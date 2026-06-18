@@ -1,0 +1,493 @@
+# 02-implementation-roadmap.md
+
+# AI Development Platform
+
+The Microsandbox Github repo can be found at:
+
+[https://github.com/microsandbox/microsandbox](https://github.com/microsandbox/microsandbox)
+
+The Microsandbox documentation is found at:
+
+[https://docs.microsandbox.dev/](https://docs.microsandbox.dev/)
+
+The Go SDK used to drive workspace microVMs is found at:
+
+[https://github.com/microsandbox/microsandbox/tree/main/sdk/go](https://github.com/microsandbox/microsandbox/tree/main/sdk/go)
+
+## Implementation Roadmap
+
+Version: 1.0
+
+---
+
+# 0. Overview
+
+This document defines the phased implementation plan for the AI Development Platform.
+
+It translates the full architecture into incremental delivery slices.
+
+Each slice must be independently testable and fully working before proceeding to the next.
+
+---
+
+# 1. Implementation Philosophy
+
+## Incremental Delivery
+
+The system must be built in small, functional slices.
+
+Each slice must:
+
+* produce a working system
+* pass acceptance tests
+* not depend on future features
+
+---
+
+## OS Always Selected (no silent default)
+
+```text id="sl0a1"
+The user always selects the OS — no OS is ever applied silently.
+```
+
+The OS is chosen in the `ai project create` wizard (CLI §3.1): the wizard
+*presents* `debian-trixie` as the default to confirm or change, but the user
+always makes the selection. There is no `--os` flag. Slice 1 ships only the
+`debian-trixie` template; Slice 5 adds the rest. A non-interactive `create` (no
+TTY) cannot prompt and fails if no OS is
+selected.
+
+---
+
+## Cross-Slice Stability
+
+Each slice must not break previous functionality.
+
+---
+
+## No Partial Features
+
+A feature is either:
+
+* fully working
+* or not included
+
+---
+
+# 2. Slice 1 — Core Foundation (MVP)
+
+## Goal
+
+Deliver a working minimal platform.
+
+---
+
+## Scope
+
+* macOS host support (Apple Silicon — required by the Microsandbox microVM runtime)
+* Docker runtime for the service tier (Podman deferred to Slice 6); Microsandbox microVM runtime for workspaces
+* rootless by default for the service tier (see 01-architecture-spec.md §6)
+* `debian-trixie` OS Dockerfile template (only OS in Slice 1; selected in the `ai project create` wizard, no implicit default); `ai project create` writes `.ai-platform/Dockerfile` from it (plus the selected agent CLIs) and builds the workspace OCI image from it
+* Single-agent system
+* LiteLLM integration
+* ClawPatrol credential brokering (real injection; firewall policy engine deferred)
+* Microsandbox workspace (microVM) creation
+
+---
+
+## Components
+
+### Host
+
+* macOS bootstrap launcher (thin shell script that fetches/execs the Go binary)
+* Docker installation detection + Microsandbox runtime / virtualization (Apple Hypervisor) detection
+* LiteLLM container startup
+* ClawPatrol gateway with real credential brokering (placeholder → real value
+  on the wire). Only the firewall **policy engine** (allow/deny rules,
+  human-in-the-loop approval) is stubbed in Slice 1 — credential injection is
+  fully functional, since the secret-injection acceptance test depends on it.
+
+---
+
+### Runtime
+
+* Docker (service tier) + Microsandbox (workspace microVMs)
+* rootless by default for the service tier (fail `doctor` if rootless is unavailable; no rooted fallback)
+* fail `doctor` if the host lacks the virtualization Microsandbox requires (Apple Silicon on macOS); no degraded non-microVM fallback
+
+---
+
+### Project System
+
+* ai project create (writes `.ai-platform/Dockerfile` from the debian-trixie template, builds the image)
+* single workspace per project
+* persistent host-mounted projects
+
+---
+
+### Model Layer
+
+* LiteLLM configured
+* basic routing:
+
+```yaml id="m1l0"
+default: gpt-5
+```
+
+---
+
+### Secrets Layer
+
+* ClawPatrol integration required
+* runtime injection only
+
+---
+
+## Commands Implemented
+
+```bash id="c1"
+ai setup
+ai project create
+ai project delete
+ai workspace start|stop|destroy|exec
+ai services status
+ai secrets set|map|list
+ai models status|test
+ai state show|repair
+ai doctor
+ai logs
+```
+
+These are exactly the commands exercised by the `[S1]` acceptance tests. There
+is no snapshot/upgrade/rollback or backup machinery — a project's environment is
+its `.ai-platform/Dockerfile` (architecture §25), and overlay persistence lands
+in Slice 4.
+
+---
+
+## Acceptance Criteria
+
+* platform installs on macOS (Apple Silicon)
+* project is created successfully
+* workspace runs the debian-trixie microVM
+* LiteLLM responds
+* secrets injected via ClawPatrol
+* no manual configuration required
+
+---
+
+# 3. Slice 2 — Context Optimization Layer
+
+## Goal
+
+Introduce Headroom + Caveman.
+
+---
+
+## Scope
+
+* Headroom context management (input compression) — host proxy
+* Caveman output compression — in-agent skill
+
+(No platform memory system — agent memory is the agent's concern, architecture
+§11.)
+
+---
+
+## Components
+
+### Headroom
+
+* token budgeting
+* input-context compression
+* summarization
+
+---
+
+### Caveman
+
+* output-token compression
+* compact commit / review messages
+
+---
+
+## Commands
+
+```bash id="c2"
+ai context status
+ai context strategy <conservative|balanced|aggressive>
+ai context caveman <lite|full|ultra|wenyan>
+```
+
+---
+
+## Acceptance Criteria
+
+* Headroom reduces input context size
+* Caveman reduces agent output size
+* large repos do not overload context
+
+---
+
+# 4. Slice 3 — Multi-Agent System
+
+## Goal
+
+Enable multiple agents per project.
+
+---
+
+## Scope
+
+* git worktrees
+* agent branches
+* agent workspaces
+* agent lifecycle system
+
+(Merging and conflict resolution are done by the in-workspace agent, not the
+platform — architecture §22.)
+
+---
+
+## Components
+
+### Git System
+
+* branch per agent
+* worktree per agent
+* branch created from current branch
+* `ai agent rebase` (plain git plumbing; stops on conflict for the agent)
+
+---
+
+### Agent System
+
+* agent creation
+* agent deletion
+* agent listing
+
+---
+
+## Commands
+
+```bash id="c3"
+ai agent create
+ai agent list
+ai agent remove
+ai agent status
+ai agent rebase
+```
+
+---
+
+## Acceptance Criteria
+
+* multiple agents operate independently
+* each agent has isolated workspace
+* agent worktrees/branches don't interfere
+
+---
+
+# 5. Slice 4 — Overlay Persistence
+
+## Goal
+
+Make installed programs and agent state persist across workspace restart and
+recreation, via the per-workspace overlay. (Environments are defined by the
+project's `.ai-platform/Dockerfile` from Slice 1 — there is no snapshot
+versioning/upgrade/rollback.)
+
+---
+
+## Scope
+
+* per-workspace persistent writable overlay (architecture §26)
+* overlay mounted over the image built from `.ai-platform/Dockerfile`
+* overlay survives stop/start and `ai workspace destroy` recreation
+* overlay removed only when its workspace is permanently removed
+
+---
+
+## Commands
+
+No new commands — persistence is automatic. (Environment changes are made by
+editing `.ai-platform/Dockerfile` and recreating the workspace.)
+
+---
+
+## Acceptance Criteria
+
+* a program installed in the workspace is still present after recreation
+* agent state written outside the project mount persists across recreation
+* the read-only image is never mutated; all changes land in the overlay
+
+---
+
+# 6. Slice 5 — Extended OS Support
+
+## Goal
+
+Add the remaining OS Dockerfile templates (Slice 1 ships the debian-trixie template).
+
+---
+
+## Scope
+
+* `alma` template (Alma 10)
+* `debian-bookworm` template (`debian:bookworm-slim`)
+* `ubuntu` template (Ubuntu minimal)
+
+---
+
+## Acceptance Criteria
+
+* all four OS templates selectable in the `ai project create` wizard
+* the user always selects the OS — no OS is applied silently
+* all OS images expose an identical **base** tooling surface (agent CLIs are whatever the user selected)
+
+---
+
+# 7. Slice 6 — Linux Host Support
+
+## Goal
+
+Add Linux host compatibility.
+
+---
+
+## Scope
+
+* Linux bootstrap (requires KVM virtualization for Microsandbox workspaces)
+* Podman support (service tier)
+* runtime abstraction improvements
+
+---
+
+## Acceptance Criteria
+
+* ai setup works on Linux (KVM available)
+* Docker or Podman auto-detected for the service tier
+* Microsandbox microVMs run via KVM
+* no workflow differences vs macOS
+
+---
+
+# 8. Slice 7 — Windows Host Support
+
+## Goal
+
+Enable Windows + WSL support.
+
+---
+
+## Scope
+
+* Windows bootstrap script
+* WSL2 integration with **nested virtualization** (required for Microsandbox microVMs) — **at-risk**; `doctor` must report clearly when unavailable
+* file path normalization
+* networking abstraction fixes
+
+---
+
+## Acceptance Criteria
+
+* ai setup works on Windows (WSL2 with nested virtualization)
+* WSL2 runs the selected-OS workspace microVM (e.g. Debian trixie)
+* project creation works unchanged
+
+---
+
+# 9. Cross-Cutting Systems
+
+These are implemented progressively across slices.
+
+---
+
+## 9.1 LiteLLM
+
+* host container
+* unified routing
+* provider abstraction
+
+---
+
+## 9.2 ClawPatrol
+
+* wire-level credential injection (agent holds placeholder; gateway swaps real value)
+* security firewall (allow/deny rules, human-in-the-loop approval, audit)
+* runtime-only access
+* no .env files
+
+---
+
+## 9.3 LiteLLM routing
+
+* thin gateway only (unified endpoint, aliasing, failover, ClawPatrol egress)
+* no per-task routing policy — the agent selects its model
+
+(MCP is not a platform concern — the agent manages it.)
+
+---
+
+## 9.4 Sandbox Strategy
+
+Default:
+
+```text id="d1"
+one Microsandbox microVM per workspace (hardware isolation, libkrun)
+```
+
+The container runtime (Docker/Podman) is used only for the service tier
+(LiteLLM, Headroom, Ollama), never to run a workspace.
+
+---
+
+## 9.5 Networking
+
+* microVM has a virtual NIC (virtio-net + gvproxy, userspace); no `host.docker.internal`, no host Docker socket
+* AI_PLATFORM_HOST abstraction for reaching trusted host services (Headroom, LiteLLM)
+* cross-platform resolution
+* Ollama reached only via LiteLLM, never directly by the workspace
+* egress is broker-mediated, delivered in two phases:
+  * **S1 (initial): ClawPatrol as a forward proxy** — the workspace env sets `HTTPS_PROXY`/`HTTP_PROXY` to ClawPatrol, and a **Microsandbox default-deny network policy** permits only the proxy + trusted host service ports. Simpler, fully userspace, no WireGuard. Known limit: proxy-unaware tools can't reach the internet (fail closed) rather than being injected.
+  * **Later slice (target): WireGuard L3 capture** — workspace default route becomes a WireGuard tunnel to the ClawPatrol gateway, so *every* tool is covered transparently (architecture §29 end-state). Gated by the feasibility spike in plan §8.2 (userspace WG termination with ClawPatrol).
+
+---
+
+## 9.6 Audit Logging
+
+* lifecycle tracking
+* no secret logging
+
+---
+
+# 10. Global Acceptance Criteria
+
+System is complete when:
+
+```bash id="g1"
+ai setup
+ai project create my-project   # interactive wizard: pick OS + agent CLIs (defaults: debian-trixie, OpenCode)
+```
+
+produces (for the OS the user selected):
+
+* selected-OS workspace (e.g. Debian trixie)
+* working LiteLLM
+* ClawPatrol secrets
+* Headroom input compression
+* Caveman output compression
+* git worktrees (multi-agent ready)
+* Dockerfile-defined environment + overlay persistence
+* reproducible environments
+* zero manual configuration
+
+---
+
+# 11. Implementation Rule
+
+No slice is considered complete until:
+
+* all commands work
+* all acceptance tests pass
+* no manual configuration is required

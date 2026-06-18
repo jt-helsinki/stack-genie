@@ -1,0 +1,11 @@
+.idea
+
+# Build output
+/bin/
+/dist/
+/ai
+
+# Go
+*.test
+*.out
+coverage.txt

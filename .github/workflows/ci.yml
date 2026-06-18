@@ -1,0 +1,49 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch: # manual trigger for the self-hosted acceptance job
+
+permissions:
+  contents: read
+
+jobs:
+  # Hosted runners: no virtualization needed — build, vet, lint, unit tests.
+  build-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: gofmt
+        run: make fmt-check
+      - name: vet
+        run: make vet
+      - name: lint
+        uses: golangci/golangci-lint-action@v6
+        with:
+          args: --timeout=5m
+      - name: unit tests
+        run: make test
+      - name: build
+        run: make build
+
+  # Self-hosted Apple Silicon: the only place that can run the full S1 stack —
+  # Microsandbox needs the Apple Hypervisor (Apple Silicon) AND Docker for the
+  # rootless service tier (plan §6). Manual until the harness (M8) and a runner
+  # exist; later slices add a Linux/KVM self-hosted runner for [S6].
+  acceptance-s1:
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: [self-hosted, macOS, ARM64]
+    needs: build-test
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: "[S1] acceptance"
+        run: make test-acceptance
