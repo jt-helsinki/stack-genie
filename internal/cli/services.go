@@ -15,8 +15,8 @@ func newServicesCmd(em *output.Emitter, exit *int) *cobra.Command {
 		Use:   "services",
 		Short: "Inspect and manage host services",
 		Args:  cobra.NoArgs,
-		RunE: func(c *cobra.Command, _ []string) error {
-			return c.Help()
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			return cmd.Help()
 		},
 	}
 	cmd.AddCommand(newServicesStatusCmd(em, exit))
@@ -29,13 +29,13 @@ func newServicesStatusCmd(em *output.Emitter, exit *int) *cobra.Command {
 		Short: "Report the health and run mode of every host service",
 		Args:  cobra.NoArgs,
 		RunE: func(_ *cobra.Command, _ []string) error {
-			d := setup.RealDeps(goruntime.GOOS, goruntime.GOARCH, nowRFC3339)
-			st, err := setup.ServicesStatus(d)
+			deps := setup.RealDeps(goruntime.GOOS, goruntime.GOARCH, nowRFC3339)
+			statuses, err := setup.ServicesStatus(deps)
 			if err != nil {
 				*exit = em.Failure("services.status", err)
 				return nil
 			}
-			*exit = em.Success("services.status", map[string]any{"services": st})
+			*exit = em.Success("services.status", map[string]any{"services": statuses})
 			return nil
 		},
 	}

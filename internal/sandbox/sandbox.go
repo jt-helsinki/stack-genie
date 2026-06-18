@@ -22,9 +22,9 @@ type Info struct {
 //   - macOS: requires Apple Silicon (Apple Hypervisor); Intel is unsupported
 //   - Linux: requires /dev/kvm
 //   - Windows: WSL2 with nested virtualization (exposes /dev/kvm in the guest)
-func Detect(goos, goarch string, p Prober) Info {
+func Detect(goos, goarch string, prober Prober) Info {
 	var info Info
-	if _, err := p.LookPath("msb"); err == nil {
+	if _, err := prober.LookPath("msb"); err == nil {
 		info.MsbInstalled = true
 	}
 	switch goos {
@@ -36,10 +36,10 @@ func Detect(goos, goarch string, p Prober) Info {
 		// Intel macOS: no virtualization (arch §6.2).
 	case "linux":
 		info.Virtualization = "kvm"
-		info.Available = p.Exists("/dev/kvm")
+		info.Available = prober.Exists("/dev/kvm")
 	case "windows":
 		info.Virtualization = "wsl2"
-		info.Available = p.Exists("/dev/kvm")
+		info.Available = prober.Exists("/dev/kvm")
 	}
 	return info
 }

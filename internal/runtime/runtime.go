@@ -41,7 +41,7 @@ type Prober interface {
 
 type realProber struct{}
 
-func (realProber) LookPath(f string) (string, error) { return exec.LookPath(f) }
+func (realProber) LookPath(file string) (string, error) { return exec.LookPath(file) }
 func (realProber) Run(name string, args ...string) ([]byte, error) {
 	return exec.Command(name, args...).Output()
 }
@@ -66,30 +66,32 @@ type Info struct {
 	DetectedAt     string           `json:"detected_at"`
 }
 
-// sandboxProber adapts a runtime.Prober to a sandbox.Prober.
-type sandboxProber struct{ p Prober }
+// sandboxAdapter adapts a runtime.Prober to a sandbox.Prober.
+type sandboxAdapter struct{ prober Prober }
 
-func (s sandboxProber) LookPath(f string) (string, error) { return s.p.LookPath(f) }
-func (s sandboxProber) Exists(path string) bool           { return s.p.Exists(path) }
+func (adapter sandboxAdapter) LookPath(file string) (string, error) {
+	return adapter.prober.LookPath(file)
+}
+func (adapter sandboxAdapter) Exists(path string) bool { return adapter.prober.Exists(path) }
 
 // Detect probes the host and builds an Info. detectedAt is an RFC 3339 UTC
 // timestamp supplied by the caller. Returns ErrNoContainerRuntime / ErrMsbMissing
 // for missing dependencies; rootless and virtualization shortfalls are recorded
 // in the Info (see Verify), not returned as errors.
-func Detect(goos, goarch string, p Prober, detectedAt string) (*Info, error) {
-	name, rootless, err := detectContainerRuntime(p)
+func Detect(goos, goarch string, prober Prober, detectedAt string) (*Info, error) {
+	name, rootless, err := detectContainerRuntime(prober)
 	if err != nil {
 		return nil, err
 	}
-	sb := sandbox.Detect(goos, goarch, sandboxProber{p})
-	if !sb.MsbInstalled {
+	detectedSandbox := sandbox.Detect(goos, goarch, sandboxAdapter{prober: prober})
+	if !detectedSandbox.MsbInstalled {
 		return nil, ErrMsbMissing
 	}
 	return &Info{
 		SchemaVersion:  SchemaVersion,
 		Detected:       name,
 		Rootless:       rootless,
-		Microsandbox:   MicrosandboxInfo{Available: sb.Available, Virtualization: sb.Virtualization},
+		Microsandbox:   MicrosandboxInfo{Available: detectedSandbox.Available, Virtualization: detectedSandbox.Virtualization},
 		AIPlatformHost: os.Getenv("AI_PLATFORM_HOST"),
 		DetectedAt:     detectedAt,
 	}, nil
@@ -108,11 +110,11 @@ func Verify(info *Info) error {
 	return nil
 }
 
-func detectContainerRuntime(p Prober) (name string, rootless bool, err error) {
+func detectContainerRuntime(prober Prober) (name string, rootless bool, err error) {
 	switch {
-	case hasBinary(p, "docker"):
-		return "docker", dockerRootless(p), nil
-	case hasBinary(p, "podman"):
+	case hasBinary(prober, "docker"):
+		return "docker", dockerRootless(prober), nil
+	case hasBinary(prober, "podman"):
 		// Podman is rootless by default; the full Runtime impl lands in Slice 6.
 		return "podman", true, nil
 	default:
@@ -120,47 +122,47 @@ func detectContainerRuntime(p Prober) (name string, rootless bool, err error) {
 	}
 }
 
-func hasBinary(p Prober, name string) bool {
-	_, err := p.LookPath(name)
+func hasBinary(prober Prober, name string) bool {
+	_, err := prober.LookPath(name)
 	return err == nil
 }
 
 // dockerRootless reports whether the docker daemon is running rootless.
-func dockerRootless(p Prober) bool {
-	out, err := p.Run("docker", "info", "-f", "{{println .SecurityOptions}}")
+func dockerRootless(prober Prober) bool {
+	output, err := prober.Run("docker", "info", "-f", "{{println .SecurityOptions}}")
 	if err != nil {
 		return false
 	}
-	return bytes.Contains(out, []byte("rootless"))
+	return bytes.Contains(output, []byte("rootless"))
 }
 
 // Path returns config/runtime.json.
 func Path() (string, error) {
-	c, err := paths.ConfigDir()
+	configDir, err := paths.ConfigDir()
 	if err != nil {
 		return "", err
 	}
-	return filepath.Join(c, "runtime.json"), nil
+	return filepath.Join(configDir, "runtime.json"), nil
 }
 
 // Persist atomically writes config/runtime.json.
 func Persist(info *Info) error {
-	p, err := Path()
+	path, err := Path()
 	if err != nil {
 		return err
 	}
-	return jsonfile.WriteAtomic(p, info)
+	return jsonfile.WriteAtomic(path, info)
 }
 
 // Load reads config/runtime.json, returning (nil, nil) if it has not been
 // detected yet (a fresh install).
 func Load() (*Info, error) {
-	p, err := Path()
+	path, err := Path()
 	if err != nil {
 		return nil, err
 	}
 	var info Info
-	if err := jsonfile.Read(p, &info); err != nil {
+	if err := jsonfile.Read(path, &info); err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			return nil, nil
 		}

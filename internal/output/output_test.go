@@ -11,14 +11,14 @@ func newTestEmitter(json bool) (*Emitter, *bytes.Buffer, *bytes.Buffer) {
 	return &Emitter{JSON: json, Out: out, Err: errb}, out, errb
 }
 
-func TestSuccessJSONEnvelope(t *testing.T) {
+func TestSuccessJSONEnvelope(test *testing.T) {
 	em, out, errb := newTestEmitter(true)
 	code := em.Success("version", map[string]any{"version": "1.2.3"})
 	if code != ExitOK {
-		t.Fatalf("exit = %d, want %d", code, ExitOK)
+		test.Fatalf("exit = %d, want %d", code, ExitOK)
 	}
 	if errb.Len() != 0 {
-		t.Fatalf("stderr should be empty with --json, got %q", errb.String())
+		test.Fatalf("stderr should be empty with --json, got %q", errb.String())
 	}
 	var env struct {
 		OK       bool           `json:"ok"`
@@ -28,45 +28,45 @@ func TestSuccessJSONEnvelope(t *testing.T) {
 		Warnings []string       `json:"warnings"`
 	}
 	if err := json.Unmarshal(out.Bytes(), &env); err != nil {
-		t.Fatalf("stdout is not valid JSON: %v\n%s", err, out.String())
+		test.Fatalf("stdout is not valid JSON: %v\n%s", err, out.String())
 	}
 	if !env.OK || env.Command != "version" || env.Error != nil {
-		t.Fatalf("unexpected envelope: %+v", env)
+		test.Fatalf("unexpected envelope: %+v", env)
 	}
 	if env.Warnings == nil {
-		t.Fatal("warnings must be an array, not null")
+		test.Fatal("warnings must be an array, not null")
 	}
 	if env.Data["version"] != "1.2.3" {
-		t.Fatalf("data.version = %v", env.Data["version"])
+		test.Fatalf("data.version = %v", env.Data["version"])
 	}
 }
 
-func TestFailureCodeEqualsErrorCode(t *testing.T) {
+func TestFailureCodeEqualsErrorCode(test *testing.T) {
 	em, out, _ := newTestEmitter(true)
 	code := em.Failure("project.create", Errorf(ExitInvalidInput, "bad name"))
 	if code != ExitInvalidInput {
-		t.Fatalf("exit = %d, want %d", code, ExitInvalidInput)
+		test.Fatalf("exit = %d, want %d", code, ExitInvalidInput)
 	}
 	var env struct {
 		OK    bool   `json:"ok"`
 		Error *Error `json:"error"`
 	}
 	if err := json.Unmarshal(out.Bytes(), &env); err != nil {
-		t.Fatalf("invalid JSON: %v", err)
+		test.Fatalf("invalid JSON: %v", err)
 	}
 	if env.OK {
-		t.Fatal("ok must be false on failure")
+		test.Fatal("ok must be false on failure")
 	}
 	// error.code must equal the process exit code (§19).
 	if env.Error.Code != code {
-		t.Fatalf("error.code = %d, exit = %d; must match", env.Error.Code, code)
+		test.Fatalf("error.code = %d, exit = %d; must match", env.Error.Code, code)
 	}
 	if env.Error.Kind != KindInvalidInput {
-		t.Fatalf("kind = %q, want %q", env.Error.Kind, KindInvalidInput)
+		test.Fatalf("kind = %q, want %q", env.Error.Kind, KindInvalidInput)
 	}
 }
 
-func TestKindForCode(t *testing.T) {
+func TestKindForCode(test *testing.T) {
 	cases := map[int]string{
 		ExitGeneral:        KindGeneral,
 		ExitInvalidInput:   KindInvalidInput,
@@ -77,18 +77,18 @@ func TestKindForCode(t *testing.T) {
 	}
 	for code, want := range cases {
 		if got := kindForCode(code); got != want {
-			t.Errorf("kindForCode(%d) = %q, want %q", code, got, want)
+			test.Errorf("kindForCode(%d) = %q, want %q", code, got, want)
 		}
 	}
 }
 
-func TestHumanFailureWritesToStderrNotStdout(t *testing.T) {
+func TestHumanFailureWritesToStderrNotStdout(test *testing.T) {
 	em, out, errb := newTestEmitter(false)
 	em.Failure("doctor", Errorf(ExitMissingDep, "docker not found"))
 	if out.Len() != 0 {
-		t.Fatalf("stdout should be empty on human failure, got %q", out.String())
+		test.Fatalf("stdout should be empty on human failure, got %q", out.String())
 	}
 	if errb.Len() == 0 {
-		t.Fatal("human error should be written to stderr")
+		test.Fatal("human error should be written to stderr")
 	}
 }

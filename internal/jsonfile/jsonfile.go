@@ -10,47 +10,48 @@ import (
 	"path/filepath"
 )
 
-// WriteAtomic writes v as indented JSON to path, creating parent directories.
-// It writes a temp file in the same directory and renames it over the target.
-func WriteAtomic(path string, v any) error {
+// WriteAtomic writes value as indented JSON to path, creating parent
+// directories. It writes a temp file in the same directory and renames it over
+// the target.
+func WriteAtomic(path string, value any) error {
 	dir := filepath.Dir(path)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return err
 	}
-	tmp, err := os.CreateTemp(dir, ".tmp-*")
+	tempFile, err := os.CreateTemp(dir, ".tmp-*")
 	if err != nil {
 		return err
 	}
-	tmpName := tmp.Name()
-	defer os.Remove(tmpName) // no-op once renamed
+	tempName := tempFile.Name()
+	defer os.Remove(tempName) // no-op once renamed
 
-	enc := json.NewEncoder(tmp)
-	enc.SetIndent("", "  ")
-	if err := enc.Encode(v); err != nil {
-		tmp.Close()
+	encoder := json.NewEncoder(tempFile)
+	encoder.SetIndent("", "  ")
+	if err := encoder.Encode(value); err != nil {
+		tempFile.Close()
 		return err
 	}
-	if err := tmp.Sync(); err != nil {
-		tmp.Close()
+	if err := tempFile.Sync(); err != nil {
+		tempFile.Close()
 		return err
 	}
-	if err := tmp.Close(); err != nil {
+	if err := tempFile.Close(); err != nil {
 		return err
 	}
-	return os.Rename(tmpName, path)
+	return os.Rename(tempName, path)
 }
 
-// Read decodes path into v, rejecting unknown fields. The returned error wraps
-// os.ErrNotExist when the file is absent, so callers can use errors.Is.
-func Read(path string, v any) error {
-	f, err := os.Open(path)
+// Read decodes path into value, rejecting unknown fields. The returned error
+// wraps os.ErrNotExist when the file is absent, so callers can use errors.Is.
+func Read(path string, value any) error {
+	file, err := os.Open(path)
 	if err != nil {
 		return err
 	}
-	defer f.Close()
-	dec := json.NewDecoder(f)
-	dec.DisallowUnknownFields()
-	if err := dec.Decode(v); err != nil {
+	defer file.Close()
+	decoder := json.NewDecoder(file)
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(value); err != nil {
 		return fmt.Errorf("%s: %w", path, err)
 	}
 	return nil

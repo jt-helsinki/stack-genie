@@ -74,23 +74,23 @@ func Default() *Config {
 // EnsureGlobalDefault writes the default global config.yaml if none exists yet.
 // It returns true when it created the file. Idempotent.
 func EnsureGlobalDefault() (created bool, err error) {
-	p, err := GlobalPath()
+	globalPath, err := GlobalPath()
 	if err != nil {
 		return false, err
 	}
-	if _, err := os.Stat(p); err == nil {
+	if _, err := os.Stat(globalPath); err == nil {
 		return false, nil
 	} else if !errors.Is(err, fs.ErrNotExist) {
 		return false, err
 	}
-	if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(globalPath), 0o755); err != nil {
 		return false, err
 	}
-	b, err := yaml.Marshal(Default())
+	encoded, err := yaml.Marshal(Default())
 	if err != nil {
 		return false, err
 	}
-	if err := os.WriteFile(p, b, 0o644); err != nil {
+	if err := os.WriteFile(globalPath, encoded, 0o644); err != nil {
 		return false, err
 	}
 	return true, nil
@@ -98,11 +98,11 @@ func EnsureGlobalDefault() (created bool, err error) {
 
 // GlobalPath returns ~/.ai-platform/config/config.yaml.
 func GlobalPath() (string, error) {
-	c, err := paths.ConfigDir()
+	configDir, err := paths.ConfigDir()
 	if err != nil {
 		return "", err
 	}
-	return filepath.Join(c, "config.yaml"), nil
+	return filepath.Join(configDir, "config.yaml"), nil
 }
 
 // ProjectPath returns <projectRoot>/.ai-platform/config.yaml.
@@ -118,39 +118,39 @@ func Load(projectRoot string) (*Config, error) {
 	if err != nil {
 		return nil, err
 	}
-	layers := []string{globalPath}
+	layerPaths := []string{globalPath}
 	if projectRoot != "" {
-		layers = append(layers, ProjectPath(projectRoot))
+		layerPaths = append(layerPaths, ProjectPath(projectRoot))
 	}
 
 	merged := map[string]any{}
-	for _, path := range layers {
-		m, ok, err := loadLayer(path)
+	for _, layerPath := range layerPaths {
+		layer, present, err := loadLayer(layerPath)
 		if err != nil {
 			return nil, err
 		}
-		if ok {
-			merged = deepMerge(merged, m)
+		if present {
+			merged = deepMerge(merged, layer)
 		}
 	}
 
-	out := &Config{}
+	config := &Config{}
 	if len(merged) > 0 {
-		b, err := yaml.Marshal(merged)
+		encoded, err := yaml.Marshal(merged)
 		if err != nil {
 			return nil, err
 		}
-		if err := strictUnmarshal(b, out); err != nil {
+		if err := strictUnmarshal(encoded, config); err != nil {
 			return nil, err
 		}
 	}
-	return out, nil
+	return config, nil
 }
 
 // loadLayer reads one config file into a map, validating it has no unknown
-// fields. ok is false when the file does not exist.
-func loadLayer(path string) (m map[string]any, ok bool, err error) {
-	b, err := os.ReadFile(path)
+// fields. present is false when the file does not exist.
+func loadLayer(path string) (layer map[string]any, present bool, err error) {
+	raw, err := os.ReadFile(path)
 	if err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
 			return nil, false, nil
@@ -158,19 +158,19 @@ func loadLayer(path string) (m map[string]any, ok bool, err error) {
 		return nil, false, err
 	}
 	// Validate against the known schema (rejects unknown fields, with filename).
-	if err := strictUnmarshal(b, &Config{}); err != nil {
+	if err := strictUnmarshal(raw, &Config{}); err != nil {
 		return nil, false, fmt.Errorf("%s: %w", path, err)
 	}
-	if err := yaml.Unmarshal(b, &m); err != nil {
+	if err := yaml.Unmarshal(raw, &layer); err != nil {
 		return nil, false, fmt.Errorf("%s: %w", path, err)
 	}
-	return m, true, nil
+	return layer, true, nil
 }
 
-func strictUnmarshal(b []byte, v any) error {
-	dec := yaml.NewDecoder(bytes.NewReader(b))
-	dec.KnownFields(true)
-	if err := dec.Decode(v); err != nil {
+func strictUnmarshal(raw []byte, target any) error {
+	decoder := yaml.NewDecoder(bytes.NewReader(raw))
+	decoder.KnownFields(true)
+	if err := decoder.Decode(target); err != nil {
 		if errors.Is(err, io.EOF) {
 			return nil // empty document
 		}
@@ -179,23 +179,23 @@ func strictUnmarshal(b []byte, v any) error {
 	return nil
 }
 
-// deepMerge returns base with over applied on top; nested maps merge recursively
-// and scalar/over values win. Inputs are not mutated.
-func deepMerge(base, over map[string]any) map[string]any {
-	out := make(map[string]any, len(base))
-	for k, v := range base {
-		out[k] = v
+// deepMerge returns base with overlay applied on top; nested maps merge
+// recursively and scalar/overlay values win. Inputs are not mutated.
+func deepMerge(base, overlay map[string]any) map[string]any {
+	result := make(map[string]any, len(base))
+	for key, value := range base {
+		result[key] = value
 	}
-	for k, v := range over {
-		if bv, ok := out[k]; ok {
-			if bm, ok1 := bv.(map[string]any); ok1 {
-				if om, ok2 := v.(map[string]any); ok2 {
-					out[k] = deepMerge(bm, om)
+	for key, overlayValue := range overlay {
+		if existing, ok := result[key]; ok {
+			if existingMap, isMap := existing.(map[string]any); isMap {
+				if overlayMap, isMap := overlayValue.(map[string]any); isMap {
+					result[key] = deepMerge(existingMap, overlayMap)
 					continue
 				}
 			}
 		}
-		out[k] = v
+		result[key] = overlayValue
 	}
-	return out
+	return result
 }

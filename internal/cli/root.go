@@ -24,14 +24,14 @@ type globalFlags struct {
 // Execute builds the root command, runs it, and returns a process exit code
 // (CLI spec §18). main() passes this to os.Exit.
 func Execute() int {
-	g := &globalFlags{}
-	em := &output.Emitter{Out: os.Stdout, Err: os.Stderr}
-	exit := output.ExitOK
+	flags := &globalFlags{}
+	emitter := &output.Emitter{Out: os.Stdout, Err: os.Stderr}
+	exitCode := output.ExitOK
 
 	root := &cobra.Command{
 		Use:   "ai",
-		Short: "Ideal Robit AI Development Platform CLI",
-		Long:  "Ideal Robot — reproducible, isolated AI development environments.",
+		Short: "AI Development Platform CLI",
+		Long:  "ai — reproducible, isolated AI development environments.",
 		// No positional args at the root: `ai <unknown>` must exit 2 (§17.0).
 		// Once subcommands are registered, cobra resolves them first and this
 		// still rejects any unrecognized token.
@@ -39,14 +39,14 @@ func Execute() int {
 		SilenceUsage:  true, // we render errors ourselves (§19)
 		SilenceErrors: true,
 		PersistentPreRun: func(_ *cobra.Command, _ []string) {
-			em.JSON = g.json
+			emitter.JSON = flags.json
 		},
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			if g.version {
-				if g.json {
-					exit = em.Success("version", versionData())
+			if flags.version {
+				if flags.json {
+					exitCode = emitter.Success("version", versionData())
 				} else {
-					_, _ = fmt.Fprintf(em.Out, "ai version %s\n", version.Version)
+					_, _ = fmt.Fprintf(emitter.Out, "ai version %s\n", version.Version)
 				}
 				return nil
 			}
@@ -55,32 +55,34 @@ func Execute() int {
 		},
 	}
 
-	pf := root.PersistentFlags()
-	pf.BoolVar(&g.json, "json", false, "machine-readable output (CLI spec §19)")
-	pf.BoolVar(&g.verbose, "verbose", false, "extra human-readable detail (ignored with --json)")
-	pf.BoolVar(&g.dryRun, "dry-run", false, "compute and print planned actions; mutate nothing")
-	pf.StringVar(&g.project, "project", "", "scope the command to a project")
-	pf.BoolVar(&g.yes, "yes", false, `assume "yes" for destructive confirmation prompts`)
-	root.Flags().BoolVar(&g.version, "version", false, "print version and exit")
+	persistentFlags := root.PersistentFlags()
+	persistentFlags.BoolVar(&flags.json, "json", false, "machine-readable output (CLI spec §19)")
+	persistentFlags.BoolVar(&flags.verbose, "verbose", false, "extra human-readable detail (ignored with --json)")
+	persistentFlags.BoolVar(&flags.dryRun, "dry-run", false, "compute and print planned actions; mutate nothing")
+	persistentFlags.StringVar(&flags.project, "project", "", "scope the command to a project")
+	persistentFlags.BoolVar(&flags.yes, "yes", false, `assume "yes" for destructive confirmation prompts`)
+	root.Flags().BoolVar(&flags.version, "version", false, "print version and exit")
 
-	// Subcommand groups. More (project/workspace/agent/secrets/...) are
-	// registered here in later milestones.
+	// Subcommand groups. More (project/workspace/agent/...) are registered here
+	// in later milestones.
 	root.AddCommand(
-		newSetupCmd(em, &exit),
-		newServicesCmd(em, &exit),
-		newStateCmd(em, &exit),
+		newSetupCmd(emitter, &exitCode),
+		newServicesCmd(emitter, &exitCode),
+		newSecretsCmd(emitter, &exitCode),
+		newModelsCmd(emitter, &exitCode),
+		newStateCmd(emitter, &exitCode),
 	)
 
 	root.SetArgs(os.Args[1:])
 	if err := root.Execute(); err != nil {
 		// Arg/flag errors abort before PersistentPreRun runs, so mirror the
 		// --json flag here to honor the requested output mode (§19).
-		em.JSON = g.json
+		emitter.JSON = flags.json
 		// Unknown command / bad flag → invalid input (exit 2, §18). The error
 		// kind is derived from the code.
-		exit = em.Failure("ai", output.Errorf(output.ExitInvalidInput, "%s", err.Error()))
+		exitCode = emitter.Failure("ai", output.Errorf(output.ExitInvalidInput, "%s", err.Error()))
 	}
-	return exit
+	return exitCode
 }
 
 // versionData is the data payload for `ai --version --json`.

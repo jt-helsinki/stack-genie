@@ -32,8 +32,8 @@ func Ensure() (string, error) {
 	if err != nil {
 		return "", err
 	}
-	for _, d := range dirs {
-		if err := os.MkdirAll(filepath.Join(root, d), 0o755); err != nil {
+	for _, dir := range dirs {
+		if err := os.MkdirAll(filepath.Join(root, dir), 0o755); err != nil {
 			return "", err
 		}
 	}

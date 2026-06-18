@@ -7,52 +7,52 @@ type fakeProber struct {
 	files map[string]bool
 }
 
-func (f fakeProber) LookPath(file string) (string, error) {
-	if f.bins[file] {
+func (prober fakeProber) LookPath(file string) (string, error) {
+	if prober.bins[file] {
 		return "/usr/bin/" + file, nil
 	}
 	return "", errNotFound
 }
-func (f fakeProber) Exists(path string) bool { return f.files[path] }
+func (prober fakeProber) Exists(path string) bool { return prober.files[path] }
 
-var errNotFound = &lookErr{}
+var errNotFound = &lookupError{}
 
-type lookErr struct{}
+type lookupError struct{}
 
-func (*lookErr) Error() string { return "not found" }
+func (*lookupError) Error() string { return "not found" }
 
-func TestDetectAppleSilicon(t *testing.T) {
-	p := fakeProber{bins: map[string]bool{"msb": true}}
-	got := Detect("darwin", "arm64", p)
-	if !got.MsbInstalled || got.Virtualization != "hvf" || !got.Available {
-		t.Fatalf("apple silicon: %+v", got)
+func TestDetectAppleSilicon(test *testing.T) {
+	prober := fakeProber{bins: map[string]bool{"msb": true}}
+	info := Detect("darwin", "arm64", prober)
+	if !info.MsbInstalled || info.Virtualization != "hvf" || !info.Available {
+		test.Fatalf("apple silicon: %+v", info)
 	}
 }
 
-func TestDetectIntelMacUnsupported(t *testing.T) {
-	p := fakeProber{bins: map[string]bool{"msb": true}}
-	got := Detect("darwin", "amd64", p)
-	if got.Available || got.Virtualization != "" {
-		t.Fatalf("intel mac must be unsupported: %+v", got)
+func TestDetectIntelMacUnsupported(test *testing.T) {
+	prober := fakeProber{bins: map[string]bool{"msb": true}}
+	info := Detect("darwin", "amd64", prober)
+	if info.Available || info.Virtualization != "" {
+		test.Fatalf("intel mac must be unsupported: %+v", info)
 	}
 }
 
-func TestDetectLinuxKVM(t *testing.T) {
-	p := fakeProber{bins: map[string]bool{"msb": true}, files: map[string]bool{"/dev/kvm": true}}
-	got := Detect("linux", "amd64", p)
-	if got.Virtualization != "kvm" || !got.Available {
-		t.Fatalf("linux kvm: %+v", got)
+func TestDetectLinuxKVM(test *testing.T) {
+	prober := fakeProber{bins: map[string]bool{"msb": true}, files: map[string]bool{"/dev/kvm": true}}
+	info := Detect("linux", "amd64", prober)
+	if info.Virtualization != "kvm" || !info.Available {
+		test.Fatalf("linux kvm: %+v", info)
 	}
 	// No /dev/kvm → unavailable.
-	got = Detect("linux", "amd64", fakeProber{bins: map[string]bool{"msb": true}})
-	if got.Available {
-		t.Fatalf("linux without /dev/kvm must be unavailable: %+v", got)
+	withoutKVM := Detect("linux", "amd64", fakeProber{bins: map[string]bool{"msb": true}})
+	if withoutKVM.Available {
+		test.Fatalf("linux without /dev/kvm must be unavailable: %+v", withoutKVM)
 	}
 }
 
-func TestDetectMsbMissing(t *testing.T) {
-	got := Detect("darwin", "arm64", fakeProber{})
-	if got.MsbInstalled {
-		t.Fatalf("msb should be reported missing: %+v", got)
+func TestDetectMsbMissing(test *testing.T) {
+	info := Detect("darwin", "arm64", fakeProber{})
+	if info.MsbInstalled {
+		test.Fatalf("msb should be reported missing: %+v", info)
 	}
 }

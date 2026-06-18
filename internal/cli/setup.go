@@ -19,13 +19,13 @@ func newSetupCmd(em *output.Emitter, exit *int) *cobra.Command {
 		Short: "Install, configure, and start the platform host services (idempotent)",
 		Args:  cobra.NoArgs,
 		RunE: func(_ *cobra.Command, _ []string) error {
-			d := setup.RealDeps(goruntime.GOOS, goruntime.GOARCH, nowRFC3339)
-			rep, err := setup.Run(setup.Options{ProviderConfig: providerConfig}, d)
+			deps := setup.RealDeps(goruntime.GOOS, goruntime.GOARCH, nowRFC3339)
+			report, err := setup.Run(setup.Options{ProviderConfig: providerConfig}, deps)
 			if err != nil {
 				*exit = em.Failure("setup", err) // err is *output.Error (carries the exit code)
 				return nil
 			}
-			*exit = em.Success("setup", rep)
+			*exit = em.Success("setup", report)
 			return nil
 		},
 	}

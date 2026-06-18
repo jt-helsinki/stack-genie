@@ -18,43 +18,46 @@ type fakeProber struct {
 	dockerOut string
 }
 
-func (f fakeProber) LookPath(file string) (string, error) {
-	if f.bins[file] {
+func (prober fakeProber) LookPath(file string) (string, error) {
+	if prober.bins[file] {
 		return "/usr/bin/" + file, nil
 	}
 	return "", exec.ErrNotFound
 }
-func (f fakeProber) Run(name string, _ ...string) ([]byte, error) {
+func (prober fakeProber) Run(name string, _ ...string) ([]byte, error) {
 	if name == "docker" {
-		return []byte(f.dockerOut), nil
+		return []byte(prober.dockerOut), nil
 	}
 	return nil, exec.ErrNotFound
 }
-func (f fakeProber) Exists(path string) bool { return f.files[path] }
+func (prober fakeProber) Exists(path string) bool { return prober.files[path] }
 
 type fakeServices struct {
 	reconciled bool
 	provider   string
 }
 
-func (s *fakeServices) Reconcile(pc string) ([]ServiceStatus, error) {
-	s.reconciled = true
-	s.provider = pc
+func (services *fakeServices) Reconcile(providerConfig string) ([]ServiceStatus, error) {
+	services.reconciled = true
+	services.provider = providerConfig
 	return []ServiceStatus{{Name: "litellm", Mode: "container", State: "running", Healthy: true}}, nil
 }
-func (s *fakeServices) Status() ([]ServiceStatus, error) {
+func (services *fakeServices) Status() ([]ServiceStatus, error) {
 	return []ServiceStatus{{Name: "litellm", Mode: "container", State: "running", Healthy: true}}, nil
 }
 
 type fakeCA struct{ ensured bool }
 
-func (c *fakeCA) Ensure() error { c.ensured = true; return nil }
+func (certificateAuthority *fakeCA) Ensure() error {
+	certificateAuthority.ensured = true
+	return nil
+}
 
 // healthyDeps returns Deps that pass preflight (Apple Silicon, rootless docker,
 // msb installed) with fresh fakes.
 func healthyDeps() (Deps, *fakeServices, *fakeCA) {
-	svc := &fakeServices{}
-	ca := &fakeCA{}
+	services := &fakeServices{}
+	certificateAuthority := &fakeCA{}
 	return Deps{
 		GOOS: "darwin", GOARCH: "arm64",
 		Prober: fakeProber{
@@ -62,118 +65,117 @@ func healthyDeps() (Deps, *fakeServices, *fakeCA) {
 			dockerOut: "[name=seccomp name=rootless]",
 		},
 		Now:      func() string { return "2026-06-18T00:00:00Z" },
-		Services: svc,
-		CA:       ca,
-	}, svc, ca
+		Services: services,
+		CA:       certificateAuthority,
+	}, services, certificateAuthority
 }
 
-func exitCode(t *testing.T, err error) int {
-	t.Helper()
-	var oe *output.Error
-	if !errors.As(err, &oe) {
-		t.Fatalf("error is not *output.Error: %v", err)
+func exitCodeOf(test *testing.T, err error) int {
+	test.Helper()
+	var platformErr *output.Error
+	if !errors.As(err, &platformErr) {
+		test.Fatalf("error is not *output.Error: %v", err)
 	}
-	return oe.Code
+	return platformErr.Code
 }
 
 // --- tests ------------------------------------------------------------------
 
-func TestRunHappyPath(t *testing.T) {
-	home := t.TempDir()
-	t.Setenv("HOME", home)
-	d, svc, ca := healthyDeps()
+func TestRunHappyPath(test *testing.T) {
+	home := test.TempDir()
+	test.Setenv("HOME", home)
+	deps, services, certificateAuthority := healthyDeps()
 
-	rep, err := Run(Options{ProviderConfig: "prov.yaml"}, d)
+	report, err := Run(Options{ProviderConfig: "prov.yaml"}, deps)
 	if err != nil {
-		t.Fatal(err)
+		test.Fatal(err)
 	}
-	if !svc.reconciled || svc.provider != "prov.yaml" {
-		t.Fatalf("services not reconciled with provider config: %+v", svc)
+	if !services.reconciled || services.provider != "prov.yaml" {
+		test.Fatalf("services not reconciled with provider config: %+v", services)
 	}
-	if !ca.ensured {
-		t.Fatal("CA.Ensure was not called")
+	if !certificateAuthority.ensured {
+		test.Fatal("CA.Ensure was not called")
 	}
-	if !rep.ConfigCreated || !rep.VersionsCreated || !rep.CAReady {
-		t.Fatalf("report flags: %+v", rep)
+	if !report.ConfigCreated || !report.VersionsCreated || !report.CAReady {
+		test.Fatalf("report flags: %+v", report)
 	}
-	// Layout + persisted artifacts exist.
-	for _, p := range []string{
+	for _, path := range []string{
 		filepath.Join(home, ".ai-platform", "config", "runtime.json"),
 		filepath.Join(home, ".ai-platform", "config", "config.yaml"),
 		filepath.Join(home, ".ai-platform", "config", "versions.json"),
 		filepath.Join(home, ".ai-platform", "logs"),
 	} {
-		if _, err := os.Stat(p); err != nil {
-			t.Errorf("expected %s to exist: %v", p, err)
+		if _, err := os.Stat(path); err != nil {
+			test.Errorf("expected %s to exist: %v", path, err)
 		}
 	}
 }
 
-func TestRunPreflightMissingDep(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
-	d, _, _ := healthyDeps()
-	d.Prober = fakeProber{bins: map[string]bool{"msb": true}} // no docker
+func TestRunPreflightMissingDep(test *testing.T) {
+	test.Setenv("HOME", test.TempDir())
+	deps, _, _ := healthyDeps()
+	deps.Prober = fakeProber{bins: map[string]bool{"msb": true}} // no docker
 
-	_, err := Run(Options{}, d)
-	if got := exitCode(t, err); got != output.ExitMissingDep {
-		t.Fatalf("exit = %d, want %d", got, output.ExitMissingDep)
+	_, err := Run(Options{}, deps)
+	if got := exitCodeOf(test, err); got != output.ExitMissingDep {
+		test.Fatalf("exit = %d, want %d", got, output.ExitMissingDep)
 	}
 }
 
-func TestRunPreflightRootlessUnavailable(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
-	d, _, _ := healthyDeps()
-	d.Prober = fakeProber{
+func TestRunPreflightRootlessUnavailable(test *testing.T) {
+	test.Setenv("HOME", test.TempDir())
+	deps, _, _ := healthyDeps()
+	deps.Prober = fakeProber{
 		bins:      map[string]bool{"docker": true, "msb": true},
 		dockerOut: "[name=seccomp]", // not rootless
 	}
-	_, err := Run(Options{}, d)
-	if got := exitCode(t, err); got != output.ExitRuntimeFailure {
-		t.Fatalf("exit = %d, want %d", got, output.ExitRuntimeFailure)
+	_, err := Run(Options{}, deps)
+	if got := exitCodeOf(test, err); got != output.ExitRuntimeFailure {
+		test.Fatalf("exit = %d, want %d", got, output.ExitRuntimeFailure)
 	}
 }
 
-func TestRunIdempotent(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
-	d, _, _ := healthyDeps()
+func TestRunIdempotent(test *testing.T) {
+	test.Setenv("HOME", test.TempDir())
+	deps, _, _ := healthyDeps()
 
-	first, err := Run(Options{}, d)
+	first, err := Run(Options{}, deps)
 	if err != nil {
-		t.Fatal(err)
+		test.Fatal(err)
 	}
 	if !first.ConfigCreated || !first.VersionsCreated {
-		t.Fatalf("first run should create defaults: %+v", first)
+		test.Fatalf("first run should create defaults: %+v", first)
 	}
-	second, err := Run(Options{}, d)
+	second, err := Run(Options{}, deps)
 	if err != nil {
-		t.Fatal(err)
+		test.Fatal(err)
 	}
 	if second.ConfigCreated || second.VersionsCreated {
-		t.Fatalf("second run must not recreate defaults: %+v", second)
+		test.Fatalf("second run must not recreate defaults: %+v", second)
 	}
 }
 
-func TestServicesStatusIncludesMicrosandbox(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
-	d, _, _ := healthyDeps()
-	if _, err := Run(Options{}, d); err != nil {
-		t.Fatal(err)
+func TestServicesStatusIncludesMicrosandbox(test *testing.T) {
+	test.Setenv("HOME", test.TempDir())
+	deps, _, _ := healthyDeps()
+	if _, err := Run(Options{}, deps); err != nil {
+		test.Fatal(err)
 	}
 
-	st, err := ServicesStatus(d)
+	statuses, err := ServicesStatus(deps)
 	if err != nil {
-		t.Fatal(err)
+		test.Fatal(err)
 	}
-	var foundMSB bool
-	for _, s := range st {
-		if s.Name == "microsandbox" {
-			foundMSB = true
-			if s.Mode != "runtime" || !s.Healthy || s.Detail != "hvf" {
-				t.Fatalf("microsandbox status: %+v", s)
+	var foundMicrosandbox bool
+	for _, status := range statuses {
+		if status.Name == "microsandbox" {
+			foundMicrosandbox = true
+			if status.Mode != "runtime" || !status.Healthy || status.Detail != "hvf" {
+				test.Fatalf("microsandbox status: %+v", status)
 			}
 		}
 	}
-	if !foundMSB {
-		t.Fatal("microsandbox runtime missing from services status")
+	if !foundMicrosandbox {
+		test.Fatal("microsandbox runtime missing from services status")
 	}
 }

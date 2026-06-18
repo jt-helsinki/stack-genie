@@ -55,7 +55,7 @@ type Error struct {
 	Message string `json:"message"`
 }
 
-func (e *Error) Error() string { return e.Message }
+func (platformErr *Error) Error() string { return platformErr.Message }
 
 // Errorf builds an *Error for the given exit code; the kind is derived from it.
 func Errorf(code int, format string, args ...any) *Error {
@@ -79,32 +79,32 @@ type Emitter struct {
 }
 
 // Success renders a successful result and returns ExitOK.
-func (e *Emitter) Success(command string, data any, warnings ...string) int {
-	w := normalize(warnings)
-	if e.JSON {
-		e.writeJSON(envelope{OK: true, Command: command, Data: data, Error: nil, Warnings: w})
+func (emitter *Emitter) Success(command string, data any, warnings ...string) int {
+	normalized := normalizeWarnings(warnings)
+	if emitter.JSON {
+		emitter.writeJSON(envelope{OK: true, Command: command, Data: data, Error: nil, Warnings: normalized})
 	} else {
-		for _, msg := range w {
-			_, _ = fmt.Fprintln(e.Err, "warning:", msg)
+		for _, message := range normalized {
+			_, _ = fmt.Fprintln(emitter.Err, "warning:", message)
 		}
-		e.writeHuman(data)
+		emitter.writeHuman(data)
 	}
 	return ExitOK
 }
 
 // Failure renders an error result and returns its exit code.
-func (e *Emitter) Failure(command string, err error, warnings ...string) int {
-	cerr := asError(err)
-	w := normalize(warnings)
-	if e.JSON {
-		e.writeJSON(envelope{OK: false, Command: command, Data: nil, Error: cerr, Warnings: w})
+func (emitter *Emitter) Failure(command string, err error, warnings ...string) int {
+	platformErr := asError(err)
+	normalized := normalizeWarnings(warnings)
+	if emitter.JSON {
+		emitter.writeJSON(envelope{OK: false, Command: command, Data: nil, Error: platformErr, Warnings: normalized})
 	} else {
-		for _, msg := range w {
-			_, _ = fmt.Fprintln(e.Err, "warning:", msg)
+		for _, message := range normalized {
+			_, _ = fmt.Fprintln(emitter.Err, "warning:", message)
 		}
-		_, _ = fmt.Fprintf(e.Err, "error: %s\n", cerr.Message)
+		_, _ = fmt.Fprintf(emitter.Err, "error: %s\n", platformErr.Message)
 	}
-	return cerr.Code
+	return platformErr.Code
 }
 
 // asError coerces any error into an *Error (general failure if untyped).
@@ -112,33 +112,33 @@ func asError(err error) *Error {
 	if err == nil {
 		return Errorf(ExitGeneral, "unknown error")
 	}
-	if ce, ok := err.(*Error); ok {
-		return ce
+	if platformErr, ok := err.(*Error); ok {
+		return platformErr
 	}
 	return Errorf(ExitGeneral, "%s", err.Error())
 }
 
-func normalize(w []string) []string {
-	if w == nil {
+func normalizeWarnings(warnings []string) []string {
+	if warnings == nil {
 		return []string{}
 	}
-	return w
+	return warnings
 }
 
-func (e *Emitter) writeJSON(env envelope) {
-	enc := json.NewEncoder(e.Out)
-	enc.SetIndent("", "  ")
-	_ = enc.Encode(env) // Encode appends a trailing newline
+func (emitter *Emitter) writeJSON(env envelope) {
+	encoder := json.NewEncoder(emitter.Out)
+	encoder.SetIndent("", "  ")
+	_ = encoder.Encode(env) // Encode appends a trailing newline
 }
 
-func (e *Emitter) writeHuman(data any) {
-	switch v := data.(type) {
+func (emitter *Emitter) writeHuman(data any) {
+	switch value := data.(type) {
 	case nil:
 		// nothing to print
 	case string:
-		_, _ = fmt.Fprintln(e.Out, v)
+		_, _ = fmt.Fprintln(emitter.Out, value)
 	default:
-		b, _ := json.MarshalIndent(v, "", "  ")
-		_, _ = fmt.Fprintln(e.Out, string(b))
+		encoded, _ := json.MarshalIndent(value, "", "  ")
+		_, _ = fmt.Fprintln(emitter.Out, string(encoded))
 	}
 }

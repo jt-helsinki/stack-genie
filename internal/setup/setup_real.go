@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 
+	"github.com/jt-helsinki/ideal-robot/internal/litellm"
 	"github.com/jt-helsinki/ideal-robot/internal/paths"
 	"github.com/jt-helsinki/ideal-robot/internal/runtime"
 )
@@ -25,30 +26,35 @@ type realServices struct {
 	prober runtime.Prober
 }
 
-func (s realServices) Reconcile(_ string) ([]ServiceStatus, error) {
-	cfg, err := paths.ConfigDir()
+func (services realServices) Reconcile(providerConfig string) ([]ServiceStatus, error) {
+	configDir, err := paths.ConfigDir()
 	if err != nil {
 		return nil, err
 	}
-	for _, svc := range desiredServices {
-		if err := os.MkdirAll(filepath.Join(cfg, svc.Name), 0o755); err != nil {
+	for _, service := range desiredServices {
+		if err := os.MkdirAll(filepath.Join(configDir, service.Name), 0o755); err != nil {
 			return nil, err
 		}
 	}
-	return s.Status()
+	// Render the LiteLLM gateway config from default routing (placeholders only),
+	// or pass through a provided provider config (e.g. the acceptance harness).
+	if err := litellm.Render(litellm.DefaultRouting(), providerConfig); err != nil {
+		return nil, err
+	}
+	return services.Status()
 }
 
-func (s realServices) Status() ([]ServiceStatus, error) {
-	out := make([]ServiceStatus, 0, len(desiredServices))
-	for _, svc := range desiredServices {
-		out = append(out, ServiceStatus{
-			Name:   svc.Name,
-			Mode:   svc.Mode,
+func (services realServices) Status() ([]ServiceStatus, error) {
+	statuses := make([]ServiceStatus, 0, len(desiredServices))
+	for _, service := range desiredServices {
+		statuses = append(statuses, ServiceStatus{
+			Name:   service.Name,
+			Mode:   service.Mode,
 			State:  "unknown",
 			Detail: "live status wired during hardware bring-up",
 		})
 	}
-	return out, nil
+	return statuses, nil
 }
 
 // realCA prepares the ClawPatrol CA location (arch §17). Generating the CA
@@ -56,22 +62,22 @@ func (s realServices) Status() ([]ServiceStatus, error) {
 type realCA struct{}
 
 func (realCA) Ensure() error {
-	cfg, err := paths.ConfigDir()
+	configDir, err := paths.ConfigDir()
 	if err != nil {
 		return err
 	}
-	return os.MkdirAll(filepath.Join(cfg, "clawpatrol", "ca"), 0o755)
+	return os.MkdirAll(filepath.Join(configDir, "clawpatrol", "ca"), 0o755)
 }
 
 // RealDeps builds Deps wired to the actual host (used by the CLI).
 func RealDeps(goos, goarch string, now func() string) Deps {
-	p := runtime.RealProber()
+	prober := runtime.RealProber()
 	return Deps{
 		GOOS:     goos,
 		GOARCH:   goarch,
-		Prober:   p,
+		Prober:   prober,
 		Now:      now,
-		Services: realServices{prober: p},
+		Services: realServices{prober: prober},
 		CA:       realCA{},
 	}
 }

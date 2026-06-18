@@ -17,8 +17,8 @@ func newStateCmd(em *output.Emitter, exit *int) *cobra.Command {
 		Use:   "state",
 		Short: "Inspect and repair platform state",
 		Args:  cobra.NoArgs,
-		RunE: func(c *cobra.Command, _ []string) error {
-			return c.Help() // `ai state` with no subcommand prints help (§17.0)
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			return cmd.Help() // `ai state` with no subcommand prints help (§17.0)
 		},
 	}
 	cmd.AddCommand(newStateShowCmd(em, exit), newStateRepairCmd(em, exit))

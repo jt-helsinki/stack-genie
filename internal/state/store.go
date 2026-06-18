@@ -13,8 +13,8 @@ import (
 )
 
 // writeJSONAtomic and readJSON delegate to the shared jsonfile package.
-func writeJSONAtomic(path string, v any) error { return jsonfile.WriteAtomic(path, v) }
-func readJSON(path string, v any) error        { return jsonfile.Read(path, v) }
+func writeJSONAtomic(path string, value any) error { return jsonfile.WriteAtomic(path, value) }
+func readJSON(path string, value any) error        { return jsonfile.Read(path, value) }
 
 func checkVersion(got int, path string) error {
 	if got != SchemaVersion {
@@ -27,46 +27,46 @@ func checkVersion(got int, path string) error {
 
 // IndexPath returns config/projects.json.
 func IndexPath() (string, error) {
-	c, err := paths.ConfigDir()
+	configDir, err := paths.ConfigDir()
 	if err != nil {
 		return "", err
 	}
-	return filepath.Join(c, "projects.json"), nil
+	return filepath.Join(configDir, "projects.json"), nil
 }
 
 // LoadIndex reads the global projects index, returning an empty index if the
 // file does not exist yet (a fresh install is not an error).
 func LoadIndex() (*ProjectsIndex, error) {
-	p, err := IndexPath()
+	indexPath, err := IndexPath()
 	if err != nil {
 		return nil, err
 	}
-	var idx ProjectsIndex
-	if err := readJSON(p, &idx); err != nil {
+	var index ProjectsIndex
+	if err := readJSON(indexPath, &index); err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
 			return NewProjectsIndex(), nil
 		}
 		return nil, err
 	}
-	if err := checkVersion(idx.SchemaVersion, p); err != nil {
+	if err := checkVersion(index.SchemaVersion, indexPath); err != nil {
 		return nil, err
 	}
-	if idx.Projects == nil {
-		idx.Projects = map[string]ProjectIndexEntry{}
+	if index.Projects == nil {
+		index.Projects = map[string]ProjectIndexEntry{}
 	}
-	return &idx, nil
+	return &index, nil
 }
 
 // SaveIndex atomically writes the global projects index.
-func SaveIndex(idx *ProjectsIndex) error {
-	p, err := IndexPath()
+func SaveIndex(index *ProjectsIndex) error {
+	indexPath, err := IndexPath()
 	if err != nil {
 		return err
 	}
-	if idx.SchemaVersion == 0 {
-		idx.SchemaVersion = SchemaVersion
+	if index.SchemaVersion == 0 {
+		index.SchemaVersion = SchemaVersion
 	}
-	return writeJSONAtomic(p, idx)
+	return writeJSONAtomic(indexPath, index)
 }
 
 // --- project discovery ------------------------------------------------------
@@ -96,27 +96,27 @@ func fileExists(path string) bool {
 
 // Store reads and writes one project's state under <root>/.ai-platform.
 type Store struct {
-	root  string // project root (dir containing .ai-platform)
-	aiDir string
+	root     string // project root (dir containing .ai-platform)
+	platform string // <root>/.ai-platform
 }
 
 // OpenStore returns a Store for the project rooted at root.
 func OpenStore(root string) *Store {
-	return &Store{root: root, aiDir: filepath.Join(root, ".ai-platform")}
+	return &Store{root: root, platform: filepath.Join(root, ".ai-platform")}
 }
 
 // Root returns the project root directory.
-func (s *Store) Root() string { return s.root }
+func (store *Store) Root() string { return store.root }
 
-func (s *Store) projectFile() string   { return filepath.Join(s.aiDir, "project.json") }
-func (s *Store) runDir() string        { return filepath.Join(s.aiDir, "run") }
-func (s *Store) workspacesDir() string { return filepath.Join(s.runDir(), "workspaces") }
-func (s *Store) agentsDir() string     { return filepath.Join(s.runDir(), "agents") }
+func (store *Store) projectFile() string   { return filepath.Join(store.platform, "project.json") }
+func (store *Store) runDir() string        { return filepath.Join(store.platform, "run") }
+func (store *Store) workspacesDir() string { return filepath.Join(store.runDir(), "workspaces") }
+func (store *Store) agentsDir() string     { return filepath.Join(store.runDir(), "agents") }
 
 // EnsureRunDirs creates the gitignored run/ subdirectories.
-func (s *Store) EnsureRunDirs() error {
-	for _, d := range []string{s.workspacesDir(), s.agentsDir()} {
-		if err := os.MkdirAll(d, 0o755); err != nil {
+func (store *Store) EnsureRunDirs() error {
+	for _, dir := range []string{store.workspacesDir(), store.agentsDir()} {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
 			return err
 		}
 	}
@@ -124,78 +124,78 @@ func (s *Store) EnsureRunDirs() error {
 }
 
 // LoadProject reads project.json (tracked, §12.1).
-func (s *Store) LoadProject() (*Project, error) {
-	var p Project
-	if err := readJSON(s.projectFile(), &p); err != nil {
+func (store *Store) LoadProject() (*Project, error) {
+	var project Project
+	if err := readJSON(store.projectFile(), &project); err != nil {
 		return nil, err
 	}
-	if err := checkVersion(p.SchemaVersion, s.projectFile()); err != nil {
+	if err := checkVersion(project.SchemaVersion, store.projectFile()); err != nil {
 		return nil, err
 	}
-	return &p, nil
+	return &project, nil
 }
 
 // SaveProject atomically writes project.json.
-func (s *Store) SaveProject(p *Project) error {
-	if p.SchemaVersion == 0 {
-		p.SchemaVersion = SchemaVersion
+func (store *Store) SaveProject(project *Project) error {
+	if project.SchemaVersion == 0 {
+		project.SchemaVersion = SchemaVersion
 	}
-	return writeJSONAtomic(s.projectFile(), p)
+	return writeJSONAtomic(store.projectFile(), project)
 }
 
 // SaveWorkspace atomically writes run/workspaces/<id>.json.
-func (s *Store) SaveWorkspace(w *Workspace) error {
-	if w.SchemaVersion == 0 {
-		w.SchemaVersion = SchemaVersion
+func (store *Store) SaveWorkspace(workspace *Workspace) error {
+	if workspace.SchemaVersion == 0 {
+		workspace.SchemaVersion = SchemaVersion
 	}
-	return writeJSONAtomic(filepath.Join(s.workspacesDir(), w.ID+".json"), w)
+	return writeJSONAtomic(filepath.Join(store.workspacesDir(), workspace.ID+".json"), workspace)
 }
 
 // SaveAgent atomically writes run/agents/<name>.json.
-func (s *Store) SaveAgent(a *Agent) error {
-	if a.SchemaVersion == 0 {
-		a.SchemaVersion = SchemaVersion
+func (store *Store) SaveAgent(agent *Agent) error {
+	if agent.SchemaVersion == 0 {
+		agent.SchemaVersion = SchemaVersion
 	}
-	return writeJSONAtomic(filepath.Join(s.agentsDir(), a.Name+".json"), a)
+	return writeJSONAtomic(filepath.Join(store.agentsDir(), agent.Name+".json"), agent)
 }
 
 // ListWorkspaces returns all workspace handles (empty if none).
-func (s *Store) ListWorkspaces() ([]Workspace, error) {
-	var out []Workspace
-	err := eachJSON(s.workspacesDir(), func(path string) error {
-		var w Workspace
-		if err := readJSON(path, &w); err != nil {
+func (store *Store) ListWorkspaces() ([]Workspace, error) {
+	var workspaces []Workspace
+	err := eachJSON(store.workspacesDir(), func(path string) error {
+		var workspace Workspace
+		if err := readJSON(path, &workspace); err != nil {
 			return err
 		}
-		if err := checkVersion(w.SchemaVersion, path); err != nil {
+		if err := checkVersion(workspace.SchemaVersion, path); err != nil {
 			return err
 		}
-		out = append(out, w)
+		workspaces = append(workspaces, workspace)
 		return nil
 	})
-	return out, err
+	return workspaces, err
 }
 
 // ListAgents returns all agent handles (empty if none).
-func (s *Store) ListAgents() ([]Agent, error) {
-	var out []Agent
-	err := eachJSON(s.agentsDir(), func(path string) error {
-		var a Agent
-		if err := readJSON(path, &a); err != nil {
+func (store *Store) ListAgents() ([]Agent, error) {
+	var agents []Agent
+	err := eachJSON(store.agentsDir(), func(path string) error {
+		var agent Agent
+		if err := readJSON(path, &agent); err != nil {
 			return err
 		}
-		if err := checkVersion(a.SchemaVersion, path); err != nil {
+		if err := checkVersion(agent.SchemaVersion, path); err != nil {
 			return err
 		}
-		out = append(out, a)
+		agents = append(agents, agent)
 		return nil
 	})
-	return out, err
+	return agents, err
 }
 
-// eachJSON calls fn for every *.json file in dir, sorted by name. A missing
+// eachJSON calls visit for every *.json file in dir, sorted by name. A missing
 // dir is treated as empty.
-func eachJSON(dir string, fn func(path string) error) error {
+func eachJSON(dir string, visit func(path string) error) error {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
@@ -204,14 +204,14 @@ func eachJSON(dir string, fn func(path string) error) error {
 		return err
 	}
 	names := make([]string, 0, len(entries))
-	for _, e := range entries {
-		if !e.IsDir() && filepath.Ext(e.Name()) == ".json" {
-			names = append(names, e.Name())
+	for _, entry := range entries {
+		if !entry.IsDir() && filepath.Ext(entry.Name()) == ".json" {
+			names = append(names, entry.Name())
 		}
 	}
 	sort.Strings(names)
-	for _, n := range names {
-		if err := fn(filepath.Join(dir, n)); err != nil {
+	for _, name := range names {
+		if err := visit(filepath.Join(dir, name)); err != nil {
 			return err
 		}
 	}

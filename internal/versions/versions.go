@@ -32,7 +32,7 @@ type File struct {
 	Services      map[string]Service `json:"services"`
 }
 
-func boolPtr(b bool) *bool { return &b }
+func boolPointer(value bool) *bool { return &value }
 
 // Default returns the built-in pins (repo-layout §12.6). Concrete digests are
 // filled in at release time; the placeholders keep the schema stable.
@@ -44,33 +44,33 @@ func Default() *File {
 			"clawpatrol":   {Mode: "native", Version: "v0.x", SHA256: "TBD"},
 			"litellm":      {Mode: "container", Image: "ghcr.io/berriai/litellm", Digest: "sha256:TBD"},
 			"headroom":     {Mode: "container", Image: "ghcr.io/chopratejas/headroom", Digest: "sha256:TBD"},
-			"ollama":       {Mode: "container", Image: "docker.io/ollama/ollama", Digest: "sha256:TBD", Enabled: boolPtr(false)},
+			"ollama":       {Mode: "container", Image: "docker.io/ollama/ollama", Digest: "sha256:TBD", Enabled: boolPointer(false)},
 		},
 	}
 }
 
 // Path returns config/versions.json.
 func Path() (string, error) {
-	c, err := paths.ConfigDir()
+	configDir, err := paths.ConfigDir()
 	if err != nil {
 		return "", err
 	}
-	return filepath.Join(c, "versions.json"), nil
+	return filepath.Join(configDir, "versions.json"), nil
 }
 
 // EnsureDefault writes the default pins if versions.json is absent. Returns true
 // when it created the file. Idempotent.
 func EnsureDefault() (created bool, err error) {
-	p, err := Path()
+	path, err := Path()
 	if err != nil {
 		return false, err
 	}
-	if _, err := os.Stat(p); err == nil {
+	if _, err := os.Stat(path); err == nil {
 		return false, nil
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return false, err
 	}
-	if err := jsonfile.WriteAtomic(p, Default()); err != nil {
+	if err := jsonfile.WriteAtomic(path, Default()); err != nil {
 		return false, err
 	}
 	return true, nil
@@ -78,16 +78,16 @@ func EnsureDefault() (created bool, err error) {
 
 // Load reads config/versions.json, returning (nil, nil) if absent.
 func Load() (*File, error) {
-	p, err := Path()
+	path, err := Path()
 	if err != nil {
 		return nil, err
 	}
-	var f File
-	if err := jsonfile.Read(p, &f); err != nil {
+	var file File
+	if err := jsonfile.Read(path, &file); err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			return nil, nil
 		}
 		return nil, err
 	}
-	return &f, nil
+	return &file, nil
 }
