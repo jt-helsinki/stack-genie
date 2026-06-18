@@ -64,7 +64,7 @@ func Execute() int {
 	persistentFlags.BoolVar(&flags.yes, "yes", false, `assume "yes" for destructive confirmation prompts`)
 	root.Flags().BoolVar(&flags.version, "version", false, "print version and exit")
 
-	// Subcommand groups. More (project/workspace/agent/...) are registered here
+	// Subcommand groups. More (context, doctor, logs, ...) are registered here
 	// in later milestones.
 	root.AddCommand(
 		newSetupCmd(emitter, &exitCode),

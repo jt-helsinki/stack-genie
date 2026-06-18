@@ -14,7 +14,7 @@ Status: Target End-State Architecture
 
 This document defines the end-state architecture for the AI Development Platform.
 
-The platform provides reproducible AI-powered software development environments using Microsandbox microVMs, centralized model access, and host-backed project persistence.
+The platform provides reproducible AI-powered software development environments using Microsandbox microVMs, centralized model access, context optimization, secure secret brokering, and host-backed project persistence.
 
 This document describes the final architecture regardless of implementation phase.
 
@@ -707,20 +707,13 @@ Platform services must remain tool-independent.
 
 ## Example Configuration
 
-The installed set and the default agent (which must be one of the installed
+The installed set and the default agent CLI (which must be one of the installed
 CLIs):
 
 ```yaml
 agent:
   tools: [opencode, claude-code]   # installed in this environment
-  default_tool: opencode           # default agent; must be in agent.tools
-```
-
-Per-agent override (must be an installed CLI):
-
-```yaml
-agent:
-  tool: claude-code
+  default_tool: opencode           # default agent CLI; must be in agent.tools
 ```
 
 ---

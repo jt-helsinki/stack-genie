@@ -210,7 +210,7 @@ Steps, in order:
    `ubuntu`). Selects the template that seeds `.ai-platform/Dockerfile`.
 3. **Agent CLIs** — **multi-select checkboxes**; `OpenCode` pre-checked; choose
    any subset of `OpenCode`, `Claude Code`, `Codex`, `Gemini CLI` (at least one).
-4. **Default agent** — single-select from the CLIs chosen in step 3; default
+4. **Default agent CLI** — single-select from the CLIs chosen in step 3; default
    `OpenCode` (recorded as `agent.default_tool`).
 5. **Software stacks** — **multi-select checkboxes**; choose the language/tool
    stacks to install into the environment (e.g. `Java`, `Maven`, `Node`, `Deno`,

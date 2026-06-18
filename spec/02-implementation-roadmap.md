@@ -428,7 +428,6 @@ produces (for the OS the user selected):
 * ClawPatrol secrets
 * Headroom input compression
 * Caveman output compression
-* git worktrees (multi-agent ready)
 * Dockerfile-defined environment + overlay persistence
 * reproducible environments
 * zero manual configuration

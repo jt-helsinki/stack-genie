@@ -19,8 +19,8 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-// namePattern validates project (and agent) names (arch §19): lowercase
-// alphanumeric and hyphens, 2–40 chars, no leading/trailing hyphen.
+// namePattern validates project names (arch §19): lowercase alphanumeric and
+// hyphens, 2–40 chars, no leading/trailing hyphen.
 var namePattern = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,38}[a-z0-9]$`)
 
 var (

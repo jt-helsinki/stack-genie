@@ -174,7 +174,7 @@ func runCreateWizard(defaultName string) (project.Spec, bool, error) {
 				Validate(wizardAtLeastOne),
 		),
 		huh.NewGroup(
-			huh.NewSelect[string]().Title("Default agent").
+			huh.NewSelect[string]().Title("Default agent CLI").
 				OptionsFunc(func() []huh.Option[string] { return huh.NewOptions(agentCLIs...) }, &agentCLIs).
 				Value(&defaultTool),
 		),

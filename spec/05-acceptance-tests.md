@@ -192,7 +192,6 @@ so it is excluded. There is no AI-approval flow.
 | Headroom input reduction on large-repo context | ≥ 50% tokens, stays ≤ `context.max_tokens` |
 | Caveman output reduction (full level) | ≥ 40% output tokens |
 | workspace create → started (cached image) | < 30 s |
-| multi-agent load test | 10 agents, 0 workspace collisions |
 
 ---
 
