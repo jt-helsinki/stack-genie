@@ -1,0 +1,83 @@
+package acceptance
+
+import (
+	"bytes"
+	"encoding/json"
+	"io"
+	"os/exec"
+	"testing"
+	"time"
+
+	"github.com/creack/pty"
+)
+
+// CreateProject drives `ai project create <name>` through a pseudo-terminal,
+// accepting every wizard step's default (acceptance-tests §1.4). The wizard's
+// TUI is rendered on the pty (stdin+stderr); the final §19 envelope is captured
+// cleanly from stdout.
+//
+// With <name> given as an argument the wizard skips the name step, so the
+// remaining steps are OS, agent CLIs, default agent, and software stacks —
+// accepted with Enter, which yields the defaults (debian-trixie, opencode, none).
+func (harness *Harness) CreateProject(test *testing.T, name string) (Envelope, int) {
+	test.Helper()
+
+	ptmx, tty, err := pty.Open()
+	if err != nil {
+		test.Fatalf("open pty: %v", err)
+	}
+	defer ptmx.Close()
+	_ = pty.Setsize(ptmx, &pty.Winsize{Rows: 40, Cols: 120})
+
+	command := exec.Command(harness.Binary, "project", "create", name, "--json")
+	command.Env = harness.env()
+	command.Stdin = tty
+	command.Stderr = tty // huh renders here and sees an interactive terminal
+	var stdout bytes.Buffer
+	command.Stdout = &stdout // clean: only the envelope lands here
+
+	if err := command.Start(); err != nil {
+		tty.Close()
+		test.Fatalf("start create: %v", err)
+	}
+	tty.Close() // the child holds the slave; we keep the master (ptmx)
+
+	// Continuously drain the TUI output on the master, or the child blocks once
+	// the pty buffer fills (and never processes our keystrokes).
+	go io.Copy(io.Discard, ptmx)
+
+	// Watchdog: never let a stuck wizard hang the suite.
+	watchdog := time.AfterFunc(15*time.Second, func() {
+		_ = command.Process.Kill()
+	})
+	defer watchdog.Stop()
+
+	// Advance each wizard step by sending Enter. Extra presses after submission
+	// are harmless (the process has exited).
+	driveDone := make(chan struct{})
+	go func() {
+		for i := 0; i < 8; i++ {
+			time.Sleep(250 * time.Millisecond)
+			if _, err := ptmx.Write([]byte("\r")); err != nil {
+				break
+			}
+		}
+		close(driveDone)
+	}()
+
+	exitCode := 0
+	if err := command.Wait(); err != nil {
+		var exitErr *exec.ExitError
+		if !asExitError(err, &exitErr) {
+			test.Fatalf("create wizard: %v", err)
+		}
+		exitCode = exitErr.ExitCode()
+	}
+	<-driveDone
+
+	var envelope Envelope
+	if err := json.Unmarshal(stdout.Bytes(), &envelope); err != nil {
+		test.Fatalf("create wizard did not emit a clean JSON envelope: %v\n%q", err, stdout.String())
+	}
+	return envelope, exitCode
+}
