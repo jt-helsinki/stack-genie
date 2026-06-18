@@ -67,6 +67,7 @@ func Execute() int {
 	// in later milestones.
 	root.AddCommand(
 		newSetupCmd(emitter, &exitCode),
+		newProjectCmd(emitter, &exitCode),
 		newServicesCmd(emitter, &exitCode),
 		newSecretsCmd(emitter, &exitCode),
 		newModelsCmd(emitter, &exitCode),

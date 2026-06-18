@@ -96,6 +96,19 @@ func EnsureGlobalDefault() (created bool, err error) {
 	return true, nil
 }
 
+// WriteProject writes a project's <projectRoot>/.ai-platform/config.yaml.
+func WriteProject(projectRoot string, config *Config) error {
+	path := ProjectPath(projectRoot)
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return err
+	}
+	encoded, err := yaml.Marshal(config)
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(path, encoded, 0o644)
+}
+
 // GlobalPath returns ~/.ai-platform/config/config.yaml.
 func GlobalPath() (string, error) {
 	configDir, err := paths.ConfigDir()
