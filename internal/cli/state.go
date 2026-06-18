@@ -5,6 +5,7 @@ import (
 
 	"github.com/jt-helsinki/ideal-robot/internal/config"
 	"github.com/jt-helsinki/ideal-robot/internal/output"
+	"github.com/jt-helsinki/ideal-robot/internal/runtime"
 	"github.com/jt-helsinki/ideal-robot/internal/state"
 	"github.com/spf13/cobra"
 )
@@ -49,10 +50,16 @@ func newStateShowCmd(em *output.Emitter, exit *int) *cobra.Command {
 				*exit = em.Failure("state.show", output.Errorf(output.ExitRuntimeFailure, "%s", err))
 				return nil
 			}
+			rt, err := runtime.Load() // nil until `ai setup` detects (M3)
+			if err != nil {
+				*exit = em.Failure("state.show", output.Errorf(output.ExitRuntimeFailure, "%s", err))
+				return nil
+			}
 			*exit = em.Success("state.show", map[string]any{
 				"projects": snap.Projects,
 				"project":  snap.Project,
 				"config":   cfg,
+				"runtime":  rt,
 			})
 			return nil
 		},
