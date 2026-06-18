@@ -63,9 +63,13 @@ func Execute() int {
 	pf.BoolVar(&g.yes, "yes", false, `assume "yes" for destructive confirmation prompts`)
 	root.Flags().BoolVar(&g.version, "version", false, "print version and exit")
 
-	// Subcommand groups. More (project/workspace/agent/services/secrets/...) are
+	// Subcommand groups. More (project/workspace/agent/secrets/...) are
 	// registered here in later milestones.
-	root.AddCommand(newStateCmd(em, &exit))
+	root.AddCommand(
+		newSetupCmd(em, &exit),
+		newServicesCmd(em, &exit),
+		newStateCmd(em, &exit),
+	)
 
 	root.SetArgs(os.Args[1:])
 	if err := root.Execute(); err != nil {

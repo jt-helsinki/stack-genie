@@ -20,42 +20,80 @@ import (
 // Config mirrors repo-layout §12.4. The same shape applies at every level; each
 // level may set any subset.
 type Config struct {
-	Runtime   string          `yaml:"runtime" json:"runtime,omitempty"`
-	OS        string          `yaml:"os" json:"os,omitempty"`
-	Git       GitConfig       `yaml:"git" json:"git,omitempty"`
-	Agent     AgentConfig     `yaml:"agent" json:"agent,omitempty"`
-	Context   ContextConfig   `yaml:"context" json:"context,omitempty"`
-	Workspace WorkspaceConfig `yaml:"workspace" json:"workspace,omitempty"`
-	Agents    AgentsConfig    `yaml:"agents" json:"agents,omitempty"`
+	Runtime   string          `yaml:"runtime,omitempty" json:"runtime,omitempty"`
+	OS        string          `yaml:"os,omitempty" json:"os,omitempty"`
+	Git       GitConfig       `yaml:"git,omitempty" json:"git,omitempty"`
+	Agent     AgentConfig     `yaml:"agent,omitempty" json:"agent,omitempty"`
+	Context   ContextConfig   `yaml:"context,omitempty" json:"context,omitempty"`
+	Workspace WorkspaceConfig `yaml:"workspace,omitempty" json:"workspace,omitempty"`
+	Agents    AgentsConfig    `yaml:"agents,omitempty" json:"agents,omitempty"`
 }
 
 type GitConfig struct {
-	MergeStrategy string `yaml:"merge_strategy" json:"merge_strategy,omitempty"`
+	MergeStrategy string `yaml:"merge_strategy,omitempty" json:"merge_strategy,omitempty"`
 }
 
 type AgentConfig struct {
 	// Tools is the set of agent CLIs installed in the environment (subset of
 	// opencode, claude-code, codex, gemini-cli); repo-layout §12.4.
-	Tools []string `yaml:"tools" json:"tools,omitempty"`
+	Tools []string `yaml:"tools,omitempty" json:"tools,omitempty"`
 	// DefaultTool is the default agent CLI; must be one of Tools.
-	DefaultTool string `yaml:"default_tool" json:"default_tool,omitempty"`
+	DefaultTool string `yaml:"default_tool,omitempty" json:"default_tool,omitempty"`
 }
 
 type ContextConfig struct {
-	MaxTokens            int     `yaml:"max_tokens" json:"max_tokens,omitempty"`
-	CompressionThreshold float64 `yaml:"compression_threshold" json:"compression_threshold,omitempty"`
-	Strategy             string  `yaml:"strategy" json:"strategy,omitempty"`
-	CavemanLevel         string  `yaml:"caveman_level" json:"caveman_level,omitempty"`
+	MaxTokens            int     `yaml:"max_tokens,omitempty" json:"max_tokens,omitempty"`
+	CompressionThreshold float64 `yaml:"compression_threshold,omitempty" json:"compression_threshold,omitempty"`
+	Strategy             string  `yaml:"strategy,omitempty" json:"strategy,omitempty"`
+	CavemanLevel         string  `yaml:"caveman_level,omitempty" json:"caveman_level,omitempty"`
 }
 
 type WorkspaceConfig struct {
-	CPULimit    int    `yaml:"cpu_limit" json:"cpu_limit,omitempty"`
-	MemoryLimit string `yaml:"memory_limit" json:"memory_limit,omitempty"`
+	CPULimit    int    `yaml:"cpu_limit,omitempty" json:"cpu_limit,omitempty"`
+	MemoryLimit string `yaml:"memory_limit,omitempty" json:"memory_limit,omitempty"`
 }
 
 type AgentsConfig struct {
-	ArchiveDays int  `yaml:"archive_days" json:"archive_days,omitempty"`
-	ReuseAgents bool `yaml:"reuse_agents" json:"reuse_agents,omitempty"`
+	ArchiveDays int  `yaml:"archive_days,omitempty" json:"archive_days,omitempty"`
+	ReuseAgents bool `yaml:"reuse_agents,omitempty" json:"reuse_agents,omitempty"`
+}
+
+// Default returns the built-in global defaults (repo-layout §12.4). It omits
+// `os` — there is no default OS (it is always chosen per project, arch §25).
+func Default() *Config {
+	return &Config{
+		Runtime:   "docker",
+		Git:       GitConfig{MergeStrategy: "squash"},
+		Agent:     AgentConfig{Tools: []string{"opencode"}, DefaultTool: "opencode"},
+		Context:   ContextConfig{MaxTokens: 64000, CompressionThreshold: 0.75, Strategy: "balanced", CavemanLevel: "full"},
+		Workspace: WorkspaceConfig{CPULimit: 4, MemoryLimit: "8G"},
+		Agents:    AgentsConfig{ArchiveDays: 14, ReuseAgents: true},
+	}
+}
+
+// EnsureGlobalDefault writes the default global config.yaml if none exists yet.
+// It returns true when it created the file. Idempotent.
+func EnsureGlobalDefault() (created bool, err error) {
+	p, err := GlobalPath()
+	if err != nil {
+		return false, err
+	}
+	if _, err := os.Stat(p); err == nil {
+		return false, nil
+	} else if !errors.Is(err, fs.ErrNotExist) {
+		return false, err
+	}
+	if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+		return false, err
+	}
+	b, err := yaml.Marshal(Default())
+	if err != nil {
+		return false, err
+	}
+	if err := os.WriteFile(p, b, 0o644); err != nil {
+		return false, err
+	}
+	return true, nil
 }
 
 // GlobalPath returns ~/.ai-platform/config/config.yaml.
