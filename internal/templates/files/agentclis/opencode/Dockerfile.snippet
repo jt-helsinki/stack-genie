@@ -1,0 +1,7 @@
+# agent CLI: opencode (the default)
+# Verify the exact npm package on hardware bring-up before relying on this.
+USER root
+RUN apt-get update && apt-get install -y --no-install-recommends nodejs npm \
+ && rm -rf /var/lib/apt/lists/* \
+ && npm install -g opencode-ai
+USER workspace

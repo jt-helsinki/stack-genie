@@ -1,0 +1,4 @@
+# stack: deno (official installer, for the workspace user)
+RUN curl -fsSL https://deno.land/install.sh | sh
+ENV DENO_INSTALL="/home/workspace/.deno"
+ENV PATH="${DENO_INSTALL}/bin:${PATH}"

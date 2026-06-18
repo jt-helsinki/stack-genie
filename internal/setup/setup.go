@@ -15,6 +15,7 @@ import (
 	"github.com/jt-helsinki/ideal-robot/internal/layout"
 	"github.com/jt-helsinki/ideal-robot/internal/output"
 	"github.com/jt-helsinki/ideal-robot/internal/runtime"
+	"github.com/jt-helsinki/ideal-robot/internal/templates"
 	"github.com/jt-helsinki/ideal-robot/internal/versions"
 )
 
@@ -81,10 +82,13 @@ func Run(options Options, deps Deps) (*Report, error) {
 		return nil, output.Errorf(output.ExitRuntimeFailure, "preflight: %s", err)
 	}
 
-	// 2. Initialize the host layout.
+	// 2. Initialize the host layout and install the environment templates.
 	platformDir, err := layout.Ensure()
 	if err != nil {
 		return nil, output.Errorf(output.ExitRuntimeFailure, "init layout: %s", err)
+	}
+	if err := templates.Install(); err != nil {
+		return nil, output.Errorf(output.ExitRuntimeFailure, "install templates: %s", err)
 	}
 
 	// 3. Persist the detected runtime.
