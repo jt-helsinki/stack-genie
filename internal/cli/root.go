@@ -9,6 +9,7 @@ import (
 	"github.com/jt-helsinki/ideal-robot/internal/output"
 	"github.com/jt-helsinki/ideal-robot/internal/version"
 	"github.com/spf13/cobra"
+	"github.com/spf13/pflag"
 )
 
 // globalFlags holds the flags accepted by every command (CLI spec §17).
@@ -75,6 +76,18 @@ func Execute() int {
 		newStateCmd(emitter, &exitCode),
 	)
 
+	// With --json, help is a structured data.help object (§17.0); otherwise the
+	// default human help is used.
+	defaultHelp := root.HelpFunc()
+	root.SetHelpFunc(func(cmd *cobra.Command, args []string) {
+		if flags.json {
+			emitter.JSON = true
+			exitCode = emitJSONHelp(emitter, cmd)
+			return
+		}
+		defaultHelp(cmd, args)
+	})
+
 	root.SetArgs(os.Args[1:])
 	if err := root.Execute(); err != nil {
 		// Arg/flag errors abort before PersistentPreRun runs, so mirror the
@@ -85,6 +98,38 @@ func Execute() int {
 		exitCode = emitter.Failure("ai", output.Errorf(output.ExitInvalidInput, "%s", err.Error()))
 	}
 	return exitCode
+}
+
+// emitJSONHelp renders a command's help as the structured data.help object
+// required by §17.0, and returns ExitOK.
+func emitJSONHelp(emitter *output.Emitter, cmd *cobra.Command) int {
+	flags := []map[string]any{}
+	cmd.Flags().VisitAll(func(flag *pflag.Flag) {
+		flags = append(flags, map[string]any{
+			"name":      flag.Name,
+			"shorthand": flag.Shorthand,
+			"usage":     flag.Usage,
+			"default":   flag.DefValue,
+		})
+	})
+	subcommands := []map[string]any{}
+	for _, sub := range cmd.Commands() {
+		if sub.Hidden || sub.Name() == "help" || sub.Name() == "completion" {
+			continue
+		}
+		subcommands = append(subcommands, map[string]any{"name": sub.Name(), "short": sub.Short})
+	}
+	return emitter.Success("help", map[string]any{
+		"help": map[string]any{
+			"name":        cmd.Name(),
+			"path":        cmd.CommandPath(),
+			"short":       cmd.Short,
+			"long":        cmd.Long,
+			"usage":       cmd.UseLine(),
+			"flags":       flags,
+			"subcommands": subcommands,
+		},
+	})
 }
 
 // versionData is the data payload for `ai --version --json`.
