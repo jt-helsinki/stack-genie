@@ -13,7 +13,7 @@ import (
 func newWorkspaceCmd(emitter *output.Emitter, exit *int) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "workspace",
-		Short: "Manage project/agent workspace microVMs",
+		Short: "Manage the project workspace microVM",
 		Args:  cobra.NoArgs,
 		RunE:  func(cmd *cobra.Command, _ []string) error { return cmd.Help() },
 	}
@@ -116,10 +116,9 @@ func newWorkspaceDestroyCmd(emitter *output.Emitter, exit *int) *cobra.Command {
 }
 
 func newWorkspaceExecCmd(emitter *output.Emitter, exit *int) *cobra.Command {
-	var agent string
-	cmd := &cobra.Command{
-		Use:   "exec <project> [--agent <name>] -- <command> [args...]",
-		Short: "Run a command inside the workspace",
+	return &cobra.Command{
+		Use:   "exec <project> -- <command> [args...]",
+		Short: "Run a command inside the project workspace",
 		Args:  cobra.MinimumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			dash := cmd.ArgsLenAtDash()
@@ -129,7 +128,7 @@ func newWorkspaceExecCmd(emitter *output.Emitter, exit *int) *cobra.Command {
 				return nil
 			}
 			project, argv := args[0], args[dash:]
-			result, err := workspace.RealManager(nowRFC3339).Exec(project, agent, argv)
+			result, err := workspace.RealManager(nowRFC3339).Exec(project, argv)
 			if err != nil {
 				// Platform failure (microVM down, unknown project, …) — §4.5.
 				*exit = emitter.Failure("workspace.exec", mapWorkspaceErr(err))
@@ -141,6 +140,4 @@ func newWorkspaceExecCmd(emitter *output.Emitter, exit *int) *cobra.Command {
 			return nil
 		},
 	}
-	cmd.Flags().StringVar(&agent, "agent", "", "target an agent's workspace instead of the project workspace")
-	return cmd
 }

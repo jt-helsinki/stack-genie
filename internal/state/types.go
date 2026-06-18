@@ -16,14 +16,6 @@ type Project struct {
 	Created       string `json:"created"`
 }
 
-// WorkspaceType is the kind of workspace a runtime handle describes.
-type WorkspaceType string
-
-const (
-	WorkspaceProject WorkspaceType = "project"
-	WorkspaceAgent   WorkspaceType = "agent"
-)
-
 // WorkspaceStatus is the lifecycle state of a workspace (§12.2, arch §7).
 type WorkspaceStatus string
 
@@ -35,31 +27,17 @@ const (
 	StatusDestroyed WorkspaceStatus = "destroyed"
 )
 
-// Workspace is run/workspaces/<id>.json (gitignored, §12.2).
+// Workspace is run/workspaces/<id>.json (gitignored, §12.2). There is one
+// workspace per project; multi-agent work happens inside it and is the
+// in-workspace agent CLI's concern, not the platform's.
 type Workspace struct {
 	SchemaVersion  int             `json:"schema_version"`
 	ID             string          `json:"id"`
 	Project        string          `json:"project"`
-	Type           WorkspaceType   `json:"type"`
 	MicrosandboxID string          `json:"microsandbox_id"`
 	Status         WorkspaceStatus `json:"status"`
-	Agent          *string         `json:"agent"`
 	Created        string          `json:"created"`
 	LastStarted    string          `json:"last_started"`
-}
-
-// Agent is run/agents/<name>.json (gitignored, §12.3).
-type Agent struct {
-	SchemaVersion int    `json:"schema_version"`
-	Name          string `json:"name"`
-	Project       string `json:"project"`
-	Branch        string `json:"branch"`
-	BaseBranch    string `json:"base_branch"`
-	Worktree      string `json:"worktree"`
-	WorkspaceID   string `json:"workspace_id"`
-	Tool          string `json:"tool"`
-	State         string `json:"state"`
-	Created       string `json:"created"`
 }
 
 // ProjectsIndex is config/projects.json (global, §12.7): name → path.

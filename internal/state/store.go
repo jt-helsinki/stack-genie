@@ -111,16 +111,10 @@ func (store *Store) Root() string { return store.root }
 func (store *Store) projectFile() string   { return filepath.Join(store.platform, "project.json") }
 func (store *Store) runDir() string        { return filepath.Join(store.platform, "run") }
 func (store *Store) workspacesDir() string { return filepath.Join(store.runDir(), "workspaces") }
-func (store *Store) agentsDir() string     { return filepath.Join(store.runDir(), "agents") }
 
 // EnsureRunDirs creates the gitignored run/ subdirectories.
 func (store *Store) EnsureRunDirs() error {
-	for _, dir := range []string{store.workspacesDir(), store.agentsDir()} {
-		if err := os.MkdirAll(dir, 0o755); err != nil {
-			return err
-		}
-	}
-	return nil
+	return os.MkdirAll(store.workspacesDir(), 0o755)
 }
 
 // LoadProject reads project.json (tracked, §12.1).
@@ -151,14 +145,6 @@ func (store *Store) SaveWorkspace(workspace *Workspace) error {
 	return writeJSONAtomic(filepath.Join(store.workspacesDir(), workspace.ID+".json"), workspace)
 }
 
-// SaveAgent atomically writes run/agents/<name>.json.
-func (store *Store) SaveAgent(agent *Agent) error {
-	if agent.SchemaVersion == 0 {
-		agent.SchemaVersion = SchemaVersion
-	}
-	return writeJSONAtomic(filepath.Join(store.agentsDir(), agent.Name+".json"), agent)
-}
-
 // ListWorkspaces returns all workspace handles (empty if none).
 func (store *Store) ListWorkspaces() ([]Workspace, error) {
 	var workspaces []Workspace
@@ -174,23 +160,6 @@ func (store *Store) ListWorkspaces() ([]Workspace, error) {
 		return nil
 	})
 	return workspaces, err
-}
-
-// ListAgents returns all agent handles (empty if none).
-func (store *Store) ListAgents() ([]Agent, error) {
-	var agents []Agent
-	err := eachJSON(store.agentsDir(), func(path string) error {
-		var agent Agent
-		if err := readJSON(path, &agent); err != nil {
-			return err
-		}
-		if err := checkVersion(agent.SchemaVersion, path); err != nil {
-			return err
-		}
-		agents = append(agents, agent)
-		return nil
-	})
-	return agents, err
 }
 
 // eachJSON calls visit for every *.json file in dir, sorted by name. A missing

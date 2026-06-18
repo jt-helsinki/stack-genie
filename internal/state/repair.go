@@ -13,7 +13,6 @@ type ProjectState struct {
 	Root       string      `json:"root"`
 	Project    Project     `json:"project"`
 	Workspaces []Workspace `json:"workspaces"`
-	Agents     []Agent     `json:"agents"`
 }
 
 // Show builds a state snapshot: the global projects index plus, if cwd is inside
@@ -38,11 +37,7 @@ func Show(cwd string) (*Snapshot, error) {
 	if err != nil {
 		return nil, err
 	}
-	ag, err := st.ListAgents()
-	if err != nil {
-		return nil, err
-	}
-	snap.Project = &ProjectState{Root: root, Project: *proj, Workspaces: ws, Agents: ag}
+	snap.Project = &ProjectState{Root: root, Project: *proj, Workspaces: ws}
 	return snap, nil
 }
 

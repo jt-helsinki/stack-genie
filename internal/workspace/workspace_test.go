@@ -53,11 +53,8 @@ func newManager(builder Builder, sandbox Sandbox) Manager {
 }
 
 func TestName(test *testing.T) {
-	if got := Name("app", ""); got != "aip-app" {
-		test.Errorf("project name = %q", got)
-	}
-	if got := Name("app", "review"); got != "aip-app-review" {
-		test.Errorf("agent name = %q", got)
+	if got := Name("app"); got != "aip-app" {
+		test.Errorf("workspace name = %q", got)
 	}
 }
 
@@ -93,7 +90,7 @@ func TestStartUnknownProject(test *testing.T) {
 func TestExecCarriesInnerResult(test *testing.T) {
 	seedProject(test, "app")
 	sandbox := &fakeSandbox{execResult: ExecResult{ExitCode: 7, Stdout: "hi"}}
-	result, err := newManager(&fakeBuilder{}, sandbox).Exec("app", "", []string{"false"})
+	result, err := newManager(&fakeBuilder{}, sandbox).Exec("app", []string{"false"})
 	if err != nil {
 		test.Fatalf("inner non-zero exit must not be a platform error: %v", err)
 	}
@@ -105,7 +102,7 @@ func TestExecCarriesInnerResult(test *testing.T) {
 func TestExecPlatformError(test *testing.T) {
 	seedProject(test, "app")
 	sandbox := &fakeSandbox{execErr: errors.New("microVM not running")}
-	if _, err := newManager(&fakeBuilder{}, sandbox).Exec("app", "", []string{"ls"}); err == nil {
+	if _, err := newManager(&fakeBuilder{}, sandbox).Exec("app", []string{"ls"}); err == nil {
 		test.Fatal("expected a platform error")
 	}
 }

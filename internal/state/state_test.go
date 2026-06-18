@@ -66,23 +66,15 @@ func TestAtomicWriteLeavesNoTempFile(test *testing.T) {
 	}
 }
 
-func TestWorkspaceAndAgentListing(test *testing.T) {
+func TestWorkspaceListing(test *testing.T) {
 	root := test.TempDir()
 	st := OpenStore(root)
-	agentName := "review-agent"
-	if err := st.SaveWorkspace(&Workspace{ID: "aip-app", Project: "app", Type: WorkspaceProject, Status: StatusStarted}); err != nil {
-		test.Fatal(err)
-	}
-	if err := st.SaveAgent(&Agent{Name: agentName, Project: "app", State: "active"}); err != nil {
+	if err := st.SaveWorkspace(&Workspace{ID: "aip-app", Project: "app", Status: StatusStarted}); err != nil {
 		test.Fatal(err)
 	}
 	ws, err := st.ListWorkspaces()
 	if err != nil || len(ws) != 1 || ws[0].ID != "aip-app" {
 		test.Fatalf("workspaces=%+v err=%v", ws, err)
-	}
-	ag, err := st.ListAgents()
-	if err != nil || len(ag) != 1 || ag[0].Name != agentName {
-		test.Fatalf("agents=%+v err=%v", ag, err)
 	}
 }
 

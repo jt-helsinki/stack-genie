@@ -1,7 +1,7 @@
-// Package git is a thin wrapper over the git subprocess for the operations the
-// platform needs at project creation (arch §21 is the agent-facing git system;
-// this is just init/clone). It is an interface so the project flow can be tested
-// with a fake.
+// Package git is a thin wrapper over the git subprocess for the only git
+// operations the platform performs itself: initializing or cloning a project's
+// repository at creation. Everything else — branches, commits, merges, rebases —
+// is the in-workspace agent's job, not the platform's (arch §21).
 package git
 
 import (
@@ -9,7 +9,7 @@ import (
 	"os/exec"
 )
 
-// Runner performs git operations.
+// Runner performs the platform's git operations.
 type Runner interface {
 	Init(dir string) error
 	Clone(repo, dir string) error

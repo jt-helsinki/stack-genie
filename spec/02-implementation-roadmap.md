@@ -229,62 +229,13 @@ ai context caveman <lite|full|ultra|wenyan>
 
 ---
 
-# 4. Slice 3 — Multi-Agent System
+# 4. Slice 3 — Removed (multi-agent is not a platform concern)
 
-## Goal
-
-Enable multiple agents per project.
-
----
-
-## Scope
-
-* git worktrees
-* agent branches
-* agent workspaces
-* agent lifecycle system
-
-(Merging and conflict resolution are done by the in-workspace agent, not the
-platform — architecture §22.)
-
----
-
-## Components
-
-### Git System
-
-* branch per agent
-* worktree per agent
-* branch created from current branch
-* `ai agent rebase` (plain git plumbing; stops on conflict for the agent)
-
----
-
-### Agent System
-
-* agent creation
-* agent deletion
-* agent listing
-
----
-
-## Commands
-
-```bash id="c3"
-ai agent create
-ai agent list
-ai agent remove
-ai agent status
-ai agent rebase
-```
-
----
-
-## Acceptance Criteria
-
-* multiple agents operate independently
-* each agent has isolated workspace
-* agent worktrees/branches don't interfere
+The platform provides **one workspace per project**. Running multiple AI agents
+on a project — and any git they need (branches, worktrees, merges, rebases) — is
+the **in-workspace agent CLI's** job, not the platform's (architecture §20–22).
+There are no `ai agent` commands and no platform-managed worktrees. The `[S3]`
+acceptance tag is retired.
 
 ---
 

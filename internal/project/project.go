@@ -36,7 +36,6 @@ type Spec struct {
 	Stacks      []string
 	AgentCLIs   []string
 	DefaultTool string
-	Agents      int
 	Clone       string
 }
 

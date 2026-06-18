@@ -7,10 +7,15 @@ import (
 	"testing"
 )
 
-func TestInitCreatesRepo(test *testing.T) {
+func requireGit(test *testing.T) {
+	test.Helper()
 	if _, err := exec.LookPath("git"); err != nil {
 		test.Skip("git not installed")
 	}
+}
+
+func TestInitCreatesRepo(test *testing.T) {
+	requireGit(test)
 	dir := filepath.Join(test.TempDir(), "proj")
 	if err := RealRunner().Init(dir); err != nil {
 		test.Fatal(err)
@@ -21,9 +26,7 @@ func TestInitCreatesRepo(test *testing.T) {
 }
 
 func TestCloneFromLocalRepo(test *testing.T) {
-	if _, err := exec.LookPath("git"); err != nil {
-		test.Skip("git not installed")
-	}
+	requireGit(test)
 	source := filepath.Join(test.TempDir(), "source")
 	if err := RealRunner().Init(source); err != nil {
 		test.Fatal(err)

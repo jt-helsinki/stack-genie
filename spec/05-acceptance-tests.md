@@ -62,13 +62,13 @@ so the harness drives it through a **pseudo-terminal (PTY)**. Tests use a helper
 
 ```text
 create_project <name> [os=<key>] [clis=<csv>] [default_tool=<key>] \
-                      [stacks=<csv>] [agents=<n>] [clone=<repo>] [abort=1]
+                      [stacks=<csv>] [clone=<repo>] [abort=1]
 ```
 
 * spawns `ai project create <name> --json` attached to a PTY
 * navigates each wizard step **accepting the presented default** unless an
   override is given; with no overrides the defaults are `os=debian-trixie`,
-  `clis=opencode`, `default_tool=opencode`, `stacks=` (none), `agents=0`
+  `clis=opencode`, `default_tool=opencode`, `stacks=` (none)
 * `clone=<repo>` is passed as the real `--clone` flag; `abort=1` drives the
   wizard to **Abort** instead of **Confirm**
 * returns the final `--json` envelope captured from stdout (wizard prompts are on
@@ -179,7 +179,7 @@ real provider.
 
 ### Non-Interactive Confirmation
 
-Destructive commands (`ai project delete`, `ai agent remove`) are confirmed
+Destructive commands (`ai project delete`) are confirmed
 non-interactively with `--yes` (CLI §20). `ai workspace destroy` is **not**
 destructive — it keeps the overlay and host source and needs no `--yes` (§4.4) —
 so it is excluded. There is no AI-approval flow.
@@ -347,120 +347,21 @@ unknown project with a missing confirmation:
 
 ---
 
-# 4. Agent System Tests
+# 4. Agent System Tests — Removed
 
-## 4.1 Agent Creation `[S3]`
-
-### Test
-
-```bash id="t8"
-ai agent create test-project agent-a --json
-```
-
-### Expected Result
-
-* git branch created from current branch
-* worktree created
-* Microsandbox workspace microVM created
-* state recorded under `~/projects/test-project/.ai-platform/run/agents/agent-a.json`
+There is no platform "agent" abstraction and no `ai agent` commands (architecture
+§20, CLI §5). Running multiple AI agents on a project is the in-workspace agent
+CLI's concern, so there are no platform-level agent tests. The `[S3]` tag is
+retired.
 
 ---
 
-## 4.2 Agent Isolation `[S3]`
+# 5. Git Workflow Tests — Removed
 
-### Test
-
-```bash
-create_project iso agents=2
-ai workspace exec iso --agent agent-1 --json -- sh -c 'echo a1 > ~/workspace/f1.txt'
-ai workspace exec iso --agent agent-2 --json -- sh -c 'echo a2 > ~/workspace/f2.txt'
-# inspect each agent's worktree
-ai workspace exec iso --agent agent-1 --json -- ls ~/workspace
-ai workspace exec iso --agent agent-2 --json -- ls ~/workspace
-```
-
-### Expected Result
-
-* `agent-1`'s worktree contains `f1.txt` and **not** `f2.txt`; `agent-2`'s the
-  reverse (asserted from each `ls`'s `data.stdout`)
-* `ai agent list iso --json` shows two distinct branches, worktrees, and
-  workspace ids (0 collisions)
-* neither write appears in the other agent's workspace
-
----
-
-## 4.3 Agent Rebase Test `[S3]`
-
-### Test
-
-```bash id="t9"
-ai agent rebase test-project agent-a main --json
-```
-
-### Expected Result
-
-* agent branch rebased cleanly
-* no data loss
-* the agent's worktree is intact
-
----
-
-## 4.4 Agent Removal `[S3]`
-
-### Test
-
-```bash id="t10"
-ai agent remove test-project agent-a --yes --json
-```
-
-### Expected Result
-
-* worktree removed
-* workspace destroyed (and its overlay removed — permanent, CLI §20)
-* branch deleted (if enabled)
-* destructive: without `--yes` non-interactively, exits `2`
-
----
-
-# 5. Git Workflow Tests
-
-## 5.1 Commit Test `[S3]`
-
-### Test
-
-```bash
-ai workspace exec iso --agent agent-1 --json -- sh -c \
-  'cd ~/workspace && echo x >> f1.txt && git add -A && git commit -m a1'
-# the commit is on agent-1's branch only
-ai workspace exec iso --agent agent-1 --json -- sh -c 'cd ~/workspace && git log --oneline -1'
-ai workspace exec iso --agent agent-2 --json -- sh -c 'cd ~/workspace && git log --oneline'
-```
-
-### Expected Result
-
-* the commit appears in `agent-1`'s branch (`data.stdout` of its `git log`)
-* it does **not** appear in `agent-2`'s branch (its `git log` lacks `a1`)
-* both exec calls have `data.exit_code == 0`
-
----
-
-## 5.2 Rebase Test `[S3]`
-
-### Test
-
-```bash
-ai agent rebase iso agent-1 main --json
-```
-
-### Expected Result
-
-* the agent branch is rebased onto `main` (plain git, no model calls)
-* on a clean rebase, `ok == true`
-* on conflict, the rebase stops in-progress for the agent to resolve (the
-  platform makes no AI call); `data` reports the conflicted paths
-
-> Merging and AI conflict resolution are done by the in-workspace agent, not the
-> platform (architecture §22) — there is no `ai merge` / `ai conflict resolve`.
+The platform's only git action is `git init`/`git clone` at project creation
+(CLI §3.1); it manages no branches, worktrees, or merges (architecture §21), so
+there are no platform-level git-workflow tests. Branching/merging/rebasing
+happen inside the workspace, driven by the agent.
 
 ---
 
@@ -888,23 +789,6 @@ ai state repair --json
 
 ---
 
-## 15.2 Multi-Agent Load Test `[S3]`
-
-### Test
-
-```bash
-create_project load-test agents=10
-ai agent list load-test --json
-```
-
-### Expected Result
-
-* 10 agents created, each with a distinct branch, worktree, and workspace id
-  (per §1.6 threshold: 0 collisions)
-* concurrent edits in different agent worktrees do not interfere
-* each agent workspace is isolated (no shared mounts beyond read-only resources)
-
----
 
 # 16. Security Tests
 

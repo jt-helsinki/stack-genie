@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"strconv"
 	"strings"
 
 	"github.com/charmbracelet/huh"
@@ -160,7 +159,6 @@ func runCreateWizard(defaultName string) (project.Spec, bool, error) {
 	agentCLIs := []string{"opencode"}
 	defaultTool := "opencode"
 	stacks := []string{}
-	agentCount := "0"
 
 	form := huh.NewForm(
 		huh.NewGroup(
@@ -184,9 +182,6 @@ func runCreateWizard(defaultName string) (project.Spec, bool, error) {
 			huh.NewMultiSelect[string]().Title("Software stacks (space to toggle)").
 				Options(huh.NewOptions(supportedStacks...)...).Value(&stacks),
 		),
-		huh.NewGroup(
-			huh.NewInput().Title("Agents to pre-create").Value(&agentCount).Validate(wizardCountValidator),
-		),
 	)
 
 	if err := form.Run(); err != nil {
@@ -196,14 +191,12 @@ func runCreateWizard(defaultName string) (project.Spec, bool, error) {
 		return project.Spec{}, false, err
 	}
 
-	count, _ := strconv.Atoi(strings.TrimSpace(agentCount))
 	return project.Spec{
 		Name:        name,
 		OS:          osKey,
 		Stacks:      stacks,
 		AgentCLIs:   agentCLIs,
 		DefaultTool: defaultTool,
-		Agents:      count,
 	}, false, nil
 }
 
@@ -212,14 +205,6 @@ func wizardNameValidator(value string) error { return project.ValidateName(value
 func wizardAtLeastOne(selected []string) error {
 	if len(selected) == 0 {
 		return errors.New("select at least one")
-	}
-	return nil
-}
-
-func wizardCountValidator(value string) error {
-	count, err := strconv.Atoi(strings.TrimSpace(value))
-	if err != nil || count < 0 {
-		return errors.New("enter a non-negative whole number")
 	}
 	return nil
 }

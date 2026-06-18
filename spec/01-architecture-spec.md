@@ -14,7 +14,7 @@ Status: Target End-State Architecture
 
 This document defines the end-state architecture for the AI Development Platform.
 
-The platform provides reproducible AI-powered software development environments using Microsandbox microVMs, centralized model access, multi-agent workflows, and host-backed project persistence.
+The platform provides reproducible AI-powered software development environments using Microsandbox microVMs, centralized model access, and host-backed project persistence.
 
 This document describes the final architecture regardless of implementation phase.
 
@@ -35,8 +35,6 @@ The platform must provide:
 * Reproducible development environments
 * Host-backed persistent source code
 * AI-native development workflows
-* Multi-agent development
-* Git worktree isolation
 * Hardware-isolated microVM workspaces (Microsandbox)
 * Rootless container runtime for the service tier by default
 * Centralized model access
@@ -236,8 +234,7 @@ State is split between **global** and **project-local**:
 ├── skills/caveman/   # tracked — platform-seeded Caveman skill (§9)
 ├── .gitignore        # ignores run/
 └── run/              # gitignored — host-local runtime state
-    ├── workspaces/<workspace-id>.json
-    └── agents/<agent-name>.json
+    └── workspaces/<workspace-id>.json
 ```
 
 Rules:
@@ -247,8 +244,8 @@ Rules:
   committable so the project is reproducible from git
 * **`run/`** holds host-local runtime handles (Microsandbox sandbox ids, status)
   and is **gitignored** — machine-specific, never committed
-* per-entity sharding (one file per workspace, one per agent under `run/`)
-  avoids write contention under multi-agent concurrency
+* per-entity sharding (one file per workspace under `run/`)
+  avoids write contention
 * **all state writes are atomic**: write to a temp file in the same directory,
   then `rename()` over the target — a crash mid-write never corrupts state
 * `ai state repair` reconstructs `run/` by reading the project + Microsandbox/git;
@@ -398,8 +395,7 @@ pass.
 Microsandbox provides:
 
 * workspace isolation (hardware-level, via libkrun microVMs)
-* workspace lifecycle
-* agent workspace management
+* workspace lifecycle (one workspace per project)
 
 Each workspace is a microVM with its own Linux kernel, root filesystem, and
 network boundary — a stronger isolation boundary than a container namespace.
@@ -412,21 +408,9 @@ Microsandbox Go SDK / `msb` CLI.
 
 ### Project Workspace
 
-One workspace per project.
-
-Purpose:
-
-* primary development environment
-
----
-
-### Agent Workspace
-
-One workspace per agent.
-
-Purpose:
-
-* isolated development work
+**One workspace per project** — the development environment for that project.
+There are no per-agent workspaces; running multiple agents inside the workspace
+is the in-workspace agent CLI's concern (§20).
 
 ---
 
@@ -460,11 +444,10 @@ The mapping below is normative.
 ### Workspace Naming
 
 ```text
-project workspace:  aip-<project>
-agent workspace:    aip-<project>-<agent>
+workspace:  aip-<project>
 ```
 
-Names are derived deterministically from project and agent identifiers, so the
+The name is derived deterministically from the project identifier, so the
 platform can resolve a workspace from state without a separate lookup table.
 
 ### Image
@@ -483,14 +466,13 @@ host  ~/.ai-platform/agents,skills,   →  workspace  (shared resources) (read-o
       prompts,templates
 ```
 
-* the host project directory is the single source of truth
-* an agent workspace mounts that agent's worktree
-  (`~/projects/<project>/.worktrees/<agent>`) at `~/workspace`
+* the host project directory is the single source of truth, mounted read-write
+  at `~/workspace`
 * no persistent data is written outside the mounted paths
 
 ### Lifecycle Mapping
 
-| Platform state (§23 / workspace §7) | Microsandbox operation (`msb` / Go SDK) |
+| Platform state (workspace §7) | Microsandbox operation (`msb` / Go SDK) |
 |---|---|
 | Created   | `create` (no start) |
 | Started   | `start` |
@@ -520,13 +502,10 @@ Cleanup depends on whether the removal is recoverable:
   It **keeps the persistent overlay** (§26) and the host source. The workspace
   is fully recoverable with `ai workspace start`, which rebuilds from
   `.ai-platform/Dockerfile` and re-mounts the same overlay. (Non-destructive.)
-* **`ai agent remove`** is permanent for that agent: delete its workspace,
-  **remove its overlay**, remove its worktree, and delete its branch per §23
-  (branch deletion configurable).
-* **`ai project delete`** is permanent for the project: delete all its
-  workspaces and **their overlays**, remove the project's `projects.json` index
-  entry, and clear `<project>/.ai-platform/run/`. Host source is preserved
-  unless `--purge` is given.
+* **`ai project delete`** is permanent for the project: delete its workspace and
+  **its overlay**, remove the project's `projects.json` index entry, and clear
+  `<project>/.ai-platform/run/`. Host source is preserved unless `--purge` is
+  given.
 
 ---
 
@@ -1085,148 +1064,58 @@ canonical project layout in `03-repository-layout.md` §2.1.
 
 ## Identifier Rules
 
-Project and agent names become directory names, git branch names, and
-Microsandbox workspace names (§7), so they are validated:
+Project names become directory names and the Microsandbox workspace name (§7),
+so they are validated:
 
 ```text
 project name:  ^[a-z0-9][a-z0-9-]{0,38}[a-z0-9]$
-agent name:    ^[a-z0-9][a-z0-9-]{0,38}[a-z0-9]$
 ```
 
 * lowercase alphanumeric and hyphens; 2–40 chars; no leading/trailing hyphen
 * a name that fails validation exits `2`
-* project names are unique across the platform; agent names are unique within a
-  project
-* derived workspace names are `aip-<project>` and `aip-<project>-<agent>` (§7),
-  which therefore also satisfy OCI image / Microsandbox naming constraints
-
-### Generated Agent Names (`--agents <n>`)
-
-When `ai project create --agents <n>` pre-creates agents, they are named
-`agent-1` … `agent-n`. If any such name already exists, the next free
-`agent-<k>` is used so generated names never collide.
+* project names are unique across the platform
+* the derived workspace name is `aip-<project>` (§7), which therefore also
+  satisfies OCI image / Microsandbox naming constraints
 
 ---
 
-# 20. Multi-Agent System
+# 20. Multi-Agent System — Removed (not a platform concern)
 
-Projects may contain multiple agents.
-
-Each agent receives:
-
-* dedicated workspace
-* dedicated branch
-* dedicated worktree
-
-(Agent memory is the agent's own concern — see §11.)
+The platform provides **one workspace per project**. Running multiple AI agents
+on a project — and any source isolation that needs (git branches, worktrees,
+separate checkouts) — is the **in-workspace agent CLI's** job, not the platform's
+(consistent with §11: the platform doesn't manage the agent's concerns). The
+platform never creates per-agent workspaces, branches, or worktrees.
 
 ---
 
 # 21. Git Workflow
 
-Agent branches originate from the currently checked-out branch.
+The platform's only git involvement is at project creation: it runs `git init`
+(or `git clone` with `--clone`, CLI §3.1) so the project is a repo. **Everything
+else is the in-workspace agent's job** — branches, commits, rebases, merges,
+conflict resolution, worktrees, and pull requests. The platform makes no model
+calls and runs no merges.
 
-Example:
-
-```text
-feature/auth
-```
-
-Agent:
-
-```text
-agent/review-agent
-```
-
-Created from:
-
-```text
-feature/auth
-```
-
----
-
-## Agent Permissions
-
-Agents may:
-
-* commit
-* rebase
-* create pull requests
-* merge locally for validation
-
-Agents may not:
-
-* force push without approval
-* delete branches without approval
-* rewrite shared history without approval
-
----
-
-## Merge Strategy
-
-Default:
-
-```yaml
-git:
-  merge_strategy: squash
-```
-
-Options:
-
-* squash
-* merge
-* rebase
+The project's `config.yaml` may carry a `git.merge_strategy` hint
+(`squash | merge | rebase`) that the in-workspace agent **may** read, but the
+platform does not act on it.
 
 ---
 
 # 22. Conflict Resolution — Removed
 
-The platform does **not** perform AI merge or conflict resolution. Resolving
-merge conflicts is LLM-on-code work done by the in-workspace agent
-(OpenCode/Claude Code/Codex/Gemini). The platform provides only git plumbing —
-per-agent branches and worktrees (§20–21) and `ai agent rebase` — and never
-makes model calls itself.
+The platform does **not** perform AI merge or conflict resolution, nor any git
+beyond init/clone (§21). Branching, merging, and conflict resolution are
+LLM-on-code work done by the in-workspace agent (OpenCode/Claude Code/Codex/Gemini).
 
 ---
 
-# 23. Agent Lifecycle
+# 23. Agent Lifecycle — Removed
 
-States:
-
-```text
-Created
- ↓
-Active
- ↓
-Review
- ↓
-Merged
- ↓
-Archived
- ↓
-Deleted
-```
-
----
-
-## Cleanup Policy
-
-After merge:
-
-* worktree removed
-* workspace destroyed
-* branch deleted (default)
-
----
-
-## Retention
-
-```yaml
-agents:
-  archive_days: 14
-  reuse_agents: true
-```
+There is no platform-managed agent lifecycle (the platform has no "agent"
+entity, §20). The lifecycle of any agents a user runs inside a workspace is the
+agent CLI's concern.
 
 ---
 
@@ -1239,7 +1128,7 @@ Workspace
  └─ Microsandbox microVM (libkrun)
 ```
 
-Each project workspace and each agent workspace is its own microVM, so installs
+Each project workspace is its own microVM, so installs
 and state are isolated and persist independently (overlay, §26). The container
 runtime (Docker/Podman) is used only for the service tier (§6.1), never to run
 a workspace.
@@ -1343,9 +1232,8 @@ host-mounted and is the user's git repo.)
 
 ## Scope
 
-One overlay **per workspace** — the project workspace and each agent workspace
-each get their own persistent overlay, so an agent's installs and state are
-isolated and persist independently:
+One overlay **per workspace** (one per project) — installs and state written in
+the workspace persist independently of the read-only image:
 
 ```text
 ~/.ai-platform/overlays/<workspace-id>/
@@ -1634,6 +1522,5 @@ and immediately receive (for the OS the user selected):
 * Caveman output compression
 * reproducible, Dockerfile-defined environments
 * zero manual Microsandbox configuration
-* multi-agent support
 * project persistence (overlay)
     

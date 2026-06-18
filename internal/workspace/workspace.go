@@ -18,12 +18,9 @@ import (
 var ErrUnknownProject = errors.New("unknown project")
 
 // Name derives the deterministic workspace/microVM name (arch §7, §19):
-// aip-<project> for the project workspace, aip-<project>-<agent> for an agent.
-func Name(project, agent string) string {
-	if agent == "" {
-		return "aip-" + project
-	}
-	return "aip-" + project + "-" + agent
+// aip-<project>. There is one workspace per project.
+func Name(project string) string {
+	return "aip-" + project
 }
 
 // ExecResult is the outcome of running a command inside a workspace (§4.5). The
@@ -76,7 +73,7 @@ func (manager Manager) Start(project string) (*state.Workspace, error) {
 	if err != nil {
 		return nil, err
 	}
-	name := Name(project, "")
+	name := Name(project)
 	imageRef := name + ":latest"
 	if err := manager.Builder.Build(root, imageRef); err != nil {
 		return nil, err
@@ -91,7 +88,6 @@ func (manager Manager) Start(project string) (*state.Workspace, error) {
 	handle := &state.Workspace{
 		ID:          name,
 		Project:     project,
-		Type:        state.WorkspaceProject,
 		Status:      state.StatusStarted,
 		Created:     now,
 		LastStarted: now,
@@ -108,7 +104,7 @@ func (manager Manager) Stop(project string) error {
 	if err != nil {
 		return err
 	}
-	name := Name(project, "")
+	name := Name(project)
 	if err := manager.Sandbox.Stop(name); err != nil {
 		return err
 	}
@@ -122,28 +118,27 @@ func (manager Manager) Destroy(project string) error {
 	if err != nil {
 		return err
 	}
-	name := Name(project, "")
+	name := Name(project)
 	if err := manager.Sandbox.Destroy(name); err != nil {
 		return err
 	}
 	return manager.updateStatus(root, name, project, state.StatusDestroyed)
 }
 
-// Exec runs argv inside the project (or agent) workspace and returns the inner
-// result. A non-zero inner exit is carried in ExecResult, not as a Go error;
-// only platform failures (microVM down, etc.) are returned as errors (§4.5).
-func (manager Manager) Exec(project, agent string, argv []string) (ExecResult, error) {
+// Exec runs argv inside the project workspace and returns the inner result. A
+// non-zero inner exit is carried in ExecResult, not as a Go error; only platform
+// failures (microVM down, etc.) are returned as errors (§4.5).
+func (manager Manager) Exec(project string, argv []string) (ExecResult, error) {
 	if _, err := resolveProjectRoot(project); err != nil {
 		return ExecResult{}, err
 	}
-	return manager.Sandbox.Exec(Name(project, agent), argv)
+	return manager.Sandbox.Exec(Name(project), argv)
 }
 
 func (manager Manager) updateStatus(root, name, project string, status state.WorkspaceStatus) error {
 	handle := &state.Workspace{
 		ID:      name,
 		Project: project,
-		Type:    state.WorkspaceProject,
 		Status:  status,
 		Created: manager.Now(),
 	}

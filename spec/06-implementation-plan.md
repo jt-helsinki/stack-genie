@@ -58,8 +58,7 @@ keep the precedence rules in arch §27 explicit), `slog` (structured logs), stdl
 │   ├── litellm/                 # host lifecycle, config gen, health, routing
 │   ├── clawpatrol/              # gateway lifecycle, credential brokering, placeholders
 │   ├── contextopt/              # Headroom proxy lifecycle + per-project Caveman skill install
-│   ├── git/                     # branch/worktree/rebase plumbing (no AI merge/conflict)
-│   ├── agent/                   # agent lifecycle orchestration
+│   ├── git/                     # project init/clone only (no platform branch/worktree/merge)
 │   ├── envimage/                # compose .ai-platform/Dockerfile (OS template + stack snippets + agent CLIs) + build OCI image
 │   ├── overlay/                 # per-workspace persistent overlay
 │   ├── audit/                   # append-only audit log (no secrets)
@@ -152,7 +151,7 @@ Each service's config is **rendered** from the platform config into
 | `litellm/` | container via `runtime/`; config rendered from routing; `/health` poll | container | S1 |
 | `clawpatrol/` | native gateway; register creds; inject placeholders into workspace env | native | S1 |
 | `contextopt/` | Headroom container via `runtime/`; install per-project Caveman skill into `<project>/.ai-platform/skills/` | container | S2 |
-| `git/` | subprocess; worktrees, branches, rebase plumbing (no AI merge/conflict) | n/a | S3 |
+| `git/` | subprocess; project init/clone only | n/a | S1 |
 
 ---
 
@@ -201,7 +200,7 @@ refer to the CLI spec and architecture spec respectively.
   injection works (arch §17). Tests: AT §6.1, harness workspace-start threshold,
   AT §16.2, AT §16.3.
 * **M6 — `ai project create` wizard + delete.** Interactive PTY wizard (CLI §3.1)
-  with steps for name/OS/agent-CLIs/default-agent/**software-stacks**/agents-count,
+  with steps for name/OS/agent-CLIs/default-agent/**software-stacks**,
   each with a presented default, checkbox multi-select for CLIs + stacks,
   arrow/space navigation, Back + Abort; no `--os`/per-choice flags; no TTY → exit
   2. Then project dir + git init (or `--clone`) + write `.ai-platform/` (Dockerfile
@@ -227,9 +226,10 @@ Slice 1 is complete only when every `[S1]` test passes with no manual config.
   path; per-project Caveman skill installed into `<project>/.ai-platform/skills/`;
   `ai context status|strategy|caveman`. (No platform memory — agent owns it.)
   Tests `[S2]`.
-* **S3 Multi-Agent.** `git/` + `agent/`: branch/worktree/workspace per agent;
-  `ai agent create|list|remove|status|rebase`. Merging and conflict resolution
-  are the agent's job (no `ai merge`/`ai conflict resolve`). Tests `[S3]`.
+* **S3 — Removed.** Multi-agent and git worktrees are the in-workspace agent
+  CLI's concern, not the platform's: one workspace per project, no `ai agent`
+  commands, no platform-managed branches/worktrees (arch §20–22). The `[S3]` tag
+  is retired.
 * **S4 Overlay persistence.** `overlay/`: per-workspace persistent overlay so
   installs + agent state survive restart/recreation (arch §26). No snapshot
   versioning/upgrade/rollback and no backup (arch §25, §32). Tests `[S4]`.

@@ -18,7 +18,6 @@ The CLI is the primary control plane for:
 
 * installation
 * project creation
-* agent management
 * workspace lifecycle
 * model routing status
 * diagnostics
@@ -220,8 +219,7 @@ Steps, in order:
    (`--clone`), the wizard pre-checks stacks it detects. Selected stacks are
    installed into the generated `.ai-platform/Dockerfile` and recorded in
    `profile.yaml`.
-6. **Agents to pre-create** — number; default `0`.
-7. **Confirm** — shows a summary; choose **Create**, **Back**, or **Abort**.
+6. **Confirm** — shows a summary; choose **Create**, **Back**, or **Abort**.
 
 Prompts render on the terminal (stderr); with `--json` the **final result** is
 still the single envelope on stdout (§19). **Abort** exits `0` and makes no
@@ -242,8 +240,6 @@ Behavior (after **Confirm**):
   `agent.default_tool`), `profile.yaml`, and a `.gitignore` that ignores `run/`
 * builds the workspace OCI image from `.ai-platform/Dockerfile` and creates the
   Microsandbox workspace microVM
-* pre-creates the chosen number of agents (step 6) with generated names
-  `agent-1 … agent-n` (skipping any name already in use)
 * records the project in the global index (`config/projects.json`)
 
 ---
@@ -278,7 +274,7 @@ Options:
 
 Behavior:
 
-* destroys the project workspace and all agent workspaces (Microsandbox `rm`)
+* destroys the project workspace (Microsandbox `rm`)
 * removes agent worktrees and **all per-workspace overlays** for the project
 * removes the project's entry from the global `config/projects.json` index
 * **without `--purge`** (default): preserves host source, including the tracked
@@ -357,12 +353,12 @@ Behavior:
 ## 4.5 Exec In Workspace
 
 ```bash id="c11a"
-ai workspace exec <project> [--agent <name>] -- <command> [args...]
+ai workspace exec <project> -- <command> [args...]
 ```
 
 Behavior:
 
-* runs `<command>` inside the project (or agent) workspace via Microsandbox and
+* runs `<command>` inside the project workspace via Microsandbox and
   streams stdout/stderr
 * everything after `--` is passed verbatim to the workspace (no shell expansion
   on the host)
@@ -385,70 +381,20 @@ Exit semantics — **platform failure is distinct from inner-command failure**:
 
 ---
 
-# 5. Agent Commands
+# 5. Agent Commands — Removed (not a platform concern)
 
-## 5.1 Create Agent
-
-```bash id="c12"
-ai agent create <project> <agent-name>
-```
-
-Behavior:
-
-* creates git branch from current branch
-* creates worktree
-* creates Microsandbox workspace microVM
+There are **no `ai agent` commands**. The platform provides one workspace per
+project (§4); running multiple AI agents on a project, and any git they need
+(branches, worktrees, commits, merges, rebases), is the **in-workspace agent
+CLI's** job — not the platform's (architecture §20–22).
 
 ---
 
-## 5.2 List Agents
+# 6. Git Commands — Removed
 
-```bash id="c13"
-ai agent list <project>
-```
-
----
-
-## 5.3 Remove Agent
-
-```bash id="c14"
-ai agent remove <project> <agent-name>
-```
-
-Behavior:
-
-* deletes the agent workspace and **its overlay** (permanent)
-* removes the worktree
-* deletes the branch (configurable)
-* **destructive** (§20): needs confirmation or `--yes`; non-interactive without
-  `--yes` exits `2`
-
----
-
-## 5.4 Agent Status
-
-```bash id="c15"
-ai agent status <project> <agent-name>
-```
-
----
-
-# 6. Git Commands
-
-The platform provides only git **plumbing** — branches, worktrees, and rebase.
-Merging and conflict resolution are done by the in-workspace agent
-(architecture §22); there is no `ai merge` or `ai conflict resolve`.
-
-## 6.1 Rebase Agent
-
-```bash id="c18"
-ai agent rebase <project> <agent-name> <branch>
-```
-
-Behavior:
-
-* rebases the agent's branch onto the target branch (plain git; no model calls)
-* on conflict, stops and leaves the rebase in progress for the agent to resolve
+The platform's only git action is `git init`/`git clone` at project creation
+(§3.1). It exposes no git commands; all branching, merging, and conflict
+resolution happen inside the workspace, driven by the agent (architecture §21).
 
 ---
 
@@ -556,7 +502,7 @@ ClawPatrol, Headroom, optional Ollama). The user never invokes
 `docker compose`, `launchctl`, or `systemctl` directly. The same verbs apply
 whether a service runs as a container or a native process (see architecture
 §5, "Host Services Control Plane"). (The Microsandbox workspace runtime is not
-a long-running service — it is driven by the `ai workspace` / `ai agent`
+a long-running service — it is driven by the `ai workspace`
 commands, not `ai services`.)
 
 ```bash id="c27a"
@@ -614,7 +560,6 @@ ai logs
 Options:
 
 ```bash id="c32"
---agent <name>
 --workspace <project>
 --service <microsandbox|litellm|clawpatrol|headroom|ollama>
 --tail
@@ -821,9 +766,8 @@ The platform has no AI-approval flow (AI merge/conflict resolution was removed �
 architecture §22). The only interactive gate is confirmation of **destructive**
 actions — those that remove something the user cannot trivially reconstruct:
 
-* `ai project delete` (removes the project record, overlays, and — with
+* `ai project delete` (removes the project record and overlay, and — with
   `--purge` — host source)
-* `ai agent remove` (removes the agent's branch, worktree, and overlay)
 
 `ai workspace destroy` is **not** destructive — it preserves source and overlay
 and is fully recoverable (§4.4), so it needs no confirmation.

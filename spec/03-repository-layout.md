@@ -72,7 +72,7 @@ Rules:
 * the global `projects.json` index is low-write (create/delete only), so no
   write contention
 * per-project runtime state is sharded per entity under `<project>/.ai-platform/run/`
-  (one file per workspace, one per agent) — gitignored, machine-specific
+  (one file per workspace) — gitignored, machine-specific
 * **all state writes are atomic**: write to a temp file in the same directory,
   then `rename()` over the target, so a crash mid-write can never produce a
   partial or corrupt state file
@@ -233,7 +233,7 @@ installs and agent state survive workspace restart and recreation.
 ```
 
 Each directory is the persistent writable layer for one workspace
-(`aip-<project>` or `aip-<project>-<agent>`), mounted over the read-only image
+(`aip-<project>`), mounted over the read-only image
 (built from the project Dockerfile) at workspace start.
 
 Rules:
@@ -261,7 +261,6 @@ All projects live under:
 ```text id="p2"
 ~/projects/my-project/
 ├── .ai-platform/
-├── .worktrees/
 ├── docs/
 ├── scripts/
 ├── src/
@@ -290,7 +289,6 @@ skills/caveman/      # tracked — platform-seeded Caveman skill (architecture �
 .gitignore           # ignores run/
 run/                 # gitignored — host-local runtime state
   workspaces/<workspace-id>.json   # (§12.2)
-  agents/<agent-name>.json         # (§12.3)
 ```
 
 The platform seeds the **Caveman** agent skill into `skills/caveman/` at
@@ -309,22 +307,12 @@ by re-seeding explicitly).
 
 ---
 
-## 2.3 Worktrees
+## 2.3 Worktrees — not platform-managed
 
-```text id="p13"
-.worktrees/
-```
-
-```text id="p14"
-agent-a/
-agent-b/
-agent-c/
-```
-
-Each contains:
-
-* isolated git checkout
-* independent working directory
+The platform does not create or manage git worktrees. If a user runs multiple AI
+agents inside a workspace and those agents use worktrees (e.g. under
+`.worktrees/`), that is entirely the in-workspace agent CLI's doing (architecture
+§20–21); the platform neither tracks nor cleans them up.
 
 ---
 
@@ -432,7 +420,6 @@ are:
 * `config/projects.json` (global) → `ai project create` / `delete` (index)
 * `<project>/.ai-platform/project.json` → `ai project create`
 * `<project>/.ai-platform/run/workspaces/*.json` → `ai workspace`
-* `<project>/.ai-platform/run/agents/*.json` → `ai agent`
 
 ---
 
@@ -522,39 +509,22 @@ stacks: [node, go]   # any subset of the available stack snippets (§1.5)
   "schema_version": 1,
   "id": "aip-my-app",
   "project": "my-app",
-  "type": "project",
   "microsandbox_id": "msb-9f3c...",
   "status": "started",
-  "agent": null,
   "created": "2026-06-18T10:00:05Z",
   "last_started": "2026-06-18T10:00:05Z"
 }
 ```
 
-* `type`: `project` | `agent`
 * `status`: `created` | `started` | `stopped` | `archived` | `destroyed`
-* `agent`: agent name when `type` is `agent`, else `null`
 * host-local runtime handle — gitignored
+* one workspace per project (§12.1); there is no per-agent workspace
 
-## 12.3 `<project>/.ai-platform/run/agents/<agent-name>.json` (gitignored)
+## 12.3 Agent state — Removed
 
-```json id="sc3"
-{
-  "schema_version": 1,
-  "name": "review-agent",
-  "project": "my-app",
-  "branch": "agent/review-agent",
-  "base_branch": "feature/auth",
-  "worktree": ".worktrees/review-agent",
-  "workspace_id": "aip-my-app-review-agent",
-  "tool": "claude-code",
-  "state": "active",
-  "created": "2026-06-18T10:05:00Z"
-}
-```
-
-* `state`: `created` | `active` | `review` | `merged` | `archived` | `deleted`
-* host-local runtime handle — gitignored
+There is no platform `agent.json`. The platform has no "agent" entity; running
+multiple AI agents on a project is the in-workspace agent CLI's concern
+(architecture §20).
 
 ## 12.4 Config (`config.yaml`)
 
@@ -577,9 +547,6 @@ context:
 workspace:
   cpu_limit: 4
   memory_limit: 8G
-agents:
-  archive_days: 14
-  reuse_agents: true
 ```
 
 ## 12.5 `config/runtime.json` (platform-global, non-project)
