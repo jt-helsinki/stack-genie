@@ -95,6 +95,13 @@ envelope (`{ok, command, data, error, warnings}`) and a stable exit code
 `5` permission). Other global flags: `--verbose`, `--dry-run`, `--project`,
 `--yes`.
 
+**The project name is optional for project-scoped commands** — `project delete`,
+`workspace start|stop|destroy|exec|doctor`, `context status|strategy|caveman`,
+and `logs`. They default to the project of your current directory (found by
+walking up from any subfolder). Pass a name, or `--project <name>`, to target a
+different project; an explicit name always overrides the default. If you give no
+name and aren't inside a project, the command exits `2`.
+
 ### 1. Install the prerequisites
 
 The platform orchestrates external tools rather than bundling them. You need, on
@@ -125,7 +132,8 @@ ai doctor           # dependency + health report with repair suggestions
 ```bash
 ai project create my-app        # pick options in the menus; or --dry-run to preview
 ai project list
-ai project delete my-app --yes  # --yes confirms; removes the project + its overlay
+ai project delete --yes         # deletes the current directory's project (--yes confirms)
+ai project delete my-app --yes  # or name one explicitly; removes the project + its overlay
 ```
 
 A project owns a git-tracked `.ai-platform/Dockerfile` defining its environment,
