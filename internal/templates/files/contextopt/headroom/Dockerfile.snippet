@@ -1,9 +1,11 @@
 # context optimization: headroom (input compression)
-# Installed in EVERY workspace — it runs as a local proxy that wraps the agent
-# CLI, compressing tool outputs / files / logs before they reach the model
-# (arch §8–10). It reads the project's context.strategy. Caveman (output
-# compression) is its per-project complement, seeded as an agent skill.
-# Verify the exact install on hardware bring-up before relying on this.
+# Installed INTO the workspace (sandbox) image — NOT a Docker/host service. It
+# wraps the agent CLI in the workspace (`headroom wrap opencode`, or the drop-in
+# proxy `headroom proxy` with OPENAI_BASE_URL=http://localhost:8787), compressing
+# tool outputs / files / logs before they reach the model, then forwarding
+# upstream to LiteLLM at AI_PLATFORM_HOST (arch §8–10). It reads the project's
+# context.strategy. Caveman (output compression) is its per-project complement,
+# seeded as an agent skill. Verify the exact install on hardware bring-up.
 USER root
 RUN apt-get update && apt-get install -y --no-install-recommends python3 python3-pip \
  && rm -rf /var/lib/apt/lists/* \

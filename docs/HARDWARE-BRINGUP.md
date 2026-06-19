@@ -90,12 +90,14 @@ Each is a thin real impl that currently returns `ErrPending` / a stub.
     (Headroom is NOT a host service — see the workspace item below.)
   - `realServices.Status` → real probes (`<rt> ps`, gateway `/health`, …).
   - `realCA.Ensure` → generate the ClawPatrol CA (verified CLI from step 2).
-- [ ] **In-workspace Headroom wiring** (arch §8–10) — verify the
+- [ ] **In-workspace Headroom wiring** (arch §8–10) — Headroom is installed in the
+  sandbox image (NOT run as a container). Verify the
   `internal/templates/files/contextopt/headroom/Dockerfile.snippet` install
-  (`pip install headroom-ai[proxy]`) on each OS, then wire the workspace runtime
-  so the agent CLI routes through local Headroom (`headroom proxy`, default
-  `:8787`) which upstreams to LiteLLM at `AI_PLATFORM_HOST`, applying the
-  project's `context.strategy`. Pin the Headroom version in `config/versions.json`.
+  (`pip install headroom-ai[proxy]`) on each OS, then launch the agent CLI
+  **wrapped by Headroom** — `headroom wrap <cli>` (e.g. `headroom wrap opencode`),
+  or the drop-in proxy `headroom proxy` with `OPENAI_BASE_URL=http://localhost:8787`
+  — upstreaming to LiteLLM at `AI_PLATFORM_HOST` and applying the project's
+  `context.strategy`. Pin the Headroom version in `config/versions.json`.
 - [ ] **`internal/secrets/secrets_real.go`**
   - `realBroker.Set/Map/Remove/List` → ClawPatrol credential CLI. Keep values out
     of platform disk; `List` returns names/metadata only.

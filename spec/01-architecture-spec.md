@@ -612,12 +612,14 @@ neither is a host service.
 
 Headroom manages context budgets.
 
-Headroom runs **inside each workspace** as a local proxy that wraps the agent CLI
-(installed in the workspace image, §25). The agent points at local Headroom,
-which compresses input at the source and forwards to LiteLLM on the host
-(`AI_PLATFORM_HOST`). It is per project — it reads that project's
-`context.strategy` (§9) — and is not a host service. (Headroom also offers
-library and MCP modes; the proxy mode is the platform default.)
+Headroom is installed **into the workspace (sandbox) image** (§25) and **wraps the
+agent CLI** — it is not a Docker/host service and is never run as a container. The
+agent CLI is launched through Headroom (`headroom wrap opencode`, or the drop-in
+OpenAI-compatible proxy `headroom proxy` with `OPENAI_BASE_URL=http://localhost:8787`),
+so its model calls are compressed at the source and then forwarded upstream to
+LiteLLM on the host at `AI_PLATFORM_HOST`. It is per project — it reads that
+project's `context.strategy` (§9). (Headroom also offers library and MCP modes;
+wrapping the CLI is the platform default.)
 
 The Github repository is found at:
 
@@ -696,9 +698,10 @@ CLI new agents use unless told otherwise — is recorded as `agent.default_tool`
 
 Context optimization (§8–10), per project:
 
-* **Headroom** — input compression, **installed in the workspace image** as a
-  local proxy that wraps the agent CLI (like the agent CLIs above). It reads the
-  project's `context.strategy`.
+* **Headroom** — input compression, **installed in the workspace (sandbox) image**
+  (like the agent CLIs above); it wraps the agent CLI (`headroom wrap <cli>`) and
+  forwards upstream to LiteLLM. Never a Docker/host service. Reads the project's
+  `context.strategy`.
 * **Caveman** — output compression, **not** baked into the image: seeded per
   project into `<project>/.ai-platform/skills/caveman/` at creation and
   **git-tracked** (an agent skill, see §9), so it travels with the project.
