@@ -183,6 +183,9 @@ ai models status                                   # LiteLLM gateway health
 ai models test  claude-opus-4-8
 
 ai services status                                 # host service tier
+ai services console                                # list services with an admin console
+ai services console litellm                        # open the LiteLLM UI in the browser
+ai services console clawpatrol                     # open the ClawPatrol firewall dashboard
 ai logs --tail                                     # current project + platform logs
 ai state show                                      # global + project state
 ai state repair                                    # reconstruct run-state handles
