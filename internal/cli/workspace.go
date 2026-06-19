@@ -5,6 +5,7 @@ import (
 	goruntime "runtime"
 
 	"github.com/jt-helsinki/ideal-robot/internal/output"
+	"github.com/jt-helsinki/ideal-robot/internal/runtime"
 	"github.com/jt-helsinki/ideal-robot/internal/state"
 	"github.com/jt-helsinki/ideal-robot/internal/workspace"
 	"github.com/spf13/cobra"
@@ -24,8 +25,52 @@ func newWorkspaceCmd(emitter *output.Emitter, exit *int) *cobra.Command {
 		newWorkspaceStopCmd(emitter, exit),
 		newWorkspaceDestroyCmd(emitter, exit),
 		newWorkspaceExecCmd(emitter, exit),
+		newWorkspaceDoctorCmd(emitter, exit),
 	)
 	return cmd
+}
+
+// newWorkspaceDoctorCmd builds `ai workspace doctor <project>` (CLI §12.1, AT
+// §11.1): report the service-tier rootless/privileged posture and the workspace
+// virtualization. There is no rooted or non-microVM fallback (§6.1/§6.2), so a
+// rootless or virtualization shortfall exits 4; a missing runtime exits 3.
+func newWorkspaceDoctorCmd(emitter *output.Emitter, exit *int) *cobra.Command {
+	return &cobra.Command{
+		Use:   "doctor <project>",
+		Short: "Diagnose the project's workspace runtime and virtualization",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(_ *cobra.Command, args []string) error {
+			if _, err := resolveProjectRoot(args[0]); err != nil {
+				*exit = emitter.Failure("workspace.doctor", output.Errorf(output.ExitInvalidInput, "%s", err))
+				return nil
+			}
+			info, err := runtime.Detect(goruntime.GOOS, goruntime.GOARCH, runtime.RealProber(), nowRFC3339())
+			if err != nil {
+				// Missing container runtime or Microsandbox → exit 3 (§18).
+				*exit = emitter.Failure("workspace.doctor", output.Errorf(output.ExitMissingDep, "%s", err))
+				return nil
+			}
+			data := map[string]any{
+				"runtime": map[string]any{
+					"detected":   info.Detected,
+					"rootless":   info.Rootless,
+					"privileged": false, // the platform never runs privileged containers (§6.1)
+				},
+				"workspace": map[string]any{
+					"kind":           "microvm", // workspaces are always microVMs (§6.2)
+					"virtualization": info.Microsandbox.Virtualization,
+					"available":      info.Microsandbox.Available,
+				},
+			}
+			if err := runtime.Verify(info); err != nil {
+				// No rooted / non-microVM fallback (§6.1, §6.2) → exit 4.
+				*exit = emitter.Failure("workspace.doctor", output.Errorf(output.ExitRuntimeFailure, "%s", err))
+				return nil
+			}
+			*exit = emitter.Success("workspace.doctor", data)
+			return nil
+		},
+	}
 }
 
 // mapWorkspaceErr maps lifecycle errors to exit codes (§18).

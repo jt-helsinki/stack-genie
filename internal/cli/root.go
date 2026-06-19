@@ -64,8 +64,7 @@ func Execute() int {
 	persistentFlags.BoolVar(&flags.yes, "yes", false, `assume "yes" for destructive confirmation prompts`)
 	root.Flags().BoolVar(&flags.version, "version", false, "print version and exit")
 
-	// Subcommand groups. More (context, doctor, logs, ...) are registered here
-	// in later milestones.
+	// Subcommand groups (the full Slice 1 surface, CLI §17.0).
 	root.AddCommand(
 		newSetupCmd(emitter, &exitCode),
 		newProjectCmd(emitter, &exitCode),
@@ -75,6 +74,7 @@ func Execute() int {
 		newContextCmd(emitter, &exitCode),
 		newWorkspaceCmd(emitter, &exitCode),
 		newDoctorCmd(emitter, &exitCode),
+		newLogsCmd(emitter, &exitCode),
 		newStateCmd(emitter, &exitCode),
 	)
 

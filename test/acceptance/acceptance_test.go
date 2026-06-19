@@ -71,6 +71,24 @@ func TestDoctorRunsAndReports(test *testing.T) {
 	}
 }
 
+func TestLogsEmptyReturnsCleanEnvelope(test *testing.T) {
+	harness := New(test)
+	envelope, code := harness.Run(test, "logs")
+	AssertOK(test, envelope, code, "logs")
+}
+
+func TestLogsUnknownServiceExits2(test *testing.T) {
+	harness := New(test)
+	envelope, code := harness.Run(test, "logs", "--service", "bogus")
+	AssertError(test, envelope, code, 2)
+}
+
+func TestWorkspaceDoctorUnknownProjectExits2(test *testing.T) {
+	harness := New(test)
+	envelope, code := harness.Run(test, "workspace", "doctor", "ghost")
+	AssertError(test, envelope, code, 2)
+}
+
 func TestStateRepairThenShow(test *testing.T) {
 	harness := New(test)
 
@@ -196,6 +214,38 @@ func TestSetupSucceedsOnHardware(test *testing.T) {
 	harness := New(test)
 	envelope, code := harness.Run(test, "setup")
 	AssertOK(test, envelope, code, "setup")
+}
+
+// TestWorkspaceDoctorOnHardware covers AT §11.1 [S1]: a rootless service tier and
+// a microVM workspace. Off-hardware the command exits 3 (no msb) or 4 (no
+// virtualization); the rootless/privileged/microvm envelope is asserted only on a
+// provisioned host.
+func TestWorkspaceDoctorOnHardware(test *testing.T) {
+	if !hardwareAvailable() {
+		test.Skip("requires Docker + Microsandbox (msb) — runs on a provisioned Apple Silicon host")
+	}
+	requireGit(test)
+	harness := New(test)
+	harness.installTemplates(test)
+
+	created, code := harness.CreateProject(test, "doctor-test")
+	AssertOK(test, created, code, "project.create")
+
+	envelope, code := harness.Run(test, "workspace", "doctor", "doctor-test")
+	AssertOK(test, envelope, code, "workspace.doctor")
+	var data struct {
+		Runtime struct {
+			Rootless   bool `json:"rootless"`
+			Privileged bool `json:"privileged"`
+		} `json:"runtime"`
+		Workspace struct {
+			Kind string `json:"kind"`
+		} `json:"workspace"`
+	}
+	envelope.dataInto(test, &data)
+	if !data.Runtime.Rootless || data.Runtime.Privileged || data.Workspace.Kind != "microvm" {
+		test.Fatalf("workspace doctor posture: %+v", data)
+	}
 }
 
 // TestOverlayPersistsAcrossRecreation covers the [S4] persistence criterion
