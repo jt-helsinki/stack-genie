@@ -72,3 +72,42 @@ func TestMissingLayersOK(test *testing.T) {
 		test.Fatalf("expected empty config, got %+v", cfg)
 	}
 }
+
+func TestNetworkValidate(test *testing.T) {
+	valid := NetworkConfig{
+		EgressProxy:       "clawpatrol",
+		AllowHostServices: []HostService{{Host: "gateway", Port: 5432}},
+		PublishPorts:      []PortMapping{{Guest: 3000, Host: 3000}},
+	}
+	if err := valid.Validate(); err != nil {
+		test.Fatalf("valid network rejected: %v", err)
+	}
+
+	badPort := NetworkConfig{AllowHostServices: []HostService{{Port: 70000}}}
+	if err := badPort.Validate(); err == nil {
+		test.Fatal("expected out-of-range port to be rejected")
+	}
+
+	dupHost := NetworkConfig{PublishPorts: []PortMapping{{Guest: 3000, Host: 8080}, {Guest: 3001, Host: 8080}}}
+	if err := dupHost.Validate(); err == nil {
+		test.Fatal("expected duplicate host port to be rejected")
+	}
+}
+
+func TestResolveHostServices(test *testing.T) {
+	network := NetworkConfig{AllowHostServices: []HostService{
+		{Host: "gateway", Port: 5432},  // gateway token → resolved address
+		{Port: 6379},                   // empty host → resolved address
+		{Host: "10.0.0.5", Port: 9092}, // explicit host preserved
+	}}
+	resolved := network.ResolveHostServices("192.0.2.1")
+	want := []string{"192.0.2.1:5432", "192.0.2.1:6379", "10.0.0.5:9092"}
+	if len(resolved) != len(want) {
+		test.Fatalf("resolved = %v, want %v", resolved, want)
+	}
+	for index := range want {
+		if resolved[index] != want[index] {
+			test.Errorf("resolved[%d] = %q, want %q", index, resolved[index], want[index])
+		}
+	}
+}

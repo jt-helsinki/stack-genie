@@ -64,7 +64,28 @@ type Info struct {
 	Rootless       bool             `json:"rootless"`
 	Microsandbox   MicrosandboxInfo `json:"microsandbox"`
 	AIPlatformHost string           `json:"ai_platform_host"`
+	HostGateway    string           `json:"host_gateway"` // guest-visible host address (arch §29.2)
 	DetectedAt     string           `json:"detected_at"`
+}
+
+// HostAddress returns the address a workspace microVM uses to reach the host
+// (arch §29.2): the AI_PLATFORM_HOST environment override when set (e.g. the
+// acceptance harness), otherwise the resolved host gateway.
+func (info *Info) HostAddress() string {
+	if info.AIPlatformHost != "" {
+		return info.AIPlatformHost
+	}
+	return info.HostGateway
+}
+
+// HostGateway resolves the gateway address of Microsandbox's host-side userspace
+// network stack — the address a workspace reaches the host at (arch §29.2). The
+// concrete value is fixed by the Microsandbox network backend and is pinned from
+// the SDK during hardware bring-up and confirmed by a connectivity probe; until
+// then it reports ("", false). goos selects the backend (HVF/KVM/WSL2).
+func HostGateway(goos string) (address string, pinned bool) {
+	// Deferred: filled in by the §29.5 reachability spike on a provisioned host.
+	return "", false
 }
 
 // sandboxAdapter adapts a runtime.Prober to a sandbox.Prober.
@@ -88,12 +109,14 @@ func Detect(goos, goarch string, prober Prober, detectedAt string) (*Info, error
 	if !detectedSandbox.MsbInstalled {
 		return nil, ErrMsbMissing
 	}
+	hostGateway, _ := HostGateway(goos) // "" until pinned on hardware (§29.2)
 	return &Info{
 		SchemaVersion:  SchemaVersion,
 		Detected:       name,
 		Rootless:       rootless,
 		Microsandbox:   MicrosandboxInfo{Available: detectedSandbox.Available, Virtualization: detectedSandbox.Virtualization},
 		AIPlatformHost: os.Getenv("AI_PLATFORM_HOST"),
+		HostGateway:    hostGateway,
 		DetectedAt:     detectedAt,
 	}, nil
 }

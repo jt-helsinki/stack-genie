@@ -26,6 +26,7 @@ type Config struct {
 	Agent     AgentConfig     `yaml:"agent,omitempty" json:"agent,omitempty"`
 	Context   ContextConfig   `yaml:"context,omitempty" json:"context,omitempty"`
 	Workspace WorkspaceConfig `yaml:"workspace,omitempty" json:"workspace,omitempty"`
+	Network   NetworkConfig   `yaml:"network,omitempty" json:"network,omitempty"`
 	Agents    AgentsConfig    `yaml:"agents,omitempty" json:"agents,omitempty"`
 }
 
@@ -53,6 +54,30 @@ type WorkspaceConfig struct {
 	MemoryLimit string `yaml:"memory_limit,omitempty" json:"memory_limit,omitempty"`
 }
 
+// NetworkConfig configures the workspace's two local-dev networking directions
+// (arch §29.6). EgressProxy names the internet-egress firewall (ClawPatrol).
+// AllowHostServices is the plain-TCP allow-list of host services the workspace
+// may reach via the host gateway (e.g. a database). PublishPorts maps guest
+// ports to host ports so the host can reach a server inside the workspace.
+type NetworkConfig struct {
+	EgressProxy       string        `yaml:"egress_proxy,omitempty" json:"egress_proxy,omitempty"`
+	AllowHostServices []HostService `yaml:"allow_host_services,omitempty" json:"allow_host_services,omitempty"`
+	PublishPorts      []PortMapping `yaml:"publish_ports,omitempty" json:"publish_ports,omitempty"`
+}
+
+// HostService is one allow-listed host endpoint. Host defaults to "gateway" (the
+// §29.2 host-gateway address) when empty.
+type HostService struct {
+	Host string `yaml:"host,omitempty" json:"host,omitempty"`
+	Port int    `yaml:"port" json:"port"`
+}
+
+// PortMapping publishes a guest port to a host port (host → workspace, arch §29.6).
+type PortMapping struct {
+	Guest int `yaml:"guest" json:"guest"`
+	Host  int `yaml:"host" json:"host"`
+}
+
 type AgentsConfig struct {
 	ArchiveDays int  `yaml:"archive_days,omitempty" json:"archive_days,omitempty"`
 	ReuseAgents bool `yaml:"reuse_agents,omitempty" json:"reuse_agents,omitempty"`
@@ -67,8 +92,50 @@ func Default() *Config {
 		Agent:     AgentConfig{Tools: []string{"opencode"}, DefaultTool: "opencode"},
 		Context:   ContextConfig{MaxTokens: 64000, CompressionThreshold: 0.75, Strategy: "balanced", CavemanLevel: "full"},
 		Workspace: WorkspaceConfig{CPULimit: 4, MemoryLimit: "8G"},
+		Network:   NetworkConfig{EgressProxy: "clawpatrol"},
 		Agents:    AgentsConfig{ArchiveDays: 14, ReuseAgents: true},
 	}
+}
+
+// gatewayToken is the placeholder in a HostService.Host that resolves to the
+// §29.2 host-gateway address at workspace start.
+const gatewayToken = "gateway"
+
+// Validate checks the network block: ports in range and publish-host ports
+// unique. It returns the first problem found, or nil.
+func (network NetworkConfig) Validate() error {
+	for _, service := range network.AllowHostServices {
+		if service.Port < 1 || service.Port > 65535 {
+			return fmt.Errorf("network.allow_host_services: port %d out of range", service.Port)
+		}
+	}
+	seenHostPorts := map[int]bool{}
+	for _, mapping := range network.PublishPorts {
+		if mapping.Guest < 1 || mapping.Guest > 65535 || mapping.Host < 1 || mapping.Host > 65535 {
+			return fmt.Errorf("network.publish_ports: %d:%d out of range", mapping.Host, mapping.Guest)
+		}
+		if seenHostPorts[mapping.Host] {
+			return fmt.Errorf("network.publish_ports: host port %d mapped twice", mapping.Host)
+		}
+		seenHostPorts[mapping.Host] = true
+	}
+	return nil
+}
+
+// ResolveHostServices returns the allow-listed host endpoints as host:port
+// strings with the "gateway" token (or an empty host) replaced by the resolved
+// host-gateway address (arch §29.2, §29.6). This is what `ai workspace start`
+// feeds to the Microsandbox network policy.
+func (network NetworkConfig) ResolveHostServices(gateway string) []string {
+	resolved := make([]string, 0, len(network.AllowHostServices))
+	for _, service := range network.AllowHostServices {
+		host := service.Host
+		if host == "" || host == gatewayToken {
+			host = gateway
+		}
+		resolved = append(resolved, fmt.Sprintf("%s:%d", host, service.Port))
+	}
+	return resolved
 }
 
 // EnsureGlobalDefault writes the default global config.yaml if none exists yet.

@@ -40,6 +40,27 @@ real docs before wiring:
       `ai` (and/or `msb`) binary (Developer ID, not App Store). The M3 spike
       (plan §8.2) covers this plus a no-admin/no-kext networking check.
 
+### Networking reachability spike (do this first — arch §29.2, §29.5, §29.6)
+
+The host↔workspace networking is the biggest "will it actually work" unknown.
+Pin it before wiring the rest, and fill in `runtime.HostGateway(goos)` (currently
+returns `("", false)`):
+
+- [ ] **Pin the host gateway.** Find the gateway address of Microsandbox's
+      host-side userspace stack (the address the guest reaches the host at) from
+      the SDK; implement `runtime.HostGateway` to return it per `GOOS`, and have
+      `ai setup` persist it to `config/runtime.json` as `host_gateway`. `Info.HostAddress()`
+      already prefers the `AI_PLATFORM_HOST` env override, else this value.
+- [ ] **Prove the four properties** (these make "it works" + "egress is confined"
+      falsifiable):
+  1. a workspace reaches an **allow-listed** host service (start a host Postgres,
+     allow-list `gateway:5432`, connect from inside the microVM);
+  2. a **non-allow-listed** host/internet destination is **denied**;
+  3. a **published** guest port (`network.publish_ports`) is reachable from the host;
+  4. internet egress is still forced through **ClawPatrol** (the firewall).
+- [ ] Confirm the SDK calls for the allow-list + port maps, then implement the
+      `realSandbox.Create` network application below.
+
 ## 3. Implement the seams
 
 Each is a thin real impl that currently returns `ErrPending` / a stub.
@@ -52,8 +73,15 @@ Each is a thin real impl that currently returns `ErrPending` / a stub.
     Windows host, via `internal/hostpath`, Slice 7), attach the
     overlay named volume backed by the host `overlayPath` Create now receives
     (ensured by `internal/overlay`, §26), apply the **default-deny network policy**, inject
-    `AI_PLATFORM_HOST` + `HTTPS_PROXY`, and install the ClawPatrol **CA root** into
-    the workspace trust store (arch §17, §29). `Exec` returns a real `ExecResult`.
+    `AI_PLATFORM_HOST` (= `runtime.Info.HostAddress()`) + `HTTPS_PROXY`, and install
+    the ClawPatrol **CA root** into the workspace trust store (arch §17, §29).
+    `Exec` returns a real `ExecResult`.
+  - Apply the project's `network` block (arch §29.6, `config.NetworkConfig`):
+    add `network.allow_host_services` (resolved via `NetworkConfig.ResolveHostServices(hostGateway)`)
+    to the Microsandbox policy allow-list as **plain-TCP** endpoints (no ClawPatrol
+    TLS interception), and map `network.publish_ports` (host → guest) so the host
+    can reach a dev server in the workspace. ClawPatrol remains the sole internet-egress
+    firewall; the network policy only default-denies and forces egress to it.
 - [ ] **`internal/setup/setup_real.go`**
   - `realServices.Reconcile` → pull pinned images by digest (`config/versions.json`),
     run LiteLLM + Headroom with the rendered config via the detected runtime

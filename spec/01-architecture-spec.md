@@ -1324,12 +1324,26 @@ front of it (WG → local plaintext socket → gateway), preserving this propert
 
 ## 29.2 Host address — `AI_PLATFORM_HOST`
 
-Never hardcode `host.docker.internal`. The platform resolves the host address
-reachable from the microVM and injects it as `AI_PLATFORM_HOST`, together with
-each service port, into the workspace environment at start (§7, Ports). Trusted
-host services (Headroom, LiteLLM) are reached directly at `AI_PLATFORM_HOST`;
-all other egress goes through the WireGuard default route. The same config works
-on macOS, Linux, and WSL2.
+Never hardcode `host.docker.internal`. The workspace microVM reaches the host
+through the **gateway address of Microsandbox's host-side userspace network
+stack** — the slirp/gvproxy-family gateway through which every guest packet is
+already routed for DNS interception and policy (§29.1). The platform resolves
+that gateway once, persists it in `config/runtime.json` as `host_gateway`
+(`internal/runtime`), and injects it — with each service port — into the
+workspace environment as `AI_PLATFORM_HOST` at start (§7, Ports).
+
+The gateway address is fixed by the Microsandbox network backend, so it is
+**pinned from the Microsandbox SDK during hardware bring-up and confirmed by a
+connectivity probe** — never guessed. `runtime.HostGateway(goos)` is the resolver
+seam and `Info.HostAddress()` returns the `AI_PLATFORM_HOST` environment override
+when set (e.g. the acceptance harness) else the resolved gateway. The same
+mechanism works on macOS (HVF), Linux (KVM), and WSL2 — only the resolved value
+differs per backend.
+
+Trusted platform host services (Headroom, LiteLLM) are reached directly at
+`AI_PLATFORM_HOST:<port>`; all other internet egress goes through ClawPatrol
+(§29.3–29.4). Reaching *other* host-local services — a developer's database or
+message broker — is a separate, explicitly allow-listed zone (§29.6).
 
 ## 29.3 Reaching each component
 
@@ -1367,11 +1381,22 @@ on macOS, Linux, and WSL2.
 
 WireGuard provides the default route, but defense-in-depth requires that nothing
 can route *around* it. Each workspace microVM therefore also runs under a
-restricted Microsandbox **network policy** so the only reachable endpoints are
-(a) the WireGuard endpoint of the ClawPatrol gateway and (b) the trusted host
-service ports (`AI_PLATFORM_HOST`). Any other direct workspace-to-internet
+restricted Microsandbox **network policy**. The reachable set is exactly: (a) the
+ClawPatrol gateway (its WireGuard endpoint, or the forward proxy in the initial
+slice), (b) the trusted platform host services at `AI_PLATFORM_HOST` (Headroom,
+LiteLLM), and (c) any host-local services explicitly allow-listed in
+`network.allow_host_services` (§29.6). Any other direct workspace-to-internet
 connection is denied at the runtime, so a misconfigured tunnel fails closed
 rather than leaking uncredentialed, unaudited traffic (§30).
+
+**ClawPatrol is the single egress policy and credential authority — the
+firewall.** Microsandbox's host-side network stack can itself enforce policy and
+swap secrets, but the platform does **not** run it as a competing authority: it
+is configured only to default-deny and to force internet egress to ClawPatrol, so
+exactly one component holds allow/deny rules, credentials, and audit (§17, §30).
+The host-local-services zone (c) is the one exception to credential mediation —
+it is plain TCP that bypasses ClawPatrol's TLS interception (§29.6) — but it is
+still gated by this allow-list.
 
 This must work identically across all supported hosts.
 
@@ -1394,6 +1419,51 @@ final architecture regardless of phase, §1). It is delivered in two steps
 
 Both steps keep the §29.4 confinement guarantee; they differ only in whether
 non-proxy-aware traffic is *injected* or *denied*.
+
+Before either step is wired, a **reachability spike** pins the unknowns this
+section depends on (the host-gateway value of §29.2 and the SDK calls for policy
++ port maps). It must demonstrate, on a provisioned host, that: (1) a workspace
+reaches an **allow-listed** host service (e.g. Postgres) via the gateway; (2) a
+**non-allow-listed** host/internet destination is **denied**; (3) a **published**
+guest port is reachable from the host; and (4) internet egress is still forced
+through ClawPatrol. These four make the platform's two headline promises — *it
+works* and *it confines egress* — falsifiable. (Tracked in `docs/HARDWARE-BRINGUP.md`.)
+
+## 29.6 Host-local services and published ports
+
+A workspace is behind the userspace network stack's NAT (§29.1), so the two
+"local development" directions are **explicit, not automatic**:
+
+**Workspace → host-local service (database, message broker, …).** Microsandbox's
+default posture does not expose the host's private network to the guest, so a
+workspace cannot reach a host-resident Postgres / Redis / Kafka unless it is
+**allow-listed by `host:port`**. These connections are made to the gateway
+address (§29.2) and are **plain TCP — they do not traverse ClawPatrol's TLS
+interception**: the wire protocols are not HTTPS and there is no provider key to
+swap (a service's own credential, if brokered, is injected at that protocol's
+auth layer, not by TLS MITM). They remain gated by the allow-list — anything not
+listed is denied (§29.4). This is a distinct trust zone from internet egress.
+
+**Host → workspace (a dev server running in the workspace).** Because the guest
+is NAT'd, the host cannot address it directly; a guest port must be **published**
+to a host port (the microVM equivalent of `-p`), after which the host reaches it
+at `localhost:<host_port>`. Publishing is declared per project, never implicit.
+
+Both are configured in the project/global `network` block (repo-layout §12.4):
+
+```yaml
+network:
+  egress_proxy: clawpatrol            # internet egress → the firewall (§29.4)
+  allow_host_services:                # plain-TCP allow-list, reached via the gateway
+    - { host: gateway, port: 5432 }   #   e.g. host Postgres
+    - { host: gateway, port: 6379 }   #   e.g. host Redis
+  publish_ports:                      # host → workspace
+    - { guest: 3000, host: 3000 }
+```
+
+`ai workspace start` translates this block into Microsandbox network-policy
+allow-list entries and port maps via the SDK (deferred to hardware bring-up; the
+`gateway` token resolves to the §29.2 host gateway).
 
 ---
 

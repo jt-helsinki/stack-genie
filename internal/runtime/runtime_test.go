@@ -221,3 +221,26 @@ func TestLoadMissingReturnsNil(test *testing.T) {
 		test.Fatalf("missing runtime.json should be (nil,nil), got (%+v,%v)", loaded, err)
 	}
 }
+
+func TestHostAddressPrefersEnvOverride(test *testing.T) {
+	// The AI_PLATFORM_HOST override (e.g. the acceptance harness) wins.
+	withOverride := &Info{AIPlatformHost: "127.0.0.1", HostGateway: "192.0.2.1"}
+	if got := withOverride.HostAddress(); got != "127.0.0.1" {
+		test.Errorf("override host = %q, want 127.0.0.1", got)
+	}
+	// Otherwise the resolved gateway is used.
+	gatewayOnly := &Info{HostGateway: "192.0.2.1"}
+	if got := gatewayOnly.HostAddress(); got != "192.0.2.1" {
+		test.Errorf("gateway host = %q, want 192.0.2.1", got)
+	}
+}
+
+func TestHostGatewayDeferredUntilHardware(test *testing.T) {
+	// The concrete gateway is pinned from the Microsandbox SDK on hardware; until
+	// then it is reported unpinned so callers fall back to the env override.
+	for _, goos := range []string{"darwin", "linux", "windows"} {
+		if address, pinned := HostGateway(goos); pinned || address != "" {
+			test.Errorf("HostGateway(%q) = (%q,%v), want (\"\",false) pre-hardware", goos, address, pinned)
+		}
+	}
+}
