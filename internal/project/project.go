@@ -14,8 +14,10 @@ import (
 
 	"github.com/jt-helsinki/ideal-robot/internal/config"
 	"github.com/jt-helsinki/ideal-robot/internal/envimage"
+	"github.com/jt-helsinki/ideal-robot/internal/overlay"
 	"github.com/jt-helsinki/ideal-robot/internal/paths"
 	"github.com/jt-helsinki/ideal-robot/internal/state"
+	"github.com/jt-helsinki/ideal-robot/internal/workspace"
 	"gopkg.in/yaml.v3"
 )
 
@@ -211,6 +213,12 @@ func Delete(name string, purge bool) error {
 		if err := os.RemoveAll(filepath.Join(entry.Path, ".ai-platform", "run")); err != nil {
 			return err
 		}
+	}
+
+	// Permanent removal: drop the project's persistent overlay (arch §26).
+	// Unlike `ai workspace destroy`, deleting the project removes the overlay.
+	if err := overlay.Remove(workspace.Name(name)); err != nil {
+		return err
 	}
 
 	delete(index.Projects, name)

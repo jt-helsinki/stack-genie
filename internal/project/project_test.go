@@ -7,8 +7,10 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/jt-helsinki/ideal-robot/internal/overlay"
 	"github.com/jt-helsinki/ideal-robot/internal/state"
 	"github.com/jt-helsinki/ideal-robot/internal/templates"
+	"github.com/jt-helsinki/ideal-robot/internal/workspace"
 )
 
 func withTemplates(test *testing.T) {
@@ -134,6 +136,26 @@ func TestDeletePurgeRemovesSource(test *testing.T) {
 	}
 	if _, err := os.Stat(root); !os.IsNotExist(err) {
 		test.Errorf("--purge should remove the source tree, got %v", err)
+	}
+}
+
+func TestDeleteRemovesOverlay(test *testing.T) {
+	withTemplates(test)
+	if _, err := Scaffold(sampleSpec(), "t"); err != nil {
+		test.Fatal(err)
+	}
+	// Simulate a provisioned workspace's persistent overlay.
+	workspaceID := workspace.Name("my-app")
+	if _, err := overlay.Ensure(workspaceID); err != nil {
+		test.Fatal(err)
+	}
+	if err := Delete("my-app", false); err != nil {
+		test.Fatal(err)
+	}
+	// Deleting the project is permanent removal (arch §26): the overlay goes too.
+	present, err := overlay.Exists(workspaceID)
+	if err != nil || present {
+		test.Fatalf("delete should remove the overlay: present=%v err=%v", present, err)
 	}
 }
 

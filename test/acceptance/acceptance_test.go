@@ -196,3 +196,34 @@ func TestSetupSucceedsOnHardware(test *testing.T) {
 	envelope, code := harness.Run(test, "setup")
 	AssertOK(test, envelope, code, "setup")
 }
+
+// TestOverlayPersistsAcrossRecreation covers the [S4] persistence criterion
+// (arch §26): a program installed inside the workspace, plus agent state written
+// outside the project mount, must survive `ai workspace destroy` + `start`. This
+// needs a real microVM, so it runs only on a provisioned host.
+func TestOverlayPersistsAcrossRecreation(test *testing.T) {
+	if !hardwareAvailable() {
+		test.Skip("requires Docker + Microsandbox (msb) — runs on a provisioned Apple Silicon host")
+	}
+	requireGit(test)
+	harness := New(test)
+	harness.installTemplates(test)
+
+	created, code := harness.CreateProject(test, "overlay-test")
+	AssertOK(test, created, code, "project.create")
+
+	start, code := harness.Run(test, "workspace", "start", "--project", "overlay-test")
+	AssertOK(test, start, code, "workspace.start")
+
+	// Write a marker outside the project mount; it must land in the overlay.
+	mark, code := harness.Run(test, "workspace", "exec", "--project", "overlay-test", "--", "sh", "-c", "echo persisted > /root/marker")
+	AssertOK(test, mark, code, "workspace.exec")
+
+	destroy, code := harness.Run(test, "workspace", "destroy", "--project", "overlay-test")
+	AssertOK(test, destroy, code, "workspace.destroy")
+	restart, code := harness.Run(test, "workspace", "start", "--project", "overlay-test")
+	AssertOK(test, restart, code, "workspace.start")
+
+	check, code := harness.Run(test, "workspace", "exec", "--project", "overlay-test", "--", "cat", "/root/marker")
+	AssertOK(test, check, code, "workspace.exec")
+}

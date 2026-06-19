@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 
+	"github.com/jt-helsinki/ideal-robot/internal/overlay"
 	"github.com/jt-helsinki/ideal-robot/internal/state"
 )
 
@@ -37,9 +38,10 @@ type Builder interface {
 }
 
 // Sandbox drives Microsandbox microVMs (Go SDK / msb). The real impl is wired on
-// a provisioned host.
+// a provisioned host. Create mounts the read-only image, the host project
+// source, and the persistent overlay (arch §26) as a named volume.
 type Sandbox interface {
-	Create(name, imageRef, projectMount string) error
+	Create(name, imageRef, projectMount, overlayPath string) error
 	Start(name string) error
 	Stop(name string) error
 	Destroy(name string) error
@@ -78,7 +80,14 @@ func (manager Manager) Start(project string) (*state.Workspace, error) {
 	if err := manager.Builder.Build(root, imageRef); err != nil {
 		return nil, err
 	}
-	if err := manager.Sandbox.Create(name, imageRef, root); err != nil {
+	// Ensure the persistent overlay before create so installs + agent state
+	// survive restart/recreation (arch §26). Re-ensuring re-uses the same
+	// directory, so a recreated workspace keeps its prior contents.
+	overlayPath, err := overlay.Ensure(name)
+	if err != nil {
+		return nil, err
+	}
+	if err := manager.Sandbox.Create(name, imageRef, root, overlayPath); err != nil {
 		return nil, err
 	}
 	if err := manager.Sandbox.Start(name); err != nil {

@@ -42,6 +42,16 @@ func LogsDir() (string, error) {
 	return filepath.Join(p, "logs"), nil
 }
 
+// OverlaysDir is ~/.ai-platform/overlays — per-workspace persistent overlays
+// (arch §26). Host-local persistence, not git material and not a backup.
+func OverlaysDir() (string, error) {
+	p, err := PlatformDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(p, "overlays"), nil
+}
+
 // ProjectsDir is ~/projects — host-backed project source.
 func ProjectsDir() (string, error) {
 	h, err := Home()

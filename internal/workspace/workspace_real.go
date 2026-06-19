@@ -39,10 +39,10 @@ func (sandbox realSandbox) ensureInstalled() error {
 	return nil
 }
 
-func (sandbox realSandbox) Create(string, string, string) error { return sandbox.pending() }
-func (sandbox realSandbox) Start(string) error                  { return sandbox.pending() }
-func (sandbox realSandbox) Stop(string) error                   { return sandbox.pending() }
-func (sandbox realSandbox) Destroy(string) error                { return sandbox.pending() }
+func (sandbox realSandbox) Create(string, string, string, string) error { return sandbox.pending() }
+func (sandbox realSandbox) Start(string) error                          { return sandbox.pending() }
+func (sandbox realSandbox) Stop(string) error                           { return sandbox.pending() }
+func (sandbox realSandbox) Destroy(string) error                        { return sandbox.pending() }
 
 func (sandbox realSandbox) Exec(string, []string) (ExecResult, error) {
 	if err := sandbox.ensureInstalled(); err != nil {

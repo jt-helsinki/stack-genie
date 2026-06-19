@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/jt-helsinki/ideal-robot/internal/overlay"
 	"github.com/jt-helsinki/ideal-robot/internal/state"
 )
 
@@ -20,14 +21,19 @@ func (builder *fakeBuilder) Build(string, string) error {
 
 type fakeSandbox struct {
 	created, started, stopped, destroyed bool
+	overlayMount                         string
 	execResult                           ExecResult
 	execErr                              error
 }
 
-func (sandbox *fakeSandbox) Create(string, string, string) error { sandbox.created = true; return nil }
-func (sandbox *fakeSandbox) Start(string) error                  { sandbox.started = true; return nil }
-func (sandbox *fakeSandbox) Stop(string) error                   { sandbox.stopped = true; return nil }
-func (sandbox *fakeSandbox) Destroy(string) error                { sandbox.destroyed = true; return nil }
+func (sandbox *fakeSandbox) Create(_, _, _, overlayPath string) error {
+	sandbox.created = true
+	sandbox.overlayMount = overlayPath
+	return nil
+}
+func (sandbox *fakeSandbox) Start(string) error   { sandbox.started = true; return nil }
+func (sandbox *fakeSandbox) Stop(string) error    { sandbox.stopped = true; return nil }
+func (sandbox *fakeSandbox) Destroy(string) error { sandbox.destroyed = true; return nil }
 func (sandbox *fakeSandbox) Exec(string, []string) (ExecResult, error) {
 	return sandbox.execResult, sandbox.execErr
 }
@@ -72,6 +78,14 @@ func TestStartBuildsAndRecordsStartedHandle(test *testing.T) {
 	}
 	if handle.ID != "aip-app" || handle.Status != state.StatusStarted {
 		test.Fatalf("handle: %+v", handle)
+	}
+	// Start must ensure the persistent overlay and mount it (arch §26).
+	present, err := overlay.Exists("aip-app")
+	if err != nil || !present {
+		test.Fatalf("overlay not ensured: present=%v err=%v", present, err)
+	}
+	if sandbox.overlayMount == "" {
+		test.Fatal("overlay path not passed to Sandbox.Create")
 	}
 	workspaces, err := state.OpenStore(root).ListWorkspaces()
 	if err != nil || len(workspaces) != 1 || workspaces[0].Status != state.StatusStarted {
@@ -119,5 +133,23 @@ func TestDestroyIsNonDestructiveAndRecordsStatus(test *testing.T) {
 	workspaces, _ := state.OpenStore(root).ListWorkspaces()
 	if len(workspaces) != 1 || workspaces[0].Status != state.StatusDestroyed {
 		test.Fatalf("status not recorded destroyed: %+v", workspaces)
+	}
+}
+
+func TestDestroyKeepsOverlayForRecovery(test *testing.T) {
+	seedProject(test, "app")
+	manager := newManager(&fakeBuilder{}, &fakeSandbox{})
+
+	if _, err := manager.Start("app"); err != nil {
+		test.Fatal(err)
+	}
+	if err := manager.Destroy("app"); err != nil {
+		test.Fatal(err)
+	}
+	// Destroy is non-destructive (arch §26): the overlay survives so a later
+	// `start` fully recovers the workspace.
+	present, err := overlay.Exists("aip-app")
+	if err != nil || !present {
+		test.Fatalf("destroy must keep the overlay: present=%v err=%v", present, err)
 	}
 }
