@@ -118,10 +118,11 @@ purposes:
 Host Layer
  ├─ Microsandbox microVM runtime (libkrun)         ← workspaces
  │   └─ Sandbox Layer (workspace microVM)
- │       └─ AI Tooling Layer (OpenCode / Claude Code / Codex / Gemini CLI — selected per env)
+ │       ├─ AI Tooling Layer (OpenCode / Claude Code / Codex / Gemini CLI — selected per env)
+ │       └─ Context Optimization (Headroom proxy + Caveman skill — per project, §8–10)
  │
  └─ Container Runtime (Docker / Podman)            ← service tier
-     └─ container-tier services (LiteLLM · Headroom · Ollama)
+     └─ container-tier services (LiteLLM · Ollama)
 ```
 
 Workspaces are **microVMs** (hardware isolation), not containers. The
@@ -131,15 +132,17 @@ workspaces.
 Host services (run on the host, not inside a workspace):
 
 ```text
-LiteLLM (Model Layer) · Headroom · Ollama   — container tier (Docker/Podman)
+LiteLLM (Model Layer) · Ollama              — container tier (Docker/Podman)
 ClawPatrol (Secrets Layer)                  — native (OS service)
 Microsandbox                                — microVM runtime, driven by the `ai` CLI via the Go SDK / `msb` (no daemon)
 ```
 
-(The model-request path below involves the LiteLLM/ClawPatrol/Headroom subset;
-Ollama is a container-tier service too — see §5. Microsandbox is not a
-long-running service: it is invoked directly to create and drive workspace
-microVMs.)
+Headroom is **not** a host service — it runs per project inside the workspace
+(§8–10), so it is listed under the Sandbox Layer above, not here.
+
+(The model-request path below involves the LiteLLM/ClawPatrol subset; Ollama is a
+container-tier service too — see §5. Microsandbox is not a long-running service:
+it is invoked directly to create and drive workspace microVMs.)
 
 The Project Layer is the top-level, user-facing artifact: host-stored source
 under `~/projects/<project>` mounted into the workspace.
@@ -156,9 +159,10 @@ Provider
 
 Context Optimization sits *between* the agent and the model (not above the AI
 Tooling), and the Secrets Layer sits on the wire *between* the model and the
-provider. The agent reaches Headroom across the microVM boundary via
-`AI_PLATFORM_HOST`; the Headroom → LiteLLM → ClawPatrol → provider hops are
-host-side. See Sections 8–9 (context optimization), 17 (secrets), and
+provider. Headroom runs **inside the workspace** wrapping the agent, so it
+compresses at the source; it then forwards to LiteLLM on the host across the
+microVM boundary via `AI_PLATFORM_HOST`, and the LiteLLM → ClawPatrol → provider
+hops are host-side. See Sections 8–9 (context optimization), 17 (secrets), and
 **29 (the full per-component networking model)** for detail.
 
 ---
@@ -259,10 +263,11 @@ project.
 
 ## Host Services Control Plane
 
-The platform's host services — LiteLLM, ClawPatrol, Headroom, and (optional)
-Ollama — plus the Microsandbox microVM runtime are installed, configured, and
-supervised by the `ai` CLI. The CLI is the **single control plane**: the user
-never invokes `docker compose`, `msb`, `launchctl`, or `systemctl` directly.
+The platform's host services — LiteLLM, ClawPatrol, and (optional) Ollama — plus
+the Microsandbox microVM runtime are installed, configured, and supervised by the
+`ai` CLI. The CLI is the **single control plane**: the user never invokes
+`docker compose`, `msb`, `launchctl`, or `systemctl` directly. (Headroom is not a
+host service — it is installed per project in the workspace image, §8–10.)
 
 ### One Tool, Uniform Lifecycle
 
@@ -282,7 +287,6 @@ ai logs --service <svc>      one log surface
 | Service | Run mode | Why |
 |---|---|---|
 | LiteLLM | container (via Runtime) | HTTP only; no host privileges |
-| Headroom | container (via Runtime) | HTTP proxy; no host privileges |
 | Ollama (optional) | container (via Runtime) on all platforms | uniform deployment; CPU-only on macOS (Docker has no GPU passthrough) |
 | ClawPatrol | native (OS service) | terminates the workspace WireGuard tunnel (in user space) + injects credentials on the wire (§17, §29) |
 | Microsandbox | microVM runtime, invoked on demand | drives workspace microVMs via the Go SDK / `msb`; no daemon to supervise (§7) |
@@ -333,7 +337,7 @@ The platform uses two runtimes for two purposes.
 
 ## 6.1 Container Runtime (service tier)
 
-Used for the stateless container-tier services (LiteLLM, Headroom, Ollama).
+Used for the stateless container-tier services (LiteLLM and, optionally, Ollama).
 
 Supported runtimes (end-state):
 
@@ -490,8 +494,9 @@ host  ~/.ai-platform/agents,skills,   →  workspace  (shared resources) (read-o
 
 ### Ports
 
-Workspace microVMs reach host services (LiteLLM, Headroom, ClawPatrol) via
-`AI_PLATFORM_HOST` (§29) — never `host.docker.internal`. The platform injects
+Workspace microVMs reach host services (LiteLLM, ClawPatrol) via
+`AI_PLATFORM_HOST` (§29) — never `host.docker.internal`. (Headroom is not a host
+service; it runs inside the workspace and forwards to LiteLLM, §10.) The platform injects
 `AI_PLATFORM_HOST` and the service ports into the workspace environment at
 start. The workspace has a virtual NIC whose default route is a WireGuard tunnel
 to the ClawPatrol gateway, so all external egress is confined to the broker
@@ -584,17 +589,21 @@ output-side complement to Headroom.
 
 ## Context Optimization Workflow
 
-Headroom is an interception proxy on the request path; Caveman is a
-generation-steering skill loaded in the agent. Headroom shrinks what goes
-*in*; Caveman shrinks what comes *out*.
+Headroom and Caveman are the two **per-project, in-workspace** halves of context
+optimization. Headroom is a local interception proxy wrapping the agent; Caveman
+is a generation-steering skill loaded in the agent. Headroom shrinks what goes
+*in*; Caveman shrinks what comes *out*. Both are configured per project (§9) and
+neither is a host service.
 
 ```text
+   workspace microVM                                   │ host
+   ─────────────────                                   │
         Caveman skill (loaded in agent → steers terse generation)
-                              │
-                              ▼
-  Agent ── full context ──► Headroom ──► LiteLLM ──► Model
-    ▲          (compresses input context)             │
-    └──────────── compact output (Caveman-steered) ───┘
+                              │                        │
+                              ▼                        │
+  Agent ── full context ──► Headroom ──compressed──►   │  LiteLLM ──► ClawPatrol ──► Model
+    ▲       (compresses input at the source)           │                │
+    └──────────── compact output (Caveman-steered) ────┼────────────────┘
 ```
 
 ---
@@ -603,9 +612,12 @@ generation-steering skill loaded in the agent. Headroom shrinks what goes
 
 Headroom manages context budgets.
 
-Headroom runs **on the host** as a proxy on the model-request path, in front of
-LiteLLM. It is not installed inside workspaces — every request from a workspace
-agent traverses the host Headroom proxy before reaching the model.
+Headroom runs **inside each workspace** as a local proxy that wraps the agent CLI
+(installed in the workspace image, §25). The agent points at local Headroom,
+which compresses input at the source and forwards to LiteLLM on the host
+(`AI_PLATFORM_HOST`). It is per project — it reads that project's
+`context.strategy` (§9) — and is not a host service. (Headroom also offers
+library and MCP modes; the proxy mode is the platform default.)
 
 The Github repository is found at:
 
@@ -682,12 +694,14 @@ the project rather than a fixed, baked-in surface. The **default agent** — whi
 CLI new agents use unless told otherwise — is recorded as `agent.default_tool`
 (repo-layout §12.4) and must be one of the installed CLIs (default OpenCode).
 
-Not baked into the image:
+Context optimization (§8–10), per project:
 
-* **Caveman** — seeded per project into `<project>/.ai-platform/skills/caveman/`
-  at project creation and **git-tracked** (an agent skill, not an image concern;
-  see §9), so it travels with the project and is independent of the image
-* **Headroom** — runs on the host as a proxy on the model-request path (§10)
+* **Headroom** — input compression, **installed in the workspace image** as a
+  local proxy that wraps the agent CLI (like the agent CLIs above). It reads the
+  project's `context.strategy`.
+* **Caveman** — output compression, **not** baked into the image: seeded per
+  project into `<project>/.ai-platform/skills/caveman/` at creation and
+  **git-tracked** (an agent skill, see §9), so it travels with the project.
 
 MCP servers are configured and run by the agent itself (the platform does not
 manage MCP).
@@ -728,13 +742,14 @@ agent:
 
 # 14. Model Layer
 
-All model access flows through LiteLLM. On the full path, Headroom compresses
-the request before LiteLLM, and ClawPatrol injects credentials on the wire
-between LiteLLM and the provider.
+All model access flows through LiteLLM. On the full path, the in-workspace
+Headroom proxy compresses the request before it leaves the workspace for LiteLLM,
+and ClawPatrol injects credentials on the wire between LiteLLM and the provider.
 
 ```text
 Agent
- ↓  (Headroom compresses input)
+ ↓  (in-workspace Headroom compresses input)
+ ╎  microVM boundary → AI_PLATFORM_HOST
 LiteLLM
  ↓  (ClawPatrol injects credentials on the wire)
 Provider
@@ -1348,33 +1363,34 @@ when set (e.g. the acceptance harness) else the resolved gateway. The same
 mechanism works on macOS (HVF), Linux (KVM), and WSL2 — only the resolved value
 differs per backend.
 
-Trusted platform host services (Headroom, LiteLLM) are reached directly at
-`AI_PLATFORM_HOST:<port>`; all other internet egress goes through ClawPatrol
-(§29.3–29.4). Reaching *other* host-local services — a developer's database or
-message broker — is a separate, explicitly allow-listed zone (§29.6).
+The trusted platform host service (LiteLLM) is reached directly at
+`AI_PLATFORM_HOST:<port>` — the in-workspace Headroom proxy forwards to it; all
+other internet egress goes through ClawPatrol (§29.3–29.4). Reaching *other*
+host-local services — a developer's database or message broker — is a separate,
+explicitly allow-listed zone (§29.6).
 
 ## 29.3 Reaching each component
 
 ```text
-                          workspace microVM (virtio-net + wg0)
-                                 │
-        ┌────────────────────────┼───────────────────────────────┐
-        │ trusted host services  │  default route = WireGuard     │
-        ▼ (direct, AI_PLATFORM_HOST)                ▼ (all other egress, L3)
-   Headroom ──► LiteLLM ──► ClawPatrol gateway ──►  ClawPatrol gateway
-                  │           (injects provider          (injects creds,
-                  ▼            credential on egress)       enforces policy)
-              [Ollama]                                        ▼
-                                                         git / MCP / web
+              workspace microVM (virtio-net + wg0)
+       ┌─────────────────────────────┐
+       │ agent ──► Headroom (local)   │   default route = WireGuard
+       └───────────────│─────────────┘   (all other egress, L3)
+        trusted host svc│ (direct, AI_PLATFORM_HOST)        │
+                        ▼                                   ▼
+                   LiteLLM ──► ClawPatrol gateway ──►  ClawPatrol gateway
+                      │         (injects provider          (injects creds,
+                      ▼          credential on egress)       enforces policy)
+                  [Ollama]                                      ▼
+                                                          git / MCP / web
 ```
 
-* **Model requests** — the in-workspace agent sends the request to **Headroom**
-  at `AI_PLATFORM_HOST:<headroom_port>` (input compression), which forwards to
-  **LiteLLM** (routing). LiteLLM's egress to the provider passes through the
-  **ClawPatrol** gateway, which swaps the placeholder provider key for the real
-  one on the wire (§17). Headroom → LiteLLM → ClawPatrol → provider are all
-  host-side hops (loopback / container-runtime network), not across the microVM
-  boundary.
+* **Model requests** — the in-workspace agent sends the request to its **local
+  Headroom** proxy (input compression, in the workspace), which forwards across
+  the microVM boundary to **LiteLLM** at `AI_PLATFORM_HOST` (routing). LiteLLM's
+  egress to the provider passes through the **ClawPatrol** gateway, which swaps
+  the placeholder provider key for the real one on the wire (§17). The
+  LiteLLM → ClawPatrol → provider hops are host-side.
 * **Ollama** — never reached directly by the workspace. It is a container-tier
   service (§16) that **LiteLLM** calls host-side; the agent only ever talks to
   LiteLLM. (Ollama is not a credentialed egress, so it does not traverse
@@ -1391,8 +1407,8 @@ WireGuard provides the default route, but defense-in-depth requires that nothing
 can route *around* it. Each workspace microVM therefore also runs under a
 restricted Microsandbox **network policy**. The reachable set is exactly: (a) the
 ClawPatrol gateway (its WireGuard endpoint, or the forward proxy in the initial
-slice), (b) the trusted platform host services at `AI_PLATFORM_HOST` (Headroom,
-LiteLLM), and (c) any host-local services explicitly allow-listed in
+slice), (b) the trusted platform host service at `AI_PLATFORM_HOST` (LiteLLM —
+reached by the in-workspace Headroom proxy), and (c) any host-local services explicitly allow-listed in
 `network.allow_host_services` (§29.6). Any other direct workspace-to-internet
 connection is denied at the runtime, so a misconfigured tunnel fails closed
 rather than leaking uncredentialed, unaudited traffic (§30).

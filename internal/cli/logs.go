@@ -11,8 +11,10 @@ import (
 	"github.com/spf13/cobra"
 )
 
-// logServices is the set accepted by `ai logs --service` (CLI §13.1).
-var logServices = []string{"microsandbox", "litellm", "clawpatrol", "headroom", "ollama"}
+// logServices is the host services accepted by `ai logs --service` (CLI §13.1).
+// Headroom is not here — it runs in the workspace, so its logs come via
+// --workspace, not as a host service.
+var logServices = []string{"microsandbox", "litellm", "clawpatrol", "ollama"}
 
 // tailLines is how many trailing lines `--tail` keeps per source.
 const tailLines = 200

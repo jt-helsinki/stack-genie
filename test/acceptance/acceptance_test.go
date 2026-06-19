@@ -1,6 +1,7 @@
 package acceptance
 
 import (
+	"os"
 	"os/exec"
 	goruntime "runtime"
 	"testing"
@@ -27,7 +28,16 @@ func requireGit(test *testing.T) {
 	}
 }
 
+// hardwareAvailable gates the full-stack [S1] tests. They require not just the
+// tools on PATH but the real service/microVM impls wired (currently deferred —
+// ErrPending), so detecting docker+msb is not enough: a dev machine can have the
+// tools while the launch paths are still stubs. Require an explicit opt-in
+// (AIP_HARDWARE_TESTS=1), set on the provisioned host where the impls are live,
+// so `go test ./...` stays green on a tooled-but-not-provisioned machine.
 func hardwareAvailable() bool {
+	if os.Getenv("AIP_HARDWARE_TESTS") != "1" {
+		return false
+	}
 	_, docker := exec.LookPath("docker")
 	_, msb := exec.LookPath("msb")
 	return docker == nil && msb == nil

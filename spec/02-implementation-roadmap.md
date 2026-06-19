@@ -186,7 +186,7 @@ Introduce Headroom + Caveman.
 
 ## Scope
 
-* Headroom context management (input compression) — host proxy
+* Headroom context management (input compression) — per-project proxy in the workspace
 * Caveman output compression — in-agent skill
 
 (No platform memory system — agent memory is the agent's concern, architecture
@@ -389,14 +389,14 @@ one Microsandbox microVM per workspace (hardware isolation, libkrun)
 ```
 
 The container runtime (Docker/Podman) is used only for the service tier
-(LiteLLM, Headroom, Ollama), never to run a workspace.
+(LiteLLM, Ollama), never to run a workspace.
 
 ---
 
 ## 9.5 Networking
 
 * microVM has a virtual NIC (virtio-net + gvproxy, userspace); no `host.docker.internal`, no host Docker socket
-* AI_PLATFORM_HOST abstraction for reaching trusted host services (Headroom, LiteLLM)
+* AI_PLATFORM_HOST abstraction for reaching trusted host services (LiteLLM)
 * cross-platform resolution
 * Ollama reached only via LiteLLM, never directly by the workspace
 * egress is broker-mediated, delivered in two phases:

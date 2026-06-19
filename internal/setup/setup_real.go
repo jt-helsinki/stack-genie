@@ -9,11 +9,12 @@ import (
 	"github.com/jt-helsinki/ideal-robot/internal/runtime"
 )
 
-// desiredServices is the host-service set (arch §5). Headroom (input compression,
-// Slice 2) joins the container tier; Ollama only when enabled.
+// desiredServices is the host-service set (arch §5): LiteLLM (gateway, container)
+// and ClawPatrol (firewall, native); Ollama only when enabled. Context
+// optimization is NOT here — Headroom (input compression) runs per-project inside
+// the workspace alongside the Caveman skill (arch §8–10), not as a host service.
 var desiredServices = []struct{ Name, Mode string }{
 	{"litellm", "container"},
-	{"headroom", "container"},
 	{"clawpatrol", "native"},
 }
 

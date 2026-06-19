@@ -16,9 +16,9 @@ import (
 var consoles = map[string]string{
 	"litellm":      "http://localhost:4000/ui", // LiteLLM admin UI (keys, usage, logs)
 	"clawpatrol":   "http://127.0.0.1:8080",    // ClawPatrol firewall dashboard
-	"headroom":     "",                         // input-compression proxy, no console
 	"ollama":       "",                         // HTTP API on :11434, no console UI
 	"microsandbox": "",                         // microVM runtime, no console
+	// Headroom is not a host service — it runs per-project in the workspace.
 }
 
 // Known reports whether name is a recognized host service.

@@ -84,11 +84,18 @@ Each is a thin real impl that currently returns `ErrPending` / a stub.
     firewall; the network policy only default-denies and forces egress to it.
 - [ ] **`internal/setup/setup_real.go`**
   - `realServices.Reconcile` → pull pinned images by digest (`config/versions.json`),
-    run LiteLLM + Headroom with the rendered config via the detected runtime
+    run LiteLLM with the rendered config via the detected runtime
     (`runtime.ContainerRuntime.RunArgs`, docker|podman — not hardcoded), start the
     ClawPatrol gateway (native, register with launchd), optional Ollama; health-poll.
+    (Headroom is NOT a host service — see the workspace item below.)
   - `realServices.Status` → real probes (`<rt> ps`, gateway `/health`, …).
   - `realCA.Ensure` → generate the ClawPatrol CA (verified CLI from step 2).
+- [ ] **In-workspace Headroom wiring** (arch §8–10) — verify the
+  `internal/templates/files/contextopt/headroom/Dockerfile.snippet` install
+  (`pip install headroom-ai[proxy]`) on each OS, then wire the workspace runtime
+  so the agent CLI routes through local Headroom (`headroom proxy`, default
+  `:8787`) which upstreams to LiteLLM at `AI_PLATFORM_HOST`, applying the
+  project's `context.strategy`. Pin the Headroom version in `config/versions.json`.
 - [ ] **`internal/secrets/secrets_real.go`**
   - `realBroker.Set/Map/Remove/List` → ClawPatrol credential CLI. Keep values out
     of platform disk; `List` returns names/metadata only.

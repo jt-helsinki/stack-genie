@@ -198,7 +198,6 @@ runtime.json             # detected runtime, platform-global (§12.5)
 versions.json            # pinned versions/digests of host services (§12.6)
 projects.json            # index: project name → path (§12.7)
 litellm/                 # rendered LiteLLM config (placeholders only)
-headroom/                # rendered Headroom config
 microsandbox/            # rendered Microsandbox workspace defaults (image, mounts, limits)
 clawpatrol/              # rendered gateway HCL (NOT the credential store)
 ollama/                  # rendered Ollama config (when enabled)
@@ -571,7 +570,7 @@ workspace:
     "microsandbox": { "mode": "native",    "version": "v0.x", "sha256": "..." },
     "clawpatrol":   { "mode": "native",    "version": "v0.x", "sha256": "..." },
     "litellm":      { "mode": "container", "image": "ghcr.io/berriai/litellm", "digest": "sha256:..." },
-    "headroom":     { "mode": "container", "image": "ghcr.io/chopratejas/headroom", "digest": "sha256:..." },
+    "headroom":     { "mode": "workspace", "version": "..." },
     "ollama":       { "mode": "container", "image": "docker.io/ollama/ollama", "digest": "sha256:...", "enabled": false }
   }
 }

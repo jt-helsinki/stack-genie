@@ -26,6 +26,14 @@ func Compose(osKey string, stacks, agentCLIs []string) (string, error) {
 	builder.WriteString(strings.TrimRight(base, "\n"))
 	builder.WriteString("\n")
 
+	// Headroom (input compression) is installed in every workspace — it is core
+	// context optimization, not an optional stack (arch §8–10).
+	headroom, err := templates.HeadroomSnippet()
+	if err != nil {
+		return "", fmt.Errorf("headroom: %w", err)
+	}
+	appendSection(&builder, headroom)
+
 	for _, stack := range stacks {
 		snippet, err := templates.StackSnippet(stack)
 		if err != nil {

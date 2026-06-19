@@ -1,9 +1,11 @@
-// Package contextopt backs the context-optimization commands (CLI §9, arch §8–10):
-// Headroom input compression (a host proxy on the model path) and Caveman output
-// compression (a per-project agent skill). This package owns the host-side
-// configuration — setting the Headroom strategy and the Caveman level on a
-// project, seeding the Caveman skill, and reporting status. Live Headroom token
-// metrics require the running proxy and are filled in on a provisioned host.
+// Package contextopt backs the context-optimization commands (CLI §9, arch §8–10).
+// Both components are per-project and live IN the workspace, not on the host:
+// Headroom (input compression) runs as a local proxy wrapping the agent CLI, and
+// Caveman (output compression) is an agent skill. This package owns the
+// per-project configuration — the Headroom strategy and the Caveman level — and
+// seeds the in-workspace artifacts (the Caveman skill today; Headroom is
+// installed in the workspace image and reads the strategy from project config).
+// Live Headroom token metrics require the running proxy in the workspace.
 package contextopt
 
 import (

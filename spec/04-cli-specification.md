@@ -124,9 +124,10 @@ Purpose:
 * initializes state directory
 * configures runtime
 * installs, configures, and starts the host services as the single control
-  plane — see architecture §5, "Host Services Control Plane". The Slice 1 set is
-  LiteLLM + ClawPatrol plus the Microsandbox workspace runtime; **Headroom is
-  added in Slice 2** (context optimization), optional Ollama when enabled
+  plane — see architecture §5, "Host Services Control Plane". The host service
+  set is LiteLLM + ClawPatrol plus the Microsandbox workspace runtime, and
+  optional Ollama when enabled. (Headroom is **not** a host service — it is
+  installed per project in the workspace image, §8–10.)
 * renders each service config from the platform config, verifies the Microsandbox
   runtime + host virtualization, and registers the native service (ClawPatrol)
   with the OS service manager (no docker compose)
@@ -498,7 +499,7 @@ Checks:
 ## 10.2 Service Management
 
 The `ai` CLI is the single control plane for all host services (LiteLLM,
-ClawPatrol, Headroom, optional Ollama). The user never invokes
+ClawPatrol, optional Ollama). The user never invokes
 `docker compose`, `launchctl`, or `systemctl` directly. The same verbs apply
 whether a service runs as a container or a native process (see architecture
 §5, "Host Services Control Plane"). (The Microsandbox workspace runtime is not
@@ -512,7 +513,7 @@ ai services stop    [<service>]    # stop one or all
 ai services restart [<service>]    # restart one or all
 ```
 
-`<service>`: `litellm` | `clawpatrol` | `headroom` | `ollama`.
+`<service>`: `litellm` | `clawpatrol` | `ollama`.
 
 Behavior:
 
@@ -561,7 +562,7 @@ Options:
 
 ```bash id="c32"
 --workspace <project>
---service <microsandbox|litellm|clawpatrol|headroom|ollama>
+--service <microsandbox|litellm|clawpatrol|ollama>
 --tail
 ```
 

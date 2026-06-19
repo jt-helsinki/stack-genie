@@ -43,8 +43,10 @@ func Default() *File {
 			"microsandbox": {Mode: "native", Version: "v0.x", SHA256: "TBD"},
 			"clawpatrol":   {Mode: "native", Version: "v0.x", SHA256: "TBD"},
 			"litellm":      {Mode: "container", Image: "ghcr.io/berriai/litellm", Digest: "sha256:TBD"},
-			"headroom":     {Mode: "container", Image: "ghcr.io/chopratejas/headroom", Digest: "sha256:TBD"},
-			"ollama":       {Mode: "container", Image: "docker.io/ollama/ollama", Digest: "sha256:TBD", Enabled: boolPointer(false)},
+			// Headroom (input compression) is installed per-project IN the workspace
+			// image (pip headroom-ai), not run as a host container (arch §8–10).
+			"headroom": {Mode: "workspace", Version: "TBD"},
+			"ollama":   {Mode: "container", Image: "docker.io/ollama/ollama", Digest: "sha256:TBD", Enabled: boolPointer(false)},
 		},
 	}
 }

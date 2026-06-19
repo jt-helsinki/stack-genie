@@ -60,6 +60,21 @@ func TestComposeMultipleSelections(test *testing.T) {
 	}
 }
 
+func TestComposeAlwaysInstallsHeadroom(test *testing.T) {
+	installTemplates(test)
+	// Headroom is core context optimization — present in every workspace image,
+	// even with no stacks selected (arch §8–10).
+	dockerfile, err := Compose("debian-trixie", nil, []string{"opencode"})
+	if err != nil {
+		test.Fatal(err)
+	}
+	for _, fragment := range []string{"context optimization: headroom", "headroom-ai"} {
+		if !strings.Contains(dockerfile, fragment) {
+			test.Errorf("composed Dockerfile missing %q:\n%s", fragment, dockerfile)
+		}
+	}
+}
+
 func TestComposeNoStacks(test *testing.T) {
 	installTemplates(test)
 	dockerfile, err := Compose("debian-trixie", nil, []string{"opencode"})

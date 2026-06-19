@@ -33,7 +33,7 @@ external-tool integration approach, the Slice 1 build sequence, and CI/testing.
   platform logic in shell.
 * **Declarative config/templates** in YAML/JSON; never executable logic.
 * External components are invoked via Go SDK or subprocess, never reimplemented:
-  Microsandbox (Go SDK / `msb`), LiteLLM / Headroom (host services over HTTP),
+  Microsandbox (Go SDK / `msb`), LiteLLM (host service over HTTP),
   ClawPatrol (gateway binary + config), git / docker / podman / gh (subprocess).
 
 Key libraries: `cobra` (commands), `viper`-free hand-rolled config merge (to
@@ -57,7 +57,7 @@ keep the precedence rules in arch §27 explicit), `slog` (structured logs), stdl
 │   ├── sandbox/                 # Microsandbox SDK wrapper: naming, mounts/volumes, microVM lifecycle
 │   ├── litellm/                 # host lifecycle, config gen, health, routing
 │   ├── clawpatrol/              # gateway lifecycle, credential brokering, placeholders
-│   ├── contextopt/              # Headroom proxy lifecycle + per-project Caveman skill install
+│   ├── contextopt/              # per-project Headroom strategy + Caveman skill (both in-workspace)
 │   ├── git/                     # project init/clone only (no platform branch/worktree/merge)
 │   ├── envimage/                # compose .ai-platform/Dockerfile (OS template + stack snippets + agent CLIs) + build OCI image
 │   ├── overlay/                 # per-workspace persistent overlay
@@ -129,7 +129,7 @@ The `ai` CLI is the **single control plane** for host services (architecture §5
 "Host Services Control Plane"). It manages two run modes behind uniform
 `ai services` verbs — **no docker compose**:
 
-* **container tier** (LiteLLM, Headroom, Ollama): managed directly via
+* **container tier** (LiteLLM, optional Ollama): managed directly via
   the `runtime/` abstraction (run by digest, restart policy, health poll), so
   docker and podman stay interchangeable
 * **native tier** (ClawPatrol): downloaded as a pinned checksum-verified binary
@@ -150,7 +150,7 @@ Each service's config is **rendered** from the platform config into
 | `sandbox/` | Microsandbox Go SDK / `msb`; names `aip-<project>[-<agent>]`; microVM lifecycle map (arch §7) | microVM runtime (no daemon) | S1 |
 | `litellm/` | container via `runtime/`; config rendered from routing; `/health` poll | container | S1 |
 | `clawpatrol/` | native gateway; register creds; inject placeholders into workspace env | native | S1 |
-| `contextopt/` | Headroom container via `runtime/`; install per-project Caveman skill into `<project>/.ai-platform/skills/` | container | S2 |
+| `contextopt/` | per-project Headroom strategy + Caveman skill; both installed in the workspace (Headroom in the image, Caveman as a skill) | workspace | S2 |
 | `git/` | subprocess; project init/clone only | n/a | S1 |
 
 ---
@@ -222,7 +222,7 @@ Slice 1 is complete only when every `[S1]` test passes with no manual config.
 
 # 5. Later Slices (sequencing)
 
-* **S2 Context Optimization.** `contextopt/`: Headroom host proxy on the request
+* **S2 Context Optimization.** `contextopt/`: in-workspace Headroom proxy on the request
   path; per-project Caveman skill installed into `<project>/.ai-platform/skills/`;
   `ai context status|strategy|caveman`. (No platform memory — agent owns it.)
   Tests `[S2]`.
@@ -289,7 +289,7 @@ Each slice must not break prior slices (roadmap §1).
 # 8. Open Decisions / Risks
 
 1. **Service provisioning — RESOLVED.** `ai setup` installs and manages
-   all host services itself (LiteLLM, ClawPatrol, Headroom, optional Ollama) as
+   all host services itself (LiteLLM, ClawPatrol, optional Ollama) as
    the single control plane, and verifies the Microsandbox workspace runtime;
    the user pre-installs only the container runtime and grants the OS privileges
    ClawPatrol needs. No docker compose: container-tier services run via the
@@ -319,8 +319,11 @@ Each slice must not break prior slices (roadmap §1).
      plaintext socket → gateway). If the spike fails outright, the S1 forward-proxy
      model remains the fallback. This keeps the S1 milestones free of the
      highest-uncertainty integration.
-3. **Headroom placement.** Runs as a host proxy in front of LiteLLM (arch §10);
-   validate latency budget in S2 against the `ai models test` threshold.
+3. **Headroom placement (decided).** Headroom runs **per project inside the
+   workspace** (installed in the workspace image) as a local proxy wrapping the
+   agent CLI; it forwards to LiteLLM on the host via `AI_PLATFORM_HOST` (arch §10).
+   It is not a host service. This compresses at the source and is symmetric with
+   the in-workspace Caveman skill.
 4. **Image build.** The workspace OCI image is built from `.ai-platform/Dockerfile`
    with the detected container runtime and booted as a Microsandbox microVM;
    confirm rootless build works for all OS templates and that each image boots
