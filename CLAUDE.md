@@ -42,4 +42,4 @@ CI (`.github/workflows/ci.yml`) is split: hosted runners do build/vet/lint/unit-
 
 - **No single-character variable names anywhere** — including method receivers and loop vars (`store`, `emitter`, `prober`, `entry`, `value`, …). Self-documenting names over Go's terse-receiver convention. The one kept exception is the test handle `t *testing.T`.
 - **Secrets never touch platform disk.** Values flow straight to ClawPatrol via `secrets.Broker`; `secrets.Entry` has no value field by design, so listings can't leak.
-- Commit messages end with: `Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>`. Commit only when asked; the work lives on a feature branch off `main`.
+- Commit messages must not include AI-attribution trailers (no `Co-Authored-By` for the assistant). Commit only when asked; the work lives on a feature branch off `main`.
