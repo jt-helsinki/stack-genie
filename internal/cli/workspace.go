@@ -2,6 +2,7 @@ package cli
 
 import (
 	"errors"
+	goruntime "runtime"
 
 	"github.com/jt-helsinki/ideal-robot/internal/output"
 	"github.com/jt-helsinki/ideal-robot/internal/state"
@@ -71,7 +72,7 @@ func newWorkspaceStartCmd(emitter *output.Emitter, exit *int) *cobra.Command {
 		Short: "Build the image and start the project's workspace microVM",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(_ *cobra.Command, args []string) error {
-			handle, err := workspace.RealManager(nowRFC3339).Start(args[0])
+			handle, err := workspace.RealManager(goruntime.GOOS, nowRFC3339).Start(args[0])
 			if err != nil {
 				*exit = emitter.Failure("workspace.start", mapWorkspaceErr(err))
 				return nil
@@ -88,7 +89,7 @@ func newWorkspaceStopCmd(emitter *output.Emitter, exit *int) *cobra.Command {
 		Short: "Stop the workspace microVM (state preserved)",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(_ *cobra.Command, args []string) error {
-			if err := workspace.RealManager(nowRFC3339).Stop(args[0]); err != nil {
+			if err := workspace.RealManager(goruntime.GOOS, nowRFC3339).Stop(args[0]); err != nil {
 				*exit = emitter.Failure("workspace.stop", mapWorkspaceErr(err))
 				return nil
 			}
@@ -105,7 +106,7 @@ func newWorkspaceDestroyCmd(emitter *output.Emitter, exit *int) *cobra.Command {
 		Short: "Delete the microVM/runtime handle only (overlay + source kept)",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(_ *cobra.Command, args []string) error {
-			if err := workspace.RealManager(nowRFC3339).Destroy(args[0]); err != nil {
+			if err := workspace.RealManager(goruntime.GOOS, nowRFC3339).Destroy(args[0]); err != nil {
 				*exit = emitter.Failure("workspace.destroy", mapWorkspaceErr(err))
 				return nil
 			}
@@ -128,7 +129,7 @@ func newWorkspaceExecCmd(emitter *output.Emitter, exit *int) *cobra.Command {
 				return nil
 			}
 			project, argv := args[0], args[dash:]
-			result, err := workspace.RealManager(nowRFC3339).Exec(project, argv)
+			result, err := workspace.RealManager(goruntime.GOOS, nowRFC3339).Exec(project, argv)
 			if err != nil {
 				// Platform failure (microVM down, unknown project, …) — §4.5.
 				*exit = emitter.Failure("workspace.exec", mapWorkspaceErr(err))

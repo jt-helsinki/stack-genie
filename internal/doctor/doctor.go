@@ -46,7 +46,7 @@ func Run(deps Deps) Report {
 	checks := []Check{
 		containerRuntimeCheck(deps.Prober),
 		microsandboxCheck(detectedSandbox),
-		virtualizationCheck(detectedSandbox),
+		virtualizationCheck(deps.GOOS, detectedSandbox),
 		clawpatrolCheck(deps.Prober),
 		litellmCheck(deps.Model),
 	}
@@ -90,7 +90,7 @@ func microsandboxCheck(detected sandbox.Info) Check {
 	}
 }
 
-func virtualizationCheck(detected sandbox.Info) Check {
+func virtualizationCheck(goos string, detected sandbox.Info) Check {
 	if detected.Available {
 		return Check{Name: "host virtualization", Status: StatusOK, Detail: detected.Virtualization}
 	}
@@ -100,7 +100,23 @@ func virtualizationCheck(detected sandbox.Info) Check {
 	}
 	return Check{
 		Name: "host virtualization", Status: StatusError, Detail: detail,
-		Suggestion: "macOS needs Apple Silicon; Linux needs /dev/kvm; Windows needs WSL2 nested virtualization",
+		Suggestion: virtualizationSuggestion(goos),
+	}
+}
+
+// virtualizationSuggestion gives the OS-specific remedy. On Windows the
+// WSL2-nested-virtualization requirement is at-risk, so `doctor` must call it out
+// clearly (arch §6.2, Slice 7).
+func virtualizationSuggestion(goos string) string {
+	switch goos {
+	case "windows":
+		return "enable WSL2 with nested virtualization (Microsandbox microVMs need /dev/kvm inside the WSL2 guest); see `ai doctor` docs"
+	case "linux":
+		return "enable hardware virtualization (KVM) so /dev/kvm is present"
+	case "darwin":
+		return "Apple Silicon is required for the microVM runtime (Intel Macs are unsupported)"
+	default:
+		return "macOS needs Apple Silicon; Linux needs /dev/kvm; Windows needs WSL2 nested virtualization"
 	}
 }
 

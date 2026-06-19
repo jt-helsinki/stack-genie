@@ -3,6 +3,7 @@ package doctor
 import (
 	"errors"
 	"os/exec"
+	"strings"
 	"testing"
 
 	"github.com/jt-helsinki/ideal-robot/internal/litellm"
@@ -81,6 +82,23 @@ func TestRunMissingDepsError(test *testing.T) {
 	// LiteLLM unreachable is a warning, not an error.
 	if checkByName(report, "litellm").Status != StatusWarn {
 		test.Errorf("litellm should warn, got %q", checkByName(report, "litellm").Status)
+	}
+}
+
+// TestWindowsVirtualizationReportsWSL2 is the [S7] requirement that `doctor`
+// clearly reports when WSL2 nested virtualization is unavailable on Windows.
+func TestWindowsVirtualizationReportsWSL2(test *testing.T) {
+	deps := Deps{
+		GOOS: "windows", GOARCH: "amd64",
+		Prober: fakeProber{bins: map[string]bool{"docker": true, "msb": true}}, // no /dev/kvm
+		Model:  fakeModel{healthy: true},
+	}
+	virtualization := checkByName(Run(deps), "host virtualization")
+	if virtualization.Status != StatusError {
+		test.Fatalf("windows without nested virt should error: %+v", virtualization)
+	}
+	if !strings.Contains(virtualization.Suggestion, "WSL2") {
+		test.Errorf("windows suggestion should name WSL2: %q", virtualization.Suggestion)
 	}
 }
 

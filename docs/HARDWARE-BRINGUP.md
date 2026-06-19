@@ -47,7 +47,9 @@ Each is a thin real impl that currently returns `ErrPending` / a stub.
 - [ ] **`internal/workspace/workspace_real.go`**
   - `realBuilder.Build` → run `<rt> build -t <imageRef> -f <root>/.ai-platform/Dockerfile <root>` where `<rt>` is the detected runtime (`docker`|`podman`, Slice 6). The argv is already produced by `runtime.ContainerRuntime.BuildArgs`; just exec it.
   - `realSandbox.Create/Start/Stop/Destroy/Exec` → Microsandbox Go SDK: boot the
-    OCI image as a microVM, bind-mount the project at `~/workspace`, attach the
+    OCI image as a microVM, bind-mount the project at `~/workspace` (the
+    `projectMount` arg arrives already normalized — WSL2 `/mnt/<drive>` form on a
+    Windows host, via `internal/hostpath`, Slice 7), attach the
     overlay named volume backed by the host `overlayPath` Create now receives
     (ensured by `internal/overlay`, §26), apply the **default-deny network policy**, inject
     `AI_PLATFORM_HOST` + `HTTPS_PROXY`, and install the ClawPatrol **CA root** into

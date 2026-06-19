@@ -21,13 +21,15 @@ func (builder *fakeBuilder) Build(string, string) error {
 
 type fakeSandbox struct {
 	created, started, stopped, destroyed bool
+	projectMount                         string
 	overlayMount                         string
 	execResult                           ExecResult
 	execErr                              error
 }
 
-func (sandbox *fakeSandbox) Create(_, _, _, overlayPath string) error {
+func (sandbox *fakeSandbox) Create(_, _, projectMount, overlayPath string) error {
 	sandbox.created = true
+	sandbox.projectMount = projectMount
 	sandbox.overlayMount = overlayPath
 	return nil
 }
@@ -86,6 +88,11 @@ func TestStartBuildsAndRecordsStartedHandle(test *testing.T) {
 	}
 	if sandbox.overlayMount == "" {
 		test.Fatal("overlay path not passed to Sandbox.Create")
+	}
+	// On a POSIX host the project mount is the host path unchanged (Slice 7's
+	// WSL2 translation only applies on Windows; covered in internal/hostpath).
+	if sandbox.projectMount != root {
+		test.Fatalf("project mount = %q, want host path %q", sandbox.projectMount, root)
 	}
 	workspaces, err := state.OpenStore(root).ListWorkspaces()
 	if err != nil || len(workspaces) != 1 || workspaces[0].Status != state.StatusStarted {

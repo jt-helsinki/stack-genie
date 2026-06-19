@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 
+	"github.com/jt-helsinki/ideal-robot/internal/hostpath"
 	"github.com/jt-helsinki/ideal-robot/internal/overlay"
 	"github.com/jt-helsinki/ideal-robot/internal/state"
 )
@@ -49,11 +50,13 @@ type Sandbox interface {
 }
 
 // Manager coordinates the lifecycle over a Builder + Sandbox, stamping state with
-// Now (RFC 3339 UTC).
+// Now (RFC 3339 UTC). GOOS selects host-specific behavior such as the project
+// mount-path form (Windows → WSL2 /mnt/<drive>, Slice 7).
 type Manager struct {
 	Builder Builder
 	Sandbox Sandbox
 	Now     func() string
+	GOOS    string
 }
 
 func resolveProjectRoot(project string) (string, error) {
@@ -87,7 +90,10 @@ func (manager Manager) Start(project string) (*state.Workspace, error) {
 	if err != nil {
 		return nil, err
 	}
-	if err := manager.Sandbox.Create(name, imageRef, root, overlayPath); err != nil {
+	// Translate the host project path to the form the microVM mounts it at
+	// (Windows host → WSL2 /mnt/<drive>; macOS/Linux unchanged) (arch §7, Slice 7).
+	projectMount := hostpath.WorkspaceMount(manager.GOOS, root)
+	if err := manager.Sandbox.Create(name, imageRef, projectMount, overlayPath); err != nil {
 		return nil, err
 	}
 	if err := manager.Sandbox.Start(name); err != nil {

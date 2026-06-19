@@ -66,11 +66,12 @@ func (sandbox realSandbox) pending() error {
 }
 
 // RealManager builds a Manager wired to the actual host (used by the CLI).
-func RealManager(now func() string) Manager {
+func RealManager(goos string, now func() string) Manager {
 	prober := runtime.RealProber()
 	return Manager{
 		Builder: realBuilder{prober: prober},
 		Sandbox: realSandbox{prober: prober},
 		Now:     now,
+		GOOS:    goos,
 	}
 }
