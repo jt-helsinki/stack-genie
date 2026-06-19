@@ -14,6 +14,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 
 	"github.com/jt-helsinki/ideal-robot/internal/jsonfile"
 	"github.com/jt-helsinki/ideal-robot/internal/paths"
@@ -110,16 +111,47 @@ func Verify(info *Info) error {
 	return nil
 }
 
-func detectContainerRuntime(prober Prober) (name string, rootless bool, err error) {
+// ContainerRuntime is the detected service-tier container CLI (arch §6.1). Docker
+// and Podman are CLI-compatible across the build/run subset the platform uses, so
+// this wraps the binary name and yields the matching invocations. It is the single
+// source of truth for "which binary, called how" shared by the workspace image
+// build (internal/workspace) and the service-tier launch (internal/setup), so the
+// platform never hardcodes "docker" (Slice 6).
+type ContainerRuntime struct {
+	Name string // "docker" | "podman"
+}
+
+// BuildArgs returns the argv (after the binary name) that builds imageRef from
+// dockerfile within contextDir. Docker and Podman share this syntax.
+func (containerRuntime ContainerRuntime) BuildArgs(imageRef, dockerfile, contextDir string) []string {
+	return []string{"build", "-t", imageRef, "-f", dockerfile, contextDir}
+}
+
+// RunArgs returns the argv that runs imageRef detached as the named container.
+// Consumed by the service-tier launch wired during hardware bring-up.
+func (containerRuntime ContainerRuntime) RunArgs(name, imageRef string, extra ...string) []string {
+	args := []string{"run", "-d", "--name", name}
+	args = append(args, extra...)
+	return append(args, imageRef)
+}
+
+// DetectContainerRuntime probes for the service-tier container runtime, preferring
+// Docker, then Podman, and reports whether it runs rootless (arch §6.1, §6.3).
+// Returns ErrNoContainerRuntime when neither is installed.
+func DetectContainerRuntime(prober Prober) (containerRuntime ContainerRuntime, rootless bool, err error) {
 	switch {
 	case hasBinary(prober, "docker"):
-		return "docker", dockerRootless(prober), nil
+		return ContainerRuntime{Name: "docker"}, dockerRootless(prober), nil
 	case hasBinary(prober, "podman"):
-		// Podman is rootless by default; the full Runtime impl lands in Slice 6.
-		return "podman", true, nil
+		return ContainerRuntime{Name: "podman"}, podmanRootless(prober), nil
 	default:
-		return "", false, ErrNoContainerRuntime
+		return ContainerRuntime{}, false, ErrNoContainerRuntime
 	}
+}
+
+func detectContainerRuntime(prober Prober) (name string, rootless bool, err error) {
+	containerRuntime, rootless, err := DetectContainerRuntime(prober)
+	return containerRuntime.Name, rootless, err
 }
 
 func hasBinary(prober Prober, name string) bool {
@@ -134,6 +166,18 @@ func dockerRootless(prober Prober) bool {
 		return false
 	}
 	return bytes.Contains(output, []byte("rootless"))
+}
+
+// podmanRootless reports whether Podman runs rootless. Podman is daemonless and
+// rootless by default for non-root users (arch §6.3), so we treat an explicit
+// "false" from `podman info` as rootful and otherwise default to rootless (a
+// probe hiccup must not block setup on a host where Podman's default holds).
+func podmanRootless(prober Prober) bool {
+	output, err := prober.Run("podman", "info", "--format", "{{.Host.Security.Rootless}}")
+	if err != nil {
+		return true
+	}
+	return strings.TrimSpace(string(output)) != "false"
 }
 
 // Path returns config/runtime.json.

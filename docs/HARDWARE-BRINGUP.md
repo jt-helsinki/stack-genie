@@ -45,7 +45,7 @@ real docs before wiring:
 Each is a thin real impl that currently returns `ErrPending` / a stub.
 
 - [ ] **`internal/workspace/workspace_real.go`**
-  - `realBuilder.Build` → `docker build -t <imageRef> -f <root>/.ai-platform/Dockerfile <root>` (command already in the comment).
+  - `realBuilder.Build` → run `<rt> build -t <imageRef> -f <root>/.ai-platform/Dockerfile <root>` where `<rt>` is the detected runtime (`docker`|`podman`, Slice 6). The argv is already produced by `runtime.ContainerRuntime.BuildArgs`; just exec it.
   - `realSandbox.Create/Start/Stop/Destroy/Exec` → Microsandbox Go SDK: boot the
     OCI image as a microVM, bind-mount the project at `~/workspace`, attach the
     overlay named volume backed by the host `overlayPath` Create now receives
@@ -54,9 +54,10 @@ Each is a thin real impl that currently returns `ErrPending` / a stub.
     the workspace trust store (arch §17, §29). `Exec` returns a real `ExecResult`.
 - [ ] **`internal/setup/setup_real.go`**
   - `realServices.Reconcile` → pull pinned images by digest (`config/versions.json`),
-    `docker run` LiteLLM with the rendered config, start the ClawPatrol gateway
-    (native, register with launchd), optional Ollama; health-poll.
-  - `realServices.Status` → real probes (`docker ps`, gateway `/health`, …).
+    run LiteLLM + Headroom with the rendered config via the detected runtime
+    (`runtime.ContainerRuntime.RunArgs`, docker|podman — not hardcoded), start the
+    ClawPatrol gateway (native, register with launchd), optional Ollama; health-poll.
+  - `realServices.Status` → real probes (`<rt> ps`, gateway `/health`, …).
   - `realCA.Ensure` → generate the ClawPatrol CA (verified CLI from step 2).
 - [ ] **`internal/secrets/secrets_real.go`**
   - `realBroker.Set/Map/Remove/List` → ClawPatrol credential CLI. Keep values out
