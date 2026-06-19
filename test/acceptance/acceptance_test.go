@@ -141,6 +141,51 @@ func TestProjectLifecycleViaWizard(test *testing.T) {
 	}
 }
 
+// TestContextOptimizationFlow exercises `ai context` end-to-end (CLI §9): a new
+// project seeds the Caveman skill at the default level, status reports it, and
+// strategy/caveman edits round-trip through the project config.
+func TestContextOptimizationFlow(test *testing.T) {
+	requireGit(test)
+	harness := New(test)
+	harness.installTemplates(test)
+
+	created, code := harness.CreateProject(test, "context-test")
+	AssertOK(test, created, code, "project.create")
+
+	type statusData struct {
+		Strategy         string `json:"strategy"`
+		CavemanLevel     string `json:"caveman_level"`
+		CavemanInstalled bool   `json:"caveman_installed"`
+	}
+
+	// Create seeds the Caveman skill at the default level.
+	status, code := harness.Run(test, "context", "status", "context-test")
+	AssertOK(test, status, code, "context.status")
+	var initial statusData
+	status.dataInto(test, &initial)
+	if !initial.CavemanInstalled || initial.CavemanLevel != "full" {
+		test.Fatalf("expected seeded full caveman skill, got %+v", initial)
+	}
+
+	// An invalid strategy is rejected with exit 2.
+	bad, code := harness.Run(test, "context", "strategy", "context-test", "turbo")
+	AssertError(test, bad, code, 2)
+
+	// Valid edits round-trip.
+	strat, code := harness.Run(test, "context", "strategy", "context-test", "aggressive")
+	AssertOK(test, strat, code, "context.strategy")
+	cave, code := harness.Run(test, "context", "caveman", "context-test", "ultra")
+	AssertOK(test, cave, code, "context.caveman")
+
+	after, code := harness.Run(test, "context", "status", "context-test")
+	AssertOK(test, after, code, "context.status")
+	var updated statusData
+	after.dataInto(test, &updated)
+	if updated.Strategy != "aggressive" || updated.CavemanLevel != "ultra" {
+		test.Fatalf("context edits did not round-trip: %+v", updated)
+	}
+}
+
 // --- service-dependent [S1] tests (hardware) --------------------------------
 
 func TestSetupSucceedsOnHardware(test *testing.T) {

@@ -1,0 +1,87 @@
+package contextopt
+
+import (
+	"errors"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+
+	"github.com/jt-helsinki/ideal-robot/internal/config"
+)
+
+func TestSetStrategy(test *testing.T) {
+	root := test.TempDir()
+	if err := SetStrategy(root, "aggressive"); err != nil {
+		test.Fatal(err)
+	}
+	loaded, err := config.LoadProjectConfig(root)
+	if err != nil {
+		test.Fatal(err)
+	}
+	if loaded.Context.Strategy != "aggressive" {
+		test.Fatalf("strategy = %q", loaded.Context.Strategy)
+	}
+}
+
+func TestSetStrategyInvalid(test *testing.T) {
+	if err := SetStrategy(test.TempDir(), "turbo"); !errors.Is(err, ErrInvalidStrategy) {
+		test.Fatalf("want ErrInvalidStrategy, got %v", err)
+	}
+}
+
+func TestSetCavemanLevelInstallsSkill(test *testing.T) {
+	root := test.TempDir()
+	if err := SetCavemanLevel(root, "ultra"); err != nil {
+		test.Fatal(err)
+	}
+	loaded, err := config.LoadProjectConfig(root)
+	if err != nil {
+		test.Fatal(err)
+	}
+	if loaded.Context.CavemanLevel != "ultra" {
+		test.Fatalf("caveman level = %q", loaded.Context.CavemanLevel)
+	}
+	skill, err := os.ReadFile(filepath.Join(root, ".ai-platform", "skills", "caveman", "SKILL.md"))
+	if err != nil {
+		test.Fatalf("skill not installed: %v", err)
+	}
+	if !strings.Contains(string(skill), "level: ultra") {
+		test.Fatalf("skill missing level:\n%s", skill)
+	}
+}
+
+func TestSetCavemanLevelInvalid(test *testing.T) {
+	if err := SetCavemanLevel(test.TempDir(), "mega"); !errors.Is(err, ErrInvalidCavemanLevel) {
+		test.Fatalf("want ErrInvalidCavemanLevel, got %v", err)
+	}
+}
+
+func TestStatusReflectsConfigAndSkill(test *testing.T) {
+	root := test.TempDir()
+	before, err := GetStatus(root)
+	if err != nil {
+		test.Fatal(err)
+	}
+	if before.CavemanInstalled {
+		test.Fatal("caveman should not be installed initially")
+	}
+
+	if err := SetStrategy(root, "balanced"); err != nil {
+		test.Fatal(err)
+	}
+	if err := SetCavemanLevel(root, "lite"); err != nil {
+		test.Fatal(err)
+	}
+
+	after, err := GetStatus(root)
+	if err != nil {
+		test.Fatal(err)
+	}
+	if after.Strategy != "balanced" || after.CavemanLevel != "lite" || !after.CavemanInstalled {
+		test.Fatalf("status: %+v", after)
+	}
+	if after.Headroom != nil {
+		test.Fatal("Headroom metrics need the running proxy; expected nil host-side")
+	}
+}

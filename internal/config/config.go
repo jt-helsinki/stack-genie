@@ -96,6 +96,25 @@ func EnsureGlobalDefault() (created bool, err error) {
 	return true, nil
 }
 
+// LoadProjectConfig reads only the project-level config.yaml (no global merge),
+// returning an empty Config if it does not exist. Use this to edit a single
+// project setting in place.
+func LoadProjectConfig(projectRoot string) (*Config, error) {
+	path := ProjectPath(projectRoot)
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return &Config{}, nil
+		}
+		return nil, err
+	}
+	config := &Config{}
+	if err := strictUnmarshal(raw, config); err != nil {
+		return nil, fmt.Errorf("%s: %w", path, err)
+	}
+	return config, nil
+}
+
 // WriteProject writes a project's <projectRoot>/.ai-platform/config.yaml.
 func WriteProject(projectRoot string, config *Config) error {
 	path := ProjectPath(projectRoot)

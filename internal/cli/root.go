@@ -72,6 +72,7 @@ func Execute() int {
 		newServicesCmd(emitter, &exitCode),
 		newSecretsCmd(emitter, &exitCode),
 		newModelsCmd(emitter, &exitCode),
+		newContextCmd(emitter, &exitCode),
 		newWorkspaceCmd(emitter, &exitCode),
 		newDoctorCmd(emitter, &exitCode),
 		newStateCmd(emitter, &exitCode),

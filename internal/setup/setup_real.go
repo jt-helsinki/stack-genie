@@ -9,10 +9,11 @@ import (
 	"github.com/jt-helsinki/ideal-robot/internal/runtime"
 )
 
-// desiredServices is the Slice 1 host-service set (arch §5). Headroom is added in
-// Slice 2; Ollama only when enabled.
+// desiredServices is the host-service set (arch §5). Headroom (input compression,
+// Slice 2) joins the container tier; Ollama only when enabled.
 var desiredServices = []struct{ Name, Mode string }{
 	{"litellm", "container"},
+	{"headroom", "container"},
 	{"clawpatrol", "native"},
 }
 

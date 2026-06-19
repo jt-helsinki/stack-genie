@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/charmbracelet/huh"
+	"github.com/jt-helsinki/ideal-robot/internal/contextopt"
 	"github.com/jt-helsinki/ideal-robot/internal/git"
 	"github.com/jt-helsinki/ideal-robot/internal/output"
 	"github.com/jt-helsinki/ideal-robot/internal/project"
@@ -95,6 +96,16 @@ func newProjectCreateCmd(emitter *output.Emitter, exit *int) *cobra.Command {
 			}
 			if _, err := project.Scaffold(spec, nowRFC3339()); err != nil {
 				*exit = emitter.Failure("project.create", mapProjectErr(err))
+				return nil
+			}
+			// Seed context-optimization defaults so the project config is
+			// self-describing, and install the Caveman skill (arch §9, Slice 2).
+			if err := contextopt.SetStrategy(root, contextopt.DefaultStrategy); err != nil {
+				*exit = emitter.Failure("project.create", output.Errorf(output.ExitRuntimeFailure, "seed context strategy: %s", err))
+				return nil
+			}
+			if err := contextopt.SetCavemanLevel(root, contextopt.DefaultCavemanLevel); err != nil {
+				*exit = emitter.Failure("project.create", output.Errorf(output.ExitRuntimeFailure, "seed caveman skill: %s", err))
 				return nil
 			}
 			*exit = emitter.Success("project.create", map[string]any{
