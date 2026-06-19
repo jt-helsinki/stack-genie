@@ -25,7 +25,7 @@ func newSetupCmd(em *output.Emitter, exit *int) *cobra.Command {
 				*exit = em.Failure("setup", err) // err is *output.Error (carries the exit code)
 				return nil
 			}
-			*exit = em.Success("setup", report)
+			*exit = em.Success("setup", report, report.Warnings...)
 			return nil
 		},
 	}

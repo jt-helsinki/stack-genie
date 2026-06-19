@@ -9,9 +9,11 @@
 package setup
 
 import (
-	"errors"
+	"fmt"
+	"strings"
 
 	"github.com/jt-helsinki/ideal-robot/internal/config"
+	"github.com/jt-helsinki/ideal-robot/internal/doctor"
 	"github.com/jt-helsinki/ideal-robot/internal/layout"
 	"github.com/jt-helsinki/ideal-robot/internal/output"
 	"github.com/jt-helsinki/ideal-robot/internal/runtime"
@@ -65,21 +67,104 @@ type Report struct {
 	VersionsCreated bool            `json:"versions_created"`
 	CAReady         bool            `json:"ca_ready"`
 	Services        []ServiceStatus `json:"services"`
+	// Warnings carries non-blocking prerequisite gaps (e.g. ClawPatrol not yet
+	// installed). Surfaced via the envelope's warnings, not the data payload.
+	Warnings []string `json:"-"`
+}
+
+// Prerequisite is one external dependency `ai setup` needs. Blocking ones must be
+// satisfied before setup can proceed; non-blocking ones are surfaced as warnings.
+type Prerequisite struct {
+	Name       string `json:"name"`
+	Detail     string `json:"detail,omitempty"`
+	Suggestion string `json:"suggestion,omitempty"`
+	Blocking   bool   `json:"blocking"`
+}
+
+// blockingPrereqs are the checks that must pass before setup proceeds. ClawPatrol
+// is intentionally non-blocking (its integration is wired during hardware
+// bring-up); a missing container runtime / Microsandbox / virtualization /
+// rootless posture stops setup.
+var blockingPrereqs = map[string]bool{
+	"container runtime":     true,
+	"microsandbox runtime":  true,
+	"host virtualization":   true,
+	"rootless service tier": true,
+}
+
+// installablePrograms are the prerequisites whose absence is a missing dependency
+// (exit 3) rather than a host-capability failure (exit 4).
+var installablePrograms = map[string]bool{
+	"container runtime":    true,
+	"microsandbox runtime": true,
+}
+
+// missingPrerequisites scans the host (reusing the doctor checks) and returns the
+// unmet prerequisites, each with an install/repair suggestion. LiteLLM is excluded
+// — it is a service setup starts, not a prerequisite.
+func missingPrerequisites(deps Deps) []Prerequisite {
+	report := doctor.Run(doctor.Deps{GOOS: deps.GOOS, GOARCH: deps.GOARCH, Prober: deps.Prober})
+	var missing []Prerequisite
+	for _, check := range report.Checks {
+		if check.Name == "litellm" || check.Status != doctor.StatusError {
+			continue
+		}
+		missing = append(missing, Prerequisite{
+			Name:       check.Name,
+			Detail:     check.Detail,
+			Suggestion: check.Suggestion,
+			Blocking:   blockingPrereqs[check.Name],
+		})
+	}
+	return missing
+}
+
+// prerequisiteError formats every missing prerequisite into one actionable error
+// (the human message lists each with its install command; the structured list
+// rides in error.details). The exit code is 3 when an installable program is
+// missing, else 4 (a host-capability shortfall).
+func prerequisiteError(missing []Prerequisite) *output.Error {
+	code := output.ExitRuntimeFailure
+	for _, prereq := range missing {
+		if installablePrograms[prereq.Name] {
+			code = output.ExitMissingDep
+			break
+		}
+	}
+	var builder strings.Builder
+	fmt.Fprintf(&builder, "preflight: %d prerequisite(s) not satisfied:", len(missing))
+	for _, prereq := range missing {
+		fmt.Fprintf(&builder, "\n  - %s: %s", prereq.Name, prereq.Detail)
+		if prereq.Suggestion != "" {
+			fmt.Fprintf(&builder, "\n      → %s", prereq.Suggestion)
+		}
+	}
+	return output.Errorf(code, "%s", builder.String()).WithDetails(missing)
 }
 
 // Run performs `ai setup`. Returned errors are *output.Error carrying the exit
 // code (§18): missing deps → 3, capability/other failures → 4. Idempotent.
 func Run(options Options, deps Deps) (*Report, error) {
-	// 1. Preflight: detect deps (exit 3) then verify capabilities (exit 4).
+	// 1. Preflight: scan every prerequisite and report all missing ones at once,
+	// each with an install command. Blocking gaps stop setup (exit 3 if a program
+	// is missing, else 4); non-blocking gaps (e.g. ClawPatrol) become warnings.
+	missing := missingPrerequisites(deps)
+	var warnings []string
+	for _, prereq := range missing {
+		if prereq.Blocking {
+			return nil, prerequisiteError(missing)
+		}
+		warning := prereq.Name + ": " + prereq.Detail
+		if prereq.Suggestion != "" {
+			warning += " — " + prereq.Suggestion
+		}
+		warnings = append(warnings, warning)
+	}
+
 	detected, err := runtime.Detect(deps.GOOS, deps.GOARCH, deps.Prober, deps.Now())
 	if err != nil {
-		if errors.Is(err, runtime.ErrNoContainerRuntime) || errors.Is(err, runtime.ErrMsbMissing) {
-			return nil, output.Errorf(output.ExitMissingDep, "preflight: %s", err)
-		}
-		return nil, output.Errorf(output.ExitRuntimeFailure, "preflight: %s", err)
-	}
-	if err := runtime.Verify(detected); err != nil {
-		return nil, output.Errorf(output.ExitRuntimeFailure, "preflight: %s", err)
+		// Defensive: the prerequisite scan should already have caught this.
+		return nil, output.Errorf(output.ExitMissingDep, "preflight: %s", err)
 	}
 
 	// 2. Initialize the host layout and install the environment templates.
@@ -124,6 +209,7 @@ func Run(options Options, deps Deps) (*Report, error) {
 		VersionsCreated: versionsCreated,
 		CAReady:         true,
 		Services:        serviceStatuses,
+		Warnings:        warnings,
 	}, nil
 }
 

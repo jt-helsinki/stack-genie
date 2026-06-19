@@ -77,15 +77,38 @@ func TestDetectMsbMissing(test *testing.T) {
 }
 
 func TestVerifyRootlessRequired(test *testing.T) {
-	info, err := Detect("darwin", "arm64", appleSiliconDocker(false), "test")
+	// A rooted Linux Docker engine (no "rootless" in SecurityOptions) must fail.
+	prober := fakeProber{
+		bins:      map[string]bool{"docker": true, "msb": true},
+		files:     map[string]bool{"/dev/kvm": true},
+		dockerOut: "[name=seccomp]",
+	}
+	info, err := Detect("linux", "amd64", prober, "test")
 	if err != nil {
 		test.Fatal(err)
 	}
 	if info.Rootless {
-		test.Fatal("expected non-rootless")
+		test.Fatal("expected non-rootless on rooted Linux docker")
 	}
 	if !errors.Is(Verify(info), ErrRootlessUnavailable) {
 		test.Fatalf("verify should fail rootless, got %v", Verify(info))
+	}
+}
+
+func TestDockerDesktopOnMacIsRootless(test *testing.T) {
+	// Docker Desktop on macOS runs the engine in a managed VM and does not report
+	// a "rootless" SecurityOption; it must still count as rootless (§6.1) so
+	// `ai setup` does not falsely fail with ErrRootlessUnavailable.
+	prober := fakeProber{bins: map[string]bool{"docker": true, "msb": true}, dockerOut: "[name=seccomp]"}
+	info, err := Detect("darwin", "arm64", prober, "test")
+	if err != nil {
+		test.Fatal(err)
+	}
+	if !info.Rootless {
+		test.Fatalf("Docker Desktop on macOS should be rootless-equivalent: %+v", info)
+	}
+	if err := Verify(info); err != nil {
+		test.Fatalf("verify should pass on macOS Docker Desktop: %v", err)
 	}
 }
 

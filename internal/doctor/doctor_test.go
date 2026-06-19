@@ -102,6 +102,38 @@ func TestWindowsVirtualizationReportsWSL2(test *testing.T) {
 	}
 }
 
+func TestRootlessCheckMacDockerDesktop(test *testing.T) {
+	// Docker Desktop on macOS reports no "rootless" SecurityOption but runs in a
+	// VM — the rootless check must pass (§6.1).
+	deps := Deps{
+		GOOS: "darwin", GOARCH: "arm64",
+		Prober: fakeProber{bins: map[string]bool{"docker": true, "msb": true}},
+		Model:  fakeModel{healthy: true},
+	}
+	if got := checkByName(Run(deps), "rootless service tier").Status; got != StatusOK {
+		test.Fatalf("rootless service tier on macOS Docker Desktop = %q, want ok", got)
+	}
+}
+
+func TestMissingDepSuggestionsAreCopyPasteable(test *testing.T) {
+	deps := Deps{
+		GOOS: "linux", GOARCH: "amd64",
+		Prober: fakeProber{}, // nothing installed
+		Model:  fakeModel{healthy: false},
+	}
+	report := Run(deps)
+	wants := map[string]string{
+		"microsandbox runtime": "curl -fsSL https://install.microsandbox.dev | sh",
+		"clawpatrol":           "curl -fsSL https://clawpatrol.dev/install.sh | sh",
+		"container runtime":    "https://get.docker.com",
+	}
+	for name, fragment := range wants {
+		if got := checkByName(report, name).Suggestion; !strings.Contains(got, fragment) {
+			test.Errorf("%s suggestion %q should contain %q", name, got, fragment)
+		}
+	}
+}
+
 func TestLitellmErrorIsWarn(test *testing.T) {
 	deps := Deps{
 		GOOS: "darwin", GOARCH: "arm64",

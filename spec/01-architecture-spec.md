@@ -356,6 +356,14 @@ The platform must not require a root daemon or the host Docker socket (see
 must fail the relevant `doctor` check rather than silently fall back to a
 rooted daemon.
 
+The check is what the requirement protects against — a **rooted daemon on the
+host** — not a literal `rootless` flag. On macOS and Windows, Docker Desktop (and
+Podman's machine) run the engine inside a managed VM, so there is no rooted
+host daemon and no host socket exposure; these satisfy the requirement by
+construction and `runtime.Verify` treats them as rootless. On Linux, where the
+engine runs on the host kernel directly, a **genuine rootless engine** is
+required and is detected from `docker info` (Podman is rootless by default).
+
 ## 6.2 microVM Runtime (workspaces)
 
 Workspaces run as **Microsandbox microVMs** (libkrun), not containers. This

@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/jt-helsinki/ideal-robot/internal/output"
@@ -111,6 +112,39 @@ func TestRunHappyPath(test *testing.T) {
 	}
 }
 
+func TestRunPreflightListsAllMissingPrerequisites(test *testing.T) {
+	test.Setenv("HOME", test.TempDir())
+	deps, _, _ := healthyDeps()
+	deps.GOOS, deps.GOARCH = "linux", "amd64"
+	deps.Prober = fakeProber{} // nothing installed, no /dev/kvm
+
+	_, err := Run(Options{}, deps)
+	if got := exitCodeOf(test, err); got != output.ExitMissingDep {
+		test.Fatalf("exit = %d, want %d (a missing program)", got, output.ExitMissingDep)
+	}
+
+	var platformErr *output.Error
+	if !errors.As(err, &platformErr) {
+		test.Fatalf("want *output.Error, got %T", err)
+	}
+	// The message lists every missing prerequisite with its install command.
+	for _, fragment := range []string{
+		"container runtime", "https://get.docker.com",
+		"microsandbox runtime", "install.microsandbox.dev",
+		"host virtualization",
+		"clawpatrol", "clawpatrol.dev/install.sh",
+	} {
+		if !strings.Contains(platformErr.Message, fragment) {
+			test.Errorf("error message missing %q:\n%s", fragment, platformErr.Message)
+		}
+	}
+	// The structured list rides in error.details for --json consumers.
+	details, ok := platformErr.Details.([]Prerequisite)
+	if !ok || len(details) < 3 {
+		test.Fatalf("details should be a []Prerequisite with the missing items, got %#v", platformErr.Details)
+	}
+}
+
 func TestRunPreflightMissingDep(test *testing.T) {
 	test.Setenv("HOME", test.TempDir())
 	deps, _, _ := healthyDeps()
@@ -125,6 +159,10 @@ func TestRunPreflightMissingDep(test *testing.T) {
 func TestRunPreflightRootlessUnavailable(test *testing.T) {
 	test.Setenv("HOME", test.TempDir())
 	deps, _, _ := healthyDeps()
+	// A rooted Linux docker engine ("rootless" absent from SecurityOptions). On
+	// macOS/Windows, Docker Desktop is rootless-equivalent (VM), so this scenario
+	// is Linux-specific.
+	deps.GOOS, deps.GOARCH = "linux", "amd64"
 	deps.Prober = fakeProber{
 		bins:      map[string]bool{"docker": true, "msb": true},
 		dockerOut: "[name=seccomp]", // not rootless

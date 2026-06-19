@@ -44,7 +44,8 @@ type Deps struct {
 func Run(deps Deps) Report {
 	detectedSandbox := sandbox.Detect(deps.GOOS, deps.GOARCH, deps.Prober)
 	checks := []Check{
-		containerRuntimeCheck(deps.Prober),
+		containerRuntimeCheck(deps.GOOS, deps.Prober),
+		rootlessCheck(deps.GOOS, deps.Prober),
 		microsandboxCheck(detectedSandbox),
 		virtualizationCheck(deps.GOOS, detectedSandbox),
 		clawpatrolCheck(deps.Prober),
@@ -64,7 +65,7 @@ func installed(prober runtime.Prober, binary string) bool {
 	return err == nil
 }
 
-func containerRuntimeCheck(prober runtime.Prober) Check {
+func containerRuntimeCheck(goos string, prober runtime.Prober) Check {
 	switch {
 	case installed(prober, "docker"):
 		return Check{Name: "container runtime", Status: StatusOK, Detail: "docker"}
@@ -74,8 +75,41 @@ func containerRuntimeCheck(prober runtime.Prober) Check {
 		return Check{
 			Name: "container runtime", Status: StatusError,
 			Detail:     "neither docker nor podman found",
-			Suggestion: "install Docker (or Podman) and run `ai setup`",
+			Suggestion: containerRuntimeSuggestion(goos),
 		}
+	}
+}
+
+// containerRuntimeSuggestion gives an OS-specific, copy-pasteable install command
+// for a rootless container runtime (the service tier, §6.1).
+func containerRuntimeSuggestion(goos string) string {
+	switch goos {
+	case "darwin":
+		return "install a rootless container runtime: brew install --cask docker (or brew install podman), then `ai setup`"
+	case "linux":
+		return "install a rootless container runtime: curl -fsSL https://get.docker.com | sh (or your distro's podman), then `ai setup`"
+	case "windows":
+		return "install Docker Desktop with the WSL2 backend (or Podman), then `ai setup`"
+	default:
+		return "install Docker or Podman (rootless), then `ai setup`"
+	}
+}
+
+// rootlessCheck verifies the service tier runs without a rooted host daemon
+// (§6.1). When no container runtime is present the container-runtime check
+// already reports it, so this stays a warning to avoid a duplicate error.
+func rootlessCheck(goos string, prober runtime.Prober) Check {
+	containerRuntime, rootless, err := runtime.DetectContainerRuntime(goos, prober)
+	if err != nil {
+		return Check{Name: "rootless service tier", Status: StatusWarn, Detail: "no container runtime"}
+	}
+	if rootless {
+		return Check{Name: "rootless service tier", Status: StatusOK, Detail: containerRuntime.Name + " rootless"}
+	}
+	return Check{
+		Name: "rootless service tier", Status: StatusError,
+		Detail:     containerRuntime.Name + " runs as root",
+		Suggestion: "run the container runtime rootless (Linux: enable rootless mode, or use Podman)",
 	}
 }
 
@@ -130,7 +164,7 @@ func clawpatrolCheck(prober runtime.Prober) Check {
 	return Check{
 		Name: "clawpatrol", Status: StatusError,
 		Detail:     "clawpatrol not found",
-		Suggestion: "install ClawPatrol and run `ai setup`",
+		Suggestion: "install ClawPatrol: curl -fsSL https://clawpatrol.dev/install.sh | sh",
 	}
 }
 

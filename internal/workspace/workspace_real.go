@@ -23,7 +23,7 @@ var (
 type realBuilder struct{ prober runtime.Prober }
 
 func (builder realBuilder) Build(projectRoot, imageRef string) error {
-	containerRuntime, _, err := runtime.DetectContainerRuntime(builder.prober)
+	containerRuntime, err := runtime.ContainerRuntimeName(builder.prober)
 	if err != nil {
 		return ErrContainerRuntimeMissing
 	}

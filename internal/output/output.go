@@ -53,9 +53,19 @@ type Error struct {
 	Code    int    `json:"code"`
 	Kind    string `json:"kind"`
 	Message string `json:"message"`
+	// Details optionally carries a machine-readable payload for the error (e.g.
+	// the list of missing prerequisites from `ai setup`). Omitted when nil.
+	Details any `json:"details,omitempty"`
 }
 
 func (platformErr *Error) Error() string { return platformErr.Message }
+
+// WithDetails attaches a machine-readable payload to the error and returns it,
+// so callers can chain: output.Errorf(code, msg).WithDetails(list).
+func (platformErr *Error) WithDetails(details any) *Error {
+	platformErr.Details = details
+	return platformErr
+}
 
 // Errorf builds an *Error for the given exit code; the kind is derived from it.
 func Errorf(code int, format string, args ...any) *Error {

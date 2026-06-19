@@ -101,10 +101,11 @@ func (adapter sandboxAdapter) Exists(path string) bool { return adapter.prober.E
 // for missing dependencies; rootless and virtualization shortfalls are recorded
 // in the Info (see Verify), not returned as errors.
 func Detect(goos, goarch string, prober Prober, detectedAt string) (*Info, error) {
-	name, rootless, err := detectContainerRuntime(prober)
+	containerRuntime, rootless, err := DetectContainerRuntime(goos, prober)
 	if err != nil {
 		return nil, err
 	}
+	name := containerRuntime.Name
 	detectedSandbox := sandbox.Detect(goos, goarch, sandboxAdapter{prober: prober})
 	if !detectedSandbox.MsbInstalled {
 		return nil, ErrMsbMissing
@@ -158,23 +159,38 @@ func (containerRuntime ContainerRuntime) RunArgs(name, imageRef string, extra ..
 	return append(args, imageRef)
 }
 
-// DetectContainerRuntime probes for the service-tier container runtime, preferring
-// Docker, then Podman, and reports whether it runs rootless (arch §6.1, §6.3).
-// Returns ErrNoContainerRuntime when neither is installed.
-func DetectContainerRuntime(prober Prober) (containerRuntime ContainerRuntime, rootless bool, err error) {
+// ContainerRuntimeName picks the service-tier container CLI by presence,
+// preferring Docker then Podman, without probing rootless state. It is what the
+// workspace build needs (the binary name only). Returns ErrNoContainerRuntime
+// when neither is installed.
+func ContainerRuntimeName(prober Prober) (ContainerRuntime, error) {
 	switch {
 	case hasBinary(prober, "docker"):
-		return ContainerRuntime{Name: "docker"}, dockerRootless(prober), nil
+		return ContainerRuntime{Name: "docker"}, nil
 	case hasBinary(prober, "podman"):
-		return ContainerRuntime{Name: "podman"}, podmanRootless(prober), nil
+		return ContainerRuntime{Name: "podman"}, nil
 	default:
-		return ContainerRuntime{}, false, ErrNoContainerRuntime
+		return ContainerRuntime{}, ErrNoContainerRuntime
 	}
 }
 
-func detectContainerRuntime(prober Prober) (name string, rootless bool, err error) {
-	containerRuntime, rootless, err := DetectContainerRuntime(prober)
-	return containerRuntime.Name, rootless, err
+// DetectContainerRuntime resolves the container runtime and whether it runs
+// rootless on this host (arch §6.1, §6.3). goos matters: Docker Desktop on macOS
+// and Windows runs the engine inside a managed VM, so there is no rooted daemon
+// on the host — that is rootless-equivalent for the platform's purposes.
+func DetectContainerRuntime(goos string, prober Prober) (containerRuntime ContainerRuntime, rootless bool, err error) {
+	containerRuntime, err = ContainerRuntimeName(prober)
+	if err != nil {
+		return ContainerRuntime{}, false, err
+	}
+	switch containerRuntime.Name {
+	case "docker":
+		return containerRuntime, dockerRootless(goos, prober), nil
+	case "podman":
+		return containerRuntime, podmanRootless(prober), nil
+	default:
+		return containerRuntime, false, nil
+	}
 }
 
 func hasBinary(prober Prober, name string) bool {
@@ -182,8 +198,16 @@ func hasBinary(prober Prober, name string) bool {
 	return err == nil
 }
 
-// dockerRootless reports whether the docker daemon is running rootless.
-func dockerRootless(prober Prober) bool {
+// dockerRootless reports whether Docker satisfies the platform's no-rooted-host-
+// daemon requirement (§6.1). On macOS and Windows, Docker Desktop runs the engine
+// inside a managed Linux VM — there is no rooted dockerd on the host and no host
+// socket exposure — so it qualifies regardless of the engine's SecurityOptions
+// (the `rootless` marker is a Linux rootless-engine flag and is absent there). On
+// Linux it must be a genuine rootless engine, detected via `docker info`.
+func dockerRootless(goos string, prober Prober) bool {
+	if goos == "darwin" || goos == "windows" {
+		return true
+	}
 	output, err := prober.Run("docker", "info", "-f", "{{println .SecurityOptions}}")
 	if err != nil {
 		return false
