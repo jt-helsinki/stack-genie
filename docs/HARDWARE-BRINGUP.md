@@ -86,7 +86,7 @@ Each is a thin real impl that currently returns `ErrPending` / a stub.
   - `realServices.Reconcile` → pull pinned images by digest (`config/versions.json`),
     run LiteLLM with the rendered config via the detected runtime
     (`runtime.ContainerRuntime.RunArgs`, docker|podman — not hardcoded), start the
-    ClawPatrol gateway (native, register with launchd), optional Ollama; health-poll.
+    Ollama (required), and the ClawPatrol gateway (native, register with launchd); health-poll.
     (Headroom is NOT a host service — see the workspace item below.)
   - `realServices.Status` → real probes (`<rt> ps`, gateway `/health`, …).
   - `realCA.Ensure` → generate the ClawPatrol CA (verified CLI from step 2).
@@ -99,7 +99,9 @@ Each is a thin real impl that currently returns `ErrPending` / a stub.
   — upstreaming to LiteLLM at `AI_PLATFORM_HOST` and applying the project's
   `context.strategy`. Pin the Headroom version in `config/versions.json`.
 - [ ] **`internal/secrets/secrets_real.go`**
-  - `realBroker.Set/Map/Remove/List` → ClawPatrol credential CLI. Keep values out
+  - ClawPatrol is the full agent firewall (intercepts all traffic incl. local
+    Ollama + cloud, evaluates HCL rules, audits everything), not just a secret
+    store (arch §17). `realBroker.Set/Map/Remove/List` → ClawPatrol credential CLI. Keep values out
     of platform disk; `List` returns names/metadata only.
 - [ ] **`internal/setup/setup.go` startup ordering** — confirm container runtime +
       Microsandbox verified → ClawPatrol (creds loaded) → LiteLLM → [Ollama] (arch §5).

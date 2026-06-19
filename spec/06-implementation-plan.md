@@ -129,7 +129,7 @@ The `ai` CLI is the **single control plane** for host services (architecture §5
 "Host Services Control Plane"). It manages two run modes behind uniform
 `ai services` verbs — **no docker compose**:
 
-* **container tier** (LiteLLM, optional Ollama): managed directly via
+* **container tier** (LiteLLM, Ollama — both required): managed directly via
   the `runtime/` abstraction (run by digest, restart policy, health poll), so
   docker and podman stay interchangeable
 * **native tier** (ClawPatrol): downloaded as a pinned checksum-verified binary
@@ -289,7 +289,7 @@ Each slice must not break prior slices (roadmap §1).
 # 8. Open Decisions / Risks
 
 1. **Service provisioning — RESOLVED.** `ai setup` installs and manages
-   all host services itself (LiteLLM, ClawPatrol, optional Ollama) as
+   all host services itself (LiteLLM, ClawPatrol, Ollama) as
    the single control plane, and verifies the Microsandbox workspace runtime;
    the user pre-installs only the container runtime and grants the OS privileges
    ClawPatrol needs. No docker compose: container-tier services run via the

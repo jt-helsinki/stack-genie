@@ -3,7 +3,7 @@
 Reproducible, isolated AI-powered development environments: workspaces run as
 hardware-isolated [Microsandbox](https://microsandbox.dev) microVMs, with
 centralized model access (LiteLLM), context optimization (Headroom + Caveman),
-and wire-level secret brokering (ClawPatrol). One Go binary, `ai`, is the single
+and an agent firewall + secret broker (ClawPatrol). One Go binary, `ai`, is the single
 control plane.
 
 The full design lives in [`spec/`](spec/):
@@ -112,13 +112,14 @@ Apple Silicon:
 |------|------|---------|
 | [Microsandbox](https://microsandbox.dev) (`msb`) | microVM workspaces | `curl -fsSL https://install.microsandbox.dev \| sh` |
 | Docker or Podman (rootless) | service tier | `brew install --cask docker` (or `brew install podman`) |
-| [ClawPatrol](https://clawpatrol.dev) | egress firewall + secret broker | `curl -fsSL https://clawpatrol.dev/install.sh \| sh` |
+| [ClawPatrol](https://clawpatrol.dev) | agent firewall (intercepts/rules/audit) + secret broker | `curl -fsSL https://clawpatrol.dev/install.sh \| sh` |
 
 `ai doctor` reports which are missing, each with its install command; `ai setup`
 lists every unmet prerequisite at once and refuses to proceed until the blocking
-ones are present. (LiteLLM and optional Ollama are *not* installed by you —
-`ai setup` runs them as containers. Headroom and Caveman are per-project context
-optimization that live **inside the workspace**, not host services.)
+ones are present. (LiteLLM and Ollama are *not* installed by you — `ai setup`
+runs them as containers; Ollama is required and LiteLLM routes local model
+traffic to it. Headroom and Caveman are per-project context optimization that
+live **inside the workspace**, not host services.)
 
 ### 2. Provision the host
 

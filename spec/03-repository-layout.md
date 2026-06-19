@@ -200,7 +200,7 @@ projects.json            # index: project name → path (§12.7)
 litellm/                 # rendered LiteLLM config (placeholders only)
 microsandbox/            # rendered Microsandbox workspace defaults (image, mounts, limits)
 clawpatrol/              # rendered gateway HCL (NOT the credential store)
-ollama/                  # rendered Ollama config (when enabled)
+ollama/                  # rendered Ollama config (required local model backend)
 ```
 
 Rules:
@@ -571,7 +571,7 @@ workspace:
     "clawpatrol":   { "mode": "native",    "version": "v0.x", "sha256": "..." },
     "litellm":      { "mode": "container", "image": "ghcr.io/berriai/litellm", "digest": "sha256:..." },
     "headroom":     { "mode": "workspace", "version": "..." },
-    "ollama":       { "mode": "container", "image": "docker.io/ollama/ollama", "digest": "sha256:...", "enabled": false }
+    "ollama":       { "mode": "container", "image": "docker.io/ollama/ollama", "digest": "sha256:..." }
   }
 }
 ```

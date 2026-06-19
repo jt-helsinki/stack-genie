@@ -183,7 +183,7 @@ Responsibilities:
 * Shared AI resources
 * LiteLLM deployment
 * ClawPatrol deployment
-* Optional Ollama deployment
+* Ollama deployment (required local model backend)
 * OS Dockerfile templates
 * Platform state
 
@@ -263,7 +263,7 @@ project.
 
 ## Host Services Control Plane
 
-The platform's host services — LiteLLM, ClawPatrol, and (optional) Ollama — plus
+The platform's host services — LiteLLM, ClawPatrol, and Ollama (required) — plus
 the Microsandbox microVM runtime are installed, configured, and supervised by the
 `ai` CLI. The CLI is the **single control plane**: the user never invokes
 `docker compose`, `msb`, `launchctl`, or `systemctl` directly. (Headroom is not a
@@ -287,7 +287,7 @@ ai logs --service <svc>      one log surface
 | Service | Run mode | Why |
 |---|---|---|
 | LiteLLM | container (via Runtime) | HTTP only; no host privileges |
-| Ollama (optional) | container (via Runtime) on all platforms | uniform deployment; CPU-only on macOS (Docker has no GPU passthrough) |
+| Ollama (required) | container (via Runtime) on all platforms | local model backend LiteLLM routes to; CPU-only on macOS (Docker has no GPU passthrough) |
 | ClawPatrol | native (OS service) | terminates the workspace WireGuard tunnel (in user space) + injects credentials on the wire (§17, §29) |
 | Microsandbox | microVM runtime, invoked on demand | drives workspace microVMs via the Go SDK / `msb`; no daemon to supervise (§7) |
 
@@ -318,7 +318,7 @@ service configs live under `config/<service>/`.
   referencing **placeholder** credentials only; ClawPatrol gateway (HCL) holds
   the real credentials in its own SQLite; Microsandbox driven non-interactively
   per workspace (image, mounts/volumes, resource limits) via the Go SDK / `msb`;
-  Ollama registered as a LiteLLM provider when enabled
+  Ollama registered as a LiteLLM provider (required local backend)
 * **startup ordering**: container runtime + Microsandbox runtime verified →
   ClawPatrol (credentials loaded) → LiteLLM (references placeholders) →
   [Ollama] → verify (workspace microVMs are created on demand, not at setup)
@@ -337,7 +337,7 @@ The platform uses two runtimes for two purposes.
 
 ## 6.1 Container Runtime (service tier)
 
-Used for the stateless container-tier services (LiteLLM and, optionally, Ollama).
+Used for the stateless container-tier services (LiteLLM and Ollama, both required).
 
 Supported runtimes (end-state):
 
@@ -816,8 +816,12 @@ llama: ollama/llama
 
 # 16. Ollama
 
+Ollama is **required** — it is the platform's local model backend, started by
+`ai setup` (arch §5). LiteLLM routes local model traffic to it.
+
 Rules:
 
+* **required**, always provisioned (not optional)
 * never installed in workspaces
 * runs as a **container-tier service** (Docker/Podman, via the runtime
   abstraction, §6.1) on all platforms — never a native host install
@@ -825,7 +829,9 @@ Rules:
   remote deployment for GPU-accelerated inference
 * remote deployment supported
 
-All access occurs through LiteLLM.
+All access occurs through LiteLLM, and LiteLLM's calls to Ollama — like its calls
+to cloud providers — pass through the ClawPatrol firewall (policy + audit; no
+credential needed for local), §17/§29.
 
 ---
 
@@ -841,9 +847,23 @@ and the documentation is found at:
 
 [https://clawpatrol.dev/docs/introduction/](https://clawpatrol.dev/docs/introduction/)
 
-ClawPatrol is both a **security firewall** for agent traffic and a
-**credential broker**. The same gateway that enforces access policy also holds
-the real credentials, so the platform uses it as its single secrets system.
+ClawPatrol is the platform's **agent firewall** — not just a credential store.
+It provides the full feature set from its docs, applied to **all** agent traffic
+(local model calls to Ollama *and* cloud calls to providers, plus git / MCP /
+web):
+
+* **intercepts all traffic** at the wire (TLS interception, §below) — nothing
+  leaves the workspace without passing through it;
+* **evaluates every action against custom rules** (its HCL policy) — allow /
+  deny / require-approval per endpoint, with human-in-the-loop when a rule asks
+  for it;
+* **safeguards and manages credentials** — real secrets live only in ClawPatrol;
+  the agent holds placeholders and the gateway swaps in the real value on the
+  wire (below);
+* **logs everything** — an append-only audit of every request/action.
+
+Because it is the single egress chokepoint, the same gateway enforces policy,
+brokers credentials, and audits — for both local and cloud model traffic.
 
 ---
 
@@ -1381,23 +1401,26 @@ explicitly allow-listed zone (§29.6).
        └───────────────│─────────────┘   (all other egress, L3)
         trusted host svc│ (direct, AI_PLATFORM_HOST)        │
                         ▼                                   ▼
-                   LiteLLM ──► ClawPatrol gateway ──►  ClawPatrol gateway
-                      │         (injects provider          (injects creds,
-                      ▼          credential on egress)       enforces policy)
-                  [Ollama]                                      ▼
-                                                          git / MCP / web
+                   LiteLLM ──► ClawPatrol gateway ──────►  ClawPatrol gateway
+                              (firewalls + audits ALL;       (injects creds,
+                               injects creds for cloud)       enforces policy)
+                              │            │                      ▼
+                              ▼            ▼                 git / MCP / web
+                          Ollama       provider
+                         (local)        (cloud)
 ```
 
 * **Model requests** — the in-workspace agent sends the request to its **local
   Headroom** proxy (input compression, in the workspace), which forwards across
   the microVM boundary to **LiteLLM** at `AI_PLATFORM_HOST` (routing). LiteLLM's
-  egress to the provider passes through the **ClawPatrol** gateway, which swaps
-  the placeholder provider key for the real one on the wire (§17). The
-  LiteLLM → ClawPatrol → provider hops are host-side.
-* **Ollama** — never reached directly by the workspace. It is a container-tier
-  service (§16) that **LiteLLM** calls host-side; the agent only ever talks to
-  LiteLLM. (Ollama is not a credentialed egress, so it does not traverse
-  ClawPatrol.)
+  egress — to **both** the local Ollama backend **and** cloud providers — passes
+  through the **ClawPatrol** gateway, which firewalls and audits *all* of it and
+  swaps the placeholder provider key for the real one on cloud calls (§17). These
+  hops are host-side.
+* **Ollama** — the required local model backend (§16); never reached directly by
+  the workspace. **LiteLLM** routes local model calls to it, and that traffic
+  **also traverses ClawPatrol** (firewalled and audited like everything else —
+  no credential to inject, but the policy and audit still apply).
 * **All other workspace egress** (git push, MCP servers, arbitrary web) leaves
   the microVM via the **WireGuard default route to the ClawPatrol gateway**
   (§17). Because capture is at layer 3, *every* tool is covered — proxy-aware or
