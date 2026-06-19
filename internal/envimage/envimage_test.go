@@ -84,6 +84,54 @@ func TestComposeUnknownInputs(test *testing.T) {
 	}
 }
 
+// TestAllOSTemplatesExposeIdenticalBaseSurface is the [S5] OS-equivalence check:
+// every shipped OS template composes and exposes the same base tooling surface
+// (git, gh, ca-certificates, sudo, a passwordless-sudo `workspace` user), and the
+// selected stack/agent CLI are appended regardless of OS.
+func TestAllOSTemplatesExposeIdenticalBaseSurface(test *testing.T) {
+	installTemplates(test)
+
+	// FROM line per OS — proves the user's OS choice is the one applied.
+	osBaseImage := map[string]string{
+		"debian-trixie":   "FROM debian:trixie-slim",
+		"debian-bookworm": "FROM debian:bookworm-slim",
+		"ubuntu":          "FROM ubuntu:24.04",
+		"alma":            "FROM almalinux:10",
+	}
+	// Identical base tooling surface across every OS (arch §12, §25).
+	baseSurface := []string{
+		"ca-certificates",
+		"curl",
+		"git",
+		"gh",
+		"sudo",
+		"useradd --create-home --shell /bin/bash workspace",
+		"workspace ALL=(ALL) NOPASSWD:ALL",
+		"USER workspace",
+	}
+
+	for osKey, fromLine := range osBaseImage {
+		dockerfile, err := Compose(osKey, []string{"go"}, []string{"opencode"})
+		if err != nil {
+			test.Fatalf("compose %s: %v", osKey, err)
+		}
+		if !strings.Contains(dockerfile, fromLine) {
+			test.Errorf("%s: missing base image line %q", osKey, fromLine)
+		}
+		for _, fragment := range baseSurface {
+			if !strings.Contains(dockerfile, fragment) {
+				test.Errorf("%s: base surface missing %q:\n%s", osKey, fragment, dockerfile)
+			}
+		}
+		// The user's selections are appended regardless of OS.
+		for _, fragment := range []string{"# stack: go", "# agent CLI: opencode"} {
+			if !strings.Contains(dockerfile, fragment) {
+				test.Errorf("%s: missing selection %q", osKey, fragment)
+			}
+		}
+	}
+}
+
 func TestWriteProjectDockerfile(test *testing.T) {
 	installTemplates(test)
 	projectRoot := test.TempDir()

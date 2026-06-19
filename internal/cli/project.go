@@ -15,8 +15,9 @@ import (
 	"github.com/spf13/cobra"
 )
 
-// Selectable options for the create wizard. Slice 1 ships the debian-trixie
-// template; the rest become installable as their templates land (S5).
+// Selectable options for the create wizard. All four OS templates ship as of
+// S5 (debian-trixie in S1; debian-bookworm, ubuntu, alma added in S5). The user
+// always picks the OS — none is applied silently (arch §25).
 var (
 	supportedOSes      = []string{"debian-trixie", "debian-bookworm", "ubuntu", "alma"}
 	supportedStacks    = []string{"go", "node", "python", "rust", "java", "maven", "deno"}

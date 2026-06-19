@@ -227,3 +227,32 @@ func TestOverlayPersistsAcrossRecreation(test *testing.T) {
 	check, code := harness.Run(test, "workspace", "exec", "--project", "overlay-test", "--", "cat", "/root/marker")
 	AssertOK(test, check, code, "workspace.exec")
 }
+
+// TestOSEquivalenceOnHardware covers the [S5] OS-equivalence criterion (spec
+// §12.4): build a workspace from each of the four OS templates with the same
+// agent-CLI selection and confirm an identical base tooling surface (git, gh).
+// The composition-side equivalence is unit-tested in internal/envimage; this
+// end-to-end build-and-smoke check needs real images, so it runs only on a
+// provisioned host (and drives the wizard's OS picker per OS).
+func TestOSEquivalenceOnHardware(test *testing.T) {
+	if !hardwareAvailable() {
+		test.Skip("requires Docker + Microsandbox (msb) — runs on a provisioned Apple Silicon host")
+	}
+	requireGit(test)
+	harness := New(test)
+	harness.installTemplates(test)
+
+	for _, osKey := range []string{"debian-trixie", "debian-bookworm", "ubuntu", "alma"} {
+		created, code := harness.CreateProjectWithOS(test, "os-"+osKey, osKey)
+		AssertOK(test, created, code, "project.create")
+
+		start, code := harness.Run(test, "workspace", "start", "--project", "os-"+osKey)
+		AssertOK(test, start, code, "workspace.start")
+
+		// Same base tooling surface across every OS.
+		for _, tool := range []string{"git", "gh"} {
+			smoke, code := harness.Run(test, "workspace", "exec", "--project", "os-"+osKey, "--", tool, "--version")
+			AssertOK(test, smoke, code, "workspace.exec")
+		}
+	}
+}
