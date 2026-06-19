@@ -136,30 +136,46 @@ plus config and the Caveman skill.
 One hardware-isolated microVM per project; installed programs and agent state
 persist across restarts via the overlay.
 
+Project-scoped commands **default to the project of your current directory**
+(found by walking up from any subfolder), so from inside the project you can
+just run:
+
 ```bash
-ai workspace start   --project my-app
-ai workspace exec    --project my-app -- bash      # run a command inside
-ai workspace doctor  my-app                        # runtime + virtualization posture
-ai workspace stop    --project my-app
-ai workspace destroy --project my-app              # non-destructive: keeps the overlay
+cd ~/projects/my-app
+ai workspace start                                 # the current directory's project
+ai workspace exec -- bash                          # run a command inside
+ai workspace doctor                                # runtime + virtualization posture
+ai workspace stop
+ai workspace destroy                               # non-destructive: keeps the overlay
+```
+
+To target a different project from anywhere, pass its name (or `--project`),
+which overrides the default:
+
+```bash
+ai workspace start my-app
+ai workspace start --project my-app
 ```
 
 ### 5. Tune, secure, observe
 
+Context commands also default to the current directory's project:
+
 ```bash
-ai context status   my-app                         # Headroom strategy + Caveman level
-ai context strategy my-app aggressive              # conservative | balanced | aggressive
-ai context caveman  my-app ultra                   # lite | full | ultra | wenyan
+ai context status                                  # Headroom strategy + Caveman level
+ai context strategy aggressive                     # conservative | balanced | aggressive
+ai context caveman  ultra                          # lite | full | ultra | wenyan
+ai context strategy my-app aggressive              # or name a project explicitly
 
 ai secrets set  GITHUB_TOKEN                       # value goes to ClawPatrol, never platform disk
-ai secrets map  my-app GITHUB_TOKEN
+ai secrets map  GITHUB_TOKEN --env GITHUB_TOKEN
 ai secrets list                                    # names + metadata only
 
 ai models status                                   # LiteLLM gateway health
 ai models test  claude-opus-4-8
 
 ai services status                                 # host service tier
-ai logs --workspace my-app --tail                  # platform / service / workspace logs
+ai logs --tail                                     # current project + platform logs
 ai state show                                      # global + project state
 ai state repair                                    # reconstruct run-state handles
 ```

@@ -662,9 +662,24 @@ Global flags (accepted by every command and subcommand):
 --json                 machine-readable output (see §19)
 --verbose              extra human-readable detail (ignored with --json)
 --dry-run              compute and print the planned actions; mutate nothing
---project <name>       scope the command to a project
+--project <name>       scope the command to a project (overrides the default)
 --yes                  assume "yes" for destructive confirmation prompts
 ```
+
+### Project resolution
+
+Project-scoped commands (`workspace *`, `context *`, `project delete`,
+`logs`) resolve their target project with this precedence:
+
+1. an explicit project name given as a positional argument;
+2. the `--project <name>` flag;
+3. otherwise the project that owns the **current working directory**, found by
+   walking up until a directory containing `.ai-platform/project.json` is reached
+   (so it works from any subfolder).
+
+When none resolve — no name, no flag, and the CWD is not inside a project — the
+command exits `2` (invalid input). The positional `<project>` is therefore
+optional and written `[project]`.
 
 ## 17.0 Help
 

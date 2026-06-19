@@ -50,11 +50,16 @@ func resolveProjectRoot(name string) (string, error) {
 
 func newContextStatusCmd(emitter *output.Emitter, exit *int) *cobra.Command {
 	return &cobra.Command{
-		Use:   "status <project>",
+		Use:   "status [project]",
 		Short: "Show context-optimization status",
-		Args:  cobra.ExactArgs(1),
-		RunE: func(_ *cobra.Command, args []string) error {
-			root, err := resolveProjectRoot(args[0])
+		Args:  cobra.MaximumNArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			name, err := resolveProjectName(cmd, firstArg(args))
+			if err != nil {
+				*exit = emitter.Failure("context.status", err)
+				return nil
+			}
+			root, err := resolveProjectRoot(name)
 			if err != nil {
 				*exit = emitter.Failure("context.status", mapContextErr(err))
 				return nil
@@ -72,20 +77,26 @@ func newContextStatusCmd(emitter *output.Emitter, exit *int) *cobra.Command {
 
 func newContextStrategyCmd(emitter *output.Emitter, exit *int) *cobra.Command {
 	return &cobra.Command{
-		Use:   "strategy <project> <conservative|balanced|aggressive>",
+		Use:   "strategy [project] <conservative|balanced|aggressive>",
 		Short: "Set the Headroom input-compression strategy",
-		Args:  cobra.ExactArgs(2),
-		RunE: func(_ *cobra.Command, args []string) error {
-			root, err := resolveProjectRoot(args[0])
+		Args:  cobra.RangeArgs(1, 2),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			explicit, value := splitProjectAndValue(args)
+			name, err := resolveProjectName(cmd, explicit)
+			if err != nil {
+				*exit = emitter.Failure("context.strategy", err)
+				return nil
+			}
+			root, err := resolveProjectRoot(name)
 			if err != nil {
 				*exit = emitter.Failure("context.strategy", mapContextErr(err))
 				return nil
 			}
-			if err := contextopt.SetStrategy(root, args[1]); err != nil {
+			if err := contextopt.SetStrategy(root, value); err != nil {
 				*exit = emitter.Failure("context.strategy", mapContextErr(err))
 				return nil
 			}
-			*exit = emitter.Success("context.strategy", map[string]any{"project": args[0], "strategy": args[1]})
+			*exit = emitter.Success("context.strategy", map[string]any{"project": name, "strategy": value})
 			return nil
 		},
 	}
@@ -93,21 +104,36 @@ func newContextStrategyCmd(emitter *output.Emitter, exit *int) *cobra.Command {
 
 func newContextCavemanCmd(emitter *output.Emitter, exit *int) *cobra.Command {
 	return &cobra.Command{
-		Use:   "caveman <project> <lite|full|ultra|wenyan>",
+		Use:   "caveman [project] <lite|full|ultra|wenyan>",
 		Short: "Set the Caveman output-compression level (reinstalls the skill)",
-		Args:  cobra.ExactArgs(2),
-		RunE: func(_ *cobra.Command, args []string) error {
-			root, err := resolveProjectRoot(args[0])
+		Args:  cobra.RangeArgs(1, 2),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			explicit, value := splitProjectAndValue(args)
+			name, err := resolveProjectName(cmd, explicit)
+			if err != nil {
+				*exit = emitter.Failure("context.caveman", err)
+				return nil
+			}
+			root, err := resolveProjectRoot(name)
 			if err != nil {
 				*exit = emitter.Failure("context.caveman", mapContextErr(err))
 				return nil
 			}
-			if err := contextopt.SetCavemanLevel(root, args[1]); err != nil {
+			if err := contextopt.SetCavemanLevel(root, value); err != nil {
 				*exit = emitter.Failure("context.caveman", mapContextErr(err))
 				return nil
 			}
-			*exit = emitter.Success("context.caveman", map[string]any{"project": args[0], "level": args[1]})
+			*exit = emitter.Success("context.caveman", map[string]any{"project": name, "level": value})
 			return nil
 		},
 	}
+}
+
+// splitProjectAndValue interprets `[project] <value>`: two args are
+// project+value, one arg is just the value (project comes from --project/CWD).
+func splitProjectAndValue(args []string) (explicit, value string) {
+	if len(args) == 2 {
+		return args[0], args[1]
+	}
+	return "", args[0]
 }

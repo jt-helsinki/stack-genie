@@ -241,23 +241,28 @@ func newProjectListCmd(emitter *output.Emitter, exit *int) *cobra.Command {
 func newProjectDeleteCmd(emitter *output.Emitter, exit *int) *cobra.Command {
 	var purge bool
 	cmd := &cobra.Command{
-		Use:   "delete <project>",
+		Use:   "delete [project]",
 		Short: "Delete a project (host source kept unless --purge)",
-		Args:  cobra.ExactArgs(1),
+		Args:  cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			root, exists, err := project.Path(args[0])
+			name, err := resolveProjectName(cmd, firstArg(args))
+			if err != nil {
+				*exit = emitter.Failure("project.delete", err)
+				return nil
+			}
+			root, exists, err := project.Path(name)
 			if err != nil {
 				*exit = emitter.Failure("project.delete", output.Errorf(output.ExitRuntimeFailure, "%s", err))
 				return nil
 			}
 			if !exists {
 				*exit = emitter.Failure("project.delete",
-					output.Errorf(output.ExitInvalidInput, "%s: %q", project.ErrUnknownProject, args[0]))
+					output.Errorf(output.ExitInvalidInput, "%s: %q", project.ErrUnknownProject, name))
 				return nil
 			}
 
 			if dryRun, _ := cmd.Flags().GetBool("dry-run"); dryRun {
-				*exit = emitter.Success("project.delete", map[string]any{"dry_run": true, "plan": deletePlan(args[0], root, purge)})
+				*exit = emitter.Success("project.delete", map[string]any{"dry_run": true, "plan": deletePlan(name, root, purge)})
 				return nil
 			}
 
@@ -267,11 +272,11 @@ func newProjectDeleteCmd(emitter *output.Emitter, exit *int) *cobra.Command {
 					output.Errorf(output.ExitInvalidInput, "destructive: pass --yes to confirm"))
 				return nil
 			}
-			if err := project.Delete(args[0], purge); err != nil {
+			if err := project.Delete(name, purge); err != nil {
 				*exit = emitter.Failure("project.delete", mapProjectErr(err))
 				return nil
 			}
-			*exit = emitter.Success("project.delete", map[string]any{"name": args[0], "purged": purge})
+			*exit = emitter.Success("project.delete", map[string]any{"name": name, "purged": purge})
 			return nil
 		},
 	}

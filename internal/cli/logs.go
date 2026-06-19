@@ -30,6 +30,13 @@ func newLogsCmd(emitter *output.Emitter, exit *int) *cobra.Command {
 		Short: "Show platform, service, and workspace logs",
 		Args:  cobra.NoArgs,
 		RunE: func(_ *cobra.Command, _ []string) error {
+			// Default the workspace scope to the current directory's project (if
+			// any) when --workspace is not given (arch §3).
+			if workspaceName == "" {
+				if name, found, _ := currentProjectName(); found {
+					workspaceName = name
+				}
+			}
 			if service != "" && !slices.Contains(logServices, service) {
 				*exit = emitter.Failure("logs",
 					output.Errorf(output.ExitInvalidInput, "unknown service %q (one of %v)", service, logServices))
