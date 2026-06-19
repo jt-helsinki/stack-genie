@@ -47,5 +47,24 @@ make lint           # golangci-lint (if installed)
 ## Install
 
 ```bash
-./installers/install.sh   # places `ai` on disk; then run `ai setup`
+source ./installers/install.sh   # installs `ai`, updates PATH in this shell; then run `ai setup`
 ```
+
+The installer places the `ai` binary on disk, adds its install dir to your
+shell rc (`~/.zshrc`, `~/.bashrc`/`~/.bash_profile`, or fish `config.fish`) as a
+single managed line — updated in place on re-run, never duplicated — and sources
+that rc so `ai` is usable immediately.
+
+**Use `source` (or `.`) as shown.** Running it normally instead:
+
+```bash
+./installers/install.sh   # also works, but PATH applies on next shell
+```
+
+still installs and updates the rc, but a normally-executed script runs in its
+own process and cannot change your current shell's `PATH`. In that case open a
+new shell or run `source ~/.zshrc` (or your shell's rc) afterwards.
+
+Environment overrides: `AIP_INSTALL_DIR` (install location),
+`AIP_NO_MODIFY_PATH=1` (skip rc edits and just print the export line),
+`AIP_VERSION`, `AIP_RELEASE_BASE_URL`.
