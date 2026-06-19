@@ -9,6 +9,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"strings"
+
+	"gopkg.in/yaml.v3"
 )
 
 // Process exit codes (CLI spec §18).
@@ -141,14 +144,27 @@ func (emitter *Emitter) writeJSON(env envelope) {
 	_ = encoder.Encode(env) // Encode appends a trailing newline
 }
 
+// Human is implemented by a data payload that knows how to render itself for
+// non-JSON output. writeHuman prefers it; otherwise it falls back to a readable
+// YAML rendering. JSON is emitted only when --json is set.
+type Human interface{ Human() string }
+
 func (emitter *Emitter) writeHuman(data any) {
 	switch value := data.(type) {
 	case nil:
 		// nothing to print
+	case Human:
+		if text := strings.TrimRight(value.Human(), "\n"); text != "" {
+			_, _ = fmt.Fprintln(emitter.Out, text)
+		}
 	case string:
 		_, _ = fmt.Fprintln(emitter.Out, value)
 	default:
-		encoded, _ := json.MarshalIndent(value, "", "  ")
-		_, _ = fmt.Fprintln(emitter.Out, string(encoded))
+		encoded, err := yaml.Marshal(value)
+		if err != nil {
+			_, _ = fmt.Fprintf(emitter.Out, "%v\n", value)
+			return
+		}
+		_, _ = fmt.Fprint(emitter.Out, string(encoded))
 	}
 }

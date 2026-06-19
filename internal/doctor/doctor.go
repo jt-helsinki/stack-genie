@@ -5,6 +5,9 @@
 package doctor
 
 import (
+	"fmt"
+	"strings"
+
 	"github.com/jt-helsinki/ideal-robot/internal/litellm"
 	"github.com/jt-helsinki/ideal-robot/internal/runtime"
 	"github.com/jt-helsinki/ideal-robot/internal/sandbox"
@@ -31,6 +34,25 @@ type Check struct {
 type Report struct {
 	OK     bool    `json:"ok"`
 	Checks []Check `json:"checks"`
+}
+
+// Human renders the report as a readable check list with status glyphs and
+// repair suggestions (used for non-JSON `ai doctor` output).
+func (report Report) Human() string {
+	glyphs := map[Status]string{StatusOK: "✓", StatusWarn: "!", StatusError: "✗"}
+	var builder strings.Builder
+	for _, check := range report.Checks {
+		_, _ = fmt.Fprintf(&builder, "%s  %-22s %s\n", glyphs[check.Status], check.Name, check.Detail)
+		if check.Suggestion != "" {
+			_, _ = fmt.Fprintf(&builder, "       ↳ %s\n", check.Suggestion)
+		}
+	}
+	if report.OK {
+		builder.WriteString("\nAll checks passed.")
+	} else {
+		builder.WriteString("\nProblems found — see the suggestions above.")
+	}
+	return builder.String()
 }
 
 // Deps are the injectable dependencies of Run.

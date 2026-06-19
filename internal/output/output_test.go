@@ -92,3 +92,37 @@ func TestHumanFailureWritesToStderrNotStdout(test *testing.T) {
 		test.Fatal("human error should be written to stderr")
 	}
 }
+
+type humanData struct{ Name string }
+
+func (humanData) Human() string { return "rendered: neat" }
+
+func TestHumanRendererUsedWithoutJSON(test *testing.T) {
+	em, out, _ := newTestEmitter(false)
+	em.Success("x", humanData{Name: "ignored"})
+	if got := out.String(); got != "rendered: neat\n" {
+		test.Fatalf("Human() output = %q, want %q", got, "rendered: neat\n")
+	}
+}
+
+func TestNonJSONFallsBackToYAMLNotJSON(test *testing.T) {
+	em, out, _ := newTestEmitter(false)
+	em.Success("x", map[string]any{"alpha": 1, "beta": "two"})
+	got := out.String()
+	if len(got) > 0 && got[0] == '{' {
+		test.Fatalf("non-JSON output should not be JSON braces, got %q", got)
+	}
+	for _, fragment := range []string{"alpha: 1", "beta: two"} {
+		if !bytes.Contains([]byte(got), []byte(fragment)) {
+			test.Errorf("YAML output missing %q:\n%s", fragment, got)
+		}
+	}
+}
+
+func TestJSONFlagStillEmitsJSON(test *testing.T) {
+	em, out, _ := newTestEmitter(true)
+	em.Success("x", humanData{Name: "kept"})
+	if got := out.String(); len(got) == 0 || got[0] != '{' {
+		test.Fatalf("--json should emit a JSON envelope, got %q", got)
+	}
+}

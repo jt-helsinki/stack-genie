@@ -72,6 +72,32 @@ type Report struct {
 	Warnings []string `json:"-"`
 }
 
+// Human renders the setup result as a readable summary (non-JSON output).
+func (report *Report) Human() string {
+	var builder strings.Builder
+	fmt.Fprintf(&builder, "Platform: %s\n", report.PlatformDir)
+	if report.Runtime != nil {
+		runtimeInfo := report.Runtime
+		available := "unavailable"
+		if runtimeInfo.Microsandbox.Available {
+			available = "available"
+		}
+		fmt.Fprintf(&builder, "Runtime:  %s (rootless=%t) · microVM %s (%s)\n",
+			runtimeInfo.Detected, runtimeInfo.Rootless, runtimeInfo.Microsandbox.Virtualization, available)
+	}
+	fmt.Fprintf(&builder, "State:    config=%t versions=%t ca=%t\n",
+		report.ConfigCreated, report.VersionsCreated, report.CAReady)
+	builder.WriteString("Services:\n")
+	for _, service := range report.Services {
+		line := fmt.Sprintf("  %-11s %-9s %s", service.Name, service.Mode, service.State)
+		if service.Detail != "" {
+			line += " — " + service.Detail
+		}
+		builder.WriteString(line + "\n")
+	}
+	return strings.TrimRight(builder.String(), "\n")
+}
+
 // Prerequisite is one external dependency `ai setup` needs. Blocking ones must be
 // satisfied before setup can proceed; non-blocking ones are surfaced as warnings.
 type Prerequisite struct {
