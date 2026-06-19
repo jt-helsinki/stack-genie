@@ -5,6 +5,7 @@ import (
 
 	"github.com/jt-helsinki/ideal-robot/internal/doctor"
 	"github.com/jt-helsinki/ideal-robot/internal/litellm"
+	"github.com/jt-helsinki/ideal-robot/internal/ollama"
 	"github.com/jt-helsinki/ideal-robot/internal/output"
 	"github.com/jt-helsinki/ideal-robot/internal/runtime"
 	"github.com/spf13/cobra"
@@ -24,6 +25,7 @@ func newDoctorCmd(emitter *output.Emitter, exit *int) *cobra.Command {
 				GOARCH: goruntime.GOARCH,
 				Prober: runtime.RealProber(),
 				Model:  litellm.RealClient(),
+				Ollama: ollama.RealProbe(),
 			})
 			*exit = emitter.Success("doctor", report)
 			return nil
