@@ -19,8 +19,17 @@ The full design lives in [`spec/`](spec/):
 
 ## Status
 
-Slice 1 (MVP) is under construction. **M0 (bootstrap)** is complete: the binary
-builds and the output envelope + exit-code contract are in place.
+The full control-plane surface (Slices S1–S7) is implemented **host-side**: the
+`ai` CLI, project/workspace lifecycle, context optimization, secrets, models,
+doctor/logs, and Linux/Windows detection all work and are unit-tested. What
+remains is the **live external-tool integration** — launching the LiteLLM /
+Headroom containers, the ClawPatrol gateway + CA, and booting Microsandbox
+microVMs — which can only be wired and verified on a provisioned Apple Silicon
+host. Those seams are tracked in [`docs/HARDWARE-BRINGUP.md`](docs/HARDWARE-BRINGUP.md).
+
+In practice: project creation, configuration, context/secrets/state commands,
+and `ai doctor`/`ai setup` preflight run today; commands that need a live
+workspace or service report their deferred status rather than pretending.
 
 ## Requirements
 
@@ -77,6 +86,86 @@ export line), `AIP_VERSION`, `AIP_RELEASE_BASE_URL`.
 After installing, run `ai doctor` to check the external prerequisites
 (Microsandbox, container runtime, virtualization, ClawPatrol) — each missing one
 prints a copy-pasteable fix — then `ai setup`.
+
+## Usage
+
+`ai` is the single control plane. Every command takes `--json` for a structured
+envelope (`{ok, command, data, error, warnings}`) and a stable exit code
+(`0` ok · `2` invalid input · `3` missing dependency · `4` runtime failure ·
+`5` permission). Other global flags: `--verbose`, `--dry-run`, `--project`,
+`--yes`.
+
+### 1. Install the prerequisites
+
+The platform orchestrates external tools rather than bundling them. You need, on
+Apple Silicon:
+
+| Tool | Role | Install |
+|------|------|---------|
+| [Microsandbox](https://microsandbox.dev) (`msb`) | microVM workspaces | `curl -fsSL https://install.microsandbox.dev \| sh` |
+| Docker or Podman (rootless) | service tier | `brew install --cask docker` (or `brew install podman`) |
+| [ClawPatrol](https://clawpatrol.dev) | egress firewall + secret broker | `curl -fsSL https://clawpatrol.dev/install.sh \| sh` |
+
+`ai doctor` reports which are missing, each with its install command; `ai setup`
+lists every unmet prerequisite at once and refuses to proceed until the blocking
+ones are present. (LiteLLM, Headroom, and Ollama are *not* installed by you —
+`ai setup` runs them as containers.)
+
+### 2. Provision the host
+
+```bash
+ai setup            # idempotent: preflight, lay down ~/.ai-platform, start services
+ai doctor           # dependency + health report with repair suggestions
+```
+
+### 3. Create a project
+
+`ai project create` is an interactive wizard (OS, agent CLIs, software stacks):
+
+```bash
+ai project create my-app        # pick options in the menus; or --dry-run to preview
+ai project list
+ai project delete my-app --yes  # --yes confirms; removes the project + its overlay
+```
+
+A project owns a git-tracked `.ai-platform/Dockerfile` defining its environment,
+plus config and the Caveman skill.
+
+### 4. Work in the workspace
+
+One hardware-isolated microVM per project; installed programs and agent state
+persist across restarts via the overlay.
+
+```bash
+ai workspace start   --project my-app
+ai workspace exec    --project my-app -- bash      # run a command inside
+ai workspace doctor  my-app                        # runtime + virtualization posture
+ai workspace stop    --project my-app
+ai workspace destroy --project my-app              # non-destructive: keeps the overlay
+```
+
+### 5. Tune, secure, observe
+
+```bash
+ai context status   my-app                         # Headroom strategy + Caveman level
+ai context strategy my-app aggressive              # conservative | balanced | aggressive
+ai context caveman  my-app ultra                   # lite | full | ultra | wenyan
+
+ai secrets set  GITHUB_TOKEN                       # value goes to ClawPatrol, never platform disk
+ai secrets map  my-app GITHUB_TOKEN
+ai secrets list                                    # names + metadata only
+
+ai models status                                   # LiteLLM gateway health
+ai models test  claude-opus-4-8
+
+ai services status                                 # host service tier
+ai logs --workspace my-app --tail                  # platform / service / workspace logs
+ai state show                                      # global + project state
+ai state repair                                    # reconstruct run-state handles
+```
+
+See [`spec/04-cli-specification.md`](spec/04-cli-specification.md) for the full
+command reference.
 
 ## Releasing
 
