@@ -46,25 +46,50 @@ make lint           # golangci-lint (if installed)
 
 ## Install
 
+Once a release is published (see [Releasing](#releasing)), install with one
+command:
+
 ```bash
-source ./installers/install.sh   # installs `ai`, updates PATH in this shell; then run `ai setup`
+curl -fsSL https://raw.githubusercontent.com/jt-helsinki/ideal-robot/main/installers/install.sh | bash
+```
+
+This downloads the installer, which fetches the `ai-<os>-<arch>` binary from the
+latest GitHub release and puts it on your PATH. Use `bash`, not `sh` (the script
+uses bash features). A piped install can't change your *current* shell's PATH, so
+open a new shell afterward (the installer updates your rc for future shells).
+
+From a clone (dev), prefer sourcing so PATH applies immediately:
+
+```bash
+source ./installers/install.sh   # builds from source, updates PATH in this shell; then run `ai setup`
 ```
 
 The installer places the `ai` binary on disk, adds its install dir to your
 shell rc (`~/.zshrc`, `~/.bashrc`/`~/.bash_profile`, or fish `config.fish`) as a
-single managed line — updated in place on re-run, never duplicated — and sources
-that rc so `ai` is usable immediately.
+single managed line — updated in place on re-run, never duplicated — and (for
+POSIX shells) sources that rc so `ai` is usable immediately.
 
-**Use `source` (or `.`) as shown.** Running it normally instead:
+Running `./installers/install.sh` normally (not sourced) also works, but PATH
+applies only in the next shell. Environment overrides: `AIP_INSTALL_DIR`
+(install location), `AIP_NO_MODIFY_PATH=1` (skip rc edits and just print the
+export line), `AIP_VERSION`, `AIP_RELEASE_BASE_URL`.
+
+After installing, run `ai doctor` to check the external prerequisites
+(Microsandbox, container runtime, virtualization, ClawPatrol) — each missing one
+prints a copy-pasteable fix — then `ai setup`.
+
+## Releasing
+
+The one-command `curl … | bash` install needs release assets named
+`ai-<os>-<arch>`, which `installers/install.sh` downloads from the latest GitHub
+release. Pushing a `v*` tag builds and publishes them via
+`.github/workflows/release.yml`:
 
 ```bash
-./installers/install.sh   # also works, but PATH applies on next shell
+git tag v0.1.0 && git push origin v0.1.0
 ```
 
-still installs and updates the rc, but a normally-executed script runs in its
-own process and cannot change your current shell's `PATH`. In that case open a
-new shell or run `source ~/.zshrc` (or your shell's rc) afterwards.
-
-Environment overrides: `AIP_INSTALL_DIR` (install location),
-`AIP_NO_MODIFY_PATH=1` (skip rc edits and just print the export line),
-`AIP_VERSION`, `AIP_RELEASE_BASE_URL`.
+The workflow runs `make release` (cross-compiles `dist/ai-darwin-arm64`,
+`ai-linux-amd64`, `ai-linux-arm64` with the tag injected as the version) and
+attaches those binaries plus `install.sh` to the release. `make release` works
+locally too, for testing the artifacts before tagging.

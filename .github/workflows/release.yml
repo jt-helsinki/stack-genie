@@ -1,0 +1,41 @@
+name: release
+
+# Publishes the `ai` binaries and the installer to a GitHub Release when a
+# version tag is pushed. The assets are named ai-<os>-<arch> — exactly what
+# installers/install.sh downloads — so `curl … | bash` works post-release.
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write # create the release and upload assets
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # tags, so `git describe` injects the version
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.26"
+
+      # GITHUB_REF_NAME is the repo-controlled tag (e.g. v1.2.3), injected as the
+      # binary version. Passed via env, not ${{ }} interpolation.
+      - name: Build release binaries
+        env:
+          VERSION: ${{ github.ref_name }}
+        run: make release VERSION="$VERSION"
+
+      - name: Publish release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/ai-darwin-arm64
+            dist/ai-linux-amd64
+            dist/ai-linux-arm64
+            installers/install.sh
+          generate_release_notes: true

@@ -86,7 +86,7 @@ func microsandboxCheck(detected sandbox.Info) Check {
 	return Check{
 		Name: "microsandbox runtime", Status: StatusError,
 		Detail:     "msb not found",
-		Suggestion: "install Microsandbox (`msb`)",
+		Suggestion: "install Microsandbox: curl -fsSL https://install.microsandbox.dev | sh",
 	}
 }
 

@@ -43,11 +43,15 @@ main() {
 }
 
 # from_source builds the binary when run inside the source tree with Go present
-# (dev convenience). Returns 0 if it handled installation.
+# (dev convenience). Returns 0 if it handled installation. When the script is
+# piped (curl | bash) there is no source file, so it returns 1 and the caller
+# falls through to downloading a release asset.
 from_source() {
-  local here repo
-  here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-  repo="$(cd "$here/.." && pwd)"
+  local src here repo
+  src="${BASH_SOURCE[0]:-}"
+  [ -n "$src" ] || return 1
+  here="$(cd "$(dirname "$src")" 2>/dev/null && pwd)" || return 1
+  repo="$(cd "$here/.." 2>/dev/null && pwd)" || return 1
   if [ -f "$repo/go.mod" ] && command -v go >/dev/null 2>&1; then
     info "Source tree detected; building from $repo"
     ( cd "$repo" && make build VERSION="$VERSION" )
