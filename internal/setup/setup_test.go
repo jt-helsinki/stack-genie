@@ -8,9 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/jt-helsinki/ideal-robot/internal/jsonfile"
 	"github.com/jt-helsinki/ideal-robot/internal/output"
-	"github.com/jt-helsinki/ideal-robot/internal/versions"
 )
 
 // --- fakes ------------------------------------------------------------------
@@ -229,36 +227,12 @@ func hasService(specs []serviceSpec, name string) bool {
 	return false
 }
 
-func TestDesiredServicesIncludeOllamaOnlyWhenEnabled(test *testing.T) {
-	test.Setenv("HOME", test.TempDir())
-	if _, err := versions.EnsureDefault(); err != nil {
-		test.Fatal(err)
-	}
-
-	// Default versions.json has ollama disabled → not a desired service.
-	if hasService(desiredServices(), "ollama") {
-		test.Fatal("ollama must be absent when disabled (default)")
-	}
-	// LiteLLM + ClawPatrol are always present.
-	if !hasService(desiredServices(), "litellm") || !hasService(desiredServices(), "clawpatrol") {
-		test.Fatalf("base services missing: %+v", desiredServices())
-	}
-
-	// Flip ollama.enabled = true in versions.json; now it is a desired service.
-	file, err := versions.Load()
-	if err != nil || file == nil {
-		test.Fatalf("load versions: %v", err)
-	}
-	ollama := file.Services["ollama"]
-	enabled := true
-	ollama.Enabled = &enabled
-	file.Services["ollama"] = ollama
-	path, _ := versions.Path()
-	if err := jsonfile.WriteAtomic(path, file); err != nil {
-		test.Fatal(err)
-	}
-
-	if !hasService(desiredServices(), "ollama") {
-		test.Fatalf("ollama must be a desired service once enabled: %+v", desiredServices())
+func TestDesiredServicesAreRequired(test *testing.T) {
+	// Ollama, LiteLLM, and ClawPatrol are all required host services (Ollama is
+	// the local model backend LiteLLM routes to, arch §14/§16).
+	for _, name := range []string{"ollama", "litellm", "clawpatrol"} {
+		if !hasService(desiredServices(), name) {
+			test.Errorf("required service %q missing from desiredServices: %+v", name, desiredServices())
+		}
 	}
 }

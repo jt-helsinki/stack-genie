@@ -32,8 +32,6 @@ type File struct {
 	Services      map[string]Service `json:"services"`
 }
 
-func boolPointer(value bool) *bool { return &value }
-
 // Default returns the built-in pins (repo-layout §12.6). Concrete digests are
 // filled in at release time; the placeholders keep the schema stable.
 func Default() *File {
@@ -46,7 +44,10 @@ func Default() *File {
 			// Headroom (input compression) is installed per-project IN the workspace
 			// image (pip headroom-ai), not run as a host container (arch §8–10).
 			"headroom": {Mode: "workspace", Version: "TBD"},
-			"ollama":   {Mode: "container", Image: "docker.io/ollama/ollama", Digest: "sha256:TBD", Enabled: boolPointer(false)},
+			// Ollama is REQUIRED (always on): LiteLLM routes local model traffic to
+			// it (arch §14, §16). Cloud models still go LiteLLM → provider, and
+			// ClawPatrol firewalls + audits both paths (§17).
+			"ollama": {Mode: "container", Image: "docker.io/ollama/ollama", Digest: "sha256:TBD"},
 		},
 	}
 }

@@ -42,21 +42,56 @@ func checkByName(report Report, name string) Check {
 	return Check{}
 }
 
+type fakeOllama struct{ err error }
+
+func (probe fakeOllama) Reachable() error { return probe.err }
+
 func TestRunAllHealthy(test *testing.T) {
 	deps := Deps{
 		GOOS: "darwin", GOARCH: "arm64",
 		Prober: fakeProber{bins: map[string]bool{"docker": true, "msb": true, "clawpatrol": true}},
 		Model:  fakeModel{healthy: true},
+		Ollama: fakeOllama{},
 	}
 	report := Run(deps)
 	if !report.OK {
 		test.Fatalf("expected healthy, got %+v", report)
+	}
+	if checkByName(report, "ollama").Status != StatusOK {
+		test.Errorf("ollama: %+v", checkByName(report, "ollama"))
 	}
 	if got := checkByName(report, "container runtime").Detail; got != "docker" {
 		test.Errorf("container detail = %q", got)
 	}
 	if checkByName(report, "host virtualization").Detail != "hvf" {
 		test.Errorf("virtualization: %+v", checkByName(report, "host virtualization"))
+	}
+}
+
+func TestOllamaRequiredCheck(test *testing.T) {
+	base := Deps{
+		GOOS: "darwin", GOARCH: "arm64",
+		Prober: fakeProber{bins: map[string]bool{"docker": true, "msb": true, "clawpatrol": true}},
+		Model:  fakeModel{healthy: true},
+	}
+
+	// No probe → warn (not yet checked), but the report stays OK.
+	report := Run(base)
+	if got := checkByName(report, "ollama").Status; got != StatusWarn {
+		test.Errorf("nil probe → ollama status = %q, want warn", got)
+	}
+	if !report.OK {
+		test.Error("a not-yet-checked Ollama must not fail the report")
+	}
+
+	// Required but unreachable → error (it is on the model path).
+	base.Ollama = fakeOllama{err: errors.New("connection refused")}
+	report = Run(base)
+	if got := checkByName(report, "ollama").Status; got != StatusError {
+		test.Errorf("unreachable ollama → status = %q, want error", got)
+	}
+	if report.OK {
+		test.Error("an unreachable required Ollama must fail the report")
 	}
 }
 

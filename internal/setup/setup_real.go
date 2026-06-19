@@ -7,36 +7,22 @@ import (
 	"github.com/jt-helsinki/ideal-robot/internal/litellm"
 	"github.com/jt-helsinki/ideal-robot/internal/paths"
 	"github.com/jt-helsinki/ideal-robot/internal/runtime"
-	"github.com/jt-helsinki/ideal-robot/internal/versions"
 )
 
 type serviceSpec struct{ Name, Mode string }
 
-// desiredServices is the host-service set (arch §5): LiteLLM (gateway, container)
-// and ClawPatrol (firewall, native), plus Ollama (container) only when it is
-// enabled in config/versions.json (default off). Context optimization is NOT
-// here — Headroom (input compression) runs per-project inside the workspace
-// alongside the Caveman skill (arch §8–10), not as a host service.
+// desiredServices is the host-service set (arch §5): Ollama (required local model
+// backend, container), LiteLLM (gateway/router, container), and ClawPatrol
+// (firewall + credential broker, native). Ollama is required — LiteLLM routes
+// local model traffic to it (arch §14, §16). Context optimization is NOT here —
+// Headroom (input compression) runs per-project inside the workspace alongside
+// the Caveman skill (arch §8–10), not as a host service.
 func desiredServices() []serviceSpec {
-	specs := []serviceSpec{
+	return []serviceSpec{
+		{"ollama", "container"},
 		{"litellm", "container"},
 		{"clawpatrol", "native"},
 	}
-	if ollamaEnabled() {
-		specs = append(specs, serviceSpec{"ollama", "container"})
-	}
-	return specs
-}
-
-// ollamaEnabled reports whether the optional Ollama service is turned on in
-// config/versions.json. A missing or unreadable file means off.
-func ollamaEnabled() bool {
-	file, err := versions.Load()
-	if err != nil || file == nil {
-		return false
-	}
-	service, ok := file.Services["ollama"]
-	return ok && service.Enabled != nil && *service.Enabled
 }
 
 // realServices reconciles/reports host services via the runtime Prober.

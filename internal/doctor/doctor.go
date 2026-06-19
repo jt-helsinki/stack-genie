@@ -55,14 +55,20 @@ func (report Report) Human() string {
 	return builder.String()
 }
 
+// OllamaProbe reports whether the optional Ollama service is reachable. It is
+// injectable so the check is unit-testable; nil means "not checked" (the live
+// probe is wired during hardware bring-up).
+type OllamaProbe interface{ Reachable() error }
+
 // Deps are the injectable dependencies of Run.
 type Deps struct {
 	GOOS, GOARCH string
 	Prober       runtime.Prober
 	Model        litellm.Client
+	Ollama       OllamaProbe
 }
 
-// Run executes the Slice 1 checks. (Caveman/Headroom checks land with Slice 2.)
+// Run executes the platform health checks.
 func Run(deps Deps) Report {
 	detectedSandbox := sandbox.Detect(deps.GOOS, deps.GOARCH, deps.Prober)
 	checks := []Check{
@@ -72,6 +78,7 @@ func Run(deps Deps) Report {
 		virtualizationCheck(deps.GOOS, detectedSandbox),
 		clawpatrolCheck(deps.Prober),
 		litellmCheck(deps.Model),
+		ollamaCheck(deps.Ollama),
 	}
 	report := Report{OK: true, Checks: checks}
 	for _, check := range checks {
@@ -133,6 +140,28 @@ func rootlessCheck(goos string, prober runtime.Prober) Check {
 		Detail:     containerRuntime.Name + " runs as root",
 		Suggestion: "run the container runtime rootless (Linux: enable rootless mode, or use Podman)",
 	}
+}
+
+// ollamaCheck reports the Ollama service state. Ollama is required — LiteLLM
+// routes local model traffic to it (arch §14, §16) — so an unreachable Ollama is
+// an error. The probe is injectable; nil means "not checked yet" (the live probe
+// is wired during hardware bring-up).
+func ollamaCheck(probe OllamaProbe) Check {
+	if probe == nil {
+		return Check{
+			Name: "ollama", Status: StatusWarn,
+			Detail:     "required; not checked",
+			Suggestion: "run `ai setup` to start Ollama (live health check lands with hardware bring-up)",
+		}
+	}
+	if err := probe.Reachable(); err != nil {
+		return Check{
+			Name: "ollama", Status: StatusError,
+			Detail:     "required but not reachable",
+			Suggestion: "run `ai setup` to start the Ollama container",
+		}
+	}
+	return Check{Name: "ollama", Status: StatusOK, Detail: "reachable"}
 }
 
 func microsandboxCheck(detected sandbox.Info) Check {
