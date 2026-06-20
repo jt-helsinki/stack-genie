@@ -777,6 +777,16 @@ the agent's job (OpenCode/Claude Code/Codex/Gemini each choose their model). Lit
 provides only a unified endpoint, provider aliasing, a single default, and
 failover.
 
+**Available models are configured once, globally, in LiteLLM's `model_list`** —
+there is **no per-project model configuration**. In an agentic workflow the agent
+simply names the model on each request (`model: <alias>`); if that alias is in
+the `model_list`, LiteLLM routes it to the provider (injecting credentials for
+cloud, none for Ollama). So "using several models, one per task" needs no
+platform routing logic — register the desired models in the catalog and the
+agent picks among them. A model is usable when it is (a) in the `model_list` and
+(b) actually available: an Ollama model must be **pulled** locally; a cloud model
+needs its key in ClawPatrol.
+
 The **default model provider is Ollama** (the required local backend, no
 credential): an unqualified request routes locally. Cloud providers are
 available as aliases for explicit selection but are not the default.
