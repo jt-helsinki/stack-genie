@@ -344,6 +344,36 @@ func TestRunUpgradeRepinsVersions(test *testing.T) {
 	}
 }
 
+type fakeInstaller struct{ installed []string }
+
+func (installer *fakeInstaller) Install(binary string) error {
+	installer.installed = append(installer.installed, binary)
+	return nil
+}
+
+func TestEnsureDependenciesInstallsOnlyMissing(test *testing.T) {
+	// clawpatrol missing, msb present → only clawpatrol is installed.
+	installer := &fakeInstaller{}
+	deps := Deps{
+		Prober:       fakeProber{bins: map[string]bool{"docker": true, "msb": true}},
+		DepInstaller: installer,
+	}
+	ensureDependencies(deps)
+	if len(installer.installed) != 1 || installer.installed[0] != "clawpatrol" {
+		test.Fatalf("expected only clawpatrol installed, got %v", installer.installed)
+	}
+
+	// All present → nothing installed (detect-if-installed).
+	allPresent := &fakeInstaller{}
+	ensureDependencies(Deps{
+		Prober:       fakeProber{bins: map[string]bool{"docker": true, "msb": true, "clawpatrol": true}},
+		DepInstaller: allPresent,
+	})
+	if len(allPresent.installed) != 0 {
+		test.Fatalf("nothing should install when all present, got %v", allPresent.installed)
+	}
+}
+
 func TestLiteLLMRunArgs(test *testing.T) {
 	args := litellmRunArgs("/cfg/litellm/config.yaml")
 	want := []string{

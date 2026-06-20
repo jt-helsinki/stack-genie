@@ -5,6 +5,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"time"
 
@@ -158,6 +159,23 @@ func (services realServices) Control(action, service string) ([]ServiceStatus, e
 		"service %s is wired during hardware bring-up", action)
 }
 
+// realDepInstaller runs a dependency's official one-line installer, streaming its
+// output so the user sees progress.
+type realDepInstaller struct{}
+
+func (realDepInstaller) Install(binary string) error {
+	url, ok := installerURL(binary)
+	if !ok {
+		return fmt.Errorf("no installer known for %q", binary)
+	}
+	// The documented installers are `curl -fsSL <url> | sh` (clawpatrol.dev,
+	// install.microsandbox.dev). #nosec G204 — url is a fixed in-binary constant.
+	command := exec.Command("sh", "-c", "curl -fsSL "+url+" | sh")
+	command.Stdout = os.Stdout
+	command.Stderr = os.Stderr
+	return command.Run()
+}
+
 // realCA prepares the ClawPatrol CA location (arch §17). Generating the CA
 // certificate is delegated to ClawPatrol on a provisioned host.
 type realCA struct{}
@@ -180,6 +198,7 @@ func RealDeps(goos, goarch string, now func() string) Deps {
 		Now:                  now,
 		Services:             realServices{prober: prober},
 		CA:                   realCA{},
+		DepInstaller:         realDepInstaller{},
 		GatewayConfigFetcher: realFetchGatewayConfig,
 	}
 }

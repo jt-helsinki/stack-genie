@@ -54,6 +54,56 @@ type CA interface {
 	Ensure() error
 }
 
+// DepInstaller installs a missing host dependency by binary name (msb,
+// clawpatrol) via the tool's official installer. Injectable for tests.
+type DepInstaller interface {
+	Install(binary string) error
+}
+
+// installableDeps are the host programs `ai setup` auto-installs when absent
+// (detect-if-installed), each with its official one-line installer. Docker/Podman
+// are intentionally NOT here — too heavy and a user choice; they stay a prereq.
+var installableDeps = []struct{ Binary, URL string }{
+	{"msb", "https://install.microsandbox.dev"},
+	{"clawpatrol", "https://clawpatrol.dev/install.sh"},
+}
+
+// installerURL returns the official installer URL for a known dependency binary.
+func installerURL(binary string) (string, bool) {
+	for _, dep := range installableDeps {
+		if dep.Binary == binary {
+			return dep.URL, true
+		}
+	}
+	return "", false
+}
+
+// ensureDependencies installs the auto-installable host programs that are not yet
+// on PATH (msb, ClawPatrol), skipping any already present. Best-effort: an
+// installer failure or a not-yet-on-PATH binary becomes a note, not a hard fail —
+// the prerequisite scan still gates anything truly missing.
+func ensureDependencies(deps Deps) []string {
+	var notes []string
+	for _, dep := range installableDeps {
+		if _, err := deps.Prober.LookPath(dep.Binary); err == nil {
+			continue // already installed
+		}
+		if deps.DepInstaller == nil {
+			continue
+		}
+		if err := deps.DepInstaller.Install(dep.Binary); err != nil {
+			notes = append(notes, fmt.Sprintf("could not auto-install %s: %s", dep.Binary, err))
+			continue
+		}
+		if _, err := deps.Prober.LookPath(dep.Binary); err == nil {
+			notes = append(notes, "installed "+dep.Binary)
+		} else {
+			notes = append(notes, dep.Binary+" installed — ensure its bin dir is on PATH, then re-run `ai setup`")
+		}
+	}
+	return notes
+}
+
 // Deps are the injectable dependencies of Run / ServicesStatus.
 type Deps struct {
 	GOOS, GOARCH string
@@ -61,6 +111,8 @@ type Deps struct {
 	Now          func() string // RFC 3339 UTC timestamp
 	Services     Services
 	CA           CA
+	// DepInstaller installs missing auto-installable host programs (msb, ClawPatrol).
+	DepInstaller DepInstaller
 	// GatewayConfigFetcher downloads the ClawPatrol gateway example HCL (seeded
 	// into ~/.clawpatrol/gateway.hcl on first setup). Injectable for tests.
 	GatewayConfigFetcher func() ([]byte, error)
@@ -264,8 +316,11 @@ func Run(options Options, deps Deps) (*Report, error) {
 	// 1. Preflight: scan every prerequisite and report all missing ones at once,
 	// each with an install command. Blocking gaps stop setup (exit 3 if a program
 	// is missing, else 4); non-blocking gaps (e.g. ClawPatrol) become warnings.
+	// Auto-install the host programs we can (msb, ClawPatrol) before the scan, so
+	// a fresh host doesn't fail preflight just for a missing installable dep.
+	warnings := ensureDependencies(deps)
+
 	missing := missingPrerequisites(deps)
-	var warnings []string
 	for _, prereq := range missing {
 		if prereq.Blocking {
 			return nil, prerequisiteError(missing)
