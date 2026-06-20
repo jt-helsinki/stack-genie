@@ -168,9 +168,13 @@ Purpose:
 * seeds the **ClawPatrol gateway config** at `~/.clawpatrol/gateway.hcl` from the
   upstream example on first run (download-if-absent; never overwrites local
   edits), applying sensible local defaults (`state_dir` → `~/.clawpatrol`). On a
-  TTY (not `--json`) it may prompt for the **dashboard password** and set it via
-  `clawpatrol gateway --set-dashboard-password` (it is not an HCL field); the
-  password is never logged or written to platform disk
+  TTY (not `--json`) it may prompt for the **dashboard password** and apply it
+  via `clawpatrol gateway --set-dashboard-password` (it is not an HCL field).
+  That command upserts the password and then **runs the gateway**, so it is
+  started **detached** (own session, output to `~/.clawpatrol/gateway.log`) —
+  setup must never block on it. The password is never logged or written to
+  platform disk. (Registering the gateway as a managed OS service is the
+  hardware-bring-up end-state.)
 * secures the **LiteLLM admin UI**: the container is launched with `UI_USERNAME`
   (`admin`), `UI_PASSWORD`, and `LITELLM_MASTER_KEY` passed as **env passthrough**
   (values are read from the environment, never inlined in argv, the config, or
