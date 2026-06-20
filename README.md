@@ -90,28 +90,28 @@ prints a copy-pasteable fix — then `ai setup`.
 
 ### Uninstall
 
-Uninstall mirrors install. The simplest way is from the binary:
+The simplest way is from the binary — a native, offline teardown:
 
 ```bash
-ai uninstall --yes           # remove the binary, PATH/completion entries, and aip-* containers
-ai uninstall --yes --purge   # also remove ~/.ai-platform and ~/.clawpatrol
+ai uninstall --yes                 # remove the binary, PATH/completion entries, and aip-* containers
+ai uninstall --yes --purge         # also remove ~/.ai-platform and ~/.clawpatrol
+ai uninstall --yes --remove-deps   # also uninstall msb + clawpatrol without prompting
 ```
 
-`ai uninstall` streams its progress as it runs and exits when finished (the
-running binary removes itself). Use `--dry-run` to print what it would do. It is
-the in-binary entry point to the same `curl | bash` teardown — you can run that
-directly instead:
+`ai uninstall` streams its progress as it runs, **asks per external dependency**
+(`msb`, `clawpatrol`) whether to uninstall it too, writes a transcript to
+**`~/ai-uninstall.log`**, and exits when finished (the running binary removes
+itself). Use `--dry-run` to print what it would do. It **never touches
+`~/projects`** (your source).
+
+For the pre-binary / scripted case, the installer runs in reverse — the same
+teardown:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/jt-helsinki/ideal-robot/main/installers/install.sh | bash -s -- --uninstall
-curl -fsSL https://raw.githubusercontent.com/jt-helsinki/ideal-robot/main/installers/install.sh | bash -s -- --uninstall --purge
+curl -fsSL https://raw.githubusercontent.com/jt-helsinki/ideal-robot/main/installers/install.sh | bash -s -- --uninstall [--purge]
 ```
 
 (Or `./installers/install.sh --uninstall [--purge]` from a checkout.)
-
-Uninstall **never touches `~/projects`** (your source). It also leaves `msb` and
-ClawPatrol installed — those were installed by their own installers; remove them
-with their own tooling if you want.
 
 ## Usage
 

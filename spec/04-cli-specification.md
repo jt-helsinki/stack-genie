@@ -78,12 +78,13 @@ CLI must behave identically on:
 * Host bootstrap uses **thin launchers only** (bash / zsh / PowerShell) whose
   sole job is to download/locate and exec the compiled Go binary. No platform
   logic lives in shell scripts.
-* The standard install is **`curl … | bash`** of `installers/install.sh`.
-  Uninstall uses the **same mechanism** — `curl … | bash -s -- --uninstall
-  [--purge]` — so there is one teardown implementation. `ai uninstall` is the
-  in-binary entry point to it (§2.2): it re-fetches the installer and runs it
-  with `--uninstall`, streaming progress, then the process exits (the running
-  binary removes itself). Uninstall never touches `~/projects`.
+* The standard install is **`curl … | bash`** of `installers/install.sh` (a thin
+  launcher, no platform logic). Uninstall is available two ways: **`ai
+  uninstall`** (§2.2) — a **native, offline** teardown built into the binary (no
+  network, no external script) — and, for the pre-binary / scripted case, the
+  same launcher run in reverse: `curl … | bash -s -- --uninstall [--purge]`
+  (also `./installers/install.sh --uninstall`). Both strip the same managed rc
+  lines and remove the same artifacts; **neither ever touches `~/projects`**.
 * Project templates and agent configuration are **declarative data**
   (YAML / JSON). They are never executable application logic.
 * External components (Microsandbox, LiteLLM, Headroom, ClawPatrol, git, docker /
@@ -205,13 +206,11 @@ Purpose:
 ### ai uninstall
 
 ```bash id="c3b"
-ai uninstall [--purge]
+ai uninstall [--purge] [--remove-deps]
 ```
 
-The inverse of the curl|bash install. It is the in-binary entry point to the
-installer's `--uninstall` path: it fetches `installers/install.sh` (override the
-URL with `AIP_INSTALL_SCRIPT_URL`) and runs it with `--uninstall`, so the
-teardown logic lives in exactly one place (§1.5).
+The inverse of install + setup, implemented **natively in the binary** — it runs
+entirely offline, with no network call and no external script (§1.5).
 
 Behavior:
 
@@ -221,20 +220,35 @@ Behavior:
   shell rc files (leaving the user's own lines intact)
 * `--purge` additionally removes the platform state under `~/.ai-platform` and
   `~/.clawpatrol`
+* **asks, per external dependency, whether to also uninstall it** — for each of
+  `msb` (Microsandbox) and `clawpatrol` that is detected on the host, it prompts
+  (on a terminal) before removing that tool's install artifacts. Neither tool
+  ships an uninstaller, so removal is the on-disk locations published by their
+  installers, not an invented subcommand:
+  * **msb** → `$MSB_HOME` (default `~/.microsandbox`) and the `~/.local/bin`
+    symlinks (`msb`, `microsandbox`)
+  * **clawpatrol** → its binary (`$CLAWPATROL_PREFIX/clawpatrol`, default
+    `~/.local/bin/clawpatrol`), `~/.clawpatrol`, and on macOS the
+    `/Applications/Clawpatrol.app` system-extension bundle
 * **never touches `~/projects`** (the user's source)
-* does **not** remove `msb` (Microsandbox) or `clawpatrol` — those were installed
-  by their own installers and may be used elsewhere
+* **writes a transcript to `~/ai-uninstall.log`** — every task it performs is
+  appended under a timestamped session header. It lives in the home directory
+  (not under `~/.ai-platform`), so it survives `--purge` and remains as a record
+  after the binary removes itself
 * **quits when finished**: the run blocks on the teardown, prints a completion
   summary, then the process exits (the running binary removes itself; its inode
   survives until exit)
 
-Guards:
+Guards / flags:
 
 * **destructive** — requires `--yes` (exit `2` otherwise), consistent with
   `ai project delete` (§20)
-* `--dry-run` prints the exact `curl … | bash` pipeline it would run and changes
-  nothing
-* exit `4` if the teardown fails (e.g. no network, or `curl`/`bash` missing)
+* `--remove-deps` removes every detected external dependency **without
+  prompting** (for non-interactive / `--json` use); without it, and with no
+  terminal to prompt on, the dependencies are left in place and reported
+* `--dry-run` prints the planned steps (including which external dependencies
+  it would ask about) and changes nothing
+* exit `4` if the teardown fails
 
 Idempotent: safe to re-run after a partial or completed uninstall.
 
