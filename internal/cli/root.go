@@ -39,6 +39,10 @@ func Execute() int {
 		Args:          cobra.NoArgs,
 		SilenceUsage:  true, // we render errors ourselves (§19)
 		SilenceErrors: true,
+		// Replace cobra's print-only `completion` command with our own that
+		// installs the script (§1.7). The hidden __complete runtime command,
+		// which powers Tab completion, is unaffected.
+		CompletionOptions: cobra.CompletionOptions{DisableDefaultCmd: true},
 		PersistentPreRun: func(_ *cobra.Command, _ []string) {
 			emitter.JSON = flags.json
 		},
@@ -78,6 +82,7 @@ func Execute() int {
 		newWorkspaceCmd(emitter, &exitCode),
 		newDoctorCmd(emitter, &exitCode),
 		newLogsCmd(emitter, &exitCode),
+		newCompletionCmd(emitter, &exitCode),
 		newStateCmd(emitter, &exitCode),
 	)
 
@@ -119,7 +124,7 @@ func emitJSONHelp(emitter *output.Emitter, cmd *cobra.Command) int {
 	})
 	subcommands := []map[string]any{}
 	for _, sub := range cmd.Commands() {
-		if sub.Hidden || sub.Name() == "help" || sub.Name() == "completion" {
+		if sub.Hidden || sub.Name() == "help" {
 			continue
 		}
 		subcommands = append(subcommands, map[string]any{"name": sub.Name(), "short": sub.Short})

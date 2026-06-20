@@ -108,10 +108,19 @@ Rules:
 
 ## 1.7 Shell Completion
 
-`ai completion <bash|zsh|fish|powershell>` prints a completion script for the
-shell. Completion is **not active until that script is loaded** by the shell
-(it is not a runtime flag) — e.g. `source <(ai completion zsh)` for the session,
-or install it into the shell's completion directory to persist.
+`ai completion <bash|zsh|fish|powershell>` **installs** the completion script into
+the shell's standard location and wires it up:
+
+* **bash** → `$XDG_DATA_HOME/bash-completion/completions/ai` (auto-loaded by
+  bash-completion)
+* **zsh** → `~/.zsh/completions/_ai`, and a managed block is appended to
+  `~/.zshrc` (idempotent) to put that dir on `fpath` and run `compinit`
+* **fish** → `$XDG_CONFIG_HOME/fish/completions/ai.fish` (auto-loaded)
+* **powershell** → a script under the PowerShell config dir, dot-sourced from the
+  profile (managed block)
+
+Restart the shell (or `exec zsh`) to activate. `--print` writes the raw script to
+stdout instead of installing (for piping / manual setup).
 
 Beyond command and flag-name completion, the CLI provides **dynamic value**
 completion:
