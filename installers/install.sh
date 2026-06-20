@@ -5,6 +5,10 @@
 # PATH via the shell rc file (adding or updating a single managed line), and
 # source that rc so `ai` is usable immediately. No platform logic lives here —
 # all real behavior is in the Go binary; run `ai setup` afterwards.
+#
+# Uninstall:  ./install.sh --uninstall [--purge]
+#   reverses the install (binary, PATH/completion rc lines, aip-* containers);
+#   --purge also removes ~/.ai-platform and ~/.clawpatrol. Never touches ~/projects.
 # Env: AIP_INSTALL_DIR, AIP_RELEASE_BASE_URL, AIP_VERSION, AIP_NO_MODIFY_PATH=1.
 set -euo pipefail
 
@@ -86,6 +90,7 @@ done_msg() {
 # installer (or changing AIP_INSTALL_DIR) keeps a single, correct entry. Set
 # AIP_NO_MODIFY_PATH=1 to skip and only print the manual instruction.
 PATH_MARKER="# added by ai installer (AI Development Platform)"
+COMPLETION_MARKER="# added by ai completion (AI Development Platform)"
 ensure_on_path() {
   if [ "${AIP_NO_MODIFY_PATH:-0}" = "1" ]; then
     print_manual_path
@@ -166,10 +171,80 @@ print_manual_path() {
   esac
 }
 
+# uninstall reverses the installer: stop platform containers, remove the binary,
+# the completion scripts, and the managed rc lines. It NEVER touches ~/projects
+# (your source). With --purge it also removes platform state (~/.ai-platform and
+# ~/.clawpatrol). It does NOT remove msb/clawpatrol — those were installed by
+# their own installers and may be used elsewhere.
+uninstall() {
+  local purge=0 arg
+  for arg in "$@"; do
+    [ "$arg" = "--purge" ] && purge=1
+  done
+
+  if command -v docker >/dev/null 2>&1; then
+    local containers
+    containers="$(docker ps -aq --filter 'name=aip-' 2>/dev/null || true)"
+    if [ -n "$containers" ]; then
+      # shellcheck disable=SC2086
+      docker rm -f $containers >/dev/null 2>&1 || true
+      info "Removed platform containers (aip-*)"
+    fi
+  fi
+
+  if [ -f "${INSTALL_DIR}/ai" ]; then
+    rm -f "${INSTALL_DIR}/ai"
+    info "Removed ${INSTALL_DIR}/ai"
+  fi
+
+  rm -f "$HOME/.zsh/completions/_ai" \
+        "${XDG_CONFIG_HOME:-$HOME/.config}/fish/completions/ai.fish" \
+        "${XDG_DATA_HOME:-$HOME/.local/share}/bash-completion/completions/ai" \
+        "${XDG_CONFIG_HOME:-$HOME/.config}/powershell/ai.completion.ps1" 2>/dev/null || true
+
+  remove_rc_markers
+
+  if [ "$purge" = "1" ]; then
+    rm -rf "$HOME/.ai-platform" "$HOME/.clawpatrol"
+    info "Purged ~/.ai-platform and ~/.clawpatrol (project sources under ~/projects were left untouched)"
+  else
+    info "Left ~/.ai-platform, ~/.clawpatrol, and ~/projects in place — re-run with --purge to remove platform state (never your projects)."
+  fi
+  info "Note: msb (Microsandbox) and clawpatrol were installed separately; remove them with their own tools if desired."
+  info "Uninstalled. Restart your shell to drop the stale PATH entry."
+}
+
+# remove_rc_markers strips the managed PATH line and the completion block (marker
+# + its fpath/compinit or dot-source lines) from the known shell rc files.
+remove_rc_markers() {
+  local rc tmp
+  for rc in "${ZDOTDIR:-$HOME}/.zshrc" "$HOME/.bashrc" "$HOME/.bash_profile" \
+            "${XDG_CONFIG_HOME:-$HOME/.config}/fish/config.fish"; do
+    [ -f "$rc" ] || continue
+    grep -qF "$PATH_MARKER" "$rc" || grep -qF "$COMPLETION_MARKER" "$rc" || continue
+    tmp="$(mktemp "${rc}.XXXXXX")"
+    awk -v pm="$PATH_MARKER" -v cm="$COMPLETION_MARKER" '
+      index($0, pm) { next }                       # drop the PATH line
+      index($0, cm) { incomp = 1; next }           # enter the completion block
+      incomp && ($0 ~ /^fpath=/ || $0 ~ /compinit/ || $0 ~ /^\. / || $0 ~ /^[[:space:]]*$/) {
+        if ($0 ~ /^[[:space:]]*$/) incomp = 0       # a blank line ends the block
+        next
+      }
+      incomp { incomp = 0 }                         # any other line ends the block (and is kept)
+      { print }
+    ' "$rc" >"$tmp"
+    mv "$tmp" "$rc"
+    info "Removed ai entries from $rc"
+  done
+}
+
 info() { printf '%s\n' "$*" >&2; }
 err()  { printf 'error: %s\n' "$*" >&2; exit 1; }
 
 # Allow sourcing for tests without running the installer (AIP_SOURCE_ONLY=1).
 if [ "${AIP_SOURCE_ONLY:-0}" != "1" ]; then
-  main "$@"
+  case "${1:-}" in
+    uninstall | --uninstall) uninstall "$@" ;;
+    *) main "$@" ;;
+  esac
 fi

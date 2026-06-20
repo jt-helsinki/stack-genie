@@ -88,6 +88,17 @@ After installing, run `ai doctor` to check the external prerequisites
 (Microsandbox, container runtime, virtualization, ClawPatrol) — each missing one
 prints a copy-pasteable fix — then `ai setup`.
 
+### Uninstall
+
+```bash
+./installers/install.sh --uninstall          # remove the binary, PATH/completion rc lines, and aip-* containers
+./installers/install.sh --uninstall --purge  # also remove ~/.ai-platform and ~/.clawpatrol
+```
+
+Uninstall **never touches `~/projects`** (your source). It also leaves `msb` and
+ClawPatrol installed — those were installed by their own installers; remove them
+with their own tooling if you want.
+
 ## Usage
 
 `ai` is the single control plane. Every command takes `--json` for a structured
