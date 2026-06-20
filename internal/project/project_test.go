@@ -69,6 +69,59 @@ func TestScaffoldWritesArtifactsAndIndex(test *testing.T) {
 	}
 }
 
+func TestResolveRoot(test *testing.T) {
+	home := test.TempDir()
+	test.Setenv("HOME", home)
+
+	// Empty dir → default ~/projects/<name>.
+	defaultRoot, err := ResolveRoot("my-app", "")
+	if err != nil {
+		test.Fatal(err)
+	}
+	if want := filepath.Join(home, "projects", "my-app"); defaultRoot != want {
+		test.Errorf("default root = %q, want %q", defaultRoot, want)
+	}
+
+	// Explicit absolute dir is honored verbatim (any directory).
+	explicit := filepath.Join(home, "workspace", "testvm")
+	got, err := ResolveRoot("my-app", explicit)
+	if err != nil {
+		test.Fatal(err)
+	}
+	if got != explicit {
+		test.Errorf("explicit root = %q, want %q", got, explicit)
+	}
+}
+
+func TestScaffoldAtExplicitRoot(test *testing.T) {
+	withTemplates(test)
+	home, _ := os.UserHomeDir()
+
+	// A directory entirely outside ~/projects — the whole point of the fix.
+	root := filepath.Join(home, "workspace", "testvm")
+	spec := sampleSpec()
+	spec.Root = root
+
+	got, err := Scaffold(spec, "t")
+	if err != nil {
+		test.Fatal(err)
+	}
+	if got != root {
+		test.Fatalf("Scaffold root = %q, want %q", got, root)
+	}
+	if _, err := os.Stat(filepath.Join(root, ".ai-platform", "project.json")); err != nil {
+		test.Errorf("project.json not written at explicit root: %v", err)
+	}
+	// The index records the explicit path, so downstream resolves it by name.
+	registered, ok, err := Path(spec.Name)
+	if err != nil || !ok {
+		test.Fatalf("project not registered: ok=%v err=%v", ok, err)
+	}
+	if registered != root {
+		test.Errorf("index path = %q, want %q", registered, root)
+	}
+}
+
 func TestScaffoldInvalidName(test *testing.T) {
 	withTemplates(test)
 	spec := sampleSpec()

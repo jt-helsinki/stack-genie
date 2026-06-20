@@ -39,6 +39,10 @@ type Spec struct {
 	AgentCLIs   []string
 	DefaultTool string
 	Clone       string
+	// Root is the host source directory for the project. Empty means the default
+	// location (~/projects/<name>); a non-empty value lets the project live in
+	// any directory (CLI §3.1, `--dir`).
+	Root string
 }
 
 // ValidateName reports whether a name is well-formed (arch §19).
@@ -49,13 +53,30 @@ func ValidateName(name string) error {
 	return nil
 }
 
-// RootPath returns the host source path for a project (~/projects/<name>).
+// RootPath returns the default host source path for a project (~/projects/<name>).
+// It is the fallback when no explicit directory is given; see ResolveRoot.
 func RootPath(name string) (string, error) {
 	projectsDir, err := paths.ProjectsDir()
 	if err != nil {
 		return "", err
 	}
 	return filepath.Join(projectsDir, name), nil
+}
+
+// ResolveRoot returns the host source directory for a project. An explicit dir
+// (from `--dir`, absolute or relative to the current directory) lets a project
+// live in ANY directory; an empty dir defaults to ~/projects/<name> (RootPath).
+func ResolveRoot(name, dir string) (string, error) {
+	if dir == "" {
+		return RootPath(name)
+	}
+	return filepath.Abs(dir)
+}
+
+// resolvedRoot returns the spec's host source dir: spec.Root when set, else the
+// default location for the name.
+func (spec Spec) resolvedRoot() (string, error) {
+	return ResolveRoot(spec.Name, spec.Root)
 }
 
 // profileFile is <project>/.ai-platform/profile.yaml (repo-layout §12.1a).
@@ -65,9 +86,9 @@ type profileFile struct {
 }
 
 // EnsureCreatable validates the name and confirms no project with that name is
-// already registered or already on disk (so the caller can clone/init the dir
-// before scaffolding).
-func EnsureCreatable(name string) error {
+// already registered, and that root is not already a project (so the caller can
+// clone/init the dir before scaffolding). root is the resolved host source dir.
+func EnsureCreatable(name, root string) error {
 	if err := ValidateName(name); err != nil {
 		return err
 	}
@@ -77,10 +98,6 @@ func EnsureCreatable(name string) error {
 	}
 	if _, exists := index.Projects[name]; exists {
 		return fmt.Errorf("%w: %q", ErrAlreadyExists, name)
-	}
-	root, err := RootPath(name)
-	if err != nil {
-		return err
 	}
 	if _, err := os.Stat(filepath.Join(root, ".ai-platform", "project.json")); err == nil {
 		return fmt.Errorf("%w: %s is already a project", ErrAlreadyExists, root)
@@ -103,11 +120,11 @@ func Path(name string) (string, bool, error) {
 // git-init'd dir) but refuses to overwrite an existing project. It does NOT run
 // git or start a workspace — those are layered on by the caller.
 func Scaffold(spec Spec, createdAt string) (string, error) {
-	if err := EnsureCreatable(spec.Name); err != nil {
+	root, err := spec.resolvedRoot()
+	if err != nil {
 		return "", err
 	}
-	root, err := RootPath(spec.Name)
-	if err != nil {
+	if err := EnsureCreatable(spec.Name, root); err != nil {
 		return "", err
 	}
 	if err := os.MkdirAll(filepath.Join(root, ".ai-platform"), 0o755); err != nil {

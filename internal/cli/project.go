@@ -51,13 +51,13 @@ func mapProjectErr(err error) error {
 }
 
 func newProjectCreateCmd(emitter *output.Emitter, exit *int) *cobra.Command {
-	var clone string
+	var clone, dir string
 	cmd := &cobra.Command{
 		Use:   "create [name]",
 		Short: "Create a project via the interactive setup wizard",
 		Args:  cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			defaultName := defaultProjectName(args)
+			defaultName := defaultProjectName(args, dir)
 			spec, cancelled, err := runCreateWizard(defaultName)
 			if err != nil {
 				// No TTY (or wizard failure): the wizard cannot prompt (§3.1).
@@ -70,18 +70,21 @@ func newProjectCreateCmd(emitter *output.Emitter, exit *int) *cobra.Command {
 				return nil
 			}
 			spec.Clone = clone
-			root, err := project.RootPath(spec.Name)
+			// Resolve the host source dir: --dir (any directory) or the default
+			// ~/projects/<name>. Resolved once and threaded through create.
+			root, err := project.ResolveRoot(spec.Name, dir)
 			if err != nil {
 				*exit = emitter.Failure("project.create", output.Errorf(output.ExitRuntimeFailure, "%s", err))
 				return nil
 			}
+			spec.Root = root
 
 			if dryRun, _ := cmd.Flags().GetBool("dry-run"); dryRun {
 				*exit = emitter.Success("project.create", map[string]any{"dry_run": true, "plan": createPlan(spec, root)})
 				return nil
 			}
 
-			if err := project.EnsureCreatable(spec.Name); err != nil {
+			if err := project.EnsureCreatable(spec.Name, root); err != nil {
 				*exit = emitter.Failure("project.create", mapProjectErr(err))
 				return nil
 			}
@@ -120,6 +123,7 @@ func newProjectCreateCmd(emitter *output.Emitter, exit *int) *cobra.Command {
 		},
 	}
 	cmd.Flags().StringVar(&clone, "clone", "", "seed the project from an existing git repo")
+	cmd.Flags().StringVar(&dir, "dir", "", "create the project in this directory (default ~/projects/<name>)")
 	return cmd
 }
 
@@ -138,9 +142,15 @@ func createPlan(spec project.Spec, root string) []string {
 	}
 }
 
-func defaultProjectName(args []string) string {
+func defaultProjectName(args []string, dir string) string {
 	if len(args) == 1 {
 		return args[0]
+	}
+	// With --dir but no name, default the name to the target directory's base.
+	if dir != "" {
+		if abs, err := filepath.Abs(dir); err == nil {
+			return sanitizeName(filepath.Base(abs))
+		}
 	}
 	if cwd, err := os.Getwd(); err == nil {
 		return sanitizeName(filepath.Base(cwd))
