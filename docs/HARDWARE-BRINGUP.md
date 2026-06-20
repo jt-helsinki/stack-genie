@@ -34,8 +34,17 @@ real docs before wiring:
       proxy** (S1 egress model). See `denoland/clawpatrol` docs.
 - [ ] **Agent-CLI install commands** in the template snippets
       (`internal/templates/files/agentclis/*/Dockerfile.snippet`) — the npm
-      package names (`opencode-ai`, `@anthropic-ai/claude-code`, `@openai/codex`,
-      `@google/gemini-cli`) are marked "verify on hardware".
+      package names (`opencode-ai`, `@earendil-works/pi-coding-agent` (pi.dev),
+      `@anthropic-ai/claude-code`, `@openai/codex`, `@google/gemini-cli`) are
+      marked "verify on hardware". `opencode` + `pi` are installed by default.
+- [ ] **Agent-CLI → LiteLLM wiring at workspace start.** Each installed agent CLI
+      must talk to models through LiteLLM (via the in-workspace Headroom proxy →
+      `AI_PLATFORM_HOST:4000`). For opencode/codex/gemini this is the
+      OpenAI-compatible base-URL env (`OPENAI_BASE_URL`/key) injected at start;
+      for **pi** it is a custom provider registered via a pi extension or
+      `models.json` (`registerProvider(..., { baseUrl, apiKey, api:
+      "openai-completions" })`, pi.dev/docs custom-provider) — verify pi's exact
+      config format on hardware.
 - [ ] **Hypervisor entitlement + notarization** chain for distributing the signed
       `ai` (and/or `msb`) binary (Developer ID, not App Store). The M3 spike
       (plan §8.2) covers this plus a no-admin/no-kext networking check.

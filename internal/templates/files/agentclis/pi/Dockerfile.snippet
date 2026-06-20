@@ -1,0 +1,10 @@
+# agent CLI: pi (https://pi.dev) — installed alongside opencode by default.
+# Like opencode, it talks to models through LiteLLM; the OpenAI-compatible
+# provider (baseUrl → AI_PLATFORM_HOST:4000, api: openai-completions) is
+# registered at workspace start (pi extension / models.json).
+# Verify the exact npm package + custom-provider config on hardware bring-up.
+USER root
+RUN apt-get update && apt-get install -y --no-install-recommends nodejs npm \
+ && rm -rf /var/lib/apt/lists/* \
+ && npm install -g --ignore-scripts @earendil-works/pi-coding-agent
+USER workspace

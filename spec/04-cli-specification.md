@@ -323,8 +323,10 @@ Steps, in order:
 2. **OS** — single-select from the supported keys; default `debian-trixie`
    (Slice 1 ships only `debian-trixie`; Slice 5 adds `alma`, `debian-bookworm`,
    `ubuntu`). Selects the template that seeds `.ai-platform/Dockerfile`.
-3. **Agent CLIs** — **multi-select checkboxes**; `OpenCode` pre-checked; choose
-   any subset of `OpenCode`, `Claude Code`, `Codex`, `Gemini CLI` (at least one).
+3. **Agent CLIs** — **multi-select checkboxes**; `OpenCode` and `Pi` pre-checked
+   (both installed by default); choose any subset of `OpenCode`, `Pi`,
+   `Claude Code`, `Codex`, `Gemini CLI` (at least one). All connect to models
+   through LiteLLM.
 4. **Default agent CLI** — single-select from the CLIs chosen in step 3; default
    `OpenCode` (recorded as `agent.default_tool`).
 5. **Software stacks** — **multi-select checkboxes**; choose the language/tool

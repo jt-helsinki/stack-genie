@@ -22,7 +22,7 @@ import (
 var (
 	supportedOSes      = []string{"debian-trixie", "debian-bookworm", "ubuntu", "alma"}
 	supportedStacks    = []string{"go", "node", "python", "rust", "java", "maven", "deno"}
-	supportedAgentCLIs = []string{"opencode", "claude-code", "codex", "gemini"}
+	supportedAgentCLIs = []string{"opencode", "pi", "claude-code", "codex", "gemini"}
 )
 
 func newProjectCmd(emitter *output.Emitter, exit *int) *cobra.Command {
@@ -197,7 +197,7 @@ func sanitizeName(raw string) string {
 func runCreateWizard(defaultName string) (project.Spec, bool, error) {
 	name := defaultName
 	osKey := "debian-trixie"
-	agentCLIs := []string{"opencode"}
+	agentCLIs := []string{"opencode", "pi"} // both installed by default
 	defaultTool := "opencode"
 	stacks := []string{}
 

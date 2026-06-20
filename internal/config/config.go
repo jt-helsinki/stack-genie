@@ -78,7 +78,7 @@ type PortMapping struct {
 // `os` — there is no default OS (it is always chosen per project, arch §25).
 func Default() *Config {
 	return &Config{
-		Agent:     AgentConfig{Tools: []string{"opencode"}, DefaultTool: "opencode"},
+		Agent:     AgentConfig{Tools: []string{"opencode", "pi"}, DefaultTool: "opencode"},
 		Context:   ContextConfig{Strategy: "balanced", CavemanLevel: "full"},
 		Workspace: WorkspaceConfig{CPULimit: 4, MemoryLimit: "8G"},
 		Network:   NetworkConfig{EgressProxy: "clawpatrol"},

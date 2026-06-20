@@ -117,7 +117,7 @@ purposes:
 Host Layer
  ├─ Microsandbox microVM runtime (libkrun)         ← workspaces
  │   └─ Sandbox Layer (workspace microVM)
- │       ├─ AI Tooling Layer (OpenCode / Claude Code / Codex / Gemini CLI — selected per env)
+ │       ├─ AI Tooling Layer (OpenCode + Pi by default; Claude Code / Codex / Gemini CLI optional — selected per env)
  │       └─ Context Optimization (Headroom proxy + Caveman skill — per project, §8–10)
  │
  └─ Container Runtime (Docker / Podman)            ← service tier

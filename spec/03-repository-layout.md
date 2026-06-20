@@ -540,7 +540,7 @@ config blocks.
 ```yaml id="sc6"
 os: alma                   # alma | debian-trixie | debian-bookworm | ubuntu
 agent:
-  tools: [opencode]        # installed agent CLIs (any subset of: opencode, claude-code, codex, gemini-cli)
+  tools: [opencode, pi]    # installed agent CLIs (any subset of: opencode, pi, claude-code, codex, gemini-cli); opencode + pi by default
   default_tool: opencode   # default agent CLI; must be one of agent.tools
 context:
   strategy: balanced       # Headroom input compression: conservative | balanced | aggressive
