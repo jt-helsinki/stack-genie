@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	goruntime "runtime"
 	"strings"
 
 	"github.com/charmbracelet/huh"
@@ -12,6 +13,7 @@ import (
 	"github.com/jt-helsinki/ideal-robot/internal/git"
 	"github.com/jt-helsinki/ideal-robot/internal/output"
 	"github.com/jt-helsinki/ideal-robot/internal/project"
+	"github.com/jt-helsinki/ideal-robot/internal/workspace"
 	"github.com/spf13/cobra"
 )
 
@@ -51,13 +53,30 @@ func mapProjectErr(err error) error {
 }
 
 func newProjectCreateCmd(emitter *output.Emitter, exit *int) *cobra.Command {
-	var clone, dir string
+	var clone string
 	cmd := &cobra.Command{
 		Use:   "create [name]",
-		Short: "Create a project via the interactive setup wizard",
+		Short: "Create a project in the current directory (or attach if one exists here)",
 		Args:  cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			defaultName := defaultProjectName(args, dir)
+			dryRun, _ := cmd.Flags().GetBool("dry-run")
+
+			// If the current directory is already a project, don't create a new
+			// one — attach to its workspace instead (bubbling up like other
+			// commands). This makes `ai project create` idempotent per directory.
+			if existing, found, err := currentProjectName(); err != nil {
+				*exit = emitter.Failure("project.create", output.Errorf(output.ExitRuntimeFailure, "%s", err))
+				return nil
+			} else if found {
+				if dryRun {
+					*exit = emitter.Success("project.create", map[string]any{"dry_run": true, "attach": existing})
+					return nil
+				}
+				attachWorkspace(emitter, exit, existing)
+				return nil
+			}
+
+			defaultName := defaultProjectName(args)
 			spec, cancelled, err := runCreateWizard(defaultName)
 			if err != nil {
 				// No TTY (or wizard failure): the wizard cannot prompt (§3.1).
@@ -70,16 +89,15 @@ func newProjectCreateCmd(emitter *output.Emitter, exit *int) *cobra.Command {
 				return nil
 			}
 			spec.Clone = clone
-			// Resolve the host source dir: --dir (any directory) or the default
-			// ~/projects/<name>. Resolved once and threaded through create.
-			root, err := project.ResolveRoot(spec.Name, dir)
+			// The project is created in the current working directory.
+			root, err := os.Getwd()
 			if err != nil {
 				*exit = emitter.Failure("project.create", output.Errorf(output.ExitRuntimeFailure, "%s", err))
 				return nil
 			}
 			spec.Root = root
 
-			if dryRun, _ := cmd.Flags().GetBool("dry-run"); dryRun {
+			if dryRun {
 				*exit = emitter.Success("project.create", map[string]any{"dry_run": true, "plan": createPlan(spec, root)})
 				return nil
 			}
@@ -123,8 +141,29 @@ func newProjectCreateCmd(emitter *output.Emitter, exit *int) *cobra.Command {
 		},
 	}
 	cmd.Flags().StringVar(&clone, "clone", "", "seed the project from an existing git repo")
-	cmd.Flags().StringVar(&dir, "dir", "", "create the project in this directory (default ~/projects/<name>)")
 	return cmd
+}
+
+// attachWorkspace connects to an existing project's workspace VM: it starts the
+// microVM (a no-op if already running) and opens an interactive login shell
+// inside it. Used when `ai project create` runs in a directory that is already a
+// project. The microVM start/exec are wired during hardware bring-up.
+func attachWorkspace(emitter *output.Emitter, exit *int, name string) {
+	manager := workspace.RealManager(goruntime.GOOS, nowRFC3339)
+	if _, err := manager.Start(name); err != nil {
+		*exit = emitter.Failure("project.create", mapWorkspaceErr(err))
+		return
+	}
+	shell := os.Getenv("SHELL")
+	if shell == "" {
+		shell = "/bin/sh"
+	}
+	result, err := manager.Exec(name, []string{shell, "-l"})
+	if err != nil {
+		*exit = emitter.Failure("project.create", mapWorkspaceErr(err))
+		return
+	}
+	*exit = emitter.Success("project.create", result)
 }
 
 // createPlan is the ordered, side-effect-free action list for --dry-run (§17.1).
@@ -142,16 +181,12 @@ func createPlan(spec project.Spec, root string) []string {
 	}
 }
 
-func defaultProjectName(args []string, dir string) string {
+func defaultProjectName(args []string) string {
 	if len(args) == 1 {
 		return args[0]
 	}
-	// With --dir but no name, default the name to the target directory's base.
-	if dir != "" {
-		if abs, err := filepath.Abs(dir); err == nil {
-			return sanitizeName(filepath.Base(abs))
-		}
-	}
+	// No name given: default to the current directory's base (the project is
+	// created here).
 	if cwd, err := os.Getwd(); err == nil {
 		return sanitizeName(filepath.Base(cwd))
 	}

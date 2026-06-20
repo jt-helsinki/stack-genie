@@ -69,35 +69,12 @@ func TestScaffoldWritesArtifactsAndIndex(test *testing.T) {
 	}
 }
 
-func TestResolveRoot(test *testing.T) {
-	home := test.TempDir()
-	test.Setenv("HOME", home)
-
-	// Empty dir → default ~/projects/<name>.
-	defaultRoot, err := ResolveRoot("my-app", "")
-	if err != nil {
-		test.Fatal(err)
-	}
-	if want := filepath.Join(home, "projects", "my-app"); defaultRoot != want {
-		test.Errorf("default root = %q, want %q", defaultRoot, want)
-	}
-
-	// Explicit absolute dir is honored verbatim (any directory).
-	explicit := filepath.Join(home, "workspace", "testvm")
-	got, err := ResolveRoot("my-app", explicit)
-	if err != nil {
-		test.Fatal(err)
-	}
-	if got != explicit {
-		test.Errorf("explicit root = %q, want %q", got, explicit)
-	}
-}
-
 func TestScaffoldAtExplicitRoot(test *testing.T) {
 	withTemplates(test)
 	home, _ := os.UserHomeDir()
 
-	// A directory entirely outside ~/projects — the whole point of the fix.
+	// A directory entirely outside ~/projects — `ai project create` sets
+	// Spec.Root to the current directory, which can be anywhere.
 	root := filepath.Join(home, "workspace", "testvm")
 	spec := sampleSpec()
 	spec.Root = root

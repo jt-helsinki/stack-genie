@@ -261,25 +261,29 @@ Idempotent: safe to re-run after a partial or completed uninstall.
 ai project create [<name>]
 ```
 
-`ai project create` sets up a new environment through an **interactive wizard**;
-it requires a terminal. Apart from the optional project name (and the `--clone` /
-`--dir` **values** — not menu choices), **there are no flags for the choices** —
-every selectable option is made in the wizard. In particular there is **no
-`--os` flag**: the OS is always picked in the wizard.
+`ai project create` sets up a new environment **in the current working
+directory** through an **interactive wizard**; it requires a terminal. Apart from
+the optional project name (and `--clone`, which takes a repo URL — a value, not a
+menu choice), **there are no flags for the choices** — every selectable option is
+made in the wizard. In particular there is **no `--os` flag**: the OS is always
+picked in the wizard.
 
-A project may live in **any directory**. By default the host source goes to
-`~/projects/<name>`; `--dir <path>` overrides this so the project can be created
-anywhere (absolute, or relative to the current directory). The chosen path is
-recorded in the global index (`config/projects.json`), and every later command
-resolves the project **by name** through that index — so the location is not
-otherwise constrained. With `--dir` and no name, the name defaults to the target
+The project lives wherever you run the command — there is no fixed projects
+directory. The chosen path is recorded in the global index
+(`config/projects.json`), and every later command resolves the project **by
+name** through that index. With no name given, the name defaults to the current
 directory's basename.
+
+**Attach if one already exists.** If the current directory (or any parent) is
+already a project, `create` does **not** scaffold a new one — it **attaches** to
+that project's workspace instead: it starts the microVM (a no-op if already
+running) and opens an interactive login shell inside it. This makes `ai project
+create` idempotent per directory.
 
 Options:
 
 ```bash id="c5"
 --clone <repo>   # optional: seed the project from an existing git repo
---dir <path>     # optional: create the project here (default ~/projects/<name>)
 ```
 
 ### Interactive setup wizard

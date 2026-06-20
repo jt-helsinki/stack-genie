@@ -54,7 +54,8 @@ func ValidateName(name string) error {
 }
 
 // RootPath returns the default host source path for a project (~/projects/<name>).
-// It is the fallback when no explicit directory is given; see ResolveRoot.
+// `ai project create` creates the project in the current directory and sets
+// Spec.Root explicitly; RootPath remains the fallback when Root is unset.
 func RootPath(name string) (string, error) {
 	projectsDir, err := paths.ProjectsDir()
 	if err != nil {
@@ -63,20 +64,13 @@ func RootPath(name string) (string, error) {
 	return filepath.Join(projectsDir, name), nil
 }
 
-// ResolveRoot returns the host source directory for a project. An explicit dir
-// (from `--dir`, absolute or relative to the current directory) lets a project
-// live in ANY directory; an empty dir defaults to ~/projects/<name> (RootPath).
-func ResolveRoot(name, dir string) (string, error) {
-	if dir == "" {
-		return RootPath(name)
-	}
-	return filepath.Abs(dir)
-}
-
 // resolvedRoot returns the spec's host source dir: spec.Root when set, else the
 // default location for the name.
 func (spec Spec) resolvedRoot() (string, error) {
-	return ResolveRoot(spec.Name, spec.Root)
+	if spec.Root != "" {
+		return spec.Root, nil
+	}
+	return RootPath(spec.Name)
 }
 
 // profileFile is <project>/.ai-platform/profile.yaml (repo-layout §12.1a).
