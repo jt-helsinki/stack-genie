@@ -56,6 +56,23 @@ func TestRenderDefaultRouting(test *testing.T) {
 	if byName["gemini-pro"] != "gemini/gemini-3.5-flash" {
 		test.Fatalf("gemini-pro -> %q, want gemini/gemini-3.5-flash", byName["gemini-pro"])
 	}
+
+	// Full catalogue: each provider exposes a wildcard so any model is routable
+	// without enumerating it. Cloud wildcards carry the placeholder key; Ollama
+	// needs none.
+	for alias, wantKey := range map[string]string{
+		"ollama/*":    "",
+		"openai/*":    "os.environ/OPENAI_API_KEY",
+		"anthropic/*": "os.environ/ANTHROPIC_API_KEY",
+		"gemini/*":    "os.environ/GEMINI_API_KEY",
+	} {
+		if byName[alias] != alias {
+			test.Errorf("wildcard %q -> %q, want %q", alias, byName[alias], alias)
+		}
+		if keyByName[alias] != wantKey {
+			test.Errorf("wildcard %q api_key = %q, want %q", alias, keyByName[alias], wantKey)
+		}
+	}
 	// Ollama needs no credential.
 	if keyByName["gemma4"] != "" {
 		test.Fatalf("ollama alias should have no api_key, got %q", keyByName["gemma4"])

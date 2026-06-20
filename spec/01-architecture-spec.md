@@ -814,16 +814,27 @@ It does not make model-selection decisions on the agent's behalf.
 
 ---
 
-## Example Aliases
+## Catalogue & Aliases
+
+The catalogue exposes a **full per-provider model list via wildcards**, so the
+agent can name *any* model from Ollama, OpenAI, Anthropic, or Google Gemini —
+LiteLLM routes it on demand without each model being enumerated. Registering a
+model does **not** install it: an Ollama model must still be `ollama pull`ed, and
+a cloud model still needs its key (injected by ClawPatrol). A few named handles
+point at the recommended model per provider; `gemma4` (local) is the default.
 
 ```yaml
-gemma4: ollama/gemma4:31b   # default (local, no credential)
-
-gpt-5.5: openai/gpt-5.5
-
-claude-opus: anthropic/claude-opus-4-8
-
-gemini-pro: gemini/gemini-3.5-flash
+model_list:
+  # Recommended named handles
+  - { model_name: gemma4,      litellm_params: { model: ollama/gemma4:31b } }   # default (local, no credential)
+  - { model_name: gpt-5.5,     litellm_params: { model: openai/gpt-5.5,    api_key: os.environ/OPENAI_API_KEY } }
+  - { model_name: claude-opus, litellm_params: { model: anthropic/claude-opus-4-8, api_key: os.environ/ANTHROPIC_API_KEY } }
+  - { model_name: gemini-pro,  litellm_params: { model: gemini/gemini-3.5-flash,   api_key: os.environ/GEMINI_API_KEY } }
+  # Full per-provider catalogue (any model, routed on demand)
+  - { model_name: "ollama/*",    litellm_params: { model: "ollama/*" } }
+  - { model_name: "openai/*",    litellm_params: { model: "openai/*",    api_key: os.environ/OPENAI_API_KEY } }
+  - { model_name: "anthropic/*", litellm_params: { model: "anthropic/*", api_key: os.environ/ANTHROPIC_API_KEY } }
+  - { model_name: "gemini/*",    litellm_params: { model: "gemini/*",    api_key: os.environ/GEMINI_API_KEY } }
 ```
 
 ---

@@ -21,17 +21,27 @@ type Routing struct {
 	Aliases map[string]string `yaml:"aliases" json:"aliases"`
 }
 
-// DefaultRouting is the built-in default (arch §14–15). The default model is the
-// local Ollama backend (required, no credential); cloud providers are available
-// as aliases for explicit selection but are not the default.
+// DefaultRouting is the built-in default (arch §14–15). It exposes a **full
+// catalogue** via per-provider wildcards — the agent may name ANY model from
+// Ollama, OpenAI, Anthropic, or Google Gemini and LiteLLM routes it on demand
+// (cloud keys injected by ClawPatrol; Ollama needs none). Registering a model
+// does not install it: an Ollama model must still be `ollama pull`ed, and a
+// cloud model still needs its key. The named aliases are convenient handles for
+// the recommended model per provider; `gemma4` (local Ollama) is the default.
 func DefaultRouting() Routing {
 	return Routing{
 		Default: "gemma4",
 		Aliases: map[string]string{
+			// Recommended named handles.
 			"gemma4":      "ollama/gemma4:31b",
 			"gpt-5.5":     "openai/gpt-5.5",
 			"claude-opus": "anthropic/claude-opus-4-8",
 			"gemini-pro":  "gemini/gemini-3.5-flash",
+			// Full per-provider catalogue (any model, routed on demand).
+			"ollama/*":    "ollama/*",
+			"openai/*":    "openai/*",
+			"anthropic/*": "anthropic/*",
+			"gemini/*":    "gemini/*",
 		},
 	}
 }
