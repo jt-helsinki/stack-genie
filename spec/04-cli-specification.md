@@ -78,6 +78,12 @@ CLI must behave identically on:
 * Host bootstrap uses **thin launchers only** (bash / zsh / PowerShell) whose
   sole job is to download/locate and exec the compiled Go binary. No platform
   logic lives in shell scripts.
+* The standard install is **`curl … | bash`** of `installers/install.sh`.
+  Uninstall uses the **same mechanism** — `curl … | bash -s -- --uninstall
+  [--purge]` — so there is one teardown implementation. `ai uninstall` is the
+  in-binary entry point to it (§2.2): it re-fetches the installer and runs it
+  with `--uninstall`, streaming progress, then the process exits (the running
+  binary removes itself). Uninstall never touches `~/projects`.
 * Project templates and agent configuration are **declarative data**
   (YAML / JSON). They are never executable application logic.
 * External components (Microsandbox, LiteLLM, Headroom, ClawPatrol, git, docker /
@@ -191,6 +197,46 @@ Purpose:
 
 * upgrades platform components
 * preserves state and projects
+
+---
+
+## 2.2 Uninstall
+
+### ai uninstall
+
+```bash id="c3b"
+ai uninstall [--purge]
+```
+
+The inverse of the curl|bash install. It is the in-binary entry point to the
+installer's `--uninstall` path: it fetches `installers/install.sh` (override the
+URL with `AIP_INSTALL_SCRIPT_URL`) and runs it with `--uninstall`, so the
+teardown logic lives in exactly one place (§1.5).
+
+Behavior:
+
+* **streams uninstall status/progress** live as each step runs — stopping the
+  platform containers (`aip-*`), removing the `ai` binary, removing the
+  completion scripts, and stripping the managed PATH/completion lines from the
+  shell rc files (leaving the user's own lines intact)
+* `--purge` additionally removes the platform state under `~/.ai-platform` and
+  `~/.clawpatrol`
+* **never touches `~/projects`** (the user's source)
+* does **not** remove `msb` (Microsandbox) or `clawpatrol` — those were installed
+  by their own installers and may be used elsewhere
+* **quits when finished**: the run blocks on the teardown, prints a completion
+  summary, then the process exits (the running binary removes itself; its inode
+  survives until exit)
+
+Guards:
+
+* **destructive** — requires `--yes` (exit `2` otherwise), consistent with
+  `ai project delete` (§20)
+* `--dry-run` prints the exact `curl … | bash` pipeline it would run and changes
+  nothing
+* exit `4` if the teardown fails (e.g. no network, or `curl`/`bash` missing)
+
+Idempotent: safe to re-run after a partial or completed uninstall.
 
 ---
 

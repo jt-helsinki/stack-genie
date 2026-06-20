@@ -182,15 +182,16 @@ uninstall() {
     [ "$arg" = "--purge" ] && purge=1
   done
 
-  if command -v docker >/dev/null 2>&1; then
-    local containers
-    containers="$(docker ps -aq --filter 'name=aip-' 2>/dev/null || true)"
+  local runtime containers
+  for runtime in docker podman; do
+    command -v "$runtime" >/dev/null 2>&1 || continue
+    containers="$("$runtime" ps -aq --filter 'name=aip-' 2>/dev/null || true)"
     if [ -n "$containers" ]; then
       # shellcheck disable=SC2086
-      docker rm -f $containers >/dev/null 2>&1 || true
-      info "Removed platform containers (aip-*)"
+      "$runtime" rm -f $containers >/dev/null 2>&1 || true
+      info "Removed platform containers (aip-*) via $runtime"
     fi
-  fi
+  done
 
   if [ -f "${INSTALL_DIR}/ai" ]; then
     rm -f "${INSTALL_DIR}/ai"

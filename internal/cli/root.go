@@ -74,6 +74,7 @@ func Execute() int {
 	// Subcommand groups (the full Slice 1 surface, CLI §17.0).
 	root.AddCommand(
 		newSetupCmd(emitter, &exitCode),
+		newUninstallCmd(emitter, &exitCode),
 		newProjectCmd(emitter, &exitCode),
 		newServicesCmd(emitter, &exitCode),
 		newSecretsCmd(emitter, &exitCode),
