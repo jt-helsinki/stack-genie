@@ -90,12 +90,14 @@ prints a copy-pasteable fix — then `ai setup`.
 
 ### Uninstall
 
-The simplest way is from the binary — a native, offline teardown:
+Uninstall is a native, offline teardown built into the binary. It **prompts for
+confirmation** before doing anything:
 
 ```bash
-ai uninstall --yes                 # remove the binary, PATH/completion entries, and aip-* containers
-ai uninstall --yes --purge         # also remove ~/.ai-platform and ~/.clawpatrol
-ai uninstall --yes --remove-deps   # also uninstall msb + clawpatrol without prompting
+ai uninstall                 # prompts, then removes the binary, PATH/completion entries, and aip-* containers
+ai uninstall --purge         # also removes ~/.ai-platform and ~/.clawpatrol
+ai uninstall --remove-deps   # also uninstalls msb + clawpatrol without prompting
+ai uninstall --yes           # skip the confirmation prompt (for automation)
 ```
 
 `ai uninstall` streams its progress as it runs, **asks per external dependency**
@@ -103,15 +105,6 @@ ai uninstall --yes --remove-deps   # also uninstall msb + clawpatrol without pro
 **`~/ai-uninstall.log`**, and exits when finished (the running binary removes
 itself). Use `--dry-run` to print what it would do. It **never touches
 `~/projects`** (your source).
-
-For the pre-binary / scripted case, the installer runs in reverse — the same
-teardown:
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/jt-helsinki/ideal-robot/main/installers/install.sh | bash -s -- --uninstall [--purge]
-```
-
-(Or `./installers/install.sh --uninstall [--purge]` from a checkout.)
 
 ## Usage
 

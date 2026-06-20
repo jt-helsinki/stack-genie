@@ -79,12 +79,10 @@ CLI must behave identically on:
   sole job is to download/locate and exec the compiled Go binary. No platform
   logic lives in shell scripts.
 * The standard install is **`curl … | bash`** of `installers/install.sh` (a thin
-  launcher, no platform logic). Uninstall is available two ways: **`ai
-  uninstall`** (§2.2) — a **native, offline** teardown built into the binary (no
-  network, no external script) — and, for the pre-binary / scripted case, the
-  same launcher run in reverse: `curl … | bash -s -- --uninstall [--purge]`
-  (also `./installers/install.sh --uninstall`). Both strip the same managed rc
-  lines and remove the same artifacts; **neither ever touches `~/projects`**.
+  launcher, no platform logic — it installs only). Uninstall lives in the binary:
+  **`ai uninstall`** (§2.2) is a **native, offline** teardown (no network, no
+  external script) that **prompts for confirmation**. It **never touches
+  `~/projects`**.
 * Project templates and agent configuration are **declarative data**
   (YAML / JSON). They are never executable application logic.
 * External components (Microsandbox, LiteLLM, Headroom, ClawPatrol, git, docker /
@@ -241,8 +239,9 @@ Behavior:
 
 Guards / flags:
 
-* **destructive** — requires `--yes` (exit `2` otherwise), consistent with
-  `ai project delete` (§20)
+* **destructive** — **prompts for confirmation** on a terminal before doing
+  anything; `--yes` (§20) skips the prompt. Where there is no terminal to prompt
+  on (e.g. `--json` / automation) and `--yes` was not given, it exits `2`
 * `--remove-deps` removes every detected external dependency **without
   prompting** (for non-interactive / `--json` use); without it, and with no
   terminal to prompt on, the dependencies are left in place and reported

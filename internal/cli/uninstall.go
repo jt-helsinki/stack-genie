@@ -42,17 +42,27 @@ func newUninstallCmd(em *output.Emitter, exit *int) *cobra.Command {
 				return nil
 			}
 
+			// Confirm before doing anything destructive. On a terminal we ask;
+			// --yes skips the prompt. Without a terminal and without --yes there
+			// is no way to confirm (e.g. --json / automation), so require --yes.
+			interactive := !em.JSON && term.IsTerminal(os.Stdin.Fd())
 			confirmed, _ := cmd.Flags().GetBool("yes") // global --yes (§20)
 			if !confirmed {
-				*exit = em.Failure("uninstall", output.Errorf(output.ExitInvalidInput,
-					"destructive: removes the ai binary, PATH/completion entries, and platform containers — pass --yes to confirm (never touches ~/projects)"))
-				return nil
+				if !interactive {
+					*exit = em.Failure("uninstall", output.Errorf(output.ExitInvalidInput,
+						"destructive: pass --yes to confirm (no terminal available to prompt)"))
+					return nil
+				}
+				if !confirmUninstall(purge) {
+					_, _ = fmt.Fprintln(em.Err, "Uninstall cancelled — nothing was changed.")
+					*exit = em.Success("uninstall", uninstallResult{Aborted: true})
+					return nil
+				}
 			}
 
 			// Decide which external dependencies to also remove: --remove-deps
 			// takes all detected ones non-interactively; otherwise ask per
 			// dependency on a real terminal. With neither, they are left in place.
-			interactive := !em.JSON && term.IsTerminal(os.Stdin.Fd())
 			var toRemove []uninstall.ExternalDep
 			var leftDeps []string
 			for _, dep := range uninstall.ExternalDeps() {
@@ -105,6 +115,29 @@ func newUninstallCmd(em *output.Emitter, exit *int) *cobra.Command {
 	return cmd
 }
 
+// confirmUninstall asks for top-level confirmation before the teardown,
+// summarizing what will be removed. Defaults to no.
+func confirmUninstall(purge bool) bool {
+	description := "Removes the ai binary, PATH/completion entries, and platform containers."
+	if purge {
+		description += " Also removes platform state (~/.ai-platform, ~/.clawpatrol)."
+	}
+	description += " Never touches ~/projects."
+	var yes bool
+	form := huh.NewForm(huh.NewGroup(
+		huh.NewConfirm().
+			Title("Uninstall the AI Development Platform?").
+			Description(description).
+			Affirmative("Yes, uninstall").
+			Negative("Cancel").
+			Value(&yes),
+	))
+	if err := form.Run(); err != nil {
+		return false
+	}
+	return yes
+}
+
 // confirmRemoveDep asks whether to also uninstall one external dependency,
 // showing exactly what would be removed. Defaults to no.
 func confirmRemoveDep(dep uninstall.ExternalDep) bool {
@@ -144,11 +177,15 @@ type uninstallResult struct {
 	RemovedDeps       []string `json:"removed_deps,omitempty"`
 	LeftDeps          []string `json:"left_deps,omitempty"`
 	LogPath           string   `json:"log_path,omitempty"`
-	Plan              []string `json:"plan,omitempty"` // set only for --dry-run
+	Aborted           bool     `json:"aborted,omitempty"` // user declined the confirmation
+	Plan              []string `json:"plan,omitempty"`    // set only for --dry-run
 }
 
 // Human renders a clear completion (or plan) summary for non-JSON output.
 func (result uninstallResult) Human() string {
+	if result.Aborted {
+		return "Uninstall cancelled — nothing was changed."
+	}
 	if len(result.Plan) > 0 {
 		lines := []string{"Dry run — would uninstall by:"}
 		for _, step := range result.Plan {
