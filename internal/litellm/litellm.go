@@ -139,11 +139,21 @@ type StatusInfo struct {
 	Ollama    bool     `json:"ollama"`
 }
 
-// TestResult is the result of `ai models test` (CLI §8.2).
+// TestResult is the result of `ai models test` (CLI §8.2). When OK is false,
+// Status carries the gateway/provider HTTP status and Error the provider's error
+// message (so the user learns *why* — bad model, missing key, provider down).
 type TestResult struct {
 	Model     string `json:"model"`
 	OK        bool   `json:"ok"`
+	Status    int    `json:"status,omitempty"`
 	LatencyMS int    `json:"latency_ms"`
+	Error     string `json:"error,omitempty"`
+}
+
+// Human renders the success line for `ai models test` (the failure path is
+// rendered by the CLI as an error with an actionable hint).
+func (result TestResult) Human() string {
+	return fmt.Sprintf("✓ %s reachable via LiteLLM (%dms)", result.Model, result.LatencyMS)
 }
 
 // Client talks to the running LiteLLM gateway. The real impl makes HTTP calls;

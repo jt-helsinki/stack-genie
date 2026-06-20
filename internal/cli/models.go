@@ -1,6 +1,9 @@
 package cli
 
 import (
+	"fmt"
+	"strings"
+
 	"github.com/jt-helsinki/ideal-robot/internal/litellm"
 	"github.com/jt-helsinki/ideal-robot/internal/output"
 	"github.com/spf13/cobra"
@@ -43,11 +46,50 @@ func newModelsTestCmd(em *output.Emitter, exit *int) *cobra.Command {
 		RunE: func(_ *cobra.Command, args []string) error {
 			res, err := litellm.RealClient().Test(args[0])
 			if err != nil {
-				*exit = em.Failure("models.test", output.Errorf(output.ExitRuntimeFailure, "%s", err))
+				// Transport-level failure: the gateway itself was unreachable.
+				*exit = em.Failure("models.test", output.Errorf(output.ExitRuntimeFailure,
+					"could not reach LiteLLM (is it running? run `ai doctor`): %s", err))
+				return nil
+			}
+			if !res.OK {
+				// The gateway responded but the call failed (bad model, missing
+				// credential, provider error). Surface why, with a hint.
+				*exit = em.Failure("models.test", modelTestError(res))
 				return nil
 			}
 			*exit = em.Success("models.test", res)
 			return nil
 		},
 	}
+}
+
+// modelTestError turns a failed model probe into an actionable error: it reports
+// the provider's message, picks an exit code (5 for auth/credential issues, else
+// 4), and adds a hint pointing at the likely fix.
+func modelTestError(res litellm.TestResult) error {
+	lower := strings.ToLower(res.Error)
+	code := output.ExitRuntimeFailure
+	hint := ""
+	switch {
+	case res.Status == 401 || res.Status == 403 ||
+		strings.Contains(lower, "api key") || strings.Contains(lower, "api_key") ||
+		strings.Contains(lower, "unauthorized") || strings.Contains(lower, "authentication") ||
+		strings.Contains(lower, "credential"):
+		code = output.ExitPermission
+		hint = " — add the provider credential with `ai secrets set <PROVIDER>_API_KEY`"
+	case res.Status == 404 || strings.Contains(lower, "not found") ||
+		strings.Contains(lower, "does not exist") || strings.Contains(lower, "no such model") ||
+		strings.Contains(lower, "not a valid model"):
+		if strings.HasPrefix(res.Model, "ollama/") {
+			hint = " — pull it first: `ollama pull " + strings.TrimPrefix(res.Model, "ollama/") + "`"
+		} else {
+			hint = " — check the model name (the gateway exposes <provider>/<model>, e.g. openai/gpt-5.5)"
+		}
+	}
+
+	detail := res.Error
+	if detail == "" {
+		detail = fmt.Sprintf("gateway returned HTTP %d", res.Status)
+	}
+	return output.Errorf(code, "model %q failed: %s%s", res.Model, detail, hint)
 }

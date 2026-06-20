@@ -1,6 +1,8 @@
 package litellm
 
 import (
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"testing"
@@ -108,5 +110,42 @@ func TestProvidersAndOllama(test *testing.T) {
 	}
 	if !hasOllama(routing) {
 		test.Fatal("default routing includes an ollama alias")
+	}
+}
+
+func TestParseProviderError(test *testing.T) {
+	cases := map[string]string{
+		`{"error":{"message":"model 'ollama/nope' not found","type":"not_found"}}`: "model 'ollama/nope' not found",
+		`{"error":{"message":"  Invalid API key  "}}`:                              "Invalid API key",
+		`Bad Gateway`: "Bad Gateway",
+		``:            "",
+	}
+	for body, want := range cases {
+		if got := parseProviderError([]byte(body)); got != want {
+			test.Errorf("parseProviderError(%q) = %q, want %q", body, got, want)
+		}
+	}
+}
+
+func TestTestSurfacesProviderError(test *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+		writer.WriteHeader(http.StatusNotFound)
+		_, _ = writer.Write([]byte(`{"error":{"message":"model not found: ollama/nope"}}`))
+	}))
+	defer server.Close()
+
+	client := realClient{baseURL: server.URL, httpClient: server.Client()}
+	result, err := client.Test("ollama/nope")
+	if err != nil {
+		test.Fatalf("transport error not expected: %v", err)
+	}
+	if result.OK {
+		test.Fatal("expected OK=false for a 404")
+	}
+	if result.Status != http.StatusNotFound {
+		test.Errorf("status = %d, want 404", result.Status)
+	}
+	if result.Error != "model not found: ollama/nope" {
+		test.Errorf("error = %q, want the provider message", result.Error)
 	}
 }

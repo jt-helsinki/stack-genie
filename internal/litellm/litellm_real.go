@@ -3,6 +3,7 @@ package litellm
 import (
 	"bytes"
 	"encoding/json"
+	"io"
 	"net/http"
 	"os"
 	"sort"
@@ -53,11 +54,35 @@ func (client realClient) Test(model string) (TestResult, error) {
 		return TestResult{Model: model, OK: false}, err
 	}
 	defer response.Body.Close()
-	return TestResult{
+	body, _ := io.ReadAll(response.Body)
+	result := TestResult{
 		Model:     model,
+		Status:    response.StatusCode,
 		OK:        response.StatusCode == http.StatusOK,
 		LatencyMS: int(time.Since(start).Milliseconds()),
-	}, nil
+	}
+	if !result.OK {
+		result.Error = parseProviderError(body)
+	}
+	return result, nil
+}
+
+// parseProviderError pulls a human-readable message out of a LiteLLM/OpenAI-style
+// error body ({"error":{"message":...}}), falling back to a trimmed raw snippet.
+func parseProviderError(body []byte) string {
+	var parsed struct {
+		Error struct {
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+	if json.Unmarshal(body, &parsed) == nil && parsed.Error.Message != "" {
+		return strings.TrimSpace(parsed.Error.Message)
+	}
+	snippet := strings.TrimSpace(string(body))
+	if len(snippet) > 300 {
+		snippet = snippet[:300] + "…"
+	}
+	return snippet
 }
 
 func providersOf(routing Routing) []string {
