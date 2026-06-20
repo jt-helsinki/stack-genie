@@ -11,6 +11,40 @@ import (
 	"github.com/spf13/cobra"
 )
 
+// logsResult is the `ai logs` payload (JSON) with a readable human rendering.
+type logsResult struct {
+	Logs []logSource `json:"logs"`
+	Note string      `json:"note"`
+}
+
+type logSource struct {
+	Source string   `json:"source"`
+	Lines  []string `json:"lines"`
+}
+
+// Human renders the logs readably: a clear "no logs" message when empty, else
+// each source under a header.
+func (result logsResult) Human() string {
+	var builder strings.Builder
+	if len(result.Logs) == 0 {
+		builder.WriteString("No logs on disk yet.")
+		if result.Note != "" {
+			builder.WriteString("\n(" + result.Note + ")")
+		}
+		return builder.String()
+	}
+	for index, source := range result.Logs {
+		if index > 0 {
+			builder.WriteString("\n")
+		}
+		builder.WriteString("── " + source.Source + " ──\n")
+		for _, line := range source.Lines {
+			builder.WriteString(line + "\n")
+		}
+	}
+	return strings.TrimRight(builder.String(), "\n")
+}
+
 // logServices is the host services accepted by `ai logs --service` (CLI §13.1).
 // Headroom is not here — it runs in the workspace, so its logs come via
 // --workspace, not as a host service.
@@ -51,20 +85,20 @@ func newLogsCmd(emitter *output.Emitter, exit *int) *cobra.Command {
 				return nil
 			}
 
-			collected := []map[string]any{}
+			result := logsResult{
+				Logs: []logSource{},
+				Note: "live service/microVM log capture is wired during hardware bring-up; this shows logs already on disk",
+			}
 			for _, source := range sources {
 				lines, err := readLogLines(source, tail)
 				if err != nil {
 					*exit = emitter.Failure("logs", output.Errorf(output.ExitRuntimeFailure, "read %s: %s", source, err))
 					return nil
 				}
-				collected = append(collected, map[string]any{"source": source, "lines": lines})
+				result.Logs = append(result.Logs, logSource{Source: source, Lines: lines})
 			}
 
-			*exit = emitter.Success("logs", map[string]any{
-				"logs": collected,
-				"note": "live service/microVM log capture is wired during hardware bring-up; this shows logs already on disk",
-			})
+			*exit = emitter.Success("logs", result)
 			return nil
 		},
 	}
