@@ -13,6 +13,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 
 	"github.com/jt-helsinki/ideal-robot/internal/config"
@@ -34,13 +35,17 @@ type ServiceStatus struct {
 	Detail  string `json:"detail,omitempty"`
 }
 
-// Services reconciles and reports the host services (LiteLLM container, ClawPatrol
-// native gateway, optional Ollama). Implementations shell out to the runtime/OS.
+// Services reconciles, reports, and controls the host services (LiteLLM + Ollama
+// containers, ClawPatrol native gateway). Implementations shell out to the
+// runtime/OS.
 type Services interface {
 	// Reconcile makes reality match the desired state (idempotent).
 	Reconcile(providerConfig string) ([]ServiceStatus, error)
 	// Status reports current health without mutating anything.
 	Status() ([]ServiceStatus, error)
+	// Control performs a lifecycle action (start|stop|restart) on one service,
+	// or all of them when service is "". Returns the resulting statuses.
+	Control(action, service string) ([]ServiceStatus, error)
 }
 
 // CA ensures the ClawPatrol TLS-interception CA exists (arch §17). The root is
@@ -64,6 +69,34 @@ type Deps struct {
 // Options configure a setup run.
 type Options struct {
 	ProviderConfig string // --provider-config: points LiteLLM at a provider config
+	Upgrade        bool   // --upgrade: re-pin versions.json to this binary's defaults
+}
+
+// controlActions are the valid `ai services <action>` verbs.
+var controlActions = map[string]bool{"start": true, "stop": true, "restart": true}
+
+// ServiceNames returns the names of the desired host services (for validation
+// and shell completion).
+func ServiceNames() []string {
+	specs := desiredServices()
+	names := make([]string, 0, len(specs))
+	for _, spec := range specs {
+		names = append(names, spec.Name)
+	}
+	return names
+}
+
+// ControlService backs `ai services start|stop|restart [service]`: it validates
+// the action and service (empty service = all) then delegates to the Services
+// implementation. Invalid action/service → exit 2.
+func ControlService(deps Deps, action, service string) ([]ServiceStatus, error) {
+	if !controlActions[action] {
+		return nil, output.Errorf(output.ExitInvalidInput, "unknown action %q (start|stop|restart)", action)
+	}
+	if service != "" && !slices.Contains(ServiceNames(), service) {
+		return nil, output.Errorf(output.ExitInvalidInput, "unknown service %q (one of %v)", service, ServiceNames())
+	}
+	return deps.Services.Control(action, service)
 }
 
 // Report is the result of a successful setup.
@@ -269,8 +302,15 @@ func Run(options Options, deps Deps) (*Report, error) {
 	if err != nil {
 		return nil, output.Errorf(output.ExitRuntimeFailure, "write config.yaml: %s", err)
 	}
-	versionsCreated, err := versions.EnsureDefault()
-	if err != nil {
+	// --upgrade re-pins versions.json to this binary's defaults (overwrite);
+	// otherwise the pins are written only when absent.
+	var versionsCreated bool
+	if options.Upgrade {
+		if err := versions.WriteDefault(); err != nil {
+			return nil, output.Errorf(output.ExitRuntimeFailure, "upgrade versions.json: %s", err)
+		}
+		versionsCreated = true
+	} else if versionsCreated, err = versions.EnsureDefault(); err != nil {
 		return nil, output.Errorf(output.ExitRuntimeFailure, "write versions.json: %s", err)
 	}
 

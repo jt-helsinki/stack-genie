@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/jt-helsinki/ideal-robot/internal/litellm"
+	"github.com/jt-helsinki/ideal-robot/internal/output"
 	"github.com/jt-helsinki/ideal-robot/internal/paths"
 	"github.com/jt-helsinki/ideal-robot/internal/runtime"
 )
@@ -83,6 +84,14 @@ func (services realServices) Status() ([]ServiceStatus, error) {
 		})
 	}
 	return statuses, nil
+}
+
+// Control performs start/stop/restart on the host services. The real container
+// (docker/podman) and gateway control is wired during hardware bring-up; until
+// then it reports a runtime failure (exit 4) rather than silently no-op.
+func (services realServices) Control(action, service string) ([]ServiceStatus, error) {
+	return nil, output.Errorf(output.ExitRuntimeFailure,
+		"service %s is wired during hardware bring-up", action)
 }
 
 // realCA prepares the ClawPatrol CA location (arch §17). Generating the CA

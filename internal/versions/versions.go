@@ -79,6 +79,16 @@ func EnsureDefault() (created bool, err error) {
 	return true, nil
 }
 
+// WriteDefault force-writes the built-in default pins, overwriting any existing
+// versions.json. Used by `ai setup --upgrade` to bump to this binary's pins.
+func WriteDefault() error {
+	path, err := Path()
+	if err != nil {
+		return err
+	}
+	return jsonfile.WriteAtomic(path, Default())
+}
+
 // Load reads config/versions.json, returning (nil, nil) if absent.
 func Load() (*File, error) {
 	path, err := Path()

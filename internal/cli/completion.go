@@ -3,6 +3,7 @@ package cli
 import (
 	"github.com/jt-helsinki/ideal-robot/internal/console"
 	"github.com/jt-helsinki/ideal-robot/internal/project"
+	"github.com/jt-helsinki/ideal-robot/internal/setup"
 	"github.com/spf13/cobra"
 )
 
@@ -54,6 +55,11 @@ func completeOptionalProjectThenValue(values []string) completer {
 			return nil, cobra.ShellCompDirectiveNoFileComp
 		}
 	}
+}
+
+// completeServiceNames offers the host service names (for services start/stop/restart).
+func completeServiceNames(*cobra.Command, []string, string) ([]string, cobra.ShellCompDirective) {
+	return setup.ServiceNames(), cobra.ShellCompDirectiveNoFileComp
 }
 
 // completeConsoleServices offers the host services that have an admin console.

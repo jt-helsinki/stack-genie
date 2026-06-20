@@ -10,7 +10,8 @@ import (
 )
 
 // newServicesCmd builds `ai services` and its subcommands (CLI §10.2). In
-// Slice 1 only `status` is implemented; start/stop/restart land in Slice 6.
+// `status`/`console` run host-side; `start`/`stop`/`restart` exist as the full
+// surface, with the live container/gateway control wired during hardware bring-up.
 func newServicesCmd(em *output.Emitter, exit *int) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "services",
@@ -22,9 +23,34 @@ func newServicesCmd(em *output.Emitter, exit *int) *cobra.Command {
 	}
 	cmd.AddCommand(
 		newServicesStatusCmd(em, exit),
+		newServicesControlCmd("start", em, exit),
+		newServicesControlCmd("stop", em, exit),
+		newServicesControlCmd("restart", em, exit),
 		newServicesConsoleCmd(em, exit),
 	)
 	return cmd
+}
+
+// newServicesControlCmd builds `ai services start|stop|restart [service]` (no
+// service = all). The live container/gateway control is wired during hardware
+// bring-up; until then it reports a runtime failure rather than a silent no-op.
+func newServicesControlCmd(action string, em *output.Emitter, exit *int) *cobra.Command {
+	return &cobra.Command{
+		Use:               action + " [service]",
+		Short:             action + " host services (all, or one named service)",
+		Args:              cobra.MaximumNArgs(1),
+		ValidArgsFunction: completeServiceNames,
+		RunE: func(_ *cobra.Command, args []string) error {
+			deps := setup.RealDeps(goruntime.GOOS, goruntime.GOARCH, nowRFC3339)
+			statuses, err := setup.ControlService(deps, action, firstArg(args))
+			if err != nil {
+				*exit = em.Failure("services."+action, err)
+				return nil
+			}
+			*exit = em.Success("services."+action, map[string]any{"services": statuses})
+			return nil
+		},
+	}
 }
 
 // newServicesConsoleCmd builds `ai services console [service]`: open a service's

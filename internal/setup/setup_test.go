@@ -8,8 +8,10 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/jt-helsinki/ideal-robot/internal/jsonfile"
 	"github.com/jt-helsinki/ideal-robot/internal/output"
 	"github.com/jt-helsinki/ideal-robot/internal/paths"
+	"github.com/jt-helsinki/ideal-robot/internal/versions"
 )
 
 // --- fakes ------------------------------------------------------------------
@@ -46,6 +48,9 @@ func (services *fakeServices) Reconcile(providerConfig string) ([]ServiceStatus,
 }
 func (services *fakeServices) Status() ([]ServiceStatus, error) {
 	return []ServiceStatus{{Name: "litellm", Mode: "container", State: "running", Healthy: true}}, nil
+}
+func (services *fakeServices) Control(action, service string) ([]ServiceStatus, error) {
+	return []ServiceStatus{{Name: "litellm", Mode: "container", State: action + "ed"}}, nil
 }
 
 type fakeCA struct{ ensured bool }
@@ -286,6 +291,56 @@ func TestEnsureGatewayConfigSkipsWhenPresent(test *testing.T) {
 	got, _ := os.ReadFile(filepath.Join(dir, "gateway.hcl"))
 	if string(got) != string(sentinel) {
 		test.Fatalf("existing config must be left untouched, got:\n%s", got)
+	}
+}
+
+func TestControlServiceValidation(test *testing.T) {
+	test.Setenv("HOME", test.TempDir())
+	deps, _, _ := healthyDeps()
+
+	if _, err := ControlService(deps, "bounce", ""); exitCodeOf(test, err) != output.ExitInvalidInput {
+		test.Fatalf("unknown action should be exit 2, got %v", err)
+	}
+	if _, err := ControlService(deps, "start", "nope"); exitCodeOf(test, err) != output.ExitInvalidInput {
+		test.Fatalf("unknown service should be exit 2, got %v", err)
+	}
+	// Valid action + known service → delegated to the Services impl.
+	statuses, err := ControlService(deps, "restart", "litellm")
+	if err != nil || len(statuses) == 0 {
+		test.Fatalf("valid control should delegate: statuses=%+v err=%v", statuses, err)
+	}
+	// Empty service (all) is valid too.
+	if _, err := ControlService(deps, "start", ""); err != nil {
+		test.Fatalf("control-all should be valid: %v", err)
+	}
+}
+
+func TestRunUpgradeRepinsVersions(test *testing.T) {
+	test.Setenv("HOME", test.TempDir())
+	deps, _, _ := healthyDeps()
+
+	// First run creates versions.json; then corrupt a pin.
+	if _, err := Run(Options{}, deps); err != nil {
+		test.Fatal(err)
+	}
+	path, _ := versions.Path()
+	if err := jsonfile.WriteAtomic(path, &versions.File{SchemaVersion: 1, Services: map[string]versions.Service{"litellm": {Mode: "container", Image: "stale"}}}); err != nil {
+		test.Fatal(err)
+	}
+
+	// --upgrade overwrites it with this binary's defaults.
+	if _, err := Run(Options{Upgrade: true}, deps); err != nil {
+		test.Fatal(err)
+	}
+	file, err := versions.Load()
+	if err != nil || file == nil {
+		test.Fatalf("load versions: %v", err)
+	}
+	if file.Services["litellm"].Image == "stale" {
+		test.Fatal("--upgrade should have re-pinned versions.json to defaults")
+	}
+	if _, ok := file.Services["ollama"]; !ok {
+		test.Fatalf("upgraded versions.json missing default services: %+v", file.Services)
 	}
 }
 

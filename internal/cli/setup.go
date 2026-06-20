@@ -21,13 +21,14 @@ func nowRFC3339() string { return time.Now().UTC().Format(time.RFC3339) }
 // newSetupCmd builds `ai setup` (CLI §2.1).
 func newSetupCmd(em *output.Emitter, exit *int) *cobra.Command {
 	var providerConfig string
+	var upgrade bool
 	cmd := &cobra.Command{
 		Use:   "setup",
 		Short: "Install, configure, and start the platform host services (idempotent)",
 		Args:  cobra.NoArgs,
 		RunE: func(_ *cobra.Command, _ []string) error {
 			deps := setup.RealDeps(goruntime.GOOS, goruntime.GOARCH, nowRFC3339)
-			report, err := setup.Run(setup.Options{ProviderConfig: providerConfig}, deps)
+			report, err := setup.Run(setup.Options{ProviderConfig: providerConfig, Upgrade: upgrade}, deps)
 			if err != nil {
 				*exit = em.Failure("setup", err) // err is *output.Error (carries the exit code)
 				return nil
@@ -44,6 +45,8 @@ func newSetupCmd(em *output.Emitter, exit *int) *cobra.Command {
 	}
 	cmd.Flags().StringVar(&providerConfig, "provider-config", "",
 		"point LiteLLM at a provider/endpoint config file")
+	cmd.Flags().BoolVar(&upgrade, "upgrade", false,
+		"re-pin service versions to this binary's defaults and re-reconcile")
 	return cmd
 }
 

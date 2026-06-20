@@ -557,9 +557,9 @@ Behavior:
   runtime abstraction (§6)
 * service install/upgrade is handled by `ai setup` /
   `ai setup --upgrade`, not by these verbs
-* **Slice phasing:** only `ai services status` is in the Slice 1 surface;
-  `start` / `stop` / `restart` land with Slice 6 (full runtime/service
-  lifecycle), and are tested from then
+* `start` / `stop` / `restart` and `console` are part of the command surface
+  (an unknown service exits `2`); the live container/gateway control is wired
+  during hardware bring-up. `ai console` lists/opens a service's admin dashboard.
 
 ---
 
