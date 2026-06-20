@@ -21,15 +21,17 @@ type Routing struct {
 	Aliases map[string]string `yaml:"aliases" json:"aliases"`
 }
 
-// DefaultRouting is the built-in default (arch §14–15).
+// DefaultRouting is the built-in default (arch §14–15). The default model is the
+// local Ollama backend (required, no credential); cloud providers are available
+// as aliases for explicit selection but are not the default.
 func DefaultRouting() Routing {
 	return Routing{
-		Default: "gpt-5",
+		Default: "llama",
 		Aliases: map[string]string{
+			"llama":         "ollama/llama",
 			"gpt-5":         "openai/gpt-5",
 			"claude-sonnet": "anthropic/claude-sonnet",
 			"gemini-pro":    "gemini/gemini-pro",
-			"llama":         "ollama/llama",
 		},
 	}
 }

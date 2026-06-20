@@ -777,9 +777,13 @@ the agent's job (OpenCode/Claude Code/Codex/Gemini each choose their model). Lit
 provides only a unified endpoint, provider aliasing, a single default, and
 failover.
 
+The **default model provider is Ollama** (the required local backend, no
+credential): an unqualified request routes locally. Cloud providers are
+available as aliases for explicit selection but are not the default.
+
 ```yaml
 routing:
-  default: gpt-5
+  default: llama   # -> ollama/llama (local, default provider)
 ```
 
 ---
@@ -803,13 +807,13 @@ It does not make model-selection decisions on the agent's behalf.
 ## Example Aliases
 
 ```yaml
+llama: ollama/llama   # default (local, no credential)
+
 gpt-5: openai/gpt-5
 
 claude-sonnet: anthropic/claude-sonnet
 
 gemini-pro: gemini/gemini-pro
-
-llama: ollama/llama
 ```
 
 ---

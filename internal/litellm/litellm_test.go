@@ -33,8 +33,9 @@ func TestRenderDefaultRouting(test *testing.T) {
 	if err := yaml.Unmarshal(b, &cfg); err != nil {
 		test.Fatalf("rendered config is not valid yaml: %v\n%s", err, b)
 	}
-	if cfg.LitellmSettings.DefaultModel != "gpt-5" {
-		test.Fatalf("default_model = %q, want gpt-5", cfg.LitellmSettings.DefaultModel)
+	// The default model is the local Ollama backend (provider = ollama).
+	if cfg.LitellmSettings.DefaultModel != "llama" {
+		test.Fatalf("default_model = %q, want llama", cfg.LitellmSettings.DefaultModel)
 	}
 	byName := map[string]string{}
 	keyByName := map[string]string{}
