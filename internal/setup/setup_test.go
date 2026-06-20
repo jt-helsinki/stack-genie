@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/jt-helsinki/ideal-robot/internal/output"
+	"github.com/jt-helsinki/ideal-robot/internal/paths"
 )
 
 // --- fakes ------------------------------------------------------------------
@@ -68,6 +69,9 @@ func healthyDeps() (Deps, *fakeServices, *fakeCA) {
 		Now:      func() string { return "2026-06-18T00:00:00Z" },
 		Services: services,
 		CA:       certificateAuthority,
+		GatewayConfigFetcher: func() ([]byte, error) {
+			return []byte("gateway {\n  state_dir        = \"/opt/clawpatrol\"\n}\n"), nil
+		},
 	}, services, certificateAuthority
 }
 
@@ -225,6 +229,61 @@ func hasService(specs []serviceSpec, name string) bool {
 		}
 	}
 	return false
+}
+
+func TestEnsureGatewayConfigSeedsWithDefaults(test *testing.T) {
+	test.Setenv("HOME", test.TempDir())
+	deps, _, _ := healthyDeps() // fetcher returns an example with state_dir=/opt/clawpatrol
+
+	created, warning, err := ensureGatewayConfig(deps)
+	if err != nil {
+		test.Fatal(err)
+	}
+	if !created || warning != "" {
+		test.Fatalf("expected created with no warning, got created=%v warning=%q", created, warning)
+	}
+
+	dir, _ := paths.ClawPatrolDir()
+	contents, err := os.ReadFile(filepath.Join(dir, "gateway.hcl"))
+	if err != nil {
+		test.Fatal(err)
+	}
+	if !strings.Contains(string(contents), `"`+dir+`"`) {
+		test.Fatalf("state_dir not defaulted to %s:\n%s", dir, contents)
+	}
+	if strings.Contains(string(contents), "/opt/clawpatrol") {
+		test.Fatalf("example state_dir should have been replaced:\n%s", contents)
+	}
+}
+
+func TestEnsureGatewayConfigSkipsWhenPresent(test *testing.T) {
+	test.Setenv("HOME", test.TempDir())
+	dir, _ := paths.ClawPatrolDir()
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		test.Fatal(err)
+	}
+	sentinel := []byte("# my hand edits\n")
+	if err := os.WriteFile(filepath.Join(dir, "gateway.hcl"), sentinel, 0o644); err != nil {
+		test.Fatal(err)
+	}
+
+	deps, _, _ := healthyDeps()
+	deps.GatewayConfigFetcher = func() ([]byte, error) {
+		test.Fatal("fetcher must not run when the config already exists")
+		return nil, nil
+	}
+
+	created, _, err := ensureGatewayConfig(deps)
+	if err != nil {
+		test.Fatal(err)
+	}
+	if created {
+		test.Fatal("must not recreate an existing config")
+	}
+	got, _ := os.ReadFile(filepath.Join(dir, "gateway.hcl"))
+	if string(got) != string(sentinel) {
+		test.Fatalf("existing config must be left untouched, got:\n%s", got)
+	}
 }
 
 func TestDesiredServicesAreRequired(test *testing.T) {

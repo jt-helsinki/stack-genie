@@ -42,6 +42,16 @@ func LogsDir() (string, error) {
 	return filepath.Join(p, "logs"), nil
 }
 
+// ClawPatrolDir is ~/.clawpatrol — ClawPatrol's own config home (the gateway
+// HCL lives here), separate from the platform's ~/.ai-platform.
+func ClawPatrolDir() (string, error) {
+	home, err := Home()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(home, ".clawpatrol"), nil
+}
+
 // OverlaysDir is ~/.ai-platform/overlays — per-workspace persistent overlays
 // (arch §26). Host-local persistence, not git material and not a backup.
 func OverlaysDir() (string, error) {

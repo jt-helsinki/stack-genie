@@ -10,12 +10,16 @@ package setup
 
 import (
 	"fmt"
+	"os"
+	"path/filepath"
+	"regexp"
 	"strings"
 
 	"github.com/jt-helsinki/ideal-robot/internal/config"
 	"github.com/jt-helsinki/ideal-robot/internal/doctor"
 	"github.com/jt-helsinki/ideal-robot/internal/layout"
 	"github.com/jt-helsinki/ideal-robot/internal/output"
+	"github.com/jt-helsinki/ideal-robot/internal/paths"
 	"github.com/jt-helsinki/ideal-robot/internal/runtime"
 	"github.com/jt-helsinki/ideal-robot/internal/templates"
 	"github.com/jt-helsinki/ideal-robot/internal/versions"
@@ -52,6 +56,9 @@ type Deps struct {
 	Now          func() string // RFC 3339 UTC timestamp
 	Services     Services
 	CA           CA
+	// GatewayConfigFetcher downloads the ClawPatrol gateway example HCL (seeded
+	// into ~/.clawpatrol/gateway.hcl on first setup). Injectable for tests.
+	GatewayConfigFetcher func() ([]byte, error)
 }
 
 // Options configure a setup run.
@@ -61,15 +68,57 @@ type Options struct {
 
 // Report is the result of a successful setup.
 type Report struct {
-	PlatformDir     string          `json:"platform_dir"`
-	Runtime         *runtime.Info   `json:"runtime"`
-	ConfigCreated   bool            `json:"config_created"`
-	VersionsCreated bool            `json:"versions_created"`
-	CAReady         bool            `json:"ca_ready"`
-	Services        []ServiceStatus `json:"services"`
+	PlatformDir     string        `json:"platform_dir"`
+	Runtime         *runtime.Info `json:"runtime"`
+	ConfigCreated   bool          `json:"config_created"`
+	VersionsCreated bool          `json:"versions_created"`
+	CAReady         bool          `json:"ca_ready"`
+	// GatewayConfigCreated is true when this run seeded ~/.clawpatrol/gateway.hcl.
+	GatewayConfigCreated bool            `json:"gateway_config_created"`
+	Services             []ServiceStatus `json:"services"`
 	// Warnings carries non-blocking prerequisite gaps (e.g. ClawPatrol not yet
 	// installed). Surfaced via the envelope's warnings, not the data payload.
 	Warnings []string `json:"-"`
+}
+
+// gatewayConfigURL is the upstream ClawPatrol gateway example, seeded into
+// ~/.clawpatrol/gateway.hcl on first setup (clawpatrol.dev/docs/configure-gateway).
+const gatewayConfigURL = "https://raw.githubusercontent.com/denoland/clawpatrol/refs/heads/main/examples/gateway.example.hcl"
+
+// stateDirAssignment matches the `state_dir = "..."` assignment in the gateway
+// HCL (not the comment references), so sensible defaults rewrite only the value.
+var stateDirAssignment = regexp.MustCompile(`(?m)^(\s*state_dir\s*=\s*)"[^"]*"`)
+
+// ensureGatewayConfig seeds ~/.clawpatrol/gateway.hcl from the upstream example
+// on first setup and applies sensible local defaults (state_dir → ~/.clawpatrol).
+// It is idempotent: if the file already exists it is left untouched (no download,
+// no rewrite — local edits are respected). A download failure is non-fatal and
+// returned as a warning so setup does not hard-fail offline.
+func ensureGatewayConfig(deps Deps) (created bool, warning string, err error) {
+	dir, err := paths.ClawPatrolDir()
+	if err != nil {
+		return false, "", err
+	}
+	configPath := filepath.Join(dir, "gateway.hcl")
+	if _, statErr := os.Stat(configPath); statErr == nil {
+		return false, "", nil // exists — skip (don't download, don't overwrite)
+	} else if !os.IsNotExist(statErr) {
+		return false, "", statErr
+	}
+
+	contents, fetchErr := deps.GatewayConfigFetcher()
+	if fetchErr != nil {
+		return false, fmt.Sprintf("ClawPatrol gateway config not seeded: %s", fetchErr), nil
+	}
+	contents = stateDirAssignment.ReplaceAll(contents, []byte(`${1}"`+dir+`"`))
+
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return false, "", err
+	}
+	if err := os.WriteFile(configPath, contents, 0o644); err != nil {
+		return false, "", err
+	}
+	return true, "", nil
 }
 
 // Human renders the setup result as a readable summary (non-JSON output).
@@ -85,8 +134,8 @@ func (report *Report) Human() string {
 		fmt.Fprintf(&builder, "Runtime:  %s (rootless=%t) · microVM %s (%s)\n",
 			runtimeInfo.Detected, runtimeInfo.Rootless, runtimeInfo.Microsandbox.Virtualization, available)
 	}
-	fmt.Fprintf(&builder, "State:    config=%t versions=%t ca=%t\n",
-		report.ConfigCreated, report.VersionsCreated, report.CAReady)
+	fmt.Fprintf(&builder, "State:    config=%t versions=%t ca=%t gateway=%t\n",
+		report.ConfigCreated, report.VersionsCreated, report.CAReady, report.GatewayConfigCreated)
 	builder.WriteString("Services:\n")
 	for _, service := range report.Services {
 		line := fmt.Sprintf("  %-11s %-9s %s", service.Name, service.Mode, service.State)
@@ -222,6 +271,15 @@ func Run(options Options, deps Deps) (*Report, error) {
 		return nil, output.Errorf(output.ExitRuntimeFailure, "ensure ClawPatrol CA: %s", err)
 	}
 
+	// 5b. Seed ~/.clawpatrol/gateway.hcl from the upstream example (first run only).
+	gatewayCreated, gatewayWarning, err := ensureGatewayConfig(deps)
+	if err != nil {
+		return nil, output.Errorf(output.ExitRuntimeFailure, "ensure ClawPatrol gateway config: %s", err)
+	}
+	if gatewayWarning != "" {
+		warnings = append(warnings, gatewayWarning)
+	}
+
 	// 6. Reconcile host services to the desired state.
 	serviceStatuses, err := deps.Services.Reconcile(options.ProviderConfig)
 	if err != nil {
@@ -229,13 +287,14 @@ func Run(options Options, deps Deps) (*Report, error) {
 	}
 
 	return &Report{
-		PlatformDir:     platformDir,
-		Runtime:         detected,
-		ConfigCreated:   configCreated,
-		VersionsCreated: versionsCreated,
-		CAReady:         true,
-		Services:        serviceStatuses,
-		Warnings:        warnings,
+		PlatformDir:          platformDir,
+		Runtime:              detected,
+		ConfigCreated:        configCreated,
+		VersionsCreated:      versionsCreated,
+		CAReady:              true,
+		GatewayConfigCreated: gatewayCreated,
+		Services:             serviceStatuses,
+		Warnings:             warnings,
 	}, nil
 }
 

@@ -1,13 +1,31 @@
 package setup
 
 import (
+	"fmt"
+	"io"
+	"net/http"
 	"os"
 	"path/filepath"
+	"time"
 
 	"github.com/jt-helsinki/ideal-robot/internal/litellm"
 	"github.com/jt-helsinki/ideal-robot/internal/paths"
 	"github.com/jt-helsinki/ideal-robot/internal/runtime"
 )
+
+// realFetchGatewayConfig downloads the upstream ClawPatrol gateway example HCL.
+func realFetchGatewayConfig() ([]byte, error) {
+	httpClient := &http.Client{Timeout: 15 * time.Second}
+	response, err := httpClient.Get(gatewayConfigURL)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = response.Body.Close() }()
+	if response.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("GET %s: status %d", gatewayConfigURL, response.StatusCode)
+	}
+	return io.ReadAll(response.Body)
+}
 
 type serviceSpec struct{ Name, Mode string }
 
@@ -83,11 +101,12 @@ func (realCA) Ensure() error {
 func RealDeps(goos, goarch string, now func() string) Deps {
 	prober := runtime.RealProber()
 	return Deps{
-		GOOS:     goos,
-		GOARCH:   goarch,
-		Prober:   prober,
-		Now:      now,
-		Services: realServices{prober: prober},
-		CA:       realCA{},
+		GOOS:                 goos,
+		GOARCH:               goarch,
+		Prober:               prober,
+		Now:                  now,
+		Services:             realServices{prober: prober},
+		CA:                   realCA{},
+		GatewayConfigFetcher: realFetchGatewayConfig,
 	}
 }
