@@ -128,7 +128,10 @@ func ensureLiteLLMDB(prober runtime.Prober, containerRuntime string) error {
 		"-e", "POSTGRES_USER=" + litellmDBUser,
 		"-e", "POSTGRES_DB=" + litellmDBName,
 		"-e", "POSTGRES_HOST_AUTH_METHOD=trust",
-		"-v", litellmDBVolume + ":/var/lib/postgresql/data",
+		// Postgres 18+ stores data in a version-specific subdir, so the volume is
+		// mounted at /var/lib/postgresql (NOT .../data, the pre-18 convention) —
+		// otherwise the image refuses to start (docker-library/postgres#1259).
+		"-v", litellmDBVolume + ":/var/lib/postgresql",
 		litellmDBImage,
 	}
 	if _, err := prober.Run(containerRuntime, args...); err != nil {
@@ -146,9 +149,34 @@ func ensureLiteLLMDB(prober runtime.Prober, containerRuntime string) error {
 // litellmHasDatabaseURL reports whether the running LiteLLM container already has
 // DATABASE_URL wired (so a healthy-but-DB-less container is relaunched once).
 func litellmHasDatabaseURL(prober runtime.Prober, containerRuntime string) bool {
+	return litellmEnvSet(prober, containerRuntime, "DATABASE_URL")
+}
+
+// LiteLLMUISecured reports whether the LiteLLM container already has a non-empty
+// UI password set, so `ai setup` does not re-prompt for it on every run.
+func LiteLLMUISecured() bool {
+	containerRuntime, err := runtime.ContainerRuntimeName(runtime.RealProber())
+	if err != nil {
+		return false
+	}
+	return litellmEnvSet(runtime.RealProber(), containerRuntime.Name, "UI_PASSWORD")
+}
+
+// litellmEnvSet reports whether the LiteLLM container's env has key set to a
+// non-empty value (via the runtime's inspect).
+func litellmEnvSet(prober runtime.Prober, containerRuntime, key string) bool {
 	out, err := prober.Run(containerRuntime, "inspect", "--format",
 		"{{range .Config.Env}}{{println .}}{{end}}", litellmContainer)
-	return err == nil && strings.Contains(string(out), "DATABASE_URL=")
+	if err != nil {
+		return false
+	}
+	prefix := key + "="
+	for _, line := range strings.Split(string(out), "\n") {
+		if strings.HasPrefix(line, prefix) && strings.TrimSpace(line[len(prefix):]) != "" {
+			return true
+		}
+	}
+	return false
 }
 
 // RelaunchLiteLLMWithAuth recreates the LiteLLM container with the admin-UI

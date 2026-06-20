@@ -119,6 +119,11 @@ func promptLiteLLMUIPassword(em *output.Emitter) {
 	if os.Getenv("UI_PASSWORD") != "" && os.Getenv("LITELLM_MASTER_KEY") != "" {
 		return
 	}
+	// Already secured on a previous run (the container carries a UI password)?
+	// Don't re-prompt — that turned `ai setup` re-runs into a "hang".
+	if setup.LiteLLMUISecured() {
+		return
+	}
 	var password string
 	form := huh.NewForm(huh.NewGroup(
 		huh.NewInput().
