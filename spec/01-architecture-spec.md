@@ -809,11 +809,11 @@ It does not make model-selection decisions on the agent's behalf.
 ```yaml
 gemma4: ollama/gemma4:31b   # default (local, no credential)
 
-gpt-5: openai/gpt-5
+gpt-5.5: openai/gpt-5.5
 
-claude-sonnet: anthropic/claude-sonnet
+claude-opus: anthropic/claude-opus-4-8
 
-gemini-pro: gemini/gemini-pro
+gemini-pro: gemini/gemini-3.5-flash
 ```
 
 ---

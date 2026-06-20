@@ -43,12 +43,18 @@ func TestRenderDefaultRouting(test *testing.T) {
 		byName[entry.ModelName] = entry.LitellmParams.Model
 		keyByName[entry.ModelName] = entry.LitellmParams.APIKey
 	}
-	if byName["gpt-5"] != "openai/gpt-5" {
-		test.Fatalf("gpt-5 -> %q", byName["gpt-5"])
+	if byName["gpt-5.5"] != "openai/gpt-5.5" {
+		test.Fatalf("gpt-5.5 -> %q", byName["gpt-5.5"])
 	}
 	// Credentials are placeholders only (never real values), arch §17.
-	if keyByName["gpt-5"] != "os.environ/OPENAI_API_KEY" {
-		test.Fatalf("gpt-5 api_key = %q, want placeholder", keyByName["gpt-5"])
+	if keyByName["gpt-5.5"] != "os.environ/OPENAI_API_KEY" {
+		test.Fatalf("gpt-5.5 api_key = %q, want placeholder", keyByName["gpt-5.5"])
+	}
+	if byName["claude-opus"] != "anthropic/claude-opus-4-8" {
+		test.Fatalf("claude-opus -> %q, want anthropic/claude-opus-4-8", byName["claude-opus"])
+	}
+	if byName["gemini-pro"] != "gemini/gemini-3.5-flash" {
+		test.Fatalf("gemini-pro -> %q, want gemini/gemini-3.5-flash", byName["gemini-pro"])
 	}
 	// Ollama needs no credential.
 	if keyByName["gemma4"] != "" {

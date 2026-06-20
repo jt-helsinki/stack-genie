@@ -28,10 +28,10 @@ func DefaultRouting() Routing {
 	return Routing{
 		Default: "gemma4",
 		Aliases: map[string]string{
-			"gemma4":        "ollama/gemma4:31b",
-			"gpt-5":         "openai/gpt-5",
-			"claude-sonnet": "anthropic/claude-sonnet",
-			"gemini-pro":    "gemini/gemini-pro",
+			"gemma4":      "ollama/gemma4:31b",
+			"gpt-5.5":     "openai/gpt-5.5",
+			"claude-opus": "anthropic/claude-opus-4-8",
+			"gemini-pro":  "gemini/gemini-3.5-flash",
 		},
 	}
 }
