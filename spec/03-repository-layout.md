@@ -199,7 +199,9 @@ versions.json            # pinned versions/digests of host services (§12.6)
 projects.json            # index: project name → path (§12.7)
 litellm/                 # rendered LiteLLM config (placeholders only)
 microsandbox/            # rendered Microsandbox workspace defaults (image, mounts, limits)
-clawpatrol/              # rendered gateway HCL (NOT the credential store)
+clawpatrol/              # platform-rendered ClawPatrol bits (NOT the credential store).
+                         # The operational gateway config lives in ClawPatrol's own
+                         # home: ~/.clawpatrol/gateway.hcl (seeded by `ai setup`).
 ollama/                  # rendered Ollama config (required local model backend)
 ```
 

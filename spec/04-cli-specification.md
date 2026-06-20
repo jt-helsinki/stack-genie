@@ -135,6 +135,12 @@ Purpose:
   run); the CA root is installed into each workspace's trust store at workspace
   start, not here — without it HTTPS credential injection cannot work
   (architecture §17, "TLS Interception and the Trust Anchor")
+* seeds the **ClawPatrol gateway config** at `~/.clawpatrol/gateway.hcl` from the
+  upstream example on first run (download-if-absent; never overwrites local
+  edits), applying sensible local defaults (`state_dir` → `~/.clawpatrol`). On a
+  TTY (not `--json`) it may prompt for the **dashboard password** and set it via
+  `clawpatrol gateway --set-dashboard-password` (it is not an HCL field); the
+  password is never logged or written to platform disk
 
 Missing **provider credentials are not a setup hard-fail**: `setup` may prompt
 interactively but otherwise proceeds and warns; `ai doctor` flags any absent
