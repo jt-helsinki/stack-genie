@@ -344,6 +344,25 @@ func TestRunUpgradeRepinsVersions(test *testing.T) {
 	}
 }
 
+func TestLiteLLMRunArgs(test *testing.T) {
+	args := litellmRunArgs("/cfg/litellm/config.yaml")
+	want := []string{
+		"run", "-d", "--name", "aip-litellm",
+		"-p", "4000:4000",
+		"-v", "/cfg/litellm/config.yaml:/app/config.yaml",
+		"ghcr.io/berriai/litellm:main-latest",
+		"--config", "/app/config.yaml", "--port", "4000",
+	}
+	if len(args) != len(want) {
+		test.Fatalf("args = %v, want %v", args, want)
+	}
+	for index := range want {
+		if args[index] != want[index] {
+			test.Errorf("args[%d] = %q, want %q", index, args[index], want[index])
+		}
+	}
+}
+
 func TestDesiredServicesAreRequired(test *testing.T) {
 	// Ollama, LiteLLM, and ClawPatrol are all required host services (Ollama is
 	// the local model backend LiteLLM routes to, arch §14/§16).
