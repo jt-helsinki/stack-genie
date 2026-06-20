@@ -69,15 +69,19 @@ func repoRoot() string {
 	return filepath.Clean(filepath.Join(wd, "..", ".."))
 }
 
-// Harness runs `ai` commands against an ephemeral HOME.
+// Harness runs `ai` commands against an ephemeral HOME and from an isolated
+// working directory (so cwd-based behavior — `project create` scaffolds in the
+// cwd, project resolution walks up from it — never touches the repo).
 type Harness struct {
 	Binary string
 	Home   string
+	Work   string
 }
 
-// New returns a Harness with a fresh ephemeral HOME (removed on test cleanup).
+// New returns a Harness with a fresh ephemeral HOME and a separate working dir
+// (both removed on test cleanup).
 func New(test *testing.T) *Harness {
-	return &Harness{Binary: sharedBinary, Home: test.TempDir()}
+	return &Harness{Binary: sharedBinary, Home: test.TempDir(), Work: test.TempDir()}
 }
 
 // env returns the child environment with HOME repointed and any extra vars.
@@ -110,6 +114,7 @@ func (harness *Harness) runRaw(test *testing.T, args ...string) (Envelope, int) 
 	test.Helper()
 	command := exec.Command(harness.Binary, args...)
 	command.Env = harness.env()
+	command.Dir = harness.Work // isolate cwd-based behavior from the repo
 	var stdout bytes.Buffer
 	command.Stdout = &stdout
 	command.Stderr = io.Discard

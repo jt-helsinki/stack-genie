@@ -55,6 +55,7 @@ func (harness *Harness) createProject(test *testing.T, name string, osDownPresse
 
 	command := exec.Command(harness.Binary, "project", "create", name, "--json")
 	command.Env = harness.env()
+	command.Dir = harness.Work // create scaffolds in the cwd; keep it isolated
 	command.Stdin = tty
 	command.Stderr = tty // huh renders here and sees an interactive terminal
 	var stdout bytes.Buffer
