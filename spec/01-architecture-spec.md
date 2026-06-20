@@ -812,6 +812,13 @@ Purpose:
 
 It does not make model-selection decisions on the agent's behalf.
 
+**Admin UI auth.** The proxy ships an admin UI at `:4000/ui`. The platform
+secures it by passing `UI_USERNAME` (`admin`), `UI_PASSWORD`, and
+`LITELLM_MASTER_KEY` into the container **via the environment** — never inlined
+in the launch argv, the rendered config, or platform disk. `ai setup` can prompt
+for the password and generate the master key (shown once); persistence is via
+exported env now, ClawPatrol injection in the end-state.
+
 ---
 
 ## Catalogue & Aliases

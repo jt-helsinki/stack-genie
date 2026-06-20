@@ -1,6 +1,8 @@
 package cli
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"fmt"
 	"os"
 	"os/exec"
@@ -33,11 +35,13 @@ func newSetupCmd(em *output.Emitter, exit *int) *cobra.Command {
 				*exit = em.Failure("setup", err) // err is *output.Error (carries the exit code)
 				return nil
 			}
-			// On first gateway seed, offer to set the ClawPatrol dashboard password
-			// — but only interactively (a real TTY, not --json/automation), so
-			// scripted/JSON setup stays non-interactive.
-			if report.GatewayConfigCreated && !em.JSON && term.IsTerminal(os.Stdin.Fd()) {
-				promptClawPatrolDashboardPassword(em)
+			// Interactive credential prompts — only on a real TTY (not
+			// --json/automation), so scripted/JSON setup stays non-interactive.
+			if !em.JSON && term.IsTerminal(os.Stdin.Fd()) {
+				if report.GatewayConfigCreated {
+					promptClawPatrolDashboardPassword(em)
+				}
+				promptLiteLLMUIPassword(em)
 			}
 			*exit = em.Success("setup", report, report.Warnings...)
 			return nil
@@ -80,4 +84,53 @@ func promptClawPatrolDashboardPassword(em *output.Emitter) {
 		return
 	}
 	_, _ = fmt.Fprintln(em.Err, "ClawPatrol dashboard password set.")
+}
+
+// promptLiteLLMUIPassword secures the LiteLLM admin UI: it asks for a password
+// (hidden), generates a master key, and relaunches the LiteLLM container with
+// both set (via the environment, never disk/argv). Skipped when the UI auth is
+// already provided through the environment. Best-effort: a blank entry or a
+// relaunch failure just prints a hint and continues. The chosen password is
+// never echoed; the generated master key is shown once (it is also the API key).
+func promptLiteLLMUIPassword(em *output.Emitter) {
+	// Already supplied via the environment (the standard LiteLLM .env pattern)?
+	// Then the container launch already picked them up — nothing to prompt.
+	if os.Getenv("UI_PASSWORD") != "" && os.Getenv("LITELLM_MASTER_KEY") != "" {
+		return
+	}
+	var password string
+	form := huh.NewForm(huh.NewGroup(
+		huh.NewInput().
+			Title("Set the LiteLLM admin UI password (leave blank to skip)").
+			EchoMode(huh.EchoModePassword).
+			Value(&password),
+	))
+	if err := form.Run(); err != nil || password == "" {
+		return
+	}
+	masterKey, err := generateMasterKey()
+	if err != nil {
+		_, _ = fmt.Fprintf(em.Err, "warning: could not generate a LiteLLM master key: %s\n", err)
+		return
+	}
+	if err := setup.RelaunchLiteLLMWithAuth(password, masterKey); err != nil {
+		_, _ = fmt.Fprintf(em.Err, "warning: could not secure the LiteLLM UI: %s\n", err)
+		return
+	}
+	_, _ = fmt.Fprintf(em.Err,
+		"LiteLLM admin UI secured — log in as %q at http://localhost:4000/ui\n"+
+			"  master key (also the API key): %s\n"+
+			"  Secrets are not stored on disk; to keep them across restarts, export them\n"+
+			"  before `ai setup` / `ai services start`:\n"+
+			"    export UI_PASSWORD='<the password you just set>' LITELLM_MASTER_KEY=%s\n",
+		"admin", masterKey, masterKey)
+}
+
+// generateMasterKey returns a random LiteLLM master key (`sk-` + 48 hex chars).
+func generateMasterKey() (string, error) {
+	buffer := make([]byte, 24)
+	if _, err := rand.Read(buffer); err != nil {
+		return "", err
+	}
+	return "sk-" + hex.EncodeToString(buffer), nil
 }

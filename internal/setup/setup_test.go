@@ -380,6 +380,9 @@ func TestLiteLLMRunArgs(test *testing.T) {
 		"run", "-d", "--name", "aip-litellm",
 		"-p", "4000:4000",
 		"-v", "/cfg/litellm/config.yaml:/app/config.yaml",
+		"-e", "UI_USERNAME=admin",
+		"-e", "UI_PASSWORD",
+		"-e", "LITELLM_MASTER_KEY",
 		"ghcr.io/berriai/litellm:main-latest",
 		"--config", "/app/config.yaml", "--port", "4000",
 	}
@@ -390,6 +393,12 @@ func TestLiteLLMRunArgs(test *testing.T) {
 		if args[index] != want[index] {
 			test.Errorf("args[%d] = %q, want %q", index, args[index], want[index])
 		}
+	}
+	// The secrets are env passthrough (name-only) — their values must NOT appear
+	// in argv (they ride in the process environment instead).
+	joined := strings.Join(args, " ")
+	if strings.Contains(joined, "UI_PASSWORD=") || strings.Contains(joined, "LITELLM_MASTER_KEY=") {
+		test.Errorf("secret values must not be inlined in argv: %v", args)
 	}
 }
 

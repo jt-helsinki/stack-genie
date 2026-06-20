@@ -51,18 +51,61 @@ func desiredServices() []serviceSpec {
 const (
 	litellmContainer = "aip-litellm"
 	litellmImage     = "ghcr.io/berriai/litellm:main-latest"
+	// litellmUIUsername is the (non-secret) admin-UI login name. The password and
+	// master key are secrets, so they are never inlined — see litellmRunArgs.
+	litellmUIUsername = "admin"
 )
 
 // litellmRunArgs is the `<runtime> run` argv that launches LiteLLM with the
 // rendered config mounted (docs.litellm.ai). Pure, so it is unit-testable.
+//
+// Admin-UI auth (docs.litellm.ai/docs/proxy/ui) is wired here: the username is
+// inlined (it is not secret), while UI_PASSWORD and LITELLM_MASTER_KEY are passed
+// as **env passthrough** (`-e NAME`, no value) so Docker copies them from the
+// launching process's environment — the secret values never appear in argv, the
+// config, or on platform disk. The UI is secured whenever those two are present
+// in the environment at launch (exported by the user, or set for a relaunch by
+// the setup prompt); otherwise LiteLLM falls back to its own default behavior.
 func litellmRunArgs(configPath string) []string {
 	return []string{
 		"run", "-d", "--name", litellmContainer,
 		"-p", "4000:4000",
 		"-v", configPath + ":/app/config.yaml",
+		"-e", "UI_USERNAME=" + litellmUIUsername,
+		"-e", "UI_PASSWORD",
+		"-e", "LITELLM_MASTER_KEY",
 		litellmImage,
 		"--config", "/app/config.yaml", "--port", "4000",
 	}
+}
+
+// RelaunchLiteLLMWithAuth recreates the LiteLLM container with the admin-UI
+// credentials set, securing the UI immediately. The password and master key are
+// passed via the process environment (not argv), so they are never written to
+// disk or visible in the command line. Username is litellmUIUsername ("admin").
+// Returns ErrNoContainerRuntime-wrapped errors if no runtime is present.
+func RelaunchLiteLLMWithAuth(password, masterKey string) error {
+	containerRuntime, err := runtime.ContainerRuntimeName(runtime.RealProber())
+	if err != nil {
+		return err
+	}
+	configPath, err := litellm.ConfigPath()
+	if err != nil {
+		return err
+	}
+	// Best-effort removal of the running (likely unsecured) container.
+	_ = exec.Command(containerRuntime.Name, "rm", "-f", litellmContainer).Run() // #nosec G204 — fixed args
+
+	// #nosec G204 — fixed argv; secrets ride in the environment, not the command line.
+	command := exec.Command(containerRuntime.Name, litellmRunArgs(configPath)...)
+	command.Env = append(os.Environ(),
+		"UI_PASSWORD="+password,
+		"LITELLM_MASTER_KEY="+masterKey,
+	)
+	if output, err := command.CombinedOutput(); err != nil {
+		return fmt.Errorf("relaunch litellm: %s: %s", err, string(output))
+	}
+	return nil
 }
 
 // realServices reconciles, reports, and controls the host services via the

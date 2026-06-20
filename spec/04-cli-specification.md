@@ -172,6 +172,15 @@ Purpose:
   TTY (not `--json`) it may prompt for the **dashboard password** and set it via
   `clawpatrol gateway --set-dashboard-password` (it is not an HCL field); the
   password is never logged or written to platform disk
+* secures the **LiteLLM admin UI**: the container is launched with `UI_USERNAME`
+  (`admin`), `UI_PASSWORD`, and `LITELLM_MASTER_KEY` passed as **env passthrough**
+  (values are read from the environment, never inlined in argv, the config, or
+  platform disk). On a TTY (not `--json`), if those are not already in the
+  environment, `setup` prompts for a UI password, generates a master key, and
+  relaunches LiteLLM with both set; the generated master key is shown once. To
+  persist secrets across restarts without writing them to disk, export
+  `UI_PASSWORD` / `LITELLM_MASTER_KEY` before `setup` / `ai services start` (the
+  end-state is ClawPatrol injecting them, architecture §17)
 
 Missing **provider credentials are not a setup hard-fail**: `setup` may prompt
 interactively but otherwise proceeds and warns; `ai doctor` flags any absent
