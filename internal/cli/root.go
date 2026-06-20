@@ -5,6 +5,7 @@ package cli
 import (
 	"fmt"
 	"os"
+	"strings"
 
 	"github.com/jt-helsinki/ideal-robot/internal/output"
 	"github.com/jt-helsinki/ideal-robot/internal/version"
@@ -100,15 +101,59 @@ func Execute() int {
 	})
 
 	root.SetArgs(os.Args[1:])
-	if err := root.Execute(); err != nil {
+	// ExecuteC returns the command that failed, so usage errors (wrong args,
+	// unknown flag/command) can show that command's own help.
+	executedCmd, err := root.ExecuteC()
+	if err != nil {
 		// Arg/flag errors abort before PersistentPreRun runs, so mirror the
 		// --json flag here to honor the requested output mode (§19).
 		emitter.JSON = flags.json
-		// Unknown command / bad flag → invalid input (exit 2, §18). The error
-		// kind is derived from the code.
-		exitCode = emitter.Failure("ai", output.Errorf(output.ExitInvalidInput, "%s", err.Error()))
+		// Unknown command / bad flag / wrong args → invalid input (exit 2, §18).
+		friendly := humanizeUsageError(err.Error())
+		if emitter.JSON {
+			// JSON consumers get one line: the friendly message + the usage line.
+			message := friendly
+			if executedCmd != nil {
+				message += " (usage: " + executedCmd.UseLine() + ")"
+			}
+			exitCode = emitter.Failure(usageCommandName(executedCmd), output.Errorf(output.ExitInvalidInput, "%s", message))
+		} else {
+			// Humans get the friendly message, then the command's full help.
+			exitCode = emitter.Failure(usageCommandName(executedCmd), output.Errorf(output.ExitInvalidInput, "%s", friendly))
+			if executedCmd != nil {
+				_, _ = fmt.Fprintln(emitter.Err)
+				_, _ = fmt.Fprint(emitter.Err, executedCmd.UsageString())
+			}
+		}
 	}
 	return exitCode
+}
+
+// humanizeUsageError rephrases cobra's terse usage errors into something a human
+// can act on. Other messages pass through unchanged.
+func humanizeUsageError(message string) string {
+	// "accepts 1 arg(s), received 0" / "requires at least 1 arg(s), only
+	// received 0" → "needs 1 argument(s), received 0".
+	replacer := strings.NewReplacer(
+		"arg(s)", "argument(s)",
+		"accepts ", "needs ",
+		"requires ", "needs ",
+		"only received", "received",
+	)
+	return replacer.Replace(message)
+}
+
+// usageCommandName names the failing command for the envelope's `command` field,
+// e.g. "ai project create" → "project.create"; the root stays "ai".
+func usageCommandName(cmd *cobra.Command) string {
+	if cmd == nil {
+		return "ai"
+	}
+	path := strings.TrimPrefix(cmd.CommandPath(), "ai ")
+	if path == "" || path == "ai" {
+		return "ai"
+	}
+	return strings.ReplaceAll(path, " ", ".")
 }
 
 // emitJSONHelp renders a command's help as the structured data.help object

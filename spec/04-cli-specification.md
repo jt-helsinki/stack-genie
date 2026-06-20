@@ -849,6 +849,21 @@ Standardized:
 Every non-zero exit must also emit a structured error (see §19) and log the
 failure (§15.1).
 
+## 18.2 Usage Errors Are Human-Helpful
+
+A **usage error** (wrong number of arguments, unknown flag, unknown command —
+all exit `2`) must never be a bare parser message. For **every** command it:
+
+* states the problem in plain language (e.g. "needs 1 argument(s), received 0",
+  not "accepts 1 arg(s), received 0"); and
+* shows the failing command's **own help** — its usage line and flags — so the
+  user can immediately see how to invoke it correctly.
+
+In human output the friendly message is printed, then the command's full help.
+With `--json` the envelope's `error.message` carries the friendly message plus
+the one-line usage (`(usage: …)`). This is handled centrally so it holds for all
+commands uniformly.
+
 ---
 
 # 19. JSON Output Schema
