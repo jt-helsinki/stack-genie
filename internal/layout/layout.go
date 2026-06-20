@@ -37,13 +37,7 @@ func Ensure() (string, error) {
 			return "", err
 		}
 	}
-	// ~/projects is also part of the platform's host layout (host-backed source).
-	projects, err := paths.ProjectsDir()
-	if err != nil {
-		return "", err
-	}
-	if err := os.MkdirAll(projects, 0o755); err != nil {
-		return "", err
-	}
+	// Projects are created in the user's chosen directory (the cwd), not a fixed
+	// location, so setup does not create a ~/projects directory.
 	return root, nil
 }
