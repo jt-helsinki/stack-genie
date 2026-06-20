@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/jt-helsinki/ideal-robot/internal/litellm"
@@ -54,6 +55,23 @@ const (
 	// litellmUIUsername is the (non-secret) admin-UI login name. The password and
 	// master key are secrets, so they are never inlined — see litellmRunArgs.
 	litellmUIUsername = "admin"
+
+	// LiteLLM's admin UI / virtual keys / spend tracking are DB-backed and
+	// PostgreSQL-only (docs.litellm.ai). We run a small Postgres beside LiteLLM on
+	// a private docker network (not published to the host), with trust auth — so
+	// DATABASE_URL carries no secret and there is no DB password to store. This is
+	// the one stateful piece of the otherwise-stateless service tier.
+	platformNetwork    = "aip-net"
+	litellmDBContainer = "aip-litellm-db"
+	litellmDBImage     = "postgres:18.4-alpine3.24"
+	litellmDBVolume    = "aip-litellm-db-data"
+	litellmDBUser      = "litellm"
+	litellmDBName      = "litellm"
+	litellmDatabaseURL = "postgresql://" + litellmDBUser + "@" + litellmDBContainer + ":5432/" + litellmDBName
+	// Published on the host at 5442 (not the default 5432) and bound to loopback,
+	// to avoid clashing with any other Postgres on the machine. LiteLLM itself
+	// reaches the DB over the private network (5432), not this host port.
+	litellmDBHostPort = "5442"
 )
 
 // litellmRunArgs is the `<runtime> run` argv that launches LiteLLM with the
@@ -66,17 +84,71 @@ const (
 // config, or on platform disk. The UI is secured whenever those two are present
 // in the environment at launch (exported by the user, or set for a relaunch by
 // the setup prompt); otherwise LiteLLM falls back to its own default behavior.
+//
+// DATABASE_URL is inlined (it carries no secret — trust auth on a private
+// network) so the DB-backed admin UI / virtual keys work. The container joins
+// platformNetwork so it can reach aip-litellm-db by name.
 func litellmRunArgs(configPath string) []string {
 	return []string{
 		"run", "-d", "--name", litellmContainer,
+		"--network", platformNetwork,
 		"-p", "4000:4000",
 		"-v", configPath + ":/app/config.yaml",
 		"-e", "UI_USERNAME=" + litellmUIUsername,
 		"-e", "UI_PASSWORD",
 		"-e", "LITELLM_MASTER_KEY",
+		"-e", "DATABASE_URL=" + litellmDatabaseURL,
 		litellmImage,
 		"--config", "/app/config.yaml", "--port", "4000",
 	}
+}
+
+// ensurePlatformNetwork creates the private docker network the service tier
+// shares (so LiteLLM can resolve aip-litellm-db by name). Idempotent.
+func ensurePlatformNetwork(prober runtime.Prober, containerRuntime string) {
+	if _, err := prober.Run(containerRuntime, "network", "inspect", platformNetwork); err != nil {
+		_, _ = prober.Run(containerRuntime, "network", "create", platformNetwork)
+	}
+}
+
+// ensureLiteLLMDB starts the Postgres that backs LiteLLM's admin UI / virtual
+// keys, unless it is already running. Trust auth on the private network (no
+// password); the host port is loopback-bound at litellmDBHostPort. Idempotent.
+func ensureLiteLLMDB(prober runtime.Prober, containerRuntime string) error {
+	out, err := prober.Run(containerRuntime, "ps", "--filter", "name=^/"+litellmDBContainer+"$",
+		"--filter", "status=running", "--format", "{{.Names}}")
+	if err == nil && strings.TrimSpace(string(out)) == litellmDBContainer {
+		return nil // already up
+	}
+	_, _ = prober.Run(containerRuntime, "rm", "-f", litellmDBContainer) // clear any stopped one
+	args := []string{
+		"run", "-d", "--name", litellmDBContainer,
+		"--network", platformNetwork,
+		"-p", "127.0.0.1:" + litellmDBHostPort + ":5432",
+		"-e", "POSTGRES_USER=" + litellmDBUser,
+		"-e", "POSTGRES_DB=" + litellmDBName,
+		"-e", "POSTGRES_HOST_AUTH_METHOD=trust",
+		"-v", litellmDBVolume + ":/var/lib/postgresql/data",
+		litellmDBImage,
+	}
+	if _, err := prober.Run(containerRuntime, args...); err != nil {
+		return output.Errorf(output.ExitRuntimeFailure, "launch litellm db via %s: %s", containerRuntime, err)
+	}
+	for attempt := 0; attempt < 20; attempt++ {
+		if _, err := prober.Run(containerRuntime, "exec", litellmDBContainer, "pg_isready", "-U", litellmDBUser); err == nil {
+			return nil
+		}
+		time.Sleep(time.Second)
+	}
+	return nil // launched; LiteLLM will retry its connection as the DB finishes coming up
+}
+
+// litellmHasDatabaseURL reports whether the running LiteLLM container already has
+// DATABASE_URL wired (so a healthy-but-DB-less container is relaunched once).
+func litellmHasDatabaseURL(prober runtime.Prober, containerRuntime string) bool {
+	out, err := prober.Run(containerRuntime, "inspect", "--format",
+		"{{range .Config.Env}}{{println .}}{{end}}", litellmContainer)
+	return err == nil && strings.Contains(string(out), "DATABASE_URL=")
 }
 
 // RelaunchLiteLLMWithAuth recreates the LiteLLM container with the admin-UI
@@ -91,6 +163,11 @@ func RelaunchLiteLLMWithAuth(password, masterKey string) error {
 	}
 	configPath, err := litellm.ConfigPath()
 	if err != nil {
+		return err
+	}
+	// The UI is DB-backed, so the network + Postgres must exist before relaunch.
+	ensurePlatformNetwork(runtime.RealProber(), containerRuntime.Name)
+	if err := ensureLiteLLMDB(runtime.RealProber(), containerRuntime.Name); err != nil {
 		return err
 	}
 	// Best-effort removal of the running (likely unsecured) container.
@@ -141,12 +218,19 @@ func (services realServices) Reconcile(providerConfig string) ([]ServiceStatus, 
 // is already healthy, then polls briefly for it to come up. Idempotent: it
 // removes any stale container of the same name first.
 func (services realServices) ensureLiteLLM(configPath string) error {
-	if services.serviceHealthy("litellm") {
-		return nil
-	}
 	containerRuntime, err := runtime.ContainerRuntimeName(services.prober)
 	if err != nil {
 		return err
+	}
+	// The DB-backed UI needs the network + Postgres regardless of LiteLLM's state.
+	ensurePlatformNetwork(services.prober, containerRuntime.Name)
+	if err := ensureLiteLLMDB(services.prober, containerRuntime.Name); err != nil {
+		return err
+	}
+	// Skip the relaunch only if LiteLLM is healthy AND already wired to the DB —
+	// so a pre-existing container without DATABASE_URL is relaunched once.
+	if services.serviceHealthy("litellm") && litellmHasDatabaseURL(services.prober, containerRuntime.Name) {
+		return nil
 	}
 	_, _ = services.prober.Run(containerRuntime.Name, "rm", "-f", litellmContainer) // best-effort cleanup
 	if _, err := services.prober.Run(containerRuntime.Name, litellmRunArgs(configPath)...); err != nil {

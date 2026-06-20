@@ -382,11 +382,13 @@ func TestLiteLLMRunArgs(test *testing.T) {
 	args := litellmRunArgs("/cfg/litellm/config.yaml")
 	want := []string{
 		"run", "-d", "--name", "aip-litellm",
+		"--network", "aip-net",
 		"-p", "4000:4000",
 		"-v", "/cfg/litellm/config.yaml:/app/config.yaml",
 		"-e", "UI_USERNAME=admin",
 		"-e", "UI_PASSWORD",
 		"-e", "LITELLM_MASTER_KEY",
+		"-e", "DATABASE_URL=postgresql://litellm@aip-litellm-db:5432/litellm",
 		"ghcr.io/berriai/litellm:main-latest",
 		"--config", "/app/config.yaml", "--port", "4000",
 	}

@@ -184,29 +184,30 @@ func TestExternalDepsPresenceAndRemoval(test *testing.T) {
 	test.Setenv("MSB_HOME", "")
 	test.Setenv("CLAWPATROL_PREFIX", "")
 
-	// msb installed: ~/.microsandbox dir + a ~/.local/bin/msb symlink target.
+	prober := &fakeProber{present: map[string]bool{}} // nothing on PATH
+
+	// Use msb: all of its targets are HOME-relative, so presence is isolated to
+	// the temp HOME. (clawpatrol is intentionally not asserted here — one of its
+	// targets is the absolute /Applications/Clawpatrol.app, which would leak the
+	// real machine's state into the test.)
+	var msb ExternalDep
+	for _, dep := range ExternalDeps() {
+		if dep.Binary == "msb" {
+			msb = dep
+		}
+	}
+
+	// Absent on a clean HOME.
+	if msb.Present(prober) {
+		test.Error("msb should not be detected on a clean HOME")
+	}
+
+	// Install msb: ~/.microsandbox dir + a ~/.local/bin/msb symlink target.
 	msbHome := filepath.Join(home, ".microsandbox")
 	mustWrite(test, filepath.Join(msbHome, "bin", "msb"), "x")
 	mustWrite(test, filepath.Join(home, ".local", "bin", "msb"), "x")
-	// clawpatrol NOT installed.
-
-	prober := &fakeProber{present: map[string]bool{}} // nothing on PATH
-
-	deps := ExternalDeps()
-	var msb, claw ExternalDep
-	for _, dep := range deps {
-		switch dep.Binary {
-		case "msb":
-			msb = dep
-		case "clawpatrol":
-			claw = dep
-		}
-	}
 	if !msb.Present(prober) {
 		test.Error("msb should be detected present (install dir exists)")
-	}
-	if claw.Present(prober) {
-		test.Error("clawpatrol should not be detected (nothing installed)")
 	}
 
 	// Removing msb via Run clears its targets but leaves clawpatrol untouched.

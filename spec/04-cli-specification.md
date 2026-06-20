@@ -175,6 +175,13 @@ Purpose:
   setup must never block on it. The password is never logged or written to
   platform disk. (Registering the gateway as a managed OS service is the
   hardware-bring-up end-state.)
+* provisions a small **Postgres** (`aip-litellm-db`, `postgres:18.4-alpine3.24`)
+  that backs LiteLLM's DB-only features (admin UI login, virtual keys, spend
+  tracking — PostgreSQL is the only engine LiteLLM supports for these). It runs
+  on a private docker network (`aip-net`) with trust auth (so `DATABASE_URL`
+  carries no secret) and a loopback host port `127.0.0.1:5442` (non-default, to
+  avoid clashing with other Postgres). This is the one **stateful** service-tier
+  container (a named volume); LiteLLM reaches it over the private network
 * secures the **LiteLLM admin UI**: the container is launched with `UI_USERNAME`
   (`admin`), `UI_PASSWORD`, and `LITELLM_MASTER_KEY` passed as **env passthrough**
   (values are read from the environment, never inlined in argv, the config, or

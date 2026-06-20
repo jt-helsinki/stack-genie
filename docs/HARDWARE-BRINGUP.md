@@ -44,7 +44,10 @@ real docs before wiring:
       for **pi** it is a custom provider registered via a pi extension or
       `models.json` (`registerProvider(..., { baseUrl, apiKey, api:
       "openai-completions" })`, pi.dev/docs custom-provider) — verify pi's exact
-      config format on hardware.
+      config format on hardware. In all cases the `apiKey` an agent CLI holds is
+      the **LiteLLM gateway key** (placeholder/master key), never a real provider
+      secret: ClawPatrol injects the real provider credentials on the wire (§17),
+      so provider API keys never reach the workspace or any agent CLI config.
 - [ ] **Hypervisor entitlement + notarization** chain for distributing the signed
       `ai` (and/or `msb`) binary (Developer ID, not App Store). The M3 spike
       (plan §8.2) covers this plus a no-admin/no-kext networking check.

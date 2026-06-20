@@ -192,6 +192,9 @@ func Run(options Options, prober runtime.Prober, progress Progress) (Report, err
 		if clawDir, err := paths.ClawPatrolDir(); err == nil {
 			_ = os.RemoveAll(clawDir)
 		}
+		if removeVolumes(prober) > 0 {
+			record("Removed platform data volumes (aip-*)")
+		}
 		report.Purged = true
 		record("Purged ~/.ai-platform and ~/.clawpatrol (your project directories were left untouched)")
 	} else {
@@ -273,6 +276,28 @@ func removeContainers(prober runtime.Prober, record func(string)) int {
 		_, _ = prober.Run(containerRuntime, append([]string{"rm", "-f"}, ids...)...)
 		record("Removed platform containers (aip-*) via " + containerRuntime)
 		total += len(ids)
+	}
+	return total
+}
+
+// removeVolumes removes the platform's aip-* data volumes (e.g. the LiteLLM
+// Postgres volume). Only called on --purge, since volumes hold platform state.
+func removeVolumes(prober runtime.Prober) int {
+	total := 0
+	for _, containerRuntime := range containerRuntimes {
+		if _, err := prober.LookPath(containerRuntime); err != nil {
+			continue
+		}
+		out, err := prober.Run(containerRuntime, "volume", "ls", "-q", "--filter", "name=aip-")
+		if err != nil {
+			continue
+		}
+		names := strings.Fields(string(out))
+		if len(names) == 0 {
+			continue
+		}
+		_, _ = prober.Run(containerRuntime, append([]string{"volume", "rm", "-f"}, names...)...)
+		total += len(names)
 	}
 	return total
 }
