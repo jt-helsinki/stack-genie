@@ -17,7 +17,7 @@ import (
 // the inverse of install + setup. It streams status/progress as each step runs,
 // asks per external dependency (msb, clawpatrol) whether to remove it too, then
 // the process exits when finished (the running binary removes itself; its inode
-// survives until exit). It never touches ~/projects.
+// survives until exit). It never touches your project directories.
 func newUninstallCmd(em *output.Emitter, exit *int) *cobra.Command {
 	var purge, removeDeps bool
 	cmd := &cobra.Command{
@@ -28,7 +28,7 @@ func newUninstallCmd(em *output.Emitter, exit *int) *cobra.Command {
 			"platform state under ~/.ai-platform and ~/.clawpatrol. Runs entirely from\n" +
 			"this binary — no network or external script. On a terminal it asks, per\n" +
 			"external dependency (msb, clawpatrol), whether to uninstall it too. Never\n" +
-			"touches ~/projects.",
+			"touches your project directories (your source lives wherever you created it).",
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			prober := runtime.RealProber()
@@ -109,7 +109,7 @@ func newUninstallCmd(em *output.Emitter, exit *int) *cobra.Command {
 		},
 	}
 	cmd.Flags().BoolVar(&purge, "purge", false,
-		"also remove ~/.ai-platform and ~/.clawpatrol (never ~/projects)")
+		"also remove ~/.ai-platform and ~/.clawpatrol (never your project directories)")
 	cmd.Flags().BoolVar(&removeDeps, "remove-deps", false,
 		"also uninstall the external dependencies (msb, clawpatrol) without prompting")
 	return cmd
@@ -122,7 +122,7 @@ func confirmUninstall(purge bool) bool {
 	if purge {
 		description += " Also removes platform state (~/.ai-platform, ~/.clawpatrol)."
 	}
-	description += " Never touches ~/projects."
+	description += " Never touches your project directories (your source)."
 	var yes bool
 	form := huh.NewForm(huh.NewGroup(
 		huh.NewConfirm().
@@ -209,7 +209,7 @@ func (result uninstallResult) Human() string {
 	if len(result.LeftDeps) > 0 {
 		summary += " Left in place: " + strings.Join(result.LeftDeps, ", ") + " (re-run with --remove-deps to remove)."
 	}
-	summary += " Your projects under ~/projects were left untouched."
+	summary += " Your project directories (your source) were left untouched."
 	if result.LogPath != "" {
 		summary += " Log: " + result.LogPath + "."
 	}

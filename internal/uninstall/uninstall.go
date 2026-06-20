@@ -2,7 +2,7 @@
 // setup — natively from the running binary, with no network or external script.
 // It stops the platform containers, strips the managed shell-rc lines, removes
 // the completion scripts and the binary, and (with Purge) the platform state.
-// It NEVER touches ~/projects (the user's source).
+// It NEVER touches your project directories (your source, created anywhere).
 package uninstall
 
 import (
@@ -193,7 +193,7 @@ func Run(options Options, prober runtime.Prober, progress Progress) (Report, err
 			_ = os.RemoveAll(clawDir)
 		}
 		report.Purged = true
-		record("Purged ~/.ai-platform and ~/.clawpatrol (your projects were left untouched)")
+		record("Purged ~/.ai-platform and ~/.clawpatrol (your project directories were left untouched)")
 	} else {
 		record("Left ~/.ai-platform and ~/.clawpatrol in place — re-run with --purge to remove them")
 	}
@@ -244,7 +244,7 @@ func Plan(purge bool) []string {
 		steps = append(steps, "keep platform state (~/.ai-platform, ~/.clawpatrol) — pass --purge to remove")
 	}
 	steps = append(steps, "ask, per external dependency (msb, clawpatrol), whether to uninstall it too")
-	steps = append(steps, "leave ~/projects untouched")
+	steps = append(steps, "leave your project directories untouched")
 	return steps
 }
 
