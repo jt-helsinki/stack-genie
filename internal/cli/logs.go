@@ -71,6 +71,8 @@ func newLogsCmd(emitter *output.Emitter, exit *int) *cobra.Command {
 	cmd.Flags().StringVar(&workspaceName, "workspace", "", "scope to a project's workspace run/ logs")
 	cmd.Flags().StringVar(&service, "service", "", "scope to a host service: "+strings.Join(logServices, "|"))
 	cmd.Flags().BoolVar(&tail, "tail", false, "show only the most recent lines per source")
+	_ = cmd.RegisterFlagCompletionFunc("service", fixedValues(logServices...))
+	_ = cmd.RegisterFlagCompletionFunc("workspace", completeProjectNames)
 	return cmd
 }
 

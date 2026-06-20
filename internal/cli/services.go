@@ -34,9 +34,10 @@ func newServicesCmd(em *output.Emitter, exit *int) *cobra.Command {
 func newServicesConsoleCmd(em *output.Emitter, exit *int) *cobra.Command {
 	var printOnly bool
 	cmd := &cobra.Command{
-		Use:   "console [service]",
-		Short: "Open a host service's admin console in the browser",
-		Args:  cobra.MaximumNArgs(1),
+		Use:               "console [service]",
+		Short:             "Open a host service's admin console in the browser",
+		Args:              cobra.MaximumNArgs(1),
+		ValidArgsFunction: completeConsoleServices,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if len(args) == 0 {
 				*exit = em.Success("services.console", map[string]any{"consoles": console.WithConsoles()})

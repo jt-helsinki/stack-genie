@@ -64,6 +64,9 @@ func Execute() int {
 	persistentFlags.BoolVar(&flags.yes, "yes", false, `assume "yes" for destructive confirmation prompts`)
 	root.Flags().BoolVar(&flags.version, "version", false, "print version and exit")
 
+	// Shell completion for --project values (the names from the global index).
+	_ = root.RegisterFlagCompletionFunc("project", completeProjectNames)
+
 	// Subcommand groups (the full Slice 1 surface, CLI §17.0).
 	root.AddCommand(
 		newSetupCmd(emitter, &exitCode),

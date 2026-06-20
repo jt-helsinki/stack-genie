@@ -106,6 +106,23 @@ Rules:
 * every command and subcommand supports `--help` / `-h` (§17.0)
 * `ai <unknown>` exits `2`
 
+## 1.7 Shell Completion
+
+`ai completion <bash|zsh|fish|powershell>` prints a completion script for the
+shell. Completion is **not active until that script is loaded** by the shell
+(it is not a runtime flag) — e.g. `source <(ai completion zsh)` for the session,
+or install it into the shell's completion directory to persist.
+
+Beyond command and flag-name completion, the CLI provides **dynamic value**
+completion:
+
+* `--project` and the optional `[project]` positional → known project names
+  (from the global index)
+* `ai context strategy` → `conservative|balanced|aggressive`
+* `ai context caveman` → `lite|full|ultra|wenyan`
+* `ai services console` → services that have an admin console
+* `ai logs --service` → the host services; `ai logs --workspace` → project names
+
 ## 2.1 Installation
 
 ### ai setup

@@ -85,9 +85,16 @@ type Report struct {
 // ~/.clawpatrol/gateway.hcl on first setup (clawpatrol.dev/docs/configure-gateway).
 const gatewayConfigURL = "https://raw.githubusercontent.com/denoland/clawpatrol/refs/heads/main/examples/gateway.example.hcl"
 
-// stateDirAssignment matches the `state_dir = "..."` assignment in the gateway
-// HCL (not the comment references), so sensible defaults rewrite only the value.
-var stateDirAssignment = regexp.MustCompile(`(?m)^(\s*state_dir\s*=\s*)"[^"]*"`)
+// gateway HCL assignments rewritten with sensible local defaults (only the
+// assignment lines, never the comment references).
+var (
+	stateDirAssignment        = regexp.MustCompile(`(?m)^(\s*state_dir\s*=\s*)"[^"]*"`)
+	dashboardListenAssignment = regexp.MustCompile(`(?m)^(\s*dashboard_listen\s*=\s*)"[^"]*"`)
+)
+
+// dashboardListen is the platform default for the ClawPatrol dashboard — 8123 is
+// less likely to collide with other apps than the upstream example's 8080.
+const dashboardListen = "127.0.0.1:8123"
 
 // ensureGatewayConfig seeds ~/.clawpatrol/gateway.hcl from the upstream example
 // on first setup and applies sensible local defaults (state_dir → ~/.clawpatrol).
@@ -111,6 +118,7 @@ func ensureGatewayConfig(deps Deps) (created bool, warning string, err error) {
 		return false, fmt.Sprintf("ClawPatrol gateway config not seeded: %s", fetchErr), nil
 	}
 	contents = stateDirAssignment.ReplaceAll(contents, []byte(`${1}"`+dir+`"`))
+	contents = dashboardListenAssignment.ReplaceAll(contents, []byte(`${1}"`+dashboardListen+`"`))
 
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return false, "", err

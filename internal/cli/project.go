@@ -241,9 +241,10 @@ func newProjectListCmd(emitter *output.Emitter, exit *int) *cobra.Command {
 func newProjectDeleteCmd(emitter *output.Emitter, exit *int) *cobra.Command {
 	var purge bool
 	cmd := &cobra.Command{
-		Use:   "delete [project]",
-		Short: "Delete a project (host source kept unless --purge)",
-		Args:  cobra.MaximumNArgs(1),
+		Use:               "delete [project]",
+		Short:             "Delete a project (host source kept unless --purge)",
+		Args:              cobra.MaximumNArgs(1),
+		ValidArgsFunction: completeProjectArg,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			name, err := resolveProjectName(cmd, firstArg(args))
 			if err != nil {

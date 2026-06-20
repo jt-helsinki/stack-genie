@@ -70,7 +70,7 @@ func healthyDeps() (Deps, *fakeServices, *fakeCA) {
 		Services: services,
 		CA:       certificateAuthority,
 		GatewayConfigFetcher: func() ([]byte, error) {
-			return []byte("gateway {\n  state_dir        = \"/opt/clawpatrol\"\n}\n"), nil
+			return []byte("gateway {\n  dashboard_listen = \"127.0.0.1:8080\"\n  state_dir        = \"/opt/clawpatrol\"\n}\n"), nil
 		},
 	}, services, certificateAuthority
 }
@@ -253,6 +253,9 @@ func TestEnsureGatewayConfigSeedsWithDefaults(test *testing.T) {
 	}
 	if strings.Contains(string(contents), "/opt/clawpatrol") {
 		test.Fatalf("example state_dir should have been replaced:\n%s", contents)
+	}
+	if !strings.Contains(string(contents), "127.0.0.1:8123") || strings.Contains(string(contents), "127.0.0.1:8080") {
+		test.Fatalf("dashboard_listen should default to :8123:\n%s", contents)
 	}
 }
 

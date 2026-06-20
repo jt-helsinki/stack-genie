@@ -50,9 +50,10 @@ func resolveProjectRoot(name string) (string, error) {
 
 func newContextStatusCmd(emitter *output.Emitter, exit *int) *cobra.Command {
 	return &cobra.Command{
-		Use:   "status [project]",
-		Short: "Show context-optimization status",
-		Args:  cobra.MaximumNArgs(1),
+		Use:               "status [project]",
+		Short:             "Show context-optimization status",
+		Args:              cobra.MaximumNArgs(1),
+		ValidArgsFunction: completeProjectArg,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			name, err := resolveProjectName(cmd, firstArg(args))
 			if err != nil {
@@ -77,9 +78,10 @@ func newContextStatusCmd(emitter *output.Emitter, exit *int) *cobra.Command {
 
 func newContextStrategyCmd(emitter *output.Emitter, exit *int) *cobra.Command {
 	return &cobra.Command{
-		Use:   "strategy [project] <conservative|balanced|aggressive>",
-		Short: "Set the Headroom input-compression strategy",
-		Args:  cobra.RangeArgs(1, 2),
+		Use:               "strategy [project] <conservative|balanced|aggressive>",
+		Short:             "Set the Headroom input-compression strategy",
+		Args:              cobra.RangeArgs(1, 2),
+		ValidArgsFunction: completeOptionalProjectThenValue(contextopt.Strategies),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			explicit, value := splitProjectAndValue(args)
 			name, err := resolveProjectName(cmd, explicit)
@@ -104,9 +106,10 @@ func newContextStrategyCmd(emitter *output.Emitter, exit *int) *cobra.Command {
 
 func newContextCavemanCmd(emitter *output.Emitter, exit *int) *cobra.Command {
 	return &cobra.Command{
-		Use:   "caveman [project] <lite|full|ultra|wenyan>",
-		Short: "Set the Caveman output-compression level (reinstalls the skill)",
-		Args:  cobra.RangeArgs(1, 2),
+		Use:               "caveman [project] <lite|full|ultra|wenyan>",
+		Short:             "Set the Caveman output-compression level (reinstalls the skill)",
+		Args:              cobra.RangeArgs(1, 2),
+		ValidArgsFunction: completeOptionalProjectThenValue(contextopt.CavemanLevels),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			explicit, value := splitProjectAndValue(args)
 			name, err := resolveProjectName(cmd, explicit)

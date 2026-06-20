@@ -36,9 +36,10 @@ func newWorkspaceCmd(emitter *output.Emitter, exit *int) *cobra.Command {
 // rootless or virtualization shortfall exits 4; a missing runtime exits 3.
 func newWorkspaceDoctorCmd(emitter *output.Emitter, exit *int) *cobra.Command {
 	return &cobra.Command{
-		Use:   "doctor [project]",
-		Short: "Diagnose the project's workspace runtime and virtualization",
-		Args:  cobra.MaximumNArgs(1),
+		Use:               "doctor [project]",
+		Short:             "Diagnose the project's workspace runtime and virtualization",
+		Args:              cobra.MaximumNArgs(1),
+		ValidArgsFunction: completeProjectArg,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			name, err := resolveProjectName(cmd, firstArg(args))
 			if err != nil {
@@ -118,9 +119,10 @@ func newWorkspaceListCmd(emitter *output.Emitter, exit *int) *cobra.Command {
 
 func newWorkspaceStartCmd(emitter *output.Emitter, exit *int) *cobra.Command {
 	return &cobra.Command{
-		Use:   "start [project]",
-		Short: "Build the image and start the project's workspace microVM",
-		Args:  cobra.MaximumNArgs(1),
+		Use:               "start [project]",
+		Short:             "Build the image and start the project's workspace microVM",
+		Args:              cobra.MaximumNArgs(1),
+		ValidArgsFunction: completeProjectArg,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			name, err := resolveProjectName(cmd, firstArg(args))
 			if err != nil {
@@ -140,9 +142,10 @@ func newWorkspaceStartCmd(emitter *output.Emitter, exit *int) *cobra.Command {
 
 func newWorkspaceStopCmd(emitter *output.Emitter, exit *int) *cobra.Command {
 	return &cobra.Command{
-		Use:   "stop [project]",
-		Short: "Stop the workspace microVM (state preserved)",
-		Args:  cobra.MaximumNArgs(1),
+		Use:               "stop [project]",
+		Short:             "Stop the workspace microVM (state preserved)",
+		Args:              cobra.MaximumNArgs(1),
+		ValidArgsFunction: completeProjectArg,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			name, err := resolveProjectName(cmd, firstArg(args))
 			if err != nil {
@@ -162,9 +165,10 @@ func newWorkspaceStopCmd(emitter *output.Emitter, exit *int) *cobra.Command {
 func newWorkspaceDestroyCmd(emitter *output.Emitter, exit *int) *cobra.Command {
 	// Non-destructive (§4.4): keeps the overlay + host source, so no --yes.
 	return &cobra.Command{
-		Use:   "destroy [project]",
-		Short: "Delete the microVM/runtime handle only (overlay + source kept)",
-		Args:  cobra.MaximumNArgs(1),
+		Use:               "destroy [project]",
+		Short:             "Delete the microVM/runtime handle only (overlay + source kept)",
+		Args:              cobra.MaximumNArgs(1),
+		ValidArgsFunction: completeProjectArg,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			name, err := resolveProjectName(cmd, firstArg(args))
 			if err != nil {
@@ -183,9 +187,10 @@ func newWorkspaceDestroyCmd(emitter *output.Emitter, exit *int) *cobra.Command {
 
 func newWorkspaceExecCmd(emitter *output.Emitter, exit *int) *cobra.Command {
 	return &cobra.Command{
-		Use:   "exec [project] -- <command> [args...]",
-		Short: "Run a command inside the project workspace",
-		Args:  cobra.ArbitraryArgs,
+		Use:               "exec [project] -- <command> [args...]",
+		Short:             "Run a command inside the project workspace",
+		Args:              cobra.ArbitraryArgs,
+		ValidArgsFunction: completeProjectArg,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			// Args before `--` are the optional [project]; args after are the
 			// command. `--` is required so the command is unambiguous.
