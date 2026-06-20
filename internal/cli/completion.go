@@ -57,9 +57,10 @@ func completeOptionalProjectThenValue(values []string) completer {
 	}
 }
 
-// completeServiceNames offers the host service names (for services start/stop/restart).
+// completeServiceNames offers "all" plus the host service names (for services
+// start/stop/restart).
 func completeServiceNames(*cobra.Command, []string, string) ([]string, cobra.ShellCompDirective) {
-	return setup.ServiceNames(), cobra.ShellCompDirectiveNoFileComp
+	return append([]string{"all"}, setup.ServiceNames()...), cobra.ShellCompDirectiveNoFileComp
 }
 
 // completeConsoleServices offers the host services that have an admin console.

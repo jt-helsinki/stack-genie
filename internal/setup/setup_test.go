@@ -313,6 +313,10 @@ func TestControlServiceValidation(test *testing.T) {
 	if _, err := ControlService(deps, "start", ""); err != nil {
 		test.Fatalf("control-all should be valid: %v", err)
 	}
+	// The literal "all" keyword is accepted (same as no service).
+	if _, err := ControlService(deps, "restart", "all"); err != nil {
+		test.Fatalf("\"all\" should be accepted: %v", err)
+	}
 }
 
 func TestRunUpgradeRepinsVersions(test *testing.T) {

@@ -622,21 +622,24 @@ ai services stop    [<service>]    # stop one or all
 ai services restart [<service>]    # restart one or all
 ```
 
-`<service>`: `litellm` | `clawpatrol` | `ollama`.
+`<service>`: `litellm` | `clawpatrol` | `ollama` | `all` (no arg = all).
 
 Behavior:
 
 * `status` reports each service's run mode (container | native), health, and
   pinned version; `--json` returns the §19 envelope with a `data.services` array
-* lifecycle verbs dispatch to the runtime (container-tier) or the OS service
-  manager (native-tier) transparently
+* lifecycle verbs act on the **platform-owned** service — **LiteLLM** (the
+  container the platform launches), via the runtime abstraction (§6). With no
+  service, or `all`, they act on the platform-owned set
+* **Ollama and ClawPatrol are started by their own installers**, so the platform
+  does not manage their lifecycle; naming either explicitly exits `2` with
+  guidance to use that tool's own service control
 * docker compose is not used; container-tier services are managed through the
   runtime abstraction (§6)
-* service install/upgrade is handled by `ai setup` /
-  `ai setup --upgrade`, not by these verbs
-* `start` / `stop` / `restart` and `console` are part of the command surface
-  (an unknown service exits `2`); the live container/gateway control is wired
-  during hardware bring-up. `ai console` lists/opens a service's admin dashboard.
+* service install/upgrade is handled by `ai setup` / `ai setup --upgrade`, not by
+  these verbs
+* an unknown service exits `2`. `ai services console` lists/opens a service's
+  admin dashboard.
 
 ---
 

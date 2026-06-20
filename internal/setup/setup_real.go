@@ -195,11 +195,48 @@ func (services realServices) serviceHealthy(name string) bool {
 	}
 }
 
-// Control performs start/stop/restart on the host services (start launches via
-// Reconcile's path). stop/restart of the container/gateway lands as it is needed.
+// Control performs start/stop/restart on the host services. Only LiteLLM's
+// lifecycle is the platform's to manage; Ollama and ClawPatrol are started by
+// their own installers/service managers, so naming them explicitly is rejected
+// with guidance, while "all" simply skips them. Returns the post-action Status.
 func (services realServices) Control(action, service string) ([]ServiceStatus, error) {
-	return nil, output.Errorf(output.ExitRuntimeFailure,
-		"service %s is wired during hardware bring-up", action)
+	switch service {
+	case "ollama":
+		return nil, output.Errorf(output.ExitInvalidInput,
+			"ollama is started by its own installer; the platform does not manage its lifecycle (use Ollama's own service control, e.g. the Ollama app or `brew services`)")
+	case "clawpatrol":
+		return nil, output.Errorf(output.ExitInvalidInput,
+			"clawpatrol runs as a native gateway managed by its own installer; the platform does not control its lifecycle")
+	}
+
+	// service is "" (all) or "litellm": act on the platform-owned LiteLLM container.
+	containerRuntime, err := runtime.ContainerRuntimeName(services.prober)
+	if err != nil {
+		return nil, output.Errorf(output.ExitMissingDep, "no container runtime to control LiteLLM: %s", err)
+	}
+	configPath, err := litellm.ConfigPath()
+	if err != nil {
+		return nil, err
+	}
+
+	switch action {
+	case "start":
+		if err := services.ensureLiteLLM(configPath); err != nil {
+			return nil, err
+		}
+	case "stop":
+		if _, err := services.prober.Run(containerRuntime.Name, "stop", litellmContainer); err != nil {
+			return nil, output.Errorf(output.ExitRuntimeFailure, "stop litellm via %s: %s", containerRuntime.Name, err)
+		}
+	case "restart":
+		// Restart the existing container; if it isn't there yet, launch it fresh.
+		if _, err := services.prober.Run(containerRuntime.Name, "restart", litellmContainer); err != nil {
+			if err := services.ensureLiteLLM(configPath); err != nil {
+				return nil, err
+			}
+		}
+	}
+	return services.Status()
 }
 
 // realDepInstaller runs a dependency's official one-line installer, streaming its

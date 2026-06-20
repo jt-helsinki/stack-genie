@@ -145,8 +145,12 @@ func ControlService(deps Deps, action, service string) ([]ServiceStatus, error) 
 	if !controlActions[action] {
 		return nil, output.Errorf(output.ExitInvalidInput, "unknown action %q (start|stop|restart)", action)
 	}
+	// "all" is the explicit spelling of "no service = all services".
+	if service == "all" {
+		service = ""
+	}
 	if service != "" && !slices.Contains(ServiceNames(), service) {
-		return nil, output.Errorf(output.ExitInvalidInput, "unknown service %q (one of %v)", service, ServiceNames())
+		return nil, output.Errorf(output.ExitInvalidInput, "unknown service %q (one of %v, or \"all\")", service, ServiceNames())
 	}
 	return deps.Services.Control(action, service)
 }

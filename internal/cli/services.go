@@ -9,9 +9,9 @@ import (
 	"github.com/spf13/cobra"
 )
 
-// newServicesCmd builds `ai services` and its subcommands (CLI §10.2). In
-// `status`/`console` run host-side; `start`/`stop`/`restart` exist as the full
-// surface, with the live container/gateway control wired during hardware bring-up.
+// newServicesCmd builds `ai services` and its subcommands (CLI §10.2).
+// `start`/`stop`/`restart` control the platform-owned LiteLLM container; Ollama
+// and ClawPatrol are managed by their own installers.
 func newServicesCmd(em *output.Emitter, exit *int) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "services",
@@ -31,9 +31,9 @@ func newServicesCmd(em *output.Emitter, exit *int) *cobra.Command {
 	return cmd
 }
 
-// newServicesControlCmd builds `ai services start|stop|restart [service]` (no
-// service = all). The live container/gateway control is wired during hardware
-// bring-up; until then it reports a runtime failure rather than a silent no-op.
+// newServicesControlCmd builds `ai services start|stop|restart [service]`. With
+// no service (or "all") it acts on the platform-owned services (LiteLLM); naming
+// ollama/clawpatrol reports that they are managed by their own installers.
 func newServicesControlCmd(action string, em *output.Emitter, exit *int) *cobra.Command {
 	return &cobra.Command{
 		Use:               action + " [service]",
