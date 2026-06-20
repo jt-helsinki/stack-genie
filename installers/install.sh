@@ -26,8 +26,14 @@ main() {
     *) err "unsupported architecture: $arch" ;;
   esac
 
-  # Slice 1 supports macOS on Apple Silicon only (arch §6.2). Other targets
-  # land in later slices; warn rather than hard-fail so dev builds work.
+  # Native Windows is not supported — microVMs need a Linux (KVM) or macOS (HVF)
+  # hypervisor. Run this inside WSL2 instead, where uname reports Linux.
+  case "$os" in
+    msys* | mingw* | cygwin* | windows*)
+      err "native Windows is not supported. Install WSL2, open a Linux distro, and run this installer there (the workspace microVMs need /dev/kvm inside WSL2)." ;;
+  esac
+
+  # macOS is supported on Apple Silicon only (arch §6.2).
   if [ "$os" = "darwin" ] && [ "$arch" != "arm64" ]; then
     err "macOS support requires Apple Silicon (Microsandbox needs the Apple Hypervisor)."
   fi

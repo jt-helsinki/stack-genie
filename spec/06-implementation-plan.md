@@ -132,8 +132,8 @@ The `ai` CLI is the **single control plane** for host services (architecture §5
   the `runtime/` abstraction (run by digest, restart policy, health poll), so
   docker and podman stay interchangeable
 * **native tier** (ClawPatrol): downloaded as a pinned checksum-verified binary
-  into `tools/`, registered with the OS service manager (launchd / systemd /
-  Windows)
+  into `tools/`, registered with the OS service manager (launchd on macOS,
+  systemd on Linux/WSL2)
 
 The Microsandbox runtime is **not** a managed service: its `msb` binary is
 pinned into `tools/` and invoked on demand via `sandbox/` to create and drive
@@ -235,8 +235,11 @@ Slice 1 is complete only when every `[S1]` test passes with no manual config.
   templates (S1 ships `debian-trixie`); OS-equivalence test. Tests `[S5]`.
 * **S6 Linux + Podman.** Podman `Runtime` impl; Linux launcher; abstraction
   equivalence. Tests `[S6]`.
-* **S7 Windows + WSL.** Windows launcher (WSL2 + nested virtualization for
-  Microsandbox — at-risk), path normalization, networking. Tests `[S7]`.
+* **S7 Windows — retired.** Native Windows is not supported: microVMs need a
+  Linux (KVM) or macOS (HVF) hypervisor. On Windows users run the **Linux build
+  inside WSL2** (it detects as Linux); the installer and `ai doctor` direct
+  native Windows to WSL2. There is no Windows launcher, path normalization, or
+  Windows-specific networking (arch §6.2, "Host Agnostic").
 
 Each slice must not break prior slices (roadmap §1).
 
@@ -260,8 +263,9 @@ Each slice must not break prior slices (roadmap §1).
     `[S1]`-tagged acceptance suite.
   * Slice tags gate which acceptance tests run per environment; later slices add
     a Linux (KVM) self-hosted runner for `[S6]`.
-* **Cross-compile** matrix (darwin/arm64, linux/amd64, linux/arm64,
-  windows/amd64) once S6/S7 land. (darwin/amd64 is dropped — Intel Macs are
+* **Cross-compile** matrix (darwin/arm64, linux/amd64, linux/arm64). No
+  windows/amd64 — native Windows is unsupported; Windows users run the
+  linux/amd64 build inside WSL2. (darwin/amd64 is also dropped — Intel Macs are
   unsupported, §6.2.)
 
 ---

@@ -10,7 +10,6 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/jt-helsinki/ideal-robot/internal/hostpath"
 	"github.com/jt-helsinki/ideal-robot/internal/overlay"
 	"github.com/jt-helsinki/ideal-robot/internal/state"
 )
@@ -50,8 +49,8 @@ type Sandbox interface {
 }
 
 // Manager coordinates the lifecycle over a Builder + Sandbox, stamping state with
-// Now (RFC 3339 UTC). GOOS selects host-specific behavior such as the project
-// mount-path form (Windows → WSL2 /mnt/<drive>, Slice 7).
+// Now (RFC 3339 UTC). GOOS records the host OS for any host-specific behavior
+// (supported hosts: macOS and Linux, including Linux inside WSL2).
 type Manager struct {
 	Builder Builder
 	Sandbox Sandbox
@@ -90,10 +89,10 @@ func (manager Manager) Start(project string) (*state.Workspace, error) {
 	if err != nil {
 		return nil, err
 	}
-	// Translate the host project path to the form the microVM mounts it at
-	// (Windows host → WSL2 /mnt/<drive>; macOS/Linux unchanged) (arch §7, Slice 7).
-	projectMount := hostpath.WorkspaceMount(manager.GOOS, root)
-	if err := manager.Sandbox.Create(name, imageRef, projectMount, overlayPath); err != nil {
+	// The microVM mounts the host project path directly. Supported hosts are
+	// macOS and Linux (incl. Linux inside WSL2 on a Windows machine), so no
+	// path translation is needed (arch §7).
+	if err := manager.Sandbox.Create(name, imageRef, root, overlayPath); err != nil {
 		return nil, err
 	}
 	if err := manager.Sandbox.Start(name); err != nil {

@@ -151,20 +151,21 @@ func TestRunMissingDepsError(test *testing.T) {
 	}
 }
 
-// TestWindowsVirtualizationReportsWSL2 is the [S7] requirement that `doctor`
-// clearly reports when WSL2 nested virtualization is unavailable on Windows.
-func TestWindowsVirtualizationReportsWSL2(test *testing.T) {
+// TestNativeWindowsUnsupportedGuidesToWSL2: native Windows is not a supported
+// host, so `doctor` reports virtualization unavailable and points the user to
+// WSL2 (where `ai` runs as the Linux build).
+func TestNativeWindowsUnsupportedGuidesToWSL2(test *testing.T) {
 	deps := Deps{
 		GOOS: "windows", GOARCH: "amd64",
-		Prober: fakeProber{bins: map[string]bool{"docker": true, "msb": true}}, // no /dev/kvm
+		Prober: fakeProber{bins: map[string]bool{"docker": true, "msb": true}},
 		Model:  fakeModel{healthy: true},
 	}
 	virtualization := checkByName(Run(deps), "host virtualization")
 	if virtualization.Status != StatusError {
-		test.Fatalf("windows without nested virt should error: %+v", virtualization)
+		test.Fatalf("native windows should report virtualization unavailable: %+v", virtualization)
 	}
 	if !strings.Contains(virtualization.Suggestion, "WSL2") {
-		test.Errorf("windows suggestion should name WSL2: %q", virtualization.Suggestion)
+		test.Errorf("windows suggestion should point to WSL2: %q", virtualization.Suggestion)
 	}
 }
 

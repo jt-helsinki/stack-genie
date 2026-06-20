@@ -65,8 +65,10 @@ All commands must support:
 CLI must behave identically on:
 
 * macOS (Apple Silicon)
-* Linux (KVM)
-* Windows (via WSL2 with nested virtualization — at-risk)
+* Linux (KVM) — including Linux inside WSL2 on a Windows machine
+
+Native Windows is not supported (no native binary); `ai` runs on Windows only
+inside WSL2, where it is the Linux build (architecture §6.2).
 
 ---
 

@@ -12,7 +12,7 @@ type Prober interface {
 // Info is the detected sandbox-runtime state.
 type Info struct {
 	MsbInstalled   bool
-	Virtualization string // "hvf" | "kvm" | "wsl2" | ""
+	Virtualization string // "hvf" | "kvm" | ""
 	Available      bool   // virtualization usable for microVMs
 }
 
@@ -21,7 +21,10 @@ type Info struct {
 //
 //   - macOS: requires Apple Silicon (Apple Hypervisor); Intel is unsupported
 //   - Linux: requires /dev/kvm
-//   - Windows: WSL2 with nested virtualization (exposes /dev/kvm in the guest)
+//
+// Native Windows is **not** a supported host — microVMs need a Linux/KVM (or
+// macOS HVF) hypervisor. On Windows you run the Linux build inside WSL2, which
+// reports as Linux here and is detected via /dev/kvm in the guest.
 func Detect(goos, goarch string, prober Prober) Info {
 	var info Info
 	if _, err := prober.LookPath("msb"); err == nil {
@@ -37,9 +40,7 @@ func Detect(goos, goarch string, prober Prober) Info {
 	case "linux":
 		info.Virtualization = "kvm"
 		info.Available = prober.Exists("/dev/kvm")
-	case "windows":
-		info.Virtualization = "wsl2"
-		info.Available = prober.Exists("/dev/kvm")
+		// Other GOOS (incl. native windows): unsupported — Available stays false.
 	}
 	return info
 }

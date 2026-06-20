@@ -97,7 +97,14 @@ The platform must function consistently on:
 
 * macOS (Apple Silicon — required by the Microsandbox microVM runtime)
 * Linux (KVM virtualization must be available)
-* Windows (via WSL2 with nested virtualization — **at-risk**; see §6 and §30)
+
+**Native Windows is not a supported host.** Microsandbox microVMs require a Linux
+(KVM) or macOS (HVF) hypervisor, which native Windows does not provide. On
+Windows you install **WSL2** (with nested virtualization) and run the **Linux
+build** of `ai` inside it — it detects as Linux and behaves identically. The
+platform ships no native Windows binary and contains no Windows-specific code
+path (e.g. no host path translation); `ai doctor` and the installer detect
+native Windows and direct the user to WSL2.
 
 Behavior must remain consistent regardless of runtime. Intel Macs are **not
 supported** because the Microsandbox microVM runtime requires Apple Silicon.
@@ -173,9 +180,8 @@ The Host Layer provides all persistent infrastructure.
 
 Supported hosts:
 
-* macOS
-* Linux
-* Windows
+* macOS (Apple Silicon)
+* Linux (incl. Linux inside WSL2 on a Windows machine)
 
 Responsibilities:
 
@@ -294,8 +300,8 @@ ai logs --service <svc>      one log surface
 **docker compose is not used.** Container-tier services are managed directly
 through the runtime abstraction (§6), so docker and podman remain
 interchangeable and there is no second orchestration mechanism. The native
-service (ClawPatrol) is registered with the OS service manager (launchd /
-systemd / Windows service) so it restarts on boot without user action.
+service (ClawPatrol) is registered with the OS service manager (launchd on
+macOS, systemd on Linux/WSL2) so it restarts on boot without user action.
 Microsandbox is **not** a long-running service — the `ai` CLI invokes it
 directly (Go SDK / `msb`) to create, start, stop, and destroy workspace
 microVMs; `ai setup` only verifies the runtime is installed and the host
@@ -361,11 +367,11 @@ must fail the relevant `doctor` check rather than silently fall back to a
 rooted daemon.
 
 The check is what the requirement protects against — a **rooted daemon on the
-host** — not a literal `rootless` flag. On macOS and Windows, Docker Desktop (and
-Podman's machine) run the engine inside a managed VM, so there is no rooted
-host daemon and no host socket exposure; these satisfy the requirement by
-construction and `runtime.Verify` treats them as rootless. On Linux, where the
-engine runs on the host kernel directly, a **genuine rootless engine** is
+host** — not a literal `rootless` flag. On macOS, Docker Desktop (and Podman's
+machine) run the engine inside a managed VM, so there is no rooted host daemon
+and no host socket exposure; this satisfies the requirement by construction and
+`runtime.Verify` treats it as rootless. On Linux (including inside WSL2), where
+the engine runs on the host kernel directly, a **genuine rootless engine** is
 required and is detected from `docker info` (Podman is rootless by default).
 
 ## 6.2 microVM Runtime (workspaces)
@@ -379,8 +385,9 @@ Host requirements:
 * **macOS:** Apple Silicon (the microVM runtime requires the Apple Hypervisor;
   Intel Macs are unsupported)
 * **Linux:** KVM virtualization available to the user
-* **Windows:** WSL2 with nested virtualization — **at-risk**; the `doctor` check
-  must report clearly when nested virtualization is unavailable
+* **Windows:** not supported natively — run the Linux build inside **WSL2** with
+  nested virtualization (so `/dev/kvm` is present in the guest). The `doctor`
+  check and installer detect native Windows and direct the user to WSL2
 
 The platform consumes OCI images: a workspace image is built from the project's
 `.ai-platform/Dockerfile` (§25) and run as a microVM. On any host that cannot
@@ -996,8 +1003,8 @@ a loopback UDP port (no `utun`, no NetworkExtension, no admin networking prompt)
 
 * **macOS**: none beyond the hypervisor entitlement that Microsandbox already
   needs — the userspace WG endpoint is an ordinary UDP listener
-* **Linux**: none beyond the userspace WG UDP listener (no `CAP_NET_ADMIN`)
-* **Windows**: the WSL2 userspace WG endpoint
+* **Linux** (including inside WSL2): none beyond the userspace WG UDP listener
+  (no `CAP_NET_ADMIN`)
 
 (The legacy alternative — a kernel `utun`/NetworkExtension WireGuard interface —
 is **not** used, precisely so the tunnel does not contend with the hypervisor for
@@ -1018,8 +1025,8 @@ permissions are an end-state ceiling, not an S1 prerequisite.
 The gateway is registered as a managed native service so it survives reboot:
 
 * **macOS**: launchd user agent
-* **Linux**: systemd unit (user, or system where required for netns)
-* **Windows**: Windows service
+* **Linux** (including inside WSL2): systemd unit (user, or system where required
+  for netns)
 
 These are written and loaded by `ai setup`; the user does not author
 them (see §5, Host Services Control Plane).
@@ -1578,9 +1585,9 @@ Requirements:
   material). This is a deliberate widening of trust in the gateway and is the
   enabler for wire-level injection
 
-On Windows, workspace isolation depends on WSL2 nested virtualization being
-available; where it is not, the platform must fail the `doctor` check rather
-than run workspaces without microVM isolation (§6.2).
+Inside WSL2 (the Windows path), workspace isolation depends on nested
+virtualization being available; where it is not, the platform must fail the
+`doctor` check rather than run workspaces without microVM isolation (§6.2).
 
 ---
 

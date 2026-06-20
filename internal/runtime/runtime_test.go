@@ -261,7 +261,7 @@ func TestHostAddressPrefersEnvOverride(test *testing.T) {
 func TestHostGatewayDeferredUntilHardware(test *testing.T) {
 	// The concrete gateway is pinned from the Microsandbox SDK on hardware; until
 	// then it is reported unpinned so callers fall back to the env override.
-	for _, goos := range []string{"darwin", "linux", "windows"} {
+	for _, goos := range []string{"darwin", "linux"} {
 		if address, pinned := HostGateway(goos); pinned || address != "" {
 			test.Errorf("HostGateway(%q) = (%q,%v), want (\"\",false) pre-hardware", goos, address, pinned)
 		}

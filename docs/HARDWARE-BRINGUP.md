@@ -69,8 +69,8 @@ Each is a thin real impl that currently returns `ErrPending` / a stub.
   - `realBuilder.Build` → run `<rt> build -t <imageRef> -f <root>/.ai-platform/Dockerfile <root>` where `<rt>` is the detected runtime (`docker`|`podman`, Slice 6). The argv is already produced by `runtime.ContainerRuntime.BuildArgs`; just exec it.
   - `realSandbox.Create/Start/Stop/Destroy/Exec` → Microsandbox Go SDK: boot the
     OCI image as a microVM, bind-mount the project at `~/workspace` (the
-    `projectMount` arg arrives already normalized — WSL2 `/mnt/<drive>` form on a
-    Windows host, via `internal/hostpath`, Slice 7), attach the
+    `projectMount` arg is the host project path directly — supported hosts are
+    macOS and Linux, incl. Linux inside WSL2, so no path translation), attach the
     overlay named volume backed by the host `overlayPath` Create now receives
     (ensured by `internal/overlay`, §26), apply the **default-deny network policy**, inject
     `AI_PLATFORM_HOST` (= `runtime.Info.HostAddress()`) + `HTTPS_PROXY`, and install
@@ -148,5 +148,6 @@ pass):
 - **WireGuard L3 egress** (arch §29 end-state) — replaces the S1 forward proxy for
   transparent capture of all tools. Gated by the userspace-WG-with-ClawPatrol
   feasibility spike (plan §8.2). Not needed for S1.
-- Podman / Linux (S6), Windows/WSL2 (S7), Headroom + Caveman context optimization
-  (S2), overlay persistence hardening (S4), extended OS templates (S5).
+- Podman / Linux (S6), Headroom + Caveman context optimization (S2), overlay
+  persistence hardening (S4), extended OS templates (S5). (Native Windows is
+  retired — S7; Windows runs the Linux build inside WSL2.)

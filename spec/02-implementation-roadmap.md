@@ -323,28 +323,25 @@ Add Linux host compatibility.
 
 ---
 
-# 8. Slice 7 — Windows Host Support
+# 8. Slice 7 — Windows Host Support — Retired
 
-## Goal
+Native Windows is **not** a supported host. Microsandbox microVMs require a Linux
+(KVM) or macOS (HVF) hypervisor, which native Windows cannot provide, so a native
+Windows port would only ever be a thin shim over a Linux VM. Instead, **Windows
+is supported via WSL2**: the user installs WSL2 (with nested virtualization) and
+runs the **Linux build** of `ai` inside it, where it detects as Linux and behaves
+identically (architecture §6.2, "Host Agnostic").
 
-Enable Windows + WSL support.
-
----
-
-## Scope
-
-* Windows bootstrap script
-* WSL2 integration with **nested virtualization** (required for Microsandbox microVMs) — **at-risk**; `doctor` must report clearly when unavailable
-* file path normalization
-* networking abstraction fixes
-
----
+There is therefore no Windows bootstrap script, file-path normalization, or
+Windows-specific networking. The installer and `ai doctor` detect native Windows
+and direct the user to WSL2.
 
 ## Acceptance Criteria
 
-* ai setup works on Windows (WSL2 with nested virtualization)
-* WSL2 runs the selected-OS workspace microVM (e.g. Debian trixie)
-* project creation works unchanged
+* on native Windows, the installer and `ai doctor` clearly direct the user to
+  WSL2 (no silent failure)
+* inside WSL2 (Linux, nested virt enabled), `ai setup` / project creation /
+  workspace microVMs work exactly as on Linux
 
 ---
 

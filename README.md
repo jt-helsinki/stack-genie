@@ -19,13 +19,13 @@ The full design lives in [`spec/`](spec/):
 
 ## Status
 
-The full control-plane surface (Slices S1–S7) is implemented **host-side**: the
+The full control-plane surface (Slices S1–S6) is implemented **host-side**: the
 `ai` CLI, project/workspace lifecycle, context optimization, secrets, models,
-doctor/logs, and Linux/Windows detection all work and are unit-tested. What
+doctor/logs, and host detection all work and are unit-tested. What
 remains is the **live external-tool integration** — launching the LiteLLM
 container, the ClawPatrol gateway + CA, the in-workspace Headroom proxy, and
 booting Microsandbox microVMs — which can only be wired and verified on a
-provisioned Apple Silicon host. Those seams are tracked in
+provisioned Apple Silicon (or Linux/KVM) host. Those seams are tracked in
 [`docs/HARDWARE-BRINGUP.md`](docs/HARDWARE-BRINGUP.md).
 
 In practice: project creation, configuration, context/secrets/state commands,
@@ -35,8 +35,9 @@ workspace or service report their deferred status rather than pretending.
 ## Requirements
 
 - Go 1.26+
-- macOS on **Apple Silicon** (Microsandbox requires the Apple Hypervisor); Linux
-  (KVM) and Windows (WSL2) land in later slices.
+- A supported host: **macOS on Apple Silicon** (Microsandbox requires the Apple
+  Hypervisor) or **Linux with KVM**. Native Windows is not supported — install
+  **WSL2** (with nested virtualization) and run the Linux build inside it.
 
 ## Build
 

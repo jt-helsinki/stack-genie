@@ -658,17 +658,24 @@ ai setup --json
 
 ---
 
-## 12.3 Windows + WSL Test `[S7]`
+## 12.3 Windows → WSL2 Test `[S7 retired]`
+
+Native Windows is not a supported host (architecture §6.2), so there is no
+native-Windows acceptance test.
 
 ### Test
 
-* run setup in a WSL2 environment with nested virtualization, then `create_project test-project` (PTY wizard, default OS, §1.4)
+* on **native Windows**, run the installer: it exits with guidance to install
+  WSL2 (no install attempted)
+* **inside WSL2** (Linux guest, nested virtualization enabled), run `ai setup`
+  then `create_project test-project` (PTY wizard, default OS, §1.4)
 
 ### Expected Result
 
-* the selected-OS workspace microVM starts correctly (WSL2 nested virtualization)
-* host/WSL path abstraction works
-* networking works via `AI_PLATFORM_HOST`
+* native Windows: clear "use WSL2" message, non-zero exit, nothing installed
+* inside WSL2: identical to the Linux path — the selected-OS workspace microVM
+  starts (nested virtualization), networking works via `AI_PLATFORM_HOST`; no
+  Windows-specific path abstraction is involved
 
 ---
 

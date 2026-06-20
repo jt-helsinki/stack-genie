@@ -82,7 +82,8 @@ func (info *Info) HostAddress() string {
 // network stack — the address a workspace reaches the host at (arch §29.2). The
 // concrete value is fixed by the Microsandbox network backend and is pinned from
 // the SDK during hardware bring-up and confirmed by a connectivity probe; until
-// then it reports ("", false). goos selects the backend (HVF/KVM/WSL2).
+// then it reports ("", false). goos selects the backend (HVF on macOS, KVM on
+// Linux — including Linux inside WSL2 on a Windows machine).
 func HostGateway(goos string) (address string, pinned bool) {
 	// Deferred: filled in by the §29.5 reachability spike on a provisioned host.
 	return "", false
@@ -176,8 +177,8 @@ func ContainerRuntimeName(prober Prober) (ContainerRuntime, error) {
 
 // DetectContainerRuntime resolves the container runtime and whether it runs
 // rootless on this host (arch §6.1, §6.3). goos matters: Docker Desktop on macOS
-// and Windows runs the engine inside a managed VM, so there is no rooted daemon
-// on the host — that is rootless-equivalent for the platform's purposes.
+// runs the engine inside a managed VM, so there is no rooted daemon on the host —
+// that is rootless-equivalent for the platform's purposes.
 func DetectContainerRuntime(goos string, prober Prober) (containerRuntime ContainerRuntime, rootless bool, err error) {
 	containerRuntime, err = ContainerRuntimeName(prober)
 	if err != nil {
@@ -199,13 +200,14 @@ func hasBinary(prober Prober, name string) bool {
 }
 
 // dockerRootless reports whether Docker satisfies the platform's no-rooted-host-
-// daemon requirement (§6.1). On macOS and Windows, Docker Desktop runs the engine
-// inside a managed Linux VM — there is no rooted dockerd on the host and no host
-// socket exposure — so it qualifies regardless of the engine's SecurityOptions
-// (the `rootless` marker is a Linux rootless-engine flag and is absent there). On
-// Linux it must be a genuine rootless engine, detected via `docker info`.
+// daemon requirement (§6.1). On macOS, Docker Desktop runs the engine inside a
+// managed Linux VM — there is no rooted dockerd on the host and no host socket
+// exposure — so it qualifies regardless of the engine's SecurityOptions (the
+// `rootless` marker is a Linux rootless-engine flag and is absent there). On
+// Linux (including inside WSL2) it must be a genuine rootless engine, detected
+// via `docker info`.
 func dockerRootless(goos string, prober Prober) bool {
-	if goos == "darwin" || goos == "windows" {
+	if goos == "darwin" {
 		return true
 	}
 	output, err := prober.Run("docker", "info", "-f", "{{println .SecurityOptions}}")

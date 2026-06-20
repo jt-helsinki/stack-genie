@@ -118,7 +118,7 @@ func containerRuntimeSuggestion(goos string) string {
 	case "linux":
 		return "install a rootless container runtime: curl -fsSL https://get.docker.com | sh (or your distro's podman), then `ai setup`"
 	case "windows":
-		return "install Docker Desktop with the WSL2 backend (or Podman), then `ai setup`"
+		return "native Windows is not supported — install WSL2 and run `ai` inside a Linux distro there (then install Docker/Podman in WSL2)"
 	default:
 		return "install Docker or Podman (rootless), then `ai setup`"
 	}
@@ -189,19 +189,19 @@ func virtualizationCheck(goos string, detected sandbox.Info) Check {
 	}
 }
 
-// virtualizationSuggestion gives the OS-specific remedy. On Windows the
-// WSL2-nested-virtualization requirement is at-risk, so `doctor` must call it out
-// clearly (arch §6.2, Slice 7).
+// virtualizationSuggestion gives the OS-specific remedy. Native Windows is not a
+// supported host (microVMs need a Linux/KVM or macOS/HVF hypervisor); on Windows
+// you run the Linux build inside WSL2, which needs nested virtualization (arch §6.2).
 func virtualizationSuggestion(goos string) string {
 	switch goos {
 	case "windows":
-		return "enable WSL2 with nested virtualization (Microsandbox microVMs need /dev/kvm inside the WSL2 guest); see `ai doctor` docs"
+		return "native Windows is not supported — install WSL2 with nested virtualization and run `ai` inside the Linux guest (microVMs need /dev/kvm there)"
 	case "linux":
-		return "enable hardware virtualization (KVM) so /dev/kvm is present"
+		return "enable hardware virtualization (KVM) so /dev/kvm is present (inside WSL2, enable nested virtualization)"
 	case "darwin":
 		return "Apple Silicon is required for the microVM runtime (Intel Macs are unsupported)"
 	default:
-		return "macOS needs Apple Silicon; Linux needs /dev/kvm; Windows needs WSL2 nested virtualization"
+		return "macOS needs Apple Silicon; Linux (incl. WSL2) needs /dev/kvm"
 	}
 }
 
