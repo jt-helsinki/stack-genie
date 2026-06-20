@@ -277,7 +277,7 @@ func TestOverlayPersistsAcrossRecreation(test *testing.T) {
 	AssertOK(test, start, code, "workspace.start")
 
 	// Write a marker outside the project mount; it must land in the overlay.
-	mark, code := harness.Run(test, "workspace", "exec", "--project", "overlay-test", "--", "sh", "-c", "echo persisted > /root/marker")
+	mark, code := harness.Exec(test, "overlay-test", "sh", "-c", "echo persisted > /root/marker")
 	AssertOK(test, mark, code, "workspace.exec")
 
 	destroy, code := harness.Run(test, "workspace", "destroy", "--project", "overlay-test")
@@ -285,7 +285,7 @@ func TestOverlayPersistsAcrossRecreation(test *testing.T) {
 	restart, code := harness.Run(test, "workspace", "start", "--project", "overlay-test")
 	AssertOK(test, restart, code, "workspace.start")
 
-	check, code := harness.Run(test, "workspace", "exec", "--project", "overlay-test", "--", "cat", "/root/marker")
+	check, code := harness.Exec(test, "overlay-test", "cat", "/root/marker")
 	AssertOK(test, check, code, "workspace.exec")
 }
 
@@ -312,7 +312,7 @@ func TestOSEquivalenceOnHardware(test *testing.T) {
 
 		// Same base tooling surface across every OS.
 		for _, tool := range []string{"git", "gh"} {
-			smoke, code := harness.Run(test, "workspace", "exec", "--project", "os-"+osKey, "--", tool, "--version")
+			smoke, code := harness.Exec(test, "os-"+osKey, tool, "--version")
 			AssertOK(test, smoke, code, "workspace.exec")
 		}
 	}

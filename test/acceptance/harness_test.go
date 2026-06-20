@@ -86,10 +86,29 @@ func (harness *Harness) env(extra ...string) []string {
 }
 
 // Run executes `ai <args> --json`, returning the parsed envelope and exit code.
-// Diagnostics on stderr are discarded; only the stdout envelope is parsed (§19).
 func (harness *Harness) Run(test *testing.T, args ...string) (Envelope, int) {
 	test.Helper()
-	command := exec.Command(harness.Binary, append(args, "--json")...)
+	return harness.runRaw(test, append(args, "--json")...)
+}
+
+// Exec runs `ai workspace exec [project] --json -- <argv>` — placing --json
+// before the `--` so it is not swallowed as part of the inner command.
+func (harness *Harness) Exec(test *testing.T, project string, argv ...string) (Envelope, int) {
+	test.Helper()
+	args := []string{"workspace", "exec"}
+	if project != "" {
+		args = append(args, project)
+	}
+	args = append(args, "--json", "--")
+	args = append(args, argv...)
+	return harness.runRaw(test, args...)
+}
+
+// runRaw runs `ai <args>` verbatim (no automatic --json) and parses the envelope.
+// Diagnostics on stderr are discarded; only the stdout envelope is parsed (§19).
+func (harness *Harness) runRaw(test *testing.T, args ...string) (Envelope, int) {
+	test.Helper()
+	command := exec.Command(harness.Binary, args...)
 	command.Env = harness.env()
 	var stdout bytes.Buffer
 	command.Stdout = &stdout

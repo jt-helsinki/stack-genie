@@ -111,18 +111,21 @@ Each is a thin real impl that currently returns `ErrPending` / a stub.
 In `test/acceptance/` (harness, PTY driver, and the runnable `[S1]` subset already
 pass):
 
-- [ ] Build the **HTTPS mock-provider** fixture (OpenAI-compatible `/health` +
-      `/v1/chat/completions` that records the credential; serve TLS and configure
-      ClawPatrol to trust its cert — acceptance-tests §1.6).
-- [ ] Add the service `[S1]` tests from `spec/05-acceptance-tests.md`, all gated by
-      `hardwareAvailable()`:
-  - §2.1–2.3 setup + idempotency; §12.1 macOS install.
-  - §7.1/§7.2 model status/test; §9.1 credentialed request (sentinel appears at the
-    mock provider, **never** in the workspace).
-  - §16.2 workspace isolation (host fs unreachable, no Docker socket); §16.3 egress
-    confinement (allowlisted reachable, non-allowlisted denied).
-  - §6.1 Dockerfile-built workspace; §6.3 agent-CLI selection; §6.4 stack selection
-    (via `ai workspace exec` probes).
+- [x] **HTTPS mock-provider** fixture — `test/acceptance/mockprovider_test.go`
+      (OpenAI-compatible `/health` + `/v1/chat/completions`, records the credential,
+      serves TLS via `httptest`, exposes its cert via `writeCertPEM`). Has its own
+      non-hardware unit test.
+- [x] Core service `[S1]` tests written (gated by `hardwareAvailable()`, ready to
+      run on a provisioned host) — `test/acceptance/s1_hardware_test.go`:
+  - §9.1 credentialed request (sentinel reaches the mock provider, **never** the
+    workspace; only the placeholder is in the workspace env);
+  - §16.2 workspace isolation (host fs + Docker socket unreachable);
+  - §16.3 egress confinement (LiteLLM reachable; non-allow-listed denied via proxy
+    and directly).
+  - On hardware these will exercise the real `ErrPending` seams — fill those in
+    until the tests pass.
+- [ ] Remaining `[S1]` tests still to add: §2.1–2.3 setup/idempotency, §7.1/§7.2
+      model status/test, §6.1/§6.3/§6.4 Dockerfile/agent-CLI/stack probes.
 - [ ] Point `make test-acceptance` at the suite (currently a stub) and enable the
       self-hosted Apple Silicon job in `.github/workflows/ci.yml` (`acceptance-s1`).
 
