@@ -22,9 +22,10 @@ func TestMergeProjectOverGlobal(test *testing.T) {
 
 	gp, _ := GlobalPath()
 	writeFile(test, gp, `
-runtime: docker
+workspace:
+  cpu_limit: 4
 context:
-  max_tokens: 64000
+  caveman_level: full
   strategy: balanced
 `)
 	projectRoot := filepath.Join(home, "projects", "app")
@@ -38,14 +39,14 @@ context:
 	if err != nil {
 		test.Fatal(err)
 	}
-	if cfg.Runtime != "docker" { // from global, untouched by project
-		test.Errorf("runtime = %q, want docker", cfg.Runtime)
+	if cfg.Workspace.CPULimit != 4 { // from global, untouched by project
+		test.Errorf("cpu_limit = %d, want 4", cfg.Workspace.CPULimit)
 	}
 	if cfg.OS != "alma" { // only in project
 		test.Errorf("os = %q, want alma", cfg.OS)
 	}
-	if cfg.Context.MaxTokens != 64000 { // global survives a nested partial override
-		test.Errorf("max_tokens = %d, want 64000", cfg.Context.MaxTokens)
+	if cfg.Context.CavemanLevel != "full" { // global survives a nested partial override
+		test.Errorf("caveman_level = %q, want full", cfg.Context.CavemanLevel)
 	}
 	if cfg.Context.Strategy != "aggressive" { // project wins on the overlapping key
 		test.Errorf("strategy = %q, want aggressive", cfg.Context.Strategy)
@@ -56,7 +57,7 @@ func TestUnknownFieldRejected(test *testing.T) {
 	home := test.TempDir()
 	test.Setenv("HOME", home)
 	gp, _ := GlobalPath()
-	writeFile(test, gp, "runtime: docker\nbogus: true\n")
+	writeFile(test, gp, "os: alma\nbogus: true\n")
 	if _, err := Load(""); err == nil {
 		test.Fatal("expected unknown-field rejection")
 	}
@@ -68,7 +69,7 @@ func TestMissingLayersOK(test *testing.T) {
 	if err != nil {
 		test.Fatalf("missing layers should not error: %v", err)
 	}
-	if cfg.Runtime != "" {
+	if cfg.OS != "" || cfg.Agent.DefaultTool != "" {
 		test.Fatalf("expected empty config, got %+v", cfg)
 	}
 }

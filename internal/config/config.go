@@ -20,18 +20,11 @@ import (
 // Config mirrors repo-layout §12.4. The same shape applies at every level; each
 // level may set any subset.
 type Config struct {
-	Runtime   string          `yaml:"runtime,omitempty" json:"runtime,omitempty"`
 	OS        string          `yaml:"os,omitempty" json:"os,omitempty"`
-	Git       GitConfig       `yaml:"git,omitempty" json:"git,omitempty"`
 	Agent     AgentConfig     `yaml:"agent,omitempty" json:"agent,omitempty"`
 	Context   ContextConfig   `yaml:"context,omitempty" json:"context,omitempty"`
 	Workspace WorkspaceConfig `yaml:"workspace,omitempty" json:"workspace,omitempty"`
 	Network   NetworkConfig   `yaml:"network,omitempty" json:"network,omitempty"`
-	Agents    AgentsConfig    `yaml:"agents,omitempty" json:"agents,omitempty"`
-}
-
-type GitConfig struct {
-	MergeStrategy string `yaml:"merge_strategy,omitempty" json:"merge_strategy,omitempty"`
 }
 
 type AgentConfig struct {
@@ -42,13 +35,16 @@ type AgentConfig struct {
 	DefaultTool string `yaml:"default_tool,omitempty" json:"default_tool,omitempty"`
 }
 
+// ContextConfig holds the per-project context-optimization settings: the
+// Headroom input-compression strategy and the Caveman output-compression level
+// (arch §8–10). Both are set by `ai context` and read at workspace start.
 type ContextConfig struct {
-	MaxTokens            int     `yaml:"max_tokens,omitempty" json:"max_tokens,omitempty"`
-	CompressionThreshold float64 `yaml:"compression_threshold,omitempty" json:"compression_threshold,omitempty"`
-	Strategy             string  `yaml:"strategy,omitempty" json:"strategy,omitempty"`
-	CavemanLevel         string  `yaml:"caveman_level,omitempty" json:"caveman_level,omitempty"`
+	Strategy     string `yaml:"strategy,omitempty" json:"strategy,omitempty"`
+	CavemanLevel string `yaml:"caveman_level,omitempty" json:"caveman_level,omitempty"`
 }
 
+// WorkspaceConfig holds the microVM resource limits applied at workspace start
+// (arch §7). Reserved — consumed by the workspace launch wired in hardware bring-up.
 type WorkspaceConfig struct {
 	CPULimit    int    `yaml:"cpu_limit,omitempty" json:"cpu_limit,omitempty"`
 	MemoryLimit string `yaml:"memory_limit,omitempty" json:"memory_limit,omitempty"`
@@ -78,22 +74,14 @@ type PortMapping struct {
 	Host  int `yaml:"host" json:"host"`
 }
 
-type AgentsConfig struct {
-	ArchiveDays int  `yaml:"archive_days,omitempty" json:"archive_days,omitempty"`
-	ReuseAgents bool `yaml:"reuse_agents,omitempty" json:"reuse_agents,omitempty"`
-}
-
 // Default returns the built-in global defaults (repo-layout §12.4). It omits
 // `os` — there is no default OS (it is always chosen per project, arch §25).
 func Default() *Config {
 	return &Config{
-		Runtime:   "docker",
-		Git:       GitConfig{MergeStrategy: "squash"},
 		Agent:     AgentConfig{Tools: []string{"opencode"}, DefaultTool: "opencode"},
-		Context:   ContextConfig{MaxTokens: 64000, CompressionThreshold: 0.75, Strategy: "balanced", CavemanLevel: "full"},
+		Context:   ContextConfig{Strategy: "balanced", CavemanLevel: "full"},
 		Workspace: WorkspaceConfig{CPULimit: 4, MemoryLimit: "8G"},
 		Network:   NetworkConfig{EgressProxy: "clawpatrol"},
-		Agents:    AgentsConfig{ArchiveDays: 14, ReuseAgents: true},
 	}
 }
 

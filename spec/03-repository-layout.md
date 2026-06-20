@@ -532,22 +532,28 @@ multiple AI agents on a project is the in-workspace agent CLI's concern
 Same shape at every level of the hierarchy (§27 of the architecture spec);
 each level may set any subset and overrides the level below.
 
+The service-tier runtime is **auto-detected** (into `runtime.json`, §12.5), not a
+config field. Git branches/worktrees/merges and multi-agent lifecycle are the
+in-workspace agent CLI's concern (arch §20–22), so there are no `git`/`agents`
+config blocks.
+
 ```yaml id="sc6"
-runtime: docker            # docker | podman
 os: alma                   # alma | debian-trixie | debian-bookworm | ubuntu
-git:
-  merge_strategy: squash   # squash | merge | rebase
 agent:
   tools: [opencode]        # installed agent CLIs (any subset of: opencode, claude-code, codex, gemini-cli)
   default_tool: opencode   # default agent CLI; must be one of agent.tools
 context:
-  max_tokens: 64000
-  compression_threshold: 0.75
-  strategy: balanced       # conservative | balanced | aggressive
-  caveman_level: full      # lite | full | ultra | wenyan
+  strategy: balanced       # Headroom input compression: conservative | balanced | aggressive
+  caveman_level: full      # Caveman output compression: lite | full | ultra | wenyan
 workspace:
-  cpu_limit: 4
+  cpu_limit: 4             # microVM resource limits (applied at workspace start)
   memory_limit: 8G
+network:                   # workspace networking (arch §29.6)
+  egress_proxy: clawpatrol
+  allow_host_services:     # plain-TCP host services the workspace may reach
+    - { host: gateway, port: 5432 }
+  publish_ports:           # host → workspace port maps
+    - { guest: 3000, host: 3000 }
 ```
 
 ## 12.5 `config/runtime.json` (platform-global, non-project)
