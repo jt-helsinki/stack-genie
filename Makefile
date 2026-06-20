@@ -47,8 +47,8 @@ lint: ## golangci-lint (skipped with a warning if not installed)
 test: ## Run unit tests
 	go test ./...
 
-test-acceptance: ## Run [S1] acceptance suite (requires Apple Silicon + Docker + Microsandbox)
-	@echo "acceptance harness not yet implemented (plan M8)"
+test-acceptance: ## Run the acceptance suite (set AIP_HARDWARE_TESTS=1 to include the full-stack [S1] tests on a provisioned host)
+	go test -count=1 ./test/acceptance/
 
 tidy: ## Sync go.mod/go.sum
 	go mod tidy
