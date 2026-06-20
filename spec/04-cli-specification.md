@@ -65,10 +65,7 @@ All commands must support:
 CLI must behave identically on:
 
 * macOS (Apple Silicon)
-* Linux (KVM) — including Linux inside WSL2 on a Windows machine
-
-Native Windows is not supported (no native binary); `ai` runs on Windows only
-inside WSL2, where it is the Linux build (architecture §6.2).
+* Linux (KVM)
 
 ---
 
@@ -590,7 +587,7 @@ ai doctor
 
 Checks:
 
-* Microsandbox runtime + host virtualization (Apple Silicon / KVM / WSL2 nested-virt)
+* Microsandbox runtime + host virtualization (Apple Silicon / KVM)
 * Docker/Podman
 * LiteLLM
 * ClawPatrol (gateway health + the workspace trusts the current ClawPatrol CA — flags drift after a CA rotation; architecture §17)

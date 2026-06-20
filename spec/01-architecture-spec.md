@@ -98,14 +98,6 @@ The platform must function consistently on:
 * macOS (Apple Silicon — required by the Microsandbox microVM runtime)
 * Linux (KVM virtualization must be available)
 
-**Native Windows is not a supported host.** Microsandbox microVMs require a Linux
-(KVM) or macOS (HVF) hypervisor, which native Windows does not provide. On
-Windows you install **WSL2** (with nested virtualization) and run the **Linux
-build** of `ai` inside it — it detects as Linux and behaves identically. The
-platform ships no native Windows binary and contains no Windows-specific code
-path (e.g. no host path translation); `ai doctor` and the installer detect
-native Windows and direct the user to WSL2.
-
 Behavior must remain consistent regardless of runtime. Intel Macs are **not
 supported** because the Microsandbox microVM runtime requires Apple Silicon.
 
@@ -181,7 +173,7 @@ The Host Layer provides all persistent infrastructure.
 Supported hosts:
 
 * macOS (Apple Silicon)
-* Linux (incl. Linux inside WSL2 on a Windows machine)
+* Linux
 
 Responsibilities:
 
@@ -301,7 +293,7 @@ ai logs --service <svc>      one log surface
 through the runtime abstraction (§6), so docker and podman remain
 interchangeable and there is no second orchestration mechanism. The native
 service (ClawPatrol) is registered with the OS service manager (launchd on
-macOS, systemd on Linux/WSL2) so it restarts on boot without user action.
+macOS, systemd on Linux) so it restarts on boot without user action.
 Microsandbox is **not** a long-running service — the `ai` CLI invokes it
 directly (Go SDK / `msb`) to create, start, stop, and destroy workspace
 microVMs; `ai setup` only verifies the runtime is installed and the host
@@ -370,7 +362,7 @@ The check is what the requirement protects against — a **rooted daemon on the
 host** — not a literal `rootless` flag. On macOS, Docker Desktop (and Podman's
 machine) run the engine inside a managed VM, so there is no rooted host daemon
 and no host socket exposure; this satisfies the requirement by construction and
-`runtime.Verify` treats it as rootless. On Linux (including inside WSL2), where
+`runtime.Verify` treats it as rootless. On Linux, where
 the engine runs on the host kernel directly, a **genuine rootless engine** is
 required and is detected from `docker info` (Podman is rootless by default).
 
@@ -385,9 +377,6 @@ Host requirements:
 * **macOS:** Apple Silicon (the microVM runtime requires the Apple Hypervisor;
   Intel Macs are unsupported)
 * **Linux:** KVM virtualization available to the user
-* **Windows:** not supported natively — run the Linux build inside **WSL2** with
-  nested virtualization (so `/dev/kvm` is present in the guest). The `doctor`
-  check and installer detect native Windows and direct the user to WSL2
 
 The platform consumes OCI images: a workspace image is built from the project's
 `.ai-platform/Dockerfile` (§25) and run as a microVM. On any host that cannot
@@ -1003,8 +992,7 @@ a loopback UDP port (no `utun`, no NetworkExtension, no admin networking prompt)
 
 * **macOS**: none beyond the hypervisor entitlement that Microsandbox already
   needs — the userspace WG endpoint is an ordinary UDP listener
-* **Linux** (including inside WSL2): none beyond the userspace WG UDP listener
-  (no `CAP_NET_ADMIN`)
+* **Linux**: none beyond the userspace WG UDP listener (no `CAP_NET_ADMIN`)
 
 (The legacy alternative — a kernel `utun`/NetworkExtension WireGuard interface —
 is **not** used, precisely so the tunnel does not contend with the hypervisor for
@@ -1025,8 +1013,7 @@ permissions are an end-state ceiling, not an S1 prerequisite.
 The gateway is registered as a managed native service so it survives reboot:
 
 * **macOS**: launchd user agent
-* **Linux** (including inside WSL2): systemd unit (user, or system where required
-  for netns)
+* **Linux**: systemd unit (user, or system where required for netns)
 
 These are written and loaded by `ai setup`; the user does not author
 them (see §5, Host Services Control Plane).
@@ -1420,7 +1407,7 @@ The gateway address is fixed by the Microsandbox network backend, so it is
 connectivity probe** — never guessed. `runtime.HostGateway(goos)` is the resolver
 seam and `Info.HostAddress()` returns the `AI_PLATFORM_HOST` environment override
 when set (e.g. the acceptance harness) else the resolved gateway. The same
-mechanism works on macOS (HVF), Linux (KVM), and WSL2 — only the resolved value
+mechanism works on macOS (HVF) and Linux (KVM) — only the resolved value
 differs per backend.
 
 The trusted platform host service (LiteLLM) is reached directly at
@@ -1491,7 +1478,7 @@ This must work identically across all supported hosts.
 
 The WireGuard L3 model above is the **end-state** (this document describes the
 final architecture regardless of phase, §1). It is delivered in two steps
-(roadmap §9.5, plan §8.2):
+(roadmap §8.5, plan §8.2):
 
 * **Initial slice — ClawPatrol forward proxy.** The same gvproxy NIC and the same
   default-deny Microsandbox network policy, but egress is mediated by setting
@@ -1585,9 +1572,9 @@ Requirements:
   material). This is a deliberate widening of trust in the gateway and is the
   enabler for wire-level injection
 
-Inside WSL2 (the Windows path), workspace isolation depends on nested
-virtualization being available; where it is not, the platform must fail the
-`doctor` check rather than run workspaces without microVM isolation (§6.2).
+Workspace isolation depends on the host hypervisor (KVM on Linux, HVF on macOS)
+being available; where it is not, the platform must fail the `doctor` check
+rather than run workspaces without microVM isolation (§6.2).
 
 ---
 

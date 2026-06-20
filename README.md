@@ -11,7 +11,7 @@ The full design lives in [`spec/`](spec/):
 | Doc | Contents |
 |-----|----------|
 | `spec/01-architecture-spec.md` | End-state architecture |
-| `spec/02-implementation-roadmap.md` | Delivery slices (S1–S7) |
+| `spec/02-implementation-roadmap.md` | Delivery slices (S1–S6) |
 | `spec/03-repository-layout.md` | On-disk + repo layout |
 | `spec/04-cli-specification.md` | CLI surface, output envelope, exit codes |
 | `spec/05-acceptance-tests.md` | Formal acceptance tests |
@@ -36,8 +36,7 @@ workspace or service report their deferred status rather than pretending.
 
 - Go 1.26+
 - A supported host: **macOS on Apple Silicon** (Microsandbox requires the Apple
-  Hypervisor) or **Linux with KVM**. Native Windows is not supported — install
-  **WSL2** (with nested virtualization) and run the Linux build inside it.
+  Hypervisor) or **Linux with KVM**.
 
 ## Build
 

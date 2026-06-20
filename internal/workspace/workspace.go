@@ -50,7 +50,7 @@ type Sandbox interface {
 
 // Manager coordinates the lifecycle over a Builder + Sandbox, stamping state with
 // Now (RFC 3339 UTC). GOOS records the host OS for any host-specific behavior
-// (supported hosts: macOS and Linux, including Linux inside WSL2).
+// (supported hosts: macOS and Linux).
 type Manager struct {
 	Builder Builder
 	Sandbox Sandbox
@@ -90,8 +90,7 @@ func (manager Manager) Start(project string) (*state.Workspace, error) {
 		return nil, err
 	}
 	// The microVM mounts the host project path directly. Supported hosts are
-	// macOS and Linux (incl. Linux inside WSL2 on a Windows machine), so no
-	// path translation is needed (arch §7).
+	// macOS and Linux, so no path translation is needed (arch §7).
 	if err := manager.Sandbox.Create(name, imageRef, root, overlayPath); err != nil {
 		return nil, err
 	}

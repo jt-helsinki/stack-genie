@@ -67,12 +67,8 @@ func (opener osOpener) Open(url string) error {
 }
 
 func (opener osOpener) command(url string) (string, []string) {
-	switch opener.goos {
-	case "darwin":
+	if opener.goos == "darwin" {
 		return "open", []string{url}
-	case "windows":
-		return "cmd", []string{"/c", "start", "", url}
-	default:
-		return "xdg-open", []string{url}
 	}
+	return "xdg-open", []string{url} // Linux
 }

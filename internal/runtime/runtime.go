@@ -83,7 +83,7 @@ func (info *Info) HostAddress() string {
 // concrete value is fixed by the Microsandbox network backend and is pinned from
 // the SDK during hardware bring-up and confirmed by a connectivity probe; until
 // then it reports ("", false). goos selects the backend (HVF on macOS, KVM on
-// Linux — including Linux inside WSL2 on a Windows machine).
+// Linux).
 func HostGateway(goos string) (address string, pinned bool) {
 	// Deferred: filled in by the §29.5 reachability spike on a provisioned host.
 	return "", false
@@ -204,8 +204,7 @@ func hasBinary(prober Prober, name string) bool {
 // managed Linux VM — there is no rooted dockerd on the host and no host socket
 // exposure — so it qualifies regardless of the engine's SecurityOptions (the
 // `rootless` marker is a Linux rootless-engine flag and is absent there). On
-// Linux (including inside WSL2) it must be a genuine rootless engine, detected
-// via `docker info`.
+// Linux it must be a genuine rootless engine, detected via `docker info`.
 func dockerRootless(goos string, prober Prober) bool {
 	if goos == "darwin" {
 		return true

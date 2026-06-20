@@ -14,7 +14,7 @@ This document is the engineering plan for building the platform. It complements
 the other specs:
 
 * `01-architecture-spec.md` — end-state architecture (the *what*)
-* `02-implementation-roadmap.md` — product slices S1–S7 (the *when*)
+* `02-implementation-roadmap.md` — product slices S1–S6 (the *when*)
 * `03-repository-layout.md` — runtime directory + state/config schemas
 * `04-cli-specification.md` — CLI contracts
 * `05-acceptance-tests.md` — executable acceptance tests (the *done* bar)
@@ -115,7 +115,7 @@ These underpin every slice and are built first.
   (Podman impl in S6)
 * `sandbox/` (workspaces): wrap the **Microsandbox Go SDK** (`msb` only as a
   fallback); verify the microVM runtime + host virtualization (Apple Silicon /
-  KVM / WSL2 nested-virt); no daemon to supervise. The adapter creates each
+  KVM); no daemon to supervise. The adapter creates each
   workspace microVM **and applies its egress network policy via the Go SDK** —
   the default-deny + allow-rule model (deny by default; allow exactly the
   ClawPatrol proxy + trusted host service ports), which is what AT §16.3 asserts.
@@ -133,7 +133,7 @@ The `ai` CLI is the **single control plane** for host services (architecture §5
   docker and podman stay interchangeable
 * **native tier** (ClawPatrol): downloaded as a pinned checksum-verified binary
   into `tools/`, registered with the OS service manager (launchd on macOS,
-  systemd on Linux/WSL2)
+  systemd on Linux)
 
 The Microsandbox runtime is **not** a managed service: its `msb` binary is
 pinned into `tools/` and invoked on demand via `sandbox/` to create and drive
@@ -235,11 +235,6 @@ Slice 1 is complete only when every `[S1]` test passes with no manual config.
   templates (S1 ships `debian-trixie`); OS-equivalence test. Tests `[S5]`.
 * **S6 Linux + Podman.** Podman `Runtime` impl; Linux launcher; abstraction
   equivalence. Tests `[S6]`.
-* **S7 Windows — retired.** Native Windows is not supported: microVMs need a
-  Linux (KVM) or macOS (HVF) hypervisor. On Windows users run the **Linux build
-  inside WSL2** (it detects as Linux); the installer and `ai doctor` direct
-  native Windows to WSL2. There is no Windows launcher, path normalization, or
-  Windows-specific networking (arch §6.2, "Host Agnostic").
 
 Each slice must not break prior slices (roadmap §1).
 
@@ -263,10 +258,8 @@ Each slice must not break prior slices (roadmap §1).
     `[S1]`-tagged acceptance suite.
   * Slice tags gate which acceptance tests run per environment; later slices add
     a Linux (KVM) self-hosted runner for `[S6]`.
-* **Cross-compile** matrix (darwin/arm64, linux/amd64, linux/arm64). No
-  windows/amd64 — native Windows is unsupported; Windows users run the
-  linux/amd64 build inside WSL2. (darwin/amd64 is also dropped — Intel Macs are
-  unsupported, §6.2.)
+* **Cross-compile** matrix (darwin/arm64, linux/amd64, linux/arm64). (darwin/amd64
+  is dropped — Intel Macs are unsupported, §6.2.)
 
 ---
 

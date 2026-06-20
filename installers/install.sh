@@ -26,11 +26,11 @@ main() {
     *) err "unsupported architecture: $arch" ;;
   esac
 
-  # Native Windows is not supported — microVMs need a Linux (KVM) or macOS (HVF)
-  # hypervisor. Run this inside WSL2 instead, where uname reports Linux.
+  # Supported hosts: macOS and Linux. Any other OS (e.g. msys/mingw/cygwin
+  # shells) is rejected.
   case "$os" in
-    msys* | mingw* | cygwin* | windows*)
-      err "native Windows is not supported. Install WSL2, open a Linux distro, and run this installer there (the workspace microVMs need /dev/kvm inside WSL2)." ;;
+    darwin | linux) ;;
+    *) err "unsupported OS: ${os}. This platform supports macOS (Apple Silicon) and Linux." ;;
   esac
 
   # macOS is supported on Apple Silicon only (arch §6.2).

@@ -169,7 +169,7 @@ func TestRunPreflightRootlessUnavailable(test *testing.T) {
 	test.Setenv("HOME", test.TempDir())
 	deps, _, _ := healthyDeps()
 	// A rooted Linux docker engine ("rootless" absent from SecurityOptions). On
-	// macOS/Windows, Docker Desktop is rootless-equivalent (VM), so this scenario
+	// macOS, Docker Desktop is rootless-equivalent (VM), so this scenario
 	// is Linux-specific.
 	deps.GOOS, deps.GOARCH = "linux", "amd64"
 	deps.Prober = fakeProber{

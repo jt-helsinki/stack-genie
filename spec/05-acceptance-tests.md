@@ -86,8 +86,8 @@ Each test is tagged with the slice from which it must pass (see
 `02-implementation-roadmap.md`). A test does not apply before its slice.
 
 ```text
-[S1] Slice 1   [S2] Slice 2   [S3] Slice 3   [S4] Slice 4
-[S5] Slice 5   [S6] Slice 6   [S7] Slice 7
+[S1] Slice 1   [S2] Slice 2   [S3] Slice 3
+[S4] Slice 4   [S5] Slice 5   [S6] Slice 6
 ```
 
 ---
@@ -134,7 +134,7 @@ non-interactive except `ai project create`, which is driven through a PTY via th
   (the fixture is parameterized by `$MOCK_PROVIDER_URL`) so the source of "what is
   allowed" is the fixture, not a test's expectation.
   (S1 routes egress via ClawPatrol as a forward proxy — `HTTPS_PROXY`; WireGuard
-  L3 capture is a later slice, roadmap §9.5.)
+  L3 capture is a later slice, roadmap §8.5.)
 
 ### Setup / Teardown
 
@@ -658,28 +658,7 @@ ai setup --json
 
 ---
 
-## 12.3 Windows → WSL2 Test `[S7 retired]`
-
-Native Windows is not a supported host (architecture §6.2), so there is no
-native-Windows acceptance test.
-
-### Test
-
-* on **native Windows**, run the installer: it exits with guidance to install
-  WSL2 (no install attempted)
-* **inside WSL2** (Linux guest, nested virtualization enabled), run `ai setup`
-  then `create_project test-project` (PTY wizard, default OS, §1.4)
-
-### Expected Result
-
-* native Windows: clear "use WSL2" message, non-zero exit, nothing installed
-* inside WSL2: identical to the Linux path — the selected-OS workspace microVM
-  starts (nested virtualization), networking works via `AI_PLATFORM_HOST`; no
-  Windows-specific path abstraction is involved
-
----
-
-## 12.4 OS Equivalence Test `[S5]`
+## 12.3 OS Equivalence Test `[S5]`
 
 ### Test
 

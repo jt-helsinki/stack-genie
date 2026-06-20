@@ -17,14 +17,12 @@ type Info struct {
 }
 
 // Detect reports whether the Microsandbox runtime (`msb`) is installed and
-// whether the host can run microVMs:
+// whether the host can run microVMs. Supported hosts are macOS and Linux:
 //
 //   - macOS: requires Apple Silicon (Apple Hypervisor); Intel is unsupported
 //   - Linux: requires /dev/kvm
 //
-// Native Windows is **not** a supported host — microVMs need a Linux/KVM (or
-// macOS HVF) hypervisor. On Windows you run the Linux build inside WSL2, which
-// reports as Linux here and is detected via /dev/kvm in the guest.
+// Any other GOOS is unsupported (Available stays false).
 func Detect(goos, goarch string, prober Prober) Info {
 	var info Info
 	if _, err := prober.LookPath("msb"); err == nil {
@@ -40,7 +38,7 @@ func Detect(goos, goarch string, prober Prober) Info {
 	case "linux":
 		info.Virtualization = "kvm"
 		info.Available = prober.Exists("/dev/kvm")
-		// Other GOOS (incl. native windows): unsupported — Available stays false.
+		// Any other GOOS: unsupported — Available stays false.
 	}
 	return info
 }

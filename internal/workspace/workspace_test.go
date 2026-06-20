@@ -90,7 +90,7 @@ func TestStartBuildsAndRecordsStartedHandle(test *testing.T) {
 		test.Fatal("overlay path not passed to Sandbox.Create")
 	}
 	// The microVM mounts the host project path directly (no translation; hosts
-	// are macOS and Linux, incl. WSL2).
+	// are macOS and Linux).
 	if sandbox.projectMount != root {
 		test.Fatalf("project mount = %q, want host path %q", sandbox.projectMount, root)
 	}

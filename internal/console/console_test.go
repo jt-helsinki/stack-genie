@@ -30,9 +30,8 @@ func TestOpenerCommandPerOS(test *testing.T) {
 		name string
 		args []string
 	}{
-		"darwin":  {"open", []string{"https://x"}},
-		"linux":   {"xdg-open", []string{"https://x"}},
-		"windows": {"cmd", []string{"/c", "start", "", "https://x"}},
+		"darwin": {"open", []string{"https://x"}},
+		"linux":  {"xdg-open", []string{"https://x"}},
 	}
 	for goos, want := range cases {
 		name, args := osOpener{goos: goos}.command("https://x")

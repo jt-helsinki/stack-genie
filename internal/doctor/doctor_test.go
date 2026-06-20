@@ -151,21 +151,17 @@ func TestRunMissingDepsError(test *testing.T) {
 	}
 }
 
-// TestNativeWindowsUnsupportedGuidesToWSL2: native Windows is not a supported
-// host, so `doctor` reports virtualization unavailable and points the user to
-// WSL2 (where `ai` runs as the Linux build).
-func TestNativeWindowsUnsupportedGuidesToWSL2(test *testing.T) {
+// TestUnsupportedOSReportsVirtualizationUnavailable: only macOS and Linux are
+// supported hosts, so any other GOOS reports virtualization unavailable.
+func TestUnsupportedOSReportsVirtualizationUnavailable(test *testing.T) {
 	deps := Deps{
-		GOOS: "windows", GOARCH: "amd64",
+		GOOS: "plan9", GOARCH: "amd64",
 		Prober: fakeProber{bins: map[string]bool{"docker": true, "msb": true}},
 		Model:  fakeModel{healthy: true},
 	}
 	virtualization := checkByName(Run(deps), "host virtualization")
 	if virtualization.Status != StatusError {
-		test.Fatalf("native windows should report virtualization unavailable: %+v", virtualization)
-	}
-	if !strings.Contains(virtualization.Suggestion, "WSL2") {
-		test.Errorf("windows suggestion should point to WSL2: %q", virtualization.Suggestion)
+		test.Fatalf("unsupported OS should report virtualization unavailable: %+v", virtualization)
 	}
 }
 

@@ -323,35 +323,13 @@ Add Linux host compatibility.
 
 ---
 
-# 8. Slice 7 — Windows Host Support — Retired
-
-Native Windows is **not** a supported host. Microsandbox microVMs require a Linux
-(KVM) or macOS (HVF) hypervisor, which native Windows cannot provide, so a native
-Windows port would only ever be a thin shim over a Linux VM. Instead, **Windows
-is supported via WSL2**: the user installs WSL2 (with nested virtualization) and
-runs the **Linux build** of `ai` inside it, where it detects as Linux and behaves
-identically (architecture §6.2, "Host Agnostic").
-
-There is therefore no Windows bootstrap script, file-path normalization, or
-Windows-specific networking. The installer and `ai doctor` detect native Windows
-and direct the user to WSL2.
-
-## Acceptance Criteria
-
-* on native Windows, the installer and `ai doctor` clearly direct the user to
-  WSL2 (no silent failure)
-* inside WSL2 (Linux, nested virt enabled), `ai setup` / project creation /
-  workspace microVMs work exactly as on Linux
-
----
-
-# 9. Cross-Cutting Systems
+# 8. Cross-Cutting Systems
 
 These are implemented progressively across slices.
 
 ---
 
-## 9.1 LiteLLM
+## 8.1 LiteLLM
 
 * host container
 * unified routing
@@ -359,7 +337,7 @@ These are implemented progressively across slices.
 
 ---
 
-## 9.2 ClawPatrol
+## 8.2 ClawPatrol
 
 * wire-level credential injection (agent holds placeholder; gateway swaps real value)
 * security firewall (allow/deny rules, human-in-the-loop approval, audit)
@@ -368,7 +346,7 @@ These are implemented progressively across slices.
 
 ---
 
-## 9.3 LiteLLM routing
+## 8.3 LiteLLM routing
 
 * thin gateway only (unified endpoint, aliasing, failover, ClawPatrol egress)
 * no per-task routing policy — the agent selects its model
@@ -377,7 +355,7 @@ These are implemented progressively across slices.
 
 ---
 
-## 9.4 Sandbox Strategy
+## 8.4 Sandbox Strategy
 
 Default:
 
@@ -390,7 +368,7 @@ The container runtime (Docker/Podman) is used only for the service tier
 
 ---
 
-## 9.5 Networking
+## 8.5 Networking
 
 * microVM has a virtual NIC (virtio-net + gvproxy, userspace); no `host.docker.internal`, no host Docker socket
 * AI_PLATFORM_HOST abstraction for reaching trusted host services (LiteLLM)
@@ -402,14 +380,14 @@ The container runtime (Docker/Podman) is used only for the service tier
 
 ---
 
-## 9.6 Audit Logging
+## 8.6 Audit Logging
 
 * lifecycle tracking
 * no secret logging
 
 ---
 
-# 10. Global Acceptance Criteria
+# 9. Global Acceptance Criteria
 
 System is complete when:
 
@@ -431,7 +409,7 @@ produces (for the OS the user selected):
 
 ---
 
-# 11. Implementation Rule
+# 10. Implementation Rule
 
 No slice is considered complete until:
 

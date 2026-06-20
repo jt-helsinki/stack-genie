@@ -3,7 +3,6 @@ package acceptance
 import (
 	"os"
 	"os/exec"
-	goruntime "runtime"
 	"testing"
 
 	"github.com/jt-helsinki/ideal-robot/internal/templates"
@@ -316,28 +315,4 @@ func TestOSEquivalenceOnHardware(test *testing.T) {
 			AssertOK(test, smoke, code, "workspace.exec")
 		}
 	}
-}
-
-// TestWindowsSetupAndWorkspaceOnHardware covers the [S7] criterion: on Windows
-// with WSL2 + nested virtualization, `ai setup` and a selected-OS workspace work
-// unchanged. It runs only on a provisioned Windows host (the WSL2-nested-virt
-// requirement is at-risk, so doctor must report clearly when absent — that
-// reporting is unit-tested in internal/doctor). The host-path normalization is
-// unit-tested in internal/hostpath.
-func TestWindowsSetupAndWorkspaceOnHardware(test *testing.T) {
-	if goruntime.GOOS != "windows" {
-		test.Skip("Windows-only [S7] check — requires WSL2 with nested virtualization")
-	}
-	if !hardwareAvailable() {
-		test.Skip("requires WSL2 nested virtualization + container runtime")
-	}
-	requireGit(test)
-	harness := New(test)
-	harness.installTemplates(test)
-
-	created, code := harness.CreateProject(test, "win-test")
-	AssertOK(test, created, code, "project.create")
-
-	start, code := harness.Run(test, "workspace", "start", "--project", "win-test")
-	AssertOK(test, start, code, "workspace.start")
 }
