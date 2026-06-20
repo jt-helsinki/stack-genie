@@ -67,6 +67,7 @@ func TestRenderDefaultRouting(test *testing.T) {
 		"openai/*":    "os.environ/OPENAI_API_KEY",
 		"anthropic/*": "os.environ/ANTHROPIC_API_KEY",
 		"gemini/*":    "os.environ/GEMINI_API_KEY",
+		"groq/*":      "os.environ/GROQ_API_KEY",
 	} {
 		if byName[alias] != alias {
 			test.Errorf("wildcard %q -> %q, want %q", alias, byName[alias], alias)

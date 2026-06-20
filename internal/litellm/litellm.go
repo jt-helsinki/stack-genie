@@ -23,10 +23,10 @@ type Routing struct {
 
 // DefaultRouting is the built-in default (arch §14–15). It exposes a **full
 // catalogue** via per-provider wildcards — the agent may name ANY model from
-// Ollama, OpenAI, Anthropic, or Google Gemini and LiteLLM routes it on demand
-// (cloud keys injected by ClawPatrol; Ollama needs none). Registering a model
-// does not install it: an Ollama model must still be `ollama pull`ed, and a
-// cloud model still needs its key. The named aliases are convenient handles for
+// Ollama, OpenAI, Anthropic, Google Gemini, or Groq and LiteLLM routes it on
+// demand (cloud keys injected by ClawPatrol; Ollama needs none). Registering a
+// model does not install it: an Ollama model must still be `ollama pull`ed, and
+// a cloud model still needs its key. The named aliases are convenient handles for
 // the recommended model per provider; `gemma4` (local Ollama) is the default.
 func DefaultRouting() Routing {
 	return Routing{
@@ -42,6 +42,7 @@ func DefaultRouting() Routing {
 			"openai/*":    "openai/*",
 			"anthropic/*": "anthropic/*",
 			"gemini/*":    "gemini/*",
+			"groq/*":      "groq/*",
 		},
 	}
 }
@@ -58,6 +59,8 @@ func placeholderKey(provider string) string {
 		return "os.environ/GEMINI_API_KEY"
 	case "openrouter":
 		return "os.environ/OPENROUTER_API_KEY"
+	case "groq":
+		return "os.environ/GROQ_API_KEY"
 	default:
 		return ""
 	}

@@ -761,6 +761,7 @@ Provider
 * OpenAI
 * Anthropic
 * Google Gemini
+* Groq
 * OpenRouter
 * Ollama
 
@@ -838,6 +839,7 @@ model_list:
   - { model_name: "openai/*",    litellm_params: { model: "openai/*",    api_key: os.environ/OPENAI_API_KEY } }
   - { model_name: "anthropic/*", litellm_params: { model: "anthropic/*", api_key: os.environ/ANTHROPIC_API_KEY } }
   - { model_name: "gemini/*",    litellm_params: { model: "gemini/*",    api_key: os.environ/GEMINI_API_KEY } }
+  - { model_name: "groq/*",      litellm_params: { model: "groq/*",      api_key: os.environ/GROQ_API_KEY } }
 ```
 
 ---
