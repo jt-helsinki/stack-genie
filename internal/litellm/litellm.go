@@ -26,9 +26,9 @@ type Routing struct {
 // as aliases for explicit selection but are not the default.
 func DefaultRouting() Routing {
 	return Routing{
-		Default: "llama",
+		Default: "gemma4",
 		Aliases: map[string]string{
-			"llama":         "ollama/llama",
+			"gemma4":        "ollama/gemma4:31b",
 			"gpt-5":         "openai/gpt-5",
 			"claude-sonnet": "anthropic/claude-sonnet",
 			"gemini-pro":    "gemini/gemini-pro",

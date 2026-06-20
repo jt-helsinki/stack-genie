@@ -783,7 +783,7 @@ available as aliases for explicit selection but are not the default.
 
 ```yaml
 routing:
-  default: llama   # -> ollama/llama (local, default provider)
+  default: gemma4   # -> ollama/gemma4:31b (local, default provider)
 ```
 
 ---
@@ -807,7 +807,7 @@ It does not make model-selection decisions on the agent's behalf.
 ## Example Aliases
 
 ```yaml
-llama: ollama/llama   # default (local, no credential)
+gemma4: ollama/gemma4:31b   # default (local, no credential)
 
 gpt-5: openai/gpt-5
 

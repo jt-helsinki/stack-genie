@@ -131,7 +131,7 @@ Deliver a working minimal platform.
 * basic routing:
 
 ```yaml id="m1l0"
-default: llama   # -> ollama/llama (local; Ollama is the default provider)
+default: gemma4   # -> ollama/gemma4:31b (local; Ollama is the default provider)
 ```
 
 ---

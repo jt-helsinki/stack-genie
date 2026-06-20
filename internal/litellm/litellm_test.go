@@ -34,8 +34,8 @@ func TestRenderDefaultRouting(test *testing.T) {
 		test.Fatalf("rendered config is not valid yaml: %v\n%s", err, b)
 	}
 	// The default model is the local Ollama backend (provider = ollama).
-	if cfg.LitellmSettings.DefaultModel != "llama" {
-		test.Fatalf("default_model = %q, want llama", cfg.LitellmSettings.DefaultModel)
+	if cfg.LitellmSettings.DefaultModel != "gemma4" {
+		test.Fatalf("default_model = %q, want gemma4", cfg.LitellmSettings.DefaultModel)
 	}
 	byName := map[string]string{}
 	keyByName := map[string]string{}
@@ -51,8 +51,11 @@ func TestRenderDefaultRouting(test *testing.T) {
 		test.Fatalf("gpt-5 api_key = %q, want placeholder", keyByName["gpt-5"])
 	}
 	// Ollama needs no credential.
-	if keyByName["llama"] != "" {
-		test.Fatalf("ollama alias should have no api_key, got %q", keyByName["llama"])
+	if keyByName["gemma4"] != "" {
+		test.Fatalf("ollama alias should have no api_key, got %q", keyByName["gemma4"])
+	}
+	if byName["gemma4"] != "ollama/gemma4:31b" {
+		test.Fatalf("gemma4 -> %q, want ollama/gemma4:31b", byName["gemma4"])
 	}
 }
 
