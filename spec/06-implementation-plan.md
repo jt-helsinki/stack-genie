@@ -58,7 +58,6 @@ keep the precedence rules in arch §27 explicit), `slog` (structured logs), stdl
 │   ├── litellm/                 # host lifecycle, config gen, health, routing
 │   ├── clawpatrol/              # gateway lifecycle, credential brokering, placeholders
 │   ├── contextopt/              # per-project Headroom strategy + Caveman skill (both in-workspace)
-│   ├── git/                     # project init/clone only (no platform branch/worktree/merge)
 │   ├── envimage/                # compose .ai-platform/Dockerfile (OS template + stack snippets + agent CLIs) + build OCI image
 │   ├── overlay/                 # per-workspace persistent overlay
 │   ├── audit/                   # append-only audit log (no secrets)
@@ -151,7 +150,6 @@ Each service's config is **rendered** from the platform config into
 | `litellm/` | container via `runtime/`; config rendered from routing; `/health` poll | container | S1 |
 | `clawpatrol/` | native gateway; register creds; inject placeholders into workspace env | native | S1 |
 | `contextopt/` | per-project Headroom strategy + Caveman skill; both installed in the workspace (Headroom in the image, Caveman as a skill) | workspace | S2 |
-| `git/` | subprocess; project init/clone only | n/a | S1 |
 
 ---
 
@@ -203,18 +201,18 @@ refer to the CLI spec and architecture spec respectively.
   with steps for name/OS/agent-CLIs/default-agent/**software-stacks**,
   each with a presented default, checkbox multi-select for CLIs + stacks,
   arrow/space navigation, Back + Abort; no `--os`/per-choice flags; no TTY → exit
-  2. Then project dir + git init (or `--clone`) + write `.ai-platform/` (Dockerfile
-  = OS template + selected stack snippets + selected CLIs / config incl.
-  `agent.tools`+`default_tool` / `profile.yaml` incl. `stacks` / project.json /
-  .gitignore) + index in `config/projects.json` + workspace + ClawPatrol
-  placeholders + pre-create N agents; `ai project delete`. Tests: AT §3.1 (incl.
-  no-TTY + abort), §6.3 (CLI selection), §6.4 (stack selection), §3.2 (clone),
-  §3.3, §9.1, §9.2.
+  2. Then, in the current directory (no git — VCS is out of scope), write
+  `.ai-platform/` (Dockerfile = OS template + selected stack snippets + selected
+  CLIs / config incl. `agent.tools`+`default_tool` / `profile.yaml` incl.
+  `stacks` / project.json / .gitignore) + index in `config/projects.json` +
+  workspace + ClawPatrol placeholders + pre-create N agents; `ai project delete`.
+  Tests: AT §3.1 (incl. no-TTY + abort), §6.3 (CLI selection), §6.4 (stack
+  selection), §3.3, §9.1, §9.2.
 * **M7 — `ai doctor`.** All S1 dependency/health checks with actionable output.
   Tests: AT §10.1, §14.1.
 * **M8 — Acceptance harness.** Go harness (ephemeral `$AIP_TEST_HOME`, fixtures,
-  bare-git clone fixture, mock-provider, credential sentinel) with all `[S1]`
-  tests green. Tests: AT §1.6 plus every `[S1]`-tagged case, AT §16.1.
+  mock-provider, credential sentinel) with all `[S1]` tests green. Tests: AT
+  §1.6 plus every `[S1]`-tagged case, AT §16.1.
 
 Slice 1 is complete only when every `[S1]` test passes with no manual config.
 

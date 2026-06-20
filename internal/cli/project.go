@@ -10,7 +10,6 @@ import (
 
 	"github.com/charmbracelet/huh"
 	"github.com/jt-helsinki/ideal-robot/internal/contextopt"
-	"github.com/jt-helsinki/ideal-robot/internal/git"
 	"github.com/jt-helsinki/ideal-robot/internal/output"
 	"github.com/jt-helsinki/ideal-robot/internal/project"
 	"github.com/jt-helsinki/ideal-robot/internal/workspace"
@@ -53,7 +52,6 @@ func mapProjectErr(err error) error {
 }
 
 func newProjectCreateCmd(emitter *output.Emitter, exit *int) *cobra.Command {
-	var clone string
 	cmd := &cobra.Command{
 		Use:   "create [name]",
 		Short: "Create a project in the current directory (or attach if one exists here)",
@@ -88,8 +86,10 @@ func newProjectCreateCmd(emitter *output.Emitter, exit *int) *cobra.Command {
 				*exit = emitter.Success("project.create", map[string]any{"cancelled": true})
 				return nil
 			}
-			spec.Clone = clone
-			// The project is created in the current working directory.
+			// The project is created in the current working directory. This tool
+			// manages only the reproducible AI dev environment (the .ai-platform/
+			// definition) — it does not init or clone version control. Bring your
+			// own git; existing files in the directory are left untouched.
 			root, err := os.Getwd()
 			if err != nil {
 				*exit = emitter.Failure("project.create", output.Errorf(output.ExitRuntimeFailure, "%s", err))
@@ -104,16 +104,6 @@ func newProjectCreateCmd(emitter *output.Emitter, exit *int) *cobra.Command {
 
 			if err := project.EnsureCreatable(spec.Name, root); err != nil {
 				*exit = emitter.Failure("project.create", mapProjectErr(err))
-				return nil
-			}
-			vcs := git.RealRunner()
-			if spec.Clone != "" {
-				if err := vcs.Clone(spec.Clone, root); err != nil {
-					*exit = emitter.Failure("project.create", output.Errorf(output.ExitRuntimeFailure, "clone: %s", err))
-					return nil
-				}
-			} else if err := vcs.Init(root); err != nil {
-				*exit = emitter.Failure("project.create", output.Errorf(output.ExitRuntimeFailure, "git init: %s", err))
 				return nil
 			}
 			if _, err := project.Scaffold(spec, nowRFC3339()); err != nil {
@@ -140,7 +130,6 @@ func newProjectCreateCmd(emitter *output.Emitter, exit *int) *cobra.Command {
 			return nil
 		},
 	}
-	cmd.Flags().StringVar(&clone, "clone", "", "seed the project from an existing git repo")
 	return cmd
 }
 
@@ -168,13 +157,8 @@ func attachWorkspace(emitter *output.Emitter, exit *int, name string) {
 
 // createPlan is the ordered, side-effect-free action list for --dry-run (§17.1).
 func createPlan(spec project.Spec, root string) []string {
-	gitStep := "git init " + root
-	if spec.Clone != "" {
-		gitStep = "git clone " + spec.Clone + " " + root
-	}
 	return []string{
-		"create project directory " + root,
-		gitStep,
+		"use current directory " + root,
 		fmt.Sprintf("write .ai-platform/Dockerfile (os=%s, stacks=%v, agent CLIs=%v)", spec.OS, spec.Stacks, spec.AgentCLIs),
 		"write config.yaml, profile.yaml, project.json, .gitignore",
 		"register " + spec.Name + " in config/projects.json",

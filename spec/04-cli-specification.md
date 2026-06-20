@@ -263,10 +263,9 @@ ai project create [<name>]
 
 `ai project create` sets up a new environment **in the current working
 directory** through an **interactive wizard**; it requires a terminal. Apart from
-the optional project name (and `--clone`, which takes a repo URL — a value, not a
-menu choice), **there are no flags for the choices** — every selectable option is
-made in the wizard. In particular there is **no `--os` flag**: the OS is always
-picked in the wizard.
+the optional project name, **there are no flags for the choices** — every
+selectable option is made in the wizard. In particular there is **no `--os`
+flag**: the OS is always picked in the wizard.
 
 The project lives wherever you run the command — there is no fixed projects
 directory. The chosen path is recorded in the global index
@@ -274,17 +273,16 @@ directory. The chosen path is recorded in the global index
 name** through that index. With no name given, the name defaults to the current
 directory's basename.
 
+**Version control is out of scope.** `ai project create` does **not** init or
+clone a git repo — it only writes the `.ai-platform/` environment definition into
+the directory and leaves any existing files untouched. Bring your own git
+(architecture §21).
+
 **Attach if one already exists.** If the current directory (or any parent) is
 already a project, `create` does **not** scaffold a new one — it **attaches** to
 that project's workspace instead: it starts the microVM (a no-op if already
 running) and opens an interactive login shell inside it. This makes `ai project
 create` idempotent per directory.
-
-Options:
-
-```bash id="c5"
---clone <repo>   # optional: seed the project from an existing git repo
-```
 
 ### Interactive setup wizard
 
@@ -320,10 +318,8 @@ Steps, in order:
 5. **Software stacks** — **multi-select checkboxes**; choose the language/tool
    stacks to install into the environment (e.g. `Java`, `Maven`, `Node`, `Deno`,
    `Go`, `Python`, `Rust` — the list is extensible, §25). None pre-checked (a
-   project may need nothing beyond the base image); when a repo is cloned
-   (`--clone`), the wizard pre-checks stacks it detects. Selected stacks are
-   installed into the generated `.ai-platform/Dockerfile` and recorded in
-   `profile.yaml`.
+   project may need nothing beyond the base image). Selected stacks are installed
+   into the generated `.ai-platform/Dockerfile` and recorded in `profile.yaml`.
 6. **Confirm** — shows a summary; choose **Create**, **Back**, or **Abort**.
 
 Prompts render on the terminal (stderr); with `--json` the **final result** is
@@ -334,7 +330,7 @@ changes (`data.cancelled = true`). A **non-interactive context (no TTY) exits
 
 Behavior (after **Confirm**):
 
-* creates the project directory and initializes git (or clones `--clone <repo>`)
+* uses the current directory as the project root (no git is run)
 * **writes `<project>/.ai-platform/Dockerfile`** by seeding it from the selected
   OS template and adding the selected software stacks (step 5) and agent CLIs
   (step 3) (architecture §25, §12); from then on the project owns that Dockerfile
@@ -497,9 +493,9 @@ CLI's** job — not the platform's (architecture §20–22).
 
 # 6. Git Commands — Removed
 
-The platform's only git action is `git init`/`git clone` at project creation
-(§3.1). It exposes no git commands; all branching, merging, and conflict
-resolution happen inside the workspace, driven by the agent (architecture §21).
+The platform runs no git at all (§3.1, architecture §21). It exposes no git
+commands; init/clone, branching, merging, and conflict resolution are the user's
+and the in-workspace agent's job.
 
 ---
 

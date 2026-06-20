@@ -1130,23 +1130,21 @@ platform never creates per-agent workspaces, branches, or worktrees.
 
 # 21. Git Workflow
 
-The platform's only git involvement is at project creation: it runs `git init`
-(or `git clone` with `--clone`, CLI §3.1) so the project is a repo. **Everything
-else is the in-workspace agent's job** — branches, commits, rebases, merges,
-conflict resolution, worktrees, and pull requests. The platform makes no model
-calls and runs no merges.
-
-The project's `config.yaml` may carry a `git.merge_strategy` hint
-(`squash | merge | rebase`) that the in-workspace agent **may** read, but the
-platform does not act on it.
+The platform has **no git involvement at all** — version control is out of
+scope. It does not init, clone, branch, commit, or merge. `ai project create`
+only writes the `.ai-platform/` environment definition into the current
+directory and leaves any existing files (including an existing repo) untouched.
+**All git is the user's and the in-workspace agent's job** — init, clone,
+branches, commits, rebases, merges, conflict resolution, worktrees, and pull
+requests. The platform makes no model calls and runs no git.
 
 ---
 
 # 22. Conflict Resolution — Removed
 
 The platform does **not** perform AI merge or conflict resolution, nor any git
-beyond init/clone (§21). Branching, merging, and conflict resolution are
-LLM-on-code work done by the in-workspace agent (OpenCode/Claude Code/Codex/Gemini).
+at all (§21). Branching, merging, and conflict resolution are LLM-on-code work
+done by the in-workspace agent (OpenCode/Claude Code/Codex/Gemini).
 
 ---
 

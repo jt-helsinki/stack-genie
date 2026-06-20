@@ -62,15 +62,14 @@ so the harness drives it through a **pseudo-terminal (PTY)**. Tests use a helper
 
 ```text
 create_project <name> [os=<key>] [clis=<csv>] [default_tool=<key>] \
-                      [stacks=<csv>] [clone=<repo>] [abort=1]
+                      [stacks=<csv>] [abort=1]
 ```
 
 * spawns `ai project create <name> --json` attached to a PTY
 * navigates each wizard step **accepting the presented default** unless an
   override is given; with no overrides the defaults are `os=debian-trixie`,
   `clis=opencode`, `default_tool=opencode`, `stacks=` (none)
-* `clone=<repo>` is passed as the real `--clone` flag; `abort=1` drives the
-  wizard to **Abort** instead of **Confirm**
+* `abort=1` drives the wizard to **Abort** instead of **Confirm**
 * returns the final `--json` envelope captured from stdout (wizard prompts are on
   the PTY/stderr and are not part of the envelope)
 
@@ -101,14 +100,13 @@ non-interactive except `ai project create`, which is driven through a PTY via th
 
 ### Fixtures
 
-* **HOME**: a throwaway `$AIP_TEST_HOME`; `~/.ai-platform` and `~/projects`
-  resolve under it. Removed on teardown.
-* **sample repo**: `fixtures/sample-app` — a small multi-language repo served
-  from a **local bare git repo** (`fixtures/sample-app.git`), used by the
-  project-creation `--clone` tests. The clone uses this local path, never a
-  network URL, so results are deterministic and offline. (There are no
-  merge/conflict tests — merging is the in-workspace agent's job, not the
-  platform's; architecture §22.)
+* **HOME**: a throwaway `$AIP_TEST_HOME`; `~/.ai-platform` resolves under it.
+  Removed on teardown.
+* **sample dir**: `fixtures/sample-app` — a small multi-language directory used
+  as a working directory for `ai project create` (the project is created in
+  place). The platform does no git, so there is no clone/repo fixture. (There
+  are also no merge/conflict tests — git is the in-workspace agent's job, not
+  the platform's; architecture §21–§22.)
 * **large repo**: `fixtures/large-repo` (synthetic, >1M LOC) for performance
   tests, generated deterministically by `fixtures/gen-large-repo` from a fixed
   seed.
@@ -278,19 +276,23 @@ create_project test-project              # PTY-driven wizard; accepts defaults (
 
 ---
 
-## 3.2 Project Clone Test `[S1]`
+## 3.2 Create In Existing Directory `[S1]`
 
 ### Test
 
 ```bash id="t6"
-create_project test-project clone="$AIP_TEST_HOME/fixtures/sample-app.git"
+# A directory with pre-existing files (the platform runs no git).
+mkdir -p "$AIP_TEST_HOME/work/app" && echo hi > "$AIP_TEST_HOME/work/app/README.md"
+cd "$AIP_TEST_HOME/work/app" && create_project app
 ```
 
 ### Expected Result
 
-* repository cloned from the local bare fixture (no network)
-* workspace initialized
-* git history preserved (HEAD commit matches the fixture's HEAD)
+* the project is created in the current directory (`root` == that directory)
+* pre-existing files are left untouched (`README.md` still present)
+* no `.git` is created by the platform
+* re-running `ai project create` in the same directory **attaches** to the
+  existing workspace instead of erroring
 
 ---
 
@@ -357,10 +359,10 @@ retired.
 
 # 5. Git Workflow Tests — Removed
 
-The platform's only git action is `git init`/`git clone` at project creation
-(CLI §3.1); it manages no branches, worktrees, or merges (architecture §21), so
-there are no platform-level git-workflow tests. Branching/merging/rebasing
-happen inside the workspace, driven by the agent.
+The platform performs no git at all (architecture §21) — not even at project
+creation — so there are no platform-level git-workflow tests. Init/clone,
+branching, merging, and rebasing are the user's and the in-workspace agent's
+job.
 
 ---
 

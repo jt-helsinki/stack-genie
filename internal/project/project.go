@@ -38,10 +38,8 @@ type Spec struct {
 	Stacks      []string
 	AgentCLIs   []string
 	DefaultTool string
-	Clone       string
-	// Root is the host source directory for the project. Empty means the default
-	// location (~/projects/<name>); a non-empty value lets the project live in
-	// any directory (CLI §3.1, `--dir`).
+	// Root is the host source directory for the project — the directory `ai
+	// project create` runs in. Empty falls back to ~/projects/<name> (RootPath).
 	Root string
 }
 
@@ -110,9 +108,9 @@ func Path(name string) (string, bool, error) {
 }
 
 // Scaffold creates a project's tracked .ai-platform/ files and registers it in
-// the global index. It tolerates an existing directory (a freshly cloned or
-// git-init'd dir) but refuses to overwrite an existing project. It does NOT run
-// git or start a workspace — those are layered on by the caller.
+// the global index. It tolerates a directory that already has other content
+// (the files are left untouched) but refuses to overwrite an existing project.
+// It does NOT touch version control or start a workspace.
 func Scaffold(spec Spec, createdAt string) (string, error) {
 	root, err := spec.resolvedRoot()
 	if err != nil {
