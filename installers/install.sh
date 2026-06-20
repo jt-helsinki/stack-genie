@@ -46,6 +46,8 @@ main() {
 
   asset="ai-${os}-${arch}"
   info "Downloading ${asset} (${VERSION}) -> ${INSTALL_DIR}/ai"
+  # Fresh inode (see from_source): avoids the macOS in-place-replace SIGKILL.
+  rm -f "${INSTALL_DIR}/ai"
   download "${RELEASE_BASE_URL}/${asset}" "${INSTALL_DIR}/ai"
   chmod +x "${INSTALL_DIR}/ai"
   done_msg
@@ -64,6 +66,9 @@ from_source() {
   if [ -f "$repo/go.mod" ] && command -v go >/dev/null 2>&1; then
     info "Source tree detected; building from $repo"
     ( cd "$repo" && make build VERSION="$VERSION" )
+    # Replace via a fresh inode: overwriting a signed arm64 binary in place can
+    # trip the macOS code-signing cache and get the new binary SIGKILLed ("killed: 9").
+    rm -f "${INSTALL_DIR}/ai"
     cp "$repo/bin/ai" "${INSTALL_DIR}/ai"
     chmod +x "${INSTALL_DIR}/ai"
     done_msg
