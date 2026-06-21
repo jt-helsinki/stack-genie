@@ -3,8 +3,10 @@ package workspace
 import (
 	"errors"
 	"path/filepath"
+	"strings"
 	"testing"
 
+	"github.com/jt-helsinki/ideal-robot/internal/litellm"
 	"github.com/jt-helsinki/ideal-robot/internal/overlay"
 	"github.com/jt-helsinki/ideal-robot/internal/state"
 )
@@ -26,6 +28,7 @@ type fakeSandbox struct {
 	netArgs                              []string
 	execResult                           ExecResult
 	execErr                              error
+	written                              map[string][]byte
 }
 
 func (sandbox *fakeSandbox) Create(_, _, projectMount, overlayPath string, netArgs []string) error {
@@ -40,6 +43,29 @@ func (sandbox *fakeSandbox) Stop(string) error    { sandbox.stopped = true; retu
 func (sandbox *fakeSandbox) Destroy(string) error { sandbox.destroyed = true; return nil }
 func (sandbox *fakeSandbox) Exec(string, []string) (ExecResult, error) {
 	return sandbox.execResult, sandbox.execErr
+}
+func (sandbox *fakeSandbox) WriteFile(_, guestPath string, content []byte) error {
+	if sandbox.written == nil {
+		sandbox.written = map[string][]byte{}
+	}
+	sandbox.written[guestPath] = content
+	return nil
+}
+
+// fakeKeyMinter records GenerateKey calls and returns a fixed key (or an error).
+type fakeKeyMinter struct {
+	calls   int
+	lastErr error
+	scope   litellm.KeyScope
+}
+
+func (minter *fakeKeyMinter) GenerateKey(scope litellm.KeyScope) (string, error) {
+	minter.calls++
+	minter.scope = scope
+	if minter.lastErr != nil {
+		return "", minter.lastErr
+	}
+	return "sk-fake-workspace-key", nil
 }
 
 func seedProject(test *testing.T, project string) string {
@@ -59,7 +85,12 @@ func seedProject(test *testing.T, project string) string {
 }
 
 func newManager(builder Builder, sandbox Sandbox) Manager {
-	return Manager{Builder: builder, Sandbox: sandbox, Now: func() string { return "2026-06-18T00:00:00Z" }}
+	return Manager{
+		Builder: builder,
+		Sandbox: sandbox,
+		Keys:    &fakeKeyMinter{},
+		Now:     func() string { return "2026-06-18T00:00:00Z" },
+	}
 }
 
 func TestName(test *testing.T) {
@@ -72,13 +103,42 @@ func TestStartBuildsAndRecordsStartedHandle(test *testing.T) {
 	root := seedProject(test, "app")
 	builder := &fakeBuilder{}
 	sandbox := &fakeSandbox{}
+	minter := &fakeKeyMinter{}
+	manager := Manager{Builder: builder, Sandbox: sandbox, Keys: minter, Now: func() string { return "2026-06-18T00:00:00Z" }}
 
-	handle, err := newManager(builder, sandbox).Start("app")
+	handle, err := manager.Start("app")
 	if err != nil {
 		test.Fatal(err)
 	}
 	if !builder.built || !sandbox.created || !sandbox.started {
 		test.Fatalf("lifecycle not driven: builder=%v sandbox=%+v", builder.built, sandbox)
+	}
+	// Start must mint a scoped virtual key tied to this workspace and write both
+	// agent provider configs into the microVM (arch §15, §17).
+	if minter.calls != 1 {
+		test.Fatalf("GenerateKey called %d times, want 1", minter.calls)
+	}
+	if minter.scope.Alias != "app" || minter.scope.Metadata["workspace"] != "aip-app" {
+		test.Fatalf("key scope = %+v, want alias=app workspace=aip-app", minter.scope)
+	}
+	openCodeConfig, wrote := sandbox.written["/home/workspace/.config/opencode/opencode.json"]
+	if !wrote {
+		test.Fatal("opencode provider config not written into the microVM")
+	}
+	piConfig, wrote := sandbox.written["/home/workspace/.pi/agent/models.json"]
+	if !wrote {
+		test.Fatal("pi provider config not written into the microVM")
+	}
+	// The minted key must reach the agent configs (host→VM only) and pi must not
+	// carry the per-request Headroom knobs.
+	if !strings.Contains(string(openCodeConfig), "sk-fake-workspace-key") {
+		test.Error("opencode config is missing the virtual key")
+	}
+	if !strings.Contains(string(openCodeConfig), "headroom_keep_turns") {
+		test.Error("opencode config is missing the Headroom knobs")
+	}
+	if strings.Contains(string(piConfig), "headroom_keep_turns") {
+		test.Error("pi config must not carry the Headroom knobs")
 	}
 	if handle.ID != "aip-app" || handle.Status != state.StatusStarted {
 		test.Fatalf("handle: %+v", handle)
@@ -104,6 +164,15 @@ func TestStartBuildsAndRecordsStartedHandle(test *testing.T) {
 	workspaces, err := state.OpenStore(root).ListWorkspaces()
 	if err != nil || len(workspaces) != 1 || workspaces[0].Status != state.StatusStarted {
 		test.Fatalf("persisted workspaces=%+v err=%v", workspaces, err)
+	}
+}
+
+func TestStartFailsWhenKeyMintFails(test *testing.T) {
+	seedProject(test, "app")
+	minter := &fakeKeyMinter{lastErr: errors.New("litellm gateway is not reachable")}
+	manager := Manager{Builder: &fakeBuilder{}, Sandbox: &fakeSandbox{}, Keys: minter, Now: func() string { return "t" }}
+	if _, err := manager.Start("app"); err == nil {
+		test.Fatal("Start must fail when the virtual key cannot be minted")
 	}
 }
 

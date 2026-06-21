@@ -6,8 +6,11 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path"
 	"path/filepath"
+	"strings"
 
+	"github.com/jt-helsinki/ideal-robot/internal/litellm"
 	"github.com/jt-helsinki/ideal-robot/internal/runtime"
 )
 
@@ -162,6 +165,35 @@ func (sandbox realSandbox) Exec(name string, argv []string) (ExecResult, error) 
 	return ExecResult{}, fmt.Errorf("msb exec %s: %w", name, err)
 }
 
+// WriteFile writes content to guestPath inside the running microVM as the
+// `workspace` user (the image's home owner), creating parent directories. It
+// pipes the content to `cat` over stdin so no file payload appears in argv. A
+// missing msb → exit 3; any write/exec failure → exit 4 (plain error mapped by
+// the CLI's mapWorkspaceErr).
+func (sandbox realSandbox) WriteFile(name, guestPath string, content []byte) error {
+	if err := sandbox.ensureInstalled(); err != nil {
+		return err
+	}
+	guestDir := path.Dir(guestPath)
+	// Single shell so the mkdir and the redirected cat share one exec; content
+	// arrives on stdin (kept out of argv).
+	shellScript := fmt.Sprintf("mkdir -p %s && cat > %s", shellQuote(guestDir), shellQuote(guestPath))
+	command := exec.Command("msb", "exec", name, "-u", "workspace", "--", "sh", "-c", shellScript)
+	command.Stdin = bytes.NewReader(content)
+	command.Stdout = os.Stdout
+	command.Stderr = os.Stderr
+	if err := command.Run(); err != nil {
+		return fmt.Errorf("msb exec %s write %s: %w", name, guestPath, err)
+	}
+	return nil
+}
+
+// shellQuote single-quotes a path for safe interpolation into the `sh -c`
+// script (the guest paths are platform-controlled, but quoting keeps it robust).
+func shellQuote(value string) string {
+	return "'" + strings.ReplaceAll(value, "'", `'\''`) + "'"
+}
+
 // runStreaming runs name with args, streaming stdout/stderr to the parent
 // process so build/boot progress is visible.
 func runStreaming(name string, args ...string) error {
@@ -177,6 +209,7 @@ func RealManager(goos string, now func() string) Manager {
 	return Manager{
 		Builder: realBuilder{prober: prober},
 		Sandbox: realSandbox{prober: prober},
+		Keys:    litellm.NewKeyManager(prober),
 		Now:     now,
 		GOOS:    goos,
 	}

@@ -9,9 +9,14 @@ package workspace
 import (
 	"errors"
 	"fmt"
+	"sort"
+	"strings"
 
+	"github.com/jt-helsinki/ideal-robot/internal/agentcfg"
 	"github.com/jt-helsinki/ideal-robot/internal/config"
+	"github.com/jt-helsinki/ideal-robot/internal/contextopt"
 	"github.com/jt-helsinki/ideal-robot/internal/egress"
+	"github.com/jt-helsinki/ideal-robot/internal/litellm"
 	"github.com/jt-helsinki/ideal-robot/internal/overlay"
 	"github.com/jt-helsinki/ideal-robot/internal/state"
 )
@@ -20,6 +25,19 @@ import (
 // model gateway on; the workspace egress policy always allows the host gateway
 // on this port (egress.MsbNetworkArgs, arch §29.2).
 const headroomPort = 8787
+
+// gatewayURL is the base URL the in-workspace agent CLIs use to reach the host
+// Headroom proxy from inside the microVM (arch §15). The /v1 suffix is required
+// by both opencode and pi. host.microsandbox.internal resolves to the host from
+// within a Microsandbox microVM.
+const gatewayURL = "http://host.microsandbox.internal:8787/v1"
+
+// Guest paths the agent provider configs are written to inside the microVM. The
+// workspace image creates a `workspace` user; both files live under its home.
+const (
+	openCodeGuestPath = "/home/workspace/.config/opencode/opencode.json"
+	piGuestPath       = "/home/workspace/.pi/agent/models.json"
+)
 
 // ErrUnknownProject is returned when a project name is not in the global index
 // (→ exit 2).
@@ -64,6 +82,16 @@ type Sandbox interface {
 	Stop(name string) error
 	Destroy(name string) error
 	Exec(name string, argv []string) (ExecResult, error)
+	// WriteFile writes content to guestPath inside the running microVM, creating
+	// parent directories. name is the human label only used for error context.
+	WriteFile(name, guestPath string, content []byte) error
+}
+
+// KeyMinter mints scoped LiteLLM virtual keys. It is the small surface
+// Manager needs from litellm.KeyManager, defined locally so tests can supply a
+// fake without a live gateway (the real impl is *litellm.KeyManager).
+type KeyMinter interface {
+	GenerateKey(scope litellm.KeyScope) (string, error)
 }
 
 // Manager coordinates the lifecycle over a Builder + Sandbox, stamping state with
@@ -72,6 +100,7 @@ type Sandbox interface {
 type Manager struct {
 	Builder Builder
 	Sandbox Sandbox
+	Keys    KeyMinter
 	Now     func() string
 	GOOS    string
 }
@@ -122,6 +151,13 @@ func (manager Manager) Start(project string) (*state.Workspace, error) {
 	if err := manager.Sandbox.Start(name); err != nil {
 		return nil, err
 	}
+	// Register the agent CLIs' provider config so opencode/pi inside the microVM
+	// talk to the host Headroom proxy through a per-workspace scoped LiteLLM
+	// virtual key (arch §15, §17). The key flows host→VM only; it is never
+	// written to platform disk.
+	if err := manager.registerAgentProviders(name, project, projectConfig); err != nil {
+		return nil, err
+	}
 	now := manager.Now()
 	handle := &state.Workspace{
 		ID:          name,
@@ -134,6 +170,58 @@ func (manager Manager) Start(project string) (*state.Workspace, error) {
 		return nil, err
 	}
 	return handle, nil
+}
+
+// registerAgentProviders mints a scoped LiteLLM virtual key for the workspace
+// and writes the opencode + pi provider configs into the running microVM so the
+// agent CLIs reach the host Headroom proxy with that key. The per-project
+// Headroom strategy maps to the two per-request knobs opencode bakes into each
+// model's request body; pi cannot inject per-request fields and uses Headroom's
+// server-side defaults (see internal/agentcfg).
+func (manager Manager) registerAgentProviders(name, project string, projectConfig *config.Config) error {
+	// Empty Models = all models allowed (the workspace agent names any model and
+	// LiteLLM routes it). The metadata ties the key back to this workspace.
+	apiKey, err := manager.Keys.GenerateKey(litellm.KeyScope{
+		Alias:    project,
+		Metadata: map[string]any{"workspace": name},
+	})
+	if err != nil {
+		return err
+	}
+
+	keepTurns, outputBufferTokens := contextopt.HeadroomParams(projectConfig.Context.Strategy)
+	routing := litellm.DefaultRouting()
+	models := namedModels(routing)
+
+	openCodeConfig, err := agentcfg.OpenCodeConfig(gatewayURL, apiKey, routing.Default, models, keepTurns, outputBufferTokens)
+	if err != nil {
+		return err
+	}
+	if err := manager.Sandbox.WriteFile(name, openCodeGuestPath, openCodeConfig); err != nil {
+		return err
+	}
+
+	piConfig, err := agentcfg.PiConfig(gatewayURL, apiKey, routing.Default, models)
+	if err != nil {
+		return err
+	}
+	return manager.Sandbox.WriteFile(name, piGuestPath, piConfig)
+}
+
+// namedModels enumerates the non-wildcard named aliases from the routing (the
+// model handles both agent CLIs can address), sorted for a stable config. The
+// per-provider "*" wildcards are skipped — neither opencode nor pi can address
+// them as concrete model ids.
+func namedModels(routing litellm.Routing) []string {
+	models := make([]string, 0, len(routing.Aliases))
+	for alias := range routing.Aliases {
+		if strings.Contains(alias, "*") {
+			continue
+		}
+		models = append(models, alias)
+	}
+	sort.Strings(models)
+	return models
 }
 
 // Stop stops the workspace microVM and marks the handle stopped (state preserved).
