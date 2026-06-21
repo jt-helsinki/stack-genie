@@ -21,7 +21,6 @@ const (
 	dockerfilesDir = "dockerfiles" // one Dockerfile per OS key
 	stacksDir      = "stacks"      // one Dockerfile.snippet per software stack
 	agentCLIsDir   = "agentclis"   // one Dockerfile.snippet per agent CLI
-	contextOptDir  = "contextopt"  // always-installed context-optimization tools
 )
 
 // InstalledRoot returns ~/.ai-platform/templates.
@@ -76,12 +75,6 @@ func StackSnippet(stack string) (string, error) {
 // AgentCLISnippet returns the installed Dockerfile snippet for an agent CLI.
 func AgentCLISnippet(cli string) (string, error) {
 	return readInstalled(filepath.Join(agentCLIsDir, cli, "Dockerfile.snippet"))
-}
-
-// HeadroomSnippet returns the Dockerfile snippet that installs Headroom (input
-// compression) into every workspace image (arch §8–10).
-func HeadroomSnippet() (string, error) {
-	return readInstalled(filepath.Join(contextOptDir, "headroom", "Dockerfile.snippet"))
 }
 
 func readInstalled(relative string) (string, error) {

@@ -30,6 +30,27 @@ func TestSetStrategyInvalid(test *testing.T) {
 	}
 }
 
+func TestHeadroomParams(test *testing.T) {
+	cases := map[string]struct{ keepTurns, bufferTokens int }{
+		"conservative": {8, 12000},
+		"balanced":     {5, 8000},
+		"aggressive":   {2, 4000},
+		"unknown":      {5, 8000}, // falls back to balanced
+	}
+	for strategy, want := range cases {
+		keepTurns, bufferTokens := HeadroomParams(strategy)
+		if keepTurns != want.keepTurns || bufferTokens != want.bufferTokens {
+			test.Errorf("%s -> (%d,%d), want (%d,%d)", strategy, keepTurns, bufferTokens, want.keepTurns, want.bufferTokens)
+		}
+	}
+	// More aggressive strategies must compress more (fewer kept turns, smaller buffer).
+	conservativeTurns, conservativeBuf := HeadroomParams("conservative")
+	aggressiveTurns, aggressiveBuf := HeadroomParams("aggressive")
+	if !(aggressiveTurns < conservativeTurns && aggressiveBuf < conservativeBuf) {
+		test.Errorf("aggressive should compress more than conservative")
+	}
+}
+
 func TestSetCavemanLevelInstallsSkill(test *testing.T) {
 	root := test.TempDir()
 	if err := SetCavemanLevel(root, "ultra"); err != nil {

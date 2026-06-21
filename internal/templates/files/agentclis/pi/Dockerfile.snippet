@@ -1,10 +1,12 @@
 # agent CLI: pi (https://pi.dev) — installed alongside opencode by default.
-# Like opencode, it talks to models through LiteLLM only; the OpenAI-compatible
-# provider (baseUrl → AI_PLATFORM_HOST:4000, api: openai-completions) is
-# registered at workspace start (pi extension / models.json). The provider's
-# apiKey is the LiteLLM gateway key (placeholder/master key) — NOT a real
-# provider secret: ClawPatrol injects the real provider credentials on the wire
-# (arch §17), so no agent CLI ever holds a provider API key.
+# Like opencode, it reaches models only through the platform: the OpenAI-compatible
+# provider (baseUrl → AI_PLATFORM_HOST:8787 = the host Headroom compression proxy,
+# which forwards to LiteLLM; api: openai-completions) is registered at workspace
+# start (pi extension / models.json), with the project's Headroom knobs
+# (headroom_keep_turns / headroom_output_buffer_tokens, from contextopt.HeadroomParams)
+# as default request extra_body. The provider's apiKey is the LiteLLM gateway key
+# (a scoped virtual key) — NOT a real provider secret; LiteLLM holds the real
+# provider credentials (arch §17), so no agent CLI ever holds a provider API key.
 # Verify the exact npm package + custom-provider config on hardware bring-up.
 USER root
 RUN apt-get update && apt-get install -y --no-install-recommends nodejs npm \

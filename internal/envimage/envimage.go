@@ -26,14 +26,11 @@ func Compose(osKey string, stacks, agentCLIs []string) (string, error) {
 	builder.WriteString(strings.TrimRight(base, "\n"))
 	builder.WriteString("\n")
 
-	// Headroom (input compression) is installed in every workspace — it is core
-	// context optimization, not an optional stack (arch §8–10).
-	headroom, err := templates.HeadroomSnippet()
-	if err != nil {
-		return "", fmt.Errorf("headroom: %w", err)
-	}
-	appendSection(&builder, headroom)
-
+	// Headroom (input compression) is NOT baked into the workspace image: it runs
+	// as a shared host container in front of LiteLLM (arch §8–10, §15). Agents
+	// reach it at AI_PLATFORM_HOST:8787 and carry the project's compression knobs
+	// per request (internal/contextopt.HeadroomParams). The workspace image only
+	// needs the OS base, the selected stacks, and the agent CLIs.
 	for _, stack := range stacks {
 		snippet, err := templates.StackSnippet(stack)
 		if err != nil {

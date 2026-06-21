@@ -41,9 +41,15 @@ func Default() *File {
 			"microsandbox": {Mode: "native", Version: "v0.x", SHA256: "TBD"},
 			"clawpatrol":   {Mode: "native", Version: "v0.x", SHA256: "TBD"},
 			"litellm":      {Mode: "container", Image: "ghcr.io/berriai/litellm", Digest: "sha256:TBD"},
-			// Headroom (input compression) is installed per-project IN the workspace
-			// image (pip headroom-ai), not run as a host container (arch §8–10).
-			"headroom": {Mode: "workspace", Version: "TBD"},
+			// Headroom (input compression) runs as a shared host container in front
+			// of LiteLLM; agents send to it at :8787 (arch §8–10, §15). Per-project
+			// compression knobs ride per request, so it is no longer baked into the
+			// workspace image.
+			"headroom": {Mode: "container", Image: "ghcr.io/chopratejas/headroom", Digest: "sha256:TBD"},
+			// Presidio backs LiteLLM's always-on PII guardrail (arch §17): the
+			// analyzer detects PII, the anonymizer masks it. Internal-only containers.
+			"presidio-analyzer":   {Mode: "container", Image: "mcr.microsoft.com/presidio-analyzer", Digest: "sha256:TBD"},
+			"presidio-anonymizer": {Mode: "container", Image: "mcr.microsoft.com/presidio-anonymizer", Digest: "sha256:TBD"},
 			// Ollama is REQUIRED (always on): LiteLLM routes local model traffic to
 			// it (arch §14, §16). Cloud models still go LiteLLM → provider, and
 			// ClawPatrol firewalls + audits both paths (§17).
