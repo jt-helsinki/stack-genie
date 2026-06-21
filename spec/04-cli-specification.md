@@ -508,6 +508,38 @@ Exit semantics — **platform failure is distinct from inner-command failure**:
 
 ---
 
+## 4.6 Lifecycle Shortcuts (`ai start` / `ai stop` / `ai restart`)
+
+```bash id="c11b"
+ai start
+ai stop
+ai restart
+```
+
+Top-level convenience shortcuts for `ai workspace start|stop|restart` that
+operate on the **current directory's** workspace.
+
+Behavior:
+
+* take **no** arguments — unlike `ai workspace start [project]`, these never
+  accept a `[project]` positional or honor `--project`; the target is purely
+  cwd-derived
+* resolve the target workspace by walking **up** parent directories until a
+  **workspace root** is found, defined as a directory that contains a
+  `.ai-platform` directory (`<project>/.ai-platform`)
+* delegate to the identical workspace lifecycle and emit the **same** result
+  envelope as the corresponding subcommand — `ai start` is `ai workspace start`
+  for the resolved project, and likewise for `stop`/`restart` (so the envelope
+  `command` is `workspace.start` / `workspace.stop` / `workspace.restart`)
+* when the cwd is **not** inside any workspace (no ancestor has `.ai-platform`),
+  fail with exit `2` (invalid input, §18) and an actionable message directing
+  the user to `ai project create` or to `cd` into a project
+* all other exit semantics (missing dependency → `3`, runtime failure → `4`,
+  restart-without-existing-workspace → `2` per §4.3a) match the delegated
+  `ai workspace` subcommand
+
+---
+
 # 5. Agent Commands — Removed (not a platform concern)
 
 There are **no `ai agent` commands**. The platform provides one workspace per

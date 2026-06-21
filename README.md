@@ -187,6 +187,10 @@ ai workspace stop
 ai workspace destroy                               # non-destructive: keeps the overlay
 ```
 
+`ai start`, `ai stop`, and `ai restart` are top-level shortcuts for
+`ai workspace start|stop|restart` on the current directory's workspace (resolved
+by walking up to a `.ai-platform` root); they take no arguments.
+
 To target a different project from anywhere, pass its name (or `--project`),
 which overrides the default:
 
