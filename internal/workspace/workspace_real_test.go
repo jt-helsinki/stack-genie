@@ -19,12 +19,14 @@ func (fakeRuntimeProber) Run(string, ...string) ([]byte, error) { return nil, ex
 func (fakeRuntimeProber) Exists(string) bool                    { return false }
 
 func TestRealBuilderAcceptsPodmanOnlyHost(test *testing.T) {
-	// A host with only Podman (no Docker) must reach the deferred build seam,
-	// not be rejected as "no runtime" (Slice 6 — never hardcode docker).
+	// A host with only Podman (no Docker) must get PAST runtime detection — not
+	// be rejected as "no runtime" (Slice 6 — never hardcode docker). With msb
+	// absent in this fake host, Build then fails on the missing microVM tool, so
+	// reaching ErrMsbMissing proves the Podman runtime was accepted.
 	builder := realBuilder{prober: fakeRuntimeProber{bins: map[string]bool{"podman": true}}}
 	err := builder.Build("/projects/app", "aip-app:latest")
-	if !errors.Is(err, ErrPending) {
-		test.Fatalf("podman-only host should reach ErrPending, got %v", err)
+	if !errors.Is(err, ErrMsbMissing) {
+		test.Fatalf("podman-only host should pass runtime detection and reach ErrMsbMissing, got %v", err)
 	}
 }
 

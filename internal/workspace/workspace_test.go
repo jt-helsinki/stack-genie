@@ -23,14 +23,16 @@ type fakeSandbox struct {
 	created, started, stopped, destroyed bool
 	projectMount                         string
 	overlayMount                         string
+	netArgs                              []string
 	execResult                           ExecResult
 	execErr                              error
 }
 
-func (sandbox *fakeSandbox) Create(_, _, projectMount, overlayPath string) error {
+func (sandbox *fakeSandbox) Create(_, _, projectMount, overlayPath string, netArgs []string) error {
 	sandbox.created = true
 	sandbox.projectMount = projectMount
 	sandbox.overlayMount = overlayPath
+	sandbox.netArgs = netArgs
 	return nil
 }
 func (sandbox *fakeSandbox) Start(string) error   { sandbox.started = true; return nil }
@@ -93,6 +95,11 @@ func TestStartBuildsAndRecordsStartedHandle(test *testing.T) {
 	// are macOS and Linux).
 	if sandbox.projectMount != root {
 		test.Fatalf("project mount = %q, want host path %q", sandbox.projectMount, root)
+	}
+	// Start must translate the project egress policy into msb network args and
+	// pass them to Create (the always-on host-gateway allow rule is present).
+	if len(sandbox.netArgs) == 0 {
+		test.Fatal("egress network args not passed to Sandbox.Create")
 	}
 	workspaces, err := state.OpenStore(root).ListWorkspaces()
 	if err != nil || len(workspaces) != 1 || workspaces[0].Status != state.StatusStarted {

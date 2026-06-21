@@ -10,9 +10,16 @@ import (
 	"errors"
 	"fmt"
 
+	"github.com/jt-helsinki/ideal-robot/internal/config"
+	"github.com/jt-helsinki/ideal-robot/internal/egress"
 	"github.com/jt-helsinki/ideal-robot/internal/overlay"
 	"github.com/jt-helsinki/ideal-robot/internal/state"
 )
+
+// headroomPort is the host port the in-workspace Headroom proxy reaches the
+// model gateway on; the workspace egress policy always allows the host gateway
+// on this port (egress.MsbNetworkArgs, arch §29.2).
+const headroomPort = 8787
 
 // ErrUnknownProject is returned when a project name is not in the global index
 // (→ exit 2).
@@ -47,11 +54,12 @@ type Builder interface {
 	Build(projectRoot, imageRef string) error
 }
 
-// Sandbox drives Microsandbox microVMs (Go SDK / msb). The real impl is wired on
-// a provisioned host. Create mounts the read-only image, the host project
-// source, and the persistent overlay (arch §26) as a named volume.
+// Sandbox drives Microsandbox microVMs (Go SDK / msb). Create mounts the
+// read-only image, the host project source, and the persistent overlay (arch
+// §26) as a volume, and applies the project's egress policy via netArgs (the
+// `msb create` network-rule fragment from egress.MsbNetworkArgs).
 type Sandbox interface {
-	Create(name, imageRef, projectMount, overlayPath string) error
+	Create(name, imageRef, projectMount, overlayPath string, netArgs []string) error
 	Start(name string) error
 	Stop(name string) error
 	Destroy(name string) error
@@ -99,9 +107,16 @@ func (manager Manager) Start(project string) (*state.Workspace, error) {
 	if err != nil {
 		return nil, err
 	}
+	// Translate the project's egress policy into the msb network argv fragment;
+	// the host gateway is always allowed on the Headroom port (arch §29.2).
+	projectConfig, err := config.LoadProjectConfig(root)
+	if err != nil {
+		return nil, err
+	}
+	netArgs := egress.MsbNetworkArgs(projectConfig.Network, headroomPort)
 	// The microVM mounts the host project path directly. Supported hosts are
 	// macOS and Linux, so no path translation is needed (arch §7).
-	if err := manager.Sandbox.Create(name, imageRef, root, overlayPath); err != nil {
+	if err := manager.Sandbox.Create(name, imageRef, root, overlayPath, netArgs); err != nil {
 		return nil, err
 	}
 	if err := manager.Sandbox.Start(name); err != nil {
