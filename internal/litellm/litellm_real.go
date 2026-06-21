@@ -12,7 +12,7 @@ import (
 )
 
 // realClient talks to a running LiteLLM gateway over its OpenAI-compatible HTTP
-// API (`/health`, `/v1/chat/completions`). Base URL comes from LITELLM_BASE_URL
+// API (`/health/liveliness`, `/v1/chat/completions`). Base URL comes from LITELLM_BASE_URL
 // or defaults to the local gateway port.
 type realClient struct {
 	baseURL    string
@@ -34,7 +34,10 @@ func RealClient() Client {
 func (client realClient) Status() (StatusInfo, error) {
 	routing := DefaultRouting()
 	info := StatusInfo{Default: routing.Default, Providers: providersOf(routing), Ollama: hasOllama(routing)}
-	response, err := client.httpClient.Get(client.baseURL + "/health")
+	// Use the unauthenticated liveness probe: /health is auth-gated and returns
+	// 401 once a master key is set (the secured-UI default), which would make a
+	// healthy proxy look down. /health/liveliness needs no credential.
+	response, err := client.httpClient.Get(client.baseURL + "/health/liveliness")
 	if err != nil {
 		return info, nil // unreachable → Healthy stays false; not a CLI error
 	}
