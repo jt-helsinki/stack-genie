@@ -34,15 +34,17 @@ func realFetchGatewayConfig() ([]byte, error) {
 type serviceSpec struct{ Name, Mode string }
 
 // desiredServices is the host-service set (arch §5): Ollama (required local model
-// backend, container), LiteLLM (gateway/router, container), and ClawPatrol
-// (firewall + credential broker, native). Ollama is required — LiteLLM routes
-// local model traffic to it (arch §14, §16). Context optimization is NOT here —
-// Headroom (input compression) runs per-project inside the workspace alongside
-// the Caveman skill (arch §8–10), not as a host service.
+// backend, container), LiteLLM (gateway/router, container), Headroom (input
+// compression proxy in front of LiteLLM, container), and ClawPatrol (firewall +
+// credential broker, native). Ollama is required — LiteLLM routes local model
+// traffic to it (arch §14, §16). Headroom runs as a shared host-side proxy
+// (agents point at :8787, it forwards to LiteLLM); the per-project Caveman skill
+// handles output compression inside the workspace (arch §8–10).
 func desiredServices() []serviceSpec {
 	return []serviceSpec{
 		{"ollama", "container"},
 		{"litellm", "container"},
+		{"headroom", "container"},
 		{"clawpatrol", "native"},
 	}
 }
@@ -72,6 +74,19 @@ const (
 	// to avoid clashing with any other Postgres on the machine. LiteLLM itself
 	// reaches the DB over the private network (5432), not this host port.
 	litellmDBHostPort = "5442"
+
+	// Ollama runs as a container on aip-net (so LiteLLM reaches it by name) and
+	// publishes :11434 to the host. Models persist in a named volume. Replaces a
+	// native Ollama — stop any native instance bound to 11434 first.
+	ollamaContainer = "aip-ollama"
+	ollamaImage     = "ollama/ollama:latest"
+	ollamaVolume    = "aip-ollama-data"
+
+	// Headroom is the input-compression proxy in front of LiteLLM. Official image
+	// (no build): agents point at :8787, it forwards to LiteLLM via OPENAI_TARGET_API_URL.
+	headroomContainer = "aip-headroom"
+	headroomImage     = "ghcr.io/chopratejas/headroom:slim"
+	headroomTargetURL = "http://" + litellmContainer + ":4000"
 )
 
 // litellmRunArgs is the `<runtime> run` argv that launches LiteLLM with the
@@ -144,6 +159,56 @@ func ensureLiteLLMDB(prober runtime.Prober, containerRuntime string) error {
 		time.Sleep(time.Second)
 	}
 	return nil // launched; LiteLLM will retry its connection as the DB finishes coming up
+}
+
+// containerRunning reports whether a container with the exact name is up.
+func containerRunning(prober runtime.Prober, containerRuntime, name string) bool {
+	out, err := prober.Run(containerRuntime, "ps", "--filter", "name=^/"+name+"$",
+		"--filter", "status=running", "--format", "{{.Names}}")
+	return err == nil && strings.TrimSpace(string(out)) == name
+}
+
+// ensureOllama runs the Ollama container on the shared network, publishing :11434
+// and persisting models in a named volume. Idempotent. Replaces a native Ollama —
+// any native instance bound to :11434 must be stopped first.
+func ensureOllama(prober runtime.Prober, containerRuntime string) error {
+	if containerRunning(prober, containerRuntime, ollamaContainer) {
+		return nil
+	}
+	_, _ = prober.Run(containerRuntime, "rm", "-f", ollamaContainer)
+	args := []string{
+		"run", "-d", "--name", ollamaContainer,
+		"--network", platformNetwork,
+		"-p", "11434:11434",
+		"-v", ollamaVolume + ":/root/.ollama",
+		ollamaImage,
+	}
+	if _, err := prober.Run(containerRuntime, args...); err != nil {
+		return output.Errorf(output.ExitRuntimeFailure,
+			"launch ollama via %s: %s (stop any native Ollama bound to :11434 first)", containerRuntime, err)
+	}
+	return nil
+}
+
+// ensureHeadroom runs the Headroom input-compression proxy in front of LiteLLM:
+// agents send to :8787, it forwards to LiteLLM via OPENAI_TARGET_API_URL. Pulled
+// image (no build). Idempotent.
+func ensureHeadroom(prober runtime.Prober, containerRuntime string) error {
+	if containerRunning(prober, containerRuntime, headroomContainer) {
+		return nil
+	}
+	_, _ = prober.Run(containerRuntime, "rm", "-f", headroomContainer)
+	args := []string{
+		"run", "-d", "--name", headroomContainer,
+		"--network", platformNetwork,
+		"-p", "8787:8787",
+		"-e", "OPENAI_TARGET_API_URL=" + headroomTargetURL,
+		headroomImage,
+	}
+	if _, err := prober.Run(containerRuntime, args...); err != nil {
+		return output.Errorf(output.ExitRuntimeFailure, "launch headroom via %s: %s", containerRuntime, err)
+	}
+	return nil
 }
 
 // litellmHasDatabaseURL reports whether the running LiteLLM container already has
@@ -234,9 +299,20 @@ func (services realServices) Reconcile(providerConfig string) ([]ServiceStatus, 
 	if err := litellm.Render(litellm.DefaultRouting(), providerConfig); err != nil {
 		return nil, err
 	}
-	// Launch LiteLLM if it is not already up (Ollama/ClawPatrol are started by
-	// their own installers; LiteLLM is the platform's to run).
+	// Bring up the container tier on the shared network: Ollama (local models),
+	// LiteLLM (+ its DB), and the Headroom compression proxy in front of LiteLLM.
+	containerRuntime, err := runtime.ContainerRuntimeName(services.prober)
+	if err != nil {
+		return nil, err
+	}
+	ensurePlatformNetwork(services.prober, containerRuntime.Name)
+	if err := ensureOllama(services.prober, containerRuntime.Name); err != nil {
+		return nil, err
+	}
 	if err := services.ensureLiteLLM(filepath.Join(configDir, "litellm", "config.yaml")); err != nil {
+		return nil, err
+	}
+	if err := ensureHeadroom(services.prober, containerRuntime.Name); err != nil {
 		return nil, err
 	}
 	return services.Status()
@@ -299,6 +375,12 @@ func (services realServices) serviceHealthy(name string) bool {
 		return err == nil && info.Healthy
 	case "ollama":
 		return ollama.RealProbe().Reachable() == nil
+	case "headroom":
+		containerRuntime, err := runtime.ContainerRuntimeName(services.prober)
+		if err != nil {
+			return false
+		}
+		return containerRunning(services.prober, containerRuntime.Name, headroomContainer)
 	case "clawpatrol":
 		_, err := services.prober.Run("clawpatrol", "status")
 		return err == nil
@@ -307,44 +389,72 @@ func (services realServices) serviceHealthy(name string) bool {
 	}
 }
 
-// Control performs start/stop/restart on the host services. Only LiteLLM's
-// lifecycle is the platform's to manage; Ollama and ClawPatrol are started by
-// their own installers/service managers, so naming them explicitly is rejected
-// with guidance, while "all" simply skips them. Returns the post-action Status.
+// Control performs start/stop/restart on the host services. The platform owns
+// the container tier (Ollama, LiteLLM + its DB, Headroom), so those are started,
+// stopped, and restarted here; ClawPatrol is a native gateway managed by its own
+// installer, so naming it explicitly is rejected with guidance, while "all" skips
+// it. An empty service name (or "all") acts on every platform container in
+// dependency order. Returns the post-action Status.
 func (services realServices) Control(action, service string) ([]ServiceStatus, error) {
-	switch service {
-	case "ollama":
-		return nil, output.Errorf(output.ExitInvalidInput,
-			"ollama is started by its own installer; the platform does not manage its lifecycle (use Ollama's own service control, e.g. the Ollama app or `brew services`)")
-	case "clawpatrol":
+	if service == "clawpatrol" {
 		return nil, output.Errorf(output.ExitInvalidInput,
 			"clawpatrol runs as a native gateway managed by its own installer; the platform does not control its lifecycle")
 	}
 
-	// service is "" (all) or "litellm": act on the platform-owned LiteLLM container.
 	containerRuntime, err := runtime.ContainerRuntimeName(services.prober)
 	if err != nil {
-		return nil, output.Errorf(output.ExitMissingDep, "no container runtime to control LiteLLM: %s", err)
+		return nil, output.Errorf(output.ExitMissingDep, "no container runtime to control platform services: %s", err)
 	}
 	configPath, err := litellm.ConfigPath()
 	if err != nil {
 		return nil, err
 	}
 
-	switch action {
-	case "start":
-		if err := services.ensureLiteLLM(configPath); err != nil {
-			return nil, err
+	// The platform-owned containers, in dependency order (Ollama and the DB before
+	// the gateway, the compression proxy last). ensure() is the idempotent launcher.
+	type managedContainer struct {
+		name      string
+		container string
+		ensure    func() error
+	}
+	managed := []managedContainer{
+		{"ollama", ollamaContainer, func() error { return ensureOllama(services.prober, containerRuntime.Name) }},
+		{"litellm", litellmContainer, func() error { return services.ensureLiteLLM(configPath) }},
+		{"headroom", headroomContainer, func() error { return ensureHeadroom(services.prober, containerRuntime.Name) }},
+	}
+
+	var targets []managedContainer
+	switch service {
+	case "", "all":
+		targets = managed
+	default:
+		for _, entry := range managed {
+			if entry.name == service {
+				targets = []managedContainer{entry}
+			}
 		}
-	case "stop":
-		if _, err := services.prober.Run(containerRuntime.Name, "stop", litellmContainer); err != nil {
-			return nil, output.Errorf(output.ExitRuntimeFailure, "stop litellm via %s: %s", containerRuntime.Name, err)
+		if targets == nil {
+			return nil, output.Errorf(output.ExitInvalidInput,
+				"unknown service %q (expected one of: ollama, litellm, headroom)", service)
 		}
-	case "restart":
-		// Restart the existing container; if it isn't there yet, launch it fresh.
-		if _, err := services.prober.Run(containerRuntime.Name, "restart", litellmContainer); err != nil {
-			if err := services.ensureLiteLLM(configPath); err != nil {
+	}
+
+	for _, target := range targets {
+		switch action {
+		case "start":
+			if err := target.ensure(); err != nil {
 				return nil, err
+			}
+		case "stop":
+			if _, err := services.prober.Run(containerRuntime.Name, "stop", target.container); err != nil {
+				return nil, output.Errorf(output.ExitRuntimeFailure, "stop %s via %s: %s", target.name, containerRuntime.Name, err)
+			}
+		case "restart":
+			// Restart the existing container; if it isn't there yet, launch it fresh.
+			if _, err := services.prober.Run(containerRuntime.Name, "restart", target.container); err != nil {
+				if err := target.ensure(); err != nil {
+					return nil, err
+				}
 			}
 		}
 	}

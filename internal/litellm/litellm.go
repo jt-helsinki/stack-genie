@@ -15,6 +15,10 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+// OllamaAPIBase is where LiteLLM reaches the platform's Ollama container on the
+// shared docker network (aip-net), used as the api_base for ollama/* models.
+const OllamaAPIBase = "http://aip-ollama:11434"
+
 // Routing is the platform's thin routing (arch §14): one default + aliases.
 type Routing struct {
 	Default string            `yaml:"default" json:"default"`
@@ -122,6 +126,11 @@ func build(routing Routing) map[string]any {
 		params := map[string]any{"model": target}
 		if key := placeholderKey(provider); key != "" {
 			params["api_key"] = key
+		}
+		if provider == "ollama" {
+			// Ollama runs as a container on the shared network; reach it by name
+			// (not localhost, which inside the LiteLLM container is itself).
+			params["api_base"] = OllamaAPIBase
 		}
 		modelList = append(modelList, map[string]any{
 			"model_name":     name,
