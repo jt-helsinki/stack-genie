@@ -23,6 +23,7 @@ func newWorkspaceCmd(emitter *output.Emitter, exit *int) *cobra.Command {
 		newWorkspaceListCmd(emitter, exit),
 		newWorkspaceStartCmd(emitter, exit),
 		newWorkspaceStopCmd(emitter, exit),
+		newWorkspaceRestartCmd(emitter, exit),
 		newWorkspaceDestroyCmd(emitter, exit),
 		newWorkspaceExecCmd(emitter, exit),
 		newWorkspaceDoctorCmd(emitter, exit),
@@ -82,7 +83,7 @@ func newWorkspaceDoctorCmd(emitter *output.Emitter, exit *int) *cobra.Command {
 // mapWorkspaceErr maps lifecycle errors to exit codes (§18).
 func mapWorkspaceErr(err error) error {
 	switch {
-	case errors.Is(err, workspace.ErrUnknownProject):
+	case errors.Is(err, workspace.ErrUnknownProject), errors.Is(err, workspace.ErrNotStarted):
 		return output.Errorf(output.ExitInvalidInput, "%s", err)
 	case errors.Is(err, workspace.ErrContainerRuntimeMissing), errors.Is(err, workspace.ErrMsbMissing):
 		return output.Errorf(output.ExitMissingDep, "%s", err)
@@ -157,6 +158,29 @@ func newWorkspaceStopCmd(emitter *output.Emitter, exit *int) *cobra.Command {
 				return nil
 			}
 			*exit = emitter.Success("workspace.stop", map[string]any{"project": name})
+			return nil
+		},
+	}
+}
+
+func newWorkspaceRestartCmd(emitter *output.Emitter, exit *int) *cobra.Command {
+	return &cobra.Command{
+		Use:               "restart [project]",
+		Short:             "Restart the existing workspace microVM (no rebuild, state preserved)",
+		Args:              cobra.MaximumNArgs(1),
+		ValidArgsFunction: completeProjectArg,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			name, err := resolveProjectName(cmd, firstArg(args))
+			if err != nil {
+				*exit = emitter.Failure("workspace.restart", err)
+				return nil
+			}
+			handle, err := workspace.RealManager(goruntime.GOOS, nowRFC3339).Restart(name)
+			if err != nil {
+				*exit = emitter.Failure("workspace.restart", mapWorkspaceErr(err))
+				return nil
+			}
+			*exit = emitter.Success("workspace.restart", handle)
 			return nil
 		},
 	}

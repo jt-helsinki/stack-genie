@@ -100,6 +100,55 @@ func TestStartBuildsAndRecordsStartedHandle(test *testing.T) {
 	}
 }
 
+func TestRestartStopsThenStartsExistingMicroVM(test *testing.T) {
+	root := seedProject(test, "app")
+	manager := newManager(&fakeBuilder{}, &fakeSandbox{})
+
+	// Establish an existing started handle.
+	if _, err := manager.Start("app"); err != nil {
+		test.Fatal(err)
+	}
+
+	// Restart drives the EXISTING microVM: no rebuild, just stop then start.
+	restartBuilder := &fakeBuilder{}
+	restartSandbox := &fakeSandbox{}
+	restartManager := newManager(restartBuilder, restartSandbox)
+
+	handle, err := restartManager.Restart("app")
+	if err != nil {
+		test.Fatal(err)
+	}
+	if !restartSandbox.stopped || !restartSandbox.started {
+		test.Fatalf("restart must stop then start the microVM: %+v", restartSandbox)
+	}
+	if restartBuilder.built || restartSandbox.created {
+		test.Fatalf("restart must not rebuild or recreate: builder=%v sandbox=%+v", restartBuilder.built, restartSandbox)
+	}
+	if handle.Status != state.StatusStarted {
+		test.Fatalf("handle status = %q, want started", handle.Status)
+	}
+	workspaces, err := state.OpenStore(root).ListWorkspaces()
+	if err != nil || len(workspaces) != 1 || workspaces[0].Status != state.StatusStarted {
+		test.Fatalf("persisted workspaces=%+v err=%v", workspaces, err)
+	}
+}
+
+func TestRestartWithoutExistingHandle(test *testing.T) {
+	seedProject(test, "app")
+	_, err := newManager(&fakeBuilder{}, &fakeSandbox{}).Restart("app")
+	if !errors.Is(err, ErrNotStarted) {
+		test.Fatalf("want ErrNotStarted, got %v", err)
+	}
+}
+
+func TestRestartUnknownProject(test *testing.T) {
+	seedProject(test, "app")
+	_, err := newManager(&fakeBuilder{}, &fakeSandbox{}).Restart("nope")
+	if !errors.Is(err, ErrUnknownProject) {
+		test.Fatalf("want ErrUnknownProject, got %v", err)
+	}
+}
+
 func TestStartUnknownProject(test *testing.T) {
 	seedProject(test, "app")
 	_, err := newManager(&fakeBuilder{}, &fakeSandbox{}).Start("nope")

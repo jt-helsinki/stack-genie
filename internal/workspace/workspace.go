@@ -18,6 +18,16 @@ import (
 // (→ exit 2).
 var ErrUnknownProject = errors.New("unknown project")
 
+// ErrNotStarted is returned when an operation needs an existing workspace handle
+// but none has been created yet (→ exit 2): the caller should `ai workspace
+// start` first.
+var ErrNotStarted = errors.New("workspace was never started; run `ai workspace start` first")
+
+// ErrAlreadyStopped lets a Sandbox.Stop signal that the microVM was already
+// stopped. Restart treats this as a no-op (it only needs the microVM down before
+// starting it again) rather than a failure.
+var ErrAlreadyStopped = errors.New("workspace microVM is already stopped")
+
 // Name derives the deterministic workspace/microVM name (arch §7, §19):
 // aip-<project>. There is one workspace per project.
 func Name(project string) string {
@@ -122,6 +132,62 @@ func (manager Manager) Stop(project string) error {
 		return err
 	}
 	return manager.updateStatus(root, name, project, state.StatusStopped)
+}
+
+// Restart restarts the EXISTING workspace microVM without rebuilding the OCI
+// image: it stops the microVM (tolerating an already-stopped microVM), starts it
+// again, and refreshes the handle to a started state with a new LastStarted
+// timestamp. It requires a previously-created handle; if the workspace was never
+// started it returns ErrNotStarted (→ exit 2) so the caller runs `start` first.
+func (manager Manager) Restart(project string) (*state.Workspace, error) {
+	root, err := resolveProjectRoot(project)
+	if err != nil {
+		return nil, err
+	}
+	name := Name(project)
+	existing, err := manager.findHandle(root, name)
+	if err != nil {
+		return nil, err
+	}
+	if existing == nil {
+		return nil, fmt.Errorf("%w: %q", ErrNotStarted, project)
+	}
+	// Stop the existing microVM; an already-stopped microVM is fine for a
+	// restart, so tolerate that case and proceed to start.
+	if err := manager.Sandbox.Stop(name); err != nil && !errors.Is(err, ErrAlreadyStopped) {
+		return nil, err
+	}
+	if err := manager.Sandbox.Start(name); err != nil {
+		return nil, err
+	}
+	now := manager.Now()
+	handle := &state.Workspace{
+		ID:             name,
+		Project:        project,
+		MicrosandboxID: existing.MicrosandboxID,
+		Status:         state.StatusStarted,
+		Created:        existing.Created,
+		LastStarted:    now,
+	}
+	if err := state.OpenStore(root).SaveWorkspace(handle); err != nil {
+		return nil, err
+	}
+	return handle, nil
+}
+
+// findHandle returns the workspace handle for name, or nil if no handle exists
+// yet (workspace never started).
+func (manager Manager) findHandle(root, name string) (*state.Workspace, error) {
+	workspaces, err := state.OpenStore(root).ListWorkspaces()
+	if err != nil {
+		return nil, err
+	}
+	for index := range workspaces {
+		if workspaces[index].ID == name {
+			return &workspaces[index], nil
+		}
+	}
+	return nil, nil
 }
 
 // Destroy removes the microVM/runtime handle only. It is NON-destructive (§4.4):

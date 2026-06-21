@@ -440,6 +440,26 @@ Behavior:
 
 ---
 
+## 4.3a Restart Workspace
+
+```bash id="c10a"
+ai workspace restart <project>
+```
+
+Behavior:
+
+* restarts the **existing** microVM — stops it (tolerating an already-stopped
+  microVM) then starts it again
+* does **not** rebuild the OCI image and does **not** recreate the microVM (the
+  persistent overlay and host project are untouched); use `start` for a fresh
+  build
+* preserves state and refreshes the handle to `started` with a new
+  `last_started`
+* requires a workspace that was previously started; if none exists it fails with
+  exit `2` and directs the user to `ai workspace start` first
+
+---
+
 ## 4.4 Destroy Workspace
 
 ```bash id="c11"
