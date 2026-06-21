@@ -389,6 +389,8 @@ func TestLiteLLMRunArgs(test *testing.T) {
 		"-e", "UI_PASSWORD",
 		"-e", "LITELLM_MASTER_KEY",
 		"-e", "DATABASE_URL=postgresql://litellm@aip-litellm-db:5432/litellm",
+		"-e", "PRESIDIO_ANALYZER_API_BASE=http://aip-presidio-analyzer:3000",
+		"-e", "PRESIDIO_ANONYMIZER_API_BASE=http://aip-presidio-anonymizer:3000",
 		"ghcr.io/berriai/litellm:main-latest",
 		"--config", "/app/config.yaml", "--port", "4000",
 	}

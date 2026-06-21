@@ -140,6 +140,39 @@ func build(routing Routing) map[string]any {
 	return map[string]any{
 		"model_list":       modelList,
 		"litellm_settings": map[string]any{"default_model": routing.Default},
+		"guardrails":       buildGuardrails(),
+	}
+}
+
+// buildGuardrails renders the platform's always-on guardrails (arch §17). Presidio
+// PII detection runs both pre-call (mask PII out of the prompt before the model
+// ever sees it) and post-call (mask PII out of the response). Both are
+// default_on:true, so no client request can opt out — and because every route,
+// including cloud providers, passes through the LiteLLM proxy, cloud calls are
+// guarded too. The backing analyzer/anonymizer reach LiteLLM via the
+// PRESIDIO_*_API_BASE env vars set on the LiteLLM container (see setup_real.go);
+// the matching containers are launched by setup so the config never references a
+// guardrail with no backend.
+func buildGuardrails() []map[string]any {
+	return []map[string]any{
+		{
+			"guardrail_name": "presidio-pii-input",
+			"litellm_params": map[string]any{
+				"guardrail":             "presidio",
+				"mode":                  "pre_call",
+				"default_on":            true,
+				"presidio_filter_scope": "input",
+			},
+		},
+		{
+			"guardrail_name": "presidio-pii-output",
+			"litellm_params": map[string]any{
+				"guardrail":             "presidio",
+				"mode":                  "post_call",
+				"default_on":            true,
+				"presidio_filter_scope": "output",
+			},
+		},
 	}
 }
 

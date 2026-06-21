@@ -83,6 +83,34 @@ func TestRenderDefaultRouting(test *testing.T) {
 	if byName["gemma4"] != "ollama/gemma4:31b" {
 		test.Fatalf("gemma4 -> %q, want ollama/gemma4:31b", byName["gemma4"])
 	}
+
+	// Always-on PII guardrails: Presidio pre-call (input) + post-call (output),
+	// both default_on so no request — cloud included — can bypass them (arch §17).
+	var guards struct {
+		Guardrails []struct {
+			GuardrailName string `yaml:"guardrail_name"`
+			LitellmParams struct {
+				Guardrail   string `yaml:"guardrail"`
+				Mode        string `yaml:"mode"`
+				DefaultOn   bool   `yaml:"default_on"`
+				FilterScope string `yaml:"presidio_filter_scope"`
+			} `yaml:"litellm_params"`
+		} `yaml:"guardrails"`
+	}
+	if err := yaml.Unmarshal(b, &guards); err != nil {
+		test.Fatalf("guardrails not valid yaml: %v", err)
+	}
+	if len(guards.Guardrails) != 2 {
+		test.Fatalf("guardrails = %d, want 2 (presidio pre+post)", len(guards.Guardrails))
+	}
+	for _, guard := range guards.Guardrails {
+		if guard.LitellmParams.Guardrail != "presidio" {
+			test.Errorf("guardrail %q backend = %q, want presidio", guard.GuardrailName, guard.LitellmParams.Guardrail)
+		}
+		if !guard.LitellmParams.DefaultOn {
+			test.Errorf("guardrail %q not default_on (would be bypassable)", guard.GuardrailName)
+		}
+	}
 }
 
 func TestRenderProviderConfigPassthrough(test *testing.T) {

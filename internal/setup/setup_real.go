@@ -43,6 +43,7 @@ type serviceSpec struct{ Name, Mode string }
 func desiredServices() []serviceSpec {
 	return []serviceSpec{
 		{"ollama", "container"},
+		{"presidio", "container"},
 		{"litellm", "container"},
 		{"headroom", "container"},
 		{"clawpatrol", "native"},
@@ -87,6 +88,17 @@ const (
 	headroomContainer = "aip-headroom"
 	headroomImage     = "ghcr.io/chopratejas/headroom:slim"
 	headroomTargetURL = "http://" + litellmContainer + ":4000"
+
+	// Presidio backs LiteLLM's always-on PII guardrail (arch §17). The analyzer
+	// detects PII and the anonymizer masks it; LiteLLM reaches both by name on the
+	// shared network via PRESIDIO_*_API_BASE (port 3000, the image default). They
+	// are internal only — not published to the host.
+	presidioAnalyzerContainer   = "aip-presidio-analyzer"
+	presidioAnonymizerContainer = "aip-presidio-anonymizer"
+	presidioAnalyzerImage       = "mcr.microsoft.com/presidio-analyzer:latest"
+	presidioAnonymizerImage     = "mcr.microsoft.com/presidio-anonymizer:latest"
+	presidioAnalyzerURL         = "http://" + presidioAnalyzerContainer + ":3000"
+	presidioAnonymizerURL       = "http://" + presidioAnonymizerContainer + ":3000"
 )
 
 // litellmRunArgs is the `<runtime> run` argv that launches LiteLLM with the
@@ -113,6 +125,10 @@ func litellmRunArgs(configPath string) []string {
 		"-e", "UI_PASSWORD",
 		"-e", "LITELLM_MASTER_KEY",
 		"-e", "DATABASE_URL=" + litellmDatabaseURL,
+		// Reach the Presidio analyzer/anonymizer by name on the shared network so
+		// the always-on PII guardrail has a backend (no secret in these values).
+		"-e", "PRESIDIO_ANALYZER_API_BASE=" + presidioAnalyzerURL,
+		"-e", "PRESIDIO_ANONYMIZER_API_BASE=" + presidioAnonymizerURL,
 		litellmImage,
 		"--config", "/app/config.yaml", "--port", "4000",
 	}
@@ -186,6 +202,32 @@ func ensureOllama(prober runtime.Prober, containerRuntime string) error {
 	if _, err := prober.Run(containerRuntime, args...); err != nil {
 		return output.Errorf(output.ExitRuntimeFailure,
 			"launch ollama via %s: %s (stop any native Ollama bound to :11434 first)", containerRuntime, err)
+	}
+	return nil
+}
+
+// ensurePresidio runs the Presidio analyzer + anonymizer containers that back
+// LiteLLM's always-on PII guardrail. Both join the shared network and are
+// reachable by name on port 3000 (the image default); neither is published to
+// the host. Idempotent.
+func ensurePresidio(prober runtime.Prober, containerRuntime string) error {
+	presidioServices := []struct{ name, image string }{
+		{presidioAnalyzerContainer, presidioAnalyzerImage},
+		{presidioAnonymizerContainer, presidioAnonymizerImage},
+	}
+	for _, presidio := range presidioServices {
+		if containerRunning(prober, containerRuntime, presidio.name) {
+			continue
+		}
+		_, _ = prober.Run(containerRuntime, "rm", "-f", presidio.name)
+		args := []string{
+			"run", "-d", "--name", presidio.name,
+			"--network", platformNetwork,
+			presidio.image,
+		}
+		if _, err := prober.Run(containerRuntime, args...); err != nil {
+			return output.Errorf(output.ExitRuntimeFailure, "launch %s via %s: %s", presidio.name, containerRuntime, err)
+		}
 	}
 	return nil
 }
@@ -300,13 +342,18 @@ func (services realServices) Reconcile(providerConfig string) ([]ServiceStatus, 
 		return nil, err
 	}
 	// Bring up the container tier on the shared network: Ollama (local models),
-	// LiteLLM (+ its DB), and the Headroom compression proxy in front of LiteLLM.
+	// Presidio (PII guardrail backend), LiteLLM (+ its DB), and the Headroom
+	// compression proxy in front of LiteLLM. Presidio precedes LiteLLM because the
+	// LiteLLM container is launched with PRESIDIO_*_API_BASE pointing at it.
 	containerRuntime, err := runtime.ContainerRuntimeName(services.prober)
 	if err != nil {
 		return nil, err
 	}
 	ensurePlatformNetwork(services.prober, containerRuntime.Name)
 	if err := ensureOllama(services.prober, containerRuntime.Name); err != nil {
+		return nil, err
+	}
+	if err := ensurePresidio(services.prober, containerRuntime.Name); err != nil {
 		return nil, err
 	}
 	if err := services.ensureLiteLLM(filepath.Join(configDir, "litellm", "config.yaml")); err != nil {
@@ -375,6 +422,13 @@ func (services realServices) serviceHealthy(name string) bool {
 		return err == nil && info.Healthy
 	case "ollama":
 		return ollama.RealProbe().Reachable() == nil
+	case "presidio":
+		containerRuntime, err := runtime.ContainerRuntimeName(services.prober)
+		if err != nil {
+			return false
+		}
+		return containerRunning(services.prober, containerRuntime.Name, presidioAnalyzerContainer) &&
+			containerRunning(services.prober, containerRuntime.Name, presidioAnonymizerContainer)
 	case "headroom":
 		containerRuntime, err := runtime.ContainerRuntimeName(services.prober)
 		if err != nil {
@@ -410,32 +464,54 @@ func (services realServices) Control(action, service string) ([]ServiceStatus, e
 		return nil, err
 	}
 
-	// The platform-owned containers, in dependency order (Ollama and the DB before
-	// the gateway, the compression proxy last). ensure() is the idempotent launcher.
-	type managedContainer struct {
-		name      string
-		container string
-		ensure    func() error
-	}
-	managed := []managedContainer{
-		{"ollama", ollamaContainer, func() error { return ensureOllama(services.prober, containerRuntime.Name) }},
-		{"litellm", litellmContainer, func() error { return services.ensureLiteLLM(configPath) }},
-		{"headroom", headroomContainer, func() error { return ensureHeadroom(services.prober, containerRuntime.Name) }},
+	stopContainer := func(name string) error {
+		if _, err := services.prober.Run(containerRuntime.Name, "stop", name); err != nil {
+			return output.Errorf(output.ExitRuntimeFailure, "stop %s via %s: %s", name, containerRuntime.Name, err)
+		}
+		return nil
 	}
 
-	var targets []managedContainer
+	// The platform-owned services, in dependency order (Ollama + Presidio before
+	// the gateway, the compression proxy last). ensure() is the idempotent
+	// launcher; stop() halts every container the service owns (Presidio is two).
+	type managedService struct {
+		name   string
+		ensure func() error
+		stop   func() error
+	}
+	managed := []managedService{
+		{"ollama",
+			func() error { return ensureOllama(services.prober, containerRuntime.Name) },
+			func() error { return stopContainer(ollamaContainer) }},
+		{"presidio",
+			func() error { return ensurePresidio(services.prober, containerRuntime.Name) },
+			func() error {
+				if err := stopContainer(presidioAnalyzerContainer); err != nil {
+					return err
+				}
+				return stopContainer(presidioAnonymizerContainer)
+			}},
+		{"litellm",
+			func() error { return services.ensureLiteLLM(configPath) },
+			func() error { return stopContainer(litellmContainer) }},
+		{"headroom",
+			func() error { return ensureHeadroom(services.prober, containerRuntime.Name) },
+			func() error { return stopContainer(headroomContainer) }},
+	}
+
+	var targets []managedService
 	switch service {
 	case "", "all":
 		targets = managed
 	default:
 		for _, entry := range managed {
 			if entry.name == service {
-				targets = []managedContainer{entry}
+				targets = []managedService{entry}
 			}
 		}
 		if targets == nil {
 			return nil, output.Errorf(output.ExitInvalidInput,
-				"unknown service %q (expected one of: ollama, litellm, headroom)", service)
+				"unknown service %q (expected one of: ollama, presidio, litellm, headroom)", service)
 		}
 	}
 
@@ -446,15 +522,15 @@ func (services realServices) Control(action, service string) ([]ServiceStatus, e
 				return nil, err
 			}
 		case "stop":
-			if _, err := services.prober.Run(containerRuntime.Name, "stop", target.container); err != nil {
-				return nil, output.Errorf(output.ExitRuntimeFailure, "stop %s via %s: %s", target.name, containerRuntime.Name, err)
+			if err := target.stop(); err != nil {
+				return nil, err
 			}
 		case "restart":
-			// Restart the existing container; if it isn't there yet, launch it fresh.
-			if _, err := services.prober.Run(containerRuntime.Name, "restart", target.container); err != nil {
-				if err := target.ensure(); err != nil {
-					return nil, err
-				}
+			// Stop then re-launch idempotently (uniform across single- and
+			// multi-container services).
+			_ = target.stop()
+			if err := target.ensure(); err != nil {
+				return nil, err
 			}
 		}
 	}
