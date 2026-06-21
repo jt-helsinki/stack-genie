@@ -255,18 +255,41 @@ func LiteLLMUISecured() bool {
 // litellmEnvSet reports whether the LiteLLM container's env has key set to a
 // non-empty value (via the runtime's inspect).
 func litellmEnvSet(prober runtime.Prober, containerRuntime, key string) bool {
+	return litellmEnvValue(prober, containerRuntime, key) != ""
+}
+
+// litellmEnvValue returns the value of an env var on the running LiteLLM
+// container, or "" if unset/absent.
+func litellmEnvValue(prober runtime.Prober, containerRuntime, key string) string {
 	out, err := prober.Run(containerRuntime, "inspect", "--format",
 		"{{range .Config.Env}}{{println .}}{{end}}", litellmContainer)
 	if err != nil {
-		return false
+		return ""
 	}
 	prefix := key + "="
 	for _, line := range strings.Split(string(out), "\n") {
-		if strings.HasPrefix(line, prefix) && strings.TrimSpace(line[len(prefix):]) != "" {
-			return true
+		if strings.HasPrefix(line, prefix) {
+			return strings.TrimSpace(line[len(prefix):])
 		}
 	}
-	return false
+	return ""
+}
+
+// preserveLiteLLMSecretsInEnv copies the running container's UI_PASSWORD and
+// LITELLM_MASTER_KEY into this process's environment when they are not already
+// present, so an env-passthrough relaunch (litellmRunArgs) keeps the admin UI
+// secured and the master key stable rather than silently dropping them. Values
+// transit process memory only — never argv or platform disk. MUST be called
+// before the container is removed (a stopped container can still be inspected).
+func preserveLiteLLMSecretsInEnv(prober runtime.Prober, containerRuntime string) {
+	for _, key := range []string{"UI_PASSWORD", "LITELLM_MASTER_KEY"} {
+		if os.Getenv(key) != "" {
+			continue // a caller-provided value (e.g. the setup prompt) wins
+		}
+		if value := litellmEnvValue(prober, containerRuntime, key); value != "" {
+			_ = os.Setenv(key, value)
+		}
+	}
 }
 
 // RelaunchLiteLLMWithAuth recreates the LiteLLM container with the admin-UI
@@ -366,6 +389,10 @@ func (services realServices) ensureLiteLLM(configPath string) error {
 	if services.serviceHealthy("litellm") && litellmHasDatabaseURL(services.prober, containerRuntime.Name) {
 		return nil
 	}
+	// Preserve the existing UI password + master key across the relaunch so a
+	// restart/re-setup does not silently unsecure the admin UI or rotate the key
+	// (env passthrough would otherwise copy empty values from this process).
+	preserveLiteLLMSecretsInEnv(services.prober, containerRuntime.Name)
 	_, _ = services.prober.Run(containerRuntime.Name, "rm", "-f", litellmContainer) // best-effort cleanup
 	if _, err := services.prober.Run(containerRuntime.Name, litellmRunArgs(configPath)...); err != nil {
 		return output.Errorf(output.ExitRuntimeFailure, "launch litellm via %s: %s", containerRuntime.Name, err)

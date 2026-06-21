@@ -210,6 +210,28 @@ func TestServicesStatusIncludesMicrosandbox(test *testing.T) {
 	}
 }
 
+func TestPreserveLiteLLMSecretsInEnv(test *testing.T) {
+	test.Setenv("UI_PASSWORD", "")
+	test.Setenv("LITELLM_MASTER_KEY", "")
+	prober := fakeProber{dockerOut: "UI_USERNAME=admin\nUI_PASSWORD=hunter2\nLITELLM_MASTER_KEY=sk-abc\nOTHER=x\n"}
+	preserveLiteLLMSecretsInEnv(prober, "docker")
+	if got := os.Getenv("UI_PASSWORD"); got != "hunter2" {
+		test.Errorf("UI_PASSWORD = %q, want preserved hunter2", got)
+	}
+	if got := os.Getenv("LITELLM_MASTER_KEY"); got != "sk-abc" {
+		test.Errorf("LITELLM_MASTER_KEY = %q, want preserved sk-abc", got)
+	}
+}
+
+func TestPreserveLiteLLMSecretsDoesNotOverrideCaller(test *testing.T) {
+	test.Setenv("UI_PASSWORD", "caller-set")
+	prober := fakeProber{dockerOut: "UI_PASSWORD=from-container\n"}
+	preserveLiteLLMSecretsInEnv(prober, "docker")
+	if got := os.Getenv("UI_PASSWORD"); got != "caller-set" {
+		test.Errorf("a caller-provided value must win, got %q", got)
+	}
+}
+
 func hasService(specs []serviceSpec, name string) bool {
 	for _, spec := range specs {
 		if spec.Name == name {
