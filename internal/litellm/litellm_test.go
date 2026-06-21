@@ -100,12 +100,25 @@ func TestRenderDefaultRouting(test *testing.T) {
 	if err := yaml.Unmarshal(b, &guards); err != nil {
 		test.Fatalf("guardrails not valid yaml: %v", err)
 	}
-	if len(guards.Guardrails) != 2 {
-		test.Fatalf("guardrails = %d, want 2 (presidio pre+post)", len(guards.Guardrails))
+	// Presidio pre+post, hide-secrets, content-filter — all always-on, all
+	// self-hostable (no Hub tokens / cloud APIs).
+	wantBackends := map[string]string{
+		"presidio-pii-input":  "presidio",
+		"presidio-pii-output": "presidio",
+		"hide-secrets":        "hide-secrets",
+		"content-filter":      "litellm_content_filter",
+	}
+	if len(guards.Guardrails) != len(wantBackends) {
+		test.Fatalf("guardrails = %d, want %d", len(guards.Guardrails), len(wantBackends))
 	}
 	for _, guard := range guards.Guardrails {
-		if guard.LitellmParams.Guardrail != "presidio" {
-			test.Errorf("guardrail %q backend = %q, want presidio", guard.GuardrailName, guard.LitellmParams.Guardrail)
+		wantBackend, known := wantBackends[guard.GuardrailName]
+		if !known {
+			test.Errorf("unexpected guardrail %q", guard.GuardrailName)
+			continue
+		}
+		if guard.LitellmParams.Guardrail != wantBackend {
+			test.Errorf("guardrail %q backend = %q, want %q", guard.GuardrailName, guard.LitellmParams.Guardrail, wantBackend)
 		}
 		if !guard.LitellmParams.DefaultOn {
 			test.Errorf("guardrail %q not default_on (would be bypassable)", guard.GuardrailName)

@@ -148,15 +148,27 @@ func build(routing Routing) map[string]any {
 	}
 }
 
-// buildGuardrails renders the platform's always-on guardrails (arch §17). Presidio
-// PII detection runs both pre-call (mask PII out of the prompt before the model
-// ever sees it) and post-call (mask PII out of the response). Both are
+// buildGuardrails renders the platform's always-on guardrails (arch §17). All are
 // default_on:true, so no client request can opt out — and because every route,
 // including cloud providers, passes through the LiteLLM proxy, cloud calls are
-// guarded too. The backing analyzer/anonymizer reach LiteLLM via the
-// PRESIDIO_*_API_BASE env vars set on the LiteLLM container (see setup_real.go);
-// the matching containers are launched by setup so the config never references a
-// guardrail with no backend.
+// guarded too. The platform ships only fully self-hostable, zero-config-token
+// guardrails (no Hub tokens, no cloud APIs):
+//   - Presidio PII detection (pre_call masks PII out of the prompt before the
+//     model sees it; post_call masks it out of the response). Backed by the
+//     analyzer/anonymizer containers reached via PRESIDIO_*_API_BASE on the
+//     LiteLLM container (see setup_real.go), launched by setup so the config
+//     never references a guardrail with no backend.
+//   - hide-secrets: LiteLLM's in-process secret detector (bundled detect-secrets,
+//     150+ plugins) — strips API keys/tokens/credentials from the prompt. No
+//     external server.
+//   - content-filter: LiteLLM's in-process content filter (litellm_content_filter)
+//     — masks emails out of the prompt as a regex backstop to Presidio. No
+//     external server.
+//
+// LLM Guard and Guardrails AI are deliberately excluded: the former does not fit
+// LiteLLM's modern guardrails list (legacy callback only) and ships only a stale
+// unpinnable image; the latter needs a Guardrails Hub token + manual per-guard
+// install, so it cannot be shipped fully automated.
 func buildGuardrails() []map[string]any {
 	return []map[string]any{
 		{
@@ -175,6 +187,25 @@ func buildGuardrails() []map[string]any {
 				"mode":                  "post_call",
 				"default_on":            true,
 				"presidio_filter_scope": "output",
+			},
+		},
+		{
+			"guardrail_name": "hide-secrets",
+			"litellm_params": map[string]any{
+				"guardrail":  "hide-secrets",
+				"mode":       "pre_call",
+				"default_on": true,
+			},
+		},
+		{
+			"guardrail_name": "content-filter",
+			"litellm_params": map[string]any{
+				"guardrail":  "litellm_content_filter",
+				"mode":       "pre_call",
+				"default_on": true,
+				"patterns": []map[string]any{
+					{"pattern_type": "prebuilt", "pattern_name": "email", "action": "MASK"},
+				},
 			},
 		},
 	}
