@@ -60,11 +60,14 @@ const (
 	litellmDBHostPort = "5442"
 
 	// Ollama runs as a container on aip-net (so LiteLLM reaches it by name) and
-	// publishes :11434 to the host. Models persist in a named volume. Replaces a
-	// native Ollama — stop any native instance bound to 11434 first.
-	ollamaContainer = "aip-ollama"
-	ollamaImage     = "ollama/ollama:latest"
-	ollamaVolume    = "aip-ollama-data"
+	// publishes :11434 to the host. Models persist on the host under
+	// ~/.ai-platform/models (bind-mounted to ollamaModelsGuest, with OLLAMA_MODELS
+	// pointing there) so they are visible on disk and removed with the rest of
+	// platform state on `ai uninstall --purge`. Replaces a native Ollama — stop any
+	// native instance bound to 11434 first.
+	ollamaContainer   = "aip-ollama"
+	ollamaImage       = "ollama/ollama:latest"
+	ollamaModelsGuest = "/models" // where ~/.ai-platform/models is mounted in the container
 
 	// Headroom is the input-compression proxy in front of LiteLLM. Official image
 	// (no build): agents point at :8787, it forwards to LiteLLM via OPENAI_TARGET_API_URL.
@@ -168,18 +171,28 @@ func containerRunning(prober runtime.Prober, containerRuntime, name string) bool
 }
 
 // ensureOllama runs the Ollama container on the shared network, publishing :11434
-// and persisting models in a named volume. Idempotent. Replaces a native Ollama —
-// any native instance bound to :11434 must be stopped first.
+// and persisting models under ~/.ai-platform/models on the host (bind-mounted).
+// Idempotent. Replaces a native Ollama — any native instance bound to :11434 must
+// be stopped first.
 func ensureOllama(prober runtime.Prober, containerRuntime string) error {
 	if containerRunning(prober, containerRuntime, ollamaContainer) {
 		return nil
+	}
+	platformDir, err := paths.PlatformDir()
+	if err != nil {
+		return err
+	}
+	modelsDir := filepath.Join(platformDir, "models")
+	if err := os.MkdirAll(modelsDir, 0o755); err != nil {
+		return output.Errorf(output.ExitRuntimeFailure, "create ollama models dir %s: %s", modelsDir, err)
 	}
 	_, _ = prober.Run(containerRuntime, "rm", "-f", ollamaContainer)
 	args := []string{
 		"run", "-d", "--name", ollamaContainer,
 		"--network", platformNetwork,
 		"-p", "11434:11434",
-		"-v", ollamaVolume + ":/root/.ollama",
+		"-v", modelsDir + ":" + ollamaModelsGuest,
+		"-e", "OLLAMA_MODELS=" + ollamaModelsGuest,
 		ollamaImage,
 	}
 	if _, err := prober.Run(containerRuntime, args...); err != nil {

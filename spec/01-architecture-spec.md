@@ -940,7 +940,8 @@ Rules:
 * **required**, always provisioned (not optional)
 * never installed in workspaces
 * runs as a **container-tier service** (`aip-ollama`, image `ollama/ollama:latest`,
-  publishes `:11434`, models persist in volume `aip-ollama-data`) on the `aip-net`
+  publishes `:11434`, models persist on the host under `~/.ai-platform/models`,
+  bind-mounted to `/models` with `OLLAMA_MODELS` pointing there) on the `aip-net`
   network on all platforms — never a native host install. It **replaces any native
   Ollama**: the native instance on `:11434` must be stopped first. LiteLLM reaches
   it by container name — `ollama/*` models carry `api_base=http://aip-ollama:11434`.

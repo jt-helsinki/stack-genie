@@ -107,7 +107,8 @@ Each is a thin real impl that currently returns `ErrPending` / a stub.
     **network → Ollama → Presidio → LiteLLM(+DB) → Headroom**, via the detected
     runtime (`runtime.ContainerRuntime.RunArgs`, docker|podman — not hardcoded);
     health-poll each:
-    - `aip-ollama` (`ollama/ollama:latest`, :11434, volume `aip-ollama-data`) —
+    - `aip-ollama` (`ollama/ollama:latest`, :11434, models bind-mounted from
+      `~/.ai-platform/models` → `/models`, `OLLAMA_MODELS=/models`) —
       required local models, replaces any **native** Ollama (stop a native :11434
       first); LiteLLM reaches it by name at `api_base=http://aip-ollama:11434`.
     - `aip-presidio-analyzer` + `aip-presidio-anonymizer`
