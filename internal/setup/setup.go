@@ -165,8 +165,8 @@ func (report *Report) Human() string {
 		fmt.Fprintf(&builder, "Runtime:  %s (rootless=%t) · microVM %s (%s)\n",
 			runtimeInfo.Detected, runtimeInfo.Rootless, runtimeInfo.Microsandbox.Virtualization, available)
 	}
-	fmt.Fprintf(&builder, "State:    config=%t versions=%t\n",
-		report.ConfigCreated, report.VersionsCreated)
+	fmt.Fprintf(&builder, "State:    config.yaml %s · versions.json %s\n",
+		presence(report.ConfigCreated), presence(report.VersionsCreated))
 	builder.WriteString("Services:\n")
 	for _, service := range report.Services {
 		line := fmt.Sprintf("  %-11s %-9s %s", service.Name, service.Mode, service.State)
@@ -176,6 +176,15 @@ func (report *Report) Human() string {
 		builder.WriteString(line + "\n")
 	}
 	return strings.TrimRight(builder.String(), "\n")
+}
+
+// presence renders whether a default state file was created on this run or
+// already existed, reporting that it is present either way.
+func presence(created bool) string {
+	if created {
+		return "✓ created"
+	}
+	return "✓ present"
 }
 
 // Prerequisite is one external dependency `ai setup` needs. Blocking ones must be
