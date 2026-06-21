@@ -666,7 +666,13 @@ ai network publish <guest:host> [project] [--remove]      # publish/unpublish a 
 
 Project-scoped (default the current directory's project, like `ai context`).
 These edit the project's `network` block (architecture §29.6); enforcement is the
-Microsandbox network policy applied at `ai workspace start`.
+Microsandbox network policy applied at `ai workspace start`. The whole policy is
+managed by the `ai` app — **no manual file editing is required** (though the
+`network` block stays hand-editable). On a terminal, omitting the value
+**presents the options**: `egress` (no mode) shows a posture menu; `allow` (no
+arg) shows a menu of common services (Postgres/Redis/Kafka/… with default ports)
+plus a custom entry; `publish` (no arg) prompts for the ports. With `--json` or
+no TTY, the value must be passed as an argument.
 
 * `egress` sets the default outbound posture: **deny** (default — only the model
   gateway + allowed services), **public** (open internet, private ranges still
