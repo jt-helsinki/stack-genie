@@ -148,21 +148,35 @@ func build(routing Routing) map[string]any {
 	}
 }
 
+// secretEntities is the Presidio entity set the platform masks — deliberately
+// scoped to unambiguous financial/identity SECRETS only. General PII (PERSON,
+// LOCATION, DATE_TIME, EMAIL_ADDRESS, …) is intentionally NOT masked: a coding
+// agent's prompts legitimately contain names, places, paths and emails, and
+// masking them corrupts the prompt before the model sees it (e.g. "capital of
+// France" → "capital of <LOCATION>"). Credentials/API keys/tokens are handled
+// separately by the hide-secrets guardrail (detect-secrets).
+var secretEntities = []string{
+	"CREDIT_CARD",
+	"US_SSN",
+	"US_BANK_NUMBER",
+	"IBAN_CODE",
+	"CRYPTO",
+}
+
 // buildGuardrails renders the platform's always-on guardrails (arch §17). All are
 // default_on:true, so no client request can opt out — and because every route,
 // including cloud providers, passes through the LiteLLM proxy, cloud calls are
 // guarded too. The platform ships only fully self-hostable, zero-config-token
-// guardrails (no Hub tokens, no cloud APIs):
-//   - Presidio PII detection (pre_call masks PII out of the prompt before the
-//     model sees it; post_call masks it out of the response). Backed by the
+// guardrails (no Hub tokens, no cloud APIs), scoped to SECRETS AND CREDENTIALS
+// (not general PII):
+//   - Presidio (pre_call masks secrets out of the prompt before the model sees
+//     them; post_call masks them out of the response), restricted to
+//     secretEntities — financial/identity secrets only. Backed by the
 //     analyzer/anonymizer containers reached via PRESIDIO_*_API_BASE on the
 //     LiteLLM container (see setup_real.go), launched by setup so the config
 //     never references a guardrail with no backend.
 //   - hide-secrets: LiteLLM's in-process secret detector (bundled detect-secrets,
 //     150+ plugins) — strips API keys/tokens/credentials from the prompt. No
-//     external server.
-//   - content-filter: LiteLLM's in-process content filter (litellm_content_filter)
-//     — masks emails out of the prompt as a regex backstop to Presidio. No
 //     external server.
 //
 // LLM Guard and Guardrails AI are deliberately excluded: the former does not fit
@@ -170,23 +184,34 @@ func build(routing Routing) map[string]any {
 // unpinnable image; the latter needs a Guardrails Hub token + manual per-guard
 // install, so it cannot be shipped fully automated.
 func buildGuardrails() []map[string]any {
+	// Mask only the scoped secret entities, at a high confidence threshold to
+	// avoid false positives on ordinary code/text.
+	entityActions := make(map[string]any, len(secretEntities))
+	for _, entity := range secretEntities {
+		entityActions[entity] = "MASK"
+	}
+	scoredThresholds := map[string]any{"DEFAULT": 0.6}
 	return []map[string]any{
 		{
-			"guardrail_name": "presidio-pii-input",
+			"guardrail_name": "presidio-secrets-input",
 			"litellm_params": map[string]any{
-				"guardrail":             "presidio",
-				"mode":                  "pre_call",
-				"default_on":            true,
-				"presidio_filter_scope": "input",
+				"guardrail":                 "presidio",
+				"mode":                      "pre_call",
+				"default_on":                true,
+				"presidio_filter_scope":     "input",
+				"pii_entities_config":       entityActions,
+				"presidio_score_thresholds": scoredThresholds,
 			},
 		},
 		{
-			"guardrail_name": "presidio-pii-output",
+			"guardrail_name": "presidio-secrets-output",
 			"litellm_params": map[string]any{
-				"guardrail":             "presidio",
-				"mode":                  "post_call",
-				"default_on":            true,
-				"presidio_filter_scope": "output",
+				"guardrail":                 "presidio",
+				"mode":                      "post_call",
+				"default_on":                true,
+				"presidio_filter_scope":     "output",
+				"pii_entities_config":       entityActions,
+				"presidio_score_thresholds": scoredThresholds,
 			},
 		},
 		{
@@ -195,17 +220,6 @@ func buildGuardrails() []map[string]any {
 				"guardrail":  "hide-secrets",
 				"mode":       "pre_call",
 				"default_on": true,
-			},
-		},
-		{
-			"guardrail_name": "content-filter",
-			"litellm_params": map[string]any{
-				"guardrail":  "litellm_content_filter",
-				"mode":       "pre_call",
-				"default_on": true,
-				"patterns": []map[string]any{
-					{"pattern_type": "prebuilt", "pattern_name": "email", "action": "MASK"},
-				},
 			},
 		},
 	}

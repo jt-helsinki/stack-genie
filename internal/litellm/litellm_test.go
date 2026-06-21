@@ -103,10 +103,9 @@ func TestRenderDefaultRouting(test *testing.T) {
 	// Presidio pre+post, hide-secrets, content-filter — all always-on, all
 	// self-hostable (no Hub tokens / cloud APIs).
 	wantBackends := map[string]string{
-		"presidio-pii-input":  "presidio",
-		"presidio-pii-output": "presidio",
-		"hide-secrets":        "hide-secrets",
-		"content-filter":      "litellm_content_filter",
+		"presidio-secrets-input":  "presidio",
+		"presidio-secrets-output": "presidio",
+		"hide-secrets":            "hide-secrets",
 	}
 	if len(guards.Guardrails) != len(wantBackends) {
 		test.Fatalf("guardrails = %d, want %d", len(guards.Guardrails), len(wantBackends))
