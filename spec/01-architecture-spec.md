@@ -14,7 +14,7 @@ Status: Target End-State Architecture
 
 This document defines the end-state architecture for the AI Development Platform.
 
-The platform provides reproducible AI-powered software development environments using Microsandbox microVMs, centralized model access, context optimization, secure secret brokering, and host-backed project persistence.
+The platform provides reproducible AI-powered software development environments using Microsandbox microVMs, centralized model access, context optimization, off-disk provider credentials (held in the LiteLLM gateway), and host-backed project persistence.
 
 This document describes the final architecture regardless of implementation phase.
 
@@ -84,10 +84,11 @@ Workspace recreation must never destroy project data.
 Secrets must never be:
 
 * committed to repositories
-* stored in plaintext
+* stored in plaintext on platform disk
 * distributed through environment files
 
-Runtime injection is mandatory.
+Provider keys live only in the LiteLLM gateway (keys-in-LiteLLM, §17); the
+workspace agent holds only a scoped LiteLLM virtual key.
 
 ---
 
@@ -118,10 +119,10 @@ Host Layer
  ├─ Microsandbox microVM runtime (libkrun)         ← workspaces
  │   └─ Sandbox Layer (workspace microVM)
  │       ├─ AI Tooling Layer (OpenCode + Pi by default; Claude Code / Codex / Gemini CLI optional — selected per env)
- │       └─ Context Optimization (Headroom proxy + Caveman skill — per project, §8–10)
+ │       └─ Context Optimization (Caveman skill — per project, §8–10; Headroom now host-side)
  │
- └─ Container Runtime (Docker / Podman)            ← service tier
-     └─ container-tier services (LiteLLM · Ollama)
+ └─ Container Runtime (Docker / Podman)            ← service tier (network aip-net)
+     └─ container-tier services (Headroom · LiteLLM (+ Postgres) · Presidio (analyzer + anonymizer) · Ollama)
 ```
 
 Workspaces are **microVMs** (hardware isolation), not containers. The
@@ -131,17 +132,22 @@ workspaces.
 Host services (run on the host, not inside a workspace):
 
 ```text
-LiteLLM (Model Layer) · Ollama              — container tier (Docker/Podman)
-ClawPatrol (Secrets Layer)                  — native (OS service)
-Microsandbox                                — microVM runtime, driven by the `ai` CLI via the Go SDK / `msb` (no daemon)
+Headroom · LiteLLM (Model Layer) · Presidio · Ollama   — container tier (Docker/Podman, network aip-net)
+Microsandbox                                            — microVM runtime, driven by the `ai` CLI via the Go SDK / `msb` (no daemon)
 ```
 
-Headroom is **not** a host service — it runs per project inside the workspace
-(§8–10), so it is listed under the Sandbox Layer above, not here.
+The entire host service tier is containers on `aip-net`: Ollama, Presidio
+(analyzer + anonymizer), LiteLLM (+ Postgres), and Headroom. There is no native
+host service.
 
-(The model-request path below involves the LiteLLM/ClawPatrol subset; Ollama is a
-container-tier service too — see §5. Microsandbox is not a long-running service:
-it is invoked directly to create and drive workspace microVMs.)
+Headroom is now a **shared host container** (`aip-headroom`, §10), the input
+compression proxy that agents send to and that forwards to LiteLLM — it is no
+longer installed inside the workspace image.
+
+(The model-request path below involves the Headroom/LiteLLM/Presidio subset;
+Ollama is a container-tier service too — see §5. Microsandbox is not a
+long-running service: it is invoked directly to create and drive workspace
+microVMs.)
 
 The Project Layer is the top-level, user-facing artifact: host-stored source
 under `~/projects/<project>` mounted into the workspace.
@@ -149,20 +155,28 @@ under `~/projects/<project>` mounted into the workspace.
 ## 4.2 Model-Request Path (how a call flows)
 
 ```text
-Agent (AI Tooling)
- ↓  Headroom compresses input · Caveman steers output   (Context Optimization)
-LiteLLM (Model Layer)
- ↓  ClawPatrol injects credentials on the wire           (Secrets Layer)
-Provider
+Agent (AI Tooling, in workspace)
+ ╎  microVM boundary → AI_PLATFORM_HOST
+Headroom (host :8787)                                    (input compression)
+ ↓  forwards to LiteLLM
+LiteLLM (Model Layer, host :4000)
+ ↓  always-on Presidio pre_call guardrail (mask PII out of the prompt)
+ ↓  route to provider (Ollama or cloud); real provider key from LiteLLM's store
+ ↓  always-on Presidio post_call guardrail (mask PII out of the response)
+Provider · Caveman steers output                         (Context Optimization)
 ```
 
-Context Optimization sits *between* the agent and the model (not above the AI
-Tooling), and the Secrets Layer sits on the wire *between* the model and the
-provider. Headroom runs **inside the workspace** wrapping the agent, so it
-compresses at the source; it then forwards to LiteLLM on the host across the
-microVM boundary via `AI_PLATFORM_HOST`, and the LiteLLM → ClawPatrol → provider
-hops are host-side. See Sections 8–9 (context optimization), 17 (secrets), and
-**29 (the full per-component networking model)** for detail.
+Context Optimization sits *between* the agent and the model (Caveman steers the
+agent's output; Headroom compresses the input). Headroom is now a **shared host
+container** (`aip-headroom`, §10): the agent sends to it across the microVM
+boundary via `AI_PLATFORM_HOST`, and it forwards to LiteLLM. LiteLLM runs an
+always-on Presidio PII guardrail on every request (pre_call and post_call, §15),
+so even cloud calls are guarded — they do not bypass PII protection. The real
+provider API keys live **in the LiteLLM gateway** (§17), never in the workspace;
+the workspace agent holds only a scoped LiteLLM virtual key. The
+LiteLLM → provider hops are host-side. See Sections 8–9 (context optimization),
+15 (LiteLLM + guardrails), 17 (keys-in-LiteLLM), and **29 (the full
+per-component networking model + Microsandbox egress policy)** for detail.
 
 ---
 
@@ -179,8 +193,9 @@ Responsibilities:
 
 * Project storage
 * Shared AI resources
+* Headroom deployment (shared input-compression proxy)
 * LiteLLM deployment
-* ClawPatrol deployment
+* Presidio deployment (PII analyzer + anonymizer, backing LiteLLM's guardrail)
 * Ollama deployment (required local model backend)
 * OS Dockerfile templates
 * Platform state
@@ -261,11 +276,15 @@ project.
 
 ## Host Services Control Plane
 
-The platform's host services — LiteLLM, ClawPatrol, and Ollama (required) — plus
-the Microsandbox microVM runtime are installed, configured, and supervised by the
+The platform's host services — Headroom, LiteLLM (+ its Postgres), Presidio
+(analyzer + anonymizer), and Ollama (required) — plus the
+Microsandbox microVM runtime are installed, configured, and supervised by the
 `ai` CLI. The CLI is the **single control plane**: the user never invokes
-`docker compose`, `msb`, `launchctl`, or `systemctl` directly. (Headroom is not a
-host service — it is installed per project in the workspace image, §8–10.)
+`docker compose`, `msb`, `launchctl`, or `systemctl` directly. The whole service
+tier is containers: they share a private docker network (`aip-net`) and are
+reconciled in order: network → Ollama → Presidio → LiteLLM (+ DB) → Headroom.
+(Headroom is now a shared host container, no longer installed in the workspace
+image, §10.)
 
 ### One Tool, Uniform Lifecycle
 
@@ -284,16 +303,16 @@ ai logs --service <svc>      one log surface
 
 | Service | Run mode | Why |
 |---|---|---|
-| LiteLLM | container (via Runtime) | HTTP only; no host privileges |
-| Ollama (required) | container (via Runtime) on all platforms | local model backend LiteLLM routes to; CPU-only on macOS (Docker has no GPU passthrough) |
-| ClawPatrol | native (OS service) | terminates the workspace WireGuard tunnel (in user space) + injects credentials on the wire (§17, §29) |
+| Headroom | container (via Runtime) `aip-headroom` | shared input-compression proxy in front of LiteLLM; HTTP only (§10) |
+| LiteLLM | container (via Runtime) `aip-litellm` (+ `aip-litellm-db` Postgres) | HTTP only; no host privileges |
+| Presidio | two containers (via Runtime) `aip-presidio-analyzer` + `aip-presidio-anonymizer` | back LiteLLM's always-on PII guardrail; internal-only, not published (§15) |
+| Ollama (required) | container (via Runtime) `aip-ollama` on all platforms | local model backend LiteLLM routes to; CPU-only on macOS (Docker has no GPU passthrough) |
 | Microsandbox | microVM runtime, invoked on demand | drives workspace microVMs via the Go SDK / `msb`; no daemon to supervise (§7) |
 
 **docker compose is not used.** Container-tier services are managed directly
 through the runtime abstraction (§6), so docker and podman remain
-interchangeable and there is no second orchestration mechanism. The native
-service (ClawPatrol) is registered with the OS service manager (launchd on
-macOS, systemd on Linux) so it restarts on boot without user action.
+interchangeable and there is no second orchestration mechanism. The whole
+service tier runs as containers — there is no native OS service to register.
 Microsandbox is **not** a long-running service — the `ai` CLI invokes it
 directly (Go SDK / `msb`) to create, start, stop, and destroy workspace
 microVMs; `ai setup` only verifies the runtime is installed and the host
@@ -313,19 +332,25 @@ service configs live under `config/<service>/`.
   downloaded as pinned, checksum-verified release artifacts into
   `tools/<name>/<version>/`
 * **configure**: rendered from platform config — LiteLLM routing/aliases (§14–15)
-  referencing **placeholder** credentials only; ClawPatrol gateway (HCL) holds
-  the real credentials in its own SQLite; Microsandbox driven non-interactively
-  per workspace (image, mounts/volumes, resource limits) via the Go SDK / `msb`;
-  Ollama registered as a LiteLLM provider (required local backend)
+  reference the provider keys via `os.environ/<VAR>`, so the **real provider
+  credentials live in the LiteLLM gateway** — supplied as env passthrough at
+  launch and/or held in its Postgres-backed store (§17) — never on platform disk;
+  Microsandbox driven non-interactively per workspace (image, mounts/volumes,
+  resource limits) via the Go SDK / `msb`; Ollama registered as a LiteLLM
+  provider (required local backend)
 * **startup ordering**: container runtime + Microsandbox runtime verified →
-  ClawPatrol (credentials loaded) → LiteLLM (references placeholders) →
-  [Ollama] → verify (workspace microVMs are created on demand, not at setup)
+  container tier reconciled in order
+  `aip-net` network → Ollama → Presidio (analyzer + anonymizer) →
+  LiteLLM (+ Postgres) → Headroom → verify
+  (workspace microVMs are created on demand, not at setup)
 
 ### Secrets Boundary
 
-Real secrets live **only** in ClawPatrol's store. Every other service holds
-placeholders, so no plaintext secret reaches LiteLLM config, the Microsandbox
-workspace, or a backup.
+Real provider keys live **only in the LiteLLM gateway** (env passthrough at
+launch / its Postgres-backed store, §17), never on platform disk and never in the
+workspace. The workspace agent holds only a scoped LiteLLM **virtual key** (the
+gateway key), not provider secrets — so no plaintext provider credential reaches
+the Microsandbox workspace, the rendered config on disk, or a backup.
 
 ---
 
@@ -335,7 +360,9 @@ The platform uses two runtimes for two purposes.
 
 ## 6.1 Container Runtime (service tier)
 
-Used for the stateless container-tier services (LiteLLM and Ollama, both required).
+Used for the container-tier services — Headroom, LiteLLM (+ its Postgres),
+Presidio (analyzer + anonymizer), and Ollama (required) — which share a private
+docker network (`aip-net`).
 
 Supported runtimes (end-state):
 
@@ -490,13 +517,14 @@ host  ~/.ai-platform/agents,skills,   →  workspace  (shared resources) (read-o
 
 ### Ports
 
-Workspace microVMs reach host services (LiteLLM, ClawPatrol) via
-`AI_PLATFORM_HOST` (§29) — never `host.docker.internal`. (Headroom is not a host
-service; it runs inside the workspace and forwards to LiteLLM, §10.) The platform injects
-`AI_PLATFORM_HOST` and the service ports into the workspace environment at
-start. The workspace has a virtual NIC whose default route is a WireGuard tunnel
-to the ClawPatrol gateway, so all external egress is confined to the broker
-(§29.3–29.4). The full per-component path is specified in §29.
+Workspace microVMs reach host services (Headroom, LiteLLM) via
+`AI_PLATFORM_HOST` (§29) — never `host.docker.internal`. The agent sends its model
+calls to the shared host Headroom (`:8787`), which forwards to LiteLLM (§10). The
+platform injects `AI_PLATFORM_HOST` and the service ports into the workspace
+environment at start. The workspace runs under a default-deny Microsandbox
+**NetworkPolicy** (§29.4), so all external egress is confined to the reachable
+set — the model gateway, the trusted host service ports, and any explicitly
+allow-listed host services. The full per-component path is specified in §29.
 
 ### Logs
 
@@ -531,12 +559,14 @@ Purpose:
 
 Components:
 
-* Headroom — compresses input context
-* Caveman — compresses agent output
+* Headroom — compresses input context (now a shared host container, §10)
+* Caveman — compresses agent output (per-project, in-workspace skill, §9)
 
 These bound token usage on both sides of every model request: Headroom
 compresses the *input* sent to the model, and Caveman compresses the *output*
-the agent emits.
+the agent emits. Per-project Headroom tuning still applies — the platform keeps a
+per-project strategy and rides its knobs in the request body so they survive the
+shared host Headroom (§10).
 
 ---
 
@@ -585,21 +615,24 @@ output-side complement to Headroom.
 
 ## Context Optimization Workflow
 
-Headroom and Caveman are the two **per-project, in-workspace** halves of context
-optimization. Headroom is a local interception proxy wrapping the agent; Caveman
-is a generation-steering skill loaded in the agent. Headroom shrinks what goes
-*in*; Caveman shrinks what comes *out*. Both are configured per project (§9) and
-neither is a host service.
+Headroom and Caveman are the two halves of context optimization. **Caveman** is a
+per-project, in-workspace generation-steering skill loaded in the agent.
+**Headroom** is now a **shared host container** (`aip-headroom`, §10) — an
+input-compression proxy in front of LiteLLM — but its tuning is still
+per-project: the platform maps a per-project strategy onto Headroom's request-body
+knobs (§10) so each project's compression behavior survives the shared proxy.
+Headroom shrinks what goes *in*; Caveman shrinks what comes *out*.
 
 ```text
-   workspace microVM                                   │ host
-   ─────────────────                                   │
+   workspace microVM                          │ host
+   ─────────────────                          │
         Caveman skill (loaded in agent → steers terse generation)
-                              │                        │
-                              ▼                        │
-  Agent ── full context ──► Headroom ──compressed──►   │  LiteLLM ──► ClawPatrol ──► Model
-    ▲       (compresses input at the source)           │                │
-    └──────────── compact output (Caveman-steered) ────┼────────────────┘
+                              │               │
+                              ▼               │
+  Agent ── full context ──────┼──► Headroom ──compressed──► LiteLLM ──► Model
+    ▲   (per-project knobs in │   (aip-headroom,           (keys-in-      │
+    │    request body)        │    host :8787)              LiteLLM)      │
+    └──────────── compact output (Caveman-steered) ────────────────────────┘
 ```
 
 ---
@@ -608,14 +641,13 @@ neither is a host service.
 
 Headroom manages context budgets.
 
-Headroom is installed **into the workspace (sandbox) image** (§25) and **wraps the
-agent CLI** — it is not a Docker/host service and is never run as a container. The
-agent CLI is launched through Headroom (`headroom wrap opencode`, or the drop-in
-OpenAI-compatible proxy `headroom proxy` with `OPENAI_BASE_URL=http://localhost:8787`),
-so its model calls are compressed at the source and then forwarded upstream to
-LiteLLM on the host at `AI_PLATFORM_HOST`. It is per project — it reads that
-project's `context.strategy` (§9). (Headroom also offers library and MCP modes;
-wrapping the CLI is the platform default.)
+Headroom now runs as a **shared host container** (`aip-headroom`, image
+`ghcr.io/chopratejas/headroom:slim` — pulled, never built, listening on `:8787`).
+It is the **input-compression proxy in front of LiteLLM**: agents send their
+OpenAI-compatible model calls to Headroom at `:8787` and it forwards them to
+LiteLLM via `OPENAI_TARGET_API_URL=http://aip-litellm:4000`. It is **no longer
+installed inside the workspace image** — the agent in the workspace reaches the
+host Headroom across the microVM boundary via `AI_PLATFORM_HOST` (§29).
 
 The Github repository is found at:
 
@@ -638,20 +670,34 @@ No provider should receive unbounded context.
 
 ---
 
-## Example Configuration
+## Per-Project Strategy
+
+Headroom's compression is content-aware and automatic — it has **no named-strategy
+header**. The only documented per-request controls are two request-**body** fields:
+
+* `keep_turns` — how many recent conversation turns to retain verbatim
+* `output_buffer_tokens` — tokens reserved for the model's output
+
+The platform keeps a per-project strategy (`ai context`; values `conservative` /
+`balanced` / `aggressive`, default `balanced`) and **maps it onto those two
+knobs** (higher = less compression):
+
+| strategy | keep_turns | output_buffer_tokens |
+|---|---|---|
+| conservative | 8 | 12000 |
+| balanced (default) | 5 | 8000 |
+| aggressive | 2 | 4000 |
+
+`balanced` is Headroom's own documented default. These values ride in the agent's
+request body (`extra_body`), baked at workspace start, so per-project tuning
+survives the shared host Headroom container. (Go: `internal/contextopt.HeadroomParams`.)
 
 ```yaml
 context:
   max_tokens: 64000
   compression_threshold: 0.75
-  strategy: balanced
+  strategy: balanced       # conservative | balanced | aggressive
 ```
-
-Supported strategies:
-
-* conservative
-* balanced
-* aggressive
 
 ---
 
@@ -692,12 +738,12 @@ the project rather than a fixed, baked-in surface. The **default agent** — whi
 CLI new agents use unless told otherwise — is recorded as `agent.default_tool`
 (repo-layout §12.4) and must be one of the installed CLIs (default OpenCode).
 
-Context optimization (§8–10), per project:
+Context optimization (§8–10):
 
-* **Headroom** — input compression, **installed in the workspace (sandbox) image**
-  (like the agent CLIs above); it wraps the agent CLI (`headroom wrap <cli>`) and
-  forwards upstream to LiteLLM. Never a Docker/host service. Reads the project's
-  `context.strategy`.
+* **Headroom** — input compression, now a **shared host container**
+  (`aip-headroom`, §10), **not** baked into the workspace image. The agent sends
+  its model calls to host Headroom (via `AI_PLATFORM_HOST`), which forwards to
+  LiteLLM. Per-project tuning rides in the request body (§10).
 * **Caveman** — output compression, **not** baked into the image: seeded per
   project into `<project>/.ai-platform/skills/caveman/` at creation and
   **git-tracked** (an agent skill, see §9), so it travels with the project.
@@ -741,16 +787,19 @@ agent:
 
 # 14. Model Layer
 
-All model access flows through LiteLLM. On the full path, the in-workspace
-Headroom proxy compresses the request before it leaves the workspace for LiteLLM,
-and ClawPatrol injects credentials on the wire between LiteLLM and the provider.
+All model access flows through LiteLLM. On the full path, the agent sends to the
+shared host Headroom proxy (input compression), which forwards to LiteLLM;
+LiteLLM applies an always-on Presidio PII guardrail (§15) and attaches the real
+provider key — held **in the LiteLLM gateway** (§17) — to the upstream request.
 
 ```text
 Agent
- ↓  (in-workspace Headroom compresses input)
  ╎  microVM boundary → AI_PLATFORM_HOST
+Headroom (host :8787, input compression)
+ ↓
 LiteLLM
- ↓  (ClawPatrol injects credentials on the wire)
+ ↓  (always-on Presidio pre_call/post_call PII guardrail, §15)
+ ↓  (real provider key from LiteLLM's own store; agent holds only a virtual key)
 Provider
 ```
 
@@ -777,12 +826,12 @@ failover.
 **Available models are configured once, globally, in LiteLLM's `model_list`** —
 there is **no per-project model configuration**. In an agentic workflow the agent
 simply names the model on each request (`model: <alias>`); if that alias is in
-the `model_list`, LiteLLM routes it to the provider (injecting credentials for
-cloud, none for Ollama). So "using several models, one per task" needs no
+the `model_list`, LiteLLM routes it to the provider (attaching its own stored key
+for cloud, none for Ollama). So "using several models, one per task" needs no
 platform routing logic — register the desired models in the catalog and the
 agent picks among them. A model is usable when it is (a) in the `model_list` and
 (b) actually available: an Ollama model must be **pulled** locally; a cloud model
-needs its key in ClawPatrol.
+needs its key present in the LiteLLM gateway (§17).
 
 The **default model provider is Ollama** (the required local backend, no
 credential): an unqualified request routes locally. Cloud providers are
@@ -802,19 +851,55 @@ Runs on the host as a **thin shared gateway**.
 Purpose:
 
 * unified provider endpoint for all tools (and Ollama)
-* single egress point for ClawPatrol credential injection
+* single point that holds the real provider keys (keys-in-LiteLLM, §17)
 * model aliasing
 * failover
 * monitoring
 
 It does not make model-selection decisions on the agent's behalf.
 
+LiteLLM runs as container `aip-litellm` (image `ghcr.io/berriai/litellm:main-latest`,
+`:4000`) on the `aip-net` network. Its DB-backed admin UI / virtual keys require
+PostgreSQL: container `aip-litellm-db` (image `postgres:18.4-alpine3.24`, data
+volume mounted at `/var/lib/postgresql`, `trust` auth on the private network,
+host port bound at `127.0.0.1:5442`). This Postgres is the one stateful piece of
+the service tier.
+
 **Admin UI auth.** The proxy ships an admin UI at `:4000/ui`. The platform
 secures it by passing `UI_USERNAME` (`admin`), `UI_PASSWORD`, and
 `LITELLM_MASTER_KEY` into the container **via the environment** — never inlined
 in the launch argv, the rendered config, or platform disk. `ai setup` can prompt
 for the password and generate the master key (shown once); persistence is via
-exported env now, ClawPatrol injection in the end-state.
+exported env. The container also
+carries `DATABASE_URL` (inline; it carries no secret) and the Presidio endpoints
+`PRESIDIO_ANALYZER_API_BASE=http://aip-presidio-analyzer:3000` /
+`PRESIDIO_ANONYMIZER_API_BASE=http://aip-presidio-anonymizer:3000`.
+
+---
+
+## Guardrails (always-on PII protection)
+
+The rendered LiteLLM config carries a top-level `guardrails:` block with two
+Presidio-backed entries, **both `default_on: true`** so **no request can opt
+out**. Presidio runs as two internal-only host containers (not published to the
+host) — `aip-presidio-analyzer` and `aip-presidio-anonymizer`, both listening on
+`:3000` internally — which LiteLLM reaches via the `PRESIDIO_*_API_BASE` env
+above. Because **every route — including cloud providers — traverses the LiteLLM
+proxy**, cloud calls are guarded too; they do **not** bypass PII protection.
+
+* **`presidio-pii-input`** — `guardrail: presidio`, `mode: pre_call`,
+  `presidio_filter_scope: input` — masks PII out of the prompt before the model
+  sees it.
+* **`presidio-pii-output`** — `guardrail: presidio`, `mode: post_call`,
+  `presidio_filter_scope: output` — masks PII out of the response.
+
+```yaml
+guardrails:
+  - guardrail_name: presidio-pii-input
+    litellm_params: { guardrail: presidio, mode: pre_call,  presidio_filter_scope: input,  default_on: true }
+  - guardrail_name: presidio-pii-output
+    litellm_params: { guardrail: presidio, mode: post_call, presidio_filter_scope: output, default_on: true }
+```
 
 ---
 
@@ -824,8 +909,9 @@ The catalogue exposes a **full per-provider model list via wildcards**, so the
 agent can name *any* model from Ollama, OpenAI, Anthropic, or Google Gemini —
 LiteLLM routes it on demand without each model being enumerated. Registering a
 model does **not** install it: an Ollama model must still be `ollama pull`ed, and
-a cloud model still needs its key (injected by ClawPatrol). A few named handles
-point at the recommended model per provider; `gemma4` (local) is the default.
+a cloud model still needs its key present in the LiteLLM gateway (§17). A few
+named handles point at the recommended model per provider; `gemma4` (local) is
+the default.
 
 ```yaml
 model_list:
@@ -853,130 +939,79 @@ Rules:
 
 * **required**, always provisioned (not optional)
 * never installed in workspaces
-* runs as a **container-tier service** (Docker/Podman, via the runtime
-  abstraction, §6.1) on all platforms — never a native host install
+* runs as a **container-tier service** (`aip-ollama`, image `ollama/ollama:latest`,
+  publishes `:11434`, models persist in volume `aip-ollama-data`) on the `aip-net`
+  network on all platforms — never a native host install. It **replaces any native
+  Ollama**: the native instance on `:11434` must be stopped first. LiteLLM reaches
+  it by container name — `ollama/*` models carry `api_base=http://aip-ollama:11434`.
 * on macOS the container is **CPU-only** (Docker has no GPU passthrough); use
   remote deployment for GPU-accelerated inference
 * remote deployment supported
 
-All access occurs through LiteLLM, and LiteLLM's calls to Ollama — like its calls
-to cloud providers — pass through the ClawPatrol firewall (policy + audit; no
-credential needed for local), §17/§29.
+All access occurs through LiteLLM; LiteLLM routes local model calls to Ollama by
+container name (no credential needed for local) and applies the always-on
+Presidio guardrail (§15) on these requests as on any other. Workspace egress to
+all of this is governed by the Microsandbox NetworkPolicy (§29.4).
 
 ---
 
 # 17. Secrets Layer
 
-The only supported secret system is ClawPatrol.
+Provider credentials live **in the LiteLLM gateway** — never on platform disk and
+never in the workspace. This is the **keys-in-LiteLLM** model:
 
-The GitHub repository for ClawPatrol is found at:
+* the real provider API keys (OpenAI, Anthropic, Gemini, Groq, …) are supplied to
+  LiteLLM as **environment passthrough at launch** and/or held in its
+  **Postgres-backed store** (the same DB that backs the admin UI and virtual
+  keys, §15);
+* the rendered LiteLLM config references them only as `os.environ/<VAR>` (§15),
+  so no plaintext key is written into the config or anywhere on platform disk;
+* when LiteLLM routes a request to a cloud provider, it attaches the real key
+  from its own store on the upstream call — the agent never sees it.
 
-[https://github.com/denoland/clawpatrol](https://github.com/denoland/clawpatrol)
+The two security concerns that used to be one component's job are now split
+across mechanisms that already exist on the path:
 
-and the documentation is found at:
-
-[https://clawpatrol.dev/docs/introduction/](https://clawpatrol.dev/docs/introduction/)
-
-ClawPatrol is the platform's **agent firewall** — not just a credential store.
-It provides the full feature set from its docs, applied to **all** agent traffic
-(local model calls to Ollama *and* cloud calls to providers, plus git / MCP /
-web):
-
-* **intercepts all traffic** at the wire (TLS interception, §below) — nothing
-  leaves the workspace without passing through it;
-* **evaluates every action against custom rules** (its HCL policy) — allow /
-  deny / require-approval per endpoint, with human-in-the-loop when a rule asks
-  for it;
-* **safeguards and manages credentials** — real secrets live only in ClawPatrol;
-  the agent holds placeholders and the gateway swaps in the real value on the
-  wire (below);
-* **logs everything** — an append-only audit of every request/action.
-
-Because it is the single egress chokepoint, the same gateway enforces policy,
-brokers credentials, and audits — for both local and cloud model traffic.
+* **off-disk credentials** — keys-in-LiteLLM (this section);
+* **egress enforcement** — the Microsandbox **NetworkPolicy** (default-deny),
+  configured by `ai network` (§29.4, §29.6); there is **no egress proxy**;
+* **PII / audit** — LiteLLM's always-on Presidio guardrails (§15), which run on
+  every request and every route.
 
 ---
 
-## How Secrets Are Injected
+## The workspace holds only a virtual key
 
-ClawPatrol injects credentials **at the wire level**, not into the workspace:
-
-* the agent process holds only a placeholder value
-  (e.g. `GITHUB_TOKEN=ghp_clawpatrol_placeholder_do_not_use`)
-* the ClawPatrol gateway substitutes the real credential into the request
-  in transit
-* the agent never sees, stores, or can exfiltrate the real secret
+The in-workspace agent never holds a provider secret. It is given a scoped
+**LiteLLM virtual key** (the gateway key) and sends all model calls to the
+gateway path (host Headroom → LiteLLM, §29). LiteLLM authenticates the virtual
+key, then uses the *real* provider key from its own store to reach the upstream
+provider:
 
 ```text
-Agent in workspace microVM (placeholder)
- ↓  WireGuard tunnel (the microVM is a WireGuard peer of the gateway)
-ClawPatrol Gateway (swaps in real credential, enforces policy)
+Agent in workspace microVM  (holds only the LiteLLM virtual key)
+ ↓  AI_PLATFORM_HOST → Headroom (:8787) → LiteLLM (:4000)
+LiteLLM  (authenticates the virtual key; attaches the real provider key)
  ↓
-Provider / git / MCP / web
+Provider (cloud) / Ollama (local, no key)
 ```
 
-The gateway is a single Go binary that holds policy, credentials, and audit
-logs in local SQLite. The workspace microVM connects to it **over WireGuard**:
-because the microVM has its own network boundary (§29), the gateway intercepts
-at the tunnel — it does not rely on sharing the agent's network namespace. The
-gateway is reachable from the workspace at `AI_PLATFORM_HOST` (§29.2).
-
----
-
-## TLS Interception and the Trust Anchor
-
-To inject a credential into an **HTTPS** request, the gateway must read and
-rewrite the request, so it **terminates TLS** at the gateway: it presents a
-certificate signed by a **ClawPatrol local CA**, inspects and injects, then
-re-originates TLS to the real destination with that destination's genuine
-certificate. For the in-workspace agent to trust the gateway rather than see a
-certificate error, the **ClawPatrol CA root must be installed in the workspace's
-trust store**.
-
-This is a mandatory bootstrap step the platform performs — it is not optional and
-HTTPS credential injection does not work without it:
-
-* the CA root is generated/held by ClawPatrol; the platform **never** ships a
-  shared or pre-baked CA
-* **every client whose traffic the gateway brokers must trust the CA.** That is
-  two places: (1) the **workspace** — installed at workspace start into the
-  system trust store and the common per-tool stores agents use (e.g.
-  `NODE_EXTRA_CA_CERTS`, `SSL_CERT_FILE`/`REQUESTS_CA_BUNDLE`, `GIT_SSL_CAINFO`),
-  via injected environment and/or the trust-store path, **not** baked into the
-  OCI image so rotating the CA needs no rebuild; and (2) **host-side LiteLLM**,
-  whose egress to providers is brokered by the gateway, configured at `ai setup`
-* the CA root is a **public** trust anchor, not a secret: it contains no
-  credential material, so installing it does not violate the secrets boundary
-  (§5). The corresponding CA **private key** stays only in ClawPatrol's store,
-  never in the workspace
-
-### Threat-model note
-
-A workspace-scoped interception CA means the gateway can read the plaintext of
-every TLS request the agent makes. This is **by design** — it is exactly how
-credential injection and request policy work — but it widens trust in the
-gateway, so:
-
-* the CA is **per-install and per-workspace-scoped**, generated locally; a
-  compromise of one host's CA does not affect any other install
-* the CA is trusted **only inside the workspace**, never added to the host's
-  trust store
-* the gateway still logs only that an injection occurred, never plaintext bodies
-  or secret values (§31)
-* `ai doctor` verifies the workspace trusts the current ClawPatrol CA and flags
-  drift after a CA rotation
+Because the real key lives only in the gateway, a compromise of the workspace
+cannot exfiltrate a provider secret — at worst it can spend against the scoped
+virtual key, which the gateway can revoke or rate-limit independently.
 
 ---
 
 ## Credential Bootstrap
 
-The user imports credentials into ClawPatrol; the platform never writes secrets
-to disk itself. The entry points are the `ai secrets` commands
-(`04-cli-specification.md` §16.1):
+The user manages the LiteLLM-side credentials through the `ai secrets` commands
+(`04-cli-specification.md` §16.1); the platform never writes the values to its own
+disk:
 
-* `ai secrets set <name> --stdin` stores a credential in ClawPatrol's SQLite
-* `ai secrets map <name> --env <ENV_VAR>` binds it to the workspace placeholder
-  the gateway swaps on the wire
+* `ai secrets set <name> --stdin` records a provider credential for the LiteLLM
+  gateway (env passthrough at launch / its Postgres-backed store)
+* `ai secrets list` shows names and metadata only, never values
+* `ai secrets rm <name>` removes a stored credential
 
 `ai setup` determines which provider credentials the configured routing
 needs (§14). A missing credential is **not** a setup hard-fail: interactively
@@ -985,41 +1020,6 @@ whose credential is absent is reported by `ai doctor`, and the actual model call
 fails (exit `5`) only when that credential is genuinely needed at request time.
 The platform never fabricates or defaults a secret.
 
-## OS Permissions Required by ClawPatrol
-
-The gateway terminates the workspace **WireGuard** tunnel (§29.3) in **user
-space** (§29.1) and brokers egress. By design this avoids a privileged host
-network interface — the default termination is a userspace WireGuard endpoint on
-a loopback UDP port (no `utun`, no NetworkExtension, no admin networking prompt):
-
-* **macOS**: none beyond the hypervisor entitlement that Microsandbox already
-  needs — the userspace WG endpoint is an ordinary UDP listener
-* **Linux**: none beyond the userspace WG UDP listener (no `CAP_NET_ADMIN`)
-
-(The legacy alternative — a kernel `utun`/NetworkExtension WireGuard interface —
-is **not** used, precisely so the tunnel does not contend with the hypervisor for
-privileged host facilities; see plan §8.2. A userspace-WG sidecar in front of
-ClawPatrol preserves this if the gateway cannot terminate WG in user space
-itself.) Because the workspace is a microVM that routes all external egress
-through the tunnel (§29.4), the gateway intercepts at the tunnel rather than by
-sharing the agent's network namespace. If a required facility is unavailable,
-`setup` / `doctor` fail the ClawPatrol check with exit `5` and actionable
-guidance (no silent degraded mode).
-
-In the **initial slice** the gateway runs as a forward proxy instead of a WG
-terminator (§29.5), which needs even less — a single listening port — so these
-permissions are an end-state ceiling, not an S1 prerequisite.
-
-## Platform-Specific Service Setup
-
-The gateway is registered as a managed native service so it survives reboot:
-
-* **macOS**: launchd user agent
-* **Linux**: systemd unit (user, or system where required for netns)
-
-These are written and loaded by `ai setup`; the user does not author
-them (see §5, Host Services Control Plane).
-
 ---
 
 ## Requirements
@@ -1027,36 +1027,42 @@ them (see §5, Host Services Control Plane).
 No:
 
 * .env files
-* plaintext secrets
+* plaintext secrets on platform disk
 * repository secrets
 
-All credentials are brokered by ClawPatrol and substituted at runtime. Real
-secret values never reach the workspace filesystem or environment.
+Real provider keys never reach the workspace filesystem or environment — they
+live only in the LiteLLM gateway, and the workspace holds only the scoped virtual
+key.
 
 ---
 
-## Security Firewall Role
+## Egress and audit (cross-references)
 
-Because ClawPatrol sits on the wire, it also enforces:
+The wire-level controls that used to be bundled with the secret store are now
+their own mechanisms:
 
-* allow / deny rules on outbound requests (HCL + CEL)
-* human-in-the-loop approval for risky actions
-* full audit logging (secret values never logged)
+* **egress enforcement** is the Microsandbox NetworkPolicy (default-deny) applied
+  per workspace and declared via `ai network` — allow / deny per host service +
+  published ports (§29.4, §29.6). Live enforcement at workspace start remains a
+  deferred hardware-bring-up seam.
+* **PII masking and audit** are LiteLLM's always-on Presidio guardrails (§15):
+  because both guardrails are `default_on: true` and **every** route — cloud
+  included — traverses the LiteLLM proxy, nothing bypasses PII masking. The
+  platform audit log (§31) records that a model-configuration or secret-access
+  event occurred, never the value.
 
 ---
 
 ## Supported Secret Types
 
-* API keys
-* OAuth credentials
-* model credentials
-* MCP server credentials
+* provider API keys (OpenAI, Anthropic, Gemini, Groq, …)
+* the LiteLLM master key and admin-UI password (§15)
+* LiteLLM virtual keys issued to workspaces
 
-ClawPatrol brokers **any** credential used on an outbound request from the
-workspace — including credentials needed by MCP servers the agent spawns. The
-platform does not manage MCP connections (the agent does), but it still secures
-the secrets those connections use, via the same wire-level placeholder
-injection.
+Credentials a tool inside the workspace needs that are **not** model-provider keys
+(e.g. a git token or an MCP server's credential) are the user's / agent's own
+concern — the platform manages only the model-path credentials described here,
+and confines all other workspace egress with the NetworkPolicy (§29.4).
 
 ---
 
@@ -1365,34 +1371,30 @@ Purpose:
 A workspace is a **microVM**, not a container, so it has its own network
 boundary. There is no shared Docker network and no `host.docker.internal`.
 
-## 29.1 Transport — virtual NIC + WireGuard (both planes in user space)
+## 29.1 Transport — virtual NIC + Microsandbox NetworkPolicy (user space)
 
 The workspace microVM is given a **virtual network interface** (Microsandbox
-virtio-net), and a **WireGuard** tunnel is brought up inside it to the ClawPatrol
-gateway. The microVM's **default route is the WireGuard tunnel**, so every
-external connection — regardless of the tool that makes it — is carried to the
-gateway at layer 3. There is no shared Docker network and the microVM never
-touches the host Docker socket (§30). (This is the single egress transport;
-libkrun's no-NIC "transparent socket" mode is **not** used, because it cannot
-give ClawPatrol a transparent L3 capture point.)
+virtio-net) behind the host-side userspace network stack (gvproxy). Egress is
+governed by a default-deny Microsandbox **NetworkPolicy** (§29.4): only the model
+gateway, the trusted host service ports, and explicitly allow-listed host
+services are reachable; everything else is denied at the runtime. There is no
+shared Docker network and the microVM never touches the host Docker socket (§30).
+There is **no egress proxy** — confinement is enforced by the NetworkPolicy, not
+a forward proxy on the wire.
 
 To avoid stacking privileged host facilities, **every plane stays in user
-space** — the hypervisor and the tunnel never contend for the same host
+space** — the hypervisor and the network stack never contend for the same host
 resource:
 
 | Plane | Where it runs | Host privilege |
 |---|---|---|
 | libkrun microVM (HVF on Apple Silicon / KVM on Linux) | host, user space | hypervisor entitlement only (Apple Silicon), baked into code signing |
 | Workspace egress NIC | **gvproxy** (userspace; macOS has no host TAP) | none |
-| WireGuard **guest** end (`wg0`, default route) | inside the Linux microVM | none — it is the guest kernel |
-| WireGuard **host** end (ClawPatrol) | **userspace WireGuard** (e.g. boringtun) on a loopback UDP port reached via gvproxy | none — a UDP listener, no `utun`/NetworkExtension |
+| Egress enforcement | Microsandbox **NetworkPolicy** (default-deny, applied per workspace via the SDK) | none |
 
-The host side of the tunnel is therefore **not** a kernel `utun` /
-NetworkExtension interface: terminating WireGuard in user space at the gateway is
-what keeps the macOS hypervisor entitlement the *only* special privilege in the
-stack (no kext, no admin networking prompt). If ClawPatrol cannot terminate
-WireGuard in user space directly, a small **userspace-WireGuard sidecar** sits in
-front of it (WG → local plaintext socket → gateway), preserving this property.
+Keeping every plane in user space is what leaves the macOS hypervisor
+entitlement the *only* special privilege in the stack (no kext, no
+NetworkExtension, no admin networking prompt).
 
 ## 29.2 Host address — `AI_PLATFORM_HOST`
 
@@ -1412,98 +1414,97 @@ when set (e.g. the acceptance harness) else the resolved gateway. The same
 mechanism works on macOS (HVF) and Linux (KVM) — only the resolved value
 differs per backend.
 
-The trusted platform host service (LiteLLM) is reached directly at
-`AI_PLATFORM_HOST:<port>` — the in-workspace Headroom proxy forwards to it; all
-other internet egress goes through ClawPatrol (§29.3–29.4). Reaching *other*
-host-local services — a developer's database or message broker — is a separate,
-explicitly allow-listed zone (§29.6).
+The trusted platform host services (Headroom and the LiteLLM it forwards to) are
+reached directly at `AI_PLATFORM_HOST:<port>` — the agent sends its model calls to
+host Headroom (`:8787`), which forwards to LiteLLM (`:4000`); all other egress is
+governed by the Microsandbox NetworkPolicy (§29.4). Reaching *other* host-local
+services — a developer's database or message broker — is a separate, explicitly
+allow-listed zone (§29.6).
 
 ## 29.3 Reaching each component
 
 ```text
-              workspace microVM (virtio-net + wg0)
+              workspace microVM (virtio-net)
        ┌─────────────────────────────┐
-       │ agent ──► Headroom (local)   │   default route = WireGuard
-       └───────────────│─────────────┘   (all other egress, L3)
-        trusted host svc│ (direct, AI_PLATFORM_HOST)        │
-                        ▼                                   ▼
-                   LiteLLM ──► ClawPatrol gateway ──────►  ClawPatrol gateway
-                              (firewalls + audits ALL;       (injects creds,
-                               injects creds for cloud)       enforces policy)
-                              │            │                      ▼
-                              ▼            ▼                 git / MCP / web
-                          Ollama       provider
-                         (local)        (cloud)
+       │ agent                        │   egress = Microsandbox NetworkPolicy
+       └───────────────│─────────────┘   (default-deny; allow-listed set only)
+        trusted host svc│ (direct, AI_PLATFORM_HOST)
+                        ▼
+        Headroom (host :8787) ──► LiteLLM ──► provider (cloud)
+        (input compression)      (Presidio    │   (real key from
+                                  guardrail;   │    LiteLLM's store)
+                                  keys-in-     ▼
+                                  LiteLLM)   Ollama (local)
 ```
 
-* **Model requests** — the in-workspace agent sends the request to its **local
-  Headroom** proxy (input compression, in the workspace), which forwards across
-  the microVM boundary to **LiteLLM** at `AI_PLATFORM_HOST` (routing). LiteLLM's
-  egress — to **both** the local Ollama backend **and** cloud providers — passes
-  through the **ClawPatrol** gateway, which firewalls and audits *all* of it and
-  swaps the placeholder provider key for the real one on cloud calls (§17). These
-  hops are host-side.
+* **Model requests** — the in-workspace agent sends the request across the microVM
+  boundary to the **shared host Headroom** proxy at `AI_PLATFORM_HOST:8787` (input
+  compression), which forwards to **LiteLLM** (routing; always-on Presidio PII
+  guardrail, §15). LiteLLM reaches **both** the local Ollama backend **and** cloud
+  providers, attaching the real provider key from **its own store** on cloud calls
+  (keys-in-LiteLLM, §17). These hops are host-side; the workspace holds only the
+  scoped LiteLLM virtual key.
 * **Ollama** — the required local model backend (§16); never reached directly by
-  the workspace. **LiteLLM** routes local model calls to it, and that traffic
-  **also traverses ClawPatrol** (firewalled and audited like everything else —
-  no credential to inject, but the policy and audit still apply).
-* **All other workspace egress** (git push, MCP servers, arbitrary web) leaves
-  the microVM via the **WireGuard default route to the ClawPatrol gateway**
-  (§17). Because capture is at layer 3, *every* tool is covered — proxy-aware or
-  not. The gateway injects any required credential and applies allow/deny
-  policy; the agent holds only placeholders.
+  the workspace. **LiteLLM** routes local model calls to it (no credential needed)
+  and applies the always-on Presidio guardrail (§15) as on any other request.
+* **All other workspace egress** (git push, MCP servers, arbitrary web) is
+  governed by the Microsandbox **NetworkPolicy** (§29.4): default-deny, with only
+  the explicitly allow-listed host services and the open-internet posture set via
+  `ai network` permitted. There is no egress proxy and no wire-level credential
+  injection; any non-model-path credential a tool needs is the agent's own.
 
-## 29.4 Egress confinement (Microsandbox network policy)
+## 29.4 Egress confinement (Microsandbox NetworkPolicy)
 
-WireGuard provides the default route, but defense-in-depth requires that nothing
-can route *around* it. Each workspace microVM therefore also runs under a
-restricted Microsandbox **network policy**. The reachable set is exactly: (a) the
-ClawPatrol gateway (its WireGuard endpoint, or the forward proxy in the initial
-slice), (b) the trusted platform host service at `AI_PLATFORM_HOST` (LiteLLM —
-reached by the in-workspace Headroom proxy), and (c) any host-local services explicitly allow-listed in
-`network.allow_host_services` (§29.6). Any other direct workspace-to-internet
-connection is denied at the runtime, so a misconfigured tunnel fails closed
-rather than leaking uncredentialed, unaudited traffic (§30).
+Each workspace microVM runs under a restricted Microsandbox **NetworkPolicy**
+(default-deny). The reachable set is exactly: (a) the trusted platform host
+services at `AI_PLATFORM_HOST` (Headroom `:8787`, which forwards to LiteLLM),
+(b) any host-local services explicitly allow-listed in
+`network.allow_host_services` (§29.6), and (c) the open internet only when the
+`network.egress` posture permits it (§29.6). Any other workspace egress is denied
+at the runtime, so the workspace fails closed rather than leaking traffic (§30).
 
-**ClawPatrol is the single egress policy and credential authority — the
-firewall.** Microsandbox's host-side network stack can itself enforce policy and
-swap secrets, but the platform does **not** run it as a competing authority: it
-is configured only to default-deny and to force internet egress to ClawPatrol, so
-exactly one component holds allow/deny rules, credentials, and audit (§17, §30).
-The host-local-services zone (c) is the one exception to credential mediation —
-it is plain TCP that bypasses ClawPatrol's TLS interception (§29.6) — but it is
-still gated by this allow-list.
+**The Microsandbox NetworkPolicy is the single egress authority.** It is
+configured to default-deny and to permit only the declared set, so exactly one
+mechanism holds the allow/deny rules (§29.6, §30). Off-disk provider credentials
+are a separate concern handled by keys-in-LiteLLM (§17); PII masking and audit
+are LiteLLM's always-on Presidio guardrails (§15). The host-local-services zone
+(b) is plain TCP — a service's own credential, if any, is presented at that
+protocol's auth layer by the tool that connects — and remains gated by this
+allow-list (§29.6).
 
-This must work identically across all supported hosts.
+This must work identically across all supported hosts. Live NetworkPolicy
+enforcement at workspace start remains a deferred hardware-bring-up seam (§29.6).
 
 ## 29.5 Delivery phasing
 
-The WireGuard L3 model above is the **end-state** (this document describes the
-final architecture regardless of phase, §1). It is delivered in two steps
-(roadmap §8.5, plan §8.2):
+The default-deny NetworkPolicy model above is the **end-state** (this document
+describes the final architecture regardless of phase, §1). What is delivered
+host-side today is the **declaration** of the policy (`ai network`, §29.6,
+CLI §10a); applying it to a running workspace via the Microsandbox SDK at
+`ai workspace start` is the deferred hardware-bring-up step (roadmap §8.5,
+plan §8.2):
 
-* **Initial slice — ClawPatrol forward proxy.** The same gvproxy NIC and the same
-  default-deny Microsandbox network policy, but egress is mediated by setting
-  `HTTPS_PROXY`/`HTTP_PROXY` in the workspace to the ClawPatrol gateway instead of
-  a WireGuard default route. Identical privilege profile (all userspace; only the
-  hypervisor entitlement is special). Trade-off: only proxy-aware tools are
-  credential-injected; proxy-unaware tools are denied by the network policy (fail
-  closed) rather than transparently captured.
-* **Target — WireGuard default route.** Replaces the proxy with the L3 tunnel so
-  *every* tool is covered transparently. Gated by the userspace-WG-with-ClawPatrol
-  feasibility spike (plan §8.2).
+* **Now (host-side).** `ai network` manages the project's `network` block
+  (egress posture + allow-listed host services + published ports) in
+  `config.yaml`. The egress policy fixture in the acceptance suite renders a known
+  default-deny policy so tests assert against a defined policy, not ambient host
+  behavior.
+* **Hardware bring-up.** `ai workspace start` translates the `network` block into
+  Microsandbox NetworkPolicy allow-list entries, the default-egress mode, and port
+  maps via the SDK, and the runtime enforces them.
 
-Both steps keep the §29.4 confinement guarantee; they differ only in whether
-non-proxy-aware traffic is *injected* or *denied*.
+Both keep the §29.4 confinement guarantee — the difference is only whether the
+policy is declared (now) or also enforced by the runtime (hardware bring-up).
 
-Before either step is wired, a **reachability spike** pins the unknowns this
+Before enforcement is wired, a **reachability spike** pins the unknowns this
 section depends on (the host-gateway value of §29.2 and the SDK calls for policy
 + port maps). It must demonstrate, on a provisioned host, that: (1) a workspace
 reaches an **allow-listed** host service (e.g. Postgres) via the gateway; (2) a
 **non-allow-listed** host/internet destination is **denied**; (3) a **published**
-guest port is reachable from the host; and (4) internet egress is still forced
-through ClawPatrol. These four make the platform's two headline promises — *it
-works* and *it confines egress* — falsifiable. (Tracked in `docs/HARDWARE-BRINGUP.md`.)
+guest port is reachable from the host; and (4) the trusted model gateway path
+(Headroom → LiteLLM) is reachable while all other egress is denied. These four
+make the platform's two headline promises — *it works* and *it confines egress* —
+falsifiable. (Tracked in `docs/HARDWARE-BRINGUP.md`.)
 
 ## 29.6 Host-local services and published ports
 
@@ -1514,10 +1515,10 @@ A workspace is behind the userspace network stack's NAT (§29.1), so the two
 default posture does not expose the host's private network to the guest, so a
 workspace cannot reach a host-resident Postgres / Redis / Kafka unless it is
 **allow-listed by `host:port`**. These connections are made to the gateway
-address (§29.2) and are **plain TCP — they do not traverse ClawPatrol's TLS
-interception**: the wire protocols are not HTTPS and there is no provider key to
-swap (a service's own credential, if brokered, is injected at that protocol's
-auth layer, not by TLS MITM). They remain gated by the allow-list — anything not
+address (§29.2) and are **plain, direct TCP**: the wire protocols are not
+necessarily HTTPS and there is no model-provider key involved (a service's own
+credential, if any, is presented at that protocol's auth layer by the tool that
+connects). They remain gated by the NetworkPolicy allow-list — anything not
 listed is denied (§29.4). This is a distinct trust zone from internet egress.
 
 **Host → workspace (a dev server running in the workspace).** Because the guest
@@ -1538,8 +1539,13 @@ A third knob sets the **default outbound posture** — `network.egress`:
 for a service on the host machine — so the same mechanism covers a host-local
 Postgres, a remote/managed database, a Kafka cluster, or a specific internet API.
 
-All of this is configured in the project `network` block (repo-layout §12.4),
-edited either by hand or via the **`ai network`** commands (CLI §10a):
+All of this is configured entirely via the **`ai network`** commands (CLI §10a) —
+no manual file editing is required, though the project `network` block
+(repo-layout §12.4) can still be edited by hand. `ai network` manages three
+declarations in the project `config.yaml`: the default outbound mode
+(`network.egress`: `deny` (default) / `public` / `unrestricted`), the
+allow-listed host services (`network.allow_host_services`), and the published
+ports (`network.publish_ports`):
 
 ```yaml
 network:
@@ -1553,11 +1559,13 @@ network:
     - { guest: 3000, host: 3000 }
 ```
 
-`ai workspace start` translates this block into Microsandbox network-policy
-allow-list entries, the default-egress mode, and port maps via the SDK (the
-enforcement is deferred to hardware bring-up; the `gateway` token resolves to the
-§29.2 host gateway). App-data connections (DB/Kafka/HTTP) go **direct** under
-this policy — they do not pass through the model gateway.
+`ai network` manages only the **declaration** in `config.yaml`. The actual
+enforcement is the Microsandbox **NetworkPolicy** applied at workspace start
+(`ai workspace start` translates this block into network-policy allow-list
+entries, the default-egress mode, and port maps via the SDK; the `gateway` token
+resolves to the §29.2 host gateway), which **remains a deferred end-state**
+(hardware bring-up). App-data connections (DB/Kafka/HTTP) go **direct** under this
+policy — they do not pass through the model gateway.
 
 ---
 
@@ -1565,8 +1573,9 @@ this policy — they do not pass through the model gateway.
 
 Requirements:
 
-* ClawPatrol only
-* no plaintext secrets
+* **keys-in-LiteLLM** — real provider keys live only in the LiteLLM gateway
+  (§17); the workspace holds only a scoped LiteLLM virtual key
+* no plaintext secrets on platform disk
 * no host Docker socket by default (the service tier runs rootless; workspaces
   use the Microsandbox microVM runtime, which never touches the Docker socket)
 * workspace isolation (hardware-level — each workspace is a microVM, so a
@@ -1574,23 +1583,18 @@ Requirements:
 * project isolation
 * agent isolation
 * **egress confinement** — each workspace runs under a restricted Microsandbox
-  network policy whose only permitted external path is the ClawPatrol gateway
-  (plus the trusted host service ports), so the credential broker cannot be
-  bypassed (§29.4)
-* **least host privilege** — the hypervisor and the egress tunnel both run in
-  user space (§29.1). On Apple Silicon the *only* elevated facility is the macOS
-  hypervisor entitlement (code-signed, no kext); workspace networking
-  (gvproxy + userspace WireGuard) needs no `utun`, NetworkExtension, admin
-  approval, or host Docker socket. ClawPatrol's host network privilege is for the
-  tunnel terminator alone
-* **scoped TLS-interception CA** — ClawPatrol injects into HTTPS by terminating
-  TLS, so a ClawPatrol CA root is installed in the **workspace** trust store
-  (§17, "TLS Interception and the Trust Anchor"). The CA is per-install,
-  per-workspace-scoped, generated locally, and trusted **only inside the
-  workspace** — never added to the host trust store. The CA private key stays in
-  ClawPatrol's store; the workspace holds only the public root (no secret
-  material). This is a deliberate widening of trust in the gateway and is the
-  enabler for wire-level injection
+  **NetworkPolicy** (default-deny) whose only permitted external paths are the
+  trusted model-gateway host services and the explicitly allow-listed host
+  services / egress posture (§29.4), so nothing leaks uncontrolled. Live
+  enforcement at workspace start is a deferred hardware-bring-up seam (§29.5)
+* **always-on PII protection** — LiteLLM's Presidio guardrails are `default_on`
+  on every request and every route (cloud included), so no model traffic bypasses
+  PII masking (§15)
+* **least host privilege** — both the hypervisor and the workspace network stack
+  run in user space (§29.1). On Apple Silicon the *only* elevated facility is the
+  macOS hypervisor entitlement (code-signed, no kext); workspace networking
+  (gvproxy + Microsandbox NetworkPolicy) needs no `utun`, NetworkExtension, admin
+  approval, or host Docker socket
 
 Workspace isolation depends on the host hypervisor (KVM on Linux, HVF on macOS)
 being available; where it is not, the platform must fail the `doctor` check
@@ -1610,12 +1614,13 @@ Events:
 
 * workspace creation
 * workspace deletion
-* secret-access events (that an injection occurred — never the value)
+* secret-access events (that a credential was used — never the value)
 * model configuration changes
 
-Secret values must never be logged. ClawPatrol owns the authoritative
-credential-access log (in its own SQLite); the platform audit log records only
-that a secret-access event occurred, with no secret material.
+Secret values must never be logged. LiteLLM owns the authoritative model-request
+log (spend, virtual-key usage, guardrail actions) in its Postgres-backed store;
+the platform audit log records only that a secret-access or model-configuration
+event occurred, with no secret material.
 
 ---
 
@@ -1626,7 +1631,7 @@ The platform has no backup/restore feature. It isn't needed:
 * **project source** lives in `~/projects/<project>` and is the user's own git
   repo (backed up by pushing to a remote)
 * **platform state** is reconstructable from the filesystem via `ai state repair`
-* **secrets** live in ClawPatrol's own store
+* **provider keys** live in the LiteLLM gateway (§17), not on platform disk
 * **installed programs** persist in the per-workspace **overlay** (§26), which
   survives workspace restart and recreation
 
@@ -1648,7 +1653,7 @@ Monitoring is required for:
 
 * Microsandbox
 * LiteLLM
-* ClawPatrol
+* Presidio
 * Ollama
 * Docker
 * Podman
@@ -1673,8 +1678,9 @@ and immediately receive (for the OS the user selected):
 * host-backed source code
 * hardware-isolated Microsandbox microVM (rootless container runtime for the
   service tier)
-* LiteLLM integration
-* ClawPatrol secrets
+* LiteLLM integration (provider keys held in the gateway, §17)
+* always-on Presidio PII guardrails on every model request (§15)
+* default-deny Microsandbox egress policy (`ai network`, §29.4)
 * Headroom input compression
 * Caveman output compression
 * reproducible, Dockerfile-defined environments

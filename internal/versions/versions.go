@@ -39,7 +39,6 @@ func Default() *File {
 		SchemaVersion: SchemaVersion,
 		Services: map[string]Service{
 			"microsandbox": {Mode: "native", Version: "v0.x", SHA256: "TBD"},
-			"clawpatrol":   {Mode: "native", Version: "v0.x", SHA256: "TBD"},
 			"litellm":      {Mode: "container", Image: "ghcr.io/berriai/litellm", Digest: "sha256:TBD"},
 			// Headroom (input compression) runs as a shared host container in front
 			// of LiteLLM; agents send to it at :8787 (arch §8–10, §15). Per-project
@@ -51,8 +50,8 @@ func Default() *File {
 			"presidio-analyzer":   {Mode: "container", Image: "mcr.microsoft.com/presidio-analyzer", Digest: "sha256:TBD"},
 			"presidio-anonymizer": {Mode: "container", Image: "mcr.microsoft.com/presidio-anonymizer", Digest: "sha256:TBD"},
 			// Ollama is REQUIRED (always on): LiteLLM routes local model traffic to
-			// it (arch §14, §16). Cloud models still go LiteLLM → provider, and
-			// ClawPatrol firewalls + audits both paths (§17).
+			// it (arch §14, §16). Cloud models still go LiteLLM → provider; LiteLLM's
+			// always-on Presidio guardrails audit both paths (§17).
 			"ollama": {Mode: "container", Image: "docker.io/ollama/ollama", Digest: "sha256:TBD"},
 		},
 	}

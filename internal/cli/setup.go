@@ -5,16 +5,12 @@ import (
 	"encoding/hex"
 	"fmt"
 	"os"
-	"os/exec"
-	"path/filepath"
 	goruntime "runtime"
-	"syscall"
 	"time"
 
 	"github.com/charmbracelet/huh"
 	"github.com/charmbracelet/x/term"
 	"github.com/jt-helsinki/ideal-robot/internal/output"
-	"github.com/jt-helsinki/ideal-robot/internal/paths"
 	"github.com/jt-helsinki/ideal-robot/internal/setup"
 	"github.com/spf13/cobra"
 )
@@ -41,10 +37,7 @@ func newSetupCmd(em *output.Emitter, exit *int) *cobra.Command {
 			// Announce them clearly so they aren't mistaken for a hang after the
 			// dependency installers' noisy output.
 			if !em.JSON && term.IsTerminal(os.Stdin.Fd()) {
-				_, _ = fmt.Fprintln(em.Err, "\nSetup needs a couple of credentials — press Enter at a prompt to skip it.")
-				if report.GatewayConfigCreated {
-					promptClawPatrolDashboardPassword(em)
-				}
+				_, _ = fmt.Fprintln(em.Err, "\nSetup needs a credential — press Enter at the prompt to skip it.")
 				promptLiteLLMUIPassword(em)
 			}
 			*exit = em.Success("setup", report, report.Warnings...)
@@ -56,55 +49,6 @@ func newSetupCmd(em *output.Emitter, exit *int) *cobra.Command {
 	cmd.Flags().BoolVar(&upgrade, "upgrade", false,
 		"re-pin service versions to this binary's defaults and re-reconcile")
 	return cmd
-}
-
-// promptClawPatrolDashboardPassword asks for the ClawPatrol dashboard password
-// (hidden input) and applies it via `clawpatrol gateway --set-dashboard-password`.
-// That command upserts the password and then RUNS the gateway server in the
-// foreground, so it is started **detached** (its own session, output to
-// ~/.clawpatrol/gateway.log) — otherwise `ai setup` would block forever. The
-// gateway then keeps running after setup exits; registering it as a managed OS
-// service is the hardware-bring-up end-state. The password is never logged or
-// written to platform disk. Best-effort: a blank entry, a missing clawpatrol
-// binary, or a start failure just prints a hint and continues.
-func promptClawPatrolDashboardPassword(em *output.Emitter) {
-	if _, err := exec.LookPath("clawpatrol"); err != nil {
-		return // can't set it without the binary; doctor already flags this
-	}
-	var password string
-	form := huh.NewForm(huh.NewGroup(
-		huh.NewInput().
-			Title("Set the ClawPatrol dashboard password (leave blank to skip)").
-			EchoMode(huh.EchoModePassword).
-			Value(&password),
-	))
-	if err := form.Run(); err != nil || password == "" {
-		return
-	}
-	dir, err := paths.ClawPatrolDir()
-	if err != nil {
-		return
-	}
-	gatewayConfig := filepath.Join(dir, "gateway.hcl")
-	logPath := filepath.Join(dir, "gateway.log")
-	logFile, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
-	if err != nil {
-		_, _ = fmt.Fprintf(em.Err, "warning: could not open %s: %s\n", logPath, err)
-		return
-	}
-	defer func() { _ = logFile.Close() }()
-
-	// #nosec G204 — fixed argv; the password is a value, not shell-interpolated.
-	command := exec.Command("clawpatrol", "gateway", "--set-dashboard-password", password, gatewayConfig)
-	command.Stdout = logFile
-	command.Stderr = logFile
-	command.SysProcAttr = &syscall.SysProcAttr{Setsid: true} // detach from setup's session
-	if err := command.Start(); err != nil {
-		_, _ = fmt.Fprintf(em.Err, "warning: could not start the ClawPatrol gateway: %s\n", err)
-		return
-	}
-	_ = command.Process.Release() // run in the background; do not wait
-	_, _ = fmt.Fprintf(em.Err, "ClawPatrol dashboard password set; gateway started in the background (log: %s).\n", logPath)
 }
 
 // promptLiteLLMUIPassword secures the LiteLLM admin UI: it asks for a password

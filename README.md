@@ -1,10 +1,16 @@
 # AI Development Platform
 
 Reproducible, isolated AI-powered development environments: workspaces run as
-hardware-isolated [Microsandbox](https://microsandbox.dev) microVMs, with
-centralized model access (LiteLLM), context optimization (Headroom + Caveman),
-and an agent firewall + secret broker (ClawPatrol). One Go binary, `ai`, is the single
-control plane.
+hardware-isolated [Microsandbox](https://microsandbox.dev) microVMs. The model
+path is agent → host Headroom input-compression proxy → LiteLLM (with always-on
+Presidio PII guardrails) → containerized Ollama or a cloud provider — Headroom,
+Ollama, Presidio, and LiteLLM all run as shared host containers, while Caveman is
+the per-project in-workspace output-compression skill. Real provider API keys
+live in the LiteLLM gateway (keys-in-LiteLLM), never on platform disk or in the
+workspace; the agent holds only a scoped LiteLLM virtual key. Workspace egress is
+a default-deny Microsandbox NetworkPolicy configured per-project via `ai network`,
+and PII masking is LiteLLM's always-on Presidio guardrails on every request. One
+Go binary, `ai`, is the single control plane.
 
 The full design lives in [`spec/`](spec/):
 
@@ -22,10 +28,12 @@ The full design lives in [`spec/`](spec/):
 The full control-plane surface (Slices S1–S6) is implemented **host-side**: the
 `ai` CLI, project/workspace lifecycle, context optimization, secrets, models,
 doctor/logs, and host detection all work and are unit-tested. What
-remains is the **live external-tool integration** — launching the LiteLLM
-container, the ClawPatrol gateway + CA, the in-workspace Headroom proxy, and
-booting Microsandbox microVMs — which can only be wired and verified on a
-provisioned Apple Silicon (or Linux/KVM) host. Those seams are tracked in
+remains is the **live external-tool integration** — launching the service-tier
+containers (Ollama, Presidio, LiteLLM + its DB, Headroom), LiteLLM provider-key
+injection + agent virtual-key minting, and booting Microsandbox microVMs
+(including egress enforcement of the `ai network` declarations as a Microsandbox
+NetworkPolicy) — which can only be wired and verified on a provisioned
+Apple Silicon (or Linux/KVM) host. Those seams are tracked in
 [`docs/HARDWARE-BRINGUP.md`](docs/HARDWARE-BRINGUP.md).
 
 In practice: project creation, configuration, context/secrets/state commands,
@@ -85,7 +93,7 @@ applies only in the next shell. Environment overrides: `AIP_INSTALL_DIR`
 export line), `AIP_VERSION`, `AIP_RELEASE_BASE_URL`.
 
 After installing, run `ai doctor` to check the external prerequisites
-(Microsandbox, container runtime, virtualization, ClawPatrol) — each missing one
+(Microsandbox, container runtime, virtualization) — each missing one
 prints a copy-pasteable fix — then `ai setup`.
 
 ### Uninstall
@@ -95,13 +103,13 @@ confirmation** before doing anything:
 
 ```bash
 ai uninstall                 # prompts, then removes the binary, PATH/completion entries, and aip-* containers
-ai uninstall --purge         # also removes ~/.ai-platform and ~/.clawpatrol
-ai uninstall --remove-deps   # also uninstalls msb + clawpatrol without prompting
+ai uninstall --purge         # also removes ~/.ai-platform
+ai uninstall --remove-deps   # also uninstalls msb without prompting
 ai uninstall --yes           # skip the confirmation prompt (for automation)
 ```
 
 `ai uninstall` streams its progress as it runs, **asks per external dependency**
-(`msb`, `clawpatrol`) whether to uninstall it too, writes a transcript to
+(`msb`) whether to uninstall it too, writes a transcript to
 **`~/ai-uninstall.log`**, and exits when finished (the running binary removes
 itself). Use `--dry-run` to print what it would do. It **never touches
 `~/projects`** (your source).
@@ -130,14 +138,15 @@ Apple Silicon:
 |------|------|---------|
 | [Microsandbox](https://microsandbox.dev) (`msb`) | microVM workspaces | `curl -fsSL https://install.microsandbox.dev \| sh` |
 | Docker or Podman (rootless) | service tier | `brew install --cask docker` (or `brew install podman`) |
-| [ClawPatrol](https://clawpatrol.dev) | agent firewall (intercepts/rules/audit) + secret broker | `curl -fsSL https://clawpatrol.dev/install.sh \| sh` |
 
 `ai doctor` reports which are missing, each with its install command; `ai setup`
 lists every unmet prerequisite at once and refuses to proceed until the blocking
-ones are present. (LiteLLM and Ollama are *not* installed by you — `ai setup`
-runs them as containers; Ollama is required and LiteLLM routes local model
-traffic to it. Headroom and Caveman are per-project context optimization that
-live **inside the workspace**, not host services.)
+ones are present. (Ollama, Presidio, LiteLLM (+ its DB), and Headroom are *not*
+installed by you — `ai setup` runs them as host containers on the shared
+`aip-net` network; Ollama is required and LiteLLM routes local model traffic to
+it, with an always-on Presidio PII guardrail on every request and Headroom
+compressing input in front of LiteLLM. Caveman is the per-project
+output-compression skill that lives **inside the workspace**.)
 
 ### 2. Provision the host
 
@@ -196,7 +205,7 @@ ai context strategy aggressive                     # conservative | balanced | a
 ai context caveman  ultra                          # lite | full | ultra | wenyan
 ai context strategy my-app aggressive              # or name a project explicitly
 
-ai secrets set  GITHUB_TOKEN                       # value goes to ClawPatrol, never platform disk
+ai secrets set  GITHUB_TOKEN                       # value goes to the LiteLLM credential store, never platform disk
 ai secrets map  GITHUB_TOKEN --env GITHUB_TOKEN
 ai secrets list                                    # names + metadata only
 
@@ -206,7 +215,6 @@ ai models test  claude-opus-4-8
 ai services status                                 # host service tier
 ai services console                                # list services with an admin console
 ai services console litellm                        # open the LiteLLM UI in the browser
-ai services console clawpatrol                     # open the ClawPatrol firewall dashboard
 ai logs --tail                                     # current project + platform logs
 ai state show                                      # global + project state
 ai state repair                                    # reconstruct run-state handles

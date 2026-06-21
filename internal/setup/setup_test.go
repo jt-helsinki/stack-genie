@@ -10,7 +10,6 @@ import (
 
 	"github.com/jt-helsinki/ideal-robot/internal/jsonfile"
 	"github.com/jt-helsinki/ideal-robot/internal/output"
-	"github.com/jt-helsinki/ideal-robot/internal/paths"
 	"github.com/jt-helsinki/ideal-robot/internal/versions"
 )
 
@@ -53,18 +52,10 @@ func (services *fakeServices) Control(action, service string) ([]ServiceStatus, 
 	return []ServiceStatus{{Name: "litellm", Mode: "container", State: action + "ed"}}, nil
 }
 
-type fakeCA struct{ ensured bool }
-
-func (certificateAuthority *fakeCA) Ensure() error {
-	certificateAuthority.ensured = true
-	return nil
-}
-
 // healthyDeps returns Deps that pass preflight (Apple Silicon, rootless docker,
 // msb installed) with fresh fakes.
-func healthyDeps() (Deps, *fakeServices, *fakeCA) {
+func healthyDeps() (Deps, *fakeServices) {
 	services := &fakeServices{}
-	certificateAuthority := &fakeCA{}
 	return Deps{
 		GOOS: "darwin", GOARCH: "arm64",
 		Prober: fakeProber{
@@ -73,11 +64,7 @@ func healthyDeps() (Deps, *fakeServices, *fakeCA) {
 		},
 		Now:      func() string { return "2026-06-18T00:00:00Z" },
 		Services: services,
-		CA:       certificateAuthority,
-		GatewayConfigFetcher: func() ([]byte, error) {
-			return []byte("gateway {\n  dashboard_listen = \"127.0.0.1:8080\"\n  state_dir        = \"/opt/clawpatrol\"\n}\n"), nil
-		},
-	}, services, certificateAuthority
+	}, services
 }
 
 func exitCodeOf(test *testing.T, err error) int {
@@ -94,7 +81,7 @@ func exitCodeOf(test *testing.T, err error) int {
 func TestRunHappyPath(test *testing.T) {
 	home := test.TempDir()
 	test.Setenv("HOME", home)
-	deps, services, certificateAuthority := healthyDeps()
+	deps, services := healthyDeps()
 
 	report, err := Run(Options{ProviderConfig: "prov.yaml"}, deps)
 	if err != nil {
@@ -103,10 +90,7 @@ func TestRunHappyPath(test *testing.T) {
 	if !services.reconciled || services.provider != "prov.yaml" {
 		test.Fatalf("services not reconciled with provider config: %+v", services)
 	}
-	if !certificateAuthority.ensured {
-		test.Fatal("CA.Ensure was not called")
-	}
-	if !report.ConfigCreated || !report.VersionsCreated || !report.CAReady {
+	if !report.ConfigCreated || !report.VersionsCreated {
 		test.Fatalf("report flags: %+v", report)
 	}
 	for _, path := range []string{
@@ -123,7 +107,7 @@ func TestRunHappyPath(test *testing.T) {
 
 func TestRunPreflightListsAllMissingPrerequisites(test *testing.T) {
 	test.Setenv("HOME", test.TempDir())
-	deps, _, _ := healthyDeps()
+	deps, _ := healthyDeps()
 	deps.GOOS, deps.GOARCH = "linux", "amd64"
 	deps.Prober = fakeProber{} // nothing installed, no /dev/kvm
 
@@ -141,7 +125,6 @@ func TestRunPreflightListsAllMissingPrerequisites(test *testing.T) {
 		"container runtime", "https://get.docker.com",
 		"microsandbox runtime", "install.microsandbox.dev",
 		"host virtualization",
-		"clawpatrol", "clawpatrol.dev/install.sh",
 	} {
 		if !strings.Contains(platformErr.Message, fragment) {
 			test.Errorf("error message missing %q:\n%s", fragment, platformErr.Message)
@@ -156,7 +139,7 @@ func TestRunPreflightListsAllMissingPrerequisites(test *testing.T) {
 
 func TestRunPreflightMissingDep(test *testing.T) {
 	test.Setenv("HOME", test.TempDir())
-	deps, _, _ := healthyDeps()
+	deps, _ := healthyDeps()
 	deps.Prober = fakeProber{bins: map[string]bool{"msb": true}} // no docker
 
 	_, err := Run(Options{}, deps)
@@ -167,7 +150,7 @@ func TestRunPreflightMissingDep(test *testing.T) {
 
 func TestRunPreflightRootlessUnavailable(test *testing.T) {
 	test.Setenv("HOME", test.TempDir())
-	deps, _, _ := healthyDeps()
+	deps, _ := healthyDeps()
 	// A rooted Linux docker engine ("rootless" absent from SecurityOptions). On
 	// macOS, Docker Desktop is rootless-equivalent (VM), so this scenario
 	// is Linux-specific.
@@ -184,7 +167,7 @@ func TestRunPreflightRootlessUnavailable(test *testing.T) {
 
 func TestRunIdempotent(test *testing.T) {
 	test.Setenv("HOME", test.TempDir())
-	deps, _, _ := healthyDeps()
+	deps, _ := healthyDeps()
 
 	first, err := Run(Options{}, deps)
 	if err != nil {
@@ -204,7 +187,7 @@ func TestRunIdempotent(test *testing.T) {
 
 func TestServicesStatusIncludesMicrosandbox(test *testing.T) {
 	test.Setenv("HOME", test.TempDir())
-	deps, _, _ := healthyDeps()
+	deps, _ := healthyDeps()
 	if _, err := Run(Options{}, deps); err != nil {
 		test.Fatal(err)
 	}
@@ -236,67 +219,9 @@ func hasService(specs []serviceSpec, name string) bool {
 	return false
 }
 
-func TestEnsureGatewayConfigSeedsWithDefaults(test *testing.T) {
-	test.Setenv("HOME", test.TempDir())
-	deps, _, _ := healthyDeps() // fetcher returns an example with state_dir=/opt/clawpatrol
-
-	created, warning, err := ensureGatewayConfig(deps)
-	if err != nil {
-		test.Fatal(err)
-	}
-	if !created || warning != "" {
-		test.Fatalf("expected created with no warning, got created=%v warning=%q", created, warning)
-	}
-
-	dir, _ := paths.ClawPatrolDir()
-	contents, err := os.ReadFile(filepath.Join(dir, "gateway.hcl"))
-	if err != nil {
-		test.Fatal(err)
-	}
-	if !strings.Contains(string(contents), `"`+dir+`"`) {
-		test.Fatalf("state_dir not defaulted to %s:\n%s", dir, contents)
-	}
-	if strings.Contains(string(contents), "/opt/clawpatrol") {
-		test.Fatalf("example state_dir should have been replaced:\n%s", contents)
-	}
-	if !strings.Contains(string(contents), "127.0.0.1:8123") || strings.Contains(string(contents), "127.0.0.1:8080") {
-		test.Fatalf("dashboard_listen should default to :8123:\n%s", contents)
-	}
-}
-
-func TestEnsureGatewayConfigSkipsWhenPresent(test *testing.T) {
-	test.Setenv("HOME", test.TempDir())
-	dir, _ := paths.ClawPatrolDir()
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		test.Fatal(err)
-	}
-	sentinel := []byte("# my hand edits\n")
-	if err := os.WriteFile(filepath.Join(dir, "gateway.hcl"), sentinel, 0o644); err != nil {
-		test.Fatal(err)
-	}
-
-	deps, _, _ := healthyDeps()
-	deps.GatewayConfigFetcher = func() ([]byte, error) {
-		test.Fatal("fetcher must not run when the config already exists")
-		return nil, nil
-	}
-
-	created, _, err := ensureGatewayConfig(deps)
-	if err != nil {
-		test.Fatal(err)
-	}
-	if created {
-		test.Fatal("must not recreate an existing config")
-	}
-	got, _ := os.ReadFile(filepath.Join(dir, "gateway.hcl"))
-	if string(got) != string(sentinel) {
-		test.Fatalf("existing config must be left untouched, got:\n%s", got)
-	}
-}
-
 func TestControlServiceValidation(test *testing.T) {
 	test.Setenv("HOME", test.TempDir())
-	deps, _, _ := healthyDeps()
+	deps, _ := healthyDeps()
 
 	if _, err := ControlService(deps, "bounce", ""); exitCodeOf(test, err) != output.ExitInvalidInput {
 		test.Fatalf("unknown action should be exit 2, got %v", err)
@@ -321,7 +246,7 @@ func TestControlServiceValidation(test *testing.T) {
 
 func TestRunUpgradeRepinsVersions(test *testing.T) {
 	test.Setenv("HOME", test.TempDir())
-	deps, _, _ := healthyDeps()
+	deps, _ := healthyDeps()
 
 	// First run creates versions.json; then corrupt a pin.
 	if _, err := Run(Options{}, deps); err != nil {
@@ -356,21 +281,21 @@ func (installer *fakeInstaller) Install(binary string) error {
 }
 
 func TestEnsureDependenciesInstallsOnlyMissing(test *testing.T) {
-	// clawpatrol missing, msb present → only clawpatrol is installed.
+	// msb missing → msb is installed.
 	installer := &fakeInstaller{}
 	deps := Deps{
-		Prober:       fakeProber{bins: map[string]bool{"docker": true, "msb": true}},
+		Prober:       fakeProber{bins: map[string]bool{"docker": true}},
 		DepInstaller: installer,
 	}
 	ensureDependencies(deps)
-	if len(installer.installed) != 1 || installer.installed[0] != "clawpatrol" {
-		test.Fatalf("expected only clawpatrol installed, got %v", installer.installed)
+	if len(installer.installed) != 1 || installer.installed[0] != "msb" {
+		test.Fatalf("expected only msb installed, got %v", installer.installed)
 	}
 
 	// All present → nothing installed (detect-if-installed).
 	allPresent := &fakeInstaller{}
 	ensureDependencies(Deps{
-		Prober:       fakeProber{bins: map[string]bool{"docker": true, "msb": true, "clawpatrol": true}},
+		Prober:       fakeProber{bins: map[string]bool{"docker": true, "msb": true}},
 		DepInstaller: allPresent,
 	})
 	if len(allPresent.installed) != 0 {
@@ -411,9 +336,9 @@ func TestLiteLLMRunArgs(test *testing.T) {
 }
 
 func TestDesiredServicesAreRequired(test *testing.T) {
-	// Ollama, LiteLLM, and ClawPatrol are all required host services (Ollama is
-	// the local model backend LiteLLM routes to, arch §14/§16).
-	for _, name := range []string{"ollama", "litellm", "clawpatrol"} {
+	// Ollama, Presidio, LiteLLM, and Headroom are all required host services
+	// (Ollama is the local model backend LiteLLM routes to, arch §14/§16).
+	for _, name := range []string{"ollama", "presidio", "litellm", "headroom"} {
 		if !hasService(desiredServices(), name) {
 			test.Errorf("required service %q missing from desiredServices: %+v", name, desiredServices())
 		}

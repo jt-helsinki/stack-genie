@@ -34,7 +34,7 @@ external-tool integration approach, the Slice 1 build sequence, and CI/testing.
 * **Declarative config/templates** in YAML/JSON; never executable logic.
 * External components are invoked via Go SDK or subprocess, never reimplemented:
   Microsandbox (Go SDK / `msb`), LiteLLM (host service over HTTP),
-  ClawPatrol (gateway binary + config), git / docker / podman / gh (subprocess).
+  git / docker / podman / gh (subprocess).
 
 Key libraries: `cobra` (commands), `viper`-free hand-rolled config merge (to
 keep the precedence rules in arch §27 explicit), `slog` (structured logs), stdlib
@@ -56,8 +56,8 @@ keep the precedence rules in arch §27 explicit), `slog` (structured logs), stdl
 │   ├── runtime/                 # docker/podman detect + rootless verify + abstraction (service tier)
 │   ├── sandbox/                 # Microsandbox SDK wrapper: naming, mounts/volumes, microVM lifecycle
 │   ├── litellm/                 # host lifecycle, config gen, health, routing
-│   ├── clawpatrol/              # gateway lifecycle, credential brokering, placeholders
-│   ├── contextopt/              # per-project Headroom strategy + Caveman skill (both in-workspace)
+│   ├── secrets/                 # keys-in-LiteLLM credential broker (fronts the LiteLLM credential store; virtual-key minting)
+│   ├── contextopt/              # per-project Headroom strategy (→ host Headroom proxy per-request knobs) + in-workspace Caveman skill
 │   ├── envimage/                # compose .ai-platform/Dockerfile (OS template + stack snippets + agent CLIs) + build OCI image
 │   ├── overlay/                 # per-workspace persistent overlay
 │   ├── audit/                   # append-only audit log (no secrets)
@@ -118,22 +118,26 @@ These underpin every slice and are built first.
   KVM); no daemon to supervise. The adapter creates each
   workspace microVM **and applies its egress network policy via the Go SDK** —
   the default-deny + allow-rule model (deny by default; allow exactly the
-  ClawPatrol proxy + trusted host service ports), which is what AT §16.3 asserts.
+  trusted host service ports + published ports), which is what AT §16.3 asserts.
+  The per-project egress policy itself (mode `deny`/`public`/`unrestricted`,
+  allowed host services, published ports — repo-layout §12.4) is configured by
+  the `ai network` command; the live Microsandbox NetworkPolicy enforcement is a
+  deferred hardware bring-up seam.
   (The Go SDK exposes the same network-policy core model as the other SDKs; pin
   the exact symbol against the SDK version at build time.)
 
 ## 3.5 External Adapters & Service Control Plane
 
 The `ai` CLI is the **single control plane** for host services (architecture §5,
-"Host Services Control Plane"). It manages two run modes behind uniform
-`ai services` verbs — **no docker compose**:
+"Host Services Control Plane"). All host services run in the **container tier**
+behind uniform `ai services` verbs — **no docker compose**:
 
-* **container tier** (LiteLLM, Ollama — both required): managed directly via
-  the `runtime/` abstraction (run by digest, restart policy, health poll), so
+* **container tier** (LiteLLM + its Postgres `aip-litellm-db`, the containerized
+  Ollama `aip-ollama`, the Presidio PII-guardrail pair
+  `aip-presidio-analyzer`/`aip-presidio-anonymizer`, and the host Headroom proxy
+  `aip-headroom`): managed directly via the `runtime/` abstraction (run by
+  digest, restart policy, health poll) on the private `aip-net` network, so
   docker and podman stay interchangeable
-* **native tier** (ClawPatrol): downloaded as a pinned checksum-verified binary
-  into `tools/`, registered with the OS service manager (launchd on macOS,
-  systemd on Linux)
 
 The Microsandbox runtime is **not** a managed service: its `msb` binary is
 pinned into `tools/` and invoked on demand via `sandbox/` to create and drive
@@ -141,23 +145,23 @@ workspace microVMs; `ai setup` only verifies it is installed and the host
 supports virtualization.
 
 Each service's config is **rendered** from the platform config into
-`config/<service>/`; real secrets stay only in ClawPatrol. Versions pinned in
-`config/versions.json`.
+`config/<service>/`; real provider keys stay only in the LiteLLM gateway
+(keys-in-LiteLLM). Versions pinned in `config/versions.json`.
 
 | Adapter | Integration | Run mode | First slice |
 |---|---|---|---|
 | `sandbox/` | Microsandbox Go SDK / `msb`; names `aip-<project>[-<agent>]`; microVM lifecycle map (arch §7) | microVM runtime (no daemon) | S1 |
 | `litellm/` | container via `runtime/`; config rendered from routing; `/health` poll | container | S1 |
-| `clawpatrol/` | native gateway; register creds; inject placeholders into workspace env | native | S1 |
-| `contextopt/` | per-project Headroom strategy + Caveman skill; both installed in the workspace (Headroom in the image, Caveman as a skill) | workspace | S2 |
+| `secrets/` | keys-in-LiteLLM credential store; mint scoped virtual key for the workspace agent | container (LiteLLM) | S1 |
+| `contextopt/` | per-project Headroom strategy (drives the host `aip-headroom` proxy per-request) + Caveman skill installed in the workspace | container (Headroom) / workspace (Caveman) | S2 |
 
 ---
 
 # 4. Slice 1 — MVP Build Sequence
 
 Slice 1 target (roadmap §2): macOS (Apple Silicon), Docker rootless service tier,
-Microsandbox microVM workspaces, debian-trixie, single agent, LiteLLM, ClawPatrol
-credential brokering, zero manual config.
+Microsandbox microVM workspaces, debian-trixie, single agent, LiteLLM,
+keys-in-LiteLLM credentials (agent holds a scoped virtual key), zero manual config.
 Commands (exactly the `[S1]`-tested surface): `ai setup`,
 `ai project create` (interactive wizard), `ai project delete`,
 `ai workspace start|stop|destroy|exec`, `ai services status`,
@@ -180,23 +184,23 @@ refer to the CLI spec and architecture spec respectively.
   `config/runtime.json`; fail (exit 4) if rootless or virtualization unavailable.
   Tests: AT §11.1.
 * **M3 — `ai setup` + services.** Preflight (exit 3 on missing deps),
-  init `~/.ai-platform/`, install/configure/start LiteLLM (container) + ClawPatrol
-  gateway (native, credential brokering, **forward-proxy egress** — S1 model,
-  §8.2) + verify the Microsandbox runtime; **ensure the ClawPatrol TLS-interception
-  CA exists** (generate on first run; arch §17); render the ClawPatrol default-deny
-  allowlist; `ai services status`; **idempotent**. Tests: AT §2.1, §2.2, §2.3,
-  §12.1 (macOS install).
-* **M4 — Model layer + secrets.** LiteLLM config gen + routing default;
-  `ai secrets set/map`; `ai models status`, `ai models test` against the mock
-  provider. Tests: AT §7.1, §7.2.
+  init `~/.ai-platform/`, install/configure/start the container service tier
+  (Ollama, Presidio pair, LiteLLM + its DB, Headroom) + verify the Microsandbox
+  runtime; provider keys live in the LiteLLM gateway (keys-in-LiteLLM, §8.2);
+  render the per-project default-deny network policy template; `ai services status`;
+  **idempotent**. Tests: AT §2.1, §2.2, §2.3, §12.1 (macOS install).
+* **M4 — Model layer + secrets.** LiteLLM config gen + routing default
+  (the generated config also renders an **always-on Presidio PII guardrail** —
+  pre_call input + post_call output, both `default_on: true`, so no request,
+  cloud included, can bypass it); `ai secrets set/map`; `ai models status`,
+  `ai models test` against the mock provider. Tests: AT §7.1, §7.2.
 * **M5 — debian-trixie image + Microsandbox.** Seed `.ai-platform/Dockerfile` from the
   `debian-trixie` template, build the workspace OCI image from it; create/start
   the microVM (virtio-net + gvproxy, default-deny network policy **applied via the
   Go SDK**, §3.4); mounts/volumes;
-  `ai workspace exec`; inject `AI_PLATFORM_HOST` + `HTTPS_PROXY` (ClawPatrol);
-  **install the ClawPatrol CA root into the workspace trust store** so HTTPS
-  injection works (arch §17). Tests: AT §6.1, harness workspace-start threshold,
-  AT §16.2, AT §16.3.
+  `ai workspace exec`; inject `AI_PLATFORM_HOST` so the agent reaches the host
+  Headroom→LiteLLM gateway with its scoped virtual key (arch §17). Tests: AT §6.1,
+  harness workspace-start threshold, AT §16.2, AT §16.3.
 * **M6 — `ai project create` wizard + delete.** Interactive PTY wizard (CLI §3.1)
   with steps for name/OS/agent-CLIs/default-agent/**software-stacks**,
   each with a presented default, checkbox multi-select for CLIs + stacks,
@@ -205,7 +209,7 @@ refer to the CLI spec and architecture spec respectively.
   `.ai-platform/` (Dockerfile = OS template + selected stack snippets + selected
   CLIs / config incl. `agent.tools`+`default_tool` / `profile.yaml` incl.
   `stacks` / project.json / .gitignore) + index in `config/projects.json` +
-  workspace + ClawPatrol placeholders + pre-create N agents; `ai project delete`.
+  workspace + mint the agent's scoped LiteLLM virtual key; `ai project delete`.
   Tests: AT §3.1 (incl. no-TTY + abort), §6.3 (CLI selection), §6.4 (stack
   selection), §3.3, §9.1, §9.2.
 * **M7 — `ai doctor`.** All S1 dependency/health checks with actionable output.
@@ -220,10 +224,11 @@ Slice 1 is complete only when every `[S1]` test passes with no manual config.
 
 # 5. Later Slices (sequencing)
 
-* **S2 Context Optimization.** `contextopt/`: in-workspace Headroom proxy on the request
-  path; per-project Caveman skill installed into `<project>/.ai-platform/skills/`;
-  `ai context status|strategy|caveman`. (No platform memory — agent owns it.)
-  Tests `[S2]`.
+* **S2 Context Optimization.** `contextopt/`: host Headroom proxy (`aip-headroom`)
+  on the request path in front of LiteLLM, driven per-request by the per-project
+  strategy; per-project Caveman skill installed into
+  `<project>/.ai-platform/skills/`; `ai context status|strategy|caveman`. (No
+  platform memory — agent owns it.) Tests `[S2]`.
 * **S3 — Removed.** Multi-agent and git worktrees are the in-workspace agent
   CLI's concern, not the platform's: one workspace per project, no `ai agent`
   commands, no platform-managed branches/worktrees (arch §20–22). The `[S3]` tag
@@ -270,8 +275,8 @@ Each slice must not break prior slices (roadmap §1).
 * supported OS (S1: macOS on Apple Silicon)
 * container runtime (S1: Docker) + rootless capability (service tier)
 * Microsandbox runtime + host virtualization (Apple Hypervisor entitlement on macOS — the only elevated facility, §29.1)
-* git; a free port for ClawPatrol's forward proxy (S1 egress model — no `utun`/NetworkExtension/admin networking; WireGuard is a later slice, §8.2)
-* provider credentials are loaded into ClawPatrol via `ai secrets` (not a
+* git (egress is a userspace default-deny Microsandbox NetworkPolicy — no `utun`/NetworkExtension/admin networking, §8.2)
+* provider credentials are loaded into the LiteLLM gateway via `ai secrets` (not a
   pre-flight hard-fail — `setup` warns if the configured routing has no
   credential; a model call fails only when its credential is actually absent)
 * free ports + resolvable `AI_PLATFORM_HOST`
@@ -284,41 +289,35 @@ Each slice must not break prior slices (roadmap §1).
 # 8. Open Decisions / Risks
 
 1. **Service provisioning — RESOLVED.** `ai setup` installs and manages
-   all host services itself (LiteLLM, ClawPatrol, Ollama) as
-   the single control plane, and verifies the Microsandbox workspace runtime;
-   the user pre-installs only the container runtime and grants the OS privileges
-   ClawPatrol needs. No docker compose: container-tier services run via the
-   runtime abstraction, the native tier via the OS service manager, and
+   all host services itself (LiteLLM + its Postgres, the containerized Ollama,
+   the Presidio PII-guardrail pair, and the Headroom proxy) as the single control
+   plane, and verifies the Microsandbox workspace runtime;
+   the user pre-installs only the container runtime. No docker compose:
+   container-tier services run via the runtime abstraction, and
    workspace microVMs via Microsandbox (no daemon). See architecture §5.
-2. **Egress model — S1 RESOLVED (forward proxy); WireGuard is the deferred
-   target.** WireGuard L3 capture is the **long-term** egress model (arch §29
-   end-state), but it is **not in S1**. The biggest correctness risk was assuming
-   userspace WireGuard termination is feasible *with ClawPatrol* in S1, so S1
-   sidesteps it entirely:
-   * **S1 model (no WireGuard):** the workspace gets a virtio-net NIC via
-     **gvproxy** (userspace), a **Microsandbox default-deny network policy**
-     permits only the ClawPatrol port + trusted host service ports, and
-     **ClawPatrol runs as an explicit forward proxy** (`HTTPS_PROXY`/`HTTP_PROXY`
-     in the workspace env). All planes are userspace; the only elevated facility
-     is the macOS hypervisor entitlement (arch §29.1, §30). Known limit:
-     proxy-unaware tools can't reach the internet (fail closed) rather than being
-     credential-injected — acceptable for S1, tested by AT §16.3.
-   * **Deferred WireGuard slice (target):** swap the default route to a WireGuard
-     tunnel to the ClawPatrol gateway for transparent L3 capture of *all* tools.
-     **Gate (spike before that slice):** on a clean Apple Silicon Mac, prove
-     (a) the `com.apple.security.hypervisor` entitlement works under Developer ID
-     + notarization for a downloaded binary; (b) a guest→host **userspace**-WG
-     tunnel terminates **with no `utun`/NetworkExtension/admin prompt/kext**; and
-     critically (c) **whether `denoland/clawpatrol` can terminate WG in user
-     space** — if not, front it with a **userspace-WG sidecar** (WG → local
-     plaintext socket → gateway). If the spike fails outright, the S1 forward-proxy
-     model remains the fallback. This keeps the S1 milestones free of the
-     highest-uncertainty integration.
-3. **Headroom placement (decided).** Headroom runs **per project inside the
-   workspace** (installed in the workspace image) as a local proxy wrapping the
-   agent CLI; it forwards to LiteLLM on the host via `AI_PLATFORM_HOST` (arch §10).
-   It is not a host service. This compresses at the source and is symmetric with
-   the in-workspace Caveman skill.
+2. **Egress model — RESOLVED (Microsandbox NetworkPolicy).** Workspace egress is
+   a **default-deny Microsandbox NetworkPolicy** per project; there is **no egress
+   proxy**:
+   * the workspace gets a virtio-net NIC via **gvproxy** (userspace), and the
+     **Microsandbox default-deny network policy** permits only the trusted host
+     service ports + published ports declared via `ai network`. All planes are
+     userspace; the only elevated facility is the macOS hypervisor entitlement
+     (arch §29.1, §30). A non-allow-listed destination is denied — tested by
+     AT §16.3.
+   * applying the per-project `ai network` declarations live as the Microsandbox
+     NetworkPolicy via the Go SDK is the deferred hardware bring-up seam (§3.4).
+     **Gate (spike on hardware):** on a clean Apple Silicon Mac, prove (a) the
+     `com.apple.security.hypervisor` entitlement works under Developer ID +
+     notarization for a downloaded binary, and (b) the Go SDK's NetworkPolicy
+     applies the default-deny + allow-rule model with no `utun`/NetworkExtension/
+     admin prompt/kext.
+3. **Headroom placement (decided).** Headroom runs as a **host service-tier
+   container** (`aip-headroom`, pulled image `ghcr.io/chopratejas/headroom:slim`,
+   :8787) — an input-compression proxy **in front of LiteLLM**, no longer baked
+   into the workspace image. The per-project strategy (`ai context strategy`)
+   maps to Headroom per-request knobs (`keep_turns`/`output_buffer_tokens` via
+   `contextopt.HeadroomParams`). Caveman remains the symmetric in-workspace
+   output-compression skill.
 4. **Image build.** The workspace OCI image is built from `.ai-platform/Dockerfile`
    with the detected container runtime and booted as a Microsandbox microVM;
    confirm rootless build works for all OS templates and that each image boots

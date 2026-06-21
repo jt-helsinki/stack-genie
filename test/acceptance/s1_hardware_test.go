@@ -8,8 +8,8 @@ import (
 	"testing"
 )
 
-// These full-stack [S1] tests need a provisioned host (real microVM + ClawPatrol
-// + LiteLLM), so they are gated by hardwareAvailable() (AIP_HARDWARE_TESTS=1).
+// These full-stack [S1] tests need a provisioned host (real microVM + LiteLLM
+// gateway), so they are gated by hardwareAvailable() (AIP_HARDWARE_TESTS=1).
 // Off-hardware they skip; on-hardware they are the falsifiable checklist for the
 // credential, isolation, and egress guarantees.
 
@@ -26,8 +26,10 @@ func innerExit(test *testing.T, envelope Envelope) int {
 }
 
 // writeProviderConfig writes a minimal LiteLLM model_list pointing a model alias
-// at the mock provider. The api_key is a ClawPatrol placeholder — the real value
-// is injected on egress (arch §17). Exact LiteLLM schema verified on hardware.
+// at the mock provider. The api_key here is a virtual-key placeholder — the real
+// provider key lives only in the LiteLLM gateway container (env passthrough at
+// launch) and is attached when LiteLLM calls the provider (arch §17). Exact
+// LiteLLM schema verified on hardware.
 func writeProviderConfig(test *testing.T, path, providerURL string) {
 	test.Helper()
 	config := fmt.Sprintf(`model_list:
@@ -35,7 +37,7 @@ func writeProviderConfig(test *testing.T, path, providerURL string) {
     litellm_params:
       model: openai/gpt-5
       api_base: %s/v1
-      api_key: sk-clawpatrol_placeholder_do_not_use
+      api_key: sk-litellm_virtual_key_placeholder
 `, providerURL)
 	if err := os.WriteFile(path, []byte(config), 0o644); err != nil {
 		test.Fatal(err)
@@ -46,7 +48,7 @@ func writeProviderConfig(test *testing.T, path, providerURL string) {
 // yet an outbound request reaches the provider carrying the real credential.
 func TestCredentialedRequestOnHardware(test *testing.T) {
 	if !hardwareAvailable() {
-		test.Skip("requires a provisioned host (msb + Docker + ClawPatrol); set AIP_HARDWARE_TESTS=1")
+		test.Skip("requires a provisioned host (msb + Docker + LiteLLM gateway); set AIP_HARDWARE_TESTS=1")
 	}
 	requireGit(test)
 	const sentinel = "sk-aip-test-sentinel-DO-NOT-LEAK"
@@ -62,7 +64,8 @@ func TestCredentialedRequestOnHardware(test *testing.T) {
 	setupEnvelope, code := harness.Run(test, "setup", "--provider-config", providerConfig)
 	AssertOK(test, setupEnvelope, code, "setup")
 
-	// Load the real credential into ClawPatrol; the agent only ever sees a placeholder.
+	// Load the real provider key into the LiteLLM gateway (env passthrough at
+	// launch); the agent only ever sees a virtual-key placeholder.
 	set, code := harness.Run(test, "secrets", "set", "OPENAI_API_KEY", "--value", sentinel)
 	AssertOK(test, set, code, "secrets.set")
 
@@ -71,14 +74,15 @@ func TestCredentialedRequestOnHardware(test *testing.T) {
 	mapped, code := harness.Run(test, "secrets", "map", "OPENAI_API_KEY", "--env", "OPENAI_API_KEY")
 	AssertOK(test, mapped, code, "secrets.map")
 
-	// A model call must reach the provider carrying the REAL credential.
+	// A model call must reach the provider carrying the REAL credential — proof
+	// that LiteLLM attached the real provider key when it called the provider.
 	resp, code := harness.Run(test, "models", "test", "gpt-5", "--project", "cred-test")
 	AssertOK(test, resp, code, "models.test")
 	if !mock.sawCredential(sentinel) {
-		test.Fatal("mock provider never received the real credential — ClawPatrol wire injection failed")
+		test.Fatal("mock provider never received the real credential — LiteLLM key injection failed")
 	}
 
-	// The workspace env must hold only the placeholder, never the sentinel.
+	// The workspace env must hold only the virtual-key placeholder, never the sentinel.
 	envOut, _ := harness.Exec(test, "cred-test", "env")
 	var execData struct {
 		Stdout string `json:"stdout"`
@@ -87,8 +91,8 @@ func TestCredentialedRequestOnHardware(test *testing.T) {
 	if strings.Contains(execData.Stdout, sentinel) {
 		test.Fatal("the real credential leaked into the workspace env")
 	}
-	if !strings.Contains(execData.Stdout, "clawpatrol_placeholder") {
-		test.Fatal("workspace env is missing the placeholder credential")
+	if !strings.Contains(execData.Stdout, "litellm_virtual_key_placeholder") {
+		test.Fatal("workspace env is missing the virtual-key placeholder")
 	}
 }
 
@@ -121,8 +125,8 @@ func TestWorkspaceIsolationOnHardware(test *testing.T) {
 }
 
 // TestEgressConfinementOnHardware — AT §16.3: trusted host services and the
-// allow-listed provider are reachable; everything else is denied (via the proxy
-// and directly).
+// allow-listed provider are reachable; everything else is denied by the
+// Microsandbox default-deny NetworkPolicy (configured via `ai network`).
 func TestEgressConfinementOnHardware(test *testing.T) {
 	if !hardwareAvailable() {
 		test.Skip("requires a provisioned host; set AIP_HARDWARE_TESTS=1")
@@ -148,16 +152,10 @@ func TestEgressConfinementOnHardware(test *testing.T) {
 	if innerExit(test, litellm) != 0 {
 		test.Fatal("trusted host service (LiteLLM) not reachable from the workspace")
 	}
-	// Non-allow-listed destination denied through the proxy.
-	viaProxy, _ := harness.Exec(test, "egress-test", "sh", "-c",
+	// A non-allow-listed destination is denied by the Microsandbox NetworkPolicy.
+	denied, _ := harness.Exec(test, "egress-test", "sh", "-c",
 		"curl -fsS --max-time 5 https://example.com >/dev/null")
-	if innerExit(test, viaProxy) == 0 {
-		test.Fatal("non-allow-listed destination should be denied by ClawPatrol")
-	}
-	// And denied directly (Microsandbox default-deny network policy).
-	direct, _ := harness.Exec(test, "egress-test", "sh", "-c",
-		`curl -fsS --max-time 5 --noproxy "*" https://example.com >/dev/null`)
-	if innerExit(test, direct) == 0 {
-		test.Fatal("direct (non-proxy) egress should be denied by the network policy")
+	if innerExit(test, denied) == 0 {
+		test.Fatal("non-allow-listed destination should be denied by the Microsandbox NetworkPolicy")
 	}
 }

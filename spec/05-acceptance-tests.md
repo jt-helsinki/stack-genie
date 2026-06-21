@@ -112,29 +112,28 @@ non-interactive except `ai project create`, which is driven through a PTY via th
   seed.
 * **mock provider**: `fixtures/mock-provider` — a local **HTTPS** server that
   emulates an OpenAI-compatible model endpoint with deterministic responses and
-  records the credential on each inbound request (used to assert injection). It
-  serves TLS with a test cert; the harness configures ClawPatrol to trust that
-  cert so the gateway can re-originate TLS to it (arch §17). Serving over HTTPS
-  means the injection tests (§9.1, §16.3) exercise ClawPatrol's **TLS
-  interception** path end-to-end, not just plaintext HTTP.
-* **credential sentinel**: the test credential loaded into ClawPatrol has a
-  known, unique value `AIP_TEST_SENTINEL_<uuid>` (env: `AIP_TEST_SENTINEL`).
+  records the provider credential on each inbound request (used to assert that
+  LiteLLM attached the real key). It serves TLS with a test cert the harness
+  trusts (arch §17). LiteLLM holds the real provider key (keys-in-LiteLLM) and
+  attaches it on the upstream call, so the injection tests (§9.1) assert the key
+  is present in the request the mock provider records — end-to-end over HTTPS.
+* **credential sentinel**: the test credential stored in the LiteLLM gateway has
+  a known, unique value `AIP_TEST_SENTINEL_<uuid>` (env: `AIP_TEST_SENTINEL`).
   Secret assertions are exact: the sentinel must appear in the mock provider's
   recorded request, and must appear **nowhere** in the workspace env, the
-  workspace filesystem, `~/.ai-platform`, or `~/projects`. The agent env holds
-  only the placeholder `*_clawpatrol_placeholder_*`.
+  workspace filesystem, `~/.ai-platform`, or `~/projects`. The workspace agent
+  holds only a scoped LiteLLM **virtual key**, never the provider secret.
 * **egress policy fixture** (`fixtures/egress-policy`): the harness configures
-  the S1 egress controls explicitly so tests assert against a *known* policy, not
-  ambient host behavior — (a) a **ClawPatrol default-deny** policy whose allowlist
-  is exactly `$MOCK_PROVIDER_URL` (§ Setup) plus the host service ports
-  (`AI_PLATFORM_HOST`: LiteLLM, Headroom); (b) the **Microsandbox default-deny
-  network policy** (applied per-workspace via the Microsandbox **Go SDK**, plan
-  §3.4) that permits the workspace to reach only the ClawPatrol forward-proxy port
-  and those host service ports. Both are rendered from this fixture at `ai setup`
-  (the fixture is parameterized by `$MOCK_PROVIDER_URL`) so the source of "what is
-  allowed" is the fixture, not a test's expectation.
-  (S1 routes egress via ClawPatrol as a forward proxy — `HTTPS_PROXY`; WireGuard
-  L3 capture is a later slice, roadmap §8.5.)
+  the egress controls explicitly so tests assert against a *known* policy, not
+  ambient host behavior — a **Microsandbox default-deny NetworkPolicy** (declared
+  via `ai network`, applied per-workspace via the Microsandbox **Go SDK**, plan
+  §3.4) that permits the workspace to reach only the trusted host service ports
+  (`AI_PLATFORM_HOST`: LiteLLM, Headroom) plus the allow-listed
+  `$MOCK_PROVIDER_URL` (§ Setup). It is rendered from this fixture (parameterized
+  by `$MOCK_PROVIDER_URL`) so the source of "what is allowed" is the fixture, not
+  a test's expectation. There is **no egress proxy** — confinement is the
+  NetworkPolicy; live enforcement at workspace start is a deferred
+  hardware-bring-up seam (arch §29.4–29.5).
 
 ### Setup / Teardown
 
@@ -149,10 +148,9 @@ setup:
   export AIP_TEST_HOME=$(mktemp -d)
   export HOME="$AIP_TEST_HOME"                 # ~/.ai-platform, ~/projects resolve here
   export AIP_TEST_SENTINEL="AIP_TEST_SENTINEL_$(uuidgen)"
-  export MOCK_PROVIDER_URL=$(start fixtures/mock-provider)   # starts the local HTTPS OpenAI-compatible endpoint; prints its https:// base URL (reachable from the workspace) — also the one allow-listed proxied destination (egress policy fixture). The harness configures ClawPatrol to trust its test cert.
+  export MOCK_PROVIDER_URL=$(start fixtures/mock-provider)   # starts the local HTTPS OpenAI-compatible endpoint; prints its https:// base URL (reachable from the workspace) — also the one allow-listed destination (egress policy fixture). The harness trusts its test cert.
   ai setup --json --provider-config fixtures/mock-provider/litellm.yaml
-  printf '%s' "$AIP_TEST_SENTINEL" | ai secrets set openai --stdin --json
-  ai secrets map openai --env OPENAI_API_KEY --json
+  printf '%s' "$AIP_TEST_SENTINEL" | ai secrets set openai --stdin --json   # stored in the LiteLLM gateway (keys-in-LiteLLM)
 
 teardown:
   ai project delete <each> --purge --yes        # best effort
@@ -209,7 +207,8 @@ ai setup --json
 * `~/.ai-platform/config/` created (incl. `projects.json` index)
 * **Docker detected, rootless** (Podman is `[S6]`; Slice 1 service tier is Docker-only)
 * **Microsandbox runtime + host virtualization verified** (Apple Silicon on macOS)
-* LiteLLM started (container); ClawPatrol gateway started (native)
+* the service tier started as containers: Ollama, Presidio (analyzer +
+  anonymizer), LiteLLM (+ Postgres), Headroom — all on `aip-net`
 * command exits `0`
 
 ---
@@ -264,7 +263,7 @@ create_project test-project              # PTY-driven wizard; accepts defaults (
 * debian-trixie microVM running (the wizard's default OS)
 * `agent.tools` is `[opencode]` and `agent.default_tool` is `opencode` (wizard defaults)
 * LiteLLM accessible
-* ClawPatrol credential brokering active
+* the workspace holds a scoped LiteLLM virtual key (keys-in-LiteLLM, arch §17); provider keys live only in the gateway
 * state updated under `~/projects/test-project/.ai-platform/` + indexed in `config/projects.json`
 
 ### Negative case
@@ -529,8 +528,9 @@ ai context caveman test-project full --json
 
 ## 9.1 Credentialed Outbound Request `[S1]`
 
-Validates the placeholder model (architecture §17): the agent never holds the
-real secret, yet an outbound request is delivered with the real credential.
+Validates the keys-in-LiteLLM model (architecture §17): the agent never holds the
+real provider secret, yet the upstream request is delivered with the real key
+that LiteLLM holds in its own store.
 
 ### Test
 
@@ -542,13 +542,12 @@ ai models test gpt-5 --project test-project --json
 
 ### Expected Result
 
-* the agent's workspace env contains only a placeholder
-  (`*_clawpatrol_placeholder_*`), never the sentinel
+* the agent's workspace env contains only the scoped LiteLLM **virtual key**,
+  never the sentinel (the real provider key)
 * the **mock provider's recorded request contains `$AIP_TEST_SENTINEL`**
-  (proves the ClawPatrol gateway injected the real credential on the wire). Since
-  the mock provider serves **HTTPS** (§1.6), this exercises ClawPatrol's TLS
-  interception: the gateway terminated TLS, injected, and re-originated TLS to the
-  provider — so it also confirms the CA trust chain (arch §17) is wired correctly
+  (proves LiteLLM attached the real provider key — held in its own store — on the
+  upstream call). Since the mock provider serves **HTTPS** (§1.6), this asserts
+  the key end-to-end over TLS while the workspace never saw it
 * no `.env` file exists anywhere under the workspace or project
 * command exits `0`
 
@@ -575,19 +574,21 @@ ai workspace exec test-project --json -- grep -rIF "$AIP_TEST_SENTINEL" / 2>/dev
 ### Expected Result
 
 * the host-side grep of the captured env finds **no** sentinel; the env instead
-  contains the placeholder `*_clawpatrol_placeholder_*`
+  contains only the scoped LiteLLM virtual key
 * the filesystem grep's `data.exit_code` is non-zero (sentinel absent)
-* a direct attempt to read the gateway's credential store from the workspace is
-  denied — `data.exit_code` reflects the denial (and the gateway returns `5`)
+* the real provider key is never reachable from the workspace — it lives only in
+  the LiteLLM gateway (keys-in-LiteLLM, arch §17), and any non-allow-listed egress
+  from the workspace is denied by the Microsandbox NetworkPolicy (§16.3)
 
 ---
 
 # 10. MCP — Not a Platform Concern
 
 The platform does not manage MCP, so there are no MCP acceptance tests. MCP
-servers are configured and run by the in-workspace agent (architecture §12);
-credentials those servers need are covered by the secrets tests (§9), since
-ClawPatrol brokers them.
+servers are configured and run by the in-workspace agent (architecture §12), and
+any credentials those servers need are the agent's own concern — the platform
+manages only the model-path provider keys (in the LiteLLM gateway, §9) and
+confines all other workspace egress with the Microsandbox NetworkPolicy (§16.3).
 
 ---
 
@@ -835,18 +836,15 @@ ai workspace exec test-project --json -- test -e /var/run/docker.sock \
 
 ### Test
 
-In S1, egress is mediated by **ClawPatrol as a forward proxy** (the workspace
-env sets `HTTPS_PROXY`/`HTTP_PROXY` to it), and the **Microsandbox default-deny
-network policy** allows the workspace to reach only the proxy + the trusted host
-service ports (arch §29; WireGuard L3 capture is a later slice). Both the
-ClawPatrol allowlist and the network policy come from the **egress policy
-fixture** (§1.6) — so this test asserts against a defined policy, not ambient
-behavior. `example.com` is denied **because it is not on the fixture's
-allowlist**, and there is no direct (non-proxy) route because the network policy
-denies it.
+Egress is governed by the **Microsandbox default-deny NetworkPolicy**, which
+allows the workspace to reach only the trusted host service ports plus the
+allow-listed `$MOCK_PROVIDER_URL` (arch §29.4). The policy comes from the
+**egress policy fixture** (§1.6) — so this test asserts against a defined policy,
+not ambient behavior. `example.com` is denied **because it is not on the
+fixture's allow-list**. There is no egress proxy.
 
 `$MOCK_PROVIDER_URL` is the harness-exported endpoint from §1.6 Setup (the single
-allow-listed proxied destination). Note the quoting convention below: values the
+allow-listed destination). Note the quoting convention below: values the
 platform injects **into the workspace** (`AI_PLATFORM_HOST`, `LITELLM_PORT`) are
 single-quoted so they expand **in the guest**; `$MOCK_PROVIDER_URL` is a
 harness-side fixture value, so it is double-quoted to expand **on the host**
@@ -857,30 +855,29 @@ before the command is passed verbatim into the workspace (CLI §4.5).
 ai workspace exec test-project --json -- \
   sh -c 'curl -fsS "http://$AI_PLATFORM_HOST:$LITELLM_PORT/health" >/dev/null'
 
-# allow-listed destination (the mock provider) IS reachable through the ClawPatrol proxy
+# allow-listed destination (the mock provider) IS reachable under the NetworkPolicy
 # (host-expanded URL, single-quoted inside so the guest receives the literal URL)
 ai workspace exec test-project --json -- \
   sh -c "curl -fsS --max-time 5 '$MOCK_PROVIDER_URL/health' >/dev/null"
 
-# NON-allowlisted destination is denied: via the proxy (policy) AND directly (network policy)
+# NON-allow-listed destination is denied by the Microsandbox NetworkPolicy
 ai workspace exec test-project --json -- \
-  sh -c 'curl -fsS --max-time 5 https://example.com >/dev/null'                 # through HTTPS_PROXY → ClawPatrol denies
-ai workspace exec test-project --json -- \
-  sh -c 'curl -fsS --max-time 5 --noproxy "*" https://example.com >/dev/null'   # direct → Microsandbox network policy denies
+  sh -c 'curl -fsS --max-time 5 https://example.com >/dev/null'   # not on the allow-list → denied
 ```
 
 ### Expected Result
 
 * the LiteLLM health probe via `AI_PLATFORM_HOST` succeeds (`data.exit_code == 0`)
 * the allow-listed mock-provider probe succeeds (`data.exit_code == 0`) — proving
-  the proxy permits exactly what the fixture allows, so the deny below is about
-  policy, not a broken proxy
-* **both** `example.com` probes **fail** (`data.exit_code != 0`): the proxied one
-  because ClawPatrol's default-deny allowlist (fixture, §1.6) excludes it, and
-  the direct one because the Microsandbox network policy denies any route around
-  the proxy
+  the NetworkPolicy permits exactly what the fixture allows, so the deny below is
+  about policy, not broken connectivity
+* the `example.com` probe **fails** (`data.exit_code != 0`) because the
+  Microsandbox NetworkPolicy default-deny allow-list (fixture, §1.6) excludes it
 * the `ai` process itself exits `0` for all (the commands ran); confinement is
   asserted via `data.exit_code`, per §4.5
+
+(Live NetworkPolicy enforcement at workspace start is a deferred
+hardware-bring-up seam, arch §29.5; this test runs once that seam is wired.)
 
 ---
 

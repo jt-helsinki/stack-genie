@@ -1,7 +1,9 @@
 // Package litellm renders the LiteLLM gateway config (arch §14–15) and exposes a
 // client for `ai models status|test`. LiteLLM is a thin shared gateway: a single
 // default model plus provider aliases, no per-task routing. Rendered config
-// references **placeholder** credentials only — real secrets live in ClawPatrol.
+// references **placeholder** credentials only (os.environ/<PROVIDER>_API_KEY) —
+// the real keys live in the LiteLLM container's own environment, populated by
+// `ai secrets` (keys-in-LiteLLM); they are never written to platform disk.
 package litellm
 
 import (
@@ -28,8 +30,9 @@ type Routing struct {
 // DefaultRouting is the built-in default (arch §14–15). It exposes a **full
 // catalogue** via per-provider wildcards — the agent may name ANY model from
 // Ollama, OpenAI, Anthropic, Google Gemini, or Groq and LiteLLM routes it on
-// demand (cloud keys injected by ClawPatrol; Ollama needs none). Registering a
-// model does not install it: an Ollama model must still be `ollama pull`ed, and
+// demand (cloud keys resolved from the LiteLLM container's own environment;
+// Ollama needs none). Registering a model does not install it: an Ollama model
+// must still be `ollama pull`ed, and
 // a cloud model still needs its key. The named aliases are convenient handles for
 // the recommended model per provider; `gemma4` (local Ollama) is the default.
 func DefaultRouting() Routing {
@@ -51,8 +54,9 @@ func DefaultRouting() Routing {
 	}
 }
 
-// placeholderKey returns the ClawPatrol placeholder env var for a provider's key
-// (arch §17). Ollama needs no credential.
+// placeholderKey returns the os.environ placeholder LiteLLM resolves for a
+// provider's key from the container's own environment (keys-in-LiteLLM, arch
+// §17). Ollama needs no credential.
 func placeholderKey(provider string) string {
 	switch provider {
 	case "openai":

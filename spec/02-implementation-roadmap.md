@@ -90,7 +90,7 @@ Deliver a working minimal platform.
 * `debian-trixie` OS Dockerfile template (only OS in Slice 1; selected in the `ai project create` wizard, no implicit default); `ai project create` writes `.ai-platform/Dockerfile` from it (plus the selected agent CLIs) and builds the workspace OCI image from it
 * Single-agent system
 * LiteLLM integration
-* ClawPatrol credential brokering (real injection; firewall policy engine deferred)
+* keys-in-LiteLLM credentials (real provider keys live in the gateway; the agent holds a scoped virtual key)
 * Microsandbox workspace (microVM) creation
 
 ---
@@ -102,10 +102,11 @@ Deliver a working minimal platform.
 * macOS bootstrap launcher (thin shell script that fetches/execs the Go binary)
 * Docker installation detection + Microsandbox runtime / virtualization (Apple Hypervisor) detection
 * LiteLLM container startup
-* ClawPatrol gateway with real credential brokering (placeholder → real value
-  on the wire). Only the firewall **policy engine** (allow/deny rules,
-  human-in-the-loop approval) is stubbed in Slice 1 — credential injection is
-  fully functional, since the secret-injection acceptance test depends on it.
+* keys-in-LiteLLM credentials: real provider keys live in the LiteLLM gateway
+  (env passthrough at launch / its Postgres-backed store), never on platform disk
+  or in the workspace; the agent authenticates to the gateway with a scoped
+  virtual key. The secret-injection acceptance test depends on this credential
+  path being fully functional.
 
 ---
 
@@ -138,8 +139,8 @@ default: gemma4   # -> ollama/gemma4:31b (local; Ollama is the default provider)
 
 ### Secrets Layer
 
-* ClawPatrol integration required
-* runtime injection only
+* keys-in-LiteLLM credential store required (`ai secrets` manages LiteLLM-side credentials)
+* real provider keys never leave the gateway; the workspace agent holds only a scoped virtual key
 
 ---
 
@@ -171,7 +172,7 @@ in Slice 4.
 * project is created successfully
 * workspace runs the debian-trixie microVM
 * LiteLLM responds
-* secrets injected via ClawPatrol
+* secrets resolved via the LiteLLM credential store (agent uses a scoped virtual key)
 * no manual configuration required
 
 ---
@@ -186,7 +187,10 @@ Introduce Headroom + Caveman.
 
 ## Scope
 
-* Headroom context management (input compression) — per-project proxy in the workspace
+* Headroom context management (input compression) — host service-tier proxy
+  (`aip-headroom`, pulled image `ghcr.io/chopratejas/headroom:slim`, :8787) in
+  front of LiteLLM; no longer baked into the workspace image. Per-project
+  strategy maps to Headroom per-request knobs.
 * Caveman output compression — in-agent skill
 
 (No platform memory system — agent memory is the agent's concern, architecture
@@ -331,24 +335,35 @@ These are implemented progressively across slices.
 
 ## 8.1 LiteLLM
 
-* host container
+* host container (`aip-litellm`, :4000), backed by a Postgres container
+  (`aip-litellm-db`) for the DB-backed admin UI / virtual keys
 * unified routing
 * provider abstraction
+* an **always-on Presidio PII guardrail** rendered into the generated LiteLLM
+  config (pre_call input + post_call output, both `default_on: true` — no
+  request, cloud included, can bypass it), backed by the
+  `aip-presidio-analyzer` + `aip-presidio-anonymizer` service-tier containers
 
 ---
 
-## 8.2 ClawPatrol
+## 8.2 Credentials & Egress
 
-* wire-level credential injection (agent holds placeholder; gateway swaps real value)
-* security firewall (allow/deny rules, human-in-the-loop approval, audit)
-* runtime-only access
-* no .env files
+* **keys-in-LiteLLM**: real provider keys live in the LiteLLM gateway (env
+  passthrough at launch / its Postgres-backed store); the workspace agent holds
+  only a scoped LiteLLM virtual key, never a real provider secret
+* `ai secrets` manages the LiteLLM-side credentials; no .env files, no secrets on
+  platform disk or in the workspace
+* **egress**: a default-deny **Microsandbox NetworkPolicy** per project, configured
+  via `ai network` (modes `deny`/`public`/`unrestricted` + allowed host services +
+  published ports); no egress proxy
+* **PII/audit**: LiteLLM's always-on **Presidio** guardrails on every request,
+  which cloud routes cannot bypass (§8.1)
 
 ---
 
 ## 8.3 LiteLLM routing
 
-* thin gateway only (unified endpoint, aliasing, failover, ClawPatrol egress)
+* thin gateway only (unified endpoint, aliasing, failover, provider-key injection)
 * no per-task routing policy — the agent selects its model
 
 (MCP is not a platform concern — the agent manages it.)
@@ -364,7 +379,9 @@ one Microsandbox microVM per workspace (hardware isolation, libkrun)
 ```
 
 The container runtime (Docker/Podman) is used only for the service tier
-(LiteLLM, Ollama), never to run a workspace.
+(LiteLLM + its Postgres, the containerized Ollama `aip-ollama`, the Presidio
+PII-guardrail pair, and the host Headroom proxy), never to run a workspace. All
+service-tier containers share the private `aip-net` network.
 
 ---
 
@@ -374,9 +391,13 @@ The container runtime (Docker/Podman) is used only for the service tier
 * AI_PLATFORM_HOST abstraction for reaching trusted host services (LiteLLM)
 * cross-platform resolution
 * Ollama reached only via LiteLLM, never directly by the workspace
-* egress is broker-mediated, delivered in two phases:
-  * **S1 (initial): ClawPatrol as a forward proxy** — the workspace env sets `HTTPS_PROXY`/`HTTP_PROXY` to ClawPatrol, and a **Microsandbox default-deny network policy** permits only the proxy + trusted host service ports. Simpler, fully userspace, no WireGuard. Known limit: proxy-unaware tools can't reach the internet (fail closed) rather than being injected.
-  * **Later slice (target): WireGuard L3 capture** — workspace default route becomes a WireGuard tunnel to the ClawPatrol gateway, so *every* tool is covered transparently (architecture §29 end-state). Gated by the feasibility spike in plan §8.2 (userspace WG termination with ClawPatrol).
+* egress is a **default-deny Microsandbox NetworkPolicy** per project: deny by
+  default, permitting only trusted host service ports + published ports. Per-project
+  egress is configured by the `ai network` command (modes `deny`/`public`/`unrestricted`
+  — default `deny` — plus allowed host services and published ports, stored in
+  `config.yaml`). The policy is fully userspace; there is **no egress proxy**. Live
+  NetworkPolicy enforcement at workspace start (applying the `ai network`
+  declarations via the Microsandbox Go SDK) is a deferred hardware bring-up seam.
 
 ---
 
@@ -400,7 +421,7 @@ produces (for the OS the user selected):
 
 * selected-OS workspace (e.g. Debian trixie)
 * working LiteLLM
-* ClawPatrol secrets
+* keys-in-LiteLLM secrets (agent uses a scoped virtual key)
 * Headroom input compression
 * Caveman output compression
 * Dockerfile-defined environment + overlay persistence

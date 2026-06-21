@@ -9,12 +9,13 @@ import (
 	"github.com/spf13/cobra"
 )
 
-// newSecretsCmd builds `ai secrets` (CLI §16.1). Credentials live only in
-// ClawPatrol's store; the platform never writes values to its own disk.
+// newSecretsCmd builds `ai secrets` (CLI §16.1). Credentials live only in the
+// LiteLLM gateway's credential store (keys-in-LiteLLM); the platform never writes
+// values to its own disk.
 func newSecretsCmd(em *output.Emitter, exit *int) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "secrets",
-		Short: "Manage credentials (stored only in ClawPatrol, never on platform disk)",
+		Short: "Manage credentials (stored only in the LiteLLM gateway, never on platform disk)",
 		Args:  cobra.NoArgs,
 		RunE:  func(cmd *cobra.Command, _ []string) error { return cmd.Help() },
 	}
@@ -29,7 +30,7 @@ func newSecretsCmd(em *output.Emitter, exit *int) *cobra.Command {
 
 // mapSecretErr maps broker errors to exit codes (§18).
 func mapSecretErr(err error) error {
-	if errors.Is(err, secrets.ErrClawPatrolMissing) {
+	if errors.Is(err, secrets.ErrGatewayMissing) {
 		return output.Errorf(output.ExitMissingDep, "%s", err)
 	}
 	return output.Errorf(output.ExitRuntimeFailure, "%s", err)
@@ -40,7 +41,7 @@ func newSecretsSetCmd(em *output.Emitter, exit *int) *cobra.Command {
 	var fromStdin bool
 	command := &cobra.Command{
 		Use:   "set <name>",
-		Short: "Store a credential in ClawPatrol",
+		Short: "Store a credential in the LiteLLM gateway",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			var credential []byte

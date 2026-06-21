@@ -88,7 +88,6 @@ func TestRunFullTeardown(test *testing.T) {
 	binaryPath := filepath.Join(home, ".ai-platform", "bin", "ai")
 	mustWrite(test, binaryPath, "binary")
 	mustWrite(test, filepath.Join(home, ".ai-platform", "config", "config.yaml"), "os: alma")
-	mustWrite(test, filepath.Join(home, ".clawpatrol", "gateway.hcl"), "state_dir = \".\"")
 	projectFile := filepath.Join(home, "projects", "keepme", "main.go")
 	mustWrite(test, projectFile, "package main")
 	completionFile := filepath.Join(home, ".zsh", "completions", "_ai")
@@ -129,7 +128,7 @@ func TestRunFullTeardown(test *testing.T) {
 		test.Errorf("expected `docker rm -f abc123 def456`, ran: %v", prober.ran)
 	}
 	// Binary, completion file, and platform state are gone; project survives.
-	for _, gone := range []string{binaryPath, completionFile, filepath.Join(home, ".ai-platform"), filepath.Join(home, ".clawpatrol")} {
+	for _, gone := range []string{binaryPath, completionFile, filepath.Join(home, ".ai-platform")} {
 		if _, statErr := os.Stat(gone); !os.IsNotExist(statErr) {
 			test.Errorf("expected %q removed, but it still exists", gone)
 		}
@@ -182,14 +181,11 @@ func TestExternalDepsPresenceAndRemoval(test *testing.T) {
 	home := test.TempDir()
 	test.Setenv("HOME", home)
 	test.Setenv("MSB_HOME", "")
-	test.Setenv("CLAWPATROL_PREFIX", "")
 
 	prober := &fakeProber{present: map[string]bool{}} // nothing on PATH
 
 	// Use msb: all of its targets are HOME-relative, so presence is isolated to
-	// the temp HOME. (clawpatrol is intentionally not asserted here — one of its
-	// targets is the absolute /Applications/Clawpatrol.app, which would leak the
-	// real machine's state into the test.)
+	// the temp HOME.
 	var msb ExternalDep
 	for _, dep := range ExternalDeps() {
 		if dep.Binary == "msb" {
@@ -210,7 +206,7 @@ func TestExternalDepsPresenceAndRemoval(test *testing.T) {
 		test.Error("msb should be detected present (install dir exists)")
 	}
 
-	// Removing msb via Run clears its targets but leaves clawpatrol untouched.
+	// Removing msb via Run clears its targets.
 	report, err := Run(Options{RemoveDeps: []ExternalDep{msb}}, prober, nil)
 	if err != nil {
 		test.Fatal(err)

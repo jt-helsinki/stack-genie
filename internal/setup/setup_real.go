@@ -2,8 +2,6 @@ package setup
 
 import (
 	"fmt"
-	"io"
-	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -17,36 +15,21 @@ import (
 	"github.com/jt-helsinki/ideal-robot/internal/runtime"
 )
 
-// realFetchGatewayConfig downloads the upstream ClawPatrol gateway example HCL.
-func realFetchGatewayConfig() ([]byte, error) {
-	httpClient := &http.Client{Timeout: 15 * time.Second}
-	response, err := httpClient.Get(gatewayConfigURL)
-	if err != nil {
-		return nil, err
-	}
-	defer func() { _ = response.Body.Close() }()
-	if response.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("GET %s: status %d", gatewayConfigURL, response.StatusCode)
-	}
-	return io.ReadAll(response.Body)
-}
-
 type serviceSpec struct{ Name, Mode string }
 
-// desiredServices is the host-service set (arch §5): Ollama (required local model
-// backend, container), LiteLLM (gateway/router, container), Headroom (input
-// compression proxy in front of LiteLLM, container), and ClawPatrol (firewall +
-// credential broker, native). Ollama is required — LiteLLM routes local model
-// traffic to it (arch §14, §16). Headroom runs as a shared host-side proxy
-// (agents point at :8787, it forwards to LiteLLM); the per-project Caveman skill
-// handles output compression inside the workspace (arch §8–10).
+// desiredServices is the host-service set (arch §5), all containers: Ollama
+// (required local model backend), Presidio (PII guardrail backend), LiteLLM
+// (gateway/router), and Headroom (input compression proxy in front of LiteLLM).
+// Ollama is required — LiteLLM routes local model traffic to it (arch §14, §16).
+// Headroom runs as a shared host-side proxy (agents point at :8787, it forwards
+// to LiteLLM); the per-project Caveman skill handles output compression inside
+// the workspace (arch §8–10).
 func desiredServices() []serviceSpec {
 	return []serviceSpec{
 		{"ollama", "container"},
 		{"presidio", "container"},
 		{"litellm", "container"},
 		{"headroom", "container"},
-		{"clawpatrol", "native"},
 	}
 }
 
@@ -413,8 +396,8 @@ func (services realServices) Status() ([]ServiceStatus, error) {
 }
 
 // serviceHealthy is the live readiness probe for one host service (the same
-// checks `ai doctor` uses): LiteLLM /health, Ollama /api/version, and
-// `clawpatrol status`.
+// checks `ai doctor` uses): LiteLLM /health, Ollama /api/version, and the
+// Presidio/Headroom containers running.
 func (services realServices) serviceHealthy(name string) bool {
 	switch name {
 	case "litellm":
@@ -435,26 +418,17 @@ func (services realServices) serviceHealthy(name string) bool {
 			return false
 		}
 		return containerRunning(services.prober, containerRuntime.Name, headroomContainer)
-	case "clawpatrol":
-		_, err := services.prober.Run("clawpatrol", "status")
-		return err == nil
 	default:
 		return false
 	}
 }
 
 // Control performs start/stop/restart on the host services. The platform owns
-// the container tier (Ollama, LiteLLM + its DB, Headroom), so those are started,
-// stopped, and restarted here; ClawPatrol is a native gateway managed by its own
-// installer, so naming it explicitly is rejected with guidance, while "all" skips
-// it. An empty service name (or "all") acts on every platform container in
-// dependency order. Returns the post-action Status.
+// the entire container tier (Ollama, Presidio, LiteLLM + its DB, Headroom), so
+// those are started, stopped, and restarted here. An empty service name (or
+// "all") acts on every platform container in dependency order. Returns the
+// post-action Status.
 func (services realServices) Control(action, service string) ([]ServiceStatus, error) {
-	if service == "clawpatrol" {
-		return nil, output.Errorf(output.ExitInvalidInput,
-			"clawpatrol runs as a native gateway managed by its own installer; the platform does not control its lifecycle")
-	}
-
 	containerRuntime, err := runtime.ContainerRuntimeName(services.prober)
 	if err != nil {
 		return nil, output.Errorf(output.ExitMissingDep, "no container runtime to control platform services: %s", err)
@@ -546,37 +520,23 @@ func (realDepInstaller) Install(binary string) error {
 	if !ok {
 		return fmt.Errorf("no installer known for %q", binary)
 	}
-	// The documented installers are `curl -fsSL <url> | sh` (clawpatrol.dev,
-	// install.microsandbox.dev). #nosec G204 — url is a fixed in-binary constant.
+	// The documented installer is `curl -fsSL <url> | sh`
+	// (install.microsandbox.dev). #nosec G204 — url is a fixed in-binary constant.
 	command := exec.Command("sh", "-c", "curl -fsSL "+url+" | sh")
 	command.Stdout = os.Stdout
 	command.Stderr = os.Stderr
 	return command.Run()
 }
 
-// realCA prepares the ClawPatrol CA location (arch §17). Generating the CA
-// certificate is delegated to ClawPatrol on a provisioned host.
-type realCA struct{}
-
-func (realCA) Ensure() error {
-	configDir, err := paths.ConfigDir()
-	if err != nil {
-		return err
-	}
-	return os.MkdirAll(filepath.Join(configDir, "clawpatrol", "ca"), 0o755)
-}
-
 // RealDeps builds Deps wired to the actual host (used by the CLI).
 func RealDeps(goos, goarch string, now func() string) Deps {
 	prober := runtime.RealProber()
 	return Deps{
-		GOOS:                 goos,
-		GOARCH:               goarch,
-		Prober:               prober,
-		Now:                  now,
-		Services:             realServices{prober: prober},
-		CA:                   realCA{},
-		DepInstaller:         realDepInstaller{},
-		GatewayConfigFetcher: realFetchGatewayConfig,
+		GOOS:         goos,
+		GOARCH:       goarch,
+		Prober:       prober,
+		Now:          now,
+		Services:     realServices{prober: prober},
+		DepInstaller: realDepInstaller{},
 	}
 }

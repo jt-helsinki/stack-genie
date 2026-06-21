@@ -76,7 +76,6 @@ func TestMissingLayersOK(test *testing.T) {
 
 func TestNetworkValidate(test *testing.T) {
 	valid := NetworkConfig{
-		EgressProxy:       "clawpatrol",
 		AllowHostServices: []HostService{{Host: "gateway", Port: 5432}},
 		PublishPorts:      []PortMapping{{Guest: 3000, Host: 3000}},
 	}

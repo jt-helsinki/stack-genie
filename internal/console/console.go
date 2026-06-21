@@ -1,9 +1,8 @@
 // Package console resolves the admin-console URLs of the host services and opens
 // them in the user's browser, so a user can see what their setup is doing
-// (LiteLLM usage/keys, the ClawPatrol firewall dashboard, …). The set of
-// consoles is a small built-in registry of verified defaults; services without a
-// web console are listed explicitly so the CLI can tell "no console" apart from
-// "unknown service".
+// (LiteLLM usage/keys, …). The set of consoles is a small built-in registry of
+// verified defaults; services without a web console are listed explicitly so the
+// CLI can tell "no console" apart from "unknown service".
 package console
 
 import (
@@ -15,7 +14,6 @@ import (
 // service is known but has no web console (e.g. Ollama is an API on :11434).
 var consoles = map[string]string{
 	"litellm":      "http://localhost:4000/ui", // LiteLLM admin UI (keys, usage, logs)
-	"clawpatrol":   "http://127.0.0.1:8123",    // ClawPatrol firewall dashboard
 	"ollama":       "",                         // HTTP API on :11434, no console UI
 	"microsandbox": "",                         // microVM runtime, no console
 	// Headroom is not a host service — it runs per-project in the workspace.

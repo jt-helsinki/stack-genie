@@ -20,8 +20,8 @@ func TestURLAndKnown(test *testing.T) {
 
 func TestWithConsolesSortedAndFiltered(test *testing.T) {
 	named := WithConsoles()
-	if len(named) != 2 || named[0].Name != "clawpatrol" || named[1].Name != "litellm" {
-		test.Fatalf("WithConsoles = %+v, want sorted [clawpatrol, litellm]", named)
+	if len(named) != 1 || named[0].Name != "litellm" {
+		test.Fatalf("WithConsoles = %+v, want [litellm]", named)
 	}
 }
 

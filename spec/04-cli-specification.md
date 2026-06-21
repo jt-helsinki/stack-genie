@@ -84,8 +84,8 @@ CLI must behave identically on:
   `~/projects`**.
 * Project templates and agent configuration are **declarative data**
   (YAML / JSON). They are never executable application logic.
-* External components (Microsandbox, LiteLLM, Headroom, ClawPatrol, git, docker /
-  podman, gh) are invoked via their Go SDK or as subprocesses — never
+* External components (Microsandbox, LiteLLM, Headroom, Presidio, Ollama, git,
+  docker / podman, gh) are invoked via their Go SDK or as subprocesses — never
   reimplemented.
 
 ---
@@ -155,26 +155,12 @@ Purpose:
 * configures runtime
 * installs, configures, and starts the host services as the single control
   plane — see architecture §5, "Host Services Control Plane". The host service
-  set is LiteLLM + Ollama (required) + ClawPatrol, plus the Microsandbox
-  workspace runtime. (Headroom is **not** a host service — it is installed per
-  project in the workspace image, §8–10.)
-* renders each service config from the platform config, verifies the Microsandbox
-  runtime + host virtualization, and registers the native service (ClawPatrol)
-  with the OS service manager (no docker compose)
-* ensures the **ClawPatrol TLS-interception CA** exists (generates it on first
-  run); the CA root is installed into each workspace's trust store at workspace
-  start, not here — without it HTTPS credential injection cannot work
-  (architecture §17, "TLS Interception and the Trust Anchor")
-* seeds the **ClawPatrol gateway config** at `~/.clawpatrol/gateway.hcl` from the
-  upstream example on first run (download-if-absent; never overwrites local
-  edits), applying sensible local defaults (`state_dir` → `~/.clawpatrol`). On a
-  TTY (not `--json`) it may prompt for the **dashboard password** and apply it
-  via `clawpatrol gateway --set-dashboard-password` (it is not an HCL field).
-  That command upserts the password and then **runs the gateway**, so it is
-  started **detached** (own session, output to `~/.clawpatrol/gateway.log`) —
-  setup must never block on it. The password is never logged or written to
-  platform disk. (Registering the gateway as a managed OS service is the
-  hardware-bring-up end-state.)
+  set is Ollama (required) + Presidio (analyzer + anonymizer) + LiteLLM
+  (+ Postgres) + Headroom — all containers on the `aip-net` network — plus the
+  Microsandbox workspace runtime.
+* renders each service config from the platform config and verifies the
+  Microsandbox runtime + host virtualization (no docker compose; the whole
+  service tier runs as containers, so there is no native OS service to register)
 * provisions a small **Postgres** (`aip-litellm-db`, `postgres:18.4-alpine3.24`)
   that backs LiteLLM's DB-only features (admin UI login, virtual keys, spend
   tracking — PostgreSQL is the only engine LiteLLM supports for these). It runs
@@ -189,14 +175,16 @@ Purpose:
   environment, `setup` prompts for a UI password, generates a master key, and
   relaunches LiteLLM with both set; the generated master key is shown once. To
   persist secrets across restarts without writing them to disk, export
-  `UI_PASSWORD` / `LITELLM_MASTER_KEY` before `setup` / `ai services start` (the
-  end-state is ClawPatrol injecting them, architecture §17)
+  `UI_PASSWORD` / `LITELLM_MASTER_KEY` before `setup` / `ai services start`
+  (keys-in-LiteLLM, architecture §17). The real **provider** API keys are
+  likewise held by the gateway — passed as env passthrough at launch and/or in
+  LiteLLM's Postgres-backed store — never written to platform disk
 
 Missing **provider credentials are not a setup hard-fail**: `setup` may prompt
 interactively but otherwise proceeds and warns; `ai doctor` flags any absent
 credential, and a model call fails (exit `5`) only when that credential is
 actually needed (architecture §17, plan §7). Missing **dependencies** (runtime,
-virtualization, git, ClawPatrol privileges) do fail fast with exit `3`.
+virtualization, git) do fail fast with exit `3`.
 
 Idempotent:
 
@@ -235,18 +223,14 @@ Behavior:
   platform containers (`aip-*`), removing the `ai` binary, removing the
   completion scripts, and stripping the managed PATH/completion lines from the
   shell rc files (leaving the user's own lines intact)
-* `--purge` additionally removes the platform state under `~/.ai-platform` and
-  `~/.clawpatrol`
-* **asks, per external dependency, whether to also uninstall it** — for each of
-  `msb` (Microsandbox) and `clawpatrol` that is detected on the host, it prompts
-  (on a terminal) before removing that tool's install artifacts. Neither tool
-  ships an uninstaller, so removal is the on-disk locations published by their
-  installers, not an invented subcommand:
+* `--purge` additionally removes the platform state under `~/.ai-platform`
+* **asks, per external dependency, whether to also uninstall it** — for `msb`
+  (Microsandbox) that is detected on the host, it prompts (on a terminal) before
+  removing that tool's install artifacts. Microsandbox ships no uninstaller, so
+  removal is the on-disk locations published by its installer, not an invented
+  subcommand:
   * **msb** → `$MSB_HOME` (default `~/.microsandbox`) and the `~/.local/bin`
     symlinks (`msb`, `microsandbox`)
-  * **clawpatrol** → its binary (`$CLAWPATROL_PREFIX/clawpatrol`, default
-    `~/.local/bin/clawpatrol`), `~/.clawpatrol`, and on macOS the
-    `/Applications/Clawpatrol.app` system-extension bundle
 * **never touches `~/projects`** (the user's source)
 * **writes a transcript to `~/ai-uninstall.log`** — every task it performs is
   appended under a timestamped session header. It lives in the home directory
@@ -407,7 +391,7 @@ Behavior:
 * destructive: requires interactive confirmation, or `--yes`; refuses and exits
   `2` if neither is present in a non-interactive context
 * `--dry-run` lists exactly what would be removed and changes nothing
-* secrets are untouched (owned by ClawPatrol)
+* provider credentials are untouched (held in the LiteLLM gateway, §16.1)
 
 ---
 
@@ -431,12 +415,13 @@ Behavior:
 
 * starts the Microsandbox workspace microVM
 * mounts host project
-* injects `AI_PLATFORM_HOST` + service ports, and the S1 egress proxy
-  (`HTTPS_PROXY`/`HTTP_PROXY` → ClawPatrol) into the workspace environment
-* installs the **ClawPatrol CA root** into the workspace trust store (system
-  store + the common per-tool stores, e.g. `NODE_EXTRA_CA_CERTS`,
-  `SSL_CERT_FILE`/`REQUESTS_CA_BUNDLE`, `GIT_SSL_CAINFO`) so HTTPS credential
-  injection works (architecture §17)
+* injects `AI_PLATFORM_HOST` + service ports and the scoped **LiteLLM virtual
+  key** into the workspace environment (the workspace holds no provider secret;
+  keys-in-LiteLLM, architecture §17)
+* applies the project's Microsandbox **NetworkPolicy** (default-deny egress +
+  allow-listed host services + published ports, from the `network` block;
+  architecture §29.4) — live enforcement at start remains a deferred
+  hardware-bring-up seam
 * initializes tooling
 
 ---
@@ -580,6 +565,11 @@ Returns:
 ai context strategy <project> <conservative|balanced|aggressive>
 ```
 
+The strategy is kept per project (default `balanced`). Because Headroom now runs
+as a shared **host** container (not in the workspace), the strategy maps to the
+per-request compression knobs (`keep_turns` / `output_buffer_tokens`) sent to the
+host Headroom proxy.
+
 ---
 
 ## 9.3 Set Caveman Level
@@ -602,8 +592,9 @@ Checks:
 
 * Microsandbox runtime + host virtualization (Apple Silicon / KVM)
 * Docker/Podman
-* LiteLLM
-* ClawPatrol (gateway health + the workspace trusts the current ClawPatrol CA — flags drift after a CA rotation; architecture §17)
+* LiteLLM (health + that the configured provider keys are present in the gateway — a missing key is warned, not fatal; architecture §17)
+* Presidio (analyzer + anonymizer back LiteLLM's always-on PII guardrails; architecture §15)
+* Ollama
 * Caveman *(from Slice 2)*
 * Headroom *(from Slice 2)*
 
@@ -619,13 +610,12 @@ Checks:
 
 ## 10.2 Service Management
 
-The `ai` CLI is the single control plane for all host services (LiteLLM,
-ClawPatrol, Ollama). The user never invokes
-`docker compose`, `launchctl`, or `systemctl` directly. The same verbs apply
-whether a service runs as a container or a native process (see architecture
-§5, "Host Services Control Plane"). (The Microsandbox workspace runtime is not
-a long-running service — it is driven by the `ai workspace`
-commands, not `ai services`.)
+The `ai` CLI is the single control plane for all host services — the platform
+containers `ollama`, `presidio`, `litellm`, and `headroom`. The user never
+invokes `docker compose`, `launchctl`, or `systemctl` directly. The whole service
+tier runs as containers (see architecture §5, "Host Services Control Plane").
+(The Microsandbox workspace runtime is not a long-running service — it is driven
+by the `ai workspace` commands, not `ai services`.)
 
 ```bash id="c27a"
 ai services status                 # health + version of every service
@@ -634,18 +624,18 @@ ai services stop    [<service>]    # stop one or all
 ai services restart [<service>]    # restart one or all
 ```
 
-`<service>`: `litellm` | `clawpatrol` | `ollama` | `all` (no arg = all).
+`<service>`: `ollama` | `presidio` | `litellm` | `headroom` |
+`all` (no arg = all).
 
 Behavior:
 
-* `status` reports each service's run mode (container | native), health, and
-  pinned version; `--json` returns the §19 envelope with a `data.services` array
-* lifecycle verbs act on the **platform-owned** service — **LiteLLM** (the
-  container the platform launches), via the runtime abstraction (§6). With no
-  service, or `all`, they act on the platform-owned set
-* **Ollama and ClawPatrol are started by their own installers**, so the platform
-  does not manage their lifecycle; naming either explicitly exits `2` with
-  guidance to use that tool's own service control
+* `status` reports each service's health and pinned version; `--json` returns the
+  §19 envelope with a `data.services` array. It covers the platform
+  **containers** — `ollama`, `presidio`, `litellm`, `headroom` — which are the
+  whole service tier
+* lifecycle verbs act on the **platform-owned container set** — `ollama`,
+  `presidio`, `litellm`, `headroom` — via the runtime abstraction (§6). With no
+  service, or `all`, they act on every container in **dependency order**
 * docker compose is not used; container-tier services are managed through the
   runtime abstraction (§6)
 * service install/upgrade is handled by `ai setup` / `ai setup --upgrade`, not by
@@ -658,30 +648,37 @@ Behavior:
 # 10a. Network (workspace egress policy)
 
 ```bash id="c27b"
-ai network show    [project]                    # show the egress policy
-ai network egress  <deny|public|unrestricted> [project]   # set the default posture
-ai network allow   <host:port> [project] [--remove]       # allow/revoke an external destination
-ai network publish <guest:host> [project] [--remove]      # publish/unpublish a workspace port
+ai network show                                  # show the egress policy
+ai network egress  [deny|public|unrestricted]    # set the default posture
+ai network allow   [host:port] [--remove]        # allow/revoke an external destination
+ai network publish [host:guest] [--remove]       # publish/unpublish a workspace port
 ```
 
 Project-scoped (default the current directory's project, like `ai context`).
-These edit the project's `network` block (architecture §29.6); enforcement is the
-Microsandbox network policy applied at `ai workspace start`. The whole policy is
+These edit the project's `network` block in `config.yaml` — `network.egress`,
+`network.allow_host_services`, `network.publish_ports`. Enforcement (the
+Microsandbox `NetworkPolicy` applied at `ai workspace start`) is **deferred to
+hardware bring-up**; this command manages the **declaration**. The whole policy is
 managed by the `ai` app — **no manual file editing is required** (though the
 `network` block stays hand-editable). On a terminal, omitting the value
-**presents the options**: `egress` (no mode) shows a posture menu; `allow` (no
-arg) shows a menu of common services (Postgres/Redis/Kafka/… with default ports)
-plus a custom entry; `publish` (no arg) prompts for the ports. With `--json` or
-no TTY, the value must be passed as an argument.
+**presents the options**: `egress` (no mode) shows a posture select menu; `allow`
+(no arg) shows interactive service presets (Postgres, MySQL, Redis, Kafka,
+MongoDB, RabbitMQ, Elasticsearch, HTTPS — each with its default port — plus a
+custom `host:port` entry); `publish` (no arg) prompts for the ports. With `--json`
+or no TTY, the value must be passed as an argument.
 
+* `show` lists the project's egress mode, allowed host services, and published
+  ports.
 * `egress` sets the default outbound posture: **deny** (default — only the model
   gateway + allowed services), **public** (open internet, private ranges still
   blocked), **unrestricted**.
-* `allow <host:port>` opens a direct egress destination — a database, Kafka
-  broker, or a specific API. `host` may be a hostname/IP/domain, or `gateway` for
-  a service on the host machine. `--remove` revokes it.
-* `publish <guest:host>` exposes a workspace port to the host; `--remove` undoes it.
+* `allow <host:port>` adds an allowed host service the workspace may reach — a
+  database, Kafka broker, or a specific API. `--remove` revokes it.
+* `publish <host:guest>` publishes a workspace (guest) port to a host port;
+  `--remove` undoes it.
 * invalid mode / port → exit `2`.
+
+Human-readable output by default; `--json` emits the standard §19 envelope.
 
 ---
 
@@ -689,8 +686,9 @@ no TTY, the value must be passed as an argument.
 
 There is no backup/restore command. It isn't needed (architecture §32): project
 source is the user's git repo, platform state is rebuildable via
-`ai state repair`, secrets live in ClawPatrol, and installed programs + agent
-state persist in the per-workspace overlay (§26 / `ai workspace` lifecycle).
+`ai state repair`, provider keys live in the LiteLLM gateway (§16.1), and
+installed programs + agent state persist in the per-workspace overlay
+(§26 / `ai workspace` lifecycle).
 
 ---
 
@@ -716,7 +714,7 @@ Options:
 
 ```bash id="c32"
 --workspace <project>
---service <microsandbox|litellm|clawpatrol|ollama>
+--service <microsandbox|ollama|presidio|litellm|headroom>
 --tail
 ```
 
@@ -777,7 +775,7 @@ Never for:
 # 16. Security Rules
 
 * no secrets exposed in CLI output
-* ClawPatrol is only secret provider
+* provider keys live only in the LiteLLM gateway (keys-in-LiteLLM, §16.1)
 * no environment variable leakage
 * no `.env` generation
 
@@ -785,15 +783,16 @@ Never for:
 
 ## 16.1 Credential Commands (`ai secrets`)
 
-Credentials are imported into ClawPatrol's store; the platform never writes them
-to disk itself (architecture §17). These commands are the only credential entry
-points.
+Provider credentials live **in the LiteLLM gateway** (keys-in-LiteLLM) — supplied
+as env passthrough at launch and/or held in LiteLLM's Postgres-backed store; the
+platform never writes the values to its own disk (architecture §17). These
+commands are the only credential entry points; they manage the LiteLLM-side
+credentials.
 
 ```bash id="c37"
-ai secrets set <name> [--value <v> | --stdin]   # store a credential in ClawPatrol
+ai secrets set <name> [--value <v> | --stdin]   # record a provider credential for the LiteLLM gateway
 ai secrets list                                 # names + metadata only, never values
 ai secrets rm <name>                            # remove a credential
-ai secrets map <name> --env <ENV_VAR>           # bind a credential to a placeholder env var
 ```
 
 Behavior:
@@ -802,9 +801,9 @@ Behavior:
   the acceptance harness uses
 * `list` output and all `--json` envelopes contain **names and metadata only** —
   never secret values (exit `5` is returned if a value would otherwise leak)
-* `map` records which workspace placeholder env var (e.g. `OPENAI_API_KEY`) the
-  gateway swaps for which stored credential
-* values are written only to ClawPatrol's SQLite store, never to platform disk
+* credentials are held by the LiteLLM gateway, never written to platform disk; the
+  workspace agent receives only a scoped LiteLLM **virtual key**, never a provider
+  secret
 
 ---
 
@@ -882,12 +881,12 @@ Standardized:
 
 | Condition | Code |
 |---|---|
-| missing Docker/Podman/Microsandbox/LiteLLM/ClawPatrol (`doctor`, `setup`) | 3 |
+| missing Docker/Podman/Microsandbox/LiteLLM (`doctor`, `setup`) | 3 |
 | unknown project / agent / OS key | 2 |
 | Microsandbox or runtime operation failed | 4 |
 | rootless required but unavailable | 4 |
 | destructive command (`project delete` / `agent remove`) without `--yes`, non-interactive | 2 |
-| ClawPatrol denies an action or lacks a credential | 5 |
+| a required provider credential is missing in the LiteLLM gateway at request time | 5 |
 
 Every non-zero exit must also emit a structured error (see §19) and log the
 failure (§15.1).

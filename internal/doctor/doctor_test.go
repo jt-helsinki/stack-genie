@@ -10,9 +10,8 @@ import (
 )
 
 type fakeProber struct {
-	bins         map[string]bool
-	files        map[string]bool
-	clawpatrolUp bool // `clawpatrol status` succeeds
+	bins  map[string]bool
+	files map[string]bool
 }
 
 func (prober fakeProber) LookPath(file string) (string, error) {
@@ -21,10 +20,7 @@ func (prober fakeProber) LookPath(file string) (string, error) {
 	}
 	return "", exec.ErrNotFound
 }
-func (prober fakeProber) Run(name string, _ ...string) ([]byte, error) {
-	if name == "clawpatrol" && prober.clawpatrolUp {
-		return nil, nil
-	}
+func (prober fakeProber) Run(_ string, _ ...string) ([]byte, error) {
 	return nil, exec.ErrNotFound
 }
 func (prober fakeProber) Exists(path string) bool { return prober.files[path] }
@@ -55,7 +51,7 @@ func (probe fakeOllama) Reachable() error { return probe.err }
 func TestRunAllHealthy(test *testing.T) {
 	deps := Deps{
 		GOOS: "darwin", GOARCH: "arm64",
-		Prober: fakeProber{bins: map[string]bool{"docker": true, "msb": true, "clawpatrol": true}, clawpatrolUp: true},
+		Prober: fakeProber{bins: map[string]bool{"docker": true, "msb": true}},
 		Model:  fakeModel{healthy: true},
 		Ollama: fakeOllama{},
 	}
@@ -65,9 +61,6 @@ func TestRunAllHealthy(test *testing.T) {
 	}
 	if checkByName(report, "ollama").Status != StatusOK {
 		test.Errorf("ollama: %+v", checkByName(report, "ollama"))
-	}
-	if checkByName(report, "clawpatrol").Status != StatusOK {
-		test.Errorf("clawpatrol: %+v", checkByName(report, "clawpatrol"))
 	}
 	if got := checkByName(report, "container runtime").Detail; got != "docker" {
 		test.Errorf("container detail = %q", got)
@@ -80,7 +73,7 @@ func TestRunAllHealthy(test *testing.T) {
 func TestOllamaRequiredCheck(test *testing.T) {
 	base := Deps{
 		GOOS: "darwin", GOARCH: "arm64",
-		Prober: fakeProber{bins: map[string]bool{"docker": true, "msb": true, "clawpatrol": true}},
+		Prober: fakeProber{bins: map[string]bool{"docker": true, "msb": true}},
 		Model:  fakeModel{healthy: true},
 	}
 
@@ -104,28 +97,6 @@ func TestOllamaRequiredCheck(test *testing.T) {
 	}
 }
 
-func TestClawpatrolHealthProbe(test *testing.T) {
-	base := func(prober fakeProber) Deps {
-		return Deps{GOOS: "darwin", GOARCH: "arm64", Prober: prober, Model: fakeModel{healthy: true}, Ollama: fakeOllama{}}
-	}
-
-	// Installed + `clawpatrol status` succeeds → running.
-	up := base(fakeProber{bins: map[string]bool{"docker": true, "msb": true, "clawpatrol": true}, clawpatrolUp: true})
-	if got := checkByName(Run(up), "clawpatrol").Status; got != StatusOK {
-		test.Errorf("clawpatrol up → %q, want ok", got)
-	}
-	// Installed but status fails → warn (gateway not running).
-	down := base(fakeProber{bins: map[string]bool{"docker": true, "msb": true, "clawpatrol": true}})
-	if got := checkByName(Run(down), "clawpatrol").Status; got != StatusWarn {
-		test.Errorf("clawpatrol installed-but-down → %q, want warn", got)
-	}
-	// Not installed → error.
-	missing := base(fakeProber{bins: map[string]bool{"docker": true, "msb": true}})
-	if got := checkByName(Run(missing), "clawpatrol").Status; got != StatusError {
-		test.Errorf("clawpatrol missing → %q, want error", got)
-	}
-}
-
 func TestRunMissingDepsError(test *testing.T) {
 	deps := Deps{
 		GOOS: "linux", GOARCH: "amd64",
@@ -136,7 +107,7 @@ func TestRunMissingDepsError(test *testing.T) {
 	if report.OK {
 		test.Fatal("expected not-OK with missing deps")
 	}
-	for _, name := range []string{"container runtime", "microsandbox runtime", "host virtualization", "clawpatrol"} {
+	for _, name := range []string{"container runtime", "microsandbox runtime", "host virtualization"} {
 		check := checkByName(report, name)
 		if check.Status != StatusError {
 			test.Errorf("%s status = %q, want error", name, check.Status)
@@ -187,7 +158,6 @@ func TestMissingDepSuggestionsAreCopyPasteable(test *testing.T) {
 	report := Run(deps)
 	wants := map[string]string{
 		"microsandbox runtime": "curl -fsSL https://install.microsandbox.dev | sh",
-		"clawpatrol":           "curl -fsSL https://clawpatrol.dev/install.sh | sh",
 		"container runtime":    "https://get.docker.com",
 	}
 	for name, fragment := range wants {
@@ -200,7 +170,7 @@ func TestMissingDepSuggestionsAreCopyPasteable(test *testing.T) {
 func TestLitellmErrorIsWarn(test *testing.T) {
 	deps := Deps{
 		GOOS: "darwin", GOARCH: "arm64",
-		Prober: fakeProber{bins: map[string]bool{"docker": true, "msb": true, "clawpatrol": true}},
+		Prober: fakeProber{bins: map[string]bool{"docker": true, "msb": true}},
 		Model:  fakeModel{err: errors.New("connection refused")},
 	}
 	report := Run(deps)

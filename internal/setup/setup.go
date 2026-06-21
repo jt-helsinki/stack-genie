@@ -1,18 +1,15 @@
 // Package setup implements `ai setup` (CLI §2.1, arch §5): the single,
 // idempotent control-plane action that preflights the host, initializes
 // ~/.ai-platform, persists the detected runtime, writes default config/versions,
-// ensures the ClawPatrol CA, and reconciles the host services.
+// and reconciles the host services.
 //
-// External-tool actions (starting services, generating the CA) are behind the
-// Services and CA interfaces so the orchestration is unit-tested with fakes and
-// the real impls (setup_real.go) run on a provisioned host.
+// External-tool actions (starting services) are behind the Services interface so
+// the orchestration is unit-tested with fakes and the real impl (setup_real.go)
+// runs on a provisioned host.
 package setup
 
 import (
 	"fmt"
-	"os"
-	"path/filepath"
-	"regexp"
 	"slices"
 	"strings"
 
@@ -20,7 +17,6 @@ import (
 	"github.com/jt-helsinki/ideal-robot/internal/doctor"
 	"github.com/jt-helsinki/ideal-robot/internal/layout"
 	"github.com/jt-helsinki/ideal-robot/internal/output"
-	"github.com/jt-helsinki/ideal-robot/internal/paths"
 	"github.com/jt-helsinki/ideal-robot/internal/runtime"
 	"github.com/jt-helsinki/ideal-robot/internal/templates"
 	"github.com/jt-helsinki/ideal-robot/internal/versions"
@@ -35,8 +31,8 @@ type ServiceStatus struct {
 	Detail  string `json:"detail,omitempty"`
 }
 
-// Services reconciles, reports, and controls the host services (LiteLLM + Ollama
-// containers, ClawPatrol native gateway). Implementations shell out to the
+// Services reconciles, reports, and controls the host services (the LiteLLM,
+// Ollama, Presidio, and Headroom containers). Implementations shell out to the
 // runtime/OS.
 type Services interface {
 	// Reconcile makes reality match the desired state (idempotent).
@@ -48,14 +44,8 @@ type Services interface {
 	Control(action, service string) ([]ServiceStatus, error)
 }
 
-// CA ensures the ClawPatrol TLS-interception CA exists (arch §17). The root is
-// installed into each workspace at workspace start (M5), not here.
-type CA interface {
-	Ensure() error
-}
-
-// DepInstaller installs a missing host dependency by binary name (msb,
-// clawpatrol) via the tool's official installer. Injectable for tests.
+// DepInstaller installs a missing host dependency by binary name (msb) via the
+// tool's official installer. Injectable for tests.
 type DepInstaller interface {
 	Install(binary string) error
 }
@@ -65,7 +55,6 @@ type DepInstaller interface {
 // are intentionally NOT here — too heavy and a user choice; they stay a prereq.
 var installableDeps = []struct{ Binary, URL string }{
 	{"msb", "https://install.microsandbox.dev"},
-	{"clawpatrol", "https://clawpatrol.dev/install.sh"},
 }
 
 // installerURL returns the official installer URL for a known dependency binary.
@@ -79,7 +68,7 @@ func installerURL(binary string) (string, bool) {
 }
 
 // ensureDependencies installs the auto-installable host programs that are not yet
-// on PATH (msb, ClawPatrol), skipping any already present. Best-effort: an
+// on PATH (msb), skipping any already present. Best-effort: an
 // installer failure or a not-yet-on-PATH binary becomes a note, not a hard fail —
 // the prerequisite scan still gates anything truly missing.
 func ensureDependencies(deps Deps) []string {
@@ -110,12 +99,8 @@ type Deps struct {
 	Prober       runtime.Prober
 	Now          func() string // RFC 3339 UTC timestamp
 	Services     Services
-	CA           CA
-	// DepInstaller installs missing auto-installable host programs (msb, ClawPatrol).
+	// DepInstaller installs missing auto-installable host programs (msb).
 	DepInstaller DepInstaller
-	// GatewayConfigFetcher downloads the ClawPatrol gateway example HCL (seeded
-	// into ~/.clawpatrol/gateway.hcl on first setup). Injectable for tests.
-	GatewayConfigFetcher func() ([]byte, error)
 }
 
 // Options configure a setup run.
@@ -157,65 +142,14 @@ func ControlService(deps Deps, action, service string) ([]ServiceStatus, error) 
 
 // Report is the result of a successful setup.
 type Report struct {
-	PlatformDir     string        `json:"platform_dir"`
-	Runtime         *runtime.Info `json:"runtime"`
-	ConfigCreated   bool          `json:"config_created"`
-	VersionsCreated bool          `json:"versions_created"`
-	CAReady         bool          `json:"ca_ready"`
-	// GatewayConfigCreated is true when this run seeded ~/.clawpatrol/gateway.hcl.
-	GatewayConfigCreated bool            `json:"gateway_config_created"`
-	Services             []ServiceStatus `json:"services"`
-	// Warnings carries non-blocking prerequisite gaps (e.g. ClawPatrol not yet
-	// installed). Surfaced via the envelope's warnings, not the data payload.
+	PlatformDir     string          `json:"platform_dir"`
+	Runtime         *runtime.Info   `json:"runtime"`
+	ConfigCreated   bool            `json:"config_created"`
+	VersionsCreated bool            `json:"versions_created"`
+	Services        []ServiceStatus `json:"services"`
+	// Warnings carries non-blocking prerequisite gaps. Surfaced via the
+	// envelope's warnings, not the data payload.
 	Warnings []string `json:"-"`
-}
-
-// gatewayConfigURL is the upstream ClawPatrol gateway example, seeded into
-// ~/.clawpatrol/gateway.hcl on first setup (clawpatrol.dev/docs/configure-gateway).
-const gatewayConfigURL = "https://raw.githubusercontent.com/denoland/clawpatrol/refs/heads/main/examples/gateway.example.hcl"
-
-// gateway HCL assignments rewritten with sensible local defaults (only the
-// assignment lines, never the comment references).
-var (
-	stateDirAssignment        = regexp.MustCompile(`(?m)^(\s*state_dir\s*=\s*)"[^"]*"`)
-	dashboardListenAssignment = regexp.MustCompile(`(?m)^(\s*dashboard_listen\s*=\s*)"[^"]*"`)
-)
-
-// dashboardListen is the platform default for the ClawPatrol dashboard — 8123 is
-// less likely to collide with other apps than the upstream example's 8080.
-const dashboardListen = "127.0.0.1:8123"
-
-// ensureGatewayConfig seeds ~/.clawpatrol/gateway.hcl from the upstream example
-// on first setup and applies sensible local defaults (state_dir → ~/.clawpatrol).
-// It is idempotent: if the file already exists it is left untouched (no download,
-// no rewrite — local edits are respected). A download failure is non-fatal and
-// returned as a warning so setup does not hard-fail offline.
-func ensureGatewayConfig(deps Deps) (created bool, warning string, err error) {
-	dir, err := paths.ClawPatrolDir()
-	if err != nil {
-		return false, "", err
-	}
-	configPath := filepath.Join(dir, "gateway.hcl")
-	if _, statErr := os.Stat(configPath); statErr == nil {
-		return false, "", nil // exists — skip (don't download, don't overwrite)
-	} else if !os.IsNotExist(statErr) {
-		return false, "", statErr
-	}
-
-	contents, fetchErr := deps.GatewayConfigFetcher()
-	if fetchErr != nil {
-		return false, fmt.Sprintf("ClawPatrol gateway config not seeded: %s", fetchErr), nil
-	}
-	contents = stateDirAssignment.ReplaceAll(contents, []byte(`${1}"`+dir+`"`))
-	contents = dashboardListenAssignment.ReplaceAll(contents, []byte(`${1}"`+dashboardListen+`"`))
-
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return false, "", err
-	}
-	if err := os.WriteFile(configPath, contents, 0o644); err != nil {
-		return false, "", err
-	}
-	return true, "", nil
 }
 
 // Human renders the setup result as a readable summary (non-JSON output).
@@ -231,8 +165,8 @@ func (report *Report) Human() string {
 		fmt.Fprintf(&builder, "Runtime:  %s (rootless=%t) · microVM %s (%s)\n",
 			runtimeInfo.Detected, runtimeInfo.Rootless, runtimeInfo.Microsandbox.Virtualization, available)
 	}
-	fmt.Fprintf(&builder, "State:    config=%t versions=%t ca=%t gateway=%t\n",
-		report.ConfigCreated, report.VersionsCreated, report.CAReady, report.GatewayConfigCreated)
+	fmt.Fprintf(&builder, "State:    config=%t versions=%t\n",
+		report.ConfigCreated, report.VersionsCreated)
 	builder.WriteString("Services:\n")
 	for _, service := range report.Services {
 		line := fmt.Sprintf("  %-11s %-9s %s", service.Name, service.Mode, service.State)
@@ -253,10 +187,9 @@ type Prerequisite struct {
 	Blocking   bool   `json:"blocking"`
 }
 
-// blockingPrereqs are the checks that must pass before setup proceeds. ClawPatrol
-// is intentionally non-blocking (its integration is wired during hardware
-// bring-up); a missing container runtime / Microsandbox / virtualization /
-// rootless posture stops setup.
+// blockingPrereqs are the checks that must pass before setup proceeds: a missing
+// container runtime / Microsandbox / virtualization / rootless posture stops
+// setup.
 var blockingPrereqs = map[string]bool{
 	"container runtime":     true,
 	"microsandbox runtime":  true,
@@ -319,9 +252,9 @@ func prerequisiteError(missing []Prerequisite) *output.Error {
 func Run(options Options, deps Deps) (*Report, error) {
 	// 1. Preflight: scan every prerequisite and report all missing ones at once,
 	// each with an install command. Blocking gaps stop setup (exit 3 if a program
-	// is missing, else 4); non-blocking gaps (e.g. ClawPatrol) become warnings.
-	// Auto-install the host programs we can (msb, ClawPatrol) before the scan, so
-	// a fresh host doesn't fail preflight just for a missing installable dep.
+	// is missing, else 4); non-blocking gaps become warnings. Auto-install the host
+	// programs we can (msb) before the scan, so a fresh host doesn't fail preflight
+	// just for a missing installable dep.
 	warnings := ensureDependencies(deps)
 
 	missing := missingPrerequisites(deps)
@@ -373,35 +306,19 @@ func Run(options Options, deps Deps) (*Report, error) {
 		return nil, output.Errorf(output.ExitRuntimeFailure, "write versions.json: %s", err)
 	}
 
-	// 5. ClawPatrol TLS-interception CA (arch §17).
-	if err := deps.CA.Ensure(); err != nil {
-		return nil, output.Errorf(output.ExitRuntimeFailure, "ensure ClawPatrol CA: %s", err)
-	}
-
-	// 5b. Seed ~/.clawpatrol/gateway.hcl from the upstream example (first run only).
-	gatewayCreated, gatewayWarning, err := ensureGatewayConfig(deps)
-	if err != nil {
-		return nil, output.Errorf(output.ExitRuntimeFailure, "ensure ClawPatrol gateway config: %s", err)
-	}
-	if gatewayWarning != "" {
-		warnings = append(warnings, gatewayWarning)
-	}
-
-	// 6. Reconcile host services to the desired state.
+	// 5. Reconcile host services to the desired state.
 	serviceStatuses, err := deps.Services.Reconcile(options.ProviderConfig)
 	if err != nil {
 		return nil, output.Errorf(output.ExitRuntimeFailure, "reconcile services: %s", err)
 	}
 
 	return &Report{
-		PlatformDir:          platformDir,
-		Runtime:              detected,
-		ConfigCreated:        configCreated,
-		VersionsCreated:      versionsCreated,
-		CAReady:              true,
-		GatewayConfigCreated: gatewayCreated,
-		Services:             serviceStatuses,
-		Warnings:             warnings,
+		PlatformDir:     platformDir,
+		Runtime:         detected,
+		ConfigCreated:   configCreated,
+		VersionsCreated: versionsCreated,
+		Services:        serviceStatuses,
+		Warnings:        warnings,
 	}, nil
 }
 

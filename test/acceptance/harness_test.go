@@ -1,7 +1,7 @@
 // Package acceptance is the Go acceptance-test harness (acceptance-tests spec
 // §1.6). It builds the `ai` binary once, runs commands against an ephemeral
 // HOME, and asserts the §19 JSON envelope and §18 exit codes — never scraped
-// text. Service-dependent tests skip when Docker/Microsandbox/ClawPatrol are
+// text. Service-dependent tests skip when Docker/Microsandbox/LiteLLM are
 // absent (they run on a provisioned Apple Silicon host).
 package acceptance
 

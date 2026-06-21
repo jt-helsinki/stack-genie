@@ -46,9 +46,7 @@ func (result logsResult) Human() string {
 }
 
 // logServices is the host services accepted by `ai logs --service` (CLI §13.1).
-// Headroom is not here — it runs in the workspace, so its logs come via
-// --workspace, not as a host service.
-var logServices = []string{"microsandbox", "litellm", "clawpatrol", "ollama"}
+var logServices = []string{"microsandbox", "ollama", "presidio", "litellm", "headroom"}
 
 // tailLines is how many trailing lines `--tail` keeps per source.
 const tailLines = 200

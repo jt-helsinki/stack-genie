@@ -166,7 +166,8 @@ Rules:
 
 The platform does not manage MCP. MCP servers are configured and run by the
 in-workspace agent (architecture §12). There is no platform MCP registry.
-(ClawPatrol still brokers any credentials those MCP servers need — architecture
+(Any provider credentials those MCP servers need are resolved through the
+keys-in-LiteLLM credential store, not stored on platform disk — architecture
 §17.)
 
 ---
@@ -197,11 +198,8 @@ config.yaml              # global platform config (§12.4)
 runtime.json             # detected runtime, platform-global (§12.5)
 versions.json            # pinned versions/digests of host services (§12.6)
 projects.json            # index: project name → path (§12.7)
-litellm/                 # rendered LiteLLM config (placeholders only)
-microsandbox/            # rendered Microsandbox workspace defaults (image, mounts, limits)
-clawpatrol/              # platform-rendered ClawPatrol bits (NOT the credential store).
-                         # The operational gateway config lives in ClawPatrol's own
-                         # home: ~/.clawpatrol/gateway.hcl (seeded by `ai setup`).
+litellm/                 # rendered LiteLLM config (placeholders only; real keys live in the gateway)
+microsandbox/            # rendered Microsandbox workspace defaults (image, mounts, limits, network policy)
 ollama/                  # rendered Ollama config (required local model backend)
 ```
 
@@ -209,8 +207,8 @@ Rules:
 
 * every `<service>/` config is **rendered** by the CLI from the platform
   config; not hand-edited (architecture §5, Host Services Control Plane)
-* contains **no secrets** — only placeholders; real credentials live in
-  ClawPatrol's own SQLite store, never here
+* contains **no secrets** — only placeholders; real provider credentials live in
+  the LiteLLM gateway (env passthrough / its Postgres-backed store), never here
 * native-service binaries live under `~/.ai-platform/tools/`, not here
 
 ## 1.9 Tools
@@ -219,7 +217,7 @@ Rules:
 ~/.ai-platform/tools/<name>/<version>/
 ```
 
-Pinned, checksum-verified host binaries (e.g. `clawpatrol` and the Microsandbox
+Pinned, checksum-verified host binaries (e.g. the Microsandbox
 `msb` runtime). Versions are tracked in `config/versions.json`. (Ollama is no
 longer a native binary — it runs as a container-tier service; see architecture
 §16 and `config/versions.json` §12.6.)
@@ -429,7 +427,8 @@ are:
 * no secrets stored anywhere in repository
 * no secrets in workspace
 * no secrets in cache
-* only ClawPatrol injects secrets at runtime
+* real provider keys live only in the LiteLLM gateway (keys-in-LiteLLM); the
+  workspace agent holds only a scoped virtual key
 
 ---
 
@@ -544,13 +543,14 @@ agent:
   default_tool: opencode   # default agent CLI; must be one of agent.tools
 context:
   strategy: balanced       # Headroom input compression: conservative | balanced | aggressive
+                           # (mapped to Headroom per-request knobs keep_turns/output_buffer_tokens)
   caveman_level: full      # Caveman output compression: lite | full | ultra | wenyan
 workspace:
   cpu_limit: 4             # microVM resource limits (applied at workspace start)
   memory_limit: 8G
-network:                   # workspace networking (arch §29.6); edit via `ai network`
+network:                   # workspace networking (arch §29.6); all fields managed via `ai network`
+                           # enforced as a default-deny Microsandbox NetworkPolicy (no egress proxy)
   egress: deny             # deny | public | unrestricted (default deny)
-  egress_proxy: clawpatrol
   allow_host_services:     # external destinations the workspace may reach (host/IP/domain or "gateway")
     - { host: gateway, port: 5432 }
   publish_ports:           # host → workspace port maps
@@ -577,10 +577,12 @@ network:                   # workspace networking (arch §29.6); edit via `ai ne
   "schema_version": 1,
   "services": {
     "microsandbox": { "mode": "native",    "version": "v0.x", "sha256": "..." },
-    "clawpatrol":   { "mode": "native",    "version": "v0.x", "sha256": "..." },
     "litellm":      { "mode": "container", "image": "ghcr.io/berriai/litellm", "digest": "sha256:..." },
-    "headroom":     { "mode": "workspace", "version": "..." },
-    "ollama":       { "mode": "container", "image": "docker.io/ollama/ollama", "digest": "sha256:..." }
+    "litellm-db":   { "mode": "container", "image": "postgres:18.4-alpine3.24", "digest": "sha256:..." },
+    "headroom":     { "mode": "container", "image": "ghcr.io/chopratejas/headroom:slim", "digest": "sha256:..." },
+    "ollama":       { "mode": "container", "image": "docker.io/ollama/ollama", "digest": "sha256:..." },
+    "presidio-analyzer":   { "mode": "container", "image": "mcr.microsoft.com/presidio-analyzer",   "digest": "sha256:..." },
+    "presidio-anonymizer": { "mode": "container", "image": "mcr.microsoft.com/presidio-anonymizer", "digest": "sha256:..." }
   }
 }
 ```

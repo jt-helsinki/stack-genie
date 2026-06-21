@@ -15,9 +15,9 @@ import (
 
 // newUninstallCmd builds `ai uninstall` (CLI §2.2): a native, offline teardown —
 // the inverse of install + setup. It streams status/progress as each step runs,
-// asks per external dependency (msb, clawpatrol) whether to remove it too, then
-// the process exits when finished (the running binary removes itself; its inode
-// survives until exit). It never touches your project directories.
+// asks per external dependency (msb) whether to remove it too, then the process
+// exits when finished (the running binary removes itself; its inode survives
+// until exit). It never touches your project directories.
 func newUninstallCmd(em *output.Emitter, exit *int) *cobra.Command {
 	var purge, removeDeps bool
 	cmd := &cobra.Command{
@@ -25,10 +25,10 @@ func newUninstallCmd(em *output.Emitter, exit *int) *cobra.Command {
 		Short: "Uninstall the platform (binary, PATH/completion entries, containers; --purge also removes state)",
 		Long: "Remove the platform from this host. Stops the platform containers, removes\n" +
 			"the ai binary and the PATH/completion entries, and (with --purge) the\n" +
-			"platform state under ~/.ai-platform and ~/.clawpatrol. Runs entirely from\n" +
-			"this binary — no network or external script. On a terminal it asks, per\n" +
-			"external dependency (msb, clawpatrol), whether to uninstall it too. Never\n" +
-			"touches your project directories (your source lives wherever you created it).",
+			"platform state under ~/.ai-platform. Runs entirely from this binary — no\n" +
+			"network or external script. On a terminal it asks, per external dependency\n" +
+			"(msb), whether to uninstall it too. Never touches your project directories\n" +
+			"(your source lives wherever you created it).",
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			prober := runtime.RealProber()
@@ -109,9 +109,9 @@ func newUninstallCmd(em *output.Emitter, exit *int) *cobra.Command {
 		},
 	}
 	cmd.Flags().BoolVar(&purge, "purge", false,
-		"also remove ~/.ai-platform and ~/.clawpatrol (never your project directories)")
+		"also remove ~/.ai-platform (never your project directories)")
 	cmd.Flags().BoolVar(&removeDeps, "remove-deps", false,
-		"also uninstall the external dependencies (msb, clawpatrol) without prompting")
+		"also uninstall the external dependencies (msb) without prompting")
 	return cmd
 }
 
@@ -120,7 +120,7 @@ func newUninstallCmd(em *output.Emitter, exit *int) *cobra.Command {
 func confirmUninstall(purge bool) bool {
 	description := "Removes the ai binary, PATH/completion entries, and platform containers."
 	if purge {
-		description += " Also removes platform state (~/.ai-platform, ~/.clawpatrol)."
+		description += " Also removes platform state (~/.ai-platform)."
 	}
 	description += " Never touches your project directories (your source)."
 	var yes bool
@@ -198,9 +198,9 @@ func (result uninstallResult) Human() string {
 		return strings.Join(lines, "\n")
 	}
 
-	tail := "Platform state was kept — re-run with --purge to remove ~/.ai-platform and ~/.clawpatrol."
+	tail := "Platform state was kept — re-run with --purge to remove ~/.ai-platform."
 	if result.Purged {
-		tail = "Removed platform state (~/.ai-platform, ~/.clawpatrol)."
+		tail = "Removed platform state (~/.ai-platform)."
 	}
 	summary := "Uninstall complete. " + tail
 	if len(result.RemovedDeps) > 0 {

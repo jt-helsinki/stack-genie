@@ -51,17 +51,16 @@ type WorkspaceConfig struct {
 }
 
 // NetworkConfig configures the workspace's two local-dev networking directions
-// (arch §29.6). EgressProxy names the internet-egress firewall (ClawPatrol).
-// AllowHostServices is the plain-TCP allow-list of host services the workspace
-// may reach via the host gateway (e.g. a database). PublishPorts maps guest
-// ports to host ports so the host can reach a server inside the workspace.
+// (arch §29.6). AllowHostServices is the plain-TCP allow-list of host services
+// the workspace may reach via the host gateway (e.g. a database). PublishPorts
+// maps guest ports to host ports so the host can reach a server inside the
+// workspace.
 type NetworkConfig struct {
 	// Egress is the workspace's default outbound posture, enforced by the
 	// Microsandbox network policy (arch §29.6): "deny" (default — only the model
 	// gateway + allow_host_services are reachable), "public" (the open internet,
 	// private ranges still blocked), or "unrestricted". Empty == "deny".
 	Egress            string        `yaml:"egress,omitempty" json:"egress,omitempty"`
-	EgressProxy       string        `yaml:"egress_proxy,omitempty" json:"egress_proxy,omitempty"`
 	AllowHostServices []HostService `yaml:"allow_host_services,omitempty" json:"allow_host_services,omitempty"`
 	PublishPorts      []PortMapping `yaml:"publish_ports,omitempty" json:"publish_ports,omitempty"`
 }
@@ -97,7 +96,7 @@ func Default() *Config {
 		Agent:     AgentConfig{Tools: []string{"opencode", "pi"}, DefaultTool: "opencode"},
 		Context:   ContextConfig{Strategy: "balanced", CavemanLevel: "full"},
 		Workspace: WorkspaceConfig{CPULimit: 4, MemoryLimit: "8G"},
-		Network:   NetworkConfig{Egress: "deny", EgressProxy: "clawpatrol"},
+		Network:   NetworkConfig{Egress: "deny"},
 	}
 }
 

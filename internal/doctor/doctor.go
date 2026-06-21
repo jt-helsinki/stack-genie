@@ -76,7 +76,6 @@ func Run(deps Deps) Report {
 		rootlessCheck(deps.GOOS, deps.Prober),
 		microsandboxCheck(detectedSandbox),
 		virtualizationCheck(deps.GOOS, detectedSandbox),
-		clawpatrolCheck(deps.Prober),
 		litellmCheck(deps.Model),
 		ollamaCheck(deps.Ollama),
 	}
@@ -198,27 +197,6 @@ func virtualizationSuggestion(goos string) string {
 	default:
 		return "unsupported OS — this platform requires macOS (Apple Silicon) or Linux (KVM)"
 	}
-}
-
-func clawpatrolCheck(prober runtime.Prober) Check {
-	if !installed(prober, "clawpatrol") {
-		return Check{
-			Name: "clawpatrol", Status: StatusError,
-			Detail:     "clawpatrol not found",
-			Suggestion: "install ClawPatrol: curl -fsSL https://clawpatrol.dev/install.sh | sh",
-		}
-	}
-	// `clawpatrol status` reports gateway/device health — whether join/login ran,
-	// the CA is trusted, and the tunnel is healthy (clawpatrol.dev/docs/cli).
-	// Exit 0 means the gateway is up; otherwise it is installed but not running.
-	if _, err := prober.Run("clawpatrol", "status"); err != nil {
-		return Check{
-			Name: "clawpatrol", Status: StatusWarn,
-			Detail:     "installed but gateway not running/healthy",
-			Suggestion: "run `ai setup` to start the ClawPatrol gateway",
-		}
-	}
-	return Check{Name: "clawpatrol", Status: StatusOK, Detail: "running"}
 }
 
 func litellmCheck(client litellm.Client) Check {

@@ -12,8 +12,8 @@ import (
 
 // mockProvider is a local HTTPS, OpenAI-compatible endpoint used by the [S1]
 // credential/egress tests (acceptance-tests §1.6). It records the Authorization
-// header of every request so a test can assert that ClawPatrol injected the real
-// credential on the wire (and that the workspace never held it).
+// header of every request so a test can assert that the LiteLLM gateway injected
+// the real credential on the wire (and that the workspace never held it).
 type mockProvider struct {
 	server *httptest.Server
 	mu     sync.Mutex
@@ -56,8 +56,9 @@ func (provider *mockProvider) sawCredential(sentinel string) bool {
 	return false
 }
 
-// writeCertPEM writes the mock server's TLS certificate so the harness can tell
-// ClawPatrol to trust it (the gateway re-originates TLS to the provider, §17).
+// writeCertPEM writes the mock server's TLS certificate so the harness can make
+// the LiteLLM gateway container trust it: LiteLLM itself makes the outbound HTTPS
+// call to the provider, so it is LiteLLM that must trust the self-signed cert (§17).
 func (provider *mockProvider) writeCertPEM(test *testing.T, path string) {
 	test.Helper()
 	certificate := provider.server.Certificate()

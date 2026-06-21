@@ -17,7 +17,6 @@ real."
       `ai setup` must verify rootless (`runtime.Verify`, exit 4 if not).
 - [ ] **Microsandbox** (`msb`) on `PATH`, code-signed with the
       `com.apple.security.hypervisor` entitlement under Developer ID + notarization.
-- [ ] **ClawPatrol** gateway binary on `PATH`.
 - [ ] `git`, `gh` (already used by project create).
 
 ## 2. Resolve the open unknowns first (don't guess the tool CLIs)
@@ -29,9 +28,10 @@ real docs before wiring:
       exact API for create/start/stop/exec, image source, bind mounts, **named
       volumes**, **default-deny network policy** (pin the symbol — confirmed to
       exist in the Python SDK; verify the Go equivalent), and env injection.
-- [ ] **ClawPatrol CLI/API** for: generating the TLS-interception **CA**;
-      **credential** set/map/remove/list; and running the gateway as a **forward
-      proxy** (S1 egress model). See `denoland/clawpatrol` docs.
+- [ ] **LiteLLM credential + virtual-key API** for: storing provider keys in the
+      gateway (env passthrough at launch / its Postgres-backed store);
+      `ai secrets` set/map/remove/list against that store; and **minting a scoped
+      virtual key** for the workspace agent. See the LiteLLM proxy docs.
 - [ ] **Agent-CLI install commands** in the template snippets
       (`internal/templates/files/agentclis/*/Dockerfile.snippet`) — the npm
       package names (`opencode-ai`, `@earendil-works/pi-coding-agent` (pi.dev),
@@ -44,10 +44,10 @@ real docs before wiring:
       for **pi** it is a custom provider registered via a pi extension or
       `models.json` (`registerProvider(..., { baseUrl, apiKey, api:
       "openai-completions" })`, pi.dev/docs custom-provider) — verify pi's exact
-      config format on hardware. In all cases the `apiKey` an agent CLI holds is
-      the **LiteLLM gateway key** (placeholder/master key), never a real provider
-      secret: ClawPatrol injects the real provider credentials on the wire (§17),
-      so provider API keys never reach the workspace or any agent CLI config.
+      config format on hardware. In all cases the `apiKey` an agent CLI holds is a
+      **scoped LiteLLM virtual key**, never a real provider secret: the real
+      provider credentials live in the LiteLLM gateway (keys-in-LiteLLM, §17), so
+      provider API keys never reach the workspace or any agent CLI config.
 - [ ] **Hypervisor entitlement + notarization** chain for distributing the signed
       `ai` (and/or `msb`) binary (Developer ID, not App Store). The M3 spike
       (plan §8.2) covers this plus a no-admin/no-kext networking check.
@@ -67,9 +67,11 @@ returns `("", false)`):
       falsifiable):
   1. a workspace reaches an **allow-listed** host service (start a host Postgres,
      allow-list `gateway:5432`, connect from inside the microVM);
-  2. a **non-allow-listed** host/internet destination is **denied**;
+  2. a **non-allow-listed** host/internet destination is **denied** (default-deny
+     NetworkPolicy);
   3. a **published** guest port (`network.publish_ports`) is reachable from the host;
-  4. internet egress is still forced through **ClawPatrol** (the firewall).
+  4. the LiteLLM gateway port remains reachable so the agent's model path works,
+     while everything not allow-listed stays denied.
 - [ ] Confirm the SDK calls for the allow-list + port maps, then implement the
       `realSandbox.Create` network application below.
 
@@ -84,39 +86,68 @@ Each is a thin real impl that currently returns `ErrPending` / a stub.
     `projectMount` arg is the host project path directly — supported hosts are
     macOS and Linux, so no path translation), attach the
     overlay named volume backed by the host `overlayPath` Create now receives
-    (ensured by `internal/overlay`, §26), apply the **default-deny network policy**, inject
-    `AI_PLATFORM_HOST` (= `runtime.Info.HostAddress()`) + `HTTPS_PROXY`, and install
-    the ClawPatrol **CA root** into the workspace trust store (arch §17, §29).
+    (ensured by `internal/overlay`, §26), apply the **default-deny network policy**, and inject
+    `AI_PLATFORM_HOST` (= `runtime.Info.HostAddress()`) so the agent reaches the
+    host Headroom→LiteLLM gateway with its scoped virtual key (arch §17, §29).
     `Exec` returns a real `ExecResult`.
-  - Apply the project's `network` block (arch §29.6, `config.NetworkConfig`):
-    add `network.allow_host_services` (resolved via `NetworkConfig.ResolveHostServices(hostGateway)`)
-    to the Microsandbox policy allow-list as **plain-TCP** endpoints (no ClawPatrol
-    TLS interception), and map `network.publish_ports` (host → guest) so the host
-    can reach a dev server in the workspace. ClawPatrol remains the sole internet-egress
-    firewall; the network policy only default-denies and forces egress to it.
+  - **Enforce the `ai network` egress declarations** — apply the project's `network`
+    block (arch §29.6, `config.NetworkConfig`, set via `ai network` and stored in
+    `config.yaml`: egress mode `deny`[default]/`public`/`unrestricted`, allowed host
+    services, published ports) as the Microsandbox **NetworkPolicy**. Add
+    `network.allow_host_services` (resolved via
+    `NetworkConfig.ResolveHostServices(hostGateway)`) to the policy allow-list as
+    **plain-TCP** endpoints, and map
+    `network.publish_ports` (host → guest) so the host can reach a dev server in the
+    workspace. The NetworkPolicy default-denies and permits only the allow-listed
+    host services + published ports; there is no egress proxy. This live
+    NetworkPolicy enforcement is the deferred bring-up end-state for `ai network`.
 - [ ] **`internal/setup/setup_real.go`**
-  - `realServices.Reconcile` → pull pinned images by digest (`config/versions.json`),
-    run LiteLLM with the rendered config via the detected runtime
-    (`runtime.ContainerRuntime.RunArgs`, docker|podman — not hardcoded), start the
-    Ollama (required), and the ClawPatrol gateway (native, register with launchd); health-poll.
-    (Headroom is NOT a host service — see the workspace item below.)
+  - `realServices.Reconcile` → pull pinned images by digest (`config/versions.json`)
+    and bring up the host service tier on the shared `aip-net` network in order
+    **network → Ollama → Presidio → LiteLLM(+DB) → Headroom**, via the detected
+    runtime (`runtime.ContainerRuntime.RunArgs`, docker|podman — not hardcoded);
+    health-poll each:
+    - `aip-ollama` (`ollama/ollama:latest`, :11434, volume `aip-ollama-data`) —
+      required local models, replaces any **native** Ollama (stop a native :11434
+      first); LiteLLM reaches it by name at `api_base=http://aip-ollama:11434`.
+    - `aip-presidio-analyzer` + `aip-presidio-anonymizer`
+      (`mcr.microsoft.com/presidio-analyzer:latest` / `-anonymizer:latest`,
+      internal :3000) — back LiteLLM's always-on PII guardrail.
+    - `aip-litellm` (`ghcr.io/berriai/litellm:main-latest`, :4000) with the rendered
+      config, plus the `aip-litellm-db` Postgres (`postgres:18.4-alpine3.24`, host
+      `127.0.0.1:5442`) for the DB-backed admin UI/virtual keys.
+    - `aip-headroom` (`ghcr.io/chopratejas/headroom:slim`, :8787,
+      `OPENAI_TARGET_API_URL=http://aip-litellm:4000`) — input-compression proxy in
+      front of LiteLLM; **pulled image, never built**.
+    Provider keys are injected into the LiteLLM gateway (env passthrough at launch /
+    its Postgres-backed store) — there is no native gateway to start.
+  - **Verify the live model path + guardrail** — agent → `aip-headroom:8787` →
+    `aip-litellm:4000` (Presidio pre → Ollama or cloud → Presidio post). Confirm the
+    rendered config carries both default-on guardrails (`presidio-pii-input`
+    pre_call, `presidio-pii-output` post_call) and that a **cloud** route still gets
+    PII masking (default-on guardrails run on every request, so cloud cannot bypass).
   - `realServices.Status` → real probes (`<rt> ps`, gateway `/health`, …).
-  - `realCA.Ensure` → generate the ClawPatrol CA (verified CLI from step 2).
-- [ ] **In-workspace Headroom wiring** (arch §8–10) — Headroom is installed in the
-  sandbox image (NOT run as a container). Verify the
-  `internal/templates/files/contextopt/headroom/Dockerfile.snippet` install
-  (`pip install headroom-ai[proxy]`) on each OS, then launch the agent CLI
-  **wrapped by Headroom** — `headroom wrap <cli>` (e.g. `headroom wrap opencode`),
-  or the drop-in proxy `headroom proxy` with `OPENAI_BASE_URL=http://localhost:8787`
-  — upstreaming to LiteLLM at `AI_PLATFORM_HOST` and applying the project's
-  `context.strategy`. Pin the Headroom version in `config/versions.json`.
+  - **Provider-key injection** → load the real provider keys into the LiteLLM
+    gateway (env passthrough at launch / its Postgres-backed store; verified API
+    from step 2). Keep keys out of platform disk and out of the workspace.
+- [ ] **Headroom strategy wiring** (arch §8–10) — Headroom is now the shared host
+  container `aip-headroom` (see the Reconcile item above), **not** installed inside
+  the workspace image. It has no named-strategy header, so the per-project
+  `context.strategy` (conservative/balanced/aggressive) maps to Headroom's two real
+  per-request body knobs `keep_turns`/`output_buffer_tokens` —
+  (8,12000)/(5,8000)/(2,4000), `internal/contextopt.HeadroomParams` — which are
+  baked into the agent CLI's request `extra_body` at workspace start. Verify the
+  agent points at `aip-headroom:8787` (via `AI_PLATFORM_HOST`) and that the knobs
+  take effect live. Pin the Headroom image in `config/versions.json`.
 - [ ] **`internal/secrets/secrets_real.go`**
-  - ClawPatrol is the full agent firewall (intercepts all traffic incl. local
-    Ollama + cloud, evaluates HCL rules, audits everything), not just a secret
-    store (arch §17). `realBroker.Set/Map/Remove/List` → ClawPatrol credential CLI. Keep values out
-    of platform disk; `List` returns names/metadata only.
+  - Credentials are **keys-in-LiteLLM**: real provider keys live in the LiteLLM
+    gateway, never on platform disk or in the workspace (arch §17).
+    `realBroker.Set/Map/Remove/List` → LiteLLM credential-store API; the workspace
+    agent is given only a scoped virtual key. Keep values out of platform disk;
+    `List` returns names/metadata only.
 - [ ] **`internal/setup/setup.go` startup ordering** — confirm container runtime +
-      Microsandbox verified → ClawPatrol (creds loaded) → LiteLLM → [Ollama] (arch §5).
+      Microsandbox verified → service tier (Ollama → Presidio → LiteLLM+DB →
+      Headroom) with provider keys loaded into LiteLLM (arch §5).
 
 ## 4. Turn on the acceptance tests
 
@@ -129,11 +160,12 @@ pass):
       non-hardware unit test.
 - [x] Core service `[S1]` tests written (gated by `hardwareAvailable()`, ready to
       run on a provisioned host) — `test/acceptance/s1_hardware_test.go`:
-  - §9.1 credentialed request (sentinel reaches the mock provider, **never** the
-    workspace; only the placeholder is in the workspace env);
+  - §9.1 credentialed request (the real provider key lives in LiteLLM and reaches
+    the mock provider, **never** the workspace; only a scoped virtual key is in the
+    workspace env);
   - §16.2 workspace isolation (host fs + Docker socket unreachable);
-  - §16.3 egress confinement (LiteLLM reachable; non-allow-listed denied via proxy
-    and directly).
+  - §16.3 egress confinement (LiteLLM gateway reachable; non-allow-listed
+    destinations denied by the default-deny NetworkPolicy).
   - On hardware these will exercise the real `ErrPending` seams — fill those in
     until the tests pass.
 - [ ] Remaining `[S1]` tests still to add: §2.1–2.3 setup/idempotency, §7.1/§7.2
@@ -144,21 +176,19 @@ pass):
 ## 5. Smoke sequence (manual, on the host)
 
 1. `ai doctor` → all checks green.
-2. `ai setup` → exit 0; LiteLLM + ClawPatrol up; CA created; templates installed.
+2. `ai setup` → exit 0; service tier (Ollama, Presidio, LiteLLM + DB, Headroom)
+   up; templates installed.
 3. `ai project create demo` (wizard) → project scaffolded **and** its workspace
    microVM starts.
 4. `ai workspace exec demo -- uname -a` → runs inside the microVM.
 5. `ai secrets set openai --stdin` + `ai secrets map openai --env OPENAI_API_KEY`;
-   `ai models test gpt-5` → injection works (real key at provider, placeholder in
-   workspace).
-6. From the workspace, a non-allowlisted destination is **denied** (egress confined
-   to ClawPatrol).
+   `ai models test gpt-5` → works (real key lives in LiteLLM, only a scoped
+   virtual key in the workspace).
+6. From the workspace, a non-allowlisted destination is **denied** (default-deny
+   Microsandbox NetworkPolicy).
 7. `make test-acceptance` → the `[S1]` suite is green.
 
 ## 6. Deferred beyond Slice 1
 
-- **WireGuard L3 egress** (arch §29 end-state) — replaces the S1 forward proxy for
-  transparent capture of all tools. Gated by the userspace-WG-with-ClawPatrol
-  feasibility spike (plan §8.2). Not needed for S1.
 - Podman / Linux (S6), Headroom + Caveman context optimization (S2), overlay
   persistence hardening (S4), extended OS templates (S5).

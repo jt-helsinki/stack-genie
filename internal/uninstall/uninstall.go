@@ -33,15 +33,15 @@ var containerRuntimes = []string{"docker", "podman"}
 
 // Options configures the teardown.
 type Options struct {
-	Purge bool // also remove ~/.ai-platform and ~/.clawpatrol
+	Purge bool // also remove ~/.ai-platform
 
 	// BinaryPath is the ai binary to remove (normally os.Executable()). The
 	// caller injects it so tests need not delete the test binary; empty skips it.
 	BinaryPath string
 
-	// RemoveDeps are the external dependencies (msb, clawpatrol) the user opted
-	// to also uninstall. The caller decides this (per-dependency prompt or flag);
-	// Run just removes their on-disk artifacts.
+	// RemoveDeps are the external dependencies (msb) the user opted to also
+	// uninstall. The caller decides this (per-dependency prompt or flag); Run just
+	// removes their on-disk artifacts.
 	RemoveDeps []ExternalDep
 }
 
@@ -67,11 +67,8 @@ type ExternalDep struct {
 }
 
 // ExternalDeps returns the external dependencies `ai setup` may install, with
-// their removal targets resolved against the environment (HOME, MSB_HOME,
-// CLAWPATROL_PREFIX). msb installs to $MSB_HOME (default ~/.microsandbox) with
-// ~/.local/bin symlinks; clawpatrol installs its binary to $CLAWPATROL_PREFIX
-// (default ~/.local/bin), keeps state in ~/.clawpatrol, and on macOS installs a
-// system-extension app bundle.
+// their removal targets resolved against the environment (HOME, MSB_HOME). msb
+// installs to $MSB_HOME (default ~/.microsandbox) with ~/.local/bin symlinks.
 func ExternalDeps() []ExternalDep {
 	home, err := paths.Home()
 	if err != nil {
@@ -83,11 +80,6 @@ func ExternalDeps() []ExternalDep {
 	if msbHome == "" {
 		msbHome = filepath.Join(home, ".microsandbox")
 	}
-	clawPrefix := os.Getenv("CLAWPATROL_PREFIX")
-	if clawPrefix == "" {
-		clawPrefix = localBin
-	}
-	clawState, _ := paths.ClawPatrolDir()
 
 	return []ExternalDep{
 		{
@@ -97,15 +89,6 @@ func ExternalDeps() []ExternalDep {
 				msbHome,
 				filepath.Join(localBin, "msb"),
 				filepath.Join(localBin, "microsandbox"),
-			},
-		},
-		{
-			Name:   "clawpatrol",
-			Binary: "clawpatrol",
-			Targets: []string{
-				filepath.Join(clawPrefix, "clawpatrol"),
-				clawState,
-				"/Applications/Clawpatrol.app",
 			},
 		},
 	}
@@ -170,7 +153,7 @@ func Run(options Options, prober runtime.Prober, progress Progress) (Report, err
 		record(fmt.Sprintf("Removed %d completion script(s)", removed))
 	}
 
-	// External dependencies the user opted to also uninstall (msb, clawpatrol).
+	// External dependencies the user opted to also uninstall (msb).
 	for _, dep := range options.RemoveDeps {
 		dep.remove()
 		report.RemovedDeps = append(report.RemovedDeps, dep.Name)
@@ -189,16 +172,13 @@ func Run(options Options, prober runtime.Prober, progress Progress) (Report, err
 		if platformDir, err := paths.PlatformDir(); err == nil {
 			_ = os.RemoveAll(platformDir)
 		}
-		if clawDir, err := paths.ClawPatrolDir(); err == nil {
-			_ = os.RemoveAll(clawDir)
-		}
 		if removeVolumes(prober) > 0 {
 			record("Removed platform data volumes (aip-*)")
 		}
 		report.Purged = true
-		record("Purged ~/.ai-platform and ~/.clawpatrol (your project directories were left untouched)")
+		record("Purged ~/.ai-platform (your project directories were left untouched)")
 	} else {
-		record("Left ~/.ai-platform and ~/.clawpatrol in place — re-run with --purge to remove them")
+		record("Left ~/.ai-platform in place — re-run with --purge to remove it")
 	}
 
 	writeLog(logFile, "=== uninstall finished ===")
@@ -242,11 +222,11 @@ func Plan(purge bool) []string {
 		"strip the managed PATH/completion lines from the shell rc files",
 	}
 	if purge {
-		steps = append(steps, "remove platform state (~/.ai-platform and ~/.clawpatrol)")
+		steps = append(steps, "remove platform state (~/.ai-platform)")
 	} else {
-		steps = append(steps, "keep platform state (~/.ai-platform, ~/.clawpatrol) — pass --purge to remove")
+		steps = append(steps, "keep platform state (~/.ai-platform) — pass --purge to remove")
 	}
-	steps = append(steps, "ask, per external dependency (msb, clawpatrol), whether to uninstall it too")
+	steps = append(steps, "ask, per external dependency (msb), whether to uninstall it too")
 	steps = append(steps, "leave your project directories untouched")
 	return steps
 }

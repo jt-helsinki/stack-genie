@@ -10,8 +10,8 @@ import (
 )
 
 // newServicesCmd builds `ai services` and its subcommands (CLI §10.2).
-// `start`/`stop`/`restart` control the platform-owned LiteLLM container; Ollama
-// and ClawPatrol are managed by their own installers.
+// `start`/`stop`/`restart` control the platform-owned containers (Ollama,
+// Presidio, LiteLLM, Headroom).
 func newServicesCmd(em *output.Emitter, exit *int) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "services",
@@ -32,8 +32,8 @@ func newServicesCmd(em *output.Emitter, exit *int) *cobra.Command {
 }
 
 // newServicesControlCmd builds `ai services start|stop|restart [service]`. With
-// no service (or "all") it acts on the platform-owned services (LiteLLM); naming
-// ollama/clawpatrol reports that they are managed by their own installers.
+// no service (or "all") it acts on every platform-owned container; a single
+// service name (ollama, presidio, litellm, headroom) targets just that one.
 func newServicesControlCmd(action string, em *output.Emitter, exit *int) *cobra.Command {
 	return &cobra.Command{
 		Use:               action + " [service]",
@@ -54,9 +54,9 @@ func newServicesControlCmd(action string, em *output.Emitter, exit *int) *cobra.
 }
 
 // newServicesConsoleCmd builds `ai services console [service]`: open a service's
-// admin console in the browser (LiteLLM UI, ClawPatrol dashboard). With no
-// argument it lists the services that have a console. --print shows the URL
-// instead of opening it (also the default with --json, for headless use).
+// admin console in the browser (the LiteLLM UI). With no argument it lists the
+// services that have a console. --print shows the URL instead of opening it
+// (also the default with --json, for headless use).
 func newServicesConsoleCmd(em *output.Emitter, exit *int) *cobra.Command {
 	var printOnly bool
 	cmd := &cobra.Command{
