@@ -28,8 +28,14 @@ func newSecretsCmd(em *output.Emitter, exit *int) *cobra.Command {
 	return cmd
 }
 
-// mapSecretErr maps broker errors to exit codes (§18).
+// mapSecretErr maps broker errors to exit codes (§18). Brokers that already carry
+// a specific code (*output.Error — e.g. the LiteLLM credentials API surfacing an
+// invalid request) are passed through unchanged.
 func mapSecretErr(err error) error {
+	var platformErr *output.Error
+	if errors.As(err, &platformErr) {
+		return platformErr
+	}
 	if errors.Is(err, secrets.ErrGatewayMissing) {
 		return output.Errorf(output.ExitMissingDep, "%s", err)
 	}
