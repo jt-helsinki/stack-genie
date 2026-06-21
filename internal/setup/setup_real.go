@@ -241,6 +241,11 @@ func ensureHeadroom(prober runtime.Prober, containerRuntime string) error {
 		"--network", platformNetwork,
 		"-p", "8787:8787",
 		"-e", "OPENAI_TARGET_API_URL=" + headroomTargetURL,
+		// Headroom otherwise injects an empty `tools:[]` (its CCR retrieve-tool
+		// path) into every request, which flips LiteLLM/Ollama into tool-calling
+		// mode and corrupts answers regardless of prompt size. Disabling the tool
+		// injection keeps compression enabled while forwarding requests faithfully.
+		"-e", "HEADROOM_NO_CCR_INJECT_TOOL=1",
 		headroomImage,
 	}
 	if _, err := prober.Run(containerRuntime, args...); err != nil {
