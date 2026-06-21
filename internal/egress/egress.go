@@ -1,0 +1,129 @@
+// Package egress edits a project's workspace egress policy (arch §29.6) in its
+// config.yaml: the default outbound posture (deny|public|unrestricted), the
+// allow-list of external services the workspace may reach (databases, Kafka,
+// specific APIs), and host→guest published ports. Enforced by the Microsandbox
+// network policy at workspace start; this package only manages the declaration.
+package egress
+
+import (
+	"errors"
+	"fmt"
+	"slices"
+
+	"github.com/jt-helsinki/ideal-robot/internal/config"
+)
+
+// ErrInvalidMode is returned for an egress mode outside config.EgressModes.
+var ErrInvalidMode = errors.New("invalid egress mode")
+
+// ErrInvalidPort is returned for a port outside 1–65535.
+var ErrInvalidPort = errors.New("port out of range")
+
+// Get returns the project's network config (for `ai network show`).
+func Get(projectRoot string) (config.NetworkConfig, error) {
+	projectConfig, err := config.LoadProjectConfig(projectRoot)
+	if err != nil {
+		return config.NetworkConfig{}, err
+	}
+	return projectConfig.Network, nil
+}
+
+// SetMode sets the default egress posture.
+func SetMode(projectRoot, mode string) error {
+	if !slices.Contains(config.EgressModes, mode) {
+		return fmt.Errorf("%w: %q (one of %v)", ErrInvalidMode, mode, config.EgressModes)
+	}
+	return mutate(projectRoot, func(network *config.NetworkConfig) {
+		network.Egress = mode
+	})
+}
+
+// Allow adds (idempotently) a host:port the workspace may reach. host may be a
+// hostname/IP/domain, or "gateway" for a service on the host machine.
+func Allow(projectRoot, host string, port int) error {
+	if err := checkPort(port); err != nil {
+		return err
+	}
+	if host == "" {
+		host = "gateway"
+	}
+	return mutate(projectRoot, func(network *config.NetworkConfig) {
+		for _, service := range network.AllowHostServices {
+			if service.Host == host && service.Port == port {
+				return // already allowed
+			}
+		}
+		network.AllowHostServices = append(network.AllowHostServices, config.HostService{Host: host, Port: port})
+	})
+}
+
+// Deny removes a previously-allowed host:port.
+func Deny(projectRoot, host string, port int) error {
+	if host == "" {
+		host = "gateway"
+	}
+	return mutate(projectRoot, func(network *config.NetworkConfig) {
+		kept := network.AllowHostServices[:0]
+		for _, service := range network.AllowHostServices {
+			if service.Host == host && service.Port == port {
+				continue
+			}
+			kept = append(kept, service)
+		}
+		network.AllowHostServices = kept
+	})
+}
+
+// Publish maps a guest port to a host port (host → workspace), replacing any
+// existing mapping for the same host port.
+func Publish(projectRoot string, guest, host int) error {
+	if err := checkPort(guest); err != nil {
+		return err
+	}
+	if err := checkPort(host); err != nil {
+		return err
+	}
+	return mutate(projectRoot, func(network *config.NetworkConfig) {
+		kept := network.PublishPorts[:0]
+		for _, mapping := range network.PublishPorts {
+			if mapping.Host != host {
+				kept = append(kept, mapping)
+			}
+		}
+		network.PublishPorts = append(kept, config.PortMapping{Guest: guest, Host: host})
+	})
+}
+
+// Unpublish removes the mapping for a host port.
+func Unpublish(projectRoot string, host int) error {
+	return mutate(projectRoot, func(network *config.NetworkConfig) {
+		kept := network.PublishPorts[:0]
+		for _, mapping := range network.PublishPorts {
+			if mapping.Host != host {
+				kept = append(kept, mapping)
+			}
+		}
+		network.PublishPorts = kept
+	})
+}
+
+func checkPort(port int) error {
+	if port < 1 || port > 65535 {
+		return fmt.Errorf("%w: %d", ErrInvalidPort, port)
+	}
+	return nil
+}
+
+// mutate loads the project config, applies edit to its Network block, validates,
+// and writes it back.
+func mutate(projectRoot string, edit func(*config.NetworkConfig)) error {
+	projectConfig, err := config.LoadProjectConfig(projectRoot)
+	if err != nil {
+		return err
+	}
+	edit(&projectConfig.Network)
+	if err := projectConfig.Network.Validate(); err != nil {
+		return err
+	}
+	return config.WriteProject(projectRoot, projectConfig)
+}

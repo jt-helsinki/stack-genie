@@ -56,9 +56,25 @@ type WorkspaceConfig struct {
 // may reach via the host gateway (e.g. a database). PublishPorts maps guest
 // ports to host ports so the host can reach a server inside the workspace.
 type NetworkConfig struct {
+	// Egress is the workspace's default outbound posture, enforced by the
+	// Microsandbox network policy (arch §29.6): "deny" (default — only the model
+	// gateway + allow_host_services are reachable), "public" (the open internet,
+	// private ranges still blocked), or "unrestricted". Empty == "deny".
+	Egress            string        `yaml:"egress,omitempty" json:"egress,omitempty"`
 	EgressProxy       string        `yaml:"egress_proxy,omitempty" json:"egress_proxy,omitempty"`
 	AllowHostServices []HostService `yaml:"allow_host_services,omitempty" json:"allow_host_services,omitempty"`
 	PublishPorts      []PortMapping `yaml:"publish_ports,omitempty" json:"publish_ports,omitempty"`
+}
+
+// EgressModes are the valid network.egress values.
+var EgressModes = []string{"deny", "public", "unrestricted"}
+
+// ResolvedEgress returns the effective egress mode, defaulting empty to "deny".
+func (network NetworkConfig) ResolvedEgress() string {
+	if network.Egress == "" {
+		return "deny"
+	}
+	return network.Egress
 }
 
 // HostService is one allow-listed host endpoint. Host defaults to "gateway" (the
@@ -81,7 +97,7 @@ func Default() *Config {
 		Agent:     AgentConfig{Tools: []string{"opencode", "pi"}, DefaultTool: "opencode"},
 		Context:   ContextConfig{Strategy: "balanced", CavemanLevel: "full"},
 		Workspace: WorkspaceConfig{CPULimit: 4, MemoryLimit: "8G"},
-		Network:   NetworkConfig{EgressProxy: "clawpatrol"},
+		Network:   NetworkConfig{Egress: "deny", EgressProxy: "clawpatrol"},
 	}
 }
 
@@ -92,6 +108,11 @@ const gatewayToken = "gateway"
 // Validate checks the network block: ports in range and publish-host ports
 // unique. It returns the first problem found, or nil.
 func (network NetworkConfig) Validate() error {
+	switch network.Egress {
+	case "", "deny", "public", "unrestricted":
+	default:
+		return fmt.Errorf("network.egress: %q (one of deny|public|unrestricted)", network.Egress)
+	}
 	for _, service := range network.AllowHostServices {
 		if service.Port < 1 || service.Port > 65535 {
 			return fmt.Errorf("network.allow_host_services: port %d out of range", service.Port)

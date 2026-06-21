@@ -1525,21 +1525,39 @@ is NAT'd, the host cannot address it directly; a guest port must be **published*
 to a host port (the microVM equivalent of `-p`), after which the host reaches it
 at `localhost:<host_port>`. Publishing is declared per project, never implicit.
 
-Both are configured in the project/global `network` block (repo-layout §12.4):
+A third knob sets the **default outbound posture** — `network.egress`:
+
+* **`deny`** (default) — only the model gateway and `allow_host_services` are
+  reachable; everything else is blocked.
+* **`public`** — the open internet is reachable, but **private/internal ranges
+  stay blocked** unless explicitly allow-listed (so the agent can `pip install` /
+  `npm install` / hit public APIs without enumerating every domain).
+* **`unrestricted`** — all egress allowed (escape hatch; least safe).
+
+`host` in an allow rule may be a hostname/IP/**domain**, or the `gateway` token
+for a service on the host machine — so the same mechanism covers a host-local
+Postgres, a remote/managed database, a Kafka cluster, or a specific internet API.
+
+All of this is configured in the project `network` block (repo-layout §12.4),
+edited either by hand or via the **`ai network`** commands (CLI §10a):
 
 ```yaml
 network:
-  egress_proxy: clawpatrol            # internet egress → the firewall (§29.4)
-  allow_host_services:                # plain-TCP allow-list, reached via the gateway
-    - { host: gateway, port: 5432 }   #   e.g. host Postgres
-    - { host: gateway, port: 6379 }   #   e.g. host Redis
+  egress: deny                        # deny | public | unrestricted (default deny)
+  allow_host_services:                # extra egress the workspace may reach
+    - { host: gateway,          port: 5432 }   # host-local Postgres
+    - { host: db.prod.internal, port: 5432 }   # a remote/managed database
+    - { host: kafka-1,          port: 9092 }   # Kafka broker(s)
+    - { host: api.stripe.com,   port: 443 }    # a specific internet API
   publish_ports:                      # host → workspace
     - { guest: 3000, host: 3000 }
 ```
 
 `ai workspace start` translates this block into Microsandbox network-policy
-allow-list entries and port maps via the SDK (deferred to hardware bring-up; the
-`gateway` token resolves to the §29.2 host gateway).
+allow-list entries, the default-egress mode, and port maps via the SDK (the
+enforcement is deferred to hardware bring-up; the `gateway` token resolves to the
+§29.2 host gateway). App-data connections (DB/Kafka/HTTP) go **direct** under
+this policy — they do not pass through the model gateway.
 
 ---
 

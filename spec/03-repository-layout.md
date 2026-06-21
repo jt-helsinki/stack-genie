@@ -548,9 +548,10 @@ context:
 workspace:
   cpu_limit: 4             # microVM resource limits (applied at workspace start)
   memory_limit: 8G
-network:                   # workspace networking (arch §29.6)
+network:                   # workspace networking (arch §29.6); edit via `ai network`
+  egress: deny             # deny | public | unrestricted (default deny)
   egress_proxy: clawpatrol
-  allow_host_services:     # plain-TCP host services the workspace may reach
+  allow_host_services:     # external destinations the workspace may reach (host/IP/domain or "gateway")
     - { host: gateway, port: 5432 }
   publish_ports:           # host → workspace port maps
     - { guest: 3000, host: 3000 }

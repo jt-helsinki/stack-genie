@@ -655,6 +655,30 @@ Behavior:
 
 ---
 
+# 10a. Network (workspace egress policy)
+
+```bash id="c27b"
+ai network show    [project]                    # show the egress policy
+ai network egress  <deny|public|unrestricted> [project]   # set the default posture
+ai network allow   <host:port> [project] [--remove]       # allow/revoke an external destination
+ai network publish <guest:host> [project] [--remove]      # publish/unpublish a workspace port
+```
+
+Project-scoped (default the current directory's project, like `ai context`).
+These edit the project's `network` block (architecture §29.6); enforcement is the
+Microsandbox network policy applied at `ai workspace start`.
+
+* `egress` sets the default outbound posture: **deny** (default — only the model
+  gateway + allowed services), **public** (open internet, private ranges still
+  blocked), **unrestricted**.
+* `allow <host:port>` opens a direct egress destination — a database, Kafka
+  broker, or a specific API. `host` may be a hostname/IP/domain, or `gateway` for
+  a service on the host machine. `--remove` revokes it.
+* `publish <guest:host>` exposes a workspace port to the host; `--remove` undoes it.
+* invalid mode / port → exit `2`.
+
+---
+
 # 11. Backup — Removed
 
 There is no backup/restore command. It isn't needed (architecture §32): project
