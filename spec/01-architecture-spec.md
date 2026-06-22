@@ -1603,13 +1603,20 @@ This cleanly splits **audit** from **enforcement**:
 * **Names only — not connection verdicts, not direct-IP egress.** It is a record
   of attempted *resolutions*, not of allowed/blocked connections, and traffic to a
   literal IP never touches DNS so never appears here.
-* **Default-deny interacts with visibility.** Under a `deny`/`public` posture the
-  netstack may filter a denied name *before* it reaches the resolver, so denied
-  names can be **absent** from the audit; under `unrestricted` the resolver sees
-  every queried name. The audit is therefore most complete as a record of names a
-  workspace was permitted (or broadly allowed) to look up — it is not a substitute
-  for the policy shown in `ai network show`, which remains the source of truth for
-  what is reachable.
+* **Default-deny interacts with visibility (verified, msb 0.5.7).** Under a
+  `deny`/`public` posture msb's DNS interception filters a denied name *before* it
+  reaches the resolver, so denied names are **absent** from the audit; under
+  `unrestricted` the resolver sees every queried name. This was confirmed by
+  controlled testing: with the platform's specific per-host/domain allow rules
+  (and regardless of `--net-default-egress deny` vs `--net-default deny`, or a
+  narrow `allow@host:udp:53`/`:15353` rule) only allow-listed names reach the
+  resolver. Denied names become visible **only** with a broad `allow@host` rule —
+  which would let the workspace reach every host service, a default-deny breach we
+  deliberately do **not** take. So capturing denied attempts under `deny`/`public`
+  is not achievable without sacrificing the egress boundary. The audit is
+  therefore most complete as a record of names a workspace was permitted to look
+  up; it is not a substitute for the policy shown in `ai network show`, which
+  remains the source of truth for what is reachable.
 
 ---
 
