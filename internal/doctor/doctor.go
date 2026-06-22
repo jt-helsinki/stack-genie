@@ -27,7 +27,8 @@ type Check struct {
 	Name       string `json:"name"`
 	Status     Status `json:"status"`
 	Detail     string `json:"detail,omitempty"`
-	Suggestion string `json:"suggestion,omitempty"`
+	Suggestion string `json:"suggestion,omitempty"` // how to install / repair
+	DocsURL    string `json:"docs_url,omitempty"`   // web address for the software
 }
 
 // Report is the full `ai doctor` result. OK is false if any check errored.
@@ -45,6 +46,9 @@ func (report Report) Human() string {
 		_, _ = fmt.Fprintf(&builder, "%s  %-22s %s\n", glyphs[check.Status], check.Name, check.Detail)
 		if check.Suggestion != "" {
 			_, _ = fmt.Fprintf(&builder, "       ↳ %s\n", check.Suggestion)
+		}
+		if check.Status != StatusOK && check.DocsURL != "" {
+			_, _ = fmt.Fprintf(&builder, "       web: %s\n", check.DocsURL)
 		}
 	}
 	if report.OK {
@@ -104,6 +108,7 @@ func containerRuntimeCheck(goos string, prober runtime.Prober) Check {
 			Name: "container runtime", Status: StatusError,
 			Detail:     "neither docker nor podman found",
 			Suggestion: containerRuntimeSuggestion(goos),
+			DocsURL:    "https://docs.docker.com/get-docker/  (or Podman: https://podman.io/get-started)",
 		}
 	}
 }
@@ -136,6 +141,7 @@ func rootlessCheck(goos string, prober runtime.Prober) Check {
 		Name: "rootless service tier", Status: StatusError,
 		Detail:     containerRuntime.Name + " runs as root",
 		Suggestion: "run the container runtime rootless (Linux: enable rootless mode, or use Podman)",
+		DocsURL:    "https://docs.docker.com/engine/security/rootless/",
 	}
 }
 
@@ -169,6 +175,7 @@ func microsandboxCheck(detected sandbox.Info) Check {
 		Name: "microsandbox runtime", Status: StatusError,
 		Detail:     "msb not found",
 		Suggestion: "install Microsandbox: curl -fsSL https://install.microsandbox.dev | sh",
+		DocsURL:    "https://docs.microsandbox.dev  (installer: https://install.microsandbox.dev)",
 	}
 }
 

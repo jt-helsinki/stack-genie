@@ -150,16 +150,6 @@ type Prerequisite struct {
 	Blocking   bool   `json:"blocking"`
 }
 
-// prereqDocs is the web address for each prerequisite's software, shown next to
-// the install instructions so the user can go straight to the source. Host
-// virtualization is a capability (nothing to download), so it has no entry — its
-// suggestion explains the remedy.
-var prereqDocs = map[string]string{
-	"container runtime":     "https://docs.docker.com/get-docker/  (or Podman: https://podman.io/get-started)",
-	"rootless service tier": "https://docs.docker.com/engine/security/rootless/",
-	"microsandbox runtime":  "https://docs.microsandbox.dev  (installer: https://install.microsandbox.dev)",
-}
-
 // blockingPrereqs are the checks that must pass before setup proceeds: a missing
 // container runtime / Microsandbox / virtualization / rootless posture stops
 // setup.
@@ -191,7 +181,7 @@ func missingPrerequisites(deps Deps) []Prerequisite {
 			Name:       check.Name,
 			Detail:     check.Detail,
 			Suggestion: check.Suggestion,
-			DocsURL:    prereqDocs[check.Name],
+			DocsURL:    check.DocsURL,
 			Blocking:   blockingPrereqs[check.Name],
 		})
 	}
