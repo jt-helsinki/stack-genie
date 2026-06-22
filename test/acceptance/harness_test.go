@@ -57,10 +57,10 @@ func buildBinary() (string, func(), error) {
 	build := exec.Command("go", "build", "-o", binary, "./cmd/ai")
 	build.Dir = repoRoot()
 	if output, err := build.CombinedOutput(); err != nil {
-		os.RemoveAll(dir)
+		_ = os.RemoveAll(dir)
 		return "", nil, fmt.Errorf("go build: %v: %s", err, output)
 	}
-	return binary, func() { os.RemoveAll(dir) }, nil
+	return binary, func() { _ = os.RemoveAll(dir) }, nil
 }
 
 // repoRoot returns the module root (the test runs in test/acceptance).

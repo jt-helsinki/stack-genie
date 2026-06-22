@@ -23,16 +23,16 @@ func WriteAtomic(path string, value any) error {
 		return err
 	}
 	tempName := tempFile.Name()
-	defer os.Remove(tempName) // no-op once renamed
+	defer func() { _ = os.Remove(tempName) }() // no-op once renamed
 
 	encoder := json.NewEncoder(tempFile)
 	encoder.SetIndent("", "  ")
 	if err := encoder.Encode(value); err != nil {
-		tempFile.Close()
+		_ = tempFile.Close()
 		return err
 	}
 	if err := tempFile.Sync(); err != nil {
-		tempFile.Close()
+		_ = tempFile.Close()
 		return err
 	}
 	if err := tempFile.Close(); err != nil {
@@ -48,7 +48,7 @@ func Read(path string, value any) error {
 	if err != nil {
 		return err
 	}
-	defer file.Close()
+	defer func() { _ = file.Close() }()
 	decoder := json.NewDecoder(file)
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(value); err != nil {

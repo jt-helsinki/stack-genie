@@ -46,7 +46,7 @@ func TestHeadroomParams(test *testing.T) {
 	// More aggressive strategies must compress more (fewer kept turns, smaller buffer).
 	conservativeTurns, conservativeBuf := HeadroomParams("conservative")
 	aggressiveTurns, aggressiveBuf := HeadroomParams("aggressive")
-	if !(aggressiveTurns < conservativeTurns && aggressiveBuf < conservativeBuf) {
+	if aggressiveTurns >= conservativeTurns || aggressiveBuf >= conservativeBuf {
 		test.Errorf("aggressive should compress more than conservative")
 	}
 }

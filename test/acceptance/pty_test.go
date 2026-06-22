@@ -50,7 +50,7 @@ func (harness *Harness) createProject(test *testing.T, name string, osDownPresse
 	if err != nil {
 		test.Fatalf("open pty: %v", err)
 	}
-	defer ptmx.Close()
+	defer func() { _ = ptmx.Close() }()
 	_ = pty.Setsize(ptmx, &pty.Winsize{Rows: 40, Cols: 120})
 
 	command := exec.Command(harness.Binary, "project", "create", name, "--json")
@@ -62,14 +62,14 @@ func (harness *Harness) createProject(test *testing.T, name string, osDownPresse
 	command.Stdout = &stdout // clean: only the envelope lands here
 
 	if err := command.Start(); err != nil {
-		tty.Close()
+		_ = tty.Close()
 		test.Fatalf("start create: %v", err)
 	}
-	tty.Close() // the child holds the slave; we keep the master (ptmx)
+	_ = tty.Close() // the child holds the slave; we keep the master (ptmx)
 
 	// Continuously drain the TUI output on the master, or the child blocks once
 	// the pty buffer fills (and never processes our keystrokes).
-	go io.Copy(io.Discard, ptmx)
+	go func() { _, _ = io.Copy(io.Discard, ptmx) }()
 
 	// Watchdog: never let a stuck wizard hang the suite.
 	watchdog := time.AfterFunc(15*time.Second, func() {

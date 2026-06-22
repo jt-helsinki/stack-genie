@@ -41,7 +41,7 @@ func (client realClient) Status() (StatusInfo, error) {
 	if err != nil {
 		return info, nil // unreachable → Healthy stays false; not a CLI error
 	}
-	defer response.Body.Close()
+	defer func() { _ = response.Body.Close() }()
 	info.Healthy = response.StatusCode == http.StatusOK
 	return info, nil
 }
@@ -56,7 +56,7 @@ func (client realClient) Test(model string) (TestResult, error) {
 	if err != nil {
 		return TestResult{Model: model, OK: false}, err
 	}
-	defer response.Body.Close()
+	defer func() { _ = response.Body.Close() }()
 	body, _ := io.ReadAll(response.Body)
 	result := TestResult{
 		Model:     model,
