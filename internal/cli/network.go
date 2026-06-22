@@ -3,13 +3,11 @@ package cli
 import (
 	"errors"
 	"fmt"
-	"os"
 	goruntime "runtime"
 	"strconv"
 	"strings"
 
 	"github.com/charmbracelet/huh"
-	"github.com/charmbracelet/x/term"
 	"github.com/jt-helsinki/ideal-robot/internal/config"
 	"github.com/jt-helsinki/ideal-robot/internal/egress"
 	"github.com/jt-helsinki/ideal-robot/internal/output"
@@ -17,11 +15,6 @@ import (
 	"github.com/jt-helsinki/ideal-robot/internal/workspace"
 	"github.com/spf13/cobra"
 )
-
-// interactive reports whether we can present a menu (a real TTY, not --json).
-func interactive(emitter *output.Emitter) bool {
-	return !emitter.JSON && term.IsTerminal(os.Stdin.Fd())
-}
 
 // newNetworkCmd builds `ai network` (CLI §29.6): the per-project workspace egress
 // policy — default posture, the allow-list of external services (DB/Kafka/APIs),
@@ -193,9 +186,14 @@ func newNetworkEgressCmd(emitter *output.Emitter, exit *int) *cobra.Command {
 			if len(args) >= 1 {
 				mode = args[0]
 			} else if interactive(emitter) {
-				picked, cancelled, err := pickEgressMode()
-				if err != nil || cancelled {
-					*exit = emitter.Success("network.egress", map[string]any{"cancelled": true})
+				picked, err := promptChoice("Default egress posture", "",
+					[]huh.Option[string]{
+						huh.NewOption("deny — only the model gateway + allowed services (most locked-down)", "deny"),
+						huh.NewOption("public — open internet, private ranges still blocked", "public"),
+						huh.NewOption("unrestricted — allow everything (least safe)", "unrestricted"),
+					}, "deny")
+				if err != nil {
+					*exit = emitter.Failure("network.egress", err)
 					return nil
 				}
 				mode = picked
@@ -214,37 +212,17 @@ func newNetworkEgressCmd(emitter *output.Emitter, exit *int) *cobra.Command {
 	}
 }
 
-// pickEgressMode presents the egress postures with descriptions.
-func pickEgressMode() (string, bool, error) {
-	mode := "deny"
-	form := huh.NewForm(huh.NewGroup(
-		huh.NewSelect[string]().
-			Title("Default egress posture").
-			Options(
-				huh.NewOption("deny — only the model gateway + allowed services (most locked-down)", "deny"),
-				huh.NewOption("public — open internet, private ranges still blocked", "public"),
-				huh.NewOption("unrestricted — allow everything (least safe)", "unrestricted"),
-			).Value(&mode),
-	))
-	if err := form.Run(); err != nil {
-		if errors.Is(err, huh.ErrUserAborted) {
-			return "", true, nil
-		}
-		return "", false, err
-	}
-	return mode, false, nil
-}
-
 func newNetworkAllowCmd(emitter *output.Emitter, exit *int) *cobra.Command {
 	var remove bool
 	cmd := &cobra.Command{
-		Use:   "allow <host[:port]> [project]",
-		Short: "Allow the workspace to reach an external service (--remove to revoke)",
+		Use:   "allow [host[:port]] [project]",
+		Short: "Allow the workspace to reach an external service (prompts if omitted; --remove to revoke)",
 		Long: "Allow an egress destination the workspace may reach directly (a database,\n" +
 			"Kafka broker, or a specific API/domain). host may be a hostname/IP/domain,\n" +
 			"a \"*.suffix\" wildcard (e.g. *.npmjs.org), or \"gateway\" for a service on\n" +
 			"the host machine. The port is optional and defaults to 443 (HTTPS), so a\n" +
-			"bare domain like api.github.com allows it on 443. Use --remove to revoke.",
+			"bare domain like api.github.com allows it on 443. Omit the host on a terminal\n" +
+			"to be prompted for it. Use --remove to revoke.",
 		Args: cobra.MaximumNArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			root, err := networkResolve(cmd, args, 1)
@@ -264,15 +242,27 @@ func newNetworkAllowCmd(emitter *output.Emitter, exit *int) *cobra.Command {
 				*exit = emitter.Failure("network.allow", output.Errorf(output.ExitInvalidInput, "--remove needs a host:port"))
 				return nil
 			} else if interactive(emitter) {
-				var cancelled bool
-				host, port, cancelled, err = pickAllowService()
-				if err != nil || cancelled {
-					*exit = emitter.Success("network.allow", map[string]any{"cancelled": true})
+				entered, promptErr := promptText(
+					"Service to allow (host, host:port, '*.suffix' wildcard, or 'gateway')",
+					"a bare host defaults to port 443 (e.g. api.github.com); use host:port for a specific port (e.g. gateway:5432)",
+					"",
+					func(candidate string) error {
+						_, _, validateErr := splitHostPort(strings.TrimSpace(candidate))
+						return validateErr
+					},
+				)
+				if promptErr != nil {
+					*exit = emitter.Failure("network.allow", promptErr)
+					return nil
+				}
+				host, port, err = splitHostPort(entered)
+				if err != nil {
+					*exit = emitter.Failure("network.allow", output.Errorf(output.ExitInvalidInput, "%s", err))
 					return nil
 				}
 			} else {
 				*exit = emitter.Failure("network.allow", output.Errorf(output.ExitInvalidInput,
-					"host:port required, or run on a terminal to choose a service"))
+					"host:port required, or run on a terminal to enter a service"))
 				return nil
 			}
 			action := egress.Allow
@@ -289,76 +279,6 @@ func newNetworkAllowCmd(emitter *output.Emitter, exit *int) *cobra.Command {
 	}
 	cmd.Flags().BoolVar(&remove, "remove", false, "revoke this allow rule instead of adding it")
 	return cmd
-}
-
-// pickAllowService presents common services (host + default port) and lets the
-// user confirm/edit the host and port. Each preset option value encodes
-// "host\tport"; selecting one pre-fills both the host and port inputs. The
-// database/infra presets default the host to "gateway" (a service on the host
-// machine); the developer-domain presets carry the real public domain. "Custom…"
-// leaves the fields free to type.
-func pickAllowService() (string, int, bool, error) {
-	// preset is "host\tport"; the empty value is the Custom… escape hatch.
-	preset := "gateway\t5432"
-	presets := huh.NewSelect[string]().
-		Title("Service to allow (pre-fills host + port — edit below)").
-		Options(
-			// Host-local / infra services (default host: gateway).
-			huh.NewOption("PostgreSQL (gateway:5432)", "gateway\t5432"),
-			huh.NewOption("MySQL / MariaDB (gateway:3306)", "gateway\t3306"),
-			huh.NewOption("Redis (gateway:6379)", "gateway\t6379"),
-			huh.NewOption("Kafka (gateway:9092)", "gateway\t9092"),
-			huh.NewOption("MongoDB (gateway:27017)", "gateway\t27017"),
-			huh.NewOption("RabbitMQ / AMQP (gateway:5672)", "gateway\t5672"),
-			huh.NewOption("Elasticsearch (gateway:9200)", "gateway\t9200"),
-			// Developer package/registry/API domains (tcp/443).
-			huh.NewOption("npm registry (registry.npmjs.org:443)", "registry.npmjs.org\t443"),
-			huh.NewOption("PyPI (pypi.org:443)", "pypi.org\t443"),
-			huh.NewOption("PyPI files (files.pythonhosted.org:443)", "files.pythonhosted.org\t443"),
-			huh.NewOption("GitHub (github.com:443)", "github.com\t443"),
-			huh.NewOption("GitHub API (api.github.com:443)", "api.github.com\t443"),
-			huh.NewOption("GitHub raw (raw.githubusercontent.com:443)", "raw.githubusercontent.com\t443"),
-			huh.NewOption("GitHub Container Registry (ghcr.io:443)", "ghcr.io\t443"),
-			huh.NewOption("Custom…", ""),
-		).Value(&preset)
-	if err := huh.NewForm(huh.NewGroup(presets)).Run(); err != nil {
-		if errors.Is(err, huh.ErrUserAborted) {
-			return "", 0, true, nil
-		}
-		return "", 0, false, err
-	}
-
-	host := "gateway"
-	portStr := "443"
-	if preset != "" {
-		fields := strings.SplitN(preset, "\t", 2)
-		host = fields[0]
-		if len(fields) == 2 {
-			portStr = fields[1]
-		}
-	}
-
-	form := huh.NewForm(huh.NewGroup(
-		huh.NewInput().Title("Host (hostname/IP/domain, '*.suffix' wildcard, or 'gateway' for the host machine)").Value(&host),
-		huh.NewInput().Title("Port").Value(&portStr).Validate(func(value string) error {
-			port, err := strconv.Atoi(value)
-			if err != nil || port < 1 || port > 65535 {
-				return fmt.Errorf("port must be 1–65535")
-			}
-			return nil
-		}),
-	))
-	if err := form.Run(); err != nil {
-		if errors.Is(err, huh.ErrUserAborted) {
-			return "", 0, true, nil
-		}
-		return "", 0, false, err
-	}
-	port, _ := strconv.Atoi(portStr)
-	if host == "" {
-		host = "gateway"
-	}
-	return host, port, false, nil
 }
 
 func newNetworkPublishCmd(emitter *output.Emitter, exit *int) *cobra.Command {
@@ -384,10 +304,22 @@ func newNetworkPublishCmd(emitter *output.Emitter, exit *int) *cobra.Command {
 				*exit = emitter.Failure("network.publish", output.Errorf(output.ExitInvalidInput, "--remove needs a guest:host"))
 				return nil
 			} else if interactive(emitter) {
-				var cancelled bool
-				guest, host, cancelled, err = pickPublishPorts()
-				if err != nil || cancelled {
-					*exit = emitter.Success("network.publish", map[string]any{"cancelled": true})
+				entered, promptErr := promptText(
+					"Port mapping to publish (guest:host)",
+					"the guest port inside the workspace and the host port it is reachable at (e.g. 3000:3000)",
+					"",
+					func(candidate string) error {
+						_, _, validateErr := splitPortPair(strings.TrimSpace(candidate))
+						return validateErr
+					},
+				)
+				if promptErr != nil {
+					*exit = emitter.Failure("network.publish", promptErr)
+					return nil
+				}
+				guest, host, err = splitPortPair(entered)
+				if err != nil {
+					*exit = emitter.Failure("network.publish", output.Errorf(output.ExitInvalidInput, "%s", err))
 					return nil
 				}
 			} else {
@@ -410,31 +342,6 @@ func newNetworkPublishCmd(emitter *output.Emitter, exit *int) *cobra.Command {
 	}
 	cmd.Flags().BoolVar(&remove, "remove", false, "remove this published port instead of adding it")
 	return cmd
-}
-
-// pickPublishPorts prompts for the guest and host ports to publish.
-func pickPublishPorts() (int, int, bool, error) {
-	guestStr, hostStr := "3000", "3000"
-	portValidator := func(value string) error {
-		port, err := strconv.Atoi(value)
-		if err != nil || port < 1 || port > 65535 {
-			return fmt.Errorf("port must be 1–65535")
-		}
-		return nil
-	}
-	form := huh.NewForm(huh.NewGroup(
-		huh.NewInput().Title("Guest port (inside the workspace)").Value(&guestStr).Validate(portValidator),
-		huh.NewInput().Title("Host port (reachable at localhost:<port>)").Value(&hostStr).Validate(portValidator),
-	))
-	if err := form.Run(); err != nil {
-		if errors.Is(err, huh.ErrUserAborted) {
-			return 0, 0, true, nil
-		}
-		return 0, 0, false, err
-	}
-	guest, _ := strconv.Atoi(guestStr)
-	host, _ := strconv.Atoi(hostStr)
-	return guest, host, false, nil
 }
 
 // splitHostPort parses an allow target. The host may be a hostname/IP/domain, a

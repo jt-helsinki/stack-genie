@@ -2,7 +2,9 @@ package cli
 
 import (
 	"errors"
+	"strings"
 
+	"github.com/charmbracelet/huh"
 	"github.com/jt-helsinki/ideal-robot/internal/contextopt"
 	"github.com/jt-helsinki/ideal-robot/internal/output"
 	"github.com/jt-helsinki/ideal-robot/internal/project"
@@ -78,13 +80,21 @@ func newContextStatusCmd(emitter *output.Emitter, exit *int) *cobra.Command {
 
 func newContextStrategyCmd(emitter *output.Emitter, exit *int) *cobra.Command {
 	return &cobra.Command{
-		Use:               "strategy [project] <conservative|balanced|aggressive>",
-		Short:             "Set the Headroom input-compression strategy",
-		Args:              cobra.RangeArgs(1, 2),
+		Use:   "strategy [project] [conservative|balanced|aggressive]",
+		Short: "Set the Headroom input-compression strategy (prompts for it if omitted)",
+		Long: "Set the Headroom input-compression strategy for a project. Pass the value as\n" +
+			"an argument; or, on a terminal, omit it to be prompted with the choices\n" +
+			"(conservative|balanced|aggressive). [project] defaults to the current directory.",
+		Args:              cobra.MaximumNArgs(2),
 		ValidArgsFunction: completeOptionalProjectThenValue(contextopt.Strategies),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			explicit, value := splitProjectAndValue(args)
 			name, err := resolveProjectName(cmd, explicit)
+			if err != nil {
+				*exit = emitter.Failure("context.strategy", err)
+				return nil
+			}
+			value, err = resolveContextValue(emitter, value, "Headroom input-compression strategy", contextopt.Strategies)
 			if err != nil {
 				*exit = emitter.Failure("context.strategy", err)
 				return nil
@@ -106,13 +116,21 @@ func newContextStrategyCmd(emitter *output.Emitter, exit *int) *cobra.Command {
 
 func newContextCavemanCmd(emitter *output.Emitter, exit *int) *cobra.Command {
 	return &cobra.Command{
-		Use:               "caveman [project] <lite|full|ultra|wenyan>",
-		Short:             "Set the Caveman output-compression level (reinstalls the skill)",
-		Args:              cobra.RangeArgs(1, 2),
+		Use:   "caveman [project] [lite|full|ultra|wenyan]",
+		Short: "Set the Caveman output-compression level (prompts for it if omitted)",
+		Long: "Set the Caveman output-compression level for a project (reinstalls the skill).\n" +
+			"Pass the value as an argument; or, on a terminal, omit it to be prompted with\n" +
+			"the choices (lite|full|ultra|wenyan). [project] defaults to the current directory.",
+		Args:              cobra.MaximumNArgs(2),
 		ValidArgsFunction: completeOptionalProjectThenValue(contextopt.CavemanLevels),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			explicit, value := splitProjectAndValue(args)
 			name, err := resolveProjectName(cmd, explicit)
+			if err != nil {
+				*exit = emitter.Failure("context.caveman", err)
+				return nil
+			}
+			value, err = resolveContextValue(emitter, value, "Caveman output-compression level", contextopt.CavemanLevels)
 			if err != nil {
 				*exit = emitter.Failure("context.caveman", err)
 				return nil
@@ -132,11 +150,35 @@ func newContextCavemanCmd(emitter *output.Emitter, exit *int) *cobra.Command {
 	}
 }
 
-// splitProjectAndValue interprets `[project] <value>`: two args are
-// project+value, one arg is just the value (project comes from --project/CWD).
+// splitProjectAndValue interprets `[project] [value]`: two args are
+// project+value, one arg is just the value (project comes from --project/CWD),
+// and zero args leaves both empty (the value is prompted/required).
 func splitProjectAndValue(args []string) (explicit, value string) {
-	if len(args) == 2 {
+	switch len(args) {
+	case 2:
 		return args[0], args[1]
+	case 1:
+		return "", args[0]
+	default:
+		return "", ""
 	}
-	return "", args[0]
+}
+
+// resolveContextValue returns value when it was given on the command line; when
+// it was omitted it prompts the user to pick from allowed on a TTY, or — when not
+// interactive — fails with exit 2 naming the allowed choices (§21). The label
+// titles the prompt and the not-a-TTY error.
+func resolveContextValue(emitter *output.Emitter, value, label string, allowed []string) (string, error) {
+	if value != "" {
+		return value, nil
+	}
+	if !interactive(emitter) {
+		return "", output.Errorf(output.ExitInvalidInput,
+			"%s required (one of %s)", label, strings.Join(allowed, "|"))
+	}
+	options := make([]huh.Option[string], 0, len(allowed))
+	for _, choice := range allowed {
+		options = append(options, huh.NewOption(choice, choice))
+	}
+	return promptChoice(label, "", options, allowed[0])
 }

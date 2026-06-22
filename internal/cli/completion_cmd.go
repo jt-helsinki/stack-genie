@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"slices"
 
+	"github.com/charmbracelet/huh"
 	"github.com/jt-helsinki/ideal-robot/internal/output"
 	"github.com/spf13/cobra"
 )
@@ -23,12 +24,37 @@ const completionMarker = "# added by ai completion (AI Development Platform)"
 func newCompletionCmd(emitter *output.Emitter, exit *int) *cobra.Command {
 	var printOnly bool
 	cmd := &cobra.Command{
-		Use:       "completion <bash|zsh|fish|powershell>",
-		Short:     "Install shell completion for ai (or --print the script)",
-		Args:      cobra.ExactArgs(1),
+		Use:   "completion [bash|zsh|fish|powershell]",
+		Short: "Install shell completion for ai (or --print the script)",
+		Long: "Install shell completion for ai (or --print the script). Run with no shell\n" +
+			"argument on a terminal to be prompted to pick one; pass the shell as an\n" +
+			"argument for non-interactive/scripted use. --print is unchanged.",
+		Args:      cobra.MaximumNArgs(1),
 		ValidArgs: completionShells,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			shell := args[0]
+			// Prompt for the shell when it was not given and we are interactive;
+			// otherwise the positional arg is required (§21).
+			shell := ""
+			if len(args) == 1 {
+				shell = args[0]
+			}
+			if shell == "" {
+				if !interactive(emitter) {
+					*exit = emitter.Failure("completion", output.Errorf(output.ExitInvalidInput,
+						"specify a shell (one of %v)", completionShells))
+					return nil
+				}
+				options := make([]huh.Option[string], 0, len(completionShells))
+				for _, candidate := range completionShells {
+					options = append(options, huh.NewOption(candidate, candidate))
+				}
+				picked, err := promptChoice("Shell", "install ai completion for which shell", options, completionShells[0])
+				if err != nil {
+					*exit = emitter.Failure("completion", err)
+					return nil
+				}
+				shell = picked
+			}
 			if !slices.Contains(completionShells, shell) {
 				*exit = emitter.Failure("completion",
 					output.Errorf(output.ExitInvalidInput, "unsupported shell %q (one of %v)", shell, completionShells))

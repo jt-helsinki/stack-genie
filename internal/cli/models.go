@@ -2,8 +2,10 @@ package cli
 
 import (
 	"fmt"
+	"sort"
 	"strings"
 
+	"github.com/charmbracelet/huh"
 	"github.com/jt-helsinki/ideal-robot/internal/litellm"
 	"github.com/jt-helsinki/ideal-robot/internal/output"
 	"github.com/spf13/cobra"
@@ -40,11 +42,33 @@ func newModelsStatusCmd(em *output.Emitter, exit *int) *cobra.Command {
 
 func newModelsTestCmd(em *output.Emitter, exit *int) *cobra.Command {
 	return &cobra.Command{
-		Use:   "test <model>",
+		Use:   "test [model]",
 		Short: "Send a probe request to a model through LiteLLM",
-		Args:  cobra.ExactArgs(1),
+		Long: "Send a probe request to a model through LiteLLM. Run with no model on a\n" +
+			"terminal to be prompted to pick one of the named model handles; pass the\n" +
+			"model as an argument for non-interactive/scripted use.",
+		Args: cobra.MaximumNArgs(1),
 		RunE: func(_ *cobra.Command, args []string) error {
-			res, err := litellm.RealClient().Test(args[0])
+			// Prompt for the model when it was not given and we are interactive;
+			// otherwise the positional arg is required (§21).
+			model := ""
+			if len(args) == 1 {
+				model = args[0]
+			}
+			if model == "" {
+				if !interactive(em) {
+					*exit = em.Failure("models.test", output.Errorf(output.ExitInvalidInput,
+						"specify a model to test (e.g. `ai models test gemma4`)"))
+					return nil
+				}
+				picked, err := promptModel()
+				if err != nil {
+					*exit = em.Failure("models.test", err)
+					return nil
+				}
+				model = picked
+			}
+			res, err := litellm.RealClient().Test(model)
 			if err != nil {
 				// Transport-level failure: the gateway itself was unreachable.
 				*exit = em.Failure("models.test", output.Errorf(output.ExitRuntimeFailure,
@@ -61,6 +85,28 @@ func newModelsTestCmd(em *output.Emitter, exit *int) *cobra.Command {
 			return nil
 		},
 	}
+}
+
+// promptModel asks the user to pick one of the named (non-wildcard) model
+// handles from the default routing so testing is pick-not-type.
+func promptModel() (string, error) {
+	names := make([]string, 0)
+	for name := range litellm.DefaultRouting().Aliases {
+		if strings.ContainsAny(name, "/*") {
+			continue // skip the per-provider wildcard handles
+		}
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	options := make([]huh.Option[string], 0, len(names))
+	for _, name := range names {
+		options = append(options, huh.NewOption(name, name))
+	}
+	initial := ""
+	if len(names) > 0 {
+		initial = names[0]
+	}
+	return promptChoice("Model", "send a probe request to this model through LiteLLM", options, initial)
 }
 
 // modelTestError turns a failed model probe into an actionable error: it reports

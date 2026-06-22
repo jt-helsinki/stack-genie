@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/jt-helsinki/ideal-robot/internal/config"
+	"github.com/jt-helsinki/ideal-robot/internal/egress"
 	"github.com/jt-helsinki/ideal-robot/internal/output"
 	"github.com/jt-helsinki/ideal-robot/internal/workspace"
 )
@@ -177,6 +178,97 @@ func TestNetworkLogNotRunning(test *testing.T) {
 	result := networkLogResult{}
 	if !strings.Contains(result.Human(), "no DNS queries logged yet") {
 		test.Errorf("empty Human() missing the no-queries message:\n%s", result.Human())
+	}
+}
+
+// runNetwork drives a single `ai network <sub> [args...]` invocation against a
+// fresh command tree with a JSON emitter (so interactive() is false), exercising
+// the non-interactive path — no prompt is attempted.
+func runNetwork(test *testing.T, args ...string) int {
+	test.Helper()
+	emitter := &output.Emitter{Out: io.Discard, Err: io.Discard, JSON: true}
+	exit := output.ExitOK
+	cmd := newNetworkCmd(emitter, &exit)
+	cmd.SetOut(io.Discard)
+	cmd.SetErr(io.Discard)
+	cmd.SetArgs(args)
+	if err := cmd.Execute(); err != nil {
+		test.Fatalf("network %v returned error: %v", args, err)
+	}
+	return exit
+}
+
+// A missing value on a non-TTY (JSON emitter) is exit 2 for each value-taking
+// subcommand; the project is resolved from the cwd.
+func TestNetworkValueRequiredNonInteractive(test *testing.T) {
+	root := seedProjectAt(test, "app")
+	test.Chdir(root)
+
+	if exit := runNetwork(test, "egress"); exit != output.ExitInvalidInput {
+		test.Fatalf("egress with no mode: exit = %d, want %d", exit, output.ExitInvalidInput)
+	}
+	if exit := runNetwork(test, "allow"); exit != output.ExitInvalidInput {
+		test.Fatalf("allow with no host: exit = %d, want %d", exit, output.ExitInvalidInput)
+	}
+	if exit := runNetwork(test, "publish"); exit != output.ExitInvalidInput {
+		test.Fatalf("publish with no ports: exit = %d, want %d", exit, output.ExitInvalidInput)
+	}
+}
+
+// --remove with no value stays exit 2 (no prompt — a remove needs an explicit
+// target) on both allow and publish.
+func TestNetworkRemoveRequiresValue(test *testing.T) {
+	root := seedProjectAt(test, "app")
+	test.Chdir(root)
+
+	if exit := runNetwork(test, "allow", "--remove"); exit != output.ExitInvalidInput {
+		test.Fatalf("allow --remove with no host: exit = %d, want %d", exit, output.ExitInvalidInput)
+	}
+	if exit := runNetwork(test, "publish", "--remove"); exit != output.ExitInvalidInput {
+		test.Fatalf("publish --remove with no ports: exit = %d, want %d", exit, output.ExitInvalidInput)
+	}
+}
+
+// Values passed on the command line are used as-is (no prompt) and applied.
+func TestNetworkValuesFromArgs(test *testing.T) {
+	root := seedProjectAt(test, "app")
+	test.Chdir(root)
+
+	if exit := runNetwork(test, "egress", "public"); exit != output.ExitOK {
+		test.Fatalf("egress public: exit = %d, want 0", exit)
+	}
+	if exit := runNetwork(test, "allow", "api.github.com"); exit != output.ExitOK {
+		test.Fatalf("allow api.github.com: exit = %d, want 0", exit)
+	}
+	if exit := runNetwork(test, "publish", "3000:3000"); exit != output.ExitOK {
+		test.Fatalf("publish 3000:3000: exit = %d, want 0", exit)
+	}
+
+	network, err := egress.Get(root)
+	if err != nil {
+		test.Fatalf("egress.Get: %v", err)
+	}
+	if network.ResolvedEgress() != "public" {
+		test.Fatalf("egress = %q, want public", network.ResolvedEgress())
+	}
+	if len(network.AllowHostServices) != 1 || network.AllowHostServices[0].Host != "api.github.com" || network.AllowHostServices[0].Port != 443 {
+		test.Fatalf("allow list = %+v, want api.github.com:443", network.AllowHostServices)
+	}
+	if len(network.PublishPorts) != 1 || network.PublishPorts[0].Guest != 3000 || network.PublishPorts[0].Host != 3000 {
+		test.Fatalf("publish list = %+v, want 3000→3000", network.PublishPorts)
+	}
+}
+
+// A malformed value arg is rejected as exit 2 (existing validation preserved).
+func TestNetworkInvalidValueArgs(test *testing.T) {
+	root := seedProjectAt(test, "app")
+	test.Chdir(root)
+
+	if exit := runNetwork(test, "allow", "host:"); exit != output.ExitInvalidInput {
+		test.Fatalf("allow host:: exit = %d, want %d", exit, output.ExitInvalidInput)
+	}
+	if exit := runNetwork(test, "publish", "notaport"); exit != output.ExitInvalidInput {
+		test.Fatalf("publish notaport: exit = %d, want %d", exit, output.ExitInvalidInput)
 	}
 }
 

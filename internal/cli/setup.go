@@ -29,7 +29,11 @@ func newSetupCmd(em *output.Emitter, exit *int) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "setup",
 		Short: "Install, configure, and start the platform host services (idempotent)",
-		Args:  cobra.NoArgs,
+		Long: "Install, configure, and start the platform host services (idempotent).\n\n" +
+			"On a TTY (without --mode) the deployment role — and, for a client, the remote\n" +
+			"server address — are prompted in a single form with back-navigation, so you can\n" +
+			"step back to change the role before submitting.",
+		Args: cobra.NoArgs,
 		RunE: func(_ *cobra.Command, _ []string) error {
 			deps := setup.RealDeps(goruntime.GOOS, goruntime.GOARCH, nowRFC3339)
 			// On a TTY without an explicit --mode, ask which deployment role this
@@ -88,7 +92,12 @@ func newSetupCmd(em *output.Emitter, exit *int) *cobra.Command {
 // promptDeploymentRole asks (on a TTY) which deployment role this host plays,
 // defaulting to the persisted role (else standalone). When Client is chosen it
 // also prompts for the remote service-tier address (defaulting to the persisted
-// one). Mirrors the password prompt's huh style.
+// one). Both prompts live in ONE huh form (two groups) so huh's built-in
+// back-navigation works: the user can step back from the server-address group to
+// the role group and change their choice (see the back-navigation note in
+// prompt.go). The second group is hidden unless the chosen role is client — huh
+// re-evaluates the hide func as the user navigates, so picking Client reveals it
+// and going back to pick a non-client role hides it again.
 func promptDeploymentRole() (mode, serverAddr string, err error) {
 	defaultRole := runtime.RoleStandalone
 	defaultServer := ""
@@ -100,7 +109,9 @@ func promptDeploymentRole() (mode, serverAddr string, err error) {
 	}
 
 	mode = defaultRole
-	roleForm := huh.NewForm(huh.NewGroup(
+	serverAddr = defaultServer
+
+	roleGroup := huh.NewGroup(
 		huh.NewSelect[string]().
 			Title("Deployment role for this host").
 			Description("standalone: full stack here · server: shared service tier only (0.0.0.0) · client: workspaces only, route to a remote server").
@@ -110,16 +121,9 @@ func promptDeploymentRole() (mode, serverAddr string, err error) {
 				huh.NewOption("Client — run only workspaces; route to a remote server", runtime.RoleClient),
 			).
 			Value(&mode),
-	))
-	if err := roleForm.Run(); err != nil {
-		return "", "", err
-	}
-	if mode != runtime.RoleClient {
-		return mode, "", nil
-	}
+	)
 
-	serverAddr = defaultServer
-	serverForm := huh.NewForm(huh.NewGroup(
+	serverGroup := huh.NewGroup(
 		huh.NewInput().
 			Title("Remote server address (host, host:port, or URL)").
 			Value(&serverAddr).
@@ -129,9 +133,13 @@ func promptDeploymentRole() (mode, serverAddr string, err error) {
 				}
 				return nil
 			}),
-	))
-	if err := serverForm.Run(); err != nil {
+	).WithHideFunc(func() bool { return mode != runtime.RoleClient })
+
+	if err := runForm(roleGroup, serverGroup); err != nil {
 		return "", "", err
+	}
+	if mode != runtime.RoleClient {
+		return mode, "", nil
 	}
 	return mode, strings.TrimSpace(serverAddr), nil
 }
@@ -153,14 +161,8 @@ func promptLiteLLMUIPassword(em *output.Emitter) {
 	if setup.LiteLLMUISecured() {
 		return
 	}
-	var password string
-	form := huh.NewForm(huh.NewGroup(
-		huh.NewInput().
-			Title("Set the LiteLLM admin UI password (leave blank to skip)").
-			EchoMode(huh.EchoModePassword).
-			Value(&password),
-	))
-	if err := form.Run(); err != nil || password == "" {
+	password, err := promptSecret("Set the LiteLLM admin UI password (leave blank to skip)", "", nil)
+	if err != nil || password == "" {
 		return
 	}
 	masterKey, err := generateMasterKey()

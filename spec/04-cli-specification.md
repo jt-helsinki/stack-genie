@@ -136,6 +136,29 @@ completion:
 * `ai services console` → services that have an admin console
 * `ai logs --service` → the host services; `ai logs --workspace` → project names
 
+## 1.8 Interactive Input
+
+To reduce entry errors, commands **prompt for their inputs on a terminal** rather
+than requiring everything on the command line. The rules (implemented once in
+`internal/cli/prompt.go` and shared across commands):
+
+* A value passed as a positional arg or flag is used as-is — **no prompt**. A
+  value that is *missing* is prompted for when stdin is a real TTY and output is
+  not `--json`. With no TTY (automation/CI) or under `--json`, a missing required
+  value is an error (exit 2) — so scripts stay fully non-interactive.
+* **Known option sets are presented, not typed**: single-choice values use a
+  select menu (`ai context strategy|caveman`, `ai models test`, `ai completion`,
+  the `ai setup` deployment role, `ai network egress`), and "one or more" values
+  use a **checkbox** list. `ai services start|stop|restart` with no argument shows
+  every service and its current state as checkboxes and acts on the selection
+  (an explicit name or `all` skips the prompt; non-interactive use still targets
+  all services).
+* **Back-navigation**: when a command collects more than one value (e.g. the
+  `ai setup` role then a client's server address, or `ai secrets set` name then
+  value), all prompts share one form so the user can step **back** to a previous
+  prompt before submitting.
+* Credentials are entered through a **hidden** prompt and never echoed.
+
 ## 2.1 Installation
 
 ### ai setup

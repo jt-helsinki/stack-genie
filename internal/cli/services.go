@@ -5,6 +5,7 @@ import (
 	goruntime "runtime"
 	"strings"
 
+	"github.com/charmbracelet/huh"
 	"github.com/jt-helsinki/ideal-robot/internal/console"
 	"github.com/jt-helsinki/ideal-robot/internal/output"
 	"github.com/jt-helsinki/ideal-robot/internal/setup"
@@ -54,18 +55,38 @@ func newServicesCmd(em *output.Emitter, exit *int) *cobra.Command {
 	return cmd
 }
 
-// newServicesControlCmd builds `ai services start|stop|restart [service]`. With
-// no service (or "all") it acts on every platform-owned container; a single
-// service name (ollama, presidio, litellm, headroom, dns) targets just that one.
+// newServicesControlCmd builds `ai services start|stop|restart [service]`.
+//   - a named service (ollama, presidio, llm-guard, litellm, headroom, proxy,
+//     open-webui, dns) — or the literal "all" — targets it directly, no prompt;
+//   - with no argument on a terminal, it shows a CHECKBOX list of every service
+//     and its current state and acts on the one(s) the user selects (minimal
+//     typing);
+//   - with no argument and no terminal (automation/--json), it acts on every
+//     service, preserving the scriptable "do everything" default.
 func newServicesControlCmd(action string, em *output.Emitter, exit *int) *cobra.Command {
 	return &cobra.Command{
 		Use:               action + " [service]",
-		Short:             action + " host services (all, or one named service)",
+		Short:             action + " host services (named, \"all\", or pick from a checkbox on a terminal)",
 		Args:              cobra.MaximumNArgs(1),
 		ValidArgsFunction: completeServiceNames,
 		RunE: func(_ *cobra.Command, args []string) error {
 			deps := setup.RealDeps(goruntime.GOOS, goruntime.GOARCH, nowRFC3339)
-			statuses, err := setup.ControlService(deps, action, firstArg(args))
+			// An explicit service (or "all") acts directly; bare invocation prompts on
+			// a terminal and falls back to "all" for non-interactive use.
+			targets := args
+			if len(args) == 0 {
+				if interactive(em) {
+					selected, err := selectServices(deps, action)
+					if err != nil {
+						*exit = em.Failure("services."+action, err)
+						return nil
+					}
+					targets = selected
+				} else {
+					targets = []string{""} // "" == all platform services
+				}
+			}
+			statuses, err := controlServices(deps, action, targets)
 			if err != nil {
 				*exit = em.Failure("services."+action, err)
 				return nil
@@ -74,6 +95,46 @@ func newServicesControlCmd(action string, em *output.Emitter, exit *int) *cobra.
 			return nil
 		},
 	}
+}
+
+// selectServices fetches the current per-service status and presents a checkbox
+// list (each labeled with its live state) for the user to choose which services
+// to act on. Returns an exit-2 error if nothing is selected.
+func selectServices(deps setup.Deps, action string) ([]string, error) {
+	statuses, err := setup.ServicesStatus(deps)
+	if err != nil {
+		return nil, err
+	}
+	options := make([]huh.Option[string], 0, len(statuses))
+	for _, service := range statuses {
+		options = append(options, huh.NewOption(fmt.Sprintf("%s (%s)", service.Name, service.State), service.Name))
+	}
+	selected, err := promptMultiChoice(
+		"Which services to "+action+"?",
+		"space to toggle, enter to confirm",
+		options,
+	)
+	if err != nil {
+		return nil, err
+	}
+	if len(selected) == 0 {
+		return nil, output.Errorf(output.ExitInvalidInput, "no services selected")
+	}
+	return selected, nil
+}
+
+// controlServices applies action to each target service in turn, returning the
+// final per-service status. An empty target name means every platform service.
+func controlServices(deps setup.Deps, action string, targets []string) ([]setup.ServiceStatus, error) {
+	var statuses []setup.ServiceStatus
+	for _, name := range targets {
+		applied, err := setup.ControlService(deps, action, name)
+		if err != nil {
+			return nil, err
+		}
+		statuses = applied
+	}
+	return statuses, nil
 }
 
 // newServicesConsoleCmd builds `ai services console [service]`: open a service's

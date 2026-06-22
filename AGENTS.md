@@ -44,6 +44,7 @@ CI (`.github/workflows/ci.yml`) is split: hosted runners do build/vet/lint/unit-
 
 ## Conventions
 
+- **Commands prompt for missing inputs on a TTY** (CLI §1.8), via the shared helpers in `internal/cli/prompt.go` (`interactive`/`runForm`/`promptText`/`promptSecret`/`promptChoice`/`promptMultiChoice`, all built on `charmbracelet/huh`). A value given as an arg/flag is used as-is; a missing value is prompted for interactively, or errors (exit 2) under `--json`/no-TTY so automation stays scriptable. Known option sets are shown as selects/checkboxes (e.g. `ai services start|stop|restart` lists services + state as checkboxes). **All of a command's prompts must share ONE `runForm`** so the user can navigate back between them — never chain separate prompt calls.
 - **No single-character variable names anywhere** — including method receivers and loop vars (`store`, `emitter`, `prober`, `entry`, `value`, …). Self-documenting names over Go's terse-receiver convention. The one kept exception is the test handle `t *testing.T`.
 - **Secrets never touch platform disk.** Values flow straight to the LiteLLM credential store via `secrets.Broker` (`internal/secrets`, which `ai secrets` fronts); `secrets.Entry` has no value field by design, so listings can't leak.
 - Commit messages must not include AI-attribution trailers (no `Co-Authored-By` for the assistant). Commit only when asked; the work lives on a feature branch off `main`.
