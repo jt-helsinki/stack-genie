@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/jt-helsinki/ideal-robot/internal/console"
 	"github.com/jt-helsinki/ideal-robot/internal/litellm"
 	"github.com/jt-helsinki/ideal-robot/internal/runtime"
 	"github.com/jt-helsinki/ideal-robot/internal/sandbox"
@@ -43,7 +44,18 @@ func (report Report) Human() string {
 	glyphs := map[Status]string{StatusOK: "✓", StatusWarn: "!", StatusError: "✗"}
 	var builder strings.Builder
 	for _, check := range report.Checks {
-		_, _ = fmt.Fprintf(&builder, "%s  %-22s %s\n", glyphs[check.Status], check.Name, check.Detail)
+		detail := check.Detail
+		// For the model-service checks (litellm, ollama) show the host-reachable
+		// address — and, for services that have one, the admin-console URL — so the
+		// user can find each service's endpoint + UI. This is distinct from the
+		// "↳ suggestion" / "web:" lines below, which guide FAILING software checks.
+		if endpoint, ok := console.EndpointFor(check.Name); ok && endpoint.Address != "" {
+			detail += " — " + endpoint.Address
+			if endpoint.Console != "" {
+				detail += " (UI " + endpoint.Console + ")"
+			}
+		}
+		_, _ = fmt.Fprintf(&builder, "%s  %-22s %s\n", glyphs[check.Status], check.Name, detail)
 		if check.Suggestion != "" {
 			_, _ = fmt.Fprintf(&builder, "       ↳ %s\n", check.Suggestion)
 		}

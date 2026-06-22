@@ -1,13 +1,36 @@
 package cli
 
 import (
+	"fmt"
 	goruntime "runtime"
+	"strings"
 
 	"github.com/jt-helsinki/ideal-robot/internal/console"
 	"github.com/jt-helsinki/ideal-robot/internal/output"
 	"github.com/jt-helsinki/ideal-robot/internal/setup"
 	"github.com/spf13/cobra"
 )
+
+// servicesResult is the typed payload of the services subcommands. It carries
+// the per-service statuses and renders them — including each service's
+// host-reachable address and admin-console URL — for non-JSON output, while the
+// `services` field keeps the JSON envelope shape stable.
+type servicesResult struct {
+	Services []setup.ServiceStatus `json:"services"`
+}
+
+// Human renders one line per service: name, mode, state, then (when present) the
+// host-reachable address and a `UI <url>` hint for services with an admin
+// console — so the user can find each service's address + UI.
+func (result servicesResult) Human() string {
+	var builder strings.Builder
+	for _, service := range result.Services {
+		line := fmt.Sprintf("%-13s %-9s %-9s", service.Name, service.Mode, service.State)
+		line += service.EndpointSuffix()
+		_, _ = fmt.Fprintln(&builder, strings.TrimRight(line, " "))
+	}
+	return strings.TrimRight(builder.String(), "\n")
+}
 
 // newServicesCmd builds `ai services` and its subcommands (CLI §10.2).
 // `start`/`stop`/`restart` control the platform-owned containers (Ollama,
@@ -47,7 +70,7 @@ func newServicesControlCmd(action string, em *output.Emitter, exit *int) *cobra.
 				*exit = em.Failure("services."+action, err)
 				return nil
 			}
-			*exit = em.Success("services."+action, map[string]any{"services": statuses})
+			*exit = em.Success("services."+action, servicesResult{Services: statuses})
 			return nil
 		},
 	}
@@ -111,7 +134,7 @@ func newServicesStatusCmd(em *output.Emitter, exit *int) *cobra.Command {
 				*exit = em.Failure("services.status", err)
 				return nil
 			}
-			*exit = em.Success("services.status", map[string]any{"services": statuses})
+			*exit = em.Success("services.status", servicesResult{Services: statuses})
 			return nil
 		},
 	}

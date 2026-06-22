@@ -70,6 +70,25 @@ func TestRunAllHealthy(test *testing.T) {
 	}
 }
 
+func TestHumanShowsModelServiceEndpoints(test *testing.T) {
+	deps := Deps{
+		GOOS: "darwin", GOARCH: "arm64",
+		Prober: fakeProber{bins: map[string]bool{"docker": true, "msb": true}},
+		Model:  fakeModel{healthy: true},
+		Ollama: fakeOllama{},
+	}
+	rendered := Run(deps).Human()
+	// A healthy litellm shows its address and admin-UI URL on the check line.
+	if !strings.Contains(rendered, "litellm") ||
+		!strings.Contains(rendered, "http://localhost:4000 (UI http://localhost:4000/ui)") {
+		test.Errorf("litellm endpoint missing from doctor output:\n%s", rendered)
+	}
+	// Ollama shows its address but no UI.
+	if !strings.Contains(rendered, "ollama") || !strings.Contains(rendered, "http://localhost:11434") {
+		test.Errorf("ollama address missing from doctor output:\n%s", rendered)
+	}
+}
+
 func TestOllamaRequiredCheck(test *testing.T) {
 	base := Deps{
 		GOOS: "darwin", GOARCH: "arm64",

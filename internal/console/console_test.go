@@ -25,6 +25,51 @@ func TestWithConsolesSortedAndFiltered(test *testing.T) {
 	}
 }
 
+func TestEndpointAndAddress(test *testing.T) {
+	// litellm has both an address and a console.
+	endpoint, ok := EndpointFor("litellm")
+	if !ok || endpoint.Address != "http://localhost:4000" || endpoint.Console != "http://localhost:4000/ui" {
+		test.Errorf("litellm endpoint = (%+v,%v)", endpoint, ok)
+	}
+	if address, ok := Address("litellm"); !ok || address != "http://localhost:4000" {
+		test.Errorf("litellm address = (%q,%v)", address, ok)
+	}
+
+	// ollama has an address only (HTTP API, no console).
+	endpoint, ok = EndpointFor("ollama")
+	if !ok || endpoint.Address != "http://localhost:11434" || endpoint.Console != "" {
+		test.Errorf("ollama endpoint = (%+v,%v)", endpoint, ok)
+	}
+	if address, ok := Address("ollama"); !ok || address != "http://localhost:11434" {
+		test.Errorf("ollama address = (%q,%v)", address, ok)
+	}
+	if _, ok := URL("ollama"); ok {
+		test.Error("ollama should report no console")
+	}
+
+	// presidio and microsandbox have neither an address nor a console.
+	for _, name := range []string{"presidio", "microsandbox"} {
+		endpoint, ok := EndpointFor(name)
+		if !ok {
+			test.Errorf("%s should be a known service", name)
+		}
+		if endpoint.Address != "" || endpoint.Console != "" {
+			test.Errorf("%s endpoint = %+v, want empty address+console", name, endpoint)
+		}
+		if _, ok := Address(name); ok {
+			test.Errorf("%s should report no address", name)
+		}
+		if _, ok := URL(name); ok {
+			test.Errorf("%s should report no console", name)
+		}
+	}
+
+	// Unknown service is not known and has no endpoint.
+	if _, ok := EndpointFor("nope"); ok {
+		test.Error("unknown service must not have an endpoint")
+	}
+}
+
 func TestOpenerCommandPerOS(test *testing.T) {
 	cases := map[string]struct {
 		name string

@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/jt-helsinki/ideal-robot/internal/console"
 	"github.com/jt-helsinki/ideal-robot/internal/litellm"
 	"github.com/jt-helsinki/ideal-robot/internal/ollama"
 	"github.com/jt-helsinki/ideal-robot/internal/output"
@@ -501,8 +502,10 @@ func (services realServices) Status() ([]ServiceStatus, error) {
 		if healthy {
 			state = "running"
 		}
+		endpoint, _ := console.EndpointFor(service.Name)
 		statuses = append(statuses, ServiceStatus{
 			Name: service.Name, Mode: service.Mode, State: state, Healthy: healthy,
+			Address: endpoint.Address, Console: endpoint.Console,
 		})
 	}
 	return statuses, nil

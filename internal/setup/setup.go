@@ -14,6 +14,7 @@ import (
 	"strings"
 
 	"github.com/jt-helsinki/ideal-robot/internal/config"
+	"github.com/jt-helsinki/ideal-robot/internal/console"
 	"github.com/jt-helsinki/ideal-robot/internal/doctor"
 	"github.com/jt-helsinki/ideal-robot/internal/layout"
 	"github.com/jt-helsinki/ideal-robot/internal/output"
@@ -29,6 +30,27 @@ type ServiceStatus struct {
 	State   string `json:"state"` // running | stopped | not_installed | unavailable | unknown
 	Healthy bool   `json:"healthy"`
 	Detail  string `json:"detail,omitempty"`
+	// Address is the host-reachable URL/host:port the user can hit (from the
+	// console registry); Console is the admin-UI URL when the service has one.
+	// Both empty for services that publish nothing to the host (e.g. Presidio,
+	// the microVM runtime).
+	Address string `json:"address,omitempty"`
+	Console string `json:"console,omitempty"`
+}
+
+// EndpointSuffix renders the host address and, when present, the admin-console
+// hint for a service line — "  <address> · UI <console>", or "" when the service
+// publishes nothing to the host. Shared by the `ai setup` and `ai services`
+// renderers so the format lives in one place.
+func (status ServiceStatus) EndpointSuffix() string {
+	if status.Address == "" {
+		return ""
+	}
+	suffix := "  " + status.Address
+	if status.Console != "" {
+		suffix += " · UI " + status.Console
+	}
+	return suffix
 }
 
 // Services reconciles, reports, and controls the host services (the LiteLLM,
@@ -129,11 +151,12 @@ func (report *Report) Human() string {
 		presence(report.ConfigCreated), presence(report.VersionsCreated))
 	builder.WriteString("Services:\n")
 	for _, service := range report.Services {
-		line := fmt.Sprintf("  %-11s %-9s %s", service.Name, service.Mode, service.State)
+		line := fmt.Sprintf("  %-11s %-9s %-9s", service.Name, service.Mode, service.State)
 		if service.Detail != "" {
 			line += " — " + service.Detail
 		}
-		builder.WriteString(line + "\n")
+		line += service.EndpointSuffix()
+		builder.WriteString(strings.TrimRight(line, " ") + "\n")
 	}
 	return strings.TrimRight(builder.String(), "\n")
 }
@@ -320,9 +343,11 @@ func ServicesStatus(deps Deps) ([]ServiceStatus, error) {
 		if detected.Microsandbox.Available {
 			state = "ready"
 		}
+		endpoint, _ := console.EndpointFor("microsandbox")
 		statuses = append(statuses, ServiceStatus{
 			Name: "microsandbox", Mode: "runtime", State: state,
 			Healthy: detected.Microsandbox.Available, Detail: detected.Microsandbox.Virtualization,
+			Address: endpoint.Address, Console: endpoint.Console,
 		})
 	}
 

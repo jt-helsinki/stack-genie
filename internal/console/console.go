@@ -1,8 +1,10 @@
-// Package console resolves the admin-console URLs of the host services and opens
-// them in the user's browser, so a user can see what their setup is doing
-// (LiteLLM usage/keys, …). The set of consoles is a small built-in registry of
-// verified defaults; services without a web console are listed explicitly so the
-// CLI can tell "no console" apart from "unknown service".
+// Package console is the single source of truth for the host services'
+// reachable endpoints: the address a user (or workspace) can hit, and — where
+// the service has one — its admin-console URL. `ai setup`, `ai doctor`, and
+// `ai services status` all read from this registry so the user can find each
+// service's UI, and `ai services console` opens the admin URL in the browser.
+// Services without a host address and/or a web console are listed explicitly so
+// the CLI can tell "no console" apart from "unknown service".
 package console
 
 import (
@@ -10,33 +12,64 @@ import (
 	"sort"
 )
 
-// consoles maps a host service to its admin-console URL. An empty value means the
-// service is known but has no web console (e.g. Ollama is an API on :11434).
-var consoles = map[string]string{
-	"litellm":      "http://localhost:4000/ui", // LiteLLM admin UI (keys, usage, logs)
-	"ollama":       "",                         // HTTP API on :11434, no console UI
-	"microsandbox": "",                         // microVM runtime, no console
-	// Headroom is not a host service — it runs per-project in the workspace.
+// Endpoint is what a host service exposes. Address is the host-reachable URL or
+// host:port the user can hit (empty when the service publishes nothing to the
+// host, e.g. the microVM runtime). Console is the admin-UI URL (empty when the
+// service has no web console — e.g. an HTTP API or a proxy with no UI).
+type Endpoint struct {
+	Address string `json:"address,omitempty"`
+	Console string `json:"console,omitempty"`
+}
+
+// registry maps a host service to its endpoint. Addresses are the verified host
+// ports the service tier publishes (see internal/setup host-port consts):
+//   - litellm  :4000  + admin UI at /ui
+//   - ollama   :11434 (HTTP API, no UI)
+//   - headroom :8787  (aip-headroom compression proxy; has /stats, no UI)
+//   - dns      127.0.0.1:15353/udp (aip-dns CoreDNS egress-audit resolver, loopback)
+//   - presidio analyzer/anonymizer are internal-only on :3000 (not host-published)
+//   - microsandbox is the microVM runtime (no host address, no console)
+var registry = map[string]Endpoint{
+	"litellm":      {Address: "http://localhost:4000", Console: "http://localhost:4000/ui"},
+	"ollama":       {Address: "http://localhost:11434"}, // HTTP API on :11434, no console UI
+	"headroom":     {Address: "http://localhost:8787"},  // aip-headroom compression proxy, no UI
+	"dns":          {Address: "127.0.0.1:15353/udp"},    // aip-dns CoreDNS resolver, host loopback
+	"presidio":     {},                                  // analyzer/anonymizer internal-only on :3000
+	"microsandbox": {},                                  // microVM runtime, no address/console
 }
 
 // Known reports whether name is a recognized host service.
 func Known(name string) bool {
-	_, ok := consoles[name]
+	_, ok := registry[name]
 	return ok
 }
 
-// URL returns the admin-console URL for a service and whether it has one.
+// EndpointFor returns the full endpoint for a service and whether it is known.
+func EndpointFor(name string) (Endpoint, bool) {
+	endpoint, ok := registry[name]
+	return endpoint, ok
+}
+
+// Address returns the host-reachable address for a service and whether it has
+// one (a known service with a non-empty Address).
+func Address(name string) (string, bool) {
+	endpoint, ok := registry[name]
+	return endpoint.Address, ok && endpoint.Address != ""
+}
+
+// URL returns the admin-console URL for a service and whether it has one (a
+// known service with a non-empty Console).
 func URL(name string) (string, bool) {
-	url, ok := consoles[name]
-	return url, ok && url != ""
+	endpoint, ok := registry[name]
+	return endpoint.Console, ok && endpoint.Console != ""
 }
 
 // WithConsoles returns the services that have an admin console, sorted by name.
 func WithConsoles() []NamedURL {
 	var named []NamedURL
-	for name, url := range consoles {
-		if url != "" {
-			named = append(named, NamedURL{Name: name, URL: url})
+	for name, endpoint := range registry {
+		if endpoint.Console != "" {
+			named = append(named, NamedURL{Name: name, URL: endpoint.Console})
 		}
 	}
 	sort.Slice(named, func(left, right int) bool { return named[left].Name < named[right].Name })

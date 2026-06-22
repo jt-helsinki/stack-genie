@@ -358,6 +358,34 @@ func TestLiteLLMRunArgs(test *testing.T) {
 	}
 }
 
+func TestReportHumanShowsAddressAndConsole(test *testing.T) {
+	report := &Report{
+		PlatformDir: "/home/u/.ai-platform",
+		Services: []ServiceStatus{
+			{Name: "litellm", Mode: "container", State: "running", Healthy: true,
+				Address: "http://localhost:4000", Console: "http://localhost:4000/ui"},
+			{Name: "ollama", Mode: "container", State: "running", Healthy: true,
+				Address: "http://localhost:11434"},
+			{Name: "presidio", Mode: "container", State: "running", Healthy: true},
+		},
+	}
+	rendered := report.Human()
+	// litellm shows both its address and the admin UI URL.
+	if !strings.Contains(rendered, "http://localhost:4000 · UI http://localhost:4000/ui") {
+		test.Errorf("litellm address+UI missing:\n%s", rendered)
+	}
+	// ollama shows its address only (no UI).
+	if !strings.Contains(rendered, "http://localhost:11434") {
+		test.Errorf("ollama address missing:\n%s", rendered)
+	}
+	// presidio (no host endpoint) shows neither an address nor a UI hint.
+	for _, presidioLine := range strings.Split(rendered, "\n") {
+		if strings.Contains(presidioLine, "presidio") && strings.Contains(presidioLine, "http") {
+			test.Errorf("presidio line should have no address/UI: %q", presidioLine)
+		}
+	}
+}
+
 func TestDesiredServicesAreRequired(test *testing.T) {
 	// Ollama, Presidio, LiteLLM, and Headroom are all required host services
 	// (Ollama is the local model backend LiteLLM routes to, arch §14/§16).
