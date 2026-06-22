@@ -48,6 +48,45 @@ type fakeOllama struct{ err error }
 
 func (probe fakeOllama) Reachable() error { return probe.err }
 
+type fakeOpenWebUI struct{ err error }
+
+func (probe fakeOpenWebUI) Reachable() error { return probe.err }
+
+func TestOpenWebUIOptionalCheck(test *testing.T) {
+	base := Deps{
+		GOOS: "darwin", GOARCH: "arm64",
+		Prober: fakeProber{bins: map[string]bool{"docker": true, "msb": true}},
+		Model:  fakeModel{healthy: true},
+		Ollama: fakeOllama{},
+	}
+
+	// No probe → warn (not checked), report stays OK.
+	report := Run(base)
+	if got := checkByName(report, "open-webui").Status; got != StatusWarn {
+		test.Errorf("nil probe → open-webui status = %q, want warn", got)
+	}
+	if !report.OK {
+		test.Error("a not-checked open-webui must not fail the report")
+	}
+
+	// Reachable → ok.
+	base.OpenWebUI = fakeOpenWebUI{}
+	report = Run(base)
+	if got := checkByName(report, "open-webui").Status; got != StatusOK {
+		test.Errorf("reachable open-webui → status = %q, want ok", got)
+	}
+
+	// Unreachable → warn (optional), report stays OK.
+	base.OpenWebUI = fakeOpenWebUI{err: errors.New("connection refused")}
+	report = Run(base)
+	if got := checkByName(report, "open-webui").Status; got != StatusWarn {
+		test.Errorf("unreachable open-webui → status = %q, want warn", got)
+	}
+	if !report.OK {
+		test.Error("an unreachable optional open-webui must not fail the report")
+	}
+}
+
 func TestRunAllHealthy(test *testing.T) {
 	deps := Deps{
 		GOOS: "darwin", GOARCH: "arm64",

@@ -76,12 +76,17 @@ func (report Report) Human() string {
 // probe is wired during hardware bring-up).
 type OllamaProbe interface{ Reachable() error }
 
+// OpenWebUIProbe reports whether the optional Open WebUI chat UI is reachable.
+// Injectable so the check is unit-testable; nil means "not checked".
+type OpenWebUIProbe interface{ Reachable() error }
+
 // Deps are the injectable dependencies of Run.
 type Deps struct {
 	GOOS, GOARCH string
 	Prober       runtime.Prober
 	Model        litellm.Client
 	Ollama       OllamaProbe
+	OpenWebUI    OpenWebUIProbe
 }
 
 // Run executes the platform health checks.
@@ -94,6 +99,7 @@ func Run(deps Deps) Report {
 		virtualizationCheck(deps.GOOS, detectedSandbox),
 		litellmCheck(deps.Model),
 		ollamaCheck(deps.Ollama),
+		openWebUICheck(deps.OpenWebUI),
 	}
 	report := Report{OK: true, Checks: checks}
 	for _, check := range checks {
@@ -177,6 +183,28 @@ func ollamaCheck(probe OllamaProbe) Check {
 		}
 	}
 	return Check{Name: "ollama", Status: StatusOK, Detail: "reachable"}
+}
+
+// openWebUICheck reports the Open WebUI chat-UI state. Open WebUI is OPTIONAL, so
+// an unreachable instance is a warning (never an error that fails the report). The
+// probe is injectable; nil means "not checked yet". The check name must match the
+// console registry key so Human() shows its address + UI.
+func openWebUICheck(probe OpenWebUIProbe) Check {
+	if probe == nil {
+		return Check{
+			Name: "open-webui", Status: StatusWarn,
+			Detail:     "optional; not checked; run `ai setup`",
+			Suggestion: "run `ai setup` to start the Open WebUI chat UI",
+		}
+	}
+	if err := probe.Reachable(); err != nil {
+		return Check{
+			Name: "open-webui", Status: StatusWarn,
+			Detail:     "optional; not reachable",
+			Suggestion: "run `ai setup` (or `ai services start open-webui`) to start the Open WebUI chat UI",
+		}
+	}
+	return Check{Name: "open-webui", Status: StatusOK, Detail: "reachable"}
 }
 
 func microsandboxCheck(detected sandbox.Info) Check {

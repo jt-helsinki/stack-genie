@@ -45,6 +45,9 @@ func Default() *File {
 			// compression knobs ride per request, so it is no longer baked into the
 			// workspace image.
 			"headroom": {Mode: "container", Image: "ghcr.io/chopratejas/headroom", Digest: "sha256:TBD"},
+			// Open WebUI is the optional chat UI, routed through LiteLLM as an
+			// OpenAI-compatible gateway (published on the host at :8090).
+			"open-webui": {Mode: "container", Image: "ghcr.io/open-webui/open-webui", Digest: "sha256:TBD"},
 			// Presidio backs LiteLLM's always-on PII guardrail (arch §17): the
 			// analyzer detects PII, the anonymizer masks it. Internal-only containers.
 			"presidio-analyzer":   {Mode: "container", Image: "mcr.microsoft.com/presidio-analyzer", Digest: "sha256:TBD"},

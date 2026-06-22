@@ -20,8 +20,16 @@ func TestURLAndKnown(test *testing.T) {
 
 func TestWithConsolesSortedAndFiltered(test *testing.T) {
 	named := WithConsoles()
-	if len(named) != 1 || named[0].Name != "litellm" {
-		test.Fatalf("WithConsoles = %+v, want [litellm]", named)
+	// litellm and open-webui both expose a console; sorted by name.
+	if len(named) != 2 || named[0].Name != "litellm" || named[1].Name != "open-webui" {
+		test.Fatalf("WithConsoles = %+v, want [litellm open-webui]", named)
+	}
+}
+
+func TestOpenWebUIEndpointHasAddressAndConsole(test *testing.T) {
+	endpoint, ok := EndpointFor("open-webui")
+	if !ok || endpoint.Address != "http://localhost:8090" || endpoint.Console != "http://localhost:8090" {
+		test.Errorf("open-webui endpoint = (%+v,%v)", endpoint, ok)
 	}
 }
 

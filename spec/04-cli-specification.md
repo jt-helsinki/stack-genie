@@ -663,7 +663,7 @@ Checks:
 ## 10.2 Service Management
 
 The `ai` CLI is the single control plane for all host services — the platform
-containers `ollama`, `presidio`, `litellm`, and `headroom`. The user never
+containers `ollama`, `presidio`, `litellm`, `headroom`, and the optional `open-webui` chat UI. The user never
 invokes `docker compose`, `launchctl`, or `systemctl` directly. The whole service
 tier runs as containers (see architecture §5, "Host Services Control Plane").
 (The Microsandbox workspace runtime is not a long-running service — it is driven
@@ -676,17 +676,17 @@ ai services stop    [<service>]    # stop one or all
 ai services restart [<service>]    # restart one or all
 ```
 
-`<service>`: `ollama` | `presidio` | `litellm` | `headroom` |
+`<service>`: `ollama` | `presidio` | `litellm` | `headroom` | `open-webui` |
 `all` (no arg = all).
 
 Behavior:
 
 * `status` reports each service's health and pinned version; `--json` returns the
   §19 envelope with a `data.services` array. It covers the platform
-  **containers** — `ollama`, `presidio`, `litellm`, `headroom` — which are the
+  **containers** — `ollama`, `presidio`, `litellm`, `headroom`, `open-webui` — which are the
   whole service tier
 * lifecycle verbs act on the **platform-owned container set** — `ollama`,
-  `presidio`, `litellm`, `headroom` — via the runtime abstraction (§6). With no
+  `presidio`, `litellm`, `headroom`, `open-webui` — via the runtime abstraction (§6). With no
   service, or `all`, they act on every container in **dependency order**
 * docker compose is not used; container-tier services are managed through the
   runtime abstraction (§6)

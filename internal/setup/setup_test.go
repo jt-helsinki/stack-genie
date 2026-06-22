@@ -389,7 +389,7 @@ func TestReportHumanShowsAddressAndConsole(test *testing.T) {
 func TestDesiredServicesAreRequired(test *testing.T) {
 	// Ollama, Presidio, LiteLLM, and Headroom are all required host services
 	// (Ollama is the local model backend LiteLLM routes to, arch §14/§16).
-	for _, name := range []string{"ollama", "presidio", "litellm", "headroom"} {
+	for _, name := range []string{"ollama", "presidio", "litellm", "headroom", "open-webui"} {
 		if !hasService(desiredServices(), name) {
 			test.Errorf("required service %q missing from desiredServices: %+v", name, desiredServices())
 		}

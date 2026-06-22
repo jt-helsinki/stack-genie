@@ -15,6 +15,7 @@ var expectedServices = map[string]string{
 	"microsandbox":        "native",
 	"litellm":             "container",
 	"headroom":            "container",
+	"open-webui":          "container",
 	"presidio-analyzer":   "container",
 	"presidio-anonymizer": "container",
 	"ollama":              "container",

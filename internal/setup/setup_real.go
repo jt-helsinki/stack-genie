@@ -31,6 +31,7 @@ func desiredServices() []serviceSpec {
 		{"presidio", "container"},
 		{"litellm", "container"},
 		{"headroom", "container"},
+		{"open-webui", "container"},
 		{"dns", "container"},
 	}
 }
@@ -76,6 +77,17 @@ const (
 	headroomContainer = "aip-headroom"
 	headroomImage     = "ghcr.io/chopratejas/headroom:slim"
 	headroomTargetURL = "http://" + litellmContainer + ":4000"
+
+	// Open WebUI is the optional chat UI for the platform, routed through LiteLLM
+	// as an OpenAI-compatible gateway. Pulled image (no build): it listens on :8080
+	// in the container, published to the host at openWebUIHostPort, and persists its
+	// data on a named volume. The built-in Ollama backend and the login wall are
+	// disabled (single-user local UI); all model traffic goes via LiteLLM.
+	openWebUIContainer = "aip-open-webui"
+	openWebUIImage     = "ghcr.io/open-webui/open-webui:main"
+	openWebUIHostPort  = "8090"
+	openWebUIVolume    = "aip-open-webui-data"
+	openWebUITargetURL = "http://" + litellmContainer + ":4000/v1"
 
 	// Presidio backs LiteLLM's always-on PII guardrail (arch §17). The analyzer
 	// detects PII and the anonymizer masks it; LiteLLM reaches both by name on the
@@ -276,6 +288,43 @@ func ensureHeadroom(prober runtime.Prober, containerRuntime string) error {
 	return nil
 }
 
+// ensureOpenWebUI runs the Open WebUI chat UI, routed through LiteLLM as an
+// OpenAI-compatible gateway: agents/users hit :8090 on the host and the UI sends
+// model traffic to LiteLLM via OPENAI_API_BASE_URL (which includes /v1). The
+// built-in Ollama backend and the login wall are disabled. The gateway key is the
+// LiteLLM master key when one is set: it is reused from the running LiteLLM
+// container (litellmEnvValue) and passed as **env passthrough** (`-e
+// OPENAI_API_KEY`, no value) so it never appears in argv or on platform disk —
+// exactly like the LiteLLM secret handling. When LiteLLM has no master key the key
+// is omitted (LiteLLM then accepts unauthenticated requests). Pulled image (no
+// build). Idempotent.
+func ensureOpenWebUI(prober runtime.Prober, containerRuntime string) error {
+	if containerRunning(prober, containerRuntime, openWebUIContainer) {
+		return nil
+	}
+	_, _ = prober.Run(containerRuntime, "rm", "-f", openWebUIContainer)
+	args := []string{
+		"run", "-d", "--name", openWebUIContainer,
+		"--network", platformNetwork,
+		"-p", openWebUIHostPort + ":8080",
+		"-v", openWebUIVolume + ":/app/backend/data",
+		"-e", "OPENAI_API_BASE_URL=" + openWebUITargetURL,
+		"-e", "ENABLE_OLLAMA_API=false",
+		"-e", "WEBUI_AUTH=false",
+	}
+	// Reuse the running LiteLLM container's master key, passing it via env
+	// passthrough so the value stays out of argv (and platform disk).
+	if key := litellmEnvValue(prober, containerRuntime, "LITELLM_MASTER_KEY"); key != "" {
+		_ = os.Setenv("OPENAI_API_KEY", key)
+		args = append(args, "-e", "OPENAI_API_KEY")
+	}
+	args = append(args, openWebUIImage)
+	if _, err := prober.Run(containerRuntime, args...); err != nil {
+		return output.Errorf(output.ExitRuntimeFailure, "launch open-webui via %s: %s", containerRuntime, err)
+	}
+	return nil
+}
+
 // ensureDNS runs the aip-dns CoreDNS resolver on the shared network, published to
 // the host loopback at dnsHostPort/udp so microVMs (booted with --dns-nameserver
 // DNSNameserver) forward their DNS there for the attempted-egress-by-name audit
@@ -455,6 +504,10 @@ func (services realServices) Reconcile(providerConfig string, progress func(stri
 	if err := ensureHeadroom(services.prober, containerRuntime.Name); err != nil {
 		return nil, err
 	}
+	progress("  • open-webui (chat UI → LiteLLM)…")
+	if err := ensureOpenWebUI(services.prober, containerRuntime.Name); err != nil {
+		return nil, err
+	}
 	return services.Status()
 }
 
@@ -534,6 +587,14 @@ func (services realServices) serviceHealthy(name string) bool {
 			return false
 		}
 		return containerRunning(services.prober, containerRuntime.Name, headroomContainer)
+	case "open-webui":
+		// Open WebUI takes a while to boot; the container running is sufficient for
+		// readiness here (the live /health probe is `ai doctor`'s job).
+		containerRuntime, err := runtime.ContainerRuntimeName(services.prober)
+		if err != nil {
+			return false
+		}
+		return containerRunning(services.prober, containerRuntime.Name, openWebUIContainer)
 	case "dns":
 		// The resolver is a pure forwarder; the container running is sufficient
 		// (it has no HTTP health endpoint).
@@ -595,6 +656,9 @@ func (services realServices) Control(action, service string) ([]ServiceStatus, e
 		{"headroom",
 			func() error { return ensureHeadroom(services.prober, containerRuntime.Name) },
 			func() error { return stopContainer(headroomContainer) }},
+		{"open-webui",
+			func() error { return ensureOpenWebUI(services.prober, containerRuntime.Name) },
+			func() error { return stopContainer(openWebUIContainer) }},
 		{"dns",
 			func() error { return ensureDNS(services.prober, containerRuntime.Name) },
 			func() error { return stopContainer(dnsContainer) }},
@@ -612,7 +676,7 @@ func (services realServices) Control(action, service string) ([]ServiceStatus, e
 		}
 		if targets == nil {
 			return nil, output.Errorf(output.ExitInvalidInput,
-				"unknown service %q (expected one of: ollama, presidio, litellm, headroom, dns)", service)
+				"unknown service %q (expected one of: ollama, presidio, litellm, headroom, open-webui, dns)", service)
 		}
 	}
 
