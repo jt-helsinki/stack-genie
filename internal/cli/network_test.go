@@ -1,6 +1,59 @@
 package cli
 
-import "testing"
+import (
+	"strings"
+	"testing"
+
+	"github.com/jt-helsinki/ideal-robot/internal/config"
+	"github.com/jt-helsinki/ideal-robot/internal/workspace"
+)
+
+// When the live policy is available, Human() renders BOTH a declared section and
+// a clearly-labeled in-force (live) section, and makes explicit that the live
+// view is the applied policy (what would be blocked), not a denial log.
+func TestNetworkResultHumanWithInForce(test *testing.T) {
+	result := networkResult{
+		Egress:            "deny",
+		AllowHostServices: []config.HostService{{Host: "gateway", Port: 5432}},
+		PublishPorts:      []config.PortMapping{{Guest: 3000, Host: 3000}},
+		InForce: &workspace.NetworkPolicy{
+			DefaultEgress: "deny",
+			Rules:         []string{"allow egress example.com tcp 443"},
+			OnViolation:   "block-and-log",
+		},
+	}
+	output := result.Human()
+	for _, want := range []string{
+		"declared (config.yaml):",
+		"gateway:5432",
+		"3000→3000",
+		"in force (live",
+		"what WOULD be blocked",
+		"default egress: deny",
+		"allow egress example.com tcp 443",
+		"on violation: block-and-log",
+	} {
+		if !strings.Contains(output, want) {
+			test.Errorf("Human() missing %q\n--- got ---\n%s", want, output)
+		}
+	}
+}
+
+// With no live policy (workspace not running), Human() shows the declared policy
+// and an explicit "not running" note — and no in-force rules.
+func TestNetworkResultHumanDeclaredOnly(test *testing.T) {
+	result := networkResult{Egress: "deny"}
+	output := result.Human()
+	if !strings.Contains(output, "declared (config.yaml):") {
+		test.Errorf("missing declared section:\n%s", output)
+	}
+	if !strings.Contains(output, "workspace not running — showing declared policy only") {
+		test.Errorf("missing not-running note:\n%s", output)
+	}
+	if strings.Contains(output, "in force (live, on the running microVM)") {
+		test.Errorf("declared-only output must not render a live policy section:\n%s", output)
+	}
+}
 
 func TestSplitHostPort(test *testing.T) {
 	cases := []struct {

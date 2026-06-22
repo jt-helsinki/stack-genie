@@ -722,8 +722,24 @@ Elasticsearch — host defaults to `gateway`) and common developer domains (npm
 all tcp/443) plus a custom `host[:port]` entry; `publish` (no arg) prompts for the
 ports. With `--json` or no TTY, the value must be passed as an argument.
 
-* `show` lists the project's egress mode, allowed host services, and published
-  ports.
+* `show` lists the project's **declared** egress policy (egress mode, allowed
+  host services, published ports — from `config.yaml`). When the project's
+  workspace microVM is **running**, `show` ALSO reads the policy actually **in
+  force** on it via `msb inspect <sandbox> --format json` and renders it in a
+  separate **"in force (live)"** section: the applied `default_egress`, the
+  applied net-rules (one readable line each), and the secrets-broker
+  `on_violation` posture. This live view is the applied **policy** — *what would
+  be blocked* — **not** a record of blocked connections: msb 0.5.7 exposes only
+  the policy config, not per-connection denials. The applied policy is parsed
+  from `config.network.policy` (`default_egress` + `rules`, each rule's
+  `destination` keyed by `domain` / `domain_suffix` / `cidr` / `ip`, with
+  `protocols` + `ports`) and `config.network.secrets.on_violation`. If the
+  workspace is **not running** (no sandbox) or `msb` is not installed, `show`
+  gracefully prints **only** the declared policy with a note
+  *"(workspace not running — showing declared policy only)"* — this is **not** an
+  error (exit `0`); only a genuine `msb` runtime failure surfaces (exit `4`). With
+  `--json`, the live policy appears under an optional `in_force` field (omitted
+  when unavailable).
 * `egress` sets the default outbound posture: **deny** (default — only the model
   gateway + allowed services), **public** (open internet, private ranges still
   blocked), **unrestricted**.

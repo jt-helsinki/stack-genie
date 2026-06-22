@@ -67,6 +67,20 @@ type ExecResult struct {
 	Stderr   string `json:"stderr"`
 }
 
+// NetworkPolicy is the egress policy actually IN FORCE on a running microVM, read
+// back from `msb inspect`. It is the applied POLICY (what would be blocked), not a
+// record of blocked connections — msb 0.5.7 does not expose per-connection denials.
+type NetworkPolicy struct {
+	// DefaultEgress is the default outbound posture in force (e.g. "deny", "allow").
+	DefaultEgress string `json:"default_egress"`
+	// Rules are the applied egress allow/deny rules, each rendered as a single
+	// human line (e.g. "allow egress example.com tcp 443").
+	Rules []string `json:"rules,omitempty"`
+	// OnViolation is the secrets-broker violation posture (e.g. "block-and-log"),
+	// empty if msb did not report one.
+	OnViolation string `json:"on_violation,omitempty"`
+}
+
 // Builder builds the workspace OCI image from <projectRoot>/.ai-platform/Dockerfile.
 type Builder interface {
 	Build(projectRoot, imageRef string) error
@@ -85,6 +99,11 @@ type Sandbox interface {
 	// WriteFile writes content to guestPath inside the running microVM, creating
 	// parent directories. name is the human label only used for error context.
 	WriteFile(name, guestPath string, content []byte) error
+	// InspectNetwork reads the egress policy in force on the named microVM via
+	// `msb inspect`. It returns ErrNotRunning when no such sandbox exists (the
+	// workspace is not running) and ErrMsbMissing when msb is not installed —
+	// both of which callers treat as "show the declared policy only", not an error.
+	InspectNetwork(name string) (NetworkPolicy, error)
 }
 
 // KeyMinter mints scoped LiteLLM virtual keys. It is the small surface
@@ -315,6 +334,17 @@ func (manager Manager) Exec(project string, argv []string) (ExecResult, error) {
 		return ExecResult{}, err
 	}
 	return manager.Sandbox.Exec(Name(project), argv)
+}
+
+// InspectNetwork returns the egress policy in force on the project's running
+// workspace microVM. A not-running workspace (or missing msb) is signalled with
+// ErrNotRunning / ErrMsbMissing so the caller can fall back to the declared
+// policy rather than treating it as a failure.
+func (manager Manager) InspectNetwork(project string) (NetworkPolicy, error) {
+	if _, err := resolveProjectRoot(project); err != nil {
+		return NetworkPolicy{}, err
+	}
+	return manager.Sandbox.InspectNetwork(Name(project))
 }
 
 func (manager Manager) updateStatus(root, name, project string, status state.WorkspaceStatus) error {

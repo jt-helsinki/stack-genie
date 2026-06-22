@@ -29,6 +29,8 @@ type fakeSandbox struct {
 	execResult                           ExecResult
 	execErr                              error
 	written                              map[string][]byte
+	inspectPolicy                        NetworkPolicy
+	inspectErr                           error
 }
 
 func (sandbox *fakeSandbox) Create(_, _, projectMount, overlayPath string, netArgs []string) error {
@@ -50,6 +52,9 @@ func (sandbox *fakeSandbox) WriteFile(_, guestPath string, content []byte) error
 	}
 	sandbox.written[guestPath] = content
 	return nil
+}
+func (sandbox *fakeSandbox) InspectNetwork(string) (NetworkPolicy, error) {
+	return sandbox.inspectPolicy, sandbox.inspectErr
 }
 
 // fakeKeyMinter records GenerateKey calls and returns a fixed key (or an error).

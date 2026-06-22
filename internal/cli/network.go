@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	goruntime "runtime"
 	"strconv"
 	"strings"
 
@@ -13,6 +14,7 @@ import (
 	"github.com/jt-helsinki/ideal-robot/internal/egress"
 	"github.com/jt-helsinki/ideal-robot/internal/output"
 	"github.com/jt-helsinki/ideal-robot/internal/project"
+	"github.com/jt-helsinki/ideal-robot/internal/workspace"
 	"github.com/spf13/cobra"
 )
 
@@ -53,29 +55,54 @@ func mapEgressErr(err error) error {
 	}
 }
 
-// networkResult is the `ai network show` payload.
+// networkResult is the `ai network show` payload: the project's DECLARED egress
+// policy (from config.yaml) plus, when the workspace is running, the policy
+// actually IN FORCE on the microVM (read back from msb inspect).
 type networkResult struct {
-	Egress            string               `json:"egress"`
-	AllowHostServices []config.HostService `json:"allow_host_services,omitempty"`
-	PublishPorts      []config.PortMapping `json:"publish_ports,omitempty"`
+	Egress            string                   `json:"egress"`
+	AllowHostServices []config.HostService     `json:"allow_host_services,omitempty"`
+	PublishPorts      []config.PortMapping     `json:"publish_ports,omitempty"`
+	InForce           *workspace.NetworkPolicy `json:"in_force,omitempty"`
 }
 
-// Human renders the egress policy readably.
+// Human renders the declared egress policy and, when available, the live in-force
+// policy. The in-force section is the applied POLICY (what would be blocked), not
+// a record of blocked connections — msb 0.5.7 exposes only the policy config.
 func (result networkResult) Human() string {
-	lines := []string{"egress: " + result.Egress}
+	lines := []string{"declared (config.yaml):", "  egress: " + result.Egress}
 	if len(result.AllowHostServices) == 0 {
-		lines = append(lines, "allow:  (none — only the model gateway is reachable)")
+		lines = append(lines, "  allow:  (none — only the model gateway is reachable)")
 	} else {
-		lines = append(lines, "allow:")
+		lines = append(lines, "  allow:")
 		for _, service := range result.AllowHostServices {
-			lines = append(lines, fmt.Sprintf("  - %s:%d", service.Host, service.Port))
+			lines = append(lines, fmt.Sprintf("    - %s:%d", service.Host, service.Port))
 		}
 	}
 	if len(result.PublishPorts) > 0 {
-		lines = append(lines, "publish (host→guest):")
+		lines = append(lines, "  publish (host→guest):")
 		for _, mapping := range result.PublishPorts {
-			lines = append(lines, fmt.Sprintf("  - %d→%d", mapping.Host, mapping.Guest))
+			lines = append(lines, fmt.Sprintf("    - %d→%d", mapping.Host, mapping.Guest))
 		}
+	}
+	if result.InForce == nil {
+		lines = append(lines, "", "in force (live): (workspace not running — showing declared policy only)")
+		return strings.Join(lines, "\n")
+	}
+	lines = append(lines,
+		"",
+		"in force (live, on the running microVM):",
+		"  (applied policy — what WOULD be blocked, not a record of blocked connections)",
+		"  default egress: "+result.InForce.DefaultEgress)
+	if len(result.InForce.Rules) == 0 {
+		lines = append(lines, "  rules:  (none)")
+	} else {
+		lines = append(lines, "  rules:")
+		for _, rule := range result.InForce.Rules {
+			lines = append(lines, "    - "+rule)
+		}
+	}
+	if result.InForce.OnViolation != "" {
+		lines = append(lines, "  on violation: "+result.InForce.OnViolation)
 	}
 	return strings.Join(lines, "\n")
 }
@@ -100,7 +127,16 @@ func newNetworkShowCmd(emitter *output.Emitter, exit *int) *cobra.Command {
 		Args:              cobra.MaximumNArgs(1),
 		ValidArgsFunction: completeProjectArg,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			root, err := networkResolve(cmd, args, 0)
+			explicit := ""
+			if len(args) > 0 {
+				explicit = args[0]
+			}
+			name, err := resolveProjectName(cmd, explicit)
+			if err != nil {
+				*exit = emitter.Failure("network.show", mapEgressErr(err))
+				return nil
+			}
+			root, err := resolveProjectRoot(name)
 			if err != nil {
 				*exit = emitter.Failure("network.show", mapEgressErr(err))
 				return nil
@@ -110,11 +146,26 @@ func newNetworkShowCmd(emitter *output.Emitter, exit *int) *cobra.Command {
 				*exit = emitter.Failure("network.show", output.Errorf(output.ExitRuntimeFailure, "%s", err))
 				return nil
 			}
-			*exit = emitter.Success("network.show", networkResult{
+			result := networkResult{
 				Egress:            network.ResolvedEgress(),
 				AllowHostServices: network.AllowHostServices,
 				PublishPorts:      network.PublishPorts,
-			})
+			}
+			// Best-effort: read the live in-force policy off the running microVM.
+			// A not-running workspace (or missing msb) is NOT an error — we just
+			// show the declared policy. Only a genuine runtime failure surfaces.
+			policy, inspectErr := workspace.RealManager(goruntime.GOOS, nowRFC3339).InspectNetwork(name)
+			switch {
+			case inspectErr == nil:
+				result.InForce = &policy
+			case errors.Is(inspectErr, workspace.ErrNotRunning),
+				errors.Is(inspectErr, workspace.ErrMsbMissing):
+				// Declared-only view; leave InForce nil.
+			default:
+				*exit = emitter.Failure("network.show", output.Errorf(output.ExitRuntimeFailure, "%s", inspectErr))
+				return nil
+			}
+			*exit = emitter.Success("network.show", result)
 			return nil
 		},
 	}

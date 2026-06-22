@@ -2,12 +2,15 @@ package workspace
 
 import (
 	"bytes"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
 	"os/exec"
 	"path"
 	"path/filepath"
+	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/jt-helsinki/ideal-robot/internal/litellm"
@@ -19,6 +22,10 @@ import (
 var (
 	ErrContainerRuntimeMissing = errors.New("no container runtime (docker or podman) found")
 	ErrMsbMissing              = errors.New("microsandbox (msb) is not installed")
+	// ErrNotRunning marks that no microVM exists for the requested name (the
+	// workspace is not running). Callers of InspectNetwork treat this as "show the
+	// declared policy only", not a failure.
+	ErrNotRunning = errors.New("workspace microVM is not running")
 	// ErrPending marks any genuinely-unimplemented seam. None remain in the
 	// workspace build + microVM lifecycle; retained so other code/tests
 	// referencing the symbol still compile.
@@ -186,6 +193,126 @@ func (sandbox realSandbox) WriteFile(name, guestPath string, content []byte) err
 		return fmt.Errorf("msb exec %s write %s: %w", name, guestPath, err)
 	}
 	return nil
+}
+
+// InspectNetwork reads the egress policy in force on the named microVM via
+// `msb inspect <name> --format json` and parses the applied network policy. A
+// missing msb returns ErrMsbMissing; a name that does not resolve to a sandbox
+// (workspace not running) returns ErrNotRunning. Both let the caller fall back to
+// the declared policy. The verified msb 0.5.7 shape nests the policy at
+// config.network.policy (default_egress + rules) and the violation posture at
+// config.network.secrets.on_violation.
+func (sandbox realSandbox) InspectNetwork(name string) (NetworkPolicy, error) {
+	if err := sandbox.ensureInstalled(); err != nil {
+		return NetworkPolicy{}, err
+	}
+	command := exec.Command("msb", "inspect", name, "--format", "json")
+	var stdout, stderr bytes.Buffer
+	command.Stdout = &stdout
+	command.Stderr = &stderr
+	if err := command.Run(); err != nil {
+		// A non-existent sandbox (workspace not running) surfaces as a non-zero
+		// exit; treat it as ErrNotRunning so the caller shows the declared policy.
+		var exitError *exec.ExitError
+		if errors.As(err, &exitError) {
+			return NetworkPolicy{}, ErrNotRunning
+		}
+		return NetworkPolicy{}, fmt.Errorf("msb inspect %s: %w", name, err)
+	}
+	return parseInspectNetwork(stdout.Bytes())
+}
+
+// msbInspect mirrors the subset of `msb inspect --format json` (msb 0.5.7) the
+// network view needs. Unknown fields are ignored.
+type msbInspect struct {
+	Config struct {
+		Network struct {
+			Policy struct {
+				DefaultEgress string           `json:"default_egress"`
+				Rules         []msbInspectRule `json:"rules"`
+			} `json:"policy"`
+			Secrets struct {
+				OnViolation string `json:"on_violation"`
+			} `json:"secrets"`
+		} `json:"network"`
+	} `json:"config"`
+}
+
+// msbInspectRule is one applied net-rule. destination is a single-key object
+// keyed by match kind (domain, domain_suffix, cidr, ip, …); it is decoded
+// generically so any kind renders.
+type msbInspectRule struct {
+	Action      string            `json:"action"`
+	Direction   string            `json:"direction"`
+	Destination map[string]string `json:"destination"`
+	Ports       []struct {
+		Start int `json:"start"`
+		End   int `json:"end"`
+	} `json:"ports"`
+	Protocols []string `json:"protocols"`
+}
+
+// parseInspectNetwork extracts the applied egress policy from a raw `msb inspect`
+// JSON document. It renders each rule as a single readable line.
+func parseInspectNetwork(raw []byte) (NetworkPolicy, error) {
+	var inspect msbInspect
+	if err := json.Unmarshal(raw, &inspect); err != nil {
+		return NetworkPolicy{}, fmt.Errorf("parse msb inspect json: %w", err)
+	}
+	network := inspect.Config.Network
+	policy := NetworkPolicy{
+		DefaultEgress: network.Policy.DefaultEgress,
+		OnViolation:   network.Secrets.OnViolation,
+	}
+	for _, rule := range network.Policy.Rules {
+		policy.Rules = append(policy.Rules, renderInspectRule(rule))
+	}
+	return policy, nil
+}
+
+// renderInspectRule turns one applied net-rule into a readable line, e.g.
+// "allow egress example.com tcp 443" or "allow egress 10.0.0.0/8 tcp 5432".
+func renderInspectRule(rule msbInspectRule) string {
+	parts := []string{rule.Action, rule.Direction}
+	if destination := renderDestination(rule.Destination); destination != "" {
+		parts = append(parts, destination)
+	}
+	if protocols := strings.Join(rule.Protocols, "/"); protocols != "" {
+		parts = append(parts, protocols)
+	}
+	for _, port := range rule.Ports {
+		if port.Start == port.End {
+			parts = append(parts, strconv.Itoa(port.Start))
+		} else {
+			parts = append(parts, fmt.Sprintf("%d-%d", port.Start, port.End))
+		}
+	}
+	return strings.Join(parts, " ")
+}
+
+// renderDestination flattens the single-key destination object (domain,
+// domain_suffix, cidr, ip, …) to a readable token. domain_suffix renders as a
+// "*.suffix" wildcard; other kinds render as their value. Keys are sorted for a
+// stable result if msb ever reports more than one.
+func renderDestination(destination map[string]string) string {
+	if len(destination) == 0 {
+		return ""
+	}
+	kinds := make([]string, 0, len(destination))
+	for kind := range destination {
+		kinds = append(kinds, kind)
+	}
+	sort.Strings(kinds)
+	rendered := make([]string, 0, len(kinds))
+	for _, kind := range kinds {
+		value := destination[kind]
+		if kind == "domain_suffix" {
+			rendered = append(rendered, "*."+value)
+		} else {
+			rendered = append(rendered, value)
+		}
+	}
+	return strings.Join(rendered, ",")
 }
 
 // shellQuote single-quotes a path for safe interpolation into the `sh -c`
