@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/charmbracelet/huh"
+	"github.com/charmbracelet/x/term"
 	"github.com/jt-helsinki/ideal-robot/internal/contextopt"
 	"github.com/jt-helsinki/ideal-robot/internal/output"
 	"github.com/jt-helsinki/ideal-robot/internal/project"
@@ -75,9 +76,19 @@ func newProjectCreateCmd(emitter *output.Emitter, exit *int) *cobra.Command {
 			}
 
 			defaultName := defaultProjectName(args)
+			// The wizard needs a real terminal. Check explicitly and exit 2 here,
+			// rather than letting huh/bubbletea fall back to opening the controlling
+			// terminal (/dev/tty) directly — which BLOCKS (hangs) when stdin is
+			// redirected to a non-TTY but a controlling terminal still exists, e.g.
+			// `go test` / `ai project create` run from an interactive shell (§3.1).
+			if !term.IsTerminal(os.Stdin.Fd()) {
+				*exit = emitter.Failure("project.create", output.Errorf(output.ExitInvalidInput,
+					"interactive terminal required: `ai project create` runs a wizard — run it in a terminal"))
+				return nil
+			}
 			spec, cancelled, err := runCreateWizard(defaultName)
 			if err != nil {
-				// No TTY (or wizard failure): the wizard cannot prompt (§3.1).
+				// Defensive: the wizard still failed despite a TTY (§3.1).
 				*exit = emitter.Failure("project.create",
 					output.Errorf(output.ExitInvalidInput, "interactive terminal required: %s", err))
 				return nil
