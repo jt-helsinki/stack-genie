@@ -33,7 +33,7 @@ func newServicesCmd(em *output.Emitter, exit *int) *cobra.Command {
 
 // newServicesControlCmd builds `ai services start|stop|restart [service]`. With
 // no service (or "all") it acts on every platform-owned container; a single
-// service name (ollama, presidio, litellm, headroom) targets just that one.
+// service name (ollama, presidio, litellm, headroom, dns) targets just that one.
 func newServicesControlCmd(action string, em *output.Emitter, exit *int) *cobra.Command {
 	return &cobra.Command{
 		Use:               action + " [service]",

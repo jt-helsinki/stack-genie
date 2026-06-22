@@ -75,6 +75,14 @@ func (builder realBuilder) Build(projectRoot, imageRef string) error {
 	return nil
 }
 
+// dnsNameserver is the fixed host-loopback address of the platform's aip-dns
+// egress-audit resolver (arch §29). Every workspace microVM is booted with
+// `--dns-nameserver` pointing here, so msb's netstack forwards guest DNS to it
+// and CoreDNS logs the attempted names (surfaced by `ai network log`). This is a
+// fixed platform setting, not policy-derived, so it lives in Create directly
+// rather than in egress.MsbNetworkArgs. It mirrors setup.DNSNameserver.
+const dnsNameserver = "127.0.0.1:15353"
+
 // realSandbox drives Microsandbox microVMs via `msb`.
 type realSandbox struct{ prober runtime.Prober }
 
@@ -101,6 +109,10 @@ func (sandbox realSandbox) Create(name, imageRef, projectMount, overlayPath stri
 		"--volume", projectMount + ":/workspace",
 		"--volume", overlayPath + ":/persist",
 		"--workdir", "/workspace",
+		// Forward all guest DNS to the platform's aip-dns audit resolver (arch
+		// §29). A fixed platform setting; egress enforcement stays on the
+		// net-rules in netArgs (a resolver answer cannot bypass them).
+		"--dns-nameserver", dnsNameserver,
 		"--replace",
 	}
 	args = append(args, netArgs...)

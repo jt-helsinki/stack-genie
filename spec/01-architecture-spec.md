@@ -307,6 +307,7 @@ ai logs --service <svc>      one log surface
 | LiteLLM | container (via Runtime) `aip-litellm` (+ `aip-litellm-db` Postgres) | HTTP only; no host privileges |
 | Presidio | two containers (via Runtime) `aip-presidio-analyzer` + `aip-presidio-anonymizer` | back LiteLLM's always-on PII guardrail; internal-only, not published (§15) |
 | Ollama (required) | container (via Runtime) `aip-ollama` on all platforms | local model backend LiteLLM routes to; CPU-only on macOS (Docker has no GPU passthrough) |
+| DNS audit resolver | container (via Runtime) `aip-dns` (CoreDNS) | egress-audit resolver: microVMs forward DNS here so attempted names are logged for `ai network log`; published to host loopback only; audit, not enforcement (§29.7) |
 | Microsandbox | microVM runtime, invoked on demand | drives workspace microVMs via the Go SDK / `msb`; no daemon to supervise (§7) |
 
 **docker compose is not used.** Container-tier services are managed directly
@@ -1571,6 +1572,44 @@ entries, the default-egress mode, and port maps via the SDK; the `gateway` token
 resolves to the §29.2 host gateway), which **remains a deferred end-state**
 (hardware bring-up). App-data connections (DB/Kafka/HTTP) go **direct** under this
 policy — they do not pass through the model gateway.
+
+## 29.7 Attempted-egress-by-name audit (`aip-dns`)
+
+The service tier (§5) includes **`aip-dns`**, a CoreDNS resolver that exists for
+**observability, not enforcement**. Every workspace microVM is booted with
+`--dns-nameserver` pointing at it (a fixed platform setting on the host loopback,
+`127.0.0.1:15353`), so Microsandbox's netstack forwards the guest's DNS to it.
+CoreDNS's `log` plugin records each query; `forward` resolves it upstream and a
+short `cache` smooths repeats. `ai network log` (CLI §10a) reads that log and
+prints the attempted-egress-**by-name** audit.
+
+This cleanly splits **audit** from **enforcement**:
+
+* **Enforcement stays on the Microsandbox NetworkPolicy** (§29.4) at L3/L4. A
+  resolver *answer* cannot create reachability — a name resolving to an address
+  the net-rules deny is still blocked at the network layer. The resolver has no
+  authority over what a workspace may reach.
+* **The resolver is the audit source.** It sees the *names* a workspace tried to
+  resolve, which the L3/L4 rules (operating on IPs/CIDRs/domains) do not surface
+  as a human-readable list.
+
+**v1 scope / caveats** (made explicit in `ai network log`'s output):
+
+* **Host-wide, not per-project.** All workspaces forward to the one resolver, so
+  the audit is every workspace's DNS on the machine; it is **not attributed per
+  project** in v1 (the queries arrive NAT'd from the netstack, so the originating
+  workspace is not distinguishable). `ai network log [project]` accepts the
+  argument for forward compatibility but does not filter on it in v1.
+* **Names only — not connection verdicts, not direct-IP egress.** It is a record
+  of attempted *resolutions*, not of allowed/blocked connections, and traffic to a
+  literal IP never touches DNS so never appears here.
+* **Default-deny interacts with visibility.** Under a `deny`/`public` posture the
+  netstack may filter a denied name *before* it reaches the resolver, so denied
+  names can be **absent** from the audit; under `unrestricted` the resolver sees
+  every queried name. The audit is therefore most complete as a record of names a
+  workspace was permitted (or broadly allowed) to look up — it is not a substitute
+  for the policy shown in `ai network show`, which remains the source of truth for
+  what is reachable.
 
 ---
 

@@ -704,6 +704,7 @@ ai network show                                  # show the egress policy
 ai network egress  [deny|public|unrestricted]    # set the default posture
 ai network allow   [host[:port]] [--remove]      # allow/revoke an external destination
 ai network publish [host:guest] [--remove]       # publish/unpublish a workspace port
+ai network log     [project] [--tail N]          # attempted-egress-by-name audit (host-wide)
 ```
 
 Project-scoped (default the current directory's project, like `ai context`).
@@ -751,6 +752,22 @@ ports. With `--json` or no TTY, the value must be passed as an argument.
   it on 443. `--remove` revokes it.
 * `publish <host:guest>` publishes a workspace (guest) port to a host port;
   `--remove` undoes it.
+* `log [project] [--tail N]` prints the **attempted-egress-by-name audit**: the
+  DNS names workspaces tried to resolve, read from the platform's **`aip-dns`**
+  resolver (architecture §29.7). Every workspace microVM forwards its DNS to that
+  resolver, whose `log` plugin records each query; this command reads
+  `docker logs aip-dns` and prints one line per query (the name + record type),
+  most-recent last, capped by `--tail` (default 50). The header makes the **v1
+  caveats** explicit: it is **host-wide across all workspaces, not attributed per
+  project** (the `[project]` argument is accepted for forward compatibility but
+  does **not** filter in v1); it is **names only — not connection verdicts and not
+  direct-IP egress** (literal-IP traffic never touches DNS); and it is **not
+  enforcement** — a name shown here was *resolved*, not necessarily *reached*.
+  Enforcement is the msb net-rules in `ai network show`, and under a default-deny
+  posture msb may filter a denied name before it reaches the resolver (so denied
+  names can be absent). If `aip-dns` is not running (or no container runtime is
+  present), `log` prints a clear note and exits `0`; a genuine runtime failure
+  reading the log exits `4`.
 * invalid mode / port → exit `2`.
 
 Human-readable output by default; `--json` emits the standard §19 envelope.

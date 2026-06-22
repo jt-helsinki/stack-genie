@@ -39,6 +39,7 @@ func newNetworkCmd(emitter *output.Emitter, exit *int) *cobra.Command {
 		newNetworkEgressCmd(emitter, exit),
 		newNetworkAllowCmd(emitter, exit),
 		newNetworkPublishCmd(emitter, exit),
+		newNetworkLogCmd(emitter, exit),
 	)
 	return cmd
 }

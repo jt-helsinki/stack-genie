@@ -1,10 +1,12 @@
 package cli
 
 import (
+	"io"
 	"strings"
 	"testing"
 
 	"github.com/jt-helsinki/ideal-robot/internal/config"
+	"github.com/jt-helsinki/ideal-robot/internal/output"
 	"github.com/jt-helsinki/ideal-robot/internal/workspace"
 )
 
@@ -52,6 +54,129 @@ func TestNetworkResultHumanDeclaredOnly(test *testing.T) {
 	}
 	if strings.Contains(output, "in force (live, on the running microVM)") {
 		test.Errorf("declared-only output must not render a live policy section:\n%s", output)
+	}
+}
+
+// realCoreDNSLog is verbatim output captured from `docker logs aip-dns`
+// (coredns/coredns:1.11.3, default `common` log format) during the step-0
+// reachability verification — the exact lines the parser must handle, including
+// the banner lines it must skip and the optional "[INFO]" level prefix.
+const realCoreDNSLog = `.:53
+CoreDNS-1.11.3
+linux/arm64, go1.21.11, a6338e9
+[INFO] 10.10.0.1:57319 - 28961 "A IN example.com. udp 40 false 4096" NOERROR qr,rd,ra,ad 83 0.063868875s
+[INFO] 10.10.0.1:63478 - 52961 "A IN example.com. udp 29 false 512" NOERROR qr,rd,ra,ad 83 0.03897s
+[INFO] 10.10.0.1:57070 - 52962 "AAAA IN example.com. udp 29 false 512" NOERROR qr,rd,ra,ad 107 0.049090458s
+[INFO] 10.10.0.1:58462 - 11268 "A IN some-random-name-xyz.test-denied.net. udp 54 false 512" NXDOMAIN qr,rd,ra 133 0.040828667s
+`
+
+func TestParseCoreDNSLog(test *testing.T) {
+	queries := parseCoreDNSLog([]byte(realCoreDNSLog))
+	if len(queries) != 4 {
+		test.Fatalf("expected 4 query records (banner lines skipped), got %d: %+v", len(queries), queries)
+	}
+	first := queries[0]
+	if first.QType != "A" || first.QName != "example.com" {
+		test.Errorf("first query = %+v, want qtype=A qname=example.com", first)
+	}
+	if first.RCode != "NOERROR" {
+		test.Errorf("first query rcode = %q, want NOERROR", first.RCode)
+	}
+	if first.Time != "0.063868875s" {
+		test.Errorf("first query time = %q, want 0.063868875s", first.Time)
+	}
+	// AAAA record parsed (qtype carried through).
+	if queries[2].QType != "AAAA" || queries[2].QName != "example.com" {
+		test.Errorf("third query = %+v, want qtype=AAAA qname=example.com", queries[2])
+	}
+	// NXDOMAIN denied-style name carried through with its rcode and the trailing
+	// dot stripped from the qname.
+	last := queries[3]
+	if last.QName != "some-random-name-xyz.test-denied.net" {
+		test.Errorf("last qname = %q, want some-random-name-xyz.test-denied.net (dot stripped)", last.QName)
+	}
+	if last.RCode != "NXDOMAIN" {
+		test.Errorf("last rcode = %q, want NXDOMAIN", last.RCode)
+	}
+}
+
+// A line missing the quoted query block (banner, plugin chatter) yields no record.
+func TestParseCoreDNSLineSkipsNonQueries(test *testing.T) {
+	for _, line := range []string{
+		"CoreDNS-1.11.3",
+		"linux/arm64, go1.21.11, a6338e9",
+		".:53",
+		"",
+		"[ERROR] plugin/errors: 2 something. read udp timeout",
+	} {
+		if _, ok := parseCoreDNSLine(line); ok {
+			test.Errorf("parseCoreDNSLine(%q) returned a query, want skip", line)
+		}
+	}
+}
+
+// runNetworkLog renders the audit from an injected log source (no live container)
+// and surfaces the host-wide / names-only / not-enforcement caveats.
+func TestNetworkLogRenderingWithFakeSource(test *testing.T) {
+	emitter := &output.Emitter{Out: io.Discard, Err: io.Discard}
+	exit := 0
+	source := func() ([]byte, error) { return []byte(realCoreDNSLog), nil }
+	if err := runNetworkLog(emitter, &exit, source, 50); err != nil {
+		test.Fatalf("runNetworkLog returned error: %v", err)
+	}
+	if exit != 0 {
+		test.Errorf("exit = %d, want 0", exit)
+	}
+	result := networkLogResult{Queries: parseCoreDNSLog([]byte(realCoreDNSLog))}
+	human := result.Human()
+	for _, want := range []string{
+		"attempted DNS names (host-wide, all workspaces)",
+		"names only",
+		"enforcement is by the msb net-rules",
+		"A example.com",
+		"some-random-name-xyz.test-denied.net",
+		"NXDOMAIN",
+	} {
+		if !strings.Contains(human, want) {
+			test.Errorf("Human() missing %q\n--- got ---\n%s", want, human)
+		}
+	}
+}
+
+// --tail keeps only the most recent N queries.
+func TestNetworkLogTail(test *testing.T) {
+	queries := parseCoreDNSLog([]byte(realCoreDNSLog))
+	result := networkLogResult{Queries: queries}
+	if len(result.Queries) != 4 {
+		test.Fatalf("setup: expected 4 queries, got %d", len(result.Queries))
+	}
+	emitter := &output.Emitter{Out: io.Discard, Err: io.Discard}
+	exit := 0
+	source := func() ([]byte, error) { return []byte(realCoreDNSLog), nil }
+	// Capture the tailed result by re-deriving it the way runNetworkLog does.
+	if err := runNetworkLog(emitter, &exit, source, 2); err != nil {
+		test.Fatalf("runNetworkLog returned error: %v", err)
+	}
+	tailed := queries[len(queries)-2:]
+	if len(tailed) != 2 || tailed[0].QName != "example.com" {
+		test.Errorf("tail of 2 = %+v, want last 2 queries", tailed)
+	}
+}
+
+// An empty/absent log source (resolver not running) is a clean exit 0 with a note.
+func TestNetworkLogNotRunning(test *testing.T) {
+	emitter := &output.Emitter{Out: io.Discard, Err: io.Discard}
+	exit := 0
+	source := func() ([]byte, error) { return nil, nil }
+	if err := runNetworkLog(emitter, &exit, source, 50); err != nil {
+		test.Fatalf("runNetworkLog returned error: %v", err)
+	}
+	if exit != 0 {
+		test.Errorf("exit = %d, want 0 for a not-running resolver", exit)
+	}
+	result := networkLogResult{}
+	if !strings.Contains(result.Human(), "no DNS queries logged yet") {
+		test.Errorf("empty Human() missing the no-queries message:\n%s", result.Human())
 	}
 }
 

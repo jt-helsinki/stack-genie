@@ -30,6 +30,7 @@ func desiredServices() []serviceSpec {
 		{"presidio", "container"},
 		{"litellm", "container"},
 		{"headroom", "container"},
+		{"dns", "container"},
 	}
 }
 
@@ -85,6 +86,26 @@ const (
 	presidioAnonymizerImage     = "mcr.microsoft.com/presidio-anonymizer:latest"
 	presidioAnalyzerURL         = "http://" + presidioAnalyzerContainer + ":3000"
 	presidioAnonymizerURL       = "http://" + presidioAnonymizerContainer + ":3000"
+
+	// aip-dns is the egress-audit DNS resolver (arch §29). microVMs are booted
+	// with --dns-nameserver pointing at it (DNSNameserver), so every name a
+	// workspace tries to resolve is forwarded here and logged by CoreDNS's `log`
+	// plugin — a host-wide attempted-egress-by-name audit, surfaced by
+	// `ai network log`. It is a pure resolver: enforcement stays on the msb
+	// net-rules (L3/L4); a resolver answer cannot bypass them. CoreDNS forwards
+	// to public upstreams and caches briefly. Published to the host LOOPBACK at
+	// dnsHostPort so msb's netstack can forward guest DNS to it; not exposed off
+	// the machine. Image tag pinned (verified to exist; coredns/coredns:1.11.x).
+	dnsContainer = "aip-dns"
+	dnsImage     = "coredns/coredns:1.11.3"
+	dnsHostPort  = "15353"
+	// DNSNameserver is the guest-facing target passed to `msb create
+	// --dns-nameserver` (a fixed platform setting). msb's netstack forwards guest
+	// DNS to this host loopback address.
+	DNSNameserver = "127.0.0.1:" + dnsHostPort
+	// dnsUpstreams are the public resolvers CoreDNS forwards to (Cloudflare +
+	// Google). Audit-only; not security-sensitive.
+	dnsUpstreams = "1.1.1.1 8.8.8.8"
 )
 
 // litellmRunArgs is the `<runtime> run` argv that launches LiteLLM with the
@@ -254,6 +275,44 @@ func ensureHeadroom(prober runtime.Prober, containerRuntime string) error {
 	return nil
 }
 
+// ensureDNS runs the aip-dns CoreDNS resolver on the shared network, published to
+// the host loopback at dnsHostPort/udp so microVMs (booted with --dns-nameserver
+// DNSNameserver) forward their DNS there for the attempted-egress-by-name audit
+// (arch §29). It renders a Corefile to ~/.ai-platform/config/dns/Corefile with the
+// `log` plugin (the audit source), a `forward` to public upstreams, and a short
+// cache. Idempotent: skips if already running, removes any stale container first.
+func ensureDNS(prober runtime.Prober, containerRuntime string) error {
+	if containerRunning(prober, containerRuntime, dnsContainer) {
+		return nil
+	}
+	configDir, err := paths.ConfigDir()
+	if err != nil {
+		return err
+	}
+	dnsDir := filepath.Join(configDir, "dns")
+	if err := os.MkdirAll(dnsDir, 0o755); err != nil {
+		return output.Errorf(output.ExitRuntimeFailure, "create dns config dir %s: %s", dnsDir, err)
+	}
+	corefilePath := filepath.Join(dnsDir, "Corefile")
+	corefile := ".:53 {\n    log\n    forward . " + dnsUpstreams + "\n    cache 30\n}\n"
+	if err := os.WriteFile(corefilePath, []byte(corefile), 0o644); err != nil {
+		return output.Errorf(output.ExitRuntimeFailure, "write Corefile %s: %s", corefilePath, err)
+	}
+	_, _ = prober.Run(containerRuntime, "rm", "-f", dnsContainer) // clear any stopped one
+	args := []string{
+		"run", "-d", "--name", dnsContainer,
+		"--network", platformNetwork,
+		"-p", "127.0.0.1:" + dnsHostPort + ":53/udp",
+		"-v", corefilePath + ":/Corefile",
+		dnsImage,
+		"-conf", "/Corefile",
+	}
+	if _, err := prober.Run(containerRuntime, args...); err != nil {
+		return output.Errorf(output.ExitRuntimeFailure, "launch aip-dns via %s: %s", containerRuntime, err)
+	}
+	return nil
+}
+
 // litellmHasDatabaseURL reports whether the running LiteLLM container already has
 // DATABASE_URL wired (so a healthy-but-DB-less container is relaunched once).
 func litellmHasDatabaseURL(prober runtime.Prober, containerRuntime string) bool {
@@ -374,6 +433,10 @@ func (services realServices) Reconcile(providerConfig string) ([]ServiceStatus, 
 		return nil, err
 	}
 	ensurePlatformNetwork(services.prober, containerRuntime.Name)
+	// aip-dns first: microVMs need the resolver up before they boot (arch §29).
+	if err := ensureDNS(services.prober, containerRuntime.Name); err != nil {
+		return nil, err
+	}
 	if err := ensureOllama(services.prober, containerRuntime.Name); err != nil {
 		return nil, err
 	}
@@ -463,6 +526,14 @@ func (services realServices) serviceHealthy(name string) bool {
 			return false
 		}
 		return containerRunning(services.prober, containerRuntime.Name, headroomContainer)
+	case "dns":
+		// The resolver is a pure forwarder; the container running is sufficient
+		// (it has no HTTP health endpoint).
+		containerRuntime, err := runtime.ContainerRuntimeName(services.prober)
+		if err != nil {
+			return false
+		}
+		return containerRunning(services.prober, containerRuntime.Name, dnsContainer)
 	default:
 		return false
 	}
@@ -516,6 +587,9 @@ func (services realServices) Control(action, service string) ([]ServiceStatus, e
 		{"headroom",
 			func() error { return ensureHeadroom(services.prober, containerRuntime.Name) },
 			func() error { return stopContainer(headroomContainer) }},
+		{"dns",
+			func() error { return ensureDNS(services.prober, containerRuntime.Name) },
+			func() error { return stopContainer(dnsContainer) }},
 	}
 
 	var targets []managedService
@@ -530,7 +604,7 @@ func (services realServices) Control(action, service string) ([]ServiceStatus, e
 		}
 		if targets == nil {
 			return nil, output.Errorf(output.ExitInvalidInput,
-				"unknown service %q (expected one of: ollama, presidio, litellm, headroom)", service)
+				"unknown service %q (expected one of: ollama, presidio, litellm, headroom, dns)", service)
 		}
 	}
 
