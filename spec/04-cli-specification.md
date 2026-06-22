@@ -141,12 +141,34 @@ completion:
 ### ai setup
 
 ```bash id="c2"
-ai setup [--provider-config <file>]
+ai setup [--provider-config <file>] [--mode standalone|server|client] [--server <addr>]
 ```
 
 `--provider-config <file>` points LiteLLM at a provider/endpoint config (model
 aliases → provider URLs). Used both for real provider setup and by the
 acceptance harness to target the mock provider.
+
+**Deployment role.** `ai setup` supports three roles, chosen **interactively** on
+a TTY (a select prompt — no per-choice flags) or via `--mode`, and persisted in
+`config/runtime.yaml` (`role:`) so they survive across runs:
+
+* **standalone** (default) — run the full service tier **and** workspaces on this
+  host. The shared services bind to **127.0.0.1** (loopback); local microVMs still
+  reach them through Microsandbox's host netstack.
+* **server** — run **only** the shared service tier here, bound to **0.0.0.0** so
+  other machines connect; this host runs no workspaces. Preflight requires only
+  the container runtime + a rootless service tier (no microVM runtime /
+  virtualization). Setup warns that 0.0.0.0 exposes the services — put TLS in
+  front and rely on LiteLLM virtual-key auth on untrusted networks.
+* **client** — run **only** workspaces here (no local Docker tier); route to a
+  remote server, whose address is prompted (or `--server <addr>`: host, host:port,
+  or URL) and stored in `runtime.yaml` (`ai_platform_host`). Preflight requires
+  only the microVM runtime + host virtualization (no docker / rootless). The
+  local service-tier reconcile is **skipped**; setup warns to verify the server
+  with `ai gateway show`.
+
+The chosen `--mode` (else the persisted role, else standalone) drives both the
+preflight blocking set and which tier is reconciled.
 
 Purpose:
 

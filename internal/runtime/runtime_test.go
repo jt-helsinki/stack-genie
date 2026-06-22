@@ -68,6 +68,44 @@ func TestDetectNoContainerRuntime(test *testing.T) {
 	}
 }
 
+func TestDetectForRoleClientToleratesNoContainerRuntime(test *testing.T) {
+	// A client runs no service tier, so a missing container runtime is fine; msb
+	// + virtualization (the only things a client needs) are present.
+	info, err := DetectForRole("darwin", "arm64", RoleClient,
+		fakeProber{bins: map[string]bool{"msb": true}}, "test")
+	if err != nil {
+		test.Fatalf("client detect should tolerate no container runtime: %v", err)
+	}
+	if info.Role != RoleClient || info.Detected != "" {
+		test.Fatalf("client info: %+v", info)
+	}
+	if !info.Microsandbox.Available {
+		test.Fatalf("client should still detect virtualization: %+v", info)
+	}
+}
+
+func TestDetectForRoleServerToleratesNoMsb(test *testing.T) {
+	// A server runs no microVMs, so a missing msb is fine; docker (the service
+	// tier) is present and rootless.
+	info, err := DetectForRole("darwin", "arm64", RoleServer,
+		fakeProber{bins: map[string]bool{"docker": true}, dockerOut: "[name=rootless]"}, "test")
+	if err != nil {
+		test.Fatalf("server detect should tolerate no msb: %v", err)
+	}
+	if info.Role != RoleServer || info.Detected != "docker" {
+		test.Fatalf("server info: %+v", info)
+	}
+}
+
+func TestDetectForRoleClientStillNeedsMsb(test *testing.T) {
+	// A client without the microVM runtime still fails (it is the client's tier).
+	_, err := DetectForRole("darwin", "arm64", RoleClient,
+		fakeProber{bins: map[string]bool{"docker": true}, dockerOut: "[name=rootless]"}, "test")
+	if !errors.Is(err, ErrMsbMissing) {
+		test.Fatalf("client without msb should fail with ErrMsbMissing, got %v", err)
+	}
+}
+
 func TestDetectMsbMissing(test *testing.T) {
 	prober := fakeProber{bins: map[string]bool{"docker": true}, dockerOut: "[name=rootless]"}
 	_, err := Detect("darwin", "arm64", prober, "test")

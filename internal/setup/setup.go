@@ -57,10 +57,12 @@ func (status ServiceStatus) EndpointSuffix() string {
 // Ollama, Presidio, and Headroom containers). Implementations shell out to the
 // runtime/OS.
 type Services interface {
-	// Reconcile makes reality match the desired state (idempotent). progress is
-	// called (never nil) with a short message before each step, so the CLI can
+	// Reconcile makes reality match the desired state (idempotent). bindHost is
+	// the host interface the shared services publish on ("127.0.0.1" for a local
+	// standalone host, "0.0.0.0" for a server other machines connect to). progress
+	// is called (never nil) with a short message before each step, so the CLI can
 	// stream feedback during the slow container bring-up.
-	Reconcile(providerConfig string, progress func(string)) ([]ServiceStatus, error)
+	Reconcile(providerConfig string, bindHost string, progress func(string)) ([]ServiceStatus, error)
 	// Status reports current health without mutating anything.
 	Status() ([]ServiceStatus, error)
 	// Control performs a lifecycle action (start|stop|restart) on one service,
@@ -89,6 +91,12 @@ type Deps struct {
 type Options struct {
 	ProviderConfig string // --provider-config: points LiteLLM at a provider config
 	Upgrade        bool   // --upgrade: re-pin versions.yaml to this binary's defaults
+	// Mode is the deployment role: "" (resolve from runtime.yaml, else standalone),
+	// standalone, server, or client (CLI §2.1).
+	Mode string
+	// ServerAddr is the remote service-tier address a client routes to (CLI §2.1).
+	// Ignored for standalone/server.
+	ServerAddr string
 }
 
 // controlActions are the valid `ai services <action>` verbs.
@@ -190,6 +198,34 @@ var blockingPrereqs = map[string]bool{
 	"rootless service tier": true,
 }
 
+// blockingPrereqsForRole returns the prerequisite names that must pass before
+// setup proceeds for a given deployment role (CLI §2.1). A role only blocks on
+// the tier it actually runs:
+//   - standalone runs everything → the full set.
+//   - server runs only the service tier → container runtime + rootless only
+//     (no microVM runtime / virtualization).
+//   - client runs only workspaces → microVM runtime + virtualization only
+//     (no container runtime / rootless service tier).
+//
+// Prerequisites not in the returned set are non-blocking for the role (surfaced
+// as warnings), so a missing one does not stop setup.
+func blockingPrereqsForRole(role string) map[string]bool {
+	switch role {
+	case runtime.RoleServer:
+		return map[string]bool{
+			"container runtime":     true,
+			"rootless service tier": true,
+		}
+	case runtime.RoleClient:
+		return map[string]bool{
+			"microsandbox runtime": true,
+			"host virtualization":  true,
+		}
+	default: // standalone
+		return blockingPrereqs
+	}
+}
+
 // installablePrograms are the prerequisites whose absence is a missing dependency
 // (exit 3) rather than a host-capability failure (exit 4).
 var installablePrograms = map[string]bool{
@@ -200,7 +236,8 @@ var installablePrograms = map[string]bool{
 // missingPrerequisites scans the host (reusing the doctor checks) and returns the
 // unmet prerequisites, each with an install/repair suggestion. LiteLLM is excluded
 // — it is a service setup starts, not a prerequisite.
-func missingPrerequisites(deps Deps) []Prerequisite {
+func missingPrerequisites(deps Deps, role string) []Prerequisite {
+	blocking := blockingPrereqsForRole(role)
 	report := doctor.Run(doctor.Deps{GOOS: deps.GOOS, GOARCH: deps.GOARCH, Prober: deps.Prober})
 	var missing []Prerequisite
 	for _, check := range report.Checks {
@@ -212,7 +249,7 @@ func missingPrerequisites(deps Deps) []Prerequisite {
 			Detail:     check.Detail,
 			Suggestion: check.Suggestion,
 			DocsURL:    check.DocsURL,
-			Blocking:   blockingPrereqs[check.Name],
+			Blocking:   blocking[check.Name],
 		})
 	}
 	return missing
@@ -260,8 +297,36 @@ func Run(options Options, deps Deps) (*Report, error) {
 		progress = func(string) {}
 	}
 
+	// 0. Resolve the effective deployment role + server address (CLI §2.1).
+	// Precedence: the explicit option, else the value persisted in runtime.yaml,
+	// else the default (standalone / empty address). A failed load is treated as
+	// "absent" — setup is the thing that writes runtime.yaml.
+	persisted, _ := runtime.Load()
+	effectiveRole := options.Mode
+	if effectiveRole == "" {
+		if persisted != nil {
+			effectiveRole = persisted.Role
+		}
+	}
+	if effectiveRole == "" {
+		effectiveRole = runtime.RoleStandalone
+	}
+	switch effectiveRole {
+	case runtime.RoleStandalone, runtime.RoleServer, runtime.RoleClient:
+	default:
+		return nil, output.Errorf(output.ExitInvalidInput,
+			"invalid setup mode %q (one of standalone|server|client)", effectiveRole)
+	}
+	effectiveServerAddr := options.ServerAddr
+	if effectiveServerAddr == "" && persisted != nil {
+		effectiveServerAddr = persisted.AIPlatformHost
+	}
+	if effectiveRole != runtime.RoleClient {
+		effectiveServerAddr = "" // only a client routes to a remote server
+	}
+
 	progress("Checking prerequisites…")
-	missing := missingPrerequisites(deps)
+	missing := missingPrerequisites(deps, effectiveRole)
 	for _, prereq := range missing {
 		if prereq.Blocking {
 			return nil, prerequisiteError(missing)
@@ -273,11 +338,15 @@ func Run(options Options, deps Deps) (*Report, error) {
 		warnings = append(warnings, warning)
 	}
 
-	detected, err := runtime.Detect(deps.GOOS, deps.GOARCH, deps.Prober, deps.Now())
+	detected, err := runtime.DetectForRole(deps.GOOS, deps.GOARCH, effectiveRole, deps.Prober, deps.Now())
 	if err != nil {
 		// Defensive: the prerequisite scan should already have caught this.
 		return nil, output.Errorf(output.ExitMissingDep, "preflight: %s", err)
 	}
+	// Persist the resolved role + remote server address so they survive across
+	// runs and are available to later steps (e.g. `ai gateway`, workspace wiring).
+	detected.Role = effectiveRole
+	detected.AIPlatformHost = effectiveServerAddr
 
 	// 2. Initialize the host layout and install the environment templates.
 	progress("Initializing ~/.ai-platform and installing templates…")
@@ -311,13 +380,30 @@ func Run(options Options, deps Deps) (*Report, error) {
 		return nil, output.Errorf(output.ExitRuntimeFailure, "write versions.yaml: %s", err)
 	}
 
-	// 5. Reconcile host services to the desired state.
-	progress("Starting host services — pulling images / launching containers (this can take a minute)…")
-	serviceStatuses, err := deps.Services.Reconcile(options.ProviderConfig, progress)
-	if err != nil {
-		return nil, output.Errorf(output.ExitRuntimeFailure, "reconcile services: %s", err)
+	// 5. Reconcile host services to the desired state — but only when this host
+	// runs the service tier. A client runs no local Docker tier: it routes to the
+	// configured server, so the reconcile is skipped (the layout/config/versions
+	// above are still useful on a client). standalone binds the shared services to
+	// loopback (local-only); server binds them to 0.0.0.0 so other machines connect.
+	var serviceStatuses []ServiceStatus
+	switch effectiveRole {
+	case runtime.RoleClient:
+		note := fmt.Sprintf("client mode: services run on the configured server (%s) — run `ai gateway show` to verify", effectiveServerAddr)
+		progress(note)
+		warnings = append(warnings, note)
+	default:
+		bindHost := "127.0.0.1"
+		if effectiveRole == runtime.RoleServer {
+			bindHost = "0.0.0.0"
+			warnings = append(warnings, "server mode exposes LiteLLM/Headroom/Ollama/open-webui on 0.0.0.0 — put TLS in front and rely on LiteLLM virtual-key auth for untrusted networks")
+		}
+		progress("Starting host services — pulling images / launching containers (this can take a minute)…")
+		serviceStatuses, err = deps.Services.Reconcile(options.ProviderConfig, bindHost, progress)
+		if err != nil {
+			return nil, output.Errorf(output.ExitRuntimeFailure, "reconcile services: %s", err)
+		}
+		progress("Host services ready.")
 	}
-	progress("Host services ready.")
 
 	return &Report{
 		PlatformDir:     platformDir,

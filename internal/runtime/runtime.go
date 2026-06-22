@@ -24,6 +24,16 @@ import (
 // SchemaVersion is stamped on config/runtime.yaml.
 const SchemaVersion = 1
 
+// Deployment roles (CLI §2.1). The role decides which tier runs on this host:
+// standalone runs the full service tier + workspaces locally; server runs only
+// the shared service tier (bound to 0.0.0.0 for remote clients, no workspaces);
+// client runs only workspaces and routes to a remote server's service tier.
+const (
+	RoleStandalone = "standalone"
+	RoleServer     = "server"
+	RoleClient     = "client"
+)
+
 // Sentinel errors. Detect returns the missing-dependency ones (exit 3); Verify
 // returns the capability ones (exit 4).
 var (
@@ -64,7 +74,8 @@ type MicrosandboxInfo struct {
 // embeds it), so the persisted snake_case keys are preserved in both encodings.
 type Info struct {
 	SchemaVersion  int              `json:"schema_version" yaml:"schema_version"`
-	Detected       string           `json:"detected" yaml:"detected"` // docker | podman
+	Role           string           `json:"role,omitempty" yaml:"role,omitempty"` // standalone | server | client (set by setup, not Detect)
+	Detected       string           `json:"detected" yaml:"detected"`             // docker | podman
 	Rootless       bool             `json:"rootless" yaml:"rootless"`
 	Microsandbox   MicrosandboxInfo `json:"microsandbox" yaml:"microsandbox"`
 	AIPlatformHost string           `json:"ai_platform_host" yaml:"ai_platform_host"`
@@ -106,18 +117,43 @@ func (adapter sandboxAdapter) Exists(path string) bool { return adapter.prober.E
 // for missing dependencies; rootless and virtualization shortfalls are recorded
 // in the Info (see Verify), not returned as errors.
 func Detect(goos, goarch string, prober Prober, detectedAt string) (*Info, error) {
-	containerRuntime, rootless, err := DetectContainerRuntime(goos, prober)
-	if err != nil {
-		return nil, err
+	// The empty role requires the full dependency set (no role-specific tolerance),
+	// matching the historical standalone behavior; setup sets the concrete role.
+	return DetectForRole(goos, goarch, "", prober, detectedAt)
+}
+
+// DetectForRole probes the host like Detect but only requires the dependencies
+// the deployment role actually uses (CLI §2.1): a server runs only the service
+// tier (no microVM runtime, so a missing msb is tolerated and recorded as
+// unavailable), and a client runs only workspaces (no service tier, so a missing
+// container runtime is tolerated and recorded empty). standalone (the default,
+// and the empty-role case) requires everything, exactly like Detect. The role is
+// recorded on the returned Info; missing dependencies that the role does need
+// still return their sentinel error.
+func DetectForRole(goos, goarch, role string, prober Prober, detectedAt string) (*Info, error) {
+	var name string
+	var rootless bool
+	containerRuntime, detectedRootless, runtimeErr := DetectContainerRuntime(goos, prober)
+	if runtimeErr != nil {
+		// A client runs no service tier, so a missing container runtime is fine.
+		if !errors.Is(runtimeErr, ErrNoContainerRuntime) || role != RoleClient {
+			return nil, runtimeErr
+		}
+	} else {
+		name = containerRuntime.Name
+		rootless = detectedRootless
 	}
-	name := containerRuntime.Name
+
 	detectedSandbox := sandbox.Detect(goos, goarch, sandboxAdapter{prober: prober})
-	if !detectedSandbox.MsbInstalled {
+	// A server runs no microVMs, so a missing msb is fine.
+	if !detectedSandbox.MsbInstalled && role != RoleServer {
 		return nil, ErrMsbMissing
 	}
+
 	hostGateway, _ := HostGateway(goos) // "" until pinned on hardware (§29.2)
 	return &Info{
 		SchemaVersion:  SchemaVersion,
+		Role:           role,
 		Detected:       name,
 		Rootless:       rootless,
 		Microsandbox:   MicrosandboxInfo{Available: detectedSandbox.Available, Virtualization: detectedSandbox.Virtualization},

@@ -58,6 +58,12 @@ ai setup     # idempotent: preflight, create ~/.ai-platform, start the service t
 ai doctor    # dependency + health report, each gap with a fix
 ```
 
+On a TTY, `ai setup` asks for a **deployment role** (or pass `--mode`): `standalone`
+(default — full service tier + workspaces here, services bound to loopback),
+`server` (only the shared service tier, bound to `0.0.0.0` for other machines, no
+workspaces), or `client` (only workspaces here, routing to a remote `--server`
+address — no local service tier). The role is persisted in `runtime.yaml`.
+
 ## Use
 
 Every command supports `--json` (envelope `{ok, command, data, error,

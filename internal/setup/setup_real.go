@@ -137,13 +137,18 @@ const (
 // DATABASE_URL is inlined (it carries no secret — trust auth on a private
 // network) so the DB-backed admin UI / virtual keys work. The container joins
 // platformNetwork so it can reach aip-litellm-db by name.
-func litellmRunArgs(configPath string) []string {
+// bindHost is the host interface a shared service publishes on. The role decides
+// it (CLI §2.1): standalone (the default and the absent-role case) keeps the
+// shared services loopback-bound — local microVMs reach a loopback-bound Headroom
+// via msb's netstack, so this is a security tightening with no functional loss —
+// while server binds 0.0.0.0 so other machines can connect.
+func litellmRunArgs(configPath, bindHost string) []string {
 	return []string{
 		"run", "-d", "--name", litellmContainer,
 		"--network", platformNetwork,
 		// Host port is deliberately non-standard (14000, not 4000) to avoid clashing
 		// with common dev servers; the container still listens on 4000 (--port 4000).
-		"-p", "14000:4000",
+		"-p", bindHost + ":14000:4000",
 		"-v", configPath + ":/app/config.yaml",
 		"-e", "UI_USERNAME=" + litellmUIUsername,
 		"-e", "UI_PASSWORD",
@@ -212,7 +217,7 @@ func containerRunning(prober runtime.Prober, containerRuntime, name string) bool
 // and persisting models under ~/.ai-platform/models on the host (bind-mounted).
 // Idempotent. Replaces a native Ollama — any native instance bound to :11434 must
 // be stopped first.
-func ensureOllama(prober runtime.Prober, containerRuntime string) error {
+func ensureOllama(prober runtime.Prober, containerRuntime, bindHost string) error {
 	if containerRunning(prober, containerRuntime, ollamaContainer) {
 		return nil
 	}
@@ -228,7 +233,7 @@ func ensureOllama(prober runtime.Prober, containerRuntime string) error {
 	args := []string{
 		"run", "-d", "--name", ollamaContainer,
 		"--network", platformNetwork,
-		"-p", "11434:11434",
+		"-p", bindHost + ":11434:11434",
 		"-v", modelsDir + ":" + ollamaModelsGuest,
 		"-e", "OLLAMA_MODELS=" + ollamaModelsGuest,
 		ollamaImage,
@@ -269,7 +274,7 @@ func ensurePresidio(prober runtime.Prober, containerRuntime string) error {
 // ensureHeadroom runs the Headroom input-compression proxy in front of LiteLLM:
 // agents send to :18787, it forwards to LiteLLM via OPENAI_TARGET_API_URL. Pulled
 // image (no build). Idempotent.
-func ensureHeadroom(prober runtime.Prober, containerRuntime string) error {
+func ensureHeadroom(prober runtime.Prober, containerRuntime, bindHost string) error {
 	if containerRunning(prober, containerRuntime, headroomContainer) {
 		return nil
 	}
@@ -279,7 +284,7 @@ func ensureHeadroom(prober runtime.Prober, containerRuntime string) error {
 		"--network", platformNetwork,
 		// Host port is deliberately non-standard (18787, not 8787) to avoid clashing
 		// with common dev servers; the container still listens on 8787.
-		"-p", "18787:8787",
+		"-p", bindHost + ":18787:8787",
 		"-e", "OPENAI_TARGET_API_URL=" + headroomTargetURL,
 		// Headroom otherwise injects an empty `tools:[]` (its CCR retrieve-tool
 		// path) into every request, which flips LiteLLM/Ollama into tool-calling
@@ -304,7 +309,7 @@ func ensureHeadroom(prober runtime.Prober, containerRuntime string) error {
 // exactly like the LiteLLM secret handling. When LiteLLM has no master key the key
 // is omitted (LiteLLM then accepts unauthenticated requests). Pulled image (no
 // build). Idempotent.
-func ensureOpenWebUI(prober runtime.Prober, containerRuntime string) error {
+func ensureOpenWebUI(prober runtime.Prober, containerRuntime, bindHost string) error {
 	if containerRunning(prober, containerRuntime, openWebUIContainer) {
 		return nil
 	}
@@ -312,7 +317,7 @@ func ensureOpenWebUI(prober runtime.Prober, containerRuntime string) error {
 	args := []string{
 		"run", "-d", "--name", openWebUIContainer,
 		"--network", platformNetwork,
-		"-p", openWebUIHostPort + ":8080",
+		"-p", bindHost + ":" + openWebUIHostPort + ":8080",
 		"-v", openWebUIVolume + ":/app/backend/data",
 		"-e", "OPENAI_API_BASE_URL=" + openWebUITargetURL,
 		"-e", "ENABLE_OLLAMA_API=false",
@@ -430,6 +435,19 @@ func preserveLiteLLMSecretsInEnv(prober runtime.Prober, containerRuntime string)
 // passed via the process environment (not argv), so they are never written to
 // disk or visible in the command line. Username is litellmUIUsername ("admin").
 // Returns ErrNoContainerRuntime-wrapped errors if no runtime is present.
+// currentBindHost returns the host interface the shared services should publish
+// on for this host's persisted deployment role: "0.0.0.0" when the role is
+// server, else "127.0.0.1" (standalone, or any absent/unreadable runtime.yaml).
+// It is the bindHost source for the standalone relaunch path (RelaunchLiteLLMWithAuth),
+// which does not receive a bindHost from Run; Reconcile/ensure* take the passed one.
+func currentBindHost() string {
+	info, err := runtime.Load()
+	if err == nil && info != nil && info.Role == runtime.RoleServer {
+		return "0.0.0.0"
+	}
+	return "127.0.0.1"
+}
+
 func RelaunchLiteLLMWithAuth(password, masterKey string) error {
 	containerRuntime, err := runtime.ContainerRuntimeName(runtime.RealProber())
 	if err != nil {
@@ -448,7 +466,7 @@ func RelaunchLiteLLMWithAuth(password, masterKey string) error {
 	_ = exec.Command(containerRuntime.Name, "rm", "-f", litellmContainer).Run() // #nosec G204 — fixed args
 
 	// #nosec G204 — fixed argv; secrets ride in the environment, not the command line.
-	command := exec.Command(containerRuntime.Name, litellmRunArgs(configPath)...)
+	command := exec.Command(containerRuntime.Name, litellmRunArgs(configPath, currentBindHost())...)
 	command.Env = append(os.Environ(),
 		"UI_PASSWORD="+password,
 		"LITELLM_MASTER_KEY="+masterKey,
@@ -465,7 +483,7 @@ type realServices struct {
 	prober runtime.Prober
 }
 
-func (services realServices) Reconcile(providerConfig string, progress func(string)) ([]ServiceStatus, error) {
+func (services realServices) Reconcile(providerConfig, bindHost string, progress func(string)) ([]ServiceStatus, error) {
 	configDir, err := paths.ConfigDir()
 	if err != nil {
 		return nil, err
@@ -495,7 +513,7 @@ func (services realServices) Reconcile(providerConfig string, progress func(stri
 		return nil, err
 	}
 	progress("  • Ollama (aip-ollama, local models)…")
-	if err := ensureOllama(services.prober, containerRuntime.Name); err != nil {
+	if err := ensureOllama(services.prober, containerRuntime.Name, bindHost); err != nil {
 		return nil, err
 	}
 	progress("  • Presidio (PII guardrail backend)…")
@@ -503,15 +521,15 @@ func (services realServices) Reconcile(providerConfig string, progress func(stri
 		return nil, err
 	}
 	progress("  • LiteLLM gateway + Postgres (waiting for it to become healthy)…")
-	if err := services.ensureLiteLLM(filepath.Join(configDir, "litellm", "config.yaml")); err != nil {
+	if err := services.ensureLiteLLM(filepath.Join(configDir, "litellm", "config.yaml"), bindHost); err != nil {
 		return nil, err
 	}
 	progress("  • Headroom (compression proxy)…")
-	if err := ensureHeadroom(services.prober, containerRuntime.Name); err != nil {
+	if err := ensureHeadroom(services.prober, containerRuntime.Name, bindHost); err != nil {
 		return nil, err
 	}
 	progress("  • open-webui (chat UI → LiteLLM)…")
-	if err := ensureOpenWebUI(services.prober, containerRuntime.Name); err != nil {
+	if err := ensureOpenWebUI(services.prober, containerRuntime.Name, bindHost); err != nil {
 		return nil, err
 	}
 	return services.Status()
@@ -520,7 +538,7 @@ func (services realServices) Reconcile(providerConfig string, progress func(stri
 // ensureLiteLLM starts the LiteLLM container via the detected runtime unless it
 // is already healthy, then polls briefly for it to come up. Idempotent: it
 // removes any stale container of the same name first.
-func (services realServices) ensureLiteLLM(configPath string) error {
+func (services realServices) ensureLiteLLM(configPath, bindHost string) error {
 	containerRuntime, err := runtime.ContainerRuntimeName(services.prober)
 	if err != nil {
 		return err
@@ -540,7 +558,7 @@ func (services realServices) ensureLiteLLM(configPath string) error {
 	// (env passthrough would otherwise copy empty values from this process).
 	preserveLiteLLMSecretsInEnv(services.prober, containerRuntime.Name)
 	_, _ = services.prober.Run(containerRuntime.Name, "rm", "-f", litellmContainer) // best-effort cleanup
-	if _, err := services.prober.Run(containerRuntime.Name, litellmRunArgs(configPath)...); err != nil {
+	if _, err := services.prober.Run(containerRuntime.Name, litellmRunArgs(configPath, bindHost)...); err != nil {
 		return output.Errorf(output.ExitRuntimeFailure, "launch litellm via %s: %s", containerRuntime.Name, err)
 	}
 	for attempt := 0; attempt < 15; attempt++ {
@@ -628,6 +646,9 @@ func (services realServices) Control(action, service string) ([]ServiceStatus, e
 	if err != nil {
 		return nil, err
 	}
+	// Publish on the interface this host's persisted role dictates (server →
+	// 0.0.0.0, else loopback), so `ai services start|restart` matches `ai setup`.
+	bindHost := currentBindHost()
 
 	stopContainer := func(name string) error {
 		if _, err := services.prober.Run(containerRuntime.Name, "stop", name); err != nil {
@@ -646,7 +667,7 @@ func (services realServices) Control(action, service string) ([]ServiceStatus, e
 	}
 	managed := []managedService{
 		{"ollama",
-			func() error { return ensureOllama(services.prober, containerRuntime.Name) },
+			func() error { return ensureOllama(services.prober, containerRuntime.Name, bindHost) },
 			func() error { return stopContainer(ollamaContainer) }},
 		{"presidio",
 			func() error { return ensurePresidio(services.prober, containerRuntime.Name) },
@@ -657,13 +678,13 @@ func (services realServices) Control(action, service string) ([]ServiceStatus, e
 				return stopContainer(presidioAnonymizerContainer)
 			}},
 		{"litellm",
-			func() error { return services.ensureLiteLLM(configPath) },
+			func() error { return services.ensureLiteLLM(configPath, bindHost) },
 			func() error { return stopContainer(litellmContainer) }},
 		{"headroom",
-			func() error { return ensureHeadroom(services.prober, containerRuntime.Name) },
+			func() error { return ensureHeadroom(services.prober, containerRuntime.Name, bindHost) },
 			func() error { return stopContainer(headroomContainer) }},
 		{"open-webui",
-			func() error { return ensureOpenWebUI(services.prober, containerRuntime.Name) },
+			func() error { return ensureOpenWebUI(services.prober, containerRuntime.Name, bindHost) },
 			func() error { return stopContainer(openWebUIContainer) }},
 		{"dns",
 			func() error { return ensureDNS(services.prober, containerRuntime.Name) },

@@ -10,6 +10,7 @@ import (
 
 	"github.com/jt-helsinki/ideal-robot/internal/conffile"
 	"github.com/jt-helsinki/ideal-robot/internal/output"
+	"github.com/jt-helsinki/ideal-robot/internal/runtime"
 	"github.com/jt-helsinki/ideal-robot/internal/versions"
 )
 
@@ -38,11 +39,13 @@ func (prober fakeProber) Exists(path string) bool { return prober.files[path] }
 type fakeServices struct {
 	reconciled bool
 	provider   string
+	bindHost   string
 }
 
-func (services *fakeServices) Reconcile(providerConfig string, progress func(string)) ([]ServiceStatus, error) {
+func (services *fakeServices) Reconcile(providerConfig, bindHost string, progress func(string)) ([]ServiceStatus, error) {
 	services.reconciled = true
 	services.provider = providerConfig
+	services.bindHost = bindHost
 	if progress != nil {
 		progress("reconciling (fake)")
 	}
@@ -327,11 +330,11 @@ func TestPreflightReportsMsbWithInstructionsNotInstalling(test *testing.T) {
 }
 
 func TestLiteLLMRunArgs(test *testing.T) {
-	args := litellmRunArgs("/cfg/litellm/config.yaml")
+	args := litellmRunArgs("/cfg/litellm/config.yaml", "127.0.0.1")
 	want := []string{
 		"run", "-d", "--name", "aip-litellm",
 		"--network", "aip-net",
-		"-p", "14000:4000",
+		"-p", "127.0.0.1:14000:4000",
 		"-v", "/cfg/litellm/config.yaml:/app/config.yaml",
 		"-e", "UI_USERNAME=admin",
 		"-e", "UI_PASSWORD",
@@ -355,6 +358,129 @@ func TestLiteLLMRunArgs(test *testing.T) {
 	joined := strings.Join(args, " ")
 	if strings.Contains(joined, "UI_PASSWORD=") || strings.Contains(joined, "LITELLM_MASTER_KEY=") {
 		test.Errorf("secret values must not be inlined in argv: %v", args)
+	}
+}
+
+// TestLiteLLMRunArgsBindHost asserts the host port is published on the bindHost
+// the role dictates: loopback for standalone, 0.0.0.0 for a server.
+func TestLiteLLMRunArgsBindHost(test *testing.T) {
+	standalone := strings.Join(litellmRunArgs("/cfg/config.yaml", "127.0.0.1"), " ")
+	if !strings.Contains(standalone, "-p 127.0.0.1:14000:4000") {
+		test.Errorf("standalone bind: want -p 127.0.0.1:14000:4000 in %s", standalone)
+	}
+	server := strings.Join(litellmRunArgs("/cfg/config.yaml", "0.0.0.0"), " ")
+	if !strings.Contains(server, "-p 0.0.0.0:14000:4000") {
+		test.Errorf("server bind: want -p 0.0.0.0:14000:4000 in %s", server)
+	}
+}
+
+// TestBlockingPrereqsForRole pins the role → blocking-prerequisite mapping:
+// standalone requires everything, server drops the microVM runtime + virtualization,
+// client drops the container runtime + rootless service tier.
+func TestBlockingPrereqsForRole(test *testing.T) {
+	standalone := blockingPrereqsForRole(runtime.RoleStandalone)
+	for _, name := range []string{"container runtime", "rootless service tier", "microsandbox runtime", "host virtualization"} {
+		if !standalone[name] {
+			test.Errorf("standalone should block on %q", name)
+		}
+	}
+	server := blockingPrereqsForRole(runtime.RoleServer)
+	if !server["container runtime"] || !server["rootless service tier"] {
+		test.Errorf("server should block on the service tier: %v", server)
+	}
+	if server["microsandbox runtime"] || server["host virtualization"] {
+		test.Errorf("server must NOT block on the microVM runtime/virtualization: %v", server)
+	}
+	client := blockingPrereqsForRole(runtime.RoleClient)
+	if !client["microsandbox runtime"] || !client["host virtualization"] {
+		test.Errorf("client should block on the microVM runtime: %v", client)
+	}
+	if client["container runtime"] || client["rootless service tier"] {
+		test.Errorf("client must NOT block on the service tier: %v", client)
+	}
+}
+
+// TestClientModePassesPreflightWithoutDocker: a client only needs the microVM
+// runtime + virtualization, so a host with NO container runtime still passes
+// preflight, and the service-tier reconcile is skipped entirely.
+func TestClientModePassesPreflightWithoutDocker(test *testing.T) {
+	test.Setenv("HOME", test.TempDir())
+	deps, services := healthyDeps()
+	// msb + virtualization present, but no docker/podman at all.
+	deps.Prober = fakeProber{bins: map[string]bool{"msb": true}}
+
+	report, err := Run(Options{Mode: runtime.RoleClient, ServerAddr: "gateway.example:14000"}, deps)
+	if err != nil {
+		test.Fatalf("client setup should pass preflight without docker: %v", err)
+	}
+	if services.reconciled {
+		test.Error("client mode must NOT reconcile the local service tier")
+	}
+	if len(report.Services) != 0 {
+		test.Errorf("client mode Report.Services should be empty, got %+v", report.Services)
+	}
+	if report.Runtime.Role != runtime.RoleClient {
+		test.Errorf("role not persisted to report: %+v", report.Runtime)
+	}
+	if report.Runtime.AIPlatformHost != "gateway.example:14000" {
+		test.Errorf("server address not recorded: %+v", report.Runtime)
+	}
+	// Role + server address survive on disk for later runs/steps.
+	persisted, err := runtime.Load()
+	if err != nil || persisted == nil {
+		test.Fatalf("load runtime.yaml: %v", err)
+	}
+	if persisted.Role != runtime.RoleClient || persisted.AIPlatformHost != "gateway.example:14000" {
+		test.Errorf("runtime.yaml did not persist client role/address: %+v", persisted)
+	}
+}
+
+// TestServerModePassesPreflightWithoutMsb: a server only needs the service tier,
+// so a host with NO microsandbox still passes preflight and reconciles, binding
+// the shared services to 0.0.0.0.
+func TestServerModePassesPreflightWithoutMsb(test *testing.T) {
+	test.Setenv("HOME", test.TempDir())
+	deps, services := healthyDeps()
+	// docker present + rootless, but no msb.
+	deps.Prober = fakeProber{
+		bins:      map[string]bool{"docker": true},
+		dockerOut: "[name=seccomp name=rootless]",
+	}
+
+	report, err := Run(Options{Mode: runtime.RoleServer}, deps)
+	if err != nil {
+		test.Fatalf("server setup should pass preflight without msb: %v", err)
+	}
+	if !services.reconciled {
+		test.Error("server mode must reconcile the service tier")
+	}
+	if services.bindHost != "0.0.0.0" {
+		test.Errorf("server reconcile bindHost = %q, want 0.0.0.0", services.bindHost)
+	}
+	if report.Runtime.Role != runtime.RoleServer {
+		test.Errorf("role not persisted: %+v", report.Runtime)
+	}
+}
+
+// TestStandaloneBindsLoopback: the default role reconciles with a loopback bind.
+func TestStandaloneBindsLoopback(test *testing.T) {
+	test.Setenv("HOME", test.TempDir())
+	deps, services := healthyDeps()
+	if _, err := Run(Options{}, deps); err != nil {
+		test.Fatal(err)
+	}
+	if services.bindHost != "127.0.0.1" {
+		test.Errorf("standalone reconcile bindHost = %q, want 127.0.0.1", services.bindHost)
+	}
+}
+
+// TestInvalidModeRejected: an unknown role is exit 2.
+func TestInvalidModeRejected(test *testing.T) {
+	test.Setenv("HOME", test.TempDir())
+	deps, _ := healthyDeps()
+	_, err := Run(Options{Mode: "bogus"}, deps)
+	if got := exitCodeOf(test, err); got != output.ExitInvalidInput {
+		test.Fatalf("invalid mode exit = %d, want %d", got, output.ExitInvalidInput)
 	}
 }
 

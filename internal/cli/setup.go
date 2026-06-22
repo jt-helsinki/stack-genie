@@ -8,9 +8,12 @@ import (
 	goruntime "runtime"
 	"time"
 
+	"strings"
+
 	"github.com/charmbracelet/huh"
 	"github.com/charmbracelet/x/term"
 	"github.com/jt-helsinki/ideal-robot/internal/output"
+	"github.com/jt-helsinki/ideal-robot/internal/runtime"
 	"github.com/jt-helsinki/ideal-robot/internal/setup"
 	"github.com/spf13/cobra"
 )
@@ -21,12 +24,27 @@ func nowRFC3339() string { return time.Now().UTC().Format(time.RFC3339) }
 func newSetupCmd(em *output.Emitter, exit *int) *cobra.Command {
 	var providerConfig string
 	var upgrade bool
+	var mode string
+	var serverAddr string
 	cmd := &cobra.Command{
 		Use:   "setup",
 		Short: "Install, configure, and start the platform host services (idempotent)",
 		Args:  cobra.NoArgs,
 		RunE: func(_ *cobra.Command, _ []string) error {
 			deps := setup.RealDeps(goruntime.GOOS, goruntime.GOARCH, nowRFC3339)
+			// On a TTY without an explicit --mode, ask which deployment role this
+			// host plays (and, for a client, where the remote service tier lives).
+			// --json/automation and non-TTY hosts stay non-interactive (default
+			// standalone unless --mode was passed).
+			interactive := !em.JSON && term.IsTerminal(os.Stdin.Fd())
+			if mode == "" && interactive {
+				selectedMode, selectedServer, err := promptDeploymentRole()
+				if err != nil {
+					*exit = em.Failure("setup", output.Errorf(output.ExitInvalidInput, "deployment role prompt: %s", err))
+					return nil
+				}
+				mode, serverAddr = selectedMode, selectedServer
+			}
 			// Stream step-by-step progress to stderr so setup doesn't look hung
 			// during the (several-second) container bring-up. Human output only —
 			// --json/automation stays quiet (progress isn't part of the envelope).
@@ -34,16 +52,21 @@ func newSetupCmd(em *output.Emitter, exit *int) *cobra.Command {
 				_, _ = fmt.Fprintln(em.Err, "Setting up the AI Development Platform…")
 				deps.Progress = func(line string) { _, _ = fmt.Fprintln(em.Err, line) }
 			}
-			report, err := setup.Run(setup.Options{ProviderConfig: providerConfig, Upgrade: upgrade}, deps)
+			report, err := setup.Run(setup.Options{
+				ProviderConfig: providerConfig,
+				Upgrade:        upgrade,
+				Mode:           mode,
+				ServerAddr:     serverAddr,
+			}, deps)
 			if err != nil {
 				*exit = em.Failure("setup", err) // err is *output.Error (carries the exit code)
 				return nil
 			}
 			// Interactive credential prompts — only on a real TTY (not
-			// --json/automation), so scripted/JSON setup stays non-interactive.
-			// Announce them clearly so they aren't mistaken for a hang after the
-			// dependency installers' noisy output.
-			if !em.JSON && term.IsTerminal(os.Stdin.Fd()) {
+			// --json/automation), so scripted/JSON setup stays non-interactive. The
+			// LiteLLM admin-UI password only matters where LiteLLM runs locally
+			// (standalone/server), so it is skipped in client mode.
+			if interactive && report.Runtime != nil && report.Runtime.Role != runtime.RoleClient {
 				_, _ = fmt.Fprintln(em.Err, "\nSetup needs a credential — press Enter at the prompt to skip it.")
 				promptLiteLLMUIPassword(em)
 			}
@@ -55,7 +78,62 @@ func newSetupCmd(em *output.Emitter, exit *int) *cobra.Command {
 		"point LiteLLM at a provider/endpoint config file")
 	cmd.Flags().BoolVar(&upgrade, "upgrade", false,
 		"re-pin service versions to this binary's defaults and re-reconcile")
+	cmd.Flags().StringVar(&mode, "mode", "",
+		"deployment role: standalone (default) | server | client (interactive prompt on a TTY)")
+	cmd.Flags().StringVar(&serverAddr, "server", "",
+		"client mode: address of the remote service tier to route to (host, host:port, or URL)")
 	return cmd
+}
+
+// promptDeploymentRole asks (on a TTY) which deployment role this host plays,
+// defaulting to the persisted role (else standalone). When Client is chosen it
+// also prompts for the remote service-tier address (defaulting to the persisted
+// one). Mirrors the password prompt's huh style.
+func promptDeploymentRole() (mode, serverAddr string, err error) {
+	defaultRole := runtime.RoleStandalone
+	defaultServer := ""
+	if persisted, loadErr := runtime.Load(); loadErr == nil && persisted != nil {
+		if persisted.Role != "" {
+			defaultRole = persisted.Role
+		}
+		defaultServer = persisted.AIPlatformHost
+	}
+
+	mode = defaultRole
+	roleForm := huh.NewForm(huh.NewGroup(
+		huh.NewSelect[string]().
+			Title("Deployment role for this host").
+			Description("standalone: full stack here · server: shared service tier only (0.0.0.0) · client: workspaces only, route to a remote server").
+			Options(
+				huh.NewOption("Standalone — run the full service tier + workspaces here", runtime.RoleStandalone),
+				huh.NewOption("Server — run only the shared service tier (other machines connect)", runtime.RoleServer),
+				huh.NewOption("Client — run only workspaces; route to a remote server", runtime.RoleClient),
+			).
+			Value(&mode),
+	))
+	if err := roleForm.Run(); err != nil {
+		return "", "", err
+	}
+	if mode != runtime.RoleClient {
+		return mode, "", nil
+	}
+
+	serverAddr = defaultServer
+	serverForm := huh.NewForm(huh.NewGroup(
+		huh.NewInput().
+			Title("Remote server address (host, host:port, or URL)").
+			Value(&serverAddr).
+			Validate(func(value string) error {
+				if strings.TrimSpace(value) == "" {
+					return fmt.Errorf("a server address is required in client mode")
+				}
+				return nil
+			}),
+	))
+	if err := serverForm.Run(); err != nil {
+		return "", "", err
+	}
+	return mode, strings.TrimSpace(serverAddr), nil
 }
 
 // promptLiteLLMUIPassword secures the LiteLLM admin UI: it asks for a password
