@@ -624,12 +624,17 @@ no `ai project rollback`. A project's environment is its
 ai models status
 ```
 
-Returns:
+Returns a labeled, actionable summary (not a raw field dump):
 
-* LiteLLM health
-* provider status
-* routing configuration
-* Ollama connectivity
+* LiteLLM gateway reachability — including the endpoint URL and, when it is down,
+  how to bring it up (`ai services start` → `ai doctor`)
+* the default model
+* the local-model (Ollama — no key needed) vs cloud-provider (each needs a key
+  via `ai secrets set <PROVIDER>_API_KEY`) split
+* a `ai models test <model>` next-step hint
+
+The `--json` envelope carries the underlying fields (`healthy`, `providers`,
+`default`, `ollama`, `base_url`).
 
 ---
 

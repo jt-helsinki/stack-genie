@@ -244,6 +244,55 @@ type StatusInfo struct {
 	Providers []string `json:"providers"`
 	Default   string   `json:"default"`
 	Ollama    bool     `json:"ollama"`
+	// BaseURL is the gateway endpoint the status was probed against (for the
+	// human-readable rendering); omitted from JSON when empty.
+	BaseURL string `json:"base_url,omitempty"`
+}
+
+// Human renders `ai models status` as a labeled, actionable summary rather than a
+// raw field dump: gateway reachability (with a fix hint when it is down), the
+// default model, the local-model (Ollama, no key) vs cloud-provider (needs a key)
+// split, and how to probe a model.
+func (info StatusInfo) Human() string {
+	endpoint := ""
+	if info.BaseURL != "" {
+		endpoint = " (" + info.BaseURL + ")"
+	}
+	var builder strings.Builder
+	if info.Healthy {
+		builder.WriteString("LiteLLM gateway   ✓ reachable" + endpoint + "\n")
+	} else {
+		builder.WriteString("LiteLLM gateway   ✗ not reachable" + endpoint + "\n")
+		builder.WriteString("                  → start it with `ai services start`, then `ai doctor` (or `ai setup` on first run)\n")
+	}
+	builder.WriteString("\n")
+	if info.Default != "" {
+		builder.WriteString("Default model     " + info.Default + "  (used unless an agent names another)\n")
+	}
+	if info.Ollama {
+		builder.WriteString("Local models      Ollama — no API key needed (install models with `ollama pull <name>`)\n")
+	}
+	cloud := make([]string, 0, len(info.Providers))
+	for _, provider := range info.Providers {
+		if provider != "ollama" {
+			cloud = append(cloud, provider)
+		}
+	}
+	if len(cloud) > 0 {
+		builder.WriteString("Cloud providers   " + strings.Join(cloud, ", ") + "\n")
+		builder.WriteString("                  each needs a key once: `ai secrets set <PROVIDER>_API_KEY`\n")
+	}
+	probeModel := info.Default
+	if probeModel == "" {
+		probeModel = "<model>"
+	}
+	builder.WriteString("\n")
+	if info.Healthy {
+		builder.WriteString("Probe a model with `ai models test " + probeModel + "`.")
+	} else {
+		builder.WriteString("Once the gateway is up, probe a model with `ai models test " + probeModel + "`.")
+	}
+	return builder.String()
 }
 
 // TestResult is the result of `ai models test` (CLI §8.2). When OK is false,

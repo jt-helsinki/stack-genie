@@ -5,6 +5,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"gopkg.in/yaml.v3"
@@ -156,6 +157,46 @@ func TestProvidersAndOllama(test *testing.T) {
 	}
 	if !hasOllama(routing) {
 		test.Fatal("default routing includes an ollama alias")
+	}
+}
+
+func TestStatusInfoHumanUnreachable(test *testing.T) {
+	info := StatusInfo{
+		Healthy:   false,
+		Providers: []string{"anthropic", "ollama", "openai"},
+		Default:   "gemma4",
+		Ollama:    true,
+		BaseURL:   "http://127.0.0.1:14000",
+	}
+	rendered := info.Human()
+	for _, fragment := range []string{
+		"not reachable",            // clear down state
+		"http://127.0.0.1:14000",   // where
+		"ai services start",        // how to fix
+		"Default model     gemma4", // labeled, not a raw dump
+		"Ollama",                   // local models split out
+		"anthropic, openai",        // cloud providers, ollama removed from the list
+		"ai secrets set",           // cloud needs a key
+		"ai models test gemma4",    // next step
+	} {
+		if !strings.Contains(rendered, fragment) {
+			test.Errorf("status Human() missing %q:\n%s", fragment, rendered)
+		}
+	}
+	// ollama must NOT appear in the cloud-providers line.
+	if strings.Contains(rendered, "anthropic, ollama") {
+		test.Errorf("ollama should be shown as a local model, not in the cloud list:\n%s", rendered)
+	}
+}
+
+func TestStatusInfoHumanReachable(test *testing.T) {
+	info := StatusInfo{Healthy: true, Providers: []string{"openai"}, Default: "gemma4", Ollama: true, BaseURL: "http://127.0.0.1:14000"}
+	rendered := info.Human()
+	if !strings.Contains(rendered, "✓ reachable") {
+		test.Errorf("expected a reachable marker:\n%s", rendered)
+	}
+	if strings.Contains(rendered, "ai services start") {
+		test.Errorf("a healthy gateway should not show the start-it hint:\n%s", rendered)
 	}
 }
 

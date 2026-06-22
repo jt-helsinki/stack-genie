@@ -33,7 +33,7 @@ func RealClient() Client {
 
 func (client realClient) Status() (StatusInfo, error) {
 	routing := DefaultRouting()
-	info := StatusInfo{Default: routing.Default, Providers: providersOf(routing), Ollama: hasOllama(routing)}
+	info := StatusInfo{Default: routing.Default, Providers: providersOf(routing), Ollama: hasOllama(routing), BaseURL: client.baseURL}
 	// Use the unauthenticated liveness probe: /health is auth-gated and returns
 	// 401 once a master key is set (the secured-UI default), which would make a
 	// healthy proxy look down. /health/liveliness needs no credential.
