@@ -241,7 +241,7 @@ func TestLoadMissingReturnsNil(test *testing.T) {
 	test.Setenv("HOME", test.TempDir())
 	loaded, err := Load()
 	if err != nil || loaded != nil {
-		test.Fatalf("missing runtime.json should be (nil,nil), got (%+v,%v)", loaded, err)
+		test.Fatalf("missing runtime.yaml should be (nil,nil), got (%+v,%v)", loaded, err)
 	}
 }
 

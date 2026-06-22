@@ -1,6 +1,6 @@
 // Package runtime detects the container runtime for the service tier
 // (Docker/Podman) and composes it with sandbox virtualization detection into
-// config/runtime.json (repo-layout §12.5, arch §6).
+// config/runtime.yaml (repo-layout §12.5, arch §6).
 //
 // Detection is parameterized by GOOS/GOARCH and a Prober so it is unit-testable
 // on any host. Missing dependencies surface as sentinel errors (→ exit 3);
@@ -16,12 +16,12 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/jt-helsinki/ideal-robot/internal/jsonfile"
+	"github.com/jt-helsinki/ideal-robot/internal/conffile"
 	"github.com/jt-helsinki/ideal-robot/internal/paths"
 	"github.com/jt-helsinki/ideal-robot/internal/sandbox"
 )
 
-// SchemaVersion is stamped on config/runtime.json.
+// SchemaVersion is stamped on config/runtime.yaml.
 const SchemaVersion = 1
 
 // Sentinel errors. Detect returns the missing-dependency ones (exit 3); Verify
@@ -51,21 +51,25 @@ func (realProber) Exists(path string) bool { _, err := os.Stat(path); return err
 // RealProber probes the actual host.
 func RealProber() Prober { return realProber{} }
 
-// MicrosandboxInfo mirrors runtime.json's microsandbox object (§12.5).
+// MicrosandboxInfo mirrors runtime.yaml's microsandbox object (§12.5). It carries
+// both json and yaml tags: yaml for config/runtime.yaml on disk, json for the
+// --json output envelope (it rides inside setup.Report).
 type MicrosandboxInfo struct {
-	Available      bool   `json:"available"`
-	Virtualization string `json:"virtualization"`
+	Available      bool   `json:"available" yaml:"available"`
+	Virtualization string `json:"virtualization" yaml:"virtualization"`
 }
 
-// Info is config/runtime.json (§12.5).
+// Info is config/runtime.yaml (§12.5). It carries both json and yaml tags: yaml
+// for the on-disk file, json for the --json output envelope (setup.Report
+// embeds it), so the persisted snake_case keys are preserved in both encodings.
 type Info struct {
-	SchemaVersion  int              `json:"schema_version"`
-	Detected       string           `json:"detected"` // docker | podman
-	Rootless       bool             `json:"rootless"`
-	Microsandbox   MicrosandboxInfo `json:"microsandbox"`
-	AIPlatformHost string           `json:"ai_platform_host"`
-	HostGateway    string           `json:"host_gateway"` // guest-visible host address (arch §29.2)
-	DetectedAt     string           `json:"detected_at"`
+	SchemaVersion  int              `json:"schema_version" yaml:"schema_version"`
+	Detected       string           `json:"detected" yaml:"detected"` // docker | podman
+	Rootless       bool             `json:"rootless" yaml:"rootless"`
+	Microsandbox   MicrosandboxInfo `json:"microsandbox" yaml:"microsandbox"`
+	AIPlatformHost string           `json:"ai_platform_host" yaml:"ai_platform_host"`
+	HostGateway    string           `json:"host_gateway" yaml:"host_gateway"` // guest-visible host address (arch §29.2)
+	DetectedAt     string           `json:"detected_at" yaml:"detected_at"`
 }
 
 // HostAddress returns the address a workspace microVM uses to reach the host
@@ -228,25 +232,25 @@ func podmanRootless(prober Prober) bool {
 	return strings.TrimSpace(string(output)) != "false"
 }
 
-// Path returns config/runtime.json.
+// Path returns config/runtime.yaml.
 func Path() (string, error) {
 	configDir, err := paths.ConfigDir()
 	if err != nil {
 		return "", err
 	}
-	return filepath.Join(configDir, "runtime.json"), nil
+	return filepath.Join(configDir, "runtime.yaml"), nil
 }
 
-// Persist atomically writes config/runtime.json.
+// Persist atomically writes config/runtime.yaml.
 func Persist(info *Info) error {
 	path, err := Path()
 	if err != nil {
 		return err
 	}
-	return jsonfile.WriteAtomic(path, info)
+	return conffile.WriteAtomic(path, info)
 }
 
-// Load reads config/runtime.json, returning (nil, nil) if it has not been
+// Load reads config/runtime.yaml, returning (nil, nil) if it has not been
 // detected yet (a fresh install).
 func Load() (*Info, error) {
 	path, err := Path()
@@ -254,7 +258,7 @@ func Load() (*Info, error) {
 		return nil, err
 	}
 	var info Info
-	if err := jsonfile.Read(path, &info); err != nil {
+	if err := conffile.Read(path, &info); err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			return nil, nil
 		}

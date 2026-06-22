@@ -204,7 +204,7 @@ ai setup --json
 ### Expected Result
 
 * CLI installed (`ai` on PATH)
-* `~/.ai-platform/config/` created (incl. `projects.json` index)
+* `~/.ai-platform/config/` created (incl. `projects.yaml` index)
 * **Docker detected, rootless** (Podman is `[S6]`; Slice 1 service tier is Docker-only)
 * **Microsandbox runtime + host virtualization verified** (Apple Silicon on macOS)
 * the service tier started as containers: Ollama, Presidio (analyzer +
@@ -264,7 +264,7 @@ create_project test-project              # PTY-driven wizard; accepts defaults (
 * `agent.tools` is `[opencode]` and `agent.default_tool` is `opencode` (wizard defaults)
 * LiteLLM accessible
 * the workspace holds a scoped LiteLLM virtual key (keys-in-LiteLLM, arch §17); provider keys live only in the gateway
-* state updated under `~/projects/test-project/.ai-platform/` + indexed in `config/projects.json`
+* state updated under `~/projects/test-project/.ai-platform/` + indexed in `config/projects.yaml`
 
 ### Negative case
 
@@ -335,12 +335,12 @@ unknown project with a missing confirmation:
 
 * **(a)** exits `2` **because confirmation is missing** — the project provably
   exists, and `--yes` is the only thing absent; nothing is removed and `del-test`
-  still appears in `config/projects.json`
+  still appears in `config/projects.yaml`
 * **(b)** exits `2` **because the project is unknown** — `--yes` is present, so a
   missing confirmation cannot be the cause; nothing is removed
-* **(c)** default delete: workspaces + overlays removed; `config/projects.json`
+* **(c)** default delete: workspaces + overlays removed; `config/projects.yaml`
   no longer lists `del-test`; tracked `~/projects/del-test/.ai-platform/` files
-  (Dockerfile / config / profile / project.json / `skills/caveman/`) **remain**;
+  (Dockerfile / config / profile / project.yaml / `skills/caveman/`) **remain**;
   `.ai-platform/run/` is **cleared**
 * `--purge` (e.g. `ai project delete <p> --purge --yes` on a separately created
   disposable project) additionally removes `~/projects/<p>` entirely
@@ -618,7 +618,7 @@ ai workspace doctor test-project --json
 ### Test
 
 * run the identical project-creation + workspace-start flow once under Docker
-  and once under Podman (force via `config/runtime.json`)
+  and once under Podman (force via `config/runtime.yaml`)
 
 ### Expected Result
 
@@ -653,7 +653,7 @@ ai setup --json
 
 ### Expected Result
 
-* Docker or Podman auto-detected (`config/runtime.json.detected` set)
+* Docker or Podman auto-detected (`config/runtime.yaml.detected` set)
 * Microsandbox microVMs run via KVM
 * no manual configuration required
 

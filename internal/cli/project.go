@@ -171,8 +171,8 @@ func createPlan(spec project.Spec, root string) []string {
 	return []string{
 		"use current directory " + root,
 		fmt.Sprintf("write .ai-platform/Dockerfile (os=%s, stacks=%v, agent CLIs=%v)", spec.OS, spec.Stacks, spec.AgentCLIs),
-		"write config.yaml, profile.yaml, project.json, .gitignore",
-		"register " + spec.Name + " in config/projects.json",
+		"write config.yaml, profile.yaml, project.yaml, .gitignore",
+		"register " + spec.Name + " in config/projects.yaml",
 	}
 }
 
@@ -332,7 +332,7 @@ func deletePlan(name, root string, purge bool) []string {
 		removal = "remove host source " + root
 	}
 	return []string{
-		"remove " + name + " from config/projects.json",
+		"remove " + name + " from config/projects.yaml",
 		removal,
 	}
 }

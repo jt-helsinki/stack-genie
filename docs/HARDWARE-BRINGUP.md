@@ -61,7 +61,7 @@ returns `("", false)`):
 - [ ] **Pin the host gateway.** Find the gateway address of Microsandbox's
       host-side userspace stack (the address the guest reaches the host at) from
       the SDK; implement `runtime.HostGateway` to return it per `GOOS`, and have
-      `ai setup` persist it to `config/runtime.json` as `host_gateway`. `Info.HostAddress()`
+      `ai setup` persist it to `config/runtime.yaml` as `host_gateway`. `Info.HostAddress()`
       already prefers the `AI_PLATFORM_HOST` env override, else this value.
 - [ ] **Prove the four properties** (these make "it works" + "egress is confined"
       falsifiable):
@@ -102,7 +102,7 @@ Each is a thin real impl that currently returns `ErrPending` / a stub.
     host services + published ports; there is no egress proxy. This live
     NetworkPolicy enforcement is the deferred bring-up end-state for `ai network`.
 - [ ] **`internal/setup/setup_real.go`**
-  - `realServices.Reconcile` → pull pinned images by digest (`config/versions.json`)
+  - `realServices.Reconcile` → pull pinned images by digest (`config/versions.yaml`)
     and bring up the host service tier on the shared `aip-net` network in order
     **network → Ollama → Presidio → LiteLLM(+DB) → Headroom**, via the detected
     runtime (`runtime.ContainerRuntime.RunArgs`, docker|podman — not hardcoded);
@@ -139,7 +139,7 @@ Each is a thin real impl that currently returns `ErrPending` / a stub.
   (8,12000)/(5,8000)/(2,4000), `internal/contextopt.HeadroomParams` — which are
   baked into the agent CLI's request `extra_body` at workspace start. Verify the
   agent points at `aip-headroom:8787` (via `AI_PLATFORM_HOST`) and that the knobs
-  take effect live. Pin the Headroom image in `config/versions.json`.
+  take effect live. Pin the Headroom image in `config/versions.yaml`.
 - [ ] **`internal/secrets/secrets_real.go`**
   - Credentials are **keys-in-LiteLLM**: real provider keys live in the LiteLLM
     gateway, never on platform disk or in the workspace (arch §17).

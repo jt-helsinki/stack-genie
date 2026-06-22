@@ -29,8 +29,8 @@ func TestUnknownFieldRejected(test *testing.T) {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		test.Fatal(err)
 	}
-	bad := `{"schema_version":1,"name":"x","os":"alma","created":"test","bogus":true}`
-	if err := os.WriteFile(filepath.Join(dir, "project.json"), []byte(bad), 0o644); err != nil {
+	bad := "schema_version: 1\nname: x\nos: alma\ncreated: test\nbogus: true\n"
+	if err := os.WriteFile(filepath.Join(dir, "project.yaml"), []byte(bad), 0o644); err != nil {
 		test.Fatal(err)
 	}
 	if _, err := OpenStore(root).LoadProject(); err == nil {
@@ -42,8 +42,8 @@ func TestBadSchemaVersionRejected(test *testing.T) {
 	root := test.TempDir()
 	dir := filepath.Join(root, ".ai-platform")
 	_ = os.MkdirAll(dir, 0o755)
-	bad := `{"schema_version":99,"name":"x","os":"alma","created":"test"}`
-	_ = os.WriteFile(filepath.Join(dir, "project.json"), []byte(bad), 0o644)
+	bad := "schema_version: 99\nname: x\nos: alma\ncreated: test\n"
+	_ = os.WriteFile(filepath.Join(dir, "project.yaml"), []byte(bad), 0o644)
 	if _, err := OpenStore(root).LoadProject(); err == nil {
 		test.Fatal("expected schema_version rejection")
 	}
@@ -125,7 +125,7 @@ func TestRepairDropsStaleAndKeepsValid(test *testing.T) {
 
 	idx := NewProjectsIndex()
 	idx.Projects["good"] = ProjectIndexEntry{Path: validRoot}
-	idx.Projects["ghost"] = ProjectIndexEntry{Path: filepath.Join(home, "projects", "ghost")} // no project.json
+	idx.Projects["ghost"] = ProjectIndexEntry{Path: filepath.Join(home, "projects", "ghost")} // no project.yaml
 	if err := SaveIndex(idx); err != nil {
 		test.Fatal(err)
 	}

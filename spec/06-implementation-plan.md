@@ -98,7 +98,7 @@ These underpin every slice and are built first.
 ## 3.2 State Store (`state/`)
 
 * project-local state under `<project>/.ai-platform/run/` (per-entity files);
-  global `config/projects.json` index of project name → path
+  global `config/projects.yaml` index of project name → path
 * **atomic writes**: temp file + `rename()`; never partial state
 * typed load/save for each schema (§12 of repo-layout); reject unknown fields
 * `ai state repair`: reconcile `run/` from filesystem + Microsandbox + git
@@ -111,7 +111,7 @@ These underpin every slice and are built first.
 ## 3.4 Runtime Abstraction (`runtime/`, `sandbox/`)
 
 * `runtime/` (service tier): detect docker/podman; verify rootless; write
-  `config/runtime.json`; `Runtime` interface so docker/podman are interchangeable
+  `config/runtime.yaml`; `Runtime` interface so docker/podman are interchangeable
   (Podman impl in S6)
 * `sandbox/` (workspaces): wrap the **Microsandbox Go SDK** (`msb` only as a
   fallback); verify the microVM runtime + host virtualization (Apple Silicon /
@@ -146,7 +146,7 @@ supports virtualization.
 
 Each service's config is **rendered** from the platform config into
 `config/<service>/`; real provider keys stay only in the LiteLLM gateway
-(keys-in-LiteLLM). Versions pinned in `config/versions.json`.
+(keys-in-LiteLLM). Versions pinned in `config/versions.yaml`.
 
 | Adapter | Integration | Run mode | First slice |
 |---|---|---|---|
@@ -181,7 +181,7 @@ refer to the CLI spec and architecture spec respectively.
   `ai state show` / `ai state repair`. Tests: AT §14.2.
 * **M2 — Runtime detect.** Docker detection + rootless verify (service tier) +
   Microsandbox runtime / host-virtualization verify (workspaces) →
-  `config/runtime.json`; fail (exit 4) if rootless or virtualization unavailable.
+  `config/runtime.yaml`; fail (exit 4) if rootless or virtualization unavailable.
   Tests: AT §11.1.
 * **M3 — `ai setup` + services.** Preflight (exit 3 on missing deps),
   init `~/.ai-platform/`, install/configure/start the container service tier
@@ -208,7 +208,7 @@ refer to the CLI spec and architecture spec respectively.
   2. Then, in the current directory (no git — VCS is out of scope), write
   `.ai-platform/` (Dockerfile = OS template + selected stack snippets + selected
   CLIs / config incl. `agent.tools`+`default_tool` / `profile.yaml` incl.
-  `stacks` / project.json / .gitignore) + index in `config/projects.json` +
+  `stacks` / project.yaml / .gitignore) + index in `config/projects.yaml` +
   workspace + mint the agent's scoped LiteLLM virtual key; `ai project delete`.
   Tests: AT §3.1 (incl. no-TTY + abort), §6.3 (CLI selection), §6.4 (stack
   selection), §3.3, §9.1, §9.2.

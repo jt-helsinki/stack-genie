@@ -60,7 +60,7 @@ State is split between a small **global index** and **project-local** state.
 Global (`~/.ai-platform/config/`):
 
 ```text id="h3"
-config/projects.json     # index: project name → absolute path (create/delete only)
+config/projects.yaml     # index: project name → absolute path (create/delete only)
 ```
 
 Project-local (`<project>/.ai-platform/`, see §2) holds everything specific to
@@ -69,7 +69,7 @@ runtime state. There is **no `~/.ai-platform/state/` directory**.
 
 Rules:
 
-* the global `projects.json` index is low-write (create/delete only), so no
+* the global `projects.yaml` index is low-write (create/delete only), so no
   write contention
 * per-project runtime state is sharded per entity under `<project>/.ai-platform/run/`
   (one file per workspace) — gitignored, machine-specific
@@ -77,7 +77,7 @@ Rules:
   then `rename()` over the target, so a crash mid-write can never produce a
   partial or corrupt state file
 * `ai state repair` rebuilds `run/` from the project + Microsandbox/git; discovery
-  uses `projects.json`
+  uses `projects.yaml`
 
 ---
 
@@ -195,9 +195,9 @@ Used for:
 
 ```text id="h17"
 config.yaml              # global platform config (§12.4)
-runtime.json             # detected runtime, platform-global (§12.5)
-versions.json            # pinned versions/digests of host services (§12.6)
-projects.json            # index: project name → path (§12.7)
+runtime.yaml             # detected runtime, platform-global (§12.5)
+versions.yaml            # pinned versions/digests of host services (§12.6)
+projects.yaml            # index: project name → path (§12.7)
 litellm/                 # rendered LiteLLM config (placeholders only; real keys live in the gateway)
 microsandbox/            # rendered Microsandbox workspace defaults (image, mounts, limits, network policy)
 ollama/                  # rendered Ollama config (required local model backend)
@@ -218,9 +218,9 @@ Rules:
 ```
 
 Pinned, checksum-verified host binaries (e.g. the Microsandbox
-`msb` runtime). Versions are tracked in `config/versions.json`. (Ollama is no
+`msb` runtime). Versions are tracked in `config/versions.yaml`. (Ollama is no
 longer a native binary — it runs as a container-tier service; see architecture
-§16 and `config/versions.json` §12.6.)
+§16 and `config/versions.yaml` §12.6.)
 
 ## 1.10 Overlays (Persistence)
 
@@ -283,7 +283,7 @@ the agent into this source tree — the platform does not manage them.
 Dockerfile           # tracked — environment (architecture §25)
 config.yaml          # tracked — project config (§12.4)
 profile.yaml         # tracked — project profile (language/toolchain)
-project.json         # tracked — { name, os, created } (§12.1)
+project.yaml         # tracked — { name, os, created } (§12.1)
 skills/caveman/      # tracked — platform-seeded Caveman skill (architecture §9)
 .gitignore           # ignores run/
 run/                 # gitignored — host-local runtime state
@@ -416,8 +416,8 @@ llm.log
 Per-project state lives in the project; the global index records where projects
 are:
 
-* `config/projects.json` (global) → `ai project create` / `delete` (index)
-* `<project>/.ai-platform/project.json` → `ai project create`
+* `config/projects.yaml` (global) → `ai project create` / `delete` (index)
+* `<project>/.ai-platform/project.yaml` → `ai project create`
 * `<project>/.ai-platform/run/workspaces/*.json` → `ai workspace`
 
 ---
@@ -437,7 +437,7 @@ are:
 * deterministic directory structure
 * no runtime-generated unknown paths
 * per-project state lives in the project (`<project>/.ai-platform/`); a global
-  `config/projects.json` index records project locations
+  `config/projects.yaml` index records project locations
 * all agent data namespaced per project
 
 ---
@@ -472,7 +472,7 @@ These schemas are normative. All examples use JSON for state files and YAML for
 config files. Unknown fields must be rejected. All timestamps are RFC 3339 UTC.
 `schema_version` is required on every state file so the CLI can migrate.
 
-## 12.1 `<project>/.ai-platform/project.json` (tracked)
+## 12.1 `<project>/.ai-platform/project.yaml` (tracked)
 
 ```json id="sc1"
 {
@@ -484,7 +484,7 @@ config files. Unknown fields must be rejected. All timestamps are RFC 3339 UTC.
 ```
 
 * tracked in git; the project's path is recorded in the global
-  `config/projects.json` index (§12.7), not here
+  `config/projects.yaml` index (§12.7), not here
 * the selected software stacks live in `profile.yaml` (§12.1a), not here
 
 ## 12.1a `<project>/.ai-platform/profile.yaml` (tracked)
@@ -531,7 +531,7 @@ multiple AI agents on a project is the in-workspace agent CLI's concern
 Same shape at every level of the hierarchy (§27 of the architecture spec);
 each level may set any subset and overrides the level below.
 
-The service-tier runtime is **auto-detected** (into `runtime.json`, §12.5), not a
+The service-tier runtime is **auto-detected** (into `runtime.yaml`, §12.5), not a
 config field. Git branches/worktrees/merges and multi-agent lifecycle are the
 in-workspace agent CLI's concern (arch §20–22), so there are no `git`/`agents`
 config blocks.
@@ -557,7 +557,7 @@ network:                   # workspace networking (arch §29.6); all fields mana
     - { guest: 3000, host: 3000 }
 ```
 
-## 12.5 `config/runtime.json` (platform-global, non-project)
+## 12.5 `config/runtime.yaml` (platform-global, non-project)
 
 ```json id="sc7"
 {
@@ -570,7 +570,7 @@ network:                   # workspace networking (arch §29.6); all fields mana
 }
 ```
 
-## 12.6 `config/versions.json` (pinned host-service versions)
+## 12.6 `config/versions.yaml` (pinned host-service versions)
 
 ```json id="sc9"
 {
@@ -591,7 +591,7 @@ network:                   # workspace networking (arch §29.6); all fields mana
 * `ai setup` verifies installed services match these pins;
   `--upgrade` updates them and re-reconciles
 
-## 12.7 `config/projects.json` (global projects index)
+## 12.7 `config/projects.yaml` (global projects index)
 
 ```json id="sc11"
 {

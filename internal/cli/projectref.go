@@ -9,7 +9,7 @@ import (
 )
 
 // currentProjectName returns the project that owns the current working directory,
-// found by walking up until a directory with .ai-platform/project.json is reached
+// found by walking up until a directory with .ai-platform/project.yaml is reached
 // (arch §3). found is false when the CWD is not inside any project — that is not
 // an error here, so callers can decide whether it is required.
 func currentProjectName() (name string, found bool, err error) {

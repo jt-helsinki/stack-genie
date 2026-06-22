@@ -1,4 +1,4 @@
-// Package versions manages config/versions.json — the pinned versions/digests of
+// Package versions manages config/versions.yaml — the pinned versions/digests of
 // the platform's host services and the Microsandbox runtime (repo-layout §12.6).
 // `ai setup` installs to these pins; `ai setup --upgrade` bumps them.
 package versions
@@ -8,28 +8,28 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/jt-helsinki/ideal-robot/internal/jsonfile"
+	"github.com/jt-helsinki/ideal-robot/internal/conffile"
 	"github.com/jt-helsinki/ideal-robot/internal/paths"
 )
 
-// SchemaVersion is stamped on config/versions.json.
+// SchemaVersion is stamped on config/versions.yaml.
 const SchemaVersion = 1
 
 // Service is a single pinned service entry. Container-tier services pin an
 // image+digest; native-tier pin a version+sha256.
 type Service struct {
-	Mode    string `json:"mode"` // container | native
-	Version string `json:"version,omitempty"`
-	SHA256  string `json:"sha256,omitempty"`
-	Image   string `json:"image,omitempty"`
-	Digest  string `json:"digest,omitempty"`
-	Enabled *bool  `json:"enabled,omitempty"`
+	Mode    string `json:"mode" yaml:"mode"` // container | native
+	Version string `json:"version,omitempty" yaml:"version,omitempty"`
+	SHA256  string `json:"sha256,omitempty" yaml:"sha256,omitempty"`
+	Image   string `json:"image,omitempty" yaml:"image,omitempty"`
+	Digest  string `json:"digest,omitempty" yaml:"digest,omitempty"`
+	Enabled *bool  `json:"enabled,omitempty" yaml:"enabled,omitempty"`
 }
 
-// File is config/versions.json.
+// File is config/versions.yaml.
 type File struct {
-	SchemaVersion int                `json:"schema_version"`
-	Services      map[string]Service `json:"services"`
+	SchemaVersion int                `json:"schema_version" yaml:"schema_version"`
+	Services      map[string]Service `json:"services" yaml:"services"`
 }
 
 // Default returns the built-in pins (repo-layout §12.6). Concrete digests are
@@ -60,16 +60,16 @@ func Default() *File {
 	}
 }
 
-// Path returns config/versions.json.
+// Path returns config/versions.yaml.
 func Path() (string, error) {
 	configDir, err := paths.ConfigDir()
 	if err != nil {
 		return "", err
 	}
-	return filepath.Join(configDir, "versions.json"), nil
+	return filepath.Join(configDir, "versions.yaml"), nil
 }
 
-// EnsureDefault writes the default pins if versions.json is absent. Returns true
+// EnsureDefault writes the default pins if versions.yaml is absent. Returns true
 // when it created the file. Idempotent.
 func EnsureDefault() (created bool, err error) {
 	path, err := Path()
@@ -81,30 +81,30 @@ func EnsureDefault() (created bool, err error) {
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return false, err
 	}
-	if err := jsonfile.WriteAtomic(path, Default()); err != nil {
+	if err := conffile.WriteAtomic(path, Default()); err != nil {
 		return false, err
 	}
 	return true, nil
 }
 
 // WriteDefault force-writes the built-in default pins, overwriting any existing
-// versions.json. Used by `ai setup --upgrade` to bump to this binary's pins.
+// versions.yaml. Used by `ai setup --upgrade` to bump to this binary's pins.
 func WriteDefault() error {
 	path, err := Path()
 	if err != nil {
 		return err
 	}
-	return jsonfile.WriteAtomic(path, Default())
+	return conffile.WriteAtomic(path, Default())
 }
 
-// Load reads config/versions.json, returning (nil, nil) if absent.
+// Load reads config/versions.yaml, returning (nil, nil) if absent.
 func Load() (*File, error) {
 	path, err := Path()
 	if err != nil {
 		return nil, err
 	}
 	var file File
-	if err := jsonfile.Read(path, &file); err != nil {
+	if err := conffile.Read(path, &file); err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			return nil, nil
 		}

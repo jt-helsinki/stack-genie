@@ -1,4 +1,4 @@
-package jsonfile_test
+package conffile_test
 
 import (
 	"errors"
@@ -7,19 +7,19 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/jt-helsinki/ideal-robot/internal/jsonfile"
+	"github.com/jt-helsinki/ideal-robot/internal/conffile"
 )
 
 type sampleRecord struct {
-	Name    string   `json:"name"`
-	Count   int      `json:"count"`
-	Enabled bool     `json:"enabled"`
-	Tags    []string `json:"tags"`
+	Name    string   `yaml:"name"`
+	Count   int      `yaml:"count"`
+	Enabled bool     `yaml:"enabled"`
+	Tags    []string `yaml:"tags"`
 }
 
 func TestWriteAtomicReadRoundTrip(t *testing.T) {
 	dir := t.TempDir()
-	path := filepath.Join(dir, "record.json")
+	path := filepath.Join(dir, "record.yaml")
 
 	want := sampleRecord{
 		Name:    "platform",
@@ -27,12 +27,12 @@ func TestWriteAtomicReadRoundTrip(t *testing.T) {
 		Enabled: true,
 		Tags:    []string{"alpha", "beta"},
 	}
-	if err := jsonfile.WriteAtomic(path, want); err != nil {
+	if err := conffile.WriteAtomic(path, want); err != nil {
 		t.Fatalf("WriteAtomic returned error: %v", err)
 	}
 
 	var got sampleRecord
-	if err := jsonfile.Read(path, &got); err != nil {
+	if err := conffile.Read(path, &got); err != nil {
 		t.Fatalf("Read returned error: %v", err)
 	}
 	if got.Name != want.Name || got.Count != want.Count || got.Enabled != want.Enabled {
@@ -48,11 +48,11 @@ func TestWriteAtomicReadRoundTrip(t *testing.T) {
 	}
 }
 
-func TestWriteAtomicProducesIndentedJSON(t *testing.T) {
+func TestWriteAtomicProducesYAML(t *testing.T) {
 	dir := t.TempDir()
-	path := filepath.Join(dir, "record.json")
+	path := filepath.Join(dir, "record.yaml")
 
-	if err := jsonfile.WriteAtomic(path, sampleRecord{Name: "indent", Count: 1}); err != nil {
+	if err := conffile.WriteAtomic(path, sampleRecord{Name: "yaml", Count: 1}); err != nil {
 		t.Fatalf("WriteAtomic returned error: %v", err)
 	}
 
@@ -61,19 +61,19 @@ func TestWriteAtomicProducesIndentedJSON(t *testing.T) {
 		t.Fatalf("ReadFile returned error: %v", err)
 	}
 	contents := string(raw)
-	if !strings.Contains(contents, "  \"name\": \"indent\"") {
-		t.Errorf("expected two-space indented JSON, got:\n%s", contents)
+	if !strings.Contains(contents, "name: yaml") {
+		t.Errorf("expected YAML key/value, got:\n%s", contents)
 	}
-	if !strings.HasSuffix(contents, "}\n") {
-		t.Errorf("expected trailing newline from encoder, got:\n%q", contents)
+	if strings.Contains(contents, "{") {
+		t.Errorf("expected block YAML, not flow/JSON, got:\n%s", contents)
 	}
 }
 
 func TestWriteAtomicLeavesNoTempFiles(t *testing.T) {
 	dir := t.TempDir()
-	path := filepath.Join(dir, "record.json")
+	path := filepath.Join(dir, "record.yaml")
 
-	if err := jsonfile.WriteAtomic(path, sampleRecord{Name: "atomic"}); err != nil {
+	if err := conffile.WriteAtomic(path, sampleRecord{Name: "atomic"}); err != nil {
 		t.Fatalf("WriteAtomic returned error: %v", err)
 	}
 
@@ -88,8 +88,8 @@ func TestWriteAtomicLeavesNoTempFiles(t *testing.T) {
 		}
 		t.Fatalf("expected exactly one file after write, got %d: %v", len(entries), names)
 	}
-	if entries[0].Name() != "record.json" {
-		t.Errorf("expected destination file record.json, got %q", entries[0].Name())
+	if entries[0].Name() != "record.yaml" {
+		t.Errorf("expected destination file record.yaml, got %q", entries[0].Name())
 	}
 	for _, entry := range entries {
 		if strings.HasPrefix(entry.Name(), ".tmp-") {
@@ -100,14 +100,14 @@ func TestWriteAtomicLeavesNoTempFiles(t *testing.T) {
 
 func TestWriteAtomicCreatesParentDirs(t *testing.T) {
 	dir := t.TempDir()
-	path := filepath.Join(dir, "nested", "deep", "record.json")
+	path := filepath.Join(dir, "nested", "deep", "record.yaml")
 
-	if err := jsonfile.WriteAtomic(path, sampleRecord{Name: "nested"}); err != nil {
+	if err := conffile.WriteAtomic(path, sampleRecord{Name: "nested"}); err != nil {
 		t.Fatalf("WriteAtomic returned error: %v", err)
 	}
 
 	var got sampleRecord
-	if err := jsonfile.Read(path, &got); err != nil {
+	if err := conffile.Read(path, &got); err != nil {
 		t.Fatalf("Read after nested write returned error: %v", err)
 	}
 	if got.Name != "nested" {
@@ -117,17 +117,17 @@ func TestWriteAtomicCreatesParentDirs(t *testing.T) {
 
 func TestWriteAtomicOverwritesExisting(t *testing.T) {
 	dir := t.TempDir()
-	path := filepath.Join(dir, "record.json")
+	path := filepath.Join(dir, "record.yaml")
 
-	if err := jsonfile.WriteAtomic(path, sampleRecord{Name: "first", Count: 1}); err != nil {
+	if err := conffile.WriteAtomic(path, sampleRecord{Name: "first", Count: 1}); err != nil {
 		t.Fatalf("first WriteAtomic returned error: %v", err)
 	}
-	if err := jsonfile.WriteAtomic(path, sampleRecord{Name: "second", Count: 2}); err != nil {
+	if err := conffile.WriteAtomic(path, sampleRecord{Name: "second", Count: 2}); err != nil {
 		t.Fatalf("second WriteAtomic returned error: %v", err)
 	}
 
 	var got sampleRecord
-	if err := jsonfile.Read(path, &got); err != nil {
+	if err := conffile.Read(path, &got); err != nil {
 		t.Fatalf("Read returned error: %v", err)
 	}
 	if got.Name != "second" || got.Count != 2 {
@@ -146,14 +146,14 @@ func TestWriteAtomicOverwritesExisting(t *testing.T) {
 
 func TestReadRejectsUnknownFields(t *testing.T) {
 	dir := t.TempDir()
-	path := filepath.Join(dir, "record.json")
+	path := filepath.Join(dir, "record.yaml")
 
-	if err := os.WriteFile(path, []byte(`{"name":"x","count":1,"surprise":true}`), 0o644); err != nil {
+	if err := os.WriteFile(path, []byte("name: x\ncount: 1\nsurprise: true\n"), 0o644); err != nil {
 		t.Fatalf("seed WriteFile returned error: %v", err)
 	}
 
 	var got sampleRecord
-	err := jsonfile.Read(path, &got)
+	err := conffile.Read(path, &got)
 	if err == nil {
 		t.Fatal("expected error for unknown field, got nil")
 	}
@@ -164,10 +164,10 @@ func TestReadRejectsUnknownFields(t *testing.T) {
 
 func TestReadMissingFileWrapsErrNotExist(t *testing.T) {
 	dir := t.TempDir()
-	path := filepath.Join(dir, "does-not-exist.json")
+	path := filepath.Join(dir, "does-not-exist.yaml")
 
 	var got sampleRecord
-	err := jsonfile.Read(path, &got)
+	err := conffile.Read(path, &got)
 	if err == nil {
 		t.Fatal("expected error for missing file, got nil")
 	}
@@ -176,18 +176,19 @@ func TestReadMissingFileWrapsErrNotExist(t *testing.T) {
 	}
 }
 
-func TestReadMalformedJSON(t *testing.T) {
+func TestReadMalformedYAML(t *testing.T) {
 	dir := t.TempDir()
-	path := filepath.Join(dir, "record.json")
+	path := filepath.Join(dir, "record.yaml")
 
-	if err := os.WriteFile(path, []byte(`{"name": "broken"`), 0o644); err != nil {
+	// Unbalanced flow mapping is not valid YAML.
+	if err := os.WriteFile(path, []byte("name: [broken\n"), 0o644); err != nil {
 		t.Fatalf("seed WriteFile returned error: %v", err)
 	}
 
 	var got sampleRecord
-	err := jsonfile.Read(path, &got)
+	err := conffile.Read(path, &got)
 	if err == nil {
-		t.Fatal("expected error for malformed JSON, got nil")
+		t.Fatal("expected error for malformed YAML, got nil")
 	}
 	// The error is wrapped with the path for context.
 	if !strings.Contains(err.Error(), path) {
@@ -197,10 +198,10 @@ func TestReadMalformedJSON(t *testing.T) {
 
 func TestWriteAtomicEncodeFailureReturnsError(t *testing.T) {
 	dir := t.TempDir()
-	path := filepath.Join(dir, "record.json")
+	path := filepath.Join(dir, "record.yaml")
 
-	// A channel value cannot be marshalled to JSON; the encoder must fail.
-	err := jsonfile.WriteAtomic(path, make(chan int))
+	// A channel value cannot be marshalled to YAML; the encoder must fail.
+	err := conffile.WriteAtomic(path, make(chan int))
 	if err == nil {
 		t.Fatal("expected error encoding an unsupported type, got nil")
 	}

@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/jt-helsinki/ideal-robot/internal/jsonfile"
+	"github.com/jt-helsinki/ideal-robot/internal/conffile"
 	"github.com/jt-helsinki/ideal-robot/internal/output"
 	"github.com/jt-helsinki/ideal-robot/internal/versions"
 )
@@ -97,9 +97,9 @@ func TestRunHappyPath(test *testing.T) {
 		test.Fatalf("report flags: %+v", report)
 	}
 	for _, path := range []string{
-		filepath.Join(home, ".ai-platform", "config", "runtime.json"),
+		filepath.Join(home, ".ai-platform", "config", "runtime.yaml"),
 		filepath.Join(home, ".ai-platform", "config", "config.yaml"),
-		filepath.Join(home, ".ai-platform", "config", "versions.json"),
+		filepath.Join(home, ".ai-platform", "config", "versions.yaml"),
 		filepath.Join(home, ".ai-platform", "logs"),
 	} {
 		if _, err := os.Stat(path); err != nil {
@@ -273,12 +273,12 @@ func TestRunUpgradeRepinsVersions(test *testing.T) {
 	test.Setenv("HOME", test.TempDir())
 	deps, _ := healthyDeps()
 
-	// First run creates versions.json; then corrupt a pin.
+	// First run creates versions.yaml; then corrupt a pin.
 	if _, err := Run(Options{}, deps); err != nil {
 		test.Fatal(err)
 	}
 	path, _ := versions.Path()
-	if err := jsonfile.WriteAtomic(path, &versions.File{SchemaVersion: 1, Services: map[string]versions.Service{"litellm": {Mode: "container", Image: "stale"}}}); err != nil {
+	if err := conffile.WriteAtomic(path, &versions.File{SchemaVersion: 1, Services: map[string]versions.Service{"litellm": {Mode: "container", Image: "stale"}}}); err != nil {
 		test.Fatal(err)
 	}
 
@@ -291,10 +291,10 @@ func TestRunUpgradeRepinsVersions(test *testing.T) {
 		test.Fatalf("load versions: %v", err)
 	}
 	if file.Services["litellm"].Image == "stale" {
-		test.Fatal("--upgrade should have re-pinned versions.json to defaults")
+		test.Fatal("--upgrade should have re-pinned versions.yaml to defaults")
 	}
 	if _, ok := file.Services["ollama"]; !ok {
-		test.Fatalf("upgraded versions.json missing default services: %+v", file.Services)
+		test.Fatalf("upgraded versions.yaml missing default services: %+v", file.Services)
 	}
 }
 

@@ -88,7 +88,7 @@ type Deps struct {
 // Options configure a setup run.
 type Options struct {
 	ProviderConfig string // --provider-config: points LiteLLM at a provider config
-	Upgrade        bool   // --upgrade: re-pin versions.json to this binary's defaults
+	Upgrade        bool   // --upgrade: re-pin versions.yaml to this binary's defaults
 }
 
 // controlActions are the valid `ai services <action>` verbs.
@@ -147,7 +147,7 @@ func (report *Report) Human() string {
 		fmt.Fprintf(&builder, "Runtime:  %s (rootless=%t) · microVM %s (%s)\n",
 			runtimeInfo.Detected, runtimeInfo.Rootless, runtimeInfo.Microsandbox.Virtualization, available)
 	}
-	fmt.Fprintf(&builder, "State:    config.yaml %s · versions.json %s\n",
+	fmt.Fprintf(&builder, "State:    config.yaml %s · versions.yaml %s\n",
 		presence(report.ConfigCreated), presence(report.VersionsCreated))
 	builder.WriteString("Services:\n")
 	for _, service := range report.Services {
@@ -291,7 +291,7 @@ func Run(options Options, deps Deps) (*Report, error) {
 
 	// 3. Persist the detected runtime.
 	if err := runtime.Persist(detected); err != nil {
-		return nil, output.Errorf(output.ExitRuntimeFailure, "write runtime.json: %s", err)
+		return nil, output.Errorf(output.ExitRuntimeFailure, "write runtime.yaml: %s", err)
 	}
 
 	// 4. Defaults: global config + pinned versions (idempotent).
@@ -299,16 +299,16 @@ func Run(options Options, deps Deps) (*Report, error) {
 	if err != nil {
 		return nil, output.Errorf(output.ExitRuntimeFailure, "write config.yaml: %s", err)
 	}
-	// --upgrade re-pins versions.json to this binary's defaults (overwrite);
+	// --upgrade re-pins versions.yaml to this binary's defaults (overwrite);
 	// otherwise the pins are written only when absent.
 	var versionsCreated bool
 	if options.Upgrade {
 		if err := versions.WriteDefault(); err != nil {
-			return nil, output.Errorf(output.ExitRuntimeFailure, "upgrade versions.json: %s", err)
+			return nil, output.Errorf(output.ExitRuntimeFailure, "upgrade versions.yaml: %s", err)
 		}
 		versionsCreated = true
 	} else if versionsCreated, err = versions.EnsureDefault(); err != nil {
-		return nil, output.Errorf(output.ExitRuntimeFailure, "write versions.json: %s", err)
+		return nil, output.Errorf(output.ExitRuntimeFailure, "write versions.yaml: %s", err)
 	}
 
 	// 5. Reconcile host services to the desired state.
@@ -330,13 +330,13 @@ func Run(options Options, deps Deps) (*Report, error) {
 }
 
 // ServicesStatus backs `ai services status`: the workspace runtime (from the
-// persisted runtime.json) plus each host service's current health.
+// persisted runtime.yaml) plus each host service's current health.
 func ServicesStatus(deps Deps) ([]ServiceStatus, error) {
 	statuses := []ServiceStatus{}
 
 	detected, err := runtime.Load()
 	if err != nil {
-		return nil, output.Errorf(output.ExitRuntimeFailure, "load runtime.json: %s", err)
+		return nil, output.Errorf(output.ExitRuntimeFailure, "load runtime.yaml: %s", err)
 	}
 	if detected != nil {
 		state := "unavailable"

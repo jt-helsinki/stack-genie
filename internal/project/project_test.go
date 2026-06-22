@@ -49,7 +49,7 @@ func TestScaffoldWritesArtifactsAndIndex(test *testing.T) {
 		}
 	}
 
-	for _, file := range []string{"config.yaml", "profile.yaml", "project.json", ".gitignore"} {
+	for _, file := range []string{"config.yaml", "profile.yaml", "project.yaml", ".gitignore"} {
 		if _, err := os.Stat(filepath.Join(root, ".ai-platform", file)); err != nil {
 			test.Errorf("missing %s: %v", file, err)
 		}
@@ -86,8 +86,8 @@ func TestScaffoldAtExplicitRoot(test *testing.T) {
 	if got != root {
 		test.Fatalf("Scaffold root = %q, want %q", got, root)
 	}
-	if _, err := os.Stat(filepath.Join(root, ".ai-platform", "project.json")); err != nil {
-		test.Errorf("project.json not written at explicit root: %v", err)
+	if _, err := os.Stat(filepath.Join(root, ".ai-platform", "project.yaml")); err != nil {
+		test.Errorf("project.yaml not written at explicit root: %v", err)
 	}
 	// The index records the explicit path, so downstream resolves it by name.
 	registered, ok, err := Path(spec.Name)

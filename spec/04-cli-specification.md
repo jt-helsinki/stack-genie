@@ -33,7 +33,7 @@ All commands must be:
 
 * deterministic
 * idempotent where possible
-* state-aware: global index in `~/.ai-platform/config/projects.json`,
+* state-aware: global index in `~/.ai-platform/config/projects.yaml`,
   per-project state in `<project>/.ai-platform/`
 
 ---
@@ -189,7 +189,7 @@ virtualization, git) do fail fast with exit `3`.
 Idempotent:
 
 * safe to re-run (reconciles desired vs. actual state)
-* `--upgrade` bumps pinned versions in `config/versions.json` and re-reconciles
+* `--upgrade` bumps pinned versions in `config/versions.yaml` and re-reconciles
 
 ---
 
@@ -272,7 +272,7 @@ flag**: the OS is always picked in the wizard.
 
 The project lives wherever you run the command — there is no fixed projects
 directory. The chosen path is recorded in the global index
-(`config/projects.json`), and every later command resolves the project **by
+(`config/projects.yaml`), and every later command resolves the project **by
 name** through that index. With no name given, the name defaults to the current
 directory's basename.
 
@@ -342,11 +342,11 @@ Behavior (after **Confirm**):
 * **(Slice 2+)** installs the Caveman skill into
   `<project>/.ai-platform/skills/caveman/` (§9); in Slice 1 no context-optimization
   skill is seeded
-* writes `project.json`, `config.yaml` (including `agent.tools` and
+* writes `project.yaml`, `config.yaml` (including `agent.tools` and
   `agent.default_tool`), `profile.yaml`, and a `.gitignore` that ignores `run/`
 * builds the workspace OCI image from `.ai-platform/Dockerfile` and creates the
   Microsandbox workspace microVM
-* records the project in the global index (`config/projects.json`)
+* records the project in the global index (`config/projects.yaml`)
 
 ---
 
@@ -382,10 +382,10 @@ Behavior:
 
 * destroys the project workspace (Microsandbox `rm`)
 * removes agent worktrees and **all per-workspace overlays** for the project
-* removes the project's entry from the global `config/projects.json` index
+* removes the project's entry from the global `config/projects.yaml` index
 * **without `--purge`** (default): preserves host source, including the tracked
   `.ai-platform/` files (`Dockerfile`, `config.yaml`, `profile.yaml`,
-  `project.json`); **clears the gitignored `.ai-platform/run/`** (stale
+  `project.yaml`); **clears the gitignored `.ai-platform/run/`** (stale
   workspace/agent runtime handles) so no orphaned state remains
 * **with `--purge`**: additionally removes `~/projects/<project>` entirely
 * destructive: requires interactive confirmation, or `--yes`; refuses and exits
@@ -920,7 +920,7 @@ Project-scoped commands (`workspace *`, `context *`, `project delete`,
 1. an explicit project name given as a positional argument;
 2. the `--project <name>` flag;
 3. otherwise the project that owns the **current working directory**, found by
-   walking up until a directory containing `.ai-platform/project.json` is reached
+   walking up until a directory containing `.ai-platform/project.yaml` is reached
    (so it works from any subfolder).
 
 When none resolve — no name, no flag, and the CWD is not inside a project — the

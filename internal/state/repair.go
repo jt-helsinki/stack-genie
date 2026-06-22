@@ -69,7 +69,7 @@ func Repair() (*RepairReport, error) {
 
 	changed := rep.IndexCreated
 	for name, entry := range idx.Projects {
-		if !fileExists(filepath.Join(entry.Path, ".ai-platform", "project.json")) {
+		if !fileExists(filepath.Join(entry.Path, ".ai-platform", "project.yaml")) {
 			delete(idx.Projects, name)
 			rep.RemovedProjects = append(rep.RemovedProjects, name)
 			changed = true

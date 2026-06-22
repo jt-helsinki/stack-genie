@@ -8,13 +8,14 @@ import (
 	"path/filepath"
 	"sort"
 
-	"github.com/jt-helsinki/ideal-robot/internal/jsonfile"
+	"github.com/jt-helsinki/ideal-robot/internal/conffile"
 	"github.com/jt-helsinki/ideal-robot/internal/paths"
 )
 
-// writeJSONAtomic and readJSON delegate to the shared jsonfile package.
-func writeJSONAtomic(path string, value any) error { return jsonfile.WriteAtomic(path, value) }
-func readJSON(path string, value any) error        { return jsonfile.Read(path, value) }
+// writeState and readState delegate to the shared conffile package (atomic YAML
+// writes, strict reads that reject unknown fields).
+func writeState(path string, value any) error { return conffile.WriteAtomic(path, value) }
+func readState(path string, value any) error  { return conffile.Read(path, value) }
 
 func checkVersion(got int, path string) error {
 	if got != SchemaVersion {
@@ -25,13 +26,13 @@ func checkVersion(got int, path string) error {
 
 // --- projects index (global) ------------------------------------------------
 
-// IndexPath returns config/projects.json.
+// IndexPath returns config/projects.yaml.
 func IndexPath() (string, error) {
 	configDir, err := paths.ConfigDir()
 	if err != nil {
 		return "", err
 	}
-	return filepath.Join(configDir, "projects.json"), nil
+	return filepath.Join(configDir, "projects.yaml"), nil
 }
 
 // LoadIndex reads the global projects index, returning an empty index if the
@@ -42,7 +43,7 @@ func LoadIndex() (*ProjectsIndex, error) {
 		return nil, err
 	}
 	var index ProjectsIndex
-	if err := readJSON(indexPath, &index); err != nil {
+	if err := readState(indexPath, &index); err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
 			return NewProjectsIndex(), nil
 		}
@@ -66,17 +67,17 @@ func SaveIndex(index *ProjectsIndex) error {
 	if index.SchemaVersion == 0 {
 		index.SchemaVersion = SchemaVersion
 	}
-	return writeJSONAtomic(indexPath, index)
+	return writeState(indexPath, index)
 }
 
 // --- project discovery ------------------------------------------------------
 
 // FindProjectRoot walks up from start looking for a directory that contains
-// .ai-platform/project.json, returning that directory.
+// .ai-platform/project.yaml, returning that directory.
 func FindProjectRoot(start string) (string, bool) {
 	dir := start
 	for {
-		if fileExists(filepath.Join(dir, ".ai-platform", "project.json")) {
+		if fileExists(filepath.Join(dir, ".ai-platform", "project.yaml")) {
 			return dir, true
 		}
 		parent := filepath.Dir(dir)
@@ -108,7 +109,7 @@ func OpenStore(root string) *Store {
 // Root returns the project root directory.
 func (store *Store) Root() string { return store.root }
 
-func (store *Store) projectFile() string   { return filepath.Join(store.platform, "project.json") }
+func (store *Store) projectFile() string   { return filepath.Join(store.platform, "project.yaml") }
 func (store *Store) runDir() string        { return filepath.Join(store.platform, "run") }
 func (store *Store) workspacesDir() string { return filepath.Join(store.runDir(), "workspaces") }
 
@@ -117,10 +118,10 @@ func (store *Store) EnsureRunDirs() error {
 	return os.MkdirAll(store.workspacesDir(), 0o755)
 }
 
-// LoadProject reads project.json (tracked, §12.1).
+// LoadProject reads project.yaml (tracked, §12.1).
 func (store *Store) LoadProject() (*Project, error) {
 	var project Project
-	if err := readJSON(store.projectFile(), &project); err != nil {
+	if err := readState(store.projectFile(), &project); err != nil {
 		return nil, err
 	}
 	if err := checkVersion(project.SchemaVersion, store.projectFile()); err != nil {
@@ -129,28 +130,28 @@ func (store *Store) LoadProject() (*Project, error) {
 	return &project, nil
 }
 
-// SaveProject atomically writes project.json.
+// SaveProject atomically writes project.yaml.
 func (store *Store) SaveProject(project *Project) error {
 	if project.SchemaVersion == 0 {
 		project.SchemaVersion = SchemaVersion
 	}
-	return writeJSONAtomic(store.projectFile(), project)
+	return writeState(store.projectFile(), project)
 }
 
-// SaveWorkspace atomically writes run/workspaces/<id>.json.
+// SaveWorkspace atomically writes run/workspaces/<id>.yaml.
 func (store *Store) SaveWorkspace(workspace *Workspace) error {
 	if workspace.SchemaVersion == 0 {
 		workspace.SchemaVersion = SchemaVersion
 	}
-	return writeJSONAtomic(filepath.Join(store.workspacesDir(), workspace.ID+".json"), workspace)
+	return writeState(filepath.Join(store.workspacesDir(), workspace.ID+".yaml"), workspace)
 }
 
 // ListWorkspaces returns all workspace handles (empty if none).
 func (store *Store) ListWorkspaces() ([]Workspace, error) {
 	var workspaces []Workspace
-	err := eachJSON(store.workspacesDir(), func(path string) error {
+	err := eachWorkspaceFile(store.workspacesDir(), func(path string) error {
 		var workspace Workspace
-		if err := readJSON(path, &workspace); err != nil {
+		if err := readState(path, &workspace); err != nil {
 			return err
 		}
 		if err := checkVersion(workspace.SchemaVersion, path); err != nil {
@@ -162,9 +163,9 @@ func (store *Store) ListWorkspaces() ([]Workspace, error) {
 	return workspaces, err
 }
 
-// eachJSON calls visit for every *.json file in dir, sorted by name. A missing
-// dir is treated as empty.
-func eachJSON(dir string, visit func(path string) error) error {
+// eachWorkspaceFile calls visit for every *.yaml file in dir, sorted by name. A
+// missing dir is treated as empty.
+func eachWorkspaceFile(dir string, visit func(path string) error) error {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
@@ -174,7 +175,7 @@ func eachJSON(dir string, visit func(path string) error) error {
 	}
 	names := make([]string, 0, len(entries))
 	for _, entry := range entries {
-		if !entry.IsDir() && filepath.Ext(entry.Name()) == ".json" {
+		if !entry.IsDir() && filepath.Ext(entry.Name()) == ".yaml" {
 			names = append(names, entry.Name())
 		}
 	}

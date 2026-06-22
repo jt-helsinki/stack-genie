@@ -2,7 +2,7 @@
 // `ai project create|delete|list` (CLI §3). Create's interactive wizard lives in
 // the CLI layer; this package owns the deterministic work: validate the choices,
 // write the project's tracked .ai-platform/ files (Dockerfile via envimage,
-// config.yaml, profile.yaml, project.json, .gitignore) and the global index.
+// config.yaml, profile.yaml, project.yaml, .gitignore) and the global index.
 package project
 
 import (
@@ -91,7 +91,7 @@ func EnsureCreatable(name, root string) error {
 	if _, exists := index.Projects[name]; exists {
 		return fmt.Errorf("%w: %q", ErrAlreadyExists, name)
 	}
-	if _, err := os.Stat(filepath.Join(root, ".ai-platform", "project.json")); err == nil {
+	if _, err := os.Stat(filepath.Join(root, ".ai-platform", "project.yaml")); err == nil {
 		return fmt.Errorf("%w: %s is already a project", ErrAlreadyExists, root)
 	}
 	return nil
@@ -146,7 +146,7 @@ func Scaffold(spec Spec, createdAt string) (string, error) {
 		return "", err
 	}
 
-	// project.json (tracked).
+	// project.yaml (tracked).
 	if err := state.OpenStore(root).SaveProject(&state.Project{Name: spec.Name, OS: spec.OS, Created: createdAt}); err != nil {
 		return "", err
 	}
@@ -183,7 +183,7 @@ type Entry struct {
 }
 
 // List returns the registered projects (from the global index, enriched with the
-// OS from each project.json when readable).
+// OS from each project.yaml when readable).
 func List() ([]Entry, error) {
 	index, err := state.LoadIndex()
 	if err != nil {

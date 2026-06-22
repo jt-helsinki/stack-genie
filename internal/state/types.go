@@ -7,13 +7,13 @@ package state
 // SchemaVersion is the current version stamped on every state file (§12).
 const SchemaVersion = 1
 
-// Project is <project>/.ai-platform/project.json (tracked, §12.1). The selected
+// Project is <project>/.ai-platform/project.yaml (tracked, §12.1). The selected
 // software stacks live in profile.yaml (§12.1a), not here.
 type Project struct {
-	SchemaVersion int    `json:"schema_version"`
-	Name          string `json:"name"`
-	OS            string `json:"os"`
-	Created       string `json:"created"`
+	SchemaVersion int    `yaml:"schema_version"`
+	Name          string `yaml:"name"`
+	OS            string `yaml:"os"`
+	Created       string `yaml:"created"`
 }
 
 // WorkspaceStatus is the lifecycle state of a workspace (§12.2, arch §7).
@@ -27,28 +27,30 @@ const (
 	StatusDestroyed WorkspaceStatus = "destroyed"
 )
 
-// Workspace is run/workspaces/<id>.json (gitignored, §12.2). There is one
+// Workspace is run/workspaces/<id>.yaml (gitignored, §12.2). There is one
 // workspace per project; multi-agent work happens inside it and is the
-// in-workspace agent CLI's concern, not the platform's.
+// in-workspace agent CLI's concern, not the platform's. It carries both yaml and
+// json tags: yaml for the on-disk handle, json for the --json output envelope
+// (`ai workspace list` emits it directly).
 type Workspace struct {
-	SchemaVersion  int             `json:"schema_version"`
-	ID             string          `json:"id"`
-	Project        string          `json:"project"`
-	MicrosandboxID string          `json:"microsandbox_id"`
-	Status         WorkspaceStatus `json:"status"`
-	Created        string          `json:"created"`
-	LastStarted    string          `json:"last_started"`
+	SchemaVersion  int             `json:"schema_version" yaml:"schema_version"`
+	ID             string          `json:"id" yaml:"id"`
+	Project        string          `json:"project" yaml:"project"`
+	MicrosandboxID string          `json:"microsandbox_id" yaml:"microsandbox_id"`
+	Status         WorkspaceStatus `json:"status" yaml:"status"`
+	Created        string          `json:"created" yaml:"created"`
+	LastStarted    string          `json:"last_started" yaml:"last_started"`
 }
 
-// ProjectsIndex is config/projects.json (global, §12.7): name → path.
+// ProjectsIndex is config/projects.yaml (global, §12.7): name → path.
 type ProjectsIndex struct {
-	SchemaVersion int                          `json:"schema_version"`
-	Projects      map[string]ProjectIndexEntry `json:"projects"`
+	SchemaVersion int                          `yaml:"schema_version"`
+	Projects      map[string]ProjectIndexEntry `yaml:"projects"`
 }
 
 // ProjectIndexEntry maps a project to its absolute path on this host.
 type ProjectIndexEntry struct {
-	Path string `json:"path"`
+	Path string `yaml:"path"`
 }
 
 // NewProjectsIndex returns an empty, schema-stamped index.

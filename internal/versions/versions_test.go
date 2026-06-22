@@ -5,7 +5,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/jt-helsinki/ideal-robot/internal/jsonfile"
+	"github.com/jt-helsinki/ideal-robot/internal/conffile"
 	"github.com/jt-helsinki/ideal-robot/internal/versions"
 )
 
@@ -95,7 +95,7 @@ func TestPathUnderRedirectedHome(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Path() error: %v", err)
 	}
-	want := filepath.Join(home, ".ai-platform", "config", "versions.json")
+	want := filepath.Join(home, ".ai-platform", "config", "versions.yaml")
 	if path != want {
 		t.Errorf("Path() = %q, want %q", path, want)
 	}
@@ -118,7 +118,7 @@ func TestEnsureDefaultCreatesThenIdempotent(t *testing.T) {
 		t.Error("first EnsureDefault() created = false, want true")
 	}
 	if _, statErr := os.Stat(path); statErr != nil {
-		t.Fatalf("versions.json not created: %v", statErr)
+		t.Fatalf("versions.yaml not created: %v", statErr)
 	}
 
 	// Mutate the on-disk file so we can prove a second call does NOT overwrite it.
@@ -126,7 +126,7 @@ func TestEnsureDefaultCreatesThenIdempotent(t *testing.T) {
 		SchemaVersion: 99,
 		Services:      map[string]versions.Service{"sentinel": {Mode: "native", Version: "keep", SHA256: "keep"}},
 	}
-	if writeErr := jsonfile.WriteAtomic(path, sentinel); writeErr != nil {
+	if writeErr := conffile.WriteAtomic(path, sentinel); writeErr != nil {
 		t.Fatalf("seeding sentinel: %v", writeErr)
 	}
 
@@ -197,7 +197,7 @@ func TestWriteDefaultOverwritesExisting(t *testing.T) {
 		SchemaVersion: 0,
 		Services:      map[string]versions.Service{"stale": {Mode: "container", Image: "old", Digest: "old"}},
 	}
-	if writeErr := jsonfile.WriteAtomic(path, stale); writeErr != nil {
+	if writeErr := conffile.WriteAtomic(path, stale); writeErr != nil {
 		t.Fatalf("seeding stale file: %v", writeErr)
 	}
 

@@ -234,10 +234,10 @@ below).
 
 State is split between **global** and **project-local**:
 
-* **global** (`~/.ai-platform/config/`): detected runtime (`runtime.json`),
-  pinned service versions (`versions.json`), global config (`config.yaml`),
+* **global** (`~/.ai-platform/config/`): detected runtime (`runtime.yaml`),
+  pinned service versions (`versions.yaml`), global config (`config.yaml`),
   rendered host-service configs, and a small **projects index**
-  (`projects.json`: maps project name → path; written only on create/delete)
+  (`projects.yaml`: maps project name → path; written only on create/delete)
 * **project-local** (`<project>/.ai-platform/`): everything specific to one
   project, stored *in the project* so it travels with the repo and can be
   git-tracked or ignored:
@@ -247,7 +247,7 @@ State is split between **global** and **project-local**:
 ├── Dockerfile        # tracked — defines the environment (§25)
 ├── config.yaml       # tracked — project config
 ├── profile.yaml      # tracked — project profile
-├── project.json      # tracked — { name, os, created }
+├── project.yaml      # tracked — { name, os, created }
 ├── skills/caveman/   # tracked — platform-seeded Caveman skill (§9)
 ├── .gitignore        # ignores run/
 └── run/              # gitignored — host-local runtime state
@@ -257,7 +257,7 @@ State is split between **global** and **project-local**:
 Rules:
 
 * **tracked** files (`Dockerfile`, `config.yaml`, `profile.yaml`,
-  `project.json`, `skills/caveman/`) are the environment + config definition —
+  `project.yaml`, `skills/caveman/`) are the environment + config definition —
   committable so the project is reproducible from git
 * **`run/`** holds host-local runtime handles (Microsandbox sandbox ids, status)
   and is **gitignored** — machine-specific, never committed
@@ -266,7 +266,7 @@ Rules:
 * **all state writes are atomic**: write to a temp file in the same directory,
   then `rename()` over the target — a crash mid-write never corrupts state
 * `ai state repair` reconstructs `run/` by reading the project + Microsandbox/git;
-  project discovery uses the global `projects.json` index
+  project discovery uses the global `projects.yaml` index
 
 Large host-local artifacts (the per-workspace **overlays**, §26) stay under
 `~/.ai-platform/overlays/` — they are not git material and do not belong in the
@@ -325,7 +325,7 @@ supports virtualization (§6).
 The platform `config.yaml` (§27) is the single source of truth. The CLI
 **renders** each service's native config from it and reconciles desired vs.
 actual state; `ai setup` means "make reality match config" and is safe
-to re-run. Pinned versions/digests live in `config/versions.json`. Rendered
+to re-run. Pinned versions/digests live in `config/versions.yaml`. Rendered
 service configs live under `config/<service>/`.
 
 ### Install + Configure Summary
@@ -542,7 +542,7 @@ Cleanup depends on whether the removal is recoverable:
   is fully recoverable with `ai workspace start`, which rebuilds from
   `.ai-platform/Dockerfile` and re-mounts the same overlay. (Non-destructive.)
 * **`ai project delete`** is permanent for the project: delete its workspace and
-  **its overlay**, remove the project's `projects.json` index entry, and clear
+  **its overlay**, remove the project's `projects.yaml` index entry, and clear
   `<project>/.ai-platform/run/`. Host source is preserved unless `--purge` is
   given.
 
@@ -1114,7 +1114,7 @@ Workspace location:
   Dockerfile         # tracked — environment (§25)
   config.yaml        # tracked
   profile.yaml       # tracked
-  project.json       # tracked — { name, os, created }
+  project.yaml       # tracked — { name, os, created }
   skills/caveman/    # tracked — platform-seeded Caveman skill (§9)
   .gitignore         # ignores run/
   run/               # gitignored — workspace/agent runtime state
@@ -1406,7 +1406,7 @@ Never hardcode `host.docker.internal`. The workspace microVM reaches the host
 through the **gateway address of Microsandbox's host-side userspace network
 stack** — the slirp/gvproxy-family gateway through which every guest packet is
 already routed for DNS interception and policy (§29.1). The platform resolves
-that gateway once, persists it in `config/runtime.json` as `host_gateway`
+that gateway once, persists it in `config/runtime.yaml` as `host_gateway`
 (`internal/runtime`), and injects it — with each service port — into the
 workspace environment as `AI_PLATFORM_HOST` at start (§7, Ports).
 

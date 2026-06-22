@@ -36,7 +36,7 @@ func desiredServices() []serviceSpec {
 	}
 }
 
-// litellm container naming + image (digest pinned in versions.json during
+// litellm container naming + image (digest pinned in versions.yaml during
 // release; until then the documented rolling tag).
 const (
 	litellmContainer = "aip-litellm"
