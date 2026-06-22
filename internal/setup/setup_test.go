@@ -342,6 +342,7 @@ func TestLiteLLMRunArgs(test *testing.T) {
 		"-e", "DATABASE_URL=postgresql://litellm@aip-litellm-db:5432/litellm",
 		"-e", "PRESIDIO_ANALYZER_API_BASE=http://aip-presidio-analyzer:3000",
 		"-e", "PRESIDIO_ANONYMIZER_API_BASE=http://aip-presidio-anonymizer:3000",
+		"-e", "LLM_GUARD_API_BASE=http://aip-llm-guard:8000",
 		"ghcr.io/berriai/litellm:main-latest",
 		"--config", "/app/config.yaml", "--port", "4000",
 	}
@@ -515,9 +516,143 @@ func TestReportHumanShowsAddressAndConsole(test *testing.T) {
 func TestDesiredServicesAreRequired(test *testing.T) {
 	// Ollama, Presidio, LiteLLM, and Headroom are all required host services
 	// (Ollama is the local model backend LiteLLM routes to, arch §14/§16).
-	for _, name := range []string{"ollama", "presidio", "litellm", "headroom", "open-webui"} {
+	for _, name := range []string{"ollama", "presidio", "llm-guard", "litellm", "headroom", "proxy", "open-webui"} {
 		if !hasService(desiredServices(), name) {
 			test.Errorf("required service %q missing from desiredServices: %+v", name, desiredServices())
 		}
+	}
+}
+
+// serviceIndex returns the position of a service in desiredServices (or -1).
+func serviceIndex(specs []serviceSpec, name string) int {
+	for index, spec := range specs {
+		if spec.Name == name {
+			return index
+		}
+	}
+	return -1
+}
+
+// TestDesiredServicesOrder pins the reconcile order that the guardrail/gateway
+// wiring depends on: LLM Guard starts AFTER presidio and BEFORE litellm (LiteLLM's
+// callback points at it), and the nginx proxy starts AFTER headroom (it forwards
+// to Headroom).
+func TestDesiredServicesOrder(test *testing.T) {
+	specs := desiredServices()
+	presidio := serviceIndex(specs, "presidio")
+	llmGuard := serviceIndex(specs, "llm-guard")
+	litellm := serviceIndex(specs, "litellm")
+	headroom := serviceIndex(specs, "headroom")
+	proxy := serviceIndex(specs, "proxy")
+	if presidio >= llmGuard || llmGuard >= litellm {
+		test.Errorf("llm-guard must be after presidio and before litellm: presidio=%d llm-guard=%d litellm=%d", presidio, llmGuard, litellm)
+	}
+	if headroom >= proxy {
+		test.Errorf("proxy must be after headroom: headroom=%d proxy=%d", headroom, proxy)
+	}
+}
+
+// recordingProber records every Run invocation's args so config-render + run-arg
+// shapes can be asserted (mirrors how ensureDNS is exercised). Containers are
+// reported as not running so the ensure* paths render config + run.
+type recordingProber struct{ calls [][]string }
+
+func (prober *recordingProber) LookPath(file string) (string, error) { return "/usr/bin/" + file, nil }
+func (prober *recordingProber) Run(name string, args ...string) ([]byte, error) {
+	prober.calls = append(prober.calls, append([]string{name}, args...))
+	return nil, nil // "ps" returns empty → containerRunning is false
+}
+func (prober *recordingProber) Exists(string) bool { return false }
+
+// runArgsFor returns the argv of the recorded `<runtime> run` call (the launch),
+// or nil if none was recorded.
+func runArgsFor(prober *recordingProber) []string {
+	for _, call := range prober.calls {
+		if len(call) >= 2 && call[1] == "run" {
+			return call
+		}
+	}
+	return nil
+}
+
+func TestEnsureLLMGuardRendersSecurityScannersOnly(test *testing.T) {
+	home := test.TempDir()
+	test.Setenv("HOME", home)
+	prober := &recordingProber{}
+	if err := ensureLLMGuard(prober, "docker"); err != nil {
+		test.Fatal(err)
+	}
+	scannersPath := filepath.Join(home, ".ai-platform", "config", "llm-guard", "scanners.yml")
+	content, err := os.ReadFile(scannersPath)
+	if err != nil {
+		test.Fatalf("scanners.yml not written: %v", err)
+	}
+	rendered := string(content)
+	for _, want := range []string{"input_scanners:", "output_scanners:", "PromptInjection", "Secrets", "Regex", "Bearer "} {
+		if !strings.Contains(rendered, want) {
+			test.Errorf("scanners.yml missing %q:\n%s", want, rendered)
+		}
+	}
+	// Security-only: the prompt-corrupting scanners must NOT be present.
+	for _, forbidden := range []string{"Anonymize", "Toxicity", "BanTopics", "Sentiment", "Language"} {
+		if strings.Contains(rendered, forbidden) {
+			test.Errorf("scanners.yml must not enable %q (corrupts coding prompts):\n%s", forbidden, rendered)
+		}
+	}
+	// The run mounts the rendered scanners and uses the internal-only image (no -p).
+	launch := strings.Join(runArgsFor(prober), " ")
+	if !strings.Contains(launch, scannersPath+":/home/user/app/config/scanners.yml") {
+		test.Errorf("llm-guard run did not bind-mount scanners.yml: %s", launch)
+	}
+	if !strings.Contains(launch, llmGuardImage) {
+		test.Errorf("llm-guard run did not use %s: %s", llmGuardImage, launch)
+	}
+	if strings.Contains(launch, "-p ") {
+		test.Errorf("llm-guard must be internal-only (no host publish): %s", launch)
+	}
+}
+
+func TestEnsureProxyRendersGatewayConfig(test *testing.T) {
+	home := test.TempDir()
+	test.Setenv("HOME", home)
+	prober := &recordingProber{}
+	if err := ensureProxy(prober, "docker", "127.0.0.1"); err != nil {
+		test.Fatal(err)
+	}
+	confPath := filepath.Join(home, ".ai-platform", "config", "proxy", "nginx.conf")
+	content, err := os.ReadFile(confPath)
+	if err != nil {
+		test.Fatalf("nginx.conf not written: %v", err)
+	}
+	rendered := string(content)
+	if !strings.Contains(rendered, "proxy_pass http://aip-headroom:8787;") {
+		test.Errorf("nginx.conf must reverse-proxy to Headroom:\n%s", rendered)
+	}
+	if !strings.Contains(rendered, "proxy_buffering off;") {
+		test.Errorf("nginx.conf must disable buffering for SSE streaming:\n%s", rendered)
+	}
+	// nginx takes over host :18787 and forwards to Headroom on :80 internally.
+	launch := strings.Join(runArgsFor(prober), " ")
+	if !strings.Contains(launch, "-p 127.0.0.1:18787:80") {
+		test.Errorf("proxy must publish the gateway port 18787: %s", launch)
+	}
+	if !strings.Contains(launch, confPath+":/etc/nginx/nginx.conf:ro") {
+		test.Errorf("proxy did not bind-mount nginx.conf: %s", launch)
+	}
+}
+
+// TestEnsureHeadroomIsInternalOnly: Headroom no longer publishes the gateway port
+// 18787 — nginx (aip-proxy) owns it now. The launch must carry no host publish.
+func TestEnsureHeadroomIsInternalOnly(test *testing.T) {
+	prober := &recordingProber{}
+	if err := ensureHeadroom(prober, "docker"); err != nil {
+		test.Fatal(err)
+	}
+	launch := strings.Join(runArgsFor(prober), " ")
+	if strings.Contains(launch, "18787") || strings.Contains(launch, "-p ") {
+		test.Errorf("headroom must be internal-only (no 18787 publish): %s", launch)
+	}
+	if !strings.Contains(launch, "OPENAI_TARGET_API_URL=") {
+		test.Errorf("headroom run missing OPENAI_TARGET_API_URL: %s", launch)
 	}
 }

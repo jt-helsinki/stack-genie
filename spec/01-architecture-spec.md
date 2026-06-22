@@ -282,9 +282,10 @@ Microsandbox microVM runtime are installed, configured, and supervised by the
 `ai` CLI. The CLI is the **single control plane**: the user never invokes
 `docker compose`, `msb`, `launchctl`, or `systemctl` directly. The whole service
 tier is containers: they share a private docker network (`aip-net`) and are
-reconciled in order: network → Ollama → Presidio → LiteLLM (+ DB) → Headroom → Open WebUI.
+reconciled in order: network → DNS → Ollama → Presidio → LLM Guard → LiteLLM (+ DB) → Headroom → nginx proxy → Open WebUI.
 (Headroom is now a shared host container, no longer installed in the workspace
-image, §10.)
+image, §10. It is INTERNAL-ONLY behind the `aip-proxy` nginx reverse proxy, which
+is the gateway entry on host :18787 — see §10/§15.)
 
 ### One Tool, Uniform Lifecycle
 
@@ -303,9 +304,11 @@ ai logs --service <svc>      one log surface
 
 | Service | Run mode | Why |
 |---|---|---|
-| Headroom | container (via Runtime) `aip-headroom` | shared input-compression proxy in front of LiteLLM; HTTP only (§10) |
+| nginx proxy | container (via Runtime) `aip-proxy` (`nginx:1.27-alpine`) | the gateway ENTRY on host :18787, reverse-proxies to Headroom (`aip-headroom:8787`); HTTPS termination point later (§10) |
+| Headroom | container (via Runtime) `aip-headroom` | shared input-compression proxy in front of LiteLLM; INTERNAL-ONLY on :8787 behind nginx (no host publish); HTTP only (§10) |
 | LiteLLM | container (via Runtime) `aip-litellm` (+ `aip-litellm-db` Postgres) | HTTP only; no host privileges |
 | Presidio | two containers (via Runtime) `aip-presidio-analyzer` + `aip-presidio-anonymizer` | back LiteLLM's always-on PII guardrail; internal-only, not published (§15) |
+| LLM Guard | container (via Runtime) `aip-llm-guard` (`laiyer/llm-guard-api`) | security-scoped guardrail (PromptInjection + Secrets + bearer-token Regex) wired into LiteLLM via the legacy `llmguard_moderations` callback; internal-only, not published; HEAVY (pulls a HuggingFace model) (§15) |
 | Ollama (required) | container (via Runtime) `aip-ollama` on all platforms | local model backend LiteLLM routes to; CPU-only on macOS (Docker has no GPU passthrough) |
 | Open WebUI (optional) | container (via Runtime) `aip-open-webui` | chat UI routed through LiteLLM as an OpenAI-compatible gateway (`OPENAI_API_BASE_URL=http://aip-litellm:4000/v1`, built-in Ollama backend + login wall disabled); published on the host at :18090 (its address IS its console); HTTP only |
 | DNS audit resolver | container (via Runtime) `aip-dns` (CoreDNS) | egress-audit resolver: microVMs forward DNS here so attempted names are logged for `ai network log`; published to host loopback only; audit, not enforcement (§29.7) |
@@ -645,11 +648,19 @@ Headroom manages context budgets.
 
 Headroom now runs as a **shared host container** (`aip-headroom`, image
 `ghcr.io/chopratejas/headroom:slim` — pulled, never built, listening on `:8787`).
-It is the **input-compression proxy in front of LiteLLM**: agents send their
-OpenAI-compatible model calls to Headroom at the host port `:18787` and it forwards
-them to LiteLLM via `OPENAI_TARGET_API_URL=http://aip-litellm:4000`. It is **no longer
-installed inside the workspace image** — the agent in the workspace reaches the
-host Headroom across the microVM boundary via `AI_PLATFORM_HOST` (§29).
+It is the **input-compression proxy in front of LiteLLM**, forwarding to LiteLLM
+via `OPENAI_TARGET_API_URL=http://aip-litellm:4000`. Headroom is now
+**INTERNAL-ONLY** on `aip-net` (no host publish): the gateway ENTRY is the
+**`aip-proxy` nginx reverse proxy** (`nginx:1.27-alpine`), which takes over the
+established gateway host port `:18787` and reverse-proxies to Headroom at
+`aip-headroom:8787`. The topology is **microVM → nginx (:18787) → Headroom
+(compress) → LiteLLM**; the nginx config disables response buffering and uses long
+timeouts so streamed (SSE) LLM responses flush promptly. This is transparent to
+workspaces (the gateway URL stays `host:18787`) and lets nginx terminate TLS later
+(in server mode it binds `0.0.0.0:18787` — the eventual public HTTPS endpoint).
+Headroom is **no longer installed inside the workspace image** — the agent in the
+workspace reaches the host gateway across the microVM boundary via
+`AI_PLATFORM_HOST` (§29).
 
 The Github repository is found at:
 
@@ -903,6 +914,27 @@ guardrails:
   - guardrail_name: presidio-pii-output
     litellm_params: { guardrail: presidio, mode: post_call, presidio_filter_scope: output, default_on: true }
 ```
+
+### LLM Guard (security-scoped, via the legacy callback)
+
+LLM Guard is additionally wired in — but via LiteLLM's **legacy callback**, not the
+modern `guardrails:` block (it is the only integration LiteLLM offers for it). The
+rendered `litellm_settings` carries `callbacks: ["llmguard_moderations"]`, and the
+LiteLLM container is launched with `LLM_GUARD_API_BASE=http://aip-llm-guard:8000`.
+`aip-llm-guard` (`laiyer/llm-guard-api`, an unpinnable rolling tag) is an
+internal-only container that runs a **security-only** scanner set, rendered to
+`config/llm-guard/scanners.yml` and bind-mounted over the image default:
+
+* `PromptInjection` (input) — blocks prompt-injection attempts.
+* `Secrets` (input) — redacts detected secrets.
+* `Regex` bearer-token (input + output) — blocks/redacts `Bearer …` tokens.
+
+The **full LLM Guard scanner set** (PII/Anonymize, Toxicity, BanTopics, Sentiment,
+Language, …) is **deliberately DEFERRED**: it corrupts ordinary coding prompts, the
+same reason general PII masking was removed. **Guardrails AI** is likewise deferred
+(it needs a Guardrails Hub token + manual per-guard install, so it cannot ship
+fully automated). Both remain future considerations. NOTE: LLM Guard is heavy — it
+pulls a HuggingFace model for PromptInjection on first run (several GB).
 
 ---
 

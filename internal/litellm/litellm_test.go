@@ -29,7 +29,8 @@ func TestRenderDefaultRouting(test *testing.T) {
 			} `yaml:"litellm_params"`
 		} `yaml:"model_list"`
 		LitellmSettings struct {
-			DefaultModel string `yaml:"default_model"`
+			DefaultModel string   `yaml:"default_model"`
+			Callbacks    []string `yaml:"callbacks"`
 		} `yaml:"litellm_settings"`
 	}
 	if err := yaml.Unmarshal(b, &cfg); err != nil {
@@ -38,6 +39,10 @@ func TestRenderDefaultRouting(test *testing.T) {
 	// The default model is the local Ollama backend (provider = ollama).
 	if cfg.LitellmSettings.DefaultModel != "gemma4" {
 		test.Fatalf("default_model = %q, want gemma4", cfg.LitellmSettings.DefaultModel)
+	}
+	// LLM Guard is wired via the legacy callback (security-scoped).
+	if len(cfg.LitellmSettings.Callbacks) != 1 || cfg.LitellmSettings.Callbacks[0] != "llmguard_moderations" {
+		test.Fatalf("litellm_settings.callbacks = %v, want [llmguard_moderations]", cfg.LitellmSettings.Callbacks)
 	}
 	byName := map[string]string{}
 	keyByName := map[string]string{}

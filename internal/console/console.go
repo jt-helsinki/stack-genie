@@ -25,18 +25,22 @@ type Endpoint struct {
 // ports the service tier publishes (see internal/setup host-port consts):
 //   - litellm  :14000  + admin UI at /ui
 //   - ollama   :11434 (HTTP API, no UI)
-//   - headroom :18787  (aip-headroom compression proxy; has /stats, no UI)
+//   - proxy    :18787 (aip-proxy nginx gateway entry → Headroom; no separate UI)
 //   - open-webui :18090 (aip-open-webui chat UI → LiteLLM; the address IS its UI)
 //   - dns      127.0.0.1:15353/udp (aip-dns CoreDNS egress-audit resolver, loopback)
+//   - headroom is internal-only on :8787 behind nginx (no longer host-published)
 //   - presidio analyzer/anonymizer are internal-only on :3000 (not host-published)
+//   - llm-guard is internal-only on :8000 (security guardrail backend, not published)
 //   - microsandbox is the microVM runtime (no host address, no console)
 var registry = map[string]Endpoint{
 	"litellm":      {Address: "http://localhost:14000", Console: "http://localhost:14000/ui"},
 	"ollama":       {Address: "http://localhost:11434"},                                    // HTTP API on :11434, no console UI
-	"headroom":     {Address: "http://localhost:18787"},                                    // aip-headroom compression proxy, no UI
+	"proxy":        {Address: "http://localhost:18787"},                                    // aip-proxy nginx gateway entry, no UI
 	"open-webui":   {Address: "http://localhost:18090", Console: "http://localhost:18090"}, // chat UI; root IS the console
 	"dns":          {Address: "127.0.0.1:15353/udp"},                                       // aip-dns CoreDNS resolver, host loopback
+	"headroom":     {},                                                                     // internal-only on :8787 behind nginx
 	"presidio":     {},                                                                     // analyzer/anonymizer internal-only on :3000
+	"llm-guard":    {},                                                                     // security guardrail backend, internal-only on :8000
 	"microsandbox": {},                                                                     // microVM runtime, no address/console
 }
 

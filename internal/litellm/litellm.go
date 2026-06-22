@@ -142,9 +142,16 @@ func build(routing Routing) map[string]any {
 		})
 	}
 	return map[string]any{
-		"model_list":       modelList,
-		"litellm_settings": map[string]any{"default_model": routing.Default},
-		"guardrails":       buildGuardrails(),
+		"model_list": modelList,
+		// callbacks wires LLM Guard via its LEGACY callback (llmguard_moderations) —
+		// a security-scoped guardrail (PromptInjection + Secrets + bearer-token Regex)
+		// backed by aip-llm-guard, reached via LLM_GUARD_API_BASE on the LiteLLM
+		// container (see setup_real.go). It is NOT a modern guardrails-list entry.
+		"litellm_settings": map[string]any{
+			"default_model": routing.Default,
+			"callbacks":     []string{"llmguard_moderations"},
+		},
+		"guardrails": buildGuardrails(),
 	}
 }
 
@@ -179,10 +186,16 @@ var secretEntities = []string{
 //     150+ plugins) — strips API keys/tokens/credentials from the prompt. No
 //     external server.
 //
-// LLM Guard and Guardrails AI are deliberately excluded: the former does not fit
-// LiteLLM's modern guardrails list (legacy callback only) and ships only a stale
-// unpinnable image; the latter needs a Guardrails Hub token + manual per-guard
-// install, so it cannot be shipped fully automated.
+// LLM Guard is now ENABLED, but via LiteLLM's LEGACY callback
+// (litellm_settings.callbacks: ["llmguard_moderations"], see build()) rather than
+// this modern guardrails list — that is the only integration LiteLLM offers for
+// it. It is SECURITY-SCOPED on purpose: aip-llm-guard runs only the
+// PromptInjection, Secrets, and a bearer-token Regex scanners. The FULL LLM Guard
+// scanner set (PII/Anonymize, Toxicity, BanTopics, Sentiment, Language, …) is
+// DELIBERATELY DEFERRED — it corrupts ordinary coding prompts, the same reason
+// general PII masking was removed. Guardrails AI also remains deferred (it needs a
+// Guardrails Hub token + manual per-guard install, so it cannot be shipped fully
+// automated). Both are documented as future considerations.
 func buildGuardrails() []map[string]any {
 	// Mask only the scoped secret entities, at a high confidence threshold to
 	// avoid false positives on ordinary code/text.

@@ -18,6 +18,8 @@ var expectedServices = map[string]string{
 	"open-webui":          "container",
 	"presidio-analyzer":   "container",
 	"presidio-anonymizer": "container",
+	"llm-guard":           "container",
+	"proxy":               "container",
 	"ollama":              "container",
 }
 

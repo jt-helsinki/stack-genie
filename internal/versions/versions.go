@@ -52,6 +52,13 @@ func Default() *File {
 			// analyzer detects PII, the anonymizer masks it. Internal-only containers.
 			"presidio-analyzer":   {Mode: "container", Image: "mcr.microsoft.com/presidio-analyzer", Digest: "sha256:TBD"},
 			"presidio-anonymizer": {Mode: "container", Image: "mcr.microsoft.com/presidio-anonymizer", Digest: "sha256:TBD"},
+			// LLM Guard backs LiteLLM's security-scoped legacy callback (arch §17):
+			// PromptInjection + Secrets + bearer-token Regex only. Internal-only. The
+			// image is an unpinnable rolling tag (ProtectAI/Laiyer legacy).
+			"llm-guard": {Mode: "container", Image: "laiyer/llm-guard-api", Digest: "sha256:TBD"},
+			// nginx reverse proxy: the gateway entry on host :18787 in front of
+			// Headroom (HTTPS-ready). Internal Headroom is reached by name.
+			"proxy": {Mode: "container", Image: "nginx", Digest: "sha256:TBD"},
 			// Ollama is REQUIRED (always on): LiteLLM routes local model traffic to
 			// it (arch §14, §16). Cloud models still go LiteLLM → provider; LiteLLM's
 			// always-on Presidio guardrails audit both paths (§17).

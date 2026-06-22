@@ -55,8 +55,15 @@ func TestEndpointAndAddress(test *testing.T) {
 		test.Error("ollama should report no console")
 	}
 
-	// presidio and microsandbox have neither an address nor a console.
-	for _, name := range []string{"presidio", "microsandbox"} {
+	// proxy is the nginx gateway entry on :18787 (no separate admin console).
+	endpoint, ok = EndpointFor("proxy")
+	if !ok || endpoint.Address != "http://localhost:18787" || endpoint.Console != "" {
+		test.Errorf("proxy endpoint = (%+v,%v)", endpoint, ok)
+	}
+
+	// headroom (now behind nginx), presidio, llm-guard and microsandbox have
+	// neither an address nor a console — all internal-only.
+	for _, name := range []string{"headroom", "presidio", "llm-guard", "microsandbox"} {
 		endpoint, ok := EndpointFor(name)
 		if !ok {
 			test.Errorf("%s should be a known service", name)

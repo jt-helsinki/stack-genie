@@ -104,7 +104,7 @@ Each is a thin real impl that currently returns `ErrPending` / a stub.
 - [ ] **`internal/setup/setup_real.go`**
   - `realServices.Reconcile` → pull pinned images by digest (`config/versions.yaml`)
     and bring up the host service tier on the shared `aip-net` network in order
-    **network → Ollama → Presidio → LiteLLM(+DB) → Headroom**, via the detected
+    **network → DNS → Ollama → Presidio → LLM Guard → LiteLLM(+DB) → Headroom → nginx proxy → Open WebUI**, via the detected
     runtime (`runtime.ContainerRuntime.RunArgs`, docker|podman — not hardcoded);
     health-poll each:
     - `aip-ollama` (`ollama/ollama:latest`, :11434, models bind-mounted from
@@ -114,19 +114,41 @@ Each is a thin real impl that currently returns `ErrPending` / a stub.
     - `aip-presidio-analyzer` + `aip-presidio-anonymizer`
       (`mcr.microsoft.com/presidio-analyzer:latest` / `-anonymizer:latest`,
       internal :3000) — back LiteLLM's always-on PII guardrail.
+    - `aip-llm-guard` (`laiyer/llm-guard-api:latest`, internal :8000, the rendered
+      security-only `scanners.yml` bind-mounted at
+      `/home/user/app/config/scanners.yml`) — backs LiteLLM's security-scoped legacy
+      callback; **heavy** (pulls a HuggingFace model for PromptInjection on first run).
     - `aip-litellm` (`ghcr.io/berriai/litellm:main-latest`, :4000) with the rendered
-      config, plus the `aip-litellm-db` Postgres (`postgres:18.4-alpine3.24`, host
+      config (`callbacks: ["llmguard_moderations"]`, `LLM_GUARD_API_BASE=http://aip-llm-guard:8000`),
+      plus the `aip-litellm-db` Postgres (`postgres:18.4-alpine3.24`, host
       `127.0.0.1:5442`) for the DB-backed admin UI/virtual keys.
     - `aip-headroom` (`ghcr.io/chopratejas/headroom:slim`, :8787,
       `OPENAI_TARGET_API_URL=http://aip-litellm:4000`) — input-compression proxy in
-      front of LiteLLM; **pulled image, never built**.
+      front of LiteLLM; **INTERNAL-ONLY** (no host publish); **pulled image, never built**.
+    - `aip-proxy` (`nginx:1.27-alpine`, host :18787 → `aip-headroom:8787`, the
+      rendered `nginx.conf` bind-mounted at `/etc/nginx/nginx.conf:ro`) — the gateway
+      ENTRY in front of Headroom; **pulled image, never built**.
     Provider keys are injected into the LiteLLM gateway (env passthrough at launch /
     its Postgres-backed store) — there is no native gateway to start.
-  - **Verify the live model path + guardrail** — agent → `aip-headroom:8787` →
-    `aip-litellm:4000` (Presidio pre → Ollama or cloud → Presidio post). Confirm the
-    rendered config carries both default-on guardrails (`presidio-pii-input`
-    pre_call, `presidio-pii-output` post_call) and that a **cloud** route still gets
-    PII masking (default-on guardrails run on every request, so cloud cannot bypass).
+  - **Verify the live model path + guardrail** — agent → `aip-proxy:18787` (nginx) →
+    `aip-headroom:8787` → `aip-litellm:4000` (Presidio pre → Ollama or cloud →
+    Presidio post). Confirm the rendered config carries both default-on guardrails
+    (`presidio-pii-input` pre_call, `presidio-pii-output` post_call) and that a
+    **cloud** route still gets PII masking (default-on guardrails run on every
+    request, so cloud cannot bypass).
+  - **hardware bring-up: LLM Guard security round-trip** — with `aip-llm-guard` up
+    and LiteLLM's `llmguard_moderations` callback wired (`LLM_GUARD_API_BASE`),
+    confirm a prompt-injection attempt is blocked and a `Bearer …`/secret in the
+    prompt is redacted, while an ordinary coding prompt passes untouched (the
+    security-only scanner scope: PromptInjection + Secrets + bearer-token Regex, NOT
+    PII/Anonymize/Toxicity). `serviceHealthy("llm-guard")` is currently
+    container-running only; add the live HTTP readiness probe here.
+  - **hardware bring-up: nginx → Headroom → LiteLLM gateway path** — confirm the
+    `aip-proxy` nginx entry on host :18787 forwards to the now-internal-only Headroom
+    (`aip-headroom:8787`) and on to LiteLLM end-to-end, including **streamed (SSE)**
+    responses flushing through (buffering off, long timeouts). In server mode verify
+    the 0.0.0.0:18787 bind reaches a remote client. `serviceHealthy("proxy")` is
+    currently container-running only; add the live readiness probe here.
   - `realServices.Status` → real probes (`<rt> ps`, gateway `/health`, …).
   - **Provider-key injection** → load the real provider keys into the LiteLLM
     gateway (env passthrough at launch / its Postgres-backed store; verified API
