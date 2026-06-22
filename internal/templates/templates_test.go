@@ -1,0 +1,191 @@
+package templates_test
+
+import (
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+
+	"github.com/jt-helsinki/ideal-robot/internal/templates"
+)
+
+// osKeys, stacks, and agentCLIs mirror the directories embedded under
+// internal/templates/files. Keep these in sync with that tree.
+var (
+	osKeys    = []string{"alma", "debian-bookworm", "debian-trixie", "ubuntu"}
+	stacks    = []string{"deno", "go", "java", "maven", "node", "python", "rust"}
+	agentCLIs = []string{"claude-code", "codex", "gemini", "opencode", "pi"}
+)
+
+// redirectHome points HOME (and USERPROFILE for portability) at a temp dir so
+// InstalledRoot resolves under an isolated ~/.ai-platform.
+func redirectHome(t *testing.T) string {
+	t.Helper()
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	return home
+}
+
+func TestInstalledRoot(t *testing.T) {
+	home := redirectHome(t)
+	root, err := templates.InstalledRoot()
+	if err != nil {
+		t.Fatalf("InstalledRoot: %v", err)
+	}
+	want := filepath.Join(home, ".ai-platform", "templates")
+	if root != want {
+		t.Fatalf("InstalledRoot = %q, want %q", root, want)
+	}
+}
+
+func TestInstallCopiesTreeToDisk(t *testing.T) {
+	redirectHome(t)
+	if err := templates.Install(); err != nil {
+		t.Fatalf("Install: %v", err)
+	}
+	root, err := templates.InstalledRoot()
+	if err != nil {
+		t.Fatalf("InstalledRoot: %v", err)
+	}
+
+	representative := []string{
+		filepath.Join("dockerfiles", "debian-trixie", "Dockerfile"),
+		filepath.Join("dockerfiles", "alma", "Dockerfile"),
+		filepath.Join("stacks", "go", "Dockerfile.snippet"),
+		filepath.Join("stacks", "python", "Dockerfile.snippet"),
+		filepath.Join("agentclis", "opencode", "Dockerfile.snippet"),
+		filepath.Join("agentclis", "claude-code", "Dockerfile.snippet"),
+	}
+	for _, relative := range representative {
+		path := filepath.Join(root, relative)
+		info, err := os.Stat(path)
+		if err != nil {
+			t.Errorf("expected installed file %q: %v", relative, err)
+			continue
+		}
+		if info.Size() == 0 {
+			t.Errorf("installed file %q is empty", relative)
+		}
+	}
+}
+
+func TestInstallIsIdempotent(t *testing.T) {
+	redirectHome(t)
+	if err := templates.Install(); err != nil {
+		t.Fatalf("first Install: %v", err)
+	}
+	first, err := templates.BaseDockerfile("ubuntu")
+	if err != nil {
+		t.Fatalf("BaseDockerfile after first install: %v", err)
+	}
+	// A second Install overwrites in place and must not error.
+	if err := templates.Install(); err != nil {
+		t.Fatalf("second Install: %v", err)
+	}
+	second, err := templates.BaseDockerfile("ubuntu")
+	if err != nil {
+		t.Fatalf("BaseDockerfile after second install: %v", err)
+	}
+	if first != second {
+		t.Fatalf("content changed across reinstall:\nfirst:  %q\nsecond: %q", first, second)
+	}
+}
+
+func TestBaseDockerfileKnownKeys(t *testing.T) {
+	redirectHome(t)
+	if err := templates.Install(); err != nil {
+		t.Fatalf("Install: %v", err)
+	}
+	for _, osKey := range osKeys {
+		t.Run(osKey, func(t *testing.T) {
+			got, err := templates.BaseDockerfile(osKey)
+			if err != nil {
+				t.Fatalf("BaseDockerfile(%q): %v", osKey, err)
+			}
+			if strings.TrimSpace(got) == "" {
+				t.Fatalf("BaseDockerfile(%q) returned blank content", osKey)
+			}
+		})
+	}
+}
+
+func TestBaseDockerfileUnknownKey(t *testing.T) {
+	redirectHome(t)
+	if err := templates.Install(); err != nil {
+		t.Fatalf("Install: %v", err)
+	}
+	if _, err := templates.BaseDockerfile("no-such-os"); err == nil {
+		t.Fatal("BaseDockerfile(unknown) = nil error, want error")
+	}
+}
+
+func TestStackSnippetKnownStacks(t *testing.T) {
+	redirectHome(t)
+	if err := templates.Install(); err != nil {
+		t.Fatalf("Install: %v", err)
+	}
+	for _, stack := range stacks {
+		t.Run(stack, func(t *testing.T) {
+			got, err := templates.StackSnippet(stack)
+			if err != nil {
+				t.Fatalf("StackSnippet(%q): %v", stack, err)
+			}
+			if strings.TrimSpace(got) == "" {
+				t.Fatalf("StackSnippet(%q) returned blank content", stack)
+			}
+		})
+	}
+}
+
+func TestStackSnippetUnknown(t *testing.T) {
+	redirectHome(t)
+	if err := templates.Install(); err != nil {
+		t.Fatalf("Install: %v", err)
+	}
+	if _, err := templates.StackSnippet("cobol"); err == nil {
+		t.Fatal("StackSnippet(unknown) = nil error, want error")
+	}
+}
+
+func TestAgentCLISnippetKnownCLIs(t *testing.T) {
+	redirectHome(t)
+	if err := templates.Install(); err != nil {
+		t.Fatalf("Install: %v", err)
+	}
+	for _, cli := range agentCLIs {
+		t.Run(cli, func(t *testing.T) {
+			got, err := templates.AgentCLISnippet(cli)
+			if err != nil {
+				t.Fatalf("AgentCLISnippet(%q): %v", cli, err)
+			}
+			if strings.TrimSpace(got) == "" {
+				t.Fatalf("AgentCLISnippet(%q) returned blank content", cli)
+			}
+		})
+	}
+}
+
+func TestAgentCLISnippetUnknown(t *testing.T) {
+	redirectHome(t)
+	if err := templates.Install(); err != nil {
+		t.Fatalf("Install: %v", err)
+	}
+	if _, err := templates.AgentCLISnippet("emacs-doctor"); err == nil {
+		t.Fatal("AgentCLISnippet(unknown) = nil error, want error")
+	}
+}
+
+// Reading a snippet before Install must error because nothing is on disk yet.
+func TestReadBeforeInstallErrors(t *testing.T) {
+	redirectHome(t)
+	if _, err := templates.BaseDockerfile("ubuntu"); err == nil {
+		t.Error("BaseDockerfile before Install = nil error, want error")
+	}
+	if _, err := templates.StackSnippet("go"); err == nil {
+		t.Error("StackSnippet before Install = nil error, want error")
+	}
+	if _, err := templates.AgentCLISnippet("opencode"); err == nil {
+		t.Error("AgentCLISnippet before Install = nil error, want error")
+	}
+}
