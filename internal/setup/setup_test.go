@@ -295,33 +295,31 @@ func TestRunUpgradeRepinsVersions(test *testing.T) {
 	}
 }
 
-type fakeInstaller struct{ installed []string }
-
-func (installer *fakeInstaller) Install(binary string) error {
-	installer.installed = append(installer.installed, binary)
-	return nil
-}
-
-func TestEnsureDependenciesInstallsOnlyMissing(test *testing.T) {
-	// msb missing → msb is installed.
-	installer := &fakeInstaller{}
-	deps := Deps{
-		Prober:       fakeProber{bins: map[string]bool{"docker": true}},
-		DepInstaller: installer,
-	}
-	ensureDependencies(deps)
-	if len(installer.installed) != 1 || installer.installed[0] != "msb" {
-		test.Fatalf("expected only msb installed, got %v", installer.installed)
+// TestPreflightReportsMsbWithInstructionsNotInstalling verifies `ai setup` does
+// NOT install msb — when it's missing it is reported as a prerequisite with its
+// install instructions + web address, not auto-installed.
+func TestPreflightReportsMsbWithInstructionsNotInstalling(test *testing.T) {
+	test.Setenv("HOME", test.TempDir())
+	deps, _ := healthyDeps()
+	deps.GOOS, deps.GOARCH = "linux", "amd64"
+	// docker present + rootless, virtualization ok, but msb absent.
+	deps.Prober = fakeProber{
+		bins:      map[string]bool{"docker": true},
+		files:     map[string]bool{"/dev/kvm": true},
+		dockerOut: "[name=rootless]",
 	}
 
-	// All present → nothing installed (detect-if-installed).
-	allPresent := &fakeInstaller{}
-	ensureDependencies(Deps{
-		Prober:       fakeProber{bins: map[string]bool{"docker": true, "msb": true}},
-		DepInstaller: allPresent,
-	})
-	if len(allPresent.installed) != 0 {
-		test.Fatalf("nothing should install when all present, got %v", allPresent.installed)
+	_, err := Run(Options{}, deps)
+	var platformErr *output.Error
+	if !errors.As(err, &platformErr) {
+		test.Fatalf("want *output.Error for missing msb, got %T", err)
+	}
+	for _, fragment := range []string{
+		"microsandbox runtime", "install.microsandbox.dev", "docs.microsandbox.dev", "how to install", "web:",
+	} {
+		if !strings.Contains(platformErr.Message, fragment) {
+			test.Errorf("message missing %q (should instruct, not install):\n%s", fragment, platformErr.Message)
+		}
 	}
 }
 

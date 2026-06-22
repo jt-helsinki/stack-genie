@@ -44,54 +44,9 @@ type Services interface {
 	Control(action, service string) ([]ServiceStatus, error)
 }
 
-// DepInstaller installs a missing host dependency by binary name (msb) via the
-// tool's official installer. Injectable for tests.
-type DepInstaller interface {
-	Install(binary string) error
-}
-
-// installableDeps are the host programs `ai setup` auto-installs when absent
-// (detect-if-installed), each with its official one-line installer. Docker/Podman
-// are intentionally NOT here — too heavy and a user choice; they stay a prereq.
-var installableDeps = []struct{ Binary, URL string }{
-	{"msb", "https://install.microsandbox.dev"},
-}
-
-// installerURL returns the official installer URL for a known dependency binary.
-func installerURL(binary string) (string, bool) {
-	for _, dep := range installableDeps {
-		if dep.Binary == binary {
-			return dep.URL, true
-		}
-	}
-	return "", false
-}
-
-// ensureDependencies installs the auto-installable host programs that are not yet
-// on PATH (msb), skipping any already present. Best-effort: an
-// installer failure or a not-yet-on-PATH binary becomes a note, not a hard fail —
-// the prerequisite scan still gates anything truly missing.
-func ensureDependencies(deps Deps) []string {
-	var notes []string
-	for _, dep := range installableDeps {
-		if _, err := deps.Prober.LookPath(dep.Binary); err == nil {
-			continue // already installed
-		}
-		if deps.DepInstaller == nil {
-			continue
-		}
-		if err := deps.DepInstaller.Install(dep.Binary); err != nil {
-			notes = append(notes, fmt.Sprintf("could not auto-install %s: %s", dep.Binary, err))
-			continue
-		}
-		if _, err := deps.Prober.LookPath(dep.Binary); err == nil {
-			notes = append(notes, "installed "+dep.Binary)
-		} else {
-			notes = append(notes, dep.Binary+" installed — ensure its bin dir is on PATH, then re-run `ai setup`")
-		}
-	}
-	return notes
-}
+// `ai setup` never installs host software. Missing prerequisites are detected
+// (missingPrerequisites) and reported with install instructions + a web address
+// for the user to install themselves and re-run (prerequisiteError).
 
 // Deps are the injectable dependencies of Run / ServicesStatus.
 type Deps struct {
@@ -99,8 +54,6 @@ type Deps struct {
 	Prober       runtime.Prober
 	Now          func() string // RFC 3339 UTC timestamp
 	Services     Services
-	// DepInstaller installs missing auto-installable host programs (msb).
-	DepInstaller DepInstaller
 }
 
 // Options configure a setup run.
@@ -192,8 +145,19 @@ func presence(created bool) string {
 type Prerequisite struct {
 	Name       string `json:"name"`
 	Detail     string `json:"detail,omitempty"`
-	Suggestion string `json:"suggestion,omitempty"`
+	Suggestion string `json:"suggestion,omitempty"` // how to install / repair
+	DocsURL    string `json:"docs_url,omitempty"`   // web address for the software
 	Blocking   bool   `json:"blocking"`
+}
+
+// prereqDocs is the web address for each prerequisite's software, shown next to
+// the install instructions so the user can go straight to the source. Host
+// virtualization is a capability (nothing to download), so it has no entry — its
+// suggestion explains the remedy.
+var prereqDocs = map[string]string{
+	"container runtime":     "https://docs.docker.com/get-docker/  (or Podman: https://podman.io/get-started)",
+	"rootless service tier": "https://docs.docker.com/engine/security/rootless/",
+	"microsandbox runtime":  "https://docs.microsandbox.dev  (installer: https://install.microsandbox.dev)",
 }
 
 // blockingPrereqs are the checks that must pass before setup proceeds: a missing
@@ -227,6 +191,7 @@ func missingPrerequisites(deps Deps) []Prerequisite {
 			Name:       check.Name,
 			Detail:     check.Detail,
 			Suggestion: check.Suggestion,
+			DocsURL:    prereqDocs[check.Name],
 			Blocking:   blockingPrereqs[check.Name],
 		})
 	}
@@ -246,11 +211,14 @@ func prerequisiteError(missing []Prerequisite) *output.Error {
 		}
 	}
 	var builder strings.Builder
-	fmt.Fprintf(&builder, "preflight: %d prerequisite(s) not satisfied:", len(missing))
+	fmt.Fprintf(&builder, "preflight: %d prerequisite(s) not satisfied — install the missing software and re-run `ai setup`:", len(missing))
 	for _, prereq := range missing {
-		fmt.Fprintf(&builder, "\n  - %s: %s", prereq.Name, prereq.Detail)
+		fmt.Fprintf(&builder, "\n  ✗ %s — %s", prereq.Name, prereq.Detail)
 		if prereq.Suggestion != "" {
-			fmt.Fprintf(&builder, "\n      → %s", prereq.Suggestion)
+			fmt.Fprintf(&builder, "\n      how to install: %s", prereq.Suggestion)
+		}
+		if prereq.DocsURL != "" {
+			fmt.Fprintf(&builder, "\n      web:            %s", prereq.DocsURL)
 		}
 	}
 	return output.Errorf(code, "%s", builder.String()).WithDetails(missing)
@@ -260,11 +228,11 @@ func prerequisiteError(missing []Prerequisite) *output.Error {
 // code (§18): missing deps → 3, capability/other failures → 4. Idempotent.
 func Run(options Options, deps Deps) (*Report, error) {
 	// 1. Preflight: scan every prerequisite and report all missing ones at once,
-	// each with an install command. Blocking gaps stop setup (exit 3 if a program
-	// is missing, else 4); non-blocking gaps become warnings. Auto-install the host
-	// programs we can (msb) before the scan, so a fresh host doesn't fail preflight
-	// just for a missing installable dep.
-	warnings := ensureDependencies(deps)
+	// each with install instructions + a web address. `ai setup` never installs
+	// software itself — the user installs what's missing and re-runs. Blocking
+	// gaps stop setup (exit 3 if a program is missing, else 4); non-blocking gaps
+	// become warnings.
+	var warnings []string
 
 	missing := missingPrerequisites(deps)
 	for _, prereq := range missing {

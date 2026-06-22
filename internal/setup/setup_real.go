@@ -630,32 +630,16 @@ func (services realServices) Control(action, service string) ([]ServiceStatus, e
 	return services.Status()
 }
 
-// realDepInstaller runs a dependency's official one-line installer, streaming its
-// output so the user sees progress.
-type realDepInstaller struct{}
-
-func (realDepInstaller) Install(binary string) error {
-	url, ok := installerURL(binary)
-	if !ok {
-		return fmt.Errorf("no installer known for %q", binary)
-	}
-	// The documented installer is `curl -fsSL <url> | sh`
-	// (install.microsandbox.dev). #nosec G204 — url is a fixed in-binary constant.
-	command := exec.Command("sh", "-c", "curl -fsSL "+url+" | sh")
-	command.Stdout = os.Stdout
-	command.Stderr = os.Stderr
-	return command.Run()
-}
-
-// RealDeps builds Deps wired to the actual host (used by the CLI).
+// RealDeps builds Deps wired to the actual host (used by the CLI). `ai setup`
+// does not install software; missing prerequisites are detected and reported
+// for the user to install, so there is no dependency installer here.
 func RealDeps(goos, goarch string, now func() string) Deps {
 	prober := runtime.RealProber()
 	return Deps{
-		GOOS:         goos,
-		GOARCH:       goarch,
-		Prober:       prober,
-		Now:          now,
-		Services:     realServices{prober: prober},
-		DepInstaller: realDepInstaller{},
+		GOOS:     goos,
+		GOARCH:   goarch,
+		Prober:   prober,
+		Now:      now,
+		Services: realServices{prober: prober},
 	}
 }
