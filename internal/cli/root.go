@@ -82,6 +82,7 @@ func Execute() int {
 		newModelsCmd(emitter, &exitCode),
 		newContextCmd(emitter, &exitCode),
 		newNetworkCmd(emitter, &exitCode),
+		newGatewayCmd(emitter, &exitCode),
 		newWorkspaceCmd(emitter, &exitCode),
 		newStartCmd(emitter, &exitCode),
 		newStopCmd(emitter, &exitCode),

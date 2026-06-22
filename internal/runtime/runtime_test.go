@@ -296,6 +296,28 @@ func TestHostAddressPrefersEnvOverride(test *testing.T) {
 	}
 }
 
+func TestResolveGateway(test *testing.T) {
+	cases := []struct {
+		configured string
+		wantHost   string
+		wantPort   int
+		wantURL    string
+	}{
+		{"", DefaultGatewayHost, DefaultGatewayPort, "http://host.microsandbox.internal:18787/v1"},
+		{"srv", "srv", DefaultGatewayPort, "http://srv:18787/v1"},
+		{"srv:9999", "srv", 9999, "http://srv:9999/v1"},
+		{"  srv:9999  ", "srv", 9999, "http://srv:9999/v1"},
+		{"srv:bad", "srv", DefaultGatewayPort, "http://srv:18787/v1"}, // unparseable port falls back
+	}
+	for _, testCase := range cases {
+		host, port, url := ResolveGateway(testCase.configured)
+		if host != testCase.wantHost || port != testCase.wantPort || url != testCase.wantURL {
+			test.Errorf("ResolveGateway(%q) = %s:%d %q, want %s:%d %q",
+				testCase.configured, host, port, url, testCase.wantHost, testCase.wantPort, testCase.wantURL)
+		}
+	}
+}
+
 func TestHostGatewayDeferredUntilHardware(test *testing.T) {
 	// The concrete gateway is pinned from the Microsandbox SDK on hardware; until
 	// then it is reported unpinned so callers fall back to the env override.

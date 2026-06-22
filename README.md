@@ -104,6 +104,10 @@ ai network egress deny               # deny | public | unrestricted
 ai network allow api.github.com      # allow a host/domain (port defaults to 443; *.suffix ok)
 ai network log                       # attempted-egress audit (domains the workspace resolved)
 
+ai gateway show                      # the model gateway every workspace on this machine routes through
+ai gateway set my-server:18787       # client mode: route all workspaces through a remote gateway
+ai gateway clear                     # back to the local standalone gateway
+
 ai secrets set OPENAI_API_KEY        # stored in the LiteLLM gateway, never platform disk
 ai secrets list                      # names + metadata only (never values)
 

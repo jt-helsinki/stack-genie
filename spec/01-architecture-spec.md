@@ -1425,6 +1425,21 @@ governed by the Microsandbox NetworkPolicy (§29.4). Reaching *other* host-local
 services — a developer's database or message broker — is a separate, explicitly
 allow-listed zone (§29.6).
 
+**Gateway resolution → microVM gateway URL + egress allow.** The model-gateway
+endpoint every workspace on a host routes through is derived from
+`Info.HostAddress()` (`internal/runtime`): the `ai_platform_host` field if set
+(machine-wide, configured by `ai setup --mode client --server` or `ai gateway
+set` — §CLI 10.4), else the resolved `host_gateway`. The field holds a **bare host
+or `host:port`** (NOT a URL); `runtime.ResolveGateway` applies: empty →
+`host.microsandbox.internal:18787` (standalone/local); `host` → that host on the
+default Headroom port `18787`; `host:port` → that host and port. The result drives
+two things at workspace start (`internal/workspace`): (a) the in-VM agent provider
+configs' `base_url` is `http://<host>:<port>/v1`, and (b) the always-on egress
+allow rule (`egress.MsbNetworkArgs`) targets `<host>:tcp:<port>`. So in standalone
+mode every microVM reaches the local LiteLLM via `host.microsandbox.internal`, and
+in client mode every microVM on the machine routes through — and is allowed egress
+to — the configured remote server's gateway.
+
 ## 29.3 Reaching each component
 
 ```text

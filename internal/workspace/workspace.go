@@ -18,19 +18,23 @@ import (
 	"github.com/jt-helsinki/ideal-robot/internal/egress"
 	"github.com/jt-helsinki/ideal-robot/internal/litellm"
 	"github.com/jt-helsinki/ideal-robot/internal/overlay"
+	"github.com/jt-helsinki/ideal-robot/internal/runtime"
 	"github.com/jt-helsinki/ideal-robot/internal/state"
 )
 
-// headroomPort is the host port the in-workspace Headroom proxy reaches the
-// model gateway on; the workspace egress policy always allows the host gateway
-// on this port (egress.MsbNetworkArgs, arch §29.2).
-const headroomPort = 18787
-
-// gatewayURL is the base URL the in-workspace agent CLIs use to reach the host
-// Headroom proxy from inside the microVM (arch §15). The /v1 suffix is required
-// by both opencode and pi. host.microsandbox.internal resolves to the host from
-// within a Microsandbox microVM.
-const gatewayURL = "http://host.microsandbox.internal:18787/v1"
+// resolveGateway derives the model-gateway host, port, and base URL every
+// workspace microVM on this machine routes through (arch §29.2). It reads the
+// configured AIPlatformHost from runtime.yaml (set machine-wide by `ai gateway
+// set`) and applies runtime.ResolveGateway's rules. A missing or unreadable
+// runtime.yaml falls back to the local standalone gateway
+// (host.microsandbox.internal:18787), so a freshly-set-up host always resolves.
+func resolveGateway() (host string, port int, url string) {
+	info, err := runtime.Load()
+	if err != nil || info == nil {
+		return runtime.ResolveGateway("")
+	}
+	return runtime.ResolveGateway(info.HostAddress())
+}
 
 // Guest paths the agent provider configs are written to inside the microVM. The
 // workspace image creates a `workspace` user; both files live under its home.
@@ -156,12 +160,15 @@ func (manager Manager) Start(project string) (*state.Workspace, error) {
 		return nil, err
 	}
 	// Translate the project's egress policy into the msb network argv fragment;
-	// the host gateway is always allowed on the Headroom port (arch §29.2).
+	// the configured model gateway is always allowed on its Headroom port (arch
+	// §29.2). In standalone/local mode this is host.microsandbox.internal:18787;
+	// in client mode it is the remote server `ai gateway set` configured.
 	projectConfig, err := config.LoadProjectConfig(root)
 	if err != nil {
 		return nil, err
 	}
-	netArgs := egress.MsbNetworkArgs(projectConfig.Network, headroomPort)
+	gatewayHost, gatewayPort, gatewayURL := resolveGateway()
+	netArgs := egress.MsbNetworkArgs(projectConfig.Network, gatewayHost, gatewayPort)
 	// The microVM mounts the host project path directly. Supported hosts are
 	// macOS and Linux, so no path translation is needed (arch §7).
 	if err := manager.Sandbox.Create(name, imageRef, root, overlayPath, netArgs); err != nil {
@@ -174,7 +181,7 @@ func (manager Manager) Start(project string) (*state.Workspace, error) {
 	// talk to the host Headroom proxy through a per-workspace scoped LiteLLM
 	// virtual key (arch §15, §17). The key flows host→VM only; it is never
 	// written to platform disk.
-	if err := manager.registerAgentProviders(name, project, projectConfig); err != nil {
+	if err := manager.registerAgentProviders(name, project, projectConfig, gatewayURL); err != nil {
 		return nil, err
 	}
 	now := manager.Now()
@@ -197,7 +204,7 @@ func (manager Manager) Start(project string) (*state.Workspace, error) {
 // Headroom strategy maps to the two per-request knobs opencode bakes into each
 // model's request body; pi cannot inject per-request fields and uses Headroom's
 // server-side defaults (see internal/agentcfg).
-func (manager Manager) registerAgentProviders(name, project string, projectConfig *config.Config) error {
+func (manager Manager) registerAgentProviders(name, project string, projectConfig *config.Config, gatewayURL string) error {
 	// Empty Models = all models allowed (the workspace agent names any model and
 	// LiteLLM routes it). The metadata ties the key back to this workspace.
 	apiKey, err := manager.Keys.GenerateKey(litellm.KeyScope{

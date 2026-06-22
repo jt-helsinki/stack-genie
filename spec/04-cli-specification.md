@@ -796,6 +796,41 @@ Human-readable output by default; `--json` emits the standard §19 envelope.
 
 ---
 
+# 10.4 Model Gateway (`ai gateway`)
+
+Configure, machine-wide, which model gateway every workspace microVM on this host
+routes through. The address is persisted in `config/runtime.yaml` as
+`ai_platform_host` (the same field `ai setup --mode client --server` sets) and is
+read at workspace start to derive both the in-VM agent `base_url` and the
+always-on egress allow rule (architecture §29.2).
+
+```bash
+ai gateway show               # the configured gateway + the URL microVMs will use
+ai gateway set <host[:port]>  # route every workspace here through a remote gateway (client mode)
+ai gateway clear              # back to the local standalone gateway
+```
+
+The address is a **bare host or `host:port`** (NOT a URL). The default port is
+`18787` (the Headroom port). Resolution:
+
+* empty → `host.microsandbox.internal:18787` (standalone/local — the in-VM name for
+  the host machine);
+* `host` → that host on port `18787`;
+* `host:port` → that host and port.
+
+microVMs reach the gateway at `http://<host>:<port>/v1` (the `/v1` suffix opencode
+and pi require), and the workspace egress policy always allows `<host>:tcp:<port>`.
+
+* `show`/`clear` take no arguments; `set` takes exactly one address.
+* a missing `runtime.yaml` (no `ai setup` yet) → exit `3` with a "run `ai setup`
+  first" note; an invalid address (empty, whitespace, a scheme/slash, or a
+  non-numeric port) → exit `2`; a failed persist/read → exit `4`.
+
+Command names in the envelope are `gateway.show` / `gateway.set` / `gateway.clear`.
+Human-readable output by default; `--json` emits the standard §19 envelope.
+
+---
+
 # 11. Backup — Removed
 
 There is no backup/restore command. It isn't needed (architecture §32): project

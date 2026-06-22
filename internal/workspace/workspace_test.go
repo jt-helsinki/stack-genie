@@ -8,6 +8,7 @@ import (
 
 	"github.com/jt-helsinki/ideal-robot/internal/litellm"
 	"github.com/jt-helsinki/ideal-robot/internal/overlay"
+	"github.com/jt-helsinki/ideal-robot/internal/runtime"
 	"github.com/jt-helsinki/ideal-robot/internal/state"
 )
 
@@ -166,6 +167,15 @@ func TestStartBuildsAndRecordsStartedHandle(test *testing.T) {
 	if len(sandbox.netArgs) == 0 {
 		test.Fatal("egress network args not passed to Sandbox.Create")
 	}
+	// With a temp HOME and no runtime.yaml, the gateway resolves to the local
+	// standalone default (host.microsandbox.internal:18787), so the always-on
+	// allow rule and the agent configs target that gateway.
+	if !strings.Contains(strings.Join(sandbox.netArgs, " "), "allow:egress@host.microsandbox.internal:tcp:18787") {
+		test.Fatalf("netArgs missing local gateway allow rule: %#v", sandbox.netArgs)
+	}
+	if !strings.Contains(string(openCodeConfig), "http://host.microsandbox.internal:18787/v1") {
+		test.Error("opencode config is missing the local gateway URL")
+	}
 	workspaces, err := state.OpenStore(root).ListWorkspaces()
 	if err != nil || len(workspaces) != 1 || workspaces[0].Status != state.StatusStarted {
 		test.Fatalf("persisted workspaces=%+v err=%v", workspaces, err)
@@ -270,6 +280,45 @@ func TestDestroyIsNonDestructiveAndRecordsStatus(test *testing.T) {
 	workspaces, _ := state.OpenStore(root).ListWorkspaces()
 	if len(workspaces) != 1 || workspaces[0].Status != state.StatusDestroyed {
 		test.Fatalf("status not recorded destroyed: %+v", workspaces)
+	}
+}
+
+// resolveGateway falls back to the local standalone gateway when no runtime.yaml
+// exists (the common test/fresh-host case).
+func TestResolveGatewayDefaultsToLocalWithoutRuntime(test *testing.T) {
+	test.Setenv("HOME", test.TempDir())
+	host, port, url := resolveGateway()
+	if host != "host.microsandbox.internal" || port != 18787 {
+		test.Fatalf("default gateway = %s:%d, want host.microsandbox.internal:18787", host, port)
+	}
+	if url != "http://host.microsandbox.internal:18787/v1" {
+		test.Fatalf("default gateway url = %q", url)
+	}
+}
+
+// resolveGateway reads the machine-wide AIPlatformHost from runtime.yaml (client
+// mode), resolving host-only and host:port forms.
+func TestResolveGatewayFromRuntime(test *testing.T) {
+	cases := []struct {
+		configured string
+		wantHost   string
+		wantPort   int
+		wantURL    string
+	}{
+		{"", "host.microsandbox.internal", 18787, "http://host.microsandbox.internal:18787/v1"},
+		{"srv", "srv", 18787, "http://srv:18787/v1"},
+		{"srv:9999", "srv", 9999, "http://srv:9999/v1"},
+	}
+	for _, testCase := range cases {
+		test.Setenv("HOME", test.TempDir())
+		if err := runtime.Persist(&runtime.Info{SchemaVersion: runtime.SchemaVersion, AIPlatformHost: testCase.configured}); err != nil {
+			test.Fatal(err)
+		}
+		host, port, url := resolveGateway()
+		if host != testCase.wantHost || port != testCase.wantPort || url != testCase.wantURL {
+			test.Fatalf("resolveGateway(%q) = %s:%d %q, want %s:%d %q",
+				testCase.configured, host, port, url, testCase.wantHost, testCase.wantPort, testCase.wantURL)
+		}
 	}
 }
 

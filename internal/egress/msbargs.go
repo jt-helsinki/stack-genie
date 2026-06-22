@@ -7,9 +7,9 @@ import (
 )
 
 // hostGatewayTarget is the special msb target that resolves, from inside a
-// sandbox, to the host machine (verified with msb v0.5.7). The in-VM agent
-// reaches the host Headroom proxy (and any allow-listed host services) through
-// this address.
+// sandbox, to the host machine (verified with msb v0.5.7). It is the target a
+// "gateway"/empty HostService.Host maps to (an allow-listed service ON the host
+// machine), independent of where the model gateway itself lives.
 const hostGatewayTarget = "host.microsandbox.internal"
 
 // gatewayToken is the placeholder in a HostService.Host that means "the host
@@ -17,10 +17,11 @@ const hostGatewayTarget = "host.microsandbox.internal"
 const gatewayToken = "gateway"
 
 // MsbNetworkArgs translates a project's egress policy (config.NetworkConfig)
-// into the `msb create`/`msb run` argv fragment that enforces it. gatewayPort
-// is the host port the in-workspace Headroom proxy listens on (default 18787);
-// the host gateway is always allowed on this port so the agent can reach the
-// model gateway in every mode.
+// into the `msb create`/`msb run` argv fragment that enforces it. gatewayHost +
+// gatewayPort are the resolved model-gateway endpoint every workspace must reach
+// (arch §29.2): host.microsandbox.internal:18787 in standalone/local mode, or the
+// remote server `ai gateway set` configured in client mode. The gateway is always
+// allowed on this host:port so the agent can reach the model gateway in every mode.
 //
 // msb's network engine (verified against `msb create --help`, v0.5.7) is
 // first-match-wins over the ordered list of --net-rule entries, with
@@ -39,16 +40,17 @@ const gatewayToken = "gateway"
 //  3. for public mode, the broad allow:egress@public rule,
 //  4. one allow rule per AllowHostServices entry (in slice order),
 //  5. one -p publish-port flag per PublishPorts entry (in slice order).
-func MsbNetworkArgs(network config.NetworkConfig, gatewayPort int) []string {
+func MsbNetworkArgs(network config.NetworkConfig, gatewayHost string, gatewayPort int) []string {
 	mode := network.ResolvedEgress()
 
 	args := make([]string, 0, 4+2*len(network.AllowHostServices)+2*len(network.PublishPorts))
 
-	// (1) Always allow the host gateway on gatewayPort. The host gateway is a
-	// private/link-local address which msb blocks by default, so this explicit
-	// allow is required even in "public"/"unrestricted" modes (in "unrestricted"
-	// it is harmless but kept for clarity).
-	args = append(args, "--net-rule", fmt.Sprintf("allow:egress@%s:tcp:%d", hostGatewayTarget, gatewayPort))
+	// (1) Always allow the resolved model gateway on gatewayHost:gatewayPort. The
+	// local gateway (host.microsandbox.internal) is a private/link-local address
+	// which msb blocks by default, so this explicit allow is required even in
+	// "public"/"unrestricted" modes (in "unrestricted" it is harmless but kept for
+	// clarity). In client mode gatewayHost is the remote server.
+	args = append(args, "--net-rule", fmt.Sprintf("allow:egress@%s:tcp:%d", gatewayHost, gatewayPort))
 
 	// (2) Default fallthrough action.
 	switch mode {

@@ -11,15 +11,28 @@ package runtime
 import (
 	"bytes"
 	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 
 	"github.com/jt-helsinki/ideal-robot/internal/conffile"
 	"github.com/jt-helsinki/ideal-robot/internal/paths"
 	"github.com/jt-helsinki/ideal-robot/internal/sandbox"
 )
+
+// DefaultGatewayHost is the in-microVM address that resolves to the host machine
+// (Microsandbox's host-side network stack). It is the standalone/local gateway
+// host: when no AI_PLATFORM_HOST is configured, every workspace reaches the model
+// gateway on the local host through this name (arch §29.2).
+const DefaultGatewayHost = "host.microsandbox.internal"
+
+// DefaultGatewayPort is the host port the in-workspace Headroom proxy reaches the
+// model gateway on (arch §29.2). It is the fallback port when AIPlatformHost
+// carries only a host with no ":port".
+const DefaultGatewayPort = 18787
 
 // SchemaVersion is stamped on config/runtime.yaml.
 const SchemaVersion = 1
@@ -91,6 +104,33 @@ func (info *Info) HostAddress() string {
 		return info.AIPlatformHost
 	}
 	return info.HostGateway
+}
+
+// ResolveGateway turns an AIPlatformHost value into the concrete (host, port,
+// url) a workspace microVM uses to reach the model gateway (arch §29.2). The
+// address format is a bare host or "host:port" — NOT a URL. Resolution:
+//   - empty            → DefaultGatewayHost : DefaultGatewayPort (standalone/local)
+//   - "host"           → host : DefaultGatewayPort
+//   - "host:port"      → host : port (port must be a positive integer)
+//
+// An unparseable ":port" falls back to DefaultGatewayPort on the given host.
+// url is always "http://<host>:<port>/v1" (the /v1 suffix opencode and pi need).
+func ResolveGateway(aiPlatformHost string) (host string, port int, url string) {
+	host = DefaultGatewayHost
+	port = DefaultGatewayPort
+	address := strings.TrimSpace(aiPlatformHost)
+	if address != "" {
+		if hostPart, portPart, ok := strings.Cut(address, ":"); ok {
+			host = hostPart
+			if parsed, err := strconv.Atoi(portPart); err == nil && parsed > 0 {
+				port = parsed
+			}
+		} else {
+			host = address
+		}
+	}
+	url = fmt.Sprintf("http://%s:%d/v1", host, port)
+	return host, port, url
 }
 
 // HostGateway resolves the gateway address of Microsandbox's host-side userspace
