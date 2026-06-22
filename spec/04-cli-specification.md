@@ -702,7 +702,7 @@ Behavior:
 ```bash id="c27b"
 ai network show                                  # show the egress policy
 ai network egress  [deny|public|unrestricted]    # set the default posture
-ai network allow   [host:port] [--remove]        # allow/revoke an external destination
+ai network allow   [host[:port]] [--remove]      # allow/revoke an external destination
 ai network publish [host:guest] [--remove]       # publish/unpublish a workspace port
 ```
 
@@ -714,18 +714,25 @@ hardware bring-up**; this command manages the **declaration**. The whole policy 
 managed by the `ai` app — **no manual file editing is required** (though the
 `network` block stays hand-editable). On a terminal, omitting the value
 **presents the options**: `egress` (no mode) shows a posture select menu; `allow`
-(no arg) shows interactive service presets (Postgres, MySQL, Redis, Kafka,
-MongoDB, RabbitMQ, Elasticsearch, HTTPS — each with its default port — plus a
-custom `host:port` entry); `publish` (no arg) prompts for the ports. With `--json`
-or no TTY, the value must be passed as an argument.
+(no arg) shows interactive service presets that pre-fill **both host and port** —
+host-local/infra services (Postgres, MySQL, Redis, Kafka, MongoDB, RabbitMQ,
+Elasticsearch — host defaults to `gateway`) and common developer domains (npm
+`registry.npmjs.org`, PyPI `pypi.org` / `files.pythonhosted.org`, GitHub
+`github.com` / `api.github.com` / `raw.githubusercontent.com`, GHCR `ghcr.io` —
+all tcp/443) plus a custom `host[:port]` entry; `publish` (no arg) prompts for the
+ports. With `--json` or no TTY, the value must be passed as an argument.
 
 * `show` lists the project's egress mode, allowed host services, and published
   ports.
 * `egress` sets the default outbound posture: **deny** (default — only the model
   gateway + allowed services), **public** (open internet, private ranges still
   blocked), **unrestricted**.
-* `allow <host:port>` adds an allowed host service the workspace may reach — a
-  database, Kafka broker, or a specific API. `--remove` revokes it.
+* `allow <host[:port]>` adds an allowed host service the workspace may reach — a
+  database, Kafka broker, or a specific API/domain. `host` may be a
+  hostname/IP/domain, a `*.suffix` wildcard (e.g. `*.npmjs.org`), or the
+  `gateway` token for a service on the host machine. The port is **optional**
+  and **defaults to 443 (HTTPS)**, so a bare domain like `api.github.com` allows
+  it on 443. `--remove` revokes it.
 * `publish <host:guest>` publishes a workspace (guest) port to a host port;
   `--remove` undoes it.
 * invalid mode / port → exit `2`.

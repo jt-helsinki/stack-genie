@@ -45,6 +45,7 @@ func mapEgressErr(err error) error {
 	switch {
 	case errors.Is(err, egress.ErrInvalidMode),
 		errors.Is(err, egress.ErrInvalidPort),
+		errors.Is(err, egress.ErrInvalidHost),
 		errors.Is(err, project.ErrUnknownProject):
 		return output.Errorf(output.ExitInvalidInput, "%s", err)
 	default:
@@ -185,11 +186,13 @@ func pickEgressMode() (string, bool, error) {
 func newNetworkAllowCmd(emitter *output.Emitter, exit *int) *cobra.Command {
 	var remove bool
 	cmd := &cobra.Command{
-		Use:   "allow <host:port> [project]",
+		Use:   "allow <host[:port]> [project]",
 		Short: "Allow the workspace to reach an external service (--remove to revoke)",
 		Long: "Allow an egress destination the workspace may reach directly (a database,\n" +
 			"Kafka broker, or a specific API/domain). host may be a hostname/IP/domain,\n" +
-			"or \"gateway\" for a service on the host machine. Use --remove to revoke.",
+			"a \"*.suffix\" wildcard (e.g. *.npmjs.org), or \"gateway\" for a service on\n" +
+			"the host machine. The port is optional and defaults to 443 (HTTPS), so a\n" +
+			"bare domain like api.github.com allows it on 443. Use --remove to revoke.",
 		Args: cobra.MaximumNArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			root, err := networkResolve(cmd, args, 1)
@@ -236,37 +239,63 @@ func newNetworkAllowCmd(emitter *output.Emitter, exit *int) *cobra.Command {
 	return cmd
 }
 
-// pickAllowService presents common services (with default ports) and lets the
-// user confirm/edit the host and port.
+// pickAllowService presents common services (host + default port) and lets the
+// user confirm/edit the host and port. Each preset option value encodes
+// "host\tport"; selecting one pre-fills both the host and port inputs. The
+// database/infra presets default the host to "gateway" (a service on the host
+// machine); the developer-domain presets carry the real public domain. "Custom…"
+// leaves the fields free to type.
 func pickAllowService() (string, int, bool, error) {
-	portStr := "5432"
-	host := "gateway"
+	// preset is "host\tport"; the empty value is the Custom… escape hatch.
+	preset := "gateway\t5432"
 	presets := huh.NewSelect[string]().
-		Title("Service to allow (sets a default port — edit below)").
+		Title("Service to allow (pre-fills host + port — edit below)").
 		Options(
-			huh.NewOption("PostgreSQL (5432)", "5432"),
-			huh.NewOption("MySQL / MariaDB (3306)", "3306"),
-			huh.NewOption("Redis (6379)", "6379"),
-			huh.NewOption("Kafka (9092)", "9092"),
-			huh.NewOption("MongoDB (27017)", "27017"),
-			huh.NewOption("RabbitMQ / AMQP (5672)", "5672"),
-			huh.NewOption("Elasticsearch (9200)", "9200"),
-			huh.NewOption("HTTPS API (443)", "443"),
+			// Host-local / infra services (default host: gateway).
+			huh.NewOption("PostgreSQL (gateway:5432)", "gateway\t5432"),
+			huh.NewOption("MySQL / MariaDB (gateway:3306)", "gateway\t3306"),
+			huh.NewOption("Redis (gateway:6379)", "gateway\t6379"),
+			huh.NewOption("Kafka (gateway:9092)", "gateway\t9092"),
+			huh.NewOption("MongoDB (gateway:27017)", "gateway\t27017"),
+			huh.NewOption("RabbitMQ / AMQP (gateway:5672)", "gateway\t5672"),
+			huh.NewOption("Elasticsearch (gateway:9200)", "gateway\t9200"),
+			// Developer package/registry/API domains (tcp/443).
+			huh.NewOption("npm registry (registry.npmjs.org:443)", "registry.npmjs.org\t443"),
+			huh.NewOption("PyPI (pypi.org:443)", "pypi.org\t443"),
+			huh.NewOption("PyPI files (files.pythonhosted.org:443)", "files.pythonhosted.org\t443"),
+			huh.NewOption("GitHub (github.com:443)", "github.com\t443"),
+			huh.NewOption("GitHub API (api.github.com:443)", "api.github.com\t443"),
+			huh.NewOption("GitHub raw (raw.githubusercontent.com:443)", "raw.githubusercontent.com\t443"),
+			huh.NewOption("GitHub Container Registry (ghcr.io:443)", "ghcr.io\t443"),
 			huh.NewOption("Custom…", ""),
-		).Value(&portStr)
-	form := huh.NewForm(
-		huh.NewGroup(presets),
-		huh.NewGroup(
-			huh.NewInput().Title("Host (hostname/IP/domain, or 'gateway' for the host machine)").Value(&host),
-			huh.NewInput().Title("Port").Value(&portStr).Validate(func(value string) error {
-				port, err := strconv.Atoi(value)
-				if err != nil || port < 1 || port > 65535 {
-					return fmt.Errorf("port must be 1–65535")
-				}
-				return nil
-			}),
-		),
-	)
+		).Value(&preset)
+	if err := huh.NewForm(huh.NewGroup(presets)).Run(); err != nil {
+		if errors.Is(err, huh.ErrUserAborted) {
+			return "", 0, true, nil
+		}
+		return "", 0, false, err
+	}
+
+	host := "gateway"
+	portStr := "443"
+	if preset != "" {
+		fields := strings.SplitN(preset, "\t", 2)
+		host = fields[0]
+		if len(fields) == 2 {
+			portStr = fields[1]
+		}
+	}
+
+	form := huh.NewForm(huh.NewGroup(
+		huh.NewInput().Title("Host (hostname/IP/domain, '*.suffix' wildcard, or 'gateway' for the host machine)").Value(&host),
+		huh.NewInput().Title("Port").Value(&portStr).Validate(func(value string) error {
+			port, err := strconv.Atoi(value)
+			if err != nil || port < 1 || port > 65535 {
+				return fmt.Errorf("port must be 1–65535")
+			}
+			return nil
+		}),
+	))
 	if err := form.Run(); err != nil {
 		if errors.Is(err, huh.ErrUserAborted) {
 			return "", 0, true, nil
@@ -356,11 +385,20 @@ func pickPublishPorts() (int, int, bool, error) {
 	return guest, host, false, nil
 }
 
-// splitHostPort parses "host:port" (host may be a domain/IP/"gateway").
+// splitHostPort parses an allow target. The host may be a hostname/IP/domain, a
+// "*.suffix" wildcard, or the "gateway" token for the host machine. The port is
+// optional: a bare host with no ":" (e.g. "api.github.com" or "*.npmjs.org")
+// defaults to 443 (HTTPS). An explicit "host:port" (e.g. "db.internal:5432" or
+// "*.npmjs.org:8443") is split on the LAST colon. IPv6 literals are not supported.
 func splitHostPort(value string) (string, int, error) {
 	index := strings.LastIndex(value, ":")
-	if index <= 0 || index == len(value)-1 {
-		return "", 0, fmt.Errorf("expected host:port, got %q", value)
+	if index < 0 {
+		// No port given — default to HTTPS. (A bare wildcard like "*.npmjs.org"
+		// or a domain like "api.github.com" lands here.)
+		return value, 443, nil
+	}
+	if index == 0 || index == len(value)-1 {
+		return "", 0, fmt.Errorf("expected host or host:port, got %q", value)
 	}
 	port, err := strconv.Atoi(value[index+1:])
 	if err != nil {

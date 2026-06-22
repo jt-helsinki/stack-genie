@@ -1536,9 +1536,13 @@ A third knob sets the **default outbound posture** — `network.egress`:
   `npm install` / hit public APIs without enumerating every domain).
 * **`unrestricted`** — all egress allowed (escape hatch; least safe).
 
-`host` in an allow rule may be a hostname/IP/**domain**, or the `gateway` token
-for a service on the host machine — so the same mechanism covers a host-local
-Postgres, a remote/managed database, a Kafka cluster, or a specific internet API.
+`host` in an allow rule may be a hostname/IP/**domain**, a **`*.suffix` wildcard**
+(e.g. `*.npmjs.org`, matching any subdomain), or the `gateway` token for a
+service on the host machine — so the same mechanism covers a host-local Postgres,
+a remote/managed database, a Kafka cluster, a specific internet API, or a whole
+package-registry domain family. Microsandbox enforces these targets natively
+(domain, suffix-wildcard, IP/CIDR, and `public`/`private` groups). The port is
+optional in `ai network allow` and defaults to **443 (HTTPS)** for bare hosts.
 
 All of this is configured entirely via the **`ai network`** commands (CLI §10a) —
 no manual file editing is required, though the project `network` block

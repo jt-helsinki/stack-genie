@@ -78,3 +78,56 @@ func TestEgressLifecycle(test *testing.T) {
 		test.Errorf("after unpublish want 0, got %+v", network.PublishPorts)
 	}
 }
+
+func TestValidateHost(test *testing.T) {
+	good := []string{
+		"gateway",
+		"10.0.0.5",
+		"192.168.1.1",
+		"db.internal",
+		"api.github.com",
+		"registry.npmjs.org",
+		"localhost",
+		"*.npmjs.org",
+		"*.pkg.github.com",
+	}
+	for _, host := range good {
+		if err := ValidateHost(host); err != nil {
+			test.Errorf("ValidateHost(%q) = %v, want nil", host, err)
+		}
+	}
+
+	bad := []string{
+		"",
+		" ",
+		"has space",
+		"with\ttab",
+		"http://api.github.com",
+		"https://example.com",
+		"example.com/path",
+		"*",
+		"*.",
+		"*.com",   // single suffix label
+		"a*b.com", // mid-label wildcard
+	}
+	for _, host := range bad {
+		if err := ValidateHost(host); !errors.Is(err, ErrInvalidHost) {
+			test.Errorf("ValidateHost(%q) = %v, want ErrInvalidHost", host, err)
+		}
+	}
+}
+
+func TestAllowRejectsBadHost(test *testing.T) {
+	root := test.TempDir()
+	if err := Allow(root, "http://api.github.com", 443); !errors.Is(err, ErrInvalidHost) {
+		test.Fatalf("Allow with scheme should be ErrInvalidHost, got %v", err)
+	}
+	// A valid domain with default-ish HTTPS port is accepted.
+	if err := Allow(root, "api.github.com", 443); err != nil {
+		test.Fatalf("Allow domain: %v", err)
+	}
+	// A suffix wildcard is accepted.
+	if err := Allow(root, "*.npmjs.org", 443); err != nil {
+		test.Fatalf("Allow wildcard: %v", err)
+	}
+}

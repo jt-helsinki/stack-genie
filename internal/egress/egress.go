@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+	"strings"
 
 	"github.com/jt-helsinki/ideal-robot/internal/config"
 )
@@ -18,6 +19,47 @@ var ErrInvalidMode = errors.New("invalid egress mode")
 
 // ErrInvalidPort is returned for a port outside 1–65535.
 var ErrInvalidPort = errors.New("port out of range")
+
+// ErrInvalidHost is returned for a clearly-invalid allow-rule host (empty, or
+// containing whitespace or a URL scheme).
+var ErrInvalidHost = errors.New("invalid host")
+
+// ValidateHost rejects clearly-invalid allow-rule hosts while staying permissive
+// — the goal is catching typos, not enforcing strict RFC syntax. It accepts the
+// "gateway" token, IPv4 addresses, hostnames/domains, and "*.suffix" wildcards
+// (a wildcard must have at least two labels, e.g. "*.npmjs.org"). It rejects an
+// empty host, any host containing whitespace, and anything carrying a URL scheme
+// such as "http://".
+func ValidateHost(host string) error {
+	if host == "" {
+		return fmt.Errorf("%w: host is empty", ErrInvalidHost)
+	}
+	if strings.ContainsAny(host, " \t\r\n") {
+		return fmt.Errorf("%w: %q contains whitespace", ErrInvalidHost, host)
+	}
+	if strings.Contains(host, "://") {
+		return fmt.Errorf("%w: %q looks like a URL — pass just the host", ErrInvalidHost, host)
+	}
+	if strings.Contains(host, "/") {
+		return fmt.Errorf("%w: %q must not contain '/'", ErrInvalidHost, host)
+	}
+	if host == gatewayToken {
+		return nil
+	}
+	if strings.HasPrefix(host, "*.") {
+		// A suffix wildcard needs a real suffix: "*.npmjs.org" (>=2 labels), not
+		// "*." or "*.com".
+		suffix := strings.TrimPrefix(host, "*.")
+		if suffix == "" || !strings.Contains(suffix, ".") {
+			return fmt.Errorf("%w: wildcard %q needs at least two suffix labels (e.g. *.npmjs.org)", ErrInvalidHost, host)
+		}
+		return nil
+	}
+	if strings.Contains(host, "*") {
+		return fmt.Errorf("%w: %q — only a leading \"*.\" suffix wildcard is supported", ErrInvalidHost, host)
+	}
+	return nil
+}
 
 // Get returns the project's network config (for `ai network show`).
 func Get(projectRoot string) (config.NetworkConfig, error) {
@@ -46,6 +88,9 @@ func Allow(projectRoot, host string, port int) error {
 	}
 	if host == "" {
 		host = "gateway"
+	}
+	if err := ValidateHost(host); err != nil {
+		return err
 	}
 	return mutate(projectRoot, func(network *config.NetworkConfig) {
 		for _, service := range network.AllowHostServices {

@@ -131,6 +131,26 @@ func TestMsbNetworkArgsAlwaysHasGatewayRuleFirst(t *testing.T) {
 	}
 }
 
+func TestMsbNetworkArgsDomainAndWildcard(t *testing.T) {
+	network := config.NetworkConfig{
+		Egress: "deny",
+		AllowHostServices: []config.HostService{
+			{Host: "api.github.com", Port: 443},
+			{Host: "*.npmjs.org", Port: 443},
+		},
+	}
+	got := MsbNetworkArgs(network, testGatewayPort)
+	want := []string{
+		"--net-rule", "allow:egress@host.microsandbox.internal:tcp:8787",
+		"--net-default-egress", "deny",
+		"--net-rule", "allow:egress@api.github.com:tcp:443",
+		"--net-rule", "allow:egress@*.npmjs.org:tcp:443",
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("domain+wildcard:\n got %#v\nwant %#v", got, want)
+	}
+}
+
 func TestMsbNetworkArgsGatewayPortRespected(t *testing.T) {
 	got := MsbNetworkArgs(config.NetworkConfig{Egress: "deny"}, 8123)
 	want := []string{
