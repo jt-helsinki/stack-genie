@@ -8,10 +8,10 @@ import (
 	"github.com/jt-helsinki/ideal-robot/internal/config"
 )
 
-const testGatewayPort = 8787
+const testGatewayPort = 18787
 
 func gatewayRule() []string {
-	return []string{"--net-rule", "allow:egress@host.microsandbox.internal:tcp:8787"}
+	return []string{"--net-rule", "allow:egress@host.microsandbox.internal:tcp:18787"}
 }
 
 func TestMsbNetworkArgsDenyDefault(t *testing.T) {
@@ -34,7 +34,7 @@ func TestMsbNetworkArgsDenyWithAllowList(t *testing.T) {
 	}
 	got := MsbNetworkArgs(network, testGatewayPort)
 	want := []string{
-		"--net-rule", "allow:egress@host.microsandbox.internal:tcp:8787",
+		"--net-rule", "allow:egress@host.microsandbox.internal:tcp:18787",
 		"--net-default-egress", "deny",
 		"--net-rule", "allow:egress@host.microsandbox.internal:tcp:5442",
 		"--net-rule", "allow:egress@host.microsandbox.internal:tcp:6379",
@@ -52,7 +52,7 @@ func TestMsbNetworkArgsPublic(t *testing.T) {
 	}
 	got := MsbNetworkArgs(network, testGatewayPort)
 	want := []string{
-		"--net-rule", "allow:egress@host.microsandbox.internal:tcp:8787",
+		"--net-rule", "allow:egress@host.microsandbox.internal:tcp:18787",
 		"--net-default-egress", "deny",
 		"--net-rule", "allow:egress@public",
 		"--net-rule", "allow:egress@host.microsandbox.internal:tcp:5442",
@@ -66,7 +66,7 @@ func TestMsbNetworkArgsUnrestricted(t *testing.T) {
 	network := config.NetworkConfig{Egress: "unrestricted"}
 	got := MsbNetworkArgs(network, testGatewayPort)
 	want := []string{
-		"--net-rule", "allow:egress@host.microsandbox.internal:tcp:8787",
+		"--net-rule", "allow:egress@host.microsandbox.internal:tcp:18787",
 		"--net-default-egress", "allow",
 	}
 	if !reflect.DeepEqual(got, want) {
@@ -88,7 +88,7 @@ func TestMsbNetworkArgsPublishPorts(t *testing.T) {
 	}
 	got := MsbNetworkArgs(network, testGatewayPort)
 	want := []string{
-		"--net-rule", "allow:egress@host.microsandbox.internal:tcp:8787",
+		"--net-rule", "allow:egress@host.microsandbox.internal:tcp:18787",
 		"--net-default-egress", "deny",
 		"-p", "8080:80",
 		"-p", "9090:9000",
@@ -141,7 +141,7 @@ func TestMsbNetworkArgsDomainAndWildcard(t *testing.T) {
 	}
 	got := MsbNetworkArgs(network, testGatewayPort)
 	want := []string{
-		"--net-rule", "allow:egress@host.microsandbox.internal:tcp:8787",
+		"--net-rule", "allow:egress@host.microsandbox.internal:tcp:18787",
 		"--net-default-egress", "deny",
 		"--net-rule", "allow:egress@api.github.com:tcp:443",
 		"--net-rule", "allow:egress@*.npmjs.org:tcp:443",

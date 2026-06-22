@@ -28,7 +28,7 @@ func Compose(osKey string, stacks, agentCLIs []string) (string, error) {
 
 	// Headroom (input compression) is NOT baked into the workspace image: it runs
 	// as a shared host container in front of LiteLLM (arch §8–10, §15). Agents
-	// reach it at AI_PLATFORM_HOST:8787 and carry the project's compression knobs
+	// reach it at AI_PLATFORM_HOST:18787 and carry the project's compression knobs
 	// per request (internal/contextopt.HeadroomParams). The workspace image only
 	// needs the OS base, the selected stacks, and the agent CLIs.
 	for _, stack := range stacks {

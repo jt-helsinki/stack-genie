@@ -148,7 +148,7 @@ func TestRemoveDeletesByName(test *testing.T) {
 }
 
 func TestMapNotApplicable(test *testing.T) {
-	broker := newTestBroker("http://127.0.0.1:4000", okProber())
+	broker := newTestBroker("http://127.0.0.1:14000", okProber())
 	err := broker.Map("OPENAI_API_KEY", "OPENAI_API_KEY")
 	var platformErr *output.Error
 	if !errors.As(err, &platformErr) || platformErr.Code != output.ExitInvalidInput {
@@ -157,7 +157,7 @@ func TestMapNotApplicable(test *testing.T) {
 }
 
 func TestGatewayMissing(test *testing.T) {
-	broker := newTestBroker("http://127.0.0.1:4000", fakeProber{noRuntime: true})
+	broker := newTestBroker("http://127.0.0.1:14000", fakeProber{noRuntime: true})
 	if err := broker.Set("OPENAI_API_KEY", []byte("x")); !errors.Is(err, ErrGatewayMissing) {
 		test.Fatalf("Set err = %v, want ErrGatewayMissing", err)
 	}

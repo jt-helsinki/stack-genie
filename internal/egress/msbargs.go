@@ -18,7 +18,7 @@ const gatewayToken = "gateway"
 
 // MsbNetworkArgs translates a project's egress policy (config.NetworkConfig)
 // into the `msb create`/`msb run` argv fragment that enforces it. gatewayPort
-// is the host port the in-workspace Headroom proxy listens on (default 8787);
+// is the host port the in-workspace Headroom proxy listens on (default 18787);
 // the host gateway is always allowed on this port so the agent can reach the
 // model gateway in every mode.
 //

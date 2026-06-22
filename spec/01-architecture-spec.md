@@ -157,9 +157,9 @@ under `~/projects/<project>` mounted into the workspace.
 ```text
 Agent (AI Tooling, in workspace)
  ╎  microVM boundary → AI_PLATFORM_HOST
-Headroom (host :8787)                                    (input compression)
+Headroom (host :18787)                                   (input compression)
  ↓  forwards to LiteLLM
-LiteLLM (Model Layer, host :4000)
+LiteLLM (Model Layer, host :14000)
  ↓  always-on Presidio pre_call guardrail (mask PII out of the prompt)
  ↓  route to provider (Ollama or cloud); real provider key from LiteLLM's store
  ↓  always-on Presidio post_call guardrail (mask PII out of the response)
@@ -307,7 +307,7 @@ ai logs --service <svc>      one log surface
 | LiteLLM | container (via Runtime) `aip-litellm` (+ `aip-litellm-db` Postgres) | HTTP only; no host privileges |
 | Presidio | two containers (via Runtime) `aip-presidio-analyzer` + `aip-presidio-anonymizer` | back LiteLLM's always-on PII guardrail; internal-only, not published (§15) |
 | Ollama (required) | container (via Runtime) `aip-ollama` on all platforms | local model backend LiteLLM routes to; CPU-only on macOS (Docker has no GPU passthrough) |
-| Open WebUI (optional) | container (via Runtime) `aip-open-webui` | chat UI routed through LiteLLM as an OpenAI-compatible gateway (`OPENAI_API_BASE_URL=http://aip-litellm:4000/v1`, built-in Ollama backend + login wall disabled); published on the host at :8090 (its address IS its console); HTTP only |
+| Open WebUI (optional) | container (via Runtime) `aip-open-webui` | chat UI routed through LiteLLM as an OpenAI-compatible gateway (`OPENAI_API_BASE_URL=http://aip-litellm:4000/v1`, built-in Ollama backend + login wall disabled); published on the host at :18090 (its address IS its console); HTTP only |
 | DNS audit resolver | container (via Runtime) `aip-dns` (CoreDNS) | egress-audit resolver: microVMs forward DNS here so attempted names are logged for `ai network log`; published to host loopback only; audit, not enforcement (§29.7) |
 | Microsandbox | microVM runtime, invoked on demand | drives workspace microVMs via the Go SDK / `msb`; no daemon to supervise (§7) |
 
@@ -521,7 +521,7 @@ host  ~/.ai-platform/agents,skills,   →  workspace  (shared resources) (read-o
 
 Workspace microVMs reach host services (Headroom, LiteLLM) via
 `AI_PLATFORM_HOST` (§29) — never `host.docker.internal`. The agent sends its model
-calls to the shared host Headroom (`:8787`), which forwards to LiteLLM (§10). The
+calls to the shared host Headroom (`:18787`), which forwards to LiteLLM (§10). The
 platform injects `AI_PLATFORM_HOST` and the service ports into the workspace
 environment at start. The workspace runs under a default-deny Microsandbox
 **NetworkPolicy** (§29.4), so all external egress is confined to the reachable
@@ -633,7 +633,7 @@ Headroom shrinks what goes *in*; Caveman shrinks what comes *out*.
                               ▼               │
   Agent ── full context ──────┼──► Headroom ──compressed──► LiteLLM ──► Model
     ▲   (per-project knobs in │   (aip-headroom,           (keys-in-      │
-    │    request body)        │    host :8787)              LiteLLM)      │
+    │    request body)        │    host :18787)             LiteLLM)      │
     └──────────── compact output (Caveman-steered) ────────────────────────┘
 ```
 
@@ -646,8 +646,8 @@ Headroom manages context budgets.
 Headroom now runs as a **shared host container** (`aip-headroom`, image
 `ghcr.io/chopratejas/headroom:slim` — pulled, never built, listening on `:8787`).
 It is the **input-compression proxy in front of LiteLLM**: agents send their
-OpenAI-compatible model calls to Headroom at `:8787` and it forwards them to
-LiteLLM via `OPENAI_TARGET_API_URL=http://aip-litellm:4000`. It is **no longer
+OpenAI-compatible model calls to Headroom at the host port `:18787` and it forwards
+them to LiteLLM via `OPENAI_TARGET_API_URL=http://aip-litellm:4000`. It is **no longer
 installed inside the workspace image** — the agent in the workspace reaches the
 host Headroom across the microVM boundary via `AI_PLATFORM_HOST` (§29).
 
@@ -797,7 +797,7 @@ provider key — held **in the LiteLLM gateway** (§17) — to the upstream requ
 ```text
 Agent
  ╎  microVM boundary → AI_PLATFORM_HOST
-Headroom (host :8787, input compression)
+Headroom (host :18787, input compression)
  ↓
 LiteLLM
  ↓  (always-on Presidio pre_call/post_call PII guardrail, §15)
@@ -867,7 +867,8 @@ volume mounted at `/var/lib/postgresql`, `trust` auth on the private network,
 host port bound at `127.0.0.1:5442`). This Postgres is the one stateful piece of
 the service tier.
 
-**Admin UI auth.** The proxy ships an admin UI at `:4000/ui`. The platform
+**Admin UI auth.** The proxy ships an admin UI at `:4000/ui` (reached on the host
+at the published port, `:14000/ui`). The platform
 secures it by passing `UI_USERNAME` (`admin`), `UI_PASSWORD`, and
 `LITELLM_MASTER_KEY` into the container **via the environment** — never inlined
 in the launch argv, the rendered config, or platform disk. `ai setup` can prompt
@@ -993,7 +994,7 @@ provider:
 
 ```text
 Agent in workspace microVM  (holds only the LiteLLM virtual key)
- ↓  AI_PLATFORM_HOST → Headroom (:8787) → LiteLLM (:4000)
+ ↓  AI_PLATFORM_HOST → Headroom (host :18787) → LiteLLM (:4000)
 LiteLLM  (authenticates the virtual key; attaches the real provider key)
  ↓
 Provider (cloud) / Ollama (local, no key)
@@ -1419,7 +1420,7 @@ differs per backend.
 
 The trusted platform host services (Headroom and the LiteLLM it forwards to) are
 reached directly at `AI_PLATFORM_HOST:<port>` — the agent sends its model calls to
-host Headroom (`:8787`), which forwards to LiteLLM (`:4000`); all other egress is
+host Headroom (`:18787`), which forwards to LiteLLM (`:4000`); all other egress is
 governed by the Microsandbox NetworkPolicy (§29.4). Reaching *other* host-local
 services — a developer's database or message broker — is a separate, explicitly
 allow-listed zone (§29.6).
@@ -1433,7 +1434,7 @@ allow-listed zone (§29.6).
        └───────────────│─────────────┘   (default-deny; allow-listed set only)
         trusted host svc│ (direct, AI_PLATFORM_HOST)
                         ▼
-        Headroom (host :8787) ──► LiteLLM ──► provider (cloud)
+        Headroom (host :18787) ──► LiteLLM ──► provider (cloud)
         (input compression)      (Presidio    │   (real key from
                                   guardrail;   │    LiteLLM's store)
                                   keys-in-     ▼
@@ -1441,7 +1442,7 @@ allow-listed zone (§29.6).
 ```
 
 * **Model requests** — the in-workspace agent sends the request across the microVM
-  boundary to the **shared host Headroom** proxy at `AI_PLATFORM_HOST:8787` (input
+  boundary to the **shared host Headroom** proxy at `AI_PLATFORM_HOST:18787` (input
   compression), which forwards to **LiteLLM** (routing; always-on Presidio PII
   guardrail, §15). LiteLLM reaches **both** the local Ollama backend **and** cloud
   providers, attaching the real provider key from **its own store** on cloud calls
@@ -1460,7 +1461,7 @@ allow-listed zone (§29.6).
 
 Each workspace microVM runs under a restricted Microsandbox **NetworkPolicy**
 (default-deny). The reachable set is exactly: (a) the trusted platform host
-services at `AI_PLATFORM_HOST` (Headroom `:8787`, which forwards to LiteLLM),
+services at `AI_PLATFORM_HOST` (Headroom `:18787`, which forwards to LiteLLM),
 (b) any host-local services explicitly allow-listed in
 `network.allow_host_services` (§29.6), and (c) the open internet only when the
 `network.egress` posture permits it (§29.6). Any other workspace egress is denied

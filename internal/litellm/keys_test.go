@@ -171,7 +171,7 @@ func TestKeyInfoParses(test *testing.T) {
 }
 
 func TestGenerateKeyGatewayMissing(test *testing.T) {
-	test.Setenv("LITELLM_BASE_URL", "http://127.0.0.1:4000")
+	test.Setenv("LITELLM_BASE_URL", "http://127.0.0.1:14000")
 	manager := NewKeyManager(fakeProber{noRuntime: true})
 	_, err := manager.GenerateKey(KeyScope{})
 	var platformErr *output.Error

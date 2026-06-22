@@ -24,13 +24,13 @@ import (
 // headroomPort is the host port the in-workspace Headroom proxy reaches the
 // model gateway on; the workspace egress policy always allows the host gateway
 // on this port (egress.MsbNetworkArgs, arch §29.2).
-const headroomPort = 8787
+const headroomPort = 18787
 
 // gatewayURL is the base URL the in-workspace agent CLIs use to reach the host
 // Headroom proxy from inside the microVM (arch §15). The /v1 suffix is required
 // by both opencode and pi. host.microsandbox.internal resolves to the host from
 // within a Microsandbox microVM.
-const gatewayURL = "http://host.microsandbox.internal:8787/v1"
+const gatewayURL = "http://host.microsandbox.internal:18787/v1"
 
 // Guest paths the agent provider configs are written to inside the microVM. The
 // workspace image creates a `workspace` user; both files live under its home.

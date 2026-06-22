@@ -38,7 +38,7 @@ type realBroker struct {
 func RealBroker() Broker {
 	baseURL := os.Getenv("LITELLM_BASE_URL")
 	if baseURL == "" {
-		baseURL = "http://127.0.0.1:4000"
+		baseURL = "http://127.0.0.1:14000"
 	}
 	return realBroker{
 		prober:     runtime.RealProber(),

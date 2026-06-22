@@ -64,12 +64,12 @@ func TestComposeDoesNotBakeHeadroom(test *testing.T) {
 	installTemplates(test)
 	// Headroom now runs as a shared host container in front of LiteLLM, so it must
 	// NOT be installed into the workspace image (arch §8–10, §15). Agents reach the
-	// host Headroom at AI_PLATFORM_HOST:8787 instead.
+	// host Headroom at AI_PLATFORM_HOST:18787 instead.
 	dockerfile, err := Compose("debian-trixie", nil, []string{"opencode"})
 	if err != nil {
 		test.Fatal(err)
 	}
-	for _, fragment := range []string{"headroom", "headroom-ai", "8787"} {
+	for _, fragment := range []string{"headroom", "headroom-ai", "18787"} {
 		if strings.Contains(dockerfile, fragment) {
 			test.Errorf("composed Dockerfile unexpectedly bakes in Headroom (%q):\n%s", fragment, dockerfile)
 		}

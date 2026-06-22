@@ -41,12 +41,12 @@ func Default() *File {
 			"microsandbox": {Mode: "native", Version: "v0.x", SHA256: "TBD"},
 			"litellm":      {Mode: "container", Image: "ghcr.io/berriai/litellm", Digest: "sha256:TBD"},
 			// Headroom (input compression) runs as a shared host container in front
-			// of LiteLLM; agents send to it at :8787 (arch §8–10, §15). Per-project
+			// of LiteLLM; agents send to it at :18787 (arch §8–10, §15). Per-project
 			// compression knobs ride per request, so it is no longer baked into the
 			// workspace image.
 			"headroom": {Mode: "container", Image: "ghcr.io/chopratejas/headroom", Digest: "sha256:TBD"},
 			// Open WebUI is the optional chat UI, routed through LiteLLM as an
-			// OpenAI-compatible gateway (published on the host at :8090).
+			// OpenAI-compatible gateway (published on the host at :18090).
 			"open-webui": {Mode: "container", Image: "ghcr.io/open-webui/open-webui", Digest: "sha256:TBD"},
 			// Presidio backs LiteLLM's always-on PII guardrail (arch §17): the
 			// analyzer detects PII, the anonymizer masks it. Internal-only containers.

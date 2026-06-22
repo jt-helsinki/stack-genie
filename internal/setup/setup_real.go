@@ -22,7 +22,7 @@ type serviceSpec struct{ Name, Mode string }
 // (required local model backend), Presidio (PII guardrail backend), LiteLLM
 // (gateway/router), and Headroom (input compression proxy in front of LiteLLM).
 // Ollama is required — LiteLLM routes local model traffic to it (arch §14, §16).
-// Headroom runs as a shared host-side proxy (agents point at :8787, it forwards
+// Headroom runs as a shared host-side proxy (agents point at :18787, it forwards
 // to LiteLLM); the per-project Caveman skill handles output compression inside
 // the workspace (arch §8–10).
 func desiredServices() []serviceSpec {
@@ -73,7 +73,7 @@ const (
 	ollamaModelsGuest = "/models" // where ~/.ai-platform/models is mounted in the container
 
 	// Headroom is the input-compression proxy in front of LiteLLM. Official image
-	// (no build): agents point at :8787, it forwards to LiteLLM via OPENAI_TARGET_API_URL.
+	// (no build): agents point at :18787, it forwards to LiteLLM via OPENAI_TARGET_API_URL.
 	headroomContainer = "aip-headroom"
 	headroomImage     = "ghcr.io/chopratejas/headroom:slim"
 	headroomTargetURL = "http://" + litellmContainer + ":4000"
@@ -85,7 +85,9 @@ const (
 	// disabled (single-user local UI); all model traffic goes via LiteLLM.
 	openWebUIContainer = "aip-open-webui"
 	openWebUIImage     = "ghcr.io/open-webui/open-webui:main"
-	openWebUIHostPort  = "8090"
+	// Published on the host at a deliberately non-standard port (18090, not 8090)
+	// to avoid clashing with common dev servers; the container still listens on 8080.
+	openWebUIHostPort  = "18090"
 	openWebUIVolume    = "aip-open-webui-data"
 	openWebUITargetURL = "http://" + litellmContainer + ":4000/v1"
 
@@ -139,7 +141,9 @@ func litellmRunArgs(configPath string) []string {
 	return []string{
 		"run", "-d", "--name", litellmContainer,
 		"--network", platformNetwork,
-		"-p", "4000:4000",
+		// Host port is deliberately non-standard (14000, not 4000) to avoid clashing
+		// with common dev servers; the container still listens on 4000 (--port 4000).
+		"-p", "14000:4000",
 		"-v", configPath + ":/app/config.yaml",
 		"-e", "UI_USERNAME=" + litellmUIUsername,
 		"-e", "UI_PASSWORD",
@@ -263,7 +267,7 @@ func ensurePresidio(prober runtime.Prober, containerRuntime string) error {
 }
 
 // ensureHeadroom runs the Headroom input-compression proxy in front of LiteLLM:
-// agents send to :8787, it forwards to LiteLLM via OPENAI_TARGET_API_URL. Pulled
+// agents send to :18787, it forwards to LiteLLM via OPENAI_TARGET_API_URL. Pulled
 // image (no build). Idempotent.
 func ensureHeadroom(prober runtime.Prober, containerRuntime string) error {
 	if containerRunning(prober, containerRuntime, headroomContainer) {
@@ -273,7 +277,9 @@ func ensureHeadroom(prober runtime.Prober, containerRuntime string) error {
 	args := []string{
 		"run", "-d", "--name", headroomContainer,
 		"--network", platformNetwork,
-		"-p", "8787:8787",
+		// Host port is deliberately non-standard (18787, not 8787) to avoid clashing
+		// with common dev servers; the container still listens on 8787.
+		"-p", "18787:8787",
 		"-e", "OPENAI_TARGET_API_URL=" + headroomTargetURL,
 		// Headroom otherwise injects an empty `tools:[]` (its CCR retrieve-tool
 		// path) into every request, which flips LiteLLM/Ollama into tool-calling
@@ -289,7 +295,7 @@ func ensureHeadroom(prober runtime.Prober, containerRuntime string) error {
 }
 
 // ensureOpenWebUI runs the Open WebUI chat UI, routed through LiteLLM as an
-// OpenAI-compatible gateway: agents/users hit :8090 on the host and the UI sends
+// OpenAI-compatible gateway: agents/users hit :18090 on the host and the UI sends
 // model traffic to LiteLLM via OPENAI_API_BASE_URL (which includes /v1). The
 // built-in Ollama backend and the login wall are disabled. The gateway key is the
 // LiteLLM master key when one is set: it is reused from the running LiteLLM

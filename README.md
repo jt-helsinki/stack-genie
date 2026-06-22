@@ -47,7 +47,7 @@ Hypervisor) or **Linux with KVM**.
 `ai setup` **never installs software** — it detects what's missing and prints how
 to install it (command + web address); `ai doctor` reports the same anytime. The
 service tier (Ollama, Presidio, LiteLLM + Postgres, Headroom, the optional Open
-WebUI chat UI on :8090, and the DNS
+WebUI chat UI on :18090, and the DNS
 egress-audit resolver) is launched by `ai setup` as host containers on the
 `aip-net` network — you don't install those.
 

@@ -71,7 +71,7 @@ func NewKeyManager(prober runtime.Prober) *KeyManager {
 func resolveBaseURL() string {
 	baseURL := os.Getenv("LITELLM_BASE_URL")
 	if baseURL == "" {
-		baseURL = "http://127.0.0.1:4000"
+		baseURL = "http://127.0.0.1:14000"
 	}
 	return strings.TrimRight(baseURL, "/")
 }

@@ -15,12 +15,12 @@ import (
 )
 
 // openWebUIProbe is the live health probe for the optional Open WebUI chat UI: it
-// GETs http://localhost:8090/health with a short timeout (doctor must not hang).
+// GETs http://localhost:18090/health with a short timeout (doctor must not hang).
 type openWebUIProbe struct{}
 
 func (openWebUIProbe) Reachable() error {
 	httpClient := &http.Client{Timeout: 3 * time.Second}
-	response, err := httpClient.Get("http://localhost:8090/health")
+	response, err := httpClient.Get("http://localhost:18090/health")
 	if err != nil {
 		return err
 	}

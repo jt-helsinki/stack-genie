@@ -119,7 +119,7 @@ func TestHumanShowsModelServiceEndpoints(test *testing.T) {
 	rendered := Run(deps).Human()
 	// A healthy litellm shows its address and admin-UI URL on the check line.
 	if !strings.Contains(rendered, "litellm") ||
-		!strings.Contains(rendered, "http://localhost:4000 (UI http://localhost:4000/ui)") {
+		!strings.Contains(rendered, "http://localhost:14000 (UI http://localhost:14000/ui)") {
 		test.Errorf("litellm endpoint missing from doctor output:\n%s", rendered)
 	}
 	// Ollama shows its address but no UI.

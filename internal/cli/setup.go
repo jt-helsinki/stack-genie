@@ -95,7 +95,7 @@ func promptLiteLLMUIPassword(em *output.Emitter) {
 		return
 	}
 	_, _ = fmt.Fprintf(em.Err,
-		"LiteLLM admin UI secured — log in as %q at http://localhost:4000/ui\n"+
+		"LiteLLM admin UI secured — log in as %q at http://localhost:14000/ui\n"+
 			"  master key (also the API key): %s\n"+
 			"  Secrets are not stored on disk; to keep them across restarts, export them\n"+
 			"  before `ai setup` / `ai services start`:\n"+

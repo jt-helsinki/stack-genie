@@ -7,7 +7,7 @@ import (
 )
 
 const (
-	testGateway = "http://host.microsandbox.internal:8787/v1"
+	testGateway = "http://host.microsandbox.internal:18787/v1"
 	testKey     = "sk-workspace-scoped-1234"
 )
 

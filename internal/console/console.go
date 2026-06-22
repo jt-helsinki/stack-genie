@@ -23,21 +23,21 @@ type Endpoint struct {
 
 // registry maps a host service to its endpoint. Addresses are the verified host
 // ports the service tier publishes (see internal/setup host-port consts):
-//   - litellm  :4000  + admin UI at /ui
+//   - litellm  :14000  + admin UI at /ui
 //   - ollama   :11434 (HTTP API, no UI)
-//   - headroom :8787  (aip-headroom compression proxy; has /stats, no UI)
-//   - open-webui :8090 (aip-open-webui chat UI → LiteLLM; the address IS its UI)
+//   - headroom :18787  (aip-headroom compression proxy; has /stats, no UI)
+//   - open-webui :18090 (aip-open-webui chat UI → LiteLLM; the address IS its UI)
 //   - dns      127.0.0.1:15353/udp (aip-dns CoreDNS egress-audit resolver, loopback)
 //   - presidio analyzer/anonymizer are internal-only on :3000 (not host-published)
 //   - microsandbox is the microVM runtime (no host address, no console)
 var registry = map[string]Endpoint{
-	"litellm":      {Address: "http://localhost:4000", Console: "http://localhost:4000/ui"},
-	"ollama":       {Address: "http://localhost:11434"},                                  // HTTP API on :11434, no console UI
-	"headroom":     {Address: "http://localhost:8787"},                                   // aip-headroom compression proxy, no UI
-	"open-webui":   {Address: "http://localhost:8090", Console: "http://localhost:8090"}, // chat UI; root IS the console
-	"dns":          {Address: "127.0.0.1:15353/udp"},                                     // aip-dns CoreDNS resolver, host loopback
-	"presidio":     {},                                                                   // analyzer/anonymizer internal-only on :3000
-	"microsandbox": {},                                                                   // microVM runtime, no address/console
+	"litellm":      {Address: "http://localhost:14000", Console: "http://localhost:14000/ui"},
+	"ollama":       {Address: "http://localhost:11434"},                                    // HTTP API on :11434, no console UI
+	"headroom":     {Address: "http://localhost:18787"},                                    // aip-headroom compression proxy, no UI
+	"open-webui":   {Address: "http://localhost:18090", Console: "http://localhost:18090"}, // chat UI; root IS the console
+	"dns":          {Address: "127.0.0.1:15353/udp"},                                       // aip-dns CoreDNS resolver, host loopback
+	"presidio":     {},                                                                     // analyzer/anonymizer internal-only on :3000
+	"microsandbox": {},                                                                     // microVM runtime, no address/console
 }
 
 // Known reports whether name is a recognized host service.

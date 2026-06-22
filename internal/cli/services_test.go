@@ -13,7 +13,7 @@ import (
 func TestServicesResultHumanShowsAddressAndConsole(test *testing.T) {
 	result := servicesResult{Services: []setup.ServiceStatus{
 		{Name: "litellm", Mode: "container", State: "running", Healthy: true,
-			Address: "http://localhost:4000", Console: "http://localhost:4000/ui"},
+			Address: "http://localhost:14000", Console: "http://localhost:14000/ui"},
 		{Name: "ollama", Mode: "container", State: "running", Healthy: true,
 			Address: "http://localhost:11434"},
 		{Name: "presidio", Mode: "container", State: "running", Healthy: true},
@@ -21,7 +21,7 @@ func TestServicesResultHumanShowsAddressAndConsole(test *testing.T) {
 	}}
 	rendered := result.Human()
 
-	if !strings.Contains(rendered, "http://localhost:4000 · UI http://localhost:4000/ui") {
+	if !strings.Contains(rendered, "http://localhost:14000 · UI http://localhost:14000/ui") {
 		test.Errorf("litellm UI URL missing from services status output:\n%s", rendered)
 	}
 	if !strings.Contains(rendered, "http://localhost:11434") {

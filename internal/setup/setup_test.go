@@ -331,7 +331,7 @@ func TestLiteLLMRunArgs(test *testing.T) {
 	want := []string{
 		"run", "-d", "--name", "aip-litellm",
 		"--network", "aip-net",
-		"-p", "4000:4000",
+		"-p", "14000:4000",
 		"-v", "/cfg/litellm/config.yaml:/app/config.yaml",
 		"-e", "UI_USERNAME=admin",
 		"-e", "UI_PASSWORD",
@@ -363,7 +363,7 @@ func TestReportHumanShowsAddressAndConsole(test *testing.T) {
 		PlatformDir: "/home/u/.ai-platform",
 		Services: []ServiceStatus{
 			{Name: "litellm", Mode: "container", State: "running", Healthy: true,
-				Address: "http://localhost:4000", Console: "http://localhost:4000/ui"},
+				Address: "http://localhost:14000", Console: "http://localhost:14000/ui"},
 			{Name: "ollama", Mode: "container", State: "running", Healthy: true,
 				Address: "http://localhost:11434"},
 			{Name: "presidio", Mode: "container", State: "running", Healthy: true},
@@ -371,7 +371,7 @@ func TestReportHumanShowsAddressAndConsole(test *testing.T) {
 	}
 	rendered := report.Human()
 	// litellm shows both its address and the admin UI URL.
-	if !strings.Contains(rendered, "http://localhost:4000 · UI http://localhost:4000/ui") {
+	if !strings.Contains(rendered, "http://localhost:14000 · UI http://localhost:14000/ui") {
 		test.Errorf("litellm address+UI missing:\n%s", rendered)
 	}
 	// ollama shows its address only (no UI).

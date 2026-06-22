@@ -3,7 +3,7 @@ package console
 import "testing"
 
 func TestURLAndKnown(test *testing.T) {
-	if url, ok := URL("litellm"); !ok || url != "http://localhost:4000/ui" {
+	if url, ok := URL("litellm"); !ok || url != "http://localhost:14000/ui" {
 		test.Errorf("litellm console = (%q,%v)", url, ok)
 	}
 	// Known service with no web console.
@@ -28,7 +28,7 @@ func TestWithConsolesSortedAndFiltered(test *testing.T) {
 
 func TestOpenWebUIEndpointHasAddressAndConsole(test *testing.T) {
 	endpoint, ok := EndpointFor("open-webui")
-	if !ok || endpoint.Address != "http://localhost:8090" || endpoint.Console != "http://localhost:8090" {
+	if !ok || endpoint.Address != "http://localhost:18090" || endpoint.Console != "http://localhost:18090" {
 		test.Errorf("open-webui endpoint = (%+v,%v)", endpoint, ok)
 	}
 }
@@ -36,10 +36,10 @@ func TestOpenWebUIEndpointHasAddressAndConsole(test *testing.T) {
 func TestEndpointAndAddress(test *testing.T) {
 	// litellm has both an address and a console.
 	endpoint, ok := EndpointFor("litellm")
-	if !ok || endpoint.Address != "http://localhost:4000" || endpoint.Console != "http://localhost:4000/ui" {
+	if !ok || endpoint.Address != "http://localhost:14000" || endpoint.Console != "http://localhost:14000/ui" {
 		test.Errorf("litellm endpoint = (%+v,%v)", endpoint, ok)
 	}
-	if address, ok := Address("litellm"); !ok || address != "http://localhost:4000" {
+	if address, ok := Address("litellm"); !ok || address != "http://localhost:14000" {
 		test.Errorf("litellm address = (%q,%v)", address, ok)
 	}
 

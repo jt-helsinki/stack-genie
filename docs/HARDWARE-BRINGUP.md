@@ -39,7 +39,7 @@ real docs before wiring:
       marked "verify on hardware". `opencode` + `pi` are installed by default.
 - [ ] **Agent-CLI → LiteLLM wiring at workspace start.** Each installed agent CLI
       must talk to models through LiteLLM (via the in-workspace Headroom proxy →
-      `AI_PLATFORM_HOST:4000`). For opencode/codex/gemini this is the
+      `AI_PLATFORM_HOST:18787`). For opencode/codex/gemini this is the
       OpenAI-compatible base-URL env (`OPENAI_BASE_URL`/key) injected at start;
       for **pi** it is a custom provider registered via a pi extension or
       `models.json` (`registerProvider(..., { baseUrl, apiKey, api:
