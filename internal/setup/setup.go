@@ -35,8 +35,10 @@ type ServiceStatus struct {
 // Ollama, Presidio, and Headroom containers). Implementations shell out to the
 // runtime/OS.
 type Services interface {
-	// Reconcile makes reality match the desired state (idempotent).
-	Reconcile(providerConfig string) ([]ServiceStatus, error)
+	// Reconcile makes reality match the desired state (idempotent). progress is
+	// called (never nil) with a short message before each step, so the CLI can
+	// stream feedback during the slow container bring-up.
+	Reconcile(providerConfig string, progress func(string)) ([]ServiceStatus, error)
 	// Status reports current health without mutating anything.
 	Status() ([]ServiceStatus, error)
 	// Control performs a lifecycle action (start|stop|restart) on one service,
@@ -54,6 +56,11 @@ type Deps struct {
 	Prober       runtime.Prober
 	Now          func() string // RFC 3339 UTC timestamp
 	Services     Services
+	// Progress, when set, is called with a short human message before each setup
+	// step so the CLI can stream feedback (the work is otherwise silent for the
+	// several seconds it takes to launch + health-check the containers). nil = no
+	// progress (e.g. --json / tests).
+	Progress func(string)
 }
 
 // Options configure a setup run.
@@ -224,6 +231,13 @@ func Run(options Options, deps Deps) (*Report, error) {
 	// become warnings.
 	var warnings []string
 
+	// progress is never nil so callees can call it directly.
+	progress := deps.Progress
+	if progress == nil {
+		progress = func(string) {}
+	}
+
+	progress("Checking prerequisites…")
 	missing := missingPrerequisites(deps)
 	for _, prereq := range missing {
 		if prereq.Blocking {
@@ -243,6 +257,7 @@ func Run(options Options, deps Deps) (*Report, error) {
 	}
 
 	// 2. Initialize the host layout and install the environment templates.
+	progress("Initializing ~/.ai-platform and installing templates…")
 	platformDir, err := layout.Ensure()
 	if err != nil {
 		return nil, output.Errorf(output.ExitRuntimeFailure, "init layout: %s", err)
@@ -274,10 +289,12 @@ func Run(options Options, deps Deps) (*Report, error) {
 	}
 
 	// 5. Reconcile host services to the desired state.
-	serviceStatuses, err := deps.Services.Reconcile(options.ProviderConfig)
+	progress("Starting host services — pulling images / launching containers (this can take a minute)…")
+	serviceStatuses, err := deps.Services.Reconcile(options.ProviderConfig, progress)
 	if err != nil {
 		return nil, output.Errorf(output.ExitRuntimeFailure, "reconcile services: %s", err)
 	}
+	progress("Host services ready.")
 
 	return &Report{
 		PlatformDir:     platformDir,

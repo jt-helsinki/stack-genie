@@ -40,9 +40,12 @@ type fakeServices struct {
 	provider   string
 }
 
-func (services *fakeServices) Reconcile(providerConfig string) ([]ServiceStatus, error) {
+func (services *fakeServices) Reconcile(providerConfig string, progress func(string)) ([]ServiceStatus, error) {
 	services.reconciled = true
 	services.provider = providerConfig
+	if progress != nil {
+		progress("reconciling (fake)")
+	}
 	return []ServiceStatus{{Name: "litellm", Mode: "container", State: "running", Healthy: true}}, nil
 }
 func (services *fakeServices) Status() ([]ServiceStatus, error) {

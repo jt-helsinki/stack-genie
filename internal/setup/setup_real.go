@@ -409,7 +409,7 @@ type realServices struct {
 	prober runtime.Prober
 }
 
-func (services realServices) Reconcile(providerConfig string) ([]ServiceStatus, error) {
+func (services realServices) Reconcile(providerConfig string, progress func(string)) ([]ServiceStatus, error) {
 	configDir, err := paths.ConfigDir()
 	if err != nil {
 		return nil, err
@@ -434,18 +434,23 @@ func (services realServices) Reconcile(providerConfig string) ([]ServiceStatus, 
 	}
 	ensurePlatformNetwork(services.prober, containerRuntime.Name)
 	// aip-dns first: microVMs need the resolver up before they boot (arch §29).
+	progress("  • DNS resolver (aip-dns)…")
 	if err := ensureDNS(services.prober, containerRuntime.Name); err != nil {
 		return nil, err
 	}
+	progress("  • Ollama (aip-ollama, local models)…")
 	if err := ensureOllama(services.prober, containerRuntime.Name); err != nil {
 		return nil, err
 	}
+	progress("  • Presidio (PII guardrail backend)…")
 	if err := ensurePresidio(services.prober, containerRuntime.Name); err != nil {
 		return nil, err
 	}
+	progress("  • LiteLLM gateway + Postgres (waiting for it to become healthy)…")
 	if err := services.ensureLiteLLM(filepath.Join(configDir, "litellm", "config.yaml")); err != nil {
 		return nil, err
 	}
+	progress("  • Headroom (compression proxy)…")
 	if err := ensureHeadroom(services.prober, containerRuntime.Name); err != nil {
 		return nil, err
 	}

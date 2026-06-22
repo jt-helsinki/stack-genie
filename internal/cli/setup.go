@@ -27,6 +27,13 @@ func newSetupCmd(em *output.Emitter, exit *int) *cobra.Command {
 		Args:  cobra.NoArgs,
 		RunE: func(_ *cobra.Command, _ []string) error {
 			deps := setup.RealDeps(goruntime.GOOS, goruntime.GOARCH, nowRFC3339)
+			// Stream step-by-step progress to stderr so setup doesn't look hung
+			// during the (several-second) container bring-up. Human output only —
+			// --json/automation stays quiet (progress isn't part of the envelope).
+			if !em.JSON {
+				_, _ = fmt.Fprintln(em.Err, "Setting up the AI Development Platform…")
+				deps.Progress = func(line string) { _, _ = fmt.Fprintln(em.Err, line) }
+			}
 			report, err := setup.Run(setup.Options{ProviderConfig: providerConfig, Upgrade: upgrade}, deps)
 			if err != nil {
 				*exit = em.Failure("setup", err) // err is *output.Error (carries the exit code)
