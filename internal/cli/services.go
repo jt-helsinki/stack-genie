@@ -108,16 +108,52 @@ func newServicesControlCmd(action string, em *output.Emitter, exit *int) *cobra.
 	}
 }
 
+// allServicesSentinel is the checkbox option value that targets every managed
+// service at once. It matches the empty/"all" target that setup.ControlService
+// already expands to every container service.
+const allServicesSentinel = "all"
+
+// controllableServices drops the workspace runtime (Mode == "runtime", i.e.
+// microsandbox) from the status list so only the platform-owned containers — the
+// services start/stop/restart can actually act on — are offered in the checkbox.
+// The full list (runtime included) is still shown by `ai services status`.
+func controllableServices(statuses []setup.ServiceStatus) []setup.ServiceStatus {
+	controllable := make([]setup.ServiceStatus, 0, len(statuses))
+	for _, service := range statuses {
+		if service.Mode == "runtime" {
+			continue
+		}
+		controllable = append(controllable, service)
+	}
+	return controllable
+}
+
+// expandServiceSelection collapses the checkbox result to ["all"] when the
+// "All services" sentinel is present (it takes precedence over any individually
+// selected names); otherwise it returns the selection unchanged.
+func expandServiceSelection(selected []string) []string {
+	for _, name := range selected {
+		if name == allServicesSentinel {
+			return []string{allServicesSentinel}
+		}
+	}
+	return selected
+}
+
 // selectServices fetches the current per-service status and presents a checkbox
-// list (each labeled with its live state) for the user to choose which services
-// to act on. Returns an exit-2 error if nothing is selected.
+// list — an "All services" option first, then each controllable service labeled
+// with its live state — for the user to choose which services to act on. The
+// workspace runtime (microsandbox) is excluded since it isn't a control target.
+// Returns an exit-2 error if nothing is selected.
 func selectServices(deps setup.Deps, action string) ([]string, error) {
 	statuses, err := setup.ServicesStatus(deps)
 	if err != nil {
 		return nil, err
 	}
-	options := make([]huh.Option[string], 0, len(statuses))
-	for _, service := range statuses {
+	controllable := controllableServices(statuses)
+	options := make([]huh.Option[string], 0, len(controllable)+1)
+	options = append(options, huh.NewOption("All services", allServicesSentinel))
+	for _, service := range controllable {
 		options = append(options, huh.NewOption(fmt.Sprintf("%s (%s)", service.Name, service.State), service.Name))
 	}
 	selected, err := promptMultiChoice(
@@ -131,7 +167,7 @@ func selectServices(deps setup.Deps, action string) ([]string, error) {
 	if len(selected) == 0 {
 		return nil, output.Errorf(output.ExitInvalidInput, "no services selected")
 	}
-	return selected, nil
+	return expandServiceSelection(selected), nil
 }
 
 // controlServices applies action to each target service in turn, returning the
