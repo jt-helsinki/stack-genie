@@ -15,6 +15,7 @@ import (
 	"github.com/jt-helsinki/ideal-robot/internal/output"
 	"github.com/jt-helsinki/ideal-robot/internal/runtime"
 	"github.com/jt-helsinki/ideal-robot/internal/setup"
+	"github.com/jt-helsinki/ideal-robot/internal/ui"
 	"github.com/spf13/cobra"
 )
 
@@ -50,18 +51,32 @@ func newSetupCmd(em *output.Emitter, exit *int) *cobra.Command {
 				mode, serverAddr = selectedMode, selectedServer
 			}
 			// Stream step-by-step progress to stderr so setup doesn't look hung
-			// during the (several-second) container bring-up. Human output only —
-			// --json/automation stays quiet (progress isn't part of the envelope).
-			if !em.JSON {
-				_, _ = fmt.Fprintln(em.Err, "Setting up the AI Development Platform…")
-				deps.Progress = func(line string) { _, _ = fmt.Fprintln(em.Err, line) }
-			}
-			report, err := setup.Run(setup.Options{
+			// during the (several-second) container bring-up. On a TTY this is a
+			// live stepper checklist; on a non-TTY (but non-JSON) we keep the plain
+			// stderr streaming; under --json/automation it stays quiet (progress
+			// isn't part of the envelope).
+			opts := setup.Options{
 				ProviderConfig: providerConfig,
 				Upgrade:        upgrade,
 				Mode:           mode,
 				ServerAddr:     serverAddr,
-			}, deps)
+			}
+			var report *setup.Report
+			var err error
+			if ui.Enabled(em) {
+				err = ui.RunSteps(em.Err, "Setting up the AI Development Platform", func(emit func(step string)) error {
+					deps.Progress = emit
+					var runErr error
+					report, runErr = setup.Run(opts, deps)
+					return runErr
+				})
+			} else {
+				if !em.JSON {
+					_, _ = fmt.Fprintln(em.Err, "Setting up the AI Development Platform…")
+					deps.Progress = func(line string) { _, _ = fmt.Fprintln(em.Err, line) }
+				}
+				report, err = setup.Run(opts, deps)
+			}
 			if err != nil {
 				*exit = em.Failure("setup", err) // err is *output.Error (carries the exit code)
 				return nil

@@ -9,6 +9,7 @@ import (
 	"github.com/charmbracelet/huh"
 	"github.com/jt-helsinki/ideal-robot/internal/litellm"
 	"github.com/jt-helsinki/ideal-robot/internal/output"
+	"github.com/jt-helsinki/ideal-robot/internal/ui"
 	"github.com/spf13/cobra"
 )
 
@@ -30,7 +31,17 @@ func newModelsStatusCmd(em *output.Emitter, exit *int) *cobra.Command {
 		Short: "LiteLLM health, providers, routing, Ollama connectivity",
 		Args:  cobra.NoArgs,
 		RunE: func(_ *cobra.Command, _ []string) error {
-			info, err := litellm.RealClient().Status()
+			var info litellm.StatusInfo
+			var err error
+			if ui.Enabled(em) {
+				err = ui.RunWithSpinner(em.Err, "contacting the model gateway", func() error {
+					var workErr error
+					info, workErr = litellm.RealClient().Status()
+					return workErr
+				})
+			} else {
+				info, err = litellm.RealClient().Status()
+			}
 			if err != nil {
 				*exit = em.Failure("models.status", output.Errorf(output.ExitRuntimeFailure, "%s", err))
 				return nil
@@ -69,7 +80,17 @@ func newModelsTestCmd(em *output.Emitter, exit *int) *cobra.Command {
 					"specify a model to test (e.g. `ai models test gemma4`)"))
 				return nil
 			}
-			res, err := litellm.RealClient().Test(model)
+			var res litellm.TestResult
+			var err error
+			if ui.Enabled(em) {
+				err = ui.RunWithSpinner(em.Err, "testing "+model, func() error {
+					var workErr error
+					res, workErr = litellm.RealClient().Test(model)
+					return workErr
+				})
+			} else {
+				res, err = litellm.RealClient().Test(model)
+			}
 			if err != nil {
 				// Transport-level failure: the gateway itself was unreachable.
 				*exit = em.Failure("models.test", output.Errorf(output.ExitRuntimeFailure,

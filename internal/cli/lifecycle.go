@@ -43,7 +43,7 @@ func newStartCmd(emitter *output.Emitter, exit *int) *cobra.Command {
 				*exit = emitter.Failure("workspace.start", err)
 				return nil
 			}
-			handle, err := workspace.RealManager(goruntime.GOOS, nowRFC3339).Start(name)
+			handle, err := startWorkspace(emitter, name)
 			if err != nil {
 				*exit = emitter.Failure("workspace.start", mapWorkspaceErr(err))
 				return nil
@@ -86,7 +86,7 @@ func newRestartCmd(emitter *output.Emitter, exit *int) *cobra.Command {
 				*exit = emitter.Failure("workspace.restart", err)
 				return nil
 			}
-			handle, err := workspace.RealManager(goruntime.GOOS, nowRFC3339).Restart(name)
+			handle, err := restartWorkspace(emitter, name)
 			if err != nil {
 				*exit = emitter.Failure("workspace.restart", mapWorkspaceErr(err))
 				return nil

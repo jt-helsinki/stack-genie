@@ -178,11 +178,14 @@ func newProjectCreateCmd(emitter *output.Emitter, exit *int) *cobra.Command {
 // inside it. Used when `ai project create` runs in a directory that is already a
 // project. The microVM start/exec run against the real Microsandbox runtime.
 func attachWorkspace(emitter *output.Emitter, exit *int, name string) {
-	manager := workspace.RealManager(goruntime.GOOS, nowRFC3339)
-	if _, err := manager.Start(name); err != nil {
+	// Boot the microVM (slow — spinner-wrapped on a TTY via startWorkspace), then
+	// exec an interactive login shell. The Exec is NOT spinner-wrapped: it takes
+	// over the terminal.
+	if _, err := startWorkspace(emitter, name); err != nil {
 		*exit = emitter.Failure("project.create", mapWorkspaceErr(err))
 		return
 	}
+	manager := workspace.RealManager(goruntime.GOOS, nowRFC3339)
 	shell := os.Getenv("SHELL")
 	if shell == "" {
 		shell = "/bin/sh"

@@ -9,6 +9,7 @@ import (
 	"github.com/charmbracelet/x/term"
 	"github.com/jt-helsinki/ideal-robot/internal/output"
 	"github.com/jt-helsinki/ideal-robot/internal/runtime"
+	"github.com/jt-helsinki/ideal-robot/internal/ui"
 	"github.com/jt-helsinki/ideal-robot/internal/uninstall"
 	"github.com/spf13/cobra"
 )
@@ -80,17 +81,23 @@ func newUninstallCmd(em *output.Emitter, exit *int) *cobra.Command {
 			}
 
 			binaryPath, _ := os.Executable()
-			var progress uninstall.Progress
-			if !em.JSON {
-				_, _ = fmt.Fprintln(em.Err, "Uninstalling the AI Development Platform…")
-				progress = func(line string) { _, _ = fmt.Fprintln(em.Err, line) }
+			runOpts := uninstall.Options{Purge: purge, BinaryPath: binaryPath, RemoveDeps: toRemove}
+			var report uninstall.Report
+			var err error
+			if ui.Enabled(em) {
+				err = ui.RunSteps(em.Err, "Uninstalling the AI Development Platform", func(emit func(step string)) error {
+					var runErr error
+					report, runErr = uninstall.Run(runOpts, prober, uninstall.Progress(emit))
+					return runErr
+				})
+			} else {
+				var progress uninstall.Progress
+				if !em.JSON {
+					_, _ = fmt.Fprintln(em.Err, "Uninstalling the AI Development Platform…")
+					progress = func(line string) { _, _ = fmt.Fprintln(em.Err, line) }
+				}
+				report, err = uninstall.Run(runOpts, prober, progress)
 			}
-
-			report, err := uninstall.Run(
-				uninstall.Options{Purge: purge, BinaryPath: binaryPath, RemoveDeps: toRemove},
-				prober,
-				progress,
-			)
 			if err != nil {
 				*exit = em.Failure("uninstall", output.Errorf(output.ExitRuntimeFailure, "uninstall: %s", err))
 				return nil

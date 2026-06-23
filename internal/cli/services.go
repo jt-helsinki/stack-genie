@@ -9,6 +9,7 @@ import (
 	"github.com/jt-helsinki/ideal-robot/internal/console"
 	"github.com/jt-helsinki/ideal-robot/internal/output"
 	"github.com/jt-helsinki/ideal-robot/internal/setup"
+	"github.com/jt-helsinki/ideal-robot/internal/ui"
 	"github.com/spf13/cobra"
 )
 
@@ -86,7 +87,17 @@ func newServicesControlCmd(action string, em *output.Emitter, exit *int) *cobra.
 					targets = []string{""} // "" == all platform services
 				}
 			}
-			statuses, err := controlServices(deps, action, targets)
+			var statuses []setup.ServiceStatus
+			var err error
+			if ui.Enabled(em) {
+				err = ui.RunWithSpinner(em.Err, action+" services", func() error {
+					var workErr error
+					statuses, workErr = controlServices(deps, action, targets)
+					return workErr
+				})
+			} else {
+				statuses, err = controlServices(deps, action, targets)
+			}
 			if err != nil {
 				*exit = em.Failure("services."+action, err)
 				return nil

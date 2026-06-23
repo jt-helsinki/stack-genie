@@ -7,6 +7,7 @@ import (
 	"github.com/jt-helsinki/ideal-robot/internal/output"
 	"github.com/jt-helsinki/ideal-robot/internal/runtime"
 	"github.com/jt-helsinki/ideal-robot/internal/state"
+	"github.com/jt-helsinki/ideal-robot/internal/ui"
 	"github.com/jt-helsinki/ideal-robot/internal/workspace"
 	"github.com/spf13/cobra"
 )
@@ -92,6 +93,41 @@ func mapWorkspaceErr(err error) error {
 	}
 }
 
+// startWorkspace builds the image and boots the project's workspace microVM.
+// Both steps are slow, so on a TTY (not --json/--plain) it animates a spinner on
+// stderr while the work runs; under --json/automation/no-TTY it runs the Manager
+// directly with no spinner (the envelope path is unchanged). Shared by `ai
+// workspace start`, the `ai start` cwd shortcut, and project attach.
+func startWorkspace(emitter *output.Emitter, name string) (*state.Workspace, error) {
+	manager := workspace.RealManager(goruntime.GOOS, nowRFC3339)
+	if !ui.Enabled(emitter) {
+		return manager.Start(name)
+	}
+	var handle *state.Workspace
+	err := ui.RunWithSpinner(emitter.Err, "starting workspace "+name, func() error {
+		var workErr error
+		handle, workErr = manager.Start(name)
+		return workErr
+	})
+	return handle, err
+}
+
+// restartWorkspace restarts the existing workspace microVM (no rebuild). Like
+// startWorkspace it animates a spinner on a TTY and runs directly otherwise.
+func restartWorkspace(emitter *output.Emitter, name string) (*state.Workspace, error) {
+	manager := workspace.RealManager(goruntime.GOOS, nowRFC3339)
+	if !ui.Enabled(emitter) {
+		return manager.Restart(name)
+	}
+	var handle *state.Workspace
+	err := ui.RunWithSpinner(emitter.Err, "restarting workspace "+name, func() error {
+		var workErr error
+		handle, workErr = manager.Restart(name)
+		return workErr
+	})
+	return handle, err
+}
+
 func newWorkspaceListCmd(emitter *output.Emitter, exit *int) *cobra.Command {
 	return &cobra.Command{
 		Use:   "list",
@@ -130,7 +166,7 @@ func newWorkspaceStartCmd(emitter *output.Emitter, exit *int) *cobra.Command {
 				*exit = emitter.Failure("workspace.start", err)
 				return nil
 			}
-			handle, err := workspace.RealManager(goruntime.GOOS, nowRFC3339).Start(name)
+			handle, err := startWorkspace(emitter, name)
 			if err != nil {
 				*exit = emitter.Failure("workspace.start", mapWorkspaceErr(err))
 				return nil
@@ -175,7 +211,7 @@ func newWorkspaceRestartCmd(emitter *output.Emitter, exit *int) *cobra.Command {
 				*exit = emitter.Failure("workspace.restart", err)
 				return nil
 			}
-			handle, err := workspace.RealManager(goruntime.GOOS, nowRFC3339).Restart(name)
+			handle, err := restartWorkspace(emitter, name)
 			if err != nil {
 				*exit = emitter.Failure("workspace.restart", mapWorkspaceErr(err))
 				return nil
