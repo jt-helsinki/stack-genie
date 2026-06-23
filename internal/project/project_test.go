@@ -130,6 +130,14 @@ func TestListReturnsProjects(test *testing.T) {
 	if len(entries) != 1 || entries[0].Name != "my-app" || entries[0].OS != "debian-trixie" {
 		test.Fatalf("list = %+v", entries)
 	}
+	// §3.3: the row also carries the active agent CLIs and the workspace status
+	// ("none" until a workspace is started).
+	if len(entries[0].Agents) != 2 || entries[0].Agents[0] != "opencode" {
+		test.Fatalf("list agents = %+v, want [opencode codex]", entries[0].Agents)
+	}
+	if entries[0].Status != "none" {
+		test.Fatalf("list status = %q, want none (no workspace started)", entries[0].Status)
+	}
 }
 
 func TestDeleteKeepsSourceClearsRun(test *testing.T) {

@@ -83,11 +83,7 @@ func newProjectCreateCmd(emitter *output.Emitter, exit *int) *cobra.Command {
 			stacksFlag, _ := cmd.Flags().GetStringSlice("stacks")
 
 			// A project is fully specifiable in one command via flags, so external
-			// programs can create it non-interactively with --json (§1.8). The huh
-			// wizard is the interactive convenience ONLY: it runs when stdin is a
-			// real terminal, --json is off, and no create flag was given. Otherwise
-			// the spec is built and validated from flags — never a prompt, which
-			// would block / hang under automation (§3.1).
+			// programs can create it non-interactively with --json (§1.8, §3.1).
 			// On a terminal (and not --json) the wizard always runs, PRE-SEEDED with
 			// any flags the user passed — flags set the UI's defaults rather than
 			// bypassing it. Under --json / no TTY the project is built straight from
@@ -417,6 +413,17 @@ func newProjectDeleteCmd(emitter *output.Emitter, exit *int) *cobra.Command {
 					output.Errorf(output.ExitInvalidInput, "destructive: pass --yes to confirm"))
 				return nil
 			}
+			// Tear down the workspace microVM first so deleting the project never
+			// leaves a running/created microVM (and its run-state) orphaned (CLI
+			// §3.4). Idempotent: a project that was never started is a no-op, so a
+			// project with no workspace still deletes. A missing Microsandbox
+			// runtime is tolerated — there is nothing running to tear down — but any
+			// other teardown failure is surfaced rather than silently leaking a VM.
+			manager := workspace.RealManager(goruntime.GOOS, nowRFC3339)
+			if err := manager.DestroyIfPresent(name); err != nil && !errors.Is(err, workspace.ErrMsbMissing) {
+				*exit = emitter.Failure("project.delete", mapWorkspaceErr(err))
+				return nil
+			}
 			if err := project.Delete(name, purge); err != nil {
 				*exit = emitter.Failure("project.delete", mapProjectErr(err))
 				return nil
@@ -436,6 +443,7 @@ func deletePlan(name, root string, purge bool) []string {
 		removal = "remove host source " + root
 	}
 	return []string{
+		"destroy workspace microVM " + workspace.Name(name) + " (if running)",
 		"remove " + name + " from config/projects.yaml",
 		removal,
 	}

@@ -180,8 +180,12 @@ func (manager Manager) Start(project string) (*state.Workspace, error) {
 	// Register the agent CLIs' provider config so opencode/pi inside the microVM
 	// talk to the host Headroom proxy through a per-workspace scoped LiteLLM
 	// virtual key (arch §15, §17). The key flows host→VM only; it is never
-	// written to platform disk.
+	// written to platform disk. If registration fails after the microVM is up, no
+	// state handle has been saved yet — so best-effort destroy the microVM to roll
+	// back rather than leaking an untracked running VM. The rollback never masks
+	// the original error.
 	if err := manager.registerAgentProviders(name, project, projectConfig, gatewayURL); err != nil {
+		_ = manager.Sandbox.Destroy(name)
 		return nil, err
 	}
 	now := manager.Now()
@@ -317,6 +321,28 @@ func (manager Manager) findHandle(root, name string) (*state.Workspace, error) {
 		}
 	}
 	return nil, nil
+}
+
+// DestroyIfPresent tears down the project's workspace microVM only when a
+// workspace handle exists and is not already destroyed. It is the idempotent
+// teardown `ai project delete` layers on before removing project state (CLI
+// §3.4): a project that was never started (no handle) is a no-op, so deleting a
+// project with no workspace still works. A still-existing handle is destroyed via
+// the normal Destroy path (so state is stamped destroyed). Returns nil when there
+// is nothing to do.
+func (manager Manager) DestroyIfPresent(project string) error {
+	root, err := resolveProjectRoot(project)
+	if err != nil {
+		return err
+	}
+	handle, err := manager.findHandle(root, Name(project))
+	if err != nil {
+		return err
+	}
+	if handle == nil || handle.Status == state.StatusDestroyed {
+		return nil // never started, or already torn down
+	}
+	return manager.Destroy(project)
 }
 
 // Destroy removes the microVM/runtime handle only. It is NON-destructive (§4.4):

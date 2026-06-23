@@ -103,9 +103,10 @@ CLI must behave identically on:
   `~/projects`**.
 * Project templates and agent configuration are **declarative data**
   (YAML / JSON). They are never executable application logic.
-* External components (Microsandbox, LiteLLM, Headroom, Presidio, Ollama, git,
-  docker / podman, gh) are invoked via their Go SDK or as subprocesses — never
-  reimplemented.
+* External components (Microsandbox via the `msb` CLI, LiteLLM, Headroom,
+  Presidio, Ollama, docker / podman) are invoked as subprocesses or over their
+  HTTP APIs — never reimplemented. Version control is out of scope: the platform
+  runs no `git`/`gh`.
 
 ---
 
@@ -424,9 +425,14 @@ Behavior (after **Confirm**):
   skill is seeded
 * writes `project.yaml`, `config.yaml` (including `agent.tools` and
   `agent.default_tool`), `profile.yaml`, and a `.gitignore` that ignores `run/`
-* builds the workspace OCI image from `.ai-platform/Dockerfile` and creates the
-  Microsandbox workspace microVM
 * records the project in the global index (`config/projects.yaml`)
+
+`create` is **scaffold-only**: it writes the `.ai-platform/` definition and
+registers the project — it does **not** build the workspace OCI image or
+create/start the workspace microVM on first creation. The image is built and the
+microVM is created on demand by `ai workspace start` (§4.2), and `create` itself
+starts/execs a workspace only when run in a directory that is **already** a
+project (the attach path above).
 
 ---
 
@@ -498,10 +504,10 @@ Behavior:
 * injects `AI_PLATFORM_HOST` + service ports and the scoped **LiteLLM virtual
   key** into the workspace environment (the workspace holds no provider secret;
   keys-in-LiteLLM, architecture §17)
-* applies the project's Microsandbox **NetworkPolicy** (default-deny egress +
-  allow-listed host services + published ports, from the `network` block;
-  architecture §29.4) — live enforcement at start remains a deferred
-  hardware-bring-up seam
+* applies the project's egress policy (default-deny egress + allow-listed host
+  services + published ports, from the `network` block; architecture §29.4) as
+  Microsandbox net-rules rendered at workspace create (`egress.MsbNetworkArgs` →
+  `msb create`)
 * initializes tooling
 
 ---
@@ -794,9 +800,9 @@ ai network log     [project] [--tail N]          # attempted-egress-by-name audi
 
 Project-scoped (default the current directory's project, like `ai context`).
 These edit the project's `network` block in `config.yaml` — `network.egress`,
-`network.allow_host_services`, `network.publish_ports`. Enforcement (the
-Microsandbox `NetworkPolicy` applied at `ai workspace start`) is **deferred to
-hardware bring-up**; this command manages the **declaration**. The whole policy is
+`network.allow_host_services`, `network.publish_ports`. This command manages the
+**declaration**; enforcement renders that declaration into Microsandbox net-rules
+at workspace create (`egress.MsbNetworkArgs` → `msb create`). The whole policy is
 managed by the `ai` app — **no manual file editing is required** (though the
 `network` block stays hand-editable). On a terminal, omitting the value
 **presents the options**: `egress` (no mode) shows a posture select menu; `allow`

@@ -126,14 +126,13 @@ non-interactive except `ai project create`, which is driven through a PTY via th
 * **egress policy fixture** (`fixtures/egress-policy`): the harness configures
   the egress controls explicitly so tests assert against a *known* policy, not
   ambient host behavior — a **Microsandbox default-deny NetworkPolicy** (declared
-  via `ai network`, applied per-workspace via the Microsandbox **Go SDK**, plan
-  §3.4) that permits the workspace to reach only the trusted host service ports
-  (`AI_PLATFORM_HOST`: LiteLLM, Headroom) plus the allow-listed
-  `$MOCK_PROVIDER_URL` (§ Setup). It is rendered from this fixture (parameterized
-  by `$MOCK_PROVIDER_URL`) so the source of "what is allowed" is the fixture, not
-  a test's expectation. There is **no egress proxy** — confinement is the
-  NetworkPolicy; live enforcement at workspace start is a deferred
-  hardware-bring-up seam (arch §29.4–29.5).
+  via `ai network`, applied per-workspace as Microsandbox net-rules at workspace
+  create via the `msb` CLI, plan §3.4) that permits the workspace to reach only
+  the trusted host service ports (`AI_PLATFORM_HOST`: LiteLLM, Headroom) plus the
+  allow-listed `$MOCK_PROVIDER_URL` (§ Setup). It is rendered from this fixture
+  (parameterized by `$MOCK_PROVIDER_URL`) so the source of "what is allowed" is
+  the fixture, not a test's expectation. There is **no egress proxy** —
+  confinement is the net-rules applied at workspace create (arch §29.4–29.5).
 
 ### Setup / Teardown
 
@@ -876,8 +875,8 @@ ai workspace exec test-project --json -- \
 * the `ai` process itself exits `0` for all (the commands ran); confinement is
   asserted via `data.exit_code`, per §4.5
 
-(Live NetworkPolicy enforcement at workspace start is a deferred
-hardware-bring-up seam, arch §29.5; this test runs once that seam is wired.)
+(Egress confinement is the Microsandbox net-rules rendered at workspace create,
+arch §29.5; this test asserts that applied policy on a provisioned host.)
 
 ---
 

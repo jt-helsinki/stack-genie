@@ -395,9 +395,9 @@ service-tier containers share the private `aip-net` network.
   default, permitting only trusted host service ports + published ports. Per-project
   egress is configured by the `ai network` command (modes `deny`/`public`/`unrestricted`
   — default `deny` — plus allowed host services and published ports, stored in
-  `config.yaml`). The policy is fully userspace; there is **no egress proxy**. Live
-  NetworkPolicy enforcement at workspace start (applying the `ai network`
-  declarations via the Microsandbox Go SDK) is a deferred hardware bring-up seam.
+  `config.yaml`). The policy is fully userspace; there is **no egress proxy**.
+  Enforcement renders the `ai network` declarations into Microsandbox net-rules at
+  workspace create (`egress.MsbNetworkArgs` → `msb create`).
 
 ---
 

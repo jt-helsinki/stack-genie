@@ -183,11 +183,24 @@ func TestStartBuildsAndRecordsStartedHandle(test *testing.T) {
 }
 
 func TestStartFailsWhenKeyMintFails(test *testing.T) {
-	seedProject(test, "app")
+	root := seedProject(test, "app")
 	minter := &fakeKeyMinter{lastErr: errors.New("litellm gateway is not reachable")}
-	manager := Manager{Builder: &fakeBuilder{}, Sandbox: &fakeSandbox{}, Keys: minter, Now: func() string { return "t" }}
+	sandbox := &fakeSandbox{}
+	manager := Manager{Builder: &fakeBuilder{}, Sandbox: sandbox, Keys: minter, Now: func() string { return "t" }}
 	if _, err := manager.Start("app"); err == nil {
 		test.Fatal("Start must fail when the virtual key cannot be minted")
+	}
+	// A post-start failure must roll back the running microVM (no orphan) and
+	// leave no saved handle, so a retry starts cleanly.
+	if !sandbox.destroyed {
+		test.Fatal("Start must destroy the microVM when post-start registration fails (orphan rollback)")
+	}
+	workspaces, err := state.OpenStore(root).ListWorkspaces()
+	if err != nil {
+		test.Fatal(err)
+	}
+	if len(workspaces) != 0 {
+		test.Fatalf("failed Start must not save a handle, got %+v", workspaces)
 	}
 }
 
@@ -280,6 +293,40 @@ func TestDestroyIsNonDestructiveAndRecordsStatus(test *testing.T) {
 	workspaces, _ := state.OpenStore(root).ListWorkspaces()
 	if len(workspaces) != 1 || workspaces[0].Status != state.StatusDestroyed {
 		test.Fatalf("status not recorded destroyed: %+v", workspaces)
+	}
+}
+
+// DestroyIfPresent tears down a started workspace's microVM (the teardown `ai
+// project delete` layers on, CLI §3.4) and stamps the handle destroyed.
+func TestDestroyIfPresentDestroysStartedWorkspace(test *testing.T) {
+	root := seedProject(test, "app")
+	sandbox := &fakeSandbox{}
+	manager := newManager(&fakeBuilder{}, sandbox)
+	if _, err := manager.Start("app"); err != nil {
+		test.Fatal(err)
+	}
+	if err := manager.DestroyIfPresent("app"); err != nil {
+		test.Fatal(err)
+	}
+	if !sandbox.destroyed {
+		test.Fatal("sandbox.Destroy not called for a started workspace")
+	}
+	workspaces, _ := state.OpenStore(root).ListWorkspaces()
+	if len(workspaces) != 1 || workspaces[0].Status != state.StatusDestroyed {
+		test.Fatalf("status not recorded destroyed: %+v", workspaces)
+	}
+}
+
+// DestroyIfPresent is a no-op when the project never started a workspace (no
+// handle), so `ai project delete` on a never-started project still works.
+func TestDestroyIfPresentNoHandleIsNoop(test *testing.T) {
+	seedProject(test, "app")
+	sandbox := &fakeSandbox{}
+	if err := newManager(&fakeBuilder{}, sandbox).DestroyIfPresent("app"); err != nil {
+		test.Fatal(err)
+	}
+	if sandbox.destroyed {
+		test.Fatal("sandbox.Destroy called for a never-started workspace")
 	}
 }
 

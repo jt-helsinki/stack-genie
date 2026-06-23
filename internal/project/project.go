@@ -175,15 +175,21 @@ func writeProfile(root string, stacks []string) error {
 	return os.WriteFile(filepath.Join(root, ".ai-platform", "profile.yaml"), encoded, 0o644)
 }
 
-// Entry is one row of `ai project list`.
+// Entry is one row of `ai project list` (CLI §3.3): name, os, the active agent
+// CLIs, and the workspace status.
 type Entry struct {
-	Name string `json:"name"`
-	Path string `json:"path"`
-	OS   string `json:"os,omitempty"`
+	Name   string   `json:"name"`
+	Path   string   `json:"path"`
+	OS     string   `json:"os,omitempty"`
+	Agents []string `json:"agents,omitempty"`
+	// Status is the project's workspace lifecycle state (started/stopped/…), or
+	// "none" when no workspace has been started for it yet.
+	Status string `json:"status"`
 }
 
-// List returns the registered projects (from the global index, enriched with the
-// OS from each project.yaml when readable).
+// List returns the registered projects (from the global index), each enriched
+// with the OS + active agent CLIs from its config and the current workspace
+// status, so `ai project list` reports the full row the spec promises (§3.3).
 func List() ([]Entry, error) {
 	index, err := state.LoadIndex()
 	if err != nil {
@@ -191,18 +197,40 @@ func List() ([]Entry, error) {
 	}
 	entries := make([]Entry, 0, len(index.Projects))
 	for name, indexEntry := range index.Projects {
-		entry := Entry{Name: name, Path: indexEntry.Path}
+		entry := Entry{Name: name, Path: indexEntry.Path, Status: workspaceStatus(name, indexEntry.Path)}
 		if project, err := state.OpenStore(indexEntry.Path).LoadProject(); err == nil {
 			entry.OS = project.OS
+		}
+		if projectConfig, err := config.LoadProjectConfig(indexEntry.Path); err == nil {
+			entry.Agents = projectConfig.Agent.Tools
 		}
 		entries = append(entries, entry)
 	}
 	return entries, nil
 }
 
-// Delete removes a project from the index and clears its host-local run/ state.
-// With purge it also removes the host source tree. Host source is otherwise
-// preserved (CLI §3.4). Workspace/overlay teardown is layered on by the caller.
+// workspaceStatus reports the lifecycle status of a project's workspace, or
+// "none" when none has been started (no handle on disk). Unreadable state is
+// reported as "none" rather than failing the whole listing.
+func workspaceStatus(name, root string) string {
+	workspaces, err := state.OpenStore(root).ListWorkspaces()
+	if err != nil {
+		return "none"
+	}
+	wanted := workspace.Name(name)
+	for index := range workspaces {
+		if workspaces[index].ID == wanted {
+			return string(workspaces[index].Status)
+		}
+	}
+	return "none"
+}
+
+// Delete removes a project from the index, clears its host-local run/ state, and
+// removes the project's persistent overlay. With purge it also removes the host
+// source tree; host source is otherwise preserved (CLI §3.4). Destroying the
+// workspace microVM is layered on by the CLI caller (workspace.DestroyIfPresent)
+// before this runs, so a delete never leaves a running microVM orphaned.
 func Delete(name string, purge bool) error {
 	index, err := state.LoadIndex()
 	if err != nil {

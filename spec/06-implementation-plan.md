@@ -32,9 +32,9 @@ external-tool integration approach, the Slice 1 build sequence, and CI/testing.
 * **Thin launchers only** (bash/zsh/PowerShell) bootstrap the binary; no
   platform logic in shell.
 * **Declarative config/templates** in YAML/JSON; never executable logic.
-* External components are invoked via Go SDK or subprocess, never reimplemented:
-  Microsandbox (Go SDK / `msb`), LiteLLM (host service over HTTP),
-  git / docker / podman / gh (subprocess).
+* External components are invoked as subprocesses or over HTTP, never
+  reimplemented: Microsandbox (the `msb` CLI), LiteLLM (host service over HTTP),
+  docker / podman (subprocess). Version control is out of scope — no `git`/`gh`.
 
 Key libraries: `cobra` (commands), `viper`-free hand-rolled config merge (to
 keep the precedence rules in arch §27 explicit), `slog` (structured logs), stdlib
@@ -113,18 +113,15 @@ These underpin every slice and are built first.
 * `runtime/` (service tier): detect docker/podman; verify rootless; write
   `config/runtime.yaml`; `Runtime` interface so docker/podman are interchangeable
   (Podman impl in S6)
-* `sandbox/` (workspaces): wrap the **Microsandbox Go SDK** (`msb` only as a
-  fallback); verify the microVM runtime + host virtualization (Apple Silicon /
-  KVM); no daemon to supervise. The adapter creates each
-  workspace microVM **and applies its egress network policy via the Go SDK** —
-  the default-deny + allow-rule model (deny by default; allow exactly the
-  trusted host service ports + published ports), which is what AT §16.3 asserts.
-  The per-project egress policy itself (mode `deny`/`public`/`unrestricted`,
-  allowed host services, published ports — repo-layout §12.4) is configured by
-  the `ai network` command; the live Microsandbox NetworkPolicy enforcement is a
-  deferred hardware bring-up seam.
-  (The Go SDK exposes the same network-policy core model as the other SDKs; pin
-  the exact symbol against the SDK version at build time.)
+* `sandbox/` (workspaces): drive Microsandbox via the **`msb` CLI**; verify the
+  microVM runtime + host virtualization (Apple Silicon / KVM); no daemon to
+  supervise. The adapter creates each workspace microVM **and applies its egress
+  network policy as `msb` net-rules at create** — the default-deny + allow-rule
+  model (deny by default; allow exactly the trusted host service ports + published
+  ports), which is what AT §16.3 asserts. The per-project egress policy itself
+  (mode `deny`/`public`/`unrestricted`, allowed host services, published ports —
+  repo-layout §12.4) is configured by the `ai network` command and rendered into
+  the `msb create` net-rule fragment by `egress.MsbNetworkArgs`.
 
 ## 3.5 External Adapters & Service Control Plane
 
@@ -196,8 +193,8 @@ refer to the CLI spec and architecture spec respectively.
   `ai models test` against the mock provider. Tests: AT §7.1, §7.2.
 * **M5 — debian-trixie image + Microsandbox.** Seed `.ai-platform/Dockerfile` from the
   `debian-trixie` template, build the workspace OCI image from it; create/start
-  the microVM (virtio-net + gvproxy, default-deny network policy **applied via the
-  Go SDK**, §3.4); mounts/volumes;
+  the microVM (virtio-net + gvproxy, default-deny network policy **applied as
+  `msb` net-rules at create**, §3.4); mounts/volumes;
   `ai workspace exec`; inject `AI_PLATFORM_HOST` so the agent reaches the host
   Headroom→LiteLLM gateway with its scoped virtual key (arch §17). Tests: AT §6.1,
   harness workspace-start threshold, AT §16.2, AT §16.3.
@@ -208,8 +205,12 @@ refer to the CLI spec and architecture spec respectively.
   2. Then, in the current directory (no git — VCS is out of scope), write
   `.ai-platform/` (Dockerfile = OS template + selected stack snippets + selected
   CLIs / config incl. `agent.tools`+`default_tool` / `profile.yaml` incl.
-  `stacks` / project.yaml / .gitignore) + index in `config/projects.yaml` +
-  workspace + mint the agent's scoped LiteLLM virtual key; `ai project delete`.
+  `stacks` / project.yaml / .gitignore) + index in `config/projects.yaml`.
+  `create` is scaffold-only — the workspace OCI image build, the microVM, and the
+  agent's scoped LiteLLM virtual key are created on demand by `ai workspace start`
+  (or by `create`'s attach path when the cwd is already a project), not on first
+  creation. `ai project delete` tears down the workspace microVM before removing
+  project state.
   Tests: AT §3.1 (incl. no-TTY + abort), §6.3 (CLI selection), §6.4 (stack
   selection), §3.3, §9.1, §9.2.
 * **M7 — `ai doctor`.** All S1 dependency/health checks with actionable output.
@@ -304,13 +305,13 @@ Each slice must not break prior slices (roadmap §1).
      userspace; the only elevated facility is the macOS hypervisor entitlement
      (arch §29.1, §30). A non-allow-listed destination is denied — tested by
      AT §16.3.
-   * applying the per-project `ai network` declarations live as the Microsandbox
-     NetworkPolicy via the Go SDK is the deferred hardware bring-up seam (§3.4).
+   * the per-project `ai network` declarations are rendered into `msb` net-rules
+     and applied at workspace create (`egress.MsbNetworkArgs` → `msb create`, §3.4).
      **Gate (spike on hardware):** on a clean Apple Silicon Mac, prove (a) the
      `com.apple.security.hypervisor` entitlement works under Developer ID +
-     notarization for a downloaded binary, and (b) the Go SDK's NetworkPolicy
-     applies the default-deny + allow-rule model with no `utun`/NetworkExtension/
-     admin prompt/kext.
+     notarization for a downloaded binary, and (b) the `msb` net-rules apply the
+     default-deny + allow-rule model with no `utun`/NetworkExtension/admin
+     prompt/kext.
 3. **Headroom placement (decided).** Headroom runs as a **host service-tier
    container** (`aip-headroom`, pulled image `ghcr.io/chopratejas/headroom:slim`,
    :8787) — an input-compression proxy **in front of LiteLLM**, no longer baked
