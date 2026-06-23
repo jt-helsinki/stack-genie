@@ -29,6 +29,21 @@ func TestProjectsLoadsAndSelectEmitsMsg(test *testing.T) {
 	}
 }
 
+func TestProjectsNewKeyRequestsCreate(test *testing.T) {
+	view := NewProjects(func() ([]project.Entry, error) {
+		return []project.Entry{{Name: "app", Path: "/p/app"}}, nil
+	})
+	_ = view.Update(view.Init()()) // load
+
+	cmd := view.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("n")})
+	if cmd == nil {
+		test.Fatal("pressing n must emit a new-project request command")
+	}
+	if _, ok := cmd().(NewProjectRequestedMsg); !ok {
+		test.Fatalf("want NewProjectRequestedMsg, got %#v", cmd())
+	}
+}
+
 func TestProjectsEmptyShowsHint(test *testing.T) {
 	view := NewProjects(func() ([]project.Entry, error) { return nil, nil })
 	_ = view.Update(view.Init()())

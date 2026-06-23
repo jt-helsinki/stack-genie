@@ -16,6 +16,13 @@ type ProjectInfoFetcher func(name string) (project.Entry, bool, error)
 // destroy) to a project. Injected; the parent wires workspace.RealManager.
 type WorkspaceController func(action, project string) error
 
+// ExecRequestedMsg is emitted when the user asks to open an interactive shell in
+// the current project's workspace (the "e" key). The parent app suspends the TUI
+// and tea.ExecProcess an interactive shell via `ai workspace exec`.
+type ExecRequestedMsg struct {
+	Project string
+}
+
 type projectRefreshedMsg struct {
 	entry project.Entry
 	found bool
@@ -50,7 +57,7 @@ func (view *Project) Hints() string {
 	if view.name == "" {
 		return "open a project from the Projects view"
 	}
-	return "s start · x stop · r restart · d destroy"
+	return "s start · x stop · r restart · d destroy · e shell"
 }
 func (view *Project) SetSize(int, int) {}
 
@@ -92,6 +99,10 @@ func (view *Project) Update(msg tea.Msg) tea.Cmd {
 	case tea.KeyMsg:
 		if view.name == "" {
 			return nil
+		}
+		if message.String() == "e" {
+			name := view.name
+			return func() tea.Msg { return ExecRequestedMsg{Project: name} }
 		}
 		action, ok := map[string]string{"s": "start", "x": "stop", "r": "restart", "d": "destroy"}[message.String()]
 		if !ok {

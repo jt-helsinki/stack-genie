@@ -18,6 +18,10 @@ type ProjectSelectedMsg struct {
 	Path string
 }
 
+// NewProjectRequestedMsg is emitted when the user asks to create a new project
+// (the "n" key); the parent app switches to the Create (directory picker) view.
+type NewProjectRequestedMsg struct{}
+
 type projectsLoadedMsg struct {
 	entries []project.Entry
 	err     error
@@ -46,7 +50,7 @@ func NewProjects(list ProjectLister) *Projects {
 }
 
 func (view *Projects) Title() string { return "Projects" }
-func (view *Projects) Hints() string { return "enter open · r refresh" }
+func (view *Projects) Hints() string { return "enter open · n new · r refresh" }
 
 func (view *Projects) SetSize(width, height int) {
 	view.table.SetWidth(width)
@@ -84,6 +88,8 @@ func (view *Projects) Update(msg tea.Msg) tea.Cmd {
 				return func() tea.Msg { return ProjectSelectedMsg{Name: selected.Name, Path: selected.Path} }
 			}
 			return nil
+		case "n":
+			return func() tea.Msg { return NewProjectRequestedMsg{} }
 		case "r":
 			return view.listCmd()
 		}

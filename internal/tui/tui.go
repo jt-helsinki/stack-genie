@@ -16,9 +16,14 @@ import (
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/jt-helsinki/ideal-robot/internal/contextopt"
+	"github.com/jt-helsinki/ideal-robot/internal/egress"
+	"github.com/jt-helsinki/ideal-robot/internal/litellm"
 	"github.com/jt-helsinki/ideal-robot/internal/project"
 	"github.com/jt-helsinki/ideal-robot/internal/runtime"
+	"github.com/jt-helsinki/ideal-robot/internal/secrets"
 	"github.com/jt-helsinki/ideal-robot/internal/setup"
+	"github.com/jt-helsinki/ideal-robot/internal/state"
 	"github.com/jt-helsinki/ideal-robot/internal/tui/scope"
 	"github.com/jt-helsinki/ideal-robot/internal/tui/views"
 	"github.com/jt-helsinki/ideal-robot/internal/ui"
@@ -45,7 +50,20 @@ func Run(cwd string) error {
 		return err
 	}
 
+	application := &app{
+		cwd:            cwd,
+		currentProject: resolution.DefaultProject,
+		role:           roleLabel(),
+		gateway:        gatewayLabel(),
+	}
+
 	deps := setup.RealDeps(goruntime.GOOS, goruntime.GOARCH, nowRFC3339)
+	litellmClient := litellm.RealClient()
+	secretsBroker := secrets.RealBroker()
+	// The per-project views (Network/Context) resolve the LIVE current project at
+	// fetch time, so switching projects reflects immediately without re-wiring.
+	currentRoot := func() (string, bool) { return resolveProjectRoot(application.currentProject) }
+
 	servicesView := views.NewServices(
 		func() ([]setup.ServiceStatus, error) { return setup.ServicesStatus(deps) },
 		func(action, service string) error {
@@ -56,23 +74,23 @@ func Run(cwd string) error {
 	)
 	projectsView := views.NewProjects(project.List)
 	projectDetail := views.NewProject(projectInfo, workspaceControl)
+	networkView := views.NewNetwork(currentRoot, egress.Get, egress.SetMode)
+	contextView := views.NewContext(currentRoot, contextopt.GetStatus, contextopt.SetStrategy, contextopt.SetCavemanLevel)
+	modelsView := views.NewModels(litellmClient.Status, litellmClient.Test)
+	secretsView := views.NewSecrets(secretsBroker.List, secretsBroker.Remove)
 
-	// View order: Services (server scope, always works), Projects (the global
-	// switcher), Project (detail of the current project).
-	const projectDetailIndex = 2
-	application := &app{
-		views:              []View{servicesView, projectsView, projectDetail},
-		projectDetail:      projectDetail,
-		projectDetailIndex: projectDetailIndex,
-		currentProject:     resolution.DefaultProject,
-		role:               roleLabel(),
-		gateway:            gatewayLabel(),
-	}
+	// View order = menu order. Projects (the switcher) is index 1, Project detail
+	// index 2 (the app points the detail at a project on selection).
+	application.views = []View{servicesView, projectsView, projectDetail, networkView, contextView, modelsView, secretsView}
+	application.projectsIndex = 1
+	application.projectDetail = projectDetail
+	application.projectDetailIndex = 2
+
 	// A project at/above the cwd opens straight to its detail; otherwise the UI
-	// opens on the server (services) view. The switcher reaches any project.
+	// opens on the server (Services) view. The switcher reaches any project.
 	if resolution.DefaultProject != "" {
 		projectDetail.SetProject(resolution.DefaultProject)
-		application.current = projectDetailIndex
+		application.current = application.projectDetailIndex
 	}
 	application.buildPalette()
 
@@ -80,6 +98,37 @@ func Run(cwd string) error {
 	_, runErr := program.Run()
 	return runErr
 }
+
+// resolveProjectRoot maps a project name to its root via the global index, or
+// ("", false) when no project is current / it is not indexed.
+func resolveProjectRoot(name string) (string, bool) {
+	if name == "" {
+		return "", false
+	}
+	index, err := state.LoadIndex()
+	if err != nil {
+		return "", false
+	}
+	if entry, ok := index.Projects[name]; ok {
+		return entry.Path, true
+	}
+	return "", false
+}
+
+// executablePath is this `ai` binary, used to spawn sub-commands (the project
+// wizard, an in-workspace shell) via tea.ExecProcess.
+func executablePath() string {
+	path, err := os.Executable()
+	if err != nil {
+		return "ai"
+	}
+	return path
+}
+
+// createFinishedMsg / execFinishedMsg report that a suspended subprocess (the
+// project-create wizard / an in-workspace shell) has returned.
+type createFinishedMsg struct{ err error }
+type execFinishedMsg struct{ err error }
 
 // projectInfo returns the current state of one project by name (over project.List).
 func projectInfo(name string) (project.Entry, bool, error) {
@@ -122,14 +171,21 @@ type app struct {
 	current int
 	width   int
 	height  int
+	cwd     string
 	role    string
 	gateway string
 
 	// projectDetail + its index let the app point the detail view at a project
-	// (a method off the View interface) when one is selected in the switcher.
+	// (a method off the View interface) when one is selected in the switcher;
+	// projectsIndex is the switcher (refreshed after a create).
 	projectDetail      *views.Project
 	projectDetailIndex int
+	projectsIndex      int
 	currentProject     string
+
+	// createView is the modal directory-picker overlay for creating a new
+	// project; non-nil only while it is open (it is not a menu/slice view).
+	createView *views.Create
 
 	paletteOpen   bool
 	palette       []paletteItem
@@ -178,12 +234,11 @@ func (application *app) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch message := msg.(type) {
 	case tea.WindowSizeMsg:
 		application.width, application.height = message.Width, message.Height
-		body := message.Height - reservedRows
-		if body < 1 {
-			body = 1
-		}
 		for _, view := range application.views {
-			view.SetSize(message.Width, body)
+			view.SetSize(message.Width, application.bodyHeight())
+		}
+		if application.createView != nil {
+			application.createView.SetSize(message.Width, application.bodyHeight())
 		}
 		return application, nil
 
@@ -194,7 +249,47 @@ func (application *app) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		application.current = application.projectDetailIndex
 		return application, application.projectDetail.Init()
 
+	case views.NewProjectRequestedMsg:
+		// Open the create overlay (a directory picker) starting at the cwd.
+		create := views.NewCreate(application.cwd)
+		create.SetSize(application.width, application.bodyHeight())
+		application.createView = create
+		return application, create.Init()
+
+	case views.CreateCancelledMsg:
+		application.createView = nil
+		return application, nil
+
+	case views.CreateConfirmedMsg:
+		// Run the existing project-create wizard in the chosen directory (it
+		// targets cwd), suspending the TUI for the interactive subprocess.
+		application.createView = nil
+		command := exec.Command(executablePath(), "project", "create")
+		command.Dir = message.Dir
+		return application, tea.ExecProcess(command, func(execErr error) tea.Msg {
+			return createFinishedMsg{err: execErr}
+		})
+
+	case createFinishedMsg:
+		// Back from the wizard — show the switcher and refresh it.
+		application.current = application.projectsIndex
+		return application, application.views[application.projectsIndex].Init()
+
+	case views.ExecRequestedMsg:
+		// Open an interactive shell inside the project's workspace microVM.
+		command := exec.Command(executablePath(), "workspace", "exec", message.Project, "--", "/bin/sh")
+		return application, tea.ExecProcess(command, func(execErr error) tea.Msg {
+			return execFinishedMsg{err: execErr}
+		})
+
+	case execFinishedMsg:
+		return application, application.projectDetail.Init()
+
 	case tea.KeyMsg:
+		// While the create overlay is open it owns all input.
+		if application.createView != nil {
+			return application, application.createView.Update(msg)
+		}
 		if application.paletteOpen {
 			return application.updatePalette(message)
 		}
@@ -209,9 +304,23 @@ func (application *app) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 	}
 
-	// Delegate everything else (ticks, refresh results, navigation keys) to the
+	// Delegate everything else (ticks, refresh results, navigation, the
+	// filepicker's own messages) to the create overlay if open, else the
 	// active view.
+	if application.createView != nil {
+		return application, application.createView.Update(msg)
+	}
 	return application, application.views[application.current].Update(msg)
+}
+
+// bodyHeight is the content area height (window minus the header/footer chrome),
+// clamped to at least one row.
+func (application *app) bodyHeight() int {
+	body := application.height - reservedRows
+	if body < 1 {
+		return 1
+	}
+	return body
 }
 
 // updatePalette handles input while the menu overlay is open.
@@ -245,9 +354,12 @@ func (application *app) View() string {
 	}
 	var screen strings.Builder
 	screen.WriteString(application.header() + "\n")
-	if application.paletteOpen {
+	switch {
+	case application.createView != nil:
+		screen.WriteString(application.createView.View())
+	case application.paletteOpen:
 		screen.WriteString(application.paletteView())
-	} else {
+	default:
 		screen.WriteString(application.views[application.current].View())
 	}
 	screen.WriteString("\n" + application.footer())
@@ -259,14 +371,20 @@ func (application *app) header() string {
 	if application.currentProject != "" {
 		scope = "project:" + application.currentProject
 	}
+	viewName := application.views[application.current].Title()
+	if application.createView != nil {
+		viewName = application.createView.Title()
+	}
 	title := ui.Heading.Render("ai ui")
 	context := ui.Muted.Render(fmt.Sprintf("role:%s  gateway:%s  scope:%s  view:%s",
-		application.role, application.gateway, scope,
-		application.views[application.current].Title()))
+		application.role, application.gateway, scope, viewName))
 	return title + "  " + context
 }
 
 func (application *app) footer() string {
+	if application.createView != nil {
+		return ui.Muted.Render(application.createView.Hints())
+	}
 	if application.paletteOpen {
 		return ui.Muted.Render("↑/↓ select · enter choose · esc close")
 	}

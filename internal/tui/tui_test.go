@@ -98,6 +98,50 @@ func TestProjectSelectedSwitchesToDetail(test *testing.T) {
 	}
 }
 
+func TestNewProjectRequestedOpensCreateOverlay(test *testing.T) {
+	application := &app{cwd: test.TempDir(), views: []View{&fakeView{title: "Projects"}}}
+	application.buildPalette()
+
+	application.Update(views.NewProjectRequestedMsg{})
+	if application.createView == nil {
+		test.Fatal("NewProjectRequestedMsg must open the create overlay")
+	}
+}
+
+func TestCreateCancelledClosesOverlay(test *testing.T) {
+	application := &app{cwd: test.TempDir(), views: []View{&fakeView{title: "Projects"}}}
+	application.createView = views.NewCreate(application.cwd)
+
+	application.Update(views.CreateCancelledMsg{})
+	if application.createView != nil {
+		test.Fatal("CreateCancelledMsg must close the overlay")
+	}
+}
+
+func TestCreateConfirmedClosesOverlayAndRunsWizard(test *testing.T) {
+	application := &app{cwd: test.TempDir(), projectsIndex: 0, views: []View{&fakeView{title: "Projects"}}}
+	application.createView = views.NewCreate(application.cwd)
+
+	_, cmd := application.Update(views.CreateConfirmedMsg{Dir: test.TempDir()})
+	if application.createView != nil {
+		test.Fatal("CreateConfirmedMsg must close the overlay")
+	}
+	if cmd == nil {
+		test.Fatal("CreateConfirmedMsg must return a command (the create wizard subprocess)")
+	}
+}
+
+func TestExecRequestedReturnsCommand(test *testing.T) {
+	application := &app{
+		views:              []View{&fakeView{title: "Project"}},
+		projectDetail:      views.NewProject(func(string) (project.Entry, bool, error) { return project.Entry{}, false, nil }, func(string, string) error { return nil }),
+		projectDetailIndex: 0,
+	}
+	if _, cmd := application.Update(views.ExecRequestedMsg{Project: "app"}); cmd == nil {
+		test.Fatal("ExecRequestedMsg must return a command (the in-workspace shell)")
+	}
+}
+
 func TestWindowSizeSetsViewportWithoutPanic(test *testing.T) {
 	application := newTestApp("Services")
 	// A tiny window must clamp the body height to >=1, not go negative.
