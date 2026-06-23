@@ -16,11 +16,13 @@ import (
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/jt-helsinki/ideal-robot/internal/project"
 	"github.com/jt-helsinki/ideal-robot/internal/runtime"
 	"github.com/jt-helsinki/ideal-robot/internal/setup"
 	"github.com/jt-helsinki/ideal-robot/internal/tui/scope"
 	"github.com/jt-helsinki/ideal-robot/internal/tui/views"
 	"github.com/jt-helsinki/ideal-robot/internal/ui"
+	"github.com/jt-helsinki/ideal-robot/internal/workspace"
 )
 
 // View is one screen of the UI. Views are pointer models that mutate in place;
@@ -52,12 +54,25 @@ func Run(cwd string) error {
 		},
 		openURL,
 	)
+	projectsView := views.NewProjects(project.List)
+	projectDetail := views.NewProject(projectInfo, workspaceControl)
 
+	// View order: Services (server scope, always works), Projects (the global
+	// switcher), Project (detail of the current project).
+	const projectDetailIndex = 2
 	application := &app{
-		views:      []View{servicesView},
-		scopeLabel: scopeLabel(resolution),
-		role:       roleLabel(),
-		gateway:    gatewayLabel(),
+		views:              []View{servicesView, projectsView, projectDetail},
+		projectDetail:      projectDetail,
+		projectDetailIndex: projectDetailIndex,
+		currentProject:     resolution.DefaultProject,
+		role:               roleLabel(),
+		gateway:            gatewayLabel(),
+	}
+	// A project at/above the cwd opens straight to its detail; otherwise the UI
+	// opens on the server (services) view. The switcher reaches any project.
+	if resolution.DefaultProject != "" {
+		projectDetail.SetProject(resolution.DefaultProject)
+		application.current = projectDetailIndex
 	}
 	application.buildPalette()
 
@@ -66,16 +81,55 @@ func Run(cwd string) error {
 	return runErr
 }
 
+// projectInfo returns the current state of one project by name (over project.List).
+func projectInfo(name string) (project.Entry, bool, error) {
+	entries, err := project.List()
+	if err != nil {
+		return project.Entry{}, false, err
+	}
+	for _, entry := range entries {
+		if entry.Name == name {
+			return entry, true, nil
+		}
+	}
+	return project.Entry{}, false, nil
+}
+
+// workspaceControl applies a workspace lifecycle action to a project via the real
+// Manager (the same one the `ai workspace` commands use).
+func workspaceControl(action, projectName string) error {
+	manager := workspace.RealManager(goruntime.GOOS, nowRFC3339)
+	switch action {
+	case "start":
+		_, err := manager.Start(projectName)
+		return err
+	case "stop":
+		return manager.Stop(projectName)
+	case "restart":
+		_, err := manager.Restart(projectName)
+		return err
+	case "destroy":
+		return manager.Destroy(projectName)
+	default:
+		return fmt.Errorf("unknown workspace action %q", action)
+	}
+}
+
 // app is the root tea.Model: it owns the views, the header/footer chrome, and the
 // command palette (the menu, which includes Exit).
 type app struct {
-	views      []View
-	current    int
-	width      int
-	height     int
-	scopeLabel string
-	role       string
-	gateway    string
+	views   []View
+	current int
+	width   int
+	height  int
+	role    string
+	gateway string
+
+	// projectDetail + its index let the app point the detail view at a project
+	// (a method off the View interface) when one is selected in the switcher.
+	projectDetail      *views.Project
+	projectDetailIndex int
+	currentProject     string
 
 	paletteOpen   bool
 	palette       []paletteItem
@@ -132,6 +186,13 @@ func (application *app) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			view.SetSize(message.Width, body)
 		}
 		return application, nil
+
+	case views.ProjectSelectedMsg:
+		// The switcher chose a project — make it current and jump to its detail.
+		application.currentProject = message.Name
+		application.projectDetail.SetProject(message.Name)
+		application.current = application.projectDetailIndex
+		return application, application.projectDetail.Init()
 
 	case tea.KeyMsg:
 		if application.paletteOpen {
@@ -194,9 +255,13 @@ func (application *app) View() string {
 }
 
 func (application *app) header() string {
+	scope := "server"
+	if application.currentProject != "" {
+		scope = "project:" + application.currentProject
+	}
 	title := ui.Heading.Render("ai ui")
 	context := ui.Muted.Render(fmt.Sprintf("role:%s  gateway:%s  scope:%s  view:%s",
-		application.role, application.gateway, application.scopeLabel,
+		application.role, application.gateway, scope,
 		application.views[application.current].Title()))
 	return title + "  " + context
 }
@@ -225,14 +290,6 @@ func (application *app) paletteView() string {
 		menu.WriteString(marker + label + "\n")
 	}
 	return menu.String()
-}
-
-// scopeLabel describes the resolved startup scope for the header.
-func scopeLabel(resolution scope.Resolution) string {
-	if resolution.DefaultProject != "" {
-		return "project:" + resolution.DefaultProject
-	}
-	return "server"
 }
 
 func roleLabel() string {

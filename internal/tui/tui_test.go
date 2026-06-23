@@ -4,6 +4,8 @@ import (
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/jt-helsinki/ideal-robot/internal/project"
+	"github.com/jt-helsinki/ideal-robot/internal/tui/views"
 )
 
 // fakeView is a minimal View for exercising the app's routing/menu logic.
@@ -72,6 +74,27 @@ func TestQuitKey(test *testing.T) {
 	application.Update(qKey())
 	if !application.quitting {
 		test.Fatal("q must set quitting")
+	}
+}
+
+func TestProjectSelectedSwitchesToDetail(test *testing.T) {
+	detail := views.NewProject(
+		func(string) (project.Entry, bool, error) { return project.Entry{Name: "app"}, true, nil },
+		func(string, string) error { return nil },
+	)
+	application := &app{
+		views:              []View{&fakeView{title: "Services"}, &fakeView{title: "Projects"}, detail},
+		projectDetail:      detail,
+		projectDetailIndex: 2,
+	}
+	application.buildPalette()
+
+	application.Update(views.ProjectSelectedMsg{Name: "app", Path: "/p/app"})
+	if application.currentProject != "app" {
+		test.Fatalf("currentProject = %q, want app", application.currentProject)
+	}
+	if application.current != 2 {
+		test.Fatalf("current view = %d, want 2 (project detail)", application.current)
 	}
 }
 
