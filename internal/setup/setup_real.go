@@ -197,17 +197,21 @@ const (
 	proxyHostPort  = "18787"
 	proxyTargetURL = "http://" + headroomContainer + ":8787"
 
-	// Open WebUI is the optional chat UI for the platform, routed through LiteLLM
-	// as an OpenAI-compatible gateway. Pulled image (no build): it listens on :8080
-	// in the container, published to the host at openWebUIHostPort, and persists its
-	// data on a named volume. The built-in Ollama backend and the login wall are
-	// disabled (single-user local UI); all model traffic goes via LiteLLM.
+	// Open WebUI is the optional chat UI for the platform. Its model traffic is
+	// routed through the nginx gateway (aip-proxy → Headroom → LiteLLM), the SAME
+	// path workspace agents and Odysseus use — never direct to LiteLLM — so its
+	// requests pass through Headroom and the gateway uniformly. Pulled image (no
+	// build): it listens on :8080 in the container, published to the host at
+	// openWebUIHostPort, and persists its data on a named volume. The built-in
+	// Ollama backend and the login wall are disabled (single-user local UI).
 	openWebUIContainer = "aip-open-webui"
 	// Published on the host at a deliberately non-standard port (18090, not 8090)
 	// to avoid clashing with common dev servers; the container still listens on 8080.
-	openWebUIHostPort  = "18090"
-	openWebUIVolume    = "aip-open-webui-data"
-	openWebUITargetURL = "http://" + litellmContainer + ":4000/v1"
+	openWebUIHostPort = "18090"
+	openWebUIVolume   = "aip-open-webui-data"
+	// Route through the nginx gateway entry (aip-proxy, :80 in-container) → Headroom
+	// → LiteLLM, NOT direct to aip-litellm:4000.
+	openWebUITargetURL = "http://" + proxyContainer + "/v1"
 
 	// Odysseus is an OPTIONAL, host-side AI workspace (arch §5). It is one logical
 	// optional service backed by FOUR containers: the app (aip-odysseus, UI on
@@ -482,9 +486,11 @@ func ensureHeadroom(prober runtime.Prober, containerRuntime string) error {
 	return nil
 }
 
-// ensureOpenWebUI runs the Open WebUI chat UI, routed through LiteLLM as an
-// OpenAI-compatible gateway: agents/users hit :18090 on the host and the UI sends
-// model traffic to LiteLLM via OPENAI_API_BASE_URL (which includes /v1). The
+// ensureOpenWebUI runs the Open WebUI chat UI, routed through the nginx gateway
+// (aip-proxy → Headroom → LiteLLM): users hit :18090 on the host and the UI sends
+// model traffic to OPENAI_API_BASE_URL=http://aip-proxy/v1 (NOT direct to LiteLLM),
+// the same path workspace agents + Odysseus use, so every request traverses
+// Headroom + the gateway. The
 // built-in Ollama backend and the login wall are disabled. The gateway key is the
 // LiteLLM master key when one is set: it is reused from the running LiteLLM
 // container (litellmEnvValue) and passed as **env passthrough** (`-e
