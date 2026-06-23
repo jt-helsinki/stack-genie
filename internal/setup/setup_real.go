@@ -2,6 +2,7 @@ package setup
 
 import (
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -61,6 +62,37 @@ func desiredServices() []serviceSpec {
 		{"open-webui", "container"},
 		{"dns", "container"},
 	}
+}
+
+// requiredImages returns the image reference (repo:tag) for EVERY container in
+// the service tier, resolved via containerImage with the same versions-keys
+// containerImage expects. desiredServices lists the services but NOT litellm-db
+// (it has no health line / Status entry), so it is added explicitly; and its
+// "presidio" entry is one logical service backed by TWO images
+// (presidio-analyzer + presidio-anonymizer, the actual versions keys), so it is
+// expanded here. Pure and testable. Duplicate refs are de-duplicated so a shared
+// image is only pulled once.
+func requiredImages() []string {
+	serviceKeys := []string{"litellm-db"}
+	for _, service := range desiredServices() {
+		switch service.Name {
+		case "presidio":
+			serviceKeys = append(serviceKeys, "presidio-analyzer", "presidio-anonymizer")
+		default:
+			serviceKeys = append(serviceKeys, service.Name)
+		}
+	}
+	seen := make(map[string]bool, len(serviceKeys))
+	images := make([]string, 0, len(serviceKeys))
+	for _, key := range serviceKeys {
+		ref := containerImage(key)
+		if ref == "" || seen[ref] {
+			continue
+		}
+		seen[ref] = true
+		images = append(images, ref)
+	}
+	return images
 }
 
 // litellm container naming (the image reference is resolved from versions.yaml
@@ -654,6 +686,42 @@ func RelaunchLiteLLMWithAuth(password, masterKey string) error {
 // detected container runtime and live health probes.
 type realServices struct {
 	prober runtime.Prober
+}
+
+// PullImages pre-pulls every service-tier image that is not already present
+// locally, streaming the runtime's native pull progress to out. This is done
+// BEFORE the reconcile so the subsequent `docker run -d` (whose implicit pull
+// output the prober captures, invisibly) finds the image present and returns
+// instantly — a multi-GB first-run pull (e.g. llm-guard) no longer looks hung.
+// Already-present images are skipped (fast re-runs). Best-effort: it returns the
+// first pull error but the caller treats it as non-fatal — the reconcile's
+// per-service `docker run` re-pulls anything still missing.
+func (services realServices) PullImages(out io.Writer, progress func(string)) error {
+	if progress == nil {
+		progress = func(string) {}
+	}
+	containerRuntime, err := runtime.ContainerRuntimeName(services.prober)
+	if err != nil {
+		return err
+	}
+	var firstErr error
+	for _, ref := range requiredImages() {
+		// Present locally? Skip — `image inspect` returning an error means absent.
+		if _, err := services.prober.Run(containerRuntime.Name, "image", "inspect", ref); err == nil {
+			continue
+		}
+		progress("pulling " + ref)
+		// Stream the runtime's native pull progress to the user. The prober captures
+		// output and cannot stream, so exec is used directly (like
+		// RelaunchLiteLLMWithAuth). #nosec G204 — fixed argv: runtime + "pull" + ref.
+		command := exec.Command(containerRuntime.Name, "pull", ref) // #nosec G204
+		command.Stdout = out
+		command.Stderr = out
+		if err := command.Run(); err != nil && firstErr == nil {
+			firstErr = fmt.Errorf("pull %s: %w", ref, err)
+		}
+	}
+	return firstErr
 }
 
 func (services realServices) Reconcile(providerConfig, bindHost string, progress func(string)) ([]ServiceStatus, error) {

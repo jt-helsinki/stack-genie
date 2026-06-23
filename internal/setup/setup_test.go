@@ -2,6 +2,7 @@ package setup
 
 import (
 	"errors"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -50,6 +51,12 @@ func (services *fakeServices) Reconcile(providerConfig, bindHost string, progres
 		progress("reconciling (fake)")
 	}
 	return []ServiceStatus{{Name: "litellm", Mode: "container", State: "running", Healthy: true}}, nil
+}
+func (services *fakeServices) PullImages(_ io.Writer, progress func(string)) error {
+	if progress != nil {
+		progress("pulling (fake)")
+	}
+	return nil
 }
 func (services *fakeServices) Status() ([]ServiceStatus, error) {
 	return []ServiceStatus{{Name: "litellm", Mode: "container", State: "running", Healthy: true}}, nil
@@ -549,6 +556,34 @@ func TestDesiredServicesOrder(test *testing.T) {
 	}
 	if headroom >= proxy {
 		test.Errorf("proxy must be after headroom: headroom=%d proxy=%d", headroom, proxy)
+	}
+}
+
+// TestRequiredImagesCoversEveryService asserts requiredImages returns the
+// containerImage ref (repo:tag form) for every service-tier container, including
+// the ones that have no Status line — litellm-db is the notable omission from
+// desiredServices and must be present here, alongside llm-guard, proxy, and dns.
+func TestRequiredImagesCoversEveryService(test *testing.T) {
+	images := requiredImages()
+	have := make(map[string]bool, len(images))
+	for _, ref := range images {
+		if !strings.Contains(ref, ":") {
+			test.Errorf("image ref %q is not in image:tag form", ref)
+		}
+		have[ref] = true
+	}
+	for _, service := range []string{
+		"ollama", "presidio-analyzer", "presidio-anonymizer",
+		"llm-guard", "litellm", "litellm-db",
+		"headroom", "proxy", "open-webui", "dns",
+	} {
+		ref := containerImage(service)
+		if ref == "" {
+			test.Fatalf("containerImage(%q) returned empty — fixture/default missing", service)
+		}
+		if !have[ref] {
+			test.Errorf("requiredImages missing %q (%s); got %v", service, ref, images)
+		}
 	}
 }
 

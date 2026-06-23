@@ -10,6 +10,7 @@ package setup
 
 import (
 	"fmt"
+	"io"
 	"slices"
 	"strings"
 
@@ -63,6 +64,13 @@ type Services interface {
 	// is called (never nil) with a short message before each step, so the CLI can
 	// stream feedback during the slow container bring-up.
 	Reconcile(providerConfig string, bindHost string, progress func(string)) ([]ServiceStatus, error)
+	// PullImages pre-pulls every service-tier image that is not already present
+	// locally, streaming the runtime's native pull progress to out (so a multi-GB
+	// first-run pull does not look hung behind a captured `docker run`). progress
+	// is called (never nil) with a short message before each pull. Already-present
+	// images are skipped. Best-effort: a pull error is returned but is non-fatal —
+	// the subsequent `docker run` re-pulls anything still missing.
+	PullImages(out io.Writer, progress func(string)) error
 	// Status reports current health without mutating anything.
 	Status() ([]ServiceStatus, error)
 	// Control performs a lifecycle action (start|stop|restart) on one service,
