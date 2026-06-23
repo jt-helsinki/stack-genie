@@ -53,6 +53,29 @@ func runForm(groups ...*huh.Group) error {
 	return nil
 }
 
+// promptConfirm shows a yes/no dialog (default No) and returns the choice. It is
+// used to confirm DESTRUCTIVE commands on a terminal before they act. A user abort
+// (ctrl-c / esc) returns false (treated as "do not proceed"), NOT an error —
+// declining is a normal outcome, not a cancellation error. It runs the huh form
+// directly rather than through runForm precisely to get that abort-as-decline
+// semantics (runForm maps huh.ErrUserAborted to an exit-2 error). Any OTHER form
+// error is returned. Only call this on an interactive terminal (see interactive).
+func promptConfirm(title, description string) (bool, error) {
+	confirmed := false
+	field := huh.NewConfirm().Title(title).Value(&confirmed)
+	if description != "" {
+		field = field.Description(description)
+	}
+	form := huh.NewForm(huh.NewGroup(field)).WithTheme(ui.HuhTheme())
+	if err := form.Run(); err != nil {
+		if errors.Is(err, huh.ErrUserAborted) {
+			return false, nil
+		}
+		return false, output.Errorf(output.ExitInvalidInput, "prompt: %s", err)
+	}
+	return confirmed, nil
+}
+
 // promptText prompts for a single trimmed line of text, seeded with initial and
 // validated by validate (nil to skip). It is the single-input convenience over
 // runForm; for a command with more than one input, build one runForm with all

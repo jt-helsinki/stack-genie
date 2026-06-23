@@ -445,9 +445,27 @@ func newProjectDeleteCmd(emitter *output.Emitter, exit *int) *cobra.Command {
 
 			confirmed, _ := cmd.Flags().GetBool("yes") // global --yes (§20)
 			if !confirmed {
-				*exit = emitter.Failure("project.delete",
-					output.Errorf(output.ExitInvalidInput, "destructive: pass --yes to confirm"))
-				return nil
+				// On a terminal (and not --json) show a themed confirm dialog
+				// before this destructive action; declining cancels with a success
+				// envelope (exit 0). Under --json / no TTY the contract is unchanged:
+				// --yes is required, and its absence is exit 2.
+				if interactive(emitter) {
+					ok, promptErr := promptConfirm(
+						fmt.Sprintf("Delete project %q? This removes its workspace and platform state.", name),
+						"This destroys the workspace microVM and removes the project from the platform. Your source directory is kept unless --purge.")
+					if promptErr != nil {
+						*exit = emitter.Failure("project.delete", promptErr)
+						return nil
+					}
+					if !ok {
+						*exit = emitter.Success("project.delete", map[string]any{"cancelled": true})
+						return nil
+					}
+				} else {
+					*exit = emitter.Failure("project.delete",
+						output.Errorf(output.ExitInvalidInput, "destructive: pass --yes to confirm"))
+					return nil
+				}
 			}
 			// Tear down the workspace microVM first so deleting the project never
 			// leaves a running/created microVM (and its run-state) orphaned (CLI

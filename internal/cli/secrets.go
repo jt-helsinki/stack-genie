@@ -193,7 +193,7 @@ func newSecretsRmCmd(em *output.Emitter, exit *int) *cobra.Command {
 			"credentials (pre-selected from any name you pass); under --json/no TTY the\n" +
 			"name argument is used directly.",
 		Args: cobra.MaximumNArgs(1),
-		RunE: func(_ *cobra.Command, args []string) error {
+		RunE: func(cmd *cobra.Command, args []string) error {
 			name := ""
 			if len(args) == 1 {
 				name = args[0]
@@ -208,6 +208,23 @@ func newSecretsRmCmd(em *output.Emitter, exit *int) *cobra.Command {
 					return nil
 				}
 				name = picked
+				// Confirm this destructive removal before acting; declining cancels
+				// with a success envelope (exit 0). --yes bypasses the dialog. Under
+				// --json / no TTY this whole branch is skipped and the contract is
+				// unchanged (the name arg is used directly and removed).
+				if yes, _ := cmd.Flags().GetBool("yes"); !yes {
+					ok, promptErr := promptConfirm(
+						fmt.Sprintf("Remove credential %q?", name),
+						"Deletes it from the LiteLLM gateway's credential store.")
+					if promptErr != nil {
+						*exit = em.Failure("secrets.rm", promptErr)
+						return nil
+					}
+					if !ok {
+						*exit = em.Success("secrets.rm", map[string]any{"cancelled": true})
+						return nil
+					}
+				}
 			} else if name == "" {
 				*exit = em.Failure("secrets.rm", output.Errorf(output.ExitInvalidInput, "provide a credential name to remove"))
 				return nil

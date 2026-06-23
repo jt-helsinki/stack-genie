@@ -54,7 +54,12 @@ func newUninstallCmd(em *output.Emitter, exit *int) *cobra.Command {
 						"destructive: pass --yes to confirm (no terminal available to prompt)"))
 					return nil
 				}
-				if !confirmUninstall(purge) {
+				confirmedPrompt, promptErr := confirmUninstall(purge)
+				if promptErr != nil {
+					*exit = em.Failure("uninstall", promptErr)
+					return nil
+				}
+				if !confirmedPrompt {
 					_, _ = fmt.Fprintln(em.Err, "Uninstall cancelled — nothing was changed.")
 					*exit = em.Success("uninstall", uninstallResult{Aborted: true})
 					return nil
@@ -123,26 +128,15 @@ func newUninstallCmd(em *output.Emitter, exit *int) *cobra.Command {
 }
 
 // confirmUninstall asks for top-level confirmation before the teardown,
-// summarizing what will be removed. Defaults to no.
-func confirmUninstall(purge bool) bool {
+// summarizing what will be removed. Defaults to no; a user abort is treated as a
+// decline (via the shared promptConfirm helper).
+func confirmUninstall(purge bool) (bool, error) {
 	description := "Removes the ai binary, PATH/completion entries, and platform containers."
 	if purge {
 		description += " Also removes platform state (~/.ai-platform)."
 	}
 	description += " Never touches your project directories (your source)."
-	var yes bool
-	form := huh.NewForm(huh.NewGroup(
-		huh.NewConfirm().
-			Title("Uninstall the AI Development Platform?").
-			Description(description).
-			Affirmative("Yes, uninstall").
-			Negative("Cancel").
-			Value(&yes),
-	))
-	if err := form.Run(); err != nil {
-		return false
-	}
-	return yes
+	return promptConfirm("Uninstall the AI Development Platform?", description)
 }
 
 // confirmRemoveDep asks whether to also uninstall one external dependency,

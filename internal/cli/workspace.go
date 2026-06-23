@@ -2,6 +2,7 @@ package cli
 
 import (
 	"errors"
+	"fmt"
 	goruntime "runtime"
 
 	"github.com/jt-helsinki/ideal-robot/internal/output"
@@ -259,6 +260,24 @@ func newWorkspaceDestroyCmd(emitter *output.Emitter, exit *int) *cobra.Command {
 			if err != nil {
 				*exit = emitter.Failure("workspace.destroy", err)
 				return nil
+			}
+			// On a terminal (and not --json) confirm before destroying the
+			// runtime handle; declining cancels with a success envelope (exit 0).
+			// Under --json / no TTY the behavior is unchanged: it proceeds directly
+			// (this command has never required --yes), so callers are not broken.
+			// --yes bypasses the dialog.
+			if yes, _ := cmd.Flags().GetBool("yes"); !yes && interactive(emitter) {
+				ok, promptErr := promptConfirm(
+					fmt.Sprintf("Destroy the workspace for %q?", name),
+					"Removes the microVM/runtime handle only — the overlay and your source are kept.")
+				if promptErr != nil {
+					*exit = emitter.Failure("workspace.destroy", promptErr)
+					return nil
+				}
+				if !ok {
+					*exit = emitter.Success("workspace.destroy", map[string]any{"cancelled": true})
+					return nil
+				}
 			}
 			if err := workspace.RealManager(goruntime.GOOS, nowRFC3339).Destroy(name); err != nil {
 				*exit = emitter.Failure("workspace.destroy", mapWorkspaceErr(err))
