@@ -106,3 +106,14 @@ func TestStatusReflectsConfigAndSkill(test *testing.T) {
 		test.Fatal("Headroom metrics need the running proxy; expected nil host-side")
 	}
 }
+
+// Status.Human() renders a labeled two-column table of the strategy, the
+// Caveman level, and whether the Caveman skill is installed.
+func TestStatusHuman(test *testing.T) {
+	rendered := Status{Strategy: "balanced", CavemanLevel: "lite", CavemanInstalled: true}.Human()
+	for _, want := range []string{"SETTING", "VALUE", "Strategy", "balanced", "Caveman level", "lite", "Caveman installed", "true"} {
+		if !strings.Contains(rendered, want) {
+			test.Errorf("context status table missing %q:\n%s", want, rendered)
+		}
+	}
+}

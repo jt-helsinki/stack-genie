@@ -3,7 +3,6 @@ package cli
 import (
 	"fmt"
 	goruntime "runtime"
-	"strings"
 
 	"github.com/charmbracelet/huh"
 	"github.com/jt-helsinki/ideal-robot/internal/console"
@@ -21,17 +20,18 @@ type servicesResult struct {
 	Services []setup.ServiceStatus `json:"services"`
 }
 
-// Human renders one line per service: name, mode, state, then (when present) the
-// host-reachable address and a `UI <url>` hint for services with an admin
-// console — so the user can find each service's address + UI.
+// Human renders the services as a table: SERVICE, MODE, STATE, then the
+// host-reachable ADDRESS and admin-console URL where present (blank cells where
+// the service publishes nothing to the host) — so the user can find each
+// service's address + UI.
 func (result servicesResult) Human() string {
-	var builder strings.Builder
+	rows := make([][]string, 0, len(result.Services))
 	for _, service := range result.Services {
-		line := fmt.Sprintf("%-13s %-9s %-9s", service.Name, service.Mode, service.State)
-		line += service.EndpointSuffix()
-		_, _ = fmt.Fprintln(&builder, strings.TrimRight(line, " "))
+		rows = append(rows, []string{
+			service.Name, service.Mode, service.State, service.Address, service.Console,
+		})
 	}
-	return strings.TrimRight(builder.String(), "\n")
+	return ui.Table([]string{"SERVICE", "MODE", "STATE", "ADDRESS", "CONSOLE"}, rows)
 }
 
 // newServicesCmd builds `ai services` and its subcommands (CLI §10.2).

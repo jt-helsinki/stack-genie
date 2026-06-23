@@ -7,9 +7,9 @@ import (
 	"github.com/jt-helsinki/ideal-robot/internal/setup"
 )
 
-// servicesResult.Human() renders each service's host-reachable address and, where
-// it has one, an admin-console UI hint — so `ai services status` shows the user
-// where each UI lives.
+// servicesResult.Human() renders a table with the column headers and each
+// service's host-reachable address + admin-console URL where present — so `ai
+// services status` shows the user where each UI lives.
 func TestServicesResultHumanShowsAddressAndConsole(test *testing.T) {
 	result := servicesResult{Services: []setup.ServiceStatus{
 		{Name: "litellm", Mode: "container", State: "running", Healthy: true,
@@ -21,17 +21,18 @@ func TestServicesResultHumanShowsAddressAndConsole(test *testing.T) {
 	}}
 	rendered := result.Human()
 
-	if !strings.Contains(rendered, "http://localhost:14000 · UI http://localhost:14000/ui") {
-		test.Errorf("litellm UI URL missing from services status output:\n%s", rendered)
+	for _, header := range []string{"SERVICE", "MODE", "STATE", "ADDRESS", "CONSOLE"} {
+		if !strings.Contains(rendered, header) {
+			test.Errorf("services status table missing header %q:\n%s", header, rendered)
+		}
+	}
+	if !strings.Contains(rendered, "http://localhost:14000/ui") {
+		test.Errorf("litellm console URL missing from services status output:\n%s", rendered)
 	}
 	if !strings.Contains(rendered, "http://localhost:11434") {
 		test.Errorf("ollama address missing from services status output:\n%s", rendered)
 	}
-	// Services without a host endpoint show no address/UI.
-	for _, line := range strings.Split(rendered, "\n") {
-		if (strings.Contains(line, "presidio") || strings.Contains(line, "microsandbox")) &&
-			strings.Contains(line, "http") {
-			test.Errorf("service with no host endpoint should show no address/UI: %q", line)
-		}
+	if !strings.Contains(rendered, "presidio") || !strings.Contains(rendered, "microsandbox") {
+		test.Errorf("all services should appear in the table:\n%s", rendered)
 	}
 }

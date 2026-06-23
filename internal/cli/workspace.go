@@ -12,6 +12,31 @@ import (
 	"github.com/spf13/cobra"
 )
 
+// workspacesResult is the typed payload of `ai workspace list`. The `workspaces`
+// field keeps the JSON envelope shape stable while Human() renders a table.
+type workspacesResult struct {
+	Workspaces []state.Workspace `json:"workspaces"`
+}
+
+// Human renders the workspaces as a table PROJECT, ID, STATUS, CREATED,
+// LAST-STARTED, or a friendly hint when there are none.
+func (result workspacesResult) Human() string {
+	if len(result.Workspaces) == 0 {
+		return "No workspaces yet — start one with `ai workspace start`."
+	}
+	rows := make([][]string, 0, len(result.Workspaces))
+	for _, entry := range result.Workspaces {
+		rows = append(rows, []string{
+			entry.Project,
+			entry.ID,
+			string(entry.Status),
+			orDash(entry.Created),
+			orDash(entry.LastStarted),
+		})
+	}
+	return ui.Table([]string{"PROJECT", "ID", "STATUS", "CREATED", "LAST-STARTED"}, rows)
+}
+
 // newWorkspaceCmd builds `ai workspace` and its subcommands (CLI §4).
 func newWorkspaceCmd(emitter *output.Emitter, exit *int) *cobra.Command {
 	cmd := &cobra.Command{
@@ -148,7 +173,7 @@ func newWorkspaceListCmd(emitter *output.Emitter, exit *int) *cobra.Command {
 				}
 				workspaces = append(workspaces, perProject...)
 			}
-			*exit = emitter.Success("workspace.list", map[string]any{"workspaces": workspaces})
+			*exit = emitter.Success("workspace.list", workspacesResult{Workspaces: workspaces})
 			return nil
 		},
 	}

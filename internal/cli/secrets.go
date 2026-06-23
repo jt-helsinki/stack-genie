@@ -8,8 +8,30 @@ import (
 	"github.com/charmbracelet/huh"
 	"github.com/jt-helsinki/ideal-robot/internal/output"
 	"github.com/jt-helsinki/ideal-robot/internal/secrets"
+	"github.com/jt-helsinki/ideal-robot/internal/ui"
 	"github.com/spf13/cobra"
 )
+
+// secretsResult is the typed payload of `ai secrets list`. The `secrets` field
+// keeps the JSON envelope shape stable while Human() renders a table. Like
+// secrets.Entry, it carries names/metadata only — never values.
+type secretsResult struct {
+	Secrets []secrets.Entry `json:"secrets"`
+}
+
+// Human renders the credentials as a table NAME, ENV-VAR (the workspace
+// placeholder the gateway swaps; "—" when unbound), or a friendly hint when
+// none are stored. Never renders secret values — secrets.Entry has no value.
+func (result secretsResult) Human() string {
+	if len(result.Secrets) == 0 {
+		return "No credentials yet — store one with `ai secrets set`."
+	}
+	rows := make([][]string, 0, len(result.Secrets))
+	for _, entry := range result.Secrets {
+		rows = append(rows, []string{entry.Name, orDash(entry.EnvVar)})
+	}
+	return ui.Table([]string{"NAME", "ENV-VAR"}, rows)
+}
 
 // newSecretsCmd builds `ai secrets` (CLI §16.1). Credentials live only in the
 // LiteLLM gateway's credential store (keys-in-LiteLLM); the platform never writes
@@ -157,7 +179,7 @@ func newSecretsListCmd(em *output.Emitter, exit *int) *cobra.Command {
 				*exit = em.Failure("secrets.list", mapSecretErr(err))
 				return nil
 			}
-			*exit = em.Success("secrets.list", map[string]any{"secrets": entries})
+			*exit = em.Success("secrets.list", secretsResult{Secrets: entries})
 			return nil
 		},
 	}

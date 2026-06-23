@@ -14,9 +14,42 @@ import (
 	"github.com/jt-helsinki/ideal-robot/internal/contextopt"
 	"github.com/jt-helsinki/ideal-robot/internal/output"
 	"github.com/jt-helsinki/ideal-robot/internal/project"
+	"github.com/jt-helsinki/ideal-robot/internal/ui"
 	"github.com/jt-helsinki/ideal-robot/internal/workspace"
 	"github.com/spf13/cobra"
 )
+
+// projectsResult is the typed payload of `ai project list`. The `projects`
+// field keeps the JSON envelope shape stable while Human() renders a table.
+type projectsResult struct {
+	Projects []project.Entry `json:"projects"`
+}
+
+// Human renders the projects as a table NAME, OS, AGENTS, STATUS (agents joined
+// with ",", "—" for an empty cell), or a friendly hint when there are none.
+func (result projectsResult) Human() string {
+	if len(result.Projects) == 0 {
+		return "No projects yet — create one with `ai project create`."
+	}
+	rows := make([][]string, 0, len(result.Projects))
+	for _, entry := range result.Projects {
+		rows = append(rows, []string{
+			entry.Name,
+			orDash(entry.OS),
+			orDash(strings.Join(entry.Agents, ",")),
+			entry.Status,
+		})
+	}
+	return ui.Table([]string{"NAME", "OS", "AGENTS", "STATUS"}, rows)
+}
+
+// orDash renders an em dash for an empty cell so blank fields read clearly.
+func orDash(value string) string {
+	if value == "" {
+		return "—"
+	}
+	return value
+}
 
 // Selectable options for the create wizard. All four OS templates ship as of
 // S5 (debian-trixie in S1; debian-bookworm, ubuntu, alma added in S5). The user
@@ -375,7 +408,7 @@ func newProjectListCmd(emitter *output.Emitter, exit *int) *cobra.Command {
 				*exit = emitter.Failure("project.list", output.Errorf(output.ExitRuntimeFailure, "%s", err))
 				return nil
 			}
-			*exit = emitter.Success("project.list", map[string]any{"projects": entries})
+			*exit = emitter.Success("project.list", projectsResult{Projects: entries})
 			return nil
 		},
 	}

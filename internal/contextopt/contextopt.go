@@ -15,8 +15,10 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strconv"
 
 	"github.com/jt-helsinki/ideal-robot/internal/config"
+	"github.com/jt-helsinki/ideal-robot/internal/ui"
 )
 
 // Strategies and CavemanLevels are the valid choices (config repo-layout §12.4).
@@ -129,6 +131,26 @@ type Status struct {
 	CavemanLevel     string           `json:"caveman_level"`
 	CavemanInstalled bool             `json:"caveman_installed"`
 	Headroom         *HeadroomMetrics `json:"headroom"` // nil until the proxy is running (hardware)
+}
+
+// Human renders the context-optimization status as a two-column table of
+// labeled settings — the Headroom strategy, the Caveman level, and whether the
+// Caveman skill is installed — for non-JSON output.
+func (status Status) Human() string {
+	rows := [][]string{
+		{"Strategy", orUnset(status.Strategy)},
+		{"Caveman level", orUnset(status.CavemanLevel)},
+		{"Caveman installed", strconv.FormatBool(status.CavemanInstalled)},
+	}
+	return ui.Table([]string{"SETTING", "VALUE"}, rows)
+}
+
+// orUnset renders "(unset)" for an empty setting so blank values read clearly.
+func orUnset(value string) string {
+	if value == "" {
+		return "(unset)"
+	}
+	return value
 }
 
 // GetStatus reports the configured strategy + Caveman level and whether the
