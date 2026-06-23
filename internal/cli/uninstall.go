@@ -54,7 +54,7 @@ func newUninstallCmd(em *output.Emitter, exit *int) *cobra.Command {
 						"destructive: pass --yes to confirm (no terminal available to prompt)"))
 					return nil
 				}
-				confirmedPrompt, promptErr := confirmUninstall(purge)
+				confirmedPrompt, promptErr := confirmUninstall()
 				if promptErr != nil {
 					*exit = em.Failure("uninstall", promptErr)
 					return nil
@@ -64,6 +64,20 @@ func newUninstallCmd(em *output.Emitter, exit *int) *cobra.Command {
 					*exit = em.Success("uninstall", uninstallResult{Aborted: true})
 					return nil
 				}
+				// Whether to also remove platform state (~/.ai-platform) is an
+				// interactive input; the --purge flag seeds its default (Yes when set,
+				// No otherwise), per the §1.8 flags-seed-the-prompt convention.
+				purgeAnswer, purgeErr := promptConfirmDefault(
+					"Also remove platform state (~/.ai-platform)?",
+					"Deletes downloaded models, config, credentials and runtime state. "+
+						"Your project directories are left untouched.",
+					purge,
+				)
+				if purgeErr != nil {
+					*exit = em.Failure("uninstall", purgeErr)
+					return nil
+				}
+				purge = purgeAnswer
 			}
 
 			// Decide which external dependencies to also remove: --remove-deps
@@ -121,22 +135,19 @@ func newUninstallCmd(em *output.Emitter, exit *int) *cobra.Command {
 		},
 	}
 	cmd.Flags().BoolVar(&purge, "purge", false,
-		"also remove ~/.ai-platform (never your project directories)")
+		"also remove ~/.ai-platform; on a terminal this is prompted and --purge seeds the default to yes (never your project directories)")
 	cmd.Flags().BoolVar(&removeDeps, "remove-deps", false,
 		"also uninstall the external dependencies (msb) without prompting")
 	return cmd
 }
 
-// confirmUninstall asks for top-level confirmation before the teardown,
-// summarizing what will be removed. Defaults to no; a user abort is treated as a
-// decline (via the shared promptConfirm helper).
-func confirmUninstall(purge bool) (bool, error) {
-	description := "Removes the ai binary, PATH/completion entries, and platform containers."
-	if purge {
-		description += " Also removes platform state (~/.ai-platform)."
-	}
-	description += " Never touches your project directories (your source)."
-	return promptConfirm("Uninstall the AI Development Platform?", description)
+// confirmUninstall asks for top-level confirmation before the teardown. Defaults
+// to no; a user abort is treated as a decline. Whether to also remove platform
+// state is a separate prompt (the purge question), so it is not summarized here.
+func confirmUninstall() (bool, error) {
+	return promptConfirm("Uninstall the AI Development Platform?",
+		"Removes the ai binary, PATH/completion entries, and platform containers. "+
+			"Never touches your project directories (your source).")
 }
 
 // confirmRemoveDep asks whether to also uninstall one external dependency,

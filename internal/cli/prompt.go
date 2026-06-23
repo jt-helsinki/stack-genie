@@ -61,7 +61,14 @@ func runForm(groups ...*huh.Group) error {
 // semantics (runForm maps huh.ErrUserAborted to an exit-2 error). Any OTHER form
 // error is returned. Only call this on an interactive terminal (see interactive).
 func promptConfirm(title, description string) (bool, error) {
-	confirmed := false
+	return promptConfirmDefault(title, description, false)
+}
+
+// promptConfirmDefault is promptConfirm with the selection pre-defaulted to
+// initial (e.g. a `--purge` flag seeds the purge prompt to Yes). A user abort
+// (ctrl-c/esc) is treated as a decline (false), not an error.
+func promptConfirmDefault(title, description string, initial bool) (bool, error) {
+	confirmed := initial
 	field := huh.NewConfirm().Title(title).Value(&confirmed)
 	if description != "" {
 		field = field.Description(description)
