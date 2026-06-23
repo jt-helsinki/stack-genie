@@ -358,6 +358,22 @@ func hasService(specs []serviceSpec, name string) bool {
 	return false
 }
 
+// owningService points companion containers (Odysseus's chromadb/searxng/ntfy,
+// which `ai logs --service` accepts individually) at their managing logical
+// service, and returns "" for a service that is managed on its own or unknown.
+func TestOwningServiceMapsCompanionsToOdysseus(test *testing.T) {
+	for _, name := range []string{"chromadb", "searxng", "ntfy"} {
+		if got := owningService(name); got != "odysseus" {
+			test.Errorf("owningService(%q) = %q, want odysseus", name, got)
+		}
+	}
+	for _, name := range []string{"odysseus", "ollama", "litellm", "presidio", "", "bogus"} {
+		if got := owningService(name); got != "" {
+			test.Errorf("owningService(%q) = %q, want empty", name, got)
+		}
+	}
+}
+
 func TestControlServiceValidation(test *testing.T) {
 	test.Setenv("HOME", test.TempDir())
 	deps, _ := healthyDeps()

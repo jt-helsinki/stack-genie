@@ -434,15 +434,19 @@ Steps, in order:
    `Go`, `Python`, `Rust` — the list is extensible, §25). None pre-checked (a
    project may need nothing beyond the base image). Selected stacks are installed
    into the generated `.ai-platform/Dockerfile` and recorded in `profile.yaml`.
-6. **Confirm** — shows a summary; choose **Create**, **Back**, or **Abort**.
+
+There is no separate confirm step — completing the last group (Enter) creates
+the project; **Abort** at any point cancels.
 
 Prompts render on the terminal (stderr); with `--json` the **final result** is
 still the single envelope on stdout (§19). **Abort** exits `0` and makes no
-changes (`data.cancelled = true`). A **non-interactive context (no TTY) exits
-`2`** with guidance — automation drives the wizard through a pseudo-terminal
-(PTY), see acceptance-tests §1.6.
+changes (`data.cancelled = true`). A **non-interactive context (no TTY) builds
+the spec straight from flags with no prompt** (matching `--json`), and exits `2`
+only when a required flag (`--os`) is absent or a flag value is unknown —
+automation can instead drive the wizard through a pseudo-terminal (PTY), see
+acceptance-tests §1.6.
 
-Behavior (after **Confirm**):
+Behavior (on completion):
 
 * uses the current directory as the project root (no git is run)
 * **writes `<project>/.ai-platform/Dockerfile`** by seeding it from the selected

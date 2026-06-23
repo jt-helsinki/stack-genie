@@ -2,6 +2,7 @@ package workspace
 
 import (
 	"errors"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -201,6 +202,35 @@ func TestStartFailsWhenKeyMintFails(test *testing.T) {
 	}
 	if len(workspaces) != 0 {
 		test.Fatalf("failed Start must not save a handle, got %+v", workspaces)
+	}
+}
+
+// A failure on the FINAL post-start step — the state-handle write, AFTER the
+// microVM is up and agent-provider registration succeeded — must also roll back
+// the running microVM, not just the registration step. (Previously this path
+// leaked an untracked running VM that no saved handle could later reap.) Force
+// SaveWorkspace to fail by planting a regular file where the workspaces state
+// directory must be, so the atomic write cannot create
+// <root>/.ai-platform/run/workspaces/<id>.yaml.
+func TestStartRollsBackWhenHandleSaveFails(test *testing.T) {
+	root := seedProject(test, "app")
+	runDir := filepath.Join(root, ".ai-platform", "run")
+	if err := os.MkdirAll(runDir, 0o755); err != nil {
+		test.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(runDir, "workspaces"), []byte("x"), 0o644); err != nil {
+		test.Fatal(err)
+	}
+	sandbox := &fakeSandbox{}
+	manager := newManager(&fakeBuilder{}, sandbox)
+
+	if _, err := manager.Start("app"); err == nil {
+		test.Fatal("Start must fail when the state handle cannot be saved")
+	}
+	// The microVM was created+started and registration succeeded; only the handle
+	// save failed — the deferred rollback must still destroy the orphan.
+	if !sandbox.destroyed {
+		test.Fatal("Start must destroy the microVM when the handle save fails (orphan rollback)")
 	}
 }
 

@@ -1306,10 +1306,11 @@ seed a new project's `.ai-platform/Dockerfile`:
 | `ubuntu` | Ubuntu minimal | `templates/dockerfiles/ubuntu/Dockerfile` |
 
 * **The OS is always chosen by the user** at creation, from the supported list,
-  via the interactive setup wizard (CLI §3.1) — there is no `--os` flag and no
-  silently-applied default. The wizard *presents* a recommended default
-  (`debian-trixie`) the user confirms or changes; the chosen key selects which
-  template seeds `.ai-platform/Dockerfile`.
+  via the interactive setup wizard (CLI §3.1) — on a TTY no default is applied
+  silently. A `--os` flag exists, but on a terminal it only *pre-seeds* the
+  wizard; the wizard always shows and the user confirms or changes the
+  recommended default (`debian-trixie`). The chosen key selects which template
+  seeds `.ai-platform/Dockerfile`.
 * each template installs the **base** tooling layer (§12: Git, GitHub CLI) on its
   base image — identical across all OSes; the **agent CLIs** and **software stacks**
   selected at creation (§12; see Software Stacks below) are then added to the

@@ -53,10 +53,12 @@ func TestCwdProjectNameOutsideWorkspaceIsExit2(test *testing.T) {
 
 // TestLifecycleCommandsResolveCwdAndDelegate drives the top-level commands from
 // inside a seeded project. Resolution succeeds (the cwd-only path), then the
-// real Manager runs; on this non-Apple-Silicon host the microVM seam is deferred
-// to hardware bring-up, so the command fails AFTER resolution — it
-// must NOT fail with the exit-2 "not inside a workspace" error. A cwd outside a
-// workspace fails at exit 2 before ever reaching the Manager.
+// real Manager runs; the microVM lifecycle is fully implemented, but the real
+// Manager needs the msb runtime + Apple-Silicon virtualization, which are absent
+// on this host, so the command fails with a missing-dependency error AFTER
+// resolution — not because the path is an unwired/deferred seam. It must NOT fail
+// with the exit-2 "not inside a workspace" error. A cwd outside a workspace fails
+// at exit 2 before ever reaching the Manager.
 func TestLifecycleCommandsResolveCwdAndDelegate(test *testing.T) {
 	cases := []struct {
 		name    string
@@ -81,9 +83,11 @@ func TestLifecycleCommandsResolveCwdAndDelegate(test *testing.T) {
 			if err := cmd.RunE(cmd, nil); err != nil {
 				test.Fatalf("RunE returned a non-nil error: %v", err)
 			}
-			// Resolution from the cwd succeeded: the command reached the Manager
-			// (where the microVM seam is deferred to hardware bring-up), so it must
-			// NOT have failed with the cwd "not inside a workspace" error.
+			// Resolution from the cwd succeeded: the command reached the real
+			// Manager (which needs the msb runtime + Apple-Silicon virtualization,
+			// absent on this host, so it fails with a missing-dependency error
+			// AFTER resolution — not because the path is an unwired/deferred seam),
+			// so it must NOT have failed with the cwd "not inside a workspace" error.
 			if strings.Contains(stderr.String(), notInWorkspace) {
 				test.Fatalf("%s inside a workspace surfaced the cwd-not-found error: %q", testCase.name, stderr.String())
 			}

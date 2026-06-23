@@ -177,15 +177,23 @@ func (manager Manager) Start(project string) (*state.Workspace, error) {
 	if err := manager.Sandbox.Start(name); err != nil {
 		return nil, err
 	}
+	// The microVM is now running but no state handle is saved yet. Arm a
+	// best-effort rollback so that ANY failure on the remaining post-start steps
+	// (agent-provider registration AND the state-handle write) tears the microVM
+	// down rather than leaking an untracked running VM — one that no saved handle
+	// could later reap (DestroyIfPresent keys off the handle). It is disarmed only
+	// once the handle is saved, and never masks the original error.
+	started := true
+	defer func() {
+		if started {
+			_ = manager.Sandbox.Destroy(name)
+		}
+	}()
 	// Register the agent CLIs' provider config so opencode/pi inside the microVM
 	// talk to the host Headroom proxy through a per-workspace scoped LiteLLM
 	// virtual key (arch §15, §17). The key flows host→VM only; it is never
-	// written to platform disk. If registration fails after the microVM is up, no
-	// state handle has been saved yet — so best-effort destroy the microVM to roll
-	// back rather than leaking an untracked running VM. The rollback never masks
-	// the original error.
+	// written to platform disk.
 	if err := manager.registerAgentProviders(name, project, projectConfig, gatewayURL); err != nil {
-		_ = manager.Sandbox.Destroy(name)
 		return nil, err
 	}
 	now := manager.Now()
@@ -199,6 +207,7 @@ func (manager Manager) Start(project string) (*state.Workspace, error) {
 	if err := state.OpenStore(root).SaveWorkspace(handle); err != nil {
 		return nil, err
 	}
+	started = false // handle saved — disarm the rollback, keep the running microVM
 	return handle, nil
 }
 

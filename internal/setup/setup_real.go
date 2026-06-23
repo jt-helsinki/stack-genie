@@ -1144,6 +1144,18 @@ func (services realServices) serviceHealthy(name string) bool {
 // nginx gateway), so those are started, stopped, and restarted here. An empty service name (or
 // "all") acts on every platform container in dependency order. Returns the
 // post-action Status.
+// owningService maps a companion container that `ai services` does not manage
+// independently to the logical service that owns it (Odysseus owns chromadb /
+// searxng / ntfy). It lets the unknown-service error point the user at the right
+// name. These containers can still be tailed individually via `ai logs --service`.
+func owningService(name string) string {
+	switch name {
+	case "chromadb", "searxng", "ntfy":
+		return "odysseus"
+	}
+	return ""
+}
+
 func (services realServices) Control(action, service string) ([]ServiceStatus, error) {
 	containerRuntime, err := runtime.ContainerRuntimeName(services.prober)
 	if err != nil {
@@ -1223,6 +1235,9 @@ func (services realServices) Control(action, service string) ([]ServiceStatus, e
 			}
 		}
 		if targets == nil {
+			// Unreachable for an unknown name via the CLI — ControlService validates
+			// (and emits the companion-container hint) before delegating here — but
+			// kept as a defensive guard for direct callers.
 			return nil, output.Errorf(output.ExitInvalidInput,
 				"unknown service %q (expected one of: ollama, presidio, litellm, headroom, proxy, open-webui, odysseus, dns)", service)
 		}

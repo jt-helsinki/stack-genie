@@ -180,6 +180,14 @@ func ControlService(deps Deps, action, service string) ([]ServiceStatus, error) 
 		service = ""
 	}
 	if service != "" && !slices.Contains(ServiceNames(), service) {
+		// A companion container (Odysseus's chromadb/searxng/ntfy) is managed as
+		// part of its owning logical service, not on its own — point the user
+		// there. (`ai logs --service <name>` can still tail that one container.)
+		if owner := owningService(service); owner != "" {
+			return nil, output.Errorf(output.ExitInvalidInput,
+				"%q is managed as part of the %q service — run `ai services %s %s` (`ai logs --service %s` tails just that container)",
+				service, owner, action, owner, service)
+		}
 		return nil, output.Errorf(output.ExitInvalidInput, "unknown service %q (one of %v, or \"all\")", service, ServiceNames())
 	}
 	return deps.Services.Control(action, service)
