@@ -233,7 +233,8 @@ func (containerRuntime ContainerRuntime) BuildArgs(imageRef, dockerfile, context
 }
 
 // RunArgs returns the argv that runs imageRef detached as the named container.
-// Consumed by the service-tier launch wired during hardware bring-up.
+// (The live service-tier launch builds its argv directly in internal/setup;
+// this helper is the shared docker|podman run prefix.)
 func (containerRuntime ContainerRuntime) RunArgs(name, imageRef string, extra ...string) []string {
 	args := []string{"run", "-d", "--name", name}
 	args = append(args, extra...)

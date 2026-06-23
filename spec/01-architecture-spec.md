@@ -160,9 +160,9 @@ Agent (AI Tooling, in workspace)
 Headroom (host :18787)                                   (input compression)
  ↓  forwards to LiteLLM
 LiteLLM (Model Layer, host :14000)
- ↓  always-on Presidio pre_call guardrail (mask PII out of the prompt)
+ ↓  always-on secret-masking guardrails, pre_call (Presidio secrets + hide-secrets)
  ↓  route to provider (Ollama or cloud); real provider key from LiteLLM's store
- ↓  always-on Presidio post_call guardrail (mask PII out of the response)
+ ↓  always-on Presidio post_call guardrail (mask secrets out of the response)
 Provider · Caveman steers output                         (Context Optimization)
 ```
 
@@ -170,8 +170,8 @@ Context Optimization sits *between* the agent and the model (Caveman steers the
 agent's output; Headroom compresses the input). Headroom is now a **shared host
 container** (`aip-headroom`, §10): the agent sends to it across the microVM
 boundary via `AI_PLATFORM_HOST`, and it forwards to LiteLLM. LiteLLM runs an
-always-on Presidio PII guardrail on every request (pre_call and post_call, §15),
-so even cloud calls are guarded — they do not bypass PII protection. The real
+always-on secret-masking guardrails on every request (pre_call and post_call, §15),
+so even cloud calls are guarded — they do not bypass them. The real
 provider API keys live **in the LiteLLM gateway** (§17), never in the workspace;
 the workspace agent holds only a scoped LiteLLM virtual key. The
 LiteLLM → provider hops are host-side. See Sections 8–9 (context optimization),
@@ -195,7 +195,7 @@ Responsibilities:
 * Shared AI resources
 * Headroom deployment (shared input-compression proxy)
 * LiteLLM deployment
-* Presidio deployment (PII analyzer + anonymizer, backing LiteLLM's guardrail)
+* Presidio deployment (analyzer + anonymizer, backing LiteLLM's secret-masking guardrail)
 * Ollama deployment (required local model backend)
 * OS Dockerfile templates
 * Platform state
@@ -307,7 +307,7 @@ ai logs --service <svc>      one log surface
 | nginx proxy | container (via Runtime) `aip-proxy` (`nginx:1.27-alpine`) | the gateway ENTRY on host :18787, reverse-proxies to Headroom (`aip-headroom:8787`); HTTPS termination point later (§10) |
 | Headroom | container (via Runtime) `aip-headroom` | shared input-compression proxy in front of LiteLLM; INTERNAL-ONLY on :8787 behind nginx (no host publish); HTTP only (§10) |
 | LiteLLM | container (via Runtime) `aip-litellm` (+ `aip-litellm-db` Postgres) | HTTP only; no host privileges |
-| Presidio | two containers (via Runtime) `aip-presidio-analyzer` + `aip-presidio-anonymizer` | back LiteLLM's always-on PII guardrail; internal-only, not published (§15) |
+| Presidio | two containers (via Runtime) `aip-presidio-analyzer` + `aip-presidio-anonymizer` | back LiteLLM's always-on secret-masking guardrail; internal-only, not published (§15) |
 | LLM Guard | container (via Runtime) `aip-llm-guard` (`laiyer/llm-guard-api`) | security-scoped guardrail (PromptInjection + Secrets + bearer-token Regex) wired into LiteLLM via the legacy `llmguard_moderations` callback; internal-only, not published; HEAVY (pulls a HuggingFace model) (§15) |
 | Ollama (required) | container (via Runtime) `aip-ollama` on all platforms | local model backend LiteLLM routes to; CPU-only on macOS (Docker has no GPU passthrough) |
 | Open WebUI (optional) | container (via Runtime) `aip-open-webui` | chat UI routed through LiteLLM as an OpenAI-compatible gateway (`OPENAI_API_BASE_URL=http://aip-litellm:4000/v1`, built-in Ollama backend + login wall disabled); published on the host at :18090 (its address IS its console); HTTP only |
@@ -802,7 +802,7 @@ agent:
 
 All model access flows through LiteLLM. On the full path, the agent sends to the
 shared host Headroom proxy (input compression), which forwards to LiteLLM;
-LiteLLM applies an always-on Presidio PII guardrail (§15) and attaches the real
+LiteLLM applies always-on secret-masking guardrails (§15) and attaches the real
 provider key — held **in the LiteLLM gateway** (§17) — to the upstream request.
 
 ```text
@@ -811,7 +811,7 @@ Agent
 Headroom (host :18787, input compression)
  ↓
 LiteLLM
- ↓  (always-on Presidio pre_call/post_call PII guardrail, §15)
+ ↓  (always-on Presidio pre_call/post_call secret-masking guardrails, §15)
  ↓  (real provider key from LiteLLM's own store; agent holds only a virtual key)
 Provider
 ```
@@ -891,28 +891,39 @@ carries `DATABASE_URL` (inline; it carries no secret) and the Presidio endpoints
 
 ---
 
-## Guardrails (always-on PII protection)
+## Guardrails (always-on secret/credential protection)
 
-The rendered LiteLLM config carries a top-level `guardrails:` block with two
-Presidio-backed entries, **both `default_on: true`** so **no request can opt
-out**. Presidio runs as two internal-only host containers (not published to the
-host) — `aip-presidio-analyzer` and `aip-presidio-anonymizer`, both listening on
-`:3000` internally — which LiteLLM reaches via the `PRESIDIO_*_API_BASE` env
-above. Because **every route — including cloud providers — traverses the LiteLLM
-proxy**, cloud calls are guarded too; they do **not** bypass PII protection.
+The rendered LiteLLM config carries a top-level `guardrails:` block with three
+entries, **all `default_on: true`** so **no request can opt out**. The masking is
+deliberately scoped to **secrets and credentials, NOT general PII**: a coding
+agent's prompts legitimately contain names, places, paths and emails, and masking
+those corrupts the prompt before the model sees it (e.g. "capital of France" →
+"capital of `<LOCATION>`"), so general PII masking was removed. Presidio runs as
+two internal-only host containers (not published to the host) —
+`aip-presidio-analyzer` and `aip-presidio-anonymizer`, both listening on `:3000`
+internally — which LiteLLM reaches via the `PRESIDIO_*_API_BASE` env above.
+Because **every route — including cloud providers — traverses the LiteLLM
+proxy**, cloud calls are guarded too; they do **not** bypass this protection.
 
-* **`presidio-pii-input`** — `guardrail: presidio`, `mode: pre_call`,
-  `presidio_filter_scope: input` — masks PII out of the prompt before the model
-  sees it.
-* **`presidio-pii-output`** — `guardrail: presidio`, `mode: post_call`,
-  `presidio_filter_scope: output` — masks PII out of the response.
+* **`presidio-secrets-input`** — `guardrail: presidio`, `mode: pre_call`,
+  `presidio_filter_scope: input` — masks financial/identity **secrets**
+  (CREDIT_CARD, US_SSN, US_BANK_NUMBER, IBAN_CODE, CRYPTO) out of the prompt
+  before the model sees it.
+* **`presidio-secrets-output`** — `guardrail: presidio`, `mode: post_call`,
+  `presidio_filter_scope: output` — masks the same secret entities out of the
+  response.
+* **`hide-secrets`** — `guardrail: hide-secrets`, `mode: pre_call` — LiteLLM's
+  in-process secret detector (bundled detect-secrets) strips API keys/tokens/
+  credentials from the prompt. No external server.
 
 ```yaml
 guardrails:
-  - guardrail_name: presidio-pii-input
+  - guardrail_name: presidio-secrets-input
     litellm_params: { guardrail: presidio, mode: pre_call,  presidio_filter_scope: input,  default_on: true }
-  - guardrail_name: presidio-pii-output
+  - guardrail_name: presidio-secrets-output
     litellm_params: { guardrail: presidio, mode: post_call, presidio_filter_scope: output, default_on: true }
+  - guardrail_name: hide-secrets
+    litellm_params: { guardrail: hide-secrets, mode: pre_call, default_on: true }
 ```
 
 ### LLM Guard (security-scoped, via the legacy callback)
@@ -1011,7 +1022,7 @@ across mechanisms that already exist on the path:
 * **off-disk credentials** — keys-in-LiteLLM (this section);
 * **egress enforcement** — the Microsandbox **NetworkPolicy** (default-deny),
   configured by `ai network` (§29.4, §29.6); there is **no egress proxy**;
-* **PII / audit** — LiteLLM's always-on Presidio guardrails (§15), which run on
+* **secret masking / audit** — LiteLLM's always-on guardrails (§15), which run on
   every request and every route.
 
 ---
@@ -1079,13 +1090,13 @@ their own mechanisms:
 
 * **egress enforcement** is the Microsandbox NetworkPolicy (default-deny) applied
   per workspace and declared via `ai network` — allow / deny per host service +
-  published ports (§29.4, §29.6). Live enforcement at workspace start remains a
-  deferred hardware-bring-up seam.
-* **PII masking and audit** are LiteLLM's always-on Presidio guardrails (§15):
-  because both guardrails are `default_on: true` and **every** route — cloud
-  included — traverses the LiteLLM proxy, nothing bypasses PII masking. The
-  platform audit log (§31) records that a model-configuration or secret-access
-  event occurred, never the value.
+  published ports (§29.4, §29.6). The policy is rendered into `msb` net-rules
+  (`egress.MsbNetworkArgs`) and applied at workspace create.
+* **secret masking and audit** are LiteLLM's always-on guardrails (§15): because
+  the guardrails are `default_on: true` and **every** route — cloud included —
+  traverses the LiteLLM proxy, nothing bypasses secret masking. The platform
+  audit log (§31) records that a model-configuration or secret-access event
+  occurred, never the value.
 
 ---
 
@@ -1490,8 +1501,8 @@ to — the configured remote server's gateway.
 
 * **Model requests** — the in-workspace agent sends the request across the microVM
   boundary to the **shared host Headroom** proxy at `AI_PLATFORM_HOST:18787` (input
-  compression), which forwards to **LiteLLM** (routing; always-on Presidio PII
-  guardrail, §15). LiteLLM reaches **both** the local Ollama backend **and** cloud
+  compression), which forwards to **LiteLLM** (routing; always-on secret-masking
+  guardrails, §15). LiteLLM reaches **both** the local Ollama backend **and** cloud
   providers, attaching the real provider key from **its own store** on cloud calls
   (keys-in-LiteLLM, §17). These hops are host-side; the workspace holds only the
   scoped LiteLLM virtual key.
@@ -1517,37 +1528,40 @@ at the runtime, so the workspace fails closed rather than leaking traffic (§30)
 **The Microsandbox NetworkPolicy is the single egress authority.** It is
 configured to default-deny and to permit only the declared set, so exactly one
 mechanism holds the allow/deny rules (§29.6, §30). Off-disk provider credentials
-are a separate concern handled by keys-in-LiteLLM (§17); PII masking and audit
-are LiteLLM's always-on Presidio guardrails (§15). The host-local-services zone
+are a separate concern handled by keys-in-LiteLLM (§17); secret masking and audit
+are LiteLLM's always-on guardrails (§15). The host-local-services zone
 (b) is plain TCP — a service's own credential, if any, is presented at that
 protocol's auth layer by the tool that connects — and remains gated by this
 allow-list (§29.6).
 
-This must work identically across all supported hosts. Live NetworkPolicy
-enforcement at workspace start remains a deferred hardware-bring-up seam (§29.6).
+This must work identically across all supported hosts. The NetworkPolicy is
+rendered into `msb` net-rules (`egress.MsbNetworkArgs`) and applied at workspace
+create (§29.5, §29.6).
 
 ## 29.5 Delivery phasing
 
-The default-deny NetworkPolicy model above is the **end-state** (this document
-describes the final architecture regardless of phase, §1). What is delivered
-host-side today is the **declaration** of the policy (`ai network`, §29.6,
-CLI §10a); applying it to a running workspace via the Microsandbox SDK at
-`ai workspace start` is the deferred hardware-bring-up step (roadmap §8.5,
-plan §8.2):
+The default-deny NetworkPolicy is **applied today**: `ai network` declares the
+project's `network` block and `ai workspace start`/create translates it into
+`msb` net-rules (`egress.MsbNetworkArgs`) — the default-egress mode, the
+allow-listed host services, and the published-port maps — which the Microsandbox
+runtime enforces. The one piece still deferred to a provisioned host is pinning
+the §29.2 **host-gateway address** (`runtime.HostGateway` currently returns
+`("", false)`): allow-listed host services that use the `gateway` token cannot be
+resolved until that value is confirmed by the reachability spike below.
 
-* **Now (host-side).** `ai network` manages the project's `network` block
-  (egress posture + allow-listed host services + published ports) in
-  `config.yaml`. The egress policy fixture in the acceptance suite renders a known
-  default-deny policy so tests assert against a defined policy, not ambient host
-  behavior.
-* **Hardware bring-up.** `ai workspace start` translates the `network` block into
-  Microsandbox NetworkPolicy allow-list entries, the default-egress mode, and port
-  maps via the SDK, and the runtime enforces them.
+* **Now (host-side + applied).** `ai network` manages the project's `network`
+  block (egress posture + allow-listed host services + published ports) in
+  `config.yaml`, and it is rendered into `msb` net-rules at workspace create. The
+  egress policy fixture in the acceptance suite renders a known default-deny
+  policy so tests assert against a defined policy, not ambient host behavior.
+* **Hardware bring-up.** Pin the §29.2 host-gateway address from the Microsandbox
+  backend so `gateway`-token host services resolve, and verify host↔workspace
+  reachability end-to-end (the spike below).
 
-Both keep the §29.4 confinement guarantee — the difference is only whether the
-policy is declared (now) or also enforced by the runtime (hardware bring-up).
+The §29.4 confinement guarantee holds either way — the remaining work is pinning
+the host-gateway address and the live host↔workspace reachability verification.
 
-Before enforcement is wired, a **reachability spike** pins the unknowns this
+A **reachability spike** pins the unknowns this
 section depends on (the host-gateway value of §29.2 and the SDK calls for policy
 + port maps). It must demonstrate, on a provisioned host, that: (1) a workspace
 reaches an **allow-listed** host service (e.g. Postgres) via the gateway; (2) a
@@ -1614,13 +1628,14 @@ network:
     - { guest: 3000, host: 3000 }
 ```
 
-`ai network` manages only the **declaration** in `config.yaml`. The actual
-enforcement is the Microsandbox **NetworkPolicy** applied at workspace start
-(`ai workspace start` translates this block into network-policy allow-list
-entries, the default-egress mode, and port maps via the SDK; the `gateway` token
-resolves to the §29.2 host gateway), which **remains a deferred end-state**
-(hardware bring-up). App-data connections (DB/Kafka/HTTP) go **direct** under this
-policy — they do not pass through the model gateway.
+`ai network` manages the **declaration** in `config.yaml`. The actual enforcement
+is the Microsandbox **NetworkPolicy**: workspace create translates this block into
+`msb` net-rules (`egress.MsbNetworkArgs`) — the allow-list entries, the
+default-egress mode, and the port maps — which the runtime enforces. (The
+`gateway` token resolves to the §29.2 host gateway, whose address is the one piece
+still pinned during hardware bring-up — see §29.5.) App-data connections
+(DB/Kafka/HTTP) go **direct** under this policy — they do not pass through the
+model gateway.
 
 ## 29.7 Attempted-egress-by-name audit (`aip-dns`)
 
@@ -1685,11 +1700,11 @@ Requirements:
 * **egress confinement** — each workspace runs under a restricted Microsandbox
   **NetworkPolicy** (default-deny) whose only permitted external paths are the
   trusted model-gateway host services and the explicitly allow-listed host
-  services / egress posture (§29.4), so nothing leaks uncontrolled. Live
-  enforcement at workspace start is a deferred hardware-bring-up seam (§29.5)
-* **always-on PII protection** — LiteLLM's Presidio guardrails are `default_on`
+  services / egress posture (§29.4), so nothing leaks uncontrolled. The policy is
+  applied as `msb` net-rules at workspace create (§29.5, §29.6)
+* **always-on secret protection** — LiteLLM's guardrails are `default_on`
   on every request and every route (cloud included), so no model traffic bypasses
-  PII masking (§15)
+  secret masking (§15)
 * **least host privilege** — both the hypervisor and the workspace network stack
   run in user space (§29.1). On Apple Silicon the *only* elevated facility is the
   macOS hypervisor entitlement (code-signed, no kext); workspace networking
@@ -1779,7 +1794,7 @@ and immediately receive (for the OS the user selected):
 * hardware-isolated Microsandbox microVM (rootless container runtime for the
   service tier)
 * LiteLLM integration (provider keys held in the gateway, §17)
-* always-on Presidio PII guardrails on every model request (§15)
+* always-on secret-masking guardrails on every model request (§15)
 * default-deny Microsandbox egress policy (`ai network`, §29.4)
 * Headroom input compression
 * Caveman output compression

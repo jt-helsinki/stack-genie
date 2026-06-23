@@ -54,7 +54,7 @@ func TestCwdProjectNameOutsideWorkspaceIsExit2(test *testing.T) {
 // TestLifecycleCommandsResolveCwdAndDelegate drives the top-level commands from
 // inside a seeded project. Resolution succeeds (the cwd-only path), then the
 // real Manager runs; on this non-Apple-Silicon host the microVM seam is deferred
-// to hardware bring-up (ErrPending), so the command fails AFTER resolution — it
+// to hardware bring-up, so the command fails AFTER resolution — it
 // must NOT fail with the exit-2 "not inside a workspace" error. A cwd outside a
 // workspace fails at exit 2 before ever reaching the Manager.
 func TestLifecycleCommandsResolveCwdAndDelegate(test *testing.T) {

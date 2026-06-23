@@ -147,7 +147,7 @@ func newProjectCreateCmd(emitter *output.Emitter, exit *int) *cobra.Command {
 // attachWorkspace connects to an existing project's workspace VM: it starts the
 // microVM (a no-op if already running) and opens an interactive login shell
 // inside it. Used when `ai project create` runs in a directory that is already a
-// project. The microVM start/exec are wired during hardware bring-up.
+// project. The microVM start/exec run against the real Microsandbox runtime.
 func attachWorkspace(emitter *output.Emitter, exit *int, name string) {
 	manager := workspace.RealManager(goruntime.GOOS, nowRFC3339)
 	if _, err := manager.Start(name); err != nil {

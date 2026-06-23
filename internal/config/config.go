@@ -44,7 +44,7 @@ type ContextConfig struct {
 }
 
 // WorkspaceConfig holds the microVM resource limits applied at workspace start
-// (arch §7). Reserved — consumed by the workspace launch wired in hardware bring-up.
+// (arch §7).
 type WorkspaceConfig struct {
 	CPULimit    int    `yaml:"cpu_limit,omitempty" json:"cpu_limit,omitempty"`
 	MemoryLimit string `yaml:"memory_limit,omitempty" json:"memory_limit,omitempty"`

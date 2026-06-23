@@ -71,9 +71,9 @@ func (report Report) Human() string {
 	return builder.String()
 }
 
-// OllamaProbe reports whether the optional Ollama service is reachable. It is
-// injectable so the check is unit-testable; nil means "not checked" (the live
-// probe is wired during hardware bring-up).
+// OllamaProbe reports whether the required Ollama service is reachable. It is
+// injectable so the check is unit-testable; nil means "not checked". The CLI
+// wires the live probe (ollama.RealProbe, GET /api/version).
 type OllamaProbe interface{ Reachable() error }
 
 // OpenWebUIProbe reports whether the optional Open WebUI chat UI is reachable.
@@ -165,14 +165,14 @@ func rootlessCheck(goos string, prober runtime.Prober) Check {
 
 // ollamaCheck reports the Ollama service state. Ollama is required — LiteLLM
 // routes local model traffic to it (arch §14, §16) — so an unreachable Ollama is
-// an error. The probe is injectable; nil means "not checked yet" (the live probe
-// is wired during hardware bring-up).
+// an error. The probe is injectable; nil means "not checked yet" (the CLI wires
+// the live probe).
 func ollamaCheck(probe OllamaProbe) Check {
 	if probe == nil {
 		return Check{
 			Name: "ollama", Status: StatusWarn,
 			Detail:     "required; not checked",
-			Suggestion: "run `ai setup` to start Ollama (live health check lands with hardware bring-up)",
+			Suggestion: "run `ai setup` to start Ollama",
 		}
 	}
 	if err := probe.Reachable(); err != nil {

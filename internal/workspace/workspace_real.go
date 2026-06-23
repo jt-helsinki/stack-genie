@@ -26,10 +26,6 @@ var (
 	// workspace is not running). Callers of InspectNetwork treat this as "show the
 	// declared policy only", not a failure.
 	ErrNotRunning = errors.New("workspace microVM is not running")
-	// ErrPending marks any genuinely-unimplemented seam. None remain in the
-	// workspace build + microVM lifecycle; retained so other code/tests
-	// referencing the symbol still compile.
-	ErrPending = errors.New("workspace operation is not yet wired")
 )
 
 // realBuilder builds the workspace OCI image with the detected container

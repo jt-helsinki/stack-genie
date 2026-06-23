@@ -891,7 +891,7 @@ Options:
 
 ```bash id="c32"
 --workspace <project>
---service <microsandbox|ollama|presidio|litellm|headroom>
+--service <microsandbox|ollama|presidio|llm-guard|litellm|headroom|proxy|open-webui|dns>
 --tail
 ```
 

@@ -45,8 +45,24 @@ func (result logsResult) Human() string {
 	return strings.TrimRight(builder.String(), "\n")
 }
 
-// logServices is the host services accepted by `ai logs --service` (CLI §13.1).
-var logServices = []string{"microsandbox", "ollama", "presidio", "litellm", "headroom"}
+// logServices is the host services accepted by `ai logs --service` (CLI §13.1):
+// the microVM runtime plus the full service tier reconciled by
+// setup.desiredServices() — ollama, presidio, llm-guard, litellm, headroom,
+// proxy, open-webui, dns. A --service value selects a log source by substring
+// match on the *.log file names under ~/.ai-platform/logs (see logSources); the
+// live capture that writes those files is wired during hardware bring-up, so for
+// services with nothing on disk yet this surfaces an empty result, not an error.
+var logServices = []string{
+	"microsandbox",
+	"ollama",
+	"presidio",
+	"llm-guard",
+	"litellm",
+	"headroom",
+	"proxy",
+	"open-webui",
+	"dns",
+}
 
 // tailLines is how many trailing lines `--tail` keeps per source.
 const tailLines = 200
