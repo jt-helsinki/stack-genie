@@ -61,7 +61,7 @@ func Default() *File {
 			// service backed by four containers: the app plus its ChromaDB / SearXNG /
 			// ntfy companions). The app routes models through the nginx gateway →
 			// Headroom → LiteLLM. The `dev` tag tracks the active published branch.
-			"odysseus": {Mode: "container", Image: "ghcr.io/pewdiepie-archdaemon/odysseus", Tag: "dev"},
+			"odysseus": {Mode: "container", Image: "ghcr.io/pewdiepie-archdaemon/odysseus", Tag: "latest"},
 			"chromadb": {Mode: "container", Image: "chromadb/chroma", Tag: "latest"},
 			"searxng":  {Mode: "container", Image: "searxng/searxng", Tag: "latest"},
 			"ntfy":     {Mode: "container", Image: "binwiederhier/ntfy", Tag: "latest"},
