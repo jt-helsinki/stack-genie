@@ -143,13 +143,13 @@ func build(routing Routing) map[string]any {
 	}
 	return map[string]any{
 		"model_list": modelList,
-		// callbacks wires LLM Guard via its LEGACY callback (llmguard_moderations) —
-		// a security-scoped guardrail (PromptInjection + Secrets + bearer-token Regex)
-		// backed by aip-llm-guard, reached via LLM_GUARD_API_BASE on the LiteLLM
-		// container (see setup_real.go). It is NOT a modern guardrails-list entry.
+		// callbacks wires LiteLLM's IN-PROCESS prompt-injection detector
+		// (detect_prompt_injection) — a local heuristic scanner that needs no
+		// external API and no companion container. It replaces the removed
+		// (unmaintained) LLM Guard legacy callback.
 		"litellm_settings": map[string]any{
 			"default_model": routing.Default,
-			"callbacks":     []string{"llmguard_moderations"},
+			"callbacks":     []string{"detect_prompt_injection"},
 		},
 		"guardrails": buildGuardrails(),
 	}
@@ -170,32 +170,72 @@ var secretEntities = []string{
 	"CRYPTO",
 }
 
+// destructiveCommandPatterns is the set of Python-regex-compatible (RE2-safe, no
+// lookahead) fragments matched against a shell tool-call's command argument by the
+// tool-firewall guardrail (see buildGuardrails). Each fragment targets one
+// destructive command family. Edit this list to tune the firewall — it is composed
+// into one alternation regex per param path. These are deliberately conservative
+// (high-signal, low-false-positive) destructive operations a coding agent should
+// not run unattended.
+var destructiveCommandPatterns = []string{
+	`rm\s+-[a-z]*(rf|fr)`,                 // rm -rf / rm -fr (any flag order)
+	`git\s+push\s+.*(--force|-f)\b`,       // git push --force / -f
+	`git\s+reset\s+--hard`,                // git reset --hard
+	`git\s+clean\s+-[a-z]*f`,              // git clean -…f
+	`terraform\s+destroy`,                 // terraform destroy
+	`terraform\s+apply\s+.*-auto-approve`, // unattended terraform apply
+	`kubectl\s+delete`,                    // kubectl delete
+	`\bdd\s+if=`,                          // dd if=… (disk overwrite)
+	`\bmkfs`,                              // mkfs (filesystem create/wipe)
+}
+
+// destructiveCommandRegex is the single alternation regex (Python/RE2 syntax)
+// composed from destructiveCommandPatterns and used as the tool-firewall's
+// allowed_param_patterns value for the command arg. A tool-call is denied when its
+// command argument matches any fragment.
+func destructiveCommandRegex() string {
+	return "(?i)(" + strings.Join(destructiveCommandPatterns, "|") + ")"
+}
+
+// shellToolNameRegex matches the common shell-tool NAMES agent CLIs expose, case-
+// insensitively. hardware bring-up: the exact tool name (and command param path)
+// each agent CLI uses for its shell tool — opencode, pi, claude-code, codex,
+// gemini — is NOT yet verified against the live tool schemas; these are best-effort
+// defaults. A destructive call made under an UNMATCHED tool name would slip through
+// the firewall, so this regex must be confirmed/tuned on a provisioned host (see
+// docs/HARDWARE-BRINGUP.md).
+const shellToolNameRegex = `(?i)^(bash|shell|sh|run|run_command|execute|exec|command|terminal)$`
+
 // buildGuardrails renders the platform's always-on guardrails (arch §17). All are
 // default_on:true, so no client request can opt out — and because every route,
 // including cloud providers, passes through the LiteLLM proxy, cloud calls are
 // guarded too. The platform ships only fully self-hostable, zero-config-token
-// guardrails (no Hub tokens, no cloud APIs), scoped to SECRETS AND CREDENTIALS
-// (not general PII):
-//   - Presidio (pre_call masks secrets out of the prompt before the model sees
-//     them; post_call masks them out of the response), restricted to
-//     secretEntities — financial/identity secrets only. Backed by the
-//     analyzer/anonymizer containers reached via PRESIDIO_*_API_BASE on the
-//     LiteLLM container (see setup_real.go), launched by setup so the config
-//     never references a guardrail with no backend.
-//   - hide-secrets: LiteLLM's in-process secret detector (bundled detect-secrets,
-//     150+ plugins) — strips API keys/tokens/credentials from the prompt. No
-//     external server.
+// guardrails (no Hub tokens, no cloud APIs):
 //
-// LLM Guard is now ENABLED, but via LiteLLM's LEGACY callback
-// (litellm_settings.callbacks: ["llmguard_moderations"], see build()) rather than
-// this modern guardrails list — that is the only integration LiteLLM offers for
-// it. It is SECURITY-SCOPED on purpose: aip-llm-guard runs only the
-// PromptInjection, Secrets, and a bearer-token Regex scanners. The FULL LLM Guard
-// scanner set (PII/Anonymize, Toxicity, BanTopics, Sentiment, Language, …) is
-// DELIBERATELY DEFERRED — it corrupts ordinary coding prompts, the same reason
-// general PII masking was removed. Guardrails AI also remains deferred (it needs a
-// Guardrails Hub token + manual per-guard install, so it cannot be shipped fully
-// automated). Both are documented as future considerations.
+//	(a) Secret masking (UNCHANGED) — scoped to SECRETS/CREDENTIALS, not general PII:
+//	  - Presidio (pre_call masks secrets out of the prompt before the model sees
+//	    them; post_call masks them out of the response), restricted to
+//	    secretEntities — financial/identity secrets only. Backed by the
+//	    analyzer/anonymizer containers reached via PRESIDIO_*_API_BASE on the
+//	    LiteLLM container (see setup_real.go), launched by setup so the config
+//	    never references a guardrail with no backend.
+//	  - hide-secrets: LiteLLM's in-process secret detector (bundled detect-secrets,
+//	    150+ plugins) — strips API keys/tokens/credentials from the prompt. No
+//	    external server.
+//
+//	(b) In-process prompt-injection — detect_prompt_injection (see build()'s
+//	    litellm_settings.callbacks). A local heuristic detector with no external
+//	    API/container; it REPLACES the removed (unmaintained) LLM Guard.
+//
+//	(c) tool-firewall — a tool_permission guardrail that DENIES destructive command
+//	    tool-calls (git push --force, rm -rf, terraform destroy, kubectl delete, …).
+//	    For sandboxed coding agents the real risk is destructive TOOL EXECUTION, not
+//	    prompt content, so this catches the model's tool-CALLS at the gateway —
+//	    tool-agnostic across opencode/pi/claude-code. It is DEFENCE-IN-DEPTH: the
+//	    microVM isolation + default-deny egress remain the hard boundary.
+//
+// Guardrails AI remains deferred (it needs a Guardrails Hub token + manual
+// per-guard install, so it cannot be shipped fully automated).
 func buildGuardrails() []map[string]any {
 	// Mask only the scoped secret entities, at a high confidence threshold to
 	// avoid false positives on ordinary code/text.
@@ -233,6 +273,41 @@ func buildGuardrails() []map[string]any {
 				"guardrail":  "hide-secrets",
 				"mode":       "pre_call",
 				"default_on": true,
+			},
+		},
+		// tool-firewall: LiteLLM's tool_permission guardrail. default_action allow
+		// (everything is permitted) EXCEPT the deny rules below; on_disallowed_action
+		// block rejects the response when a destructive call is matched. Two rules
+		// cover the two param paths providers use for a shell tool's command arg:
+		// a flat `command` and a nested `arguments.command`. hardware bring-up: the
+		// tool_name / param-path regexes are best-effort defaults — see
+		// shellToolNameRegex and docs/HARDWARE-BRINGUP.md.
+		{
+			"guardrail_name": "tool-firewall",
+			"litellm_params": map[string]any{
+				"guardrail":            "tool_permission",
+				"mode":                 "post_call",
+				"default_on":           true,
+				"default_action":       "allow",
+				"on_disallowed_action": "block",
+				"rules": []map[string]any{
+					{
+						"id":        "deny-destructive-command",
+						"tool_name": shellToolNameRegex,
+						"decision":  "deny",
+						"allowed_param_patterns": map[string]any{
+							"command": destructiveCommandRegex(),
+						},
+					},
+					{
+						"id":        "deny-destructive-arguments-command",
+						"tool_name": shellToolNameRegex,
+						"decision":  "deny",
+						"allowed_param_patterns": map[string]any{
+							"arguments.command": destructiveCommandRegex(),
+						},
+					},
+				},
 			},
 		},
 	}

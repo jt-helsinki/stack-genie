@@ -41,9 +41,9 @@ func TestRenderDefaultRouting(test *testing.T) {
 	if cfg.LitellmSettings.DefaultModel != "gemma4" {
 		test.Fatalf("default_model = %q, want gemma4", cfg.LitellmSettings.DefaultModel)
 	}
-	// LLM Guard is wired via the legacy callback (security-scoped).
-	if len(cfg.LitellmSettings.Callbacks) != 1 || cfg.LitellmSettings.Callbacks[0] != "llmguard_moderations" {
-		test.Fatalf("litellm_settings.callbacks = %v, want [llmguard_moderations]", cfg.LitellmSettings.Callbacks)
+	// Prompt-injection is the IN-PROCESS detector (replaces the removed LLM Guard).
+	if len(cfg.LitellmSettings.Callbacks) != 1 || cfg.LitellmSettings.Callbacks[0] != "detect_prompt_injection" {
+		test.Fatalf("litellm_settings.callbacks = %v, want [detect_prompt_injection]", cfg.LitellmSettings.Callbacks)
 	}
 	byName := map[string]string{}
 	keyByName := map[string]string{}
@@ -90,32 +90,43 @@ func TestRenderDefaultRouting(test *testing.T) {
 		test.Fatalf("gemma4 -> %q, want ollama/gemma4:31b", byName["gemma4"])
 	}
 
-	// Always-on PII guardrails: Presidio pre-call (input) + post-call (output),
-	// both default_on so no request — cloud included — can bypass them (arch §17).
+	// Always-on guardrails: Presidio pre/post + hide-secrets (secret masking,
+	// unchanged) and the tool-firewall (tool_permission) — all default_on, so no
+	// request, cloud included, can bypass them (arch §17).
 	var guards struct {
 		Guardrails []struct {
 			GuardrailName string `yaml:"guardrail_name"`
 			LitellmParams struct {
-				Guardrail   string `yaml:"guardrail"`
-				Mode        string `yaml:"mode"`
-				DefaultOn   bool   `yaml:"default_on"`
-				FilterScope string `yaml:"presidio_filter_scope"`
+				Guardrail          string `yaml:"guardrail"`
+				Mode               string `yaml:"mode"`
+				DefaultOn          bool   `yaml:"default_on"`
+				FilterScope        string `yaml:"presidio_filter_scope"`
+				DefaultAction      string `yaml:"default_action"`
+				OnDisallowedAction string `yaml:"on_disallowed_action"`
+				Rules              []struct {
+					ID                   string            `yaml:"id"`
+					ToolName             string            `yaml:"tool_name"`
+					Decision             string            `yaml:"decision"`
+					AllowedParamPatterns map[string]string `yaml:"allowed_param_patterns"`
+				} `yaml:"rules"`
 			} `yaml:"litellm_params"`
 		} `yaml:"guardrails"`
 	}
 	if err := yaml.Unmarshal(b, &guards); err != nil {
 		test.Fatalf("guardrails not valid yaml: %v", err)
 	}
-	// Presidio pre+post, hide-secrets, content-filter — all always-on, all
+	// Secret masking (unchanged) + the tool-firewall — all always-on, all
 	// self-hostable (no Hub tokens / cloud APIs).
 	wantBackends := map[string]string{
 		"presidio-secrets-input":  "presidio",
 		"presidio-secrets-output": "presidio",
 		"hide-secrets":            "hide-secrets",
+		"tool-firewall":           "tool_permission",
 	}
 	if len(guards.Guardrails) != len(wantBackends) {
 		test.Fatalf("guardrails = %d, want %d", len(guards.Guardrails), len(wantBackends))
 	}
+	var toolFirewallSeen bool
 	for _, guard := range guards.Guardrails {
 		wantBackend, known := wantBackends[guard.GuardrailName]
 		if !known {
@@ -128,6 +139,39 @@ func TestRenderDefaultRouting(test *testing.T) {
 		if !guard.LitellmParams.DefaultOn {
 			test.Errorf("guardrail %q not default_on (would be bypassable)", guard.GuardrailName)
 		}
+		if guard.GuardrailName != "tool-firewall" {
+			continue
+		}
+		toolFirewallSeen = true
+		// The tool firewall allows by default and blocks the matched destructive
+		// tool-calls.
+		if guard.LitellmParams.DefaultAction != "allow" {
+			test.Errorf("tool-firewall default_action = %q, want allow", guard.LitellmParams.DefaultAction)
+		}
+		if guard.LitellmParams.OnDisallowedAction != "block" {
+			test.Errorf("tool-firewall on_disallowed_action = %q, want block", guard.LitellmParams.OnDisallowedAction)
+		}
+		if len(guard.LitellmParams.Rules) == 0 {
+			test.Fatalf("tool-firewall has no deny rules")
+		}
+		// At least one deny rule's command pattern must carry a destructive token.
+		var sawDestructive bool
+		for _, rule := range guard.LitellmParams.Rules {
+			if rule.Decision != "deny" {
+				test.Errorf("tool-firewall rule %q decision = %q, want deny", rule.ID, rule.Decision)
+			}
+			for _, pattern := range rule.AllowedParamPatterns {
+				if strings.Contains(pattern, "rm") && strings.Contains(pattern, "rf") {
+					sawDestructive = true
+				}
+			}
+		}
+		if !sawDestructive {
+			test.Errorf("tool-firewall has no rule whose command pattern matches a destructive token (e.g. rm -rf)")
+		}
+	}
+	if !toolFirewallSeen {
+		test.Errorf("tool-firewall guardrail missing")
 	}
 }
 

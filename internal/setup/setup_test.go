@@ -349,7 +349,6 @@ func TestLiteLLMRunArgs(test *testing.T) {
 		"-e", "DATABASE_URL=postgresql://litellm@aip-litellm-db:5432/litellm",
 		"-e", "PRESIDIO_ANALYZER_API_BASE=http://aip-presidio-analyzer:3000",
 		"-e", "PRESIDIO_ANONYMIZER_API_BASE=http://aip-presidio-anonymizer:3000",
-		"-e", "LLM_GUARD_API_BASE=http://aip-llm-guard:8000",
 		containerImage("litellm"),
 		"--config", "/app/config.yaml", "--port", "4000",
 	}
@@ -523,7 +522,7 @@ func TestReportHumanShowsAddressAndConsole(test *testing.T) {
 func TestDesiredServicesAreRequired(test *testing.T) {
 	// Ollama, Presidio, LiteLLM, and Headroom are all required host services
 	// (Ollama is the local model backend LiteLLM routes to, arch §14/§16).
-	for _, name := range []string{"ollama", "presidio", "llm-guard", "litellm", "headroom", "proxy", "open-webui"} {
+	for _, name := range []string{"ollama", "presidio", "litellm", "headroom", "proxy", "open-webui"} {
 		if !hasService(desiredServices(), name) {
 			test.Errorf("required service %q missing from desiredServices: %+v", name, desiredServices())
 		}
@@ -541,18 +540,17 @@ func serviceIndex(specs []serviceSpec, name string) int {
 }
 
 // TestDesiredServicesOrder pins the reconcile order that the guardrail/gateway
-// wiring depends on: LLM Guard starts AFTER presidio and BEFORE litellm (LiteLLM's
-// callback points at it), and the nginx proxy starts AFTER headroom (it forwards
-// to Headroom).
+// wiring depends on: Presidio (the secret-masking guardrail backend) starts BEFORE
+// litellm (LiteLLM is launched with PRESIDIO_*_API_BASE pointing at it), and the
+// nginx proxy starts AFTER headroom (it forwards to Headroom).
 func TestDesiredServicesOrder(test *testing.T) {
 	specs := desiredServices()
 	presidio := serviceIndex(specs, "presidio")
-	llmGuard := serviceIndex(specs, "llm-guard")
 	litellm := serviceIndex(specs, "litellm")
 	headroom := serviceIndex(specs, "headroom")
 	proxy := serviceIndex(specs, "proxy")
-	if presidio >= llmGuard || llmGuard >= litellm {
-		test.Errorf("llm-guard must be after presidio and before litellm: presidio=%d llm-guard=%d litellm=%d", presidio, llmGuard, litellm)
+	if presidio >= litellm {
+		test.Errorf("presidio must be before litellm: presidio=%d litellm=%d", presidio, litellm)
 	}
 	if headroom >= proxy {
 		test.Errorf("proxy must be after headroom: headroom=%d proxy=%d", headroom, proxy)
@@ -562,7 +560,7 @@ func TestDesiredServicesOrder(test *testing.T) {
 // TestRequiredImagesCoversEveryService asserts requiredImages returns the
 // containerImage ref (repo:tag form) for every service-tier container, including
 // the ones that have no Status line — litellm-db is the notable omission from
-// desiredServices and must be present here, alongside llm-guard, proxy, and dns.
+// desiredServices and must be present here, alongside proxy and dns.
 func TestRequiredImagesCoversEveryService(test *testing.T) {
 	images := requiredImages()
 	have := make(map[string]bool, len(images))
@@ -574,7 +572,7 @@ func TestRequiredImagesCoversEveryService(test *testing.T) {
 	}
 	for _, service := range []string{
 		"ollama", "presidio-analyzer", "presidio-anonymizer",
-		"llm-guard", "litellm", "litellm-db",
+		"litellm", "litellm-db",
 		"headroom", "proxy", "open-webui", "dns",
 	} {
 		ref := containerImage(service)
@@ -608,43 +606,6 @@ func runArgsFor(prober *recordingProber) []string {
 		}
 	}
 	return nil
-}
-
-func TestEnsureLLMGuardRendersSecurityScannersOnly(test *testing.T) {
-	home := test.TempDir()
-	test.Setenv("HOME", home)
-	prober := &recordingProber{}
-	if err := ensureLLMGuard(prober, "docker"); err != nil {
-		test.Fatal(err)
-	}
-	scannersPath := filepath.Join(home, ".ai-platform", "config", "llm-guard", "scanners.yml")
-	content, err := os.ReadFile(scannersPath)
-	if err != nil {
-		test.Fatalf("scanners.yml not written: %v", err)
-	}
-	rendered := string(content)
-	for _, want := range []string{"input_scanners:", "output_scanners:", "PromptInjection", "Secrets", "Regex", "Bearer "} {
-		if !strings.Contains(rendered, want) {
-			test.Errorf("scanners.yml missing %q:\n%s", want, rendered)
-		}
-	}
-	// Security-only: the prompt-corrupting scanners must NOT be present.
-	for _, forbidden := range []string{"Anonymize", "Toxicity", "BanTopics", "Sentiment", "Language"} {
-		if strings.Contains(rendered, forbidden) {
-			test.Errorf("scanners.yml must not enable %q (corrupts coding prompts):\n%s", forbidden, rendered)
-		}
-	}
-	// The run mounts the rendered scanners and uses the internal-only image (no -p).
-	launch := strings.Join(runArgsFor(prober), " ")
-	if !strings.Contains(launch, scannersPath+":/home/user/app/config/scanners.yml") {
-		test.Errorf("llm-guard run did not bind-mount scanners.yml: %s", launch)
-	}
-	if !strings.Contains(launch, containerImage("llm-guard")) {
-		test.Errorf("llm-guard run did not use %s: %s", containerImage("llm-guard"), launch)
-	}
-	if strings.Contains(launch, "-p ") {
-		test.Errorf("llm-guard must be internal-only (no host publish): %s", launch)
-	}
 }
 
 func TestEnsureProxyRendersGatewayConfig(test *testing.T) {

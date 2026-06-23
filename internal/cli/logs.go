@@ -47,7 +47,7 @@ func (result logsResult) Human() string {
 
 // logServices is the host services accepted by `ai logs --service` (CLI §13.1):
 // the microVM runtime plus the full service tier reconciled by
-// setup.desiredServices() — ollama, presidio, llm-guard, litellm, headroom,
+// setup.desiredServices() — ollama, presidio, litellm, headroom,
 // proxy, open-webui, dns. A --service value selects a log source by substring
 // match on the *.log file names under ~/.ai-platform/logs (see logSources); the
 // live capture that writes those files is wired during hardware bring-up, so for
@@ -56,7 +56,6 @@ var logServices = []string{
 	"microsandbox",
 	"ollama",
 	"presidio",
-	"llm-guard",
 	"litellm",
 	"headroom",
 	"proxy",

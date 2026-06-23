@@ -22,7 +22,7 @@ code.
   `--dns-nameserver` at the `aip-dns` audit resolver.
 - **Service-tier launch** — `internal/setup/setup_real.go`: `realServices.Reconcile`
   brings up the container tier on `aip-net` in order **network → DNS → Ollama →
-  Presidio → LLM Guard → LiteLLM (+ DB) → Headroom → nginx proxy → Open WebUI**,
+  Presidio → LiteLLM (+ DB) → Headroom → nginx proxy → Open WebUI**,
   via the detected runtime (docker|podman).
 - **Egress net-rules** — the project `network` block is rendered by
   `egress.MsbNetworkArgs` and applied at `realSandbox.Create` (default-deny +
@@ -76,19 +76,25 @@ token cannot resolve until this is pinned.
       produces service/microVM logs is the deferred seam (see
       `internal/cli/logs.go`, grep `hardware bring-up`).
 
-### 2.3 Live HTTP readiness probes for LLM Guard and the nginx proxy
+### 2.3 Tool-firewall verification + nginx proxy readiness probe
 
-`realServices.serviceHealthy` treats `llm-guard` and `proxy` as healthy once the
-container is running (parity with Presidio). The live HTTP round-trips are the
-remaining probe work:
+`realServices.serviceHealthy` treats `proxy` as healthy once the container is
+running. The remaining verification work:
 
-- [ ] **LLM Guard security round-trip** — with `aip-llm-guard` up and LiteLLM's
-      `llmguard_moderations` callback wired (`LLM_GUARD_API_BASE`), confirm a
-      prompt-injection attempt is blocked and a `Bearer …`/secret in the prompt is
-      redacted, while an ordinary coding prompt passes untouched (the security-only
-      scanner scope: PromptInjection + Secrets + bearer-token Regex, NOT
-      PII/Anonymize/Toxicity). Add the live HTTP readiness probe to
-      `serviceHealthy("llm-guard")`.
+- [ ] **Tool-firewall (`tool_permission`) tool-name/param verification** — the
+      firewall denies destructive command tool-calls (`rm -rf`, `git push --force`,
+      `git reset --hard`, `terraform destroy`, `kubectl delete`, …) by matching the
+      model's tool-calls at the gateway (deny rules in `internal/litellm`,
+      `destructiveCommandPatterns`). The `shellToolNameRegex` and the command param
+      paths (`command` / `arguments.command`) are **best-effort defaults**: verify
+      them against the LIVE tool schemas each agent CLI emits
+      (opencode/pi/claude-code/codex/gemini) so a destructive call made under an
+      unmatched tool name cannot slip through. Confirm `git push --force` is blocked
+      while `git status` passes. (The microVM isolation + default-deny egress remain
+      the hard boundary — the firewall is defence-in-depth.)
+- [ ] **In-process prompt-injection** — confirm the `detect_prompt_injection`
+      callback flags an injection attempt without corrupting ordinary coding prompts
+      (watch for false positives, the reason general PII masking was dropped).
 - [ ] **nginx → Headroom → LiteLLM gateway path** — confirm the `aip-proxy` nginx
       entry on host :18787 forwards to the internal-only Headroom
       (`aip-headroom:8787`) and on to LiteLLM end-to-end, including **streamed
@@ -135,7 +141,7 @@ pass):
 ## 4. Smoke sequence (manual, on the host)
 
 1. `ai doctor` → all checks green.
-2. `ai setup` → exit 0; service tier (DNS, Ollama, Presidio, LLM Guard, LiteLLM +
+2. `ai setup` → exit 0; service tier (DNS, Ollama, Presidio, LiteLLM +
    DB, Headroom, nginx proxy, Open WebUI) up; templates installed.
 3. `ai project create demo` (wizard) → project scaffolded **and** its workspace
    microVM builds and starts.

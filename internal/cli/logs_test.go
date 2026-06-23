@@ -35,7 +35,6 @@ func TestLogsServiceAcceptsFullTier(test *testing.T) {
 		"microsandbox",
 		"ollama",
 		"presidio",
-		"llm-guard",
 		"litellm",
 		"headroom",
 		"proxy",

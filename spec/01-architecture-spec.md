@@ -282,7 +282,9 @@ Microsandbox microVM runtime are installed, configured, and supervised by the
 `ai` CLI. The CLI is the **single control plane**: the user never invokes
 `docker compose`, `msb`, `launchctl`, or `systemctl` directly. The whole service
 tier is containers: they share a private docker network (`aip-net`) and are
-reconciled in order: network → DNS → Ollama → Presidio → LLM Guard → LiteLLM (+ DB) → Headroom → nginx proxy → Open WebUI.
+reconciled in order: network → DNS → Ollama → Presidio → LiteLLM (+ DB) → Headroom → nginx proxy → Open WebUI.
+(Prompt-injection detection and the destructive-tool-call firewall are in-process
+in LiteLLM — they need no companion container, §15.)
 (Headroom is now a shared host container, no longer installed in the workspace
 image, §10. It is INTERNAL-ONLY behind the `aip-proxy` nginx reverse proxy, which
 is the gateway entry on host :18787 — see §10/§15.)
@@ -308,7 +310,6 @@ ai logs --service <svc>      one log surface
 | Headroom | container (via Runtime) `aip-headroom` | shared input-compression proxy in front of LiteLLM; INTERNAL-ONLY on :8787 behind nginx (no host publish); HTTP only (§10) |
 | LiteLLM | container (via Runtime) `aip-litellm` (+ `aip-litellm-db` Postgres) | HTTP only; no host privileges |
 | Presidio | two containers (via Runtime) `aip-presidio-analyzer` + `aip-presidio-anonymizer` | back LiteLLM's always-on secret-masking guardrail; internal-only, not published (§15) |
-| LLM Guard | container (via Runtime) `aip-llm-guard` (`laiyer/llm-guard-api`) | security-scoped guardrail (PromptInjection + Secrets + bearer-token Regex) wired into LiteLLM via the legacy `llmguard_moderations` callback; internal-only, not published; HEAVY (pulls a HuggingFace model) (§15) |
 | Ollama (required) | container (via Runtime) `aip-ollama` on all platforms | local model backend LiteLLM routes to; CPU-only on macOS (Docker has no GPU passthrough) |
 | Open WebUI (optional) | container (via Runtime) `aip-open-webui` | chat UI routed through LiteLLM as an OpenAI-compatible gateway (`OPENAI_API_BASE_URL=http://aip-litellm:4000/v1`, built-in Ollama backend + login wall disabled); published on the host at :18090 (its address IS its console); HTTP only |
 | DNS audit resolver | container (via Runtime) `aip-dns` (CoreDNS) | egress-audit resolver: microVMs forward DNS here so attempted names are logged for `ai network log`; published to host loopback only; audit, not enforcement (§29.7) |
@@ -891,10 +892,12 @@ carries `DATABASE_URL` (inline; it carries no secret) and the Presidio endpoints
 
 ---
 
-## Guardrails (always-on secret/credential protection)
+## Guardrails (always-on: secret masking, tool firewall, prompt-injection)
 
-The rendered LiteLLM config carries a top-level `guardrails:` block with three
-entries, **all `default_on: true`** so **no request can opt out**. The masking is
+The rendered LiteLLM config carries a top-level `guardrails:` block, **all
+`default_on: true`** so **no request can opt out**: three secret-masking entries
+plus a **tool firewall** (below), and an in-process **prompt-injection** callback
+in `litellm_settings`. The masking is
 deliberately scoped to **secrets and credentials, NOT general PII**: a coding
 agent's prompts legitimately contain names, places, paths and emails, and masking
 those corrupts the prompt before the model sees it (e.g. "capital of France" →
@@ -924,28 +927,51 @@ guardrails:
     litellm_params: { guardrail: presidio, mode: post_call, presidio_filter_scope: output, default_on: true }
   - guardrail_name: hide-secrets
     litellm_params: { guardrail: hide-secrets, mode: pre_call, default_on: true }
+  - guardrail_name: tool-firewall
+    litellm_params:
+      guardrail: tool_permission
+      mode: post_call
+      default_on: true
+      default_action: allow          # allow everything except the deny rules
+      on_disallowed_action: block     # reject the response on a destructive match
+      rules:
+        - { id: deny-destructive-command, tool_name: "<shell-tool regex>", decision: deny,
+            allowed_param_patterns: { command: "<destructive-command regex>" } }
+        - { id: deny-destructive-arguments-command, tool_name: "<shell-tool regex>", decision: deny,
+            allowed_param_patterns: { arguments.command: "<destructive-command regex>" } }
+
+litellm_settings:
+  callbacks: ["detect_prompt_injection"]   # in-process prompt-injection, no external service
 ```
 
-### LLM Guard (security-scoped, via the legacy callback)
+### Tool firewall (destructive command tool-calls)
 
-LLM Guard is additionally wired in — but via LiteLLM's **legacy callback**, not the
-modern `guardrails:` block (it is the only integration LiteLLM offers for it). The
-rendered `litellm_settings` carries `callbacks: ["llmguard_moderations"]`, and the
-LiteLLM container is launched with `LLM_GUARD_API_BASE=http://aip-llm-guard:8000`.
-`aip-llm-guard` (`laiyer/llm-guard-api`, an unpinnable rolling tag) is an
-internal-only container that runs a **security-only** scanner set, rendered to
-`config/llm-guard/scanners.yml` and bind-mounted over the image default:
+For sandboxed coding agents the bigger risk is destructive **tool execution**, not
+prompt content — `git push --force`, `git reset --hard`, `terraform destroy`,
+`kubectl delete`, `rm -rf` matter far more than "ignore previous instructions". The
+`tool-firewall` guardrail (`guardrail: tool_permission`, `mode: post_call`,
+in-process — no external service) inspects the model's **tool-calls** at the gateway
+and **denies** ones whose shell command matches a destructive pattern
+(`destructiveCommandPatterns` in `internal/litellm`): default-allow, with deny rules
+matching a shell-tool-name regex against the `command` / `arguments.command` arg;
+`on_disallowed_action: block` rejects the response. Because every agent
+(opencode/pi/claude-code) routes model calls through LiteLLM, this is tool-agnostic.
 
-* `PromptInjection` (input) — blocks prompt-injection attempts.
-* `Secrets` (input) — redacts detected secrets.
-* `Regex` bearer-token (input + output) — blocks/redacts `Bearer …` tokens.
+It is **defence-in-depth**, not the only control: it catches the model's tool-calls
+(the agent path), but the microVM isolation + the default-deny egress firewall (which
+already blocks network-dependent destructive commands like push/terraform/kubectl)
+remain the hard boundary. The exact shell-tool name/param paths per agent CLI are a
+`hardware bring-up` verification item (`docs/HARDWARE-BRINGUP.md`).
 
-The **full LLM Guard scanner set** (PII/Anonymize, Toxicity, BanTopics, Sentiment,
-Language, …) is **deliberately DEFERRED**: it corrupts ordinary coding prompts, the
-same reason general PII masking was removed. **Guardrails AI** is likewise deferred
-(it needs a Guardrails Hub token + manual per-guard install, so it cannot ship
-fully automated). Both remain future considerations. NOTE: LLM Guard is heavy — it
-pulls a HuggingFace model for PromptInjection on first run (several GB).
+### Prompt-injection (in-process)
+
+`litellm_settings.callbacks: ["detect_prompt_injection"]` enables LiteLLM's
+in-process prompt-injection detector (a local heuristic — similarity against known
+injection patterns — with no external API or container). It replaces the **removed**
+LLM Guard (`laiyer/llm-guard-api`), which was unmaintained, shipped only an
+unpinnable multi-GB image, and aimed at the lower-priority layer for this use case.
+**Guardrails AI** remains deferred (it needs a Guardrails Hub token + manual
+per-guard install, so it cannot ship fully automated).
 
 ---
 

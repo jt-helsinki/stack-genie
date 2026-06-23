@@ -30,7 +30,6 @@ type Endpoint struct {
 //   - dns      127.0.0.1:15353/udp (aip-dns CoreDNS egress-audit resolver, loopback)
 //   - headroom is internal-only on :8787 behind nginx (no longer host-published)
 //   - presidio analyzer/anonymizer are internal-only on :3000 (not host-published)
-//   - llm-guard is internal-only on :8000 (security guardrail backend, not published)
 //   - microsandbox is the microVM runtime (no host address, no console)
 var registry = map[string]Endpoint{
 	"litellm":      {Address: "http://localhost:14000", Console: "http://localhost:14000/ui"},
@@ -40,7 +39,6 @@ var registry = map[string]Endpoint{
 	"dns":          {Address: "127.0.0.1:15353/udp"},                                       // aip-dns CoreDNS resolver, host loopback
 	"headroom":     {},                                                                     // internal-only on :8787 behind nginx
 	"presidio":     {},                                                                     // analyzer/anonymizer internal-only on :3000
-	"llm-guard":    {},                                                                     // security guardrail backend, internal-only on :8000
 	"microsandbox": {},                                                                     // microVM runtime, no address/console
 }
 

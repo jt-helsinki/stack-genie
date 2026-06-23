@@ -52,9 +52,6 @@ func desiredServices() []serviceSpec {
 	return []serviceSpec{
 		{"ollama", "container"},
 		{"presidio", "container"},
-		// LLM Guard precedes LiteLLM: the gateway is launched with
-		// LLM_GUARD_API_BASE pointing at it (security-scoped legacy callback).
-		{"llm-guard", "container"},
 		{"litellm", "container"},
 		{"headroom", "container"},
 		// nginx reverse proxy: the gateway entry on host :18787, in front of Headroom.
@@ -136,16 +133,6 @@ const (
 	headroomContainer = "aip-headroom"
 	headroomTargetURL = "http://" + litellmContainer + ":4000"
 
-	// LLM Guard is a security-scoped guardrail backend, wired into LiteLLM via the
-	// LEGACY callback (llmguard_moderations) — it is NOT a modern guardrails-list
-	// entry. It is internal-only on aip-net at :8000 (no host publish, like
-	// Presidio); no AUTH_TOKEN on the private network. The published image is an
-	// unpinnable rolling tag (ProtectAI/Laiyer legacy — the only image they ship).
-	// NOTE: LLM Guard is HEAVY — on first run it pulls a HuggingFace model for the
-	// PromptInjection scanner (several GB); plan host memory/disk accordingly.
-	llmGuardContainer = "aip-llm-guard"
-	llmGuardURL       = "http://" + llmGuardContainer + ":8000"
-
 	// aip-proxy is the nginx reverse proxy that is the gateway ENTRY on the host:
 	// microVM → nginx (host :18787) → Headroom (compress) → LiteLLM. nginx takes
 	// over the established gateway port 18787 (what resolveGateway returns), so this
@@ -195,37 +182,6 @@ const (
 	// Google). Audit-only; not security-sensitive.
 	dnsUpstreams = "1.1.1.1 8.8.8.8"
 )
-
-// llmGuardScanners is the security-scoped LLM Guard scanner config rendered to
-// ~/.ai-platform/config/llm-guard/scanners.yml and bind-mounted over the image
-// default. It enables ONLY security scanners — PromptInjection, Secrets, and a
-// bearer-token Regex — and deliberately omits Anonymize/PII, Toxicity, BanTopics,
-// Sentiment, Language and the rest: those corrupt ordinary coding prompts (the
-// same reason general PII masking was removed). A minimal file also keeps the
-// container lighter. Schema verified: top-level input_scanners/output_scanners,
-// each item `- type: X` with a `params:` map.
-const llmGuardScanners = `input_scanners:
-  - type: PromptInjection
-    params:
-      threshold: 0.92
-      match_type: truncate_head_tail
-  - type: Secrets
-    params:
-      redact_mode: all
-  - type: Regex
-    params:
-      patterns: ["Bearer [A-Za-z0-9-._~+/]+"]
-      is_blocked: true
-      match_type: search
-      redact: true
-output_scanners:
-  - type: Regex
-    params:
-      patterns: ["Bearer [A-Za-z0-9-._~+/]+"]
-      is_blocked: true
-      match_type: search
-      redact: true
-`
 
 // proxyNginxConf is the nginx reverse-proxy config rendered to
 // ~/.ai-platform/config/proxy/nginx.conf and bind-mounted at /etc/nginx/nginx.conf.
@@ -286,9 +242,6 @@ func litellmRunArgs(configPath, bindHost, image string) []string {
 		// the always-on PII guardrail has a backend (no secret in these values).
 		"-e", "PRESIDIO_ANALYZER_API_BASE=" + presidioAnalyzerURL,
 		"-e", "PRESIDIO_ANONYMIZER_API_BASE=" + presidioAnonymizerURL,
-		// LLM Guard's legacy callback (callbacks: ["llmguard_moderations"] in the
-		// rendered config) sends requests to this base for security scanning.
-		"-e", "LLM_GUARD_API_BASE=" + llmGuardURL,
 		image,
 		"--config", "/app/config.yaml", "--port", "4000",
 	}
@@ -504,44 +457,6 @@ func ensureDNS(prober runtime.Prober, containerRuntime string) error {
 	return nil
 }
 
-// ensureLLMGuard runs the security-scoped LLM Guard guardrail backend on the
-// shared network, reachable by name at llmGuardURL (:8000) — internal-only, not
-// published to the host (like Presidio), no AUTH_TOKEN on the private network. It
-// renders a minimal security-only scanners.yml (PromptInjection + Secrets + a
-// bearer-token Regex; no PII/Anonymize/Toxicity/BanTopics) to
-// ~/.ai-platform/config/llm-guard/scanners.yml and bind-mounts it over the image
-// default. NOTE: the image pulls a HuggingFace model for PromptInjection on first
-// run (several GB) — it is the heaviest service-tier container. Idempotent: skips
-// if already running, removes any stale container first.
-func ensureLLMGuard(prober runtime.Prober, containerRuntime string) error {
-	if containerRunning(prober, containerRuntime, llmGuardContainer) {
-		return nil
-	}
-	configDir, err := paths.ConfigDir()
-	if err != nil {
-		return err
-	}
-	guardDir := filepath.Join(configDir, "llm-guard")
-	if err := os.MkdirAll(guardDir, 0o755); err != nil {
-		return output.Errorf(output.ExitRuntimeFailure, "create llm-guard config dir %s: %s", guardDir, err)
-	}
-	scannersPath := filepath.Join(guardDir, "scanners.yml")
-	if err := os.WriteFile(scannersPath, []byte(llmGuardScanners), 0o644); err != nil {
-		return output.Errorf(output.ExitRuntimeFailure, "write scanners.yml %s: %s", scannersPath, err)
-	}
-	_, _ = prober.Run(containerRuntime, "rm", "-f", llmGuardContainer) // clear any stopped one
-	args := []string{
-		"run", "-d", "--name", llmGuardContainer,
-		"--network", platformNetwork,
-		"-v", scannersPath + ":/home/user/app/config/scanners.yml",
-		containerImage("llm-guard"),
-	}
-	if _, err := prober.Run(containerRuntime, args...); err != nil {
-		return output.Errorf(output.ExitRuntimeFailure, "launch llm-guard via %s: %s", containerRuntime, err)
-	}
-	return nil
-}
-
 // ensureProxy runs the nginx reverse proxy that is the gateway entry on the host:
 // microVM → nginx (bindHost:18787) → Headroom (:8787) → LiteLLM. It renders the
 // nginx config to ~/.ai-platform/config/proxy/nginx.conf, bind-mounts it at
@@ -692,7 +607,7 @@ type realServices struct {
 // locally, streaming the runtime's native pull progress to out. This is done
 // BEFORE the reconcile so the subsequent `docker run -d` (whose implicit pull
 // output the prober captures, invisibly) finds the image present and returns
-// instantly — a multi-GB first-run pull (e.g. llm-guard) no longer looks hung.
+// instantly — a multi-GB first-run pull (e.g. ollama) no longer looks hung.
 // Already-present images are skipped (fast re-runs). Best-effort: it returns the
 // first pull error but the caller treats it as non-fatal — the reconcile's
 // per-service `docker run` re-pulls anything still missing.
@@ -740,10 +655,12 @@ func (services realServices) Reconcile(providerConfig, bindHost string, progress
 		return nil, err
 	}
 	// Bring up the container tier on the shared network: Ollama (local models),
-	// Presidio + LLM Guard (guardrail backends), LiteLLM (+ its DB), the Headroom
-	// compression proxy, and the nginx gateway in front of Headroom. Presidio and
-	// LLM Guard precede LiteLLM because the LiteLLM container is launched with
-	// PRESIDIO_*_API_BASE / LLM_GUARD_API_BASE pointing at them.
+	// Presidio (the secret-masking guardrail backend), LiteLLM (+ its DB), the
+	// Headroom compression proxy, and the nginx gateway in front of Headroom.
+	// Presidio precedes LiteLLM because the LiteLLM container is launched with
+	// PRESIDIO_*_API_BASE pointing at it. The prompt-injection (detect_prompt_
+	// injection) and tool-firewall guardrails are in-process in LiteLLM — they need
+	// no companion container.
 	containerRuntime, err := runtime.ContainerRuntimeName(services.prober)
 	if err != nil {
 		return nil, err
@@ -760,10 +677,6 @@ func (services realServices) Reconcile(providerConfig, bindHost string, progress
 	}
 	progress("  • Presidio (PII guardrail backend)…")
 	if err := ensurePresidio(services.prober, containerRuntime.Name); err != nil {
-		return nil, err
-	}
-	progress("  • LLM Guard (security guardrail backend)…")
-	if err := ensureLLMGuard(services.prober, containerRuntime.Name); err != nil {
 		return nil, err
 	}
 	progress("  • LiteLLM gateway + Postgres (waiting for it to become healthy)…")
@@ -855,14 +768,6 @@ func (services realServices) serviceHealthy(name string) bool {
 		}
 		return containerRunning(services.prober, containerRuntime.Name, presidioAnalyzerContainer) &&
 			containerRunning(services.prober, containerRuntime.Name, presidioAnonymizerContainer)
-	case "llm-guard":
-		// Container running is sufficient (parity with presidio; the live HTTP
-		// round-trip probe is a hardware bring-up seam — see docs/HARDWARE-BRINGUP.md).
-		containerRuntime, err := runtime.ContainerRuntimeName(services.prober)
-		if err != nil {
-			return false
-		}
-		return containerRunning(services.prober, containerRuntime.Name, llmGuardContainer)
 	case "headroom":
 		containerRuntime, err := runtime.ContainerRuntimeName(services.prober)
 		if err != nil {
@@ -899,8 +804,8 @@ func (services realServices) serviceHealthy(name string) bool {
 }
 
 // Control performs start/stop/restart on the host services. The platform owns
-// the entire container tier (Ollama, Presidio, LLM Guard, LiteLLM + its DB,
-// Headroom, the nginx gateway), so those are started, stopped, and restarted here. An empty service name (or
+// the entire container tier (Ollama, Presidio, LiteLLM + its DB, Headroom, the
+// nginx gateway), so those are started, stopped, and restarted here. An empty service name (or
 // "all") acts on every platform container in dependency order. Returns the
 // post-action Status.
 func (services realServices) Control(action, service string) ([]ServiceStatus, error) {
@@ -943,9 +848,6 @@ func (services realServices) Control(action, service string) ([]ServiceStatus, e
 				}
 				return stopContainer(presidioAnonymizerContainer)
 			}},
-		{"llm-guard",
-			func() error { return ensureLLMGuard(services.prober, containerRuntime.Name) },
-			func() error { return stopContainer(llmGuardContainer) }},
 		{"litellm",
 			func() error { return services.ensureLiteLLM(configPath, bindHost) },
 			func() error { return stopContainer(litellmContainer) }},
@@ -975,7 +877,7 @@ func (services realServices) Control(action, service string) ([]ServiceStatus, e
 		}
 		if targets == nil {
 			return nil, output.Errorf(output.ExitInvalidInput,
-				"unknown service %q (expected one of: ollama, presidio, llm-guard, litellm, headroom, proxy, open-webui, dns)", service)
+				"unknown service %q (expected one of: ollama, presidio, litellm, headroom, proxy, open-webui, dns)", service)
 		}
 	}
 

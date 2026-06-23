@@ -61,9 +61,9 @@ func TestEndpointAndAddress(test *testing.T) {
 		test.Errorf("proxy endpoint = (%+v,%v)", endpoint, ok)
 	}
 
-	// headroom (now behind nginx), presidio, llm-guard and microsandbox have
-	// neither an address nor a console — all internal-only.
-	for _, name := range []string{"headroom", "presidio", "llm-guard", "microsandbox"} {
+	// headroom (now behind nginx), presidio and microsandbox have neither an
+	// address nor a console — all internal-only.
+	for _, name := range []string{"headroom", "presidio", "microsandbox"} {
 		endpoint, ok := EndpointFor(name)
 		if !ok {
 			test.Errorf("%s should be a known service", name)

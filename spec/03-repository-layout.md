@@ -583,7 +583,6 @@ network:                   # workspace networking (arch §29.6); all fields mana
     "ollama":       { "mode": "container", "image": "ollama/ollama", "tag": "latest" },
     "presidio-analyzer":   { "mode": "container", "image": "mcr.microsoft.com/presidio-analyzer",   "tag": "latest" },
     "presidio-anonymizer": { "mode": "container", "image": "mcr.microsoft.com/presidio-anonymizer", "tag": "latest" },
-    "llm-guard":    { "mode": "container", "image": "laiyer/llm-guard-api", "tag": "latest" },
     "proxy":        { "mode": "container", "image": "nginx", "tag": "latest" },
     "open-webui":   { "mode": "container", "image": "ghcr.io/open-webui/open-webui", "tag": "latest" },
     "dns":          { "mode": "container", "image": "coredns/coredns", "tag": "latest" }

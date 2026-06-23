@@ -65,7 +65,7 @@ func newSetupCmd(em *output.Emitter, exit *int) *cobra.Command {
 			// the reconcile, on a human (non-JSON) run that actually runs the service
 			// tier (standalone/server, not client). Each ensure* launches a container
 			// with `docker run -d`, whose implicit pull output the prober CAPTURES
-			// (invisible) — so a multi-GB first-run pull (e.g. llm-guard) looks hung.
+			// (invisible) — so a multi-GB first-run pull (e.g. ollama) looks hung.
 			// Pre-pulling renders docker's native progress bars to the terminal; the
 			// later `docker run -d` then finds the image present and returns instantly.
 			// This MUST be sequential with (and before) the bubbletea RunSteps below —

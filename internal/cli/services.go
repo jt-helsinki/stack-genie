@@ -57,7 +57,7 @@ func newServicesCmd(em *output.Emitter, exit *int) *cobra.Command {
 }
 
 // newServicesControlCmd builds `ai services start|stop|restart [service]`.
-//   - a named service (ollama, presidio, llm-guard, litellm, headroom, proxy,
+//   - a named service (ollama, presidio, litellm, headroom, proxy,
 //     open-webui, dns) — or the literal "all" — targets it directly, no prompt;
 //   - with no argument on a terminal, it shows a CHECKBOX list of every service
 //     and its current state and acts on the one(s) the user selects (minimal
