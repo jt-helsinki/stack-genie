@@ -1,13 +1,11 @@
 package cli
 
 import (
-	"os"
-	"path/filepath"
 	"slices"
 	"strings"
 
+	"github.com/jt-helsinki/ideal-robot/internal/logs"
 	"github.com/jt-helsinki/ideal-robot/internal/output"
-	"github.com/jt-helsinki/ideal-robot/internal/paths"
 	"github.com/spf13/cobra"
 )
 
@@ -45,32 +43,10 @@ func (result logsResult) Human() string {
 	return strings.TrimRight(builder.String(), "\n")
 }
 
-// logServices is the host services accepted by `ai logs --service` (CLI §13.1):
-// the microVM runtime (microsandbox) plus every container in the service tier —
-// ollama, presidio, litellm, headroom, proxy, open-webui, dns, and Odysseus's
-// containers (odysseus + chromadb / searxng / ntfy). Logs are per-CONTAINER, so
-// this is finer-grained than `ai services` (which acts on whole logical
-// services). A --service value selects a log source by substring match on the
-// *.log file names under ~/.ai-platform/logs (see logSources); the live capture
-// that writes those files is wired during hardware bring-up, so for services with
-// nothing on disk yet this surfaces an empty result, not an error.
-var logServices = []string{
-	"microsandbox",
-	"ollama",
-	"presidio",
-	"litellm",
-	"headroom",
-	"proxy",
-	"open-webui",
-	"odysseus",
-	"chromadb",
-	"searxng",
-	"ntfy",
-	"dns",
-}
-
-// tailLines is how many trailing lines `--tail` keeps per source.
-const tailLines = 200
+// logServices is the host services accepted by `ai logs --service` (CLI §13.1).
+// The list lives in internal/logs (the single source of truth shared with the
+// TUI Logs view); `ai logs` validates against it and offers it as completions.
+var logServices = logs.Services()
 
 // newLogsCmd builds `ai logs` (CLI §13.1): show platform, host-service, and
 // workspace logs. It reads the log files the platform writes under
@@ -98,7 +74,7 @@ func newLogsCmd(emitter *output.Emitter, exit *int) *cobra.Command {
 				return nil
 			}
 
-			sources, err := logSources(workspaceName, service)
+			sources, err := logs.Sources(workspaceName, service)
 			if err != nil {
 				*exit = emitter.Failure("logs", output.Errorf(output.ExitInvalidInput, "%s", err))
 				return nil
@@ -108,8 +84,12 @@ func newLogsCmd(emitter *output.Emitter, exit *int) *cobra.Command {
 				Logs: []logSource{},
 				Note: "live service/microVM log capture is wired during hardware bring-up; this shows logs already on disk",
 			}
+			tailCount := 0
+			if tail {
+				tailCount = logs.TailLines
+			}
 			for _, source := range sources {
-				lines, err := readLogLines(source, tail)
+				lines, err := logs.Tail(source, tailCount)
 				if err != nil {
 					*exit = emitter.Failure("logs", output.Errorf(output.ExitRuntimeFailure, "read %s: %s", source, err))
 					return nil
@@ -127,61 +107,4 @@ func newLogsCmd(emitter *output.Emitter, exit *int) *cobra.Command {
 	_ = cmd.RegisterFlagCompletionFunc("service", fixedValues(logServices...))
 	_ = cmd.RegisterFlagCompletionFunc("workspace", completeProjectNames)
 	return cmd
-}
-
-// logSources resolves the *.log files to read: the platform logs dir (filtered by
-// service when given), plus the project run/ dir when --workspace is set. Missing
-// directories yield no sources (not an error).
-func logSources(workspaceName, service string) ([]string, error) {
-	var roots []string
-
-	logsDir, err := paths.LogsDir()
-	if err != nil {
-		return nil, err
-	}
-	roots = append(roots, logsDir)
-
-	if workspaceName != "" {
-		root, err := resolveProjectRoot(workspaceName)
-		if err != nil {
-			return nil, err
-		}
-		roots = append(roots, filepath.Join(root, ".ai-platform", "run"))
-	}
-
-	var sources []string
-	for _, root := range roots {
-		entries, err := os.ReadDir(root)
-		if err != nil {
-			if os.IsNotExist(err) {
-				continue
-			}
-			return nil, err
-		}
-		for _, entry := range entries {
-			if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".log") {
-				continue
-			}
-			if service != "" && !strings.Contains(entry.Name(), service) {
-				continue
-			}
-			sources = append(sources, filepath.Join(root, entry.Name()))
-		}
-	}
-	return sources, nil
-}
-
-func readLogLines(path string, tail bool) ([]string, error) {
-	contents, err := os.ReadFile(path)
-	if err != nil {
-		return nil, err
-	}
-	lines := strings.Split(strings.TrimRight(string(contents), "\n"), "\n")
-	if len(lines) == 1 && lines[0] == "" {
-		return []string{}, nil
-	}
-	if tail && len(lines) > tailLines {
-		lines = lines[len(lines)-tailLines:]
-	}
-	return lines, nil
 }

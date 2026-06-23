@@ -19,6 +19,7 @@ import (
 	"github.com/jt-helsinki/ideal-robot/internal/contextopt"
 	"github.com/jt-helsinki/ideal-robot/internal/egress"
 	"github.com/jt-helsinki/ideal-robot/internal/litellm"
+	"github.com/jt-helsinki/ideal-robot/internal/logs"
 	"github.com/jt-helsinki/ideal-robot/internal/project"
 	"github.com/jt-helsinki/ideal-robot/internal/runtime"
 	"github.com/jt-helsinki/ideal-robot/internal/secrets"
@@ -78,10 +79,11 @@ func Run(cwd string) error {
 	contextView := views.NewContext(currentRoot, contextopt.GetStatus, contextopt.SetStrategy, contextopt.SetCavemanLevel)
 	modelsView := views.NewModels(litellmClient.Status, litellmClient.Test)
 	secretsView := views.NewSecrets(secretsBroker.List, secretsBroker.Remove)
+	logsView := views.NewLogs(logs.Services, tailService)
 
 	// View order = menu order. Projects (the switcher) is index 1, Project detail
 	// index 2 (the app points the detail at a project on selection).
-	application.views = []View{servicesView, projectsView, projectDetail, networkView, contextView, modelsView, secretsView}
+	application.views = []View{servicesView, projectsView, projectDetail, networkView, contextView, modelsView, secretsView, logsView}
 	application.projectsIndex = 1
 	application.projectDetail = projectDetail
 	application.projectDetailIndex = 2
@@ -142,6 +144,21 @@ func projectInfo(name string) (project.Entry, bool, error) {
 		}
 	}
 	return project.Entry{}, false, nil
+}
+
+// tailService resolves the host service's log source under ~/.ai-platform/logs
+// (the first matching *.log file) and returns its last logs.TailLines lines. A
+// service with nothing on disk yet yields an empty result (not an error) — live
+// capture is wired during hardware bring-up.
+func tailService(service string) ([]string, error) {
+	sources, err := logs.Sources("", service)
+	if err != nil {
+		return nil, err
+	}
+	if len(sources) == 0 {
+		return []string{}, nil
+	}
+	return logs.Tail(sources[0], logs.TailLines)
 }
 
 // workspaceControl applies a workspace lifecycle action to a project via the real

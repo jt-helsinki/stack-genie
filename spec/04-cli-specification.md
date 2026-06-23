@@ -1052,10 +1052,14 @@ new project may be created from it (see below).
 * **Context** (per-project) — Headroom strategy + Caveman level; `s`/`c` cycle them.
 * **Models** — LiteLLM routing status; `t` tests the default model.
 * **Secrets** — credential names (never values); `d` deletes one.
+* **Logs** — pick a host service and tail its `~/.ai-platform/logs/<name>.log`
+  in a scrollable pane (shared with `ai logs` via `internal/logs`).
 
-`?` shows the key bindings; `q` / `ctrl-c` quit. The UI honours the theme set by
+The `:` menu is **type-to-filter** (type to narrow, ↑/↓ + enter to choose). `?`
+shows the key bindings; `q` / `ctrl-c` quit. The UI honours the theme set by
 `ai theme` (§14.3). Live service/microVM **log** capture and richer container
-detail are wired during hardware bring-up.
+detail are wired during hardware bring-up, so the Logs view shows whatever is
+already on disk.
 
 ---
 
