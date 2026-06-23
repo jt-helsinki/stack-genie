@@ -57,6 +57,14 @@ func Default() *File {
 			// Open WebUI is the optional chat UI, routed through LiteLLM as an
 			// OpenAI-compatible gateway (published on the host at :18090).
 			"open-webui": {Mode: "container", Image: "ghcr.io/open-webui/open-webui", Tag: "latest"},
+			// Odysseus is an optional, host-side AI workspace (one logical optional
+			// service backed by four containers: the app plus its ChromaDB / SearXNG /
+			// ntfy companions). The app routes models through the nginx gateway →
+			// Headroom → LiteLLM. The `dev` tag tracks the active published branch.
+			"odysseus": {Mode: "container", Image: "ghcr.io/pewdiepie-archdaemon/odysseus", Tag: "dev"},
+			"chromadb": {Mode: "container", Image: "chromadb/chroma", Tag: "latest"},
+			"searxng":  {Mode: "container", Image: "searxng/searxng", Tag: "latest"},
+			"ntfy":     {Mode: "container", Image: "binwiederhier/ntfy", Tag: "latest"},
 			// Presidio backs LiteLLM's always-on PII guardrail (arch §17): the
 			// analyzer detects PII, the anonymizer masks it. Internal-only containers.
 			"presidio-analyzer":   {Mode: "container", Image: "mcr.microsoft.com/presidio-analyzer", Tag: "latest"},

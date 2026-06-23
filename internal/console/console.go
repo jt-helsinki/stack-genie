@@ -36,6 +36,10 @@ var registry = map[string]Endpoint{
 	"ollama":       {Address: "http://localhost:11434"},                                    // HTTP API on :11434, no console UI
 	"proxy":        {Address: "http://localhost:18787"},                                    // aip-proxy nginx gateway entry, no UI
 	"open-webui":   {Address: "http://localhost:18090", Console: "http://localhost:18090"}, // chat UI; root IS the console
+	"odysseus":     {Address: "http://localhost:7000", Console: "http://localhost:7000"},   // optional AI workspace UI; root IS the console
+	"chromadb":     {},                                                                     // internal-only on aip-net (no host publish)
+	"searxng":      {},                                                                     // internal-only on aip-net (no host publish)
+	"ntfy":         {},                                                                     // internal-only on aip-net (no host publish)
 	"dns":          {Address: "127.0.0.1:15353/udp"},                                       // aip-dns CoreDNS resolver, host loopback
 	"headroom":     {},                                                                     // internal-only on :8787 behind nginx
 	"presidio":     {},                                                                     // analyzer/anonymizer internal-only on :3000

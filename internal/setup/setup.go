@@ -68,11 +68,14 @@ type Services interface {
 	Reconcile(providerConfig string, bindHost string, optional []string, progress func(string)) ([]ServiceStatus, error)
 	// PullImages pre-pulls every service-tier image that is not already present
 	// locally, streaming the runtime's native pull progress to out (so a multi-GB
-	// first-run pull does not look hung behind a captured `docker run`). progress
-	// is called (never nil) with a short message before each pull. Already-present
-	// images are skipped. Best-effort: a pull error is returned but is non-fatal —
-	// the subsequent `docker run` re-pulls anything still missing.
-	PullImages(out io.Writer, progress func(string)) error
+	// first-run pull does not look hung behind a captured `docker run`). enabled is
+	// the set of opt-in optional services to include — core images are always
+	// pulled, but a disabled optional service's (potentially large) images are
+	// skipped. progress is called (never nil) with a short message before each
+	// pull. Already-present images are skipped. Best-effort: a pull error is
+	// returned but is non-fatal — the subsequent `docker run` re-pulls anything
+	// still missing.
+	PullImages(enabled []string, out io.Writer, progress func(string)) error
 	// Status reports current health without mutating anything.
 	Status() ([]ServiceStatus, error)
 	// Control performs a lifecycle action (start|stop|restart) on one service,
@@ -136,6 +139,8 @@ func OptionalServiceLabel(name string) string {
 	switch name {
 	case "open-webui":
 		return "chat UI"
+	case "odysseus":
+		return "AI workspace (mounts the Docker socket = full host-Docker control)"
 	default:
 		return ""
 	}

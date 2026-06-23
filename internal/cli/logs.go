@@ -60,6 +60,10 @@ var logServices = []string{
 	"headroom",
 	"proxy",
 	"open-webui",
+	"odysseus",
+	"chromadb",
+	"searxng",
+	"ntfy",
 	"dns",
 }
 

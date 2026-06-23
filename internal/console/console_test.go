@@ -20,9 +20,16 @@ func TestURLAndKnown(test *testing.T) {
 
 func TestWithConsolesSortedAndFiltered(test *testing.T) {
 	named := WithConsoles()
-	// litellm and open-webui both expose a console; sorted by name.
-	if len(named) != 2 || named[0].Name != "litellm" || named[1].Name != "open-webui" {
-		test.Fatalf("WithConsoles = %+v, want [litellm open-webui]", named)
+	// litellm, odysseus, and open-webui all expose a console; sorted by name.
+	if len(named) != 3 || named[0].Name != "litellm" || named[1].Name != "odysseus" || named[2].Name != "open-webui" {
+		test.Fatalf("WithConsoles = %+v, want [litellm odysseus open-webui]", named)
+	}
+}
+
+func TestOdysseusEndpointHasAddressAndConsole(test *testing.T) {
+	endpoint, ok := EndpointFor("odysseus")
+	if !ok || endpoint.Address != "http://localhost:7000" || endpoint.Console != "http://localhost:7000" {
+		test.Errorf("odysseus endpoint = (%+v,%v)", endpoint, ok)
 	}
 }
 

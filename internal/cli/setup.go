@@ -99,7 +99,13 @@ func newSetupCmd(em *output.Emitter, exit *int) *cobra.Command {
 			// continue — the reconcile re-pulls anything still missing.
 			if !em.JSON && mode != runtime.RoleClient {
 				_, _ = fmt.Fprintln(em.Err, "Pulling container images (first run may take a few minutes)…")
-				if err := deps.Services.PullImages(em.Err, func(line string) { _, _ = fmt.Fprintln(em.Err, line) }); err != nil {
+				// Resolve the effective enabled optional-service set so the pre-pull
+				// includes a disabled optional service's (large) images ONLY when it
+				// is enabled (same precedence as the reconcile: explicit choice >
+				// persisted > first-run default).
+				persisted, _ := runtime.Load()
+				enabledOptional := setup.ResolveOptional(opts, persisted)
+				if err := deps.Services.PullImages(enabledOptional, em.Err, func(line string) { _, _ = fmt.Fprintln(em.Err, line) }); err != nil {
 					_, _ = fmt.Fprintf(em.Err, "warning: image pre-pull incomplete (%s) — continuing; the reconcile will retry\n", err)
 				}
 			}
@@ -373,6 +379,8 @@ func promptOptionalServices() ([]string, error) {
 		"Optional tools",
 		"SECURITY WARNING: these tools run OUTSIDE the workspace microVM sandbox, on the host, "+
 			"with elevated privileges — they are a security risk and are not isolated like workspaces. "+
+			"In particular, odysseus MOUNTS THE HOST DOCKER SOCKET (/var/run/docker.sock), which grants it "+
+			"full control of the host's Docker daemon — anything it runs can escape to the host. "+
 			"Leave them unchecked unless you need them.",
 		options,
 		preChecked,

@@ -38,11 +38,12 @@ func (prober fakeProber) Run(name string, _ ...string) ([]byte, error) {
 func (prober fakeProber) Exists(path string) bool { return prober.files[path] }
 
 type fakeServices struct {
-	reconciled bool
-	provider   string
-	bindHost   string
-	optional   []string
-	installed  bool
+	reconciled    bool
+	provider      string
+	bindHost      string
+	optional      []string
+	pulledEnabled []string
+	installed     bool
 }
 
 func (services *fakeServices) Reconcile(providerConfig, bindHost string, optional []string, progress func(string)) ([]ServiceStatus, error) {
@@ -76,7 +77,8 @@ func slicesContains(values []string, want string) bool {
 	}
 	return false
 }
-func (services *fakeServices) PullImages(_ io.Writer, progress func(string)) error {
+func (services *fakeServices) PullImages(enabled []string, _ io.Writer, progress func(string)) error {
+	services.pulledEnabled = enabled
 	if progress != nil {
 		progress("pulling (fake)")
 	}
@@ -660,11 +662,13 @@ func TestDesiredServicesOrder(test *testing.T) {
 }
 
 // TestRequiredImagesCoversEveryService asserts requiredImages returns the
-// containerImage ref (repo:tag form) for every service-tier container, including
-// the ones that have no Status line — litellm-db is the notable omission from
-// desiredServices and must be present here, alongside proxy and dns.
+// containerImage ref (repo:tag form) for every service-tier container when all
+// optional services are enabled, including the ones that have no Status line —
+// litellm-db is the notable omission from desiredServices and must be present
+// here, alongside proxy and dns. With all optional enabled, Odysseus's four
+// images appear too.
 func TestRequiredImagesCoversEveryService(test *testing.T) {
-	images := requiredImages()
+	images := requiredImages(optionalServiceNames()) // all optional enabled
 	have := make(map[string]bool, len(images))
 	for _, ref := range images {
 		if !strings.Contains(ref, ":") {
@@ -676,6 +680,7 @@ func TestRequiredImagesCoversEveryService(test *testing.T) {
 		"ollama", "presidio-analyzer", "presidio-anonymizer",
 		"litellm", "litellm-db",
 		"headroom", "proxy", "open-webui", "dns",
+		"odysseus", "chromadb", "searxng", "ntfy",
 	} {
 		ref := containerImage(service)
 		if ref == "" {
@@ -683,6 +688,33 @@ func TestRequiredImagesCoversEveryService(test *testing.T) {
 		}
 		if !have[ref] {
 			test.Errorf("requiredImages missing %q (%s); got %v", service, ref, images)
+		}
+	}
+}
+
+// TestRequiredImagesGatesOptionalImages: a disabled optional service's images are
+// NOT pulled, but become required once it is enabled. Core images are always present.
+func TestRequiredImagesGatesOptionalImages(test *testing.T) {
+	odysseusImages := []string{
+		containerImage("odysseus"), containerImage("chromadb"),
+		containerImage("searxng"), containerImage("ntfy"),
+	}
+	// Disabled: none of Odysseus's images appear.
+	disabled := requiredImages(nil)
+	for _, ref := range odysseusImages {
+		if slicesContains(disabled, ref) {
+			test.Errorf("disabled odysseus image %q must NOT be in requiredImages: %v", ref, disabled)
+		}
+	}
+	// Core image (ollama) is always present, even with nothing optional enabled.
+	if !slicesContains(disabled, containerImage("ollama")) {
+		test.Errorf("core ollama image must always be required: %v", disabled)
+	}
+	// Enabled: Odysseus's four images all appear.
+	enabled := requiredImages([]string{"odysseus"})
+	for _, ref := range odysseusImages {
+		if !slicesContains(enabled, ref) {
+			test.Errorf("enabled odysseus image %q must be in requiredImages: %v", ref, enabled)
 		}
 	}
 }
@@ -823,11 +855,13 @@ func stateOf(statuses []ServiceStatus, name string) string {
 	return ""
 }
 
-// TestCoreOptionalSplit pins the core/optional partition: open-webui is the only
-// optional service today; the rest are core; desiredServices is their union.
+// TestCoreOptionalSplit pins the core/optional partition: open-webui and odysseus
+// are the optional services; the rest are core; desiredServices is their union.
 func TestCoreOptionalSplit(test *testing.T) {
-	if !isOptionalService("open-webui") {
-		test.Error("open-webui must be an optional service")
+	for _, optional := range []string{"open-webui", "odysseus"} {
+		if !isOptionalService(optional) {
+			test.Errorf("%q must be an optional service", optional)
+		}
 	}
 	for _, core := range []string{"ollama", "presidio", "litellm", "headroom", "proxy", "dns"} {
 		if isOptionalService(core) {
@@ -837,11 +871,11 @@ func TestCoreOptionalSplit(test *testing.T) {
 			test.Errorf("%q missing from coreServices", core)
 		}
 	}
-	if got := optionalServiceNames(); len(got) != 1 || got[0] != "open-webui" {
-		test.Errorf("optionalServiceNames = %v, want [open-webui]", got)
+	if got := optionalServiceNames(); len(got) != 2 || got[0] != "open-webui" || got[1] != "odysseus" {
+		test.Errorf("optionalServiceNames = %v, want [open-webui odysseus]", got)
 	}
 	// desiredServices is core + all optional (every name addressable).
-	for _, name := range []string{"ollama", "presidio", "litellm", "headroom", "proxy", "dns", "open-webui"} {
+	for _, name := range []string{"ollama", "presidio", "litellm", "headroom", "proxy", "dns", "open-webui", "odysseus"} {
 		if !hasService(desiredServices(), name) {
 			test.Errorf("%q missing from desiredServices: %+v", name, desiredServices())
 		}
@@ -967,5 +1001,116 @@ func TestEnsureHeadroomIsInternalOnly(test *testing.T) {
 	}
 	if !strings.Contains(launch, "OPENAI_TARGET_API_URL=") {
 		test.Errorf("headroom run missing OPENAI_TARGET_API_URL: %s", launch)
+	}
+}
+
+// runArgsForContainer returns the argv of the recorded `<runtime> run --name
+// <container>` call, or nil if none was recorded.
+func runArgsForContainer(prober *recordingProber, container string) []string {
+	for _, call := range prober.calls {
+		if len(call) < 4 || call[1] != "run" {
+			continue
+		}
+		for index := 2; index < len(call)-1; index++ {
+			if call[index] == "--name" && call[index+1] == container {
+				return call
+			}
+		}
+	}
+	return nil
+}
+
+// TestEnsureOdysseusGroupRunArgs: ensureOdysseus brings up all four containers;
+// the companions are internal-only (no -p host publish), and the app publishes
+// :7000, mounts the host Docker socket, and routes models through aip-proxy.
+func TestEnsureOdysseusGroupRunArgs(test *testing.T) {
+	test.Setenv("HOME", test.TempDir())
+	prober := &recordingProber{}
+	if err := ensureOdysseus(prober, "docker", "127.0.0.1"); err != nil {
+		test.Fatal(err)
+	}
+
+	// Companions are internal-only: launched, but with no host publish.
+	for _, companion := range []string{chromadbContainer, searxngContainer, ntfyContainer} {
+		args := runArgsForContainer(prober, companion)
+		if args == nil {
+			test.Fatalf("%s was not launched: %v", companion, prober.calls)
+		}
+		launch := strings.Join(args, " ")
+		if strings.Contains(launch, "-p ") {
+			test.Errorf("%s must be internal-only (no host publish): %s", companion, launch)
+		}
+		if !strings.Contains(launch, "--network "+platformNetwork) {
+			test.Errorf("%s must join %s: %s", companion, platformNetwork, launch)
+		}
+	}
+	// ntfy needs the explicit `serve` command.
+	if ntfy := strings.Join(runArgsForContainer(prober, ntfyContainer), " "); !strings.HasSuffix(ntfy, " serve") {
+		test.Errorf("ntfy must run `serve`: %s", ntfy)
+	}
+	// SearXNG must carry a secret.
+	if searx := strings.Join(runArgsForContainer(prober, searxngContainer), " "); !strings.Contains(searx, "SEARXNG_SECRET=") {
+		test.Errorf("searxng must set SEARXNG_SECRET: %s", searx)
+	}
+
+	// The app: publishes :7000, mounts the Docker socket, routes via aip-proxy.
+	appArgs := runArgsForContainer(prober, odysseusContainer)
+	if appArgs == nil {
+		test.Fatalf("aip-odysseus was not launched: %v", prober.calls)
+	}
+	app := strings.Join(appArgs, " ")
+	if !strings.Contains(app, "-p 127.0.0.1:7000:7000") {
+		test.Errorf("odysseus must publish :7000: %s", app)
+	}
+	if !strings.Contains(app, "/var/run/docker.sock:/var/run/docker.sock") {
+		test.Errorf("odysseus must mount the host Docker socket: %s", app)
+	}
+	if !strings.Contains(app, "OLLAMA_BASE_URL=http://aip-proxy/v1") {
+		test.Errorf("odysseus must route models through aip-proxy: %s", app)
+	}
+	if !strings.Contains(app, "CHROMADB_HOST=aip-chromadb") || !strings.Contains(app, "SEARXNG_INSTANCE=http://aip-searxng:8080") {
+		test.Errorf("odysseus must point at its companions by name: %s", app)
+	}
+	if !strings.Contains(app, "APP_BIND=0.0.0.0") {
+		test.Errorf("odysseus must bind 0.0.0.0 inside the container: %s", app)
+	}
+}
+
+// TestSearxngSecretPersists: the SearXNG secret is generated once and reused on
+// later runs (so signed cookies stay valid).
+func TestSearxngSecretPersists(test *testing.T) {
+	test.Setenv("HOME", test.TempDir())
+	first, err := searxngSecret()
+	if err != nil || first == "" {
+		test.Fatalf("searxngSecret() = (%q,%v)", first, err)
+	}
+	second, err := searxngSecret()
+	if err != nil {
+		test.Fatal(err)
+	}
+	if first != second {
+		test.Errorf("searxng secret not stable across runs: %q vs %q", first, second)
+	}
+}
+
+// TestReconcileGatesOptionalOdysseus: odysseus is brought up when enabled and
+// skipped when not (via the fake's per-service status mirroring the real gating).
+func TestReconcileGatesOptionalOdysseus(test *testing.T) {
+	services := &fakeServices{}
+	enabledStatuses, err := services.Reconcile("", "127.0.0.1", []string{"odysseus"}, nil)
+	if err != nil {
+		test.Fatal(err)
+	}
+	if stateOf(enabledStatuses, "odysseus") != "running" {
+		test.Errorf("odysseus should be running when enabled: %+v", enabledStatuses)
+	}
+
+	disabled := &fakeServices{}
+	disabledStatuses, err := disabled.Reconcile("", "127.0.0.1", nil, nil)
+	if err != nil {
+		test.Fatal(err)
+	}
+	if stateOf(disabledStatuses, "odysseus") != "disabled" {
+		test.Errorf("odysseus should be disabled when not enabled: %+v", disabledStatuses)
 	}
 }

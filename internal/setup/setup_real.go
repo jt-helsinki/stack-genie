@@ -1,6 +1,8 @@
 package setup
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"fmt"
 	"io"
 	"os"
@@ -70,6 +72,9 @@ func coreServices() []serviceSpec {
 func optionalServices() []serviceSpec {
 	return []serviceSpec{
 		{"open-webui", "container"},
+		// Odysseus is one logical optional service backed by four containers (the app
+		// + ChromaDB/SearXNG/ntfy companions); see ensureOdysseus.
+		{"odysseus", "container"},
 	}
 }
 
@@ -98,23 +103,36 @@ func desiredServices() []serviceSpec {
 	return append(coreServices(), optionalServices()...)
 }
 
-// requiredImages returns the image reference (repo:tag) for EVERY container in
-// the service tier, resolved via containerImage with the same versions-keys
-// containerImage expects. desiredServices lists the services but NOT litellm-db
-// (it has no health line / Status entry), so it is added explicitly; and its
-// "presidio" entry is one logical service backed by TWO images
-// (presidio-analyzer + presidio-anonymizer, the actual versions keys), so it is
-// expanded here. Pure and testable. Duplicate refs are de-duplicated so a shared
-// image is only pulled once.
-func requiredImages() []string {
+// serviceImageKeys maps a service spec to the versions keys whose images it pulls.
+// Most services map 1:1 to their name, but a few are one logical service backed by
+// SEVERAL images: "presidio" → analyzer + anonymizer; "odysseus" → the app plus its
+// ChromaDB/SearXNG/ntfy companions. Pure helper, shared by requiredImages.
+func serviceImageKeys(service string) []string {
+	switch service {
+	case "presidio":
+		return []string{"presidio-analyzer", "presidio-anonymizer"}
+	case "odysseus":
+		return []string{"odysseus", "chromadb", "searxng", "ntfy"}
+	default:
+		return []string{service}
+	}
+}
+
+// requiredImages returns the image references (repo:tag) to pre-pull, gated by the
+// enabled optional-service set: CORE images are always included, but an OPTIONAL
+// service's images are included ONLY when that service is in enabled — so a
+// disabled Odysseus never triggers a pull of its (large) images. References are
+// resolved via containerImage; desiredServices lists the services but NOT
+// litellm-db (no health line / Status entry), so it is added explicitly. A few
+// services expand to several images (serviceImageKeys). Pure and testable;
+// duplicate refs are de-duplicated so a shared image is only pulled once.
+func requiredImages(enabled []string) []string {
 	serviceKeys := []string{"litellm-db"}
 	for _, service := range desiredServices() {
-		switch service.Name {
-		case "presidio":
-			serviceKeys = append(serviceKeys, "presidio-analyzer", "presidio-anonymizer")
-		default:
-			serviceKeys = append(serviceKeys, service.Name)
+		if isOptionalService(service.Name) && !slices.Contains(enabled, service.Name) {
+			continue // a not-enabled optional service: don't pull its images
 		}
+		serviceKeys = append(serviceKeys, serviceImageKeys(service.Name)...)
 	}
 	seen := make(map[string]bool, len(serviceKeys))
 	images := make([]string, 0, len(serviceKeys))
@@ -190,6 +208,31 @@ const (
 	openWebUIHostPort  = "18090"
 	openWebUIVolume    = "aip-open-webui-data"
 	openWebUITargetURL = "http://" + litellmContainer + ":4000/v1"
+
+	// Odysseus is an OPTIONAL, host-side AI workspace (arch §5). It is one logical
+	// optional service backed by FOUR containers: the app (aip-odysseus, UI on
+	// :7000) plus three companions reached by name on aip-net — ChromaDB (vector
+	// DB), SearXNG (web search), and ntfy (notifications). The companions are
+	// INTERNAL-ONLY (no host publish): Odysseus reaches them on the shared network,
+	// and not publishing them avoids clashing with common dev ports (8080/8000) and
+	// keeps them off the host. The app routes models through the nginx gateway
+	// (aip-proxy) → Headroom → LiteLLM, so it never holds provider keys directly.
+	odysseusContainer  = "aip-odysseus"
+	odysseusHostPort   = "7000"
+	chromadbContainer  = "aip-chromadb"
+	searxngContainer   = "aip-searxng"
+	ntfyContainer      = "aip-ntfy"
+	odysseusDataVolume = "aip-odysseus-data"
+	chromadbVolume     = "aip-chromadb-data"
+	searxngVolume      = "aip-searxng-data"
+	ntfyCacheVolume    = "aip-ntfy-cache"
+	// Odysseus routes all model traffic through the nginx gateway (aip-proxy) on the
+	// shared network — the same Headroom → LiteLLM path the workspaces use — as an
+	// OpenAI-compatible base, so it inherits the always-on guardrails and never
+	// holds provider keys directly.
+	odysseusProxyBaseURL     = "http://" + proxyContainer + "/v1"
+	odysseusResearchEndpoint = odysseusProxyBaseURL + "/chat/completions"
+	odysseusSearxngURL       = "http://" + searxngContainer + ":8080"
 
 	// Presidio backs LiteLLM's always-on PII guardrail (arch §17). The analyzer
 	// detects PII and the anonymizer masks it; LiteLLM reaches both by name on the
@@ -476,6 +519,153 @@ func ensureOpenWebUI(prober runtime.Prober, containerRuntime, bindHost string) e
 	return nil
 }
 
+// searxngSecret returns the persistent SearXNG secret key, generating a random
+// hex secret on first use and persisting it to ~/.ai-platform/odysseus/searxng-secret
+// so it is reused on later runs (a stable secret keeps SearXNG's signed cookies
+// valid across restarts). Best-effort persistence: a write failure still returns a
+// usable secret for this run.
+func searxngSecret() (string, error) {
+	platformDir, err := paths.PlatformDir()
+	if err != nil {
+		return "", err
+	}
+	odysseusDir := filepath.Join(platformDir, "odysseus")
+	if err := os.MkdirAll(odysseusDir, 0o755); err != nil {
+		return "", output.Errorf(output.ExitRuntimeFailure, "create odysseus dir %s: %s", odysseusDir, err)
+	}
+	secretPath := filepath.Join(odysseusDir, "searxng-secret")
+	if existing, err := os.ReadFile(secretPath); err == nil {
+		if value := strings.TrimSpace(string(existing)); value != "" {
+			return value, nil
+		}
+	}
+	buffer := make([]byte, 32)
+	if _, err := rand.Read(buffer); err != nil {
+		return "", output.Errorf(output.ExitRuntimeFailure, "generate searxng secret: %s", err)
+	}
+	secret := hex.EncodeToString(buffer)
+	_ = os.WriteFile(secretPath, []byte(secret+"\n"), 0o600) // best-effort persist
+	return secret, nil
+}
+
+// ensureOdysseus brings up the OPTIONAL Odysseus AI workspace and its three
+// companions on the shared network, idempotently (each container is
+// containerRunning-checked, and any stale one is rm -f'd first). The companions
+// (ChromaDB, SearXNG, ntfy) are INTERNAL-ONLY — Odysseus reaches them by name on
+// aip-net, so they publish nothing to the host (avoiding clashes with common dev
+// ports). They are started first, then the app last. The app routes all model
+// traffic through the nginx gateway (aip-proxy) → Headroom → LiteLLM as an
+// OpenAI-compatible base, reusing the running LiteLLM master key via env
+// passthrough (the ensureOpenWebUI pattern) so the secret never lands in argv.
+//
+// SECURITY: the app mounts the host Docker socket (/var/run/docker.sock) — the
+// Odysseus maintainer explicitly chose this — which grants it full control of the
+// host's Docker daemon. That is an elevated privilege OUTSIDE the workspace
+// microVM sandbox, which is why Odysseus is opt-in and carries a security warning
+// at `ai setup`.
+//
+// hardware bring-up: Odysseus configures its model providers IN-APP (/setup); the
+// env values below are best-effort seeds, and the OpenAI-compatible routing
+// through aip-proxy should be confirmed in its UI on a provisioned host.
+func ensureOdysseus(prober runtime.Prober, containerRuntime, bindHost string) error {
+	// Companions first (internal-only; Odysseus reaches them by name on aip-net).
+	if !containerRunning(prober, containerRuntime, chromadbContainer) {
+		_, _ = prober.Run(containerRuntime, "rm", "-f", chromadbContainer)
+		chromaArgs := []string{
+			"run", "-d", "--name", chromadbContainer,
+			"--network", platformNetwork,
+			"-e", "ANONYMIZED_TELEMETRY=FALSE",
+			"-v", chromadbVolume + ":/chroma/chroma",
+			containerImage("chromadb"),
+		}
+		if _, err := prober.Run(containerRuntime, chromaArgs...); err != nil {
+			return output.Errorf(output.ExitRuntimeFailure, "launch chromadb via %s: %s", containerRuntime, err)
+		}
+	}
+	if !containerRunning(prober, containerRuntime, searxngContainer) {
+		secret, err := searxngSecret()
+		if err != nil {
+			return err
+		}
+		_, _ = prober.Run(containerRuntime, "rm", "-f", searxngContainer)
+		searxngArgs := []string{
+			"run", "-d", "--name", searxngContainer,
+			"--network", platformNetwork,
+			"-v", searxngVolume + ":/etc/searxng",
+			"-e", "SEARXNG_SECRET=" + secret,
+			"-e", "SEARXNG_BASE_URL=http://" + searxngContainer + ":8080/",
+			containerImage("searxng"),
+		}
+		if _, err := prober.Run(containerRuntime, searxngArgs...); err != nil {
+			return output.Errorf(output.ExitRuntimeFailure, "launch searxng via %s: %s", containerRuntime, err)
+		}
+	}
+	if !containerRunning(prober, containerRuntime, ntfyContainer) {
+		_, _ = prober.Run(containerRuntime, "rm", "-f", ntfyContainer)
+		ntfyArgs := []string{
+			"run", "-d", "--name", ntfyContainer,
+			"--network", platformNetwork,
+			"-v", ntfyCacheVolume + ":/var/cache/ntfy",
+			containerImage("ntfy"),
+			"serve", // ntfy needs an explicit `serve` command
+		}
+		if _, err := prober.Run(containerRuntime, ntfyArgs...); err != nil {
+			return output.Errorf(output.ExitRuntimeFailure, "launch ntfy via %s: %s", containerRuntime, err)
+		}
+	}
+
+	// The app last.
+	if containerRunning(prober, containerRuntime, odysseusContainer) {
+		return nil
+	}
+	platformDir, err := paths.PlatformDir()
+	if err != nil {
+		return err
+	}
+	odysseusDir := filepath.Join(platformDir, "odysseus")
+	dataDir := filepath.Join(odysseusDir, "data")
+	logsDir := filepath.Join(odysseusDir, "logs")
+	for _, dir := range []string{dataDir, logsDir} {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			return output.Errorf(output.ExitRuntimeFailure, "create odysseus dir %s: %s", dir, err)
+		}
+	}
+	_, _ = prober.Run(containerRuntime, "rm", "-f", odysseusContainer)
+	args := []string{
+		"run", "-d", "--name", odysseusContainer,
+		"--network", platformNetwork,
+		"-p", bindHost + ":" + odysseusHostPort + ":" + odysseusHostPort,
+		"-v", dataDir + ":/app/data",
+		"-v", logsDir + ":/app/logs",
+		// SECURITY: mounting the host Docker socket grants Odysseus full control of
+		// the host Docker daemon (an elevated privilege outside the sandbox). The
+		// Odysseus maintainer explicitly requires it.
+		"-v", "/var/run/docker.sock:/var/run/docker.sock",
+		// Route models through the nginx gateway → Headroom → LiteLLM (OpenAI-compatible).
+		"-e", "OLLAMA_BASE_URL=" + odysseusProxyBaseURL,
+		"-e", "RESEARCH_LLM_ENDPOINT=" + odysseusResearchEndpoint,
+		"-e", "SEARXNG_INSTANCE=" + odysseusSearxngURL,
+		"-e", "CHROMADB_HOST=" + chromadbContainer,
+		"-e", "CHROMADB_PORT=8000",
+		"-e", "DATABASE_URL=sqlite:///./data/app.db",
+		"-e", "AUTH_ENABLED=true",
+		"-e", "APP_PORT=" + odysseusHostPort,
+		// Listen on all interfaces inside the container so the host publish works.
+		"-e", "APP_BIND=0.0.0.0",
+	}
+	// Reuse the running LiteLLM master key as the OpenAI key, via env passthrough so
+	// the value stays out of argv (and platform disk) — the ensureOpenWebUI pattern.
+	if key := litellmEnvValue(prober, containerRuntime, "LITELLM_MASTER_KEY"); key != "" {
+		_ = os.Setenv("OPENAI_API_KEY", key)
+		args = append(args, "-e", "OPENAI_API_KEY")
+	}
+	args = append(args, containerImage("odysseus"))
+	if _, err := prober.Run(containerRuntime, args...); err != nil {
+		return output.Errorf(output.ExitRuntimeFailure, "launch odysseus via %s: %s", containerRuntime, err)
+	}
+	return nil
+}
+
 // ensureDNS runs the aip-dns CoreDNS resolver on the shared network, published to
 // the host loopback at dnsHostPort/udp so microVMs (booted with --dns-nameserver
 // DNSNameserver) forward their DNS there for the attempted-egress-by-name audit
@@ -669,10 +859,12 @@ type realServices struct {
 // BEFORE the reconcile so the subsequent `docker run -d` (whose implicit pull
 // output the prober captures, invisibly) finds the image present and returns
 // instantly — a multi-GB first-run pull (e.g. ollama) no longer looks hung.
-// Already-present images are skipped (fast re-runs). Best-effort: it returns the
-// first pull error but the caller treats it as non-fatal — the reconcile's
-// per-service `docker run` re-pulls anything still missing.
-func (services realServices) PullImages(out io.Writer, progress func(string)) error {
+// enabled is the set of opt-in optional services to include: core images are
+// always pulled, but a disabled optional service's (potentially large) images are
+// skipped. Already-present images are skipped (fast re-runs). Best-effort: it
+// returns the first pull error but the caller treats it as non-fatal — the
+// reconcile's per-service `docker run` re-pulls anything still missing.
+func (services realServices) PullImages(enabled []string, out io.Writer, progress func(string)) error {
 	if progress == nil {
 		progress = func(string) {}
 	}
@@ -681,7 +873,7 @@ func (services realServices) PullImages(out io.Writer, progress func(string)) er
 		return err
 	}
 	var firstErr error
-	for _, ref := range requiredImages() {
+	for _, ref := range requiredImages(enabled) {
 		// Present locally? Skip — `image inspect` returning an error means absent.
 		if _, err := services.prober.Run(containerRuntime.Name, "image", "inspect", ref); err == nil {
 			continue
@@ -776,6 +968,12 @@ func (services realServices) Reconcile(providerConfig, bindHost string, optional
 	if slices.Contains(optional, "open-webui") {
 		progress("  • open-webui (chat UI → LiteLLM)…")
 		if err := ensureOpenWebUI(services.prober, containerRuntime.Name, bindHost); err != nil {
+			return nil, err
+		}
+	}
+	if slices.Contains(optional, "odysseus") {
+		progress("  • odysseus (AI workspace + ChromaDB/SearXNG/ntfy → LiteLLM)…")
+		if err := ensureOdysseus(services.prober, containerRuntime.Name, bindHost); err != nil {
 			return nil, err
 		}
 	}
@@ -913,6 +1111,15 @@ func (services realServices) serviceHealthy(name string) bool {
 			return false
 		}
 		return containerRunning(services.prober, containerRuntime.Name, openWebUIContainer)
+	case "odysseus":
+		// The aip-odysseus app container running is sufficient for readiness here
+		// (the live HTTP probe is a hardware bring-up seam — see
+		// docs/HARDWARE-BRINGUP.md); the companions are internal-only.
+		containerRuntime, err := runtime.ContainerRuntimeName(services.prober)
+		if err != nil {
+			return false
+		}
+		return containerRunning(services.prober, containerRuntime.Name, odysseusContainer)
 	case "dns":
 		// The resolver is a pure forwarder; the container running is sufficient
 		// (it has no HTTP health endpoint).
@@ -983,6 +1190,17 @@ func (services realServices) Control(action, service string) ([]ServiceStatus, e
 		{"open-webui",
 			func() error { return ensureOpenWebUI(services.prober, containerRuntime.Name, bindHost) },
 			func() error { return stopContainer(openWebUIContainer) }},
+		{"odysseus",
+			func() error { return ensureOdysseus(services.prober, containerRuntime.Name, bindHost) },
+			func() error {
+				// Odysseus owns four containers — stop them all.
+				for _, name := range []string{odysseusContainer, chromadbContainer, searxngContainer, ntfyContainer} {
+					if err := stopContainer(name); err != nil {
+						return err
+					}
+				}
+				return nil
+			}},
 		{"dns",
 			func() error { return ensureDNS(services.prober, containerRuntime.Name) },
 			func() error { return stopContainer(dnsContainer) }},
@@ -1000,7 +1218,7 @@ func (services realServices) Control(action, service string) ([]ServiceStatus, e
 		}
 		if targets == nil {
 			return nil, output.Errorf(output.ExitInvalidInput,
-				"unknown service %q (expected one of: ollama, presidio, litellm, headroom, proxy, open-webui, dns)", service)
+				"unknown service %q (expected one of: ollama, presidio, litellm, headroom, proxy, open-webui, odysseus, dns)", service)
 		}
 	}
 

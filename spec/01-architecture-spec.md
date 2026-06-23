@@ -277,7 +277,7 @@ project.
 ## Host Services Control Plane
 
 The platform's host services — Headroom, LiteLLM (+ its Postgres), Presidio
-(analyzer + anonymizer), Ollama (required), and the optional Open WebUI chat UI — plus the
+(analyzer + anonymizer), Ollama (required), and the optional Open WebUI chat UI and Odysseus AI workspace (OFF by default) — plus the
 Microsandbox microVM runtime are installed, configured, and supervised by the
 `ai` CLI. The CLI is the **single control plane**: the user never invokes
 `docker compose`, `msb`, `launchctl`, or `systemctl` directly. The whole service
@@ -312,6 +312,7 @@ ai logs --service <svc>      one log surface
 | Presidio | two containers (via Runtime) `aip-presidio-analyzer` + `aip-presidio-anonymizer` | back LiteLLM's always-on secret-masking guardrail; internal-only, not published (§15) |
 | Ollama (required) | container (via Runtime) `aip-ollama` on all platforms | local model backend LiteLLM routes to; CPU-only on macOS (Docker has no GPU passthrough) |
 | Open WebUI (optional) | container (via Runtime) `aip-open-webui` | chat UI routed through LiteLLM as an OpenAI-compatible gateway (`OPENAI_API_BASE_URL=http://aip-litellm:4000/v1`, built-in Ollama backend + login wall disabled); published on the host at :18090 (its address IS its console); HTTP only |
+| Odysseus (optional, OFF by default) | one optional service (via Runtime) backed by FOUR containers: `aip-odysseus` (app UI on host :7000) + the INTERNAL-ONLY companions `aip-chromadb` / `aip-searxng` / `aip-ntfy` | self-hosted AI workspace; routes models through the nginx gateway → Headroom → LiteLLM (`OLLAMA_BASE_URL=http://aip-proxy/v1`, OpenAI-compatible, master key via env passthrough); companions reached by name on `aip-net` (no host publish). **MOUNTS THE HOST DOCKER SOCKET** (`/var/run/docker.sock`) — full host-Docker control, an elevated privilege outside the sandbox — so it is opt-in with a sharpened `ai setup` warning. Providers configured in-app (`/setup`); env values are seeds. HTTP only |
 | DNS audit resolver | container (via Runtime) `aip-dns` (CoreDNS) | egress-audit resolver: microVMs forward DNS here so attempted names are logged for `ai network log`; published to host loopback only; audit, not enforcement (§29.7) |
 | Microsandbox | microVM runtime, invoked on demand | drives workspace microVMs via the Go SDK / `msb`; no daemon to supervise (§7) |
 
