@@ -87,8 +87,13 @@ type envelope struct {
 // Emitter renders command results as either the JSON envelope or human text.
 type Emitter struct {
 	JSON bool
-	Out  io.Writer // stdout — envelope only when JSON
-	Err  io.Writer // stderr — diagnostics, warnings, human errors
+	// Plain forces non-interactive, unstyled human output (the --plain flag): no
+	// TUI spinners/steppers, no colour. Honored by internal/ui's gate so callers
+	// that want plain human output (logs, dumb terminals) opt out of the TUI
+	// without switching to --json.
+	Plain bool
+	Out   io.Writer // stdout — envelope only when JSON
+	Err   io.Writer // stderr — diagnostics, warnings, human errors
 }
 
 // Success renders a successful result and returns ExitOK.

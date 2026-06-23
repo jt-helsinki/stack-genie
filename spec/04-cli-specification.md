@@ -58,6 +58,25 @@ All commands must support:
 * human-readable output (default)
 * JSON output (`--json` flag)
 
+### Programmatic / external invocation
+
+External programs drive the CLI as a subprocess — `ai <command> [flags] --json` —
+and rely on this contract (a future web interface will sit on top of the same
+contract; there is no server today):
+
+* Exactly **one JSON envelope** is written to **stdout** per invocation
+  (`{ok, command, data, error, warnings}`, §19). Diagnostics, progress, and the
+  interactive TUI never touch stdout — they go to stderr and are suppressed under
+  `--json`.
+* `error.code` **equals** the process exit code (§18), so a caller can branch on
+  either.
+* Under `--json` the CLI is **fully non-interactive**: it never prompts and never
+  renders a TUI. **Every input has a flag (or positional)**, so a command is
+  completely specifiable in a single invocation; a missing required input is an
+  error (exit `2`), never a prompt.
+* `--plain` also disables the TUI (spinners/colour) but keeps human-readable
+  (non-JSON) output — for dumb terminals or simple log capture.
+
 ---
 
 ## 1.4 Cross-Platform Consistency
@@ -306,14 +325,30 @@ Idempotent: safe to re-run after a partial or completed uninstall.
 ## 3.1 Create Project
 
 ```bash id="c4"
-ai project create [<name>]
+ai project create [<name>] [--name <name>] [--os <os>] [--agents <list>] [--stacks <list>]
 ```
 
 `ai project create` sets up a new environment **in the current working
-directory** through an **interactive wizard**; it requires a terminal. Apart from
-the optional project name, **there are no flags for the choices** — every
-selectable option is made in the wizard. In particular there is **no `--os`
-flag**: the OS is always picked in the wizard.
+directory**. On a terminal with no create flags it runs an **interactive
+wizard**; for non-interactive use — and for external programs via `--json` —
+**every input also has a flag**, so the whole project is specifiable in one
+command:
+
+* `--name <name>` (or the `[<name>]` positional) — defaults to the current
+  directory's basename
+* `--os <os>` — one of `debian-trixie|debian-bookworm|ubuntu|alma`; **required**
+  when running non-interactively
+* `--agents <list>` — comma-separated agent CLIs
+  (`opencode,pi,claude-code,codex,gemini`); defaults to `opencode,pi`, and the
+  first listed becomes the default agent CLI
+* `--stacks <list>` — comma-separated software stacks
+  (`go,node,python,rust,java,maven,deno`); optional
+
+On a terminal (with `--json` off) the wizard **always** runs, **pre-seeded** with
+any flags you passed — flags set the defaults rather than bypassing the UI. Under
+`--json` or no terminal, the spec is built straight from flags with **no prompt**.
+Unknown flag values — or a missing `--os` when non-interactive — exit `2`.
+`--dry-run` prints the plan in either mode.
 
 The project lives wherever you run the command — there is no fixed projects
 directory. The chosen path is recorded in the global index

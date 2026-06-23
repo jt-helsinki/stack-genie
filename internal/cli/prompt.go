@@ -8,6 +8,7 @@ import (
 	"github.com/charmbracelet/huh"
 	"github.com/charmbracelet/x/term"
 	"github.com/jt-helsinki/ideal-robot/internal/output"
+	"github.com/jt-helsinki/ideal-robot/internal/ui"
 )
 
 // This file is the shared interactive-prompt surface every command uses to
@@ -38,7 +39,7 @@ func interactive(emitter *output.Emitter) bool {
 // "cancelled". Pass every prompt for one command as groups of a SINGLE call so
 // the user can navigate back between them (see the back-navigation note above).
 func runForm(groups ...*huh.Group) error {
-	form := huh.NewForm(groups...)
+	form := huh.NewForm(groups...).WithTheme(ui.HuhTheme())
 	if err := form.Run(); err != nil {
 		if errors.Is(err, huh.ErrUserAborted) {
 			return output.Errorf(output.ExitInvalidInput, "cancelled")

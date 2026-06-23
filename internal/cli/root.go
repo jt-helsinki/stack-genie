@@ -16,6 +16,7 @@ import (
 // globalFlags holds the flags accepted by every command (CLI spec §17).
 type globalFlags struct {
 	json    bool
+	plain   bool
 	verbose bool
 	dryRun  bool
 	project string
@@ -46,6 +47,7 @@ func Execute() int {
 		CompletionOptions: cobra.CompletionOptions{DisableDefaultCmd: true},
 		PersistentPreRun: func(_ *cobra.Command, _ []string) {
 			emitter.JSON = flags.json
+			emitter.Plain = flags.plain
 		},
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			if flags.version {
@@ -63,6 +65,7 @@ func Execute() int {
 
 	persistentFlags := root.PersistentFlags()
 	persistentFlags.BoolVar(&flags.json, "json", false, "machine-readable output (CLI spec §19)")
+	persistentFlags.BoolVar(&flags.plain, "plain", false, "plain, non-interactive human output — no TUI spinners/colour")
 	persistentFlags.BoolVar(&flags.verbose, "verbose", false, "extra human-readable detail (ignored with --json)")
 	persistentFlags.BoolVar(&flags.dryRun, "dry-run", false, "compute and print planned actions; mutate nothing")
 	persistentFlags.StringVar(&flags.project, "project", "", "scope the command to a project")
@@ -111,8 +114,9 @@ func Execute() int {
 	executedCmd, err := root.ExecuteC()
 	if err != nil {
 		// Arg/flag errors abort before PersistentPreRun runs, so mirror the
-		// --json flag here to honor the requested output mode (§19).
+		// --json/--plain flags here to honor the requested output mode (§19).
 		emitter.JSON = flags.json
+		emitter.Plain = flags.plain
 		// Unknown command / bad flag / wrong args → invalid input (exit 2, §18).
 		friendly := humanizeUsageError(err.Error())
 		if emitter.JSON {

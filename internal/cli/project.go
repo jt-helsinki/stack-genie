@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	goruntime "runtime"
+	"slices"
 	"strings"
 
 	"github.com/charmbracelet/huh"
@@ -76,26 +77,48 @@ func newProjectCreateCmd(emitter *output.Emitter, exit *int) *cobra.Command {
 			}
 
 			defaultName := defaultProjectName(args)
-			// The wizard needs a real terminal. Check explicitly and exit 2 here,
-			// rather than letting huh/bubbletea fall back to opening the controlling
-			// terminal (/dev/tty) directly — which BLOCKS (hangs) when stdin is
-			// redirected to a non-TTY but a controlling terminal still exists, e.g.
-			// `go test` / `ai project create` run from an interactive shell (§3.1).
-			if !term.IsTerminal(os.Stdin.Fd()) {
-				*exit = emitter.Failure("project.create", output.Errorf(output.ExitInvalidInput,
-					"interactive terminal required: `ai project create` runs a wizard — run it in a terminal"))
-				return nil
-			}
-			spec, cancelled, err := runCreateWizard(defaultName)
-			if err != nil {
-				// Defensive: the wizard still failed despite a TTY (§3.1).
-				*exit = emitter.Failure("project.create",
-					output.Errorf(output.ExitInvalidInput, "interactive terminal required: %s", err))
-				return nil
-			}
-			if cancelled {
-				*exit = emitter.Success("project.create", map[string]any{"cancelled": true})
-				return nil
+			nameFlag, _ := cmd.Flags().GetString("name")
+			osFlag, _ := cmd.Flags().GetString("os")
+			agentsFlag, _ := cmd.Flags().GetStringSlice("agents")
+			stacksFlag, _ := cmd.Flags().GetStringSlice("stacks")
+
+			// A project is fully specifiable in one command via flags, so external
+			// programs can create it non-interactively with --json (§1.8). The huh
+			// wizard is the interactive convenience ONLY: it runs when stdin is a
+			// real terminal, --json is off, and no create flag was given. Otherwise
+			// the spec is built and validated from flags — never a prompt, which
+			// would block / hang under automation (§3.1).
+			// On a terminal (and not --json) the wizard always runs, PRE-SEEDED with
+			// any flags the user passed — flags set the UI's defaults rather than
+			// bypassing it. Under --json / no TTY the project is built straight from
+			// flags with no prompt (the programmatic contract, §1.3/§3.1).
+			interactiveTTY := !emitter.JSON && term.IsTerminal(os.Stdin.Fd())
+
+			var spec project.Spec
+			if interactiveTTY {
+				if err := validateProvidedCreateFlags(osFlag, agentsFlag, stacksFlag); err != nil {
+					*exit = emitter.Failure("project.create", err)
+					return nil
+				}
+				built, cancelled, err := runCreateWizard(seedSpec(nameFlag, osFlag, agentsFlag, stacksFlag, defaultName))
+				if err != nil {
+					// Defensive: the wizard still failed despite a TTY (§3.1).
+					*exit = emitter.Failure("project.create",
+						output.Errorf(output.ExitInvalidInput, "interactive terminal required: %s", err))
+					return nil
+				}
+				if cancelled {
+					*exit = emitter.Success("project.create", map[string]any{"cancelled": true})
+					return nil
+				}
+				spec = built
+			} else {
+				built, err := specFromFlags(nameFlag, osFlag, agentsFlag, stacksFlag, defaultName)
+				if err != nil {
+					*exit = emitter.Failure("project.create", err)
+					return nil
+				}
+				spec = built
 			}
 			// The project is created in the current working directory. This tool
 			// manages only the reproducible AI dev environment (the .ai-platform/
@@ -141,6 +164,16 @@ func newProjectCreateCmd(emitter *output.Emitter, exit *int) *cobra.Command {
 			return nil
 		},
 	}
+	// Non-interactive inputs — every value also has a flag so the command is fully
+	// specifiable in one invocation (for --json / external callers). The [name]
+	// positional remains a convenience equivalent to --name.
+	cmd.Flags().String("name", "", "project name (default: the [name] argument or the current directory)")
+	cmd.Flags().String("os", "", "base OS: "+strings.Join(supportedOSes, "|"))
+	cmd.Flags().StringSlice("agents", nil, "agent CLIs to install (default: opencode,pi): "+strings.Join(supportedAgentCLIs, ","))
+	cmd.Flags().StringSlice("stacks", nil, "software stacks to install: "+strings.Join(supportedStacks, ","))
+	_ = cmd.RegisterFlagCompletionFunc("os", fixedValues(supportedOSes...))
+	_ = cmd.RegisterFlagCompletionFunc("agents", fixedValues(supportedAgentCLIs...))
+	_ = cmd.RegisterFlagCompletionFunc("stacks", fixedValues(supportedStacks...))
 	return cmd
 }
 
@@ -205,12 +238,13 @@ func sanitizeName(raw string) string {
 
 // runCreateWizard collects a project.Spec interactively (CLI §3.1). It returns
 // cancelled=true if the user aborts, or an error if no terminal is available.
-func runCreateWizard(defaultName string) (project.Spec, bool, error) {
-	name := defaultName
-	osKey := "debian-trixie"
-	agentCLIs := []string{"opencode", "pi"} // both installed by default
-	defaultTool := "opencode"
-	stacks := []string{}
+func runCreateWizard(seed project.Spec) (project.Spec, bool, error) {
+	// Pre-seed every field from the caller (flags become the wizard's defaults).
+	name := seed.Name
+	osKey := seed.OS
+	agentCLIs := seed.AgentCLIs
+	defaultTool := seed.DefaultTool
+	stacks := seed.Stacks
 
 	form := huh.NewForm(
 		huh.NewGroup(
@@ -259,6 +293,76 @@ func wizardAtLeastOne(selected []string) error {
 		return errors.New("select at least one")
 	}
 	return nil
+}
+
+// validateProvidedCreateFlags rejects any non-empty create flag whose value is
+// not a known option (a typo'd --os/--agents/--stacks → exit 2). Empty flags are
+// left for defaults. Shared by the interactive (seed) and non-interactive paths.
+func validateProvidedCreateFlags(osKey string, agents, stacks []string) error {
+	if osKey != "" && !slices.Contains(supportedOSes, osKey) {
+		return output.Errorf(output.ExitInvalidInput,
+			"unknown --os %q (one of: %s)", osKey, strings.Join(supportedOSes, ", "))
+	}
+	for _, agent := range agents {
+		if !slices.Contains(supportedAgentCLIs, agent) {
+			return output.Errorf(output.ExitInvalidInput,
+				"unknown --agents value %q (one of: %s)", agent, strings.Join(supportedAgentCLIs, ", "))
+		}
+	}
+	for _, stack := range stacks {
+		if !slices.Contains(supportedStacks, stack) {
+			return output.Errorf(output.ExitInvalidInput,
+				"unknown --stacks value %q (one of: %s)", stack, strings.Join(supportedStacks, ", "))
+		}
+	}
+	return nil
+}
+
+// seedSpec applies defaults to the (already-validated) create flags to produce the
+// wizard's pre-seeded starting point on a terminal: flags fill the defaults, the
+// wizard supplies the rest (name → cwd basename, OS → debian-trixie, agents →
+// opencode+pi). The user can still change anything in the wizard.
+func seedSpec(name, osKey string, agents, stacks []string, defaultName string) project.Spec {
+	if name == "" {
+		name = defaultName
+	}
+	if osKey == "" {
+		osKey = "debian-trixie"
+	}
+	if len(agents) == 0 {
+		agents = []string{"opencode", "pi"}
+	}
+	return project.Spec{Name: name, OS: osKey, Stacks: stacks, AgentCLIs: agents, DefaultTool: agents[0]}
+}
+
+// specFromFlags builds and validates a project.Spec from the non-interactive
+// create flags (the path external programs use with --json). --os is required;
+// agents default to opencode+pi; stacks are optional. The default agent CLI is
+// the first one listed. Unknown values map to exit 2.
+func specFromFlags(name, osKey string, agents, stacks []string, defaultName string) (project.Spec, error) {
+	if name == "" {
+		name = defaultName
+	}
+	if err := project.ValidateName(name); err != nil {
+		return project.Spec{}, output.Errorf(output.ExitInvalidInput, "%s", err)
+	}
+	if osKey == "" {
+		return project.Spec{}, output.Errorf(output.ExitInvalidInput,
+			"--os is required (one of: %s)", strings.Join(supportedOSes, ", "))
+	}
+	if err := validateProvidedCreateFlags(osKey, agents, stacks); err != nil {
+		return project.Spec{}, err
+	}
+	if len(agents) == 0 {
+		agents = []string{"opencode", "pi"}
+	}
+	return project.Spec{
+		Name:        name,
+		OS:          osKey,
+		Stacks:      stacks,
+		AgentCLIs:   agents,
+		DefaultTool: agents[0],
+	}, nil
 }
 
 func newProjectListCmd(emitter *output.Emitter, exit *int) *cobra.Command {
