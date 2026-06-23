@@ -190,6 +190,7 @@ type app struct {
 	paletteOpen   bool
 	palette       []paletteItem
 	paletteCursor int
+	paletteFilter string
 
 	helpOpen bool
 	quitting bool
@@ -306,6 +307,7 @@ func (application *app) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case ":", "/":
 			application.paletteOpen = true
 			application.paletteCursor = application.current
+			application.paletteFilter = ""
 			return application, nil
 		case "?":
 			application.helpOpen = true
@@ -332,29 +334,64 @@ func (application *app) bodyHeight() int {
 	return body
 }
 
-// updatePalette handles input while the menu overlay is open.
+// updatePalette handles input while the menu overlay is open. Typing letters
+// filters the menu (case-insensitive substring); ↑/↓ + enter operate on the
+// filtered list; backspace edits the filter; esc closes.
 func (application *app) updatePalette(key tea.KeyMsg) (tea.Model, tea.Cmd) {
+	filtered := application.filteredPalette()
 	switch key.String() {
-	case "esc", "q":
+	case "esc":
 		application.paletteOpen = false
-	case "up", "k":
+		application.paletteFilter = ""
+	case "up":
 		if application.paletteCursor > 0 {
 			application.paletteCursor--
 		}
-	case "down", "j":
-		if application.paletteCursor < len(application.palette)-1 {
+	case "down":
+		if application.paletteCursor < len(filtered)-1 {
 			application.paletteCursor++
 		}
 	case "enter":
-		item := application.palette[application.paletteCursor]
-		application.paletteOpen = false
-		if item.kind == paletteExit {
-			application.quitting = true
-			return application, tea.Quit
+		if application.paletteCursor < len(filtered) {
+			item := filtered[application.paletteCursor]
+			application.paletteOpen = false
+			application.paletteFilter = ""
+			if item.kind == paletteExit {
+				application.quitting = true
+				return application, tea.Quit
+			}
+			application.current = item.view
 		}
-		application.current = item.view
+	case "backspace":
+		if application.paletteFilter != "" {
+			runes := []rune(application.paletteFilter)
+			application.paletteFilter = string(runes[:len(runes)-1])
+			application.paletteCursor = 0
+		}
+	default:
+		// A single printable rune extends the filter.
+		if key.Type == tea.KeyRunes && len(key.Runes) == 1 {
+			application.paletteFilter += string(key.Runes)
+			application.paletteCursor = 0
+		}
 	}
 	return application, nil
+}
+
+// filteredPalette returns the menu items matching the current filter (all items
+// when the filter is empty), in palette order.
+func (application *app) filteredPalette() []paletteItem {
+	if application.paletteFilter == "" {
+		return application.palette
+	}
+	needle := strings.ToLower(application.paletteFilter)
+	filtered := make([]paletteItem, 0, len(application.palette))
+	for _, item := range application.palette {
+		if strings.Contains(strings.ToLower(item.label), needle) {
+			filtered = append(filtered, item)
+		}
+	}
+	return filtered
 }
 
 func (application *app) View() string {
@@ -414,7 +451,7 @@ func (application *app) footer() string {
 		return ui.Muted.Render("any key to close")
 	}
 	if application.paletteOpen {
-		return ui.Muted.Render("↑/↓ select · enter choose · esc close")
+		return ui.Muted.Render("type to filter · ↑/↓ select · enter choose · esc close")
 	}
 	global := ": menu · ? help · q quit"
 	if hints := application.views[application.current].Hints(); hints != "" {
@@ -425,8 +462,16 @@ func (application *app) footer() string {
 
 func (application *app) paletteView() string {
 	var menu strings.Builder
-	menu.WriteString(ui.Heading.Render("Menu") + "\n")
-	for index, item := range application.palette {
+	title := "Menu"
+	if application.paletteFilter != "" {
+		title += "  /" + application.paletteFilter
+	}
+	menu.WriteString(ui.Heading.Render(title) + "\n")
+	filtered := application.filteredPalette()
+	if len(filtered) == 0 {
+		menu.WriteString(ui.Muted.Render("  (no match)") + "\n")
+	}
+	for index, item := range filtered {
 		marker := "  "
 		label := item.label
 		if index == application.paletteCursor {

@@ -70,6 +70,23 @@ func TestMenuSwitchesView(test *testing.T) {
 	}
 }
 
+func TestPaletteTypeToFilter(test *testing.T) {
+	application := newTestApp("Services", "Projects", "Models")
+	application.Update(colon())
+	// Typing "p" filters to items whose label contains it (only "Projects").
+	application.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("p")})
+	if filtered := application.filteredPalette(); len(filtered) != 1 || filtered[0].label != "Projects" {
+		test.Fatalf("filter 'p' = %v, want [Projects]", filtered)
+	}
+	application.Update(enter())
+	if application.current != 1 {
+		test.Fatalf("after filter+enter current = %d, want 1 (Projects)", application.current)
+	}
+	if application.paletteOpen {
+		test.Error("enter should close the palette")
+	}
+}
+
 func TestQuitKey(test *testing.T) {
 	application := newTestApp("Services")
 	application.Update(qKey())
