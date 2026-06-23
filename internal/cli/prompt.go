@@ -148,3 +148,19 @@ func promptMultiChoice(title, description string, options []huh.Option[string]) 
 	}
 	return selected, nil
 }
+
+// promptMultiChoiceDefault is promptMultiChoice with the checkboxes pre-checked
+// from initial (each option whose value is in initial starts selected). Use when
+// the prompt edits an existing/default set the user confirms or toggles (e.g. the
+// enabled optional-service set seeded from the persisted/default choice).
+func promptMultiChoiceDefault(title, description string, options []huh.Option[string], initial []string) ([]string, error) {
+	selected := append([]string(nil), initial...)
+	choice := huh.NewMultiSelect[string]().Title(title).Options(options...).Value(&selected)
+	if description != "" {
+		choice = choice.Description(description)
+	}
+	if err := runForm(huh.NewGroup(choice)); err != nil {
+		return nil, err
+	}
+	return selected, nil
+}

@@ -86,14 +86,19 @@ type MicrosandboxInfo struct {
 // for the on-disk file, json for the --json output envelope (setup.Report
 // embeds it), so the persisted snake_case keys are preserved in both encodings.
 type Info struct {
-	SchemaVersion  int              `json:"schema_version" yaml:"schema_version"`
-	Role           string           `json:"role,omitempty" yaml:"role,omitempty"` // standalone | server | client (set by setup, not Detect)
-	Detected       string           `json:"detected" yaml:"detected"`             // docker | podman
-	Rootless       bool             `json:"rootless" yaml:"rootless"`
-	Microsandbox   MicrosandboxInfo `json:"microsandbox" yaml:"microsandbox"`
-	AIPlatformHost string           `json:"ai_platform_host" yaml:"ai_platform_host"`
-	HostGateway    string           `json:"host_gateway" yaml:"host_gateway"` // guest-visible host address (arch §29.2)
-	DetectedAt     string           `json:"detected_at" yaml:"detected_at"`
+	SchemaVersion int              `json:"schema_version" yaml:"schema_version"`
+	Role          string           `json:"role,omitempty" yaml:"role,omitempty"` // standalone | server | client (set by setup, not Detect)
+	Detected      string           `json:"detected" yaml:"detected"`             // docker | podman
+	Rootless      bool             `json:"rootless" yaml:"rootless"`
+	Microsandbox  MicrosandboxInfo `json:"microsandbox" yaml:"microsandbox"`
+	// OptionalServices is the set of opt-in host services this host runs (e.g.
+	// "open-webui"). CORE services are always reconciled; OPTIONAL ones are
+	// reconciled only when enabled here. Chosen interactively at `ai setup` and
+	// persisted machine-wide so it survives across runs.
+	OptionalServices []string `json:"optional_services,omitempty" yaml:"optional_services,omitempty"`
+	AIPlatformHost   string   `json:"ai_platform_host" yaml:"ai_platform_host"`
+	HostGateway      string   `json:"host_gateway" yaml:"host_gateway"` // guest-visible host address (arch §29.2)
+	DetectedAt       string   `json:"detected_at" yaml:"detected_at"`
 }
 
 // HostAddress returns the address a workspace microVM uses to reach the host

@@ -41,17 +41,40 @@ type fakeServices struct {
 	reconciled bool
 	provider   string
 	bindHost   string
+	optional   []string
 	installed  bool
 }
 
-func (services *fakeServices) Reconcile(providerConfig, bindHost string, progress func(string)) ([]ServiceStatus, error) {
+func (services *fakeServices) Reconcile(providerConfig, bindHost string, optional []string, progress func(string)) ([]ServiceStatus, error) {
 	services.reconciled = true
 	services.provider = providerConfig
 	services.bindHost = bindHost
+	services.optional = optional
 	if progress != nil {
 		progress("reconciling (fake)")
 	}
-	return []ServiceStatus{{Name: "litellm", Mode: "container", State: "running", Healthy: true}}, nil
+	statuses := []ServiceStatus{{Name: "litellm", Mode: "container", State: "running", Healthy: true}}
+	// Mirror the real impl's optional gating so callers can assert which optional
+	// services were brought up.
+	for _, name := range optionalServiceNames() {
+		state := "disabled"
+		if slicesContains(optional, name) {
+			state = "running"
+		}
+		statuses = append(statuses, ServiceStatus{Name: name, Mode: "container", State: state, Healthy: state == "running"})
+	}
+	return statuses, nil
+}
+
+// slicesContains is a tiny local helper so the fake mirrors the real gating
+// without importing slices just for the test.
+func slicesContains(values []string, want string) bool {
+	for _, value := range values {
+		if value == want {
+			return true
+		}
+	}
+	return false
 }
 func (services *fakeServices) PullImages(_ io.Writer, progress func(string)) error {
 	if progress != nil {
@@ -759,6 +782,175 @@ func TestEnsureProxyRendersGatewayConfig(test *testing.T) {
 	}
 	if !strings.Contains(launch, confPath+":/etc/nginx/nginx.conf:ro") {
 		test.Errorf("proxy did not bind-mount nginx.conf: %s", launch)
+	}
+}
+
+// --- optional-services framework -------------------------------------------
+
+// TestReconcileGatesOptionalOpenWebUI: open-webui is brought up when enabled and
+// skipped when not, while core services are unaffected (asserted via the fake's
+// per-service status, which mirrors the real impl's gating).
+func TestReconcileGatesOptionalOpenWebUI(test *testing.T) {
+	services := &fakeServices{}
+	enabledStatuses, err := services.Reconcile("", "127.0.0.1", []string{"open-webui"}, nil)
+	if err != nil {
+		test.Fatal(err)
+	}
+	if stateOf(enabledStatuses, "open-webui") != "running" {
+		test.Errorf("open-webui should be running when enabled: %+v", enabledStatuses)
+	}
+	if !slicesContains(services.optional, "open-webui") {
+		test.Errorf("Reconcile did not receive the enabled optional set: %+v", services.optional)
+	}
+
+	disabled := &fakeServices{}
+	disabledStatuses, err := disabled.Reconcile("", "127.0.0.1", nil, nil)
+	if err != nil {
+		test.Fatal(err)
+	}
+	if stateOf(disabledStatuses, "open-webui") != "disabled" {
+		test.Errorf("open-webui should be disabled when not enabled: %+v", disabledStatuses)
+	}
+}
+
+// stateOf returns the State of a named service in statuses, or "".
+func stateOf(statuses []ServiceStatus, name string) string {
+	for _, status := range statuses {
+		if status.Name == name {
+			return status.State
+		}
+	}
+	return ""
+}
+
+// TestCoreOptionalSplit pins the core/optional partition: open-webui is the only
+// optional service today; the rest are core; desiredServices is their union.
+func TestCoreOptionalSplit(test *testing.T) {
+	if !isOptionalService("open-webui") {
+		test.Error("open-webui must be an optional service")
+	}
+	for _, core := range []string{"ollama", "presidio", "litellm", "headroom", "proxy", "dns"} {
+		if isOptionalService(core) {
+			test.Errorf("%q must be a core service, not optional", core)
+		}
+		if !hasService(coreServices(), core) {
+			test.Errorf("%q missing from coreServices", core)
+		}
+	}
+	if got := optionalServiceNames(); len(got) != 1 || got[0] != "open-webui" {
+		test.Errorf("optionalServiceNames = %v, want [open-webui]", got)
+	}
+	// desiredServices is core + all optional (every name addressable).
+	for _, name := range []string{"ollama", "presidio", "litellm", "headroom", "proxy", "dns", "open-webui"} {
+		if !hasService(desiredServices(), name) {
+			test.Errorf("%q missing from desiredServices: %+v", name, desiredServices())
+		}
+	}
+}
+
+// TestResolveOptionalPrecedence pins the enabled-set precedence: an explicit set
+// (incl. "none") wins; else the persisted set; else the first-run default.
+func TestResolveOptionalPrecedence(test *testing.T) {
+	// First run, no explicit choice, no persisted set → default ([open-webui]).
+	if got := ResolveOptional(Options{}, nil); len(got) != 1 || got[0] != "open-webui" {
+		test.Errorf("default first-run set = %v, want [open-webui]", got)
+	}
+	// Explicit "none" (OptionalSet with an empty slice) → empty.
+	if got := ResolveOptional(Options{OptionalSet: true, Optional: []string{}}, nil); len(got) != 0 {
+		test.Errorf("explicit none = %v, want []", got)
+	}
+	// Explicit choice wins over the persisted set.
+	persisted := &runtime.Info{OptionalServices: []string{}}
+	if got := ResolveOptional(Options{OptionalSet: true, Optional: []string{"open-webui"}}, persisted); len(got) != 1 {
+		test.Errorf("explicit choice should win: %v", got)
+	}
+	// No explicit choice → the persisted set (here, deliberately empty).
+	if got := ResolveOptional(Options{}, persisted); len(got) != 0 {
+		test.Errorf("persisted empty set should be honored: %v", got)
+	}
+	// Unknown persisted names are dropped (a retired optional service).
+	stale := &runtime.Info{OptionalServices: []string{"open-webui", "retired-tool"}}
+	if got := ResolveOptional(Options{}, stale); len(got) != 1 || got[0] != "open-webui" {
+		test.Errorf("unknown names should be dropped: %v", got)
+	}
+}
+
+// TestRunPersistsDefaultOptional: a first run with no choice persists the default
+// ([open-webui]) to runtime.yaml and reconciles it.
+func TestRunPersistsDefaultOptional(test *testing.T) {
+	test.Setenv("HOME", test.TempDir())
+	deps, services := healthyDeps()
+	report, err := Run(Options{}, deps)
+	if err != nil {
+		test.Fatal(err)
+	}
+	if !slicesContains(report.Runtime.OptionalServices, "open-webui") {
+		test.Errorf("first run should default to [open-webui], got %v", report.Runtime.OptionalServices)
+	}
+	if !slicesContains(services.optional, "open-webui") {
+		test.Errorf("Reconcile should receive [open-webui], got %v", services.optional)
+	}
+	persisted, err := runtime.Load()
+	if err != nil || persisted == nil {
+		test.Fatalf("load runtime.yaml: %v", err)
+	}
+	if !slicesContains(persisted.OptionalServices, "open-webui") {
+		test.Errorf("runtime.yaml did not persist [open-webui]: %v", persisted.OptionalServices)
+	}
+}
+
+// TestRunOptionalNoneDisables: --optional none (OptionalSet + empty) persists an
+// empty optional set and reconciles no optional services.
+func TestRunOptionalNoneDisables(test *testing.T) {
+	test.Setenv("HOME", test.TempDir())
+	deps, services := healthyDeps()
+	report, err := Run(Options{OptionalSet: true, Optional: []string{}}, deps)
+	if err != nil {
+		test.Fatal(err)
+	}
+	if len(report.Runtime.OptionalServices) != 0 {
+		test.Errorf("--optional none should persist no optional services, got %v", report.Runtime.OptionalServices)
+	}
+	if len(services.optional) != 0 {
+		test.Errorf("Reconcile should receive no optional services, got %v", services.optional)
+	}
+}
+
+// TestRunOptionalHonoursExplicitSet: an explicit set is honored and persisted.
+func TestRunOptionalHonoursExplicitSet(test *testing.T) {
+	test.Setenv("HOME", test.TempDir())
+	deps, services := healthyDeps()
+	report, err := Run(Options{OptionalSet: true, Optional: []string{"open-webui"}}, deps)
+	if err != nil {
+		test.Fatal(err)
+	}
+	if !slicesContains(report.Runtime.OptionalServices, "open-webui") {
+		test.Errorf("explicit set not persisted: %v", report.Runtime.OptionalServices)
+	}
+	if !slicesContains(services.optional, "open-webui") {
+		test.Errorf("explicit set not reconciled: %v", services.optional)
+	}
+}
+
+// TestStatusForShowsDisabledOptional: a not-enabled optional service is listed
+// with State "disabled" so users can discover it.
+func TestStatusForShowsDisabledOptional(test *testing.T) {
+	test.Setenv("HOME", test.TempDir())
+	services := realServices{prober: fakeProber{}}
+	statuses, err := services.statusFor(nil) // nothing enabled
+	if err != nil {
+		test.Fatal(err)
+	}
+	if stateOf(statuses, "open-webui") != "disabled" {
+		test.Errorf("not-enabled open-webui should be \"disabled\": %+v", statuses)
+	}
+	// And it IS probed (not "disabled") when enabled.
+	enabled, err := services.statusFor([]string{"open-webui"})
+	if err != nil {
+		test.Fatal(err)
+	}
+	if stateOf(enabled, "open-webui") == "disabled" {
+		test.Errorf("enabled open-webui should be probed, not \"disabled\": %+v", enabled)
 	}
 }
 

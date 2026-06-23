@@ -275,6 +275,23 @@ func TestPersistLoadRoundTrip(test *testing.T) {
 	}
 }
 
+// TestOptionalServicesRoundTrip: the enabled optional-service set survives a
+// persist/load cycle (it is the machine-wide opt-in tool list).
+func TestOptionalServicesRoundTrip(test *testing.T) {
+	test.Setenv("HOME", test.TempDir())
+	saved := &Info{SchemaVersion: SchemaVersion, Detected: "docker", OptionalServices: []string{"open-webui"}}
+	if err := Persist(saved); err != nil {
+		test.Fatal(err)
+	}
+	loaded, err := Load()
+	if err != nil || loaded == nil {
+		test.Fatalf("load: %v", err)
+	}
+	if len(loaded.OptionalServices) != 1 || loaded.OptionalServices[0] != "open-webui" {
+		test.Errorf("OptionalServices did not round-trip: %v", loaded.OptionalServices)
+	}
+}
+
 func TestLoadMissingReturnsNil(test *testing.T) {
 	test.Setenv("HOME", test.TempDir())
 	loaded, err := Load()

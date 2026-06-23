@@ -60,10 +60,12 @@ func (status ServiceStatus) EndpointSuffix() string {
 type Services interface {
 	// Reconcile makes reality match the desired state (idempotent). bindHost is
 	// the host interface the shared services publish on ("127.0.0.1" for a local
-	// standalone host, "0.0.0.0" for a server other machines connect to). progress
-	// is called (never nil) with a short message before each step, so the CLI can
+	// standalone host, "0.0.0.0" for a server other machines connect to). optional
+	// is the set of enabled opt-in services (e.g. ["open-webui"]) — CORE services
+	// are always reconciled, optional ones only when present here. progress is
+	// called (never nil) with a short message before each step, so the CLI can
 	// stream feedback during the slow container bring-up.
-	Reconcile(providerConfig string, bindHost string, progress func(string)) ([]ServiceStatus, error)
+	Reconcile(providerConfig string, bindHost string, optional []string, progress func(string)) ([]ServiceStatus, error)
 	// PullImages pre-pulls every service-tier image that is not already present
 	// locally, streaming the runtime's native pull progress to out (so a multi-GB
 	// first-run pull does not look hung behind a captured `docker run`). progress
@@ -110,6 +112,41 @@ type Options struct {
 	// ServerAddr is the remote service-tier address a client routes to (CLI §2.1).
 	// Ignored for standalone/server.
 	ServerAddr string
+	// Optional is the enabled opt-in service set for this run (e.g.
+	// ["open-webui"]). nil means "unspecified" — Run falls back to the persisted
+	// runtime.yaml set, else the first-run default (DefaultOptionalServices). To
+	// disable every optional service explicitly, set OptionalSet=true with an
+	// empty Optional (the CLI's `--optional none`).
+	Optional []string
+	// OptionalSet distinguishes a deliberately-empty Optional ("none") from an
+	// unspecified one (nil), so automation can disable every optional service.
+	OptionalSet bool
+}
+
+// OptionalServiceNames returns the universe of opt-in service names (in
+// declaration order) so the CLI can render the setup checkbox and validate the
+// --optional flag without reaching into the unexported service table.
+func OptionalServiceNames() []string {
+	return optionalServiceNames()
+}
+
+// OptionalServiceLabel returns a short human label for an optional service, used
+// in the setup checkbox (e.g. open-webui → "chat UI"). Unknown names get "".
+func OptionalServiceLabel(name string) string {
+	switch name {
+	case "open-webui":
+		return "chat UI"
+	default:
+		return ""
+	}
+}
+
+// DefaultOptionalServices is the opt-in service set enabled on a FIRST run when
+// the user makes no explicit choice — open-webui, preserving the historical
+// always-on behavior. It is overridden by an explicit choice (the setup prompt /
+// --optional flag) and, once persisted, by the runtime.yaml set.
+func DefaultOptionalServices() []string {
+	return []string{"open-webui"}
 }
 
 // controlActions are the valid `ai services <action>` verbs.
@@ -351,6 +388,32 @@ func RoleFor(options Options) (string, error) {
 	}
 }
 
+// ResolveOptional resolves the enabled optional-service set for a setup run,
+// applying the precedence: an explicit choice (options.OptionalSet — the setup
+// prompt or the --optional flag, including the empty "none" set) wins; else the
+// set persisted in runtime.yaml; else the first-run default
+// (DefaultOptionalServices). Unknown names are dropped so a stale persisted entry
+// (a retired optional service) cannot break the reconcile. The returned slice is
+// in optionalServices declaration order and de-duplicated.
+func ResolveOptional(options Options, persisted *runtime.Info) []string {
+	var chosen []string
+	switch {
+	case options.OptionalSet:
+		chosen = options.Optional
+	case persisted != nil && persisted.OptionalServices != nil:
+		chosen = persisted.OptionalServices
+	default:
+		chosen = DefaultOptionalServices()
+	}
+	enabled := make([]string, 0, len(chosen))
+	for _, name := range optionalServiceNames() {
+		if slices.Contains(chosen, name) {
+			enabled = append(enabled, name)
+		}
+	}
+	return enabled
+}
+
 // Run performs `ai setup`. Returned errors are *output.Error carrying the exit
 // code (§18): missing deps → 3, capability/other failures → 4. Idempotent.
 func Run(options Options, deps Deps) (*Report, error) {
@@ -403,6 +466,11 @@ func Run(options Options, deps Deps) (*Report, error) {
 	// runs and are available to later steps (e.g. `ai gateway`, workspace wiring).
 	detected.Role = effectiveRole
 	detected.AIPlatformHost = effectiveServerAddr
+	// Resolve + persist the enabled optional-service set (explicit choice, else
+	// the persisted set, else the first-run default) so it survives across runs
+	// and Status can report not-enabled optional services as "disabled".
+	optional := ResolveOptional(options, persisted)
+	detected.OptionalServices = optional
 
 	// 2. Initialize the host layout and install the environment templates.
 	progress("Initializing ~/.ai-platform and installing templates…")
@@ -454,7 +522,7 @@ func Run(options Options, deps Deps) (*Report, error) {
 			warnings = append(warnings, "server mode exposes LiteLLM/Headroom/Ollama/open-webui on 0.0.0.0 — put TLS in front and rely on LiteLLM virtual-key auth for untrusted networks")
 		}
 		progress("Starting host services — pulling images / launching containers (this can take a minute)…")
-		serviceStatuses, err = deps.Services.Reconcile(options.ProviderConfig, bindHost, progress)
+		serviceStatuses, err = deps.Services.Reconcile(options.ProviderConfig, bindHost, optional, progress)
 		if err != nil {
 			return nil, output.Errorf(output.ExitRuntimeFailure, "reconcile services: %s", err)
 		}

@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 
@@ -41,14 +42,15 @@ func versionsImageRef(file *versions.File, service string) string {
 
 type serviceSpec struct{ Name, Mode string }
 
-// desiredServices is the host-service set (arch §5), all containers: Ollama
-// (required local model backend), Presidio (PII guardrail backend), LiteLLM
-// (gateway/router), and Headroom (input compression proxy in front of LiteLLM).
+// coreServices is the always-on host-service set (arch §5), all containers:
+// Ollama (required local model backend), Presidio (PII guardrail backend),
+// LiteLLM (gateway/router), Headroom (input compression proxy in front of
+// LiteLLM), the nginx gateway proxy, and the aip-dns egress-audit resolver.
 // Ollama is required — LiteLLM routes local model traffic to it (arch §14, §16).
 // Headroom runs as a shared host-side proxy (agents point at :18787, it forwards
 // to LiteLLM); the per-project Caveman skill handles output compression inside
-// the workspace (arch §8–10).
-func desiredServices() []serviceSpec {
+// the workspace (arch §8–10). These are reconciled on every `ai setup`.
+func coreServices() []serviceSpec {
 	return []serviceSpec{
 		{"ollama", "container"},
 		{"presidio", "container"},
@@ -56,9 +58,44 @@ func desiredServices() []serviceSpec {
 		{"headroom", "container"},
 		// nginx reverse proxy: the gateway entry on host :18787, in front of Headroom.
 		{"proxy", "container"},
-		{"open-webui", "container"},
 		{"dns", "container"},
 	}
+}
+
+// optionalServices is the opt-in host-service set: services that run on the
+// host, OUTSIDE the workspace microVM sandbox, and so are reconciled only when
+// the user has explicitly enabled them at `ai setup`. They are an additive,
+// data-driven list — adding a new optional service is just another entry here
+// (plus its ensure*/stop wiring). Currently: open-webui (the chat UI).
+func optionalServices() []serviceSpec {
+	return []serviceSpec{
+		{"open-webui", "container"},
+	}
+}
+
+// optionalServiceNames returns the names of the optional services (the universe
+// of opt-in tools), in declaration order.
+func optionalServiceNames() []string {
+	specs := optionalServices()
+	names := make([]string, 0, len(specs))
+	for _, spec := range specs {
+		names = append(names, spec.Name)
+	}
+	return names
+}
+
+// isOptionalService reports whether name is an opt-in service (vs a core one).
+func isOptionalService(name string) bool {
+	return slices.Contains(optionalServiceNames(), name)
+}
+
+// desiredServices is the full known host-service set: core + ALL optional. It is
+// the universe of addressable service names (for ServiceNames / Status /
+// Control), regardless of which optional services are currently enabled —
+// `ai services status` lists every one (a not-enabled optional shows "disabled")
+// and `ai services start <name>` works ad hoc on any of them.
+func desiredServices() []serviceSpec {
+	return append(coreServices(), optionalServices()...)
 }
 
 // requiredImages returns the image reference (repo:tag) for EVERY container in
@@ -685,7 +722,7 @@ func (services realServices) InstallPrerequisite(prereq Prerequisite, out io.Wri
 	return nil
 }
 
-func (services realServices) Reconcile(providerConfig, bindHost string, progress func(string)) ([]ServiceStatus, error) {
+func (services realServices) Reconcile(providerConfig, bindHost string, optional []string, progress func(string)) ([]ServiceStatus, error) {
 	configDir, err := paths.ConfigDir()
 	if err != nil {
 		return nil, err
@@ -734,11 +771,15 @@ func (services realServices) Reconcile(providerConfig, bindHost string, progress
 	if err := ensureProxy(services.prober, containerRuntime.Name, bindHost); err != nil {
 		return nil, err
 	}
-	progress("  • open-webui (chat UI → LiteLLM)…")
-	if err := ensureOpenWebUI(services.prober, containerRuntime.Name, bindHost); err != nil {
-		return nil, err
+	// Optional services: reconciled ONLY when enabled. These run on the host,
+	// outside the workspace sandbox, so they are opt-in (chosen at `ai setup`).
+	if slices.Contains(optional, "open-webui") {
+		progress("  • open-webui (chat UI → LiteLLM)…")
+		if err := ensureOpenWebUI(services.prober, containerRuntime.Name, bindHost); err != nil {
+			return nil, err
+		}
 	}
-	return services.Status()
+	return services.statusFor(optional)
 }
 
 // ensureLiteLLM starts the LiteLLM container via the detected runtime unless it
@@ -784,22 +825,53 @@ func (services realServices) ensureLiteLLM(configPath, bindHost, providerConfig 
 	return nil // launched; Status() will report it as still coming up if not yet healthy
 }
 
+// Status reports the health of every known service. The enabled optional set is
+// read from runtime.yaml so a not-enabled optional service is shown as
+// "disabled" (it is still listed, so users can discover it).
 func (services realServices) Status() ([]ServiceStatus, error) {
+	return services.statusFor(enabledOptionalServices())
+}
+
+// statusFor reports the health of every known service (core + all optional),
+// treating the optional services in enabled as live and any other optional
+// service as "disabled" (listed but not reconciled). Core services are always
+// probed. The optional-disabled state lets `ai services status` surface an
+// opt-in tool the user hasn't enabled yet.
+func (services realServices) statusFor(enabled []string) ([]ServiceStatus, error) {
 	specs := desiredServices()
 	statuses := make([]ServiceStatus, 0, len(specs))
 	for _, service := range specs {
+		endpoint, _ := console.EndpointFor(service.Name)
+		if isOptionalService(service.Name) && !slices.Contains(enabled, service.Name) {
+			// Not enabled: surfaced so it is discoverable, but not probed.
+			statuses = append(statuses, ServiceStatus{
+				Name: service.Name, Mode: service.Mode, State: "disabled", Healthy: false,
+				Address: endpoint.Address, Console: endpoint.Console,
+			})
+			continue
+		}
 		healthy := services.serviceHealthy(service.Name)
 		state := "stopped"
 		if healthy {
 			state = "running"
 		}
-		endpoint, _ := console.EndpointFor(service.Name)
 		statuses = append(statuses, ServiceStatus{
 			Name: service.Name, Mode: service.Mode, State: state, Healthy: healthy,
 			Address: endpoint.Address, Console: endpoint.Console,
 		})
 	}
 	return statuses, nil
+}
+
+// enabledOptionalServices returns the optional services enabled on this host
+// (from runtime.yaml). An absent/unreadable runtime.yaml yields no enabled
+// optional services (so Status reports them "disabled" rather than guessing).
+func enabledOptionalServices() []string {
+	info, err := runtime.Load()
+	if err != nil || info == nil {
+		return nil
+	}
+	return info.OptionalServices
 }
 
 // serviceHealthy is the live readiness probe for one host service (the same

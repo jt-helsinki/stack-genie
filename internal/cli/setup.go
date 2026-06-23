@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	goruntime "runtime"
+	"slices"
 	"time"
 
 	"strings"
@@ -27,6 +28,7 @@ func newSetupCmd(em *output.Emitter, exit *int) *cobra.Command {
 	var upgrade bool
 	var mode string
 	var serverAddr string
+	var optional string
 	cmd := &cobra.Command{
 		Use:   "setup",
 		Short: "Install, configure, and start the platform host services (idempotent)",
@@ -50,6 +52,16 @@ func newSetupCmd(em *output.Emitter, exit *int) *cobra.Command {
 				}
 				mode, serverAddr = selectedMode, selectedServer
 			}
+			// Resolve the enabled optional-service set (CLI §2.1). Precedence: an
+			// explicit --optional flag (incl. "none") wins; else, on a TTY, a
+			// checkbox prompt pre-seeded from the persisted/default set with a
+			// security warning; else (non-TTY / --json without --flag) leave it
+			// unspecified so setup.Run keeps the persisted/default set.
+			optionalSet, optionalServices, optionalErr := resolveOptionalServices(optional, interactive)
+			if optionalErr != nil {
+				*exit = em.Failure("setup", optionalErr)
+				return nil
+			}
 			// Stream step-by-step progress to stderr so setup doesn't look hung
 			// during the (several-second) container bring-up. On a TTY this is a
 			// live stepper checklist; on a non-TTY (but non-JSON) we keep the plain
@@ -60,6 +72,8 @@ func newSetupCmd(em *output.Emitter, exit *int) *cobra.Command {
 				Upgrade:        upgrade,
 				Mode:           mode,
 				ServerAddr:     serverAddr,
+				Optional:       optionalServices,
+				OptionalSet:    optionalSet,
 			}
 			// Preflight: check prerequisites FIRST — before pulling any images. On a
 			// TTY, missing-but-auto-installable prerequisites are offered for install
@@ -129,6 +143,8 @@ func newSetupCmd(em *output.Emitter, exit *int) *cobra.Command {
 		"deployment role: standalone (default) | server | client (interactive prompt on a TTY)")
 	cmd.Flags().StringVar(&serverAddr, "server", "",
 		"client mode: address of the remote service tier to route to (host, host:port, or URL)")
+	cmd.Flags().StringVar(&optional, "optional", "",
+		"comma-separated opt-in host services to enable (e.g. open-webui), or \"none\" to disable them all; omit on a TTY to choose interactively")
 	return cmd
 }
 
@@ -283,6 +299,84 @@ func promptDeploymentRole() (mode, serverAddr string, err error) {
 		return mode, "", nil
 	}
 	return mode, strings.TrimSpace(serverAddr), nil
+}
+
+// resolveOptionalServices decides which opt-in host services to enable for this
+// setup run, returning (set, services): set reports whether an explicit choice
+// was made (a --optional flag, or the interactive prompt), so setup.Run can tell
+// a deliberate "none" from an unspecified set. Precedence:
+//   - --optional given: parse it ("none" → empty, else CSV); validate every name
+//     against the optional-service universe (unknown → exit 2). set=true.
+//   - else on a TTY: a checkbox MultiSelect pre-checked from the persisted/default
+//     set, carrying a prominent SECURITY WARNING (these run on the host, outside
+//     the workspace sandbox). set=true.
+//   - else (non-TTY without --optional): set=false — keep the persisted/default.
+func resolveOptionalServices(flagValue string, interactive bool) (bool, []string, error) {
+	if strings.TrimSpace(flagValue) != "" {
+		selected, err := parseOptionalFlag(flagValue)
+		if err != nil {
+			return false, nil, err
+		}
+		return true, selected, nil
+	}
+	if !interactive {
+		return false, nil, nil
+	}
+	selected, err := promptOptionalServices()
+	if err != nil {
+		return false, nil, err
+	}
+	return true, selected, nil
+}
+
+// parseOptionalFlag turns the --optional CSV into a validated service list. The
+// sentinel "none" (case-insensitive) yields an empty set (disable them all); any
+// unknown name is exit 2.
+func parseOptionalFlag(flagValue string) ([]string, error) {
+	if strings.EqualFold(strings.TrimSpace(flagValue), "none") {
+		return []string{}, nil
+	}
+	universe := setup.OptionalServiceNames()
+	var selected []string
+	for _, part := range strings.Split(flagValue, ",") {
+		name := strings.TrimSpace(part)
+		if name == "" {
+			continue
+		}
+		if !slices.Contains(universe, name) {
+			return nil, output.Errorf(output.ExitInvalidInput,
+				"unknown optional service %q (one of %v, or \"none\")", name, universe)
+		}
+		selected = append(selected, name)
+	}
+	return selected, nil
+}
+
+// promptOptionalServices shows the opt-in host-services checkbox on a TTY,
+// pre-checked from the persisted set (else the first-run default), with a
+// prominent security warning. The chosen set is returned in option order.
+func promptOptionalServices() ([]string, error) {
+	universe := setup.OptionalServiceNames()
+	options := make([]huh.Option[string], 0, len(universe))
+	for _, name := range universe {
+		label := name
+		if hint := setup.OptionalServiceLabel(name); hint != "" {
+			label = name + " — " + hint
+		}
+		options = append(options, huh.NewOption(label, name))
+	}
+	preChecked := setup.DefaultOptionalServices()
+	if persisted, err := runtime.Load(); err == nil && persisted != nil && persisted.OptionalServices != nil {
+		preChecked = persisted.OptionalServices
+	}
+	return promptMultiChoiceDefault(
+		"Optional tools",
+		"SECURITY WARNING: these tools run OUTSIDE the workspace microVM sandbox, on the host, "+
+			"with elevated privileges — they are a security risk and are not isolated like workspaces. "+
+			"Leave them unchecked unless you need them.",
+		options,
+		preChecked,
+	)
 }
 
 // promptLiteLLMUIPassword secures the LiteLLM admin UI: it asks for a password
