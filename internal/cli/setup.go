@@ -33,34 +33,40 @@ func newSetupCmd(em *output.Emitter, exit *int) *cobra.Command {
 		Use:   "setup",
 		Short: "Install, configure, and start the platform host services (idempotent)",
 		Long: "Install, configure, and start the platform host services (idempotent).\n\n" +
-			"On a TTY (without --mode) the deployment role — and, for a client, the remote\n" +
-			"server address — are prompted in a single form with back-navigation, so you can\n" +
-			"step back to change the role before submitting.",
+			"On a TTY, setup prompts for this host's configuration in a single form with\n" +
+			"back-navigation: the deployment role, the remote server address (client role),\n" +
+			"and which optional host tools to enable (e.g. open-webui, odysseus). The\n" +
+			"--mode/--server/--optional flags are NOT required — they just pre-seed the\n" +
+			"form's defaults. Under --json / no TTY the flags drive setup directly with no\n" +
+			"prompt (so automation stays scriptable).",
 		Args: cobra.NoArgs,
 		RunE: func(_ *cobra.Command, _ []string) error {
 			deps := setup.RealDeps(goruntime.GOOS, goruntime.GOARCH, nowRFC3339)
-			// On a TTY without an explicit --mode, ask which deployment role this
-			// host plays (and, for a client, where the remote service tier lives).
-			// --json/automation and non-TTY hosts stay non-interactive (default
-			// standalone unless --mode was passed).
+			// On a TTY, ALWAYS prompt for this host's configuration — deployment
+			// role, the remote server address (client only), and the enabled
+			// optional host services — in a single back-navigable form, every field
+			// PRE-SEEDED from the --mode/--server/--optional flags (which set the
+			// defaults but are never required, CLI §21). Under --json / no TTY the
+			// flags drive it directly with no prompt: --mode (else standalone) and
+			// --optional (else leave the persisted/default optional set untouched).
 			interactive := !em.JSON && term.IsTerminal(os.Stdin.Fd())
-			if mode == "" && interactive {
-				selectedMode, selectedServer, err := promptDeploymentRole()
-				if err != nil {
-					*exit = em.Failure("setup", output.Errorf(output.ExitInvalidInput, "deployment role prompt: %s", err))
+			var optionalSet bool
+			var optionalServices []string
+			if interactive {
+				selectedMode, selectedServer, selectedOptional, promptErr := promptSetupConfig(mode, serverAddr, optional)
+				if promptErr != nil {
+					*exit = em.Failure("setup", promptErr)
 					return nil
 				}
 				mode, serverAddr = selectedMode, selectedServer
-			}
-			// Resolve the enabled optional-service set (CLI §2.1). Precedence: an
-			// explicit --optional flag (incl. "none") wins; else, on a TTY, a
-			// checkbox prompt pre-seeded from the persisted/default set with a
-			// security warning; else (non-TTY / --json without --flag) leave it
-			// unspecified so setup.Run keeps the persisted/default set.
-			optionalSet, optionalServices, optionalErr := resolveOptionalServices(optional, interactive)
-			if optionalErr != nil {
-				*exit = em.Failure("setup", optionalErr)
-				return nil
+				optionalServices, optionalSet = selectedOptional, true
+			} else {
+				var optErr error
+				optionalSet, optionalServices, optErr = optionalServicesFromFlag(optional)
+				if optErr != nil {
+					*exit = em.Failure("setup", optErr)
+					return nil
+				}
 			}
 			// Stream step-by-step progress to stderr so setup doesn't look hung
 			// during the (several-second) container bring-up. On a TTY this is a
@@ -146,11 +152,11 @@ func newSetupCmd(em *output.Emitter, exit *int) *cobra.Command {
 	cmd.Flags().BoolVar(&upgrade, "upgrade", false,
 		"re-pin service versions to this binary's defaults and re-reconcile")
 	cmd.Flags().StringVar(&mode, "mode", "",
-		"deployment role: standalone (default) | server | client (interactive prompt on a TTY)")
+		"deployment role: standalone (default) | server | client; seeds the role prompt on a TTY")
 	cmd.Flags().StringVar(&serverAddr, "server", "",
-		"client mode: address of the remote service tier to route to (host, host:port, or URL)")
+		"client mode: address of the remote service tier to route to (host or host:port); seeds the prompt on a TTY")
 	cmd.Flags().StringVar(&optional, "optional", "",
-		"comma-separated opt-in host services to enable (e.g. open-webui), or \"none\" to disable them all; omit on a TTY to choose interactively")
+		"comma-separated opt-in host services to enable (e.g. open-webui,odysseus), or \"none\" to disable them all; seeds the checkbox on a TTY")
 	return cmd
 }
 
@@ -252,27 +258,52 @@ func printPrerequisiteInstructions(em *output.Emitter, prereq setup.Prerequisite
 	}
 }
 
-// promptDeploymentRole asks (on a TTY) which deployment role this host plays,
-// defaulting to the persisted role (else standalone). When Client is chosen it
-// also prompts for the remote service-tier address (defaulting to the persisted
-// one). Both prompts live in ONE huh form (two groups) so huh's built-in
-// back-navigation works: the user can step back from the server-address group to
-// the role group and change their choice (see the back-navigation note in
-// prompt.go). The second group is hidden unless the chosen role is client — huh
-// re-evaluates the hide func as the user navigates, so picking Client reveals it
-// and going back to pick a non-client role hides it again.
-func promptDeploymentRole() (mode, serverAddr string, err error) {
-	defaultRole := runtime.RoleStandalone
-	defaultServer := ""
-	if persisted, loadErr := runtime.Load(); loadErr == nil && persisted != nil {
-		if persisted.Role != "" {
-			defaultRole = persisted.Role
-		}
-		defaultServer = persisted.AIPlatformHost
-	}
+// promptSetupConfig collects this host's setup configuration on a TTY in ONE huh
+// form (so huh's built-in back-navigation works across all of it): the deployment
+// role, the remote server address (client only), and the enabled optional host
+// services (standalone/server only). Every field is PRE-SEEDED from the
+// command-line flags, falling back to the persisted choice, then the first-run
+// default — so --mode/--server/--optional set defaults without being required
+// (CLI §21). Known choices are presented as a Select / checkbox (not free text),
+// and the free-text server address is validated (reusing validateGatewayAddress).
+//
+// The hide funcs are re-evaluated by huh as the user navigates: the server-address
+// group is shown only for the client role, and the optional-tools group only for
+// standalone/server (a client runs no service tier here), so stepping back to
+// change the role reveals/hides the right follow-up fields.
+func promptSetupConfig(seedMode, seedServer, seedOptional string) (mode, serverAddr string, optional []string, err error) {
+	persisted, _ := runtime.Load()
 
-	mode = defaultRole
-	serverAddr = defaultServer
+	// Role seed: flag > persisted > standalone.
+	mode = strings.TrimSpace(seedMode)
+	if mode == "" {
+		if persisted != nil && persisted.Role != "" {
+			mode = persisted.Role
+		} else {
+			mode = runtime.RoleStandalone
+		}
+	}
+	// Remote-server-address seed: flag > persisted.
+	serverAddr = strings.TrimSpace(seedServer)
+	if serverAddr == "" && persisted != nil {
+		serverAddr = persisted.AIPlatformHost
+	}
+	// Optional-services seed (the pre-checked boxes): flag > persisted > first-run
+	// default. A bad --optional name is exit 2 even on a TTY (validate inputs).
+	var preChecked []string
+	switch {
+	case strings.TrimSpace(seedOptional) != "":
+		parsed, parseErr := parseOptionalFlag(seedOptional)
+		if parseErr != nil {
+			return "", "", nil, parseErr
+		}
+		preChecked = parsed
+	case persisted != nil && persisted.OptionalServices != nil:
+		preChecked = persisted.OptionalServices
+	default:
+		preChecked = setup.DefaultOptionalServices()
+	}
+	selectedOptional := append([]string(nil), preChecked...)
 
 	roleGroup := huh.NewGroup(
 		huh.NewSelect[string]().
@@ -288,47 +319,42 @@ func promptDeploymentRole() (mode, serverAddr string, err error) {
 
 	serverGroup := huh.NewGroup(
 		huh.NewInput().
-			Title("Remote server address (host, host:port, or URL)").
+			Title("Remote server address (host or host:port)").
+			Description("The machine running the shared service tier (a `server`-role host).").
 			Value(&serverAddr).
-			Validate(func(value string) error {
-				if strings.TrimSpace(value) == "" {
-					return fmt.Errorf("a server address is required in client mode")
-				}
-				return nil
-			}),
+			Validate(validateGatewayAddress),
 	).WithHideFunc(func() bool { return mode != runtime.RoleClient })
 
-	if err := runForm(roleGroup, serverGroup); err != nil {
-		return "", "", err
+	optionalGroup := huh.NewGroup(
+		huh.NewMultiSelect[string]().
+			Title("Optional tools").
+			Description(optionalServicesWarning).
+			Options(optionalServiceOptions()...).
+			Value(&selectedOptional),
+	).WithHideFunc(func() bool { return mode == runtime.RoleClient })
+
+	if formErr := runForm(roleGroup, serverGroup, optionalGroup); formErr != nil {
+		return "", "", nil, formErr
 	}
-	if mode != runtime.RoleClient {
-		return mode, "", nil
+	if mode == runtime.RoleClient {
+		// The optional group was hidden; selectedOptional is the untouched seed —
+		// return it so a later switch to standalone doesn't clobber the choice.
+		return mode, strings.TrimSpace(serverAddr), selectedOptional, nil
 	}
-	return mode, strings.TrimSpace(serverAddr), nil
+	return mode, "", selectedOptional, nil
 }
 
-// resolveOptionalServices decides which opt-in host services to enable for this
-// setup run, returning (set, services): set reports whether an explicit choice
-// was made (a --optional flag, or the interactive prompt), so setup.Run can tell
-// a deliberate "none" from an unspecified set. Precedence:
-//   - --optional given: parse it ("none" → empty, else CSV); validate every name
-//     against the optional-service universe (unknown → exit 2). set=true.
-//   - else on a TTY: a checkbox MultiSelect pre-checked from the persisted/default
-//     set, carrying a prominent SECURITY WARNING (these run on the host, outside
-//     the workspace sandbox). set=true.
-//   - else (non-TTY without --optional): set=false — keep the persisted/default.
-func resolveOptionalServices(flagValue string, interactive bool) (bool, []string, error) {
-	if strings.TrimSpace(flagValue) != "" {
-		selected, err := parseOptionalFlag(flagValue)
-		if err != nil {
-			return false, nil, err
-		}
-		return true, selected, nil
-	}
-	if !interactive {
+// optionalServicesFromFlag resolves the enabled optional-service set from the
+// --optional flag alone (the non-interactive path: --json / no TTY). It returns
+// (set, services): set reports whether an explicit choice was made, so setup.Run
+// can tell a deliberate "none" from an unspecified set. An empty flag → set=false
+// (keep the persisted/default); "none" → set=true, empty; a CSV → set=true with
+// every name validated against the optional-service universe (unknown → exit 2).
+func optionalServicesFromFlag(flagValue string) (bool, []string, error) {
+	if strings.TrimSpace(flagValue) == "" {
 		return false, nil, nil
 	}
-	selected, err := promptOptionalServices()
+	selected, err := parseOptionalFlag(flagValue)
 	if err != nil {
 		return false, nil, err
 	}
@@ -358,10 +384,19 @@ func parseOptionalFlag(flagValue string) ([]string, error) {
 	return selected, nil
 }
 
-// promptOptionalServices shows the opt-in host-services checkbox on a TTY,
-// pre-checked from the persisted set (else the first-run default), with a
-// prominent security warning. The chosen set is returned in option order.
-func promptOptionalServices() ([]string, error) {
+// optionalServicesWarning is the SECURITY WARNING shown on the optional-tools
+// checkbox: these opt-in services run on the host, OUTSIDE the workspace microVM
+// sandbox, and odysseus in particular mounts the host Docker socket.
+const optionalServicesWarning = "SECURITY WARNING: these tools run OUTSIDE the workspace microVM sandbox, on the host, " +
+	"with elevated privileges — they are a security risk and are not isolated like workspaces. " +
+	"In particular, odysseus MOUNTS THE HOST DOCKER SOCKET (/var/run/docker.sock), which grants it " +
+	"full control of the host's Docker daemon — anything it runs can escape to the host. " +
+	"Leave them unchecked unless you need them."
+
+// optionalServiceOptions builds the checkbox options for the optional host
+// services, labelling each with its human hint (OptionalServiceLabel), in the
+// canonical OptionalServiceNames order.
+func optionalServiceOptions() []huh.Option[string] {
 	universe := setup.OptionalServiceNames()
 	options := make([]huh.Option[string], 0, len(universe))
 	for _, name := range universe {
@@ -371,20 +406,7 @@ func promptOptionalServices() ([]string, error) {
 		}
 		options = append(options, huh.NewOption(label, name))
 	}
-	preChecked := setup.DefaultOptionalServices()
-	if persisted, err := runtime.Load(); err == nil && persisted != nil && persisted.OptionalServices != nil {
-		preChecked = persisted.OptionalServices
-	}
-	return promptMultiChoiceDefault(
-		"Optional tools",
-		"SECURITY WARNING: these tools run OUTSIDE the workspace microVM sandbox, on the host, "+
-			"with elevated privileges — they are a security risk and are not isolated like workspaces. "+
-			"In particular, odysseus MOUNTS THE HOST DOCKER SOCKET (/var/run/docker.sock), which grants it "+
-			"full control of the host's Docker daemon — anything it runs can escape to the host. "+
-			"Leave them unchecked unless you need them.",
-		options,
-		preChecked,
-	)
+	return options
 }
 
 // promptLiteLLMUIPassword secures the LiteLLM admin UI: it asks for a password

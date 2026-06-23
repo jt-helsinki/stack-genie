@@ -192,15 +192,23 @@ than requiring everything on the command line. The rules (implemented once in
 ### ai setup
 
 ```bash id="c2"
-ai setup [--provider-config <file>] [--mode standalone|server|client] [--server <addr>]
+ai setup [--provider-config <file>] [--mode standalone|server|client] [--server <addr>] [--optional <csv>]
 ```
 
 `--provider-config <file>` points LiteLLM at a provider/endpoint config (model
 aliases → provider URLs). Used both for real provider setup and by the
 acceptance harness to target the mock provider.
 
-**Deployment role.** `ai setup` supports three roles, chosen **interactively** on
-a TTY (a select prompt — no per-choice flags) or via `--mode`, and persisted in
+**Interactive form.** On a TTY, `ai setup` ALWAYS prompts for this host's
+configuration in a single back-navigable form — the deployment role, the remote
+server address (client only), and the enabled optional host tools — with every
+field **pre-seeded** from the `--mode` / `--server` / `--optional` flags (which set
+defaults but are **never required**, §21). Known choices are a select / checkbox,
+not free text; the free-text server address is validated. Under `--json` / no TTY
+the flags drive setup directly with no prompt (automation stays scriptable).
+
+**Deployment role.** `ai setup` supports three roles, chosen on a TTY via the
+form's select prompt (pre-seeded by `--mode`), and persisted in
 `config/runtime.yaml` (`role:`) so they survive across runs:
 
 * **standalone** (default) — run the full service tier **and** workspaces on this
@@ -220,6 +228,18 @@ a TTY (a select prompt — no per-choice flags) or via `--mode`, and persisted i
 
 The chosen `--mode` (else the persisted role, else standalone) drives both the
 preflight blocking set and which tier is reconciled.
+
+**Optional host tools.** Beyond the always-on service tier, `ai setup` can enable
+opt-in host services (currently **open-webui** and **odysseus**), chosen on a TTY
+via a checkbox pre-checked from the persisted/default set and carrying a prominent
+**security warning**: these run on the host **outside** the workspace microVM
+sandbox with elevated privileges, and **odysseus mounts the host Docker socket**
+(`/var/run/docker.sock` — full host-Docker control). `--optional <csv>` seeds the
+checkbox on a TTY and drives the set directly under `--json` / no TTY: a
+comma-separated list of service names (validated; unknown → exit `2`), or the
+sentinel `none` to disable them all. Omitting `--optional` keeps the
+persisted/default set (open-webui on first run); the choice persists in
+`runtime.yaml` (`optional_services:`).
 
 Purpose:
 
