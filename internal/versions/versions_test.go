@@ -49,13 +49,15 @@ func TestDefaultServicesPresent(t *testing.T) {
 		if entry.Mode != wantMode {
 			t.Errorf("service %q: Mode = %q, want %q", name, entry.Mode, wantMode)
 		}
-		// Every container service is pinned by image+tag (currently `latest`).
+		// Every container service is pinned by image+tag (mostly `latest`, but
+		// some are pinned to a specific tag — e.g. litellm-db to a small Alpine
+		// Postgres; the invariant is a non-empty image+tag, not a fixed value).
 		if wantMode == "container" {
 			if entry.Image == "" {
 				t.Errorf("container service %q has empty Image", name)
 			}
-			if entry.Tag != "latest" {
-				t.Errorf("container service %q: Tag = %q, want %q", name, entry.Tag, "latest")
+			if entry.Tag == "" {
+				t.Errorf("container service %q has empty Tag", name)
 			}
 		}
 	}

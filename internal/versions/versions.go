@@ -46,8 +46,9 @@ func Default() *File {
 		Services: map[string]Service{
 			"microsandbox": {Mode: "native", Version: "v0.x", SHA256: "TBD"},
 			"litellm":      {Mode: "container", Image: "ghcr.io/berriai/litellm", Tag: "latest"},
-			// Postgres backing LiteLLM's admin UI / virtual keys.
-			"litellm-db": {Mode: "container", Image: "postgres", Tag: "latest"},
+			// Postgres backing LiteLLM's admin UI / virtual keys. Pinned to the
+			// small Alpine variant (far smaller/faster to pull than postgres:latest).
+			"litellm-db": {Mode: "container", Image: "postgres", Tag: "18.4-alpine3.23"},
 			// Headroom (input compression) runs as a shared host container in front
 			// of LiteLLM; agents send to it at :18787 (arch §8–10, §15). Per-project
 			// compression knobs ride per request, so it is no longer baked into the
