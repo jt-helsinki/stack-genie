@@ -44,6 +44,7 @@ func NewSecrets(list SecretLister, remove SecretRemover) *Secrets {
 		{Title: "ENV VAR", Width: 30},
 	}
 	built := table.New(table.WithColumns(columns), table.WithFocused(true))
+	built.SetStyles(ui.TableStyles())
 	return &Secrets{list: list, remove: remove, table: built}
 }
 

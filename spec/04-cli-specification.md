@@ -1020,6 +1020,43 @@ across themes; a theme changes the form styling and the accent/heading colour.
 
 ---
 
+## 14.4 Management UI
+
+```bash
+ai ui
+```
+
+A full-screen, K9s-style management TUI — a thin interactive layer over the same
+package APIs the other commands use (no duplicated logic). It is **interactive
+only**: it requires a terminal and has **no JSON envelope**, so `--json` or a
+non-TTY invocation is exit `2`.
+
+**Scope on launch.** `ai ui` is a global project switcher. A project at the cwd
+or an ANCESTOR (the default) opens straight to its detail; otherwise it opens on
+the server (Services) view. The switcher reaches any project in the index, and a
+new project may be created from it (see below).
+
+**Views** (switched via the `:` menu, which also has an **Exit** item):
+
+* **Services** — live service-tier + container status; `s`/`x`/`r` start/stop/
+  restart the selected service, `o` opens its admin console.
+* **Projects** — the switcher: every project (name / OS / workspace status /
+  agents); `enter` opens one, `n` creates a new one (a directory picker validated
+  by the create rules, then the `ai project create` wizard runs in that dir).
+* **Project** — the current project's summary + workspace lifecycle `s`/`x`/`r`/
+  `d` (start/stop/restart/destroy) and `e` (an interactive shell in the workspace).
+* **Network** (per-project) — egress mode + allow-list + published ports; `m`
+  cycles the mode.
+* **Context** (per-project) — Headroom strategy + Caveman level; `s`/`c` cycle them.
+* **Models** — LiteLLM routing status; `t` tests the default model.
+* **Secrets** — credential names (never values); `d` deletes one.
+
+`?` shows the key bindings; `q` / `ctrl-c` quit. The UI honours the theme set by
+`ai theme` (§14.3). Live service/microVM **log** capture and richer container
+detail are wired during hardware bring-up.
+
+---
+
 # 15. AI Behavior Rules
 
 ## 15.1 No Silent Failure

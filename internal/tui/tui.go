@@ -191,6 +191,7 @@ type app struct {
 	palette       []paletteItem
 	paletteCursor int
 
+	helpOpen bool
 	quitting bool
 }
 
@@ -290,6 +291,11 @@ func (application *app) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if application.createView != nil {
 			return application, application.createView.Update(msg)
 		}
+		// The help overlay is dismissed by any key.
+		if application.helpOpen {
+			application.helpOpen = false
+			return application, nil
+		}
 		if application.paletteOpen {
 			return application.updatePalette(message)
 		}
@@ -300,6 +306,9 @@ func (application *app) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case ":", "/":
 			application.paletteOpen = true
 			application.paletteCursor = application.current
+			return application, nil
+		case "?":
+			application.helpOpen = true
 			return application, nil
 		}
 	}
@@ -357,6 +366,8 @@ func (application *app) View() string {
 	switch {
 	case application.createView != nil:
 		screen.WriteString(application.createView.View())
+	case application.helpOpen:
+		screen.WriteString(application.helpView())
 	case application.paletteOpen:
 		screen.WriteString(application.paletteView())
 	default:
@@ -364,6 +375,20 @@ func (application *app) View() string {
 	}
 	screen.WriteString("\n" + application.footer())
 	return screen.String()
+}
+
+// helpView lists the global key bindings plus the active view's own bindings.
+func (application *app) helpView() string {
+	var help strings.Builder
+	help.WriteString(ui.Heading.Render("Keys") + "\n\n")
+	help.WriteString(ui.Muted.Render("Global") + "\n")
+	help.WriteString("  :, /    open the menu\n")
+	help.WriteString("  ?       toggle this help\n")
+	help.WriteString("  ↑/↓     navigate\n")
+	help.WriteString("  q       quit\n\n")
+	help.WriteString(ui.Muted.Render(application.views[application.current].Title()+" view") + "\n")
+	help.WriteString("  " + application.views[application.current].Hints() + "\n")
+	return help.String()
 }
 
 func (application *app) header() string {
@@ -385,10 +410,13 @@ func (application *app) footer() string {
 	if application.createView != nil {
 		return ui.Muted.Render(application.createView.Hints())
 	}
+	if application.helpOpen {
+		return ui.Muted.Render("any key to close")
+	}
 	if application.paletteOpen {
 		return ui.Muted.Render("↑/↓ select · enter choose · esc close")
 	}
-	global := ": menu · ↑/↓ navigate · q quit"
+	global := ": menu · ? help · q quit"
 	if hints := application.views[application.current].Hints(); hints != "" {
 		return ui.Muted.Render(hints + " · " + global)
 	}

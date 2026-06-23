@@ -64,6 +64,7 @@ func NewServices(fetch ServiceFetcher, control ServiceController, open URLOpener
 		{Title: "ADDRESS", Width: 28},
 	}
 	built := table.New(table.WithColumns(columns), table.WithFocused(true))
+	built.SetStyles(ui.TableStyles())
 	return &Services{fetch: fetch, control: control, open: open, table: built}
 }
 

@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"strings"
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -139,6 +140,23 @@ func TestExecRequestedReturnsCommand(test *testing.T) {
 	}
 	if _, cmd := application.Update(views.ExecRequestedMsg{Project: "app"}); cmd == nil {
 		test.Fatal("ExecRequestedMsg must return a command (the in-workspace shell)")
+	}
+}
+
+func TestHelpToggle(test *testing.T) {
+	application := newTestApp("Services")
+
+	application.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("?")})
+	if !application.helpOpen {
+		test.Fatal("? must open the help overlay")
+	}
+	if !strings.Contains(application.helpView(), "Global") {
+		test.Error("help should list the global key bindings")
+	}
+	// Any key dismisses it.
+	application.Update(qKey())
+	if application.helpOpen {
+		test.Fatal("any key must close the help overlay")
 	}
 }
 

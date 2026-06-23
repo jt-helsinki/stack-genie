@@ -46,6 +46,7 @@ func NewProjects(list ProjectLister) *Projects {
 		{Title: "AGENTS", Width: 28},
 	}
 	built := table.New(table.WithColumns(columns), table.WithFocused(true))
+	built.SetStyles(ui.TableStyles())
 	return &Projects{list: list, table: built}
 }
 
