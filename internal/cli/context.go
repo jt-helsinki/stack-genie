@@ -81,10 +81,11 @@ func newContextStatusCmd(emitter *output.Emitter, exit *int) *cobra.Command {
 func newContextStrategyCmd(emitter *output.Emitter, exit *int) *cobra.Command {
 	return &cobra.Command{
 		Use:   "strategy [project] [conservative|balanced|aggressive]",
-		Short: "Set the Headroom input-compression strategy (prompts for it if omitted)",
-		Long: "Set the Headroom input-compression strategy for a project. Pass the value as\n" +
-			"an argument; or, on a terminal, omit it to be prompted with the choices\n" +
-			"(conservative|balanced|aggressive). [project] defaults to the current directory.",
+		Short: "Set the Headroom input-compression strategy (prompts on a terminal)",
+		Long: "Set the Headroom input-compression strategy for a project. On a terminal you\n" +
+			"are prompted to pick (conservative|balanced|aggressive), pre-selected from\n" +
+			"any value you pass; under --json/no TTY the value argument is used directly.\n" +
+			"[project] defaults to the current directory.",
 		Args:              cobra.MaximumNArgs(2),
 		ValidArgsFunction: completeOptionalProjectThenValue(contextopt.Strategies),
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -117,10 +118,11 @@ func newContextStrategyCmd(emitter *output.Emitter, exit *int) *cobra.Command {
 func newContextCavemanCmd(emitter *output.Emitter, exit *int) *cobra.Command {
 	return &cobra.Command{
 		Use:   "caveman [project] [lite|full|ultra|wenyan]",
-		Short: "Set the Caveman output-compression level (prompts for it if omitted)",
+		Short: "Set the Caveman output-compression level (prompts on a terminal)",
 		Long: "Set the Caveman output-compression level for a project (reinstalls the skill).\n" +
-			"Pass the value as an argument; or, on a terminal, omit it to be prompted with\n" +
-			"the choices (lite|full|ultra|wenyan). [project] defaults to the current directory.",
+			"On a terminal you are prompted to pick (lite|full|ultra|wenyan), pre-selected\n" +
+			"from any value you pass; under --json/no TTY the value argument is used\n" +
+			"directly. [project] defaults to the current directory.",
 		Args:              cobra.MaximumNArgs(2),
 		ValidArgsFunction: completeOptionalProjectThenValue(contextopt.CavemanLevels),
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -164,15 +166,17 @@ func splitProjectAndValue(args []string) (explicit, value string) {
 	}
 }
 
-// resolveContextValue returns value when it was given on the command line; when
-// it was omitted it prompts the user to pick from allowed on a TTY, or — when not
-// interactive — fails with exit 2 naming the allowed choices (§21). The label
-// titles the prompt and the not-a-TTY error.
+// resolveContextValue resolves the choice value. On a TTY it ALWAYS prompts the
+// user to pick from allowed, PRE-SELECTING any value given on the command line
+// (else the first/default choice) so the user confirms or edits it. Under --json
+// / no TTY a provided value is used directly and an omitted one fails with exit 2
+// naming the allowed choices (§21, §1.8). The label titles the prompt and the
+// not-a-TTY error.
 func resolveContextValue(emitter *output.Emitter, value, label string, allowed []string) (string, error) {
-	if value != "" {
-		return value, nil
-	}
 	if !interactive(emitter) {
+		if value != "" {
+			return value, nil
+		}
 		return "", output.Errorf(output.ExitInvalidInput,
 			"%s required (one of %s)", label, strings.Join(allowed, "|"))
 	}
@@ -180,5 +184,9 @@ func resolveContextValue(emitter *output.Emitter, value, label string, allowed [
 	for _, choice := range allowed {
 		options = append(options, huh.NewOption(choice, choice))
 	}
-	return promptChoice(label, "", options, allowed[0])
+	initial := value
+	if initial == "" {
+		initial = allowed[0]
+	}
+	return promptChoice(label, "", options, initial)
 }

@@ -162,10 +162,18 @@ To reduce entry errors, commands **prompt for their inputs on a terminal** rathe
 than requiring everything on the command line. The rules (implemented once in
 `internal/cli/prompt.go` and shared across commands):
 
-* A value passed as a positional arg or flag is used as-is — **no prompt**. A
-  value that is *missing* is prompted for when stdin is a real TTY and output is
-  not `--json`. With no TTY (automation/CI) or under `--json`, a missing required
-  value is an error (exit 2) — so scripts stay fully non-interactive.
+* On a terminal (stdin is a real TTY and output is not `--json`) a command
+  **always shows its prompt**: a value passed as a positional arg or flag
+  **pre-seeds** that prompt (its default selection / pre-filled text), so the user
+  confirms or edits it — the value never silently bypasses the TUI. Only under
+  `--json` or with no TTY (automation/CI) is a provided value **used directly with
+  no prompt**; a *missing* required value is then an error (exit 2) — so scripts
+  stay fully non-interactive. **Two exceptions** to the seed-and-prompt rule: a
+  **hidden credential value** can't display a seed, so when one is provided
+  (`ai secrets set --value/--stdin`) it is used directly even on a TTY (only a
+  *missing* value is prompted, hidden); and `ai services` start/stop/restart act
+  directly on an explicit name/`all` and only show their multi-select checkbox
+  when no service is named (see below).
 * **Known option sets are presented, not typed**: single-choice values use a
   select menu (`ai context strategy|caveman`, `ai models test`, `ai completion`,
   the `ai setup` deployment role, `ai network egress`), and "one or more" values

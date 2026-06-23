@@ -13,11 +13,15 @@ import (
 
 // This file is the shared interactive-prompt surface every command uses to
 // collect its inputs (CLI §21). The platform prefers prompted inputs over bare
-// positional args/flags to reduce entry errors: on a TTY a command prompts for
-// any value it was not given, validating as the user types. Positional args and
-// flags remain the non-interactive fallback, so automation, CI, and `--json`
-// stay fully scriptable (and a value passed on the command line is used as-is,
-// skipping its prompt).
+// positional args/flags to reduce entry errors: on a TTY a command ALWAYS shows
+// its prompt, PRE-SEEDED with any value the user passed on the command line, so
+// the user confirms or edits it (the value never silently bypasses the TUI),
+// validating as the user types. Under `--json` / no TTY a provided value is used
+// directly with no prompt and a missing required value is exit 2 — so automation,
+// CI, and `--json` stay fully scriptable. (Two exceptions: a hidden credential
+// value can't display a seed, so when one is provided via --value/--stdin it is
+// used directly even on a TTY; and `ai services` start/stop/restart act directly
+// on an explicit name and only show the multi-select checkbox with no arg.)
 //
 // BACK-NAVIGATION: a command's prompts must all live in ONE huh form so the user
 // can step BACK to a previous prompt before submitting. runForm runs a single

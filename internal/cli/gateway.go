@@ -98,26 +98,22 @@ func newGatewaySetCmd(emitter *output.Emitter, exit *int) *cobra.Command {
 		Long: "Set the machine-wide model gateway to a remote server (client mode): every\n" +
 			"workspace microVM routes its model traffic through that server's LiteLLM.\n" +
 			"The address is a bare host or host:port (NOT a URL); the default port is 18787.\n\n" +
-			"Run with no argument on a terminal to be prompted for the address; pass it as\n" +
-			"an argument for non-interactive/scripted use.",
+			"Run on a terminal to be prompted for the address (pre-seeded with any value\n" +
+			"you pass); pass it as an argument under --json/no TTY for non-interactive use.",
 		Args: cobra.MaximumNArgs(1),
 		RunE: func(_ *cobra.Command, args []string) error {
-			// Prompt for the address when it was not given on the command line and we
-			// are interactive; otherwise the positional arg is required (§21).
+			// On a terminal always prompt, PRE-SEEDED with any address given on the
+			// command line (the user confirms/edits). Under --json / no TTY the
+			// positional arg is used directly and is required (§21, §1.8).
 			address := ""
 			if len(args) == 1 {
 				address = strings.TrimSpace(args[0])
 			}
-			if address == "" {
-				if !interactive(emitter) {
-					*exit = emitter.Failure("gateway.set", output.Errorf(output.ExitInvalidInput,
-						"provide a gateway address (e.g. `ai gateway set server:18787`)"))
-					return nil
-				}
+			if interactive(emitter) {
 				entered, err := promptText(
 					"Remote gateway address (host or host:port)",
 					"every workspace on this machine routes its model traffic through this server's LiteLLM",
-					"",
+					address,
 					func(candidate string) error { return validateGatewayAddress(strings.TrimSpace(candidate)) },
 				)
 				if err != nil {
@@ -125,6 +121,10 @@ func newGatewaySetCmd(emitter *output.Emitter, exit *int) *cobra.Command {
 					return nil
 				}
 				address = entered
+			} else if address == "" {
+				*exit = emitter.Failure("gateway.set", output.Errorf(output.ExitInvalidInput,
+					"provide a gateway address (e.g. `ai gateway set server:18787`)"))
+				return nil
 			}
 			if err := validateGatewayAddress(address); err != nil {
 				*exit = emitter.Failure("gateway.set", output.Errorf(output.ExitInvalidInput, "%s", err))

@@ -2,6 +2,7 @@ package cli
 
 import (
 	"fmt"
+	"slices"
 	"sort"
 	"strings"
 
@@ -44,29 +45,29 @@ func newModelsTestCmd(em *output.Emitter, exit *int) *cobra.Command {
 	return &cobra.Command{
 		Use:   "test [model]",
 		Short: "Send a probe request to a model through LiteLLM",
-		Long: "Send a probe request to a model through LiteLLM. Run with no model on a\n" +
-			"terminal to be prompted to pick one of the named model handles; pass the\n" +
-			"model as an argument for non-interactive/scripted use.",
+		Long: "Send a probe request to a model through LiteLLM. On a terminal you are\n" +
+			"prompted to pick one of the named model handles (pre-selected from any model\n" +
+			"you pass); under --json/no TTY the model argument is used directly.",
 		Args: cobra.MaximumNArgs(1),
 		RunE: func(_ *cobra.Command, args []string) error {
-			// Prompt for the model when it was not given and we are interactive;
-			// otherwise the positional arg is required (§21).
+			// On a terminal always prompt, PRE-SEEDED with any model given on the
+			// command line (the user confirms/edits). Under --json / no TTY the
+			// positional arg is used directly and is required (§21, §1.8).
 			model := ""
 			if len(args) == 1 {
 				model = args[0]
 			}
-			if model == "" {
-				if !interactive(em) {
-					*exit = em.Failure("models.test", output.Errorf(output.ExitInvalidInput,
-						"specify a model to test (e.g. `ai models test gemma4`)"))
-					return nil
-				}
-				picked, err := promptModel()
+			if interactive(em) {
+				picked, err := promptModel(model)
 				if err != nil {
 					*exit = em.Failure("models.test", err)
 					return nil
 				}
 				model = picked
+			} else if model == "" {
+				*exit = em.Failure("models.test", output.Errorf(output.ExitInvalidInput,
+					"specify a model to test (e.g. `ai models test gemma4`)"))
+				return nil
 			}
 			res, err := litellm.RealClient().Test(model)
 			if err != nil {
@@ -88,8 +89,10 @@ func newModelsTestCmd(em *output.Emitter, exit *int) *cobra.Command {
 }
 
 // promptModel asks the user to pick one of the named (non-wildcard) model
-// handles from the default routing so testing is pick-not-type.
-func promptModel() (string, error) {
+// handles from the default routing so testing is pick-not-type. The prompt is
+// PRE-SEEDED with seed when it names a known handle; otherwise it falls back to
+// the first handle.
+func promptModel(seed string) (string, error) {
 	names := make([]string, 0)
 	for name := range litellm.DefaultRouting().Aliases {
 		if strings.ContainsAny(name, "/*") {
@@ -105,6 +108,11 @@ func promptModel() (string, error) {
 	initial := ""
 	if len(names) > 0 {
 		initial = names[0]
+	}
+	// A provided model pre-selects its option when it is one of the named handles;
+	// an arbitrary string (e.g. a wildcard route) leaves the default selected.
+	if seed != "" && slices.Contains(names, seed) {
+		initial = seed
 	}
 	return promptChoice("Model", "send a probe request to this model through LiteLLM", options, initial)
 }

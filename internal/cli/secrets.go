@@ -50,10 +50,11 @@ func newSecretsSetCmd(em *output.Emitter, exit *int) *cobra.Command {
 	command := &cobra.Command{
 		Use:   "set [name]",
 		Short: "Store a credential in the LiteLLM gateway",
-		Long: "Store a credential in the LiteLLM gateway. Run with no name (and no value)\n" +
-			"on a terminal to be prompted for the name and the credential (hidden); pass\n" +
-			"the name as an argument and the value via --stdin/--value for\n" +
-			"non-interactive/scripted use.",
+		Long: "Store a credential in the LiteLLM gateway. On a terminal you are prompted for\n" +
+			"the name (pre-seeded with any name you pass) and, when not supplied, the\n" +
+			"hidden credential value; under --json/no TTY pass the name as an argument and\n" +
+			"the value via --stdin/--value. A value given via --stdin/--value is always\n" +
+			"used directly (the hidden field can't display a seed).",
 		Args: cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			name := ""
@@ -78,26 +79,27 @@ func newSecretsSetCmd(em *output.Emitter, exit *int) *cobra.Command {
 				haveValue = true
 			}
 
-			// On a TTY prompt for whichever of {name, value} we are still missing,
-			// in ONE form so the user can navigate back. The credential field is
-			// hidden and never echoed.
-			if (name == "" || !haveValue) && interactive(em) {
+			// On a TTY prompt in ONE form so the user can navigate back. The name
+			// field always shows, PRE-SEEDED with any provided name (§1.8). The
+			// credential value is the exception: a hidden field can't display a seed
+			// and --value/--stdin are explicit non-interactive inputs, so when a value
+			// was provided it is used directly — the hidden field is only prompted when
+			// the value is missing. It is never echoed.
+			if interactive(em) {
 				promptedName := name
 				var promptedValue string
 				fields := make([]huh.Field, 0, 2)
-				if name == "" {
-					nameInput := huh.NewInput().
-						Title("Credential name").
-						Description("e.g. OPENAI_API_KEY").
-						Value(&promptedName).
-						Validate(func(candidate string) error {
-							if candidate == "" {
-								return fmt.Errorf("name is required")
-							}
-							return nil
-						})
-					fields = append(fields, nameInput)
-				}
+				nameInput := huh.NewInput().
+					Title("Credential name").
+					Description("e.g. OPENAI_API_KEY").
+					Value(&promptedName).
+					Validate(func(candidate string) error {
+						if candidate == "" {
+							return fmt.Errorf("name is required")
+						}
+						return nil
+					})
+				fields = append(fields, nameInput)
 				if !haveValue {
 					valueInput := huh.NewInput().
 						Title("Credential value").
@@ -165,26 +167,28 @@ func newSecretsRmCmd(em *output.Emitter, exit *int) *cobra.Command {
 	return &cobra.Command{
 		Use:   "rm [name]",
 		Short: "Remove a credential",
-		Long: "Remove a credential. Run with no name on a terminal to be prompted to pick\n" +
-			"one of the stored credentials; pass the name as an argument for\n" +
-			"non-interactive/scripted use.",
+		Long: "Remove a credential. On a terminal you are prompted to pick one of the stored\n" +
+			"credentials (pre-selected from any name you pass); under --json/no TTY the\n" +
+			"name argument is used directly.",
 		Args: cobra.MaximumNArgs(1),
 		RunE: func(_ *cobra.Command, args []string) error {
 			name := ""
 			if len(args) == 1 {
 				name = args[0]
 			}
-			if name == "" {
-				if !interactive(em) {
-					*exit = em.Failure("secrets.rm", output.Errorf(output.ExitInvalidInput, "provide a credential name to remove"))
-					return nil
-				}
-				picked, err := promptSecretName("Remove which credential")
+			// On a terminal always prompt, PRE-SEEDED with any name given on the
+			// command line; under --json / no TTY the arg is used directly and is
+			// required (§21, §1.8).
+			if interactive(em) {
+				picked, err := promptSecretName("Remove which credential", name)
 				if err != nil {
 					*exit = em.Failure("secrets.rm", err)
 					return nil
 				}
 				name = picked
+			} else if name == "" {
+				*exit = em.Failure("secrets.rm", output.Errorf(output.ExitInvalidInput, "provide a credential name to remove"))
+				return nil
 			}
 			if err := secrets.RealBroker().Remove(name); err != nil {
 				*exit = em.Failure("secrets.rm", mapSecretErr(err))
@@ -201,10 +205,10 @@ func newSecretsMapCmd(em *output.Emitter, exit *int) *cobra.Command {
 	command := &cobra.Command{
 		Use:   "map [name] --env <ENV_VAR>",
 		Short: "Bind a credential to a workspace placeholder env var",
-		Long: "Bind a credential to a workspace placeholder env var. Run with the name or\n" +
-			"--env omitted on a terminal to be prompted for them (name picked from the\n" +
-			"stored credentials); pass the name as an argument and --env for\n" +
-			"non-interactive/scripted use.",
+		Long: "Bind a credential to a workspace placeholder env var. On a terminal you are\n" +
+			"prompted for the name (picked from the stored credentials, pre-selected from\n" +
+			"any name you pass) and the env var (pre-seeded with any --env you pass); under\n" +
+			"--json/no TTY pass the name as an argument and --env.",
 		Args: cobra.MaximumNArgs(1),
 		RunE: func(_ *cobra.Command, args []string) error {
 			name := ""
@@ -212,44 +216,42 @@ func newSecretsMapCmd(em *output.Emitter, exit *int) *cobra.Command {
 				name = args[0]
 			}
 
-			// On a TTY prompt for whichever of {name, env var} are missing, in ONE
-			// form so the user can navigate back.
-			if (name == "" || env == "") && interactive(em) {
+			// On a TTY prompt for both {name, env var} in ONE form so the user can
+			// navigate back. Both fields always show, PRE-SEEDED with any provided
+			// values (a matching stored credential is pre-selected); under --json / no
+			// TTY the provided values are used directly and required (§21, §1.8).
+			if interactive(em) {
 				fields := make([]huh.Field, 0, 2)
 				promptedName := name
 				promptedEnv := env
-				if name == "" {
-					options, listErr := secretNameOptions()
-					if listErr == nil && len(options) > 0 {
-						fields = append(fields, huh.NewSelect[string]().
-							Title("Credential").
-							Description("bind which stored credential").
-							Options(options...).
-							Value(&promptedName))
-					} else {
-						fields = append(fields, huh.NewInput().
-							Title("Credential name").
-							Value(&promptedName).
-							Validate(func(candidate string) error {
-								if candidate == "" {
-									return fmt.Errorf("name is required")
-								}
-								return nil
-							}))
-					}
-				}
-				if env == "" {
+				options, listErr := secretNameOptions()
+				if listErr == nil && len(options) > 0 {
+					fields = append(fields, huh.NewSelect[string]().
+						Title("Credential").
+						Description("bind which stored credential").
+						Options(options...).
+						Value(&promptedName))
+				} else {
 					fields = append(fields, huh.NewInput().
-						Title("Workspace env var").
-						Description("the placeholder env var the gateway swaps, e.g. OPENAI_API_KEY").
-						Value(&promptedEnv).
+						Title("Credential name").
+						Value(&promptedName).
 						Validate(func(candidate string) error {
 							if candidate == "" {
-								return fmt.Errorf("env var is required")
+								return fmt.Errorf("name is required")
 							}
 							return nil
 						}))
 				}
+				fields = append(fields, huh.NewInput().
+					Title("Workspace env var").
+					Description("the placeholder env var the gateway swaps, e.g. OPENAI_API_KEY").
+					Value(&promptedEnv).
+					Validate(func(candidate string) error {
+						if candidate == "" {
+							return fmt.Errorf("env var is required")
+						}
+						return nil
+					}))
 				if err := runForm(huh.NewGroup(fields...)); err != nil {
 					*exit = em.Failure("secrets.map", err)
 					return nil
@@ -294,13 +296,22 @@ func secretNameOptions() ([]huh.Option[string], error) {
 }
 
 // promptSecretName prompts the user to pick one of the stored credential names,
-// falling back to a free-text input when the list is unavailable or empty.
-func promptSecretName(title string) (string, error) {
+// falling back to a free-text input when the list is unavailable or empty. The
+// prompt is PRE-SEEDED with seed: the matching option is pre-selected (or the
+// first), and the free-text fallback is pre-filled.
+func promptSecretName(title, seed string) (string, error) {
 	options, err := secretNameOptions()
 	if err == nil && len(options) > 0 {
-		return promptChoice(title, "", options, options[0].Value)
+		initial := options[0].Value
+		for _, option := range options {
+			if option.Value == seed {
+				initial = seed
+				break
+			}
+		}
+		return promptChoice(title, "", options, initial)
 	}
-	return promptText(title, "", "", func(candidate string) error {
+	return promptText(title, "", seed, func(candidate string) error {
 		if candidate == "" {
 			return fmt.Errorf("name is required")
 		}

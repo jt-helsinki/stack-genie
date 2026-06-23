@@ -26,34 +26,38 @@ func newCompletionCmd(emitter *output.Emitter, exit *int) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "completion [bash|zsh|fish|powershell]",
 		Short: "Install shell completion for ai (or --print the script)",
-		Long: "Install shell completion for ai (or --print the script). Run with no shell\n" +
-			"argument on a terminal to be prompted to pick one; pass the shell as an\n" +
-			"argument for non-interactive/scripted use. --print is unchanged.",
+		Long: "Install shell completion for ai (or --print the script). On a terminal you\n" +
+			"are prompted to pick a shell (pre-selected from any shell you pass); under\n" +
+			"--json/no TTY the shell argument is used directly. --print is unchanged.",
 		Args:      cobra.MaximumNArgs(1),
 		ValidArgs: completionShells,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			// Prompt for the shell when it was not given and we are interactive;
-			// otherwise the positional arg is required (§21).
+			// On a terminal always prompt, PRE-SEEDED with any shell given on the
+			// command line (the user confirms/edits). Under --json / no TTY the
+			// positional arg is used directly and is required (§21, §1.8).
 			shell := ""
 			if len(args) == 1 {
 				shell = args[0]
 			}
-			if shell == "" {
-				if !interactive(emitter) {
-					*exit = emitter.Failure("completion", output.Errorf(output.ExitInvalidInput,
-						"specify a shell (one of %v)", completionShells))
-					return nil
-				}
+			if interactive(emitter) {
 				options := make([]huh.Option[string], 0, len(completionShells))
 				for _, candidate := range completionShells {
 					options = append(options, huh.NewOption(candidate, candidate))
 				}
-				picked, err := promptChoice("Shell", "install ai completion for which shell", options, completionShells[0])
+				initial := completionShells[0]
+				if slices.Contains(completionShells, shell) {
+					initial = shell
+				}
+				picked, err := promptChoice("Shell", "install ai completion for which shell", options, initial)
 				if err != nil {
 					*exit = emitter.Failure("completion", err)
 					return nil
 				}
 				shell = picked
+			} else if shell == "" {
+				*exit = emitter.Failure("completion", output.Errorf(output.ExitInvalidInput,
+					"specify a shell (one of %v)", completionShells))
+				return nil
 			}
 			if !slices.Contains(completionShells, shell) {
 				*exit = emitter.Failure("completion",
