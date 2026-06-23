@@ -189,22 +189,33 @@ var destructiveCommandPatterns = []string{
 	`\bmkfs`,                              // mkfs (filesystem create/wipe)
 }
 
-// destructiveCommandRegex is the single alternation regex (Python/RE2 syntax)
-// composed from destructiveCommandPatterns and used as the tool-firewall's
-// allowed_param_patterns value for the command arg. A tool-call is denied when its
-// command argument matches any fragment.
+// destructiveCommandRegex is the alternation regex composed from
+// destructiveCommandPatterns, used as the tool-firewall's allowed_param_patterns
+// value for the command arg. LiteLLM's tool_permission guardrail matches params
+// with re.FULLMATCH (verified against its source), so the alternation is wrapped
+// `.*( … ).*` to fullmatch a command that CONTAINS a destructive fragment, and the
+// `s` flag makes `.` span newlines (multi-line command strings). A shell tool-call
+// is denied when its command argument fullmatches this (default_action: allow lets
+// everything else through).
 func destructiveCommandRegex() string {
-	return "(?i)(" + strings.Join(destructiveCommandPatterns, "|") + ")"
+	return "(?is).*(" + strings.Join(destructiveCommandPatterns, "|") + ").*"
 }
 
-// shellToolNameRegex matches the common shell-tool NAMES agent CLIs expose, case-
-// insensitively. hardware bring-up: the exact tool name (and command param path)
-// each agent CLI uses for its shell tool — opencode, pi, claude-code, codex,
-// gemini — is NOT yet verified against the live tool schemas; these are best-effort
-// defaults. A destructive call made under an UNMATCHED tool name would slip through
-// the firewall, so this regex must be confirmed/tuned on a provisioned host (see
-// docs/HARDWARE-BRINGUP.md).
-const shellToolNameRegex = `(?i)^(bash|shell|sh|run|run_command|execute|exec|command|terminal)$`
+// shellToolNameRegex matches the shell-tool NAMES the supported agent CLIs expose,
+// verified against their tool schemas: opencode/pi `bash`, claude-code `Bash`
+// (case-insensitive), codex `shell`/`shell_command`/`exec_command`, gemini
+// `run_shell_command`. hardware bring-up: confirm these against the LIVE tool
+// schemas on a provisioned host — a destructive call under an unmatched tool name
+// slips the firewall (see docs/HARDWARE-BRINGUP.md).
+const shellToolNameRegex = `(?i)^(bash|shell|sh|run|run_command|run_shell_command|shell_command|exec_command|execute|exec|command|terminal)$`
+
+// commandParamPaths are the tool-call argument paths that carry the shell command
+// across the supported agents, in LiteLLM tool_permission's flattened dot/`[]`
+// notation (verified against its source): `command` (opencode/pi/claude-code/gemini/
+// codex shell_command — string), `command[]` (codex `shell` — array, matched
+// per-element), and `cmd` (codex exec_command — string). NOT `arguments.command`,
+// which matches nothing (the guardrail evaluates the PARSED arguments object).
+var commandParamPaths = []string{"command", "command[]", "cmd"}
 
 // buildGuardrails renders the platform's always-on guardrails (arch §17). All are
 // default_on:true, so no client request can opt out — and because every route,
@@ -276,12 +287,10 @@ func buildGuardrails() []map[string]any {
 			},
 		},
 		// tool-firewall: LiteLLM's tool_permission guardrail. default_action allow
-		// (everything is permitted) EXCEPT the deny rules below; on_disallowed_action
-		// block rejects the response when a destructive call is matched. Two rules
-		// cover the two param paths providers use for a shell tool's command arg:
-		// a flat `command` and a nested `arguments.command`. hardware bring-up: the
-		// tool_name / param-path regexes are best-effort defaults — see
-		// shellToolNameRegex and docs/HARDWARE-BRINGUP.md.
+		// (everything is permitted) EXCEPT the per-path deny rules; on_disallowed_action
+		// block rejects the response when a destructive shell tool-call is matched.
+		// One deny rule per command param path (commandParamPaths), each fullmatching
+		// a destructive command via destructiveCommandRegex.
 		{
 			"guardrail_name": "tool-firewall",
 			"litellm_params": map[string]any{
@@ -290,27 +299,29 @@ func buildGuardrails() []map[string]any {
 				"default_on":           true,
 				"default_action":       "allow",
 				"on_disallowed_action": "block",
-				"rules": []map[string]any{
-					{
-						"id":        "deny-destructive-command",
-						"tool_name": shellToolNameRegex,
-						"decision":  "deny",
-						"allowed_param_patterns": map[string]any{
-							"command": destructiveCommandRegex(),
-						},
-					},
-					{
-						"id":        "deny-destructive-arguments-command",
-						"tool_name": shellToolNameRegex,
-						"decision":  "deny",
-						"allowed_param_patterns": map[string]any{
-							"arguments.command": destructiveCommandRegex(),
-						},
-					},
-				},
+				"rules":                toolFirewallRules(),
 			},
 		},
 	}
+}
+
+// toolFirewallRules builds one tool_permission deny rule per command param path
+// (commandParamPaths). Each matches the shell-tool name regex and denies when the
+// command argument at that path fullmatches a destructive command.
+func toolFirewallRules() []map[string]any {
+	rules := make([]map[string]any, 0, len(commandParamPaths))
+	for _, path := range commandParamPaths {
+		ruleID := "deny-destructive-" + strings.NewReplacer("[]", "-array", ".", "-").Replace(path)
+		rules = append(rules, map[string]any{
+			"id":        ruleID,
+			"tool_name": shellToolNameRegex,
+			"decision":  "deny",
+			"allowed_param_patterns": map[string]any{
+				path: destructiveCommandRegex(),
+			},
+		})
+	}
+	return rules
 }
 
 // StatusInfo is the result of `ai models status` (CLI §8.1).

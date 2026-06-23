@@ -81,17 +81,28 @@ token cannot resolve until this is pinned.
 `realServices.serviceHealthy` treats `proxy` as healthy once the container is
 running. The remaining verification work:
 
-- [ ] **Tool-firewall (`tool_permission`) tool-name/param verification** — the
-      firewall denies destructive command tool-calls (`rm -rf`, `git push --force`,
-      `git reset --hard`, `terraform destroy`, `kubectl delete`, …) by matching the
-      model's tool-calls at the gateway (deny rules in `internal/litellm`,
-      `destructiveCommandPatterns`). The `shellToolNameRegex` and the command param
-      paths (`command` / `arguments.command`) are **best-effort defaults**: verify
-      them against the LIVE tool schemas each agent CLI emits
-      (opencode/pi/claude-code/codex/gemini) so a destructive call made under an
-      unmatched tool name cannot slip through. Confirm `git push --force` is blocked
-      while `git status` passes. (The microVM isolation + default-deny egress remain
-      the hard boundary — the firewall is defence-in-depth.)
+- [ ] **Tool-firewall (`tool_permission`) live verification** — the firewall denies
+      destructive command tool-calls (`rm -rf`, `git push --force`, `git reset
+      --hard`, `terraform destroy`, `kubectl delete`, `dd`, `mkfs`) at the gateway.
+      The config was corrected against LiteLLM's verified semantics
+      (`tool_permission` matches `allowed_param_patterns` with **re.fullmatch**, so
+      `destructiveCommandRegex` is `.*( … ).*`-wrapped; `default_action: allow` +
+      `decision: deny` rules block on match). `shellToolNameRegex` and the command
+      param paths (`command`, `command[]`, `cmd`) were verified against each agent's
+      tool schema (opencode/pi `bash`→`command`, claude-code `Bash`→`command`, codex
+      `shell`→`command[]` array / `exec_command`→`cmd` / `shell_command`→`command`,
+      gemini `run_shell_command`→`command`). Remaining LIVE checks:
+  - confirm on a real host that `git push --force` is **blocked** (HTTP error) while
+    `git status` passes, for each installed agent CLI;
+  - **codex `shell` array semantics** — LiteLLM matches the `command[]` path
+    **per element**; verify whether a destructive element in `["bash","-lc","rm -rf
+    /"]` triggers the deny (any-element) or is missed (all-element) and adjust if
+    needed.
+  KNOWN LIMIT (not a bring-up item — inherent): the firewall only sees the model's
+  structured tool-call args, so chained/compound commands inside one call, scripts
+  the agent writes then runs, free-text-parsed actions, and obfuscation
+  (`rm -r -f`, `$(echo rm) -rf`) are invisible. The microVM isolation + default-deny
+  egress remain the hard boundary; the firewall is thin defence-in-depth.
 - [ ] **In-process prompt-injection** — confirm the `detect_prompt_injection`
       callback flags an injection attempt without corrupting ordinary coding prompts
       (watch for false positives, the reason general PII masking was dropped).

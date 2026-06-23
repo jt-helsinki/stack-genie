@@ -5,6 +5,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 
@@ -172,6 +173,48 @@ func TestRenderDefaultRouting(test *testing.T) {
 	}
 	if !toolFirewallSeen {
 		test.Errorf("tool-firewall guardrail missing")
+	}
+}
+
+// TestDestructiveCommandRegexBlocksOnlyDestructive guards the tool-firewall's core
+// behavior: LiteLLM's tool_permission matches allowed_param_patterns with
+// re.fullmatch, so the regex MUST fullmatch a command that contains a destructive
+// fragment (else the deny rule never fires — the bug that made the firewall
+// fail-open) and MUST NOT fullmatch benign commands (else false blocks). We
+// emulate re.fullmatch with \A…\z anchors.
+func TestDestructiveCommandRegexBlocksOnlyDestructive(test *testing.T) {
+	fullmatch := regexp.MustCompile(`\A(?:` + destructiveCommandRegex() + `)\z`)
+
+	blocked := []string{
+		"rm -rf /",
+		"sudo rm -rf --no-preserve-root /tmp/x",
+		"git push --force origin main",
+		"git push -f",
+		"git reset --hard HEAD~3",
+		"terraform destroy -auto-approve",
+		"kubectl delete namespace prod",
+		"echo building && rm -rf build",
+		"dd if=/dev/zero of=/dev/sda",
+	}
+	for _, command := range blocked {
+		if !fullmatch.MatchString(command) {
+			test.Errorf("destructive command NOT matched (would slip the firewall): %q", command)
+		}
+	}
+
+	allowed := []string{
+		"ls -la",
+		"git status",
+		"git push origin main",
+		"echo hello world",
+		"go test ./...",
+		"kubectl get pods",
+		"terraform plan",
+	}
+	for _, command := range allowed {
+		if fullmatch.MatchString(command) {
+			test.Errorf("benign command WRONGLY matched (false block): %q", command)
+		}
 	}
 }
 
