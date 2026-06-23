@@ -13,6 +13,7 @@ func (view *fakeView) Init() tea.Cmd          { return nil }
 func (view *fakeView) Update(tea.Msg) tea.Cmd { return nil }
 func (view *fakeView) View() string           { return "fake-" + view.title }
 func (view *fakeView) Title() string          { return view.title }
+func (view *fakeView) Hints() string          { return "" }
 func (view *fakeView) SetSize(int, int)       {}
 
 func newTestApp(titles ...string) *app {

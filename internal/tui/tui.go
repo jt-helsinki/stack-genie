@@ -10,6 +10,7 @@ package tui
 import (
 	"fmt"
 	"os"
+	"os/exec"
 	goruntime "runtime"
 	"strings"
 	"time"
@@ -30,6 +31,7 @@ type View interface {
 	Update(tea.Msg) tea.Cmd
 	View() string
 	Title() string
+	Hints() string
 	SetSize(width, height int)
 }
 
@@ -42,9 +44,14 @@ func Run(cwd string) error {
 	}
 
 	deps := setup.RealDeps(goruntime.GOOS, goruntime.GOARCH, nowRFC3339)
-	servicesView := views.NewServices(func() ([]setup.ServiceStatus, error) {
-		return setup.ServicesStatus(deps)
-	})
+	servicesView := views.NewServices(
+		func() ([]setup.ServiceStatus, error) { return setup.ServicesStatus(deps) },
+		func(action, service string) error {
+			_, err := setup.ControlService(deps, action, service)
+			return err
+		},
+		openURL,
+	)
 
 	application := &app{
 		views:      []View{servicesView},
@@ -198,7 +205,11 @@ func (application *app) footer() string {
 	if application.paletteOpen {
 		return ui.Muted.Render("↑/↓ select · enter choose · esc close")
 	}
-	return ui.Muted.Render(": menu · ↑/↓ navigate · q quit")
+	global := ": menu · ↑/↓ navigate · q quit"
+	if hints := application.views[application.current].Hints(); hints != "" {
+		return ui.Muted.Render(hints + " · " + global)
+	}
+	return ui.Muted.Render(global)
 }
 
 func (application *app) paletteView() string {
@@ -244,3 +255,21 @@ func gatewayLabel() string {
 
 // nowRFC3339 stamps state writes (matches the CLI's clock helper).
 func nowRFC3339() string { return time.Now().UTC().Format(time.RFC3339) }
+
+// openURL opens a console URL in the host's default browser. It returns quickly
+// (Start, not Run) so the TUI never blocks on the browser launch.
+func openURL(url string) error {
+	if url == "" {
+		return fmt.Errorf("no console URL")
+	}
+	var opener string
+	switch goruntime.GOOS {
+	case "darwin":
+		opener = "open"
+	case "linux":
+		opener = "xdg-open"
+	default:
+		return fmt.Errorf("cannot open URLs on %s", goruntime.GOOS)
+	}
+	return exec.Command(opener, url).Start()
+}

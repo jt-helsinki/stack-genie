@@ -1,8 +1,8 @@
 // Package views holds the individual K9s-style screens of the `ai ui` TUI. Each
 // view is a self-contained component (a pointer model with Init/Update/View +
-// Title/SetSize) that the parent tui package composes and routes input to. Views
-// take their data through injected fetcher/action funcs so they unit-test with
-// fakes and the real package APIs are wired by the parent.
+// Title/Hints/SetSize) that the parent tui package composes and routes input to.
+// Views take their data and side effects through injected funcs so they unit-test
+// with fakes and the real package APIs are wired by the parent.
 package views
 
 import (
@@ -18,6 +18,14 @@ import (
 // testable; the parent wires setup.ServicesStatus(deps).
 type ServiceFetcher func() ([]setup.ServiceStatus, error)
 
+// ServiceController applies a lifecycle action (start/stop/restart) to one named
+// service. Injected; the parent wires setup.ControlService(deps, action, name).
+type ServiceController func(action, service string) error
+
+// URLOpener opens a console URL in the host browser. Injected; the parent wires
+// the OS opener (open / xdg-open).
+type URLOpener func(url string) error
+
 // ServicesRefreshInterval is how often the live view re-polls status.
 const ServicesRefreshInterval = 2 * time.Second
 
@@ -26,17 +34,28 @@ type servicesRefreshedMsg struct {
 	err      error
 }
 type servicesTickMsg struct{}
-
-// Services is the live view of the host service tier + their containers.
-type Services struct {
-	fetch  ServiceFetcher
-	table  table.Model
-	err    error
-	loaded bool
+type serviceActionDoneMsg struct {
+	action  string
+	service string
+	err     error
 }
 
-// NewServices builds the services view over the given status fetcher.
-func NewServices(fetch ServiceFetcher) *Services {
+// Services is the live view of the host service tier + their containers, with
+// start/stop/restart and open-console actions on the selected row.
+type Services struct {
+	fetch    ServiceFetcher
+	control  ServiceController
+	open     URLOpener
+	table    table.Model
+	statuses []setup.ServiceStatus
+	flash    string
+	err      error
+	loaded   bool
+}
+
+// NewServices builds the services view over the injected status fetcher,
+// lifecycle controller, and URL opener.
+func NewServices(fetch ServiceFetcher, control ServiceController, open URLOpener) *Services {
 	columns := []table.Column{
 		{Title: "SERVICE", Width: 20},
 		{Title: "MODE", Width: 10},
@@ -45,11 +64,14 @@ func NewServices(fetch ServiceFetcher) *Services {
 		{Title: "ADDRESS", Width: 28},
 	}
 	built := table.New(table.WithColumns(columns), table.WithFocused(true))
-	return &Services{fetch: fetch, table: built}
+	return &Services{fetch: fetch, control: control, open: open, table: built}
 }
 
 // Title is the view's name (used by the menu/header).
 func (view *Services) Title() string { return "Services" }
+
+// Hints are the context-sensitive key bindings shown in the footer.
+func (view *Services) Hints() string { return "s start · x stop · r restart · o console" }
 
 // SetSize fits the table to the content area the parent allots it.
 func (view *Services) SetSize(width, height int) {
@@ -75,31 +97,102 @@ func servicesTick() tea.Cmd {
 }
 
 // Update advances the view: refresh results repopulate the table and re-arm the
-// tick; the tick triggers the next fetch; other messages drive table navigation.
+// tick; the tick triggers the next fetch; s/x/r/o act on the selected service;
+// other keys drive table navigation.
 func (view *Services) Update(msg tea.Msg) tea.Cmd {
 	switch message := msg.(type) {
 	case servicesRefreshedMsg:
 		view.loaded = true
 		view.err = message.err
 		if message.err == nil {
+			view.statuses = message.statuses
 			view.table.SetRows(serviceRows(message.statuses))
 		}
 		return servicesTick()
 	case servicesTickMsg:
 		return view.fetchCmd()
+	case serviceActionDoneMsg:
+		view.flash = actionFlash(message)
+		return view.fetchCmd() // reflect the action immediately
+	case tea.KeyMsg:
+		if cmd, handled := view.handleAction(message); handled {
+			return cmd
+		}
 	}
 	var cmd tea.Cmd
 	view.table, cmd = view.table.Update(msg)
 	return cmd
 }
 
-// View renders the table (or a load/error line).
+// handleAction maps the action keys to async commands; the bool reports whether
+// the key was an action (so it is not also passed to the table for navigation).
+func (view *Services) handleAction(key tea.KeyMsg) (tea.Cmd, bool) {
+	service := view.selectedService()
+	switch key.String() {
+	case "s", "x", "r":
+		if service == "" {
+			return nil, true
+		}
+		action := map[string]string{"s": "start", "x": "stop", "r": "restart"}[key.String()]
+		view.flash = ui.Muted.Render(action + "ing " + service + "…")
+		return view.controlCmd(action, service), true
+	case "o":
+		if service == "" {
+			return nil, true
+		}
+		url := view.consoleURL(service)
+		if url == "" {
+			view.flash = ui.Muted.Render(service + " has no admin console")
+			return nil, true
+		}
+		return view.openCmd(service, url), true
+	}
+	return nil, false
+}
+
+func (view *Services) controlCmd(action, service string) tea.Cmd {
+	control := view.control
+	return func() tea.Msg {
+		return serviceActionDoneMsg{action: action, service: service, err: control(action, service)}
+	}
+}
+
+func (view *Services) openCmd(service, url string) tea.Cmd {
+	open := view.open
+	return func() tea.Msg {
+		return serviceActionDoneMsg{action: "open", service: service, err: open(url)}
+	}
+}
+
+// selectedService returns the service name in the highlighted row (or "").
+func (view *Services) selectedService() string {
+	row := view.table.SelectedRow()
+	if len(row) == 0 {
+		return ""
+	}
+	return row[0]
+}
+
+// consoleURL returns the admin-console URL for the named service (or "").
+func (view *Services) consoleURL(service string) string {
+	for _, status := range view.statuses {
+		if status.Name == service {
+			return status.Console
+		}
+	}
+	return ""
+}
+
+// View renders the table (or a load/error line) with the latest action flash.
 func (view *Services) View() string {
 	if view.err != nil {
 		return ui.Failure.Render(ui.IconFail + " " + view.err.Error())
 	}
 	if !view.loaded {
 		return ui.Muted.Render("loading service status…")
+	}
+	if view.flash != "" {
+		return view.flash + "\n" + view.table.View()
 	}
 	return view.table.View()
 }
@@ -114,4 +207,15 @@ func serviceRows(statuses []setup.ServiceStatus) []table.Row {
 		rows = append(rows, table.Row{status.Name, status.Mode, status.State, health, status.Address})
 	}
 	return rows
+}
+
+// actionFlash renders the outcome of a lifecycle/console action.
+func actionFlash(msg serviceActionDoneMsg) string {
+	verbs := map[string]string{
+		"start": "started", "stop": "stopped", "restart": "restarted", "open": "opened console for",
+	}
+	if msg.err != nil {
+		return ui.Failure.Render(ui.IconFail + " " + msg.action + " " + msg.service + ": " + msg.err.Error())
+	}
+	return ui.Success.Render(ui.IconOK + " " + verbs[msg.action] + " " + msg.service)
 }
