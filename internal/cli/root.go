@@ -99,6 +99,7 @@ func Execute() int {
 		newCompletionCmd(emitter, &exitCode),
 		newStateCmd(emitter, &exitCode),
 		newThemeCmd(emitter, &exitCode),
+		newUICmd(emitter, &exitCode),
 	)
 
 	// With --json, help is a structured data.help object (§17.0); otherwise the

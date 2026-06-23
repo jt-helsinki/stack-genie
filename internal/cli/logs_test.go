@@ -30,6 +30,10 @@ func runLogs(test *testing.T, args ...string) int {
 // service resolves to an empty result (exit 0), never a crash or an error.
 func TestLogsServiceAcceptsFullTier(test *testing.T) {
 	test.Setenv("HOME", test.TempDir())
+	// Run from a non-project directory so the default-workspace resolution (the
+	// cwd's project) finds nothing — keeps the test hermetic regardless of where
+	// `go test` is invoked (e.g. from inside a project checkout).
+	test.Chdir(test.TempDir())
 
 	wantServices := []string{
 		"microsandbox",
@@ -54,6 +58,7 @@ func TestLogsServiceAcceptsFullTier(test *testing.T) {
 // An unknown --service value is rejected as invalid input (exit 2).
 func TestLogsServiceRejectsUnknown(test *testing.T) {
 	test.Setenv("HOME", test.TempDir())
+	test.Chdir(test.TempDir())
 
 	if exit := runLogs(test, "--service", "bogus"); exit != output.ExitInvalidInput {
 		test.Fatalf("logs --service bogus: exit = %d, want %d", exit, output.ExitInvalidInput)
