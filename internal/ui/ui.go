@@ -62,7 +62,7 @@ func Enabled(emitter *output.Emitter) bool {
 }
 
 // HuhTheme is the form theme for the shared prompt helpers, so prompts match the
-// rest of the UI.
+// rest of the UI. It reflects the active theme (see Apply / `ai theme`).
 func HuhTheme() *huh.Theme {
-	return huh.ThemeCharm()
+	return active.huh()
 }

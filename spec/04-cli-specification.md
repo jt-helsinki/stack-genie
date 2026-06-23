@@ -155,6 +155,7 @@ completion:
 * `ai context caveman` → `lite|full|ultra|wenyan`
 * `ai services console` → services that have an admin console
 * `ai logs --service` → the host services; `ai logs --workspace` → project names
+* `ai theme` → the available theme names
 
 ## 1.8 Interactive Input
 
@@ -176,7 +177,7 @@ than requiring everything on the command line. The rules (implemented once in
   when no service is named (see below).
 * **Known option sets are presented, not typed**: single-choice values use a
   select menu (`ai context strategy|caveman`, `ai models test`, `ai completion`,
-  the `ai setup` deployment role, `ai network egress`), and "one or more" values
+  the `ai setup` deployment role, `ai network egress`, `ai theme`), and "one or more" values
   use a **checkbox** list. `ai services start|stop|restart` with no argument shows
   every service and its current state as checkboxes and acts on the selection
   (an explicit name or `all` skips the prompt; non-interactive use still targets
@@ -991,6 +992,31 @@ Behavior:
 * rebuilds state from filesystem
 * reconciles missing entries
 * fixes inconsistencies
+
+---
+
+## 14.3 UI Theme
+
+```bash
+ai theme [name]
+```
+
+Selects the CLI colour theme applied to the interactive prompts, forms, the
+setup stepper, and headings. The choice is persisted **per host** in
+`~/.ai-platform/config/ui.yaml` (`theme:`) and applied at startup, so every
+command matches. Available themes wrap huh's built-ins: `default` (charm),
+`dracula`, `catppuccin`, `base16`, `monochrome`.
+
+Behavior (follows §1.8):
+
+* On a TTY it ALWAYS shows a select menu, pre-seeded with `[name]` (else the
+  active theme); the choice is applied and persisted.
+* Under `--json` / no TTY, a provided `name` is applied directly (unknown name →
+  exit `2`, listing the valid set); with **no** name it reports the active theme
+  and the available set, changing nothing.
+
+The semantic status colours (success/warn/failure = green/amber/red) stay fixed
+across themes; a theme changes the form styling and the accent/heading colour.
 
 ---
 

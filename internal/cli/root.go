@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/jt-helsinki/ideal-robot/internal/output"
+	"github.com/jt-helsinki/ideal-robot/internal/ui"
 	"github.com/jt-helsinki/ideal-robot/internal/version"
 	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"
@@ -48,6 +49,9 @@ func Execute() int {
 		PersistentPreRun: func(_ *cobra.Command, _ []string) {
 			emitter.JSON = flags.json
 			emitter.Plain = flags.plain
+			// Apply the persisted UI theme so every command's prompts, forms, and
+			// headings match the user's choice (falls back to the default theme).
+			_ = ui.Apply(ui.LoadThemeName())
 		},
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			if flags.version {
@@ -94,6 +98,7 @@ func Execute() int {
 		newLogsCmd(emitter, &exitCode),
 		newCompletionCmd(emitter, &exitCode),
 		newStateCmd(emitter, &exitCode),
+		newThemeCmd(emitter, &exitCode),
 	)
 
 	// With --json, help is a structured data.help object (§17.0); otherwise the
