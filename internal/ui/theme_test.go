@@ -28,6 +28,26 @@ func TestApplyUnknownThemeErrorsAndKeepsActive(test *testing.T) {
 	}
 }
 
+// Every registered theme — built-in or custom — must apply cleanly and yield a
+// non-nil huh form theme and an accent (so a broken custom palette is caught).
+func TestEveryRegisteredThemeApplies(test *testing.T) {
+	test.Cleanup(func() { _ = Apply(DefaultTheme) })
+
+	for _, name := range ThemeNames() {
+		if err := Apply(name); err != nil {
+			test.Errorf("Apply(%q): %v", name, err)
+			continue
+		}
+		if HuhTheme() == nil {
+			test.Errorf("theme %q: HuhTheme() is nil", name)
+		}
+		if Accent() == "" {
+			test.Errorf("theme %q: Accent() is empty", name)
+		}
+		_ = TableStyles() // must not panic for any theme
+	}
+}
+
 func TestThemeRegistryHasDefault(test *testing.T) {
 	if !IsTheme(DefaultTheme) {
 		test.Fatalf("%q must be a registered theme", DefaultTheme)

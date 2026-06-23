@@ -35,6 +35,47 @@ var themes = map[string]themeDef{
 	"catppuccin": {huh.ThemeCatppuccin, lipgloss.Color("183")}, // mauve
 	"base16":     {huh.ThemeBase16, lipgloss.Color("45")},      // cyan
 	"monochrome": {huh.ThemeBase, lipgloss.Color("252")},       // near-white, minimal colour
+	// Custom themes.
+	"orange": {
+		huh:    ThemeFactory(OrangeBlue),
+		accent: lipgloss.Color("#F97316"),
+	},
+	"orange-blue": {
+		huh:    ThemeFactory(OrangeBlue),
+		accent: lipgloss.Color("#F97316"),
+	},
+	"synthwave": {
+		huh:    ThemeFactory(Synthwave),
+		accent: lipgloss.Color("#FF2BD6"),
+	},
+	"cyberpunk": {
+		huh:    ThemeFactory(RetroCyberpunk),
+		accent: lipgloss.Color("#FE53BB"),
+	},
+	"tokyo-night": {
+		huh:    ThemeFactory(TokyoNight),
+		accent: lipgloss.Color("#7DCFFF"),
+	},
+	"vaporwave": {
+		huh:    ThemeFactory(Vaporwave),
+		accent: lipgloss.Color("#FF71CE"),
+	},
+	"tron": {
+		huh:    ThemeFactory(Tron),
+		accent: lipgloss.Color("#00FFFF"),
+	},
+	"nord": {
+		huh:    ThemeFactory(Nord),
+		accent: lipgloss.Color("#88C0D0"),
+	},
+	"gruvbox": {
+		huh:    ThemeFactory(Gruvbox),
+		accent: lipgloss.Color("#FE8019"),
+	},
+	"onedark": {
+		huh:    ThemeFactory(OneDark),
+		accent: lipgloss.Color("#61AFEF"),
+	},
 }
 
 // active / activeName track the currently applied theme (the default until Apply

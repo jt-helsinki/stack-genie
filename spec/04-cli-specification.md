@@ -1004,8 +1004,10 @@ ai theme [name]
 Selects the CLI colour theme applied to the interactive prompts, forms, the
 setup stepper, and headings. The choice is persisted **per host** in
 `~/.ai-platform/config/ui.yaml` (`theme:`) and applied at startup, so every
-command matches. Available themes wrap huh's built-ins: `default` (charm),
-`dracula`, `catppuccin`, `base16`, `monochrome`.
+command matches. Available themes wrap huh's built-ins (`default` (charm),
+`dracula`, `catppuccin`, `base16`, `monochrome`) plus custom palettes (`orange`,
+`orange-blue`, `synthwave`, `cyberpunk`, `tokyo-night`, `vaporwave`, `tron`,
+`nord`, `gruvbox`, `onedark`) — run `ai theme` to list them all.
 
 Behavior (follows §1.8):
 
