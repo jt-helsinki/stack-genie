@@ -196,7 +196,7 @@ Used for:
 ```text id="h17"
 config.yaml              # global platform config (§12.4)
 runtime.yaml             # detected runtime, platform-global (§12.5)
-versions.yaml            # pinned versions/digests of host services (§12.6)
+versions.yaml            # pinned image+tag of host services (§12.6)
 projects.yaml            # index: project name → path (§12.7)
 litellm/                 # rendered LiteLLM config (placeholders only; real keys live in the gateway)
 microsandbox/            # rendered Microsandbox workspace defaults (image, mounts, limits, network policy)
@@ -577,19 +577,29 @@ network:                   # workspace networking (arch §29.6); all fields mana
   "schema_version": 1,
   "services": {
     "microsandbox": { "mode": "native",    "version": "v0.x", "sha256": "..." },
-    "litellm":      { "mode": "container", "image": "ghcr.io/berriai/litellm", "digest": "sha256:..." },
-    "litellm-db":   { "mode": "container", "image": "postgres:18.4-alpine3.24", "digest": "sha256:..." },
-    "headroom":     { "mode": "container", "image": "ghcr.io/chopratejas/headroom:slim", "digest": "sha256:..." },
-    "ollama":       { "mode": "container", "image": "docker.io/ollama/ollama", "digest": "sha256:..." },
-    "presidio-analyzer":   { "mode": "container", "image": "mcr.microsoft.com/presidio-analyzer",   "digest": "sha256:..." },
-    "presidio-anonymizer": { "mode": "container", "image": "mcr.microsoft.com/presidio-anonymizer", "digest": "sha256:..." }
+    "litellm":      { "mode": "container", "image": "ghcr.io/berriai/litellm", "tag": "latest" },
+    "litellm-db":   { "mode": "container", "image": "postgres", "tag": "latest" },
+    "headroom":     { "mode": "container", "image": "ghcr.io/chopratejas/headroom", "tag": "latest" },
+    "ollama":       { "mode": "container", "image": "ollama/ollama", "tag": "latest" },
+    "presidio-analyzer":   { "mode": "container", "image": "mcr.microsoft.com/presidio-analyzer",   "tag": "latest" },
+    "presidio-anonymizer": { "mode": "container", "image": "mcr.microsoft.com/presidio-anonymizer", "tag": "latest" },
+    "llm-guard":    { "mode": "container", "image": "laiyer/llm-guard-api", "tag": "latest" },
+    "proxy":        { "mode": "container", "image": "nginx", "tag": "latest" },
+    "open-webui":   { "mode": "container", "image": "ghcr.io/open-webui/open-webui", "tag": "latest" },
+    "dns":          { "mode": "container", "image": "coredns/coredns", "tag": "latest" }
   }
 }
 ```
 
 * `mode`: `container` | `native`
-* `ai setup` verifies installed services match these pins;
-  `--upgrade` updates them and re-reconciles
+* This file is the **source of truth** for the service-tier image references:
+  container services are pinned by **image + tag** (currently the `latest` tag for
+  every image), **not by digest** (digests are platform/arch specific, so a digest
+  pin breaks cross-platform pulls). Native services pin `version` + `sha256`.
+* `ai setup` **resolves every service-tier image from this file** (via
+  `internal/setup`'s `containerImage`, falling back to the built-in
+  `versions.Default()` pins when the file is absent or an entry is incomplete);
+  `--upgrade` re-writes it to this binary's defaults and re-reconciles
 
 ## 12.7 `config/projects.yaml` (global projects index)
 

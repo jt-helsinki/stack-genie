@@ -14,7 +14,29 @@ import (
 	"github.com/jt-helsinki/ideal-robot/internal/output"
 	"github.com/jt-helsinki/ideal-robot/internal/paths"
 	"github.com/jt-helsinki/ideal-robot/internal/runtime"
+	"github.com/jt-helsinki/ideal-robot/internal/versions"
 )
+
+// containerImage returns the image reference (repo:tag) for a service, from
+// config/versions.yaml when present and complete, else the built-in default
+// pin (versions.Default). Pinned by tag — digests are platform-specific and
+// intentionally not used.
+func containerImage(service string) string {
+	if loaded, err := versions.Load(); err == nil && loaded != nil {
+		if ref := versionsImageRef(loaded, service); ref != "" {
+			return ref
+		}
+	}
+	return versionsImageRef(versions.Default(), service)
+}
+
+func versionsImageRef(file *versions.File, service string) string {
+	svc, ok := file.Services[service]
+	if !ok || svc.Image == "" || svc.Tag == "" {
+		return ""
+	}
+	return svc.Image + ":" + svc.Tag
+}
 
 type serviceSpec struct{ Name, Mode string }
 
@@ -41,11 +63,10 @@ func desiredServices() []serviceSpec {
 	}
 }
 
-// litellm container naming + image (digest pinned in versions.yaml during
-// release; until then the documented rolling tag).
+// litellm container naming (the image reference is resolved from versions.yaml
+// by containerImage("litellm"), falling back to the built-in default pin).
 const (
 	litellmContainer = "aip-litellm"
-	litellmImage     = "ghcr.io/berriai/litellm:main-latest"
 	// litellmUIUsername is the (non-secret) admin-UI login name. The password and
 	// master key are secrets, so they are never inlined — see litellmRunArgs.
 	litellmUIUsername = "admin"
@@ -57,7 +78,6 @@ const (
 	// the one stateful piece of the otherwise-stateless service tier.
 	platformNetwork    = "aip-net"
 	litellmDBContainer = "aip-litellm-db"
-	litellmDBImage     = "postgres:18.4-alpine3.24"
 	litellmDBVolume    = "aip-litellm-db-data"
 	litellmDBUser      = "litellm"
 	litellmDBName      = "litellm"
@@ -74,7 +94,6 @@ const (
 	// platform state on `ai uninstall --purge`. Replaces a native Ollama — stop any
 	// native instance bound to 11434 first.
 	ollamaContainer   = "aip-ollama"
-	ollamaImage       = "ollama/ollama:latest"
 	ollamaModelsGuest = "/models" // where ~/.ai-platform/models is mounted in the container
 
 	// Headroom is the input-compression proxy in front of LiteLLM. Official image
@@ -83,7 +102,6 @@ const (
 	// forwards to Headroom by name; Headroom forwards to LiteLLM via
 	// OPENAI_TARGET_API_URL.
 	headroomContainer = "aip-headroom"
-	headroomImage     = "ghcr.io/chopratejas/headroom:slim"
 	headroomTargetURL = "http://" + litellmContainer + ":4000"
 
 	// LLM Guard is a security-scoped guardrail backend, wired into LiteLLM via the
@@ -94,7 +112,6 @@ const (
 	// NOTE: LLM Guard is HEAVY — on first run it pulls a HuggingFace model for the
 	// PromptInjection scanner (several GB); plan host memory/disk accordingly.
 	llmGuardContainer = "aip-llm-guard"
-	llmGuardImage     = "laiyer/llm-guard-api:latest"
 	llmGuardURL       = "http://" + llmGuardContainer + ":8000"
 
 	// aip-proxy is the nginx reverse proxy that is the gateway ENTRY on the host:
@@ -103,7 +120,6 @@ const (
 	// is transparent to workspaces; Headroom no longer publishes to the host. nginx
 	// terminates TLS later (the future HTTPS endpoint). Pinned minor tag.
 	proxyContainer = "aip-proxy"
-	proxyImage     = "nginx:1.27-alpine"
 	proxyHostPort  = "18787"
 	proxyTargetURL = "http://" + headroomContainer + ":8787"
 
@@ -113,7 +129,6 @@ const (
 	// data on a named volume. The built-in Ollama backend and the login wall are
 	// disabled (single-user local UI); all model traffic goes via LiteLLM.
 	openWebUIContainer = "aip-open-webui"
-	openWebUIImage     = "ghcr.io/open-webui/open-webui:main"
 	// Published on the host at a deliberately non-standard port (18090, not 8090)
 	// to avoid clashing with common dev servers; the container still listens on 8080.
 	openWebUIHostPort  = "18090"
@@ -126,8 +141,6 @@ const (
 	// are internal only — not published to the host.
 	presidioAnalyzerContainer   = "aip-presidio-analyzer"
 	presidioAnonymizerContainer = "aip-presidio-anonymizer"
-	presidioAnalyzerImage       = "mcr.microsoft.com/presidio-analyzer:latest"
-	presidioAnonymizerImage     = "mcr.microsoft.com/presidio-anonymizer:latest"
 	presidioAnalyzerURL         = "http://" + presidioAnalyzerContainer + ":3000"
 	presidioAnonymizerURL       = "http://" + presidioAnonymizerContainer + ":3000"
 
@@ -139,9 +152,8 @@ const (
 	// net-rules (L3/L4); a resolver answer cannot bypass them. CoreDNS forwards
 	// to public upstreams and caches briefly. Published to the host LOOPBACK at
 	// dnsHostPort so msb's netstack can forward guest DNS to it; not exposed off
-	// the machine. Image tag pinned (verified to exist; coredns/coredns:1.11.x).
+	// the machine. The image reference is resolved from versions.yaml (CoreDNS).
 	dnsContainer = "aip-dns"
-	dnsImage     = "coredns/coredns:1.11.3"
 	dnsHostPort  = "15353"
 	// DNSNameserver is the guest-facing target passed to `msb create
 	// --dns-nameserver` (a fixed platform setting). msb's netstack forwards guest
@@ -226,7 +238,7 @@ http {
 // shared services loopback-bound — local microVMs reach the loopback-bound nginx
 // gateway via msb's netstack, so this is a security tightening with no functional
 // loss — while server binds 0.0.0.0 so other machines can connect.
-func litellmRunArgs(configPath, bindHost string) []string {
+func litellmRunArgs(configPath, bindHost, image string) []string {
 	return []string{
 		"run", "-d", "--name", litellmContainer,
 		"--network", platformNetwork,
@@ -245,7 +257,7 @@ func litellmRunArgs(configPath, bindHost string) []string {
 		// LLM Guard's legacy callback (callbacks: ["llmguard_moderations"] in the
 		// rendered config) sends requests to this base for security scanning.
 		"-e", "LLM_GUARD_API_BASE=" + llmGuardURL,
-		litellmImage,
+		image,
 		"--config", "/app/config.yaml", "--port", "4000",
 	}
 }
@@ -279,7 +291,7 @@ func ensureLiteLLMDB(prober runtime.Prober, containerRuntime string) error {
 		// mounted at /var/lib/postgresql (NOT .../data, the pre-18 convention) —
 		// otherwise the image refuses to start (docker-library/postgres#1259).
 		"-v", litellmDBVolume + ":/var/lib/postgresql",
-		litellmDBImage,
+		containerImage("litellm-db"),
 	}
 	if _, err := prober.Run(containerRuntime, args...); err != nil {
 		return output.Errorf(output.ExitRuntimeFailure, "launch litellm db via %s: %s", containerRuntime, err)
@@ -323,7 +335,7 @@ func ensureOllama(prober runtime.Prober, containerRuntime, bindHost string) erro
 		"-p", bindHost + ":11434:11434",
 		"-v", modelsDir + ":" + ollamaModelsGuest,
 		"-e", "OLLAMA_MODELS=" + ollamaModelsGuest,
-		ollamaImage,
+		containerImage("ollama"),
 	}
 	if _, err := prober.Run(containerRuntime, args...); err != nil {
 		return output.Errorf(output.ExitRuntimeFailure,
@@ -338,8 +350,8 @@ func ensureOllama(prober runtime.Prober, containerRuntime, bindHost string) erro
 // the host. Idempotent.
 func ensurePresidio(prober runtime.Prober, containerRuntime string) error {
 	presidioServices := []struct{ name, image string }{
-		{presidioAnalyzerContainer, presidioAnalyzerImage},
-		{presidioAnonymizerContainer, presidioAnonymizerImage},
+		{presidioAnalyzerContainer, containerImage("presidio-analyzer")},
+		{presidioAnonymizerContainer, containerImage("presidio-anonymizer")},
 	}
 	for _, presidio := range presidioServices {
 		if containerRunning(prober, containerRuntime, presidio.name) {
@@ -377,7 +389,7 @@ func ensureHeadroom(prober runtime.Prober, containerRuntime string) error {
 		// mode and corrupts answers regardless of prompt size. Disabling the tool
 		// injection keeps compression enabled while forwarding requests faithfully.
 		"-e", "HEADROOM_NO_CCR_INJECT_TOOL=1",
-		headroomImage,
+		containerImage("headroom"),
 	}
 	if _, err := prober.Run(containerRuntime, args...); err != nil {
 		return output.Errorf(output.ExitRuntimeFailure, "launch headroom via %s: %s", containerRuntime, err)
@@ -415,7 +427,7 @@ func ensureOpenWebUI(prober runtime.Prober, containerRuntime, bindHost string) e
 		_ = os.Setenv("OPENAI_API_KEY", key)
 		args = append(args, "-e", "OPENAI_API_KEY")
 	}
-	args = append(args, openWebUIImage)
+	args = append(args, containerImage("open-webui"))
 	if _, err := prober.Run(containerRuntime, args...); err != nil {
 		return output.Errorf(output.ExitRuntimeFailure, "launch open-webui via %s: %s", containerRuntime, err)
 	}
@@ -451,7 +463,7 @@ func ensureDNS(prober runtime.Prober, containerRuntime string) error {
 		"--network", platformNetwork,
 		"-p", "127.0.0.1:" + dnsHostPort + ":53/udp",
 		"-v", corefilePath + ":/Corefile",
-		dnsImage,
+		containerImage("dns"),
 		"-conf", "/Corefile",
 	}
 	if _, err := prober.Run(containerRuntime, args...); err != nil {
@@ -490,7 +502,7 @@ func ensureLLMGuard(prober runtime.Prober, containerRuntime string) error {
 		"run", "-d", "--name", llmGuardContainer,
 		"--network", platformNetwork,
 		"-v", scannersPath + ":/home/user/app/config/scanners.yml",
-		llmGuardImage,
+		containerImage("llm-guard"),
 	}
 	if _, err := prober.Run(containerRuntime, args...); err != nil {
 		return output.Errorf(output.ExitRuntimeFailure, "launch llm-guard via %s: %s", containerRuntime, err)
@@ -527,7 +539,7 @@ func ensureProxy(prober runtime.Prober, containerRuntime, bindHost string) error
 		"--network", platformNetwork,
 		"-p", bindHost + ":" + proxyHostPort + ":80",
 		"-v", confPath + ":/etc/nginx/nginx.conf:ro",
-		proxyImage,
+		containerImage("proxy"),
 	}
 	if _, err := prober.Run(containerRuntime, args...); err != nil {
 		return output.Errorf(output.ExitRuntimeFailure, "launch aip-proxy via %s: %s", containerRuntime, err)
@@ -627,7 +639,7 @@ func RelaunchLiteLLMWithAuth(password, masterKey string) error {
 	_ = exec.Command(containerRuntime.Name, "rm", "-f", litellmContainer).Run() // #nosec G204 — fixed args
 
 	// #nosec G204 — fixed argv; secrets ride in the environment, not the command line.
-	command := exec.Command(containerRuntime.Name, litellmRunArgs(configPath, currentBindHost())...)
+	command := exec.Command(containerRuntime.Name, litellmRunArgs(configPath, currentBindHost(), containerImage("litellm"))...)
 	command.Env = append(os.Environ(),
 		"UI_PASSWORD="+password,
 		"LITELLM_MASTER_KEY="+masterKey,
@@ -728,7 +740,7 @@ func (services realServices) ensureLiteLLM(configPath, bindHost string) error {
 	// (env passthrough would otherwise copy empty values from this process).
 	preserveLiteLLMSecretsInEnv(services.prober, containerRuntime.Name)
 	_, _ = services.prober.Run(containerRuntime.Name, "rm", "-f", litellmContainer) // best-effort cleanup
-	if _, err := services.prober.Run(containerRuntime.Name, litellmRunArgs(configPath, bindHost)...); err != nil {
+	if _, err := services.prober.Run(containerRuntime.Name, litellmRunArgs(configPath, bindHost, containerImage("litellm"))...); err != nil {
 		return output.Errorf(output.ExitRuntimeFailure, "launch litellm via %s: %s", containerRuntime.Name, err)
 	}
 	for attempt := 0; attempt < 15; attempt++ {

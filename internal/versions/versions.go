@@ -1,6 +1,8 @@
-// Package versions manages config/versions.yaml — the pinned versions/digests of
+// Package versions manages config/versions.yaml — the pinned versions/tags of
 // the platform's host services and the Microsandbox runtime (repo-layout §12.6).
-// `ai setup` installs to these pins; `ai setup --upgrade` bumps them.
+// `ai setup` installs to these pins; `ai setup --upgrade` bumps them. Container
+// services are pinned by image+tag (no digest — digests are platform/arch
+// specific, so pinning one breaks cross-platform pulls).
 package versions
 
 import (
@@ -16,13 +18,15 @@ import (
 const SchemaVersion = 1
 
 // Service is a single pinned service entry. Container-tier services pin an
-// image+digest; native-tier pin a version+sha256.
+// image+tag; native-tier pin a version+sha256. Digests are intentionally not
+// pinned — they differ per platform/arch, so a digest pin breaks cross-platform
+// pulls.
 type Service struct {
 	Mode    string `json:"mode" yaml:"mode"` // container | native
 	Version string `json:"version,omitempty" yaml:"version,omitempty"`
 	SHA256  string `json:"sha256,omitempty" yaml:"sha256,omitempty"`
 	Image   string `json:"image,omitempty" yaml:"image,omitempty"`
-	Digest  string `json:"digest,omitempty" yaml:"digest,omitempty"`
+	Tag     string `json:"tag,omitempty" yaml:"tag,omitempty"`
 	Enabled *bool  `json:"enabled,omitempty" yaml:"enabled,omitempty"`
 }
 
@@ -32,37 +36,44 @@ type File struct {
 	Services      map[string]Service `json:"services" yaml:"services"`
 }
 
-// Default returns the built-in pins (repo-layout §12.6). Concrete digests are
-// filled in at release time; the placeholders keep the schema stable.
+// Default returns the built-in pins (repo-layout §12.6). Container services are
+// pinned by image+tag (currently the `latest` tag for every image); digests are
+// intentionally not pinned (platform/arch specific). `ai setup` resolves every
+// service-tier image from versions.yaml, falling back to these defaults.
 func Default() *File {
 	return &File{
 		SchemaVersion: SchemaVersion,
 		Services: map[string]Service{
 			"microsandbox": {Mode: "native", Version: "v0.x", SHA256: "TBD"},
-			"litellm":      {Mode: "container", Image: "ghcr.io/berriai/litellm", Digest: "sha256:TBD"},
+			"litellm":      {Mode: "container", Image: "ghcr.io/berriai/litellm", Tag: "latest"},
+			// Postgres backing LiteLLM's admin UI / virtual keys.
+			"litellm-db": {Mode: "container", Image: "postgres", Tag: "latest"},
 			// Headroom (input compression) runs as a shared host container in front
 			// of LiteLLM; agents send to it at :18787 (arch §8–10, §15). Per-project
 			// compression knobs ride per request, so it is no longer baked into the
 			// workspace image.
-			"headroom": {Mode: "container", Image: "ghcr.io/chopratejas/headroom", Digest: "sha256:TBD"},
+			"headroom": {Mode: "container", Image: "ghcr.io/chopratejas/headroom", Tag: "latest"},
 			// Open WebUI is the optional chat UI, routed through LiteLLM as an
 			// OpenAI-compatible gateway (published on the host at :18090).
-			"open-webui": {Mode: "container", Image: "ghcr.io/open-webui/open-webui", Digest: "sha256:TBD"},
+			"open-webui": {Mode: "container", Image: "ghcr.io/open-webui/open-webui", Tag: "latest"},
 			// Presidio backs LiteLLM's always-on PII guardrail (arch §17): the
 			// analyzer detects PII, the anonymizer masks it. Internal-only containers.
-			"presidio-analyzer":   {Mode: "container", Image: "mcr.microsoft.com/presidio-analyzer", Digest: "sha256:TBD"},
-			"presidio-anonymizer": {Mode: "container", Image: "mcr.microsoft.com/presidio-anonymizer", Digest: "sha256:TBD"},
+			"presidio-analyzer":   {Mode: "container", Image: "mcr.microsoft.com/presidio-analyzer", Tag: "latest"},
+			"presidio-anonymizer": {Mode: "container", Image: "mcr.microsoft.com/presidio-anonymizer", Tag: "latest"},
 			// LLM Guard backs LiteLLM's security-scoped legacy callback (arch §17):
 			// PromptInjection + Secrets + bearer-token Regex only. Internal-only. The
 			// image is an unpinnable rolling tag (ProtectAI/Laiyer legacy).
-			"llm-guard": {Mode: "container", Image: "laiyer/llm-guard-api", Digest: "sha256:TBD"},
+			"llm-guard": {Mode: "container", Image: "laiyer/llm-guard-api", Tag: "latest"},
 			// nginx reverse proxy: the gateway entry on host :18787 in front of
 			// Headroom (HTTPS-ready). Internal Headroom is reached by name.
-			"proxy": {Mode: "container", Image: "nginx", Digest: "sha256:TBD"},
+			"proxy": {Mode: "container", Image: "nginx", Tag: "latest"},
 			// Ollama is REQUIRED (always on): LiteLLM routes local model traffic to
 			// it (arch §14, §16). Cloud models still go LiteLLM → provider; LiteLLM's
 			// always-on Presidio guardrails audit both paths (§17).
-			"ollama": {Mode: "container", Image: "docker.io/ollama/ollama", Digest: "sha256:TBD"},
+			"ollama": {Mode: "container", Image: "ollama/ollama", Tag: "latest"},
+			// CoreDNS egress-audit resolver: microVMs boot with --dns-nameserver
+			// pointed at it so every queried name is logged (arch §29).
+			"dns": {Mode: "container", Image: "coredns/coredns", Tag: "latest"},
 		},
 	}
 }

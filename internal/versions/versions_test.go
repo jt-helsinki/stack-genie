@@ -14,6 +14,7 @@ import (
 var expectedServices = map[string]string{
 	"microsandbox":        "native",
 	"litellm":             "container",
+	"litellm-db":          "container",
 	"headroom":            "container",
 	"open-webui":          "container",
 	"presidio-analyzer":   "container",
@@ -21,6 +22,7 @@ var expectedServices = map[string]string{
 	"llm-guard":           "container",
 	"proxy":               "container",
 	"ollama":              "container",
+	"dns":                 "container",
 }
 
 func TestDefaultSchemaVersion(t *testing.T) {
@@ -47,6 +49,15 @@ func TestDefaultServicesPresent(t *testing.T) {
 		if entry.Mode != wantMode {
 			t.Errorf("service %q: Mode = %q, want %q", name, entry.Mode, wantMode)
 		}
+		// Every container service is pinned by image+tag (currently `latest`).
+		if wantMode == "container" {
+			if entry.Image == "" {
+				t.Errorf("container service %q has empty Image", name)
+			}
+			if entry.Tag != "latest" {
+				t.Errorf("container service %q: Tag = %q, want %q", name, entry.Tag, "latest")
+			}
+		}
 	}
 }
 
@@ -58,8 +69,9 @@ func TestDefaultServiceFieldsAreSane(t *testing.T) {
 			if entry.Image == "" {
 				t.Errorf("container service %q has empty Image", name)
 			}
-			if entry.Digest == "" {
-				t.Errorf("container service %q has empty Digest", name)
+			// Container services are pinned by tag (no digest — platform-specific).
+			if entry.Tag == "" {
+				t.Errorf("container service %q has empty Tag", name)
 			}
 			if entry.Version != "" || entry.SHA256 != "" {
 				t.Errorf("container service %q should not pin native fields (Version=%q SHA256=%q)", name, entry.Version, entry.SHA256)
@@ -71,8 +83,8 @@ func TestDefaultServiceFieldsAreSane(t *testing.T) {
 			if entry.SHA256 == "" {
 				t.Errorf("native service %q has empty SHA256", name)
 			}
-			if entry.Image != "" || entry.Digest != "" {
-				t.Errorf("native service %q should not pin container fields (Image=%q Digest=%q)", name, entry.Image, entry.Digest)
+			if entry.Image != "" || entry.Tag != "" {
+				t.Errorf("native service %q should not pin container fields (Image=%q Tag=%q)", name, entry.Image, entry.Tag)
 			}
 		default:
 			t.Errorf("service %q has unexpected Mode %q", name, entry.Mode)
@@ -197,7 +209,7 @@ func TestWriteDefaultOverwritesExisting(t *testing.T) {
 	}
 	stale := &versions.File{
 		SchemaVersion: 0,
-		Services:      map[string]versions.Service{"stale": {Mode: "container", Image: "old", Digest: "old"}},
+		Services:      map[string]versions.Service{"stale": {Mode: "container", Image: "old", Tag: "old"}},
 	}
 	if writeErr := conffile.WriteAtomic(path, stale); writeErr != nil {
 		t.Fatalf("seeding stale file: %v", writeErr)

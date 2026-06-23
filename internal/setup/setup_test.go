@@ -330,7 +330,7 @@ func TestPreflightReportsMsbWithInstructionsNotInstalling(test *testing.T) {
 }
 
 func TestLiteLLMRunArgs(test *testing.T) {
-	args := litellmRunArgs("/cfg/litellm/config.yaml", "127.0.0.1")
+	args := litellmRunArgs("/cfg/litellm/config.yaml", "127.0.0.1", containerImage("litellm"))
 	want := []string{
 		"run", "-d", "--name", "aip-litellm",
 		"--network", "aip-net",
@@ -343,7 +343,7 @@ func TestLiteLLMRunArgs(test *testing.T) {
 		"-e", "PRESIDIO_ANALYZER_API_BASE=http://aip-presidio-analyzer:3000",
 		"-e", "PRESIDIO_ANONYMIZER_API_BASE=http://aip-presidio-anonymizer:3000",
 		"-e", "LLM_GUARD_API_BASE=http://aip-llm-guard:8000",
-		"ghcr.io/berriai/litellm:main-latest",
+		containerImage("litellm"),
 		"--config", "/app/config.yaml", "--port", "4000",
 	}
 	if len(args) != len(want) {
@@ -365,11 +365,11 @@ func TestLiteLLMRunArgs(test *testing.T) {
 // TestLiteLLMRunArgsBindHost asserts the host port is published on the bindHost
 // the role dictates: loopback for standalone, 0.0.0.0 for a server.
 func TestLiteLLMRunArgsBindHost(test *testing.T) {
-	standalone := strings.Join(litellmRunArgs("/cfg/config.yaml", "127.0.0.1"), " ")
+	standalone := strings.Join(litellmRunArgs("/cfg/config.yaml", "127.0.0.1", containerImage("litellm")), " ")
 	if !strings.Contains(standalone, "-p 127.0.0.1:14000:4000") {
 		test.Errorf("standalone bind: want -p 127.0.0.1:14000:4000 in %s", standalone)
 	}
-	server := strings.Join(litellmRunArgs("/cfg/config.yaml", "0.0.0.0"), " ")
+	server := strings.Join(litellmRunArgs("/cfg/config.yaml", "0.0.0.0", containerImage("litellm")), " ")
 	if !strings.Contains(server, "-p 0.0.0.0:14000:4000") {
 		test.Errorf("server bind: want -p 0.0.0.0:14000:4000 in %s", server)
 	}
@@ -604,8 +604,8 @@ func TestEnsureLLMGuardRendersSecurityScannersOnly(test *testing.T) {
 	if !strings.Contains(launch, scannersPath+":/home/user/app/config/scanners.yml") {
 		test.Errorf("llm-guard run did not bind-mount scanners.yml: %s", launch)
 	}
-	if !strings.Contains(launch, llmGuardImage) {
-		test.Errorf("llm-guard run did not use %s: %s", llmGuardImage, launch)
+	if !strings.Contains(launch, containerImage("llm-guard")) {
+		test.Errorf("llm-guard run did not use %s: %s", containerImage("llm-guard"), launch)
 	}
 	if strings.Contains(launch, "-p ") {
 		test.Errorf("llm-guard must be internal-only (no host publish): %s", launch)
