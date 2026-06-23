@@ -116,17 +116,19 @@ func TestStateRepairThenShow(test *testing.T) {
 
 func TestProjectCreateNoTTYExits2(test *testing.T) {
 	harness := New(test)
-	// Run (not PTY) → no terminal → the wizard cannot prompt (§3.1).
+	// harness.Run adds --json, which disables the wizard and requires the flags;
+	// "demo" has no --os, so it exits 2 (CLI §3.1).
 	envelope, code := harness.Run(test, "project", "create", "demo")
 	AssertError(test, envelope, code, 2)
 }
 
-func TestProjectLifecycleViaWizard(test *testing.T) {
+func TestProjectLifecycle(test *testing.T) {
 	requireGit(test)
 	harness := New(test)
 	harness.installTemplates(test)
 
-	// Create via the PTY wizard, accepting defaults.
+	// Create non-interactively via flags (--json); the helper passes the default
+	// base OS and agent CLIs.
 	created, code := harness.CreateProject(test, "lifecycle-test")
 	AssertOK(test, created, code, "project.create")
 	var createData struct {

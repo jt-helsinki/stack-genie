@@ -55,28 +55,27 @@ Each test must run in a clean environment:
 
 ---
 
-## 1.4 Interactive Project Creation (PTY)
+## 1.4 Project Creation (non-interactive)
 
-`ai project create` is an interactive wizard with no per-choice flags (CLI §3.1),
-so the harness drives it through a **pseudo-terminal (PTY)**. Tests use a helper:
+`ai project create` has a flag for every choice (`--name`/`--os`/`--agents`/
+`--stacks`). On a TTY those flags **pre-seed** an interactive wizard, but under
+`--json` the wizard is **disabled** and the spec is built straight from the flags
+(the programmatic contract — every input has a flag, no prompts; CLI §1.3/§3.1).
+The harness always runs with `--json`, so it drives creation with explicit flags
+rather than a pseudo-terminal:
 
 ```text
-create_project <name> [os=<key>] [clis=<csv>] [default_tool=<key>] \
-                      [stacks=<csv>] [abort=1]
+harness.CreateProjectWithOS(name, osKey)  →  ai project create <name> --os <key> --json
 ```
 
-* spawns `ai project create <name> --json` attached to a PTY
-* navigates each wizard step **accepting the presented default** unless an
-  override is given; with no overrides the defaults are `os=debian-trixie`,
-  `clis=opencode`, `default_tool=opencode`, `stacks=` (none)
-* `abort=1` drives the wizard to **Abort** instead of **Confirm**
-* returns the final `--json` envelope captured from stdout (wizard prompts are on
-  the PTY/stderr and are not part of the envelope)
+* the default base OS is `debian-trixie` and the default agent CLIs are
+  `opencode`, `pi`
+* `--os` is **required** on this non-interactive path; a missing or unknown value
+  exits `2`
+* the result is the `--json` envelope on stdout
 
-Because every `ai project create` in these tests goes through `create_project`,
-the Slice 1 default OS (`debian-trixie`) and default CLI (`opencode`) are used
-unless a test overrides them. A `create` with **no TTY** is itself a test case
-that must exit `2` (§3.1).
+A `create` with **no TTY** and nothing to build from is itself a test case that
+must exit `2` (§3.1 — the wizard cannot prompt).
 
 ---
 

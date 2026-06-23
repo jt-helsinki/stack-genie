@@ -44,7 +44,9 @@ code.
       `ai setup` must verify rootless (`runtime.Verify`, exit 4 if not).
 - [ ] **Microsandbox** (`msb`) on `PATH`, code-signed with the
       `com.apple.security.hypervisor` entitlement under Developer ID + notarization.
-- [ ] `git`, `gh` (already used by project create).
+- [ ] `git`, `gh` — workspace agent tooling and the acceptance suite's
+      `requireGit` gate; the platform itself runs no git (VCS is out of scope, so
+      `project create` does **not** use git).
 
 ## 2. Remaining seams to wire/verify
 
@@ -154,8 +156,9 @@ pass):
 1. `ai doctor` → all checks green.
 2. `ai setup` → exit 0; service tier (DNS, Ollama, Presidio, LiteLLM +
    DB, Headroom, nginx proxy, Open WebUI) up; templates installed.
-3. `ai project create demo` (wizard) → project scaffolded **and** its workspace
-   microVM builds and starts.
+3. `ai project create demo --os debian-trixie` → project scaffolded in the cwd
+   (create does **not** start a workspace); then `ai start` builds and starts its
+   workspace microVM.
 4. `ai workspace exec demo -- uname -a` → runs inside the microVM.
 5. `ai secrets set openai --stdin` + `ai secrets map openai --env OPENAI_API_KEY`;
    `ai models test gpt-5` → works (real key lives in LiteLLM, only a scoped
