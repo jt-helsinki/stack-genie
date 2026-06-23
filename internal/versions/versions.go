@@ -27,7 +27,6 @@ type Service struct {
 	SHA256  string `json:"sha256,omitempty" yaml:"sha256,omitempty"`
 	Image   string `json:"image,omitempty" yaml:"image,omitempty"`
 	Tag     string `json:"tag,omitempty" yaml:"tag,omitempty"`
-	Enabled *bool  `json:"enabled,omitempty" yaml:"enabled,omitempty"`
 }
 
 // File is config/versions.yaml.

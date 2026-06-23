@@ -13,6 +13,7 @@ import (
 	"os"
 	"path/filepath"
 
+	"github.com/jt-helsinki/ideal-robot/internal/conffile"
 	"github.com/jt-helsinki/ideal-robot/internal/paths"
 	"gopkg.in/yaml.v3"
 )
@@ -158,14 +159,7 @@ func EnsureGlobalDefault() (created bool, err error) {
 	} else if !errors.Is(err, fs.ErrNotExist) {
 		return false, err
 	}
-	if err := os.MkdirAll(filepath.Dir(globalPath), 0o755); err != nil {
-		return false, err
-	}
-	encoded, err := yaml.Marshal(Default())
-	if err != nil {
-		return false, err
-	}
-	if err := os.WriteFile(globalPath, encoded, 0o644); err != nil {
+	if err := conffile.WriteAtomic(globalPath, Default()); err != nil {
 		return false, err
 	}
 	return true, nil
@@ -192,15 +186,7 @@ func LoadProjectConfig(projectRoot string) (*Config, error) {
 
 // WriteProject writes a project's <projectRoot>/.ai-platform/config.yaml.
 func WriteProject(projectRoot string, config *Config) error {
-	path := ProjectPath(projectRoot)
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		return err
-	}
-	encoded, err := yaml.Marshal(config)
-	if err != nil {
-		return err
-	}
-	return os.WriteFile(path, encoded, 0o644)
+	return conffile.WriteAtomic(ProjectPath(projectRoot), config)
 }
 
 // GlobalPath returns ~/.ai-platform/config/config.yaml.

@@ -12,13 +12,13 @@ import (
 	"path/filepath"
 	"regexp"
 
+	"github.com/jt-helsinki/ideal-robot/internal/conffile"
 	"github.com/jt-helsinki/ideal-robot/internal/config"
 	"github.com/jt-helsinki/ideal-robot/internal/envimage"
 	"github.com/jt-helsinki/ideal-robot/internal/overlay"
 	"github.com/jt-helsinki/ideal-robot/internal/paths"
 	"github.com/jt-helsinki/ideal-robot/internal/state"
 	"github.com/jt-helsinki/ideal-robot/internal/workspace"
-	"gopkg.in/yaml.v3"
 )
 
 // namePattern validates project names (arch §19): lowercase alphanumeric and
@@ -168,11 +168,8 @@ func writeProfile(root string, stacks []string) error {
 	if stacks == nil {
 		stacks = []string{}
 	}
-	encoded, err := yaml.Marshal(profileFile{SchemaVersion: 1, Stacks: stacks})
-	if err != nil {
-		return err
-	}
-	return os.WriteFile(filepath.Join(root, ".ai-platform", "profile.yaml"), encoded, 0o644)
+	return conffile.WriteAtomic(filepath.Join(root, ".ai-platform", "profile.yaml"),
+		profileFile{SchemaVersion: 1, Stacks: stacks})
 }
 
 // Entry is one row of `ai project list` (CLI §3.3): name, os, the active agent
