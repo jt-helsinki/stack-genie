@@ -608,6 +608,52 @@ func runArgsFor(prober *recordingProber) []string {
 	return nil
 }
 
+// staleHeadroomProber reports Headroom as RUNNING with a stale host-port binding
+// (the pre-nginx :18787 publish), so ensureHeadroom must recreate it internal-only.
+type staleHeadroomProber struct{ calls [][]string }
+
+func (prober *staleHeadroomProber) LookPath(file string) (string, error) {
+	return "/usr/bin/" + file, nil
+}
+func (prober *staleHeadroomProber) Exists(string) bool { return false }
+func (prober *staleHeadroomProber) Run(name string, args ...string) ([]byte, error) {
+	prober.calls = append(prober.calls, append([]string{name}, args...))
+	if len(args) > 0 && args[0] == "ps" {
+		return []byte("aip-headroom\n"), nil // running
+	}
+	if len(args) > 0 && args[0] == "inspect" {
+		return []byte(`{"8787/tcp":[{"HostIp":"127.0.0.1","HostPort":"18787"}]}`), nil // stale publish
+	}
+	return nil, nil
+}
+
+// TestEnsureHeadroomRecreatesStalePublishedContainer: a Headroom still holding the
+// old host :18787 publish must be recreated internal-only (self-heal) rather than
+// skipped — otherwise `ai setup` fails when the nginx proxy can't bind 18787.
+func TestEnsureHeadroomRecreatesStalePublishedContainer(test *testing.T) {
+	prober := &staleHeadroomProber{}
+	if err := ensureHeadroom(prober, "docker"); err != nil {
+		test.Fatal(err)
+	}
+	var removed, launched bool
+	var launchArgs []string
+	for _, call := range prober.calls {
+		if len(call) >= 3 && call[1] == "rm" && call[len(call)-1] == "aip-headroom" {
+			removed = true
+		}
+		if len(call) >= 2 && call[1] == "run" {
+			launched = true
+			launchArgs = call
+		}
+	}
+	if !removed || !launched {
+		test.Fatalf("stale headroom not recreated: removed=%v launched=%v", removed, launched)
+	}
+	if launch := strings.Join(launchArgs, " "); strings.Contains(launch, "18787") || strings.Contains(launch, "-p ") {
+		test.Errorf("recreated headroom must be internal-only (no 18787 publish): %s", launch)
+	}
+}
+
 func TestEnsureProxyRendersGatewayConfig(test *testing.T) {
 	home := test.TempDir()
 	test.Setenv("HOME", home)

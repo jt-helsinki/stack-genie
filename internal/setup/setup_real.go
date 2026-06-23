@@ -297,6 +297,21 @@ func containerRunning(prober runtime.Prober, containerRuntime, name string) bool
 	return err == nil && strings.TrimSpace(string(out)) == name
 }
 
+// containerPublishesHostPort reports whether a container has any host port
+// binding. Used to detect a container left over from a previous topology — e.g. a
+// Headroom that still host-publishes :18787 from before nginx (aip-proxy) took
+// that port — so the reconcile recreates it internal-only instead of skipping it
+// (idempotent "already running") and then failing when the proxy can't bind 18787.
+func containerPublishesHostPort(prober runtime.Prober, containerRuntime, name string) bool {
+	out, err := prober.Run(containerRuntime, "inspect", "--format",
+		"{{json .HostConfig.PortBindings}}", name)
+	if err != nil {
+		return false
+	}
+	bindings := strings.TrimSpace(string(out))
+	return bindings != "" && bindings != "{}" && bindings != "null"
+}
+
 // ensureOllama runs the Ollama container on the shared network, publishing :11434
 // and persisting models under ~/.ai-platform/models on the host (bind-mounted).
 // Idempotent. Replaces a native Ollama — any native instance bound to :11434 must
@@ -361,7 +376,12 @@ func ensurePresidio(prober runtime.Prober, containerRuntime string) error {
 // publish) — nginx is the host gateway entry on :18787. Pulled image (no build).
 // Idempotent.
 func ensureHeadroom(prober runtime.Prober, containerRuntime string) error {
-	if containerRunning(prober, containerRuntime, headroomContainer) {
+	// Skip only if it is running AND already internal-only. A Headroom left over
+	// from the pre-nginx topology still host-publishes :18787, which collides with
+	// the aip-proxy gateway — recreate it internal-only in that case (self-heal, so
+	// a plain `ai setup` migrates it instead of failing when the proxy can't bind).
+	if containerRunning(prober, containerRuntime, headroomContainer) &&
+		!containerPublishesHostPort(prober, containerRuntime, headroomContainer) {
 		return nil
 	}
 	_, _ = prober.Run(containerRuntime, "rm", "-f", headroomContainer)
