@@ -821,6 +821,28 @@ func currentBindHost() string {
 	return "127.0.0.1"
 }
 
+// osHostname is the source of the local machine's hostname, indirected through a
+// var so tests can override it. Defaults to os.Hostname.
+var osHostname = os.Hostname
+
+// statusDisplayHost returns the host string used to RENDER service endpoints in
+// `ai services status` (and the `ai ui` Services view). In the server role the
+// shared services bind 0.0.0.0 and are reachable on the LAN, so we display the
+// machine hostname (LAN clients can hit it); every other role keeps "localhost"
+// (loopback). This is DISPLAY ONLY — it does not affect the container bind. A
+// failing os.Hostname falls back to localhost.
+func statusDisplayHost() string {
+	info, err := runtime.Load()
+	if err != nil || info == nil || info.Role != runtime.RoleServer {
+		return console.DefaultHost
+	}
+	hostname, err := osHostname()
+	if err != nil || hostname == "" {
+		return console.DefaultHost
+	}
+	return hostname
+}
+
 func RelaunchLiteLLMWithAuth(password, masterKey string) error {
 	containerRuntime, err := runtime.ContainerRuntimeName(runtime.RealProber())
 	if err != nil {
@@ -1043,9 +1065,10 @@ func (services realServices) Status() ([]ServiceStatus, error) {
 // opt-in tool the user hasn't enabled yet.
 func (services realServices) statusFor(enabled []string) ([]ServiceStatus, error) {
 	specs := desiredServices()
+	displayHost := statusDisplayHost()
 	statuses := make([]ServiceStatus, 0, len(specs))
 	for _, service := range specs {
-		endpoint, _ := console.EndpointFor(service.Name)
+		endpoint, _ := console.EndpointForHost(service.Name, displayHost)
 		if isOptionalService(service.Name) && !slices.Contains(enabled, service.Name) {
 			// Not enabled: surfaced so it is discoverable, but not probed.
 			statuses = append(statuses, ServiceStatus{

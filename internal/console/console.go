@@ -8,6 +8,7 @@
 package console
 
 import (
+	"fmt"
 	"os/exec"
 	"sort"
 )
@@ -21,7 +22,27 @@ type Endpoint struct {
 	Console string `json:"console,omitempty"`
 }
 
-// registry maps a host service to its endpoint. Addresses are the verified host
+// DefaultHost is the display host used by the host-agnostic accessors
+// (EndpointFor/Address/URL/WithConsoles). The host-published services are bound
+// to loopback in every role except server, so localhost is the right default;
+// server-role hosts render their endpoints against the machine hostname via the
+// *Host variants (see internal/setup statusDisplayHost) so LAN clients get a
+// reachable address. This is DISPLAY ONLY — it never changes the container bind.
+const DefaultHost = "localhost"
+
+// endpointSpec is the host-agnostic data for a service's endpoint: the host port
+// it publishes (rendered as http://<host>:<port>) and, where it has an admin UI,
+// the path appended to that base. A spec with port 0 publishes nothing to the
+// host (internal-only); loopbackAddress, when set, is used verbatim regardless of
+// the display host (e.g. the DNS resolver, which always stays on loopback).
+type endpointSpec struct {
+	port            int
+	consolePath     string // "" → no console; "/" or "" semantics: see endpointForHost
+	hasConsole      bool   // distinguishes "console at the root URL" from "no console"
+	loopbackAddress string // verbatim address, host-independent (loopback-only services)
+}
+
+// registry maps a host service to its endpoint spec. Ports are the verified host
 // ports the service tier publishes (see internal/setup host-port consts):
 //   - litellm  :14000  + admin UI at /ui
 //   - ollama   :11434 (HTTP API, no UI)
@@ -31,19 +52,37 @@ type Endpoint struct {
 //   - headroom is internal-only on :8787 behind nginx (no longer host-published)
 //   - presidio analyzer/anonymizer are internal-only on :3000 (not host-published)
 //   - microsandbox is the microVM runtime (no host address, no console)
-var registry = map[string]Endpoint{
-	"litellm":      {Address: "http://localhost:14000", Console: "http://localhost:14000/ui"},
-	"ollama":       {Address: "http://localhost:11434"},                                    // HTTP API on :11434, no console UI
-	"proxy":        {Address: "http://localhost:18787"},                                    // aip-proxy nginx gateway entry, no UI
-	"open-webui":   {Address: "http://localhost:18090", Console: "http://localhost:18090"}, // chat UI; root IS the console
-	"odysseus":     {Address: "http://localhost:7000", Console: "http://localhost:7000"},   // optional AI workspace UI; root IS the console
-	"chromadb":     {},                                                                     // internal-only on aip-net (no host publish)
-	"searxng":      {},                                                                     // internal-only on aip-net (no host publish)
-	"ntfy":         {},                                                                     // internal-only on aip-net (no host publish)
-	"dns":          {Address: "127.0.0.1:15353/udp"},                                       // aip-dns CoreDNS resolver, host loopback
-	"headroom":     {},                                                                     // internal-only on :8787 behind nginx
-	"presidio":     {},                                                                     // analyzer/anonymizer internal-only on :3000
-	"microsandbox": {},                                                                     // microVM runtime, no address/console
+var registry = map[string]endpointSpec{
+	"litellm":      {port: 14000, consolePath: "/ui", hasConsole: true},
+	"ollama":       {port: 11434},                            // HTTP API on :11434, no console UI
+	"proxy":        {port: 18787},                            // aip-proxy nginx gateway entry, no UI
+	"open-webui":   {port: 18090, hasConsole: true},          // chat UI; root IS the console
+	"odysseus":     {port: 7000, hasConsole: true},           // optional AI workspace UI; root IS the console
+	"chromadb":     {},                                       // internal-only on aip-net (no host publish)
+	"searxng":      {},                                       // internal-only on aip-net (no host publish)
+	"ntfy":         {},                                       // internal-only on aip-net (no host publish)
+	"dns":          {loopbackAddress: "127.0.0.1:15353/udp"}, // aip-dns CoreDNS resolver, host loopback
+	"headroom":     {},                                       // internal-only on :8787 behind nginx
+	"presidio":     {},                                       // analyzer/anonymizer internal-only on :3000
+	"microsandbox": {},                                       // microVM runtime, no address/console
+}
+
+// endpointForHost renders a spec into a concrete Endpoint for the given display
+// host. Loopback-only specs (e.g. dns) ignore host and use their verbatim
+// address; internal-only specs (port 0, no loopback address) render empty.
+func (spec endpointSpec) endpointForHost(host string) Endpoint {
+	if spec.loopbackAddress != "" {
+		return Endpoint{Address: spec.loopbackAddress}
+	}
+	if spec.port == 0 {
+		return Endpoint{}
+	}
+	base := fmt.Sprintf("http://%s:%d", host, spec.port)
+	endpoint := Endpoint{Address: base}
+	if spec.hasConsole {
+		endpoint.Console = base + spec.consolePath
+	}
+	return endpoint
 }
 
 // Known reports whether name is a recognized host service.
@@ -52,30 +91,43 @@ func Known(name string) bool {
 	return ok
 }
 
-// EndpointFor returns the full endpoint for a service and whether it is known.
-func EndpointFor(name string) (Endpoint, bool) {
-	endpoint, ok := registry[name]
-	return endpoint, ok
+// EndpointForHost returns the full endpoint for a service rendered against the
+// given display host (e.g. "localhost" or a machine hostname), and whether the
+// service is known. Loopback-only services (dns) keep their loopback address.
+func EndpointForHost(name, host string) (Endpoint, bool) {
+	spec, ok := registry[name]
+	if !ok {
+		return Endpoint{}, false
+	}
+	return spec.endpointForHost(host), true
 }
 
-// Address returns the host-reachable address for a service and whether it has
-// one (a known service with a non-empty Address).
+// EndpointFor returns the full endpoint for a service against DefaultHost
+// ("localhost") and whether it is known.
+func EndpointFor(name string) (Endpoint, bool) {
+	return EndpointForHost(name, DefaultHost)
+}
+
+// Address returns the host-reachable address for a service (against DefaultHost)
+// and whether it has one (a known service with a non-empty Address).
 func Address(name string) (string, bool) {
-	endpoint, ok := registry[name]
+	endpoint, ok := EndpointFor(name)
 	return endpoint.Address, ok && endpoint.Address != ""
 }
 
-// URL returns the admin-console URL for a service and whether it has one (a
-// known service with a non-empty Console).
+// URL returns the admin-console URL for a service (against DefaultHost) and
+// whether it has one (a known service with a non-empty Console).
 func URL(name string) (string, bool) {
-	endpoint, ok := registry[name]
+	endpoint, ok := EndpointFor(name)
 	return endpoint.Console, ok && endpoint.Console != ""
 }
 
-// WithConsoles returns the services that have an admin console, sorted by name.
+// WithConsoles returns the services that have an admin console (rendered against
+// DefaultHost), sorted by name.
 func WithConsoles() []NamedURL {
 	var named []NamedURL
-	for name, endpoint := range registry {
+	for name, spec := range registry {
+		endpoint := spec.endpointForHost(DefaultHost)
 		if endpoint.Console != "" {
 			named = append(named, NamedURL{Name: name, URL: endpoint.Console})
 		}

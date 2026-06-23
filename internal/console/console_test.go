@@ -92,6 +92,49 @@ func TestEndpointAndAddress(test *testing.T) {
 	}
 }
 
+func TestEndpointForHostRendersGivenHost(test *testing.T) {
+	// Default host ("localhost") matches the legacy hardcoded URLs.
+	endpoint, ok := EndpointForHost("litellm", DefaultHost)
+	if !ok || endpoint.Address != "http://localhost:14000" || endpoint.Console != "http://localhost:14000/ui" {
+		test.Errorf("litellm@localhost endpoint = (%+v,%v)", endpoint, ok)
+	}
+
+	// A custom display host (e.g. a server-role machine hostname) is woven into
+	// both the address and the console URL.
+	endpoint, ok = EndpointForHost("litellm", "build-host.lan")
+	if !ok || endpoint.Address != "http://build-host.lan:14000" || endpoint.Console != "http://build-host.lan:14000/ui" {
+		test.Errorf("litellm@build-host.lan endpoint = (%+v,%v)", endpoint, ok)
+	}
+
+	// A console whose root IS the UI gets the host in both fields, no path.
+	endpoint, ok = EndpointForHost("open-webui", "build-host.lan")
+	if !ok || endpoint.Address != "http://build-host.lan:18090" || endpoint.Console != "http://build-host.lan:18090" {
+		test.Errorf("open-webui@build-host.lan endpoint = (%+v,%v)", endpoint, ok)
+	}
+
+	// dns is loopback-only and must NOT be rewritten to the custom host.
+	endpoint, ok = EndpointForHost("dns", "build-host.lan")
+	if !ok || endpoint.Address != "127.0.0.1:15353/udp" || endpoint.Console != "" {
+		test.Errorf("dns@build-host.lan endpoint = (%+v,%v), want loopback unchanged", endpoint, ok)
+	}
+
+	// Internal-only services stay empty regardless of host.
+	for _, name := range []string{"headroom", "presidio", "microsandbox", "chromadb"} {
+		endpoint, ok := EndpointForHost(name, "build-host.lan")
+		if !ok {
+			test.Errorf("%s should be a known service", name)
+		}
+		if endpoint.Address != "" || endpoint.Console != "" {
+			test.Errorf("%s@build-host.lan endpoint = %+v, want empty", name, endpoint)
+		}
+	}
+
+	// Unknown service is not known.
+	if _, ok := EndpointForHost("nope", "build-host.lan"); ok {
+		test.Error("unknown service must not have an endpoint")
+	}
+}
+
 func TestOpenerCommandPerOS(test *testing.T) {
 	cases := map[string]struct {
 		name string

@@ -1004,6 +1004,73 @@ func TestStatusForShowsDisabledOptional(test *testing.T) {
 	}
 }
 
+// TestStatusForDisplayHostByRole: in the server role (services bound 0.0.0.0,
+// LAN-reachable) statusFor renders endpoints against the machine hostname so a
+// remote client gets a reachable address; every other role keeps localhost. This
+// is display-only — it does not change any container bind.
+func TestStatusForDisplayHostByRole(test *testing.T) {
+	addressOf := func(statuses []ServiceStatus, name string) string {
+		for _, status := range statuses {
+			if status.Name == name {
+				return status.Address
+			}
+		}
+		return ""
+	}
+	consoleOf := func(statuses []ServiceStatus, name string) string {
+		for _, status := range statuses {
+			if status.Name == name {
+				return status.Console
+			}
+		}
+		return ""
+	}
+
+	// Stub the hostname source so the assertion is exact and deterministic.
+	original := osHostname
+	osHostname = func() (string, error) { return "build-host.lan", nil }
+	defer func() { osHostname = original }()
+
+	// Standalone role → localhost (loopback display).
+	test.Setenv("HOME", test.TempDir())
+	if err := runtime.Persist(&runtime.Info{SchemaVersion: runtime.SchemaVersion, Role: runtime.RoleStandalone}); err != nil {
+		test.Fatal(err)
+	}
+	services := realServices{prober: fakeProber{}}
+	standalone, err := services.statusFor(nil)
+	if err != nil {
+		test.Fatal(err)
+	}
+	if got := addressOf(standalone, "litellm"); got != "http://localhost:14000" {
+		test.Errorf("standalone litellm address = %q, want http://localhost:14000", got)
+	}
+	if got := addressOf(standalone, "dns"); got != "127.0.0.1:15353/udp" {
+		test.Errorf("standalone dns address = %q, want loopback unchanged", got)
+	}
+
+	// Server role → machine hostname in both Address and Console; dns stays loopback.
+	test.Setenv("HOME", test.TempDir())
+	if err := runtime.Persist(&runtime.Info{SchemaVersion: runtime.SchemaVersion, Role: runtime.RoleServer}); err != nil {
+		test.Fatal(err)
+	}
+	server, err := services.statusFor(nil)
+	if err != nil {
+		test.Fatal(err)
+	}
+	if got := addressOf(server, "litellm"); got != "http://build-host.lan:14000" {
+		test.Errorf("server litellm address = %q, want http://build-host.lan:14000", got)
+	}
+	if got := consoleOf(server, "litellm"); got != "http://build-host.lan:14000/ui" {
+		test.Errorf("server litellm console = %q, want http://build-host.lan:14000/ui", got)
+	}
+	if got := addressOf(server, "litellm"); strings.Contains(got, "localhost") {
+		test.Errorf("server role must not display localhost: %q", got)
+	}
+	if got := addressOf(server, "dns"); got != "127.0.0.1:15353/udp" {
+		test.Errorf("server dns address = %q, want loopback unchanged", got)
+	}
+}
+
 // TestEnsureHeadroomIsInternalOnly: Headroom no longer publishes the gateway port
 // 18787 — nginx (aip-proxy) owns it now. The launch must carry no host publish.
 func TestEnsureHeadroomIsInternalOnly(test *testing.T) {
