@@ -9,6 +9,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/jt-helsinki/ideal-robot/internal/runtime"
 )
 
 // realClient talks to a running LiteLLM gateway over its OpenAI-compatible HTTP
@@ -51,8 +53,20 @@ func (client realClient) Test(model string) (TestResult, error) {
 		"model":    model,
 		"messages": []map[string]string{{"role": "user", "content": "ping"}},
 	})
+	request, err := http.NewRequest(http.MethodPost, client.baseURL+"/v1/chat/completions", bytes.NewReader(payload))
+	if err != nil {
+		return TestResult{Model: model, OK: false}, err
+	}
+	request.Header.Set("Content-Type", "application/json")
+	// Authenticate as admin when the gateway is secured: with a master key set,
+	// every completion 401s, so `ai models test` could never probe a model. The key
+	// is read from the running container (never disk); an unsecured gateway needs
+	// none, so this is best-effort.
+	if key := gatewayMasterKey(runtime.RealProber()); key != "" {
+		request.Header.Set("Authorization", "Bearer "+key)
+	}
 	start := time.Now()
-	response, err := client.httpClient.Post(client.baseURL+"/v1/chat/completions", "application/json", bytes.NewReader(payload))
+	response, err := client.httpClient.Do(request)
 	if err != nil {
 		return TestResult{Model: model, OK: false}, err
 	}
@@ -68,6 +82,31 @@ func (client realClient) Test(model string) (TestResult, error) {
 		result.Error = parseProviderError(body)
 	}
 	return result, nil
+}
+
+// gatewayMasterKey best-effort reads LITELLM_MASTER_KEY from the running LiteLLM
+// container so admin diagnostics (`ai models test`) can authenticate against a
+// secured gateway. Returns "" when the runtime/container/key is unavailable (an
+// unsecured gateway needs no key). The value transits process memory only.
+func gatewayMasterKey(prober runtime.Prober) string {
+	containerRuntime, err := runtime.ContainerRuntimeName(prober)
+	if err != nil {
+		return ""
+	}
+	out, err := prober.Run(containerRuntime.Name, "inspect", "--format",
+		"{{range .Config.Env}}{{println .}}{{end}}", litellmContainer)
+	if err != nil {
+		return ""
+	}
+	const prefix = "LITELLM_MASTER_KEY="
+	for _, line := range strings.Split(string(out), "\n") {
+		if strings.HasPrefix(line, prefix) {
+			if value := strings.TrimSpace(line[len(prefix):]); value != "" {
+				return value
+			}
+		}
+	}
+	return ""
 }
 
 // parseProviderError pulls a human-readable message out of a LiteLLM/OpenAI-style

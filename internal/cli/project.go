@@ -76,6 +76,10 @@ func newProjectCmd(emitter *output.Emitter, exit *int) *cobra.Command {
 }
 
 func mapProjectErr(err error) error {
+	var platformErr *output.Error
+	if errors.As(err, &platformErr) {
+		return platformErr
+	}
 	switch {
 	case errors.Is(err, project.ErrInvalidName),
 		errors.Is(err, project.ErrAlreadyExists),

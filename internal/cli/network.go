@@ -38,6 +38,12 @@ func newNetworkCmd(emitter *output.Emitter, exit *int) *cobra.Command {
 }
 
 func mapEgressErr(err error) error {
+	// An error that already carries an exit code (e.g. resolveProjectName's exit-2
+	// "no project" error) is passed through unchanged — don't re-map it to runtime.
+	var platformErr *output.Error
+	if errors.As(err, &platformErr) {
+		return platformErr
+	}
 	switch {
 	case errors.Is(err, egress.ErrInvalidMode),
 		errors.Is(err, egress.ErrInvalidPort),

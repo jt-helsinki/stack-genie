@@ -109,6 +109,10 @@ func newWorkspaceDoctorCmd(emitter *output.Emitter, exit *int) *cobra.Command {
 
 // mapWorkspaceErr maps lifecycle errors to exit codes (§18).
 func mapWorkspaceErr(err error) error {
+	var platformErr *output.Error
+	if errors.As(err, &platformErr) {
+		return platformErr
+	}
 	switch {
 	case errors.Is(err, workspace.ErrUnknownProject), errors.Is(err, workspace.ErrNotStarted):
 		return output.Errorf(output.ExitInvalidInput, "%s", err)
