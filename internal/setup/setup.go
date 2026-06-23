@@ -76,11 +76,16 @@ type Services interface {
 	// Control performs a lifecycle action (start|stop|restart) on one service,
 	// or all of them when service is "". Returns the resulting statuses.
 	Control(action, service string) ([]ServiceStatus, error)
+	// InstallPrerequisite runs the prerequisite's auto-installer (prereq.InstallCommand,
+	// a fixed per-OS command from the platform's own table), streaming the installer's
+	// native stdout/stderr to out so the user sees its progress. Only valid when
+	// prereq.InstallCommand != ""; an empty command is a programmer error.
+	InstallPrerequisite(prereq Prerequisite, out io.Writer) error
 }
 
 // `ai setup` never installs host software. Missing prerequisites are detected
-// (missingPrerequisites) and reported with install instructions + a web address
-// for the user to install themselves and re-run (prerequisiteError).
+// (MissingPrerequisites) and reported with install instructions + a web address
+// for the user to install themselves and re-run (PrerequisiteError).
 
 // Deps are the injectable dependencies of Run / ServicesStatus.
 type Deps struct {
@@ -194,6 +199,37 @@ type Prerequisite struct {
 	Suggestion string `json:"suggestion,omitempty"` // how to install / repair
 	DocsURL    string `json:"docs_url,omitempty"`   // web address for the software
 	Blocking   bool   `json:"blocking"`
+	// InstallCommand is the exact shell command that auto-installs this
+	// prerequisite on this host's OS, or "" when there is no clean auto-installer
+	// (e.g. Docker Desktop on macOS, or a host-capability gap like virtualization /
+	// rootless posture). When "", the prerequisite is instruct-only — the CLI prints
+	// Suggestion + DocsURL and exits rather than offering to install it.
+	InstallCommand string `json:"install_command,omitempty"`
+}
+
+// installCommandFor returns the auto-install command for a prerequisite on the
+// given OS, or "" when there is no clean auto-installer. The commands are the
+// platform's own verified per-OS table — do not invent others:
+//   - microsandbox runtime: `curl -sSL https://get.microsandbox.dev | sh` (macOS + Linux).
+//   - container runtime: `curl -fsSL https://get.docker.com | sh` (Linux only; needs
+//     sudo). On macOS Docker Desktop is a GUI app → no auto-installer ("").
+//   - everything else (host virtualization, rootless service tier): host
+//     capability/config → never auto-installable ("").
+func installCommandFor(name, goos string) string {
+	switch name {
+	case "microsandbox runtime":
+		if goos == "darwin" || goos == "linux" {
+			return "curl -sSL https://get.microsandbox.dev | sh"
+		}
+		return ""
+	case "container runtime":
+		if goos == "linux" {
+			return "curl -fsSL https://get.docker.com | sh"
+		}
+		return ""
+	default:
+		return ""
+	}
 }
 
 // blockingPrereqs are the checks that must pass before setup proceeds: a missing
@@ -241,10 +277,11 @@ var installablePrograms = map[string]bool{
 	"microsandbox runtime": true,
 }
 
-// missingPrerequisites scans the host (reusing the doctor checks) and returns the
-// unmet prerequisites, each with an install/repair suggestion. LiteLLM is excluded
-// — it is a service setup starts, not a prerequisite.
-func missingPrerequisites(deps Deps, role string) []Prerequisite {
+// MissingPrerequisites scans the host (reusing the doctor checks) and returns the
+// unmet prerequisites, each with an install/repair suggestion and, where one
+// exists for this OS, the auto-install command. LiteLLM is excluded — it is a
+// service setup starts, not a prerequisite.
+func MissingPrerequisites(deps Deps, role string) []Prerequisite {
 	blocking := blockingPrereqsForRole(role)
 	report := doctor.Run(doctor.Deps{GOOS: deps.GOOS, GOARCH: deps.GOARCH, Prober: deps.Prober})
 	var missing []Prerequisite
@@ -253,21 +290,22 @@ func missingPrerequisites(deps Deps, role string) []Prerequisite {
 			continue
 		}
 		missing = append(missing, Prerequisite{
-			Name:       check.Name,
-			Detail:     check.Detail,
-			Suggestion: check.Suggestion,
-			DocsURL:    check.DocsURL,
-			Blocking:   blocking[check.Name],
+			Name:           check.Name,
+			Detail:         check.Detail,
+			Suggestion:     check.Suggestion,
+			DocsURL:        check.DocsURL,
+			Blocking:       blocking[check.Name],
+			InstallCommand: installCommandFor(check.Name, deps.GOOS),
 		})
 	}
 	return missing
 }
 
-// prerequisiteError formats every missing prerequisite into one actionable error
+// PrerequisiteError formats every missing prerequisite into one actionable error
 // (the human message lists each with its install command; the structured list
 // rides in error.details). The exit code is 3 when an installable program is
 // missing, else 4 (a host-capability shortfall).
-func prerequisiteError(missing []Prerequisite) *output.Error {
+func PrerequisiteError(missing []Prerequisite) *output.Error {
 	code := output.ExitRuntimeFailure
 	for _, prereq := range missing {
 		if installablePrograms[prereq.Name] {
@@ -289,6 +327,30 @@ func prerequisiteError(missing []Prerequisite) *output.Error {
 	return output.Errorf(code, "%s", builder.String()).WithDetails(missing)
 }
 
+// RoleFor resolves the effective deployment role for a setup run (CLI §2.1),
+// using the same precedence Run() applies: the explicit option (options.Mode),
+// else the role persisted in runtime.yaml, else the default (standalone). A failed
+// load is treated as "absent" — setup is the thing that writes runtime.yaml. An
+// unrecognized role is an invalid-input error (exit 2).
+func RoleFor(options Options) (string, error) {
+	effectiveRole := options.Mode
+	if effectiveRole == "" {
+		if persisted, _ := runtime.Load(); persisted != nil {
+			effectiveRole = persisted.Role
+		}
+	}
+	if effectiveRole == "" {
+		effectiveRole = runtime.RoleStandalone
+	}
+	switch effectiveRole {
+	case runtime.RoleStandalone, runtime.RoleServer, runtime.RoleClient:
+		return effectiveRole, nil
+	default:
+		return "", output.Errorf(output.ExitInvalidInput,
+			"invalid setup mode %q (one of standalone|server|client)", effectiveRole)
+	}
+}
+
 // Run performs `ai setup`. Returned errors are *output.Error carrying the exit
 // code (§18): missing deps → 3, capability/other failures → 4. Idempotent.
 func Run(options Options, deps Deps) (*Report, error) {
@@ -306,24 +368,10 @@ func Run(options Options, deps Deps) (*Report, error) {
 	}
 
 	// 0. Resolve the effective deployment role + server address (CLI §2.1).
-	// Precedence: the explicit option, else the value persisted in runtime.yaml,
-	// else the default (standalone / empty address). A failed load is treated as
-	// "absent" — setup is the thing that writes runtime.yaml.
 	persisted, _ := runtime.Load()
-	effectiveRole := options.Mode
-	if effectiveRole == "" {
-		if persisted != nil {
-			effectiveRole = persisted.Role
-		}
-	}
-	if effectiveRole == "" {
-		effectiveRole = runtime.RoleStandalone
-	}
-	switch effectiveRole {
-	case runtime.RoleStandalone, runtime.RoleServer, runtime.RoleClient:
-	default:
-		return nil, output.Errorf(output.ExitInvalidInput,
-			"invalid setup mode %q (one of standalone|server|client)", effectiveRole)
+	effectiveRole, err := RoleFor(options)
+	if err != nil {
+		return nil, err
 	}
 	effectiveServerAddr := options.ServerAddr
 	if effectiveServerAddr == "" && persisted != nil {
@@ -334,10 +382,10 @@ func Run(options Options, deps Deps) (*Report, error) {
 	}
 
 	progress("Checking prerequisites…")
-	missing := missingPrerequisites(deps, effectiveRole)
+	missing := MissingPrerequisites(deps, effectiveRole)
 	for _, prereq := range missing {
 		if prereq.Blocking {
-			return nil, prerequisiteError(missing)
+			return nil, PrerequisiteError(missing)
 		}
 		warning := prereq.Name + ": " + prereq.Detail
 		if prereq.Suggestion != "" {

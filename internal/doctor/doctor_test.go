@@ -215,7 +215,7 @@ func TestMissingDepSuggestionsAreCopyPasteable(test *testing.T) {
 	}
 	report := Run(deps)
 	wants := map[string]string{
-		"microsandbox runtime": "curl -fsSL https://install.microsandbox.dev | sh",
+		"microsandbox runtime": "curl -sSL https://get.microsandbox.dev | sh",
 		"container runtime":    "https://get.docker.com",
 	}
 	for name, fragment := range wants {

@@ -61,6 +61,16 @@ func newSetupCmd(em *output.Emitter, exit *int) *cobra.Command {
 				Mode:           mode,
 				ServerAddr:     serverAddr,
 			}
+			// Preflight: check prerequisites FIRST — before pulling any images. On a
+			// TTY, missing-but-auto-installable prerequisites are offered for install
+			// (the installer streams its native output); declining, or a missing
+			// instruct-only prerequisite (e.g. Docker Desktop on macOS, virtualization),
+			// prints the instructions + web URL and exits 3. Under --json / no-TTY this
+			// stays non-interactive: a missing blocking prerequisite is exit 3 with the
+			// instructions message (no prompt, no install, no image pull).
+			if proceed := preflightPrerequisites(em, exit, opts, deps, interactive); !proceed {
+				return nil
+			}
 			// Pre-pull the service-tier images with STREAMED native progress before
 			// the reconcile, on a human (non-JSON) run that actually runs the service
 			// tier (standalone/server, not client). Each ensure* launches a container
@@ -120,6 +130,104 @@ func newSetupCmd(em *output.Emitter, exit *int) *cobra.Command {
 	cmd.Flags().StringVar(&serverAddr, "server", "",
 		"client mode: address of the remote service tier to route to (host, host:port, or URL)")
 	return cmd
+}
+
+// preflightPrerequisites checks the host prerequisites BEFORE any image pre-pull
+// or the setup.Run reconcile (goal: never print "Pulling images…" when a
+// prerequisite is missing). It returns true when setup should proceed (everything
+// satisfied) and false when it set *exit and the RunE should return.
+//
+//   - Non-interactive (--json or no TTY): a missing blocking prerequisite → the
+//     instructions message at exit 3 (no prompt, no install, no image pull).
+//   - Interactive (TTY, not --json): each missing blocking prerequisite, in order:
+//   - auto-installable (InstallCommand != "") → prompt (default Yes, showing the
+//     exact command). Yes runs the installer streaming to stderr, then re-scans;
+//     still missing → exit 3 with instructions. No → instructions + exit 3.
+//   - instruct-only (InstallCommand == "") → print instructions + URL, exit 3.
+//
+// The installer runs here (sequential, outside the bubbletea stepper) like the
+// image pre-pull — native curl|sh output and a bubbletea program cannot both own
+// the terminal at once.
+func preflightPrerequisites(em *output.Emitter, exit *int, opts setup.Options, deps setup.Deps, interactive bool) bool {
+	role, err := setup.RoleFor(opts)
+	if err != nil {
+		*exit = em.Failure("setup", err)
+		return false
+	}
+	missing := blockingMissing(deps, role)
+	if len(missing) == 0 {
+		return true
+	}
+
+	// Non-interactive: no prompts, no installs — just the actionable error (exit 3/4).
+	if !interactive {
+		*exit = em.Failure("setup", setup.PrerequisiteError(missing))
+		return false
+	}
+
+	// Interactive: resolve each missing blocking prerequisite in order.
+	for _, prereq := range missing {
+		if prereq.InstallCommand == "" {
+			// No clean auto-installer on this OS (Docker Desktop on macOS, a
+			// host-capability gap, …) — instruct only and stop.
+			printPrerequisiteInstructions(em, prereq)
+			*exit = em.Failure("setup", setup.PrerequisiteError([]setup.Prerequisite{prereq}))
+			return false
+		}
+		install, promptErr := promptConfirmDefault(
+			"Install "+prereq.Name+"?",
+			"Runs: "+prereq.InstallCommand+"  ("+prereq.Detail+")",
+			true,
+		)
+		if promptErr != nil {
+			*exit = em.Failure("setup", promptErr)
+			return false
+		}
+		if !install {
+			_, _ = fmt.Fprintf(em.Err, "Skipping %s — install it and re-run `ai setup`.\n", prereq.Name)
+			printPrerequisiteInstructions(em, prereq)
+			*exit = em.Failure("setup", setup.PrerequisiteError([]setup.Prerequisite{prereq}))
+			return false
+		}
+		_, _ = fmt.Fprintf(em.Err, "Installing %s: %s\n", prereq.Name, prereq.InstallCommand)
+		if installErr := deps.Services.InstallPrerequisite(prereq, em.Err); installErr != nil {
+			_, _ = fmt.Fprintf(em.Err, "warning: installer for %s failed: %s\n", prereq.Name, installErr)
+		}
+	}
+
+	// Re-scan after the install attempts; anything still missing stops setup.
+	if stillMissing := blockingMissing(deps, role); len(stillMissing) > 0 {
+		for _, prereq := range stillMissing {
+			printPrerequisiteInstructions(em, prereq)
+		}
+		*exit = em.Failure("setup", setup.PrerequisiteError(stillMissing))
+		return false
+	}
+	return true
+}
+
+// blockingMissing returns the missing BLOCKING prerequisites for the role (the
+// non-blocking gaps are left to setup.Run, which surfaces them as warnings).
+func blockingMissing(deps setup.Deps, role string) []setup.Prerequisite {
+	var blocking []setup.Prerequisite
+	for _, prereq := range setup.MissingPrerequisites(deps, role) {
+		if prereq.Blocking {
+			blocking = append(blocking, prereq)
+		}
+	}
+	return blocking
+}
+
+// printPrerequisiteInstructions writes a missing prerequisite's manual-install
+// hint + web URL to stderr (reused for declined / instruct-only / still-missing).
+func printPrerequisiteInstructions(em *output.Emitter, prereq setup.Prerequisite) {
+	_, _ = fmt.Fprintf(em.Err, "%s must be installed manually:\n", prereq.Name)
+	if prereq.Suggestion != "" {
+		_, _ = fmt.Fprintf(em.Err, "  how to install: %s\n", prereq.Suggestion)
+	}
+	if prereq.DocsURL != "" {
+		_, _ = fmt.Fprintf(em.Err, "  web:            %s\n", prereq.DocsURL)
+	}
 }
 
 // promptDeploymentRole asks (on a TTY) which deployment role this host plays,

@@ -41,6 +41,7 @@ type fakeServices struct {
 	reconciled bool
 	provider   string
 	bindHost   string
+	installed  bool
 }
 
 func (services *fakeServices) Reconcile(providerConfig, bindHost string, progress func(string)) ([]ServiceStatus, error) {
@@ -63,6 +64,10 @@ func (services *fakeServices) Status() ([]ServiceStatus, error) {
 }
 func (services *fakeServices) Control(action, service string) ([]ServiceStatus, error) {
 	return []ServiceStatus{{Name: "litellm", Mode: "container", State: action + "ed"}}, nil
+}
+func (services *fakeServices) InstallPrerequisite(_ Prerequisite, _ io.Writer) error {
+	services.installed = true
+	return nil
 }
 
 // healthyDeps returns Deps that pass preflight (Apple Silicon, rootless docker,
@@ -136,7 +141,7 @@ func TestRunPreflightListsAllMissingPrerequisites(test *testing.T) {
 	// The message lists every missing prerequisite with its install command.
 	for _, fragment := range []string{
 		"container runtime", "https://get.docker.com",
-		"microsandbox runtime", "install.microsandbox.dev",
+		"microsandbox runtime", "get.microsandbox.dev",
 		"host virtualization",
 	} {
 		if !strings.Contains(platformErr.Message, fragment) {
@@ -147,6 +152,80 @@ func TestRunPreflightListsAllMissingPrerequisites(test *testing.T) {
 	details, ok := platformErr.Details.([]Prerequisite)
 	if !ok || len(details) < 3 {
 		test.Fatalf("details should be a []Prerequisite with the missing items, got %#v", platformErr.Details)
+	}
+}
+
+func TestRoleForPrecedence(test *testing.T) {
+	// An explicit option always wins, even over a persisted role.
+	test.Setenv("HOME", test.TempDir())
+	if role, err := RoleFor(Options{Mode: runtime.RoleServer}); err != nil || role != runtime.RoleServer {
+		test.Fatalf("explicit option: role=%q err=%v, want %q", role, err, runtime.RoleServer)
+	}
+
+	// No option, no persisted runtime.yaml → standalone default.
+	if role, err := RoleFor(Options{}); err != nil || role != runtime.RoleStandalone {
+		test.Fatalf("default: role=%q err=%v, want %q", role, err, runtime.RoleStandalone)
+	}
+
+	// No option but a persisted role → the persisted role.
+	if err := runtime.Persist(&runtime.Info{Role: runtime.RoleClient}); err != nil {
+		test.Fatal(err)
+	}
+	if role, err := RoleFor(Options{}); err != nil || role != runtime.RoleClient {
+		test.Fatalf("persisted: role=%q err=%v, want %q", role, err, runtime.RoleClient)
+	}
+
+	// An unrecognized explicit role is an invalid-input error (exit 2).
+	if _, err := RoleFor(Options{Mode: "bogus"}); exitCodeOf(test, err) != output.ExitInvalidInput {
+		test.Fatalf("invalid role should be exit %d", output.ExitInvalidInput)
+	}
+}
+
+func TestPrerequisiteInstallCommandPerOS(test *testing.T) {
+	cases := []struct {
+		name string
+		goos string
+		want string
+	}{
+		{"microsandbox runtime", "darwin", "curl -sSL https://get.microsandbox.dev | sh"},
+		{"microsandbox runtime", "linux", "curl -sSL https://get.microsandbox.dev | sh"},
+		{"container runtime", "linux", "curl -fsSL https://get.docker.com | sh"},
+		{"container runtime", "darwin", ""}, // Docker Desktop is a GUI app — instruct only
+		{"host virtualization", "linux", ""},
+		{"host virtualization", "darwin", ""},
+		{"rootless service tier", "linux", ""},
+	}
+	for _, testCase := range cases {
+		if got := installCommandFor(testCase.name, testCase.goos); got != testCase.want {
+			test.Errorf("installCommandFor(%q,%q) = %q, want %q", testCase.name, testCase.goos, got, testCase.want)
+		}
+	}
+}
+
+func TestMissingPrerequisitesPopulatesInstallCommand(test *testing.T) {
+	// Linux, nothing installed: msb + docker are missing AND auto-installable.
+	deps := Deps{GOOS: "linux", GOARCH: "amd64", Prober: fakeProber{}}
+	byName := map[string]Prerequisite{}
+	for _, prereq := range MissingPrerequisites(deps, runtime.RoleStandalone) {
+		byName[prereq.Name] = prereq
+	}
+	if cmd := byName["microsandbox runtime"].InstallCommand; cmd != "curl -sSL https://get.microsandbox.dev | sh" {
+		test.Errorf("microsandbox InstallCommand = %q", cmd)
+	}
+	if cmd := byName["container runtime"].InstallCommand; cmd != "curl -fsSL https://get.docker.com | sh" {
+		test.Errorf("container runtime InstallCommand = %q", cmd)
+	}
+	if cmd := byName["host virtualization"].InstallCommand; cmd != "" {
+		test.Errorf("host virtualization should be instruct-only, got %q", cmd)
+	}
+}
+
+func TestMissingPrerequisitesNoneWhenSatisfied(test *testing.T) {
+	// A healthy host (docker + msb + virtualization) has no missing prerequisites,
+	// so the interactive preflight would attempt no install.
+	deps, _ := healthyDeps()
+	if missing := MissingPrerequisites(deps, runtime.RoleStandalone); len(missing) != 0 {
+		test.Fatalf("expected no missing prerequisites on a healthy host, got %+v", missing)
 	}
 }
 
@@ -328,7 +407,7 @@ func TestPreflightReportsMsbWithInstructionsNotInstalling(test *testing.T) {
 		test.Fatalf("want *output.Error for missing msb, got %T", err)
 	}
 	for _, fragment := range []string{
-		"microsandbox runtime", "install.microsandbox.dev", "docs.microsandbox.dev", "how to install", "web:",
+		"microsandbox runtime", "get.microsandbox.dev", "docs.microsandbox.dev", "how to install", "web:",
 	} {
 		if !strings.Contains(platformErr.Message, fragment) {
 			test.Errorf("message missing %q (should instruct, not install):\n%s", fragment, platformErr.Message)

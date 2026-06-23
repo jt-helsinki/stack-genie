@@ -659,6 +659,28 @@ func (services realServices) PullImages(out io.Writer, progress func(string)) er
 	return firstErr
 }
 
+// InstallPrerequisite runs the prerequisite's auto-installer, streaming the
+// installer's native stdout/stderr to out so the user sees its progress (e.g. the
+// curl|sh installer's own output), mirroring PullImages / RelaunchLiteLLMWithAuth's
+// exec+stream pattern. The command is a fixed entry from the platform's own per-OS
+// table (installCommandFor), not user input. Returns an error if the command is
+// empty (a programmer error) or the installer exits non-zero.
+func (services realServices) InstallPrerequisite(prereq Prerequisite, out io.Writer) error {
+	if prereq.InstallCommand == "" {
+		return fmt.Errorf("no auto-installer for %q on this OS", prereq.Name)
+	}
+	// #nosec G204 — the command is a fixed per-OS string from the platform's own
+	// installCommandFor table (not user input); it is run via `sh -c` only so the
+	// pipe (curl … | sh) is honored.
+	command := exec.Command("sh", "-c", prereq.InstallCommand)
+	command.Stdout = out
+	command.Stderr = out
+	if err := command.Run(); err != nil {
+		return fmt.Errorf("install %s: %w", prereq.Name, err)
+	}
+	return nil
+}
+
 func (services realServices) Reconcile(providerConfig, bindHost string, progress func(string)) ([]ServiceStatus, error) {
 	configDir, err := paths.ConfigDir()
 	if err != nil {
