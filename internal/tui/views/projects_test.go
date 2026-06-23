@@ -44,6 +44,26 @@ func TestProjectsNewKeyRequestsCreate(test *testing.T) {
 	}
 }
 
+func TestProjectsDescribeTogglesPane(test *testing.T) {
+	view := NewProjects(func() ([]project.Entry, error) {
+		return []project.Entry{{Name: "app", Path: "/p/app", OS: "ubuntu", Status: "started"}}, nil
+	})
+	_ = view.Update(view.Init()())
+	view.SetSize(80, 20)
+
+	_ = view.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("d")})
+	if !view.describe.active() {
+		test.Fatal("d must open the describe pane")
+	}
+	if !strings.Contains(view.View(), "/p/app") {
+		test.Errorf("describe pane should show the project path, got:\n%s", view.View())
+	}
+	_ = view.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	if view.describe.active() {
+		test.Fatal("esc must close the describe pane")
+	}
+}
+
 func TestProjectsEmptyShowsHint(test *testing.T) {
 	view := NewProjects(func() ([]project.Entry, error) { return nil, nil })
 	_ = view.Update(view.Init()())

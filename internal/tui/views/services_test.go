@@ -76,6 +76,29 @@ func TestServicesStartActionInvokesController(test *testing.T) {
 	}
 }
 
+func TestServicesDescribeTogglesPane(test *testing.T) {
+	view := NewServices(
+		func() ([]setup.ServiceStatus, error) {
+			return []setup.ServiceStatus{{Name: "litellm", State: "running", Console: "http://localhost:14000/ui"}}, nil
+		},
+		noControl, noOpen,
+	)
+	_ = view.Update(view.Init()())
+	view.SetSize(80, 20) // give the describe viewport room to render
+
+	_ = view.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("d")})
+	if !view.describe.active() {
+		test.Fatal("d must open the describe pane")
+	}
+	if !strings.Contains(view.View(), "http://localhost:14000/ui") {
+		test.Errorf("describe pane should show the console URL, got:\n%s", view.View())
+	}
+	_ = view.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	if view.describe.active() {
+		test.Fatal("esc must close the describe pane")
+	}
+}
+
 func TestServicesOpenConsoleUsesURL(test *testing.T) {
 	var opened string
 	view := NewServices(

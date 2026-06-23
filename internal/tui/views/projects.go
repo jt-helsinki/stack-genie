@@ -1,6 +1,8 @@
 package views
 
 import (
+	"strings"
+
 	"github.com/charmbracelet/bubbles/table"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/jt-helsinki/ideal-robot/internal/project"
@@ -30,11 +32,12 @@ type projectsLoadedMsg struct {
 // Projects is the global project switcher: a list of every registered project
 // (from ~/.ai-platform/config/projects.yaml); selecting one makes it current.
 type Projects struct {
-	list    ProjectLister
-	table   table.Model
-	entries []project.Entry
-	err     error
-	loaded  bool
+	list     ProjectLister
+	table    table.Model
+	describe describePane
+	entries  []project.Entry
+	err      error
+	loaded   bool
 }
 
 // NewProjects builds the switcher over the injected project lister.
@@ -47,17 +50,18 @@ func NewProjects(list ProjectLister) *Projects {
 	}
 	built := table.New(table.WithColumns(columns), table.WithFocused(true))
 	built.SetStyles(ui.TableStyles())
-	return &Projects{list: list, table: built}
+	return &Projects{list: list, table: built, describe: newDescribePane()}
 }
 
 func (view *Projects) Title() string { return "Projects" }
-func (view *Projects) Hints() string { return "enter open · n new · r refresh" }
+func (view *Projects) Hints() string { return "enter open · n new · d describe · r refresh" }
 
 func (view *Projects) SetSize(width, height int) {
 	view.table.SetWidth(width)
 	if height > 0 {
 		view.table.SetHeight(height)
 	}
+	view.describe.setSize(width, height)
 }
 
 func (view *Projects) Init() tea.Cmd { return view.listCmd() }
@@ -83,6 +87,10 @@ func (view *Projects) Update(msg tea.Msg) tea.Cmd {
 		}
 		return nil
 	case tea.KeyMsg:
+		// While the describe pane is open it owns input (scroll / esc / d).
+		if view.describe.active() {
+			return view.describe.update(message)
+		}
 		switch message.String() {
 		case "enter":
 			if selected, ok := view.selectedEntry(); ok {
@@ -91,6 +99,11 @@ func (view *Projects) Update(msg tea.Msg) tea.Cmd {
 			return nil
 		case "n":
 			return func() tea.Msg { return NewProjectRequestedMsg{} }
+		case "d":
+			if selected, ok := view.selectedEntry(); ok {
+				view.describe.show(describeProject(selected))
+			}
+			return nil
 		case "r":
 			return view.listCmd()
 		}
@@ -115,6 +128,9 @@ func (view *Projects) selectedEntry() (project.Entry, bool) {
 }
 
 func (view *Projects) View() string {
+	if view.describe.active() {
+		return view.describe.view()
+	}
 	if view.err != nil {
 		return ui.Failure.Render(ui.IconFail + " " + view.err.Error())
 	}
@@ -125,6 +141,17 @@ func (view *Projects) View() string {
 		return ui.Muted.Render("no projects yet — create one with `ai project create` in a directory")
 	}
 	return view.table.View()
+}
+
+// describeProject renders a project's full detail for the describe pane.
+func describeProject(entry project.Entry) string {
+	var body strings.Builder
+	body.WriteString(ui.Heading.Render(entry.Name) + "\n")
+	body.WriteString(field("os", entry.OS))
+	body.WriteString(field("workspace", entry.Status))
+	body.WriteString(field("path", entry.Path))
+	body.WriteString(field("agents", strings.Join(entry.Agents, ", ")))
+	return body.String()
 }
 
 func projectRows(entries []project.Entry) []table.Row {

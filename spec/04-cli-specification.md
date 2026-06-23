@@ -1041,10 +1041,11 @@ new project may be created from it (see below).
 **Views** (switched via the `:` menu, which also has an **Exit** item):
 
 * **Services** — live service-tier + container status; `s`/`x`/`r` start/stop/
-  restart the selected service, `o` opens its admin console.
+  restart the selected service, `o` opens its admin console, `d` describes it.
 * **Projects** — the switcher: every project (name / OS / workspace status /
   agents); `enter` opens one, `n` creates a new one (a directory picker validated
-  by the create rules, then the `ai project create` wizard runs in that dir).
+  by the create rules, then the `ai project create` wizard runs in that dir),
+  `d` describes the selected one.
 * **Project** — the current project's summary + workspace lifecycle `s`/`x`/`r`/
   `d` (start/stop/restart/destroy) and `e` (an interactive shell in the workspace).
 * **Network** (per-project) — egress mode + allow-list + published ports; `m`
@@ -1055,8 +1056,9 @@ new project may be created from it (see below).
 * **Logs** — pick a host service and tail its `~/.ai-platform/logs/<name>.log`
   in a scrollable pane (shared with `ai logs` via `internal/logs`).
 
-The `:` menu is **type-to-filter** (type to narrow, ↑/↓ + enter to choose). `?`
-shows the key bindings; `q` / `ctrl-c` quit. The UI honours the theme set by
+The `:` menu is **type-to-filter** (type to narrow, ↑/↓ + enter to choose). On
+the list views `d` opens a scrollable describe pane (esc closes). `?` shows the
+key bindings; `q` / `ctrl-c` quit. The UI honours the theme set by
 `ai theme` (§14.3). Live service/microVM **log** capture and richer container
 detail are wired during hardware bring-up, so the Logs view shows whatever is
 already on disk.

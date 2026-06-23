@@ -6,6 +6,7 @@
 package views
 
 import (
+	"strings"
 	"time"
 
 	"github.com/charmbracelet/bubbles/table"
@@ -47,6 +48,7 @@ type Services struct {
 	control  ServiceController
 	open     URLOpener
 	table    table.Model
+	describe describePane
 	statuses []setup.ServiceStatus
 	flash    string
 	err      error
@@ -65,21 +67,24 @@ func NewServices(fetch ServiceFetcher, control ServiceController, open URLOpener
 	}
 	built := table.New(table.WithColumns(columns), table.WithFocused(true))
 	built.SetStyles(ui.TableStyles())
-	return &Services{fetch: fetch, control: control, open: open, table: built}
+	return &Services{fetch: fetch, control: control, open: open, table: built, describe: newDescribePane()}
 }
 
 // Title is the view's name (used by the menu/header).
 func (view *Services) Title() string { return "Services" }
 
 // Hints are the context-sensitive key bindings shown in the footer.
-func (view *Services) Hints() string { return "s start · x stop · r restart · o console" }
+func (view *Services) Hints() string {
+	return "s start · x stop · r restart · o console · d describe"
+}
 
-// SetSize fits the table to the content area the parent allots it.
+// SetSize fits the table + the describe pane to the content area.
 func (view *Services) SetSize(width, height int) {
 	view.table.SetWidth(width)
 	if height > 0 {
 		view.table.SetHeight(height)
 	}
+	view.describe.setSize(width, height)
 }
 
 // Init kicks off the first status fetch.
@@ -116,6 +121,10 @@ func (view *Services) Update(msg tea.Msg) tea.Cmd {
 		view.flash = actionFlash(message)
 		return view.fetchCmd() // reflect the action immediately
 	case tea.KeyMsg:
+		// While the describe pane is open it owns input (scroll / esc / d).
+		if view.describe.active() {
+			return view.describe.update(message)
+		}
 		if cmd, handled := view.handleAction(message); handled {
 			return cmd
 		}
@@ -147,8 +156,25 @@ func (view *Services) handleAction(key tea.KeyMsg) (tea.Cmd, bool) {
 			return nil, true
 		}
 		return view.openCmd(service, url), true
+	case "d":
+		if service == "" {
+			return nil, true
+		}
+		view.describe.show(describeService(view.statusByName(service)))
+		return nil, true
 	}
 	return nil, false
+}
+
+// statusByName returns the cached status for a service (a name-only fallback if
+// it is not in the latest fetch).
+func (view *Services) statusByName(service string) setup.ServiceStatus {
+	for _, status := range view.statuses {
+		if status.Name == service {
+			return status
+		}
+	}
+	return setup.ServiceStatus{Name: service}
 }
 
 func (view *Services) controlCmd(action, service string) tea.Cmd {
@@ -184,8 +210,11 @@ func (view *Services) consoleURL(service string) string {
 	return ""
 }
 
-// View renders the table (or a load/error line) with the latest action flash.
+// View renders the describe pane when open, else the table (with any flash).
 func (view *Services) View() string {
+	if view.describe.active() {
+		return view.describe.view()
+	}
 	if view.err != nil {
 		return ui.Failure.Render(ui.IconFail + " " + view.err.Error())
 	}
@@ -196,6 +225,23 @@ func (view *Services) View() string {
 		return view.flash + "\n" + view.table.View()
 	}
 	return view.table.View()
+}
+
+// describeService renders a service's full detail for the describe pane.
+func describeService(status setup.ServiceStatus) string {
+	health := "no"
+	if status.Healthy {
+		health = "yes"
+	}
+	var body strings.Builder
+	body.WriteString(ui.Heading.Render(status.Name) + "\n")
+	body.WriteString(field("mode", status.Mode))
+	body.WriteString(field("state", status.State))
+	body.WriteString(field("healthy", health))
+	body.WriteString(field("address", status.Address))
+	body.WriteString(field("console", status.Console))
+	body.WriteString(field("detail", status.Detail))
+	return body.String()
 }
 
 func serviceRows(statuses []setup.ServiceStatus) []table.Row {
