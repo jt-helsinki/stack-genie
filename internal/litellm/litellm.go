@@ -108,6 +108,15 @@ func Render(routing Routing, providerConfigPath string) error {
 			return err
 		}
 	}
+	// Docker creates a DIRECTORY at the config path when it is bind-mounted
+	// (`-v <path>:/app/config.yaml`) before this file is ever rendered — which then
+	// makes LiteLLM crash with IsADirectoryError. Replace such a directory so the
+	// render (and the subsequent mount) yields a real file.
+	if info, statErr := os.Stat(destination); statErr == nil && info.IsDir() {
+		if err := os.RemoveAll(destination); err != nil {
+			return err
+		}
+	}
 	return os.WriteFile(destination, rendered, 0o644)
 }
 

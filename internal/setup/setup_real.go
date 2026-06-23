@@ -602,6 +602,10 @@ func RelaunchLiteLLMWithAuth(password, masterKey string) error {
 	if err := ensureLiteLLMDB(runtime.RealProber(), containerRuntime.Name); err != nil {
 		return err
 	}
+	// Ensure the mounted config exists (and is a file, not a Docker-created dir).
+	if err := litellm.Render(litellm.DefaultRouting(), ""); err != nil {
+		return err
+	}
 	// Best-effort removal of the running (likely unsecured) container.
 	_ = exec.Command(containerRuntime.Name, "rm", "-f", litellmContainer).Run() // #nosec G204 — fixed args
 
@@ -691,11 +695,8 @@ func (services realServices) Reconcile(providerConfig, bindHost string, progress
 			return nil, err
 		}
 	}
-	// Render the LiteLLM gateway config from default routing (placeholders only),
-	// or pass through a provided provider config (e.g. the acceptance harness).
-	if err := litellm.Render(litellm.DefaultRouting(), providerConfig); err != nil {
-		return nil, err
-	}
+	// (LiteLLM's config is rendered by ensureLiteLLM below — passing providerConfig
+	// through — so the same render happens whether launched here or by Control.)
 	// Bring up the container tier on the shared network: Ollama (local models),
 	// Presidio (the secret-masking guardrail backend), LiteLLM (+ its DB), the
 	// Headroom compression proxy, and the nginx gateway in front of Headroom.
@@ -722,7 +723,7 @@ func (services realServices) Reconcile(providerConfig, bindHost string, progress
 		return nil, err
 	}
 	progress("  • LiteLLM gateway + Postgres (waiting for it to become healthy)…")
-	if err := services.ensureLiteLLM(filepath.Join(configDir, "litellm", "config.yaml"), bindHost); err != nil {
+	if err := services.ensureLiteLLM(filepath.Join(configDir, "litellm", "config.yaml"), bindHost, providerConfig); err != nil {
 		return nil, err
 	}
 	progress("  • Headroom (compression proxy)…")
@@ -743,7 +744,7 @@ func (services realServices) Reconcile(providerConfig, bindHost string, progress
 // ensureLiteLLM starts the LiteLLM container via the detected runtime unless it
 // is already healthy, then polls briefly for it to come up. Idempotent: it
 // removes any stale container of the same name first.
-func (services realServices) ensureLiteLLM(configPath, bindHost string) error {
+func (services realServices) ensureLiteLLM(configPath, bindHost, providerConfig string) error {
 	containerRuntime, err := runtime.ContainerRuntimeName(services.prober)
 	if err != nil {
 		return err
@@ -757,6 +758,14 @@ func (services realServices) ensureLiteLLM(configPath, bindHost string) error {
 	// so a pre-existing container without DATABASE_URL is relaunched once.
 	if services.serviceHealthy("litellm") && litellmHasDatabaseURL(services.prober, containerRuntime.Name) {
 		return nil
+	}
+	// Render the config we are about to mount — here (not only in Reconcile) so
+	// `ai services restart` re-renders it too: it both applies the current config
+	// and guarantees the file exists (a missing `-v` source makes Docker create a
+	// directory → LiteLLM IsADirectoryError). providerConfig is "" for the Control
+	// path (default routing) and the acceptance/real provider file for Reconcile.
+	if err := litellm.Render(litellm.DefaultRouting(), providerConfig); err != nil {
+		return output.Errorf(output.ExitRuntimeFailure, "render litellm config: %s", err)
 	}
 	// Preserve the existing UI password + master key across the relaunch so a
 	// restart/re-setup does not silently unsecure the admin UI or rotate the key
@@ -891,7 +900,7 @@ func (services realServices) Control(action, service string) ([]ServiceStatus, e
 				return stopContainer(presidioAnonymizerContainer)
 			}},
 		{"litellm",
-			func() error { return services.ensureLiteLLM(configPath, bindHost) },
+			func() error { return services.ensureLiteLLM(configPath, bindHost, "") },
 			func() error { return stopContainer(litellmContainer) }},
 		{"headroom",
 			func() error { return ensureHeadroom(services.prober, containerRuntime.Name) },
