@@ -9,16 +9,17 @@ import (
 	"github.com/jt-helsinki/ideal-robot/internal/setup"
 )
 
-// noControl / noOpen are stubs for tests that don't exercise actions.
-func noControl(string, string) error { return nil }
-func noOpen(string) error            { return nil }
+// noControl / noOpen / noTail are stubs for tests that don't exercise actions.
+func noControl(string, string) error  { return nil }
+func noOpen(string) error             { return nil }
+func noTail(string) ([]string, error) { return nil, nil }
 
 func TestServicesPopulatesTableOnRefresh(test *testing.T) {
 	statuses := []setup.ServiceStatus{
 		{Name: "litellm", Mode: "container", State: "running", Healthy: true, Address: "127.0.0.1:14000"},
 		{Name: "ollama", Mode: "container", State: "stopped", Healthy: false},
 	}
-	view := NewServices(func() ([]setup.ServiceStatus, error) { return statuses, nil }, noControl, noOpen)
+	view := NewServices(func() ([]setup.ServiceStatus, error) { return statuses, nil }, noControl, noOpen, noTail)
 
 	// Run the fetch command Init returns, then feed its message back in.
 	_ = view.Update(view.Init()())
@@ -37,7 +38,7 @@ func TestServicesPopulatesTableOnRefresh(test *testing.T) {
 func TestServicesSurfacesFetchError(test *testing.T) {
 	view := NewServices(func() ([]setup.ServiceStatus, error) {
 		return nil, errors.New("docker is not running")
-	}, noControl, noOpen)
+	}, noControl, noOpen, noTail)
 
 	_ = view.Update(view.Init()())
 
@@ -57,6 +58,7 @@ func TestServicesStartActionInvokesController(test *testing.T) {
 		},
 		func(action, service string) error { calls = append(calls, action+":"+service); return nil },
 		noOpen,
+		noTail,
 	)
 	_ = view.Update(view.Init()()) // load rows so a row is selected
 
@@ -81,7 +83,7 @@ func TestServicesDescribeTogglesPane(test *testing.T) {
 		func() ([]setup.ServiceStatus, error) {
 			return []setup.ServiceStatus{{Name: "litellm", State: "running", Console: "http://localhost:14000/ui"}}, nil
 		},
-		noControl, noOpen,
+		noControl, noOpen, noTail,
 	)
 	_ = view.Update(view.Init()())
 	view.SetSize(80, 20) // give the describe viewport room to render
@@ -99,6 +101,36 @@ func TestServicesDescribeTogglesPane(test *testing.T) {
 	}
 }
 
+func TestServicesLogsPaneOpensAndEscReturns(test *testing.T) {
+	view := NewServices(
+		func() ([]setup.ServiceStatus, error) {
+			return []setup.ServiceStatus{{Name: "litellm", State: "running"}}, nil
+		},
+		noControl, noOpen,
+		func(service string) ([]string, error) { return []string{"line one", "line two"}, nil },
+	)
+	_ = view.Update(view.Init()())
+	view.SetSize(80, 20)
+
+	// `l` opens the full-pane log viewer for the selected service.
+	_ = view.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("l")})
+	if !view.logs.active() {
+		test.Fatal("l must open the logs pane")
+	}
+	rendered := view.View()
+	if !strings.Contains(rendered, "logs · litellm") || !strings.Contains(rendered, "line one") {
+		test.Errorf("logs pane should fill the view with the tailed logs, got:\n%s", rendered)
+	}
+	if strings.Contains(rendered, "SERVICE") {
+		test.Error("the service table should be hidden while the logs pane is open")
+	}
+	// esc returns to the table.
+	_ = view.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	if view.logs.active() {
+		test.Fatal("esc must return from the logs pane to the table")
+	}
+}
+
 func TestServicesOpenConsoleUsesURL(test *testing.T) {
 	var opened string
 	view := NewServices(
@@ -107,6 +139,7 @@ func TestServicesOpenConsoleUsesURL(test *testing.T) {
 		},
 		noControl,
 		func(url string) error { opened = url; return nil },
+		noTail,
 	)
 	_ = view.Update(view.Init()())
 

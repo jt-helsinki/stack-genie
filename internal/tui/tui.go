@@ -73,6 +73,7 @@ func Run(cwd string) error {
 			return err
 		},
 		openURL,
+		tailService, // logs are viewed from the Services view (the `l` key)
 	)
 	projectsView := views.NewProjects(project.List)
 	projectDetail := views.NewProject(projectInfo, workspaceControl)
@@ -80,11 +81,11 @@ func Run(cwd string) error {
 	contextView := views.NewContext(currentRoot, contextopt.GetStatus, contextopt.SetStrategy, contextopt.SetCavemanLevel)
 	modelsView := views.NewModels(litellmClient.Status, litellmClient.Test)
 	secretsView := views.NewSecrets(secretsBroker.List, secretsBroker.Remove)
-	logsView := views.NewLogs(logs.Services, tailService)
 
 	// View order = menu order. Projects (the switcher) is index 1, Project detail
-	// index 2 (the app points the detail at a project on selection).
-	application.views = []View{servicesView, projectsView, projectDetail, networkView, contextView, modelsView, secretsView, logsView}
+	// index 2 (the app points the detail at a project on selection). Logs are
+	// consolidated into the Services view (the `l` key), not a separate tab.
+	application.views = []View{servicesView, projectsView, projectDetail, networkView, contextView, modelsView, secretsView}
 	application.projectsIndex = 1
 	application.projectDetail = projectDetail
 	application.projectDetailIndex = 2

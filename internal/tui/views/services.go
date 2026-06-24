@@ -27,6 +27,11 @@ type ServiceController func(action, service string) error
 // the OS opener (open / xdg-open).
 type URLOpener func(url string) error
 
+// LogTailer returns the recent log lines for a service. Injected; the parent
+// wires it over internal/logs (Sources + Tail). Logs are viewed from the
+// Services view (the `l` key) — there is no separate Logs tab.
+type LogTailer func(service string) ([]string, error)
+
 // ServicesRefreshInterval is how often the live view re-polls status.
 const ServicesRefreshInterval = 2 * time.Second
 
@@ -47,8 +52,10 @@ type Services struct {
 	fetch    ServiceFetcher
 	control  ServiceController
 	open     URLOpener
+	tail     LogTailer
 	table    table.Model
 	describe describePane
+	logs     describePane // full-pane log viewer for the selected service
 	statuses []setup.ServiceStatus
 	flash    string
 	err      error
@@ -56,8 +63,8 @@ type Services struct {
 }
 
 // NewServices builds the services view over the injected status fetcher,
-// lifecycle controller, and URL opener.
-func NewServices(fetch ServiceFetcher, control ServiceController, open URLOpener) *Services {
+// lifecycle controller, URL opener, and log tailer.
+func NewServices(fetch ServiceFetcher, control ServiceController, open URLOpener, tail LogTailer) *Services {
 	columns := []table.Column{
 		{Title: "SERVICE", Width: 20},
 		{Title: "MODE", Width: 10},
@@ -67,7 +74,10 @@ func NewServices(fetch ServiceFetcher, control ServiceController, open URLOpener
 	}
 	built := table.New(table.WithColumns(columns), table.WithFocused(true))
 	built.SetStyles(ui.TableStyles())
-	return &Services{fetch: fetch, control: control, open: open, table: built, describe: newDescribePane()}
+	return &Services{
+		fetch: fetch, control: control, open: open, tail: tail,
+		table: built, describe: newDescribePane(), logs: newDescribePane(),
+	}
 }
 
 // Title is the view's name (used by the menu/header).
@@ -75,16 +85,17 @@ func (view *Services) Title() string { return "Services" }
 
 // Hints are the context-sensitive key bindings shown in the footer.
 func (view *Services) Hints() string {
-	return "s start · x stop · r restart · o console · d describe"
+	return "s start · x stop · r restart · o console · l logs · d describe"
 }
 
-// SetSize fits the table + the describe pane to the content area.
+// SetSize fits the table + the describe/logs panes to the content area.
 func (view *Services) SetSize(width, height int) {
 	view.table.SetWidth(width)
 	if height > 0 {
 		view.table.SetHeight(height)
 	}
 	view.describe.setSize(width, height)
+	view.logs.setSize(width, height)
 }
 
 // Init kicks off the first status fetch.
@@ -121,7 +132,11 @@ func (view *Services) Update(msg tea.Msg) tea.Cmd {
 		view.flash = actionFlash(message)
 		return view.fetchCmd() // reflect the action immediately
 	case tea.KeyMsg:
-		// While the describe pane is open it owns input (scroll / esc / d).
+		// While the full-pane logs or describe pane is open it owns input (scroll;
+		// esc backs out to the table).
+		if view.logs.active() {
+			return view.logs.update(message)
+		}
 		if view.describe.active() {
 			return view.describe.update(message)
 		}
@@ -162,8 +177,29 @@ func (view *Services) handleAction(key tea.KeyMsg) (tea.Cmd, bool) {
 		}
 		view.describe.show(describeService(view.statusByName(service)))
 		return nil, true
+	case "l":
+		if service == "" {
+			return nil, true
+		}
+		view.logs.show(view.serviceLogs(service))
+		return nil, true
 	}
 	return nil, false
+}
+
+// serviceLogs returns the tailed log content for the full-pane log viewer (or a
+// friendly placeholder when there is nothing on disk / capture isn't wired yet).
+func (view *Services) serviceLogs(service string) string {
+	heading := ui.Heading.Render("logs · " + service)
+	lines, err := view.tail(service)
+	if err != nil {
+		return heading + "\n" + ui.Failure.Render(ui.IconFail+" "+err.Error())
+	}
+	if len(lines) == 0 {
+		return heading + "\n" + ui.Muted.Render("no logs on disk yet for "+service+
+			" (live capture is wired during hardware bring-up)")
+	}
+	return heading + "\n" + strings.Join(lines, "\n")
 }
 
 // statusByName returns the cached status for a service (a name-only fallback if
@@ -210,8 +246,12 @@ func (view *Services) consoleURL(service string) string {
 	return ""
 }
 
-// View renders the describe pane when open, else the table (with any flash).
+// View renders the full-pane logs or describe pane when open, else the table
+// (with any flash). The panes fill the body; esc returns to the table.
 func (view *Services) View() string {
+	if view.logs.active() {
+		return view.logs.view()
+	}
 	if view.describe.active() {
 		return view.describe.view()
 	}

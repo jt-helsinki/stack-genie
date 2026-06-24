@@ -32,12 +32,12 @@ func (pane *describePane) setSize(width, height int) {
 	}
 }
 
-// update routes input to the pane: esc / d close it; other keys scroll. (The
-// app intercepts q for quit before the view sees it, so it is not handled here.)
+// update routes input to the pane: esc backs out (closes it, per the app-wide
+// esc-goes-up-one-level convention); other keys scroll. (The app intercepts q for
+// quit before the view sees it, so it is not handled here.)
 func (pane *describePane) update(msg tea.Msg) tea.Cmd {
 	if key, ok := msg.(tea.KeyMsg); ok {
-		switch key.String() {
-		case "esc", "d":
+		if key.String() == "esc" {
 			pane.on = false
 			return nil
 		}
