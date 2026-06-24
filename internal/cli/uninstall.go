@@ -204,7 +204,7 @@ func (result uninstallResult) Human() string {
 			lines = append(lines, "  • "+step)
 		}
 		if len(result.LeftDeps) > 0 {
-			lines = append(lines, "External dependencies detected (you'd be asked about each): "+strings.Join(result.LeftDeps, ", "))
+			lines = append(lines, "external dependencies detected — you'd be prompted about each: "+strings.Join(result.LeftDeps, ", "))
 		}
 		lines = append(lines, "(nothing was changed)")
 		return strings.Join(lines, "\n")

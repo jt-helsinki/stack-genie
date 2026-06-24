@@ -47,7 +47,7 @@ func (builder realBuilder) Build(projectRoot, imageRef string) error {
 	dockerfile := filepath.Join(projectRoot, ".ai-platform", "Dockerfile")
 	buildArgs := containerRuntime.BuildArgs(imageRef, dockerfile, projectRoot)
 	if err := runStreaming(containerRuntime.Name, buildArgs...); err != nil {
-		return fmt.Errorf("%s build %s: %w", containerRuntime.Name, imageRef, err)
+		return fmt.Errorf("could not build the workspace image — check disk space and the project Dockerfile (.ai-platform/Dockerfile)")
 	}
 
 	// 2. Export the freshly-built image to a temp tar. msb cannot read the
@@ -61,12 +61,12 @@ func (builder realBuilder) Build(projectRoot, imageRef string) error {
 	defer func() { _ = os.Remove(tarPath) }()
 
 	if err := runStreaming(containerRuntime.Name, "save", "-o", tarPath, imageRef); err != nil {
-		return fmt.Errorf("%s save %s: %w", containerRuntime.Name, imageRef, err)
+		return fmt.Errorf("could not export the workspace image")
 	}
 
 	// 3. Load the image tar into Microsandbox.
 	if err := runStreaming("msb", "load", "--input", tarPath); err != nil {
-		return fmt.Errorf("msb load %s: %w", imageRef, err)
+		return fmt.Errorf("could not load the workspace image into Microsandbox")
 	}
 	return nil
 }
@@ -113,7 +113,7 @@ func (sandbox realSandbox) Create(name, imageRef, projectMount, overlayPath stri
 	}
 	args = append(args, netArgs...)
 	if err := runStreaming("msb", args...); err != nil {
-		return fmt.Errorf("msb create %s: %w", name, err)
+		return fmt.Errorf("could not create workspace %q — run `ai doctor` to check Microsandbox and disk space", name)
 	}
 	return nil
 }
@@ -130,7 +130,7 @@ func (sandbox realSandbox) Start(name string) error {
 		if strings.Contains(combined, "already running") {
 			return nil
 		}
-		return fmt.Errorf("msb start %s: %w: %s", name, err, strings.TrimSpace(combined))
+		return fmt.Errorf("could not start workspace %q — run `ai doctor`", name)
 	}
 	return nil
 }
@@ -140,7 +140,7 @@ func (sandbox realSandbox) Stop(name string) error {
 		return err
 	}
 	if err := runStreaming("msb", "stop", "-f", name); err != nil {
-		return fmt.Errorf("msb stop %s: %w", name, err)
+		return fmt.Errorf("could not stop workspace %q", name)
 	}
 	return nil
 }
@@ -151,7 +151,7 @@ func (sandbox realSandbox) Destroy(name string) error {
 	}
 	// `-f` stops the microVM first if running, then removes it.
 	if err := runStreaming("msb", "remove", "-f", name); err != nil {
-		return fmt.Errorf("msb remove %s: %w", name, err)
+		return fmt.Errorf("could not remove workspace %q", name)
 	}
 	return nil
 }
@@ -187,7 +187,7 @@ func (sandbox realSandbox) Exec(name string, argv []string) (ExecResult, error) 
 		return result, nil
 	}
 	// Anything else (couldn't launch msb, signal, etc.) is an infra failure.
-	return ExecResult{}, fmt.Errorf("msb exec %s: %w", name, err)
+	return ExecResult{}, fmt.Errorf("could not run the command in workspace %q — is it running? start it with `ai workspace start`", name)
 }
 
 // ExecInteractive runs argv inside the running microVM attached to the caller's
@@ -214,7 +214,7 @@ func (sandbox realSandbox) ExecInteractive(name string, argv []string) error {
 		if errors.As(err, &exitError) {
 			return nil // the inner program exited non-zero — normal end of session
 		}
-		return fmt.Errorf("msb exec -t %s: %w", name, err)
+		return fmt.Errorf("lost the connection to workspace %q — restart it with `ai workspace start`", name)
 	}
 	return nil
 }
@@ -237,7 +237,7 @@ func (sandbox realSandbox) WriteFile(name, guestPath string, content []byte) err
 	command.Stdout = os.Stdout
 	command.Stderr = os.Stderr
 	if err := command.Run(); err != nil {
-		return fmt.Errorf("msb exec %s write %s: %w", name, guestPath, err)
+		return fmt.Errorf("could not write to workspace %q", name)
 	}
 	return nil
 }

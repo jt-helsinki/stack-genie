@@ -193,7 +193,7 @@ func resolveGatewayResult(aiPlatformHost string) gatewayResult {
 // integer port. It is deliberately light (catch typos, not enforce RFC syntax).
 func validateGatewayAddress(address string) error {
 	if address == "" {
-		return fmt.Errorf("gateway address is empty (pass a host or host:port)")
+		return fmt.Errorf("gateway address is required — pass a host or host:port")
 	}
 	if strings.ContainsAny(address, " \t\r\n") {
 		return fmt.Errorf("gateway address %q contains whitespace", address)

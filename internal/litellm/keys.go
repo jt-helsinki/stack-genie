@@ -82,12 +82,12 @@ func resolveBaseURL() string {
 func (manager *KeyManager) masterKey() (string, error) {
 	containerRuntime, err := runtime.ContainerRuntimeName(manager.prober)
 	if err != nil {
-		return "", output.Errorf(output.ExitMissingDep, "litellm gateway is not reachable: %v", err)
+		return "", output.Errorf(output.ExitMissingDep, "LiteLLM gateway is not reachable — run `ai services start`")
 	}
 	out, err := manager.prober.Run(containerRuntime.Name, "inspect", "--format",
 		"{{range .Config.Env}}{{println .}}{{end}}", litellmContainer)
 	if err != nil {
-		return "", output.Errorf(output.ExitMissingDep, "litellm gateway (%s) is not running", litellmContainer)
+		return "", output.Errorf(output.ExitMissingDep, "LiteLLM gateway is not running — run `ai services start`")
 	}
 	const prefix = "LITELLM_MASTER_KEY="
 	for _, line := range strings.Split(string(out), "\n") {
@@ -98,7 +98,7 @@ func (manager *KeyManager) masterKey() (string, error) {
 			}
 		}
 	}
-	return "", output.Errorf(output.ExitMissingDep, "LITELLM_MASTER_KEY is not set on %s", litellmContainer)
+	return "", output.Errorf(output.ExitMissingDep, "LiteLLM admin key is not configured — run `ai setup`")
 }
 
 // doJSON performs an authenticated admin request and decodes a JSON response into
@@ -132,7 +132,7 @@ func (manager *KeyManager) doJSON(method, path string, body any, result any) err
 	defer func() { _ = response.Body.Close() }()
 	payload, _ := io.ReadAll(response.Body)
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
-		return output.Errorf(output.ExitRuntimeFailure, "litellm %s %s: %s", method, path, errorMessage(payload, response.StatusCode))
+		return output.Errorf(output.ExitRuntimeFailure, "LiteLLM gateway error: %s", errorMessage(payload, response.StatusCode))
 	}
 	if result != nil {
 		if err := json.Unmarshal(payload, result); err != nil {

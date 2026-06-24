@@ -117,7 +117,7 @@ func newSecretsSetCmd(em *output.Emitter, exit *int) *cobra.Command {
 					Value(&promptedName).
 					Validate(func(candidate string) error {
 						if candidate == "" {
-							return fmt.Errorf("name is required")
+							return fmt.Errorf("credential name is required")
 						}
 						return nil
 					})
@@ -130,7 +130,7 @@ func newSecretsSetCmd(em *output.Emitter, exit *int) *cobra.Command {
 						Value(&promptedValue).
 						Validate(func(candidate string) error {
 							if candidate == "" {
-								return fmt.Errorf("value is required")
+								return fmt.Errorf("credential value is required")
 							}
 							return nil
 						})
@@ -148,11 +148,11 @@ func newSecretsSetCmd(em *output.Emitter, exit *int) *cobra.Command {
 			}
 
 			if name == "" {
-				*exit = em.Failure("secrets.set", output.Errorf(output.ExitInvalidInput, "provide a credential name"))
+				*exit = em.Failure("secrets.set", output.Errorf(output.ExitInvalidInput, "credential name is required"))
 				return nil
 			}
 			if !haveValue {
-				*exit = em.Failure("secrets.set", output.Errorf(output.ExitInvalidInput, "provide --stdin or --value"))
+				*exit = em.Failure("secrets.set", output.Errorf(output.ExitInvalidInput, "provide the value with --value or --stdin"))
 				return nil
 			}
 			if err := secrets.RealBroker().Set(name, credential); err != nil {
@@ -276,7 +276,7 @@ func newSecretsMapCmd(em *output.Emitter, exit *int) *cobra.Command {
 						Value(&promptedName).
 						Validate(func(candidate string) error {
 							if candidate == "" {
-								return fmt.Errorf("name is required")
+								return fmt.Errorf("credential name is required")
 							}
 							return nil
 						}))
@@ -287,7 +287,7 @@ func newSecretsMapCmd(em *output.Emitter, exit *int) *cobra.Command {
 					Value(&promptedEnv).
 					Validate(func(candidate string) error {
 						if candidate == "" {
-							return fmt.Errorf("env var is required")
+							return fmt.Errorf("environment variable is required (--env)")
 						}
 						return nil
 					}))
@@ -300,7 +300,7 @@ func newSecretsMapCmd(em *output.Emitter, exit *int) *cobra.Command {
 			}
 
 			if name == "" {
-				*exit = em.Failure("secrets.map", output.Errorf(output.ExitInvalidInput, "provide a credential name"))
+				*exit = em.Failure("secrets.map", output.Errorf(output.ExitInvalidInput, "credential name is required"))
 				return nil
 			}
 			if env == "" {
@@ -352,7 +352,7 @@ func promptSecretName(title, seed string) (string, error) {
 	}
 	return promptText(title, "", seed, func(candidate string) error {
 		if candidate == "" {
-			return fmt.Errorf("name is required")
+			return fmt.Errorf("credential name is required")
 		}
 		return nil
 	})

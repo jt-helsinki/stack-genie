@@ -634,7 +634,7 @@ func nowRFC3339() string { return time.Now().UTC().Format(time.RFC3339) }
 // (Start, not Run) so the TUI never blocks on the browser launch.
 func openURL(url string) error {
 	if url == "" {
-		return fmt.Errorf("no console URL")
+		return fmt.Errorf("no admin console for this service")
 	}
 	var opener string
 	switch goruntime.GOOS {

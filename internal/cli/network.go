@@ -292,7 +292,7 @@ func newNetworkAllowCmd(emitter *output.Emitter, exit *int) *cobra.Command {
 				}
 			default:
 				*exit = emitter.Failure("network.allow", output.Errorf(output.ExitInvalidInput,
-					"host:port required, or run on a terminal to enter a service"))
+					"provide host:port, or run on a terminal to enter it"))
 				return nil
 			}
 			action := egress.Allow
@@ -369,7 +369,7 @@ func newNetworkPublishCmd(emitter *output.Emitter, exit *int) *cobra.Command {
 				}
 			default:
 				*exit = emitter.Failure("network.publish", output.Errorf(output.ExitInvalidInput,
-					"guest:host required, or run on a terminal to enter the ports"))
+					"provide guest:host, or run on a terminal to enter the mapping"))
 				return nil
 			}
 			if remove {

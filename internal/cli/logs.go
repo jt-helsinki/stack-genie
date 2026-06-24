@@ -73,7 +73,7 @@ func newLogsCmd(emitter *output.Emitter, exit *int) *cobra.Command {
 			}
 			if service != "" && !slices.Contains(logServices, service) {
 				*exit = emitter.Failure("logs",
-					output.Errorf(output.ExitInvalidInput, "unknown service %q (one of %v)", service, logServices))
+					output.Errorf(output.ExitInvalidInput, "unknown service %q (one of %s)", service, strings.Join(logServices, ", ")))
 				return nil
 			}
 			// --follow streams a service's logs live to stdout until Ctrl-C. It is

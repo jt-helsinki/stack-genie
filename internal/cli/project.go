@@ -137,7 +137,7 @@ func newProjectCreateCmd(emitter *output.Emitter, exit *int) *cobra.Command {
 				if err != nil {
 					// Defensive: the wizard still failed despite a TTY (§3.1).
 					*exit = emitter.Failure("project.create",
-						output.Errorf(output.ExitInvalidInput, "interactive terminal required: %s", err))
+						output.Errorf(output.ExitInvalidInput, "a terminal is required for the project wizard (or pass --name/--os/--agents/--stacks with --json)"))
 					return nil
 				}
 				if cancelled {
@@ -242,7 +242,7 @@ func attachWorkspace(emitter *output.Emitter, exit *int, name string) {
 func createPlan(spec project.Spec, root string) []string {
 	return []string{
 		"use current directory " + root,
-		fmt.Sprintf("write .ai-platform/Dockerfile (os=%s, stacks=%v, agent CLIs=%v)", spec.OS, spec.Stacks, spec.AgentCLIs),
+		fmt.Sprintf("write .ai-platform/Dockerfile (os=%s, stacks=%s, agent CLIs=%s)", spec.OS, strings.Join(spec.Stacks, ", "), strings.Join(spec.AgentCLIs, ", ")),
 		"write config.yaml, profile.yaml, project.yaml, .gitignore",
 		"register " + spec.Name + " in config/projects.yaml",
 	}
@@ -329,7 +329,7 @@ func wizardNameValidator(value string) error { return project.ValidateName(value
 
 func wizardAtLeastOne(selected []string) error {
 	if len(selected) == 0 {
-		return errors.New("select at least one")
+		return errors.New("select at least one agent CLI")
 	}
 	return nil
 }

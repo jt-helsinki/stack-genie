@@ -24,6 +24,15 @@ import (
 	"github.com/jt-helsinki/ideal-robot/internal/versions"
 )
 
+// serviceStartError builds the user-facing error for a failed service-tier
+// container launch. It hides the container runtime's raw stderr (already noisy
+// and tool-specific) and points the user at the one fix that resolves almost all
+// launch failures: make sure Docker is up, then re-run setup.
+func serviceStartError(service string) error {
+	return output.Errorf(output.ExitRuntimeFailure,
+		"could not start the %s service — make sure Docker is running, then re-run `ai setup`", service)
+}
+
 // containerImage returns the image reference (repo:tag) for a service, from
 // config/versions.yaml when present and complete, else the built-in default
 // pin (versions.Default). Pinned by tag — digests are platform-specific and
@@ -366,7 +375,7 @@ func ensureLiteLLMDB(prober runtime.Prober, containerRuntime string) error {
 		containerImage("litellm-db"),
 	}
 	if _, err := prober.Run(containerRuntime, args...); err != nil {
-		return output.Errorf(output.ExitRuntimeFailure, "launch litellm db via %s: %s", containerRuntime, err)
+		return serviceStartError("LiteLLM database")
 	}
 	for attempt := 0; attempt < 20; attempt++ {
 		if _, err := prober.Run(containerRuntime, "exec", litellmDBContainer, "pg_isready", "-U", litellmDBUser); err == nil {
@@ -426,7 +435,7 @@ func ensureOllama(prober runtime.Prober, containerRuntime, bindHost string) erro
 	}
 	if _, err := prober.Run(containerRuntime, args...); err != nil {
 		return output.Errorf(output.ExitRuntimeFailure,
-			"launch ollama via %s: %s (stop any native Ollama bound to :11434 first)", containerRuntime, err)
+			"could not start Ollama — stop any local Ollama using port 11434, then re-run `ai setup`")
 	}
 	return nil
 }
@@ -451,7 +460,7 @@ func ensurePresidio(prober runtime.Prober, containerRuntime string) error {
 			presidio.image,
 		}
 		if _, err := prober.Run(containerRuntime, args...); err != nil {
-			return output.Errorf(output.ExitRuntimeFailure, "launch %s via %s: %s", presidio.name, containerRuntime, err)
+			return serviceStartError("Presidio")
 		}
 	}
 	return nil
@@ -484,7 +493,7 @@ func ensureHeadroom(prober runtime.Prober, containerRuntime string) error {
 		containerImage("headroom"),
 	}
 	if _, err := prober.Run(containerRuntime, args...); err != nil {
-		return output.Errorf(output.ExitRuntimeFailure, "launch headroom via %s: %s", containerRuntime, err)
+		return serviceStartError("Headroom")
 	}
 	return nil
 }
@@ -523,7 +532,7 @@ func ensureOpenWebUI(prober runtime.Prober, containerRuntime, bindHost string) e
 	}
 	args = append(args, containerImage("open-webui"))
 	if _, err := prober.Run(containerRuntime, args...); err != nil {
-		return output.Errorf(output.ExitRuntimeFailure, "launch open-webui via %s: %s", containerRuntime, err)
+		return serviceStartError("Open WebUI")
 	}
 	return nil
 }
@@ -588,7 +597,7 @@ func ensureOdysseus(prober runtime.Prober, containerRuntime, bindHost string) er
 			containerImage("chromadb"),
 		}
 		if _, err := prober.Run(containerRuntime, chromaArgs...); err != nil {
-			return output.Errorf(output.ExitRuntimeFailure, "launch chromadb via %s: %s", containerRuntime, err)
+			return serviceStartError("ChromaDB")
 		}
 	}
 	if !containerRunning(prober, containerRuntime, searxngContainer) {
@@ -606,7 +615,7 @@ func ensureOdysseus(prober runtime.Prober, containerRuntime, bindHost string) er
 			containerImage("searxng"),
 		}
 		if _, err := prober.Run(containerRuntime, searxngArgs...); err != nil {
-			return output.Errorf(output.ExitRuntimeFailure, "launch searxng via %s: %s", containerRuntime, err)
+			return serviceStartError("SearXNG")
 		}
 	}
 	if !containerRunning(prober, containerRuntime, ntfyContainer) {
@@ -619,7 +628,7 @@ func ensureOdysseus(prober runtime.Prober, containerRuntime, bindHost string) er
 			"serve", // ntfy needs an explicit `serve` command
 		}
 		if _, err := prober.Run(containerRuntime, ntfyArgs...); err != nil {
-			return output.Errorf(output.ExitRuntimeFailure, "launch ntfy via %s: %s", containerRuntime, err)
+			return serviceStartError("ntfy")
 		}
 	}
 
@@ -670,7 +679,7 @@ func ensureOdysseus(prober runtime.Prober, containerRuntime, bindHost string) er
 	}
 	args = append(args, containerImage("odysseus"))
 	if _, err := prober.Run(containerRuntime, args...); err != nil {
-		return output.Errorf(output.ExitRuntimeFailure, "launch odysseus via %s: %s", containerRuntime, err)
+		return serviceStartError("Odysseus")
 	}
 	return nil
 }
@@ -708,7 +717,7 @@ func ensureDNS(prober runtime.Prober, containerRuntime string) error {
 		"-conf", "/Corefile",
 	}
 	if _, err := prober.Run(containerRuntime, args...); err != nil {
-		return output.Errorf(output.ExitRuntimeFailure, "launch aip-dns via %s: %s", containerRuntime, err)
+		return serviceStartError("DNS audit resolver")
 	}
 	return nil
 }
@@ -745,7 +754,7 @@ func ensureProxy(prober runtime.Prober, containerRuntime, bindHost string) error
 		containerImage("proxy"),
 	}
 	if _, err := prober.Run(containerRuntime, args...); err != nil {
-		return output.Errorf(output.ExitRuntimeFailure, "launch aip-proxy via %s: %s", containerRuntime, err)
+		return serviceStartError("gateway proxy")
 	}
 	return nil
 }
@@ -1015,8 +1024,8 @@ func RelaunchLiteLLMWithAuth(password, masterKey string) error {
 		"UI_PASSWORD="+password,
 		"LITELLM_MASTER_KEY="+masterKey,
 	)
-	if output, err := command.CombinedOutput(); err != nil {
-		return fmt.Errorf("relaunch litellm: %s: %s", err, string(output))
+	if _, err := command.CombinedOutput(); err != nil {
+		return serviceStartError("LiteLLM gateway")
 	}
 	return nil
 }
@@ -1188,7 +1197,7 @@ func (services realServices) ensureLiteLLM(configPath, bindHost, providerConfig 
 	preserveLiteLLMSecretsInEnv(services.prober, containerRuntime.Name)
 	_, _ = services.prober.Run(containerRuntime.Name, "rm", "-f", litellmContainer) // best-effort cleanup
 	if _, err := services.prober.Run(containerRuntime.Name, litellmRunArgs(configPath, bindHost, containerImage("litellm"))...); err != nil {
-		return output.Errorf(output.ExitRuntimeFailure, "launch litellm via %s: %s", containerRuntime.Name, err)
+		return serviceStartError("LiteLLM gateway")
 	}
 	for attempt := 0; attempt < 15; attempt++ {
 		if services.serviceHealthy("litellm") {

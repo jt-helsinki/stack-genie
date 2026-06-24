@@ -140,7 +140,7 @@ func newSetupCmd(em *output.Emitter, exit *int) *cobra.Command {
 			// LiteLLM admin-UI password only matters where LiteLLM runs locally
 			// (standalone/server), so it is skipped in client mode.
 			if interactive && report.Runtime != nil && report.Runtime.Role != runtime.RoleClient {
-				_, _ = fmt.Fprintln(em.Err, "\nSetup needs a credential — press Enter at the prompt to skip it.")
+				_, _ = fmt.Fprintln(em.Err, "\nthe LiteLLM admin UI needs a password — press Enter to skip and set one later")
 				promptLiteLLMUIPassword(em)
 			}
 			*exit = em.Success("setup", report, report.Warnings...)
@@ -212,7 +212,7 @@ func preflightPrerequisites(em *output.Emitter, exit *int, opts setup.Options, d
 			return false
 		}
 		if !install {
-			_, _ = fmt.Fprintf(em.Err, "Skipping %s — install it and re-run `ai setup`.\n", prereq.Name)
+			_, _ = fmt.Fprintf(em.Err, "skipping %s — install it and re-run `ai setup`\n", prereq.Name)
 			printPrerequisiteInstructions(em, prereq)
 			*exit = em.Failure("setup", setup.PrerequisiteError([]setup.Prerequisite{prereq}))
 			return false

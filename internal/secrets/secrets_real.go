@@ -103,7 +103,7 @@ func (broker realBroker) do(method, path string, body any, result any) error {
 	defer func() { _ = response.Body.Close() }()
 	payload, _ := io.ReadAll(response.Body)
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
-		return output.Errorf(output.ExitRuntimeFailure, "litellm %s %s: %s", method, path, credentialError(payload, response.StatusCode))
+		return output.Errorf(output.ExitRuntimeFailure, "LiteLLM gateway error: %s", credentialError(payload, response.StatusCode))
 	}
 	if result != nil {
 		if err := json.Unmarshal(payload, result); err != nil {
