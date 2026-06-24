@@ -30,6 +30,7 @@ type fakeSandbox struct {
 	netArgs                              []string
 	execResult                           ExecResult
 	execErr                              error
+	interactiveArgv                      []string
 	written                              map[string][]byte
 	inspectPolicy                        NetworkPolicy
 	inspectErr                           error
@@ -47,6 +48,10 @@ func (sandbox *fakeSandbox) Stop(string) error    { sandbox.stopped = true; retu
 func (sandbox *fakeSandbox) Destroy(string) error { sandbox.destroyed = true; return nil }
 func (sandbox *fakeSandbox) Exec(string, []string) (ExecResult, error) {
 	return sandbox.execResult, sandbox.execErr
+}
+func (sandbox *fakeSandbox) ExecInteractive(_ string, argv []string) error {
+	sandbox.interactiveArgv = argv
+	return nil
 }
 func (sandbox *fakeSandbox) WriteFile(_, guestPath string, content []byte) error {
 	if sandbox.written == nil {
@@ -286,6 +291,25 @@ func TestRestartUnknownProject(test *testing.T) {
 func TestStartUnknownProject(test *testing.T) {
 	seedProject(test, "app")
 	_, err := newManager(&fakeBuilder{}, &fakeSandbox{}).Start("nope")
+	if !errors.Is(err, ErrUnknownProject) {
+		test.Fatalf("want ErrUnknownProject, got %v", err)
+	}
+}
+
+func TestShellOpensInteractiveLoginShell(test *testing.T) {
+	seedProject(test, "app")
+	sandbox := &fakeSandbox{}
+	if err := newManager(&fakeBuilder{}, sandbox).Shell("app"); err != nil {
+		test.Fatal(err)
+	}
+	if got := sandbox.interactiveArgv; len(got) != 2 || got[0] != "bash" || got[1] != "-l" {
+		test.Fatalf("Shell ran %v via ExecInteractive, want [bash -l]", got)
+	}
+}
+
+func TestExecInteractiveUnknownProject(test *testing.T) {
+	seedProject(test, "app")
+	err := newManager(&fakeBuilder{}, &fakeSandbox{}).ExecInteractive("nope", []string{"bash"})
 	if !errors.Is(err, ErrUnknownProject) {
 		test.Fatalf("want ErrUnknownProject, got %v", err)
 	}

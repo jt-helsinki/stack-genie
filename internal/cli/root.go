@@ -94,6 +94,7 @@ func Execute() int {
 		newStartCmd(emitter, &exitCode),
 		newStopCmd(emitter, &exitCode),
 		newRestartCmd(emitter, &exitCode),
+		newShellCmd(emitter, &exitCode),
 		newDoctorCmd(emitter, &exitCode),
 		newLogsCmd(emitter, &exitCode),
 		newCompletionCmd(emitter, &exitCode),

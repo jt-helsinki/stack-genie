@@ -100,6 +100,12 @@ type Sandbox interface {
 	Stop(name string) error
 	Destroy(name string) error
 	Exec(name string, argv []string) (ExecResult, error)
+	// ExecInteractive runs argv inside the running microVM with the CALLER'S
+	// terminal attached — a real PTY via `msb exec -t`, with stdin/stdout/stderr
+	// wired straight through — for interactive shells and agent CLIs. Only an
+	// infrastructure failure (microVM down, msb missing) is returned; the inner
+	// program's own exit (the user ending the session) is not an error.
+	ExecInteractive(name string, argv []string) error
 	// WriteFile writes content to guestPath inside the running microVM, creating
 	// parent directories. name is the human label only used for error context.
 	WriteFile(name, guestPath string, content []byte) error
@@ -376,6 +382,21 @@ func (manager Manager) Exec(project string, argv []string) (ExecResult, error) {
 		return ExecResult{}, err
 	}
 	return manager.Sandbox.Exec(Name(project), argv)
+}
+
+// ExecInteractive runs argv inside the project's running workspace microVM with
+// the caller's terminal attached (a real PTY), for interactive shells and agent
+// CLIs. Only infrastructure failures are returned (§4.5).
+func (manager Manager) ExecInteractive(project string, argv []string) error {
+	if _, err := resolveProjectRoot(project); err != nil {
+		return err
+	}
+	return manager.Sandbox.ExecInteractive(Name(project), argv)
+}
+
+// Shell opens an interactive login shell in the project's workspace microVM.
+func (manager Manager) Shell(project string) error {
+	return manager.ExecInteractive(project, []string{"bash", "-l"})
 }
 
 // InspectNetwork returns the egress policy in force on the project's running

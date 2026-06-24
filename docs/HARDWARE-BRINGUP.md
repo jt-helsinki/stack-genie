@@ -159,7 +159,10 @@ pass):
 3. `ai project create demo --os debian-trixie` → project scaffolded in the cwd
    (create does **not** start a workspace); then `ai start` builds and starts its
    workspace microVM.
-4. `ai workspace exec demo -- uname -a` → runs inside the microVM.
+4. `ai workspace exec demo -- uname -a` → runs inside the microVM (one-shot).
+   `ai workspace shell demo` (or `ai shell` from the project dir) → a real
+   interactive login PTY in the microVM via `msb exec -t` (verify line editing,
+   Ctrl-C, and a clean exit back to the host).
 5. `ai secrets set openai --stdin` + `ai secrets map openai --env OPENAI_API_KEY`;
    `ai models test gpt-5` → works (real key lives in LiteLLM, only a scoped
    virtual key in the workspace).

@@ -53,9 +53,80 @@ func newWorkspaceCmd(emitter *output.Emitter, exit *int) *cobra.Command {
 		newWorkspaceRestartCmd(emitter, exit),
 		newWorkspaceDestroyCmd(emitter, exit),
 		newWorkspaceExecCmd(emitter, exit),
+		newWorkspaceShellCmd(emitter, exit),
 		newWorkspaceDoctorCmd(emitter, exit),
 	)
 	return cmd
+}
+
+// openWorkspaceShell is the shared body of `ai shell` / `ai workspace shell`: an
+// interactive login shell inside the project's running workspace microVM (a real
+// PTY via msb exec -t). It is interactive-only — it owns the terminal and emits
+// no JSON envelope — so it is rejected under --json / a non-TTY (exit 2). On a
+// clean exit it leaves no stdout envelope (like `ai ui`).
+func openWorkspaceShell(emitter *output.Emitter, exit *int, name string) {
+	if !interactive(emitter) {
+		*exit = emitter.Failure("workspace.shell", output.Errorf(output.ExitInvalidInput,
+			"ai shell is interactive and needs a terminal (not available with --json or when piped)"))
+		return
+	}
+	if err := workspace.RealManager(goruntime.GOOS, nowRFC3339).Shell(name); err != nil {
+		*exit = emitter.Failure("workspace.shell", mapWorkspaceErr(err))
+		return
+	}
+	*exit = output.ExitOK
+}
+
+// newWorkspaceShellCmd builds `ai workspace shell [project]`.
+func newWorkspaceShellCmd(emitter *output.Emitter, exit *int) *cobra.Command {
+	return &cobra.Command{
+		Use:               "shell [project]",
+		Short:             "Open an interactive shell inside the project workspace",
+		Args:              cobra.MaximumNArgs(1),
+		ValidArgsFunction: completeProjectArg,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			// Resolve the project before the TTY gate only when a name might come
+			// from the arg/flag; the gate itself doesn't need it, but a bad project
+			// should still report cleanly, so gate first (interactive is the cheap
+			// check) then resolve.
+			if !interactive(emitter) {
+				*exit = emitter.Failure("workspace.shell", output.Errorf(output.ExitInvalidInput,
+					"ai shell is interactive and needs a terminal (not available with --json or when piped)"))
+				return nil
+			}
+			name, err := resolveProjectName(cmd, firstArg(args))
+			if err != nil {
+				*exit = emitter.Failure("workspace.shell", err)
+				return nil
+			}
+			openWorkspaceShell(emitter, exit, name)
+			return nil
+		},
+	}
+}
+
+// newShellCmd builds the top-level `ai shell` (shortcut for the current
+// directory's project — `ai workspace shell`).
+func newShellCmd(emitter *output.Emitter, exit *int) *cobra.Command {
+	return &cobra.Command{
+		Use:   "shell",
+		Short: "Open an interactive shell in the current directory's workspace (shortcut for `ai workspace shell`)",
+		Args:  cobra.NoArgs,
+		RunE: func(_ *cobra.Command, _ []string) error {
+			if !interactive(emitter) {
+				*exit = emitter.Failure("workspace.shell", output.Errorf(output.ExitInvalidInput,
+					"ai shell is interactive and needs a terminal (not available with --json or when piped)"))
+				return nil
+			}
+			name, err := cwdProjectName()
+			if err != nil {
+				*exit = emitter.Failure("workspace.shell", err)
+				return nil
+			}
+			openWorkspaceShell(emitter, exit, name)
+			return nil
+		},
+	}
 }
 
 // newWorkspaceDoctorCmd builds `ai workspace doctor <project>` (CLI §12.1, AT

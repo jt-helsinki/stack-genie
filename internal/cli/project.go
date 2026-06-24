@@ -223,16 +223,19 @@ func attachWorkspace(emitter *output.Emitter, exit *int, name string) {
 		return
 	}
 	manager := workspace.RealManager(goruntime.GOOS, nowRFC3339)
-	shell := os.Getenv("SHELL")
-	if shell == "" {
-		shell = "/bin/sh"
+	// Without a terminal (e.g. --json) we can't open a shell — report the started
+	// workspace instead.
+	if !interactive(emitter) {
+		*exit = emitter.Success("project.create", map[string]any{"project": name, "attached": false})
+		return
 	}
-	result, err := manager.Exec(name, []string{shell, "-l"})
-	if err != nil {
+	// Hand the terminal to a real interactive login shell in the microVM (a PTY
+	// via msb exec -t); the inner shell exiting is a clean end, not a failure.
+	if err := manager.Shell(name); err != nil {
 		*exit = emitter.Failure("project.create", mapWorkspaceErr(err))
 		return
 	}
-	*exit = emitter.Success("project.create", result)
+	*exit = output.ExitOK
 }
 
 // createPlan is the ordered, side-effect-free action list for --dry-run (§17.1).

@@ -627,6 +627,25 @@ Exit semantics — **platform failure is distinct from inner-command failure**:
 
 ---
 
+## 4.5a Interactive Shell (`ai shell` / `ai workspace shell`)
+
+```bash
+ai shell                      # the current directory's project
+ai workspace shell [project]
+```
+
+Opens an **interactive login shell inside the running workspace microVM** — a real
+PTY via `msb exec -t`, with the caller's stdin/stdout/stderr wired straight
+through (distinct from `ai workspace exec`, which is one-shot and buffered). It is
+**interactive-only**: it owns the terminal and emits no JSON envelope, so under
+`--json` or a non-TTY it is exit `2`. On a clean exit (the shell ends) there is no
+stdout envelope, like `ai ui`. The same path backs the TUI Project view's `e` key
+(via `tea.ExecProcess`) and the `ai project create` attach-to-existing flow. A
+platform failure (workspace not running, msb missing) maps per §18 (3/4); the
+inner shell exiting is a clean end, not a failure.
+
+---
+
 ## 4.6 Lifecycle Shortcuts (`ai start` / `ai stop` / `ai restart`)
 
 ```bash id="c11b"

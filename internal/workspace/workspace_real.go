@@ -180,6 +180,32 @@ func (sandbox realSandbox) Exec(name string, argv []string) (ExecResult, error) 
 	return ExecResult{}, fmt.Errorf("msb exec %s: %w", name, err)
 }
 
+// ExecInteractive runs argv inside the running microVM attached to the caller's
+// terminal: `msb exec -t <name> -- <argv>` allocates a PTY, and stdin/stdout/
+// stderr are wired straight through (no buffering), so interactive shells and
+// agent CLIs work. The inner program's non-zero exit (the user ending the
+// session, Ctrl-C, etc.) is NOT a platform error — only a failure to launch msb
+// is. Caller is responsible for owning the terminal (the CLI runs it in the
+// foreground; the TUI runs it via tea.ExecProcess).
+func (sandbox realSandbox) ExecInteractive(name string, argv []string) error {
+	if err := sandbox.ensureInstalled(); err != nil {
+		return err
+	}
+	args := append([]string{"exec", "-t", name, "--"}, argv...)
+	command := exec.Command("msb", args...)
+	command.Stdin = os.Stdin
+	command.Stdout = os.Stdout
+	command.Stderr = os.Stderr
+	if err := command.Run(); err != nil {
+		var exitError *exec.ExitError
+		if errors.As(err, &exitError) {
+			return nil // the inner program exited non-zero — normal end of session
+		}
+		return fmt.Errorf("msb exec -t %s: %w", name, err)
+	}
+	return nil
+}
+
 // WriteFile writes content to guestPath inside the running microVM as the
 // `workspace` user (the image's home owner), creating parent directories. It
 // pipes the content to `cat` over stdin so no file payload appears in argv. A

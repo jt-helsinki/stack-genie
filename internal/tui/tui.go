@@ -288,8 +288,10 @@ func (application *app) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return application, application.views[application.projectsIndex].Init()
 
 	case views.ExecRequestedMsg:
-		// Open an interactive shell inside the project's workspace microVM.
-		command := exec.Command(executablePath(), "workspace", "exec", message.Project, "--", "/bin/sh")
+		// Open an interactive shell inside the project's workspace microVM — a real
+		// PTY via `ai workspace shell` (msb exec -t). tea.ExecProcess hands the
+		// terminal to the child and restores the TUI on exit.
+		command := exec.Command(executablePath(), "workspace", "shell", message.Project)
 		return application, tea.ExecProcess(command, func(execErr error) tea.Msg {
 			return execFinishedMsg{err: execErr}
 		})
