@@ -160,19 +160,10 @@ func executablePath() string {
 	return path
 }
 
-// createFinishedMsg / execFinishedMsg report that a suspended subprocess (the
-// project-create wizard / an in-workspace shell) has returned.
+// createFinishedMsg reports that the suspended project-create wizard subprocess
+// has returned. (Workspace lifecycle / shell / attach run in the live embedded
+// terminal overlay instead — see openTerminal — so they have no finished message.)
 type createFinishedMsg struct{ err error }
-type execFinishedMsg struct{ err error }
-
-// attachFinishedMsg reports that a suspended `ai workspace attach` subprocess (a
-// tmux session attach from the Sessions view) has returned.
-type attachFinishedMsg struct {
-	// session is the session the user was attached to, so the Sessions view can
-	// refresh against it on return.
-	session string
-	err     error
-}
 
 // projectInfo returns the current state of one project by name (over project.List).
 func projectInfo(name string) (project.Entry, bool, error) {
@@ -231,6 +222,12 @@ type app struct {
 	// createView is the modal directory-picker overlay for creating a new
 	// project; non-nil only while it is open (it is not a menu/slice view).
 	createView *views.Create
+
+	// terminal is the live embedded-terminal overlay (workspace start/stop/…,
+	// shell, agent, attach); non-nil only while it is open. While set it owns all
+	// input — keystrokes are forwarded to the PTY — except ctrl+q (force-detach)
+	// and, once the process has exited, any key (close).
+	terminal *views.Terminal
 
 	paletteOpen   bool
 	palette       []paletteItem
@@ -321,47 +318,34 @@ func (application *app) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		application.switchTab(application.projectsIndex)
 		return application, application.projectsHub.Reset()
 
-	case views.ExecRequestedMsg:
-		// Open an interactive shell inside the project's workspace microVM — a real
-		// PTY via `ai workspace shell` (msb exec -t). tea.ExecProcess hands the
-		// terminal to the child and restores the TUI on exit.
-		command := exec.Command(executablePath(), "workspace", "shell", message.Project)
-		return application, tea.ExecProcess(command, func(execErr error) tea.Msg {
-			return execFinishedMsg{err: execErr}
-		})
-
-	case execFinishedMsg:
-		return application, application.projectDetail.Init()
-
 	case views.WorkspaceActionRequestedMsg:
-		// Run a workspace lifecycle action as a suspended subprocess so msb's
-		// (verbose) image-build / boot progress streams to the real terminal rather
-		// than corrupting the TUI's alt-screen, and a destructive `destroy` can
-		// prompt for confirmation. tea.ExecProcess restores the TUI on return.
-		command := exec.Command(executablePath(), "workspace", message.Action, message.Project)
-		return application, tea.ExecProcess(command, func(execErr error) tea.Msg {
-			return execFinishedMsg{err: execErr}
-		})
+		// Run a workspace lifecycle action (start/stop/restart/destroy) in the live
+		// embedded terminal: msb's verbose build/boot progress streams INTO the pane
+		// (no suspend, no flicker) and a destructive `destroy` can prompt inline.
+		return application, application.openTerminal(
+			message.Action+" "+message.Project,
+			[]string{"workspace", message.Action, message.Project})
+
+	case views.ExecRequestedMsg:
+		// Open an interactive shell inside the project's workspace microVM, live in
+		// the pane (a real PTY via `ai workspace shell` → msb exec -t).
+		return application, application.openTerminal(
+			"shell "+message.Project,
+			[]string{"workspace", "shell", message.Project})
 
 	case views.AttachRequestedMsg:
-		// Attach to (or create) a workspace session — a real PTY via `ai workspace
-		// attach <session> <project>` (tmux new-session -A). tea.ExecProcess hands
-		// the terminal to the child and restores the TUI on exit.
-		command := exec.Command(executablePath(), "workspace", "attach", message.Session, message.Project)
-		session := message.Session
-		return application, tea.ExecProcess(command, func(execErr error) tea.Msg {
-			return attachFinishedMsg{session: session, err: execErr}
-		})
-
-	case attachFinishedMsg:
-		// Back from the attach — refresh the Sessions view (a session may have been
-		// created or killed) if it is wired.
-		if application.sessionsView != nil {
-			return application, application.sessionsView.Init()
-		}
-		return application, nil
+		// Attach to (or create) a workspace session, live in the pane (`ai workspace
+		// attach <session> <project>` → tmux new-session -A).
+		return application, application.openTerminal(
+			"attach "+message.Session+" "+message.Project,
+			[]string{"workspace", "attach", message.Session, message.Project})
 
 	case tea.KeyMsg:
+		// While the live terminal overlay is open it owns input (keystrokes go to
+		// the PTY); ctrl+q force-detaches and, once the process exits, any key closes.
+		if application.terminal != nil {
+			return application.updateTerminal(message)
+		}
 		// While the create overlay is open it owns all input.
 		if application.createView != nil {
 			return application, application.createView.Update(msg)
@@ -416,12 +400,46 @@ func (application *app) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	}
 
 	// Delegate everything else (ticks, refresh results, navigation, the
-	// filepicker's own messages) to the create overlay if open, else the
-	// active view.
+	// filepicker's own messages) to the live terminal / create overlay if open,
+	// else the active view. The terminal's own dirty/exit messages drive its
+	// render loop here.
+	if application.terminal != nil {
+		return application, application.terminal.Update(msg)
+	}
 	if application.createView != nil {
 		return application, application.createView.Update(msg)
 	}
 	return application, application.views[application.current].Update(msg)
+}
+
+// openTerminal opens the live embedded-terminal overlay running `ai <args…>` on a
+// PTY, sized to the body. Workspace output streams into the pane (no suspend) and
+// interactive programs run inside it.
+func (application *app) openTerminal(label string, args []string) tea.Cmd {
+	argv := append([]string{executablePath()}, args...)
+	term := views.NewTerminal(label, argv)
+	bodyWidth, bodyHeight := application.bodyContentSize()
+	term.SetSize(bodyWidth, bodyHeight)
+	application.terminal = term
+	return term.Init()
+}
+
+// updateTerminal routes a key while the terminal overlay is open: ctrl+q
+// force-detaches; once the process has exited any key closes; otherwise the key is
+// forwarded to the PTY. Closing refreshes the project detail + sessions (a start /
+// stop / kill may have changed them).
+func (application *app) updateTerminal(key tea.KeyMsg) (tea.Model, tea.Cmd) {
+	term := application.terminal
+	if key.String() == "ctrl+q" || term.Exited() {
+		term.Close()
+		application.terminal = nil
+		commands := []tea.Cmd{application.projectDetail.Init()}
+		if application.sessionsView != nil {
+			commands = append(commands, application.sessionsView.Init())
+		}
+		return application, tea.Batch(commands...)
+	}
+	return application, term.Update(key)
 }
 
 // switchTab moves the active tab to index, wrapping around the ends so Tab/←/→ cycle
@@ -443,6 +461,9 @@ func (application *app) resizeViews() {
 	}
 	if application.createView != nil {
 		application.createView.SetSize(bodyWidth, bodyHeight)
+	}
+	if application.terminal != nil {
+		application.terminal.SetSize(bodyWidth, bodyHeight)
 	}
 }
 
@@ -512,6 +533,8 @@ func (application *app) View() string {
 	}
 	var content string
 	switch {
+	case application.terminal != nil:
+		content = application.terminal.View()
 	case application.createView != nil:
 		content = application.createView.View()
 	case application.helpOpen:

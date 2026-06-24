@@ -130,6 +130,11 @@ func (application *app) commandsPanel(_ int) string {
 // when one is open, else the active view's Hints() followed by the global keys.
 func (application *app) currentHints() []keyHint {
 	switch {
+	case application.terminal != nil:
+		if application.terminal.Exited() {
+			return []keyHint{{"any key", "close"}}
+		}
+		return []keyHint{{"keys", "→ terminal"}, {"ctrl+q", "detach"}}
 	case application.createView != nil:
 		return parseHints(application.createView.Hints())
 	case application.helpOpen:
@@ -177,10 +182,10 @@ func (application *app) tabBar() string {
 	for index, view := range application.views {
 		title := view.Title()
 		if application.createView == nil && index == application.current {
-			cells = append(cells, activeStyle.Render("["+title+"]"))
-			continue
+			cells = append(cells, activeStyle.Render(title))
+		} else {
+			cells = append(cells, inactiveStyle.Render(title))
 		}
-		cells = append(cells, inactiveStyle.Render(title))
 	}
 	return lipgloss.JoinHorizontal(lipgloss.Top, cells...)
 }
@@ -198,8 +203,12 @@ func (application *app) body(content string) string {
 	return border.Render(content)
 }
 
-// activeTitle is the active view's title, or the create overlay's while it is open.
+// activeTitle is the active view's title, or the open overlay's (terminal label /
+// create) while one is open.
 func (application *app) activeTitle() string {
+	if application.terminal != nil {
+		return "term:" + application.terminal.Label()
+	}
 	if application.createView != nil {
 		return application.createView.Title()
 	}

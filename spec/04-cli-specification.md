@@ -1155,11 +1155,9 @@ below).
   acted on directly; `esc` backs UP to the switcher. The per-project sub-tabs are:
   * **Project** — the project's summary + workspace lifecycle `s`/`x`/`r`/`d`
     (start/stop/restart/destroy) and `e` (an interactive shell in the workspace).
-    Each lifecycle action runs as a **suspended subprocess** (`ai workspace
-    <action>` via `tea.ExecProcess`), so msb's image-build / boot progress streams
-    to the real terminal (with native scrollback) instead of corrupting the
-    alt-screen, and `destroy` can prompt for confirmation; the TUI is restored and
-    refreshed on return.
+    Each of these opens the **live embedded terminal** overlay (see below) running
+    the corresponding `ai workspace …` command, so the work happens IN the pane —
+    the TUI is never suspended.
   * **Network** — egress mode + allow-list + published ports; `m` cycles the mode.
   * **Context** — Headroom strategy + Caveman level; `s`/`c` cycle them.
   * **Secrets** — credential names (never values); `enter` describes the selected
@@ -1167,14 +1165,25 @@ below).
     deletes one.
   * **Sessions** — the persistent tmux sessions in the workspace (NAME / ATTACHED /
     IDLE); `a`/`enter` attach the selected session, `n` starts a default agent
-    session, `k` kills the selected one, `r` refreshes. Attaching runs `ai workspace
-    attach <session> <project>` via `tea.ExecProcess` (the same path as the Project
-    sub-tab's `e` shell).
+    session, `k` kills the selected one, `r` refreshes. Attaching opens the live
+    embedded terminal running `ai workspace attach <session> <project>` (the same
+    pane as the Project sub-tab's `e` shell).
 * **Models** — LiteLLM routing status; `t` tests the default model.
 * **Settings** — a live **theme** picker (every `ai theme` theme; `enter` applies
   the selected one to the whole UI immediately and persists it, `↑/↓` select) above
   a read-only platform info block (deployment role + model gateway, changed via
   `ai gateway` / `ai setup`).
+
+**Live embedded terminal.** Workspace lifecycle (start/stop/restart/destroy) and
+the interactive sessions (shell/agent/attach) run inside a **live terminal overlay**
+that fills the body — the platform runs the corresponding `ai workspace …` command
+on a pseudo-terminal (`creack/pty`) and renders the program's screen with a vt10x
+emulator, forwarding keystrokes to it. So msb's build/boot progress AND a full
+interactive shell (or agent CLI) both render IN the pane, with the TUI chrome around
+them and never suspended. While it is open, keys go to the program; **ctrl+q**
+force-detaches, and once the program exits **any key** closes the overlay (the
+project detail + sessions refresh on close). The in-VM behavior of `msb exec -t`
+over this PTY is verified during hardware bring-up.
 
 The `:` menu is **type-to-filter** (type to narrow, ↑/↓ + enter to choose) over the
 top-level tabs. On the list views `d` opens a scrollable describe pane and `l`

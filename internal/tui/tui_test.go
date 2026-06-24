@@ -243,20 +243,26 @@ func TestCreateConfirmedClosesOverlayAndRunsWizard(test *testing.T) {
 	}
 }
 
-func TestExecRequestedReturnsCommand(test *testing.T) {
+// ExecRequestedMsg opens the live embedded-terminal overlay (running the shell in
+// the pane) and returns its spawn command. The spawn is deferred to that command,
+// so this test never launches a process by merely sending the message.
+func TestExecRequestedOpensTerminal(test *testing.T) {
 	application := &app{
 		views:         []View{&fakeView{title: "Project"}},
 		projectDetail: views.NewProject(func(string) (project.Entry, bool, error) { return project.Entry{}, false, nil }),
 	}
-	if _, cmd := application.Update(views.ExecRequestedMsg{Project: "app"}); cmd == nil {
-		test.Fatal("ExecRequestedMsg must return a command (the in-workspace shell)")
+	_, cmd := application.Update(views.ExecRequestedMsg{Project: "app"})
+	if application.terminal == nil {
+		test.Fatal("ExecRequestedMsg must open the terminal overlay")
+	}
+	if cmd == nil {
+		test.Fatal("opening the terminal must return its spawn command")
 	}
 }
 
-// AttachRequestedMsg suspends the TUI and runs `ai workspace attach` via
-// tea.ExecProcess (it must return a command), refreshing the Sessions view on
-// return (attachFinishedMsg).
-func TestAttachRequestedReturnsCommand(test *testing.T) {
+// AttachRequestedMsg also opens the terminal overlay (running `ai workspace attach`
+// live in the pane).
+func TestAttachRequestedOpensTerminal(test *testing.T) {
 	sessionsView := views.NewSessions(
 		func() ([]workspace.Session, error) { return nil, nil },
 		func(string) error { return nil },
@@ -266,9 +272,11 @@ func TestAttachRequestedReturnsCommand(test *testing.T) {
 		views:        []View{sessionsView},
 		sessionsView: sessionsView,
 	}
-	_, cmd := application.Update(views.AttachRequestedMsg{Project: "app", Session: "shell"})
-	if cmd == nil {
-		test.Fatal("AttachRequestedMsg must return a command (the attach subprocess)")
+	if _, cmd := application.Update(views.AttachRequestedMsg{Project: "app", Session: "shell"}); cmd == nil {
+		test.Fatal("AttachRequestedMsg must return the terminal spawn command")
+	}
+	if application.terminal == nil {
+		test.Fatal("AttachRequestedMsg must open the terminal overlay")
 	}
 }
 
