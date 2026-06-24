@@ -1,6 +1,9 @@
 package acceptance
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 // Project creation in acceptance is NON-INTERACTIVE, via flags. Under --json the
 // interactive `project create` wizard is deliberately disabled (the programmatic
@@ -18,4 +21,20 @@ func (harness *Harness) CreateProject(test *testing.T, name string) (Envelope, i
 func (harness *Harness) CreateProjectWithOS(test *testing.T, name, osKey string) (Envelope, int) {
 	test.Helper()
 	return harness.Run(test, "project", "create", name, "--os", osKey)
+}
+
+// CreateProjectFull creates a project pinning every input — base OS, agent CLIs
+// (--agents), and software stacks (--stacks) — so the §6.1/§6.3/§6.4 file-probe
+// tests can drive an exact selection non-interactively. Empty agents/stacks
+// slices fall back to the create command's own defaults (opencode,pi / none).
+func (harness *Harness) CreateProjectFull(test *testing.T, name, osKey string, agents, stacks []string) (Envelope, int) {
+	test.Helper()
+	args := []string{"project", "create", name, "--os", osKey}
+	if len(agents) > 0 {
+		args = append(args, "--agents", strings.Join(agents, ","))
+	}
+	if len(stacks) > 0 {
+		args = append(args, "--stacks", strings.Join(stacks, ","))
+	}
+	return harness.Run(test, args...)
 }
