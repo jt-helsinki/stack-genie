@@ -452,7 +452,12 @@ Behavior (on completion):
 * uses the current directory as the project root (no git is run)
 * **writes `<project>/.ai-platform/Dockerfile`** by seeding it from the selected
   OS template and adding the selected software stacks (step 5) and agent CLIs
-  (step 3) (architecture §25, §12); from then on the project owns that Dockerfile
+  (step 3) (architecture §25, §12); from then on the project owns that Dockerfile.
+  Before composing, create **refreshes the on-disk templates**
+  (`~/.ai-platform/templates`) from the running binary's embedded copies — composition
+  reads the on-disk copies, so this keeps a new project in sync with the installed
+  binary even when those copies were last written by an older `ai` (a binary upgrade
+  alone suffices; no separate `ai setup` re-run is needed)
 * **(Slice 2+)** installs the Caveman skill into
   `<project>/.ai-platform/skills/caveman/` (§9); in Slice 1 no context-optimization
   skill is seeded

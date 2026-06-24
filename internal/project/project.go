@@ -18,6 +18,7 @@ import (
 	"github.com/jt-helsinki/ideal-robot/internal/overlay"
 	"github.com/jt-helsinki/ideal-robot/internal/paths"
 	"github.com/jt-helsinki/ideal-robot/internal/state"
+	"github.com/jt-helsinki/ideal-robot/internal/templates"
 	"github.com/jt-helsinki/ideal-robot/internal/workspace"
 )
 
@@ -127,6 +128,15 @@ func Scaffold(spec Spec, createdAt string) (string, error) {
 		return "", err
 	}
 
+	// Refresh the on-disk templates (~/.ai-platform/templates) from THIS binary's
+	// embedded copies before composing. envimage reads the on-disk copies, so an
+	// install left by an OLDER `ai` (e.g. before tmux was added to the base image)
+	// would otherwise silently seed a stale Dockerfile — a binary upgrade alone
+	// wouldn't fix it without re-running `ai setup`. Install overwrites and is
+	// idempotent (repo-layout §1.5), so create always reflects the running binary.
+	if err := templates.Install(); err != nil {
+		return "", err
+	}
 	// Dockerfile = OS base + selected stacks + selected agent CLIs (§25, §12).
 	if err := envimage.Write(root, spec.OS, spec.Stacks, spec.AgentCLIs); err != nil {
 		return "", err

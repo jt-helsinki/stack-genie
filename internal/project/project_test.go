@@ -69,6 +69,37 @@ func TestScaffoldWritesArtifactsAndIndex(test *testing.T) {
 	}
 }
 
+// TestScaffoldRefreshesStaleTemplates: create must overwrite an on-disk template
+// left by an OLDER ai (here a tmux-less base) with THIS binary's embedded copy, so
+// a binary upgrade alone fixes the generated Dockerfile without re-running setup.
+func TestScaffoldRefreshesStaleTemplates(test *testing.T) {
+	test.Setenv("HOME", test.TempDir())
+	// Seed a stale on-disk base template (no tmux), as an old `ai setup` would have.
+	root, err := templates.InstalledRoot()
+	if err != nil {
+		test.Fatal(err)
+	}
+	stalePath := filepath.Join(root, "dockerfiles", "debian-trixie", "Dockerfile")
+	if err := os.MkdirAll(filepath.Dir(stalePath), 0o755); err != nil {
+		test.Fatal(err)
+	}
+	if err := os.WriteFile(stalePath, []byte("FROM debian:trixie-slim\nRUN apt-get install -y curl git\n"), 0o644); err != nil {
+		test.Fatal(err)
+	}
+
+	projectRoot, err := Scaffold(sampleSpec(), "t")
+	if err != nil {
+		test.Fatal(err)
+	}
+	dockerfile, err := os.ReadFile(filepath.Join(projectRoot, ".ai-platform", "Dockerfile"))
+	if err != nil {
+		test.Fatal(err)
+	}
+	if !strings.Contains(string(dockerfile), "tmux") {
+		test.Errorf("create must refresh stale on-disk templates from the embed (expected tmux in base):\n%s", dockerfile)
+	}
+}
+
 func TestScaffoldAtExplicitRoot(test *testing.T) {
 	withTemplates(test)
 	home, _ := os.UserHomeDir()
