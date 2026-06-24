@@ -107,6 +107,21 @@ func seedProject(test *testing.T, project string) string {
 	return root
 }
 
+// seedStartedWorkspace seeds a project AND a started lifecycle handle, so the
+// interactive entry points (which require a running workspace) proceed.
+func seedStartedWorkspace(test *testing.T, project string) string {
+	test.Helper()
+	root := seedProject(test, project)
+	handle := &state.Workspace{
+		ID: Name(project), Project: project,
+		Status: state.StatusStarted, Created: "t", LastStarted: "t",
+	}
+	if err := state.OpenStore(root).SaveWorkspace(handle); err != nil {
+		test.Fatal(err)
+	}
+	return root
+}
+
 func newManager(builder Builder, sandbox Sandbox) Manager {
 	return Manager{
 		Builder: builder,
@@ -316,7 +331,7 @@ func TestStartUnknownProject(test *testing.T) {
 // Shell opens a PERSISTENT, reattachable tmux session named "shell" in /workspace
 // running a login shell (tmux new-session -A makes it create-or-attach).
 func TestShellOpensPersistentTmuxSession(test *testing.T) {
-	seedProject(test, "app")
+	seedStartedWorkspace(test, "app")
 	sandbox := &fakeSandbox{}
 	if err := newManager(&fakeBuilder{}, sandbox).Shell("app"); err != nil {
 		test.Fatal(err)
@@ -330,7 +345,7 @@ func TestShellOpensPersistentTmuxSession(test *testing.T) {
 // Agent starts (or reattaches to) a per-CLI tmux session named after the CLI,
 // running that CLI's launch command in /workspace.
 func TestAgentStartsPerCLITmuxSession(test *testing.T) {
-	seedProject(test, "app")
+	seedStartedWorkspace(test, "app")
 	sandbox := &fakeSandbox{}
 	if err := newManager(&fakeBuilder{}, sandbox).Agent("app", "opencode"); err != nil {
 		test.Fatal(err)
@@ -343,7 +358,7 @@ func TestAgentStartsPerCLITmuxSession(test *testing.T) {
 
 // claude-code maps to the `claude` launch command but keeps its own session name.
 func TestAgentMapsClaudeCodeLaunch(test *testing.T) {
-	seedProject(test, "app")
+	seedStartedWorkspace(test, "app")
 	sandbox := &fakeSandbox{}
 	if err := newManager(&fakeBuilder{}, sandbox).Agent("app", "claude-code"); err != nil {
 		test.Fatal(err)
@@ -371,7 +386,7 @@ func TestAgentUnknownCLI(test *testing.T) {
 // Attach attaches to (or creates) a named session with no command (so a fresh
 // session opens the default shell); a blank session attaches the default "shell".
 func TestAttachSession(test *testing.T) {
-	seedProject(test, "app")
+	seedStartedWorkspace(test, "app")
 	sandbox := &fakeSandbox{}
 	if err := newManager(&fakeBuilder{}, sandbox).Attach("app", "opencode"); err != nil {
 		test.Fatal(err)
@@ -394,7 +409,7 @@ func TestAttachSession(test *testing.T) {
 // ListSessions parses tmux's tab-separated list-sessions output (name, attached,
 // activity), reading the attached flag and raw activity epoch.
 func TestListSessionsParsesOutput(test *testing.T) {
-	seedProject(test, "app")
+	seedStartedWorkspace(test, "app")
 	sandbox := &fakeSandbox{execResult: ExecResult{
 		ExitCode: 0,
 		Stdout:   "shell\t1\t1700000000\nopencode\t0\t1700000500\n",
@@ -422,7 +437,7 @@ func TestListSessionsParsesOutput(test *testing.T) {
 // server running" on stderr — that is ZERO sessions, not an error. Exec carries
 // the inner non-zero exit as data, so the check is on the ExecResult.
 func TestListSessionsNoServerIsEmpty(test *testing.T) {
-	seedProject(test, "app")
+	seedStartedWorkspace(test, "app")
 	sandbox := &fakeSandbox{execResult: ExecResult{ExitCode: 1, Stderr: "no server running on /tmp/tmux-1000/default"}}
 	sessions, err := newManager(&fakeBuilder{}, sandbox).ListSessions("app")
 	if err != nil {
@@ -435,7 +450,7 @@ func TestListSessionsNoServerIsEmpty(test *testing.T) {
 
 // A non-zero tmux exit that is NOT "no server running" is a real failure.
 func TestListSessionsOtherFailureIsError(test *testing.T) {
-	seedProject(test, "app")
+	seedStartedWorkspace(test, "app")
 	sandbox := &fakeSandbox{execResult: ExecResult{ExitCode: 1, Stderr: "tmux: command not found"}}
 	if _, err := newManager(&fakeBuilder{}, sandbox).ListSessions("app"); err == nil {
 		test.Fatal("a non-'no server running' failure must be an error")
@@ -493,31 +508,47 @@ func TestExecInteractiveUnknownProject(test *testing.T) {
 	}
 }
 
-// TestInteractiveRequiresRunningWorkspace: a shell/agent/sessions request against
-// a workspace whose microVM is not running fails cleanly with ErrNotStarted
-// (rather than attaching a PTY to a missing VM, which can corrupt the terminal).
+// TestInteractiveRequiresRunningWorkspace: a shell/agent/attach/sessions request
+// against a workspace that was never started fails cleanly with ErrNotStarted
+// (rather than poking msb — `msb exec -t` against a missing VM can corrupt the
+// terminal).
 func TestInteractiveRequiresRunningWorkspace(test *testing.T) {
-	seedProject(test, "app")
-	// InspectNetwork reports no sandbox (the workspace was never started).
-	notRunning := func() *fakeSandbox { return &fakeSandbox{inspectErr: ErrNotRunning} }
+	seedProject(test, "app") // no lifecycle handle → never started
+	sandbox := &fakeSandbox{}
+	manager := newManager(&fakeBuilder{}, sandbox)
 
-	if err := newManager(&fakeBuilder{}, notRunning()).Shell("app"); !errors.Is(err, ErrNotStarted) {
-		test.Fatalf("Shell on a not-running workspace: want ErrNotStarted, got %v", err)
+	if err := manager.Shell("app"); !errors.Is(err, ErrNotStarted) {
+		test.Fatalf("Shell on a never-started workspace: want ErrNotStarted, got %v", err)
 	}
-	if err := newManager(&fakeBuilder{}, notRunning()).Agent("app", "opencode"); !errors.Is(err, ErrNotStarted) {
-		test.Fatalf("Agent on a not-running workspace: want ErrNotStarted, got %v", err)
+	if err := manager.Agent("app", "opencode"); !errors.Is(err, ErrNotStarted) {
+		test.Fatalf("Agent on a never-started workspace: want ErrNotStarted, got %v", err)
 	}
-	if err := newManager(&fakeBuilder{}, notRunning()).Attach("app", "shell"); !errors.Is(err, ErrNotStarted) {
-		test.Fatalf("Attach on a not-running workspace: want ErrNotStarted, got %v", err)
+	if err := manager.Attach("app", "shell"); !errors.Is(err, ErrNotStarted) {
+		test.Fatalf("Attach on a never-started workspace: want ErrNotStarted, got %v", err)
 	}
-	if _, err := newManager(&fakeBuilder{}, notRunning()).ListSessions("app"); !errors.Is(err, ErrNotStarted) {
-		test.Fatalf("ListSessions on a not-running workspace: want ErrNotStarted, got %v", err)
+	if _, err := manager.ListSessions("app"); !errors.Is(err, ErrNotStarted) {
+		test.Fatalf("ListSessions on a never-started workspace: want ErrNotStarted, got %v", err)
 	}
-	// A not-running shell must NOT have attached a PTY (no msb exec -t).
-	sandbox := notRunning()
-	_ = newManager(&fakeBuilder{}, sandbox).Shell("app")
 	if sandbox.interactiveArgv != nil {
 		test.Fatalf("a not-running shell must not attach a PTY, ran %v", sandbox.interactiveArgv)
+	}
+}
+
+// TestStoppedWorkspaceShellFailsCleanly is the regression for the hang: a STOPPED
+// (but existing) workspace must fail fast with ErrNotStarted, not invoke `msb exec`
+// (which hangs on a stopped microVM).
+func TestStoppedWorkspaceShellFailsCleanly(test *testing.T) {
+	root := seedProject(test, "app")
+	stopped := &state.Workspace{ID: Name("app"), Project: "app", Status: state.StatusStopped, Created: "t"}
+	if err := state.OpenStore(root).SaveWorkspace(stopped); err != nil {
+		test.Fatal(err)
+	}
+	sandbox := &fakeSandbox{}
+	if err := newManager(&fakeBuilder{}, sandbox).Shell("app"); !errors.Is(err, ErrNotStarted) {
+		test.Fatalf("Shell on a stopped workspace must fail cleanly, got %v", err)
+	}
+	if sandbox.interactiveArgv != nil {
+		test.Fatal("a stopped-workspace shell must not attach a PTY (it would hang)")
 	}
 }
 
@@ -525,8 +556,8 @@ func TestInteractiveRequiresRunningWorkspace(test *testing.T) {
 // workspace whose image lacks tmux fails with ErrTmuxMissing (a clear remediation)
 // and never attaches the PTY — instead of msb's raw "failed to exec tmux" leak.
 func TestSessionRequiresTmuxInImage(test *testing.T) {
-	seedProject(test, "app")
-	// Running VM (inspectErr nil), but the tmux probe exits non-zero (not installed).
+	seedStartedWorkspace(test, "app")
+	// Running workspace (started handle), but the tmux probe exits non-zero (not installed).
 	noTmux := func() *fakeSandbox { return &fakeSandbox{execResult: ExecResult{ExitCode: 127}} }
 
 	sandbox := noTmux()

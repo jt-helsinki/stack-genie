@@ -688,9 +688,11 @@ under `--json`. A no-running-tmux-server workspace lists **zero** sessions, not 
 error. Platform failures (workspace not running, msb missing) map per §18 (3/4).
 The TUI **Sessions** view (§14.4) drives the same path via `ai workspace attach`.
 The interactive entry points (shell / agent / attach) and the session list first
-verify the workspace microVM is running; a not-yet-started workspace fails cleanly
-with `ErrNotStarted` (exit 2) rather than attaching a PTY to a missing VM (which can
-leave the terminal in raw mode — from the TUI the screen appears to vanish). The
+verify the workspace is **running** — they read the platform's lifecycle handle
+(set by start/stop), so a **stopped or never-started** workspace fails fast with
+`ErrNotStarted` (exit 2, "workspace is not running — run `ai workspace start`
+first") rather than invoking `msb exec`, which HANGS on a stopped microVM (and
+`msb exec -t` on a missing one can leave the terminal in raw mode). The
 TUI Project view additionally guards its `e` shell key with an inline "workspace
 not running — press s to start" hint, so it never suspends into a doomed subprocess.
 The session launchers also verify **tmux is present in the workspace image** (a

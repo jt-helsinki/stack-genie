@@ -57,10 +57,11 @@ const workspaceWorkdir = "/workspace"
 // (→ exit 2).
 var ErrUnknownProject = errors.New("unknown project")
 
-// ErrNotStarted is returned when an operation needs an existing workspace handle
-// but none has been created yet (→ exit 2): the caller should `ai workspace
-// start` first.
-var ErrNotStarted = errors.New("workspace was never started; run `ai workspace start` first")
+// ErrNotStarted is returned when an operation needs a RUNNING workspace but it is
+// stopped or was never started (→ exit 2). The message is the user-facing nudge to
+// start it; it covers both cases (the platform tracks the running state in the
+// lifecycle handle, set by start/stop).
+var ErrNotStarted = errors.New("workspace is not running — run `ai workspace start` first")
 
 // ErrAlreadyStopped lets a Sandbox.Stop signal that the microVM was already
 // stopped. Restart treats this as a no-op (it only needs the microVM down before
@@ -433,23 +434,25 @@ func (manager Manager) Exec(project string, argv []string) (ExecResult, error) {
 	return manager.Sandbox.Exec(Name(project), argv)
 }
 
-// requireRunning verifies the project's workspace microVM exists before an
-// operation that assumes it. It matters most for the interactive PTY path: `msb
-// exec -t` against a MISSING microVM can leave the terminal in raw mode, so from
-// the TUI (which runs it via tea.ExecProcess) the whole screen appears to vanish.
-// The lightweight inspect path returns ErrNotRunning when no sandbox resolves; we
-// remap that to ErrNotStarted so the caller tells the user to start it first. Any
-// other inspect outcome (success, or a transient error) lets the operation proceed
-// rather than falsely blocking a shell the user explicitly asked for.
+// requireRunning verifies the project's workspace microVM is RUNNING before an
+// operation that needs it. It reads the platform's own lifecycle handle (set by
+// start/stop) rather than poking msb, because `msb exec` against a STOPPED microVM
+// hangs (and `msb exec -t` against a missing one can leave the terminal in raw
+// mode). A stopped or never-started workspace fails fast with ErrNotStarted, whose
+// message tells the user to run `ai workspace start`.
 func (manager Manager) requireRunning(project string) error {
-	switch _, err := manager.Sandbox.InspectNetwork(Name(project)); {
-	case errors.Is(err, ErrNotRunning):
-		return fmt.Errorf("%w: %q", ErrNotStarted, project)
-	case errors.Is(err, ErrMsbMissing):
+	root, err := resolveProjectRoot(project)
+	if err != nil {
 		return err
-	default:
-		return nil
 	}
+	handle, err := manager.findHandle(root, Name(project))
+	if err != nil {
+		return err
+	}
+	if handle == nil || handle.Status != state.StatusStarted {
+		return ErrNotStarted
+	}
+	return nil
 }
 
 // ExecInteractive runs argv inside the project's running workspace microVM with
