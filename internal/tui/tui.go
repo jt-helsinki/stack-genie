@@ -26,7 +26,6 @@ import (
 	"github.com/jt-helsinki/ideal-robot/internal/secrets"
 	"github.com/jt-helsinki/ideal-robot/internal/setup"
 	"github.com/jt-helsinki/ideal-robot/internal/state"
-	"github.com/jt-helsinki/ideal-robot/internal/tui/scope"
 	"github.com/jt-helsinki/ideal-robot/internal/tui/views"
 	"github.com/jt-helsinki/ideal-robot/internal/ui"
 	"github.com/jt-helsinki/ideal-robot/internal/workspace"
@@ -44,19 +43,18 @@ type View interface {
 	SetSize(width, height int)
 }
 
-// Run resolves the startup scope from cwd, wires the views to the real platform
-// APIs, and runs the full-screen program until the user exits.
+// Run wires the views to the real platform APIs and runs the full-screen program
+// until the user exits. It always opens on the home screen (Services); the active
+// view is not persisted across restarts.
 func Run(cwd string) error {
-	resolution, err := scope.Resolve(cwd)
-	if err != nil {
-		return err
-	}
-
+	// The UI always opens on the home screen (Services) with no project selected —
+	// the active view is never persisted across restarts, and the cwd is not
+	// auto-drilled into a project (the user picks one from the Projects switcher).
+	// cwd is still kept for the create overlay's default directory.
 	application := &app{
-		cwd:            cwd,
-		currentProject: resolution.DefaultProject,
-		role:           roleLabel(),
-		gateway:        gatewayLabel(),
+		cwd:     cwd,
+		role:    roleLabel(),
+		gateway: gatewayLabel(),
 	}
 
 	deps := setup.RealDeps(goruntime.GOOS, goruntime.GOARCH, nowRFC3339)
@@ -127,13 +125,8 @@ func Run(cwd string) error {
 	application.projectDetail = projectDetail
 	application.sessionsView = sessionsView
 
-	// A project at/above the cwd opens straight into it (the hub's first sub-tab);
-	// otherwise the UI opens on the server (Services) view. The switcher reaches
-	// any project.
-	if resolution.DefaultProject != "" {
-		projectsHub.OpenProject(resolution.DefaultProject)
-		application.current = application.projectsIndex
-	}
+	// Always land on the home screen (Services, index 0 — current's zero value); a
+	// project is opened only when the user selects it from the Projects switcher.
 	application.buildPalette()
 
 	program := tea.NewProgram(application, tea.WithAltScreen(), tea.WithOutput(os.Stderr))
