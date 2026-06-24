@@ -194,6 +194,30 @@ func digit(value string) tea.KeyMsg {
 	return tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(value)}
 }
 
+// TestHeaderShowsLogoAndCommands: the header has the ASCII logo and the active
+// context's command grid (incl. the global keys).
+func TestHeaderShowsLogoAndCommands(test *testing.T) {
+	application := newTestApp("Services")
+	application.width = 120
+	header := application.header()
+	if !strings.Contains(header, "█") {
+		test.Error("header should contain the ASCII logo")
+	}
+	if !strings.Contains(header, "menu") || !strings.Contains(header, "quit") {
+		test.Errorf("header command grid missing global keys: %q", header)
+	}
+}
+
+// TestFooterShowsContext: the status line (moved down from the header) carries
+// role / gateway / scope.
+func TestFooterShowsContext(test *testing.T) {
+	application := &app{views: []View{&fakeView{title: "Services"}}, role: "standalone", gateway: "http://x:18787"}
+	footer := application.footer()
+	if !strings.Contains(footer, "role:standalone") || !strings.Contains(footer, "scope:server") {
+		test.Errorf("footer missing context: %q", footer)
+	}
+}
+
 // TestTabBarListsAllTitles confirms every view's Title appears in the tab bar.
 func TestTabBarListsAllTitles(test *testing.T) {
 	titles := []string{"Services", "Projects", "Project", "Network", "Context"}

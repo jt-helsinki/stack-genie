@@ -478,21 +478,16 @@ func (application *app) helpView() string {
 	return help.String()
 }
 
+// footer is the status line (moved down from the old header): the deployment
+// role, the model gateway, the current scope, and the active view. The key
+// bindings now live at the top (see commandsPanel).
 func (application *app) footer() string {
-	if application.createView != nil {
-		return ui.Muted.Render(application.createView.Hints())
+	scope := "server"
+	if application.currentProject != "" {
+		scope = "project:" + application.currentProject
 	}
-	if application.helpOpen {
-		return ui.Muted.Render("any key to close")
-	}
-	if application.paletteOpen {
-		return ui.Muted.Render("type to filter · ↑/↓ select · enter choose · esc close")
-	}
-	global := "tab/←→ switch · : menu · ? help · q quit"
-	if hints := application.views[application.current].Hints(); hints != "" {
-		return ui.Muted.Render(hints + " · " + global)
-	}
-	return ui.Muted.Render(global)
+	return ui.Muted.Render(fmt.Sprintf("ai ui · role:%s · gateway:%s · scope:%s · view:%s",
+		application.role, application.gateway, scope, application.activeTitle()))
 }
 
 func (application *app) paletteView() string {
