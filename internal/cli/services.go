@@ -3,6 +3,7 @@ package cli
 import (
 	"fmt"
 	goruntime "runtime"
+	"strings"
 
 	"github.com/charmbracelet/huh"
 	"github.com/jt-helsinki/ideal-robot/internal/console"
@@ -51,9 +52,78 @@ func newServicesCmd(em *output.Emitter, exit *int) *cobra.Command {
 		newServicesControlCmd("start", em, exit),
 		newServicesControlCmd("stop", em, exit),
 		newServicesControlCmd("restart", em, exit),
+		newServicesToggleCmd("enable", em, exit),
+		newServicesToggleCmd("disable", em, exit),
 		newServicesConsoleCmd(em, exit),
 	)
 	return cmd
+}
+
+// newServicesToggleCmd builds `ai services enable|disable <service>`: it toggles
+// an OPTIONAL service (open-webui, odysseus) in the persisted set and brings it
+// up/down. Core services are always on, so only the optional ones are valid.
+// With no argument on a terminal it shows a single-select of the optional
+// services; under --json / no TTY a name is required (exit 2).
+func newServicesToggleCmd(action string, em *output.Emitter, exit *int) *cobra.Command {
+	return &cobra.Command{
+		Use:               action + " <service>",
+		Short:             action + " an optional service (" + strings.Join(setup.OptionalServiceNames(), ", ") + ")",
+		Args:              cobra.MaximumNArgs(1),
+		ValidArgsFunction: completeOptionalServiceNames,
+		RunE: func(_ *cobra.Command, args []string) error {
+			deps := setup.RealDeps(goruntime.GOOS, goruntime.GOARCH, nowRFC3339)
+			service := ""
+			if len(args) == 1 {
+				service = args[0]
+			}
+			if service == "" {
+				if !interactive(em) {
+					*exit = em.Failure("services."+action, output.Errorf(output.ExitInvalidInput,
+						"%s needs an optional service name (one of %v)", action, setup.OptionalServiceNames()))
+					return nil
+				}
+				selected, err := selectOptionalService(action)
+				if err != nil {
+					*exit = em.Failure("services."+action, err)
+					return nil
+				}
+				service = selected
+			}
+			var statuses []setup.ServiceStatus
+			var err error
+			work := func() error {
+				var workErr error
+				statuses, workErr = setup.ControlService(deps, action, service)
+				return workErr
+			}
+			if ui.Enabled(em) {
+				err = ui.RunWithSpinner(em.Err, action+" "+service, work)
+			} else {
+				err = work()
+			}
+			if err != nil {
+				*exit = em.Failure("services."+action, err)
+				return nil
+			}
+			*exit = em.Success("services."+action, servicesResult{Services: statuses})
+			return nil
+		},
+	}
+}
+
+// selectOptionalService prompts for one optional service to enable/disable (a
+// single-select, since the action takes exactly one name).
+func selectOptionalService(action string) (string, error) {
+	names := setup.OptionalServiceNames()
+	options := make([]huh.Option[string], 0, len(names))
+	for _, name := range names {
+		label := name
+		if hint := setup.OptionalServiceLabel(name); hint != "" {
+			label = fmt.Sprintf("%s — %s", name, hint)
+		}
+		options = append(options, huh.NewOption(label, name))
+	}
+	return promptChoice("Which optional service to "+action+"?", "", options, "")
 }
 
 // newServicesControlCmd builds `ai services start|stop|restart [service]`.

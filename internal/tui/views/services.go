@@ -91,7 +91,7 @@ func (view *Services) Title() string { return "Services" }
 
 // Hints are the context-sensitive key bindings shown in the footer.
 func (view *Services) Hints() string {
-	return "s start · x stop · r restart · o console · l logs · d describe"
+	return "s start · x stop · r restart · e enable/disable · o console · l logs · d describe"
 }
 
 // SetSize fits the table + the describe/logs panes to the content area.
@@ -171,8 +171,30 @@ func (view *Services) handleAction(key tea.KeyMsg) (tea.Cmd, bool) {
 		if service == "" {
 			return nil, true
 		}
+		// A disabled optional service must be enabled before it can be controlled.
+		if status := view.statusByName(service); status.Optional && !status.Enabled() {
+			view.flash = ui.Muted.Render(service + " is disabled — press e to enable it first")
+			return nil, true
+		}
 		action := map[string]string{"s": "start", "x": "stop", "r": "restart"}[key.String()]
 		view.flash = ui.Muted.Render(action + "ing " + service + "…")
+		return view.controlCmd(action, service), true
+	case "e":
+		if service == "" {
+			return nil, true
+		}
+		// enable/disable applies only to optional services — core services are
+		// always on. Toggle based on the current state.
+		status := view.statusByName(service)
+		if !status.Optional {
+			view.flash = ui.Muted.Render(service + " is a core service — always enabled")
+			return nil, true
+		}
+		action, gerund := "enable", "enabling"
+		if status.Enabled() {
+			action, gerund = "disable", "disabling"
+		}
+		view.flash = ui.Muted.Render(gerund + " " + service + "…")
 		return view.controlCmd(action, service), true
 	case "o":
 		if service == "" {
@@ -295,6 +317,9 @@ func describeService(status setup.ServiceStatus) string {
 	body.WriteString(ui.Heading.Render(status.Name) + "\n")
 	body.WriteString(field("mode", status.Mode))
 	body.WriteString(field("state", status.State))
+	if status.Optional {
+		body.WriteString(field("optional", "yes (press e to enable/disable)"))
+	}
 	body.WriteString(field("healthy", health))
 	body.WriteString(field("address", status.Address))
 	body.WriteString(field("console", status.Console))
@@ -318,6 +343,7 @@ func serviceRows(statuses []setup.ServiceStatus) []table.Row {
 func actionFlash(msg serviceActionDoneMsg) string {
 	verbs := map[string]string{
 		"start": "started", "stop": "stopped", "restart": "restarted", "open": "opened console for",
+		"enable": "enabled", "disable": "disabled",
 	}
 	if msg.err != nil {
 		return ui.Failure.Render(ui.IconFail + " " + msg.action + " " + msg.service + ": " + msg.err.Error())

@@ -853,23 +853,34 @@ by the `ai workspace` commands, not `ai services`.)
 
 ```bash id="c27a"
 ai services status                 # health + version of every service
-ai services start   [<service>]    # start one or all
+ai services start   [<service>]    # start one or all (enabled services only)
 ai services stop    [<service>]    # stop one or all
 ai services restart [<service>]    # restart one or all
+ai services enable  <service>      # enable an optional service (and bring it up)
+ai services disable <service>      # disable an optional service (and bring it down)
 ```
 
-`<service>`: `ollama` | `presidio` | `litellm` | `headroom` | `open-webui` |
-`all` (no arg = all).
+`<service>`: `ollama` | `presidio` | `litellm` | `headroom` | `proxy` | `dns` |
+`open-webui` | `odysseus` | `all` (no arg = all). The first six are **core**
+(always on); `open-webui` and `odysseus` are **optional** (opt-in).
 
 Behavior:
 
 * `status` reports each service's health and pinned version; `--json` returns the
-  §19 envelope with a `data.services` array. It covers the platform
-  **containers** — `ollama`, `presidio`, `litellm`, `headroom`, `open-webui` — which are the
-  whole service tier
-* lifecycle verbs act on the **platform-owned container set** — `ollama`,
-  `presidio`, `litellm`, `headroom`, `open-webui` — via the runtime abstraction (§6). With no
-  service, or `all`, they act on every container in **dependency order**
+  §19 envelope with a `data.services` array. Each entry carries `optional` (true
+  for the opt-in services); a not-enabled optional service is listed with state
+  `disabled` so it is discoverable.
+* lifecycle verbs (`start`/`stop`/`restart`) act on the **platform-owned container
+  set** via the runtime abstraction (§6). With no service, or `all`, they act on
+  every **enabled** container in **dependency order** (a disabled optional service
+  is skipped). Acting on a *named* disabled optional service exits `2` with a hint
+  to `ai services enable <service>` first.
+* `enable`/`disable` apply **only to optional services** — they update the
+  persisted optional-service set (`runtime.yaml`) and then start / stop the
+  service's container(s). Enabling a core service, or naming an unknown/empty
+  service, exits `2`; with no `runtime.yaml` (setup not run) `enable`/`disable`
+  exit `3`. On a terminal a bare `enable`/`disable` shows a single-select of the
+  optional services; under `--json`/no-TTY a name is required (exit `2`).
 * docker compose is not used; container-tier services are managed through the
   runtime abstraction (§6)
 * service install/upgrade is handled by `ai setup` / `ai setup --upgrade`, not by
@@ -1109,10 +1120,12 @@ below).
 **Exit** item):
 
 * **Services** — live service-tier + container status; `s`/`x`/`r` start/stop/
-  restart the selected service, `o` opens its admin console, `d` describes it, and
-  `l` shows its **logs full-pane** (the table hides; the log pane fills the body
-  and scrolls; `esc` returns to the table). Logs are consolidated here — there is
-  no separate Logs tab — and share `internal/logs` with `ai logs`.
+  restart the selected service (only when it is enabled), `e` enables/disables it
+  when it is an **optional** service (toggling on its current state; core services
+  are always on), `o` opens its admin console, `d` describes it, and `l` shows its
+  **logs full-pane** (the table hides; the log pane fills the body and scrolls;
+  `esc` returns to the table). Logs are consolidated here — there is no separate
+  Logs tab — and share `internal/logs` with `ai logs`.
 * **Projects** — a **two-level hub**. It opens on the *switcher*: every project
   (name / OS / workspace status / agents); `enter` opens one, `n` creates a new one
   (a directory picker validated by the create rules, then the `ai project create`

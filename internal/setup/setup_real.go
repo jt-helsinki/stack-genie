@@ -1221,11 +1221,12 @@ func (services realServices) statusFor(enabled []string) ([]ServiceStatus, error
 	statuses := make([]ServiceStatus, 0, len(specs))
 	for _, service := range specs {
 		endpoint, _ := console.EndpointForHost(service.Name, displayHost)
-		if isOptionalService(service.Name) && !slices.Contains(enabled, service.Name) {
+		optional := isOptionalService(service.Name)
+		if optional && !slices.Contains(enabled, service.Name) {
 			// Not enabled: surfaced so it is discoverable, but not probed.
 			statuses = append(statuses, ServiceStatus{
 				Name: service.Name, Mode: service.Mode, State: "disabled", Healthy: false,
-				Address: endpoint.Address, Console: endpoint.Console,
+				Address: endpoint.Address, Console: endpoint.Console, Optional: true,
 			})
 			continue
 		}
@@ -1236,7 +1237,7 @@ func (services realServices) statusFor(enabled []string) ([]ServiceStatus, error
 		}
 		statuses = append(statuses, ServiceStatus{
 			Name: service.Name, Mode: service.Mode, State: state, Healthy: healthy,
-			Address: endpoint.Address, Console: endpoint.Console,
+			Address: endpoint.Address, Console: endpoint.Console, Optional: optional,
 		})
 	}
 	return statuses, nil
@@ -1410,7 +1411,17 @@ func (services realServices) Control(action, service string) ([]ServiceStatus, e
 	var targets []managedService
 	switch service {
 	case "", "all":
-		targets = managed
+		// "all" acts only on the ENABLED set: core services always, plus the
+		// optional services currently enabled (so it never launches a disabled
+		// open-webui/odysseus). A named target bypasses this (and is gated by
+		// ControlService).
+		enabledOptional := enabledOptionalServices()
+		for _, entry := range managed {
+			if isOptionalService(entry.name) && !slices.Contains(enabledOptional, entry.name) {
+				continue
+			}
+			targets = append(targets, entry)
+		}
 	default:
 		for _, entry := range managed {
 			if entry.name == service {

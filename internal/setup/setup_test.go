@@ -39,13 +39,15 @@ func (prober fakeProber) Run(name string, _ ...string) ([]byte, error) {
 func (prober fakeProber) Exists(path string) bool { return prober.files[path] }
 
 type fakeServices struct {
-	reconciled    bool
-	provider      string
-	bindHost      string
-	optional      []string
-	pulledEnabled []string
-	installed     bool
-	capturedLogs  bool
+	reconciled     bool
+	provider       string
+	bindHost       string
+	optional       []string
+	pulledEnabled  []string
+	installed      bool
+	capturedLogs   bool
+	controlAction  string
+	controlService string
 }
 
 func (services *fakeServices) Reconcile(providerConfig, bindHost string, optional []string, progress func(string)) ([]ServiceStatus, error) {
@@ -90,6 +92,8 @@ func (services *fakeServices) Status() ([]ServiceStatus, error) {
 	return []ServiceStatus{{Name: "litellm", Mode: "container", State: "running", Healthy: true}}, nil
 }
 func (services *fakeServices) Control(action, service string) ([]ServiceStatus, error) {
+	services.controlAction = action
+	services.controlService = service
 	return []ServiceStatus{{Name: "litellm", Mode: "container", State: action + "ed"}}, nil
 }
 func (services *fakeServices) InstallPrerequisite(_ Prerequisite, _ io.Writer) error {
@@ -402,6 +406,61 @@ func TestControlServiceValidation(test *testing.T) {
 	// The literal "all" keyword is accepted (same as no service).
 	if _, err := ControlService(deps, "restart", "all"); err != nil {
 		test.Fatalf("\"all\" should be accepted: %v", err)
+	}
+}
+
+// TestServicesEnableDisableOptional: enable/disable toggle an optional service's
+// membership in runtime.yaml and start/stop its container(s).
+func TestServicesEnableDisableOptional(test *testing.T) {
+	test.Setenv("HOME", test.TempDir())
+	deps, services := healthyDeps()
+	if _, err := Run(Options{}, deps); err != nil {
+		test.Fatal(err)
+	}
+	// After setup the default optional set is enabled (open-webui), odysseus off.
+	// Disable open-webui: it leaves the persisted set and its container is stopped.
+	if _, err := ControlService(deps, "disable", "open-webui"); err != nil {
+		test.Fatalf("disable open-webui: %v", err)
+	}
+	info, _ := runtime.Load()
+	if slicesContains(info.OptionalServices, "open-webui") {
+		test.Errorf("open-webui should be removed from the optional set: %v", info.OptionalServices)
+	}
+	if services.controlAction != "stop" || services.controlService != "open-webui" {
+		test.Errorf("disable should stop open-webui, got %s %s", services.controlAction, services.controlService)
+	}
+	// Enable odysseus: it joins the set and its container is started.
+	if _, err := ControlService(deps, "enable", "odysseus"); err != nil {
+		test.Fatalf("enable odysseus: %v", err)
+	}
+	info, _ = runtime.Load()
+	if !slicesContains(info.OptionalServices, "odysseus") {
+		test.Errorf("odysseus should be in the optional set: %v", info.OptionalServices)
+	}
+	if services.controlAction != "start" || services.controlService != "odysseus" {
+		test.Errorf("enable should start odysseus, got %s %s", services.controlAction, services.controlService)
+	}
+}
+
+// TestControlServiceGatesAndValidatesToggle: start/stop/restart are gated to
+// enabled services, and enable/disable only apply to optional services.
+func TestControlServiceGatesAndValidatesToggle(test *testing.T) {
+	test.Setenv("HOME", test.TempDir())
+	deps, _ := healthyDeps()
+	if _, err := Run(Options{}, deps); err != nil {
+		test.Fatal(err)
+	}
+	// odysseus is disabled by default → it cannot be started until enabled.
+	if _, err := ControlService(deps, "start", "odysseus"); exitCodeOf(test, err) != output.ExitInvalidInput {
+		test.Fatalf("start on a disabled optional should be exit 2, got %v", err)
+	}
+	// A core service cannot be enabled/disabled (always on).
+	if _, err := ControlService(deps, "enable", "litellm"); exitCodeOf(test, err) != output.ExitInvalidInput {
+		test.Fatalf("enabling a core service should be exit 2, got %v", err)
+	}
+	// enable/disable need a service name.
+	if _, err := ControlService(deps, "enable", ""); exitCodeOf(test, err) != output.ExitInvalidInput {
+		test.Fatalf("enable with no service should be exit 2, got %v", err)
 	}
 }
 

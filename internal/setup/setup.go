@@ -37,7 +37,17 @@ type ServiceStatus struct {
 	// the microVM runtime).
 	Address string `json:"address,omitempty"`
 	Console string `json:"console,omitempty"`
+	// Optional marks an opt-in service (open-webui, odysseus) that can be enabled
+	// or disabled (`ai services enable|disable`); core services are always on. A
+	// disabled optional service has State "disabled".
+	Optional bool `json:"optional,omitempty"`
 }
+
+// Enabled reports whether the service is currently enabled — true for every core
+// service and for an optional service that is not in the "disabled" state. It lets
+// the UI gate start/stop/restart (only enabled services) vs enable/disable (only
+// optional ones).
+func (status ServiceStatus) Enabled() bool { return !status.Optional || status.State != "disabled" }
 
 // EndpointSuffix renders the host address and, when present, the admin-console
 // hint for a service line — "  <address> · UI <console>", or "" when the service
@@ -174,12 +184,18 @@ func ServiceNames() []string {
 	return names
 }
 
-// ControlService backs `ai services start|stop|restart [service]`: it validates
-// the action and service (empty service = all) then delegates to the Services
-// implementation. Invalid action/service → exit 2.
+// ControlService backs `ai services start|stop|restart|enable|disable [service]`.
+// start/stop/restart validate the action + service (empty service = all) and
+// delegate to the Services implementation, but are GATED to enabled services: a
+// disabled optional service must be enabled first. enable/disable toggle an
+// optional service's membership in the persisted set and bring it up/down (see
+// setOptionalService). Invalid action/service → exit 2.
 func ControlService(deps Deps, action, service string) ([]ServiceStatus, error) {
+	if action == "enable" || action == "disable" {
+		return setOptionalService(deps, action == "enable", service)
+	}
 	if !controlActions[action] {
-		return nil, output.Errorf(output.ExitInvalidInput, "unknown action %q (start|stop|restart)", action)
+		return nil, output.Errorf(output.ExitInvalidInput, "unknown action %q (start|stop|restart|enable|disable)", action)
 	}
 	// "all" is the explicit spelling of "no service = all services".
 	if service == "all" {
@@ -196,7 +212,75 @@ func ControlService(deps Deps, action, service string) ([]ServiceStatus, error) 
 		}
 		return nil, output.Errorf(output.ExitInvalidInput, "unknown service %q (one of %v, or \"all\")", service, ServiceNames())
 	}
+	// A disabled optional service can't be started/stopped/restarted until it is
+	// enabled (`ai services enable <name>`); enabling is what brings it up.
+	if service != "" && isOptionalService(service) && !optionalServiceEnabled(service) {
+		return nil, output.Errorf(output.ExitInvalidInput,
+			"%q is disabled — run `ai services enable %s` first", service, service)
+	}
 	return deps.Services.Control(action, service)
+}
+
+// setOptionalService enables or disables an OPTIONAL service: it updates the
+// persisted optional-service set in runtime.yaml, then starts (enable) or stops
+// (disable) the service's container(s) via the Services impl. Core services are
+// always on and cannot be toggled (exit 2); an empty/unknown name is exit 2; a
+// missing runtime.yaml is exit 3 (run `ai setup` first).
+func setOptionalService(deps Deps, enable bool, service string) ([]ServiceStatus, error) {
+	if service == "" || service == "all" {
+		return nil, output.Errorf(output.ExitInvalidInput,
+			"enable/disable need an optional service name (one of %v)", OptionalServiceNames())
+	}
+	if !isOptionalService(service) {
+		return nil, output.Errorf(output.ExitInvalidInput,
+			"%q is a core service (always enabled); only optional services (%v) can be enabled/disabled",
+			service, OptionalServiceNames())
+	}
+	info, err := runtime.Load()
+	if err != nil {
+		return nil, output.Errorf(output.ExitRuntimeFailure, "load runtime.yaml: %s", err)
+	}
+	if info == nil {
+		return nil, output.Errorf(output.ExitMissingDep, "no runtime.yaml — run `ai setup` first")
+	}
+	info.OptionalServices = optionalSetWith(info.OptionalServices, service, enable)
+	if err := runtime.Persist(info); err != nil {
+		return nil, output.Errorf(output.ExitRuntimeFailure, "persist runtime.yaml: %s", err)
+	}
+	// Persisting first means the post-action Status reflects the new enabled set,
+	// and the start/stop below is no longer blocked by the disabled-gate above
+	// (Control is called directly, not through ControlService).
+	action := "start"
+	if !enable {
+		action = "stop"
+	}
+	if _, err := deps.Services.Control(action, service); err != nil {
+		return nil, err
+	}
+	return ServicesStatus(deps)
+}
+
+// optionalSetWith returns the optional-service set with service added (enable) or
+// removed (disable), in declaration order and de-duplicated.
+func optionalSetWith(current []string, service string, enable bool) []string {
+	want := make(map[string]bool, len(current))
+	for _, name := range current {
+		want[name] = true
+	}
+	want[service] = enable
+	result := make([]string, 0, len(optionalServiceNames()))
+	for _, name := range optionalServiceNames() {
+		if want[name] {
+			result = append(result, name)
+		}
+	}
+	return result
+}
+
+// optionalServiceEnabled reports whether an optional service is currently enabled
+// on this host (present in runtime.yaml's optional set).
+func optionalServiceEnabled(name string) bool {
+	return slices.Contains(enabledOptionalServices(), name)
 }
 
 // Report is the result of a successful setup.

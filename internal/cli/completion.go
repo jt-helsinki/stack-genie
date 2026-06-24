@@ -77,6 +77,12 @@ func completeServiceNames(*cobra.Command, []string, string) ([]string, cobra.She
 	return append([]string{"all"}, setup.ServiceNames()...), cobra.ShellCompDirectiveNoFileComp
 }
 
+// completeOptionalServiceNames offers the opt-in service names (for services
+// enable/disable, which only act on optional services).
+func completeOptionalServiceNames(*cobra.Command, []string, string) ([]string, cobra.ShellCompDirective) {
+	return setup.OptionalServiceNames(), cobra.ShellCompDirectiveNoFileComp
+}
+
 // completeConsoleServices offers the host services that have an admin console.
 func completeConsoleServices(*cobra.Command, []string, string) ([]string, cobra.ShellCompDirective) {
 	var names []string
