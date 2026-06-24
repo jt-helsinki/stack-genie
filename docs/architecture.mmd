@@ -1,0 +1,41 @@
+---
+title: AI Development Platform — service tier and model data path
+---
+flowchart LR
+  classDef vm fill:#eef6ff,stroke:#3b82f6,stroke-width:2px,color:#0b3a6b;
+  classDef gw fill:#fff7e6,stroke:#f59e0b,stroke-width:2px,color:#7a4a05;
+  classDef core fill:#eafaf0,stroke:#16a34a,stroke-width:2px,color:#0b4a25;
+  classDef store fill:#f3f0ff,stroke:#7c3aed,stroke-width:1.5px,color:#3b1d80;
+  classDef opt fill:#f4f4f5,stroke:#9ca3af,stroke-width:1.5px,stroke-dasharray:4 3,color:#374151;
+  classDef cloud fill:#fdecec,stroke:#dc2626,stroke-width:2px,color:#7a1212;
+
+  subgraph WS["Workspace · Microsandbox microVM (one per project)"]
+    direction TB
+    AGENT["Agent CLI<br/>opencode · pi · claude · codex · gemini<br/><b>holds only a scoped LiteLLM virtual key</b>"]:::vm
+  end
+
+  subgraph TIER["Host · Docker service tier (aip-net)"]
+    direction TB
+    PROXY["nginx gateway · aip-proxy<br/>host :18787 — single entry, TLS-ready"]:::gw
+    HEAD["Headroom · aip-headroom<br/>input compression (internal-only)"]:::gw
+    LLM["LiteLLM · aip-litellm<br/><b>router + always-on guardrails</b>"]:::core
+    PG[("Postgres · aip-litellm-db<br/>virtual keys · spend · provider creds")]:::store
+    PRES["Presidio · aip-presidio<br/>secret masking (pre/post-call)"]:::core
+    OLL["Ollama · aip-ollama<br/>local models (default: gemma)"]:::core
+    DNS["CoreDNS · aip-dns<br/>egress audit log"]:::core
+
+    OWUI["Open WebUI · aip-open-webui<br/>(optional chat UI)"]:::opt
+    ODY["Odysseus · aip-odysseus<br/>(optional AI workspace)"]:::opt
+  end
+
+  CLOUD["Cloud providers<br/>OpenAI · Anthropic · Gemini · Groq<br/><b>real provider keys live in LiteLLM</b>"]:::cloud
+
+  AGENT == "OpenAI API · base_url http://host:18787/v1<br/>egress DEFAULT-DENY — only the gateway is reachable" ==> PROXY
+  AGENT -. "every DNS name audited" .-> DNS
+  PROXY --> HEAD --> LLM
+  LLM <-. "guardrails" .-> PRES
+  LLM --- PG
+  LLM -- "local route" --> OLL
+  LLM == "cloud route (real key attached)" ==> CLOUD
+  OWUI -. "same gateway path" .-> PROXY
+  ODY  -. "same gateway path" .-> PROXY
