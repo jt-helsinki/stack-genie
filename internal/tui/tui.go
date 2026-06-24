@@ -16,6 +16,7 @@ import (
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 	"github.com/jt-helsinki/ideal-robot/internal/contextopt"
 	"github.com/jt-helsinki/ideal-robot/internal/egress"
 	"github.com/jt-helsinki/ideal-robot/internal/litellm"
@@ -245,20 +246,11 @@ func (application *app) Init() tea.Cmd {
 	return tea.Batch(commands...)
 }
 
-// reservedRows is the chrome height (header + its rule + footer) the body sits
-// inside.
-const reservedRows = 3
-
 func (application *app) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch message := msg.(type) {
 	case tea.WindowSizeMsg:
 		application.width, application.height = message.Width, message.Height
-		for _, view := range application.views {
-			view.SetSize(message.Width, application.bodyHeight())
-		}
-		if application.createView != nil {
-			application.createView.SetSize(message.Width, application.bodyHeight())
-		}
+		application.resizeViews()
 		return application, nil
 
 	case views.ProjectSelectedMsg:
@@ -271,7 +263,8 @@ func (application *app) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case views.NewProjectRequestedMsg:
 		// Open the create overlay (a directory picker) starting at the cwd.
 		create := views.NewCreate(application.cwd)
-		create.SetSize(application.width, application.bodyHeight())
+		bodyWidth, bodyHeight := application.bodyContentSize()
+		create.SetSize(bodyWidth, bodyHeight)
 		application.createView = create
 		return application, create.Init()
 
@@ -329,6 +322,22 @@ func (application *app) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "?":
 			application.helpOpen = true
 			return application, nil
+		case "tab", "right":
+			application.switchTab(application.current + 1)
+			return application, application.views[application.current].Init()
+		case "shift+tab", "left":
+			application.switchTab(application.current - 1)
+			return application, application.views[application.current].Init()
+		}
+		// Number keys 1-9 jump straight to that tab (1-based).
+		if message.Type == tea.KeyRunes && len(message.Runes) == 1 {
+			if digit := message.Runes[0]; digit >= '1' && digit <= '9' {
+				target := int(digit - '1')
+				if target < len(application.views) {
+					application.switchTab(target)
+					return application, application.views[application.current].Init()
+				}
+			}
 		}
 	}
 
@@ -341,14 +350,26 @@ func (application *app) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return application, application.views[application.current].Update(msg)
 }
 
-// bodyHeight is the content area height (window minus the header/footer chrome),
-// clamped to at least one row.
-func (application *app) bodyHeight() int {
-	body := application.height - reservedRows
-	if body < 1 {
-		return 1
+// switchTab moves the active tab to index, wrapping around the ends so Tab/←/→ cycle
+// (a direct number jump passes an in-range index). A no-op when there are no views.
+func (application *app) switchTab(index int) {
+	count := len(application.views)
+	if count == 0 {
+		return
 	}
-	return body
+	application.current = ((index % count) + count) % count
+}
+
+// resizeViews pushes the current inner body size (inside the border) to every view
+// and the create overlay, so tables/viewports fit within the chrome.
+func (application *app) resizeViews() {
+	bodyWidth, bodyHeight := application.bodyContentSize()
+	for _, view := range application.views {
+		view.SetSize(bodyWidth, bodyHeight)
+	}
+	if application.createView != nil {
+		application.createView.SetSize(bodyWidth, bodyHeight)
+	}
 }
 
 // updatePalette handles input while the menu overlay is open. Typing letters
@@ -415,20 +436,27 @@ func (application *app) View() string {
 	if application.quitting {
 		return ""
 	}
-	var screen strings.Builder
-	screen.WriteString(application.header() + "\n")
+	var content string
 	switch {
 	case application.createView != nil:
-		screen.WriteString(application.createView.View())
+		content = application.createView.View()
 	case application.helpOpen:
-		screen.WriteString(application.helpView())
+		content = application.helpView()
 	case application.paletteOpen:
-		screen.WriteString(application.paletteView())
+		content = application.paletteView()
 	default:
-		screen.WriteString(application.views[application.current].View())
+		content = application.views[application.current].View()
 	}
-	screen.WriteString("\n" + application.footer())
-	return screen.String()
+	// header / tab bar / bordered body / footer, stacked top-to-bottom. The
+	// overlays (palette/help/create/describe) render INSIDE the body border, just
+	// as the active view does.
+	return lipgloss.JoinVertical(
+		lipgloss.Left,
+		application.header(),
+		application.tabBar(),
+		application.body(content),
+		application.footer(),
+	)
 }
 
 // helpView lists the global key bindings plus the active view's own bindings.
@@ -436,28 +464,16 @@ func (application *app) helpView() string {
 	var help strings.Builder
 	help.WriteString(ui.Heading.Render("Keys") + "\n\n")
 	help.WriteString(ui.Muted.Render("Global") + "\n")
-	help.WriteString("  :, /    open the menu\n")
-	help.WriteString("  ?       toggle this help\n")
-	help.WriteString("  ↑/↓     navigate\n")
-	help.WriteString("  q       quit\n\n")
+	help.WriteString("  tab/⇧tab  cycle tabs\n")
+	help.WriteString("  ←/→       previous/next tab\n")
+	help.WriteString("  1-9       jump to tab\n")
+	help.WriteString("  :, /      open the menu\n")
+	help.WriteString("  ?         toggle this help\n")
+	help.WriteString("  ↑/↓       navigate\n")
+	help.WriteString("  q         quit\n\n")
 	help.WriteString(ui.Muted.Render(application.views[application.current].Title()+" view") + "\n")
 	help.WriteString("  " + application.views[application.current].Hints() + "\n")
 	return help.String()
-}
-
-func (application *app) header() string {
-	scope := "server"
-	if application.currentProject != "" {
-		scope = "project:" + application.currentProject
-	}
-	viewName := application.views[application.current].Title()
-	if application.createView != nil {
-		viewName = application.createView.Title()
-	}
-	title := ui.Heading.Render("ai ui")
-	context := ui.Muted.Render(fmt.Sprintf("role:%s  gateway:%s  scope:%s  view:%s",
-		application.role, application.gateway, scope, viewName))
-	return title + "  " + context
 }
 
 func (application *app) footer() string {
@@ -470,7 +486,7 @@ func (application *app) footer() string {
 	if application.paletteOpen {
 		return ui.Muted.Render("type to filter · ↑/↓ select · enter choose · esc close")
 	}
-	global := ": menu · ? help · q quit"
+	global := "tab/←→ switch · : menu · ? help · q quit"
 	if hints := application.views[application.current].Hints(); hints != "" {
 		return ui.Muted.Render(hints + " · " + global)
 	}

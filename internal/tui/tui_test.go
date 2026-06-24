@@ -185,3 +185,100 @@ func TestWindowSizeSetsViewportWithoutPanic(test *testing.T) {
 		test.Fatalf("width = %d, want 80", application.width)
 	}
 }
+
+func tabKey() tea.KeyMsg      { return tea.KeyMsg{Type: tea.KeyTab} }
+func shiftTabKey() tea.KeyMsg { return tea.KeyMsg{Type: tea.KeyShiftTab} }
+func rightKey() tea.KeyMsg    { return tea.KeyMsg{Type: tea.KeyRight} }
+func leftKey() tea.KeyMsg     { return tea.KeyMsg{Type: tea.KeyLeft} }
+func digit(value string) tea.KeyMsg {
+	return tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(value)}
+}
+
+// TestTabBarListsAllTitles confirms every view's Title appears in the tab bar.
+func TestTabBarListsAllTitles(test *testing.T) {
+	titles := []string{"Services", "Projects", "Project", "Network", "Context"}
+	application := newTestApp(titles...)
+	bar := application.tabBar()
+	for _, title := range titles {
+		if !strings.Contains(bar, title) {
+			test.Errorf("tab bar %q missing title %q", bar, title)
+		}
+	}
+}
+
+// TestTabBarHighlightsActive checks the active tab is bracketed (the accent marker)
+// while the others are not.
+func TestTabBarHighlightsActive(test *testing.T) {
+	application := newTestApp("Services", "Projects", "Models")
+	application.current = 1 // Projects
+	bar := application.tabBar()
+	if !strings.Contains(bar, "[Projects]") {
+		test.Errorf("active tab not bracketed in %q", bar)
+	}
+	if strings.Contains(bar, "[Services]") || strings.Contains(bar, "[Models]") {
+		test.Errorf("inactive tabs should not be bracketed: %q", bar)
+	}
+}
+
+// TestTabKeysCycle checks Tab/Shift+Tab and →/← move application.current, wrapping.
+func TestTabKeysCycle(test *testing.T) {
+	application := newTestApp("Services", "Projects", "Models")
+
+	application.Update(tabKey())
+	if application.current != 1 {
+		test.Fatalf("after tab current = %d, want 1", application.current)
+	}
+	application.Update(rightKey())
+	if application.current != 2 {
+		test.Fatalf("after right current = %d, want 2", application.current)
+	}
+	// Tab past the end wraps to the first tab.
+	application.Update(tabKey())
+	if application.current != 0 {
+		test.Fatalf("tab past end should wrap to 0, got %d", application.current)
+	}
+	// Shift+Tab / ← from the first tab wrap to the last.
+	application.Update(shiftTabKey())
+	if application.current != 2 {
+		test.Fatalf("shift+tab from 0 should wrap to 2, got %d", application.current)
+	}
+	application.Update(leftKey())
+	if application.current != 1 {
+		test.Fatalf("after left current = %d, want 1", application.current)
+	}
+}
+
+// TestNumberKeysJumpToTab checks 1-9 jump to that tab (1-based) and out-of-range
+// numbers are ignored.
+func TestNumberKeysJumpToTab(test *testing.T) {
+	application := newTestApp("Services", "Projects", "Models")
+
+	application.Update(digit("3"))
+	if application.current != 2 {
+		test.Fatalf("'3' should select index 2, got %d", application.current)
+	}
+	application.Update(digit("1"))
+	if application.current != 0 {
+		test.Fatalf("'1' should select index 0, got %d", application.current)
+	}
+	// '9' is out of range (only 3 views) — must be a no-op.
+	application.Update(digit("9"))
+	if application.current != 0 {
+		test.Fatalf("out-of-range '9' should not move; got %d", application.current)
+	}
+}
+
+// TestTinyWindowClampsBodySize checks a tiny window yields a body size of >=1 on both
+// axes without panicking, and that the chrome still renders.
+func TestTinyWindowClampsBodySize(test *testing.T) {
+	application := newTestApp("Services", "Projects")
+	application.Update(tea.WindowSizeMsg{Width: 2, Height: 2})
+	width, height := application.bodyContentSize()
+	if width < 1 || height < 1 {
+		test.Fatalf("body size = %dx%d, both must be >=1", width, height)
+	}
+	// View() must not panic on a degenerate window.
+	if application.View() == "" {
+		test.Error("View() should render chrome even on a tiny window")
+	}
+}
