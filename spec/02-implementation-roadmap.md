@@ -50,12 +50,13 @@ Each slice must:
 The user always selects the OS — no OS is ever applied silently.
 ```
 
-The OS is chosen in the `ai project create` wizard (CLI §3.1): the wizard
+The OS is selected in the `ai create` wizard (CLI §3.1): on a TTY the wizard
 *presents* `debian-trixie` as the default to confirm or change, but the user
-always makes the selection. There is no `--os` flag. Slice 1 ships only the
-`debian-trixie` template; Slice 5 adds the rest. A non-interactive `create` (no
-TTY) cannot prompt and fails if no OS is
-selected.
+always makes the selection. The OS can also be supplied via the `--os` flag,
+which on a TTY pre-seeds the wizard (the wizard still shows). Under `--json` or
+no TTY there is no prompt and the spec is built straight from the flags, so
+`--os` is **required** — a missing (or invalid) `--os` fails with exit 2. Slice 1
+ships only the `debian-trixie` template; Slice 5 adds the rest.
 
 ---
 
@@ -87,7 +88,7 @@ Deliver a working minimal platform.
 * macOS host support (Apple Silicon — required by the Microsandbox microVM runtime)
 * Docker runtime for the service tier (Podman deferred to Slice 6); Microsandbox microVM runtime for workspaces
 * rootless by default for the service tier (see 01-architecture-spec.md §6)
-* `debian-trixie` OS Dockerfile template (only OS in Slice 1; selected in the `ai project create` wizard, no implicit default); `ai project create` writes `.ai-platform/Dockerfile` from it (plus the selected agent CLIs) and builds the workspace OCI image from it
+* `debian-trixie` OS Dockerfile template (only OS in Slice 1; selected in the `ai create` wizard or via `--os`, no implicit default); `ai create` writes `.ai-platform/Dockerfile` from it (plus the selected agent CLIs) and registers the workspace — the workspace OCI image is built later by `ai start`
 * Single-agent system
 * LiteLLM integration
 * keys-in-LiteLLM credentials (real provider keys live in the gateway; the agent holds a scoped virtual key)
@@ -118,11 +119,11 @@ Deliver a working minimal platform.
 
 ---
 
-### Project System
+### Workspace System
 
-* ai project create (writes `.ai-platform/Dockerfile` from the debian-trixie template, builds the image)
-* single workspace per project
-* persistent host-mounted projects
+* ai create (writes `.ai-platform/Dockerfile` from the debian-trixie template plus the selected agent CLIs and registers the workspace; the image is built later by `ai start`)
+* single workspace per directory
+* persistent host-mounted workspaces
 
 ---
 
@@ -148,9 +149,9 @@ default: gemma4   # -> ollama/gemma4:31b (local; Ollama is the default provider)
 
 ```bash id="c1"
 ai setup
-ai project create
-ai project delete
-ai workspace start|stop|destroy|exec
+ai create
+ai delete
+ai start|stop|destroy|exec
 ai services status
 ai secrets set|map|list
 ai models status|test
@@ -160,7 +161,7 @@ ai logs
 ```
 
 These are exactly the commands exercised by the `[S1]` acceptance tests. There
-is no snapshot/upgrade/rollback or backup machinery — a project's environment is
+is no snapshot/upgrade/rollback or backup machinery — a workspace's environment is
 its `.ai-platform/Dockerfile` (architecture §25), and overlay persistence lands
 in Slice 4.
 
@@ -235,8 +236,8 @@ ai context caveman <lite|full|ultra|wenyan>
 
 # 4. Slice 3 — Removed (multi-agent is not a platform concern)
 
-The platform provides **one workspace per project**. Running multiple AI agents
-on a project — and any git they need (branches, worktrees, merges, rebases) — is
+The platform provides **one workspace per directory**. Running multiple AI agents
+in a workspace — and any git they need (branches, worktrees, merges, rebases) — is
 the **in-workspace agent CLI's** job, not the platform's (architecture §20–22).
 There are no `ai agent` commands and no platform-managed worktrees. The `[S3]`
 acceptance tag is retired.
@@ -258,7 +259,7 @@ versioning/upgrade/rollback.)
 
 * per-workspace persistent writable overlay (architecture §26)
 * overlay mounted over the image built from `.ai-platform/Dockerfile`
-* overlay survives stop/start and `ai workspace destroy` recreation
+* overlay survives stop/start and `ai destroy` recreation
 * overlay removed only when its workspace is permanently removed
 
 ---
@@ -296,7 +297,7 @@ Add the remaining OS Dockerfile templates (Slice 1 ships the debian-trixie templ
 
 ## Acceptance Criteria
 
-* all four OS templates selectable in the `ai project create` wizard
+* all four OS templates selectable in the `ai create` wizard (or via `--os`)
 * the user always selects the OS — no OS is applied silently
 * all OS images expose an identical **base** tooling surface (agent CLIs are whatever the user selected)
 
@@ -414,7 +415,7 @@ System is complete when:
 
 ```bash id="g1"
 ai setup
-ai project create my-project   # interactive wizard: pick OS + agent CLIs (defaults: debian-trixie, OpenCode)
+ai create --name my-project   # interactive wizard: pick OS + agent CLIs (defaults: debian-trixie, OpenCode)
 ```
 
 produces (for the OS the user selected):

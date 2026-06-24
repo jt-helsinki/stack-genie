@@ -151,8 +151,8 @@ stacks/rust/Dockerfile.snippet
 
 Rules:
 
-* the OS template **seeds** a new project's `.ai-platform/Dockerfile` at
-  `ai project create`; the selected **stack snippets** (wizard step 5) are
+* the OS template **seeds** a new workspace's `.ai-platform/Dockerfile` at
+  `ai create`; the selected **stack snippets** (wizard step 5) are
   composed into it after the base tooling
 * the stack list is **extensible** — adding `stacks/<name>/Dockerfile.snippet`
   makes `<name>` selectable
@@ -416,9 +416,9 @@ llm.log
 Per-project state lives in the project; the global index records where projects
 are:
 
-* `config/projects.yaml` (global) → `ai project create` / `delete` (index)
-* `<project>/.ai-platform/project.yaml` → `ai project create`
-* `<project>/.ai-platform/run/workspaces/*.json` → `ai workspace`
+* `config/projects.yaml` (global) → `ai create` / `delete` (index)
+* `<project>/.ai-platform/project.yaml` → `ai create`
+* `<project>/.ai-platform/run/workspaces/*.json` → `ai start`/`stop`/…
 
 ---
 
@@ -612,8 +612,8 @@ network:                   # workspace networking (arch §29.6); all fields mana
 }
 ```
 
-* maps project name → absolute path; written only on `ai project create` /
-  `ai project delete` (low-write)
+* maps project name → absolute path; written only on `ai create` /
+  `ai delete` (low-write)
 * lets the CLI find a project's `.ai-platform/` without scanning
 
 ## 12.8 `overlays/<workspace-id>/overlay.json` (global overlay record)

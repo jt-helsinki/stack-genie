@@ -3,7 +3,7 @@
 Slice 1 is implemented host-side **and** verified end-to-end on a provisioned
 Apple Silicon host: `ai setup` launches the full service tier; LiteLLM mints
 scoped agent virtual keys and holds provider keys; workspace OCI images build and
-boot as Microsandbox microVMs; `ai workspace exec` runs inside them; the
+boot as Microsandbox microVMs; commands run inside them; the
 per-project `ai network` egress policy is applied as `msb` net-rules at workspace
 create; and the DNS egress audit (`ai network log`) works.
 
@@ -46,7 +46,7 @@ code.
       `com.apple.security.hypervisor` entitlement under Developer ID + notarization.
 - [ ] `git`, `gh` — workspace agent tooling and the acceptance suite's
       `requireGit` gate; the platform itself runs no git (VCS is out of scope, so
-      `project create` does **not** use git).
+      `ai create` does **not** use git).
 
 ## 2. Remaining seams to wire/verify
 
@@ -153,37 +153,42 @@ pass):
       workspace isolation, §16.3 egress confinement.
 - [ ] Remaining `[S1]` tests still to add: §2.1–2.3 setup/idempotency, §7.1/§7.2
       model status/test, §6.1/§6.3/§6.4 Dockerfile/agent-CLI/stack probes.
-- [ ] Point `make test-acceptance` at the suite (currently a stub) and enable the
-      self-hosted Apple Silicon job in `.github/workflows/ci.yml` (`acceptance-s1`).
+- [ ] Run/verify the acceptance suite on hardware — `make test-acceptance` already
+      runs `go test -count=1 ./test/acceptance/` (the package passes `go test ./...`);
+      confirm the `hardwareAvailable()`-gated `[S1]` tests go green on a live host and
+      enable the self-hosted Apple Silicon job in `.github/workflows/ci.yml`
+      (`acceptance-s1`).
 
 ## 4. Smoke sequence (manual, on the host)
 
 1. `ai doctor` → all checks green.
 2. `ai setup` → exit 0; service tier (DNS, Ollama, Presidio, LiteLLM +
    DB, Headroom, nginx proxy, Open WebUI) up; templates installed.
-3. `ai project create demo --os debian-trixie` → project scaffolded in the cwd
-   (create does **not** start a workspace); then `ai start` builds and starts its
-   workspace microVM.
-4. `ai workspace exec demo -- uname -a` → runs inside the microVM (one-shot).
-   `ai workspace shell demo` (or `ai shell` from the project dir) → a real
+3. `ai create --name demo --os debian-trixie` → **scaffold-only**: writes the
+   project's `.ai-platform/` files in the cwd and registers it; it does **not**
+   build the image or boot a microVM.
+4. `ai start` (or `ai start demo`) → builds the workspace OCI image and boots its
+   microVM.
+5. `ai exec demo -- uname -a` → runs inside the microVM (one-shot).
+   `ai shell demo` (or `ai shell` from the project dir) → a real
    interactive login PTY in the microVM via `msb exec -t -u workspace` (verify line
    editing, Ctrl-C, and a clean exit back to the host).
-4a. **Workspace sessions (wired; needs a live microVM to verify).** The session
+5a. **Workspace sessions (wired; needs a live microVM to verify).** The session
    model — persistent, reattachable per-name **tmux** sessions inside the microVM,
    with a managed `~/.tmux.conf` written at start — is fully wired host-side. On a
    live microVM verify: `ai agent opencode` starts/attaches a per-CLI session;
    `ai sessions` lists it (NAME/ATTACHED/IDLE; a no-server workspace lists zero,
    not an error); detaching (`Ctrl-b d`) leaves it running and `ai attach opencode`
    reattaches; `ai shell` ↔ a second agent run concurrently; the TUI **Sessions**
-   view attaches/kills via `ai workspace attach`. (Needs `tmux` in the image — now
+   view attaches/kills via `ai attach`. (Needs `tmux` in the image — now
    in every OS Dockerfile — and a booted microVM, so it is verified during
    bring-up alongside the shell.)
-5. `ai secrets set openai --stdin` + `ai secrets map openai --env OPENAI_API_KEY`;
+6. `ai secrets set openai --stdin` + `ai secrets map openai --env OPENAI_API_KEY`;
    `ai models test gpt-5` → works (real key lives in LiteLLM, only a scoped
    virtual key in the workspace).
-6. From the workspace, a non-allowlisted destination is **denied** (default-deny
+7. From the workspace, a non-allowlisted destination is **denied** (default-deny
    Microsandbox net-rules); `ai network log` shows the attempted name.
-7. `make test-acceptance` → the `[S1]` suite is green.
+8. `make test-acceptance` → the `[S1]` suite is green.
 
 ## 5. Deferred beyond Slice 1
 

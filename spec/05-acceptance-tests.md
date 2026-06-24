@@ -57,25 +57,28 @@ Each test must run in a clean environment:
 
 ## 1.4 Project Creation (non-interactive)
 
-`ai project create` has a flag for every choice (`--name`/`--os`/`--agents`/
-`--stacks`). On a TTY those flags **pre-seed** an interactive wizard, but under
-`--json` the wizard is **disabled** and the spec is built straight from the flags
-(the programmatic contract — every input has a flag, no prompts; CLI §1.3/§3.1).
-The harness always runs with `--json`, so it drives creation with explicit flags
+`ai create` has a flag for every choice (`--name`/`--os`/`--agents`/`--stacks`).
+On a TTY those flags **pre-seed** an interactive wizard, but under `--json` (or no
+TTY) the wizard is **disabled** and the spec is built straight from the flags (the
+programmatic contract — every input has a flag, no prompts; CLI §1.3/§3.1). The
+harness always runs with `--json`, so it drives creation with explicit flags
 rather than a pseudo-terminal:
 
 ```text
-harness.CreateProjectWithOS(name, osKey)  →  ai project create <name> --os <key> --json
+harness.CreateProjectWithOS(name, osKey)  →  ai create <name> --os <key> --json
 ```
 
+* `ai create` is **scaffold-only** — it writes the project's `.ai-platform/`
+  artifacts and indexes the project; it does **not** build or boot a workspace.
+  `ai start` builds the image and boots the microVM.
 * the default base OS is `debian-trixie` and the default agent CLIs are
   `opencode`, `pi`
 * `--os` is **required** on this non-interactive path; a missing or unknown value
   exits `2`
-* the result is the `--json` envelope on stdout
+* the result is the `--json` envelope on stdout (envelope `command: project.create`)
 
-A `create` with **no TTY** and nothing to build from is itself a test case that
-must exit `2` (§3.1 — the wizard cannot prompt).
+A `--json`/no-TTY `create` exits `2` **only** when a required input (`--os`) is
+missing or a value is invalid — not merely because there is no TTY (§3.1).
 
 ---
 
@@ -93,16 +96,18 @@ Each test is tagged with the slice from which it must pass (see
 
 ## 1.6 Test Harness
 
-All tests run unattended against a clean, ephemeral environment. Commands are
-non-interactive except `ai project create`, which is driven through a PTY via the
-`create_project` helper (§1.4).
+All tests run unattended against a clean, ephemeral environment. Every command —
+including `ai create` — is non-interactive: the harness always appends `--json`,
+which disables the interactive wizard and drives creation with explicit flags
+(§1.4). No PTY is used to drive `ai create`. (The `creack/pty` harness exists only
+for the rare TTY-only human-wizard cases and is not used here.)
 
 ### Fixtures
 
 * **HOME**: a throwaway `$AIP_TEST_HOME`; `~/.ai-platform` resolves under it.
   Removed on teardown.
 * **sample dir**: `fixtures/sample-app` — a small multi-language directory used
-  as a working directory for `ai project create` (the project is created in
+  as a working directory for `ai create` (the project is created in
   place). The platform does no git, so there is no clone/repo fixture. (There
   are also no merge/conflict tests — git is the in-workspace agent's job, not
   the platform's; architecture §21–§22.)
@@ -151,7 +156,7 @@ setup:
   printf '%s' "$AIP_TEST_SENTINEL" | ai secrets set openai --stdin --json   # stored in the LiteLLM gateway (keys-in-LiteLLM)
 
 teardown:
-  ai project delete <each> --purge --yes        # best effort
+  ai delete <each> --purge --yes                # best effort
   stop fixtures/mock-provider
   rm -rf "$AIP_TEST_HOME"
 ```
@@ -173,10 +178,10 @@ real provider.
 
 ### Non-Interactive Confirmation
 
-Destructive commands (`ai project delete`) are confirmed
-non-interactively with `--yes` (CLI §20). `ai workspace destroy` is **not**
-destructive — it keeps the overlay and host source and needs no `--yes` (§4.4) —
-so it is excluded. There is no AI-approval flow.
+Destructive commands (`ai delete`) are confirmed non-interactively with `--yes`
+(CLI §20). `ai destroy` is **not** destructive — it keeps the overlay and host
+source and needs no `--yes` (§4.4) — so it is excluded. There is no AI-approval
+flow.
 
 ### Thresholds
 
@@ -251,25 +256,27 @@ ai setup --upgrade
 ### Test
 
 ```bash id="t5"
-create_project test-project              # PTY-driven wizard; accepts defaults (§1.4)
+ai create test-project --os debian-trixie --json   # flag-driven, non-interactive (§1.4)
 ```
 
 ### Expected Result
 
-* project created under `~/projects/`
-* Microsandbox workspace microVM started
-* debian-trixie microVM running (the wizard's default OS)
-* `agent.tools` is `[opencode]` and `agent.default_tool` is `opencode` (wizard defaults)
-* LiteLLM accessible
-* the workspace holds a scoped LiteLLM virtual key (keys-in-LiteLLM, arch §17); provider keys live only in the gateway
-* state updated under `~/projects/test-project/.ai-platform/` + indexed in `config/projects.yaml`
+`ai create` is scaffold-only — it writes state and indexes the project; it does
+**not** build or boot a workspace (that is `ai start`).
+
+* the envelope is `command: project.create`, `ok == true`, exit `0`
+* `data.name == test-project`, `data.os == debian-trixie`
+* `data.tools` is `[opencode, pi]` (the default agent CLIs)
+* project scaffolded in the current directory; `data.root` points at it, and the
+  project is indexed in `config/projects.yaml`
+* state written under `<root>/.ai-platform/` (Dockerfile / config.yaml /
+  profile.yaml / project.yaml / `skills/caveman/`)
 
 ### Negative case
 
-* `ai project create test-project` with **no TTY** (not attached to a PTY) exits
-  `2` — the wizard cannot prompt non-interactively
-* aborting the wizard (`create_project test-project abort=1`) exits `0`, makes no
-  changes, and reports `data.cancelled == true`
+* `ai create test-project --json` with **no `--os`** exits `2` — under `--json`
+  the wizard is disabled and `--os` is required (§1.4/§3.1). The failure is the
+  missing required input, not the absence of a TTY.
 
 ---
 
@@ -280,7 +287,7 @@ create_project test-project              # PTY-driven wizard; accepts defaults (
 ```bash id="t6"
 # A directory with pre-existing files (the platform runs no git).
 mkdir -p "$AIP_TEST_HOME/work/app" && echo hi > "$AIP_TEST_HOME/work/app/README.md"
-cd "$AIP_TEST_HOME/work/app" && create_project app
+cd "$AIP_TEST_HOME/work/app" && ai create app --os debian-trixie --json
 ```
 
 ### Expected Result
@@ -288,8 +295,8 @@ cd "$AIP_TEST_HOME/work/app" && create_project app
 * the project is created in the current directory (`root` == that directory)
 * pre-existing files are left untouched (`README.md` still present)
 * no `.git` is created by the platform
-* re-running `ai project create` in the same directory **attaches** to the
-  existing workspace instead of erroring
+* re-running `ai create` in the same directory **attaches** to the existing
+  workspace instead of erroring
 
 ---
 
@@ -298,13 +305,13 @@ cd "$AIP_TEST_HOME/work/app" && create_project app
 ### Test
 
 ```bash id="t7"
-ai workspace destroy test-project --json
+ai destroy test-project --json
 ```
 
 ### Expected Result
 
 * the Microsandbox workspace microVM is destroyed; the overlay and host source remain intact
-* `ai workspace start test-project` recovers the workspace (re-mounts the overlay)
+* `ai start test-project` recovers the workspace (re-mounts the overlay)
 * no `--yes` needed — destroy is non-destructive (CLI §20)
 
 ---
@@ -314,16 +321,16 @@ ai workspace destroy test-project --json
 ### Test
 
 ```bash id="t7b"
-create_project del-test
+ai create del-test --os debian-trixie --json
 
 # (a) KNOWN project, missing confirmation → exit 2 (isolates the missing-`--yes` cause)
-ai project delete del-test --json
+ai delete del-test --json
 
 # (b) UNKNOWN project, WITH --yes → exit 2 (isolates the unknown-project cause)
-ai project delete no-such-project --yes --json
+ai delete no-such-project --yes --json
 
 # (c) successful default delete (keeps host source)
-ai project delete del-test --yes --json
+ai delete del-test --yes --json
 ```
 
 ### Expected Result
@@ -337,11 +344,11 @@ unknown project with a missing confirmation:
 * **(b)** exits `2` **because the project is unknown** — `--yes` is present, so a
   missing confirmation cannot be the cause; nothing is removed
 * **(c)** default delete: workspaces + overlays removed; `config/projects.yaml`
-  no longer lists `del-test`; tracked `~/projects/del-test/.ai-platform/` files
+  no longer lists `del-test`; tracked `<project>/.ai-platform/` files
   (Dockerfile / config / profile / project.yaml / `skills/caveman/`) **remain**;
   `.ai-platform/run/` is **cleared**
-* `--purge` (e.g. `ai project delete <p> --purge --yes` on a separately created
-  disposable project) additionally removes `~/projects/<p>` entirely
+* `--purge` (e.g. `ai delete <p> --purge --yes` on a separately created
+  disposable project) additionally removes the project directory entirely
 
 ---
 
@@ -373,16 +380,17 @@ environment is its `.ai-platform/Dockerfile`, architecture §25.)
 ### Test
 
 ```bash id="t12"
-create_project env-test
-ai workspace exec env-test --json -- cat /etc/os-release
+ai create env-test --os debian-trixie --json
+ai exec env-test --json -- cat /etc/os-release
 ```
 
 ### Expected Result
 
-* `~/projects/env-test/.ai-platform/Dockerfile` exists, seeded from the
-  `debian-trixie` template
+* `<project>/.ai-platform/Dockerfile` exists, seeded from the `debian-trixie`
+  template (asserted on-disk by the file-inspection probe; runnable without a
+  microVM)
 * the workspace image is built from that Dockerfile; `data.stdout` of
-  `os-release` shows Debian trixie
+  `os-release` shows Debian trixie (the in-VM half is hardware-gated)
 
 (Caveman is seeded from Slice 2, not asserted here; see §8.)
 
@@ -394,10 +402,10 @@ ai workspace exec env-test --json -- cat /etc/os-release
 
 ```bash
 # edit the project's Dockerfile to add a package, then recreate (debian-trixie → apt)
-printf '\nRUN apt-get update && apt-get install -y jq && rm -rf /var/lib/apt/lists/*\n' >> ~/projects/env-test/.ai-platform/Dockerfile
-ai workspace destroy env-test --json
-ai workspace start   env-test --json
-ai workspace exec    env-test --json -- command -v jq
+printf '\nRUN apt-get update && apt-get install -y jq && rm -rf /var/lib/apt/lists/*\n' >> <project>/.ai-platform/Dockerfile
+ai destroy env-test --json
+ai start   env-test --json
+ai exec    env-test --json -- command -v jq
 ```
 
 ### Expected Result
@@ -413,19 +421,22 @@ ai workspace exec    env-test --json -- command -v jq
 
 ```bash
 # select a non-default agent CLI in addition to the default
-create_project cli-test clis=opencode,codex default_tool=codex
-ai workspace exec cli-test --json -- sh -c 'command -v opencode && command -v codex'
-ai workspace exec cli-test --json -- sh -c 'command -v gemini'   # NOT selected
+ai create cli-test --os debian-trixie --agents opencode,codex --json
+ai exec cli-test --json -- sh -c 'command -v opencode && command -v codex'
+ai exec cli-test --json -- sh -c 'command -v gemini'   # NOT selected
 ```
 
 ### Expected Result
 
-* the selected CLIs are installed: the `opencode` + `codex` probe succeeds
-  (`data.exit_code == 0`)
-* an **unselected** CLI is absent: the `gemini` probe fails (`data.exit_code != 0`)
-* `config.yaml` records `agent.tools: [opencode, codex]` and
-  `agent.default_tool: codex`; both appear in `.ai-platform/Dockerfile`
-* default selection (`create_project x`) yields `agent.tools: [opencode]` (§3.1)
+* the create envelope reports `data.tools == [opencode, codex]`
+* `config.yaml` records the selected agent CLIs, and each appears as an
+  `# agent CLI: <name>` snippet in `.ai-platform/Dockerfile`; an unselected CLI
+  (`gemini`) does **not** appear (asserted on-disk; runnable without a microVM)
+* in the workspace (hardware-gated): the `opencode` + `codex` probe succeeds
+  (`data.exit_code == 0`), and the unselected `gemini` probe fails
+  (`data.exit_code != 0`)
+* default selection (`ai create x --os <key>`, no `--agents`) yields
+  `data.tools == [opencode, pi]` (§3.1)
 
 ---
 
@@ -434,22 +445,24 @@ ai workspace exec cli-test --json -- sh -c 'command -v gemini'   # NOT selected
 ### Test
 
 ```bash
-# select software stacks in the wizard (step 5)
-create_project stack-test stacks=go,node
-ai workspace exec stack-test --json -- sh -c 'command -v go && command -v node'
-ai workspace exec stack-test --json -- sh -c 'command -v python3'   # NOT selected
+# select software stacks
+ai create stack-test --os debian-trixie --stacks go,node --json
+ai exec stack-test --json -- sh -c 'command -v go && command -v node'
+ai exec stack-test --json -- sh -c 'command -v python3'   # NOT selected
 ```
 
 ### Expected Result
 
-* the selected stacks are installed: the `go` + `node` probe succeeds
-  (`data.exit_code == 0`)
-* an **unselected** stack is absent: the `python3` probe fails
+* the create envelope reports `data.stacks == [go, node]`
+* `profile.yaml` records `stacks: [go, node]` and the matching `# stack: <name>`
+  snippets appear in `.ai-platform/Dockerfile`; an unselected stack (`python`)
+  does **not** (§25, repo-layout §1.5; asserted on-disk, runnable without a
+  microVM)
+* in the workspace (hardware-gated): the `go` + `node` probe succeeds
+  (`data.exit_code == 0`), and the unselected `python3` probe fails
   (`data.exit_code != 0`)
-* `profile.yaml` records `stacks: [go, node]` and the matching stack snippets
-  appear in `.ai-platform/Dockerfile` (§25, repo-layout §1.5)
-* default selection (`create_project x`) installs **no** stacks beyond the base
-  image (`profile.yaml` `stacks: []`)
+* default selection (`ai create x --os <key>`, no `--stacks`) installs **no**
+  stacks beyond the base image (`profile.yaml` `stacks: []`)
 
 ---
 
@@ -533,7 +546,7 @@ that LiteLLM holds in its own store.
 ### Test
 
 ```bash id="t18"
-create_project test-project
+ai create test-project --os debian-trixie --json
 # inside the workspace, make a model call through LiteLLM to the mock provider:
 ai models test gpt-5 --project test-project --json
 ```
@@ -561,11 +574,11 @@ is unset.
 
 ```bash
 # 1) workspace env must not contain the sentinel — capture stdout on the host, grep host-side
-ai workspace exec test-project --json -- env | jq -r .data.stdout > ws-env.txt
+ai exec test-project --json -- env | jq -r .data.stdout > ws-env.txt
 grep -qF "$AIP_TEST_SENTINEL" ws-env.txt        # expect: no match (exit 1)
 
 # 2) workspace filesystem must not contain the sentinel — inner grep, host-expanded arg
-ai workspace exec test-project --json -- grep -rIF "$AIP_TEST_SENTINEL" / 2>/dev/null \
+ai exec test-project --json -- grep -rIF "$AIP_TEST_SENTINEL" / 2>/dev/null \
   | jq -e '.data.exit_code != 0'                # expect: inner grep found nothing
 ```
 
@@ -597,17 +610,22 @@ confines all other workspace egress with the Microsandbox NetworkPolicy (§16.3)
 ### Test
 
 ```bash
-ai workspace doctor test-project --json
+ai doctor test-project --json
 ```
 
 ### Expected Result
 
-* service tier: `data.runtime.rootless == true`; no privileged containers
-  (`data.runtime.privileged == false`); if rootless is unavailable, the command
-  exits `4` (no rooted fallback, §6.1)
-* workspace: runs as a Microsandbox microVM (`data.workspace.kind == "microvm"`);
-  if host virtualization is unavailable, the command exits `4` (no non-microVM
-  fallback, §6.2)
+`ai doctor` is consolidated: given a project name it adds a WORKSPACE-runtime
+section to the report. It always runs to completion and exits `0` (per-check
+status conveys health, §14.1) — a runtime/virtualization shortfall is folded into
+the checks, not a non-zero exit.
+
+* the envelope is `command: doctor`, `ok == true`, exit `0`
+* on a provisioned host the workspace posture checks pass: the `workspace
+  rootless` and `workspace virtualization` checks each report status `ok` (the
+  platform never runs privileged; workspaces are Microsandbox microVMs)
+* off-hardware those same checks appear in the report but report a non-`ok`
+  status — the command still exits `0`
 
 ---
 
@@ -661,9 +679,10 @@ ai setup --json
 
 ### Test
 
-* `create_project per-<os> os=<key>` for each OS key
-  (`alma`, `debian-trixie`, `debian-bookworm`, `ubuntu`), each with the same
-  agent-CLI selection, and run the same tooling-smoke command in each
+* `ai create os-<key> --os <key> --json` for each OS key
+  (`alma`, `debian-trixie`, `debian-bookworm`, `ubuntu`), then `ai start
+  --project os-<key>`, each with the same agent-CLI selection, and run the same
+  tooling-smoke command (`ai exec os-<key> -- <tool> --version`) in each
 
 ### Expected Result
 
@@ -690,13 +709,13 @@ distro mirrors or whether the image grants sudo).
 
 ```bash id="t21"
 # write an executable into the overlay
-ai workspace exec test-project --json -- sh -c \
+ai exec test-project --json -- sh -c \
   'mkdir -p ~/.local/bin && printf "#!/bin/sh\necho overlay-ok\n" > ~/.local/bin/overlay-tool && chmod +x ~/.local/bin/overlay-tool'
 # destroy (non-destructive) and recreate the workspace
-ai workspace destroy test-project --json
-ai workspace start   test-project --json
+ai destroy test-project --json
+ai start   test-project --json
 # the file is still there
-ai workspace exec test-project --json -- sh -c '~/.local/bin/overlay-tool'
+ai exec test-project --json -- sh -c '~/.local/bin/overlay-tool'
 ```
 
 ### Expected Result
@@ -713,10 +732,10 @@ ai workspace exec test-project --json -- sh -c '~/.local/bin/overlay-tool'
 ### Test
 
 ```bash id="t22"
-ai workspace exec test-project --json -- sh -c 'echo hi > ~/.local/agent-state'
-ai workspace destroy test-project --json
-ai workspace start   test-project --json
-ai workspace exec test-project --json -- sh -c 'cat ~/.local/agent-state'
+ai exec test-project --json -- sh -c 'echo hi > ~/.local/agent-state'
+ai destroy test-project --json
+ai start   test-project --json
+ai exec test-project --json -- sh -c 'cat ~/.local/agent-state'
 ```
 
 ### Expected Result
@@ -738,9 +757,19 @@ ai doctor --json
 
 ### Expected Result
 
-* system health report generated
-* no crashes
-* actionable output
+`ai doctor` is consolidated — one command covers the platform dependencies, every
+managed service, and (when a project name is given, §11.1) the workspace runtime.
+It always exits `0`; per-check status conveys health.
+
+* the envelope is `command: doctor`, `ok == true`, exit `0`, with a non-empty
+  `data.checks`
+* the platform-dependency checks are always present: `container runtime`,
+  `microsandbox runtime`, `host virtualization`
+* the SERVICES section lists every managed service — `ollama`, `litellm`,
+  `headroom`, `proxy`, `dns`, and the optional `open-webui` and `odysseus` (the
+  names appear even when stopped/not-installed off-hardware)
+* `ai doctor ghost` (unknown name) still exits `0` with a report — a shortfall is
+  folded into the checks, not a non-zero exit
 
 ---
 
@@ -812,11 +841,11 @@ namespace-dependent).
 printf 'HOST_ONLY_%s' "$AIP_TEST_SENTINEL" > "$AIP_TEST_HOME/host-only-marker"
 
 # the workspace must not be able to read the host-only marker by its host path
-ai workspace exec test-project --json -- cat "$AIP_TEST_HOME/host-only-marker" \
+ai exec test-project --json -- cat "$AIP_TEST_HOME/host-only-marker" \
   | jq -e '.data.exit_code != 0'
 
 # no host Docker socket inside the workspace
-ai workspace exec test-project --json -- test -e /var/run/docker.sock \
+ai exec test-project --json -- test -e /var/run/docker.sock \
   | jq -e '.data.exit_code != 0'
 ```
 
@@ -850,16 +879,16 @@ before the command is passed verbatim into the workspace (CLI §4.5).
 
 ```bash
 # trusted host service (LiteLLM) is reachable directly via AI_PLATFORM_HOST (guest-side vars)
-ai workspace exec test-project --json -- \
+ai exec test-project --json -- \
   sh -c 'curl -fsS "http://$AI_PLATFORM_HOST:$LITELLM_PORT/health" >/dev/null'
 
 # allow-listed destination (the mock provider) IS reachable under the NetworkPolicy
 # (host-expanded URL, single-quoted inside so the guest receives the literal URL)
-ai workspace exec test-project --json -- \
+ai exec test-project --json -- \
   sh -c "curl -fsS --max-time 5 '$MOCK_PROVIDER_URL/health' >/dev/null"
 
 # NON-allow-listed destination is denied by the Microsandbox NetworkPolicy
-ai workspace exec test-project --json -- \
+ai exec test-project --json -- \
   sh -c 'curl -fsS --max-time 5 https://example.com >/dev/null'   # not on the allow-list → denied
 ```
 

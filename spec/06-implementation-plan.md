@@ -81,7 +81,7 @@ Principle: `cli/` stays thin (parse flags → call a package → render via
 
 `ai setup` installs the source `dockerfiles/<os>/Dockerfile` and
 `stacks/<stack>/` templates into `~/.ai-platform/templates/` (the runtime paths
-`ai project create` composes from — repo-layout §1.5).
+`ai create` composes from — repo-layout §1.5).
 
 ---
 
@@ -160,8 +160,8 @@ Slice 1 target (roadmap §2): macOS (Apple Silicon), Docker rootless service tie
 Microsandbox microVM workspaces, debian-trixie, single agent, LiteLLM,
 keys-in-LiteLLM credentials (agent holds a scoped virtual key), zero manual config.
 Commands (exactly the `[S1]`-tested surface): `ai setup`,
-`ai project create` (interactive wizard), `ai project delete`,
-`ai workspace start|stop|destroy|exec`, `ai services status`,
+`ai create` (interactive wizard), `ai delete`,
+`ai start|stop|destroy|exec`, `ai services status`,
 `ai secrets set|map|list`, `ai models status|test`, `ai state show|repair`,
 `ai doctor`, `ai logs`.
 (No snapshot/upgrade/rollback commands — the environment is the project's
@@ -195,10 +195,10 @@ refer to the CLI spec and architecture spec respectively.
   `debian-trixie` template, build the workspace OCI image from it; create/start
   the microVM (virtio-net + gvproxy, default-deny network policy **applied as
   `msb` net-rules at create**, §3.4); mounts/volumes;
-  `ai workspace exec`; inject `AI_PLATFORM_HOST` so the agent reaches the host
+  `ai exec`; inject `AI_PLATFORM_HOST` so the agent reaches the host
   Headroom→LiteLLM gateway with its scoped virtual key (arch §17). Tests: AT §6.1,
   harness workspace-start threshold, AT §16.2, AT §16.3.
-* **M6 — `ai project create` wizard + delete.** Interactive PTY wizard (CLI §3.1)
+* **M6 — `ai create` wizard + delete.** Interactive PTY wizard (CLI §3.1)
   with steps for name/OS/agent-CLIs/default-agent/**software-stacks**,
   each with a presented default, checkbox multi-select for CLIs + stacks,
   arrow/space navigation, Back + Abort; no `--os`/per-choice flags; no TTY → exit
@@ -207,9 +207,9 @@ refer to the CLI spec and architecture spec respectively.
   CLIs / config incl. `agent.tools`+`default_tool` / `profile.yaml` incl.
   `stacks` / project.yaml / .gitignore) + index in `config/projects.yaml`.
   `create` is scaffold-only — the workspace OCI image build, the microVM, and the
-  agent's scoped LiteLLM virtual key are created on demand by `ai workspace start`
+  agent's scoped LiteLLM virtual key are created on demand by `ai start`
   (or by `create`'s attach path when the cwd is already a project), not on first
-  creation. `ai project delete` tears down the workspace microVM before removing
+  creation. `ai delete` tears down the workspace microVM before removing
   project state.
   Tests: AT §3.1 (incl. no-TTY + abort), §6.3 (CLI selection), §6.4 (stack
   selection), §3.3, §9.1, §9.2.

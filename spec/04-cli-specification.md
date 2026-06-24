@@ -120,8 +120,10 @@ single, consistent pattern:
 ai <noun> [<verb>] [args] [flags]
 ```
 
-Examples: `ai setup`, `ai project create`, `ai project delete`,
-`ai workspace start`, `ai workspace exec`, `ai context status`.
+Examples: `ai setup`, `ai create`, `ai delete`, `ai start`, `ai exec`,
+`ai context status`. Workspace lifecycle verbs are **top-level** (`ai create`,
+`ai start`, `ai exec`, …); grouped commands like `ai context status` /
+`ai services status` keep the `ai <noun> <verb>` form.
 
 Rules:
 
@@ -352,18 +354,16 @@ Idempotent: safe to re-run after a partial or completed uninstall.
 
 # 3. Workspace Commands (create / list / delete)
 
-> **Flat surface.** The canonical commands are the **top-level verbs** below
-> (`ai create` / `ai list` / `ai delete`). The grouped forms `ai project create`
-> / `ai project list` / `ai project delete` remain as **hidden back-compat
-> aliases** — they behave identically and emit the same envelope `command` keys
-> (`project.create` / `project.list` / `project.delete`), but no longer appear in
-> `--help`. The user-facing noun is **workspace** everywhere.
+> **Flat surface.** The commands are the **top-level verbs** below
+> (`ai create` / `ai list` / `ai delete`). There are **no** `ai project …`
+> command groups or aliases. The envelope `command` keys are unchanged
+> (`project.create` / `project.list` / `project.delete`). The user-facing noun is
+> **workspace** everywhere.
 
 ## 3.1 Create Workspace
 
 ```bash id="c4"
 ai create [<name>] [--name <name>] [--os <os>] [--agents <list>] [--stacks <list>]
-# alias (hidden): ai project create …
 ```
 
 `ai create` sets up a new environment **in the current working
@@ -476,7 +476,7 @@ Behavior (on completion):
 `create` is **scaffold-only**: it writes the `.ai-platform/` definition and
 registers the project — it does **not** build the workspace OCI image or
 create/start the workspace microVM on first creation. The image is built and the
-microVM is created on demand by `ai workspace start` (§4.2), and `create` itself
+microVM is created on demand by `ai start` (§4.2), and `create` itself
 starts/execs a workspace only when run in a directory that is **already** a
 project (the attach path above).
 
@@ -486,15 +486,17 @@ project (the attach path above).
 
 ```bash id="c7"
 ai list
-# alias (hidden): ai project list
 ```
 
-Output (one row per workspace):
+Output (one row per workspace), columns:
 
-* workspace name
-* os
-* active agents
-* workspace status
+* `NAME` — workspace name
+* `OS` — operating system
+* `AGENTS` — active agent CLIs
+* `STATUS` — workspace status
+* `ID` — microVM / runtime handle id
+* `CREATED` — creation timestamp
+* `LAST-STARTED` — last-started timestamp
 
 ---
 
@@ -502,7 +504,6 @@ Output (one row per workspace):
 
 ```bash id="c7a"
 ai delete [<name>]
-# alias (hidden): ai project delete [<name>]
 ```
 
 Removes the **whole workspace** — definition, index entry, and microVM. With no
@@ -534,24 +535,25 @@ Behavior:
 
 # 4. Workspace microVM Commands (start / stop / restart / destroy / exec / …)
 
-> **Flat surface.** The canonical commands are the **top-level verbs** below
+> **Flat surface.** The commands are the **top-level verbs** below
 > (`ai start` / `ai stop` / `ai restart` / `ai destroy` / `ai exec` / `ai shell`
-> / `ai agent` / `ai attach` / `ai sessions`). Each takes an **optional `[name]`**
-> positional that defaults to the workspace owning the current directory (then
-> `--project`). The grouped `ai workspace …` forms remain as **hidden back-compat
-> aliases** — identical behavior, same `workspace.*` envelope keys — and no longer
-> appear in `--help`. The per-workspace runtime check stays as `ai workspace
-> doctor [name]` only, because the top-level `ai doctor` is the **platform** health
-> command (§10.1).
+> / `ai agent` / `ai attach` / `ai sessions` / `ai doctor`). Each takes an
+> **optional `[name]`** positional that defaults to the workspace owning the
+> current directory (then `--project`). There are **no** `ai workspace …` command
+> groups or aliases. The envelope `command` keys are unchanged (`workspace.*`).
+> There is no separate per-workspace doctor: the single top-level `ai doctor`
+> reports platform health and **additionally** the workspace-runtime section when
+> run inside a workspace or given a `[name]` (§10.1, §12.1).
 
-## 4.1 List Workspace microVMs
+## 4.1 List Workspaces
 
 ```bash id="c8"
-ai workspace list
+ai list
 ```
 
-> This lists the microVM runtime handles (one row per started workspace). For the
-> richer workspace inventory (name / OS / status / agents) use **`ai list`** (§3.3).
+> There is a **single** `ai list` (§3.3) — it is the workspace inventory and also
+> reflects each workspace's microVM runtime status. There is no separate
+> microVM-only listing command.
 
 ---
 
@@ -559,7 +561,6 @@ ai workspace list
 
 ```bash id="c9"
 ai start [<name>]
-# alias (hidden): ai workspace start [<name>]
 ```
 
 Behavior:
@@ -581,7 +582,6 @@ Behavior:
 
 ```bash id="c10"
 ai stop [<name>]
-# alias (hidden): ai workspace stop [<name>]
 ```
 
 Behavior:
@@ -596,7 +596,6 @@ Behavior:
 
 ```bash id="c10a"
 ai restart [<name>]
-# alias (hidden): ai workspace restart [<name>]
 ```
 
 Behavior:
@@ -617,7 +616,6 @@ Behavior:
 
 ```bash id="c11"
 ai destroy [<name>]
-# alias (hidden): ai workspace destroy [<name>]
 ```
 
 Behavior:
@@ -635,7 +633,6 @@ Behavior:
 
 ```bash id="c11a"
 ai exec [<name>] -- <command> [args...]
-# alias (hidden): ai workspace exec [<name>] -- <command> [args...]
 ```
 
 Behavior:
@@ -667,12 +664,11 @@ Exit semantics — **platform failure is distinct from inner-command failure**:
 
 ```bash
 ai shell [<name>]             # defaults to the current directory's workspace
-# alias (hidden): ai workspace shell [<name>]
 ```
 
 Opens an **interactive login shell inside the running workspace microVM** — a real
 PTY via `msb exec -t`, with the caller's stdin/stdout/stderr wired straight
-through (distinct from `ai workspace exec`, which is one-shot and buffered). It is
+through (distinct from `ai exec`, which is one-shot and buffered). It is
 **interactive-only**: it owns the terminal and emits no JSON envelope, so under
 `--json` or a non-TTY it is exit `2`. On a clean exit (the shell ends) there is no
 stdout envelope, like `ai ui`. The same path backs the TUI Workspace view's `e` key
@@ -685,9 +681,9 @@ inner shell exiting is a clean end, not a failure.
 ## 4.5b Workspace Sessions (`ai agent` / `ai attach` / `ai sessions`)
 
 ```bash
-ai agent <cli> [<name>]           # alias (hidden): ai workspace agent <cli> [<name>]
-ai attach [session] [<name>]      # alias (hidden): ai workspace attach [session] [<name>]
-ai sessions [<name>]              # alias (hidden): ai workspace sessions [<name>]
+ai agent <cli> [<name>]
+ai attach [session] [<name>]
+ai sessions [<name>]
 # each [<name>] defaults to the current directory's workspace
 ```
 
@@ -750,8 +746,7 @@ workspace verb does:
   directories until a **workspace root** is found, defined as a directory that
   contains a `.ai-platform` directory
 * the emitted envelope `command` is `workspace.start` / `workspace.stop` /
-  `workspace.restart` (unchanged by the flat surface; the hidden `ai workspace
-  start|stop|restart [<name>]` aliases emit the same)
+  `workspace.restart` (the envelope keys are unchanged by the flat surface)
 * when **no name resolves** — none given, no `--project`, and the cwd is not
   inside any workspace — fail with exit `2` (invalid input, §18) and an
   actionable message directing the user to `ai create` or to `cd` into a workspace
@@ -779,12 +774,12 @@ and the in-workspace agent's job.
 
 # 7. Environment (Dockerfile)
 
-There are **no snapshot commands** — no `ai snapshot`, no `ai project upgrade`,
-no `ai project rollback`. A project's environment is its
+There are **no snapshot commands** — no `ai snapshot`, no environment
+upgrade/rollback verbs. A project's environment is its
 `<project>/.ai-platform/Dockerfile` (architecture §25):
 
 * to change the environment, edit `.ai-platform/Dockerfile` and recreate the
-  workspace (`ai workspace destroy` then `ai workspace start`, which rebuilds)
+  workspace (`ai destroy` then `ai start`, which rebuilds)
 * the Dockerfile is git-tracked, so its history *is* the version record
 * ad-hoc installs in a running workspace persist via the overlay without
   editing the Dockerfile
@@ -862,18 +857,27 @@ ai context caveman <project> <lite|full|ultra|wenyan>
 ## 10.1 System Doctor
 
 ```bash id="c27"
-ai doctor
+ai doctor [<name>]
 ```
 
-Checks:
+`ai doctor` is the **consolidated** health command. It **always** reports:
 
-* Microsandbox runtime + host virtualization (Apple Silicon / KVM)
-* Docker/Podman
-* LiteLLM (health + that the configured provider keys are present in the gateway — a missing key is warned, not fatal; architecture §17)
-* Presidio (analyzer + anonymizer back LiteLLM's always-on PII guardrails; architecture §15)
-* Ollama
-* Caveman *(from Slice 2)*
-* Headroom *(from Slice 2)*
+* **Platform dependencies** — Microsandbox runtime + host virtualization (Apple
+  Silicon / KVM), Docker/Podman
+* **All service-tier services** — Ollama, Presidio (analyzer + anonymizer back
+  LiteLLM's always-on secret-masking guardrails; architecture §15), LiteLLM
+  (health + that the configured provider keys are present in the gateway — a
+  missing key is warned, not fatal; architecture §17), Headroom, the nginx proxy,
+  DNS, and the optional `open-webui` / `odysseus` (plus odysseus's companion
+  containers)
+
+**Additionally**, it reports the **workspace-runtime** section (per-workspace
+runtime / virtualization check, §12.1) **only** when run inside a workspace
+directory (cwd or an ancestor) or given a `[<name>]`. There is no separate
+workspace doctor command.
+
+`ai doctor` **always exits 0** with a report — per-check status (ok / warn /
+fail) conveys health, rather than the process exit code.
 
 ---
 
@@ -892,7 +896,7 @@ containers `ollama`, `presidio`, `litellm`, `headroom`, and the optional `open-w
 invokes `docker compose`, `launchctl`, or `systemctl` directly. The whole service
 tier runs as containers (see architecture §5, "Host Services Control Plane").
 (The Microsandbox workspace runtime is not a long-running service — it is driven
-by the `ai workspace` commands, not `ai services`.)
+by the top-level workspace verbs, not `ai services`.)
 
 ```bash id="c27a"
 ai services status                 # health + version of every service
@@ -1051,7 +1055,7 @@ There is no backup/restore command. It isn't needed (architecture §32): project
 source is the user's git repo, platform state is rebuildable via
 `ai state repair`, provider keys live in the LiteLLM gateway (§16.1), and
 installed programs + agent state persist in the per-workspace overlay
-(§26 / `ai workspace` lifecycle).
+(§26 / the workspace lifecycle verbs).
 
 ---
 
@@ -1060,13 +1064,15 @@ installed programs + agent state persist in the per-workspace overlay
 ## 12.1 Workspace Health
 
 ```bash id="c30"
-ai workspace doctor [<name>]
+ai doctor [<name>]
 ```
 
-The per-workspace runtime/virtualization check stays under the `ai workspace`
-alias group **only** — there is intentionally no top-level `ai doctor [name]`,
-because `ai doctor` (no args) is the **platform** health command (§10.1). `[<name>]`
-defaults to the current directory's workspace.
+There is no separate workspace doctor command. The per-workspace
+runtime/virtualization check is a **section of the consolidated `ai doctor`**
+(§10.1): it appears **only** when `ai doctor` is run inside a workspace directory
+(cwd or an ancestor) or given a `[<name>]`. When run outside any workspace and
+with no `[<name>]`, `ai doctor` reports platform + service-tier health only.
+`[<name>]` defaults to the current directory's workspace.
 
 ---
 
@@ -1179,7 +1185,7 @@ below).
   share `internal/logs` with `ai logs`.
 * **Projects** — a **two-level hub**. It opens on the *switcher*: every project
   (name / OS / workspace status / agents); `enter` opens one, `n` creates a new one
-  (a directory picker validated by the create rules, then the `ai project create`
+  (a directory picker validated by the create rules, then the `ai create`
   wizard runs in that dir), `d` describes the selected one. Opening a project drops
   INTO it, revealing a **sub-tab bar** for that project (the project name + the
   sub-tabs below). `tab`/`←→` cycle the sub-tabs; the focused sub-view's pane is
@@ -1187,7 +1193,7 @@ below).
   * **Project** — the project's summary + workspace lifecycle `s`/`x`/`r`/`d`
     (start/stop/restart/destroy) and `e` (an interactive shell in the workspace).
     Each of these opens the **live embedded terminal** overlay (see below) running
-    the corresponding `ai workspace …` command, so the work happens IN the pane —
+    the corresponding workspace verb, so the work happens IN the pane —
     the TUI is never suspended.
   * **Network** — egress mode + allow-list + published ports; `m` cycles the mode.
   * **Context** — Headroom strategy + Caveman level; `s`/`c` cycle them.
@@ -1197,7 +1203,7 @@ below).
   * **Sessions** — the persistent tmux sessions in the workspace (NAME / ATTACHED /
     IDLE); `a`/`enter` attach the selected session, `n` starts a default agent
     session, `k` kills the selected one, `r` refreshes. Attaching opens the live
-    embedded terminal running `ai workspace attach <session> <project>` (the same
+    embedded terminal running `ai attach <session> <name>` (the same
     pane as the Project sub-tab's `e` shell).
 * **Models** — LiteLLM routing status; `t` tests the default model.
 * **Settings** — a live **theme** picker (every `ai theme` theme; `enter` applies
@@ -1207,7 +1213,7 @@ below).
 
 **Live embedded terminal.** Workspace lifecycle (start/stop/restart/destroy) and
 the interactive sessions (shell/agent/attach) run inside a **live terminal overlay**
-that fills the body — the platform runs the corresponding `ai workspace …` command
+that fills the body — the platform runs the corresponding workspace verb
 on a pseudo-terminal (`creack/pty`) and renders the program's screen with a vt10x
 emulator, forwarding keystrokes to it. So msb's build/boot progress AND a full
 interactive shell (or agent CLI) both render IN the pane, with the TUI chrome around
@@ -1287,7 +1293,7 @@ Behavior:
   never secret values (exit `5` is returned if a value would otherwise leak)
 * credentials are held by the LiteLLM gateway, never written to platform disk; the
   workspace agent receives only a scoped LiteLLM **virtual key**, never a provider
-  secret. The key is aliased to the project; `ai workspace start` **rotates** it —
+  secret. The key is aliased to the project; `ai start` **rotates** it —
   revoking any key left from a prior start before minting a fresh one — so a
   re-start never collides with LiteLLM's unique-alias requirement
 
@@ -1324,9 +1330,9 @@ optional and written `[project]`.
 ## 17.0 Help
 
 **Every command and every subcommand must support `--help` / `-h`** — no
-exceptions. This includes `ai` itself, every group (`ai project`, `ai workspace`,
-`ai context`, `ai services`, `ai secrets`, …), and every leaf
-command (`ai project create`, `ai workspace exec`, …).
+exceptions. This includes `ai` itself, the remaining groups (`ai context`,
+`ai services`, `ai secrets`, …), and every top-level verb (`ai create`,
+`ai exec`, `ai start`, …).
 
 * `--help` / `-h` prints usage, all flags, arguments, and a one-line
   description, then exits `0`
@@ -1371,7 +1377,7 @@ Standardized:
 | unknown project / agent / OS key | 2 |
 | Microsandbox or runtime operation failed | 4 |
 | rootless required but unavailable | 4 |
-| destructive command (`project delete` / `agent remove`) without `--yes`, non-interactive | 2 |
+| destructive command (`ai delete`) without `--yes`, non-interactive | 2 |
 | a required provider credential is missing in the LiteLLM gateway at request time | 5 |
 
 Every non-zero exit must also emit a structured error (see §19) and log the
@@ -1436,10 +1442,10 @@ The platform has no AI-approval flow (AI merge/conflict resolution was removed �
 architecture §22). The only interactive gate is confirmation of **destructive**
 actions — those that remove something the user cannot trivially reconstruct:
 
-* `ai project delete` (removes the project record and overlay, and — with
+* `ai delete` (removes the project record and overlay, and — with
   `--purge` — host source)
 
-`ai workspace destroy` is **not** destructive — it preserves source and overlay
+`ai destroy` is **not** destructive — it preserves source and overlay
 and is fully recoverable (§4.4), so it needs no confirmation.
 
 * interactive runs prompt for confirmation

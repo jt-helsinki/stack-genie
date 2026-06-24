@@ -542,11 +542,11 @@ per-workspace detail is retrievable via `ai logs --workspace <project>`.
 
 Cleanup depends on whether the removal is recoverable:
 
-* **`ai workspace destroy`** deletes only the Microsandbox microVM/runtime handle.
+* **`ai destroy`** deletes only the Microsandbox microVM/runtime handle.
   It **keeps the persistent overlay** (§26) and the host source. The workspace
-  is fully recoverable with `ai workspace start`, which rebuilds from
+  is fully recoverable with `ai start`, which rebuilds from
   `.ai-platform/Dockerfile` and re-mounts the same overlay. (Non-destructive.)
-* **`ai project delete`** is permanent for the project: delete its workspace and
+* **`ai delete`** is permanent for the workspace: delete its workspace and
   **its overlay**, remove the project's `projects.yaml` index entry, and clear
   `<project>/.ai-platform/run/`. Host source is preserved unless `--purge` is
   given.
@@ -739,7 +739,7 @@ templates (§25); it is identical across all OSes:
 ## Agent CLIs (selected per environment)
 
 The AI coding-agent CLIs are **not** all baked in. One or more are chosen at
-environment setup (`ai project create`, CLI §3.1) from the supported list:
+environment setup (`ai create`, CLI §3.1) from the supported list:
 
 * **OpenCode** — the default; pre-selected and the default agent
 * **Claude Code**
@@ -1239,7 +1239,7 @@ platform never creates per-agent workspaces, branches, or worktrees.
 # 21. Git Workflow
 
 The platform has **no git involvement at all** — version control is out of
-scope. It does not init, clone, branch, commit, or merge. `ai project create`
+scope. It does not init, clone, branch, commit, or merge. `ai create`
 only writes the `.ai-platform/` environment definition into the current
 directory and leaves any existing files (including an existing repo) untouched.
 **All git is the user's and the in-workspace agent's job** — init, clone,
@@ -1329,7 +1329,7 @@ environment (CLI §3.1, step 5) — a **multi-select** of e.g. `java`, `maven`,
 `node`, `deno`, `go`, `python`, `rust`. The set is **extensible**: each stack is
 a small install snippet the platform ships under
 `~/.ai-platform/templates/stacks/<stack>` (repo-layout §1.5), and the
-`ai project create` Dockerfile generator composes the selected snippets into the
+`ai create` Dockerfile generator composes the selected snippets into the
 project's `.ai-platform/Dockerfile` (after the base tooling, alongside the agent
 CLIs). The selected set is recorded in the project's tracked `profile.yaml`
 (`stacks: [...]`, repo-layout §12) so it is reproducible from git, and — like the
@@ -1389,10 +1389,10 @@ the workspace persist independently of the read-only image:
 
 * mounted over the microVM root (the image built from `.ai-platform/Dockerfile`)
   at workspace start, as a Microsandbox named volume (§6.2, §7)
-* survives workspace stop/start and `ai workspace destroy` recreation
-  (destroy keeps the overlay; `ai workspace start` re-mounts it)
+* survives workspace stop/start and `ai destroy` recreation
+  (destroy keeps the overlay; `ai start` re-mounts it)
 * removed only on **permanent** removal: `ai agent remove` (that agent's
-  overlay) or `ai project delete` (all the project's overlays)
+  overlay) or `ai delete` (all the project's overlays)
 * it is **local persistence, not a backup** — if the host disk is lost the
   overlay is lost; reinstall (source is in git, §32)
 * when `.ai-platform/Dockerfile` changes and the workspace is rebuilt, the same
@@ -1569,7 +1569,7 @@ create (§29.5, §29.6).
 ## 29.5 Delivery phasing
 
 The default-deny NetworkPolicy is **applied today**: `ai network` declares the
-project's `network` block and `ai workspace start`/create translates it into
+project's `network` block and `ai start`/create translates it into
 `msb` net-rules (`egress.MsbNetworkArgs`) — the default-egress mode, the
 allow-listed host services, and the published-port maps — which the Microsandbox
 runtime enforces. The one piece still deferred to a provisioned host is pinning
@@ -1812,7 +1812,8 @@ The architecture is considered successful when a user can:
 ```bash
 ai setup
 
-ai project create my-project   # interactive wizard: select OS + agent CLIs (defaults: debian-trixie, OpenCode)
+ai create my-project   # interactive wizard: select OS + agent CLIs (defaults: debian-trixie, OpenCode) — scaffolds .ai-platform/
+ai start               # build the OCI image + boot the microVM
 ```
 
 and immediately receive (for the OS the user selected):
