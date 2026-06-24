@@ -97,20 +97,30 @@ func Run(cwd string) error {
 	modelsView := views.NewModels(litellmClient.Status, litellmClient.Test)
 	secretsView := views.NewSecrets(secretsBroker.List, secretsBroker.Remove)
 
-	// View order = menu order. Projects (the switcher) is index 1, Project detail
-	// index 2 (the app points the detail at a project on selection). Logs are
-	// consolidated into the Services view (the `l` key), not a separate tab.
-	application.views = []View{servicesView, projectsView, projectDetail, sessionsView, networkView, contextView, modelsView, secretsView}
+	// The Projects tab is a two-level hub: it opens on the switcher (the project
+	// list) and, once a project is selected, reveals per-project sub-tabs —
+	// Project · Network · Context · Secrets · Sessions — for it.
+	projectsHub := views.NewProjectsHub(
+		projectsView,
+		[]views.Screen{projectDetail, networkView, contextView, secretsView, sessionsView},
+		[]string{"Project", "Network", "Context", "Secrets", "Sessions"},
+	)
+
+	// Top-level tab order = menu order: Services · Projects · Models. Project /
+	// Network / Context / Secrets / Sessions are nested under Projects (the hub);
+	// logs are consolidated into the Services view (the `l` key).
+	application.views = []View{servicesView, projectsHub, modelsView}
 	application.projectsIndex = 1
+	application.projectsHub = projectsHub
 	application.projectDetail = projectDetail
-	application.projectDetailIndex = 2
 	application.sessionsView = sessionsView
 
-	// A project at/above the cwd opens straight to its detail; otherwise the UI
-	// opens on the server (Services) view. The switcher reaches any project.
+	// A project at/above the cwd opens straight into it (the hub's first sub-tab);
+	// otherwise the UI opens on the server (Services) view. The switcher reaches
+	// any project.
 	if resolution.DefaultProject != "" {
-		projectDetail.SetProject(resolution.DefaultProject)
-		application.current = application.projectDetailIndex
+		projectsHub.OpenProject(resolution.DefaultProject)
+		application.current = application.projectsIndex
 	}
 	application.buildPalette()
 
@@ -219,13 +229,15 @@ type app struct {
 	role    string
 	gateway string
 
-	// projectDetail + its index let the app point the detail view at a project
-	// (a method off the View interface) when one is selected in the switcher;
-	// projectsIndex is the switcher (refreshed after a create).
-	projectDetail      *views.Project
-	projectDetailIndex int
-	projectsIndex      int
-	currentProject     string
+	// projectsHub is the two-level "Projects" tab (switcher + per-project
+	// sub-tabs); projectsIndex is its slot in views. The app forwards project
+	// selection / create-return to it and reads the live current project for the
+	// footer + the Sessions lister. projectDetail is kept so a returning shell can
+	// refresh the detail pane directly.
+	projectsHub    *views.ProjectsHub
+	projectDetail  *views.Project
+	projectsIndex  int
+	currentProject string
 
 	// sessionsView lets the app refresh the Sessions view when an attach
 	// subprocess returns (the user may have created/killed a session).
@@ -284,11 +296,11 @@ func (application *app) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return application, nil
 
 	case views.ProjectSelectedMsg:
-		// The switcher chose a project — make it current and jump to its detail.
+		// The switcher chose a project — make it current (so the closure-driven
+		// sub-views resolve it) and drop into it inside the Projects hub.
 		application.currentProject = message.Name
-		application.projectDetail.SetProject(message.Name)
-		application.current = application.projectDetailIndex
-		return application, application.projectDetail.Init()
+		application.switchTab(application.projectsIndex)
+		return application, application.projectsHub.OpenProject(message.Name)
 
 	case views.NewProjectRequestedMsg:
 		// Open the create overlay (a directory picker) starting at the cwd.
@@ -313,9 +325,10 @@ func (application *app) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		})
 
 	case createFinishedMsg:
-		// Back from the wizard — show the switcher and refresh it.
-		application.current = application.projectsIndex
-		return application, application.views[application.projectsIndex].Init()
+		// Back from the wizard — show the switcher (backed out of any open project)
+		// and refresh it so a newly created project appears.
+		application.switchTab(application.projectsIndex)
+		return application, application.projectsHub.Reset()
 
 	case views.ExecRequestedMsg:
 		// Open an interactive shell inside the project's workspace microVM — a real
@@ -360,6 +373,10 @@ func (application *app) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if application.paletteOpen {
 			return application.updatePalette(message)
 		}
+		// When the active view captures navigation (the Projects hub with a project
+		// open), Tab/←→ cycle ITS sub-tabs and esc backs up a level inside it — so
+		// those keys are delegated to the view rather than switching top-level tabs.
+		captures := capturesNav(application.views[application.current])
 		switch message.String() {
 		case "ctrl+c", "q":
 			application.quitting = true
@@ -373,9 +390,15 @@ func (application *app) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			application.helpOpen = true
 			return application, nil
 		case "tab", "right":
+			if captures {
+				return application, application.views[application.current].Update(msg)
+			}
 			application.switchTab(application.current + 1)
 			return application, application.views[application.current].Init()
 		case "shift+tab", "left":
+			if captures {
+				return application, application.views[application.current].Update(msg)
+			}
 			application.switchTab(application.current - 1)
 			return application, application.views[application.current].Init()
 		}

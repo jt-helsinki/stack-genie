@@ -1100,41 +1100,45 @@ only**: it requires a terminal and has **no JSON envelope**, so `--json` or a
 non-TTY invocation is exit `2`.
 
 **Scope on launch.** `ai ui` is a global project switcher. A project at the cwd
-or an ANCESTOR (the default) opens straight to its detail; otherwise it opens on
-the server (Services) view. The switcher reaches any project in the index, and a
-new project may be created from it (see below).
+or an ANCESTOR (the default) opens straight INTO that project (the Projects tab,
+first sub-tab); otherwise it opens on the server (Services) view. The switcher
+reaches any project in the index, and a new project may be created from it (see
+below).
 
-**Views** (switched via the `:` menu, which also has an **Exit** item):
+**Top-level tabs** (three; cycled by `tab`/`←→` or the `:` menu, which also has an
+**Exit** item):
 
 * **Services** — live service-tier + container status; `s`/`x`/`r` start/stop/
   restart the selected service, `o` opens its admin console, `d` describes it, and
   `l` shows its **logs full-pane** (the table hides; the log pane fills the body
   and scrolls; `esc` returns to the table). Logs are consolidated here — there is
   no separate Logs tab — and share `internal/logs` with `ai logs`.
-* **Projects** — the switcher: every project (name / OS / workspace status /
-  agents); `enter` opens one, `n` creates a new one (a directory picker validated
-  by the create rules, then the `ai project create` wizard runs in that dir),
-  `d` describes the selected one.
-* **Project** — the current project's summary + workspace lifecycle `s`/`x`/`r`/
-  `d` (start/stop/restart/destroy) and `e` (an interactive shell in the workspace).
-* **Sessions** (current project) — the persistent tmux sessions in the workspace
-  (NAME / ATTACHED / IDLE); `a`/`enter` attach the selected session, `n` starts a
-  default agent session, `k` kills the selected one, `r` refreshes. Attaching runs
-  `ai workspace attach <session> <project>` via `tea.ExecProcess` (the same path
-  as the Project view's `e` shell). With no project selected it shows "no project
-  selected".
-* **Network** (per-project) — egress mode + allow-list + published ports; `m`
-  cycles the mode.
-* **Context** (per-project) — Headroom strategy + Caveman level; `s`/`c` cycle them.
+* **Projects** — a **two-level hub**. It opens on the *switcher*: every project
+  (name / OS / workspace status / agents); `enter` opens one, `n` creates a new one
+  (a directory picker validated by the create rules, then the `ai project create`
+  wizard runs in that dir), `d` describes the selected one. Opening a project drops
+  INTO it, revealing a **sub-tab bar** for that project (the project name + the
+  sub-tabs below). `tab`/`←→` cycle the sub-tabs; the focused sub-view's pane is
+  acted on directly; `esc` backs UP to the switcher. The per-project sub-tabs are:
+  * **Project** — the project's summary + workspace lifecycle `s`/`x`/`r`/`d`
+    (start/stop/restart/destroy) and `e` (an interactive shell in the workspace).
+  * **Network** — egress mode + allow-list + published ports; `m` cycles the mode.
+  * **Context** — Headroom strategy + Caveman level; `s`/`c` cycle them.
+  * **Secrets** — credential names (never values); `d` deletes one.
+  * **Sessions** — the persistent tmux sessions in the workspace (NAME / ATTACHED /
+    IDLE); `a`/`enter` attach the selected session, `n` starts a default agent
+    session, `k` kills the selected one, `r` refreshes. Attaching runs `ai workspace
+    attach <session> <project>` via `tea.ExecProcess` (the same path as the Project
+    sub-tab's `e` shell).
 * **Models** — LiteLLM routing status; `t` tests the default model.
-* **Secrets** — credential names (never values); `d` deletes one.
 
-The `:` menu is **type-to-filter** (type to narrow, ↑/↓ + enter to choose). On
-the list views `d` opens a scrollable describe pane and `l` (Services) opens the
-full-pane log viewer. **`esc` backs out one level** everywhere it makes sense —
-it closes the describe/logs pane, the menu, the help overlay, or cancels the
-create flow, returning to the level above; at the top level it is a no-op (`q`
-quits). `?` shows the key bindings. The UI honours the theme set by `ai theme`
+The `:` menu is **type-to-filter** (type to narrow, ↑/↓ + enter to choose) over the
+top-level tabs. On the list views `d` opens a scrollable describe pane and `l`
+(Services) opens the full-pane log viewer. **`esc` backs out one level** everywhere
+it makes sense — it closes the describe/logs pane, backs an open project out to the
+Projects switcher, closes the menu/help overlay, or cancels the create flow,
+returning to the level above; at the top level it is a no-op (`q` quits). `?` shows
+the key bindings. The UI honours the theme set by `ai theme`
 (§14.3). Live service/microVM **log** capture and richer container detail are
 wired during hardware bring-up, so the log pane shows whatever is already on disk.
 

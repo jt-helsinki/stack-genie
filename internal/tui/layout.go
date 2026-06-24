@@ -40,6 +40,18 @@ var aiLogo = []string{
 // keyHint is one key binding (key + what it does) for the header command grid.
 type keyHint struct{ key, desc string }
 
+// navCapturer is satisfied by a view that wants Tab/←→/esc for its own internal
+// navigation (the Projects hub while a project is open). When it is capturing, the
+// app delegates those keys to it instead of switching top-level tabs, and the
+// header labels them as sub-tab navigation.
+type navCapturer interface{ CapturesNav() bool }
+
+// capturesNav reports whether view is currently capturing navigation keys.
+func capturesNav(view View) bool {
+	capturer, ok := view.(navCapturer)
+	return ok && capturer.CapturesNav()
+}
+
 // bodyContentSize is the inner area passed to a view's SetSize: the window minus
 // the (dynamic) header, the tab bar, the footer, and the border's two lines +
 // padding. Both dimensions clamp to ≥1 so a tiny window never panics.
@@ -125,7 +137,14 @@ func (application *app) currentHints() []keyHint {
 	case application.paletteOpen:
 		return []keyHint{{"type", "filter"}, {"↑/↓", "select"}, {"enter", "choose"}, {"esc", "close"}}
 	}
-	hints := parseHints(application.views[application.current].Hints())
+	active := application.views[application.current]
+	hints := parseHints(active.Hints())
+	if capturesNav(active) {
+		// Inside an open project: Tab cycles the sub-tabs and esc backs up.
+		return append(hints,
+			keyHint{"tab/←→", "sub-tab"}, keyHint{"esc", "back"},
+			keyHint{":", "menu"}, keyHint{"?", "help"}, keyHint{"q", "quit"})
+	}
 	return append(hints,
 		keyHint{"tab/←→", "switch"}, keyHint{":", "menu"}, keyHint{"?", "help"}, keyHint{"q", "quit"})
 }

@@ -96,24 +96,72 @@ func TestQuitKey(test *testing.T) {
 	}
 }
 
-func TestProjectSelectedSwitchesToDetail(test *testing.T) {
+// newTestHubApp builds an app whose Projects tab (index 1) is a real ProjectsHub
+// over the given sub-tab titles, with Services/Models as the flanking top tabs.
+func newTestHubApp(test *testing.T, subTitles ...string) (*app, *views.ProjectsHub) {
+	test.Helper()
 	detail := views.NewProject(
 		func(string) (project.Entry, bool, error) { return project.Entry{Name: "app"}, true, nil },
 		func(string, string) error { return nil },
 	)
+	subViews := make([]views.Screen, 0, len(subTitles))
+	for index, title := range subTitles {
+		if index == 0 {
+			subViews = append(subViews, detail) // first sub-tab is the project detail
+			continue
+		}
+		subViews = append(subViews, &fakeView{title: title})
+	}
+	hub := views.NewProjectsHub(&fakeView{title: "Projects"}, subViews, subTitles)
 	application := &app{
-		views:              []View{&fakeView{title: "Services"}, &fakeView{title: "Projects"}, detail},
-		projectDetail:      detail,
-		projectDetailIndex: 2,
+		views:         []View{&fakeView{title: "Services"}, hub, &fakeView{title: "Models"}},
+		projectsHub:   hub,
+		projectDetail: detail,
+		projectsIndex: 1,
 	}
 	application.buildPalette()
+	return application, hub
+}
+
+func TestProjectSelectedOpensHub(test *testing.T) {
+	application, hub := newTestHubApp(test, "Project", "Network")
 
 	application.Update(views.ProjectSelectedMsg{Name: "app", Path: "/p/app"})
 	if application.currentProject != "app" {
 		test.Fatalf("currentProject = %q, want app", application.currentProject)
 	}
+	if application.current != application.projectsIndex {
+		test.Fatalf("current view = %d, want %d (Projects hub)", application.current, application.projectsIndex)
+	}
+	if !hub.CapturesNav() {
+		test.Fatal("selecting a project should open it in the hub (CapturesNav must be true)")
+	}
+}
+
+// TestProjectsHubSubTabNavAndEscBack: once a project is open the hub captures
+// Tab/esc — Tab cycles sub-tabs (the top-level tab stays put) and esc backs up to
+// the switcher, after which Tab cycles top-level tabs again.
+func TestProjectsHubSubTabNavAndEscBack(test *testing.T) {
+	application, hub := newTestHubApp(test, "Project", "Network", "Context")
+	application.Update(views.ProjectSelectedMsg{Name: "app"})
+
+	// Tab inside an open project cycles sub-tabs — the top-level tab is unchanged.
+	application.Update(tabKey())
+	if application.current != application.projectsIndex {
+		test.Fatalf("tab inside an open project must not switch top-level tab; current=%d", application.current)
+	}
+	// esc backs out to the switcher (hub stops capturing), staying on Projects.
+	application.Update(esc())
+	if hub.CapturesNav() {
+		test.Fatal("esc should back out of the open project (switcher mode)")
+	}
+	if application.current != application.projectsIndex {
+		test.Fatalf("esc should stay on the Projects tab; current=%d", application.current)
+	}
+	// With the project closed, Tab cycles TOP-level tabs again (Projects -> Models).
+	application.Update(tabKey())
 	if application.current != 2 {
-		test.Fatalf("current view = %d, want 2 (project detail)", application.current)
+		test.Fatalf("tab in switcher mode should switch top-level tab; current=%d", application.current)
 	}
 }
 
@@ -152,9 +200,8 @@ func TestCreateConfirmedClosesOverlayAndRunsWizard(test *testing.T) {
 
 func TestExecRequestedReturnsCommand(test *testing.T) {
 	application := &app{
-		views:              []View{&fakeView{title: "Project"}},
-		projectDetail:      views.NewProject(func(string) (project.Entry, bool, error) { return project.Entry{}, false, nil }, func(string, string) error { return nil }),
-		projectDetailIndex: 0,
+		views:         []View{&fakeView{title: "Project"}},
+		projectDetail: views.NewProject(func(string) (project.Entry, bool, error) { return project.Entry{}, false, nil }, func(string, string) error { return nil }),
 	}
 	if _, cmd := application.Update(views.ExecRequestedMsg{Project: "app"}); cmd == nil {
 		test.Fatal("ExecRequestedMsg must return a command (the in-workspace shell)")
