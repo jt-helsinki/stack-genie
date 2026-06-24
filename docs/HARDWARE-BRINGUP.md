@@ -166,8 +166,18 @@ pass):
    workspace microVM.
 4. `ai workspace exec demo -- uname -a` → runs inside the microVM (one-shot).
    `ai workspace shell demo` (or `ai shell` from the project dir) → a real
-   interactive login PTY in the microVM via `msb exec -t` (verify line editing,
-   Ctrl-C, and a clean exit back to the host).
+   interactive login PTY in the microVM via `msb exec -t -u workspace` (verify line
+   editing, Ctrl-C, and a clean exit back to the host).
+4a. **Workspace sessions (wired; needs a live microVM to verify).** The session
+   model — persistent, reattachable per-name **tmux** sessions inside the microVM,
+   with a managed `~/.tmux.conf` written at start — is fully wired host-side. On a
+   live microVM verify: `ai agent opencode` starts/attaches a per-CLI session;
+   `ai sessions` lists it (NAME/ATTACHED/IDLE; a no-server workspace lists zero,
+   not an error); detaching (`Ctrl-b d`) leaves it running and `ai attach opencode`
+   reattaches; `ai shell` ↔ a second agent run concurrently; the TUI **Sessions**
+   view attaches/kills via `ai workspace attach`. (Needs `tmux` in the image — now
+   in every OS Dockerfile — and a booted microVM, so it is verified during
+   bring-up alongside the shell.)
 5. `ai secrets set openai --stdin` + `ai secrets map openai --env OPENAI_API_KEY`;
    `ai models test gpt-5` → works (real key lives in LiteLLM, only a scoped
    virtual key in the workspace).

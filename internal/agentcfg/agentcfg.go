@@ -80,6 +80,23 @@ func PiConfig(gatewayURL, apiKey, defaultModel string, models []string) ([]byte,
 	return marshalStable(document)
 }
 
+// TmuxConfig renders the managed tmux configuration written to
+// `/home/workspace/.tmux.conf` at workspace start. The platform's workspace
+// session model is "tmux-transparent": persistent, reattachable per-CLI tmux
+// sessions back `ai agent`/`ai attach`/`ai sessions`, but the user never types a
+// tmux command. To keep tmux invisible to a casual user it hides the status bar;
+// it enables the mouse so the wheel scrolls naturally through scrollback, sets
+// vi-style copy-mode keys, and keeps a generous scrollback history.
+func TmuxConfig() []byte {
+	return []byte(`# Managed by the AI Development Platform — tmux-transparent workspace sessions.
+# Do not edit by hand; this file is rewritten on every workspace start.
+set -g mouse on
+set -g status off
+setw -g mode-keys vi
+set -g history-limit 50000
+`)
+}
+
 // marshalStable produces deterministic, indented JSON. encoding/json sorts map
 // keys, so the output is stable across runs (no spurious workspace-start diffs).
 func marshalStable(document any) ([]byte, error) {

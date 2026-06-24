@@ -77,6 +77,21 @@ func Run(cwd string) error {
 	)
 	projectsView := views.NewProjects(project.List)
 	projectDetail := views.NewProject(projectInfo, workspaceControl)
+	// The Sessions view resolves the LIVE current project at fetch time (over the
+	// real Manager), so switching projects reflects immediately. With no current
+	// project the lister is not invoked (the view shows "no project selected").
+	sessionsView := views.NewSessions(
+		func() ([]workspace.Session, error) {
+			if application.currentProject == "" {
+				return nil, nil
+			}
+			return workspace.RealManager(goruntime.GOOS, nowRFC3339).ListSessions(application.currentProject)
+		},
+		func(session string) error {
+			return workspace.RealManager(goruntime.GOOS, nowRFC3339).KillSession(application.currentProject, session)
+		},
+		func() string { return application.currentProject },
+	)
 	networkView := views.NewNetwork(currentRoot, egress.Get, egress.SetMode)
 	contextView := views.NewContext(currentRoot, contextopt.GetStatus, contextopt.SetStrategy, contextopt.SetCavemanLevel)
 	modelsView := views.NewModels(litellmClient.Status, litellmClient.Test)
@@ -85,10 +100,11 @@ func Run(cwd string) error {
 	// View order = menu order. Projects (the switcher) is index 1, Project detail
 	// index 2 (the app points the detail at a project on selection). Logs are
 	// consolidated into the Services view (the `l` key), not a separate tab.
-	application.views = []View{servicesView, projectsView, projectDetail, networkView, contextView, modelsView, secretsView}
+	application.views = []View{servicesView, projectsView, projectDetail, sessionsView, networkView, contextView, modelsView, secretsView}
 	application.projectsIndex = 1
 	application.projectDetail = projectDetail
 	application.projectDetailIndex = 2
+	application.sessionsView = sessionsView
 
 	// A project at/above the cwd opens straight to its detail; otherwise the UI
 	// opens on the server (Services) view. The switcher reaches any project.
@@ -133,6 +149,15 @@ func executablePath() string {
 // project-create wizard / an in-workspace shell) has returned.
 type createFinishedMsg struct{ err error }
 type execFinishedMsg struct{ err error }
+
+// attachFinishedMsg reports that a suspended `ai workspace attach` subprocess (a
+// tmux session attach from the Sessions view) has returned.
+type attachFinishedMsg struct {
+	// session is the session the user was attached to, so the Sessions view can
+	// refresh against it on return.
+	session string
+	err     error
+}
 
 // projectInfo returns the current state of one project by name (over project.List).
 func projectInfo(name string) (project.Entry, bool, error) {
@@ -201,6 +226,10 @@ type app struct {
 	projectDetailIndex int
 	projectsIndex      int
 	currentProject     string
+
+	// sessionsView lets the app refresh the Sessions view when an attach
+	// subprocess returns (the user may have created/killed a session).
+	sessionsView *views.Sessions
 
 	// createView is the modal directory-picker overlay for creating a new
 	// project; non-nil only while it is open (it is not a menu/slice view).
@@ -299,6 +328,24 @@ func (application *app) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case execFinishedMsg:
 		return application, application.projectDetail.Init()
+
+	case views.AttachRequestedMsg:
+		// Attach to (or create) a workspace session — a real PTY via `ai workspace
+		// attach <session> <project>` (tmux new-session -A). tea.ExecProcess hands
+		// the terminal to the child and restores the TUI on exit.
+		command := exec.Command(executablePath(), "workspace", "attach", message.Session, message.Project)
+		session := message.Session
+		return application, tea.ExecProcess(command, func(execErr error) tea.Msg {
+			return attachFinishedMsg{session: session, err: execErr}
+		})
+
+	case attachFinishedMsg:
+		// Back from the attach — refresh the Sessions view (a session may have been
+		// created or killed) if it is wired.
+		if application.sessionsView != nil {
+			return application, application.sessionsView.Init()
+		}
+		return application, nil
 
 	case tea.KeyMsg:
 		// While the create overlay is open it owns all input.

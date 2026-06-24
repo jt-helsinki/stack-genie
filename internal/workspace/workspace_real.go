@@ -157,7 +157,10 @@ func (sandbox realSandbox) Exec(name string, argv []string) (ExecResult, error) 
 	if err := sandbox.ensureInstalled(); err != nil {
 		return ExecResult{}, err
 	}
-	args := append([]string{"exec", name, "--"}, argv...)
+	// Run as the `workspace` user (the image's home owner, matching WriteFile) so
+	// commands, shells, agents, and tmux all share that user's home + the agent
+	// provider configs under /home/workspace.
+	args := append([]string{"exec", "-u", "workspace", name, "--"}, argv...)
 	command := exec.Command("msb", args...)
 	var stdout, stderr bytes.Buffer
 	command.Stdout = &stdout
@@ -191,7 +194,10 @@ func (sandbox realSandbox) ExecInteractive(name string, argv []string) error {
 	if err := sandbox.ensureInstalled(); err != nil {
 		return err
 	}
-	args := append([]string{"exec", "-t", name, "--"}, argv...)
+	// Attach the PTY as the `workspace` user (the image's home owner, matching
+	// Exec/WriteFile) so interactive shells, agent CLIs, and tmux sessions all
+	// share that user's home + the agent provider configs under /home/workspace.
+	args := append([]string{"exec", "-t", "-u", "workspace", name, "--"}, argv...)
 	command := exec.Command("msb", args...)
 	command.Stdin = os.Stdin
 	command.Stdout = os.Stdout

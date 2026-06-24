@@ -6,7 +6,7 @@
 FROM almalinux:10
 
 RUN dnf install -y --setopt=install_weak_deps=False \
-      ca-certificates curl git sudo \
+      ca-certificates curl git sudo tmux \
  && dnf clean all
 
 # GitHub CLI (gh) from the official GitHub CLI rpm repo.

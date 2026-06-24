@@ -7,6 +7,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/jt-helsinki/ideal-robot/internal/project"
 	"github.com/jt-helsinki/ideal-robot/internal/tui/views"
+	"github.com/jt-helsinki/ideal-robot/internal/workspace"
 )
 
 // fakeView is a minimal View for exercising the app's routing/menu logic.
@@ -157,6 +158,25 @@ func TestExecRequestedReturnsCommand(test *testing.T) {
 	}
 	if _, cmd := application.Update(views.ExecRequestedMsg{Project: "app"}); cmd == nil {
 		test.Fatal("ExecRequestedMsg must return a command (the in-workspace shell)")
+	}
+}
+
+// AttachRequestedMsg suspends the TUI and runs `ai workspace attach` via
+// tea.ExecProcess (it must return a command), refreshing the Sessions view on
+// return (attachFinishedMsg).
+func TestAttachRequestedReturnsCommand(test *testing.T) {
+	sessionsView := views.NewSessions(
+		func() ([]workspace.Session, error) { return nil, nil },
+		func(string) error { return nil },
+		func() string { return "app" },
+	)
+	application := &app{
+		views:        []View{sessionsView},
+		sessionsView: sessionsView,
+	}
+	_, cmd := application.Update(views.AttachRequestedMsg{Project: "app", Session: "shell"})
+	if cmd == nil {
+		test.Fatal("AttachRequestedMsg must return a command (the attach subprocess)")
 	}
 }
 

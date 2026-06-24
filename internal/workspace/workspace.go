@@ -41,7 +41,17 @@ func resolveGateway() (host string, port int, url string) {
 const (
 	openCodeGuestPath = "/home/workspace/.config/opencode/opencode.json"
 	piGuestPath       = "/home/workspace/.pi/agent/models.json"
+	tmuxConfGuestPath = "/home/workspace/.tmux.conf"
 )
+
+// shellSessionName is the tmux session that backs the default interactive shell
+// (`ai shell` / `ai attach` with no session). Per-agent sessions are named after
+// the agent CLI (opencode, pi, …).
+const shellSessionName = "shell"
+
+// workspaceWorkdir is the guest path the project source is mounted at and where
+// every tmux session opens (matches the microVM --workdir in Create).
+const workspaceWorkdir = "/workspace"
 
 // ErrUnknownProject is returned when a project name is not in the global index
 // (→ exit 2).
@@ -61,6 +71,22 @@ var ErrAlreadyStopped = errors.New("workspace microVM is already stopped")
 // aip-<project>. There is one workspace per project.
 func Name(project string) string {
 	return "aip-" + project
+}
+
+// ErrUnknownAgentCLI is returned when `ai agent <cli>` names a CLI the platform
+// does not know how to launch (→ exit 2). Its message lists the valid set.
+var ErrUnknownAgentCLI = errors.New("unknown agent CLI")
+
+// Session is one tmux session inside the workspace microVM — a persistent,
+// reattachable shell or agent CLI. The platform exposes these via `ai sessions`.
+type Session struct {
+	// Name is the tmux session name ("shell" for the default shell; the agent CLI
+	// name — opencode, pi, … — for an agent session).
+	Name string `json:"name"`
+	// Attached is true when a client is currently attached to the session.
+	Attached bool `json:"attached"`
+	// Activity is tmux's raw last-activity value (a Unix epoch string).
+	Activity string `json:"activity"`
 }
 
 // ExecResult is the outcome of running a command inside a workspace (§4.5). The
@@ -250,7 +276,13 @@ func (manager Manager) registerAgentProviders(name, project string, projectConfi
 	if err != nil {
 		return err
 	}
-	return manager.Sandbox.WriteFile(name, piGuestPath, piConfig)
+	if err := manager.Sandbox.WriteFile(name, piGuestPath, piConfig); err != nil {
+		return err
+	}
+
+	// Write the managed tmux.conf so the workspace session model is transparent
+	// (mouse scroll, hidden status bar) — the user never types a tmux command.
+	return manager.Sandbox.WriteFile(name, tmuxConfGuestPath, agentcfg.TmuxConfig())
 }
 
 // namedModels enumerates the non-wildcard named aliases from the routing (the
@@ -394,9 +426,148 @@ func (manager Manager) ExecInteractive(project string, argv []string) error {
 	return manager.Sandbox.ExecInteractive(Name(project), argv)
 }
 
-// Shell opens an interactive login shell in the project's workspace microVM.
+// Shell opens the project's PERSISTENT default shell session — a tmux session
+// named "shell". `tmux new-session -A` creates the session on first use and
+// re-attaches to it on every later call, so the shell (and anything left running
+// in it) survives detaching and is reattachable. The session opens in /workspace
+// with a login shell.
 func (manager Manager) Shell(project string) error {
-	return manager.ExecInteractive(project, []string{"bash", "-l"})
+	return manager.ExecInteractive(project, tmuxNewSession(shellSessionName, []string{"bash", "-l"}))
+}
+
+// Attach opens (creating it if needed) the named tmux session in the project's
+// workspace microVM. A missing/empty session name attaches the default "shell"
+// session. When the session is created fresh it has no command, so it opens the
+// image's default login shell in /workspace; an existing session is reattached
+// as-is. This backs `ai attach [session]` and the TUI Sessions view.
+func (manager Manager) Attach(project, session string) error {
+	if session == "" {
+		session = shellSessionName
+	}
+	return manager.ExecInteractive(project, tmuxNewSession(session, nil))
+}
+
+// Agent starts (or reattaches to) a per-CLI tmux session running the named agent
+// CLI in /workspace. The session is named after the CLI (opencode, pi, …) so each
+// agent has one persistent, reattachable session and multiple agents can run
+// concurrently. An unknown CLI returns ErrUnknownAgentCLI (→ exit 2).
+func (manager Manager) Agent(project, cli string) error {
+	launch, err := agentLaunchCommand(cli)
+	if err != nil {
+		return err
+	}
+	return manager.ExecInteractive(project, tmuxNewSession(cli, launch))
+}
+
+// ListSessions returns the tmux sessions running in the project's workspace
+// microVM. When no tmux server is running yet (no sessions have been opened) tmux
+// exits non-zero with "no server running" — that is ZERO sessions, not an error.
+func (manager Manager) ListSessions(project string) ([]Session, error) {
+	if _, err := resolveProjectRoot(project); err != nil {
+		return nil, err
+	}
+	result, err := manager.Sandbox.Exec(Name(project), []string{
+		"tmux", "list-sessions", "-F", "#{session_name}\t#{session_attached}\t#{session_activity}",
+	})
+	if err != nil {
+		return nil, err
+	}
+	if result.ExitCode != 0 {
+		// `tmux list-sessions` with no running server is a non-zero exit carrying
+		// "no server running" — treat it as an empty session list, not a failure.
+		// Exec returns the inner non-zero exit as data (not a Go error), so the
+		// check is on the ExecResult, not err (§4.5).
+		if strings.Contains(result.Stderr, "no server running") {
+			return []Session{}, nil
+		}
+		return nil, fmt.Errorf("tmux list-sessions exited %d: %s", result.ExitCode, strings.TrimSpace(result.Stderr))
+	}
+	return parseSessions(result.Stdout), nil
+}
+
+// KillSession kills the named tmux session in the project's workspace microVM,
+// ending the shell/agent running in it.
+func (manager Manager) KillSession(project, session string) error {
+	if _, err := resolveProjectRoot(project); err != nil {
+		return err
+	}
+	result, err := manager.Sandbox.Exec(Name(project), []string{"tmux", "kill-session", "-t", session})
+	if err != nil {
+		return err
+	}
+	if result.ExitCode != 0 {
+		return fmt.Errorf("tmux kill-session %s exited %d: %s", session, result.ExitCode, strings.TrimSpace(result.Stderr))
+	}
+	return nil
+}
+
+// tmuxNewSession builds the argv for an attach-or-create tmux session opening in
+// /workspace. `-A` makes it idempotent and reattachable: it creates the session
+// named session on first use and re-attaches on every later call. When command is
+// non-empty it is the session's program (an agent CLI or a login shell); a nil
+// command lets tmux open the image's default shell.
+func tmuxNewSession(session string, command []string) []string {
+	argv := []string{"tmux", "new-session", "-A", "-s", session, "-c", workspaceWorkdir}
+	return append(argv, command...)
+}
+
+// agentValidCLIs is the set of agent CLIs the platform knows how to launch in a
+// session, mapped to the in-VM launch command. The keys match `ai project
+// create`'s agent choices.
+var agentValidCLIs = map[string][]string{
+	"opencode":    {"opencode"},
+	"pi":          {"pi"},
+	"claude-code": {"claude"},
+	"codex":       {"codex"},
+	"gemini":      {"gemini"},
+}
+
+// AgentCLINames returns the sorted set of agent CLI names the platform can launch
+// in a session (for shell completion and help text).
+func AgentCLINames() []string {
+	names := make([]string, 0, len(agentValidCLIs))
+	for name := range agentValidCLIs {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return names
+}
+
+// agentLaunchCommand maps an agent CLI name to its in-VM launch command. An
+// unknown CLI returns ErrUnknownAgentCLI with the valid set listed (→ exit 2).
+func agentLaunchCommand(cli string) ([]string, error) {
+	if launch, ok := agentValidCLIs[cli]; ok {
+		return launch, nil
+	}
+	valid := make([]string, 0, len(agentValidCLIs))
+	for name := range agentValidCLIs {
+		valid = append(valid, name)
+	}
+	sort.Strings(valid)
+	return nil, fmt.Errorf("%w %q (valid: %s)", ErrUnknownAgentCLI, cli, strings.Join(valid, ", "))
+}
+
+// parseSessions turns tmux's tab-separated list-sessions output (one session per
+// line: name<TAB>attached<TAB>activity) into Session values. Blank/short lines are
+// skipped; attached is "1" when a client is attached.
+func parseSessions(stdout string) []Session {
+	sessions := []Session{}
+	for _, line := range strings.Split(stdout, "\n") {
+		line = strings.TrimRight(line, "\r")
+		if strings.TrimSpace(line) == "" {
+			continue
+		}
+		fields := strings.Split(line, "\t")
+		if len(fields) < 3 {
+			continue
+		}
+		sessions = append(sessions, Session{
+			Name:     fields[0],
+			Attached: fields[1] == "1",
+			Activity: fields[2],
+		})
+	}
+	return sessions
 }
 
 // InspectNetwork returns the egress policy in force on the project's running

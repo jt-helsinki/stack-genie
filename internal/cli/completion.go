@@ -4,6 +4,7 @@ import (
 	"github.com/jt-helsinki/ideal-robot/internal/console"
 	"github.com/jt-helsinki/ideal-robot/internal/project"
 	"github.com/jt-helsinki/ideal-robot/internal/setup"
+	"github.com/jt-helsinki/ideal-robot/internal/workspace"
 	"github.com/spf13/cobra"
 )
 
@@ -54,6 +55,19 @@ func completeOptionalProjectThenValue(values []string) completer {
 		default:
 			return nil, cobra.ShellCompDirectiveNoFileComp
 		}
+	}
+}
+
+// completeAgentArg completes `<cli> [project]`: the agent CLI names at the first
+// position, project names at the second (the optional trailing [project]).
+func completeAgentArg(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
+	switch len(args) {
+	case 0:
+		return workspace.AgentCLINames(), cobra.ShellCompDirectiveNoFileComp
+	case 1:
+		return completeProjectNames(cmd, args, toComplete)
+	default:
+		return nil, cobra.ShellCompDirectiveNoFileComp
 	}
 }
 

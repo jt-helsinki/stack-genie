@@ -30,6 +30,7 @@ type fakeSandbox struct {
 	netArgs                              []string
 	execResult                           ExecResult
 	execErr                              error
+	execArgv                             []string
 	interactiveArgv                      []string
 	written                              map[string][]byte
 	inspectPolicy                        NetworkPolicy
@@ -46,7 +47,8 @@ func (sandbox *fakeSandbox) Create(_, _, projectMount, overlayPath string, netAr
 func (sandbox *fakeSandbox) Start(string) error   { sandbox.started = true; return nil }
 func (sandbox *fakeSandbox) Stop(string) error    { sandbox.stopped = true; return nil }
 func (sandbox *fakeSandbox) Destroy(string) error { sandbox.destroyed = true; return nil }
-func (sandbox *fakeSandbox) Exec(string, []string) (ExecResult, error) {
+func (sandbox *fakeSandbox) Exec(_ string, argv []string) (ExecResult, error) {
+	sandbox.execArgv = argv
 	return sandbox.execResult, sandbox.execErr
 }
 func (sandbox *fakeSandbox) ExecInteractive(_ string, argv []string) error {
@@ -296,15 +298,176 @@ func TestStartUnknownProject(test *testing.T) {
 	}
 }
 
-func TestShellOpensInteractiveLoginShell(test *testing.T) {
+// Shell opens a PERSISTENT, reattachable tmux session named "shell" in /workspace
+// running a login shell (tmux new-session -A makes it create-or-attach).
+func TestShellOpensPersistentTmuxSession(test *testing.T) {
 	seedProject(test, "app")
 	sandbox := &fakeSandbox{}
 	if err := newManager(&fakeBuilder{}, sandbox).Shell("app"); err != nil {
 		test.Fatal(err)
 	}
-	if got := sandbox.interactiveArgv; len(got) != 2 || got[0] != "bash" || got[1] != "-l" {
-		test.Fatalf("Shell ran %v via ExecInteractive, want [bash -l]", got)
+	want := []string{"tmux", "new-session", "-A", "-s", "shell", "-c", "/workspace", "bash", "-l"}
+	if got := sandbox.interactiveArgv; !equalStrings(got, want) {
+		test.Fatalf("Shell ran %v via ExecInteractive, want %v", got, want)
 	}
+}
+
+// Agent starts (or reattaches to) a per-CLI tmux session named after the CLI,
+// running that CLI's launch command in /workspace.
+func TestAgentStartsPerCLITmuxSession(test *testing.T) {
+	seedProject(test, "app")
+	sandbox := &fakeSandbox{}
+	if err := newManager(&fakeBuilder{}, sandbox).Agent("app", "opencode"); err != nil {
+		test.Fatal(err)
+	}
+	want := []string{"tmux", "new-session", "-A", "-s", "opencode", "-c", "/workspace", "opencode"}
+	if got := sandbox.interactiveArgv; !equalStrings(got, want) {
+		test.Fatalf("Agent ran %v via ExecInteractive, want %v", got, want)
+	}
+}
+
+// claude-code maps to the `claude` launch command but keeps its own session name.
+func TestAgentMapsClaudeCodeLaunch(test *testing.T) {
+	seedProject(test, "app")
+	sandbox := &fakeSandbox{}
+	if err := newManager(&fakeBuilder{}, sandbox).Agent("app", "claude-code"); err != nil {
+		test.Fatal(err)
+	}
+	want := []string{"tmux", "new-session", "-A", "-s", "claude-code", "-c", "/workspace", "claude"}
+	if got := sandbox.interactiveArgv; !equalStrings(got, want) {
+		test.Fatalf("Agent(claude-code) ran %v, want %v", got, want)
+	}
+}
+
+// An unknown CLI is rejected with ErrUnknownAgentCLI (→ exit 2) and never starts
+// a session.
+func TestAgentUnknownCLI(test *testing.T) {
+	seedProject(test, "app")
+	sandbox := &fakeSandbox{}
+	err := newManager(&fakeBuilder{}, sandbox).Agent("app", "nope")
+	if !errors.Is(err, ErrUnknownAgentCLI) {
+		test.Fatalf("want ErrUnknownAgentCLI, got %v", err)
+	}
+	if sandbox.interactiveArgv != nil {
+		test.Fatal("an unknown CLI must not start a session")
+	}
+}
+
+// Attach attaches to (or creates) a named session with no command (so a fresh
+// session opens the default shell); a blank session attaches the default "shell".
+func TestAttachSession(test *testing.T) {
+	seedProject(test, "app")
+	sandbox := &fakeSandbox{}
+	if err := newManager(&fakeBuilder{}, sandbox).Attach("app", "opencode"); err != nil {
+		test.Fatal(err)
+	}
+	want := []string{"tmux", "new-session", "-A", "-s", "opencode", "-c", "/workspace"}
+	if got := sandbox.interactiveArgv; !equalStrings(got, want) {
+		test.Fatalf("Attach ran %v, want %v", got, want)
+	}
+
+	defaulted := &fakeSandbox{}
+	if err := newManager(&fakeBuilder{}, defaulted).Attach("app", ""); err != nil {
+		test.Fatal(err)
+	}
+	wantDefault := []string{"tmux", "new-session", "-A", "-s", "shell", "-c", "/workspace"}
+	if got := defaulted.interactiveArgv; !equalStrings(got, wantDefault) {
+		test.Fatalf("Attach(\"\") ran %v, want the default shell session %v", got, wantDefault)
+	}
+}
+
+// ListSessions parses tmux's tab-separated list-sessions output (name, attached,
+// activity), reading the attached flag and raw activity epoch.
+func TestListSessionsParsesOutput(test *testing.T) {
+	seedProject(test, "app")
+	sandbox := &fakeSandbox{execResult: ExecResult{
+		ExitCode: 0,
+		Stdout:   "shell\t1\t1700000000\nopencode\t0\t1700000500\n",
+	}}
+	sessions, err := newManager(&fakeBuilder{}, sandbox).ListSessions("app")
+	if err != nil {
+		test.Fatal(err)
+	}
+	want := []string{"tmux", "list-sessions", "-F", "#{session_name}\t#{session_attached}\t#{session_activity}"}
+	if !equalStrings(sandbox.execArgv, want) {
+		test.Fatalf("ListSessions ran %v, want %v", sandbox.execArgv, want)
+	}
+	if len(sessions) != 2 {
+		test.Fatalf("parsed %d sessions, want 2: %+v", len(sessions), sessions)
+	}
+	if sessions[0].Name != "shell" || !sessions[0].Attached || sessions[0].Activity != "1700000000" {
+		test.Fatalf("session[0] = %+v", sessions[0])
+	}
+	if sessions[1].Name != "opencode" || sessions[1].Attached {
+		test.Fatalf("session[1] = %+v", sessions[1])
+	}
+}
+
+// With no tmux server running yet, `tmux list-sessions` exits non-zero with "no
+// server running" on stderr — that is ZERO sessions, not an error. Exec carries
+// the inner non-zero exit as data, so the check is on the ExecResult.
+func TestListSessionsNoServerIsEmpty(test *testing.T) {
+	seedProject(test, "app")
+	sandbox := &fakeSandbox{execResult: ExecResult{ExitCode: 1, Stderr: "no server running on /tmp/tmux-1000/default"}}
+	sessions, err := newManager(&fakeBuilder{}, sandbox).ListSessions("app")
+	if err != nil {
+		test.Fatalf("no running tmux server must be empty, not an error: %v", err)
+	}
+	if len(sessions) != 0 {
+		test.Fatalf("want zero sessions, got %+v", sessions)
+	}
+}
+
+// A non-zero tmux exit that is NOT "no server running" is a real failure.
+func TestListSessionsOtherFailureIsError(test *testing.T) {
+	seedProject(test, "app")
+	sandbox := &fakeSandbox{execResult: ExecResult{ExitCode: 1, Stderr: "tmux: command not found"}}
+	if _, err := newManager(&fakeBuilder{}, sandbox).ListSessions("app"); err == nil {
+		test.Fatal("a non-'no server running' failure must be an error")
+	}
+}
+
+// KillSession kills the named session via tmux kill-session -t.
+func TestKillSession(test *testing.T) {
+	seedProject(test, "app")
+	sandbox := &fakeSandbox{}
+	if err := newManager(&fakeBuilder{}, sandbox).KillSession("app", "opencode"); err != nil {
+		test.Fatal(err)
+	}
+	want := []string{"tmux", "kill-session", "-t", "opencode"}
+	if !equalStrings(sandbox.execArgv, want) {
+		test.Fatalf("KillSession ran %v, want %v", sandbox.execArgv, want)
+	}
+}
+
+// Start writes the managed tmux.conf into the microVM so the session model is
+// transparent (alongside the agent provider configs).
+func TestStartWritesTmuxConf(test *testing.T) {
+	seedProject(test, "app")
+	sandbox := &fakeSandbox{}
+	if _, err := newManager(&fakeBuilder{}, sandbox).Start("app"); err != nil {
+		test.Fatal(err)
+	}
+	conf, wrote := sandbox.written["/home/workspace/.tmux.conf"]
+	if !wrote {
+		test.Fatal("Start must write the managed tmux.conf into the microVM")
+	}
+	if !strings.Contains(string(conf), "status off") || !strings.Contains(string(conf), "mouse on") {
+		test.Errorf("tmux.conf missing transparent settings:\n%s", conf)
+	}
+}
+
+// equalStrings reports whether two string slices are element-wise equal.
+func equalStrings(got, want []string) bool {
+	if len(got) != len(want) {
+		return false
+	}
+	for index := range got {
+		if got[index] != want[index] {
+			return false
+		}
+	}
+	return true
 }
 
 func TestExecInteractiveUnknownProject(test *testing.T) {

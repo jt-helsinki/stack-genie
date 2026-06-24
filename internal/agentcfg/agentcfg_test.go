@@ -154,3 +154,14 @@ func nested(test *testing.T, document map[string]any, key1, key2 string) map[str
 	}
 	return level2
 }
+
+// TmuxConfig renders the managed transparent tmux config: mouse on (wheel
+// scrollback), status off (invisible), vi copy-mode keys, and a history limit.
+func TestTmuxConfig(test *testing.T) {
+	conf := string(TmuxConfig())
+	for _, want := range []string{"set -g mouse on", "set -g status off", "setw -g mode-keys vi", "history-limit"} {
+		if !strings.Contains(conf, want) {
+			test.Errorf("tmux.conf missing %q:\n%s", want, conf)
+		}
+	}
+}

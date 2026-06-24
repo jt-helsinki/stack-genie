@@ -646,6 +646,45 @@ inner shell exiting is a clean end, not a failure.
 
 ---
 
+## 4.5b Workspace Sessions (`ai agent` / `ai attach` / `ai sessions`)
+
+```bash
+ai agent <cli> [project]          # ai workspace agent <cli> [project]
+ai agent <cli>                    # current directory's project
+ai attach [session] [project]     # ai workspace attach [session] [project]
+ai attach [session]               # current directory's project
+ai sessions [project]             # ai workspace sessions [project]
+ai sessions                       # current directory's project
+```
+
+The workspace runs a **tmux-transparent** session model: each interactive shell
+and agent CLI lives in a **persistent, reattachable tmux session** inside the
+microVM (all running as the `workspace` user, via `msb exec -t -u workspace`), so
+work survives detaching and multiple agents run concurrently — but the user never
+types a tmux command. A **managed `~/.tmux.conf`** is written at workspace start
+(mouse-scroll on, status bar hidden, vi copy-keys, generous scrollback), so tmux
+is invisible to a casual user.
+
+* **`ai shell` / `ai workspace shell`** (§4.5a) open the persistent **`shell`**
+  session — a login shell in `/workspace`. `tmux new-session -A` makes this
+  **create-or-attach**: the first call creates it, every later call reattaches.
+* **`ai agent <cli>`** starts (or reattaches to) a **per-CLI** session named after
+  the CLI — `opencode`, `pi`, `claude-code` (runs `claude`), `codex`, `gemini` —
+  so each agent has one durable session and several can run side by side. An
+  **unknown `<cli>`** is exit `2` with the valid set listed.
+* **`ai attach [session]`** attaches to (creating it if absent) a named session,
+  defaulting to **`shell`**. A freshly-created session opens the default shell.
+
+`ai agent` and `ai attach` are **interactive-only** (they own the terminal and
+emit no JSON envelope), so under `--json` or a non-TTY they are exit `2`, exactly
+like `ai shell`. `ai sessions` is a **normal command**: it lists the workspace's
+sessions as a table (NAME / ATTACHED / IDLE) by default and the JSON envelope
+under `--json`. A no-running-tmux-server workspace lists **zero** sessions, not an
+error. Platform failures (workspace not running, msb missing) map per §18 (3/4).
+The TUI **Sessions** view (§14.4) drives the same path via `ai workspace attach`.
+
+---
+
 ## 4.6 Lifecycle Shortcuts (`ai start` / `ai stop` / `ai restart`)
 
 ```bash id="c11b"
@@ -1078,6 +1117,12 @@ new project may be created from it (see below).
   `d` describes the selected one.
 * **Project** — the current project's summary + workspace lifecycle `s`/`x`/`r`/
   `d` (start/stop/restart/destroy) and `e` (an interactive shell in the workspace).
+* **Sessions** (current project) — the persistent tmux sessions in the workspace
+  (NAME / ATTACHED / IDLE); `a`/`enter` attach the selected session, `n` starts a
+  default agent session, `k` kills the selected one, `r` refreshes. Attaching runs
+  `ai workspace attach <session> <project>` via `tea.ExecProcess` (the same path
+  as the Project view's `e` shell). With no project selected it shows "no project
+  selected".
 * **Network** (per-project) — egress mode + allow-list + published ports; `m`
   cycles the mode.
 * **Context** (per-project) — Headroom strategy + Caveman level; `s`/`c` cycle them.
