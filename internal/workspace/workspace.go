@@ -148,11 +148,15 @@ type Sandbox interface {
 	InspectNetwork(name string) (NetworkPolicy, error)
 }
 
-// KeyMinter mints scoped LiteLLM virtual keys. It is the small surface
-// Manager needs from litellm.KeyManager, defined locally so tests can supply a
-// fake without a live gateway (the real impl is *litellm.KeyManager).
+// KeyMinter mints (and rotates) scoped LiteLLM virtual keys. It is the small
+// surface Manager needs from litellm.KeyManager, defined locally so tests can
+// supply a fake without a live gateway (the real impl is *litellm.KeyManager).
+// DeleteKeyByAlias lets a re-start revoke the previous key for a project before
+// minting a fresh one — LiteLLM requires key aliases to be unique, so without the
+// revoke a second start fails ("alias already exists").
 type KeyMinter interface {
 	GenerateKey(scope litellm.KeyScope) (string, error)
+	DeleteKeyByAlias(alias string) error
 }
 
 // Manager coordinates the lifecycle over a Builder + Sandbox, stamping state with
@@ -256,6 +260,13 @@ func (manager Manager) Start(project string) (*state.Workspace, error) {
 // model's request body; pi cannot inject per-request fields and uses Headroom's
 // server-side defaults (see internal/agentcfg).
 func (manager Manager) registerAgentProviders(name, project string, projectConfig *config.Config, gatewayURL string) error {
+	// Rotate: revoke any key left from a previous start of this project before
+	// minting a new one. LiteLLM requires unique key aliases, so re-using the
+	// project name as the alias would otherwise fail the second start with "alias
+	// already exists". Best-effort — a missing alias (first start) is not an error,
+	// and a real gateway problem surfaces on GenerateKey below.
+	_ = manager.Keys.DeleteKeyByAlias(project)
+
 	// Empty Models = all models allowed (the workspace agent names any model and
 	// LiteLLM routes it). The metadata ties the key back to this workspace.
 	apiKey, err := manager.Keys.GenerateKey(litellm.KeyScope{

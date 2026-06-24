@@ -1247,7 +1247,9 @@ Behavior:
   never secret values (exit `5` is returned if a value would otherwise leak)
 * credentials are held by the LiteLLM gateway, never written to platform disk; the
   workspace agent receives only a scoped LiteLLM **virtual key**, never a provider
-  secret
+  secret. The key is aliased to the project; `ai workspace start` **rotates** it —
+  revoking any key left from a prior start before minting a fresh one — so a
+  re-start never collides with LiteLLM's unique-alias requirement
 
 ---
 

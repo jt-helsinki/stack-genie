@@ -66,11 +66,14 @@ func (sandbox *fakeSandbox) InspectNetwork(string) (NetworkPolicy, error) {
 	return sandbox.inspectPolicy, sandbox.inspectErr
 }
 
-// fakeKeyMinter records GenerateKey calls and returns a fixed key (or an error).
+// fakeKeyMinter records GenerateKey/DeleteKeyByAlias calls and returns a fixed key
+// (or an error).
 type fakeKeyMinter struct {
-	calls   int
-	lastErr error
-	scope   litellm.KeyScope
+	calls        int
+	lastErr      error
+	scope        litellm.KeyScope
+	deletedAlias string
+	deleteCalls  int
 }
 
 func (minter *fakeKeyMinter) GenerateKey(scope litellm.KeyScope) (string, error) {
@@ -80,6 +83,12 @@ func (minter *fakeKeyMinter) GenerateKey(scope litellm.KeyScope) (string, error)
 		return "", minter.lastErr
 	}
 	return "sk-fake-workspace-key", nil
+}
+
+func (minter *fakeKeyMinter) DeleteKeyByAlias(alias string) error {
+	minter.deleteCalls++
+	minter.deletedAlias = alias
+	return nil
 }
 
 func seedProject(test *testing.T, project string) string {
@@ -134,6 +143,12 @@ func TestStartBuildsAndRecordsStartedHandle(test *testing.T) {
 	}
 	if minter.scope.Alias != "app" || minter.scope.Metadata["workspace"] != "aip-app" {
 		test.Fatalf("key scope = %+v, want alias=app workspace=aip-app", minter.scope)
+	}
+	// Start must ROTATE the key: revoke any prior key for the project's alias before
+	// minting, so a re-start does not fail on LiteLLM's unique-alias requirement.
+	if minter.deleteCalls != 1 || minter.deletedAlias != "app" {
+		test.Fatalf("expected a delete-by-alias rotate for %q, got %d call(s) for %q",
+			"app", minter.deleteCalls, minter.deletedAlias)
 	}
 	openCodeConfig, wrote := sandbox.written["/home/workspace/.config/opencode/opencode.json"]
 	if !wrote {
