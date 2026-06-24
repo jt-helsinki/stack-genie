@@ -4,8 +4,11 @@
 // imports tui → cycle). It depends only on low-level packages (paths, project,
 // os) so both callers can import it.
 //
-// The live capture that writes these files is wired during hardware bring-up, so
-// a missing logs dir yields an empty result, not an error.
+// The live capture that writes these files is the snapshot in
+// setup.realServices.CaptureServiceLogs (run by `ai setup` and `ai services
+// status`), which is the SOLE container-runtime touch-point — this package stays
+// a pure file reader (no docker dependency). Continuous follow (`logs -f`) is a
+// later enhancement. A missing logs dir yields an empty result, not an error.
 package logs
 
 import (
@@ -26,9 +29,10 @@ const TailLines = 200
 // containers (odysseus + chromadb / searxng / ntfy). Logs are per-CONTAINER, so
 // this is finer-grained than `ai services` (which acts on whole logical
 // services). A service value selects a log source by substring match on the
-// *.log file names under ~/.ai-platform/logs (see Sources); the live capture
-// that writes those files is wired during hardware bring-up, so for services
-// with nothing on disk yet this surfaces an empty result, not an error.
+// *.log file names under ~/.ai-platform/logs (see Sources); those files are
+// written by setup.realServices.CaptureServiceLogs (a point-in-time snapshot run
+// by `ai setup` / `ai services status`), so for services with nothing on disk yet
+// this surfaces an empty result, not an error.
 var services = []string{
 	"microsandbox",
 	"ollama",

@@ -3,6 +3,7 @@ package setup
 import (
 	"errors"
 	"io"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -44,6 +45,7 @@ type fakeServices struct {
 	optional      []string
 	pulledEnabled []string
 	installed     bool
+	capturedLogs  bool
 }
 
 func (services *fakeServices) Reconcile(providerConfig, bindHost string, optional []string, progress func(string)) ([]ServiceStatus, error) {
@@ -92,6 +94,10 @@ func (services *fakeServices) Control(action, service string) ([]ServiceStatus, 
 }
 func (services *fakeServices) InstallPrerequisite(_ Prerequisite, _ io.Writer) error {
 	services.installed = true
+	return nil
+}
+func (services *fakeServices) CaptureServiceLogs() error {
+	services.capturedLogs = true
 	return nil
 }
 
@@ -1195,5 +1201,168 @@ func TestReconcileGatesOptionalOdysseus(test *testing.T) {
 	}
 	if stateOf(disabledStatuses, "odysseus") != "disabled" {
 		test.Errorf("odysseus should be disabled when not enabled: %+v", disabledStatuses)
+	}
+}
+
+// --- TASK B: live service log capture --------------------------------------
+
+// logCaptureProber is a fake that reports docker present, reports a fixed set of
+// containers as RUNNING (via `ps`), and returns canned `docker logs` output for
+// any container — so CaptureServiceLogs can be exercised without a live daemon.
+// It records its calls so the test can assert the `docker logs` invocation shape.
+type logCaptureProber struct {
+	running map[string]bool // container name → running
+	calls   [][]string
+}
+
+func (prober *logCaptureProber) LookPath(file string) (string, error) {
+	if file == "docker" {
+		return "/usr/bin/docker", nil
+	}
+	return "", exec.ErrNotFound
+}
+func (prober *logCaptureProber) Exists(string) bool { return false }
+func (prober *logCaptureProber) Run(name string, args ...string) ([]byte, error) {
+	prober.calls = append(prober.calls, append([]string{name}, args...))
+	if len(args) == 0 {
+		return nil, nil
+	}
+	switch args[0] {
+	case "ps":
+		// `ps --filter name=^/<name>$ ... --format {{.Names}}` → the name if running.
+		for _, arg := range args {
+			if filterName, found := strings.CutPrefix(arg, "name=^/"); found {
+				container := strings.TrimSuffix(filterName, "$")
+				if prober.running[container] {
+					return []byte(container + "\n"), nil
+				}
+			}
+		}
+		return nil, nil
+	case "logs":
+		// The container name is the last arg; return canned output keyed to it.
+		container := args[len(args)-1]
+		return []byte("LOG-" + container + "\n"), nil
+	}
+	return nil, nil
+}
+
+// TestCaptureServiceLogsWritesRunningContainers: a running container's `docker
+// logs` output is snapshotted to ~/.ai-platform/logs/<name>.log (aip- prefix
+// stripped), a stopped container is skipped, and the `docker logs` call carries
+// --tail/--timestamps.
+func TestCaptureServiceLogsWritesRunningContainers(test *testing.T) {
+	home := test.TempDir()
+	test.Setenv("HOME", home)
+	prober := &logCaptureProber{running: map[string]bool{
+		litellmContainer:          true, // aip-litellm running
+		presidioAnalyzerContainer: true, // aip-presidio-analyzer running
+		// aip-litellm-db, aip-presidio-anonymizer, and everything else are stopped.
+	}}
+	services := realServices{prober: prober}
+	if err := services.CaptureServiceLogs(); err != nil {
+		test.Fatal(err)
+	}
+
+	logsDir := filepath.Join(home, ".ai-platform", "logs")
+	// Running containers are captured to <stripped-name>.log with their canned output.
+	for container, wantBase := range map[string]string{
+		litellmContainer:          "litellm.log",
+		presidioAnalyzerContainer: "presidio-analyzer.log",
+	} {
+		content, err := os.ReadFile(filepath.Join(logsDir, wantBase))
+		if err != nil {
+			test.Fatalf("expected %s to be written: %v", wantBase, err)
+		}
+		if got := strings.TrimSpace(string(content)); got != "LOG-"+container {
+			test.Errorf("%s content = %q, want %q", wantBase, got, "LOG-"+container)
+		}
+	}
+	// A stopped container (the litellm DB) must NOT be captured.
+	if _, err := os.Stat(filepath.Join(logsDir, "litellm-db.log")); !os.IsNotExist(err) {
+		test.Errorf("stopped aip-litellm-db must not be captured (err=%v)", err)
+	}
+
+	// The `docker logs` call must use --tail and --timestamps.
+	var sawLogsCall bool
+	for _, call := range prober.calls {
+		if len(call) >= 2 && call[0] == "docker" && call[1] == "logs" {
+			sawLogsCall = true
+			joined := strings.Join(call, " ")
+			if !strings.Contains(joined, "--tail") || !strings.Contains(joined, "--timestamps") {
+				test.Errorf("docker logs call missing --tail/--timestamps: %s", joined)
+			}
+		}
+	}
+	if !sawLogsCall {
+		test.Error("CaptureServiceLogs made no `docker logs` call")
+	}
+}
+
+// TestServiceContainersMapping: the logical service → container(s) mapping covers
+// the multi-container services (presidio is two; odysseus is four) and the simple
+// 1:1 ones, and the file-name derivation strips the aip- prefix.
+func TestServiceContainersMapping(test *testing.T) {
+	cases := map[string][]string{
+		"litellm":  {litellmContainer, litellmDBContainer},
+		"presidio": {presidioAnalyzerContainer, presidioAnonymizerContainer},
+		"odysseus": {odysseusContainer, chromadbContainer, searxngContainer, ntfyContainer},
+		"dns":      {dnsContainer},
+		"unknown":  nil,
+	}
+	for service, want := range cases {
+		got := serviceContainers(service)
+		if len(got) != len(want) {
+			test.Errorf("serviceContainers(%q) = %v, want %v", service, got, want)
+			continue
+		}
+		for index := range want {
+			if got[index] != want[index] {
+				test.Errorf("serviceContainers(%q)[%d] = %q, want %q", service, index, got[index], want[index])
+			}
+		}
+	}
+	if got := logFileNameFor("aip-presidio-analyzer"); got != "presidio-analyzer.log" {
+		test.Errorf("logFileNameFor(aip-presidio-analyzer) = %q, want presidio-analyzer.log", got)
+	}
+}
+
+// TestCaptureServiceLogsNoRuntimeIsNoOp: with no container runtime present,
+// CaptureServiceLogs is a no-op (no error, no files) — capture must never fail a
+// reconcile/status on a host without docker.
+func TestCaptureServiceLogsNoRuntimeIsNoOp(test *testing.T) {
+	test.Setenv("HOME", test.TempDir())
+	services := realServices{prober: fakeProber{}} // no docker in LookPath
+	if err := services.CaptureServiceLogs(); err != nil {
+		test.Fatalf("CaptureServiceLogs with no runtime should be a no-op, got %v", err)
+	}
+}
+
+// --- TASK A: nginx proxy readiness probe -----------------------------------
+
+// TestProxyReachableUpAndDown: the readiness probe treats ANY HTTP response (even
+// a 404/502 from a not-ready upstream) as "up and forwarding", and a transport
+// error (connection refused) as down — exercised behind the proxyHTTPGet seam so
+// no live server is needed.
+func TestProxyReachableUpAndDown(test *testing.T) {
+	original := proxyHTTPGet
+	defer func() { proxyHTTPGet = original }()
+
+	// Any HTTP response (even 404) → up.
+	for _, status := range []int{http.StatusOK, http.StatusNotFound, http.StatusBadGateway} {
+		proxyHTTPGet = func(string) (*http.Response, error) {
+			return &http.Response{StatusCode: status, Body: io.NopCloser(strings.NewReader(""))}, nil
+		}
+		if !proxyReachable("http://127.0.0.1:18787/health/liveliness") {
+			test.Errorf("HTTP %d should be treated as up/forwarding", status)
+		}
+	}
+
+	// Transport error (connection refused) → down.
+	proxyHTTPGet = func(string) (*http.Response, error) {
+		return nil, errors.New("dial tcp 127.0.0.1:18787: connect: connection refused")
+	}
+	if proxyReachable("http://127.0.0.1:18787/health/liveliness") {
+		test.Error("a transport error should be treated as down")
 	}
 }

@@ -50,9 +50,10 @@ var logServices = logs.Services()
 
 // newLogsCmd builds `ai logs` (CLI §13.1): show platform, host-service, and
 // workspace logs. It reads the log files the platform writes under
-// ~/.ai-platform/logs (and a project's run/ dir with --workspace). The live
-// capture that produces service/microVM logs is wired during hardware bring-up;
-// host-side this surfaces whatever is already on disk.
+// ~/.ai-platform/logs (and a project's run/ dir with --workspace). Those service
+// logs are written by setup's CaptureServiceLogs snapshot (run by `ai setup` /
+// `ai services status`); continuous follow (`logs -f`) is a later enhancement, so
+// this surfaces whatever snapshot is already on disk.
 func newLogsCmd(emitter *output.Emitter, exit *int) *cobra.Command {
 	var workspaceName, service string
 	var tail bool
@@ -82,7 +83,7 @@ func newLogsCmd(emitter *output.Emitter, exit *int) *cobra.Command {
 
 			result := logsResult{
 				Logs: []logSource{},
-				Note: "live service/microVM log capture is wired during hardware bring-up; this shows logs already on disk",
+				Note: "service logs are snapshotted by `ai setup` / `ai services status`; this shows the latest snapshot on disk (continuous follow is a later enhancement)",
 			}
 			tailCount := 0
 			if tail {

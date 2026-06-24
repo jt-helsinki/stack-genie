@@ -86,6 +86,12 @@ type Services interface {
 	// native stdout/stderr to out so the user sees its progress. Only valid when
 	// prereq.InstallCommand != ""; an empty command is a programmer error.
 	InstallPrerequisite(prereq Prerequisite, out io.Writer) error
+	// CaptureServiceLogs snapshots each RUNNING service container's recent output
+	// into ~/.ai-platform/logs/<container>.log, so `ai logs` / the TUI Logs view
+	// show real container output (arch §2.2). It is a point-in-time snapshot via the
+	// container runtime; best-effort (per-container errors are skipped, a missing
+	// runtime is a no-op).
+	CaptureServiceLogs() error
 }
 
 // `ai setup` never installs host software. Missing prerequisites are detected

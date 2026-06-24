@@ -5,10 +5,12 @@ import (
 	"encoding/hex"
 	"fmt"
 	"io"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 
@@ -747,6 +749,118 @@ func ensureProxy(prober runtime.Prober, containerRuntime, bindHost string) error
 	return nil
 }
 
+// proxyReadinessURL is the host entry the proxy readiness probe GETs (arch §2.3).
+// It targets LiteLLM's unauthenticated liveness path THROUGH the nginx gateway
+// (:18787 → aip-headroom:8787 → aip-litellm), so a 200 means the whole forward
+// chain is live; but proxyReachable treats ANY HTTP response (even 404/502) as
+// "the proxy is up and forwarding", and only a transport error as down — so the
+// probe stays meaningful even before Headroom/LiteLLM are fully healthy.
+const proxyReadinessURL = "http://127.0.0.1:" + proxyHostPort + "/health/liveliness"
+
+// proxyHTTPGet is the indirection the proxy readiness probe uses to make its HTTP
+// request, so unit tests can substitute a fake without a live server. It defaults
+// to a short-timeout client GET (mirroring litellm/ollama's probe style).
+var proxyHTTPGet = func(url string) (*http.Response, error) {
+	client := &http.Client{Timeout: 3 * time.Second}
+	return client.Get(url)
+}
+
+// proxyReachable reports whether the nginx gateway is up and forwarding: it GETs
+// url and treats ANY HTTP response (any status code, even 404/502 from a not-yet-
+// ready upstream) as "up and forwarding", and a transport error (e.g. connection
+// refused) as down. This is the live nginx-proxy readiness check (arch §2.3),
+// kept behind proxyHTTPGet so it is unit-testable.
+func proxyReachable(url string) bool {
+	response, err := proxyHTTPGet(url)
+	if err != nil {
+		return false
+	}
+	_ = response.Body.Close()
+	return true
+}
+
+// logCaptureTailLines is how many trailing lines per container the log snapshot
+// keeps (matches logs.TailLines, the reader's default tail).
+const logCaptureTailLines = 200
+
+// serviceContainers maps a logical service name (the `ai logs --service` /
+// `ai services` vocabulary) to the container name(s) whose output is snapshotted
+// for it. Most services own one container; a few own several — Presidio is the
+// analyzer + anonymizer pair, and Odysseus is the app plus its ChromaDB / SearXNG
+// / ntfy companions (each captured to its own <name>.log so `ai logs --service
+// chromadb` works). Pure, so the mapping is unit-testable.
+func serviceContainers(service string) []string {
+	switch service {
+	case "ollama":
+		return []string{ollamaContainer}
+	case "presidio":
+		return []string{presidioAnalyzerContainer, presidioAnonymizerContainer}
+	case "litellm":
+		return []string{litellmContainer, litellmDBContainer}
+	case "headroom":
+		return []string{headroomContainer}
+	case "proxy":
+		return []string{proxyContainer}
+	case "open-webui":
+		return []string{openWebUIContainer}
+	case "odysseus":
+		return []string{odysseusContainer, chromadbContainer, searxngContainer, ntfyContainer}
+	case "dns":
+		return []string{dnsContainer}
+	default:
+		return nil
+	}
+}
+
+// logFileNameFor maps a container name to its on-disk log file base name under
+// ~/.ai-platform/logs. We strip the shared "aip-" prefix so the file name matches
+// the `ai logs --service` vocabulary (logs.Services) for the substring filter —
+// e.g. aip-litellm → litellm.log, aip-presidio-analyzer → presidio-analyzer.log
+// (still matched by the "presidio" filter).
+func logFileNameFor(container string) string {
+	return strings.TrimPrefix(container, "aip-") + ".log"
+}
+
+// CaptureServiceLogs snapshots each RUNNING service container's recent output into
+// ~/.ai-platform/logs/<container>.log, so `ai logs` and the TUI Logs view show
+// real container output (arch §2.2). It walks every known logical service
+// (desiredServices) → its container(s) (serviceContainers), and for each running
+// container runs `docker logs --tail N --timestamps <container>` via the prober
+// and writes the captured bytes to the log file. This is a point-in-time SNAPSHOT;
+// continuous follow (`logs -f`) is a later enhancement. Best-effort: a probe or
+// write error on one container is skipped (the rest still update), and a missing
+// container runtime is a no-op (nothing to capture). The prober is the SOLE docker
+// touch-point — internal/logs stays a pure file reader.
+func (services realServices) CaptureServiceLogs() error {
+	containerRuntime, err := runtime.ContainerRuntimeName(services.prober)
+	if err != nil {
+		return nil // no runtime → nothing to capture (not an error for callers)
+	}
+	logsDir, err := paths.LogsDir()
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(logsDir, 0o755); err != nil {
+		return output.Errorf(output.ExitRuntimeFailure, "create logs dir %s: %s", logsDir, err)
+	}
+	tail := strconv.Itoa(logCaptureTailLines)
+	for _, service := range desiredServices() {
+		for _, container := range serviceContainers(service.Name) {
+			if !containerRunning(services.prober, containerRuntime.Name, container) {
+				continue // only snapshot running containers
+			}
+			out, err := services.prober.Run(containerRuntime.Name,
+				"logs", "--tail", tail, "--timestamps", container)
+			if err != nil {
+				continue // best-effort: skip this container, keep going
+			}
+			logPath := filepath.Join(logsDir, logFileNameFor(container))
+			_ = os.WriteFile(logPath, out, 0o644) // raw log text; best-effort
+		}
+	}
+	return nil
+}
+
 // litellmHasDatabaseURL reports whether the running LiteLLM container already has
 // DATABASE_URL wired (so a healthy-but-DB-less container is relaunched once).
 func litellmHasDatabaseURL(prober runtime.Prober, containerRuntime string) bool {
@@ -1005,6 +1119,9 @@ func (services realServices) Reconcile(providerConfig, bindHost string, optional
 			return nil, err
 		}
 	}
+	// Snapshot each running container's recent output so `ai logs` reflects this
+	// run (arch §2.2). Best-effort — a capture failure must not fail the reconcile.
+	_ = services.CaptureServiceLogs()
 	return services.statusFor(optional)
 }
 
@@ -1055,6 +1172,10 @@ func (services realServices) ensureLiteLLM(configPath, bindHost, providerConfig 
 // read from runtime.yaml so a not-enabled optional service is shown as
 // "disabled" (it is still listed, so users can discover it).
 func (services realServices) Status() ([]ServiceStatus, error) {
+	// Refresh the on-disk log snapshots so `ai services status` (and its refresh
+	// path) keep `ai logs` current with live container output (arch §2.2).
+	// Best-effort — a capture failure must not fail a status read.
+	_ = services.CaptureServiceLogs()
 	return services.statusFor(enabledOptionalServices())
 }
 
@@ -1125,13 +1246,21 @@ func (services realServices) serviceHealthy(name string) bool {
 		}
 		return containerRunning(services.prober, containerRuntime.Name, headroomContainer)
 	case "proxy":
-		// The nginx gateway is ready once the container is running (the live HTTP
-		// readiness probe is a hardware bring-up seam — see docs/HARDWARE-BRINGUP.md).
+		// Live readiness probe (arch §2.3): the nginx gateway is ready once it is
+		// running AND actually forwarding — an HTTP GET through the host entry
+		// (:18787 → aip-headroom:8787 → aip-litellm) returns SOME response. The
+		// container merely running is not enough (nginx can be up before its
+		// upstream resolves). proxyReady treats any HTTP status (even 404/502) as
+		// "up and forwarding" and only a transport error (connection refused) as
+		// down — see proxyReachable.
 		containerRuntime, err := runtime.ContainerRuntimeName(services.prober)
 		if err != nil {
 			return false
 		}
-		return containerRunning(services.prober, containerRuntime.Name, proxyContainer)
+		if !containerRunning(services.prober, containerRuntime.Name, proxyContainer) {
+			return false
+		}
+		return proxyReachable(proxyReadinessURL)
 	case "open-webui":
 		// Open WebUI takes a while to boot; the container running is sufficient for
 		// readiness here (the live /health probe is `ai doctor`'s job).
