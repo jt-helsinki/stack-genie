@@ -688,6 +688,12 @@ with `ErrNotStarted` (exit 2) rather than attaching a PTY to a missing VM (which
 leave the terminal in raw mode — from the TUI the screen appears to vanish). The
 TUI Project view additionally guards its `e` shell key with an inline "workspace
 not running — press s to start" hint, so it never suspends into a doomed subprocess.
+The session launchers also verify **tmux is present in the workspace image** (a
+buffered probe before the PTY); a tmux-less image — e.g. a project created with an
+older `ai` whose template predates tmux — fails with `ErrTmuxMissing` (exit 3) and
+remediation guidance (add `tmux` to `<project>/.ai-platform/Dockerfile` and restart,
+or recreate with an up-to-date `ai`), instead of msb's raw "failed to exec tmux"
+leak (which also misreports a successful exit).
 
 ---
 

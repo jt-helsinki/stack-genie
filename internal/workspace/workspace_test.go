@@ -506,6 +506,29 @@ func TestInteractiveRequiresRunningWorkspace(test *testing.T) {
 	}
 }
 
+// TestSessionRequiresTmuxInImage: a tmux-backed session against a running
+// workspace whose image lacks tmux fails with ErrTmuxMissing (a clear remediation)
+// and never attaches the PTY — instead of msb's raw "failed to exec tmux" leak.
+func TestSessionRequiresTmuxInImage(test *testing.T) {
+	seedProject(test, "app")
+	// Running VM (inspectErr nil), but the tmux probe exits non-zero (not installed).
+	noTmux := func() *fakeSandbox { return &fakeSandbox{execResult: ExecResult{ExitCode: 127}} }
+
+	sandbox := noTmux()
+	if err := newManager(&fakeBuilder{}, sandbox).Shell("app"); !errors.Is(err, ErrTmuxMissing) {
+		test.Fatalf("Shell with no tmux in image: want ErrTmuxMissing, got %v", err)
+	}
+	if sandbox.interactiveArgv != nil {
+		test.Fatalf("a tmux-less shell must not attach a PTY, ran %v", sandbox.interactiveArgv)
+	}
+	if err := newManager(&fakeBuilder{}, noTmux()).Agent("app", "opencode"); !errors.Is(err, ErrTmuxMissing) {
+		test.Fatalf("Agent with no tmux in image: want ErrTmuxMissing, got %v", err)
+	}
+	if err := newManager(&fakeBuilder{}, noTmux()).Attach("app", "shell"); !errors.Is(err, ErrTmuxMissing) {
+		test.Fatalf("Attach with no tmux in image: want ErrTmuxMissing, got %v", err)
+	}
+}
+
 func TestExecCarriesInnerResult(test *testing.T) {
 	seedProject(test, "app")
 	sandbox := &fakeSandbox{execResult: ExecResult{ExitCode: 7, Stdout: "hi"}}

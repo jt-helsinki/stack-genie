@@ -67,6 +67,12 @@ var ErrNotStarted = errors.New("workspace was never started; run `ai workspace s
 // starting it again) rather than a failure.
 var ErrAlreadyStopped = errors.New("workspace microVM is already stopped")
 
+// ErrTmuxMissing is returned when the workspace image has no tmux, which the
+// persistent-session model (shell/agent/attach) requires. It carries the
+// remediation so the user is not left with msb's raw "failed to exec tmux" leak
+// (which also misreports as a successful exit). Mapped to exit 3 (missing dep).
+var ErrTmuxMissing = errors.New("tmux is not installed in the workspace image — add `tmux` to <project>/.ai-platform/Dockerfile and restart the workspace (rebuild), or recreate the project with an up-to-date `ai`")
+
 // Name derives the deterministic workspace/microVM name (arch §7, §19):
 // aip-<project>. There is one workspace per project.
 func Name(project string) string {
@@ -456,7 +462,40 @@ func (manager Manager) ExecInteractive(project string, argv []string) error {
 // in it) survives detaching and is reattachable. The session opens in /workspace
 // with a login shell.
 func (manager Manager) Shell(project string) error {
-	return manager.ExecInteractive(project, tmuxNewSession(shellSessionName, []string{"bash", "-l"}))
+	return manager.launchTmuxSession(project, tmuxNewSession(shellSessionName, []string{"bash", "-l"}))
+}
+
+// launchTmuxSession is the shared entry for the tmux-backed interactive sessions
+// (shell / attach / agent). It verifies the microVM is up (clean ErrNotStarted if
+// not) and that tmux is present in the image (ErrTmuxMissing with remediation if
+// not — rather than msb's raw "failed to exec tmux" leak, which also misreports
+// success), then attaches the PTY.
+func (manager Manager) launchTmuxSession(project string, argv []string) error {
+	if _, err := resolveProjectRoot(project); err != nil {
+		return err
+	}
+	if err := manager.requireRunning(project); err != nil {
+		return err
+	}
+	if err := manager.requireTmux(project); err != nil {
+		return err
+	}
+	return manager.Sandbox.ExecInteractive(Name(project), argv)
+}
+
+// requireTmux verifies tmux is on PATH inside the running microVM before a tmux
+// session is launched. It runs a buffered probe (not the interactive PTY), so a
+// missing tmux surfaces as a clear ErrTmuxMissing instead of msb failing to exec
+// tmux through the PTY (which returns a misleading success).
+func (manager Manager) requireTmux(project string) error {
+	result, err := manager.Sandbox.Exec(Name(project), []string{"sh", "-c", "command -v tmux >/dev/null 2>&1"})
+	if err != nil {
+		return err
+	}
+	if result.ExitCode != 0 {
+		return ErrTmuxMissing
+	}
+	return nil
 }
 
 // Attach opens (creating it if needed) the named tmux session in the project's
@@ -468,7 +507,7 @@ func (manager Manager) Attach(project, session string) error {
 	if session == "" {
 		session = shellSessionName
 	}
-	return manager.ExecInteractive(project, tmuxNewSession(session, nil))
+	return manager.launchTmuxSession(project, tmuxNewSession(session, nil))
 }
 
 // Agent starts (or reattaches to) a per-CLI tmux session running the named agent
@@ -480,7 +519,7 @@ func (manager Manager) Agent(project, cli string) error {
 	if err != nil {
 		return err
 	}
-	return manager.ExecInteractive(project, tmuxNewSession(cli, launch))
+	return manager.launchTmuxSession(project, tmuxNewSession(cli, launch))
 }
 
 // ListSessions returns the tmux sessions running in the project's workspace

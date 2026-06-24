@@ -431,7 +431,7 @@ func mapWorkspaceErr(err error) error {
 	switch {
 	case errors.Is(err, workspace.ErrUnknownProject), errors.Is(err, workspace.ErrNotStarted), errors.Is(err, workspace.ErrUnknownAgentCLI):
 		return output.Errorf(output.ExitInvalidInput, "%s", err)
-	case errors.Is(err, workspace.ErrContainerRuntimeMissing), errors.Is(err, workspace.ErrMsbMissing):
+	case errors.Is(err, workspace.ErrContainerRuntimeMissing), errors.Is(err, workspace.ErrMsbMissing), errors.Is(err, workspace.ErrTmuxMissing):
 		return output.Errorf(output.ExitMissingDep, "%s", err)
 	default:
 		return output.Errorf(output.ExitRuntimeFailure, "%s", err)
