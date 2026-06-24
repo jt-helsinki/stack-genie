@@ -1,0 +1,116 @@
+package views
+
+import (
+	"strings"
+
+	"github.com/charmbracelet/bubbles/table"
+	tea "github.com/charmbracelet/bubbletea"
+	"github.com/jt-helsinki/ideal-robot/internal/ui"
+)
+
+// ThemeApplier applies AND persists a theme by name. Injected; the parent wires
+// ui.Apply followed by ui.SaveThemeName. Returns an error if the name is invalid
+// or the save fails.
+type ThemeApplier func(name string) error
+
+// ThemeChangedMsg is emitted after a theme is applied so the parent app can
+// re-push sizes to every view (their tables re-pick the theme's styles in
+// SetSize), making the change fully live across the UI — not just the chrome.
+type ThemeChangedMsg struct{ Name string }
+
+// Settings is the global-settings screen: a live theme picker plus read-only
+// platform info (deployment role / model gateway). Selecting a theme applies it
+// to the whole UI immediately and persists it for future sessions; the role and
+// gateway are shown for reference (changed via `ai gateway` / `ai setup`).
+type Settings struct {
+	themes  []string
+	current func() string // the currently-applied theme name
+	apply   ThemeApplier
+	role    string
+	gateway string
+	table   table.Model
+	flash   string
+}
+
+// NewSettings builds the settings view over the theme list, a getter for the
+// currently-applied theme, the apply+persist func, and the platform role/gateway
+// to display.
+func NewSettings(themes []string, current func() string, apply ThemeApplier, role, gateway string) *Settings {
+	columns := []table.Column{{Title: "THEME", Width: 22}, {Title: "", Width: 12}}
+	built := table.New(table.WithColumns(columns), table.WithFocused(true))
+	built.SetStyles(ui.TableStyles())
+	view := &Settings{themes: themes, current: current, apply: apply, role: role, gateway: gateway, table: built}
+	view.refreshRows()
+	return view
+}
+
+// Title is the tab label.
+func (view *Settings) Title() string { return "Settings" }
+
+// Hints are the key bindings shown in the header grid.
+func (view *Settings) Hints() string { return "enter apply theme · ↑/↓ select" }
+
+// SetSize fits the theme table, leaving room for the platform info block below.
+// It also re-applies the table styles so a just-applied theme recolors the table.
+func (view *Settings) SetSize(width, height int) {
+	view.table.SetStyles(ui.TableStyles())
+	view.table.SetWidth(width)
+	// Reserve a few lines for the headings, flash, and the platform info block.
+	if tableHeight := height - 7; tableHeight > 0 {
+		view.table.SetHeight(tableHeight)
+	}
+}
+
+// Init has nothing to fetch (the theme list + role/gateway are static).
+func (view *Settings) Init() tea.Cmd { return nil }
+
+// refreshRows rebuilds the theme rows, marking the currently-applied one.
+func (view *Settings) refreshRows() {
+	current := view.current()
+	rows := make([]table.Row, 0, len(view.themes))
+	for _, name := range view.themes {
+		marker := ""
+		if name == current {
+			marker = ui.Success.Render("● applied")
+		}
+		rows = append(rows, table.Row{name, marker})
+	}
+	view.table.SetRows(rows)
+}
+
+// Update applies the highlighted theme on enter (emitting ThemeChangedMsg so the
+// whole UI recolors); other keys drive table navigation.
+func (view *Settings) Update(msg tea.Msg) tea.Cmd {
+	if key, ok := msg.(tea.KeyMsg); ok && key.String() == "enter" {
+		row := view.table.SelectedRow()
+		if len(row) == 0 {
+			return nil
+		}
+		name := row[0]
+		if err := view.apply(name); err != nil {
+			view.flash = ui.Failure.Render(ui.IconFail + " " + err.Error())
+			return nil
+		}
+		view.flash = ui.Success.Render(ui.IconOK + " theme " + name + " applied")
+		view.refreshRows()
+		return func() tea.Msg { return ThemeChangedMsg{Name: name} }
+	}
+	var cmd tea.Cmd
+	view.table, cmd = view.table.Update(msg)
+	return cmd
+}
+
+// View renders the theme picker above a read-only platform info block.
+func (view *Settings) View() string {
+	var body strings.Builder
+	body.WriteString(ui.Heading.Render("Theme") + "\n")
+	body.WriteString(view.table.View() + "\n")
+	if view.flash != "" {
+		body.WriteString(view.flash + "\n")
+	}
+	body.WriteString("\n" + ui.Heading.Render("Platform") + "\n")
+	body.WriteString(field("role", view.role))
+	body.WriteString(field("gateway", view.gateway))
+	body.WriteString(ui.Muted.Render("  (change with `ai gateway` / `ai setup`)"))
+	return body.String()
+}

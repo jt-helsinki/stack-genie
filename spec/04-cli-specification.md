@@ -1116,7 +1116,7 @@ first sub-tab); otherwise it opens on the server (Services) view. The switcher
 reaches any project in the index, and a new project may be created from it (see
 below).
 
-**Top-level tabs** (three; cycled by `tab`/`←→` or the `:` menu, which also has an
+**Top-level tabs** (four; cycled by `tab`/`←→` or the `:` menu, which also has an
 **Exit** item):
 
 * **Services** — live service-tier + container status; `s`/`x`/`r` start/stop/
@@ -1144,6 +1144,10 @@ below).
     attach <session> <project>` via `tea.ExecProcess` (the same path as the Project
     sub-tab's `e` shell).
 * **Models** — LiteLLM routing status; `t` tests the default model.
+* **Settings** — a live **theme** picker (every `ai theme` theme; `enter` applies
+  the selected one to the whole UI immediately and persists it, `↑/↓` select) above
+  a read-only platform info block (deployment role + model gateway, changed via
+  `ai gateway` / `ai setup`).
 
 The `:` menu is **type-to-filter** (type to narrow, ↑/↓ + enter to choose) over the
 top-level tabs. On the list views `d` opens a scrollable describe pane and `l`

@@ -96,6 +96,18 @@ func Run(cwd string) error {
 	contextView := views.NewContext(currentRoot, contextopt.GetStatus, contextopt.SetStrategy, contextopt.SetCavemanLevel)
 	modelsView := views.NewModels(litellmClient.Status, litellmClient.Test)
 	secretsView := views.NewSecrets(secretsBroker.List, secretsBroker.Remove)
+	// The Settings tab is a live theme picker plus read-only platform info.
+	// Applying a theme persists it and recolors the whole UI (ThemeChangedMsg).
+	settingsView := views.NewSettings(
+		ui.ThemeNames(), ui.CurrentTheme,
+		func(name string) error {
+			if err := ui.Apply(name); err != nil {
+				return err
+			}
+			return ui.SaveThemeName(name)
+		},
+		application.role, application.gateway,
+	)
 
 	// The Projects tab is a two-level hub: it opens on the switcher (the project
 	// list) and, once a project is selected, reveals per-project sub-tabs —
@@ -106,10 +118,10 @@ func Run(cwd string) error {
 		[]string{"Project", "Network", "Context", "Secrets", "Sessions"},
 	)
 
-	// Top-level tab order = menu order: Services · Projects · Models. Project /
-	// Network / Context / Secrets / Sessions are nested under Projects (the hub);
-	// logs are consolidated into the Services view (the `l` key).
-	application.views = []View{servicesView, projectsHub, modelsView}
+	// Top-level tab order = menu order: Services · Projects · Models · Settings.
+	// Project / Network / Context / Secrets / Sessions are nested under Projects
+	// (the hub); logs are consolidated into the Services view (the `l` key).
+	application.views = []View{servicesView, projectsHub, modelsView, settingsView}
 	application.projectsIndex = 1
 	application.projectsHub = projectsHub
 	application.projectDetail = projectDetail
@@ -292,6 +304,12 @@ func (application *app) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch message := msg.(type) {
 	case tea.WindowSizeMsg:
 		application.width, application.height = message.Width, message.Height
+		application.resizeViews()
+		return application, nil
+
+	case views.ThemeChangedMsg:
+		// A theme was applied in Settings — re-push sizes so every view's table
+		// re-picks the new styles (the chrome already reads the accent live).
 		application.resizeViews()
 		return application, nil
 

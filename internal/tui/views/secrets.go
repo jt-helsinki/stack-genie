@@ -53,6 +53,7 @@ func (view *Secrets) Hints() string { return "d delete · r refresh · (ai secre
 
 // SetSize fits the table to the content area the parent allots it.
 func (view *Secrets) SetSize(width, height int) {
+	view.table.SetStyles(ui.TableStyles()) // pick up a live theme change
 	view.table.SetWidth(width)
 	if height > 0 {
 		view.table.SetHeight(height)

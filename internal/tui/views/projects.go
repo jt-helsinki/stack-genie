@@ -57,6 +57,7 @@ func (view *Projects) Title() string { return "Projects" }
 func (view *Projects) Hints() string { return "enter open · n new · d describe · r refresh" }
 
 func (view *Projects) SetSize(width, height int) {
+	view.table.SetStyles(ui.TableStyles()) // pick up a live theme change
 	view.table.SetWidth(width)
 	if height > 0 {
 		view.table.SetHeight(height)

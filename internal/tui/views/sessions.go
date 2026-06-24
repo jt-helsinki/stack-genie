@@ -76,6 +76,7 @@ func (view *Sessions) Hints() string {
 
 // SetSize fits the table to the content area.
 func (view *Sessions) SetSize(width, height int) {
+	view.table.SetStyles(ui.TableStyles()) // pick up a live theme change
 	view.table.SetWidth(width)
 	if height > 0 {
 		view.table.SetHeight(height)

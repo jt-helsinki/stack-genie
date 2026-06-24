@@ -96,6 +96,7 @@ func (view *Services) Hints() string {
 
 // SetSize fits the table + the describe/logs panes to the content area.
 func (view *Services) SetSize(width, height int) {
+	view.table.SetStyles(ui.TableStyles()) // pick up a live theme change
 	view.table.SetWidth(width)
 	if height > 0 {
 		view.table.SetHeight(height)
