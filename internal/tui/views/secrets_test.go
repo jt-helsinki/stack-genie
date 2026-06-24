@@ -47,6 +47,37 @@ func TestSecretsSurfacesListError(test *testing.T) {
 	}
 }
 
+// TestSecretsEnterDescribesAndKeysStayLive: enter drills into the selected
+// credential's detail (name + env var, never the value), and the menu keys remain
+// live while the pane is open (esc backs out).
+func TestSecretsEnterDescribesAndKeysStayLive(test *testing.T) {
+	view := NewSecrets(
+		func() ([]secrets.Entry, error) {
+			return []secrets.Entry{{Name: "openai", EnvVar: "OPENAI_API_KEY"}}, nil
+		},
+		func(string) error { return nil },
+	)
+	_ = view.Update(view.Init()())
+	view.SetSize(80, 20)
+
+	_ = view.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if !view.describe.active() {
+		test.Fatal("enter must open the credential describe pane")
+	}
+	rendered := view.View()
+	if !strings.Contains(rendered, "openai") || !strings.Contains(rendered, "OPENAI_API_KEY") {
+		test.Errorf("describe pane should show name + env var, got:\n%s", rendered)
+	}
+	if !strings.Contains(rendered, "never on platform disk") {
+		test.Error("describe pane must note the value is not on platform disk")
+	}
+	// esc backs out to the table.
+	_ = view.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	if view.describe.active() {
+		test.Fatal("esc must close the describe pane")
+	}
+}
+
 func TestSecretsDeleteActionInvokesRemover(test *testing.T) {
 	var removed []string
 	view := NewSecrets(

@@ -131,6 +131,115 @@ func TestServicesLogsPaneOpensAndEscReturns(test *testing.T) {
 	}
 }
 
+// TestServicesEnableKeyTogglesOptional: `e` enables a disabled optional service
+// (and would disable an enabled one), driving the control func with enable/disable.
+func TestServicesEnableKeyTogglesOptional(test *testing.T) {
+	var controlled string
+	view := NewServices(
+		func() ([]setup.ServiceStatus, error) {
+			return []setup.ServiceStatus{{Name: "open-webui", State: "disabled", Optional: true}}, nil
+		},
+		func(action, service string) error { controlled = action + ":" + service; return nil },
+		noOpen, noTail,
+	)
+	_ = view.Update(view.Init()())
+
+	cmd := view.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("e")})
+	if cmd == nil {
+		test.Fatal("e on a disabled optional must return an enable command")
+	}
+	cmd()
+	if controlled != "enable:open-webui" {
+		test.Fatalf("e should enable a disabled optional, got %q", controlled)
+	}
+}
+
+// TestServicesEnableKeyRejectsCore: `e` on a core service is a no-op with a hint
+// (core services are always on).
+func TestServicesEnableKeyRejectsCore(test *testing.T) {
+	view := NewServices(
+		func() ([]setup.ServiceStatus, error) {
+			return []setup.ServiceStatus{{Name: "litellm", State: "running"}}, nil
+		}, noControl, noOpen, noTail)
+	_ = view.Update(view.Init()())
+
+	if cmd := view.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("e")}); cmd != nil {
+		test.Fatal("e on a core service must not control anything")
+	}
+	if !strings.Contains(view.View(), "core service") {
+		test.Errorf("expected a core-service hint, got:\n%s", view.View())
+	}
+}
+
+// TestServicesStartGatedOnDisabledOptional: start/stop/restart are blocked on a
+// disabled optional service (the user must enable it first) — no control call.
+func TestServicesStartGatedOnDisabledOptional(test *testing.T) {
+	controlled := false
+	view := NewServices(
+		func() ([]setup.ServiceStatus, error) {
+			return []setup.ServiceStatus{{Name: "odysseus", State: "disabled", Optional: true}}, nil
+		},
+		func(string, string) error { controlled = true; return nil },
+		noOpen, noTail,
+	)
+	_ = view.Update(view.Init()())
+
+	if cmd := view.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("s")}); cmd != nil {
+		test.Fatal("start on a disabled optional must not return a control command")
+	}
+	if controlled {
+		test.Fatal("start on a disabled optional must not control anything")
+	}
+	if !strings.Contains(view.View(), "disabled") {
+		test.Errorf("expected a 'press e to enable' hint, got:\n%s", view.View())
+	}
+}
+
+// TestServicesMenuKeysWorkWhilePaneOpen is the regression for the pane-trap bug:
+// once a service's describe/logs pane is open, the menu keys must still work — `l`
+// jumps from describe to logs (and `d` back), and an operation key closes the pane
+// and acts — without needing esc first.
+func TestServicesMenuKeysWorkWhilePaneOpen(test *testing.T) {
+	var controlled string
+	view := NewServices(
+		func() ([]setup.ServiceStatus, error) {
+			return []setup.ServiceStatus{{Name: "litellm", State: "running", Console: "http://x/ui"}}, nil
+		},
+		func(action, service string) error { controlled = action + ":" + service; return nil },
+		noOpen,
+		func(string) ([]string, error) { return []string{"a log line"}, nil },
+	)
+	_ = view.Update(view.Init()())
+	view.SetSize(80, 20)
+
+	// Open describe, then jump straight to logs with `l` (no esc).
+	_ = view.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("d")})
+	_ = view.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("l")})
+	if !view.logs.active() || view.describe.active() {
+		test.Fatalf("l from describe must switch to the logs pane (logs=%v describe=%v)",
+			view.logs.active(), view.describe.active())
+	}
+	// `d` jumps back to describe, closing logs.
+	_ = view.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("d")})
+	if !view.describe.active() || view.logs.active() {
+		test.Fatalf("d from logs must switch back to describe (logs=%v describe=%v)",
+			view.logs.active(), view.describe.active())
+	}
+	// An operation key (restart) works while a pane is open: it closes the pane and
+	// runs the action so the result is visible over the table.
+	cmd := view.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("r")})
+	if view.describe.active() || view.logs.active() {
+		test.Fatal("an operation key must close the open pane")
+	}
+	if cmd == nil {
+		test.Fatal("restart must return a control command")
+	}
+	cmd()
+	if controlled != "restart:litellm" {
+		test.Fatalf("restart should control the service, got %q", controlled)
+	}
+}
+
 func TestServicesOpenConsoleUsesURL(test *testing.T) {
 	var opened string
 	view := NewServices(

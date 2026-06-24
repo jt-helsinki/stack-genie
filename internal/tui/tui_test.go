@@ -138,6 +138,50 @@ func TestProjectSelectedOpensHub(test *testing.T) {
 	}
 }
 
+// fakeEscView is a sub-view with a toggleable open overlay, to test that the hub
+// lets a sub-view absorb esc before backing out of the project.
+type fakeEscView struct {
+	fakeView
+	overlayOpen bool
+}
+
+func (view *fakeEscView) WantsEsc() bool { return view.overlayOpen }
+func (view *fakeEscView) Update(msg tea.Msg) tea.Cmd {
+	if key, ok := msg.(tea.KeyMsg); ok && key.Type == tea.KeyEsc {
+		view.overlayOpen = false // esc closes the overlay
+	}
+	return nil
+}
+
+// TestProjectsHubEscClosesSubViewOverlayBeforeBackingOut: when a sub-tab has an
+// open overlay, esc closes the overlay first; a second esc backs out to the
+// switcher (esc goes up one level).
+func TestProjectsHubEscClosesSubViewOverlayBeforeBackingOut(test *testing.T) {
+	escView := &fakeEscView{fakeView: fakeView{title: "Secrets"}, overlayOpen: true}
+	hub := views.NewProjectsHub(&fakeView{title: "Projects"}, []views.Screen{escView}, []string{"Secrets"})
+	application := &app{
+		views:         []View{&fakeView{title: "Services"}, hub, &fakeView{title: "Models"}},
+		projectsHub:   hub,
+		projectsIndex: 1,
+	}
+	application.buildPalette()
+	application.Update(views.ProjectSelectedMsg{Name: "app"})
+
+	// First esc: the sub-view's overlay absorbs it; still inside the project.
+	application.Update(esc())
+	if escView.overlayOpen {
+		test.Fatal("esc should close the sub-view's overlay first")
+	}
+	if !hub.CapturesNav() {
+		test.Fatal("the first esc must NOT back out of the project (overlay closes first)")
+	}
+	// Second esc: nothing left to close, so back out to the switcher.
+	application.Update(esc())
+	if hub.CapturesNav() {
+		test.Fatal("the second esc should back out to the switcher")
+	}
+}
+
 // TestProjectsHubSubTabNavAndEscBack: once a project is open the hub captures
 // Tab/esc — Tab cycles sub-tabs (the top-level tab stays put) and esc backs up to
 // the switcher, after which Tab cycles top-level tabs again.

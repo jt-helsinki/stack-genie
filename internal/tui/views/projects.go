@@ -88,10 +88,9 @@ func (view *Projects) Update(msg tea.Msg) tea.Cmd {
 		}
 		return nil
 	case tea.KeyMsg:
-		// While the describe pane is open it owns input (scroll / esc / d).
-		if view.describe.active() {
-			return view.describe.update(message)
-		}
+		// Menu keys stay live even while the describe pane is open (so enter opens
+		// the project, r refreshes, etc.); scroll keys + esc fall through to the
+		// pane.
 		switch message.String() {
 		case "enter":
 			if selected, ok := view.selectedEntry(); ok {
@@ -107,6 +106,9 @@ func (view *Projects) Update(msg tea.Msg) tea.Cmd {
 			return nil
 		case "r":
 			return view.listCmd()
+		}
+		if view.describe.active() {
+			return view.describe.update(message)
 		}
 	}
 	var cmd tea.Cmd

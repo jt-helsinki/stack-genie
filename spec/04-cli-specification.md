@@ -1124,8 +1124,11 @@ below).
   when it is an **optional** service (toggling on its current state; core services
   are always on), `o` opens its admin console, `d` describes it, and `l` shows its
   **logs full-pane** (the table hides; the log pane fills the body and scrolls;
-  `esc` returns to the table). Logs are consolidated here — there is no separate
-  Logs tab — and share `internal/logs` with `ai logs`.
+  `esc` returns to the table). The menu keys stay **live while a pane is open** —
+  `l` jumps straight from describe to logs (and `d`/`enter` back), and an operation
+  key (start/stop/restart/enable) closes the pane and acts — so you never have to
+  `esc` out first. Logs are consolidated here — there is no separate Logs tab — and
+  share `internal/logs` with `ai logs`.
 * **Projects** — a **two-level hub**. It opens on the *switcher*: every project
   (name / OS / workspace status / agents); `enter` opens one, `n` creates a new one
   (a directory picker validated by the create rules, then the `ai project create`
@@ -1137,7 +1140,9 @@ below).
     (start/stop/restart/destroy) and `e` (an interactive shell in the workspace).
   * **Network** — egress mode + allow-list + published ports; `m` cycles the mode.
   * **Context** — Headroom strategy + Caveman level; `s`/`c` cycle them.
-  * **Secrets** — credential names (never values); `d` deletes one.
+  * **Secrets** — credential names (never values); `enter` describes the selected
+    one (name + workspace env-var placeholder; the value stays in LiteLLM), `d`
+    deletes one.
   * **Sessions** — the persistent tmux sessions in the workspace (NAME / ATTACHED /
     IDLE); `a`/`enter` attach the selected session, `n` starts a default agent
     session, `k` kills the selected one, `r` refreshes. Attaching runs `ai workspace

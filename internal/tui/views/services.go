@@ -91,7 +91,7 @@ func (view *Services) Title() string { return "Services" }
 
 // Hints are the context-sensitive key bindings shown in the footer.
 func (view *Services) Hints() string {
-	return "s start · x stop · r restart · e enable/disable · o console · l logs · d describe"
+	return "enter/d describe · s start · x stop · r restart · e enable/disable · o console · l logs"
 }
 
 // SetSize fits the table + the describe/logs panes to the content area.
@@ -146,16 +146,17 @@ func (view *Services) Update(msg tea.Msg) tea.Cmd {
 		view.flash = actionFlash(message)
 		return view.fetchCmd() // reflect the action immediately
 	case tea.KeyMsg:
-		// While the full-pane logs or describe pane is open it owns input (scroll;
-		// esc backs out to the table).
+		// Menu keys stay live even while a pane is open, so the user can jump
+		// straight from describe to logs (or run an action) without esc-ing out
+		// first. Scroll keys + esc fall through to whichever pane is active.
+		if cmd, handled := view.handleAction(message); handled {
+			return cmd
+		}
 		if view.logs.active() {
 			return view.logs.update(message)
 		}
 		if view.describe.active() {
 			return view.describe.update(message)
-		}
-		if cmd, handled := view.handleAction(message); handled {
-			return cmd
 		}
 	}
 	var cmd tea.Cmd
@@ -175,10 +176,12 @@ func (view *Services) handleAction(key tea.KeyMsg) (tea.Cmd, bool) {
 		// A disabled optional service must be enabled before it can be controlled.
 		if status := view.statusByName(service); status.Optional && !status.Enabled() {
 			view.flash = ui.Muted.Render(service + " is disabled — press e to enable it first")
+			view.closePanes() // show the hint over the table
 			return nil, true
 		}
 		action := map[string]string{"s": "start", "x": "stop", "r": "restart"}[key.String()]
 		view.flash = ui.Muted.Render(action + "ing " + service + "…")
+		view.closePanes() // surface the action's result over the table
 		return view.controlCmd(action, service), true
 	case "e":
 		if service == "" {
@@ -187,6 +190,7 @@ func (view *Services) handleAction(key tea.KeyMsg) (tea.Cmd, bool) {
 		// enable/disable applies only to optional services — core services are
 		// always on. Toggle based on the current state.
 		status := view.statusByName(service)
+		view.closePanes()
 		if !status.Optional {
 			view.flash = ui.Muted.Render(service + " is a core service — always enabled")
 			return nil, true
@@ -204,24 +208,37 @@ func (view *Services) handleAction(key tea.KeyMsg) (tea.Cmd, bool) {
 		url := view.consoleURL(service)
 		if url == "" {
 			view.flash = ui.Muted.Render(service + " has no admin console")
+			view.closePanes()
 			return nil, true
 		}
 		return view.openCmd(service, url), true
-	case "d":
+	case "enter", "d":
+		// enter / d both drill into the selected service's detail pane (closing the
+		// logs pane if it was the one open).
 		if service == "" {
 			return nil, true
 		}
+		view.logs.close()
 		view.describe.show(describeService(view.statusByName(service)))
 		return nil, true
 	case "l":
+		// Switch to the live logs pane (closing the describe pane if it was open).
 		if service == "" {
 			return nil, true
 		}
+		view.describe.close()
 		view.logService = service
 		view.logs.showLive(view.serviceLogs(service))
 		return logsTick(), true // start following the tail
 	}
 	return nil, false
+}
+
+// closePanes hides both the describe and logs panes so the table (and any flash)
+// is visible again — used by the operation actions (start/stop/restart/enable).
+func (view *Services) closePanes() {
+	view.describe.close()
+	view.logs.close()
 }
 
 func logsTick() tea.Cmd {

@@ -19,6 +19,10 @@ func newDescribePane() describePane {
 
 func (pane *describePane) active() bool { return pane.on }
 
+// close hides the pane (used when another action takes over, so the host view
+// returns to its table and the action's result is visible).
+func (pane *describePane) close() { pane.on = false }
+
 func (pane *describePane) show(content string) {
 	pane.on = true
 	pane.viewport.SetContent(content)

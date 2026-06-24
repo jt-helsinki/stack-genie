@@ -1,6 +1,8 @@
 package views
 
 import (
+	"strings"
+
 	"github.com/charmbracelet/bubbles/table"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/jt-helsinki/ideal-robot/internal/secrets"
@@ -28,13 +30,14 @@ type secretRemoveDoneMsg struct {
 // credential NAMES (never values) with delete + refresh. Adding a credential
 // needs a hidden value prompt and is out of scope here — use `ai secrets set`.
 type Secrets struct {
-	list    SecretLister
-	remove  SecretRemover
-	table   table.Model
-	entries []secrets.Entry
-	flash   string
-	err     error
-	loaded  bool
+	list     SecretLister
+	remove   SecretRemover
+	table    table.Model
+	describe describePane // detail pane for the selected credential (enter / d)
+	entries  []secrets.Entry
+	flash    string
+	err      error
+	loaded   bool
 }
 
 // NewSecrets builds the secrets view over the injected lister and remover.
@@ -45,19 +48,26 @@ func NewSecrets(list SecretLister, remove SecretRemover) *Secrets {
 	}
 	built := table.New(table.WithColumns(columns), table.WithFocused(true))
 	built.SetStyles(ui.TableStyles())
-	return &Secrets{list: list, remove: remove, table: built}
+	return &Secrets{list: list, remove: remove, table: built, describe: newDescribePane()}
 }
 
 func (view *Secrets) Title() string { return "Secrets" }
-func (view *Secrets) Hints() string { return "d delete · r refresh · (ai secrets set adds one)" }
 
-// SetSize fits the table to the content area the parent allots it.
+// WantsEsc reports that esc should close the open describe pane first (rather than
+// the Projects hub using esc to back out of the project). See escConsumer.
+func (view *Secrets) WantsEsc() bool { return view.describe.active() }
+func (view *Secrets) Hints() string {
+	return "enter describe · d delete · r refresh · (ai secrets set adds one)"
+}
+
+// SetSize fits the table + describe pane to the content area the parent allots it.
 func (view *Secrets) SetSize(width, height int) {
 	view.table.SetStyles(ui.TableStyles()) // pick up a live theme change
 	view.table.SetWidth(width)
 	if height > 0 {
 		view.table.SetHeight(height)
 	}
+	view.describe.setSize(width, height)
 }
 
 // Init kicks off the first credential list.
@@ -87,16 +97,30 @@ func (view *Secrets) Update(msg tea.Msg) tea.Cmd {
 		view.flash = secretRemoveFlash(message)
 		return view.refreshCmd()
 	case tea.KeyMsg:
+		// Menu keys stay live even while the describe pane is open; scroll keys + esc
+		// fall through to the pane.
 		switch message.String() {
+		case "enter":
+			// Drill into the selected credential's detail.
+			name := view.selectedName()
+			if name == "" {
+				return nil
+			}
+			view.describe.show(describeSecret(view.entryByName(name)))
+			return nil
 		case "d":
 			name := view.selectedName()
 			if name == "" {
 				return nil
 			}
+			view.describe.close() // surface the delete flash over the table
 			view.flash = ui.Muted.Render("deleting " + name + "…")
 			return view.removeCmd(name)
 		case "r":
 			return view.refreshCmd()
+		}
+		if view.describe.active() {
+			return view.describe.update(message)
 		}
 	}
 	var cmd tea.Cmd
@@ -120,8 +144,37 @@ func (view *Secrets) selectedName() string {
 	return row[0]
 }
 
-// View renders the credential table (or a load/error line) with the latest flash.
+// entryByName returns the cached entry for a credential (a name-only fallback if
+// it is not in the latest list).
+func (view *Secrets) entryByName(name string) secrets.Entry {
+	for _, entry := range view.entries {
+		if entry.Name == name {
+			return entry
+		}
+	}
+	return secrets.Entry{Name: name}
+}
+
+// describeSecret renders a credential's detail for the describe pane — name and
+// the workspace env-var placeholder only; the value never leaves LiteLLM.
+func describeSecret(entry secrets.Entry) string {
+	envVar := entry.EnvVar
+	if envVar == "" {
+		envVar = ui.Muted.Render("(not mapped to a workspace env var)")
+	}
+	var body strings.Builder
+	body.WriteString(ui.Heading.Render(entry.Name) + "\n")
+	body.WriteString(field("env var", envVar))
+	body.WriteString(field("value", ui.Muted.Render("stored in LiteLLM — never on platform disk")))
+	return body.String()
+}
+
+// View renders the describe pane when open, else the credential table (or a
+// load/error line) with the latest flash.
 func (view *Secrets) View() string {
+	if view.describe.active() {
+		return view.describe.view()
+	}
 	if view.err != nil {
 		return ui.Failure.Render(ui.IconFail + " " + view.err.Error())
 	}

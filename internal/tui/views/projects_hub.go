@@ -31,6 +31,12 @@ type Screen interface {
 // live current project through their injected closures.
 type projectAware interface{ SetProject(name string) }
 
+// escConsumer is implemented by a sub-view that has an open overlay (e.g. a
+// describe pane) which should absorb esc itself — so esc closes that overlay
+// before the hub uses esc to back out of the open project (esc goes up one level:
+// overlay → sub-tab → switcher).
+type escConsumer interface{ WantsEsc() bool }
+
 // subTabRows is the height the per-project sub-tab bar (plus a blank line) reserves
 // from the body when a project is open, so the sub-view's pane fits the remainder.
 const subTabRows = 2
@@ -117,6 +123,12 @@ func (hub *ProjectsHub) Update(msg tea.Msg) tea.Cmd {
 				hub.subIndex = ((hub.subIndex-1)%count + count) % count
 				return hub.active().Init()
 			case "esc":
+				// If the active sub-view has an open overlay (e.g. a describe pane),
+				// let it consume esc first; only back out to the switcher once the
+				// sub-view has nothing left to close.
+				if consumer, ok := hub.active().(escConsumer); ok && consumer.WantsEsc() {
+					return hub.active().Update(msg)
+				}
 				hub.open = false
 				return hub.switcher.Init()
 			}
