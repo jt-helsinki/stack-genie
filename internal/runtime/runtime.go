@@ -138,12 +138,15 @@ func ResolveGateway(aiPlatformHost string) (host string, port int, url string) {
 	return host, port, url
 }
 
-// HostGateway resolves the gateway address of Microsandbox's host-side userspace
-// network stack — the address a workspace reaches the host at (arch §29.2). The
-// concrete value is fixed by the Microsandbox network backend and is pinned from
-// the SDK during hardware bring-up and confirmed by a connectivity probe; until
-// then it reports ("", false). goos selects the backend (HVF on macOS, KVM on
-// Linux).
+// HostGateway is the SDK-PINNED override for the address a workspace reaches the
+// host at (arch §29.2) — distinct from the working default. Egress + gateway
+// wiring already use the verified `host.microsandbox.internal:18787`
+// (egress.hostGatewayTarget / runtime.ResolveGateway); HostGateway exists only so
+// a future hardware-bring-up spike can pin a backend-specific value from the
+// Microsandbox SDK (HVF on macOS, KVM on Linux) and confirm it with a connectivity
+// probe. Until that spike runs it reports ("", false) and callers use the default.
+// It is a deliberate reserved seam, NOT dead code — do not remove without a
+// runtime.yaml migration (Info.HostGateway is a persisted field).
 func HostGateway(goos string) (address string, pinned bool) {
 	// Deferred: filled in by the §29.5 reachability spike on a provisioned host.
 	return "", false

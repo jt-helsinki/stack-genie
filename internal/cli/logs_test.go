@@ -5,6 +5,7 @@ import (
 	"slices"
 	"testing"
 
+	"github.com/jt-helsinki/ideal-robot/internal/logs"
 	"github.com/jt-helsinki/ideal-robot/internal/output"
 )
 
@@ -35,16 +36,10 @@ func TestLogsServiceAcceptsFullTier(test *testing.T) {
 	// `go test` is invoked (e.g. from inside a project checkout).
 	test.Chdir(test.TempDir())
 
-	wantServices := []string{
-		"microsandbox",
-		"ollama",
-		"presidio",
-		"litellm",
-		"headroom",
-		"proxy",
-		"open-webui",
-		"dns",
-	}
+	// Derive the expected set from logs.Services() (the source of truth) rather than
+	// a hand-written subset, so dropping an optional log scope (odysseus, chromadb,
+	// searxng, ntfy, …) is caught here.
+	wantServices := logs.Services()
 	for _, service := range wantServices {
 		if !slices.Contains(logServices, service) {
 			test.Fatalf("logServices missing %q; have %v", service, logServices)

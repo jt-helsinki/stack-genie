@@ -36,9 +36,11 @@ type File struct {
 }
 
 // Default returns the built-in pins (repo-layout §12.6). Container services are
-// pinned by image+tag (currently the `latest` tag for every image); digests are
-// intentionally not pinned (platform/arch specific). `ai setup` resolves every
-// service-tier image from versions.yaml, falling back to these defaults.
+// pinned by image+tag — most use `latest`, but some are intentionally more
+// specific (e.g. postgres `18.4-alpine3.23`, nginx `stable-alpine3.23-slim`);
+// digests are intentionally not pinned (platform/arch specific). `ai setup`
+// resolves every service-tier image from versions.yaml, falling back to these
+// defaults.
 func Default() *File {
 	return &File{
 		SchemaVersion: SchemaVersion,
