@@ -1,11 +1,13 @@
 package cli
 
 import (
+	goruntime "runtime"
 	"slices"
 	"strings"
 
 	"github.com/jt-helsinki/ideal-robot/internal/logs"
 	"github.com/jt-helsinki/ideal-robot/internal/output"
+	"github.com/jt-helsinki/ideal-robot/internal/setup"
 	"github.com/spf13/cobra"
 )
 
@@ -56,7 +58,7 @@ var logServices = logs.Services()
 // this surfaces whatever snapshot is already on disk.
 func newLogsCmd(emitter *output.Emitter, exit *int) *cobra.Command {
 	var workspaceName, service string
-	var tail bool
+	var tail, follow bool
 	cmd := &cobra.Command{
 		Use:   "logs",
 		Short: "Show platform, service, and workspace logs",
@@ -74,6 +76,27 @@ func newLogsCmd(emitter *output.Emitter, exit *int) *cobra.Command {
 					output.Errorf(output.ExitInvalidInput, "unknown service %q (one of %v)", service, logServices))
 				return nil
 			}
+			// --follow streams a service's logs live to stdout until Ctrl-C. It is
+			// human-only (no single-envelope JSON) and needs a --service.
+			if follow {
+				if emitter.JSON {
+					*exit = emitter.Failure("logs", output.Errorf(output.ExitInvalidInput,
+						"--follow streams continuously and is not available with --json"))
+					return nil
+				}
+				if service == "" {
+					*exit = emitter.Failure("logs", output.Errorf(output.ExitInvalidInput,
+						"--follow needs a --service to stream (e.g. ai logs --service litellm --follow)"))
+					return nil
+				}
+				deps := setup.RealDeps(goruntime.GOOS, goruntime.GOARCH, nowRFC3339)
+				if err := setup.FollowServiceLogs(deps, service, emitter.Out); err != nil {
+					*exit = emitter.Failure("logs", err)
+					return nil
+				}
+				*exit = output.ExitOK
+				return nil
+			}
 
 			sources, err := logs.Sources(workspaceName, service)
 			if err != nil {
@@ -83,7 +106,7 @@ func newLogsCmd(emitter *output.Emitter, exit *int) *cobra.Command {
 
 			result := logsResult{
 				Logs: []logSource{},
-				Note: "service logs are snapshotted by `ai setup` / `ai services status`; this shows the latest snapshot on disk (continuous follow is a later enhancement)",
+				Note: "service logs are snapshotted by `ai setup` / `ai services status`; this shows the latest snapshot on disk — use `--service <name> --follow` to stream live",
 			}
 			tailCount := 0
 			if tail {
@@ -105,6 +128,7 @@ func newLogsCmd(emitter *output.Emitter, exit *int) *cobra.Command {
 	cmd.Flags().StringVar(&workspaceName, "workspace", "", "scope to a project's workspace run/ logs")
 	cmd.Flags().StringVar(&service, "service", "", "scope to a host service: "+strings.Join(logServices, "|"))
 	cmd.Flags().BoolVar(&tail, "tail", false, "show only the most recent lines per source")
+	cmd.Flags().BoolVar(&follow, "follow", false, "stream a --service's logs live until Ctrl-C (human-only)")
 	_ = cmd.RegisterFlagCompletionFunc("service", fixedValues(logServices...))
 	_ = cmd.RegisterFlagCompletionFunc("workspace", completeProjectNames)
 	return cmd

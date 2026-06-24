@@ -3,6 +3,7 @@ package setup
 import (
 	"crypto/rand"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -829,6 +830,36 @@ func logFileNameFor(container string) string {
 // and writes the captured bytes to the log file. This is a point-in-time SNAPSHOT;
 // continuous follow (`logs -f`) is a later enhancement. Best-effort: a probe or
 // write error on one container is skipped (the rest still update), and a missing
+// FollowServiceLogs streams a service's logs live (`<runtime> logs -f`) to out
+// until the process is interrupted (Ctrl-C terminates the shared process group).
+// It is a DIRECT streaming exec — the buffered Prober.Run cannot stream — which
+// backs `ai logs --follow`. It follows the service's primary container (the
+// analyzer for presidio, the app for odysseus); per-container names
+// (chromadb/searxng/ntfy) map to aip-<name>.
+func FollowServiceLogs(deps Deps, service string, out io.Writer) error {
+	containerRuntime, err := runtime.ContainerRuntimeName(deps.Prober)
+	if err != nil {
+		return output.Errorf(output.ExitMissingDep, "no container runtime for --follow: %s", err)
+	}
+	container := "aip-" + service
+	if mapped := serviceContainers(service); len(mapped) > 0 {
+		container = mapped[0]
+	}
+	command := exec.Command(containerRuntime.Name, "logs", "-f",
+		"--tail", strconv.Itoa(logCaptureTailLines), "--timestamps", container)
+	command.Stdout = out
+	command.Stderr = out
+	if err := command.Run(); err != nil {
+		// Ctrl-C (SIGINT) and the container stopping are clean ends, not failures.
+		var exitError *exec.ExitError
+		if errors.As(err, &exitError) {
+			return nil
+		}
+		return output.Errorf(output.ExitRuntimeFailure, "follow %s logs: %s", service, err)
+	}
+	return nil
+}
+
 // container runtime is a no-op (nothing to capture). The prober is the SOLE docker
 // touch-point — internal/logs stays a pure file reader.
 func (services realServices) CaptureServiceLogs() error {

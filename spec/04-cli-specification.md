@@ -984,9 +984,17 @@ Options:
 
 ```bash id="c32"
 --workspace <project>
---service <microsandbox|ollama|presidio|litellm|headroom|proxy|open-webui|dns>
+--service <microsandbox|ollama|presidio|litellm|headroom|proxy|open-webui|odysseus|dns>
 --tail
+--follow
 ```
+
+Without `--follow`, `ai logs` shows the latest on-disk snapshot (refreshed by
+`ai setup` / `ai services status`). **`--follow`** streams a `--service`'s logs
+live (`<runtime> logs -f`) to stdout until Ctrl-C — human-only (it streams
+continuously, so it is rejected under `--json`, and it requires a `--service`).
+The `ai ui` Services view shows the same logs full-pane and auto-refreshing via
+the `l` key (§14.4).
 
 ---
 

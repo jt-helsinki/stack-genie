@@ -32,14 +32,19 @@ type URLOpener func(url string) error
 // Services view (the `l` key) — there is no separate Logs tab.
 type LogTailer func(service string) ([]string, error)
 
-// ServicesRefreshInterval is how often the live view re-polls status.
-const ServicesRefreshInterval = 2 * time.Second
+// ServicesRefreshInterval is how often the live view re-polls status;
+// logsRefreshInterval is how often the open log pane re-tails its service.
+const (
+	ServicesRefreshInterval = 2 * time.Second
+	logsRefreshInterval     = 1500 * time.Millisecond
+)
 
 type servicesRefreshedMsg struct {
 	statuses []setup.ServiceStatus
 	err      error
 }
 type servicesTickMsg struct{}
+type logsTickMsg struct{}
 type serviceActionDoneMsg struct {
 	action  string
 	service string
@@ -49,17 +54,18 @@ type serviceActionDoneMsg struct {
 // Services is the live view of the host service tier + their containers, with
 // start/stop/restart and open-console actions on the selected row.
 type Services struct {
-	fetch    ServiceFetcher
-	control  ServiceController
-	open     URLOpener
-	tail     LogTailer
-	table    table.Model
-	describe describePane
-	logs     describePane // full-pane log viewer for the selected service
-	statuses []setup.ServiceStatus
-	flash    string
-	err      error
-	loaded   bool
+	fetch      ServiceFetcher
+	control    ServiceController
+	open       URLOpener
+	tail       LogTailer
+	table      table.Model
+	describe   describePane
+	logs       describePane // full-pane log viewer for the selected service
+	logService string       // the service whose logs the pane is following
+	statuses   []setup.ServiceStatus
+	flash      string
+	err        error
+	loaded     bool
 }
 
 // NewServices builds the services view over the injected status fetcher,
@@ -128,6 +134,13 @@ func (view *Services) Update(msg tea.Msg) tea.Cmd {
 		return servicesTick()
 	case servicesTickMsg:
 		return view.fetchCmd()
+	case logsTickMsg:
+		// Keep the open log pane live: re-tail and refresh until it is closed.
+		if view.logs.active() && view.logService != "" {
+			view.logs.refresh(view.serviceLogs(view.logService))
+			return logsTick()
+		}
+		return nil
 	case serviceActionDoneMsg:
 		view.flash = actionFlash(message)
 		return view.fetchCmd() // reflect the action immediately
@@ -181,10 +194,15 @@ func (view *Services) handleAction(key tea.KeyMsg) (tea.Cmd, bool) {
 		if service == "" {
 			return nil, true
 		}
-		view.logs.show(view.serviceLogs(service))
-		return nil, true
+		view.logService = service
+		view.logs.showLive(view.serviceLogs(service))
+		return logsTick(), true // start following the tail
 	}
 	return nil, false
+}
+
+func logsTick() tea.Cmd {
+	return tea.Tick(logsRefreshInterval, func(time.Time) tea.Msg { return logsTickMsg{} })
 }
 
 // serviceLogs returns the tailed log content for the full-pane log viewer (or a

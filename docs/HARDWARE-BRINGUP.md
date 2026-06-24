@@ -74,9 +74,14 @@ token cannot resolve until this is pinned.
 
 ### 2.2 Live service/microVM log capture (`ai logs`)
 
-- [ ] `ai logs` currently shows logs already on disk. The live capture that
-      produces service/microVM logs is the deferred seam (see
-      `internal/cli/logs.go`, grep `hardware bring-up`).
+- [x] **Live service-log viewing is done.** `ai logs --service <svc> --follow`
+      streams `<runtime> logs -f` to stdout, and the `ai ui` Services view shows a
+      service's logs full-pane, auto-refreshing (the `l` key). The on-disk
+      snapshot (`ai setup` / `ai services status` → `~/.ai-platform/logs`) remains
+      for the non-follow path.
+- [ ] **microVM (`msb`) log follow** — `msb logs -f <name>` streaming for
+      `ai logs --workspace <p> --follow` is the remaining piece (needs a running
+      microVM to verify).
 
 ### 2.3 Tool-firewall verification + nginx proxy readiness probe
 
