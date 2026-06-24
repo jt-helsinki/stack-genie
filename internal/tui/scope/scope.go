@@ -101,7 +101,7 @@ func IsProjectRoot(dir string) bool {
 // A child or parent of an existing project directory is allowed.
 func ValidateCreateTarget(dir string) error {
 	if dir == "" {
-		return fmt.Errorf("choose a directory for the new project")
+		return fmt.Errorf("choose a directory for the new workspace")
 	}
 	absolute, err := filepath.Abs(dir)
 	if err != nil {
@@ -111,7 +111,7 @@ func ValidateCreateTarget(dir string) error {
 		return fmt.Errorf("%q is not a directory", absolute)
 	}
 	if IsProjectRoot(absolute) {
-		return fmt.Errorf("%q is already a project — select it instead of creating a new one", absolute)
+		return fmt.Errorf("%q is already a workspace — select it instead of creating a new one", absolute)
 	}
 	return nil
 }

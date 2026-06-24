@@ -107,17 +107,17 @@ func Run(cwd string) error {
 		application.role, application.gateway,
 	)
 
-	// The Projects tab is a two-level hub: it opens on the switcher (the project
-	// list) and, once a project is selected, reveals per-project sub-tabs —
-	// Project · Network · Context · Secrets · Sessions — for it.
+	// The Workspaces tab is a two-level hub: it opens on the switcher (the
+	// workspace list) and, once a workspace is selected, reveals per-workspace
+	// sub-tabs — Workspace · Network · Context · Secrets · Sessions — for it.
 	projectsHub := views.NewProjectsHub(
 		projectsView,
 		[]views.Screen{projectDetail, networkView, contextView, secretsView, sessionsView},
-		[]string{"Project", "Network", "Context", "Secrets", "Sessions"},
+		[]string{"Workspace", "Network", "Context", "Secrets", "Sessions"},
 	)
 
-	// Top-level tab order = menu order: Services · Projects · Models · Settings.
-	// Project / Network / Context / Secrets / Sessions are nested under Projects
+	// Top-level tab order = menu order: Services · Workspaces · Models · Settings.
+	// Workspace / Network / Context / Secrets / Sessions are nested under Workspaces
 	// (the hub); logs are consolidated into the Services view (the `l` key).
 	application.views = []View{servicesView, projectsHub, modelsView, settingsView}
 	application.projectsIndex = 1
@@ -160,7 +160,7 @@ func executablePath() string {
 	return path
 }
 
-// createFinishedMsg reports that the suspended project-create wizard subprocess
+// createFinishedMsg reports that the suspended workspace-create wizard subprocess
 // has returned. (Workspace lifecycle / shell / attach run in the live embedded
 // terminal overlay instead — see openTerminal — so they have no finished message.)
 type createFinishedMsg struct{ err error }
@@ -306,7 +306,7 @@ func (application *app) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Run the existing project-create wizard in the chosen directory (it
 		// targets cwd), suspending the TUI for the interactive subprocess.
 		application.createView = nil
-		command := exec.Command(executablePath(), "project", "create")
+		command := exec.Command(executablePath(), "create")
 		command.Dir = message.Dir
 		return application, tea.ExecProcess(command, func(execErr error) tea.Msg {
 			return createFinishedMsg{err: execErr}
@@ -324,21 +324,21 @@ func (application *app) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// (no suspend, no flicker) and a destructive `destroy` can prompt inline.
 		return application, application.openTerminal(
 			message.Action+" "+message.Project,
-			[]string{"workspace", message.Action, message.Project})
+			[]string{message.Action, message.Project})
 
 	case views.ExecRequestedMsg:
-		// Open an interactive shell inside the project's workspace microVM, live in
-		// the pane (a real PTY via `ai workspace shell` → msb exec -t).
+		// Open an interactive shell inside the workspace microVM, live in
+		// the pane (a real PTY via `ai shell` → msb exec -t).
 		return application, application.openTerminal(
 			"shell "+message.Project,
-			[]string{"workspace", "shell", message.Project})
+			[]string{"shell", message.Project})
 
 	case views.AttachRequestedMsg:
-		// Attach to (or create) a workspace session, live in the pane (`ai workspace
-		// attach <session> <project>` → tmux new-session -A).
+		// Attach to (or create) a workspace session, live in the pane (`ai attach
+		// <session> <name>` → tmux new-session -A).
 		return application, application.openTerminal(
 			"attach "+message.Session+" "+message.Project,
-			[]string{"workspace", "attach", message.Session, message.Project})
+			[]string{"attach", message.Session, message.Project})
 
 	case tea.KeyMsg:
 		// While the live terminal overlay is open it owns input (keystrokes go to
@@ -580,7 +580,7 @@ func (application *app) helpView() string {
 func (application *app) footer() string {
 	scope := "server"
 	if application.currentProject != "" {
-		scope = "project:" + application.currentProject
+		scope = "workspace:" + application.currentProject
 	}
 	return ui.Muted.Render(fmt.Sprintf("ai ui · role:%s · gateway:%s · scope:%s · view:%s",
 		application.role, application.gateway, scope, application.activeTitle()))

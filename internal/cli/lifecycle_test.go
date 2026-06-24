@@ -69,7 +69,10 @@ func TestLifecycleCommandsResolveCwdAndDelegate(test *testing.T) {
 		{"restart", newRestartCmd},
 	}
 
-	const notInWorkspace = "not inside a workspace"
+	// Top-level start/stop/restart now take an optional [name] and resolve via
+	// resolveProjectName (explicit name → --project → cwd), so the outside-a-
+	// workspace message is the shared resolver's, not cwdProjectName's.
+	const notInWorkspace = "the current directory is not inside one"
 
 	for _, testCase := range cases {
 		test.Run("inside_workspace/"+testCase.name, func(test *testing.T) {

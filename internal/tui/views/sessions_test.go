@@ -115,8 +115,8 @@ func TestSessionsNoProjectSelected(test *testing.T) {
 		noKill,
 		func() string { return "" },
 	)
-	if !strings.Contains(view.View(), "no project selected") {
-		test.Errorf("no-project view must hint: %q", view.View())
+	if !strings.Contains(view.View(), "no workspace selected") {
+		test.Errorf("no-workspace view must hint: %q", view.View())
 	}
 	// Attach/kill keys are no-ops with no project.
 	if cmd := view.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("a")}); cmd != nil {

@@ -76,7 +76,7 @@ func TestCreateRejectsExistingProjectRoot(test *testing.T) {
 	if view.validationErr == nil {
 		test.Fatal("selecting an existing project root must set a validation error")
 	}
-	if !strings.Contains(view.View(), "already a project") {
+	if !strings.Contains(view.View(), "already a workspace") {
 		test.Errorf("the validation error should show inline, got view:\n%s", view.View())
 	}
 }

@@ -176,7 +176,7 @@ func (view *Sessions) selectedSession() string {
 // when none is current, or a fetch error.
 func (view *Sessions) View() string {
 	if view.project() == "" {
-		return ui.Muted.Render("no project selected — open one from the Projects view")
+		return ui.Muted.Render("no workspace selected — open one from the Workspaces view")
 	}
 	if view.err != nil {
 		return ui.Failure.Render(ui.IconFail + " " + view.err.Error())

@@ -63,7 +63,7 @@ func NewProjectsHub(switcher Screen, subViews []Screen, subTitles []string) *Pro
 }
 
 // Title is the top-level tab label.
-func (hub *ProjectsHub) Title() string { return "Projects" }
+func (hub *ProjectsHub) Title() string { return "Workspaces" }
 
 // CapturesNav reports whether the hub wants Tab/←→/esc for itself — true while a
 // project is open (so the app cycles sub-tabs instead of top-level tabs).

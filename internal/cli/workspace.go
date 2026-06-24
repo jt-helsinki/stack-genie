@@ -25,7 +25,7 @@ type workspacesResult struct {
 // LAST-STARTED, or a friendly hint when there are none.
 func (result workspacesResult) Human() string {
 	if len(result.Workspaces) == 0 {
-		return "No workspaces yet — start one with `ai workspace start`."
+		return "No workspaces yet — start one with `ai start`."
 	}
 	rows := make([][]string, 0, len(result.Workspaces))
 	for _, entry := range result.Workspaces {
@@ -97,13 +97,17 @@ func secondArg(args []string) string {
 	return ""
 }
 
-// newWorkspaceCmd builds `ai workspace` and its subcommands (CLI §4).
+// newWorkspaceCmd builds the HIDDEN `ai workspace` back-compat alias group. The
+// canonical surface is the flattened top-level verbs (`ai start`/`ai stop`/`ai
+// shell`/`ai exec`/…); this group keeps existing scripts working but no longer
+// shows in help (CLI §4).
 func newWorkspaceCmd(emitter *output.Emitter, exit *int) *cobra.Command {
 	cmd := &cobra.Command{
-		Use:   "workspace",
-		Short: "Manage the project workspace microVM",
-		Args:  cobra.NoArgs,
-		RunE:  func(cmd *cobra.Command, _ []string) error { return cmd.Help() },
+		Use:    "workspace",
+		Short:  "Manage the workspace microVM (alias for the top-level verbs)",
+		Args:   cobra.NoArgs,
+		Hidden: true,
+		RunE:   func(cmd *cobra.Command, _ []string) error { return cmd.Help() },
 	}
 	cmd.AddCommand(
 		newWorkspaceListCmd(emitter, exit),
@@ -139,55 +143,48 @@ func openWorkspaceShell(emitter *output.Emitter, exit *int, name string) {
 	*exit = output.ExitOK
 }
 
-// newWorkspaceShellCmd builds `ai workspace shell [project]`.
-func newWorkspaceShellCmd(emitter *output.Emitter, exit *int) *cobra.Command {
-	return &cobra.Command{
-		Use:               "shell [project]",
-		Short:             "Open an interactive shell inside the project workspace",
-		Args:              cobra.MaximumNArgs(1),
-		ValidArgsFunction: completeProjectArg,
-		RunE: func(cmd *cobra.Command, args []string) error {
-			// Resolve the project before the TTY gate only when a name might come
-			// from the arg/flag; the gate itself doesn't need it, but a bad project
-			// should still report cleanly, so gate first (interactive is the cheap
-			// check) then resolve.
-			if !interactive(emitter) {
-				*exit = emitter.Failure("workspace.shell", output.Errorf(output.ExitInvalidInput,
-					"ai shell is interactive and needs a terminal (not available with --json or when piped)"))
-				return nil
-			}
-			name, err := resolveProjectName(cmd, firstArg(args))
-			if err != nil {
-				*exit = emitter.Failure("workspace.shell", err)
-				return nil
-			}
-			openWorkspaceShell(emitter, exit, name)
+// workspaceShellRunE is the shared RunE for `ai shell [name]` and the hidden
+// `ai workspace shell [name]`: resolve the workspace (explicit name, --project, or
+// cwd) and open an interactive login shell inside it.
+func workspaceShellRunE(emitter *output.Emitter, exit *int) func(*cobra.Command, []string) error {
+	return func(cmd *cobra.Command, args []string) error {
+		// Gate the TTY first (the cheap check); a bad name still reports cleanly
+		// after, since resolution runs only once a terminal is present.
+		if !interactive(emitter) {
+			*exit = emitter.Failure("workspace.shell", output.Errorf(output.ExitInvalidInput,
+				"ai shell is interactive and needs a terminal (not available with --json or when piped)"))
 			return nil
-		},
+		}
+		name, err := resolveProjectName(cmd, firstArg(args))
+		if err != nil {
+			*exit = emitter.Failure("workspace.shell", err)
+			return nil
+		}
+		openWorkspaceShell(emitter, exit, name)
+		return nil
 	}
 }
 
-// newShellCmd builds the top-level `ai shell` (shortcut for the current
-// directory's project — `ai workspace shell`).
+// newWorkspaceShellCmd builds the hidden `ai workspace shell [name]` alias.
+func newWorkspaceShellCmd(emitter *output.Emitter, exit *int) *cobra.Command {
+	return &cobra.Command{
+		Use:               "shell [name]",
+		Short:             "Open an interactive shell inside the workspace",
+		Args:              cobra.MaximumNArgs(1),
+		ValidArgsFunction: completeProjectArg,
+		RunE:              workspaceShellRunE(emitter, exit),
+	}
+}
+
+// newShellCmd builds the canonical top-level `ai shell [name]` (defaults to the
+// current directory's workspace).
 func newShellCmd(emitter *output.Emitter, exit *int) *cobra.Command {
 	return &cobra.Command{
-		Use:   "shell",
-		Short: "Open an interactive shell in the current directory's workspace (shortcut for `ai workspace shell`)",
-		Args:  cobra.NoArgs,
-		RunE: func(_ *cobra.Command, _ []string) error {
-			if !interactive(emitter) {
-				*exit = emitter.Failure("workspace.shell", output.Errorf(output.ExitInvalidInput,
-					"ai shell is interactive and needs a terminal (not available with --json or when piped)"))
-				return nil
-			}
-			name, err := cwdProjectName()
-			if err != nil {
-				*exit = emitter.Failure("workspace.shell", err)
-				return nil
-			}
-			openWorkspaceShell(emitter, exit, name)
-			return nil
-		},
+		Use:               "shell [name]",
+		Short:             "Open an interactive shell inside the workspace (defaults to the current directory)",
+		Args:              cobra.MaximumNArgs(1),
+		ValidArgsFunction: completeProjectArg,
+		RunE:              workspaceShellRunE(emitter, exit),
 	}
 }
 
@@ -210,52 +207,46 @@ func openWorkspaceAgent(emitter *output.Emitter, exit *int, name, cli string) {
 	*exit = output.ExitOK
 }
 
-// newWorkspaceAgentCmd builds `ai workspace agent <cli> [project]`.
-func newWorkspaceAgentCmd(emitter *output.Emitter, exit *int) *cobra.Command {
-	return &cobra.Command{
-		Use:               "agent <cli> [project]",
-		Short:             "Start or reattach an agent CLI session inside the project workspace",
-		Args:              cobra.RangeArgs(1, 2),
-		ValidArgsFunction: completeAgentArg,
-		RunE: func(cmd *cobra.Command, args []string) error {
-			if !interactive(emitter) {
-				*exit = emitter.Failure("workspace.agent", output.Errorf(output.ExitInvalidInput,
-					"ai agent is interactive and needs a terminal (not available with --json or when piped)"))
-				return nil
-			}
-			name, err := resolveProjectName(cmd, secondArg(args))
-			if err != nil {
-				*exit = emitter.Failure("workspace.agent", err)
-				return nil
-			}
-			openWorkspaceAgent(emitter, exit, name, args[0])
+// workspaceAgentRunE is the shared RunE for `ai agent <cli> [name]` and the hidden
+// `ai workspace agent <cli> [name]`: the agent CLI is the first positional, the
+// optional trailing [name] resolves the workspace (else --project, else cwd).
+func workspaceAgentRunE(emitter *output.Emitter, exit *int) func(*cobra.Command, []string) error {
+	return func(cmd *cobra.Command, args []string) error {
+		if !interactive(emitter) {
+			*exit = emitter.Failure("workspace.agent", output.Errorf(output.ExitInvalidInput,
+				"ai agent is interactive and needs a terminal (not available with --json or when piped)"))
 			return nil
-		},
+		}
+		name, err := resolveProjectName(cmd, secondArg(args))
+		if err != nil {
+			*exit = emitter.Failure("workspace.agent", err)
+			return nil
+		}
+		openWorkspaceAgent(emitter, exit, name, args[0])
+		return nil
 	}
 }
 
-// newAgentCmd builds the top-level `ai agent <cli>` (shortcut for the current
-// directory's project — `ai workspace agent`).
+// newWorkspaceAgentCmd builds the hidden `ai workspace agent <cli> [name]` alias.
+func newWorkspaceAgentCmd(emitter *output.Emitter, exit *int) *cobra.Command {
+	return &cobra.Command{
+		Use:               "agent <cli> [name]",
+		Short:             "Start or reattach an agent CLI session inside the workspace",
+		Args:              cobra.RangeArgs(1, 2),
+		ValidArgsFunction: completeAgentArg,
+		RunE:              workspaceAgentRunE(emitter, exit),
+	}
+}
+
+// newAgentCmd builds the canonical top-level `ai agent <cli> [name]` (defaults to
+// the current directory's workspace).
 func newAgentCmd(emitter *output.Emitter, exit *int) *cobra.Command {
 	return &cobra.Command{
-		Use:               "agent <cli>",
-		Short:             "Start an agent CLI session in the current directory's workspace (shortcut for `ai workspace agent`)",
-		Args:              cobra.ExactArgs(1),
+		Use:               "agent <cli> [name]",
+		Short:             "Start or reattach an agent CLI session inside the workspace (defaults to the current directory)",
+		Args:              cobra.RangeArgs(1, 2),
 		ValidArgsFunction: completeAgentArg,
-		RunE: func(_ *cobra.Command, args []string) error {
-			if !interactive(emitter) {
-				*exit = emitter.Failure("workspace.agent", output.Errorf(output.ExitInvalidInput,
-					"ai agent is interactive and needs a terminal (not available with --json or when piped)"))
-				return nil
-			}
-			name, err := cwdProjectName()
-			if err != nil {
-				*exit = emitter.Failure("workspace.agent", err)
-				return nil
-			}
-			openWorkspaceAgent(emitter, exit, name, args[0])
-			return nil
-		},
+		RunE:              workspaceAgentRunE(emitter, exit),
 	}
 }
 
@@ -276,50 +267,45 @@ func openWorkspaceAttach(emitter *output.Emitter, exit *int, name, session strin
 	*exit = output.ExitOK
 }
 
-// newWorkspaceAttachCmd builds `ai workspace attach [session] [project]`.
-func newWorkspaceAttachCmd(emitter *output.Emitter, exit *int) *cobra.Command {
-	return &cobra.Command{
-		Use:   "attach [session] [project]",
-		Short: "Attach to a workspace session (default: shell)",
-		Args:  cobra.MaximumNArgs(2),
-		RunE: func(cmd *cobra.Command, args []string) error {
-			if !interactive(emitter) {
-				*exit = emitter.Failure("workspace.attach", output.Errorf(output.ExitInvalidInput,
-					"ai attach is interactive and needs a terminal (not available with --json or when piped)"))
-				return nil
-			}
-			name, err := resolveProjectName(cmd, secondArg(args))
-			if err != nil {
-				*exit = emitter.Failure("workspace.attach", err)
-				return nil
-			}
-			openWorkspaceAttach(emitter, exit, name, firstArg(args))
+// workspaceAttachRunE is the shared RunE for `ai attach [session] [name]` and the
+// hidden `ai workspace attach [session] [name]`: the optional [session] is the
+// first positional (default "shell"), the optional trailing [name] resolves the
+// workspace (else --project, else cwd).
+func workspaceAttachRunE(emitter *output.Emitter, exit *int) func(*cobra.Command, []string) error {
+	return func(cmd *cobra.Command, args []string) error {
+		if !interactive(emitter) {
+			*exit = emitter.Failure("workspace.attach", output.Errorf(output.ExitInvalidInput,
+				"ai attach is interactive and needs a terminal (not available with --json or when piped)"))
 			return nil
-		},
+		}
+		name, err := resolveProjectName(cmd, secondArg(args))
+		if err != nil {
+			*exit = emitter.Failure("workspace.attach", err)
+			return nil
+		}
+		openWorkspaceAttach(emitter, exit, name, firstArg(args))
+		return nil
 	}
 }
 
-// newAttachCmd builds the top-level `ai attach [session]` (shortcut for the
-// current directory's project — `ai workspace attach`).
+// newWorkspaceAttachCmd builds the hidden `ai workspace attach [session] [name]`.
+func newWorkspaceAttachCmd(emitter *output.Emitter, exit *int) *cobra.Command {
+	return &cobra.Command{
+		Use:   "attach [session] [name]",
+		Short: "Attach to a workspace session (default: shell)",
+		Args:  cobra.MaximumNArgs(2),
+		RunE:  workspaceAttachRunE(emitter, exit),
+	}
+}
+
+// newAttachCmd builds the canonical top-level `ai attach [session] [name]`
+// (defaults to the current directory's workspace).
 func newAttachCmd(emitter *output.Emitter, exit *int) *cobra.Command {
 	return &cobra.Command{
-		Use:   "attach [session]",
-		Short: "Attach to a session in the current directory's workspace (shortcut for `ai workspace attach`)",
-		Args:  cobra.MaximumNArgs(1),
-		RunE: func(_ *cobra.Command, args []string) error {
-			if !interactive(emitter) {
-				*exit = emitter.Failure("workspace.attach", output.Errorf(output.ExitInvalidInput,
-					"ai attach is interactive and needs a terminal (not available with --json or when piped)"))
-				return nil
-			}
-			name, err := cwdProjectName()
-			if err != nil {
-				*exit = emitter.Failure("workspace.attach", err)
-				return nil
-			}
-			openWorkspaceAttach(emitter, exit, name, firstArg(args))
-			return nil
-		},
+		Use:   "attach [session] [name]",
+		Short: "Attach to a workspace session (default: shell; defaults to the current directory)",
+		Args:  cobra.MaximumNArgs(2),
+		RunE:  workspaceAttachRunE(emitter, exit),
 	}
 }
 
@@ -335,90 +321,95 @@ func listSessions(emitter *output.Emitter, exit *int, name string) {
 	*exit = emitter.Success("workspace.sessions", sessionsResult{Project: name, Sessions: sessions})
 }
 
-// newWorkspaceSessionsCmd builds `ai workspace sessions [project]`.
+// workspaceSessionsRunE is the shared RunE for `ai sessions [name]` and the hidden
+// `ai workspace sessions [name]`: list the workspace's persistent tmux sessions.
+func workspaceSessionsRunE(emitter *output.Emitter, exit *int) func(*cobra.Command, []string) error {
+	return func(cmd *cobra.Command, args []string) error {
+		name, err := resolveProjectName(cmd, firstArg(args))
+		if err != nil {
+			*exit = emitter.Failure("workspace.sessions", err)
+			return nil
+		}
+		listSessions(emitter, exit, name)
+		return nil
+	}
+}
+
+// newWorkspaceSessionsCmd builds the hidden `ai workspace sessions [name]` alias.
 func newWorkspaceSessionsCmd(emitter *output.Emitter, exit *int) *cobra.Command {
 	return &cobra.Command{
-		Use:               "sessions [project]",
-		Short:             "List the persistent sessions in the project workspace",
+		Use:               "sessions [name]",
+		Short:             "List the persistent sessions in the workspace",
 		Args:              cobra.MaximumNArgs(1),
 		ValidArgsFunction: completeProjectArg,
-		RunE: func(cmd *cobra.Command, args []string) error {
-			name, err := resolveProjectName(cmd, firstArg(args))
-			if err != nil {
-				*exit = emitter.Failure("workspace.sessions", err)
-				return nil
-			}
-			listSessions(emitter, exit, name)
-			return nil
-		},
+		RunE:              workspaceSessionsRunE(emitter, exit),
 	}
 }
 
-// newSessionsCmd builds the top-level `ai sessions` (shortcut for the current
-// directory's project — `ai workspace sessions`).
+// newSessionsCmd builds the canonical top-level `ai sessions [name]` (defaults to
+// the current directory's workspace).
 func newSessionsCmd(emitter *output.Emitter, exit *int) *cobra.Command {
 	return &cobra.Command{
-		Use:   "sessions",
-		Short: "List the current directory's workspace sessions (shortcut for `ai workspace sessions`)",
-		Args:  cobra.NoArgs,
-		RunE: func(_ *cobra.Command, _ []string) error {
-			name, err := cwdProjectName()
-			if err != nil {
-				*exit = emitter.Failure("workspace.sessions", err)
-				return nil
-			}
-			listSessions(emitter, exit, name)
-			return nil
-		},
+		Use:               "sessions [name]",
+		Short:             "List the workspace's persistent sessions (defaults to the current directory)",
+		Args:              cobra.MaximumNArgs(1),
+		ValidArgsFunction: completeProjectArg,
+		RunE:              workspaceSessionsRunE(emitter, exit),
 	}
 }
 
-// newWorkspaceDoctorCmd builds `ai workspace doctor <project>` (CLI §12.1, AT
-// §11.1): report the service-tier rootless/privileged posture and the workspace
-// virtualization. There is no rooted or non-microVM fallback (§6.1/§6.2), so a
-// rootless or virtualization shortfall exits 4; a missing runtime exits 3.
+// workspaceDoctorRunE is the shared RunE for `ai doctor [name]` and the hidden
+// `ai workspace doctor [name]` (CLI §12.1, AT §11.1): report the service-tier
+// rootless/privileged posture and the workspace virtualization. There is no rooted
+// or non-microVM fallback (§6.1/§6.2), so a rootless or virtualization shortfall
+// exits 4; a missing runtime exits 3.
+func workspaceDoctorRunE(emitter *output.Emitter, exit *int) func(*cobra.Command, []string) error {
+	return func(cmd *cobra.Command, args []string) error {
+		name, err := resolveProjectName(cmd, firstArg(args))
+		if err != nil {
+			*exit = emitter.Failure("workspace.doctor", err)
+			return nil
+		}
+		if _, err := resolveProjectRoot(name); err != nil {
+			*exit = emitter.Failure("workspace.doctor", output.Errorf(output.ExitInvalidInput, "%s", err))
+			return nil
+		}
+		info, err := runtime.Detect(goruntime.GOOS, goruntime.GOARCH, runtime.RealProber(), nowRFC3339())
+		if err != nil {
+			// Missing container runtime or Microsandbox → exit 3 (§18).
+			*exit = emitter.Failure("workspace.doctor", output.Errorf(output.ExitMissingDep, "%s", err))
+			return nil
+		}
+		data := map[string]any{
+			"runtime": map[string]any{
+				"detected":   info.Detected,
+				"rootless":   info.Rootless,
+				"privileged": false, // the platform never runs privileged containers (§6.1)
+			},
+			"workspace": map[string]any{
+				"kind":           "microvm", // workspaces are always microVMs (§6.2)
+				"virtualization": info.Microsandbox.Virtualization,
+				"available":      info.Microsandbox.Available,
+			},
+		}
+		if err := runtime.Verify(info); err != nil {
+			// No rooted / non-microVM fallback (§6.1, §6.2) → exit 4.
+			*exit = emitter.Failure("workspace.doctor", output.Errorf(output.ExitRuntimeFailure, "%s", err))
+			return nil
+		}
+		*exit = emitter.Success("workspace.doctor", data)
+		return nil
+	}
+}
+
+// newWorkspaceDoctorCmd builds the hidden `ai workspace doctor [name]` alias.
 func newWorkspaceDoctorCmd(emitter *output.Emitter, exit *int) *cobra.Command {
 	return &cobra.Command{
-		Use:               "doctor [project]",
-		Short:             "Diagnose the project's workspace runtime and virtualization",
+		Use:               "doctor [name]",
+		Short:             "Diagnose the workspace runtime and virtualization",
 		Args:              cobra.MaximumNArgs(1),
 		ValidArgsFunction: completeProjectArg,
-		RunE: func(cmd *cobra.Command, args []string) error {
-			name, err := resolveProjectName(cmd, firstArg(args))
-			if err != nil {
-				*exit = emitter.Failure("workspace.doctor", err)
-				return nil
-			}
-			if _, err := resolveProjectRoot(name); err != nil {
-				*exit = emitter.Failure("workspace.doctor", output.Errorf(output.ExitInvalidInput, "%s", err))
-				return nil
-			}
-			info, err := runtime.Detect(goruntime.GOOS, goruntime.GOARCH, runtime.RealProber(), nowRFC3339())
-			if err != nil {
-				// Missing container runtime or Microsandbox → exit 3 (§18).
-				*exit = emitter.Failure("workspace.doctor", output.Errorf(output.ExitMissingDep, "%s", err))
-				return nil
-			}
-			data := map[string]any{
-				"runtime": map[string]any{
-					"detected":   info.Detected,
-					"rootless":   info.Rootless,
-					"privileged": false, // the platform never runs privileged containers (§6.1)
-				},
-				"workspace": map[string]any{
-					"kind":           "microvm", // workspaces are always microVMs (§6.2)
-					"virtualization": info.Microsandbox.Virtualization,
-					"available":      info.Microsandbox.Available,
-				},
-			}
-			if err := runtime.Verify(info); err != nil {
-				// No rooted / non-microVM fallback (§6.1, §6.2) → exit 4.
-				*exit = emitter.Failure("workspace.doctor", output.Errorf(output.ExitRuntimeFailure, "%s", err))
-				return nil
-			}
-			*exit = emitter.Success("workspace.doctor", data)
-			return nil
-		},
+		RunE:              workspaceDoctorRunE(emitter, exit),
 	}
 }
 
@@ -476,7 +467,7 @@ func restartWorkspace(emitter *output.Emitter, name string) (*state.Workspace, e
 func newWorkspaceListCmd(emitter *output.Emitter, exit *int) *cobra.Command {
 	return &cobra.Command{
 		Use:   "list",
-		Short: "List workspaces across all projects",
+		Short: "List workspace microVMs",
 		Args:  cobra.NoArgs,
 		RunE: func(_ *cobra.Command, _ []string) error {
 			index, err := state.LoadIndex()
@@ -499,146 +490,178 @@ func newWorkspaceListCmd(emitter *output.Emitter, exit *int) *cobra.Command {
 	}
 }
 
+// workspaceStartRunE is the shared RunE for `ai start [name]` and the hidden
+// `ai workspace start [name]`.
+func workspaceStartRunE(emitter *output.Emitter, exit *int) func(*cobra.Command, []string) error {
+	return func(cmd *cobra.Command, args []string) error {
+		name, err := resolveProjectName(cmd, firstArg(args))
+		if err != nil {
+			*exit = emitter.Failure("workspace.start", err)
+			return nil
+		}
+		handle, err := startWorkspace(emitter, name)
+		if err != nil {
+			*exit = emitter.Failure("workspace.start", mapWorkspaceErr(err))
+			return nil
+		}
+		*exit = emitter.Success("workspace.start", handle)
+		return nil
+	}
+}
+
 func newWorkspaceStartCmd(emitter *output.Emitter, exit *int) *cobra.Command {
 	return &cobra.Command{
-		Use:               "start [project]",
-		Short:             "Build the image and start the project's workspace microVM",
+		Use:               "start [name]",
+		Short:             "Build the image and start the workspace microVM",
 		Args:              cobra.MaximumNArgs(1),
 		ValidArgsFunction: completeProjectArg,
-		RunE: func(cmd *cobra.Command, args []string) error {
-			name, err := resolveProjectName(cmd, firstArg(args))
-			if err != nil {
-				*exit = emitter.Failure("workspace.start", err)
-				return nil
-			}
-			handle, err := startWorkspace(emitter, name)
-			if err != nil {
-				*exit = emitter.Failure("workspace.start", mapWorkspaceErr(err))
-				return nil
-			}
-			*exit = emitter.Success("workspace.start", handle)
+		RunE:              workspaceStartRunE(emitter, exit),
+	}
+}
+
+// workspaceStopRunE is the shared RunE for `ai stop [name]` and the hidden
+// `ai workspace stop [name]`.
+func workspaceStopRunE(emitter *output.Emitter, exit *int) func(*cobra.Command, []string) error {
+	return func(cmd *cobra.Command, args []string) error {
+		name, err := resolveProjectName(cmd, firstArg(args))
+		if err != nil {
+			*exit = emitter.Failure("workspace.stop", err)
 			return nil
-		},
+		}
+		if err := workspace.RealManager(goruntime.GOOS, nowRFC3339).Stop(name); err != nil {
+			*exit = emitter.Failure("workspace.stop", mapWorkspaceErr(err))
+			return nil
+		}
+		*exit = emitter.Success("workspace.stop", map[string]any{"project": name})
+		return nil
 	}
 }
 
 func newWorkspaceStopCmd(emitter *output.Emitter, exit *int) *cobra.Command {
 	return &cobra.Command{
-		Use:               "stop [project]",
+		Use:               "stop [name]",
 		Short:             "Stop the workspace microVM (state preserved)",
 		Args:              cobra.MaximumNArgs(1),
 		ValidArgsFunction: completeProjectArg,
-		RunE: func(cmd *cobra.Command, args []string) error {
-			name, err := resolveProjectName(cmd, firstArg(args))
-			if err != nil {
-				*exit = emitter.Failure("workspace.stop", err)
-				return nil
-			}
-			if err := workspace.RealManager(goruntime.GOOS, nowRFC3339).Stop(name); err != nil {
-				*exit = emitter.Failure("workspace.stop", mapWorkspaceErr(err))
-				return nil
-			}
-			*exit = emitter.Success("workspace.stop", map[string]any{"project": name})
+		RunE:              workspaceStopRunE(emitter, exit),
+	}
+}
+
+// workspaceRestartRunE is the shared RunE for `ai restart [name]` and the hidden
+// `ai workspace restart [name]`.
+func workspaceRestartRunE(emitter *output.Emitter, exit *int) func(*cobra.Command, []string) error {
+	return func(cmd *cobra.Command, args []string) error {
+		name, err := resolveProjectName(cmd, firstArg(args))
+		if err != nil {
+			*exit = emitter.Failure("workspace.restart", err)
 			return nil
-		},
+		}
+		handle, err := restartWorkspace(emitter, name)
+		if err != nil {
+			*exit = emitter.Failure("workspace.restart", mapWorkspaceErr(err))
+			return nil
+		}
+		*exit = emitter.Success("workspace.restart", handle)
+		return nil
 	}
 }
 
 func newWorkspaceRestartCmd(emitter *output.Emitter, exit *int) *cobra.Command {
 	return &cobra.Command{
-		Use:               "restart [project]",
+		Use:               "restart [name]",
 		Short:             "Restart the existing workspace microVM (no rebuild, state preserved)",
 		Args:              cobra.MaximumNArgs(1),
 		ValidArgsFunction: completeProjectArg,
-		RunE: func(cmd *cobra.Command, args []string) error {
-			name, err := resolveProjectName(cmd, firstArg(args))
-			if err != nil {
-				*exit = emitter.Failure("workspace.restart", err)
-				return nil
-			}
-			handle, err := restartWorkspace(emitter, name)
-			if err != nil {
-				*exit = emitter.Failure("workspace.restart", mapWorkspaceErr(err))
-				return nil
-			}
-			*exit = emitter.Success("workspace.restart", handle)
-			return nil
-		},
+		RunE:              workspaceRestartRunE(emitter, exit),
 	}
 }
 
+// workspaceDestroyRunE is the shared RunE for `ai destroy [name]` and the hidden
+// `ai workspace destroy [name]`. Non-destructive (§4.4): keeps the overlay + host
+// source, so no --yes is required; on a TTY it confirms first.
+func workspaceDestroyRunE(emitter *output.Emitter, exit *int) func(*cobra.Command, []string) error {
+	return func(cmd *cobra.Command, args []string) error {
+		name, err := resolveProjectName(cmd, firstArg(args))
+		if err != nil {
+			*exit = emitter.Failure("workspace.destroy", err)
+			return nil
+		}
+		// On a terminal (and not --json) confirm before destroying the
+		// runtime handle; declining cancels with a success envelope (exit 0).
+		// Under --json / no TTY the behavior is unchanged: it proceeds directly
+		// (this command has never required --yes), so callers are not broken.
+		// --yes bypasses the dialog.
+		if yes, _ := cmd.Flags().GetBool("yes"); !yes && interactive(emitter) {
+			ok, promptErr := promptConfirm(
+				fmt.Sprintf("Destroy the workspace %q?", name),
+				"Removes the microVM/runtime handle only — the overlay and your source are kept.")
+			if promptErr != nil {
+				*exit = emitter.Failure("workspace.destroy", promptErr)
+				return nil
+			}
+			if !ok {
+				*exit = emitter.Success("workspace.destroy", map[string]any{"cancelled": true})
+				return nil
+			}
+		}
+		if err := workspace.RealManager(goruntime.GOOS, nowRFC3339).Destroy(name); err != nil {
+			*exit = emitter.Failure("workspace.destroy", mapWorkspaceErr(err))
+			return nil
+		}
+		*exit = emitter.Success("workspace.destroy", map[string]any{"project": name})
+		return nil
+	}
+}
+
+// newWorkspaceDestroyCmd builds the hidden `ai workspace destroy [name]` alias.
 func newWorkspaceDestroyCmd(emitter *output.Emitter, exit *int) *cobra.Command {
-	// Non-destructive (§4.4): keeps the overlay + host source, so no --yes.
 	return &cobra.Command{
-		Use:               "destroy [project]",
-		Short:             "Delete the microVM/runtime handle only (overlay + source kept)",
+		Use:               "destroy [name]",
+		Short:             "Delete the workspace microVM/runtime handle only (overlay + source kept)",
 		Args:              cobra.MaximumNArgs(1),
 		ValidArgsFunction: completeProjectArg,
-		RunE: func(cmd *cobra.Command, args []string) error {
-			name, err := resolveProjectName(cmd, firstArg(args))
-			if err != nil {
-				*exit = emitter.Failure("workspace.destroy", err)
-				return nil
-			}
-			// On a terminal (and not --json) confirm before destroying the
-			// runtime handle; declining cancels with a success envelope (exit 0).
-			// Under --json / no TTY the behavior is unchanged: it proceeds directly
-			// (this command has never required --yes), so callers are not broken.
-			// --yes bypasses the dialog.
-			if yes, _ := cmd.Flags().GetBool("yes"); !yes && interactive(emitter) {
-				ok, promptErr := promptConfirm(
-					fmt.Sprintf("Destroy the workspace for %q?", name),
-					"Removes the microVM/runtime handle only — the overlay and your source are kept.")
-				if promptErr != nil {
-					*exit = emitter.Failure("workspace.destroy", promptErr)
-					return nil
-				}
-				if !ok {
-					*exit = emitter.Success("workspace.destroy", map[string]any{"cancelled": true})
-					return nil
-				}
-			}
-			if err := workspace.RealManager(goruntime.GOOS, nowRFC3339).Destroy(name); err != nil {
-				*exit = emitter.Failure("workspace.destroy", mapWorkspaceErr(err))
-				return nil
-			}
-			*exit = emitter.Success("workspace.destroy", map[string]any{"project": name})
-			return nil
-		},
+		RunE:              workspaceDestroyRunE(emitter, exit),
 	}
 }
 
+// workspaceExecRunE is the shared RunE for `ai exec [name] -- <command>` and the
+// hidden `ai workspace exec [name] -- <command>`.
+func workspaceExecRunE(emitter *output.Emitter, exit *int) func(*cobra.Command, []string) error {
+	return func(cmd *cobra.Command, args []string) error {
+		// Args before `--` are the optional [name]; args after are the command.
+		// `--` is required so the command is unambiguous.
+		dash := cmd.ArgsLenAtDash()
+		if dash < 0 || dash > 1 || dash >= len(args) {
+			*exit = emitter.Failure("workspace.exec",
+				output.Errorf(output.ExitInvalidInput, "usage: ai exec [name] -- <command> [args...]"))
+			return nil
+		}
+		name, err := resolveProjectName(cmd, firstArg(args[:dash]))
+		if err != nil {
+			*exit = emitter.Failure("workspace.exec", err)
+			return nil
+		}
+		argv := args[dash:]
+		result, err := workspace.RealManager(goruntime.GOOS, nowRFC3339).Exec(name, argv)
+		if err != nil {
+			// Platform failure (microVM down, unknown workspace, …) — §4.5.
+			*exit = emitter.Failure("workspace.exec", mapWorkspaceErr(err))
+			return nil
+		}
+		// Inner command ran: `ai` exits 0; the inner exit code rides in data
+		// (§4.5), so a non-zero inner exit does not make `ai` exit non-zero.
+		*exit = emitter.Success("workspace.exec", result)
+		return nil
+	}
+}
+
+// newWorkspaceExecCmd builds the hidden `ai workspace exec [name] -- <command>`.
 func newWorkspaceExecCmd(emitter *output.Emitter, exit *int) *cobra.Command {
 	return &cobra.Command{
-		Use:               "exec [project] -- <command> [args...]",
-		Short:             "Run a command inside the project workspace",
+		Use:               "exec [name] -- <command> [args...]",
+		Short:             "Run a command inside the workspace",
 		Args:              cobra.ArbitraryArgs,
 		ValidArgsFunction: completeProjectArg,
-		RunE: func(cmd *cobra.Command, args []string) error {
-			// Args before `--` are the optional [project]; args after are the
-			// command. `--` is required so the command is unambiguous.
-			dash := cmd.ArgsLenAtDash()
-			if dash < 0 || dash > 1 || dash >= len(args) {
-				*exit = emitter.Failure("workspace.exec",
-					output.Errorf(output.ExitInvalidInput, "usage: ai workspace exec [project] -- <command> [args...]"))
-				return nil
-			}
-			name, err := resolveProjectName(cmd, firstArg(args[:dash]))
-			if err != nil {
-				*exit = emitter.Failure("workspace.exec", err)
-				return nil
-			}
-			argv := args[dash:]
-			result, err := workspace.RealManager(goruntime.GOOS, nowRFC3339).Exec(name, argv)
-			if err != nil {
-				// Platform failure (microVM down, unknown project, …) — §4.5.
-				*exit = emitter.Failure("workspace.exec", mapWorkspaceErr(err))
-				return nil
-			}
-			// Inner command ran: `ai` exits 0; the inner exit code rides in data
-			// (§4.5), so a non-zero inner exit does not make `ai` exit non-zero.
-			*exit = emitter.Success("workspace.exec", result)
-			return nil
-		},
+		RunE:              workspaceExecRunE(emitter, exit),
 	}
 }

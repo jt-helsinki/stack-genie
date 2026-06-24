@@ -28,11 +28,11 @@ func TestProjectsResultHuman(test *testing.T) {
 	}
 }
 
-// The friendly empty case is shown when no projects exist.
+// The friendly empty case is shown when no workspaces exist.
 func TestProjectsResultHumanEmpty(test *testing.T) {
 	rendered := projectsResult{}.Human()
-	if !strings.Contains(rendered, "No projects yet") || !strings.Contains(rendered, "ai project create") {
-		test.Errorf("empty project list hint missing:\n%s", rendered)
+	if !strings.Contains(rendered, "No workspaces yet") || !strings.Contains(rendered, "ai create") {
+		test.Errorf("empty workspace list hint missing:\n%s", rendered)
 	}
 }
 

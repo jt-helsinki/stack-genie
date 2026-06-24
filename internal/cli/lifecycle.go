@@ -1,25 +1,21 @@
 package cli
 
 import (
-	goruntime "runtime"
-
 	"github.com/jt-helsinki/ideal-robot/internal/output"
-	"github.com/jt-helsinki/ideal-robot/internal/workspace"
 	"github.com/spf13/cobra"
 )
 
-// Top-level `ai start|stop|restart` are cwd-resolved shortcuts for the matching
-// `ai workspace start|stop|restart` commands (CLI §4). Unlike the workspace
-// subcommands they take NO `[project]` argument: the target workspace is always
-// the one that owns the current working directory, found by walking up parent
-// directories to a workspace root (a directory containing `.ai-platform`). The
-// behavior and emitted envelope are identical to the workspace subcommands, so
-// they reuse the same Manager methods and the same `workspace.*` command names.
+// Top-level `ai start|stop|restart [name]` are the canonical microVM lifecycle
+// verbs (CLI §4). The target workspace is resolved like every other verb: an
+// explicit [name], then --project, then the workspace that owns the current
+// working directory (found by walking up to a `.ai-platform` root). They share
+// their RunE — and the emitted `workspace.*` envelope — with the hidden `ai
+// workspace start|stop|restart` aliases, so behavior is identical.
 
 // cwdProjectName resolves the workspace that owns the current directory by
 // walking up to a `.ai-platform` root. When the cwd is not inside any workspace
 // it returns an actionable exit-2 error (§18), matching how resolveProjectName
-// surfaces the not-in-a-project case.
+// surfaces the not-in-a-workspace case.
 func cwdProjectName() (string, error) {
 	name, found, err := currentProjectName()
 	if err != nil {
@@ -27,72 +23,37 @@ func cwdProjectName() (string, error) {
 	}
 	if !found {
 		return "", output.Errorf(output.ExitInvalidInput,
-			"not inside a workspace (no .ai-platform found in this or any parent directory); run `ai project create` first or cd into a project")
+			"not inside a workspace (no .ai-platform found in this or any parent directory); run `ai create` first, or cd into a workspace")
 	}
 	return name, nil
 }
 
 func newStartCmd(emitter *output.Emitter, exit *int) *cobra.Command {
 	return &cobra.Command{
-		Use:   "start",
-		Short: "Start the current directory's workspace microVM (shortcut for `ai workspace start`)",
-		Args:  cobra.NoArgs,
-		RunE: func(_ *cobra.Command, _ []string) error {
-			name, err := cwdProjectName()
-			if err != nil {
-				*exit = emitter.Failure("workspace.start", err)
-				return nil
-			}
-			handle, err := startWorkspace(emitter, name)
-			if err != nil {
-				*exit = emitter.Failure("workspace.start", mapWorkspaceErr(err))
-				return nil
-			}
-			*exit = emitter.Success("workspace.start", handle)
-			return nil
-		},
+		Use:               "start [name]",
+		Short:             "Build the image and start the workspace microVM (defaults to the current directory)",
+		Args:              cobra.MaximumNArgs(1),
+		ValidArgsFunction: completeProjectArg,
+		RunE:              workspaceStartRunE(emitter, exit),
 	}
 }
 
 func newStopCmd(emitter *output.Emitter, exit *int) *cobra.Command {
 	return &cobra.Command{
-		Use:   "stop",
-		Short: "Stop the current directory's workspace microVM (shortcut for `ai workspace stop`)",
-		Args:  cobra.NoArgs,
-		RunE: func(_ *cobra.Command, _ []string) error {
-			name, err := cwdProjectName()
-			if err != nil {
-				*exit = emitter.Failure("workspace.stop", err)
-				return nil
-			}
-			if err := workspace.RealManager(goruntime.GOOS, nowRFC3339).Stop(name); err != nil {
-				*exit = emitter.Failure("workspace.stop", mapWorkspaceErr(err))
-				return nil
-			}
-			*exit = emitter.Success("workspace.stop", map[string]any{"project": name})
-			return nil
-		},
+		Use:               "stop [name]",
+		Short:             "Stop the workspace microVM (state preserved; defaults to the current directory)",
+		Args:              cobra.MaximumNArgs(1),
+		ValidArgsFunction: completeProjectArg,
+		RunE:              workspaceStopRunE(emitter, exit),
 	}
 }
 
 func newRestartCmd(emitter *output.Emitter, exit *int) *cobra.Command {
 	return &cobra.Command{
-		Use:   "restart",
-		Short: "Restart the current directory's workspace microVM (shortcut for `ai workspace restart`)",
-		Args:  cobra.NoArgs,
-		RunE: func(_ *cobra.Command, _ []string) error {
-			name, err := cwdProjectName()
-			if err != nil {
-				*exit = emitter.Failure("workspace.restart", err)
-				return nil
-			}
-			handle, err := restartWorkspace(emitter, name)
-			if err != nil {
-				*exit = emitter.Failure("workspace.restart", mapWorkspaceErr(err))
-				return nil
-			}
-			*exit = emitter.Success("workspace.restart", handle)
-			return nil
-		},
+		Use:               "restart [name]",
+		Short:             "Restart the workspace microVM (no rebuild; defaults to the current directory)",
+		Args:              cobra.MaximumNArgs(1),
+		ValidArgsFunction: completeProjectArg,
+		RunE:              workspaceRestartRunE(emitter, exit),
 	}
 }

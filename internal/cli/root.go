@@ -72,38 +72,50 @@ func Execute() int {
 	persistentFlags.BoolVar(&flags.plain, "plain", false, "plain, non-interactive human output — no TUI spinners/colour")
 	persistentFlags.BoolVar(&flags.verbose, "verbose", false, "extra human-readable detail (ignored with --json)")
 	persistentFlags.BoolVar(&flags.dryRun, "dry-run", false, "compute and print planned actions; mutate nothing")
-	persistentFlags.StringVar(&flags.project, "project", "", "scope the command to a project")
+	persistentFlags.StringVar(&flags.project, "project", "", "scope the command to a named workspace")
 	persistentFlags.BoolVar(&flags.yes, "yes", false, `assume "yes" for destructive confirmation prompts`)
 	root.Flags().BoolVar(&flags.version, "version", false, "print version and exit")
 
 	// Shell completion for --project values (the names from the global index).
 	_ = root.RegisterFlagCompletionFunc("project", completeProjectNames)
 
-	// Subcommand groups (the full Slice 1 surface, CLI §17.0).
+	// Command surface (CLI §17.0). The canonical surface is FLAT: workspace
+	// management is top-level verbs (`ai create`/`ai list`/`ai start`/`ai shell`/
+	// …). The `ai workspace …` and `ai project …` groups are kept as HIDDEN
+	// back-compat aliases (see newWorkspaceCmd / newProjectCmd) so existing scripts
+	// keep working without cluttering help.
 	root.AddCommand(
 		newSetupCmd(emitter, &exitCode),
 		newUninstallCmd(emitter, &exitCode),
-		newProjectCmd(emitter, &exitCode),
+		// Canonical flat workspace verbs.
+		newCreateCmd(emitter, &exitCode, "create [name]"),
+		newListCmd(emitter, &exitCode, "list"),
+		newDeleteCmd(emitter, &exitCode, "delete [name]"),
+		newStartCmd(emitter, &exitCode),
+		newStopCmd(emitter, &exitCode),
+		newRestartCmd(emitter, &exitCode),
+		newDestroyCmd(emitter, &exitCode),
+		newExecCmd(emitter, &exitCode),
+		newShellCmd(emitter, &exitCode),
+		newAgentCmd(emitter, &exitCode),
+		newAttachCmd(emitter, &exitCode),
+		newSessionsCmd(emitter, &exitCode),
+		// Other top-level commands.
 		newServicesCmd(emitter, &exitCode),
 		newSecretsCmd(emitter, &exitCode),
 		newModelsCmd(emitter, &exitCode),
 		newContextCmd(emitter, &exitCode),
 		newNetworkCmd(emitter, &exitCode),
 		newGatewayCmd(emitter, &exitCode),
-		newWorkspaceCmd(emitter, &exitCode),
-		newStartCmd(emitter, &exitCode),
-		newStopCmd(emitter, &exitCode),
-		newRestartCmd(emitter, &exitCode),
-		newShellCmd(emitter, &exitCode),
-		newAgentCmd(emitter, &exitCode),
-		newAttachCmd(emitter, &exitCode),
-		newSessionsCmd(emitter, &exitCode),
 		newDoctorCmd(emitter, &exitCode),
 		newLogsCmd(emitter, &exitCode),
 		newCompletionCmd(emitter, &exitCode),
 		newStateCmd(emitter, &exitCode),
 		newThemeCmd(emitter, &exitCode),
 		newUICmd(emitter, &exitCode),
+		// Hidden back-compat alias groups.
+		newWorkspaceCmd(emitter, &exitCode),
+		newProjectCmd(emitter, &exitCode),
 	)
 
 	// With --json, help is a structured data.help object (§17.0); otherwise the

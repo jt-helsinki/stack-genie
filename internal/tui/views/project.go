@@ -51,10 +51,10 @@ func NewProject(info ProjectInfoFetcher) *Project {
 	return &Project{info: info}
 }
 
-func (view *Project) Title() string { return "Project" }
+func (view *Project) Title() string { return "Workspace" }
 func (view *Project) Hints() string {
 	if view.name == "" {
-		return "open a project from the Projects view"
+		return "open a workspace from the Workspaces view"
 	}
 	return "s start · x stop · r restart · d destroy · e shell"
 }
@@ -121,7 +121,7 @@ func (view *Project) Update(msg tea.Msg) tea.Cmd {
 
 func (view *Project) View() string {
 	if view.name == "" {
-		return ui.Muted.Render("no project selected — open one from the Projects view (menu: Projects)")
+		return ui.Muted.Render("no workspace selected — open one from the Workspaces view (menu: Workspaces)")
 	}
 	if view.err != nil {
 		return ui.Failure.Render(ui.IconFail + " " + view.err.Error())

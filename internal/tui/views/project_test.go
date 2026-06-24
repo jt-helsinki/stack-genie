@@ -76,8 +76,8 @@ func TestProjectDetailNoSelection(test *testing.T) {
 	if cmd := view.Init(); cmd != nil {
 		test.Error("Init with no project selected must be a no-op")
 	}
-	if !strings.Contains(view.View(), "no project selected") {
-		test.Error("with no project, the view should prompt to open one")
+	if !strings.Contains(view.View(), "no workspace selected") {
+		test.Error("with no workspace, the view should prompt to open one")
 	}
 	// Action keys are inert until a project is selected.
 	if cmd := view.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("s")}); cmd != nil {

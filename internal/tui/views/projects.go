@@ -43,9 +43,9 @@ type Projects struct {
 // NewProjects builds the switcher over the injected project lister.
 func NewProjects(list ProjectLister) *Projects {
 	columns := []table.Column{
-		{Title: "PROJECT", Width: 22},
+		{Title: "NAME", Width: 22},
 		{Title: "OS", Width: 16},
-		{Title: "WORKSPACE", Width: 12},
+		{Title: "STATUS", Width: 12},
 		{Title: "AGENTS", Width: 28},
 	}
 	built := table.New(table.WithColumns(columns), table.WithFocused(true))
@@ -53,7 +53,7 @@ func NewProjects(list ProjectLister) *Projects {
 	return &Projects{list: list, table: built, describe: newDescribePane()}
 }
 
-func (view *Projects) Title() string { return "Projects" }
+func (view *Projects) Title() string { return "Workspaces" }
 func (view *Projects) Hints() string { return "enter open · n new · d describe · r refresh" }
 
 func (view *Projects) SetSize(width, height int) {
@@ -138,10 +138,10 @@ func (view *Projects) View() string {
 		return ui.Failure.Render(ui.IconFail + " " + view.err.Error())
 	}
 	if !view.loaded {
-		return ui.Muted.Render("loading projects…")
+		return ui.Muted.Render("loading workspaces…")
 	}
 	if len(view.entries) == 0 {
-		return ui.Muted.Render("no projects yet — create one with `ai project create` in a directory")
+		return ui.Muted.Render("no workspaces yet — create one with `ai create` in a directory")
 	}
 	return view.table.View()
 }

@@ -26,7 +26,7 @@ func TestWorkspacesResultHuman(test *testing.T) {
 // The friendly empty case is shown when no workspaces exist.
 func TestWorkspacesResultHumanEmpty(test *testing.T) {
 	rendered := workspacesResult{}.Human()
-	if !strings.Contains(rendered, "No workspaces yet") || !strings.Contains(rendered, "ai workspace start") {
+	if !strings.Contains(rendered, "No workspaces yet") || !strings.Contains(rendered, "ai start") {
 		test.Errorf("empty workspace list hint missing:\n%s", rendered)
 	}
 }

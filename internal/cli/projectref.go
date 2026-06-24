@@ -42,11 +42,11 @@ func resolveProjectName(cmd *cobra.Command, explicit string) (string, error) {
 	}
 	name, found, err := currentProjectName()
 	if err != nil {
-		return "", output.Errorf(output.ExitRuntimeFailure, "resolve current project: %s", err)
+		return "", output.Errorf(output.ExitRuntimeFailure, "resolve current workspace: %s", err)
 	}
 	if !found {
 		return "", output.Errorf(output.ExitInvalidInput,
-			"no project specified and the current directory is not inside one; pass a project name, use --project, or cd into a project")
+			"no workspace specified and the current directory is not inside one; pass a workspace name, use --project, or cd into a workspace")
 	}
 	return name, nil
 }

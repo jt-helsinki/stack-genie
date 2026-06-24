@@ -8,8 +8,8 @@ import (
 )
 
 // CreateConfirmedMsg is emitted when the user confirms a valid directory for a new
-// project. The parent app then runs `ai project create` with its working directory
-// set to Dir, and refreshes the Projects switcher.
+// workspace. The parent app then runs `ai create` with its working directory
+// set to Dir, and refreshes the Workspaces switcher.
 type CreateConfirmedMsg struct {
 	Dir string
 }
@@ -18,10 +18,10 @@ type CreateConfirmedMsg struct {
 // parent returns to whichever view it came from (typically Projects).
 type CreateCancelledMsg struct{}
 
-// Create is a directory picker for choosing where to create a new project. It is
+// Create is a directory picker for choosing where to create a new workspace. It is
 // configured for directories only and validates the chosen directory with
-// scope.ValidateCreateTarget — a directory that is already a project root is
-// rejected (with an inline error), while a child or parent of an existing project
+// scope.ValidateCreateTarget — a directory that is already a workspace root is
+// rejected (with an inline error), while a child or parent of an existing workspace
 // is allowed.
 type Create struct {
 	picker        filepicker.Model
@@ -29,8 +29,8 @@ type Create struct {
 	validationErr error
 }
 
-// NewCreate builds the create view starting at startDir (the cwd), configured to
-// browse and select directories only.
+// NewCreate builds the workspace-create view starting at startDir (the cwd),
+// configured to browse and select directories only.
 func NewCreate(startDir string) *Create {
 	picker := filepicker.New()
 	picker.DirAllowed = true
@@ -40,7 +40,7 @@ func NewCreate(startDir string) *Create {
 }
 
 // Title is the view's name (used by the menu/header).
-func (view *Create) Title() string { return "New Project" }
+func (view *Create) Title() string { return "New Workspace" }
 
 // Hints are the context-sensitive key bindings shown in the footer.
 func (view *Create) Hints() string { return "↑/↓ browse · enter choose dir · esc cancel" }

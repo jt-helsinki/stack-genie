@@ -67,7 +67,7 @@ func TestProjectsDescribeTogglesPane(test *testing.T) {
 func TestProjectsEmptyShowsHint(test *testing.T) {
 	view := NewProjects(func() ([]project.Entry, error) { return nil, nil })
 	_ = view.Update(view.Init()())
-	if got := view.View(); !strings.Contains(got, "no projects yet") {
-		test.Errorf("empty switcher should hint at creating a project, got: %q", got)
+	if got := view.View(); !strings.Contains(got, "no workspaces yet") {
+		test.Errorf("empty switcher should hint at creating a workspace, got: %q", got)
 	}
 }

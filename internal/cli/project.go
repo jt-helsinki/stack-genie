@@ -25,11 +25,11 @@ type projectsResult struct {
 	Projects []project.Entry `json:"projects"`
 }
 
-// Human renders the projects as a table NAME, OS, AGENTS, STATUS (agents joined
+// Human renders the workspaces as a table NAME, OS, AGENTS, STATUS (agents joined
 // with ",", "—" for an empty cell), or a friendly hint when there are none.
 func (result projectsResult) Human() string {
 	if len(result.Projects) == 0 {
-		return "No projects yet — create one with `ai project create`."
+		return "No workspaces yet — create one with `ai create`."
 	}
 	rows := make([][]string, 0, len(result.Projects))
 	for _, entry := range result.Projects {
@@ -60,17 +60,21 @@ var (
 	supportedAgentCLIs = []string{"opencode", "pi", "claude-code", "codex", "gemini"}
 )
 
+// newProjectCmd builds the HIDDEN `ai project` back-compat alias group. The
+// canonical surface is the flattened top-level verbs (`ai create`/`ai list`/`ai
+// delete`); this group keeps existing scripts working but no longer shows in help.
 func newProjectCmd(emitter *output.Emitter, exit *int) *cobra.Command {
 	cmd := &cobra.Command{
-		Use:   "project",
-		Short: "Create, list, and delete projects",
-		Args:  cobra.NoArgs,
-		RunE:  func(cmd *cobra.Command, _ []string) error { return cmd.Help() },
+		Use:    "project",
+		Short:  "Create, list, and delete workspaces (alias for the top-level verbs)",
+		Args:   cobra.NoArgs,
+		Hidden: true,
+		RunE:   func(cmd *cobra.Command, _ []string) error { return cmd.Help() },
 	}
 	cmd.AddCommand(
-		newProjectCreateCmd(emitter, exit),
-		newProjectListCmd(emitter, exit),
-		newProjectDeleteCmd(emitter, exit),
+		newCreateCmd(emitter, exit, "create [name]"),
+		newListCmd(emitter, exit, "list"),
+		newDeleteCmd(emitter, exit, "delete [name]"),
 	)
 	return cmd
 }
@@ -90,17 +94,19 @@ func mapProjectErr(err error) error {
 	}
 }
 
-func newProjectCreateCmd(emitter *output.Emitter, exit *int) *cobra.Command {
+// newCreateCmd builds the canonical top-level `ai create [name]` (also the body of
+// the hidden `ai project create` alias). use lets the alias keep its own Use line.
+func newCreateCmd(emitter *output.Emitter, exit *int, use string) *cobra.Command {
 	cmd := &cobra.Command{
-		Use:   "create [name]",
-		Short: "Create a project in the current directory (or attach if one exists here)",
+		Use:   use,
+		Short: "Create a workspace in the current directory (or attach if one exists here)",
 		Args:  cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			dryRun, _ := cmd.Flags().GetBool("dry-run")
 
-			// If the current directory is already a project, don't create a new
-			// one — attach to its workspace instead (bubbling up like other
-			// commands). This makes `ai project create` idempotent per directory.
+			// If the current directory is already a workspace, don't create a new
+			// one — attach to it instead (bubbling up like other commands). This
+			// makes `ai create` idempotent per directory.
 			if existing, found, err := currentProjectName(); err != nil {
 				*exit = emitter.Failure("project.create", output.Errorf(output.ExitRuntimeFailure, "%s", err))
 				return nil
@@ -119,11 +125,11 @@ func newProjectCreateCmd(emitter *output.Emitter, exit *int) *cobra.Command {
 			agentsFlag, _ := cmd.Flags().GetStringSlice("agents")
 			stacksFlag, _ := cmd.Flags().GetStringSlice("stacks")
 
-			// A project is fully specifiable in one command via flags, so external
+			// A workspace is fully specifiable in one command via flags, so external
 			// programs can create it non-interactively with --json (§1.8, §3.1).
 			// On a terminal (and not --json) the wizard always runs, PRE-SEEDED with
 			// any flags the user passed — flags set the UI's defaults rather than
-			// bypassing it. Under --json / no TTY the project is built straight from
+			// bypassing it. Under --json / no TTY the workspace is built straight from
 			// flags with no prompt (the programmatic contract, §1.3/§3.1).
 			interactiveTTY := !emitter.JSON && term.IsTerminal(os.Stdin.Fd())
 
@@ -137,7 +143,7 @@ func newProjectCreateCmd(emitter *output.Emitter, exit *int) *cobra.Command {
 				if err != nil {
 					// Defensive: the wizard still failed despite a TTY (§3.1).
 					*exit = emitter.Failure("project.create",
-						output.Errorf(output.ExitInvalidInput, "a terminal is required for the project wizard (or pass --name/--os/--agents/--stacks with --json)"))
+						output.Errorf(output.ExitInvalidInput, "a terminal is required for the workspace wizard (or pass --name/--os/--agents/--stacks with --json)"))
 					return nil
 				}
 				if cancelled {
@@ -153,7 +159,7 @@ func newProjectCreateCmd(emitter *output.Emitter, exit *int) *cobra.Command {
 				}
 				spec = built
 			}
-			// The project is created in the current working directory. This tool
+			// The workspace is created in the current working directory. This tool
 			// manages only the reproducible AI dev environment (the .ai-platform/
 			// definition) — it does not init or clone version control. Bring your
 			// own git; existing files in the directory are left untouched.
@@ -200,7 +206,7 @@ func newProjectCreateCmd(emitter *output.Emitter, exit *int) *cobra.Command {
 	// Non-interactive inputs — every value also has a flag so the command is fully
 	// specifiable in one invocation (for --json / external callers). The [name]
 	// positional remains a convenience equivalent to --name.
-	cmd.Flags().String("name", "", "project name (default: the [name] argument or the current directory)")
+	cmd.Flags().String("name", "", "workspace name (default: the [name] argument or the current directory)")
 	cmd.Flags().String("os", "", "base OS: "+strings.Join(supportedOSes, "|"))
 	cmd.Flags().StringSlice("agents", nil, "agent CLIs to install (default: opencode,pi): "+strings.Join(supportedAgentCLIs, ","))
 	cmd.Flags().StringSlice("stacks", nil, "software stacks to install: "+strings.Join(supportedStacks, ","))
@@ -210,10 +216,10 @@ func newProjectCreateCmd(emitter *output.Emitter, exit *int) *cobra.Command {
 	return cmd
 }
 
-// attachWorkspace connects to an existing project's workspace VM: it starts the
+// attachWorkspace connects to an existing workspace's microVM: it starts the
 // microVM (a no-op if already running) and opens an interactive login shell
-// inside it. Used when `ai project create` runs in a directory that is already a
-// project. The microVM start/exec run against the real Microsandbox runtime.
+// inside it. Used when `ai create` runs in a directory that is already a
+// workspace. The microVM start/exec run against the real Microsandbox runtime.
 func attachWorkspace(emitter *output.Emitter, exit *int, name string) {
 	// Boot the microVM (slow — spinner-wrapped on a TTY via startWorkspace), then
 	// exec an interactive login shell. The Exec is NOT spinner-wrapped: it takes
@@ -246,6 +252,7 @@ func createPlan(spec project.Spec, root string) []string {
 		"write config.yaml, profile.yaml, project.yaml, .gitignore",
 		"register " + spec.Name + " in config/projects.yaml",
 	}
+	// NB: file/index names above are on-disk artifacts, intentionally unchanged.
 }
 
 func defaultProjectName(args []string) string {
@@ -275,8 +282,8 @@ func sanitizeName(raw string) string {
 	return strings.Trim(builder.String(), "-")
 }
 
-// runCreateWizard collects a project.Spec interactively (CLI §3.1). It returns
-// cancelled=true if the user aborts, or an error if no terminal is available.
+// runCreateWizard collects a workspace project.Spec interactively (CLI §3.1). It
+// returns cancelled=true if the user aborts, or an error if no terminal is available.
 func runCreateWizard(seed project.Spec) (project.Spec, bool, error) {
 	// Pre-seed every field from the caller (flags become the wizard's defaults).
 	name := seed.Name
@@ -287,7 +294,7 @@ func runCreateWizard(seed project.Spec) (project.Spec, bool, error) {
 
 	form := huh.NewForm(
 		huh.NewGroup(
-			huh.NewInput().Title("Project name").Value(&name).Validate(wizardNameValidator),
+			huh.NewInput().Title("Workspace name").Value(&name).Validate(wizardNameValidator),
 		),
 		huh.NewGroup(
 			huh.NewSelect[string]().Title("Operating system").
@@ -404,10 +411,13 @@ func specFromFlags(name, osKey string, agents, stacks []string, defaultName stri
 	}, nil
 }
 
-func newProjectListCmd(emitter *output.Emitter, exit *int) *cobra.Command {
+// newListCmd builds the canonical top-level `ai list` (also the body of the hidden
+// `ai project list` alias). It lists registered workspaces with their OS, workspace
+// status, and agents (the richer project.List-backed renderer).
+func newListCmd(emitter *output.Emitter, exit *int, use string) *cobra.Command {
 	return &cobra.Command{
-		Use:   "list",
-		Short: "List registered projects",
+		Use:   use,
+		Short: "List workspaces",
 		Args:  cobra.NoArgs,
 		RunE: func(_ *cobra.Command, _ []string) error {
 			entries, err := project.List()
@@ -421,11 +431,14 @@ func newProjectListCmd(emitter *output.Emitter, exit *int) *cobra.Command {
 	}
 }
 
-func newProjectDeleteCmd(emitter *output.Emitter, exit *int) *cobra.Command {
+// newDeleteCmd builds the canonical top-level `ai delete [name]` (also the body of
+// the hidden `ai project delete` alias): remove the whole workspace — definition,
+// index entry, and microVM — keeping the host source unless --purge.
+func newDeleteCmd(emitter *output.Emitter, exit *int, use string) *cobra.Command {
 	var purge bool
 	cmd := &cobra.Command{
-		Use:               "delete [project]",
-		Short:             "Delete a project (host source kept unless --purge)",
+		Use:               use,
+		Short:             "Delete a workspace (host source kept unless --purge)",
 		Args:              cobra.MaximumNArgs(1),
 		ValidArgsFunction: completeProjectArg,
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -458,8 +471,8 @@ func newProjectDeleteCmd(emitter *output.Emitter, exit *int) *cobra.Command {
 				// --yes is required, and its absence is exit 2.
 				if interactive(emitter) {
 					ok, promptErr := promptConfirm(
-						fmt.Sprintf("Delete project %q? This removes its workspace and platform state.", name),
-						"This destroys the workspace microVM and removes the project from the platform. Your source directory is kept unless --purge.")
+						fmt.Sprintf("Delete workspace %q? This removes its microVM and platform state.", name),
+						"This destroys the workspace microVM and removes the workspace from the platform. Your source directory is kept unless --purge.")
 					if promptErr != nil {
 						*exit = emitter.Failure("project.delete", promptErr)
 						return nil
@@ -493,7 +506,7 @@ func newProjectDeleteCmd(emitter *output.Emitter, exit *int) *cobra.Command {
 			return nil
 		},
 	}
-	cmd.Flags().BoolVar(&purge, "purge", false, "also delete the host source at ~/projects/<project>")
+	cmd.Flags().BoolVar(&purge, "purge", false, "also delete the host source directory")
 	return cmd
 }
 
