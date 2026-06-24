@@ -1,7 +1,10 @@
-// Package doctor implements `ai doctor` (CLI §10.1): it runs the platform's
-// dependency and health checks and reports each with an actionable repair
-// suggestion. Detection reuses internal/runtime + internal/sandbox, so it is
-// unit-testable on any host via an injected prober and model client.
+// Package doctor implements `ai doctor [name]` (CLI §10.1, §12.1): it runs the
+// platform's dependency, service, and (when inside a workspace) runtime health
+// checks and reports each with an actionable repair suggestion. Detection reuses
+// internal/runtime + internal/sandbox, so it is unit-testable on any host via an
+// injected prober. The service list is supplied by the CLI layer (from
+// setup.ServicesStatus) so this package does not import internal/setup — that
+// would form an import cycle (internal/setup imports internal/doctor).
 package doctor
 
 import (
@@ -9,7 +12,6 @@ import (
 	"strings"
 
 	"github.com/jt-helsinki/ideal-robot/internal/console"
-	"github.com/jt-helsinki/ideal-robot/internal/litellm"
 	"github.com/jt-helsinki/ideal-robot/internal/runtime"
 	"github.com/jt-helsinki/ideal-robot/internal/sandbox"
 )
@@ -45,10 +47,10 @@ func (report Report) Human() string {
 	var builder strings.Builder
 	for _, check := range report.Checks {
 		detail := check.Detail
-		// For the model-service checks (litellm, ollama) show the host-reachable
-		// address — and, for services that have one, the admin-console URL — so the
-		// user can find each service's endpoint + UI. This is distinct from the
-		// "↳ suggestion" / "web:" lines below, which guide FAILING software checks.
+		// For service checks show the host-reachable address — and, for services
+		// that have one, the admin-console URL — so the user can find each
+		// service's endpoint + UI. This is distinct from the "↳ suggestion" /
+		// "web:" lines below, which guide FAILING software checks.
 		if endpoint, ok := console.EndpointFor(check.Name); ok && endpoint.Address != "" {
 			detail += " — " + endpoint.Address
 			if endpoint.Console != "" {
@@ -71,25 +73,54 @@ func (report Report) Human() string {
 	return builder.String()
 }
 
-// OllamaProbe reports whether the required Ollama service is reachable. It is
-// injectable so the check is unit-testable; nil means "not checked". The CLI
-// wires the live probe (ollama.RealProbe, GET /api/version).
-type OllamaProbe interface{ Reachable() error }
+// Service is the doctor-layer view of one managed service, supplied by the CLI
+// from setup.ServiceStatus. It is a local mirror (not setup.ServiceStatus) so
+// this package avoids importing internal/setup, which would create an import
+// cycle. Run turns each into a Check in the SERVICES section.
+type Service struct {
+	Name     string
+	State    string // running | stopped | disabled | not_installed | unavailable | ready | unknown
+	Healthy  bool
+	Optional bool
+	Detail   string
+}
 
-// OpenWebUIProbe reports whether the optional Open WebUI chat UI is reachable.
-// Injectable so the check is unit-testable; nil means "not checked".
-type OpenWebUIProbe interface{ Reachable() error }
+// WorkspaceRuntime is the per-workspace runtime posture supplied by the CLI when
+// the user is inside (or names) a workspace. It mirrors the fields the old
+// `ai workspace doctor` reported; Run turns it into the WORKSPACE section.
+type WorkspaceRuntime struct {
+	// Project names the resolved workspace (for the section heading detail).
+	Project string
+	// RuntimeErr, when non-nil, is a missing-runtime failure (no container
+	// runtime / Microsandbox) — surfaced as an error Check rather than aborting.
+	RuntimeErr error
+	// VerifyErr, when non-nil, is a rootless/virtualization shortfall — surfaced
+	// as an error Check.
+	VerifyErr error
+	Rootless  bool
+	// Virtualization names the workspace virtualization backend (hvf, kvm, …).
+	Virtualization string
+	// Available reports whether the microVM virtualization is usable.
+	Available bool
+}
 
 // Deps are the injectable dependencies of Run.
 type Deps struct {
 	GOOS, GOARCH string
 	Prober       runtime.Prober
-	Model        litellm.Client
-	Ollama       OllamaProbe
-	OpenWebUI    OpenWebUIProbe
+	// Services is the full managed-service list (from setup.ServicesStatus,
+	// mapped by the CLI). Run renders each as a Check in the SERVICES section, so
+	// `ai doctor` lists every service — including the optional open-webui and
+	// odysseus — without this package importing internal/setup.
+	Services []Service
+	// Workspace, when non-nil, adds the WORKSPACE-runtime section (the user is
+	// inside a workspace directory or named one). When nil the section is omitted.
+	Workspace *WorkspaceRuntime
 }
 
-// Run executes the platform health checks.
+// Run executes the platform health checks: platform dependencies, then every
+// managed service, then (when supplied) the per-workspace runtime posture. It
+// always runs to completion and the report's OK is false if any check errored.
 func Run(deps Deps) Report {
 	detectedSandbox := sandbox.Detect(deps.GOOS, deps.GOARCH, deps.Prober)
 	checks := []Check{
@@ -97,9 +128,12 @@ func Run(deps Deps) Report {
 		rootlessCheck(deps.GOOS, deps.Prober),
 		microsandboxCheck(detectedSandbox),
 		virtualizationCheck(deps.GOOS, detectedSandbox),
-		litellmCheck(deps.Model),
-		ollamaCheck(deps.Ollama),
-		openWebUICheck(deps.OpenWebUI),
+	}
+	for _, service := range deps.Services {
+		checks = append(checks, serviceCheck(service))
+	}
+	if deps.Workspace != nil {
+		checks = append(checks, workspaceChecks(*deps.Workspace)...)
 	}
 	report := Report{OK: true, Checks: checks}
 	for _, check := range checks {
@@ -110,9 +144,85 @@ func Run(deps Deps) Report {
 	return report
 }
 
-func installed(prober runtime.Prober, binary string) bool {
-	_, err := prober.LookPath(binary)
-	return err == nil
+// serviceCheck renders one managed service as a Check. A disabled optional
+// service is a non-error "disabled" warning; a stopped/unhealthy required
+// service is an error; everything else maps from State + Healthy. The check name
+// matches the service name so Human() can show its console-registry endpoint.
+func serviceCheck(service Service) Check {
+	if service.Optional && service.State == "disabled" {
+		return Check{
+			Name: service.Name, Status: StatusWarn,
+			Detail:     "optional; disabled",
+			Suggestion: "run `ai services enable " + service.Name + "` to turn it on",
+		}
+	}
+	if service.Healthy {
+		detail := "running"
+		if service.State == "ready" {
+			detail = "ready"
+		}
+		if service.Detail != "" {
+			detail = service.Detail
+		}
+		return Check{Name: service.Name, Status: StatusOK, Detail: detail}
+	}
+	// Not healthy. Optional services warn (never fail the report); required
+	// services error.
+	detail := service.State
+	if detail == "" {
+		detail = "not reachable"
+	}
+	if service.Optional {
+		return Check{
+			Name: service.Name, Status: StatusWarn,
+			Detail:     "optional; " + detail,
+			Suggestion: "run `ai services start " + service.Name + "` (or `ai setup`) to start it",
+		}
+	}
+	return Check{
+		Name: service.Name, Status: StatusError,
+		Detail:     detail,
+		Suggestion: "run `ai setup` (or `ai services start " + service.Name + "`) to start it",
+	}
+}
+
+// workspaceChecks renders the per-workspace runtime posture as Checks (the old
+// `ai workspace doctor` content). A missing runtime or a rootless/virtualization
+// shortfall is folded into an error Check rather than a non-zero exit, so the
+// consolidated doctor still runs to completion and exits 0 with a full report.
+func workspaceChecks(workspace WorkspaceRuntime) []Check {
+	if workspace.RuntimeErr != nil {
+		// Missing container runtime or Microsandbox.
+		return []Check{{
+			Name: "workspace runtime", Status: StatusError,
+			Detail:     workspace.RuntimeErr.Error(),
+			Suggestion: "install the missing runtime, then `ai setup`",
+		}}
+	}
+	rootless := Check{Name: "workspace rootless", Status: StatusOK, Detail: "rootless, unprivileged"}
+	if !workspace.Rootless {
+		rootless = Check{
+			Name: "workspace rootless", Status: StatusError,
+			Detail:     "container runtime runs as root",
+			Suggestion: "run the container runtime rootless (the platform never runs privileged)",
+		}
+	}
+	virt := Check{
+		Name: "workspace virtualization", Status: StatusOK,
+		Detail: "microvm (" + workspace.Virtualization + ")",
+	}
+	if !workspace.Available || workspace.VerifyErr != nil {
+		detail := "microVM virtualization unavailable"
+		if workspace.VerifyErr != nil {
+			detail = workspace.VerifyErr.Error()
+		}
+		virt = Check{
+			Name: "workspace virtualization", Status: StatusError,
+			Detail:     detail,
+			Suggestion: "enable hardware virtualization for the microVM runtime (Apple Silicon HVF / Linux KVM)",
+		}
+	}
+	return []Check{rootless, virt}
 }
 
 func containerRuntimeCheck(goos string, prober runtime.Prober) Check {
@@ -129,6 +239,11 @@ func containerRuntimeCheck(goos string, prober runtime.Prober) Check {
 			DocsURL:    "https://docs.docker.com/get-docker/  (or Podman: https://podman.io/get-started)",
 		}
 	}
+}
+
+func installed(prober runtime.Prober, binary string) bool {
+	_, err := prober.LookPath(binary)
+	return err == nil
 }
 
 // containerRuntimeSuggestion gives an OS-specific, copy-pasteable install command
@@ -161,50 +276,6 @@ func rootlessCheck(goos string, prober runtime.Prober) Check {
 		Suggestion: "run the container runtime rootless (Linux: enable rootless mode, or use Podman)",
 		DocsURL:    "https://docs.docker.com/engine/security/rootless/",
 	}
-}
-
-// ollamaCheck reports the Ollama service state. Ollama is required — LiteLLM
-// routes local model traffic to it (arch §14, §16) — so an unreachable Ollama is
-// an error. The probe is injectable; nil means "not checked yet" (the CLI wires
-// the live probe).
-func ollamaCheck(probe OllamaProbe) Check {
-	if probe == nil {
-		return Check{
-			Name: "ollama", Status: StatusWarn,
-			Detail:     "required; not checked",
-			Suggestion: "run `ai setup` to start Ollama",
-		}
-	}
-	if err := probe.Reachable(); err != nil {
-		return Check{
-			Name: "ollama", Status: StatusError,
-			Detail:     "required but not reachable",
-			Suggestion: "run `ai setup` to start the Ollama container",
-		}
-	}
-	return Check{Name: "ollama", Status: StatusOK, Detail: "reachable"}
-}
-
-// openWebUICheck reports the Open WebUI chat-UI state. Open WebUI is OPTIONAL, so
-// an unreachable instance is a warning (never an error that fails the report). The
-// probe is injectable; nil means "not checked yet". The check name must match the
-// console registry key so Human() shows its address + UI.
-func openWebUICheck(probe OpenWebUIProbe) Check {
-	if probe == nil {
-		return Check{
-			Name: "open-webui", Status: StatusWarn,
-			Detail:     "optional; not checked; run `ai setup`",
-			Suggestion: "run `ai setup` to start the Open WebUI chat UI",
-		}
-	}
-	if err := probe.Reachable(); err != nil {
-		return Check{
-			Name: "open-webui", Status: StatusWarn,
-			Detail:     "optional; not reachable",
-			Suggestion: "run `ai setup` (or `ai services start open-webui`) to start the Open WebUI chat UI",
-		}
-	}
-	return Check{Name: "open-webui", Status: StatusOK, Detail: "reachable"}
 }
 
 func microsandboxCheck(detected sandbox.Info) Check {
@@ -244,18 +315,4 @@ func virtualizationSuggestion(goos string) string {
 	default:
 		return "unsupported OS — this platform requires macOS (Apple Silicon) or Linux (KVM)"
 	}
-}
-
-func litellmCheck(client litellm.Client) Check {
-	if client == nil {
-		return Check{Name: "litellm", Status: StatusWarn, Detail: "not checked"}
-	}
-	status, err := client.Status()
-	if err != nil || !status.Healthy {
-		return Check{
-			Name: "litellm", Status: StatusWarn, Detail: "not reachable",
-			Suggestion: "run `ai setup` to start the LiteLLM gateway",
-		}
-	}
-	return Check{Name: "litellm", Status: StatusOK, Detail: "reachable"}
 }

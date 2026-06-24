@@ -79,11 +79,10 @@ func Execute() int {
 	// Shell completion for --project values (the names from the global index).
 	_ = root.RegisterFlagCompletionFunc("project", completeProjectNames)
 
-	// Command surface (CLI §17.0). The canonical surface is FLAT: workspace
-	// management is top-level verbs (`ai create`/`ai list`/`ai start`/`ai shell`/
-	// …). The `ai workspace …` and `ai project …` groups are kept as HIDDEN
-	// back-compat aliases (see newWorkspaceCmd / newProjectCmd) so existing scripts
-	// keep working without cluttering help.
+	// Command surface (CLI §17.0). The surface is FLAT: workspace management is
+	// top-level verbs (`ai create`/`ai list`/`ai start`/`ai shell`/…). There are
+	// no `ai workspace …` or `ai project …` alias groups — the flat verbs are the
+	// canonical (and only) surface.
 	root.AddCommand(
 		newSetupCmd(emitter, &exitCode),
 		newUninstallCmd(emitter, &exitCode),
@@ -113,9 +112,6 @@ func Execute() int {
 		newStateCmd(emitter, &exitCode),
 		newThemeCmd(emitter, &exitCode),
 		newUICmd(emitter, &exitCode),
-		// Hidden back-compat alias groups.
-		newWorkspaceCmd(emitter, &exitCode),
-		newProjectCmd(emitter, &exitCode),
 	)
 
 	// With --json, help is a structured data.help object (§17.0); otherwise the

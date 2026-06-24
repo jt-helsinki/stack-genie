@@ -5,8 +5,6 @@ import (
 	"os/exec"
 	"strings"
 	"testing"
-
-	"github.com/jt-helsinki/ideal-robot/internal/litellm"
 )
 
 type fakeProber struct {
@@ -25,16 +23,6 @@ func (prober fakeProber) Run(_ string, _ ...string) ([]byte, error) {
 }
 func (prober fakeProber) Exists(path string) bool { return prober.files[path] }
 
-type fakeModel struct {
-	healthy bool
-	err     error
-}
-
-func (model fakeModel) Status() (litellm.StatusInfo, error) {
-	return litellm.StatusInfo{Healthy: model.healthy}, model.err
-}
-func (fakeModel) Test(string) (litellm.TestResult, error) { return litellm.TestResult{}, nil }
-
 func checkByName(report Report, name string) Check {
 	for _, check := range report.Checks {
 		if check.Name == name {
@@ -44,55 +32,84 @@ func checkByName(report Report, name string) Check {
 	return Check{}
 }
 
-type fakeOllama struct{ err error }
+// healthyServices is the service list a fully-up platform would supply (the CLI
+// maps it from setup.ServicesStatus). It mirrors the real per-provider set,
+// including the optional open-webui/odysseus, so the SERVICES section is covered.
+func healthyServices() []Service {
+	return []Service{
+		{Name: "ollama", State: "running", Healthy: true},
+		{Name: "presidio", State: "running", Healthy: true},
+		{Name: "litellm", State: "running", Healthy: true},
+		{Name: "headroom", State: "running", Healthy: true},
+		{Name: "proxy", State: "running", Healthy: true},
+		{Name: "dns", State: "running", Healthy: true},
+		{Name: "open-webui", State: "disabled", Healthy: false, Optional: true},
+		{Name: "odysseus", State: "disabled", Healthy: false, Optional: true},
+	}
+}
 
-func (probe fakeOllama) Reachable() error { return probe.err }
+func TestServicesSectionListsEveryService(test *testing.T) {
+	deps := Deps{
+		GOOS: "darwin", GOARCH: "arm64",
+		Prober:   fakeProber{bins: map[string]bool{"docker": true, "msb": true}},
+		Services: healthyServices(),
+	}
+	report := Run(deps)
+	// Every service supplied appears as a check — including the optional ones.
+	for _, name := range []string{"ollama", "litellm", "headroom", "proxy", "dns", "open-webui", "odysseus"} {
+		if checkByName(report, name).Name == "" {
+			test.Errorf("doctor SERVICES section is missing %q", name)
+		}
+	}
+	// A disabled optional service is a non-error warning, not a failure.
+	openWebUI := checkByName(report, "open-webui")
+	if openWebUI.Status != StatusWarn {
+		test.Errorf("disabled open-webui status = %q, want warn", openWebUI.Status)
+	}
+	if !report.OK {
+		test.Error("a disabled optional service must not fail the report")
+	}
+}
 
-type fakeOpenWebUI struct{ err error }
-
-func (probe fakeOpenWebUI) Reachable() error { return probe.err }
-
-func TestOpenWebUIOptionalCheck(test *testing.T) {
-	base := Deps{
+func TestOptionalServiceUnreachableWarns(test *testing.T) {
+	deps := Deps{
 		GOOS: "darwin", GOARCH: "arm64",
 		Prober: fakeProber{bins: map[string]bool{"docker": true, "msb": true}},
-		Model:  fakeModel{healthy: true},
-		Ollama: fakeOllama{},
+		Services: []Service{
+			{Name: "open-webui", State: "stopped", Healthy: false, Optional: true},
+		},
 	}
-
-	// No probe → warn (not checked), report stays OK.
-	report := Run(base)
+	report := Run(deps)
 	if got := checkByName(report, "open-webui").Status; got != StatusWarn {
-		test.Errorf("nil probe → open-webui status = %q, want warn", got)
+		test.Errorf("unreachable optional open-webui → status = %q, want warn", got)
 	}
 	if !report.OK {
-		test.Error("a not-checked open-webui must not fail the report")
+		test.Error("an unreachable optional service must not fail the report")
 	}
+}
 
-	// Reachable → ok.
-	base.OpenWebUI = fakeOpenWebUI{}
-	report = Run(base)
-	if got := checkByName(report, "open-webui").Status; got != StatusOK {
-		test.Errorf("reachable open-webui → status = %q, want ok", got)
+func TestRequiredServiceDownIsError(test *testing.T) {
+	deps := Deps{
+		GOOS: "darwin", GOARCH: "arm64",
+		Prober: fakeProber{bins: map[string]bool{"docker": true, "msb": true}},
+		Services: []Service{
+			{Name: "ollama", State: "stopped", Healthy: false},
+		},
 	}
-
-	// Unreachable → warn (optional), report stays OK.
-	base.OpenWebUI = fakeOpenWebUI{err: errors.New("connection refused")}
-	report = Run(base)
-	if got := checkByName(report, "open-webui").Status; got != StatusWarn {
-		test.Errorf("unreachable open-webui → status = %q, want warn", got)
+	report := Run(deps)
+	if got := checkByName(report, "ollama").Status; got != StatusError {
+		test.Errorf("down required ollama → status = %q, want error", got)
 	}
-	if !report.OK {
-		test.Error("an unreachable optional open-webui must not fail the report")
+	if report.OK {
+		test.Error("a down required service must fail the report")
 	}
 }
 
 func TestRunAllHealthy(test *testing.T) {
 	deps := Deps{
 		GOOS: "darwin", GOARCH: "arm64",
-		Prober: fakeProber{bins: map[string]bool{"docker": true, "msb": true}},
-		Model:  fakeModel{healthy: true},
-		Ollama: fakeOllama{},
+		Prober:   fakeProber{bins: map[string]bool{"docker": true, "msb": true}},
+		Services: healthyServices(),
 	}
 	report := Run(deps)
 	if !report.OK {
@@ -109,12 +126,11 @@ func TestRunAllHealthy(test *testing.T) {
 	}
 }
 
-func TestHumanShowsModelServiceEndpoints(test *testing.T) {
+func TestHumanShowsServiceEndpoints(test *testing.T) {
 	deps := Deps{
 		GOOS: "darwin", GOARCH: "arm64",
-		Prober: fakeProber{bins: map[string]bool{"docker": true, "msb": true}},
-		Model:  fakeModel{healthy: true},
-		Ollama: fakeOllama{},
+		Prober:   fakeProber{bins: map[string]bool{"docker": true, "msb": true}},
+		Services: healthyServices(),
 	}
 	rendered := Run(deps).Human()
 	// A healthy litellm shows its address and admin-UI URL on the check line.
@@ -128,30 +144,69 @@ func TestHumanShowsModelServiceEndpoints(test *testing.T) {
 	}
 }
 
-func TestOllamaRequiredCheck(test *testing.T) {
-	base := Deps{
+func TestWorkspaceSectionOmittedWhenAbsent(test *testing.T) {
+	deps := Deps{
 		GOOS: "darwin", GOARCH: "arm64",
-		Prober: fakeProber{bins: map[string]bool{"docker": true, "msb": true}},
-		Model:  fakeModel{healthy: true},
+		Prober:   fakeProber{bins: map[string]bool{"docker": true, "msb": true}},
+		Services: healthyServices(),
 	}
+	report := Run(deps)
+	for _, name := range []string{"workspace rootless", "workspace virtualization", "workspace runtime"} {
+		if checkByName(report, name).Name != "" {
+			test.Errorf("workspace section should be omitted when Workspace is nil, found %q", name)
+		}
+	}
+}
 
-	// No probe → warn (not yet checked), but the report stays OK.
-	report := Run(base)
-	if got := checkByName(report, "ollama").Status; got != StatusWarn {
-		test.Errorf("nil probe → ollama status = %q, want warn", got)
+func TestWorkspaceSectionRendersWhenPresent(test *testing.T) {
+	deps := Deps{
+		GOOS: "darwin", GOARCH: "arm64",
+		Prober:   fakeProber{bins: map[string]bool{"docker": true, "msb": true}},
+		Services: healthyServices(),
+		Workspace: &WorkspaceRuntime{
+			Project: "demo", Rootless: true, Virtualization: "hvf", Available: true,
+		},
+	}
+	report := Run(deps)
+	if got := checkByName(report, "workspace rootless").Status; got != StatusOK {
+		test.Errorf("workspace rootless = %q, want ok", got)
+	}
+	if got := checkByName(report, "workspace virtualization").Status; got != StatusOK {
+		test.Errorf("workspace virtualization = %q, want ok", got)
 	}
 	if !report.OK {
-		test.Error("a not-yet-checked Ollama must not fail the report")
+		test.Error("a healthy workspace section must not fail the report")
+	}
+}
+
+// A missing-runtime / virtualization shortfall is folded into error Checks rather
+// than aborting (the old `ai workspace doctor` exited 3/4 here).
+func TestWorkspaceSectionFoldsFailuresIntoChecks(test *testing.T) {
+	missingRuntime := Run(Deps{
+		GOOS: "darwin", GOARCH: "arm64",
+		Prober:    fakeProber{bins: map[string]bool{"docker": true, "msb": true}},
+		Workspace: &WorkspaceRuntime{Project: "demo", RuntimeErr: errors.New("no container runtime")},
+	})
+	if got := checkByName(missingRuntime, "workspace runtime").Status; got != StatusError {
+		test.Errorf("missing runtime → workspace runtime check = %q, want error", got)
+	}
+	if missingRuntime.OK {
+		test.Error("a missing workspace runtime must fail the report (as a check, not a non-zero exit)")
 	}
 
-	// Required but unreachable → error (it is on the model path).
-	base.Ollama = fakeOllama{err: errors.New("connection refused")}
-	report = Run(base)
-	if got := checkByName(report, "ollama").Status; got != StatusError {
-		test.Errorf("unreachable ollama → status = %q, want error", got)
+	shortfall := Run(Deps{
+		GOOS: "darwin", GOARCH: "arm64",
+		Prober: fakeProber{bins: map[string]bool{"docker": true, "msb": true}},
+		Workspace: &WorkspaceRuntime{
+			Project: "demo", Rootless: false, Available: false,
+			VerifyErr: errors.New("virtualization unavailable"),
+		},
+	})
+	if got := checkByName(shortfall, "workspace rootless").Status; got != StatusError {
+		test.Errorf("non-rootless → workspace rootless check = %q, want error", got)
 	}
-	if report.OK {
-		test.Error("an unreachable required Ollama must fail the report")
+	if got := checkByName(shortfall, "workspace virtualization").Status; got != StatusError {
+		test.Errorf("unavailable virt → workspace virtualization check = %q, want error", got)
 	}
 }
 
@@ -159,7 +214,6 @@ func TestRunMissingDepsError(test *testing.T) {
 	deps := Deps{
 		GOOS: "linux", GOARCH: "amd64",
 		Prober: fakeProber{}, // nothing installed, no /dev/kvm
-		Model:  fakeModel{healthy: false},
 	}
 	report := Run(deps)
 	if report.OK {
@@ -174,10 +228,6 @@ func TestRunMissingDepsError(test *testing.T) {
 			test.Errorf("%s should carry a repair suggestion", name)
 		}
 	}
-	// LiteLLM unreachable is a warning, not an error.
-	if checkByName(report, "litellm").Status != StatusWarn {
-		test.Errorf("litellm should warn, got %q", checkByName(report, "litellm").Status)
-	}
 }
 
 // TestUnsupportedOSReportsVirtualizationUnavailable: only macOS and Linux are
@@ -186,7 +236,6 @@ func TestUnsupportedOSReportsVirtualizationUnavailable(test *testing.T) {
 	deps := Deps{
 		GOOS: "plan9", GOARCH: "amd64",
 		Prober: fakeProber{bins: map[string]bool{"docker": true, "msb": true}},
-		Model:  fakeModel{healthy: true},
 	}
 	virtualization := checkByName(Run(deps), "host virtualization")
 	if virtualization.Status != StatusError {
@@ -200,7 +249,6 @@ func TestRootlessCheckMacDockerDesktop(test *testing.T) {
 	deps := Deps{
 		GOOS: "darwin", GOARCH: "arm64",
 		Prober: fakeProber{bins: map[string]bool{"docker": true, "msb": true}},
-		Model:  fakeModel{healthy: true},
 	}
 	if got := checkByName(Run(deps), "rootless service tier").Status; got != StatusOK {
 		test.Fatalf("rootless service tier on macOS Docker Desktop = %q, want ok", got)
@@ -211,7 +259,6 @@ func TestMissingDepSuggestionsAreCopyPasteable(test *testing.T) {
 	deps := Deps{
 		GOOS: "linux", GOARCH: "amd64",
 		Prober: fakeProber{}, // nothing installed
-		Model:  fakeModel{healthy: false},
 	}
 	report := Run(deps)
 	wants := map[string]string{
@@ -222,20 +269,5 @@ func TestMissingDepSuggestionsAreCopyPasteable(test *testing.T) {
 		if got := checkByName(report, name).Suggestion; !strings.Contains(got, fragment) {
 			test.Errorf("%s suggestion %q should contain %q", name, got, fragment)
 		}
-	}
-}
-
-func TestLitellmErrorIsWarn(test *testing.T) {
-	deps := Deps{
-		GOOS: "darwin", GOARCH: "arm64",
-		Prober: fakeProber{bins: map[string]bool{"docker": true, "msb": true}},
-		Model:  fakeModel{err: errors.New("connection refused")},
-	}
-	report := Run(deps)
-	if !report.OK { // a warn does not flip OK
-		test.Fatalf("warn should not make report not-OK: %+v", report)
-	}
-	if checkByName(report, "litellm").Status != StatusWarn {
-		test.Errorf("litellm should warn on error")
 	}
 }

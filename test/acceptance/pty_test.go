@@ -20,7 +20,7 @@ func (harness *Harness) CreateProject(test *testing.T, name string) (Envelope, i
 // CreateProjectWithOS creates a project with a specific base OS via --os.
 func (harness *Harness) CreateProjectWithOS(test *testing.T, name, osKey string) (Envelope, int) {
 	test.Helper()
-	return harness.Run(test, "project", "create", name, "--os", osKey)
+	return harness.Run(test, "create", name, "--os", osKey)
 }
 
 // CreateProjectFull creates a project pinning every input — base OS, agent CLIs
@@ -29,7 +29,7 @@ func (harness *Harness) CreateProjectWithOS(test *testing.T, name, osKey string)
 // slices fall back to the create command's own defaults (opencode,pi / none).
 func (harness *Harness) CreateProjectFull(test *testing.T, name, osKey string, agents, stacks []string) (Envelope, int) {
 	test.Helper()
-	args := []string{"project", "create", name, "--os", osKey}
+	args := []string{"create", name, "--os", osKey}
 	if len(agents) > 0 {
 		args = append(args, "--agents", strings.Join(agents, ","))
 	}

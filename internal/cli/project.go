@@ -60,25 +60,6 @@ var (
 	supportedAgentCLIs = []string{"opencode", "pi", "claude-code", "codex", "gemini"}
 )
 
-// newProjectCmd builds the HIDDEN `ai project` back-compat alias group. The
-// canonical surface is the flattened top-level verbs (`ai create`/`ai list`/`ai
-// delete`); this group keeps existing scripts working but no longer shows in help.
-func newProjectCmd(emitter *output.Emitter, exit *int) *cobra.Command {
-	cmd := &cobra.Command{
-		Use:    "project",
-		Short:  "Create, list, and delete workspaces (alias for the top-level verbs)",
-		Args:   cobra.NoArgs,
-		Hidden: true,
-		RunE:   func(cmd *cobra.Command, _ []string) error { return cmd.Help() },
-	}
-	cmd.AddCommand(
-		newCreateCmd(emitter, exit, "create [name]"),
-		newListCmd(emitter, exit, "list"),
-		newDeleteCmd(emitter, exit, "delete [name]"),
-	)
-	return cmd
-}
-
 func mapProjectErr(err error) error {
 	var platformErr *output.Error
 	if errors.As(err, &platformErr) {

@@ -6,13 +6,12 @@ import (
 )
 
 // This file builds the canonical FLAT top-level verbs that are unique to the
-// flattened surface (`ai destroy`/`ai exec`/`ai doctor`); the create/list/delete
-// verbs live in project.go (shared with the hidden `ai project` alias) and the
-// start/stop/restart/shell/agent/attach/sessions verbs live in lifecycle.go and
-// workspace.go (shared with the hidden `ai workspace` alias). Each verb takes an
-// OPTIONAL [name] positional resolved exactly like `ai workspace …`: an explicit
-// name, then --project, then the workspace that owns the cwd. The JSON envelope
-// `command` keys stay the existing `workspace.*` values for back-compat.
+// flattened surface (`ai destroy`/`ai exec`); the create/list/delete verbs live
+// in project.go and the start/stop/restart/shell/agent/attach/sessions verbs live
+// in lifecycle.go and workspace.go. The consolidated `ai doctor [name]` lives in
+// doctor.go. Each verb takes an OPTIONAL [name] positional resolved by precedence:
+// an explicit name, then --project, then the workspace that owns the cwd. The JSON
+// envelope `command` keys are the `workspace.*` values.
 
 // newDestroyCmd builds the canonical top-level `ai destroy [name]`: tear down the
 // workspace microVM/runtime handle only (the definition, overlay, and host source
@@ -38,8 +37,3 @@ func newExecCmd(emitter *output.Emitter, exit *int) *cobra.Command {
 		RunE:              workspaceExecRunE(emitter, exit),
 	}
 }
-
-// NB: there is intentionally NO top-level `ai doctor [name]` for the workspace
-// runtime check — `ai doctor` is already the platform health command (CLI §10.1).
-// The per-workspace runtime diagnosis stays available via `ai workspace doctor
-// [name]` (the hidden alias), built from workspaceDoctorRunE in workspace.go.

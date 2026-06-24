@@ -10,18 +10,16 @@ import (
 	"github.com/spf13/cobra"
 )
 
-// `ai agent`/`ai attach` (and their workspace.* forms) are interactive-only (they
-// own the terminal and emit no envelope), so under --json they are rejected at
-// exit 2 before ever reaching the Manager — like `ai shell`.
+// `ai agent`/`ai attach` are interactive-only (they own the terminal and emit no
+// envelope), so under --json they are rejected at exit 2 before ever reaching the
+// Manager — like `ai shell`.
 func TestSessionCommandsGatedUnderJSON(test *testing.T) {
 	cases := map[string]struct {
 		builder func(*output.Emitter, *int) *cobra.Command
 		args    []string
 	}{
 		"top-level agent":  {newAgentCmd, []string{"opencode"}},
-		"workspace agent":  {newWorkspaceAgentCmd, []string{"opencode"}},
 		"top-level attach": {newAttachCmd, nil},
-		"workspace attach": {newWorkspaceAttachCmd, nil},
 	}
 	for name, testCase := range cases {
 		test.Run(name, func(test *testing.T) {

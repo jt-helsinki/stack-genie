@@ -108,7 +108,7 @@ func TestWorkspaceIsolationOnHardware(test *testing.T) {
 
 	created, code := harness.CreateProject(test, "iso-test")
 	AssertOK(test, created, code, "project.create")
-	start, code := harness.Run(test, "workspace", "start", "iso-test")
+	start, code := harness.Run(test, "start", "iso-test")
 	AssertOK(test, start, code, "workspace.start")
 
 	// A host-only marker placed outside any workspace mount.
@@ -143,7 +143,7 @@ func TestEgressConfinementOnHardware(test *testing.T) {
 
 	created, code := harness.CreateProject(test, "egress-test")
 	AssertOK(test, created, code, "project.create")
-	start, code := harness.Run(test, "workspace", "start", "egress-test")
+	start, code := harness.Run(test, "start", "egress-test")
 	AssertOK(test, start, code, "workspace.start")
 
 	// Trusted host service (LiteLLM) reachable via AI_PLATFORM_HOST (guest vars).

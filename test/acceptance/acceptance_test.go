@@ -91,10 +91,56 @@ func TestLogsUnknownServiceExits2(test *testing.T) {
 	AssertError(test, envelope, code, 2)
 }
 
-func TestWorkspaceDoctorUnknownProjectExits2(test *testing.T) {
+// The consolidated `ai doctor [name]` always runs to completion and exits 0 with
+// a report (per-check status conveys health), even for an unknown name — a
+// runtime/virtualization shortfall is folded into the report's checks rather than
+// a non-zero exit.
+func TestDoctorAlwaysReportsExit0(test *testing.T) {
 	harness := New(test)
-	envelope, code := harness.Run(test, "workspace", "doctor", "ghost")
-	AssertError(test, envelope, code, 2)
+	envelope, code := harness.Run(test, "doctor", "ghost")
+	AssertOK(test, envelope, code, "doctor")
+	var data struct {
+		Checks []struct {
+			Name   string `json:"name"`
+			Status string `json:"status"`
+		} `json:"checks"`
+	}
+	envelope.dataInto(test, &data)
+	// The platform-dependency checks are always present.
+	names := map[string]bool{}
+	for _, check := range data.Checks {
+		names[check.Name] = true
+	}
+	for _, want := range []string{"container runtime", "microsandbox runtime", "host virtualization"} {
+		if !names[want] {
+			test.Errorf("doctor report missing dependency check %q", want)
+		}
+	}
+}
+
+// `ai doctor` lists every managed service — including the optional open-webui and
+// odysseus — in its SERVICES section (sourced from setup.ServicesStatus). Off
+// hardware the probes report stopped/not-installed; we assert the service NAMES
+// appear, not that they are healthy.
+func TestDoctorListsAllServices(test *testing.T) {
+	harness := New(test)
+	envelope, code := harness.Run(test, "doctor")
+	AssertOK(test, envelope, code, "doctor")
+	var data struct {
+		Checks []struct {
+			Name string `json:"name"`
+		} `json:"checks"`
+	}
+	envelope.dataInto(test, &data)
+	names := map[string]bool{}
+	for _, check := range data.Checks {
+		names[check.Name] = true
+	}
+	for _, want := range []string{"ollama", "litellm", "headroom", "proxy", "dns", "open-webui", "odysseus"} {
+		if !names[want] {
+			test.Errorf("doctor SERVICES section missing %q (got %v)", want, names)
+		}
+	}
 }
 
 func TestStateRepairThenShow(test *testing.T) {
@@ -118,7 +164,7 @@ func TestProjectCreateNoTTYExits2(test *testing.T) {
 	harness := New(test)
 	// harness.Run adds --json, which disables the wizard and requires the flags;
 	// "demo" has no --os, so it exits 2 (CLI §3.1).
-	envelope, code := harness.Run(test, "project", "create", "demo")
+	envelope, code := harness.Run(test, "create", "demo")
 	AssertError(test, envelope, code, 2)
 }
 
@@ -142,7 +188,7 @@ func TestProjectLifecycle(test *testing.T) {
 	}
 
 	// It appears in the list.
-	list, code := harness.Run(test, "project", "list")
+	list, code := harness.Run(test, "list")
 	AssertOK(test, list, code, "project.list")
 	var listData struct {
 		Projects []struct {
@@ -155,14 +201,14 @@ func TestProjectLifecycle(test *testing.T) {
 	}
 
 	// Delete requires --yes.
-	noYes, code := harness.Run(test, "project", "delete", "lifecycle-test")
+	noYes, code := harness.Run(test, "delete", "lifecycle-test")
 	AssertError(test, noYes, code, 2)
 
 	// Delete with --yes succeeds, and the list is empty again.
-	deleted, code := harness.Run(test, "project", "delete", "lifecycle-test", "--yes")
+	deleted, code := harness.Run(test, "delete", "lifecycle-test", "--yes")
 	AssertOK(test, deleted, code, "project.delete")
 
-	after, code := harness.Run(test, "project", "list")
+	after, code := harness.Run(test, "list")
 	AssertOK(test, after, code, "project.list")
 	after.dataInto(test, &listData)
 	if len(listData.Projects) != 0 {
@@ -241,26 +287,33 @@ func TestWorkspaceDoctorOnHardware(test *testing.T) {
 	created, code := harness.CreateProject(test, "doctor-test")
 	AssertOK(test, created, code, "project.create")
 
-	envelope, code := harness.Run(test, "workspace", "doctor", "doctor-test")
-	AssertOK(test, envelope, code, "workspace.doctor")
+	// The consolidated `ai doctor [name]` adds the WORKSPACE-runtime section when a
+	// name is given. On a provisioned host the workspace rootless/virtualization
+	// checks must pass (the platform never runs privileged, workspaces are
+	// microVMs).
+	envelope, code := harness.Run(test, "doctor", "doctor-test")
+	AssertOK(test, envelope, code, "doctor")
 	var data struct {
-		Runtime struct {
-			Rootless   bool `json:"rootless"`
-			Privileged bool `json:"privileged"`
-		} `json:"runtime"`
-		Workspace struct {
-			Kind string `json:"kind"`
-		} `json:"workspace"`
+		Checks []struct {
+			Name   string `json:"name"`
+			Status string `json:"status"`
+		} `json:"checks"`
 	}
 	envelope.dataInto(test, &data)
-	if !data.Runtime.Rootless || data.Runtime.Privileged || data.Workspace.Kind != "microvm" {
-		test.Fatalf("workspace doctor posture: %+v", data)
+	status := map[string]string{}
+	for _, check := range data.Checks {
+		status[check.Name] = check.Status
+	}
+	for _, name := range []string{"workspace rootless", "workspace virtualization"} {
+		if status[name] != "ok" {
+			test.Fatalf("workspace doctor posture: %s = %q, want ok (checks: %+v)", name, status[name], data.Checks)
+		}
 	}
 }
 
 // TestOverlayPersistsAcrossRecreation covers the [S4] persistence criterion
 // (arch §26): a program installed inside the workspace, plus agent state written
-// outside the project mount, must survive `ai workspace destroy` + `start`. This
+// outside the project mount, must survive `ai destroy` + `ai start`. This
 // needs a real microVM, so it runs only on a provisioned host.
 func TestOverlayPersistsAcrossRecreation(test *testing.T) {
 	if !hardwareAvailable() {
@@ -273,16 +326,16 @@ func TestOverlayPersistsAcrossRecreation(test *testing.T) {
 	created, code := harness.CreateProject(test, "overlay-test")
 	AssertOK(test, created, code, "project.create")
 
-	start, code := harness.Run(test, "workspace", "start", "--project", "overlay-test")
+	start, code := harness.Run(test, "start", "--project", "overlay-test")
 	AssertOK(test, start, code, "workspace.start")
 
 	// Write a marker outside the project mount; it must land in the overlay.
 	mark, code := harness.Exec(test, "overlay-test", "sh", "-c", "echo persisted > /root/marker")
 	AssertOK(test, mark, code, "workspace.exec")
 
-	destroy, code := harness.Run(test, "workspace", "destroy", "--project", "overlay-test")
+	destroy, code := harness.Run(test, "destroy", "--project", "overlay-test")
 	AssertOK(test, destroy, code, "workspace.destroy")
-	restart, code := harness.Run(test, "workspace", "start", "--project", "overlay-test")
+	restart, code := harness.Run(test, "start", "--project", "overlay-test")
 	AssertOK(test, restart, code, "workspace.start")
 
 	check, code := harness.Exec(test, "overlay-test", "cat", "/root/marker")
@@ -307,7 +360,7 @@ func TestOSEquivalenceOnHardware(test *testing.T) {
 		created, code := harness.CreateProjectWithOS(test, "os-"+osKey, osKey)
 		AssertOK(test, created, code, "project.create")
 
-		start, code := harness.Run(test, "workspace", "start", "--project", "os-"+osKey)
+		start, code := harness.Run(test, "start", "--project", "os-"+osKey)
 		AssertOK(test, start, code, "workspace.start")
 
 		// Same base tooling surface across every OS.

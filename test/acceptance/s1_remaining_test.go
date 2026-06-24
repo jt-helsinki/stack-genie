@@ -269,7 +269,7 @@ func TestSetupUpgradePreservesStateOnHardware(test *testing.T) {
 	AssertOK(test, upgrade, code, "setup")
 
 	// The project must still be in the index after the upgrade.
-	list, code := harness.Run(test, "project", "list")
+	list, code := harness.Run(test, "list")
 	AssertOK(test, list, code, "project.list")
 	var listData struct {
 		Projects []struct {

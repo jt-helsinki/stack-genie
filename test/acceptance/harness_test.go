@@ -95,11 +95,11 @@ func (harness *Harness) Run(test *testing.T, args ...string) (Envelope, int) {
 	return harness.runRaw(test, append(args, "--json")...)
 }
 
-// Exec runs `ai workspace exec [project] --json -- <argv>` — placing --json
-// before the `--` so it is not swallowed as part of the inner command.
+// Exec runs `ai exec [project] --json -- <argv>` — placing --json before the
+// `--` so it is not swallowed as part of the inner command.
 func (harness *Harness) Exec(test *testing.T, project string, argv ...string) (Envelope, int) {
 	test.Helper()
-	args := []string{"workspace", "exec"}
+	args := []string{"exec"}
 	if project != "" {
 		args = append(args, project)
 	}
