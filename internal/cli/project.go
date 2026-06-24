@@ -25,7 +25,8 @@ type projectsResult struct {
 	Projects []project.Entry `json:"projects"`
 }
 
-// Human renders the workspaces as a table NAME, OS, AGENTS, STATUS (agents joined
+// Human renders the workspaces as a table with every field: NAME, OS, AGENTS,
+// STATUS, plus the microVM handle details ID, CREATED, LAST-STARTED (agents joined
 // with ",", "—" for an empty cell), or a friendly hint when there are none.
 func (result projectsResult) Human() string {
 	if len(result.Projects) == 0 {
@@ -38,9 +39,12 @@ func (result projectsResult) Human() string {
 			orDash(entry.OS),
 			orDash(strings.Join(entry.Agents, ",")),
 			entry.Status,
+			orDash(entry.ID),
+			orDash(entry.Created),
+			orDash(entry.LastStarted),
 		})
 	}
-	return ui.Table([]string{"NAME", "OS", "AGENTS", "STATUS"}, rows)
+	return ui.Table([]string{"NAME", "OS", "AGENTS", "STATUS", "ID", "CREATED", "LAST-STARTED"}, rows)
 }
 
 // orDash renders an em dash for an empty cell so blank fields read clearly.

@@ -182,8 +182,8 @@ func writeProfile(root string, stacks []string) error {
 		profileFile{SchemaVersion: 1, Stacks: stacks})
 }
 
-// Entry is one row of `ai project list` (CLI §3.3): name, os, the active agent
-// CLIs, and the workspace status.
+// Entry is one row of `ai list` (CLI §3.3): name, os, the active agent CLIs, the
+// workspace status, and the microVM handle details (id + lifecycle timestamps).
 type Entry struct {
 	Name   string   `json:"name"`
 	Path   string   `json:"path"`
@@ -192,6 +192,11 @@ type Entry struct {
 	// Status is the project's workspace lifecycle state (started/stopped/…), or
 	// "none" when no workspace has been started for it yet.
 	Status string `json:"status"`
+	// ID is the workspace microVM id (aip-<name>); Created / LastStarted are the
+	// lifecycle timestamps from the saved handle (empty when never started).
+	ID          string `json:"id,omitempty"`
+	Created     string `json:"created,omitempty"`
+	LastStarted string `json:"last_started,omitempty"`
 }
 
 // List returns the registered projects (from the global index), each enriched
@@ -204,7 +209,8 @@ func List() ([]Entry, error) {
 	}
 	entries := make([]Entry, 0, len(index.Projects))
 	for name, indexEntry := range index.Projects {
-		entry := Entry{Name: name, Path: indexEntry.Path, Status: workspaceStatus(name, indexEntry.Path)}
+		entry := Entry{Name: name, Path: indexEntry.Path}
+		entry.ID, entry.Status, entry.Created, entry.LastStarted = workspaceHandle(name, indexEntry.Path)
 		if project, err := state.OpenStore(indexEntry.Path).LoadProject(); err == nil {
 			entry.OS = project.OS
 		}
@@ -216,21 +222,23 @@ func List() ([]Entry, error) {
 	return entries, nil
 }
 
-// workspaceStatus reports the lifecycle status of a project's workspace, or
-// "none" when none has been started (no handle on disk). Unreadable state is
-// reported as "none" rather than failing the whole listing.
-func workspaceStatus(name, root string) string {
+// workspaceHandle reports a project's workspace microVM id and lifecycle handle
+// details: the id is deterministic (aip-<name>) even before a first start; the
+// status is "none" and the timestamps empty when no handle exists yet. An
+// unreadable store is reported as "none" rather than failing the whole listing.
+func workspaceHandle(name, root string) (id, status, created, lastStarted string) {
+	id = workspace.Name(name)
+	status = "none"
 	workspaces, err := state.OpenStore(root).ListWorkspaces()
 	if err != nil {
-		return "none"
+		return id, status, "", ""
 	}
-	wanted := workspace.Name(name)
 	for index := range workspaces {
-		if workspaces[index].ID == wanted {
-			return string(workspaces[index].Status)
+		if workspaces[index].ID == id {
+			return id, string(workspaces[index].Status), workspaces[index].Created, workspaces[index].LastStarted
 		}
 	}
-	return "none"
+	return id, status, "", ""
 }
 
 // Delete removes a project from the index, clears its host-local run/ state, and
