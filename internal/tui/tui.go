@@ -76,7 +76,7 @@ func Run(cwd string) error {
 		tailService, // logs are viewed from the Services view (the `l` key)
 	)
 	projectsView := views.NewProjects(project.List)
-	projectDetail := views.NewProject(projectInfo, workspaceControl)
+	projectDetail := views.NewProject(projectInfo)
 	// The Sessions view resolves the LIVE current project at fetch time (over the
 	// real Manager), so switching projects reflects immediately. With no current
 	// project the lister is not invoked (the view shows "no project selected").
@@ -210,26 +210,6 @@ func tailService(service string) ([]string, error) {
 	return logs.Tail(sources[0], logs.TailLines)
 }
 
-// workspaceControl applies a workspace lifecycle action to a project via the real
-// Manager (the same one the `ai workspace` commands use).
-func workspaceControl(action, projectName string) error {
-	manager := workspace.RealManager(goruntime.GOOS, nowRFC3339)
-	switch action {
-	case "start":
-		_, err := manager.Start(projectName)
-		return err
-	case "stop":
-		return manager.Stop(projectName)
-	case "restart":
-		_, err := manager.Restart(projectName)
-		return err
-	case "destroy":
-		return manager.Destroy(projectName)
-	default:
-		return fmt.Errorf("unknown workspace action %q", action)
-	}
-}
-
 // app is the root tea.Model: it owns the views, the header/footer chrome, and the
 // command palette (the menu, which includes Exit).
 type app struct {
@@ -359,6 +339,16 @@ func (application *app) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case execFinishedMsg:
 		return application, application.projectDetail.Init()
+
+	case views.WorkspaceActionRequestedMsg:
+		// Run a workspace lifecycle action as a suspended subprocess so msb's
+		// (verbose) image-build / boot progress streams to the real terminal rather
+		// than corrupting the TUI's alt-screen, and a destructive `destroy` can
+		// prompt for confirmation. tea.ExecProcess restores the TUI on return.
+		command := exec.Command(executablePath(), "workspace", message.Action, message.Project)
+		return application, tea.ExecProcess(command, func(execErr error) tea.Msg {
+			return execFinishedMsg{err: execErr}
+		})
 
 	case views.AttachRequestedMsg:
 		// Attach to (or create) a workspace session — a real PTY via `ai workspace

@@ -12,14 +12,20 @@ import (
 // workspace status). Injected; the parent wires it over project.List.
 type ProjectInfoFetcher func(name string) (project.Entry, bool, error)
 
-// WorkspaceController applies a workspace lifecycle action (start/stop/restart/
-// destroy) to a project. Injected; the parent wires workspace.RealManager.
-type WorkspaceController func(action, project string) error
-
 // ExecRequestedMsg is emitted when the user asks to open an interactive shell in
 // the current project's workspace (the "e" key). The parent app suspends the TUI
-// and tea.ExecProcess an interactive shell via `ai workspace exec`.
+// and tea.ExecProcess an interactive shell via `ai workspace shell`.
 type ExecRequestedMsg struct {
+	Project string
+}
+
+// WorkspaceActionRequestedMsg is emitted for a workspace lifecycle action
+// (start/stop/restart/destroy). The parent app suspends the TUI and runs
+// `ai workspace <action> <project>` via tea.ExecProcess, so msb's image-build /
+// boot progress streams to the REAL terminal (not the alt-screen, which it would
+// otherwise corrupt) and the TUI is restored — and refreshed — on return.
+type WorkspaceActionRequestedMsg struct {
+	Action  string
 	Project string
 }
 
@@ -28,28 +34,20 @@ type projectRefreshedMsg struct {
 	found bool
 	err   error
 }
-type workspaceActionDoneMsg struct {
-	action  string
-	project string
-	err     error
-}
 
 // Project is the detail view for the current project: its summary and workspace
 // lifecycle (start/stop/restart/destroy).
 type Project struct {
 	info     ProjectInfoFetcher
-	control  WorkspaceController
 	name     string
 	entry    project.Entry
 	hasEntry bool
-	flash    string
 	err      error
 }
 
-// NewProject builds the project-detail view over the injected info fetcher and
-// workspace controller.
-func NewProject(info ProjectInfoFetcher, control WorkspaceController) *Project {
-	return &Project{info: info, control: control}
+// NewProject builds the project-detail view over the injected info fetcher.
+func NewProject(info ProjectInfoFetcher) *Project {
+	return &Project{info: info}
 }
 
 func (view *Project) Title() string { return "Project" }
@@ -93,33 +91,23 @@ func (view *Project) Update(msg tea.Msg) tea.Cmd {
 			view.entry = message.entry
 		}
 		return nil
-	case workspaceActionDoneMsg:
-		view.flash = workspaceActionFlash(message)
-		return view.refreshCmd()
 	case tea.KeyMsg:
 		if view.name == "" {
 			return nil
 		}
+		name := view.name
 		if message.String() == "e" {
-			name := view.name
 			return func() tea.Msg { return ExecRequestedMsg{Project: name} }
 		}
 		action, ok := map[string]string{"s": "start", "x": "stop", "r": "restart", "d": "destroy"}[message.String()]
 		if !ok {
 			return nil
 		}
-		view.flash = ui.Muted.Render(action + "ing workspace…")
-		return view.controlCmd(action)
+		// Lifecycle runs as a suspended subprocess (the app handles this msg), so
+		// msb's progress streams to the terminal instead of corrupting the TUI.
+		return func() tea.Msg { return WorkspaceActionRequestedMsg{Action: action, Project: name} }
 	}
 	return nil
-}
-
-func (view *Project) controlCmd(action string) tea.Cmd {
-	control := view.control
-	name := view.name
-	return func() tea.Msg {
-		return workspaceActionDoneMsg{action: action, project: name, err: control(action, name)}
-	}
 }
 
 func (view *Project) View() string {
@@ -138,9 +126,6 @@ func (view *Project) View() string {
 	body.WriteString(field("agents", strings.Join(view.entry.Agents, ", ")))
 	body.WriteString(field("workspace", view.entry.Status))
 	body.WriteString(field("path", view.entry.Path))
-	if view.flash != "" {
-		body.WriteString("\n" + view.flash)
-	}
 	return body.String()
 }
 
@@ -149,12 +134,4 @@ func field(label, value string) string {
 		value = ui.Muted.Render("—")
 	}
 	return "  " + ui.Muted.Render(label+":") + " " + value + "\n"
-}
-
-func workspaceActionFlash(msg workspaceActionDoneMsg) string {
-	verbs := map[string]string{"start": "started", "stop": "stopped", "restart": "restarted", "destroy": "destroyed"}
-	if msg.err != nil {
-		return ui.Failure.Render(ui.IconFail + " " + msg.action + " " + msg.project + ": " + msg.err.Error())
-	}
-	return ui.Success.Render(ui.IconOK + " " + verbs[msg.action] + " " + msg.project + " workspace")
 }

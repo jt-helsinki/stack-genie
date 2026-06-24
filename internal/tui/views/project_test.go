@@ -8,28 +8,27 @@ import (
 	"github.com/jt-helsinki/ideal-robot/internal/project"
 )
 
-func TestProjectDetailStartActionInvokesController(test *testing.T) {
-	var calls []string
+// TestProjectDetailLifecycleKeyEmitsActionRequest: a lifecycle key emits a
+// WorkspaceActionRequestedMsg so the parent runs it as a suspended subprocess
+// (streaming msb output to the terminal), rather than calling msb on the alt-screen.
+func TestProjectDetailLifecycleKeyEmitsActionRequest(test *testing.T) {
 	view := NewProject(
 		func(name string) (project.Entry, bool, error) {
 			return project.Entry{Name: name, OS: "ubuntu", Status: "stopped"}, true, nil
 		},
-		func(action, projectName string) error { calls = append(calls, action+":"+projectName); return nil },
 	)
 	view.SetProject("app")
 	_ = view.Update(view.Init()()) // refresh the summary
 
-	cmd := view.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("s")})
-	if cmd == nil {
-		test.Fatal("pressing s must return a workspace control command")
-	}
-	done := cmd()
-	if len(calls) != 1 || calls[0] != "start:app" {
-		test.Fatalf("controller calls = %v, want [start:app]", calls)
-	}
-	_ = view.Update(done)
-	if !strings.Contains(view.View(), "started app") {
-		test.Errorf("expected a success flash, got view:\n%s", view.View())
+	for key, wantAction := range map[string]string{"s": "start", "x": "stop", "r": "restart", "d": "destroy"} {
+		cmd := view.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(key)})
+		if cmd == nil {
+			test.Fatalf("pressing %q must emit a workspace action request", key)
+		}
+		requested, ok := cmd().(WorkspaceActionRequestedMsg)
+		if !ok || requested.Action != wantAction || requested.Project != "app" {
+			test.Fatalf("key %q: want WorkspaceActionRequestedMsg{%s, app}, got %#v", key, wantAction, cmd())
+		}
 	}
 }
 
@@ -38,7 +37,6 @@ func TestProjectDetailExecKeyRequestsShell(test *testing.T) {
 		func(name string) (project.Entry, bool, error) {
 			return project.Entry{Name: name, OS: "ubuntu", Status: "started"}, true, nil
 		},
-		func(action, projectName string) error { return nil },
 	)
 	view.SetProject("app")
 	_ = view.Update(view.Init()()) // refresh the summary
@@ -54,7 +52,7 @@ func TestProjectDetailExecKeyRequestsShell(test *testing.T) {
 }
 
 func TestProjectDetailNoSelection(test *testing.T) {
-	view := NewProject(nil, nil)
+	view := NewProject(nil)
 	if cmd := view.Init(); cmd != nil {
 		test.Error("Init with no project selected must be a no-op")
 	}

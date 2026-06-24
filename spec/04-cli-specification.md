@@ -1138,6 +1138,11 @@ below).
   acted on directly; `esc` backs UP to the switcher. The per-project sub-tabs are:
   * **Project** — the project's summary + workspace lifecycle `s`/`x`/`r`/`d`
     (start/stop/restart/destroy) and `e` (an interactive shell in the workspace).
+    Each lifecycle action runs as a **suspended subprocess** (`ai workspace
+    <action>` via `tea.ExecProcess`), so msb's image-build / boot progress streams
+    to the real terminal (with native scrollback) instead of corrupting the
+    alt-screen, and `destroy` can prompt for confirmation; the TUI is restored and
+    refreshed on return.
   * **Network** — egress mode + allow-list + published ports; `m` cycles the mode.
   * **Context** — Headroom strategy + Caveman level; `s`/`c` cycle them.
   * **Secrets** — credential names (never values); `enter` describes the selected

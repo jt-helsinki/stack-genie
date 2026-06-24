@@ -5,9 +5,11 @@ import (
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 	"github.com/jt-helsinki/ideal-robot/internal/project"
 	"github.com/jt-helsinki/ideal-robot/internal/tui/views"
 	"github.com/jt-helsinki/ideal-robot/internal/workspace"
+	"github.com/muesli/termenv"
 )
 
 // fakeView is a minimal View for exercising the app's routing/menu logic.
@@ -102,7 +104,6 @@ func newTestHubApp(test *testing.T, subTitles ...string) (*app, *views.ProjectsH
 	test.Helper()
 	detail := views.NewProject(
 		func(string) (project.Entry, bool, error) { return project.Entry{Name: "app"}, true, nil },
-		func(string, string) error { return nil },
 	)
 	subViews := make([]views.Screen, 0, len(subTitles))
 	for index, title := range subTitles {
@@ -245,7 +246,7 @@ func TestCreateConfirmedClosesOverlayAndRunsWizard(test *testing.T) {
 func TestExecRequestedReturnsCommand(test *testing.T) {
 	application := &app{
 		views:         []View{&fakeView{title: "Project"}},
-		projectDetail: views.NewProject(func(string) (project.Entry, bool, error) { return project.Entry{}, false, nil }, func(string, string) error { return nil }),
+		projectDetail: views.NewProject(func(string) (project.Entry, bool, error) { return project.Entry{}, false, nil }),
 	}
 	if _, cmd := application.Update(views.ExecRequestedMsg{Project: "app"}); cmd == nil {
 		test.Fatal("ExecRequestedMsg must return a command (the in-workspace shell)")
@@ -341,17 +342,29 @@ func TestTabBarListsAllTitles(test *testing.T) {
 	}
 }
 
-// TestTabBarHighlightsActive checks the active tab is bracketed (the accent marker)
-// while the others are not.
+// TestTabBarHighlightsActive checks the active tab is styled differently from the
+// inactive ones. The highlight is colour-only (accent background), so the test
+// forces a colour profile — otherwise lipgloss strips styling on the non-TTY test
+// output and the active/inactive cells would be indistinguishable.
 func TestTabBarHighlightsActive(test *testing.T) {
-	application := newTestApp("Services", "Projects", "Models")
-	application.current = 1 // Projects
-	bar := application.tabBar()
-	if !strings.Contains(bar, "[Projects]") {
-		test.Errorf("active tab not bracketed in %q", bar)
+	lipgloss.SetColorProfile(termenv.TrueColor)
+	test.Cleanup(func() { lipgloss.SetColorProfile(termenv.Ascii) })
+
+	onProjects := newTestApp("Services", "Projects", "Models")
+	onProjects.current = 1
+	onServices := newTestApp("Services", "Projects", "Models")
+	onServices.current = 0
+
+	// All titles still render.
+	for _, title := range []string{"Services", "Projects", "Models"} {
+		if !strings.Contains(onProjects.tabBar(), title) {
+			test.Errorf("tab bar missing title %q", title)
+		}
 	}
-	if strings.Contains(bar, "[Services]") || strings.Contains(bar, "[Models]") {
-		test.Errorf("inactive tabs should not be bracketed: %q", bar)
+	// Moving the active tab changes the rendered bar even though the titles are
+	// identical — i.e. the active tab is highlighted distinctly.
+	if onProjects.tabBar() == onServices.tabBar() {
+		test.Error("the active tab should render differently from the inactive tabs")
 	}
 }
 

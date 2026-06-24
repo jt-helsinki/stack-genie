@@ -122,8 +122,15 @@ func (sandbox realSandbox) Start(name string) error {
 	if err := sandbox.ensureInstalled(); err != nil {
 		return err
 	}
-	if err := runStreaming("msb", "start", name); err != nil {
-		return fmt.Errorf("msb start %s: %w", name, err)
+	// Start means "ensure the microVM is booted". `msb create --replace` (in
+	// Create) already boots it, so a follow-up start reports "already running" —
+	// that is success here, not a failure. Capture the output to tell that case
+	// apart from a real error (and to keep msb's noise out of the caller's screen).
+	if combined, err := runCaptured("msb", "start", name); err != nil {
+		if strings.Contains(combined, "already running") {
+			return nil
+		}
+		return fmt.Errorf("msb start %s: %w: %s", name, err, strings.TrimSpace(combined))
 	}
 	return nil
 }
@@ -368,6 +375,18 @@ func runStreaming(name string, args ...string) error {
 	command.Stdout = os.Stdout
 	command.Stderr = os.Stderr
 	return command.Run()
+}
+
+// runCaptured runs a command and returns its combined stdout+stderr, used when the
+// caller needs to inspect the output (e.g. to treat an idempotent "already
+// running" as success) rather than stream it to the terminal.
+func runCaptured(name string, args ...string) (string, error) {
+	command := exec.Command(name, args...)
+	var combined bytes.Buffer
+	command.Stdout = &combined
+	command.Stderr = &combined
+	err := command.Run()
+	return combined.String(), err
 }
 
 // RealManager builds a Manager wired to the actual host (used by the CLI).
