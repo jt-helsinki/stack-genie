@@ -478,6 +478,34 @@ func TestExecInteractiveUnknownProject(test *testing.T) {
 	}
 }
 
+// TestInteractiveRequiresRunningWorkspace: a shell/agent/sessions request against
+// a workspace whose microVM is not running fails cleanly with ErrNotStarted
+// (rather than attaching a PTY to a missing VM, which can corrupt the terminal).
+func TestInteractiveRequiresRunningWorkspace(test *testing.T) {
+	seedProject(test, "app")
+	// InspectNetwork reports no sandbox (the workspace was never started).
+	notRunning := func() *fakeSandbox { return &fakeSandbox{inspectErr: ErrNotRunning} }
+
+	if err := newManager(&fakeBuilder{}, notRunning()).Shell("app"); !errors.Is(err, ErrNotStarted) {
+		test.Fatalf("Shell on a not-running workspace: want ErrNotStarted, got %v", err)
+	}
+	if err := newManager(&fakeBuilder{}, notRunning()).Agent("app", "opencode"); !errors.Is(err, ErrNotStarted) {
+		test.Fatalf("Agent on a not-running workspace: want ErrNotStarted, got %v", err)
+	}
+	if err := newManager(&fakeBuilder{}, notRunning()).Attach("app", "shell"); !errors.Is(err, ErrNotStarted) {
+		test.Fatalf("Attach on a not-running workspace: want ErrNotStarted, got %v", err)
+	}
+	if _, err := newManager(&fakeBuilder{}, notRunning()).ListSessions("app"); !errors.Is(err, ErrNotStarted) {
+		test.Fatalf("ListSessions on a not-running workspace: want ErrNotStarted, got %v", err)
+	}
+	// A not-running shell must NOT have attached a PTY (no msb exec -t).
+	sandbox := notRunning()
+	_ = newManager(&fakeBuilder{}, sandbox).Shell("app")
+	if sandbox.interactiveArgv != nil {
+		test.Fatalf("a not-running shell must not attach a PTY, ran %v", sandbox.interactiveArgv)
+	}
+}
+
 func TestExecCarriesInnerResult(test *testing.T) {
 	seedProject(test, "app")
 	sandbox := &fakeSandbox{execResult: ExecResult{ExitCode: 7, Stdout: "hi"}}

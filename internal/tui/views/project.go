@@ -42,6 +42,7 @@ type Project struct {
 	name     string
 	entry    project.Entry
 	hasEntry bool
+	flash    string
 	err      error
 }
 
@@ -89,6 +90,7 @@ func (view *Project) Update(msg tea.Msg) tea.Cmd {
 		view.hasEntry = message.found
 		if message.err == nil && message.found {
 			view.entry = message.entry
+			view.flash = "" // a fresh status supersedes any stale hint
 		}
 		return nil
 	case tea.KeyMsg:
@@ -97,6 +99,13 @@ func (view *Project) Update(msg tea.Msg) tea.Cmd {
 		}
 		name := view.name
 		if message.String() == "e" {
+			// A shell only works once the workspace is running; otherwise opening it
+			// would suspend the TUI to a subprocess that immediately fails. Hint
+			// inline instead.
+			if view.entry.Status != "started" {
+				view.flash = ui.Muted.Render("workspace not running — press s to start it first")
+				return nil
+			}
 			return func() tea.Msg { return ExecRequestedMsg{Project: name} }
 		}
 		action, ok := map[string]string{"s": "start", "x": "stop", "r": "restart", "d": "destroy"}[message.String()]
@@ -126,6 +135,9 @@ func (view *Project) View() string {
 	body.WriteString(field("agents", strings.Join(view.entry.Agents, ", ")))
 	body.WriteString(field("workspace", view.entry.Status))
 	body.WriteString(field("path", view.entry.Path))
+	if view.flash != "" {
+		body.WriteString("\n" + view.flash)
+	}
 	return body.String()
 }
 

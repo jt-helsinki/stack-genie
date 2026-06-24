@@ -416,11 +416,35 @@ func (manager Manager) Exec(project string, argv []string) (ExecResult, error) {
 	return manager.Sandbox.Exec(Name(project), argv)
 }
 
+// requireRunning verifies the project's workspace microVM exists before an
+// operation that assumes it. It matters most for the interactive PTY path: `msb
+// exec -t` against a MISSING microVM can leave the terminal in raw mode, so from
+// the TUI (which runs it via tea.ExecProcess) the whole screen appears to vanish.
+// The lightweight inspect path returns ErrNotRunning when no sandbox resolves; we
+// remap that to ErrNotStarted so the caller tells the user to start it first. Any
+// other inspect outcome (success, or a transient error) lets the operation proceed
+// rather than falsely blocking a shell the user explicitly asked for.
+func (manager Manager) requireRunning(project string) error {
+	switch _, err := manager.Sandbox.InspectNetwork(Name(project)); {
+	case errors.Is(err, ErrNotRunning):
+		return fmt.Errorf("%w: %q", ErrNotStarted, project)
+	case errors.Is(err, ErrMsbMissing):
+		return err
+	default:
+		return nil
+	}
+}
+
 // ExecInteractive runs argv inside the project's running workspace microVM with
 // the caller's terminal attached (a real PTY), for interactive shells and agent
-// CLIs. Only infrastructure failures are returned (§4.5).
+// CLIs. It checks the microVM is up first so a not-yet-started workspace fails
+// cleanly (ErrNotStarted) instead of attaching a PTY to a missing VM. Only
+// infrastructure failures are returned (§4.5).
 func (manager Manager) ExecInteractive(project string, argv []string) error {
 	if _, err := resolveProjectRoot(project); err != nil {
+		return err
+	}
+	if err := manager.requireRunning(project); err != nil {
 		return err
 	}
 	return manager.Sandbox.ExecInteractive(Name(project), argv)
@@ -464,6 +488,11 @@ func (manager Manager) Agent(project, cli string) error {
 // exits non-zero with "no server running" — that is ZERO sessions, not an error.
 func (manager Manager) ListSessions(project string) ([]Session, error) {
 	if _, err := resolveProjectRoot(project); err != nil {
+		return nil, err
+	}
+	// A not-yet-started workspace has no microVM to query — report that cleanly
+	// rather than surfacing a raw msb "sandbox not found" error.
+	if err := manager.requireRunning(project); err != nil {
 		return nil, err
 	}
 	result, err := manager.Sandbox.Exec(Name(project), []string{

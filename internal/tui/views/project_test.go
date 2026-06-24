@@ -51,6 +51,26 @@ func TestProjectDetailExecKeyRequestsShell(test *testing.T) {
 	}
 }
 
+// TestProjectDetailShellGuardedWhenNotRunning: pressing e on a not-running
+// workspace shows an inline hint and does NOT emit an exec request (which would
+// suspend the TUI into a doomed subprocess).
+func TestProjectDetailShellGuardedWhenNotRunning(test *testing.T) {
+	view := NewProject(
+		func(name string) (project.Entry, bool, error) {
+			return project.Entry{Name: name, OS: "ubuntu", Status: "none"}, true, nil
+		},
+	)
+	view.SetProject("app")
+	_ = view.Update(view.Init()())
+
+	if cmd := view.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("e")}); cmd != nil {
+		test.Fatal("e on a not-running workspace must not emit an exec request")
+	}
+	if !strings.Contains(view.View(), "not running") {
+		test.Errorf("expected a 'not running' hint, got:\n%s", view.View())
+	}
+}
+
 func TestProjectDetailNoSelection(test *testing.T) {
 	view := NewProject(nil)
 	if cmd := view.Init(); cmd != nil {
