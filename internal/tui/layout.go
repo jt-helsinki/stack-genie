@@ -19,11 +19,16 @@ import (
 // body is wrapped in a rounded border (two lines + two columns) with one column of
 // inner padding per side.
 const (
-	tabRows    = 1
-	footerRows = 1
-	borderRows = 2
-	borderCols = 2
-	bodyPadX   = 1
+	headerGapRows = 1 // blank line between the header and the tab bar
+	tabRows       = 1
+	footerRows    = 1
+	borderRows    = 2
+	borderCols    = 2
+	bodyPadX      = 1
+	// commandColumns is how many key bindings sit per row in the header; logoGap is
+	// the spacer between the logo and the command list.
+	commandColumns = 4
+	logoGap        = "      "
 )
 
 // aiLogo is the compact ASCII wordmark shown in the header's top-left corner.
@@ -40,7 +45,7 @@ type keyHint struct{ key, desc string }
 // padding. Both dimensions clamp to ≥1 so a tiny window never panics.
 func (application *app) bodyContentSize() (width, height int) {
 	width = application.width - borderCols - 2*bodyPadX
-	chrome := lipgloss.Height(application.header()) + tabRows + footerRows + borderRows
+	chrome := lipgloss.Height(application.header()) + headerGapRows + tabRows + footerRows + borderRows
 	height = application.height - chrome
 	if width < 1 {
 		width = 1
@@ -55,12 +60,11 @@ func (application *app) bodyContentSize() (width, height int) {
 // active context's key bindings as a grid (see commandsPanel).
 func (application *app) header() string {
 	logo := application.logo()
-	gap := "  "
-	panelWidth := application.width - lipgloss.Width(logo) - lipgloss.Width(gap)
+	panelWidth := application.width - lipgloss.Width(logo) - lipgloss.Width(logoGap)
 	if panelWidth < 1 {
 		panelWidth = 1
 	}
-	return lipgloss.JoinHorizontal(lipgloss.Top, logo, gap, application.commandsPanel(panelWidth))
+	return lipgloss.JoinHorizontal(lipgloss.Top, logo, logoGap, application.commandsPanel(panelWidth))
 }
 
 // logo renders the ASCII wordmark in the theme accent.
@@ -68,43 +72,46 @@ func (application *app) logo() string {
 	return lipgloss.NewStyle().Bold(true).Foreground(ui.Accent()).Render(strings.Join(aiLogo, "\n"))
 }
 
-// commandsPanel lays the active context's key bindings out as a tidy grid (key in
-// the accent, action muted), wrapped to fit width. It is context-aware: an open
-// overlay shows the overlay's keys; otherwise the active view's Hints() plus the
-// global keys.
-func (application *app) commandsPanel(width int) string {
+// commandsPanel lays the active context's key bindings out as aligned
+// "<key>  action" columns — commandColumns per row, the bracketed key labels all
+// padded to the same width so the actions line up, with a gutter between items and
+// a left margin. Context-aware: an open overlay shows the overlay's keys;
+// otherwise the active view's Hints() plus the global keys.
+func (application *app) commandsPanel(_ int) string {
 	hints := application.currentHints()
 	if len(hints) == 0 {
 		return ""
 	}
 	keyStyle := lipgloss.NewStyle().Bold(true).Foreground(ui.Accent())
 
-	cellWidth := 0
+	const keyGutter = 2 // spaces between the <key> label and its action
+	const itemGap = 3   // spaces between items across a row
+	keyWidth, descWidth := 0, 0
 	for _, hint := range hints {
-		if candidate := lipgloss.Width(hint.key + " " + hint.desc); candidate > cellWidth {
-			cellWidth = candidate
+		if labelWidth := lipgloss.Width("<" + hint.key + ">"); labelWidth > keyWidth {
+			keyWidth = labelWidth
+		}
+		if actionWidth := lipgloss.Width(hint.desc); actionWidth > descWidth {
+			descWidth = actionWidth
 		}
 	}
-	cellWidth += 2 // gutter between columns
-	columns := width / cellWidth
-	if columns < 1 {
-		columns = 1
-	}
-	cell := lipgloss.NewStyle().Width(cellWidth)
+	keyCell := lipgloss.NewStyle().Width(keyWidth + keyGutter)
+	item := lipgloss.NewStyle().Width(keyWidth + keyGutter + descWidth + itemGap)
 
 	var rows []string
-	for start := 0; start < len(hints); start += columns {
-		end := start + columns
+	for start := 0; start < len(hints); start += commandColumns {
+		end := start + commandColumns
 		if end > len(hints) {
 			end = len(hints)
 		}
 		cells := make([]string, 0, end-start)
 		for _, hint := range hints[start:end] {
-			cells = append(cells, cell.Render(keyStyle.Render(hint.key)+" "+ui.Muted.Render(hint.desc)))
+			label := keyCell.Render(keyStyle.Render("<" + hint.key + ">"))
+			cells = append(cells, item.Render(label+ui.Muted.Render(hint.desc)))
 		}
 		rows = append(rows, lipgloss.JoinHorizontal(lipgloss.Top, cells...))
 	}
-	return lipgloss.JoinVertical(lipgloss.Left, rows...)
+	return lipgloss.NewStyle().MarginLeft(1).Render(lipgloss.JoinVertical(lipgloss.Left, rows...))
 }
 
 // currentHints is the key bindings for the header grid: the active overlay's keys

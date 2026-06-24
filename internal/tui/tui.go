@@ -503,6 +503,7 @@ func (application *app) View() string {
 	return lipgloss.JoinVertical(
 		lipgloss.Left,
 		application.header(),
+		"", // headerGapRows: breathing room between the header and the tab bar
 		application.tabBar(),
 		application.body(content),
 		application.footer(),
