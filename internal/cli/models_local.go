@@ -198,97 +198,182 @@ func newModelsPopularCmd(emitter *output.Emitter, exit *int) *cobra.Command {
 	}
 }
 
-// modelsPullResult is the `ai models pull` payload.
-type modelsPullResult struct {
+// modelPullOutcome is the per-model result of a (multi-)pull: the exact reference
+// and either success or the error message.
+type modelPullOutcome struct {
 	Model string `json:"model"`
+	OK    bool   `json:"ok"`
+	Error string `json:"error,omitempty"`
+}
+
+// modelsPullResult is the `ai models pull` payload: one outcome per requested model.
+type modelsPullResult struct {
+	Pulled []modelPullOutcome `json:"pulled"`
 }
 
 func (result modelsPullResult) Human() string {
-	return ui.Success.Render(ui.IconOK) + " pulled " + result.Model
+	var builder strings.Builder
+	for index, outcome := range result.Pulled {
+		if index > 0 {
+			builder.WriteString("\n")
+		}
+		if outcome.OK {
+			builder.WriteString(ui.Success.Render(ui.IconOK) + " pulled " + outcome.Model)
+		} else {
+			builder.WriteString(ui.Failure.Render(ui.IconFail) + " " + outcome.Model + ": " + outcome.Error)
+		}
+	}
+	return builder.String()
 }
 
 func newModelsPullCmd(emitter *output.Emitter, exit *int) *cobra.Command {
 	return &cobra.Command{
-		Use:   "pull [name]",
-		Short: "Download a model into the local (Ollama) store",
-		Long: "Download a model into the local Ollama store. With a name argument (or under\n" +
-			"--json / no TTY) the given reference is pulled directly — this is the custom-\n" +
-			"reference path (e.g. `llama3.2:3b`, or `hf.co/user/model`). On a terminal with\n" +
-			"no argument you pick from the popular models (a bundled snapshot), or\n" +
-			"choose \"enter a custom model…\" to type any reference. Re-pulling an installed\n" +
-			"model updates it (there is no separate update command).",
-		Args: cobra.MaximumNArgs(1),
+		Use:   "pull [name...]",
+		Short: "Download one or more models into the local (Ollama) store",
+		Long: "Download one or more models into the local Ollama store. With name arguments\n" +
+			"(or under --json / no TTY) each given reference is pulled in turn — this is\n" +
+			"the custom-reference path (e.g. `llama3.2:3b qwen2.5:7b`, or `hf.co/user/model`).\n" +
+			"On a terminal with no arguments you check off any number of popular models (a\n" +
+			"bundled snapshot), and may also tick \"enter custom model(s)…\" to type extra\n" +
+			"references. Every selected model is pulled; the run continues past a failure\n" +
+			"and reports a per-model summary. Re-pulling an installed model updates it\n" +
+			"(there is no separate update command).",
+		Args: cobra.ArbitraryArgs,
 		RunE: func(_ *cobra.Command, args []string) error {
-			name := ""
-			if len(args) == 1 {
-				name = strings.TrimSpace(args[0])
-			}
-			if name == "" {
+			names := dedupeModelNames(args)
+			if len(names) == 0 {
 				if !interactive(emitter) {
 					*exit = emitter.Failure("models.pull", output.Errorf(output.ExitInvalidInput,
-						"specify a model to pull (e.g. `ai models pull llama3.2`)"))
+						"specify one or more models to pull (e.g. `ai models pull llama3.2 qwen2.5:7b`)"))
 					return nil
 				}
-				picked, err := promptModelToPull()
+				picked, err := promptModelsToPull()
 				if err != nil {
 					*exit = emitter.Failure("models.pull", err)
 					return nil
 				}
-				name = picked
+				names = picked
+			}
+			if len(names) == 0 {
+				// Interactive: nothing checked / entered → a clean cancellation.
+				*exit = emitter.Failure("models.pull", output.Errorf(output.ExitInvalidInput, "cancelled"))
+				return nil
 			}
 
 			client := ollamaClient()
-			pull := func() error {
-				return client.Pull(name, func(progress ollama.PullProgress) {
-					// hardware bring-up: a future revision can render a live byte-
-					// progress bar; the spinner already reflects ongoing work.
-					_ = progress
-				})
+			outcomes := make([]modelPullOutcome, 0, len(names))
+			anyFailed := false
+			var lastErr error
+			for index, name := range names {
+				label := fmt.Sprintf("pulling %s… (%d/%d)", name, index+1, len(names))
+				pull := func() error {
+					return client.Pull(name, func(progress ollama.PullProgress) {
+						// hardware bring-up: a future revision can render a live byte-
+						// progress bar; the spinner already reflects ongoing work.
+						_ = progress
+					})
+				}
+				var err error
+				if ui.Enabled(emitter) {
+					err = ui.RunWithSpinner(emitter.Err, label, pull)
+				} else {
+					err = pull()
+				}
+				if err != nil {
+					anyFailed = true
+					lastErr = err
+					outcomes = append(outcomes, modelPullOutcome{Model: name, OK: false, Error: err.Error()})
+					continue
+				}
+				outcomes = append(outcomes, modelPullOutcome{Model: name, OK: true})
 			}
-			var err error
-			if ui.Enabled(emitter) {
-				err = ui.RunWithSpinner(emitter.Err, "pulling "+name, pull)
-			} else {
-				err = pull()
-			}
-			if err != nil {
-				*exit = emitter.Failure("models.pull", ollamaErr("models.pull", err))
+
+			result := modelsPullResult{Pulled: outcomes}
+			if anyFailed {
+				// Report the per-model summary but exit non-zero. The exit code is
+				// mapped from the last failure (e.g. unreachable Ollama → exit 3);
+				// the per-model outcomes ride along in error.details (JSON) and the
+				// human message lists each failure.
+				failed := make([]string, 0, len(outcomes))
+				for _, outcome := range outcomes {
+					if !outcome.OK {
+						failed = append(failed, outcome.Model+": "+outcome.Error)
+					}
+				}
+				mapped := ollamaErr("models.pull", lastErr).(*output.Error)
+				summary := output.Errorf(mapped.Code, "%d of %d models failed to pull:\n  %s",
+					len(failed), len(outcomes), strings.Join(failed, "\n  ")).WithDetails(result)
+				*exit = emitter.Failure("models.pull", summary)
 				return nil
 			}
-			*exit = emitter.Success("models.pull", modelsPullResult{Model: name})
+			*exit = emitter.Success("models.pull", result)
 			return nil
 		},
 	}
 }
 
-// promptModelToPull presents the popular models (from the bundled snapshot) plus a
-// final "enter a custom model…" option; choosing the latter prompts for a free-text
-// reference. If the snapshot is somehow unavailable it falls back to just the
-// custom-entry prompt — the picker must never block pulling. Returns the chosen/
-// typed model name. Only call on an interactive terminal.
-func promptModelToPull() (string, error) {
+// dedupeModelNames trims, drops empties, and removes duplicate references while
+// preserving first-seen order.
+func dedupeModelNames(names []string) []string {
+	seen := make(map[string]struct{}, len(names))
+	out := make([]string, 0, len(names))
+	for _, raw := range names {
+		name := strings.TrimSpace(raw)
+		if name == "" {
+			continue
+		}
+		if _, ok := seen[name]; ok {
+			continue
+		}
+		seen[name] = struct{}{}
+		out = append(out, name)
+	}
+	return out
+}
+
+// promptModelsToPull presents the popular models (from the bundled snapshot) as a
+// CHECKBOX multi-select plus a final "enter custom model(s)…" checkbox; ticking the
+// latter prompts for free-text references (space- or comma-separated) which are added
+// to the selection. If the snapshot is unavailable it falls back to the free-text
+// custom-entry prompt (still multiple). Returns the de-duplicated set of references
+// (possibly empty → cancelled). Only call on an interactive terminal.
+func promptModelsToPull() ([]string, error) {
 	popular, popularErr := ollamaPopular()
 	if popularErr != nil || len(popular) == 0 {
 		// The popular list is unavailable; don't block pulling — go straight to the
-		// free-text custom-entry prompt.
-		return promptCustomModel()
+		// free-text custom-entry prompt (still allows multiple, space/comma separated).
+		return promptCustomModels()
 	}
 	options := make([]huh.Option[string], 0, len(popular)+1)
 	for _, candidate := range popular {
 		options = append(options, huh.NewOption(popularPickerLabel(candidate), candidate.Name))
 	}
-	options = append(options, huh.NewOption("✎ enter a custom model…", customModelOption))
+	options = append(options, huh.NewOption("✎ enter custom model(s)…", customModelOption))
 
-	choice, err := promptChoice("Model to pull",
-		"pick a popular model, or enter a custom reference (e.g. llama3.2:3b, hf.co/user/model)",
-		options, options[0].Value)
+	selected, err := promptMultiChoice("Models to pull",
+		"check any number; tick ✎ to also type custom references (e.g. llama3.2:3b, hf.co/user/model)",
+		options)
 	if err != nil {
-		return "", err
+		return nil, err
 	}
-	if choice != customModelOption {
-		return choice, nil
+
+	names := make([]string, 0, len(selected))
+	wantCustom := false
+	for _, value := range selected {
+		if value == customModelOption {
+			wantCustom = true
+			continue
+		}
+		names = append(names, value)
 	}
-	return promptCustomModel()
+	if wantCustom {
+		custom, customErr := promptCustomModels()
+		if customErr != nil {
+			return nil, customErr
+		}
+		names = append(names, custom...)
+	}
+	return dedupeModelNames(names), nil
 }
 
 // popularPickerLabel formats a popular model variant as "name — size" for the pull
@@ -302,20 +387,31 @@ func popularPickerLabel(model ollama.PopularModel) string {
 	return model.Name + " — " + size
 }
 
-// promptCustomModel asks for a free-text model reference (the custom-entry path).
-func promptCustomModel() (string, error) {
-	custom, err := promptText("Custom model reference",
-		"the Ollama model to pull (e.g. llama3.2:3b, qwen2.5:7b, hf.co/user/model)", "",
+// promptCustomModels asks for one or more free-text model references (the custom-
+// entry path), space- or comma-separated (e.g. "llama3.2:1b qwen2.5:7b"). Returns
+// the parsed, de-duplicated references.
+func promptCustomModels() ([]string, error) {
+	custom, err := promptText("Custom model reference(s)",
+		"space- or comma-separated Ollama models to pull (e.g. llama3.2:3b qwen2.5:7b, hf.co/user/model)", "",
 		func(value string) error {
-			if strings.TrimSpace(value) == "" {
-				return errors.New("enter a model reference")
+			if len(parseModelRefs(value)) == 0 {
+				return errors.New("enter at least one model reference")
 			}
 			return nil
 		})
 	if err != nil {
-		return "", err
+		return nil, err
 	}
-	return strings.TrimSpace(custom), nil
+	return parseModelRefs(custom), nil
+}
+
+// parseModelRefs splits a free-text entry into model references on whitespace and
+// commas, dropping empties and duplicates.
+func parseModelRefs(value string) []string {
+	fields := strings.FieldsFunc(value, func(runeValue rune) bool {
+		return runeValue == ',' || runeValue == ' ' || runeValue == '\t' || runeValue == '\n'
+	})
+	return dedupeModelNames(fields)
 }
 
 // modelsRmResult is the `ai models rm` payload.

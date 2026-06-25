@@ -7,9 +7,11 @@ type Fake struct {
 	ListModels []Model
 	ListErr    error
 
-	PullFrames []PullProgress
-	PullErr    error
-	PulledName string // captures the last name passed to Pull
+	PullFrames  []PullProgress
+	PullErr     error
+	PulledName  string           // captures the last name passed to Pull
+	PulledNames []string         // captures every name passed to Pull, in order
+	PullErrs    map[string]error // per-name Pull error (overrides PullErr when the name has an entry)
 
 	RemoveErr   error
 	RemovedName string // captures the last name passed to Remove
@@ -22,9 +24,15 @@ func (fake *Fake) List() ([]Model, error) { return fake.ListModels, fake.ListErr
 
 func (fake *Fake) Pull(name string, progress func(PullProgress)) error {
 	fake.PulledName = name
+	fake.PulledNames = append(fake.PulledNames, name)
 	if progress != nil {
 		for _, frame := range fake.PullFrames {
 			progress(frame)
+		}
+	}
+	if fake.PullErrs != nil {
+		if err, ok := fake.PullErrs[name]; ok {
+			return err
 		}
 	}
 	return fake.PullErr

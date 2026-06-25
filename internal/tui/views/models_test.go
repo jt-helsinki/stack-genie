@@ -2,6 +2,7 @@ package views
 
 import (
 	"errors"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -216,6 +217,137 @@ func TestModelsRemoveSelectedInstalled(test *testing.T) {
 	}
 	if msg.Name != "llama3.2:3b" {
 		test.Fatalf("remove requested for %q, want llama3.2:3b", msg.Name)
+	}
+}
+
+// manyLocalModels returns a lister of count installed models with predictable names
+// (model-00, model-01, …) so tests can assert which window is rendered.
+func manyLocalModels(count int) LocalModelLister {
+	return func() ([]ollama.Model, error) {
+		models := make([]ollama.Model, 0, count)
+		for index := 0; index < count; index++ {
+			name := "model-0" + strconv.Itoa(index)
+			if index >= 10 {
+				name = "model-" + strconv.Itoa(index)
+			}
+			models = append(models, ollama.Model{Name: name, Size: 100, ParameterSize: "1B"})
+		}
+		return models, nil
+	}
+}
+
+// loadedScrollView builds a Models view with count local models, a fixed pane size,
+// and the local list loaded — ready to drive cursor movement.
+func loadedScrollView(test *testing.T, count, width, height int) *Models {
+	test.Helper()
+	view := NewModels(
+		func() (litellm.StatusInfo, error) { return litellm.StatusInfo{Healthy: true, Default: "gemma4"}, nil },
+		func(string) (litellm.TestResult, error) { return litellm.TestResult{}, nil },
+		manyLocalModels(count),
+	)
+	refreshModels(view)
+	_ = view.Update(view.listCmd()())
+	view.SetSize(width, height)
+	return view
+}
+
+func pressDown(view *Models) { _ = view.Update(tea.KeyMsg{Type: tea.KeyDown}) }
+func pressUp(view *Models)   { _ = view.Update(tea.KeyMsg{Type: tea.KeyUp}) }
+
+// Moving the cursor DOWN within the visible window does NOT change the offset; only
+// crossing the bottom edge advances it (by one per step).
+func TestModelsScrollEdgeRule(test *testing.T) {
+	view := loadedScrollView(test, 30, 80, 12)
+	visible := view.visibleRows()
+	if visible < 2 || visible >= 30 {
+		test.Fatalf("test needs a clipped window: visibleRows=%d of 30", visible)
+	}
+
+	// Move down to the LAST visible row — offset must stay 0 the whole way.
+	for step := 0; step < visible-1; step++ {
+		pressDown(view)
+		if view.offset != 0 {
+			test.Fatalf("offset moved to %d while cursor (%d) still inside the window", view.offset, view.cursor)
+		}
+	}
+	if view.cursor != visible-1 {
+		test.Fatalf("cursor = %d, want %d (last visible row)", view.cursor, visible-1)
+	}
+
+	// One more step crosses the bottom edge: offset advances by exactly one.
+	pressDown(view)
+	if view.offset != 1 {
+		test.Fatalf("offset = %d after crossing the bottom edge, want 1", view.offset)
+	}
+	pressDown(view)
+	if view.offset != 2 {
+		test.Fatalf("offset = %d after a second cross, want 2", view.offset)
+	}
+}
+
+// Scrolling back UP past the top edge moves the offset back to the cursor.
+func TestModelsScrollUpEdgeRule(test *testing.T) {
+	view := loadedScrollView(test, 30, 80, 12)
+	visible := view.visibleRows()
+	// Drive the cursor to the bottom so the window is scrolled down.
+	for step := 0; step < 29; step++ {
+		pressDown(view)
+	}
+	if view.cursor != 29 {
+		test.Fatalf("cursor = %d, want 29 (bottom)", view.cursor)
+	}
+	bottomOffset := view.offset
+	if bottomOffset != 30-visible {
+		test.Fatalf("offset = %d at bottom, want %d", bottomOffset, 30-visible)
+	}
+	// Move up within the window — offset unchanged until we cross the top edge.
+	pressUp(view)
+	if view.offset != bottomOffset {
+		test.Fatalf("offset changed to %d moving up within the window", view.offset)
+	}
+}
+
+// The rendered local list never exceeds visibleRows, and the cursor is always within
+// the rendered window — regardless of where the cursor sits.
+func TestModelsViewWindowFitsAndKeepsCursorVisible(test *testing.T) {
+	view := loadedScrollView(test, 30, 80, 12)
+	visible := view.visibleRows()
+	for target := 0; target < 30; target++ {
+		// Move the cursor to `target`.
+		for view.cursor < target {
+			pressDown(view)
+		}
+		rendered := view.View()
+		// Count rendered local rows (each prefixed with the padded name "model-").
+		shown := strings.Count(rendered, "model-")
+		if shown > visible {
+			test.Fatalf("cursor=%d: rendered %d local rows, exceeds visibleRows=%d", target, shown, visible)
+		}
+		// The cursor's row must appear in the rendered window.
+		name := view.rows[view.cursor].name
+		if !strings.Contains(rendered, name) {
+			test.Fatalf("cursor=%d: row %q not visible in window (offset=%d):\n%s", target, name, view.offset, rendered)
+		}
+	}
+}
+
+// When the list is clipped, the view shows a "↑/↓ more" affordance.
+func TestModelsViewShowsScrollAffordanceWhenClipped(test *testing.T) {
+	view := loadedScrollView(test, 30, 80, 12)
+	if !strings.Contains(view.View(), "more") {
+		test.Errorf("clipped list should show a scroll affordance:\n%s", view.View())
+	}
+}
+
+// A short list that fits the pane is not clipped and renders every row.
+func TestModelsViewNoClipWhenFits(test *testing.T) {
+	view := loadedScrollView(test, 3, 80, 40)
+	rendered := view.View()
+	if strings.Count(rendered, "model-") != 3 {
+		test.Fatalf("a fitting list should render all 3 rows:\n%s", rendered)
+	}
+	if strings.Contains(rendered, "↑/↓ more") {
+		test.Errorf("a fitting list should not show the scroll affordance:\n%s", rendered)
 	}
 }
 

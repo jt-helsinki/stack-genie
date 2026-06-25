@@ -65,11 +65,19 @@ type Models struct {
 	status   litellm.StatusInfo
 	rows     []localRow
 	cursor   int
+	offset   int // scroll offset: index of the first VISIBLE local row
+	width    int // pane width  (from SetSize)
+	height   int // pane height (from SetSize)
 	flash    string
 	err      error
 	localErr error
 	loaded   bool
 }
+
+// maxServedModelsShown caps how many live served-model lines the routing section
+// renders before collapsing the rest into a "+K more" note, so the cursor-driven
+// local list always has room within the pane.
+const maxServedModelsShown = 6
 
 // NewModels builds the models view over the injected gateway status fetcher,
 // gateway tester, and local-store lister.
@@ -77,9 +85,16 @@ func NewModels(fetch ModelStatusFetcher, test ModelTester, list LocalModelLister
 	return &Models{fetch: fetch, test: test, list: list}
 }
 
-func (view *Models) Title() string    { return "Models" }
-func (view *Models) Hints() string    { return "↑/↓ select · t test default · p pull · d remove" }
-func (view *Models) SetSize(int, int) {}
+func (view *Models) Title() string { return "Models" }
+func (view *Models) Hints() string { return "↑/↓ select · t test default · p pull · d remove" }
+
+// SetSize records the pane dimensions so View() can window the local list to fit
+// (the routing/gateway header is fixed; the local list scrolls within what's left).
+func (view *Models) SetSize(width, height int) {
+	view.width = width
+	view.height = height
+	view.clampScroll()
+}
 
 // Init kicks off the first gateway-status fetch and local-store list.
 func (view *Models) Init() tea.Cmd {
@@ -123,6 +138,7 @@ func (view *Models) Update(msg tea.Msg) tea.Cmd {
 		if view.cursor >= len(view.rows) {
 			view.cursor = 0
 		}
+		view.clampScroll()
 		return nil
 	case modelTestDoneMsg:
 		view.flash = modelTestFlash(message)
@@ -132,10 +148,12 @@ func (view *Models) Update(msg tea.Msg) tea.Cmd {
 		case "up", "k":
 			if view.cursor > 0 {
 				view.cursor--
+				view.scrollToCursor()
 			}
 		case "down", "j":
 			if view.cursor < len(view.rows)-1 {
 				view.cursor++
+				view.scrollToCursor()
 			}
 		case "t":
 			model := view.status.Default
@@ -169,6 +187,55 @@ func (view *Models) selectedRow() (localRow, bool) {
 	return view.rows[view.cursor], true
 }
 
+// visibleRows is how many local-list rows fit below the fixed routing/gateway
+// header within the pane. It is paneHeight minus the header lines (and the footer
+// hint line), floored at 1 so there is always at least one visible row. When the
+// pane height is unknown (0, e.g. before the first SetSize) it returns len(rows) so
+// nothing is clipped.
+func (view *Models) visibleRows() int {
+	if view.height <= 0 {
+		if len(view.rows) == 0 {
+			return 1
+		}
+		return len(view.rows)
+	}
+	available := view.height - view.headerLines() - footerHintLines
+	if available < 1 {
+		available = 1
+	}
+	return available
+}
+
+// scrollToCursor applies the edge-scroll rule: the offset only moves when the
+// cursor leaves the visible window. Cursor above the window top → offset = cursor;
+// cursor below the window bottom → offset = cursor - visibleRows + 1; otherwise the
+// offset stays put. Then it is clamped.
+func (view *Models) scrollToCursor() {
+	visible := view.visibleRows()
+	if view.cursor < view.offset {
+		view.offset = view.cursor
+	} else if view.cursor >= view.offset+visible {
+		view.offset = view.cursor - visible + 1
+	}
+	view.clampScroll()
+}
+
+// clampScroll keeps the offset within [0, maxOffset] where maxOffset leaves the last
+// window of rows visible.
+func (view *Models) clampScroll() {
+	visible := view.visibleRows()
+	maxOffset := len(view.rows) - visible
+	if maxOffset < 0 {
+		maxOffset = 0
+	}
+	if view.offset > maxOffset {
+		view.offset = maxOffset
+	}
+	if view.offset < 0 {
+		view.offset = 0
+	}
+}
+
 func (view *Models) testCmd(model string) tea.Cmd {
 	test := view.test
 	return func() tea.Msg {
@@ -177,12 +244,16 @@ func (view *Models) testCmd(model string) tea.Cmd {
 	}
 }
 
-// View renders the gateway summary, the local-store list (installed + installable,
-// with a cursor), and the latest test flash.
-func (view *Models) View() string {
-	if !view.loaded {
-		return ui.Muted.Render("loading model gateway status…")
-	}
+// footerHintLines is the number of lines View() reserves below the local list (the
+// "installed models · …" hint plus, when present, a flash line). Kept fixed so the
+// header/visible-row math is deterministic.
+const footerHintLines = 1
+
+// header renders everything ABOVE the local list: the gateway/routing summary and
+// the "Local model store" heading (or its error/empty note). It is built once and
+// reused by View() and headerLines() so the line-count math stays in sync with what
+// is actually drawn.
+func (view *Models) header() string {
 	var body strings.Builder
 	body.WriteString(ui.Heading.Render("Model gateway (LiteLLM routing)") + "\n")
 	if view.err != nil {
@@ -196,18 +267,49 @@ func (view *Models) View() string {
 		body.WriteString(field("base url", view.status.BaseURL))
 		body.WriteString(renderServedModels(view.status))
 	}
-
 	body.WriteString("\n" + ui.Heading.Render("Local model store (Ollama)") + "\n")
-	if view.localErr != nil {
+	return body.String()
+}
+
+// headerLines counts the rendered header lines (used to size the local-list window).
+func (view *Models) headerLines() int {
+	return strings.Count(view.header(), "\n")
+}
+
+// View renders the gateway summary, then a WINDOW of the local-store list sized to
+// fit the pane (edge-scrolled via offset), and the latest test flash. Nothing
+// overflows the bordered body: the routing section caps its served-model list and
+// the local list only ever renders visibleRows rows.
+func (view *Models) View() string {
+	if !view.loaded {
+		return ui.Muted.Render("loading model gateway status…")
+	}
+	var body strings.Builder
+	body.WriteString(view.header())
+
+	switch {
+	case view.localErr != nil:
 		body.WriteString(ui.Failure.Render(ui.IconFail+" "+view.localErr.Error()) +
 			"\n" + ui.Muted.Render("start it with `ai services start ollama`") + "\n")
-	} else if len(view.rows) == 0 {
+	case len(view.rows) == 0:
 		body.WriteString(ui.Muted.Render("no models in the local store (p to pull)") + "\n")
-	} else {
-		for index, row := range view.rows {
-			body.WriteString(renderLocalRow(row, index == view.cursor) + "\n")
+	default:
+		view.clampScroll()
+		visible := view.visibleRows()
+		start := view.offset
+		end := start + visible
+		if end > len(view.rows) {
+			end = len(view.rows)
 		}
-		body.WriteString(ui.Muted.Render("installed models · p to pull (popular picker) · d to remove") + "\n")
+		for index := start; index < end; index++ {
+			body.WriteString(renderLocalRow(view.rows[index], index == view.cursor) + "\n")
+		}
+		hint := "installed models · p to pull (popular picker) · d to remove"
+		if start > 0 || end < len(view.rows) {
+			// The list is clipped: show a subtle scroll affordance.
+			hint = "↑/↓ more · " + hint
+		}
+		body.WriteString(ui.Muted.Render(hint) + "\n")
 	}
 
 	if view.flash != "" {
@@ -228,7 +330,13 @@ func renderServedModels(status litellm.StatusInfo) string {
 	switch {
 	case len(status.Models) > 0:
 		section.WriteString(ui.Muted.Render("served models (live):") + "\n")
-		for _, model := range status.Models {
+		// Cap the rendered served models so the cursor-driven local list always has
+		// room within the pane; the remainder collapses into a "+K more" note.
+		shown := status.Models
+		if len(shown) > maxServedModelsShown {
+			shown = shown[:maxServedModelsShown]
+		}
+		for _, model := range shown {
 			descriptor := model.Provider
 			if model.Mode != "" {
 				if descriptor != "" {
@@ -241,6 +349,9 @@ func renderServedModels(status litellm.StatusInfo) string {
 				line += "  (" + descriptor + ")"
 			}
 			section.WriteString(line + "\n")
+		}
+		if remaining := len(status.Models) - len(shown); remaining > 0 {
+			section.WriteString(ui.Muted.Render("  +"+strconv.Itoa(remaining)+" more") + "\n")
 		}
 	case status.ModelsNote != "":
 		section.WriteString(ui.Muted.Render("served models: "+status.ModelsNote) + "\n")

@@ -81,6 +81,81 @@ func TestModelsPullDirectName(test *testing.T) {
 	}
 }
 
+// Passing several names pulls each in turn (in order) and reports a per-model result.
+func TestModelsPullMultipleNames(test *testing.T) {
+	fake := &ollama.Fake{}
+	withFakeOllama(test, fake)
+	exit := output.ExitOK
+	cmd := newModelsPullCmd(jsonEmitter(), &exit)
+	cmd.SetOut(io.Discard)
+	cmd.SetErr(io.Discard)
+	runLocalModelsCmd(test, cmd, "llama3.2:3b", "qwen2.5:7b", "gemma4:2b")
+	if exit != output.ExitOK {
+		test.Fatalf("multi pull exit = %d, want 0", exit)
+	}
+	want := []string{"llama3.2:3b", "qwen2.5:7b", "gemma4:2b"}
+	if strings.Join(fake.PulledNames, ",") != strings.Join(want, ",") {
+		test.Fatalf("pulled %v, want %v", fake.PulledNames, want)
+	}
+}
+
+// Duplicate references are pulled once (de-duplicated, first-seen order preserved).
+func TestModelsPullDedupesNames(test *testing.T) {
+	fake := &ollama.Fake{}
+	withFakeOllama(test, fake)
+	exit := output.ExitOK
+	cmd := newModelsPullCmd(jsonEmitter(), &exit)
+	cmd.SetOut(io.Discard)
+	cmd.SetErr(io.Discard)
+	runLocalModelsCmd(test, cmd, "llama3.2:3b", "llama3.2:3b", " qwen2.5:7b ", "")
+	if exit != output.ExitOK {
+		test.Fatalf("pull exit = %d, want 0", exit)
+	}
+	want := []string{"llama3.2:3b", "qwen2.5:7b"}
+	if strings.Join(fake.PulledNames, ",") != strings.Join(want, ",") {
+		test.Fatalf("pulled %v, want %v (deduped, trimmed)", fake.PulledNames, want)
+	}
+}
+
+// The run continues past a failing model and exits non-zero (mapped from the failure),
+// while still pulling the remaining models and returning a per-model result list.
+func TestModelsPullContinuesPastFailure(test *testing.T) {
+	fake := &ollama.Fake{
+		PullErrs: map[string]error{"bad-model": &ollama.NotFoundError{Name: "bad-model"}},
+	}
+	withFakeOllama(test, fake)
+	exit := output.ExitOK
+	emitter := jsonEmitter()
+	cmd := newModelsPullCmd(emitter, &exit)
+	cmd.SetOut(io.Discard)
+	cmd.SetErr(io.Discard)
+	runLocalModelsCmd(test, cmd, "good-a", "bad-model", "good-b")
+	// Every model was attempted, in order, despite the middle one failing.
+	want := []string{"good-a", "bad-model", "good-b"}
+	if strings.Join(fake.PulledNames, ",") != strings.Join(want, ",") {
+		test.Fatalf("attempted %v, want %v (run continues past failure)", fake.PulledNames, want)
+	}
+	// A not-found model maps to exit 2 (invalid input).
+	if exit != output.ExitInvalidInput {
+		test.Fatalf("pull-with-failure exit = %d, want %d", exit, output.ExitInvalidInput)
+	}
+}
+
+// The pull result Human() renders a per-model line with the SPECIFIC ref, marking
+// each success/failure.
+func TestModelsPullResultHuman(test *testing.T) {
+	result := modelsPullResult{Pulled: []modelPullOutcome{
+		{Model: "llama3.2:3b", OK: true},
+		{Model: "bad-model", OK: false, Error: "not found"},
+	}}
+	human := result.Human()
+	for _, want := range []string{"llama3.2:3b", "bad-model", "not found"} {
+		if !strings.Contains(human, want) {
+			test.Fatalf("Human() missing %q:\n%s", want, human)
+		}
+	}
+}
+
 func TestModelsPullMissingNameNonInteractiveExits2(test *testing.T) {
 	withFakeOllama(test, &ollama.Fake{})
 	exit := output.ExitOK
@@ -195,6 +270,19 @@ func TestModelsPopularFetchFailureExits4(test *testing.T) {
 	runLocalModelsCmd(test, cmd)
 	if exit != output.ExitRuntimeFailure {
 		test.Fatalf("popular fetch failure exit = %d, want %d", exit, output.ExitRuntimeFailure)
+	}
+}
+
+// parseModelRefs splits free text on whitespace/commas and de-duplicates — the
+// custom-entry path of the interactive multi-pull.
+func TestParseModelRefs(test *testing.T) {
+	got := parseModelRefs("llama3.2:1b qwen2.5:7b, llama3.2:1b\thf.co/u/m")
+	want := []string{"llama3.2:1b", "qwen2.5:7b", "hf.co/u/m"}
+	if strings.Join(got, ",") != strings.Join(want, ",") {
+		test.Fatalf("parseModelRefs = %v, want %v", got, want)
+	}
+	if len(parseModelRefs("   ,  ,")) != 0 {
+		test.Fatalf("parseModelRefs of separators-only should be empty")
 	}
 }
 
