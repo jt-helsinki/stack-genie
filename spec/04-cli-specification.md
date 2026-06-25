@@ -816,6 +816,78 @@ ai models test <model>
 
 ---
 
+## 8.3 Local Model Store (Ollama)
+
+`ai models status` / `ai models test` describe and probe **LiteLLM routing**. The
+commands below instead manage the **local Ollama store** directly over its HTTP API
+— the local-model backend LiteLLM's `ollama/*` wildcard routes to. Pulling a tag
+here makes it usable immediately through that wildcard: registering a model in the
+gateway is **not** the same as installing it; `pull` is what installs it. These
+commands only affect Ollama's local store (they never touch LiteLLM config).
+
+If Ollama is unreachable, these exit **3** (missing dependency) with a hint to run
+`ai services start ollama` (or `ai setup`); bad input exits **2**; other failures
+exit **4**.
+
+### 8.3.1 List
+
+```bash id="c23a"
+ai models list
+```
+
+Merges the **installed** models (Ollama `GET /api/tags`) with the platform's
+**curated catalog** of installable models, and marks each row with its status:
+
+* **installed** — present in the local store (installed-but-not-in-catalog models
+  still appear here)
+* **available** — a catalog model not yet installed (installable with `ai models
+  pull`)
+
+A catalog entry is matched to an installed model by base name (so catalog `gemma4`
+is hidden when `gemma4:31b` is installed). The human output is a NAME / STATUS /
+SIZE / PARAMS table; `--json` returns the merged list with an `installed` bool per
+entry. The catalog is convenience data that will age — that is fine, because the
+pull path always also accepts a free-text custom reference.
+
+### 8.3.2 Pull (install / update)
+
+```bash id="c23b"
+ai models pull [name]
+```
+
+* With a `name` argument, or under `--json` / no TTY: the given reference is pulled
+  directly (the **custom-reference** path — e.g. `llama3.2:3b`, or a custom ref like
+  `hf.co/user/model`). Under `--json` a name is **required** (missing → exit 2).
+* On a terminal with **no** argument: the user picks from a select of the catalog
+  models that are **not yet installed**, plus a final **"✎ enter a custom model…"**
+  option that prompts for a free-text reference.
+
+The pull **streams** Ollama's NDJSON progress while a spinner shows ongoing work.
+There is **no separate update verb** — re-pulling an installed model updates it.
+
+### 8.3.3 Remove
+
+```bash id="c23c"
+ai models rm [name]
+```
+
+Removes a model from the local store (`DELETE /api/delete`, body `{"model":…}`). On
+a terminal with no argument the user picks from the **installed** models; with an
+argument (or under `--json`) that name is removed. On a terminal the user is asked
+to **confirm** before deleting. A model not in the store → a clear not-found error
+(exit 2).
+
+### 8.3.4 Show
+
+```bash id="c23d"
+ai models show <name>
+```
+
+Shows metadata for a local model (`POST /api/show`): parameter size, quantization,
+family, format, and capabilities.
+
+---
+
 # 9. Context Optimization Commands (Headroom + Caveman)
 
 ## 9.1 Context Status

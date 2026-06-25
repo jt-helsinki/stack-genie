@@ -1,7 +1,10 @@
-// Package ollama provides a minimal health probe for the required Ollama service
-// (arch §16). `ai doctor` uses it to report whether Ollama — the local model
-// backend LiteLLM routes to — is reachable. Ollama exposes GET /api/version as a
-// lightweight liveness endpoint (docs.ollama.com).
+// Package ollama provides a health probe for the required Ollama service
+// (arch §16) and a client for managing its local model store (`ai models
+// list|pull|rm|show`). Ollama is the local model backend LiteLLM routes to; it
+// exposes GET /api/version as a lightweight liveness endpoint and an HTTP API
+// (GET /api/tags, POST /api/pull, DELETE /api/delete, POST /api/show) for model
+// management (docs.ollama.com). The package stays importable by `ai doctor` (it
+// uses RealProbe as its OllamaProbe) — no import cycles.
 package ollama
 
 import (
@@ -9,6 +12,51 @@ import (
 	"net/http"
 	"time"
 )
+
+// Model is one entry from the local Ollama store (GET /api/tags). The fields are
+// the subset surfaced by `ai models list`.
+type Model struct {
+	Name              string `json:"name"`
+	Size              int64  `json:"size"`
+	ParameterSize     string `json:"parameter_size,omitempty"`
+	QuantizationLevel string `json:"quantization_level,omitempty"`
+	Modified          string `json:"modified,omitempty"`
+}
+
+// PullProgress is one NDJSON progress frame from POST /api/pull. Total/Completed
+// are byte counts for a layer download (zero on status-only frames such as
+// "pulling manifest" / "success").
+type PullProgress struct {
+	Status    string `json:"status"`
+	Digest    string `json:"digest,omitempty"`
+	Total     int64  `json:"total,omitempty"`
+	Completed int64  `json:"completed,omitempty"`
+}
+
+// ModelInfo is the metadata for one model (POST /api/show), surfaced by
+// `ai models show`.
+type ModelInfo struct {
+	Name              string         `json:"name"`
+	ParameterSize     string         `json:"parameter_size,omitempty"`
+	QuantizationLevel string         `json:"quantization_level,omitempty"`
+	Family            string         `json:"family,omitempty"`
+	Format            string         `json:"format,omitempty"`
+	Parameters        string         `json:"parameters,omitempty"`
+	Template          string         `json:"template,omitempty"`
+	Capabilities      []string       `json:"capabilities,omitempty"`
+	ModelInfo         map[string]any `json:"model_info,omitempty"`
+}
+
+// Client manages the local Ollama model store. The real impl makes HTTP calls;
+// tests use a fake. Pull streams: progress is reported one callback per NDJSON
+// frame. Every method surfaces a clean error when Ollama is unreachable so the
+// CLI can map it to an exit code.
+type Client interface {
+	List() ([]Model, error)
+	Pull(name string, progress func(PullProgress)) error
+	Remove(name string) error
+	Show(name string) (ModelInfo, error)
+}
 
 // DefaultBaseURL is where the platform's Ollama container publishes on the host.
 const DefaultBaseURL = "http://localhost:11434"

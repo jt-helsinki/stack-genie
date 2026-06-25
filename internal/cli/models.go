@@ -8,10 +8,16 @@ import (
 
 	"github.com/charmbracelet/huh"
 	"github.com/jt-helsinki/ideal-robot/internal/litellm"
+	"github.com/jt-helsinki/ideal-robot/internal/ollama"
 	"github.com/jt-helsinki/ideal-robot/internal/output"
 	"github.com/jt-helsinki/ideal-robot/internal/ui"
 	"github.com/spf13/cobra"
 )
+
+// ollamaClient is the constructor for the local-store client used by
+// `ai models list|pull|rm|show`. It is a package var so tests can inject a fake;
+// production wires ollama.RealClient.
+var ollamaClient = ollama.RealClient
 
 // newModelsCmd builds `ai models` (CLI §8).
 func newModelsCmd(em *output.Emitter, exit *int) *cobra.Command {
@@ -21,7 +27,14 @@ func newModelsCmd(em *output.Emitter, exit *int) *cobra.Command {
 		Args:  cobra.NoArgs,
 		RunE:  func(cmd *cobra.Command, _ []string) error { return cmd.Help() },
 	}
-	cmd.AddCommand(newModelsStatusCmd(em, exit), newModelsTestCmd(em, exit))
+	cmd.AddCommand(
+		newModelsStatusCmd(em, exit),
+		newModelsTestCmd(em, exit),
+		newModelsListCmd(em, exit),
+		newModelsPullCmd(em, exit),
+		newModelsRmCmd(em, exit),
+		newModelsShowCmd(em, exit),
+	)
 	return cmd
 }
 

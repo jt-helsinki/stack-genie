@@ -21,6 +21,7 @@ import (
 	"github.com/jt-helsinki/ideal-robot/internal/egress"
 	"github.com/jt-helsinki/ideal-robot/internal/litellm"
 	"github.com/jt-helsinki/ideal-robot/internal/logs"
+	"github.com/jt-helsinki/ideal-robot/internal/ollama"
 	"github.com/jt-helsinki/ideal-robot/internal/project"
 	"github.com/jt-helsinki/ideal-robot/internal/runtime"
 	"github.com/jt-helsinki/ideal-robot/internal/secrets"
@@ -92,7 +93,7 @@ func Run(cwd string) error {
 	)
 	networkView := views.NewNetwork(currentRoot, egress.Get, egress.SetMode)
 	contextView := views.NewContext(currentRoot, contextopt.GetStatus, contextopt.SetStrategy, contextopt.SetCavemanLevel)
-	modelsView := views.NewModels(litellmClient.Status, litellmClient.Test)
+	modelsView := views.NewModels(litellmClient.Status, litellmClient.Test, ollama.RealClient().List)
 	secretsView := views.NewSecrets(secretsBroker.List, secretsBroker.Remove)
 	// The Settings tab is a live theme picker plus read-only platform info.
 	// Applying a theme persists it and recolors the whole UI (ThemeChangedMsg).
@@ -124,6 +125,7 @@ func Run(cwd string) error {
 	application.projectsHub = projectsHub
 	application.projectDetail = projectDetail
 	application.sessionsView = sessionsView
+	application.modelsView = modelsView
 
 	// Always land on the home screen (Services, index 0 — current's zero value); a
 	// project is opened only when the user selects it from the Projects switcher.
@@ -218,6 +220,10 @@ type app struct {
 	// sessionsView lets the app refresh the Sessions view when an attach
 	// subprocess returns (the user may have created/killed a session).
 	sessionsView *views.Sessions
+
+	// modelsView lets the app refresh the local-store list after a pull/rm
+	// subprocess returns from the terminal overlay.
+	modelsView *views.Models
 
 	// createView is the modal directory-picker overlay for creating a new
 	// project; non-nil only while it is open (it is not a menu/slice view).
@@ -340,6 +346,17 @@ func (application *app) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			"attach "+message.Session+" "+message.Project,
 			[]string{"attach", message.Session, message.Project})
 
+	case views.ModelPullRequestedMsg:
+		// Pull is interactive (select-or-custom + streaming progress): run the real
+		// `ai models pull` live in the terminal overlay, then refresh the list.
+		return application, application.openTerminal("models pull", []string{"models", "pull"})
+
+	case views.ModelRemoveRequestedMsg:
+		// Remove confirms before deleting: run `ai models rm <name>` live in the
+		// overlay (its TTY confirm prompt shows in the pane), then refresh the list.
+		return application, application.openTerminal(
+			"models rm "+message.Name, []string{"models", "rm", message.Name})
+
 	case tea.KeyMsg:
 		// While the live terminal overlay is open it owns input (keystrokes go to
 		// the PTY); ctrl+q force-detaches and, once the process exits, any key closes.
@@ -436,6 +453,9 @@ func (application *app) updateTerminal(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 		commands := []tea.Cmd{application.projectDetail.Init()}
 		if application.sessionsView != nil {
 			commands = append(commands, application.sessionsView.Init())
+		}
+		if application.modelsView != nil {
+			commands = append(commands, application.modelsView.Init())
 		}
 		return application, tea.Batch(commands...)
 	}
