@@ -1,0 +1,46 @@
+# cloud_models.yaml — MAINTAINER-CURATED seed of cloud model handles offered by
+# the in-workspace agent CLIs' model picker.
+#
+# This is a CURATED SEED, not an exhaustive or authoritative list. Cloud model
+# IDs change often (providers add/rename/retire models), and LiteLLM's per-provider
+# wildcards (`openai/*`, `anthropic/*`, `gemini/*`, `groq/*`) route WHATEVER an
+# agent names — so this file only seeds the picker with well-known current handles
+# for convenience. To add or remove a suggestion, just edit this list: each entry
+# is a LiteLLM model route of the form `<provider>/<model-id>`. No code change is
+# needed. The installed local Ollama models and the named aliases are added on top
+# of this seed at workspace start.
+#
+# Keep entries as the exact route LiteLLM resolves (provider prefix + model id).
+models:
+  # OpenAI
+  - openai/gpt-5.5
+  - openai/gpt-5
+  - openai/gpt-5-mini
+  - openai/gpt-4.1
+  - openai/gpt-4.1-mini
+  - openai/gpt-4o
+  - openai/gpt-4o-mini
+  - openai/o3
+  - openai/o4-mini
+
+  # Anthropic
+  - anthropic/claude-opus-4-8
+  - anthropic/claude-opus-4-1
+  - anthropic/claude-sonnet-4-6
+  - anthropic/claude-sonnet-4-5
+  - anthropic/claude-haiku-4-5
+  - anthropic/claude-3-7-sonnet
+  - anthropic/claude-3-5-haiku
+
+  # Google Gemini
+  - gemini/gemini-3.5-flash
+  - gemini/gemini-2.5-pro
+  - gemini/gemini-2.5-flash
+  - gemini/gemini-2.0-flash
+  - gemini/gemini-2.0-flash-lite
+
+  # Groq
+  - groq/llama-3.3-70b-versatile
+  - groq/llama-3.1-8b-instant
+  - groq/mixtral-8x7b
+  - groq/gemma2-9b-it

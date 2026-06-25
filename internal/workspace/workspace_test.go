@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/jt-helsinki/ideal-robot/internal/litellm"
+	"github.com/jt-helsinki/ideal-robot/internal/ollama"
 	"github.com/jt-helsinki/ideal-robot/internal/overlay"
 	"github.com/jt-helsinki/ideal-robot/internal/runtime"
 	"github.com/jt-helsinki/ideal-robot/internal/state"
@@ -698,5 +699,111 @@ func TestDestroyKeepsOverlayForRecovery(test *testing.T) {
 	present, err := overlay.Exists("aip-app")
 	if err != nil || !present {
 		test.Fatalf("destroy must keep the overlay: present=%v err=%v", present, err)
+	}
+}
+
+// fakeModelLister is a workspace-local ModelLister fake: it returns a fixed set of
+// installed Ollama models (or an error to simulate Ollama being down at start).
+type fakeModelLister struct {
+	models []ollama.Model
+	err    error
+}
+
+func (lister fakeModelLister) List() ([]ollama.Model, error) {
+	return lister.models, lister.err
+}
+
+// TestStartPickerUnionIncludesAliasesLocalAndCloud verifies the in-VM agent model
+// picker is the UNION of the named aliases, the INSTALLED local Ollama models
+// (rendered as ollama/<name>), and the curated cloud seed — and that the union is
+// written into both agent provider configs.
+func TestStartPickerUnionIncludesAliasesLocalAndCloud(test *testing.T) {
+	_ = seedProject(test, "app")
+	sandbox := &fakeSandbox{}
+	lister := fakeModelLister{models: []ollama.Model{
+		{Name: "llama3.2:latest"},
+		{Name: "qwen2.5:7b"},
+	}}
+	manager := Manager{
+		Builder: &fakeBuilder{}, Sandbox: sandbox, Keys: &fakeKeyMinter{},
+		Ollama: lister, Now: func() string { return "t" },
+	}
+	if _, err := manager.Start("app"); err != nil {
+		test.Fatal(err)
+	}
+
+	for _, guestPath := range []string{
+		"/home/workspace/.config/opencode/opencode.json",
+		"/home/workspace/.pi/agent/models.json",
+	} {
+		config := string(sandbox.written[guestPath])
+		if config == "" {
+			test.Fatalf("no config written to %s", guestPath)
+		}
+		// A named alias.
+		if !strings.Contains(config, "claude-opus") {
+			test.Errorf("%s missing the named alias 'claude-opus'", guestPath)
+		}
+		// The installed local models, rendered as ollama/<name>.
+		if !strings.Contains(config, "ollama/llama3.2:latest") {
+			test.Errorf("%s missing installed local model 'ollama/llama3.2:latest'", guestPath)
+		}
+		if !strings.Contains(config, "ollama/qwen2.5:7b") {
+			test.Errorf("%s missing installed local model 'ollama/qwen2.5:7b'", guestPath)
+		}
+		// A cloud seed entry.
+		if !strings.Contains(config, "anthropic/claude-opus-4-8") {
+			test.Errorf("%s missing the curated cloud seed entry", guestPath)
+		}
+	}
+}
+
+// TestStartPickerDegradesWhenOllamaDown verifies the picker degrades gracefully:
+// when the installed-model lookup errors (Ollama down at start), the local models
+// are skipped but the workspace still starts with the aliases + cloud seed.
+func TestStartPickerDegradesWhenOllamaDown(test *testing.T) {
+	_ = seedProject(test, "app")
+	sandbox := &fakeSandbox{}
+	lister := fakeModelLister{err: errors.New("ollama: connection refused")}
+	manager := Manager{
+		Builder: &fakeBuilder{}, Sandbox: sandbox, Keys: &fakeKeyMinter{},
+		Ollama: lister, Now: func() string { return "t" },
+	}
+	if _, err := manager.Start("app"); err != nil {
+		test.Fatalf("Start must NOT fail when the model-list lookup fails: %v", err)
+	}
+
+	config := string(sandbox.written["/home/workspace/.config/opencode/opencode.json"])
+	if config == "" {
+		test.Fatal("no opencode config written")
+	}
+	// Aliases + cloud seed are still present.
+	if !strings.Contains(config, "claude-opus") {
+		test.Error("degraded config missing the named aliases")
+	}
+	if !strings.Contains(config, "anthropic/claude-opus-4-8") {
+		test.Error("degraded config missing the cloud seed")
+	}
+	// No local models (none could be listed).
+	if strings.Contains(config, "ollama/llama") {
+		test.Error("degraded config must not contain local Ollama models")
+	}
+}
+
+// TestStartPickerNilListerSkipsLocal verifies a nil lister (Manager without an
+// Ollama dep) also degrades to aliases + cloud seed without panicking.
+func TestStartPickerNilListerSkipsLocal(test *testing.T) {
+	_ = seedProject(test, "app")
+	sandbox := &fakeSandbox{}
+	manager := Manager{
+		Builder: &fakeBuilder{}, Sandbox: sandbox, Keys: &fakeKeyMinter{},
+		Now: func() string { return "t" },
+	}
+	if _, err := manager.Start("app"); err != nil {
+		test.Fatalf("Start must not fail with a nil Ollama lister: %v", err)
+	}
+	config := string(sandbox.written["/home/workspace/.config/opencode/opencode.json"])
+	if !strings.Contains(config, "anthropic/claude-opus-4-8") {
+		test.Error("config missing the cloud seed with a nil lister")
 	}
 }

@@ -14,6 +14,7 @@ import (
 	"strings"
 
 	"github.com/jt-helsinki/ideal-robot/internal/litellm"
+	"github.com/jt-helsinki/ideal-robot/internal/ollama"
 	"github.com/jt-helsinki/ideal-robot/internal/runtime"
 )
 
@@ -396,6 +397,7 @@ func RealManager(goos string, now func() string) Manager {
 		Builder: realBuilder{prober: prober},
 		Sandbox: realSandbox{prober: prober},
 		Keys:    litellm.NewKeyManager(prober),
+		Ollama:  ollama.RealClient(),
 		Now:     now,
 		GOOS:    goos,
 	}

@@ -17,6 +17,7 @@ import (
 	"github.com/jt-helsinki/ideal-robot/internal/contextopt"
 	"github.com/jt-helsinki/ideal-robot/internal/egress"
 	"github.com/jt-helsinki/ideal-robot/internal/litellm"
+	"github.com/jt-helsinki/ideal-robot/internal/ollama"
 	"github.com/jt-helsinki/ideal-robot/internal/overlay"
 	"github.com/jt-helsinki/ideal-robot/internal/runtime"
 	"github.com/jt-helsinki/ideal-robot/internal/state"
@@ -160,6 +161,16 @@ type KeyMinter interface {
 	DeleteKeyByAlias(alias string) error
 }
 
+// ModelLister lists the locally-installed Ollama models so the in-VM agent model
+// picker can offer them alongside the named aliases and the curated cloud seed. It
+// is the small surface Manager needs from ollama.Client, defined locally so tests
+// can supply a fake without a live Ollama service (the real impl is
+// ollama.RealClient()). A nil lister, or a List that errors (Ollama down at start),
+// degrades gracefully — the workspace still starts with aliases + the cloud seed.
+type ModelLister interface {
+	List() ([]ollama.Model, error)
+}
+
 // Manager coordinates the lifecycle over a Builder + Sandbox, stamping state with
 // Now (RFC 3339 UTC). GOOS records the host OS for any host-specific behavior
 // (supported hosts: macOS and Linux).
@@ -167,8 +178,12 @@ type Manager struct {
 	Builder Builder
 	Sandbox Sandbox
 	Keys    KeyMinter
-	Now     func() string
-	GOOS    string
+	// Ollama lists the installed local models for the in-VM agent model picker. It
+	// is optional: a nil lister (or a List error) skips the local models without
+	// failing the workspace start.
+	Ollama ModelLister
+	Now    func() string
+	GOOS   string
 }
 
 func resolveProjectRoot(project string) (string, error) {
@@ -280,7 +295,7 @@ func (manager Manager) registerAgentProviders(name, project string, projectConfi
 
 	keepTurns, outputBufferTokens := contextopt.HeadroomParams(projectConfig.Context.Strategy)
 	routing := litellm.DefaultRouting()
-	models := namedModels(routing)
+	models := manager.pickerModels(routing)
 
 	openCodeConfig, err := agentcfg.OpenCodeConfig(gatewayURL, apiKey, routing.Default, models, keepTurns, outputBufferTokens)
 	if err != nil {
@@ -301,6 +316,48 @@ func (manager Manager) registerAgentProviders(name, project string, projectConfi
 	// Write the managed tmux.conf so the workspace session model is transparent
 	// (mouse scroll, hidden status bar) — the user never types a tmux command.
 	return manager.Sandbox.WriteFile(name, tmuxConfGuestPath, agentcfg.TmuxConfig())
+}
+
+// pickerModels builds the concrete model list the in-VM agent CLIs offer in their
+// picker: the UNION of the named aliases (namedModels), the INSTALLED local Ollama
+// models (rendered as "ollama/<Name>"), and the maintainer-curated cloud seed
+// (agentcfg.CloudModels). The set is deduped and sorted for a deterministic config.
+//
+// The local-model lookup DEGRADES GRACEFULLY: a nil lister or a List error (Ollama
+// down at workspace start) simply skips the local models — the picker still offers
+// the aliases + cloud seed, and the workspace start never fails over a model-list
+// lookup. LiteLLM's per-provider wildcards still route any model the agent names by
+// hand regardless of what the picker lists.
+func (manager Manager) pickerModels(routing litellm.Routing) []string {
+	seen := make(map[string]struct{})
+	models := make([]string, 0)
+	add := func(model string) {
+		if model == "" {
+			return
+		}
+		if _, ok := seen[model]; ok {
+			return
+		}
+		seen[model] = struct{}{}
+		models = append(models, model)
+	}
+
+	for _, alias := range namedModels(routing) {
+		add(alias)
+	}
+	if manager.Ollama != nil {
+		if installed, err := manager.Ollama.List(); err == nil {
+			for _, model := range installed {
+				add("ollama/" + model.Name)
+			}
+		}
+	}
+	for _, model := range agentcfg.CloudModels() {
+		add(model)
+	}
+
+	sort.Strings(models)
+	return models
 }
 
 // namedModels enumerates the non-wildcard named aliases from the routing (the
