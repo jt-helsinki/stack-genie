@@ -3,7 +3,6 @@ package cli
 import (
 	"errors"
 	"fmt"
-	"sort"
 	"strings"
 
 	"github.com/charmbracelet/huh"
@@ -39,59 +38,48 @@ func ollamaErr(command string, err error) error {
 	return output.Errorf(output.ExitRuntimeFailure, "%s", err)
 }
 
-// localModelEntry is one row of `ai models list`: a model in the local store, a
-// catalog model not yet installed, or both. Installed reports the local-store
-// presence; Size/Params are populated only for installed models.
+// localModelEntry is one row of `ai models list`: a model in the local Ollama
+// store. The list is INSTALLED-only now (live from GET /api/tags) — the hardcoded
+// catalog was dropped; installable suggestions live behind `ai models popular`.
 type localModelEntry struct {
-	Name        string `json:"name"`
-	Installed   bool   `json:"installed"`
-	Size        int64  `json:"size,omitempty"`
-	Params      string `json:"params,omitempty"`
-	Description string `json:"description,omitempty"`
+	Name      string `json:"name"`
+	Installed bool   `json:"installed"`
+	Size      int64  `json:"size,omitempty"`
+	Params    string `json:"params,omitempty"`
 }
 
-// modelsListResult is the `ai models list` payload: the merged installed + catalog
-// view of the LOCAL Ollama store.
+// modelsListResult is the `ai models list` payload: the INSTALLED models in the
+// LOCAL Ollama store.
 type modelsListResult struct {
 	Models []localModelEntry `json:"models"`
 }
 
-// Human renders the merged list as a NAME / STATUS / SIZE / PARAMS table.
+// Human renders the installed list as a NAME / SIZE / PARAMS table.
 func (result modelsListResult) Human() string {
 	if len(result.Models) == 0 {
-		return "no local models and an empty catalog"
+		return "no models in the local store — pull one with `ai models pull` (`ai models popular` lists installable models)"
 	}
 	var builder strings.Builder
-	_, _ = fmt.Fprintf(&builder, "%-28s  %-10s  %-9s  %s\n", "NAME", "STATUS", "SIZE", "PARAMS")
+	_, _ = fmt.Fprintf(&builder, "%-28s  %-9s  %s\n", "NAME", "SIZE", "PARAMS")
 	for _, entry := range result.Models {
-		status := "available"
-		if entry.Installed {
-			status = "installed"
-		}
 		size := "-"
-		if entry.Installed && entry.Size > 0 {
+		if entry.Size > 0 {
 			size = humanByteSize(entry.Size)
 		}
 		params := entry.Params
 		if params == "" {
 			params = "-"
 		}
-		_, _ = fmt.Fprintf(&builder, "%-28s  %-10s  %-9s  %s\n", entry.Name, status, size, params)
+		_, _ = fmt.Fprintf(&builder, "%-28s  %-9s  %s\n", entry.Name, size, params)
 	}
-	builder.WriteString("\ninstalled = in the local Ollama store · available = installable with `ai models pull`")
+	builder.WriteString("\ninstalled = in the local Ollama store · `ai models popular` lists installable models")
 	return strings.TrimRight(builder.String(), "\n")
 }
 
-// mergeModels merges the installed local-store models with the curated catalog
-// into one sorted list: catalog models that are not installed appear as
-// "available"; installed models always appear (installed-but-not-in-catalog ones
-// included). It matches catalog entries to installed models by base name (the part
-// before ':'), so a catalog "gemma4" is considered installed when "gemma4:31b" is.
-func mergeModels(installed []ollama.Model, catalog []ollama.CatalogModel) []localModelEntry {
-	byBase := make(map[string]bool, len(installed))
-	entries := make([]localModelEntry, 0, len(installed)+len(catalog))
+// installedEntries maps the installed local-store models to list rows.
+func installedEntries(installed []ollama.Model) []localModelEntry {
+	entries := make([]localModelEntry, 0, len(installed))
 	for _, model := range installed {
-		byBase[baseName(model.Name)] = true
 		entries = append(entries, localModelEntry{
 			Name:      model.Name,
 			Installed: true,
@@ -99,40 +87,17 @@ func mergeModels(installed []ollama.Model, catalog []ollama.CatalogModel) []loca
 			Params:    model.ParameterSize,
 		})
 	}
-	for _, candidate := range catalog {
-		if byBase[baseName(candidate.Name)] {
-			continue // already represented by an installed tag
-		}
-		entries = append(entries, localModelEntry{
-			Name:        candidate.Name,
-			Installed:   false,
-			Description: candidate.Description,
-		})
-	}
-	sort.Slice(entries, func(i, j int) bool {
-		if entries[i].Installed != entries[j].Installed {
-			return entries[i].Installed // installed first
-		}
-		return entries[i].Name < entries[j].Name
-	})
 	return entries
-}
-
-func baseName(name string) string {
-	if idx := strings.IndexByte(name, ':'); idx >= 0 {
-		return name[:idx]
-	}
-	return name
 }
 
 func newModelsListCmd(emitter *output.Emitter, exit *int) *cobra.Command {
 	return &cobra.Command{
 		Use:   "list",
-		Short: "List installed and installable local (Ollama) models",
-		Long: "List models in the local Ollama store merged with the platform's curated\n" +
-			"catalog of installable models. Each row is marked installed (in the store) or\n" +
-			"available (installable with `ai models pull`). This manages the LOCAL model\n" +
-			"store; `ai models status` describes LiteLLM routing.",
+		Short: "List installed local (Ollama) models",
+		Long: "List the models in the local Ollama store (GET /api/tags). The human output\n" +
+			"is a NAME / SIZE / PARAMS table; --json returns the list. This manages the\n" +
+			"LOCAL model store; `ai models popular` lists installable models (live from\n" +
+			"ollama.com) and `ai models status` describes LiteLLM routing.",
 		Args: cobra.NoArgs,
 		RunE: func(_ *cobra.Command, _ []string) error {
 			client := ollamaClient()
@@ -151,8 +116,91 @@ func newModelsListCmd(emitter *output.Emitter, exit *int) *cobra.Command {
 				*exit = emitter.Failure("models.list", ollamaErr("models.list", err))
 				return nil
 			}
-			result := modelsListResult{Models: mergeModels(installed, ollama.Catalog())}
+			result := modelsListResult{Models: installedEntries(installed)}
 			*exit = emitter.Success("models.list", result)
+			return nil
+		},
+	}
+}
+
+// popularModelEntry is one row of `ai models popular`: a live popular model from
+// ollama.com/search with its parameter-size variants, default-tag download size
+// (bytes; 0 = unknown), and ollama.com/library page URL.
+type popularModelEntry struct {
+	Name         string   `json:"name"`
+	Params       []string `json:"params,omitempty"`
+	DownloadSize int64    `json:"download_size,omitempty"`
+	RepoURL      string   `json:"repo_url"`
+}
+
+// modelsPopularResult is the `ai models popular` payload.
+type modelsPopularResult struct {
+	Models []popularModelEntry `json:"models"`
+}
+
+// Human renders the popular list as a NAME / PARAMS / SIZE / REPO table.
+func (result modelsPopularResult) Human() string {
+	if len(result.Models) == 0 {
+		return "no popular models returned"
+	}
+	var builder strings.Builder
+	_, _ = fmt.Fprintf(&builder, "%-24s  %-22s  %-9s  %s\n", "NAME", "PARAMS", "SIZE", "REPO")
+	for _, entry := range result.Models {
+		params := strings.Join(entry.Params, ",")
+		if params == "" {
+			params = "-"
+		}
+		size := "—"
+		if entry.DownloadSize > 0 {
+			size = humanByteSize(entry.DownloadSize)
+		}
+		_, _ = fmt.Fprintf(&builder, "%-24s  %-22s  %-9s  %s\n", entry.Name, params, size, entry.RepoURL)
+	}
+	builder.WriteString("\npull any of these with `ai models pull <name>` (size — = unknown · list fetched live from ollama.com)")
+	return strings.TrimRight(builder.String(), "\n")
+}
+
+func toPopularEntries(models []ollama.PopularModel) []popularModelEntry {
+	entries := make([]popularModelEntry, 0, len(models))
+	for _, model := range models {
+		entries = append(entries, popularModelEntry{
+			Name:         model.Name,
+			Params:       model.Parameters,
+			DownloadSize: model.DownloadSize,
+			RepoURL:      model.RepoURL,
+		})
+	}
+	return entries
+}
+
+func newModelsPopularCmd(emitter *output.Emitter, exit *int) *cobra.Command {
+	return &cobra.Command{
+		Use:   "popular",
+		Short: "List popular installable models (live from ollama.com)",
+		Long: "List popular installable models fetched LIVE from ollama.com/search, with\n" +
+			"their parameter-size variants, default-tag download size (from the public\n" +
+			"Ollama registry), and ollama.com/library link. There is no hardcoded catalog;\n" +
+			"this needs internet access to ollama.com. Pull any of them — or any other\n" +
+			"reference — with `ai models pull`.",
+		Args: cobra.NoArgs,
+		RunE: func(_ *cobra.Command, _ []string) error {
+			var models []ollama.PopularModel
+			var err error
+			if ui.Enabled(emitter) {
+				err = ui.RunWithSpinner(emitter.Err, "fetching popular models from ollama.com", func() error {
+					var workErr error
+					models, workErr = ollamaPopular()
+					return workErr
+				})
+			} else {
+				models, err = ollamaPopular()
+			}
+			if err != nil {
+				*exit = emitter.Failure("models.popular", output.Errorf(output.ExitRuntimeFailure,
+					"could not fetch popular models (needs internet access to ollama.com): %s", err))
+				return nil
+			}
+			*exit = emitter.Success("models.popular", modelsPopularResult{Models: toPopularEntries(models)})
 			return nil
 		},
 	}
@@ -174,7 +222,7 @@ func newModelsPullCmd(emitter *output.Emitter, exit *int) *cobra.Command {
 		Long: "Download a model into the local Ollama store. With a name argument (or under\n" +
 			"--json / no TTY) the given reference is pulled directly — this is the custom-\n" +
 			"reference path (e.g. `llama3.2:3b`, or `hf.co/user/model`). On a terminal with\n" +
-			"no argument you pick from the curated catalog of not-yet-installed models, or\n" +
+			"no argument you pick from the popular models (fetched live from ollama.com), or\n" +
 			"choose \"enter a custom model…\" to type any reference. Re-pulling an installed\n" +
 			"model updates it (there is no separate update command).",
 		Args: cobra.MaximumNArgs(1),
@@ -221,33 +269,26 @@ func newModelsPullCmd(emitter *output.Emitter, exit *int) *cobra.Command {
 	}
 }
 
-// promptModelToPull presents the curated catalog (filtered to models not already
-// installed) plus a final "enter a custom model…" option; choosing the latter
-// prompts for a free-text reference. Returns the chosen/typed model name. Only call
-// on an interactive terminal.
+// promptModelToPull presents the popular models (fetched live from ollama.com)
+// plus a final "enter a custom model…" option; choosing the latter prompts for a
+// free-text reference. If the live fetch fails it falls back to just the custom-
+// entry prompt — a brittle scrape must never block pulling. Returns the chosen/
+// typed model name. Only call on an interactive terminal.
 func promptModelToPull() (string, error) {
-	installed, listErr := ollamaClient().List()
-	// A list failure is non-fatal here: we can still offer the full catalog and the
-	// custom-entry path. If Ollama is truly down, the subsequent pull will surface
-	// the unreachable error with the right exit code.
-	byBase := make(map[string]bool)
-	if listErr == nil {
-		for _, model := range installed {
-			byBase[baseName(model.Name)] = true
-		}
+	popular, popularErr := ollamaPopular()
+	if popularErr != nil || len(popular) == 0 {
+		// The live popular list is unavailable; don't block pulling — go straight
+		// to the free-text custom-entry prompt.
+		return promptCustomModel()
 	}
-	options := make([]huh.Option[string], 0)
-	for _, candidate := range ollama.Catalog() {
-		if byBase[baseName(candidate.Name)] {
-			continue
-		}
-		label := candidate.Name + " — " + candidate.Description
-		options = append(options, huh.NewOption(label, candidate.Name))
+	options := make([]huh.Option[string], 0, len(popular)+1)
+	for _, candidate := range popular {
+		options = append(options, huh.NewOption(popularPickerLabel(candidate), candidate.Name))
 	}
 	options = append(options, huh.NewOption("✎ enter a custom model…", customModelOption))
 
 	choice, err := promptChoice("Model to pull",
-		"pick a catalog model, or enter a custom reference (e.g. llama3.2:3b, hf.co/user/model)",
+		"pick a popular model, or enter a custom reference (e.g. llama3.2:3b, hf.co/user/model)",
 		options, options[0].Value)
 	if err != nil {
 		return "", err
@@ -255,6 +296,25 @@ func promptModelToPull() (string, error) {
 	if choice != customModelOption {
 		return choice, nil
 	}
+	return promptCustomModel()
+}
+
+// popularPickerLabel formats a popular model as "name — params — size" for the
+// pull picker; unknown sizes show "—".
+func popularPickerLabel(model ollama.PopularModel) string {
+	params := strings.Join(model.Parameters, ",")
+	if params == "" {
+		params = "-"
+	}
+	size := "—"
+	if model.DownloadSize > 0 {
+		size = humanByteSize(model.DownloadSize)
+	}
+	return model.Name + " — " + params + " — " + size
+}
+
+// promptCustomModel asks for a free-text model reference (the custom-entry path).
+func promptCustomModel() (string, error) {
 	custom, err := promptText("Custom model reference",
 		"the Ollama model to pull (e.g. llama3.2:3b, qwen2.5:7b, hf.co/user/model)", "",
 		func(value string) error {

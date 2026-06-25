@@ -1,0 +1,121 @@
+<!doctype html>
+<html class="h-full overflow-y-scroll">
+  <head>
+    <title>Ollama</title>
+    <meta charset="utf-8" />
+    <meta name="description" content="Search for models on Ollama."/>
+  </head>
+  <body>
+    <ul role="list">
+<li x-test-model class="flex items-baseline border-b border-neutral-200 py-6">
+  <a href="/library/gemma4" class="group w-full">
+    <div class="flex flex-col mb-1" title="gemma4">
+      <h2 class="truncate text-xl font-medium underline-offset-2 group-hover:underline md:text-2xl">
+        <span x-test-search-response-title>gemma4</span>
+      </h2>
+      <p class="max-w-lg break-words text-neutral-800 text-md">Gemma 4 models are designed to deliver frontier-level performance at each size. They are well-suited for reasoning, agentic workflows, coding, and multimodal understanding.</p>
+    </div>
+    <div class="flex flex-col">
+      <div class="flex flex-wrap space-x-2">
+        <span x-test-capability class="inline-flex my-1 items-center rounded-md bg-indigo-50 px-2 py-[2px] text-xs font-medium text-indigo-600 sm:text-[13px]">vision</span>
+          <span x-test-capability class="inline-flex my-1 items-center rounded-md bg-indigo-50 px-2 py-[2px] text-xs font-medium text-indigo-600 sm:text-[13px]">tools</span>
+          <span x-test-capability class="inline-flex my-1 items-center rounded-md bg-indigo-50 px-2 py-[2px] text-xs font-medium text-indigo-600 sm:text-[13px]">thinking</span>
+          <span x-test-capability class="inline-flex my-1 items-center rounded-md bg-indigo-50 px-2 py-[2px] text-xs font-medium text-indigo-600 sm:text-[13px]">audio</span>
+          <span class="inline-flex my-1 items-center rounded-md bg-cyan-50 px-2 py-[2px] text-xs font-medium text-cyan-500 sm:text-[13px]">cloud</span>
+          <span x-test-size class="inline-flex my-1 items-center rounded-md bg-[#ddf4ff] px-2 py-[2px] text-xs font-medium text-blue-600 sm:text-[13px]">e2b</span>
+          <span x-test-size class="inline-flex my-1 items-center rounded-md bg-[#ddf4ff] px-2 py-[2px] text-xs font-medium text-blue-600 sm:text-[13px]">e4b</span>
+          <span x-test-size class="inline-flex my-1 items-center rounded-md bg-[#ddf4ff] px-2 py-[2px] text-xs font-medium text-blue-600 sm:text-[13px]">12b</span>
+          <span x-test-size class="inline-flex my-1 items-center rounded-md bg-[#ddf4ff] px-2 py-[2px] text-xs font-medium text-blue-600 sm:text-[13px]">26b</span>
+          <span x-test-size class="inline-flex my-1 items-center rounded-md bg-[#ddf4ff] px-2 py-[2px] text-xs font-medium text-blue-600 sm:text-[13px]">31b</span>
+      </div>
+      <p class="my-1 flex space-x-5 text-[13px] font-medium text-neutral-500">
+          <span class="flex items-center">
+            <svg></svg>
+            <span x-test-pull-count>15.5M</span>
+            <span class="hidden sm:flex">&nbsp;Pulls</span>
+          </span>
+          <span class="flex items-center">
+            <svg></svg>
+            <span x-test-tag-count>49</span>
+            <span class="hidden sm:flex">&nbsp;Tags</span>
+          </span>
+          <span class="flex items-center" title="Jun 24, 2026 6:34 PM UTC">
+            <svg></svg>
+            <span class="hidden sm:flex">Updated&nbsp;</span>
+            <span x-test-updated>19 hours ago</span>
+          </span>
+      </p>
+    </div>
+  </a>
+</li>
+<li x-test-model class="flex items-baseline border-b border-neutral-200 py-6">
+  <a href="/library/lfm2.5" class="group w-full">
+    <div class="flex flex-col mb-1" title="lfm2.5">
+      <h2 class="truncate text-xl font-medium underline-offset-2 group-hover:underline md:text-2xl">
+        <span x-test-search-response-title>lfm2.5</span>
+      </h2>
+      <p class="max-w-lg break-words text-neutral-800 text-md">LFM2.5-8B-A1B, an edge model built for fast, reliable tool calling on consumer hardware.</p>
+    </div>
+    <div class="flex flex-col">
+      <div class="flex flex-wrap space-x-2">
+          <span x-test-capability class="inline-flex my-1 items-center rounded-md bg-indigo-50 px-2 py-[2px] text-xs font-medium text-indigo-600 sm:text-[13px]">tools</span>
+          <span x-test-capability class="inline-flex my-1 items-center rounded-md bg-indigo-50 px-2 py-[2px] text-xs font-medium text-indigo-600 sm:text-[13px]">thinking</span>
+          <span x-test-size class="inline-flex my-1 items-center rounded-md bg-[#ddf4ff] px-2 py-[2px] text-xs font-medium text-blue-600 sm:text-[13px]">8b</span>
+      </div>
+      <p class="my-1 flex space-x-5 text-[13px] font-medium text-neutral-500">
+          <span class="flex items-center">
+            <svg></svg>
+            <span x-test-pull-count>35.2K</span>
+            <span class="hidden sm:flex">&nbsp;Pulls</span>
+          </span>
+          <span class="flex items-center">
+            <svg></svg>
+            <span x-test-tag-count>5</span>
+            <span class="hidden sm:flex">&nbsp;Tags</span>
+          </span>
+          <span class="flex items-center" title="May 31, 2026 4:16 AM UTC">
+            <svg></svg>
+            <span class="hidden sm:flex">Updated&nbsp;</span>
+            <span x-test-updated>3 weeks ago</span>
+          </span>
+      </p>
+    </div>
+  </a>
+</li>
+<li x-test-model class="flex items-baseline border-b border-neutral-200 py-6">
+  <a href="/library/glm-5.2" class="group w-full">
+    <div class="flex flex-col mb-1" title="glm-5.2">
+      <h2 class="truncate text-xl font-medium underline-offset-2 group-hover:underline md:text-2xl">
+        <span x-test-search-response-title>glm-5.2</span>
+      </h2>
+      <p class="max-w-lg break-words text-neutral-800 text-md">GLM-5.2 is Z.ai&#39;s flagship model for the era of long-horizon tasks. </p>
+    </div>
+    <div class="flex flex-col">
+      <div class="flex flex-wrap space-x-2">
+          <span x-test-capability class="inline-flex my-1 items-center rounded-md bg-indigo-50 px-2 py-[2px] text-xs font-medium text-indigo-600 sm:text-[13px]">tools</span>
+          <span x-test-capability class="inline-flex my-1 items-center rounded-md bg-indigo-50 px-2 py-[2px] text-xs font-medium text-indigo-600 sm:text-[13px]">thinking</span>
+          <span class="inline-flex my-1 items-center rounded-md bg-cyan-50 px-2 py-[2px] text-xs font-medium text-cyan-500 sm:text-[13px]">cloud</span>
+      </div>
+      <p class="my-1 flex space-x-5 text-[13px] font-medium text-neutral-500">
+          <span class="flex items-center">
+            <svg></svg>
+            <span x-test-pull-count>58.2K</span>
+            <span class="hidden sm:flex">&nbsp;Pulls</span>
+          </span>
+          <span class="flex items-center">
+            <svg></svg>
+            <span x-test-tag-count>1</span>
+            <span class="hidden sm:flex">&nbsp;Tag</span>
+          </span>
+          <span class="flex items-center" title="Jun 16, 2026 5:39 PM UTC">
+            <svg></svg>
+            <span class="hidden sm:flex">Updated&nbsp;</span>
+            <span x-test-updated>1 week ago</span>
+          </span>
+      </p>
+    </div>
+  </a>
+</li>
+    </ul>
+  </body>
+</html>

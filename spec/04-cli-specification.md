@@ -835,21 +835,38 @@ exit **4**.
 ai models list
 ```
 
-Merges the **installed** models (Ollama `GET /api/tags`) with the platform's
-**curated catalog** of installable models, and marks each row with its status:
+Lists the **installed** models in the local Ollama store (`GET /api/tags`). There
+is **no hardcoded catalog** — installable suggestions live behind `ai models
+popular` (§8.3.2). The human output is a NAME / SIZE / PARAMS table; `--json`
+returns the installed list (each entry carries `installed: true`).
 
-* **installed** — present in the local store (installed-but-not-in-catalog models
-  still appear here)
-* **available** — a catalog model not yet installed (installable with `ai models
-  pull`)
+### 8.3.2 Popular (installable, live)
 
-A catalog entry is matched to an installed model by base name (so catalog `gemma4`
-is hidden when `gemma4:31b` is installed). The human output is a NAME / STATUS /
-SIZE / PARAMS table; `--json` returns the merged list with an `installed` bool per
-entry. The catalog is convenience data that will age — that is fine, because the
-pull path always also accepts a free-text custom reference.
+```bash id="c23p"
+ai models popular
+```
 
-### 8.3.2 Pull (install / update)
+Lists popular **installable** models fetched **live** from `ollama.com/search`
+(there is no API, so the page is scraped by its `x-test-*` markers), capped to a
+sensible top N. For each model it reports:
+
+* **name** and its **parameter-size variants** (the `x-test-size` tags, e.g.
+  `1b`, `8b`, `120b`)
+* the default-tag **download size** in bytes, summed from the model's manifest on
+  the public Ollama registry (`GET registry.ollama.ai/v2/library/<model>/manifests/latest`,
+  summing `layers[].size`); sizes are fetched **concurrently** with a bounded
+  worker pool and a short per-request timeout, and a lookup that fails/times out
+  degrades to an unknown size (rendered `—`) without failing the whole list
+* the **repo link** (`https://ollama.com/library/<name>`)
+
+The human output is a NAME / PARAMS / SIZE / REPO table; `--json` returns the
+structured list. This **needs internet access to ollama.com**: a failed
+fetch/parse exits **4** with a note to that effect. The list is inherently
+brittle (ollama.com has no API) — it will need updating if the page markup
+changes; that is acceptable because `ai models pull` always also accepts a
+free-text reference.
+
+### 8.3.3 Pull (install / update)
 
 ```bash id="c23b"
 ai models pull [name]
@@ -858,14 +875,17 @@ ai models pull [name]
 * With a `name` argument, or under `--json` / no TTY: the given reference is pulled
   directly (the **custom-reference** path — e.g. `llama3.2:3b`, or a custom ref like
   `hf.co/user/model`). Under `--json` a name is **required** (missing → exit 2).
-* On a terminal with **no** argument: the user picks from a select of the catalog
-  models that are **not yet installed**, plus a final **"✎ enter a custom model…"**
-  option that prompts for a free-text reference.
+  Pull stays **free-form** — any model reference can be pulled, listed or not.
+* On a terminal with **no** argument: the user picks from the **popular** models
+  (fetched live — §8.3.2, each labelled "name — params — size"), plus a final
+  **"✎ enter a custom model…"** option that prompts for a free-text reference. If
+  the live popular fetch fails it falls back to just the custom-entry prompt —
+  the scrape never blocks pulling.
 
 The pull **streams** Ollama's NDJSON progress while a spinner shows ongoing work.
 There is **no separate update verb** — re-pulling an installed model updates it.
 
-### 8.3.3 Remove
+### 8.3.4 Remove
 
 ```bash id="c23c"
 ai models rm [name]
@@ -877,7 +897,7 @@ argument (or under `--json`) that name is removed. On a terminal the user is ask
 to **confirm** before deleting. A model not in the store → a clear not-found error
 (exit 2).
 
-### 8.3.4 Show
+### 8.3.5 Show
 
 ```bash id="c23d"
 ai models show <name>

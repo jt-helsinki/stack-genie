@@ -44,8 +44,9 @@ type ModelPullRequestedMsg struct{}
 // terminal overlay (with its confirm prompt).
 type ModelRemoveRequestedMsg struct{ Name string }
 
-// localRow is one merged row of the local-store list: an installed model and/or a
-// catalog ("available") model.
+// localRow is one row of the local-store list: an INSTALLED model (the hardcoded
+// catalog was dropped — installable suggestions live behind `ai models pull`,
+// which opens the live popular picker).
 type localRow struct {
 	name      string
 	installed bool
@@ -118,7 +119,7 @@ func (view *Models) Update(msg tea.Msg) tea.Cmd {
 		return nil
 	case localModelsRefreshedMsg:
 		view.localErr = message.err
-		view.rows = mergeLocalRows(message.installed, ollama.Catalog())
+		view.rows = installedRows(message.installed)
 		if view.cursor >= len(view.rows) {
 			view.cursor = 0
 		}
@@ -198,12 +199,12 @@ func (view *Models) View() string {
 		body.WriteString(ui.Failure.Render(ui.IconFail+" "+view.localErr.Error()) +
 			"\n" + ui.Muted.Render("start it with `ai services start ollama`") + "\n")
 	} else if len(view.rows) == 0 {
-		body.WriteString(ui.Muted.Render("no local models and an empty catalog") + "\n")
+		body.WriteString(ui.Muted.Render("no models in the local store (p to pull)") + "\n")
 	} else {
 		for index, row := range view.rows {
 			body.WriteString(renderLocalRow(row, index == view.cursor) + "\n")
 		}
-		body.WriteString(ui.Muted.Render("installed = in the store · available = installable (p to pull)") + "\n")
+		body.WriteString(ui.Muted.Render("installed models · p to pull (popular picker) · d to remove") + "\n")
 	}
 
 	if view.flash != "" {
@@ -236,36 +237,14 @@ func renderLocalRow(row localRow, selected bool) string {
 	return line
 }
 
-// mergeLocalRows merges installed models with the catalog into one sorted list:
-// catalog models not installed appear as "available"; installed models always
-// appear. Catalog/installed matching is by base name (gemma4 vs gemma4:31b).
-func mergeLocalRows(installed []ollama.Model, catalog []ollama.CatalogModel) []localRow {
-	byBase := make(map[string]bool, len(installed))
-	rows := make([]localRow, 0, len(installed)+len(catalog))
+// installedRows maps the installed local-store models to rows, sorted by name.
+func installedRows(installed []ollama.Model) []localRow {
+	rows := make([]localRow, 0, len(installed))
 	for _, model := range installed {
-		byBase[localBaseName(model.Name)] = true
 		rows = append(rows, localRow{name: model.Name, installed: true, size: model.Size, params: model.ParameterSize})
 	}
-	for _, candidate := range catalog {
-		if byBase[localBaseName(candidate.Name)] {
-			continue
-		}
-		rows = append(rows, localRow{name: candidate.Name})
-	}
-	sort.Slice(rows, func(i, j int) bool {
-		if rows[i].installed != rows[j].installed {
-			return rows[i].installed
-		}
-		return rows[i].name < rows[j].name
-	})
+	sort.Slice(rows, func(i, j int) bool { return rows[i].name < rows[j].name })
 	return rows
-}
-
-func localBaseName(name string) string {
-	if idx := strings.IndexByte(name, ':'); idx >= 0 {
-		return name[:idx]
-	}
-	return name
 }
 
 func padRight(value string, width int) string {

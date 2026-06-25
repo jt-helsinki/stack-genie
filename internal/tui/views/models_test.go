@@ -125,10 +125,13 @@ func TestModelsLocalListMergesAndPulls(test *testing.T) {
 	_ = view.Update(view.listCmd()()) // dispatch the local-store list
 
 	rendered := view.View()
-	for _, want := range []string{"Local model store", "installed", "available", "gemma4:31b"} {
+	for _, want := range []string{"Local model store", "installed", "gemma4:31b"} {
 		if !strings.Contains(rendered, want) {
 			test.Errorf("local list missing %q:\n%s", want, rendered)
 		}
+	}
+	if strings.Contains(rendered, "available") {
+		test.Errorf("local list should be installed-only now (no \"available\"):\n%s", rendered)
 	}
 
 	// "p" requests an interactive pull (handled by the parent via ExecProcess).
@@ -167,17 +170,17 @@ func TestModelsRemoveSelectedInstalled(test *testing.T) {
 	}
 }
 
-func TestModelsRemoveAvailableIsNoOp(test *testing.T) {
+func TestModelsRemoveWithNoModelsIsNoOp(test *testing.T) {
 	view := NewModels(
 		func() (litellm.StatusInfo, error) { return litellm.StatusInfo{Healthy: true}, nil },
 		func(string) (litellm.TestResult, error) { return litellm.TestResult{}, nil },
-		noLocalModels, // nothing installed → all rows are catalog "available"
+		noLocalModels, // nothing installed → no rows to remove
 	)
 	refreshModels(view)
 	_ = view.Update(view.listCmd()())
 
 	cmd := view.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("d")})
 	if cmd != nil {
-		test.Fatalf("d on an available (not installed) model must be a no-op, got %T", cmd())
+		test.Fatalf("d with no installed model must be a no-op, got %T", cmd())
 	}
 }

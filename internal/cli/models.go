@@ -19,6 +19,12 @@ import (
 // production wires ollama.RealClient.
 var ollamaClient = ollama.RealClient
 
+// ollamaPopular fetches the live popular-models list (ollama.com/search + the
+// registry for sizes) used by `ai models popular` and the `ai models pull` picker.
+// It is a package var so tests can inject a fixture without hitting the network;
+// production wires ollama.Popular.
+var ollamaPopular = func() ([]ollama.PopularModel, error) { return ollama.Popular() }
+
 // newModelsCmd builds `ai models` (CLI §8).
 func newModelsCmd(em *output.Emitter, exit *int) *cobra.Command {
 	cmd := &cobra.Command{
@@ -31,6 +37,7 @@ func newModelsCmd(em *output.Emitter, exit *int) *cobra.Command {
 		newModelsStatusCmd(em, exit),
 		newModelsTestCmd(em, exit),
 		newModelsListCmd(em, exit),
+		newModelsPopularCmd(em, exit),
 		newModelsPullCmd(em, exit),
 		newModelsRmCmd(em, exit),
 		newModelsShowCmd(em, exit),

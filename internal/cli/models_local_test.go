@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"errors"
 	"io"
 	"strings"
 	"testing"
@@ -33,39 +34,22 @@ func jsonEmitter() *output.Emitter {
 	return &output.Emitter{Out: io.Discard, Err: io.Discard, JSON: true}
 }
 
-func TestMergeModelsInstalledFirstAndDedup(test *testing.T) {
+func TestInstalledEntriesListsInstalledOnly(test *testing.T) {
 	installed := []ollama.Model{
 		{Name: "gemma4:31b", Size: 100, ParameterSize: "31B"},
 		{Name: "custom-thing:latest", Size: 50, ParameterSize: "7B"},
 	}
-	merged := mergeModels(installed, ollama.Catalog())
-
-	// Installed-but-not-in-catalog model still appears, marked installed.
-	var sawCustom, sawGemmaInstalled, sawLlamaAvailable bool
-	for _, entry := range merged {
-		switch {
-		case entry.Name == "custom-thing:latest":
-			sawCustom = entry.Installed
-		case entry.Name == "gemma4:31b":
-			sawGemmaInstalled = entry.Installed
-		case entry.Name == "llama3.2":
-			sawLlamaAvailable = !entry.Installed
-		case entry.Name == "gemma4":
-			test.Fatal("catalog gemma4 must be hidden — gemma4:31b is installed (base-name match)")
+	entries := installedEntries(installed)
+	if len(entries) != 2 {
+		test.Fatalf("got %d entries, want 2 (installed-only, no catalog)", len(entries))
+	}
+	for _, entry := range entries {
+		if !entry.Installed {
+			test.Fatalf("entry %q should be marked installed", entry.Name)
 		}
 	}
-	if !sawCustom {
-		test.Fatal("installed-not-in-catalog model missing or not marked installed")
-	}
-	if !sawGemmaInstalled {
-		test.Fatal("gemma4:31b should be installed")
-	}
-	if !sawLlamaAvailable {
-		test.Fatal("a catalog model (llama3.2) should appear as available")
-	}
-	// Installed entries sort before available entries.
-	if merged[0].Installed != true {
-		test.Fatalf("first entry should be installed, got %+v", merged[0])
+	if entries[0].Name != "gemma4:31b" || entries[0].Size != 100 || entries[0].Params != "31B" {
+		test.Fatalf("first entry = %+v", entries[0])
 	}
 }
 
@@ -155,15 +139,62 @@ func TestModelsShowDirectName(test *testing.T) {
 }
 
 func TestModelsListHumanTable(test *testing.T) {
-	result := modelsListResult{Models: mergeModels(
+	result := modelsListResult{Models: installedEntries(
 		[]ollama.Model{{Name: "gemma4:31b", Size: 1610612736, ParameterSize: "31B"}},
-		ollama.Catalog(),
 	)}
 	human := result.Human()
-	for _, want := range []string{"NAME", "STATUS", "installed", "available", "1.5 GB"} {
+	for _, want := range []string{"NAME", "SIZE", "PARAMS", "gemma4:31b", "1.5 GB"} {
 		if !strings.Contains(human, want) {
 			test.Fatalf("Human() missing %q:\n%s", want, human)
 		}
+	}
+}
+
+func TestModelsPopularHumanTableAndJSON(test *testing.T) {
+	result := modelsPopularResult{Models: toPopularEntries([]ollama.PopularModel{
+		{Name: "gemma4", Parameters: []string{"e2b", "31b"}, DownloadSize: 1610612736, RepoURL: "https://ollama.com/library/gemma4"},
+		{Name: "glm-5.2", DownloadSize: 0, RepoURL: "https://ollama.com/library/glm-5.2"},
+	})}
+	human := result.Human()
+	for _, want := range []string{"NAME", "PARAMS", "SIZE", "REPO", "gemma4", "e2b,31b", "1.5 GB", "ollama.com/library/gemma4", "—"} {
+		if !strings.Contains(human, want) {
+			test.Fatalf("Human() missing %q:\n%s", want, human)
+		}
+	}
+}
+
+// withFakePopular swaps the package-level ollamaPopular fetcher for a stub,
+// restoring it after the test (no network).
+func withFakePopular(test *testing.T, models []ollama.PopularModel, err error) {
+	test.Helper()
+	prev := ollamaPopular
+	ollamaPopular = func() ([]ollama.PopularModel, error) { return models, err }
+	test.Cleanup(func() { ollamaPopular = prev })
+}
+
+func TestModelsPopularSuccess(test *testing.T) {
+	withFakePopular(test, []ollama.PopularModel{
+		{Name: "gemma4", Parameters: []string{"31b"}, DownloadSize: 100, RepoURL: "https://ollama.com/library/gemma4"},
+	}, nil)
+	exit := output.ExitOK
+	cmd := newModelsPopularCmd(jsonEmitter(), &exit)
+	cmd.SetOut(io.Discard)
+	cmd.SetErr(io.Discard)
+	runLocalModelsCmd(test, cmd)
+	if exit != output.ExitOK {
+		test.Fatalf("popular exit = %d, want 0", exit)
+	}
+}
+
+func TestModelsPopularFetchFailureExits4(test *testing.T) {
+	withFakePopular(test, nil, errors.New("no internet"))
+	exit := output.ExitOK
+	cmd := newModelsPopularCmd(jsonEmitter(), &exit)
+	cmd.SetOut(io.Discard)
+	cmd.SetErr(io.Discard)
+	runLocalModelsCmd(test, cmd)
+	if exit != output.ExitRuntimeFailure {
+		test.Fatalf("popular fetch failure exit = %d, want %d", exit, output.ExitRuntimeFailure)
 	}
 }
 

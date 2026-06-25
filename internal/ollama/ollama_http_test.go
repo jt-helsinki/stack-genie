@@ -169,18 +169,3 @@ func TestUnreachableIsClassified(test *testing.T) {
 		test.Fatalf("expected unreachable classification, got %v", err)
 	}
 }
-
-func TestCatalogIncludesDefault(test *testing.T) {
-	if DefaultCatalogModel() != "gemma4" {
-		test.Fatalf("default catalog model = %q, want gemma4", DefaultCatalogModel())
-	}
-	found := false
-	for _, entry := range Catalog() {
-		if entry.Default && entry.Name == "gemma4" {
-			found = true
-		}
-	}
-	if !found {
-		test.Fatal("gemma4 must be in the catalog and marked Default")
-	}
-}
