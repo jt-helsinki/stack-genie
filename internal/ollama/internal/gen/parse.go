@@ -7,11 +7,25 @@ import (
 	"strings"
 )
 
-// scrapedModel is one model parsed off the ollama.com library page. It mirrors the
-// fields of ollama.PopularModel; the generator converts it to the embedded YAML.
+// scrapedModel is one parameter-size VARIANT parsed off the ollama.com library
+// page. It mirrors the fields of ollama.PopularModel — each library model expands
+// into one scrapedModel per size variant (a model with no variants yields a single
+// entry with an empty Parameters / SizeTag). The generator converts it to the
+// embedded YAML.
+//
+//   - Name      the exact pullable reference incl. the size tag (e.g. "qwen2.5:7b"),
+//     or the bare model name when the model lists no size variants.
+//   - Parameters the single size (e.g. "7b"), or "" for a no-variant model.
+//   - SizeTag   the registry manifest tag to fetch this variant's download size from
+//     (the size label, e.g. "7b"); "latest" for a no-variant model.
+//   - Model     the bare library model name (e.g. "qwen2.5"), used for the RepoURL.
+//   - RepoURL   the model's ollama.com/library page (shared across its variants).
+//   - PullCount the model's pull count (shared across its variants).
 type scrapedModel struct {
 	Name       string
-	Parameters []string
+	Parameters string
+	SizeTag    string
+	Model      string
 	RepoURL    string
 	PullCount  string
 }
@@ -32,11 +46,15 @@ var (
 const repoBaseURL = "https://ollama.com"
 
 // parseLibraryHTML extracts the listed models from the library page HTML, in page
-// order (the page is sorted most-popular-first), de-duplicated by name. It is
-// tolerant: a malformed item is skipped, never panics.
+// order (the page is sorted most-popular-first), de-duplicated by model name, and
+// EXPANDED into one entry per parameter-size variant. A model that lists no size
+// variants (e.g. an embedding model) yields a single bare entry (Parameters "",
+// SizeTag "latest"). Page order is preserved: a model's variants follow each other
+// in the order the page lists them, immediately after the previous model's variants.
+// It is tolerant: a malformed item is skipped, never panics.
 func parseLibraryHTML(html string) []scrapedModel {
 	items := modelItemRe.FindAllString(html, -1)
-	models := make([]scrapedModel, 0, len(items))
+	variants := make([]scrapedModel, 0, len(items))
 	seen := make(map[string]bool, len(items))
 	for _, item := range items {
 		hrefMatch := hrefRe.FindStringSubmatch(item)
@@ -51,11 +69,11 @@ func parseLibraryHTML(html string) []scrapedModel {
 		if name == "" || seen[name] {
 			continue
 		}
-		var params []string
+		var sizes []string
 		for _, sizeMatch := range sizeRe.FindAllStringSubmatch(item, -1) {
 			variant := stripTags(sizeMatch[1])
 			if variant != "" {
-				params = append(params, variant)
+				sizes = append(sizes, variant)
 			}
 		}
 		pullCount := ""
@@ -63,14 +81,32 @@ func parseLibraryHTML(html string) []scrapedModel {
 			pullCount = stripTags(pullMatch[1])
 		}
 		seen[name] = true
-		models = append(models, scrapedModel{
-			Name:       name,
-			Parameters: params,
-			RepoURL:    repoBaseURL + "/library/" + name,
-			PullCount:  pullCount,
-		})
+		repoURL := repoBaseURL + "/library/" + name
+		if len(sizes) == 0 {
+			// No size variants — a single bare entry (e.g. an embedding model). The
+			// default-tag manifest gives its size.
+			variants = append(variants, scrapedModel{
+				Name:       name,
+				Parameters: "",
+				SizeTag:    "latest",
+				Model:      name,
+				RepoURL:    repoURL,
+				PullCount:  pullCount,
+			})
+			continue
+		}
+		for _, size := range sizes {
+			variants = append(variants, scrapedModel{
+				Name:       name + ":" + size,
+				Parameters: size,
+				SizeTag:    size,
+				Model:      name,
+				RepoURL:    repoURL,
+				PullCount:  pullCount,
+			})
+		}
 	}
-	return models
+	return variants
 }
 
 func stripTags(fragment string) string {

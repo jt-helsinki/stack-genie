@@ -1,157 +1,365 @@
 # Popular Ollama models — a BUNDLED, regenerable snapshot. DO NOT hand-edit.
 #
 # Source: https://ollama.com/library?sort=popular (the most-pulled models),
-# captured by the regeneration tool. download_size is the default-tag (`latest`)
-# manifest layer-size sum from https://registry.ollama.ai. The runtime ollama
-# package EMBEDS this file and never re-scrapes; regenerate with one of:
+# captured by the regeneration tool. ONE entry PER parameter-size variant:
+# name is the exact pullable ref incl. the size tag (e.g. qwen2.5:7b) and
+# download_size is THAT tag's manifest layer-size sum from
+# https://registry.ollama.ai. The runtime ollama package EMBEDS this file and
+# never re-scrapes; regenerate with one of:
 #   make models-refresh
 #   go generate ./internal/ollama/...
 models:
-  - name: llama3.1
-    parameters: [8b, 70b, 405b]
+  - name: llama3.1:8b
+    parameters: 8b
     download_size: 4920752841
     repo_url: https://ollama.com/library/llama3.1
     pull_count: "116.4M"
-  - name: deepseek-r1
-    parameters: [1.5b, 7b, 8b, 14b, 32b, 70b, 671b]
+  - name: llama3.1:70b
+    parameters: 70b
+    download_size: 42520412073
+    repo_url: https://ollama.com/library/llama3.1
+    pull_count: "116.4M"
+  - name: llama3.1:405b
+    parameters: 405b
+    download_size: 243069624617
+    repo_url: https://ollama.com/library/llama3.1
+    pull_count: "116.4M"
+  - name: deepseek-r1:1.5b
+    parameters: 1.5b
+    download_size: 1117322281
+    repo_url: https://ollama.com/library/deepseek-r1
+    pull_count: "88.5M"
+  - name: deepseek-r1:7b
+    parameters: 7b
+    download_size: 4683074953
+    repo_url: https://ollama.com/library/deepseek-r1
+    pull_count: "88.5M"
+  - name: deepseek-r1:8b
+    parameters: 8b
     download_size: 5225375560
+    repo_url: https://ollama.com/library/deepseek-r1
+    pull_count: "88.5M"
+  - name: deepseek-r1:14b
+    parameters: 14b
+    download_size: 8988111721
+    repo_url: https://ollama.com/library/deepseek-r1
+    pull_count: "88.5M"
+  - name: deepseek-r1:32b
+    parameters: 32b
+    download_size: 19851337321
+    repo_url: https://ollama.com/library/deepseek-r1
+    pull_count: "88.5M"
+  - name: deepseek-r1:70b
+    parameters: 70b
+    download_size: 42520397385
+    repo_url: https://ollama.com/library/deepseek-r1
+    pull_count: "88.5M"
+  - name: deepseek-r1:671b
+    parameters: 671b
+    download_size: 404430189771
     repo_url: https://ollama.com/library/deepseek-r1
     pull_count: "88.5M"
   - name: nomic-embed-text
     download_size: 274302030
     repo_url: https://ollama.com/library/nomic-embed-text
     pull_count: "75.9M"
-  - name: llama3.2
-    parameters: [1b, 3b]
+  - name: llama3.2:1b
+    parameters: 1b
+    download_size: 1321097844
+    repo_url: https://ollama.com/library/llama3.2
+    pull_count: "74M"
+  - name: llama3.2:3b
+    parameters: 3b
     download_size: 2019392628
     repo_url: https://ollama.com/library/llama3.2
     pull_count: "74M"
-  - name: gemma3
-    parameters: [270m, 1b, 4b, 12b, 27b]
+  - name: gemma3:270m
+    parameters: 270m
+    download_size: 291554440
+    repo_url: https://ollama.com/library/gemma3
+    pull_count: "38M"
+  - name: gemma3:1b
+    parameters: 1b
+    download_size: 815319299
+    repo_url: https://ollama.com/library/gemma3
+    pull_count: "38M"
+  - name: gemma3:4b
+    parameters: 4b
     download_size: 3338801315
     repo_url: https://ollama.com/library/gemma3
     pull_count: "38M"
-  - name: qwen2.5
-    parameters: [0.5b, 1.5b, 3b, 7b, 14b, 32b, 72b]
+  - name: gemma3:12b
+    parameters: 12b
+    download_size: 8149189763
+    repo_url: https://ollama.com/library/gemma3
+    pull_count: "38M"
+  - name: gemma3:27b
+    parameters: 27b
+    download_size: 17396936451
+    repo_url: https://ollama.com/library/gemma3
+    pull_count: "38M"
+  - name: qwen2.5:0.5b
+    parameters: 0.5b
+    download_size: 397820829
+    repo_url: https://ollama.com/library/qwen2.5
+    pull_count: "33.4M"
+  - name: qwen2.5:1.5b
+    parameters: 1.5b
+    download_size: 986061405
+    repo_url: https://ollama.com/library/qwen2.5
+    pull_count: "33.4M"
+  - name: qwen2.5:3b
+    parameters: 3b
+    download_size: 1929911945
+    repo_url: https://ollama.com/library/qwen2.5
+    pull_count: "33.4M"
+  - name: qwen2.5:7b
+    parameters: 7b
     download_size: 4683086845
     repo_url: https://ollama.com/library/qwen2.5
     pull_count: "33.4M"
-  - name: qwen3
-    parameters: [0.6b, 1.7b, 4b, 8b, 14b, 30b, 32b, 235b]
+  - name: qwen2.5:14b
+    parameters: 14b
+    download_size: 8988123581
+    repo_url: https://ollama.com/library/qwen2.5
+    pull_count: "33.4M"
+  - name: qwen2.5:32b
+    parameters: 32b
+    download_size: 19851349181
+    repo_url: https://ollama.com/library/qwen2.5
+    pull_count: "33.4M"
+  - name: qwen2.5:72b
+    parameters: 72b
+    download_size: 47415724137
+    repo_url: https://ollama.com/library/qwen2.5
+    pull_count: "33.4M"
+  - name: qwen3:0.6b
+    parameters: 0.6b
+    download_size: 522653277
+    repo_url: https://ollama.com/library/qwen3
+    pull_count: "31.4M"
+  - name: qwen3:1.7b
+    parameters: 1.7b
+    download_size: 1359292957
+    repo_url: https://ollama.com/library/qwen3
+    pull_count: "31.4M"
+  - name: qwen3:4b
+    parameters: 4b
+    download_size: 2497293444
+    repo_url: https://ollama.com/library/qwen3
+    pull_count: "31.4M"
+  - name: qwen3:8b
+    parameters: 8b
     download_size: 5225387677
     repo_url: https://ollama.com/library/qwen3
     pull_count: "31.4M"
-  - name: mistral
-    parameters: [7b]
+  - name: qwen3:14b
+    parameters: 14b
+    download_size: 9276198077
+    repo_url: https://ollama.com/library/qwen3
+    pull_count: "31.4M"
+  - name: qwen3:30b
+    parameters: 30b
+    download_size: 18556698820
+    repo_url: https://ollama.com/library/qwen3
+    pull_count: "31.4M"
+  - name: qwen3:32b
+    parameters: 32b
+    download_size: 20201253341
+    repo_url: https://ollama.com/library/qwen3
+    pull_count: "31.4M"
+  - name: qwen3:235b
+    parameters: 235b
+    download_size: 142154086628
+    repo_url: https://ollama.com/library/qwen3
+    pull_count: "31.4M"
+  - name: mistral:7b
+    parameters: 7b
     download_size: 4372823897
     repo_url: https://ollama.com/library/mistral
     pull_count: "30.5M"
-  - name: gemma2
-    parameters: [2b, 9b, 27b]
+  - name: gemma2:2b
+    parameters: 2b
+    download_size: 1629518008
+    repo_url: https://ollama.com/library/gemma2
+    pull_count: "26.3M"
+  - name: gemma2:9b
+    parameters: 9b
     download_size: 5443151930
     repo_url: https://ollama.com/library/gemma2
     pull_count: "26.3M"
-  - name: llama3
-    parameters: [8b, 70b]
+  - name: gemma2:27b
+    parameters: 27b
+    download_size: 15628386970
+    repo_url: https://ollama.com/library/gemma2
+    pull_count: "26.3M"
+  - name: llama3:8b
+    parameters: 8b
     download_size: 4661224191
     repo_url: https://ollama.com/library/llama3
     pull_count: "24.5M"
-  - name: phi3
-    parameters: [3.8b, 14b]
+  - name: llama3:70b
+    parameters: 70b
+    download_size: 39969744863
+    repo_url: https://ollama.com/library/llama3
+    pull_count: "24.5M"
+  - name: phi3:3.8b
+    parameters: 3.8b
     download_size: 2176178430
     repo_url: https://ollama.com/library/phi3
     pull_count: "17.7M"
-  - name: qwen2.5-coder
-    parameters: [0.5b, 1.5b, 3b, 7b, 14b, 32b]
+  - name: phi3:14b
+    parameters: 14b
+    download_size: 7897126974
+    repo_url: https://ollama.com/library/phi3
+    pull_count: "17.7M"
+  - name: qwen2.5-coder:0.5b
+    parameters: 0.5b
+    download_size: 397821026
+    repo_url: https://ollama.com/library/qwen2.5-coder
+    pull_count: "17.3M"
+  - name: qwen2.5-coder:1.5b
+    parameters: 1.5b
+    download_size: 986061602
+    repo_url: https://ollama.com/library/qwen2.5-coder
+    pull_count: "17.3M"
+  - name: qwen2.5-coder:3b
+    parameters: 3b
+    download_size: 1929912139
+    repo_url: https://ollama.com/library/qwen2.5-coder
+    pull_count: "17.3M"
+  - name: qwen2.5-coder:7b
+    parameters: 7b
     download_size: 4683087074
     repo_url: https://ollama.com/library/qwen2.5-coder
     pull_count: "17.3M"
-  - name: gemma4
-    parameters: [e2b, e4b, 12b, 26b, 31b]
+  - name: qwen2.5-coder:14b
+    parameters: 14b
+    download_size: 8988123810
+    repo_url: https://ollama.com/library/qwen2.5-coder
+    pull_count: "17.3M"
+  - name: qwen2.5-coder:32b
+    parameters: 32b
+    download_size: 19851349410
+    repo_url: https://ollama.com/library/qwen2.5-coder
+    pull_count: "17.3M"
+  - name: gemma4:e2b
+    parameters: e2b
+    download_size: 7162405413
+    repo_url: https://ollama.com/library/gemma4
+    pull_count: "15.5M"
+  - name: gemma4:e4b
+    parameters: e4b
     download_size: 9608350245
     repo_url: https://ollama.com/library/gemma4
     pull_count: "15.5M"
-  - name: llava
-    parameters: [7b, 13b, 34b]
+  - name: gemma4:12b
+    parameters: 12b
+    download_size: 7556507848
+    repo_url: https://ollama.com/library/gemma4
+    pull_count: "15.5M"
+  - name: gemma4:26b
+    parameters: 26b
+    download_size: 17987580741
+    repo_url: https://ollama.com/library/gemma4
+    pull_count: "15.5M"
+  - name: gemma4:31b
+    parameters: 31b
+    download_size: 19868981317
+    repo_url: https://ollama.com/library/gemma4
+    pull_count: "15.5M"
+  - name: llava:7b
+    parameters: 7b
     download_size: 4733362813
     repo_url: https://ollama.com/library/llava
     pull_count: "14.2M"
-  - name: qwen3.5
-    parameters: [0.8b, 2b, 4b, 9b, 27b, 35b, 122b]
+  - name: llava:13b
+    parameters: 13b
+    download_size: 8011255929
+    repo_url: https://ollama.com/library/llava
+    pull_count: "14.2M"
+  - name: llava:34b
+    parameters: 34b
+    download_size: 20166496961
+    repo_url: https://ollama.com/library/llava
+    pull_count: "14.2M"
+  - name: qwen3.5:0.8b
+    parameters: 0.8b
+    download_size: 1036046107
+    repo_url: https://ollama.com/library/qwen3.5
+    pull_count: "14.2M"
+  - name: qwen3.5:2b
+    parameters: 2b
+    download_size: 2741192347
+    repo_url: https://ollama.com/library/qwen3.5
+    pull_count: "14.2M"
+  - name: qwen3.5:4b
+    parameters: 4b
+    download_size: 3389983260
+    repo_url: https://ollama.com/library/qwen3.5
+    pull_count: "14.2M"
+  - name: qwen3.5:9b
+    parameters: 9b
     download_size: 6594474236
     repo_url: https://ollama.com/library/qwen3.5
     pull_count: "14.2M"
-  - name: mxbai-embed-large
-    parameters: [335m]
+  - name: qwen3.5:27b
+    parameters: 27b
+    download_size: 17420432252
+    repo_url: https://ollama.com/library/qwen3.5
+    pull_count: "14.2M"
+  - name: qwen3.5:35b
+    parameters: 35b
+    download_size: 23869191260
+    repo_url: https://ollama.com/library/qwen3.5
+    pull_count: "14.2M"
+  - name: qwen3.5:122b
+    parameters: 122b
+    download_size: 81370035877
+    repo_url: https://ollama.com/library/qwen3.5
+    pull_count: "14.2M"
+  - name: mxbai-embed-large:335m
+    parameters: 335m
     download_size: 669615085
     repo_url: https://ollama.com/library/mxbai-embed-large
     pull_count: "11.9M"
-  - name: gpt-oss
-    parameters: [20b, 120b]
+  - name: gpt-oss:20b
+    parameters: 20b
     download_size: 13793440755
     repo_url: https://ollama.com/library/gpt-oss
     pull_count: "10.5M"
-  - name: phi4
-    parameters: [14b]
+  - name: gpt-oss:120b
+    parameters: 120b
+    download_size: 65369818451
+    repo_url: https://ollama.com/library/gpt-oss
+    pull_count: "10.5M"
+  - name: phi4:14b
+    parameters: 14b
     download_size: 9053115905
     repo_url: https://ollama.com/library/phi4
     pull_count: "7.6M"
-  - name: gemma
-    parameters: [2b, 7b]
+  - name: gemma:2b
+    parameters: 2b
+    download_size: 1678456173
+    repo_url: https://ollama.com/library/gemma
+    pull_count: "7.2M"
+  - name: gemma:7b
+    parameters: 7b
     download_size: 5011852742
     repo_url: https://ollama.com/library/gemma
     pull_count: "7.2M"
-  - name: llama2
-    parameters: [7b, 13b, 70b]
+  - name: llama2:7b
+    parameters: 7b
     download_size: 3826793120
     repo_url: https://ollama.com/library/llama2
     pull_count: "7.1M"
-  - name: qwen
-    parameters: [0.5b, 1.8b, 4b, 7b, 14b, 32b, 72b, 110b]
-    download_size: 2330092878
-    repo_url: https://ollama.com/library/qwen
-    pull_count: "7M"
-  - name: qwen3-coder
-    parameters: [30b, 480b]
-    download_size: 18556700222
-    repo_url: https://ollama.com/library/qwen3-coder
-    pull_count: "6.7M"
-  - name: qwen2
-    parameters: [0.5b, 1.5b, 7b, 72b]
-    download_size: 4431401006
-    repo_url: https://ollama.com/library/qwen2
-    pull_count: "6M"
-  - name: codellama
-    parameters: [7b, 13b, 34b, 70b]
-    download_size: 3825910133
-    repo_url: https://ollama.com/library/codellama
-    pull_count: "5.7M"
-  - name: glm-ocr
-    download_size: 2219298770
-    repo_url: https://ollama.com/library/glm-ocr
-    pull_count: "5.5M"
-  - name: minicpm-v
-    parameters: [8b]
-    download_size: 5473837900
-    repo_url: https://ollama.com/library/minicpm-v
-    pull_count: "5.3M"
-  - name: tinyllama
-    parameters: [1.1b]
-    download_size: 637699655
-    repo_url: https://ollama.com/library/tinyllama
-    pull_count: "5.1M"
-  - name: mistral-nemo
-    parameters: [12b]
-    download_size: 7071712741
-    repo_url: https://ollama.com/library/mistral-nemo
-    pull_count: "5.1M"
-  - name: bge-m3
-    parameters: [567m]
-    download_size: 1157672268
-    repo_url: https://ollama.com/library/bge-m3
-    pull_count: "4.9M"
-  - name: llama3.2-vision
-    parameters: [11b, 90b]
-    download_size: 7816588622
-    repo_url: https://ollama.com/library/llama3.2-vision
-    pull_count: "4.7M"
+  - name: llama2:13b
+    parameters: 13b
+    download_size: 7366820736
+    repo_url: https://ollama.com/library/llama2
+    pull_count: "7.1M"
+  - name: llama2:70b
+    parameters: 70b
+    download_size: 38873235328
+    repo_url: https://ollama.com/library/llama2
+    pull_count: "7.1M"

@@ -152,11 +152,11 @@ func TestModelsListHumanTable(test *testing.T) {
 
 func TestModelsPopularHumanTableAndJSON(test *testing.T) {
 	result := modelsPopularResult{Models: toPopularEntries([]ollama.PopularModel{
-		{Name: "gemma4", Parameters: []string{"e2b", "31b"}, DownloadSize: 1610612736, RepoURL: "https://ollama.com/library/gemma4"},
-		{Name: "glm-5.2", DownloadSize: 0, RepoURL: "https://ollama.com/library/glm-5.2"},
+		{Name: "gemma4:31b", Parameters: "31b", DownloadSize: 1610612736, RepoURL: "https://ollama.com/library/gemma4"},
+		{Name: "nomic-embed-text", Parameters: "", DownloadSize: 0, RepoURL: "https://ollama.com/library/nomic-embed-text"},
 	})}
 	human := result.Human()
-	for _, want := range []string{"NAME", "PARAMS", "SIZE", "REPO", "gemma4", "e2b,31b", "1.5 GB", "ollama.com/library/gemma4", "—"} {
+	for _, want := range []string{"NAME", "PARAMS", "SIZE", "REPO", "gemma4:31b", "31b", "1.5 GB", "ollama.com/library/gemma4", "—"} {
 		if !strings.Contains(human, want) {
 			test.Fatalf("Human() missing %q:\n%s", want, human)
 		}
@@ -174,7 +174,7 @@ func withFakePopular(test *testing.T, models []ollama.PopularModel, err error) {
 
 func TestModelsPopularSuccess(test *testing.T) {
 	withFakePopular(test, []ollama.PopularModel{
-		{Name: "gemma4", Parameters: []string{"31b"}, DownloadSize: 100, RepoURL: "https://ollama.com/library/gemma4"},
+		{Name: "gemma4:31b", Parameters: "31b", DownloadSize: 100, RepoURL: "https://ollama.com/library/gemma4"},
 	}, nil)
 	exit := output.ExitOK
 	cmd := newModelsPopularCmd(jsonEmitter(), &exit)

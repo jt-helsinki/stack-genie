@@ -123,14 +123,16 @@ func newModelsListCmd(emitter *output.Emitter, exit *int) *cobra.Command {
 	}
 }
 
-// popularModelEntry is one row of `ai models popular`: a live popular model from
-// ollama.com/search with its parameter-size variants, default-tag download size
-// (bytes; 0 = unknown), and ollama.com/library page URL.
+// popularModelEntry is one row of `ai models popular`: one parameter-size VARIANT of
+// a popular model from ollama.com/library. Name is the exact pullable ref incl. the
+// size tag (e.g. qwen2.5:7b); Params is that single size (e.g. "7b", "" for a model
+// with no variants); DownloadSize is that tag's download size (bytes; 0 = unknown);
+// RepoURL is the model's ollama.com/library page.
 type popularModelEntry struct {
-	Name         string   `json:"name"`
-	Params       []string `json:"params,omitempty"`
-	DownloadSize int64    `json:"download_size,omitempty"`
-	RepoURL      string   `json:"repo_url"`
+	Name         string `json:"name"`
+	Params       string `json:"params,omitempty"`
+	DownloadSize int64  `json:"download_size,omitempty"`
+	RepoURL      string `json:"repo_url"`
 }
 
 // modelsPopularResult is the `ai models popular` payload.
@@ -146,7 +148,7 @@ func (result modelsPopularResult) Human() string {
 	var builder strings.Builder
 	_, _ = fmt.Fprintf(&builder, "%-24s  %-22s  %-9s  %s\n", "NAME", "PARAMS", "SIZE", "REPO")
 	for _, entry := range result.Models {
-		params := strings.Join(entry.Params, ",")
+		params := entry.Params
 		if params == "" {
 			params = "-"
 		}
@@ -289,18 +291,15 @@ func promptModelToPull() (string, error) {
 	return promptCustomModel()
 }
 
-// popularPickerLabel formats a popular model as "name — params — size" for the
-// pull picker; unknown sizes show "—".
+// popularPickerLabel formats a popular model variant as "name — size" for the pull
+// picker (Name already carries the size tag, e.g. qwen2.5:7b); unknown sizes show
+// "—".
 func popularPickerLabel(model ollama.PopularModel) string {
-	params := strings.Join(model.Parameters, ",")
-	if params == "" {
-		params = "-"
-	}
 	size := "—"
 	if model.DownloadSize > 0 {
 		size = humanByteSize(model.DownloadSize)
 	}
-	return model.Name + " — " + params + " — " + size
+	return model.Name + " — " + size
 }
 
 // promptCustomModel asks for a free-text model reference (the custom-entry path).

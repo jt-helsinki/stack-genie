@@ -18,7 +18,7 @@ func TestPopularReadsEmbeddedSnapshot(test *testing.T) {
 	}
 
 	seen := map[string]bool{}
-	var withSize int
+	var withSize, withSizeTag int
 	for _, model := range models {
 		if strings.TrimSpace(model.Name) == "" {
 			test.Fatalf("a model has an empty Name: %+v", model)
@@ -29,8 +29,27 @@ func TestPopularReadsEmbeddedSnapshot(test *testing.T) {
 		if !strings.HasPrefix(model.RepoURL, "https://ollama.com/library/") {
 			test.Fatalf("%s RepoURL = %q, want an ollama.com/library URL", model.Name, model.RepoURL)
 		}
-		if !strings.HasSuffix(model.RepoURL, "/"+model.Name) {
-			test.Fatalf("%s RepoURL = %q, want it to end in /%s", model.Name, model.RepoURL, model.Name)
+		// Entries are per-variant: Name is the exact pullable ref. A sized variant
+		// looks like "<model>:<size>" with Parameters == that size, and its Name ends
+		// in ":<Parameters>". A no-variant model (e.g. an embedding) has an empty
+		// Parameters and a bare Name (no tag). RepoURL always ends in the bare model
+		// name (the part before any ":").
+		bareModel := model.Name
+		if colon := strings.IndexByte(model.Name, ':'); colon >= 0 {
+			bareModel = model.Name[:colon]
+		}
+		if !strings.HasSuffix(model.RepoURL, "/"+bareModel) {
+			test.Fatalf("%s RepoURL = %q, want it to end in /%s", model.Name, model.RepoURL, bareModel)
+		}
+		if model.Parameters == "" {
+			if strings.Contains(model.Name, ":") {
+				test.Fatalf("%s has empty Parameters but a tagged Name", model.Name)
+			}
+		} else {
+			if !strings.HasSuffix(model.Name, ":"+model.Parameters) {
+				test.Fatalf("%s Name does not end in its size tag :%s", model.Name, model.Parameters)
+			}
+			withSizeTag++
 		}
 		if model.DownloadSize < 0 {
 			test.Fatalf("%s DownloadSize = %d, must not be negative", model.Name, model.DownloadSize)
@@ -39,18 +58,23 @@ func TestPopularReadsEmbeddedSnapshot(test *testing.T) {
 			withSize++
 		}
 		if seen[model.Name] {
-			test.Fatalf("duplicate model %q in the snapshot", model.Name)
+			test.Fatalf("duplicate entry %q in the snapshot", model.Name)
 		}
 		seen[model.Name] = true
 	}
 
-	// The snapshot is a curated top-N list; a handful is the floor.
+	// The snapshot is a curated top-N list expanded into size variants; a handful is
+	// the floor.
 	if len(models) < 5 {
-		test.Fatalf("snapshot has only %d models, expected a fuller popular list", len(models))
+		test.Fatalf("snapshot has only %d entries, expected a fuller popular list", len(models))
 	}
-	// Sizes are baked from the registry; most models should carry one.
+	// The expansion produces many tagged size variants.
+	if withSizeTag == 0 {
+		test.Fatal("no entry carries a size tag; the per-variant expansion likely failed")
+	}
+	// Sizes are baked from the registry; entries should carry one.
 	if withSize == 0 {
-		test.Fatal("no model in the snapshot has a download_size; the bake likely failed")
+		test.Fatal("no entry in the snapshot has a download_size; the bake likely failed")
 	}
 }
 
