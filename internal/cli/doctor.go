@@ -106,6 +106,7 @@ func doctorDomain() *doctor.DomainInfo {
 			"(set at `ai setup`, or `ai litellm password`), Open WebUI requires login " +
 			"(WEBUI_AUTH on), and — if Odysseus is enabled — you MUST configure its auth " +
 			"in-app at /setup (the platform cannot set it)"
+		domainInfo.ServerCredentials = uihosts.ServerCredentialsGuide(domain)
 	}
 	return domainInfo
 }

@@ -77,6 +77,35 @@ func TestManualMessageContainsBlockAndURLs(t *testing.T) {
 	}
 }
 
+func TestServerCredentialsGuideListsURLsAndPasswordHints(t *testing.T) {
+	guide := ServerCredentialsGuide("aip.example.com")
+	// Each UI's host-reachable URL appears.
+	for _, url := range []string{
+		"http://litellm.aip.example.com:18787/ui",
+		"http://chat.aip.example.com:18787",
+		"http://odysseus.aip.example.com:18787",
+	} {
+		if !strings.Contains(guide, url) {
+			t.Fatalf("credentials guide should list %q:\n%s", url, guide)
+		}
+	}
+	// LiteLLM: how to rotate the admin password.
+	if !strings.Contains(guide, "ai litellm password") {
+		t.Fatalf("credentials guide should mention `ai litellm password`:\n%s", guide)
+	}
+	// Open WebUI: first account becomes admin.
+	if !strings.Contains(guide, "FIRST account") {
+		t.Fatalf("credentials guide should note the first Open WebUI account is admin:\n%s", guide)
+	}
+	// Odysseus: in-app /setup, platform cannot set it.
+	if !strings.Contains(guide, "/setup") || !strings.Contains(guide, "platform cannot set") {
+		t.Fatalf("credentials guide should note Odysseus auth is configured in-app at /setup:\n%s", guide)
+	}
+	if !strings.HasSuffix(guide, "\n") {
+		t.Fatalf("credentials guide should end with a trailing newline:\n%q", guide)
+	}
+}
+
 func TestServerGuidanceMentionsWildcardAndTLS(t *testing.T) {
 	guidance := ServerGuidance("aip.example.com")
 	if !strings.Contains(guidance, "*.aip.example.com") {

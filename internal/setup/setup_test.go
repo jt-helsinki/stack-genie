@@ -168,6 +168,68 @@ func TestRunHappyPath(test *testing.T) {
 	}
 }
 
+func TestRunPersistsOptionsDomain(test *testing.T) {
+	test.Setenv("HOME", test.TempDir())
+	deps, _ := healthyDeps()
+
+	report, err := Run(Options{Mode: runtime.RoleServer, Domain: "aip.example.com"}, deps)
+	if err != nil {
+		test.Fatal(err)
+	}
+	if report.Runtime.Domain != "aip.example.com" {
+		test.Fatalf("report domain = %q, want aip.example.com", report.Runtime.Domain)
+	}
+	persisted, err := runtime.Load()
+	if err != nil || persisted == nil {
+		test.Fatalf("load runtime.yaml: %v", err)
+	}
+	if persisted.Domain != "aip.example.com" {
+		test.Fatalf("persisted domain = %q, want aip.example.com", persisted.Domain)
+	}
+}
+
+func TestRunPreservesExistingDomainWhenUnset(test *testing.T) {
+	test.Setenv("HOME", test.TempDir())
+	deps, _ := healthyDeps()
+
+	// First run sets a domain (e.g. via `ai domain` / a prior server setup).
+	if _, err := Run(Options{Mode: runtime.RoleServer, Domain: "set.example.com"}, deps); err != nil {
+		test.Fatal(err)
+	}
+	// A subsequent run with NO Options.Domain must NOT clobber it (load-modify-save).
+	report, err := Run(Options{Mode: runtime.RoleServer}, deps)
+	if err != nil {
+		test.Fatal(err)
+	}
+	if report.Runtime.Domain != "set.example.com" {
+		test.Fatalf("domain not preserved: got %q, want set.example.com", report.Runtime.Domain)
+	}
+	persisted, err := runtime.Load()
+	if err != nil || persisted == nil {
+		test.Fatalf("load runtime.yaml: %v", err)
+	}
+	if persisted.Domain != "set.example.com" {
+		test.Fatalf("persisted domain not preserved: got %q", persisted.Domain)
+	}
+}
+
+func TestRunStandaloneLeavesDomainEmptyForDefault(test *testing.T) {
+	test.Setenv("HOME", test.TempDir())
+	deps, _ := healthyDeps()
+
+	report, err := Run(Options{}, deps)
+	if err != nil {
+		test.Fatal(err)
+	}
+	// Standalone with no domain stays empty so ResolveDomain falls back to aip.local.
+	if report.Runtime.Domain != "" {
+		test.Fatalf("standalone domain = %q, want empty (default aip.local)", report.Runtime.Domain)
+	}
+	if report.Runtime.ResolveDomain() != runtime.DefaultDomain {
+		test.Fatalf("resolved domain = %q, want %q", report.Runtime.ResolveDomain(), runtime.DefaultDomain)
+	}
+}
+
 func TestRunPreflightListsAllMissingPrerequisites(test *testing.T) {
 	test.Setenv("HOME", test.TempDir())
 	deps, _ := healthyDeps()

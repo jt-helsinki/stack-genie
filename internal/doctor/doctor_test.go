@@ -171,13 +171,18 @@ func TestDomainSectionServerReminder(test *testing.T) {
 		Prober: fakeProber{bins: map[string]bool{"docker": true, "msb": true}},
 		Domain: &DomainInfo{
 			Domain: "aip.example.com", Role: "server",
-			ServerReminder: "create DNS records (*.aip.example.com) → this server's IP, and terminate TLS at nginx",
+			ServerReminder:    "create DNS records (*.aip.example.com) → this server's IP, and terminate TLS at nginx",
+			ServerCredentials: "LiteLLM admin UI — http://litellm.aip.example.com:18787/ui — ai litellm password",
 		},
 	}
 	report := Run(deps)
 	resolution := checkByName(report, "UI subdomain resolution")
 	if resolution.Status != StatusWarn || !strings.Contains(resolution.Suggestion, "DNS") {
 		test.Errorf("server reminder missing: %+v", resolution)
+	}
+	credentials := checkByName(report, "UI admin access")
+	if credentials.Status != StatusWarn || !strings.Contains(credentials.Suggestion, "ai litellm password") {
+		test.Errorf("server credentials check missing: %+v", credentials)
 	}
 }
 

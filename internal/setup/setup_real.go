@@ -319,6 +319,15 @@ func proxyNginxConf(domain string, enabled []string) string {
 	var builder strings.Builder
 	builder.WriteString("events {}\n")
 	builder.WriteString("http {\n")
+	// TLS (deferred — hardware bring-up): when HTTPS is enabled, each server block
+	// below gains a `listen 443 ssl;` (+ ssl_certificate/ssl_certificate_key — a
+	// wildcard for *.<domain> or per-vhost), TLS terminating per-vhost AT NGINX,
+	// and THIS http listener becomes a redirect-only block:
+	//     listen 80 default_server;
+	//     return 301 https://$host$request_uri;
+	// i.e. http MUST 301-redirect to https on the single :18787 entry. We do NOT
+	// emit that redirect now — there is no https listener yet, so a 301 would break
+	// every plain-http caller (the host CLI, the microVM gateway, the UIs).
 	// The DEFAULT server: the model path (/ + /v1 → Headroom) plus the LiteLLM
 	// admin (/llm) and Ollama (/ollama) management surfaces. default_server so it
 	// answers localhost, host.microsandbox.internal, and any unmatched Host.

@@ -326,7 +326,11 @@ does NOT edit `/etc/hosts` — `ai setup`/`ai doctor` print the operator contrac
 create real DNS (`*.<domain>` wildcard or per-host) → this server's IP and provide
 a TLS cert terminated at nginx. The blocks are structured so a per-vhost
 `listen 443 ssl;` + ssl directives can be added later (TLS termination, out of
-scope now). nginx is reconciled LAST so its upstreams (incl. the enabled UIs) are
+scope now) — TLS terminates **per-vhost at nginx**, and once HTTPS is configured the
+`:80`/http listener on the single :18787 entry **MUST** `return 301
+https://$host$request_uri;` (http → https redirect); no redirect is emitted today
+because there is no https listener yet (a 301 with no :443 would break every
+plain-http caller). nginx is reconciled LAST so its upstreams (incl. the enabled UIs) are
 up first. (`aip-litellm-db` and `aip-dns` stay loopback-published — DNS must stay
 `127.0.0.1:15353` for the microVM `--dns-nameserver`.) The live end-to-end routing
 through these nginx routes — and especially the UI vhosts, the sudo `/etc/hosts`

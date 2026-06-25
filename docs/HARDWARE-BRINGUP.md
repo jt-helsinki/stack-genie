@@ -166,7 +166,18 @@ running. The remaining verification work:
       the operator contract (create `*.<domain>` or per-host DNS → this server, and
       a TLS cert terminated at nginx). Confirm a remote client can reach the UI
       subdomains once real DNS + cert are in place (the platform does NOT edit
-      `/etc/hosts` on a server).
+      `/etc/hosts` on a server). The server hostname is collected at `ai setup`
+      (default `localhost`, which only resolves on the server itself) and persisted
+      as runtime.yaml's `domain`; a real DNS name is set there or via `ai domain`.
+- [ ] **http→https redirect (TLS-time requirement)** — TLS terminates PER-VHOST at
+      nginx. Today nginx serves plain http on the single `:18787` entry; TLS is
+      deferred. When HTTPS is configured (see the `proxyNginxConf` server-block
+      comment): add a `listen 443 ssl;` + `ssl_certificate`/`ssl_certificate_key`
+      (a wildcard for `*.<domain>` or per-vhost) to each vhost, and make the `:80`
+      http listener redirect-only — `return 301 https://$host$request_uri;` — so
+      http MUST 301-redirect to https on the single entry. Do NOT emit that redirect
+      before an https listener exists (a 301 with no :443 breaks every plain-http
+      caller). Verify the redirect + per-vhost TLS once a cert is in place.
 - [ ] **Role-based UI auth policy** (`runtime.RequireUIAuth`, server-only). Verify
       the auth posture per role against the live UIs:
   - standalone/client (loopback) are OPEN: Open WebUI launches `WEBUI_AUTH=false`

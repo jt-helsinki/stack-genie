@@ -134,6 +134,39 @@ func ServerGuidance(domain string) string {
 	return builder.String()
 }
 
+// ServerCredentialsGuide is the post-install admin-access guidance printed after a
+// SERVER-mode setup (and surfaced by `ai doctor`): for each exposed UI it lists the
+// host-reachable URL and how to set or rotate its admin password. A server binds
+// the service tier to 0.0.0.0, so these UIs are network-exposed and MUST be
+// secured. It always ends with a trailing newline.
+//
+//   - LiteLLM admin UI — set/rotate with `ai litellm password`.
+//   - Open WebUI — login required; the FIRST account created becomes admin; change
+//     it later in the app (Settings → Account).
+//   - Odysseus (when enabled) — configure auth in its in-app /setup (the platform
+//     cannot set this password).
+func ServerCredentialsGuide(domain string) string {
+	var builder strings.Builder
+	builder.WriteString("Set up admin access for the exposed UIs (server mode is network-exposed):\n")
+	for _, url := range URLs(domain) {
+		switch url.Service {
+		case "litellm":
+			builder.WriteString("  - LiteLLM admin UI — " + url.URL + "/ui\n")
+			builder.WriteString("      set/rotate the admin password with: ai litellm password\n")
+		case "open-webui":
+			builder.WriteString("  - Open WebUI — " + url.URL + "\n")
+			builder.WriteString("      login required; the FIRST account created becomes admin —\n")
+			builder.WriteString("      change it later in the app (Settings → Account).\n")
+		case "odysseus":
+			builder.WriteString("  - Odysseus — " + url.URL + "\n")
+			builder.WriteString("      configure auth in its in-app /setup (the platform cannot set this password).\n")
+		default:
+			builder.WriteString("  - " + url.Service + " — " + url.URL + "\n")
+		}
+	}
+	return builder.String()
+}
+
 // GatewayPort exposes the fixed gateway port for callers that need to assert it
 // matches runtime.DefaultGatewayPort (keeping the two in sync without an import).
 func GatewayPort() int { return gatewayPort }

@@ -139,6 +139,12 @@ type Options struct {
 	// ServerAddr is the remote service-tier address a client routes to (CLI §2.1).
 	// Ignored for standalone/server.
 	ServerAddr string
+	// Domain is the platform base domain the nginx UI subdomains hang off
+	// (litellm.<domain>, chat.<domain>, odysseus.<domain>). Empty means "leave the
+	// persisted/default domain untouched" — Run does a load-modify-save so a domain
+	// set via `ai domain` is preserved. The server role prompts for it at `ai setup`
+	// (defaulting to localhost); standalone keeps the aip.local default.
+	Domain string
 	// Optional is the enabled opt-in service set for this run (e.g.
 	// ["open-webui"]). nil means "unspecified" — Run falls back to the persisted
 	// runtime.yaml set, else the first-run default (DefaultOptionalServices). To
@@ -624,6 +630,15 @@ func Run(options Options, deps Deps) (*Report, error) {
 	// and Status can report not-enabled optional services as "disabled".
 	optional := ResolveOptional(options, persisted)
 	detected.OptionalServices = optional
+	// Carry the platform base domain (the nginx UI vhosts hang off it). An explicit
+	// Options.Domain wins (the server role prompts for it at `ai setup`); otherwise
+	// PRESERVE a domain already set via `ai domain`/a prior run (load-modify-save —
+	// the freshly-detected Info has no domain). Empty stays empty so ResolveDomain
+	// falls back to aip.local for standalone.
+	detected.Domain = strings.TrimSpace(options.Domain)
+	if detected.Domain == "" && persisted != nil {
+		detected.Domain = strings.TrimSpace(persisted.Domain)
+	}
 
 	// 2. Initialize the host layout and install the environment templates.
 	progress("Initializing ~/.ai-platform and installing templates…")

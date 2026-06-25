@@ -130,6 +130,9 @@ type DomainInfo struct {
 	HostsUpToDate bool
 	// ServerReminder is the one-line DNS/TLS reminder shown on a server.
 	ServerReminder string
+	// ServerCredentials, when set (server role), is the per-UI admin-access guide
+	// (each UI's URL + how to set/rotate its password) rendered as its own check.
+	ServerCredentials string
 }
 
 // Deps are the injectable dependencies of Run.
@@ -298,6 +301,13 @@ func domainChecks(info DomainInfo) []Check {
 			Detail:     "server mode — DNS + TLS are operator-managed",
 			Suggestion: info.ServerReminder,
 		})
+		if info.ServerCredentials != "" {
+			checks = append(checks, Check{
+				Name: "UI admin access", Status: StatusWarn,
+				Detail:     "server mode is network-exposed — secure each UI",
+				Suggestion: info.ServerCredentials,
+			})
+		}
 	}
 	return checks
 }

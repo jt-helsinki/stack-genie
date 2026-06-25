@@ -54,14 +54,20 @@ func newSetupCmd(em *output.Emitter, exit *int) *cobra.Command {
 			interactive := !em.JSON && term.IsTerminal(os.Stdin.Fd())
 			var optionalSet bool
 			var optionalServices []string
+			// serverDomain is the hostname clients/browsers reach a SERVER-role host
+			// at — it drives the UI subdomains + DNS guidance. Empty for
+			// standalone/client; the server branch prompts for it (default localhost)
+			// on a TTY, or uses the persisted/default under --json / no TTY.
+			var serverDomain string
 			if interactive {
-				selectedMode, selectedServer, selectedOptional, promptErr := promptSetupConfig(mode, serverAddr, optional)
+				selectedMode, selectedServer, selectedOptional, selectedDomain, promptErr := promptSetupConfig(mode, serverAddr, optional)
 				if promptErr != nil {
 					*exit = em.Failure("setup", promptErr)
 					return nil
 				}
 				mode, serverAddr = selectedMode, selectedServer
 				optionalServices, optionalSet = selectedOptional, true
+				serverDomain = selectedDomain
 			} else {
 				var optErr error
 				optionalSet, optionalServices, optErr = optionalServicesFromFlag(optional)
@@ -69,6 +75,10 @@ func newSetupCmd(em *output.Emitter, exit *int) *cobra.Command {
 					*exit = em.Failure("setup", optErr)
 					return nil
 				}
+				// Non-interactive server hostname: keep the persisted domain (or the
+				// default) — no prompt. Run does a load-modify-save, so leaving
+				// Options.Domain empty preserves a domain set via `ai domain`.
+				serverDomain = nonInteractiveServerDomain(mode)
 			}
 			// Stream step-by-step progress to stderr so setup doesn't look hung
 			// during the (several-second) container bring-up. On a TTY this is a
@@ -82,6 +92,7 @@ func newSetupCmd(em *output.Emitter, exit *int) *cobra.Command {
 				ServerAddr:     serverAddr,
 				Optional:       optionalServices,
 				OptionalSet:    optionalSet,
+				Domain:         serverDomain,
 			}
 			// Preflight: check prerequisites FIRST — before pulling any images. On a
 			// TTY, missing-but-auto-installable prerequisites are offered for install
@@ -274,10 +285,15 @@ func printPrerequisiteInstructions(em *output.Emitter, prereq setup.Prerequisite
 // and the free-text server address is validated (reusing validateGatewayAddress).
 //
 // The hide funcs are re-evaluated by huh as the user navigates: the server-address
-// group is shown only for the client role, and the optional-tools group only for
-// standalone/server (a client runs no service tier here), so stepping back to
-// change the role reveals/hides the right follow-up fields.
-func promptSetupConfig(seedMode, seedServer, seedOptional string) (mode, serverAddr string, optional []string, err error) {
+// group is shown only for the client role, the server-hostname group only for the
+// server role, and the optional-tools group only for standalone/server (a client
+// runs no service tier here), so stepping back to change the role reveals/hides the
+// right follow-up fields.
+//
+// The returned serverDomain is the hostname clients/browsers reach a SERVER-role
+// host at (it drives the UI subdomains + DNS guidance); it is "" for
+// standalone/client (those use their own defaults and are not newly prompted).
+func promptSetupConfig(seedMode, seedServer, seedOptional string) (mode, serverAddr string, optional []string, serverDomain string, err error) {
 	persisted, _ := runtime.Load()
 
 	// Role seed: flag > persisted > standalone.
@@ -294,6 +310,10 @@ func promptSetupConfig(seedMode, seedServer, seedOptional string) (mode, serverA
 	if serverAddr == "" && persisted != nil {
 		serverAddr = persisted.AIPlatformHost
 	}
+	// Server-hostname seed: the persisted domain if set, else localhost (the
+	// clients/browsers default). Standalone keeps its aip.local default and is NOT
+	// newly prompted, so this is only surfaced for the server role.
+	serverDomain = defaultServerDomain(persisted)
 	// Optional-services seed (the pre-checked boxes): flag > persisted > first-run
 	// default. A bad --optional name is exit 2 even on a TTY (validate inputs).
 	var preChecked []string
@@ -301,7 +321,7 @@ func promptSetupConfig(seedMode, seedServer, seedOptional string) (mode, serverA
 	case strings.TrimSpace(seedOptional) != "":
 		parsed, parseErr := parseOptionalFlag(seedOptional)
 		if parseErr != nil {
-			return "", "", nil, parseErr
+			return "", "", nil, "", parseErr
 		}
 		preChecked = parsed
 	case persisted != nil && persisted.OptionalServices != nil:
@@ -331,6 +351,17 @@ func promptSetupConfig(seedMode, seedServer, seedOptional string) (mode, serverA
 			Validate(validateGatewayAddress),
 	).WithHideFunc(func() bool { return mode != runtime.RoleClient })
 
+	// Server-hostname group (server role only): the name clients + browsers reach
+	// THIS server at — it drives the UI subdomains (litellm.<host> …) + DNS
+	// guidance. Validated with the shared `ai domain` hostname validator.
+	serverHostnameGroup := huh.NewGroup(
+		huh.NewInput().
+			Title("Server hostname / domain (how clients and browsers reach this server)").
+			Description("The UI subdomains hang off this (litellm.<host>, chat.<host>, odysseus.<host>). Default localhost only resolves on this machine.").
+			Value(&serverDomain).
+			Validate(func(candidate string) error { return validateDomain(strings.TrimSpace(candidate)) }),
+	).WithHideFunc(func() bool { return mode != runtime.RoleServer })
+
 	optionalGroup := huh.NewGroup(
 		huh.NewMultiSelect[string]().
 			Title("Optional tools").
@@ -339,15 +370,48 @@ func promptSetupConfig(seedMode, seedServer, seedOptional string) (mode, serverA
 			Value(&selectedOptional),
 	).WithHideFunc(func() bool { return mode == runtime.RoleClient })
 
-	if formErr := runForm(roleGroup, serverGroup, optionalGroup); formErr != nil {
-		return "", "", nil, formErr
+	if formErr := runForm(roleGroup, serverGroup, serverHostnameGroup, optionalGroup); formErr != nil {
+		return "", "", nil, "", formErr
 	}
-	if mode == runtime.RoleClient {
+	switch mode {
+	case runtime.RoleClient:
 		// The optional group was hidden; selectedOptional is the untouched seed —
-		// return it so a later switch to standalone doesn't clobber the choice.
-		return mode, strings.TrimSpace(serverAddr), selectedOptional, nil
+		// return it so a later switch to standalone doesn't clobber the choice. A
+		// client has no local UIs, so no server domain.
+		return mode, strings.TrimSpace(serverAddr), selectedOptional, "", nil
+	case runtime.RoleServer:
+		// Thread the chosen server hostname through to Options.Domain.
+		return mode, "", selectedOptional, strings.TrimSpace(serverDomain), nil
+	default:
+		// Standalone: keep the aip.local default (Domain empty → preserved/default).
+		return mode, "", selectedOptional, "", nil
 	}
-	return mode, "", selectedOptional, nil
+}
+
+// defaultServerDomain is the server-hostname seed: the persisted domain when set,
+// else "localhost" (the address clients/browsers reach the server at by default).
+func defaultServerDomain(persisted *runtime.Info) string {
+	if persisted != nil {
+		if domain := strings.TrimSpace(persisted.Domain); domain != "" {
+			return domain
+		}
+	}
+	return "localhost"
+}
+
+// nonInteractiveServerDomain is the server hostname used under --json / no TTY: for
+// a server role, the persisted domain (else "" so Run's load-modify-save preserves
+// or defaults it — never clobbering a domain set via `ai domain`); for any other
+// role, "" (standalone keeps aip.local, a client has no local UIs).
+func nonInteractiveServerDomain(mode string) string {
+	if strings.TrimSpace(mode) != runtime.RoleServer {
+		return ""
+	}
+	persisted, _ := runtime.Load()
+	if persisted != nil {
+		return strings.TrimSpace(persisted.Domain)
+	}
+	return ""
 }
 
 // optionalServicesFromFlag resolves the enabled optional-service set from the
@@ -575,6 +639,15 @@ func syncUISubdomains(em *output.Emitter, interactive bool, info *runtime.Info) 
 	case runtime.RoleServer:
 		_, _ = fmt.Fprintln(em.Err)
 		_, _ = fmt.Fprint(em.Err, uihosts.ServerGuidance(domain))
+		_, _ = fmt.Fprintln(em.Err)
+		_, _ = fmt.Fprint(em.Err, uihosts.ServerCredentialsGuide(domain))
+		if domain == "localhost" {
+			_, _ = fmt.Fprintln(em.Err,
+				"Note: the server hostname is localhost — the UI subdomains "+
+					"(litellm.localhost, …) resolve only ON this server (or wherever DNS / "+
+					"/etc/hosts maps them). Set a real hostname with `ai domain <name>` (and "+
+					"the DNS records above) so clients and browsers can reach them.")
+		}
 	default: // standalone (and the empty role)
 		action, _ := uihosts.SyncHosts(uihosts.HostsSync{
 			Path:        uihosts.DefaultHostsPath,
