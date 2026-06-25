@@ -1,10 +1,11 @@
 package uihosts
 
 import (
+	"bytes"
 	"fmt"
 	"io"
-	"os"
 	"os/exec"
+	"strings"
 
 	"github.com/jt-helsinki/ideal-robot/internal/hostsfile"
 	"github.com/jt-helsinki/ideal-robot/internal/runtime"
@@ -163,20 +164,23 @@ func writeManual(sync HostsSync) {
 // hardware bring-up: the live `sudo cp` over /etc/hosts is exercised on a
 // provisioned host (it prompts for the sudo password on the TTY).
 func sudoWriteHosts(path string, content []byte) error {
-	tempFile, err := os.CreateTemp("", "ai-hosts-*")
-	if err != nil {
+	// Write via `sudo tee` with the content on stdin — the canonical "write a file
+	// as root" idiom. It needs no root-readable temp path (an earlier `cp` from the
+	// per-user $TMPDIR could fail), and stderr is captured so a real failure isn't
+	// reduced to a bare "exit status 1". tee echoes stdin to stdout, which we drop;
+	// sudo prompts for the password on the controlling terminal (/dev/tty), so the
+	// content on stdin does not interfere.
+	// #nosec G204 — fixed argv; path is the platform's own hosts target.
+	cmd := exec.Command("sudo", "-p", "[ai] enter your login password to update "+path+": ", "tee", path)
+	cmd.Stdin = bytes.NewReader(content)
+	cmd.Stdout = io.Discard
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		if detail := strings.TrimSpace(stderr.String()); detail != "" {
+			return fmt.Errorf("%w: %s", err, detail)
+		}
 		return err
 	}
-	tempName := tempFile.Name()
-	defer func() { _ = os.Remove(tempName) }()
-	if _, err := tempFile.Write(content); err != nil {
-		_ = tempFile.Close()
-		return err
-	}
-	if err := tempFile.Close(); err != nil {
-		return err
-	}
-	// #nosec G204 — fixed argv; path is the platform's own hosts target, content is
-	// the planned bytes staged in a temp file. sudo prompts on the TTY.
-	return exec.Command("sudo", "-p", "[ai] enter your login password to update /etc/hosts: ", "cp", tempName, path).Run()
+	return nil
 }
