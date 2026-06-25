@@ -79,11 +79,22 @@ func removeHostsBlock(record func(string)) bool {
 	if !uihosts.ManageHostsForRole(role) {
 		return false
 	}
-	action, _ := uihosts.RemoveHosts(uihosts.HostsSync{Path: hostsPath, Write: hostsWriter})
+	if present, _, _ := uihosts.HostsStatus(hostsPath, ""); !present {
+		return false // no managed block to remove
+	}
+	// The write needs root; announce it so the (labeled) sudo prompt has context,
+	// and route uihosts' own failure hint into the uninstall log/progress.
+	record("Removing the platform UI-subdomain block from " + hostsPath + " (needs sudo)…")
+	action, _ := uihosts.RemoveHosts(uihosts.HostsSync{Path: hostsPath, Write: hostsWriter, Out: os.Stderr})
 	if action == uihosts.HostsWritten {
 		record("Removed the platform UI-subdomain block from " + hostsPath)
 		return true
 	}
+	// Don't fail silently (the block surviving is exactly what was reported): tell
+	// the user precisely how to finish the removal by hand.
+	record("Could not remove the block from " + hostsPath + " automatically — remove it " +
+		"manually: sudo sed -i '' '/# >>> ai-platform/,/# <<< ai-platform/d' " + hostsPath +
+		" (drop the '' on Linux), or edit the file and delete the lines between the markers.")
 	return false
 }
 
