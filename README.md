@@ -78,9 +78,9 @@ no name and outside a project, the command exits `2`.
 **Create a project** (interactive wizard — OS, agent CLIs, software stacks):
 
 ```bash
-ai project create my-app     # --dry-run to preview
-ai project list
-ai project delete --yes      # the current project, plus its overlay
+ai create my-app --os debian-trixie   # --dry-run to preview
+ai list
+ai delete --yes              # the current project, plus its overlay
 ```
 
 **Work in the workspace** (one microVM per project; installed programs and agent
@@ -88,9 +88,9 @@ state persist across restarts via the overlay):
 
 ```bash
 cd my-app
-ai start                     # = ai workspace start (cwd's project); also: ai stop, ai restart
-ai workspace exec -- bash    # run a command inside
-ai workspace destroy         # non-destructive: keeps the overlay
+ai start                     # the cwd's project; also: ai stop, ai restart
+ai exec -- bash              # run a command inside
+ai destroy                   # non-destructive: keeps the overlay
 ```
 
 **Tune, secure, observe:**

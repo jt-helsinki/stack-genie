@@ -50,7 +50,6 @@ func createRoot(test *testing.T, envelope Envelope) string {
 // on-disk base image (the FROM line) that the workspace is built from — for each
 // of the four supported OS templates.
 func TestProjectDockerfileReflectsOS(test *testing.T) {
-	requireGit(test)
 	cases := map[string]string{
 		"debian-trixie":   "FROM debian:trixie-slim",
 		"debian-bookworm": "FROM debian:bookworm-slim",
@@ -77,7 +76,6 @@ func TestProjectDockerfileReflectsOS(test *testing.T) {
 // recorded in config.yaml (agent.tools / agent.default_tool) and each appears as
 // an `# agent CLI:` snippet in the Dockerfile, while an unselected CLI does NOT.
 func TestAgentCLISelectionReflected(test *testing.T) {
-	requireGit(test)
 	harness := New(test)
 	harness.installTemplates(test)
 
@@ -119,7 +117,6 @@ func TestAgentCLISelectionReflected(test *testing.T) {
 // TestAgentCLIDefaultSelection covers the §6.3/§3.1 default: a plain create
 // (no --agents) yields the default agent CLIs (opencode + pi).
 func TestAgentCLIDefaultSelection(test *testing.T) {
-	requireGit(test)
 	harness := New(test)
 	harness.installTemplates(test)
 
@@ -138,7 +135,6 @@ func TestAgentCLIDefaultSelection(test *testing.T) {
 // stacks are recorded in profile.yaml and each appears as a `# stack:` snippet in
 // the Dockerfile, while an unselected stack does NOT.
 func TestSoftwareStackSelectionReflected(test *testing.T) {
-	requireGit(test)
 	harness := New(test)
 	harness.installTemplates(test)
 
@@ -178,7 +174,6 @@ func TestSoftwareStackSelectionReflected(test *testing.T) {
 // TestSoftwareStackDefaultEmpty covers the §6.4 default: a plain create installs
 // no stacks beyond the base image (profile.yaml stacks: []).
 func TestSoftwareStackDefaultEmpty(test *testing.T) {
-	requireGit(test)
 	harness := New(test)
 	harness.installTemplates(test)
 
@@ -255,7 +250,6 @@ func TestSetupUpgradePreservesStateOnHardware(test *testing.T) {
 	if !hardwareAvailable() {
 		test.Skip("requires Docker + Microsandbox (msb) — runs on a provisioned Apple Silicon host; set AIP_HARDWARE_TESTS=1")
 	}
-	requireGit(test)
 	harness := New(test)
 
 	setupEnvelope, code := harness.Run(test, "setup")

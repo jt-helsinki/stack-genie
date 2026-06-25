@@ -151,8 +151,11 @@ pass):
 - [x] Core service `[S1]` tests written (gated by `hardwareAvailable()`) —
       `test/acceptance/s1_hardware_test.go`: §9.1 credentialed request, §16.2
       workspace isolation, §16.3 egress confinement.
-- [ ] Remaining `[S1]` tests still to add: §2.1–2.3 setup/idempotency, §7.1/§7.2
-      model status/test, §6.1/§6.3/§6.4 Dockerfile/agent-CLI/stack probes.
+- [x] Remaining `[S1]` tests written — `test/acceptance/s1_remaining_test.go`:
+      §6.1/§6.3/§6.4 Dockerfile/agent-CLI/stack probes (run host-side), §2.1–2.3
+      setup/idempotency and §7.1/§7.2 model status/test (gated by
+      `hardwareAvailable()`). The hardware-gated ones still need live-host
+      verification (next item).
 - [ ] Run/verify the acceptance suite on hardware — `make test-acceptance` already
       runs `go test -count=1 ./test/acceptance/` (the package passes `go test ./...`);
       confirm the `hardwareAvailable()`-gated `[S1]` tests go green on a live host and

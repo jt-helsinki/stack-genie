@@ -88,9 +88,13 @@ Each test is tagged with the slice from which it must pass (see
 `02-implementation-roadmap.md`). A test does not apply before its slice.
 
 ```text
-[S1] Slice 1   [S2] Slice 2   [S3] Slice 3
+[S1] Slice 1   [S2] Slice 2   [S3] Slice 3 (RETIRED — see §4)
 [S4] Slice 4   [S5] Slice 5   [S6] Slice 6
 ```
+
+The `[S3]` tag is retired (agent-CLI behavior is the CLI's own concern, not a
+platform-level test — see "Agent System Tests — Removed", §4); no test in this
+document carries it.
 
 ---
 

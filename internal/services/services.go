@@ -87,14 +87,19 @@ type Native struct {
 	Pin      Pin
 }
 
-// nativeRuntime is the microVM runtime. It pins a native version (not an image),
-// is tailable, and has an (empty) console entry, but is not reconciled as a
-// container service.
+// nativeRuntime is the microVM runtime. It is tailable and has an (empty) console
+// entry, but is not reconciled as a container service.
+//
+// microsandbox is a user-installed PREREQUISITE that `ai setup`/`ai doctor` DETECT
+// (msb on PATH), not an image the platform pulls or pins — so the native
+// version/SHA below are informational placeholders, never an actionable pin. The
+// entry exists only to give the runtime a log scope + registry slot; the platform
+// detects msb rather than versioning it.
 var nativeRuntime = Native{
 	Name:     "microsandbox",
 	LogScope: "microsandbox",
-	Endpoint: Endpoint{}, // no host address, no console
-	Pin:      Pin{Mode: ModeNative, Version: "v0.x", SHA256: "TBD"},
+	Endpoint: Endpoint{},                                            // no host address, no console
+	Pin:      Pin{Mode: ModeNative, Version: "v0.x", SHA256: "TBD"}, // placeholders — see comment above
 }
 
 // registry is the single declaration of the logical service topology, in the

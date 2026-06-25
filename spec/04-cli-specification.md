@@ -1088,10 +1088,15 @@ Options:
 
 ```bash id="c32"
 --workspace <project>
---service <microsandbox|ollama|presidio|litellm|headroom|proxy|open-webui|odysseus|dns>
+--service <microsandbox|ollama|presidio|litellm|headroom|proxy|open-webui|odysseus|chromadb|searxng|ntfy|dns>
 --tail
 --follow
 ```
+
+Log scopes are per-CONTAINER (finer-grained than `ai services`, which acts on whole
+logical services). Odysseus is one logical service owning four containers, so its
+companions `chromadb|searxng|ntfy` are accepted as `--service` scopes alongside
+`odysseus` itself.
 
 Without `--follow`, `ai logs` shows the latest on-disk snapshot (refreshed by
 `ai setup` / `ai services status`). **`--follow`** streams a `--service`'s logs

@@ -20,13 +20,6 @@ func (harness *Harness) installTemplates(test *testing.T) {
 	}
 }
 
-func requireGit(test *testing.T) {
-	test.Helper()
-	if _, err := exec.LookPath("git"); err != nil {
-		test.Skip("git not installed")
-	}
-}
-
 // hardwareAvailable gates the full-stack [S1] tests. They require not just the
 // tools on PATH but a provisioned Apple Silicon host that can actually boot
 // microVMs and launch the service tier — so detecting docker+msb is not enough.
@@ -169,7 +162,6 @@ func TestProjectCreateNoTTYExits2(test *testing.T) {
 }
 
 func TestProjectLifecycle(test *testing.T) {
-	requireGit(test)
 	harness := New(test)
 	harness.installTemplates(test)
 
@@ -220,7 +212,6 @@ func TestProjectLifecycle(test *testing.T) {
 // project seeds the Caveman skill at the default level, status reports it, and
 // strategy/caveman edits round-trip through the project config.
 func TestContextOptimizationFlow(test *testing.T) {
-	requireGit(test)
 	harness := New(test)
 	harness.installTemplates(test)
 
@@ -280,7 +271,6 @@ func TestWorkspaceDoctorOnHardware(test *testing.T) {
 	if !hardwareAvailable() {
 		test.Skip("requires Docker + Microsandbox (msb) — runs on a provisioned Apple Silicon host")
 	}
-	requireGit(test)
 	harness := New(test)
 	harness.installTemplates(test)
 
@@ -319,7 +309,6 @@ func TestOverlayPersistsAcrossRecreation(test *testing.T) {
 	if !hardwareAvailable() {
 		test.Skip("requires Docker + Microsandbox (msb) — runs on a provisioned Apple Silicon host")
 	}
-	requireGit(test)
 	harness := New(test)
 	harness.installTemplates(test)
 
@@ -352,7 +341,6 @@ func TestOSEquivalenceOnHardware(test *testing.T) {
 	if !hardwareAvailable() {
 		test.Skip("requires Docker + Microsandbox (msb) — runs on a provisioned Apple Silicon host")
 	}
-	requireGit(test)
 	harness := New(test)
 	harness.installTemplates(test)
 

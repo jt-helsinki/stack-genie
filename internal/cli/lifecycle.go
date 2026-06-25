@@ -5,12 +5,12 @@ import (
 	"github.com/spf13/cobra"
 )
 
-// Top-level `ai start|stop|restart [name]` are the canonical microVM lifecycle
-// verbs (CLI §4). The target workspace is resolved like every other verb: an
-// explicit [name], then --project, then the workspace that owns the current
-// working directory (found by walking up to a `.ai-platform` root). They share
-// their RunE — and the emitted `workspace.*` envelope — with the hidden `ai
-// workspace start|stop|restart` aliases, so behavior is identical.
+// Top-level `ai start|stop|restart [name]` are the only microVM lifecycle verbs
+// (CLI §4; the surface is flat — there is no `ai workspace start|stop|restart`).
+// The target workspace is resolved like every other verb: an explicit [name],
+// then --project, then the workspace that owns the current working directory
+// (found by walking up to a `.ai-platform` root). The shared RunE backs all
+// three verbs and the emitted envelope `command` key stays `workspace.*`.
 
 // cwdProjectName resolves the workspace that owns the current directory by
 // walking up to a `.ai-platform` root. When the cwd is not inside any workspace

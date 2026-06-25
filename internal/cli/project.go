@@ -19,8 +19,9 @@ import (
 	"github.com/spf13/cobra"
 )
 
-// projectsResult is the typed payload of `ai project list`. The `projects`
-// field keeps the JSON envelope shape stable while Human() renders a table.
+// projectsResult is the typed payload of `ai list`. The `projects` field keeps
+// the JSON envelope shape (and the `project.list` command key) stable while
+// Human() renders a table.
 type projectsResult struct {
 	Projects []project.Entry `json:"projects"`
 }
@@ -79,8 +80,9 @@ func mapProjectErr(err error) error {
 	}
 }
 
-// newCreateCmd builds the canonical top-level `ai create [name]` (also the body of
-// the hidden `ai project create` alias). use lets the alias keep its own Use line.
+// newCreateCmd builds the top-level `ai create [name]` — the only create verb
+// (the surface is flat; there is no `ai project create`). The emitted envelope
+// `command` key stays "project.create" for stability. use sets the Use line.
 func newCreateCmd(emitter *output.Emitter, exit *int, use string) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   use,

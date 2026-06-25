@@ -50,7 +50,6 @@ func TestCredentialedRequestOnHardware(test *testing.T) {
 	if !hardwareAvailable() {
 		test.Skip("requires a provisioned host (msb + Docker + LiteLLM gateway); set AIP_HARDWARE_TESTS=1")
 	}
-	requireGit(test)
 	const sentinel = "sk-aip-test-sentinel-DO-NOT-LEAK"
 
 	mock := startMockProvider(test)
@@ -102,7 +101,6 @@ func TestWorkspaceIsolationOnHardware(test *testing.T) {
 	if !hardwareAvailable() {
 		test.Skip("requires a provisioned host; set AIP_HARDWARE_TESTS=1")
 	}
-	requireGit(test)
 	harness := New(test)
 	harness.installTemplates(test)
 
@@ -131,7 +129,6 @@ func TestEgressConfinementOnHardware(test *testing.T) {
 	if !hardwareAvailable() {
 		test.Skip("requires a provisioned host; set AIP_HARDWARE_TESTS=1")
 	}
-	requireGit(test)
 	mock := startMockProvider(test)
 	harness := New(test)
 	harness.installTemplates(test)

@@ -31,8 +31,8 @@ func currentProjectName() (name string, found bool, err error) {
 // resolveProjectName determines the project a command targets. Precedence:
 // an explicit positional name, then the --project flag, then the project that
 // owns the current working directory (bubbling up). When none resolve it returns
-// an exit-2 error. This is what lets `ai workspace start` (no args, inside a
-// project) work while `ai workspace start other` still targets a named project.
+// an exit-2 error. This is what lets `ai start` (no args, inside a project) work
+// while `ai start other` still targets a named project.
 func resolveProjectName(cmd *cobra.Command, explicit string) (string, error) {
 	if explicit != "" {
 		return explicit, nil
