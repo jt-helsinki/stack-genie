@@ -625,7 +625,7 @@ func ensureOpenWebUI(prober runtime.Prober, containerRuntime, bindHost, domain s
 		"-v", openWebUIVolume + ":/app/backend/data",
 		"-e", "OPENAI_API_BASE_URL=" + openWebUITargetURL,
 		"-e", "ENABLE_OLLAMA_API=false",
-		"-e", "WEBUI_AUTH=false",
+		"-e", "WEBUI_AUTH=true",
 		// Reverse-proxy public URL + matching CORS origin so links + websockets work
 		// behind the chat.<domain> vhost (hardware bring-up: confirm against the app).
 		"-e", "WEBUI_URL=" + publicURL,
