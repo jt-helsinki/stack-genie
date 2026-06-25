@@ -35,8 +35,8 @@ const DefaultGatewayHost = "host.microsandbox.internal"
 const DefaultGatewayPort = 18787
 
 // DefaultDomain is the platform base domain the nginx UI subdomains hang off
-// (litellm.<domain>, chat.<domain>, odysseus.<domain>). It is the local/standalone
-// default; operators override it in server mode via `ai domain`.
+// (litellm.<domain>). It is the local/standalone default; operators override it in
+// server mode via `ai domain`.
 const DefaultDomain = "aip.local"
 
 // SchemaVersion is stamped on config/runtime.yaml.
@@ -107,15 +107,16 @@ type Info struct {
 	Detected      string           `json:"detected" yaml:"detected"`             // docker | podman
 	Rootless      bool             `json:"rootless" yaml:"rootless"`
 	Microsandbox  MicrosandboxInfo `json:"microsandbox" yaml:"microsandbox"`
-	// OptionalServices is the set of opt-in host services this host runs (e.g.
-	// "open-webui"). CORE services are always reconciled; OPTIONAL ones are
-	// reconciled only when enabled here. Chosen interactively at `ai setup` and
-	// persisted machine-wide so it survives across runs.
+	// OptionalServices is the set of opt-in host services this host runs. CORE
+	// services are always reconciled; OPTIONAL ones are reconciled only when enabled
+	// here. There are currently no optional host services (the field stays for
+	// compatibility + future use). Chosen interactively at `ai setup` and persisted
+	// machine-wide so it survives across runs.
 	OptionalServices []string `json:"optional_services,omitempty" yaml:"optional_services,omitempty"`
 	AIPlatformHost   string   `json:"ai_platform_host" yaml:"ai_platform_host"`
 	HostGateway      string   `json:"host_gateway" yaml:"host_gateway"` // guest-visible host address (arch §29.2)
 	// Domain is the platform base domain the nginx UI subdomains hang off
-	// (litellm.<domain>, chat.<domain>, odysseus.<domain>). Empty falls back to
+	// (litellm.<domain>). Empty falls back to
 	// DefaultDomain (aip.local); operators override it in server mode (`ai domain`).
 	Domain     string `json:"domain,omitempty" yaml:"domain,omitempty"`
 	DetectedAt string `json:"detected_at" yaml:"detected_at"`

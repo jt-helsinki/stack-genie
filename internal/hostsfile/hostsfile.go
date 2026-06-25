@@ -1,7 +1,7 @@
 // Package hostsfile manages an AI-platform-owned block of entries inside a hosts
 // file (normally /etc/hosts). It is the building block for `ai setup` to map the
-// platform's UI subdomains (e.g. litellm.aip.local, chat.aip.local,
-// odysseus.aip.local) to 127.0.0.1 in standalone mode.
+// platform's UI subdomains (e.g. litellm.aip.local) to 127.0.0.1 in standalone
+// mode.
 //
 // Only the platform's own block — delimited by stable marker lines — is touched.
 // Everything else in the file (other entries, blank lines, comments, and their

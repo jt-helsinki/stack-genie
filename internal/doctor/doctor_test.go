@@ -33,8 +33,8 @@ func checkByName(report Report, name string) Check {
 }
 
 // healthyServices is the service list a fully-up platform would supply (the CLI
-// maps it from setup.ServicesStatus). It mirrors the real per-provider set,
-// including the optional open-webui/odysseus, so the SERVICES section is covered.
+// maps it from setup.ServicesStatus). It mirrors the real per-provider set, so the
+// SERVICES section is covered. There are no optional services any longer.
 func healthyServices() []Service {
 	return []Service{
 		{Name: "ollama", State: "running", Healthy: true},
@@ -43,8 +43,6 @@ func healthyServices() []Service {
 		{Name: "headroom", State: "running", Healthy: true},
 		{Name: "proxy", State: "running", Healthy: true},
 		{Name: "dns", State: "running", Healthy: true},
-		{Name: "open-webui", State: "disabled", Healthy: false, Optional: true},
-		{Name: "odysseus", State: "disabled", Healthy: false, Optional: true},
 	}
 }
 
@@ -55,36 +53,14 @@ func TestServicesSectionListsEveryService(test *testing.T) {
 		Services: healthyServices(),
 	}
 	report := Run(deps)
-	// Every service supplied appears as a check — including the optional ones.
-	for _, name := range []string{"ollama", "litellm", "headroom", "proxy", "dns", "open-webui", "odysseus"} {
+	// Every service supplied appears as a check.
+	for _, name := range []string{"ollama", "presidio", "litellm", "headroom", "proxy", "dns"} {
 		if checkByName(report, name).Name == "" {
 			test.Errorf("doctor SERVICES section is missing %q", name)
 		}
 	}
-	// A disabled optional service is a non-error warning, not a failure.
-	openWebUI := checkByName(report, "open-webui")
-	if openWebUI.Status != StatusWarn {
-		test.Errorf("disabled open-webui status = %q, want warn", openWebUI.Status)
-	}
 	if !report.OK {
-		test.Error("a disabled optional service must not fail the report")
-	}
-}
-
-func TestOptionalServiceUnreachableWarns(test *testing.T) {
-	deps := Deps{
-		GOOS: "darwin", GOARCH: "arm64",
-		Prober: fakeProber{bins: map[string]bool{"docker": true, "msb": true}},
-		Services: []Service{
-			{Name: "open-webui", State: "stopped", Healthy: false, Optional: true},
-		},
-	}
-	report := Run(deps)
-	if got := checkByName(report, "open-webui").Status; got != StatusWarn {
-		test.Errorf("unreachable optional open-webui → status = %q, want warn", got)
-	}
-	if !report.OK {
-		test.Error("an unreachable optional service must not fail the report")
+		test.Error("a fully-healthy service set must not fail the report")
 	}
 }
 

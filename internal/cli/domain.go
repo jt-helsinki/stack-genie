@@ -10,8 +10,8 @@ import (
 )
 
 // domainResult is the `ai domain [name]` payload: the platform base domain the
-// nginx UI subdomains hang off (litellm.<domain>, chat.<domain>,
-// odysseus.<domain>). Configured is the raw runtime.yaml value (empty means the
+// nginx UI subdomains hang off (litellm.<domain>). Configured is the raw
+// runtime.yaml value (empty means the
 // default); Domain is the resolved value; Default is true when unset.
 type domainResult struct {
 	// Configured is the raw configured domain; empty means the default fallback.
@@ -31,15 +31,15 @@ func (result domainResult) Human() string {
 		builder.WriteString(" (default)")
 	}
 	builder.WriteString("\n")
-	builder.WriteString(fmt.Sprintf(
-		"UIs are served at litellm.%s, chat.%s, odysseus.%s (configure DNS/hosts accordingly).",
-		result.Domain, result.Domain, result.Domain))
+	builder.WriteString("UIs are served at litellm.")
+	builder.WriteString(result.Domain)
+	builder.WriteString(" (configure DNS/hosts accordingly).")
 	return builder.String()
 }
 
 // newDomainCmd builds `ai domain [name]` (CLI §domain): show or set the platform
-// base domain every nginx UI subdomain hangs off (litellm.<domain>, chat.<domain>,
-// odysseus.<domain>). It is machine-wide (config/runtime.yaml); the default is
+// base domain every nginx UI subdomain hangs off (litellm.<domain>). It is
+// machine-wide (config/runtime.yaml); the default is
 // aip.local for local/standalone and operators override it in server mode.
 //
 // On a terminal with a [name] it ALWAYS prompts, pre-seeded with the name (the
@@ -52,8 +52,8 @@ func newDomainCmd(emitter *output.Emitter, exit *int) *cobra.Command {
 		Use:   "domain [name]",
 		Short: "Show or set the platform base domain the UI subdomains hang off",
 		Long: "Show or set the platform base domain (machine-wide, config/runtime.yaml). The\n" +
-			"nginx UI subdomains hang off it: litellm.<domain>, chat.<domain>,\n" +
-			"odysseus.<domain>. The default is aip.local for local/standalone; operators\n" +
+			"nginx UI subdomains hang off it: litellm.<domain>.\n" +
+			"The default is aip.local for local/standalone; operators\n" +
 			"override it in server mode.\n\n" +
 			"With no argument it shows the resolved domain. Run on a terminal with a name\n" +
 			"to be prompted (pre-seeded with it); pass it as an argument under --json / no\n" +
@@ -86,7 +86,7 @@ func newDomainCmd(emitter *output.Emitter, exit *int) *cobra.Command {
 			if interactive(emitter) {
 				entered, promptErr := promptText(
 					"Platform base domain",
-					"the nginx UI subdomains hang off this (litellm.<domain>, chat.<domain>, odysseus.<domain>)",
+					"the nginx UI subdomains hang off this (litellm.<domain>)",
 					domain,
 					func(candidate string) error { return validateDomain(strings.TrimSpace(candidate)) },
 				)

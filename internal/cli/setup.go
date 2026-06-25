@@ -36,9 +36,8 @@ func newSetupCmd(em *output.Emitter, exit *int) *cobra.Command {
 		Short: "Install, configure, and start the platform host services (idempotent)",
 		Long: "Install, configure, and start the platform host services (idempotent).\n\n" +
 			"On a TTY, setup prompts for this host's configuration in a single form with\n" +
-			"back-navigation: the deployment role, the remote server address (client role),\n" +
-			"and which optional host tools to enable (e.g. open-webui, odysseus). The\n" +
-			"--mode/--server/--optional flags are NOT required — they just pre-seed the\n" +
+			"back-navigation: the deployment role and the remote server address (client\n" +
+			"role). The --mode/--server flags are NOT required — they just pre-seed the\n" +
 			"form's defaults. Under --json / no TTY the flags drive setup directly with no\n" +
 			"prompt (so automation stays scriptable).",
 		Args: cobra.NoArgs,
@@ -173,7 +172,7 @@ func newSetupCmd(em *output.Emitter, exit *int) *cobra.Command {
 	cmd.Flags().StringVar(&serverAddr, "server", "",
 		"client mode: address of the remote service tier to route to (host or host:port); seeds the prompt on a TTY")
 	cmd.Flags().StringVar(&optional, "optional", "",
-		"comma-separated opt-in host services to enable (e.g. open-webui,odysseus), or \"none\" to disable them all; seeds the checkbox on a TTY")
+		"comma-separated opt-in host services to enable, or \"none\" to disable them all; seeds the checkbox on a TTY (there are currently no optional host services, so this is a no-op)")
 	return cmd
 }
 
@@ -357,18 +356,23 @@ func promptSetupConfig(seedMode, seedServer, seedOptional string) (mode, serverA
 	serverHostnameGroup := huh.NewGroup(
 		huh.NewInput().
 			Title("Server hostname / domain (how clients and browsers reach this server)").
-			Description("The UI subdomains hang off this (litellm.<host>, chat.<host>, odysseus.<host>). Default localhost only resolves on this machine.").
+			Description("The UI subdomains hang off this (litellm.<host>). Default localhost only resolves on this machine.").
 			Value(&serverDomain).
 			Validate(func(candidate string) error { return validateDomain(strings.TrimSpace(candidate)) }),
 	).WithHideFunc(func() bool { return mode != runtime.RoleServer })
 
+	// The optional-tools group is shown only when there ARE optional host services
+	// to offer. There are none today (Open WebUI moved to a per-workspace in-VM app
+	// and Odysseus was removed), so it is always hidden — the mechanism is retained
+	// for future host optional services.
+	hasOptional := len(setup.OptionalServiceNames()) > 0
 	optionalGroup := huh.NewGroup(
 		huh.NewMultiSelect[string]().
 			Title("Optional tools").
 			Description(optionalServicesWarning).
 			Options(optionalServiceOptions()...).
 			Value(&selectedOptional),
-	).WithHideFunc(func() bool { return mode == runtime.RoleClient })
+	).WithHideFunc(func() bool { return !hasOptional || mode == runtime.RoleClient })
 
 	if formErr := runForm(roleGroup, serverGroup, serverHostnameGroup, optionalGroup); formErr != nil {
 		return "", "", nil, "", formErr
@@ -455,12 +459,11 @@ func parseOptionalFlag(flagValue string) ([]string, error) {
 }
 
 // optionalServicesWarning is the SECURITY WARNING shown on the optional-tools
-// checkbox: these opt-in services run on the host, OUTSIDE the workspace microVM
-// sandbox, and odysseus in particular mounts the host Docker socket.
+// checkbox: opt-in host services run OUTSIDE the workspace microVM sandbox. There
+// are currently no optional host services, so the checkbox is not shown — this is
+// retained for future host optional services.
 const optionalServicesWarning = "SECURITY WARNING: these tools run OUTSIDE the workspace microVM sandbox, on the host, " +
 	"with elevated privileges — they are a security risk and are not isolated like workspaces. " +
-	"In particular, odysseus MOUNTS THE HOST DOCKER SOCKET (/var/run/docker.sock), which grants it " +
-	"full control of the host's Docker daemon — anything it runs can escape to the host. " +
 	"Leave them unchecked unless you need them."
 
 // optionalServiceOptions builds the checkbox options for the optional host
@@ -623,7 +626,7 @@ func offerPersistLiteLLMSecrets(em *output.Emitter, interactive bool, password, 
 }
 
 // syncUISubdomains wires the platform UI subdomains for this host's role after a
-// successful setup. Standalone: point litellm./chat./odysseus.<domain> at
+// successful setup. Standalone: point litellm.<domain> at
 // 127.0.0.1 in /etc/hosts — on a TTY with consent (the write needs sudo), else
 // print the exact block to add manually. Server: print the DNS + TLS operator
 // contract (no /etc/hosts editing). Client: nothing (no local UIs). It is
@@ -659,7 +662,7 @@ func syncUISubdomains(em *output.Emitter, interactive bool, info *runtime.Info) 
 			},
 		})
 		if action == uihosts.HostsWritten {
-			_, _ = fmt.Fprintf(em.Err, "Updated /etc/hosts — the platform UIs resolve at litellm.%s, chat.%s, odysseus.%s on :18787\n", domain, domain, domain)
+			_, _ = fmt.Fprintf(em.Err, "Updated /etc/hosts — the platform UI resolves at litellm.%s on :18787\n", domain)
 		}
 	}
 }

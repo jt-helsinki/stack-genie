@@ -440,16 +440,13 @@ func hasService(specs []serviceSpec, name string) bool {
 	return false
 }
 
-// owningService points companion containers (Odysseus's chromadb/searxng/ntfy,
-// which `ai logs --service` accepts individually) at their managing logical
-// service, and returns "" for a service that is managed on its own or unknown.
-func TestOwningServiceMapsCompanionsToOdysseus(test *testing.T) {
-	for _, name := range []string{"chromadb", "searxng", "ntfy"} {
-		if got := owningService(name); got != "odysseus" {
-			test.Errorf("owningService(%q) = %q, want odysseus", name, got)
-		}
-	}
-	for _, name := range []string{"odysseus", "ollama", "litellm", "presidio", "", "bogus"} {
+// owningService points companion containers at their managing logical service. No
+// such surfaced companions exist today (Open WebUI moved to a per-workspace in-VM
+// app and Odysseus — which owned chromadb/searxng/ntfy — was removed), so it
+// returns "" for every name. The hook is retained for a future multi-container
+// optional service.
+func TestOwningServiceReturnsEmpty(test *testing.T) {
+	for _, name := range []string{"chromadb", "searxng", "ntfy", "litellm", "ollama", "presidio", "litellm-db", "", "bogus"} {
 		if got := owningService(name); got != "" {
 			test.Errorf("owningService(%q) = %q, want empty", name, got)
 		}
@@ -519,56 +516,28 @@ func TestUpdateService(test *testing.T) {
 	}
 }
 
-// TestServicesEnableDisableOptional: enable/disable toggle an optional service's
-// membership in runtime.yaml and start/stop its container(s).
-func TestServicesEnableDisableOptional(test *testing.T) {
+// TestNoOptionalServicesToToggle: there are currently NO optional host services
+// (Open WebUI moved to a per-workspace in-VM app and Odysseus was removed), so the
+// universe of optional services is empty and enable/disable have nothing to toggle.
+func TestNoOptionalServicesToToggle(test *testing.T) {
 	test.Setenv("HOME", test.TempDir())
-	deps, services := healthyDeps()
-	if _, err := Run(Options{}, deps); err != nil {
-		test.Fatal(err)
+	if got := optionalServiceNames(); len(got) != 0 {
+		test.Fatalf("optionalServiceNames() = %v, want empty (no optional host services)", got)
 	}
-	// After setup the default optional set is enabled (open-webui), odysseus off.
-	// Disable open-webui: it leaves the persisted set and its container is stopped.
-	if _, err := ControlService(deps, "disable", "open-webui"); err != nil {
-		test.Fatalf("disable open-webui: %v", err)
-	}
-	info, _ := runtime.Load()
-	if slicesContains(info.OptionalServices, "open-webui") {
-		test.Errorf("open-webui should be removed from the optional set: %v", info.OptionalServices)
-	}
-	if services.controlAction != "stop" || services.controlService != "open-webui" {
-		test.Errorf("disable should stop open-webui, got %s %s", services.controlAction, services.controlService)
-	}
-	// Enable odysseus: it joins the set and its container is started.
-	if _, err := ControlService(deps, "enable", "odysseus"); err != nil {
-		test.Fatalf("enable odysseus: %v", err)
-	}
-	info, _ = runtime.Load()
-	if !slicesContains(info.OptionalServices, "odysseus") {
-		test.Errorf("odysseus should be in the optional set: %v", info.OptionalServices)
-	}
-	if services.controlAction != "start" || services.controlService != "odysseus" {
-		test.Errorf("enable should start odysseus, got %s %s", services.controlAction, services.controlService)
-	}
-}
-
-// TestControlServiceGatesAndValidatesToggle: start/stop/restart are gated to
-// enabled services, and enable/disable only apply to optional services.
-func TestControlServiceGatesAndValidatesToggle(test *testing.T) {
-	test.Setenv("HOME", test.TempDir())
 	deps, _ := healthyDeps()
 	if _, err := Run(Options{}, deps); err != nil {
 		test.Fatal(err)
 	}
-	// odysseus is disabled by default → it cannot be started until enabled.
-	if _, err := ControlService(deps, "start", "odysseus"); exitCodeOf(test, err) != output.ExitInvalidInput {
-		test.Fatalf("start on a disabled optional should be exit 2, got %v", err)
+	// No optional services are enabled after setup.
+	info, _ := runtime.Load()
+	if len(info.OptionalServices) != 0 {
+		test.Errorf("no optional services should be enabled, got %v", info.OptionalServices)
 	}
-	// A core service cannot be enabled/disabled (always on).
+	// enable/disable a non-optional (core) name → exit 2 (it is not optional).
 	if _, err := ControlService(deps, "enable", "litellm"); exitCodeOf(test, err) != output.ExitInvalidInput {
 		test.Fatalf("enabling a core service should be exit 2, got %v", err)
 	}
-	// enable/disable need a service name.
+	// enable/disable with no service name → exit 2.
 	if _, err := ControlService(deps, "enable", ""); exitCodeOf(test, err) != output.ExitInvalidInput {
 		test.Fatalf("enable with no service should be exit 2, got %v", err)
 	}
@@ -815,7 +784,7 @@ func TestReportHumanShowsAddressAndConsole(test *testing.T) {
 func TestDesiredServicesAreRequired(test *testing.T) {
 	// Ollama, Presidio, LiteLLM, and Headroom are all required host services
 	// (Ollama is the local model backend LiteLLM routes to, arch §14/§16).
-	for _, name := range []string{"ollama", "presidio", "litellm", "headroom", "proxy", "open-webui"} {
+	for _, name := range []string{"ollama", "presidio", "litellm", "headroom", "proxy", "dns"} {
 		if !hasService(desiredServices(), name) {
 			test.Errorf("required service %q missing from desiredServices: %+v", name, desiredServices())
 		}
@@ -851,13 +820,12 @@ func TestDesiredServicesOrder(test *testing.T) {
 }
 
 // TestRequiredImagesCoversEveryService asserts requiredImages returns the
-// containerImage ref (repo:tag form) for every service-tier container when all
-// optional services are enabled, including the ones that have no Status line —
-// litellm-db is the notable omission from desiredServices and must be present
-// here, alongside proxy and dns. With all optional enabled, Odysseus's four
-// images appear too.
+// containerImage ref (repo:tag form) for every service-tier container, including
+// the ones that have no Status line — litellm-db is the notable omission from
+// desiredServices and must be present here, alongside proxy and dns. There are no
+// optional host services, so this is the full set.
 func TestRequiredImagesCoversEveryService(test *testing.T) {
-	images := requiredImages(optionalServiceNames()) // all optional enabled
+	images := requiredImages(optionalServiceNames()) // all optional enabled (none)
 	have := make(map[string]bool, len(images))
 	for _, ref := range images {
 		if !strings.Contains(ref, ":") {
@@ -868,8 +836,7 @@ func TestRequiredImagesCoversEveryService(test *testing.T) {
 	for _, service := range []string{
 		"ollama", "presidio-analyzer", "presidio-anonymizer",
 		"litellm", "litellm-db",
-		"headroom", "proxy", "open-webui", "dns",
-		"odysseus", "chromadb", "searxng", "ntfy",
+		"headroom", "proxy", "dns",
 	} {
 		ref := containerImage(service)
 		if ref == "" {
@@ -877,33 +844,6 @@ func TestRequiredImagesCoversEveryService(test *testing.T) {
 		}
 		if !have[ref] {
 			test.Errorf("requiredImages missing %q (%s); got %v", service, ref, images)
-		}
-	}
-}
-
-// TestRequiredImagesGatesOptionalImages: a disabled optional service's images are
-// NOT pulled, but become required once it is enabled. Core images are always present.
-func TestRequiredImagesGatesOptionalImages(test *testing.T) {
-	odysseusImages := []string{
-		containerImage("odysseus"), containerImage("chromadb"),
-		containerImage("searxng"), containerImage("ntfy"),
-	}
-	// Disabled: none of Odysseus's images appear.
-	disabled := requiredImages(nil)
-	for _, ref := range odysseusImages {
-		if slicesContains(disabled, ref) {
-			test.Errorf("disabled odysseus image %q must NOT be in requiredImages: %v", ref, disabled)
-		}
-	}
-	// Core image (ollama) is always present, even with nothing optional enabled.
-	if !slicesContains(disabled, containerImage("ollama")) {
-		test.Errorf("core ollama image must always be required: %v", disabled)
-	}
-	// Enabled: Odysseus's four images all appear.
-	enabled := requiredImages([]string{"odysseus"})
-	for _, ref := range odysseusImages {
-		if !slicesContains(enabled, ref) {
-			test.Errorf("enabled odysseus image %q must be in requiredImages: %v", ref, enabled)
 		}
 	}
 }
@@ -981,7 +921,7 @@ func TestEnsureProxyRendersGatewayConfig(test *testing.T) {
 	home := test.TempDir()
 	test.Setenv("HOME", home)
 	prober := &recordingProber{}
-	if err := ensureProxy(prober, "docker", "127.0.0.1", "aip.local", nil); err != nil {
+	if err := ensureProxy(prober, "docker", "127.0.0.1", "aip.local"); err != nil {
 		test.Fatal(err)
 	}
 	confPath := filepath.Join(home, ".ai-platform", "config", "proxy", "nginx.conf")
@@ -1024,9 +964,9 @@ func TestEnsureProxyRendersGatewayConfig(test *testing.T) {
 	if !strings.Contains(rendered, "server_name litellm.aip.local;") || !strings.Contains(rendered, "proxy_pass http://aip-litellm:4000;") {
 		test.Errorf("nginx.conf must serve the litellm.<domain> vhost:\n%s", rendered)
 	}
-	// With no optional services enabled, no chat/odysseus vhosts render.
+	// litellm is the ONLY host UI vhost — no chat/odysseus vhosts render anymore.
 	if strings.Contains(rendered, "server_name chat.aip.local;") || strings.Contains(rendered, "server_name odysseus.aip.local;") {
-		test.Errorf("no optional UI vhosts should render when none are enabled:\n%s", rendered)
+		test.Errorf("no chat/odysseus UI vhosts should render (Open WebUI is in-VM; Odysseus removed):\n%s", rendered)
 	}
 	// nginx takes over host :18787 and forwards on :80 internally; the UIs are
 	// subdomains on the SAME port, so no separate UI ports are published.
@@ -1042,117 +982,43 @@ func TestEnsureProxyRendersGatewayConfig(test *testing.T) {
 	}
 }
 
-// TestEnsureProxyFrontsEnabledUIs: with open-webui + odysseus enabled, nginx
-// renders their Host-based UI vhosts (chat./odysseus.<domain>) on the SAME
-// gateway port — no separate host ports (the containers are internal-only).
-func TestEnsureProxyFrontsEnabledUIs(test *testing.T) {
-	home := test.TempDir()
-	test.Setenv("HOME", home)
-	prober := &recordingProber{}
-	if err := ensureProxy(prober, "0.0.0.0", "0.0.0.0", "aip.example.com", []string{"open-webui", "odysseus"}); err != nil {
-		test.Fatal(err)
-	}
-	confPath := filepath.Join(home, ".ai-platform", "config", "proxy", "nginx.conf")
-	content, err := os.ReadFile(confPath)
-	if err != nil {
-		test.Fatalf("nginx.conf not written: %v", err)
-	}
-	rendered := string(content)
-	if !strings.Contains(rendered, "server_name chat.aip.example.com;") || !strings.Contains(rendered, "proxy_pass http://aip-open-webui:8080;") {
-		test.Errorf("nginx.conf must serve the chat.<domain> vhost → Open WebUI:\n%s", rendered)
-	}
-	if !strings.Contains(rendered, "server_name odysseus.aip.example.com;") || !strings.Contains(rendered, "proxy_pass http://aip-odysseus:7000;") {
-		test.Errorf("nginx.conf must serve the odysseus.<domain> vhost → Odysseus:\n%s", rendered)
-	}
-	// WebSocket upgrade headers for the UI vhosts.
-	if !strings.Contains(rendered, "proxy_set_header Upgrade $http_upgrade;") {
-		test.Errorf("UI vhosts must carry the websocket Upgrade header:\n%s", rendered)
-	}
-	// nginx publishes ONLY the gateway port (on the server bindHost 0.0.0.0) — the
-	// UIs are subdomains on the same port.
-	launch := strings.Join(runArgsFor(prober), " ")
-	if !strings.Contains(launch, "-p 0.0.0.0:18787:80") {
-		test.Errorf("proxy must publish the gateway port on 0.0.0.0: %s", launch)
-	}
-	if strings.Contains(launch, ":18090:") || strings.Contains(launch, ":7000:") || strings.Contains(launch, ":8080") {
-		test.Errorf("no separate UI ports should be published (UIs are subdomains): %s", launch)
-	}
-}
-
 // TestProxyNginxConfThreadsDomain: the rendered vhost server_names use the given
-// domain, the LiteLLM admin UI vhost redirects / → /ui, and the UI-serving vhosts
-// bypass Headroom (proxy_pass to the app, not aip-headroom).
+// domain, the LiteLLM admin UI vhost redirects / → /ui and bypasses Headroom, and
+// litellm is the ONLY host UI vhost (no chat./odysseus.).
 func TestProxyNginxConfThreadsDomain(test *testing.T) {
-	rendered := proxyNginxConf("dev.example.com", []string{"open-webui"})
+	rendered := proxyNginxConf("dev.example.com")
 	if !strings.Contains(rendered, "server_name dev.example.com localhost _;") {
 		test.Errorf("default server must use the threaded domain:\n%s", rendered)
 	}
 	if !strings.Contains(rendered, "server_name litellm.dev.example.com;") {
 		test.Errorf("litellm vhost must use the threaded domain:\n%s", rendered)
 	}
-	if !strings.Contains(rendered, "server_name chat.dev.example.com;") {
-		test.Errorf("chat vhost must use the threaded domain:\n%s", rendered)
-	}
 	// LiteLLM admin UI: / → /ui redirect.
 	if !strings.Contains(rendered, "return 302 /ui;") {
 		test.Errorf("litellm vhost should redirect / → /ui:\n%s", rendered)
 	}
-	// The UI vhosts BYPASS Headroom (they proxy to the app, not aip-headroom).
-	chatBlock := rendered[strings.Index(rendered, "server_name chat.dev.example.com;"):]
-	if strings.Contains(chatBlock[:strings.Index(chatBlock, "}")], "aip-headroom") {
-		test.Errorf("the chat UI vhost must bypass Headroom:\n%s", rendered)
+	// The litellm UI vhost BYPASSES Headroom (it proxies to :4000, not aip-headroom).
+	litellmBlock := rendered[strings.Index(rendered, "server_name litellm.dev.example.com;"):]
+	if strings.Contains(litellmBlock[:strings.Index(litellmBlock, "}")], "aip-headroom") {
+		test.Errorf("the litellm UI vhost must bypass Headroom:\n%s", rendered)
 	}
-	// disabled odysseus does not render.
-	if strings.Contains(rendered, "odysseus.dev.example.com") {
-		test.Errorf("disabled odysseus vhost should not render:\n%s", rendered)
+	// No chat./odysseus. vhosts render anymore.
+	if strings.Contains(rendered, "chat.dev.example.com") || strings.Contains(rendered, "odysseus.dev.example.com") {
+		test.Errorf("no chat/odysseus vhost should render:\n%s", rendered)
 	}
 }
 
 // --- optional-services framework -------------------------------------------
 
-// TestReconcileGatesOptionalOpenWebUI: open-webui is brought up when enabled and
-// skipped when not, while core services are unaffected (asserted via the fake's
-// per-service status, which mirrors the real impl's gating).
-func TestReconcileGatesOptionalOpenWebUI(test *testing.T) {
-	services := &fakeServices{}
-	enabledStatuses, err := services.Reconcile("", "127.0.0.1", []string{"open-webui"}, nil)
-	if err != nil {
-		test.Fatal(err)
-	}
-	if stateOf(enabledStatuses, "open-webui") != "running" {
-		test.Errorf("open-webui should be running when enabled: %+v", enabledStatuses)
-	}
-	if !slicesContains(services.optional, "open-webui") {
-		test.Errorf("Reconcile did not receive the enabled optional set: %+v", services.optional)
-	}
+// There are currently NO optional host services (Open WebUI moved to a
+// per-workspace in-VM app and Odysseus was removed). The optional MECHANISM is
+// retained, so these tests pin the empty-set behaviour.
 
-	disabled := &fakeServices{}
-	disabledStatuses, err := disabled.Reconcile("", "127.0.0.1", nil, nil)
-	if err != nil {
-		test.Fatal(err)
-	}
-	if stateOf(disabledStatuses, "open-webui") != "disabled" {
-		test.Errorf("open-webui should be disabled when not enabled: %+v", disabledStatuses)
-	}
-}
-
-// stateOf returns the State of a named service in statuses, or "".
-func stateOf(statuses []ServiceStatus, name string) string {
-	for _, status := range statuses {
-		if status.Name == name {
-			return status.State
-		}
-	}
-	return ""
-}
-
-// TestCoreOptionalSplit pins the core/optional partition: open-webui and odysseus
-// are the optional services; the rest are core; desiredServices is their union.
-func TestCoreOptionalSplit(test *testing.T) {
-	for _, optional := range []string{"open-webui", "odysseus"} {
-		if !isOptionalService(optional) {
-			test.Errorf("%q must be an optional service", optional)
-		}
+// TestNoOptionalServices pins that the optional set is empty and every remaining
+// service is core; desiredServices == coreServices.
+func TestNoOptionalServices(test *testing.T) {
+	if got := optionalServiceNames(); len(got) != 0 {
+		test.Errorf("optionalServiceNames = %v, want empty (no optional host services)", got)
 	}
 	for _, core := range []string{"ollama", "presidio", "litellm", "headroom", "proxy", "dns"} {
 		if isOptionalService(core) {
@@ -1161,66 +1027,61 @@ func TestCoreOptionalSplit(test *testing.T) {
 		if !hasService(coreServices(), core) {
 			test.Errorf("%q missing from coreServices", core)
 		}
-	}
-	if got := optionalServiceNames(); len(got) != 2 || got[0] != "open-webui" || got[1] != "odysseus" {
-		test.Errorf("optionalServiceNames = %v, want [open-webui odysseus]", got)
-	}
-	// desiredServices is core + all optional (every name addressable).
-	for _, name := range []string{"ollama", "presidio", "litellm", "headroom", "proxy", "dns", "open-webui", "odysseus"} {
-		if !hasService(desiredServices(), name) {
-			test.Errorf("%q missing from desiredServices: %+v", name, desiredServices())
+		if !hasService(desiredServices(), core) {
+			test.Errorf("%q missing from desiredServices: %+v", core, desiredServices())
 		}
+	}
+	// desiredServices == coreServices when there are no optional services.
+	if len(desiredServices()) != len(coreServices()) {
+		test.Errorf("desiredServices (%d) should equal coreServices (%d) with no optional services",
+			len(desiredServices()), len(coreServices()))
 	}
 }
 
-// TestResolveOptionalPrecedence pins the enabled-set precedence: an explicit set
-// (incl. "none") wins; else the persisted set; else the first-run default.
+// TestResolveOptionalPrecedence pins the enabled-set precedence with no optional
+// services: every path resolves to the empty set (an unknown persisted/explicit
+// name is dropped because the optional universe is empty).
 func TestResolveOptionalPrecedence(test *testing.T) {
-	// First run, no explicit choice, no persisted set → default ([open-webui]).
-	if got := ResolveOptional(Options{}, nil); len(got) != 1 || got[0] != "open-webui" {
-		test.Errorf("default first-run set = %v, want [open-webui]", got)
+	// First run, no explicit choice, no persisted set → empty (no default optional).
+	if got := ResolveOptional(Options{}, nil); len(got) != 0 {
+		test.Errorf("default first-run set = %v, want []", got)
 	}
 	// Explicit "none" (OptionalSet with an empty slice) → empty.
 	if got := ResolveOptional(Options{OptionalSet: true, Optional: []string{}}, nil); len(got) != 0 {
 		test.Errorf("explicit none = %v, want []", got)
 	}
-	// Explicit choice wins over the persisted set.
-	persisted := &runtime.Info{OptionalServices: []string{}}
-	if got := ResolveOptional(Options{OptionalSet: true, Optional: []string{"open-webui"}}, persisted); len(got) != 1 {
-		test.Errorf("explicit choice should win: %v", got)
+	// An explicit name with no matching optional service is dropped → empty.
+	if got := ResolveOptional(Options{OptionalSet: true, Optional: []string{"bogus"}}, nil); len(got) != 0 {
+		test.Errorf("unknown explicit name should be dropped: %v", got)
 	}
-	// No explicit choice → the persisted set (here, deliberately empty).
-	if got := ResolveOptional(Options{}, persisted); len(got) != 0 {
-		test.Errorf("persisted empty set should be honored: %v", got)
-	}
-	// Unknown persisted names are dropped (a retired optional service).
+	// Unknown persisted names are dropped (a retired optional service) → empty.
 	stale := &runtime.Info{OptionalServices: []string{"open-webui", "retired-tool"}}
-	if got := ResolveOptional(Options{}, stale); len(got) != 1 || got[0] != "open-webui" {
-		test.Errorf("unknown names should be dropped: %v", got)
+	if got := ResolveOptional(Options{}, stale); len(got) != 0 {
+		test.Errorf("retired persisted names should be dropped: %v", got)
 	}
 }
 
-// TestRunPersistsDefaultOptional: a first run with no choice persists the default
-// ([open-webui]) to runtime.yaml and reconciles it.
-func TestRunPersistsDefaultOptional(test *testing.T) {
+// TestRunPersistsNoOptional: a first run persists no optional services (there are
+// none) and reconciles none.
+func TestRunPersistsNoOptional(test *testing.T) {
 	test.Setenv("HOME", test.TempDir())
 	deps, services := healthyDeps()
 	report, err := Run(Options{}, deps)
 	if err != nil {
 		test.Fatal(err)
 	}
-	if !slicesContains(report.Runtime.OptionalServices, "open-webui") {
-		test.Errorf("first run should default to [open-webui], got %v", report.Runtime.OptionalServices)
+	if len(report.Runtime.OptionalServices) != 0 {
+		test.Errorf("first run should persist no optional services, got %v", report.Runtime.OptionalServices)
 	}
-	if !slicesContains(services.optional, "open-webui") {
-		test.Errorf("Reconcile should receive [open-webui], got %v", services.optional)
+	if len(services.optional) != 0 {
+		test.Errorf("Reconcile should receive no optional services, got %v", services.optional)
 	}
 	persisted, err := runtime.Load()
 	if err != nil || persisted == nil {
 		test.Fatalf("load runtime.yaml: %v", err)
 	}
-	if !slicesContains(persisted.OptionalServices, "open-webui") {
-		test.Errorf("runtime.yaml did not persist [open-webui]: %v", persisted.OptionalServices)
+	if len(persisted.OptionalServices) != 0 {
+		test.Errorf("runtime.yaml should persist no optional services: %v", persisted.OptionalServices)
 	}
 }
 
@@ -1241,41 +1102,19 @@ func TestRunOptionalNoneDisables(test *testing.T) {
 	}
 }
 
-// TestRunOptionalHonoursExplicitSet: an explicit set is honored and persisted.
-func TestRunOptionalHonoursExplicitSet(test *testing.T) {
-	test.Setenv("HOME", test.TempDir())
-	deps, services := healthyDeps()
-	report, err := Run(Options{OptionalSet: true, Optional: []string{"open-webui"}}, deps)
-	if err != nil {
-		test.Fatal(err)
-	}
-	if !slicesContains(report.Runtime.OptionalServices, "open-webui") {
-		test.Errorf("explicit set not persisted: %v", report.Runtime.OptionalServices)
-	}
-	if !slicesContains(services.optional, "open-webui") {
-		test.Errorf("explicit set not reconciled: %v", services.optional)
-	}
-}
-
-// TestStatusForShowsDisabledOptional: a not-enabled optional service is listed
-// with State "disabled" so users can discover it.
-func TestStatusForShowsDisabledOptional(test *testing.T) {
+// TestStatusForHasNoOptional: with no optional services, statusFor lists only the
+// core services and none is marked Optional.
+func TestStatusForHasNoOptional(test *testing.T) {
 	test.Setenv("HOME", test.TempDir())
 	services := realServices{prober: fakeProber{}}
-	statuses, err := services.statusFor(nil) // nothing enabled
+	statuses, err := services.statusFor(nil)
 	if err != nil {
 		test.Fatal(err)
 	}
-	if stateOf(statuses, "open-webui") != "disabled" {
-		test.Errorf("not-enabled open-webui should be \"disabled\": %+v", statuses)
-	}
-	// And it IS probed (not "disabled") when enabled.
-	enabled, err := services.statusFor([]string{"open-webui"})
-	if err != nil {
-		test.Fatal(err)
-	}
-	if stateOf(enabled, "open-webui") == "disabled" {
-		test.Errorf("enabled open-webui should be probed, not \"disabled\": %+v", enabled)
+	for _, status := range statuses {
+		if status.Optional {
+			test.Errorf("no service should be Optional, got %q", status.Name)
+		}
 	}
 }
 
@@ -1322,7 +1161,7 @@ func TestStatusForDisplayDomain(test *testing.T) {
 		test.Errorf("standalone proxy address = %q, want http://aip.local:18787", got)
 	}
 	// No host-side use of the old direct ports anywhere.
-	for _, name := range []string{"litellm", "ollama", "open-webui", "odysseus", "proxy"} {
+	for _, name := range []string{"litellm", "ollama", "proxy"} {
 		got := addressOf(standalone, name)
 		for _, deadPort := range []string{":14000", ":11434", ":18090", ":7000"} {
 			if strings.Contains(got, deadPort) {
@@ -1346,9 +1185,6 @@ func TestStatusForDisplayDomain(test *testing.T) {
 	if got := consoleOf(server, "litellm"); got != "http://litellm.build-host.lan:18787/ui" {
 		test.Errorf("server litellm console = %q, want http://litellm.build-host.lan:18787/ui", got)
 	}
-	if got := addressOf(server, "open-webui"); got != "http://chat.build-host.lan:18787" {
-		test.Errorf("server open-webui address = %q, want http://chat.build-host.lan:18787", got)
-	}
 	if got := addressOf(server, "dns"); got != "127.0.0.1:15353/udp" {
 		test.Errorf("server dns address = %q, want loopback unchanged", got)
 	}
@@ -1367,153 +1203,6 @@ func TestEnsureHeadroomIsInternalOnly(test *testing.T) {
 	}
 	if !strings.Contains(launch, "OPENAI_TARGET_API_URL=") {
 		test.Errorf("headroom run missing OPENAI_TARGET_API_URL: %s", launch)
-	}
-}
-
-// runArgsForContainer returns the argv of the recorded `<runtime> run --name
-// <container>` call, or nil if none was recorded.
-// TestEnsureOpenWebUIAuthByRole pins the role-based UI-auth policy
-// (runtime.RequireUIAuth): a server renders WEBUI_AUTH=true (network-exposed,
-// login required), while standalone/client render WEBUI_AUTH=false (open).
-func TestEnsureOpenWebUIAuthByRole(test *testing.T) {
-	cases := []struct {
-		name        string
-		requireAuth bool
-		wantAuth    string
-	}{
-		{"server", true, "WEBUI_AUTH=true"},
-		{"standalone", false, "WEBUI_AUTH=false"},
-	}
-	for _, testCase := range cases {
-		test.Run(testCase.name, func(test *testing.T) {
-			test.Setenv("HOME", test.TempDir())
-			prober := &recordingProber{}
-			if err := ensureOpenWebUI(prober, "docker", "127.0.0.1", "aip.local", testCase.requireAuth); err != nil {
-				test.Fatal(err)
-			}
-			args := runArgsForContainer(prober, openWebUIContainer)
-			if args == nil {
-				test.Fatalf("open-webui was not launched: %v", prober.calls)
-			}
-			launch := strings.Join(args, " ")
-			if !strings.Contains(launch, testCase.wantAuth) {
-				test.Errorf("launch missing %q: %s", testCase.wantAuth, launch)
-			}
-			// open-webui is internal-only (no host publish) regardless of role.
-			if strings.Contains(launch, "-p ") {
-				test.Errorf("open-webui must be internal-only (no host publish): %s", launch)
-			}
-		})
-	}
-}
-
-func runArgsForContainer(prober *recordingProber, container string) []string {
-	for _, call := range prober.calls {
-		if len(call) < 4 || call[1] != "run" {
-			continue
-		}
-		for index := 2; index < len(call)-1; index++ {
-			if call[index] == "--name" && call[index+1] == container {
-				return call
-			}
-		}
-	}
-	return nil
-}
-
-// TestEnsureOdysseusGroupRunArgs: ensureOdysseus brings up all four containers;
-// ALL of them are internal-only (no -p host publish — nginx fronts the app UI),
-// the app mounts the host Docker socket, and routes models through aip-proxy.
-func TestEnsureOdysseusGroupRunArgs(test *testing.T) {
-	test.Setenv("HOME", test.TempDir())
-	prober := &recordingProber{}
-	if err := ensureOdysseus(prober, "docker", "127.0.0.1", "aip.local", false); err != nil {
-		test.Fatal(err)
-	}
-
-	// Companions are internal-only: launched, but with no host publish.
-	for _, companion := range []string{chromadbContainer, searxngContainer, ntfyContainer} {
-		args := runArgsForContainer(prober, companion)
-		if args == nil {
-			test.Fatalf("%s was not launched: %v", companion, prober.calls)
-		}
-		launch := strings.Join(args, " ")
-		if strings.Contains(launch, "-p ") {
-			test.Errorf("%s must be internal-only (no host publish): %s", companion, launch)
-		}
-		if !strings.Contains(launch, "--network "+platformNetwork) {
-			test.Errorf("%s must join %s: %s", companion, platformNetwork, launch)
-		}
-	}
-	// ntfy needs the explicit `serve` command.
-	if ntfy := strings.Join(runArgsForContainer(prober, ntfyContainer), " "); !strings.HasSuffix(ntfy, " serve") {
-		test.Errorf("ntfy must run `serve`: %s", ntfy)
-	}
-	// SearXNG must carry a secret.
-	if searx := strings.Join(runArgsForContainer(prober, searxngContainer), " "); !strings.Contains(searx, "SEARXNG_SECRET=") {
-		test.Errorf("searxng must set SEARXNG_SECRET: %s", searx)
-	}
-
-	// The app: INTERNAL-ONLY (nginx fronts its UI), mounts the Docker socket,
-	// routes via aip-proxy.
-	appArgs := runArgsForContainer(prober, odysseusContainer)
-	if appArgs == nil {
-		test.Fatalf("aip-odysseus was not launched: %v", prober.calls)
-	}
-	app := strings.Join(appArgs, " ")
-	if strings.Contains(app, "-p ") {
-		test.Errorf("odysseus must be internal-only (no host publish — nginx fronts it): %s", app)
-	}
-	if !strings.Contains(app, "/var/run/docker.sock:/var/run/docker.sock") {
-		test.Errorf("odysseus must mount the host Docker socket: %s", app)
-	}
-	if !strings.Contains(app, "OLLAMA_BASE_URL=http://aip-proxy/v1") {
-		test.Errorf("odysseus must route models through aip-proxy: %s", app)
-	}
-	if !strings.Contains(app, "CHROMADB_HOST=aip-chromadb") || !strings.Contains(app, "SEARXNG_INSTANCE=http://aip-searxng:8080") {
-		test.Errorf("odysseus must point at its companions by name: %s", app)
-	}
-	if !strings.Contains(app, "APP_BIND=0.0.0.0") {
-		test.Errorf("odysseus must bind 0.0.0.0 inside the container: %s", app)
-	}
-}
-
-// TestSearxngSecretPersists: the SearXNG secret is generated once and reused on
-// later runs (so signed cookies stay valid).
-func TestSearxngSecretPersists(test *testing.T) {
-	test.Setenv("HOME", test.TempDir())
-	first, err := searxngSecret()
-	if err != nil || first == "" {
-		test.Fatalf("searxngSecret() = (%q,%v)", first, err)
-	}
-	second, err := searxngSecret()
-	if err != nil {
-		test.Fatal(err)
-	}
-	if first != second {
-		test.Errorf("searxng secret not stable across runs: %q vs %q", first, second)
-	}
-}
-
-// TestReconcileGatesOptionalOdysseus: odysseus is brought up when enabled and
-// skipped when not (via the fake's per-service status mirroring the real gating).
-func TestReconcileGatesOptionalOdysseus(test *testing.T) {
-	services := &fakeServices{}
-	enabledStatuses, err := services.Reconcile("", "127.0.0.1", []string{"odysseus"}, nil)
-	if err != nil {
-		test.Fatal(err)
-	}
-	if stateOf(enabledStatuses, "odysseus") != "running" {
-		test.Errorf("odysseus should be running when enabled: %+v", enabledStatuses)
-	}
-
-	disabled := &fakeServices{}
-	disabledStatuses, err := disabled.Reconcile("", "127.0.0.1", nil, nil)
-	if err != nil {
-		test.Fatal(err)
-	}
-	if stateOf(disabledStatuses, "odysseus") != "disabled" {
-		test.Errorf("odysseus should be disabled when not enabled: %+v", disabledStatuses)
 	}
 }
 
@@ -1613,13 +1302,12 @@ func TestCaptureServiceLogsWritesRunningContainers(test *testing.T) {
 }
 
 // TestServiceContainersMapping: the logical service → container(s) mapping covers
-// the multi-container services (presidio is two; odysseus is four) and the simple
-// 1:1 ones, and the file-name derivation strips the aip- prefix.
+// the multi-container services (presidio is two) and the simple 1:1 ones, and the
+// file-name derivation strips the aip- prefix.
 func TestServiceContainersMapping(test *testing.T) {
 	cases := map[string][]string{
 		"litellm":  {litellmContainer, litellmDBContainer},
 		"presidio": {presidioAnalyzerContainer, presidioAnonymizerContainer},
-		"odysseus": {odysseusContainer, chromadbContainer, searxngContainer, ntfyContainer},
 		"dns":      {dnsContainer},
 		"unknown":  nil,
 	}

@@ -60,7 +60,7 @@ func ManageHostsForRole(role string) bool {
 	return role == runtime.RoleStandalone || role == ""
 }
 
-// SyncHosts points the platform's UI subdomains (litellm./chat./odysseus.<domain>)
+// SyncHosts points the platform's UI subdomains (litellm.<domain>)
 // at 127.0.0.1 in /etc/hosts, for STANDALONE mode. It:
 //
 //   - Plans the new bytes (hostsfile.Plan) — if the managed block is already up to
@@ -156,10 +156,9 @@ func writeManual(sync HostsSync) {
 	_, _ = io.WriteString(sync.Out, ManualMessage(sync.Domain))
 }
 
-// sudoWriteHosts is the production privileged write: it stages the planned bytes
-// in a temp file and copies them over the target with `sudo cp`. This is the ONE
-// seam that shells out (it needs root for /etc/hosts) — it is replaced by a fake
-// in tests.
+// sudoWriteHosts is the production privileged write: it pipes the planned bytes to
+// `sudo tee <path>`. This is the ONE seam that shells out (it needs root for
+// /etc/hosts) — it is replaced by a fake in tests.
 //
 // hardware bring-up: the live `sudo cp` over /etc/hosts is exercised on a
 // provisioned host (it prompts for the sudo password on the TTY).

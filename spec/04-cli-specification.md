@@ -203,9 +203,9 @@ aliases → provider URLs). Used both for real provider setup and by the
 acceptance harness to target the mock provider.
 
 **Interactive form.** On a TTY, `ai setup` ALWAYS prompts for this host's
-configuration in a single back-navigable form — the deployment role, the remote
-server address (client only), and the enabled optional host tools — with every
-field **pre-seeded** from the `--mode` / `--server` / `--optional` flags (which set
+configuration in a single back-navigable form — the deployment role and the remote
+server address (client only) — with every
+field **pre-seeded** from the `--mode` / `--server` flags (which set
 defaults but are **never required**, §21). Known choices are a select / checkbox,
 not free text; the free-text server address is validated. Under `--json` / no TTY
 the flags drive setup directly with no prompt (automation stays scriptable).
@@ -232,17 +232,12 @@ form's select prompt (pre-seeded by `--mode`), and persisted in
 The chosen `--mode` (else the persisted role, else standalone) drives both the
 preflight blocking set and which tier is reconciled.
 
-**Optional host tools.** Beyond the always-on service tier, `ai setup` can enable
-opt-in host services (currently **open-webui** and **odysseus**), chosen on a TTY
-via a checkbox pre-checked from the persisted/default set and carrying a prominent
-**security warning**: these run on the host **outside** the workspace microVM
-sandbox with elevated privileges, and **odysseus mounts the host Docker socket**
-(`/var/run/docker.sock` — full host-Docker control). `--optional <csv>` seeds the
-checkbox on a TTY and drives the set directly under `--json` / no TTY: a
-comma-separated list of service names (validated; unknown → exit `2`), or the
-sentinel `none` to disable them all. Omitting `--optional` keeps the
-persisted/default set (open-webui on first run); the choice persists in
-`runtime.yaml` (`optional_services:`).
+**Optional host tools.** The optional host-service set is currently **empty** —
+there are no opt-in host services. (Open WebUI is now a per-workspace in-VM app,
+launched at `ai create` and managed via `ai apps`; Odysseus has been removed from
+the platform entirely.) The `--optional <csv>` flag is retained for forward
+compatibility but accepts only the sentinel `none` (a safe no-op); any other value
+is unknown → exit `2`. Omitting `--optional` keeps the empty set.
 
 Purpose:
 
@@ -283,20 +278,20 @@ Purpose:
   likewise held by the gateway — passed as env passthrough at launch and/or in
   LiteLLM's Postgres-backed store — never written to platform disk
 
-**Platform base domain & name resolution.** The web UIs are served on nginx
-subdomains of the platform base domain (`litellm.<domain>` / `chat.<domain>` /
-`odysseus.<domain>` on the single gateway port `:18787`; `ai domain`, §10.5). In
+**Platform base domain & name resolution.** The host UI is served on an nginx
+subdomain of the platform base domain (`litellm.<domain>` — the only host UI vhost
+— on the single gateway port `:18787`; `ai domain`, §10.5). In
 **server** mode the form additionally prompts for the **server hostname / domain**
 (the name clients and browsers reach this host at, default **`localhost`**),
 persisted as the `domain`. Once the domain is known, `setup` wires name
 resolution best-effort:
 
 * **standalone** — offers (on a TTY, with consent) to write a managed block to
-  `/etc/hosts` mapping the UI subdomains to `127.0.0.1`. The write needs root, so
+  `/etc/hosts` mapping the UI subdomain (`litellm.<domain>`) to `127.0.0.1`. The write needs root, so
   it shells out through a **labeled sudo prompt** (`[ai] enter your login password
   to update /etc/hosts:`); on decline / non-TTY it prints the manual block instead.
 * **server** — does **not** edit `/etc/hosts`; it prints the **DNS/TLS operator
-  contract** (create `*.<domain>` or per-host `litellm./chat./odysseus.<domain>`
+  contract** (create `*.<domain>` or per-host `litellm.<domain>`
   records → this server's IP, terminate TLS at nginx).
 * **client** — nothing (no local UIs).
 
@@ -1107,8 +1102,7 @@ ai doctor [<name>]
   LiteLLM's always-on secret-masking guardrails; architecture §15), LiteLLM
   (health + that the configured provider keys are present in the gateway — a
   missing key is warned, not fatal; architecture §17), Headroom, the nginx proxy,
-  DNS, and the optional `open-webui` / `odysseus` (plus odysseus's companion
-  containers)
+  and DNS (there are no optional host services)
 
 **Additionally**, it reports the **workspace-runtime** section (per-workspace
 runtime / virtualization check, §12.1) **only** when run inside a workspace
@@ -1131,7 +1125,8 @@ fail) conveys health, rather than the process exit code.
 ## 10.2 Service Management
 
 The `ai` CLI is the single control plane for all host services — the platform
-containers `ollama`, `presidio`, `litellm`, `headroom`, and the optional `open-webui` chat UI. The user never
+containers `dns`, `ollama`, `presidio`, `litellm`, `headroom`, and `proxy` (there
+are no optional host services). The user never
 invokes `docker compose`, `launchctl`, or `systemctl` directly. The whole service
 tier runs as containers (see architecture §5, "Host Services Control Plane").
 (The Microsandbox workspace runtime is not a long-running service — it is driven
@@ -1149,15 +1144,15 @@ ai services console [<service>]    # list/open a service's admin console (--prin
 ```
 
 `<service>`: `ollama` | `presidio` | `litellm` | `headroom` | `proxy` | `dns` |
-`open-webui` | `odysseus` | `all` (no arg = all). The first six are **core**
-(always on); `open-webui` and `odysseus` are **optional** (opt-in).
+`all` (no arg = all). All six are **core** (always on). The optional host-service
+set is currently **empty**, so `enable`/`disable` have nothing to act on
+(retained for forward compatibility).
 
 Behavior:
 
 * `status` reports each service's health and pinned version; `--json` returns the
-  §19 envelope with a `data.services` array. Each entry carries `optional` (true
-  for the opt-in services); a not-enabled optional service is listed with state
-  `disabled` so it is discoverable.
+  §19 envelope with a `data.services` array. (The optional set is empty, so every
+  listed service is a core service.)
 * lifecycle verbs (`start`/`stop`/`restart`) act on the **platform-owned container
   set** via the runtime abstraction (§6). With no service, or `all`, they act on
   every **enabled** container in **dependency order** (a disabled optional service
@@ -1174,10 +1169,9 @@ Behavior:
   `update` re-pulls the *current* pins.)
 * `enable`/`disable` apply **only to optional services** — they update the
   persisted optional-service set (`runtime.yaml`) and then start / stop the
-  service's container(s). Enabling a core service, or naming an unknown/empty
-  service, exits `2`; with no `runtime.yaml` (setup not run) `enable`/`disable`
-  exit `3`. On a terminal a bare `enable`/`disable` shows a single-select of the
-  optional services; under `--json`/no-TTY a name is required (exit `2`).
+  service's container(s). Because the optional set is currently empty, enabling a
+  core service or naming an unknown service exits `2`; with no `runtime.yaml`
+  (setup not run) they exit `3`.
 * docker compose is not used; container-tier services are managed through the
   runtime abstraction (§6)
 * service install/upgrade is handled by `ai setup` / `ai setup --upgrade`, not by
@@ -1185,12 +1179,12 @@ Behavior:
 * an unknown service exits `2`. `ai services console [<service>]` lists/opens a
   service's admin dashboard: with no argument it lists the services that have a
   console; with a name it **opens** that console in the browser, or — with
-  `--print` (and always under `--json`) — prints the URL instead. The consoles are
-  the **nginx subdomain UIs** served on the single gateway port `:18787`:
-  `litellm.<domain>:18787/ui` (the LiteLLM admin UI), `chat.<domain>:18787`
-  (Open WebUI), and `odysseus.<domain>:18787` — where `<domain>` is the platform
-  base domain (`ai domain`, default `aip.local`). They are **not** the old direct
-  container ports.
+  `--print` (and always under `--json`) — prints the URL instead. The only host
+  console is the **nginx subdomain UI** served on the single gateway port `:18787`:
+  `litellm.<domain>:18787/ui` (the LiteLLM admin UI) — where `<domain>` is the
+  platform base domain (`ai domain`, default `aip.local`). It is **not** the old
+  direct container port. (Open WebUI is now a per-workspace in-VM app; Odysseus was
+  removed.)
 
 ## 10.3 LiteLLM gateway (`ai litellm`)
 
@@ -1341,14 +1335,14 @@ Human-readable output by default; `--json` emits the standard §19 envelope.
 
 # 10.5 Platform Base Domain (`ai domain`)
 
-Configure, machine-wide, the platform **base domain** the nginx UI subdomains hang
-off: `litellm.<domain>`, `chat.<domain>`, `odysseus.<domain>`. The value is
+Configure, machine-wide, the platform **base domain** the nginx UI subdomain hangs
+off: `litellm.<domain>` (the only host UI vhost). The value is
 persisted in `config/runtime.yaml` as `domain`. The default is **`aip.local`** for
-local/standalone; operators **override it in server mode** so the UIs are served on
+local/standalone; operators **override it in server mode** so the UI is served on
 a routable hostname.
 
 ```bash
-ai domain                 # show the resolved base domain + the UI subdomains
+ai domain                 # show the resolved base domain + the UI subdomain
 ai domain <name>          # set the base domain (e.g. aip.example.com)
 ```
 
@@ -1409,15 +1403,13 @@ Options:
 
 ```bash id="c32"
 --workspace <project>
---service <microsandbox|ollama|presidio|litellm|headroom|proxy|open-webui|odysseus|chromadb|searxng|ntfy|dns>
+--service <microsandbox|ollama|presidio|litellm|headroom|proxy|dns>
 --tail
 --follow
 ```
 
 Log scopes are per-CONTAINER (finer-grained than `ai services`, which acts on whole
-logical services). Odysseus is one logical service owning four containers, so its
-companions `chromadb|searxng|ntfy` are accepted as `--service` scopes alongside
-`odysseus` itself.
+logical services).
 
 Without `--follow`, `ai logs` shows the latest on-disk snapshot (refreshed by
 `ai setup` / `ai services status`). **`--follow`** streams a `--service`'s logs

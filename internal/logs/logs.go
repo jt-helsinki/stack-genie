@@ -26,8 +26,7 @@ const TailLines = 200
 
 // Services returns the host services accepted by `ai logs --service` (CLI §13.1):
 // the microVM runtime (microsandbox) plus every container in the service tier —
-// ollama, presidio, litellm, headroom, proxy, open-webui, dns, and Odysseus's
-// containers (odysseus + chromadb / searxng / ntfy). Logs are per-CONTAINER, so
+// ollama, presidio, litellm, headroom, proxy, dns. Logs are per-CONTAINER, so
 // this is finer-grained than `ai services` (which acts on whole logical
 // services). A service value selects a log source by substring match on the
 // *.log file names under ~/.ai-platform/logs (see Sources); those files are

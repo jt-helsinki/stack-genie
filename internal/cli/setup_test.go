@@ -12,8 +12,10 @@ import (
 )
 
 // parseOptionalFlag turns the --optional CSV (the non-interactive setup contract)
-// into a validated service list: "none" disables all, a CSV selects (trimmed),
-// and any unknown name is exit 2.
+// into a validated service list: "none" disables all. There are currently NO
+// optional host services (Open WebUI moved to a per-workspace in-VM app and
+// Odysseus was removed), so the optional universe is empty and ANY named value is
+// exit 2.
 func TestParseOptionalFlag(test *testing.T) {
 	valid := []struct {
 		in   string
@@ -21,10 +23,6 @@ func TestParseOptionalFlag(test *testing.T) {
 	}{
 		{"none", []string{}},
 		{"NONE", []string{}},
-		{"open-webui", []string{"open-webui"}},
-		{"open-webui,odysseus", []string{"open-webui", "odysseus"}},
-		{"  open-webui , odysseus  ", []string{"open-webui", "odysseus"}},
-		{"open-webui,,", []string{"open-webui"}},
 	}
 	for _, testCase := range valid {
 		got, err := parseOptionalFlag(testCase.in)
@@ -37,7 +35,8 @@ func TestParseOptionalFlag(test *testing.T) {
 		}
 	}
 
-	for _, bad := range []string{"bogus", "open-webui,bogus", "llm-guard"} {
+	// Any named value is rejected — there are no optional host services.
+	for _, bad := range []string{"bogus", "open-webui", "odysseus", "llm-guard"} {
 		_, err := parseOptionalFlag(bad)
 		var platformErr *output.Error
 		if !errors.As(err, &platformErr) || platformErr.Code != output.ExitInvalidInput {
@@ -48,17 +47,14 @@ func TestParseOptionalFlag(test *testing.T) {
 
 // optionalServicesFromFlag is the non-interactive (--json / no-TTY) resolution:
 // an empty flag leaves the set unspecified (set=false, keep persisted/default);
-// any value makes an explicit choice (set=true), with "none" meaning empty.
+// "none" makes an explicit empty choice (set=true). Any named value is exit 2
+// (there are no optional host services).
 func TestOptionalServicesFromFlag(test *testing.T) {
 	if set, services, err := optionalServicesFromFlag(""); set || services != nil || err != nil {
 		test.Errorf("empty flag = (set=%v, %v, %v), want (false, nil, nil) — unspecified", set, services, err)
 	}
 	if set, services, err := optionalServicesFromFlag("none"); !set || len(services) != 0 || err != nil {
 		test.Errorf("\"none\" = (set=%v, %v, %v), want (true, [], nil)", set, services, err)
-	}
-	set, services, err := optionalServicesFromFlag("open-webui")
-	if !set || err != nil || !slices.Equal(services, []string{"open-webui"}) {
-		test.Errorf("\"open-webui\" = (set=%v, %v, %v), want (true, [open-webui], nil)", set, services, err)
 	}
 	if _, _, err := optionalServicesFromFlag("bogus"); err == nil {
 		test.Error("unknown --optional name must error (exit 2)")
@@ -117,19 +113,18 @@ func TestNonInteractiveServerDomain(test *testing.T) {
 }
 
 // Server mode produces the per-UI credential guide (the post-setup admin-access
-// instructions): each UI's URL plus how to set/rotate its password.
+// instructions): the LiteLLM admin UI URL plus how to set/rotate its password.
+// litellm is now the ONLY host UI (Open WebUI moved in-VM; Odysseus was removed).
 func TestServerModeProducesCredentialsGuide(test *testing.T) {
 	guide := uihosts.ServerCredentialsGuide("aip.example.com")
 	if !strings.Contains(guide, "ai litellm password") {
 		test.Fatalf("server credentials guide must mention `ai litellm password`:\n%s", guide)
 	}
-	for _, url := range []string{
-		"http://litellm.aip.example.com:18787/ui",
-		"http://chat.aip.example.com:18787",
-		"http://odysseus.aip.example.com:18787",
-	} {
-		if !strings.Contains(guide, url) {
-			test.Fatalf("server credentials guide must list %q:\n%s", url, guide)
-		}
+	if !strings.Contains(guide, "http://litellm.aip.example.com:18787/ui") {
+		test.Fatalf("server credentials guide must list the LiteLLM admin UI:\n%s", guide)
+	}
+	// No chat./odysseus. UIs anymore.
+	if strings.Contains(guide, "chat.aip.example.com") || strings.Contains(guide, "odysseus.aip.example.com") {
+		test.Fatalf("server credentials guide must not list chat/odysseus UIs:\n%s", guide)
 	}
 }

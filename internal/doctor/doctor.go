@@ -141,8 +141,8 @@ type Deps struct {
 	Prober       runtime.Prober
 	// Services is the full managed-service list (from setup.ServicesStatus,
 	// mapped by the CLI). Run renders each as a Check in the SERVICES section, so
-	// `ai doctor` lists every service — including the optional open-webui and
-	// odysseus — without this package importing internal/setup.
+	// `ai doctor` lists every service — including any optional ones — without this
+	// package importing internal/setup.
 	Services []Service
 	// Domain, when non-nil, adds the DOMAIN section (the platform base domain, the
 	// UI URLs, and the standalone /etc/hosts resolution status or the server DNS

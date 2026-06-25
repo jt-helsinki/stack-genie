@@ -124,7 +124,7 @@ Host Layer
  └─ Container Runtime (Docker / Podman)            ← service tier (network aip-net)
      └─ nginx reverse proxy (aip-proxy — SOLE host entry, publishes :18787)
          └─ INTERNAL-ONLY containers on aip-net (no host publish):
-            Headroom · LiteLLM (+ Postgres) · Presidio (analyzer + anonymizer) · Ollama · DNS audit (CoreDNS) · Open WebUI (opt) · Odysseus + companions (opt)
+            Headroom · LiteLLM (+ Postgres) · Presidio (analyzer + anonymizer) · Ollama · DNS audit (CoreDNS)
 ```
 
 Workspaces are **microVMs** (hardware isolation), not containers. The
@@ -140,8 +140,8 @@ Microsandbox                                            — microVM runtime, dri
 ```
 
 The entire host service tier is containers on `aip-net`: nginx (`aip-proxy`),
-Ollama, Presidio (analyzer + anonymizer), LiteLLM (+ Postgres), Headroom, the
-CoreDNS egress-audit resolver, and the optional Open WebUI / Odysseus. There is no
+Ollama, Presidio (analyzer + anonymizer), LiteLLM (+ Postgres), Headroom, and the
+CoreDNS egress-audit resolver. There are no optional host services. There is no
 native host service. **`aip-proxy` (nginx) is the SOLE host entry point** — every
 other service container is INTERNAL-ONLY on `aip-net` (reached by name, no host
 publish), except the two loopback-published support containers `aip-litellm-db`
@@ -290,12 +290,13 @@ project.
 ## Host Services Control Plane
 
 The platform's host services — Headroom, LiteLLM (+ its Postgres), Presidio
-(analyzer + anonymizer), Ollama (required), and the optional Open WebUI chat UI and Odysseus AI workspace (OFF by default) — plus the
+(analyzer + anonymizer), Ollama (required), and the CoreDNS egress-audit
+resolver (there are no optional host services) — plus the
 Microsandbox microVM runtime are installed, configured, and supervised by the
 `ai` CLI. The CLI is the **single control plane**: the user never invokes
 `docker compose`, `msb`, `launchctl`, or `systemctl` directly. The whole service
 tier is containers: they share a private docker network (`aip-net`) and are
-reconciled in order: network → DNS → Ollama → Presidio → LiteLLM (+ DB) → Headroom → Open WebUI/Odysseus (if enabled) → nginx proxy (last).
+reconciled in order: network → DNS → Ollama → Presidio → LiteLLM (+ DB) → Headroom → nginx proxy (last).
 (Prompt-injection detection and the destructive-tool-call firewall are in-process
 in LiteLLM — they need no companion container, §15.)
 (Headroom is now a shared host container, no longer installed in the workspace
@@ -318,22 +319,18 @@ by `server_name` (Host-based vhosts):
     surface, **bypassing Headroom**.
   - `location /ollama/` → `aip-ollama:11434` (prefix stripped) — the Ollama HTTP
     API, **bypassing Headroom**.
-- The **web UIs are now Host-based VHOSTS (subdomains)** on the SAME :18787, NOT
-  separate host ports: `litellm.<domain>` → `aip-litellm:4000` (the admin UI at
-  `/ui`; always, litellm is core), `chat.<domain>` → `aip-open-webui:8080` (when
-  enabled), `odysseus.<domain>` → `aip-odysseus:7000` (when enabled). The UI vhosts
-  carry WebSocket upgrade headers and **bypass Headroom** (they serve the app UI —
-  the apps' model calls ride the default server's `/v1` route through Headroom). The
+- The **single web UI is a Host-based VHOST (subdomain)** on the SAME :18787, NOT
+  a separate host port: `litellm.<domain>` → `aip-litellm:4000` (the admin UI at
+  `/ui`; litellm is the ONLY host UI vhost). The vhost carries WebSocket upgrade
+  headers and **bypasses Headroom** (it serves the admin UI directly). The
   `<domain>` is the resolved platform base domain (`runtime.yaml` `domain`, default
-  `aip.local`; `ai domain`). UI vhosts are rendered only for enabled services (nginx
-  resolves a literal `proxy_pass` host at config-load time).
+  `aip.local`; `ai domain`). (Open WebUI is now a per-workspace in-VM app — see
+  `internal/apps`, §5 — not a host service; Odysseus has been removed from the
+  platform entirely.)
 
 In **standalone** mode `ai setup` writes an `/etc/hosts` block (with consent + sudo;
 on no-TTY/--json/declined it prints the block to add manually) pointing
-`litellm./chat./odysseus.<domain>` at `127.0.0.1`. The block carries **all** UI
-subdomains — including optional ones not currently enabled — DELIBERATELY: the
-hosts entries are stable, so enabling open-webui/odysseus later needs no further
-privileged `/etc/hosts` edit (only the nginx vhost is gated by enablement). In
+`litellm.<domain>` at `127.0.0.1` (litellm is the only host UI vhost). In
 **server** mode the platform
 does NOT edit `/etc/hosts` — `ai setup`/`ai doctor` print the operator contract:
 create real DNS (`*.<domain>` wildcard or per-host) → this server's IP and provide
@@ -343,12 +340,12 @@ scope now) — TLS terminates **per-vhost at nginx**, and once HTTPS is configur
 `:80`/http listener on the single :18787 entry **MUST** `return 301
 https://$host$request_uri;` (http → https redirect); no redirect is emitted today
 because there is no https listener yet (a 301 with no :443 would break every
-plain-http caller). nginx is reconciled LAST so its upstreams (incl. the enabled UIs) are
+plain-http caller). nginx is reconciled LAST so its upstreams are
 up first. (`aip-litellm-db` and `aip-dns` stay loopback-published — DNS must stay
 `127.0.0.1:15353` for the microVM `--dns-nameserver`.) The live end-to-end routing
-through these nginx routes — and especially the UI vhosts, the sudo `/etc/hosts`
-write, and the Open WebUI / Odysseus reverse-proxy envs — is a **hardware bring-up**
-verification item (`docs/HARDWARE-BRINGUP.md`).
+through these nginx routes — and especially the litellm UI vhost and the sudo
+`/etc/hosts` write — is a **hardware bring-up** verification item
+(`docs/HARDWARE-BRINGUP.md`).
 
 ### One Tool, Uniform Lifecycle
 
@@ -368,13 +365,11 @@ ai logs --service <svc>      one log surface
 
 | Service | Run mode | Why |
 |---|---|---|
-| nginx proxy | container (via Runtime) `aip-proxy` (`nginx:1.27-alpine`) | the SOLE host ENTRY to the service tier: publishes ONLY :18787 — the default server (`/`+`/v1`→Headroom, `/llm`→LiteLLM, `/ollama`→Ollama) plus the Host-based UI vhosts on the same port (`litellm.`/`chat.`/`odysseus.<domain>`); HTTPS termination point later (§10) |
+| nginx proxy | container (via Runtime) `aip-proxy` (`nginx:1.27-alpine`) | the SOLE host ENTRY to the service tier: publishes ONLY :18787 — the default server (`/`+`/v1`→Headroom, `/llm`→LiteLLM, `/ollama`→Ollama) plus the single Host-based UI vhost on the same port (`litellm.<domain>`); HTTPS termination point later (§10) |
 | Headroom | container (via Runtime) `aip-headroom` | shared input-compression proxy in front of LiteLLM; INTERNAL-ONLY on :8787 behind nginx (no host publish); HTTP only (§10) |
 | LiteLLM | container (via Runtime) `aip-litellm` (+ `aip-litellm-db` Postgres) | INTERNAL-ONLY: no host publish, reached by name (`aip-litellm:4000`) by Headroom + nginx's `/llm` route; HTTP only; no host privileges |
 | Presidio | two containers (via Runtime) `aip-presidio-analyzer` + `aip-presidio-anonymizer` | back LiteLLM's always-on secret-masking guardrail; internal-only, not published (§15) |
 | Ollama (required) | container (via Runtime) `aip-ollama` on all platforms | local model backend LiteLLM routes to; INTERNAL-ONLY (no host publish — reached by name, and from the host via nginx's `/ollama` route); CPU-only on macOS (Docker has no GPU passthrough) |
-| Open WebUI (optional) | container (via Runtime) `aip-open-webui` | chat UI routed through the nginx gateway → Headroom → LiteLLM (`OPENAI_API_BASE_URL=http://aip-proxy/v1`, never direct to LiteLLM; built-in Ollama backend + login wall disabled); INTERNAL-ONLY — nginx serves its UI as the Host-based vhost `chat.<domain>:18787` (its address IS its console); reverse-proxy envs `WEBUI_URL`/`CORS_ALLOW_ORIGIN` set to that URL; HTTP only |
-| Odysseus (optional, OFF by default) | one optional service (via Runtime) backed by FOUR INTERNAL-ONLY containers: `aip-odysseus` (app, nginx serves its UI as the Host-based vhost `odysseus.<domain>:18787`) + the companions `aip-chromadb` / `aip-searxng` / `aip-ntfy` | self-hosted AI workspace; routes models through the nginx gateway → Headroom → LiteLLM (`OLLAMA_BASE_URL=http://aip-proxy/v1`, OpenAI-compatible, master key via env passthrough); all four reached by name on `aip-net` (no host publish — nginx is the sole publisher). **MOUNTS THE HOST DOCKER SOCKET** (`/var/run/docker.sock`) — full host-Docker control, an elevated privilege outside the sandbox — so it is opt-in with a sharpened `ai setup` warning. Providers configured in-app (`/setup`); env values are seeds. HTTP only |
 | DNS audit resolver | container (via Runtime) `aip-dns` (CoreDNS) | egress-audit resolver: microVMs forward DNS here so attempted names are logged for `ai network log`; published to host loopback only; audit, not enforcement (§29.7) |
 | Microsandbox | microVM runtime, invoked on demand | drives workspace microVMs via the Go SDK / `msb`; no daemon to supervise (§7) |
 
@@ -411,7 +406,7 @@ service configs live under `config/<service>/`.
 * **startup ordering**: container runtime + Microsandbox runtime verified →
   container tier reconciled in order
   `aip-net` network → DNS (CoreDNS) → Ollama → Presidio (analyzer + anonymizer) →
-  LiteLLM (+ Postgres) → Headroom → Open WebUI / Odysseus (if enabled) →
+  LiteLLM (+ Postgres) → Headroom →
   **nginx proxy (last** — its upstreams must be up first since nginx resolves
   literal `proxy_pass` hosts at config-load) → verify
   (workspace microVMs are created on demand, not at setup)
@@ -434,9 +429,8 @@ The platform uses two runtimes for two purposes.
 
 Used for the container-tier services — the nginx proxy (`aip-proxy`, the sole
 host entry), Headroom, LiteLLM (+ its Postgres), Presidio (analyzer +
-anonymizer), Ollama (required), the CoreDNS egress-audit resolver, and the
-optional Open WebUI / Odysseus — which share a private docker network
-(`aip-net`).
+anonymizer), Ollama (required), and the CoreDNS egress-audit resolver — which
+share a private docker network (`aip-net`). There are no optional host services.
 
 Supported runtimes (end-state):
 
@@ -781,22 +775,18 @@ admin/management surface on **`location /llm`** (→ `aip-litellm:4000`, prefix
 stripped: `/model/info`, `/v1/models`, `/health*`, `/key*`, `/credentials`, …) and
 the Ollama HTTP API on **`location /ollama`** (→ `aip-ollama:11434`, prefix
 stripped) — the specific `/llm` and `/ollama` prefixes match before the catch-all
-`/` (the default route, also → Headroom). `/llm` and `/ollama` (and the UI vhosts
-below) **bypass Headroom** — only `/` + `/v1` ride the compression proxy. The web
-UIs are now served as **Host-based vhosts on the SAME :18787**, NOT separate host
-ports: `litellm.<domain>` → `aip-litellm:4000` (admin UI at `/ui`; always),
-`chat.<domain>` → `aip-open-webui:8080` and `odysseus.<domain>` →
-`aip-odysseus:7000` (each with WebSocket upgrade headers), rendered only when
-enabled (nginx resolves a literal `proxy_pass` host at config-load time). `<domain>`
+`/` (the default route, also → Headroom). `/llm` and `/ollama` (and the UI vhost
+below) **bypass Headroom** — only `/` + `/v1` ride the compression proxy. The
+single web UI is served as a **Host-based vhost on the SAME :18787**, NOT a separate
+host port: `litellm.<domain>` → `aip-litellm:4000` (admin UI at `/ui`; litellm is
+the ONLY host UI vhost, with WebSocket upgrade headers). `<domain>`
 is the resolved platform base domain (`runtime.yaml` `domain`, default `aip.local`;
-`ai domain`). Standalone points those names at `127.0.0.1` via an `/etc/hosts`
+`ai domain`). Standalone points that name at `127.0.0.1` via an `/etc/hosts`
 managed block written by `ai setup` (consent + sudo, else a manual block);
 server mode does NOT edit `/etc/hosts` and instead prints the DNS (`*.<domain>` →
-this server) + TLS (cert terminated at nginx) operator contract. Open WebUI gets
-`WEBUI_URL`/`CORS_ALLOW_ORIGIN` = its chat-vhost URL; Odysseus gets best-effort
-`APP_BIND=0.0.0.0`/`APP_PUBLIC_URL`/`SECURE_COOKIES` (env names unconfirmed →
-bring-up). Because nginx is the only publisher, **every other service container is
-INTERNAL-ONLY on `aip-net`** (LiteLLM, Ollama, Open WebUI, Odysseus + companions no
+this server) + TLS (cert terminated at nginx) operator contract. Because nginx is
+the only publisher, **every other service container is
+INTERNAL-ONLY on `aip-net`** (LiteLLM, Ollama, Presidio, Headroom no
 longer publish to the host); only `aip-litellm-db` and `aip-dns` stay
 loopback-published. This is transparent to workspaces (the gateway URL stays
 `host:18787`) and lets nginx terminate TLS later, per-vhost (in server mode it binds
@@ -805,8 +795,9 @@ loopback-published. This is transparent to workspaces (the gateway URL stays
 nginx, never a container directly. Headroom is **no longer installed inside the
 workspace image** — the agent in the workspace reaches the host gateway across the
 microVM boundary via `AI_PLATFORM_HOST` (§29). The live end-to-end routing through
-these nginx routes — the UI vhosts, the sudo `/etc/hosts` write, the Open WebUI /
-Odysseus reverse-proxy envs — is verified at hardware bring-up.
+these nginx routes — the litellm UI vhost and the sudo `/etc/hosts` write — is
+verified at hardware bring-up. (Open WebUI is now a per-workspace in-VM app, §5.2;
+Odysseus has been removed from the platform.)
 
 The Github repository is found at:
 
@@ -1042,19 +1033,12 @@ in the launch argv, the rendered config, or platform disk.
 locked down on a host that binds to `0.0.0.0`:
 
 * **standalone / client** (loopback) → OPEN access. `ai setup` does NOT prompt
-  for a LiteLLM password (a single-user local box), and Open WebUI launches with
-  `WEBUI_AUTH=false`. A standalone user can opt into a LiteLLM password later via
-  **`ai litellm password`**.
+  for a LiteLLM password (a single-user local box). A standalone user can opt into
+  a LiteLLM password later via **`ai litellm password`**.
 * **server** (`0.0.0.0`, network-exposed) → auth REQUIRED. `ai setup` REQUIRES a
   LiteLLM admin-UI password (it loops on a TTY until one is entered, and
   generates a strong random one non-interactively rather than leave the gateway
-  open), and Open WebUI launches with `WEBUI_AUTH=true` (the first signup becomes
-  the admin; `ENABLE_SIGNUP` is left at its default so that first account can
-  register). **Odysseus**: the platform CANNOT set its admin password (it is
-  configured IN-APP at `/setup`), so a server-mode note in `ai setup` output and
-  `ai doctor` warns that Odysseus's auth must be configured in-app and that it is
-  network-exposed; `SECURE_COOKIES` stays `false` until TLS terminates at nginx
-  (we serve plain http :18787 today — bring-up to flip it on under HTTPS).
+  open).
 
 **Persisting the secrets.** `ai setup` (server) and `ai litellm password` OFFER
 (on a TTY) to save `UI_PASSWORD` + `LITELLM_MASTER_KEY` to **`~/.ai-platform.env`**
@@ -2012,8 +1996,8 @@ Monitoring is required for:
 * Caveman
 * Headroom
 
-(`ai doctor` reports every service-tier service including the optional Open WebUI
-and Odysseus + companions, §5.)
+(`ai doctor` reports every service-tier service — dns, ollama, presidio, litellm,
+headroom, proxy — §5.)
 
 ---
 

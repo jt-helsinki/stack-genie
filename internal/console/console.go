@@ -68,8 +68,6 @@ type endpointSpec struct {
 //   - litellm  admin UI at litellm.<domain>:18787/ui (nginx vhost; :4000 internal)
 //   - ollama   http://<domain>:18787/ollama (host-CLI gateway path; :11434 internal)
 //   - proxy    http://<domain>:18787 (aip-proxy nginx gateway entry; no separate UI)
-//   - open-webui chat UI at chat.<domain>:18787 (nginx vhost; the address IS its UI)
-//   - odysseus  app UI at odysseus.<domain>:18787 (nginx vhost; the address IS its UI)
 //   - dns      127.0.0.1:15353/udp (aip-dns CoreDNS egress-audit resolver, loopback)
 //   - headroom is internal-only on :8787 behind nginx (no longer host-published)
 //   - presidio analyzer/anonymizer are internal-only on :3000 (not host-published)

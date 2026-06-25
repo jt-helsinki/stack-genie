@@ -25,16 +25,14 @@ func TestURLAndKnown(test *testing.T) {
 
 func TestWithConsolesSortedAndFiltered(test *testing.T) {
 	named := WithConsoles()
-	// litellm, odysseus, and open-webui all expose a console; sorted by name. Every
-	// console URL must be an nginx subdomain vhost on the gateway port — never a
-	// direct (now internal-only) per-service port.
-	if len(named) != 3 || named[0].Name != "litellm" || named[1].Name != "odysseus" || named[2].Name != "open-webui" {
-		test.Fatalf("WithConsoles = %+v, want [litellm odysseus open-webui]", named)
+	// litellm is now the ONLY host service exposing a console. Its console URL must
+	// be an nginx subdomain vhost on the gateway port — never a direct (now
+	// internal-only) per-service port.
+	if len(named) != 1 || named[0].Name != "litellm" {
+		test.Fatalf("WithConsoles = %+v, want [litellm]", named)
 	}
 	want := map[string]string{
-		"litellm":    "http://litellm.localhost:18787/ui",
-		"odysseus":   "http://odysseus.localhost:18787",
-		"open-webui": "http://chat.localhost:18787",
+		"litellm": "http://litellm.localhost:18787/ui",
 	}
 	for _, namedURL := range named {
 		if namedURL.URL != want[namedURL.Name] {
@@ -45,20 +43,6 @@ func TestWithConsolesSortedAndFiltered(test *testing.T) {
 				test.Errorf("%s console %q must not use internal-only port %s", namedURL.Name, namedURL.URL, deadPort)
 			}
 		}
-	}
-}
-
-func TestOdysseusEndpointHasAddressAndConsole(test *testing.T) {
-	endpoint, ok := EndpointFor("odysseus")
-	if !ok || endpoint.Address != "http://odysseus.localhost:18787" || endpoint.Console != "http://odysseus.localhost:18787" {
-		test.Errorf("odysseus endpoint = (%+v,%v)", endpoint, ok)
-	}
-}
-
-func TestOpenWebUIEndpointHasAddressAndConsole(test *testing.T) {
-	endpoint, ok := EndpointFor("open-webui")
-	if !ok || endpoint.Address != "http://chat.localhost:18787" || endpoint.Console != "http://chat.localhost:18787" {
-		test.Errorf("open-webui endpoint = (%+v,%v)", endpoint, ok)
 	}
 }
 
@@ -130,12 +114,6 @@ func TestEndpointForHostRendersGivenDomain(test *testing.T) {
 		test.Errorf("litellm@build-host.lan endpoint = (%+v,%v)", endpoint, ok)
 	}
 
-	// A console whose root IS the UI gets the subdomain in both fields, no path.
-	endpoint, ok = EndpointForHost("open-webui", "build-host.lan")
-	if !ok || endpoint.Address != "http://chat.build-host.lan:18787" || endpoint.Console != "http://chat.build-host.lan:18787" {
-		test.Errorf("open-webui@build-host.lan endpoint = (%+v,%v)", endpoint, ok)
-	}
-
 	// ollama is a gateway-path service: <domain>:18787/ollama, no subdomain.
 	endpoint, ok = EndpointForHost("ollama", "build-host.lan")
 	if !ok || endpoint.Address != "http://build-host.lan:18787/ollama" || endpoint.Console != "" {
@@ -149,7 +127,7 @@ func TestEndpointForHostRendersGivenDomain(test *testing.T) {
 	}
 
 	// Internal-only services stay empty regardless of domain.
-	for _, name := range []string{"headroom", "presidio", "microsandbox", "chromadb"} {
+	for _, name := range []string{"headroom", "presidio", "microsandbox"} {
 		endpoint, ok := EndpointForHost(name, "build-host.lan")
 		if !ok {
 			test.Errorf("%s should be a known service", name)

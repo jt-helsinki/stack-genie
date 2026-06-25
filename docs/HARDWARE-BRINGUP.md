@@ -22,7 +22,7 @@ code.
   `--dns-nameserver` at the `aip-dns` audit resolver.
 - **Service-tier launch** — `internal/setup/setup_real.go`: `realServices.Reconcile`
   brings up the container tier on `aip-net` in order **network → DNS → Ollama →
-  Presidio → LiteLLM (+ DB) → Headroom → Open WebUI/Odysseus (if enabled) →
+  Presidio → LiteLLM (+ DB) → Headroom →
   nginx proxy (LAST)**, via the detected runtime (docker|podman). nginx
   (`aip-proxy`) is the sole host entry — all other containers are internal-only.
 - **Egress net-rules** — the project `network` block is rendered by
@@ -131,8 +131,8 @@ chain itself. The remaining verification work:
       `serviceHealthy("proxy")` readiness probe is already wired — see §2.3 intro;
       this item is the live end-to-end confirmation of the forward chain.)
 - [ ] **nginx as the SOLE host entry — the new routes** — every service container
-      is now INTERNAL-ONLY on `aip-net` (LiteLLM, Ollama, Open WebUI, Odysseus +
-      companions no longer host-publish); only nginx publishes. Verify on a live
+      is now INTERNAL-ONLY on `aip-net` (LiteLLM, Ollama, Presidio, Headroom no
+      longer host-publish); only nginx publishes. Verify on a live
       host that the new nginx routes work end-to-end:
   - `localhost:18787/llm/*` reaches the LiteLLM admin surface (e.g.
     `GET /llm/model/info`, `/llm/v1/models`, `/llm/health/liveliness`, the
@@ -147,31 +147,20 @@ chain itself. The remaining verification work:
   - the agent microVM `/v1` path (`host.microsandbox.internal:18787/v1` → Headroom)
     is unchanged — confirm a workspace agent still routes correctly.
 
-- [ ] **UI Host-based vhosts on the single :18787 (the new topology)** — the web
-      UIs are now subdomains (NOT separate host ports :18090/:7000): nginx matches
-      them by `server_name` on the same :18787. Verify on a live host:
+- [ ] **UI Host-based vhost on the single :18787 (the new topology)** — the single
+      host UI is now a subdomain (NOT a separate host port): nginx matches it by
+      `server_name` on the same :18787. Verify on a live host:
   - `http://litellm.<domain>:18787/` serves the LiteLLM admin UI (redirects `/` →
     `/ui`; proxies to `aip-litellm:4000`, bypassing Headroom);
-  - `http://chat.<domain>:18787/` serves Open WebUI (proxies `aip-open-webui:8080`,
-    WebSocket upgrade working) when open-webui is enabled;
-  - `http://odysseus.<domain>:18787/` serves Odysseus (proxies `aip-odysseus:7000`,
-    WebSocket upgrade) when odysseus is enabled;
   - `<domain>` is the resolved platform base domain (default `aip.local`; `ai domain`).
+  - (Open WebUI is now a per-workspace in-VM app, not a host vhost; Odysseus was removed.)
 - [ ] **Standalone `/etc/hosts` write (the sudo seam)** — `ai setup` in standalone
       mode prompts for consent and writes the managed block via
       `uihosts.sudoWriteHosts` (temp file → `sudo cp <tmp> /etc/hosts`). Confirm on a
-      live host the sudo prompt appears, the block is written (all UI subdomains →
-      127.0.0.1, incl. not-yet-enabled ones), the names then resolve, and the
+      live host the sudo prompt appears, the block is written (`litellm.<domain>` →
+      127.0.0.1), the name then resolves, and the
       no-TTY/`--json`/declined paths print the manual block instead (never fail
       setup). `ai uninstall` removes the block the same way (standalone only).
-- [ ] **Open WebUI / Odysseus reverse-proxy envs** — confirm the apps behave
-      correctly behind their subdomain vhost: Open WebUI's `WEBUI_URL` +
-      `CORS_ALLOW_ORIGIN` (set to `http://chat.<domain>:18787`) let links + the
-      websocket handshake work; Odysseus's `APP_BIND=0.0.0.0` / `APP_PUBLIC_URL` /
-      `SECURE_COOKIES=false` seeds are best-effort — VERIFY the exact env names
-      against the live app (Odysseus configures providers in-app at `/setup`; the
-      env names were not confirmable from its docs) and that `X-Forwarded-Proto` is
-      forwarded once TLS terminates at nginx.
 - [ ] **Server-mode DNS/TLS contract** — in server mode `ai setup`/`ai doctor` print
       the operator contract (create `*.<domain>` or per-host DNS → this server, and
       a TLS cert terminated at nginx). Confirm a remote client can reach the UI
@@ -190,17 +179,10 @@ chain itself. The remaining verification work:
       caller). Verify the redirect + per-vhost TLS once a cert is in place.
 - [ ] **Role-based UI auth policy** (`runtime.RequireUIAuth`, server-only). Verify
       the auth posture per role against the live UIs:
-  - standalone/client (loopback) are OPEN: Open WebUI launches `WEBUI_AUTH=false`
-    (no login wall) and `ai setup` does NOT prompt for a LiteLLM password.
-  - server (`0.0.0.0`) requires auth: Open WebUI launches `WEBUI_AUTH=true` (the
-    first signup becomes admin — confirm `ENABLE_SIGNUP` default lets that first
-    account register, then consider disabling further signups), and `ai setup`
-    forces a non-empty LiteLLM admin password (generated if not entered).
-  - **Odysseus auth is NOT platform-settable** — it is configured in-app at
-    `/setup`. On a server, confirm the in-app login is actually enabled before the
-    box is network-exposed; `SECURE_COOKIES` stays `false` until TLS terminates at
-    nginx, so FLIP IT ON (to `true`) once HTTPS is live (and confirm the exact env
-    name against the live app — it is a best-effort seed today).
+  - standalone/client (loopback) are OPEN: `ai setup` does NOT prompt for a
+    LiteLLM password.
+  - server (`0.0.0.0`) requires auth: `ai setup` forces a non-empty LiteLLM admin
+    password (generated if not entered).
   - **`ai litellm password`** relaunches the live LiteLLM with the new password —
     verify the relaunch + login work end-to-end on a provisioned host (the
     relaunch is mocked in unit tests).
@@ -322,8 +304,8 @@ pass):
 
 1. `ai doctor` → all checks green.
 2. `ai setup` → exit 0; the core service tier (DNS, Ollama, Presidio, LiteLLM +
-   DB, Headroom, and the nginx proxy LAST) up; templates installed. The optional
-   UIs (Open WebUI, Odysseus) come up only when enabled via `--optional`.
+   DB, Headroom, and the nginx proxy LAST) up; templates installed. There are no
+   optional host services.
 3. `ai create --name demo --os debian-trixie` → **scaffold-only**: writes the
    project's `.ai-platform/` files in the cwd and registers it; it does **not**
    build the image or boot a microVM.

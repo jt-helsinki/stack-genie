@@ -7,7 +7,7 @@ import (
 )
 
 // TestLogScopesMatchesCurrent asserts the derived log-scope list is byte-for-byte
-// the legacy internal/logs `services` slice (same order, same 12 entries).
+// the legacy internal/logs `services` slice (same order, same entries).
 func TestLogScopesMatchesCurrent(test *testing.T) {
 	want := []string{
 		"microsandbox",
@@ -16,11 +16,6 @@ func TestLogScopesMatchesCurrent(test *testing.T) {
 		"litellm",
 		"headroom",
 		"proxy",
-		"open-webui",
-		"odysseus",
-		"chromadb",
-		"searxng",
-		"ntfy",
 		"dns",
 	}
 	got := LogScopes()
@@ -47,11 +42,6 @@ func TestEndpointsMatchCurrentConsoleRegistry(test *testing.T) {
 		"litellm":      {ConsolePath: "/ui", HasConsole: true, UISubdomain: "litellm"},
 		"ollama":       {GatewayPath: "/ollama"},
 		"proxy":        {Port: 18787},
-		"open-webui":   {HasConsole: true, UISubdomain: "chat"},
-		"odysseus":     {HasConsole: true, UISubdomain: "odysseus"},
-		"chromadb":     {},
-		"searxng":      {},
-		"ntfy":         {},
 		"dns":          {LoopbackAddress: "127.0.0.1:15353/udp"},
 		"headroom":     {},
 		"presidio":     {},
@@ -71,11 +61,6 @@ func TestVersionPinsMatchCurrentDefault(test *testing.T) {
 		"litellm":             {Mode: ModeContainer, Image: "ghcr.io/berriai/litellm", Tag: "latest"},
 		"litellm-db":          {Mode: ModeContainer, Image: "postgres", Tag: "18.4-alpine3.23"},
 		"headroom":            {Mode: ModeContainer, Image: "ghcr.io/chopratejas/headroom", Tag: "latest"},
-		"open-webui":          {Mode: ModeContainer, Image: "ghcr.io/open-webui/open-webui", Tag: "latest"},
-		"odysseus":            {Mode: ModeContainer, Image: "ghcr.io/pewdiepie-archdaemon/odysseus", Tag: "latest"},
-		"chromadb":            {Mode: ModeContainer, Image: "chromadb/chroma", Tag: "latest"},
-		"searxng":             {Mode: ModeContainer, Image: "searxng/searxng", Tag: "latest"},
-		"ntfy":                {Mode: ModeContainer, Image: "binwiederhier/ntfy", Tag: "latest"},
 		"presidio-analyzer":   {Mode: ModeContainer, Image: "mcr.microsoft.com/presidio-analyzer", Tag: "latest"},
 		"presidio-anonymizer": {Mode: ModeContainer, Image: "mcr.microsoft.com/presidio-anonymizer", Tag: "latest"},
 		"proxy":               {Mode: ModeContainer, Image: "nginx", Tag: "stable-alpine3.23-slim"},
@@ -92,12 +77,11 @@ func TestVersionPinsMatchCurrentDefault(test *testing.T) {
 // frozen API the internal/setup migration consumes).
 func TestCoreAndOptionalServiceNames(test *testing.T) {
 	wantCore := []string{"ollama", "presidio", "litellm", "headroom", "proxy", "dns"}
-	wantOptional := []string{"open-webui", "odysseus"}
 	if got := CoreServiceNames(); !reflect.DeepEqual(got, wantCore) {
 		test.Errorf("CoreServiceNames() = %v, want %v", got, wantCore)
 	}
-	if got := OptionalServiceNames(); !reflect.DeepEqual(got, wantOptional) {
-		test.Errorf("OptionalServiceNames() = %v, want %v", got, wantOptional)
+	if got := OptionalServiceNames(); len(got) != 0 {
+		test.Errorf("OptionalServiceNames() = %v, want empty", got)
 	}
 }
 
@@ -105,14 +89,12 @@ func TestCoreAndOptionalServiceNames(test *testing.T) {
 // setup migration must reproduce (serviceImageKeys). litellm-db rides on litellm.
 func TestImageKeysMatchServiceImageKeys(test *testing.T) {
 	cases := map[string][]string{
-		"ollama":     {"ollama"},
-		"presidio":   {"presidio-analyzer", "presidio-anonymizer"},
-		"litellm":    {"litellm", "litellm-db"},
-		"headroom":   {"headroom"},
-		"proxy":      {"proxy"},
-		"dns":        {"dns"},
-		"open-webui": {"open-webui"},
-		"odysseus":   {"odysseus", "chromadb", "searxng", "ntfy"},
+		"ollama":   {"ollama"},
+		"presidio": {"presidio-analyzer", "presidio-anonymizer"},
+		"litellm":  {"litellm", "litellm-db"},
+		"headroom": {"headroom"},
+		"proxy":    {"proxy"},
+		"dns":      {"dns"},
 	}
 	for service, want := range cases {
 		if got := ImageKeys(service); !reflect.DeepEqual(got, want) {
@@ -127,14 +109,12 @@ func TestImageKeysMatchServiceImageKeys(test *testing.T) {
 // TestContainerNames pins the service → container-names map (aip-*).
 func TestContainerNames(test *testing.T) {
 	cases := map[string][]string{
-		"ollama":     {"aip-ollama"},
-		"presidio":   {"aip-presidio-analyzer", "aip-presidio-anonymizer"},
-		"litellm":    {"aip-litellm", "aip-litellm-db"},
-		"headroom":   {"aip-headroom"},
-		"proxy":      {"aip-proxy"},
-		"dns":        {"aip-dns"},
-		"open-webui": {"aip-open-webui"},
-		"odysseus":   {"aip-odysseus", "aip-chromadb", "aip-searxng", "aip-ntfy"},
+		"ollama":   {"aip-ollama"},
+		"presidio": {"aip-presidio-analyzer", "aip-presidio-anonymizer"},
+		"litellm":  {"aip-litellm", "aip-litellm-db"},
+		"headroom": {"aip-headroom"},
+		"proxy":    {"aip-proxy"},
+		"dns":      {"aip-dns"},
 	}
 	for service, want := range cases {
 		if got := ContainerNames(service); !reflect.DeepEqual(got, want) {
@@ -146,18 +126,13 @@ func TestContainerNames(test *testing.T) {
 	}
 }
 
-// TestOwningService pins the companion → owner map (matching setup.owningService,
-// extended with litellm-db → litellm).
+// TestOwningService pins the companion → owner map (litellm-db → litellm).
 func TestOwningService(test *testing.T) {
 	cases := map[string]string{
-		"chromadb":   "odysseus",
-		"searxng":    "odysseus",
-		"ntfy":       "odysseus",
 		"litellm-db": "litellm",
 		// A logical service is not "owned".
-		"odysseus": "",
-		"litellm":  "",
-		"ollama":   "",
+		"litellm": "",
+		"ollama":  "",
 		// Unknown.
 		"nope": "",
 	}
@@ -215,16 +190,14 @@ func TestLogScopesAreUniqueAndKnown(test *testing.T) {
 }
 
 // TestUIVhostsMapping pins the UI→subdomain mapping the host-side nginx vhosts +
-// /etc/hosts logic depends on: litellm (core) → litellm, open-webui → chat,
-// odysseus → odysseus, each with a non-empty in-network upstream.
+// /etc/hosts logic depends on: litellm (core) → litellm, with a non-empty
+// in-network upstream. It is the only remaining host UI vhost.
 func TestUIVhostsMapping(test *testing.T) {
 	want := map[string]struct {
 		subdomain string
 		optional  bool
 	}{
-		"litellm":    {"litellm", false},
-		"open-webui": {"chat", true},
-		"odysseus":   {"odysseus", true},
+		"litellm": {"litellm", false},
 	}
 	vhosts := UIVhosts()
 	if len(vhosts) != len(want) {

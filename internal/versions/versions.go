@@ -47,8 +47,10 @@ type File struct {
 // truth for the platform's service topology), so they cannot drift from the log
 // scopes / console endpoints / setup reconcile. The registry carries the split
 // keys (presidio-analyzer/anonymizer), the standalone litellm-db, and the native
-// microsandbox runtime; this projects each pin into a versions.Service. A fresh
-// map is built each call, so callers cannot mutate shared state.
+// microsandbox runtime; this projects each pin into a versions.Service. (The host
+// service tier no longer pins Open WebUI or Odysseus — Open WebUI moved to a
+// per-workspace in-VM app and Odysseus was removed.) A fresh map is built each
+// call, so callers cannot mutate shared state.
 func Default() *File {
 	pinned := make(map[string]Service, len(services.VersionPins()))
 	for key, pin := range services.VersionPins() {

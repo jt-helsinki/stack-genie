@@ -14,12 +14,12 @@ func TestGatewayPortMatchesRuntime(t *testing.T) {
 	}
 }
 
-// Names returns ALL UI subdomains regardless of which optional services are
-// enabled — the /etc/hosts entries are stable so enabling open-webui/odysseus
-// later needs no further privileged edit.
+// Names returns the host UI subdomains. The only remaining host UI vhost is
+// litellm (Open WebUI is now a per-workspace in-VM app and Odysseus was
+// removed), so the /etc/hosts entry carries just litellm.<domain>.
 func TestNamesAlwaysAllSubdomains(t *testing.T) {
 	names := Names("aip.example.com")
-	want := []string{"litellm.aip.example.com", "chat.aip.example.com", "odysseus.aip.example.com"}
+	want := []string{"litellm.aip.example.com"}
 	if len(names) != len(want) {
 		t.Fatalf("got %v want %v", names, want)
 	}
@@ -38,15 +38,15 @@ func TestEntriesSingleLoopbackEntry(t *testing.T) {
 	if entries[0].IP != "127.0.0.1" {
 		t.Fatalf("UI subdomains must resolve to loopback, got %q", entries[0].IP)
 	}
-	if len(entries[0].Names) != 3 {
-		t.Fatalf("expected 3 names (all UI subdomains), got %v", entries[0].Names)
+	if len(entries[0].Names) != 1 {
+		t.Fatalf("expected 1 name (the only UI subdomain), got %v", entries[0].Names)
 	}
 }
 
 func TestURLsUseGatewayPort(t *testing.T) {
 	urls := URLs("aip.local")
-	if len(urls) != 3 {
-		t.Fatalf("expected all 3 UI URLs, got %d", len(urls))
+	if len(urls) != 1 {
+		t.Fatalf("expected the single UI URL, got %d", len(urls))
 	}
 	for _, url := range urls {
 		if !strings.HasSuffix(url.URL, ":18787") {
@@ -66,8 +66,8 @@ func TestManualMessageContainsBlockAndURLs(t *testing.T) {
 	if !strings.Contains(message, "127.0.0.1") {
 		t.Fatalf("manual message should contain the rendered block:\n%s", message)
 	}
-	// ALL UI subdomains appear (stable hosts entries regardless of enabled set).
-	for _, name := range []string{"litellm.aip.local", "chat.aip.local", "odysseus.aip.local"} {
+	// The only host UI subdomain appears.
+	for _, name := range []string{"litellm.aip.local"} {
 		if !strings.Contains(message, name) {
 			t.Fatalf("manual message should list %q:\n%s", name, message)
 		}
@@ -79,11 +79,9 @@ func TestManualMessageContainsBlockAndURLs(t *testing.T) {
 
 func TestServerCredentialsGuideListsURLsAndPasswordHints(t *testing.T) {
 	guide := ServerCredentialsGuide("aip.example.com")
-	// Each UI's host-reachable URL appears.
+	// The only host UI's reachable URL appears (LiteLLM admin UI).
 	for _, url := range []string{
 		"http://litellm.aip.example.com:18787/ui",
-		"http://chat.aip.example.com:18787",
-		"http://odysseus.aip.example.com:18787",
 	} {
 		if !strings.Contains(guide, url) {
 			t.Fatalf("credentials guide should list %q:\n%s", url, guide)
@@ -92,14 +90,6 @@ func TestServerCredentialsGuideListsURLsAndPasswordHints(t *testing.T) {
 	// LiteLLM: how to rotate the admin password.
 	if !strings.Contains(guide, "ai litellm password") {
 		t.Fatalf("credentials guide should mention `ai litellm password`:\n%s", guide)
-	}
-	// Open WebUI: first account becomes admin.
-	if !strings.Contains(guide, "FIRST account") {
-		t.Fatalf("credentials guide should note the first Open WebUI account is admin:\n%s", guide)
-	}
-	// Odysseus: in-app /setup, platform cannot set it.
-	if !strings.Contains(guide, "/setup") || !strings.Contains(guide, "platform cannot set") {
-		t.Fatalf("credentials guide should note Odysseus auth is configured in-app at /setup:\n%s", guide)
 	}
 	if !strings.HasSuffix(guide, "\n") {
 		t.Fatalf("credentials guide should end with a trailing newline:\n%q", guide)
@@ -111,7 +101,7 @@ func TestServerGuidanceMentionsWildcardAndTLS(t *testing.T) {
 	if !strings.Contains(guidance, "*.aip.example.com") {
 		t.Fatalf("server guidance should mention the wildcard DNS record:\n%s", guidance)
 	}
-	if !strings.Contains(guidance, "litellm.aip.example.com") || !strings.Contains(guidance, "chat.aip.example.com") {
+	if !strings.Contains(guidance, "litellm.aip.example.com") {
 		t.Fatalf("server guidance should list the per-host names:\n%s", guidance)
 	}
 	if !strings.Contains(strings.ToLower(guidance), "tls") {

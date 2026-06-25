@@ -3,7 +3,6 @@ package cli
 import (
 	"fmt"
 	goruntime "runtime"
-	"strings"
 
 	"github.com/charmbracelet/huh"
 	"github.com/jt-helsinki/ideal-robot/internal/console"
@@ -61,18 +60,26 @@ func newServicesCmd(em *output.Emitter, exit *int) *cobra.Command {
 }
 
 // newServicesToggleCmd builds `ai services enable|disable <service>`: it toggles
-// an OPTIONAL service (open-webui, odysseus) in the persisted set and brings it
-// up/down. Core services are always on, so only the optional ones are valid.
-// With no argument on a terminal it shows a single-select of the optional
-// services; under --json / no TTY a name is required (exit 2).
+// an OPTIONAL service in the persisted set and brings it up/down. Core services are
+// always on, so only the optional ones are valid. With no argument on a terminal it
+// shows a single-select of the optional services; under --json / no TTY a name is
+// required (exit 2). There are currently NO optional host services (Open WebUI is a
+// per-workspace in-VM app and Odysseus was removed), so enable/disable report that
+// there is nothing to toggle; the commands are retained for future host optional
+// services.
 func newServicesToggleCmd(action string, em *output.Emitter, exit *int) *cobra.Command {
 	return &cobra.Command{
 		Use:               action + " <service>",
-		Short:             action + " an optional service (" + strings.Join(setup.OptionalServiceNames(), ", ") + ")",
+		Short:             action + " an optional service (none available — Open WebUI is now an in-VM app)",
 		Args:              cobra.MaximumNArgs(1),
 		ValidArgsFunction: completeOptionalServiceNames,
 		RunE: func(_ *cobra.Command, args []string) error {
 			deps := setup.RealDeps(goruntime.GOOS, goruntime.GOARCH, nowRFC3339)
+			if len(setup.OptionalServiceNames()) == 0 {
+				*exit = em.Failure("services."+action, output.Errorf(output.ExitInvalidInput,
+					"there are no optional host services to %s (Open WebUI is now a per-workspace in-VM app; Odysseus was removed)", action))
+				return nil
+			}
 			service := ""
 			if len(args) == 1 {
 				service = args[0]
@@ -129,9 +136,8 @@ func selectOptionalService(action string) (string, error) {
 
 // newServicesControlCmd builds `ai services start|stop|restart [service]`.
 //   - a named logical service (ollama, presidio, litellm, headroom, proxy,
-//     open-webui, odysseus, dns) — or the literal "all" — targets it directly,
-//     no prompt; a service may own several containers (odysseus → chromadb /
-//     searxng / ntfy), which are acted on as a unit;
+//     dns) — or the literal "all" — targets it directly, no prompt; a service may
+//     own several containers (presidio → analyzer + anonymizer), acted on as a unit;
 //   - with no argument on a terminal, it shows a CHECKBOX list of every service
 //     and its current state and acts on the one(s) the user selects (minimal
 //     typing);

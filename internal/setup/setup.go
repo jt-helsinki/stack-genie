@@ -37,7 +37,7 @@ type ServiceStatus struct {
 	// the microVM runtime).
 	Address string `json:"address,omitempty"`
 	Console string `json:"console,omitempty"`
-	// Optional marks an opt-in service (open-webui, odysseus) that can be enabled
+	// Optional marks an opt-in service that can be enabled
 	// or disabled (`ai services enable|disable`); core services are always on. A
 	// disabled optional service has State "disabled".
 	Optional bool `json:"optional,omitempty"`
@@ -71,8 +71,9 @@ type Services interface {
 	// Reconcile makes reality match the desired state (idempotent). bindHost is
 	// the host interface the shared services publish on ("127.0.0.1" for a local
 	// standalone host, "0.0.0.0" for a server other machines connect to). optional
-	// is the set of enabled opt-in services (e.g. ["open-webui"]) — CORE services
-	// are always reconciled, optional ones only when present here. progress is
+	// is the set of enabled opt-in services (currently always empty — there are no
+	// optional host services) — CORE services are always reconciled, optional ones
+	// only when present here. progress is
 	// called (never nil) with a short message before each step, so the CLI can
 	// stream feedback during the slow container bring-up.
 	Reconcile(providerConfig string, bindHost string, optional []string, progress func(string)) ([]ServiceStatus, error)
@@ -140,13 +141,13 @@ type Options struct {
 	// Ignored for standalone/server.
 	ServerAddr string
 	// Domain is the platform base domain the nginx UI subdomains hang off
-	// (litellm.<domain>, chat.<domain>, odysseus.<domain>). Empty means "leave the
+	// (litellm.<domain>). Empty means "leave the
 	// persisted/default domain untouched" — Run does a load-modify-save so a domain
 	// set via `ai domain` is preserved. The server role prompts for it at `ai setup`
 	// (defaulting to localhost); standalone keeps the aip.local default.
 	Domain string
-	// Optional is the enabled opt-in service set for this run (e.g.
-	// ["open-webui"]). nil means "unspecified" — Run falls back to the persisted
+	// Optional is the enabled opt-in service set for this run. nil means
+	// "unspecified" — Run falls back to the persisted
 	// runtime.yaml set, else the first-run default (DefaultOptionalServices). To
 	// disable every optional service explicitly, set OptionalSet=true with an
 	// empty Optional (the CLI's `--optional none`).
@@ -164,24 +165,19 @@ func OptionalServiceNames() []string {
 }
 
 // OptionalServiceLabel returns a short human label for an optional service, used
-// in the setup checkbox (e.g. open-webui → "chat UI"). Unknown names get "".
+// in the setup checkbox. Unknown names get "". There are currently NO optional host
+// services (Open WebUI moved to a per-workspace in-VM app and Odysseus was
+// removed), so this returns "" for everything today.
 func OptionalServiceLabel(name string) string {
-	switch name {
-	case "open-webui":
-		return "chat UI"
-	case "odysseus":
-		return "AI workspace (mounts the Docker socket = full host-Docker control)"
-	default:
-		return ""
-	}
+	_ = name
+	return ""
 }
 
 // DefaultOptionalServices is the opt-in service set enabled on a FIRST run when
-// the user makes no explicit choice — open-webui, preserving the historical
-// always-on behavior. It is overridden by an explicit choice (the setup prompt /
-// --optional flag) and, once persisted, by the runtime.yaml set.
+// the user makes no explicit choice. There are currently NO optional host services,
+// so it is empty (the optional mechanism is retained for future use).
 func DefaultOptionalServices() []string {
-	return []string{"open-webui"}
+	return nil
 }
 
 // controlActions are the valid `ai services <action>` verbs.
@@ -216,9 +212,11 @@ func ControlService(deps Deps, action, service string) ([]ServiceStatus, error) 
 		service = ""
 	}
 	if service != "" && !slices.Contains(ServiceNames(), service) {
-		// A companion container (Odysseus's chromadb/searxng/ntfy) is managed as
-		// part of its owning logical service, not on its own — point the user
-		// there. (`ai logs --service <name>` can still tail that one container.)
+		// A companion container managed as part of its owning logical service
+		// (not on its own) would be pointed at its owner here. There are currently
+		// no such surfaced companions (owningService returns "" for all names), so
+		// this branch is dormant. (`ai logs --service <name>` can still tail a
+		// companion container.)
 		if owner := owningService(service); owner != "" {
 			return nil, output.Errorf(output.ExitInvalidInput,
 				"%q is managed as part of the %q service — run `ai services %s %s` (`ai logs --service %s` tails just that container)",
@@ -687,7 +685,7 @@ func Run(options Options, deps Deps) (*Report, error) {
 		bindHost := "127.0.0.1"
 		if effectiveRole == runtime.RoleServer {
 			bindHost = "0.0.0.0"
-			warnings = append(warnings, "server mode exposes LiteLLM/Headroom/Ollama/open-webui on 0.0.0.0 — put TLS in front and rely on LiteLLM virtual-key auth for untrusted networks")
+			warnings = append(warnings, "server mode exposes LiteLLM/Headroom/Ollama on 0.0.0.0 — put TLS in front and rely on LiteLLM virtual-key auth for untrusted networks")
 		}
 		progress("Starting host services — pulling images / launching containers (this can take a minute)…")
 		serviceStatuses, err = deps.Services.Reconcile(options.ProviderConfig, bindHost, optional, progress)

@@ -44,8 +44,7 @@ func newDoctorCmd(emitter *output.Emitter, exit *int) *cobra.Command {
 }
 
 // doctorServices fetches the full managed-service list (the same backend as
-// `ai services status`, including the optional open-webui and odysseus) and maps
-// it into the doctor layer's Service view. The mapping lives here so the doctor
+// `ai services status`) and maps it into the doctor layer's Service view. The mapping lives here so the doctor
 // package never imports internal/setup (which imports internal/doctor — an
 // import cycle). A status-load failure yields an empty list: doctor still
 // reports the platform-dependency checks rather than failing.
@@ -74,7 +73,7 @@ func doctorServices() []doctor.Service {
 }
 
 // doctorDomain builds the DOMAIN section for `ai doctor`: the resolved platform
-// base domain, the UI subdomain URLs (litellm./chat./odysseus.<domain>:18787), and
+// base domain, the UI subdomain URLs (litellm.<domain>:18787), and
 // the resolution status — standalone reports whether the /etc/hosts block is
 // present + up to date; a server reports the DNS/TLS reminder. Returns nil (omit
 // the section) when there is no runtime.yaml yet (a fresh, un-setup host).
@@ -100,12 +99,10 @@ func doctorDomain() *doctor.DomainInfo {
 		}
 	} else if info.Role == runtime.RoleServer {
 		domainInfo.ServerReminder = "create DNS records (*." + domain +
-			" or per-host litellm./chat./odysseus." + domain +
+			" or per-host litellm." + domain +
 			") → this server's IP, and terminate a TLS cert at nginx. " +
 			"Server mode is network-exposed: the LiteLLM admin UI requires a password " +
-			"(set at `ai setup`, or `ai litellm password`), Open WebUI requires login " +
-			"(WEBUI_AUTH on), and — if Odysseus is enabled — you MUST configure its auth " +
-			"in-app at /setup (the platform cannot set it)"
+			"(set at `ai setup`, or `ai litellm password`)"
 		domainInfo.ServerCredentials = uihosts.ServerCredentialsGuide(domain)
 	}
 	return domainInfo

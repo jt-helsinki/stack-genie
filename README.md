@@ -49,13 +49,14 @@ Hypervisor) or **Linux with KVM**.
 `ai setup` **never installs software** — it detects what's missing and prints how
 to install it (command + web address); `ai doctor` reports the same anytime. The
 service tier (the nginx gateway, Ollama, Presidio, LiteLLM + Postgres, Headroom,
-the optional Open WebUI chat UI, and the DNS egress-audit resolver) is launched by
+and the DNS egress-audit resolver) is launched by
 `ai setup` as host containers on the `aip-net` network — you don't install those.
 Only the nginx gateway (`aip-proxy`) publishes a host port (`:18787`); every other
-service is internal-only and reached through it. The web UIs are served as
-Host-based subdomains off a platform base domain (default `aip.local`, set with
-`ai domain`): `litellm.<domain>`, `chat.<domain>`, `odysseus.<domain>` — all on
-`:18787`. In standalone mode `ai setup` offers to add the matching `/etc/hosts`
+service is internal-only and reached through it. The single host UI is served as a
+Host-based subdomain off a platform base domain (default `aip.local`, set with
+`ai domain`): `litellm.<domain>` (the LiteLLM admin UI) — on
+`:18787`. (Open WebUI is now a per-workspace in-VM app; Odysseus has been removed.)
+In standalone mode `ai setup` offers to add the matching `/etc/hosts`
 entries; in server mode it prints the DNS + TLS contract for an operator.
 
 ## Set up

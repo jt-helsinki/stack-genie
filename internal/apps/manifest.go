@@ -96,8 +96,8 @@ var catalogue = []Manifest{
 		// Open WebUI talks to an OpenAI-compatible endpoint via OPENAI_API_BASE_URL
 		// + OPENAI_API_KEY; ENABLE_OLLAMA_API=false keeps it routed only through the
 		// gateway, and WEBUI_AUTH=false runs it as a single-user per-workspace
-		// instance (no login wall) — verified against the platform's own
-		// aip-open-webui service launch (internal/setup/setup_real.go).
+		// instance (no login wall). Open WebUI now runs ONLY as this in-VM app — the
+		// former host aip-open-webui service was removed.
 		envFor: func(gatewayURL, apiKey, _ string) map[string]string {
 			return map[string]string{
 				"OPENAI_API_BASE_URL": gatewayURL,

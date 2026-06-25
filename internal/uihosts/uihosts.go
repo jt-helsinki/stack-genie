@@ -1,7 +1,8 @@
 // Package uihosts is the host-side logic for the platform's UI subdomains: the
-// Host-based nginx vhosts the web UIs are served on (litellm.<domain>,
-// chat.<domain>, odysseus.<domain>, all on the single gateway port) and the
-// /etc/hosts entries that point those names at 127.0.0.1 in standalone mode.
+// Host-based nginx vhosts the web UIs are served on (only litellm.<domain> now, on
+// the single gateway port) and the /etc/hosts entries that point those names at
+// 127.0.0.1 in standalone mode. (Open WebUI is now a per-workspace in-VM app and
+// is no longer a host UI vhost; Odysseus has been removed from the platform.)
 //
 // It ties together the service registry (internal/services — the single source
 // of the UI→subdomain mapping) and internal/hostsfile (the managed-block writer),
@@ -42,16 +43,12 @@ type URL struct {
 }
 
 // Names returns the fully-qualified UI subdomain names for the resolved domain
-// (e.g. [litellm.aip.local, chat.aip.local, odysseus.aip.local]), in registry
-// order. domain is the already-resolved base domain (the caller passes runtime
-// Info.ResolveDomain()).
+// (e.g. [litellm.aip.local]), in registry order. domain is the already-resolved
+// base domain (the caller passes runtime Info.ResolveDomain()).
 //
-// It returns the names for ALL UI services — including optional ones that are not
-// currently enabled — DELIBERATELY: the /etc/hosts entries (and the DNS the names
-// resolve through) are stable, so enabling open-webui/odysseus later "just works"
-// without another privileged /etc/hosts edit. (The nginx VHOST for an optional UI
-// is still rendered only when that service is enabled — nginx would fail to start
-// against an absent upstream — but the NAME resolving to the host is harmless.)
+// It returns the names for ALL UI services. (Currently only litellm; the host UI
+// set has no optional members anymore — Open WebUI moved in-VM and Odysseus was
+// removed.)
 func Names(domain string) []string {
 	var names []string
 	for _, vhost := range services.UIVhosts() {
@@ -141,10 +138,9 @@ func ServerGuidance(domain string) string {
 // secured. It always ends with a trailing newline.
 //
 //   - LiteLLM admin UI — set/rotate with `ai litellm password`.
-//   - Open WebUI — login required; the FIRST account created becomes admin; change
-//     it later in the app (Settings → Account).
-//   - Odysseus (when enabled) — configure auth in its in-app /setup (the platform
-//     cannot set this password).
+//
+// (Open WebUI is now a per-workspace in-VM app, not a host UI; Odysseus has been
+// removed — so neither appears here anymore.)
 func ServerCredentialsGuide(domain string) string {
 	var builder strings.Builder
 	builder.WriteString("Set up admin access for the exposed UIs (server mode is network-exposed):\n")
@@ -153,13 +149,6 @@ func ServerCredentialsGuide(domain string) string {
 		case "litellm":
 			builder.WriteString("  - LiteLLM admin UI — " + url.URL + "/ui\n")
 			builder.WriteString("      set/rotate the admin password with: ai litellm password\n")
-		case "open-webui":
-			builder.WriteString("  - Open WebUI — " + url.URL + "\n")
-			builder.WriteString("      login required; the FIRST account created becomes admin —\n")
-			builder.WriteString("      change it later in the app (Settings → Account).\n")
-		case "odysseus":
-			builder.WriteString("  - Odysseus — " + url.URL + "\n")
-			builder.WriteString("      configure auth in its in-app /setup (the platform cannot set this password).\n")
 		default:
 			builder.WriteString("  - " + url.Service + " — " + url.URL + "\n")
 		}

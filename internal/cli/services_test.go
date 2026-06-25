@@ -46,7 +46,7 @@ func TestControllableServicesExcludesRuntime(test *testing.T) {
 		{Name: "presidio", Mode: "container"},
 		{Name: "litellm", Mode: "container"},
 		{Name: "headroom", Mode: "container"},
-		{Name: "open-webui", Mode: "container"},
+		{Name: "proxy", Mode: "container"},
 		{Name: "dns", Mode: "container"},
 		{Name: "microsandbox", Mode: "runtime"},
 	}
@@ -67,7 +67,7 @@ func TestControllableServicesExcludesRuntime(test *testing.T) {
 	for _, service := range controllable {
 		kept[service.Name] = true
 	}
-	for _, name := range []string{"ollama", "presidio", "litellm", "headroom", "open-webui", "dns"} {
+	for _, name := range []string{"ollama", "presidio", "litellm", "headroom", "proxy", "dns"} {
 		if !kept[name] {
 			test.Errorf("container service %q should be kept", name)
 		}

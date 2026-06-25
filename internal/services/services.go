@@ -65,7 +65,7 @@ type Pin struct {
 
 // Component is one image/container that a logical service is built from. Most
 // services have a single component; a few have several (Presidio's analyzer +
-// anonymizer; Odysseus's app + ChromaDB/SearXNG/ntfy; LiteLLM + its Postgres).
+// anonymizer; LiteLLM + its Postgres).
 // ImageKey is the versions.yaml key (and the containerImage() lookup key);
 // Container is the runtime container name (aip-*); LogScope is the
 // `ai logs --service` scope this component contributes ("" → none, e.g.
@@ -91,7 +91,7 @@ type Service struct {
 	LogScope string
 	// UISubdomain is the subdomain LABEL this service's web UI is served at, as a
 	// Host-based nginx vhost on the single gateway port: <label>.<domain> (e.g.
-	// "litellm" → litellm.<domain>, "chat" → chat.<domain>). Empty means the
+	// "litellm" → litellm.<domain>). Empty means the
 	// service has no UI vhost (it is reached on a path of the gateway, or is
 	// internal-only). It is the SINGLE source of truth for the UI→subdomain
 	// mapping consumed by internal/setup (nginx vhosts + /etc/hosts) and the
@@ -209,57 +209,6 @@ var registry = []Service{
 		},
 	},
 	{
-		Name:     "open-webui",
-		Optional: true,
-		// The :18090 host port is GONE — Open WebUI is internal-only now, fronted by
-		// nginx at chat.<domain>:GatewayPort (root IS the console).
-		Endpoint:    Endpoint{HasConsole: true, UISubdomain: "chat"},
-		LogScope:    "open-webui",
-		UISubdomain: "chat", // chat.<domain> → the Open WebUI chat UI
-		Components: []Component{
-			{
-				ImageKey:  "open-webui",
-				Container: "aip-open-webui",
-				Pin:       Pin{Mode: ModeContainer, Image: "ghcr.io/open-webui/open-webui", Tag: "latest"},
-			},
-		},
-	},
-	{
-		Name:     "odysseus",
-		Optional: true,
-		// The :7000 host port is GONE — Odysseus is internal-only now, fronted by
-		// nginx at odysseus.<domain>:GatewayPort (root IS the console).
-		Endpoint:    Endpoint{HasConsole: true, UISubdomain: "odysseus"},
-		LogScope:    "odysseus",
-		UISubdomain: "odysseus", // odysseus.<domain> → the Odysseus AI workspace UI
-		Components: []Component{
-			{
-				ImageKey:  "odysseus",
-				Container: "aip-odysseus",
-				LogScope:  "odysseus",
-				Pin:       Pin{Mode: ModeContainer, Image: "ghcr.io/pewdiepie-archdaemon/odysseus", Tag: "latest"},
-			},
-			{
-				ImageKey:  "chromadb",
-				Container: "aip-chromadb",
-				LogScope:  "chromadb",
-				Pin:       Pin{Mode: ModeContainer, Image: "chromadb/chroma", Tag: "latest"},
-			},
-			{
-				ImageKey:  "searxng",
-				Container: "aip-searxng",
-				LogScope:  "searxng",
-				Pin:       Pin{Mode: ModeContainer, Image: "searxng/searxng", Tag: "latest"},
-			},
-			{
-				ImageKey:  "ntfy",
-				Container: "aip-ntfy",
-				LogScope:  "ntfy",
-				Pin:       Pin{Mode: ModeContainer, Image: "binwiederhier/ntfy", Tag: "latest"},
-			},
-		},
-	},
-	{
 		Name:     "dns",
 		Endpoint: Endpoint{LoopbackAddress: "127.0.0.1:15353/udp"}, // aip-dns CoreDNS resolver, host loopback
 		LogScope: "dns",
@@ -277,8 +226,7 @@ var registry = []Service{
 // runtime first, then — walking the registry in declaration order — each logical
 // service's own scope, immediately followed by its companion components' scopes.
 // Presidio contributes one scope (its components carry none); litellm contributes
-// "litellm" (litellm-db carries none); odysseus contributes "odysseus" then its
-// companions "chromadb"/"searxng"/"ntfy" — reproducing logs.services exactly.
+// "litellm" (litellm-db carries none) — reproducing logs.services exactly.
 func logScopeOrder() []string {
 	scopes := []string{nativeRuntime.LogScope}
 	for _, service := range registry {
@@ -340,9 +288,9 @@ func OptionalServiceNames() []string {
 }
 
 // ImageKeys returns the versions.yaml image keys a logical service is built from
-// (in component order) — e.g. presidio → [presidio-analyzer, presidio-anonymizer],
-// odysseus → [odysseus, chromadb, searxng, ntfy]. The "litellm-db" standalone key
-// is attached to its owning litellm service, so litellm → [litellm, litellm-db].
+// (in component order) — e.g. presidio → [presidio-analyzer, presidio-anonymizer].
+// The "litellm-db" standalone key is attached to its owning litellm service, so
+// litellm → [litellm, litellm-db].
 // Returns nil for an unknown service.
 func ImageKeys(service string) []string {
 	for _, entry := range registry {
@@ -375,9 +323,8 @@ func ContainerNames(service string) []string {
 }
 
 // OwningService maps a companion image-key/component to the logical service that
-// owns it, for components that are NOT themselves a logical service (e.g. the
-// odysseus companions chromadb/searxng/ntfy, or litellm-db). Returns "" when the
-// name IS a logical service or is unknown.
+// owns it, for components that are NOT themselves a logical service (e.g.
+// litellm-db). Returns "" when the name IS a logical service or is unknown.
 func OwningService(component string) string {
 	for _, entry := range registry {
 		for _, candidate := range entry.Components {
@@ -385,7 +332,7 @@ func OwningService(component string) string {
 				continue
 			}
 			if candidate.ImageKey == entry.Name {
-				return "" // the component IS the logical service (e.g. odysseus, litellm)
+				return "" // the component IS the logical service (e.g. litellm)
 			}
 			return entry.Name
 		}
@@ -395,10 +342,10 @@ func OwningService(component string) string {
 
 // Endpoints returns the per-name host endpoint specs, keyed by the name each
 // consumer uses: every logical service by its own name, PLUS any companion
-// components that need an addressable name (the odysseus companions, which are
-// internal-only), PLUS the native runtime. This is exactly the key set
-// internal/console registers. A component shares its service's name only when it
-// is the sole/primary one, so companions get their own (internal-only) entry.
+// components that need an addressable name, PLUS the native runtime. This is
+// exactly the key set internal/console registers. A component shares its service's
+// name only when it is the sole/primary one, so companions get their own
+// (internal-only) entry.
 func Endpoints() map[string]Endpoint {
 	endpoints := make(map[string]Endpoint)
 	for _, service := range registry {
@@ -408,7 +355,7 @@ func Endpoints() map[string]Endpoint {
 				continue // the service's own entry already covers it
 			}
 			// Companion components are keyed by their image-key when they carry a
-			// distinct log scope (they are individually addressable, e.g. chromadb);
+			// distinct log scope (they are individually addressable);
 			// litellm-db carries no scope and no endpoint, so it is not surfaced.
 			if component.LogScope == "" {
 				continue
@@ -440,9 +387,7 @@ type UIVhost struct {
 // shared aip-net). These bypass Headroom — they serve the app UI, not the model
 // path (the apps' MODEL calls ride the gateway's /v1 → Headroom route).
 var uiUpstreams = map[string]string{
-	"litellm":    "http://aip-litellm:4000",
-	"open-webui": "http://aip-open-webui:8080",
-	"odysseus":   "http://aip-odysseus:7000",
+	"litellm": "http://aip-litellm:4000",
 }
 
 // UIVhosts returns every service that is served as a Host-based UI vhost (those
@@ -465,9 +410,9 @@ func UIVhosts() []UIVhost {
 }
 
 // VersionPins returns the versions.yaml Services map content: every component's
-// pin keyed by its image-key (including the split presidio keys, litellm-db, and
-// the odysseus companions), plus the native microsandbox runtime. This is exactly
-// the key set versions.Default() produces.
+// pin keyed by its image-key (including the split presidio keys and litellm-db),
+// plus the native microsandbox runtime. This is exactly the key set
+// versions.Default() produces.
 func VersionPins() map[string]Pin {
 	pins := make(map[string]Pin)
 	for _, service := range registry {
