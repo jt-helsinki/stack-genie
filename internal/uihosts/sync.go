@@ -98,6 +98,9 @@ func SyncHosts(sync HostsSync) (HostsAction, error) {
 		return HostsManual, nil
 	}
 
+	if sync.Out != nil {
+		_, _ = fmt.Fprintln(sync.Out, "Updating /etc/hosts (sudo) — enter your system login password if prompted…")
+	}
 	if writeErr := writerOf(sync)(sync.Path, planned); writeErr != nil {
 		if sync.Out != nil {
 			_, _ = fmt.Fprintf(sync.Out, "could not update %s (%s) — add it yourself:\n", sync.Path, writeErr)
@@ -175,5 +178,5 @@ func sudoWriteHosts(path string, content []byte) error {
 	}
 	// #nosec G204 — fixed argv; path is the platform's own hosts target, content is
 	// the planned bytes staged in a temp file. sudo prompts on the TTY.
-	return exec.Command("sudo", "cp", tempName, path).Run()
+	return exec.Command("sudo", "-p", "[ai] enter your login password to update /etc/hosts: ", "cp", tempName, path).Run()
 }

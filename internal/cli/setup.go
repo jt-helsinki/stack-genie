@@ -142,7 +142,7 @@ func newSetupCmd(em *output.Emitter, exit *int) *cobra.Command {
 			// (standalone/server), so it is skipped in client mode.
 			if interactive && report.Runtime != nil && report.Runtime.Role != runtime.RoleClient {
 				_, _ = fmt.Fprintln(em.Err, "\nthe LiteLLM admin UI needs a password — press Enter to skip and set one later")
-				promptLiteLLMUIPassword(em)
+				promptLiteLLMUIPassword(em, report.Runtime.ResolveDomain())
 			}
 			// Domain wiring: standalone points the UI subdomains at 127.0.0.1 in
 			// /etc/hosts (with consent + sudo, else a manual block); server prints the
@@ -421,7 +421,7 @@ func optionalServiceOptions() []huh.Option[string] {
 // already provided through the environment. Best-effort: a blank entry or a
 // relaunch failure just prints a hint and continues. The chosen password is
 // never echoed; the generated master key is shown once (it is also the API key).
-func promptLiteLLMUIPassword(em *output.Emitter) {
+func promptLiteLLMUIPassword(em *output.Emitter, domain string) {
 	// Already supplied via the environment (the standard LiteLLM .env pattern)?
 	// Then the container launch already picked them up — nothing to prompt.
 	if os.Getenv("UI_PASSWORD") != "" && os.Getenv("LITELLM_MASTER_KEY") != "" {
@@ -446,12 +446,13 @@ func promptLiteLLMUIPassword(em *output.Emitter) {
 		return
 	}
 	_, _ = fmt.Fprintf(em.Err,
-		"LiteLLM admin UI secured — log in as %q at http://localhost:14000/ui\n"+
+		"LiteLLM admin UI secured — log in as %q at http://litellm.%s:18787/ui\n"+
+			"  (reachable once the /etc/hosts or DNS step maps litellm.%s to this host)\n"+
 			"  master key (also the API key): %s\n"+
 			"  Secrets are not stored on disk; to keep them across restarts, export them\n"+
 			"  before `ai setup` / `ai services start`:\n"+
 			"    export UI_PASSWORD='<the password you just set>' LITELLM_MASTER_KEY=%s\n",
-		"admin", masterKey, masterKey)
+		"admin", domain, domain, masterKey, masterKey)
 }
 
 // syncUISubdomains wires the platform UI subdomains for this host's role after a
