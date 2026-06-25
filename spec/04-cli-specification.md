@@ -727,6 +727,30 @@ remediation guidance (add `tmux` to the workspace's `.ai-platform/Dockerfile` an
 restart, or recreate with an up-to-date `ai`), instead of msb's raw "failed to exec tmux"
 leak (which also misreports a successful exit).
 
+### In-workspace `refresh-models` — re-pull the model picker without restarting
+
+At workspace start the platform installs a self-contained **`refresh-models`**
+command on `PATH` inside the microVM (`/usr/local/bin/refresh-models`, generated
+per-workspace by `agentcfg.RefreshScript` and installed via `sudo install -m 0755`).
+Run it **inside the workspace** after pulling new models on the host
+(`ollama pull …`) to re-pull the in-VM agent model picker **without restarting the
+microVM**:
+
+```bash
+refresh-models      # run from any workspace session (ai shell / ai agent)
+```
+
+It fetches the installed local models from the gateway's auth-free `/ollama/api/tags`
+route, merges them with the baked-in static set (the named aliases ∪ the curated
+cloud seed), dedups + sorts the result **exactly** as a fresh workspace start does,
+and rewrites the agent CLI configs (`opencode.json`, pi `models.json`) **in place,
+byte-identical** to what a restart would produce. Restart the agent CLI afterwards
+to pick up the new list. It **degrades**: if the gateway is unreachable it keeps the
+baked models (never wipes the configs) and warns; a missing `curl` (image without
+it) errors clearly. The host-side generation and the script's own logic are
+unit-tested (the generated script is executed against a fake `curl`); **live in-VM
+execution is a `hardware bring-up` verification item.**
+
 ---
 
 ## 4.6 Name Resolution For The Lifecycle Verbs

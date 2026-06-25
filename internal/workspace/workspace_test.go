@@ -7,6 +7,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/jt-helsinki/ideal-robot/internal/agentcfg"
+	"github.com/jt-helsinki/ideal-robot/internal/contextopt"
 	"github.com/jt-helsinki/ideal-robot/internal/litellm"
 	"github.com/jt-helsinki/ideal-robot/internal/ollama"
 	"github.com/jt-helsinki/ideal-robot/internal/overlay"
@@ -485,6 +487,90 @@ func TestStartWritesTmuxConf(test *testing.T) {
 	}
 	if !strings.Contains(string(conf), "status off") || !strings.Contains(string(conf), "mouse on") {
 		test.Errorf("tmux.conf missing transparent settings:\n%s", conf)
+	}
+}
+
+// TestStartInstallsRefreshScript verifies Start stages the per-workspace
+// `refresh-models` script via WriteFile and installs it onto PATH executable
+// (sudo install -m 0755 → /usr/local/bin/refresh-models). The staged script must
+// bake in the resolved gateway URL, the minted scoped key, the default model, and
+// the NON-dynamic static models (named aliases ∪ cloud seed) — but NOT the live
+// local models, which the script fetches itself.
+func TestStartInstallsRefreshScript(test *testing.T) {
+	_ = seedProject(test, "app")
+	sandbox := &fakeSandbox{}
+	lister := fakeModelLister{models: []ollama.Model{{Name: "llama3.2:latest"}}}
+	manager := Manager{
+		Builder: &fakeBuilder{}, Sandbox: sandbox, Keys: &fakeKeyMinter{},
+		Ollama: lister, Now: func() string { return "t" },
+	}
+	if _, err := manager.Start("app"); err != nil {
+		test.Fatal(err)
+	}
+
+	staged, wrote := sandbox.written[refreshScriptStagePath]
+	if !wrote {
+		test.Fatalf("refresh-models script not staged at %s", refreshScriptStagePath)
+	}
+	script := string(staged)
+
+	// The staged script must be EXACTLY what agentcfg.RefreshScript produces for the
+	// resolved gateway, the minted key, the default model, the NON-dynamic static
+	// models (aliases ∪ cloud seed), and the project's Headroom knobs — pinning the
+	// full wiring (gateway URL, scoped key, default, static set, knobs). With a temp
+	// HOME and no runtime.yaml the gateway resolves to the local standalone default,
+	// and the default Headroom strategy yields its knobs.
+	routing := litellm.DefaultRouting()
+	keepTurns, outputBufferTokens := contextopt.HeadroomParams("")
+	wantScript, err := agentcfg.RefreshScript(
+		"http://host.microsandbox.internal:18787/v1",
+		"sk-fake-workspace-key",
+		routing.Default,
+		refreshStaticModels(routing),
+		keepTurns, outputBufferTokens,
+	)
+	if err != nil {
+		test.Fatal(err)
+	}
+	if script != string(wantScript) {
+		test.Fatalf("staged refresh-models script does not match RefreshScript for the resolved wiring")
+	}
+
+	// Sanity on the static set: the named aliases and cloud seed are baked in
+	// (plaintext STATIC_MODELS), but the live local model is NOT (the script fetches
+	// it from /ollama at run time).
+	if !strings.Contains(script, "claude-opus") {
+		test.Error("refresh-models static models missing a named alias")
+	}
+	if !strings.Contains(script, "anthropic/claude-opus-4-8") {
+		test.Error("refresh-models static models missing the cloud seed")
+	}
+	if strings.Contains(script, "\nollama/llama3.2:latest\n") {
+		test.Error("refresh-models must not bake in the live local models (it fetches them)")
+	}
+
+	// It must be installed onto PATH executable via sudo install -m 0755, then the
+	// staging copy removed.
+	installed := strings.Join(sandbox.execArgv, " ")
+	if !strings.Contains(installed, "install -m 0755") ||
+		!strings.Contains(installed, refreshScriptStagePath) ||
+		!strings.Contains(installed, refreshScriptBinPath) {
+		test.Errorf("refresh-models not installed executable onto PATH; exec was: %v", sandbox.execArgv)
+	}
+}
+
+// TestStartFailsWhenRefreshInstallFails: a non-zero exit from the install step
+// fails Start (and the orphan rollback tears the microVM down) — the user is not
+// left with a half-provisioned workspace silently missing refresh-models.
+func TestStartFailsWhenRefreshInstallFails(test *testing.T) {
+	_ = seedProject(test, "app")
+	sandbox := &fakeSandbox{execResult: ExecResult{ExitCode: 1, Stderr: "install: permission denied"}}
+	manager := newManager(&fakeBuilder{}, sandbox)
+	if _, err := manager.Start("app"); err == nil {
+		test.Fatal("Start must fail when the refresh-models install exits non-zero")
+	}
+	if !sandbox.destroyed {
+		test.Fatal("a failed refresh-models install must roll back the microVM (orphan rollback)")
 	}
 }
 

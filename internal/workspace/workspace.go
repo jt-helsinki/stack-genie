@@ -45,6 +45,16 @@ const (
 	tmuxConfGuestPath = "/home/workspace/.tmux.conf"
 )
 
+// refresh-models guest paths. The generated script is first written to a home
+// staging path (WriteFile runs as the `workspace` user and keeps the payload off
+// argv), then installed onto PATH at /usr/local/bin via passwordless sudo so the
+// user can run `refresh-models` from any session. The staging file is removed
+// after install.
+const (
+	refreshScriptStagePath = "/home/workspace/.cache/aip/refresh-models"
+	refreshScriptBinPath   = "/usr/local/bin/refresh-models"
+)
+
 // shellSessionName is the tmux session that backs the default interactive shell
 // (`ai shell` / `ai attach` with no session). Per-agent sessions are named after
 // the agent CLI (opencode, pi, …).
@@ -313,9 +323,90 @@ func (manager Manager) registerAgentProviders(name, project string, projectConfi
 		return err
 	}
 
+	// Install the in-VM `refresh-models` command so the user can re-pull the model
+	// picker (after `ollama pull`-ing new models on the host) WITHOUT restarting the
+	// workspace. It bakes the SAME gateway URL, scoped key, default, and Headroom
+	// knobs as the configs above, plus the NON-dynamic part of the picker (the named
+	// aliases ∪ the cloud seed) as its static models; at run time it fetches the
+	// installed local models from the gateway's /ollama route and merges them in,
+	// reproducing pickerModels' result. The minted key flows host→VM only.
+	if err := manager.installRefreshScript(name, gatewayURL, apiKey, routing, keepTurns, outputBufferTokens); err != nil {
+		return err
+	}
+
 	// Write the managed tmux.conf so the workspace session model is transparent
 	// (mouse scroll, hidden status bar) — the user never types a tmux command.
 	return manager.Sandbox.WriteFile(name, tmuxConfGuestPath, agentcfg.TmuxConfig())
+}
+
+// installRefreshScript generates the per-workspace `refresh-models` script and
+// installs it on PATH inside the running microVM at /usr/local/bin/refresh-models
+// (executable). The script's static models are the NON-dynamic part of the picker
+// (namedModels(routing) ∪ CloudModels) — the installed local models are fetched
+// live by the script itself. It is staged to a home path via WriteFile (payload
+// off argv) then moved into place with `sudo install -m 0755`, matching how the
+// workspace user gains PATH commands (passwordless sudo per the base image).
+//
+// hardware bring-up: the staging+install Exec and the script's own /ollama fetch
+// run only inside a live microVM; the host-side generation and the script logic
+// are unit-tested (internal/agentcfg) and the install wiring is unit-tested here
+// against the fake sandbox.
+func (manager Manager) installRefreshScript(name, gatewayURL, apiKey string, routing litellm.Routing, keepTurns, outputBufferTokens int) error {
+	staticModels := refreshStaticModels(routing)
+	script, err := agentcfg.RefreshScript(gatewayURL, apiKey, routing.Default, staticModels, keepTurns, outputBufferTokens)
+	if err != nil {
+		return err
+	}
+	if err := manager.Sandbox.WriteFile(name, refreshScriptStagePath, script); err != nil {
+		return err
+	}
+	// Move the staged script onto PATH, executable, then drop the staging copy. A
+	// single shell keeps it one exec; sudo is passwordless for the workspace user.
+	installCmd := fmt.Sprintf("sudo install -m 0755 %s %s && rm -f %s",
+		shellQuoteGuest(refreshScriptStagePath), shellQuoteGuest(refreshScriptBinPath), shellQuoteGuest(refreshScriptStagePath))
+	result, err := manager.Sandbox.Exec(name, []string{"sh", "-c", installCmd})
+	if err != nil {
+		return err
+	}
+	if result.ExitCode != 0 {
+		return fmt.Errorf("could not install refresh-models in workspace %q (exit %d): %s",
+			name, result.ExitCode, strings.TrimSpace(result.Stderr))
+	}
+	return nil
+}
+
+// refreshStaticModels is the non-dynamic part of the in-VM picker the refresh
+// script bakes in: the named aliases UNION the curated cloud seed, deduped+sorted
+// the same way pickerModels orders its output. The installed local Ollama models
+// are deliberately excluded — the script fetches those live so a refresh reflects
+// models pulled after the workspace started.
+func refreshStaticModels(routing litellm.Routing) []string {
+	seen := make(map[string]struct{})
+	models := make([]string, 0)
+	add := func(model string) {
+		if model == "" {
+			return
+		}
+		if _, ok := seen[model]; ok {
+			return
+		}
+		seen[model] = struct{}{}
+		models = append(models, model)
+	}
+	for _, alias := range namedModels(routing) {
+		add(alias)
+	}
+	for _, model := range agentcfg.CloudModels() {
+		add(model)
+	}
+	sort.Strings(models)
+	return models
+}
+
+// shellQuoteGuest single-quotes a guest path for safe embedding in a `sh -c`
+// command run inside the microVM (POSIX single-quote escaping).
+func shellQuoteGuest(value string) string {
+	return "'" + strings.ReplaceAll(value, "'", `'\''`) + "'"
 }
 
 // pickerModels builds the concrete model list the in-VM agent CLIs offer in their
