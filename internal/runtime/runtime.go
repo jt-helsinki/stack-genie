@@ -138,18 +138,16 @@ func ResolveGateway(aiPlatformHost string) (host string, port int, url string) {
 	return host, port, url
 }
 
-// HostGateway is the SDK-PINNED override for the address a workspace reaches the
-// host at (arch §29.2) — distinct from the working default. Egress + gateway
-// wiring already use the verified `host.microsandbox.internal:18787`
-// (egress.hostGatewayTarget / runtime.ResolveGateway); HostGateway exists only so
-// a future hardware-bring-up spike can pin a backend-specific value from the
-// Microsandbox SDK (HVF on macOS, KVM on Linux) and confirm it with a connectivity
-// probe. Until that spike runs it reports ("", false) and callers use the default.
-// It is a deliberate reserved seam, NOT dead code — do not remove without a
-// runtime.yaml migration (Info.HostGateway is a persisted field).
-func HostGateway(goos string) (address string, pinned bool) {
-	// Deferred: filled in by the §29.5 reachability spike on a provisioned host.
-	return "", false
+// HostGateway returns the pinned address a workspace microVM reaches the host at
+// (arch §29.2): the fixed Microsandbox guest→host DNS name DefaultGatewayHost
+// (host.microsandbox.internal), verified end-to-end during hardware bring-up. The
+// address is backend-independent — Microsandbox publishes the same name under HVF
+// on macOS and KVM on Linux — so goos does not vary it (the parameter is kept for
+// call-site symmetry with the other goos-parameterized detectors). pinned is always
+// true. Detect/DetectForRole persist this into Info.HostGateway (a runtime.yaml
+// field), so do not change the returned value without a runtime.yaml migration.
+func HostGateway(_ string) (address string, pinned bool) {
+	return DefaultGatewayHost, true
 }
 
 // sandboxAdapter adapts a runtime.Prober to a sandbox.Prober.
@@ -198,7 +196,7 @@ func DetectForRole(goos, goarch, role string, prober Prober, detectedAt string) 
 		return nil, ErrMsbMissing
 	}
 
-	hostGateway, _ := HostGateway(goos) // "" until pinned on hardware (§29.2)
+	hostGateway, _ := HostGateway(goos) // pinned host.microsandbox.internal (§29.2)
 	return &Info{
 		SchemaVersion:  SchemaVersion,
 		Role:           role,

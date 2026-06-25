@@ -4,13 +4,16 @@ import (
 	"fmt"
 
 	"github.com/jt-helsinki/ideal-robot/internal/config"
+	"github.com/jt-helsinki/ideal-robot/internal/runtime"
 )
 
 // hostGatewayTarget is the special msb target that resolves, from inside a
 // sandbox, to the host machine (verified with msb v0.5.7). It is the target a
 // "gateway"/empty HostService.Host maps to (an allow-listed service ON the host
-// machine), independent of where the model gateway itself lives.
-const hostGatewayTarget = "host.microsandbox.internal"
+// machine), independent of where the model gateway itself lives. It is the single
+// source of truth runtime.DefaultGatewayHost so the host-gateway DNS name can't
+// drift between the egress rules and the gateway/runtime wiring.
+const hostGatewayTarget = runtime.DefaultGatewayHost
 
 // gatewayToken is the placeholder in a HostService.Host that means "the host
 // machine" (mirrors config's unexported gatewayToken; see egress.Allow/Deny).

@@ -1481,13 +1481,14 @@ that gateway once, persists it in `config/runtime.yaml` as `host_gateway`
 (`internal/runtime`), and injects it — with each service port — into the
 workspace environment as `AI_PLATFORM_HOST` at start (§7, Ports).
 
-The gateway address is fixed by the Microsandbox network backend, so it is
-**pinned from the Microsandbox SDK during hardware bring-up and confirmed by a
-connectivity probe** — never guessed. `runtime.HostGateway(goos)` is the resolver
-seam and `Info.HostAddress()` returns the `AI_PLATFORM_HOST` environment override
-when set (e.g. the acceptance harness) else the resolved gateway. The same
-mechanism works on macOS (HVF) and Linux (KVM) — only the resolved value
-differs per backend.
+The gateway address is the **fixed, backend-independent Microsandbox guest→host
+DNS name `host.microsandbox.internal`** — Microsandbox publishes the same name
+under HVF on macOS and KVM on Linux, verified end-to-end during hardware bring-up.
+It is **pinned** in `runtime.HostGateway` (which returns
+`(DefaultGatewayHost, true)`) and persisted as `config/runtime.yaml`'s
+`host_gateway`; it is never guessed. `Info.HostAddress()` returns the
+`AI_PLATFORM_HOST` environment override when set (e.g. the acceptance harness) else
+the persisted `host_gateway`.
 
 The trusted platform host services (Headroom and the LiteLLM it forwards to) are
 reached directly at `AI_PLATFORM_HOST:<port>` — the agent sends its model calls to
@@ -1572,26 +1573,25 @@ The default-deny NetworkPolicy is **applied today**: `ai network` declares the
 project's `network` block and `ai start`/create translates it into
 `msb` net-rules (`egress.MsbNetworkArgs`) — the default-egress mode, the
 allow-listed host services, and the published-port maps — which the Microsandbox
-runtime enforces. The one piece still deferred to a provisioned host is pinning
-the §29.2 **host-gateway address** (`runtime.HostGateway` currently returns
-`("", false)`): allow-listed host services that use the `gateway` token cannot be
-resolved until that value is confirmed by the reachability spike below.
+runtime enforces. The §29.2 **host-gateway address** is now **pinned**:
+`runtime.HostGateway` returns the fixed `host.microsandbox.internal`, so
+`gateway`-token allow-listed host services resolve in every mode. The remaining
+deferred work is the **live host↔workspace reachability verification** below.
 
 * **Now (host-side + applied).** `ai network` manages the project's `network`
   block (egress posture + allow-listed host services + published ports) in
   `config.yaml`, and it is rendered into `msb` net-rules at workspace create. The
   egress policy fixture in the acceptance suite renders a known default-deny
-  policy so tests assert against a defined policy, not ambient host behavior.
-* **Hardware bring-up.** Pin the §29.2 host-gateway address from the Microsandbox
-  backend so `gateway`-token host services resolve, and verify host↔workspace
-  reachability end-to-end (the spike below).
+  policy so tests assert against a defined policy, not ambient host behavior. The
+  host-gateway address (§29.2) is pinned (`host.microsandbox.internal`).
+* **Hardware bring-up.** Verify host↔workspace reachability end-to-end (the spike
+  below).
 
-The §29.4 confinement guarantee holds either way — the remaining work is pinning
-the host-gateway address and the live host↔workspace reachability verification.
+The §29.4 confinement guarantee holds either way — the remaining work is the live
+host↔workspace reachability verification.
 
-A **reachability spike** pins the unknowns this
-section depends on (the host-gateway value of §29.2 and the SDK calls for policy
-+ port maps). It must demonstrate, on a provisioned host, that: (1) a workspace
+A **reachability spike** confirms, on a provisioned host, the SDK calls for policy
++ port maps and the pinned host-gateway path of §29.2. It must demonstrate that: (1) a workspace
 reaches an **allow-listed** host service (e.g. Postgres) via the gateway; (2) a
 **non-allow-listed** host/internet destination is **denied**; (3) a **published**
 guest port is reachable from the host; and (4) the trusted model gateway path
@@ -1660,8 +1660,8 @@ network:
 is the Microsandbox **NetworkPolicy**: workspace create translates this block into
 `msb` net-rules (`egress.MsbNetworkArgs`) — the allow-list entries, the
 default-egress mode, and the port maps — which the runtime enforces. (The
-`gateway` token resolves to the §29.2 host gateway, whose address is the one piece
-still pinned during hardware bring-up — see §29.5.) App-data connections
+`gateway` token resolves to the §29.2 host gateway, the pinned
+`host.microsandbox.internal` — see §29.5.) App-data connections
 (DB/Kafka/HTTP) go **direct** under this policy — they do not pass through the
 model gateway.
 

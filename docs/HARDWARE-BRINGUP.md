@@ -52,17 +52,17 @@ code.
 
 ### 2.1 Host-gateway pinning + networking reachability spike (arch §29.2, §29.5)
 
-The host↔workspace networking is the last "will it actually work" unknown.
-`runtime.HostGateway(goos)` currently returns `("", false)`; egress net-rules are
-already applied at create, but allow-listed host services that use the `gateway`
-token cannot resolve until this is pinned.
+The host↔workspace networking is the last "will it actually work" unknown. The
+host-gateway address is now pinned; egress net-rules are applied at create, and
+allow-listed host services that use the `gateway` token resolve to it in every mode.
 
-- [ ] **Pin the host gateway.** Find the gateway address of Microsandbox's
-      host-side userspace stack (the address the guest reaches the host at) from
-      the SDK; implement `runtime.HostGateway` to return it per `GOOS`, and have
-      `ai setup` persist it to `config/runtime.yaml` as `host_gateway`.
-      `Info.HostAddress()` already prefers the `AI_PLATFORM_HOST` env override,
-      else this value.
+- [x] **Host gateway pinned.** The guest→host address is the fixed,
+      backend-independent Microsandbox DNS name `host.microsandbox.internal` (the
+      same under HVF on macOS and KVM on Linux, verified end-to-end during bring-up).
+      `runtime.HostGateway(_)` returns `(DefaultGatewayHost, true)`, Detect persists
+      it to `config/runtime.yaml` as `host_gateway`, and `egress`'s host-gateway
+      target derives from the same `runtime.DefaultGatewayHost`. `Info.HostAddress()`
+      prefers the `AI_PLATFORM_HOST` env override, else this value.
 - [ ] **Prove the four properties** (these make "it works" + "egress is confined"
       falsifiable) on a live host:
   1. a workspace reaches an **allow-listed** host service (start a host Postgres,

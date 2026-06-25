@@ -56,6 +56,14 @@ func TestDetectHappyPath(test *testing.T) {
 	if !info.Microsandbox.Available || info.Microsandbox.Virtualization != "hvf" {
 		test.Fatalf("microsandbox: %+v", info)
 	}
+	// Detect now persists the pinned host-gateway DNS name, and the resolved
+	// gateway URL is unchanged for users (standalone → host.microsandbox.internal:18787).
+	if info.HostGateway != DefaultGatewayHost {
+		test.Fatalf("HostGateway = %q, want %q", info.HostGateway, DefaultGatewayHost)
+	}
+	if host, port, url := ResolveGateway(info.HostAddress()); host != DefaultGatewayHost || port != DefaultGatewayPort || url != "http://host.microsandbox.internal:18787/v1" {
+		test.Fatalf("resolved gateway = %s:%d %q, want standalone default", host, port, url)
+	}
 	if err := Verify(info); err != nil {
 		test.Fatalf("verify should pass: %v", err)
 	}
@@ -335,12 +343,12 @@ func TestResolveGateway(test *testing.T) {
 	}
 }
 
-func TestHostGatewayDeferredUntilHardware(test *testing.T) {
-	// The concrete gateway is pinned from the Microsandbox SDK on hardware; until
-	// then it is reported unpinned so callers fall back to the env override.
+func TestHostGatewayPinned(test *testing.T) {
+	// The host-gateway address is the fixed, backend-independent Microsandbox
+	// guest→host DNS name, pinned regardless of goos (HVF on macOS, KVM on Linux).
 	for _, goos := range []string{"darwin", "linux"} {
-		if address, pinned := HostGateway(goos); pinned || address != "" {
-			test.Errorf("HostGateway(%q) = (%q,%v), want (\"\",false) pre-hardware", goos, address, pinned)
+		if address, pinned := HostGateway(goos); !pinned || address != DefaultGatewayHost {
+			test.Errorf("HostGateway(%q) = (%q,%v), want (%q,true)", goos, address, pinned, DefaultGatewayHost)
 		}
 	}
 }

@@ -6,12 +6,24 @@ import (
 	"testing"
 
 	"github.com/jt-helsinki/ideal-robot/internal/config"
+	"github.com/jt-helsinki/ideal-robot/internal/runtime"
 )
 
 const (
 	testGatewayHost = "host.microsandbox.internal"
 	testGatewayPort = 18787
 )
+
+// TestHostGatewayTargetMatchesRuntime guards against the egress host-gateway
+// target drifting from the single source of truth, runtime.DefaultGatewayHost
+// (which runtime.HostGateway pins). hostGatewayTarget derives from it directly,
+// so this is a belt-and-braces check that the consolidation holds.
+func TestHostGatewayTargetMatchesRuntime(t *testing.T) {
+	if hostGatewayTarget != runtime.DefaultGatewayHost {
+		t.Fatalf("hostGatewayTarget = %q, want runtime.DefaultGatewayHost %q",
+			hostGatewayTarget, runtime.DefaultGatewayHost)
+	}
+}
 
 func gatewayRule() []string {
 	return []string{"--net-rule", "allow:egress@host.microsandbox.internal:tcp:18787"}
