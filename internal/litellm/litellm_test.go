@@ -317,6 +317,72 @@ func TestStatusInfoHumanServedModels(test *testing.T) {
 	}
 }
 
+// TestDisplayModelsCollapsesWildcards verifies the display-set rule: concrete
+// models whose provider has a `<provider>/*` wildcard are dropped, the wildcards
+// themselves are kept, and concrete models with no wildcard are kept.
+func TestDisplayModelsCollapsesWildcards(test *testing.T) {
+	models := []Model{
+		{Name: "anthropic/*", Provider: "anthropic"},
+		{Name: "claude-opus", Provider: "anthropic"}, // covered by anthropic/* → dropped
+		{Name: "openai/*", Provider: "openai"},
+		{Name: "gpt-5.5", Provider: "openai"}, // covered by openai/* → dropped
+		{Name: "gemma4", Provider: "ollama"},  // no ollama/* wildcard → kept
+	}
+	display := DisplayModels(models)
+	got := make([]string, 0, len(display))
+	for _, model := range display {
+		got = append(got, model.Name)
+	}
+	want := []string{"anthropic/*", "openai/*", "gemma4"}
+	if len(got) != len(want) {
+		test.Fatalf("DisplayModels = %v, want %v", got, want)
+	}
+	for index := range want {
+		if got[index] != want[index] {
+			test.Fatalf("DisplayModels = %v, want %v", got, want)
+		}
+	}
+}
+
+// When every served model collapses under a wildcard, Human omits the served-models
+// block entirely but still shows the providers line.
+func TestStatusInfoHumanOmitsServedWhenAllCollapse(test *testing.T) {
+	info := StatusInfo{
+		Healthy:   true,
+		Default:   "gemma4",
+		Providers: []string{"anthropic", "openai"},
+		BaseURL:   "http://127.0.0.1:14000",
+		Models: []Model{
+			{Name: "anthropic/*", Provider: "anthropic"},
+			{Name: "claude-opus", Provider: "anthropic"},
+		},
+	}
+	rendered := info.Human()
+	// anthropic/* is a wildcard, so the block is NOT empty; the alias is collapsed.
+	if strings.Contains(rendered, "claude-opus") {
+		test.Errorf("alias under anthropic/* should be collapsed:\n%s", rendered)
+	}
+	if !strings.Contains(rendered, "Cloud providers") {
+		test.Errorf("providers line must remain:\n%s", rendered)
+	}
+
+	// A set that is ENTIRELY concrete-under-wildcard with no surviving entries (an
+	// empty display) drops the Served-models block.
+	allCollapsed := StatusInfo{
+		Healthy:   true,
+		Default:   "gemma4",
+		Providers: []string{"openai"},
+		BaseURL:   "http://127.0.0.1:14000",
+		Models:    []Model{}, // nothing served
+	}
+	if strings.Contains(allCollapsed.Human(), "Served models") {
+		test.Errorf("Served-models block must be omitted when the display set is empty:\n%s", allCollapsed.Human())
+	}
+	if !strings.Contains(allCollapsed.Human(), "Cloud providers") {
+		test.Errorf("providers line must remain even with no served models:\n%s", allCollapsed.Human())
+	}
+}
+
 func TestParseProviderError(test *testing.T) {
 	cases := map[string]string{
 		`{"error":{"message":"model 'ollama/nope' not found","type":"not_found"}}`: "model 'ollama/nope' not found",

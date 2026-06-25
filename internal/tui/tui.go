@@ -93,7 +93,7 @@ func Run(cwd string) error {
 	)
 	networkView := views.NewNetwork(currentRoot, egress.Get, egress.SetMode)
 	contextView := views.NewContext(currentRoot, contextopt.GetStatus, contextopt.SetStrategy, contextopt.SetCavemanLevel)
-	modelsView := views.NewModels(litellmClient.Status, litellmClient.Test, ollama.RealClient().List)
+	modelsView := views.NewModels(litellmClient.Status, litellmClient.Test, ollama.RealClient().List, ollama.RealClient().Show)
 	secretsView := views.NewSecrets(secretsBroker.List, secretsBroker.Remove)
 	// The Settings tab is a live theme picker plus read-only platform info.
 	// Applying a theme persists it and recolors the whole UI (ThemeChangedMsg).

@@ -2,7 +2,6 @@ package views
 
 import (
 	"errors"
-	"strconv"
 	"strings"
 	"testing"
 
@@ -14,12 +13,14 @@ import (
 // noLocalModels is a lister stub for tests that don't exercise the local store.
 func noLocalModels() ([]ollama.Model, error) { return nil, nil }
 
-// refresh drives the view's gateway-status refresh synchronously: it dispatches a
-// modelsRefreshedMsg via the fetch func (Init now batches refresh+list, so the old
-// view.Update(view.Init()()) no longer yields a single message).
-func refreshModels(view *Models) {
-	_ = view.Update(view.refreshCmd()())
-}
+// noShow is a Show fetcher stub for tests that don't open the describe pane.
+func noShow(string) (ollama.ModelInfo, error) { return ollama.ModelInfo{}, nil }
+
+// refreshModels drives the view's gateway-status refresh synchronously.
+func refreshModels(view *Models) { _ = view.Update(view.refreshCmd()()) }
+
+// listLocal drives the local-store list synchronously.
+func listLocal(view *Models) { _ = view.Update(view.listCmd()()) }
 
 func TestModelsPopulatesOnRefresh(test *testing.T) {
 	status := litellm.StatusInfo{
@@ -31,7 +32,7 @@ func TestModelsPopulatesOnRefresh(test *testing.T) {
 	view := NewModels(
 		func() (litellm.StatusInfo, error) { return status, nil },
 		func(string) (litellm.TestResult, error) { return litellm.TestResult{}, nil },
-		noLocalModels,
+		noLocalModels, noShow,
 	)
 
 	refreshModels(view)
@@ -51,36 +52,65 @@ func TestModelsPopulatesOnRefresh(test *testing.T) {
 	}
 }
 
-// The routing section renders the LIVE served-model list (with provider/mode) that
-// the status fetcher carries from the gateway — not a hardcoded list.
-func TestModelsRoutingShowsLiveServedModels(test *testing.T) {
+// The routing section renders the LIVE served-model list, collapsed via
+// DisplayModels: a concrete alias covered by its provider wildcard is dropped, the
+// wildcard + uncovered concrete models are kept.
+func TestModelsRoutingShowsCollapsedServedModels(test *testing.T) {
 	status := litellm.StatusInfo{
 		Healthy:   true,
 		Default:   "gemma4",
 		Providers: []string{"anthropic", "ollama"},
 		BaseURL:   "http://localhost:14000",
 		Models: []litellm.Model{
-			{Name: "gemma4", Provider: "ollama", Mode: "chat"},
-			{Name: "claude-opus", Provider: "anthropic"},
+			{Name: "anthropic/*", Provider: "anthropic"},
+			{Name: "claude-opus", Provider: "anthropic"}, // covered by anthropic/* → dropped
+			{Name: "gemma4", Provider: "ollama"},         // no ollama/* wildcard → kept
 		},
 	}
 	view := NewModels(
 		func() (litellm.StatusInfo, error) { return status, nil },
 		func(string) (litellm.TestResult, error) { return litellm.TestResult{}, nil },
-		noLocalModels,
+		noLocalModels, noShow,
 	)
 	refreshModels(view)
 
 	rendered := view.View()
-	for _, want := range []string{"served models (live)", "gemma4", "claude-opus", "ollama, chat", "(anthropic)"} {
+	for _, want := range []string{"served models (live)", "anthropic/*", "gemma4"} {
 		if !strings.Contains(rendered, want) {
 			test.Errorf("routing section missing %q:\n%s", want, rendered)
 		}
 	}
+	if strings.Contains(rendered, "claude-opus") {
+		test.Errorf("alias covered by anthropic/* should be collapsed away:\n%s", rendered)
+	}
 }
 
-// When the gateway is reachable but the model list could not be fetched, the
-// routing section shows the note instead of erroring.
+// When every served model collapses under a wildcard, the served-models heading is
+// omitted (the providers line already summarizes the wildcards).
+func TestModelsRoutingOmitsServedHeadingWhenEmpty(test *testing.T) {
+	status := litellm.StatusInfo{
+		Healthy:   true,
+		Default:   "gemma4",
+		Providers: []string{"anthropic"},
+		BaseURL:   "http://localhost:14000",
+		Models: []litellm.Model{
+			{Name: "anthropic/*", Provider: "anthropic"},
+		},
+	}
+	view := NewModels(
+		func() (litellm.StatusInfo, error) { return status, nil },
+		func(string) (litellm.TestResult, error) { return litellm.TestResult{}, nil },
+		noLocalModels, noShow,
+	)
+	refreshModels(view)
+	// anthropic/* is itself a wildcard, so it is kept and the heading shows.
+	if !strings.Contains(view.View(), "anthropic/*") {
+		test.Errorf("the wildcard itself should still render:\n%s", view.View())
+	}
+}
+
+// When the gateway is reachable but the model list could not be fetched, the routing
+// section shows the note instead of erroring.
 func TestModelsRoutingShowsModelListNote(test *testing.T) {
 	status := litellm.StatusInfo{
 		Healthy:    true,
@@ -91,7 +121,7 @@ func TestModelsRoutingShowsModelListNote(test *testing.T) {
 	view := NewModels(
 		func() (litellm.StatusInfo, error) { return status, nil },
 		func(string) (litellm.TestResult, error) { return litellm.TestResult{}, nil },
-		noLocalModels,
+		noLocalModels, noShow,
 	)
 	refreshModels(view)
 
@@ -104,7 +134,7 @@ func TestModelsSurfacesFetchError(test *testing.T) {
 	view := NewModels(
 		func() (litellm.StatusInfo, error) { return litellm.StatusInfo{}, errors.New("gateway down") },
 		func(string) (litellm.TestResult, error) { return litellm.TestResult{}, nil },
-		noLocalModels,
+		noLocalModels, noShow,
 	)
 	refreshModels(view)
 
@@ -126,7 +156,7 @@ func TestModelsTestActionInvokesTester(test *testing.T) {
 			tested = model
 			return litellm.TestResult{Model: model, OK: true, LatencyMS: 42}, nil
 		},
-		noLocalModels,
+		noLocalModels, noShow,
 	)
 	refreshModels(view)
 
@@ -152,7 +182,7 @@ func TestModelsTestFlashesFailure(test *testing.T) {
 		func(model string) (litellm.TestResult, error) {
 			return litellm.TestResult{Model: model, OK: false, Status: 401, Error: "invalid key"}, nil
 		},
-		noLocalModels,
+		noLocalModels, noShow,
 	)
 	refreshModels(view)
 
@@ -163,25 +193,26 @@ func TestModelsTestFlashesFailure(test *testing.T) {
 	}
 }
 
-func TestModelsLocalListMergesAndPulls(test *testing.T) {
+// The local store renders as a 4-column table (NAME · PARAMETERS · SIZE · STATUS),
+// and the selected installed model can be pulled.
+func TestModelsLocalTableAndPull(test *testing.T) {
 	view := NewModels(
 		func() (litellm.StatusInfo, error) { return litellm.StatusInfo{Healthy: true, Default: "gemma4"}, nil },
 		func(string) (litellm.TestResult, error) { return litellm.TestResult{}, nil },
 		func() ([]ollama.Model, error) {
 			return []ollama.Model{{Name: "gemma4:31b", Size: 1610612736, ParameterSize: "31B"}}, nil
 		},
+		noShow,
 	)
+	view.SetSize(80, 30)
 	refreshModels(view)
-	_ = view.Update(view.listCmd()()) // dispatch the local-store list
+	listLocal(view)
 
 	rendered := view.View()
-	for _, want := range []string{"Local model store", "installed", "gemma4:31b"} {
+	for _, want := range []string{"Local model store", "NAME", "PARAMETERS", "SIZE", "STATUS", "gemma4:31b", "31B", "installed"} {
 		if !strings.Contains(rendered, want) {
-			test.Errorf("local list missing %q:\n%s", want, rendered)
+			test.Errorf("local table missing %q:\n%s", want, rendered)
 		}
-	}
-	if strings.Contains(rendered, "available") {
-		test.Errorf("local list should be installed-only now (no \"available\"):\n%s", rendered)
 	}
 
 	// "p" requests an interactive pull (handled by the parent via ExecProcess).
@@ -201,12 +232,14 @@ func TestModelsRemoveSelectedInstalled(test *testing.T) {
 		func() ([]ollama.Model, error) {
 			return []ollama.Model{{Name: "llama3.2:3b", Size: 100, ParameterSize: "3B"}}, nil
 		},
+		noShow,
 	)
+	view.SetSize(80, 30)
 	refreshModels(view)
-	_ = view.Update(view.listCmd()())
+	listLocal(view)
 
-	// The cursor starts on the first row (installed, sorted first); "d" requests its
-	// removal.
+	// The cursor starts on the first row (the only installed model); "d" requests
+	// its removal.
 	cmd := view.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("d")})
 	if cmd == nil {
 		test.Fatal("pressing d on an installed model must return a remove-request command")
@@ -220,134 +253,117 @@ func TestModelsRemoveSelectedInstalled(test *testing.T) {
 	}
 }
 
-// manyLocalModels returns a lister of count installed models with predictable names
-// (model-00, model-01, …) so tests can assert which window is rendered.
-func manyLocalModels(count int) LocalModelLister {
-	return func() ([]ollama.Model, error) {
-		models := make([]ollama.Model, 0, count)
-		for index := 0; index < count; index++ {
-			name := "model-0" + strconv.Itoa(index)
-			if index >= 10 {
-				name = "model-" + strconv.Itoa(index)
-			}
-			models = append(models, ollama.Model{Name: name, Size: 100, ParameterSize: "1B"})
-		}
-		return models, nil
-	}
-}
-
-// loadedScrollView builds a Models view with count local models, a fixed pane size,
-// and the local list loaded — ready to drive cursor movement.
-func loadedScrollView(test *testing.T, count, width, height int) *Models {
-	test.Helper()
+// The table tracks selection across multiple rows: moving down selects the next
+// model, and that is the one acted on.
+func TestModelsTableSelectionTracksCursor(test *testing.T) {
 	view := NewModels(
-		func() (litellm.StatusInfo, error) { return litellm.StatusInfo{Healthy: true, Default: "gemma4"}, nil },
+		func() (litellm.StatusInfo, error) { return litellm.StatusInfo{Healthy: true}, nil },
 		func(string) (litellm.TestResult, error) { return litellm.TestResult{}, nil },
-		manyLocalModels(count),
+		func() ([]ollama.Model, error) {
+			return []ollama.Model{
+				{Name: "aaa:1b", Size: 100, ParameterSize: "1B"},
+				{Name: "bbb:7b", Size: 200, ParameterSize: "7B"},
+			}, nil
+		},
+		noShow,
 	)
+	view.SetSize(80, 30)
 	refreshModels(view)
-	_ = view.Update(view.listCmd()())
-	view.SetSize(width, height)
-	return view
-}
+	listLocal(view)
 
-func pressDown(view *Models) { _ = view.Update(tea.KeyMsg{Type: tea.KeyDown}) }
-func pressUp(view *Models)   { _ = view.Update(tea.KeyMsg{Type: tea.KeyUp}) }
-
-// Moving the cursor DOWN within the visible window does NOT change the offset; only
-// crossing the bottom edge advances it (by one per step).
-func TestModelsScrollEdgeRule(test *testing.T) {
-	view := loadedScrollView(test, 30, 80, 12)
-	visible := view.visibleRows()
-	if visible < 2 || visible >= 30 {
-		test.Fatalf("test needs a clipped window: visibleRows=%d of 30", visible)
+	selected, ok := view.selectedModel()
+	if !ok || selected.name != "aaa:1b" {
+		test.Fatalf("first row should be aaa:1b, got %q (ok=%v)", selected.name, ok)
 	}
-
-	// Move down to the LAST visible row — offset must stay 0 the whole way.
-	for step := 0; step < visible-1; step++ {
-		pressDown(view)
-		if view.offset != 0 {
-			test.Fatalf("offset moved to %d while cursor (%d) still inside the window", view.offset, view.cursor)
-		}
+	_ = view.Update(tea.KeyMsg{Type: tea.KeyDown})
+	selected, ok = view.selectedModel()
+	if !ok || selected.name != "bbb:7b" {
+		test.Fatalf("after down the second row should be bbb:7b, got %q (ok=%v)", selected.name, ok)
 	}
-	if view.cursor != visible-1 {
-		test.Fatalf("cursor = %d, want %d (last visible row)", view.cursor, visible-1)
-	}
-
-	// One more step crosses the bottom edge: offset advances by exactly one.
-	pressDown(view)
-	if view.offset != 1 {
-		test.Fatalf("offset = %d after crossing the bottom edge, want 1", view.offset)
-	}
-	pressDown(view)
-	if view.offset != 2 {
-		test.Fatalf("offset = %d after a second cross, want 2", view.offset)
+	cmd := view.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("d")})
+	msg, ok := cmd().(ModelRemoveRequestedMsg)
+	if !ok || msg.Name != "bbb:7b" {
+		test.Fatalf("d must remove the selected bbb:7b, got %+v (ok=%v)", msg, ok)
 	}
 }
 
-// Scrolling back UP past the top edge moves the offset back to the cursor.
-func TestModelsScrollUpEdgeRule(test *testing.T) {
-	view := loadedScrollView(test, 30, 80, 12)
-	visible := view.visibleRows()
-	// Drive the cursor to the bottom so the window is scrolled down.
-	for step := 0; step < 29; step++ {
-		pressDown(view)
-	}
-	if view.cursor != 29 {
-		test.Fatalf("cursor = %d, want 29 (bottom)", view.cursor)
-	}
-	bottomOffset := view.offset
-	if bottomOffset != 30-visible {
-		test.Fatalf("offset = %d at bottom, want %d", bottomOffset, 30-visible)
-	}
-	// Move up within the window — offset unchanged until we cross the top edge.
-	pressUp(view)
-	if view.offset != bottomOffset {
-		test.Fatalf("offset changed to %d moving up within the window", view.offset)
-	}
-}
+// enter opens the describe pane with the full /api/show detail (details block,
+// parameters, template, license, capabilities, model_info); esc closes it.
+func TestModelsEnterOpensDescribePane(test *testing.T) {
+	var shown string
+	view := NewModels(
+		func() (litellm.StatusInfo, error) { return litellm.StatusInfo{Healthy: true}, nil },
+		func(string) (litellm.TestResult, error) { return litellm.TestResult{}, nil },
+		func() ([]ollama.Model, error) {
+			return []ollama.Model{{Name: "llama3.2:3b", Size: 100, ParameterSize: "3B"}}, nil
+		},
+		func(name string) (ollama.ModelInfo, error) {
+			shown = name
+			return ollama.ModelInfo{
+				Name:              name,
+				Family:            "llama",
+				ParameterSize:     "3.2B",
+				QuantizationLevel: "Q4_K_M",
+				Format:            "gguf",
+				ParentModel:       "llama3.2",
+				Parameters:        "stop \"<|eot|>\"",
+				Template:          "{{ .Prompt }}",
+				License:           "MIT LICENSE TEXT",
+				Capabilities:      []string{"completion", "tools"},
+				ModelInfo:         map[string]any{"llama.context_length": float64(131072)},
+			}, nil
+		},
+	)
+	view.SetSize(80, 30)
+	refreshModels(view)
+	listLocal(view)
 
-// The rendered local list never exceeds visibleRows, and the cursor is always within
-// the rendered window — regardless of where the cursor sits.
-func TestModelsViewWindowFitsAndKeepsCursorVisible(test *testing.T) {
-	view := loadedScrollView(test, 30, 80, 12)
-	visible := view.visibleRows()
-	for target := 0; target < 30; target++ {
-		// Move the cursor to `target`.
-		for view.cursor < target {
-			pressDown(view)
-		}
-		rendered := view.View()
-		// Count rendered local rows (each prefixed with the padded name "model-").
-		shown := strings.Count(rendered, "model-")
-		if shown > visible {
-			test.Fatalf("cursor=%d: rendered %d local rows, exceeds visibleRows=%d", target, shown, visible)
-		}
-		// The cursor's row must appear in the rendered window.
-		name := view.rows[view.cursor].name
-		if !strings.Contains(rendered, name) {
-			test.Fatalf("cursor=%d: row %q not visible in window (offset=%d):\n%s", target, name, view.offset, rendered)
-		}
+	_ = view.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if !view.describe.active() {
+		test.Fatal("enter should open the describe pane")
 	}
-}
-
-// When the list is clipped, the view shows a "↑/↓ more" affordance.
-func TestModelsViewShowsScrollAffordanceWhenClipped(test *testing.T) {
-	view := loadedScrollView(test, 30, 80, 12)
-	if !strings.Contains(view.View(), "more") {
-		test.Errorf("clipped list should show a scroll affordance:\n%s", view.View())
+	if shown != "llama3.2:3b" {
+		test.Fatalf("Show fetched %q, want llama3.2:3b", shown)
 	}
-}
-
-// A short list that fits the pane is not clipped and renders every row.
-func TestModelsViewNoClipWhenFits(test *testing.T) {
-	view := loadedScrollView(test, 3, 80, 40)
 	rendered := view.View()
-	if strings.Count(rendered, "model-") != 3 {
-		test.Fatalf("a fitting list should render all 3 rows:\n%s", rendered)
+	for _, want := range []string{
+		"details", "llama", "3.2B", "Q4_K_M", "gguf", "llama3.2",
+		"parameters", "template", "license", "MIT LICENSE TEXT",
+		"capabilities", "completion, tools",
+		"model_info", "llama.context_length", "131072",
+	} {
+		if !strings.Contains(rendered, want) {
+			test.Errorf("describe pane missing %q:\n%s", want, rendered)
+		}
 	}
-	if strings.Contains(rendered, "↑/↓ more") {
-		test.Errorf("a fitting list should not show the scroll affordance:\n%s", rendered)
+
+	// esc closes the pane back to the table.
+	_ = view.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	if view.describe.active() {
+		test.Fatal("esc should close the describe pane")
+	}
+	if !strings.Contains(view.View(), "NAME") {
+		test.Errorf("after esc the table should be visible again:\n%s", view.View())
+	}
+}
+
+// The describe-pane Show error is surfaced, not fatal.
+func TestModelsDescribeSurfacesShowError(test *testing.T) {
+	view := NewModels(
+		func() (litellm.StatusInfo, error) { return litellm.StatusInfo{Healthy: true}, nil },
+		func(string) (litellm.TestResult, error) { return litellm.TestResult{}, nil },
+		func() ([]ollama.Model, error) {
+			return []ollama.Model{{Name: "gone:1b", Size: 100}}, nil
+		},
+		func(string) (ollama.ModelInfo, error) { return ollama.ModelInfo{}, errors.New("not found") },
+	)
+	view.SetSize(80, 30)
+	refreshModels(view)
+	listLocal(view)
+
+	_ = view.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if !strings.Contains(view.View(), "not found") {
+		test.Errorf("describe pane should surface the Show error:\n%s", view.View())
 	}
 }
 
@@ -355,13 +371,16 @@ func TestModelsRemoveWithNoModelsIsNoOp(test *testing.T) {
 	view := NewModels(
 		func() (litellm.StatusInfo, error) { return litellm.StatusInfo{Healthy: true}, nil },
 		func(string) (litellm.TestResult, error) { return litellm.TestResult{}, nil },
-		noLocalModels, // nothing installed → no rows to remove
+		noLocalModels, noShow, // nothing installed → no rows to remove
 	)
 	refreshModels(view)
-	_ = view.Update(view.listCmd()())
+	listLocal(view)
 
 	cmd := view.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("d")})
 	if cmd != nil {
-		test.Fatalf("d with no installed model must be a no-op, got %T", cmd())
+		test.Fatalf("d with no installed model must be a no-op (flash only), got %T", cmd())
+	}
+	if !strings.Contains(view.View(), "select an installed model") {
+		test.Errorf("expected a hint flash, got:\n%s", view.View())
 	}
 }

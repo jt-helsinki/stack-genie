@@ -153,9 +153,12 @@ func (client realClient) Remove(name string) error {
 	return nil
 }
 
-// showResponse is POST /api/show. Model metadata lives under details; some fields
-// are top-level.
+// showResponse is POST /api/show (verified against the current Ollama API docs):
+// top-level license/modelfile/parameters/template, a details object, the free-form
+// model_info map, and a capabilities list. Model metadata lives under details; the
+// modelfile blocks are top-level.
 type showResponse struct {
+	License    string `json:"license"`
 	Parameters string `json:"parameters"`
 	Template   string `json:"template"`
 	Details    struct {
@@ -163,6 +166,7 @@ type showResponse struct {
 		QuantizationLevel string `json:"quantization_level"`
 		Family            string `json:"family"`
 		Format            string `json:"format"`
+		ParentModel       string `json:"parent_model"`
 	} `json:"details"`
 	ModelInfo    map[string]any `json:"model_info"`
 	Capabilities []string       `json:"capabilities"`
@@ -196,8 +200,10 @@ func (client realClient) Show(name string) (ModelInfo, error) {
 		QuantizationLevel: parsed.Details.QuantizationLevel,
 		Family:            parsed.Details.Family,
 		Format:            parsed.Details.Format,
+		ParentModel:       parsed.Details.ParentModel,
 		Parameters:        parsed.Parameters,
 		Template:          parsed.Template,
+		License:           parsed.License,
 		Capabilities:      parsed.Capabilities,
 		ModelInfo:         parsed.ModelInfo,
 	}, nil

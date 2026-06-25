@@ -1,10 +1,12 @@
 package views
 
 import (
+	"fmt"
 	"sort"
 	"strconv"
 	"strings"
 
+	"github.com/charmbracelet/bubbles/table"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/jt-helsinki/ideal-robot/internal/litellm"
 	"github.com/jt-helsinki/ideal-robot/internal/ollama"
@@ -22,6 +24,11 @@ type ModelTester func(model string) (litellm.TestResult, error)
 // LocalModelLister returns the models in the local Ollama store. Injected; the
 // parent wires ollama.RealClient().List.
 type LocalModelLister func() ([]ollama.Model, error)
+
+// ModelShowFetcher returns the full /api/show detail for one local model.
+// Injected; the parent wires ollama.RealClient().Show. Nil is tolerated (the
+// describe pane then reports detail is unavailable).
+type ModelShowFetcher func(model string) (ollama.ModelInfo, error)
 
 type modelsRefreshedMsg struct {
 	status litellm.StatusInfo
@@ -44,56 +51,77 @@ type ModelPullRequestedMsg struct{}
 // terminal overlay (with its confirm prompt).
 type ModelRemoveRequestedMsg struct{ Name string }
 
-// localRow is one row of the local-store list: an INSTALLED model (the hardcoded
-// catalog was dropped — installable suggestions live behind `ai models pull`,
-// which opens the live popular picker).
-type localRow struct {
-	name      string
-	installed bool
-	size      int64
-	params    string
+// localModel is one installed model in the local store, sorted by name.
+type localModel struct {
+	name   string
+	size   int64
+	params string
 }
 
-// Models is the global model view: the LiteLLM gateway summary (reachability,
-// default model, providers, endpoint) plus the LOCAL Ollama store as a merged
-// installed+installable list. Keys: t test the default model, p pull a model
-// (select-or-custom, runs `ai models pull`), d remove the selected installed model.
+// Models is the global model view, Services-style: the LiteLLM gateway/routing
+// summary (reachability, default model, providers, endpoint, the collapsed served
+// models) rendered as a header above a bubbles table of the LOCAL Ollama store
+// (NAME · PARAMETERS · SIZE · STATUS). enter drills into the selected model's full
+// /api/show detail in a scrollable describe pane (esc closes); the action keys stay
+// live while the pane is open. Keys: enter details, p pull, d remove, t test, r refresh.
 type Models struct {
 	fetch    ModelStatusFetcher
 	test     ModelTester
 	list     LocalModelLister
+	show     ModelShowFetcher
 	status   litellm.StatusInfo
-	rows     []localRow
-	cursor   int
-	offset   int // scroll offset: index of the first VISIBLE local row
-	width    int // pane width  (from SetSize)
-	height   int // pane height (from SetSize)
+	table    table.Model
+	describe describePane
+	models   []localModel
+	width    int
+	height   int
 	flash    string
 	err      error
 	localErr error
 	loaded   bool
 }
 
-// maxServedModelsShown caps how many live served-model lines the routing section
-// renders before collapsing the rest into a "+K more" note, so the cursor-driven
-// local list always has room within the pane.
-const maxServedModelsShown = 6
-
 // NewModels builds the models view over the injected gateway status fetcher,
-// gateway tester, and local-store lister.
-func NewModels(fetch ModelStatusFetcher, test ModelTester, list LocalModelLister) *Models {
-	return &Models{fetch: fetch, test: test, list: list}
+// gateway tester, local-store lister, and per-model detail fetcher (/api/show).
+func NewModels(fetch ModelStatusFetcher, test ModelTester, list LocalModelLister, show ModelShowFetcher) *Models {
+	columns := []table.Column{
+		{Title: "NAME", Width: 30},
+		{Title: "PARAMETERS", Width: 12},
+		{Title: "SIZE", Width: 10},
+		{Title: "STATUS", Width: 10},
+	}
+	built := table.New(table.WithColumns(columns), table.WithFocused(true))
+	built.SetStyles(ui.TableStyles())
+	return &Models{fetch: fetch, test: test, list: list, show: show, table: built, describe: newDescribePane()}
 }
 
 func (view *Models) Title() string { return "Models" }
-func (view *Models) Hints() string { return "↑/↓ select · t test default · p pull · d remove" }
+func (view *Models) Hints() string {
+	return "↑/↓ select · enter details · p pull · d remove · t test · r refresh"
+}
 
-// SetSize records the pane dimensions so View() can window the local list to fit
-// (the routing/gateway header is fixed; the local list scrolls within what's left).
+// SetSize records the pane dimensions and fits the table to the body BELOW the
+// fixed routing/gateway header (mirroring how Services sizes its table within the
+// content area), then refits the describe pane.
 func (view *Models) SetSize(width, height int) {
 	view.width = width
 	view.height = height
-	view.clampScroll()
+	view.fitTable()
+	view.describe.setSize(width, height)
+}
+
+// fitTable sizes the table to the height left after the routing/gateway header and
+// re-applies the (theme-aware) styles so a live theme change is picked up.
+func (view *Models) fitTable() {
+	view.table.SetStyles(ui.TableStyles())
+	view.table.SetWidth(view.width)
+	if view.height > 0 {
+		tableHeight := view.height - view.headerLines()
+		if tableHeight < 1 {
+			tableHeight = 1
+		}
+		view.table.SetHeight(tableHeight)
+	}
 }
 
 // Init kicks off the first gateway-status fetch and local-store list.
@@ -120,9 +148,9 @@ func (view *Models) listCmd() tea.Cmd {
 	}
 }
 
-// Update advances the view: refreshes fill the gateway summary and local list; "t"
-// test-probes the default model; "p" requests an interactive pull; "d" requests
-// removal of the selected installed model; ↑/↓ move the local-list cursor.
+// Update advances the view: refreshes fill the gateway summary and the local table;
+// the action keys (enter/p/d/t/r) stay live even while the describe pane is open
+// (Services-style); other keys drive table navigation or scroll the pane.
 func (view *Models) Update(msg tea.Msg) tea.Cmd {
 	switch message := msg.(type) {
 	case modelsRefreshedMsg:
@@ -131,109 +159,83 @@ func (view *Models) Update(msg tea.Msg) tea.Cmd {
 		if message.err == nil {
 			view.status = message.status
 		}
+		view.fitTable() // the header height can change once the status arrives
 		return nil
 	case localModelsRefreshedMsg:
 		view.localErr = message.err
-		view.rows = installedRows(message.installed)
-		if view.cursor >= len(view.rows) {
-			view.cursor = 0
-		}
-		view.clampScroll()
+		view.models = installedModels(message.installed)
+		view.table.SetRows(modelRows(view.models))
 		return nil
 	case modelTestDoneMsg:
 		view.flash = modelTestFlash(message)
 		return view.refreshCmd()
 	case tea.KeyMsg:
-		switch message.String() {
-		case "up", "k":
-			if view.cursor > 0 {
-				view.cursor--
-				view.scrollToCursor()
-			}
-		case "down", "j":
-			if view.cursor < len(view.rows)-1 {
-				view.cursor++
-				view.scrollToCursor()
-			}
-		case "t":
-			model := view.status.Default
-			if model == "" {
-				view.flash = ui.Muted.Render("no default model to test")
-				return nil
-			}
-			view.flash = ui.Muted.Render("testing " + model + "…")
-			return view.testCmd(model)
-		case "p":
-			// Pull is the interactive select-or-custom flow + streaming progress;
-			// run it as the real `ai models pull` subprocess in the terminal overlay.
-			return func() tea.Msg { return ModelPullRequestedMsg{} }
-		case "d":
-			row, ok := view.selectedRow()
-			if !ok || !row.installed {
-				view.flash = ui.Muted.Render("select an installed model to remove")
-				return nil
-			}
-			name := row.name
-			return func() tea.Msg { return ModelRemoveRequestedMsg{Name: name} }
+		if cmd, handled := view.handleAction(message); handled {
+			return cmd
+		}
+		if view.describe.active() {
+			return view.describe.update(message)
 		}
 	}
-	return nil
+	var cmd tea.Cmd
+	view.table, cmd = view.table.Update(msg)
+	return cmd
 }
 
-func (view *Models) selectedRow() (localRow, bool) {
-	if view.cursor < 0 || view.cursor >= len(view.rows) {
-		return localRow{}, false
-	}
-	return view.rows[view.cursor], true
-}
-
-// visibleRows is how many local-list rows fit below the fixed routing/gateway
-// header within the pane. It is paneHeight minus the header lines (and the footer
-// hint line), floored at 1 so there is always at least one visible row. When the
-// pane height is unknown (0, e.g. before the first SetSize) it returns len(rows) so
-// nothing is clipped.
-func (view *Models) visibleRows() int {
-	if view.height <= 0 {
-		if len(view.rows) == 0 {
-			return 1
+// handleAction maps the action keys; the bool reports whether the key was an action
+// (so it is not also passed to the table for navigation). Action keys stay live
+// while the describe pane is open.
+func (view *Models) handleAction(key tea.KeyMsg) (tea.Cmd, bool) {
+	switch key.String() {
+	case "enter":
+		model, ok := view.selectedModel()
+		if !ok {
+			view.flash = ui.Muted.Render("no model selected")
+			return nil, true
 		}
-		return len(view.rows)
+		view.describe.show(view.describeModel(model.name))
+		return nil, true
+	case "t":
+		model := view.status.Default
+		if model == "" {
+			view.flash = ui.Muted.Render("no default model to test")
+			return nil, true
+		}
+		view.flash = ui.Muted.Render("testing " + model + "…")
+		view.describe.close()
+		return view.testCmd(model), true
+	case "p":
+		// Pull is the interactive select-or-custom flow + streaming progress; run it
+		// as the real `ai models pull` subprocess in the terminal overlay.
+		return func() tea.Msg { return ModelPullRequestedMsg{} }, true
+	case "d":
+		model, ok := view.selectedModel()
+		if !ok {
+			view.flash = ui.Muted.Render("select an installed model to remove")
+			return nil, true
+		}
+		name := model.name
+		return func() tea.Msg { return ModelRemoveRequestedMsg{Name: name} }, true
+	case "r":
+		view.flash = ui.Muted.Render("refreshing…")
+		view.describe.close()
+		return tea.Batch(view.refreshCmd(), view.listCmd()), true
 	}
-	available := view.height - view.headerLines() - footerHintLines
-	if available < 1 {
-		available = 1
-	}
-	return available
+	return nil, false
 }
 
-// scrollToCursor applies the edge-scroll rule: the offset only moves when the
-// cursor leaves the visible window. Cursor above the window top → offset = cursor;
-// cursor below the window bottom → offset = cursor - visibleRows + 1; otherwise the
-// offset stays put. Then it is clamped.
-func (view *Models) scrollToCursor() {
-	visible := view.visibleRows()
-	if view.cursor < view.offset {
-		view.offset = view.cursor
-	} else if view.cursor >= view.offset+visible {
-		view.offset = view.cursor - visible + 1
+// selectedModel returns the installed model in the highlighted table row.
+func (view *Models) selectedModel() (localModel, bool) {
+	row := view.table.SelectedRow()
+	if len(row) == 0 {
+		return localModel{}, false
 	}
-	view.clampScroll()
-}
-
-// clampScroll keeps the offset within [0, maxOffset] where maxOffset leaves the last
-// window of rows visible.
-func (view *Models) clampScroll() {
-	visible := view.visibleRows()
-	maxOffset := len(view.rows) - visible
-	if maxOffset < 0 {
-		maxOffset = 0
+	for _, model := range view.models {
+		if model.name == row[0] {
+			return model, true
+		}
 	}
-	if view.offset > maxOffset {
-		view.offset = maxOffset
-	}
-	if view.offset < 0 {
-		view.offset = 0
-	}
+	return localModel{}, false
 }
 
 func (view *Models) testCmd(model string) tea.Cmd {
@@ -244,15 +246,10 @@ func (view *Models) testCmd(model string) tea.Cmd {
 	}
 }
 
-// footerHintLines is the number of lines View() reserves below the local list (the
-// "installed models · …" hint plus, when present, a flash line). Kept fixed so the
-// header/visible-row math is deterministic.
-const footerHintLines = 1
-
-// header renders everything ABOVE the local list: the gateway/routing summary and
-// the "Local model store" heading (or its error/empty note). It is built once and
-// reused by View() and headerLines() so the line-count math stays in sync with what
-// is actually drawn.
+// header renders everything ABOVE the table: the gateway/routing summary (health,
+// default, providers, base url, the collapsed served-model list) and the "Local
+// model store" heading (or its error/empty note). Built once and reused by View()
+// and headerLines() so the table-sizing math stays in sync with what is drawn.
 func (view *Models) header() string {
 	var body strings.Builder
 	body.WriteString(ui.Heading.Render("Model gateway (LiteLLM routing)") + "\n")
@@ -268,75 +265,53 @@ func (view *Models) header() string {
 		body.WriteString(renderServedModels(view.status))
 	}
 	body.WriteString("\n" + ui.Heading.Render("Local model store (Ollama)") + "\n")
+	if view.localErr != nil {
+		body.WriteString(ui.Failure.Render(ui.IconFail+" "+view.localErr.Error()) +
+			"\n" + ui.Muted.Render("start it with `ai services start ollama`") + "\n")
+	} else if len(view.models) == 0 {
+		body.WriteString(ui.Muted.Render("no models in the local store (p to pull)") + "\n")
+	}
 	return body.String()
 }
 
-// headerLines counts the rendered header lines (used to size the local-list window).
-func (view *Models) headerLines() int {
-	return strings.Count(view.header(), "\n")
-}
+// headerLines counts the rendered header lines (used to size the table).
+func (view *Models) headerLines() int { return strings.Count(view.header(), "\n") }
 
-// View renders the gateway summary, then a WINDOW of the local-store list sized to
-// fit the pane (edge-scrolled via offset), and the latest test flash. Nothing
-// overflows the bordered body: the routing section caps its served-model list and
-// the local list only ever renders visibleRows rows.
+// View renders the describe pane when open (Services-style), else the routing/gateway
+// header above the local-store table, with the latest test flash.
 func (view *Models) View() string {
+	if view.describe.active() {
+		return view.describe.view()
+	}
 	if !view.loaded {
 		return ui.Muted.Render("loading model gateway status…")
 	}
 	var body strings.Builder
 	body.WriteString(view.header())
-
-	switch {
-	case view.localErr != nil:
-		body.WriteString(ui.Failure.Render(ui.IconFail+" "+view.localErr.Error()) +
-			"\n" + ui.Muted.Render("start it with `ai services start ollama`") + "\n")
-	case len(view.rows) == 0:
-		body.WriteString(ui.Muted.Render("no models in the local store (p to pull)") + "\n")
-	default:
-		view.clampScroll()
-		visible := view.visibleRows()
-		start := view.offset
-		end := start + visible
-		if end > len(view.rows) {
-			end = len(view.rows)
-		}
-		for index := start; index < end; index++ {
-			body.WriteString(renderLocalRow(view.rows[index], index == view.cursor) + "\n")
-		}
-		hint := "installed models · p to pull (popular picker) · d to remove"
-		if start > 0 || end < len(view.rows) {
-			// The list is clipped: show a subtle scroll affordance.
-			hint = "↑/↓ more · " + hint
-		}
-		body.WriteString(ui.Muted.Render(hint) + "\n")
+	if view.localErr == nil && len(view.models) > 0 {
+		body.WriteString(view.table.View())
 	}
-
 	if view.flash != "" {
 		body.WriteString("\n" + view.flash)
 	}
 	return body.String()
 }
 
-// renderServedModels renders the LIVE list of models the gateway serves (from
-// litellm.StatusInfo.Models, sourced from the gateway's /model/info endpoint — not
-// the hardcoded routing). When the gateway is reachable but the list could not be
-// fetched, the note is shown instead of erroring the view.
+// renderServedModels renders the LIVE list of models the gateway serves, collapsed
+// via litellm.DisplayModels so concrete models already covered by their provider's
+// `*/` wildcard are dropped (the providers line already summarizes the wildcards).
+// When the filtered set is empty, the heading is omitted entirely. When the gateway
+// is reachable but the list could not be fetched, the note is shown instead.
 func renderServedModels(status litellm.StatusInfo) string {
 	if !status.Healthy {
 		return ""
 	}
+	display := litellm.DisplayModels(status.Models)
 	var section strings.Builder
 	switch {
-	case len(status.Models) > 0:
+	case len(display) > 0:
 		section.WriteString(ui.Muted.Render("served models (live):") + "\n")
-		// Cap the rendered served models so the cursor-driven local list always has
-		// room within the pane; the remainder collapses into a "+K more" note.
-		shown := status.Models
-		if len(shown) > maxServedModelsShown {
-			shown = shown[:maxServedModelsShown]
-		}
-		for _, model := range shown {
+		for _, model := range display {
 			descriptor := model.Provider
 			if model.Mode != "" {
 				if descriptor != "" {
@@ -350,54 +325,112 @@ func renderServedModels(status litellm.StatusInfo) string {
 			}
 			section.WriteString(line + "\n")
 		}
-		if remaining := len(status.Models) - len(shown); remaining > 0 {
-			section.WriteString(ui.Muted.Render("  +"+strconv.Itoa(remaining)+" more") + "\n")
-		}
-	case status.ModelsNote != "":
+	case len(status.Models) == 0 && status.ModelsNote != "":
 		section.WriteString(ui.Muted.Render("served models: "+status.ModelsNote) + "\n")
 	}
 	return section.String()
 }
 
-func renderLocalRow(row localRow, selected bool) string {
-	marker := "  "
-	if selected {
-		marker = ui.Heading.Render("> ")
+// describeModel fetches the full /api/show detail for the named model and renders
+// every field Ollama exposes (details block, parameters, template, license,
+// capabilities, and the model_info map) into the describe pane.
+func (view *Models) describeModel(name string) string {
+	var body strings.Builder
+	body.WriteString(ui.Heading.Render(name) + "\n")
+	if view.show == nil {
+		body.WriteString(ui.Muted.Render("model detail is unavailable (no /api/show fetcher wired)"))
+		return body.String()
 	}
-	status := "available"
-	if row.installed {
-		status = "installed"
+	info, err := view.show(name)
+	if err != nil {
+		body.WriteString(ui.Failure.Render(ui.IconFail + " " + err.Error()))
+		return body.String()
 	}
-	size := "-"
-	if row.installed && row.size > 0 {
-		size = humanByteSize(row.size)
+	body.WriteString("\n" + ui.Heading.Render("details") + "\n")
+	body.WriteString(field("family", info.Family))
+	body.WriteString(field("parameter size", info.ParameterSize))
+	body.WriteString(field("quantization", info.QuantizationLevel))
+	body.WriteString(field("format", info.Format))
+	body.WriteString(field("parent model", info.ParentModel))
+	if len(info.Capabilities) > 0 {
+		body.WriteString(field("capabilities", strings.Join(info.Capabilities, ", ")))
 	}
-	params := row.params
-	if params == "" {
-		params = "-"
+	if len(info.ModelInfo) > 0 {
+		body.WriteString("\n" + ui.Heading.Render("model_info") + "\n")
+		keys := make([]string, 0, len(info.ModelInfo))
+		for key := range info.ModelInfo {
+			keys = append(keys, key)
+		}
+		sort.Strings(keys)
+		for _, key := range keys {
+			body.WriteString(field(key, valueString(info.ModelInfo[key])))
+		}
 	}
-	line := marker + padRight(row.name, 28) + "  " + padRight(status, 10) + "  " + padRight(size, 9) + "  " + params
-	if selected {
-		return ui.Success.Render(line)
+	if strings.TrimSpace(info.Parameters) != "" {
+		body.WriteString("\n" + ui.Heading.Render("parameters") + "\n")
+		body.WriteString(info.Parameters + "\n")
 	}
-	return line
+	if strings.TrimSpace(info.Template) != "" {
+		body.WriteString("\n" + ui.Heading.Render("template") + "\n")
+		body.WriteString(info.Template + "\n")
+	}
+	if strings.TrimSpace(info.License) != "" {
+		body.WriteString("\n" + ui.Heading.Render("license") + "\n")
+		body.WriteString(truncate(info.License, 2000) + "\n")
+	}
+	return body.String()
 }
 
-// installedRows maps the installed local-store models to rows, sorted by name.
-func installedRows(installed []ollama.Model) []localRow {
-	rows := make([]localRow, 0, len(installed))
-	for _, model := range installed {
-		rows = append(rows, localRow{name: model.Name, installed: true, size: model.Size, params: model.ParameterSize})
+// valueString renders a model_info value as a readable single line. Scalars print
+// cleanly; the rare non-scalar value (slice/map) falls back to %v.
+func valueString(value any) string {
+	switch typed := value.(type) {
+	case string:
+		return typed
+	case float64:
+		return strconv.FormatFloat(typed, 'g', -1, 64)
+	case bool:
+		return strconv.FormatBool(typed)
+	default:
+		return fmt.Sprintf("%v", value)
 	}
-	sort.Slice(rows, func(i, j int) bool { return rows[i].name < rows[j].name })
-	return rows
 }
 
-func padRight(value string, width int) string {
-	if len(value) >= width {
+// truncate clips an overlong string (e.g. a multi-KB license) to limit runes with a
+// trailing ellipsis note so the pane stays scrollable rather than enormous.
+func truncate(value string, limit int) string {
+	runes := []rune(value)
+	if len(runes) <= limit {
 		return value
 	}
-	return value + strings.Repeat(" ", width-len(value))
+	return string(runes[:limit]) + "\n… (truncated)"
+}
+
+// installedModels maps the installed local-store models to view rows, sorted by name.
+func installedModels(installed []ollama.Model) []localModel {
+	models := make([]localModel, 0, len(installed))
+	for _, model := range installed {
+		models = append(models, localModel{name: model.Name, size: model.Size, params: model.ParameterSize})
+	}
+	sort.Slice(models, func(i, j int) bool { return models[i].name < models[j].name })
+	return models
+}
+
+// modelRows builds the table rows in the column order NAME · PARAMETERS · SIZE · STATUS.
+func modelRows(models []localModel) []table.Row {
+	rows := make([]table.Row, 0, len(models))
+	for _, model := range models {
+		params := model.params
+		if params == "" {
+			params = "-"
+		}
+		size := "-"
+		if model.size > 0 {
+			size = humanByteSize(model.size)
+		}
+		rows = append(rows, table.Row{model.name, params, size, "installed"})
+	}
+	return rows
 }
 
 // humanByteSize formats a byte count as a compact binary-unit string (e.g. 1.5 GB).

@@ -345,6 +345,34 @@ type Model struct {
 	Mode     string `json:"mode,omitempty"`
 }
 
+// DisplayModels collapses the live served-model list to the set worth SHOWING a
+// human: it drops any concrete model whose provider already has a
+// `<provider>/*` wildcard entry, because a named alias (gemma4, claude-opus, …)
+// is just a concrete model under its provider's wildcard — listing both is
+// redundant. The wildcards themselves are kept, as are concrete models whose
+// provider has no wildcard. The input order is preserved.
+//
+// The full live list stays available on StatusInfo.Models (and in the --json
+// envelope); only the human/TUI rendering is filtered through this helper.
+func DisplayModels(models []Model) []Model {
+	hasWildcard := make(map[string]bool, len(models))
+	for _, model := range models {
+		if strings.HasSuffix(model.Name, "/*") {
+			hasWildcard[model.Provider] = true
+		}
+	}
+	display := make([]Model, 0, len(models))
+	for _, model := range models {
+		// Keep the wildcard entries themselves; drop concrete models already
+		// covered by their provider's wildcard.
+		if !strings.HasSuffix(model.Name, "/*") && hasWildcard[model.Provider] {
+			continue
+		}
+		display = append(display, model)
+	}
+	return display
+}
+
 // StatusInfo is the result of `ai models status` (CLI §8.1).
 type StatusInfo struct {
 	Healthy bool `json:"healthy"`
@@ -403,13 +431,17 @@ func (info StatusInfo) Human() string {
 		builder.WriteString("                  each needs a key once: `ai secrets set <PROVIDER>_API_KEY`\n")
 	}
 	// The LIVE served-model list, straight from the gateway (not the hardcoded
-	// routing). When the gateway is up but the list could not be fetched, show the
-	// note instead of an empty section rather than erroring the whole command.
-	builder.WriteString("\n")
+	// routing) — collapsed via DisplayModels so concrete models already covered by
+	// their provider's `*/` wildcard are dropped (the providers: line above already
+	// summarizes the wildcards). When the filtered set is empty, the whole block is
+	// omitted. When the gateway is up but the list could not be fetched, the note is
+	// shown instead of erroring the whole command.
+	display := DisplayModels(info.Models)
 	switch {
-	case len(info.Models) > 0:
+	case len(display) > 0:
+		builder.WriteString("\n")
 		builder.WriteString("Served models     (live from the gateway)\n")
-		for _, model := range info.Models {
+		for _, model := range display {
 			line := "                  " + model.Name
 			descriptor := model.Provider
 			if model.Mode != "" {
@@ -423,7 +455,8 @@ func (info StatusInfo) Human() string {
 			}
 			builder.WriteString(line + "\n")
 		}
-	case info.ModelsNote != "":
+	case len(info.Models) == 0 && info.ModelsNote != "":
+		builder.WriteString("\n")
 		builder.WriteString("Served models     " + info.ModelsNote + "\n")
 	}
 	probeModel := info.Default

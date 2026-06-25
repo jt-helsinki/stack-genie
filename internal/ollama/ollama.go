@@ -34,15 +34,21 @@ type PullProgress struct {
 }
 
 // ModelInfo is the metadata for one model (POST /api/show), surfaced by
-// `ai models show`.
+// `ai models show` and the `ai ui` Models describe pane. It captures the full set
+// of fields the /api/show response exposes: the details block (family,
+// parameter_size, quantization_level, format, parent_model), the modelfile
+// parameters/template/license blocks, the capabilities list, and the free-form
+// model_info map.
 type ModelInfo struct {
 	Name              string         `json:"name"`
 	ParameterSize     string         `json:"parameter_size,omitempty"`
 	QuantizationLevel string         `json:"quantization_level,omitempty"`
 	Family            string         `json:"family,omitempty"`
 	Format            string         `json:"format,omitempty"`
+	ParentModel       string         `json:"parent_model,omitempty"`
 	Parameters        string         `json:"parameters,omitempty"`
 	Template          string         `json:"template,omitempty"`
+	License           string         `json:"license,omitempty"`
 	Capabilities      []string       `json:"capabilities,omitempty"`
 	ModelInfo         map[string]any `json:"model_info,omitempty"`
 }
