@@ -502,8 +502,10 @@ func truncate(value string, limit int) string {
 // available-row describe pane. Dedup is by EXACT name: a catalog entry whose name is
 // already installed is dropped (shown once, as installed). Installed models with no
 // catalog match still appear. The result is ordered installed-first (alpha by name),
-// then available (alpha) — deterministic. When the catalog lookup failed (popErr),
-// only the installed rows are produced (installed-only degrade).
+// then the available group sorted ALPHABETICALLY by model name then ascending by
+// parameter size (matching the bundled snapshot's order) — deterministic. When the
+// catalog lookup failed (popErr), only the installed rows are produced
+// (installed-only degrade).
 func mergeModels(installed []ollama.Model, popular []ollama.PopularModel, popErr error) ([]localModel, map[string]ollama.PopularModel) {
 	installedNames := make(map[string]struct{}, len(installed))
 	installedRows := make([]localModel, 0, len(installed))
@@ -534,10 +536,65 @@ func mergeModels(installed []ollama.Model, popular []ollama.PopularModel, popErr
 				repoURL: candidate.RepoURL,
 			})
 		}
-		sort.Slice(availableRows, func(i, j int) bool { return availableRows[i].name < availableRows[j].name })
+		sortAvailableRows(availableRows)
 	}
 
 	return append(installedRows, availableRows...), catalog
+}
+
+// sortAvailableRows orders the installable rows ALPHABETICALLY by bare model name
+// (case-insensitive), then ascending by parameter size within a model (so
+// 270m < 1b < 3b < 70b), mirroring the bundled snapshot's order. The bare model name
+// is the row name up to any ":" tag.
+func sortAvailableRows(rows []localModel) {
+	sort.SliceStable(rows, func(left, right int) bool {
+		leftModel := bareModelName(rows[left].name)
+		rightModel := bareModelName(rows[right].name)
+		if leftModel != rightModel {
+			return leftModel < rightModel
+		}
+		leftSize := paramMagnitude(rows[left].params)
+		rightSize := paramMagnitude(rows[right].params)
+		if leftSize != rightSize {
+			return leftSize < rightSize
+		}
+		return rows[left].name < rows[right].name
+	})
+}
+
+// bareModelName returns the lowercased model name without its ":<size>" tag.
+func bareModelName(name string) string {
+	if colon := strings.IndexByte(name, ':'); colon >= 0 {
+		name = name[:colon]
+	}
+	return strings.ToLower(name)
+}
+
+// paramMagnitude converts a parameter-size label (e.g. "270m", "1.5b", "70b") into a
+// comparable magnitude in parameters so the within-model order is ascending. An
+// unparseable/empty label yields 0 (sorts first).
+func paramMagnitude(label string) float64 {
+	label = strings.TrimSpace(strings.ToLower(label))
+	if label == "" {
+		return 0
+	}
+	suffix := byte(0)
+	if last := label[len(label)-1]; last == 'm' || last == 'b' {
+		suffix = last
+		label = label[:len(label)-1]
+	}
+	value, err := strconv.ParseFloat(strings.TrimSpace(label), 64)
+	if err != nil {
+		return 0
+	}
+	switch suffix {
+	case 'm':
+		return value * 1e6
+	case 'b':
+		return value * 1e9
+	default:
+		return value
+	}
 }
 
 // modelRows builds the table rows in the column order NAME · PARAMETERS · SIZE · STATUS.
