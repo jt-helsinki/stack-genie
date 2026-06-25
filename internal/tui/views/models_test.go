@@ -13,6 +13,9 @@ import (
 // noLocalModels is a lister stub for tests that don't exercise the local store.
 func noLocalModels() ([]ollama.Model, error) { return nil, nil }
 
+// noPopular is a catalog stub for tests that don't exercise the installable list.
+func noPopular() ([]ollama.PopularModel, error) { return nil, nil }
+
 // noShow is a Show fetcher stub for tests that don't open the describe pane.
 func noShow(string) (ollama.ModelInfo, error) { return ollama.ModelInfo{}, nil }
 
@@ -32,7 +35,7 @@ func TestModelsPopulatesOnRefresh(test *testing.T) {
 	view := NewModels(
 		func() (litellm.StatusInfo, error) { return status, nil },
 		func(string) (litellm.TestResult, error) { return litellm.TestResult{}, nil },
-		noLocalModels, noShow,
+		noLocalModels, noPopular, noShow,
 	)
 
 	refreshModels(view)
@@ -70,7 +73,7 @@ func TestModelsRoutingShowsCollapsedServedModels(test *testing.T) {
 	view := NewModels(
 		func() (litellm.StatusInfo, error) { return status, nil },
 		func(string) (litellm.TestResult, error) { return litellm.TestResult{}, nil },
-		noLocalModels, noShow,
+		noLocalModels, noPopular, noShow,
 	)
 	refreshModels(view)
 
@@ -100,7 +103,7 @@ func TestModelsRoutingOmitsServedHeadingWhenEmpty(test *testing.T) {
 	view := NewModels(
 		func() (litellm.StatusInfo, error) { return status, nil },
 		func(string) (litellm.TestResult, error) { return litellm.TestResult{}, nil },
-		noLocalModels, noShow,
+		noLocalModels, noPopular, noShow,
 	)
 	refreshModels(view)
 	// anthropic/* is itself a wildcard, so it is kept and the heading shows.
@@ -121,7 +124,7 @@ func TestModelsRoutingShowsModelListNote(test *testing.T) {
 	view := NewModels(
 		func() (litellm.StatusInfo, error) { return status, nil },
 		func(string) (litellm.TestResult, error) { return litellm.TestResult{}, nil },
-		noLocalModels, noShow,
+		noLocalModels, noPopular, noShow,
 	)
 	refreshModels(view)
 
@@ -134,7 +137,7 @@ func TestModelsSurfacesFetchError(test *testing.T) {
 	view := NewModels(
 		func() (litellm.StatusInfo, error) { return litellm.StatusInfo{}, errors.New("gateway down") },
 		func(string) (litellm.TestResult, error) { return litellm.TestResult{}, nil },
-		noLocalModels, noShow,
+		noLocalModels, noPopular, noShow,
 	)
 	refreshModels(view)
 
@@ -156,7 +159,7 @@ func TestModelsTestActionInvokesTester(test *testing.T) {
 			tested = model
 			return litellm.TestResult{Model: model, OK: true, LatencyMS: 42}, nil
 		},
-		noLocalModels, noShow,
+		noLocalModels, noPopular, noShow,
 	)
 	refreshModels(view)
 
@@ -182,7 +185,7 @@ func TestModelsTestFlashesFailure(test *testing.T) {
 		func(model string) (litellm.TestResult, error) {
 			return litellm.TestResult{Model: model, OK: false, Status: 401, Error: "invalid key"}, nil
 		},
-		noLocalModels, noShow,
+		noLocalModels, noPopular, noShow,
 	)
 	refreshModels(view)
 
@@ -202,7 +205,7 @@ func TestModelsLocalTableAndPull(test *testing.T) {
 		func() ([]ollama.Model, error) {
 			return []ollama.Model{{Name: "gemma4:31b", Size: 1610612736, ParameterSize: "31B"}}, nil
 		},
-		noShow,
+		noPopular, noShow,
 	)
 	view.SetSize(80, 30)
 	refreshModels(view)
@@ -215,13 +218,17 @@ func TestModelsLocalTableAndPull(test *testing.T) {
 		}
 	}
 
-	// "p" requests an interactive pull (handled by the parent via ExecProcess).
+	// "p" pulls the SELECTED row's exact reference (handled by the parent via ExecProcess).
 	cmd := view.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("p")})
 	if cmd == nil {
 		test.Fatal("pressing p must return a pull-request command")
 	}
-	if _, ok := cmd().(ModelPullRequestedMsg); !ok {
+	msg, ok := cmd().(ModelPullRequestedMsg)
+	if !ok {
 		test.Fatalf("p must emit ModelPullRequestedMsg, got %T", cmd())
+	}
+	if msg.Name != "gemma4:31b" {
+		test.Fatalf("p must pull the selected row %q, got %q", "gemma4:31b", msg.Name)
 	}
 }
 
@@ -232,7 +239,7 @@ func TestModelsRemoveSelectedInstalled(test *testing.T) {
 		func() ([]ollama.Model, error) {
 			return []ollama.Model{{Name: "llama3.2:3b", Size: 100, ParameterSize: "3B"}}, nil
 		},
-		noShow,
+		noPopular, noShow,
 	)
 	view.SetSize(80, 30)
 	refreshModels(view)
@@ -265,7 +272,7 @@ func TestModelsTableSelectionTracksCursor(test *testing.T) {
 				{Name: "bbb:7b", Size: 200, ParameterSize: "7B"},
 			}, nil
 		},
-		noShow,
+		noPopular, noShow,
 	)
 	view.SetSize(80, 30)
 	refreshModels(view)
@@ -297,6 +304,7 @@ func TestModelsEnterOpensDescribePane(test *testing.T) {
 		func() ([]ollama.Model, error) {
 			return []ollama.Model{{Name: "llama3.2:3b", Size: 100, ParameterSize: "3B"}}, nil
 		},
+		noPopular,
 		func(name string) (ollama.ModelInfo, error) {
 			shown = name
 			return ollama.ModelInfo{
@@ -355,6 +363,7 @@ func TestModelsDescribeSurfacesShowError(test *testing.T) {
 		func() ([]ollama.Model, error) {
 			return []ollama.Model{{Name: "gone:1b", Size: 100}}, nil
 		},
+		noPopular,
 		func(string) (ollama.ModelInfo, error) { return ollama.ModelInfo{}, errors.New("not found") },
 	)
 	view.SetSize(80, 30)
@@ -371,7 +380,7 @@ func TestModelsRemoveWithNoModelsIsNoOp(test *testing.T) {
 	view := NewModels(
 		func() (litellm.StatusInfo, error) { return litellm.StatusInfo{Healthy: true}, nil },
 		func(string) (litellm.TestResult, error) { return litellm.TestResult{}, nil },
-		noLocalModels, noShow, // nothing installed → no rows to remove
+		noLocalModels, noPopular, noShow, // nothing installed → no rows to remove
 	)
 	refreshModels(view)
 	listLocal(view)
@@ -382,5 +391,203 @@ func TestModelsRemoveWithNoModelsIsNoOp(test *testing.T) {
 	}
 	if !strings.Contains(view.View(), "select an installed model") {
 		test.Errorf("expected a hint flash, got:\n%s", view.View())
+	}
+}
+
+// installedAndAvailable wires one installed model plus a popular catalog with a
+// matching variant (deduped → installed) and a non-installed variant (→ available).
+func installedAndAvailable(test *testing.T, show ModelShowFetcher) *Models {
+	test.Helper()
+	view := NewModels(
+		func() (litellm.StatusInfo, error) { return litellm.StatusInfo{Healthy: true, Default: "gemma4"}, nil },
+		func(string) (litellm.TestResult, error) { return litellm.TestResult{}, nil },
+		func() ([]ollama.Model, error) {
+			return []ollama.Model{{Name: "qwen2.5:7b", Size: 4700000000, ParameterSize: "7.6B"}}, nil
+		},
+		func() ([]ollama.PopularModel, error) {
+			return []ollama.PopularModel{
+				{Name: "qwen2.5:7b", Parameters: "7b", DownloadSize: 4700000000, RepoURL: "https://ollama.com/library/qwen2.5"}, // installed → deduped
+				{Name: "llama3.2:1b", Parameters: "1b", DownloadSize: 1300000000, RepoURL: "https://ollama.com/library/llama3.2", PullCount: "5M"},
+			}, nil
+		},
+		show,
+	)
+	view.SetSize(100, 40)
+	refreshModels(view)
+	listLocal(view)
+	return view
+}
+
+// The merged table shows installed first (with on-disk size + /api/tags params) then
+// available (with download size + catalog params); STATUS reflects each.
+func TestModelsMergesInstalledAndAvailable(test *testing.T) {
+	view := installedAndAvailable(test, noShow)
+
+	if len(view.models) != 2 {
+		test.Fatalf("merged rows = %d, want 2 (1 installed + 1 available, the matching variant deduped)", len(view.models))
+	}
+	// Installed first.
+	if view.models[0].name != "qwen2.5:7b" || !view.models[0].installed() {
+		test.Fatalf("row 0 should be installed qwen2.5:7b, got %+v", view.models[0])
+	}
+	if view.models[1].name != "llama3.2:1b" || view.models[1].installed() {
+		test.Fatalf("row 1 should be available llama3.2:1b, got %+v", view.models[1])
+	}
+	// The installed row's params come from /api/tags (7.6B), not the catalog (7b).
+	if view.models[0].params != "7.6B" {
+		test.Errorf("installed params = %q, want 7.6B (from /api/tags)", view.models[0].params)
+	}
+	// The available row's params + size come from the catalog.
+	if view.models[1].params != "1b" {
+		test.Errorf("available params = %q, want 1b (from the catalog)", view.models[1].params)
+	}
+	if view.models[1].size != 1300000000 {
+		test.Errorf("available size = %d, want the catalog download size", view.models[1].size)
+	}
+
+	rendered := view.View()
+	for _, want := range []string{"qwen2.5:7b", "installed", "llama3.2:1b", "available"} {
+		if !strings.Contains(rendered, want) {
+			test.Errorf("merged table missing %q:\n%s", want, rendered)
+		}
+	}
+}
+
+// A popular variant that is also installed appears exactly once, as installed.
+func TestModelsDedupesInstalledPopularVariant(test *testing.T) {
+	view := installedAndAvailable(test, noShow)
+
+	count := 0
+	var found localModel
+	for _, model := range view.models {
+		if model.name == "qwen2.5:7b" {
+			count++
+			found = model
+		}
+	}
+	if count != 1 {
+		test.Fatalf("qwen2.5:7b appears %d times, want 1 (deduped to installed)", count)
+	}
+	if !found.installed() {
+		test.Errorf("the deduped qwen2.5:7b row must be installed, got %q", found.status)
+	}
+}
+
+// p on an available row emits a pull request for THAT row's exact ref.
+func TestModelsPullAvailableRow(test *testing.T) {
+	view := installedAndAvailable(test, noShow)
+
+	// Move to the available row (row 1).
+	_ = view.Update(tea.KeyMsg{Type: tea.KeyDown})
+	selected, ok := view.selectedModel()
+	if !ok || selected.name != "llama3.2:1b" {
+		test.Fatalf("selected row = %q (ok=%v), want llama3.2:1b", selected.name, ok)
+	}
+	cmd := view.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("p")})
+	msg, ok := cmd().(ModelPullRequestedMsg)
+	if !ok || msg.Name != "llama3.2:1b" {
+		test.Fatalf("p must pull the selected available ref, got %+v (ok=%v)", msg, ok)
+	}
+}
+
+// enter on an available row shows CATALOG detail and never calls Show().
+func TestModelsEnterAvailableShowsCatalogNotShow(test *testing.T) {
+	showCalled := false
+	view := installedAndAvailable(test, func(string) (ollama.ModelInfo, error) {
+		showCalled = true
+		return ollama.ModelInfo{}, nil
+	})
+
+	_ = view.Update(tea.KeyMsg{Type: tea.KeyDown}) // to the available row
+	_ = view.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if showCalled {
+		test.Fatal("enter on an available row must NOT call /api/show")
+	}
+	if !view.describe.active() {
+		test.Fatal("enter should open the describe pane")
+	}
+	rendered := view.View()
+	for _, want := range []string{"llama3.2:1b", "not installed", "press p to pull", "catalog", "1b", "ollama.com/library/llama3.2"} {
+		if !strings.Contains(rendered, want) {
+			test.Errorf("available describe pane missing %q:\n%s", want, rendered)
+		}
+	}
+}
+
+// enter on an installed row DOES call Show() (the full /api/show detail path).
+func TestModelsEnterInstalledCallsShow(test *testing.T) {
+	var shown string
+	view := installedAndAvailable(test, func(name string) (ollama.ModelInfo, error) {
+		shown = name
+		return ollama.ModelInfo{Name: name, Family: "qwen"}, nil
+	})
+
+	_ = view.Update(tea.KeyMsg{Type: tea.KeyEnter}) // row 0 is installed
+	if shown != "qwen2.5:7b" {
+		test.Fatalf("enter on installed should Show %q, got %q", "qwen2.5:7b", shown)
+	}
+	if !strings.Contains(view.View(), "qwen") {
+		test.Errorf("installed describe pane should show the /api/show detail:\n%s", view.View())
+	}
+}
+
+// d on an available row is a no-op (flash only), and never a remove request.
+func TestModelsRemoveAvailableIsNoOp(test *testing.T) {
+	view := installedAndAvailable(test, noShow)
+
+	_ = view.Update(tea.KeyMsg{Type: tea.KeyDown}) // to the available row
+	cmd := view.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("d")})
+	if cmd != nil {
+		test.Fatalf("d on an available row must be a no-op, got %T", cmd())
+	}
+	if !strings.Contains(view.View(), "not installed") {
+		test.Errorf("expected a 'not installed' flash, got:\n%s", view.View())
+	}
+}
+
+// When Popular() fails, the view degrades to installed-only (no available rows).
+func TestModelsDegradesToInstalledOnlyWhenPopularFails(test *testing.T) {
+	view := NewModels(
+		func() (litellm.StatusInfo, error) { return litellm.StatusInfo{Healthy: true}, nil },
+		func(string) (litellm.TestResult, error) { return litellm.TestResult{}, nil },
+		func() ([]ollama.Model, error) {
+			return []ollama.Model{{Name: "gemma4:31b", Size: 100, ParameterSize: "31B"}}, nil
+		},
+		func() ([]ollama.PopularModel, error) { return nil, errors.New("snapshot broken") },
+		noShow,
+	)
+	view.SetSize(80, 30)
+	refreshModels(view)
+	listLocal(view)
+
+	if len(view.models) != 1 || !view.models[0].installed() {
+		test.Fatalf("expected installed-only degrade, got %+v", view.models)
+	}
+}
+
+// When Ollama is unreachable (List fails) the offline catalog still renders as
+// available rows, with an unreachable note.
+func TestModelsShowsCatalogWhenOllamaUnreachable(test *testing.T) {
+	view := NewModels(
+		func() (litellm.StatusInfo, error) { return litellm.StatusInfo{Healthy: true}, nil },
+		func(string) (litellm.TestResult, error) { return litellm.TestResult{}, nil },
+		func() ([]ollama.Model, error) { return nil, errors.New("connection refused") },
+		func() ([]ollama.PopularModel, error) {
+			return []ollama.PopularModel{{Name: "llama3.2:1b", Parameters: "1b", DownloadSize: 1300000000, RepoURL: "x"}}, nil
+		},
+		noShow,
+	)
+	view.SetSize(80, 30)
+	refreshModels(view)
+	listLocal(view)
+
+	if len(view.models) != 1 || view.models[0].installed() {
+		test.Fatalf("expected the offline catalog as one available row, got %+v", view.models)
+	}
+	rendered := view.View()
+	for _, want := range []string{"Ollama unreachable", "llama3.2:1b", "available"} {
+		if !strings.Contains(rendered, want) {
+			test.Errorf("unreachable view missing %q:\n%s", want, rendered)
+		}
 	}
 }

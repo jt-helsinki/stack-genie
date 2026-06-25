@@ -25,6 +25,11 @@ type ModelTester func(model string) (litellm.TestResult, error)
 // parent wires ollama.RealClient().List.
 type LocalModelLister func() ([]ollama.Model, error)
 
+// PopularModelLister returns the bundled popular-models catalog (installable
+// models). Injected; the parent wires ollama.Popular. Nil is tolerated (the view
+// then degrades to installed-only).
+type PopularModelLister func() ([]ollama.PopularModel, error)
+
 // ModelShowFetcher returns the full /api/show detail for one local model.
 // Injected; the parent wires ollama.RealClient().Show. Nil is tolerated (the
 // describe pane then reports detail is unavailable).
@@ -40,23 +45,42 @@ type modelTestDoneMsg struct {
 }
 type localModelsRefreshedMsg struct {
 	installed []ollama.Model
-	err       error
+	popular   []ollama.PopularModel
+	listErr   error
+	popErr    error
 }
 
-// ModelPullRequestedMsg asks the parent to run `ai models pull` live in the
-// terminal overlay (the interactive select-or-custom prompt + streaming progress).
-type ModelPullRequestedMsg struct{}
+// ModelPullRequestedMsg asks the parent to run `ai models pull <Name>` live in the
+// terminal overlay (streaming progress) for the SELECTED row's exact reference. An
+// "available" row installs it; an "installed" row re-pulls (updates) it.
+type ModelPullRequestedMsg struct{ Name string }
 
 // ModelRemoveRequestedMsg asks the parent to run `ai models rm <Name>` live in the
 // terminal overlay (with its confirm prompt).
 type ModelRemoveRequestedMsg struct{ Name string }
 
-// localModel is one installed model in the local store, sorted by name.
+// modelStatus distinguishes a model already in the local store from a catalog
+// model that is installable but not yet pulled.
+type modelStatus string
+
+const (
+	statusInstalled modelStatus = "installed"
+	statusAvailable modelStatus = "available"
+)
+
+// localModel is one row of the merged local-store table: an installed model (from
+// /api/tags) or an installable catalog model (from the popular snapshot). For an
+// installed row size is the on-disk size and repoURL is empty; for an available row
+// size is the download size and repoURL is the ollama.com/library page.
 type localModel struct {
-	name   string
-	size   int64
-	params string
+	name    string
+	size    int64
+	params  string
+	status  modelStatus
+	repoURL string
 }
+
+func (model localModel) installed() bool { return model.status == statusInstalled }
 
 // Models is the global model view, Services-style: the LiteLLM gateway/routing
 // summary (reachability, default model, providers, endpoint, the collapsed served
@@ -68,11 +92,13 @@ type Models struct {
 	fetch    ModelStatusFetcher
 	test     ModelTester
 	list     LocalModelLister
+	popular  PopularModelLister
 	show     ModelShowFetcher
 	status   litellm.StatusInfo
 	table    table.Model
 	describe describePane
 	models   []localModel
+	catalog  map[string]ollama.PopularModel // by exact name, for the available-row describe pane
 	width    int
 	height   int
 	flash    string
@@ -82,8 +108,9 @@ type Models struct {
 }
 
 // NewModels builds the models view over the injected gateway status fetcher,
-// gateway tester, local-store lister, and per-model detail fetcher (/api/show).
-func NewModels(fetch ModelStatusFetcher, test ModelTester, list LocalModelLister, show ModelShowFetcher) *Models {
+// gateway tester, local-store lister, installable-catalog lister (popular), and
+// per-model detail fetcher (/api/show).
+func NewModels(fetch ModelStatusFetcher, test ModelTester, list LocalModelLister, popular PopularModelLister, show ModelShowFetcher) *Models {
 	columns := []table.Column{
 		{Title: "NAME", Width: 30},
 		{Title: "PARAMETERS", Width: 12},
@@ -92,12 +119,12 @@ func NewModels(fetch ModelStatusFetcher, test ModelTester, list LocalModelLister
 	}
 	built := table.New(table.WithColumns(columns), table.WithFocused(true))
 	built.SetStyles(ui.TableStyles())
-	return &Models{fetch: fetch, test: test, list: list, show: show, table: built, describe: newDescribePane()}
+	return &Models{fetch: fetch, test: test, list: list, popular: popular, show: show, table: built, describe: newDescribePane()}
 }
 
 func (view *Models) Title() string { return "Models" }
 func (view *Models) Hints() string {
-	return "↑/↓ select · enter details · p pull · d remove · t test · r refresh"
+	return "↑/↓ select · enter details · p pull selected · d remove (installed) · t test · r refresh"
 }
 
 // SetSize records the pane dimensions and fits the table to the body BELOW the
@@ -137,14 +164,21 @@ func (view *Models) refreshCmd() tea.Cmd {
 	}
 }
 
+// listCmd fetches BOTH the installed store and the installable catalog. Each side
+// degrades independently: a failed List() still shows the offline catalog (with an
+// "Ollama unreachable" note), and a failed Popular() falls back to installed-only.
 func (view *Models) listCmd() tea.Cmd {
 	list := view.list
+	popular := view.popular
 	return func() tea.Msg {
-		if list == nil {
-			return localModelsRefreshedMsg{}
+		var msg localModelsRefreshedMsg
+		if list != nil {
+			msg.installed, msg.listErr = list()
 		}
-		installed, err := list()
-		return localModelsRefreshedMsg{installed: installed, err: err}
+		if popular != nil {
+			msg.popular, msg.popErr = popular()
+		}
+		return msg
 	}
 }
 
@@ -162,9 +196,10 @@ func (view *Models) Update(msg tea.Msg) tea.Cmd {
 		view.fitTable() // the header height can change once the status arrives
 		return nil
 	case localModelsRefreshedMsg:
-		view.localErr = message.err
-		view.models = installedModels(message.installed)
+		view.localErr = message.listErr
+		view.models, view.catalog = mergeModels(message.installed, message.popular, message.popErr)
 		view.table.SetRows(modelRows(view.models))
+		view.fitTable() // the local-store header (note line) can change height
 		return nil
 	case modelTestDoneMsg:
 		view.flash = modelTestFlash(message)
@@ -193,7 +228,13 @@ func (view *Models) handleAction(key tea.KeyMsg) (tea.Cmd, bool) {
 			view.flash = ui.Muted.Render("no model selected")
 			return nil, true
 		}
-		view.describe.show(view.describeModel(model.name))
+		// An installed model has /api/show detail; an available (not-yet-pulled)
+		// model would error on /api/show, so render its catalog metadata instead.
+		if model.installed() {
+			view.describe.show(view.describeModel(model.name))
+		} else {
+			view.describe.show(view.describeAvailable(model))
+		}
 		return nil, true
 	case "t":
 		model := view.status.Default
@@ -205,13 +246,24 @@ func (view *Models) handleAction(key tea.KeyMsg) (tea.Cmd, bool) {
 		view.describe.close()
 		return view.testCmd(model), true
 	case "p":
-		// Pull is the interactive select-or-custom flow + streaming progress; run it
-		// as the real `ai models pull` subprocess in the terminal overlay.
-		return func() tea.Msg { return ModelPullRequestedMsg{} }, true
+		// Pull the SELECTED row's exact reference: `ai models pull <ref>` (streaming
+		// progress in the terminal overlay). An available row installs it; an installed
+		// row re-pulls (updates). Run it as the real subprocess.
+		model, ok := view.selectedModel()
+		if !ok {
+			view.flash = ui.Muted.Render("select a model to pull")
+			return nil, true
+		}
+		name := model.name
+		return func() tea.Msg { return ModelPullRequestedMsg{Name: name} }, true
 	case "d":
 		model, ok := view.selectedModel()
 		if !ok {
 			view.flash = ui.Muted.Render("select an installed model to remove")
+			return nil, true
+		}
+		if !model.installed() {
+			view.flash = ui.Muted.Render(model.name + " is not installed (press p to pull)")
 			return nil, true
 		}
 		name := model.name
@@ -265,11 +317,15 @@ func (view *Models) header() string {
 		body.WriteString(renderServedModels(view.status))
 	}
 	body.WriteString("\n" + ui.Heading.Render("Local model store (Ollama)") + "\n")
+	// The table merges INSTALLED + INSTALLABLE rows. When Ollama is unreachable the
+	// installed status can't be read, but the offline catalog still lists installable
+	// models — so show the note yet keep the table.
 	if view.localErr != nil {
-		body.WriteString(ui.Failure.Render(ui.IconFail+" "+view.localErr.Error()) +
-			"\n" + ui.Muted.Render("start it with `ai services start ollama`") + "\n")
-	} else if len(view.models) == 0 {
-		body.WriteString(ui.Muted.Render("no models in the local store (p to pull)") + "\n")
+		body.WriteString(ui.Failure.Render(ui.IconFail+" Ollama unreachable: "+view.localErr.Error()) +
+			"\n" + ui.Muted.Render("installed status is unavailable — start it with `ai services start ollama`") + "\n")
+	}
+	if len(view.models) == 0 {
+		body.WriteString(ui.Muted.Render("no models to show (p to pull a reference)") + "\n")
 	}
 	return body.String()
 }
@@ -288,7 +344,7 @@ func (view *Models) View() string {
 	}
 	var body strings.Builder
 	body.WriteString(view.header())
-	if view.localErr == nil && len(view.models) > 0 {
+	if len(view.models) > 0 {
 		body.WriteString(view.table.View())
 	}
 	if view.flash != "" {
@@ -381,6 +437,41 @@ func (view *Models) describeModel(name string) string {
 	return body.String()
 }
 
+// describeAvailable renders the CATALOG metadata for a not-yet-installed model
+// (name, parameters, download size, repo URL) — /api/show is NOT called, as it
+// would error for a model that is not in the local store. Prefers the indexed
+// catalog entry (richer) and falls back to the row's own fields.
+func (view *Models) describeAvailable(model localModel) string {
+	candidate, ok := view.catalog[model.name]
+	if !ok {
+		candidate = ollama.PopularModel{
+			Name:         model.name,
+			Parameters:   model.params,
+			DownloadSize: model.size,
+			RepoURL:      model.repoURL,
+		}
+	}
+	var body strings.Builder
+	body.WriteString(ui.Heading.Render(candidate.Name) + "\n")
+	body.WriteString(ui.Muted.Render("not installed — press p to pull") + "\n")
+	body.WriteString("\n" + ui.Heading.Render("catalog") + "\n")
+	params := candidate.Parameters
+	if params == "" {
+		params = "-"
+	}
+	body.WriteString(field("parameters", params))
+	downloadSize := "unknown"
+	if candidate.DownloadSize > 0 {
+		downloadSize = humanByteSize(candidate.DownloadSize)
+	}
+	body.WriteString(field("download size", downloadSize))
+	body.WriteString(field("repo", candidate.RepoURL))
+	if candidate.PullCount != "" {
+		body.WriteString(field("pulls", candidate.PullCount))
+	}
+	return body.String()
+}
+
 // valueString renders a model_info value as a readable single line. Scalars print
 // cleanly; the rare non-scalar value (slice/map) falls back to %v.
 func valueString(value any) string {
@@ -406,14 +497,47 @@ func truncate(value string, limit int) string {
 	return string(runes[:limit]) + "\n… (truncated)"
 }
 
-// installedModels maps the installed local-store models to view rows, sorted by name.
-func installedModels(installed []ollama.Model) []localModel {
-	models := make([]localModel, 0, len(installed))
+// mergeModels merges the INSTALLED local-store models with the INSTALLABLE catalog
+// (popular) models into the table's row set, plus a name→catalog index for the
+// available-row describe pane. Dedup is by EXACT name: a catalog entry whose name is
+// already installed is dropped (shown once, as installed). Installed models with no
+// catalog match still appear. The result is ordered installed-first (alpha by name),
+// then available (alpha) — deterministic. When the catalog lookup failed (popErr),
+// only the installed rows are produced (installed-only degrade).
+func mergeModels(installed []ollama.Model, popular []ollama.PopularModel, popErr error) ([]localModel, map[string]ollama.PopularModel) {
+	installedNames := make(map[string]struct{}, len(installed))
+	installedRows := make([]localModel, 0, len(installed))
 	for _, model := range installed {
-		models = append(models, localModel{name: model.Name, size: model.Size, params: model.ParameterSize})
+		installedNames[model.Name] = struct{}{}
+		installedRows = append(installedRows, localModel{
+			name:   model.Name,
+			size:   model.Size,
+			params: model.ParameterSize,
+			status: statusInstalled,
+		})
 	}
-	sort.Slice(models, func(i, j int) bool { return models[i].name < models[j].name })
-	return models
+	sort.Slice(installedRows, func(i, j int) bool { return installedRows[i].name < installedRows[j].name })
+
+	catalog := make(map[string]ollama.PopularModel, len(popular))
+	availableRows := make([]localModel, 0, len(popular))
+	if popErr == nil {
+		for _, candidate := range popular {
+			catalog[candidate.Name] = candidate
+			if _, isInstalled := installedNames[candidate.Name]; isInstalled {
+				continue // dedup by exact name — already shown as installed
+			}
+			availableRows = append(availableRows, localModel{
+				name:    candidate.Name,
+				size:    candidate.DownloadSize,
+				params:  candidate.Parameters,
+				status:  statusAvailable,
+				repoURL: candidate.RepoURL,
+			})
+		}
+		sort.Slice(availableRows, func(i, j int) bool { return availableRows[i].name < availableRows[j].name })
+	}
+
+	return append(installedRows, availableRows...), catalog
 }
 
 // modelRows builds the table rows in the column order NAME · PARAMETERS · SIZE · STATUS.
@@ -428,7 +552,7 @@ func modelRows(models []localModel) []table.Row {
 		if model.size > 0 {
 			size = humanByteSize(model.size)
 		}
-		rows = append(rows, table.Row{model.name, params, size, "installed"})
+		rows = append(rows, table.Row{model.name, params, size, string(model.status)})
 	}
 	return rows
 }

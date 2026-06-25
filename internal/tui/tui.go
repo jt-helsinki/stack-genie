@@ -93,7 +93,7 @@ func Run(cwd string) error {
 	)
 	networkView := views.NewNetwork(currentRoot, egress.Get, egress.SetMode)
 	contextView := views.NewContext(currentRoot, contextopt.GetStatus, contextopt.SetStrategy, contextopt.SetCavemanLevel)
-	modelsView := views.NewModels(litellmClient.Status, litellmClient.Test, ollama.RealClient().List, ollama.RealClient().Show)
+	modelsView := views.NewModels(litellmClient.Status, litellmClient.Test, ollama.RealClient().List, ollama.Popular, ollama.RealClient().Show)
 	secretsView := views.NewSecrets(secretsBroker.List, secretsBroker.Remove)
 	// The Settings tab is a live theme picker plus read-only platform info.
 	// Applying a theme persists it and recolors the whole UI (ThemeChangedMsg).
@@ -347,9 +347,10 @@ func (application *app) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			[]string{"attach", message.Session, message.Project})
 
 	case views.ModelPullRequestedMsg:
-		// Pull is interactive (select-or-custom + streaming progress): run the real
-		// `ai models pull` live in the terminal overlay, then refresh the list.
-		return application, application.openTerminal("models pull", []string{"models", "pull"})
+		// Pull the SELECTED row's exact reference (streaming progress): run the real
+		// `ai models pull <ref>` live in the terminal overlay, then refresh the list.
+		return application, application.openTerminal(
+			"models pull "+message.Name, []string{"models", "pull", message.Name})
 
 	case views.ModelRemoveRequestedMsg:
 		// Remove confirms before deleting: run `ai models rm <name>` live in the
