@@ -386,3 +386,23 @@ func TestHostGatewayPinned(test *testing.T) {
 		}
 	}
 }
+
+// TestRequireUIAuth pins the role-based UI-auth policy: only a server requires
+// the web UIs to run with auth on (it binds 0.0.0.0 and is network-exposed);
+// standalone, client, and the empty/default role run open.
+func TestRequireUIAuth(test *testing.T) {
+	cases := []struct {
+		role string
+		want bool
+	}{
+		{RoleServer, true},
+		{RoleStandalone, false},
+		{RoleClient, false},
+		{"", false},
+	}
+	for _, testCase := range cases {
+		if got := RequireUIAuth(testCase.role); got != testCase.want {
+			test.Errorf("RequireUIAuth(%q) = %v, want %v", testCase.role, got, testCase.want)
+		}
+	}
+}

@@ -52,6 +52,17 @@ const (
 	RoleClient     = "client"
 )
 
+// RequireUIAuth reports whether this host's deployment role must run the web
+// UIs with authentication ON. It is true ONLY for the server role: a server
+// binds the service tier to 0.0.0.0 for remote clients, so its UIs are
+// network-exposed and MUST require a login. standalone and client (and the
+// empty/default role) bind to loopback and run open access (no UI login wall) —
+// a standalone user can opt into a LiteLLM password later via `ai litellm
+// password`.
+func RequireUIAuth(role string) bool {
+	return role == RoleServer
+}
+
 // Sentinel errors. Detect returns the missing-dependency ones (exit 3); Verify
 // returns the capability ones (exit 4).
 var (

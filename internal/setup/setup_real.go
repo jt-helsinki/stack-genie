@@ -612,20 +612,29 @@ func ensureHeadroom(prober runtime.Prober, containerRuntime string) error {
 // mismatch). Verified against the Open WebUI env reference (WEBUI_URL,
 // CORS_ALLOW_ORIGIN). hardware bring-up: confirm the values against the live app
 // behind the subdomain (and that nginx forwards X-Forwarded-Proto once TLS lands).
-func ensureOpenWebUI(prober runtime.Prober, containerRuntime, bindHost, domain string) error {
+func ensureOpenWebUI(prober runtime.Prober, containerRuntime, bindHost, domain string, requireAuth bool) error {
 	_ = bindHost // internal-only: nginx (aip-proxy) fronts the UI on the host
 	if containerRunning(prober, containerRuntime, openWebUIContainer) {
 		return nil
 	}
 	_, _ = prober.Run(containerRuntime, "rm", "-f", openWebUIContainer)
 	publicURL := "http://chat." + domain + ":" + proxyHostPort // the chat.<domain> vhost
+	// Role-based UI auth (runtime.RequireUIAuth): a server binds 0.0.0.0 and is
+	// network-exposed, so WEBUI_AUTH is true (the first signup becomes the admin —
+	// ENABLE_SIGNUP is left at its default so that first account can register).
+	// standalone/client bind loopback and run OPEN (no login wall) for a smooth
+	// single-user local experience.
+	webuiAuth := "false"
+	if requireAuth {
+		webuiAuth = "true"
+	}
 	args := []string{
 		"run", "-d", "--name", openWebUIContainer,
 		"--network", platformNetwork,
 		"-v", openWebUIVolume + ":/app/backend/data",
 		"-e", "OPENAI_API_BASE_URL=" + openWebUITargetURL,
 		"-e", "ENABLE_OLLAMA_API=false",
-		"-e", "WEBUI_AUTH=true",
+		"-e", "WEBUI_AUTH=" + webuiAuth,
 		// Reverse-proxy public URL + matching CORS origin so links + websockets work
 		// behind the chat.<domain> vhost (hardware bring-up: confirm against the app).
 		"-e", "WEBUI_URL=" + publicURL,
@@ -695,8 +704,17 @@ func searxngSecret() (string, error) {
 // reverse-proxy seeds (APP_BIND=0.0.0.0, APP_PUBLIC_URL=http://odysseus.<domain>:18787,
 // SECURE_COOKIES=false until TLS) are best-effort — the exact env names are NOT
 // confirmable against the app's docs here, so they are flagged hardware bring-up.
-func ensureOdysseus(prober runtime.Prober, containerRuntime, bindHost, domain string) error {
-	_ = bindHost // internal-only: nginx (aip-proxy) fronts the app UI on the host
+// requireAuth carries this host's role-based UI-auth policy (true for a server).
+// Odysseus configures its admin credentials IN-APP at /setup — the platform
+// CANNOT set its password — so requireAuth does NOT inject a password; it is kept
+// for call-site symmetry with ensureOpenWebUI and documents that a server's
+// network-exposed Odysseus MUST have its auth configured in-app (surfaced as a
+// server-mode note in setup output and `ai doctor`). AUTH_ENABLED stays true so
+// the app gates on its own login; SECURE_COOKIES stays false until TLS terminates
+// at nginx (we serve plain http :18787 today — hardware bring-up to flip on TLS).
+func ensureOdysseus(prober runtime.Prober, containerRuntime, bindHost, domain string, requireAuth bool) error {
+	_ = bindHost    // internal-only: nginx (aip-proxy) fronts the app UI on the host
+	_ = requireAuth // platform cannot set Odysseus's password; auth is configured in-app (/setup)
 	// Companions first (internal-only; Odysseus reaches them by name on aip-net).
 	if !containerRunning(prober, containerRuntime, chromadbContainer) {
 		_, _ = prober.Run(containerRuntime, "rm", "-f", chromadbContainer)
@@ -1035,6 +1053,29 @@ func litellmHasDatabaseURL(prober runtime.Prober, containerRuntime string) bool 
 	return litellmEnvSet(prober, containerRuntime, "DATABASE_URL")
 }
 
+// CurrentLiteLLMMasterKey returns the LITELLM_MASTER_KEY of the running LiteLLM
+// container, or "" if unset / no container / no runtime. It is the SAME source
+// RelaunchLiteLLMWithAuth and LiteLLMUISecured read, so `ai litellm password` can
+// reuse an existing master key (and only mint a new one when there is none)
+// rather than rotating it on every password change.
+func CurrentLiteLLMMasterKey() string {
+	containerRuntime, err := runtime.ContainerRuntimeName(runtime.RealProber())
+	if err != nil {
+		return ""
+	}
+	return litellmEnvValue(runtime.RealProber(), containerRuntime.Name, "LITELLM_MASTER_KEY")
+}
+
+// LiteLLMRunning reports whether the LiteLLM gateway container is up — used by
+// `ai litellm password` to fail fast (exit 3) when the platform isn't set up.
+func LiteLLMRunning() bool {
+	containerRuntime, err := runtime.ContainerRuntimeName(runtime.RealProber())
+	if err != nil {
+		return false
+	}
+	return containerRunning(runtime.RealProber(), containerRuntime.Name, litellmContainer)
+}
+
 // LiteLLMUISecured reports whether the LiteLLM container already has a non-empty
 // UI password set, so `ai setup` does not re-prompt for it on every run.
 func LiteLLMUISecured() bool {
@@ -1101,6 +1142,21 @@ func currentBindHost() string {
 		return "0.0.0.0"
 	}
 	return "127.0.0.1"
+}
+
+// currentRequireUIAuth returns the role-based UI-auth policy for this host's
+// persisted deployment role (runtime.RequireUIAuth): true for a server (its UIs
+// are network-exposed on 0.0.0.0 and must require a login), false otherwise
+// (standalone/client run open). It is the requireAuth source for the
+// Reconcile/Control ensure* paths, which do not receive it from their callers; a
+// missing/unreadable runtime.yaml falls back to false (open, the standalone
+// default).
+func currentRequireUIAuth() bool {
+	info, err := runtime.Load()
+	if err != nil || info == nil {
+		return false
+	}
+	return runtime.RequireUIAuth(info.Role)
 }
 
 // reconcileDomain resolves the platform base domain the nginx UI vhosts hang off
@@ -1304,6 +1360,7 @@ func (services realServices) Reconcile(providerConfig, bindHost string, optional
 	// The platform base domain the nginx UI vhosts + the apps' reverse-proxy public
 	// URLs hang off (runtime.yaml domain, default aip.local).
 	domain := reconcileDomain()
+	requireUIAuth := currentRequireUIAuth()
 	// Optional services: reconciled ONLY when enabled. These run on the host,
 	// outside the workspace sandbox, so they are opt-in (chosen at `ai setup`).
 	// They are brought up BEFORE the nginx proxy so nginx can front their UIs —
@@ -1311,13 +1368,13 @@ func (services realServices) Reconcile(providerConfig, bindHost string, optional
 	// to start if the upstream container were absent.
 	if slices.Contains(optional, "open-webui") {
 		progress("  • open-webui (chat UI → LiteLLM)…")
-		if err := ensureOpenWebUI(services.prober, containerRuntime.Name, bindHost, domain); err != nil {
+		if err := ensureOpenWebUI(services.prober, containerRuntime.Name, bindHost, domain, requireUIAuth); err != nil {
 			return nil, err
 		}
 	}
 	if slices.Contains(optional, "odysseus") {
 		progress("  • odysseus (AI workspace + ChromaDB/SearXNG/ntfy → LiteLLM)…")
-		if err := ensureOdysseus(services.prober, containerRuntime.Name, bindHost, domain); err != nil {
+		if err := ensureOdysseus(services.prober, containerRuntime.Name, bindHost, domain, requireUIAuth); err != nil {
 			return nil, err
 		}
 	}
@@ -1581,12 +1638,12 @@ func (services realServices) Control(action, service string) ([]ServiceStatus, e
 			func() error { return stopContainer(headroomContainer) }},
 		{"open-webui",
 			func() error {
-				return ensureOpenWebUI(services.prober, containerRuntime.Name, bindHost, reconcileDomain())
+				return ensureOpenWebUI(services.prober, containerRuntime.Name, bindHost, reconcileDomain(), currentRequireUIAuth())
 			},
 			func() error { return stopContainer(openWebUIContainer) }},
 		{"odysseus",
 			func() error {
-				return ensureOdysseus(services.prober, containerRuntime.Name, bindHost, reconcileDomain())
+				return ensureOdysseus(services.prober, containerRuntime.Name, bindHost, reconcileDomain(), currentRequireUIAuth())
 			},
 			func() error {
 				// Odysseus owns four containers — stop them all.

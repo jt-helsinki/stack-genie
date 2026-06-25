@@ -7,6 +7,7 @@ import (
 	"os"
 	"strings"
 
+	"github.com/jt-helsinki/ideal-robot/internal/envfile"
 	"github.com/jt-helsinki/ideal-robot/internal/output"
 	"github.com/jt-helsinki/ideal-robot/internal/ui"
 	"github.com/jt-helsinki/ideal-robot/internal/version"
@@ -49,6 +50,12 @@ func Execute() int {
 		PersistentPreRun: func(_ *cobra.Command, _ []string) {
 			emitter.JSON = flags.json
 			emitter.Plain = flags.plain
+			// Load ~/.ai-platform.env into this process's environment FIRST (before
+			// any command runs), so persisted platform secrets (UI_PASSWORD,
+			// LITELLM_MASTER_KEY) are present for the container env-passthrough
+			// launches — WITHOUT the user having to edit their shell rc. Existing
+			// env wins (the file only fills gaps); a missing file is a no-op.
+			_ = envfile.Load()
 			// Apply the persisted UI theme so every command's prompts, forms, and
 			// headings match the user's choice (falls back to the default theme).
 			_ = ui.Apply(ui.LoadThemeName())
@@ -101,6 +108,7 @@ func Execute() int {
 		newSessionsCmd(emitter, &exitCode),
 		// Other top-level commands.
 		newServicesCmd(emitter, &exitCode),
+		newLiteLLMCmd(emitter, &exitCode),
 		newSecretsCmd(emitter, &exitCode),
 		newModelsCmd(emitter, &exitCode),
 		newContextCmd(emitter, &exitCode),

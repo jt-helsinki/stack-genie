@@ -101,7 +101,11 @@ func doctorDomain() *doctor.DomainInfo {
 	} else if info.Role == runtime.RoleServer {
 		domainInfo.ServerReminder = "create DNS records (*." + domain +
 			" or per-host litellm./chat./odysseus." + domain +
-			") → this server's IP, and terminate a TLS cert at nginx"
+			") → this server's IP, and terminate a TLS cert at nginx. " +
+			"Server mode is network-exposed: the LiteLLM admin UI requires a password " +
+			"(set at `ai setup`, or `ai litellm password`), Open WebUI requires login " +
+			"(WEBUI_AUTH on), and — if Odysseus is enabled — you MUST configure its auth " +
+			"in-app at /setup (the platform cannot set it)"
 	}
 	return domainInfo
 }

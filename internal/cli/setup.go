@@ -13,6 +13,7 @@ import (
 
 	"github.com/charmbracelet/huh"
 	"github.com/charmbracelet/x/term"
+	"github.com/jt-helsinki/ideal-robot/internal/envfile"
 	"github.com/jt-helsinki/ideal-robot/internal/output"
 	"github.com/jt-helsinki/ideal-robot/internal/runtime"
 	"github.com/jt-helsinki/ideal-robot/internal/setup"
@@ -140,9 +141,8 @@ func newSetupCmd(em *output.Emitter, exit *int) *cobra.Command {
 			// --json/automation), so scripted/JSON setup stays non-interactive. The
 			// LiteLLM admin-UI password only matters where LiteLLM runs locally
 			// (standalone/server), so it is skipped in client mode.
-			if interactive && report.Runtime != nil && report.Runtime.Role != runtime.RoleClient {
-				_, _ = fmt.Fprintln(em.Err, "\nthe LiteLLM admin UI needs a password — press Enter to skip and set one later")
-				promptLiteLLMUIPassword(em, report.Runtime.ResolveDomain())
+			if report.Runtime != nil && report.Runtime.Role != runtime.RoleClient {
+				setupLiteLLMUIPassword(em, interactive, report.Runtime.Role, report.Runtime.ResolveDomain())
 			}
 			// Domain wiring: standalone points the UI subdomains at 127.0.0.1 in
 			// /etc/hosts (with consent + sudo, else a manual block); server prints the
@@ -415,15 +415,24 @@ func optionalServiceOptions() []huh.Option[string] {
 	return options
 }
 
-// promptLiteLLMUIPassword secures the LiteLLM admin UI: it asks for a password
-// (hidden), generates a master key, and relaunches the LiteLLM container with
-// both set (via the environment, never disk/argv). Skipped when the UI auth is
-// already provided through the environment. Best-effort: a blank entry or a
-// relaunch failure just prints a hint and continues. The chosen password is
-// never echoed; the generated master key is shown once (it is also the API key).
-func promptLiteLLMUIPassword(em *output.Emitter, domain string) {
-	// Already supplied via the environment (the standard LiteLLM .env pattern)?
-	// Then the container launch already picked them up — nothing to prompt.
+// setupLiteLLMUIPassword applies this host's role-based LiteLLM admin-UI auth
+// policy at the end of `ai setup` (runtime.RequireUIAuth):
+//
+//   - SERVER → the password is REQUIRED (the gateway binds 0.0.0.0 and is
+//     network-exposed). On a TTY we loop until a non-empty password is entered;
+//     non-interactively (or if the user keeps aborting) we GENERATE one rather
+//     than leave the server open. The short-circuits below (already secured /
+//     env-provided) still apply — those already secure it.
+//   - STANDALONE / CLIENT → we do NOT prompt at all (open local access; a user
+//     can opt into a password later with `ai litellm password`).
+//
+// It returns having either secured the UI or decided not to; it never fails
+// setup (best-effort), and reuses secureLiteLLMUI for the relaunch + persist
+// offer shared with `ai litellm password`.
+func setupLiteLLMUIPassword(em *output.Emitter, interactive bool, role, domain string) {
+	// Already supplied via the environment (the standard LiteLLM .env pattern, or
+	// auto-loaded from ~/.ai-platform.env)? The container launch already picked
+	// them up — nothing to do, for any role.
 	if os.Getenv("UI_PASSWORD") != "" && os.Getenv("LITELLM_MASTER_KEY") != "" {
 		return
 	}
@@ -432,14 +441,74 @@ func promptLiteLLMUIPassword(em *output.Emitter, domain string) {
 	if setup.LiteLLMUISecured() {
 		return
 	}
-	password, err := promptSecret("Set the LiteLLM admin UI password (leave blank to skip)", "", nil)
-	if err != nil || password == "" {
+
+	if !liteLLMPasswordRequiredAtSetup(role) {
+		// standalone/client: open access. Don't prompt — `ai litellm password`
+		// lets a user opt into one later.
 		return
 	}
-	masterKey, err := generateMasterKey()
-	if err != nil {
-		_, _ = fmt.Fprintf(em.Err, "warning: could not generate a LiteLLM master key: %s\n", err)
+
+	// Server: a password is REQUIRED. Obtain a non-empty one.
+	password := serverLiteLLMPassword(em, interactive)
+	if password == "" {
+		// Could not obtain a password (e.g. a generation failure was warned about).
 		return
+	}
+	secureLiteLLMUI(em, interactive, password, domain)
+}
+
+// liteLLMPasswordRequiredAtSetup is the pure role decision for whether `ai setup`
+// must collect a LiteLLM admin-UI password: ONLY the server role (its gateway is
+// network-exposed on 0.0.0.0). standalone/client run open access (a user opts in
+// later via `ai litellm password`). It is runtime.RequireUIAuth at the setup
+// site, factored out so the decision is unit-testable without the live container.
+func liteLLMPasswordRequiredAtSetup(role string) bool {
+	return runtime.RequireUIAuth(role)
+}
+
+// serverLiteLLMPassword obtains a non-empty LiteLLM admin-UI password for the
+// server role. On a TTY it loops until the user enters a non-empty value (a
+// server gateway must not be left open). Non-interactively — or if interactive
+// entry keeps failing/aborting — it GENERATES a strong random password so the
+// server is never left unauthenticated. Returns "" only when even generation
+// fails (warned to the caller).
+func serverLiteLLMPassword(em *output.Emitter, interactive bool) string {
+	if interactive {
+		_, _ = fmt.Fprintln(em.Err, "\nServer mode: the LiteLLM admin UI is network-exposed and MUST have a password.")
+		for attempt := 0; attempt < 3; attempt++ {
+			password, err := promptSecret("Set the LiteLLM admin UI password (required)", "", nil)
+			if err == nil && password != "" {
+				return password
+			}
+			_, _ = fmt.Fprintln(em.Err, "a password is required in server mode — please enter one")
+		}
+		_, _ = fmt.Fprintln(em.Err, "no password entered — generating a random one so the server is not left open")
+	}
+	generated, err := generateMasterKey()
+	if err != nil {
+		_, _ = fmt.Fprintf(em.Err, "warning: could not generate a LiteLLM admin password: %s\n", err)
+		return ""
+	}
+	if !interactive {
+		_, _ = fmt.Fprintln(em.Err, "server mode: generated a random LiteLLM admin UI password (shown below)")
+	}
+	return generated
+}
+
+// secureLiteLLMUI relaunches LiteLLM with the given admin-UI password (reusing the
+// running container's master key, else minting one), prints the login details
+// once, then offers to persist the secrets to ~/.ai-platform.env. It is the
+// shared securing path for `ai setup` (server role) and `ai litellm password`.
+// Best-effort: a master-key/relaunch failure prints a warning and returns.
+func secureLiteLLMUI(em *output.Emitter, interactive bool, password, domain string) {
+	masterKey := setup.CurrentLiteLLMMasterKey()
+	if masterKey == "" {
+		generated, err := generateMasterKey()
+		if err != nil {
+			_, _ = fmt.Fprintf(em.Err, "warning: could not generate a LiteLLM master key: %s\n", err)
+			return
+		}
+		masterKey = generated
 	}
 	if err := setup.RelaunchLiteLLMWithAuth(password, masterKey); err != nil {
 		_, _ = fmt.Fprintf(em.Err, "warning: could not secure the LiteLLM UI: %s\n", err)
@@ -448,11 +517,45 @@ func promptLiteLLMUIPassword(em *output.Emitter, domain string) {
 	_, _ = fmt.Fprintf(em.Err,
 		"LiteLLM admin UI secured — log in as %q at http://litellm.%s:18787/ui\n"+
 			"  (reachable once the /etc/hosts or DNS step maps litellm.%s to this host)\n"+
-			"  master key (also the API key): %s\n"+
-			"  Secrets are not stored on disk; to keep them across restarts, export them\n"+
-			"  before `ai setup` / `ai services start`:\n"+
+			"  master key (also the API key): %s\n",
+		"admin", domain, domain, masterKey)
+	offerPersistLiteLLMSecrets(em, interactive, password, masterKey)
+}
+
+// offerPersistLiteLLMSecrets offers (on a TTY) to save the LiteLLM UI password +
+// master key to ~/.ai-platform.env, a 0600 file the `ai` CLI auto-loads at
+// startup, so they persist across restarts without the user editing their shell
+// rc. On YES it writes the file and confirms the path; on NO / non-TTY it falls
+// back to printing the manual `export …` block (the previous behaviour). Shared
+// by `ai setup` (server) and `ai litellm password`.
+func offerPersistLiteLLMSecrets(em *output.Emitter, interactive bool, password, masterKey string) {
+	if interactive {
+		save, err := promptConfirmDefault(
+			"Save these to ~/.ai-platform.env so they persist across restarts?",
+			"writes a 0600 file that `ai` loads automatically",
+			true,
+		)
+		if err == nil && save {
+			if writeErr := envfile.Write(map[string]string{
+				"UI_PASSWORD":        password,
+				"LITELLM_MASTER_KEY": masterKey,
+			}); writeErr != nil {
+				_, _ = fmt.Fprintf(em.Err, "warning: could not write the env file: %s\n", writeErr)
+			} else {
+				path, _ := envfile.Path()
+				_, _ = fmt.Fprintf(em.Err,
+					"Saved to %s (loaded automatically by ai; add `source ~/.ai-platform.env` "+
+						"to your shell rc if other tools need these)\n", path)
+				return
+			}
+		}
+	}
+	// No / non-TTY / write failure: print the manual export block to keep them.
+	_, _ = fmt.Fprintf(em.Err,
+		"  Secrets are not stored on platform disk; to keep them across restarts, export\n"+
+			"  them before `ai setup` / `ai services start`:\n"+
 			"    export UI_PASSWORD='<the password you just set>' LITELLM_MASTER_KEY=%s\n",
-		"admin", domain, domain, masterKey, masterKey)
+		masterKey)
 }
 
 // syncUISubdomains wires the platform UI subdomains for this host's role after a

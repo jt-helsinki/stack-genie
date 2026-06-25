@@ -955,9 +955,36 @@ the service tier.
 at the published port, `:14000/ui`). The platform
 secures it by passing `UI_USERNAME` (`admin`), `UI_PASSWORD`, and
 `LITELLM_MASTER_KEY` into the container **via the environment** — never inlined
-in the launch argv, the rendered config, or platform disk. `ai setup` can prompt
-for the password and generate the master key (shown once); persistence is via
-exported env. The container also
+in the launch argv, the rendered config, or platform disk.
+
+**Role-based UI auth policy** (`runtime.RequireUIAuth`, true only for the
+**server** role). The web UIs are open on a host that binds to loopback and
+locked down on a host that binds to `0.0.0.0`:
+
+* **standalone / client** (loopback) → OPEN access. `ai setup` does NOT prompt
+  for a LiteLLM password (a single-user local box), and Open WebUI launches with
+  `WEBUI_AUTH=false`. A standalone user can opt into a LiteLLM password later via
+  **`ai litellm password`**.
+* **server** (`0.0.0.0`, network-exposed) → auth REQUIRED. `ai setup` REQUIRES a
+  LiteLLM admin-UI password (it loops on a TTY until one is entered, and
+  generates a strong random one non-interactively rather than leave the gateway
+  open), and Open WebUI launches with `WEBUI_AUTH=true` (the first signup becomes
+  the admin; `ENABLE_SIGNUP` is left at its default so that first account can
+  register). **Odysseus**: the platform CANNOT set its admin password (it is
+  configured IN-APP at `/setup`), so a server-mode note in `ai setup` output and
+  `ai doctor` warns that Odysseus's auth must be configured in-app and that it is
+  network-exposed; `SECURE_COOKIES` stays `false` until TLS terminates at nginx
+  (we serve plain http :18787 today — bring-up to flip it on under HTTPS).
+
+**Persisting the secrets.** `ai setup` (server) and `ai litellm password` OFFER
+(on a TTY) to save `UI_PASSWORD` + `LITELLM_MASTER_KEY` to **`~/.ai-platform.env`**
+— an opt-in, **0600** file of `export KEY='VALUE'` lines that the `ai` CLI
+**auto-loads at startup** (into its own process env, where the container
+env-passthrough launches pick them up) — so they persist across restarts WITHOUT
+the user editing their shell rc. Precedence is "existing env wins": the file only
+fills gaps, so a value already exported in the shell is never clobbered. On
+decline / non-TTY the manual `export …` block is printed instead. The container
+also
 carries `DATABASE_URL` (inline; it carries no secret) and the Presidio endpoints
 `PRESIDIO_ANALYZER_API_BASE=http://aip-presidio-analyzer:3000` /
 `PRESIDIO_ANONYMIZER_API_BASE=http://aip-presidio-anonymizer:3000`.

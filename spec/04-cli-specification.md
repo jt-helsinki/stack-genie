@@ -267,12 +267,19 @@ Purpose:
 * secures the **LiteLLM admin UI**: the container is launched with `UI_USERNAME`
   (`admin`), `UI_PASSWORD`, and `LITELLM_MASTER_KEY` passed as **env passthrough**
   (values are read from the environment, never inlined in argv, the config, or
-  platform disk). On a TTY (not `--json`), if those are not already in the
-  environment, `setup` prompts for a UI password, generates a master key, and
-  relaunches LiteLLM with both set; the generated master key is shown once. To
-  persist secrets across restarts without writing them to disk, export
-  `UI_PASSWORD` / `LITELLM_MASTER_KEY` before `setup` / `ai services start`
-  (keys-in-LiteLLM, architecture §17). The real **provider** API keys are
+  platform disk). The prompt follows the **role-based UI-auth policy**
+  (`runtime.RequireUIAuth`, architecture §17): **standalone/client** are open and
+  `setup` does NOT prompt (a user opts into a password later with
+  `ai litellm password`); **server** REQUIRES one — `setup` loops on a TTY until a
+  non-empty password is entered and generates a strong random one
+  non-interactively, so a network-exposed gateway is never left open. The existing
+  short-circuits still apply (already secured / `UI_PASSWORD`+`LITELLM_MASTER_KEY`
+  already in the env). The generated master key is shown once. To persist the
+  secrets across restarts, `setup` OFFERS (on a TTY) to save them to
+  **`~/.ai-platform.env`** (a 0600 file the `ai` CLI auto-loads at startup —
+  existing env wins); on decline / non-TTY the manual `export UI_PASSWORD … /
+  LITELLM_MASTER_KEY …` block is printed instead (keys-in-LiteLLM, architecture
+  §17). The real **provider** API keys are
   likewise held by the gateway — passed as env passthrough at launch and/or in
   LiteLLM's Postgres-backed store — never written to platform disk
 
@@ -1081,6 +1088,32 @@ Behavior:
   these verbs
 * an unknown service exits `2`. `ai services console` lists/opens a service's
   admin dashboard.
+
+## 10.3 LiteLLM gateway (`ai litellm`)
+
+```bash id="c27a2"
+ai litellm password                # set/rotate the LiteLLM admin UI password
+```
+
+`ai litellm password` sets or rotates the LiteLLM admin-UI password later (after
+`setup`) — primarily so a **standalone** user who skipped a password at setup
+(open access) can opt into one. It works in ANY role with a local LiteLLM
+(standalone/server; a `client` host has none → exit 3).
+
+Behavior:
+
+* prompts (hidden, `promptSecret`) for the new password — a credential is never a
+  flag/arg and can't be pre-seeded, so under `--json` / no-TTY there is nothing to
+  supply and it exits `2`. An empty entry exits `2`.
+* reuses the running gateway's `LITELLM_MASTER_KEY` when it has one (the same
+  source `RelaunchLiteLLMWithAuth` reads), else mints a new one.
+* relaunches LiteLLM with both set via env passthrough (`RelaunchLiteLLMWithAuth`)
+  — the secrets never touch argv or platform disk.
+* then OFFERS to save them to `~/.ai-platform.env` (the same opt-in 0600
+  auto-loaded persistence as `ai setup`).
+* **Exit codes**: `3` when the platform/LiteLLM isn't set up (no `runtime.yaml`,
+  client role, or the gateway container isn't running); `2` on bad/empty input or
+  a non-TTY invocation; `4` on a relaunch / master-key failure.
 
 ---
 

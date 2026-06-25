@@ -167,6 +167,27 @@ running. The remaining verification work:
       a TLS cert terminated at nginx). Confirm a remote client can reach the UI
       subdomains once real DNS + cert are in place (the platform does NOT edit
       `/etc/hosts` on a server).
+- [ ] **Role-based UI auth policy** (`runtime.RequireUIAuth`, server-only). Verify
+      the auth posture per role against the live UIs:
+  - standalone/client (loopback) are OPEN: Open WebUI launches `WEBUI_AUTH=false`
+    (no login wall) and `ai setup` does NOT prompt for a LiteLLM password.
+  - server (`0.0.0.0`) requires auth: Open WebUI launches `WEBUI_AUTH=true` (the
+    first signup becomes admin — confirm `ENABLE_SIGNUP` default lets that first
+    account register, then consider disabling further signups), and `ai setup`
+    forces a non-empty LiteLLM admin password (generated if not entered).
+  - **Odysseus auth is NOT platform-settable** — it is configured in-app at
+    `/setup`. On a server, confirm the in-app login is actually enabled before the
+    box is network-exposed; `SECURE_COOKIES` stays `false` until TLS terminates at
+    nginx, so FLIP IT ON (to `true`) once HTTPS is live (and confirm the exact env
+    name against the live app — it is a best-effort seed today).
+  - **`ai litellm password`** relaunches the live LiteLLM with the new password —
+    verify the relaunch + login work end-to-end on a provisioned host (the
+    relaunch is mocked in unit tests).
+- [ ] **`~/.ai-platform.env` auto-load** — confirm that a password saved via the
+      `ai setup` / `ai litellm password` persist offer survives a restart: the
+      0600 file is auto-loaded at `ai` startup (existing shell env still wins) and
+      the LiteLLM container relaunch picks `UI_PASSWORD`/`LITELLM_MASTER_KEY` up via
+      env passthrough without the user editing their shell rc.
 
 ### 2.4 Headroom strategy verification (arch §8–10)
 

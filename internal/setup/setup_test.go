@@ -1302,6 +1302,41 @@ func TestEnsureHeadroomIsInternalOnly(test *testing.T) {
 
 // runArgsForContainer returns the argv of the recorded `<runtime> run --name
 // <container>` call, or nil if none was recorded.
+// TestEnsureOpenWebUIAuthByRole pins the role-based UI-auth policy
+// (runtime.RequireUIAuth): a server renders WEBUI_AUTH=true (network-exposed,
+// login required), while standalone/client render WEBUI_AUTH=false (open).
+func TestEnsureOpenWebUIAuthByRole(test *testing.T) {
+	cases := []struct {
+		name        string
+		requireAuth bool
+		wantAuth    string
+	}{
+		{"server", true, "WEBUI_AUTH=true"},
+		{"standalone", false, "WEBUI_AUTH=false"},
+	}
+	for _, testCase := range cases {
+		test.Run(testCase.name, func(test *testing.T) {
+			test.Setenv("HOME", test.TempDir())
+			prober := &recordingProber{}
+			if err := ensureOpenWebUI(prober, "docker", "127.0.0.1", "aip.local", testCase.requireAuth); err != nil {
+				test.Fatal(err)
+			}
+			args := runArgsForContainer(prober, openWebUIContainer)
+			if args == nil {
+				test.Fatalf("open-webui was not launched: %v", prober.calls)
+			}
+			launch := strings.Join(args, " ")
+			if !strings.Contains(launch, testCase.wantAuth) {
+				test.Errorf("launch missing %q: %s", testCase.wantAuth, launch)
+			}
+			// open-webui is internal-only (no host publish) regardless of role.
+			if strings.Contains(launch, "-p ") {
+				test.Errorf("open-webui must be internal-only (no host publish): %s", launch)
+			}
+		})
+	}
+}
+
 func runArgsForContainer(prober *recordingProber, container string) []string {
 	for _, call := range prober.calls {
 		if len(call) < 4 || call[1] != "run" {
@@ -1322,7 +1357,7 @@ func runArgsForContainer(prober *recordingProber, container string) []string {
 func TestEnsureOdysseusGroupRunArgs(test *testing.T) {
 	test.Setenv("HOME", test.TempDir())
 	prober := &recordingProber{}
-	if err := ensureOdysseus(prober, "docker", "127.0.0.1", "aip.local"); err != nil {
+	if err := ensureOdysseus(prober, "docker", "127.0.0.1", "aip.local", false); err != nil {
 		test.Fatal(err)
 	}
 
