@@ -300,6 +300,40 @@ func TestOptionalServicesRoundTrip(test *testing.T) {
 	}
 }
 
+func TestDomainRoundTrip(test *testing.T) {
+	test.Setenv("HOME", test.TempDir())
+	saved := &Info{SchemaVersion: SchemaVersion, Detected: "docker", Domain: "aip.example.com"}
+	if err := Persist(saved); err != nil {
+		test.Fatal(err)
+	}
+	loaded, err := Load()
+	if err != nil || loaded == nil {
+		test.Fatalf("load: %v", err)
+	}
+	if loaded.Domain != "aip.example.com" {
+		test.Errorf("Domain did not round-trip: %q", loaded.Domain)
+	}
+	if loaded.ResolveDomain() != "aip.example.com" {
+		test.Errorf("ResolveDomain() = %q, want aip.example.com", loaded.ResolveDomain())
+	}
+}
+
+func TestResolveDomainFallsBackToDefault(test *testing.T) {
+	if got := ResolveDomain(""); got != DefaultDomain {
+		test.Errorf("ResolveDomain(\"\") = %q, want %q", got, DefaultDomain)
+	}
+	if got := ResolveDomain("  "); got != DefaultDomain {
+		test.Errorf("ResolveDomain(whitespace) = %q, want %q", got, DefaultDomain)
+	}
+	if got := ResolveDomain("aip.example.com"); got != "aip.example.com" {
+		test.Errorf("ResolveDomain(set) = %q, want aip.example.com", got)
+	}
+	info := &Info{}
+	if got := info.ResolveDomain(); got != DefaultDomain {
+		test.Errorf("(*Info).ResolveDomain() unset = %q, want %q", got, DefaultDomain)
+	}
+}
+
 func TestLoadMissingReturnsNil(test *testing.T) {
 	test.Setenv("HOME", test.TempDir())
 	loaded, err := Load()

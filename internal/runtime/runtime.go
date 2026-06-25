@@ -34,6 +34,11 @@ const DefaultGatewayHost = "host.microsandbox.internal"
 // carries only a host with no ":port".
 const DefaultGatewayPort = 18787
 
+// DefaultDomain is the platform base domain the nginx UI subdomains hang off
+// (litellm.<domain>, chat.<domain>, odysseus.<domain>). It is the local/standalone
+// default; operators override it in server mode via `ai domain`.
+const DefaultDomain = "aip.local"
+
 // SchemaVersion is stamped on config/runtime.yaml.
 const SchemaVersion = 1
 
@@ -98,7 +103,26 @@ type Info struct {
 	OptionalServices []string `json:"optional_services,omitempty" yaml:"optional_services,omitempty"`
 	AIPlatformHost   string   `json:"ai_platform_host" yaml:"ai_platform_host"`
 	HostGateway      string   `json:"host_gateway" yaml:"host_gateway"` // guest-visible host address (arch §29.2)
-	DetectedAt       string   `json:"detected_at" yaml:"detected_at"`
+	// Domain is the platform base domain the nginx UI subdomains hang off
+	// (litellm.<domain>, chat.<domain>, odysseus.<domain>). Empty falls back to
+	// DefaultDomain (aip.local); operators override it in server mode (`ai domain`).
+	Domain     string `json:"domain,omitempty" yaml:"domain,omitempty"`
+	DetectedAt string `json:"detected_at" yaml:"detected_at"`
+}
+
+// ResolveDomain returns the configured platform base domain, falling back to
+// DefaultDomain (aip.local) when unset.
+func (info *Info) ResolveDomain() string {
+	return ResolveDomain(info.Domain)
+}
+
+// ResolveDomain returns raw when non-empty, otherwise DefaultDomain. It is the
+// single resolution point for the platform base domain the UI subdomains hang off.
+func ResolveDomain(raw string) string {
+	if domain := strings.TrimSpace(raw); domain != "" {
+		return domain
+	}
+	return DefaultDomain
 }
 
 // HostAddress returns the address a workspace microVM uses to reach the host

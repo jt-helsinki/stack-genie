@@ -106,6 +106,7 @@ func Execute() int {
 		newContextCmd(emitter, &exitCode),
 		newNetworkCmd(emitter, &exitCode),
 		newGatewayCmd(emitter, &exitCode),
+		newDomainCmd(emitter, &exitCode),
 		newDoctorCmd(emitter, &exitCode),
 		newLogsCmd(emitter, &exitCode),
 		newCompletionCmd(emitter, &exitCode),

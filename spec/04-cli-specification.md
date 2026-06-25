@@ -1196,6 +1196,37 @@ Human-readable output by default; `--json` emits the standard §19 envelope.
 
 ---
 
+# 10.5 Platform Base Domain (`ai domain`)
+
+Configure, machine-wide, the platform **base domain** the nginx UI subdomains hang
+off: `litellm.<domain>`, `chat.<domain>`, `odysseus.<domain>`. The value is
+persisted in `config/runtime.yaml` as `domain`. The default is **`aip.local`** for
+local/standalone; operators **override it in server mode** so the UIs are served on
+a routable hostname.
+
+```bash
+ai domain                 # show the resolved base domain + the UI subdomains
+ai domain <name>          # set the base domain (e.g. aip.example.com)
+```
+
+The name is a **syntactically valid DNS hostname** (NOT a URL): one or more
+lowercase, dot-separated labels of `[a-z0-9-]` (each 1–63 chars, not starting or
+ending with a hyphen), no scheme/path/whitespace, no leading/trailing dot. A dotted
+name like `aip.local` or `aip.example.com` is fine, as is a bare label.
+
+* with no argument → **show** the resolved domain (falling back to `aip.local` when
+  unset), change nothing;
+* with a name → set it. On a terminal the prompt always shows, pre-seeded with any
+  name passed (the user confirms/edits); under `--json` / no TTY a name is applied
+  directly.
+* a missing `runtime.yaml` (no `ai setup` yet) → exit `3` with a "run `ai setup`
+  first" note; an invalid name → exit `2`; a failed persist/read → exit `4`.
+
+The envelope command name is `domain`. Human-readable output by default; `--json`
+emits the standard §19 envelope.
+
+---
+
 # 11. Backup — Removed
 
 There is no backup/restore command. It isn't needed (architecture §32): project
