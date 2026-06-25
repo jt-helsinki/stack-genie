@@ -287,6 +287,36 @@ func TestStatusInfoHumanReachable(test *testing.T) {
 	}
 }
 
+// TestStatusInfoHumanServedModels verifies the Human renderer lists the LIVE
+// served models (with provider/mode descriptors), and falls back to the note when
+// the list could not be fetched.
+func TestStatusInfoHumanServedModels(test *testing.T) {
+	withModels := StatusInfo{
+		Healthy:   true,
+		Default:   "gemma4",
+		Providers: []string{"anthropic", "ollama"},
+		Ollama:    true,
+		BaseURL:   "http://127.0.0.1:14000",
+		Models: []Model{
+			{Name: "gemma4", Provider: "ollama", Mode: "chat"},
+			{Name: "openai/*", Provider: "openai"},
+		},
+	}
+	rendered := withModels.Human()
+	for _, fragment := range []string{"Served models", "gemma4", "ollama, chat", "openai/*", "(openai)"} {
+		if !strings.Contains(rendered, fragment) {
+			test.Errorf("served-models render missing %q:\n%s", fragment, rendered)
+		}
+	}
+
+	withNote := StatusInfo{Healthy: true, Default: "gemma4", BaseURL: "http://127.0.0.1:14000",
+		ModelsNote: "could not list served models: unauthorized"}
+	noteRendered := withNote.Human()
+	if !strings.Contains(noteRendered, "could not list served models") {
+		test.Errorf("expected the model-list note in the render:\n%s", noteRendered)
+	}
+}
+
 func TestParseProviderError(test *testing.T) {
 	cases := map[string]string{
 		`{"error":{"message":"model 'ollama/nope' not found","type":"not_found"}}`: "model 'ollama/nope' not found",
@@ -298,6 +328,170 @@ func TestParseProviderError(test *testing.T) {
 		if got := parseProviderError([]byte(body)); got != want {
 			test.Errorf("parseProviderError(%q) = %q, want %q", body, got, want)
 		}
+	}
+}
+
+// TestModelsParsesModelInfo verifies Models() parses LiteLLM's /model/info shape
+// (model_name + litellm_params.model for the provider prefix + model_info.mode),
+// handles wildcard ids gracefully, and sends the Bearer master key.
+func TestModelsParsesModelInfo(test *testing.T) {
+	// Inject a master key so the Bearer header must be sent (production reads it from
+	// the live container; tests must not).
+	original := resolveMasterKey
+	resolveMasterKey = func() string { return "sk-test-key" }
+	defer func() { resolveMasterKey = original }()
+
+	var gotAuth string
+	var gotPath string
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		gotAuth = request.Header.Get("Authorization")
+		gotPath = request.URL.Path
+		_, _ = writer.Write([]byte(`{"data":[
+			{"model_name":"gemma4","litellm_params":{"model":"ollama/gemma4:31b"},"model_info":{"mode":"chat"}},
+			{"model_name":"gpt-5.5","litellm_params":{"model":"openai/gpt-5.5"},"model_info":{"mode":"chat"}},
+			{"model_name":"openai/*","litellm_params":{"model":"openai/*"},"model_info":{}},
+			{"model_name":"text-embed","litellm_params":{"model":"openai/text-embedding-3"},"model_info":{"mode":"embedding"}}
+		]}`))
+	}))
+	defer server.Close()
+
+	client := realClient{baseURL: server.URL, httpClient: server.Client()}
+	models, err := client.Models()
+	if err != nil {
+		test.Fatalf("Models() error: %v", err)
+	}
+	if gotPath != "/model/info" {
+		test.Errorf("queried %q, want /model/info", gotPath)
+	}
+	if gotAuth != "Bearer sk-test-key" {
+		test.Errorf("Authorization = %q, want the Bearer master key", gotAuth)
+	}
+	// Sorted by name: gemma4, gpt-5.5, openai/*, text-embed.
+	byName := map[string]Model{}
+	for _, model := range models {
+		byName[model.Name] = model
+	}
+	if got := byName["gemma4"]; got.Provider != "ollama" || got.Mode != "chat" {
+		test.Errorf("gemma4 = %+v, want provider ollama mode chat", got)
+	}
+	if got := byName["gpt-5.5"]; got.Provider != "openai" {
+		test.Errorf("gpt-5.5 provider = %q, want openai", got.Provider)
+	}
+	// Wildcard id handled gracefully: provider derived from the prefix.
+	if got := byName["openai/*"]; got.Provider != "openai" {
+		test.Errorf("openai/* provider = %q, want openai", got.Provider)
+	}
+	if got := byName["text-embed"]; got.Mode != "embedding" {
+		test.Errorf("text-embed mode = %q, want embedding", got.Mode)
+	}
+
+	// Providers derived from the LIVE list (not hardcoded routing).
+	providers := providersFromModels(models)
+	if strings.Join(providers, ",") != "ollama,openai" {
+		test.Errorf("providers = %v, want [ollama openai]", providers)
+	}
+	if !hasOllamaModel(models) {
+		test.Error("expected an ollama-backed served model")
+	}
+}
+
+// TestModelsUnauthorized verifies a 401/403 from the gateway returns a clean error
+// (so the CLI can map an exit code / show a note rather than crashing).
+func TestModelsUnauthorized(test *testing.T) {
+	original := resolveMasterKey
+	resolveMasterKey = func() string { return "" }
+	defer func() { resolveMasterKey = original }()
+
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+		writer.WriteHeader(http.StatusUnauthorized)
+		_, _ = writer.Write([]byte(`{"error":{"message":"Authentication Error"}}`))
+	}))
+	defer server.Close()
+
+	client := realClient{baseURL: server.URL, httpClient: server.Client()}
+	if _, err := client.Models(); err == nil {
+		test.Fatal("expected an error for a 401")
+	} else if !strings.Contains(err.Error(), "unauthorized") {
+		test.Errorf("error = %v, want it to mention unauthorized", err)
+	}
+}
+
+// TestStatusFetchesLiveModels verifies Status() reports the LIVE served list +
+// derived providers when the gateway is healthy, while the default stays the
+// platform handle.
+func TestStatusFetchesLiveModels(test *testing.T) {
+	original := resolveMasterKey
+	resolveMasterKey = func() string { return "" }
+	defer func() { resolveMasterKey = original }()
+
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		switch request.URL.Path {
+		case "/health/liveliness":
+			writer.WriteHeader(http.StatusOK)
+		case "/model/info":
+			_, _ = writer.Write([]byte(`{"data":[
+				{"model_name":"gemma4","litellm_params":{"model":"ollama/gemma4:31b"},"model_info":{"mode":"chat"}},
+				{"model_name":"claude-opus","litellm_params":{"model":"anthropic/claude-opus-4-8"},"model_info":{"mode":"chat"}}
+			]}`))
+		default:
+			writer.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer server.Close()
+
+	client := realClient{baseURL: server.URL, httpClient: server.Client()}
+	info, err := client.Status()
+	if err != nil {
+		test.Fatalf("Status() error: %v", err)
+	}
+	if !info.Healthy {
+		test.Fatal("gateway should be healthy")
+	}
+	if info.Default != DefaultRouting().Default {
+		test.Errorf("default = %q, want the platform handle %q", info.Default, DefaultRouting().Default)
+	}
+	if len(info.Models) != 2 {
+		test.Fatalf("served models = %d, want 2", len(info.Models))
+	}
+	if strings.Join(info.Providers, ",") != "anthropic,ollama" {
+		test.Errorf("providers = %v, want [anthropic ollama] derived from the live list", info.Providers)
+	}
+	if !info.Ollama {
+		test.Error("Ollama should be true (an ollama-backed model is served)")
+	}
+}
+
+// TestStatusHealthyButModelListFails verifies that when the gateway is reachable
+// but the model-list call fails, Status() still reports health and records a note
+// rather than erroring out.
+func TestStatusHealthyButModelListFails(test *testing.T) {
+	original := resolveMasterKey
+	resolveMasterKey = func() string { return "" }
+	defer func() { resolveMasterKey = original }()
+
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		switch request.URL.Path {
+		case "/health/liveliness":
+			writer.WriteHeader(http.StatusOK)
+		default: // /model/info → 500
+			writer.WriteHeader(http.StatusInternalServerError)
+		}
+	}))
+	defer server.Close()
+
+	client := realClient{baseURL: server.URL, httpClient: server.Client()}
+	info, err := client.Status()
+	if err != nil {
+		test.Fatalf("Status() must not error when only the model list fails: %v", err)
+	}
+	if !info.Healthy {
+		test.Error("gateway should still be healthy")
+	}
+	if len(info.Models) != 0 {
+		test.Errorf("models should be empty on a failed list, got %v", info.Models)
+	}
+	if info.ModelsNote == "" {
+		test.Error("expected a ModelsNote explaining the failed model list")
 	}
 }
 

@@ -798,13 +798,29 @@ Returns a labeled, actionable summary (not a raw field dump):
 
 * LiteLLM gateway reachability — including the endpoint URL and, when it is down,
   how to bring it up (`ai services start` → `ai doctor`)
-* the default model
+* the default model — the platform's configured default handle
+  (`DefaultRouting().Default`); the gateway's model-list endpoints do not mark a
+  default, so this legitimately stays from platform config
+* the **LIVE** list of models the gateway currently serves, sourced from LiteLLM's
+  own endpoints (`/model/info`, falling back to `/v1/models`) — **not** a hardcoded
+  list. The list reflects the real gateway config: per-provider wildcard handles
+  (`ollama/*`, `openai/*`, …) plus the named aliases, each shown with its provider
+  and (when `/model/info` exposes it) its mode. The **providers** line is DERIVED
+  from this live list (the distinct provider prefixes), not from the hardcoded
+  routing.
 * the local-model (Ollama — no key needed) vs cloud-provider (each needs a key
   via `ai secrets set <PROVIDER>_API_KEY`) split
 * a `ai models test <model>` next-step hint
 
-The `--json` envelope carries the underlying fields (`healthy`, `providers`,
-`default`, `ollama`, `base_url`).
+The model-list call authenticates with the gateway master key (read from the
+running container, same as `ai models test`). If the gateway is reachable but the
+model-list call fails (e.g. unauthorized), the command still reports health and
+shows a note rather than erroring out.
+
+The `--json` envelope carries the underlying fields (`healthy`, `providers`
+[live-derived], `default`, `ollama`, `models` [the live served list of
+`{name, provider, mode}`], `models_note` [why the list is empty when otherwise
+reachable], `base_url`).
 
 ---
 

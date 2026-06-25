@@ -19,6 +19,11 @@ import (
 // production wires ollama.RealClient.
 var ollamaClient = ollama.RealClient
 
+// litellmClient is the constructor for the gateway client used by
+// `ai models status|test`. It is a package var so tests can inject a fake (no
+// network); production wires litellm.RealClient.
+var litellmClient = litellm.RealClient
+
 // ollamaPopular fetches the live popular-models list (ollama.com/search + the
 // registry for sizes) used by `ai models popular` and the `ai models pull` picker.
 // It is a package var so tests can inject a fixture without hitting the network;
@@ -56,11 +61,11 @@ func newModelsStatusCmd(em *output.Emitter, exit *int) *cobra.Command {
 			if ui.Enabled(em) {
 				err = ui.RunWithSpinner(em.Err, "contacting the model gateway", func() error {
 					var workErr error
-					info, workErr = litellm.RealClient().Status()
+					info, workErr = litellmClient().Status()
 					return workErr
 				})
 			} else {
-				info, err = litellm.RealClient().Status()
+				info, err = litellmClient().Status()
 			}
 			if err != nil {
 				*exit = em.Failure("models.status", output.Errorf(output.ExitRuntimeFailure, "%s", err))
@@ -105,11 +110,11 @@ func newModelsTestCmd(em *output.Emitter, exit *int) *cobra.Command {
 			if ui.Enabled(em) {
 				err = ui.RunWithSpinner(em.Err, "testing "+model, func() error {
 					var workErr error
-					res, workErr = litellm.RealClient().Test(model)
+					res, workErr = litellmClient().Test(model)
 					return workErr
 				})
 			} else {
-				res, err = litellm.RealClient().Test(model)
+				res, err = litellmClient().Test(model)
 			}
 			if err != nil {
 				// Transport-level failure: the gateway itself was unreachable.

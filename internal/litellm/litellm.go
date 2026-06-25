@@ -333,12 +333,37 @@ func toolFirewallRules() []map[string]any {
 	return rules
 }
 
+// Model is one model the LiteLLM gateway currently serves, as reported by the
+// gateway itself (/model/info or /v1/models) — NOT the hardcoded DefaultRouting.
+// Name is the served model_name/id (which may be a provider wildcard like
+// `openai/*`); Provider is the prefix before the first `/` (e.g. "ollama",
+// "openai"), empty for a bare alias with no prefix; Mode is the served model's
+// mode (e.g. "chat", "embedding") when /model/info exposes it, else empty.
+type Model struct {
+	Name     string `json:"name"`
+	Provider string `json:"provider,omitempty"`
+	Mode     string `json:"mode,omitempty"`
+}
+
 // StatusInfo is the result of `ai models status` (CLI §8.1).
 type StatusInfo struct {
-	Healthy   bool     `json:"healthy"`
+	Healthy bool `json:"healthy"`
+	// Providers is the DISTINCT set of provider prefixes derived from the LIVE
+	// served-model list (Models), not from the hardcoded routing.
 	Providers []string `json:"providers"`
-	Default   string   `json:"default"`
-	Ollama    bool     `json:"ollama"`
+	// Default is the platform's configured default-model handle. The gateway's
+	// model-list endpoints do NOT mark a default, so this legitimately stays from
+	// platform config (DefaultRouting().Default), not from the live list.
+	Default string `json:"default"`
+	Ollama  bool   `json:"ollama"`
+	// Models is the LIVE list of models the gateway serves, sourced from LiteLLM's
+	// /model/info//v1/models endpoints. Empty when the gateway is unreachable or the
+	// model-list call failed (see ModelsNote).
+	Models []Model `json:"models,omitempty"`
+	// ModelsNote explains why Models is empty when the gateway is otherwise reachable
+	// (e.g. the model-list call was unauthorized or failed) — so status still renders
+	// health rather than erroring out. Empty when the list was fetched fine.
+	ModelsNote string `json:"models_note,omitempty"`
 	// BaseURL is the gateway endpoint the status was probed against (for the
 	// human-readable rendering); omitted from JSON when empty.
 	BaseURL string `json:"base_url,omitempty"`
@@ -369,13 +394,37 @@ func (info StatusInfo) Human() string {
 	}
 	cloud := make([]string, 0, len(info.Providers))
 	for _, provider := range info.Providers {
-		if provider != "ollama" {
+		if provider != "ollama" && provider != "" {
 			cloud = append(cloud, provider)
 		}
 	}
 	if len(cloud) > 0 {
 		builder.WriteString("Cloud providers   " + strings.Join(cloud, ", ") + "\n")
 		builder.WriteString("                  each needs a key once: `ai secrets set <PROVIDER>_API_KEY`\n")
+	}
+	// The LIVE served-model list, straight from the gateway (not the hardcoded
+	// routing). When the gateway is up but the list could not be fetched, show the
+	// note instead of an empty section rather than erroring the whole command.
+	builder.WriteString("\n")
+	switch {
+	case len(info.Models) > 0:
+		builder.WriteString("Served models     (live from the gateway)\n")
+		for _, model := range info.Models {
+			line := "                  " + model.Name
+			descriptor := model.Provider
+			if model.Mode != "" {
+				if descriptor != "" {
+					descriptor += ", "
+				}
+				descriptor += model.Mode
+			}
+			if descriptor != "" {
+				line += "  (" + descriptor + ")"
+			}
+			builder.WriteString(line + "\n")
+		}
+	case info.ModelsNote != "":
+		builder.WriteString("Served models     " + info.ModelsNote + "\n")
 	}
 	probeModel := info.Default
 	if probeModel == "" {
@@ -412,4 +461,9 @@ func (result TestResult) Human() string {
 type Client interface {
 	Status() (StatusInfo, error)
 	Test(model string) (TestResult, error)
+	// Models returns the LIVE list of models the gateway currently serves, sourced
+	// from LiteLLM's own endpoints (not the hardcoded DefaultRouting). It returns a
+	// non-nil error when the gateway is unreachable or the call is unauthorized, so
+	// callers can map an exit code or degrade gracefully.
+	Models() ([]Model, error)
 }

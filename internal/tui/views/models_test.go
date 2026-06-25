@@ -50,6 +50,55 @@ func TestModelsPopulatesOnRefresh(test *testing.T) {
 	}
 }
 
+// The routing section renders the LIVE served-model list (with provider/mode) that
+// the status fetcher carries from the gateway — not a hardcoded list.
+func TestModelsRoutingShowsLiveServedModels(test *testing.T) {
+	status := litellm.StatusInfo{
+		Healthy:   true,
+		Default:   "gemma4",
+		Providers: []string{"anthropic", "ollama"},
+		BaseURL:   "http://localhost:14000",
+		Models: []litellm.Model{
+			{Name: "gemma4", Provider: "ollama", Mode: "chat"},
+			{Name: "claude-opus", Provider: "anthropic"},
+		},
+	}
+	view := NewModels(
+		func() (litellm.StatusInfo, error) { return status, nil },
+		func(string) (litellm.TestResult, error) { return litellm.TestResult{}, nil },
+		noLocalModels,
+	)
+	refreshModels(view)
+
+	rendered := view.View()
+	for _, want := range []string{"served models (live)", "gemma4", "claude-opus", "ollama, chat", "(anthropic)"} {
+		if !strings.Contains(rendered, want) {
+			test.Errorf("routing section missing %q:\n%s", want, rendered)
+		}
+	}
+}
+
+// When the gateway is reachable but the model list could not be fetched, the
+// routing section shows the note instead of erroring.
+func TestModelsRoutingShowsModelListNote(test *testing.T) {
+	status := litellm.StatusInfo{
+		Healthy:    true,
+		Default:    "gemma4",
+		BaseURL:    "http://localhost:14000",
+		ModelsNote: "could not list served models: unauthorized",
+	}
+	view := NewModels(
+		func() (litellm.StatusInfo, error) { return status, nil },
+		func(string) (litellm.TestResult, error) { return litellm.TestResult{}, nil },
+		noLocalModels,
+	)
+	refreshModels(view)
+
+	if !strings.Contains(view.View(), "could not list served models") {
+		test.Errorf("expected the model-list note in the routing section:\n%s", view.View())
+	}
+}
+
 func TestModelsSurfacesFetchError(test *testing.T) {
 	view := NewModels(
 		func() (litellm.StatusInfo, error) { return litellm.StatusInfo{}, errors.New("gateway down") },
