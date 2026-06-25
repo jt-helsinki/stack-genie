@@ -58,9 +58,13 @@ type WorkspaceConfig struct {
 // workspace.
 type NetworkConfig struct {
 	// Egress is the workspace's default outbound posture, enforced by the
-	// Microsandbox network policy (arch §29.6): "deny" (default — only the model
-	// gateway + allow_host_services are reachable), "public" (the open internet,
-	// private ranges still blocked), or "unrestricted". Empty == "deny".
+	// Microsandbox network policy (arch §29.6): "public" (DEFAULT — the open
+	// internet, private ranges still blocked; lets in-VM nerdctl pull images and
+	// AI processes reach the internet, with DNS still audited via `ai network
+	// log`), "deny" (only the model gateway + allow_host_services are reachable),
+	// or "unrestricted". Empty == "public". This default is a deliberate
+	// security-posture choice: the workspace ships allow-outbound and is
+	// re-lockable per project with `ai network egress deny`.
 	Egress            string        `yaml:"egress,omitempty" json:"egress,omitempty"`
 	AllowHostServices []HostService `yaml:"allow_host_services,omitempty" json:"allow_host_services,omitempty"`
 	PublishPorts      []PortMapping `yaml:"publish_ports,omitempty" json:"publish_ports,omitempty"`
@@ -69,10 +73,14 @@ type NetworkConfig struct {
 // EgressModes are the valid network.egress values.
 var EgressModes = []string{"deny", "public", "unrestricted"}
 
-// ResolvedEgress returns the effective egress mode, defaulting empty to "deny".
+// ResolvedEgress returns the effective egress mode, defaulting empty to "public"
+// (allow-outbound). The default flipped from "deny" to "public" so a freshly
+// created workspace can pull in-VM container images and reach the internet out
+// of the box; egress is still DNS-audited (`ai network log`) and re-lockable per
+// project with `ai network egress deny`.
 func (network NetworkConfig) ResolvedEgress() string {
 	if network.Egress == "" {
-		return "deny"
+		return "public"
 	}
 	return network.Egress
 }
@@ -97,7 +105,7 @@ func Default() *Config {
 		Agent:     AgentConfig{Tools: []string{"opencode", "pi"}, DefaultTool: "opencode"},
 		Context:   ContextConfig{Strategy: "balanced", CavemanLevel: "full"},
 		Workspace: WorkspaceConfig{CPULimit: 4, MemoryLimit: "8G"},
-		Network:   NetworkConfig{Egress: "deny"},
+		Network:   NetworkConfig{Egress: "public"},
 	}
 }
 

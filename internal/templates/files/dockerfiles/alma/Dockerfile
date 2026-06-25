@@ -6,8 +6,26 @@
 FROM almalinux:10
 
 RUN dnf install -y --setopt=install_weak_deps=False \
-      ca-certificates curl git sudo tmux \
+      ca-certificates curl git sudo tmux tar gzip \
+      iptables-nft iproute \
  && dnf clean all
+
+# In-VM OCI container runtime (arch §7): containerd + nerdctl + runc + CNI +
+# buildkit, installed from the pinned nerdctl-full release tarball (one static,
+# distro-agnostic artifact) into /usr/local. Arch-aware (amd64/arm64). The
+# runtime is rootful and is started at workspace start, not in the image. (On
+# RHEL-family the iptables provider is iptables-nft and the package is iproute.)
+ENV NERDCTL_VERSION=2.3.3
+RUN arch="$(uname -m)" \
+ && case "$arch" in \
+      x86_64)  nerdctl_arch=amd64 ;; \
+      aarch64) nerdctl_arch=arm64 ;; \
+      *) echo "unsupported arch: $arch" >&2; exit 1 ;; \
+    esac \
+ && curl -fsSL "https://github.com/containerd/nerdctl/releases/download/v${NERDCTL_VERSION}/nerdctl-full-${NERDCTL_VERSION}-linux-${nerdctl_arch}.tar.gz" \
+      -o /tmp/nerdctl-full.tar.gz \
+ && tar -C /usr/local -xzf /tmp/nerdctl-full.tar.gz \
+ && rm -f /tmp/nerdctl-full.tar.gz
 
 # GitHub CLI (gh) from the official GitHub CLI rpm repo.
 RUN dnf install -y 'dnf-command(config-manager)' \

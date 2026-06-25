@@ -8,9 +8,10 @@ import (
 func TestEgressLifecycle(test *testing.T) {
 	root := test.TempDir()
 
-	// Default (no config yet) resolves to deny.
-	if network, _ := Get(root); network.ResolvedEgress() != "deny" {
-		test.Errorf("default egress = %q, want deny", network.ResolvedEgress())
+	// Default (no config yet) resolves to public (allow-outbound) — the workspace
+	// ships open so in-VM nerdctl can pull images; it is re-lockable per project.
+	if network, _ := Get(root); network.ResolvedEgress() != "public" {
+		test.Errorf("default egress = %q, want public", network.ResolvedEgress())
 	}
 
 	// Mode: valid set, invalid rejected.

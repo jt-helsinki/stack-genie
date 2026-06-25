@@ -567,6 +567,16 @@ workspace. There is no shared, versioned snapshot image — each project builds
 from its own Dockerfile. (Microsandbox consumes OCI images directly, so the
 Dockerfile flow is unchanged; the image is built once and booted as a microVM.)
 
+Every workspace image also ships a **rootful in-VM OCI container runtime** —
+containerd + nerdctl + runc + CNI plugins + buildkit, installed from the pinned
+`nerdctl-full` release tarball (one static, distro-agnostic artifact, arch-aware
+amd64/arm64) into `/usr/local` in every OS base Dockerfile, alongside the CNI
+runtime deps (`ca-certificates`, `iptables`, `iproute`). The runtime is **started
+at workspace start** (not baked running into the image): the platform probes
+`nerdctl info` as root and, if needed, boots `containerd` detached so it runs for
+the VM's life. Bringing it up is **best-effort** — a failure does not fail the
+workspace start. (The applications that run *on* this runtime are a later phase.)
+
 ### Mount Rules
 
 ```text
@@ -1776,12 +1786,18 @@ at `localhost:<host_port>`. Publishing is declared per project, never implicit.
 
 A third knob sets the **default outbound posture** — `network.egress`:
 
-* **`deny`** (default) — only the model gateway and `allow_host_services` are
-  reachable; everything else is blocked.
-* **`public`** — the open internet is reachable, but **private/internal ranges
-  stay blocked** unless explicitly allow-listed (so the agent can `pip install` /
-  `npm install` / hit public APIs without enumerating every domain).
-* **`unrestricted`** — all egress allowed (escape hatch; least safe).
+* **`public`** (**default**) — the open internet is reachable, but
+  **private/internal ranges stay blocked** unless explicitly allow-listed (so the
+  agent can `pip install` / `npm install`, the in-VM container runtime can pull
+  images, and AI processes can hit public APIs without enumerating every domain).
+  This is a deliberate security-posture choice: the workspace ships allow-outbound
+  so it is usable out of the box, with egress still **DNS-audited** (`ai network
+  log`) and **re-lockable** per project. Empty `network.egress` resolves to
+  `public`.
+* **`deny`** — only the model gateway and `allow_host_services` are reachable;
+  everything else is blocked. Re-lock a project with `ai network egress deny`.
+* **`unrestricted`** — all egress allowed, including private ranges (escape hatch;
+  least safe).
 
 `host` in an allow rule may be a hostname/IP/**domain**, a **`*.suffix` wildcard**
 (e.g. `*.npmjs.org`, matching any subdomain), or the `gateway` token for a
@@ -1795,13 +1811,13 @@ All of this is configured entirely via the **`ai network`** commands (CLI §10a)
 no manual file editing is required, though the project `network` block
 (repo-layout §12.4) can still be edited by hand. `ai network` manages three
 declarations in the project `config.yaml`: the default outbound mode
-(`network.egress`: `deny` (default) / `public` / `unrestricted`), the
+(`network.egress`: `public` (default) / `deny` / `unrestricted`), the
 allow-listed host services (`network.allow_host_services`), and the published
 ports (`network.publish_ports`):
 
 ```yaml
 network:
-  egress: deny                        # deny | public | unrestricted (default deny)
+  egress: public                      # public (default) | deny | unrestricted
   allow_host_services:                # extra egress the workspace may reach
     - { host: gateway,          port: 5432 }   # host-local Postgres
     - { host: db.prod.internal, port: 5432 }   # a remote/managed database

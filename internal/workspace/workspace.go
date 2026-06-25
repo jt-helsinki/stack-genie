@@ -9,6 +9,7 @@ package workspace
 import (
 	"errors"
 	"fmt"
+	"os"
 	"sort"
 	"strings"
 
@@ -144,6 +145,12 @@ type Sandbox interface {
 	Stop(name string) error
 	Destroy(name string) error
 	Exec(name string, argv []string) (ExecResult, error)
+	// ExecRoot runs argv inside the running microVM as the image's ROOT user
+	// (no `-u workspace`), for privileged operations the unprivileged workspace
+	// user cannot perform — notably booting the rootful in-VM containerd. A
+	// non-zero inner exit is carried in ExecResult; only an infrastructure failure
+	// (microVM down, msb missing) is a Go error.
+	ExecRoot(name string, argv []string) (ExecResult, error)
 	// ExecInteractive runs argv inside the running microVM with the CALLER'S
 	// terminal attached — a real PTY via `msb exec -t`, with stdin/stdout/stderr
 	// wired straight through — for interactive shells and agent CLIs. Only an
@@ -264,6 +271,11 @@ func (manager Manager) Start(project string) (*state.Workspace, error) {
 	if err := manager.registerAgentProviders(name, project, projectConfig, gatewayURL); err != nil {
 		return nil, err
 	}
+	// Bring up the rootful in-VM container runtime (containerd) so nerdctl works
+	// inside the workspace. BEST-EFFORT: a failure here must NOT fail the workspace
+	// start — a non-container workspace is still fully usable, and Phase 1's app
+	// start surfaces a clear error if the runtime is down. We only log a warning.
+	manager.ensureContainerd(name)
 	now := manager.Now()
 	handle := &state.Workspace{
 		ID:          name,
@@ -337,6 +349,46 @@ func (manager Manager) registerAgentProviders(name, project string, projectConfi
 	// Write the managed tmux.conf so the workspace session model is transparent
 	// (mouse scroll, hidden status bar) — the user never types a tmux command.
 	return manager.Sandbox.WriteFile(name, tmuxConfGuestPath, agentcfg.TmuxConfig())
+}
+
+// containerdLog is the in-VM path containerd's stdout/stderr is redirected to
+// when ensureContainerd boots it, so the daemon's output is inspectable.
+const containerdLog = "/var/log/containerd.log"
+
+// ensureContainerd makes the rootful in-VM container runtime (containerd)
+// available so nerdctl works inside the workspace (arch §7). It probes whether
+// containerd is already up (a `nerdctl info` that talks to the daemon) and, if
+// not, boots it DETACHED via `setsid` so the daemon outlives the exec that
+// started it and runs for the VM's life. Both run as ROOT (ExecRoot) because the
+// runtime is rootful and the unprivileged workspace user cannot start it.
+//
+// It is BEST-EFFORT: any failure (probe error, boot error, non-zero exit) is
+// logged as a warning and swallowed — a workspace with no running runtime is
+// still fully usable, and Phase 1's app start surfaces a clear error if the
+// runtime is down. It never returns an error and never fails the workspace start.
+//
+// hardware bring-up: the daemon-persistence of `msb exec` + setsid and the real
+// containerd boot are verified on a provisioned Apple Silicon host. The host-side
+// orchestration (the probe, the boot argv, the best-effort swallowing) is
+// unit-tested here against the fake sandbox.
+func (manager Manager) ensureContainerd(name string) {
+	// Probe: if `nerdctl info` reaches the daemon, containerd is already up.
+	if result, err := manager.Sandbox.ExecRoot(name, []string{"nerdctl", "info"}); err == nil && result.ExitCode == 0 {
+		return
+	}
+	// Boot containerd detached so it survives this exec returning. setsid +
+	// background keeps the daemon running for the VM's life; output is redirected
+	// to a log for later inspection.
+	bootCmd := fmt.Sprintf("setsid sh -c 'containerd >%s 2>&1 &'", shellQuoteGuest(containerdLog))
+	result, err := manager.Sandbox.ExecRoot(name, []string{"sh", "-c", bootCmd})
+	if err != nil {
+		_, _ = fmt.Fprintf(os.Stderr, "warning: could not start the in-VM container runtime in workspace %q: %v\n", name, err)
+		return
+	}
+	if result.ExitCode != 0 {
+		_, _ = fmt.Fprintf(os.Stderr, "warning: in-VM container runtime did not start cleanly in workspace %q (exit %d): %s\n",
+			name, result.ExitCode, strings.TrimSpace(result.Stderr))
+	}
 }
 
 // installRefreshScript generates the per-workspace `refresh-models` script and

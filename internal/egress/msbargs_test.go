@@ -29,12 +29,14 @@ func gatewayRule() []string {
 	return []string{"--net-rule", "allow:egress@host.microsandbox.internal:tcp:18787"}
 }
 
-func TestMsbNetworkArgsDenyDefault(t *testing.T) {
-	// Empty Egress resolves to "deny".
+func TestMsbNetworkArgsPublicDefault(t *testing.T) {
+	// Empty Egress now resolves to "public" (allow-outbound) — a zero NetworkConfig
+	// emits the broad public allow rule on top of the default-deny fallthrough and
+	// the always-on host-gateway allow.
 	got := MsbNetworkArgs(config.NetworkConfig{}, testGatewayHost, testGatewayPort)
-	want := append(gatewayRule(), "--net-default-egress", "deny")
+	want := append(gatewayRule(), "--net-default-egress", "deny", "--net-rule", "allow:egress@public")
 	if !reflect.DeepEqual(got, want) {
-		t.Fatalf("deny default:\n got %#v\nwant %#v", got, want)
+		t.Fatalf("public default:\n got %#v\nwant %#v", got, want)
 	}
 }
 

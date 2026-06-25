@@ -65,13 +65,19 @@ allow-listed host services that use the `gateway` token resolve to it in every m
       target derives from the same `runtime.DefaultGatewayHost`. `Info.HostAddress()`
       prefers the `AI_PLATFORM_HOST` env override, else this value.
 - [ ] **Prove the four properties** (these make "it works" + "egress is confined"
-      falsifiable) on a live host:
+      falsifiable) on a live host. NOTE the default egress mode is now **"public"**
+      (allow-outbound — a deliberate security-posture change so in-VM nerdctl can
+      pull images and AI processes reach the internet); the deny properties below
+      apply when the project is re-locked with `ai network egress deny`:
   1. a workspace reaches an **allow-listed** host service (start a host Postgres,
      allow-list `gateway:5432`, connect from inside the microVM);
-  2. a **non-allow-listed** host/internet destination is **denied** (default-deny);
+  2. under `egress deny`, a **non-allow-listed** host/internet destination is
+     **denied** (default-deny); under the **default "public"**, the open internet
+     is reachable while **private ranges** stay blocked by the default-deny
+     fallthrough — verify both;
   3. a **published** guest port (`network.publish_ports`) is reachable from the host;
-  4. the model-gateway path (nginx → Headroom → LiteLLM) remains reachable while
-     everything not allow-listed stays denied.
+  4. the model-gateway path (nginx → Headroom → LiteLLM) remains reachable in
+     every mode (the always-on host-gateway allow rule).
 
 ### 2.2 Live service/microVM log capture (`ai logs`)
 
@@ -223,6 +229,39 @@ chain itself. The remaining verification work:
       PII masking is deliberately not done). Because the guardrails are
       `default_on: true` and every route traverses the proxy, a cloud route cannot
       bypass them.
+
+### 2.6 In-VM container runtime (Phase 0 — arch §7)
+
+Every workspace microVM image now ships a **rootful** OCI container runtime —
+containerd + nerdctl + runc + CNI plugins + buildkit — installed from the pinned
+`nerdctl-full` release tarball (`NERDCTL_VERSION=2.3.3`, arch-aware amd64/arm64,
+extracted to `/usr/local`) in every OS base Dockerfile, plus the runtime OS deps
+CNI needs (`ca-certificates`, `iptables`/`iptables-nft`, `iproute`/`iproute2`).
+The runtime is **started at workspace start**, not baked running into the image:
+`Manager.Start` calls `ensureContainerd`, which probes `nerdctl info` (as root via
+the new `Sandbox.ExecRoot`) and, if the daemon is not up, boots it **detached**
+(`setsid sh -c 'containerd >/var/log/containerd.log 2>&1 &'`) so it survives the
+exec and runs for the VM's life. This is **best-effort** — a failure logs a
+warning and does NOT fail the workspace start.
+
+The host-side wiring (the Dockerfile install lines, `ExecRoot` argv assembly, the
+probe + boot argv, and the best-effort swallowing) is unit-tested. The LIVE
+behaviour is a bring-up item:
+
+- [ ] **containerd boots and persists in the microVM** — on a provisioned host,
+      confirm `msb exec <name> -- nerdctl info` reports a running daemon after
+      `ai start` (the detached `setsid` containerd survives the exec that started
+      it), and `msb exec <name> -- nerdctl run --rm hello-world` works (proves
+      runc + CNI + image pull through the now-`public` egress).
+- [ ] **`msb exec` daemon-persistence** — verify the `setsid` background daemon is
+      not reaped when the boot exec returns (the assumption `ensureContainerd`
+      relies on). If msb tears down the exec's process group, switch the boot to a
+      persistence mechanism msb keeps alive (e.g. a transient unit / init service).
+- [ ] **arch-aware tarball** — confirm `uname -m` → `arm64` on Apple Silicon
+      selects `nerdctl-full-2.3.3-linux-arm64.tar.gz` (and `amd64` on Linux x86_64).
+
+(Phase 1 — the apps that run ON this runtime — is NOT part of Phase 0 and is not
+documented here yet.)
 
 ## 3. Turn on the remaining acceptance tests
 

@@ -169,6 +169,10 @@ Rules:
 * the OS template **seeds** a new workspace's `.ai-platform/Dockerfile` at
   `ai create`; the selected **stack snippets** (wizard step 5) are
   composed into it after the base tooling
+* every OS base template installs, beyond the base tooling, a **rootful in-VM OCI
+  container runtime** (containerd + nerdctl + runc + CNI + buildkit, from the
+  pinned `nerdctl-full` tarball into `/usr/local`, arch-aware) plus its CNI deps
+  (`iptables`, `iproute`); the runtime is started at workspace start (arch §7)
 * the stack list is **extensible** — adding `stacks/<name>/Dockerfile.snippet`
   makes `<name>` selectable
 * after creation the project owns its Dockerfile; templates/snippets are no
@@ -576,8 +580,8 @@ workspace:
   cpu_limit: 4             # microVM resource limits (applied at workspace start)
   memory_limit: 8G
 network:                   # workspace networking (arch §29.6); all fields managed via `ai network`
-                           # enforced as a default-deny Microsandbox NetworkPolicy (no egress proxy)
-  egress: deny             # deny | public | unrestricted (default deny)
+                           # enforced as a Microsandbox NetworkPolicy (no egress proxy); DNS-audited
+  egress: public           # public (default, allow-outbound) | deny | unrestricted
   allow_host_services:     # external destinations the workspace may reach (host/IP/domain or "gateway")
     - { host: gateway, port: 5432 }
   publish_ports:           # host → workspace port maps

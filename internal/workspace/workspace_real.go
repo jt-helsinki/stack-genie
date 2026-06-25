@@ -162,13 +162,38 @@ func (sandbox realSandbox) Destroy(name string) error {
 // is data carried in ExecResult, NOT a Go error. Only infrastructure failures
 // (microVM down, msb missing) are returned as errors (§4.5).
 func (sandbox realSandbox) Exec(name string, argv []string) (ExecResult, error) {
-	if err := sandbox.ensureInstalled(); err != nil {
-		return ExecResult{}, err
-	}
 	// Run as the `workspace` user (the image's home owner, matching WriteFile) so
 	// commands, shells, agents, and tmux all share that user's home + the agent
 	// provider configs under /home/workspace.
-	args := append([]string{"exec", "-u", "workspace", name, "--"}, argv...)
+	return sandbox.execAs(name, "workspace", argv)
+}
+
+// ExecRoot runs argv as the image's ROOT user — `msb exec <name> -- <argv>` with
+// no `-u workspace` — for privileged operations the unprivileged workspace user
+// cannot perform (notably booting the rootful in-VM containerd). A non-zero inner
+// exit is data in ExecResult; only an infra failure is a Go error (§4.5).
+//
+// hardware bring-up: msb's daemon-persistence (a setsid'd containerd surviving
+// the exec) is verified on a provisioned host; the argv assembly is unit-tested.
+func (sandbox realSandbox) ExecRoot(name string, argv []string) (ExecResult, error) {
+	return sandbox.execAs(name, "", argv)
+}
+
+// execAs runs argv inside the running microVM, optionally as a specific user
+// (empty user → the image's root). The inner command's exit code is faithfully
+// propagated by msb to its own process exit; a non-zero inner exit is data
+// carried in ExecResult, NOT a Go error. Only infrastructure failures (microVM
+// down, msb missing) are returned as errors (§4.5).
+func (sandbox realSandbox) execAs(name, user string, argv []string) (ExecResult, error) {
+	if err := sandbox.ensureInstalled(); err != nil {
+		return ExecResult{}, err
+	}
+	args := []string{"exec"}
+	if user != "" {
+		args = append(args, "-u", user)
+	}
+	args = append(args, name, "--")
+	args = append(args, argv...)
 	command := exec.Command("msb", args...)
 	var stdout, stderr bytes.Buffer
 	command.Stdout = &stdout

@@ -8,7 +8,24 @@ ENV DEBIAN_FRONTEND=noninteractive
 RUN apt-get update \
  && apt-get install -y --no-install-recommends \
       ca-certificates curl git gnupg sudo tmux \
+      iptables iproute2 \
  && rm -rf /var/lib/apt/lists/*
+
+# In-VM OCI container runtime (arch §7): containerd + nerdctl + runc + CNI +
+# buildkit, installed from the pinned nerdctl-full release tarball (one static,
+# distro-agnostic artifact) into /usr/local. Arch-aware (amd64/arm64). The
+# runtime is rootful and is started at workspace start, not in the image.
+ENV NERDCTL_VERSION=2.3.3
+RUN arch="$(uname -m)" \
+ && case "$arch" in \
+      x86_64)  nerdctl_arch=amd64 ;; \
+      aarch64) nerdctl_arch=arm64 ;; \
+      *) echo "unsupported arch: $arch" >&2; exit 1 ;; \
+    esac \
+ && curl -fsSL "https://github.com/containerd/nerdctl/releases/download/v${NERDCTL_VERSION}/nerdctl-full-${NERDCTL_VERSION}-linux-${nerdctl_arch}.tar.gz" \
+      -o /tmp/nerdctl-full.tar.gz \
+ && tar -C /usr/local -xzf /tmp/nerdctl-full.tar.gz \
+ && rm -f /tmp/nerdctl-full.tar.gz
 
 # GitHub CLI (gh).
 RUN curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \

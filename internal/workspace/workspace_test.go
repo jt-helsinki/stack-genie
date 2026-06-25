@@ -35,6 +35,9 @@ type fakeSandbox struct {
 	execErr                              error
 	execArgv                             []string
 	interactiveArgv                      []string
+	execRootArgv                         [][]string // every ExecRoot call's argv, in order
+	execRootResult                       ExecResult
+	execRootErr                          error
 	written                              map[string][]byte
 	inspectPolicy                        NetworkPolicy
 	inspectErr                           error
@@ -53,6 +56,10 @@ func (sandbox *fakeSandbox) Destroy(string) error { sandbox.destroyed = true; re
 func (sandbox *fakeSandbox) Exec(_ string, argv []string) (ExecResult, error) {
 	sandbox.execArgv = argv
 	return sandbox.execResult, sandbox.execErr
+}
+func (sandbox *fakeSandbox) ExecRoot(_ string, argv []string) (ExecResult, error) {
+	sandbox.execRootArgv = append(sandbox.execRootArgv, argv)
+	return sandbox.execRootResult, sandbox.execRootErr
 }
 func (sandbox *fakeSandbox) ExecInteractive(_ string, argv []string) error {
 	sandbox.interactiveArgv = argv
@@ -220,6 +227,70 @@ func TestStartBuildsAndRecordsStartedHandle(test *testing.T) {
 	workspaces, err := state.OpenStore(root).ListWorkspaces()
 	if err != nil || len(workspaces) != 1 || workspaces[0].Status != state.StatusStarted {
 		test.Fatalf("persisted workspaces=%+v err=%v", workspaces, err)
+	}
+}
+
+// TestStartEnsuresContainerdWhenDown drives the in-VM container-runtime bring-up:
+// when the `nerdctl info` probe reports the daemon is NOT up, Start must boot
+// containerd as ROOT (ExecRoot) detached via setsid.
+func TestStartEnsuresContainerdWhenDown(test *testing.T) {
+	seedProject(test, "app")
+	sandbox := &fakeSandbox{
+		// Probe (and the boot) report a non-zero exit → containerd not yet up, so
+		// ensureContainerd proceeds to the boot. A non-zero boot exit is swallowed
+		// (best-effort) so it never fails the start.
+		execRootResult: ExecResult{ExitCode: 1, Stderr: "down"},
+	}
+	manager := Manager{Builder: &fakeBuilder{}, Sandbox: sandbox, Keys: &fakeKeyMinter{}, Now: func() string { return "t" }}
+
+	if _, err := manager.Start("app"); err != nil {
+		test.Fatalf("Start must succeed even when containerd is down (best-effort): %v", err)
+	}
+	if len(sandbox.execRootArgv) != 2 {
+		test.Fatalf("expected a probe + a boot ExecRoot call, got %d: %v", len(sandbox.execRootArgv), sandbox.execRootArgv)
+	}
+	probe := strings.Join(sandbox.execRootArgv[0], " ")
+	if probe != "nerdctl info" {
+		test.Errorf("first ExecRoot must probe the runtime, got %q", probe)
+	}
+	boot := strings.Join(sandbox.execRootArgv[1], " ")
+	if !strings.Contains(boot, "setsid") || !strings.Contains(boot, "containerd") {
+		test.Errorf("second ExecRoot must boot containerd detached via setsid, got %q", boot)
+	}
+}
+
+// TestStartSkipsContainerdBootWhenUp confirms the probe short-circuits the boot:
+// when `nerdctl info` succeeds (exit 0), only the single probe ExecRoot is issued.
+func TestStartSkipsContainerdBootWhenUp(test *testing.T) {
+	seedProject(test, "app")
+	sandbox := &fakeSandbox{} // zero-value execRootResult → exit 0 → already up
+	manager := Manager{Builder: &fakeBuilder{}, Sandbox: sandbox, Keys: &fakeKeyMinter{}, Now: func() string { return "t" }}
+
+	if _, err := manager.Start("app"); err != nil {
+		test.Fatal(err)
+	}
+	if len(sandbox.execRootArgv) != 1 {
+		test.Fatalf("expected only the probe ExecRoot when containerd is up, got %v", sandbox.execRootArgv)
+	}
+}
+
+// TestStartSucceedsWhenContainerdEnsureErrors confirms the bring-up is BEST-EFFORT:
+// an infrastructure error from ExecRoot must not fail the workspace start.
+func TestStartSucceedsWhenContainerdEnsureErrors(test *testing.T) {
+	root := seedProject(test, "app")
+	sandbox := &fakeSandbox{execRootErr: errors.New("msb exec failed")}
+	manager := Manager{Builder: &fakeBuilder{}, Sandbox: sandbox, Keys: &fakeKeyMinter{}, Now: func() string { return "t" }}
+
+	if _, err := manager.Start("app"); err != nil {
+		test.Fatalf("Start must not fail when containerd-ensure errors (best-effort): %v", err)
+	}
+	// The handle must still be saved (the start completed) and the microVM kept.
+	workspaces, err := state.OpenStore(root).ListWorkspaces()
+	if err != nil || len(workspaces) != 1 || workspaces[0].Status != state.StatusStarted {
+		test.Fatalf("a best-effort containerd failure must still save a started handle, got %+v err=%v", workspaces, err)
+	}
+	if sandbox.destroyed {
+		test.Fatal("a best-effort containerd failure must NOT roll back the microVM")
 	}
 }
 

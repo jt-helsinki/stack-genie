@@ -110,6 +110,38 @@ func TestBaseDockerfileKnownKeys(t *testing.T) {
 	}
 }
 
+// TestBaseDockerfileShipsContainerRuntime asserts every OS base Dockerfile
+// installs the in-VM OCI container runtime (arch §7): the pinned nerdctl-full
+// tarball (containerd + nerdctl + runc + CNI + buildkit) plus the runtime OS deps
+// CNI needs (iptables, iproute). The runtime is the foundation Phase 1 builds on.
+func TestBaseDockerfileShipsContainerRuntime(t *testing.T) {
+	redirectHome(t)
+	if err := templates.Install(); err != nil {
+		t.Fatalf("Install: %v", err)
+	}
+	for _, osKey := range osKeys {
+		t.Run(osKey, func(t *testing.T) {
+			got, err := templates.BaseDockerfile(osKey)
+			if err != nil {
+				t.Fatalf("BaseDockerfile(%q): %v", osKey, err)
+			}
+			for _, fragment := range []string{
+				"NERDCTL_VERSION=2.3.3",
+				"nerdctl-full-",
+				"tar -C /usr/local",
+			} {
+				if !strings.Contains(got, fragment) {
+					t.Errorf("%s: base Dockerfile missing container-runtime install %q:\n%s", osKey, fragment, got)
+				}
+			}
+			// CNI's bridge plugin needs iptables + iproute at runtime.
+			if !strings.Contains(got, "iptables") {
+				t.Errorf("%s: base Dockerfile missing iptables (CNI bridge dep)", osKey)
+			}
+		})
+	}
+}
+
 func TestBaseDockerfileUnknownKey(t *testing.T) {
 	redirectHome(t)
 	if err := templates.Install(); err != nil {

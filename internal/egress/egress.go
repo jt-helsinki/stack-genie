@@ -1,5 +1,6 @@
 // Package egress edits a project's workspace egress policy (arch §29.6) in its
-// config.yaml: the default outbound posture (deny|public|unrestricted), the
+// config.yaml: the default outbound posture (deny|public|unrestricted; the
+// default is now "public" — allow-outbound, DNS-audited and re-lockable), the
 // allow-list of external services the workspace may reach (databases, Kafka,
 // specific APIs), and host→guest published ports. Enforced by the Microsandbox
 // network policy at workspace start; this package only manages the declaration.
