@@ -293,7 +293,8 @@ func startWorkspace(emitter *output.Emitter, name string) (*state.Workspace, err
 	return handle, err
 }
 
-// restartWorkspace restarts the existing workspace microVM (no rebuild). Like
+// restartWorkspace restarts the existing workspace microVM (rebuild + recreate to
+// re-apply the network/published-port set, via Manager.Restart → Start). Like
 // startWorkspace it animates a spinner on a TTY and runs directly otherwise.
 func restartWorkspace(emitter *output.Emitter, name string) (*state.Workspace, error) {
 	manager := workspace.RealManager(goruntime.GOOS, nowRFC3339)

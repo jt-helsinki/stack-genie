@@ -51,7 +51,7 @@ func newStopCmd(emitter *output.Emitter, exit *int) *cobra.Command {
 func newRestartCmd(emitter *output.Emitter, exit *int) *cobra.Command {
 	return &cobra.Command{
 		Use:               "restart [name]",
-		Short:             "Restart the workspace microVM (no rebuild; defaults to the current directory)",
+		Short:             "Restart the workspace microVM (rebuilds + recreates to re-apply config; defaults to the current directory)",
 		Args:              cobra.MaximumNArgs(1),
 		ValidArgsFunction: completeProjectArg,
 		RunE:              workspaceRestartRunE(emitter, exit),
