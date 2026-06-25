@@ -12,6 +12,7 @@ import (
 
 	"github.com/jt-helsinki/ideal-robot/internal/conffile"
 	"github.com/jt-helsinki/ideal-robot/internal/paths"
+	"github.com/jt-helsinki/ideal-robot/internal/services"
 )
 
 // SchemaVersion is stamped on config/versions.yaml.
@@ -41,46 +42,27 @@ type File struct {
 // digests are intentionally not pinned (platform/arch specific). `ai setup`
 // resolves every service-tier image from versions.yaml, falling back to these
 // defaults.
+//
+// The pins are DERIVED from the internal/services registry (the single source of
+// truth for the platform's service topology), so they cannot drift from the log
+// scopes / console endpoints / setup reconcile. The registry carries the split
+// keys (presidio-analyzer/anonymizer), the standalone litellm-db, and the native
+// microsandbox runtime; this projects each pin into a versions.Service. A fresh
+// map is built each call, so callers cannot mutate shared state.
 func Default() *File {
+	pinned := make(map[string]Service, len(services.VersionPins()))
+	for key, pin := range services.VersionPins() {
+		pinned[key] = Service{
+			Mode:    pin.Mode,
+			Image:   pin.Image,
+			Tag:     pin.Tag,
+			Version: pin.Version,
+			SHA256:  pin.SHA256,
+		}
+	}
 	return &File{
 		SchemaVersion: SchemaVersion,
-		Services: map[string]Service{
-			"microsandbox": {Mode: "native", Version: "v0.x", SHA256: "TBD"},
-			"litellm":      {Mode: "container", Image: "ghcr.io/berriai/litellm", Tag: "latest"},
-			// Postgres backing LiteLLM's admin UI / virtual keys. Pinned to the
-			// small Alpine variant (far smaller/faster to pull than postgres:latest).
-			"litellm-db": {Mode: "container", Image: "postgres", Tag: "18.4-alpine3.23"},
-			// Headroom (input compression) runs as a shared host container in front
-			// of LiteLLM; agents send to it at :18787 (arch §8–10, §15). Per-project
-			// compression knobs ride per request, so it is no longer baked into the
-			// workspace image.
-			"headroom": {Mode: "container", Image: "ghcr.io/chopratejas/headroom", Tag: "latest"},
-			// Open WebUI is the optional chat UI, routed through LiteLLM as an
-			// OpenAI-compatible gateway (published on the host at :18090).
-			"open-webui": {Mode: "container", Image: "ghcr.io/open-webui/open-webui", Tag: "latest"},
-			// Odysseus is an optional, host-side AI workspace (one logical optional
-			// service backed by four containers: the app plus its ChromaDB / SearXNG /
-			// ntfy companions). The app routes models through the nginx gateway →
-			// Headroom → LiteLLM. Pinned to the published `latest` tag.
-			"odysseus": {Mode: "container", Image: "ghcr.io/pewdiepie-archdaemon/odysseus", Tag: "latest"},
-			"chromadb": {Mode: "container", Image: "chromadb/chroma", Tag: "latest"},
-			"searxng":  {Mode: "container", Image: "searxng/searxng", Tag: "latest"},
-			"ntfy":     {Mode: "container", Image: "binwiederhier/ntfy", Tag: "latest"},
-			// Presidio backs LiteLLM's always-on PII guardrail (arch §17): the
-			// analyzer detects PII, the anonymizer masks it. Internal-only containers.
-			"presidio-analyzer":   {Mode: "container", Image: "mcr.microsoft.com/presidio-analyzer", Tag: "latest"},
-			"presidio-anonymizer": {Mode: "container", Image: "mcr.microsoft.com/presidio-anonymizer", Tag: "latest"},
-			// nginx reverse proxy: the gateway entry on host :18787 in front of
-			// Headroom (HTTPS-ready). Internal Headroom is reached by name.
-			"proxy": {Mode: "container", Image: "nginx", Tag: "stable-alpine3.23-slim"},
-			// Ollama is REQUIRED (always on): LiteLLM routes local model traffic to
-			// it (arch §14, §16). Cloud models still go LiteLLM → provider; LiteLLM's
-			// always-on Presidio guardrails audit both paths (§17).
-			"ollama": {Mode: "container", Image: "ollama/ollama", Tag: "latest"},
-			// CoreDNS egress-audit resolver: microVMs boot with --dns-nameserver
-			// pointed at it so every queried name is logged (arch §29).
-			"dns": {Mode: "container", Image: "coredns/coredns", Tag: "latest"},
-		},
+		Services:      pinned,
 	}
 }
 

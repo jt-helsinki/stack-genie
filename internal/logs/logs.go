@@ -18,12 +18,13 @@ import (
 
 	"github.com/jt-helsinki/ideal-robot/internal/paths"
 	"github.com/jt-helsinki/ideal-robot/internal/project"
+	"github.com/jt-helsinki/ideal-robot/internal/services"
 )
 
 // TailLines is how many trailing lines a tail keeps per source.
 const TailLines = 200
 
-// services is the host services accepted by `ai logs --service` (CLI §13.1):
+// Services returns the host services accepted by `ai logs --service` (CLI §13.1):
 // the microVM runtime (microsandbox) plus every container in the service tier —
 // ollama, presidio, litellm, headroom, proxy, open-webui, dns, and Odysseus's
 // containers (odysseus + chromadb / searxng / ntfy). Logs are per-CONTAINER, so
@@ -33,27 +34,13 @@ const TailLines = 200
 // written by setup.realServices.CaptureServiceLogs (a point-in-time snapshot run
 // by `ai setup` / `ai services status`), so for services with nothing on disk yet
 // this surfaces an empty result, not an error.
-var services = []string{
-	"microsandbox",
-	"ollama",
-	"presidio",
-	"litellm",
-	"headroom",
-	"proxy",
-	"open-webui",
-	"odysseus",
-	"chromadb",
-	"searxng",
-	"ntfy",
-	"dns",
-}
-
-// Services returns the host-service names accepted as a log scope (a fresh copy,
-// so callers cannot mutate the backing slice).
+//
+// The scope list is derived from the internal/services registry (the single
+// source of truth for the platform's service topology), so it cannot drift from
+// the console endpoints / version pins / setup reconcile. It returns a fresh copy
+// each call, so callers cannot mutate the backing slice.
 func Services() []string {
-	out := make([]string, len(services))
-	copy(out, services)
-	return out
+	return services.LogScopes()
 }
 
 // Sources resolves the *.log files to read: the platform logs dir (filtered by

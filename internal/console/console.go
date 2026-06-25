@@ -11,6 +11,8 @@ import (
 	"fmt"
 	"os/exec"
 	"sort"
+
+	"github.com/jt-helsinki/ideal-robot/internal/services"
 )
 
 // Endpoint is what a host service exposes. Address is the host-reachable URL or
@@ -42,8 +44,11 @@ type endpointSpec struct {
 	loopbackAddress string // verbatim address, host-independent (loopback-only services)
 }
 
-// registry maps a host service to its endpoint spec. Ports are the verified host
-// ports the service tier publishes (see internal/setup host-port consts):
+// registry maps a host service to its endpoint spec. The data is DERIVED from the
+// internal/services registry (the single source of truth for the platform's
+// service topology), so it cannot drift from the log scopes / version pins / setup
+// reconcile. The verified host ports the service tier publishes are declared there
+// (see internal/setup host-port consts):
 //   - litellm  :14000  + admin UI at /ui
 //   - ollama   :11434 (HTTP API, no UI)
 //   - proxy    :18787 (aip-proxy nginx gateway entry → Headroom; no separate UI)
@@ -52,19 +57,21 @@ type endpointSpec struct {
 //   - headroom is internal-only on :8787 behind nginx (no longer host-published)
 //   - presidio analyzer/anonymizer are internal-only on :3000 (not host-published)
 //   - microsandbox is the microVM runtime (no host address, no console)
-var registry = map[string]endpointSpec{
-	"litellm":      {port: 14000, consolePath: "/ui", hasConsole: true},
-	"ollama":       {port: 11434},                            // HTTP API on :11434, no console UI
-	"proxy":        {port: 18787},                            // aip-proxy nginx gateway entry, no UI
-	"open-webui":   {port: 18090, hasConsole: true},          // chat UI; root IS the console
-	"odysseus":     {port: 7000, hasConsole: true},           // optional AI workspace UI; root IS the console
-	"chromadb":     {},                                       // internal-only on aip-net (no host publish)
-	"searxng":      {},                                       // internal-only on aip-net (no host publish)
-	"ntfy":         {},                                       // internal-only on aip-net (no host publish)
-	"dns":          {loopbackAddress: "127.0.0.1:15353/udp"}, // aip-dns CoreDNS resolver, host loopback
-	"headroom":     {},                                       // internal-only on :8787 behind nginx
-	"presidio":     {},                                       // analyzer/anonymizer internal-only on :3000
-	"microsandbox": {},                                       // microVM runtime, no address/console
+var registry = buildRegistry()
+
+// buildRegistry projects the internal/services endpoint topology into this
+// package's host-display endpointSpec (the host-rendering logic stays here).
+func buildRegistry() map[string]endpointSpec {
+	specs := make(map[string]endpointSpec)
+	for name, endpoint := range services.Endpoints() {
+		specs[name] = endpointSpec{
+			port:            endpoint.Port,
+			consolePath:     endpoint.ConsolePath,
+			hasConsole:      endpoint.HasConsole,
+			loopbackAddress: endpoint.LoopbackAddress,
+		}
+	}
+	return specs
 }
 
 // endpointForHost renders a spec into a concrete Endpoint for the given display
