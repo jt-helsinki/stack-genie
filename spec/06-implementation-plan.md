@@ -60,6 +60,8 @@ keep the precedence rules in arch §27 explicit), `slog` (structured logs), stdl
 │   ├── runtime/                 # docker/podman detect + rootless verify + role/domain/gateway resolution (service tier)
 │   ├── sandbox/                 # Microsandbox SDK wrapper: naming, mounts/volumes, microVM lifecycle
 │   ├── services/               # service-tier topology registry (names, ports, UI subdomains, gateway paths)
+│   ├── hostsfile/              # managed /etc/hosts block writer (delimited, idempotent)
+│   ├── uihosts/                # UI-vhost logic: the litellm.<domain> host vhost + its /etc/hosts entry (composes services + hostsfile)
 │   ├── console/                # host-display endpoint registry (UI subdomains + gateway paths off the nginx port)
 │   ├── litellm/                 # host lifecycle, config gen, health, routing, guardrails, virtual-key KeyManager
 │   ├── secrets/                 # keys-in-LiteLLM credential broker (fronts the LiteLLM credential store; virtual-key minting)
@@ -68,6 +70,7 @@ keep the precedence rules in arch §27 explicit), `slog` (structured logs), stdl
 │   ├── contextopt/              # per-project Headroom strategy (→ host Headroom proxy per-request knobs) + in-workspace Caveman skill
 │   ├── envimage/                # compose .ai-platform/Dockerfile (OS template + stack snippets + agent CLIs) + build OCI image
 │   ├── workspace/               # workspace lifecycle + tmux-transparent sessions (Builder/Sandbox/Manager)
+│   ├── apps/                     # opt-in in-VM AI apps (Open WebUI / AnythingLLM) — declarative manifests + per-(workspace,app) lifecycle over nerdctl; unique host-port allocation
 │   ├── egress/                  # per-project egress policy → msb net-rules (MsbNetworkArgs)
 │   ├── overlay/                 # per-workspace persistent overlay
 │   ├── audit/                   # append-only audit log (no secrets)
@@ -130,9 +133,15 @@ These underpin every slice and are built first.
 * `sandbox/` (workspaces): drive Microsandbox via the **`msb` CLI**; verify the
   microVM runtime + host virtualization (Apple Silicon / KVM); no daemon to
   supervise. The adapter creates each workspace microVM **and applies its egress
-  network policy as `msb` net-rules at create** — the default-deny + allow-rule
-  model (deny by default; allow exactly the trusted host service ports + published
-  ports), which is what AT §16.3 asserts. The per-project egress policy itself
+  network policy as `msb` net-rules at create**. The enforcement primitive is
+  msb's deny fallthrough (`--net-default-egress deny`) plus explicit allow rules;
+  the **per-project default mode is now `public`**, which keeps that deny
+  fallthrough but adds a broad `allow:egress@public` rule (open internet; private
+  ranges still blocked) so a fresh workspace can pull in-VM container images and
+  reach the internet. `deny` mode drops the broad rule and allows only the trusted
+  host service ports + published ports — that locked-down posture is what AT §16.3
+  asserts (it configures `deny` explicitly via the egress fixture). The model
+  gateway is always reachable in every mode. The per-project egress policy itself
   (mode `deny`/`public`/`unrestricted`, allowed host services, published ports —
   repo-layout §12.4) is configured by the `ai network` command and rendered into
   the `msb create` net-rule fragment by `egress.MsbNetworkArgs`.
@@ -144,18 +153,19 @@ The `ai` CLI is the **single control plane** for host services (architecture §5
 behind uniform `ai services` verbs — **no docker compose**:
 
 * **container tier**, reconciled in order network → DNS → Ollama → Presidio →
-  LiteLLM(+DB) → Headroom → nginx proxy → Open WebUI: the `aip-dns` CoreDNS
+  LiteLLM(+DB) → Headroom → nginx proxy: the `aip-dns` CoreDNS
   egress-audit resolver, the containerized Ollama `aip-ollama`, the Presidio
   secret-masking pair `aip-presidio-analyzer`/`aip-presidio-anonymizer`, LiteLLM
   `aip-litellm` + its Postgres `aip-litellm-db`, the Headroom proxy
-  `aip-headroom`, the `aip-proxy` nginx gateway, and the optional `aip-open-webui`
-  / Odysseus (`aip-odysseus` + companions): managed directly via the `runtime/`
-  abstraction (run by image+tag, restart policy, health poll) on the private
-  `aip-net` network, so docker and podman stay interchangeable. **Only the
+  `aip-headroom`, and the `aip-proxy` nginx gateway: managed directly via the
+  `runtime/` abstraction (run by image+tag, restart policy, health poll) on the
+  private `aip-net` network, so docker and podman stay interchangeable. **Only the
   `aip-proxy` nginx gateway is host-published** (host port `18787`, the sole
   entry); every other service is internal-only on `aip-net` and reached through
   it (Postgres + DNS stay loopback). `ai services update` re-pulls moved tags and
-  recreates affected containers.
+  recreates affected containers. (Open WebUI is now an opt-in **in-VM** app and
+  Odysseus was removed, so the host tier has no optional services; the optional
+  mechanism is retained for future host services.)
 
 The Microsandbox runtime is **not** a managed service: its `msb` binary is
 pinned into `tools/` and invoked on demand via `sandbox/` to create and drive
@@ -163,11 +173,12 @@ workspace microVMs; `ai setup` only verifies it is installed and the host
 supports virtualization.
 
 Each service's config is **rendered** from the platform config into
-`config/<service>/` (including the nginx vhost map for the
-`litellm.`/`chat.`/`odysseus.<domain>` UI subdomains and the `/v1`, `/ollama`,
-`/llm` gateway paths); real provider keys stay only in the LiteLLM gateway
-(keys-in-LiteLLM). Service-tier image refs are pinned by **image+tag** (no
-digest — digests are platform/arch specific) in `config/versions.yaml`.
+`config/<service>/` (including the nginx vhost map for the `litellm.<domain>` UI
+subdomain — the only host UI vhost — and the `/v1`, `/ollama`, `/llm` gateway
+paths); real provider keys stay only in the LiteLLM gateway (keys-in-LiteLLM).
+Service-tier image refs are pinned by **image+tag** (no digest — digests are
+platform/arch specific) in `config/versions.yaml`. (The in-VM apps pin their own
+images in `internal/apps`, not in the host `versions.yaml`.)
 
 | Adapter | Integration | Run mode | First slice |
 |---|---|---|---|
@@ -206,11 +217,12 @@ refer to the CLI spec and architecture spec respectively.
   Tests: AT §11.1.
 * **M3 — `ai setup` + services.** Preflight (exit 3 on missing deps),
   init `~/.ai-platform/`, install/configure/start the container service tier
-  (DNS resolver, Ollama, Presidio pair, LiteLLM + its DB, Headroom, nginx gateway,
-  optional Open WebUI/Odysseus) with the role-driven bind host (server 0.0.0.0,
+  (DNS resolver, Ollama, Presidio pair, LiteLLM + its DB, Headroom, nginx gateway)
+  with the role-driven bind host (server 0.0.0.0,
   standalone/client loopback) + verify the Microsandbox runtime; provider keys
   live in the LiteLLM gateway (keys-in-LiteLLM, §8.2); render the per-project
-  default-deny network policy template; `ai services status`; **idempotent**.
+  network policy template (default mode `public`, §8.2); `ai services status`;
+  **idempotent**.
   Tests: AT §2.1, §2.2, §2.3, §12.1 (macOS install).
 * **M4 — Model layer + secrets.** LiteLLM config gen + routing default
   (the generated config also renders **always-on guardrails**, all
@@ -222,23 +234,27 @@ refer to the CLI spec and architecture spec respectively.
   provider. Tests: AT §7.1, §7.2.
 * **M5 — debian-trixie image + Microsandbox.** Seed `.ai-platform/Dockerfile` from the
   `debian-trixie` template, build the workspace OCI image from it; create/start
-  the microVM (virtio-net + gvproxy, default-deny network policy **applied as
-  `msb` net-rules at create**, §3.4); mounts/volumes;
+  the microVM (virtio-net + gvproxy, the per-project network policy **applied as
+  `msb` net-rules at create** — deny fallthrough + allow rules, default mode
+  `public`, §3.4); mounts/volumes;
   `ai exec`; write the in-VM agent provider config so the agent reaches the host
   nginx gateway (`http://<gateway>:18787/v1` → Headroom → LiteLLM, resolved via
   `runtime.ResolveGateway`) with its scoped virtual key (arch §17). Tests: AT §6.1,
   harness workspace-start threshold, AT §16.2, AT §16.3.
 * **M6 — `ai create` wizard + delete.** In-process `charmbracelet/huh` wizard
-  (CLI §3.1) with steps for name/OS/agent-CLIs/default-agent/**software-stacks**,
-  each with a presented default, checkbox multi-select for CLIs + stacks,
+  (CLI §3.1) with steps for
+  name/OS/agent-CLIs/default-agent/**software-stacks**/**in-VM apps**, each with a
+  presented default, checkbox multi-select for CLIs + stacks + apps,
   arrow/space navigation, Back + Abort. Every input also has a flag
-  (`--name`/`--os`/`--agents`/`--stacks`) that **pre-seeds** the wizard on a TTY
+  (`--name`/`--os`/`--agents`/`--stacks`/`--apps`) that **pre-seeds** the wizard
+  on a TTY
   (the wizard always shows); under `--json`/no-TTY the spec is built straight from
   the flags with no prompt and `--os` is **required** (missing `--os` → exit 2).
   Then, in the current directory (no git — VCS is out of scope), write
   `.ai-platform/` (Dockerfile = OS template + selected stack snippets + selected
-  CLIs / config incl. `agent.tools`+`default_tool` / `profile.yaml` incl.
-  `stacks` / project.yaml / .gitignore) + index in `config/projects.yaml`.
+  CLIs / config incl. `agent.tools`+`default_tool` + any selected `apps` (with an
+  allocated unique host port each) / `profile.yaml` incl. `stacks` / project.yaml /
+  .gitignore) + index in `config/projects.yaml`.
   `create` is scaffold-only — the workspace OCI image build, the microVM, and the
   agent's scoped LiteLLM virtual key are created on demand by `ai start`
   (or by `create`'s attach path when the cwd is already a project), not on first
@@ -277,6 +293,17 @@ Slice 1 is complete only when every `[S1]` test passes with no manual config.
 * **S7 — Removed.** The `[S7]` tag is retired (no separate slice).
 
 Each slice must not break prior slices (roadmap §1).
+
+**In-VM AI apps (post-S1, cross-cutting).** `apps/`: the opt-in in-VM
+applications (Open WebUI, AnythingLLM) that run as **rootful nerdctl containers
+inside the workspace microVM**, pointed at the same model gateway as the agent
+CLIs, with data persisted on the workspace overlay and reachable from the host on
+a per-(workspace, app) unique published port. Surfaced by `ai apps
+<list|add|remove|update|start|stop|restart>` and pre-seeded at create via
+`ai create --apps`; installed apps are recorded in `config.yaml` (`apps:`,
+repo-layout §12.4). The host **versions.yaml** no longer pins Open WebUI — the
+in-VM apps pin their own images in `internal/apps`. (Live `nerdctl`/containerd
+operation inside a booted microVM is a `hardware bring-up` seam.)
 
 **Status.** The full surface is implemented — milestones M0–M8 plus slices S1,
 S2, S4–S6 (S3 and S7 retired) — host-side and, on a provisioned Apple Silicon
@@ -317,7 +344,7 @@ are grep-able (`hardware bring-up`) and tracked in `docs/HARDWARE-BRINGUP.md`.
 * supported OS (S1: macOS on Apple Silicon)
 * container runtime (S1: Docker) + rootless capability (service tier)
 * Microsandbox runtime + host virtualization (Apple Hypervisor entitlement on macOS — the only elevated facility, §29.1)
-* no admin networking (egress is a userspace default-deny Microsandbox NetworkPolicy — no `utun`/NetworkExtension/admin networking, §8.2; version control is out of scope, so no git prereq)
+* no admin networking (egress is a userspace Microsandbox NetworkPolicy — msb's deny fallthrough plus allow rules, default mode `public`; no `utun`/NetworkExtension/admin networking, §8.2; version control is out of scope, so no git prereq)
 * provider credentials are loaded into the LiteLLM gateway via `ai secrets` (not a
   pre-flight hard-fail — `setup` warns if the configured routing has no
   credential; a model call fails only when its credential is actually absent)
@@ -337,21 +364,25 @@ are grep-able (`hardware bring-up`) and tracked in `docs/HARDWARE-BRINGUP.md`.
    the user pre-installs only the container runtime. No docker compose:
    container-tier services run via the runtime abstraction, and
    workspace microVMs via Microsandbox (no daemon). See architecture §5.
-2. **Egress model — RESOLVED (Microsandbox NetworkPolicy).** Workspace egress is
-   a **default-deny Microsandbox NetworkPolicy** per project; there is **no egress
-   proxy**:
-   * the workspace gets a virtio-net NIC via **gvproxy** (userspace), and the
-     **Microsandbox default-deny network policy** permits only the trusted host
-     service ports + published ports declared via `ai network`. All planes are
-     userspace; the only elevated facility is the macOS hypervisor entitlement
-     (arch §29.1, §30). A non-allow-listed destination is denied — tested by
-     AT §16.3.
+2. **Egress model — RESOLVED (Microsandbox NetworkPolicy).** Workspace egress is a
+   per-project **Microsandbox NetworkPolicy** built on msb's deny fallthrough plus
+   explicit allow rules; there is **no egress proxy**:
+   * the workspace gets a virtio-net NIC via **gvproxy** (userspace). The
+     **per-project default mode is now `public`** (allow-outbound to the open
+     internet; private ranges still blocked by the deny fallthrough), so a fresh
+     workspace can pull in-VM container images and reach the internet — egress is
+     still DNS-audited (`ai network log`) and re-lockable. `deny` mode permits only
+     the trusted host service ports + published ports declared via `ai network`;
+     the model gateway is always reachable in every mode. All planes are userspace;
+     the only elevated facility is the macOS hypervisor entitlement (arch §29.1,
+     §30). Under `deny`, a non-allow-listed destination is denied — tested by
+     AT §16.3 (which configures `deny` via the egress fixture).
    * the per-project `ai network` declarations are rendered into `msb` net-rules
      and applied at workspace create (`egress.MsbNetworkArgs` → `msb create`, §3.4).
      **Gate (spike on hardware):** on a clean Apple Silicon Mac, prove (a) the
      `com.apple.security.hypervisor` entitlement works under Developer ID +
      notarization for a downloaded binary, and (b) the `msb` net-rules apply the
-     default-deny + allow-rule model with no `utun`/NetworkExtension/admin
+     deny-fallthrough + allow-rule model with no `utun`/NetworkExtension/admin
      prompt/kext.
 3. **Headroom placement (decided).** Headroom runs as a **host service-tier
    container** (`aip-headroom`, pulled image `ghcr.io/chopratejas/headroom:slim`,

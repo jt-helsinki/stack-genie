@@ -378,9 +378,12 @@ These are implemented progressively across slices.
   only a scoped LiteLLM virtual key, never a real provider secret
 * `ai secrets` manages the LiteLLM-side credentials; no .env files, no secrets on
   platform disk or in the workspace
-* **egress**: a default-deny **Microsandbox NetworkPolicy** per project, configured
-  via `ai network` (modes `deny`/`public`/`unrestricted` + allowed host services +
-  published ports); no egress proxy
+* **egress**: a per-project **Microsandbox NetworkPolicy**, configured via
+  `ai network` (modes `deny`/`public`/`unrestricted` + allowed host services +
+  published ports); **default mode `public`** (allow-outbound to the open
+  internet, private ranges still blocked; lets in-VM apps pull images and AI
+  processes reach the internet, DNS-audited and re-lockable), with `deny` the
+  locked-down posture; no egress proxy
 * **secret masking / audit**: LiteLLM's always-on guardrails on every request
   (Presidio scoped to financial/identity secrets + `hide-secrets` +
   `detect_prompt_injection` + the `tool_permission` tool firewall), which cloud
@@ -429,8 +432,9 @@ one Microsandbox microVM per workspace (hardware isolation, libkrun)
 The container runtime (Docker/Podman) is used only for the service tier
 (the `aip-dns` CoreDNS egress-audit resolver, the containerized Ollama
 `aip-ollama`, the Presidio secret-masking pair, LiteLLM + its Postgres, the
-Headroom input-compression proxy, the `aip-proxy` nginx gateway, and the optional
-Open WebUI / Odysseus), never to run a workspace. All service-tier containers
+Headroom input-compression proxy, and the `aip-proxy` nginx gateway), never to run
+a workspace. The host tier has no optional services (Open WebUI is now a
+per-workspace **in-VM** app and Odysseus was removed). All service-tier containers
 share the private `aip-net` network, and **only the `aip-proxy` nginx gateway is
 host-published** (the host port `18787`); every other service is internal-only on
 `aip-net` and reached through it (Postgres + DNS stay loopback for admin access).
@@ -443,16 +447,15 @@ host-published** (the host port `18787`); every other service is internal-only o
   on host port `18787`. It binds **127.0.0.1** in standalone/client roles and
   **0.0.0.0** in server role (`internal/setup` `currentBindHost()`). It forwards
   to the internal-only Headroom (`aip-headroom:8787`) → LiteLLM
-  (`aip-litellm:4000`), and serves Host-based UI subdomains
-  (`litellm.<domain>`, `chat.<domain>`, `odysseus.<domain>`) plus host-CLI
-  gateway paths (`/v1` model path, `/ollama`, `/llm`). The platform base domain
-  is set by `ai domain` (default `aip.local`; host-CLI URLs render under
-  `localhost:18787`). TLS/HTTPS termination at nginx is still deferred.
-* **role-based UI auth**: the server role requires UI passwords
-  (`WEBUI_AUTH=true`, LiteLLM admin secured via `ai litellm password`);
-  standalone/client are open. Passwords/master key are passed by **env
-  passthrough** and can be persisted out of argv/disk in `~/.ai-platform.env`
-  (`internal/envfile`).
+  (`aip-litellm:4000`), and serves the Host-based UI subdomain
+  (`litellm.<domain>` — the only host UI vhost) plus host-CLI gateway paths
+  (`/v1` model path, `/ollama`, `/llm`). The platform base domain is set by
+  `ai domain` (default `aip.local`; host-CLI URLs render under `localhost:18787`).
+  TLS/HTTPS termination at nginx is still deferred.
+* **role-based UI auth**: the server role secures the exposed UI (LiteLLM admin
+  via `ai litellm password`); standalone/client are open. Passwords/master key are
+  passed by **env passthrough** and can be persisted out of argv/disk in
+  `~/.ai-platform.env` (`internal/envfile`).
 * microVM has a virtual NIC (virtio-net + gvproxy, userspace); no `host.docker.internal`, no host Docker socket
 * machine-wide gateway selection via `ai gateway show|set|clear` →
   `ai_platform_host` in `runtime.yaml`; `runtime.ResolveGateway` derives the
@@ -460,13 +463,18 @@ host-published** (the host port `18787`); every other service is internal-only o
   port `18787`; empty → `host.microsandbox.internal:18787` for standalone/local)
 * cross-platform resolution
 * Ollama reached only via LiteLLM, never directly by the workspace
-* egress is a **default-deny Microsandbox NetworkPolicy** per project: deny by
-  default, permitting only trusted host service ports + published ports. Per-project
-  egress is configured by the `ai network` command (modes `deny`/`public`/`unrestricted`
-  — default `deny` — plus allowed host services and published ports, stored in
-  `config.yaml`). The policy is fully userspace; there is **no egress proxy**.
-  Enforcement renders the `ai network` declarations into Microsandbox net-rules at
-  workspace create (`egress.MsbNetworkArgs` → `msb create`).
+* egress is a per-project **Microsandbox NetworkPolicy** built on msb's deny
+  fallthrough plus explicit allow rules. The **default mode is `public`**
+  (allow-outbound to the open internet; private ranges still blocked by the deny
+  fallthrough), which lets a fresh workspace pull in-VM app images and reach the
+  internet; `deny` mode permits only the trusted host service ports + published
+  ports, and the model gateway is always reachable in every mode. Per-project
+  egress is configured by the `ai network` command (modes
+  `deny`/`public`/`unrestricted` — default `public` — plus allowed host services
+  and published ports, stored in `config.yaml`). The policy is fully userspace;
+  there is **no egress proxy**. Enforcement renders the `ai network` declarations
+  into Microsandbox net-rules at workspace create (`egress.MsbNetworkArgs` →
+  `msb create`).
 
 ---
 

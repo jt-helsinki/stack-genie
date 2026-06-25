@@ -218,7 +218,7 @@ runtime.yaml             # detected runtime, platform-global (§12.5)
 versions.yaml            # pinned image+tag of host services (§12.6)
 projects.yaml            # index: project name → path (§12.7)
 litellm/                 # rendered LiteLLM config.yaml (placeholders only; real keys live in the gateway)
-proxy/                   # rendered nginx.conf for the aip-proxy gateway (UI subdomains)
+proxy/                   # rendered nginx.conf for the aip-proxy gateway (the litellm.<domain> UI vhost + gateway paths)
 dns/                     # rendered CoreDNS config for the aip-dns egress-audit resolver
 ollama/                  # rendered Ollama config (required local model backend)
 <service>/               # one rendered-config dir per service-tier service (created at reconcile)
@@ -238,9 +238,11 @@ Rules:
 
 In **standalone** mode `ai setup` also writes an AI-platform-owned block to
 `/etc/hosts` (a privileged write, outside `~/.ai-platform/`) mapping the UI
-subdomains (`litellm.<domain>`, `chat.<domain>`, `odysseus.<domain>`) to
-`127.0.0.1`, so the nginx gateway's vhosts resolve locally. Only the platform's
-delimited block is touched; `ai uninstall` removes it.
+subdomain (`litellm.<domain>` — the only host UI vhost; Open WebUI is now a
+per-workspace in-VM app and Odysseus was removed) to `127.0.0.1`, so the nginx
+gateway's vhost resolves locally. Only the platform's delimited block is touched;
+`ai uninstall` removes it. (`internal/hostsfile` writes the managed block;
+`internal/uihosts` computes the entries from the service registry.)
 
 ## 1.9 Tools
 
@@ -491,7 +493,6 @@ System is valid when:
 
 * CLI can reconstruct runtime state from each project's `.ai-platform/run/`
 * a project is fully described by its `.ai-platform/` (Dockerfile + config)
-* agents can be rebuilt from worktrees + branches
 * the `.ai-platform/Dockerfile` recreates the environment
 * no manual directory setup is required
 
@@ -581,11 +582,16 @@ workspace:
   memory_limit: 8G
 network:                   # workspace networking (arch §29.6); all fields managed via `ai network`
                            # enforced as a Microsandbox NetworkPolicy (no egress proxy); DNS-audited
-  egress: public           # public (default, allow-outbound) | deny | unrestricted
+  egress: public           # public (DEFAULT, allow-outbound; private ranges still blocked) | deny | unrestricted
+                           # empty == "public" (the model gateway is always reachable in every mode)
   allow_host_services:     # external destinations the workspace may reach (host/IP/domain or "gateway")
     - { host: gateway, port: 5432 }
   publish_ports:           # host → workspace port maps
     - { guest: 3000, host: 3000 }
+apps:                      # opt-in in-VM AI apps (arch §7), chosen via `ai create --apps` / `ai apps add`
+                           # each runs as a rootful nerdctl container in the workspace microVM, gateway-routed,
+                           # published on its allocated unique host port (stable across restarts)
+  - { key: openwebui, port: 41001 }   # key one of: openwebui, anythingllm
 ```
 
 ## 12.5 `config/runtime.yaml` (platform-global, non-project)
@@ -597,7 +603,6 @@ network:                   # workspace networking (arch §29.6); all fields mana
   "detected": "docker",
   "rootless": true,
   "microsandbox": { "available": true, "virtualization": "hvf" },
-  "optional_services": ["open-webui"],
   "ai_platform_host": "host.local",
   "host_gateway": "host.microsandbox.internal",
   "domain": "aip.local",
@@ -608,15 +613,17 @@ network:                   # workspace networking (arch §29.6); all fields mana
 * `role`: `standalone` | `server` | `client` (chosen by `ai setup`; absent on a
   pre-role runtime.yaml). Drives the service bind host and which prereqs are
   required.
-* `optional_services`: the opt-in services enabled at setup (e.g. `open-webui`,
-  `odysseus`); omitted when none.
+* `optional_services`: the opt-in HOST services enabled at setup; the optional
+  mechanism is retained but there are currently **no** optional host services
+  (Open WebUI moved to a per-workspace in-VM app and Odysseus was removed), so
+  this field is normally omitted.
 * `ai_platform_host`: the machine-wide gateway address every workspace microVM
   routes through (`ai gateway set` / `ai setup --mode client --server`).
 * `host_gateway`: the guest-visible host address (arch §29.2), default
   `host.microsandbox.internal`.
-* `domain`: the platform base domain the nginx UI subdomains hang off
-  (`litellm.<domain>`, `chat.<domain>`, `odysseus.<domain>`); empty resolves to
-  the default `aip.local` (`ai domain` shows/sets it).
+* `domain`: the platform base domain the nginx UI subdomain hangs off
+  (`litellm.<domain>` — the only host UI vhost); empty resolves to the default
+  `aip.local` (`ai domain` shows/sets it).
 
 ## 12.6 `config/versions.yaml` (pinned host-service versions)
 
@@ -631,8 +638,7 @@ network:                   # workspace networking (arch §29.6); all fields mana
     "ollama":       { "mode": "container", "image": "ollama/ollama", "tag": "latest" },
     "presidio-analyzer":   { "mode": "container", "image": "mcr.microsoft.com/presidio-analyzer",   "tag": "latest" },
     "presidio-anonymizer": { "mode": "container", "image": "mcr.microsoft.com/presidio-anonymizer", "tag": "latest" },
-    "proxy":        { "mode": "container", "image": "nginx", "tag": "latest" },
-    "open-webui":   { "mode": "container", "image": "ghcr.io/open-webui/open-webui", "tag": "latest" },
+    "proxy":        { "mode": "container", "image": "nginx", "tag": "stable-alpine3.23-slim" },
     "dns":          { "mode": "container", "image": "coredns/coredns", "tag": "latest" }
   }
 }

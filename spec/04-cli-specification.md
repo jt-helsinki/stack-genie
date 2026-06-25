@@ -156,6 +156,7 @@ completion:
 * `ai context strategy` → `conservative|balanced|aggressive`
 * `ai context caveman` → `lite|full|ultra|wenyan`
 * `ai services console` → services that have an admin console
+* `ai apps <verb>` → the verb set, then the app keys (`openwebui|anythingllm`)
 * `ai logs --service` → the host services; `ai logs --workspace` → project names
 * `ai theme` → the available theme names
 
@@ -467,6 +468,12 @@ Steps, in order:
    `Go`, `Python`, `Rust` — the list is extensible, §25). None pre-checked (a
    project may need nothing beyond the base image). Selected stacks are installed
    into the generated `.ai-platform/Dockerfile` and recorded in `profile.yaml`.
+6. **AI apps** — **multi-select checkboxes**; choose the opt-in in-VM AI
+   applications to install into the workspace (`Open WebUI`, `AnythingLLM`).
+   **None pre-checked** (apps are opt-in). Pre-seeded from `--apps`. Each selected
+   app is recorded in `config.yaml`'s `apps:` block and allocated a unique host
+   port; the containers run inside the microVM and are managed later via
+   `ai apps` (§4.5c).
 
 There is no separate confirm step — completing the last group (Enter) creates
 the project; **Abort** at any point cancels.
@@ -493,8 +500,9 @@ Behavior (on completion):
 * **(Slice 2+)** installs the Caveman skill into
   `<project>/.ai-platform/skills/caveman/` (§9); in Slice 1 no context-optimization
   skill is seeded
-* writes `project.yaml`, `config.yaml` (including `agent.tools` and
-  `agent.default_tool`), `profile.yaml`, and a `.gitignore` that ignores `run/`
+* writes `project.yaml`, `config.yaml` (including `agent.tools`,
+  `agent.default_tool`, and an `apps:` block for any in-VM apps chosen in step 6),
+  `profile.yaml`, and a `.gitignore` that ignores `run/`
 * records the project in the global index (`config/projects.yaml`)
 
 `create` is **scaffold-only**: it writes the `.ai-platform/` definition and
@@ -594,10 +602,10 @@ Behavior:
 * injects `AI_PLATFORM_HOST` + service ports and the scoped **LiteLLM virtual
   key** into the workspace environment (the workspace holds no provider secret;
   keys-in-LiteLLM, architecture §17)
-* applies the project's egress policy (default-deny egress + allow-listed host
-  services + published ports, from the `network` block; architecture §29.4) as
-  Microsandbox net-rules rendered at workspace create (`egress.MsbNetworkArgs` →
-  `msb create`)
+* applies the project's egress policy (the default posture — **public** by
+  default; deny/unrestricted are opt-in — plus allow-listed host services +
+  published ports, from the `network` block; architecture §29.4) as Microsandbox
+  net-rules rendered at workspace create (`egress.MsbNetworkArgs` → `msb create`)
 * initializes tooling
 
 ---
@@ -1262,9 +1270,11 @@ ports. With `--json` or no TTY, the value must be passed as an argument.
   error (exit `0`); only a genuine `msb` runtime failure surfaces (exit `4`). With
   `--json`, the live policy appears under an optional `in_force` field (omitted
   when unavailable).
-* `egress` sets the default outbound posture: **deny** (default — only the model
-  gateway + allowed services), **public** (open internet, private ranges still
-  blocked), **unrestricted**.
+* `egress` sets the default outbound posture: **public** (default — open
+  internet, private ranges still blocked, every name DNS-audited via `ai network
+  log` and re-lockable per project), **deny** (only the model gateway + allowed
+  services — most locked-down), **unrestricted** (allow everything). A project
+  whose `network.egress` is unset resolves to **public**.
 * `allow <host[:port]>` adds an allowed host service the workspace may reach — a
   database, Kafka broker, or a specific API/domain. `host` may be a
   hostname/IP/domain, a `*.suffix` wildcard (e.g. `*.npmjs.org`), or the
@@ -1285,7 +1295,7 @@ ports. With `--json` or no TTY, the value must be passed as an argument.
   does **not** filter in v1); it is **names only — not connection verdicts and not
   direct-IP egress** (literal-IP traffic never touches DNS); and it is **not
   enforcement** — a name shown here was *resolved*, not necessarily *reached*.
-  Enforcement is the msb net-rules in `ai network show`, and under a default-deny
+  Enforcement is the msb net-rules in `ai network show`, and under a `deny`
   posture msb may filter a denied name before it reaches the resolver (so denied
   names can be absent). If `aip-dns` is not running (or no container runtime is
   present), `log` prints a clear note and exits `0`; a genuine runtime failure

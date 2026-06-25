@@ -131,17 +131,18 @@ for the rare TTY-only human-wizard cases and is not used here.)
   recorded request, and must appear **nowhere** in the workspace env, the
   workspace filesystem, `~/.ai-platform`, or `~/projects`. The workspace agent
   holds only a scoped LiteLLM **virtual key**, never the provider secret.
-* **egress policy fixture** (`fixtures/egress-policy`): the harness configures
-  the egress controls explicitly so tests assert against a *known* policy, not
-  ambient host behavior — a **Microsandbox default-deny NetworkPolicy** (declared
-  via `ai network`, applied per-workspace as Microsandbox net-rules at workspace
-  create via the `msb` CLI, plan §3.4) that permits the workspace to reach only
-  the **host gateway** (the always-on allow rule: nginx `aip-proxy` → Headroom →
-  LiteLLM, default `host.microsandbox.internal:18787` — workspaces never reach
-  LiteLLM directly) plus the allow-listed `$MOCK_PROVIDER_URL` (§ Setup). It is
-  rendered from this fixture
-  (parameterized by `$MOCK_PROVIDER_URL`) so the source of "what is allowed" is
-  the fixture, not a test's expectation. There is **no egress proxy** —
+* **egress policy fixture** (`fixtures/egress-policy`): the per-project egress
+  default is now `public` (allow-outbound), so to assert *confinement* the harness
+  configures the egress controls explicitly — it sets **`deny` mode** via
+  `ai network` so tests run against a *known* locked-down policy rather than ambient
+  host behavior. In `deny` mode the **Microsandbox NetworkPolicy** (applied
+  per-workspace as Microsandbox net-rules at workspace create via the `msb` CLI,
+  plan §3.4) permits the workspace to reach only the **host gateway** (the
+  always-on allow rule: nginx `aip-proxy` → Headroom → LiteLLM, default
+  `host.microsandbox.internal:18787` — workspaces never reach LiteLLM directly)
+  plus the allow-listed `$MOCK_PROVIDER_URL` (§ Setup). It is rendered from this
+  fixture (parameterized by `$MOCK_PROVIDER_URL`) so the source of "what is
+  allowed" is the fixture, not a test's expectation. There is **no egress proxy** —
   confinement is the net-rules applied at workspace create (arch §29.4–29.5).
 
 ### Setup / Teardown
@@ -223,8 +224,8 @@ ai setup --json
   (the nginx gateway) — all on `aip-net`
 * in **standalone** (default) the shared services bind **127.0.0.1**; the nginx
   gateway (`aip-proxy`) is the SOLE host entry on `:18787`, with `aip-headroom`
-  now INTERNAL-ONLY behind it (no host publish); the optional `open-webui` /
-  `odysseus` are off by default
+  now INTERNAL-ONLY behind it (no host publish); the host tier has **no optional
+  services** (Open WebUI is now a per-workspace in-VM app and Odysseus was removed)
 * command exits `0`
 
 ---
@@ -779,9 +780,10 @@ It always exits `0`; per-check status conveys health.
   `data.checks`
 * the platform-dependency checks are always present: `container runtime`,
   `microsandbox runtime`, `host virtualization`
-* the SERVICES section lists every managed service — `ollama`, `litellm`,
-  `headroom`, `proxy`, `dns`, and the optional `open-webui` and `odysseus` (the
-  names appear even when stopped/not-installed off-hardware)
+* the SERVICES section lists every managed service — `ollama`, `presidio`,
+  `litellm`, `headroom`, `proxy`, `dns` (the names appear even when stopped
+  off-hardware). The host tier has no optional services (Open WebUI is now a
+  per-workspace in-VM app and Odysseus was removed)
 * `ai doctor ghost` (unknown name) still exits `0` with a report — a shortfall is
   folded into the checks, not a non-zero exit
 
@@ -878,14 +880,16 @@ ai exec test-project --json -- test -e /var/run/docker.sock \
 
 ### Test
 
-Egress is governed by the **Microsandbox default-deny NetworkPolicy**, which
-allows the workspace to reach only the **host gateway** (the always-on allow rule
-the platform injects — `nginx aip-proxy → Headroom → LiteLLM`, the SOLE model
-path; default `host.microsandbox.internal:18787`) plus the allow-listed
-`$MOCK_PROVIDER_URL` (arch §29.4). Workspaces never reach LiteLLM directly. The
-policy comes from the **egress policy fixture** (§1.6) — so this test asserts
-against a defined policy, not ambient behavior. `example.com` is denied **because
-it is not on the fixture's allow-list**. There is no egress proxy.
+The per-project egress default is now `public` (allow-outbound), so to assert
+*confinement* the harness sets **`deny` mode** via the egress policy fixture
+(§1.6). Under `deny` the **Microsandbox NetworkPolicy** allows the workspace to
+reach only the **host gateway** (the always-on allow rule the platform injects —
+`nginx aip-proxy → Headroom → LiteLLM`, the SOLE model path; default
+`host.microsandbox.internal:18787`) plus the allow-listed `$MOCK_PROVIDER_URL`
+(arch §29.4). Workspaces never reach LiteLLM directly. The policy comes from the
+**egress policy fixture** (§1.6) — so this test asserts against a defined policy,
+not ambient behavior. `example.com` is denied **because it is not on the
+`deny`-mode fixture's allow-list**. There is no egress proxy.
 
 `$GATEWAY_URL` is the resolved gateway address (`runtime.ResolveGateway`, default
 `http://host.microsandbox.internal:18787`); `$MOCK_PROVIDER_URL` is the
@@ -916,7 +920,7 @@ ai exec test-project --json -- \
   the NetworkPolicy permits exactly what the fixture allows, so the deny below is
   about policy, not broken connectivity
 * the `example.com` probe **fails** (`data.exit_code != 0`) because the
-  Microsandbox NetworkPolicy default-deny allow-list (fixture, §1.6) excludes it
+  `deny`-mode Microsandbox NetworkPolicy allow-list (fixture, §1.6) excludes it
 * the `ai` process itself exits `0` for all (the commands ran); confinement is
   asserted via `data.exit_code`, per §4.5
 

@@ -11,9 +11,10 @@ provider. A single nginx reverse proxy (`aip-proxy`) is the only host entry to
 the service tier — everything else runs internal-only on the `aip-net` network.
 Real provider API keys live only in the LiteLLM gateway (keys-in-LiteLLM) — never
 on platform disk or in the workspace; the agent holds a scoped virtual key.
-Workspace egress is a default-deny Microsandbox NetworkPolicy you configure with
-`ai network`. Caveman is a per-project output-compression skill inside the
-workspace.
+Workspace egress is a Microsandbox NetworkPolicy you configure with `ai network`;
+it defaults to **public** (DNS-audited outbound, private ranges blocked) so the
+in-VM container runtime can pull images and is re-lockable to default-deny per
+project. Caveman is a per-project output-compression skill inside the workspace.
 
 ## Install
 
@@ -54,8 +55,8 @@ and the DNS egress-audit resolver) is launched by
 Only the nginx gateway (`aip-proxy`) publishes a host port (`:18787`); every other
 service is internal-only and reached through it. The single host UI is served as a
 Host-based subdomain off a platform base domain (default `aip.local`, set with
-`ai domain`): `litellm.<domain>` (the LiteLLM admin UI) — on
-`:18787`. (Open WebUI is now a per-workspace in-VM app; Odysseus has been removed.)
+`ai domain`): `litellm.<domain>` (the LiteLLM admin UI) — on `:18787`. (Open WebUI
+is now a per-workspace in-VM app, run with `ai apps`; Odysseus has been removed.)
 In standalone mode `ai setup` offers to add the matching `/etc/hosts`
 entries; in server mode it prints the DNS + TLS contract for an operator.
 
@@ -75,7 +76,7 @@ address — no local service tier). The role is persisted in `runtime.yaml`.
 Role drives UI auth: standalone/client run **open** for a smooth single-user
 local experience (no login wall); a `server` is network-exposed, so the LiteLLM
 admin UI requires a password (`ai setup` prompts, or set it later with `ai litellm
-password`) and Open WebUI enables login. Platform secrets (`UI_PASSWORD`,
+password`). Platform secrets (`UI_PASSWORD`,
 `LITELLM_MASTER_KEY`) can be persisted opt-in to `~/.ai-platform.env` (mode 0600,
 auto-loaded by `ai`) so they survive restarts without editing your shell rc.
 
@@ -90,10 +91,10 @@ Project-scoped commands default to the project of your current directory (walkin
 up to a `.ai-platform/` root); pass a name or `--project` to target another. With
 no name and outside a project, the command exits `2`.
 
-**Create a project** (interactive wizard — OS, agent CLIs, software stacks):
+**Create a project** (interactive wizard — OS, agent CLIs, software stacks, in-VM apps):
 
 ```bash
-ai create my-app --os debian-trixie   # --dry-run to preview
+ai create my-app --os debian-trixie   # --dry-run to preview; --apps openwebui to seed an in-VM app
 ai list
 ai delete --yes              # the current project, plus its overlay
 ```
@@ -111,6 +112,17 @@ ai sessions                  # list sessions; ai attach reattaches one
 ai destroy                   # non-destructive: keeps the overlay
 ```
 
+**Run an in-VM app** (Open WebUI / AnythingLLM run as nerdctl containers inside the
+microVM, on the rootful in-VM container runtime, routed through the same gateway and
+published on a unique host port):
+
+```bash
+ai apps list                 # the app catalogue + per-workspace status
+ai apps add openwebui        # install; published on restart at a per-(workspace,app) port
+ai apps update anythingllm   # re-pull the latest image and recreate
+ai apps remove openwebui     # also: ai apps start | stop | restart <app>
+```
+
 **Tune, secure, observe:**
 
 ```bash
@@ -118,7 +130,7 @@ ai context strategy aggressive       # Headroom: conservative | balanced | aggre
 ai context caveman  ultra            # Caveman:  lite | full | ultra | wenyan
 
 ai network show                      # egress policy (declared + live in-force)
-ai network egress deny               # deny | public | unrestricted
+ai network egress deny               # deny | public (default) | unrestricted
 ai network allow api.github.com      # allow a host/domain (port defaults to 443; *.suffix ok)
 ai network log                       # attempted-egress audit (domains the workspace resolved)
 

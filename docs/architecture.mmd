@@ -1,5 +1,5 @@
 ---
-title: AI Development Platform — service tier and model data path
+title: AI Development Platform — workspace microVM, host service tier, and model data path
 ---
 flowchart LR
   classDef vm fill:#eef6ff,stroke:#3b82f6,stroke-width:2px,color:#0b3a6b;
@@ -12,26 +12,26 @@ flowchart LR
   subgraph WS["Workspace · Microsandbox microVM (one per project)"]
     direction TB
     AGENT["Agent CLI<br/>opencode · pi · claude · codex · gemini<br/><b>holds only a scoped LiteLLM virtual key</b>"]:::vm
+    RT["In-VM container runtime<br/>rootful containerd · nerdctl · runc · CNI"]:::core
+    APPS["Opt-in in-VM apps (nerdctl)<br/>Open WebUI · AnythingLLM<br/>per-(workspace,app) host port · /workspace mount"]:::opt
   end
 
   subgraph TIER["Host · Docker service tier (aip-net) — internal-only but nginx (loopback: DB, DNS)"]
     direction TB
-    PROXY["nginx gateway · aip-proxy<br/>host :18787 — <b>SOLE host entry</b>, TLS-ready<br/>/ &amp; /v1 → Headroom · /llm → LiteLLM · /ollama → Ollama<br/>vhosts: litellm. / chat. / odysseus.&lt;domain&gt;"]:::gw
+    PROXY["nginx gateway · aip-proxy<br/>host :18787 — <b>SOLE host entry</b>, TLS-ready<br/>/ &amp; /v1 → Headroom · /llm → LiteLLM · /ollama → Ollama<br/>vhost: litellm.&lt;domain&gt;"]:::gw
     HEAD["Headroom · aip-headroom :8787<br/>input compression (internal-only)"]:::gw
     LLM["LiteLLM · aip-litellm :4000<br/><b>router + always-on guardrails</b><br/>admin UI via /llm + litellm.&lt;domain&gt; (internal-only)"]:::core
     PG[("Postgres · aip-litellm-db<br/>(loopback :5442)<br/>virtual keys · spend · provider creds")]:::store
     PRES["Presidio · aip-presidio-{analyzer,anonymizer}<br/>secret masking (pre/post-call)"]:::core
     OLL["Ollama · aip-ollama :11434<br/>local models (default: gemma · internal-only)"]:::core
     DNS["CoreDNS · aip-dns (loopback :15353)<br/>egress audit log"]:::core
-
-    OWUI["Open WebUI · aip-open-webui :8080<br/>(optional chat UI · internal-only)"]:::opt
-    ODY["Odysseus · aip-odysseus :7000<br/>(optional AI workspace · internal-only<br/>+ chromadb/searxng/ntfy)"]:::opt
   end
 
   CLI["Host CLI / UI<br/>loopback 127.0.0.1:18787"]:::vm
   CLOUD["Cloud providers<br/>OpenAI · Anthropic · Gemini · Groq<br/><b>real provider keys live in LiteLLM</b>"]:::cloud
 
-  AGENT == "OpenAI API · base_url http://host:18787/v1<br/>egress DEFAULT-DENY — only the gateway is reachable" ==> PROXY
+  AGENT == "OpenAI API · base_url http://host:18787/v1<br/>egress default PUBLIC (DNS-audited) — re-lockable to deny" ==> PROXY
+  APPS == "same gateway path (model calls)" ==> PROXY
   CLI -- "/v1 model path · /llm + /ollama admin" --> PROXY
   AGENT -. "every DNS name audited" .-> DNS
   PROXY -- "/ + /v1" --> HEAD --> LLM
@@ -41,5 +41,3 @@ flowchart LR
   LLM --- PG
   LLM -- "local route" --> OLL
   LLM == "cloud route (real key attached)" ==> CLOUD
-  OWUI -. "same gateway path (model calls)" .-> PROXY
-  ODY  -. "same gateway path (model calls)" .-> PROXY

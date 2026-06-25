@@ -119,6 +119,7 @@ Host Layer
  ├─ Microsandbox microVM runtime (libkrun)         ← workspaces
  │   └─ Sandbox Layer (workspace microVM)
  │       ├─ AI Tooling Layer (OpenCode + Pi by default; Claude Code / Codex / Gemini CLI optional — selected per env)
+ │       ├─ In-VM OCI runtime (rootful containerd + nerdctl) → opt-in apps: Open WebUI · AnythingLLM (§7)
  │       └─ Context Optimization (Caveman skill — per project, §8–10; Headroom now host-side)
  │
  └─ Container Runtime (Docker / Podman)            ← service tier (network aip-net)
@@ -310,7 +311,8 @@ port**: host **:18787**. Everything is served on that one port, split by route a
 by `server_name` (Host-based vhosts):
 
 - The **DEFAULT server** (`server_name <domain> localhost _;`, `default_server`) —
-  the model path + management surfaces, what the host CLI (`localhost:18787`) and
+  the model path + management surfaces, what the host CLI (`127.0.0.1:18787` — IPv4,
+  not `localhost`, which can resolve to IPv6 `::1`) and
   the microVM gateway (`host.microsandbox.internal:18787`) hit:
   - `location /` → Headroom → LiteLLM (the DEFAULT route; agents + the UIs' model
     calls ride this).
@@ -325,7 +327,7 @@ by `server_name` (Host-based vhosts):
   headers and **bypasses Headroom** (it serves the admin UI directly). The
   `<domain>` is the resolved platform base domain (`runtime.yaml` `domain`, default
   `aip.local`; `ai domain`). (Open WebUI is now a per-workspace in-VM app — see
-  `internal/apps`, §5 — not a host service; Odysseus has been removed from the
+  `internal/apps`, §7 — not a host service; Odysseus has been removed from the
   platform entirely.)
 
 In **standalone** mode `ai setup` writes an `/etc/hosts` block (with consent + sudo;
@@ -640,10 +642,11 @@ Workspace microVMs reach host services via the **nginx gateway** at
 `AI_PLATFORM_HOST:18787` (§29) — never `host.docker.internal`. The agent sends its
 model calls to that single gateway port (`location /v1` → Headroom → LiteLLM, §10).
 The platform injects `AI_PLATFORM_HOST` and the service ports into the workspace
-environment at start. The workspace runs under a default-deny Microsandbox
-**NetworkPolicy** (§29.4), so all external egress is confined to the reachable
-set — the model gateway, the trusted host service ports, and any explicitly
-allow-listed host services. The full per-component path is specified in §29.
+environment at start. The workspace runs under a Microsandbox **NetworkPolicy**
+(§29.4) whose default posture is **`public`** — the open internet is reachable,
+private/internal ranges stay blocked, and the model gateway plus any explicitly
+allow-listed host services are always reachable; a project can re-lock to `deny`
+via `ai network`. The full per-component path is specified in §29.
 
 ### Logs
 
@@ -796,7 +799,7 @@ nginx, never a container directly. Headroom is **no longer installed inside the
 workspace image** — the agent in the workspace reaches the host gateway across the
 microVM boundary via `AI_PLATFORM_HOST` (§29). The live end-to-end routing through
 these nginx routes — the litellm UI vhost and the sudo `/etc/hosts` write — is
-verified at hardware bring-up. (Open WebUI is now a per-workspace in-VM app, §5.2;
+verified at hardware bring-up. (Open WebUI is now a per-workspace in-VM app, §7;
 Odysseus has been removed from the platform.)
 
 The Github repository is found at:
@@ -877,12 +880,13 @@ The AI coding-agent CLIs are **not** all baked in. One or more are chosen at
 environment setup (`ai create`, CLI §3.1) from the supported list:
 
 * **OpenCode** — the default; pre-selected and the default agent
+* **Pi** — pre-selected by default (also wired to LiteLLM)
 * **Claude Code**
 * **Codex**
 * **Gemini CLI**
 
-Selection is **multi-select**: install any subset (at least one), with OpenCode
-pre-selected. The chosen CLIs are written into the project's
+Selection is **multi-select**: install any subset (at least one), with **OpenCode
+and Pi** pre-selected by default. The chosen CLIs are written into the project's
 `.ai-platform/Dockerfile` at creation, so the installed set is reproducible from
 the project rather than a fixed, baked-in surface. The **default agent** — which
 CLI new agents use unless told otherwise — is recorded as `agent.default_tool`
@@ -908,6 +912,7 @@ manage MCP).
 Supported providers (selected per environment, §12):
 
 * OpenCode — default
+* Pi — also pre-selected by default
 * Claude Code
 * Codex
 * Gemini CLI
@@ -1121,10 +1126,11 @@ matching a shell-tool-name regex against the `command` / `arguments.command` arg
 (opencode/pi/claude-code) routes model calls through LiteLLM, this is tool-agnostic.
 
 It is **defence-in-depth**, not the only control: it catches the model's tool-calls
-(the agent path), but the microVM isolation + the default-deny egress firewall (which
-already blocks network-dependent destructive commands like push/terraform/kubectl)
-remain the hard boundary. The exact shell-tool name/param paths per agent CLI are a
-`hardware bring-up` verification item (`docs/HARDWARE-BRINGUP.md`).
+(the agent path), but the microVM isolation + the per-project egress policy (§29.6 —
+which a project can re-lock to `deny` to block network-dependent destructive commands
+like push/terraform/kubectl) remain the hard boundary. The exact shell-tool name/param
+paths per agent CLI are a `hardware bring-up` verification item
+(`docs/HARDWARE-BRINGUP.md`).
 
 ### Prompt-injection (in-process)
 
@@ -1229,7 +1235,8 @@ The two security concerns that used to be one component's job are now split
 across mechanisms that already exist on the path:
 
 * **off-disk credentials** — keys-in-LiteLLM (this section);
-* **egress enforcement** — the Microsandbox **NetworkPolicy** (default-deny),
+* **egress enforcement** — the Microsandbox **NetworkPolicy** (default posture
+  `public`: open internet allowed, private ranges blocked; re-lockable to `deny`),
   configured by `ai network` (§29.4, §29.6); there is **no egress proxy**;
 * **secret masking / audit** — LiteLLM's always-on guardrails (§15), which run on
   every request and every route.
@@ -1297,10 +1304,12 @@ key.
 The wire-level controls that used to be bundled with the secret store are now
 their own mechanisms:
 
-* **egress enforcement** is the Microsandbox NetworkPolicy (default-deny) applied
-  per workspace and declared via `ai network` — allow / deny per host service +
-  published ports (§29.4, §29.6). The policy is rendered into `msb` net-rules
-  (`egress.MsbNetworkArgs`) and applied at workspace create.
+* **egress enforcement** is the Microsandbox NetworkPolicy applied per workspace
+  and declared via `ai network` — the default outbound posture (`public` by
+  default: open internet allowed, private ranges blocked; re-lockable to `deny`),
+  allow-listed host services, and published ports (§29.4, §29.6). The policy is
+  rendered into `msb` net-rules (`egress.MsbNetworkArgs`) and applied at workspace
+  create.
 * **secret masking and audit** are LiteLLM's always-on guardrails (§15): because
   the guardrails are `default_on: true` and **every** route — cloud included —
   traverses the LiteLLM proxy, nothing bypasses secret masking. The platform
@@ -1632,9 +1641,13 @@ boundary. There is no shared Docker network and no `host.docker.internal`.
 
 The workspace microVM is given a **virtual network interface** (Microsandbox
 virtio-net) behind the host-side userspace network stack (gvproxy). Egress is
-governed by a default-deny Microsandbox **NetworkPolicy** (§29.4): only the model
-gateway, the trusted host service ports, and explicitly allow-listed host
-services are reachable; everything else is denied at the runtime. There is no
+governed by a Microsandbox **NetworkPolicy** (§29.4) whose default outbound
+posture is **`public`** — the open internet is reachable while private/internal
+ranges stay blocked, and the model gateway plus any explicitly allow-listed host
+services are always reachable. The policy is implemented as a default-deny
+fallthrough that `public` mode widens with a broad allow-internet rule, so a
+project can re-lock to `deny` (only the gateway + allow-listed services) via
+`ai network`. There is no
 shared Docker network and the microVM never touches the host Docker socket (§30).
 There is **no egress proxy** — confinement is enforced by the NetworkPolicy, not
 a forward proxy on the wire.
@@ -1647,7 +1660,7 @@ resource:
 |---|---|---|
 | libkrun microVM (HVF on Apple Silicon / KVM on Linux) | host, user space | hypervisor entitlement only (Apple Silicon), baked into code signing |
 | Workspace egress NIC | **gvproxy** (userspace; macOS has no host TAP) | none |
-| Egress enforcement | Microsandbox **NetworkPolicy** (default-deny, applied per workspace via the SDK) | none |
+| Egress enforcement | Microsandbox **NetworkPolicy** (default posture `public`, applied per workspace via the SDK) | none |
 
 Keeping every plane in user space is what leaves the macOS hypervisor
 entitlement the *only* special privilege in the stack (no kext, no
@@ -1700,7 +1713,7 @@ to — the configured remote server's gateway.
               workspace microVM (virtio-net)
        ┌─────────────────────────────┐
        │ agent                        │   egress = Microsandbox NetworkPolicy
-       └───────────────│─────────────┘   (default-deny; allow-listed set only)
+       └───────────────│─────────────┘   (default `public`; private ranges blocked)
         trusted gateway │ (AI_PLATFORM_HOST:18787)
                         ▼
         nginx (host :18787) ─► Headroom ─► LiteLLM ──► provider (cloud)
@@ -1723,24 +1736,28 @@ to — the configured remote server's gateway.
   the workspace. **LiteLLM** routes local model calls to it (no credential needed)
   and applies the always-on Presidio guardrail (§15) as on any other request.
 * **All other workspace egress** (git push, MCP servers, arbitrary web) is
-  governed by the Microsandbox **NetworkPolicy** (§29.4): default-deny, with only
-  the explicitly allow-listed host services and the open-internet posture set via
-  `ai network` permitted. There is no egress proxy and no wire-level credential
+  governed by the Microsandbox **NetworkPolicy** (§29.4): the default `public`
+  posture allows the open internet (private ranges still blocked) plus the
+  explicitly allow-listed host services, and a project can re-lock to `deny` via
+  `ai network`. There is no egress proxy and no wire-level credential
   injection; any non-model-path credential a tool needs is the agent's own.
 
 ## 29.4 Egress confinement (Microsandbox NetworkPolicy)
 
-Each workspace microVM runs under a restricted Microsandbox **NetworkPolicy**
-(default-deny). The reachable set is exactly: (a) the trusted platform gateway at
-`AI_PLATFORM_HOST:18787` (the nginx proxy → Headroom → LiteLLM),
-(b) any host-local services explicitly allow-listed in
-`network.allow_host_services` (§29.6), and (c) the open internet only when the
-`network.egress` posture permits it (§29.6). Any other workspace egress is denied
-at the runtime, so the workspace fails closed rather than leaking traffic (§30).
+Each workspace microVM runs under a Microsandbox **NetworkPolicy** whose default
+outbound posture is **`public`** (§29.6). The always-reachable set is: (a) the
+trusted platform gateway at `AI_PLATFORM_HOST:18787` (the nginx proxy → Headroom →
+LiteLLM), and (b) any host-local services explicitly allow-listed in
+`network.allow_host_services` (§29.6). On top of that, (c) the open internet is
+reachable under the default `public` posture (private/internal ranges stay blocked)
+and a project can re-lock to `deny` so only (a) and (b) are reachable (§29.6). The
+policy is implemented as a default-deny fallthrough that `public` mode widens with
+a broad allow-internet rule, so anything outside the permitted set is denied at the
+runtime — under `deny` the workspace fails closed rather than leaking traffic (§30).
 
-**The Microsandbox NetworkPolicy is the single egress authority.** It is
-configured to default-deny and to permit only the declared set, so exactly one
-mechanism holds the allow/deny rules (§29.6, §30). Off-disk provider credentials
+**The Microsandbox NetworkPolicy is the single egress authority.** It holds the
+declared posture + allow/deny rules in exactly one mechanism (§29.6, §30). Off-disk
+provider credentials
 are a separate concern handled by keys-in-LiteLLM (§17); secret masking and audit
 are LiteLLM's always-on guardrails (§15). The host-local-services zone
 (b) is plain TCP — a service's own credential, if any, is presented at that
@@ -1753,11 +1770,11 @@ create (§29.5, §29.6).
 
 ## 29.5 Delivery phasing
 
-The default-deny NetworkPolicy is **applied today**: `ai network` declares the
+The NetworkPolicy is **applied today**: `ai network` declares the
 project's `network` block and `ai start`/create translates it into
-`msb` net-rules (`egress.MsbNetworkArgs`) — the default-egress mode, the
-allow-listed host services, and the published-port maps — which the Microsandbox
-runtime enforces. The §29.2 **host-gateway address** is now **pinned**:
+`msb` net-rules (`egress.MsbNetworkArgs`) — the egress posture (`public` by
+default, re-lockable to `deny`), the allow-listed host services, and the
+published-port maps — which the Microsandbox runtime enforces. The §29.2 **host-gateway address** is now **pinned**:
 `runtime.HostGateway` returns the fixed `host.microsandbox.internal`, so
 `gateway`-token allow-listed host services resolve in every mode. The remaining
 deferred work is the **live host↔workspace reachability verification** below.
@@ -1765,8 +1782,9 @@ deferred work is the **live host↔workspace reachability verification** below.
 * **Now (host-side + applied).** `ai network` manages the project's `network`
   block (egress posture + allow-listed host services + published ports) in
   `config.yaml`, and it is rendered into `msb` net-rules at workspace create. The
-  egress policy fixture in the acceptance suite renders a known default-deny
-  policy so tests assert against a defined policy, not ambient host behavior. The
+  egress policy fixture in the acceptance suite renders a known `deny` policy so
+  tests assert egress confinement against a defined policy, not ambient host
+  behavior. The
   host-gateway address (§29.2) is pinned (`host.microsandbox.internal`).
 * **Hardware bring-up.** Verify host↔workspace reachability end-to-end (the spike
   below).
@@ -1915,11 +1933,13 @@ Requirements:
   workspace escape is contained at the VM boundary, not the host kernel)
 * project isolation
 * agent isolation
-* **egress confinement** — each workspace runs under a restricted Microsandbox
-  **NetworkPolicy** (default-deny) whose only permitted external paths are the
-  trusted model-gateway host services and the explicitly allow-listed host
-  services / egress posture (§29.4), so nothing leaks uncontrolled. The policy is
-  applied as `msb` net-rules at workspace create (§29.5, §29.6)
+* **egress confinement** — each workspace runs under a Microsandbox
+  **NetworkPolicy** with a deny-by-default fallthrough; its default `public`
+  posture allows the open internet (private/internal ranges stay blocked) plus the
+  trusted model gateway and explicitly allow-listed host services, and a project
+  can re-lock to `deny` so only the gateway + allow-listed services are reachable
+  (§29.4, §29.6). The policy is applied as `msb` net-rules at workspace create
+  (§29.5, §29.6)
 * **always-on secret protection** — LiteLLM's guardrails are `default_on`
   on every request and every route (cloud included), so no model traffic bypasses
   secret masking (§15)
@@ -2020,7 +2040,8 @@ and immediately receive (for the OS the user selected):
   service tier)
 * LiteLLM integration (provider keys held in the gateway, §17)
 * always-on secret-masking guardrails on every model request (§15)
-* default-deny Microsandbox egress policy (`ai network`, §29.4)
+* per-project Microsandbox egress policy — default `public` (open internet,
+  private ranges blocked), re-lockable to `deny` (`ai network`, §29.4)
 * Headroom input compression
 * Caveman output compression
 * reproducible, Dockerfile-defined environments

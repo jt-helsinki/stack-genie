@@ -673,27 +673,17 @@ func (manager Manager) Restart(project string) (*state.Workspace, error) {
 	if existing == nil {
 		return nil, fmt.Errorf("%w: %q", ErrNotStarted, project)
 	}
-	// Stop the existing microVM; an already-stopped microVM is fine for a
-	// restart, so tolerate that case and proceed to start.
+	// Stop the existing microVM (an already-stopped one is fine for a restart), then
+	// run the FULL start path again. Start recreates the microVM via Sandbox.Create,
+	// re-deriving the network/published-port set, so a restart picks up config changes
+	// — notably a newly added/removed in-VM app's host port (the apps publish set is
+	// merged into netArgs only at Start). A bare Sandbox.Stop+Start (no Create) would
+	// leave the new port unpublished. Start has no "already running" short-circuit, so
+	// it rebuilds + recreates unconditionally and re-runs provider/containerd/app setup.
 	if err := manager.Sandbox.Stop(name); err != nil && !errors.Is(err, ErrAlreadyStopped) {
 		return nil, err
 	}
-	if err := manager.Sandbox.Start(name); err != nil {
-		return nil, err
-	}
-	now := manager.Now()
-	handle := &state.Workspace{
-		ID:             name,
-		Project:        project,
-		MicrosandboxID: existing.MicrosandboxID,
-		Status:         state.StatusStarted,
-		Created:        existing.Created,
-		LastStarted:    now,
-	}
-	if err := state.OpenStore(root).SaveWorkspace(handle); err != nil {
-		return nil, err
-	}
-	return handle, nil
+	return manager.Start(project)
 }
 
 // findHandle returns the workspace handle for name, or nil if no handle exists

@@ -328,8 +328,11 @@ pass):
 6. `ai secrets set openai --stdin` + `ai secrets map openai --env OPENAI_API_KEY`;
    `ai models test gpt-5` → works (real key lives in LiteLLM, only a scoped
    virtual key in the workspace).
-7. From the workspace, a non-allowlisted destination is **denied** (default-deny
-   Microsandbox net-rules); `ai network log` shows the attempted name.
+7. The default egress mode is **"public"** — from a fresh workspace the open
+   internet is reachable (in-VM `nerdctl` can pull images) while private ranges stay
+   blocked, and `ai network log` shows the resolved names. Re-lock with `ai network
+   egress deny`, then confirm a non-allowlisted destination is **denied**
+   (default-deny Microsandbox net-rules) while the gateway stays reachable.
 8. `make test-acceptance` → the `[S1]` suite is green.
 
 ## 5. Deferred beyond Slice 1

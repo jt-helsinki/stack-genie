@@ -355,7 +355,9 @@ func TestRestartStopsThenStartsExistingMicroVM(test *testing.T) {
 		test.Fatal(err)
 	}
 
-	// Restart drives the EXISTING microVM: no rebuild, just stop then start.
+	// Restart stops the existing microVM then runs the FULL start path again, so it
+	// recreates (Sandbox.Create) and re-applies the network/published-port set —
+	// otherwise a newly added/removed in-VM app's host port would never re-publish.
 	restartBuilder := &fakeBuilder{}
 	restartSandbox := &fakeSandbox{}
 	restartManager := newManager(restartBuilder, restartSandbox)
@@ -367,8 +369,8 @@ func TestRestartStopsThenStartsExistingMicroVM(test *testing.T) {
 	if !restartSandbox.stopped || !restartSandbox.started {
 		test.Fatalf("restart must stop then start the microVM: %+v", restartSandbox)
 	}
-	if restartBuilder.built || restartSandbox.created {
-		test.Fatalf("restart must not rebuild or recreate: builder=%v sandbox=%+v", restartBuilder.built, restartSandbox)
+	if !restartBuilder.built || !restartSandbox.created {
+		test.Fatalf("restart must rebuild + recreate to re-apply published ports: builder=%v sandbox=%+v", restartBuilder.built, restartSandbox)
 	}
 	if handle.Status != state.StatusStarted {
 		test.Fatalf("handle status = %q, want started", handle.Status)
