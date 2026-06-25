@@ -41,15 +41,30 @@ All platform-wide data is stored under:
 ├── cache/
 ├── config/        # global settings + projects index (no per-project state)
 ├── logs/
+├── models/        # Ollama persistent model store (bind-mounted into aip-ollama)
 ├── overlays/
 ├── prompts/
 ├── skills/
 ├── templates/     # OS Dockerfile templates + shared templates
 └── tools/
+
+~/.ai-platform.env   # OPT-IN, 0600 sibling file (NOT under ~/.ai-platform/)
 ```
 
 Global only — **no per-project state here**. Per-project state lives in
 `<project>/.ai-platform/` (see §2).
+
+`~/.ai-platform.env` is an **opt-in, mode-0600** plain-text file of
+`export KEY='VALUE'` lines (NOT YAML) that the `ai` CLI loads at startup so
+platform secrets (`UI_PASSWORD`, `LITELLM_MASTER_KEY`) persist across restarts
+without the user editing a shell rc; it lives **beside** `~/.ai-platform/`, not
+inside it. Precedence is "existing env wins" — load only fills gaps. It is the
+ONE on-disk place secrets may live for the host's own service tier (still never
+in a workspace or project); real provider keys remain in the LiteLLM gateway.
+
+`~/.ai-platform/models/` is the **persistent Ollama model store**, bind-mounted
+into the `aip-ollama` container so pulled local models survive container
+recreation (distinct from the disposable `cache/models/` in §1.3).
 
 ---
 
@@ -198,18 +213,30 @@ config.yaml              # global platform config (§12.4)
 runtime.yaml             # detected runtime, platform-global (§12.5)
 versions.yaml            # pinned image+tag of host services (§12.6)
 projects.yaml            # index: project name → path (§12.7)
-litellm/                 # rendered LiteLLM config (placeholders only; real keys live in the gateway)
-microsandbox/            # rendered Microsandbox workspace defaults (image, mounts, limits, network policy)
+litellm/                 # rendered LiteLLM config.yaml (placeholders only; real keys live in the gateway)
+proxy/                   # rendered nginx.conf for the aip-proxy gateway (UI subdomains)
+dns/                     # rendered CoreDNS config for the aip-dns egress-audit resolver
 ollama/                  # rendered Ollama config (required local model backend)
+<service>/               # one rendered-config dir per service-tier service (created at reconcile)
 ```
 
 Rules:
 
+* a config dir is created **per service-tier service** at reconcile (e.g.
+  `litellm/`, `proxy/`, `dns/`, `ollama/`, `presidio-analyzer/`, …); the ones
+  that have a rendered file today are LiteLLM (`config.yaml`), the nginx gateway
+  (`proxy/nginx.conf`), and the CoreDNS resolver (`dns/`)
 * every `<service>/` config is **rendered** by the CLI from the platform
   config; not hand-edited (architecture §5, Host Services Control Plane)
 * contains **no secrets** — only placeholders; real provider credentials live in
   the LiteLLM gateway (env passthrough / its Postgres-backed store), never here
 * native-service binaries live under `~/.ai-platform/tools/`, not here
+
+In **standalone** mode `ai setup` also writes an AI-platform-owned block to
+`/etc/hosts` (a privileged write, outside `~/.ai-platform/`) mapping the UI
+subdomains (`litellm.<domain>`, `chat.<domain>`, `odysseus.<domain>`) to
+`127.0.0.1`, so the nginx gateway's vhosts resolve locally. Only the platform's
+delimited block is touched; `ai uninstall` removes it.
 
 ## 1.9 Tools
 
@@ -562,13 +589,30 @@ network:                   # workspace networking (arch §29.6); all fields mana
 ```json id="sc7"
 {
   "schema_version": 1,
+  "role": "standalone",
   "detected": "docker",
   "rootless": true,
   "microsandbox": { "available": true, "virtualization": "hvf" },
+  "optional_services": ["open-webui"],
   "ai_platform_host": "host.local",
+  "host_gateway": "host.microsandbox.internal",
+  "domain": "aip.local",
   "detected_at": "2026-06-18T09:59:00Z"
 }
 ```
+
+* `role`: `standalone` | `server` | `client` (chosen by `ai setup`; absent on a
+  pre-role runtime.yaml). Drives the service bind host and which prereqs are
+  required.
+* `optional_services`: the opt-in services enabled at setup (e.g. `open-webui`,
+  `odysseus`); omitted when none.
+* `ai_platform_host`: the machine-wide gateway address every workspace microVM
+  routes through (`ai gateway set` / `ai setup --mode client --server`).
+* `host_gateway`: the guest-visible host address (arch §29.2), default
+  `host.microsandbox.internal`.
+* `domain`: the platform base domain the nginx UI subdomains hang off
+  (`litellm.<domain>`, `chat.<domain>`, `odysseus.<domain>`); empty resolves to
+  the default `aip.local` (`ai domain` shows/sets it).
 
 ## 12.6 `config/versions.yaml` (pinned host-service versions)
 

@@ -29,8 +29,9 @@ external-tool integration approach, the Slice 1 build sequence, and CI/testing.
 * **Language: Go.** The `ai` CLI, installers, state management, Microsandbox
   orchestration, runtime abstraction, and diagnostics are all
   Go, shipped as a **single static binary** per host.
-* **Thin launchers only** (bash/zsh/PowerShell) bootstrap the binary; no
-  platform logic in shell.
+* **Thin launchers only** (bash/zsh) bootstrap the binary; no platform logic in
+  shell. Supported hosts are macOS (Apple Silicon) and Linux — there is no
+  Windows/PowerShell path.
 * **Declarative config/templates** in YAML/JSON; never executable logic.
 * External components are invoked as subprocesses or over HTTP, never
   reimplemented: Microsandbox (the `msb` CLI), LiteLLM (host service over HTTP),
@@ -50,26 +51,36 @@ keep the precedence rules in arch §27 explicit), `slog` (structured logs), stdl
 ├── internal/
 │   ├── cli/                     # cobra commands → thin; delegate to packages
 │   ├── output/                  # JSON envelope (CLI §19) + human renderer + exit codes (CLI §18)
-│   ├── paths/                   # ~/.ai-platform + ~/projects layout helpers
+│   ├── paths/                   # ~/.ai-platform layout helpers (workspaces live in the cwd, not a fixed ~/projects)
+│   ├── conffile/                # atomic YAML read/write (temp file + rename; rejects unknown fields)
 │   ├── state/                   # project-local state (<project>/.ai-platform/run) + projects index; atomic writes
 │   ├── config/                  # config load/merge (project > global)
-│   ├── runtime/                 # docker/podman detect + rootless verify + abstraction (service tier)
+│   ├── versions/                # service-tier image refs (image+tag, no digest) — source of truth for setup
+│   ├── envfile/                 # ~/.ai-platform.env (opt-in 0600 secrets passthrough: UI password, master key)
+│   ├── runtime/                 # docker/podman detect + rootless verify + role/domain/gateway resolution (service tier)
 │   ├── sandbox/                 # Microsandbox SDK wrapper: naming, mounts/volumes, microVM lifecycle
-│   ├── litellm/                 # host lifecycle, config gen, health, routing
+│   ├── services/               # service-tier topology registry (names, ports, UI subdomains, gateway paths)
+│   ├── console/                # host-display endpoint registry (UI subdomains + gateway paths off the nginx port)
+│   ├── litellm/                 # host lifecycle, config gen, health, routing, guardrails, virtual-key KeyManager
 │   ├── secrets/                 # keys-in-LiteLLM credential broker (fronts the LiteLLM credential store; virtual-key minting)
+│   ├── ollama/                  # required local-model service + bundled Ollama catalogue (models.yaml)
+│   ├── agentcfg/                # in-VM agent provider config (base_url→nginx gateway, virtual key, picker models, refresh-models)
 │   ├── contextopt/              # per-project Headroom strategy (→ host Headroom proxy per-request knobs) + in-workspace Caveman skill
 │   ├── envimage/                # compose .ai-platform/Dockerfile (OS template + stack snippets + agent CLIs) + build OCI image
+│   ├── workspace/               # workspace lifecycle + tmux-transparent sessions (Builder/Sandbox/Manager)
+│   ├── egress/                  # per-project egress policy → msb net-rules (MsbNetworkArgs)
 │   ├── overlay/                 # per-workspace persistent overlay
 │   ├── audit/                   # append-only audit log (no secrets)
-│   └── doctor/                  # health checks → repair suggestions
-├── dockerfiles/                 # one base Dockerfile per OS key
-│   ├── alma/Dockerfile
-│   ├── debian-trixie/Dockerfile
-│   ├── debian-bookworm/Dockerfile
-│   └── ubuntu/Dockerfile
-├── stacks/                      # one install snippet per software stack (java, maven, node, deno, go, python, rust, …)
-├── installers/                  # install.sh, install.ps1 (thin launchers)
-├── test/acceptance/             # Go acceptance harness + fixtures (AT §1.6)
+│   ├── ui/ + tui/               # theme registry + the K9s-style `ai ui` management TUI
+│   ├── templates/               # embedded source templates + installer into ~/.ai-platform/templates
+│   │   └── files/
+│   │       ├── dockerfiles/<os>/Dockerfile        # one base Dockerfile per OS key (alma, debian-trixie, debian-bookworm, ubuntu)
+│   │       ├── stacks/<stack>/Dockerfile.snippet  # one install snippet per stack (java, maven, node, deno, go, python, rust)
+│   │       └── agentclis/                          # per-agent-CLI install snippets
+│   ├── uninstall/               # native `ai uninstall` teardown
+│   └── doctor/                  # consolidated health checks → repair suggestions
+├── installers/                  # install.sh (+ install-local.sh) thin launchers (macOS/Linux)
+├── test/acceptance/             # Go acceptance harness + fixtures (AT §1.6) — [S1] stub
 │   └── fixtures/                # sample-app, large-repo gen, mock-provider
 ├── go.mod
 ├── Makefile
@@ -79,9 +90,11 @@ keep the precedence rules in arch §27 explicit), `slog` (structured logs), stdl
 Principle: `cli/` stays thin (parse flags → call a package → render via
 `output/`). All logic is testable without the CLI.
 
-`ai setup` installs the source `dockerfiles/<os>/Dockerfile` and
-`stacks/<stack>/` templates into `~/.ai-platform/templates/` (the runtime paths
-`ai create` composes from — repo-layout §1.5).
+`ai setup` installs the templates embedded under
+`internal/templates/files/` (OS `dockerfiles/<os>/Dockerfile`, software-stack
+`stacks/<stack>/Dockerfile.snippet`, and agent-CLI snippets) into
+`~/.ai-platform/templates/` (the runtime paths `ai create` composes from —
+repo-layout §1.5).
 
 ---
 
@@ -101,7 +114,8 @@ These underpin every slice and are built first.
   global `config/projects.yaml` index of project name → path
 * **atomic writes**: temp file + `rename()`; never partial state
 * typed load/save for each schema (§12 of repo-layout); reject unknown fields
-* `ai state repair`: reconcile `run/` from filesystem + Microsandbox + git
+* `ai state repair`: reconcile `run/` from filesystem + Microsandbox (no git —
+  version control is out of scope)
 
 ## 3.3 Config (`config/`)
 
@@ -129,12 +143,19 @@ The `ai` CLI is the **single control plane** for host services (architecture §5
 "Host Services Control Plane"). All host services run in the **container tier**
 behind uniform `ai services` verbs — **no docker compose**:
 
-* **container tier** (LiteLLM + its Postgres `aip-litellm-db`, the containerized
-  Ollama `aip-ollama`, the Presidio PII-guardrail pair
-  `aip-presidio-analyzer`/`aip-presidio-anonymizer`, and the host Headroom proxy
-  `aip-headroom`): managed directly via the `runtime/` abstraction (run by
-  digest, restart policy, health poll) on the private `aip-net` network, so
-  docker and podman stay interchangeable
+* **container tier**, reconciled in order network → DNS → Ollama → Presidio →
+  LiteLLM(+DB) → Headroom → nginx proxy → Open WebUI: the `aip-dns` CoreDNS
+  egress-audit resolver, the containerized Ollama `aip-ollama`, the Presidio
+  secret-masking pair `aip-presidio-analyzer`/`aip-presidio-anonymizer`, LiteLLM
+  `aip-litellm` + its Postgres `aip-litellm-db`, the Headroom proxy
+  `aip-headroom`, the `aip-proxy` nginx gateway, and the optional `aip-open-webui`
+  / Odysseus (`aip-odysseus` + companions): managed directly via the `runtime/`
+  abstraction (run by image+tag, restart policy, health poll) on the private
+  `aip-net` network, so docker and podman stay interchangeable. **Only the
+  `aip-proxy` nginx gateway is host-published** (host port `18787`, the sole
+  entry); every other service is internal-only on `aip-net` and reached through
+  it (Postgres + DNS stay loopback). `ai services update` re-pulls moved tags and
+  recreates affected containers.
 
 The Microsandbox runtime is **not** a managed service: its `msb` binary is
 pinned into `tools/` and invoked on demand via `sandbox/` to create and drive
@@ -142,8 +163,11 @@ workspace microVMs; `ai setup` only verifies it is installed and the host
 supports virtualization.
 
 Each service's config is **rendered** from the platform config into
-`config/<service>/`; real provider keys stay only in the LiteLLM gateway
-(keys-in-LiteLLM). Versions pinned in `config/versions.yaml`.
+`config/<service>/` (including the nginx vhost map for the
+`litellm.`/`chat.`/`odysseus.<domain>` UI subdomains and the `/v1`, `/ollama`,
+`/llm` gateway paths); real provider keys stay only in the LiteLLM gateway
+(keys-in-LiteLLM). Service-tier image refs are pinned by **image+tag** (no
+digest — digests are platform/arch specific) in `config/versions.yaml`.
 
 | Adapter | Integration | Run mode | First slice |
 |---|---|---|---|
@@ -182,27 +206,36 @@ refer to the CLI spec and architecture spec respectively.
   Tests: AT §11.1.
 * **M3 — `ai setup` + services.** Preflight (exit 3 on missing deps),
   init `~/.ai-platform/`, install/configure/start the container service tier
-  (Ollama, Presidio pair, LiteLLM + its DB, Headroom) + verify the Microsandbox
-  runtime; provider keys live in the LiteLLM gateway (keys-in-LiteLLM, §8.2);
-  render the per-project default-deny network policy template; `ai services status`;
-  **idempotent**. Tests: AT §2.1, §2.2, §2.3, §12.1 (macOS install).
+  (DNS resolver, Ollama, Presidio pair, LiteLLM + its DB, Headroom, nginx gateway,
+  optional Open WebUI/Odysseus) with the role-driven bind host (server 0.0.0.0,
+  standalone/client loopback) + verify the Microsandbox runtime; provider keys
+  live in the LiteLLM gateway (keys-in-LiteLLM, §8.2); render the per-project
+  default-deny network policy template; `ai services status`; **idempotent**.
+  Tests: AT §2.1, §2.2, §2.3, §12.1 (macOS install).
 * **M4 — Model layer + secrets.** LiteLLM config gen + routing default
-  (the generated config also renders an **always-on Presidio PII guardrail** —
-  pre_call input + post_call output, both `default_on: true`, so no request,
-  cloud included, can bypass it); `ai secrets set/map`; `ai models status`,
-  `ai models test` against the mock provider. Tests: AT §7.1, §7.2.
+  (the generated config also renders **always-on guardrails**, all
+  `default_on: true` so no request — cloud included — can bypass them: Presidio
+  scoped to financial/identity **secrets** input+output, `hide-secrets`, the
+  `detect_prompt_injection` callback, and the `tool_permission` tool firewall;
+  general-PII masking and the unmaintained LLM Guard were removed);
+  `ai secrets set/map`; `ai models status`, `ai models test` against the mock
+  provider. Tests: AT §7.1, §7.2.
 * **M5 — debian-trixie image + Microsandbox.** Seed `.ai-platform/Dockerfile` from the
   `debian-trixie` template, build the workspace OCI image from it; create/start
   the microVM (virtio-net + gvproxy, default-deny network policy **applied as
   `msb` net-rules at create**, §3.4); mounts/volumes;
-  `ai exec`; inject `AI_PLATFORM_HOST` so the agent reaches the host
-  Headroom→LiteLLM gateway with its scoped virtual key (arch §17). Tests: AT §6.1,
+  `ai exec`; write the in-VM agent provider config so the agent reaches the host
+  nginx gateway (`http://<gateway>:18787/v1` → Headroom → LiteLLM, resolved via
+  `runtime.ResolveGateway`) with its scoped virtual key (arch §17). Tests: AT §6.1,
   harness workspace-start threshold, AT §16.2, AT §16.3.
-* **M6 — `ai create` wizard + delete.** Interactive PTY wizard (CLI §3.1)
-  with steps for name/OS/agent-CLIs/default-agent/**software-stacks**,
+* **M6 — `ai create` wizard + delete.** In-process `charmbracelet/huh` wizard
+  (CLI §3.1) with steps for name/OS/agent-CLIs/default-agent/**software-stacks**,
   each with a presented default, checkbox multi-select for CLIs + stacks,
-  arrow/space navigation, Back + Abort; no `--os`/per-choice flags; no TTY → exit
-  2. Then, in the current directory (no git — VCS is out of scope), write
+  arrow/space navigation, Back + Abort. Every input also has a flag
+  (`--name`/`--os`/`--agents`/`--stacks`) that **pre-seeds** the wizard on a TTY
+  (the wizard always shows); under `--json`/no-TTY the spec is built straight from
+  the flags with no prompt and `--os` is **required** (missing `--os` → exit 2).
+  Then, in the current directory (no git — VCS is out of scope), write
   `.ai-platform/` (Dockerfile = OS template + selected stack snippets + selected
   CLIs / config incl. `agent.tools`+`default_tool` / `profile.yaml` incl.
   `stacks` / project.yaml / .gitignore) + index in `config/projects.yaml`.
@@ -241,8 +274,16 @@ Slice 1 is complete only when every `[S1]` test passes with no manual config.
   templates (S1 ships `debian-trixie`); OS-equivalence test. Tests `[S5]`.
 * **S6 Linux + Podman.** Podman `Runtime` impl; Linux launcher; abstraction
   equivalence. Tests `[S6]`.
+* **S7 — Removed.** The `[S7]` tag is retired (no separate slice).
 
 Each slice must not break prior slices (roadmap §1).
+
+**Status.** The full surface is implemented — milestones M0–M8 plus slices S1,
+S2, S4–S6 (S3 and S7 retired) — host-side and, on a provisioned Apple Silicon
+host, verified end-to-end against the live external tools. The narrow seams that
+still depend on further bring-up (live service/microVM log capture, verifying the
+tool-firewall regexes against live agent tool schemas, the nginx readiness probe)
+are grep-able (`hardware bring-up`) and tracked in `docs/HARDWARE-BRINGUP.md`.
 
 ---
 
@@ -276,7 +317,7 @@ Each slice must not break prior slices (roadmap §1).
 * supported OS (S1: macOS on Apple Silicon)
 * container runtime (S1: Docker) + rootless capability (service tier)
 * Microsandbox runtime + host virtualization (Apple Hypervisor entitlement on macOS — the only elevated facility, §29.1)
-* git (egress is a userspace default-deny Microsandbox NetworkPolicy — no `utun`/NetworkExtension/admin networking, §8.2)
+* no admin networking (egress is a userspace default-deny Microsandbox NetworkPolicy — no `utun`/NetworkExtension/admin networking, §8.2; version control is out of scope, so no git prereq)
 * provider credentials are loaded into the LiteLLM gateway via `ai secrets` (not a
   pre-flight hard-fail — `setup` warns if the configured routing has no
   credential; a model call fails only when its credential is actually absent)
@@ -314,11 +355,12 @@ Each slice must not break prior slices (roadmap §1).
      prompt/kext.
 3. **Headroom placement (decided).** Headroom runs as a **host service-tier
    container** (`aip-headroom`, pulled image `ghcr.io/chopratejas/headroom:slim`,
-   :8787) — an input-compression proxy **in front of LiteLLM**, no longer baked
-   into the workspace image. The per-project strategy (`ai context strategy`)
-   maps to Headroom per-request knobs (`keep_turns`/`output_buffer_tokens` via
-   `contextopt.HeadroomParams`). Caveman remains the symmetric in-workspace
-   output-compression skill.
+   internal :8787) — an input-compression proxy **in front of LiteLLM**, no longer
+   baked into the workspace image, and now **internal-only on `aip-net` behind the
+   nginx gateway** (no host publish). The per-project strategy
+   (`ai context strategy`) maps to Headroom per-request knobs
+   (`keep_turns`/`output_buffer_tokens` via `contextopt.HeadroomParams`). Caveman
+   remains the symmetric in-workspace output-compression skill.
 4. **Image build.** The workspace OCI image is built from `.ai-platform/Dockerfile`
    with the detected container runtime and booted as a Microsandbox microVM;
    confirm rootless build works for all OS templates and that each image boots

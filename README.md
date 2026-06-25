@@ -5,10 +5,12 @@ hardware-isolated [Microsandbox](https://microsandbox.dev) microVM; the model
 path and guardrails run as a shared host container tier. One Go binary, `ai`, is
 the entire control plane.
 
-**Model path:** agent → Headroom (input compression) → LiteLLM (always-on
-Presidio PII guardrails) → containerized Ollama or a cloud provider. Real
-provider API keys live only in the LiteLLM gateway (keys-in-LiteLLM) — never on
-platform disk or in the workspace; the agent holds a scoped virtual key.
+**Model path:** agent → nginx gateway → Headroom (input compression) → LiteLLM
+(always-on secret-masking guardrails) → containerized Ollama or a cloud
+provider. A single nginx reverse proxy (`aip-proxy`) is the only host entry to
+the service tier — everything else runs internal-only on the `aip-net` network.
+Real provider API keys live only in the LiteLLM gateway (keys-in-LiteLLM) — never
+on platform disk or in the workspace; the agent holds a scoped virtual key.
 Workspace egress is a default-deny Microsandbox NetworkPolicy you configure with
 `ai network`. Caveman is a per-project output-compression skill inside the
 workspace.
@@ -46,10 +48,15 @@ Hypervisor) or **Linux with KVM**.
 
 `ai setup` **never installs software** — it detects what's missing and prints how
 to install it (command + web address); `ai doctor` reports the same anytime. The
-service tier (Ollama, Presidio, LiteLLM + Postgres, Headroom, the optional Open
-WebUI chat UI on :18090, and the DNS
-egress-audit resolver) is launched by `ai setup` as host containers on the
-`aip-net` network — you don't install those.
+service tier (the nginx gateway, Ollama, Presidio, LiteLLM + Postgres, Headroom,
+the optional Open WebUI chat UI, and the DNS egress-audit resolver) is launched by
+`ai setup` as host containers on the `aip-net` network — you don't install those.
+Only the nginx gateway (`aip-proxy`) publishes a host port (`:18787`); every other
+service is internal-only and reached through it. The web UIs are served as
+Host-based subdomains off a platform base domain (default `aip.local`, set with
+`ai domain`): `litellm.<domain>`, `chat.<domain>`, `odysseus.<domain>` — all on
+`:18787`. In standalone mode `ai setup` offers to add the matching `/etc/hosts`
+entries; in server mode it prints the DNS + TLS contract for an operator.
 
 ## Set up
 
@@ -63,6 +70,13 @@ On a TTY, `ai setup` asks for a **deployment role** (or pass `--mode`): `standal
 `server` (only the shared service tier, bound to `0.0.0.0` for other machines, no
 workspaces), or `client` (only workspaces here, routing to a remote `--server`
 address — no local service tier). The role is persisted in `runtime.yaml`.
+
+Role drives UI auth: standalone/client run **open** for a smooth single-user
+local experience (no login wall); a `server` is network-exposed, so the LiteLLM
+admin UI requires a password (`ai setup` prompts, or set it later with `ai litellm
+password`) and Open WebUI enables login. Platform secrets (`UI_PASSWORD`,
+`LITELLM_MASTER_KEY`) can be persisted opt-in to `~/.ai-platform.env` (mode 0600,
+auto-loaded by `ai`) so they survive restarts without editing your shell rc.
 
 ## Use
 
@@ -89,7 +103,10 @@ state persist across restarts via the overlay):
 ```bash
 cd my-app
 ai start                     # the cwd's project; also: ai stop, ai restart
-ai exec -- bash              # run a command inside
+ai shell                     # an interactive shell inside (reattachable tmux session)
+ai agent opencode            # launch an agent CLI in its own session
+ai exec -- bash              # run a one-off command inside
+ai sessions                  # list sessions; ai attach reattaches one
 ai destroy                   # non-destructive: keeps the overlay
 ```
 
@@ -107,15 +124,22 @@ ai network log                       # attempted-egress audit (domains the works
 ai gateway show                      # the model gateway every workspace on this machine routes through
 ai gateway set my-server:18787       # client mode: route all workspaces through a remote gateway
 ai gateway clear                     # back to the local standalone gateway
+ai domain                            # show the platform base domain the UI subdomains hang off
+ai domain aip.example.com            # set it (default aip.local; server operators override)
 
 ai secrets set OPENAI_API_KEY        # stored in the LiteLLM gateway, never platform disk
 ai secrets list                      # names + metadata only (never values)
 
-ai models status                     # LiteLLM gateway health
+ai models status                     # LiteLLM gateway health + Ollama connectivity
 ai models test  gemma4               # round-trip a model (gemma4 = local default)
+ai models list                       # installed local (Ollama) models
+ai models popular                    # the bundled installable model catalogue
+ai models pull  llama3.2 qwen2.5:7b  # download models into the local Ollama store (rm/show too)
 
 ai services status                   # host service tier
 ai services console litellm          # open the LiteLLM admin UI
+ai services update                   # re-pull the latest service images and recreate containers
+ai litellm password                  # set/rotate the LiteLLM admin UI password (secures the gateway)
 ai logs --tail                       # project + platform logs
 ai state show                        # global + project state
 ```

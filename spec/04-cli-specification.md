@@ -283,6 +283,23 @@ Purpose:
   likewise held by the gateway — passed as env passthrough at launch and/or in
   LiteLLM's Postgres-backed store — never written to platform disk
 
+**Platform base domain & name resolution.** The web UIs are served on nginx
+subdomains of the platform base domain (`litellm.<domain>` / `chat.<domain>` /
+`odysseus.<domain>` on the single gateway port `:18787`; `ai domain`, §10.5). In
+**server** mode the form additionally prompts for the **server hostname / domain**
+(the name clients and browsers reach this host at, default **`localhost`**),
+persisted as the `domain`. Once the domain is known, `setup` wires name
+resolution best-effort:
+
+* **standalone** — offers (on a TTY, with consent) to write a managed block to
+  `/etc/hosts` mapping the UI subdomains to `127.0.0.1`. The write needs root, so
+  it shells out through a **labeled sudo prompt** (`[ai] enter your login password
+  to update /etc/hosts:`); on decline / non-TTY it prints the manual block instead.
+* **server** — does **not** edit `/etc/hosts`; it prints the **DNS/TLS operator
+  contract** (create `*.<domain>` or per-host `litellm./chat./odysseus.<domain>`
+  records → this server's IP, terminate TLS at nginx).
+* **client** — nothing (no local UIs).
+
 Missing **provider credentials are not a setup hard-fail**: `setup` may prompt
 interactively but otherwise proceeds and warns; `ai doctor` flags any absent
 credential, and a model call fails (exit `5`) only when that credential is
@@ -858,8 +875,14 @@ reachable], `base_url`).
 ## 8.2 Model Test
 
 ```bash id="c23"
-ai models test <model>
+ai models test [model]
 ```
+
+The `[model]` is **optional**: on a terminal you are prompted to pick one of the
+named model handles (pre-selected from any model passed); under `--json` / no TTY
+the model argument is **required** (missing → exit 2). A transport failure
+(gateway unreachable) is exit `4`; an auth/credential failure is exit `5`; other
+gateway errors are exit `4`.
 
 ---
 
@@ -930,22 +953,31 @@ never blocks pulling anything.
 ### 8.3.3 Pull (install / update)
 
 ```bash id="c23b"
-ai models pull [name]
+ai models pull [name...]
 ```
 
-* With a `name` argument, or under `--json` / no TTY: the given reference is pulled
-  directly (the **custom-reference** path — e.g. `llama3.2:3b`, or a custom ref like
-  `hf.co/user/model`). Under `--json` a name is **required** (missing → exit 2).
-  Pull stays **free-form** — any model reference can be pulled, listed or not.
-* On a terminal with **no** argument: the user picks from the **popular** model
-  variants (the bundled snapshot — §8.3.2, each labelled "name — size", where name
-  already carries the size tag, e.g. `qwen2.5:7b`), plus a
-  final **"✎ enter a custom model…"** option that prompts for a free-text
-  reference. If the snapshot is somehow unavailable it falls back to just the
-  custom-entry prompt — the picker never blocks pulling.
+`pull` is **variadic** — it installs **one or more** models in a single run.
+
+* With one or more `name` arguments, or under `--json` / no TTY: each given
+  reference is pulled in turn (the **custom-reference** path — e.g.
+  `llama3.2:3b qwen2.5:7b`, or a custom ref like `hf.co/user/model`). Under
+  `--json` at least one name is **required** (none → exit 2). Pull stays
+  **free-form** — any model reference can be pulled, listed or not. Names are
+  de-duplicated; the run **continues past a failure** and reports a per-model
+  summary, exiting non-zero (mapped from the last failure) if any failed.
+* On a terminal with **no** arguments: the user gets a **checkbox multi-select** of
+  the **popular** model variants (the bundled snapshot — §8.3.2, each labelled
+  "name — size", where name already carries the size tag, e.g. `qwen2.5:7b`), plus a
+  final **"✎ enter custom model(s)…"** checkbox that, when ticked, prompts for
+  free-text references (space- or comma-separated). If the snapshot is somehow
+  unavailable it falls back to just the custom-entry prompt — the picker never
+  blocks pulling.
 
 The pull **streams** Ollama's NDJSON progress while a spinner shows ongoing work.
 There is **no separate update verb** — re-pulling an installed model updates it.
+
+The `--json` envelope carries `data.pulled`, one `{model, ok, error}` outcome per
+requested model.
 
 ### 8.3.4 Remove
 
@@ -975,9 +1007,11 @@ family, format, and capabilities.
 ## 9.1 Context Status
 
 ```bash id="c24"
-ai context status <project>
+ai context status [project]
 ```
 
+The `[project]` is **optional** and resolves like every project-scoped command
+(positional → `--project` → the workspace owning the current directory; §17).
 Returns:
 
 * Headroom input-compression metrics (tokens saved, strategy)
@@ -988,10 +1022,13 @@ Returns:
 ## 9.2 Set Headroom Strategy
 
 ```bash id="c25"
-ai context strategy <project> <conservative|balanced|aggressive>
+ai context strategy [project] [conservative|balanced|aggressive]
 ```
 
-The strategy is kept per project (default `balanced`). Because Headroom now runs
+Both positionals are **optional**: the project resolves like every project-scoped
+command (§17), and on a terminal omitting the value **presents a select menu**
+(pre-seeded with the current/given strategy); under `--json` / no TTY the value
+must be passed. The strategy is kept per project (default `balanced`). Because Headroom now runs
 as a shared **host** container (not in the workspace), the strategy maps to the
 per-request compression knobs (`keep_turns` / `output_buffer_tokens`) sent to the
 host Headroom proxy.
@@ -1001,8 +1038,12 @@ host Headroom proxy.
 ## 9.3 Set Caveman Level
 
 ```bash id="c26"
-ai context caveman <project> <lite|full|ultra|wenyan>
+ai context caveman [project] [lite|full|ultra|wenyan]
 ```
+
+Both positionals are **optional** (project resolution per §17; on a terminal the
+level is a select menu when omitted, pre-seeded with the current/given level;
+`--json` / no TTY requires the value).
 
 ---
 
@@ -1057,8 +1098,10 @@ ai services status                 # health + version of every service
 ai services start   [<service>]    # start one or all (enabled services only)
 ai services stop    [<service>]    # stop one or all
 ai services restart [<service>]    # restart one or all
+ai services update  [<service>]    # re-pull the latest image(s) and recreate one or all
 ai services enable  <service>      # enable an optional service (and bring it up)
 ai services disable <service>      # disable an optional service (and bring it down)
+ai services console [<service>]    # list/open a service's admin console (--print for the URL)
 ```
 
 `<service>`: `ollama` | `presidio` | `litellm` | `headroom` | `proxy` | `dns` |
@@ -1074,8 +1117,17 @@ Behavior:
 * lifecycle verbs (`start`/`stop`/`restart`) act on the **platform-owned container
   set** via the runtime abstraction (§6). With no service, or `all`, they act on
   every **enabled** container in **dependency order** (a disabled optional service
-  is skipped). Acting on a *named* disabled optional service exits `2` with a hint
-  to `ai services enable <service>` first.
+  is skipped). On a terminal with no service they show a **checkbox** of every
+  controllable service and its current state; an explicit name or `all` skips the
+  prompt; non-interactive use targets all. Acting on a *named* disabled optional
+  service exits `2` with a hint to `ai services enable <service>` first.
+* `update` **re-pulls** each target service's pinned image — refreshing a moved tag
+  like `latest` — and **recreates** the affected container(s). It accepts the same
+  targets as the lifecycle verbs (a name, `all`, the no-arg checkbox on a terminal,
+  or every service non-interactively). The native pull progress streams to stderr
+  (no spinner, like the `ai setup` pre-pull); `--json` returns the `data.services`
+  status array. (Image **version pinning** is changed by `ai setup --upgrade`;
+  `update` re-pulls the *current* pins.)
 * `enable`/`disable` apply **only to optional services** — they update the
   persisted optional-service set (`runtime.yaml`) and then start / stop the
   service's container(s). Enabling a core service, or naming an unknown/empty
@@ -1086,8 +1138,15 @@ Behavior:
   runtime abstraction (§6)
 * service install/upgrade is handled by `ai setup` / `ai setup --upgrade`, not by
   these verbs
-* an unknown service exits `2`. `ai services console` lists/opens a service's
-  admin dashboard.
+* an unknown service exits `2`. `ai services console [<service>]` lists/opens a
+  service's admin dashboard: with no argument it lists the services that have a
+  console; with a name it **opens** that console in the browser, or — with
+  `--print` (and always under `--json`) — prints the URL instead. The consoles are
+  the **nginx subdomain UIs** served on the single gateway port `:18787`:
+  `litellm.<domain>:18787/ui` (the LiteLLM admin UI), `chat.<domain>:18787`
+  (Open WebUI), and `odysseus.<domain>:18787` — where `<domain>` is the platform
+  base domain (`ai domain`, default `aip.local`). They are **not** the old direct
+  container ports.
 
 ## 10.3 LiteLLM gateway (`ai litellm`)
 
@@ -1120,12 +1179,16 @@ Behavior:
 # 10a. Network (workspace egress policy)
 
 ```bash id="c27b"
-ai network show                                  # show the egress policy
-ai network egress  [deny|public|unrestricted]    # set the default posture
-ai network allow   [host[:port]] [--remove]      # allow/revoke an external destination
-ai network publish [host:guest] [--remove]       # publish/unpublish a workspace port
-ai network log     [project] [--tail N]          # attempted-egress-by-name audit (host-wide)
+ai network show    [project]                              # show the egress policy
+ai network egress  [deny|public|unrestricted] [project]  # set the default posture
+ai network allow   [host[:port]] [project] [--remove]    # allow/revoke an external destination
+ai network publish [guest:host] [project] [--remove]     # publish/unpublish a workspace port
+ai network log     [project] [--tail N]                  # attempted-egress-by-name audit (host-wide)
 ```
+
+Each verb takes an optional trailing `[project]` (after its own value) which, like
+every project-scoped command, resolves the target project (positional → `--project`
+→ the workspace owning the current directory; §17).
 
 Project-scoped (default the current directory's project, like `ai context`).
 These edit the project's `network` block in `config.yaml` — `network.egress`,
@@ -1170,8 +1233,9 @@ ports. With `--json` or no TTY, the value must be passed as an argument.
   `gateway` token for a service on the host machine. The port is **optional**
   and **defaults to 443 (HTTPS)**, so a bare domain like `api.github.com` allows
   it on 443. `--remove` revokes it.
-* `publish <host:guest>` publishes a workspace (guest) port to a host port;
-  `--remove` undoes it.
+* `publish <guest:host>` publishes a workspace (guest) port to a host port — the
+  guest port inside the workspace followed by the host port it is reachable at
+  (e.g. `3000:3000`); `--remove` undoes it.
 * `log [project] [--tail N]` prints the **attempted-egress-by-name audit**: the
   DNS names workspaces tried to resolve, read from the platform's **`aip-dns`**
   resolver (architecture §29.7). Every workspace microVM forwards its DNS to that
@@ -1204,7 +1268,7 @@ always-on egress allow rule (architecture §29.2).
 
 ```bash
 ai gateway show               # the configured gateway + the URL microVMs will use
-ai gateway set <host[:port]>  # route every workspace here through a remote gateway (client mode)
+ai gateway set [host[:port]]  # route every workspace here through a remote gateway (client mode)
 ai gateway clear              # back to the local standalone gateway
 ```
 
@@ -1219,7 +1283,9 @@ The address is a **bare host or `host:port`** (NOT a URL). The default port is
 microVMs reach the gateway at `http://<host>:<port>/v1` (the `/v1` suffix opencode
 and pi require), and the workspace egress policy always allows `<host>:tcp:<port>`.
 
-* `show`/`clear` take no arguments; `set` takes exactly one address.
+* `show`/`clear` take no arguments. `set` takes an **optional** address: on a
+  terminal it always prompts (pre-seeded with any address passed); under `--json` /
+  no TTY the address is **required** (missing → exit 2).
 * a missing `runtime.yaml` (no `ai setup` yet) → exit `3` with a "run `ai setup`
   first" note; an invalid address (empty, whitespace, a scheme/slash, or a
   non-numeric port) → exit `2`; a failed persist/read → exit `4`.
@@ -1530,8 +1596,10 @@ Global flags (accepted by every command and subcommand):
 
 ### Project resolution
 
-Project-scoped commands (`workspace *`, `context *`, `project delete`,
-`logs`) resolve their target project with this precedence:
+Project-scoped commands (the workspace lifecycle verbs `start`/`stop`/`restart`/
+`destroy`/`exec`/`shell`/`agent`/`attach`/`sessions`/`delete`, `context *`,
+`network *`, `doctor`, `logs --workspace`) resolve their target project with this
+precedence:
 
 1. an explicit project name given as a positional argument;
 2. the `--project <name>` flag;
@@ -1623,7 +1691,7 @@ With `--json`, every command emits a single JSON object with this envelope:
 ```json
 {
   "ok": true,
-  "command": "agent.create",
+  "command": "project.create",
   "data": { },
   "error": null,
   "warnings": []
@@ -1635,7 +1703,7 @@ On failure:
 ```json
 {
   "ok": false,
-  "command": "agent.create",
+  "command": "project.create",
   "data": null,
   "error": { "code": 4, "kind": "runtime_failure", "message": "..." },
   "warnings": []

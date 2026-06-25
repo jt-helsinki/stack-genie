@@ -28,6 +28,12 @@ It translates the full architecture into incremental delivery slices.
 
 Each slice must be independently testable and fully working before proceeding to the next.
 
+> **Status:** the full surface is implemented — slices S1, S2, S4–S6 (S3 and the
+> retired S7 tag are removed) — host-side and, on a provisioned Apple Silicon
+> host, verified end-to-end against the live external tools. The slices below
+> describe the delivery order; the few seams still pending live hardware bring-up
+> are grep-able as `hardware bring-up` and tracked in `docs/HARDWARE-BRINGUP.md`.
+
 ---
 
 # 1. Implementation Philosophy
@@ -189,9 +195,10 @@ Introduce Headroom + Caveman.
 ## Scope
 
 * Headroom context management (input compression) — host service-tier proxy
-  (`aip-headroom`, pulled image `ghcr.io/chopratejas/headroom:slim`, :8787) in
-  front of LiteLLM; no longer baked into the workspace image. Per-project
-  strategy maps to Headroom per-request knobs.
+  (`aip-headroom`, pulled image `ghcr.io/chopratejas/headroom:slim`, internal
+  port :8787) in front of LiteLLM; no longer baked into the workspace image, and
+  now **internal-only on `aip-net`** behind the nginx gateway (no host publish).
+  Per-project strategy maps to Headroom per-request knobs.
 * Caveman output compression — in-agent skill
 
 (No platform memory system — agent memory is the agent's concern, architecture
@@ -336,14 +343,31 @@ These are implemented progressively across slices.
 
 ## 8.1 LiteLLM
 
-* host container (`aip-litellm`, :4000), backed by a Postgres container
-  (`aip-litellm-db`) for the DB-backed admin UI / virtual keys
-* unified routing
-* provider abstraction
-* an **always-on Presidio PII guardrail** rendered into the generated LiteLLM
-  config (pre_call input + post_call output, both `default_on: true` — no
-  request, cloud included, can bypass it), backed by the
-  `aip-presidio-analyzer` + `aip-presidio-anonymizer` service-tier containers
+* host container (`aip-litellm`, internal :4000), backed by a Postgres container
+  (`aip-litellm-db`) for the DB-backed admin UI / virtual keys + the encrypted
+  provider-credential store. LiteLLM is **internal-only on `aip-net`** — reached
+  through the nginx gateway (`litellm.<domain>:18787` admin UI, `…:18787/llm`
+  host-CLI path), never host-published directly.
+* unified routing; default model the local Ollama `gemma4` (→ `ollama/gemma4:31b`)
+* provider abstraction via per-provider wildcards (`ollama/*`, `openai/*`,
+  `anthropic/*`, `gemini/*`, `groq/*`) plus a few named handles
+* **always-on guardrails** rendered into the generated LiteLLM config (all
+  `default_on: true`, so no request — cloud included — can bypass them), scoped
+  to **secrets/credentials, not general PII** (masking general PII was removed —
+  it corrupted ordinary coding prompts):
+  * `presidio-secrets-input` (pre_call) + `presidio-secrets-output` (post_call)
+    mask only financial/identity secrets (CREDIT_CARD, US_SSN, US_BANK_NUMBER,
+    IBAN_CODE, CRYPTO), backed by the `aip-presidio-analyzer` +
+    `aip-presidio-anonymizer` service-tier containers
+  * `hide-secrets` (LiteLLM's in-process detect-secrets) for API keys/tokens
+  * an in-process `detect_prompt_injection` callback (local heuristic, no
+    external service)
+  * a `tool_permission` **tool firewall** (post_call) that DENIES destructive
+    command tool-calls (`git push --force`, `rm -rf`, `terraform destroy`,
+    `kubectl delete`, …) — for coding agents the bigger risk is destructive tool
+    execution, not prompt content
+* (The unmaintained LLM Guard was removed; Guardrails AI remains deliberately
+  deferred.)
 
 ---
 
@@ -357,8 +381,11 @@ These are implemented progressively across slices.
 * **egress**: a default-deny **Microsandbox NetworkPolicy** per project, configured
   via `ai network` (modes `deny`/`public`/`unrestricted` + allowed host services +
   published ports); no egress proxy
-* **PII/audit**: LiteLLM's always-on **Presidio** guardrails on every request,
-  which cloud routes cannot bypass (§8.1)
+* **secret masking / audit**: LiteLLM's always-on guardrails on every request
+  (Presidio scoped to financial/identity secrets + `hide-secrets` +
+  `detect_prompt_injection` + the `tool_permission` tool firewall), which cloud
+  routes cannot bypass (§8.1); plus per-domain DNS egress audit via the `aip-dns`
+  CoreDNS resolver, surfaced by `ai network log`
 
 ---
 
@@ -366,8 +393,28 @@ These are implemented progressively across slices.
 
 * thin gateway only (unified endpoint, aliasing, failover, provider-key injection)
 * no per-task routing policy — the agent selects its model
+* the in-workspace agent's model picker is the **union** of the named aliases,
+  the **installed** Ollama models (rendered `ollama/<name>`, listed at workspace
+  start; skipped if Ollama is down — never fails the start), and a
+  maintainer-curated cloud seed (`internal/agentcfg/cloud_models.yaml`). A bundled
+  full Ollama catalogue (`internal/ollama/models.yaml`, regenerable via
+  `make models-refresh`) backs local-model selection; an installed in-VM
+  `refresh-models` helper re-reads the installed models without a restart.
 
 (MCP is not a platform concern — the agent manages it.)
+
+---
+
+## 8.7 Host service control commands
+
+* `ai domain [name]` — show/set the platform base domain (default `aip.local`)
+* `ai gateway show|set|clear` — machine-wide gateway address selection
+* `ai litellm password` — set/rotate the LiteLLM admin UI password (env
+  passthrough; offers to persist to `~/.ai-platform.env`)
+* `ai services start|stop|restart|update [service|all]` — manage the platform
+  container set; `update` re-pulls moved tags (e.g. `latest`) and recreates
+  affected containers
+* `ai network ... log` — per-domain DNS egress audit via the `aip-dns` resolver
 
 ---
 
@@ -380,16 +427,37 @@ one Microsandbox microVM per workspace (hardware isolation, libkrun)
 ```
 
 The container runtime (Docker/Podman) is used only for the service tier
-(LiteLLM + its Postgres, the containerized Ollama `aip-ollama`, the Presidio
-PII-guardrail pair, and the host Headroom proxy), never to run a workspace. All
-service-tier containers share the private `aip-net` network.
+(the `aip-dns` CoreDNS egress-audit resolver, the containerized Ollama
+`aip-ollama`, the Presidio secret-masking pair, LiteLLM + its Postgres, the
+Headroom input-compression proxy, the `aip-proxy` nginx gateway, and the optional
+Open WebUI / Odysseus), never to run a workspace. All service-tier containers
+share the private `aip-net` network, and **only the `aip-proxy` nginx gateway is
+host-published** (the host port `18787`); every other service is internal-only on
+`aip-net` and reached through it (Postgres + DNS stay loopback for admin access).
 
 ---
 
 ## 8.5 Networking
 
+* the **`aip-proxy` nginx gateway is the SOLE host entry** to the service tier,
+  on host port `18787`. It binds **127.0.0.1** in standalone/client roles and
+  **0.0.0.0** in server role (`internal/setup` `currentBindHost()`). It forwards
+  to the internal-only Headroom (`aip-headroom:8787`) → LiteLLM
+  (`aip-litellm:4000`), and serves Host-based UI subdomains
+  (`litellm.<domain>`, `chat.<domain>`, `odysseus.<domain>`) plus host-CLI
+  gateway paths (`/v1` model path, `/ollama`, `/llm`). The platform base domain
+  is set by `ai domain` (default `aip.local`; host-CLI URLs render under
+  `localhost:18787`). TLS/HTTPS termination at nginx is still deferred.
+* **role-based UI auth**: the server role requires UI passwords
+  (`WEBUI_AUTH=true`, LiteLLM admin secured via `ai litellm password`);
+  standalone/client are open. Passwords/master key are passed by **env
+  passthrough** and can be persisted out of argv/disk in `~/.ai-platform.env`
+  (`internal/envfile`).
 * microVM has a virtual NIC (virtio-net + gvproxy, userspace); no `host.docker.internal`, no host Docker socket
-* AI_PLATFORM_HOST abstraction for reaching trusted host services (LiteLLM)
+* machine-wide gateway selection via `ai gateway show|set|clear` →
+  `ai_platform_host` in `runtime.yaml`; `runtime.ResolveGateway` derives the
+  `http://<host>:<port>/v1` agent base URL (bare host or `host:port`, default
+  port `18787`; empty → `host.microsandbox.internal:18787` for standalone/local)
 * cross-platform resolution
 * Ollama reached only via LiteLLM, never directly by the workspace
 * egress is a **default-deny Microsandbox NetworkPolicy** per project: deny by

@@ -86,8 +86,11 @@ allow-listed host services that use the `gateway` token resolve to it in every m
 
 ### 2.3 Tool-firewall verification + nginx proxy readiness probe
 
-`realServices.serviceHealthy` treats `proxy` as healthy once the container is
-running. The remaining verification work:
+`realServices.serviceHealthy("proxy")` now runs a **live** readiness probe
+(`proxyReachable` → GET `http://127.0.0.1:18787/health/liveliness` through the
+nginx → Headroom → LiteLLM chain; any HTTP response = up-and-forwarding, only a
+transport error = down). What remains is live-host verification of the forward
+chain itself. The remaining verification work:
 
 - [ ] **Tool-firewall (`tool_permission`) live verification** — the firewall denies
       destructive command tool-calls (`rm -rf`, `git push --force`, `git reset
@@ -118,8 +121,9 @@ running. The remaining verification work:
       entry on host :18787 forwards to the internal-only Headroom
       (`aip-headroom:8787`) and on to LiteLLM end-to-end, including **streamed
       (SSE)** responses flushing through (buffering off, long timeouts). In server
-      mode verify the 0.0.0.0:18787 bind reaches a remote client. Add the live
-      readiness probe to `serviceHealthy("proxy")`.
+      mode verify the 0.0.0.0:18787 bind reaches a remote client. (The live
+      `serviceHealthy("proxy")` readiness probe is already wired — see §2.3 intro;
+      this item is the live end-to-end confirmation of the forward chain.)
 - [ ] **nginx as the SOLE host entry — the new routes** — every service container
       is now INTERNAL-ONLY on `aip-net` (LiteLLM, Ollama, Open WebUI, Odysseus +
       companions no longer host-publish); only nginx publishes. Verify on a live
@@ -245,8 +249,9 @@ pass):
 ## 4. Smoke sequence (manual, on the host)
 
 1. `ai doctor` → all checks green.
-2. `ai setup` → exit 0; service tier (DNS, Ollama, Presidio, LiteLLM +
-   DB, Headroom, nginx proxy, Open WebUI) up; templates installed.
+2. `ai setup` → exit 0; the core service tier (DNS, Ollama, Presidio, LiteLLM +
+   DB, Headroom, and the nginx proxy LAST) up; templates installed. The optional
+   UIs (Open WebUI, Odysseus) come up only when enabled via `--optional`.
 3. `ai create --name demo --os debian-trixie` → **scaffold-only**: writes the
    project's `.ai-platform/` files in the cwd and registers it; it does **not**
    build the image or boot a microVM.

@@ -136,8 +136,10 @@ for the rare TTY-only human-wizard cases and is not used here.)
   ambient host behavior — a **Microsandbox default-deny NetworkPolicy** (declared
   via `ai network`, applied per-workspace as Microsandbox net-rules at workspace
   create via the `msb` CLI, plan §3.4) that permits the workspace to reach only
-  the trusted host service ports (`AI_PLATFORM_HOST`: LiteLLM, Headroom) plus the
-  allow-listed `$MOCK_PROVIDER_URL` (§ Setup). It is rendered from this fixture
+  the **host gateway** (the always-on allow rule: nginx `aip-proxy` → Headroom →
+  LiteLLM, default `host.microsandbox.internal:18787` — workspaces never reach
+  LiteLLM directly) plus the allow-listed `$MOCK_PROVIDER_URL` (§ Setup). It is
+  rendered from this fixture
   (parameterized by `$MOCK_PROVIDER_URL`) so the source of "what is allowed" is
   the fixture, not a test's expectation. There is **no egress proxy** —
   confinement is the net-rules applied at workspace create (arch §29.4–29.5).
@@ -192,7 +194,7 @@ flow.
 | Metric | Threshold |
 |---|---|
 | `ai models test` round-trip (mock provider) | < 2000 ms |
-| Headroom input reduction on large-repo context | ≥ 50% tokens, stays ≤ `context.max_tokens` |
+| Headroom input reduction on large-repo context | ≥ 50% tokens under the project's strategy |
 | Caveman output reduction (full level) | ≥ 40% output tokens |
 | workspace create → started (cached image) | < 30 s |
 
@@ -214,8 +216,15 @@ ai setup --json
 * `~/.ai-platform/config/` created (incl. `projects.yaml` index)
 * **Docker detected, rootless** (Podman is `[S6]`; Slice 1 service tier is Docker-only)
 * **Microsandbox runtime + host virtualization verified** (Apple Silicon on macOS)
-* the service tier started as containers: Ollama, Presidio (analyzer +
-  anonymizer), LiteLLM (+ Postgres), Headroom — all on `aip-net`
+* the service tier started as containers, reconciled in order (network → DNS →
+  Ollama → Presidio → LiteLLM(+DB) → Headroom → nginx proxy): `aip-dns`,
+  `aip-ollama`, the `aip-presidio-analyzer`/`aip-presidio-anonymizer` pair,
+  `aip-litellm` (+ `aip-litellm-db` Postgres), `aip-headroom`, and `aip-proxy`
+  (the nginx gateway) — all on `aip-net`
+* in **standalone** (default) the shared services bind **127.0.0.1**; the nginx
+  gateway (`aip-proxy`) is the SOLE host entry on `:18787`, with `aip-headroom`
+  now INTERNAL-ONLY behind it (no host publish); the optional `open-webui` /
+  `odysseus` are off by default
 * command exits `0`
 
 ---
@@ -527,14 +536,15 @@ ai context caveman test-project full --json
 
 ### Test
 
-* with `fixtures/large-repo` open, issue a model call whose context exceeds
-  `context.max_tokens`
+* with `fixtures/large-repo` open, issue a model call with a large multi-turn
+  context, under the project's Headroom strategy (CLI `ai context strategy`)
 
 ### Expected Result
 
-* Headroom reduces input tokens by ≥ 50% (harness threshold, §1.6)
-* the request sent to the provider stays ≤ `context.max_tokens`
-* `ai context status --json` reports the reduction
+* Headroom reduces input tokens by ≥ 50% (harness threshold, §1.6) — the
+  strategy maps to Headroom's per-request `keep_turns`/`output_buffer_tokens`
+  knobs (there is no `context.max_tokens` field; arch §10)
+* `ai context status --json` reports the active strategy + reduction
 * command exits `0`
 
 ---
@@ -798,12 +808,13 @@ ai state repair --json
 
 ### Test
 
-* with `fixtures/large-repo` (>1M LOC), issue a model call whose raw context
-  exceeds `context.max_tokens`
+* with `fixtures/large-repo` (>1M LOC), issue a model call with a large raw
+  multi-turn context under the project's Headroom strategy
 
 ### Expected Result
 
-* Headroom keeps the request ≤ `context.max_tokens` (§1.6 threshold)
+* Headroom reduces the request's input tokens by ≥ 50% (§1.6 threshold) via its
+  per-request `keep_turns`/`output_buffer_tokens` knobs
 * no model overload; command exits `0`
 
 ---
@@ -868,23 +879,24 @@ ai exec test-project --json -- test -e /var/run/docker.sock \
 ### Test
 
 Egress is governed by the **Microsandbox default-deny NetworkPolicy**, which
-allows the workspace to reach only the trusted host service ports plus the
-allow-listed `$MOCK_PROVIDER_URL` (arch §29.4). The policy comes from the
-**egress policy fixture** (§1.6) — so this test asserts against a defined policy,
-not ambient behavior. `example.com` is denied **because it is not on the
-fixture's allow-list**. There is no egress proxy.
+allows the workspace to reach only the **host gateway** (the always-on allow rule
+the platform injects — `nginx aip-proxy → Headroom → LiteLLM`, the SOLE model
+path; default `host.microsandbox.internal:18787`) plus the allow-listed
+`$MOCK_PROVIDER_URL` (arch §29.4). Workspaces never reach LiteLLM directly. The
+policy comes from the **egress policy fixture** (§1.6) — so this test asserts
+against a defined policy, not ambient behavior. `example.com` is denied **because
+it is not on the fixture's allow-list**. There is no egress proxy.
 
-`$MOCK_PROVIDER_URL` is the harness-exported endpoint from §1.6 Setup (the single
-allow-listed destination). Note the quoting convention below: values the
-platform injects **into the workspace** (`AI_PLATFORM_HOST`, `LITELLM_PORT`) are
-single-quoted so they expand **in the guest**; `$MOCK_PROVIDER_URL` is a
-harness-side fixture value, so it is double-quoted to expand **on the host**
-before the command is passed verbatim into the workspace (CLI §4.5).
+`$GATEWAY_URL` is the resolved gateway address (`runtime.ResolveGateway`, default
+`http://host.microsandbox.internal:18787`); `$MOCK_PROVIDER_URL` is the
+harness-exported endpoint from §1.6 Setup (the single extra allow-listed
+destination). Both are harness-side values, double-quoted so they expand **on the
+host** before the command is passed verbatim into the workspace (CLI §4.5).
 
 ```bash
-# trusted host service (LiteLLM) is reachable directly via AI_PLATFORM_HOST (guest-side vars)
+# the host gateway (the always-on allow rule, the model path) is reachable
 ai exec test-project --json -- \
-  sh -c 'curl -fsS "http://$AI_PLATFORM_HOST:$LITELLM_PORT/health" >/dev/null'
+  sh -c "curl -fsS --max-time 5 '$GATEWAY_URL/health' >/dev/null"
 
 # allow-listed destination (the mock provider) IS reachable under the NetworkPolicy
 # (host-expanded URL, single-quoted inside so the guest receives the literal URL)
@@ -898,7 +910,8 @@ ai exec test-project --json -- \
 
 ### Expected Result
 
-* the LiteLLM health probe via `AI_PLATFORM_HOST` succeeds (`data.exit_code == 0`)
+* the gateway health probe succeeds (`data.exit_code == 0`) — the always-on
+  allow rule (the model path) is reachable
 * the allow-listed mock-provider probe succeeds (`data.exit_code == 0`) — proving
   the NetworkPolicy permits exactly what the fixture allows, so the deny below is
   about policy, not broken connectivity

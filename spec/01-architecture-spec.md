@@ -122,7 +122,9 @@ Host Layer
  │       └─ Context Optimization (Caveman skill — per project, §8–10; Headroom now host-side)
  │
  └─ Container Runtime (Docker / Podman)            ← service tier (network aip-net)
-     └─ container-tier services (Headroom · LiteLLM (+ Postgres) · Presidio (analyzer + anonymizer) · Ollama)
+     └─ nginx reverse proxy (aip-proxy — SOLE host entry, publishes :18787)
+         └─ INTERNAL-ONLY containers on aip-net (no host publish):
+            Headroom · LiteLLM (+ Postgres) · Presidio (analyzer + anonymizer) · Ollama · DNS audit (CoreDNS) · Open WebUI (opt) · Odysseus + companions (opt)
 ```
 
 Workspaces are **microVMs** (hardware isolation), not containers. The
@@ -132,13 +134,19 @@ workspaces.
 Host services (run on the host, not inside a workspace):
 
 ```text
-Headroom · LiteLLM (Model Layer) · Presidio · Ollama   — container tier (Docker/Podman, network aip-net)
+nginx proxy (aip-proxy)                                 — the SOLE host entry, publishes :18787 (default server + UI vhosts)
+Headroom · LiteLLM (Model Layer) · Presidio · Ollama    — container tier (Docker/Podman, network aip-net), INTERNAL-ONLY behind nginx
 Microsandbox                                            — microVM runtime, driven by the `ai` CLI via the Go SDK / `msb` (no daemon)
 ```
 
-The entire host service tier is containers on `aip-net`: Ollama, Presidio
-(analyzer + anonymizer), LiteLLM (+ Postgres), and Headroom. There is no native
-host service.
+The entire host service tier is containers on `aip-net`: nginx (`aip-proxy`),
+Ollama, Presidio (analyzer + anonymizer), LiteLLM (+ Postgres), Headroom, the
+CoreDNS egress-audit resolver, and the optional Open WebUI / Odysseus. There is no
+native host service. **`aip-proxy` (nginx) is the SOLE host entry point** — every
+other service container is INTERNAL-ONLY on `aip-net` (reached by name, no host
+publish), except the two loopback-published support containers `aip-litellm-db`
+(`127.0.0.1:5442`) and `aip-dns` (`127.0.0.1:15353/udp`, for the microVM
+`--dns-nameserver`). See §5/§10 for the full nginx routing model.
 
 Headroom is now a **shared host container** (`aip-headroom`, §10), the input
 compression proxy that agents send to and that forwards to LiteLLM — it is no
@@ -149,17 +157,20 @@ Ollama is a container-tier service too — see §5. Microsandbox is not a
 long-running service: it is invoked directly to create and drive workspace
 microVMs.)
 
-The Project Layer is the top-level, user-facing artifact: host-stored source
-under `~/projects/<project>` mounted into the workspace.
+The Project Layer is the top-level, user-facing artifact: host-stored source in
+the project directory (the cwd at `ai create`), bind-mounted into the workspace
+at `/workspace`.
 
 ## 4.2 Model-Request Path (how a call flows)
 
 ```text
 Agent (AI Tooling, in workspace)
  ╎  microVM boundary → AI_PLATFORM_HOST
-Headroom (host :18787)                                   (input compression)
+nginx (aip-proxy, host :18787, location /v1 → Headroom)  (SOLE host entry)
+ ↓
+Headroom (aip-headroom:8787, internal-only)              (input compression)
  ↓  forwards to LiteLLM
-LiteLLM (Model Layer, host :14000)
+LiteLLM (Model Layer, aip-litellm:4000, internal-only)
  ↓  always-on secret-masking guardrails, pre_call (Presidio secrets + hide-secrets)
  ↓  route to provider (Ollama or cloud); real provider key from LiteLLM's store
  ↓  always-on Presidio post_call guardrail (mask secrets out of the response)
@@ -168,8 +179,10 @@ Provider · Caveman steers output                         (Context Optimization)
 
 Context Optimization sits *between* the agent and the model (Caveman steers the
 agent's output; Headroom compresses the input). Headroom is now a **shared host
-container** (`aip-headroom`, §10): the agent sends to it across the microVM
-boundary via `AI_PLATFORM_HOST`, and it forwards to LiteLLM. LiteLLM runs an
+container** (`aip-headroom`, §10): the agent sends to the **nginx gateway** (host
+:18787) across the microVM boundary via `AI_PLATFORM_HOST`, nginx (`location /v1`)
+forwards to Headroom (internal-only on :8787), and Headroom forwards to LiteLLM.
+LiteLLM runs an
 always-on secret-masking guardrails on every request (pre_call and post_call, §15),
 so even cloud calls are guarded — they do not bypass them. The real
 provider API keys live **in the LiteLLM gateway** (§17), never in the workspace;
@@ -384,9 +397,10 @@ service configs live under `config/<service>/`.
 
 ### Install + Configure Summary
 
-* **install**: container images are pulled by digest; native binaries are
-  downloaded as pinned, checksum-verified release artifacts into
-  `tools/<name>/<version>/`
+* **install**: container images are pulled by pinned **image + tag** (default
+  `latest`; no digests — they are platform/arch specific — `config/versions.yaml`,
+  §27); native binaries are downloaded as pinned, checksum-verified release
+  artifacts into `tools/<name>/<version>/`
 * **configure**: rendered from platform config — LiteLLM routing/aliases (§14–15)
   reference the provider keys via `os.environ/<VAR>`, so the **real provider
   credentials live in the LiteLLM gateway** — supplied as env passthrough at
@@ -396,8 +410,10 @@ service configs live under `config/<service>/`.
   provider (required local backend)
 * **startup ordering**: container runtime + Microsandbox runtime verified →
   container tier reconciled in order
-  `aip-net` network → Ollama → Presidio (analyzer + anonymizer) →
-  LiteLLM (+ Postgres) → Headroom → verify
+  `aip-net` network → DNS (CoreDNS) → Ollama → Presidio (analyzer + anonymizer) →
+  LiteLLM (+ Postgres) → Headroom → Open WebUI / Odysseus (if enabled) →
+  **nginx proxy (last** — its upstreams must be up first since nginx resolves
+  literal `proxy_pass` hosts at config-load) → verify
   (workspace microVMs are created on demand, not at setup)
 
 ### Secrets Boundary
@@ -416,9 +432,11 @@ The platform uses two runtimes for two purposes.
 
 ## 6.1 Container Runtime (service tier)
 
-Used for the container-tier services — Headroom, LiteLLM (+ its Postgres),
-Presidio (analyzer + anonymizer), and Ollama (required) — which share a private
-docker network (`aip-net`).
+Used for the container-tier services — the nginx proxy (`aip-proxy`, the sole
+host entry), Headroom, LiteLLM (+ its Postgres), Presidio (analyzer +
+anonymizer), Ollama (required), the CoreDNS egress-audit resolver, and the
+optional Open WebUI / Odysseus — which share a private docker network
+(`aip-net`).
 
 Supported runtimes (end-state):
 
@@ -552,14 +570,20 @@ Dockerfile flow is unchanged; the image is built once and booted as a microVM.)
 ### Mount Rules
 
 ```text
-host  ~/projects/<project>            →  workspace  ~/workspace        (read-write)
-host  ~/.ai-platform/agents,skills,   →  workspace  (shared resources) (read-only)
-      prompts,templates
+host  <project dir> (the cwd at `ai create`)  →  workspace  /workspace  (read-write)
+host  ~/.ai-platform/overlays/<workspace-id>  →  workspace  /persist    (overlay, §26)
 ```
 
-* the host project directory is the single source of truth, mounted read-write
-  at `~/workspace`
+* the project is created **in the current working directory** (no fixed
+  `~/projects` root — that path survives only as an unused fallback); the host
+  project directory is the single source of truth, bind-mounted read-write at
+  `/workspace` (the workspace working directory). The `workspace` user's home is
+  `/home/workspace`, distinct from the project mount.
+* the per-workspace overlay (§26) is mounted at `/persist`
 * no persistent data is written outside the mounted paths
+* (a shared read-only mount of `~/.ai-platform/agents,skills,prompts,templates`
+  into the workspace is **deferred** — not currently wired into the `msb`
+  run-args)
 
 ### Lifecycle Mapping
 
@@ -573,10 +597,10 @@ host  ~/.ai-platform/agents,skills,   →  workspace  (shared resources) (read-o
 
 ### Ports
 
-Workspace microVMs reach host services (Headroom, LiteLLM) via
-`AI_PLATFORM_HOST` (§29) — never `host.docker.internal`. The agent sends its model
-calls to the shared host Headroom (`:18787`), which forwards to LiteLLM (§10). The
-platform injects `AI_PLATFORM_HOST` and the service ports into the workspace
+Workspace microVMs reach host services via the **nginx gateway** at
+`AI_PLATFORM_HOST:18787` (§29) — never `host.docker.internal`. The agent sends its
+model calls to that single gateway port (`location /v1` → Headroom → LiteLLM, §10).
+The platform injects `AI_PLATFORM_HOST` and the service ports into the workspace
 environment at start. The workspace runs under a default-deny Microsandbox
 **NetworkPolicy** (§29.4), so all external egress is confined to the reachable
 set — the model gateway, the trusted host service ports, and any explicitly
@@ -685,9 +709,9 @@ Headroom shrinks what goes *in*; Caveman shrinks what comes *out*.
         Caveman skill (loaded in agent → steers terse generation)
                               │               │
                               ▼               │
-  Agent ── full context ──────┼──► Headroom ──compressed──► LiteLLM ──► Model
-    ▲   (per-project knobs in │   (aip-headroom,           (keys-in-      │
-    │    request body)        │    host :18787)             LiteLLM)      │
+  Agent ─ full context ─┼─► nginx ─► Headroom ─compressed─► LiteLLM ─► Model
+    ▲  (per-project      │  (:18787,  (aip-headroom         (keys-in-       │
+    │   knobs in body)   │   /v1)      :8787)                LiteLLM)       │
     └──────────── compact output (Caveman-steered) ────────────────────────┘
 ```
 
@@ -878,14 +902,17 @@ agent:
 # 14. Model Layer
 
 All model access flows through LiteLLM. On the full path, the agent sends to the
-shared host Headroom proxy (input compression), which forwards to LiteLLM;
-LiteLLM applies always-on secret-masking guardrails (§15) and attaches the real
-provider key — held **in the LiteLLM gateway** (§17) — to the upstream request.
+**nginx gateway** (host :18787), which routes `/v1` to the shared host Headroom
+proxy (input compression), which forwards to LiteLLM; LiteLLM applies always-on
+secret-masking guardrails (§15) and attaches the real provider key — held **in the
+LiteLLM gateway** (§17) — to the upstream request.
 
 ```text
 Agent
  ╎  microVM boundary → AI_PLATFORM_HOST
-Headroom (host :18787, input compression)
+nginx (aip-proxy, host :18787, /v1 → Headroom)
+ ↓
+Headroom (aip-headroom:8787, input compression)
  ↓
 LiteLLM
  ↓  (always-on Presidio pre_call/post_call secret-masking guardrails, §15)
@@ -949,14 +976,18 @@ Purpose:
 It does not make model-selection decisions on the agent's behalf.
 
 LiteLLM runs as container `aip-litellm` (image `ghcr.io/berriai/litellm:main-latest`,
-`:4000`) on the `aip-net` network. Its DB-backed admin UI / virtual keys require
+`:4000`) on the `aip-net` network — **INTERNAL-ONLY** (no host publish; reached by
+name `aip-litellm:4000` by Headroom and by nginx's `/llm` route + `litellm.<domain>`
+vhost). Its DB-backed admin UI / virtual keys require
 PostgreSQL: container `aip-litellm-db` (image `postgres:18.4-alpine3.24`, data
 volume mounted at `/var/lib/postgresql`, `trust` auth on the private network,
 host port bound at `127.0.0.1:5442`). This Postgres is the one stateful piece of
 the service tier.
 
 **Admin UI auth.** The proxy ships an admin UI at `:4000/ui` (reached on the host
-at the published port, `:14000/ui`). The platform
+through nginx — the `litellm.<domain>` vhost on :18787, which redirects `/` → `/ui`,
+or the `/llm` route — never a direct host port; the host CLI hits it at
+`http://127.0.0.1:18787/llm`, §10). The platform
 secures it by passing `UI_USERNAME` (`admin`), `UI_PASSWORD`, and
 `LITELLM_MASTER_KEY` into the container **via the environment** — never inlined
 in the launch argv, the rendered config, or platform disk.
@@ -1103,6 +1134,25 @@ model_list:
   - { model_name: "groq/*",      litellm_params: { model: "groq/*",      api_key: os.environ/GROQ_API_KEY } }
 ```
 
+### In-VM model picker
+
+The wildcards let the agent name *any* model, but for discoverability the in-VM
+agent CLIs are seeded with a curated **picker** built at workspace start
+(`internal/workspace.pickerModels`): the deduped, sorted UNION of (a) the named
+aliases, (b) the **installed** local Ollama models (rendered `ollama/<name>`,
+listed live via the injected lister — skipped, never fatal, if Ollama is down),
+and (c) a maintainer-curated **cloud seed** (`internal/agentcfg/cloud_models.yaml`,
+an editable `<provider>/<model-id>` list across openai/anthropic/gemini/groq).
+Editing the seed adds/removes picker suggestions with no code change — LiteLLM's
+wildcards route whatever is named. The platform also installs an in-VM
+`refresh-models` command (`/usr/local/bin/refresh-models`, from
+`agentcfg.RefreshScript`) that re-fetches the installed-local set live from the
+gateway's `/ollama` tags route and rewrites the agent-CLI configs, so a model
+pulled after start can be picked up without recreating the workspace. (The full
+ollama.com library snapshot baked at `internal/ollama/models.yaml` is a separate,
+regenerable catalogue backing the *host-side* `ai models` browse — not the in-VM
+picker.)
+
 ---
 
 # 16. Ollama
@@ -1161,13 +1211,13 @@ across mechanisms that already exist on the path:
 
 The in-workspace agent never holds a provider secret. It is given a scoped
 **LiteLLM virtual key** (the gateway key) and sends all model calls to the
-gateway path (host Headroom → LiteLLM, §29). LiteLLM authenticates the virtual
-key, then uses the *real* provider key from its own store to reach the upstream
-provider:
+gateway path (nginx :18787 → Headroom → LiteLLM, §29). LiteLLM authenticates the
+virtual key, then uses the *real* provider key from its own store to reach the
+upstream provider:
 
 ```text
 Agent in workspace microVM  (holds only the LiteLLM virtual key)
- ↓  AI_PLATFORM_HOST → Headroom (host :18787) → LiteLLM (:4000)
+ ↓  AI_PLATFORM_HOST → nginx (:18787, /v1) → Headroom (:8787) → LiteLLM (:4000)
 LiteLLM  (authenticates the virtual key; attaches the real provider key)
  ↓
 Provider (cloud) / Ollama (local, no key)
@@ -1266,16 +1316,16 @@ Mounted read-only.
 
 # 19. Project Architecture
 
-Host location:
+Host location (the project directory — the cwd at `ai create`, not a fixed root):
 
 ```text
-~/projects/<project>
+<project dir>/.ai-platform/
 ```
 
-Workspace location:
+Workspace mount location (guest):
 
 ```text
-~/workspace
+/workspace
 ```
 
 ---
@@ -1476,8 +1526,8 @@ Anything written in the workspace persists across stop / start / recreation:
 * any other files written outside the mounted project source
 
 The whole writable layer is persisted — there is no manifest of "declared
-paths" to maintain. (Project source under `~/projects/<project>` is separately
-host-mounted and is the user's git repo.)
+paths" to maintain. (Project source in the project directory is separately
+bind-mounted at `/workspace` and is the user's git repo.)
 
 ## Scope
 
@@ -1593,9 +1643,9 @@ It is **pinned** in `runtime.HostGateway` (which returns
 `AI_PLATFORM_HOST` environment override when set (e.g. the acceptance harness) else
 the persisted `host_gateway`.
 
-The trusted platform host services (Headroom and the LiteLLM it forwards to) are
-reached directly at `AI_PLATFORM_HOST:<port>` — the agent sends its model calls to
-host Headroom (`:18787`), which forwards to LiteLLM (`:4000`); all other egress is
+The trusted platform gateway is reached at `AI_PLATFORM_HOST:18787` — the **nginx
+proxy** (the sole host entry), which routes `/v1` to Headroom (internal-only on
+`:8787`), which forwards to LiteLLM (`aip-litellm:4000`); all other egress is
 governed by the Microsandbox NetworkPolicy (§29.4). Reaching *other* host-local
 services — a developer's database or message broker — is a separate, explicitly
 allow-listed zone (§29.6).
@@ -1607,7 +1657,7 @@ endpoint every workspace on a host routes through is derived from
 set` — §CLI 10.4), else the resolved `host_gateway`. The field holds a **bare host
 or `host:port`** (NOT a URL); `runtime.ResolveGateway` applies: empty →
 `host.microsandbox.internal:18787` (standalone/local); `host` → that host on the
-default Headroom port `18787`; `host:port` → that host and port. The result drives
+default nginx-gateway port `18787`; `host:port` → that host and port. The result drives
 two things at workspace start (`internal/workspace`): (a) the in-VM agent provider
 configs' `base_url` is `http://<host>:<port>/v1`, and (b) the always-on egress
 allow rule (`egress.MsbNetworkArgs`) targets `<host>:tcp:<port>`. So in standalone
@@ -1622,19 +1672,21 @@ to — the configured remote server's gateway.
        ┌─────────────────────────────┐
        │ agent                        │   egress = Microsandbox NetworkPolicy
        └───────────────│─────────────┘   (default-deny; allow-listed set only)
-        trusted host svc│ (direct, AI_PLATFORM_HOST)
+        trusted gateway │ (AI_PLATFORM_HOST:18787)
                         ▼
-        Headroom (host :18787) ──► LiteLLM ──► provider (cloud)
-        (input compression)      (Presidio    │   (real key from
-                                  guardrail;   │    LiteLLM's store)
-                                  keys-in-     ▼
-                                  LiteLLM)   Ollama (local)
+        nginx (host :18787) ─► Headroom ─► LiteLLM ──► provider (cloud)
+        (sole host entry,    (:8787,    (Presidio    │   (real key from
+         /v1 → Headroom)      input      guardrail;   │    LiteLLM's store)
+                              compress)  keys-in-     ▼
+                                         LiteLLM)   Ollama (local)
 ```
 
 * **Model requests** — the in-workspace agent sends the request across the microVM
-  boundary to the **shared host Headroom** proxy at `AI_PLATFORM_HOST:18787` (input
-  compression), which forwards to **LiteLLM** (routing; always-on secret-masking
-  guardrails, §15). LiteLLM reaches **both** the local Ollama backend **and** cloud
+  boundary to the **nginx gateway** at `AI_PLATFORM_HOST:18787` (the sole host
+  entry), which routes `/v1` to the **shared host Headroom** proxy (input
+  compression, internal-only on `:8787`), which forwards to **LiteLLM** (routing;
+  always-on secret-masking guardrails, §15). LiteLLM reaches **both** the local
+  Ollama backend **and** cloud
   providers, attaching the real provider key from **its own store** on cloud calls
   (keys-in-LiteLLM, §17). These hops are host-side; the workspace holds only the
   scoped LiteLLM virtual key.
@@ -1650,8 +1702,8 @@ to — the configured remote server's gateway.
 ## 29.4 Egress confinement (Microsandbox NetworkPolicy)
 
 Each workspace microVM runs under a restricted Microsandbox **NetworkPolicy**
-(default-deny). The reachable set is exactly: (a) the trusted platform host
-services at `AI_PLATFORM_HOST` (Headroom `:18787`, which forwards to LiteLLM),
+(default-deny). The reachable set is exactly: (a) the trusted platform gateway at
+`AI_PLATFORM_HOST:18787` (the nginx proxy → Headroom → LiteLLM),
 (b) any host-local services explicitly allow-listed in
 `network.allow_host_services` (§29.6), and (c) the open internet only when the
 `network.egress` posture permits it (§29.6). Any other workspace egress is denied
@@ -1874,8 +1926,8 @@ event occurred, with no secret material.
 
 The platform has no backup/restore feature. It isn't needed:
 
-* **project source** lives in `~/projects/<project>` and is the user's own git
-  repo (backed up by pushing to a remote)
+* **project source** lives in the project directory (the cwd at `ai create`) and
+  is the user's own git repo (backed up by pushing to a remote)
 * **platform state** is reconstructable from the filesystem via `ai state repair`
 * **provider keys** live in the LiteLLM gateway (§17), not on platform disk
 * **installed programs** persist in the per-workspace **overlay** (§26), which
@@ -1898,13 +1950,19 @@ The platform must support:
 Monitoring is required for:
 
 * Microsandbox
+* nginx proxy (`aip-proxy` — the host entry; readiness probed end-to-end through
+  the gateway, §10)
 * LiteLLM
 * Presidio
 * Ollama
+* DNS audit resolver (`aip-dns`, §29.7)
 * Docker
 * Podman
 * Caveman
 * Headroom
+
+(`ai doctor` reports every service-tier service including the optional Open WebUI
+and Odysseus + companions, §5.)
 
 ---
 

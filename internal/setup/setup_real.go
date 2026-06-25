@@ -204,8 +204,9 @@ const (
 	// publishes to the host. It fronts the model path (host :18787 /v1 → Headroom →
 	// LiteLLM, what resolveGateway returns — transparent to workspaces), the LiteLLM
 	// admin (/llm) and Ollama (/ollama) surfaces on the same :18787, and the optional
-	// web UIs on their host ports (18090 Open WebUI, 7000 Odysseus). nginx terminates
-	// TLS later (the future HTTPS endpoint). Pinned minor tag.
+	// web UIs as Host-based vhosts on that SAME :18787 (litellm./chat./odysseus.<domain>
+	// — no separate host ports). nginx terminates TLS later (the future HTTPS endpoint,
+	// per-vhost :443 + http→https redirect). Pinned minor tag.
 	proxyContainer = "aip-proxy"
 	proxyHostPort  = "18787"
 	proxyTargetURL = "http://" + headroomContainer + ":8787"
@@ -229,7 +230,8 @@ const (
 	// :7000) plus three companions reached by name on aip-net — ChromaDB (vector
 	// DB), SearXNG (web search), and ntfy (notifications). ALL FOUR are INTERNAL-ONLY
 	// (no host publish): the companions are reached on the shared network, and the
-	// app's UI is fronted on host :7000 by the nginx gateway (aip-proxy). The app
+	// app's UI is fronted by the nginx gateway (aip-proxy) as the Host-vhost
+	// odysseus.<domain> on :18787 → aip-odysseus:7000. The app
 	// routes models through the nginx gateway → Headroom → LiteLLM, so it never holds
 	// provider keys directly.
 	odysseusContainer  = "aip-odysseus"
@@ -790,8 +792,8 @@ func ensureOdysseus(prober runtime.Prober, containerRuntime, bindHost, domain st
 	args := []string{
 		"run", "-d", "--name", odysseusContainer,
 		"--network", platformNetwork,
-		// INTERNAL-ONLY: no host publish. nginx (aip-proxy) fronts the UI on host
-		// :7000 → aip-odysseus:7000 (reached by name on aip-net).
+		// INTERNAL-ONLY: no host publish. nginx (aip-proxy) fronts the UI as the
+		// odysseus.<domain> vhost on host :18787 → aip-odysseus:7000 (by name on aip-net).
 		"-v", dataDir + ":/app/data",
 		"-v", logsDir + ":/app/logs",
 		// SECURITY: mounting the host Docker socket grants Odysseus full control of
