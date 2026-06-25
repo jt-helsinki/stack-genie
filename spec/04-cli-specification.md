@@ -387,7 +387,7 @@ Idempotent: safe to re-run after a partial or completed uninstall.
 ## 3.1 Create Workspace
 
 ```bash id="c4"
-ai create [<name>] [--name <name>] [--os <os>] [--agents <list>] [--stacks <list>]
+ai create [<name>] [--name <name>] [--os <os>] [--agents <list>] [--stacks <list>] [--apps <list>]
 ```
 
 `ai create` sets up a new environment **in the current working
@@ -405,6 +405,11 @@ command:
   first listed becomes the default agent CLI
 * `--stacks <list>` — comma-separated software stacks
   (`go,node,python,rust,java,maven,deno`); optional
+* `--apps <list>` — comma-separated in-VM AI apps to install
+  (`openwebui,anythingllm`); **opt-in, default none**. Like `--stacks` it
+  pre-seeds the wizard's apps multi-select on a terminal and drives the selection
+  directly under `--json`/no-TTY. Each selected app is allocated a unique host port
+  at create time (see §4.5c)
 
 On a terminal (with `--json` off) the wizard **always** runs, **pre-seeded** with
 any flags you passed — flags set the defaults rather than bypassing the UI. Under
@@ -750,6 +755,45 @@ older `ai` whose template predates tmux — fails with `ErrTmuxMissing` (exit 3)
 remediation guidance (add `tmux` to the workspace's `.ai-platform/Dockerfile` and
 restart, or recreate with an up-to-date `ai`), instead of msb's raw "failed to exec tmux"
 leak (which also misreports a successful exit).
+
+## 4.5c In-VM Apps (`ai apps`)
+
+```bash
+ai apps list [<name>]
+ai apps <add|remove|update|start|stop|restart> <app> [<name>]
+```
+
+`ai apps` manages the opt-in AI applications that run as `nerdctl` containers
+**inside** the workspace microVM (Open WebUI, AnythingLLM). The optional trailing
+`[<name>]` resolves the workspace exactly like the other verbs (explicit name →
+`--project` → cwd); `<app>` is validated against the manifest set
+(`openwebui|anythingllm`).
+
+* **`list`** — table (APP / STATUS / URL) by default, JSON envelope under `--json`.
+  STATUS is `not installed` / `installed (stopped)` / `running`; URL is the app's
+  host URL (`http://localhost:<port>`). `list` works against a **stopped**
+  workspace (running status simply reports false).
+* **`add`** — records the app, allocates its **unique host port**, and (when the
+  microVM is running) starts the container. Because adding an app changes the
+  microVM's published-port set — which `msb` only applies at create — `add` reports
+  **restart required** (`ai restart`) to publish the host port.
+* **`remove`** — stops/removes the container, unrecords the app, and frees its
+  port (also restart-required to stop publishing).
+* **`update`** — `nerdctl pull` the latest image and recreate the container.
+* **`start` / `stop` / `restart`** — `nerdctl start|stop|restart` the container.
+
+Each installed app is allocated a unique host port (recorded in the project
+`config.yaml`'s `apps:` block) so two running microVMs never collide. The port
+chain is `host:<port> → (msb -p <port>:<port>) → VM:<port> → (nerdctl -p
+<port>:<containerPort>) → container`; the host and guest side use the same number,
+reusing the `ai network publish` plumbing. App data persists on the workspace
+overlay (`/persist/apps/<key>`). Each app is configured to route through the same
+model gateway the agent CLIs use, with the workspace's scoped virtual key.
+
+Exit codes (§18): invalid app/args → `2`; a lifecycle verb (`update`/`start`/
+`stop`/`restart`, and `add` on a started workspace) that needs a **running**
+workspace when none is running → `3`; runtime failures → `4`. The TUI **Apps**
+view (§14) drives the same path via `ai apps`.
 
 ### In-workspace `refresh-models` — re-pull the model picker without restarting
 

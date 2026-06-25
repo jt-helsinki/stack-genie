@@ -14,6 +14,7 @@ import (
 	"strings"
 
 	"github.com/jt-helsinki/ideal-robot/internal/agentcfg"
+	"github.com/jt-helsinki/ideal-robot/internal/apps"
 	"github.com/jt-helsinki/ideal-robot/internal/config"
 	"github.com/jt-helsinki/ideal-robot/internal/contextopt"
 	"github.com/jt-helsinki/ideal-robot/internal/egress"
@@ -243,7 +244,14 @@ func (manager Manager) Start(project string) (*state.Workspace, error) {
 		return nil, err
 	}
 	gatewayHost, gatewayPort, gatewayURL := resolveGateway()
-	netArgs := egress.MsbNetworkArgs(projectConfig.Network, gatewayHost, gatewayPort)
+	// Publish the installed in-VM apps' unique host ports so msb forwards
+	// host:<port> → VM:<port> (nerdctl then maps VM:<port> → container). The app
+	// ports are merged into the project's publish set for this start only — they
+	// live in the apps config, not the network block, so adding/removing an app and
+	// restarting re-derives the published set automatically.
+	networkForStart := projectConfig.Network
+	networkForStart.PublishPorts = mergePublishPorts(networkForStart.PublishPorts, apps.PublishedPorts(projectConfig))
+	netArgs := egress.MsbNetworkArgs(networkForStart, gatewayHost, gatewayPort)
 	// The microVM mounts the host project path directly. Supported hosts are
 	// macOS and Linux, so no path translation is needed (arch §7).
 	if err := manager.Sandbox.Create(name, imageRef, root, overlayPath, netArgs); err != nil {
@@ -276,6 +284,9 @@ func (manager Manager) Start(project string) (*state.Workspace, error) {
 	// start — a non-container workspace is still fully usable, and Phase 1's app
 	// start surfaces a clear error if the runtime is down. We only log a warning.
 	manager.ensureContainerd(name)
+	// Start the installed in-VM apps (best-effort PER app: one failing must not
+	// fail the workspace or the other apps — see startInstalledApps).
+	manager.startInstalledApps(name, project, root, gatewayURL)
 	now := manager.Now()
 	handle := &state.Workspace{
 		ID:          name,
@@ -388,6 +399,118 @@ func (manager Manager) ensureContainerd(name string) {
 	if result.ExitCode != 0 {
 		_, _ = fmt.Fprintf(os.Stderr, "warning: in-VM container runtime did not start cleanly in workspace %q (exit %d): %s\n",
 			name, result.ExitCode, strings.TrimSpace(result.Stderr))
+	}
+}
+
+// mergePublishPorts overlays the app-derived publish mappings onto the project's
+// declared ones, with app mappings winning on a host-port clash (the network
+// allow-list never publishes an app's reserved port). Deterministic order is left
+// to MsbNetworkArgs/the caller; this only dedupes by host port.
+func mergePublishPorts(declared, appPorts []config.PortMapping) []config.PortMapping {
+	byHost := make(map[int]config.PortMapping, len(declared)+len(appPorts))
+	order := make([]int, 0, len(declared)+len(appPorts))
+	add := func(mapping config.PortMapping) {
+		if _, seen := byHost[mapping.Host]; !seen {
+			order = append(order, mapping.Host)
+		}
+		byHost[mapping.Host] = mapping
+	}
+	for _, mapping := range declared {
+		add(mapping)
+	}
+	for _, mapping := range appPorts {
+		add(mapping)
+	}
+	merged := make([]config.PortMapping, 0, len(order))
+	for _, host := range order {
+		merged = append(merged, byHost[host])
+	}
+	return merged
+}
+
+// AppManager builds an apps.Manager bound to a running workspace microVM: its
+// Exec runs nerdctl as root in the VM (Sandbox.ExecRoot), config is the project's
+// config.yaml, port reservations span every workspace, and the gateway env is the
+// resolved gateway URL + a freshly-minted scoped virtual key + the default model.
+// It is used by `ai apps` and by startInstalledApps. exec is nil when the
+// workspace is not running, so the lifecycle methods that need the VM report
+// ErrWorkspaceNotRunning.
+func (manager Manager) AppManager(name, project, root, gatewayURL string) *apps.Manager {
+	return manager.buildAppManager(name, project, root, gatewayURL, manager.requireRunning(project) == nil)
+}
+
+// buildAppManager wires an apps.Manager for a workspace. forceExec=true wires the
+// in-VM exec surface unconditionally (used at workspace start, when the microVM is
+// running but its handle is not yet saved so requireRunning would say "no");
+// otherwise Exec is wired only when the workspace is recorded running.
+func (manager Manager) buildAppManager(name, project, root, gatewayURL string, forceExec bool) *apps.Manager {
+	var exec apps.ExecRunner
+	if forceExec {
+		exec = func(argv []string) (apps.ExecResult, error) {
+			result, err := manager.Sandbox.ExecRoot(name, argv)
+			return apps.ExecResult{ExitCode: result.ExitCode, Stdout: result.Stdout, Stderr: result.Stderr}, err
+		}
+	}
+	return apps.NewManager(apps.Deps{
+		LoadConfig:    func() (*config.Config, error) { return config.LoadProjectConfig(root) },
+		SaveConfig:    func(updated *config.Config) error { return config.WriteProject(root, updated) },
+		ReservedPorts: apps.ReservedPortsAcrossWorkspaces,
+		Exec:          exec,
+		Gateway: func() (string, string, string, error) {
+			apiKey, err := manager.appGatewayKey(name, project)
+			if err != nil {
+				return "", "", "", err
+			}
+			return gatewayURL, apiKey, litellm.DefaultRouting().Default, nil
+		},
+	})
+}
+
+// AppManagerFor resolves a project's root + gateway and returns an apps.Manager
+// bound to its workspace microVM. It is the entry the `ai apps` CLI uses: it does
+// not require the workspace to be running (the returned Manager reports
+// ErrWorkspaceNotRunning from the methods that need the VM). An unknown project
+// returns ErrUnknownProject (→ exit 2).
+func (manager Manager) AppManagerFor(project string) (*apps.Manager, error) {
+	root, err := resolveProjectRoot(project)
+	if err != nil {
+		return nil, err
+	}
+	_, _, gatewayURL := resolveGateway()
+	return manager.AppManager(Name(project), project, root, gatewayURL), nil
+}
+
+// appGatewayKey mints a scoped LiteLLM virtual key for the workspace's apps,
+// aliased per workspace+apps so it does not collide with the agent-CLI key. It
+// rotates (delete-then-mint) so a restart always has a fresh key.
+func (manager Manager) appGatewayKey(name, project string) (string, error) {
+	alias := project + "-apps"
+	_ = manager.Keys.DeleteKeyByAlias(alias)
+	return manager.Keys.GenerateKey(litellm.KeyScope{
+		Alias:    alias,
+		Metadata: map[string]any{"workspace": name, "purpose": "apps"},
+	})
+}
+
+// startInstalledApps brings up every installed in-VM app at workspace start. It is
+// BEST-EFFORT and never fails the workspace start: if the gateway key cannot be
+// minted, or an individual app fails to start, it logs a warning and continues. A
+// workspace with a degraded app is still fully usable.
+//
+// hardware bring-up: the live `nerdctl run` for each app executes only inside a
+// booted microVM with containerd up; the orchestration is unit-tested with a fake.
+func (manager Manager) startInstalledApps(name, project, root, gatewayURL string) {
+	// The microVM is running here even though the lifecycle handle is not saved
+	// yet, so wire Exec directly (AppManager's requireRunning gate would see no
+	// handle and leave Exec nil). buildAppManager(..., true) forces Exec on.
+	appManager := manager.buildAppManager(name, project, root, gatewayURL, true)
+	warnings, err := appManager.StartInstalled()
+	if err != nil {
+		_, _ = fmt.Fprintf(os.Stderr, "warning: could not start in-VM apps in workspace %q: %v\n", name, err)
+		return
+	}
+	for _, warning := range warnings {
+		_, _ = fmt.Fprintf(os.Stderr, "warning: %s\n", warning)
 	}
 }
 

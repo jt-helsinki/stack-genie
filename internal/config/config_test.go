@@ -111,3 +111,41 @@ func TestResolveHostServices(test *testing.T) {
 		}
 	}
 }
+
+func TestAppsRoundTrip(test *testing.T) {
+	root := test.TempDir()
+	original := &Config{
+		OS:   "debian-trixie",
+		Apps: []AppEntry{{Key: "openwebui", Port: 21000}, {Key: "anythingllm", Port: 21001}},
+	}
+	if err := WriteProject(root, original); err != nil {
+		test.Fatal(err)
+	}
+	loaded, err := LoadProjectConfig(root)
+	if err != nil {
+		test.Fatal(err)
+	}
+	if len(loaded.Apps) != 2 {
+		test.Fatalf("loaded %d apps, want 2", len(loaded.Apps))
+	}
+	if loaded.Apps[0].Key != "openwebui" || loaded.Apps[0].Port != 21000 {
+		test.Fatalf("app[0] = %+v", loaded.Apps[0])
+	}
+	if loaded.Apps[1].Key != "anythingllm" || loaded.Apps[1].Port != 21001 {
+		test.Fatalf("app[1] = %+v", loaded.Apps[1])
+	}
+}
+
+func TestAppsOmittedWhenEmpty(test *testing.T) {
+	root := test.TempDir()
+	if err := WriteProject(root, &Config{OS: "ubuntu"}); err != nil {
+		test.Fatal(err)
+	}
+	loaded, err := LoadProjectConfig(root)
+	if err != nil {
+		test.Fatal(err)
+	}
+	if len(loaded.Apps) != 0 {
+		test.Fatalf("apps = %v, want empty", loaded.Apps)
+	}
+}

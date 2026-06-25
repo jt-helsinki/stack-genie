@@ -106,6 +106,7 @@ func Execute() int {
 		newAgentCmd(emitter, &exitCode),
 		newAttachCmd(emitter, &exitCode),
 		newSessionsCmd(emitter, &exitCode),
+		newAppsCmd(emitter, &exitCode),
 		// Other top-level commands.
 		newServicesCmd(emitter, &exitCode),
 		newLiteLLMCmd(emitter, &exitCode),

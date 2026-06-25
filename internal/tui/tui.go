@@ -18,6 +18,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/jt-helsinki/ideal-robot/internal/apps"
 	"github.com/jt-helsinki/ideal-robot/internal/contextopt"
 	"github.com/jt-helsinki/ideal-robot/internal/egress"
 	"github.com/jt-helsinki/ideal-robot/internal/litellm"
@@ -98,6 +99,22 @@ func Run(cwd string) error {
 		},
 		func() string { return application.currentProject },
 	)
+	// The Apps view resolves the LIVE current project at fetch time (over the real
+	// AppManager), so switching workspaces reflects immediately. With no current
+	// project the lister returns nothing (the view shows "no workspace selected").
+	appsView := views.NewApps(
+		func() ([]apps.Status, error) {
+			if application.currentProject == "" {
+				return nil, nil
+			}
+			manager, err := workspace.RealManager(goruntime.GOOS, nowRFC3339).AppManagerFor(application.currentProject)
+			if err != nil {
+				return nil, err
+			}
+			return manager.List()
+		},
+		func() string { return application.currentProject },
+	)
 	networkView := views.NewNetwork(currentRoot, egress.Get, egress.SetMode)
 	contextView := views.NewContext(currentRoot, contextopt.GetStatus, contextopt.SetStrategy, contextopt.SetCavemanLevel)
 	modelsView := views.NewModels(litellmClient.Status, litellmClient.Test, ollama.RealClient().List, ollama.Popular, ollama.RealClient().Show)
@@ -120,8 +137,8 @@ func Run(cwd string) error {
 	// sub-tabs — Workspace · Network · Context · Secrets · Sessions — for it.
 	projectsHub := views.NewProjectsHub(
 		projectsView,
-		[]views.Screen{projectDetail, networkView, contextView, secretsView, sessionsView},
-		[]string{"Workspace", "Network", "Context", "Secrets", "Sessions"},
+		[]views.Screen{projectDetail, networkView, contextView, secretsView, sessionsView, appsView},
+		[]string{"Workspace", "Network", "Context", "Secrets", "Sessions", "Apps"},
 	)
 
 	// Top-level tab order = menu order: Services · Workspaces · Models · Settings.
@@ -132,6 +149,7 @@ func Run(cwd string) error {
 	application.projectsHub = projectsHub
 	application.projectDetail = projectDetail
 	application.sessionsView = sessionsView
+	application.appsView = appsView
 	application.modelsView = modelsView
 
 	// Always land on the home screen (Services, index 0 — current's zero value); a
@@ -227,6 +245,10 @@ type app struct {
 	// sessionsView lets the app refresh the Sessions view when an attach
 	// subprocess returns (the user may have created/killed a session).
 	sessionsView *views.Sessions
+
+	// appsView lets the app refresh the Apps view when an apps lifecycle
+	// subprocess returns (the user may have installed/removed/started an app).
+	appsView *views.Apps
 
 	// modelsView lets the app refresh the local-store list after a pull/rm
 	// subprocess returns from the terminal overlay.
@@ -353,6 +375,14 @@ func (application *app) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			"attach "+message.Session+" "+message.Project,
 			[]string{"attach", message.Session, message.Project})
 
+	case views.AppActionRequestedMsg:
+		// Run an apps lifecycle action live in the terminal overlay (`ai apps
+		// <action> <app> <name>` → nerdctl in the VM); the Apps view refreshes when
+		// the overlay closes.
+		return application, application.openTerminal(
+			"apps "+message.Action+" "+message.App+" "+message.Project,
+			[]string{"apps", message.Action, message.App, message.Project})
+
 	case views.ModelPullRequestedMsg:
 		// Pull the SELECTED row's exact reference (streaming progress): run the real
 		// `ai models pull <ref>` live in the terminal overlay, then refresh the list.
@@ -461,6 +491,9 @@ func (application *app) updateTerminal(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 		commands := []tea.Cmd{application.projectDetail.Init()}
 		if application.sessionsView != nil {
 			commands = append(commands, application.sessionsView.Init())
+		}
+		if application.appsView != nil {
+			commands = append(commands, application.appsView.Init())
 		}
 		if application.modelsView != nil {
 			commands = append(commands, application.modelsView.Init())

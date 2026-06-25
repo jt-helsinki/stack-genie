@@ -26,6 +26,19 @@ type Config struct {
 	Context   ContextConfig   `yaml:"context,omitempty" json:"context,omitempty"`
 	Workspace WorkspaceConfig `yaml:"workspace,omitempty" json:"workspace,omitempty"`
 	Network   NetworkConfig   `yaml:"network,omitempty" json:"network,omitempty"`
+	// Apps are the opt-in AI applications installed in this workspace, run as
+	// in-VM nerdctl containers (arch §7). Each carries the unique host port it is
+	// published on so concurrently-running workspaces never collide.
+	Apps []AppEntry `yaml:"apps,omitempty" json:"apps,omitempty"`
+}
+
+// AppEntry records one installed in-VM app and the unique host port allocated
+// for it. The port is reserved at install time and reused on every restart, so a
+// workspace's app keeps a stable URL and two running workspaces never publish the
+// same host port. Port is only ever published while the app is installed.
+type AppEntry struct {
+	Key  string `yaml:"key" json:"key"`
+	Port int    `yaml:"port" json:"port"`
 }
 
 type AgentConfig struct {

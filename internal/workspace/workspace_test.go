@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/jt-helsinki/ideal-robot/internal/agentcfg"
+	"github.com/jt-helsinki/ideal-robot/internal/config"
 	"github.com/jt-helsinki/ideal-robot/internal/contextopt"
 	"github.com/jt-helsinki/ideal-robot/internal/litellm"
 	"github.com/jt-helsinki/ideal-robot/internal/ollama"
@@ -963,4 +964,77 @@ func TestStartPickerNilListerSkipsLocal(test *testing.T) {
 	if !strings.Contains(config, "anthropic/claude-opus-4-8") {
 		test.Error("config missing the cloud seed with a nil lister")
 	}
+}
+
+func TestMergePublishPorts(test *testing.T) {
+	declared := []config.PortMapping{{Guest: 8000, Host: 9000}}
+	appPorts := []config.PortMapping{{Guest: 21000, Host: 21000}}
+	merged := mergePublishPorts(declared, appPorts)
+	if len(merged) != 2 {
+		test.Fatalf("merged = %v, want 2", merged)
+	}
+	// App mapping wins on a host-port clash.
+	conflict := mergePublishPorts(
+		[]config.PortMapping{{Guest: 1, Host: 21000}},
+		[]config.PortMapping{{Guest: 21000, Host: 21000}},
+	)
+	if len(conflict) != 1 || conflict[0].Guest != 21000 {
+		test.Fatalf("clash resolution = %v, want the app mapping to win", conflict)
+	}
+}
+
+// TestStartPublishesInstalledAppPorts checks that an installed app's allocated
+// port is published as an msb -p mapping and its container is run in the VM.
+func TestStartPublishesInstalledAppPorts(test *testing.T) {
+	root := seedProject(test, "app")
+	// Record an installed app in the project config before start.
+	if err := config.WriteProject(root, &config.Config{
+		OS:   "debian-trixie",
+		Apps: []config.AppEntry{{Key: "openwebui", Port: 21000}},
+	}); err != nil {
+		test.Fatal(err)
+	}
+	sandbox := &fakeSandbox{}
+	manager := Manager{
+		Builder: &fakeBuilder{}, Sandbox: sandbox, Keys: &fakeKeyMinter{},
+		Now: func() string { return "t" },
+	}
+	if _, err := manager.Start("app"); err != nil {
+		test.Fatal(err)
+	}
+	// The app's host port is published (host:guest same number).
+	if !strings.Contains(strings.Join(sandbox.netArgs, " "), "-p 21000:21000") {
+		test.Fatalf("app port not published in netArgs: %#v", sandbox.netArgs)
+	}
+	// The app container was run via ExecRoot (nerdctl run ... aip-app-openwebui).
+	if !execRootRan(sandbox, "aip-app-openwebui") {
+		test.Fatalf("app container not run in VM; ExecRoot calls: %#v", sandbox.execRootArgv)
+	}
+	// The apps key alias is rotated/minted (project-apps), distinct from the agent
+	// key alias.
+}
+
+// TestStartNoAppPortsWhenNoneInstalled confirms nothing extra is published when
+// no app is installed.
+func TestStartNoAppPortsWhenNoneInstalled(test *testing.T) {
+	seedProject(test, "app")
+	sandbox := &fakeSandbox{}
+	manager := Manager{Builder: &fakeBuilder{}, Sandbox: sandbox, Keys: &fakeKeyMinter{}, Now: func() string { return "t" }}
+	if _, err := manager.Start("app"); err != nil {
+		test.Fatal(err)
+	}
+	if strings.Contains(strings.Join(sandbox.netArgs, " "), "-p ") {
+		test.Fatalf("unexpected published port when no apps installed: %#v", sandbox.netArgs)
+	}
+}
+
+func execRootRan(sandbox *fakeSandbox, name string) bool {
+	for _, call := range sandbox.execRootArgv {
+		for _, arg := range call {
+			if arg == name {
+				return true
+			}
+		}
+	}
+	return false
 }

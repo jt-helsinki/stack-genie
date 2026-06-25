@@ -260,8 +260,41 @@ behaviour is a bring-up item:
 - [ ] **arch-aware tarball** — confirm `uname -m` → `arm64` on Apple Silicon
       selects `nerdctl-full-2.3.3-linux-arm64.tar.gz` (and `amd64` on Linux x86_64).
 
-(Phase 1 — the apps that run ON this runtime — is NOT part of Phase 0 and is not
-documented here yet.)
+### 2.7 In-VM apps (Phase 1 — arch §7, CLI §4.5c)
+
+On the Phase-0 runtime the platform runs opt-in AI apps as `nerdctl` containers
+**inside** the workspace microVM — Open WebUI and AnythingLLM (`internal/apps`).
+Each app is a declarative manifest (image+tag pin, container port, persisted data
+dir, optional `/workspace` mount, gateway env). The host-side orchestration is
+fully unit-tested with fakes:
+
+- the manifest env (each app points at the resolved gateway
+  `http://host.microsandbox.internal:18787/v1` with the workspace's scoped virtual
+  key + default model);
+- **port allocation** — a unique host port per `(workspace, app)`, reserved
+  machine-wide across all workspaces' configs and persisted in the project
+  `config.yaml`'s `apps:` block, published ONLY while installed via the existing
+  `egress.MsbNetworkArgs` `-p <port>:<port>` plumbing (`apps.PublishedPorts` merged
+  into the network publish set at `Manager.Start`);
+- the lifecycle Manager (install/remove/update/start/stop/restart/list) and the
+  `nerdctl run -d` argv (`-p <port>:<containerPort>`, `-v
+  /persist/apps/<key>:<DataDir>`, optional `-v /workspace:/workspace`, the gateway
+  `-e` env, `--restart always`);
+- best-effort start at workspace start (one app failing does not fail the
+  workspace or the others).
+
+The LIVE `nerdctl` behaviour is the bring-up item (grep `hardware bring-up` in
+`internal/apps` and `internal/workspace`):
+
+- [ ] **app containers run in the microVM** — on a provisioned host, `ai apps add
+      openwebui` then `ai restart` should publish the host port and run
+      `aip-app-openwebui`; confirm `nerdctl ps` in the VM shows it and the app is
+      reachable on `http://localhost:<port>` from the host, routed through the
+      gateway (`ai apps list` STATUS → `running`).
+- [ ] **`nerdctl pull` on update** — `ai apps update <app>` pulls the latest image
+      and recreates the container.
+- [ ] **persisted data survives restart** — data written under
+      `/persist/apps/<key>` (the overlay) is retained across `ai restart`.
 
 ## 3. Turn on the remaining acceptance tests
 

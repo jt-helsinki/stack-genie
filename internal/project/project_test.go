@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/jt-helsinki/ideal-robot/internal/config"
 	"github.com/jt-helsinki/ideal-robot/internal/overlay"
 	"github.com/jt-helsinki/ideal-robot/internal/state"
 	"github.com/jt-helsinki/ideal-robot/internal/templates"
@@ -232,5 +233,40 @@ func TestDeleteUnknown(test *testing.T) {
 	withTemplates(test)
 	if err := Delete("ghost", false); !errors.Is(err, ErrUnknownProject) {
 		test.Fatalf("want ErrUnknownProject, got %v", err)
+	}
+}
+
+func TestScaffoldAllocatesAppPorts(test *testing.T) {
+	withTemplates(test)
+	spec := sampleSpec()
+	spec.Apps = []string{"openwebui", "anythingllm"}
+	root, err := Scaffold(spec, "t")
+	if err != nil {
+		test.Fatal(err)
+	}
+	cfg, err := config.LoadProjectConfig(root)
+	if err != nil {
+		test.Fatal(err)
+	}
+	if len(cfg.Apps) != 2 {
+		test.Fatalf("config has %d apps, want 2: %+v", len(cfg.Apps), cfg.Apps)
+	}
+	if cfg.Apps[0].Port == 0 || cfg.Apps[0].Port == cfg.Apps[1].Port {
+		test.Fatalf("app ports not allocated uniquely: %+v", cfg.Apps)
+	}
+}
+
+func TestScaffoldNoAppsByDefault(test *testing.T) {
+	withTemplates(test)
+	root, err := Scaffold(sampleSpec(), "t")
+	if err != nil {
+		test.Fatal(err)
+	}
+	cfg, err := config.LoadProjectConfig(root)
+	if err != nil {
+		test.Fatal(err)
+	}
+	if len(cfg.Apps) != 0 {
+		test.Fatalf("apps default to %v, want empty", cfg.Apps)
 	}
 }

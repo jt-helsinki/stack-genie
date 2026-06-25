@@ -11,6 +11,7 @@ import (
 
 	"github.com/charmbracelet/huh"
 	"github.com/charmbracelet/x/term"
+	"github.com/jt-helsinki/ideal-robot/internal/apps"
 	"github.com/jt-helsinki/ideal-robot/internal/contextopt"
 	"github.com/jt-helsinki/ideal-robot/internal/output"
 	"github.com/jt-helsinki/ideal-robot/internal/project"
@@ -63,6 +64,8 @@ var (
 	supportedOSes      = []string{"debian-trixie", "debian-bookworm", "ubuntu", "alma"}
 	supportedStacks    = []string{"go", "node", "python", "rust", "java", "maven", "deno"}
 	supportedAgentCLIs = []string{"opencode", "pi", "claude-code", "codex", "gemini"}
+	// supportedApps are the opt-in in-VM AI applications (apps.Keys()). Default OFF.
+	supportedApps = apps.Keys()
 )
 
 func mapProjectErr(err error) error {
@@ -111,6 +114,7 @@ func newCreateCmd(emitter *output.Emitter, exit *int, use string) *cobra.Command
 			osFlag, _ := cmd.Flags().GetString("os")
 			agentsFlag, _ := cmd.Flags().GetStringSlice("agents")
 			stacksFlag, _ := cmd.Flags().GetStringSlice("stacks")
+			appsFlag, _ := cmd.Flags().GetStringSlice("apps")
 
 			// A workspace is fully specifiable in one command via flags, so external
 			// programs can create it non-interactively with --json (§1.8, §3.1).
@@ -122,11 +126,11 @@ func newCreateCmd(emitter *output.Emitter, exit *int, use string) *cobra.Command
 
 			var spec project.Spec
 			if interactiveTTY {
-				if err := validateProvidedCreateFlags(osFlag, agentsFlag, stacksFlag); err != nil {
+				if err := validateProvidedCreateFlags(osFlag, agentsFlag, stacksFlag, appsFlag); err != nil {
 					*exit = emitter.Failure("project.create", err)
 					return nil
 				}
-				built, cancelled, err := runCreateWizard(seedSpec(nameFlag, osFlag, agentsFlag, stacksFlag, defaultName))
+				built, cancelled, err := runCreateWizard(seedSpec(nameFlag, osFlag, agentsFlag, stacksFlag, appsFlag, defaultName))
 				if err != nil {
 					// Defensive: the wizard still failed despite a TTY (§3.1).
 					*exit = emitter.Failure("project.create",
@@ -139,7 +143,7 @@ func newCreateCmd(emitter *output.Emitter, exit *int, use string) *cobra.Command
 				}
 				spec = built
 			} else {
-				built, err := specFromFlags(nameFlag, osFlag, agentsFlag, stacksFlag, defaultName)
+				built, err := specFromFlags(nameFlag, osFlag, agentsFlag, stacksFlag, appsFlag, defaultName)
 				if err != nil {
 					*exit = emitter.Failure("project.create", err)
 					return nil
@@ -186,6 +190,7 @@ func newCreateCmd(emitter *output.Emitter, exit *int, use string) *cobra.Command
 				"os":     spec.OS,
 				"tools":  spec.AgentCLIs,
 				"stacks": spec.Stacks,
+				"apps":   spec.Apps,
 			})
 			return nil
 		},
@@ -197,9 +202,11 @@ func newCreateCmd(emitter *output.Emitter, exit *int, use string) *cobra.Command
 	cmd.Flags().String("os", "", "base OS: "+strings.Join(supportedOSes, "|"))
 	cmd.Flags().StringSlice("agents", nil, "agent CLIs to install (default: opencode,pi): "+strings.Join(supportedAgentCLIs, ","))
 	cmd.Flags().StringSlice("stacks", nil, "software stacks to install: "+strings.Join(supportedStacks, ","))
+	cmd.Flags().StringSlice("apps", nil, "in-VM AI apps to install (default: none): "+strings.Join(supportedApps, ","))
 	_ = cmd.RegisterFlagCompletionFunc("os", fixedValues(supportedOSes...))
 	_ = cmd.RegisterFlagCompletionFunc("agents", fixedValues(supportedAgentCLIs...))
 	_ = cmd.RegisterFlagCompletionFunc("stacks", fixedValues(supportedStacks...))
+	_ = cmd.RegisterFlagCompletionFunc("apps", fixedValues(supportedApps...))
 	return cmd
 }
 
@@ -236,10 +243,19 @@ func createPlan(spec project.Spec, root string) []string {
 	return []string{
 		"use current directory " + root,
 		fmt.Sprintf("write .ai-platform/Dockerfile (os=%s, stacks=%s, agent CLIs=%s)", spec.OS, strings.Join(spec.Stacks, ", "), strings.Join(spec.AgentCLIs, ", ")),
+		fmt.Sprintf("install in-VM apps: %s", orNone(strings.Join(spec.Apps, ", "))),
 		"write config.yaml, profile.yaml, project.yaml, .gitignore",
 		"register " + spec.Name + " in config/projects.yaml",
 	}
 	// NB: file/index names above are on-disk artifacts, intentionally unchanged.
+}
+
+// orNone renders "(none)" for an empty list cell so the plan reads clearly.
+func orNone(value string) string {
+	if value == "" {
+		return "(none)"
+	}
+	return value
 }
 
 func defaultProjectName(args []string) string {
@@ -278,6 +294,7 @@ func runCreateWizard(seed project.Spec) (project.Spec, bool, error) {
 	agentCLIs := seed.AgentCLIs
 	defaultTool := seed.DefaultTool
 	stacks := seed.Stacks
+	selectedApps := seed.Apps
 
 	form := huh.NewForm(
 		huh.NewGroup(
@@ -301,6 +318,10 @@ func runCreateWizard(seed project.Spec) (project.Spec, bool, error) {
 			huh.NewMultiSelect[string]().Title("Software stacks (space to toggle)").
 				Options(huh.NewOptions(supportedStacks...)...).Value(&stacks),
 		),
+		huh.NewGroup(
+			huh.NewMultiSelect[string]().Title("AI apps to run in the workspace (space to toggle; default none)").
+				Options(appOptions()...).Value(&selectedApps),
+		),
 	)
 
 	if err := form.Run(); err != nil {
@@ -316,7 +337,18 @@ func runCreateWizard(seed project.Spec) (project.Spec, bool, error) {
 		Stacks:      stacks,
 		AgentCLIs:   agentCLIs,
 		DefaultTool: defaultTool,
+		Apps:        selectedApps,
 	}, false, nil
+}
+
+// appOptions renders the app multi-select options with the human label but the
+// stable key as the value (so the wizard returns keys, matching --apps).
+func appOptions() []huh.Option[string] {
+	options := make([]huh.Option[string], 0, len(apps.All()))
+	for _, manifest := range apps.All() {
+		options = append(options, huh.NewOption(manifest.Name, manifest.Key))
+	}
+	return options
 }
 
 func wizardNameValidator(value string) error { return project.ValidateName(value) }
@@ -331,7 +363,7 @@ func wizardAtLeastOne(selected []string) error {
 // validateProvidedCreateFlags rejects any non-empty create flag whose value is
 // not a known option (a typo'd --os/--agents/--stacks → exit 2). Empty flags are
 // left for defaults. Shared by the interactive (seed) and non-interactive paths.
-func validateProvidedCreateFlags(osKey string, agents, stacks []string) error {
+func validateProvidedCreateFlags(osKey string, agents, stacks, appsList []string) error {
 	if osKey != "" && !slices.Contains(supportedOSes, osKey) {
 		return output.Errorf(output.ExitInvalidInput,
 			"unknown --os %q (one of: %s)", osKey, strings.Join(supportedOSes, ", "))
@@ -348,6 +380,12 @@ func validateProvidedCreateFlags(osKey string, agents, stacks []string) error {
 				"unknown --stacks value %q (one of: %s)", stack, strings.Join(supportedStacks, ", "))
 		}
 	}
+	for _, app := range appsList {
+		if !slices.Contains(supportedApps, app) {
+			return output.Errorf(output.ExitInvalidInput,
+				"unknown --apps value %q (one of: %s)", app, strings.Join(supportedApps, ", "))
+		}
+	}
 	return nil
 }
 
@@ -355,7 +393,7 @@ func validateProvidedCreateFlags(osKey string, agents, stacks []string) error {
 // wizard's pre-seeded starting point on a terminal: flags fill the defaults, the
 // wizard supplies the rest (name → cwd basename, OS → debian-trixie, agents →
 // opencode+pi). The user can still change anything in the wizard.
-func seedSpec(name, osKey string, agents, stacks []string, defaultName string) project.Spec {
+func seedSpec(name, osKey string, agents, stacks, appsList []string, defaultName string) project.Spec {
 	if name == "" {
 		name = defaultName
 	}
@@ -365,14 +403,15 @@ func seedSpec(name, osKey string, agents, stacks []string, defaultName string) p
 	if len(agents) == 0 {
 		agents = []string{"opencode", "pi"}
 	}
-	return project.Spec{Name: name, OS: osKey, Stacks: stacks, AgentCLIs: agents, DefaultTool: agents[0]}
+	// Apps are opt-in: an unset --apps seeds the wizard with NOTHING selected.
+	return project.Spec{Name: name, OS: osKey, Stacks: stacks, AgentCLIs: agents, DefaultTool: agents[0], Apps: appsList}
 }
 
 // specFromFlags builds and validates a project.Spec from the non-interactive
 // create flags (the path external programs use with --json). --os is required;
 // agents default to opencode+pi; stacks are optional. The default agent CLI is
 // the first one listed. Unknown values map to exit 2.
-func specFromFlags(name, osKey string, agents, stacks []string, defaultName string) (project.Spec, error) {
+func specFromFlags(name, osKey string, agents, stacks, appsList []string, defaultName string) (project.Spec, error) {
 	if name == "" {
 		name = defaultName
 	}
@@ -383,7 +422,7 @@ func specFromFlags(name, osKey string, agents, stacks []string, defaultName stri
 		return project.Spec{}, output.Errorf(output.ExitInvalidInput,
 			"--os is required (one of: %s)", strings.Join(supportedOSes, ", "))
 	}
-	if err := validateProvidedCreateFlags(osKey, agents, stacks); err != nil {
+	if err := validateProvidedCreateFlags(osKey, agents, stacks, appsList); err != nil {
 		return project.Spec{}, err
 	}
 	if len(agents) == 0 {
@@ -395,6 +434,7 @@ func specFromFlags(name, osKey string, agents, stacks []string, defaultName stri
 		Stacks:      stacks,
 		AgentCLIs:   agents,
 		DefaultTool: agents[0],
+		Apps:        appsList,
 	}, nil
 }
 

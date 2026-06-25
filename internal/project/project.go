@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"regexp"
 
+	"github.com/jt-helsinki/ideal-robot/internal/apps"
 	"github.com/jt-helsinki/ideal-robot/internal/conffile"
 	"github.com/jt-helsinki/ideal-robot/internal/config"
 	"github.com/jt-helsinki/ideal-robot/internal/envimage"
@@ -39,6 +40,9 @@ type Spec struct {
 	Stacks      []string
 	AgentCLIs   []string
 	DefaultTool string
+	// Apps are the opt-in in-VM AI applications to install (subset of apps.Keys()).
+	// Empty by default — apps are opt-in.
+	Apps []string
 	// Root is the host source directory for the project — the directory `ai
 	// project create` runs in. Empty falls back to ~/projects/<name> (RootPath).
 	Root string
@@ -142,10 +146,22 @@ func Scaffold(spec Spec, createdAt string) (string, error) {
 		return "", err
 	}
 
-	// config.yaml — project config with the installed agent CLIs + default.
+	// config.yaml — project config with the installed agent CLIs + default, and
+	// the opt-in in-VM apps each allocated a unique machine-wide host port (so two
+	// running workspaces never publish the same port). Allocation avoids ports
+	// already in use by other workspaces' apps.
+	reserved, err := apps.ReservedPortsAcrossWorkspaces()
+	if err != nil {
+		return "", err
+	}
+	appEntries, err := apps.AllocateEntries(spec.Apps, reserved, nil)
+	if err != nil {
+		return "", err
+	}
 	projectConfig := &config.Config{
 		OS:    spec.OS,
 		Agent: config.AgentConfig{Tools: spec.AgentCLIs, DefaultTool: spec.DefaultTool},
+		Apps:  appEntries,
 	}
 	if err := config.WriteProject(root, projectConfig); err != nil {
 		return "", err

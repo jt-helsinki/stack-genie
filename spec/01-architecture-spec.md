@@ -577,6 +577,41 @@ at workspace start** (not baked running into the image): the platform probes
 the VM's life. Bringing it up is **best-effort** — a failure does not fail the
 workspace start. (The applications that run *on* this runtime are a later phase.)
 
+#### In-VM apps (Phase 1)
+
+On this runtime the platform runs **opt-in AI applications** as `nerdctl`
+containers **inside** the workspace microVM — currently **Open WebUI**
+(`ghcr.io/open-webui/open-webui:latest`, web port 8080, data `/app/backend/data`)
+and **AnythingLLM** (`mintplexlabs/anythingllm:latest`, web port 3001, storage
+`/app/server/storage`). Each app is described by a declarative manifest
+(`internal/apps`): image (pinned image+tag, no digest — same convention as the
+service tier), container port, persisted data dir, an optional `/workspace` mount,
+a memory limit, and a gateway-pointing env builder. Each app is routed through the
+**same model gateway** the agent CLIs use — `http://host.microsandbox.internal:18787/v1`
+(the resolved gateway) with the workspace's own scoped LiteLLM virtual key and the
+default model — via `OPENAI_API_BASE_URL`/`OPENAI_API_KEY` (Open WebUI, plus
+`ENABLE_OLLAMA_API=false`/`WEBUI_AUTH=false` for a single-user in-VM instance) and
+`LLM_PROVIDER=generic-openai` + `GENERIC_OPEN_AI_*` (AnythingLLM).
+
+Apps are **opt-in** (chosen at `ai create`, default OFF) and have a full
+lifecycle via **`ai apps <list|add|remove|update|start|stop|restart> [app] [name]`**
+and a per-workspace **Apps** view in `ai ui`. Each installed app is allocated a
+**unique host port** (recorded in the project `config.yaml`'s `apps:` block) so two
+running microVMs never collide. The port chain is:
+
+```text
+host:<port>  --(msb published port: -p <port>:<port>)-->  VM:<port>  --(nerdctl -p <port>:<containerPort>)-->  container:<containerPort>
+```
+
+The host and guest side use the **same number**, reusing the existing
+`ai network publish` / `egress.MsbNetworkArgs` published-ports plumbing — a port is
+published **only while its app is installed**. App data is bind-mounted from
+`/persist/apps/<key>` (the workspace overlay, §26) so it survives restart. Adding
+or removing an app changes the published-port set, which `msb` only applies at
+workspace create, so it requires an **`ai restart`**; the container itself is
+(re)started best-effort immediately. App start is **best-effort per app** — one app
+failing must not fail the workspace or the others.
+
 ### Mount Rules
 
 ```text
