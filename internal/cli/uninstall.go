@@ -3,6 +3,7 @@ package cli
 import (
 	"fmt"
 	"os"
+	"os/exec"
 	"strings"
 
 	"github.com/charmbracelet/huh"
@@ -10,9 +11,33 @@ import (
 	"github.com/jt-helsinki/ideal-robot/internal/output"
 	"github.com/jt-helsinki/ideal-robot/internal/runtime"
 	"github.com/jt-helsinki/ideal-robot/internal/ui"
+	"github.com/jt-helsinki/ideal-robot/internal/uihosts"
 	"github.com/jt-helsinki/ideal-robot/internal/uninstall"
 	"github.com/spf13/cobra"
 )
+
+// preauthorizeHostsSudo refreshes the sudo timestamp on the NORMAL terminal BEFORE the
+// bubbletea progress (ui.RunSteps) takes over. The teardown removes the platform's
+// /etc/hosts UI-subdomain block via `sudo tee`, but that runs INSIDE the spinner, where
+// the terminal is in raw mode owned by bubbletea — so sudo's password prompt never
+// receives the user's keystrokes ("does not accept my password"). Validating sudo here
+// (plain terminal) caches the credential so the later write runs without prompting.
+// Best-effort: only on a TTY, only when a managed block is actually present; a failure
+// (or sudoers with no timestamp caching) just falls back to removeHostsBlock printing
+// the manual command.
+func preauthorizeHostsSudo(em *output.Emitter, interactive bool) {
+	if !interactive {
+		return
+	}
+	present, _, err := uihosts.HostsStatus(uihosts.DefaultHostsPath, "")
+	if err != nil || !present {
+		return
+	}
+	_, _ = fmt.Fprintln(em.Err, "Removing the platform's /etc/hosts block needs sudo.")
+	command := exec.Command("sudo", "-v", "-p", "[ai] enter your login password to update /etc/hosts: ")
+	command.Stdin, command.Stdout, command.Stderr = os.Stdin, os.Stderr, os.Stderr
+	_ = command.Run()
+}
 
 // newUninstallCmd builds `ai uninstall` (CLI §2.2): a native, offline teardown —
 // the inverse of install + setup. It streams status/progress as each step runs,
@@ -103,6 +128,10 @@ func newUninstallCmd(em *output.Emitter, exit *int) *cobra.Command {
 			runOpts := uninstall.Options{Purge: purge, BinaryPath: binaryPath, RemoveDeps: toRemove}
 			var report uninstall.Report
 			var err error
+			// Acquire sudo for the /etc/hosts removal NOW, on the plain terminal, before
+			// the progress UI grabs it (the actual write runs inside ui.RunSteps, where a
+			// sudo prompt could not read the password).
+			preauthorizeHostsSudo(em, interactive)
 			if ui.Enabled(em) {
 				err = ui.RunSteps(em.Err, "Uninstalling the AI Development Platform", func(emit func(step string)) error {
 					var runErr error
