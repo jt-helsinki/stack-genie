@@ -1,10 +1,12 @@
 package setup
 
 import (
+	"slices"
 	"testing"
 
 	"github.com/jt-helsinki/ideal-robot/internal/console"
 	"github.com/jt-helsinki/ideal-robot/internal/logs"
+	"github.com/jt-helsinki/ideal-robot/internal/services"
 )
 
 // The service set is, by necessity, expressed at several granularities across
@@ -112,6 +114,36 @@ func TestNoOrphanLogScopes(test *testing.T) {
 	for _, name := range logs.Services() {
 		if !known[name] {
 			test.Errorf("log scope %q has no backing service — it is not a desiredService, an Odysseus companion, or the microsandbox runtime; remove it from internal/logs or add the service", name)
+		}
+	}
+}
+
+// The aip-* container-name consts in setup_real.go are still hand-written
+// (they back the verified ensure*/Control/Reconcile path and are intentionally
+// not derived). This guard pins them to internal/services (the single source of
+// truth for service→container-names) so the two surfaces cannot drift: each
+// logical service's consts must equal services.ContainerNames(<service>) in
+// component order. Drift caught: a container renamed/added in one place but not
+// the other.
+func TestSetupContainerConstsMatchRegistry(test *testing.T) {
+	expected := map[string][]string{
+		"ollama":     {ollamaContainer},
+		"presidio":   {presidioAnalyzerContainer, presidioAnonymizerContainer},
+		"litellm":    {litellmContainer, litellmDBContainer},
+		"headroom":   {headroomContainer},
+		"proxy":      {proxyContainer},
+		"open-webui": {openWebUIContainer},
+		"odysseus":   {odysseusContainer, chromadbContainer, searxngContainer, ntfyContainer},
+		"dns":        {dnsContainer},
+	}
+	for _, spec := range desiredServices() {
+		want, ok := expected[spec.Name]
+		if !ok {
+			test.Errorf("service %q has no container-name const expectation — add it to this guard", spec.Name)
+			continue
+		}
+		if got := services.ContainerNames(spec.Name); !slices.Equal(got, want) {
+			test.Errorf("services.ContainerNames(%q) = %v, want %v (setup consts drifted from the registry)", spec.Name, got, want)
 		}
 	}
 }

@@ -21,6 +21,7 @@ import (
 	"github.com/jt-helsinki/ideal-robot/internal/output"
 	"github.com/jt-helsinki/ideal-robot/internal/paths"
 	"github.com/jt-helsinki/ideal-robot/internal/runtime"
+	"github.com/jt-helsinki/ideal-robot/internal/services"
 	"github.com/jt-helsinki/ideal-robot/internal/versions"
 )
 
@@ -63,31 +64,34 @@ type serviceSpec struct{ Name, Mode string }
 // Ollama is required — LiteLLM routes local model traffic to it (arch §14, §16).
 // Headroom runs as a shared host-side proxy (agents point at :18787, it forwards
 // to LiteLLM); the per-project Caveman skill handles output compression inside
-// the workspace (arch §8–10). These are reconciled on every `ai setup`.
+// the workspace (arch §8–10). These are reconciled on every `ai setup`. The set
+// (and its order) is derived from the internal/services registry, the single
+// source of truth for the service topology — these are all container-mode.
 func coreServices() []serviceSpec {
-	return []serviceSpec{
-		{"ollama", "container"},
-		{"presidio", "container"},
-		{"litellm", "container"},
-		{"headroom", "container"},
-		// nginx reverse proxy: the gateway entry on host :18787, in front of Headroom.
-		{"proxy", "container"},
-		{"dns", "container"},
-	}
+	return serviceSpecsFor(services.CoreServiceNames())
 }
 
 // optionalServices is the opt-in host-service set: services that run on the
 // host, OUTSIDE the workspace microVM sandbox, and so are reconciled only when
-// the user has explicitly enabled them at `ai setup`. They are an additive,
-// data-driven list — adding a new optional service is just another entry here
-// (plus its ensure*/stop wiring). Currently: open-webui (the chat UI).
+// the user has explicitly enabled them at `ai setup`. The set is derived from the
+// internal/services registry (its optional services), so adding a new optional
+// service is a single registry edit (plus its ensure*/stop wiring). Currently:
+// open-webui (the chat UI) and odysseus (one logical service backed by four
+// containers — the app + ChromaDB/SearXNG/ntfy companions; see ensureOdysseus).
 func optionalServices() []serviceSpec {
-	return []serviceSpec{
-		{"open-webui", "container"},
-		// Odysseus is one logical optional service backed by four containers (the app
-		// + ChromaDB/SearXNG/ntfy companions); see ensureOdysseus.
-		{"odysseus", "container"},
+	return serviceSpecsFor(services.OptionalServiceNames())
+}
+
+// serviceSpecsFor turns a registry-derived list of logical service names into the
+// container-mode serviceSpecs the reconcile path consumes, preserving order. All
+// host services run as containers (the native microsandbox runtime is not part of
+// this reconciled set).
+func serviceSpecsFor(names []string) []serviceSpec {
+	specs := make([]serviceSpec, 0, len(names))
+	for _, name := range names {
+		specs = append(specs, serviceSpec{name, "container"})
 	}
+	return specs
 }
 
 // optionalServiceNames returns the names of the optional services (the universe
@@ -118,16 +122,11 @@ func desiredServices() []serviceSpec {
 // serviceImageKeys maps a service spec to the versions keys whose images it pulls.
 // Most services map 1:1 to their name, but a few are one logical service backed by
 // SEVERAL images: "presidio" → analyzer + anonymizer; "odysseus" → the app plus its
-// ChromaDB/SearXNG/ntfy companions. Pure helper, shared by requiredImages.
+// ChromaDB/SearXNG/ntfy companions. Derived from the internal/services registry
+// (the single source of truth for the service→image-keys mapping). Pure helper,
+// shared by requiredImages.
 func serviceImageKeys(service string) []string {
-	switch service {
-	case "presidio":
-		return []string{"presidio-analyzer", "presidio-anonymizer"}
-	case "odysseus":
-		return []string{"odysseus", "chromadb", "searxng", "ntfy"}
-	default:
-		return []string{service}
-	}
+	return services.ImageKeys(service)
 }
 
 // requiredImages returns the image references (repo:tag) to pre-pull, gated by the
@@ -1341,10 +1340,17 @@ func (services realServices) serviceHealthy(name string) bool {
 // independently to the logical service that owns it (Odysseus owns chromadb /
 // searxng / ntfy). It lets the unknown-service error point the user at the right
 // name. These containers can still be tailed individually via `ai logs --service`.
+//
+// It derives the owner from the internal/services registry (services.OwningService),
+// but DELIBERATELY scopes the result to the Odysseus companion set — the only
+// companions `ai services` surfaces this hint for. The registry additionally maps
+// litellm-db → litellm; that mapping is intentionally NOT exposed here, preserving
+// the long-standing behavior that `ai services <action> litellm-db` reports a plain
+// "unknown service" (litellm-db is an internal LiteLLM implementation detail with no
+// independent service vocabulary). See TestOwningServiceMapsCompanionsToOdysseus.
 func owningService(name string) string {
-	switch name {
-	case "chromadb", "searxng", "ntfy":
-		return "odysseus"
+	if owner := services.OwningService(name); owner == "odysseus" {
+		return owner
 	}
 	return ""
 }
