@@ -282,12 +282,27 @@ Microsandbox microVM runtime are installed, configured, and supervised by the
 `ai` CLI. The CLI is the **single control plane**: the user never invokes
 `docker compose`, `msb`, `launchctl`, or `systemctl` directly. The whole service
 tier is containers: they share a private docker network (`aip-net`) and are
-reconciled in order: network → DNS → Ollama → Presidio → LiteLLM (+ DB) → Headroom → nginx proxy → Open WebUI.
+reconciled in order: network → DNS → Ollama → Presidio → LiteLLM (+ DB) → Headroom → Open WebUI/Odysseus (if enabled) → nginx proxy (last).
 (Prompt-injection detection and the destructive-tool-call firewall are in-process
 in LiteLLM — they need no companion container, §15.)
 (Headroom is now a shared host container, no longer installed in the workspace
 image, §10. It is INTERNAL-ONLY behind the `aip-proxy` nginx reverse proxy, which
 is the gateway entry on host :18787 — see §10/§15.)
+
+**`aip-proxy` (nginx) is the SOLE host entry point to the service tier.** Every
+other service container is INTERNAL-ONLY on `aip-net` (reached by name) — none
+publishes a port to the host. Only nginx publishes: host **:18787** fronts the
+model path on `/v1` (→ Headroom → LiteLLM, the agent chat path, unchanged), the
+LiteLLM admin/management surface on `/llm` (→ `aip-litellm:4000`, prefix stripped),
+and the Ollama HTTP API on `/ollama` (→ `aip-ollama:11434`, prefix stripped); the
+optional web UIs are fronted on their own host ports (**:18090** → `aip-open-webui`,
+**:7000** → `aip-odysseus`) when enabled. The host CLI itself reaches LiteLLM
+(admin via `…:18787/llm`, the chat test via `…:18787/v1`) and Ollama (via
+`…:18787/ollama`) ONLY through nginx — never a container directly. nginx is
+reconciled LAST so its upstreams (incl. the enabled UIs) are up first. (`aip-litellm-db`
+and `aip-dns` stay loopback-published — DNS must stay `127.0.0.1:15353` for the
+microVM `--dns-nameserver`.) The live end-to-end routing through these nginx routes
+is a **hardware bring-up** verification item (`docs/HARDWARE-BRINGUP.md`).
 
 ### One Tool, Uniform Lifecycle
 
@@ -306,13 +321,13 @@ ai logs --service <svc>      one log surface
 
 | Service | Run mode | Why |
 |---|---|---|
-| nginx proxy | container (via Runtime) `aip-proxy` (`nginx:1.27-alpine`) | the gateway ENTRY on host :18787, reverse-proxies to Headroom (`aip-headroom:8787`); HTTPS termination point later (§10) |
+| nginx proxy | container (via Runtime) `aip-proxy` (`nginx:1.27-alpine`) | the SOLE host ENTRY to the service tier: publishes :18787 (`/v1`→Headroom, `/llm`→LiteLLM, `/ollama`→Ollama) + the enabled UI ports (:18090, :7000); HTTPS termination point later (§10) |
 | Headroom | container (via Runtime) `aip-headroom` | shared input-compression proxy in front of LiteLLM; INTERNAL-ONLY on :8787 behind nginx (no host publish); HTTP only (§10) |
-| LiteLLM | container (via Runtime) `aip-litellm` (+ `aip-litellm-db` Postgres) | HTTP only; no host privileges |
+| LiteLLM | container (via Runtime) `aip-litellm` (+ `aip-litellm-db` Postgres) | INTERNAL-ONLY: no host publish, reached by name (`aip-litellm:4000`) by Headroom + nginx's `/llm` route; HTTP only; no host privileges |
 | Presidio | two containers (via Runtime) `aip-presidio-analyzer` + `aip-presidio-anonymizer` | back LiteLLM's always-on secret-masking guardrail; internal-only, not published (§15) |
-| Ollama (required) | container (via Runtime) `aip-ollama` on all platforms | local model backend LiteLLM routes to; CPU-only on macOS (Docker has no GPU passthrough) |
-| Open WebUI (optional) | container (via Runtime) `aip-open-webui` | chat UI routed through the nginx gateway → Headroom → LiteLLM (`OPENAI_API_BASE_URL=http://aip-proxy/v1`, never direct to LiteLLM; built-in Ollama backend + login wall disabled); published on the host at :18090 (its address IS its console); HTTP only |
-| Odysseus (optional, OFF by default) | one optional service (via Runtime) backed by FOUR containers: `aip-odysseus` (app UI on host :7000) + the INTERNAL-ONLY companions `aip-chromadb` / `aip-searxng` / `aip-ntfy` | self-hosted AI workspace; routes models through the nginx gateway → Headroom → LiteLLM (`OLLAMA_BASE_URL=http://aip-proxy/v1`, OpenAI-compatible, master key via env passthrough); companions reached by name on `aip-net` (no host publish). **MOUNTS THE HOST DOCKER SOCKET** (`/var/run/docker.sock`) — full host-Docker control, an elevated privilege outside the sandbox — so it is opt-in with a sharpened `ai setup` warning. Providers configured in-app (`/setup`); env values are seeds. HTTP only |
+| Ollama (required) | container (via Runtime) `aip-ollama` on all platforms | local model backend LiteLLM routes to; INTERNAL-ONLY (no host publish — reached by name, and from the host via nginx's `/ollama` route); CPU-only on macOS (Docker has no GPU passthrough) |
+| Open WebUI (optional) | container (via Runtime) `aip-open-webui` | chat UI routed through the nginx gateway → Headroom → LiteLLM (`OPENAI_API_BASE_URL=http://aip-proxy/v1`, never direct to LiteLLM; built-in Ollama backend + login wall disabled); INTERNAL-ONLY — nginx fronts its UI on host :18090 (its address IS its console); HTTP only |
+| Odysseus (optional, OFF by default) | one optional service (via Runtime) backed by FOUR INTERNAL-ONLY containers: `aip-odysseus` (app, nginx fronts its UI on host :7000) + the companions `aip-chromadb` / `aip-searxng` / `aip-ntfy` | self-hosted AI workspace; routes models through the nginx gateway → Headroom → LiteLLM (`OLLAMA_BASE_URL=http://aip-proxy/v1`, OpenAI-compatible, master key via env passthrough); all four reached by name on `aip-net` (no host publish — nginx is the sole publisher). **MOUNTS THE HOST DOCKER SOCKET** (`/var/run/docker.sock`) — full host-Docker control, an elevated privilege outside the sandbox — so it is opt-in with a sharpened `ai setup` warning. Providers configured in-app (`/setup`); env values are seeds. HTTP only |
 | DNS audit resolver | container (via Runtime) `aip-dns` (CoreDNS) | egress-audit resolver: microVMs forward DNS here so attempted names are logged for `ai network log`; published to host loopback only; audit, not enforcement (§29.7) |
 | Microsandbox | microVM runtime, invoked on demand | drives workspace microVMs via the Go SDK / `msb`; no daemon to supervise (§7) |
 
@@ -653,16 +668,30 @@ Headroom now runs as a **shared host container** (`aip-headroom`, image
 It is the **input-compression proxy in front of LiteLLM**, forwarding to LiteLLM
 via `OPENAI_TARGET_API_URL=http://aip-litellm:4000`. Headroom is now
 **INTERNAL-ONLY** on `aip-net` (no host publish): the gateway ENTRY is the
-**`aip-proxy` nginx reverse proxy** (`nginx:1.27-alpine`), which takes over the
-established gateway host port `:18787` and reverse-proxies to Headroom at
-`aip-headroom:8787`. The topology is **microVM → nginx (:18787) → Headroom
-(compress) → LiteLLM**; the nginx config disables response buffering and uses long
-timeouts so streamed (SSE) LLM responses flush promptly. This is transparent to
-workspaces (the gateway URL stays `host:18787`) and lets nginx terminate TLS later
-(in server mode it binds `0.0.0.0:18787` — the eventual public HTTPS endpoint).
-Headroom is **no longer installed inside the workspace image** — the agent in the
-workspace reaches the host gateway across the microVM boundary via
-`AI_PLATFORM_HOST` (§29).
+**`aip-proxy` nginx reverse proxy** (`nginx:1.27-alpine`), the **SOLE host entry
+point** to the whole service tier. The model path is **microVM → nginx (:18787,
+`location /v1`) → Headroom (compress) → LiteLLM** — preserved unchanged, this is
+what every workspace agent's `base_url=…/v1` hits; the nginx config disables
+response buffering and uses long timeouts so streamed (SSE) LLM responses flush
+promptly. On the **same :18787**, nginx additionally fronts the LiteLLM
+admin/management surface on **`location /llm`** (→ `aip-litellm:4000`, prefix
+stripped: `/model/info`, `/v1/models`, `/health*`, `/key*`, `/credentials`, …) and
+the Ollama HTTP API on **`location /ollama`** (→ `aip-ollama:11434`, prefix
+stripped) — the specific `/llm` and `/ollama` prefixes match before the catch-all
+`/`. The optional web UIs are fronted on their own host ports (**:18090** →
+`aip-open-webui:8080`, **:7000** → `aip-odysseus:7000`, with WebSocket upgrade
+headers), rendered only when enabled (nginx resolves a literal `proxy_pass` host at
+config-load time). Because nginx is the only publisher, **every other service
+container is INTERNAL-ONLY on `aip-net`** (LiteLLM, Ollama, Open WebUI, Odysseus +
+companions no longer publish to the host); only `aip-litellm-db` and `aip-dns` stay
+loopback-published. This is transparent to workspaces (the gateway URL stays
+`host:18787`) and lets nginx terminate TLS later (in server mode it binds
+`0.0.0.0:18787` — the eventual public HTTPS endpoint). The host CLI reaches LiteLLM
+(admin via `…/llm`, the chat test via `…/v1`) and Ollama (via `…/ollama`) through
+nginx, never a container directly. Headroom is **no longer installed inside the
+workspace image** — the agent in the workspace reaches the host gateway across the
+microVM boundary via `AI_PLATFORM_HOST` (§29). The live end-to-end routing through
+these nginx routes is verified at hardware bring-up.
 
 The Github repository is found at:
 
@@ -1013,11 +1042,12 @@ Rules:
 * **required**, always provisioned (not optional)
 * never installed in workspaces
 * runs as a **container-tier service** (`aip-ollama`, image `ollama/ollama:latest`,
-  publishes `:11434`, models persist on the host under `~/.ai-platform/models`,
+  **INTERNAL-ONLY** — no host publish; reached by name, and from the host through
+  nginx's `/ollama` route; models persist on the host under `~/.ai-platform/models`,
   bind-mounted to `/models` with `OLLAMA_MODELS` pointing there) on the `aip-net`
-  network on all platforms — never a native host install. It **replaces any native
-  Ollama**: the native instance on `:11434` must be stopped first. LiteLLM reaches
-  it by container name — `ollama/*` models carry `api_base=http://aip-ollama:11434`.
+  network on all platforms — never a native host install. A native Ollama bound to
+  the container's own `:11434` should be stopped first. LiteLLM reaches it by
+  container name — `ollama/*` models carry `api_base=http://aip-ollama:11434`.
 * on macOS the container is **CPU-only** (Docker has no GPU passthrough); use
   remote deployment for GPU-accelerated inference
 * remote deployment supported

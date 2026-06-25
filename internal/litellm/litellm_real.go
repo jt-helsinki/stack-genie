@@ -14,22 +14,66 @@ import (
 	"github.com/jt-helsinki/ideal-robot/internal/runtime"
 )
 
-// realClient talks to a running LiteLLM gateway over its OpenAI-compatible HTTP
-// API (`/health/liveliness`, `/v1/chat/completions`). Base URL comes from LITELLM_BASE_URL
-// or defaults to the local gateway port.
+// The host CLI reaches LiteLLM ONLY through the nginx gateway (aip-proxy) on the
+// host — never the LiteLLM container directly (every service container is
+// internal-only on aip-net now). Two routes through nginx:
+//
+//   - the ADMIN/management surface (/model/info, /v1/models, /health*, /key*,
+//     /credentials, …) is fronted by nginx's `location /llm/` which strips the
+//     prefix and forwards to aip-litellm:4000. AdminBaseURL is that base.
+//   - the CHAT/model path (/v1/chat/completions) goes through nginx's `location
+//     /v1/` → Headroom → LiteLLM, exercising the REAL model path (compression +
+//     guardrails). GatewayBaseURL is that base.
+//
+// nginx publishes proxyHostPort (18787) on the host; the CLI reaches its own host
+// gateway at localhost. AdminBaseURL is overridable via LITELLM_BASE_URL (e.g. a
+// remote gateway); the chat base derives from the same host so a remote admin base
+// keeps the chat test on the matching gateway.
+const (
+	// proxyHostPort mirrors setup.proxyHostPort (the nginx gateway host port). Kept
+	// as a local const to avoid an import cycle (setup imports litellm).
+	proxyHostPort = "18787"
+	// defaultAdminBaseURL is the LiteLLM admin surface via nginx `/llm`.
+	defaultAdminBaseURL = "http://localhost:" + proxyHostPort + "/llm"
+)
+
+// AdminBaseURL is the LiteLLM admin/management base URL (through nginx `/llm`),
+// overridable via LITELLM_BASE_URL. Trailing slash trimmed.
+func AdminBaseURL() string {
+	baseURL := os.Getenv("LITELLM_BASE_URL")
+	if baseURL == "" {
+		baseURL = defaultAdminBaseURL
+	}
+	return strings.TrimRight(baseURL, "/")
+}
+
+// GatewayBaseURL is the model-path base URL (nginx `/v1` → Headroom → LiteLLM),
+// where the chat test runs so it exercises the real compression+guardrail path.
+// It derives from the admin base's scheme+host so a LITELLM_BASE_URL override
+// keeps the chat test on the matching gateway: it replaces a trailing "/llm" with
+// "/v1", else appends "/v1".
+func GatewayBaseURL() string {
+	admin := AdminBaseURL()
+	if trimmed := strings.TrimSuffix(admin, "/llm"); trimmed != admin {
+		return trimmed + "/v1"
+	}
+	return admin + "/v1"
+}
+
+// realClient talks to a running LiteLLM gateway through the nginx host gateway.
+// adminURL fronts the management surface (`/health/liveliness`, `/model/info`),
+// gatewayURL fronts the model path (`/v1/chat/completions`).
 type realClient struct {
-	baseURL    string
+	adminURL   string
+	gatewayURL string
 	httpClient *http.Client
 }
 
-// RealClient returns a Client bound to the local LiteLLM gateway.
+// RealClient returns a Client bound to the local LiteLLM gateway via nginx.
 func RealClient() Client {
-	baseURL := os.Getenv("LITELLM_BASE_URL")
-	if baseURL == "" {
-		baseURL = "http://127.0.0.1:14000"
-	}
 	return realClient{
-		baseURL:    strings.TrimRight(baseURL, "/"),
+		adminURL:   AdminBaseURL(),
+		gatewayURL: GatewayBaseURL(),
 		httpClient: &http.Client{Timeout: 5 * time.Second},
 	}
 }
@@ -40,11 +84,11 @@ func (client realClient) Status() (StatusInfo, error) {
 	// DefaultRouting().Default is the source of truth for the default handle. The
 	// served-model list and the derived provider set, by contrast, come LIVE from the
 	// gateway below.
-	info := StatusInfo{Default: DefaultRouting().Default, BaseURL: client.baseURL}
+	info := StatusInfo{Default: DefaultRouting().Default, BaseURL: client.adminURL}
 	// Use the unauthenticated liveness probe: /health is auth-gated and returns
 	// 401 once a master key is set (the secured-UI default), which would make a
 	// healthy proxy look down. /health/liveliness needs no credential.
-	response, err := client.httpClient.Get(client.baseURL + "/health/liveliness")
+	response, err := client.httpClient.Get(client.adminURL + "/health/liveliness")
 	if err != nil {
 		return info, nil // unreachable → Healthy stays false; not a CLI error
 	}
@@ -75,7 +119,7 @@ func (client realClient) Status() (StatusInfo, error) {
 // none (best-effort). Both endpoints return wildcard handles (e.g. `openai/*`) and
 // named aliases — that is expected and reflects the real config.
 func (client realClient) Models() ([]Model, error) {
-	request, err := http.NewRequest(http.MethodGet, client.baseURL+"/model/info", nil)
+	request, err := http.NewRequest(http.MethodGet, client.adminURL+"/model/info", nil)
 	if err != nil {
 		return nil, err
 	}
@@ -193,7 +237,7 @@ func (client realClient) Test(model string) (TestResult, error) {
 		"model":    model,
 		"messages": []map[string]string{{"role": "user", "content": "ping"}},
 	})
-	request, err := http.NewRequest(http.MethodPost, client.baseURL+"/v1/chat/completions", bytes.NewReader(payload))
+	request, err := http.NewRequest(http.MethodPost, client.gatewayURL+"/chat/completions", bytes.NewReader(payload))
 	if err != nil {
 		return TestResult{Model: model, OK: false}, err
 	}

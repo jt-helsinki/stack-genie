@@ -28,21 +28,32 @@ const litellmContainer = "aip-litellm"
 // API keys are handed to LiteLLM (stored encrypted in its Postgres DB) and never
 // written to platform disk; Entry carries names/metadata only. The master key is
 // read at runtime from the running container's environment via the prober.
+//
+// The credentials API is an ADMIN surface, so it is reached through the nginx
+// host gateway's `/llm` route (aip-proxy → aip-litellm:4000) — never the LiteLLM
+// container directly (all service containers are internal-only on aip-net now).
 type realBroker struct {
 	prober     runtime.Prober
 	baseURL    string
 	httpClient *http.Client
 }
 
-// RealBroker returns a Broker bound to the host's LiteLLM gateway.
-func RealBroker() Broker {
+// litellmAdminBaseURL is the LiteLLM admin base via the nginx `/llm` route,
+// overridable via LITELLM_BASE_URL. It mirrors litellm.AdminBaseURL but is kept
+// local to avoid importing the litellm package from secrets.
+func litellmAdminBaseURL() string {
 	baseURL := os.Getenv("LITELLM_BASE_URL")
 	if baseURL == "" {
-		baseURL = "http://127.0.0.1:14000"
+		baseURL = "http://localhost:18787/llm"
 	}
+	return strings.TrimRight(baseURL, "/")
+}
+
+// RealBroker returns a Broker bound to the host's LiteLLM gateway (via nginx).
+func RealBroker() Broker {
 	return realBroker{
 		prober:     runtime.RealProber(),
-		baseURL:    strings.TrimRight(baseURL, "/"),
+		baseURL:    litellmAdminBaseURL(),
 		httpClient: &http.Client{Timeout: 10 * time.Second},
 	}
 }

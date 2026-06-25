@@ -526,7 +526,7 @@ func TestLiteLLMRunArgs(test *testing.T) {
 	want := []string{
 		"run", "-d", "--name", "aip-litellm",
 		"--network", "aip-net",
-		"-p", "127.0.0.1:14000:4000",
+		// INTERNAL-ONLY: no host publish — reached by name on aip-net; nginx fronts it.
 		"-v", "/cfg/litellm/config.yaml:/app/config.yaml",
 		"-e", "UI_USERNAME=admin",
 		"-e", "UI_PASSWORD",
@@ -553,16 +553,14 @@ func TestLiteLLMRunArgs(test *testing.T) {
 	}
 }
 
-// TestLiteLLMRunArgsBindHost asserts the host port is published on the bindHost
-// the role dictates: loopback for standalone, 0.0.0.0 for a server.
-func TestLiteLLMRunArgsBindHost(test *testing.T) {
-	standalone := strings.Join(litellmRunArgs("/cfg/config.yaml", "127.0.0.1", containerImage("litellm")), " ")
-	if !strings.Contains(standalone, "-p 127.0.0.1:14000:4000") {
-		test.Errorf("standalone bind: want -p 127.0.0.1:14000:4000 in %s", standalone)
-	}
-	server := strings.Join(litellmRunArgs("/cfg/config.yaml", "0.0.0.0", containerImage("litellm")), " ")
-	if !strings.Contains(server, "-p 0.0.0.0:14000:4000") {
-		test.Errorf("server bind: want -p 0.0.0.0:14000:4000 in %s", server)
+// TestLiteLLMRunArgsInternalOnly asserts LiteLLM no longer publishes ANY host port
+// (nginx is the sole host entry) — regardless of the role's bindHost.
+func TestLiteLLMRunArgsInternalOnly(test *testing.T) {
+	for _, bindHost := range []string{"127.0.0.1", "0.0.0.0"} {
+		launch := strings.Join(litellmRunArgs("/cfg/config.yaml", bindHost, containerImage("litellm")), " ")
+		if strings.Contains(launch, "-p ") || strings.Contains(launch, "14000") {
+			test.Errorf("litellm must be internal-only (no host publish) for bindHost %s: %s", bindHost, launch)
+		}
 	}
 }
 
@@ -873,7 +871,7 @@ func TestEnsureProxyRendersGatewayConfig(test *testing.T) {
 	home := test.TempDir()
 	test.Setenv("HOME", home)
 	prober := &recordingProber{}
-	if err := ensureProxy(prober, "docker", "127.0.0.1"); err != nil {
+	if err := ensureProxy(prober, "docker", "127.0.0.1", nil); err != nil {
 		test.Fatal(err)
 	}
 	confPath := filepath.Join(home, ".ai-platform", "config", "proxy", "nginx.conf")
@@ -882,19 +880,82 @@ func TestEnsureProxyRendersGatewayConfig(test *testing.T) {
 		test.Fatalf("nginx.conf not written: %v", err)
 	}
 	rendered := string(content)
-	if !strings.Contains(rendered, "proxy_pass http://aip-headroom:8787;") {
-		test.Errorf("nginx.conf must reverse-proxy to Headroom:\n%s", rendered)
+	// The agent CHAT path (/v1) stays routed to Headroom — preserved unchanged.
+	if !strings.Contains(rendered, "location /v1/ {") || !strings.Contains(rendered, "proxy_pass http://aip-headroom:8787;") {
+		test.Errorf("nginx.conf must keep the /v1 → Headroom model path:\n%s", rendered)
+	}
+	// The LiteLLM admin surface is fronted on /llm (prefix stripped → :4000).
+	if !strings.Contains(rendered, "location /llm/ {") || !strings.Contains(rendered, "proxy_pass http://aip-litellm:4000/;") {
+		test.Errorf("nginx.conf must front the LiteLLM admin surface on /llm:\n%s", rendered)
+	}
+	// The Ollama HTTP API is fronted on /ollama (prefix stripped → :11434).
+	if !strings.Contains(rendered, "location /ollama/ {") || !strings.Contains(rendered, "proxy_pass http://aip-ollama:11434/;") {
+		test.Errorf("nginx.conf must front the Ollama API on /ollama:\n%s", rendered)
+	}
+	// /llm and /ollama must be matched BEFORE the catch-all `location /`.
+	llmIdx := strings.Index(rendered, "location /llm/ {")
+	ollamaIdx := strings.Index(rendered, "location /ollama/ {")
+	catchAllIdx := strings.Index(rendered, "location / {")
+	if llmIdx < 0 || ollamaIdx < 0 || catchAllIdx < 0 || llmIdx > catchAllIdx || ollamaIdx > catchAllIdx {
+		test.Errorf("specific /llm and /ollama prefixes must precede the catch-all:\n%s", rendered)
 	}
 	if !strings.Contains(rendered, "proxy_buffering off;") {
 		test.Errorf("nginx.conf must disable buffering for SSE streaming:\n%s", rendered)
+	}
+	// With no optional services enabled, nginx renders no UI server blocks and
+	// publishes only the gateway port 18787.
+	if strings.Contains(rendered, "listen 8080;") || strings.Contains(rendered, "listen 7000;") {
+		test.Errorf("no UI server blocks should render when no optional services are enabled:\n%s", rendered)
 	}
 	// nginx takes over host :18787 and forwards to Headroom on :80 internally.
 	launch := strings.Join(runArgsFor(prober), " ")
 	if !strings.Contains(launch, "-p 127.0.0.1:18787:80") {
 		test.Errorf("proxy must publish the gateway port 18787: %s", launch)
 	}
+	if strings.Contains(launch, "18090") || strings.Contains(launch, ":7000") {
+		test.Errorf("no UI ports should be published when no optional services are enabled: %s", launch)
+	}
 	if !strings.Contains(launch, confPath+":/etc/nginx/nginx.conf:ro") {
 		test.Errorf("proxy did not bind-mount nginx.conf: %s", launch)
+	}
+}
+
+// TestEnsureProxyFrontsEnabledUIs: with open-webui + odysseus enabled, nginx
+// renders their UI server blocks and publishes their host ports (the containers
+// are internal-only — nginx is the sole publisher).
+func TestEnsureProxyFrontsEnabledUIs(test *testing.T) {
+	home := test.TempDir()
+	test.Setenv("HOME", home)
+	prober := &recordingProber{}
+	if err := ensureProxy(prober, "0.0.0.0", "0.0.0.0", []string{"open-webui", "odysseus"}); err != nil {
+		test.Fatal(err)
+	}
+	confPath := filepath.Join(home, ".ai-platform", "config", "proxy", "nginx.conf")
+	content, err := os.ReadFile(confPath)
+	if err != nil {
+		test.Fatalf("nginx.conf not written: %v", err)
+	}
+	rendered := string(content)
+	if !strings.Contains(rendered, "listen 8080;") || !strings.Contains(rendered, "proxy_pass http://aip-open-webui:8080/;") {
+		test.Errorf("nginx.conf must front Open WebUI:\n%s", rendered)
+	}
+	if !strings.Contains(rendered, "listen 7000;") || !strings.Contains(rendered, "proxy_pass http://aip-odysseus:7000/;") {
+		test.Errorf("nginx.conf must front Odysseus:\n%s", rendered)
+	}
+	// WebSocket upgrade headers for the UIs.
+	if !strings.Contains(rendered, "proxy_set_header Upgrade $http_upgrade;") {
+		test.Errorf("UI server blocks must carry the websocket Upgrade header:\n%s", rendered)
+	}
+	// nginx publishes the UI ports (on the server bindHost 0.0.0.0).
+	launch := strings.Join(runArgsFor(prober), " ")
+	if !strings.Contains(launch, "-p 0.0.0.0:18787:80") {
+		test.Errorf("proxy must publish the gateway port on 0.0.0.0: %s", launch)
+	}
+	if !strings.Contains(launch, "-p 0.0.0.0:18090:8080") {
+		test.Errorf("proxy must publish the Open WebUI port: %s", launch)
+	}
+	if !strings.Contains(launch, "-p 0.0.0.0:7000:7000") {
+		test.Errorf("proxy must publish the Odysseus port: %s", launch)
 	}
 }
 
@@ -1169,8 +1230,8 @@ func runArgsForContainer(prober *recordingProber, container string) []string {
 }
 
 // TestEnsureOdysseusGroupRunArgs: ensureOdysseus brings up all four containers;
-// the companions are internal-only (no -p host publish), and the app publishes
-// :7000, mounts the host Docker socket, and routes models through aip-proxy.
+// ALL of them are internal-only (no -p host publish — nginx fronts the app UI),
+// the app mounts the host Docker socket, and routes models through aip-proxy.
 func TestEnsureOdysseusGroupRunArgs(test *testing.T) {
 	test.Setenv("HOME", test.TempDir())
 	prober := &recordingProber{}
@@ -1201,14 +1262,15 @@ func TestEnsureOdysseusGroupRunArgs(test *testing.T) {
 		test.Errorf("searxng must set SEARXNG_SECRET: %s", searx)
 	}
 
-	// The app: publishes :7000, mounts the Docker socket, routes via aip-proxy.
+	// The app: INTERNAL-ONLY (nginx fronts its UI), mounts the Docker socket,
+	// routes via aip-proxy.
 	appArgs := runArgsForContainer(prober, odysseusContainer)
 	if appArgs == nil {
 		test.Fatalf("aip-odysseus was not launched: %v", prober.calls)
 	}
 	app := strings.Join(appArgs, " ")
-	if !strings.Contains(app, "-p 127.0.0.1:7000:7000") {
-		test.Errorf("odysseus must publish :7000: %s", app)
+	if strings.Contains(app, "-p ") {
+		test.Errorf("odysseus must be internal-only (no host publish — nginx fronts it): %s", app)
 	}
 	if !strings.Contains(app, "/var/run/docker.sock:/var/run/docker.sock") {
 		test.Errorf("odysseus must mount the host Docker socket: %s", app)

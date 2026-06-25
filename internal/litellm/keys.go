@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"os"
 	"strings"
 	"time"
 
@@ -66,14 +65,11 @@ func NewKeyManager(prober runtime.Prober) *KeyManager {
 	}
 }
 
-// resolveBaseURL matches RealClient's base-URL resolution so the key API targets
-// the same gateway as `ai models status|test`.
+// resolveBaseURL matches RealClient's admin base-URL resolution so the key API
+// (/key/*, an admin surface) targets the same nginx `/llm` route as
+// `ai models status` — never the LiteLLM container directly.
 func resolveBaseURL() string {
-	baseURL := os.Getenv("LITELLM_BASE_URL")
-	if baseURL == "" {
-		baseURL = "http://127.0.0.1:14000"
-	}
-	return strings.TrimRight(baseURL, "/")
+	return AdminBaseURL()
 }
 
 // masterKey reads LITELLM_MASTER_KEY from the running LiteLLM container's

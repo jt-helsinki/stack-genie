@@ -22,8 +22,9 @@ code.
   `--dns-nameserver` at the `aip-dns` audit resolver.
 - **Service-tier launch** — `internal/setup/setup_real.go`: `realServices.Reconcile`
   brings up the container tier on `aip-net` in order **network → DNS → Ollama →
-  Presidio → LiteLLM (+ DB) → Headroom → nginx proxy → Open WebUI**,
-  via the detected runtime (docker|podman).
+  Presidio → LiteLLM (+ DB) → Headroom → Open WebUI/Odysseus (if enabled) →
+  nginx proxy (LAST)**, via the detected runtime (docker|podman). nginx
+  (`aip-proxy`) is the sole host entry — all other containers are internal-only.
 - **Egress net-rules** — the project `network` block is rendered by
   `egress.MsbNetworkArgs` and applied at `realSandbox.Create` (default-deny +
   allow-listed host services + published ports).
@@ -119,6 +120,25 @@ running. The remaining verification work:
       (SSE)** responses flushing through (buffering off, long timeouts). In server
       mode verify the 0.0.0.0:18787 bind reaches a remote client. Add the live
       readiness probe to `serviceHealthy("proxy")`.
+- [ ] **nginx as the SOLE host entry — the new routes** — every service container
+      is now INTERNAL-ONLY on `aip-net` (LiteLLM, Ollama, Open WebUI, Odysseus +
+      companions no longer host-publish); only nginx publishes. Verify on a live
+      host that the new nginx routes work end-to-end:
+  - `localhost:18787/llm/*` reaches the LiteLLM admin surface (e.g.
+    `GET /llm/model/info`, `/llm/v1/models`, `/llm/health/liveliness`, the
+    `/llm/key/*` + `/llm/credentials` paths) — the prefix is stripped to
+    `aip-litellm:4000/*`. This is what the host CLI uses (`litellm.AdminBaseURL`,
+    `secrets` broker, `litellm.KeyManager`);
+  - `localhost:18787/ollama/api/*` reaches the Ollama HTTP API (`ollama.DefaultBaseURL`
+    → `/ollama/api/tags|pull|delete|show|version`), prefix stripped to
+    `aip-ollama:11434/*`;
+  - the chat test (`ai models test`) on `localhost:18787/v1/chat/completions` still
+    goes through Headroom → LiteLLM (the real model path), NOT `/llm`;
+  - the optional UIs are reachable on host :18090 (Open WebUI) and :7000 (Odysseus)
+    THROUGH nginx (server blocks fronting `aip-open-webui:8080` / `aip-odysseus:7000`,
+    WebSocket upgrade working);
+  - the agent microVM `/v1` path (`host.microsandbox.internal:18787/v1` → Headroom)
+    is unchanged — confirm a workspace agent still routes correctly.
 
 ### 2.4 Headroom strategy verification (arch §8–10)
 

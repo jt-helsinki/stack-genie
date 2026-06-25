@@ -421,7 +421,7 @@ func TestModelsParsesModelInfo(test *testing.T) {
 	}))
 	defer server.Close()
 
-	client := realClient{baseURL: server.URL, httpClient: server.Client()}
+	client := realClient{adminURL: server.URL, gatewayURL: server.URL, httpClient: server.Client()}
 	models, err := client.Models()
 	if err != nil {
 		test.Fatalf("Models() error: %v", err)
@@ -474,7 +474,7 @@ func TestModelsUnauthorized(test *testing.T) {
 	}))
 	defer server.Close()
 
-	client := realClient{baseURL: server.URL, httpClient: server.Client()}
+	client := realClient{adminURL: server.URL, gatewayURL: server.URL, httpClient: server.Client()}
 	if _, err := client.Models(); err == nil {
 		test.Fatal("expected an error for a 401")
 	} else if !strings.Contains(err.Error(), "unauthorized") {
@@ -505,7 +505,7 @@ func TestStatusFetchesLiveModels(test *testing.T) {
 	}))
 	defer server.Close()
 
-	client := realClient{baseURL: server.URL, httpClient: server.Client()}
+	client := realClient{adminURL: server.URL, gatewayURL: server.URL, httpClient: server.Client()}
 	info, err := client.Status()
 	if err != nil {
 		test.Fatalf("Status() error: %v", err)
@@ -545,7 +545,7 @@ func TestStatusHealthyButModelListFails(test *testing.T) {
 	}))
 	defer server.Close()
 
-	client := realClient{baseURL: server.URL, httpClient: server.Client()}
+	client := realClient{adminURL: server.URL, gatewayURL: server.URL, httpClient: server.Client()}
 	info, err := client.Status()
 	if err != nil {
 		test.Fatalf("Status() must not error when only the model list fails: %v", err)
@@ -568,7 +568,7 @@ func TestTestSurfacesProviderError(test *testing.T) {
 	}))
 	defer server.Close()
 
-	client := realClient{baseURL: server.URL, httpClient: server.Client()}
+	client := realClient{adminURL: server.URL, gatewayURL: server.URL, httpClient: server.Client()}
 	result, err := client.Test("ollama/nope")
 	if err != nil {
 		test.Fatalf("transport error not expected: %v", err)
@@ -581,5 +581,52 @@ func TestTestSurfacesProviderError(test *testing.T) {
 	}
 	if result.Error != "model not found: ollama/nope" {
 		test.Errorf("error = %q, want the provider message", result.Error)
+	}
+}
+
+// TestBaseURLsRouteThroughNginxGateway verifies the host CLI reaches LiteLLM ONLY
+// through the nginx gateway (never the container at :14000): the admin surface on
+// /llm and the chat path on /v1, both on host :18787. LITELLM_BASE_URL overrides
+// the admin base and the chat base derives from it (swapping /llm → /v1).
+func TestBaseURLsRouteThroughNginxGateway(test *testing.T) {
+	test.Setenv("LITELLM_BASE_URL", "")
+	if got := AdminBaseURL(); got != "http://localhost:18787/llm" {
+		test.Errorf("admin base = %q, want the nginx /llm route", got)
+	}
+	if got := GatewayBaseURL(); got != "http://localhost:18787/v1" {
+		test.Errorf("gateway base = %q, want the nginx /v1 route", got)
+	}
+	// An override of the admin base keeps the chat base on the matching gateway.
+	test.Setenv("LITELLM_BASE_URL", "http://gw.lan:9999/llm")
+	if got := AdminBaseURL(); got != "http://gw.lan:9999/llm" {
+		test.Errorf("admin base override = %q", got)
+	}
+	if got := GatewayBaseURL(); got != "http://gw.lan:9999/v1" {
+		test.Errorf("gateway base derived from override = %q, want .../v1", got)
+	}
+}
+
+// TestTestUsesGatewayChatPath verifies the chat probe (`ai models test`) hits the
+// gateway /v1 chat path (Headroom → LiteLLM, the real model path), not the admin
+// /llm base — so it exercises compression + guardrails.
+func TestTestUsesGatewayChatPath(test *testing.T) {
+	original := resolveMasterKey
+	resolveMasterKey = func() string { return "" }
+	defer func() { resolveMasterKey = original }()
+
+	var gotPath string
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		gotPath = request.URL.Path
+		_, _ = writer.Write([]byte(`{"choices":[]}`))
+	}))
+	defer server.Close()
+
+	// Admin base distinct from the gateway base, so the chat path is unambiguous.
+	client := realClient{adminURL: server.URL + "/llm", gatewayURL: server.URL + "/v1", httpClient: server.Client()}
+	if _, err := client.Test("gemma4"); err != nil {
+		test.Fatalf("Test: %v", err)
+	}
+	if gotPath != "/v1/chat/completions" {
+		test.Errorf("chat probe queried %q, want /v1/chat/completions (the gateway path)", gotPath)
 	}
 }

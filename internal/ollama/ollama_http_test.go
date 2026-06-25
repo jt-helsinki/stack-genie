@@ -169,3 +169,27 @@ func TestUnreachableIsClassified(test *testing.T) {
 		test.Fatalf("expected unreachable classification, got %v", err)
 	}
 }
+
+// TestDefaultBaseURLRoutesThroughNginxOllama verifies the host CLI reaches Ollama
+// through the nginx gateway's /ollama route (never the container directly): the
+// default base is http://localhost:18787/ollama, so an /api/* call becomes
+// /ollama/api/* on the wire.
+func TestDefaultBaseURLRoutesThroughNginxOllama(test *testing.T) {
+	if DefaultBaseURL != "http://localhost:18787/ollama" {
+		test.Errorf("DefaultBaseURL = %q, want the nginx /ollama route", DefaultBaseURL)
+	}
+	// With a base ending in /ollama, the realClient must hit /ollama/api/tags.
+	var gotPath string
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		gotPath = request.URL.Path
+		_, _ = writer.Write([]byte(`{"models":[]}`))
+	}))
+	defer server.Close()
+	client := realClient{baseURL: strings.TrimRight(server.URL, "/") + "/ollama", httpClient: server.Client()}
+	if _, err := client.List(); err != nil {
+		test.Fatalf("List: %v", err)
+	}
+	if gotPath != "/ollama/api/tags" {
+		test.Errorf("queried %q, want /ollama/api/tags (through nginx)", gotPath)
+	}
+}
