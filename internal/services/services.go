@@ -31,13 +31,27 @@ const (
 // ConsolePath is the path appended to the base URL for the admin UI; HasConsole
 // distinguishes "console at the root URL" from "no console". LoopbackAddress, when
 // set, is a verbatim host-independent address (loopback-only services, e.g. the DNS
-// resolver) used regardless of the display host.
+// resolver) used regardless of the display host. UISubdomain, when set, means the
+// service's UI is served as a Host-based nginx vhost on the single gateway port
+// (<UISubdomain>.<domain>:GatewayPort) — its direct Port is internal-only now, so
+// its host-reachable address + console are the nginx subdomain forms, NOT
+// http://host:Port. GatewayPath, when set, is the prefix the host CLI reaches a
+// non-UI service through the gateway at (e.g. ollama → "/ollama").
 type Endpoint struct {
 	Port            int
 	ConsolePath     string
 	HasConsole      bool
 	LoopbackAddress string
+	UISubdomain     string
+	GatewayPath     string
 }
+
+// GatewayPort is the single host port the nginx gateway (aip-proxy) publishes —
+// the SOLE host entry to the service tier. Every UI subdomain and every host-CLI
+// gateway path (/ollama, /llm, /v1) is reached on this port. It mirrors the
+// internal/setup proxyHostPort const (kept here so the leaf services package — and
+// its projections — owns the value without importing setup).
+const GatewayPort = 18787
 
 // Pin is the version pin for one component: a container image+tag, or a native
 // version+sha256. Exactly one shape is populated, per Mode.
@@ -116,8 +130,11 @@ var nativeRuntime = Native{
 // the production code.
 var registry = []Service{
 	{
-		Name:     "ollama",
-		Endpoint: Endpoint{Port: 11434}, // HTTP API on :11434, no console UI
+		Name: "ollama",
+		// HTTP API only, no console UI. The :11434 container port is INTERNAL-ONLY
+		// now (not host-published); the host CLI reaches it through the nginx gateway
+		// at GatewayPort via the /ollama prefix (nginx strips it → aip-ollama:11434).
+		Endpoint: Endpoint{GatewayPath: "/ollama"},
 		LogScope: "ollama",
 		Components: []Component{
 			{
@@ -145,8 +162,10 @@ var registry = []Service{
 		},
 	},
 	{
-		Name:        "litellm",
-		Endpoint:    Endpoint{Port: 14000, ConsolePath: "/ui", HasConsole: true},
+		Name: "litellm",
+		// The :14000 host port is GONE — LiteLLM is internal-only on aip-net now. Its
+		// admin UI is reached through the nginx gateway at litellm.<domain>:GatewayPort/ui.
+		Endpoint:    Endpoint{ConsolePath: "/ui", HasConsole: true, UISubdomain: "litellm"},
 		LogScope:    "litellm",
 		UISubdomain: "litellm", // litellm.<domain> → the LiteLLM admin UI (/ui)
 		Components: []Component{
@@ -190,9 +209,11 @@ var registry = []Service{
 		},
 	},
 	{
-		Name:        "open-webui",
-		Optional:    true,
-		Endpoint:    Endpoint{Port: 18090, HasConsole: true}, // chat UI; root IS the console
+		Name:     "open-webui",
+		Optional: true,
+		// The :18090 host port is GONE — Open WebUI is internal-only now, fronted by
+		// nginx at chat.<domain>:GatewayPort (root IS the console).
+		Endpoint:    Endpoint{HasConsole: true, UISubdomain: "chat"},
 		LogScope:    "open-webui",
 		UISubdomain: "chat", // chat.<domain> → the Open WebUI chat UI
 		Components: []Component{
@@ -204,9 +225,11 @@ var registry = []Service{
 		},
 	},
 	{
-		Name:        "odysseus",
-		Optional:    true,
-		Endpoint:    Endpoint{Port: 7000, HasConsole: true}, // optional AI workspace UI; root IS the console
+		Name:     "odysseus",
+		Optional: true,
+		// The :7000 host port is GONE — Odysseus is internal-only now, fronted by
+		// nginx at odysseus.<domain>:GatewayPort (root IS the console).
+		Endpoint:    Endpoint{HasConsole: true, UISubdomain: "odysseus"},
 		LogScope:    "odysseus",
 		UISubdomain: "odysseus", // odysseus.<domain> → the Odysseus AI workspace UI
 		Components: []Component{

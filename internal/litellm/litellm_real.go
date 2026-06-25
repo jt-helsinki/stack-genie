@@ -26,15 +26,17 @@ import (
 //     guardrails). GatewayBaseURL is that base.
 //
 // nginx publishes proxyHostPort (18787) on the host; the CLI reaches its own host
-// gateway at localhost. AdminBaseURL is overridable via LITELLM_BASE_URL (e.g. a
-// remote gateway); the chat base derives from the same host so a remote admin base
-// keeps the chat test on the matching gateway.
+// gateway on 127.0.0.1 (IPv4) — NOT "localhost", which resolves to IPv6 ::1 and
+// fails the dial, since nginx publishes on the IPv4 bindHost in standalone.
+// AdminBaseURL is overridable via LITELLM_BASE_URL (e.g. a remote gateway); the
+// chat base derives from the same host so a remote admin base keeps the chat test
+// on the matching gateway.
 const (
 	// proxyHostPort mirrors setup.proxyHostPort (the nginx gateway host port). Kept
 	// as a local const to avoid an import cycle (setup imports litellm).
 	proxyHostPort = "18787"
 	// defaultAdminBaseURL is the LiteLLM admin surface via nginx `/llm`.
-	defaultAdminBaseURL = "http://localhost:" + proxyHostPort + "/llm"
+	defaultAdminBaseURL = "http://127.0.0.1:" + proxyHostPort + "/llm"
 )
 
 // AdminBaseURL is the LiteLLM admin/management base URL (through nginx `/llm`),

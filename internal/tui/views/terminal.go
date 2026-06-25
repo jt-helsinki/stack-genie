@@ -7,6 +7,7 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/charmbracelet/bubbles/spinner"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/creack/pty"
@@ -45,6 +46,13 @@ type Terminal struct {
 	emulator vt10x.Terminal
 	dirty    chan struct{}
 	done     chan error
+
+	// spinner animates a "running …" header while the child has been spawned but has
+	// not yet produced any visible output (the vt10x screen is still blank/black), so
+	// the user sees progress instead of an empty pane. It keeps ticking until the
+	// process exits; once the program streams output, render() shows the live screen
+	// and the spinner header is dropped.
+	spinner spinner.Model
 
 	// mu guards ptmx/cmd, which are set by the spawn command (a bubbletea cmd
 	// goroutine) and read by SetSize / key-forwarding / Close on the main loop.
@@ -103,7 +111,10 @@ func (term *Terminal) Init() tea.Cmd {
 	term.emulator = vt10x.New(vt10x.WithSize(term.cols(), term.rows()))
 	term.dirty = make(chan struct{}, 1)
 	term.done = make(chan error, 1)
-	return func() tea.Msg { return term.spawn() }
+	term.spinner = ui.NewSpinner()
+	// Batch the PTY spawn with the spinner's first tick so the progress header
+	// animates from the moment the overlay opens — before any child output arrives.
+	return tea.Batch(func() tea.Msg { return term.spawn() }, term.spinner.Tick)
 }
 
 // spawn starts the command on a PTY sized to the pane and begins streaming its
@@ -169,7 +180,16 @@ func (term *Terminal) Update(msg tea.Msg) tea.Cmd {
 	case terminalExitMsg:
 		term.exited = true
 		term.exitErr = message.err
-		return nil
+		return nil // the process is done — stop re-ticking the spinner
+	case spinner.TickMsg:
+		// Keep the progress spinner animating until the process exits; re-issue its
+		// tick so the header glyph advances even before the child produces output.
+		if term.exited {
+			return nil
+		}
+		var cmd tea.Cmd
+		term.spinner, cmd = term.spinner.Update(message)
+		return cmd
 	case tea.KeyMsg:
 		if term.exited {
 			return nil
@@ -210,13 +230,31 @@ func (term *Terminal) View() string {
 		if term.exitErr != nil {
 			return ui.Failure.Render(ui.IconFail + " " + term.exitErr.Error())
 		}
-		return ui.Muted.Render("starting…")
+		return term.spinnerHeader()
 	}
 	screen := term.render()
 	if term.exited {
 		return screen + "\n" + ui.Muted.Render(term.exitNote())
 	}
+	// Before the child produces any visible output the vt10x screen is blank (a
+	// black pane). Show the animated spinner header so the user sees that work is
+	// underway; once output streams in, render the live screen.
+	if isBlank(screen) {
+		return term.spinnerHeader()
+	}
 	return screen
+}
+
+// spinnerHeader is the animated "running `ai <label>` ⣾" progress line shown while
+// the child has been spawned but has produced no visible output yet.
+func (term *Terminal) spinnerHeader() string {
+	return ui.Muted.Render("running `ai "+term.label+"` ") + term.spinner.View()
+}
+
+// isBlank reports whether the rendered screen has no visible content (only spaces
+// and newlines) — i.e. the child has not painted anything yet.
+func isBlank(screen string) bool {
+	return strings.TrimSpace(screen) == ""
 }
 
 // render walks the emulator's cell grid and produces a styled string, coalescing

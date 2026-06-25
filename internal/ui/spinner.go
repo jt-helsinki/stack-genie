@@ -35,6 +35,13 @@ func newSpinner() spinner.Model {
 	return model
 }
 
+// NewSpinner returns the platform's standard themed spinner for embedding in
+// another bubbletea model (e.g. the `ai ui` terminal overlay's progress header
+// while a child process is starting/running with no output yet). Callers drive it
+// the usual way: return model.Tick from Init, feed spinner.TickMsg to Update, and
+// re-issue the returned tick command so it keeps animating.
+func NewSpinner() spinner.Model { return newSpinner() }
+
 type spinnerModel struct {
 	spinner spinner.Model
 	title   string

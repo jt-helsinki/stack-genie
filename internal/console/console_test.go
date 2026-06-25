@@ -1,9 +1,14 @@
 package console
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func TestURLAndKnown(test *testing.T) {
-	if url, ok := URL("litellm"); !ok || url != "http://localhost:14000/ui" {
+	// The LiteLLM admin UI is the nginx subdomain vhost on the gateway port, NOT
+	// the old internal-only :14000.
+	if url, ok := URL("litellm"); !ok || url != "http://litellm.localhost:18787/ui" {
 		test.Errorf("litellm console = (%q,%v)", url, ok)
 	}
 	// Known service with no web console.
@@ -20,42 +25,61 @@ func TestURLAndKnown(test *testing.T) {
 
 func TestWithConsolesSortedAndFiltered(test *testing.T) {
 	named := WithConsoles()
-	// litellm, odysseus, and open-webui all expose a console; sorted by name.
+	// litellm, odysseus, and open-webui all expose a console; sorted by name. Every
+	// console URL must be an nginx subdomain vhost on the gateway port — never a
+	// direct (now internal-only) per-service port.
 	if len(named) != 3 || named[0].Name != "litellm" || named[1].Name != "odysseus" || named[2].Name != "open-webui" {
 		test.Fatalf("WithConsoles = %+v, want [litellm odysseus open-webui]", named)
+	}
+	want := map[string]string{
+		"litellm":    "http://litellm.localhost:18787/ui",
+		"odysseus":   "http://odysseus.localhost:18787",
+		"open-webui": "http://chat.localhost:18787",
+	}
+	for _, namedURL := range named {
+		if namedURL.URL != want[namedURL.Name] {
+			test.Errorf("%s console = %q, want %q", namedURL.Name, namedURL.URL, want[namedURL.Name])
+		}
+		for _, deadPort := range []string{":14000", ":11434", ":18090", ":7000"} {
+			if strings.Contains(namedURL.URL, deadPort) {
+				test.Errorf("%s console %q must not use internal-only port %s", namedURL.Name, namedURL.URL, deadPort)
+			}
+		}
 	}
 }
 
 func TestOdysseusEndpointHasAddressAndConsole(test *testing.T) {
 	endpoint, ok := EndpointFor("odysseus")
-	if !ok || endpoint.Address != "http://localhost:7000" || endpoint.Console != "http://localhost:7000" {
+	if !ok || endpoint.Address != "http://odysseus.localhost:18787" || endpoint.Console != "http://odysseus.localhost:18787" {
 		test.Errorf("odysseus endpoint = (%+v,%v)", endpoint, ok)
 	}
 }
 
 func TestOpenWebUIEndpointHasAddressAndConsole(test *testing.T) {
 	endpoint, ok := EndpointFor("open-webui")
-	if !ok || endpoint.Address != "http://localhost:18090" || endpoint.Console != "http://localhost:18090" {
+	if !ok || endpoint.Address != "http://chat.localhost:18787" || endpoint.Console != "http://chat.localhost:18787" {
 		test.Errorf("open-webui endpoint = (%+v,%v)", endpoint, ok)
 	}
 }
 
 func TestEndpointAndAddress(test *testing.T) {
-	// litellm has both an address and a console.
+	// litellm: admin UI subdomain vhost on the gateway port; the address is the
+	// same base, the console adds /ui.
 	endpoint, ok := EndpointFor("litellm")
-	if !ok || endpoint.Address != "http://localhost:14000" || endpoint.Console != "http://localhost:14000/ui" {
+	if !ok || endpoint.Address != "http://litellm.localhost:18787" || endpoint.Console != "http://litellm.localhost:18787/ui" {
 		test.Errorf("litellm endpoint = (%+v,%v)", endpoint, ok)
 	}
-	if address, ok := Address("litellm"); !ok || address != "http://localhost:14000" {
+	if address, ok := Address("litellm"); !ok || address != "http://litellm.localhost:18787" {
 		test.Errorf("litellm address = (%q,%v)", address, ok)
 	}
 
-	// ollama has an address only (HTTP API, no console).
+	// ollama: host-CLI gateway PATH (no console). The /api/* calls land on
+	// /ollama/api/* through nginx.
 	endpoint, ok = EndpointFor("ollama")
-	if !ok || endpoint.Address != "http://localhost:11434" || endpoint.Console != "" {
+	if !ok || endpoint.Address != "http://localhost:18787/ollama" || endpoint.Console != "" {
 		test.Errorf("ollama endpoint = (%+v,%v)", endpoint, ok)
 	}
-	if address, ok := Address("ollama"); !ok || address != "http://localhost:11434" {
+	if address, ok := Address("ollama"); !ok || address != "http://localhost:18787/ollama" {
 		test.Errorf("ollama address = (%q,%v)", address, ok)
 	}
 	if _, ok := URL("ollama"); ok {
@@ -92,33 +116,39 @@ func TestEndpointAndAddress(test *testing.T) {
 	}
 }
 
-func TestEndpointForHostRendersGivenHost(test *testing.T) {
-	// Default host ("localhost") matches the legacy hardcoded URLs.
+func TestEndpointForHostRendersGivenDomain(test *testing.T) {
+	// The host argument is the platform base DOMAIN: UI subdomains hang off it and
+	// the gateway-path addresses resolve under it — always on the single gateway port.
 	endpoint, ok := EndpointForHost("litellm", DefaultHost)
-	if !ok || endpoint.Address != "http://localhost:14000" || endpoint.Console != "http://localhost:14000/ui" {
+	if !ok || endpoint.Address != "http://litellm.localhost:18787" || endpoint.Console != "http://litellm.localhost:18787/ui" {
 		test.Errorf("litellm@localhost endpoint = (%+v,%v)", endpoint, ok)
 	}
 
-	// A custom display host (e.g. a server-role machine hostname) is woven into
-	// both the address and the console URL.
+	// A custom domain is woven into the subdomain URL.
 	endpoint, ok = EndpointForHost("litellm", "build-host.lan")
-	if !ok || endpoint.Address != "http://build-host.lan:14000" || endpoint.Console != "http://build-host.lan:14000/ui" {
+	if !ok || endpoint.Address != "http://litellm.build-host.lan:18787" || endpoint.Console != "http://litellm.build-host.lan:18787/ui" {
 		test.Errorf("litellm@build-host.lan endpoint = (%+v,%v)", endpoint, ok)
 	}
 
-	// A console whose root IS the UI gets the host in both fields, no path.
+	// A console whose root IS the UI gets the subdomain in both fields, no path.
 	endpoint, ok = EndpointForHost("open-webui", "build-host.lan")
-	if !ok || endpoint.Address != "http://build-host.lan:18090" || endpoint.Console != "http://build-host.lan:18090" {
+	if !ok || endpoint.Address != "http://chat.build-host.lan:18787" || endpoint.Console != "http://chat.build-host.lan:18787" {
 		test.Errorf("open-webui@build-host.lan endpoint = (%+v,%v)", endpoint, ok)
 	}
 
-	// dns is loopback-only and must NOT be rewritten to the custom host.
+	// ollama is a gateway-path service: <domain>:18787/ollama, no subdomain.
+	endpoint, ok = EndpointForHost("ollama", "build-host.lan")
+	if !ok || endpoint.Address != "http://build-host.lan:18787/ollama" || endpoint.Console != "" {
+		test.Errorf("ollama@build-host.lan endpoint = (%+v,%v)", endpoint, ok)
+	}
+
+	// dns is loopback-only and must NOT be rewritten to the custom domain.
 	endpoint, ok = EndpointForHost("dns", "build-host.lan")
 	if !ok || endpoint.Address != "127.0.0.1:15353/udp" || endpoint.Console != "" {
 		test.Errorf("dns@build-host.lan endpoint = (%+v,%v), want loopback unchanged", endpoint, ok)
 	}
 
-	// Internal-only services stay empty regardless of host.
+	// Internal-only services stay empty regardless of domain.
 	for _, name := range []string{"headroom", "presidio", "microsandbox", "chromadb"} {
 		endpoint, ok := EndpointForHost(name, "build-host.lan")
 		if !ok {

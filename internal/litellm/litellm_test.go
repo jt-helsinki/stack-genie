@@ -585,16 +585,17 @@ func TestTestSurfacesProviderError(test *testing.T) {
 }
 
 // TestBaseURLsRouteThroughNginxGateway verifies the host CLI reaches LiteLLM ONLY
-// through the nginx gateway (never the container at :14000): the admin surface on
-// /llm and the chat path on /v1, both on host :18787. LITELLM_BASE_URL overrides
-// the admin base and the chat base derives from it (swapping /llm → /v1).
+// through the nginx gateway (never the container at :4000): the admin surface on
+// /llm and the chat path on /v1, both on host :18787 at 127.0.0.1 (NOT localhost →
+// ::1, which would refuse the dial). LITELLM_BASE_URL overrides the admin base and
+// the chat base derives from it (swapping /llm → /v1).
 func TestBaseURLsRouteThroughNginxGateway(test *testing.T) {
 	test.Setenv("LITELLM_BASE_URL", "")
-	if got := AdminBaseURL(); got != "http://localhost:18787/llm" {
-		test.Errorf("admin base = %q, want the nginx /llm route", got)
+	if got := AdminBaseURL(); got != "http://127.0.0.1:18787/llm" {
+		test.Errorf("admin base = %q, want the nginx /llm route on 127.0.0.1", got)
 	}
-	if got := GatewayBaseURL(); got != "http://localhost:18787/v1" {
-		test.Errorf("gateway base = %q, want the nginx /v1 route", got)
+	if got := GatewayBaseURL(); got != "http://127.0.0.1:18787/v1" {
+		test.Errorf("gateway base = %q, want the nginx /v1 route on 127.0.0.1", got)
 	}
 	// An override of the admin base keeps the chat base on the matching gateway.
 	test.Setenv("LITELLM_BASE_URL", "http://gw.lan:9999/llm")

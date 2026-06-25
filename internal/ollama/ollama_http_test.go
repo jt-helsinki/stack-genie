@@ -172,11 +172,11 @@ func TestUnreachableIsClassified(test *testing.T) {
 
 // TestDefaultBaseURLRoutesThroughNginxOllama verifies the host CLI reaches Ollama
 // through the nginx gateway's /ollama route (never the container directly): the
-// default base is http://localhost:18787/ollama, so an /api/* call becomes
-// /ollama/api/* on the wire.
+// default base is http://127.0.0.1:18787/ollama (127.0.0.1, NOT localhost → ::1,
+// which would refuse the dial), so an /api/* call becomes /ollama/api/* on the wire.
 func TestDefaultBaseURLRoutesThroughNginxOllama(test *testing.T) {
-	if DefaultBaseURL != "http://localhost:18787/ollama" {
-		test.Errorf("DefaultBaseURL = %q, want the nginx /ollama route", DefaultBaseURL)
+	if DefaultBaseURL != "http://127.0.0.1:18787/ollama" {
+		test.Errorf("DefaultBaseURL = %q, want the nginx /ollama route on 127.0.0.1", DefaultBaseURL)
 	}
 	// With a base ending in /ollama, the realClient must hit /ollama/api/tags.
 	var gotPath string

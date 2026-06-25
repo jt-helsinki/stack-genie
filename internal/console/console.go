@@ -25,34 +25,51 @@ type Endpoint struct {
 }
 
 // DefaultHost is the display host used by the host-agnostic accessors
-// (EndpointFor/Address/URL/WithConsoles). The host-published services are bound
-// to loopback in every role except server, so localhost is the right default;
-// server-role hosts render their endpoints against the machine hostname via the
-// *Host variants (see internal/setup statusDisplayHost) so LAN clients get a
-// reachable address. This is DISPLAY ONLY — it never changes the container bind.
+// (EndpointFor/Address/URL/WithConsoles). It is the platform base DOMAIN the
+// nginx UI subdomains hang off and the host-CLI gateway paths resolve under. The
+// gateway (aip-proxy) binds loopback in every role except server, and the UI
+// subdomains map to 127.0.0.1 via /etc/hosts in standalone — so the default
+// domain renders reachable browser URLs. Server/other domains are threaded in via
+// the *Host variants (see internal/setup statusDisplayHost / runtime.ResolveDomain).
+// This is DISPLAY ONLY — it never changes the container bind.
 const DefaultHost = "localhost"
 
-// endpointSpec is the host-agnostic data for a service's endpoint: the host port
-// it publishes (rendered as http://<host>:<port>) and, where it has an admin UI,
-// the path appended to that base. A spec with port 0 publishes nothing to the
-// host (internal-only); loopbackAddress, when set, is used verbatim regardless of
-// the display host (e.g. the DNS resolver, which always stays on loopback).
+// gatewayPort is the single nginx gateway (aip-proxy) host port — the SOLE host
+// entry to the service tier. Every UI subdomain and host-CLI gateway path is
+// reached on this port. Mirrors services.GatewayPort.
+const gatewayPort = services.GatewayPort
+
+// endpointSpec is the host-agnostic data for a service's endpoint. Three shapes,
+// all reached through the single nginx gateway port now:
+//   - a UI vhost (uiSubdomain set): served at <uiSubdomain>.<domain>:gatewayPort,
+//     console at that base + consolePath.
+//   - a host-CLI gateway path (gatewayPath set, e.g. ollama "/ollama"): reached at
+//     http://<host>:gatewayPort<gatewayPath> (HTTP API, no console).
+//   - a directly-published host port (port != 0, e.g. the proxy itself on
+//     gatewayPort): http://<host>:port.
+//
+// loopbackAddress, when set, is used verbatim regardless of the display host (e.g.
+// the DNS resolver, which always stays on loopback). A spec with none of these set
+// is internal-only and renders empty.
 type endpointSpec struct {
 	port            int
 	consolePath     string // "" → no console; "/" or "" semantics: see endpointForHost
 	hasConsole      bool   // distinguishes "console at the root URL" from "no console"
 	loopbackAddress string // verbatim address, host-independent (loopback-only services)
+	uiSubdomain     string // nginx UI vhost label (<uiSubdomain>.<domain>:gatewayPort)
+	gatewayPath     string // host-CLI gateway prefix (http://<host>:gatewayPort<path>)
 }
 
 // registry maps a host service to its endpoint spec. The data is DERIVED from the
 // internal/services registry (the single source of truth for the platform's
 // service topology), so it cannot drift from the log scopes / version pins / setup
-// reconcile. The verified host ports the service tier publishes are declared there
-// (see internal/setup host-port consts):
-//   - litellm  :14000  + admin UI at /ui
-//   - ollama   :11434 (HTTP API, no UI)
-//   - proxy    :18787 (aip-proxy nginx gateway entry → Headroom; no separate UI)
-//   - open-webui :18090 (aip-open-webui chat UI → LiteLLM; the address IS its UI)
+// reconcile. nginx (aip-proxy) is the SOLE host entry on the gateway port now; the
+// per-service direct ports are internal-only. The endpoints render through nginx:
+//   - litellm  admin UI at litellm.<domain>:18787/ui (nginx vhost; :4000 internal)
+//   - ollama   http://<domain>:18787/ollama (host-CLI gateway path; :11434 internal)
+//   - proxy    http://<domain>:18787 (aip-proxy nginx gateway entry; no separate UI)
+//   - open-webui chat UI at chat.<domain>:18787 (nginx vhost; the address IS its UI)
+//   - odysseus  app UI at odysseus.<domain>:18787 (nginx vhost; the address IS its UI)
 //   - dns      127.0.0.1:15353/udp (aip-dns CoreDNS egress-audit resolver, loopback)
 //   - headroom is internal-only on :8787 behind nginx (no longer host-published)
 //   - presidio analyzer/anonymizer are internal-only on :3000 (not host-published)
@@ -69,17 +86,36 @@ func buildRegistry() map[string]endpointSpec {
 			consolePath:     endpoint.ConsolePath,
 			hasConsole:      endpoint.HasConsole,
 			loopbackAddress: endpoint.LoopbackAddress,
+			uiSubdomain:     endpoint.UISubdomain,
+			gatewayPath:     endpoint.GatewayPath,
 		}
 	}
 	return specs
 }
 
 // endpointForHost renders a spec into a concrete Endpoint for the given display
-// host. Loopback-only specs (e.g. dns) ignore host and use their verbatim
-// address; internal-only specs (port 0, no loopback address) render empty.
+// host (the platform base DOMAIN). All host-reachable endpoints now go through the
+// single nginx gateway port:
+//   - loopback-only specs (e.g. dns) ignore host and use their verbatim address;
+//   - a UI vhost renders http://<uiSubdomain>.<host>:gatewayPort (+ consolePath);
+//   - a gateway-path spec (e.g. ollama) renders http://<host>:gatewayPort<path>
+//     (HTTP API, no console);
+//   - a directly-published port (e.g. the proxy) renders http://<host>:port;
+//   - everything else is internal-only and renders empty.
 func (spec endpointSpec) endpointForHost(host string) Endpoint {
 	if spec.loopbackAddress != "" {
 		return Endpoint{Address: spec.loopbackAddress}
+	}
+	if spec.uiSubdomain != "" {
+		base := fmt.Sprintf("http://%s.%s:%d", spec.uiSubdomain, host, gatewayPort)
+		endpoint := Endpoint{Address: base}
+		if spec.hasConsole {
+			endpoint.Console = base + spec.consolePath
+		}
+		return endpoint
+	}
+	if spec.gatewayPath != "" {
+		return Endpoint{Address: fmt.Sprintf("http://%s:%d%s", host, gatewayPort, spec.gatewayPath)}
 	}
 	if spec.port == 0 {
 		return Endpoint{}

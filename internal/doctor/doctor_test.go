@@ -193,13 +193,14 @@ func TestHumanShowsServiceEndpoints(test *testing.T) {
 		Services: healthyServices(),
 	}
 	rendered := Run(deps).Human()
-	// A healthy litellm shows its address and admin-UI URL on the check line.
+	// A healthy litellm shows its nginx subdomain address and admin-UI URL on the
+	// check line (the gateway port, NOT the internal-only :14000).
 	if !strings.Contains(rendered, "litellm") ||
-		!strings.Contains(rendered, "http://localhost:14000 (UI http://localhost:14000/ui)") {
+		!strings.Contains(rendered, "http://litellm.localhost:18787 (UI http://litellm.localhost:18787/ui)") {
 		test.Errorf("litellm endpoint missing from doctor output:\n%s", rendered)
 	}
-	// Ollama shows its address but no UI.
-	if !strings.Contains(rendered, "ollama") || !strings.Contains(rendered, "http://localhost:11434") {
+	// Ollama shows its host-CLI gateway path (no UI), NOT the internal-only :11434.
+	if !strings.Contains(rendered, "ollama") || !strings.Contains(rendered, "http://localhost:18787/ollama") {
 		test.Errorf("ollama address missing from doctor output:\n%s", rendered)
 	}
 }

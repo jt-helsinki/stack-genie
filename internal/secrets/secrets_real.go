@@ -44,7 +44,9 @@ type realBroker struct {
 func litellmAdminBaseURL() string {
 	baseURL := os.Getenv("LITELLM_BASE_URL")
 	if baseURL == "" {
-		baseURL = "http://localhost:18787/llm"
+		// 127.0.0.1 (IPv4), not "localhost" (→ IPv6 ::1): nginx publishes on the
+		// IPv4 bindHost in standalone, so ::1 would refuse the dial.
+		baseURL = "http://127.0.0.1:18787/llm"
 	}
 	return strings.TrimRight(baseURL, "/")
 }

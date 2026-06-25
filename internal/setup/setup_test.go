@@ -789,19 +789,19 @@ func TestReportHumanShowsAddressAndConsole(test *testing.T) {
 		PlatformDir: "/home/u/.ai-platform",
 		Services: []ServiceStatus{
 			{Name: "litellm", Mode: "container", State: "running", Healthy: true,
-				Address: "http://localhost:14000", Console: "http://localhost:14000/ui"},
+				Address: "http://litellm.aip.local:18787", Console: "http://litellm.aip.local:18787/ui"},
 			{Name: "ollama", Mode: "container", State: "running", Healthy: true,
-				Address: "http://localhost:11434"},
+				Address: "http://aip.local:18787/ollama"},
 			{Name: "presidio", Mode: "container", State: "running", Healthy: true},
 		},
 	}
 	rendered := report.Human()
 	// litellm shows both its address and the admin UI URL.
-	if !strings.Contains(rendered, "http://localhost:14000 · UI http://localhost:14000/ui") {
+	if !strings.Contains(rendered, "http://litellm.aip.local:18787 · UI http://litellm.aip.local:18787/ui") {
 		test.Errorf("litellm address+UI missing:\n%s", rendered)
 	}
 	// ollama shows its address only (no UI).
-	if !strings.Contains(rendered, "http://localhost:11434") {
+	if !strings.Contains(rendered, "http://aip.local:18787/ollama") {
 		test.Errorf("ollama address missing:\n%s", rendered)
 	}
 	// presidio (no host endpoint) shows neither an address nor a UI hint.
@@ -1279,11 +1279,12 @@ func TestStatusForShowsDisabledOptional(test *testing.T) {
 	}
 }
 
-// TestStatusForDisplayHostByRole: in the server role (services bound 0.0.0.0,
-// LAN-reachable) statusFor renders endpoints against the machine hostname so a
-// remote client gets a reachable address; every other role keeps localhost. This
-// is display-only — it does not change any container bind.
-func TestStatusForDisplayHostByRole(test *testing.T) {
+// TestStatusForDisplayDomain: statusFor renders host-reachable endpoints through
+// the single nginx gateway against the platform base DOMAIN — UI services as
+// <subdomain>.<domain>:18787 vhosts, ollama as the host-CLI gateway path
+// <domain>:18787/ollama, the proxy on <domain>:18787 — never the old direct
+// per-service ports (which are internal-only now). dns stays loopback.
+func TestStatusForDisplayDomain(test *testing.T) {
 	addressOf := func(statuses []ServiceStatus, name string) string {
 		for _, status := range statuses {
 			if status.Name == name {
@@ -1301,12 +1302,7 @@ func TestStatusForDisplayHostByRole(test *testing.T) {
 		return ""
 	}
 
-	// Stub the hostname source so the assertion is exact and deterministic.
-	original := osHostname
-	osHostname = func() (string, error) { return "build-host.lan", nil }
-	defer func() { osHostname = original }()
-
-	// Standalone role → localhost (loopback display).
+	// Default domain (aip.local) when none is persisted.
 	test.Setenv("HOME", test.TempDir())
 	if err := runtime.Persist(&runtime.Info{SchemaVersion: runtime.SchemaVersion, Role: runtime.RoleStandalone}); err != nil {
 		test.Fatal(err)
@@ -1316,30 +1312,42 @@ func TestStatusForDisplayHostByRole(test *testing.T) {
 	if err != nil {
 		test.Fatal(err)
 	}
-	if got := addressOf(standalone, "litellm"); got != "http://localhost:14000" {
-		test.Errorf("standalone litellm address = %q, want http://localhost:14000", got)
+	if got := consoleOf(standalone, "litellm"); got != "http://litellm.aip.local:18787/ui" {
+		test.Errorf("standalone litellm console = %q, want http://litellm.aip.local:18787/ui", got)
+	}
+	if got := addressOf(standalone, "ollama"); got != "http://aip.local:18787/ollama" {
+		test.Errorf("standalone ollama address = %q, want http://aip.local:18787/ollama", got)
+	}
+	if got := addressOf(standalone, "proxy"); got != "http://aip.local:18787" {
+		test.Errorf("standalone proxy address = %q, want http://aip.local:18787", got)
+	}
+	// No host-side use of the old direct ports anywhere.
+	for _, name := range []string{"litellm", "ollama", "open-webui", "odysseus", "proxy"} {
+		got := addressOf(standalone, name)
+		for _, deadPort := range []string{":14000", ":11434", ":18090", ":7000"} {
+			if strings.Contains(got, deadPort) {
+				test.Errorf("%s address %q must not use the internal-only port %s", name, got, deadPort)
+			}
+		}
 	}
 	if got := addressOf(standalone, "dns"); got != "127.0.0.1:15353/udp" {
 		test.Errorf("standalone dns address = %q, want loopback unchanged", got)
 	}
 
-	// Server role → machine hostname in both Address and Console; dns stays loopback.
+	// A configured domain is woven into the subdomain URLs.
 	test.Setenv("HOME", test.TempDir())
-	if err := runtime.Persist(&runtime.Info{SchemaVersion: runtime.SchemaVersion, Role: runtime.RoleServer}); err != nil {
+	if err := runtime.Persist(&runtime.Info{SchemaVersion: runtime.SchemaVersion, Role: runtime.RoleServer, Domain: "build-host.lan"}); err != nil {
 		test.Fatal(err)
 	}
 	server, err := services.statusFor(nil)
 	if err != nil {
 		test.Fatal(err)
 	}
-	if got := addressOf(server, "litellm"); got != "http://build-host.lan:14000" {
-		test.Errorf("server litellm address = %q, want http://build-host.lan:14000", got)
+	if got := consoleOf(server, "litellm"); got != "http://litellm.build-host.lan:18787/ui" {
+		test.Errorf("server litellm console = %q, want http://litellm.build-host.lan:18787/ui", got)
 	}
-	if got := consoleOf(server, "litellm"); got != "http://build-host.lan:14000/ui" {
-		test.Errorf("server litellm console = %q, want http://build-host.lan:14000/ui", got)
-	}
-	if got := addressOf(server, "litellm"); strings.Contains(got, "localhost") {
-		test.Errorf("server role must not display localhost: %q", got)
+	if got := addressOf(server, "open-webui"); got != "http://chat.build-host.lan:18787" {
+		test.Errorf("server open-webui address = %q, want http://chat.build-host.lan:18787", got)
 	}
 	if got := addressOf(server, "dns"); got != "127.0.0.1:15353/udp" {
 		test.Errorf("server dns address = %q, want loopback unchanged", got)

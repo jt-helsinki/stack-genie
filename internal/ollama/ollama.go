@@ -68,8 +68,10 @@ type Client interface {
 // (aip-proxy). The Ollama container is internal-only on aip-net now (it no longer
 // publishes :11434 to the host); nginx fronts it via `location /ollama/` which
 // strips the prefix and forwards to aip-ollama:11434. So the /api/* calls become
-// /ollama/api/* through nginx. Overridable via OLLAMA_BASE_URL (a remote Ollama).
-const DefaultBaseURL = "http://localhost:18787/ollama"
+// /ollama/api/* through nginx. The host MUST use 127.0.0.1 (IPv4), not "localhost"
+// (which resolves to IPv6 ::1 and fails — nginx publishes on the IPv4 bindHost in
+// standalone). Overridable via OLLAMA_BASE_URL (a remote Ollama).
+const DefaultBaseURL = "http://127.0.0.1:18787/ollama"
 
 // Probe checks whether an Ollama server is reachable. BaseURL/Client are
 // overridable (remote Ollama, tests); zero values use sensible defaults.
