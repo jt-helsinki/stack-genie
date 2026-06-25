@@ -108,6 +108,34 @@ func Apply(path string, entries []Entry) (changed bool, err error) {
 	return true, nil
 }
 
+// Plan computes the new file bytes Apply WOULD write, WITHOUT touching the file.
+// It is the read-only counterpart used by privileged callers (internal/setup,
+// internal/uninstall) that must perform the actual write themselves via sudo —
+// they Plan the bytes here, write them to a temp file, then `sudo cp` over the
+// target. changed mirrors Apply: false (with the unchanged current bytes) when
+// the file already contains exactly the rendered block, true otherwise. An empty
+// entries set plans the file with the block REMOVED (the Remove behavior). A
+// missing file is not an error (it plans as if starting from empty content).
+func Plan(path string, entries []Entry) (newContent []byte, changed bool, err error) {
+	original, existed, err := readFile(path)
+	if err != nil {
+		return nil, false, err
+	}
+	if len(entries) == 0 {
+		updated, found := stripBlock(original)
+		if !existed || !found || updated == original {
+			return []byte(original), false, nil
+		}
+		return []byte(updated), true, nil
+	}
+	block := Render(entries)
+	updated := replaceBlock(original, block)
+	if existed && updated == original {
+		return []byte(original), false, nil
+	}
+	return []byte(updated), true, nil
+}
+
 // Remove strips the managed block from the file at path (and a single blank line
 // that the block leaves stranded between two adjacent lines), preserving
 // everything else, and writes atomically. It returns changed=false (writing

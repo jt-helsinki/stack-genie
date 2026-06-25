@@ -211,3 +211,37 @@ func TestLogScopesAreUniqueAndKnown(test *testing.T) {
 		}
 	}
 }
+
+// TestUIVhostsMapping pins the UI→subdomain mapping the host-side nginx vhosts +
+// /etc/hosts logic depends on: litellm (core) → litellm, open-webui → chat,
+// odysseus → odysseus, each with a non-empty in-network upstream.
+func TestUIVhostsMapping(test *testing.T) {
+	want := map[string]struct {
+		subdomain string
+		optional  bool
+	}{
+		"litellm":    {"litellm", false},
+		"open-webui": {"chat", true},
+		"odysseus":   {"odysseus", true},
+	}
+	vhosts := UIVhosts()
+	if len(vhosts) != len(want) {
+		test.Fatalf("expected %d UI vhosts, got %d: %+v", len(want), len(vhosts), vhosts)
+	}
+	for _, vhost := range vhosts {
+		expected, ok := want[vhost.Name]
+		if !ok {
+			test.Errorf("unexpected UI vhost %q", vhost.Name)
+			continue
+		}
+		if vhost.Subdomain != expected.subdomain {
+			test.Errorf("%s subdomain = %q, want %q", vhost.Name, vhost.Subdomain, expected.subdomain)
+		}
+		if vhost.Optional != expected.optional {
+			test.Errorf("%s optional = %v, want %v", vhost.Name, vhost.Optional, expected.optional)
+		}
+		if vhost.Upstream == "" {
+			test.Errorf("%s vhost has no upstream", vhost.Name)
+		}
+	}
+}

@@ -9,8 +9,10 @@ import (
 	"github.com/jt-helsinki/ideal-robot/internal/setup"
 )
 
-// noControl / noOpen / noTail are stubs for tests that don't exercise actions.
+// noControl / noUpdate / noOpen / noTail are stubs for tests that don't exercise
+// those actions.
 func noControl(string, string) error  { return nil }
+func noUpdate(string) error           { return nil }
 func noOpen(string) error             { return nil }
 func noTail(string) ([]string, error) { return nil, nil }
 
@@ -19,7 +21,7 @@ func TestServicesPopulatesTableOnRefresh(test *testing.T) {
 		{Name: "litellm", Mode: "container", State: "running", Healthy: true, Address: "127.0.0.1:14000"},
 		{Name: "ollama", Mode: "container", State: "stopped", Healthy: false},
 	}
-	view := NewServices(func() ([]setup.ServiceStatus, error) { return statuses, nil }, noControl, noOpen, noTail)
+	view := NewServices(func() ([]setup.ServiceStatus, error) { return statuses, nil }, noControl, noUpdate, noOpen, noTail)
 
 	// Run the fetch command Init returns, then feed its message back in.
 	_ = view.Update(view.Init()())
@@ -38,7 +40,7 @@ func TestServicesPopulatesTableOnRefresh(test *testing.T) {
 func TestServicesSurfacesFetchError(test *testing.T) {
 	view := NewServices(func() ([]setup.ServiceStatus, error) {
 		return nil, errors.New("docker is not running")
-	}, noControl, noOpen, noTail)
+	}, noControl, noUpdate, noOpen, noTail)
 
 	_ = view.Update(view.Init()())
 
@@ -57,6 +59,7 @@ func TestServicesStartActionInvokesController(test *testing.T) {
 			return []setup.ServiceStatus{{Name: "litellm", State: "stopped"}}, nil
 		},
 		func(action, service string) error { calls = append(calls, action+":"+service); return nil },
+		noUpdate,
 		noOpen,
 		noTail,
 	)
@@ -83,7 +86,7 @@ func TestServicesDescribeTogglesPane(test *testing.T) {
 		func() ([]setup.ServiceStatus, error) {
 			return []setup.ServiceStatus{{Name: "litellm", State: "running", Console: "http://localhost:14000/ui"}}, nil
 		},
-		noControl, noOpen, noTail,
+		noControl, noUpdate, noOpen, noTail,
 	)
 	_ = view.Update(view.Init()())
 	view.SetSize(80, 20) // give the describe viewport room to render
@@ -106,7 +109,7 @@ func TestServicesLogsPaneOpensAndEscReturns(test *testing.T) {
 		func() ([]setup.ServiceStatus, error) {
 			return []setup.ServiceStatus{{Name: "litellm", State: "running"}}, nil
 		},
-		noControl, noOpen,
+		noControl, noUpdate, noOpen,
 		func(service string) ([]string, error) { return []string{"line one", "line two"}, nil },
 	)
 	_ = view.Update(view.Init()())
@@ -140,6 +143,7 @@ func TestServicesEnableKeyTogglesOptional(test *testing.T) {
 			return []setup.ServiceStatus{{Name: "open-webui", State: "disabled", Optional: true}}, nil
 		},
 		func(action, service string) error { controlled = action + ":" + service; return nil },
+		noUpdate,
 		noOpen, noTail,
 	)
 	_ = view.Update(view.Init()())
@@ -160,7 +164,7 @@ func TestServicesEnableKeyRejectsCore(test *testing.T) {
 	view := NewServices(
 		func() ([]setup.ServiceStatus, error) {
 			return []setup.ServiceStatus{{Name: "litellm", State: "running"}}, nil
-		}, noControl, noOpen, noTail)
+		}, noControl, noUpdate, noOpen, noTail)
 	_ = view.Update(view.Init()())
 
 	if cmd := view.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("e")}); cmd != nil {
@@ -180,6 +184,7 @@ func TestServicesStartGatedOnDisabledOptional(test *testing.T) {
 			return []setup.ServiceStatus{{Name: "odysseus", State: "disabled", Optional: true}}, nil
 		},
 		func(string, string) error { controlled = true; return nil },
+		noUpdate,
 		noOpen, noTail,
 	)
 	_ = view.Update(view.Init()())
@@ -206,6 +211,7 @@ func TestServicesMenuKeysWorkWhilePaneOpen(test *testing.T) {
 			return []setup.ServiceStatus{{Name: "litellm", State: "running", Console: "http://x/ui"}}, nil
 		},
 		func(action, service string) error { controlled = action + ":" + service; return nil },
+		noUpdate,
 		noOpen,
 		func(string) ([]string, error) { return []string{"a log line"}, nil },
 	)
@@ -240,6 +246,56 @@ func TestServicesMenuKeysWorkWhilePaneOpen(test *testing.T) {
 	}
 }
 
+// TestServicesUpdateKeyInvokesUpdater: `p` re-pulls/updates the selected service
+// via the injected updater and flashes the result.
+func TestServicesUpdateKeyInvokesUpdater(test *testing.T) {
+	var updated string
+	view := NewServices(
+		func() ([]setup.ServiceStatus, error) {
+			return []setup.ServiceStatus{{Name: "litellm", State: "running"}}, nil
+		},
+		noControl,
+		func(service string) error { updated = service; return nil },
+		noOpen, noTail,
+	)
+	_ = view.Update(view.Init()())
+
+	cmd := view.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("p")})
+	if cmd == nil {
+		test.Fatal("pressing p must return an update command")
+	}
+	done := cmd()
+	if updated != "litellm" {
+		test.Fatalf("updater service = %q, want litellm", updated)
+	}
+	_ = view.Update(done)
+	if !strings.Contains(view.View(), "updated litellm") {
+		test.Errorf("expected an 'updated' flash, got view:\n%s", view.View())
+	}
+}
+
+// TestServicesUpdateGatedOnDisabledOptional: `p` on a disabled optional service is
+// blocked (enable it first) — no updater call.
+func TestServicesUpdateGatedOnDisabledOptional(test *testing.T) {
+	updatedCalled := false
+	view := NewServices(
+		func() ([]setup.ServiceStatus, error) {
+			return []setup.ServiceStatus{{Name: "odysseus", State: "disabled", Optional: true}}, nil
+		},
+		noControl,
+		func(string) error { updatedCalled = true; return nil },
+		noOpen, noTail,
+	)
+	_ = view.Update(view.Init()())
+
+	if cmd := view.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("p")}); cmd != nil {
+		test.Fatal("p on a disabled optional must not return an update command")
+	}
+	if updatedCalled {
+		test.Fatal("p on a disabled optional must not update anything")
+	}
+}
+
 func TestServicesOpenConsoleUsesURL(test *testing.T) {
 	var opened string
 	view := NewServices(
@@ -247,6 +303,7 @@ func TestServicesOpenConsoleUsesURL(test *testing.T) {
 			return []setup.ServiceStatus{{Name: "litellm", Console: "http://localhost:14000/ui"}}, nil
 		},
 		noControl,
+		noUpdate,
 		func(url string) error { opened = url; return nil },
 		noTail,
 	)

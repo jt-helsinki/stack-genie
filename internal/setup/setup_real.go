@@ -215,15 +215,11 @@ const (
 	// path workspace agents and Odysseus use — never direct to LiteLLM — so its
 	// requests pass through Headroom and the gateway uniformly. Pulled image (no
 	// build): it is INTERNAL-ONLY (listens on :8080 in the container, reached by
-	// name on aip-net) — nginx fronts its UI on host openWebUIHostPort — and persists
-	// its data on a named volume. The built-in Ollama backend and the login wall are
-	// disabled (single-user local UI).
+	// name on aip-net) — nginx serves its UI as the Host-based vhost chat.<domain>
+	// on the single gateway port — and persists its data on a named volume. The
+	// built-in Ollama backend and the login wall are disabled (single-user local UI).
 	openWebUIContainer = "aip-open-webui"
-	// The UI is fronted by nginx on this host port (deliberately non-standard,
-	// 18090 not 8090, to avoid clashing with common dev servers). The container
-	// listens on 8080 and is reached by name; nginx publishes 18090 → it.
-	openWebUIHostPort = "18090"
-	openWebUIVolume   = "aip-open-webui-data"
+	openWebUIVolume    = "aip-open-webui-data"
 	// Route through the nginx gateway entry (aip-proxy, :80 in-container) → Headroom
 	// → LiteLLM, NOT direct to aip-litellm:4000.
 	openWebUITargetURL = "http://" + proxyContainer + "/v1"
@@ -286,52 +282,69 @@ const (
 // ~/.ai-platform/config/proxy/nginx.conf and bind-mounted at /etc/nginx/nginx.conf.
 // nginx (aip-proxy) is the SOLE host entry point to the service tier: every other
 // service container is internal-only on aip-net, reached BY NAME, and only nginx
-// publishes ports to the host. It exposes three host entry points:
+// publishes ports to the host. EVERYTHING listens on the SAME port :80 (host
+// :18787); the web UIs are now Host-based VHOSTS (subdomains), matched by
+// server_name, NOT separate host ports:
 //
-//   - the gateway on :80 (host :18787) — the model path and the LiteLLM admin/
-//     Ollama management surfaces, on three location prefixes:
-//   - location /v1/  → Headroom (aip-headroom:8787) → LiteLLM: the agent CHAT
-//     path (compression + always-on guardrails). PRESERVED unchanged — this is
-//     what every workspace agent's base_url=…/v1 hits.
+//   - the DEFAULT server (server_name <domain> localhost _; default_server) — the
+//     model path + LiteLLM/Ollama management surfaces:
+//   - location /     → Headroom (aip-headroom:8787) → LiteLLM: the DEFAULT route.
+//     The host CLI (localhost:18787) and the microVM gateway
+//     (host.microsandbox.internal:18787) hit this; agents + the UIs' MODEL calls
+//     ride it. Goes through Headroom (compression + always-on guardrails).
+//   - location /v1/  → Headroom too, with the SSE-friendly settings (the agent
+//     CHAT path; what every workspace agent's base_url=…/v1 hits) — PRESERVED.
 //   - location /llm/ → aip-litellm:4000 (prefix stripped): the LiteLLM ADMIN/
-//     management surface (/model/info, /v1/models, /health*, /key*, /credentials).
+//     management surface. BYPASSES Headroom (direct to LiteLLM).
 //   - location /ollama/ → aip-ollama:11434 (prefix stripped): the Ollama HTTP API.
-//     The specific /v1/, /llm/, /ollama/ prefixes are matched before the catch-all
-//     `location /` (which also routes to Headroom for any other model-path call).
-//   - the Open WebUI on :8080 (host :18090) → aip-open-webui:8080, when enabled.
-//   - the Odysseus app on :7000 (host :7000) → aip-odysseus:7000, when enabled.
+//     BYPASSES Headroom.
+//   - server_name litellm.<domain>; → aip-litellm:4000 at ROOT (the LiteLLM admin
+//     UI is served at /ui; / redirects there). BYPASSES Headroom.
+//   - server_name chat.<domain>;    → aip-open-webui:8080 at root, with WebSocket
+//     upgrade headers (when open-webui is enabled).
+//   - server_name odysseus.<domain>; → aip-odysseus:7000 at root, with WebSocket
+//     upgrade headers (when odysseus is enabled).
 //
 // All blocks are tuned for LLM/WebSocket traffic: HTTP/1.1, disabled response
 // buffering so streamed (SSE) responses flush promptly, long read/send timeouts,
-// and Upgrade/Connection headers so the web UIs' websockets work. The UI server
-// blocks are rendered ONLY for enabled services because nginx resolves a literal
+// and Upgrade/Connection headers so the web UIs' websockets work. The UI vhosts
+// are rendered ONLY for enabled services because nginx resolves a literal
 // proxy_pass host at config-load time and would fail to start if the upstream
-// container is absent. A `server { listen 443 ssl; ... }` block is the future
-// HTTPS termination point (out of scope now).
-func proxyNginxConf(enabled []string) string {
+// container is absent. The blocks are structured so a `listen 443 ssl;` +
+// per-vhost ssl directives can be added later (TLS termination — out of scope now).
+//
+// domain is the resolved platform base domain (runtime Info.ResolveDomain(),
+// default aip.local) the UI subdomains hang off.
+func proxyNginxConf(domain string, enabled []string) string {
 	var builder strings.Builder
 	builder.WriteString("events {}\n")
 	builder.WriteString("http {\n")
-	// The gateway server: the model path (/v1 → Headroom) plus the LiteLLM admin
-	// (/llm) and Ollama (/ollama) management surfaces.
+	// The DEFAULT server: the model path (/ + /v1 → Headroom) plus the LiteLLM
+	// admin (/llm) and Ollama (/ollama) management surfaces. default_server so it
+	// answers localhost, host.microsandbox.internal, and any unmatched Host.
 	builder.WriteString("  server {\n")
-	builder.WriteString("    listen 80;\n")
+	builder.WriteString("    listen 80 default_server;\n")
+	builder.WriteString("    server_name " + domain + " localhost _;\n")
 	// LiteLLM admin/management surface (prefix stripped by the trailing slash).
+	// BYPASSES Headroom (direct to LiteLLM).
 	builder.WriteString(proxyLocation("/llm/", "http://"+litellmContainer+":4000/"))
-	// Ollama HTTP API (prefix stripped).
+	// Ollama HTTP API (prefix stripped). BYPASSES Headroom.
 	builder.WriteString(proxyLocation("/ollama/", "http://"+ollamaContainer+":11434/"))
 	// The agent CHAT path → Headroom → LiteLLM (PRESERVED). No trailing slash on
 	// the target: /v1/... is forwarded to Headroom verbatim.
 	builder.WriteString(proxyLocation("/v1/", proxyTargetURL))
-	// Catch-all: any other model-path call also goes to Headroom.
+	// Catch-all DEFAULT route: any other model-path call also goes to Headroom.
 	builder.WriteString(proxyLocation("/", proxyTargetURL))
 	builder.WriteString("  }\n")
-	// Optional UI servers, only when their container is enabled (see above).
+	// LiteLLM admin-UI vhost (always — litellm is a core service). Root → :4000,
+	// BYPASSING Headroom; the admin UI lives at /ui, so / redirects there.
+	builder.WriteString(proxyUIVhost("litellm."+domain, "http://"+litellmContainer+":4000", "/ui"))
+	// Optional UI vhosts, only when their container is enabled (see above).
 	if slices.Contains(enabled, "open-webui") {
-		builder.WriteString(proxyUIServer("8080", "http://"+openWebUIContainer+":8080/"))
+		builder.WriteString(proxyUIVhost("chat."+domain, "http://"+openWebUIContainer+":8080", ""))
 	}
 	if slices.Contains(enabled, "odysseus") {
-		builder.WriteString(proxyUIServer(odysseusHostPort, "http://"+odysseusContainer+":"+odysseusHostPort+"/"))
+		builder.WriteString(proxyUIVhost("odysseus."+domain, "http://"+odysseusContainer+":"+odysseusHostPort, ""))
 	}
 	builder.WriteString("}\n")
 	return builder.String()
@@ -351,22 +364,35 @@ func proxyLocation(prefix, target string) string {
 		"    }\n"
 }
 
-// proxyUIServer renders a `server { listen <port>; ... }` block fronting a web UI,
-// forwarding / to target with WebSocket upgrade headers (the UIs use websockets).
-func proxyUIServer(listenPort, target string) string {
-	return "  server {\n" +
-		"    listen " + listenPort + ";\n" +
-		"    location / {\n" +
-		"      proxy_pass " + target + ";\n" +
-		"      proxy_http_version 1.1;\n" +
-		"      proxy_set_header Host $host;\n" +
-		"      proxy_set_header Upgrade $http_upgrade;\n" +
-		"      proxy_set_header Connection \"upgrade\";\n" +
-		"      proxy_buffering off;\n" +
-		"      proxy_read_timeout 3600s;\n" +
-		"      proxy_send_timeout 3600s;\n" +
-		"    }\n" +
-		"  }\n"
+// proxyUIVhost renders a Host-based `server { server_name <name>; ... }` vhost (on
+// the SHARED :80, host :18787) fronting a web UI at root, with WebSocket upgrade
+// headers (the UIs use websockets). It BYPASSES Headroom — it serves the app UI,
+// not the model path (the apps' model calls ride the default server's /v1 route).
+// rootRedirect, when non-empty, makes `/` 302 to that path (e.g. LiteLLM's /ui).
+// The block is structured so a `listen 443 ssl;` + ssl_* directives can be added
+// per-vhost later (TLS termination).
+func proxyUIVhost(serverName, target, rootRedirect string) string {
+	var builder strings.Builder
+	builder.WriteString("  server {\n")
+	builder.WriteString("    listen 80;\n")
+	builder.WriteString("    server_name " + serverName + ";\n")
+	if rootRedirect != "" {
+		builder.WriteString("    location = / {\n")
+		builder.WriteString("      return 302 " + rootRedirect + ";\n")
+		builder.WriteString("    }\n")
+	}
+	builder.WriteString("    location / {\n")
+	builder.WriteString("      proxy_pass " + target + ";\n")
+	builder.WriteString("      proxy_http_version 1.1;\n")
+	builder.WriteString("      proxy_set_header Host $host;\n")
+	builder.WriteString("      proxy_set_header Upgrade $http_upgrade;\n")
+	builder.WriteString("      proxy_set_header Connection \"upgrade\";\n")
+	builder.WriteString("      proxy_buffering off;\n")
+	builder.WriteString("      proxy_read_timeout 3600s;\n")
+	builder.WriteString("      proxy_send_timeout 3600s;\n")
+	builder.WriteString("    }\n")
+	builder.WriteString("  }\n")
+	return builder.String()
 }
 
 // litellmRunArgs is the `<runtime> run` argv that launches LiteLLM with the
@@ -567,9 +593,9 @@ func ensureHeadroom(prober runtime.Prober, containerRuntime string) error {
 }
 
 // ensureOpenWebUI runs the Open WebUI chat UI INTERNAL-ONLY (no host publish):
-// users reach it on host :18090 THROUGH the nginx gateway (which fronts its UI),
-// and the UI sends model traffic to OPENAI_API_BASE_URL=http://aip-proxy/v1 (NOT
-// direct to LiteLLM), the same path workspace agents + Odysseus use, so every
+// users reach it at the Host-based vhost chat.<domain>:18787 THROUGH the nginx
+// gateway, and the UI sends model traffic to OPENAI_API_BASE_URL=http://aip-proxy/v1
+// (NOT direct to LiteLLM), the same path workspace agents + Odysseus use, so every
 // request traverses Headroom + the gateway. bindHost is unused now (nginx, not the
 // container, publishes). The
 // built-in Ollama backend and the login wall are disabled. The gateway key is the
@@ -579,12 +605,20 @@ func ensureHeadroom(prober runtime.Prober, containerRuntime string) error {
 // exactly like the LiteLLM secret handling. When LiteLLM has no master key the key
 // is omitted (LiteLLM then accepts unauthenticated requests). Pulled image (no
 // build). Idempotent.
-func ensureOpenWebUI(prober runtime.Prober, containerRuntime, bindHost string) error {
+//
+// Reverse-proxy env: WEBUI_URL is set to the chat vhost's public URL so the app
+// builds correct absolute links behind nginx, and CORS_ALLOW_ORIGIN matches it so
+// the websocket handshake is not rejected (Open WebUI returns 403 on a CORS
+// mismatch). Verified against the Open WebUI env reference (WEBUI_URL,
+// CORS_ALLOW_ORIGIN). hardware bring-up: confirm the values against the live app
+// behind the subdomain (and that nginx forwards X-Forwarded-Proto once TLS lands).
+func ensureOpenWebUI(prober runtime.Prober, containerRuntime, bindHost, domain string) error {
 	_ = bindHost // internal-only: nginx (aip-proxy) fronts the UI on the host
 	if containerRunning(prober, containerRuntime, openWebUIContainer) {
 		return nil
 	}
 	_, _ = prober.Run(containerRuntime, "rm", "-f", openWebUIContainer)
+	publicURL := "http://chat." + domain + ":" + proxyHostPort // the chat.<domain> vhost
 	args := []string{
 		"run", "-d", "--name", openWebUIContainer,
 		"--network", platformNetwork,
@@ -592,6 +626,10 @@ func ensureOpenWebUI(prober runtime.Prober, containerRuntime, bindHost string) e
 		"-e", "OPENAI_API_BASE_URL=" + openWebUITargetURL,
 		"-e", "ENABLE_OLLAMA_API=false",
 		"-e", "WEBUI_AUTH=false",
+		// Reverse-proxy public URL + matching CORS origin so links + websockets work
+		// behind the chat.<domain> vhost (hardware bring-up: confirm against the app).
+		"-e", "WEBUI_URL=" + publicURL,
+		"-e", "CORS_ALLOW_ORIGIN=" + publicURL,
 	}
 	// Reuse the running LiteLLM container's master key, passing it via env
 	// passthrough so the value stays out of argv (and platform disk).
@@ -653,8 +691,11 @@ func searxngSecret() (string, error) {
 //
 // hardware bring-up: Odysseus configures its model providers IN-APP (/setup); the
 // env values below are best-effort seeds, and the OpenAI-compatible routing
-// through aip-proxy should be confirmed in its UI on a provisioned host.
-func ensureOdysseus(prober runtime.Prober, containerRuntime, bindHost string) error {
+// through aip-proxy should be confirmed in its UI on a provisioned host. The
+// reverse-proxy seeds (APP_BIND=0.0.0.0, APP_PUBLIC_URL=http://odysseus.<domain>:18787,
+// SECURE_COOKIES=false until TLS) are best-effort — the exact env names are NOT
+// confirmable against the app's docs here, so they are flagged hardware bring-up.
+func ensureOdysseus(prober runtime.Prober, containerRuntime, bindHost, domain string) error {
 	_ = bindHost // internal-only: nginx (aip-proxy) fronts the app UI on the host
 	// Companions first (internal-only; Odysseus reaches them by name on aip-net).
 	if !containerRunning(prober, containerRuntime, chromadbContainer) {
@@ -739,8 +780,13 @@ func ensureOdysseus(prober runtime.Prober, containerRuntime, bindHost string) er
 		"-e", "DATABASE_URL=sqlite:///./data/app.db",
 		"-e", "AUTH_ENABLED=true",
 		"-e", "APP_PORT=" + odysseusHostPort,
-		// Listen on all interfaces inside the container so the host publish works.
+		// Listen on all interfaces inside the container so nginx can reach it by name.
 		"-e", "APP_BIND=0.0.0.0",
+		// Reverse-proxy seeds for the odysseus.<domain> vhost (best-effort; exact env
+		// names unconfirmed → hardware bring-up). SECURE_COOKIES stays false until TLS
+		// terminates at nginx (HTTPS) — flip it on then.
+		"-e", "APP_PUBLIC_URL=http://odysseus." + domain + ":" + proxyHostPort,
+		"-e", "SECURE_COOKIES=false",
 	}
 	// Reuse the running LiteLLM master key as the OpenAI key, via env passthrough so
 	// the value stays out of argv (and platform disk) — the ensureOpenWebUI pattern.
@@ -795,21 +841,23 @@ func ensureDNS(prober runtime.Prober, containerRuntime string) error {
 
 // ensureProxy runs the nginx reverse proxy that is the SOLE host entry to the
 // service tier: microVM/host → nginx (bindHost:18787) → Headroom (:8787) → LiteLLM,
-// plus the LiteLLM /llm + Ollama /ollama admin routes on :18787, and the enabled
-// web UIs on their host ports. It renders the nginx config (proxyNginxConf, gated
-// by the enabled optional set so it only fronts running upstreams) to
+// plus the LiteLLM /llm + Ollama /ollama admin routes and the web UI Host-based
+// vhosts (litellm./chat./odysseus.<domain>) — ALL on the single :18787. It renders
+// the nginx config (proxyNginxConf, threading the resolved domain + gated by the
+// enabled optional set so it only fronts running upstreams) to
 // ~/.ai-platform/config/proxy/nginx.conf, bind-mounts it at /etc/nginx/nginx.conf,
-// and publishes 18787 (always) plus 18090 (open-webui) / 7000 (odysseus) when
-// enabled — all on the role's bindHost (0.0.0.0 for a server, else loopback).
-// Pulled image (no build).
+// and publishes ONLY :18787 (the UIs are now subdomains on the same port, not
+// separate host ports) on the role's bindHost (0.0.0.0 for a server, else
+// loopback). Pulled image (no build).
 //
 // It always recreates the container (rather than skipping when running) so a change
-// in the enabled set — which changes both the rendered config and the published
-// ports — actually takes effect; nginx is cheap to recreate.
+// in the enabled set or the domain — which changes the rendered config — actually
+// takes effect; nginx is cheap to recreate.
 //
-// hardware bring-up: the live end-to-end routing through these new nginx routes
-// (/llm, /ollama, the UI server blocks) is verified on a provisioned host.
-func ensureProxy(prober runtime.Prober, containerRuntime, bindHost string, enabled []string) error {
+// hardware bring-up: the live end-to-end routing through these nginx routes
+// (/llm, /ollama, and especially the Host-based UI vhosts) is verified on a
+// provisioned host.
+func ensureProxy(prober runtime.Prober, containerRuntime, bindHost, domain string, enabled []string) error {
 	configDir, err := paths.ConfigDir()
 	if err != nil {
 		return err
@@ -819,26 +867,20 @@ func ensureProxy(prober runtime.Prober, containerRuntime, bindHost string, enabl
 		return output.Errorf(output.ExitRuntimeFailure, "create proxy config dir %s: %s", proxyDir, err)
 	}
 	confPath := filepath.Join(proxyDir, "nginx.conf")
-	if err := os.WriteFile(confPath, []byte(proxyNginxConf(enabled)), 0o644); err != nil {
+	if err := os.WriteFile(confPath, []byte(proxyNginxConf(domain, enabled)), 0o644); err != nil {
 		return output.Errorf(output.ExitRuntimeFailure, "write nginx.conf %s: %s", confPath, err)
 	}
-	_, _ = prober.Run(containerRuntime, "rm", "-f", proxyContainer) // recreate to apply config/ports
+	_, _ = prober.Run(containerRuntime, "rm", "-f", proxyContainer) // recreate to apply config
 	args := []string{
 		"run", "-d", "--name", proxyContainer,
 		"--network", platformNetwork,
-		// nginx is the only publisher: the gateway port (always) + the enabled UI ports.
+		// nginx is the only publisher and publishes ONLY the gateway port: the web
+		// UIs are now Host-based vhosts (subdomains) on this SAME port, not separate
+		// host publishes.
 		"-p", bindHost + ":" + proxyHostPort + ":80",
-	}
-	if slices.Contains(enabled, "open-webui") {
-		args = append(args, "-p", bindHost+":"+openWebUIHostPort+":8080")
-	}
-	if slices.Contains(enabled, "odysseus") {
-		args = append(args, "-p", bindHost+":"+odysseusHostPort+":"+odysseusHostPort)
-	}
-	args = append(args,
-		"-v", confPath+":/etc/nginx/nginx.conf:ro",
+		"-v", confPath + ":/etc/nginx/nginx.conf:ro",
 		containerImage("proxy"),
-	)
+	}
 	if _, err := prober.Run(containerRuntime, args...); err != nil {
 		return serviceStartError("gateway proxy")
 	}
@@ -1061,6 +1103,19 @@ func currentBindHost() string {
 	return "127.0.0.1"
 }
 
+// reconcileDomain resolves the platform base domain the nginx UI vhosts hang off
+// from the persisted runtime.yaml (Info.ResolveDomain), falling back to the
+// default (aip.local) when runtime.yaml is absent/unreadable. It is the domain
+// source for ensureProxy in the Reconcile/Control paths, which do not receive a
+// domain from their callers.
+func reconcileDomain() string {
+	info, err := runtime.Load()
+	if err != nil || info == nil {
+		return runtime.DefaultDomain
+	}
+	return info.ResolveDomain()
+}
+
 // osHostname is the source of the local machine's hostname, indirected through a
 // var so tests can override it. Defaults to os.Hostname.
 var osHostname = os.Hostname
@@ -1133,6 +1188,23 @@ type realServices struct {
 // returns the first pull error but the caller treats it as non-fatal — the
 // reconcile's per-service `docker run` re-pulls anything still missing.
 func (services realServices) PullImages(enabled []string, out io.Writer, progress func(string)) error {
+	return services.pullImages(enabled, out, progress, false)
+}
+
+// UpdateImages force-pulls every required image — UNLIKE PullImages it does NOT
+// skip already-present ones, so a moved tag like `latest` is refreshed. It backs
+// `ai services update`; the caller restarts the affected services afterwards to
+// recreate their containers against the freshly-pulled images.
+func (services realServices) UpdateImages(enabled []string, out io.Writer, progress func(string)) error {
+	return services.pullImages(enabled, out, progress, true)
+}
+
+// pullImages pulls the required service-tier images, streaming native progress to
+// out. When force is false it SKIPS images already present locally (the first-run
+// pre-pull, fast re-runs); when force is true it pulls every one (the update path).
+// Best-effort: it returns the first pull error but the caller treats it as
+// non-fatal.
+func (services realServices) pullImages(enabled []string, out io.Writer, progress func(string), force bool) error {
 	if progress == nil {
 		progress = func(string) {}
 	}
@@ -1142,9 +1214,11 @@ func (services realServices) PullImages(enabled []string, out io.Writer, progres
 	}
 	var firstErr error
 	for _, ref := range requiredImages(enabled) {
-		// Present locally? Skip — `image inspect` returning an error means absent.
-		if _, err := services.prober.Run(containerRuntime.Name, "image", "inspect", ref); err == nil {
-			continue
+		if !force {
+			// Present locally? Skip — `image inspect` returning an error means absent.
+			if _, err := services.prober.Run(containerRuntime.Name, "image", "inspect", ref); err == nil {
+				continue
+			}
 		}
 		progress("pulling " + ref)
 		// Stream the runtime's native pull progress to the user. The prober captures
@@ -1227,6 +1301,9 @@ func (services realServices) Reconcile(providerConfig, bindHost string, optional
 	if err := ensureHeadroom(services.prober, containerRuntime.Name); err != nil {
 		return nil, err
 	}
+	// The platform base domain the nginx UI vhosts + the apps' reverse-proxy public
+	// URLs hang off (runtime.yaml domain, default aip.local).
+	domain := reconcileDomain()
 	// Optional services: reconciled ONLY when enabled. These run on the host,
 	// outside the workspace sandbox, so they are opt-in (chosen at `ai setup`).
 	// They are brought up BEFORE the nginx proxy so nginx can front their UIs —
@@ -1234,20 +1311,22 @@ func (services realServices) Reconcile(providerConfig, bindHost string, optional
 	// to start if the upstream container were absent.
 	if slices.Contains(optional, "open-webui") {
 		progress("  • open-webui (chat UI → LiteLLM)…")
-		if err := ensureOpenWebUI(services.prober, containerRuntime.Name, bindHost); err != nil {
+		if err := ensureOpenWebUI(services.prober, containerRuntime.Name, bindHost, domain); err != nil {
 			return nil, err
 		}
 	}
 	if slices.Contains(optional, "odysseus") {
 		progress("  • odysseus (AI workspace + ChromaDB/SearXNG/ntfy → LiteLLM)…")
-		if err := ensureOdysseus(services.prober, containerRuntime.Name, bindHost); err != nil {
+		if err := ensureOdysseus(services.prober, containerRuntime.Name, bindHost, domain); err != nil {
 			return nil, err
 		}
 	}
-	// nginx LAST: it is the SOLE host entry, fronting the gateway (/v1 → Headroom),
-	// the LiteLLM /llm + Ollama /ollama admin routes, and the enabled web UIs.
+	// nginx LAST: it is the SOLE host entry, fronting the gateway (/ + /v1 →
+	// Headroom), the LiteLLM /llm + Ollama /ollama admin routes, and the enabled
+	// web UIs as Host-based vhosts on the same port. The UI vhosts hang off the
+	// resolved platform base domain (runtime.yaml domain, default aip.local).
 	progress("  • nginx reverse proxy (sole host entry → service tier)…")
-	if err := ensureProxy(services.prober, containerRuntime.Name, bindHost, optional); err != nil {
+	if err := ensureProxy(services.prober, containerRuntime.Name, bindHost, domain, optional); err != nil {
 		return nil, err
 	}
 	// Snapshot each running container's recent output so `ai logs` reflects this
@@ -1501,10 +1580,14 @@ func (services realServices) Control(action, service string) ([]ServiceStatus, e
 			func() error { return ensureHeadroom(services.prober, containerRuntime.Name) },
 			func() error { return stopContainer(headroomContainer) }},
 		{"open-webui",
-			func() error { return ensureOpenWebUI(services.prober, containerRuntime.Name, bindHost) },
+			func() error {
+				return ensureOpenWebUI(services.prober, containerRuntime.Name, bindHost, reconcileDomain())
+			},
 			func() error { return stopContainer(openWebUIContainer) }},
 		{"odysseus",
-			func() error { return ensureOdysseus(services.prober, containerRuntime.Name, bindHost) },
+			func() error {
+				return ensureOdysseus(services.prober, containerRuntime.Name, bindHost, reconcileDomain())
+			},
 			func() error {
 				// Odysseus owns four containers — stop them all.
 				for _, name := range []string{odysseusContainer, chromadbContainer, searxngContainer, ntfyContainer} {
@@ -1515,7 +1598,9 @@ func (services realServices) Control(action, service string) ([]ServiceStatus, e
 				return nil
 			}},
 		{"proxy",
-			func() error { return ensureProxy(services.prober, containerRuntime.Name, bindHost, enabledOptional) },
+			func() error {
+				return ensureProxy(services.prober, containerRuntime.Name, bindHost, reconcileDomain(), enabledOptional)
+			},
 			func() error { return stopContainer(proxyContainer) }},
 		{"dns",
 			func() error { return ensureDNS(services.prober, containerRuntime.Name) },

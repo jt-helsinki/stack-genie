@@ -9,6 +9,7 @@ package tui
 
 import (
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	goruntime "runtime"
@@ -69,6 +70,12 @@ func Run(cwd string) error {
 		func() ([]setup.ServiceStatus, error) { return setup.ServicesStatus(deps) },
 		func(action, service string) error {
 			_, err := setup.ControlService(deps, action, service)
+			return err
+		},
+		func(service string) error {
+			// Re-pull latest images + recreate. The TUI owns the screen, so the
+			// native pull progress is discarded here (the flash reports completion).
+			_, err := setup.UpdateService(deps, service, io.Discard, nil)
 			return err
 		},
 		openURL,

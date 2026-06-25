@@ -134,11 +134,39 @@ running. The remaining verification work:
     `aip-ollama:11434/*`;
   - the chat test (`ai models test`) on `localhost:18787/v1/chat/completions` still
     goes through Headroom → LiteLLM (the real model path), NOT `/llm`;
-  - the optional UIs are reachable on host :18090 (Open WebUI) and :7000 (Odysseus)
-    THROUGH nginx (server blocks fronting `aip-open-webui:8080` / `aip-odysseus:7000`,
-    WebSocket upgrade working);
   - the agent microVM `/v1` path (`host.microsandbox.internal:18787/v1` → Headroom)
     is unchanged — confirm a workspace agent still routes correctly.
+
+- [ ] **UI Host-based vhosts on the single :18787 (the new topology)** — the web
+      UIs are now subdomains (NOT separate host ports :18090/:7000): nginx matches
+      them by `server_name` on the same :18787. Verify on a live host:
+  - `http://litellm.<domain>:18787/` serves the LiteLLM admin UI (redirects `/` →
+    `/ui`; proxies to `aip-litellm:4000`, bypassing Headroom);
+  - `http://chat.<domain>:18787/` serves Open WebUI (proxies `aip-open-webui:8080`,
+    WebSocket upgrade working) when open-webui is enabled;
+  - `http://odysseus.<domain>:18787/` serves Odysseus (proxies `aip-odysseus:7000`,
+    WebSocket upgrade) when odysseus is enabled;
+  - `<domain>` is the resolved platform base domain (default `aip.local`; `ai domain`).
+- [ ] **Standalone `/etc/hosts` write (the sudo seam)** — `ai setup` in standalone
+      mode prompts for consent and writes the managed block via
+      `uihosts.sudoWriteHosts` (temp file → `sudo cp <tmp> /etc/hosts`). Confirm on a
+      live host the sudo prompt appears, the block is written (all UI subdomains →
+      127.0.0.1, incl. not-yet-enabled ones), the names then resolve, and the
+      no-TTY/`--json`/declined paths print the manual block instead (never fail
+      setup). `ai uninstall` removes the block the same way (standalone only).
+- [ ] **Open WebUI / Odysseus reverse-proxy envs** — confirm the apps behave
+      correctly behind their subdomain vhost: Open WebUI's `WEBUI_URL` +
+      `CORS_ALLOW_ORIGIN` (set to `http://chat.<domain>:18787`) let links + the
+      websocket handshake work; Odysseus's `APP_BIND=0.0.0.0` / `APP_PUBLIC_URL` /
+      `SECURE_COOKIES=false` seeds are best-effort — VERIFY the exact env names
+      against the live app (Odysseus configures providers in-app at `/setup`; the
+      env names were not confirmable from its docs) and that `X-Forwarded-Proto` is
+      forwarded once TLS terminates at nginx.
+- [ ] **Server-mode DNS/TLS contract** — in server mode `ai setup`/`ai doctor` print
+      the operator contract (create `*.<domain>` or per-host DNS → this server, and
+      a TLS cert terminated at nginx). Confirm a remote client can reach the UI
+      subdomains once real DNS + cert are in place (the platform does NOT edit
+      `/etc/hosts` on a server).
 
 ### 2.4 Headroom strategy verification (arch §8–10)
 

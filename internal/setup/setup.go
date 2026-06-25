@@ -86,6 +86,14 @@ type Services interface {
 	// returned but is non-fatal — the subsequent `docker run` re-pulls anything
 	// still missing.
 	PullImages(enabled []string, out io.Writer, progress func(string)) error
+	// UpdateImages force-pulls the latest service-tier images (UNLIKE PullImages it
+	// does NOT skip already-present images — it re-pulls so a moved tag like
+	// `latest` is updated), streaming native progress to out. enabled gates the
+	// optional services exactly like PullImages. It backs `ai services update`:
+	// after it pulls, the caller restarts the affected services to recreate their
+	// containers against the freshly-pulled images. Best-effort: returns the first
+	// pull error (non-fatal — a still-old image just means no update for that one).
+	UpdateImages(enabled []string, out io.Writer, progress func(string)) error
 	// Status reports current health without mutating anything.
 	Status() ([]ServiceStatus, error)
 	// Control performs a lifecycle action (start|stop|restart) on one service,
@@ -219,6 +227,48 @@ func ControlService(deps Deps, action, service string) ([]ServiceStatus, error) 
 			"%q is disabled — run `ai services enable %s` first", service, service)
 	}
 	return deps.Services.Control(action, service)
+}
+
+// UpdateService backs `ai services update [service]` (and the TUI `p` key): it
+// force-pulls the latest service-tier images (re-pulling moved tags like `latest`)
+// then RESTARTS the target service(s) so their containers are recreated against
+// the freshly-pulled images. An empty/"all" service updates every enabled service;
+// a named one validates + updates just that service (same validation as
+// ControlService). out receives the native pull progress; progress streams short
+// step lines. It returns the post-restart statuses.
+func UpdateService(deps Deps, service string, out io.Writer, progress func(string)) ([]ServiceStatus, error) {
+	if progress == nil {
+		progress = func(string) {}
+	}
+	// Validate the target up front (reusing the restart validation path) so an
+	// unknown/companion/disabled name fails BEFORE we pull anything.
+	if service == "all" {
+		service = ""
+	}
+	if service != "" {
+		if !slices.Contains(ServiceNames(), service) {
+			if owner := owningService(service); owner != "" {
+				return nil, output.Errorf(output.ExitInvalidInput,
+					"%q is managed as part of the %q service — run `ai services update %s`", service, owner, owner)
+			}
+			return nil, output.Errorf(output.ExitInvalidInput, "unknown service %q (one of %v, or \"all\")", service, ServiceNames())
+		}
+		if isOptionalService(service) && !optionalServiceEnabled(service) {
+			return nil, output.Errorf(output.ExitInvalidInput,
+				"%q is disabled — run `ai services enable %s` first", service, service)
+		}
+	}
+	// Force-pull the enabled image set (the whole set; pulling an already-current
+	// image is cheap, and the per-service image subset is an internal detail).
+	progress("pulling latest images…")
+	if err := deps.Services.UpdateImages(enabledOptionalServices(), out, progress); err != nil {
+		// Non-fatal: a pull miss just means no update for that image; still restart
+		// so any image that DID update is picked up.
+		progress("warning: some images did not update — continuing")
+	}
+	// Restart to recreate the containers against the new images.
+	progress("restarting to apply the updated images…")
+	return ControlService(deps, "restart", service)
 }
 
 // setOptionalService enables or disables an OPTIONAL service: it updates the

@@ -23,6 +23,11 @@ type ServiceFetcher func() ([]setup.ServiceStatus, error)
 // service. Injected; the parent wires setup.ControlService(deps, action, name).
 type ServiceController func(action, service string) error
 
+// ServiceUpdater re-pulls the latest images for one named service (or "" for all)
+// and recreates its container. Injected; the parent wires
+// setup.UpdateService(deps, service, …). It backs the `p` (pull/update) key.
+type ServiceUpdater func(service string) error
+
 // URLOpener opens a console URL in the host browser. Injected; the parent wires
 // the OS opener (open / xdg-open).
 type URLOpener func(url string) error
@@ -56,6 +61,7 @@ type serviceActionDoneMsg struct {
 type Services struct {
 	fetch      ServiceFetcher
 	control    ServiceController
+	update     ServiceUpdater
 	open       URLOpener
 	tail       LogTailer
 	table      table.Model
@@ -69,8 +75,8 @@ type Services struct {
 }
 
 // NewServices builds the services view over the injected status fetcher,
-// lifecycle controller, URL opener, and log tailer.
-func NewServices(fetch ServiceFetcher, control ServiceController, open URLOpener, tail LogTailer) *Services {
+// lifecycle controller, image updater, URL opener, and log tailer.
+func NewServices(fetch ServiceFetcher, control ServiceController, update ServiceUpdater, open URLOpener, tail LogTailer) *Services {
 	columns := []table.Column{
 		{Title: "SERVICE", Width: 20},
 		{Title: "MODE", Width: 10},
@@ -81,7 +87,7 @@ func NewServices(fetch ServiceFetcher, control ServiceController, open URLOpener
 	built := table.New(table.WithColumns(columns), table.WithFocused(true))
 	built.SetStyles(ui.TableStyles())
 	return &Services{
-		fetch: fetch, control: control, open: open, tail: tail,
+		fetch: fetch, control: control, update: update, open: open, tail: tail,
 		table: built, describe: newDescribePane(), logs: newDescribePane(),
 	}
 }
@@ -91,7 +97,7 @@ func (view *Services) Title() string { return "Services" }
 
 // Hints are the context-sensitive key bindings shown in the footer.
 func (view *Services) Hints() string {
-	return "enter/d describe · s start · x stop · r restart · e enable/disable · o console · l logs"
+	return "enter/d describe · s start · x stop · r restart · p update · e enable/disable · o console · l logs"
 }
 
 // SetSize fits the table + the describe/logs panes to the content area.
@@ -183,6 +189,19 @@ func (view *Services) handleAction(key tea.KeyMsg) (tea.Cmd, bool) {
 		view.flash = ui.Muted.Render(action + "ing " + service + "…")
 		view.closePanes() // surface the action's result over the table
 		return view.controlCmd(action, service), true
+	case "p":
+		// Re-pull the latest images for the service and recreate its container.
+		if service == "" {
+			return nil, true
+		}
+		if status := view.statusByName(service); status.Optional && !status.Enabled() {
+			view.flash = ui.Muted.Render(service + " is disabled — press e to enable it first")
+			view.closePanes()
+			return nil, true
+		}
+		view.flash = ui.Muted.Render("updating " + service + " (re-pulling images)…")
+		view.closePanes()
+		return view.updateCmd(service), true
 	case "e":
 		if service == "" {
 			return nil, true
@@ -278,6 +297,13 @@ func (view *Services) controlCmd(action, service string) tea.Cmd {
 	}
 }
 
+func (view *Services) updateCmd(service string) tea.Cmd {
+	update := view.update
+	return func() tea.Msg {
+		return serviceActionDoneMsg{action: "update", service: service, err: update(service)}
+	}
+}
+
 func (view *Services) openCmd(service, url string) tea.Cmd {
 	open := view.open
 	return func() tea.Msg {
@@ -361,7 +387,7 @@ func serviceRows(statuses []setup.ServiceStatus) []table.Row {
 func actionFlash(msg serviceActionDoneMsg) string {
 	verbs := map[string]string{
 		"start": "started", "stop": "stopped", "restart": "restarted", "open": "opened console for",
-		"enable": "enabled", "disable": "disabled",
+		"enable": "enabled", "disable": "disabled", "update": "updated",
 	}
 	if msg.err != nil {
 		return ui.Failure.Render(ui.IconFail + " " + msg.action + " " + msg.service + ": " + msg.err.Error())

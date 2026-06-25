@@ -44,6 +44,8 @@ type fakeServices struct {
 	bindHost       string
 	optional       []string
 	pulledEnabled  []string
+	updatedImages  bool
+	updatedEnabled []string
 	installed      bool
 	capturedLogs   bool
 	controlAction  string
@@ -85,6 +87,14 @@ func (services *fakeServices) PullImages(enabled []string, _ io.Writer, progress
 	services.pulledEnabled = enabled
 	if progress != nil {
 		progress("pulling (fake)")
+	}
+	return nil
+}
+func (services *fakeServices) UpdateImages(enabled []string, _ io.Writer, progress func(string)) error {
+	services.updatedImages = true
+	services.updatedEnabled = enabled
+	if progress != nil {
+		progress("updating (fake)")
 	}
 	return nil
 }
@@ -406,6 +416,44 @@ func TestControlServiceValidation(test *testing.T) {
 	// The literal "all" keyword is accepted (same as no service).
 	if _, err := ControlService(deps, "restart", "all"); err != nil {
 		test.Fatalf("\"all\" should be accepted: %v", err)
+	}
+}
+
+// TestUpdateService: it force-pulls the images then RESTARTS the target — and
+// validates the target up front (unknown name → exit 2, before any pull).
+func TestUpdateService(test *testing.T) {
+	test.Setenv("HOME", test.TempDir())
+	deps, services := healthyDeps()
+
+	// Unknown service → exit 2, and no pull happened.
+	if _, err := UpdateService(deps, "nope", io.Discard, nil); exitCodeOf(test, err) != output.ExitInvalidInput {
+		test.Fatalf("unknown service should be exit 2, got %v", err)
+	}
+	if services.updatedImages {
+		test.Fatal("a validation failure must not pull images")
+	}
+
+	// Valid service → force-pull (UpdateImages) then restart (Control).
+	statuses, err := UpdateService(deps, "litellm", io.Discard, nil)
+	if err != nil {
+		test.Fatalf("update litellm: %v", err)
+	}
+	if !services.updatedImages {
+		test.Error("UpdateService must force-pull the images (UpdateImages)")
+	}
+	if services.controlAction != "restart" || services.controlService != "litellm" {
+		test.Errorf("update should restart the service, got %s %s", services.controlAction, services.controlService)
+	}
+	if len(statuses) == 0 {
+		test.Error("update should return the post-restart statuses")
+	}
+
+	// "all" updates every service (empty target to Control).
+	if _, err := UpdateService(deps, "all", io.Discard, nil); err != nil {
+		test.Fatalf("update all: %v", err)
+	}
+	if services.controlService != "" {
+		test.Errorf("update all should restart every service (empty target), got %q", services.controlService)
 	}
 }
 
@@ -871,7 +919,7 @@ func TestEnsureProxyRendersGatewayConfig(test *testing.T) {
 	home := test.TempDir()
 	test.Setenv("HOME", home)
 	prober := &recordingProber{}
-	if err := ensureProxy(prober, "docker", "127.0.0.1", nil); err != nil {
+	if err := ensureProxy(prober, "docker", "127.0.0.1", "aip.local", nil); err != nil {
 		test.Fatal(err)
 	}
 	confPath := filepath.Join(home, ".ai-platform", "config", "proxy", "nginx.conf")
@@ -880,6 +928,13 @@ func TestEnsureProxyRendersGatewayConfig(test *testing.T) {
 		test.Fatalf("nginx.conf not written: %v", err)
 	}
 	rendered := string(content)
+	// The default server matches the domain, localhost, and the catch-all.
+	if !strings.Contains(rendered, "server_name aip.local localhost _;") {
+		test.Errorf("default server must match the domain + localhost + _:\n%s", rendered)
+	}
+	if !strings.Contains(rendered, "listen 80 default_server;") {
+		test.Errorf("default server must be the default_server on :80:\n%s", rendered)
+	}
 	// The agent CHAT path (/v1) stays routed to Headroom — preserved unchanged.
 	if !strings.Contains(rendered, "location /v1/ {") || !strings.Contains(rendered, "proxy_pass http://aip-headroom:8787;") {
 		test.Errorf("nginx.conf must keep the /v1 → Headroom model path:\n%s", rendered)
@@ -902,18 +957,23 @@ func TestEnsureProxyRendersGatewayConfig(test *testing.T) {
 	if !strings.Contains(rendered, "proxy_buffering off;") {
 		test.Errorf("nginx.conf must disable buffering for SSE streaming:\n%s", rendered)
 	}
-	// With no optional services enabled, nginx renders no UI server blocks and
-	// publishes only the gateway port 18787.
-	if strings.Contains(rendered, "listen 8080;") || strings.Contains(rendered, "listen 7000;") {
-		test.Errorf("no UI server blocks should render when no optional services are enabled:\n%s", rendered)
+	// The LiteLLM admin UI is ALWAYS served as the litellm.<domain> vhost (it is a
+	// core service) → :4000 at root, bypassing Headroom.
+	if !strings.Contains(rendered, "server_name litellm.aip.local;") || !strings.Contains(rendered, "proxy_pass http://aip-litellm:4000;") {
+		test.Errorf("nginx.conf must serve the litellm.<domain> vhost:\n%s", rendered)
 	}
-	// nginx takes over host :18787 and forwards to Headroom on :80 internally.
+	// With no optional services enabled, no chat/odysseus vhosts render.
+	if strings.Contains(rendered, "server_name chat.aip.local;") || strings.Contains(rendered, "server_name odysseus.aip.local;") {
+		test.Errorf("no optional UI vhosts should render when none are enabled:\n%s", rendered)
+	}
+	// nginx takes over host :18787 and forwards on :80 internally; the UIs are
+	// subdomains on the SAME port, so no separate UI ports are published.
 	launch := strings.Join(runArgsFor(prober), " ")
 	if !strings.Contains(launch, "-p 127.0.0.1:18787:80") {
 		test.Errorf("proxy must publish the gateway port 18787: %s", launch)
 	}
-	if strings.Contains(launch, "18090") || strings.Contains(launch, ":7000") {
-		test.Errorf("no UI ports should be published when no optional services are enabled: %s", launch)
+	if strings.Contains(launch, "18090") || strings.Contains(launch, ":7000") || strings.Contains(launch, ":8080") {
+		test.Errorf("no separate UI ports should be published (UIs are subdomains): %s", launch)
 	}
 	if !strings.Contains(launch, confPath+":/etc/nginx/nginx.conf:ro") {
 		test.Errorf("proxy did not bind-mount nginx.conf: %s", launch)
@@ -921,13 +981,13 @@ func TestEnsureProxyRendersGatewayConfig(test *testing.T) {
 }
 
 // TestEnsureProxyFrontsEnabledUIs: with open-webui + odysseus enabled, nginx
-// renders their UI server blocks and publishes their host ports (the containers
-// are internal-only — nginx is the sole publisher).
+// renders their Host-based UI vhosts (chat./odysseus.<domain>) on the SAME
+// gateway port — no separate host ports (the containers are internal-only).
 func TestEnsureProxyFrontsEnabledUIs(test *testing.T) {
 	home := test.TempDir()
 	test.Setenv("HOME", home)
 	prober := &recordingProber{}
-	if err := ensureProxy(prober, "0.0.0.0", "0.0.0.0", []string{"open-webui", "odysseus"}); err != nil {
+	if err := ensureProxy(prober, "0.0.0.0", "0.0.0.0", "aip.example.com", []string{"open-webui", "odysseus"}); err != nil {
 		test.Fatal(err)
 	}
 	confPath := filepath.Join(home, ".ai-platform", "config", "proxy", "nginx.conf")
@@ -936,26 +996,53 @@ func TestEnsureProxyFrontsEnabledUIs(test *testing.T) {
 		test.Fatalf("nginx.conf not written: %v", err)
 	}
 	rendered := string(content)
-	if !strings.Contains(rendered, "listen 8080;") || !strings.Contains(rendered, "proxy_pass http://aip-open-webui:8080/;") {
-		test.Errorf("nginx.conf must front Open WebUI:\n%s", rendered)
+	if !strings.Contains(rendered, "server_name chat.aip.example.com;") || !strings.Contains(rendered, "proxy_pass http://aip-open-webui:8080;") {
+		test.Errorf("nginx.conf must serve the chat.<domain> vhost → Open WebUI:\n%s", rendered)
 	}
-	if !strings.Contains(rendered, "listen 7000;") || !strings.Contains(rendered, "proxy_pass http://aip-odysseus:7000/;") {
-		test.Errorf("nginx.conf must front Odysseus:\n%s", rendered)
+	if !strings.Contains(rendered, "server_name odysseus.aip.example.com;") || !strings.Contains(rendered, "proxy_pass http://aip-odysseus:7000;") {
+		test.Errorf("nginx.conf must serve the odysseus.<domain> vhost → Odysseus:\n%s", rendered)
 	}
-	// WebSocket upgrade headers for the UIs.
+	// WebSocket upgrade headers for the UI vhosts.
 	if !strings.Contains(rendered, "proxy_set_header Upgrade $http_upgrade;") {
-		test.Errorf("UI server blocks must carry the websocket Upgrade header:\n%s", rendered)
+		test.Errorf("UI vhosts must carry the websocket Upgrade header:\n%s", rendered)
 	}
-	// nginx publishes the UI ports (on the server bindHost 0.0.0.0).
+	// nginx publishes ONLY the gateway port (on the server bindHost 0.0.0.0) — the
+	// UIs are subdomains on the same port.
 	launch := strings.Join(runArgsFor(prober), " ")
 	if !strings.Contains(launch, "-p 0.0.0.0:18787:80") {
 		test.Errorf("proxy must publish the gateway port on 0.0.0.0: %s", launch)
 	}
-	if !strings.Contains(launch, "-p 0.0.0.0:18090:8080") {
-		test.Errorf("proxy must publish the Open WebUI port: %s", launch)
+	if strings.Contains(launch, ":18090:") || strings.Contains(launch, ":7000:") || strings.Contains(launch, ":8080") {
+		test.Errorf("no separate UI ports should be published (UIs are subdomains): %s", launch)
 	}
-	if !strings.Contains(launch, "-p 0.0.0.0:7000:7000") {
-		test.Errorf("proxy must publish the Odysseus port: %s", launch)
+}
+
+// TestProxyNginxConfThreadsDomain: the rendered vhost server_names use the given
+// domain, the LiteLLM admin UI vhost redirects / → /ui, and the UI-serving vhosts
+// bypass Headroom (proxy_pass to the app, not aip-headroom).
+func TestProxyNginxConfThreadsDomain(test *testing.T) {
+	rendered := proxyNginxConf("dev.example.com", []string{"open-webui"})
+	if !strings.Contains(rendered, "server_name dev.example.com localhost _;") {
+		test.Errorf("default server must use the threaded domain:\n%s", rendered)
+	}
+	if !strings.Contains(rendered, "server_name litellm.dev.example.com;") {
+		test.Errorf("litellm vhost must use the threaded domain:\n%s", rendered)
+	}
+	if !strings.Contains(rendered, "server_name chat.dev.example.com;") {
+		test.Errorf("chat vhost must use the threaded domain:\n%s", rendered)
+	}
+	// LiteLLM admin UI: / → /ui redirect.
+	if !strings.Contains(rendered, "return 302 /ui;") {
+		test.Errorf("litellm vhost should redirect / → /ui:\n%s", rendered)
+	}
+	// The UI vhosts BYPASS Headroom (they proxy to the app, not aip-headroom).
+	chatBlock := rendered[strings.Index(rendered, "server_name chat.dev.example.com;"):]
+	if strings.Contains(chatBlock[:strings.Index(chatBlock, "}")], "aip-headroom") {
+		test.Errorf("the chat UI vhost must bypass Headroom:\n%s", rendered)
+	}
+	// disabled odysseus does not render.
+	if strings.Contains(rendered, "odysseus.dev.example.com") {
+		test.Errorf("disabled odysseus vhost should not render:\n%s", rendered)
 	}
 }
 
@@ -1235,7 +1322,7 @@ func runArgsForContainer(prober *recordingProber, container string) []string {
 func TestEnsureOdysseusGroupRunArgs(test *testing.T) {
 	test.Setenv("HOME", test.TempDir())
 	prober := &recordingProber{}
-	if err := ensureOdysseus(prober, "docker", "127.0.0.1"); err != nil {
+	if err := ensureOdysseus(prober, "docker", "127.0.0.1", "aip.local"); err != nil {
 		test.Fatal(err)
 	}
 

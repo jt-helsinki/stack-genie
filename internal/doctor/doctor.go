@@ -104,6 +104,34 @@ type WorkspaceRuntime struct {
 	Available bool
 }
 
+// DomainURL is one UI subdomain's display URL for the DOMAIN section.
+type DomainURL struct {
+	Service string
+	Host    string
+	URL     string
+}
+
+// DomainInfo is the platform UI-subdomain posture supplied by the CLI (built from
+// uihosts + the persisted runtime.yaml). Run renders it as the DOMAIN section: the
+// resolved base domain, the UI URLs, and — for standalone — whether the /etc/hosts
+// block is present + up to date; for a server, the DNS reminder.
+type DomainInfo struct {
+	// Domain is the resolved platform base domain (Info.ResolveDomain()).
+	Domain string
+	// Role is the deployment role (standalone/server/client) that decides how the
+	// UI subdomains resolve.
+	Role string
+	// URLs are the active UI subdomain display URLs.
+	URLs []DomainURL
+	// Standalone is true when this host manages /etc/hosts (the resolution-status
+	// check applies). HostsPresent/HostsUpToDate are the hostsfile.Status result.
+	Standalone    bool
+	HostsPresent  bool
+	HostsUpToDate bool
+	// ServerReminder is the one-line DNS/TLS reminder shown on a server.
+	ServerReminder string
+}
+
 // Deps are the injectable dependencies of Run.
 type Deps struct {
 	GOOS, GOARCH string
@@ -113,6 +141,10 @@ type Deps struct {
 	// `ai doctor` lists every service — including the optional open-webui and
 	// odysseus — without this package importing internal/setup.
 	Services []Service
+	// Domain, when non-nil, adds the DOMAIN section (the platform base domain, the
+	// UI URLs, and the standalone /etc/hosts resolution status or the server DNS
+	// reminder). nil omits it.
+	Domain *DomainInfo
 	// Workspace, when non-nil, adds the WORKSPACE-runtime section (the user is
 	// inside a workspace directory or named one). When nil the section is omitted.
 	Workspace *WorkspaceRuntime
@@ -131,6 +163,9 @@ func Run(deps Deps) Report {
 	}
 	for _, service := range deps.Services {
 		checks = append(checks, serviceCheck(service))
+	}
+	if deps.Domain != nil {
+		checks = append(checks, domainChecks(*deps.Domain)...)
 	}
 	if deps.Workspace != nil {
 		checks = append(checks, workspaceChecks(*deps.Workspace)...)
@@ -223,6 +258,48 @@ func workspaceChecks(workspace WorkspaceRuntime) []Check {
 		}
 	}
 	return []Check{rootless, virt}
+}
+
+// domainChecks renders the platform UI-subdomain posture: the resolved base
+// domain, one info check per UI URL, and the resolution status — standalone shows
+// whether the /etc/hosts block is present + up to date (a warning when it is
+// missing/stale, with a `ai setup` repair hint); a server shows the DNS/TLS
+// reminder. These are informational/warn only — they never fail the report.
+func domainChecks(info DomainInfo) []Check {
+	checks := []Check{{
+		Name: "platform domain", Status: StatusOK, Detail: info.Domain,
+	}}
+	for _, url := range info.URLs {
+		checks = append(checks, Check{
+			Name: "UI " + url.Host, Status: StatusOK, Detail: url.URL,
+		})
+	}
+	switch {
+	case info.Standalone:
+		if info.HostsPresent && info.HostsUpToDate {
+			checks = append(checks, Check{
+				Name: "UI subdomain resolution", Status: StatusOK,
+				Detail: "/etc/hosts block present and up to date",
+			})
+		} else {
+			detail := "/etc/hosts block missing"
+			if info.HostsPresent {
+				detail = "/etc/hosts block out of date"
+			}
+			checks = append(checks, Check{
+				Name: "UI subdomain resolution", Status: StatusWarn,
+				Detail:     detail,
+				Suggestion: "run `ai setup` to update /etc/hosts (or add the block manually with sudo)",
+			})
+		}
+	case info.ServerReminder != "":
+		checks = append(checks, Check{
+			Name: "UI subdomain resolution", Status: StatusWarn,
+			Detail:     "server mode — DNS + TLS are operator-managed",
+			Suggestion: info.ServerReminder,
+		})
+	}
+	return checks
 }
 
 func containerRuntimeCheck(goos string, prober runtime.Prober) Check {

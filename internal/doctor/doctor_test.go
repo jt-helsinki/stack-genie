@@ -126,6 +126,61 @@ func TestRunAllHealthy(test *testing.T) {
 	}
 }
 
+func TestDomainSectionStandaloneUpToDate(test *testing.T) {
+	deps := Deps{
+		GOOS: "darwin", GOARCH: "arm64",
+		Prober: fakeProber{bins: map[string]bool{"docker": true, "msb": true}},
+		Domain: &DomainInfo{
+			Domain: "aip.local", Role: "standalone", Standalone: true,
+			HostsPresent: true, HostsUpToDate: true,
+			URLs: []DomainURL{{Service: "litellm", Host: "litellm.aip.local", URL: "http://litellm.aip.local:18787"}},
+		},
+	}
+	report := Run(deps)
+	if checkByName(report, "platform domain").Detail != "aip.local" {
+		test.Errorf("platform domain detail: %+v", checkByName(report, "platform domain"))
+	}
+	if checkByName(report, "UI litellm.aip.local").Status != StatusOK {
+		test.Errorf("UI URL check missing/not ok: %+v", checkByName(report, "UI litellm.aip.local"))
+	}
+	if checkByName(report, "UI subdomain resolution").Status != StatusOK {
+		test.Errorf("resolution should be ok when present + up to date: %+v", checkByName(report, "UI subdomain resolution"))
+	}
+}
+
+func TestDomainSectionStandaloneMissingWarns(test *testing.T) {
+	deps := Deps{
+		GOOS: "darwin", GOARCH: "arm64",
+		Prober: fakeProber{bins: map[string]bool{"docker": true, "msb": true}},
+		Domain: &DomainInfo{Domain: "aip.local", Role: "standalone", Standalone: true},
+	}
+	report := Run(deps)
+	resolution := checkByName(report, "UI subdomain resolution")
+	if resolution.Status != StatusWarn {
+		test.Errorf("missing hosts block should warn: %+v", resolution)
+	}
+	// A warning must NOT fail the report (doctor always exits 0 with a report).
+	if !report.OK {
+		test.Error("a hosts-resolution warning must not fail the report")
+	}
+}
+
+func TestDomainSectionServerReminder(test *testing.T) {
+	deps := Deps{
+		GOOS: "darwin", GOARCH: "arm64",
+		Prober: fakeProber{bins: map[string]bool{"docker": true, "msb": true}},
+		Domain: &DomainInfo{
+			Domain: "aip.example.com", Role: "server",
+			ServerReminder: "create DNS records (*.aip.example.com) → this server's IP, and terminate TLS at nginx",
+		},
+	}
+	report := Run(deps)
+	resolution := checkByName(report, "UI subdomain resolution")
+	if resolution.Status != StatusWarn || !strings.Contains(resolution.Suggestion, "DNS") {
+		test.Errorf("server reminder missing: %+v", resolution)
+	}
+}
+
 func TestHumanShowsServiceEndpoints(test *testing.T) {
 	deps := Deps{
 		GOOS: "darwin", GOARCH: "arm64",

@@ -17,6 +17,7 @@ import (
 	"github.com/jt-helsinki/ideal-robot/internal/runtime"
 	"github.com/jt-helsinki/ideal-robot/internal/setup"
 	"github.com/jt-helsinki/ideal-robot/internal/ui"
+	"github.com/jt-helsinki/ideal-robot/internal/uihosts"
 	"github.com/spf13/cobra"
 )
 
@@ -143,6 +144,11 @@ func newSetupCmd(em *output.Emitter, exit *int) *cobra.Command {
 				_, _ = fmt.Fprintln(em.Err, "\nthe LiteLLM admin UI needs a password — press Enter to skip and set one later")
 				promptLiteLLMUIPassword(em)
 			}
+			// Domain wiring: standalone points the UI subdomains at 127.0.0.1 in
+			// /etc/hosts (with consent + sudo, else a manual block); server prints the
+			// DNS/cert operator contract (no /etc/hosts editing). Best-effort — neither
+			// fails setup.
+			syncUISubdomains(em, interactive, report.Runtime)
 			*exit = em.Success("setup", report, report.Warnings...)
 			return nil
 		},
@@ -446,6 +452,39 @@ func promptLiteLLMUIPassword(em *output.Emitter) {
 			"  before `ai setup` / `ai services start`:\n"+
 			"    export UI_PASSWORD='<the password you just set>' LITELLM_MASTER_KEY=%s\n",
 		"admin", masterKey, masterKey)
+}
+
+// syncUISubdomains wires the platform UI subdomains for this host's role after a
+// successful setup. Standalone: point litellm./chat./odysseus.<domain> at
+// 127.0.0.1 in /etc/hosts — on a TTY with consent (the write needs sudo), else
+// print the exact block to add manually. Server: print the DNS + TLS operator
+// contract (no /etc/hosts editing). Client: nothing (no local UIs). It is
+// best-effort and never fails setup.
+func syncUISubdomains(em *output.Emitter, interactive bool, info *runtime.Info) {
+	if info == nil {
+		return
+	}
+	domain := info.ResolveDomain()
+	switch info.Role {
+	case runtime.RoleClient:
+		return
+	case runtime.RoleServer:
+		_, _ = fmt.Fprintln(em.Err)
+		_, _ = fmt.Fprint(em.Err, uihosts.ServerGuidance(domain))
+	default: // standalone (and the empty role)
+		action, _ := uihosts.SyncHosts(uihosts.HostsSync{
+			Path:        uihosts.DefaultHostsPath,
+			Domain:      domain,
+			Interactive: interactive,
+			Out:         em.Err,
+			Consent: func(prompt string) (bool, error) {
+				return promptConfirmDefault(prompt, "writes a managed block to /etc/hosts; you may be asked for your sudo password", true)
+			},
+		})
+		if action == uihosts.HostsWritten {
+			_, _ = fmt.Fprintf(em.Err, "Updated /etc/hosts — the platform UIs resolve at litellm.%s, chat.%s, odysseus.%s on :18787\n", domain, domain, domain)
+		}
+	}
 }
 
 // generateMasterKey returns a random LiteLLM master key (`sk-` + 48 hex chars).

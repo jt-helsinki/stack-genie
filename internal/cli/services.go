@@ -52,6 +52,7 @@ func newServicesCmd(em *output.Emitter, exit *int) *cobra.Command {
 		newServicesControlCmd("start", em, exit),
 		newServicesControlCmd("stop", em, exit),
 		newServicesControlCmd("restart", em, exit),
+		newServicesUpdateCmd(em, exit),
 		newServicesToggleCmd("enable", em, exit),
 		newServicesToggleCmd("disable", em, exit),
 		newServicesConsoleCmd(em, exit),
@@ -254,6 +255,56 @@ func controlServices(deps setup.Deps, action string, targets []string) ([]setup.
 		statuses = applied
 	}
 	return statuses, nil
+}
+
+// newServicesUpdateCmd builds `ai services update [service]`: re-pull the latest
+// service-tier images (refreshing moved tags like `latest`) and recreate the
+// affected containers. A named service (or "all") targets it directly; with no
+// argument on a terminal it shows the same checkbox as start/stop/restart; with no
+// argument and no terminal it updates every service. The native pull progress
+// streams to stderr (it cannot share the terminal with a bubbletea spinner, so the
+// spinner is skipped here, like the `ai setup` pre-pull).
+func newServicesUpdateCmd(em *output.Emitter, exit *int) *cobra.Command {
+	return &cobra.Command{
+		Use:               "update [service]",
+		Short:             "Re-pull the latest service images and recreate the containers",
+		Args:              cobra.MaximumNArgs(1),
+		ValidArgsFunction: completeServiceNames,
+		RunE: func(_ *cobra.Command, args []string) error {
+			deps := setup.RealDeps(goruntime.GOOS, goruntime.GOARCH, nowRFC3339)
+			targets := args
+			if len(args) == 0 {
+				if interactive(em) {
+					selected, err := selectServices(deps, "update")
+					if err != nil {
+						*exit = em.Failure("services.update", err)
+						return nil
+					}
+					targets = selected
+				} else {
+					targets = []string{""} // "" == all platform services
+				}
+			}
+			// Stream native pull progress to stderr on a human run (kept off the JSON
+			// stdout envelope), like the `ai setup` pre-pull.
+			progress := func(string) {}
+			if !em.JSON {
+				_, _ = fmt.Fprintln(em.Err, "Updating service images (re-pulling latest)…")
+				progress = func(line string) { _, _ = fmt.Fprintln(em.Err, line) }
+			}
+			var statuses []setup.ServiceStatus
+			for _, name := range targets {
+				applied, err := setup.UpdateService(deps, name, em.Err, progress)
+				if err != nil {
+					*exit = em.Failure("services.update", err)
+					return nil
+				}
+				statuses = applied
+			}
+			*exit = em.Success("services.update", servicesResult{Services: statuses})
+			return nil
+		},
+	}
 }
 
 // newServicesConsoleCmd builds `ai services console [service]`: open a service's

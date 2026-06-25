@@ -5,7 +5,82 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/jt-helsinki/ideal-robot/internal/hostsfile"
+	"github.com/jt-helsinki/ideal-robot/internal/runtime"
+	"github.com/jt-helsinki/ideal-robot/internal/uihosts"
 )
+
+// withHostsSeams redirects the /etc/hosts removal seams to a temp file + a stub
+// writer for the duration of the test, restoring them after.
+func withHostsSeams(t *testing.T, path string, write func(string, []byte) error) {
+	t.Helper()
+	origPath, origWriter := hostsPath, hostsWriter
+	hostsPath, hostsWriter = path, write
+	t.Cleanup(func() { hostsPath, hostsWriter = origPath, origWriter })
+}
+
+func TestRemoveHostsBlockStandaloneRemoves(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	if err := runtime.Persist(&runtime.Info{SchemaVersion: runtime.SchemaVersion, Role: runtime.RoleStandalone}); err != nil {
+		t.Fatalf("persist runtime: %v", err)
+	}
+	hostsFilePath := filepath.Join(t.TempDir(), "hosts")
+	if _, err := hostsfile.Apply(hostsFilePath, uihosts.Entries("aip.local")); err != nil {
+		t.Fatalf("seed hosts: %v", err)
+	}
+	wrote := false
+	withHostsSeams(t, hostsFilePath, func(_ string, content []byte) error {
+		wrote = true
+		return os.WriteFile(hostsFilePath, content, 0o644)
+	})
+	if !removeHostsBlock(func(string) {}) {
+		t.Fatal("standalone with a present block should remove it")
+	}
+	if !wrote {
+		t.Fatal("expected the privileged write to be invoked")
+	}
+	data, _ := os.ReadFile(hostsFilePath)
+	if strings.Contains(string(data), "litellm.aip.local") {
+		t.Fatalf("block not removed:\n%s", data)
+	}
+}
+
+func TestRemoveHostsBlockServerSkips(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	if err := runtime.Persist(&runtime.Info{SchemaVersion: runtime.SchemaVersion, Role: runtime.RoleServer}); err != nil {
+		t.Fatalf("persist runtime: %v", err)
+	}
+	hostsFilePath := filepath.Join(t.TempDir(), "hosts")
+	if _, err := hostsfile.Apply(hostsFilePath, uihosts.Entries("aip.local")); err != nil {
+		t.Fatalf("seed hosts: %v", err)
+	}
+	withHostsSeams(t, hostsFilePath, func(string, []byte) error {
+		t.Fatal("server must NOT touch /etc/hosts")
+		return nil
+	})
+	if removeHostsBlock(func(string) {}) {
+		t.Fatal("server role must not remove the hosts block")
+	}
+}
+
+func TestRemoveHostsBlockNoBlockNoop(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	if err := runtime.Persist(&runtime.Info{SchemaVersion: runtime.SchemaVersion, Role: runtime.RoleStandalone}); err != nil {
+		t.Fatalf("persist runtime: %v", err)
+	}
+	hostsFilePath := filepath.Join(t.TempDir(), "hosts")
+	if err := os.WriteFile(hostsFilePath, []byte("127.0.0.1\tlocalhost\n"), 0o644); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	withHostsSeams(t, hostsFilePath, func(string, []byte) error {
+		t.Fatal("must not write when no managed block is present")
+		return nil
+	})
+	if removeHostsBlock(func(string) {}) {
+		t.Fatal("no block present → nothing removed")
+	}
+}
 
 func TestStripManagedRemovesOnlyOurLines(test *testing.T) {
 	input := strings.Join([]string{

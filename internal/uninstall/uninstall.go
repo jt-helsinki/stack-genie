@@ -14,6 +14,7 @@ import (
 
 	"github.com/jt-helsinki/ideal-robot/internal/paths"
 	"github.com/jt-helsinki/ideal-robot/internal/runtime"
+	"github.com/jt-helsinki/ideal-robot/internal/uihosts"
 )
 
 // LogName is the uninstall transcript written to the home directory. It lives at
@@ -52,7 +53,38 @@ type Report struct {
 	RemovedBinary     string   `json:"removed_binary,omitempty"`
 	RemovedDeps       []string `json:"removed_deps,omitempty"`
 	Purged            bool     `json:"purged"`
-	LogPath           string   `json:"log_path,omitempty"` // ~/ai-uninstall.log
+	LogPath           string   `json:"log_path,omitempty"`            // ~/ai-uninstall.log
+	RemovedHostsBlock bool     `json:"removed_hosts_block,omitempty"` // standalone /etc/hosts UI subdomains
+}
+
+// hostsPath + hostsWriter are the /etc/hosts removal seams, indirected through
+// package vars so tests can redirect the path and stub the privileged write
+// (the real write is uihosts' sudo `cp`). hardware bring-up: the live sudo write.
+var (
+	hostsPath   = uihosts.DefaultHostsPath
+	hostsWriter func(path string, content []byte) error // nil → uihosts' default sudo cp
+)
+
+// removeHostsBlock strips the platform's managed UI-subdomain block from
+// /etc/hosts when this host ran STANDALONE (the only role that wrote it). It is
+// best-effort: a non-standalone role, a missing block, or a write failure all
+// leave the file as-is and return false. The decision (role + whether a block is
+// present) is unit-tested via the injectable hostsPath/hostsWriter.
+func removeHostsBlock(record func(string)) bool {
+	info, err := runtime.Load()
+	role := ""
+	if err == nil && info != nil {
+		role = info.Role
+	}
+	if !uihosts.ManageHostsForRole(role) {
+		return false
+	}
+	action, _ := uihosts.RemoveHosts(uihosts.HostsSync{Path: hostsPath, Write: hostsWriter})
+	if action == uihosts.HostsWritten {
+		record("Removed the platform UI-subdomain block from " + hostsPath)
+		return true
+	}
+	return false
 }
 
 // ExternalDep is a tool installed alongside the platform by its own installer
@@ -137,6 +169,12 @@ func Run(options Options, prober runtime.Prober, progress Progress) (Report, err
 
 	report.RemovedContainers = removeContainers(prober, record)
 
+	// Standalone hosts: remove the platform's managed /etc/hosts block (best-effort
+	// via sudo). server/client never edited /etc/hosts, so there is nothing to undo.
+	if removeHostsBlock(record) {
+		report.RemovedHostsBlock = true
+	}
+
 	for _, rcPath := range rcFiles() {
 		if stripRCFile(rcPath) {
 			report.CleanedRC = append(report.CleanedRC, rcPath)
@@ -217,6 +255,7 @@ func writeLog(logFile *os.File, line string) {
 func Plan(purge bool) []string {
 	steps := []string{
 		"stop and remove platform containers (aip-*)",
+		"remove the platform UI-subdomain block from /etc/hosts (standalone; needs sudo)",
 		"remove the ai binary",
 		"remove the shell completion scripts",
 		"strip the managed PATH/completion lines from the shell rc files",

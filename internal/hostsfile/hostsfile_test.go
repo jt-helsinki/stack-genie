@@ -265,6 +265,91 @@ func TestRemoveMissingFile(t *testing.T) {
 	}
 }
 
+func TestPlanComputesBytesWithoutWriting(t *testing.T) {
+	path := tempPath(t)
+	existing := "127.0.0.1\tlocalhost\n"
+	writeFile(t, path, existing)
+
+	newContent, changed, err := Plan(path, sampleEntries())
+	if err != nil {
+		t.Fatalf("Plan: %v", err)
+	}
+	if !changed {
+		t.Fatal("expected changed=true for a file without the block")
+	}
+	// The file must be untouched: Plan is read-only.
+	if got := readFileText(t, path); got != existing {
+		t.Fatalf("Plan must not write the file, got:\n%s", got)
+	}
+	if !strings.Contains(string(newContent), Render(sampleEntries())) {
+		t.Fatalf("planned bytes missing the block:\n%s", newContent)
+	}
+	if !strings.HasPrefix(string(newContent), existing) {
+		t.Fatalf("planned bytes must preserve existing lines:\n%s", newContent)
+	}
+}
+
+func TestPlanIdempotentReportsUnchanged(t *testing.T) {
+	path := tempPath(t)
+	if _, err := Apply(path, sampleEntries()); err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+	before := readFileText(t, path)
+	newContent, changed, err := Plan(path, sampleEntries())
+	if err != nil {
+		t.Fatalf("Plan: %v", err)
+	}
+	if changed {
+		t.Fatal("expected changed=false when block already up to date")
+	}
+	if string(newContent) != before {
+		t.Fatalf("unchanged plan should return the current bytes:\n%s", newContent)
+	}
+}
+
+func TestPlanEmptyEntriesRemovesBlock(t *testing.T) {
+	path := tempPath(t)
+	content := "127.0.0.1\tlocalhost\n\n" + Render(sampleEntries()) + "\n# trailing\n"
+	writeFile(t, path, content)
+
+	newContent, changed, err := Plan(path, nil)
+	if err != nil {
+		t.Fatalf("Plan empty: %v", err)
+	}
+	if !changed {
+		t.Fatal("expected changed=true removing the block")
+	}
+	if strings.Contains(string(newContent), markerBegin) {
+		t.Fatalf("planned bytes should not contain the block:\n%s", newContent)
+	}
+	// The file is untouched.
+	if got := readFileText(t, path); got != content {
+		t.Fatalf("Plan must not write the file:\n%s", got)
+	}
+}
+
+func TestPlanMissingFile(t *testing.T) {
+	path := tempPath(t)
+	newContent, changed, err := Plan(path, sampleEntries())
+	if err != nil {
+		t.Fatalf("Plan missing: %v", err)
+	}
+	if !changed {
+		t.Fatal("expected changed=true for a missing file")
+	}
+	if string(newContent) != Render(sampleEntries()) {
+		t.Fatalf("missing-file plan should equal the rendered block:\n%s", newContent)
+	}
+	// Empty entries on a missing file: nothing to remove, unchanged.
+	_, changed, err = Plan(path, nil)
+	if err != nil {
+		t.Fatalf("Plan missing empty: %v", err)
+	}
+	if changed {
+		t.Fatal("expected changed=false removing from a missing file")
+	}
+}
+
 func TestStatus(t *testing.T) {
 	path := tempPath(t)
 

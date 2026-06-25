@@ -7,6 +7,7 @@ import (
 	"github.com/jt-helsinki/ideal-robot/internal/output"
 	"github.com/jt-helsinki/ideal-robot/internal/runtime"
 	"github.com/jt-helsinki/ideal-robot/internal/setup"
+	"github.com/jt-helsinki/ideal-robot/internal/uihosts"
 	"github.com/spf13/cobra"
 )
 
@@ -28,6 +29,7 @@ func newDoctorCmd(emitter *output.Emitter, exit *int) *cobra.Command {
 				GOARCH:   goruntime.GOARCH,
 				Prober:   runtime.RealProber(),
 				Services: doctorServices(),
+				Domain:   doctorDomain(),
 			}
 			// Add the workspace-runtime section only when a name is given OR the
 			// cwd resolves to a workspace; otherwise omit it (not an error).
@@ -69,6 +71,39 @@ func doctorServices() []doctor.Service {
 		})
 	}
 	return services
+}
+
+// doctorDomain builds the DOMAIN section for `ai doctor`: the resolved platform
+// base domain, the UI subdomain URLs (litellm./chat./odysseus.<domain>:18787), and
+// the resolution status — standalone reports whether the /etc/hosts block is
+// present + up to date; a server reports the DNS/TLS reminder. Returns nil (omit
+// the section) when there is no runtime.yaml yet (a fresh, un-setup host).
+func doctorDomain() *doctor.DomainInfo {
+	info, err := runtime.Load()
+	if err != nil || info == nil {
+		return nil
+	}
+	domain := info.ResolveDomain()
+
+	urls := make([]doctor.DomainURL, 0)
+	for _, url := range uihosts.URLs(domain) {
+		urls = append(urls, doctor.DomainURL{Service: url.Service, Host: url.Host, URL: url.URL})
+	}
+	domainInfo := &doctor.DomainInfo{Domain: domain, Role: info.Role, URLs: urls}
+
+	if uihosts.ManageHostsForRole(info.Role) {
+		domainInfo.Standalone = true
+		present, upToDate, statusErr := uihosts.HostsStatus(uihosts.DefaultHostsPath, domain)
+		if statusErr == nil {
+			domainInfo.HostsPresent = present
+			domainInfo.HostsUpToDate = upToDate
+		}
+	} else if info.Role == runtime.RoleServer {
+		domainInfo.ServerReminder = "create DNS records (*." + domain +
+			" or per-host litellm./chat./odysseus." + domain +
+			") → this server's IP, and terminate a TLS cert at nginx"
+	}
+	return domainInfo
 }
 
 // resolveDoctorWorkspace builds the per-workspace runtime section for `ai doctor`

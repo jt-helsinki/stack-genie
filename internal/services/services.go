@@ -71,11 +71,19 @@ type Component struct {
 // LogScope is the service's own log scope; Components are the image(s)/container(s)
 // it owns.
 type Service struct {
-	Name       string
-	Optional   bool
-	Endpoint   Endpoint
-	LogScope   string
-	Components []Component
+	Name     string
+	Optional bool
+	Endpoint Endpoint
+	LogScope string
+	// UISubdomain is the subdomain LABEL this service's web UI is served at, as a
+	// Host-based nginx vhost on the single gateway port: <label>.<domain> (e.g.
+	// "litellm" → litellm.<domain>, "chat" → chat.<domain>). Empty means the
+	// service has no UI vhost (it is reached on a path of the gateway, or is
+	// internal-only). It is the SINGLE source of truth for the UI→subdomain
+	// mapping consumed by internal/setup (nginx vhosts + /etc/hosts) and the
+	// `ai doctor` / uninstall flows.
+	UISubdomain string
+	Components  []Component
 }
 
 // Native is the microVM runtime (microsandbox): a native version pin, a log scope,
@@ -137,9 +145,10 @@ var registry = []Service{
 		},
 	},
 	{
-		Name:     "litellm",
-		Endpoint: Endpoint{Port: 14000, ConsolePath: "/ui", HasConsole: true},
-		LogScope: "litellm",
+		Name:        "litellm",
+		Endpoint:    Endpoint{Port: 14000, ConsolePath: "/ui", HasConsole: true},
+		LogScope:    "litellm",
+		UISubdomain: "litellm", // litellm.<domain> → the LiteLLM admin UI (/ui)
 		Components: []Component{
 			{
 				ImageKey:  "litellm",
@@ -181,10 +190,11 @@ var registry = []Service{
 		},
 	},
 	{
-		Name:     "open-webui",
-		Optional: true,
-		Endpoint: Endpoint{Port: 18090, HasConsole: true}, // chat UI; root IS the console
-		LogScope: "open-webui",
+		Name:        "open-webui",
+		Optional:    true,
+		Endpoint:    Endpoint{Port: 18090, HasConsole: true}, // chat UI; root IS the console
+		LogScope:    "open-webui",
+		UISubdomain: "chat", // chat.<domain> → the Open WebUI chat UI
 		Components: []Component{
 			{
 				ImageKey:  "open-webui",
@@ -194,10 +204,11 @@ var registry = []Service{
 		},
 	},
 	{
-		Name:     "odysseus",
-		Optional: true,
-		Endpoint: Endpoint{Port: 7000, HasConsole: true}, // optional AI workspace UI; root IS the console
-		LogScope: "odysseus",
+		Name:        "odysseus",
+		Optional:    true,
+		Endpoint:    Endpoint{Port: 7000, HasConsole: true}, // optional AI workspace UI; root IS the console
+		LogScope:    "odysseus",
+		UISubdomain: "odysseus", // odysseus.<domain> → the Odysseus AI workspace UI
 		Components: []Component{
 			{
 				ImageKey:  "odysseus",
@@ -384,6 +395,50 @@ func Endpoints() map[string]Endpoint {
 	}
 	endpoints[nativeRuntime.Name] = nativeRuntime.Endpoint
 	return endpoints
+}
+
+// UIVhost is one Host-based nginx vhost the platform serves a web UI on: the
+// logical service Name, its Subdomain LABEL (Subdomain.<domain>), whether it is
+// Optional (rendered/wired only when enabled), and the in-network Upstream the
+// vhost proxies to (e.g. "http://aip-litellm:4000" — the host:port nginx forwards
+// to, BYPASSING Headroom: these are UI-serving routes, not the model path). It is
+// the single projection consumers (internal/setup, doctor, uninstall) use so the
+// UI→subdomain mapping is never duplicated.
+type UIVhost struct {
+	Name      string
+	Subdomain string
+	Optional  bool
+	Upstream  string
+}
+
+// uiUpstreams maps each UI service to the in-network upstream nginx proxies its
+// vhost to. Declared alongside the registry so adding a UI service is a single
+// edit. The port is the container's internal listen port (reached by name on the
+// shared aip-net). These bypass Headroom — they serve the app UI, not the model
+// path (the apps' MODEL calls ride the gateway's /v1 → Headroom route).
+var uiUpstreams = map[string]string{
+	"litellm":    "http://aip-litellm:4000",
+	"open-webui": "http://aip-open-webui:8080",
+	"odysseus":   "http://aip-odysseus:7000",
+}
+
+// UIVhosts returns every service that is served as a Host-based UI vhost (those
+// with a non-empty UISubdomain), in registry order, with its subdomain label and
+// upstream. Fresh slice each call.
+func UIVhosts() []UIVhost {
+	var vhosts []UIVhost
+	for _, service := range registry {
+		if service.UISubdomain == "" {
+			continue
+		}
+		vhosts = append(vhosts, UIVhost{
+			Name:      service.Name,
+			Subdomain: service.UISubdomain,
+			Optional:  service.Optional,
+			Upstream:  uiUpstreams[service.Name],
+		})
+	}
+	return vhosts
 }
 
 // VersionPins returns the versions.yaml Services map content: every component's
