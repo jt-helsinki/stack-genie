@@ -156,7 +156,7 @@ func (result modelsPopularResult) Human() string {
 		}
 		_, _ = fmt.Fprintf(&builder, "%-24s  %-22s  %-9s  %s\n", entry.Name, params, size, entry.RepoURL)
 	}
-	builder.WriteString("\npull any of these with `ai models pull <name>` (size — = unknown · list fetched live from ollama.com)")
+	builder.WriteString("\npull any of these with `ai models pull <name>` (size — = unknown · bundled snapshot of ollama.com/library)")
 	return strings.TrimRight(builder.String(), "\n")
 }
 
@@ -176,28 +176,18 @@ func toPopularEntries(models []ollama.PopularModel) []popularModelEntry {
 func newModelsPopularCmd(emitter *output.Emitter, exit *int) *cobra.Command {
 	return &cobra.Command{
 		Use:   "popular",
-		Short: "List popular installable models (live from ollama.com)",
-		Long: "List popular installable models fetched LIVE from ollama.com/search, with\n" +
-			"their parameter-size variants, default-tag download size (from the public\n" +
-			"Ollama registry), and ollama.com/library link. There is no hardcoded catalog;\n" +
-			"this needs internet access to ollama.com. Pull any of them — or any other\n" +
-			"reference — with `ai models pull`.",
+		Short: "List popular installable models (bundled snapshot)",
+		Long: "List popular installable models from a BUNDLED snapshot of ollama.com/library,\n" +
+			"with their parameter-size variants, default-tag download size, and\n" +
+			"ollama.com/library link. The list is embedded in the binary — it reads\n" +
+			"instantly and OFFLINE; maintainers refresh it with `make models-refresh`.\n" +
+			"Pull any of them — or any other reference — with `ai models pull`.",
 		Args: cobra.NoArgs,
 		RunE: func(_ *cobra.Command, _ []string) error {
-			var models []ollama.PopularModel
-			var err error
-			if ui.Enabled(emitter) {
-				err = ui.RunWithSpinner(emitter.Err, "fetching popular models from ollama.com", func() error {
-					var workErr error
-					models, workErr = ollamaPopular()
-					return workErr
-				})
-			} else {
-				models, err = ollamaPopular()
-			}
+			models, err := ollamaPopular()
 			if err != nil {
 				*exit = emitter.Failure("models.popular", output.Errorf(output.ExitRuntimeFailure,
-					"could not fetch popular models (needs internet access to ollama.com): %s", err))
+					"could not read the bundled popular-models snapshot: %s", err))
 				return nil
 			}
 			*exit = emitter.Success("models.popular", modelsPopularResult{Models: toPopularEntries(models)})
@@ -222,7 +212,7 @@ func newModelsPullCmd(emitter *output.Emitter, exit *int) *cobra.Command {
 		Long: "Download a model into the local Ollama store. With a name argument (or under\n" +
 			"--json / no TTY) the given reference is pulled directly — this is the custom-\n" +
 			"reference path (e.g. `llama3.2:3b`, or `hf.co/user/model`). On a terminal with\n" +
-			"no argument you pick from the popular models (fetched live from ollama.com), or\n" +
+			"no argument you pick from the popular models (a bundled snapshot), or\n" +
 			"choose \"enter a custom model…\" to type any reference. Re-pulling an installed\n" +
 			"model updates it (there is no separate update command).",
 		Args: cobra.MaximumNArgs(1),
@@ -269,16 +259,16 @@ func newModelsPullCmd(emitter *output.Emitter, exit *int) *cobra.Command {
 	}
 }
 
-// promptModelToPull presents the popular models (fetched live from ollama.com)
-// plus a final "enter a custom model…" option; choosing the latter prompts for a
-// free-text reference. If the live fetch fails it falls back to just the custom-
-// entry prompt — a brittle scrape must never block pulling. Returns the chosen/
+// promptModelToPull presents the popular models (from the bundled snapshot) plus a
+// final "enter a custom model…" option; choosing the latter prompts for a free-text
+// reference. If the snapshot is somehow unavailable it falls back to just the
+// custom-entry prompt — the picker must never block pulling. Returns the chosen/
 // typed model name. Only call on an interactive terminal.
 func promptModelToPull() (string, error) {
 	popular, popularErr := ollamaPopular()
 	if popularErr != nil || len(popular) == 0 {
-		// The live popular list is unavailable; don't block pulling — go straight
-		// to the free-text custom-entry prompt.
+		// The popular list is unavailable; don't block pulling — go straight to the
+		// free-text custom-entry prompt.
 		return promptCustomModel()
 	}
 	options := make([]huh.Option[string], 0, len(popular)+1)

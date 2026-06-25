@@ -856,31 +856,33 @@ is **no hardcoded catalog** — installable suggestions live behind `ai models
 popular` (§8.3.2). The human output is a NAME / SIZE / PARAMS table; `--json`
 returns the installed list (each entry carries `installed: true`).
 
-### 8.3.2 Popular (installable, live)
+### 8.3.2 Popular (installable, bundled snapshot)
 
 ```bash id="c23p"
 ai models popular
 ```
 
-Lists popular **installable** models fetched **live** from `ollama.com/search`
-(there is no API, so the page is scraped by its `x-test-*` markers), capped to a
-sensible top N. For each model it reports:
+Lists popular **installable** models from a **bundled, embedded snapshot**
+(`internal/ollama/models.yaml`, compiled into the binary via `go:embed`), captured
+from `ollama.com/library?sort=popular` (the most-pulled models) and capped to a
+sensible top N (~30). It reads **instantly and offline — there is no runtime
+network call**. For each model it reports:
 
 * **name** and its **parameter-size variants** (the `x-test-size` tags, e.g.
   `1b`, `8b`, `120b`)
-* the default-tag **download size** in bytes, summed from the model's manifest on
+* the default-tag **download size** in bytes, captured from the model's manifest on
   the public Ollama registry (`GET registry.ollama.ai/v2/library/<model>/manifests/latest`,
-  summing `layers[].size`); sizes are fetched **concurrently** with a bounded
-  worker pool and a short per-request timeout, and a lookup that fails/times out
-  degrades to an unknown size (rendered `—`) without failing the whole list
+  summing `layers[].size`); an unknown size renders `—`
 * the **repo link** (`https://ollama.com/library/<name>`)
 
 The human output is a NAME / PARAMS / SIZE / REPO table; `--json` returns the
-structured list. This **needs internet access to ollama.com**: a failed
-fetch/parse exits **4** with a note to that effect. The list is inherently
-brittle (ollama.com has no API) — it will need updating if the page markup
-changes; that is acceptable because `ai models pull` always also accepts a
-free-text reference.
+structured list. The snapshot is **regenerable, not a dead hand-typed list**:
+maintainers refresh it with `make models-refresh` (equivalently
+`go generate ./internal/ollama/...`), which re-scrapes ollama.com by its
+`x-test-*` markers, re-looks-up sizes, and rewrites `models.yaml`. Only the
+regeneration tool touches the network — the runtime never does (and `go test` never
+hits the network). `ai models pull` always also accepts a free-text reference, so an
+out-of-date snapshot never blocks pulling anything.
 
 ### 8.3.3 Pull (install / update)
 
@@ -893,10 +895,10 @@ ai models pull [name]
   `hf.co/user/model`). Under `--json` a name is **required** (missing → exit 2).
   Pull stays **free-form** — any model reference can be pulled, listed or not.
 * On a terminal with **no** argument: the user picks from the **popular** models
-  (fetched live — §8.3.2, each labelled "name — params — size"), plus a final
-  **"✎ enter a custom model…"** option that prompts for a free-text reference. If
-  the live popular fetch fails it falls back to just the custom-entry prompt —
-  the scrape never blocks pulling.
+  (the bundled snapshot — §8.3.2, each labelled "name — params — size"), plus a
+  final **"✎ enter a custom model…"** option that prompts for a free-text
+  reference. If the snapshot is somehow unavailable it falls back to just the
+  custom-entry prompt — the picker never blocks pulling.
 
 The pull **streams** Ollama's NDJSON progress while a spinner shows ongoing work.
 There is **no separate update verb** — re-pulling an installed model updates it.

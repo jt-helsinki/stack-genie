@@ -24,10 +24,10 @@ var ollamaClient = ollama.RealClient
 // network); production wires litellm.RealClient.
 var litellmClient = litellm.RealClient
 
-// ollamaPopular fetches the live popular-models list (ollama.com/search + the
-// registry for sizes) used by `ai models popular` and the `ai models pull` picker.
-// It is a package var so tests can inject a fixture without hitting the network;
-// production wires ollama.Popular.
+// ollamaPopular reads the bundled popular-models snapshot (the embedded
+// models.yaml) used by `ai models popular` and the `ai models pull` picker. It is a
+// package var so tests can inject a fixture; production wires ollama.Popular (a pure
+// embedded read, no network).
 var ollamaPopular = func() ([]ollama.PopularModel, error) { return ollama.Popular() }
 
 // newModelsCmd builds `ai models` (CLI §8).

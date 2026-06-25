@@ -7,7 +7,7 @@ VERSION_PKG := $(PKG)/internal/version
 VERSION     ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo 0.0.0-dev)
 LDFLAGS     := -X $(VERSION_PKG).Version=$(VERSION)
 
-.PHONY: all build release fmt fmt-check vet lint test test-acceptance tidy clean
+.PHONY: all build release fmt fmt-check vet lint test test-acceptance tidy clean models-refresh
 
 # Release targets. Asset names are ai-<os>-<arch> — the exact names
 # installers/install.sh downloads. macOS is Apple Silicon only (arch §6.2).
@@ -52,6 +52,9 @@ test-acceptance: ## Run the acceptance suite (set AIP_HARDWARE_TESTS=1 to includ
 
 tidy: ## Sync go.mod/go.sum
 	go mod tidy
+
+models-refresh: ## Re-scrape ollama.com and rewrite the bundled popular-models snapshot (internal/ollama/models.yaml). Needs internet; maintainer-only.
+	go run ./internal/ollama/internal/gen
 
 clean:
 	rm -rf bin dist
