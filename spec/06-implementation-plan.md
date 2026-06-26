@@ -56,7 +56,7 @@ keep the precedence rules in arch §27 explicit), `slog` (structured logs), stdl
 │   ├── state/                   # project-local state (<project>/.ai-platform/run) + projects index; atomic writes
 │   ├── config/                  # config load/merge (project > global)
 │   ├── versions/                # service-tier image refs (image+tag, no digest) — source of truth for setup
-│   ├── envfile/                 # ~/.ai-platform.env (opt-in 0600 secrets passthrough: UI password, master key)
+│   ├── envfile/                 # ~/.ai-platform/.ai-platform.env (opt-in 0600 secrets passthrough: UI password, master key)
 │   ├── runtime/                 # docker/podman detect + rootless verify + role/domain/gateway resolution (service tier)
 │   ├── sandbox/                 # Microsandbox SDK wrapper: naming, mounts/volumes, microVM lifecycle
 │   ├── services/               # service-tier topology registry (names, ports, UI subdomains, gateway paths)

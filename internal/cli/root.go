@@ -50,7 +50,7 @@ func Execute() int {
 		PersistentPreRun: func(_ *cobra.Command, _ []string) {
 			emitter.JSON = flags.json
 			emitter.Plain = flags.plain
-			// Load ~/.ai-platform.env into this process's environment FIRST (before
+			// Load ~/.ai-platform/.ai-platform.env into this process's environment FIRST (before
 			// any command runs), so persisted platform secrets (UI_PASSWORD,
 			// LITELLM_MASTER_KEY) are present for the container env-passthrough
 			// launches — WITHOUT the user having to edit their shell rc. Existing

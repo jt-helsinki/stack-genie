@@ -54,7 +54,7 @@ func newLiteLLMCmd(emitter *output.Emitter, exit *int) *cobra.Command {
 // newLiteLLMPasswordCmd builds `ai litellm password`. It prompts (hidden) for a
 // new admin-UI password, reuses the running gateway's master key (or mints one),
 // relaunches LiteLLM with both set (via env passthrough, never disk/argv), and
-// then offers to persist the secrets to ~/.ai-platform.env. Exit codes: 3 when
+// then offers to persist the secrets to ~/.ai-platform/.ai-platform.env. Exit codes: 3 when
 // the platform/LiteLLM isn't set up, 2 on bad/empty input, 4 on relaunch failure.
 func newLiteLLMPasswordCmd(emitter *output.Emitter, exit *int) *cobra.Command {
 	return &cobra.Command{
@@ -63,7 +63,7 @@ func newLiteLLMPasswordCmd(emitter *output.Emitter, exit *int) *cobra.Command {
 		Long: "Set or rotate the LiteLLM admin UI password. This secures the admin UI and the\n" +
 			"gateway API in any deployment role. You are prompted (hidden) for the new\n" +
 			"password; the master key is reused from the running gateway when present, else a\n" +
-			"new one is minted. You are then offered to save the secrets to ~/.ai-platform.env\n" +
+			"new one is minted. You are then offered to save the secrets to ~/.ai-platform/.ai-platform.env\n" +
 			"(a 0600 file `ai` auto-loads) so they persist across restarts.",
 		Args: cobra.NoArgs,
 		RunE: func(_ *cobra.Command, _ []string) error {
@@ -126,7 +126,7 @@ func newLiteLLMPasswordCmd(emitter *output.Emitter, exit *int) *cobra.Command {
 				return nil
 			}
 
-			// Offer to persist the secrets to ~/.ai-platform.env (Feature 2).
+			// Offer to persist the secrets to ~/.ai-platform/.ai-platform.env (Feature 2).
 			offerPersistLiteLLMSecrets(emitter, true, password, masterKey)
 
 			domain := info.ResolveDomain()

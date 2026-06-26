@@ -1,4 +1,4 @@
-// Package envfile manages ~/.ai-platform.env — an OPT-IN, 0600 file of `export
+// Package envfile manages ~/.ai-platform/.ai-platform.env — an OPT-IN, 0600 file of `export
 // KEY='VALUE'` lines that the `ai` CLI loads at startup so platform secrets
 // (UI_PASSWORD, LITELLM_MASTER_KEY) persist across restarts WITHOUT the user
 // having to edit their shell rc. The values are loaded into THIS process's
@@ -24,20 +24,21 @@ import (
 	"github.com/jt-helsinki/ideal-robot/internal/paths"
 )
 
-// fileName is the env file's base name under the user's home directory.
+// fileName is the env file's base name inside the platform state directory.
 const fileName = ".ai-platform.env"
 
-// Path returns ~/.ai-platform.env (derived from the user's home directory, so
-// tests redirect it with t.Setenv("HOME", t.TempDir())).
+// Path returns ~/.ai-platform/.ai-platform.env (inside the platform state dir, so
+// `ai uninstall --purge` removes it with the rest of ~/.ai-platform; derived from
+// the home dir, so tests redirect it with t.Setenv("HOME", t.TempDir())).
 func Path() (string, error) {
-	home, err := paths.Home()
+	dir, err := paths.PlatformDir()
 	if err != nil {
 		return "", err
 	}
-	return filepath.Join(home, fileName), nil
+	return filepath.Join(dir, fileName), nil
 }
 
-// Load reads ~/.ai-platform.env and, for each KEY=VALUE it carries, sets the
+// Load reads ~/.ai-platform/.ai-platform.env and, for each KEY=VALUE it carries, sets the
 // process environment variable IF it is not already present. Existing
 // environment (the user's shell exports, or values set for this run) therefore
 // WINS — the file only fills gaps. A missing file is a no-op (no error); only a
@@ -72,7 +73,7 @@ func Load() error {
 	return scanner.Err()
 }
 
-// Write merges vars into ~/.ai-platform.env and rewrites it atomically at mode
+// Write merges vars into ~/.ai-platform/.ai-platform.env and rewrites it atomically at mode
 // 0600. A managed key present in vars is updated in place (keeping its position);
 // a new key is appended as an `export KEY='VALUE'` line. Lines the file already
 // carries that are NOT in vars (other exports, comments, blanks) are preserved

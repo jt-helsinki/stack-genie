@@ -48,13 +48,13 @@ All platform-wide data is stored under:
 ├── templates/     # OS Dockerfile templates + shared templates
 └── tools/
 
-~/.ai-platform.env   # OPT-IN, 0600 sibling file (NOT under ~/.ai-platform/)
+~/.ai-platform/.ai-platform.env   # OPT-IN, 0600 sibling file (NOT under ~/.ai-platform/)
 ```
 
 Global only — **no per-project state here**. Per-project state lives in
 `<project>/.ai-platform/` (see §2).
 
-`~/.ai-platform.env` is an **opt-in, mode-0600** plain-text file of
+`~/.ai-platform/.ai-platform.env` is an **opt-in, mode-0600** plain-text file of
 `export KEY='VALUE'` lines (NOT YAML) that the `ai` CLI loads at startup so
 platform secrets (`UI_PASSWORD`, `LITELLM_MASTER_KEY`) persist across restarts
 without the user editing a shell rc; it lives **beside** `~/.ai-platform/`, not

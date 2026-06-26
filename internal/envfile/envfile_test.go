@@ -2,8 +2,21 @@ package envfile
 
 import (
 	"os"
+	"path/filepath"
 	"testing"
 )
+
+// seedFile writes content to path, creating the parent dir (the env file now lives
+// inside ~/.ai-platform/, which a temp HOME does not have yet).
+func seedFile(test *testing.T, path, content string) {
+	test.Helper()
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		test.Fatalf("mkdir: %v", err)
+	}
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		test.Fatalf("seed file: %v", err)
+	}
+}
 
 // TestLoadFillsOnlyMissingKeys: Load sets a key absent from the env but leaves
 // an already-present one untouched (existing env / shell exports WIN).
@@ -17,9 +30,7 @@ func TestLoadFillsOnlyMissingKeys(test *testing.T) {
 		"export UI_PASSWORD='from-file'\n" +
 		"LITELLM_MASTER_KEY=\"sk-fromfile\"\n" +
 		"PLAIN=bare\n"
-	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
-		test.Fatalf("seed file: %v", err)
-	}
+	seedFile(test, path, content)
 	// UI_PASSWORD already exported — must NOT be overwritten by the file.
 	test.Setenv("UI_PASSWORD", "from-env")
 
@@ -55,9 +66,7 @@ func TestWriteRoundTripPermsAndMerge(test *testing.T) {
 	}
 	// Pre-existing file with an unmanaged line and a stale managed value.
 	seed := "# keep me\nexport OTHER='untouched'\nexport UI_PASSWORD='old'\n"
-	if err := os.WriteFile(path, []byte(seed), 0o600); err != nil {
-		test.Fatalf("seed: %v", err)
-	}
+	seedFile(test, path, seed)
 
 	if err := Write(map[string]string{
 		"UI_PASSWORD":        "new-pw-with-'-quote",

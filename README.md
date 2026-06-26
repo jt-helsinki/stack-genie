@@ -77,7 +77,7 @@ Role drives UI auth: standalone/client run **open** for a smooth single-user
 local experience (no login wall); a `server` is network-exposed, so the LiteLLM
 admin UI requires a password (`ai setup` prompts, or set it later with `ai litellm
 password`). Platform secrets (`UI_PASSWORD`,
-`LITELLM_MASTER_KEY`) can be persisted opt-in to `~/.ai-platform.env` (mode 0600,
+`LITELLM_MASTER_KEY`) can be persisted opt-in to `~/.ai-platform/.ai-platform.env` (mode 0600,
 auto-loaded by `ai`) so they survive restarts without editing your shell rc.
 
 ## Use

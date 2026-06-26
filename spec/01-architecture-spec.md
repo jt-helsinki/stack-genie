@@ -1046,7 +1046,7 @@ locked down on a host that binds to `0.0.0.0`:
   open).
 
 **Persisting the secrets.** `ai setup` (server) and `ai litellm password` OFFER
-(on a TTY) to save `UI_PASSWORD` + `LITELLM_MASTER_KEY` to **`~/.ai-platform.env`**
+(on a TTY) to save `UI_PASSWORD` + `LITELLM_MASTER_KEY` to **`~/.ai-platform/.ai-platform.env`**
 — an opt-in, **0600** file of `export KEY='VALUE'` lines that the `ai` CLI
 **auto-loads at startup** (into its own process env, where the container
 env-passthrough launches pick them up) — so they persist across restarts WITHOUT

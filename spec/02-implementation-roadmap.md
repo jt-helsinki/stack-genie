@@ -413,7 +413,7 @@ These are implemented progressively across slices.
 * `ai domain [name]` — show/set the platform base domain (default `aip.local`)
 * `ai gateway show|set|clear` — machine-wide gateway address selection
 * `ai litellm password` — set/rotate the LiteLLM admin UI password (env
-  passthrough; offers to persist to `~/.ai-platform.env`)
+  passthrough; offers to persist to `~/.ai-platform/.ai-platform.env`)
 * `ai services start|stop|restart|update [service|all]` — manage the platform
   container set; `update` re-pulls moved tags (e.g. `latest`) and recreates
   affected containers
@@ -455,7 +455,7 @@ host-published** (the host port `18787`); every other service is internal-only o
 * **role-based UI auth**: the server role secures the exposed UI (LiteLLM admin
   via `ai litellm password`); standalone/client are open. Passwords/master key are
   passed by **env passthrough** and can be persisted out of argv/disk in
-  `~/.ai-platform.env` (`internal/envfile`).
+  `~/.ai-platform/.ai-platform.env` (`internal/envfile`).
 * microVM has a virtual NIC (virtio-net + gvproxy, userspace); no `host.docker.internal`, no host Docker socket
 * machine-wide gateway selection via `ai gateway show|set|clear` →
   `ai_platform_host` in `runtime.yaml`; `runtime.ResolveGateway` derives the

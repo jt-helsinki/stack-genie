@@ -498,7 +498,7 @@ func optionalServiceOptions() []huh.Option[string] {
 // offer shared with `ai litellm password`.
 func setupLiteLLMUIPassword(em *output.Emitter, interactive bool, role, domain string) {
 	// Already supplied via the environment (the standard LiteLLM .env pattern, or
-	// auto-loaded from ~/.ai-platform.env)? The container launch already picked
+	// auto-loaded from ~/.ai-platform/.ai-platform.env)? The container launch already picked
 	// them up — nothing to do, for any role.
 	if os.Getenv("UI_PASSWORD") != "" && os.Getenv("LITELLM_MASTER_KEY") != "" {
 		return
@@ -564,7 +564,7 @@ func serverLiteLLMPassword(em *output.Emitter, interactive bool) string {
 
 // secureLiteLLMUI relaunches LiteLLM with the given admin-UI password (reusing the
 // running container's master key, else minting one), prints the login details
-// once, then offers to persist the secrets to ~/.ai-platform.env. It is the
+// once, then offers to persist the secrets to ~/.ai-platform/.ai-platform.env. It is the
 // shared securing path for `ai setup` (server role) and `ai litellm password`.
 // Best-effort: a master-key/relaunch failure prints a warning and returns.
 func secureLiteLLMUI(em *output.Emitter, interactive bool, password, domain string) {
@@ -594,7 +594,7 @@ func secureLiteLLMUI(em *output.Emitter, interactive bool, password, domain stri
 }
 
 // offerPersistLiteLLMSecrets offers (on a TTY) to save the LiteLLM UI password +
-// master key to ~/.ai-platform.env, a 0600 file the `ai` CLI auto-loads at
+// master key to ~/.ai-platform/.ai-platform.env, a 0600 file the `ai` CLI auto-loads at
 // startup, so they persist across restarts without the user editing their shell
 // rc. On YES it writes the file and confirms the path; on NO / non-TTY it falls
 // back to printing the manual `export …` block (the previous behaviour). Shared
@@ -602,8 +602,8 @@ func secureLiteLLMUI(em *output.Emitter, interactive bool, password, domain stri
 func offerPersistLiteLLMSecrets(em *output.Emitter, interactive bool, password, masterKey string) {
 	if interactive {
 		save, err := promptConfirmDefault(
-			"Save these to ~/.ai-platform.env so they persist across restarts?",
-			"writes a 0600 file that `ai` loads automatically",
+			"Save these to ~/.ai-platform/.ai-platform.env so they persist across restarts?",
+			"writes a 0600 (owner-only) file that `ai` loads automatically",
 			true,
 		)
 		if err == nil && save {
@@ -615,7 +615,7 @@ func offerPersistLiteLLMSecrets(em *output.Emitter, interactive bool, password, 
 			} else {
 				path, _ := envfile.Path()
 				_, _ = fmt.Fprintf(em.Err,
-					"Saved to %s (loaded automatically by ai; add `source ~/.ai-platform.env` "+
+					"Saved to %s (loaded automatically by ai; add `source ~/.ai-platform/.ai-platform.env` "+
 						"to your shell rc if other tools need these)\n", path)
 				return
 			}

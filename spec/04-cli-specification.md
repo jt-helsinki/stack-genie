@@ -272,7 +272,7 @@ Purpose:
   short-circuits still apply (already secured / `UI_PASSWORD`+`LITELLM_MASTER_KEY`
   already in the env). The generated master key is shown once. To persist the
   secrets across restarts, `setup` OFFERS (on a TTY) to save them to
-  **`~/.ai-platform.env`** (a 0600 file the `ai` CLI auto-loads at startup —
+  **`~/.ai-platform/.ai-platform.env`** (a 0600 file the `ai` CLI auto-loads at startup —
   existing env wins); on decline / non-TTY the manual `export UI_PASSWORD … /
   LITELLM_MASTER_KEY …` block is printed instead (keys-in-LiteLLM, architecture
   §17). The real **provider** API keys are
@@ -1214,7 +1214,7 @@ Behavior:
   source `RelaunchLiteLLMWithAuth` reads), else mints a new one.
 * relaunches LiteLLM with both set via env passthrough (`RelaunchLiteLLMWithAuth`)
   — the secrets never touch argv or platform disk.
-* then OFFERS to save them to `~/.ai-platform.env` (the same opt-in 0600
+* then OFFERS to save them to `~/.ai-platform/.ai-platform.env` (the same opt-in 0600
   auto-loaded persistence as `ai setup`).
 * **Exit codes**: `3` when the platform/LiteLLM isn't set up (no `runtime.yaml`,
   client role, or the gateway container isn't running); `2` on bad/empty input or

@@ -186,7 +186,7 @@ chain itself. The remaining verification work:
   - **`ai litellm password`** relaunches the live LiteLLM with the new password —
     verify the relaunch + login work end-to-end on a provisioned host (the
     relaunch is mocked in unit tests).
-- [ ] **`~/.ai-platform.env` auto-load** — confirm that a password saved via the
+- [ ] **`~/.ai-platform/.ai-platform.env` auto-load** — confirm that a password saved via the
       `ai setup` / `ai litellm password` persist offer survives a restart: the
       0600 file is auto-loaded at `ai` startup (existing shell env still wins) and
       the LiteLLM container relaunch picks `UI_PASSWORD`/`LITELLM_MASTER_KEY` up via
