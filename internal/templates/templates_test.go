@@ -142,6 +142,31 @@ func TestBaseDockerfileShipsContainerRuntime(t *testing.T) {
 	}
 }
 
+// TestBaseDockerfileShipsTerminfo asserts every OS base Dockerfile installs
+// ncurses-term, which provides the modern terminfo entries (notably
+// tmux-256color) that in-VM TUI agent CLIs need to render correctly through the
+// per-session tmux. The VM is headless — the host terminal emulator draws the
+// PTY stream — so this terminfo + the managed tmux config (agentcfg.TmuxConfig)
+// is what makes truecolor + extended keys work. The package name is the same
+// (ncurses-term) on apt (debian/ubuntu) and dnf (almalinux).
+func TestBaseDockerfileShipsTerminfo(t *testing.T) {
+	redirectHome(t)
+	if err := templates.Install(); err != nil {
+		t.Fatalf("Install: %v", err)
+	}
+	for _, osKey := range osKeys {
+		t.Run(osKey, func(t *testing.T) {
+			got, err := templates.BaseDockerfile(osKey)
+			if err != nil {
+				t.Fatalf("BaseDockerfile(%q): %v", osKey, err)
+			}
+			if !strings.Contains(got, "ncurses-term") {
+				t.Errorf("%s: base Dockerfile missing ncurses-term (modern terminfo for tmux TUIs):\n%s", osKey, got)
+			}
+		})
+	}
+}
+
 func TestBaseDockerfileUnknownKey(t *testing.T) {
 	redirectHome(t)
 	if err := templates.Install(); err != nil {

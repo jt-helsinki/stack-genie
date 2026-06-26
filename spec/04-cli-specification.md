@@ -727,6 +727,22 @@ types a tmux command. A **managed `~/.tmux.conf`** is written at workspace start
 (mouse-scroll on, status bar hidden, vi copy-keys, generous scrollback), so tmux
 is invisible to a casual user.
 
+**Terminal rendering for modern TUI agent CLIs (OpenCode, …).** The microVM is
+**headless** — there is no terminal emulator inside it. Each agent runs inside
+tmux over a PTY (`msb exec -t`), and its byte stream is rendered by the **user's
+HOST terminal emulator** (WezTerm/Ghostty/iTerm/…); a modern emulator is
+recommended for OpenCode. Correct rendering is therefore a matter of terminfo +
+tmux config, not a VM-side emulator: every workspace image ships **`ncurses-term`**
+(so the `tmux-256color` and other modern terminfo entries exist), and the managed
+`~/.tmux.conf` sets `default-terminal "tmux-256color"`, `terminal-features
+",*:RGB"` (24-bit truecolor passthrough), and `terminal-features ",*:extkeys"` +
+`extended-keys on` (CSI-u / kitty extended keys, so OpenCode's shift+enter and
+ctrl-combos survive the tmux layer) plus a short `escape-time`. These require
+tmux ≥ 3.2 (`terminal-features`/`extended-keys`), which all four bases satisfy.
+**Known limitation:** tmux does **not** pass GPU/graphics protocols (kitty
+graphics, sixel) through, so a TUI's image-rendering features will not work inside
+the tmux session.
+
 * **`ai shell`** (§4.5a) opens the persistent **`shell`**
   session — a login shell in `/workspace`. `tmux new-session -A` makes this
   **create-or-attach**: the first call creates it, every later call reattaches.

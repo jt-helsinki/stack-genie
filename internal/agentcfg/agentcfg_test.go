@@ -156,10 +156,25 @@ func nested(test *testing.T, document map[string]any, key1, key2 string) map[str
 }
 
 // TmuxConfig renders the managed transparent tmux config: mouse on (wheel
-// scrollback), status off (invisible), vi copy-mode keys, and a history limit.
+// scrollback), status off (invisible), vi copy-mode keys, and a history limit,
+// PLUS the terminal-capability directives modern TUI agent CLIs need to render
+// correctly through tmux (truecolor + extended keys + a modern terminfo entry).
 func TestTmuxConfig(test *testing.T) {
 	conf := string(TmuxConfig())
-	for _, want := range []string{"set -g mouse on", "set -g status off", "setw -g mode-keys vi", "history-limit"} {
+	for _, want := range []string{
+		// Existing transparency settings.
+		"set -g mouse on",
+		"set -g status off",
+		"setw -g mode-keys vi",
+		"history-limit",
+		// Modern-TUI capabilities (see the task background):
+		// a modern terminfo entry, 24-bit truecolor passthrough, and CSI-u /
+		// kitty extended-key forwarding so OpenCode's key combos survive tmux.
+		`set -g default-terminal "tmux-256color"`,
+		`set -as terminal-features ",*:RGB"`,
+		`set -as terminal-features ",*:extkeys"`,
+		"set -s extended-keys on",
+	} {
 		if !strings.Contains(conf, want) {
 			test.Errorf("tmux.conf missing %q:\n%s", want, conf)
 		}

@@ -101,6 +101,28 @@ func PiConfig(gatewayURL, apiKey, defaultModel string, models []string) ([]byte,
 // tmux command. To keep tmux invisible to a casual user it hides the status bar;
 // it enables the mouse so the wheel scrolls naturally through scrollback, sets
 // vi-style copy-mode keys, and keeps a generous scrollback history.
+//
+// Terminal capabilities for modern TUI agent CLIs (OpenCode, …): the microVM is
+// HEADLESS — there is no terminal emulator inside it. Each agent runs inside tmux
+// over a PTY (`msb exec -t`) and its byte stream is rendered by the USER'S HOST
+// terminal emulator (WezTerm/Ghostty/iTerm/…). The fix for correct rendering is
+// therefore not a VM-side emulator but terminfo + tmux directives so the VM emits
+// the right sequences THROUGH tmux:
+//   - default-terminal "tmux-256color": the modern terminfo entry tmux advertises
+//     to programs inside it (shipped by the image's ncurses-term package).
+//   - terminal-features ",*:RGB": pass 24-bit truecolor through for ALL outer
+//     terminals (the host emulator decides what it actually renders).
+//   - terminal-features ",*:extkeys" + extended-keys on: forward CSI-u / kitty
+//     extended key encodings so OpenCode's shift+enter and ctrl-combos survive the
+//     tmux layer instead of being collapsed to legacy codes.
+//   - escape-time 10: a short escape timeout so single Esc / Alt chords feel snappy
+//     in a TUI rather than lagging behind tmux's key-sequence wait.
+//
+// These directives require tmux >= 3.2 (terminal-features, extended-keys); the
+// shipped bases all satisfy this (debian trixie ~3.4, debian bookworm 3.3a,
+// ubuntu 24.04 3.4, almalinux 10 ~3.4). Note (a known limitation): tmux does NOT
+// proxy GPU/graphics protocols (kitty graphics, sixel), so a TUI's image-rendering
+// features will not work inside the tmux session.
 func TmuxConfig() []byte {
 	return []byte(`# Managed by the AI Development Platform — tmux-transparent workspace sessions.
 # Do not edit by hand; this file is rewritten on every workspace start.
@@ -108,6 +130,16 @@ set -g mouse on
 set -g status off
 setw -g mode-keys vi
 set -g history-limit 50000
+
+# Terminal capabilities so modern TUI agent CLIs render correctly THROUGH tmux.
+# The VM is headless: the user's HOST terminal emulator draws the PTY stream, so
+# these only need to make tmux emit/forward the right sequences (terminfo ships
+# via the image's ncurses-term). Requires tmux >= 3.2.
+set -g default-terminal "tmux-256color"
+set -as terminal-features ",*:RGB"
+set -as terminal-features ",*:extkeys"
+set -s extended-keys on
+set -sg escape-time 10
 `)
 }
 
