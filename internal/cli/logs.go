@@ -54,8 +54,9 @@ var logServices = logs.Services()
 // workspace logs. It reads the log files the platform writes under
 // ~/.ai-platform/logs (and a project's run/ dir with --workspace). Those service
 // logs are written by setup's CaptureServiceLogs snapshot (run by `ai setup` /
-// `ai services status`); continuous follow (`logs -f`) is a later enhancement, so
-// this surfaces whatever snapshot is already on disk.
+// `ai services status`). The default (non-follow) read surfaces whatever snapshot
+// is already on disk; `--service <name> --follow` streams that service's live
+// container logs to stdout (via setup.FollowServiceLogs) until Ctrl-C.
 func newLogsCmd(emitter *output.Emitter, exit *int) *cobra.Command {
 	var workspaceName, service string
 	var tail, follow bool

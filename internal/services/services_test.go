@@ -56,8 +56,9 @@ func TestEndpointsMatchCurrentConsoleRegistry(test *testing.T) {
 // TestVersionPinsMatchCurrentDefault asserts the derived version pins match the
 // legacy versions.Default() Services map (same keys, same fields).
 func TestVersionPinsMatchCurrentDefault(test *testing.T) {
+	// The native microsandbox runtime is intentionally absent — it is a detected
+	// prerequisite, not a pulled/pinned image (see VersionPins doc).
 	want := map[string]Pin{
-		"microsandbox":        {Mode: ModeNative, Version: "v0.x", SHA256: "TBD"},
 		"litellm":             {Mode: ModeContainer, Image: "ghcr.io/berriai/litellm", Tag: "latest"},
 		"litellm-db":          {Mode: ModeContainer, Image: "postgres", Tag: "18.4-alpine3.23"},
 		"headroom":            {Mode: ModeContainer, Image: "ghcr.io/chopratejas/headroom", Tag: "latest"},
@@ -143,8 +144,10 @@ func TestOwningService(test *testing.T) {
 	}
 }
 
-// TestVersionPinsModeShapes guards the per-mode field discipline (container pins
-// image+tag and no native fields; native pins version+sha256 and no image fields).
+// TestVersionPinsModeShapes guards the per-mode field discipline. Every emitted
+// pin must be a container pin (image+tag, no native fields) — native-tier entries
+// are excluded from VersionPins (they are detected prerequisites, not pulled
+// images), so a ModeNative pin appearing here is a regression.
 func TestVersionPinsModeShapes(test *testing.T) {
 	for key, pin := range VersionPins() {
 		switch pin.Mode {
@@ -155,16 +158,28 @@ func TestVersionPinsModeShapes(test *testing.T) {
 			if pin.Version != "" || pin.SHA256 != "" {
 				test.Errorf("container pin %q has native fields: %+v", key, pin)
 			}
-		case ModeNative:
-			if pin.Version == "" || pin.SHA256 == "" {
-				test.Errorf("native pin %q missing version/sha256: %+v", key, pin)
-			}
-			if pin.Image != "" || pin.Tag != "" {
-				test.Errorf("native pin %q has container fields: %+v", key, pin)
-			}
 		default:
-			test.Errorf("pin %q has unexpected mode %q", key, pin.Mode)
+			test.Errorf("pin %q has unexpected mode %q (native runtimes must not be pinned)", key, pin.Mode)
 		}
+	}
+}
+
+// TestVersionPinsExcludesNativeRuntime asserts the native microsandbox runtime is
+// NOT emitted as a version pin (it is a detected prerequisite, not a pulled image),
+// while still being present in the registry for its log scope.
+func TestVersionPinsExcludesNativeRuntime(test *testing.T) {
+	if _, present := VersionPins()[nativeRuntime.Name]; present {
+		test.Errorf("VersionPins() includes the native runtime %q — it must be excluded from the image pin set", nativeRuntime.Name)
+	}
+	// It is still a log scope (registry slot retained).
+	found := false
+	for _, scope := range LogScopes() {
+		if scope == nativeRuntime.LogScope {
+			found = true
+		}
+	}
+	if !found {
+		test.Errorf("native runtime log scope %q missing from LogScopes()", nativeRuntime.LogScope)
 	}
 }
 

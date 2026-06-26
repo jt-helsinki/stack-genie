@@ -631,9 +631,8 @@ apps:                      # opt-in in-VM AI apps (arch §7), chosen via `ai cre
 {
   "schema_version": 1,
   "services": {
-    "microsandbox": { "mode": "native",    "version": "v0.x", "sha256": "..." },
     "litellm":      { "mode": "container", "image": "ghcr.io/berriai/litellm", "tag": "latest" },
-    "litellm-db":   { "mode": "container", "image": "postgres", "tag": "latest" },
+    "litellm-db":   { "mode": "container", "image": "postgres", "tag": "18.4-alpine3.23" },
     "headroom":     { "mode": "container", "image": "ghcr.io/chopratejas/headroom", "tag": "latest" },
     "ollama":       { "mode": "container", "image": "ollama/ollama", "tag": "latest" },
     "presidio-analyzer":   { "mode": "container", "image": "mcr.microsoft.com/presidio-analyzer",   "tag": "latest" },
@@ -646,9 +645,16 @@ apps:                      # opt-in in-VM AI apps (arch §7), chosen via `ai cre
 
 * `mode`: `container` | `native`
 * This file is the **source of truth** for the service-tier image references:
-  container services are pinned by **image + tag** (currently the `latest` tag for
-  every image), **not by digest** (digests are platform/arch specific, so a digest
-  pin breaks cross-platform pulls). Native services pin `version` + `sha256`.
+  container services are pinned by **image + tag** — most use the `latest` tag, but
+  some are intentionally pinned to a specific tag (e.g. `litellm-db` →
+  `postgres:18.4-alpine3.23`, `proxy` → `nginx:stable-alpine3.23-slim`) — **not by
+  digest** (digests are platform/arch specific, so a digest pin breaks
+  cross-platform pulls).
+* The **native microsandbox runtime is NOT pinned here**: it is a user-installed
+  prerequisite that `ai setup`/`ai doctor` DETECT on PATH, not an image the platform
+  pulls — so it is deliberately excluded from this image pin set (it keeps a
+  registry slot only for its log scope). Native pins (`version` + `sha256`) are
+  reserved for any future genuinely-pinned native component.
 * `ai setup` **resolves every service-tier image from this file** (via
   `internal/setup`'s `containerImage`, falling back to the built-in
   `versions.Default()` pins when the file is absent or an entry is incomplete);

@@ -438,9 +438,9 @@ func specFromFlags(name, osKey string, agents, stacks, appsList []string, defaul
 	}, nil
 }
 
-// newListCmd builds the canonical top-level `ai list` (also the body of the hidden
-// `ai project list` alias). It lists registered workspaces with their OS, workspace
-// status, and agents (the richer project.List-backed renderer).
+// newListCmd builds the canonical top-level `ai list` (the flat surface — there is
+// no `ai project list` group). It lists registered workspaces with their OS,
+// workspace status, and agents (the richer project.List-backed renderer).
 func newListCmd(emitter *output.Emitter, exit *int, use string) *cobra.Command {
 	return &cobra.Command{
 		Use:   use,
@@ -458,8 +458,8 @@ func newListCmd(emitter *output.Emitter, exit *int, use string) *cobra.Command {
 	}
 }
 
-// newDeleteCmd builds the canonical top-level `ai delete [name]` (also the body of
-// the hidden `ai project delete` alias): remove the whole workspace — definition,
+// newDeleteCmd builds the canonical top-level `ai delete [name]` (the flat surface —
+// there is no `ai project delete` group): remove the whole workspace — definition,
 // index entry, and microVM — keeping the host source unless --purge.
 func newDeleteCmd(emitter *output.Emitter, exit *int, use string) *cobra.Command {
 	var purge bool

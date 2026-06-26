@@ -10,9 +10,10 @@ import (
 )
 
 // expectedServices documents the pins the default registry must carry, together
-// with the runtime mode each service uses (repo-layout §12.6).
+// with the runtime mode each service uses (repo-layout §12.6). The native
+// microsandbox runtime is intentionally absent — it is a detected prerequisite,
+// not a pulled/pinned image, so it is excluded from the version pin set.
 var expectedServices = map[string]string{
-	"microsandbox":        "native",
 	"litellm":             "container",
 	"litellm-db":          "container",
 	"headroom":            "container",

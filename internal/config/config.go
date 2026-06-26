@@ -154,7 +154,7 @@ func (network NetworkConfig) Validate() error {
 
 // ResolveHostServices returns the allow-listed host endpoints as host:port
 // strings with the "gateway" token (or an empty host) replaced by the resolved
-// host-gateway address (arch §29.2, §29.6). This is what `ai workspace start`
+// host-gateway address (arch §29.2, §29.6). This is what `ai start`
 // feeds to the Microsandbox network policy.
 func (network NetworkConfig) ResolveHostServices(gateway string) []string {
 	resolved := make([]string, 0, len(network.AllowHostServices))

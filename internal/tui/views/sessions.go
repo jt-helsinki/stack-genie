@@ -22,7 +22,7 @@ type SessionKiller func(session string) error
 
 // AttachRequestedMsg is emitted when the user asks to attach to a workspace
 // session (the `a`/`enter` keys) or to start a default agent session (`n`). The
-// parent app suspends the TUI and runs `ai workspace attach <session> <project>`
+// parent app suspends the TUI and runs `ai attach <session> <name>`
 // via tea.ExecProcess, restoring the TUI on exit.
 type AttachRequestedMsg struct {
 	Project string

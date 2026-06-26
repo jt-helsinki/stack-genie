@@ -82,7 +82,7 @@ func NewServices(fetch ServiceFetcher, control ServiceController, update Service
 		{Title: "MODE", Width: 10},
 		{Title: "STATE", Width: 14},
 		{Title: "HEALTH", Width: 7},
-		{Title: "ADDRESS", Width: 28},
+		{Title: "ADDRESS", Width: 50},
 	}
 	built := table.New(table.WithColumns(columns), table.WithFocused(true))
 	built.SetStyles(ui.TableStyles())
@@ -172,85 +172,128 @@ func (view *Services) Update(msg tea.Msg) tea.Cmd {
 
 // handleAction maps the action keys to async commands; the bool reports whether
 // the key was an action (so it is not also passed to the table for navigation).
+// Each branch delegates to a per-action helper so this stays a flat dispatch; the
+// helpers own the (now-shared) selection + controllability guards.
 func (view *Services) handleAction(key tea.KeyMsg) (tea.Cmd, bool) {
-	service := view.selectedService()
-	switch key.String() {
+	switch keyName := key.String(); keyName {
 	case "s", "x", "r":
-		if service == "" {
-			return nil, true
-		}
-		// A disabled optional service must be enabled before it can be controlled.
-		if status := view.statusByName(service); status.Optional && !status.Enabled() {
-			view.flash = ui.Muted.Render(service + " is disabled — press e to enable it first")
-			view.closePanes() // show the hint over the table
-			return nil, true
-		}
-		action := map[string]string{"s": "start", "x": "stop", "r": "restart"}[key.String()]
-		view.flash = ui.Muted.Render(action + "ing " + service + "…")
-		view.closePanes() // surface the action's result over the table
-		return view.controlCmd(action, service), true
+		return view.handleLifecycle(keyName), true
 	case "p":
-		// Re-pull the latest images for the service and recreate its container.
-		if service == "" {
-			return nil, true
-		}
-		if status := view.statusByName(service); status.Optional && !status.Enabled() {
-			view.flash = ui.Muted.Render(service + " is disabled — press e to enable it first")
-			view.closePanes()
-			return nil, true
-		}
-		view.flash = ui.Muted.Render("updating " + service + " (re-pulling images)…")
-		view.closePanes()
-		return view.updateCmd(service), true
+		return view.handleUpdate(), true
 	case "e":
-		if service == "" {
-			return nil, true
-		}
-		// enable/disable applies only to optional services — core services are
-		// always on. Toggle based on the current state.
-		status := view.statusByName(service)
-		view.closePanes()
-		if !status.Optional {
-			view.flash = ui.Muted.Render(service + " is a core service — always enabled")
-			return nil, true
-		}
-		action, gerund := "enable", "enabling"
-		if status.Enabled() {
-			action, gerund = "disable", "disabling"
-		}
-		view.flash = ui.Muted.Render(gerund + " " + service + "…")
-		return view.controlCmd(action, service), true
+		return view.handleToggle(), true
 	case "o":
-		if service == "" {
-			return nil, true
-		}
-		url := view.consoleURL(service)
-		if url == "" {
-			view.flash = ui.Muted.Render(service + " has no admin console")
-			view.closePanes()
-			return nil, true
-		}
-		return view.openCmd(service, url), true
+		return view.handleOpenConsole(), true
 	case "enter", "d":
-		// enter / d both drill into the selected service's detail pane (closing the
-		// logs pane if it was the one open).
-		if service == "" {
-			return nil, true
-		}
-		view.logs.close()
-		view.describe.show(describeService(view.statusByName(service)))
-		return nil, true
+		return view.handleDescribe(), true
 	case "l":
-		// Switch to the live logs pane (closing the describe pane if it was open).
-		if service == "" {
-			return nil, true
-		}
-		view.describe.close()
-		view.logService = service
-		view.logs.showLive(view.serviceLogs(service))
-		return logsTick(), true // start following the tail
+		return view.handleShowLogs(), true
 	}
 	return nil, false
+}
+
+// selectedControllable resolves the selected service for a lifecycle/update action
+// and reports whether it can be acted on now: it returns ("", false) when nothing
+// is selected, or flashes a hint and returns ("", false) when the service is a
+// disabled optional one (which must be enabled with `e` first). On success it
+// returns the service name and true.
+func (view *Services) selectedControllable() (string, bool) {
+	service := view.selectedService()
+	if service == "" {
+		return "", false
+	}
+	// A disabled optional service must be enabled before it can be controlled.
+	if status := view.statusByName(service); status.Optional && !status.Enabled() {
+		view.flash = ui.Muted.Render(service + " is disabled — press e to enable it first")
+		view.closePanes() // show the hint over the table
+		return "", false
+	}
+	return service, true
+}
+
+// handleLifecycle runs a start/stop/restart on the selected controllable service.
+func (view *Services) handleLifecycle(keyName string) tea.Cmd {
+	service, ok := view.selectedControllable()
+	if !ok {
+		return nil
+	}
+	action := map[string]string{"s": "start", "x": "stop", "r": "restart"}[keyName]
+	view.flash = ui.Muted.Render(action + "ing " + service + "…")
+	view.closePanes() // surface the action's result over the table
+	return view.controlCmd(action, service)
+}
+
+// handleUpdate re-pulls the latest images for the selected controllable service
+// and recreates its container.
+func (view *Services) handleUpdate() tea.Cmd {
+	service, ok := view.selectedControllable()
+	if !ok {
+		return nil
+	}
+	view.flash = ui.Muted.Render("updating " + service + " (re-pulling images)…")
+	view.closePanes()
+	return view.updateCmd(service)
+}
+
+// handleToggle enables/disables the selected service (optional services only —
+// core services are always on).
+func (view *Services) handleToggle() tea.Cmd {
+	service := view.selectedService()
+	if service == "" {
+		return nil
+	}
+	status := view.statusByName(service)
+	view.closePanes()
+	if !status.Optional {
+		view.flash = ui.Muted.Render(service + " is a core service — always enabled")
+		return nil
+	}
+	action, gerund := "enable", "enabling"
+	if status.Enabled() {
+		action, gerund = "disable", "disabling"
+	}
+	view.flash = ui.Muted.Render(gerund + " " + service + "…")
+	return view.controlCmd(action, service)
+}
+
+// handleOpenConsole opens the selected service's admin console (if it has one).
+func (view *Services) handleOpenConsole() tea.Cmd {
+	service := view.selectedService()
+	if service == "" {
+		return nil
+	}
+	url := view.consoleURL(service)
+	if url == "" {
+		view.flash = ui.Muted.Render(service + " has no admin console")
+		view.closePanes()
+		return nil
+	}
+	return view.openCmd(service, url)
+}
+
+// handleDescribe drills into the selected service's detail pane (closing the logs
+// pane if it was the one open).
+func (view *Services) handleDescribe() tea.Cmd {
+	service := view.selectedService()
+	if service == "" {
+		return nil
+	}
+	view.logs.close()
+	view.describe.show(describeService(view.statusByName(service)))
+	return nil
+}
+
+// handleShowLogs switches to the live logs pane for the selected service (closing
+// the describe pane if it was open).
+func (view *Services) handleShowLogs() tea.Cmd {
+	service := view.selectedService()
+	if service == "" {
+		return nil
+	}
+	view.describe.close()
+	view.logService = service
+	view.logs.showLive(view.serviceLogs(service))
+	return logsTick() // start following the tail
 }
 
 // closePanes hides both the describe and logs panes so the table (and any flash)

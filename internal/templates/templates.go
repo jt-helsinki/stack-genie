@@ -1,6 +1,6 @@
 // Package templates embeds the source environment templates (OS base
 // Dockerfiles, software-stack snippets, agent-CLI snippets) and installs them
-// into ~/.ai-platform/templates (repo-layout §1.5). `ai project create` composes
+// into ~/.ai-platform/templates (repo-layout §1.5). `ai create` composes
 // a project's .ai-platform/Dockerfile from the installed copies (internal/envimage),
 // so a user can customize them after install.
 package templates

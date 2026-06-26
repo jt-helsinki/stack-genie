@@ -14,14 +14,14 @@ type ProjectInfoFetcher func(name string) (project.Entry, bool, error)
 
 // ExecRequestedMsg is emitted when the user asks to open an interactive shell in
 // the current project's workspace (the "e" key). The parent app suspends the TUI
-// and tea.ExecProcess an interactive shell via `ai workspace shell`.
+// and tea.ExecProcess an interactive shell via `ai shell`.
 type ExecRequestedMsg struct {
 	Project string
 }
 
 // WorkspaceActionRequestedMsg is emitted for a workspace lifecycle action
 // (start/stop/restart/destroy). The parent app suspends the TUI and runs
-// `ai workspace <action> <project>` via tea.ExecProcess, so msb's image-build /
+// `ai <action> <name>` via tea.ExecProcess, so msb's image-build /
 // boot progress streams to the REAL terminal (not the alt-screen, which it would
 // otherwise corrupt) and the TUI is restored — and refreshed — on return.
 type WorkspaceActionRequestedMsg struct {

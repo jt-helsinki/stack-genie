@@ -2,7 +2,7 @@
 // (arch §26). A workspace is a read-only image (built from the project's
 // Dockerfile, §25) plus this writable overlay: everything written inside the
 // microVM — installed programs, agent state, any file outside the project
-// mount — lands here and survives stop/start and `ai workspace destroy`
+// mount — lands here and survives stop/start and `ai destroy`
 // recreation. The overlay is keyed by workspace ID and lives under
 // ~/.ai-platform/overlays/<workspace-id>/.
 //
@@ -59,8 +59,8 @@ func Exists(workspaceID string) (bool, error) {
 }
 
 // Remove deletes the overlay directory for a workspace. This is permanent
-// removal (arch §26): only `ai project delete` calls it — `ai workspace
-// destroy` keeps the overlay so `start` fully recovers the workspace.
+// removal (arch §26): only `ai delete` calls it — `ai destroy`
+// keeps the overlay so `start` fully recovers the workspace.
 // Idempotent: removing a non-existent overlay is not an error.
 func Remove(workspaceID string) error {
 	overlayPath, err := Path(workspaceID)

@@ -74,7 +74,7 @@ var ErrUnknownProject = errors.New("unknown project")
 // stopped or was never started (→ exit 2). The message is the user-facing nudge to
 // start it; it covers both cases (the platform tracks the running state in the
 // lifecycle handle, set by start/stop).
-var ErrNotStarted = errors.New("workspace is not running — run `ai workspace start` first")
+var ErrNotStarted = errors.New("workspace is not running — run `ai start` first")
 
 // ErrAlreadyStopped lets a Sandbox.Stop signal that the microVM was already
 // stopped. Restart treats this as a no-op (it only needs the microVM down before
@@ -703,7 +703,7 @@ func (manager Manager) findHandle(root, name string) (*state.Workspace, error) {
 
 // DestroyIfPresent tears down the project's workspace microVM only when a
 // workspace handle exists and is not already destroyed. It is the idempotent
-// teardown `ai project delete` layers on before removing project state (CLI
+// teardown `ai delete` layers on before removing project state (CLI
 // §3.4): a project that was never started (no handle) is a no-op, so deleting a
 // project with no workspace still works. A still-existing handle is destroyed via
 // the normal Destroy path (so state is stamped destroyed). Returns nil when there
@@ -752,7 +752,7 @@ func (manager Manager) Exec(project string, argv []string) (ExecResult, error) {
 // start/stop) rather than poking msb, because `msb exec` against a STOPPED microVM
 // hangs (and `msb exec -t` against a missing one can leave the terminal in raw
 // mode). A stopped or never-started workspace fails fast with ErrNotStarted, whose
-// message tells the user to run `ai workspace start`.
+// message tells the user to run `ai start`.
 func (manager Manager) requireRunning(project string) error {
 	root, err := resolveProjectRoot(project)
 	if err != nil {

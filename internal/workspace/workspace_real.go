@@ -213,7 +213,7 @@ func (sandbox realSandbox) execAs(name, user string, argv []string) (ExecResult,
 		return result, nil
 	}
 	// Anything else (couldn't launch msb, signal, etc.) is an infra failure.
-	return ExecResult{}, fmt.Errorf("could not run the command in workspace %q — is it running? start it with `ai workspace start`", name)
+	return ExecResult{}, fmt.Errorf("could not run the command in workspace %q — is it running? start it with `ai start`", name)
 }
 
 // ExecInteractive runs argv inside the running microVM attached to the caller's
@@ -240,7 +240,7 @@ func (sandbox realSandbox) ExecInteractive(name string, argv []string) error {
 		if errors.As(err, &exitError) {
 			return nil // the inner program exited non-zero — normal end of session
 		}
-		return fmt.Errorf("lost the connection to workspace %q — restart it with `ai workspace start`", name)
+		return fmt.Errorf("lost the connection to workspace %q — restart it with `ai start`", name)
 	}
 	return nil
 }

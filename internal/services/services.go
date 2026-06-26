@@ -409,10 +409,16 @@ func UIVhosts() []UIVhost {
 	return vhosts
 }
 
-// VersionPins returns the versions.yaml Services map content: every component's
-// pin keyed by its image-key (including the split presidio keys and litellm-db),
-// plus the native microsandbox runtime. This is exactly the key set
-// versions.Default() produces.
+// VersionPins returns the versions.yaml Services map content: every CONTAINER
+// component's pin keyed by its image-key (including the split presidio keys and
+// litellm-db). This is exactly the key set versions.Default() produces.
+//
+// The native microsandbox runtime is deliberately EXCLUDED: it is a user-installed
+// prerequisite that `ai setup`/`ai doctor` DETECT on PATH, not an image the
+// platform pulls or pins — so emitting its placeholder version/SHA into
+// versions.yaml would be a fake, never-actionable "pin". It still lives in the
+// registry (NativeRuntime) for its log scope + console slot; it just does not
+// belong in the image pin set.
 func VersionPins() map[string]Pin {
 	pins := make(map[string]Pin)
 	for _, service := range registry {
@@ -420,6 +426,5 @@ func VersionPins() map[string]Pin {
 			pins[component.ImageKey] = component.Pin
 		}
 	}
-	pins[nativeRuntime.Name] = nativeRuntime.Pin
 	return pins
 }

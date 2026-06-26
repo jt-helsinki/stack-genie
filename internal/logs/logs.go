@@ -7,8 +7,10 @@
 // The live capture that writes these files is the snapshot in
 // setup.realServices.CaptureServiceLogs (run by `ai setup` and `ai services
 // status`), which is the SOLE container-runtime touch-point — this package stays
-// a pure file reader (no docker dependency). Continuous follow (`logs -f`) is a
-// later enhancement. A missing logs dir yields an empty result, not an error.
+// a pure file reader (no docker dependency). This package reads the on-disk
+// snapshot; continuous follow (`ai logs --service <name> --follow`) is handled
+// separately by setup.FollowServiceLogs, which streams the live container logs. A
+// missing logs dir yields an empty result, not an error.
 package logs
 
 import (
@@ -26,9 +28,10 @@ const TailLines = 200
 
 // Services returns the host services accepted by `ai logs --service` (CLI §13.1):
 // the microVM runtime (microsandbox) plus every container in the service tier —
-// ollama, presidio, litellm, headroom, proxy, dns. Logs are per-CONTAINER, so
-// this is finer-grained than `ai services` (which acts on whole logical
-// services). A service value selects a log source by substring match on the
+// ollama, presidio, litellm, headroom, proxy, dns. Log scopes are per logical
+// service (some services aggregate multiple containers — e.g. presidio covers the
+// analyzer + anonymizer pair, and litellm-db has no scope of its own). A service
+// value selects a log source by substring match on the
 // *.log file names under ~/.ai-platform/logs (see Sources); those files are
 // written by setup.realServices.CaptureServiceLogs (a point-in-time snapshot run
 // by `ai setup` / `ai services status`), so for services with nothing on disk yet

@@ -253,7 +253,7 @@ Purpose:
 * renders each service config from the platform config and verifies the
   Microsandbox runtime + host virtualization (no docker compose; the whole
   service tier runs as containers, so there is no native OS service to register)
-* provisions a small **Postgres** (`aip-litellm-db`, `postgres:18.4-alpine3.24`)
+* provisions a small **Postgres** (`aip-litellm-db`, `postgres:18.4-alpine3.23`)
   that backs LiteLLM's DB-only features (admin UI login, virtual keys, spend
   tracking — PostgreSQL is the only engine LiteLLM supports for these). It runs
   on a private docker network (`aip-net`) with trust auth (so `DATABASE_URL`

@@ -31,7 +31,7 @@ const (
 // workspace per project; multi-agent work happens inside it and is the
 // in-workspace agent CLI's concern, not the platform's. It carries both yaml and
 // json tags: yaml for the on-disk handle, json for the --json output envelope
-// (`ai workspace list` emits it directly).
+// (`ai list` emits it directly).
 type Workspace struct {
 	SchemaVersion  int             `json:"schema_version" yaml:"schema_version"`
 	ID             string          `json:"id" yaml:"id"`

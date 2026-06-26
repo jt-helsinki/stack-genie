@@ -367,7 +367,7 @@ ai logs --service <svc>      one log surface
 
 | Service | Run mode | Why |
 |---|---|---|
-| nginx proxy | container (via Runtime) `aip-proxy` (`nginx:1.27-alpine`) | the SOLE host ENTRY to the service tier: publishes ONLY :18787 — the default server (`/`+`/v1`→Headroom, `/llm`→LiteLLM, `/ollama`→Ollama) plus the single Host-based UI vhost on the same port (`litellm.<domain>`); HTTPS termination point later (§10) |
+| nginx proxy | container (via Runtime) `aip-proxy` (`nginx:stable-alpine3.23-slim`) | the SOLE host ENTRY to the service tier: publishes ONLY :18787 — the default server (`/`+`/v1`→Headroom, `/llm`→LiteLLM, `/ollama`→Ollama) plus the single Host-based UI vhost on the same port (`litellm.<domain>`); HTTPS termination point later (§10) |
 | Headroom | container (via Runtime) `aip-headroom` | shared input-compression proxy in front of LiteLLM; INTERNAL-ONLY on :8787 behind nginx (no host publish); HTTP only (§10) |
 | LiteLLM | container (via Runtime) `aip-litellm` (+ `aip-litellm-db` Postgres) | INTERNAL-ONLY: no host publish, reached by name (`aip-litellm:4000`) by Headroom + nginx's `/llm` route; HTTP only; no host privileges |
 | Presidio | two containers (via Runtime) `aip-presidio-analyzer` + `aip-presidio-anonymizer` | back LiteLLM's always-on secret-masking guardrail; internal-only, not published (§15) |
@@ -768,7 +768,7 @@ Headroom now runs as a **shared host container** (`aip-headroom`, image
 It is the **input-compression proxy in front of LiteLLM**, forwarding to LiteLLM
 via `OPENAI_TARGET_API_URL=http://aip-litellm:4000`. Headroom is now
 **INTERNAL-ONLY** on `aip-net` (no host publish): the gateway ENTRY is the
-**`aip-proxy` nginx reverse proxy** (`nginx:1.27-alpine`), the **SOLE host entry
+**`aip-proxy` nginx reverse proxy** (`nginx:stable-alpine3.23-slim`), the **SOLE host entry
 point** to the whole service tier. The model path is **microVM → nginx (:18787,
 `location /v1`) → Headroom (compress) → LiteLLM** — preserved unchanged, this is
 what every workspace agent's `base_url=…/v1` hits; the nginx config disables
@@ -1016,11 +1016,11 @@ Purpose:
 
 It does not make model-selection decisions on the agent's behalf.
 
-LiteLLM runs as container `aip-litellm` (image `ghcr.io/berriai/litellm:main-latest`,
+LiteLLM runs as container `aip-litellm` (image `ghcr.io/berriai/litellm:latest`,
 `:4000`) on the `aip-net` network — **INTERNAL-ONLY** (no host publish; reached by
 name `aip-litellm:4000` by Headroom and by nginx's `/llm` route + `litellm.<domain>`
 vhost). Its DB-backed admin UI / virtual keys require
-PostgreSQL: container `aip-litellm-db` (image `postgres:18.4-alpine3.24`, data
+PostgreSQL: container `aip-litellm-db` (image `postgres:18.4-alpine3.23`, data
 volume mounted at `/var/lib/postgresql`, `trust` auth on the private network,
 host port bound at `127.0.0.1:5442`). This Postgres is the one stateful piece of
 the service tier.

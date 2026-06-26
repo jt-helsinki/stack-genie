@@ -1,5 +1,5 @@
 // Package project implements project scaffolding and teardown for
-// `ai project create|delete|list` (CLI §3). Create's interactive wizard lives in
+// `ai create|delete|list` (CLI §3). Create's interactive wizard lives in
 // the CLI layer; this package owns the deterministic work: validate the choices,
 // write the project's tracked .ai-platform/ files (Dockerfile via envimage,
 // config.yaml, profile.yaml, project.yaml, .gitignore) and the global index.
@@ -57,7 +57,7 @@ func ValidateName(name string) error {
 }
 
 // RootPath returns the default host source path for a project (~/projects/<name>).
-// `ai project create` creates the project in the current directory and sets
+// `ai create` creates the project in the current directory and sets
 // Spec.Root explicitly; RootPath remains the fallback when Root is unset.
 func RootPath(name string) (string, error) {
 	projectsDir, err := paths.ProjectsDir()
@@ -217,7 +217,7 @@ type Entry struct {
 
 // List returns the registered projects (from the global index), each enriched
 // with the OS + active agent CLIs from its config and the current workspace
-// status, so `ai project list` reports the full row the spec promises (§3.3).
+// status, so `ai list` reports the full row the spec promises (§3.3).
 func List() ([]Entry, error) {
 	index, err := state.LoadIndex()
 	if err != nil {
@@ -284,7 +284,7 @@ func Delete(name string, purge bool) error {
 	}
 
 	// Permanent removal: drop the project's persistent overlay (arch §26).
-	// Unlike `ai workspace destroy`, deleting the project removes the overlay.
+	// Unlike `ai destroy`, deleting the project removes the overlay.
 	if err := overlay.Remove(workspace.Name(name)); err != nil {
 		return err
 	}
