@@ -466,7 +466,12 @@ func (view *Models) header() string {
 		// routing); see litellm.Status.
 		body.WriteString(field("providers", strings.Join(view.status.Providers, ", ")))
 		body.WriteString(field("base url", view.status.BaseURL))
-		body.WriteString(renderServedModels(view.status))
+		// The served models themselves live in the (scrollable) table below — the
+		// header stays compact so it never overflows the pane. Surface only the
+		// gateway's model-list NOTE (reachable but the list couldn't be fetched).
+		if len(view.status.Models) == 0 && view.status.ModelsNote != "" {
+			body.WriteString(ui.Muted.Render("served models: "+view.status.ModelsNote) + "\n")
+		}
 	}
 	body.WriteString("\n" + ui.Heading.Render("Models — local (Ollama) + cloud (models.dev catalog)") + "\n")
 	// The table merges Ollama (installed/installable) + cloud (registered/available)
@@ -509,40 +514,6 @@ func (view *Models) View() string {
 		body.WriteString("\n" + view.flash)
 	}
 	return body.String()
-}
-
-// renderServedModels renders the LIVE list of models the gateway serves, collapsed
-// via litellm.DisplayModels so concrete models already covered by their provider's
-// `*/` wildcard are dropped (the providers line already summarizes the wildcards).
-// When the filtered set is empty, the heading is omitted entirely. When the gateway
-// is reachable but the list could not be fetched, the note is shown instead.
-func renderServedModels(status litellm.StatusInfo) string {
-	if !status.Healthy {
-		return ""
-	}
-	display := litellm.DisplayModels(status.Models)
-	var section strings.Builder
-	switch {
-	case len(display) > 0:
-		section.WriteString(ui.Muted.Render("served models (live):") + "\n")
-		for _, model := range display {
-			descriptor := model.Provider
-			if model.Mode != "" {
-				if descriptor != "" {
-					descriptor += ", "
-				}
-				descriptor += model.Mode
-			}
-			line := "  " + model.Name
-			if descriptor != "" {
-				line += "  (" + descriptor + ")"
-			}
-			section.WriteString(line + "\n")
-		}
-	case len(status.Models) == 0 && status.ModelsNote != "":
-		section.WriteString(ui.Muted.Render("served models: "+status.ModelsNote) + "\n")
-	}
-	return section.String()
 }
 
 // describeModel fetches the full /api/show detail for the named model and renders

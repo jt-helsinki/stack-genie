@@ -56,62 +56,9 @@ func TestModelsPopulatesOnRefresh(test *testing.T) {
 	}
 }
 
-// The routing section renders the LIVE served-model list, collapsed via
-// DisplayModels: a concrete alias covered by its provider wildcard is dropped, the
-// wildcard + uncovered concrete models are kept.
-func TestModelsRoutingShowsCollapsedServedModels(test *testing.T) {
-	status := litellm.StatusInfo{
-		Healthy:   true,
-		Default:   "gemma4",
-		Providers: []string{"anthropic", "ollama"},
-		BaseURL:   "http://localhost:14000",
-		Models: []litellm.Model{
-			{Name: "anthropic/*", Provider: "anthropic"},
-			{Name: "claude-opus", Provider: "anthropic"}, // covered by anthropic/* → dropped
-			{Name: "gemma4", Provider: "ollama"},         // no ollama/* wildcard → kept
-		},
-	}
-	view := NewModels(
-		func() (litellm.StatusInfo, error) { return status, nil },
-		func(string) (litellm.TestResult, error) { return litellm.TestResult{}, nil },
-		noLocalModels, noPopular, noShow,
-	)
-	refreshModels(view)
-
-	rendered := view.View()
-	for _, want := range []string{"served models (live)", "anthropic/*", "gemma4"} {
-		if !strings.Contains(rendered, want) {
-			test.Errorf("routing section missing %q:\n%s", want, rendered)
-		}
-	}
-	if strings.Contains(rendered, "claude-opus") {
-		test.Errorf("alias covered by anthropic/* should be collapsed away:\n%s", rendered)
-	}
-}
-
-// When every served model collapses under a wildcard, the served-models heading is
-// omitted (the providers line already summarizes the wildcards).
-func TestModelsRoutingOmitsServedHeadingWhenEmpty(test *testing.T) {
-	status := litellm.StatusInfo{
-		Healthy:   true,
-		Default:   "gemma4",
-		Providers: []string{"anthropic"},
-		BaseURL:   "http://localhost:14000",
-		Models: []litellm.Model{
-			{Name: "anthropic/*", Provider: "anthropic"},
-		},
-	}
-	view := NewModels(
-		func() (litellm.StatusInfo, error) { return status, nil },
-		func(string) (litellm.TestResult, error) { return litellm.TestResult{}, nil },
-		noLocalModels, noPopular, noShow,
-	)
-	refreshModels(view)
-	// anthropic/* is itself a wildcard, so it is kept and the heading shows.
-	if !strings.Contains(view.View(), "anthropic/*") {
-		test.Errorf("the wildcard itself should still render:\n%s", view.View())
-	}
-}
+// The served models themselves render in the (scrollable) table, not the header —
+// the header stays compact so it never overflows the pane. (The DisplayModels
+// collapse rule is unit-tested in internal/litellm.)
 
 // When the gateway is reachable but the model list could not be fetched, the routing
 // section shows the note instead of erroring.
