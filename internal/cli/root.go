@@ -74,6 +74,10 @@ func Execute() int {
 		},
 	}
 
+	// Style cobra's --help/usage output with the platform palette (headers pink,
+	// command names pink, flags blue, footer muted). Inherited by every subcommand.
+	applyStyledHelp(root)
+
 	persistentFlags := root.PersistentFlags()
 	persistentFlags.BoolVar(&flags.json, "json", false, "machine-readable output (CLI spec §19)")
 	persistentFlags.BoolVar(&flags.plain, "plain", false, "plain, non-interactive human output — no TUI spinners/colour")
