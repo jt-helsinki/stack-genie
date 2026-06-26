@@ -111,10 +111,11 @@ func TestDoctorAlwaysReportsExit0(test *testing.T) {
 	}
 }
 
-// `ai doctor` lists every managed service — including the optional open-webui and
-// odysseus — in its SERVICES section (sourced from setup.ServicesStatus). Off
-// hardware the probes report stopped/not-installed; we assert the service NAMES
-// appear, not that they are healthy.
+// `ai doctor` lists every managed host service in its SERVICES section (sourced
+// from setup.ServicesStatus). Off hardware the probes report stopped/not-installed;
+// we assert the service NAMES appear, not that they are healthy. open-webui and
+// odysseus are NO LONGER host services (open-webui is now a per-workspace in-VM app;
+// odysseus was removed), so they are intentionally absent.
 func TestDoctorListsAllServices(test *testing.T) {
 	harness := New(test)
 	envelope, code := harness.Run(test, "doctor")
@@ -129,9 +130,14 @@ func TestDoctorListsAllServices(test *testing.T) {
 	for _, check := range data.Checks {
 		names[check.Name] = true
 	}
-	for _, want := range []string{"ollama", "litellm", "headroom", "proxy", "dns", "open-webui", "odysseus"} {
+	for _, want := range []string{"ollama", "litellm", "headroom", "proxy", "dns"} {
 		if !names[want] {
 			test.Errorf("doctor SERVICES section missing %q (got %v)", want, names)
+		}
+	}
+	for _, gone := range []string{"open-webui", "odysseus"} {
+		if names[gone] {
+			test.Errorf("doctor should NOT list the removed host service %q (got %v)", gone, names)
 		}
 	}
 }
