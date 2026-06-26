@@ -398,10 +398,10 @@ service configs live under `config/<service>/`.
   `latest`; no digests — they are platform/arch specific — `config/versions.yaml`,
   §27); native binaries are downloaded as pinned, checksum-verified release
   artifacts into `tools/<name>/<version>/`
-* **configure**: rendered from platform config — LiteLLM routing/aliases (§14–15)
-  reference the provider keys via `os.environ/<VAR>`, so the **real provider
-  credentials live in the LiteLLM gateway** — supplied as env passthrough at
-  launch and/or held in its Postgres-backed store (§17) — never on platform disk;
+* **configure**: rendered from platform config — the LiteLLM config carries no
+  model list (models are DB-backed, §14–15), so the **real provider credentials
+  live in the LiteLLM gateway**, stored **encrypted in its Postgres DB** under
+  `LITELLM_SALT_KEY` and managed via `ai keys` (§17) — never on platform disk;
   Microsandbox driven non-interactively per workspace (image, mounts/volumes,
   resource limits) via the Go SDK / `msb`; Ollama registered as a LiteLLM
   provider (required local backend)
@@ -978,27 +978,28 @@ Provider
 
 The platform does **not** define per-task routing policies — model selection is
 the agent's job (OpenCode/Claude Code/Codex/Gemini each choose their model). LiteLLM
-provides only a unified endpoint, provider aliasing, a single default, and
-failover.
+provides only a unified endpoint and failover; it makes no model-selection decision.
 
-**Available models are configured once, globally, in LiteLLM's `model_list`** —
-there is **no per-project model configuration**. In an agentic workflow the agent
-simply names the model on each request (`model: <alias>`); if that alias is in
-the `model_list`, LiteLLM routes it to the provider (attaching its own stored key
-for cloud, none for Ollama). So "using several models, one per task" needs no
-platform routing logic — register the desired models in the catalog and the
-agent picks among them. A model is usable when it is (a) in the `model_list` and
-(b) actually available: an Ollama model must be **pulled** locally; a cloud model
-needs its key present in the LiteLLM gateway (§17).
+**Available models live entirely in the LiteLLM DB** (`general_settings.store_model_in_db: true`),
+not in the rendered config — there is **no `model_list`, no named aliases, no
+per-provider wildcards, and no default model** in the generated `config.yaml`
+(`litellm.DefaultRouting()` is the zero `Routing`). The served set is reconciled
+from the **models.dev catalog** (`internal/catalog`, fetched to
+`~/.ai-platform/volumes/catalog.json`) keyed by which providers the user has
+supplied an API key for: adding a provider key (`ai keys add`, §17) registers
+that provider's catalog models into the DB via `litellm.SyncModels`, and an
+`ollama pull`/`rm` registers/unregisters the corresponding `ollama/<name>` served
+model. The catalog id is the public `model_name` verbatim; the
+catalog-id→LiteLLM-prefix map (e.g. `google` → `gemini`) supplies each model's
+routing prefix. In an agentic workflow the agent names a model on each request
+and LiteLLM routes it to the provider (attaching its own stored key for cloud,
+none for Ollama). A model is usable when it is (a) registered in the DB and
+(b) actually available: an Ollama model must be **pulled** locally; a cloud
+model needs its provider key present in the gateway (§17).
 
-The **default model provider is Ollama** (the required local backend, no
-credential): an unqualified request routes locally. Cloud providers are
-available as aliases for explicit selection but are not the default.
-
-```yaml
-routing:
-  default: gemma4   # -> ollama/gemma4:31b (local, default provider)
-```
+There is no default model: an unqualified request is the agent's responsibility.
+Ollama (the required local backend, no credential) is always available once a
+model is pulled.
 
 ---
 
@@ -1010,7 +1011,7 @@ Purpose:
 
 * unified provider endpoint for all tools (and Ollama)
 * single point that holds the real provider keys (keys-in-LiteLLM, §17)
-* model aliasing
+* the DB-backed served-model catalogue (synced from models.dev by `ai keys`, §14)
 * failover
 * monitoring
 
@@ -1159,49 +1160,38 @@ per-guard install, so it cannot ship fully automated).
 
 ---
 
-## Catalogue & Aliases
+## Catalogue
 
-The catalogue exposes a **full per-provider model list via wildcards**, so the
-agent can name *any* model from Ollama, OpenAI, Anthropic, or Google Gemini —
-LiteLLM routes it on demand without each model being enumerated. Registering a
-model does **not** install it: an Ollama model must still be `ollama pull`ed, and
-a cloud model still needs its key present in the LiteLLM gateway (§17). A few
-named handles point at the recommended model per provider; `gemma4` (local) is
-the default.
-
-```yaml
-model_list:
-  # Recommended named handles
-  - { model_name: gemma4,      litellm_params: { model: ollama/gemma4:31b } }   # default (local, no credential)
-  - { model_name: gpt-5.5,     litellm_params: { model: openai/gpt-5.5,    api_key: os.environ/OPENAI_API_KEY } }
-  - { model_name: claude-opus, litellm_params: { model: anthropic/claude-opus-4-8, api_key: os.environ/ANTHROPIC_API_KEY } }
-  - { model_name: gemini-pro,  litellm_params: { model: gemini/gemini-3.5-flash,   api_key: os.environ/GEMINI_API_KEY } }
-  # Full per-provider catalogue (any model, routed on demand)
-  - { model_name: "ollama/*",    litellm_params: { model: "ollama/*" } }
-  - { model_name: "openai/*",    litellm_params: { model: "openai/*",    api_key: os.environ/OPENAI_API_KEY } }
-  - { model_name: "anthropic/*", litellm_params: { model: "anthropic/*", api_key: os.environ/ANTHROPIC_API_KEY } }
-  - { model_name: "gemini/*",    litellm_params: { model: "gemini/*",    api_key: os.environ/GEMINI_API_KEY } }
-  - { model_name: "groq/*",      litellm_params: { model: "groq/*",      api_key: os.environ/GROQ_API_KEY } }
-```
+The served catalogue is **DB-backed and key-driven**: the rendered LiteLLM config
+carries no `model_list` (§14). Models are reconciled into the gateway DB from the
+**models.dev catalog** (`internal/catalog`, saved at
+`~/.ai-platform/volumes/catalog.json`, refreshed at `ai setup` and on the Models
+pane's `r` key) keyed by which providers the user has supplied a key for: adding a
+provider key (`ai keys add`, §17) registers that provider's catalog models via
+`litellm.SyncModels`; removing it unregisters them; an `ollama pull`/`rm`
+registers/unregisters the matching `ollama/<name>`. Registering a model does **not**
+install it: an Ollama model must still be `ollama pull`ed, and a cloud model still
+needs its provider key present in the gateway (§17). The catalog id is the public
+`model_name` verbatim; the catalog-id→LiteLLM-prefix map (e.g. `google` → `gemini`)
+supplies the routing prefix. There is no default model.
 
 ### In-VM model picker
 
-The wildcards let the agent name *any* model, but for discoverability the in-VM
-agent CLIs are seeded with a curated **picker** built at workspace start
-(`internal/workspace.pickerModels`): the deduped, sorted UNION of (a) the named
-aliases, (b) the **installed** local Ollama models (rendered `ollama/<name>`,
-listed live via the injected lister — skipped, never fatal, if Ollama is down),
-and (c) a maintainer-curated **cloud seed** (`internal/agentcfg/cloud_models.yaml`,
-an editable `<provider>/<model-id>` list across openai/anthropic/gemini/groq).
-Editing the seed adds/removes picker suggestions with no code change — LiteLLM's
-wildcards route whatever is named. The platform also installs an in-VM
+For discoverability the in-VM agent CLIs are seeded with a **picker** built at
+workspace start (`internal/workspace.pickerModels`): it is **exactly the set of
+models the LiteLLM gateway currently serves** — its live DB-backed models — sourced
+via the injected `workspace.ServedModels` → `litellm.KeyManager.ListModels`,
+deduped and sorted. If the gateway is unreachable the picker **degrades to an empty
+list** (never fatal — it must never fail a workspace start), and **no default model
+is written** to the agent configs. The platform also installs an in-VM
 `refresh-models` command (`/usr/local/bin/refresh-models`, from
-`agentcfg.RefreshScript`) that re-fetches the installed-local set live from the
-gateway's `/ollama` tags route and rewrites the agent-CLI configs, so a model
-pulled after start can be picked up without recreating the workspace. (The full
-ollama.com library snapshot baked at `internal/ollama/models.yaml` is a separate,
-regenerable catalogue backing the *host-side* `ai models` browse — not the in-VM
-picker.)
+`agentcfg.RefreshScript`) that re-fetches the served list from the gateway's
+`/v1/models` endpoint (authenticated with the scoped virtual key) and rewrites the
+agent-CLI configs to match a fresh start, so models registered after start can be
+picked up without recreating the workspace; on failure it leaves the configs
+untouched. (The full ollama.com library snapshot baked at
+`internal/ollama/models.yaml` is a separate, regenerable catalogue backing the
+*host-side* `ai models` browse — not the in-VM picker.)
 
 ---
 
@@ -1238,14 +1228,15 @@ all of this is governed by the Microsandbox NetworkPolicy (§29.4).
 Provider credentials live **in the LiteLLM gateway** — never on platform disk and
 never in the workspace. This is the **keys-in-LiteLLM** model:
 
-* the real provider API keys (OpenAI, Anthropic, Gemini, Groq, …) are supplied to
-  LiteLLM as **environment passthrough at launch** and/or held in its
-  **Postgres-backed store** (the same DB that backs the admin UI and virtual
-  keys, §15);
-* the rendered LiteLLM config references them only as `os.environ/<VAR>` (§15),
-  so no plaintext key is written into the config or anywhere on platform disk;
+* the real provider API keys (OpenAI, Anthropic, Gemini, Groq, …) are added with
+  `ai keys add <provider>` and held **encrypted** in LiteLLM's **Postgres-backed
+  credential store** (the same DB that backs the admin UI and virtual keys, §15),
+  encrypted under `LITELLM_SALT_KEY` (`litellm.KeyManager.SetCredential`);
+* the rendered LiteLLM config carries **no `model_list` and no key references** —
+  models are DB-backed (§14) — so no plaintext key (and no model definition) is
+  written into the config or anywhere on platform disk;
 * when LiteLLM routes a request to a cloud provider, it attaches the real key
-  from its own store on the upstream call — the agent never sees it.
+  from its own encrypted store on the upstream call — the agent never sees it.
 
 The two security concerns that used to be one component's job are now split
 across mechanisms that already exist on the path:
@@ -1283,21 +1274,27 @@ virtual key, which the gateway can revoke or rate-limit independently.
 
 ## Credential Bootstrap
 
-The user manages the LiteLLM-side credentials through the `ai secrets` commands
-(`04-cli-specification.md` §16.1); the platform never writes the values to its own
-disk:
+The user manages provider API keys through the `ai keys` commands (which **replace**
+the removed `ai secrets`); the platform never writes the key values to its own disk:
 
-* `ai secrets set <name> --stdin` records a provider credential for the LiteLLM
-  gateway (env passthrough at launch / its Postgres-backed store)
-* `ai secrets list` shows names and metadata only, never values
-* `ai secrets rm <name>` removes a stored credential
+* `ai keys add <provider>` stores the provider's API key — **encrypted in the
+  LiteLLM Postgres DB** under `LITELLM_SALT_KEY` (`litellm.KeyManager.SetCredential`)
+  — and registers that provider's models.dev catalog models into the gateway DB
+  (`litellm.SyncModels`). The key is read hidden on a TTY, or via `--value`/`--stdin`
+  under `--json`/no-TTY; it never appears in argv, logs, or the JSON envelope.
+* `ai keys list` shows each routable provider and **whether a key is set** (plus its
+  catalog model count) — never the key value (`litellm.KeyManager.ListCredentials`).
+* `ai keys remove <provider>` deletes the stored key
+  (`litellm.KeyManager.DeleteCredential`) and unregisters that provider's models from
+  the gateway DB.
 
-`ai setup` determines which provider credentials the configured routing
-needs (§14). A missing credential is **not** a setup hard-fail: interactively
-`setup` may prompt for it; non-interactively it proceeds and warns. A provider
-whose credential is absent is reported by `ai doctor`, and the actual model call
-fails (exit `5`) only when that credential is genuinely needed at request time.
-The platform never fabricates or defaults a secret.
+`ai setup` fetches + persists the models.dev catalog (so the saved copy is current);
+it does not itself register models — a provider's catalog models are registered the
+moment its key is added with `ai keys add`. A missing provider key is **not** a setup
+hard-fail: a provider with no key simply has no models registered, and that is
+reported by `ai keys list` / `ai doctor`.
+The actual model call fails (exit `5`) only when a key is genuinely needed at request
+time and absent. The platform never fabricates or defaults a key.
 
 ---
 

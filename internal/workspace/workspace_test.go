@@ -11,7 +11,6 @@ import (
 	"github.com/jt-helsinki/ideal-robot/internal/config"
 	"github.com/jt-helsinki/ideal-robot/internal/contextopt"
 	"github.com/jt-helsinki/ideal-robot/internal/litellm"
-	"github.com/jt-helsinki/ideal-robot/internal/ollama"
 	"github.com/jt-helsinki/ideal-robot/internal/overlay"
 	"github.com/jt-helsinki/ideal-robot/internal/runtime"
 	"github.com/jt-helsinki/ideal-robot/internal/state"
@@ -153,7 +152,8 @@ func TestStartBuildsAndRecordsStartedHandle(test *testing.T) {
 	builder := &fakeBuilder{}
 	sandbox := &fakeSandbox{}
 	minter := &fakeKeyMinter{}
-	manager := Manager{Builder: builder, Sandbox: sandbox, Keys: minter, Now: func() string { return "2026-06-18T00:00:00Z" }}
+	served := fakeServedModels{models: []string{"ollama/gemma4:latest"}}
+	manager := Manager{Builder: builder, Sandbox: sandbox, Keys: minter, Served: served, Now: func() string { return "2026-06-18T00:00:00Z" }}
 
 	handle, err := manager.Start("app")
 	if err != nil {
@@ -567,16 +567,15 @@ func TestStartWritesTmuxConf(test *testing.T) {
 // TestStartInstallsRefreshScript verifies Start stages the per-workspace
 // `refresh-models` script via WriteFile and installs it onto PATH executable
 // (sudo install -m 0755 → /usr/local/bin/refresh-models). The staged script must
-// bake in the resolved gateway URL, the minted scoped key, the default model, and
-// the NON-dynamic static models (named aliases ∪ cloud seed) — but NOT the live
-// local models, which the script fetches itself.
+// bake in the resolved gateway URL, the minted scoped key, and the Headroom knobs —
+// but NOT any model list: the script fetches the served models live from /v1/models.
 func TestStartInstallsRefreshScript(test *testing.T) {
 	_ = seedProject(test, "app")
 	sandbox := &fakeSandbox{}
-	lister := fakeModelLister{models: []ollama.Model{{Name: "llama3.2:latest"}}}
+	served := fakeServedModels{models: []string{"ollama/llama3.2:latest"}}
 	manager := Manager{
 		Builder: &fakeBuilder{}, Sandbox: sandbox, Keys: &fakeKeyMinter{},
-		Ollama: lister, Now: func() string { return "t" },
+		Served: served, Now: func() string { return "t" },
 	}
 	if _, err := manager.Start("app"); err != nil {
 		test.Fatal(err)
@@ -589,18 +588,15 @@ func TestStartInstallsRefreshScript(test *testing.T) {
 	script := string(staged)
 
 	// The staged script must be EXACTLY what agentcfg.RefreshScript produces for the
-	// resolved gateway, the minted key, the default model, the NON-dynamic static
-	// models (aliases ∪ cloud seed), and the project's Headroom knobs — pinning the
-	// full wiring (gateway URL, scoped key, default, static set, knobs). With a temp
-	// HOME and no runtime.yaml the gateway resolves to the local standalone default,
-	// and the default Headroom strategy yields its knobs.
-	routing := litellm.DefaultRouting()
+	// resolved gateway, the minted key, the empty default model, and the project's
+	// Headroom knobs — pinning the full wiring (gateway URL, scoped key, knobs). With
+	// a temp HOME and no runtime.yaml the gateway resolves to the local standalone
+	// default, and the default Headroom strategy yields its knobs.
 	keepTurns, outputBufferTokens := contextopt.HeadroomParams("")
 	wantScript, err := agentcfg.RefreshScript(
 		"http://host.microsandbox.internal:18787/v1",
 		"sk-fake-workspace-key",
-		routing.Default,
-		refreshStaticModels(routing),
+		"", // no built-in default model
 		keepTurns, outputBufferTokens,
 	)
 	if err != nil {
@@ -610,17 +606,13 @@ func TestStartInstallsRefreshScript(test *testing.T) {
 		test.Fatalf("staged refresh-models script does not match RefreshScript for the resolved wiring")
 	}
 
-	// Sanity on the static set: the named aliases and cloud seed are baked in
-	// (plaintext STATIC_MODELS), but the live local model is NOT (the script fetches
-	// it from /ollama at run time).
-	if !strings.Contains(script, "claude-opus") {
-		test.Error("refresh-models static models missing a named alias")
+	// The script fetches the served models live from /v1/models — it must NOT bake in
+	// any model list (no served model is embedded).
+	if !strings.Contains(script, "MODELS_URL=") {
+		test.Error("refresh-models script missing the served-models endpoint")
 	}
-	if !strings.Contains(script, "anthropic/claude-opus-4-8") {
-		test.Error("refresh-models static models missing the cloud seed")
-	}
-	if strings.Contains(script, "\nollama/llama3.2:latest\n") {
-		test.Error("refresh-models must not bake in the live local models (it fetches them)")
+	if strings.Contains(script, "ollama/llama3.2:latest") {
+		test.Error("refresh-models must not bake in any models (it fetches the served list)")
 	}
 
 	// It must be installed onto PATH executable via sudo install -m 0755, then the
@@ -862,31 +854,32 @@ func TestDestroyKeepsOverlayForRecovery(test *testing.T) {
 	}
 }
 
-// fakeModelLister is a workspace-local ModelLister fake: it returns a fixed set of
-// installed Ollama models (or an error to simulate Ollama being down at start).
-type fakeModelLister struct {
-	models []ollama.Model
+// fakeServedModels is a workspace-local ServedModels fake: it returns a fixed set of
+// served model names (or an error to simulate the gateway being down at start).
+type fakeServedModels struct {
+	models []string
 	err    error
 }
 
-func (lister fakeModelLister) List() ([]ollama.Model, error) {
-	return lister.models, lister.err
+func (source fakeServedModels) ServedModels() ([]string, error) {
+	return source.models, source.err
 }
 
-// TestStartPickerUnionIncludesAliasesLocalAndCloud verifies the in-VM agent model
-// picker is the UNION of the named aliases, the INSTALLED local Ollama models
-// (rendered as ollama/<name>), and the curated cloud seed — and that the union is
-// written into both agent provider configs.
-func TestStartPickerUnionIncludesAliasesLocalAndCloud(test *testing.T) {
+// TestStartPickerIsServedModels verifies the in-VM agent model picker is EXACTLY
+// the set of models the gateway currently serves (its DB-backed models), deduped +
+// sorted, and that it is written into both agent provider configs.
+func TestStartPickerIsServedModels(test *testing.T) {
 	_ = seedProject(test, "app")
 	sandbox := &fakeSandbox{}
-	lister := fakeModelLister{models: []ollama.Model{
-		{Name: "llama3.2:latest"},
-		{Name: "qwen2.5:7b"},
+	served := fakeServedModels{models: []string{
+		"ollama/qwen2.5:7b",
+		"anthropic/claude-opus-4-8",
+		"ollama/llama3.2:latest",
+		"anthropic/claude-opus-4-8", // duplicate — must be collapsed
 	}}
 	manager := Manager{
 		Builder: &fakeBuilder{}, Sandbox: sandbox, Keys: &fakeKeyMinter{},
-		Ollama: lister, Now: func() string { return "t" },
+		Served: served, Now: func() string { return "t" },
 	}
 	if _, err := manager.Start("app"); err != nil {
 		test.Fatal(err)
@@ -900,59 +893,53 @@ func TestStartPickerUnionIncludesAliasesLocalAndCloud(test *testing.T) {
 		if config == "" {
 			test.Fatalf("no config written to %s", guestPath)
 		}
-		// A named alias.
-		if !strings.Contains(config, "claude-opus") {
-			test.Errorf("%s missing the named alias 'claude-opus'", guestPath)
+		// Every served model is present.
+		for _, want := range []string{"ollama/llama3.2:latest", "ollama/qwen2.5:7b", "anthropic/claude-opus-4-8"} {
+			if !strings.Contains(config, want) {
+				test.Errorf("%s missing served model %q", guestPath, want)
+			}
 		}
-		// The installed local models, rendered as ollama/<name>.
-		if !strings.Contains(config, "ollama/llama3.2:latest") {
-			test.Errorf("%s missing installed local model 'ollama/llama3.2:latest'", guestPath)
-		}
-		if !strings.Contains(config, "ollama/qwen2.5:7b") {
-			test.Errorf("%s missing installed local model 'ollama/qwen2.5:7b'", guestPath)
-		}
-		// A cloud seed entry.
-		if !strings.Contains(config, "anthropic/claude-opus-4-8") {
-			test.Errorf("%s missing the curated cloud seed entry", guestPath)
-		}
+	}
+	// The duplicate served entry is collapsed: in opencode's model map the model id
+	// appears as a JSON key exactly once (`"anthropic/claude-opus-4-8":`), not twice.
+	openCode := string(sandbox.written["/home/workspace/.config/opencode/opencode.json"])
+	if got := strings.Count(openCode, `"anthropic/claude-opus-4-8":`); got != 1 {
+		test.Errorf("opencode: served model keyed %d times, want 1 (deduped)", got)
+	}
+	// No built-in default model is written (the catalog-driven system has none).
+	if strings.Contains(openCode, `"model":`) {
+		test.Errorf("opencode config must not carry a top-level default model:\n%s", openCode)
 	}
 }
 
-// TestStartPickerDegradesWhenOllamaDown verifies the picker degrades gracefully:
-// when the installed-model lookup errors (Ollama down at start), the local models
-// are skipped but the workspace still starts with the aliases + cloud seed.
-func TestStartPickerDegradesWhenOllamaDown(test *testing.T) {
+// TestStartPickerDegradesWhenGatewayDown verifies the picker degrades gracefully:
+// when ServedModels errors (the gateway is down at start), the picker is empty but
+// the workspace still starts.
+func TestStartPickerDegradesWhenGatewayDown(test *testing.T) {
 	_ = seedProject(test, "app")
 	sandbox := &fakeSandbox{}
-	lister := fakeModelLister{err: errors.New("ollama: connection refused")}
+	served := fakeServedModels{err: errors.New("litellm: connection refused")}
 	manager := Manager{
 		Builder: &fakeBuilder{}, Sandbox: sandbox, Keys: &fakeKeyMinter{},
-		Ollama: lister, Now: func() string { return "t" },
+		Served: served, Now: func() string { return "t" },
 	}
 	if _, err := manager.Start("app"); err != nil {
-		test.Fatalf("Start must NOT fail when the model-list lookup fails: %v", err)
+		test.Fatalf("Start must NOT fail when the served-models lookup fails: %v", err)
 	}
 
 	config := string(sandbox.written["/home/workspace/.config/opencode/opencode.json"])
 	if config == "" {
 		test.Fatal("no opencode config written")
 	}
-	// Aliases + cloud seed are still present.
-	if !strings.Contains(config, "claude-opus") {
-		test.Error("degraded config missing the named aliases")
-	}
-	if !strings.Contains(config, "anthropic/claude-opus-4-8") {
-		test.Error("degraded config missing the cloud seed")
-	}
-	// No local models (none could be listed).
-	if strings.Contains(config, "ollama/llama") {
-		test.Error("degraded config must not contain local Ollama models")
+	// The picker is empty — no model ids at all.
+	if strings.Contains(config, "ollama/") || strings.Contains(config, "anthropic/") {
+		test.Errorf("degraded config must have an empty picker:\n%s", config)
 	}
 }
 
-// TestStartPickerNilListerSkipsLocal verifies a nil lister (Manager without an
-// Ollama dep) also degrades to aliases + cloud seed without panicking.
-func TestStartPickerNilListerSkipsLocal(test *testing.T) {
+// TestStartPickerNilSourceIsEmpty verifies a nil ServedModels source (Manager
+// without the dep) also degrades to an empty picker without panicking.
+func TestStartPickerNilSourceIsEmpty(test *testing.T) {
 	_ = seedProject(test, "app")
 	sandbox := &fakeSandbox{}
 	manager := Manager{
@@ -960,11 +947,14 @@ func TestStartPickerNilListerSkipsLocal(test *testing.T) {
 		Now: func() string { return "t" },
 	}
 	if _, err := manager.Start("app"); err != nil {
-		test.Fatalf("Start must not fail with a nil Ollama lister: %v", err)
+		test.Fatalf("Start must not fail with a nil ServedModels source: %v", err)
 	}
 	config := string(sandbox.written["/home/workspace/.config/opencode/opencode.json"])
-	if !strings.Contains(config, "anthropic/claude-opus-4-8") {
-		test.Error("config missing the cloud seed with a nil lister")
+	if config == "" {
+		test.Fatal("no opencode config written")
+	}
+	if strings.Contains(config, "ollama/") || strings.Contains(config, "anthropic/") {
+		test.Errorf("config must have an empty picker with a nil source:\n%s", config)
 	}
 }
 

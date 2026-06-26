@@ -160,7 +160,7 @@ setup:
   export AIP_TEST_SENTINEL="AIP_TEST_SENTINEL_$(uuidgen)"
   export MOCK_PROVIDER_URL=$(start fixtures/mock-provider)   # starts the local HTTPS OpenAI-compatible endpoint; prints its https:// base URL (reachable from the workspace) — also the one allow-listed destination (egress policy fixture). The harness trusts its test cert.
   ai setup --json --provider-config fixtures/mock-provider/litellm.yaml
-  printf '%s' "$AIP_TEST_SENTINEL" | ai secrets set openai --stdin --json   # stored in the LiteLLM gateway (keys-in-LiteLLM)
+  printf '%s' "$AIP_TEST_SENTINEL" | ai keys add openai --stdin --json   # stored encrypted in the LiteLLM DB (keys-in-LiteLLM)
 
 teardown:
   ai delete <each> --purge --yes                # best effort

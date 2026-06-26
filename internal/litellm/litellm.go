@@ -1,9 +1,10 @@
 // Package litellm renders the LiteLLM gateway config (arch §14–15) and exposes a
-// client for `ai models status|test`. LiteLLM is a thin shared gateway: a single
-// default model plus provider aliases, no per-task routing. Rendered config
-// references **placeholder** credentials only (os.environ/<PROVIDER>_API_KEY) —
-// the real keys live in the LiteLLM container's own environment, populated by
-// `ai secrets` (keys-in-LiteLLM); they are never written to platform disk.
+// client for `ai models status|test`. LiteLLM is a thin shared gateway in the
+// catalog-driven model system: the rendered config carries NO model_list — models
+// are DB-backed (store_model_in_db), added/removed over the admin API as the user
+// adds provider keys (`ai keys`) or pulls/removes Ollama models. Provider API keys
+// are stored encrypted in the LiteLLM DB (LITELLM_SALT_KEY), never written to
+// platform disk or this config. There is no built-in default model.
 package litellm
 
 import (
@@ -349,22 +350,19 @@ type StatusInfo struct {
 	BaseURL string `json:"base_url,omitempty"`
 }
 
+// statusIndent is the left padding used to align a continuation/detail line under
+// the value column of `ai models status` (the labels are rendered left of it). It is
+// the single source of that alignment, reused by every detail/continuation line.
+const statusIndent = "                  "
+
 // Human renders `ai models status` as a labeled, actionable summary rather than a
 // raw field dump: gateway reachability (with a fix hint when it is down), the
 // default model, the local-model (Ollama, no key) vs cloud-provider (needs a key)
-// split, and how to probe a model.
+// split, and how to probe a model. The per-section rendering is delegated to small
+// helpers so this stays a simple sequence of appends.
 func (info StatusInfo) Human() string {
-	endpoint := ""
-	if info.BaseURL != "" {
-		endpoint = " (" + ui.Value.Render(info.BaseURL) + ")"
-	}
 	var builder strings.Builder
-	if info.Healthy {
-		builder.WriteString(ui.Label.Render("LiteLLM gateway") + "   " + ui.Success.Render(ui.IconOK+" reachable") + endpoint + "\n")
-	} else {
-		builder.WriteString(ui.Label.Render("LiteLLM gateway") + "   " + ui.Failure.Render(ui.IconFail+" not reachable") + endpoint + "\n")
-		builder.WriteString("                  " + ui.Muted.Render(ui.IconArrow+" start it with `") + ui.Primary.Render("ai services start") + ui.Muted.Render("`, then `") + ui.Primary.Render("ai doctor") + ui.Muted.Render("` (or `") + ui.Primary.Render("ai setup") + ui.Muted.Render("` on first run)") + "\n")
-	}
+	builder.WriteString(info.humanGatewayLine())
 	builder.WriteString("\n")
 	if info.Default != "" {
 		builder.WriteString(ui.Label.Render("Default model") + "     " + ui.Value.Render(info.Default) + ui.Muted.Render("  (used unless an agent names another)") + "\n")
@@ -372,56 +370,93 @@ func (info StatusInfo) Human() string {
 	if info.Ollama {
 		builder.WriteString(ui.Label.Render("Local models") + "      " + ui.Value.Render("Ollama") + ui.Muted.Render(" — no API key needed (install models with `") + ui.Primary.Render("ollama pull <name>") + ui.Muted.Render("`)") + "\n")
 	}
+	builder.WriteString(info.humanCloudProviders())
+	builder.WriteString(info.humanServedModels())
+	builder.WriteString("\n")
+	builder.WriteString(info.humanProbeHint())
+	return builder.String()
+}
+
+// humanGatewayLine renders the gateway-reachability line (plus the fix hint when it
+// is down).
+func (info StatusInfo) humanGatewayLine() string {
+	endpoint := ""
+	if info.BaseURL != "" {
+		endpoint = " (" + ui.Value.Render(info.BaseURL) + ")"
+	}
+	if info.Healthy {
+		return ui.Label.Render("LiteLLM gateway") + "   " + ui.Success.Render(ui.IconOK+" reachable") + endpoint + "\n"
+	}
+	return ui.Label.Render("LiteLLM gateway") + "   " + ui.Failure.Render(ui.IconFail+" not reachable") + endpoint + "\n" +
+		statusIndent + ui.Muted.Render(ui.IconArrow+" start it with `") + ui.Primary.Render("ai services start") + ui.Muted.Render("`, then `") + ui.Primary.Render("ai doctor") + ui.Muted.Render("` (or `") + ui.Primary.Render("ai setup") + ui.Muted.Render("` on first run)") + "\n"
+}
+
+// humanCloudProviders renders the cloud-provider summary (the providers that need a
+// key), or "" when there are none.
+func (info StatusInfo) humanCloudProviders() string {
 	cloud := make([]string, 0, len(info.Providers))
 	for _, provider := range info.Providers {
 		if provider != "ollama" && provider != "" {
 			cloud = append(cloud, provider)
 		}
 	}
-	if len(cloud) > 0 {
-		builder.WriteString(ui.Label.Render("Cloud providers") + "   " + ui.Value.Render(strings.Join(cloud, ", ")) + "\n")
-		builder.WriteString("                  " + ui.Muted.Render("each needs a key once: `") + ui.Primary.Render("ai secrets set <PROVIDER>_API_KEY") + ui.Muted.Render("`") + "\n")
+	if len(cloud) == 0 {
+		return ""
 	}
-	// The LIVE served-model list, straight from the gateway (not the hardcoded
-	// routing) — collapsed via DisplayModels so concrete models already covered by
-	// their provider's `*/` wildcard are dropped (the providers: line above already
-	// summarizes the wildcards). When the filtered set is empty, the whole block is
-	// omitted. When the gateway is up but the list could not be fetched, the note is
-	// shown instead of erroring the whole command.
+	return ui.Label.Render("Cloud providers") + "   " + ui.Value.Render(strings.Join(cloud, ", ")) + "\n" +
+		statusIndent + ui.Muted.Render("each needs a key once: `") + ui.Primary.Render("ai keys add <provider>") + ui.Muted.Render("`") + "\n"
+}
+
+// humanServedModels renders the LIVE served-model list, straight from the gateway
+// (not the hardcoded routing) — collapsed via DisplayModels so concrete models
+// already covered by their provider's `*/` wildcard are dropped. When the filtered
+// set is empty, the block is omitted. When the gateway is up but the list could not
+// be fetched, the note is shown instead. Returns "" when there is nothing to show.
+func (info StatusInfo) humanServedModels() string {
 	display := DisplayModels(info.Models)
 	switch {
 	case len(display) > 0:
+		var builder strings.Builder
 		builder.WriteString("\n")
 		builder.WriteString(ui.Label.Render("Served models") + "     " + ui.Muted.Render("(live from the gateway)") + "\n")
 		for _, model := range display {
-			line := "                  " + ui.Value.Render(model.Name)
-			descriptor := model.Provider
-			if model.Mode != "" {
-				if descriptor != "" {
-					descriptor += ", "
-				}
-				descriptor += model.Mode
-			}
-			if descriptor != "" {
-				line += "  " + ui.Muted.Render("("+descriptor+")")
-			}
-			builder.WriteString(line + "\n")
+			builder.WriteString(servedModelLine(model))
 		}
+		return builder.String()
 	case len(info.Models) == 0 && info.ModelsNote != "":
-		builder.WriteString("\n")
-		builder.WriteString(ui.Label.Render("Served models") + "     " + ui.Muted.Render(info.ModelsNote) + "\n")
+		return "\n" + ui.Label.Render("Served models") + "     " + ui.Muted.Render(info.ModelsNote) + "\n"
+	default:
+		return ""
 	}
+}
+
+// servedModelLine renders one served-model row (name + an optional "(provider,
+// mode)" descriptor).
+func servedModelLine(model Model) string {
+	line := statusIndent + ui.Value.Render(model.Name)
+	descriptor := model.Provider
+	if model.Mode != "" {
+		if descriptor != "" {
+			descriptor += ", "
+		}
+		descriptor += model.Mode
+	}
+	if descriptor != "" {
+		line += "  " + ui.Muted.Render("("+descriptor+")")
+	}
+	return line + "\n"
+}
+
+// humanProbeHint renders the closing "probe a model with …" hint.
+func (info StatusInfo) humanProbeHint() string {
 	probeModel := info.Default
 	if probeModel == "" {
 		probeModel = "<model>"
 	}
-	builder.WriteString("\n")
 	if info.Healthy {
-		builder.WriteString(ui.Muted.Render("Probe a model with `") + ui.Primary.Render("ai models test "+probeModel) + ui.Muted.Render("`."))
-	} else {
-		builder.WriteString(ui.Muted.Render("Once the gateway is up, probe a model with `") + ui.Primary.Render("ai models test "+probeModel) + ui.Muted.Render("`."))
+		return ui.Muted.Render("Probe a model with `") + ui.Primary.Render("ai models test "+probeModel) + ui.Muted.Render("`.")
 	}
-	return builder.String()
+	return ui.Muted.Render("Once the gateway is up, probe a model with `") + ui.Primary.Render("ai models test "+probeModel) + ui.Muted.Render("`.")
 }
 
 // TestResult is the result of `ai models test` (CLI §8.2). When OK is false,

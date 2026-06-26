@@ -28,6 +28,12 @@ const ProviderID = "aip-gateway"
 // Headroom knobs (keepTurns, outputBufferTokens) ride on every model as
 // headroom_keep_turns / headroom_output_buffer_tokens. The baseURL carries the
 // required /v1 suffix and apiKey carries the scoped virtual key.
+//
+// In the catalog-driven model system there is no built-in default model; the
+// served list (from the live gateway) may even be empty until the user adds a
+// provider key or pulls an Ollama model. defaultModel is therefore optional: when
+// empty no top-level `model` is written and opencode falls back to its own
+// default-model selection.
 func OpenCodeConfig(gatewayURL, apiKey, defaultModel string, models []string, keepTurns, outputBufferTokens int) ([]byte, error) {
 	modelEntries := make(map[string]any, len(models))
 	for _, model := range models {
@@ -52,7 +58,9 @@ func OpenCodeConfig(gatewayURL, apiKey, defaultModel string, models []string, ke
 				"models": modelEntries,
 			},
 		},
-		"model": ProviderID + "/" + defaultModel,
+	}
+	if defaultModel != "" {
+		document["model"] = ProviderID + "/" + defaultModel
 	}
 	return marshalStable(document)
 }
@@ -136,25 +144,26 @@ const (
 // verification item; the host-side generation and the script's own logic are
 // fully unit-tested (the generated script is executed against a fake curl).
 //
-// The script:
+// In the catalog-driven model system the in-VM picker is exactly the set of models
+// the LiteLLM gateway currently SERVES (its DB-backed models — a keyed provider's
+// catalog models + the registered Ollama models). The script:
 //   - requires curl (clear error + exit if absent);
-//   - GETs <gatewayBaseURL-without-/v1>/ollama/api/tags and extracts the installed
-//     model names PORTABLY (grep/sed over the "name":"…" fields — no jq/python),
-//     prefixing each with "ollama/";
-//   - merges those with the BAKED staticModels (aliases + cloud seed), dedups and
-//     sorts EXACTLY as workspace.pickerModels does (LC_ALL=C sort -u), so the
-//     result matches a fresh workspace start;
+//   - GETs <gatewayBaseURL>/models (the OpenAI-compatible list endpoint) with the
+//     scoped virtual key, and extracts the served model ids PORTABLY (grep/sed over
+//     the "id":"…" fields — no jq/python);
+//   - dedups + sorts them (LC_ALL=C sort -u) exactly as workspace.pickerModels does,
+//     so the result matches a fresh workspace start;
 //   - rewrites opencode.json + pi models.json BYTE-IDENTICAL to what OpenCodeConfig
-//     / PiConfig would produce for that merged list, default, gateway, and key —
-//     by splicing the merged model fragments into Go-rendered JSON skeletons;
-//   - DEGRADES: if the tags fetch fails it keeps the static models (never wipes the
-//     configs) and warns;
+//     / PiConfig would produce for that served list, default, gateway, and key —
+//     by splicing the model fragments into Go-rendered JSON skeletons;
+//   - DEGRADES: if the fetch fails it leaves the existing configs untouched and
+//     warns (it never wipes them to an empty list);
 //   - prints a short human summary.
 //
 // gatewayBaseURL is the SAME url written into the agent configs (carrying the /v1
-// suffix); the script derives the auth-free /ollama tags URL from it by trimming
-// the trailing /v1. apiKey is the scoped virtual key (host→VM only).
-func RefreshScript(gatewayBaseURL, apiKey, defaultModel string, staticModels []string, keepTurns, outputBufferTokens int) ([]byte, error) {
+// suffix); the script GETs the /models endpoint at that base. apiKey is the scoped
+// virtual key (host→VM only). defaultModel is optional (empty → no default written).
+func RefreshScript(gatewayBaseURL, apiKey, defaultModel string, keepTurns, outputBufferTokens int) ([]byte, error) {
 	// Render the two JSON skeletons with a single sentinel model so we can split
 	// each into a prefix / per-model template / suffix the shell splices into. The
 	// rendered fragments inherit MarshalIndent's exact indentation, guaranteeing
@@ -175,24 +184,23 @@ func RefreshScript(gatewayBaseURL, apiKey, defaultModel string, staticModels []s
 	var script bytes.Buffer
 	script.WriteString("#!/usr/bin/env bash\n")
 	script.WriteString(`# Managed by the AI Development Platform — refresh the in-workspace agent model
-# picker. Run this INSIDE the workspace after pulling new models on the host:
+# picker. Run this INSIDE the workspace after changing the served models on the host
+# (add a provider key with 'ai keys', or pull/remove an Ollama model):
 #   refresh-models
-# It re-fetches the installed local models from the gateway's /ollama route, merges
-# them with the baked aliases + cloud seed, and rewrites the agent CLI configs in
-# place. Restart your agent CLI afterwards to pick up the new list.
+# It re-fetches the models the gateway currently SERVES (its DB-backed models) from
+# the gateway's /v1/models endpoint and rewrites the agent CLI configs in place.
+# Restart your agent CLI afterwards to pick up the new list.
 # Do not edit by hand; this file is rewritten on every workspace start.
 set -u
 
 `)
 	// The baked-in values. The gateway URL keeps its /v1 suffix (it is written into
-	// the configs verbatim); the tags URL trims it.
+	// the configs verbatim); the served-models list endpoint is <base>/models.
 	script.WriteString("GATEWAY_URL=" + shellQuote(gatewayBaseURL) + "\n")
-	script.WriteString("TAGS_URL=" + shellQuote(tagsURL(gatewayBaseURL)) + "\n")
+	script.WriteString("MODELS_URL=" + shellQuote(modelsURL(gatewayBaseURL)) + "\n")
+	script.WriteString("API_KEY=" + shellQuote(apiKey) + "\n")
 	script.WriteString("OPENCODE_PATH=" + shellQuote(openCodeGuestPath) + "\n")
 	script.WriteString("PI_PATH=" + shellQuote(piGuestPath) + "\n\n")
-
-	// The baked static models (aliases + cloud seed), one per line.
-	script.WriteString("STATIC_MODELS=" + shellQuote(strings.Join(staticModels, "\n")) + "\n\n")
 
 	// The four JSON fragments per config, base64-encoded so arbitrary bytes
 	// (newlines, quotes, indentation, the inter-entry separator) survive embedding
@@ -228,27 +236,21 @@ decode() { printf '%s' "$1" | base64 -d 2>/dev/null || printf '%s' "$1" | base64
 # JSON-escape a single line for embedding as a bare value (backslash, quote).
 json_escape() { printf '%s' "$1" | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g'; }
 
-# Fetch the installed local models from the auth-free /ollama tags route. Extract
-# each "name":"…" PORTABLY (no jq/python): one name per line, then prefix ollama/.
-local_models=""
-local_count=0
-if tags="$(curl -fsS --max-time 10 "$TAGS_URL" 2>/dev/null)"; then
-  local_models="$(printf '%s' "$tags" \
-    | grep -o '"name"[[:space:]]*:[[:space:]]*"[^"]*"' \
-    | sed -e 's/.*:[[:space:]]*"//' -e 's/"$//' \
-    | sed -e 's#^#ollama/#')"
-  if [ -n "$local_models" ]; then
-    local_count="$(printf '%s\n' "$local_models" | sed '/^$/d' | wc -l | tr -d ' ')"
-  fi
-else
-  echo "refresh-models: could not reach the gateway model list ($TAGS_URL) — keeping the baked models only" >&2
+# Fetch the models the gateway currently SERVES from its OpenAI-compatible
+# /v1/models endpoint (authenticated with the scoped virtual key). Extract each
+# "id":"…" PORTABLY (no jq/python): one served model id per line. If the fetch
+# fails we leave the existing configs UNTOUCHED rather than wiping them.
+if ! served_body="$(curl -fsS --max-time 10 -H "Authorization: Bearer $API_KEY" "$MODELS_URL" 2>/dev/null)"; then
+  echo "refresh-models: could not reach the gateway model list ($MODELS_URL) — leaving the current configs unchanged" >&2
+  exit 1
 fi
+served="$(printf '%s' "$served_body" \
+  | grep -o '"id"[[:space:]]*:[[:space:]]*"[^"]*"' \
+  | sed -e 's/.*:[[:space:]]*"//' -e 's/"$//')"
 
-static_count="$(printf '%s\n' "$STATIC_MODELS" | sed '/^$/d' | wc -l | tr -d ' ')"
-
-# Merge static + local, drop blanks, dedup + sort EXACTLY as pickerModels does
-# (LC_ALL=C lexical sort, unique). Result: one model id per line.
-merged="$(printf '%s\n%s\n' "$STATIC_MODELS" "$local_models" | sed '/^$/d' | LC_ALL=C sort -u)"
+# Dedup + sort EXACTLY as pickerModels does (LC_ALL=C lexical sort, unique).
+# Result: one served model id per line.
+merged="$(printf '%s\n' "$served" | sed '/^$/d' | LC_ALL=C sort -u)"
 merged_count="$(printf '%s\n' "$merged" | sed '/^$/d' | wc -l | tr -d ' ')"
 
 # render <prefix-b64> <item-b64> <sep-b64> <suffix-b64> -> full JSON on stdout,
@@ -284,7 +286,7 @@ pi_json="$(render "$PI_PREFIX" "$PI_ITEM" "$PI_SEP" "$PI_SUFFIX")"
 write_config "$OPENCODE_PATH" "$opencode_json" || { echo "refresh-models: failed to write $OPENCODE_PATH" >&2; exit 1; }
 write_config "$PI_PATH" "$pi_json" || { echo "refresh-models: failed to write $PI_PATH" >&2; exit 1; }
 
-echo "refreshed: $merged_count models ($local_count local, $static_count baked) — restart your agent CLI to pick them up"
+echo "refreshed: $merged_count served models — restart your agent CLI to pick them up"
 `)
 
 // skeleton is the decomposition of a config's JSON around its model collection:
@@ -371,14 +373,12 @@ func commonSuffix(a, b []byte) []byte {
 	return a[len(a)-index:]
 }
 
-// tagsURL derives the auth-free Ollama tags endpoint from the gateway base URL the
-// agent configs use. The configs carry the /v1 suffix; the /ollama route sits at
-// the same origin without /v1, so we trim a trailing /v1 (and any trailing slash).
-func tagsURL(gatewayBaseURL string) string {
-	base := strings.TrimRight(gatewayBaseURL, "/")
-	base = strings.TrimSuffix(base, "/v1")
-	base = strings.TrimRight(base, "/")
-	return base + "/ollama/api/tags"
+// modelsURL derives the OpenAI-compatible served-models list endpoint from the
+// gateway base URL the agent configs use. The configs carry the /v1 suffix, so the
+// list endpoint is <base>/models (e.g. ".../v1" → ".../v1/models"). A trailing
+// slash on the base is tolerated.
+func modelsURL(gatewayBaseURL string) string {
+	return strings.TrimRight(gatewayBaseURL, "/") + "/models"
 }
 
 // shellQuote single-quotes a value for safe embedding in the script, escaping any

@@ -803,24 +803,26 @@ view (§14) drives the same path via `ai apps`.
 At workspace start the platform installs a self-contained **`refresh-models`**
 command on `PATH` inside the microVM (`/usr/local/bin/refresh-models`, generated
 per-workspace by `agentcfg.RefreshScript` and installed via `sudo install -m 0755`).
-Run it **inside the workspace** after pulling new models on the host
-(`ollama pull …`) to re-pull the in-VM agent model picker **without restarting the
-microVM**:
+Run it **inside the workspace** after changing the served models on the host (add a
+provider key with `ai keys add …`, or pull/remove an Ollama model with
+`ai models pull`/`rm`) to re-pull the in-VM agent model picker **without restarting
+the microVM**:
 
 ```bash
 refresh-models      # run from any workspace session (ai shell / ai agent)
 ```
 
-It fetches the installed local models from the gateway's auth-free `/ollama/api/tags`
-route, merges them with the baked-in static set (the named aliases ∪ the curated
-cloud seed), dedups + sorts the result **exactly** as a fresh workspace start does,
-and rewrites the agent CLI configs (`opencode.json`, pi `models.json`) **in place,
+It re-fetches the models the gateway currently **serves** (its DB-backed models)
+from the gateway's `/v1/models` endpoint — authenticated with the workspace's scoped
+virtual key — dedups + sorts them **exactly** as a fresh workspace start does, and
+rewrites the agent CLI configs (`opencode.json`, pi `models.json`) **in place,
 byte-identical** to what a restart would produce. Restart the agent CLI afterwards
-to pick up the new list. It **degrades**: if the gateway is unreachable it keeps the
-baked models (never wipes the configs) and warns; a missing `curl` (image without
-it) errors clearly. The host-side generation and the script's own logic are
-unit-tested (the generated script is executed against a fake `curl`); **live in-VM
-execution is a `hardware bring-up` verification item.**
+to pick up the new list. It **degrades**: if the gateway is unreachable it leaves the
+existing configs **untouched** (it never wipes them to an empty list) and exits
+non-zero with a warning; a missing `curl` (image without it) errors clearly. The
+host-side generation and the script's own logic are unit-tested (the generated
+script is executed against a fake `curl`); **live in-VM execution is a
+`hardware bring-up` verification item.**
 
 ---
 
@@ -893,16 +895,17 @@ Returns a labeled, actionable summary (not a raw field dump):
 
 * LiteLLM gateway reachability — including the endpoint URL and, when it is down,
   how to bring it up (`ai services start` → `ai doctor`)
-* the default model — the platform's configured default handle
-  (`DefaultRouting().Default`); the gateway's model-list endpoints do not mark a
-  default, so this legitimately stays from platform config
+* the default model — there is **no** built-in default in the catalog-driven model
+  system (`DefaultRouting()` is the zero `Routing`), so the default line is omitted
+  unless platform config ever sets one; the gateway's model-list endpoints do not
+  mark a default
 * the **LIVE** list of models the gateway currently serves, sourced from LiteLLM's
   own endpoints (`/model/info`, falling back to `/v1/models`) — **not** a hardcoded
-  list. The list reflects the real gateway config: per-provider wildcard handles
-  (`ollama/*`, `openai/*`, …) plus the named aliases, each shown with its provider
-  and (when `/model/info` exposes it) its mode. The **providers** line is DERIVED
-  from this live list (the distinct provider prefixes), not from the hardcoded
-  routing.
+  list. The list is the gateway's **DB-backed** served models: a keyed provider's
+  registered models.dev catalog models plus the registered Ollama models
+  (`ollama/<name>`), each shown with its provider and (when `/model/info` exposes it)
+  its mode. The **providers** line is DERIVED from this live list (the distinct
+  provider prefixes), not from any hardcoded routing.
 * the local-model (Ollama — no key needed) vs cloud-provider (each needs a key
   via `ai keys add <provider>`) split
 * a `ai models test <model>` next-step hint

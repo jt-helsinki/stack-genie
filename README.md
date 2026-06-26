@@ -9,8 +9,13 @@ the entire control plane.
 (always-on secret-masking guardrails) → containerized Ollama or a cloud
 provider. A single nginx reverse proxy (`aip-proxy`) is the only host entry to
 the service tier — everything else runs internal-only on the `aip-net` network.
-Real provider API keys live only in the LiteLLM gateway (keys-in-LiteLLM) — never
-on platform disk or in the workspace; the agent holds a scoped virtual key.
+Real provider API keys live only in the LiteLLM gateway (keys-in-LiteLLM),
+encrypted in its DB and added with `ai keys` — never on platform disk, in
+`config.yaml`, or in the workspace; the agent holds a scoped virtual key. Models
+are DB-backed and catalog-driven: adding a provider key registers that provider's
+[models.dev](https://models.dev) catalog models into the gateway (removing it
+unregisters them), and `ai models pull` registers local Ollama models — there is
+no built-in default model.
 Workspace egress is a Microsandbox NetworkPolicy you configure with `ai network`;
 it defaults to **public** (DNS-audited outbound, private ranges blocked) so the
 in-VM container runtime can pull images and is re-lockable to default-deny per
@@ -140,14 +145,15 @@ ai gateway clear                     # back to the local standalone gateway
 ai domain                            # show the platform base domain the UI subdomains hang off
 ai domain aip.example.com            # set it (default aip.local; server operators override)
 
-ai secrets set OPENAI_API_KEY        # stored in the LiteLLM gateway, never platform disk
-ai secrets list                      # names + metadata only (never values)
+ai keys add openai                   # store a provider API key (encrypted in the LiteLLM DB; registers its catalog models)
+ai keys list                         # providers + whether a key is set (never the key value)
+ai keys remove openai                # remove the key and unregister that provider's models
 
-ai models status                     # LiteLLM gateway health + Ollama connectivity
-ai models test  gemma4               # round-trip a model (gemma4 = local default)
+ai models status                     # gateway's live served models (added keys + pulled Ollama)
+ai models test  llama3.2             # round-trip one of the served models
 ai models list                       # installed local (Ollama) models
 ai models popular                    # the bundled installable model catalogue
-ai models pull  llama3.2 qwen2.5:7b  # download models into the local Ollama store (rm/show too)
+ai models pull  llama3.2 qwen2.5:7b  # pull Ollama models, registering them as served (rm too)
 
 ai services status                   # host service tier
 ai services console litellm          # open the LiteLLM admin UI
@@ -192,7 +198,7 @@ commit `v0.0.<run_number>` and marks it the latest release (so `install.sh`'s
 ## Status
 
 The entire control-plane surface is implemented host-side and unit-tested: the
-`ai` CLI, project/workspace lifecycle, context/secrets/models/network/state
+`ai` CLI, project/workspace lifecycle, context/keys/models/network/state
 commands, `doctor`/`logs`, host detection, and the service-tier + guardrail +
 egress wiring. On a provisioned Apple Silicon host the service tier comes up live
 via `ai setup`, microVMs build and boot, LiteLLM virtual-key minting works, and

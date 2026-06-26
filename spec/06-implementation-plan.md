@@ -197,7 +197,7 @@ keys-in-LiteLLM credentials (agent holds a scoped virtual key), zero manual conf
 Commands (exactly the `[S1]`-tested surface): `ai setup`,
 `ai create` (interactive wizard), `ai delete`,
 `ai start|stop|destroy|exec`, `ai services status`,
-`ai secrets set|map|list`, `ai models status|test`, `ai state show|repair`,
+`ai keys add|list|remove`, `ai models status|test`, `ai state show|repair`,
 `ai doctor`, `ai logs`.
 (No snapshot/upgrade/rollback commands — the environment is the project's
 `.ai-platform/Dockerfile`, arch §25; overlay persistence is `[S4]`.)
@@ -230,7 +230,7 @@ refer to the CLI spec and architecture spec respectively.
   scoped to financial/identity **secrets** input+output, `hide-secrets`, the
   `detect_prompt_injection` callback, and the `tool_permission` tool firewall;
   general-PII masking and the unmaintained LLM Guard were removed);
-  `ai secrets set/map`; `ai models status`, `ai models test` against the mock
+  `ai keys add/remove`; `ai models status`, `ai models test` against the mock
   provider. Tests: AT §7.1, §7.2.
 * **M5 — debian-trixie image + Microsandbox.** Seed `.ai-platform/Dockerfile` from the
   `debian-trixie` template, build the workspace OCI image from it; create/start
@@ -345,9 +345,10 @@ are grep-able (`hardware bring-up`) and tracked in `docs/HARDWARE-BRINGUP.md`.
 * container runtime (S1: Docker) + rootless capability (service tier)
 * Microsandbox runtime + host virtualization (Apple Hypervisor entitlement on macOS — the only elevated facility, §29.1)
 * no admin networking (egress is a userspace Microsandbox NetworkPolicy — msb's deny fallthrough plus allow rules, default mode `public`; no `utun`/NetworkExtension/admin networking, §8.2; version control is out of scope, so no git prereq)
-* provider credentials are loaded into the LiteLLM gateway via `ai secrets` (not a
-  pre-flight hard-fail — `setup` warns if the configured routing has no
-  credential; a model call fails only when its credential is actually absent)
+* provider credentials are loaded into the LiteLLM gateway via `ai keys`
+  (encrypted in the LiteLLM Postgres DB; not a pre-flight hard-fail — `setup`
+  warns if a routed provider has no key; a model call fails only when its
+  credential is actually absent)
 * free ports + resolvable `AI_PLATFORM_HOST`
 * sufficient disk/CPU/RAM for image builds and workspace microVMs
 

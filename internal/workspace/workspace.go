@@ -19,7 +19,6 @@ import (
 	"github.com/jt-helsinki/ideal-robot/internal/contextopt"
 	"github.com/jt-helsinki/ideal-robot/internal/egress"
 	"github.com/jt-helsinki/ideal-robot/internal/litellm"
-	"github.com/jt-helsinki/ideal-robot/internal/ollama"
 	"github.com/jt-helsinki/ideal-robot/internal/overlay"
 	"github.com/jt-helsinki/ideal-robot/internal/runtime"
 	"github.com/jt-helsinki/ideal-robot/internal/state"
@@ -179,14 +178,15 @@ type KeyMinter interface {
 	DeleteKeyByAlias(alias string) error
 }
 
-// ModelLister lists the locally-installed Ollama models so the in-VM agent model
-// picker can offer them alongside the named aliases and the curated cloud seed. It
-// is the small surface Manager needs from ollama.Client, defined locally so tests
-// can supply a fake without a live Ollama service (the real impl is
-// ollama.RealClient()). A nil lister, or a List that errors (Ollama down at start),
-// degrades gracefully — the workspace still starts with aliases + the cloud seed.
-type ModelLister interface {
-	List() ([]ollama.Model, error)
+// ServedModels lists the models the LiteLLM gateway currently SERVES — its
+// DB-backed models (a keyed provider's catalog models + the registered Ollama
+// models). It is the live source of the in-VM agent model picker in the
+// catalog-driven model system, defined locally so tests can supply a fake without a
+// live gateway (the real impl wraps litellm.KeyManager.ListModels). A nil source,
+// or a ServedModels that errors (gateway down at start), degrades gracefully — the
+// workspace still starts, with an empty picker, never failing over a model lookup.
+type ServedModels interface {
+	ServedModels() ([]string, error)
 }
 
 // Manager coordinates the lifecycle over a Builder + Sandbox, stamping state with
@@ -196,10 +196,10 @@ type Manager struct {
 	Builder Builder
 	Sandbox Sandbox
 	Keys    KeyMinter
-	// Ollama lists the installed local models for the in-VM agent model picker. It
-	// is optional: a nil lister (or a List error) skips the local models without
-	// failing the workspace start.
-	Ollama ModelLister
+	// Served lists the models the gateway currently serves, for the in-VM agent
+	// model picker. It is optional: a nil source (or a ServedModels error) yields an
+	// empty picker without failing the workspace start.
+	Served ServedModels
 	Now    func() string
 	GOOS   string
 }
@@ -327,10 +327,14 @@ func (manager Manager) registerAgentProviders(name, project string, projectConfi
 	}
 
 	keepTurns, outputBufferTokens := contextopt.HeadroomParams(projectConfig.Context.Strategy)
-	routing := litellm.DefaultRouting()
-	models := manager.pickerModels(routing)
+	// The in-VM picker is the models the gateway currently SERVES (its DB-backed
+	// models). There is NO built-in default model in the catalog-driven system, so
+	// the empty default is passed through (the agent CLIs fall back to their own
+	// default selection).
+	const defaultModel = ""
+	models := manager.pickerModels()
 
-	openCodeConfig, err := agentcfg.OpenCodeConfig(gatewayURL, apiKey, routing.Default, models, keepTurns, outputBufferTokens)
+	openCodeConfig, err := agentcfg.OpenCodeConfig(gatewayURL, apiKey, defaultModel, models, keepTurns, outputBufferTokens)
 	if err != nil {
 		return err
 	}
@@ -338,7 +342,7 @@ func (manager Manager) registerAgentProviders(name, project string, projectConfi
 		return err
 	}
 
-	piConfig, err := agentcfg.PiConfig(gatewayURL, apiKey, routing.Default, models)
+	piConfig, err := agentcfg.PiConfig(gatewayURL, apiKey, defaultModel, models)
 	if err != nil {
 		return err
 	}
@@ -347,13 +351,13 @@ func (manager Manager) registerAgentProviders(name, project string, projectConfi
 	}
 
 	// Install the in-VM `refresh-models` command so the user can re-pull the model
-	// picker (after `ollama pull`-ing new models on the host) WITHOUT restarting the
-	// workspace. It bakes the SAME gateway URL, scoped key, default, and Headroom
-	// knobs as the configs above, plus the NON-dynamic part of the picker (the named
-	// aliases ∪ the cloud seed) as its static models; at run time it fetches the
-	// installed local models from the gateway's /ollama route and merges them in,
-	// reproducing pickerModels' result. The minted key flows host→VM only.
-	if err := manager.installRefreshScript(name, gatewayURL, apiKey, routing, keepTurns, outputBufferTokens); err != nil {
+	// picker (after adding a provider key with `ai keys` or pulling/removing an
+	// Ollama model on the host) WITHOUT restarting the workspace. It bakes the SAME
+	// gateway URL, scoped key, default, and Headroom knobs as the configs above; at
+	// run time it re-fetches the served models from the gateway's /v1/models endpoint
+	// and rewrites the configs, reproducing pickerModels' result. The minted key
+	// flows host→VM only.
+	if err := manager.installRefreshScript(name, gatewayURL, apiKey, defaultModel, keepTurns, outputBufferTokens); err != nil {
 		return err
 	}
 
@@ -516,19 +520,18 @@ func (manager Manager) startInstalledApps(name, project, root, gatewayURL string
 
 // installRefreshScript generates the per-workspace `refresh-models` script and
 // installs it on PATH inside the running microVM at /usr/local/bin/refresh-models
-// (executable). The script's static models are the NON-dynamic part of the picker
-// (namedModels(routing) ∪ CloudModels) — the installed local models are fetched
-// live by the script itself. It is staged to a home path via WriteFile (payload
-// off argv) then moved into place with `sudo install -m 0755`, matching how the
-// workspace user gains PATH commands (passwordless sudo per the base image).
+// (executable). The script fetches the served models LIVE from the gateway's
+// /v1/models endpoint at run time — nothing about the model list is baked in. It is
+// staged to a home path via WriteFile (payload off argv) then moved into place with
+// `sudo install -m 0755`, matching how the workspace user gains PATH commands
+// (passwordless sudo per the base image).
 //
-// hardware bring-up: the staging+install Exec and the script's own /ollama fetch
+// hardware bring-up: the staging+install Exec and the script's own /v1/models fetch
 // run only inside a live microVM; the host-side generation and the script logic
 // are unit-tested (internal/agentcfg) and the install wiring is unit-tested here
 // against the fake sandbox.
-func (manager Manager) installRefreshScript(name, gatewayURL, apiKey string, routing litellm.Routing, keepTurns, outputBufferTokens int) error {
-	staticModels := refreshStaticModels(routing)
-	script, err := agentcfg.RefreshScript(gatewayURL, apiKey, routing.Default, staticModels, keepTurns, outputBufferTokens)
+func (manager Manager) installRefreshScript(name, gatewayURL, apiKey, defaultModel string, keepTurns, outputBufferTokens int) error {
+	script, err := agentcfg.RefreshScript(gatewayURL, apiKey, defaultModel, keepTurns, outputBufferTokens)
 	if err != nil {
 		return err
 	}
@@ -550,34 +553,6 @@ func (manager Manager) installRefreshScript(name, gatewayURL, apiKey string, rou
 	return nil
 }
 
-// refreshStaticModels is the non-dynamic part of the in-VM picker the refresh
-// script bakes in: the named aliases UNION the curated cloud seed, deduped+sorted
-// the same way pickerModels orders its output. The installed local Ollama models
-// are deliberately excluded — the script fetches those live so a refresh reflects
-// models pulled after the workspace started.
-func refreshStaticModels(routing litellm.Routing) []string {
-	seen := make(map[string]struct{})
-	models := make([]string, 0)
-	add := func(model string) {
-		if model == "" {
-			return
-		}
-		if _, ok := seen[model]; ok {
-			return
-		}
-		seen[model] = struct{}{}
-		models = append(models, model)
-	}
-	for _, alias := range namedModels(routing) {
-		add(alias)
-	}
-	for _, model := range agentcfg.CloudModels() {
-		add(model)
-	}
-	sort.Strings(models)
-	return models
-}
-
 // shellQuoteGuest single-quotes a guest path for safe embedding in a `sh -c`
 // command run inside the microVM (POSIX single-quote escaping).
 func shellQuoteGuest(value string) string {
@@ -585,58 +560,35 @@ func shellQuoteGuest(value string) string {
 }
 
 // pickerModels builds the concrete model list the in-VM agent CLIs offer in their
-// picker: the UNION of the named aliases (namedModels), the INSTALLED local Ollama
-// models (rendered as "ollama/<Name>"), and the maintainer-curated cloud seed
-// (agentcfg.CloudModels). The set is deduped and sorted for a deterministic config.
+// picker: exactly the models the LiteLLM gateway currently SERVES (its DB-backed
+// models — a keyed provider's catalog models + the registered Ollama models),
+// deduped and sorted for a deterministic config.
 //
-// The local-model lookup DEGRADES GRACEFULLY: a nil lister or a List error (Ollama
-// down at workspace start) simply skips the local models — the picker still offers
-// the aliases + cloud seed, and the workspace start never fails over a model-list
-// lookup. LiteLLM's per-provider wildcards still route any model the agent names by
-// hand regardless of what the picker lists.
-func (manager Manager) pickerModels(routing litellm.Routing) []string {
-	seen := make(map[string]struct{})
-	models := make([]string, 0)
-	add := func(model string) {
+// The served-models lookup DEGRADES GRACEFULLY: a nil source or a ServedModels error
+// (gateway down at workspace start, or no models registered yet) yields an EMPTY
+// picker — the workspace still starts, never failing over a model lookup. The user
+// adds provider keys (`ai keys`) / pulls Ollama models and the served set grows; the
+// in-VM `refresh-models` command re-pulls it without a restart.
+func (manager Manager) pickerModels() []string {
+	if manager.Served == nil {
+		return []string{}
+	}
+	served, err := manager.Served.ServedModels()
+	if err != nil {
+		_, _ = fmt.Fprintf(os.Stderr, "warning: could not list the gateway's served models for the agent picker (continuing with an empty list): %v\n", err)
+		return []string{}
+	}
+	seen := make(map[string]struct{}, len(served))
+	models := make([]string, 0, len(served))
+	for _, model := range served {
 		if model == "" {
-			return
+			continue
 		}
 		if _, ok := seen[model]; ok {
-			return
+			continue
 		}
 		seen[model] = struct{}{}
 		models = append(models, model)
-	}
-
-	for _, alias := range namedModels(routing) {
-		add(alias)
-	}
-	if manager.Ollama != nil {
-		if installed, err := manager.Ollama.List(); err == nil {
-			for _, model := range installed {
-				add("ollama/" + model.Name)
-			}
-		}
-	}
-	for _, model := range agentcfg.CloudModels() {
-		add(model)
-	}
-
-	sort.Strings(models)
-	return models
-}
-
-// namedModels enumerates the non-wildcard named aliases from the routing (the
-// model handles both agent CLIs can address), sorted for a stable config. The
-// per-provider "*" wildcards are skipped — neither opencode nor pi can address
-// them as concrete model ids.
-func namedModels(routing litellm.Routing) []string {
-	models := make([]string, 0, len(routing.Aliases))
-	for alias := range routing.Aliases {
-		if strings.Contains(alias, "*") {
-			continue
-		}
-		models = append(models, alias)
 	}
 	sort.Strings(models)
 	return models

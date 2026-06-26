@@ -217,7 +217,7 @@ func TestStatusInfoHumanUnreachable(test *testing.T) {
 		"Default model     gemma4", // labeled, not a raw dump
 		"Ollama",                   // local models split out
 		"anthropic, openai",        // cloud providers, ollama removed from the list
-		"ai secrets set",           // cloud needs a key
+		"ai keys add",              // cloud needs a key
 		"ai models test gemma4",    // next step
 	} {
 		if !strings.Contains(rendered, fragment) {

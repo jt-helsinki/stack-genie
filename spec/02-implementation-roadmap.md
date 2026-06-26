@@ -136,17 +136,24 @@ Deliver a working minimal platform.
 ### Model Layer
 
 * LiteLLM configured
-* basic routing:
+* models are **DB-backed** (`general_settings.store_model_in_db: true`): the
+  rendered `config.yaml` carries **no `model_list`, no named aliases, no
+  per-provider wildcards, and no default model**. Served models are managed via
+  `ai keys add <provider>` (registers that provider's models.dev catalog models)
+  and `ai models pull` (registers `ollama/<name>` local models):
 
 ```yaml id="m1l0"
-default: gemma4   # -> ollama/gemma4:31b (local; Ollama is the default provider)
+general_settings:
+  store_model_in_db: true   # served models live in the gateway DB, not config.yaml
 ```
 
 ---
 
-### Secrets Layer
+### Keys Layer
 
-* keys-in-LiteLLM credential store required (`ai secrets` manages LiteLLM-side credentials)
+* per-provider API keys added via `ai keys add <provider>` (encrypted in the
+  LiteLLM Postgres DB via `LITELLM_SALT_KEY`; never in `config.yaml`, never on
+  platform disk)
 * real provider keys never leave the gateway; the workspace agent holds only a scoped virtual key
 
 ---
@@ -159,7 +166,7 @@ ai create
 ai delete
 ai start|stop|destroy|exec
 ai services status
-ai secrets set|map|list
+ai keys add|list|remove
 ai models status|test
 ai state show|repair
 ai doctor
@@ -348,9 +355,12 @@ These are implemented progressively across slices.
   provider-credential store. LiteLLM is **internal-only on `aip-net`** — reached
   through the nginx gateway (`litellm.<domain>:18787` admin UI, `…:18787/llm`
   host-CLI path), never host-published directly.
-* unified routing; default model the local Ollama `gemma4` (→ `ollama/gemma4:31b`)
-* provider abstraction via per-provider wildcards (`ollama/*`, `openai/*`,
-  `anthropic/*`, `gemini/*`, `groq/*`) plus a few named handles
+* unified routing; **no default model** — served models are DB-backed
+  (`store_model_in_db: true`), catalog-driven, and registered on demand
+* provider abstraction via **DB-backed served models** synced from the models.dev
+  catalog when a provider key is added (`ai keys add`) and from Ollama when a
+  local model is pulled (`ai models pull` → `ollama/<name>`); the rendered config
+  has no `model_list`, no wildcards, and no named aliases
 * **always-on guardrails** rendered into the generated LiteLLM config (all
   `default_on: true`, so no request — cloud included — can bypass them), scoped
   to **secrets/credentials, not general PII** (masking general PII was removed —
@@ -376,8 +386,9 @@ These are implemented progressively across slices.
 * **keys-in-LiteLLM**: real provider keys live in the LiteLLM gateway (env
   passthrough at launch / its Postgres-backed store); the workspace agent holds
   only a scoped LiteLLM virtual key, never a real provider secret
-* `ai secrets` manages the LiteLLM-side credentials; no .env files, no secrets on
-  platform disk or in the workspace
+* `ai keys` (add|list|remove) manages the per-provider keys, stored **encrypted
+  in the LiteLLM Postgres DB** (`LITELLM_SALT_KEY`); no .env files, no keys in
+  `config.yaml`, none on platform disk or in the workspace
 * **egress**: a per-project **Microsandbox NetworkPolicy**, configured via
   `ai network` (modes `deny`/`public`/`unrestricted` + allowed host services +
   published ports); **default mode `public`** (allow-outbound to the open
@@ -396,13 +407,13 @@ These are implemented progressively across slices.
 
 * thin gateway only (unified endpoint, aliasing, failover, provider-key injection)
 * no per-task routing policy — the agent selects its model
-* the in-workspace agent's model picker is the **union** of the named aliases,
-  the **installed** Ollama models (rendered `ollama/<name>`, listed at workspace
-  start; skipped if Ollama is down — never fails the start), and a
-  maintainer-curated cloud seed (`internal/agentcfg/cloud_models.yaml`). A bundled
-  full Ollama catalogue (`internal/ollama/models.yaml`, regenerable via
-  `make models-refresh`) backs local-model selection; an installed in-VM
-  `refresh-models` helper re-reads the installed models without a restart.
+* the in-workspace agent's model picker is **exactly the models the LiteLLM
+  gateway currently serves** (its live DB-backed model set), read at workspace
+  start via the injected `workspace.ServedModels` source
+  (`litellm.KeyManager.ListModels`) and built by `workspace.Manager.pickerModels`.
+  It is **not** a union of aliases + Ollama + a cloud seed — there are no aliases
+  and no `cloud_models.yaml`. When the gateway is unreachable it degrades to an
+  **empty** picker and writes **no** default model.
 
 (MCP is not a platform concern — the agent manages it.)
 

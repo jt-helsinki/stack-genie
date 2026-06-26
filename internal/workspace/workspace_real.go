@@ -14,7 +14,6 @@ import (
 	"strings"
 
 	"github.com/jt-helsinki/ideal-robot/internal/litellm"
-	"github.com/jt-helsinki/ideal-robot/internal/ollama"
 	"github.com/jt-helsinki/ideal-robot/internal/runtime"
 )
 
@@ -415,14 +414,35 @@ func runCaptured(name string, args ...string) (string, error) {
 	return combined.String(), err
 }
 
+// servedModelsClient adapts a *litellm.KeyManager to the ServedModels interface:
+// it lists the gateway's live DB-backed models and returns their public model
+// names for the in-VM agent picker. Any list error propagates so pickerModels can
+// degrade to an empty picker (it never fails the workspace start).
+type servedModelsClient struct{ manager *litellm.KeyManager }
+
+func (client servedModelsClient) ServedModels() ([]string, error) {
+	models, err := client.manager.ListModels()
+	if err != nil {
+		return nil, err
+	}
+	names := make([]string, 0, len(models))
+	for _, model := range models {
+		if model.Name != "" {
+			names = append(names, model.Name)
+		}
+	}
+	return names, nil
+}
+
 // RealManager builds a Manager wired to the actual host (used by the CLI).
 func RealManager(goos string, now func() string) Manager {
 	prober := runtime.RealProber()
+	keyManager := litellm.NewKeyManager(prober)
 	return Manager{
 		Builder: realBuilder{prober: prober},
 		Sandbox: realSandbox{prober: prober},
-		Keys:    litellm.NewKeyManager(prober),
-		Ollama:  ollama.RealClient(),
+		Keys:    keyManager,
+		Served:  servedModelsClient{manager: keyManager},
 		Now:     now,
 		GOOS:    goos,
 	}

@@ -208,7 +208,7 @@ func modelTestError(res litellm.TestResult) error {
 		strings.Contains(lower, "unauthorized") || strings.Contains(lower, "authentication") ||
 		strings.Contains(lower, "credential"):
 		code = output.ExitPermission
-		hint = " — add the provider credential with `ai secrets set <PROVIDER>_API_KEY`"
+		hint = " — add the provider key with `ai keys add <provider>`"
 	case res.Status == 404 || strings.Contains(lower, "not found") ||
 		strings.Contains(lower, "does not exist") || strings.Contains(lower, "no such model") ||
 		strings.Contains(lower, "not a valid model"):
