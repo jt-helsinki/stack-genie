@@ -10,7 +10,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"sort"
 	"strings"
 
 	"github.com/jt-helsinki/ideal-robot/internal/paths"
@@ -22,57 +21,25 @@ import (
 // shared docker network (aip-net), used as the api_base for ollama/* models.
 const OllamaAPIBase = "http://aip-ollama:11434"
 
-// Routing is the platform's thin routing (arch §14): one default + aliases.
+// Routing is the platform's model routing. The named handles + per-provider
+// wildcards were intentionally REMOVED in the catalog-driven model system
+// (Phase B): models are now DB-backed (added via /model/new, see models_admin.go
+// + reconcile.go) and there is NO built-in default model — the user adds provider
+// keys / pulls Ollama models and the sync engine registers them. The struct is
+// retained (zero-valued) so the few callers that still take a Routing keep a
+// stable signature; both fields are empty.
 type Routing struct {
 	Default string            `yaml:"default" json:"default"`
 	Aliases map[string]string `yaml:"aliases" json:"aliases"`
 }
 
-// DefaultRouting is the built-in default (arch §14–15). It exposes a **full
-// catalogue** via per-provider wildcards — the agent may name ANY model from
-// Ollama, OpenAI, Anthropic, Google Gemini, or Groq and LiteLLM routes it on
-// demand (cloud keys resolved from the LiteLLM container's own environment;
-// Ollama needs none). Registering a model does not install it: an Ollama model
-// must still be `ollama pull`ed, and
-// a cloud model still needs its key. The named aliases are convenient handles for
-// the recommended model per provider; `gemma4` (local Ollama) is the default.
+// DefaultRouting returns the zero routing: no default model and no aliases. The
+// catalog-driven system manages the model list in the DB, so nothing is baked in
+// here. Kept for the callers that still pass a Routing through (workspace agent
+// config, refresh script) — they degrade to "no static handles", sourcing the
+// in-VM picker from the installed Ollama models + the curated cloud seed.
 func DefaultRouting() Routing {
-	return Routing{
-		Default: "gemma4",
-		Aliases: map[string]string{
-			// Recommended named handles.
-			"gemma4":      "ollama/gemma4:31b",
-			"gpt-5.5":     "openai/gpt-5.5",
-			"claude-opus": "anthropic/claude-opus-4-8",
-			"gemini-pro":  "gemini/gemini-3.5-flash",
-			// Full per-provider catalogue (any model, routed on demand).
-			"ollama/*":    "ollama/*",
-			"openai/*":    "openai/*",
-			"anthropic/*": "anthropic/*",
-			"gemini/*":    "gemini/*",
-			"groq/*":      "groq/*",
-		},
-	}
-}
-
-// placeholderKey returns the os.environ placeholder LiteLLM resolves for a
-// provider's key from the container's own environment (keys-in-LiteLLM, arch
-// §17). Ollama needs no credential.
-func placeholderKey(provider string) string {
-	switch provider {
-	case "openai":
-		return "os.environ/OPENAI_API_KEY"
-	case "anthropic":
-		return "os.environ/ANTHROPIC_API_KEY"
-	case "gemini":
-		return "os.environ/GEMINI_API_KEY"
-	case "openrouter":
-		return "os.environ/OPENROUTER_API_KEY"
-	case "groq":
-		return "os.environ/GROQ_API_KEY"
-	default:
-		return ""
-	}
+	return Routing{}
 }
 
 // ConfigPath returns config/litellm/config.yaml.
@@ -97,6 +64,8 @@ func Render(routing Routing, providerConfigPath string) error {
 		return err
 	}
 
+	_ = routing // routing is now empty (DB-backed models); kept for signature stability
+
 	var rendered []byte
 	if providerConfigPath != "" {
 		rendered, err = os.ReadFile(providerConfigPath)
@@ -104,7 +73,7 @@ func Render(routing Routing, providerConfigPath string) error {
 			return fmt.Errorf("provider config: %w", err)
 		}
 	} else {
-		rendered, err = yaml.Marshal(build(routing))
+		rendered, err = yaml.Marshal(build())
 		if err != nil {
 			return err
 		}
@@ -121,45 +90,27 @@ func Render(routing Routing, providerConfigPath string) error {
 	return os.WriteFile(destination, rendered, 0o644)
 }
 
-// build maps the platform routing onto LiteLLM's native config shape
-// (model_list + litellm_settings), with placeholder keys only.
-func build(routing Routing) map[string]any {
-	aliasNames := make([]string, 0, len(routing.Aliases))
-	for name := range routing.Aliases {
-		aliasNames = append(aliasNames, name)
-	}
-	sort.Strings(aliasNames)
-
-	modelList := make([]map[string]any, 0, len(aliasNames))
-	for _, name := range aliasNames {
-		target := routing.Aliases[name]
-		provider := target
-		if slashIndex := strings.IndexByte(target, '/'); slashIndex >= 0 {
-			provider = target[:slashIndex]
-		}
-		params := map[string]any{"model": target}
-		if key := placeholderKey(provider); key != "" {
-			params["api_key"] = key
-		}
-		if provider == "ollama" {
-			// Ollama runs as a container on the shared network; reach it by name
-			// (not localhost, which inside the LiteLLM container is itself).
-			params["api_base"] = OllamaAPIBase
-		}
-		modelList = append(modelList, map[string]any{
-			"model_name":     name,
-			"litellm_params": params,
-		})
-	}
+// build renders the LiteLLM config in the catalog-driven (DB-backed) model
+// system: there is NO model_list — models are added via /model/new and persisted
+// in the DB (general_settings.store_model_in_db: true). The guardrails + the
+// in-process prompt-injection callback are unchanged (always-on). With no static
+// model_list there is also no default_model (the user adds keys / pulls Ollama and
+// the sync engine registers models).
+func build() map[string]any {
 	return map[string]any{
-		"model_list": modelList,
+		// store_model_in_db persists models added over the admin API (/model/new)
+		// and their stored credentials in the Postgres DB (encrypted at rest by
+		// LITELLM_SALT_KEY) so they survive restarts — the catalog-driven model
+		// system manages the model list here, not in this file.
+		"general_settings": map[string]any{
+			"store_model_in_db": true,
+		},
 		// callbacks wires LiteLLM's IN-PROCESS prompt-injection detector
 		// (detect_prompt_injection) — a local heuristic scanner that needs no
 		// external API and no companion container. It replaces the removed
 		// (unmaintained) LLM Guard legacy callback.
 		"litellm_settings": map[string]any{
-			"default_model": routing.Default,
-			"callbacks":     []string{"detect_prompt_injection"},
+			"callbacks": []string{"detect_prompt_injection"},
 		},
 		"guardrails": buildGuardrails(),
 	}

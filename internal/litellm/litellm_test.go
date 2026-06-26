@@ -12,6 +12,10 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+// TestRenderDefaultRouting verifies the catalog-driven (DB-backed) config: NO
+// model_list and NO default_model (models are added via /model/new), but
+// general_settings.store_model_in_db: true so the added models persist, plus the
+// unchanged in-process prompt-injection callback and the always-on guardrails.
 func TestRenderDefaultRouting(test *testing.T) {
 	test.Setenv("HOME", test.TempDir())
 	if err := Render(DefaultRouting(), ""); err != nil {
@@ -23,13 +27,10 @@ func TestRenderDefaultRouting(test *testing.T) {
 		test.Fatal(err)
 	}
 	var cfg struct {
-		ModelList []struct {
-			ModelName     string `yaml:"model_name"`
-			LitellmParams struct {
-				Model  string `yaml:"model"`
-				APIKey string `yaml:"api_key"`
-			} `yaml:"litellm_params"`
-		} `yaml:"model_list"`
+		ModelList       []map[string]any `yaml:"model_list"`
+		GeneralSettings struct {
+			StoreModelInDB bool `yaml:"store_model_in_db"`
+		} `yaml:"general_settings"`
 		LitellmSettings struct {
 			DefaultModel string   `yaml:"default_model"`
 			Callbacks    []string `yaml:"callbacks"`
@@ -38,57 +39,21 @@ func TestRenderDefaultRouting(test *testing.T) {
 	if err := yaml.Unmarshal(b, &cfg); err != nil {
 		test.Fatalf("rendered config is not valid yaml: %v\n%s", err, b)
 	}
-	// The default model is the local Ollama backend (provider = ollama).
-	if cfg.LitellmSettings.DefaultModel != "gemma4" {
-		test.Fatalf("default_model = %q, want gemma4", cfg.LitellmSettings.DefaultModel)
+	// No baked-in model_list — models are DB-backed (added via /model/new).
+	if len(cfg.ModelList) != 0 {
+		test.Errorf("model_list should be empty (DB-backed models), got %v", cfg.ModelList)
+	}
+	// store_model_in_db must be true so /model/new persists.
+	if !cfg.GeneralSettings.StoreModelInDB {
+		test.Errorf("general_settings.store_model_in_db = false, want true")
+	}
+	// No default model in the catalog-driven system.
+	if cfg.LitellmSettings.DefaultModel != "" {
+		test.Errorf("default_model = %q, want empty (no default model)", cfg.LitellmSettings.DefaultModel)
 	}
 	// Prompt-injection is the IN-PROCESS detector (replaces the removed LLM Guard).
 	if len(cfg.LitellmSettings.Callbacks) != 1 || cfg.LitellmSettings.Callbacks[0] != "detect_prompt_injection" {
 		test.Fatalf("litellm_settings.callbacks = %v, want [detect_prompt_injection]", cfg.LitellmSettings.Callbacks)
-	}
-	byName := map[string]string{}
-	keyByName := map[string]string{}
-	for _, entry := range cfg.ModelList {
-		byName[entry.ModelName] = entry.LitellmParams.Model
-		keyByName[entry.ModelName] = entry.LitellmParams.APIKey
-	}
-	if byName["gpt-5.5"] != "openai/gpt-5.5" {
-		test.Fatalf("gpt-5.5 -> %q", byName["gpt-5.5"])
-	}
-	// Credentials are placeholders only (never real values), arch §17.
-	if keyByName["gpt-5.5"] != "os.environ/OPENAI_API_KEY" {
-		test.Fatalf("gpt-5.5 api_key = %q, want placeholder", keyByName["gpt-5.5"])
-	}
-	if byName["claude-opus"] != "anthropic/claude-opus-4-8" {
-		test.Fatalf("claude-opus -> %q, want anthropic/claude-opus-4-8", byName["claude-opus"])
-	}
-	if byName["gemini-pro"] != "gemini/gemini-3.5-flash" {
-		test.Fatalf("gemini-pro -> %q, want gemini/gemini-3.5-flash", byName["gemini-pro"])
-	}
-
-	// Full catalogue: each provider exposes a wildcard so any model is routable
-	// without enumerating it. Cloud wildcards carry the placeholder key; Ollama
-	// needs none.
-	for alias, wantKey := range map[string]string{
-		"ollama/*":    "",
-		"openai/*":    "os.environ/OPENAI_API_KEY",
-		"anthropic/*": "os.environ/ANTHROPIC_API_KEY",
-		"gemini/*":    "os.environ/GEMINI_API_KEY",
-		"groq/*":      "os.environ/GROQ_API_KEY",
-	} {
-		if byName[alias] != alias {
-			test.Errorf("wildcard %q -> %q, want %q", alias, byName[alias], alias)
-		}
-		if keyByName[alias] != wantKey {
-			test.Errorf("wildcard %q api_key = %q, want %q", alias, keyByName[alias], wantKey)
-		}
-	}
-	// Ollama needs no credential.
-	if keyByName["gemma4"] != "" {
-		test.Fatalf("ollama alias should have no api_key, got %q", keyByName["gemma4"])
-	}
-	if byName["gemma4"] != "ollama/gemma4:31b" {
-		test.Fatalf("gemma4 -> %q, want ollama/gemma4:31b", byName["gemma4"])
 	}
 
 	// Always-on guardrails: Presidio pre/post + hide-secrets (secret masking,
@@ -233,17 +198,6 @@ func TestRenderProviderConfigPassthrough(test *testing.T) {
 	got, _ := os.ReadFile(p)
 	if string(got) != want {
 		test.Fatalf("provider config not passed through verbatim:\n got %q\nwant %q", got, want)
-	}
-}
-
-func TestProvidersAndOllama(test *testing.T) {
-	routing := DefaultRouting()
-	providers := providersOf(routing)
-	if len(providers) == 0 {
-		test.Fatal("expected providers")
-	}
-	if !hasOllama(routing) {
-		test.Fatal("default routing includes an ollama alias")
 	}
 }
 

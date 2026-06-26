@@ -126,8 +126,10 @@ func newLiteLLMPasswordCmd(emitter *output.Emitter, exit *int) *cobra.Command {
 				return nil
 			}
 
-			// Offer to persist the secrets to ~/.ai-platform/.ai-platform.env (Feature 2).
-			offerPersistLiteLLMSecrets(emitter, true, password, masterKey)
+			// Offer to persist the secrets to ~/.ai-platform/.ai-platform.env (Feature 2),
+			// including the stable salt key the relaunch settled on (DB-credential
+			// encryption key — must not change).
+			offerPersistLiteLLMSecrets(emitter, true, password, masterKey, setup.CurrentLiteLLMSaltKey())
 
 			domain := info.ResolveDomain()
 			*exit = emitter.Success("litellm.password", litellmPasswordResult{

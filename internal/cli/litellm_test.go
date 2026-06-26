@@ -73,7 +73,7 @@ func TestOfferPersistNonInteractiveFallback(test *testing.T) {
 	test.Setenv("HOME", test.TempDir())
 	err := &bytes.Buffer{}
 	emitter := &output.Emitter{Out: &bytes.Buffer{}, Err: err}
-	offerPersistLiteLLMSecrets(emitter, false, "pw", "sk-key")
+	offerPersistLiteLLMSecrets(emitter, false, "pw", "sk-key", "sk-salt")
 
 	path, _ := envfile.Path()
 	if _, statErr := os.Stat(path); statErr == nil {

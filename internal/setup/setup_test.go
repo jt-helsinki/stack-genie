@@ -413,13 +413,40 @@ func TestServicesStatusIncludesMicrosandbox(test *testing.T) {
 func TestPreserveLiteLLMSecretsInEnv(test *testing.T) {
 	test.Setenv("UI_PASSWORD", "")
 	test.Setenv("LITELLM_MASTER_KEY", "")
-	prober := fakeProber{dockerOut: "UI_USERNAME=admin\nUI_PASSWORD=hunter2\nLITELLM_MASTER_KEY=sk-abc\nOTHER=x\n"}
+	test.Setenv("LITELLM_SALT_KEY", "")
+	prober := fakeProber{dockerOut: "UI_USERNAME=admin\nUI_PASSWORD=hunter2\nLITELLM_MASTER_KEY=sk-abc\nLITELLM_SALT_KEY=sk-salt-xyz\nOTHER=x\n"}
 	preserveLiteLLMSecretsInEnv(prober, "docker")
 	if got := os.Getenv("UI_PASSWORD"); got != "hunter2" {
 		test.Errorf("UI_PASSWORD = %q, want preserved hunter2", got)
 	}
 	if got := os.Getenv("LITELLM_MASTER_KEY"); got != "sk-abc" {
 		test.Errorf("LITELLM_MASTER_KEY = %q, want preserved sk-abc", got)
+	}
+	// The salt key must be preserved too (a rotated salt orphans stored credentials).
+	if got := os.Getenv("LITELLM_SALT_KEY"); got != "sk-salt-xyz" {
+		test.Errorf("LITELLM_SALT_KEY = %q, want preserved sk-salt-xyz", got)
+	}
+}
+
+// TestGenerateSaltKey verifies a fresh salt key has the sk- shape and is non-empty
+// and unique across calls.
+func TestGenerateSaltKey(test *testing.T) {
+	first := generateSaltKey()
+	second := generateSaltKey()
+	if !strings.HasPrefix(first, "sk-") || len(first) <= len("sk-") {
+		test.Errorf("generateSaltKey() = %q, want sk-<hex>", first)
+	}
+	if first == second {
+		test.Errorf("generateSaltKey() produced identical keys %q", first)
+	}
+}
+
+// TestResolveLiteLLMSaltKeyPrefersEnv verifies an explicit process-env salt key
+// wins over generation (the env-file / exported value path).
+func TestResolveLiteLLMSaltKeyPrefersEnv(test *testing.T) {
+	test.Setenv("LITELLM_SALT_KEY", "sk-from-env")
+	if got := resolveLiteLLMSaltKey(); got != "sk-from-env" {
+		test.Errorf("resolveLiteLLMSaltKey() = %q, want the explicit env value", got)
 	}
 }
 
@@ -611,6 +638,7 @@ func TestLiteLLMRunArgs(test *testing.T) {
 		"-e", "UI_USERNAME=admin",
 		"-e", "UI_PASSWORD",
 		"-e", "LITELLM_MASTER_KEY",
+		"-e", "LITELLM_SALT_KEY",
 		"-e", "DATABASE_URL=postgresql://litellm@aip-litellm-db:5432/litellm",
 		"-e", "PRESIDIO_ANALYZER_API_BASE=http://aip-presidio-analyzer:3000",
 		"-e", "PRESIDIO_ANONYMIZER_API_BASE=http://aip-presidio-anonymizer:3000",
@@ -628,7 +656,8 @@ func TestLiteLLMRunArgs(test *testing.T) {
 	// The secrets are env passthrough (name-only) — their values must NOT appear
 	// in argv (they ride in the process environment instead).
 	joined := strings.Join(args, " ")
-	if strings.Contains(joined, "UI_PASSWORD=") || strings.Contains(joined, "LITELLM_MASTER_KEY=") {
+	if strings.Contains(joined, "UI_PASSWORD=") || strings.Contains(joined, "LITELLM_MASTER_KEY=") ||
+		strings.Contains(joined, "LITELLM_SALT_KEY=") {
 		test.Errorf("secret values must not be inlined in argv: %v", args)
 	}
 }

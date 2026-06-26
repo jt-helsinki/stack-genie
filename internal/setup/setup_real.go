@@ -1,6 +1,8 @@
 package setup
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -379,12 +381,14 @@ func proxyUIVhost(serverName, target, rootRedirect string) string {
 // rendered config mounted (docs.litellm.ai). Pure, so it is unit-testable.
 //
 // Admin-UI auth (docs.litellm.ai/docs/proxy/ui) is wired here: the username is
-// inlined (it is not secret), while UI_PASSWORD and LITELLM_MASTER_KEY are passed
-// as **env passthrough** (`-e NAME`, no value) so Docker copies them from the
-// launching process's environment — the secret values never appear in argv, the
-// config, or on platform disk. The UI is secured whenever those two are present
-// in the environment at launch (exported by the user, or set for a relaunch by
-// the setup prompt); otherwise LiteLLM falls back to its own default behavior.
+// inlined (it is not secret), while UI_PASSWORD, LITELLM_MASTER_KEY, and
+// LITELLM_SALT_KEY are passed as **env passthrough** (`-e NAME`, no value) so
+// Docker copies them from the launching process's environment — the secret values
+// never appear in argv, the config, or on platform disk. The UI is secured
+// whenever the password + master key are present in the environment at launch
+// (exported by the user, or set for a relaunch by the setup prompt); otherwise
+// LiteLLM falls back to its own default behavior. The salt key encrypts DB-backed
+// model keys/credentials at rest and is generated once and kept stable.
 //
 // DATABASE_URL is inlined (it carries no secret — trust auth on a private
 // network) so the DB-backed admin UI / virtual keys work. The container joins
@@ -406,6 +410,13 @@ func litellmRunArgs(configPath, bindHost, image string) []string {
 		"-e", "UI_USERNAME=" + litellmUIUsername,
 		"-e", "UI_PASSWORD",
 		"-e", "LITELLM_MASTER_KEY",
+		// LITELLM_SALT_KEY encrypts the DB-backed model keys + provider credentials
+		// at rest (store_model_in_db). Like the master key it is env passthrough
+		// (name-only, value rides in the process env) so it never appears in argv or
+		// on platform disk. It MUST stay stable across relaunches (a changed salt key
+		// makes already-stored credentials undecryptable, docs.litellm.ai), which the
+		// generate-once + preserve/persist wiring guarantees.
+		"-e", "LITELLM_SALT_KEY",
 		"-e", "DATABASE_URL=" + litellmDatabaseURL,
 		// Reach the Presidio analyzer/anonymizer by name on the shared network so
 		// the always-on PII guardrail has a backend (no secret in these values).
@@ -854,6 +865,44 @@ func CurrentLiteLLMMasterKey() string {
 	return litellmEnvValue(runtime.RealProber(), containerRuntime.Name, "LITELLM_MASTER_KEY")
 }
 
+// CurrentLiteLLMSaltKey returns the LITELLM_SALT_KEY of the running LiteLLM
+// container, or "" if unset / no container / no runtime. The salt key encrypts the
+// DB-backed model keys + provider credentials at rest and MUST stay stable across
+// relaunches, so RelaunchLiteLLMWithAuth reuses this (only minting one when there
+// is none) rather than rotating it — a rotated salt key would orphan every stored
+// credential.
+func CurrentLiteLLMSaltKey() string {
+	containerRuntime, err := runtime.ContainerRuntimeName(runtime.RealProber())
+	if err != nil {
+		return ""
+	}
+	return litellmEnvValue(runtime.RealProber(), containerRuntime.Name, "LITELLM_SALT_KEY")
+}
+
+// resolveLiteLLMSaltKey returns the salt key to launch LiteLLM with: an explicit
+// process-env value (LITELLM_SALT_KEY, e.g. from ~/.ai-platform/.ai-platform.env)
+// wins; else the running container's existing salt key (kept stable); else a newly
+// generated one. The value transits process memory only.
+func resolveLiteLLMSaltKey() string {
+	if value := os.Getenv("LITELLM_SALT_KEY"); value != "" {
+		return value
+	}
+	if value := CurrentLiteLLMSaltKey(); value != "" {
+		return value
+	}
+	return generateSaltKey()
+}
+
+// generateSaltKey returns a random LiteLLM salt key (`sk-` + 32 hex chars). It is
+// distinct from the master key but shares the `sk-` shape LiteLLM expects.
+func generateSaltKey() string {
+	buffer := make([]byte, 16)
+	if _, err := rand.Read(buffer); err != nil {
+		return "sk-aip-salt-fallback"
+	}
+	return "sk-" + hex.EncodeToString(buffer)
+}
+
 // LiteLLMRunning reports whether the LiteLLM gateway container is up — used by
 // `ai litellm password` to fail fast (exit 3) when the platform isn't set up.
 func LiteLLMRunning() bool {
@@ -897,14 +946,16 @@ func litellmEnvValue(prober runtime.Prober, containerRuntime, key string) string
 	return ""
 }
 
-// preserveLiteLLMSecretsInEnv copies the running container's UI_PASSWORD and
-// LITELLM_MASTER_KEY into this process's environment when they are not already
-// present, so an env-passthrough relaunch (litellmRunArgs) keeps the admin UI
-// secured and the master key stable rather than silently dropping them. Values
-// transit process memory only — never argv or platform disk. MUST be called
-// before the container is removed (a stopped container can still be inspected).
+// preserveLiteLLMSecretsInEnv copies the running container's UI_PASSWORD,
+// LITELLM_MASTER_KEY, and LITELLM_SALT_KEY into this process's environment when
+// they are not already present, so an env-passthrough relaunch (litellmRunArgs)
+// keeps the admin UI secured, the master key stable, AND the salt key stable
+// (a changed salt key makes already-stored credentials undecryptable) rather than
+// silently dropping them. Values transit process memory only — never argv or
+// platform disk. MUST be called before the container is removed (a stopped
+// container can still be inspected).
 func preserveLiteLLMSecretsInEnv(prober runtime.Prober, containerRuntime string) {
-	for _, key := range []string{"UI_PASSWORD", "LITELLM_MASTER_KEY"} {
+	for _, key := range []string{"UI_PASSWORD", "LITELLM_MASTER_KEY", "LITELLM_SALT_KEY"} {
 		if os.Getenv(key) != "" {
 			continue // a caller-provided value (e.g. the setup prompt) wins
 		}
@@ -971,6 +1022,9 @@ func RelaunchLiteLLMWithAuth(password, masterKey string) error {
 	command.Env = append(os.Environ(),
 		"UI_PASSWORD="+password,
 		"LITELLM_MASTER_KEY="+masterKey,
+		// Keep the salt key stable across relaunches (reuse the running container's,
+		// else mint one) so already-stored DB credentials remain decryptable.
+		"LITELLM_SALT_KEY="+resolveLiteLLMSaltKey(),
 	)
 	if _, err := command.CombinedOutput(); err != nil {
 		return serviceStartError("LiteLLM gateway")
@@ -1159,6 +1213,13 @@ func (services realServices) ensureLiteLLM(configPath, bindHost, providerConfig 
 	// restart/re-setup does not silently unsecure the admin UI or rotate the key
 	// (env passthrough would otherwise copy empty values from this process).
 	preserveLiteLLMSecretsInEnv(services.prober, containerRuntime.Name)
+	// Guarantee a stable salt key in the process env before the env-passthrough
+	// launch: preserve copied any existing one; on the FIRST launch there is none,
+	// so mint one (and keep it) — store_model_in_db credentials are encrypted with
+	// it at rest. Never overwrite an existing value (rotating it orphans creds).
+	if os.Getenv("LITELLM_SALT_KEY") == "" {
+		_ = os.Setenv("LITELLM_SALT_KEY", generateSaltKey())
+	}
 	_, _ = services.prober.Run(containerRuntime.Name, "rm", "-f", litellmContainer) // best-effort cleanup
 	if _, err := services.prober.Run(containerRuntime.Name, litellmRunArgs(configPath, bindHost, containerImage("litellm"))...); err != nil {
 		return serviceStartError("LiteLLM gateway")

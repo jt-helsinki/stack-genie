@@ -134,19 +134,14 @@ func newModelsTestCmd(em *output.Emitter, exit *int) *cobra.Command {
 	}
 }
 
-// promptModel asks the user to pick one of the named (non-wildcard) model
-// handles from the default routing so testing is pick-not-type. The prompt is
-// PRE-SEEDED with seed when it names a known handle; otherwise it falls back to
-// the first handle.
+// promptModel asks the user to pick one of the models the gateway currently
+// serves (the live DB-backed model list) so testing is pick-not-type. The named
+// aliases were removed (catalog-driven, DB-backed models), so the candidate set is
+// the LIVE served-model list; a gateway that is down or serving nothing yields an
+// empty option set and the prompt falls back to the seed. The prompt is PRE-SEEDED
+// with seed when it names a served model; otherwise it falls back to the first one.
 func promptModel(seed string) (string, error) {
-	names := make([]string, 0)
-	for name := range litellm.DefaultRouting().Aliases {
-		if strings.ContainsAny(name, "/*") {
-			continue // skip the per-provider wildcard handles
-		}
-		names = append(names, name)
-	}
-	sort.Strings(names)
+	names := servedModelNames()
 	options := make([]huh.Option[string], 0, len(names))
 	for _, name := range names {
 		options = append(options, huh.NewOption(name, name))
@@ -161,6 +156,25 @@ func promptModel(seed string) (string, error) {
 		initial = seed
 	}
 	return promptChoice("Model", "send a probe request to this model through LiteLLM", options, initial)
+}
+
+// servedModelNames returns the live served-model names worth offering in the
+// `ai models test` picker (sorted, wildcards excluded). The named aliases were
+// removed (catalog-driven, DB-backed models), so the source is the gateway's live
+// model list; a gateway that is down or empty yields an empty slice (the prompt
+// then falls back to the seed). Extracted so it is unit-testable without a TTY.
+func servedModelNames() []string {
+	names := make([]string, 0)
+	if models, err := litellmClient().Models(); err == nil {
+		for _, model := range models {
+			if strings.Contains(model.Name, "*") {
+				continue // skip any wildcard handle (none expected, but be safe)
+			}
+			names = append(names, model.Name)
+		}
+	}
+	sort.Strings(names)
+	return names
 }
 
 // modelTestError turns a failed model probe into an actionable error: it reports

@@ -623,7 +623,10 @@ func secureLiteLLMUI(em *output.Emitter, interactive bool, password, domain stri
 		ui.Value.Render(fmt.Sprintf("litellm.%s", domain)),
 		ui.Label.Render("master key (also the API key):"),
 		ui.Value.Render(masterKey))
-	offerPersistLiteLLMSecrets(em, interactive, password, masterKey)
+	// Read the salt key the relaunch settled on (reused if already present, else
+	// freshly minted) so it persists alongside the password + master key — it MUST
+	// stay stable or stored DB credentials become undecryptable.
+	offerPersistLiteLLMSecrets(em, interactive, password, masterKey, setup.CurrentLiteLLMSaltKey())
 }
 
 // offerPersistLiteLLMSecrets offers (on a TTY) to save the LiteLLM UI password +
@@ -636,22 +639,27 @@ func secureLiteLLMUI(em *output.Emitter, interactive bool, password, domain stri
 // prints the no-file instructions (the interactive prompt, or an `export …` from a
 // Keychain/secrets manager, supply the secret only when the LiteLLM container is
 // (re)launched). Shared by `ai setup` (server) and `ai litellm password`.
-func offerPersistLiteLLMSecrets(em *output.Emitter, interactive bool, password, masterKey string) {
+func offerPersistLiteLLMSecrets(em *output.Emitter, interactive bool, password, masterKey, saltKey string) {
 	if interactive {
 		save, err := promptConfirmDefault(
 			"Save these to ~/.ai-platform/.ai-platform.env so they persist across restarts?",
-			"PRO: persists the LiteLLM admin password + master key across restarts (no re-entry, "+
-				"no re-mint), in a 0600 owner-only file under ~/.ai-platform (removed by `ai uninstall --purge`). "+
+			"PRO: persists the LiteLLM admin password + master key + salt key across restarts (no re-entry, "+
+				"no re-mint; the salt key must stay stable or stored model credentials become undecryptable), "+
+				"in a 0600 owner-only file under ~/.ai-platform (removed by `ai uninstall --purge`). "+
 				"CON: it is a PLAINTEXT secret on disk — fine on a single-user machine, but on a SHARED/multi-user "+
 				"host or a synced/backed-up home dir prefer NOT saving (export it from your Keychain/secrets "+
 				"manager, or re-enter it at the prompt, to keep it off disk).",
 			true,
 		)
 		if err == nil && save {
-			if writeErr := envfile.Write(map[string]string{
+			secrets := map[string]string{
 				"UI_PASSWORD":        password,
 				"LITELLM_MASTER_KEY": masterKey,
-			}); writeErr != nil {
+			}
+			if saltKey != "" {
+				secrets["LITELLM_SALT_KEY"] = saltKey
+			}
+			if writeErr := envfile.Write(secrets); writeErr != nil {
 				_, _ = fmt.Fprintf(em.Err, "warning: could not write the env file: %s\n", writeErr)
 			} else {
 				path, _ := envfile.Path()

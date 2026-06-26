@@ -1,0 +1,239 @@
+package litellm
+
+import (
+	"encoding/json"
+	"io"
+	"net/http"
+	"net/http/httptest"
+	"testing"
+)
+
+// TestSetCredentialRequestShape verifies SetCredential deletes any prior credential
+// of the same name then POSTs /credentials with the documented body
+// (credential_name, credential_info.custom_llm_provider, credential_values.api_key)
+// and the Bearer master key.
+func TestSetCredentialRequestShape(test *testing.T) {
+	var sawDelete bool
+	var postBody map[string]any
+	var postAuth string
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		switch {
+		case request.Method == http.MethodDelete:
+			// DELETE /credentials/openai-key (the pre-delete on set).
+			if request.URL.Path != "/credentials/openai-key" {
+				test.Errorf("delete path = %q, want /credentials/openai-key", request.URL.Path)
+			}
+			sawDelete = true
+			_, _ = writer.Write([]byte(`{}`))
+		case request.Method == http.MethodPost:
+			if request.URL.Path != "/credentials" {
+				test.Errorf("post path = %q, want /credentials", request.URL.Path)
+			}
+			postAuth = request.Header.Get("Authorization")
+			payload, _ := io.ReadAll(request.Body)
+			_ = json.Unmarshal(payload, &postBody)
+			_, _ = writer.Write([]byte(`{}`))
+		default:
+			test.Errorf("unexpected %s %s", request.Method, request.URL.Path)
+		}
+	}))
+	defer server.Close()
+	test.Setenv("LITELLM_BASE_URL", server.URL)
+
+	manager := NewKeyManager(okProber())
+	if err := manager.SetCredential("openai", "sk-secret-openai"); err != nil {
+		test.Fatalf("SetCredential: %v", err)
+	}
+	if !sawDelete {
+		test.Error("SetCredential should pre-delete the existing credential of the same name")
+	}
+	if postAuth != "Bearer "+testMasterKey {
+		test.Errorf("auth = %q, want Bearer master key", postAuth)
+	}
+	if postBody["credential_name"] != "openai-key" {
+		test.Errorf("credential_name = %v, want openai-key", postBody["credential_name"])
+	}
+	info, _ := postBody["credential_info"].(map[string]any)
+	if info["custom_llm_provider"] != "openai" {
+		test.Errorf("custom_llm_provider = %v, want openai", info["custom_llm_provider"])
+	}
+	values, _ := postBody["credential_values"].(map[string]any)
+	if values["api_key"] != "sk-secret-openai" {
+		test.Errorf("api_key = %v, want the secret", values["api_key"])
+	}
+}
+
+// TestListCredentialsParses verifies the GET /credentials response (credentials
+// array of credential_name + credential_info.custom_llm_provider) is parsed; the
+// secret values are never present.
+func TestListCredentialsParses(test *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		if request.Method != http.MethodGet || request.URL.Path != "/credentials" {
+			test.Errorf("unexpected %s %s", request.Method, request.URL.Path)
+		}
+		_, _ = writer.Write([]byte(`{"credentials":[
+			{"credential_name":"openai-key","credential_info":{"custom_llm_provider":"openai"}},
+			{"credential_name":"gemini-key","credential_info":{"custom_llm_provider":"gemini"}}
+		]}`))
+	}))
+	defer server.Close()
+	test.Setenv("LITELLM_BASE_URL", server.URL)
+
+	manager := NewKeyManager(okProber())
+	creds, err := manager.ListCredentials()
+	if err != nil {
+		test.Fatalf("ListCredentials: %v", err)
+	}
+	if len(creds) != 2 {
+		test.Fatalf("creds = %d, want 2", len(creds))
+	}
+	if creds[0].Name != "openai-key" || creds[0].Provider != "openai" {
+		test.Errorf("creds[0] = %+v", creds[0])
+	}
+	if creds[1].Name != "gemini-key" || creds[1].Provider != "gemini" {
+		test.Errorf("creds[1] = %+v", creds[1])
+	}
+}
+
+// TestAddModelRequestShape verifies a cloud model add: model_name = the catalog id
+// verbatim; litellm_params.model = the LiteLLM-rewritten id; litellm_credential_name
+// = the provider credential; model_info carries the catalog metadata.
+func TestAddModelRequestShape(test *testing.T) {
+	var body map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		if request.Method != http.MethodPost || request.URL.Path != "/model/new" {
+			test.Errorf("unexpected %s %s", request.Method, request.URL.Path)
+		}
+		payload, _ := io.ReadAll(request.Body)
+		_ = json.Unmarshal(payload, &body)
+		_, _ = writer.Write([]byte(`{}`))
+	}))
+	defer server.Close()
+	test.Setenv("LITELLM_BASE_URL", server.URL)
+
+	manager := NewKeyManager(okProber())
+	err := manager.AddModel("google/gemini-3.1-pro",
+		ModelParams{Model: "gemini/gemini-3.1-pro", CredentialName: "gemini-key"},
+		ModelInfo{Family: "gemini", ContextLen: 1000000})
+	if err != nil {
+		test.Fatalf("AddModel: %v", err)
+	}
+	if body["model_name"] != "google/gemini-3.1-pro" {
+		test.Errorf("model_name = %v, want the catalog id verbatim", body["model_name"])
+	}
+	params, _ := body["litellm_params"].(map[string]any)
+	if params["model"] != "gemini/gemini-3.1-pro" {
+		test.Errorf("litellm_params.model = %v, want the rewritten id", params["model"])
+	}
+	if params["litellm_credential_name"] != "gemini-key" {
+		test.Errorf("litellm_credential_name = %v, want gemini-key", params["litellm_credential_name"])
+	}
+	// api_base / api_key must be omitted for a credential-referencing cloud model.
+	if _, present := params["api_base"]; present {
+		test.Errorf("api_base must be omitted for a cloud model, got %v", params["api_base"])
+	}
+	info, _ := body["model_info"].(map[string]any)
+	if info["family"] != "gemini" {
+		test.Errorf("model_info.family = %v, want gemini", info["family"])
+	}
+}
+
+// TestAddModelOllamaShape verifies an Ollama model add: api_base points at the
+// in-network Ollama and no credential is referenced.
+func TestAddModelOllamaShape(test *testing.T) {
+	var body map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		payload, _ := io.ReadAll(request.Body)
+		_ = json.Unmarshal(payload, &body)
+		_, _ = writer.Write([]byte(`{}`))
+	}))
+	defer server.Close()
+	test.Setenv("LITELLM_BASE_URL", server.URL)
+
+	manager := NewKeyManager(okProber())
+	if err := manager.AddModel("ollama/gemma4",
+		ModelParams{Model: "ollama/gemma4", APIBase: OllamaAPIBase}, ModelInfo{}); err != nil {
+		test.Fatalf("AddModel: %v", err)
+	}
+	params, _ := body["litellm_params"].(map[string]any)
+	if params["api_base"] != OllamaAPIBase {
+		test.Errorf("api_base = %v, want %s", params["api_base"], OllamaAPIBase)
+	}
+	if _, present := params["litellm_credential_name"]; present {
+		test.Errorf("an Ollama model must not reference a credential, got %v", params["litellm_credential_name"])
+	}
+}
+
+// TestDeleteModelRequestShape verifies DeleteModel POSTs /model/delete with the id.
+func TestDeleteModelRequestShape(test *testing.T) {
+	var body map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		if request.Method != http.MethodPost || request.URL.Path != "/model/delete" {
+			test.Errorf("unexpected %s %s", request.Method, request.URL.Path)
+		}
+		payload, _ := io.ReadAll(request.Body)
+		_ = json.Unmarshal(payload, &body)
+		_, _ = writer.Write([]byte(`{}`))
+	}))
+	defer server.Close()
+	test.Setenv("LITELLM_BASE_URL", server.URL)
+
+	manager := NewKeyManager(okProber())
+	if err := manager.DeleteModel("model-abc-123"); err != nil {
+		test.Fatalf("DeleteModel: %v", err)
+	}
+	if body["id"] != "model-abc-123" {
+		test.Errorf("delete body id = %v, want model-abc-123", body["id"])
+	}
+}
+
+// TestListModelsParses verifies GET /model/info parsing into LiveModel (id, name,
+// routed target, derived provider), de-duplicated by name.
+func TestListModelsParses(test *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		if request.Method != http.MethodGet || request.URL.Path != "/model/info" {
+			test.Errorf("unexpected %s %s", request.Method, request.URL.Path)
+		}
+		_, _ = writer.Write([]byte(`{"data":[
+			{"model_name":"openai/gpt-5.5","litellm_params":{"model":"openai/gpt-5.5"},"model_info":{"id":"id-1"}},
+			{"model_name":"ollama/gemma4","litellm_params":{"model":"ollama/gemma4"},"model_info":{"id":"id-2"}},
+			{"model_name":"openai/gpt-5.5","litellm_params":{"model":"openai/gpt-5.5"},"model_info":{"id":"dup"}}
+		]}`))
+	}))
+	defer server.Close()
+	test.Setenv("LITELLM_BASE_URL", server.URL)
+
+	manager := NewKeyManager(okProber())
+	models, err := manager.ListModels()
+	if err != nil {
+		test.Fatalf("ListModels: %v", err)
+	}
+	if len(models) != 2 {
+		test.Fatalf("models = %d, want 2 (deduped by name)", len(models))
+	}
+	byName := map[string]LiveModel{}
+	for _, model := range models {
+		byName[model.Name] = model
+	}
+	if got := byName["openai/gpt-5.5"]; got.ID != "id-1" || got.Provider != "openai" {
+		test.Errorf("openai model = %+v, want id-1 / openai", got)
+	}
+	if got := byName["ollama/gemma4"]; got.ID != "id-2" || got.Provider != "ollama" {
+		test.Errorf("ollama model = %+v, want id-2 / ollama", got)
+	}
+}
+
+// TestAddModelEmptyName rejects an empty model_name without a round-trip.
+func TestAddModelEmptyName(test *testing.T) {
+	manager := NewKeyManager(okProber())
+	if err := manager.AddModel("", ModelParams{Model: "x"}, ModelInfo{}); err == nil {
+		test.Error("AddModel with empty name should error")
+	}
+}
+
+// TestCredentialName pins the credential naming convention.
+func TestCredentialName(test *testing.T) {
+	if got := CredentialName("openai"); got != "openai-key" {
+		test.Errorf("CredentialName(openai) = %q, want openai-key", got)
+	}
+}

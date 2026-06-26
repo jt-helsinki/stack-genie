@@ -123,20 +123,44 @@ func TestModelsTestMissingModelNonInteractive(test *testing.T) {
 	}
 }
 
-// promptModel offers only the named (non-wildcard) handles from the default
-// routing, sorted, so the prompt is pick-not-type.
-func TestPromptModelOptionsExcludeWildcards(test *testing.T) {
-	for name := range litellm.DefaultRouting().Aliases {
-		if strings.ContainsAny(name, "/*") {
-			// wildcard handles must be excluded — sanity-check the data shape the
-			// prompt filters on.
-			if !strings.Contains(name, "*") && !strings.Contains(name, "/") {
-				test.Fatalf("unexpected handle %q classified as wildcard", name)
-			}
-		}
+// modelsListClient is a fake litellm.Client whose Models() returns a canned set,
+// used to drive servedModelNames (the prompt's candidate source).
+type modelsListClient struct {
+	models []litellm.Model
+	err    error
+}
+
+func (fake modelsListClient) Status() (litellm.StatusInfo, error) { return litellm.StatusInfo{}, nil }
+func (modelsListClient) Test(string) (litellm.TestResult, error)  { return litellm.TestResult{}, nil }
+func (fake modelsListClient) Models() ([]litellm.Model, error)    { return fake.models, fake.err }
+
+// servedModelNames offers the LIVE served models (DB-backed), sorted, with any
+// wildcard handle excluded — the named-alias routing was removed.
+func TestServedModelNamesExcludeWildcards(test *testing.T) {
+	original := litellmClient
+	defer func() { litellmClient = original }()
+	litellmClient = func() litellm.Client {
+		return modelsListClient{models: []litellm.Model{
+			{Name: "openai/gpt-5.5", Provider: "openai"},
+			{Name: "ollama/gemma4", Provider: "ollama"},
+			{Name: "openai/*", Provider: "openai"}, // wildcard → excluded
+		}}
 	}
-	// At least the named handles exist (gemma4 is the default).
-	if _, ok := litellm.DefaultRouting().Aliases["gemma4"]; !ok {
-		test.Fatal("expected gemma4 named handle in default routing")
+	got := servedModelNames()
+	want := []string{"ollama/gemma4", "openai/gpt-5.5"} // sorted, wildcard dropped
+	if strings.Join(got, ",") != strings.Join(want, ",") {
+		test.Errorf("servedModelNames() = %v, want %v", got, want)
+	}
+}
+
+// A down/empty gateway yields no candidates (the prompt then falls back to the seed).
+func TestServedModelNamesGatewayDown(test *testing.T) {
+	original := litellmClient
+	defer func() { litellmClient = original }()
+	litellmClient = func() litellm.Client {
+		return modelsListClient{err: io.ErrUnexpectedEOF}
+	}
+	if got := servedModelNames(); len(got) != 0 {
+		test.Errorf("servedModelNames() = %v, want empty when the gateway is down", got)
 	}
 }
