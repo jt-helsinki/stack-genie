@@ -509,19 +509,52 @@ func setupLiteLLMUIPassword(em *output.Emitter, interactive bool, role, domain s
 		return
 	}
 
-	if !liteLLMPasswordRequiredAtSetup(role) {
-		// standalone/client: open access. Don't prompt — `ai litellm password`
-		// lets a user opt into one later.
+	server := liteLLMPasswordRequiredAtSetup(role)
+
+	// No TTY to offer on (--json / piped): a network-exposed SERVER must not be left
+	// open, so generate + secure; standalone/client stay open (opt in later via
+	// `ai litellm password`).
+	if !interactive {
+		if server {
+			if password := serverLiteLLMPassword(em, false); password != "" {
+				secureLiteLLMUI(em, false, password, domain)
+			}
+		}
 		return
 	}
 
-	// Server: a password is REQUIRED. Obtain a non-empty one.
-	password := serverLiteLLMPassword(em, interactive)
-	if password == "" {
-		// Could not obtain a password (e.g. a generation failure was warned about).
+	// Interactive: OFFER to set a password (ask first), then run the same flow as
+	// `ai litellm password`. Declining leaves the UI open with clear instructions.
+	description := "Secures the admin UI with a login. Otherwise it stays open on this " +
+		"machine — you can set one anytime with `ai litellm password`."
+	if server {
+		description = "Server mode: the admin UI is exposed on the network (0.0.0.0), so a " +
+			"password is strongly recommended. You can also set one later with `ai litellm password`."
+	}
+	want, confirmErr := promptConfirmDefault("Set a LiteLLM admin UI password now?", description, true)
+	if confirmErr != nil || !want {
+		printLiteLLMOpenInstructions(em, server, domain)
+		return
+	}
+	password, promptErr := promptSecret("New LiteLLM admin UI password", "", nil)
+	if promptErr != nil || password == "" {
+		printLiteLLMOpenInstructions(em, server, domain)
 		return
 	}
 	secureLiteLLMUI(em, interactive, password, domain)
+}
+
+// printLiteLLMOpenInstructions tells the user the admin UI is being left unsecured
+// (after they decline the setup-time offer) and how to secure it later.
+func printLiteLLMOpenInstructions(em *output.Emitter, server bool, domain string) {
+	_, _ = fmt.Fprintln(em.Err, ui.Muted.Render("Leaving the LiteLLM admin UI open (no password)."))
+	if server {
+		_, _ = fmt.Fprintln(em.Err, ui.Warn.Render(
+			"  "+ui.IconArrow+" it is reachable on the network — anyone who can reach this host can open it."))
+	}
+	_, _ = fmt.Fprintf(em.Err, "  Secure it anytime with %s. UI: %s\n",
+		ui.Primary.Render("`ai litellm password`"),
+		ui.Value.Render(fmt.Sprintf("http://litellm.%s:18787/ui", domain)))
 }
 
 // liteLLMPasswordRequiredAtSetup is the pure role decision for whether `ai setup`
