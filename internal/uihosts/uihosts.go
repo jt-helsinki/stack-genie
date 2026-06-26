@@ -1,8 +1,9 @@
 // Package uihosts is the host-side logic for the platform's UI subdomains: the
-// Host-based nginx vhosts the web UIs are served on (only litellm.<domain> now, on
-// the single gateway port) and the /etc/hosts entries that point those names at
-// 127.0.0.1 in standalone mode. (Open WebUI is now a per-workspace in-VM app and
-// is no longer a host UI vhost; Odysseus has been removed from the platform.)
+// Host-based nginx vhosts the web UIs are served on (only litellm.<domain> now,
+// reached PORTLESS on the standard :80 nginx also publishes — no :18787 suffix)
+// and the /etc/hosts entries that point those names at 127.0.0.1 in standalone
+// mode. (Open WebUI is now a per-workspace in-VM app and is no longer a host UI
+// vhost; Odysseus has been removed from the platform.)
 //
 // It ties together the service registry (internal/services — the single source
 // of the UI→subdomain mapping) and internal/hostsfile (the managed-block writer),
@@ -35,7 +36,8 @@ const gatewayPort = 18787
 
 // URL is one UI vhost's host-reachable address for display (doctor / setup
 // guidance): the logical Service name, its Subdomain.<domain> Host, and the full
-// HTTP URL on the gateway port.
+// portless HTTP URL (the UI subdomains answer on the standard :80 nginx also
+// publishes — no :18787 suffix).
 type URL struct {
 	Service string
 	Host    string
@@ -69,8 +71,11 @@ func Entries(domain string) []hostsfile.Entry {
 	return []hostsfile.Entry{{IP: loopbackIP, Names: names}}
 }
 
-// URLs returns the display URLs for ALL UI vhosts (the gateway port is fixed at
-// gatewayPort), in registry order.
+// URLs returns the display URLs for ALL UI vhosts, in registry order. The UI
+// subdomains are reached PORTLESS on the standard HTTP port: nginx publishes host
+// :80 → container :80 (alongside :18787), so litellm.<domain> answers with no
+// :18787 suffix. (The gateway/API surfaces — /ollama, /v1, the proxy entry — keep
+// :18787; only these browser-facing UI subdomains drop the port.)
 func URLs(domain string) []URL {
 	var urls []URL
 	for _, vhost := range services.UIVhosts() {
@@ -78,7 +83,7 @@ func URLs(domain string) []URL {
 		urls = append(urls, URL{
 			Service: vhost.Name,
 			Host:    host,
-			URL:     fmt.Sprintf("http://%s:%d", host, gatewayPort),
+			URL:     "http://" + host,
 		})
 	}
 	return urls
@@ -126,8 +131,8 @@ func ServerGuidance(domain string) string {
 	builder.WriteString(fmt.Sprintf(
 		"  2. Provide a TLS certificate terminated at nginx — a wildcard for *.%s\n"+
 			"     (e.g. Let's Encrypt DNS-01) or an internal CA. Clients then reach the\n"+
-			"     UIs over HTTPS at the names above (gateway port %d until TLS lands).\n",
-		domain, gatewayPort))
+			"     UIs over HTTPS at the names above (portless http on :80 until TLS lands).\n",
+		domain))
 	return builder.String()
 }
 

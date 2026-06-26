@@ -969,17 +969,51 @@ func TestEnsureProxyRendersGatewayConfig(test *testing.T) {
 	if strings.Contains(rendered, "server_name chat.aip.local;") || strings.Contains(rendered, "server_name odysseus.aip.local;") {
 		test.Errorf("no chat/odysseus UI vhosts should render (Open WebUI is in-VM; Odysseus removed):\n%s", rendered)
 	}
-	// nginx takes over host :18787 and forwards on :80 internally; the UIs are
-	// subdomains on the SAME port, so no separate UI ports are published.
+	// nginx forwards on container :80 internally and is published to the host on BOTH
+	// the gateway/API port :18787 (agents + host CLI) AND the standard :80 (so the UI
+	// subdomains are reached PORTLESS). Both map to the SAME container :80; the UIs are
+	// subdomains, so no separate per-UI ports are published.
 	launch := strings.Join(runArgsFor(prober), " ")
 	if !strings.Contains(launch, "-p 127.0.0.1:18787:80") {
 		test.Errorf("proxy must publish the gateway port 18787: %s", launch)
+	}
+	if !strings.Contains(launch, "-p 127.0.0.1:80:80") {
+		test.Errorf("proxy must ALSO publish the standard :80 for portless UI subdomains: %s", launch)
 	}
 	if strings.Contains(launch, "18090") || strings.Contains(launch, ":7000") || strings.Contains(launch, ":8080") {
 		test.Errorf("no separate UI ports should be published (UIs are subdomains): %s", launch)
 	}
 	if !strings.Contains(launch, confPath+":/etc/nginx/nginx.conf:ro") {
 		test.Errorf("proxy did not bind-mount nginx.conf: %s", launch)
+	}
+}
+
+// TestEnsureProxyPublishesBothPortsOnRoleBindHost asserts the publish set binds to
+// the role's bindHost — loopback for standalone, 0.0.0.0 for a server — on BOTH the
+// gateway/API :18787 and the standard :80 (portless UI).
+func TestEnsureProxyPublishesBothPortsOnRoleBindHost(test *testing.T) {
+	cases := []struct {
+		name     string
+		bindHost string
+	}{
+		{"standalone", "127.0.0.1"},
+		{"server", "0.0.0.0"},
+	}
+	for _, testCase := range cases {
+		test.Run(testCase.name, func(test *testing.T) {
+			test.Setenv("HOME", test.TempDir())
+			prober := &recordingProber{}
+			if err := ensureProxy(prober, "docker", testCase.bindHost, "aip.local"); err != nil {
+				test.Fatal(err)
+			}
+			launch := strings.Join(runArgsFor(prober), " ")
+			if !strings.Contains(launch, "-p "+testCase.bindHost+":18787:80") {
+				test.Errorf("proxy must publish gateway :18787 on bindHost %s: %s", testCase.bindHost, launch)
+			}
+			if !strings.Contains(launch, "-p "+testCase.bindHost+":80:80") {
+				test.Errorf("proxy must publish portless :80 on bindHost %s: %s", testCase.bindHost, launch)
+			}
+		})
 	}
 }
 
@@ -1152,8 +1186,9 @@ func TestStatusForDisplayDomain(test *testing.T) {
 	if err != nil {
 		test.Fatal(err)
 	}
-	if got := consoleOf(standalone, "litellm"); got != "http://litellm.aip.local:18787/ui" {
-		test.Errorf("standalone litellm console = %q, want http://litellm.aip.local:18787/ui", got)
+	// The litellm UI subdomain is PORTLESS (on :80), unlike the gateway/API URLs below.
+	if got := consoleOf(standalone, "litellm"); got != "http://litellm.aip.local/ui" {
+		test.Errorf("standalone litellm console = %q, want http://litellm.aip.local/ui", got)
 	}
 	if got := addressOf(standalone, "ollama"); got != "http://aip.local:18787/ollama" {
 		test.Errorf("standalone ollama address = %q, want http://aip.local:18787/ollama", got)
@@ -1183,8 +1218,8 @@ func TestStatusForDisplayDomain(test *testing.T) {
 	if err != nil {
 		test.Fatal(err)
 	}
-	if got := consoleOf(server, "litellm"); got != "http://litellm.build-host.lan:18787/ui" {
-		test.Errorf("server litellm console = %q, want http://litellm.build-host.lan:18787/ui", got)
+	if got := consoleOf(server, "litellm"); got != "http://litellm.build-host.lan/ui" {
+		test.Errorf("server litellm console = %q, want http://litellm.build-host.lan/ui", got)
 	}
 	if got := addressOf(server, "dns"); got != "127.0.0.1:15353/udp" {
 		test.Errorf("server dns address = %q, want loopback unchanged", got)

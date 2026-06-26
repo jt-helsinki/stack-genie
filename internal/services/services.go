@@ -32,11 +32,13 @@ const (
 // distinguishes "console at the root URL" from "no console". LoopbackAddress, when
 // set, is a verbatim host-independent address (loopback-only services, e.g. the DNS
 // resolver) used regardless of the display host. UISubdomain, when set, means the
-// service's UI is served as a Host-based nginx vhost on the single gateway port
-// (<UISubdomain>.<domain>:GatewayPort) — its direct Port is internal-only now, so
-// its host-reachable address + console are the nginx subdomain forms, NOT
-// http://host:Port. GatewayPath, when set, is the prefix the host CLI reaches a
-// non-UI service through the gateway at (e.g. ollama → "/ollama").
+// service's UI is served as a Host-based nginx vhost reached PORTLESS on the
+// standard :80 (<UISubdomain>.<domain>, no :GatewayPort suffix — nginx publishes
+// host :80 alongside the gateway :GatewayPort) — its direct Port is internal-only
+// now, so its host-reachable address + console are the portless nginx subdomain
+// forms, NOT http://host:Port. GatewayPath, when set, is the prefix the host CLI
+// reaches a non-UI service through the gateway (:GatewayPort) at (e.g. ollama →
+// "/ollama").
 type Endpoint struct {
 	Port            int
 	ConsolePath     string
@@ -90,8 +92,8 @@ type Service struct {
 	Endpoint Endpoint
 	LogScope string
 	// UISubdomain is the subdomain LABEL this service's web UI is served at, as a
-	// Host-based nginx vhost on the single gateway port: <label>.<domain> (e.g.
-	// "litellm" → litellm.<domain>). Empty means the
+	// Host-based nginx vhost reached PORTLESS on the standard :80: <label>.<domain>
+	// (e.g. "litellm" → litellm.<domain>, no :GatewayPort suffix). Empty means the
 	// service has no UI vhost (it is reached on a path of the gateway, or is
 	// internal-only). It is the SINGLE source of truth for the UI→subdomain
 	// mapping consumed by internal/setup (nginx vhosts + /etc/hosts) and the
@@ -164,7 +166,7 @@ var registry = []Service{
 	{
 		Name: "litellm",
 		// The :14000 host port is GONE — LiteLLM is internal-only on aip-net now. Its
-		// admin UI is reached through the nginx gateway at litellm.<domain>:GatewayPort/ui.
+		// admin UI is reached through nginx PORTLESS at litellm.<domain>/ui (on :80).
 		Endpoint:    Endpoint{ConsolePath: "/ui", HasConsole: true, UISubdomain: "litellm"},
 		LogScope:    "litellm",
 		UISubdomain: "litellm", // litellm.<domain> → the LiteLLM admin UI (/ui)

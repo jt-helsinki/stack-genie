@@ -212,9 +212,11 @@ const (
 	// publishes to the host. It fronts the model path (host :18787 /v1 → Headroom →
 	// LiteLLM, what resolveGateway returns — transparent to workspaces), the LiteLLM
 	// admin (/llm) and Ollama (/ollama) surfaces on the same :18787, and the LiteLLM
-	// admin UI as a Host-based vhost on that SAME :18787 (litellm.<domain>
-	// — no separate host ports). nginx terminates TLS later (the future HTTPS endpoint,
-	// per-vhost :443 + http→https redirect). Pinned minor tag.
+	// admin UI as a Host-based vhost (litellm.<domain>) reached PORTLESS on the
+	// standard :80 that nginx ALSO publishes (both host :18787 and host :80 map to
+	// the container's single :80; nginx serves by Host/route). nginx terminates TLS
+	// later (the future HTTPS endpoint, per-vhost :443 + http→https redirect). Pinned
+	// minor tag.
 	proxyContainer = "aip-proxy"
 	proxyHostPort  = "18787"
 	proxyTargetURL = "http://" + headroomContainer + ":8787"
@@ -252,9 +254,10 @@ const (
 // ~/.ai-platform/config/proxy/nginx.conf and bind-mounted at /etc/nginx/nginx.conf.
 // nginx (aip-proxy) is the SOLE host entry point to the service tier: every other
 // service container is internal-only on aip-net, reached BY NAME, and only nginx
-// publishes ports to the host. EVERYTHING listens on the SAME port :80 (host
-// :18787); the web UIs are now Host-based VHOSTS (subdomains), matched by
-// server_name, NOT separate host ports:
+// publishes ports to the host. EVERYTHING listens on the SAME container port :80,
+// published to the host on BOTH :18787 (the gateway/API entry) AND :80 (so the UI
+// subdomains are reached PORTLESS); the web UIs are now Host-based VHOSTS
+// (subdomains), matched by server_name, NOT separate host ports:
 //
 //   - the DEFAULT server (server_name <domain> localhost _; default_server) — the
 //     model path + LiteLLM/Ollama management surfaces:
@@ -347,7 +350,8 @@ func proxyUIVhost(serverName, target, rootRedirect string) string {
 	builder.WriteString("    listen 80;\n")
 	builder.WriteString("    server_name " + serverName + ";\n")
 	// Keep nginx's own redirects (e.g. trailing-slash) relative so the client's
-	// host:port is preserved — an absolute redirect would drop the :18787.
+	// original host (portless litellm.<domain> on :80, or the same name on :18787)
+	// is preserved — an absolute redirect would force a port and break the portless form.
 	builder.WriteString("    absolute_redirect off;\n")
 	if rootRedirect != "" {
 		builder.WriteString("    location = / {\n")
@@ -357,10 +361,10 @@ func proxyUIVhost(serverName, target, rootRedirect string) string {
 	builder.WriteString("    location / {\n")
 	builder.WriteString("      proxy_pass " + target + ";\n")
 	builder.WriteString("      proxy_http_version 1.1;\n")
-	// Forward the ORIGINAL host INCLUDING the port ($http_host, not $host which
+	// Forward the ORIGINAL host INCLUDING any port ($http_host, not $host which
 	// strips it) + the forwarded-* headers, so the app builds absolute redirects
-	// (e.g. LiteLLM /ui) back to litellm.<domain>:18787 rather than dropping the
-	// port and sending the browser to :80.
+	// (e.g. LiteLLM /ui) back to the same host the browser used — the portless
+	// litellm.<domain> (on :80) or litellm.<domain>:18787 — not a different port.
 	builder.WriteString("      proxy_set_header Host $http_host;\n")
 	builder.WriteString("      proxy_set_header X-Forwarded-Host $http_host;\n")
 	builder.WriteString("      proxy_set_header X-Forwarded-Proto $scheme;\n")
@@ -655,13 +659,21 @@ func ensureDNS(prober runtime.Prober, containerRuntime string) error {
 
 // ensureProxy runs the nginx reverse proxy that is the SOLE host entry to the
 // service tier: microVM/host → nginx (bindHost:18787) → Headroom (:8787) → LiteLLM,
-// plus the LiteLLM /llm + Ollama /ollama admin routes and the single LiteLLM admin
-// UI Host-based vhost (litellm.<domain>) — ALL on the single :18787. It renders
+// plus the LiteLLM /llm + Ollama /ollama admin routes (on the gateway :18787) and
+// the single LiteLLM admin UI Host-based vhost (litellm.<domain>, reached PORTLESS
+// on the standard :80 nginx ALSO publishes) — all served by the SAME container :80,
+// matched by Host/route. It renders
 // the nginx config (proxyNginxConf, threading the resolved domain) to
 // ~/.ai-platform/config/proxy/nginx.conf, bind-mounts it at /etc/nginx/nginx.conf,
-// and publishes ONLY :18787 (the LiteLLM UI is a subdomain on the same port, not a
-// separate host port) on the role's bindHost (0.0.0.0 for a server, else
+// and publishes BOTH :18787 (the gateway/API entry the agents + host CLI depend on)
+// AND :80 (the standard HTTP port, so the LiteLLM UI subdomain is reached PORTLESS
+// at litellm.<domain> with no :18787 suffix) — both map to the container's :80;
+// nginx serves by Host/route — on the role's bindHost (0.0.0.0 for a server, else
 // loopback). Pulled image (no build).
+//
+// hardware bring-up: the :80 publish works on macOS Docker Desktop; on Linux
+// rootless :80 is privileged and the publish fails unless
+// net.ipv4.ip_unprivileged_port_start is lowered (see the run-args comment + docs).
 //
 // It always recreates the container (rather than skipping when running) so a change
 // in the domain — which changes the rendered config — actually takes effect; nginx
@@ -690,7 +702,21 @@ func ensureProxy(prober runtime.Prober, containerRuntime, bindHost, domain strin
 		// nginx is the only publisher and publishes ONLY the gateway port: the LiteLLM
 		// admin UI is a Host-based vhost (subdomain) on this SAME port, not a separate
 		// host publish.
+		// Gateway/API entry: host :18787 → container :80. Agents + the host CLI
+		// (resolveGateway, the egress allow rule, AdminBaseURL/GatewayBaseURL,
+		// ollama's :18787/ollama) depend on this port — it MUST stay.
 		"-p", bindHost + ":" + proxyHostPort + ":80",
+		// PORTLESS UI entry: ALSO publish the standard HTTP port (host :80 → container
+		// :80) so the UI subdomains (litellm.<domain>) answer with no :18787 suffix.
+		// Both map to the SAME container :80; nginx serves by Host/route.
+		//
+		// hardware bring-up: the host :80 publish works on macOS Docker Desktop, but on
+		// Linux ROOTLESS :80 is a privileged port — the publish FAILS unless
+		// net.ipv4.ip_unprivileged_port_start is lowered to 80 (e.g.
+		// `sysctl net.ipv4.ip_unprivileged_port_start=80`) or an equivalent capability
+		// is granted. A pre-existing host :80 listener also conflicts. Verified on a
+		// provisioned host.
+		"-p", bindHost + ":80:80",
 		"-v", confPath + ":/etc/nginx/nginx.conf:ro",
 		containerImage("proxy"),
 	}

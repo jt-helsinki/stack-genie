@@ -34,9 +34,10 @@ func TestLogScopesIsFreshCopy(test *testing.T) {
 }
 
 // TestEndpointsMatchCurrentConsoleRegistry asserts the derived endpoint specs.
-// The UI services are nginx subdomain vhosts on the single GatewayPort now (their
-// direct ports are internal-only), ollama is a host-CLI gateway path, and only the
-// proxy publishes a direct host port.
+// The UI services are nginx subdomain vhosts reached PORTLESS on :80 now (their
+// direct ports are internal-only; the portless rendering lives in internal/console),
+// ollama is a host-CLI gateway path (on :18787), and only the proxy publishes a
+// direct host port (the gateway/API :18787).
 func TestEndpointsMatchCurrentConsoleRegistry(test *testing.T) {
 	want := map[string]Endpoint{
 		"litellm":      {ConsolePath: "/ui", HasConsole: true, UISubdomain: "litellm"},
