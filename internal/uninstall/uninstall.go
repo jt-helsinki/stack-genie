@@ -222,7 +222,7 @@ func Run(options Options, prober runtime.Prober, progress Progress) (Report, err
 			_ = os.RemoveAll(platformDir)
 		}
 		if removeVolumes(prober) > 0 {
-			record("Removed platform data volumes (aip-*)")
+			record("Removed LEGACY platform data volumes (aip-*)")
 		}
 		report.Purged = true
 		record("Purged ~/.ai-platform (your project directories were left untouched)")
@@ -310,8 +310,12 @@ func removeContainers(prober runtime.Prober, record func(string)) int {
 	return total
 }
 
-// removeVolumes removes the platform's aip-* data volumes (e.g. the LiteLLM
-// Postgres volume). Only called on --purge, since volumes hold platform state.
+// removeVolumes removes any LEGACY platform Docker NAMED volumes (aip-*). System
+// data now lives as bind mounts under ~/.ai-platform/volumes, so the --purge
+// RemoveAll of ~/.ai-platform (done above) is the PRIMARY mechanism that removes
+// it. This stays only as a best-effort cleanup of named volumes left over from the
+// OLD topology (notably the former aip-litellm-db-data Postgres volume) so an
+// upgrade doesn't strand them. Only called on --purge.
 func removeVolumes(prober runtime.Prober) int {
 	total := 0
 	for _, containerRuntime := range containerRuntimes {

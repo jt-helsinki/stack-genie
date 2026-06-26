@@ -47,6 +47,11 @@ func TestPathHelpersRootedUnderHome(t *testing.T) {
 			want:   filepath.Join(platformDir, "logs"),
 		},
 		{
+			name:   "VolumesDir",
+			helper: paths.VolumesDir,
+			want:   filepath.Join(platformDir, "volumes"),
+		},
+		{
 			name:   "OverlaysDir",
 			helper: paths.OverlaysDir,
 			want:   filepath.Join(platformDir, "overlays"),
@@ -110,6 +115,7 @@ func TestHelpersPropagateHomeError(t *testing.T) {
 		{"PlatformDir", paths.PlatformDir},
 		{"ConfigDir", paths.ConfigDir},
 		{"LogsDir", paths.LogsDir},
+		{"VolumesDir", paths.VolumesDir},
 		{"OverlaysDir", paths.OverlaysDir},
 		{"ProjectsDir", paths.ProjectsDir},
 	}

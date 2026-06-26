@@ -594,16 +594,24 @@ func secureLiteLLMUI(em *output.Emitter, interactive bool, password, domain stri
 }
 
 // offerPersistLiteLLMSecrets offers (on a TTY) to save the LiteLLM UI password +
-// master key to ~/.ai-platform/.ai-platform.env, a 0600 file the `ai` CLI auto-loads at
-// startup, so they persist across restarts without the user editing their shell
-// rc. On YES it writes the file and confirms the path; on NO / non-TTY it falls
-// back to printing the manual `export …` block (the previous behaviour). Shared
-// by `ai setup` (server) and `ai litellm password`.
+// master key to ~/.ai-platform/.ai-platform.env, a 0600 file the `ai` CLI auto-loads
+// at startup, so they persist across restarts without the user editing their shell
+// rc. The consent prompt's DESCRIPTION states the trade-off concisely so the user
+// makes an INFORMED choice (pro: no re-entry/re-mint; con: a plaintext secret on
+// disk — prefer NOT saving on a shared/multi-user host or a synced home dir). On
+// YES it writes the file and confirms the path; on NO / non-TTY / write failure it
+// prints the no-file instructions (the interactive prompt, or an `export …` from a
+// Keychain/secrets manager, supply the secret only when the LiteLLM container is
+// (re)launched). Shared by `ai setup` (server) and `ai litellm password`.
 func offerPersistLiteLLMSecrets(em *output.Emitter, interactive bool, password, masterKey string) {
 	if interactive {
 		save, err := promptConfirmDefault(
 			"Save these to ~/.ai-platform/.ai-platform.env so they persist across restarts?",
-			"writes a 0600 (owner-only) file that `ai` loads automatically",
+			"PRO: persists the LiteLLM admin password + master key across restarts (no re-entry, "+
+				"no re-mint), in a 0600 owner-only file under ~/.ai-platform (removed by `ai uninstall --purge`). "+
+				"CON: it is a PLAINTEXT secret on disk — fine on a single-user machine, but on a SHARED/multi-user "+
+				"host or a synced/backed-up home dir prefer NOT saving (export it from your Keychain/secrets "+
+				"manager, or re-enter it at the prompt, to keep it off disk).",
 			true,
 		)
 		if err == nil && save {
@@ -615,18 +623,36 @@ func offerPersistLiteLLMSecrets(em *output.Emitter, interactive bool, password, 
 			} else {
 				path, _ := envfile.Path()
 				_, _ = fmt.Fprintf(em.Err,
-					"Saved to %s (loaded automatically by ai; add `source ~/.ai-platform/.ai-platform.env` "+
-						"to your shell rc if other tools need these)\n", path)
+					"%s Saved to %s (loaded automatically by ai; add `source ~/.ai-platform/.ai-platform.env` "+
+						"to your shell rc if other tools need these)\n",
+					ui.Success.Render(ui.IconOK), ui.Value.Render(path))
 				return
 			}
 		}
 	}
-	// No / non-TTY / write failure: print the manual export block to keep them.
-	_, _ = fmt.Fprintf(em.Err,
-		"  Secrets are not stored on platform disk; to keep them across restarts, export\n"+
-			"  them before `ai setup` / `ai services start`:\n"+
-			"    export UI_PASSWORD='<the password you just set>' LITELLM_MASTER_KEY=%s\n",
-		masterKey)
+	// No / non-TTY / write failure: print the no-file instructions. The secret is
+	// needed ONLY when the LiteLLM container is (re)launched — supply it then.
+	printNoEnvFileInstructions(em, masterKey)
+}
+
+// printNoEnvFileInstructions explains how to keep using the platform WITHOUT the
+// ~/.ai-platform/.ai-platform.env file: the LiteLLM admin password + master key are
+// needed only when the LiteLLM container is (re)launched — at `ai setup`,
+// `ai services restart`, or `ai litellm password` — and can be supplied then either
+// by the interactive prompt or by exporting them in that shell first (optionally
+// sourced from a Keychain/secrets manager). It also notes that `ai` auto-loads the
+// env file if the user later chooses to create it. Styled with the ui palette.
+func printNoEnvFileInstructions(em *output.Emitter, masterKey string) {
+	_, _ = fmt.Fprintln(em.Err, ui.Heading.Render("Not saving to disk — supply the secret when the LiteLLM container is (re)launched"))
+	_, _ = fmt.Fprintf(em.Err, "  %s\n",
+		ui.Muted.Render("Needed only by: `ai setup`, `ai services restart`, `ai litellm password` (when LiteLLM is relaunched)."))
+	_, _ = fmt.Fprintf(em.Err, "  %s\n", ui.Muted.Render("Provide it then either by the interactive prompt, or by exporting it in that shell first:"))
+	_, _ = fmt.Fprintf(em.Err, "    %s\n", ui.Value.Render("export LITELLM_MASTER_KEY="+masterKey))
+	_, _ = fmt.Fprintf(em.Err, "    %s\n", ui.Value.Render("export UI_PASSWORD='<the password you just set>'"))
+	_, _ = fmt.Fprintf(em.Err, "  %s\n",
+		ui.Muted.Render("(optionally sourced from your Keychain / secrets manager so it stays off disk)."))
+	_, _ = fmt.Fprintf(em.Err, "  %s\n",
+		ui.Muted.Render("`ai` also auto-loads ~/.ai-platform/.ai-platform.env if you later choose to create it."))
 }
 
 // syncUISubdomains wires the platform UI subdomains for this host's role after a

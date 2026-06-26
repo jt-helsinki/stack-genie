@@ -171,7 +171,6 @@ const (
 	// the one stateful piece of the otherwise-stateless service tier.
 	platformNetwork    = "aip-net"
 	litellmDBContainer = "aip-litellm-db"
-	litellmDBVolume    = "aip-litellm-db-data"
 	litellmDBUser      = "litellm"
 	litellmDBName      = "litellm"
 	litellmDatabaseURL = "postgresql://" + litellmDBUser + "@" + litellmDBContainer + ":5432/" + litellmDBName
@@ -183,11 +182,22 @@ const (
 	// Ollama runs as a container on aip-net (so LiteLLM reaches it by name at
 	// aip-ollama:11434). It is INTERNAL-ONLY — no host publish; the host CLI reaches
 	// the Ollama HTTP API through the nginx gateway's /ollama route. Models persist
-	// on the host under ~/.ai-platform/models (bind-mounted to ollamaModelsGuest,
-	// with OLLAMA_MODELS pointing there) so they are visible on disk and removed with
-	// the rest of platform state on `ai uninstall --purge`.
-	ollamaContainer   = "aip-ollama"
-	ollamaModelsGuest = "/models" // where ~/.ai-platform/models is mounted in the container
+	// on the host under ~/.ai-platform/volumes/models (the standardized system-volume
+	// home; bind-mounted to ollamaModelsGuest, with OLLAMA_MODELS pointing there) so
+	// they are visible on disk and removed with the rest of platform state on
+	// `ai uninstall --purge` (which RemoveAll's ~/.ai-platform). Migration caveat:
+	// models previously stored under ~/.ai-platform/models do NOT auto-migrate — the
+	// next `ai setup` starts with a fresh dir and re-pulls; acceptable for this dev
+	// platform.
+	ollamaContainer    = "aip-ollama"
+	ollamaModelsVolume = "models"  // subdir under VolumesDir: ~/.ai-platform/volumes/models
+	ollamaModelsGuest  = "/models" // where the host models volume is mounted in the container
+
+	// litellmDBVolume is the per-name subdir under VolumesDir for the LiteLLM
+	// Postgres data dir: ~/.ai-platform/volumes/litellm-db, HOST-BIND-MOUNTED into
+	// the Postgres container at /var/lib/postgresql (NOT a Docker named volume), so
+	// all system data lives in one discoverable place under ~/.ai-platform.
+	litellmDBVolume = "litellm-db"
 
 	// Headroom is the input-compression proxy in front of LiteLLM. Official image
 	// (no build). It is now INTERNAL-ONLY on aip-net at :8787 (no host publish) —
@@ -414,14 +424,54 @@ func ensurePlatformNetwork(prober runtime.Prober, containerRuntime string) {
 	}
 }
 
+// systemVolumeDir resolves a host SYSTEM-data volume directory under VolumesDir
+// (~/.ai-platform/volumes/<name>) and creates it with the given perms. Every
+// host-persisted system volume goes through here, so they all live in one
+// discoverable place that `ai uninstall --purge` removes (RemoveAll
+// ~/.ai-platform). Pure-ish (it touches the filesystem only to MkdirAll), and the
+// path it returns is asserted in tests via VolumesDir.
+func systemVolumeDir(name string, perm os.FileMode) (string, error) {
+	volumesDir, err := paths.VolumesDir()
+	if err != nil {
+		return "", err
+	}
+	dir := filepath.Join(volumesDir, name)
+	if err := os.MkdirAll(dir, perm); err != nil {
+		return "", output.Errorf(output.ExitRuntimeFailure, "create volume dir %s: %s", dir, err)
+	}
+	return dir, nil
+}
+
 // ensureLiteLLMDB starts the Postgres that backs LiteLLM's admin UI / virtual
 // keys, unless it is already running. Trust auth on the private network (no
 // password); the host port is loopback-bound at litellmDBHostPort. Idempotent.
+//
+// The data dir is a HOST BIND MOUNT at ~/.ai-platform/volumes/litellm-db (created
+// 0700 before launch) → /var/lib/postgresql in the container — not a Docker named
+// volume — so all system data lives under ~/.ai-platform and is removed by
+// `ai uninstall --purge`.
+//
+// hardware bring-up: Postgres on a bind mount has data-dir OWNERSHIP quirks — the
+// container's `postgres` UID must own (or be able to chown) the host dir, which
+// macOS Docker Desktop's gRPC-FUSE mount and Linux rootless (userns-remapped UIDs)
+// handle differently. Verify `initdb` succeeds on the bind mount on a provisioned
+// host; some hosts may need a uid/`:Z` SELinux relabel tweak on the `-v`.
+//
+// Migration caveat: data in the OLD `aip-litellm-db-data` named volume does NOT
+// auto-migrate — the next `ai setup` re-initdb's into the fresh bind dir;
+// acceptable for this dev platform (`ai uninstall` best-effort-removes the legacy
+// named volume).
 func ensureLiteLLMDB(prober runtime.Prober, containerRuntime string) error {
 	out, err := prober.Run(containerRuntime, "ps", "--filter", "name=^/"+litellmDBContainer+"$",
 		"--filter", "status=running", "--format", "{{.Names}}")
 	if err == nil && strings.TrimSpace(string(out)) == litellmDBContainer {
 		return nil // already up
+	}
+	// Host bind-mount dir for the Postgres data (0700 — owner-only, the usual data-dir
+	// perm). hardware bring-up: see the function doc on bind-mount ownership quirks.
+	dbDir, err := systemVolumeDir(litellmDBVolume, 0o700)
+	if err != nil {
+		return err
 	}
 	_, _ = prober.Run(containerRuntime, "rm", "-f", litellmDBContainer) // clear any stopped one
 	args := []string{
@@ -431,10 +481,13 @@ func ensureLiteLLMDB(prober runtime.Prober, containerRuntime string) error {
 		"-e", "POSTGRES_USER=" + litellmDBUser,
 		"-e", "POSTGRES_DB=" + litellmDBName,
 		"-e", "POSTGRES_HOST_AUTH_METHOD=trust",
-		// Postgres 18+ stores data in a version-specific subdir, so the volume is
-		// mounted at /var/lib/postgresql (NOT .../data, the pre-18 convention) —
-		// otherwise the image refuses to start (docker-library/postgres#1259).
-		"-v", litellmDBVolume + ":/var/lib/postgresql",
+		// HOST BIND MOUNT (not a named volume): the data dir lives under
+		// ~/.ai-platform/volumes/litellm-db so all system data is in one discoverable
+		// place removed by `ai uninstall --purge`. Postgres 18+ stores data in a
+		// version-specific subdir, so the mount target is /var/lib/postgresql (NOT
+		// .../data, the pre-18 convention) — otherwise the image refuses to start
+		// (docker-library/postgres#1259).
+		"-v", dbDir + ":/var/lib/postgresql",
 		containerImage("litellm-db"),
 	}
 	if _, err := prober.Run(containerRuntime, args...); err != nil {
@@ -473,21 +526,21 @@ func containerPublishesHostPort(prober runtime.Prober, containerRuntime, name st
 
 // ensureOllama runs the Ollama container on the shared network, INTERNAL-ONLY (no
 // host publish — reached by name on aip-net and, from the host, through the nginx
-// /ollama route), persisting models under ~/.ai-platform/models on the host
+// /ollama route), persisting models under ~/.ai-platform/volumes/models on the host
 // (bind-mounted). Idempotent. bindHost is unused now (no publish) but kept for a
 // stable ensure* signature.
+//
+// Migration caveat: models previously under ~/.ai-platform/models do NOT
+// auto-migrate to volumes/models — the next `ai setup` starts fresh and re-pulls;
+// acceptable for this dev platform.
 func ensureOllama(prober runtime.Prober, containerRuntime, bindHost string) error {
 	_ = bindHost // internal-only: Ollama no longer publishes to the host
 	if containerRunning(prober, containerRuntime, ollamaContainer) {
 		return nil
 	}
-	platformDir, err := paths.PlatformDir()
+	modelsDir, err := systemVolumeDir(ollamaModelsVolume, 0o755)
 	if err != nil {
 		return err
-	}
-	modelsDir := filepath.Join(platformDir, "models")
-	if err := os.MkdirAll(modelsDir, 0o755); err != nil {
-		return output.Errorf(output.ExitRuntimeFailure, "create ollama models dir %s: %s", modelsDir, err)
 	}
 	_, _ = prober.Run(containerRuntime, "rm", "-f", ollamaContainer)
 	args := []string{

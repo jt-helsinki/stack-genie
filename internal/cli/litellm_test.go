@@ -79,8 +79,18 @@ func TestOfferPersistNonInteractiveFallback(test *testing.T) {
 	if _, statErr := os.Stat(path); statErr == nil {
 		test.Errorf("non-interactive offer must NOT write %s", path)
 	}
-	if !strings.Contains(err.String(), "export UI_PASSWORD") {
-		test.Errorf("non-interactive offer must print the manual export block: %q", err.String())
+	output := err.String()
+	// The no-file instructions must show both exports (master key inlined, password
+	// placeholder) and name when the secret is needed (the relaunch commands).
+	for _, want := range []string{
+		"export LITELLM_MASTER_KEY=sk-key",
+		"export UI_PASSWORD",
+		"ai services restart",
+		"ai litellm password",
+	} {
+		if !strings.Contains(output, want) {
+			test.Errorf("non-interactive offer must print %q in the no-file instructions: %q", want, output)
+		}
 	}
 }
 

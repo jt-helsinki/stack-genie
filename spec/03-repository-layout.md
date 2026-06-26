@@ -41,12 +41,14 @@ All platform-wide data is stored under:
 ├── cache/
 ├── config/        # global settings + projects index (no per-project state)
 ├── logs/
-├── models/        # Ollama persistent model store (bind-mounted into aip-ollama)
 ├── overlays/
 ├── prompts/
 ├── skills/
 ├── templates/     # OS Dockerfile templates + shared templates
-└── tools/
+├── tools/
+└── volumes/       # ALL host-persisted SYSTEM data volumes (bind-mounted into aip-* containers)
+    ├── litellm-db/  # LiteLLM Postgres data dir (→ aip-litellm-db:/var/lib/postgresql)
+    └── models/      # Ollama persistent model store (→ aip-ollama)
 
 ~/.ai-platform/.ai-platform.env   # OPT-IN, 0600 sibling file (NOT under ~/.ai-platform/)
 ```
@@ -62,9 +64,27 @@ inside it. Precedence is "existing env wins" — load only fills gaps. It is the
 ONE on-disk place secrets may live for the host's own service tier (still never
 in a workspace or project); real provider keys remain in the LiteLLM gateway.
 
-`~/.ai-platform/models/` is the **persistent Ollama model store**, bind-mounted
-into the `aip-ollama` container so pulled local models survive container
-recreation (distinct from the disposable `cache/models/` in §1.3).
+`~/.ai-platform/volumes/` is the **single home for every host-persisted SYSTEM
+data volume** — keeping them in one discoverable place (rather than scattered
+Docker named volumes or ad-hoc paths under the platform dir) means
+`ai uninstall --purge` (which `RemoveAll`s `~/.ai-platform`) removes them all. The
+rule: **all system host volumes live under `~/.ai-platform/volumes/<name>`**
+(config files — the LiteLLM/DNS/nginx configs under `config/` — and the
+per-project workspace overlays are NOT system volumes and stay where they are).
+Today there are two:
+
+- `~/.ai-platform/volumes/litellm-db/` — the LiteLLM **Postgres data dir**,
+  **HOST-BIND-MOUNTED** into `aip-litellm-db` at `/var/lib/postgresql` (NOT a
+  Docker named volume). This is the one stateful service-tier piece.
+- `~/.ai-platform/volumes/models/` — the **persistent Ollama model store**,
+  bind-mounted into `aip-ollama` so pulled local models survive container
+  recreation (distinct from the disposable `cache/models/` in §1.3).
+
+**Migration caveat (acceptable for this dev platform):** existing data in the old
+`aip-litellm-db-data` named volume and the old `~/.ai-platform/models/` does NOT
+auto-migrate — the next `ai setup` starts with fresh dirs (Postgres re-`initdb`s,
+models re-pull). `ai uninstall` still best-effort `docker volume rm aip-*`s the
+legacy named volume on upgrade.
 
 ---
 

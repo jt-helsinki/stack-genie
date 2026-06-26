@@ -12,6 +12,7 @@ import (
 
 	"github.com/jt-helsinki/ideal-robot/internal/conffile"
 	"github.com/jt-helsinki/ideal-robot/internal/output"
+	"github.com/jt-helsinki/ideal-robot/internal/paths"
 	"github.com/jt-helsinki/ideal-robot/internal/runtime"
 	"github.com/jt-helsinki/ideal-robot/internal/versions"
 )
@@ -1365,5 +1366,110 @@ func TestProxyReachableUpAndDown(test *testing.T) {
 	}
 	if proxyReachable("http://127.0.0.1:18787/health/liveliness") {
 		test.Error("a transport error should be treated as down")
+	}
+}
+
+// capturingProber records every Run argv so volume-mount tests can assert the
+// host bind paths the ensure* funcs pass to `docker run`. It reports the litellm-db
+// container as NOT running (empty ps output) so ensureLiteLLMDB proceeds to launch.
+type capturingProber struct {
+	runs [][]string
+}
+
+func (prober *capturingProber) LookPath(file string) (string, error) {
+	return "/usr/bin/" + file, nil
+}
+
+func (prober *capturingProber) Run(name string, args ...string) ([]byte, error) {
+	prober.runs = append(prober.runs, append([]string{name}, args...))
+	// pg_isready (the readiness loop) → succeed immediately so the test is fast.
+	if len(args) > 0 && args[0] == "exec" {
+		return nil, nil
+	}
+	return nil, nil
+}
+func (prober *capturingProber) Exists(string) bool { return false }
+
+// runContainsVolume reports whether any captured `run` argv carries `-v src:...`
+// with the given host source path, returning the full mount spec it found.
+func runContainsVolume(runs [][]string, hostSrc string) (string, bool) {
+	for _, run := range runs {
+		for index := 0; index < len(run)-1; index++ {
+			if run[index] == "-v" && strings.HasPrefix(run[index+1], hostSrc+":") {
+				return run[index+1], true
+			}
+		}
+	}
+	return "", false
+}
+
+// TestEnsureLiteLLMDBBindMountUnderVolumesDir asserts Postgres is launched with a
+// HOST BIND MOUNT under ~/.ai-platform/volumes/litellm-db (not a docker named
+// volume), targeting /var/lib/postgresql, and that the host dir is created.
+func TestEnsureLiteLLMDBBindMountUnderVolumesDir(test *testing.T) {
+	home := test.TempDir()
+	test.Setenv("HOME", home)
+
+	prober := &capturingProber{}
+	if err := ensureLiteLLMDB(prober, "docker"); err != nil {
+		test.Fatalf("ensureLiteLLMDB: %v", err)
+	}
+
+	volumesDir, err := paths.VolumesDir()
+	if err != nil {
+		test.Fatalf("VolumesDir: %v", err)
+	}
+	wantSrc := filepath.Join(volumesDir, "litellm-db")
+	spec, ok := runContainsVolume(prober.runs, wantSrc)
+	if !ok {
+		test.Fatalf("no -v bind mount with host source %q in runs: %v", wantSrc, prober.runs)
+	}
+	if spec != wantSrc+":/var/lib/postgresql" {
+		test.Errorf("db mount = %q, want %q", spec, wantSrc+":/var/lib/postgresql")
+	}
+	// Must NOT use the old docker NAMED volume.
+	if named, found := runContainsVolume(prober.runs, "aip-litellm-db-data"); found {
+		test.Errorf("must not use the legacy named volume, found %q", named)
+	}
+	if info, err := os.Stat(wantSrc); err != nil || !info.IsDir() {
+		test.Errorf("expected the db bind dir %q to be created: %v", wantSrc, err)
+	}
+}
+
+// TestEnsureOllamaModelsUnderVolumesDir asserts the Ollama models bind mount moved
+// to ~/.ai-platform/volumes/models (with the guest path unchanged) and the dir is
+// created.
+func TestEnsureOllamaModelsUnderVolumesDir(test *testing.T) {
+	home := test.TempDir()
+	test.Setenv("HOME", home)
+
+	prober := &capturingProber{}
+	if err := ensureOllama(prober, "docker", "127.0.0.1"); err != nil {
+		test.Fatalf("ensureOllama: %v", err)
+	}
+
+	volumesDir, err := paths.VolumesDir()
+	if err != nil {
+		test.Fatalf("VolumesDir: %v", err)
+	}
+	wantSrc := filepath.Join(volumesDir, "models")
+	spec, ok := runContainsVolume(prober.runs, wantSrc)
+	if !ok {
+		test.Fatalf("no -v models bind mount with host source %q in runs: %v", wantSrc, prober.runs)
+	}
+	if spec != wantSrc+":"+ollamaModelsGuest {
+		test.Errorf("models mount = %q, want %q", spec, wantSrc+":"+ollamaModelsGuest)
+	}
+	// Must NOT use the old ~/.ai-platform/models (directly under the platform dir).
+	platformDir, err := paths.PlatformDir()
+	if err != nil {
+		test.Fatalf("PlatformDir: %v", err)
+	}
+	oldModels := filepath.Join(platformDir, "models")
+	if _, found := runContainsVolume(prober.runs, oldModels); found {
+		test.Errorf("must not bind the legacy %q models path", oldModels)
+	}
+	if info, err := os.Stat(wantSrc); err != nil || !info.IsDir() {
+		test.Errorf("expected the models dir %q to be created: %v", wantSrc, err)
 	}
 }

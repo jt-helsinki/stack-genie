@@ -212,6 +212,30 @@ chain itself. The remaining verification work:
       `default_on: true` and every route traverses the proxy, a cloud route cannot
       bypass them.
 
+### 2.5b LiteLLM Postgres data-dir on a host bind mount
+
+Every host-persisted **system** volume now lives under `~/.ai-platform/volumes/<name>`
+(so it is discoverable in one place and removed by `ai uninstall --purge`, which
+`RemoveAll`s `~/.ai-platform`). Two volumes today:
+
+- `~/.ai-platform/volumes/litellm-db` → bind-mounted into `aip-litellm-db` at
+  `/var/lib/postgresql` (the LiteLLM Postgres data dir). This replaces the former
+  `aip-litellm-db-data` Docker **named volume**.
+- `~/.ai-platform/volumes/models` → the Ollama model store (moved from the old
+  `~/.ai-platform/models`).
+
+- [ ] **Verify `initdb` succeeds on the bind mount.** Postgres on a host bind mount
+      has data-dir **ownership** quirks: the container's `postgres` UID must own (or
+      be able to `chown`) the host dir, and macOS Docker Desktop's gRPC-FUSE mount vs
+      Linux **rootless** (userns-remapped UIDs) handle this differently. The dir is
+      created `0700` before `docker run`. If `initdb` fails on a given host, a
+      uid/`:Z` (SELinux relabel) tweak on the `-v` may be needed — wire it here.
+- [ ] **Migration caveat (acceptable for this dev platform):** data in the OLD
+      `aip-litellm-db-data` named volume and the OLD `~/.ai-platform/models` does
+      **not** auto-migrate — the next `ai setup` re-`initdb`s the Postgres data dir
+      and re-pulls Ollama models into the fresh dirs. `ai uninstall` still
+      best-effort `docker volume rm aip-*`s the legacy named volume on upgrade.
+
 ### 2.6 In-VM container runtime (Phase 0 — arch §7)
 
 Every workspace microVM image now ships a **rootful** OCI container runtime —

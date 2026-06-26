@@ -1020,10 +1020,25 @@ LiteLLM runs as container `aip-litellm` (image `ghcr.io/berriai/litellm:latest`,
 `:4000`) on the `aip-net` network — **INTERNAL-ONLY** (no host publish; reached by
 name `aip-litellm:4000` by Headroom and by nginx's `/llm` route + `litellm.<domain>`
 vhost). Its DB-backed admin UI / virtual keys require
-PostgreSQL: container `aip-litellm-db` (image `postgres:18.4-alpine3.23`, data
-volume mounted at `/var/lib/postgresql`, `trust` auth on the private network,
-host port bound at `127.0.0.1:5442`). This Postgres is the one stateful piece of
-the service tier.
+PostgreSQL: container `aip-litellm-db` (image `postgres:18.4-alpine3.23`, the data
+dir **HOST-BIND-MOUNTED** from `~/.ai-platform/volumes/litellm-db` at
+`/var/lib/postgresql` — NOT a Docker named volume — `trust` auth on the private
+network, host port bound at `127.0.0.1:5442`). This Postgres is the one stateful
+piece of the service tier.
+
+**All host-persisted SYSTEM data volumes live under `~/.ai-platform/volumes/<name>`**
+— a single discoverable home, so `ai uninstall --purge` (which `RemoveAll`s
+`~/.ai-platform`) removes them all (no scattered Docker named volumes). Today:
+`volumes/litellm-db` (the Postgres data dir above) and `volumes/models` (the Ollama
+model store). Config files (the LiteLLM/DNS/nginx configs under `config/`) and the
+per-project workspace overlays are NOT system volumes and stay where they are.
+*Bring-up caveat:* Postgres on a host bind mount has data-dir ownership quirks on
+macOS Docker Desktop / Linux rootless (the container's `postgres` UID vs the host
+dir) — verify `initdb` succeeds; some hosts may need a uid/`:Z` tweak. *Migration
+caveat:* data in the old `aip-litellm-db-data` named volume / old
+`~/.ai-platform/models` does NOT auto-migrate — the next `ai setup` starts fresh
+(Postgres re-`initdb`s, models re-pull); `ai uninstall` still best-effort removes
+the legacy named volume on upgrade.
 
 **Admin UI auth.** The proxy ships an admin UI at `:4000/ui` (reached on the host
 through nginx — the `litellm.<domain>` vhost on :18787, which redirects `/` → `/ui`,
@@ -1201,8 +1216,9 @@ Rules:
 * never installed in workspaces
 * runs as a **container-tier service** (`aip-ollama`, image `ollama/ollama:latest`,
   **INTERNAL-ONLY** — no host publish; reached by name, and from the host through
-  nginx's `/ollama` route; models persist on the host under `~/.ai-platform/models`,
-  bind-mounted to `/models` with `OLLAMA_MODELS` pointing there) on the `aip-net`
+  nginx's `/ollama` route; models persist on the host under
+  `~/.ai-platform/volumes/models`, bind-mounted to `/models` with `OLLAMA_MODELS`
+  pointing there) on the `aip-net`
   network on all platforms — never a native host install. A native Ollama bound to
   the container's own `:11434` should be stopped first. LiteLLM reaches it by
   container name — `ollama/*` models carry `api_base=http://aip-ollama:11434`.

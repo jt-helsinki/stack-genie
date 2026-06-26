@@ -42,6 +42,21 @@ func LogsDir() (string, error) {
 	return filepath.Join(p, "logs"), nil
 }
 
+// VolumesDir is ~/.ai-platform/volumes — the single home for every host-persisted
+// SYSTEM data volume (the LiteLLM Postgres data dir, the Ollama model store, …).
+// Keeping all system volumes here (rather than scattered Docker named volumes or
+// ad-hoc paths under the platform dir) makes them discoverable in one place and
+// means `ai uninstall --purge`, which RemoveAll's ~/.ai-platform, removes them
+// too. Per-name subdirs (volumes/litellm-db, volumes/models, …) are created on use
+// via MkdirAll by their consumer, mirroring how the models dir was created.
+func VolumesDir() (string, error) {
+	p, err := PlatformDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(p, "volumes"), nil
+}
+
 // OverlaysDir is ~/.ai-platform/overlays — per-workspace persistent overlays
 // (arch §26). Host-local persistence, not git material and not a backup.
 func OverlaysDir() (string, error) {
