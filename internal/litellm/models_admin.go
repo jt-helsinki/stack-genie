@@ -149,6 +149,63 @@ func (manager *KeyManager) DeleteModel(id string) error {
 	return manager.doJSON(http.MethodPost, "/model/delete", map[string]any{"id": id}, nil)
 }
 
+// OllamaModelName is the PUBLIC model handle for a locally-installed Ollama model:
+// "ollama/<name>" verbatim (the name as Ollama reports it, e.g. "llama3.2:3b"). This
+// is exactly what the in-workspace agent names and what LiteLLM's ollama/* wildcard
+// otherwise routes — registering it as an explicit DB-backed model gives it a stable
+// model_info.id (and surfaces it in the live model list) without changing the handle.
+func OllamaModelName(name string) string {
+	return "ollama/" + name
+}
+
+// RegisterOllamaModel registers a locally-installed Ollama model as a DB-backed model
+// in the gateway, so a freshly-pulled model appears in the live catalogue with its own
+// id. The public model_name and the routed litellm_params.model are both
+// "ollama/<name>" (OllamaModelName); api_base is the in-network Ollama the gateway
+// reaches on aip-net (OllamaAPIBase = http://aip-ollama:11434), and no credential is
+// referenced (Ollama needs none).
+//
+// Idempotent-ish: if a model with this model_name already exists (ListModels), the add
+// is skipped so re-pulling does not create a duplicate.
+//
+// hardware bring-up: the LIVE POST /model/new round-trip is exercised only against a
+// running aip-litellm — verify on a provisioned host.
+func (manager *KeyManager) RegisterOllamaModel(name string) error {
+	modelName := OllamaModelName(name)
+	existing, err := manager.ListModels()
+	if err != nil {
+		return err
+	}
+	for _, model := range existing {
+		if model.Name == modelName {
+			return nil // already registered — don't duplicate
+		}
+	}
+	return manager.AddModel(modelName,
+		ModelParams{Model: modelName, APIBase: OllamaAPIBase}, ModelInfo{})
+}
+
+// UnregisterOllamaModel removes the DB-backed model registered for a local Ollama
+// model. It looks up the entry whose model_name == "ollama/<name>" (OllamaModelName)
+// and deletes it by its LiteLLM-assigned id. A no-op (no error) when no such model is
+// registered.
+//
+// hardware bring-up: the LIVE POST /model/delete round-trip is exercised only against
+// a running aip-litellm — verify on a provisioned host.
+func (manager *KeyManager) UnregisterOllamaModel(name string) error {
+	modelName := OllamaModelName(name)
+	existing, err := manager.ListModels()
+	if err != nil {
+		return err
+	}
+	for _, model := range existing {
+		if model.Name == modelName {
+			return manager.DeleteModel(model.ID)
+		}
+	}
+	return nil // not registered — nothing to do
+}
+
 // LiveModel is a model currently served by the gateway, parsed from GET
 // /model/info: the public model_name, the routed litellm_params.model (whose
 // prefix is the Provider), and the LiteLLM-assigned model_info.id used to delete it.

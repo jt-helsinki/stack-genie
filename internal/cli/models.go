@@ -10,6 +10,7 @@ import (
 	"github.com/jt-helsinki/ideal-robot/internal/litellm"
 	"github.com/jt-helsinki/ideal-robot/internal/ollama"
 	"github.com/jt-helsinki/ideal-robot/internal/output"
+	"github.com/jt-helsinki/ideal-robot/internal/runtime"
 	"github.com/jt-helsinki/ideal-robot/internal/ui"
 	"github.com/spf13/cobra"
 )
@@ -29,6 +30,23 @@ var litellmClient = litellm.RealClient
 // package var so tests can inject a fixture; production wires ollama.Popular (a pure
 // embedded read, no network).
 var ollamaPopular = func() ([]ollama.PopularModel, error) { return ollama.Popular() }
+
+// modelRegistrar is the slice of litellm.KeyManager that `ai models pull|rm` use to
+// keep the gateway's DB-backed model list in step with the local Ollama store: a
+// freshly-pulled model is registered (so it gains a stable id + shows in the live
+// catalogue), a removed model is unregistered. It is an interface so tests inject a
+// fake (no network); registration is BEST-EFFORT — a gateway that is down or has no
+// master key must never fail a pull/rm.
+type modelRegistrar interface {
+	RegisterOllamaModel(name string) error
+	UnregisterOllamaModel(name string) error
+}
+
+// modelRegistrarFactory builds the registrar. A package var so tests inject a fake;
+// production binds a KeyManager over the real container prober.
+var modelRegistrarFactory = func() modelRegistrar {
+	return litellm.NewKeyManager(runtime.RealProber())
+}
 
 // newModelsCmd builds `ai models` (CLI §8).
 func newModelsCmd(em *output.Emitter, exit *int) *cobra.Command {

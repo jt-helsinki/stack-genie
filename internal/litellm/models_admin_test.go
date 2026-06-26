@@ -231,6 +231,147 @@ func TestAddModelEmptyName(test *testing.T) {
 	}
 }
 
+// TestRegisterOllamaModelRequestShape verifies an Ollama registration: it first
+// lists models (GET /model/info), and — when not already present — POSTs /model/new
+// with model_name = "ollama/<name>" verbatim, litellm_params.model = the same, and
+// api_base = the in-network Ollama (OllamaAPIBase). No credential is referenced.
+func TestRegisterOllamaModelRequestShape(test *testing.T) {
+	var addBody map[string]any
+	var sawList bool
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		switch {
+		case request.Method == http.MethodGet && request.URL.Path == "/model/info":
+			sawList = true
+			_, _ = writer.Write([]byte(`{"data":[]}`)) // nothing registered yet
+		case request.Method == http.MethodPost && request.URL.Path == "/model/new":
+			payload, _ := io.ReadAll(request.Body)
+			_ = json.Unmarshal(payload, &addBody)
+			_, _ = writer.Write([]byte(`{}`))
+		default:
+			test.Errorf("unexpected %s %s", request.Method, request.URL.Path)
+		}
+	}))
+	defer server.Close()
+	test.Setenv("LITELLM_BASE_URL", server.URL)
+
+	manager := NewKeyManager(okProber())
+	if err := manager.RegisterOllamaModel("llama3.2:3b"); err != nil {
+		test.Fatalf("RegisterOllamaModel: %v", err)
+	}
+	if !sawList {
+		test.Error("RegisterOllamaModel should list existing models before adding")
+	}
+	if addBody["model_name"] != "ollama/llama3.2:3b" {
+		test.Errorf("model_name = %v, want ollama/llama3.2:3b", addBody["model_name"])
+	}
+	params, _ := addBody["litellm_params"].(map[string]any)
+	if params["model"] != "ollama/llama3.2:3b" {
+		test.Errorf("litellm_params.model = %v, want ollama/llama3.2:3b", params["model"])
+	}
+	if params["api_base"] != OllamaAPIBase {
+		test.Errorf("api_base = %v, want %s", params["api_base"], OllamaAPIBase)
+	}
+	if _, present := params["litellm_credential_name"]; present {
+		test.Errorf("an Ollama model must not reference a credential, got %v", params["litellm_credential_name"])
+	}
+}
+
+// TestRegisterOllamaModelSkipsWhenPresent verifies registration is a no-op (no
+// /model/new) when a model with the same model_name already exists.
+func TestRegisterOllamaModelSkipsWhenPresent(test *testing.T) {
+	var sawAdd bool
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		switch {
+		case request.Method == http.MethodGet && request.URL.Path == "/model/info":
+			_, _ = writer.Write([]byte(`{"data":[
+				{"model_name":"ollama/gemma4","litellm_params":{"model":"ollama/gemma4"},"model_info":{"id":"id-1"}}
+			]}`))
+		case request.URL.Path == "/model/new":
+			sawAdd = true
+			_, _ = writer.Write([]byte(`{}`))
+		default:
+			test.Errorf("unexpected %s %s", request.Method, request.URL.Path)
+		}
+	}))
+	defer server.Close()
+	test.Setenv("LITELLM_BASE_URL", server.URL)
+
+	manager := NewKeyManager(okProber())
+	if err := manager.RegisterOllamaModel("gemma4"); err != nil {
+		test.Fatalf("RegisterOllamaModel: %v", err)
+	}
+	if sawAdd {
+		test.Error("RegisterOllamaModel should skip /model/new when the model is already registered")
+	}
+}
+
+// TestUnregisterOllamaModelDeletesByID verifies it finds the entry whose model_name
+// == "ollama/<name>" and POSTs /model/delete with that entry's id.
+func TestUnregisterOllamaModelDeletesByID(test *testing.T) {
+	var deleteBody map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		switch {
+		case request.Method == http.MethodGet && request.URL.Path == "/model/info":
+			_, _ = writer.Write([]byte(`{"data":[
+				{"model_name":"ollama/llama3.2:3b","litellm_params":{"model":"ollama/llama3.2:3b"},"model_info":{"id":"id-llama"}},
+				{"model_name":"openai/gpt-5.5","litellm_params":{"model":"openai/gpt-5.5"},"model_info":{"id":"id-gpt"}}
+			]}`))
+		case request.Method == http.MethodPost && request.URL.Path == "/model/delete":
+			payload, _ := io.ReadAll(request.Body)
+			_ = json.Unmarshal(payload, &deleteBody)
+			_, _ = writer.Write([]byte(`{}`))
+		default:
+			test.Errorf("unexpected %s %s", request.Method, request.URL.Path)
+		}
+	}))
+	defer server.Close()
+	test.Setenv("LITELLM_BASE_URL", server.URL)
+
+	manager := NewKeyManager(okProber())
+	if err := manager.UnregisterOllamaModel("llama3.2:3b"); err != nil {
+		test.Fatalf("UnregisterOllamaModel: %v", err)
+	}
+	if deleteBody["id"] != "id-llama" {
+		test.Errorf("delete id = %v, want id-llama (the matching ollama/<name> entry)", deleteBody["id"])
+	}
+}
+
+// TestUnregisterOllamaModelNoOpWhenAbsent verifies it is a no-op (no /model/delete,
+// no error) when no model with that model_name is registered.
+func TestUnregisterOllamaModelNoOpWhenAbsent(test *testing.T) {
+	var sawDelete bool
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		switch {
+		case request.Method == http.MethodGet && request.URL.Path == "/model/info":
+			_, _ = writer.Write([]byte(`{"data":[
+				{"model_name":"openai/gpt-5.5","litellm_params":{"model":"openai/gpt-5.5"},"model_info":{"id":"id-gpt"}}
+			]}`))
+		case request.URL.Path == "/model/delete":
+			sawDelete = true
+			_, _ = writer.Write([]byte(`{}`))
+		default:
+			test.Errorf("unexpected %s %s", request.Method, request.URL.Path)
+		}
+	}))
+	defer server.Close()
+	test.Setenv("LITELLM_BASE_URL", server.URL)
+
+	manager := NewKeyManager(okProber())
+	if err := manager.UnregisterOllamaModel("ghost"); err != nil {
+		test.Fatalf("UnregisterOllamaModel(absent) should be a no-op, got %v", err)
+	}
+	if sawDelete {
+		test.Error("UnregisterOllamaModel should not call /model/delete when the model is absent")
+	}
+}
+
+// TestOllamaModelName pins the public-handle convention.
+func TestOllamaModelName(test *testing.T) {
+	if got := OllamaModelName("llama3.2:3b"); got != "ollama/llama3.2:3b" {
+		test.Errorf("OllamaModelName = %q, want ollama/llama3.2:3b", got)
+	}
+}
+
 // TestCredentialName pins the credential naming convention.
 func TestCredentialName(test *testing.T) {
 	if got := CredentialName("openai"); got != "openai-key" {

@@ -19,6 +19,34 @@ func withFakeOllama(test *testing.T, fake *ollama.Fake) {
 	test.Cleanup(func() { ollamaClient = prev })
 }
 
+// fakeRegistrar records the model names register/unregister were called with and can
+// be configured to fail (to prove pull/rm tolerate a gateway error).
+type fakeRegistrar struct {
+	registered   []string
+	unregistered []string
+	registerErr  error
+	unregErr     error
+}
+
+func (fake *fakeRegistrar) RegisterOllamaModel(name string) error {
+	fake.registered = append(fake.registered, name)
+	return fake.registerErr
+}
+
+func (fake *fakeRegistrar) UnregisterOllamaModel(name string) error {
+	fake.unregistered = append(fake.unregistered, name)
+	return fake.unregErr
+}
+
+// withFakeRegistrar swaps the package-level modelRegistrarFactory for one returning
+// the given fake (no network), restoring it after the test.
+func withFakeRegistrar(test *testing.T, fake *fakeRegistrar) {
+	test.Helper()
+	prev := modelRegistrarFactory
+	modelRegistrarFactory = func() modelRegistrar { return fake }
+	test.Cleanup(func() { modelRegistrarFactory = prev })
+}
+
 func runLocalModelsCmd(test *testing.T, cmd interface {
 	SetArgs([]string)
 	Execute() error
@@ -68,6 +96,7 @@ func TestModelsListUnreachableExits3(test *testing.T) {
 func TestModelsPullDirectName(test *testing.T) {
 	fake := &ollama.Fake{}
 	withFakeOllama(test, fake)
+	withFakeRegistrar(test, &fakeRegistrar{})
 	exit := output.ExitOK
 	cmd := newModelsPullCmd(jsonEmitter(), &exit)
 	cmd.SetOut(io.Discard)
@@ -85,6 +114,7 @@ func TestModelsPullDirectName(test *testing.T) {
 func TestModelsPullMultipleNames(test *testing.T) {
 	fake := &ollama.Fake{}
 	withFakeOllama(test, fake)
+	withFakeRegistrar(test, &fakeRegistrar{})
 	exit := output.ExitOK
 	cmd := newModelsPullCmd(jsonEmitter(), &exit)
 	cmd.SetOut(io.Discard)
@@ -103,6 +133,7 @@ func TestModelsPullMultipleNames(test *testing.T) {
 func TestModelsPullDedupesNames(test *testing.T) {
 	fake := &ollama.Fake{}
 	withFakeOllama(test, fake)
+	withFakeRegistrar(test, &fakeRegistrar{})
 	exit := output.ExitOK
 	cmd := newModelsPullCmd(jsonEmitter(), &exit)
 	cmd.SetOut(io.Discard)
@@ -124,6 +155,7 @@ func TestModelsPullContinuesPastFailure(test *testing.T) {
 		PullErrs: map[string]error{"bad-model": &ollama.NotFoundError{Name: "bad-model"}},
 	}
 	withFakeOllama(test, fake)
+	withFakeRegistrar(test, &fakeRegistrar{})
 	exit := output.ExitOK
 	emitter := jsonEmitter()
 	cmd := newModelsPullCmd(emitter, &exit)
@@ -171,6 +203,7 @@ func TestModelsPullMissingNameNonInteractiveExits2(test *testing.T) {
 func TestModelsRmDirectName(test *testing.T) {
 	fake := &ollama.Fake{}
 	withFakeOllama(test, fake)
+	withFakeRegistrar(test, &fakeRegistrar{})
 	exit := output.ExitOK
 	// JSON emitter => no confirm prompt.
 	cmd := newModelsRmCmd(jsonEmitter(), &exit)
@@ -288,3 +321,111 @@ func TestParseModelRefs(test *testing.T) {
 
 // ollamaUnreachable returns an error classified as Ollama-down for tests.
 func ollamaUnreachable() error { return ollama.NewUnreachable() }
+
+// A successful pull registers each pulled ref in the gateway (the full ref Ollama
+// reports, e.g. llama3.2:3b), and reports registration in the result.
+func TestModelsPullRegistersEachRef(test *testing.T) {
+	withFakeOllama(test, &ollama.Fake{})
+	registrar := &fakeRegistrar{}
+	withFakeRegistrar(test, registrar)
+	exit := output.ExitOK
+	cmd := newModelsPullCmd(jsonEmitter(), &exit)
+	cmd.SetOut(io.Discard)
+	cmd.SetErr(io.Discard)
+	runLocalModelsCmd(test, cmd, "llama3.2:3b", "qwen2.5:7b")
+	if exit != output.ExitOK {
+		test.Fatalf("pull exit = %d, want 0", exit)
+	}
+	want := []string{"llama3.2:3b", "qwen2.5:7b"}
+	if strings.Join(registrar.registered, ",") != strings.Join(want, ",") {
+		test.Fatalf("registered %v, want %v", registrar.registered, want)
+	}
+}
+
+// A gateway registration failure is best-effort: the pull still succeeds (exit 0)
+// and the per-model result records the registration error.
+func TestModelsPullToleratesRegistrarError(test *testing.T) {
+	withFakeOllama(test, &ollama.Fake{})
+	registrar := &fakeRegistrar{registerErr: errors.New("gateway down")}
+	withFakeRegistrar(test, registrar)
+	exit := output.ExitOK
+	cmd := newModelsPullCmd(jsonEmitter(), &exit)
+	cmd.SetOut(io.Discard)
+	cmd.SetErr(io.Discard)
+	runLocalModelsCmd(test, cmd, "llama3.2:3b")
+	if exit != output.ExitOK {
+		test.Fatalf("pull with registrar error: exit = %d, want 0 (best-effort)", exit)
+	}
+	if len(registrar.registered) != 1 || registrar.registered[0] != "llama3.2:3b" {
+		test.Fatalf("registered %v, want [llama3.2:3b]", registrar.registered)
+	}
+}
+
+// The pull-result Human() shows the gateway-registration warning for a model whose
+// registration was skipped, while still reporting the pull as successful.
+func TestModelsPullResultHumanRegisterWarning(test *testing.T) {
+	result := modelsPullResult{Pulled: []modelPullOutcome{
+		{Model: "llama3.2:3b", OK: true, RegisterError: "gateway down"},
+	}}
+	human := result.Human()
+	for _, want := range []string{"llama3.2:3b", "gateway down", "registration"} {
+		if !strings.Contains(human, want) {
+			test.Fatalf("Human() missing %q:\n%s", want, human)
+		}
+	}
+}
+
+// A successful rm unregisters the model in the gateway.
+func TestModelsRmUnregisters(test *testing.T) {
+	withFakeOllama(test, &ollama.Fake{})
+	registrar := &fakeRegistrar{}
+	withFakeRegistrar(test, registrar)
+	exit := output.ExitOK
+	cmd := newModelsRmCmd(jsonEmitter(), &exit)
+	cmd.SetOut(io.Discard)
+	cmd.SetErr(io.Discard)
+	runLocalModelsCmd(test, cmd, "llama3.2:3b")
+	if exit != output.ExitOK {
+		test.Fatalf("rm exit = %d, want 0", exit)
+	}
+	if len(registrar.unregistered) != 1 || registrar.unregistered[0] != "llama3.2:3b" {
+		test.Fatalf("unregistered %v, want [llama3.2:3b]", registrar.unregistered)
+	}
+}
+
+// A gateway unregistration failure is best-effort: the rm still succeeds (exit 0).
+func TestModelsRmToleratesUnregisterError(test *testing.T) {
+	withFakeOllama(test, &ollama.Fake{})
+	registrar := &fakeRegistrar{unregErr: errors.New("gateway down")}
+	withFakeRegistrar(test, registrar)
+	exit := output.ExitOK
+	cmd := newModelsRmCmd(jsonEmitter(), &exit)
+	cmd.SetOut(io.Discard)
+	cmd.SetErr(io.Discard)
+	runLocalModelsCmd(test, cmd, "llama3.2:3b")
+	if exit != output.ExitOK {
+		test.Fatalf("rm with unregister error: exit = %d, want 0 (best-effort)", exit)
+	}
+	if len(registrar.unregistered) != 1 {
+		test.Fatalf("unregister should still be attempted, got %v", registrar.unregistered)
+	}
+}
+
+// A failed Ollama remove must NOT attempt unregistration (the model still exists
+// locally).
+func TestModelsRmFailureSkipsUnregister(test *testing.T) {
+	withFakeOllama(test, &ollama.Fake{RemoveErr: &ollama.NotFoundError{Name: "ghost"}})
+	registrar := &fakeRegistrar{}
+	withFakeRegistrar(test, registrar)
+	exit := output.ExitOK
+	cmd := newModelsRmCmd(jsonEmitter(), &exit)
+	cmd.SetOut(io.Discard)
+	cmd.SetErr(io.Discard)
+	runLocalModelsCmd(test, cmd, "ghost")
+	if exit != output.ExitInvalidInput {
+		test.Fatalf("rm not-found: exit = %d, want %d", exit, output.ExitInvalidInput)
+	}
+	if len(registrar.unregistered) != 0 {
+		test.Fatalf("a failed remove should not unregister, got %v", registrar.unregistered)
+	}
+}

@@ -219,11 +219,16 @@ func newModelsPopularCmd(emitter *output.Emitter, exit *int) *cobra.Command {
 }
 
 // modelPullOutcome is the per-model result of a (multi-)pull: the exact reference
-// and either success or the error message.
+// and either success or the error message. Registered records whether the model was
+// also registered in the LiteLLM gateway (best-effort, post-pull); RegisterError
+// carries the registration failure message when registration was attempted and failed
+// (it never fails the pull itself).
 type modelPullOutcome struct {
-	Model string `json:"model"`
-	OK    bool   `json:"ok"`
-	Error string `json:"error,omitempty"`
+	Model         string `json:"model"`
+	OK            bool   `json:"ok"`
+	Error         string `json:"error,omitempty"`
+	Registered    bool   `json:"registered,omitempty"`
+	RegisterError string `json:"register_error,omitempty"`
 }
 
 // modelsPullResult is the `ai models pull` payload: one outcome per requested model.
@@ -239,6 +244,12 @@ func (result modelsPullResult) Human() string {
 		}
 		if outcome.OK {
 			builder.WriteString(ui.Success.Render(ui.IconOK) + " pulled " + ui.Value.Render(outcome.Model))
+			if outcome.Registered {
+				builder.WriteString(ui.Muted.Render(" · registered in the gateway"))
+			} else if outcome.RegisterError != "" {
+				builder.WriteString("\n  " + ui.Warn.Render(ui.IconDot) +
+					" gateway registration skipped: " + ui.Muted.Render(outcome.RegisterError))
+			}
 		} else {
 			builder.WriteString(ui.Failure.Render(ui.IconFail) + " " + ui.Value.Render(outcome.Model) + ": " + outcome.Error)
 		}
@@ -281,6 +292,7 @@ func newModelsPullCmd(emitter *output.Emitter, exit *int) *cobra.Command {
 			}
 
 			client := ollamaClient()
+			registrar := modelRegistrarFactory()
 			outcomes := make([]modelPullOutcome, 0, len(names))
 			anyFailed := false
 			var lastErr error
@@ -305,7 +317,16 @@ func newModelsPullCmd(emitter *output.Emitter, exit *int) *cobra.Command {
 					outcomes = append(outcomes, modelPullOutcome{Model: name, OK: false, Error: err.Error()})
 					continue
 				}
-				outcomes = append(outcomes, modelPullOutcome{Model: name, OK: true})
+				// Best-effort: register the freshly-pulled model in the gateway so it
+				// gains a stable id and shows in the live catalogue. A gateway that is
+				// down or has no master key must NOT fail the pull — warn and continue.
+				outcome := modelPullOutcome{Model: name, OK: true}
+				if regErr := registrar.RegisterOllamaModel(name); regErr != nil {
+					outcome.RegisterError = regErr.Error()
+				} else {
+					outcome.Registered = true
+				}
+				outcomes = append(outcomes, outcome)
 			}
 
 			result := modelsPullResult{Pulled: outcomes}
@@ -434,13 +455,20 @@ func parseModelRefs(value string) []string {
 	return dedupeModelNames(fields)
 }
 
-// modelsRmResult is the `ai models rm` payload.
+// modelsRmResult is the `ai models rm` payload. UnregisterError carries a best-effort
+// gateway-unregistration failure message (never fails the removal itself).
 type modelsRmResult struct {
-	Model string `json:"model"`
+	Model           string `json:"model"`
+	UnregisterError string `json:"unregister_error,omitempty"`
 }
 
 func (result modelsRmResult) Human() string {
-	return ui.Success.Render(ui.IconOK) + " removed " + ui.Value.Render(result.Model)
+	out := ui.Success.Render(ui.IconOK) + " removed " + ui.Value.Render(result.Model)
+	if result.UnregisterError != "" {
+		out += "\n  " + ui.Warn.Render(ui.IconDot) +
+			" gateway unregistration skipped: " + ui.Muted.Render(result.UnregisterError)
+	}
+	return out
 }
 
 func newModelsRmCmd(emitter *output.Emitter, exit *int) *cobra.Command {
@@ -493,7 +521,14 @@ func newModelsRmCmd(emitter *output.Emitter, exit *int) *cobra.Command {
 				*exit = emitter.Failure("models.rm", ollamaErr("models.rm", err))
 				return nil
 			}
-			*exit = emitter.Success("models.rm", modelsRmResult{Model: name})
+			// Best-effort: drop the gateway's DB-backed registration for the removed
+			// model. A gateway that is down or has no master key must NOT fail the
+			// removal — surface the warning in the result.
+			result := modelsRmResult{Model: name}
+			if regErr := modelRegistrarFactory().UnregisterOllamaModel(name); regErr != nil {
+				result.UnregisterError = regErr.Error()
+			}
+			*exit = emitter.Success("models.rm", result)
 			return nil
 		},
 	}
