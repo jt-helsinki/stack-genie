@@ -1208,9 +1208,16 @@ func (services realServices) statusFor(enabled []string) ([]ServiceStatus, error
 			continue
 		}
 		healthy := services.serviceHealthy(service.Name)
+		// Three states, so a container that is up but not yet ready (e.g. LiteLLM
+		// still creating its DB views right after launch) reads "starting", not the
+		// misleading "stopped": healthy → running; container(s) up but not healthy →
+		// starting; nothing running → stopped.
 		state := "stopped"
-		if healthy {
+		switch {
+		case healthy:
 			state = "running"
+		case services.serviceContainersUp(service.Name):
+			state = "starting"
 		}
 		statuses = append(statuses, ServiceStatus{
 			Name: service.Name, Mode: service.Mode, State: state, Healthy: healthy,
@@ -1229,6 +1236,28 @@ func enabledOptionalServices() []string {
 		return nil
 	}
 	return info.OptionalServices
+}
+
+// serviceContainersUp reports whether ALL of a service's containers are running,
+// regardless of readiness. It distinguishes "starting" (the container is up but its
+// readiness probe is not yet passing — e.g. LiteLLM warming up) from "stopped" (no
+// container running at all). Returns false if the service maps to no container or
+// the runtime can't be resolved.
+func (services realServices) serviceContainersUp(name string) bool {
+	mapped := serviceContainers(name)
+	if len(mapped) == 0 {
+		return false
+	}
+	containerRuntime, err := runtime.ContainerRuntimeName(services.prober)
+	if err != nil {
+		return false
+	}
+	for _, container := range mapped {
+		if !containerRunning(services.prober, containerRuntime.Name, container) {
+			return false
+		}
+	}
+	return true
 }
 
 // serviceHealthy is the live readiness probe for one host service (the same

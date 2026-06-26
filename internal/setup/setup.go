@@ -387,16 +387,17 @@ func (report *Report) Human() string {
 }
 
 // styleServiceState colours a service state word semantically (running/ready →
-// green, stopped → orange, a failure/unavailable state → red, disabled/unknown →
-// muted), padded to the column width BEFORE styling so alignment is preserved.
+// green, starting/pending → orange [in progress], stopped/failed → red, disabled/
+// unknown → muted), padded to the column width BEFORE styling so alignment is
+// preserved. Mirrors cli.serviceStateLabel.
 func styleServiceState(state string) string {
 	padded := fmt.Sprintf("%-9s", state)
 	switch state {
 	case "running", "ready":
 		return ui.Success.Render(padded)
-	case "stopped":
+	case "starting", "pending":
 		return ui.Warn.Render(padded)
-	case "not_installed", "unavailable":
+	case "stopped", "failed", "error", "not_installed", "unavailable":
 		return ui.Failure.Render(padded)
 	default: // disabled, unknown, …
 		return ui.Muted.Render(padded)
