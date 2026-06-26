@@ -117,12 +117,25 @@ func ThemeFromPalette(p Palette) *huh.Theme {
 	return t
 }
 
-var OrangeBlue = Palette{
-	Primary:   lipgloss.Color("#2563EB"),
-	Secondary: lipgloss.Color("#F97316"),
-	Success:   lipgloss.Color("#22C55E"),
-	Error:     lipgloss.Color("#EF4444"),
+// BluePink is the default CLI palette (per the maintainer's spec): bright pink +
+// bright blue, replacing huh's purple ThemeCharm which read poorly. Errors are
+// bright red; the bright-orange warning colour is the fixed colorWarn in ui.go.
+var BluePink = Palette{
+	Primary:   lipgloss.Color("#FF66FF"), // bright pink  (R255 G102 B255)
+	Secondary: lipgloss.Color("#33FFFF"), // bright blue  (R51  G255 B255)
+	Success:   lipgloss.Color("#33FF99"), // readable green for the selected option
+	Error:     lipgloss.Color("#FF3333"), // bright red   (R255 G51  B51)
 	Text:      lipgloss.Color("#E5E7EB"),
+	Muted:     lipgloss.Color("#9CA3AF"),
+	ButtonFg:  lipgloss.Color("#000000"),
+}
+
+var OrangeBlue = Palette{
+	Primary:   lipgloss.Color("#00FFFF"),
+	Secondary: lipgloss.Color("#FF9933"),
+	Success:   lipgloss.Color("#00FF00"),
+	Error:     lipgloss.Color("#FF0000"),
+	Text:      lipgloss.Color("#CCFFFF"),
 	Muted:     lipgloss.Color("#6B7280"),
 	ButtonFg:  lipgloss.Color("#FFFFFF"),
 }

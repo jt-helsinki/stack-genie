@@ -30,7 +30,10 @@ type themeDef struct {
 // themes is the registry of selectable named themes (wrapping huh's built-ins
 // with an accent for headings).
 var themes = map[string]themeDef{
-	"default":    {huh.ThemeCharm, lipgloss.Color("39")},       // blue
+	// The default CLI look is bright pink + bright blue (BluePink), replacing huh's
+	// purple ThemeCharm which read poorly. The heading accent is the bright pink.
+	"default":    {ThemeFactory(BluePink), lipgloss.Color("#FF66FF")},
+	"blue-pink":  {ThemeFactory(BluePink), lipgloss.Color("#FF66FF")},
 	"dracula":    {huh.ThemeDracula, lipgloss.Color("212")},    // pink
 	"catppuccin": {huh.ThemeCatppuccin, lipgloss.Color("183")}, // mauve
 	"base16":     {huh.ThemeBase16, lipgloss.Color("45")},      // cyan

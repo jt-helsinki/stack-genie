@@ -23,11 +23,11 @@ import (
 // them entirely when output is not a TTY or NO_COLOR is set, so colour needs no
 // manual gating.
 const (
-	colorAccent  = lipgloss.Color("39")  // blue
-	colorSuccess = lipgloss.Color("42")  // green
-	colorWarn    = lipgloss.Color("214") // amber
-	colorError   = lipgloss.Color("203") // red
-	colorMuted   = lipgloss.Color("245") // grey
+	colorAccent  = lipgloss.Color("#33FFFF") // bright blue   (R51  G255 B255)
+	colorSuccess = lipgloss.Color("#33FF99") // green
+	colorWarn    = lipgloss.Color("#FF8000") // bright orange (R255 G128 B0)
+	colorError   = lipgloss.Color("#FF3333") // bright red    (R255 G51  B51)
+	colorMuted   = lipgloss.Color("245")     // grey
 )
 
 // Named styles, shared by every command's human output and the TUI components.
