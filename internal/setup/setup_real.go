@@ -336,6 +336,9 @@ func proxyUIVhost(serverName, target, rootRedirect string) string {
 	builder.WriteString("  server {\n")
 	builder.WriteString("    listen 80;\n")
 	builder.WriteString("    server_name " + serverName + ";\n")
+	// Keep nginx's own redirects (e.g. trailing-slash) relative so the client's
+	// host:port is preserved — an absolute redirect would drop the :18787.
+	builder.WriteString("    absolute_redirect off;\n")
 	if rootRedirect != "" {
 		builder.WriteString("    location = / {\n")
 		builder.WriteString("      return 302 " + rootRedirect + ";\n")
@@ -344,7 +347,14 @@ func proxyUIVhost(serverName, target, rootRedirect string) string {
 	builder.WriteString("    location / {\n")
 	builder.WriteString("      proxy_pass " + target + ";\n")
 	builder.WriteString("      proxy_http_version 1.1;\n")
-	builder.WriteString("      proxy_set_header Host $host;\n")
+	// Forward the ORIGINAL host INCLUDING the port ($http_host, not $host which
+	// strips it) + the forwarded-* headers, so the app builds absolute redirects
+	// (e.g. LiteLLM /ui) back to litellm.<domain>:18787 rather than dropping the
+	// port and sending the browser to :80.
+	builder.WriteString("      proxy_set_header Host $http_host;\n")
+	builder.WriteString("      proxy_set_header X-Forwarded-Host $http_host;\n")
+	builder.WriteString("      proxy_set_header X-Forwarded-Proto $scheme;\n")
+	builder.WriteString("      proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;\n")
 	builder.WriteString("      proxy_set_header Upgrade $http_upgrade;\n")
 	builder.WriteString("      proxy_set_header Connection \"upgrade\";\n")
 	builder.WriteString("      proxy_buffering off;\n")
