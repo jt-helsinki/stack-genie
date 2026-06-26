@@ -43,20 +43,17 @@ func TestEntriesSingleLoopbackEntry(t *testing.T) {
 	}
 }
 
-// The UI subdomain URLs are PORTLESS (reached on the standard :80 nginx also
-// publishes) — no :18787 suffix. The gateway/API URLs (ollama, the proxy entry)
-// keep :18787, but those are not UI vhosts and so are not in URLs().
-func TestURLsArePortless(t *testing.T) {
+func TestURLsUseGatewayPort(t *testing.T) {
 	urls := URLs("aip.local")
 	if len(urls) != 1 {
 		t.Fatalf("expected the single UI URL, got %d", len(urls))
 	}
 	for _, url := range urls {
-		if strings.Contains(url.URL, ":18787") || strings.Contains(url.URL, ":80") {
-			t.Fatalf("UI subdomain URL must be portless (no :18787 / :80): %q", url.URL)
+		if !strings.HasSuffix(url.URL, ":18787") {
+			t.Fatalf("URL must use the gateway port 18787: %q", url.URL)
 		}
-		if url.URL != "http://"+url.Host {
-			t.Fatalf("URL %q should be the portless form of host %q", url.URL, url.Host)
+		if !strings.HasPrefix(url.URL, "http://"+url.Host+":") {
+			t.Fatalf("URL %q should be built from host %q", url.URL, url.Host)
 		}
 	}
 }
@@ -75,26 +72,20 @@ func TestManualMessageContainsBlockAndURLs(t *testing.T) {
 			t.Fatalf("manual message should list %q:\n%s", name, message)
 		}
 	}
-	if !strings.Contains(message, "http://litellm.aip.local") {
+	if !strings.Contains(message, "http://litellm.aip.local:18787") {
 		t.Fatalf("manual message should list the URLs:\n%s", message)
-	}
-	if strings.Contains(message, "http://litellm.aip.local:18787") {
-		t.Fatalf("UI URL in the manual message must be portless (no :18787):\n%s", message)
 	}
 }
 
 func TestServerCredentialsGuideListsURLsAndPasswordHints(t *testing.T) {
 	guide := ServerCredentialsGuide("aip.example.com")
-	// The only host UI's reachable URL appears (LiteLLM admin UI), PORTLESS.
+	// The only host UI's reachable URL appears (LiteLLM admin UI).
 	for _, url := range []string{
-		"http://litellm.aip.example.com/ui",
+		"http://litellm.aip.example.com:18787/ui",
 	} {
 		if !strings.Contains(guide, url) {
 			t.Fatalf("credentials guide should list %q:\n%s", url, guide)
 		}
-	}
-	if strings.Contains(guide, "litellm.aip.example.com:18787") {
-		t.Fatalf("UI URL in the credentials guide must be portless (no :18787):\n%s", guide)
 	}
 	// LiteLLM: how to rotate the admin password.
 	if !strings.Contains(guide, "ai litellm password") {

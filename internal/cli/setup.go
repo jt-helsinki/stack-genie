@@ -586,7 +586,7 @@ func secureLiteLLMUI(em *output.Emitter, interactive bool, password, domain stri
 			"  (reachable once the /etc/hosts or DNS step maps %s to this host)\n"+
 			"  %s %s\n",
 		ui.Value.Render(`"admin"`),
-		ui.Value.Render(fmt.Sprintf("http://litellm.%s/ui", domain)),
+		ui.Value.Render(fmt.Sprintf("http://litellm.%s:18787/ui", domain)),
 		ui.Value.Render(fmt.Sprintf("litellm.%s", domain)),
 		ui.Label.Render("master key (also the API key):"),
 		ui.Value.Render(masterKey))

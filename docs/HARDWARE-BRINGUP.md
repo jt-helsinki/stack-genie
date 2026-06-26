@@ -147,22 +147,13 @@ chain itself. The remaining verification work:
   - the agent microVM `/v1` path (`host.microsandbox.internal:18787/v1` → Headroom)
     is unchanged — confirm a workspace agent still routes correctly.
 
-- [ ] **PORTLESS UI Host-based vhost (the new topology)** — the single host UI is a
-      subdomain (NOT a separate host port). nginx now publishes BOTH host ports
-      `<bindHost>:18787:80` (the gateway/API entry agents + the host CLI depend on)
-      AND `<bindHost>:80:80` (the standard HTTP port), both mapping to the container's
-      single `:80`; nginx matches the UI vhost by `server_name`. The UI subdomain is
-      therefore reached PORTLESS. Verify on a live host:
-  - `http://litellm.<domain>/` (NO `:18787`) serves the LiteLLM admin UI (redirects
-    `/` → `/ui`; proxies to `aip-litellm:4000`, bypassing Headroom);
+- [ ] **UI Host-based vhost on the single :18787 (the new topology)** — the single
+      host UI is now a subdomain (NOT a separate host port): nginx matches it by
+      `server_name` on the same :18787. Verify on a live host:
+  - `http://litellm.<domain>:18787/` serves the LiteLLM admin UI (redirects `/` →
+    `/ui`; proxies to `aip-litellm:4000`, bypassing Headroom);
   - `<domain>` is the resolved platform base domain (default `aip.local`; `ai domain`).
-  - **`:80`-publish caveat (Linux rootless)** — the `<bindHost>:80:80` publish works
-    on macOS Docker Desktop, but on **Linux rootless** `:80` is a privileged port and
-    the publish FAILS unless `net.ipv4.ip_unprivileged_port_start` is lowered to 80
-    (e.g. `sysctl net.ipv4.ip_unprivileged_port_start=80`) or an equivalent capability
-    is granted. A pre-existing host `:80` listener also conflicts. The `:18787`
-    gateway/API publish is unaffected. (Open WebUI is now a per-workspace in-VM app,
-    not a host vhost; Odysseus was removed.)
+  - (Open WebUI is now a per-workspace in-VM app, not a host vhost; Odysseus was removed.)
 - [ ] **Standalone `/etc/hosts` write (the sudo seam)** — `ai setup` in standalone
       mode prompts for consent and writes the managed block via
       `uihosts.sudoWriteHosts` (temp file → `sudo cp <tmp> /etc/hosts`). Confirm on a
@@ -178,15 +169,14 @@ chain itself. The remaining verification work:
       (default `localhost`, which only resolves on the server itself) and persisted
       as runtime.yaml's `domain`; a real DNS name is set there or via `ai domain`.
 - [ ] **http→https redirect (TLS-time requirement)** — TLS terminates PER-VHOST at
-      nginx. Today nginx serves plain http on the gateway `:18787` entry AND the
-      portless `:80` entry; TLS is deferred. When HTTPS is configured (see the
-      `proxyNginxConf` server-block comment): add a `listen 443 ssl;` +
-      `ssl_certificate`/`ssl_certificate_key` (a wildcard for `*.<domain>` or
-      per-vhost) to each vhost, and make the plain-http listeners redirect-only —
-      `return 301 https://$host$request_uri;` — so http MUST 301-redirect to https.
-      Do NOT emit that redirect before an https listener exists (a 301 with no :443
-      breaks every plain-http caller). Verify the redirect + per-vhost TLS once a cert
-      is in place.
+      nginx. Today nginx serves plain http on the single `:18787` entry; TLS is
+      deferred. When HTTPS is configured (see the `proxyNginxConf` server-block
+      comment): add a `listen 443 ssl;` + `ssl_certificate`/`ssl_certificate_key`
+      (a wildcard for `*.<domain>` or per-vhost) to each vhost, and make the `:80`
+      http listener redirect-only — `return 301 https://$host$request_uri;` — so
+      http MUST 301-redirect to https on the single entry. Do NOT emit that redirect
+      before an https listener exists (a 301 with no :443 breaks every plain-http
+      caller). Verify the redirect + per-vhost TLS once a cert is in place.
 - [ ] **Role-based UI auth policy** (`runtime.RequireUIAuth`, server-only). Verify
       the auth posture per role against the live UIs:
   - standalone/client (loopback) are OPEN: `ai setup` does NOT prompt for a

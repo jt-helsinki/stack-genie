@@ -39,11 +39,10 @@ const DefaultHost = "localhost"
 // reached on this port. Mirrors services.GatewayPort.
 const gatewayPort = services.GatewayPort
 
-// endpointSpec is the host-agnostic data for a service's endpoint. Three shapes:
-//   - a UI vhost (uiSubdomain set): served PORTLESS at http://<uiSubdomain>.<domain>
-//     (nginx also publishes host :80 → container :80), console at that base +
-//     consolePath. Only the browser UI subdomain drops the port; the gateway/API
-//     surfaces below keep gatewayPort.
+// endpointSpec is the host-agnostic data for a service's endpoint. Three shapes,
+// all reached through the single nginx gateway port now:
+//   - a UI vhost (uiSubdomain set): served at <uiSubdomain>.<domain>:gatewayPort,
+//     console at that base + consolePath.
 //   - a host-CLI gateway path (gatewayPath set, e.g. ollama "/ollama"): reached at
 //     http://<host>:gatewayPort<gatewayPath> (HTTP API, no console).
 //   - a directly-published host port (port != 0, e.g. the proxy itself on
@@ -66,7 +65,7 @@ type endpointSpec struct {
 // service topology), so it cannot drift from the log scopes / version pins / setup
 // reconcile. nginx (aip-proxy) is the SOLE host entry on the gateway port now; the
 // per-service direct ports are internal-only. The endpoints render through nginx:
-//   - litellm  admin UI portless at litellm.<domain>/ui (nginx vhost on :80; :4000 internal)
+//   - litellm  admin UI at litellm.<domain>:18787/ui (nginx vhost; :4000 internal)
 //   - ollama   http://<domain>:18787/ollama (host-CLI gateway path; :11434 internal)
 //   - proxy    http://<domain>:18787 (aip-proxy nginx gateway entry; no separate UI)
 //   - dns      127.0.0.1:15353/udp (aip-dns CoreDNS egress-audit resolver, loopback)
@@ -93,10 +92,10 @@ func buildRegistry() map[string]endpointSpec {
 }
 
 // endpointForHost renders a spec into a concrete Endpoint for the given display
-// host (the platform base DOMAIN). All host-reachable endpoints go through nginx:
+// host (the platform base DOMAIN). All host-reachable endpoints now go through the
+// single nginx gateway port:
 //   - loopback-only specs (e.g. dns) ignore host and use their verbatim address;
-//   - a UI vhost renders PORTLESS http://<uiSubdomain>.<host> (+ consolePath), on
-//     the standard :80 nginx also publishes;
+//   - a UI vhost renders http://<uiSubdomain>.<host>:gatewayPort (+ consolePath);
 //   - a gateway-path spec (e.g. ollama) renders http://<host>:gatewayPort<path>
 //     (HTTP API, no console);
 //   - a directly-published port (e.g. the proxy) renders http://<host>:port;
@@ -106,11 +105,7 @@ func (spec endpointSpec) endpointForHost(host string) Endpoint {
 		return Endpoint{Address: spec.loopbackAddress}
 	}
 	if spec.uiSubdomain != "" {
-		// UI subdomains are reached PORTLESS on the standard HTTP port: nginx also
-		// publishes host :80 → container :80, so litellm.<domain> answers with no
-		// :18787 suffix (the gateway/API surfaces — /ollama, /v1, the proxy entry —
-		// keep :18787; only the browser-facing UI subdomain drops the port).
-		base := fmt.Sprintf("http://%s.%s", spec.uiSubdomain, host)
+		base := fmt.Sprintf("http://%s.%s:%d", spec.uiSubdomain, host, gatewayPort)
 		endpoint := Endpoint{Address: base}
 		if spec.hasConsole {
 			endpoint.Console = base + spec.consolePath

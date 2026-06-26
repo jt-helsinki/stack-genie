@@ -73,7 +73,7 @@ func doctorServices() []doctor.Service {
 }
 
 // doctorDomain builds the DOMAIN section for `ai doctor`: the resolved platform
-// base domain, the portless UI subdomain URLs (litellm.<domain>), and
+// base domain, the UI subdomain URLs (litellm.<domain>:18787), and
 // the resolution status — standalone reports whether the /etc/hosts block is
 // present + up to date; a server reports the DNS/TLS reminder. Returns nil (omit
 // the section) when there is no runtime.yaml yet (a fresh, un-setup host).

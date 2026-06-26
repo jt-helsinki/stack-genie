@@ -109,7 +109,7 @@ func TestDomainSectionStandaloneUpToDate(test *testing.T) {
 		Domain: &DomainInfo{
 			Domain: "aip.local", Role: "standalone", Standalone: true,
 			HostsPresent: true, HostsUpToDate: true,
-			URLs: []DomainURL{{Service: "litellm", Host: "litellm.aip.local", URL: "http://litellm.aip.local"}},
+			URLs: []DomainURL{{Service: "litellm", Host: "litellm.aip.local", URL: "http://litellm.aip.local:18787"}},
 		},
 	}
 	report := Run(deps)
@@ -148,7 +148,7 @@ func TestDomainSectionServerReminder(test *testing.T) {
 		Domain: &DomainInfo{
 			Domain: "aip.example.com", Role: "server",
 			ServerReminder:    "create DNS records (*.aip.example.com) → this server's IP, and terminate TLS at nginx",
-			ServerCredentials: "LiteLLM admin UI — http://litellm.aip.example.com/ui — ai litellm password",
+			ServerCredentials: "LiteLLM admin UI — http://litellm.aip.example.com:18787/ui — ai litellm password",
 		},
 	}
 	report := Run(deps)
@@ -170,13 +170,12 @@ func TestHumanShowsServiceEndpoints(test *testing.T) {
 	}
 	rendered := Run(deps).Human()
 	// A healthy litellm shows its nginx subdomain address and admin-UI URL on the
-	// check line — PORTLESS (reached on :80, NOT :18787 and NOT the internal-only :14000).
+	// check line (the gateway port, NOT the internal-only :14000).
 	if !strings.Contains(rendered, "litellm") ||
-		!strings.Contains(rendered, "http://litellm.localhost (UI http://litellm.localhost/ui)") {
+		!strings.Contains(rendered, "http://litellm.localhost:18787 (UI http://litellm.localhost:18787/ui)") {
 		test.Errorf("litellm endpoint missing from doctor output:\n%s", rendered)
 	}
-	// Ollama shows its host-CLI gateway path (no UI) on the gateway port :18787,
-	// NOT the internal-only :11434.
+	// Ollama shows its host-CLI gateway path (no UI), NOT the internal-only :11434.
 	if !strings.Contains(rendered, "ollama") || !strings.Contains(rendered, "http://localhost:18787/ollama") {
 		test.Errorf("ollama address missing from doctor output:\n%s", rendered)
 	}

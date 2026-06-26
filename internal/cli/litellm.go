@@ -133,8 +133,7 @@ func newLiteLLMPasswordCmd(emitter *output.Emitter, exit *int) *cobra.Command {
 			*exit = emitter.Success("litellm.password", litellmPasswordResult{
 				Secured: true,
 				LoginAs: "admin",
-				// The LiteLLM admin UI is reached PORTLESS on :80 (no :18787 suffix).
-				URL: "http://litellm." + domain + "/ui",
+				URL:     "http://litellm." + domain + ":18787/ui",
 			})
 			return nil
 		},

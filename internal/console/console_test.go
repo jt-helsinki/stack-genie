@@ -6,9 +6,9 @@ import (
 )
 
 func TestURLAndKnown(test *testing.T) {
-	// The LiteLLM admin UI is the nginx subdomain vhost, reached PORTLESS on :80
-	// (no :18787 suffix), NOT the old internal-only :14000.
-	if url, ok := URL("litellm"); !ok || url != "http://litellm.localhost/ui" {
+	// The LiteLLM admin UI is the nginx subdomain vhost on the gateway port, NOT
+	// the old internal-only :14000.
+	if url, ok := URL("litellm"); !ok || url != "http://litellm.localhost:18787/ui" {
 		test.Errorf("litellm console = (%q,%v)", url, ok)
 	}
 	// Known service with no web console.
@@ -26,21 +26,19 @@ func TestURLAndKnown(test *testing.T) {
 func TestWithConsolesSortedAndFiltered(test *testing.T) {
 	named := WithConsoles()
 	// litellm is now the ONLY host service exposing a console. Its console URL must
-	// be an nginx subdomain vhost reached PORTLESS on :80 (no :18787) — never a
-	// direct (now internal-only) per-service port.
+	// be an nginx subdomain vhost on the gateway port — never a direct (now
+	// internal-only) per-service port.
 	if len(named) != 1 || named[0].Name != "litellm" {
 		test.Fatalf("WithConsoles = %+v, want [litellm]", named)
 	}
 	want := map[string]string{
-		"litellm": "http://litellm.localhost/ui",
+		"litellm": "http://litellm.localhost:18787/ui",
 	}
 	for _, namedURL := range named {
 		if namedURL.URL != want[namedURL.Name] {
 			test.Errorf("%s console = %q, want %q", namedURL.Name, namedURL.URL, want[namedURL.Name])
 		}
-		// The UI subdomain is portless — it must carry NO port at all (incl. the
-		// gateway/API :18787) — alongside the long-dead internal-only ports.
-		for _, deadPort := range []string{":18787", ":14000", ":11434", ":18090", ":7000"} {
+		for _, deadPort := range []string{":14000", ":11434", ":18090", ":7000"} {
 			if strings.Contains(namedURL.URL, deadPort) {
 				test.Errorf("%s console %q must not use internal-only port %s", namedURL.Name, namedURL.URL, deadPort)
 			}
@@ -49,13 +47,13 @@ func TestWithConsolesSortedAndFiltered(test *testing.T) {
 }
 
 func TestEndpointAndAddress(test *testing.T) {
-	// litellm: admin UI subdomain vhost, PORTLESS on :80; the address is the
+	// litellm: admin UI subdomain vhost on the gateway port; the address is the
 	// same base, the console adds /ui.
 	endpoint, ok := EndpointFor("litellm")
-	if !ok || endpoint.Address != "http://litellm.localhost" || endpoint.Console != "http://litellm.localhost/ui" {
+	if !ok || endpoint.Address != "http://litellm.localhost:18787" || endpoint.Console != "http://litellm.localhost:18787/ui" {
 		test.Errorf("litellm endpoint = (%+v,%v)", endpoint, ok)
 	}
-	if address, ok := Address("litellm"); !ok || address != "http://litellm.localhost" {
+	if address, ok := Address("litellm"); !ok || address != "http://litellm.localhost:18787" {
 		test.Errorf("litellm address = (%q,%v)", address, ok)
 	}
 
@@ -103,16 +101,16 @@ func TestEndpointAndAddress(test *testing.T) {
 }
 
 func TestEndpointForHostRendersGivenDomain(test *testing.T) {
-	// The host argument is the platform base DOMAIN: UI subdomains hang off it
-	// (PORTLESS on :80) and the gateway-path addresses resolve under it (on :18787).
+	// The host argument is the platform base DOMAIN: UI subdomains hang off it and
+	// the gateway-path addresses resolve under it — always on the single gateway port.
 	endpoint, ok := EndpointForHost("litellm", DefaultHost)
-	if !ok || endpoint.Address != "http://litellm.localhost" || endpoint.Console != "http://litellm.localhost/ui" {
+	if !ok || endpoint.Address != "http://litellm.localhost:18787" || endpoint.Console != "http://litellm.localhost:18787/ui" {
 		test.Errorf("litellm@localhost endpoint = (%+v,%v)", endpoint, ok)
 	}
 
-	// A custom domain is woven into the (portless) subdomain URL.
+	// A custom domain is woven into the subdomain URL.
 	endpoint, ok = EndpointForHost("litellm", "build-host.lan")
-	if !ok || endpoint.Address != "http://litellm.build-host.lan" || endpoint.Console != "http://litellm.build-host.lan/ui" {
+	if !ok || endpoint.Address != "http://litellm.build-host.lan:18787" || endpoint.Console != "http://litellm.build-host.lan:18787/ui" {
 		test.Errorf("litellm@build-host.lan endpoint = (%+v,%v)", endpoint, ok)
 	}
 

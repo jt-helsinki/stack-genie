@@ -120,11 +120,8 @@ func TestServerModeProducesCredentialsGuide(test *testing.T) {
 	if !strings.Contains(guide, "ai litellm password") {
 		test.Fatalf("server credentials guide must mention `ai litellm password`:\n%s", guide)
 	}
-	if !strings.Contains(guide, "http://litellm.aip.example.com/ui") {
-		test.Fatalf("server credentials guide must list the LiteLLM admin UI (portless):\n%s", guide)
-	}
-	if strings.Contains(guide, "litellm.aip.example.com:18787") {
-		test.Fatalf("the UI URL in the credentials guide must be portless (no :18787):\n%s", guide)
+	if !strings.Contains(guide, "http://litellm.aip.example.com:18787/ui") {
+		test.Fatalf("server credentials guide must list the LiteLLM admin UI:\n%s", guide)
 	}
 	// No chat./odysseus. UIs anymore.
 	if strings.Contains(guide, "chat.aip.example.com") || strings.Contains(guide, "odysseus.aip.example.com") {

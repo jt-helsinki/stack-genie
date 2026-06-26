@@ -306,13 +306,9 @@ is the gateway entry on host :18787 — see §10/§15.)
 
 **`aip-proxy` (nginx) is the SOLE host entry point to the service tier.** Every
 other service container is INTERNAL-ONLY on `aip-net` (reached by name) — none
-publishes a port to the host. Only nginx publishes, and it publishes **two host
-ports, both mapping to the container's single `:80`** (nginx serves by route +
-`server_name`): host **:18787** — the gateway/API entry the host CLI and the
-microVM agents depend on — AND host **:80**, the standard HTTP port, so the UI
-subdomains are reached **PORTLESS** (`http://litellm.<domain>`, no `:18787`
-suffix). Everything is served on that one container port, split by route and by
-`server_name` (Host-based vhosts):
+publishes a port to the host. Only nginx publishes, and it publishes a **single
+port**: host **:18787**. Everything is served on that one port, split by route and
+by `server_name` (Host-based vhosts):
 
 - The **DEFAULT server** (`server_name <domain> localhost _;`, `default_server`) —
   the model path + management surfaces, what the host CLI (`127.0.0.1:18787` — IPv4,
@@ -325,23 +321,14 @@ suffix). Everything is served on that one container port, split by route and by
     surface, **bypassing Headroom**.
   - `location /ollama/` → `aip-ollama:11434` (prefix stripped) — the Ollama HTTP
     API, **bypassing Headroom**.
-- The **single web UI is a Host-based VHOST (subdomain)** reached **PORTLESS** on
-  the standard `:80` (NOT a separate host port, NOT `:18787`): `litellm.<domain>` →
-  `aip-litellm:4000` (the admin UI at `/ui`; litellm is the ONLY host UI vhost). The
-  vhost carries WebSocket upgrade headers and **bypasses Headroom** (it serves the
-  admin UI directly). nginx keeps redirects relative (`absolute_redirect off`) and
-  forwards `$http_host`, so the app's absolute redirects come back to the same
-  portless host the browser used. The `<domain>` is the resolved platform base
-  domain (`runtime.yaml` `domain`, default `aip.local`; `ai domain`). (Open WebUI is
-  now a per-workspace in-VM app — see `internal/apps`, §7 — not a host service;
-  Odysseus has been removed from the platform entirely.)
-
-  The `:80` publish works on macOS Docker Desktop; on **Linux rootless** `:80` is a
-  privileged port and the publish **fails** unless
-  `net.ipv4.ip_unprivileged_port_start` is lowered to 80 (or an equivalent
-  capability is granted), and a pre-existing host `:80` listener conflicts — a
-  **hardware bring-up** caveat (`docs/HARDWARE-BRINGUP.md`). The `:18787`
-  gateway/API publish is unaffected.
+- The **single web UI is a Host-based VHOST (subdomain)** on the SAME :18787, NOT
+  a separate host port: `litellm.<domain>` → `aip-litellm:4000` (the admin UI at
+  `/ui`; litellm is the ONLY host UI vhost). The vhost carries WebSocket upgrade
+  headers and **bypasses Headroom** (it serves the admin UI directly). The
+  `<domain>` is the resolved platform base domain (`runtime.yaml` `domain`, default
+  `aip.local`; `ai domain`). (Open WebUI is now a per-workspace in-VM app — see
+  `internal/apps`, §7 — not a host service; Odysseus has been removed from the
+  platform entirely.)
 
 In **standalone** mode `ai setup` writes an `/etc/hosts` block (with consent + sudo;
 on no-TTY/--json/declined it prints the block to add manually) pointing
@@ -352,9 +339,8 @@ create real DNS (`*.<domain>` wildcard or per-host) → this server's IP and pro
 a TLS cert terminated at nginx. The blocks are structured so a per-vhost
 `listen 443 ssl;` + ssl directives can be added later (TLS termination, out of
 scope now) — TLS terminates **per-vhost at nginx**, and once HTTPS is configured the
-plain-http listeners (the `:18787` gateway entry and the portless `:80` UI entry)
-**MUST** `return 301 https://$host$request_uri;` (http → https redirect); no
-redirect is emitted today
+`:80`/http listener on the single :18787 entry **MUST** `return 301
+https://$host$request_uri;` (http → https redirect); no redirect is emitted today
 because there is no https listener yet (a 301 with no :443 would break every
 plain-http caller). nginx is reconciled LAST so its upstreams are
 up first. (`aip-litellm-db` and `aip-dns` stay loopback-published — DNS must stay
@@ -381,7 +367,7 @@ ai logs --service <svc>      one log surface
 
 | Service | Run mode | Why |
 |---|---|---|
-| nginx proxy | container (via Runtime) `aip-proxy` (`nginx:stable-alpine3.23-slim`) | the SOLE host ENTRY to the service tier: publishes :18787 (gateway/API) AND :80 (standard HTTP, both → container :80) — the default server (`/`+`/v1`→Headroom, `/llm`→LiteLLM, `/ollama`→Ollama) plus the single Host-based UI vhost reached PORTLESS on :80 (`http://litellm.<domain>`); HTTPS termination point later (§10) |
+| nginx proxy | container (via Runtime) `aip-proxy` (`nginx:stable-alpine3.23-slim`) | the SOLE host ENTRY to the service tier: publishes ONLY :18787 — the default server (`/`+`/v1`→Headroom, `/llm`→LiteLLM, `/ollama`→Ollama) plus the single Host-based UI vhost on the same port (`litellm.<domain>`); HTTPS termination point later (§10) |
 | Headroom | container (via Runtime) `aip-headroom` | shared input-compression proxy in front of LiteLLM; INTERNAL-ONLY on :8787 behind nginx (no host publish); HTTP only (§10) |
 | LiteLLM | container (via Runtime) `aip-litellm` (+ `aip-litellm-db` Postgres) | INTERNAL-ONLY: no host publish, reached by name (`aip-litellm:4000`) by Headroom + nginx's `/llm` route; HTTP only; no host privileges |
 | Presidio | two containers (via Runtime) `aip-presidio-analyzer` + `aip-presidio-anonymizer` | back LiteLLM's always-on secret-masking guardrail; internal-only, not published (§15) |
@@ -794,13 +780,9 @@ the Ollama HTTP API on **`location /ollama`** (→ `aip-ollama:11434`, prefix
 stripped) — the specific `/llm` and `/ollama` prefixes match before the catch-all
 `/` (the default route, also → Headroom). `/llm` and `/ollama` (and the UI vhost
 below) **bypass Headroom** — only `/` + `/v1` ride the compression proxy. The
-single web UI is served as a **Host-based vhost reached PORTLESS on `:80`** (NOT a
-separate host port, NOT `:18787`): `http://litellm.<domain>` → `aip-litellm:4000`
-(admin UI at `/ui`; litellm is the ONLY host UI vhost, with WebSocket upgrade
-headers). nginx publishes BOTH host `:18787` (gateway/API) and host `:80` (the
-portless UI), both mapping to the container's single `:80`. On Linux rootless the
-`:80` publish needs `net.ipv4.ip_unprivileged_port_start=80` (hardware bring-up).
-`<domain>`
+single web UI is served as a **Host-based vhost on the SAME :18787**, NOT a separate
+host port: `litellm.<domain>` → `aip-litellm:4000` (admin UI at `/ui`; litellm is
+the ONLY host UI vhost, with WebSocket upgrade headers). `<domain>`
 is the resolved platform base domain (`runtime.yaml` `domain`, default `aip.local`;
 `ai domain`). Standalone points that name at `127.0.0.1` via an `/etc/hosts`
 managed block written by `ai setup` (consent + sudo, else a manual block);
