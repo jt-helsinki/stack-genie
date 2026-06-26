@@ -1,0 +1,157 @@
+{
+  "models": {
+    "anthropic/claude-opus-4-5": {
+      "attachment": true,
+      "family": "claude-opus",
+      "id": "anthropic/claude-opus-4-5",
+      "knowledge": "2025-03-31",
+      "last_updated": "2025-11-24",
+      "limit": {
+        "context": 200000,
+        "output": 64000
+      },
+      "modalities": {
+        "input": [
+          "text",
+          "image",
+          "pdf"
+        ],
+        "output": [
+          "text"
+        ]
+      },
+      "name": "Claude Opus 4.5 (latest)",
+      "open_weights": false,
+      "reasoning": true,
+      "release_date": "2025-11-24",
+      "temperature": true,
+      "tool_call": true
+    },
+    "google/gemini-2.5-pro-tts": {
+      "attachment": false,
+      "family": "gemini-pro",
+      "id": "google/gemini-2.5-pro-tts",
+      "knowledge": "2025-01",
+      "last_updated": "2025-12-10",
+      "limit": {
+        "context": 32768,
+        "output": 16384
+      },
+      "modalities": {
+        "input": [
+          "text"
+        ],
+        "output": [
+          "audio"
+        ]
+      },
+      "name": "Gemini 2.5 Pro TTS",
+      "open_weights": false,
+      "reasoning": false,
+      "release_date": "2025-09-30",
+      "temperature": false,
+      "tool_call": false
+    },
+    "meta/llama-4-scout-17b-instruct": {
+      "attachment": true,
+      "family": "llama",
+      "id": "meta/llama-4-scout-17b-instruct",
+      "knowledge": "2024-08",
+      "last_updated": "2025-04-05",
+      "limit": {
+        "context": 3500000,
+        "output": 16384
+      },
+      "modalities": {
+        "input": [
+          "text",
+          "image"
+        ],
+        "output": [
+          "text"
+        ]
+      },
+      "name": "Llama 4 Scout 17B Instruct",
+      "open_weights": true,
+      "reasoning": false,
+      "release_date": "2025-04-05",
+      "temperature": true,
+      "tool_call": true,
+      "weights": [
+        {
+          "label": "Hugging Face",
+          "url": "https://huggingface.co/meta-llama/Llama-4-Scout-17B-16E-Instruct"
+        }
+      ]
+    },
+    "openai/gpt-5.2-codex": {
+      "attachment": true,
+      "benchmarks": [
+        {
+          "dataset": "public",
+          "metric": "resolve rate",
+          "name": "SWE-Bench Pro",
+          "score": 41.04,
+          "source": "https://labs.scale.com/leaderboard/swe_bench_pro_public"
+        }
+      ],
+      "family": "gpt-codex",
+      "id": "openai/gpt-5.2-codex",
+      "knowledge": "2025-08-31",
+      "last_updated": "2025-12-11",
+      "limit": {
+        "context": 400000,
+        "input": 272000,
+        "output": 128000
+      },
+      "modalities": {
+        "input": [
+          "text",
+          "image",
+          "pdf"
+        ],
+        "output": [
+          "text"
+        ]
+      },
+      "name": "GPT-5.2 Codex",
+      "open_weights": false,
+      "reasoning": true,
+      "release_date": "2025-12-11",
+      "structured_output": true,
+      "temperature": false,
+      "tool_call": true
+    }
+  },
+  "providers": {
+    "anthropic": {
+      "doc": "https://docs.anthropic.com/en/docs/about-claude/models",
+      "env": [
+        "ANTHROPIC_API_KEY"
+      ],
+      "id": "anthropic",
+      "name": "Anthropic",
+      "npm": "@ai-sdk/anthropic"
+    },
+    "google": {
+      "doc": "https://ai.google.dev/gemini-api/docs/models",
+      "env": [
+        "GOOGLE_API_KEY",
+        "GOOGLE_GENERATIVE_AI_API_KEY",
+        "GEMINI_API_KEY"
+      ],
+      "id": "google",
+      "name": "Google",
+      "npm": "@ai-sdk/google"
+    },
+    "openai": {
+      "doc": "https://platform.openai.com/docs/models",
+      "env": [
+        "OPENAI_API_KEY"
+      ],
+      "id": "openai",
+      "name": "OpenAI",
+      "npm": "@ai-sdk/openai"
+    }
+  }
+}
