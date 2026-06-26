@@ -13,7 +13,9 @@ import (
 
 	"github.com/charmbracelet/huh"
 	"github.com/charmbracelet/x/term"
+	"github.com/jt-helsinki/ideal-robot/internal/catalog"
 	"github.com/jt-helsinki/ideal-robot/internal/envfile"
+	"github.com/jt-helsinki/ideal-robot/internal/litellm"
 	"github.com/jt-helsinki/ideal-robot/internal/output"
 	"github.com/jt-helsinki/ideal-robot/internal/runtime"
 	"github.com/jt-helsinki/ideal-robot/internal/setup"
@@ -153,6 +155,10 @@ func newSetupCmd(em *output.Emitter, exit *int) *cobra.Command {
 			// (standalone/server), so it is skipped in client mode.
 			if report.Runtime != nil && report.Runtime.Role != runtime.RoleClient {
 				setupLiteLLMUIPassword(em, interactive, report.Runtime.Role, report.Runtime.ResolveDomain())
+				// Offer to add cloud-provider API keys (TTY only), then run the initial
+				// catalog → gateway model sync so LiteLLM reflects the keyed providers'
+				// models + any installed Ollama models. Best-effort — never fails setup.
+				offerCloudKeysAndSync(em, interactive)
 			}
 			// Domain wiring: standalone points the UI subdomains at 127.0.0.1 in
 			// /etc/hosts (with consent + sudo, else a manual block); server prints the
@@ -738,6 +744,99 @@ func syncUISubdomains(em *output.Emitter, interactive bool, info *runtime.Info) 
 				ui.Value.Render(fmt.Sprintf("litellm.%s", domain)),
 				ui.Value.Render(":18787"))
 		}
+	}
+}
+
+// offerCloudKeysAndSync runs at the end of `ai setup` for non-client roles: on a
+// TTY it OFFERS to add cloud-provider API keys (multi-select from the catalog's
+// LiteLLM-routable providers, then the hidden-key `ai keys add` flow per provider),
+// and — interactive or not — it runs the INITIAL catalog → gateway model sync so
+// LiteLLM reflects the keyed providers' catalog models plus any installed Ollama
+// models. NO default models are added — the user opts in by adding a key (or
+// pulling an Ollama model). It is best-effort: a catalog/gateway error is warned to
+// stderr and never fails setup. Under --json / no TTY the key offer is skipped
+// entirely (only the sync runs, reflecting whatever is already keyed/installed).
+//
+// hardware bring-up: the live SetCredential / SyncModels round-trips run only
+// against a running aip-litellm.
+func offerCloudKeysAndSync(em *output.Emitter, interactive bool) {
+	cat, err := keysCatalogLoader()
+	if err != nil {
+		// No catalog (offline + no saved copy): nothing to offer or sync against.
+		if interactive {
+			_, _ = fmt.Fprintf(em.Err, "%s\n", ui.Muted.Render("Model catalog unavailable ("+err.Error()+") — skipping the API-key offer."))
+		}
+		return
+	}
+	gateway := keysGatewayFactory()
+
+	if interactive {
+		offerCloudKeys(em, cat, gateway)
+	}
+
+	// Initial sync: reconcile the gateway's model set to the keyed providers'
+	// catalog models + installed Ollama models. Reuses the keys.go sync helper so
+	// the keyed set is read back from the live credential store.
+	if _, err := syncKeyedModels(gateway, cat); err != nil {
+		_, _ = fmt.Fprintf(em.Err, "%s\n", ui.Muted.Render("Initial model sync skipped ("+err.Error()+") — run `ai keys add <provider>` once the gateway is up."))
+	}
+}
+
+// offerCloudKeys (TTY only) asks whether to add a cloud-provider API key now and,
+// on yes, multi-selects from the catalog's LiteLLM-routable providers and runs the
+// hidden-key flow (prompt → SetCredential) for each selected provider. It also
+// mentions that local Ollama models are pulled with `ai models pull`. Each step is
+// best-effort: a declined prompt, an empty selection, or a per-provider error just
+// moves on. No models are registered here — the post-offer sync does that.
+func offerCloudKeys(em *output.Emitter, cat *catalog.Catalog, gateway keysGateway) {
+	providers := litellm.LiteLLMProviders(cat)
+	if len(providers) == 0 {
+		return
+	}
+	want, err := promptConfirmDefault(
+		"Add a cloud-provider API key now?",
+		"Stores a provider key (encrypted in the LiteLLM gateway) so the agent can route to that "+
+			"provider's models. You can also do this later with `ai keys add <provider>`, and pull local "+
+			"models with `ai models pull`.",
+		false,
+	)
+	if err != nil || !want {
+		return
+	}
+	options := make([]huh.Option[string], 0, len(providers))
+	for _, provider := range providers {
+		options = append(options, huh.NewOption(provider.Name+" ("+provider.ID+")", provider.ID))
+	}
+	selected, err := promptMultiChoice(
+		"Which providers?",
+		"Pick the providers you have an API key for. The key is hidden and stored encrypted in the gateway.",
+		options)
+	if err != nil {
+		return
+	}
+	for _, providerID := range selected {
+		prefix, ok := litellm.LiteLLMPrefix(providerID)
+		if !ok {
+			continue
+		}
+		key, promptErr := promptSecret(
+			"API key for "+providerID,
+			"hidden — stored encrypted in the LiteLLM gateway, never on platform disk",
+			func(candidate string) error {
+				if candidate == "" {
+					return fmt.Errorf("API key is required")
+				}
+				return nil
+			})
+		if promptErr != nil || key == "" {
+			_, _ = fmt.Fprintf(em.Err, "%s\n", ui.Muted.Render("Skipped "+providerID+" (no key entered)."))
+			continue
+		}
+		if setErr := gateway.SetCredential(prefix, key); setErr != nil {
+			_, _ = fmt.Fprintf(em.Err, "warning: could not store the %s key: %s\n", providerID, setErr)
+			continue
+		}
+		_, _ = fmt.Fprintf(em.Err, "%s\n", ui.Success.Render(ui.IconOK+" stored key for "+providerID))
 	}
 }
 

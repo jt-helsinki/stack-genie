@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/jt-helsinki/ideal-robot/internal/catalog"
 	"github.com/jt-helsinki/ideal-robot/internal/litellm"
 	"github.com/jt-helsinki/ideal-robot/internal/ollama"
 )
@@ -212,7 +213,7 @@ func TestModelsLocalTableAndPull(test *testing.T) {
 	listLocal(view)
 
 	rendered := view.View()
-	for _, want := range []string{"Local model store", "NAME", "PARAMETERS", "SIZE", "STATUS", "gemma4:31b", "31B", "installed"} {
+	for _, want := range []string{"local (Ollama)", "NAME", "PARAMETERS", "SIZE", "STATUS", "gemma4:31b", "31B", "installed"} {
 		if !strings.Contains(rendered, want) {
 			test.Errorf("local table missing %q:\n%s", want, rendered)
 		}
@@ -589,5 +590,243 @@ func TestModelsShowsCatalogWhenOllamaUnreachable(test *testing.T) {
 		if !strings.Contains(rendered, want) {
 			test.Errorf("unreachable view missing %q:\n%s", want, rendered)
 		}
+	}
+}
+
+// --- cloud catalog (Phase E) ------------------------------------------------
+
+// cloudTestCatalogJSON has two cloud models: an openai model and a google model,
+// each with release/last-updated/limits/modalities, so the enriched table + detail
+// pane can be asserted.
+const cloudTestCatalogJSON = `{
+	"models": {
+		"openai/gpt-5.5": {
+			"id": "openai/gpt-5.5", "name": "GPT-5.5", "family": "gpt",
+			"release_date": "2026-01-15", "last_updated": "2026-03-01",
+			"limit": {"context": 400000, "output": 128000},
+			"modalities": {"input": ["text", "image"], "output": ["text"]}
+		},
+		"google/gemini-3.1-pro": {
+			"id": "google/gemini-3.1-pro", "name": "Gemini 3.1 Pro", "family": "gemini",
+			"release_date": "2026-02-20", "last_updated": "2026-04-10",
+			"limit": {"context": 1000000, "output": 65000},
+			"modalities": {"input": ["text", "audio"], "output": ["text"]}
+		}
+	},
+	"providers": {
+		"openai": {"id": "openai", "name": "OpenAI"},
+		"google": {"id": "google", "name": "Google"}
+	}
+}`
+
+func cloudTestCatalog(test *testing.T) *catalog.Catalog {
+	test.Helper()
+	cat, err := catalog.Parse([]byte(cloudTestCatalogJSON))
+	if err != nil {
+		test.Fatalf("parse cloud test catalog: %v", err)
+	}
+	return cat
+}
+
+// loadCatalogCloud drives the cloud-catalog load synchronously.
+func loadCatalogCloud(view *Models) {
+	if cmd := view.catalogCmd(); cmd != nil {
+		_ = view.Update(cmd())
+	}
+}
+
+// withCloud wires the catalog side onto a freshly-built models view: the cloud
+// catalog, the registered (live) set, and a refresher whose call count is recorded.
+func withCloud(test *testing.T, registered []litellm.LiveModel, refresh func() error) *Models {
+	test.Helper()
+	cat := cloudTestCatalog(test)
+	view := NewModels(
+		func() (litellm.StatusInfo, error) { return litellm.StatusInfo{Healthy: true, Default: "gemma4"}, nil },
+		func(string) (litellm.TestResult, error) { return litellm.TestResult{}, nil },
+		noLocalModels, noPopular, noShow,
+	).WithCatalog(
+		func() (*catalog.Catalog, error) { return cat, nil },
+		func() ([]litellm.LiveModel, error) { return registered, nil },
+		refresh,
+	)
+	view.SetSize(120, 40)
+	refreshModels(view)
+	listLocal(view)
+	loadCatalogCloud(view)
+	return view
+}
+
+// The merged table renders cloud catalog rows with NAME · CONTEXT · STATUS, where a
+// gateway-served (registered) model is "registered" and an unkeyed one "available".
+func TestModelsRendersCloudCatalogRows(test *testing.T) {
+	// openai/gpt-5.5 is served by the gateway → registered; the gemini model is not.
+	view := withCloud(test,
+		[]litellm.LiveModel{{Name: "openai/gpt-5.5", Provider: "openai"}},
+		nil)
+
+	if len(view.cloudModels) != 2 {
+		test.Fatalf("cloud rows = %d, want 2", len(view.cloudModels))
+	}
+	rendered := view.View()
+	for _, want := range []string{"openai/gpt-5.5", "google/gemini-3.1-pro", "registered", "available", "CONTEXT", "400K", "1M"} {
+		if !strings.Contains(rendered, want) {
+			test.Errorf("cloud table missing %q:\n%s", want, rendered)
+		}
+	}
+	// Registered sorts before available.
+	if !view.cloudModels[0].registered() {
+		test.Errorf("registered row should sort first, got %+v", view.cloudModels[0])
+	}
+}
+
+// enter on a cloud row opens the describe pane with the models.dev metadata
+// (release date, last updated, context/output limits, input/output modalities) and
+// never calls /api/show.
+func TestModelsEnterCloudShowsCatalogDetail(test *testing.T) {
+	showCalled := false
+	cat := cloudTestCatalog(test)
+	view := NewModels(
+		func() (litellm.StatusInfo, error) { return litellm.StatusInfo{Healthy: true}, nil },
+		func(string) (litellm.TestResult, error) { return litellm.TestResult{}, nil },
+		noLocalModels, noPopular,
+		func(string) (ollama.ModelInfo, error) { showCalled = true; return ollama.ModelInfo{}, nil },
+	).WithCatalog(
+		func() (*catalog.Catalog, error) { return cat, nil },
+		func() ([]litellm.LiveModel, error) { return nil, nil },
+		nil,
+	)
+	view.SetSize(120, 40)
+	refreshModels(view)
+	listLocal(view)
+	loadCatalogCloud(view)
+
+	// With no Ollama rows, the first table row is a cloud model.
+	_ = view.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if showCalled {
+		test.Fatal("enter on a cloud row must NOT call /api/show")
+	}
+	if !view.describe.active() {
+		test.Fatal("enter should open the describe pane")
+	}
+	rendered := view.View()
+	for _, want := range []string{
+		"catalog (models.dev)", "release date", "last updated",
+		"context limit", "output limit", "input modalities", "output modalities",
+	} {
+		if !strings.Contains(rendered, want) {
+			test.Errorf("cloud describe pane missing label %q:\n%s", want, rendered)
+		}
+	}
+	// The first cloud row (alpha) is google/gemini-3.1-pro — assert ITS values.
+	for _, want := range []string{"2026-02-20", "2026-04-10", "1M tokens", "65K tokens", "text, audio"} {
+		if !strings.Contains(rendered, want) {
+			test.Errorf("cloud describe pane missing value %q:\n%s", want, rendered)
+		}
+	}
+}
+
+// enter on an INSTALLED Ollama row still shows the /api/show detail (size/params),
+// proving the Ollama and cloud detail paths coexist.
+func TestModelsEnterOllamaShowsSizeParamsAlongsideCloud(test *testing.T) {
+	cat := cloudTestCatalog(test)
+	var shown string
+	view := NewModels(
+		func() (litellm.StatusInfo, error) { return litellm.StatusInfo{Healthy: true}, nil },
+		func(string) (litellm.TestResult, error) { return litellm.TestResult{}, nil },
+		func() ([]ollama.Model, error) {
+			return []ollama.Model{{Name: "llama3.2:3b", Size: 2147483648, ParameterSize: "3.2B"}}, nil
+		},
+		noPopular,
+		func(name string) (ollama.ModelInfo, error) {
+			shown = name
+			return ollama.ModelInfo{Name: name, Family: "llama", ParameterSize: "3.2B"}, nil
+		},
+	).WithCatalog(
+		func() (*catalog.Catalog, error) { return cat, nil },
+		func() ([]litellm.LiveModel, error) { return nil, nil },
+		nil,
+	)
+	view.SetSize(120, 40)
+	refreshModels(view)
+	listLocal(view)
+	loadCatalogCloud(view)
+
+	// Row 0 is the installed Ollama model (Ollama rows precede cloud rows).
+	_ = view.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if shown != "llama3.2:3b" {
+		test.Fatalf("enter on the installed row should Show %q, got %q", "llama3.2:3b", shown)
+	}
+	rendered := view.View()
+	for _, want := range []string{"parameter size", "3.2B", "llama"} {
+		if !strings.Contains(rendered, want) {
+			test.Errorf("ollama describe pane missing %q:\n%s", want, rendered)
+		}
+	}
+}
+
+// Pressing r triggers the catalog refresh + gateway resync (the injected refresher
+// runs), then reloads the displayed data.
+func TestModelsRefreshTriggersCatalogResync(test *testing.T) {
+	resyncs := 0
+	view := withCloud(test, nil, func() error { resyncs++; return nil })
+
+	cmd := view.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("r")})
+	if cmd == nil {
+		test.Fatal("pressing r must return a resync command")
+	}
+	msg := cmd() // runs the injected refresher off the UI thread
+	if resyncs != 1 {
+		test.Fatalf("refresher called %d times, want 1", resyncs)
+	}
+	done, ok := msg.(catalogResyncedMsg)
+	if !ok {
+		test.Fatalf("r must produce a catalogResyncedMsg, got %T", msg)
+	}
+	if done.err != nil {
+		test.Fatalf("resync should have succeeded, got %v", done.err)
+	}
+	// The completion message reloads the displayed data (a batch command).
+	if reload := view.Update(done); reload == nil {
+		test.Fatal("the resync completion should reload the displayed data")
+	}
+	if !strings.Contains(view.View(), "resynced") {
+		test.Errorf("expected a success flash after the resync:\n%s", view.View())
+	}
+}
+
+// A resync error is surfaced as a flash, not a fatal.
+func TestModelsRefreshResyncErrorFlashes(test *testing.T) {
+	view := withCloud(test, nil, func() error { return errors.New("gateway down") })
+
+	msg := view.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("r")})()
+	_ = view.Update(msg)
+	if !strings.Contains(view.View(), "gateway down") {
+		test.Errorf("expected the resync error in a flash:\n%s", view.View())
+	}
+}
+
+// With NO catalog side wired, r still refreshes the displayed data (no resync).
+func TestModelsRefreshWithoutCatalogSideStillRefreshes(test *testing.T) {
+	view := NewModels(
+		func() (litellm.StatusInfo, error) { return litellm.StatusInfo{Healthy: true}, nil },
+		func(string) (litellm.TestResult, error) { return litellm.TestResult{}, nil },
+		noLocalModels, noPopular, noShow,
+	)
+	refreshModels(view)
+	cmd := view.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("r")})
+	if cmd == nil {
+		test.Fatal("r should still return a data-refresh command when no catalog is wired")
+	}
+}
+
+// p on a cloud row is a no-op (cloud models are keyed, not pulled).
+func TestModelsPullCloudRowIsNoOp(test *testing.T) {
+	view := withCloud(test, nil, nil) // no Ollama rows → row 0 is a cloud model
+	cmd := view.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("p")})
+	if cmd != nil {
+		test.Fatalf("p on a cloud row must be a no-op, got %T", cmd())
+	}
+	if !strings.Contains(view.View(), "cloud model") {
+		test.Errorf("expected a 'cloud model' flash, got:\n%s", view.View())
 	}
 }

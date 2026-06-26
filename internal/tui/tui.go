@@ -117,7 +117,16 @@ func Run(cwd string) error {
 	)
 	networkView := views.NewNetwork(currentRoot, egress.Get, egress.SetMode)
 	contextView := views.NewContext(currentRoot, contextopt.GetStatus, contextopt.SetStrategy, contextopt.SetCavemanLevel)
-	modelsView := views.NewModels(litellmClient.Status, litellmClient.Test, ollama.RealClient().List, ollama.Popular, ollama.RealClient().Show)
+	modelsView := views.NewModels(litellmClient.Status, litellmClient.Test, ollama.RealClient().List, ollama.Popular, ollama.RealClient().Show).
+		// The cloud side: the saved models.dev catalog (cloud models + their
+		// release/limits/modalities), the gateway's live (registered) model set, and
+		// the `r`-refresh (re-fetch the catalog + resync the gateway). All over the
+		// existing package APIs so the view stays fakeable in tests.
+		WithCatalog(
+			catalog.Load,
+			litellm.NewKeyManager(runtime.RealProber()).ListModels,
+			refreshModelCatalog,
+		)
 	// The API Keys view lists the routable catalog providers + their keyed status
 	// (the same catalog + ListCredentials join `ai keys list` uses). Add/remove run
 	// `ai keys add|remove <provider>` live in the terminal overlay (the hidden key
@@ -258,6 +267,73 @@ func listAPIKeyProviders() ([]views.APIKeyProvider, error) {
 		})
 	}
 	return rows, nil
+}
+
+// refreshModelCatalog is the Models view's `r`-refresh network work: it re-fetches
+// the models.dev catalog (and persists it) then resyncs the gateway's model set to
+// the keyed providers' catalog models + the installed Ollama models. The keyed set
+// is read back from the live credential store so the desired set always reflects
+// what is actually keyed. Best-effort — the caller surfaces any error as a flash and
+// reloads the displayed data regardless.
+//
+// hardware bring-up: the live models.dev fetch + the /model/* resync round-trips run
+// only against the network / a running aip-litellm.
+func refreshModelCatalog() error {
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	cat, err := catalog.Fetch(ctx, nil, "")
+	if err != nil {
+		// Offline: fall back to the saved copy so the resync still runs against it.
+		cat, err = catalog.Load()
+		if err != nil {
+			return err
+		}
+	} else {
+		_ = catalog.Save(cat) // best-effort persist; a save failure must not abort the resync
+	}
+	manager := litellm.NewKeyManager(runtime.RealProber())
+	creds, err := manager.ListCredentials()
+	if err != nil {
+		return err
+	}
+	keyed := catalogIDsForCredentials(cat, creds)
+	_, err = manager.SyncModels(cat, keyed, installedOllamaModels())
+	return err
+}
+
+// catalogIDsForCredentials maps the stored credentials' LiteLLM provider prefixes
+// back to the CATALOG provider ids that route under them (e.g. a "gemini" credential
+// keys the catalog's "google" provider), so SyncModels (which matches on catalog
+// ids) registers the right providers' models. Only routable catalog providers are
+// considered.
+func catalogIDsForCredentials(cat *catalog.Catalog, creds []litellm.Credential) []string {
+	keyedPrefix := make(map[string]bool, len(creds))
+	for _, cred := range creds {
+		keyedPrefix[cred.Provider] = true
+	}
+	var ids []string
+	for _, provider := range litellm.LiteLLMProviders(cat) {
+		prefix, _ := litellm.LiteLLMPrefix(provider.ID)
+		if keyedPrefix[prefix] {
+			ids = append(ids, provider.ID)
+		}
+	}
+	return ids
+}
+
+// installedOllamaModels lists the installed Ollama model names so a resync
+// re-registers the local models alongside the keyed cloud providers. A down/empty
+// Ollama is tolerated (returns nil) — it must never fail the resync.
+func installedOllamaModels() []string {
+	installed, err := ollama.RealClient().List()
+	if err != nil {
+		return nil
+	}
+	names := make([]string, 0, len(installed))
+	for _, model := range installed {
+		names = append(names, model.Name)
+	}
+	return names
 }
 
 // app is the root tea.Model: it owns the views, the header/footer chrome, and the

@@ -129,6 +129,14 @@ type Deps struct {
 	// several seconds it takes to launch + health-check the containers). nil = no
 	// progress (e.g. --json / tests).
 	Progress func(string)
+	// FetchCatalog, when set, fetches the models.dev model catalog and persists it
+	// (catalog.LoadOrFetch + Save), so the saved copy is current before the CLI
+	// offers cloud-provider keys and the initial model sync runs. It is BEST-EFFORT
+	// — Run calls it after the service reconcile (non-client roles) and never fails
+	// setup on its error. nil = skip (e.g. tests that don't exercise the catalog).
+	//
+	// hardware bring-up: the LIVE models.dev fetch runs only against the network.
+	FetchCatalog func() error
 }
 
 // Options configure a setup run.
@@ -721,6 +729,17 @@ func Run(options Options, deps Deps) (*Report, error) {
 			return nil, output.Errorf(output.ExitRuntimeFailure, "reconcile services: %s", err)
 		}
 		progress("Host services ready.")
+
+		// 6. Fetch + persist the models.dev catalog so the saved copy is current
+		// before the CLI offers cloud-provider keys and runs the initial model sync.
+		// Best-effort: offline falls back to the saved copy and a failure never
+		// stops setup (the catalog is only a model-picker convenience).
+		if deps.FetchCatalog != nil {
+			progress("Fetching the model catalog (models.dev)…")
+			if err := deps.FetchCatalog(); err != nil {
+				warnings = append(warnings, "model catalog: "+err.Error())
+			}
+		}
 	}
 
 	return &Report{

@@ -1,6 +1,7 @@
 package setup
 
 import (
+	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"errors"
@@ -15,6 +16,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/jt-helsinki/ideal-robot/internal/catalog"
 	"github.com/jt-helsinki/ideal-robot/internal/console"
 	"github.com/jt-helsinki/ideal-robot/internal/litellm"
 	"github.com/jt-helsinki/ideal-robot/internal/ollama"
@@ -1516,5 +1518,13 @@ func RealDeps(goos, goarch string, now func() string) Deps {
 		Prober:   prober,
 		Now:      now,
 		Services: realServices{prober: prober},
+		// FetchCatalog fetches + persists the models.dev catalog (offline → the saved
+		// copy; never fails). hardware bring-up: the live models.dev fetch.
+		FetchCatalog: func() error {
+			ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+			defer cancel()
+			_, err := catalog.LoadOrFetch(ctx, nil, "")
+			return err
+		},
 	}
 }

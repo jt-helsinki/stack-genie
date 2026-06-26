@@ -169,6 +169,68 @@ func TestRunHappyPath(test *testing.T) {
 	}
 }
 
+// Phase E: Run invokes the catalog fetch (best-effort) after the service reconcile
+// on a non-client role, and a fetch error becomes a warning rather than failing.
+func TestRunFetchesCatalogBestEffort(test *testing.T) {
+	test.Setenv("HOME", test.TempDir())
+	deps, _ := healthyDeps()
+	fetched := 0
+	deps.FetchCatalog = func() error { fetched++; return nil }
+
+	report, err := Run(Options{}, deps)
+	if err != nil {
+		test.Fatal(err)
+	}
+	if fetched != 1 {
+		test.Fatalf("FetchCatalog called %d times, want 1 (after the reconcile)", fetched)
+	}
+	_ = report
+}
+
+func TestRunCatalogFetchErrorIsWarningNotFatal(test *testing.T) {
+	test.Setenv("HOME", test.TempDir())
+	deps, _ := healthyDeps()
+	deps.FetchCatalog = func() error { return errors.New("models.dev unreachable") }
+
+	report, err := Run(Options{}, deps)
+	if err != nil {
+		test.Fatalf("a catalog fetch error must not fail setup: %v", err)
+	}
+	found := false
+	for _, warning := range report.Warnings {
+		if strings.Contains(warning, "model catalog") && strings.Contains(warning, "unreachable") {
+			found = true
+		}
+	}
+	if !found {
+		test.Fatalf("expected a model-catalog warning, got %v", report.Warnings)
+	}
+}
+
+// A client role runs no local service tier, so the catalog fetch is skipped.
+func TestRunClientRoleSkipsCatalogFetch(test *testing.T) {
+	test.Setenv("HOME", test.TempDir())
+	services := &fakeServices{}
+	deps := Deps{
+		GOOS: "darwin", GOARCH: "arm64",
+		Prober: fakeProber{
+			bins:      map[string]bool{"msb": true},
+			dockerOut: "[name=seccomp name=rootless]",
+		},
+		Now:      func() string { return "2026-06-18T00:00:00Z" },
+		Services: services,
+	}
+	fetched := 0
+	deps.FetchCatalog = func() error { fetched++; return nil }
+
+	if _, err := Run(Options{Mode: runtime.RoleClient, ServerAddr: "10.0.0.5"}, deps); err != nil {
+		test.Fatal(err)
+	}
+	if fetched != 0 {
+		test.Fatalf("client role should NOT fetch the catalog, called %d times", fetched)
+	}
+}
+
 func TestRunPersistsOptionsDomain(test *testing.T) {
 	test.Setenv("HOME", test.TempDir())
 	deps, _ := healthyDeps()
