@@ -23,7 +23,8 @@ import (
 // them entirely when output is not a TTY or NO_COLOR is set, so colour needs no
 // manual gating.
 const (
-	colorAccent  = lipgloss.Color("#33FFFF") // bright blue   (R51  G255 B255)
+	colorPrimary = lipgloss.Color("#FF66FF") // bright pink   (R255 G102 B255)
+	colorAccent  = lipgloss.Color("#33FFFF") // bright blue   (R51  G255 B255) — secondary
 	colorSuccess = lipgloss.Color("#33FF99") // green
 	colorWarn    = lipgloss.Color("#FF8000") // bright orange (R255 G128 B0)
 	colorError   = lipgloss.Color("#FF3333") // bright red    (R255 G51  B51)
@@ -31,12 +32,23 @@ const (
 )
 
 // Named styles, shared by every command's human output and the TUI components.
+// CLI styling vocabulary — apply CONSISTENTLY across command Human renderers:
+//   - Heading: section titles/headers (primary pink, bold). Restyled per theme by Apply.
+//   - Primary: emphasis + the platform's own nouns/commands (primary pink).
+//   - Value:   data — names, paths, counts, URLs, IDs, the "value" in key: value
+//     (secondary blue). This is the "other text" colour.
+//   - Label:   field/column labels, the "key" in key: value (muted/dim).
+//   - Success/Warn/Failure: status words + their icons (green/orange/red).
+//   - Muted:   secondary/dim/hint text.
 var (
-	Heading = lipgloss.NewStyle().Bold(true).Foreground(colorAccent)
+	Heading = lipgloss.NewStyle().Bold(true).Foreground(colorPrimary)
+	Primary = lipgloss.NewStyle().Foreground(colorPrimary)
+	Value   = lipgloss.NewStyle().Foreground(colorAccent)
 	Success = lipgloss.NewStyle().Foreground(colorSuccess)
 	Warn    = lipgloss.NewStyle().Foreground(colorWarn)
 	Failure = lipgloss.NewStyle().Foreground(colorError)
 	Muted   = lipgloss.NewStyle().Foreground(colorMuted)
+	Label   = Muted
 )
 
 // Status icons (colour is applied by the styles above where rendered).

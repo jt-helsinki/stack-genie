@@ -12,6 +12,7 @@ import (
 	"github.com/jt-helsinki/ideal-robot/internal/egress"
 	"github.com/jt-helsinki/ideal-robot/internal/output"
 	"github.com/jt-helsinki/ideal-robot/internal/project"
+	"github.com/jt-helsinki/ideal-robot/internal/ui"
 	"github.com/jt-helsinki/ideal-robot/internal/workspace"
 	"github.com/spf13/cobra"
 )
@@ -69,40 +70,40 @@ type networkResult struct {
 // policy. The in-force section is the applied POLICY (what would be blocked), not
 // a record of blocked connections — msb 0.5.7 exposes only the policy config.
 func (result networkResult) Human() string {
-	lines := []string{"declared (config.yaml):", "  egress: " + result.Egress}
+	lines := []string{ui.Heading.Render("declared (config.yaml):"), "  " + ui.Label.Render("egress:") + " " + ui.Value.Render(result.Egress)}
 	if len(result.AllowHostServices) == 0 {
-		lines = append(lines, "  allow:  (none — only the model gateway is reachable)")
+		lines = append(lines, "  "+ui.Label.Render("allow:")+"  "+ui.Muted.Render("(none — only the model gateway is reachable)"))
 	} else {
-		lines = append(lines, "  allow:")
+		lines = append(lines, "  "+ui.Label.Render("allow:"))
 		for _, service := range result.AllowHostServices {
-			lines = append(lines, fmt.Sprintf("    - %s:%d", service.Host, service.Port))
+			lines = append(lines, "    - "+ui.Value.Render(fmt.Sprintf("%s:%d", service.Host, service.Port)))
 		}
 	}
 	if len(result.PublishPorts) > 0 {
-		lines = append(lines, "  publish (host→guest):")
+		lines = append(lines, "  "+ui.Label.Render("publish (host→guest):"))
 		for _, mapping := range result.PublishPorts {
-			lines = append(lines, fmt.Sprintf("    - %d→%d", mapping.Host, mapping.Guest))
+			lines = append(lines, "    - "+ui.Value.Render(fmt.Sprintf("%d→%d", mapping.Host, mapping.Guest)))
 		}
 	}
 	if result.InForce == nil {
-		lines = append(lines, "", "in force (live): (workspace not running — showing declared policy only)")
+		lines = append(lines, "", ui.Heading.Render("in force (live):")+" "+ui.Muted.Render("(workspace not running — showing declared policy only)"))
 		return strings.Join(lines, "\n")
 	}
 	lines = append(lines,
 		"",
-		"in force (live, on the running microVM):",
-		"  (applied policy — what WOULD be blocked, not a record of blocked connections)",
-		"  default egress: "+result.InForce.DefaultEgress)
+		ui.Heading.Render("in force (live, on the running microVM):"),
+		"  "+ui.Muted.Render("(applied policy — what WOULD be blocked, not a record of blocked connections)"),
+		"  "+ui.Label.Render("default egress:")+" "+ui.Value.Render(result.InForce.DefaultEgress))
 	if len(result.InForce.Rules) == 0 {
-		lines = append(lines, "  rules:  (none)")
+		lines = append(lines, "  "+ui.Label.Render("rules:")+"  "+ui.Muted.Render("(none)"))
 	} else {
-		lines = append(lines, "  rules:")
+		lines = append(lines, "  "+ui.Label.Render("rules:"))
 		for _, rule := range result.InForce.Rules {
-			lines = append(lines, "    - "+rule)
+			lines = append(lines, "    - "+ui.Value.Render(rule))
 		}
 	}
 	if result.InForce.OnViolation != "" {
-		lines = append(lines, "  on violation: "+result.InForce.OnViolation)
+		lines = append(lines, "  "+ui.Label.Render("on violation:")+" "+ui.Value.Render(result.InForce.OnViolation))
 	}
 	return strings.Join(lines, "\n")
 }

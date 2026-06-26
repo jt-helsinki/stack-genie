@@ -32,21 +32,39 @@ type projectsResult struct {
 // with ",", "—" for an empty cell), or a friendly hint when there are none.
 func (result projectsResult) Human() string {
 	if len(result.Projects) == 0 {
-		return "No workspaces yet — create one with `ai create`."
+		return ui.Muted.Render("No workspaces yet — create one with ") + ui.Primary.Render("`ai create`") + ui.Muted.Render(".")
 	}
 	rows := make([][]string, 0, len(result.Projects))
 	for _, entry := range result.Projects {
 		rows = append(rows, []string{
-			entry.Name,
-			orDash(entry.OS),
-			orDash(strings.Join(entry.Agents, ",")),
-			entry.Status,
-			orDash(entry.ID),
-			orDash(entry.Created),
-			orDash(entry.LastStarted),
+			ui.Value.Render(entry.Name),
+			ui.Value.Render(orDash(entry.OS)),
+			ui.Value.Render(orDash(strings.Join(entry.Agents, ","))),
+			styleWorkspaceStatus(entry.Status),
+			ui.Value.Render(orDash(entry.ID)),
+			ui.Value.Render(orDash(entry.Created)),
+			ui.Value.Render(orDash(entry.LastStarted)),
 		})
 	}
 	return ui.Table([]string{"NAME", "OS", "AGENTS", "STATUS", "ID", "CREATED", "LAST-STARTED"}, rows)
+}
+
+// styleWorkspaceStatus colours a workspace status word semantically: active
+// states (running/created/started) green, inactive (stopped) orange, an error
+// state red, and anything else (incl. the em-dash placeholder) muted.
+func styleWorkspaceStatus(status string) string {
+	switch strings.ToLower(strings.TrimSpace(status)) {
+	case "running", "started", "created", "active":
+		return ui.Success.Render(status)
+	case "stopped", "paused":
+		return ui.Warn.Render(status)
+	case "failed", "error", "unavailable":
+		return ui.Failure.Render(status)
+	case "", "—":
+		return ui.Muted.Render(orDash(status))
+	default:
+		return ui.Value.Render(status)
+	}
 }
 
 // orDash renders an em dash for an empty cell so blank fields read clearly.

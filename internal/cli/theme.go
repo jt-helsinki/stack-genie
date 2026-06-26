@@ -23,12 +23,12 @@ func (result themeResult) Human() string {
 	builder.WriteString(ui.Heading.Render("UI theme") + "\n")
 	for _, name := range result.Available {
 		if name == result.Theme {
-			builder.WriteString("  " + ui.Success.Render(ui.IconOK+" ") + ui.Heading.Render(name) + ui.Muted.Render(" (active)") + "\n")
+			builder.WriteString("  " + ui.Success.Render(ui.IconOK+" ") + ui.Primary.Render(name) + ui.Muted.Render(" (active)") + "\n")
 			continue
 		}
-		builder.WriteString("    " + name + "\n")
+		builder.WriteString("    " + ui.Value.Render(name) + "\n")
 	}
-	builder.WriteString(ui.Muted.Render("Change it with `ai theme <name>` (prompts on a terminal)."))
+	builder.WriteString(ui.Muted.Render("Change it with ") + ui.Primary.Render("`ai theme <name>`") + ui.Muted.Render(" (prompts on a terminal)."))
 	return builder.String()
 }
 

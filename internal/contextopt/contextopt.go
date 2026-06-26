@@ -15,7 +15,6 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
-	"strconv"
 
 	"github.com/jt-helsinki/ideal-robot/internal/config"
 	"github.com/jt-helsinki/ideal-robot/internal/ui"
@@ -137,12 +136,25 @@ type Status struct {
 // labeled settings — the Headroom strategy, the Caveman level, and whether the
 // Caveman skill is installed — for non-JSON output.
 func (status Status) Human() string {
+	installed := ui.Muted.Render("false")
+	if status.CavemanInstalled {
+		installed = ui.Success.Render("true")
+	}
 	rows := [][]string{
-		{"Strategy", orUnset(status.Strategy)},
-		{"Caveman level", orUnset(status.CavemanLevel)},
-		{"Caveman installed", strconv.FormatBool(status.CavemanInstalled)},
+		{ui.Label.Render("Strategy"), styleSetting(status.Strategy)},
+		{ui.Label.Render("Caveman level"), styleSetting(status.CavemanLevel)},
+		{ui.Label.Render("Caveman installed"), installed},
 	}
 	return ui.Table([]string{"SETTING", "VALUE"}, rows)
+}
+
+// styleSetting renders a setting value as a data token (or a muted "(unset)" when
+// blank), keeping the orUnset wording.
+func styleSetting(value string) string {
+	if value == "" {
+		return ui.Muted.Render(orUnset(value))
+	}
+	return ui.Value.Render(orUnset(value))
 }
 
 // orUnset renders "(unset)" for an empty setting so blank values read clearly.

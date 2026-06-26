@@ -8,6 +8,7 @@ import (
 	"github.com/jt-helsinki/ideal-robot/internal/logs"
 	"github.com/jt-helsinki/ideal-robot/internal/output"
 	"github.com/jt-helsinki/ideal-robot/internal/setup"
+	"github.com/jt-helsinki/ideal-robot/internal/ui"
 	"github.com/spf13/cobra"
 )
 
@@ -27,9 +28,9 @@ type logSource struct {
 func (result logsResult) Human() string {
 	var builder strings.Builder
 	if len(result.Logs) == 0 {
-		builder.WriteString("No logs on disk yet.")
+		builder.WriteString(ui.Muted.Render("No logs on disk yet."))
 		if result.Note != "" {
-			builder.WriteString("\n(" + result.Note + ")")
+			builder.WriteString("\n" + ui.Muted.Render("("+result.Note+")"))
 		}
 		return builder.String()
 	}
@@ -37,7 +38,7 @@ func (result logsResult) Human() string {
 		if index > 0 {
 			builder.WriteString("\n")
 		}
-		builder.WriteString("── " + source.Source + " ──\n")
+		builder.WriteString(ui.Heading.Render("── "+source.Source+" ──") + "\n")
 		for _, line := range source.Lines {
 			builder.WriteString(line + "\n")
 		}

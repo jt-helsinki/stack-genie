@@ -6,6 +6,7 @@ import (
 
 	"github.com/jt-helsinki/ideal-robot/internal/output"
 	"github.com/jt-helsinki/ideal-robot/internal/runtime"
+	"github.com/jt-helsinki/ideal-robot/internal/ui"
 	"github.com/spf13/cobra"
 )
 
@@ -41,26 +42,26 @@ type networkLogResult struct {
 // host-wide and names-only (see the field comments / CLI §29.7).
 func (result networkLogResult) Human() string {
 	var builder strings.Builder
-	builder.WriteString("attempted DNS names (host-wide, all workspaces) — names only, not connection verdicts\n")
-	builder.WriteString("enforcement is by the msb net-rules shown in `ai network show`; a resolved name\n")
-	builder.WriteString("may still have been blocked at the network layer\n")
+	builder.WriteString(ui.Heading.Render("attempted DNS names (host-wide, all workspaces) — names only, not connection verdicts") + "\n")
+	builder.WriteString(ui.Muted.Render("enforcement is by the msb net-rules shown in `ai network show`; a resolved name") + "\n")
+	builder.WriteString(ui.Muted.Render("may still have been blocked at the network layer") + "\n")
 	if result.Note != "" {
-		builder.WriteString("(" + result.Note + ")\n")
+		builder.WriteString(ui.Muted.Render("("+result.Note+")") + "\n")
 	}
 	builder.WriteString("\n")
 	if len(result.Queries) == 0 {
-		builder.WriteString("no DNS queries logged yet.")
+		builder.WriteString(ui.Muted.Render("no DNS queries logged yet."))
 		return builder.String()
 	}
 	for _, query := range result.Queries {
 		// "<qtype> <qname> (<rcode>, <duration>)"
-		builder.WriteString(query.QType + " " + query.QName)
+		builder.WriteString(ui.Value.Render(query.QType) + " " + ui.Value.Render(query.QName))
 		details := make([]string, 0, 2)
 		if query.RCode != "" {
-			details = append(details, query.RCode)
+			details = append(details, ui.Value.Render(query.RCode))
 		}
 		if query.Time != "" {
-			details = append(details, query.Time)
+			details = append(details, ui.Value.Render(query.Time))
 		}
 		if len(details) > 0 {
 			builder.WriteString(" (" + strings.Join(details, ", ") + ")")

@@ -14,7 +14,20 @@ import (
 	"github.com/jt-helsinki/ideal-robot/internal/console"
 	"github.com/jt-helsinki/ideal-robot/internal/runtime"
 	"github.com/jt-helsinki/ideal-robot/internal/sandbox"
+	"github.com/jt-helsinki/ideal-robot/internal/ui"
 )
+
+// statusStyle maps a check Status to its semantic lipgloss style (green/orange/red).
+func statusStyle(status Status) func(...string) string {
+	switch status {
+	case StatusOK:
+		return ui.Success.Render
+	case StatusWarn:
+		return ui.Warn.Render
+	default:
+		return ui.Failure.Render
+	}
+}
 
 // Status is a single check's outcome.
 type Status string
@@ -57,18 +70,21 @@ func (report Report) Human() string {
 				detail += " (UI " + endpoint.Console + ")"
 			}
 		}
-		_, _ = fmt.Fprintf(&builder, "%s  %-22s %s\n", glyphs[check.Status], check.Name, detail)
+		style := statusStyle(check.Status)
+		glyph := style(glyphs[check.Status])
+		name := ui.Value.Render(fmt.Sprintf("%-22s", check.Name))
+		_, _ = fmt.Fprintf(&builder, "%s  %s %s\n", glyph, name, ui.Value.Render(detail))
 		if check.Suggestion != "" {
-			_, _ = fmt.Fprintf(&builder, "       ↳ %s\n", check.Suggestion)
+			_, _ = fmt.Fprintf(&builder, "       %s %s\n", ui.Muted.Render("↳"), ui.Muted.Render(check.Suggestion))
 		}
 		if check.Status != StatusOK && check.DocsURL != "" {
-			_, _ = fmt.Fprintf(&builder, "       web: %s\n", check.DocsURL)
+			_, _ = fmt.Fprintf(&builder, "       %s %s\n", ui.Muted.Render("web:"), ui.Value.Render(check.DocsURL))
 		}
 	}
 	if report.OK {
-		builder.WriteString("\nAll checks passed.")
+		builder.WriteString("\n" + ui.Success.Render("All checks passed."))
 	} else {
-		builder.WriteString("\nProblems found — see the suggestions above.")
+		builder.WriteString("\n" + ui.Warn.Render("Problems found — see the suggestions above."))
 	}
 	return builder.String()
 }

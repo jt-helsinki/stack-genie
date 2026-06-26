@@ -7,6 +7,7 @@ import (
 
 	"github.com/jt-helsinki/ideal-robot/internal/output"
 	"github.com/jt-helsinki/ideal-robot/internal/runtime"
+	"github.com/jt-helsinki/ideal-robot/internal/ui"
 	"github.com/spf13/cobra"
 )
 
@@ -31,16 +32,16 @@ type gatewayResult struct {
 func (result gatewayResult) Human() string {
 	var builder strings.Builder
 	if result.Local {
-		builder.WriteString("gateway: local (standalone) — host.microsandbox.internal:")
-		builder.WriteString(strconv.Itoa(result.Port))
+		builder.WriteString(ui.Label.Render("gateway:") + " " + ui.Muted.Render("local (standalone) —") + " ")
+		builder.WriteString(ui.Value.Render("host.microsandbox.internal:" + strconv.Itoa(result.Port)))
 		builder.WriteString("\n")
 	} else {
-		builder.WriteString("gateway: ")
-		builder.WriteString(result.Configured)
-		builder.WriteString(" (client mode)\n")
+		builder.WriteString(ui.Label.Render("gateway:") + " ")
+		builder.WriteString(ui.Value.Render(result.Configured))
+		builder.WriteString(" " + ui.Muted.Render("(client mode)") + "\n")
 	}
-	builder.WriteString("microVMs route to: ")
-	builder.WriteString(result.URL)
+	builder.WriteString(ui.Label.Render("microVMs route to:") + " ")
+	builder.WriteString(ui.Value.Render(result.URL))
 	return builder.String()
 }
 

@@ -6,6 +6,7 @@ import (
 
 	"github.com/jt-helsinki/ideal-robot/internal/output"
 	"github.com/jt-helsinki/ideal-robot/internal/runtime"
+	"github.com/jt-helsinki/ideal-robot/internal/ui"
 	"github.com/spf13/cobra"
 )
 
@@ -25,15 +26,15 @@ type domainResult struct {
 // Human renders the resolved platform base domain and the UI subdomains it serves.
 func (result domainResult) Human() string {
 	var builder strings.Builder
-	builder.WriteString("Platform domain: ")
-	builder.WriteString(result.Domain)
+	builder.WriteString(ui.Label.Render("Platform domain:") + " ")
+	builder.WriteString(ui.Value.Render(result.Domain))
 	if result.Default {
-		builder.WriteString(" (default)")
+		builder.WriteString(" " + ui.Muted.Render("(default)"))
 	}
 	builder.WriteString("\n")
-	builder.WriteString("UIs are served at litellm.")
-	builder.WriteString(result.Domain)
-	builder.WriteString(" (configure DNS/hosts accordingly).")
+	builder.WriteString("UIs are served at ")
+	builder.WriteString(ui.Value.Render("litellm." + result.Domain))
+	builder.WriteString(" " + ui.Muted.Render("(configure DNS/hosts accordingly)."))
 	return builder.String()
 }
 

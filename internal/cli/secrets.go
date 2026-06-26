@@ -24,11 +24,11 @@ type secretsResult struct {
 // none are stored. Never renders secret values — secrets.Entry has no value.
 func (result secretsResult) Human() string {
 	if len(result.Secrets) == 0 {
-		return "No credentials yet — store one with `ai secrets set`."
+		return ui.Muted.Render("No credentials yet — store one with ") + ui.Primary.Render("`ai secrets set`") + ui.Muted.Render(".")
 	}
 	rows := make([][]string, 0, len(result.Secrets))
 	for _, entry := range result.Secrets {
-		rows = append(rows, []string{entry.Name, orDash(entry.EnvVar)})
+		rows = append(rows, []string{ui.Value.Render(entry.Name), ui.Value.Render(orDash(entry.EnvVar))})
 	}
 	return ui.Table([]string{"NAME", "ENV-VAR"}, rows)
 }

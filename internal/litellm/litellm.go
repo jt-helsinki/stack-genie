@@ -14,6 +14,7 @@ import (
 	"strings"
 
 	"github.com/jt-helsinki/ideal-robot/internal/paths"
+	"github.com/jt-helsinki/ideal-robot/internal/ui"
 	"gopkg.in/yaml.v3"
 )
 
@@ -404,21 +405,21 @@ type StatusInfo struct {
 func (info StatusInfo) Human() string {
 	endpoint := ""
 	if info.BaseURL != "" {
-		endpoint = " (" + info.BaseURL + ")"
+		endpoint = " (" + ui.Value.Render(info.BaseURL) + ")"
 	}
 	var builder strings.Builder
 	if info.Healthy {
-		builder.WriteString("LiteLLM gateway   ✓ reachable" + endpoint + "\n")
+		builder.WriteString(ui.Label.Render("LiteLLM gateway") + "   " + ui.Success.Render(ui.IconOK+" reachable") + endpoint + "\n")
 	} else {
-		builder.WriteString("LiteLLM gateway   ✗ not reachable" + endpoint + "\n")
-		builder.WriteString("                  → start it with `ai services start`, then `ai doctor` (or `ai setup` on first run)\n")
+		builder.WriteString(ui.Label.Render("LiteLLM gateway") + "   " + ui.Failure.Render(ui.IconFail+" not reachable") + endpoint + "\n")
+		builder.WriteString("                  " + ui.Muted.Render(ui.IconArrow+" start it with `") + ui.Primary.Render("ai services start") + ui.Muted.Render("`, then `") + ui.Primary.Render("ai doctor") + ui.Muted.Render("` (or `") + ui.Primary.Render("ai setup") + ui.Muted.Render("` on first run)") + "\n")
 	}
 	builder.WriteString("\n")
 	if info.Default != "" {
-		builder.WriteString("Default model     " + info.Default + "  (used unless an agent names another)\n")
+		builder.WriteString(ui.Label.Render("Default model") + "     " + ui.Value.Render(info.Default) + ui.Muted.Render("  (used unless an agent names another)") + "\n")
 	}
 	if info.Ollama {
-		builder.WriteString("Local models      Ollama — no API key needed (install models with `ollama pull <name>`)\n")
+		builder.WriteString(ui.Label.Render("Local models") + "      " + ui.Value.Render("Ollama") + ui.Muted.Render(" — no API key needed (install models with `") + ui.Primary.Render("ollama pull <name>") + ui.Muted.Render("`)") + "\n")
 	}
 	cloud := make([]string, 0, len(info.Providers))
 	for _, provider := range info.Providers {
@@ -427,8 +428,8 @@ func (info StatusInfo) Human() string {
 		}
 	}
 	if len(cloud) > 0 {
-		builder.WriteString("Cloud providers   " + strings.Join(cloud, ", ") + "\n")
-		builder.WriteString("                  each needs a key once: `ai secrets set <PROVIDER>_API_KEY`\n")
+		builder.WriteString(ui.Label.Render("Cloud providers") + "   " + ui.Value.Render(strings.Join(cloud, ", ")) + "\n")
+		builder.WriteString("                  " + ui.Muted.Render("each needs a key once: `") + ui.Primary.Render("ai secrets set <PROVIDER>_API_KEY") + ui.Muted.Render("`") + "\n")
 	}
 	// The LIVE served-model list, straight from the gateway (not the hardcoded
 	// routing) — collapsed via DisplayModels so concrete models already covered by
@@ -440,9 +441,9 @@ func (info StatusInfo) Human() string {
 	switch {
 	case len(display) > 0:
 		builder.WriteString("\n")
-		builder.WriteString("Served models     (live from the gateway)\n")
+		builder.WriteString(ui.Label.Render("Served models") + "     " + ui.Muted.Render("(live from the gateway)") + "\n")
 		for _, model := range display {
-			line := "                  " + model.Name
+			line := "                  " + ui.Value.Render(model.Name)
 			descriptor := model.Provider
 			if model.Mode != "" {
 				if descriptor != "" {
@@ -451,13 +452,13 @@ func (info StatusInfo) Human() string {
 				descriptor += model.Mode
 			}
 			if descriptor != "" {
-				line += "  (" + descriptor + ")"
+				line += "  " + ui.Muted.Render("("+descriptor+")")
 			}
 			builder.WriteString(line + "\n")
 		}
 	case len(info.Models) == 0 && info.ModelsNote != "":
 		builder.WriteString("\n")
-		builder.WriteString("Served models     " + info.ModelsNote + "\n")
+		builder.WriteString(ui.Label.Render("Served models") + "     " + ui.Muted.Render(info.ModelsNote) + "\n")
 	}
 	probeModel := info.Default
 	if probeModel == "" {
@@ -465,9 +466,9 @@ func (info StatusInfo) Human() string {
 	}
 	builder.WriteString("\n")
 	if info.Healthy {
-		builder.WriteString("Probe a model with `ai models test " + probeModel + "`.")
+		builder.WriteString(ui.Muted.Render("Probe a model with `") + ui.Primary.Render("ai models test "+probeModel) + ui.Muted.Render("`."))
 	} else {
-		builder.WriteString("Once the gateway is up, probe a model with `ai models test " + probeModel + "`.")
+		builder.WriteString(ui.Muted.Render("Once the gateway is up, probe a model with `") + ui.Primary.Render("ai models test "+probeModel) + ui.Muted.Render("`."))
 	}
 	return builder.String()
 }
@@ -486,7 +487,7 @@ type TestResult struct {
 // Human renders the success line for `ai models test` (the failure path is
 // rendered by the CLI as an error with an actionable hint).
 func (result TestResult) Human() string {
-	return fmt.Sprintf("✓ %s reachable via LiteLLM (%dms)", result.Model, result.LatencyMS)
+	return ui.Success.Render(ui.IconOK) + " " + ui.Value.Render(result.Model) + " reachable via LiteLLM " + ui.Muted.Render(fmt.Sprintf("(%dms)", result.LatencyMS))
 }
 
 // Client talks to the running LiteLLM gateway. The real impl makes HTTP calls;

@@ -116,7 +116,7 @@ func newSetupCmd(em *output.Emitter, exit *int) *cobra.Command {
 			// the reconcile's implicit pull stays as-is). On error we warn and
 			// continue — the reconcile re-pulls anything still missing.
 			if !em.JSON && mode != runtime.RoleClient {
-				_, _ = fmt.Fprintln(em.Err, "Pulling container images (first run may take a few minutes)…")
+				_, _ = fmt.Fprintln(em.Err, ui.Heading.Render("Pulling container images")+ui.Muted.Render(" (first run may take a few minutes)…"))
 				// Resolve the effective enabled optional-service set so the pre-pull
 				// includes a disabled optional service's (large) images ONLY when it
 				// is enabled (same precedence as the reconcile: explicit choice >
@@ -138,7 +138,7 @@ func newSetupCmd(em *output.Emitter, exit *int) *cobra.Command {
 				})
 			} else {
 				if !em.JSON {
-					_, _ = fmt.Fprintln(em.Err, "Setting up the AI Development Platform…")
+					_, _ = fmt.Fprintln(em.Err, ui.Heading.Render("Setting up the AI Development Platform")+ui.Muted.Render("…"))
 					deps.Progress = func(line string) { _, _ = fmt.Fprintln(em.Err, line) }
 				}
 				report, err = setup.Run(opts, deps)
@@ -228,12 +228,12 @@ func preflightPrerequisites(em *output.Emitter, exit *int, opts setup.Options, d
 			return false
 		}
 		if !install {
-			_, _ = fmt.Fprintf(em.Err, "skipping %s — install it and re-run `ai setup`\n", prereq.Name)
+			_, _ = fmt.Fprintf(em.Err, "skipping %s — install it and re-run %s\n", ui.Value.Render(prereq.Name), ui.Primary.Render("`ai setup`"))
 			printPrerequisiteInstructions(em, prereq)
 			*exit = em.Failure("setup", setup.PrerequisiteError([]setup.Prerequisite{prereq}))
 			return false
 		}
-		_, _ = fmt.Fprintf(em.Err, "Installing %s: %s\n", prereq.Name, prereq.InstallCommand)
+		_, _ = fmt.Fprintf(em.Err, "Installing %s: %s\n", ui.Value.Render(prereq.Name), ui.Value.Render(prereq.InstallCommand))
 		if installErr := deps.Services.InstallPrerequisite(prereq, em.Err); installErr != nil {
 			_, _ = fmt.Fprintf(em.Err, "warning: installer for %s failed: %s\n", prereq.Name, installErr)
 		}
@@ -265,12 +265,12 @@ func blockingMissing(deps setup.Deps, role string) []setup.Prerequisite {
 // printPrerequisiteInstructions writes a missing prerequisite's manual-install
 // hint + web URL to stderr (reused for declined / instruct-only / still-missing).
 func printPrerequisiteInstructions(em *output.Emitter, prereq setup.Prerequisite) {
-	_, _ = fmt.Fprintf(em.Err, "%s must be installed manually:\n", prereq.Name)
+	_, _ = fmt.Fprintf(em.Err, "%s must be installed manually:\n", ui.Value.Render(prereq.Name))
 	if prereq.Suggestion != "" {
-		_, _ = fmt.Fprintf(em.Err, "  how to install: %s\n", prereq.Suggestion)
+		_, _ = fmt.Fprintf(em.Err, "  %s %s\n", ui.Label.Render("how to install:"), ui.Value.Render(prereq.Suggestion))
 	}
 	if prereq.DocsURL != "" {
-		_, _ = fmt.Fprintf(em.Err, "  web:            %s\n", prereq.DocsURL)
+		_, _ = fmt.Fprintf(em.Err, "  %s            %s\n", ui.Label.Render("web:"), ui.Value.Render(prereq.DocsURL))
 	}
 }
 
@@ -582,10 +582,14 @@ func secureLiteLLMUI(em *output.Emitter, interactive bool, password, domain stri
 		return
 	}
 	_, _ = fmt.Fprintf(em.Err,
-		"LiteLLM admin UI secured — log in as %q at http://litellm.%s:18787/ui\n"+
-			"  (reachable once the /etc/hosts or DNS step maps litellm.%s to this host)\n"+
-			"  master key (also the API key): %s\n",
-		"admin", domain, domain, masterKey)
+		ui.Success.Render(ui.IconOK+" LiteLLM admin UI secured")+" — log in as %s at %s\n"+
+			"  (reachable once the /etc/hosts or DNS step maps %s to this host)\n"+
+			"  %s %s\n",
+		ui.Value.Render(`"admin"`),
+		ui.Value.Render(fmt.Sprintf("http://litellm.%s:18787/ui", domain)),
+		ui.Value.Render(fmt.Sprintf("litellm.%s", domain)),
+		ui.Label.Render("master key (also the API key):"),
+		ui.Value.Render(masterKey))
 	offerPersistLiteLLMSecrets(em, interactive, password, masterKey)
 }
 
@@ -662,7 +666,10 @@ func syncUISubdomains(em *output.Emitter, interactive bool, info *runtime.Info) 
 			},
 		})
 		if action == uihosts.HostsWritten {
-			_, _ = fmt.Fprintf(em.Err, "Updated /etc/hosts — the platform UI resolves at litellm.%s on :18787\n", domain)
+			_, _ = fmt.Fprintf(em.Err, "%s — the platform UI resolves at %s on %s\n",
+				ui.Success.Render(ui.IconOK+" Updated /etc/hosts"),
+				ui.Value.Render(fmt.Sprintf("litellm.%s", domain)),
+				ui.Value.Render(":18787"))
 		}
 	}
 }

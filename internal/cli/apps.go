@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	goruntime "runtime"
+	"strconv"
 	"strings"
 
 	"github.com/jt-helsinki/ideal-robot/internal/apps"
@@ -23,11 +24,11 @@ type appsResult struct {
 // Human renders the apps as a table APP / STATUS / URL.
 func (result appsResult) Human() string {
 	if len(result.Apps) == 0 {
-		return "No apps available."
+		return ui.Muted.Render("No apps available.")
 	}
 	rows := make([][]string, 0, len(result.Apps))
 	for _, status := range result.Apps {
-		rows = append(rows, []string{status.Name, appStatusLabel(status), orDash(status.URL)})
+		rows = append(rows, []string{ui.Value.Render(status.Name), appStatusLabel(status), ui.Value.Render(orDash(status.URL))})
 	}
 	return ui.Table([]string{"APP", "STATUS", "URL"}, rows)
 }
@@ -36,11 +37,11 @@ func (result appsResult) Human() string {
 func appStatusLabel(status apps.Status) string {
 	switch {
 	case !status.Installed:
-		return "not installed"
+		return ui.Failure.Render("not installed")
 	case status.Running:
-		return "running"
+		return ui.Success.Render("running")
 	default:
-		return "installed (stopped)"
+		return ui.Warn.Render("installed (stopped)")
 	}
 }
 
@@ -56,12 +57,12 @@ type appActionResult struct {
 // Human renders a one-line confirmation, noting when a restart is needed to apply
 // the change to the published-port set (adding/removing an app).
 func (result appActionResult) Human() string {
-	line := fmt.Sprintf("%s app %q in workspace %q", result.Action, result.App, result.Project)
+	line := fmt.Sprintf("%s app %s in workspace %s", result.Action, ui.Value.Render(strconv.Quote(result.App)), ui.Value.Render(strconv.Quote(result.Project)))
 	if result.Port > 0 {
-		line += fmt.Sprintf(" (host port %d)", result.Port)
+		line += fmt.Sprintf(" (host port %s)", ui.Value.Render(fmt.Sprintf("%d", result.Port)))
 	}
 	if result.RestartRequired {
-		line += "\nRestart the workspace to apply the published port change: `ai restart " + result.Project + "`"
+		line += "\nRestart the workspace to apply the published port change: " + ui.Primary.Render("ai restart "+result.Project)
 	}
 	return line
 }

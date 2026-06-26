@@ -85,7 +85,7 @@ func newUninstallCmd(em *output.Emitter, exit *int) *cobra.Command {
 					return nil
 				}
 				if !confirmedPrompt {
-					_, _ = fmt.Fprintln(em.Err, "Uninstall cancelled — nothing was changed.")
+					_, _ = fmt.Fprintln(em.Err, ui.Muted.Render("Uninstall cancelled — nothing was changed."))
 					*exit = em.Success("uninstall", uninstallResult{Aborted: true})
 					return nil
 				}
@@ -225,34 +225,34 @@ type uninstallResult struct {
 // Human renders a clear completion (or plan) summary for non-JSON output.
 func (result uninstallResult) Human() string {
 	if result.Aborted {
-		return "Uninstall cancelled — nothing was changed."
+		return ui.Muted.Render("Uninstall cancelled — nothing was changed.")
 	}
 	if len(result.Plan) > 0 {
-		lines := []string{"Dry run — would uninstall by:"}
+		lines := []string{ui.Heading.Render("Dry run — would uninstall by:")}
 		for _, step := range result.Plan {
-			lines = append(lines, "  • "+step)
+			lines = append(lines, "  "+ui.Muted.Render(ui.IconDot)+" "+ui.Value.Render(step))
 		}
 		if len(result.LeftDeps) > 0 {
-			lines = append(lines, "external dependencies detected — you'd be prompted about each: "+strings.Join(result.LeftDeps, ", "))
+			lines = append(lines, "external dependencies detected — you'd be prompted about each: "+ui.Value.Render(strings.Join(result.LeftDeps, ", ")))
 		}
-		lines = append(lines, "(nothing was changed)")
+		lines = append(lines, ui.Muted.Render("(nothing was changed)"))
 		return strings.Join(lines, "\n")
 	}
 
-	tail := "Platform state was kept — re-run with --purge to remove ~/.ai-platform."
+	tail := "Platform state was kept — re-run with --purge to remove " + ui.Value.Render("~/.ai-platform") + "."
 	if result.Purged {
-		tail = "Removed platform state (~/.ai-platform)."
+		tail = "Removed platform state (" + ui.Value.Render("~/.ai-platform") + ")."
 	}
-	summary := "Uninstall complete. " + tail
+	summary := ui.Success.Render(ui.IconOK+" Uninstall complete.") + " " + tail
 	if len(result.RemovedDeps) > 0 {
-		summary += " Also uninstalled: " + strings.Join(result.RemovedDeps, ", ") + "."
+		summary += " Also uninstalled: " + ui.Value.Render(strings.Join(result.RemovedDeps, ", ")) + "."
 	}
 	if len(result.LeftDeps) > 0 {
-		summary += " Left in place: " + strings.Join(result.LeftDeps, ", ") + " (re-run with --remove-deps to remove)."
+		summary += " Left in place: " + ui.Value.Render(strings.Join(result.LeftDeps, ", ")) + " (re-run with --remove-deps to remove)."
 	}
 	summary += " Your project directories (your source) were left untouched."
 	if result.LogPath != "" {
-		summary += " Log: " + result.LogPath + "."
+		summary += " Log: " + ui.Value.Render(result.LogPath) + "."
 	}
 	return summary + " Restart your shell to drop the stale PATH entry."
 }

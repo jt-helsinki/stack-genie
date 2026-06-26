@@ -24,15 +24,17 @@ type sessionsResult struct {
 // friendly hint when there are none.
 func (result sessionsResult) Human() string {
 	if len(result.Sessions) == 0 {
-		return "No sessions yet — start one with `ai agent <cli>` or `ai shell`."
+		return ui.Muted.Render("No sessions yet — start one with ") +
+			ui.Primary.Render("`ai agent <cli>`") + ui.Muted.Render(" or ") +
+			ui.Primary.Render("`ai shell`") + ui.Muted.Render(".")
 	}
 	rows := make([][]string, 0, len(result.Sessions))
 	for _, session := range result.Sessions {
-		attached := "no"
+		attached := ui.Muted.Render("no")
 		if session.Attached {
-			attached = "yes"
+			attached = ui.Success.Render("yes")
 		}
-		rows = append(rows, []string{session.Name, attached, sessionIdle(session.Activity)})
+		rows = append(rows, []string{ui.Value.Render(session.Name), attached, ui.Value.Render(sessionIdle(session.Activity))})
 	}
 	return ui.Table([]string{"NAME", "ATTACHED", "IDLE"}, rows)
 }

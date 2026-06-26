@@ -28,10 +28,37 @@ func (result servicesResult) Human() string {
 	rows := make([][]string, 0, len(result.Services))
 	for _, service := range result.Services {
 		rows = append(rows, []string{
-			service.Name, service.Mode, service.State, service.Address, service.Console,
+			ui.Value.Render(service.Name), service.Mode, serviceStateLabel(service.State),
+			valueOrEmpty(service.Address), valueOrEmpty(service.Console),
 		})
 	}
 	return ui.Table([]string{"SERVICE", "MODE", "STATE", "ADDRESS", "CONSOLE"}, rows)
+}
+
+// serviceStateLabel styles a service's STATE cell semantically: running/healthy
+// states green, stopped/failed red, neutral/unknown muted, anything else (e.g.
+// degraded/pending) orange.
+func serviceStateLabel(state string) string {
+	switch state {
+	case "":
+		return state
+	case "running", "healthy", "started", "ok", "up", "reachable", "ready":
+		return ui.Success.Render(state)
+	case "stopped", "failed", "error", "unreachable", "down", "not installed", "unavailable":
+		return ui.Failure.Render(state)
+	case "disabled", "none", "absent", "unset", "n/a":
+		return ui.Muted.Render(state)
+	default:
+		return ui.Warn.Render(state)
+	}
+}
+
+// valueOrEmpty styles a non-empty cell as a data value, leaving blank cells blank.
+func valueOrEmpty(value string) string {
+	if value == "" {
+		return ""
+	}
+	return ui.Value.Render(value)
 }
 
 // newServicesCmd builds `ai services` and its subcommands (CLI §10.2).

@@ -6,6 +6,7 @@ import (
 	"github.com/jt-helsinki/ideal-robot/internal/output"
 	"github.com/jt-helsinki/ideal-robot/internal/runtime"
 	"github.com/jt-helsinki/ideal-robot/internal/setup"
+	"github.com/jt-helsinki/ideal-robot/internal/ui"
 	"github.com/spf13/cobra"
 )
 
@@ -20,11 +21,11 @@ type litellmPasswordResult struct {
 // Human renders the secured-UI confirmation for an operator.
 func (result litellmPasswordResult) Human() string {
 	var builder strings.Builder
-	builder.WriteString("LiteLLM admin UI secured.\n")
+	builder.WriteString("LiteLLM admin UI " + ui.Success.Render("secured") + ".\n")
 	builder.WriteString("log in as ")
-	builder.WriteString(result.LoginAs)
+	builder.WriteString(ui.Value.Render(result.LoginAs))
 	builder.WriteString(" at ")
-	builder.WriteString(result.URL)
+	builder.WriteString(ui.Value.Render(result.URL))
 	return builder.String()
 }
 

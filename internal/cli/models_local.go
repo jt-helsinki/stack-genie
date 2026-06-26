@@ -57,10 +57,16 @@ type modelsListResult struct {
 // Human renders the installed list as a NAME / SIZE / PARAMS table.
 func (result modelsListResult) Human() string {
 	if len(result.Models) == 0 {
-		return "no models in the local store — pull one with `ai models pull` (`ai models popular` lists installable models)"
+		return ui.Muted.Render("no models in the local store — pull one with ") +
+			ui.Primary.Render("ai models pull") +
+			ui.Muted.Render(" (") + ui.Primary.Render("ai models popular") +
+			ui.Muted.Render(" lists installable models)")
 	}
 	var builder strings.Builder
-	_, _ = fmt.Fprintf(&builder, "%-28s  %-9s  %s\n", "NAME", "SIZE", "PARAMS")
+	_, _ = fmt.Fprintf(&builder, "%s  %s  %s\n",
+		ui.Label.Render(fmt.Sprintf("%-28s", "NAME")),
+		ui.Label.Render(fmt.Sprintf("%-9s", "SIZE")),
+		ui.Label.Render("PARAMS"))
 	for _, entry := range result.Models {
 		size := "-"
 		if entry.Size > 0 {
@@ -70,9 +76,13 @@ func (result modelsListResult) Human() string {
 		if params == "" {
 			params = "-"
 		}
-		_, _ = fmt.Fprintf(&builder, "%-28s  %-9s  %s\n", entry.Name, size, params)
+		_, _ = fmt.Fprintf(&builder, "%s  %s  %s\n",
+			ui.Value.Render(fmt.Sprintf("%-28s", entry.Name)),
+			ui.Value.Render(fmt.Sprintf("%-9s", size)),
+			ui.Value.Render(params))
 	}
-	builder.WriteString("\ninstalled = in the local Ollama store · `ai models popular` lists installable models")
+	builder.WriteString("\n" + ui.Muted.Render("installed = in the local Ollama store · ") +
+		ui.Primary.Render("ai models popular") + ui.Muted.Render(" lists installable models"))
 	return strings.TrimRight(builder.String(), "\n")
 }
 
@@ -143,10 +153,14 @@ type modelsPopularResult struct {
 // Human renders the popular list as a NAME / PARAMS / SIZE / REPO table.
 func (result modelsPopularResult) Human() string {
 	if len(result.Models) == 0 {
-		return "no popular models returned"
+		return ui.Muted.Render("no popular models returned")
 	}
 	var builder strings.Builder
-	_, _ = fmt.Fprintf(&builder, "%-24s  %-22s  %-9s  %s\n", "NAME", "PARAMS", "SIZE", "REPO")
+	_, _ = fmt.Fprintf(&builder, "%s  %s  %s  %s\n",
+		ui.Label.Render(fmt.Sprintf("%-24s", "NAME")),
+		ui.Label.Render(fmt.Sprintf("%-22s", "PARAMS")),
+		ui.Label.Render(fmt.Sprintf("%-9s", "SIZE")),
+		ui.Label.Render("REPO"))
 	for _, entry := range result.Models {
 		params := entry.Params
 		if params == "" {
@@ -156,9 +170,15 @@ func (result modelsPopularResult) Human() string {
 		if entry.DownloadSize > 0 {
 			size = humanByteSize(entry.DownloadSize)
 		}
-		_, _ = fmt.Fprintf(&builder, "%-24s  %-22s  %-9s  %s\n", entry.Name, params, size, entry.RepoURL)
+		_, _ = fmt.Fprintf(&builder, "%s  %s  %s  %s\n",
+			ui.Value.Render(fmt.Sprintf("%-24s", entry.Name)),
+			ui.Value.Render(fmt.Sprintf("%-22s", params)),
+			ui.Value.Render(fmt.Sprintf("%-9s", size)),
+			ui.Value.Render(entry.RepoURL))
 	}
-	builder.WriteString("\npull any of these with `ai models pull <name>` (size — = unknown · bundled snapshot of ollama.com/library)")
+	builder.WriteString("\n" + ui.Muted.Render("pull any of these with ") +
+		ui.Primary.Render("ai models pull <name>") +
+		ui.Muted.Render(" (size — = unknown · bundled snapshot of ollama.com/library)"))
 	return strings.TrimRight(builder.String(), "\n")
 }
 
@@ -218,9 +238,9 @@ func (result modelsPullResult) Human() string {
 			builder.WriteString("\n")
 		}
 		if outcome.OK {
-			builder.WriteString(ui.Success.Render(ui.IconOK) + " pulled " + outcome.Model)
+			builder.WriteString(ui.Success.Render(ui.IconOK) + " pulled " + ui.Value.Render(outcome.Model))
 		} else {
-			builder.WriteString(ui.Failure.Render(ui.IconFail) + " " + outcome.Model + ": " + outcome.Error)
+			builder.WriteString(ui.Failure.Render(ui.IconFail) + " " + ui.Value.Render(outcome.Model) + ": " + outcome.Error)
 		}
 	}
 	return builder.String()
@@ -420,7 +440,7 @@ type modelsRmResult struct {
 }
 
 func (result modelsRmResult) Human() string {
-	return ui.Success.Render(ui.IconOK) + " removed " + result.Model
+	return ui.Success.Render(ui.IconOK) + " removed " + ui.Value.Render(result.Model)
 }
 
 func newModelsRmCmd(emitter *output.Emitter, exit *int) *cobra.Command {
@@ -508,7 +528,7 @@ func (result modelsShowResult) Human() string {
 	lines := []string{ui.Heading.Render(info.Name)}
 	add := func(label, value string) {
 		if value != "" {
-			lines = append(lines, fmt.Sprintf("  %-12s %s", label, value))
+			lines = append(lines, "  "+ui.Label.Render(fmt.Sprintf("%-12s", label))+" "+ui.Value.Render(value))
 		}
 	}
 	add("params", info.ParameterSize)

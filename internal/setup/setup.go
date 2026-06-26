@@ -21,6 +21,7 @@ import (
 	"github.com/jt-helsinki/ideal-robot/internal/output"
 	"github.com/jt-helsinki/ideal-robot/internal/runtime"
 	"github.com/jt-helsinki/ideal-robot/internal/templates"
+	"github.com/jt-helsinki/ideal-robot/internal/ui"
 	"github.com/jt-helsinki/ideal-robot/internal/versions"
 )
 
@@ -57,9 +58,9 @@ func (status ServiceStatus) EndpointSuffix() string {
 	if status.Address == "" {
 		return ""
 	}
-	suffix := "  " + status.Address
+	suffix := "  " + ui.Value.Render(status.Address)
 	if status.Console != "" {
-		suffix += " · UI " + status.Console
+		suffix += " · " + ui.Label.Render("UI") + " " + ui.Value.Render(status.Console)
 	}
 	return suffix
 }
@@ -352,23 +353,32 @@ type Report struct {
 // Human renders the setup result as a readable summary (non-JSON output).
 func (report *Report) Human() string {
 	var builder strings.Builder
-	fmt.Fprintf(&builder, "Platform: %s\n", report.PlatformDir)
+	fmt.Fprintf(&builder, "%s %s\n", ui.Label.Render("Platform:"), ui.Value.Render(report.PlatformDir))
 	if report.Runtime != nil {
 		runtimeInfo := report.Runtime
-		available := "unavailable"
+		available := ui.Failure.Render("unavailable")
 		if runtimeInfo.Microsandbox.Available {
-			available = "available"
+			available = ui.Success.Render("available")
 		}
-		fmt.Fprintf(&builder, "Runtime:  %s (rootless=%t) · microVM %s (%s)\n",
-			runtimeInfo.Detected, runtimeInfo.Rootless, runtimeInfo.Microsandbox.Virtualization, available)
+		fmt.Fprintf(&builder, "%s  %s (rootless=%s) · microVM %s (%s)\n",
+			ui.Label.Render("Runtime:"),
+			ui.Value.Render(runtimeInfo.Detected),
+			ui.Value.Render(fmt.Sprintf("%t", runtimeInfo.Rootless)),
+			ui.Value.Render(runtimeInfo.Microsandbox.Virtualization),
+			available)
 	}
-	fmt.Fprintf(&builder, "State:    config.yaml %s · versions.yaml %s\n",
+	fmt.Fprintf(&builder, "%s    config.yaml %s · versions.yaml %s\n",
+		ui.Label.Render("State:"),
 		presence(report.ConfigCreated), presence(report.VersionsCreated))
-	builder.WriteString("Services:\n")
+	builder.WriteString(ui.Heading.Render("Services:") + "\n")
 	for _, service := range report.Services {
-		line := fmt.Sprintf("  %-11s %-9s %-9s", service.Name, service.Mode, service.State)
+		// Pad the plain cells to fixed width FIRST, then colour — so the invisible
+		// ANSI styling codes don't throw off the column alignment.
+		line := "  " + ui.Value.Render(fmt.Sprintf("%-11s", service.Name)) + " " +
+			ui.Label.Render(fmt.Sprintf("%-9s", service.Mode)) + " " +
+			styleServiceState(service.State)
 		if service.Detail != "" {
-			line += " — " + service.Detail
+			line += " — " + ui.Muted.Render(service.Detail)
 		}
 		line += service.EndpointSuffix()
 		builder.WriteString(strings.TrimRight(line, " ") + "\n")
@@ -376,13 +386,30 @@ func (report *Report) Human() string {
 	return strings.TrimRight(builder.String(), "\n")
 }
 
+// styleServiceState colours a service state word semantically (running/ready →
+// green, stopped → orange, a failure/unavailable state → red, disabled/unknown →
+// muted), padded to the column width BEFORE styling so alignment is preserved.
+func styleServiceState(state string) string {
+	padded := fmt.Sprintf("%-9s", state)
+	switch state {
+	case "running", "ready":
+		return ui.Success.Render(padded)
+	case "stopped":
+		return ui.Warn.Render(padded)
+	case "not_installed", "unavailable":
+		return ui.Failure.Render(padded)
+	default: // disabled, unknown, …
+		return ui.Muted.Render(padded)
+	}
+}
+
 // presence renders whether a default state file was created on this run or
 // already existed, reporting that it is present either way.
 func presence(created bool) string {
 	if created {
-		return "✓ created"
+		return ui.Success.Render(ui.IconOK + " created")
 	}
-	return "✓ present"
+	return ui.Success.Render(ui.IconOK + " present")
 }
 
 // Prerequisite is one external dependency `ai setup` needs. Blocking ones must be
