@@ -114,7 +114,7 @@ func Execute() int {
 		// Other top-level commands.
 		newServicesCmd(emitter, &exitCode),
 		newLiteLLMCmd(emitter, &exitCode),
-		newSecretsCmd(emitter, &exitCode),
+		newKeysCmd(emitter, &exitCode),
 		newModelsCmd(emitter, &exitCode),
 		newContextCmd(emitter, &exitCode),
 		newNetworkCmd(emitter, &exitCode),

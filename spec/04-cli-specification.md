@@ -174,7 +174,7 @@ than requiring everything on the command line. The rules (implemented once in
   no prompt**; a *missing* required value is then an error (exit 2) — so scripts
   stay fully non-interactive. **Two exceptions** to the seed-and-prompt rule: a
   **hidden credential value** can't display a seed, so when one is provided
-  (`ai secrets set --value/--stdin`) it is used directly even on a TTY (only a
+  (`ai keys add --value/--stdin`) it is used directly even on a TTY (only a
   *missing* value is prompted, hidden); and `ai services` start/stop/restart act
   directly on an explicit name/`all` and only show their multi-select checkbox
   when no service is named (see below).
@@ -186,8 +186,8 @@ than requiring everything on the command line. The rules (implemented once in
   (an explicit name or `all` skips the prompt; non-interactive use still targets
   all services).
 * **Back-navigation**: when a command collects more than one value (e.g. the
-  `ai setup` role then a client's server address, or `ai secrets set` name then
-  value), all prompts share one form so the user can step **back** to a previous
+  `ai setup` role then a client's server address), all prompts share one form so
+  the user can step **back** to a previous
   prompt before submitting.
 * Credentials are entered through a **hidden** prompt and never echoed.
 
@@ -904,7 +904,7 @@ Returns a labeled, actionable summary (not a raw field dump):
   from this live list (the distinct provider prefixes), not from the hardcoded
   routing.
 * the local-model (Ollama — no key needed) vs cloud-provider (each needs a key
-  via `ai secrets set <PROVIDER>_API_KEY`) split
+  via `ai keys add <provider>`) split
 * a `ai models test <model>` next-step hint
 
 The model-list call authenticates with the gateway master key (read from the
@@ -1525,15 +1525,16 @@ below).
     the TUI is never suspended.
   * **Network** — egress mode + allow-list + published ports; `m` cycles the mode.
   * **Context** — Headroom strategy + Caveman level; `s`/`c` cycle them.
-  * **Secrets** — credential names (never values); `enter` describes the selected
-    one (name + workspace env-var placeholder; the value stays in LiteLLM), `d`
-    deletes one.
   * **Sessions** — the persistent tmux sessions in the workspace (NAME / ATTACHED /
     IDLE); `a`/`enter` attach the selected session, `n` starts a default agent
     session, `k` kills the selected one, `r` refreshes. Attaching opens the live
     embedded terminal running `ai attach <session> <name>` (the same
     pane as the Project sub-tab's `e` shell).
 * **Models** — LiteLLM routing status; `t` tests the default model.
+* **API Keys** — the LiteLLM-routable catalog providers (PROVIDER / NAME / KEY? /
+  MODELS); `a` adds a key for the selected provider, `d` removes it (each runs
+  `ai keys add|remove <provider>` in the live embedded terminal — the hidden key
+  prompt shows there, so the value never enters the view), `r` refreshes.
 * **Settings** — a live **theme** picker (every `ai theme` theme; `enter` applies
   the selected one to the whole UI immediately and persists it, `↑/↓` select) above
   a read-only platform info block (deployment role + model gateway, changed via
@@ -1599,31 +1600,41 @@ Never for:
 
 ---
 
-## 16.1 Credential Commands (`ai secrets`)
+## 16.1 Provider API Keys (`ai keys`)
 
-Provider credentials live **in the LiteLLM gateway** (keys-in-LiteLLM) — supplied
-as env passthrough at launch and/or held in LiteLLM's Postgres-backed store; the
-platform never writes the values to its own disk (architecture §17). These
-commands are the only credential entry points; they manage the LiteLLM-side
-credentials.
+Provider API keys live **in the LiteLLM gateway** (keys-in-LiteLLM): they are
+stored **encrypted at rest** in LiteLLM's Postgres-backed credential store
+(encrypted by `LITELLM_SALT_KEY`); the platform never writes the values to its own
+disk (architecture §17). `ai keys` is keyed **per provider** off the model catalog
+(models.dev, `internal/catalog`): a key is stored against a LiteLLM-routable
+catalog provider, and adding/removing a key **syncs** that provider's catalog
+models into/out of the gateway so the agent can route to them.
 
 ```bash id="c37"
-ai secrets set <name> [--value <v> | --stdin]   # record a provider credential for the LiteLLM gateway
-ai secrets list                                 # names + metadata only, never values
-ai secrets rm <name>                            # remove a credential
+ai keys list                                    # routable providers: id, name, KEY?, catalog model count
+ai keys add <provider> [--value <v> | --stdin]  # store the provider key + register its catalog models
+ai keys remove <provider>                        # remove the provider key + drop its models
 ```
 
 Behavior:
 
-* `--value` is discouraged (shell history); `--stdin` is preferred and is what
-  the acceptance harness uses
-* `list` output and all `--json` envelopes contain **names and metadata only** —
-  never secret values (exit `5` is returned if a value would otherwise leak)
-* credentials are held by the LiteLLM gateway, never written to platform disk; the
-  workspace agent receives only a scoped LiteLLM **virtual key**, never a provider
-  secret. The key is aliased to the project; `ai start` **rotates** it —
-  revoking any key left from a prior start before minting a fresh one — so a
-  re-start never collides with LiteLLM's unique-alias requirement
+* `<provider>` must be a **LiteLLM-routable catalog provider** (the catalog
+  providers that map to a LiteLLM prefix — e.g. `openai`, `anthropic`, `google`
+  routes as `gemini`); an unknown provider exits `2` and lists the valid ones
+* the key value is read from `--value` (discouraged — shell history) or `--stdin`
+  (preferred, what the acceptance harness uses), else prompted **hidden** on a TTY;
+  under `--json`/no-TTY a missing value exits `2`. The value **never** appears in
+  argv, logs, or any `--json` envelope
+* `add` stores the key via the LiteLLM credential API (encrypted at rest) then
+  registers that provider's catalog models (alongside every currently-keyed
+  provider + the installed Ollama models); `remove` deletes the key then re-syncs
+  (its models drop out)
+* the gateway/master key must be reachable (`ai setup`); when it is not, the
+  command exits `3`. The workspace agent receives only a scoped LiteLLM **virtual
+  key**, never a provider secret; that key is aliased to the project and `ai start`
+  **rotates** it so a re-start never collides with LiteLLM's unique-alias
+  requirement
+* `ai keys` **replaces** the former `ai secrets` command
 
 ---
 
@@ -1661,7 +1672,7 @@ optional and written `[project]`.
 
 **Every command and every subcommand must support `--help` / `-h`** — no
 exceptions. This includes `ai` itself, the remaining groups (`ai context`,
-`ai services`, `ai secrets`, …), and every top-level verb (`ai create`,
+`ai services`, `ai keys`, …), and every top-level verb (`ai create`,
 `ai exec`, `ai start`, …).
 
 * `--help` / `-h` prints usage, all flags, arguments, and a one-line

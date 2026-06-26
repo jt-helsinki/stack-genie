@@ -1,6 +1,6 @@
 // ProjectsHub is the two-level "Projects" tab. It opens on the project SWITCHER
 // (the project list); selecting a project drops INTO that project, revealing a
-// sub-tab bar — Project · Network · Context · Secrets · Sessions — for it. While a
+// sub-tab bar — Project · Network · Context · Sessions · Apps — for it. While a
 // project is open, Tab/←→ cycle the sub-tabs and the focused sub-view's pane is
 // acted on directly; esc backs UP one level (sub-pane → switcher), matching the
 // app-wide "esc goes up" convention. The chrome (tui/layout.go) only ever shows
@@ -152,7 +152,7 @@ func (hub *ProjectsHub) View() string {
 	return lipgloss.JoinVertical(lipgloss.Left, hub.subTabBar(), "", hub.active().View())
 }
 
-// subTabBar renders "<project> ▸ [Project] Network Context Secrets Sessions" with
+// subTabBar renders "<project> ▸ [Project] Network Context Sessions Apps" with
 // the active sub-tab filled in the theme accent (mirroring the chrome's tab bar).
 func (hub *ProjectsHub) subTabBar() string {
 	activeStyle := lipgloss.NewStyle().Bold(true).

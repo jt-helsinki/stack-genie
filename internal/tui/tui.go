@@ -1,13 +1,14 @@
 // Package tui is the K9s-style full-screen management UI behind `ai ui`. It is a
 // thin interactive layer over the existing platform package APIs: each screen
 // (see internal/tui/views) reads/acts through injected funcs that wire to
-// setup/workspace/egress/contextopt/litellm/secrets, so no management logic is
+// setup/workspace/egress/contextopt/litellm/catalog, so no management logic is
 // duplicated here. The UI is interactive-only (it requires a TTY) and renders to
 // stderr via the alternate screen, keeping stdout free of any output (consistent
 // with the platform's JSON-envelope contract — `ai ui` simply has no envelope).
 package tui
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"os"
@@ -19,6 +20,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/jt-helsinki/ideal-robot/internal/apps"
+	"github.com/jt-helsinki/ideal-robot/internal/catalog"
 	"github.com/jt-helsinki/ideal-robot/internal/contextopt"
 	"github.com/jt-helsinki/ideal-robot/internal/egress"
 	"github.com/jt-helsinki/ideal-robot/internal/litellm"
@@ -26,7 +28,6 @@ import (
 	"github.com/jt-helsinki/ideal-robot/internal/ollama"
 	"github.com/jt-helsinki/ideal-robot/internal/project"
 	"github.com/jt-helsinki/ideal-robot/internal/runtime"
-	"github.com/jt-helsinki/ideal-robot/internal/secrets"
 	"github.com/jt-helsinki/ideal-robot/internal/setup"
 	"github.com/jt-helsinki/ideal-robot/internal/state"
 	"github.com/jt-helsinki/ideal-robot/internal/tui/views"
@@ -62,7 +63,6 @@ func Run(cwd string) error {
 
 	deps := setup.RealDeps(goruntime.GOOS, goruntime.GOARCH, nowRFC3339)
 	litellmClient := litellm.RealClient()
-	secretsBroker := secrets.RealBroker()
 	// The per-project views (Network/Context) resolve the LIVE current project at
 	// fetch time, so switching projects reflects immediately without re-wiring.
 	currentRoot := func() (string, bool) { return resolveProjectRoot(application.currentProject) }
@@ -118,7 +118,11 @@ func Run(cwd string) error {
 	networkView := views.NewNetwork(currentRoot, egress.Get, egress.SetMode)
 	contextView := views.NewContext(currentRoot, contextopt.GetStatus, contextopt.SetStrategy, contextopt.SetCavemanLevel)
 	modelsView := views.NewModels(litellmClient.Status, litellmClient.Test, ollama.RealClient().List, ollama.Popular, ollama.RealClient().Show)
-	secretsView := views.NewSecrets(secretsBroker.List, secretsBroker.Remove)
+	// The API Keys view lists the routable catalog providers + their keyed status
+	// (the same catalog + ListCredentials join `ai keys list` uses). Add/remove run
+	// `ai keys add|remove <provider>` live in the terminal overlay (the hidden key
+	// prompt shows there) — the view never sees a key value.
+	apiKeysView := views.NewAPIKeys(listAPIKeyProviders)
 	// The Settings tab is a live theme picker plus read-only platform info.
 	// Applying a theme persists it and recolors the whole UI (ThemeChangedMsg).
 	settingsView := views.NewSettings(
@@ -134,23 +138,24 @@ func Run(cwd string) error {
 
 	// The Workspaces tab is a two-level hub: it opens on the switcher (the
 	// workspace list) and, once a workspace is selected, reveals per-workspace
-	// sub-tabs — Workspace · Network · Context · Secrets · Sessions — for it.
+	// sub-tabs — Workspace · Network · Context · Sessions · Apps — for it.
 	projectsHub := views.NewProjectsHub(
 		projectsView,
-		[]views.Screen{projectDetail, networkView, contextView, secretsView, sessionsView, appsView},
-		[]string{"Workspace", "Network", "Context", "Secrets", "Sessions", "Apps"},
+		[]views.Screen{projectDetail, networkView, contextView, sessionsView, appsView},
+		[]string{"Workspace", "Network", "Context", "Sessions", "Apps"},
 	)
 
-	// Top-level tab order = menu order: Services · Workspaces · Models · Settings.
-	// Workspace / Network / Context / Secrets / Sessions are nested under Workspaces
+	// Top-level tab order = menu order: Services · Workspaces · Models · API Keys ·
+	// Settings. Workspace / Network / Context / Sessions are nested under Workspaces
 	// (the hub); logs are consolidated into the Services view (the `l` key).
-	application.views = []View{servicesView, projectsHub, modelsView, settingsView}
+	application.views = []View{servicesView, projectsHub, modelsView, apiKeysView, settingsView}
 	application.projectsIndex = 1
 	application.projectsHub = projectsHub
 	application.projectDetail = projectDetail
 	application.sessionsView = sessionsView
 	application.appsView = appsView
 	application.modelsView = modelsView
+	application.apiKeysView = apiKeysView
 
 	// Always land on the home screen (Services, index 0 — current's zero value); a
 	// project is opened only when the user selects it from the Projects switcher.
@@ -221,6 +226,40 @@ func tailService(service string) ([]string, error) {
 	return logs.Tail(sources[0], logs.TailLines)
 }
 
+// listAPIKeyProviders joins the model catalog's LiteLLM-routable providers with the
+// gateway's stored credentials so the API Keys view can render PROVIDER · NAME ·
+// KEY? · MODELS. It never returns a key value (ListCredentials reports names +
+// provider prefixes only). A provider is keyed when a credential's LiteLLM prefix
+// matches the provider's prefix (e.g. the catalog "google" keyed by a "gemini" cred).
+func listAPIKeyProviders() ([]views.APIKeyProvider, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	cat, err := catalog.LoadOrFetch(ctx, nil, "")
+	if err != nil {
+		return nil, err
+	}
+	creds, err := litellm.NewKeyManager(runtime.RealProber()).ListCredentials()
+	if err != nil {
+		return nil, err
+	}
+	keyedPrefix := make(map[string]bool, len(creds))
+	for _, cred := range creds {
+		keyedPrefix[cred.Provider] = true
+	}
+	providers := litellm.LiteLLMProviders(cat)
+	rows := make([]views.APIKeyProvider, 0, len(providers))
+	for _, provider := range providers {
+		prefix, _ := litellm.LiteLLMPrefix(provider.ID)
+		rows = append(rows, views.APIKeyProvider{
+			Provider: provider.ID,
+			Name:     provider.Name,
+			HasKey:   keyedPrefix[prefix],
+			Models:   len(provider.Models),
+		})
+	}
+	return rows, nil
+}
+
 // app is the root tea.Model: it owns the views, the header/footer chrome, and the
 // command palette (the menu, which includes Exit).
 type app struct {
@@ -253,6 +292,10 @@ type app struct {
 	// modelsView lets the app refresh the local-store list after a pull/rm
 	// subprocess returns from the terminal overlay.
 	modelsView *views.Models
+
+	// apiKeysView lets the app refresh the provider/keyed list after an
+	// `ai keys add|remove` subprocess returns from the terminal overlay.
+	apiKeysView *views.APIKeys
 
 	// createView is the modal directory-picker overlay for creating a new
 	// project; non-nil only while it is open (it is not a menu/slice view).
@@ -395,6 +438,17 @@ func (application *app) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return application, application.openTerminal(
 			"models rm "+message.Name, []string{"models", "rm", message.Name})
 
+	case views.APIKeyAddRequestedMsg:
+		// Add runs `ai keys add <provider>` live in the overlay (its hidden key
+		// prompt shows in the pane), then the API Keys view refreshes on close.
+		return application, application.openTerminal(
+			"keys add "+message.Provider, []string{"keys", "add", message.Provider})
+
+	case views.APIKeyRemoveRequestedMsg:
+		// Remove runs `ai keys remove <provider>` live in the overlay, then refresh.
+		return application, application.openTerminal(
+			"keys remove "+message.Provider, []string{"keys", "remove", message.Provider})
+
 	case tea.KeyMsg:
 		// While the live terminal overlay is open it owns input (keystrokes go to
 		// the PTY); ctrl+q force-detaches and, once the process exits, any key closes.
@@ -497,6 +551,9 @@ func (application *app) updateTerminal(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		if application.modelsView != nil {
 			commands = append(commands, application.modelsView.Init())
+		}
+		if application.apiKeysView != nil {
+			commands = append(commands, application.apiKeysView.Init())
 		}
 		return application, tea.Batch(commands...)
 	}
