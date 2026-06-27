@@ -151,7 +151,7 @@ func (application *app) currentHints() []keyHint {
 			keyHint{":", "menu"}, keyHint{"?", "help"}, keyHint{"q", "quit"})
 	}
 	return append(hints,
-		keyHint{"tab/←→", "switch"}, keyHint{":", "menu"}, keyHint{"?", "help"}, keyHint{"q", "quit"})
+		keyHint{"tab/←→", "switch tab"}, keyHint{":", "menu"}, keyHint{"?", "help"}, keyHint{"q", "quit"})
 }
 
 // parseHints splits a view's " · "-joined Hints() string into key/action pairs
