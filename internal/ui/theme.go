@@ -23,8 +23,9 @@ import (
 const DefaultTheme = "default"
 
 type themeDef struct {
-	huh    func() *huh.Theme
-	accent lipgloss.Color
+	huh       func() *huh.Theme
+	accent    lipgloss.Color
+	secondary lipgloss.Color
 }
 
 // themes is the registry of selectable named themes (wrapping huh's built-ins
@@ -32,52 +33,57 @@ type themeDef struct {
 var themes = map[string]themeDef{
 	// The default CLI look is bright pink + bright blue (BluePink), replacing huh's
 	// purple ThemeCharm which read poorly. The heading accent is the bright pink.
-	"default":    {ThemeFactory(BluePink), lipgloss.Color("#FF66FF")},
-	"blue-pink":  {ThemeFactory(BluePink), lipgloss.Color("#FF66FF")},
-	"dracula":    {huh.ThemeDracula, lipgloss.Color("212")},    // pink
-	"catppuccin": {huh.ThemeCatppuccin, lipgloss.Color("183")}, // mauve
-	"base16":     {huh.ThemeBase16, lipgloss.Color("45")},      // cyan
-	"monochrome": {huh.ThemeBase, lipgloss.Color("252")},       // near-white, minimal colour
+	"default":    {ThemeFactory(BluePink), lipgloss.Color("#FF66FF"), lipgloss.Color("#33FFFF")},
+	"blue-pink":  {ThemeFactory(BluePink), lipgloss.Color("#FF2BD6"), lipgloss.Color("#33FFFF")},
+	"dracula":    {huh.ThemeDracula, lipgloss.Color("#FF2BD6"), lipgloss.Color("#50FA7B")},    // pink + green
+	"catppuccin": {huh.ThemeCatppuccin, lipgloss.Color("#CBA6F7"), lipgloss.Color("#FE53BB")}, // mauve + peach
+	"base16":     {huh.ThemeBase16, lipgloss.Color("45"), lipgloss.Color("212")},              // cyan + pink
+	"monochrome": {huh.ThemeBase, lipgloss.Color("252"), lipgloss.Color("238")},               // light grey + dark grey
 	// Custom themes.
 	"orange": {
-		huh:    ThemeFactory(OrangeBlue),
-		accent: lipgloss.Color("#F97316"),
-	},
-	"orange-blue": {
-		huh:    ThemeFactory(OrangeBlue),
-		accent: lipgloss.Color("#F97316"),
+		huh:       ThemeFactory(OrangeBlue),
+		accent:    lipgloss.Color("#F97316"), // orange
+		secondary: lipgloss.Color("#33FFFF"), // bright blue
 	},
 	"synthwave": {
-		huh:    ThemeFactory(Synthwave),
-		accent: lipgloss.Color("#FF2BD6"),
+		huh:       ThemeFactory(Synthwave),
+		accent:    lipgloss.Color("#00D9FF"), // cyan
+		secondary: lipgloss.Color("#FF2BD6"), // magenta
 	},
 	"cyberpunk": {
-		huh:    ThemeFactory(RetroCyberpunk),
-		accent: lipgloss.Color("#FE53BB"),
+		huh:       ThemeFactory(RetroCyberpunk),
+		accent:    lipgloss.Color("#08F7FE"), // cyan
+		secondary: lipgloss.Color("#FE53BB"), // pink
 	},
 	"tokyo-night": {
-		huh:    ThemeFactory(TokyoNight),
-		accent: lipgloss.Color("#7DCFFF"),
+		huh:       ThemeFactory(TokyoNight),
+		accent:    lipgloss.Color("#4ABDFF"),  // cyan
+		secondary: lipgloss.Color("#FF8F4Dq"), // orange
 	},
 	"vaporwave": {
-		huh:    ThemeFactory(Vaporwave),
-		accent: lipgloss.Color("#FF71CE"),
+		huh:       ThemeFactory(Vaporwave),
+		accent:    lipgloss.Color("#5EEAD4"), // teal
+		secondary: lipgloss.Color("#FF71CE"), // pink
 	},
 	"tron": {
-		huh:    ThemeFactory(Tron),
-		accent: lipgloss.Color("#00FFFF"),
+		huh:       ThemeFactory(Tron),
+		accent:    lipgloss.Color("#00FFFF"),
+		secondary: lipgloss.Color("#FF00FF"),
 	},
 	"nord": {
-		huh:    ThemeFactory(Nord),
-		accent: lipgloss.Color("#88C0D0"),
+		huh:       ThemeFactory(Nord),
+		accent:    lipgloss.Color("#72D0EC"), // frost blue
+		secondary: lipgloss.Color("#E86137"), // aurora orange
 	},
 	"gruvbox": {
-		huh:    ThemeFactory(Gruvbox),
-		accent: lipgloss.Color("#FE8019"),
+		huh:       ThemeFactory(Gruvbox),
+		accent:    lipgloss.Color("#FE8019"), // orange
+		secondary: lipgloss.Color("#0000FF"), // blue
 	},
 	"onedark": {
-		huh:    ThemeFactory(OneDark),
-		accent: lipgloss.Color("#61AFEF"),
+		huh:       ThemeFactory(OneDark),
+		accent:    lipgloss.Color("#61AFEF"), // blue
+		secondary: lipgloss.Color("#E22330"), // red
 	},
 }
 

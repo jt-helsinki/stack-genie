@@ -81,7 +81,7 @@ func (application *app) header() string {
 
 // logo renders the ASCII wordmark in the theme accent.
 func (application *app) logo() string {
-	return lipgloss.NewStyle().Bold(true).Foreground(ui.Accent()).Render(strings.Join(aiLogo, "\n"))
+	return lipgloss.NewStyle().Bold(true).Foreground(ui.Secondary()).Render(strings.Join(aiLogo, "\n"))
 }
 
 // commandsPanel lays the active context's key bindings out as aligned
@@ -174,9 +174,9 @@ func parseHints(line string) []keyHint {
 // create overlay is open there is no active tab.
 func (application *app) tabBar() string {
 	activeStyle := lipgloss.NewStyle().Bold(true).
-		Foreground(lipgloss.Color("0")).Background(ui.Accent()).Padding(0, 1)
+		Foreground(ui.Secondary()).Background(ui.Accent()).Padding(0, 1)
 	inactiveStyle := lipgloss.NewStyle().
-		Foreground(lipgloss.Color("252")).Background(lipgloss.Color("238")).Padding(0, 1)
+		Foreground(ui.Accent()).Background(ui.Secondary()).Padding(0, 1)
 
 	cells := make([]string, 0, len(application.views))
 	for index, view := range application.views {

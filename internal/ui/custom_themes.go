@@ -131,8 +131,20 @@ var BluePink = Palette{
 }
 
 var OrangeBlue = Palette{
-	Primary:   lipgloss.Color("#00FFFF"),
-	Secondary: lipgloss.Color("#FF9933"),
+	Primary:   lipgloss.Color("#F97316"), // orange
+	Secondary: lipgloss.Color("#33FFFF"), // bright blue
+	Success:   lipgloss.Color("#00FF00"),
+	Error:     lipgloss.Color("#FF0000"),
+	Text:      lipgloss.Color("#CCFFFF"),
+	Muted:     lipgloss.Color("#6B7280"),
+	ButtonFg:  lipgloss.Color("#FFFFFF"),
+}
+
+// OrangeBlueVivid is OrangeBlue with a brighter, more-saturated azure blue
+// secondary (less cyan), so the orange-blue theme reads distinct from orange.
+var OrangeBlueVivid = Palette{
+	Primary:   lipgloss.Color("#F97316"), // orange
+	Secondary: lipgloss.Color("#2D9CFF"), // bright azure blue
 	Success:   lipgloss.Color("#00FF00"),
 	Error:     lipgloss.Color("#FF0000"),
 	Text:      lipgloss.Color("#CCFFFF"),
@@ -162,7 +174,7 @@ var Synthwave = Palette{
 
 var TokyoNight = Palette{
 	Primary:   lipgloss.Color("#7DCFFF"),
-	Secondary: lipgloss.Color("#F7768E"),
+	Secondary: lipgloss.Color("#FF9E64"), // orange
 	Success:   lipgloss.Color("#9ECE6A"),
 	Error:     lipgloss.Color("#FF757F"),
 	Text:      lipgloss.Color("#C0CAF5"),
@@ -191,8 +203,8 @@ var Tron = Palette{
 }
 
 var Nord = Palette{
-	Primary:   lipgloss.Color("#88C0D0"),
-	Secondary: lipgloss.Color("#81A1C1"),
+	Primary:   lipgloss.Color("#88C0D0"), // frost blue
+	Secondary: lipgloss.Color("#D08770"), // aurora orange
 	Success:   lipgloss.Color("#A3BE8C"),
 	Error:     lipgloss.Color("#BF616A"),
 	Text:      lipgloss.Color("#ECEFF4"),
@@ -201,8 +213,8 @@ var Nord = Palette{
 }
 
 var Gruvbox = Palette{
-	Primary:   lipgloss.Color("#FE8019"),
-	Secondary: lipgloss.Color("#FABD2F"),
+	Primary:   lipgloss.Color("#FE8019"), // orange
+	Secondary: lipgloss.Color("#458588"), // blue
 	Success:   lipgloss.Color("#B8BB26"),
 	Error:     lipgloss.Color("#FB4934"),
 	Text:      lipgloss.Color("#EBDBB2"),
@@ -211,8 +223,8 @@ var Gruvbox = Palette{
 }
 
 var OneDark = Palette{
-	Primary:   lipgloss.Color("#61AFEF"),
-	Secondary: lipgloss.Color("#C678DD"),
+	Primary:   lipgloss.Color("#61AFEF"), // blue
+	Secondary: lipgloss.Color("#E06C75"), // red
 	Success:   lipgloss.Color("#98C379"),
 	Error:     lipgloss.Color("#E06C75"),
 	Text:      lipgloss.Color("#ABB2BF"),
