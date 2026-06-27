@@ -49,8 +49,50 @@ main() {
   # Fresh inode (see from_source): avoids the macOS in-place-replace SIGKILL.
   rm -f "${INSTALL_DIR}/ai"
   download "${RELEASE_BASE_URL}/${asset}" "${INSTALL_DIR}/ai"
+  verify_checksum "$asset" "${INSTALL_DIR}/ai"
   chmod +x "${INSTALL_DIR}/ai"
   done_msg
+}
+
+# verify_checksum downloads the release SHA256SUMS and checks the asset against
+# it. The release publishes SHA256SUMS alongside the binaries (see
+# .github/workflows/release.yml). Best-effort: if no sha256 tool or the sums
+# file is unavailable, we warn and continue rather than block the install. Set
+# AIP_NO_VERIFY=1 to skip entirely.
+verify_checksum() {
+  local asset="$1" file="$2" sums tool expected actual
+  [ "${AIP_NO_VERIFY:-0}" = "1" ] && return 0
+
+  if command -v sha256sum >/dev/null 2>&1; then
+    tool="sha256sum"
+  elif command -v shasum >/dev/null 2>&1; then
+    tool="shasum -a 256"
+  else
+    info "No sha256 tool found; skipping checksum verification."
+    return 0
+  fi
+
+  sums="$(mktemp)" || { info "Could not stage checksums; skipping verification."; return 0; }
+  if ! download "${RELEASE_BASE_URL}/SHA256SUMS" "$sums" 2>/dev/null; then
+    info "Could not fetch SHA256SUMS; skipping checksum verification."
+    rm -f "$sums"
+    return 0
+  fi
+
+  # SHA256SUMS lines are "<hash>  <asset>". Pull the expected hash for our asset.
+  expected="$(awk -v a="$asset" '$2 == a { print $1 }' "$sums")"
+  rm -f "$sums"
+  if [ -z "$expected" ]; then
+    info "No checksum entry for ${asset}; skipping verification."
+    return 0
+  fi
+
+  actual="$($tool "$file" | awk '{ print $1 }')"
+  if [ "$actual" != "$expected" ]; then
+    rm -f "$file"
+    err "checksum mismatch for ${asset} (expected ${expected}, got ${actual})"
+  fi
+  info "Checksum verified (${asset})."
 }
 
 # from_source builds the binary when run inside the source tree with Go present

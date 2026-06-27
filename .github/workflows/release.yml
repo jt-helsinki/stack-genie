@@ -35,9 +35,22 @@ jobs:
         with:
           go-version-file: go.mod # track the module's Go version, no drift
 
-      # Build + verify. If this fails, no deploy and no tag is created.
+      # Install golangci-lint (v2, matching the local gate) onto PATH so the
+      # `make check` lint step below actually runs — the Makefile's `lint` target
+      # silently skips when the binary is absent, which would let lint failures
+      # slip into a release. install-only places the binary on PATH without
+      # running it here; `make check` invokes `golangci-lint run` itself.
+      - name: Install golangci-lint
+        uses: golangci/golangci-lint-action@v9
+        with:
+          version: v2.12.2
+          install-only: true
+
+      # Full pre-commit gate: fmt-check + vet + lint + test + build. A failure in
+      # ANY of these fails the job, so no deploy and no tag is created — the
+      # deploy is gated on the same suite developers run locally.
       - name: Verify
-        run: make vet test
+        run: make check
 
       - name: Build release binaries
         env:

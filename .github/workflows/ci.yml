@@ -23,9 +23,13 @@ jobs:
         run: make fmt-check
       - name: vet
         run: make vet
+      # golangci-lint v2 requires action v7+ (v6 installs the incompatible v1.x).
+      # Pin the linter version to match the local `make check` gate so CI and
+      # local agree; the action handles install + caching.
       - name: lint
-        uses: golangci/golangci-lint-action@v6
+        uses: golangci/golangci-lint-action@v9
         with:
+          version: v2.12.2
           args: --timeout=5m
       - name: unit tests
         run: make test

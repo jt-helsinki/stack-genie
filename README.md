@@ -24,14 +24,15 @@ project. Caveman is a per-project output-compression skill inside the workspace.
 ## Install
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/jt-helsinki/ideal-robot/main/installers/install.sh | bash
+curl -fsSL https://github.com/jt-helsinki/ideal-robot/releases/latest/download/install.sh | bash
 ```
 
-Fetches the installer, which downloads the `ai-<os>-<arch>` binary from the
-latest GitHub release and adds it to your PATH. Use `bash`, not `sh`. A piped
+Fetches the installer (published with each release), which downloads the
+`ai-<os>-<arch>` binary from the latest GitHub release, verifies it against the
+release `SHA256SUMS`, and adds it to your PATH. Use `bash`, not `sh`. A piped
 install can't change your *current* shell's PATH — open a new shell, then run
 `ai setup`. Overrides: `AIP_INSTALL_DIR`, `AIP_VERSION`, `AIP_RELEASE_BASE_URL`,
-`AIP_NO_MODIFY_PATH=1`.
+`AIP_NO_MODIFY_PATH=1`, `AIP_NO_VERIFY=1`.
 
 From a clone, build and install from source (PATH applies in this shell):
 
