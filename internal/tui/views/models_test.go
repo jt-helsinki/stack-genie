@@ -97,50 +97,80 @@ func TestModelsSurfacesFetchError(test *testing.T) {
 	}
 }
 
-func TestModelsTestActionInvokesTester(test *testing.T) {
+func TestModelsTestActionInvokesSelected(test *testing.T) {
 	var tested string
 	view := NewModels(
-		func() (litellm.StatusInfo, error) {
-			return litellm.StatusInfo{Healthy: true, Default: "claude-opus"}, nil
-		},
+		func() (litellm.StatusInfo, error) { return litellm.StatusInfo{Healthy: true}, nil },
 		func(model string) (litellm.TestResult, error) {
 			tested = model
 			return litellm.TestResult{Model: model, OK: true, LatencyMS: 42}, nil
 		},
-		noLocalModels, noPopular, noShow,
+		func() ([]ollama.Model, error) {
+			return []ollama.Model{{Name: "gemma4:31b", Size: 1610612736, ParameterSize: "31B"}}, nil
+		},
+		noPopular, noShow,
 	)
+	view.SetSize(80, 30)
 	refreshModels(view)
+	listLocal(view)
 
+	// t tests the SELECTED row (no default model exists in the catalog-driven system).
 	cmd := view.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("t")})
 	if cmd == nil {
 		test.Fatal("pressing t must return a test command")
 	}
 	done := cmd()
-	if tested != "claude-opus" {
-		test.Fatalf("tested model = %q, want claude-opus (the default)", tested)
+	if tested != "gemma4:31b" {
+		test.Fatalf("tested model = %q, want gemma4:31b (the SELECTED row, not a default)", tested)
 	}
 	_ = view.Update(done)
-	if !strings.Contains(view.View(), "claude-opus reachable (42ms)") {
+	if !strings.Contains(view.View(), "gemma4:31b reachable (42ms)") {
 		test.Errorf("expected a success flash with latency, got view:\n%s", view.View())
 	}
 }
 
 func TestModelsTestFlashesFailure(test *testing.T) {
 	view := NewModels(
-		func() (litellm.StatusInfo, error) {
-			return litellm.StatusInfo{Default: "openai/gpt-5.5"}, nil
-		},
+		func() (litellm.StatusInfo, error) { return litellm.StatusInfo{Healthy: true}, nil },
 		func(model string) (litellm.TestResult, error) {
 			return litellm.TestResult{Model: model, OK: false, Status: 401, Error: "invalid key"}, nil
 		},
-		noLocalModels, noPopular, noShow,
+		func() ([]ollama.Model, error) {
+			return []ollama.Model{{Name: "smollm:135m", Size: 92274688, ParameterSize: "135M"}}, nil
+		},
+		noPopular, noShow,
 	)
+	view.SetSize(80, 30)
 	refreshModels(view)
+	listLocal(view)
 
 	done := view.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("t")})()
 	_ = view.Update(done)
 	if !strings.Contains(view.View(), "invalid key") {
 		test.Errorf("expected a failure flash, got view:\n%s", view.View())
+	}
+}
+
+func TestModelsTestWithNoSelectionIsNoOp(test *testing.T) {
+	var tested bool
+	view := NewModels(
+		func() (litellm.StatusInfo, error) { return litellm.StatusInfo{Healthy: true}, nil },
+		func(string) (litellm.TestResult, error) { tested = true; return litellm.TestResult{}, nil },
+		noLocalModels, noPopular, noShow,
+	)
+	view.SetSize(80, 30)
+	refreshModels(view)
+	listLocal(view)
+
+	cmd := view.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("t")})
+	if cmd != nil {
+		test.Fatal("pressing t with nothing selected must not return a test command")
+	}
+	if tested {
+		test.Fatal("the tester must not be invoked when nothing is selected")
+	}
+	if !strings.Contains(view.View(), "select a model to test") {
+		test.Errorf("expected a select-a-model flash, got view:\n%s", view.View())
 	}
 }
 

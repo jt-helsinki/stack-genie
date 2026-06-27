@@ -1552,7 +1552,9 @@ below).
     session, `k` kills the selected one, `r` refreshes. Attaching opens the live
     embedded terminal running `ai attach <session> <name>` (the same
     pane as the Project sub-tab's `e` shell).
-* **Models** — LiteLLM routing status; `t` tests the default model.
+* **Models** — LiteLLM routing status; `t` tests the **selected** model (round-trips
+  the cursor's model through the gateway; the catalog-driven system has no default
+  model). `enter` details · `p` pull · `d` remove · `r` refresh.
 * **API Keys** — the LiteLLM-routable catalog providers (PROVIDER / NAME / KEY? /
   MODELS); `a` adds a key for the selected provider, `d` removes it (each runs
   `ai keys add|remove <provider>` in the live embedded terminal — the hidden key

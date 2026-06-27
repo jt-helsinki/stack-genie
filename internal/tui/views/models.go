@@ -376,14 +376,18 @@ func (view *Models) handleAction(key tea.KeyMsg) (tea.Cmd, bool) {
 		}
 		return nil, true
 	case "t":
-		model := view.status.Default
-		if model == "" {
-			view.flash = ui.Muted.Render("no default model to test")
+		// Test the SELECTED row's model through the gateway (mirrors p/d). The
+		// catalog-driven system has no default model, so testing the cursor's model
+		// is the only meaningful behavior: a round-trip that reports success or the
+		// gateway's error for whatever is selected.
+		model, ok := view.selectedModel()
+		if !ok {
+			view.flash = ui.Muted.Render("select a model to test")
 			return nil, true
 		}
-		view.flash = ui.Muted.Render("testing " + model + "…")
+		view.flash = ui.Muted.Render("testing " + model.name + "…")
 		view.describe.close()
-		return view.testCmd(model), true
+		return view.testCmd(model.name), true
 	case "p":
 		// Pull the SELECTED row's exact reference: `ai models pull <ref>` (streaming
 		// progress in the terminal overlay). An available row installs it; an installed
