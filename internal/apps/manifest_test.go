@@ -4,7 +4,30 @@ import (
 	"errors"
 	"strings"
 	"testing"
+
+	"github.com/jt-helsinki/ideal-robot/internal/litellm"
 )
+
+// TestAppsEnvCarriesNoBakedDefaultModel guards the catalog-driven invariant: there
+// is NO built-in default model, so the model handle production threads into the app
+// containers — litellm.DefaultRouting().Default, which is EMPTY — must pass through
+// to the gateway env unchanged. No manifest may bake a non-empty default model.
+// Reintroducing a default in EITHER DefaultRouting() or a manifest fails this.
+func TestAppsEnvCarriesNoBakedDefaultModel(test *testing.T) {
+	productionModel := litellm.DefaultRouting().Default
+	if productionModel != "" {
+		test.Fatalf("litellm.DefaultRouting().Default = %q, want empty — the catalog-driven system has no built-in default model", productionModel)
+	}
+	for _, manifest := range All() {
+		env := manifest.Env("http://gateway/v1", "sk-scoped-key", productionModel)
+		// AnythingLLM is the only app that takes a model preference; it must carry the
+		// empty production handle, not a baked default. (Open WebUI ignores the model
+		// handle entirely — the user picks per-request.)
+		if pref, ok := env["GENERIC_OPEN_AI_MODEL_PREF"]; ok && pref != "" {
+			test.Fatalf("%s env GENERIC_OPEN_AI_MODEL_PREF = %q, want empty (no baked default model)", manifest.Key, pref)
+		}
+	}
+}
 
 func TestAllAndKeys(test *testing.T) {
 	all := All()
