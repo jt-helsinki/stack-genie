@@ -36,7 +36,7 @@ type Settings struct {
 // currently-applied theme, the apply+persist func, and the platform role/gateway
 // to display.
 func NewSettings(themes []string, current func() string, apply ThemeApplier, role, gateway string) *Settings {
-	columns := []table.Column{{Title: "THEME", Width: 22}, {Title: "", Width: 12}}
+	columns := []table.Column{{Title: "THEME", Width: 22}, {Title: "", Width: 16}}
 	built := table.New(table.WithColumns(columns), table.WithFocused(true))
 	built.SetStyles(ui.TableStyles())
 	view := &Settings{themes: themes, current: current, apply: apply, role: role, gateway: gateway, table: built}
@@ -71,8 +71,14 @@ func (view *Settings) refreshRows() {
 	for _, name := range view.themes {
 		marker := ""
 		if name == current {
-			marker = ui.Success.Render("● applied")
+			marker = "● applied"
 		}
+		// Cell values are PLAIN (no ANSI): bubbles/table truncates cells with a
+		// width function that is NOT ANSI-aware, so colour codes inside a cell get
+		// counted as width — cutting the visible text early and slicing through a
+		// colour sequence (the stray "[[0m" artefact). The applied theme is marked
+		// by the "● applied" text; the highlighted row is coloured by the table's
+		// own Selected style (ui.TableStyles), which is applied AFTER truncation.
 		rows = append(rows, table.Row{name, marker})
 	}
 	view.table.SetRows(rows)
@@ -82,11 +88,13 @@ func (view *Settings) refreshRows() {
 // whole UI recolors); other keys drive table navigation.
 func (view *Settings) Update(msg tea.Msg) tea.Cmd {
 	if key, ok := msg.(tea.KeyMsg); ok && key.String() == "enter" {
-		row := view.table.SelectedRow()
-		if len(row) == 0 {
+		// Resolve the theme name from the cursor index into the source list (robust
+		// regardless of cell rendering).
+		cursor := view.table.Cursor()
+		if cursor < 0 || cursor >= len(view.themes) {
 			return nil
 		}
-		name := row[0]
+		name := view.themes[cursor]
 		if err := view.apply(name); err != nil {
 			view.flash = ui.Failure.Render(ui.IconFail + " " + err.Error())
 			return nil
