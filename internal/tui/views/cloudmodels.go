@@ -264,6 +264,13 @@ func (view *CloudModels) buildModels(cloud []catalog.Model, registered []litellm
 	index := make(map[string]cloudModel, len(registered))
 	seen := make(map[string]bool, len(registered))
 	for _, live := range registered {
+		// Cloud Models lists only CLOUD-provider models. Local Ollama models are also
+		// registered in the gateway (public model_name "ollama/<name>", provider
+		// "ollama") via `ai models pull` — they belong to the Local Models tab, so
+		// skip them here.
+		if live.Provider == "ollama" || strings.HasPrefix(live.Name, "ollama/") {
+			continue
+		}
 		if seen[live.Name] {
 			continue
 		}

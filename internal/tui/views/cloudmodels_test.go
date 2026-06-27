@@ -85,6 +85,26 @@ func TestCloudModelsBuildsRows(test *testing.T) {
 	}
 }
 
+// Local Ollama models are also registered in the gateway ("ollama/<name>", provider
+// "ollama") but belong to the Local Models tab, so Cloud Models must exclude them.
+func TestCloudModelsExcludesLocalOllama(test *testing.T) {
+	view := buildCloud(test,
+		[]litellm.LiveModel{
+			{Name: "openai/gpt-5.5", Provider: "openai"},
+			{Name: "ollama/smollm:135m", Provider: "ollama"},
+		},
+		nil, noTest)
+	if len(view.models) != 1 {
+		test.Fatalf("cloud rows = %d, want 1 (the ollama model excluded)", len(view.models))
+	}
+	if view.models[0].name != "openai/gpt-5.5" {
+		test.Errorf("only the cloud model should remain, got %+v", view.models)
+	}
+	if strings.Contains(view.View(), "ollama/") {
+		test.Errorf("a local ollama model must not appear in Cloud Models:\n%s", view.View())
+	}
+}
+
 // With no keyed provider the table is empty and the empty-state hint shows.
 func TestCloudModelsEmptyWhenNoKeys(test *testing.T) {
 	view := buildCloud(test, nil, nil, noTest)
