@@ -161,6 +161,16 @@ func (hub *ProjectsHub) View() string {
 	return lipgloss.JoinVertical(lipgloss.Left, hub.subTabBar(), "", hub.active().View())
 }
 
+// SubTabBar exposes the per-project sub-tab bar so the app can keep it visible above
+// the live terminal overlay when that overlay was launched from a sub-tab (so the
+// tabs don't disappear while, e.g., a shell is open). Empty when no project is open.
+func (hub *ProjectsHub) SubTabBar() string {
+	if !hub.open {
+		return ""
+	}
+	return hub.subTabBar()
+}
+
 // subTabBar renders "<project> ▸ [Project] Network Context Sessions Apps" with
 // the active sub-tab filled in the theme accent (mirroring the chrome's tab bar).
 func (hub *ProjectsHub) subTabBar() string {

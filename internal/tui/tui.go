@@ -118,7 +118,7 @@ func Run(cwd string) error {
 	// The Shell sub-tab drops into the workspace's interactive shell (the terminal
 	// overlay running `ai shell` for the live current project).
 	shellView := views.NewShell(func() string { return application.currentProject })
-	// The Sandbox log sub-tab streams the microVM's captured output (msb logs) for
+	// The Sandbox Log sub-tab streams the microVM's captured output (msb logs) for
 	// the live current project, polling so new lines stream in. With no current
 	// project the tailer returns nothing (the view shows "no workspace selected").
 	sandboxLogView := views.NewSandboxLog(
@@ -170,12 +170,12 @@ func Run(cwd string) error {
 
 	// The Workspaces tab is a two-level hub: it opens on the switcher (the
 	// workspace list) and, once a workspace is selected, reveals per-workspace
-	// sub-tabs — Workspace · Network · Context · Sessions · Shell · Sandbox log ·
+	// sub-tabs — Workspace · Network · Context · Sessions · Shell · Sandbox Log ·
 	// Apps — for it.
 	projectsHub := views.NewProjectsHub(
 		projectsView,
 		[]views.Screen{projectDetail, networkView, contextView, sessionsView, shellView, sandboxLogView, appsView},
-		[]string{"Workspace", "Network", "Context", "Sessions", "Shell", "Sandbox log", "Apps"},
+		[]string{"Workspace", "Network", "Context", "Sessions", "Shell", "Sandbox Log", "Apps"},
 	)
 
 	// Top-level tab order = menu order: Services · Workspaces · Local Models · Cloud
@@ -196,7 +196,7 @@ func Run(cwd string) error {
 	// project is opened only when the user selects it from the Projects switcher.
 	application.buildPalette()
 
-	// Mouse cell-motion is enabled so the scrollable panes (Sandbox log, describe,
+	// Mouse cell-motion is enabled so the scrollable panes (Sandbox Log, describe,
 	// and the terminal pane's scrollback) respond to the wheel. (Hold Shift to use the
 	// host terminal's native text selection while mouse reporting is on.)
 	program := tea.NewProgram(application, tea.WithAltScreen(), tea.WithMouseCellMotion(), tea.WithOutput(os.Stderr))
@@ -669,10 +669,36 @@ func (application *app) openTerminal(label string, args []string, interactive bo
 	argv := append([]string{executablePath()}, args...)
 	term := views.NewTerminal(label, argv, interactive)
 	bodyWidth, bodyHeight := application.bodyContentSize()
-	term.SetSize(bodyWidth, bodyHeight)
+	term.SetSize(bodyWidth, application.terminalBodyHeight(bodyHeight))
 	application.terminal = term
 	application.terminalEscCloses = false // default: esc belongs to the inner program
 	return term.Init()
+}
+
+// subTabBarRows is the height the per-workspace sub-tab bar (bar + blank line)
+// occupies above the terminal when it is shown inside a workspace sub-tab.
+const subTabBarRows = 2
+
+// inWorkspaceSubTab reports whether the Workspaces hub is the active top-level view
+// AND a workspace is open in it — i.e. an open terminal belongs to a per-workspace
+// sub-tab and should keep the sub-tab bar visible above it.
+func (application *app) inWorkspaceSubTab() bool {
+	return application.current == application.projectsIndex &&
+		capturesNav(application.views[application.current])
+}
+
+// terminalBodyHeight is the height the terminal pane gets: the full body, minus the
+// sub-tab bar rows when it is shown inside a workspace sub-tab (so the bar fits above
+// it without the terminal overflowing the body).
+func (application *app) terminalBodyHeight(bodyHeight int) int {
+	if !application.inWorkspaceSubTab() {
+		return bodyHeight
+	}
+	height := bodyHeight - subTabBarRows
+	if height < 1 {
+		return 1
+	}
+	return height
 }
 
 // updateTerminal routes a key while the terminal overlay is open: ctrl+q
@@ -737,7 +763,7 @@ func (application *app) resizeViews() {
 		application.createView.SetSize(bodyWidth, bodyHeight)
 	}
 	if application.terminal != nil {
-		application.terminal.SetSize(bodyWidth, bodyHeight)
+		application.terminal.SetSize(bodyWidth, application.terminalBodyHeight(bodyHeight))
 	}
 }
 
@@ -809,6 +835,14 @@ func (application *app) View() string {
 	switch {
 	case application.terminal != nil:
 		content = application.terminal.View()
+		// When the terminal was launched from a workspace sub-tab (shell/attach/
+		// lifecycle/apps), keep the per-workspace sub-tab bar visible ABOVE it so the
+		// tabs don't disappear — it reads like the other sub-tab panes, just with a
+		// live terminal as the body.
+		if application.inWorkspaceSubTab() {
+			content = lipgloss.JoinVertical(lipgloss.Left,
+				application.projectsHub.SubTabBar(), "", content)
+		}
 	case application.createView != nil:
 		content = application.createView.View()
 	case application.helpOpen:

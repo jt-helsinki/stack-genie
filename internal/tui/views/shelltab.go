@@ -1,6 +1,8 @@
 package views
 
 import (
+	"strings"
+
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/jt-helsinki/ideal-robot/internal/ui"
 )
@@ -47,7 +49,17 @@ func (view *Shell) View() string {
 	if view.project() == "" {
 		return ui.Muted.Render("no workspace selected — open one from the Workspaces view")
 	}
-	return ui.Muted.Render("Press ") + ui.Primary.Render("enter") +
-		ui.Muted.Render(" to open an interactive shell in this workspace — a persistent,\nreattachable tmux session (the same as ") +
-		ui.Primary.Render("ai shell") + ui.Muted.Render("). Detach with ctrl+q or esc.")
+	// Each line is rendered on its OWN row (styled segments joined horizontally, no
+	// newline inside any single Render call) — a \n inside one lipgloss block pads the
+	// line to the block width and shifts the following segment, so the text must be
+	// assembled line-by-line and joined here.
+	lines := []string{
+		ui.Muted.Render("Press ") + ui.Primary.Render("enter") +
+			ui.Muted.Render(" to open an interactive shell in this workspace."),
+		ui.Muted.Render("It is a persistent, reattachable tmux session (the same as ") +
+			ui.Primary.Render("ai shell") + ui.Muted.Render(")."),
+		ui.Muted.Render("Detach with ") + ui.Primary.Render("ctrl+q") +
+			ui.Muted.Render(" or ") + ui.Primary.Render("esc") + ui.Muted.Render("."),
+	}
+	return strings.Join(lines, "\n")
 }

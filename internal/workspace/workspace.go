@@ -163,7 +163,7 @@ type Sandbox interface {
 	WriteFile(name, guestPath string, content []byte) error
 	// LogTail returns the microVM's captured output (`msb logs <name> --tail
 	// <lines>` — the merged stdout/stderr the sandbox produced). lines ≤ 0 returns
-	// the full captured log. Backs the TUI "Sandbox log" tab. ErrMsbMissing when msb
+	// the full captured log. Backs the TUI "Sandbox Log" tab. ErrMsbMissing when msb
 	// is absent; a non-running/unknown sandbox surfaces as a Go error carrying msb's
 	// message.
 	LogTail(name string, lines int) (string, error)
@@ -769,7 +769,9 @@ func (manager Manager) Shell(project string) error {
 // (shell / attach / agent). It verifies the microVM is up (clean ErrNotStarted if
 // not) and that tmux is present in the image (ErrTmuxMissing with remediation if
 // not — rather than msb's raw "failed to exec tmux" leak, which also misreports
-// success), then attaches the PTY.
+// success), then attaches the PTY. tmux is a hard requirement: every base image
+// installs it, so a missing tmux means a stale project Dockerfile (recreate /
+// rebuild), not a case to silently degrade.
 func (manager Manager) launchTmuxSession(project string, argv []string) error {
 	if _, err := resolveProjectRoot(project); err != nil {
 		return err
@@ -823,7 +825,7 @@ func (manager Manager) Agent(project, cli string) error {
 }
 
 // SandboxLogTail returns the last lines of the project's workspace microVM
-// captured output (`msb logs`). It backs the TUI "Sandbox log" tab. A not-yet-
+// captured output (`msb logs`). It backs the TUI "Sandbox Log" tab. A not-yet-
 // started workspace reports cleanly via requireRunning rather than surfacing a raw
 // msb "sandbox not found" error.
 func (manager Manager) SandboxLogTail(project string, lines int) (string, error) {
