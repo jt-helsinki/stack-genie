@@ -219,3 +219,13 @@ The full design lives in [`spec/`](spec/) — the source of truth:
 | `spec/04-cli-specification.md` | CLI surface, output envelope, exit codes |
 | `spec/05-acceptance-tests.md` | Acceptance tests |
 | `spec/06-implementation-plan.md` | Build milestones (M0–M8) |
+
+## License
+
+MIT
+
+## Acknowledgments
+
+This software was generated primarily by AI from a human-authored design spec. The author reviewed and tested the
+generated code. See the MIT license for warranty and liability terms.
+
