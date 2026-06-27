@@ -59,29 +59,49 @@ func buildCloud(test *testing.T, registered []litellm.LiveModel, refresh Catalog
 	return view
 }
 
-// The cloud table builds MODEL · PROVIDER · STATUS · CONTEXT, registered-first.
+// The cloud table shows ONLY models whose provider has a key (the registered set);
+// the unkeyed catalog rows are dropped. Metadata (context) comes from the catalog
+// join. MODEL · PROVIDER · STATUS · CONTEXT.
 func TestCloudModelsBuildsRows(test *testing.T) {
 	view := buildCloud(test,
 		[]litellm.LiveModel{{Name: "openai/gpt-5.5", Provider: "openai"}},
 		nil, noTest)
 
-	if len(view.models) != 2 {
-		test.Fatalf("cloud rows = %d, want 2", len(view.models))
+	if len(view.models) != 1 {
+		test.Fatalf("cloud rows = %d, want 1 (only the keyed model)", len(view.models))
 	}
-	if !view.models[0].registered() {
-		test.Errorf("registered row should sort first, got %+v", view.models[0])
+	if view.models[0].name != "openai/gpt-5.5" || !view.models[0].registered() {
+		test.Errorf("the single row should be the keyed openai/gpt-5.5, got %+v", view.models[0])
 	}
 	rendered := view.View()
-	for _, want := range []string{"openai/gpt-5.5", "google/gemini-3.1-pro", "registered", "available", "CONTEXT", "400K", "1M", "PROVIDER", "openai"} {
+	for _, want := range []string{"openai/gpt-5.5", "registered", "CONTEXT", "400K", "PROVIDER", "openai"} {
 		if !strings.Contains(rendered, want) {
 			test.Errorf("cloud table missing %q:\n%s", want, rendered)
 		}
 	}
+	// The unkeyed google model must NOT appear (no key for google).
+	if strings.Contains(rendered, "google/gemini-3.1-pro") {
+		test.Errorf("unkeyed google model must not appear:\n%s", rendered)
+	}
 }
 
-// enter opens the describe pane with the models.dev metadata.
-func TestCloudModelsEnterShowsDetail(test *testing.T) {
+// With no keyed provider the table is empty and the empty-state hint shows.
+func TestCloudModelsEmptyWhenNoKeys(test *testing.T) {
 	view := buildCloud(test, nil, nil, noTest)
+	if len(view.models) != 0 {
+		test.Fatalf("cloud rows = %d, want 0 (no keys)", len(view.models))
+	}
+	if !strings.Contains(view.View(), "API Keys tab") {
+		test.Errorf("expected the add-a-key empty-state hint:\n%s", view.View())
+	}
+}
+
+// enter opens the describe pane with the models.dev metadata (joined from the catalog
+// for the keyed model).
+func TestCloudModelsEnterShowsDetail(test *testing.T) {
+	view := buildCloud(test,
+		[]litellm.LiveModel{{Name: "google/gemini-3.1-pro", Provider: "google"}},
+		nil, noTest)
 	_ = view.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	if !view.describe.active() {
 		test.Fatal("enter should open the describe pane")
@@ -95,7 +115,7 @@ func TestCloudModelsEnterShowsDetail(test *testing.T) {
 			test.Errorf("cloud describe pane missing %q:\n%s", want, rendered)
 		}
 	}
-	// The first row (alpha within available) is google/gemini-3.1-pro.
+	// The keyed row is google/gemini-3.1-pro; its catalog-joined metadata shows.
 	for _, want := range []string{"2026-02-20", "1M tokens", "65K tokens", "text, audio"} {
 		if !strings.Contains(rendered, want) {
 			test.Errorf("cloud describe pane missing value %q:\n%s", want, rendered)
@@ -129,14 +149,16 @@ func TestCloudModelsTestRegistered(test *testing.T) {
 	}
 }
 
-func TestCloudModelsTestUnregisteredIsNoOp(test *testing.T) {
-	view := buildCloud(test, nil, nil, noTest) // nothing registered → row 0 available
+// With no keyed providers the table is empty, so t (test) selects nothing and is a
+// no-op with the "no model selected" hint.
+func TestCloudModelsTestEmptyIsNoOp(test *testing.T) {
+	view := buildCloud(test, nil, nil, noTest) // nothing keyed → empty table
 	cmd := view.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("t")})
 	if cmd != nil {
-		test.Fatalf("t on an unregistered model must be a no-op, got %T", cmd())
+		test.Fatalf("t with no rows must be a no-op, got %T", cmd())
 	}
-	if !strings.Contains(view.View(), "not registered") {
-		test.Errorf("expected a not-registered hint:\n%s", view.View())
+	if !strings.Contains(view.View(), "select a model to test") {
+		test.Errorf("expected a no-selection hint:\n%s", view.View())
 	}
 }
 

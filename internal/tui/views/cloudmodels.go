@@ -69,13 +69,15 @@ type CloudModels struct {
 	test        ModelTester
 
 	table    table.Model
+	columns  []table.Column
 	describe describePane
 
-	models   []cloudModel
-	byName   map[string]cloudModel
-	source   catalog.Source
-	cloudErr error
-	liveErr  error
+	models      []cloudModel
+	byName      map[string]cloudModel
+	catalogRows int // count of catalog entries loaded (for the cached-copy flash)
+	source      catalog.Source
+	cloudErr    error
+	liveErr     error
 
 	width  int
 	height int
@@ -94,7 +96,7 @@ func NewCloudModels(load CloudCatalogLoader, live LiveModelLister, refresh Catal
 	}
 	built := table.New(table.WithColumns(columns), table.WithFocused(true))
 	built.SetStyles(ui.TableStyles())
-	return &CloudModels{loadCatalog: load, listLive: live, refresh: refresh, test: test, table: built, describe: newDescribePane()}
+	return &CloudModels{loadCatalog: load, listLive: live, refresh: refresh, test: test, table: built, columns: columns, describe: newDescribePane()}
 }
 
 func (view *CloudModels) Title() string { return "Cloud Models" }
@@ -113,6 +115,7 @@ func (view *CloudModels) SetSize(width, height int) {
 func (view *CloudModels) fitTable() {
 	view.table.SetStyles(ui.TableStyles())
 	view.table.SetWidth(view.width)
+	view.table.SetColumns(ui.StretchColumns(view.columns, view.width))
 	if view.height > 0 {
 		tableHeight := view.height - view.headerLines()
 		if tableHeight < 1 {
@@ -245,43 +248,52 @@ func (view *CloudModels) selectedModel() (cloudModel, bool) {
 	return cloudModel{}, false
 }
 
-// buildModels builds the cloud rows + name index, registered-first then available,
-// each alpha by name.
+// buildModels builds the cloud rows from the gateway's REGISTERED set only — i.e.
+// exactly the models whose provider has a stored API key (adding a key via
+// `ai keys add` syncs that provider's models into the gateway; removing un-syncs
+// them). The unkeyed/"available" catalog rows are dropped. The models.dev catalog is
+// used only to enrich each registered model with metadata (context/modalities/family)
+// where a matching catalog entry exists. Rows are alpha by name.
 func (view *CloudModels) buildModels(cloud []catalog.Model, registered []litellm.LiveModel) {
-	registeredNames := make(map[string]bool, len(registered))
-	for _, model := range registered {
-		registeredNames[model.Name] = true
-	}
-	rows := make([]cloudModel, 0, len(cloud))
-	index := make(map[string]cloudModel, len(cloud))
+	view.catalogRows = len(cloud)
+	byCatalogID := make(map[string]catalog.Model, len(cloud))
 	for _, model := range cloud {
-		status := statusAvailable
-		if registeredNames[model.ID] {
-			status = statusRegistered
+		byCatalogID[model.ID] = model
+	}
+	rows := make([]cloudModel, 0, len(registered))
+	index := make(map[string]cloudModel, len(registered))
+	seen := make(map[string]bool, len(registered))
+	for _, live := range registered {
+		if seen[live.Name] {
+			continue
 		}
+		seen[live.Name] = true
 		row := cloudModel{
-			name:        model.ID,
-			provider:    providerOf(model.ID),
-			family:      model.Family,
-			releaseDate: model.ReleaseDate,
-			lastUpdated: model.LastUpdated,
-			contextLen:  model.Limit.Context,
-			outputLen:   model.Limit.Output,
-			inputModes:  model.Modalities.Input,
-			outputModes: model.Modalities.Output,
-			status:      status,
+			name:     live.Name,
+			provider: live.Provider,
+			status:   statusRegistered,
+		}
+		if row.provider == "" {
+			row.provider = providerOf(live.Name)
+		}
+		// Join to the catalog entry (keyed by the public model_name = catalog id) for
+		// the describe-pane metadata where the catalog carries it.
+		if entry, ok := byCatalogID[live.Name]; ok {
+			row.family = entry.Family
+			row.releaseDate = entry.ReleaseDate
+			row.lastUpdated = entry.LastUpdated
+			row.contextLen = entry.Limit.Context
+			row.outputLen = entry.Limit.Output
+			row.inputModes = entry.Modalities.Input
+			row.outputModes = entry.Modalities.Output
+			if row.provider == "" {
+				row.provider = providerOf(entry.ID)
+			}
 		}
 		rows = append(rows, row)
-		index[model.ID] = row
+		index[row.name] = row
 	}
-	sort.SliceStable(rows, func(left, right int) bool {
-		leftReg := rows[left].registered()
-		rightReg := rows[right].registered()
-		if leftReg != rightReg {
-			return leftReg // registered first
-		}
-		return rows[left].name < rows[right].name
-	})
+	sort.SliceStable(rows, func(left, right int) bool { return rows[left].name < rows[right].name })
 	view.models = rows
 	view.byName = index
 	view.table.SetRows(cloudRows(rows))
@@ -295,7 +307,7 @@ func (view *CloudModels) catalogFlash() {
 	if view.cloudErr == nil {
 		return
 	}
-	view.flash = sourceFlash("models.dev catalog", len(view.models) > 0)
+	view.flash = sourceFlash("models.dev catalog", view.catalogRows > 0)
 }
 
 // describeCloud renders a cloud model's models.dev metadata.
@@ -333,14 +345,11 @@ func (view *CloudModels) describeCloud(model cloudModel) string {
 // header renders everything above the table.
 func (view *CloudModels) header() string {
 	var body strings.Builder
-	body.WriteString(ui.Heading.Render("Cloud models — models.dev catalog") + "\n")
-	if view.cloudErr != nil && len(view.models) == 0 {
-		body.WriteString(ui.Muted.Render("catalog unavailable — connect and press r to refresh") + "\n")
+	body.WriteString(ui.Heading.Render("Cloud models — providers with an API key") + "\n")
+	if len(view.models) == 0 {
+		body.WriteString(ui.Muted.Render("no cloud models — add a provider key in the API Keys tab to register its models") + "\n")
 	}
-	if len(view.models) == 0 && view.cloudErr == nil {
-		body.WriteString(ui.Muted.Render("no cloud models in the catalog") + "\n")
-	}
-	body.WriteString(ui.Muted.Render("add keys in the API Keys tab to register a provider's models") + "\n")
+	body.WriteString(ui.Muted.Render("only models for providers with a stored key are shown (add keys in the API Keys tab)") + "\n")
 	return body.String()
 }
 

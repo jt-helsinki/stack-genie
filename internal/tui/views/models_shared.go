@@ -22,16 +22,14 @@ type ModelStatusFetcher func() (litellm.StatusInfo, error)
 // Injected; the parent wires litellm.RealClient().Test(model).
 type ModelTester func(model string) (litellm.TestResult, error)
 
-// modelStatus distinguishes a model already in the local store from a catalog model
-// that is installable but not yet pulled, and (for cloud) a model the gateway serves.
+// modelStatus is the Cloud Models row status. The Cloud Models view now shows ONLY
+// models the gateway serves (the provider is keyed), so every row is statusRegistered;
+// the type is retained for the STATUS column + the describe pane wording.
 type modelStatus string
 
 const (
-	statusInstalled modelStatus = "installed"
-	statusAvailable modelStatus = "available"
 	// statusRegistered marks a CLOUD catalog model the gateway currently serves
-	// (registered in its DB — i.e. the provider is keyed). A cloud model with no
-	// stored key is statusAvailable.
+	// (registered in its DB — i.e. the provider is keyed).
 	statusRegistered modelStatus = "registered"
 )
 

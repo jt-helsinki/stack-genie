@@ -78,6 +78,7 @@ type LocalModels struct {
 	show    ModelShowFetcher
 
 	table    table.Model
+	columns  []table.Column
 	describe describePane
 	drill    *tagPicker
 
@@ -105,7 +106,7 @@ func NewLocalModels(list LocalModelLister, library LibraryLister, show ModelShow
 	}
 	built := table.New(table.WithColumns(columns), table.WithFocused(true))
 	built.SetStyles(ui.TableStyles())
-	return &LocalModels{list: list, library: library, show: show, test: test, table: built, describe: newDescribePane()}
+	return &LocalModels{list: list, library: library, show: show, test: test, table: built, columns: columns, describe: newDescribePane()}
 }
 
 func (view *LocalModels) Title() string { return "Local Models" }
@@ -125,6 +126,7 @@ func (view *LocalModels) SetSize(width, height int) {
 func (view *LocalModels) fitTable() {
 	view.table.SetStyles(ui.TableStyles())
 	view.table.SetWidth(view.width)
+	view.table.SetColumns(ui.StretchColumns(view.columns, view.width))
 	if view.height > 0 {
 		tableHeight := view.height - view.headerLines()
 		if tableHeight < 1 {
@@ -459,13 +461,13 @@ func (view *LocalModels) rebuildTable(installedCount int) {
 	}
 
 	if installedCount > 0 {
-		addHeader("— Installed —")
+		addHeader("— Installed —————————————————————————")
 		for index := 0; index < installedCount; index++ {
 			addModel(index)
 		}
 	}
 	if installedCount < len(view.models) {
-		addHeader("— Installable —")
+		addHeader("— Installable ———————————————————————")
 		for index := installedCount; index < len(view.models); index++ {
 			addModel(index)
 		}
