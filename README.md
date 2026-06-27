@@ -49,9 +49,17 @@ yourself:
 |------|------|---------|
 | [Microsandbox](https://microsandbox.dev) (`msb`) | microVM workspaces | `curl -fsSL https://install.microsandbox.dev \| sh` |
 | Docker or Podman (rootless) | service tier | `brew install --cask docker` (or `brew install podman`) |
+| [Ghostty](https://ghostty.org) | terminal emulator (recommended) | `brew install --cask ghostty` |
 
 Supported host: **macOS on Apple Silicon** (Microsandbox needs the Apple
 Hypervisor) or **Linux with KVM**.
+
+> **Use [Ghostty](https://ghostty.org).** Workspace microVMs are headless — the
+> agent CLIs (OpenCode, etc.) run inside the VM and their terminal output is
+> rendered by *your* terminal emulator. A modern, truecolor- and CSI-u-capable
+> emulator is required for these TUIs to display correctly; **Ghostty is the
+> recommended choice** (WezTerm or a recent iTerm2 also work). The stock macOS
+> Terminal.app will not render them correctly.
 
 `ai setup` **never installs software** — it detects what's missing and prints how
 to install it (command + web address); `ai doctor` reports the same anytime. The

@@ -133,6 +133,12 @@ download() {
 done_msg() {
   info "Installed: ${INSTALL_DIR}/ai"
   ensure_on_path
+  info ""
+  info "Recommended: install the Ghostty terminal emulator — https://ghostty.org"
+  info "  (macOS: brew install --cask ghostty). Workspace microVMs are headless, so"
+  info "  the in-VM agent CLIs are rendered by your terminal; Ghostty displays them"
+  info "  correctly. WezTerm or a recent iTerm2 also work; Terminal.app does not."
+  info ""
   info "Next:  ai setup"
 }
 
