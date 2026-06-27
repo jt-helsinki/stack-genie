@@ -25,11 +25,11 @@ var ollamaClient = ollama.RealClient
 // network); production wires litellm.RealClient.
 var litellmClient = litellm.RealClient
 
-// ollamaPopular reads the bundled popular-models snapshot (the embedded
-// models.yaml) used by `ai models popular` and the `ai models pull` picker. It is a
-// package var so tests can inject a fixture; production wires ollama.Popular (a pure
-// embedded read, no network).
-var ollamaPopular = func() ([]ollama.PopularModel, error) { return ollama.Popular() }
+// ollamaLibrary loads the installable Ollama library (live from ollama.com, cached
+// locally) used by `ai models popular` and the `ai models pull` picker. It is a
+// package var so tests can inject a fixture; production wires ollama.Library (a live
+// fetch with an on-disk cache fallback).
+var ollamaLibrary = func() ([]ollama.LibraryModel, ollama.Source, error) { return ollama.Library() }
 
 // modelRegistrar is the slice of litellm.KeyManager that `ai models pull|rm` use to
 // keep the gateway's DB-backed model list in step with the local Ollama store: a

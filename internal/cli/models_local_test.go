@@ -259,31 +259,31 @@ func TestModelsListHumanTable(test *testing.T) {
 }
 
 func TestModelsPopularHumanTableAndJSON(test *testing.T) {
-	result := modelsPopularResult{Models: toPopularEntries([]ollama.PopularModel{
-		{Name: "gemma4:31b", Parameters: "31b", DownloadSize: 1610612736, RepoURL: "https://ollama.com/library/gemma4"},
-		{Name: "nomic-embed-text", Parameters: "", DownloadSize: 0, RepoURL: "https://ollama.com/library/nomic-embed-text"},
+	result := modelsPopularResult{Models: toPopularEntries([]ollama.LibraryModel{
+		{Name: "gemma4", Description: "Google Gemma", Tags: []string{"4b", "31b"}, RepoURL: "https://ollama.com/library/gemma4"},
+		{Name: "nomic-embed-text", Description: "An embedding model", Tags: nil, RepoURL: "https://ollama.com/library/nomic-embed-text"},
 	})}
 	human := result.Human()
-	for _, want := range []string{"NAME", "PARAMS", "SIZE", "REPO", "gemma4:31b", "31b", "1.5 GB", "ollama.com/library/gemma4", "—"} {
+	for _, want := range []string{"NAME", "TAGS", "SIZE", "REPO", "gemma4", "4b, 31b", "ollama.com/library/gemma4", "—"} {
 		if !strings.Contains(human, want) {
 			test.Fatalf("Human() missing %q:\n%s", want, human)
 		}
 	}
 }
 
-// withFakePopular swaps the package-level ollamaPopular fetcher for a stub,
+// withFakeLibrary swaps the package-level ollamaLibrary loader for a stub,
 // restoring it after the test (no network).
-func withFakePopular(test *testing.T, models []ollama.PopularModel, err error) {
+func withFakeLibrary(test *testing.T, models []ollama.LibraryModel, source ollama.Source, err error) {
 	test.Helper()
-	prev := ollamaPopular
-	ollamaPopular = func() ([]ollama.PopularModel, error) { return models, err }
-	test.Cleanup(func() { ollamaPopular = prev })
+	prev := ollamaLibrary
+	ollamaLibrary = func() ([]ollama.LibraryModel, ollama.Source, error) { return models, source, err }
+	test.Cleanup(func() { ollamaLibrary = prev })
 }
 
 func TestModelsPopularSuccess(test *testing.T) {
-	withFakePopular(test, []ollama.PopularModel{
-		{Name: "gemma4:31b", Parameters: "31b", DownloadSize: 100, RepoURL: "https://ollama.com/library/gemma4"},
-	}, nil)
+	withFakeLibrary(test, []ollama.LibraryModel{
+		{Name: "gemma4", Tags: []string{"31b"}, RepoURL: "https://ollama.com/library/gemma4"},
+	}, ollama.SourceFresh, nil)
 	exit := output.ExitOK
 	cmd := newModelsPopularCmd(jsonEmitter(), &exit)
 	cmd.SetOut(io.Discard)
@@ -294,8 +294,23 @@ func TestModelsPopularSuccess(test *testing.T) {
 	}
 }
 
+// A cached copy (live fetch failed but cache present) still succeeds.
+func TestModelsPopularCachedStillSucceeds(test *testing.T) {
+	withFakeLibrary(test, []ollama.LibraryModel{
+		{Name: "gemma4", Tags: []string{"31b"}, RepoURL: "https://ollama.com/library/gemma4"},
+	}, ollama.SourceCached, errors.New("no internet"))
+	exit := output.ExitOK
+	cmd := newModelsPopularCmd(jsonEmitter(), &exit)
+	cmd.SetOut(io.Discard)
+	cmd.SetErr(io.Discard)
+	runLocalModelsCmd(test, cmd)
+	if exit != output.ExitOK {
+		test.Fatalf("popular (cached) exit = %d, want 0", exit)
+	}
+}
+
 func TestModelsPopularFetchFailureExits4(test *testing.T) {
-	withFakePopular(test, nil, errors.New("no internet"))
+	withFakeLibrary(test, nil, ollama.SourceCached, errors.New("no internet"))
 	exit := output.ExitOK
 	cmd := newModelsPopularCmd(jsonEmitter(), &exit)
 	cmd.SetOut(io.Discard)
@@ -303,6 +318,17 @@ func TestModelsPopularFetchFailureExits4(test *testing.T) {
 	runLocalModelsCmd(test, cmd)
 	if exit != output.ExitRuntimeFailure {
 		test.Fatalf("popular fetch failure exit = %d, want %d", exit, output.ExitRuntimeFailure)
+	}
+}
+
+func TestLibraryPullRefs(test *testing.T) {
+	refs := libraryPullRefs([]ollama.LibraryModel{
+		{Name: "qwen2.5", Tags: []string{"7b", "72b"}},
+		{Name: "nomic-embed-text", Tags: nil},
+	})
+	want := []string{"qwen2.5:7b", "qwen2.5:72b", "nomic-embed-text"}
+	if strings.Join(refs, ",") != strings.Join(want, ",") {
+		test.Fatalf("libraryPullRefs = %v, want %v", refs, want)
 	}
 }
 

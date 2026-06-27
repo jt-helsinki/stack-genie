@@ -133,16 +133,16 @@ func newModelsListCmd(emitter *output.Emitter, exit *int) *cobra.Command {
 	}
 }
 
-// popularModelEntry is one row of `ai models popular`: one parameter-size VARIANT of
-// a popular model from ollama.com/library. Name is the exact pullable ref incl. the
-// size tag (e.g. qwen2.5:7b); Params is that single size (e.g. "7b", "" for a model
-// with no variants); DownloadSize is that tag's download size (bytes; 0 = unknown);
-// RepoURL is the model's ollama.com/library page.
+// popularModelEntry is one row of `ai models popular`: one installable model from
+// the live ollama.com library. Name is the base model name (e.g. qwen2.5); Tags are
+// its pullable size tags (e.g. 7b, 72b) — pull a specific variant with
+// `ai models pull <name>:<tag>`. The library carries no per-tag download size, so
+// SIZE is shown as "—". RepoURL is the model's ollama.com/library page.
 type popularModelEntry struct {
-	Name         string `json:"name"`
-	Params       string `json:"params,omitempty"`
-	DownloadSize int64  `json:"download_size,omitempty"`
-	RepoURL      string `json:"repo_url"`
+	Name        string   `json:"name"`
+	Description string   `json:"description,omitempty"`
+	Tags        []string `json:"tags,omitempty"`
+	RepoURL     string   `json:"repo_url"`
 }
 
 // modelsPopularResult is the `ai models popular` payload.
@@ -150,7 +150,8 @@ type modelsPopularResult struct {
 	Models []popularModelEntry `json:"models"`
 }
 
-// Human renders the popular list as a NAME / PARAMS / SIZE / REPO table.
+// Human renders the library list as a NAME / TAGS / SIZE / REPO table. The library
+// has no per-tag download size, so SIZE is always "—".
 func (result modelsPopularResult) Human() string {
 	if len(result.Models) == 0 {
 		return ui.Muted.Render("no popular models returned")
@@ -158,38 +159,47 @@ func (result modelsPopularResult) Human() string {
 	var builder strings.Builder
 	_, _ = fmt.Fprintf(&builder, "%s  %s  %s  %s\n",
 		ui.Label.Render(fmt.Sprintf("%-24s", "NAME")),
-		ui.Label.Render(fmt.Sprintf("%-22s", "PARAMS")),
+		ui.Label.Render(fmt.Sprintf("%-22s", "TAGS")),
 		ui.Label.Render(fmt.Sprintf("%-9s", "SIZE")),
 		ui.Label.Render("REPO"))
 	for _, entry := range result.Models {
-		params := entry.Params
-		if params == "" {
-			params = "-"
-		}
-		size := "—"
-		if entry.DownloadSize > 0 {
-			size = ollama.HumanByteSize(entry.DownloadSize)
+		tags := strings.Join(entry.Tags, ", ")
+		if tags == "" {
+			tags = "-"
 		}
 		_, _ = fmt.Fprintf(&builder, "%s  %s  %s  %s\n",
 			ui.Value.Render(fmt.Sprintf("%-24s", entry.Name)),
-			ui.Value.Render(fmt.Sprintf("%-22s", params)),
-			ui.Value.Render(fmt.Sprintf("%-9s", size)),
+			ui.Value.Render(fmt.Sprintf("%-22s", truncateCell(tags, 22))),
+			ui.Value.Render(fmt.Sprintf("%-9s", "—")),
 			ui.Value.Render(entry.RepoURL))
 	}
 	builder.WriteString("\n" + ui.Muted.Render("pull any of these with ") +
-		ui.Primary.Render("ai models pull <name>") +
-		ui.Muted.Render(" (size — = unknown · bundled snapshot of ollama.com/library)"))
+		ui.Primary.Render("ai models pull <name>:<tag>") +
+		ui.Muted.Render(" (size — = not reported by the library · live from ollama.com)"))
 	return strings.TrimRight(builder.String(), "\n")
 }
 
-func toPopularEntries(models []ollama.PopularModel) []popularModelEntry {
+// truncateCell clips a cell value to width runes with a trailing ellipsis so the
+// fixed-width column lines stay aligned.
+func truncateCell(value string, width int) string {
+	runes := []rune(value)
+	if len(runes) <= width {
+		return value
+	}
+	if width <= 1 {
+		return string(runes[:width])
+	}
+	return string(runes[:width-1]) + "…"
+}
+
+func toPopularEntries(models []ollama.LibraryModel) []popularModelEntry {
 	entries := make([]popularModelEntry, 0, len(models))
 	for _, model := range models {
 		entries = append(entries, popularModelEntry{
-			Name:         model.Name,
-			Params:       model.Parameters,
-			DownloadSize: model.DownloadSize,
-			RepoURL:      model.RepoURL,
+			Name:        model.Name,
+			Description: model.Description,
+			Tags:        model.Tags,
+			RepoURL:     model.RepoURL,
 		})
 	}
 	return entries
@@ -198,18 +208,19 @@ func toPopularEntries(models []ollama.PopularModel) []popularModelEntry {
 func newModelsPopularCmd(emitter *output.Emitter, exit *int) *cobra.Command {
 	return &cobra.Command{
 		Use:   "popular",
-		Short: "List popular installable models (bundled snapshot)",
-		Long: "List popular installable models from a BUNDLED snapshot of ollama.com/library,\n" +
-			"with their parameter-size variants, default-tag download size, and\n" +
-			"ollama.com/library link. The list is embedded in the binary — it reads\n" +
-			"instantly and OFFLINE; maintainers refresh it with `make models-refresh`.\n" +
-			"Pull any of them — or any other reference — with `ai models pull`.",
+		Short: "List popular installable models (live Ollama library)",
+		Long: "List installable models from the live ollama.com library, with their pullable\n" +
+			"size tags and ollama.com/library link. The list is fetched from the Ollama\n" +
+			"library endpoint and cached locally; when the endpoint is unreachable the\n" +
+			"cached copy is used. The library reports no per-tag download size, so SIZE\n" +
+			"shows \"—\". Pull a specific variant — or any other reference — with\n" +
+			"`ai models pull <name>:<tag>`.",
 		Args: cobra.NoArgs,
 		RunE: func(_ *cobra.Command, _ []string) error {
-			models, err := ollamaPopular()
-			if err != nil {
+			models, _, err := ollamaLibrary()
+			if err != nil && len(models) == 0 {
 				*exit = emitter.Failure("models.popular", output.Errorf(output.ExitRuntimeFailure,
-					"could not read the bundled popular-models snapshot: %s", err))
+					"could not reach the Ollama library and no cached copy: %s", err))
 				return nil
 			}
 			*exit = emitter.Success("models.popular", modelsPopularResult{Models: toPopularEntries(models)})
@@ -372,22 +383,27 @@ func dedupeModelNames(names []string) []string {
 	return out
 }
 
-// promptModelsToPull presents the popular models (from the bundled snapshot) as a
-// CHECKBOX multi-select plus a final "enter custom model(s)…" checkbox; ticking the
-// latter prompts for free-text references (space- or comma-separated) which are added
-// to the selection. If the snapshot is unavailable it falls back to the free-text
-// custom-entry prompt (still multiple). Returns the de-duplicated set of references
-// (possibly empty → cancelled). Only call on an interactive terminal.
+// promptModelsToPull presents the installable library models — one checkbox per
+// model:tag reference (built from each library model's Name + its size Tags) — plus a
+// final "enter custom model(s)…" checkbox; ticking the latter prompts for free-text
+// references (space- or comma-separated) which are added to the selection. If the
+// library is unavailable it falls back to the free-text custom-entry prompt (still
+// multiple). Returns the de-duplicated set of references (possibly empty → cancelled).
+// Only call on an interactive terminal.
 func promptModelsToPull() ([]string, error) {
-	popular, popularErr := ollamaPopular()
-	if popularErr != nil || len(popular) == 0 {
-		// The popular list is unavailable; don't block pulling — go straight to the
+	library, _, libraryErr := ollamaLibrary()
+	if libraryErr != nil && len(library) == 0 {
+		// The library is unavailable; don't block pulling — go straight to the
 		// free-text custom-entry prompt (still allows multiple, space/comma separated).
 		return promptCustomModels()
 	}
-	options := make([]huh.Option[string], 0, len(popular)+1)
-	for _, candidate := range popular {
-		options = append(options, huh.NewOption(popularPickerLabel(candidate), candidate.Name))
+	refs := libraryPullRefs(library)
+	if len(refs) == 0 {
+		return promptCustomModels()
+	}
+	options := make([]huh.Option[string], 0, len(refs)+1)
+	for _, ref := range refs {
+		options = append(options, huh.NewOption(ref, ref))
 	}
 	options = append(options, huh.NewOption("✎ enter custom model(s)…", customModelOption))
 
@@ -417,15 +433,21 @@ func promptModelsToPull() ([]string, error) {
 	return dedupeModelNames(names), nil
 }
 
-// popularPickerLabel formats a popular model variant as "name — size" for the pull
-// picker (Name already carries the size tag, e.g. qwen2.5:7b); unknown sizes show
-// "—".
-func popularPickerLabel(model ollama.PopularModel) string {
-	size := "—"
-	if model.DownloadSize > 0 {
-		size = ollama.HumanByteSize(model.DownloadSize)
+// libraryPullRefs expands the library models into pullable references: one
+// "name:tag" per tag, or the bare name for a model with no tags. Order follows the
+// library (already sorted by name), tags in their listed order.
+func libraryPullRefs(library []ollama.LibraryModel) []string {
+	refs := make([]string, 0, len(library))
+	for _, model := range library {
+		if len(model.Tags) == 0 {
+			refs = append(refs, model.Name)
+			continue
+		}
+		for _, tag := range model.Tags {
+			refs = append(refs, model.Name+":"+tag)
+		}
 	}
-	return model.Name + " — " + size
+	return refs
 }
 
 // promptCustomModels asks for one or more free-text model references (the custom-

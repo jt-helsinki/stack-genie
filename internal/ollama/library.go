@@ -183,9 +183,9 @@ func LoadOrFetchLibrary(ctx context.Context, httpClient *http.Client, url string
 	return nil, SourceCached, fetchErr
 }
 
-// Library is a package-level func var (so tests can stub it, mirroring Popular)
-// that loads the installable library, fetching live with a short timeout and
-// falling back to the cache. It never panics.
+// Library is a package-level func var (so tests can stub it) that loads the
+// installable library, fetching live with a short timeout and falling back to the
+// cache. It never panics.
 var Library = func() ([]LibraryModel, Source, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()

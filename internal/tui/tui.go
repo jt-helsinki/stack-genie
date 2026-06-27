@@ -117,16 +117,24 @@ func Run(cwd string) error {
 	)
 	networkView := views.NewNetwork(currentRoot, egress.Get, egress.SetMode)
 	contextView := views.NewContext(currentRoot, contextopt.GetStatus, contextopt.SetStrategy, contextopt.SetCavemanLevel)
-	modelsView := views.NewModels(litellmClient.Status, litellmClient.Test, ollama.RealClient().List, ollama.Popular, ollama.RealClient().Show).
-		// The cloud side: the saved models.dev catalog (cloud models + their
-		// release/limits/modalities), the gateway's live (registered) model set, and
-		// the `r`-refresh (re-fetch the catalog + resync the gateway). All over the
-		// existing package APIs so the view stays fakeable in tests.
-		WithCatalog(
-			catalog.Load,
-			litellm.NewKeyManager(runtime.RealProber()).ListModels,
-			refreshModelCatalog,
-		)
+	// Local Models: the installed Ollama store + the installable ollama.com library
+	// (live, cache-backed), with a per-model tag drill-down and the gateway tester.
+	localModelsView := views.NewLocalModels(
+		ollama.RealClient().List,
+		ollama.Library,
+		ollama.RealClient().Show,
+		litellmClient.Test,
+	)
+	// Cloud Models: the models.dev catalog (with its data source for availability
+	// messaging), the gateway's live (registered) set, the `r`-refresh (re-fetch the
+	// catalog + resync the gateway), and the gateway tester. All over the existing
+	// package APIs so the view stays fakeable in tests.
+	cloudModelsView := views.NewCloudModels(
+		loadCloudCatalog,
+		litellm.NewKeyManager(runtime.RealProber()).ListModels,
+		refreshModelCatalog,
+		litellmClient.Test,
+	)
 	// The API Keys view lists the routable catalog providers + their keyed status
 	// (the same catalog + ListCredentials join `ai keys list` uses). Add/remove run
 	// `ai keys add|remove <provider>` live in the terminal overlay (the hidden key
@@ -154,16 +162,18 @@ func Run(cwd string) error {
 		[]string{"Workspace", "Network", "Context", "Sessions", "Apps"},
 	)
 
-	// Top-level tab order = menu order: Services · Workspaces · Models · API Keys ·
-	// Settings. Workspace / Network / Context / Sessions are nested under Workspaces
-	// (the hub); logs are consolidated into the Services view (the `l` key).
-	application.views = []View{servicesView, projectsHub, modelsView, apiKeysView, settingsView}
+	// Top-level tab order = menu order: Services · Workspaces · Local Models · Cloud
+	// Models · API Keys · Settings. Workspace / Network / Context / Sessions are
+	// nested under Workspaces (the hub); logs are consolidated into the Services view
+	// (the `l` key).
+	application.views = []View{servicesView, projectsHub, localModelsView, cloudModelsView, apiKeysView, settingsView}
 	application.projectsIndex = 1
 	application.projectsHub = projectsHub
 	application.projectDetail = projectDetail
 	application.sessionsView = sessionsView
 	application.appsView = appsView
-	application.modelsView = modelsView
+	application.localModelsView = localModelsView
+	application.cloudModelsView = cloudModelsView
 	application.apiKeysView = apiKeysView
 
 	// Always land on the home screen (Services, index 0 — current's zero value); a
@@ -269,6 +279,16 @@ func listAPIKeyProviders() ([]views.APIKeyProvider, error) {
 	return rows, nil
 }
 
+// loadCloudCatalog loads the models.dev catalog for the Cloud Models view, reporting
+// the data SOURCE (fresh vs cached) + the live-fetch error so the view can message
+// availability. It prefers a fresh fetch (persisting it) and falls back to the
+// on-disk cache, mirroring catalog.LoadOrFetchStatus.
+func loadCloudCatalog() (*catalog.Catalog, catalog.Source, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	return catalog.LoadOrFetchStatus(ctx, nil, "")
+}
+
 // refreshModelCatalog is the Models view's `r`-refresh network work: it re-fetches
 // the models.dev catalog (and persists it) then resyncs the gateway's model set to
 // the keyed providers' catalog models + the installed Ollama models. The keyed set
@@ -365,9 +385,10 @@ type app struct {
 	// subprocess returns (the user may have installed/removed/started an app).
 	appsView *views.Apps
 
-	// modelsView lets the app refresh the local-store list after a pull/rm
-	// subprocess returns from the terminal overlay.
-	modelsView *views.Models
+	// localModelsView / cloudModelsView let the app refresh the model lists after a
+	// pull/rm/keys subprocess returns from the terminal overlay.
+	localModelsView *views.LocalModels
+	cloudModelsView *views.CloudModels
 
 	// apiKeysView lets the app refresh the provider/keyed list after an
 	// `ai keys add|remove` subprocess returns from the terminal overlay.
@@ -508,11 +529,13 @@ func (application *app) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			"apps "+message.Action+" "+message.App+" "+message.Project,
 			[]string{"apps", message.Action, message.App, message.Project})
 
-	case views.ModelPullRequestedMsg:
-		// Pull the SELECTED row's exact reference (streaming progress): run the real
-		// `ai models pull <ref>` live in the terminal overlay, then refresh the list.
+	case views.ModelsPullRequestedMsg:
+		// Pull one or more selected tag references (streaming progress): run the real
+		// `ai models pull <refs...>` live in the terminal overlay, then refresh the
+		// Local Models list when the overlay closes.
 		return application, application.openTerminal(
-			"models pull "+message.Name, []string{"models", "pull", message.Name})
+			"models pull "+strings.Join(message.Refs, " "),
+			append([]string{"models", "pull"}, message.Refs...))
 
 	case views.ModelRemoveRequestedMsg:
 		// Remove confirms before deleting: run `ai models rm <name>` live in the
@@ -641,8 +664,11 @@ func (application *app) updateTerminal(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if application.appsView != nil {
 			commands = append(commands, application.appsView.Init())
 		}
-		if application.modelsView != nil {
-			commands = append(commands, application.modelsView.Init())
+		if application.localModelsView != nil {
+			commands = append(commands, application.localModelsView.Init())
+		}
+		if application.cloudModelsView != nil {
+			commands = append(commands, application.cloudModelsView.Init())
 		}
 		if application.apiKeysView != nil {
 			commands = append(commands, application.apiKeysView.Init())
