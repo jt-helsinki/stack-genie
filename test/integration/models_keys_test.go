@@ -8,7 +8,7 @@ import (
 )
 
 // The local model the user keeps pulled (do NOT remove it — the user wants it).
-const localModel = "ollama/smollm:135m"
+const localModel = "ollama/all-minilm:22m"
 
 // dummyKeyProvider is a routable catalog provider used for the dummy-key test.
 // It must NOT already have a real key on this machine. anthropic is chosen
