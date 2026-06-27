@@ -136,9 +136,18 @@ func (hub *ProjectsHub) Update(msg tea.Msg) tea.Cmd {
 		}
 		return hub.switcher.Update(msg)
 	}
-	// Non-key messages (ticks, refresh results) go to the focused screen.
+	// Non-key messages (ticks, async refresh results) are delivered to EVERY sub-view,
+	// not just the focused one. OpenProject pre-fetches all sub-views at once, so a
+	// result (e.g. the Sessions/Apps listing) routinely arrives while a DIFFERENT
+	// sub-tab is focused; routing only to hub.active() dropped it and left that view
+	// stuck on "loading…" forever. Each sub-view's Update ignores message types it
+	// does not recognise, so broadcasting is safe.
 	if hub.open {
-		return hub.active().Update(msg)
+		commands := make([]tea.Cmd, 0, len(hub.subViews))
+		for _, sub := range hub.subViews {
+			commands = append(commands, sub.Update(msg))
+		}
+		return tea.Batch(commands...)
 	}
 	return hub.switcher.Update(msg)
 }
@@ -164,7 +173,7 @@ func (hub *ProjectsHub) subTabBar() string {
 	cells = append(cells, ui.Heading.Render(hub.project)+ui.Muted.Render("  ▸ "))
 	for index, title := range hub.subTitles {
 		if index == hub.subIndex {
-			cells = append(cells, activeStyle.Render("["+title+"]"))
+			cells = append(cells, activeStyle.Render(title))
 			continue
 		}
 		cells = append(cells, inactiveStyle.Render(title))

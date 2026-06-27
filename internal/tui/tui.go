@@ -503,9 +503,13 @@ func (application *app) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Run a workspace lifecycle action (start/stop/restart/destroy) in the live
 		// embedded terminal: msb's verbose build/boot progress streams INTO the pane
 		// (no suspend, no flicker) and a destructive `destroy` can prompt inline.
-		return application, application.openTerminal(
+		cmd := application.openTerminal(
 			message.Action+" "+message.Project,
 			[]string{message.Action, message.Project})
+		// A lifecycle action is not an interactive program that owns <esc>, so let
+		// <esc> cancel/close the pane (same as ctrl+q) — the user's escape hatch.
+		application.terminalEscCloses = true
+		return application, cmd
 
 	case views.ExecRequestedMsg:
 		// Open an interactive shell inside the workspace microVM, live in
@@ -525,9 +529,12 @@ func (application *app) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Run an apps lifecycle action live in the terminal overlay (`ai apps
 		// <action> <app> <name>` → nerdctl in the VM); the Apps view refreshes when
 		// the overlay closes.
-		return application, application.openTerminal(
+		cmd := application.openTerminal(
 			"apps "+message.Action+" "+message.App+" "+message.Project,
 			[]string{"apps", message.Action, message.App, message.Project})
+		// Not an interactive program — let <esc> cancel/close the pane (like ctrl+q).
+		application.terminalEscCloses = true
+		return application, cmd
 
 	case views.ModelsPullRequestedMsg:
 		// Pull one or more selected tag references (streaming progress): run the real
