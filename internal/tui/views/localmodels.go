@@ -26,8 +26,8 @@ type ModelShowFetcher func(model string) (ollama.ModelInfo, error)
 
 // localModel is one model row of the Local Models view: a library model (or a
 // synthesized row for an installed custom not in the library) plus the set of its
-// tags that are installed locally. The list shows NAME · DESCRIPTION · TAGS; enter
-// drills into the per-tag picker.
+// tags that are installed locally. The list shows NAME · DESCRIPTION (the tags are
+// shown only in the per-model drill-down); enter drills into the per-tag picker.
 type localModel struct {
 	name        string          // base model name (e.g. "qwen2.5")
 	description string          // library description ("" for a synthesized custom)

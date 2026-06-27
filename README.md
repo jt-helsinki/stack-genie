@@ -153,7 +153,7 @@ ai keys remove openai                # remove the key and unregister that provid
 ai models status                     # gateway's live served models (added keys + pulled Ollama)
 ai models test  llama3.2             # round-trip one of the served models
 ai models list                       # installed local (Ollama) models
-ai models popular                    # the bundled installable model catalogue
+ai models popular                    # the live ollama.com installable model library
 ai models pull  llama3.2 qwen2.5:7b  # pull Ollama models, registering them as served (rm too)
 
 ai services status                   # host service tier

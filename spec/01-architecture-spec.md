@@ -570,9 +570,12 @@ containerd + nerdctl + runc + CNI plugins + buildkit, installed from the pinned
 amd64/arm64) into `/usr/local` in every OS base Dockerfile, alongside the CNI
 runtime deps (`ca-certificates`, `iptables`, `iproute`). The runtime is **started
 at workspace start** (not baked running into the image): the platform probes
-`nerdctl info` as root and, if needed, boots `containerd` detached so it runs for
-the VM's life. Bringing it up is **best-effort** — a failure does not fail the
-workspace start. (The applications that run *on* this runtime are a later phase.)
+`nerdctl info` as root and, if needed, boots `containerd` detached (`setsid`, as
+root) so it runs for the VM's life, then **polls for
+`/run/containerd/containerd.sock`** so the daemon establishes before the exec
+returns (msb tears down the exec's process group on return, which would otherwise
+kill the just-forked daemon). Bringing it up is **best-effort** — a failure does
+not fail the workspace start. (The applications that run *on* this runtime are a later phase.)
 
 #### In-VM apps (Phase 1)
 

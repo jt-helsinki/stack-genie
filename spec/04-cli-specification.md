@@ -1502,11 +1502,11 @@ package APIs the other commands use (no duplicated logic). It is **interactive
 only**: it requires a terminal and has **no JSON envelope**, so `--json` or a
 non-TTY invocation is exit `2`.
 
-**Scope on launch.** `ai ui` is a global project switcher. A project at the cwd
-or an ANCESTOR (the default) opens straight INTO that project (the Projects tab,
-first sub-tab); otherwise it opens on the server (Services) view. The switcher
-reaches any project in the index, and a new project may be created from it (see
-below).
+**Scope on launch.** `ai ui` is a global project switcher. It **always opens on the
+home screen (Services)** with no project selected — the active view is not persisted
+across restarts (the cwd is still kept for the create overlay's default directory).
+The switcher reaches any project in the index, and a new project may be created from
+it (see below).
 
 **Top-level tabs** (Services · Projects (Workspaces) · Local Models · Cloud Models ·
 API Keys · Settings; cycled by `tab`/`←→` or the `:` menu, which also has an
@@ -1542,27 +1542,33 @@ API Keys · Settings; cycled by `tab`/`←→` or the `:` menu, which also has a
     embedded terminal running `ai attach <session> <name>` (the same
     pane as the Project sub-tab's `e` shell).
 * **Local Models** — the local Ollama store ⨯ the **live ollama.com installable
-  library**, in one NAME · DESCRIPTION · TAGS table split into an **Installed**
-  section (library models with ≥1 pulled tag, plus installed customs) and an
-  **Installable** section (the rest of the library). `enter` opens a per-model **tag
-  drill-down**: `space` ticks 1+ NOT-installed tags, `enter`/`p` pulls the ticked
-  tags, `d` removes the installed tag under the cursor, `t` tests it (and `enter` on
-  an installed tag opens its `/api/show` detail); `esc` backs out to the list. List
-  keys: `enter` manage tags · `t` test (first installed tag) · `d` remove (first
-  installed tag) · `r` refresh. When the library endpoint is unreachable the cached
-  copy is used and a source-availability message is flashed; with no cache the
-  Installable section is empty with that message.
+  library**, in one **NAME · DESCRIPTION** list (there is **no TAGS column** — tags
+  appear only in the per-model drill-down) split into an **Installed** section
+  (library models with ≥1 pulled tag, plus installed customs) and an **Installable**
+  section (the rest of the library). It is rendered as a **custom viewport-windowed
+  list (NOT a bubbles table)** so each section header can be bold + accent-coloured
+  with blank-line padding. `enter` opens a per-model **tag drill-down**: `space`
+  ticks 1+ NOT-installed tags, `enter`/`p` pulls the ticked tags, `d` removes the
+  installed tag under the cursor, `t` tests it (and `enter` on an installed tag opens
+  its `/api/show` detail); `esc` backs out to the list. List keys: `enter` manage
+  tags · `t` test (first installed tag) · `d` remove (first installed tag) · `r`
+  refresh. When the library endpoint is unreachable the cached copy is used and a
+  source-availability message is flashed; with no cache the Installable section is
+  empty with that message.
 * **Cloud Models** — the **models.dev catalog** ⨯ the gateway's live registered set,
-  in a MODEL · PROVIDER · STATUS · CONTEXT table (registered-first). `enter` opens
-  the catalog metadata in a describe pane; `t` tests a **registered** model
+  in a MODEL · PROVIDER · STATUS · CONTEXT table (registered-first). It shows ONLY
+  cloud providers — local `ollama/<name>` models are EXCLUDED (they live on the Local
+  Models tab). `enter` opens the catalog metadata in a describe pane; `t` tests a
+  **registered** model
   (round-trips it through the gateway; the catalog-driven system has no default
   model); `r` re-fetches the catalog + resyncs the gateway. Provider keys are added
   in the **API Keys** tab, not here. When models.dev is unreachable the cached copy
   is used and a source-availability message is flashed.
-* **API Keys** — the LiteLLM-routable catalog providers (PROVIDER / NAME / KEY? /
-  MODELS); `a` adds a key for the selected provider, `d` removes it (each runs
-  `ai keys add|remove <provider>` in the live embedded terminal — the hidden key
-  prompt shows there, so the value never enters the view), `r` refreshes.
+* **API Keys** — the LiteLLM-routable catalog providers (PROVIDER · NAME · KEY? ·
+  MODELS); `a` adds a key for the selected provider, `e` edits (overwrites) it, `d`
+  removes it (each runs `ai keys add|remove <provider>` in the live embedded terminal
+  — the hidden key prompt shows there, so the value never enters the view), `r`
+  refreshes; `esc` backs out of the add/edit terminal overlay.
 * **Settings** — a live **theme** picker (every `ai theme` theme; `enter` applies
   the selected one to the whole UI immediately and persists it, `↑/↓` select) above
   a read-only platform info block (deployment role + model gateway, changed via
