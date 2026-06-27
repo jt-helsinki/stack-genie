@@ -382,6 +382,12 @@ type app struct {
 	// input — keystrokes are forwarded to the PTY — except ctrl+q (force-detach)
 	// and, once the process has exited, any key (close).
 	terminal *views.Terminal
+	// terminalEscCloses makes <esc> cancel/close the terminal overlay (killing the
+	// inner process) for one-shot prompt commands like `ai keys add/remove`, so the
+	// user can back out of the add/edit-key screen with a single esc. It is false for
+	// interactive sessions (shell/agent) where esc belongs to the program. Set when
+	// the overlay is opened; reset by openTerminal.
+	terminalEscCloses bool
 
 	paletteOpen   bool
 	palette       []paletteItem
@@ -517,13 +523,19 @@ func (application *app) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case views.APIKeyAddRequestedMsg:
 		// Add runs `ai keys add <provider>` live in the overlay (its hidden key
 		// prompt shows in the pane), then the API Keys view refreshes on close.
-		return application, application.openTerminal(
+		// esc cancels the add/edit-key screen (one-shot prompt).
+		cmd := application.openTerminal(
 			"keys add "+message.Provider, []string{"keys", "add", message.Provider})
+		application.terminalEscCloses = true
+		return application, cmd
 
 	case views.APIKeyRemoveRequestedMsg:
 		// Remove runs `ai keys remove <provider>` live in the overlay, then refresh.
-		return application, application.openTerminal(
+		// esc cancels the confirm screen.
+		cmd := application.openTerminal(
 			"keys remove "+message.Provider, []string{"keys", "remove", message.Provider})
+		application.terminalEscCloses = true
+		return application, cmd
 
 	case tea.KeyMsg:
 		// While the live terminal overlay is open it owns input (keystrokes go to
@@ -606,6 +618,7 @@ func (application *app) openTerminal(label string, args []string) tea.Cmd {
 	bodyWidth, bodyHeight := application.bodyContentSize()
 	term.SetSize(bodyWidth, bodyHeight)
 	application.terminal = term
+	application.terminalEscCloses = false // default: esc belongs to the inner program
 	return term.Init()
 }
 
@@ -615,7 +628,10 @@ func (application *app) openTerminal(label string, args []string) tea.Cmd {
 // stop / kill may have changed them).
 func (application *app) updateTerminal(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 	term := application.terminal
-	if key.String() == "ctrl+q" || term.Exited() {
+	// <esc> cancels/closes a one-shot prompt overlay (keys add/edit/remove); for
+	// interactive sessions esc is forwarded to the program instead.
+	escCancels := application.terminalEscCloses && key.String() == "esc"
+	if key.String() == "ctrl+q" || escCancels || term.Exited() {
 		term.Close()
 		application.terminal = nil
 		commands := []tea.Cmd{application.projectDetail.Init()}

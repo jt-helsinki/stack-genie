@@ -65,15 +65,19 @@ func NewAPIKeys(list APIKeyLister) *APIKeys {
 
 func (view *APIKeys) Title() string { return "API Keys" }
 func (view *APIKeys) Hints() string {
-	return "↑/↓ select · a add key · d remove key · r refresh"
+	return "↑/↓ select · a add · e edit · d delete · r refresh"
 }
 
-// SetSize fits the table to the content area the parent allots it.
+// SetSize fits the table to the content area the parent allots it, RESERVING rows
+// for the heading, the action-key footer, and the flash line. Without this reserve
+// the table claims the full body height and the heading+footer overflow it, pushing
+// the whole frame (header included) to scroll off the top.
 func (view *APIKeys) SetSize(width, height int) {
 	view.table.SetStyles(ui.TableStyles()) // pick up a live theme change
 	view.table.SetWidth(width)
-	if height > 0 {
-		view.table.SetHeight(height)
+	// heading (1) + action footer (2) + hidden-prompt note (1) + flash (1) = 5.
+	if tableHeight := height - 5; tableHeight > 0 {
+		view.table.SetHeight(tableHeight)
 	}
 }
 
@@ -103,10 +107,12 @@ func (view *APIKeys) Update(msg tea.Msg) tea.Cmd {
 		return nil
 	case tea.KeyMsg:
 		switch message.String() {
-		case "a":
+		case "a", "e":
+			// `a` adds and `e` edits — both run `ai keys add <provider>` (re-adding
+			// overwrites the stored credential), so they share one handler.
 			provider, ok := view.selectedProvider()
 			if !ok {
-				view.flash = ui.Muted.Render("select a provider to add a key for")
+				view.flash = ui.Muted.Render("select a provider first")
 				return nil
 			}
 			name := provider.Provider
@@ -158,9 +164,18 @@ func (view *APIKeys) View() string {
 	var body strings.Builder
 	body.WriteString(ui.Heading.Render("Provider API keys (LiteLLM)") + "\n")
 	if len(view.providers) == 0 {
-		body.WriteString(ui.Muted.Render("no routable providers in the catalog"))
+		body.WriteString(ui.Muted.Render("no routable providers in the catalog — run `ai setup` " +
+			"(or the Models tab `r`) to fetch the models.dev catalog"))
 	} else {
 		body.WriteString(view.table.View())
+		// Spell the actions out IN the view (not only the header hint grid) so add/
+		// edit/delete are discoverable, and explain that the key prompt is hidden.
+		body.WriteString("\n" + ui.Muted.Render("Keys: ") +
+			ui.Primary.Render("a") + ui.Muted.Render(" add · ") +
+			ui.Primary.Render("e") + ui.Muted.Render(" edit (overwrite) · ") +
+			ui.Primary.Render("d") + ui.Muted.Render(" delete · ") +
+			ui.Primary.Render("r") + ui.Muted.Render(" refresh"))
+		body.WriteString("\n" + ui.Muted.Render("add/edit opens a prompt for the key — input is hidden as you type"))
 	}
 	if view.flash != "" {
 		body.WriteString("\n" + view.flash)
