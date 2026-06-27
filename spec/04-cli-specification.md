@@ -1541,6 +1541,15 @@ API Keys · Settings; cycled by `tab`/`←→` or the `:` menu, which also has a
     session, `k` kills the selected one, `r` refreshes. Attaching opens the live
     embedded terminal running `ai attach <session> <name>` (the same
     pane as the Project sub-tab's `e` shell).
+  * **Shell** — a launcher into the workspace's interactive shell; `enter` opens the
+    live embedded terminal running `ai shell <name>` (the persistent, reattachable
+    tmux shell). It is a launcher (not an embedded pane) because the live PTY pane is
+    an app-level overlay.
+  * **Sandbox log** — a scrollable, auto-refreshing view of the microVM's captured
+    output (`msb logs <vm> --tail`, re-polled every 2s so new lines stream in);
+    follows the tail unless scrolled up. `r` refreshes; `↑/↓`/`PgUp`/`PgDn`/mouse
+    wheel scroll.
+  * **Apps** — the in-VM AI apps (install/start/stop/restart/remove).
 * **Local Models** — the local Ollama store ⨯ the **live ollama.com installable
   library**, in one **NAME · DESCRIPTION** list (there is **no TAGS column** — tags
   appear only in the per-model drill-down) split into an **Installed** section

@@ -274,6 +274,33 @@ func (sandbox realSandbox) WriteFile(name, guestPath string, content []byte) err
 	return nil
 }
 
+// LogTail returns the microVM's captured output via `msb logs <name> --tail
+// <lines>` (verified against msb 0.5.10: `logs <NAME> [--tail N] [-f]` shows the
+// sandbox's captured stdout/stderr). lines ≤ 0 omits --tail (full log). The log
+// content is on stdout; on a non-zero exit (e.g. the sandbox is not running) msb
+// writes a diagnostic to stderr, which is surfaced in the error.
+func (sandbox realSandbox) LogTail(name string, lines int) (string, error) {
+	if err := sandbox.ensureInstalled(); err != nil {
+		return "", err
+	}
+	args := []string{"logs", name}
+	if lines > 0 {
+		args = append(args, "--tail", strconv.Itoa(lines))
+	}
+	command := exec.Command("msb", args...)
+	var stdout, stderr bytes.Buffer
+	command.Stdout = &stdout
+	command.Stderr = &stderr
+	if err := command.Run(); err != nil {
+		message := strings.TrimSpace(stderr.String())
+		if message == "" {
+			message = err.Error()
+		}
+		return "", fmt.Errorf("could not read the workspace log (msb logs %s): %s", name, message)
+	}
+	return stdout.String(), nil
+}
+
 // InspectNetwork reads the egress policy in force on the named microVM via
 // `msb inspect <name> --format json` and parses the applied network policy. A
 // missing msb returns ErrMsbMissing; a name that does not resolve to a sandbox

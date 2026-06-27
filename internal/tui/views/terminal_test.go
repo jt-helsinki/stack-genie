@@ -50,7 +50,7 @@ func pump(test *testing.T, term *Terminal, cmd tea.Cmd) {
 // streams its output through the emulator, and renders it — verifying the
 // PTY+emulator+render path end to end (the msb side is hardware-verified).
 func TestTerminalRunsCommandAndRenders(test *testing.T) {
-	term := NewTerminal("print", []string{"sh", "-c", "printf HELLO; exit 0"})
+	term := NewTerminal("print", []string{"sh", "-c", "printf HELLO; exit 0"}, true)
 	term.SetSize(40, 10)
 
 	cmd := term.Init()
@@ -70,7 +70,7 @@ func TestTerminalRunsCommandAndRenders(test *testing.T) {
 // TestTerminalForwardsKeystrokes: keys typed in the pane reach the program through
 // the PTY — the program reads a line of stdin and echoes it back.
 func TestTerminalForwardsKeystrokes(test *testing.T) {
-	term := NewTerminal("read", []string{"sh", "-c", "read line; printf 'GOT:%s' \"$line\""})
+	term := NewTerminal("read", []string{"sh", "-c", "read line; printf 'GOT:%s' \"$line\""}, true)
 	term.SetSize(40, 10)
 
 	cmd := term.Init()
@@ -95,7 +95,7 @@ func TestTerminalForwardsKeystrokes(test *testing.T) {
 // tick command is scheduled (Init batches it) so the glyph actually animates. Once
 // the process exits, the spinner stops re-ticking.
 func TestTerminalShowsSpinnerWhileRunningBlank(test *testing.T) {
-	term := NewTerminal("models pull gemma4", []string{"sh", "-c", "sleep 0.3; printf DONE"})
+	term := NewTerminal("models pull gemma4", []string{"sh", "-c", "sleep 0.3; printf DONE"}, false)
 	term.SetSize(40, 10)
 
 	cmd := term.Init()
@@ -164,5 +164,59 @@ func TestEncodeKey(test *testing.T) {
 		if got := encodeKey(testCase.key); string(got) != string(testCase.want) {
 			test.Errorf("%s: encodeKey = %v, want %v", testCase.name, got, testCase.want)
 		}
+	}
+}
+
+// TestTerminalScrollbackCapturesLines verifies the pane captures the child's output
+// into a plain-text scrollback (escape sequences stripped, \r overwrite handled) and
+// that scroll mode renders that history.
+func TestTerminalScrollbackCapturesLines(test *testing.T) {
+	term := NewTerminal("log", []string{"true"}, false)
+	// Feed bytes directly (no PTY needed) to exercise the accumulator: an ANSI colour
+	// sequence (stripped), three lines, and a \r progress redraw whose final text wins.
+	term.appendScrollback([]byte("\x1b[31mred\x1b[0m line1\nline2\nprog 1%\rprog 100%\n"))
+	if len(term.scrollback) != 3 {
+		test.Fatalf("expected 3 captured lines, got %d: %q", len(term.scrollback), term.scrollback)
+	}
+	if term.scrollback[0] != "red line1" {
+		test.Errorf("escape sequences not stripped: %q", term.scrollback[0])
+	}
+	if term.scrollback[2] != "prog 100%" {
+		test.Errorf("carriage-return overwrite not handled: %q", term.scrollback[2])
+	}
+	// With more captured lines than the visible body there IS something to scroll, so
+	// entering scroll mode + scrolling up stays in scroll mode and shows the indicator.
+	for index := 0; index < 10; index++ {
+		term.appendScrollback([]byte("extra\n"))
+	}
+	term.SetSize(40, 4) // body = rows-1 = 3
+	term.enterScroll()
+	term.scrollBy(2)
+	if !term.InScrollMode() {
+		test.Fatal("should be in scroll mode after scrollBy with more lines than the body")
+	}
+	out := term.scrollView()
+	if !strings.Contains(out, "scrollback") {
+		test.Errorf("scrollView missing indicator:\n%s", out)
+	}
+}
+
+// TestTerminalNonInteractiveArrowEntersScrollback verifies that in a non-interactive
+// (streaming) pane the up arrow enters scrollback rather than being forwarded (the
+// ^[[A echo bug), while an interactive pane keeps the arrow for the child.
+func TestTerminalNonInteractiveArrowEntersScrollback(test *testing.T) {
+	streaming := NewTerminal("restart", []string{"true"}, false)
+	streaming.SetSize(40, 6)
+	streaming.appendScrollback([]byte("a\nb\nc\nd\ne\nf\ng\nh\n"))
+	if _, ok := streaming.liveScrollEntry("up"); !ok {
+		test.Error("non-interactive pane should enter scrollback on up arrow")
+	}
+	interactive := NewTerminal("shell", []string{"true"}, true)
+	if _, ok := interactive.liveScrollEntry("up"); ok {
+		test.Error("interactive pane must forward the up arrow to the child, not scroll")
+	}
+	// PgUp scrolls in any pane.
+	if _, ok := interactive.liveScrollEntry("pgup"); !ok {
+		test.Error("pgup should enter scrollback even in an interactive pane")
 	}
 }

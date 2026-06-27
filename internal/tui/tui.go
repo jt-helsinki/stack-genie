@@ -115,6 +115,21 @@ func Run(cwd string) error {
 		},
 		func() string { return application.currentProject },
 	)
+	// The Shell sub-tab drops into the workspace's interactive shell (the terminal
+	// overlay running `ai shell` for the live current project).
+	shellView := views.NewShell(func() string { return application.currentProject })
+	// The Sandbox log sub-tab streams the microVM's captured output (msb logs) for
+	// the live current project, polling so new lines stream in. With no current
+	// project the tailer returns nothing (the view shows "no workspace selected").
+	sandboxLogView := views.NewSandboxLog(
+		func() (string, error) {
+			if application.currentProject == "" {
+				return "", nil
+			}
+			return workspace.RealManager(goruntime.GOOS, nowRFC3339).SandboxLogTail(application.currentProject, 1000)
+		},
+		func() string { return application.currentProject },
+	)
 	networkView := views.NewNetwork(currentRoot, egress.Get, egress.SetMode)
 	contextView := views.NewContext(currentRoot, contextopt.GetStatus, contextopt.SetStrategy, contextopt.SetCavemanLevel)
 	// Local Models: the installed Ollama store + the installable ollama.com library
@@ -155,11 +170,12 @@ func Run(cwd string) error {
 
 	// The Workspaces tab is a two-level hub: it opens on the switcher (the
 	// workspace list) and, once a workspace is selected, reveals per-workspace
-	// sub-tabs — Workspace · Network · Context · Sessions · Apps — for it.
+	// sub-tabs — Workspace · Network · Context · Sessions · Shell · Sandbox log ·
+	// Apps — for it.
 	projectsHub := views.NewProjectsHub(
 		projectsView,
-		[]views.Screen{projectDetail, networkView, contextView, sessionsView, appsView},
-		[]string{"Workspace", "Network", "Context", "Sessions", "Apps"},
+		[]views.Screen{projectDetail, networkView, contextView, sessionsView, shellView, sandboxLogView, appsView},
+		[]string{"Workspace", "Network", "Context", "Sessions", "Shell", "Sandbox log", "Apps"},
 	)
 
 	// Top-level tab order = menu order: Services · Workspaces · Local Models · Cloud
@@ -180,7 +196,10 @@ func Run(cwd string) error {
 	// project is opened only when the user selects it from the Projects switcher.
 	application.buildPalette()
 
-	program := tea.NewProgram(application, tea.WithAltScreen(), tea.WithOutput(os.Stderr))
+	// Mouse cell-motion is enabled so the scrollable panes (Sandbox log, describe,
+	// and the terminal pane's scrollback) respond to the wheel. (Hold Shift to use the
+	// host terminal's native text selection while mouse reporting is on.)
+	program := tea.NewProgram(application, tea.WithAltScreen(), tea.WithMouseCellMotion(), tea.WithOutput(os.Stderr))
 	_, runErr := program.Run()
 	return runErr
 }
@@ -505,7 +524,7 @@ func (application *app) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// (no suspend, no flicker) and a destructive `destroy` can prompt inline.
 		cmd := application.openTerminal(
 			message.Action+" "+message.Project,
-			[]string{message.Action, message.Project})
+			[]string{message.Action, message.Project}, false)
 		// A lifecycle action is not an interactive program that owns <esc>, so let
 		// <esc> cancel/close the pane (same as ctrl+q) — the user's escape hatch.
 		application.terminalEscCloses = true
@@ -516,14 +535,14 @@ func (application *app) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// the pane (a real PTY via `ai shell` → msb exec -t).
 		return application, application.openTerminal(
 			"shell "+message.Project,
-			[]string{"shell", message.Project})
+			[]string{"shell", message.Project}, true)
 
 	case views.AttachRequestedMsg:
 		// Attach to (or create) a workspace session, live in the pane (`ai attach
 		// <session> <name>` → tmux new-session -A).
 		return application, application.openTerminal(
 			"attach "+message.Session+" "+message.Project,
-			[]string{"attach", message.Session, message.Project})
+			[]string{"attach", message.Session, message.Project}, true)
 
 	case views.AppActionRequestedMsg:
 		// Run an apps lifecycle action live in the terminal overlay (`ai apps
@@ -531,7 +550,7 @@ func (application *app) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// the overlay closes.
 		cmd := application.openTerminal(
 			"apps "+message.Action+" "+message.App+" "+message.Project,
-			[]string{"apps", message.Action, message.App, message.Project})
+			[]string{"apps", message.Action, message.App, message.Project}, false)
 		// Not an interactive program — let <esc> cancel/close the pane (like ctrl+q).
 		application.terminalEscCloses = true
 		return application, cmd
@@ -542,20 +561,20 @@ func (application *app) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Local Models list when the overlay closes.
 		return application, application.openTerminal(
 			"models pull "+strings.Join(message.Refs, " "),
-			append([]string{"models", "pull"}, message.Refs...))
+			append([]string{"models", "pull"}, message.Refs...), false)
 
 	case views.ModelRemoveRequestedMsg:
 		// Remove confirms before deleting: run `ai models rm <name>` live in the
 		// overlay (its TTY confirm prompt shows in the pane), then refresh the list.
 		return application, application.openTerminal(
-			"models rm "+message.Name, []string{"models", "rm", message.Name})
+			"models rm "+message.Name, []string{"models", "rm", message.Name}, false)
 
 	case views.APIKeyAddRequestedMsg:
 		// Add runs `ai keys add <provider>` live in the overlay (its hidden key
 		// prompt shows in the pane), then the API Keys view refreshes on close.
 		// esc cancels the add/edit-key screen (one-shot prompt).
 		cmd := application.openTerminal(
-			"keys add "+message.Provider, []string{"keys", "add", message.Provider})
+			"keys add "+message.Provider, []string{"keys", "add", message.Provider}, false)
 		application.terminalEscCloses = true
 		return application, cmd
 
@@ -563,7 +582,7 @@ func (application *app) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Remove runs `ai keys remove <provider>` live in the overlay, then refresh.
 		// esc cancels the confirm screen.
 		cmd := application.openTerminal(
-			"keys remove "+message.Provider, []string{"keys", "remove", message.Provider})
+			"keys remove "+message.Provider, []string{"keys", "remove", message.Provider}, false)
 		application.terminalEscCloses = true
 		return application, cmd
 
@@ -641,10 +660,14 @@ func (application *app) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 // openTerminal opens the live embedded-terminal overlay running `ai <args…>` on a
 // PTY, sized to the body. Workspace output streams into the pane (no suspend) and
-// interactive programs run inside it.
-func (application *app) openTerminal(label string, args []string) tea.Cmd {
+// interactive programs run inside it. interactive=true means the child is a full
+// interactive program that needs the arrow keys (a shell / attached session), so
+// arrows are forwarded to it; interactive=false means a command run whose output
+// streams (lifecycle, apps, models, keys), so the arrow/page keys SCROLL the pane's
+// scrollback instead of being forwarded (otherwise they echo as ^[[A).
+func (application *app) openTerminal(label string, args []string, interactive bool) tea.Cmd {
 	argv := append([]string{executablePath()}, args...)
-	term := views.NewTerminal(label, argv)
+	term := views.NewTerminal(label, argv, interactive)
 	bodyWidth, bodyHeight := application.bodyContentSize()
 	term.SetSize(bodyWidth, bodyHeight)
 	application.terminal = term
@@ -658,6 +681,11 @@ func (application *app) openTerminal(label string, args []string) tea.Cmd {
 // stop / kill may have changed them).
 func (application *app) updateTerminal(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 	term := application.terminal
+	// In scrollback mode the pane owns every key (nav scrolls, esc/q resume live);
+	// only ctrl+q still force-detaches.
+	if term.InScrollMode() && key.String() != "ctrl+q" {
+		return application, term.Update(key)
+	}
 	// <esc> cancels/closes a one-shot prompt overlay (keys add/edit/remove); for
 	// interactive sessions esc is forwarded to the program instead.
 	escCancels := application.terminalEscCloses && key.String() == "esc"

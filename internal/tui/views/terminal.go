@@ -3,6 +3,7 @@ package views
 import (
 	"os"
 	"os/exec"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -54,16 +55,47 @@ type Terminal struct {
 	// and the spinner header is dropped.
 	spinner spinner.Model
 
-	// mu guards ptmx/cmd, which are set by the spawn command (a bubbletea cmd
-	// goroutine) and read by SetSize / key-forwarding / Close on the main loop.
+	// mu guards ptmx/cmd AND the scrollback buffer, which the read goroutine appends
+	// to while the main loop reads it for rendering.
 	mu   sync.Mutex
 	ptmx *os.File
 	cmd  *exec.Cmd
+
+	// interactive marks a child that needs the arrow keys (a shell / attached
+	// session); for it arrows are forwarded to the PTY. When false (a command run
+	// whose output streams — lifecycle/apps/models/keys) the arrow/page keys instead
+	// scroll the pane's scrollback, so they don't echo as ^[[A.
+	interactive bool
+
+	// scrollback holds the plain-text lines the child has emitted (escape sequences
+	// stripped) so the pane can be scrolled back — vt10x keeps no history. partial is
+	// the current not-yet-newline-terminated line being assembled.
+	scrollback []string
+	partial    string
+	// scrollMode pauses the live view and shows a window into scrollback; scrollOffset
+	// is how many lines up from the bottom the window's bottom edge sits (0 = tail =
+	// live).
+	scrollMode   bool
+	scrollOffset int
 
 	width, height int
 	exited        bool
 	exitErr       error
 }
+
+// maxScrollback bounds the captured history (lines) so a long-running session does
+// not grow memory without limit.
+const maxScrollback = 5000
+
+// scrollStep / the page size are how far the wheel and the page keys move.
+const scrollStep = 3
+
+// ansiPattern matches the escape sequences stripped from captured text before it is
+// stored in the scrollback (CSI, OSC, and the common two-byte escapes), so the
+// scrollback reads as plain lines.
+var ansiPattern = regexp.MustCompile("\x1b\\[[0-9;?]*[ -/]*[@-~]" +
+	"|\x1b\\][^\x07\x1b]*(?:\x07|\x1b\\\\)" +
+	"|\x1b[@-Z\\\\-_]")
 
 // terminalStartedMsg signals the PTY spawn succeeded; the parent then begins the
 // output wait loop.
@@ -77,9 +109,11 @@ type terminalDirtyMsg struct{}
 type terminalExitMsg struct{ err error }
 
 // NewTerminal builds a terminal that will run argv (argv[0] is the program). label
-// is a short description for the header.
-func NewTerminal(label string, argv []string) *Terminal {
-	return &Terminal{label: label, argv: argv}
+// is a short description for the header. interactive forwards the arrow keys to the
+// child (a shell / attached session); when false the arrow/page keys scroll the
+// pane's captured scrollback instead.
+func NewTerminal(label string, argv []string, interactive bool) *Terminal {
+	return &Terminal{label: label, argv: argv, interactive: interactive}
 }
 
 // Label is the short description shown in the chrome while the terminal is open.
@@ -148,6 +182,7 @@ func (term *Terminal) readLoop(ptmx *os.File) {
 		read, err := ptmx.Read(buffer)
 		if read > 0 {
 			_, _ = term.emulator.Write(buffer[:read])
+			term.appendScrollback(buffer[:read])
 			select {
 			case term.dirty <- struct{}{}:
 			default: // a redraw is already pending — coalesce
@@ -194,7 +229,34 @@ func (term *Terminal) Update(msg tea.Msg) tea.Cmd {
 		var cmd tea.Cmd
 		term.spinner, cmd = term.spinner.Update(message)
 		return cmd
+	case tea.MouseMsg:
+		// The wheel scrolls the captured scrollback (entering scroll mode on the way
+		// up); this works during the run AND after the child has exited.
+		switch message.Button {
+		case tea.MouseButtonWheelUp:
+			term.enterScroll()
+			term.scrollBy(scrollStep)
+		case tea.MouseButtonWheelDown:
+			if term.scrollMode {
+				term.scrollBy(-scrollStep)
+			}
+		}
+		return nil
 	case tea.KeyMsg:
+		// In scroll mode every key drives the scrollback (nav scrolls; esc/q resume
+		// live); the child sees nothing.
+		if term.scrollMode {
+			term.handleScrollKey(message)
+			return nil
+		}
+		// In live mode an upward key enters the scrollback instead of being forwarded
+		// (so it does not echo as ^[[A): page-up in any pane, and the up arrow in a
+		// non-interactive streaming pane (lifecycle/apps/models/keys).
+		if delta, ok := term.liveScrollEntry(message.String()); ok {
+			term.enterScroll()
+			term.scrollBy(delta)
+			return nil
+		}
 		if term.exited {
 			return nil
 		}
@@ -211,6 +273,178 @@ func (term *Terminal) Update(msg tea.Msg) tea.Cmd {
 		return nil
 	}
 	return nil
+}
+
+// InScrollMode reports whether the pane is currently paused in scrollback (so the
+// app routes keys to the pane rather than closing it).
+func (term *Terminal) InScrollMode() bool { return term.scrollMode }
+
+// liveScrollEntry maps a key pressed in LIVE mode to a scrollback entry: page-up
+// (and shift+up) scroll a page in any pane; the up arrow scrolls one line in a
+// non-interactive pane (an interactive shell keeps the arrow for itself). ok=false
+// means the key is not a scroll-entry key and should be forwarded to the child.
+func (term *Terminal) liveScrollEntry(key string) (int, bool) {
+	switch key {
+	case "pgup", "shift+up":
+		return term.pageStep(), true
+	case "up":
+		if !term.interactive {
+			return 1, true
+		}
+	}
+	return 0, false
+}
+
+// handleScrollKey advances the scrollback window while in scroll mode.
+func (term *Terminal) handleScrollKey(key tea.KeyMsg) {
+	switch key.String() {
+	case "esc", "q", "i":
+		term.exitScroll()
+	case "up", "k":
+		term.scrollBy(1)
+	case "down", "j":
+		term.scrollBy(-1)
+	case "pgup", "shift+up", "b":
+		term.scrollBy(term.pageStep())
+	case "pgdown", "pgdn", "shift+down", " ", "f":
+		term.scrollBy(-term.pageStep())
+	case "home", "g":
+		term.scrollToTop()
+	case "end", "G":
+		term.exitScroll()
+	}
+}
+
+// enterScroll switches the pane into scrollback mode at the tail (offset 0).
+func (term *Terminal) enterScroll() {
+	if !term.scrollMode {
+		term.scrollMode = true
+		term.scrollOffset = 0
+	}
+}
+
+// exitScroll resumes the live view at the tail.
+func (term *Terminal) exitScroll() {
+	term.scrollMode = false
+	term.scrollOffset = 0
+}
+
+// scrollBy moves the scrollback window by delta lines (positive = older). Reaching
+// the bottom (offset 0) resumes live; the top is clamped to the captured history.
+func (term *Terminal) scrollBy(delta int) {
+	maxOffset := term.maxScrollOffset()
+	term.scrollOffset += delta
+	if term.scrollOffset > maxOffset {
+		term.scrollOffset = maxOffset
+	}
+	if term.scrollOffset <= 0 {
+		term.exitScroll()
+	}
+}
+
+// scrollToTop jumps to the oldest captured line.
+func (term *Terminal) scrollToTop() {
+	term.scrollMode = true
+	term.scrollOffset = term.maxScrollOffset()
+}
+
+// maxScrollOffset is how far up the window can go: total captured lines minus the
+// visible body height.
+func (term *Terminal) maxScrollOffset() int {
+	term.mu.Lock()
+	total := len(term.scrollback)
+	if term.partial != "" {
+		total++
+	}
+	term.mu.Unlock()
+	maxOffset := total - term.scrollBodyRows()
+	if maxOffset < 0 {
+		return 0
+	}
+	return maxOffset
+}
+
+// scrollBodyRows is the number of content rows in scroll mode (the pane height minus
+// the one-line scrollback indicator).
+func (term *Terminal) scrollBodyRows() int {
+	body := term.rows() - 1
+	if body < 1 {
+		return 1
+	}
+	return body
+}
+
+// pageStep is how far PgUp/PgDn move (nearly a full page).
+func (term *Terminal) pageStep() int {
+	step := term.rows() - 2
+	if step < 1 {
+		return 1
+	}
+	return step
+}
+
+// appendScrollback captures a chunk of the child's output into the plain-text
+// scrollback: escape sequences are stripped, \n finalises a line, \r overwrites the
+// current line (so progress-bar redraws keep their final text), and the buffer is
+// capped at maxScrollback lines.
+func (term *Terminal) appendScrollback(chunk []byte) {
+	text := ansiPattern.ReplaceAllString(string(chunk), "")
+	term.mu.Lock()
+	defer term.mu.Unlock()
+	for _, char := range text {
+		switch char {
+		case '\n':
+			term.scrollback = append(term.scrollback, term.partial)
+			term.partial = ""
+		case '\r':
+			term.partial = ""
+		case '\t':
+			term.partial += "    "
+		default:
+			if char >= 0x20 {
+				term.partial += string(char)
+			}
+		}
+	}
+	if len(term.scrollback) > maxScrollback {
+		term.scrollback = term.scrollback[len(term.scrollback)-maxScrollback:]
+	}
+}
+
+// scrollView renders the scrollback window (the current offset) plus a one-line
+// indicator, padded to the pane height so the bottom stays put.
+func (term *Terminal) scrollView() string {
+	term.mu.Lock()
+	lines := make([]string, len(term.scrollback), len(term.scrollback)+1)
+	copy(lines, term.scrollback)
+	if term.partial != "" {
+		lines = append(lines, term.partial)
+	}
+	offset := term.scrollOffset
+	term.mu.Unlock()
+
+	body := term.scrollBodyRows()
+	end := len(lines) - offset
+	if end > len(lines) {
+		end = len(lines)
+	}
+	if end < 0 {
+		end = 0
+	}
+	start := end - body
+	if start < 0 {
+		start = 0
+	}
+	var screen strings.Builder
+	for row := 0; row < body; row++ {
+		index := start + row
+		if index >= 0 && index < end {
+			screen.WriteString(lines[index])
+		}
+		screen.WriteByte('\n')
+	}
+	screen.WriteString(ui.Muted.Render("— scrollback · ↑/↓ scroll · PgUp/PgDn page · esc/q resume live —"))
+	return screen.String()
 }
 
 // SetSize resizes both the emulator and the PTY so the program reflows to the pane.
@@ -235,6 +469,11 @@ func (term *Terminal) View() string {
 			return ui.Failure.Render(ui.IconFail + " " + term.exitErr.Error())
 		}
 		return term.spinnerHeader()
+	}
+	// Scrollback mode shows a window into the captured history (works during the run
+	// and after exit) instead of the live screen.
+	if term.scrollMode {
+		return term.scrollView()
 	}
 	screen := term.render()
 	if term.exited {

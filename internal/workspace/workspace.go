@@ -161,6 +161,12 @@ type Sandbox interface {
 	// WriteFile writes content to guestPath inside the running microVM, creating
 	// parent directories. name is the human label only used for error context.
 	WriteFile(name, guestPath string, content []byte) error
+	// LogTail returns the microVM's captured output (`msb logs <name> --tail
+	// <lines>` — the merged stdout/stderr the sandbox produced). lines ≤ 0 returns
+	// the full captured log. Backs the TUI "Sandbox log" tab. ErrMsbMissing when msb
+	// is absent; a non-running/unknown sandbox surfaces as a Go error carrying msb's
+	// message.
+	LogTail(name string, lines int) (string, error)
 	// InspectNetwork reads the egress policy in force on the named microVM via
 	// `msb inspect`. It returns ErrNotRunning when no such sandbox exists (the
 	// workspace is not running) and ErrMsbMissing when msb is not installed —
@@ -814,6 +820,20 @@ func (manager Manager) Agent(project, cli string) error {
 		return err
 	}
 	return manager.launchTmuxSession(project, tmuxNewSession(cli, launch))
+}
+
+// SandboxLogTail returns the last lines of the project's workspace microVM
+// captured output (`msb logs`). It backs the TUI "Sandbox log" tab. A not-yet-
+// started workspace reports cleanly via requireRunning rather than surfacing a raw
+// msb "sandbox not found" error.
+func (manager Manager) SandboxLogTail(project string, lines int) (string, error) {
+	if _, err := resolveProjectRoot(project); err != nil {
+		return "", err
+	}
+	if err := manager.requireRunning(project); err != nil {
+		return "", err
+	}
+	return manager.Sandbox.LogTail(Name(project), lines)
 }
 
 // ListSessions returns the tmux sessions running in the project's workspace

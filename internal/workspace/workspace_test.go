@@ -41,6 +41,9 @@ type fakeSandbox struct {
 	written                              map[string][]byte
 	inspectPolicy                        NetworkPolicy
 	inspectErr                           error
+	logTail                              string
+	logTailLines                         int
+	logTailErr                           error
 }
 
 func (sandbox *fakeSandbox) Create(_, _, projectMount, overlayPath string, netArgs []string) error {
@@ -74,6 +77,10 @@ func (sandbox *fakeSandbox) WriteFile(_, guestPath string, content []byte) error
 }
 func (sandbox *fakeSandbox) InspectNetwork(string) (NetworkPolicy, error) {
 	return sandbox.inspectPolicy, sandbox.inspectErr
+}
+func (sandbox *fakeSandbox) LogTail(_ string, lines int) (string, error) {
+	sandbox.logTailLines = lines
+	return sandbox.logTail, sandbox.logTailErr
 }
 
 // fakeKeyMinter records GenerateKey/DeleteKeyByAlias calls and returns a fixed key
