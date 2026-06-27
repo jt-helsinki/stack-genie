@@ -551,7 +551,7 @@ Options:
 Behavior:
 
 * destroys the workspace microVM (Microsandbox `rm`)
-* removes agent worktrees and **all per-workspace overlays** for the workspace
+* removes the workspace's persistent overlay (`overlay.Remove`)
 * removes the workspace's entry from the global `config/projects.yaml` index
 * **without `--purge`** (default): preserves host source, including the tracked
   `.ai-platform/` files (`Dockerfile`, `config.yaml`, `profile.yaml`,
