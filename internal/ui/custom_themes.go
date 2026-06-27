@@ -15,106 +15,106 @@ type Palette struct {
 	ButtonFg  lipgloss.TerminalColor
 }
 
-func ThemeFactory(p Palette) func() *huh.Theme {
+func ThemeFactory(palette Palette) func() *huh.Theme {
 	return func() *huh.Theme {
-		return ThemeFromPalette(p)
+		return ThemeFromPalette(palette)
 	}
 }
 
-func ThemeFromPalette(p Palette) *huh.Theme {
-	t := huh.ThemeBase()
+func ThemeFromPalette(palette Palette) *huh.Theme {
+	theme := huh.ThemeBase()
 
-	t.Focused.Base =
-		t.Focused.Base.BorderForeground(p.Primary)
+	theme.Focused.Base =
+		theme.Focused.Base.BorderForeground(palette.Primary)
 
-	t.Focused.Card = t.Focused.Base
+	theme.Focused.Card = theme.Focused.Base
 
-	t.Focused.Title =
-		t.Focused.Title.
-			Foreground(p.Primary).
+	theme.Focused.Title =
+		theme.Focused.Title.
+			Foreground(palette.Primary).
 			Bold(true)
 
-	t.Focused.NoteTitle =
-		t.Focused.NoteTitle.
-			Foreground(p.Secondary).
+	theme.Focused.NoteTitle =
+		theme.Focused.NoteTitle.
+			Foreground(palette.Secondary).
 			Bold(true)
 
-	t.Focused.Directory =
-		t.Focused.Directory.
-			Foreground(p.Primary)
+	theme.Focused.Directory =
+		theme.Focused.Directory.
+			Foreground(palette.Primary)
 
-	t.Focused.Description =
-		t.Focused.Description.
-			Foreground(p.Muted)
+	theme.Focused.Description =
+		theme.Focused.Description.
+			Foreground(palette.Muted)
 
-	t.Focused.ErrorIndicator =
-		t.Focused.ErrorIndicator.
-			Foreground(p.Error)
+	theme.Focused.ErrorIndicator =
+		theme.Focused.ErrorIndicator.
+			Foreground(palette.Error)
 
-	t.Focused.ErrorMessage =
-		t.Focused.ErrorMessage.
-			Foreground(p.Error)
+	theme.Focused.ErrorMessage =
+		theme.Focused.ErrorMessage.
+			Foreground(palette.Error)
 
-	t.Focused.SelectSelector =
-		t.Focused.SelectSelector.
-			Foreground(p.Secondary)
+	theme.Focused.SelectSelector =
+		theme.Focused.SelectSelector.
+			Foreground(palette.Secondary)
 
-	t.Focused.NextIndicator =
-		t.Focused.NextIndicator.
-			Foreground(p.Secondary)
+	theme.Focused.NextIndicator =
+		theme.Focused.NextIndicator.
+			Foreground(palette.Secondary)
 
-	t.Focused.PrevIndicator =
-		t.Focused.PrevIndicator.
-			Foreground(p.Secondary)
+	theme.Focused.PrevIndicator =
+		theme.Focused.PrevIndicator.
+			Foreground(palette.Secondary)
 
-	t.Focused.MultiSelectSelector =
-		t.Focused.MultiSelectSelector.
-			Foreground(p.Secondary)
+	theme.Focused.MultiSelectSelector =
+		theme.Focused.MultiSelectSelector.
+			Foreground(palette.Secondary)
 
-	t.Focused.Option =
-		t.Focused.Option.
-			Foreground(p.Text)
+	theme.Focused.Option =
+		theme.Focused.Option.
+			Foreground(palette.Text)
 
-	t.Focused.SelectedOption =
-		t.Focused.SelectedOption.
-			Foreground(p.Success)
+	theme.Focused.SelectedOption =
+		theme.Focused.SelectedOption.
+			Foreground(palette.Success)
 
-	t.Focused.SelectedPrefix =
+	theme.Focused.SelectedPrefix =
 		lipgloss.NewStyle().
-			Foreground(p.Success).
+			Foreground(palette.Success).
 			SetString("◆ ")
 
-	t.Focused.UnselectedPrefix =
+	theme.Focused.UnselectedPrefix =
 		lipgloss.NewStyle().
-			Foreground(p.Muted).
+			Foreground(palette.Muted).
 			SetString("◇ ")
 
-	t.Focused.FocusedButton =
-		t.Focused.FocusedButton.
-			Foreground(p.ButtonFg).
-			Background(p.Secondary).
+	theme.Focused.FocusedButton =
+		theme.Focused.FocusedButton.
+			Foreground(palette.ButtonFg).
+			Background(palette.Secondary).
 			Bold(true)
 
-	t.Focused.Next = t.Focused.FocusedButton
+	theme.Focused.Next = theme.Focused.FocusedButton
 
-	t.Focused.TextInput.Cursor =
-		t.Focused.TextInput.Cursor.
-			Foreground(p.Primary)
+	theme.Focused.TextInput.Cursor =
+		theme.Focused.TextInput.Cursor.
+			Foreground(palette.Primary)
 
-	t.Focused.TextInput.Prompt =
-		t.Focused.TextInput.Prompt.
-			Foreground(p.Secondary)
+	theme.Focused.TextInput.Prompt =
+		theme.Focused.TextInput.Prompt.
+			Foreground(palette.Secondary)
 
-	t.Blurred = t.Focused
-	t.Blurred.Base =
-		t.Blurred.Base.BorderStyle(lipgloss.HiddenBorder())
+	theme.Blurred = theme.Focused
+	theme.Blurred.Base =
+		theme.Blurred.Base.BorderStyle(lipgloss.HiddenBorder())
 
-	t.Blurred.Card = t.Blurred.Base
+	theme.Blurred.Card = theme.Blurred.Base
 
-	t.Group.Title = t.Focused.Title
-	t.Group.Description = t.Focused.Description
+	theme.Group.Title = theme.Focused.Title
+	theme.Group.Description = theme.Focused.Description
 
-	return t
+	return theme
 }
 
 // BluePink is the default CLI palette (per the maintainer's spec): bright pink +

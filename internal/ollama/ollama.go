@@ -23,6 +23,22 @@ type Model struct {
 	Modified          string `json:"modified,omitempty"`
 }
 
+// HumanByteSize formats a byte count as a compact binary-unit string (e.g.
+// "1.5 GB"). It is the single formatter shared by the CLI (`ai models`) and the
+// TUI Models view so the two model tables render sizes identically.
+func HumanByteSize(bytes int64) string {
+	const unit = 1024
+	if bytes < unit {
+		return fmt.Sprintf("%d B", bytes)
+	}
+	div, exp := int64(unit), 0
+	for scaled := bytes / unit; scaled >= unit; scaled /= unit {
+		div *= unit
+		exp++
+	}
+	return fmt.Sprintf("%.1f %cB", float64(bytes)/float64(div), "KMGTPE"[exp])
+}
+
 // PullProgress is one NDJSON progress frame from POST /api/pull. Total/Completed
 // are byte counts for a layer download (zero on status-only frames such as
 // "pulling manifest" / "success").

@@ -67,8 +67,10 @@ type Deps struct {
 	// (start/stop/run/pull) return ErrWorkspaceNotRunning then.
 	Exec ExecRunner
 	// Gateway supplies the resolved model-gateway base URL (".../v1"), the
-	// workspace's scoped LiteLLM virtual key, and the default model handle that the
-	// app containers are configured with. Called only when (re)starting an app.
+	// workspace's scoped LiteLLM virtual key, and the model preference the app
+	// containers are configured with — EMPTY in the catalog-driven system (no
+	// built-in default model; the app/user picks a served model). Called only when
+	// (re)starting an app.
 	Gateway func() (gatewayURL, apiKey, defaultModel string, err error)
 }
 

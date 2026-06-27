@@ -232,7 +232,7 @@ func writeAtomic(path string, content string) error {
 // [beginIndex, endIndex] (inclusive) of the begin and end markers. found is false
 // when no complete block is present.
 func blockBounds(lines []string) (beginIndex int, endIndex int, found bool) {
-	beginIndex, endIndex = -1, -1
+	beginIndex = -1
 	for index, line := range lines {
 		switch strings.TrimSpace(line) {
 		case markerBegin:

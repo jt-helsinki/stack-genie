@@ -55,12 +55,14 @@ type Manifest struct {
 	Memory string
 	// envFor builds the gateway-pointing environment for this app given the
 	// resolved gateway base URL (".../v1"), the workspace's scoped LiteLLM virtual
-	// key, and the default model handle.
+	// key, and the model preference (EMPTY in the catalog-driven system — no
+	// built-in default model).
 	envFor func(gatewayURL, apiKey, defaultModel string) map[string]string
 }
 
 // Env returns the app's container environment for a workspace, pointing it at the
-// model gateway with the workspace's scoped virtual key and the default model.
+// model gateway with the workspace's scoped virtual key and the model preference
+// (empty when no default model is configured — the catalog-driven default).
 func (manifest Manifest) Env(gatewayURL, apiKey, defaultModel string) map[string]string {
 	return manifest.envFor(gatewayURL, apiKey, defaultModel)
 }

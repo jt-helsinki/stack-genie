@@ -17,15 +17,15 @@ func TestSetCredentialRequestShape(test *testing.T) {
 	var postBody map[string]any
 	var postAuth string
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
-		switch {
-		case request.Method == http.MethodDelete:
+		switch request.Method {
+		case http.MethodDelete:
 			// DELETE /credentials/openai-key (the pre-delete on set).
 			if request.URL.Path != "/credentials/openai-key" {
 				test.Errorf("delete path = %q, want /credentials/openai-key", request.URL.Path)
 			}
 			sawDelete = true
 			_, _ = writer.Write([]byte(`{}`))
-		case request.Method == http.MethodPost:
+		case http.MethodPost:
 			if request.URL.Path != "/credentials" {
 				test.Errorf("post path = %q, want /credentials", request.URL.Path)
 			}

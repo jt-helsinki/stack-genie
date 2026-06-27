@@ -113,20 +113,20 @@ func TestSyncModelsAppliesDiff(test *testing.T) {
 	var added []string
 	var deleted []string
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
-		switch {
-		case request.URL.Path == "/model/info":
+		switch request.URL.Path {
+		case "/model/info":
 			// Current set: one keep, one stale.
 			_, _ = writer.Write([]byte(`{"data":[
 				{"model_name":"ollama/gemma4","litellm_params":{"model":"ollama/gemma4"},"model_info":{"id":"keep"}},
 				{"model_name":"openai/old","litellm_params":{"model":"openai/old"},"model_info":{"id":"stale"}}
 			]}`))
-		case request.URL.Path == "/model/new":
+		case "/model/new":
 			payload, _ := io.ReadAll(request.Body)
 			var body map[string]any
 			_ = json.Unmarshal(payload, &body)
 			added = append(added, body["model_name"].(string))
 			_, _ = writer.Write([]byte(`{}`))
-		case request.URL.Path == "/model/delete":
+		case "/model/delete":
 			payload, _ := io.ReadAll(request.Body)
 			var body map[string]any
 			_ = json.Unmarshal(payload, &body)

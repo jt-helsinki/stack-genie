@@ -70,7 +70,7 @@ func (result modelsListResult) Human() string {
 	for _, entry := range result.Models {
 		size := "-"
 		if entry.Size > 0 {
-			size = humanByteSize(entry.Size)
+			size = ollama.HumanByteSize(entry.Size)
 		}
 		params := entry.Params
 		if params == "" {
@@ -168,7 +168,7 @@ func (result modelsPopularResult) Human() string {
 		}
 		size := "—"
 		if entry.DownloadSize > 0 {
-			size = humanByteSize(entry.DownloadSize)
+			size = ollama.HumanByteSize(entry.DownloadSize)
 		}
 		_, _ = fmt.Fprintf(&builder, "%s  %s  %s  %s\n",
 			ui.Value.Render(fmt.Sprintf("%-24s", entry.Name)),
@@ -423,7 +423,7 @@ func promptModelsToPull() ([]string, error) {
 func popularPickerLabel(model ollama.PopularModel) string {
 	size := "—"
 	if model.DownloadSize > 0 {
-		size = humanByteSize(model.DownloadSize)
+		size = ollama.HumanByteSize(model.DownloadSize)
 	}
 	return model.Name + " — " + size
 }
@@ -619,18 +619,4 @@ func newModelsShowCmd(emitter *output.Emitter, exit *int) *cobra.Command {
 			return nil
 		},
 	}
-}
-
-// humanByteSize formats a byte count as a compact binary-unit string (e.g. 1.5 GB).
-func humanByteSize(bytes int64) string {
-	const unit = 1024
-	if bytes < unit {
-		return fmt.Sprintf("%d B", bytes)
-	}
-	div, exp := int64(unit), 0
-	for n := bytes / unit; n >= unit; n /= unit {
-		div *= unit
-		exp++
-	}
-	return fmt.Sprintf("%.1f %cB", float64(bytes)/float64(div), "KMGTPE"[exp])
 }

@@ -117,17 +117,17 @@ func ManualMessage(domain string) string {
 func ServerGuidance(domain string) string {
 	var builder strings.Builder
 	builder.WriteString("Server mode — DNS + TLS are operator-managed (no /etc/hosts editing):\n")
-	builder.WriteString(fmt.Sprintf(
+	_, _ = fmt.Fprintf(&builder,
 		"  1. Create DNS records pointing the UI subdomains at THIS server's IP:\n"+
-			"       *.%s            (a wildcard), or per host:\n", domain))
+			"       *.%s            (a wildcard), or per host:\n", domain)
 	for _, name := range Names(domain) {
 		builder.WriteString("       " + name + "\n")
 	}
-	builder.WriteString(fmt.Sprintf(
+	_, _ = fmt.Fprintf(&builder,
 		"  2. Provide a TLS certificate terminated at nginx — a wildcard for *.%s\n"+
 			"     (e.g. Let's Encrypt DNS-01) or an internal CA. Clients then reach the\n"+
 			"     UIs over HTTPS at the names above (gateway port %d until TLS lands).\n",
-		domain, gatewayPort))
+		domain, gatewayPort)
 	return builder.String()
 }
 

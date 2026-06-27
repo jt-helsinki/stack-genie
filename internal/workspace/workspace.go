@@ -146,10 +146,11 @@ type Sandbox interface {
 	Destroy(name string) error
 	Exec(name string, argv []string) (ExecResult, error)
 	// ExecRoot runs argv inside the running microVM as the image's ROOT user
-	// (no `-u workspace`), for privileged operations the unprivileged workspace
-	// user cannot perform — notably booting the rootful in-VM containerd. A
-	// non-zero inner exit is carried in ExecResult; only an infrastructure failure
-	// (microVM down, msb missing) is a Go error.
+	// (`msb exec -u root` — msb's no-`-u` default is the unprivileged `workspace`
+	// user, NOT root), for privileged operations the unprivileged workspace user
+	// cannot perform — notably booting the rootful in-VM containerd. A non-zero
+	// inner exit is carried in ExecResult; only an infrastructure failure (microVM
+	// down, msb missing) is a Go error.
 	ExecRoot(name string, argv []string) (ExecResult, error)
 	// ExecInteractive runs argv inside the running microVM with the CALLER'S
 	// terminal attached — a real PTY via `msb exec -t`, with stdin/stdout/stderr
@@ -448,10 +449,11 @@ func mergePublishPorts(declared, appPorts []config.PortMapping) []config.PortMap
 // AppManager builds an apps.Manager bound to a running workspace microVM: its
 // Exec runs nerdctl as root in the VM (Sandbox.ExecRoot), config is the project's
 // config.yaml, port reservations span every workspace, and the gateway env is the
-// resolved gateway URL + a freshly-minted scoped virtual key + the default model.
-// It is used by `ai apps` and by startInstalledApps. exec is nil when the
-// workspace is not running, so the lifecycle methods that need the VM report
-// ErrWorkspaceNotRunning.
+// resolved gateway URL + a freshly-minted scoped virtual key + the model
+// preference (litellm.DefaultRouting().Default, which is EMPTY in the catalog-driven
+// system — no built-in default model). It is used by `ai apps` and by
+// startInstalledApps. exec is nil when the workspace is not running, so the
+// lifecycle methods that need the VM report ErrWorkspaceNotRunning.
 func (manager Manager) AppManager(name, project, root, gatewayURL string) *apps.Manager {
 	return manager.buildAppManager(name, project, root, gatewayURL, manager.requireRunning(project) == nil)
 }

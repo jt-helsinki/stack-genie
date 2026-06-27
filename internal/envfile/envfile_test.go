@@ -131,9 +131,9 @@ func contains(haystack, needle string) bool {
 }
 
 func indexOf(haystack, needle string) int {
-	for i := 0; i+len(needle) <= len(haystack); i++ {
-		if haystack[i:i+len(needle)] == needle {
-			return i
+	for offset := 0; offset+len(needle) <= len(haystack); offset++ {
+		if haystack[offset:offset+len(needle)] == needle {
+			return offset
 		}
 	}
 	return -1

@@ -181,6 +181,10 @@ func TestRunFullTeardown(test *testing.T) {
 		present: map[string]bool{"docker": true},
 		output:  map[string][]byte{"docker ps -aq --filter name=aip-": []byte("abc123\ndef456\n")},
 	}
+	// Isolate the /etc/hosts removal seam to a temp file so Run never reaches the
+	// real privileged sudo writer on a developer machine that ran `ai setup`.
+	withHostsSeams(test, filepath.Join(home, "etc-hosts"), func(string, []byte) error { return nil })
+
 	var steps []string
 	report, err := Run(Options{Purge: true, BinaryPath: binaryPath}, prober, func(line string) {
 		steps = append(steps, line)
@@ -243,6 +247,7 @@ func TestRunIdempotentOnCleanHome(test *testing.T) {
 	test.Setenv("HOME", home)
 	test.Setenv("ZDOTDIR", "")
 	prober := &fakeProber{present: map[string]bool{}}
+	withHostsSeams(test, filepath.Join(home, "etc-hosts"), func(string, []byte) error { return nil })
 	report, err := Run(Options{BinaryPath: filepath.Join(home, "nope", "ai")}, prober, nil)
 	if err != nil {
 		test.Fatalf("Run on clean home should not error: %v", err)
@@ -282,6 +287,7 @@ func TestExternalDepsPresenceAndRemoval(test *testing.T) {
 	}
 
 	// Removing msb via Run clears its targets.
+	withHostsSeams(test, filepath.Join(home, "etc-hosts"), func(string, []byte) error { return nil })
 	report, err := Run(Options{RemoveDeps: []ExternalDep{msb}}, prober, nil)
 	if err != nil {
 		test.Fatal(err)

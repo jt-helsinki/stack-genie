@@ -591,7 +591,7 @@ func (view *Models) describeAvailable(model localModel) string {
 	body.WriteString(field("parameters", params))
 	downloadSize := "unknown"
 	if candidate.DownloadSize > 0 {
-		downloadSize = humanByteSize(candidate.DownloadSize)
+		downloadSize = ollama.HumanByteSize(candidate.DownloadSize)
 	}
 	body.WriteString(field("download size", downloadSize))
 	body.WriteString(field("repo", candidate.RepoURL))
@@ -850,7 +850,7 @@ func modelRows(models []localModel) []table.Row {
 		}
 		size := "-"
 		if model.size > 0 {
-			size = humanByteSize(model.size)
+			size = ollama.HumanByteSize(model.size)
 		}
 		context := "-"
 		if model.contextLen > 0 {
@@ -872,20 +872,6 @@ func humanTokenCount(tokens int) string {
 	default:
 		return strconv.Itoa(tokens)
 	}
-}
-
-// humanByteSize formats a byte count as a compact binary-unit string (e.g. 1.5 GB).
-func humanByteSize(bytes int64) string {
-	const unit = 1024
-	if bytes < unit {
-		return strconv.FormatInt(bytes, 10) + " B"
-	}
-	div, exp := int64(unit), 0
-	for n := bytes / unit; n >= unit; n /= unit {
-		div *= unit
-		exp++
-	}
-	return strconv.FormatFloat(float64(bytes)/float64(div), 'f', 1, 64) + " " + string("KMGTPE"[exp]) + "B"
 }
 
 func modelsHealth(healthy bool) string {
