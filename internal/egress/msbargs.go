@@ -7,13 +7,25 @@ import (
 	"github.com/jt-helsinki/ideal-robot/internal/runtime"
 )
 
-// hostGatewayTarget is the special msb target that resolves, from inside a
-// sandbox, to the host machine (verified with msb v0.5.7). It is the target a
-// "gateway"/empty HostService.Host maps to (an allow-listed service ON the host
-// machine), independent of where the model gateway itself lives. It is the single
-// source of truth runtime.DefaultGatewayHost so the host-gateway DNS name can't
-// drift between the egress rules and the gateway/runtime wiring.
+// hostGatewayTarget is the DNS name that, from inside a sandbox, resolves to the
+// host machine (host.microsandbox.internal). MsbNetworkArgs uses it to RECOGNIZE
+// when the model gateway is the local host (standalone) vs a remote server (client
+// mode). It is the single source of truth runtime.DefaultGatewayHost so the
+// host-gateway DNS name can't drift between the egress rules and the gateway wiring.
+//
+// NB: this NAME must NOT be used as a --net-rule TARGET. Verified live: a net-rule
+// targeting host.microsandbox.internal (a host-NAME) lets the guest CONNECT to the
+// msb gateway but msb does NOT host-forward it — the request never reaches the host
+// service and the guest gets an empty reply. Only msb's `host` GROUP token
+// (hostGroupTarget) engages host-forwarding. So we emit hostGroupTarget in rules
+// and reserve hostGatewayTarget for the local-vs-remote comparison.
 const hostGatewayTarget = runtime.DefaultGatewayHost
+
+// hostGroupTarget is msb's `host` GROUP token — the rule target that means "the
+// host machine" and engages msb's host-forwarding (so the guest actually reaches
+// services ON the host, e.g. the model gateway and allow-listed local services).
+// It is the only target that works for host access under a default-deny policy.
+const hostGroupTarget = "host"
 
 // gatewayToken is the placeholder in a HostService.Host that means "the host
 // machine" (mirrors config's unexported gatewayToken; see egress.Allow/Deny).
@@ -49,12 +61,18 @@ func MsbNetworkArgs(network config.NetworkConfig, gatewayHost string, gatewayPor
 
 	args := make([]string, 0, 6+2*len(network.AllowHostServices)+2*len(network.PublishPorts))
 
-	// (1) Always allow the resolved model gateway on gatewayHost:gatewayPort. The
-	// local gateway (host.microsandbox.internal) is a private/link-local address
-	// which msb blocks by default, so this explicit allow is required even in
-	// "public"/"unrestricted" modes (in "unrestricted" it is harmless but kept for
-	// clarity). In client mode gatewayHost is the remote server.
-	args = append(args, "--net-rule", fmt.Sprintf("allow:egress@%s:tcp:%d", gatewayHost, gatewayPort))
+	// (1) Always allow the model gateway on gatewayHost:gatewayPort so the agent can
+	// reach it in every mode. When the gateway is the LOCAL host (standalone), the
+	// rule MUST target msb's `host` GROUP token, not the host.microsandbox.internal
+	// NAME: the NAME lets the guest connect to the msb gateway but is NOT
+	// host-forwarded (verified live — empty reply, the request never reaches the
+	// host). In client mode gatewayHost is a remote server, reached as an ordinary
+	// external host (the public allow / its own allow rule), not via the host group.
+	gatewayTarget := gatewayHost
+	if gatewayHost == hostGatewayTarget {
+		gatewayTarget = hostGroupTarget
+	}
+	args = append(args, "--net-rule", fmt.Sprintf("allow:egress@%s:tcp:%d", gatewayTarget, gatewayPort))
 
 	// (1b) Always allow DNS to the LOCAL msb gateway forwarder. Under a
 	// default-deny egress policy msb filters DNS like any other egress, and a
@@ -86,12 +104,13 @@ func MsbNetworkArgs(network config.NetworkConfig, gatewayHost string, gatewayPor
 
 	// (4) Per-host-service allow rules. These keep allow-listed private host
 	// services reachable in every mode (including "public", where the
-	// default-deny would otherwise block them). A "gateway" or empty Host
-	// targets the host machine.
+	// default-deny would otherwise block them). A "gateway" or empty Host targets
+	// the host machine via msb's `host` GROUP token (which engages host-forwarding);
+	// any other Host (a domain/IP) is an ordinary external target left verbatim.
 	for _, service := range network.AllowHostServices {
 		target := service.Host
 		if target == "" || target == gatewayToken {
-			target = hostGatewayTarget
+			target = hostGroupTarget
 		}
 		args = append(args, "--net-rule", fmt.Sprintf("allow:egress@%s:tcp:%d", target, service.Port))
 	}

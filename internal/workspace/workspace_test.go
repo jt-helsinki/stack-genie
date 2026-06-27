@@ -217,9 +217,11 @@ func TestStartBuildsAndRecordsStartedHandle(test *testing.T) {
 		test.Fatal("egress network args not passed to Sandbox.Create")
 	}
 	// With a temp HOME and no runtime.yaml, the gateway resolves to the local
-	// standalone default (host.microsandbox.internal:18787), so the always-on
-	// allow rule and the agent configs target that gateway.
-	if !strings.Contains(strings.Join(sandbox.netArgs, " "), "allow:egress@host.microsandbox.internal:tcp:18787") {
+	// standalone default (host.microsandbox.internal:18787). The always-on allow
+	// rule targets msb's `host` GROUP token (which engages host-forwarding — a host
+	// NAME target does not), while the agent configs still use the resolved gateway
+	// URL the guest connects to.
+	if !strings.Contains(strings.Join(sandbox.netArgs, " "), "allow:egress@host:tcp:18787") {
 		test.Fatalf("netArgs missing local gateway allow rule: %#v", sandbox.netArgs)
 	}
 	if !strings.Contains(string(openCodeConfig), "http://host.microsandbox.internal:18787/v1") {
