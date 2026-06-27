@@ -25,6 +25,10 @@ const (
 	borderRows    = 2
 	borderCols    = 2
 	bodyPadX      = 1
+	// bodyPadY is the inner vertical padding inside the body border — kept equal to
+	// bodyPadX so the content sits the SAME margin off the top/bottom border as it
+	// does off the left/right (a symmetric 1-line / 1-col margin).
+	bodyPadY = bodyPadX
 	// commandColumns is how many key bindings sit per row in the header; logoGap is
 	// the spacer between the logo and the command list.
 	commandColumns = 4
@@ -58,7 +62,7 @@ func capturesNav(view View) bool {
 func (application *app) bodyContentSize() (width, height int) {
 	width = application.width - borderCols - 2*bodyPadX
 	chrome := lipgloss.Height(application.header()) + headerGapRows + tabRows + footerRows + borderRows
-	height = application.height - chrome
+	height = application.height - chrome - 2*bodyPadY
 	if width < 1 {
 		width = 1
 	}
@@ -194,17 +198,19 @@ func (application *app) tabBar() string {
 // to the window. The content (the active view, or an overlay) renders INSIDE it.
 func (application *app) body(content string) string {
 	width, height := application.bodyContentSize()
-	// lipgloss Width(w) is the box width INCLUDING horizontal padding (content wraps
-	// at w-2*padX), so to give the content the full bodyContentSize width we set Width
-	// to that width PLUS the padding. Without this the real content area is 2*bodyPadX
-	// narrower than every view was sized to, so full-width rows (e.g. the selected-row
-	// highlight) overflow by that much and wrap.
+	// lipgloss Width(w)/Height(h) are the box dimensions INCLUDING padding (the content
+	// area is w-2*padX × h-2*padY), so to give the content the full bodyContentSize we
+	// add the padding back onto both dimensions. Without this the real content area is
+	// 2*bodyPadX narrower / 2*bodyPadY shorter than every view was sized to, so
+	// full-width rows (e.g. the selected-row highlight) overflow and wrap, and a
+	// full-height table overflows the box. The symmetric Padding gives a 1-line margin
+	// top/bottom and a 1-col margin left/right inside the border.
 	border := lipgloss.NewStyle().
 		Border(lipgloss.RoundedBorder()).
 		BorderForeground(ui.Accent()).
-		Padding(0, bodyPadX).
+		Padding(bodyPadY, bodyPadX).
 		Width(width + 2*bodyPadX).
-		Height(height)
+		Height(height + 2*bodyPadY)
 	return border.Render(content)
 }
 
