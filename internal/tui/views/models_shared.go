@@ -148,6 +148,17 @@ func truncateRunes(value string, width int) string {
 	return string(runes[:width-1]) + "…"
 }
 
+// flashLine renders a view's flash message as EXACTLY one line: the message when
+// set, an empty (blank) line otherwise. Views reserve one row for it in SetSize and
+// always emit it so the table/list above fills a FIXED content height — the bottom
+// never shifts depending on whether a flash is currently shown.
+func flashLine(flash string) string {
+	if flash == "" {
+		return ""
+	}
+	return flash
+}
+
 // sourceFlash builds the source-availability warning for an offline live source
 // (the Ollama library or models.dev). cached reports whether a cached copy was
 // shown; source names the live source for the message. Returns "" when there is no

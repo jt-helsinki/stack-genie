@@ -127,6 +127,51 @@ func (view *LocalModels) SetSize(width, height int) {
 	view.describe.setSize(width, height)
 }
 
+// displayLine is one rendered line of the two-section list: either a section
+// header / blank-padding line (modelIndex < 0) or a model content row (modelIndex
+// = its index into view.models). The list is windowed over these DISPLAY lines so
+// the rendered block is a CONSTANT height regardless of how many section headers the
+// current window straddles (the bug being that the old per-model capacity reserved
+// chrome for BOTH sections always, shrinking the row count as you scrolled).
+type displayLine struct {
+	text       string
+	modelIndex int
+}
+
+// displayLines flattens the two sections into the full sequence of rendered lines:
+// each present section's header (blank · header · blank) followed by its model rows.
+// The cursor highlight is applied later, at render time, to the matching modelIndex.
+func (view *LocalModels) displayLines() []displayLine {
+	lines := make([]displayLine, 0, len(view.models)+6)
+	appendSection := func(label string, from, to int) {
+		if from >= to {
+			return
+		}
+		lines = append(lines,
+			displayLine{text: "", modelIndex: -1},
+			displayLine{text: ui.Heading.Render(label), modelIndex: -1},
+			displayLine{text: "", modelIndex: -1},
+		)
+		for index := from; index < to; index++ {
+			lines = append(lines, displayLine{text: view.contentLine(view.models[index]), modelIndex: index})
+		}
+	}
+	appendSection("Installed", 0, view.installedCount)
+	appendSection("Installable", view.installedCount, len(view.models))
+	return lines
+}
+
+// modelLineIndex returns the display-line index of model row modelIndex (-1 if not
+// found) — used to keep the cursor's row inside the scroll window.
+func modelLineIndex(lines []displayLine, modelIndex int) int {
+	for index, line := range lines {
+		if line.modelIndex == modelIndex {
+			return index
+		}
+	}
+	return -1
+}
+
 // Init kicks off the first install-store list + library load.
 func (view *LocalModels) Init() tea.Cmd { return view.listCmd() }
 
@@ -490,36 +535,25 @@ func (view *LocalModels) header() string {
 	return body.String()
 }
 
-// listCapacity is how many MODEL rows fit in the scroll window, after reserving the
-// top header, the section-header lines (header + blank above + blank below, per
-// section), and a line for the flash. At least one row is always shown.
-func (view *LocalModels) listCapacity() int {
+// listHeight is the FIXED number of rendered lines the two-section list block
+// occupies: the content height minus the top header and the one always-rendered flash
+// slot. The list is padded to this height so its bottom never moves with scroll. At
+// least one line is always shown.
+func (view *LocalModels) listHeight() int {
 	if view.height <= 0 {
 		return len(view.models)
 	}
-	reserved := view.headerLines() + view.sectionChromeLines() + 1 // +1 for the flash line
-	capacity := view.height - reserved
-	if capacity < 1 {
-		capacity = 1
+	height := view.height - view.headerLines() - 1 // -1 for the flash slot
+	if height < 1 {
+		height = 1
 	}
-	return capacity
+	return height
 }
 
-// sectionChromeLines counts the non-model lines the section structure adds: per
-// section a blank line above the header, the header itself, and a blank line below it
-// (3 lines), for whichever of the two sections are present.
-func (view *LocalModels) sectionChromeLines() int {
-	lines := 0
-	if view.installedCount > 0 {
-		lines += 3
-	}
-	if view.installedCount < len(view.models) {
-		lines += 3
-	}
-	return lines
-}
-
-// clampWindow keeps the cursor inside the visible window [top, top+capacity).
+// clampWindow keeps the cursor inside the visible DISPLAY-line window. view.top is the
+// first visible display-line index; it is chosen so the cursor's row is visible AND
+// the last page is full (top clamped to totalLines-listHeight), so a short tail never
+// leaves a growing gap above the bottom margin.
 func (view *LocalModels) clampWindow() {
 	if len(view.models) == 0 {
 		view.top = 0
@@ -531,24 +565,30 @@ func (view *LocalModels) clampWindow() {
 	if view.cursor > len(view.models)-1 {
 		view.cursor = len(view.models) - 1
 	}
-	capacity := view.listCapacity()
-	if view.cursor < view.top {
-		view.top = view.cursor
+	lines := view.displayLines()
+	height := view.listHeight()
+	cursorLine := modelLineIndex(lines, view.cursor)
+	if cursorLine < 0 {
+		view.top = 0
+		return
 	}
-	if view.cursor >= view.top+capacity {
-		view.top = view.cursor - capacity + 1
+	// Scroll just enough to keep the cursor's line visible. When scrolling up to the
+	// cursor, include the section header(s) above it so the cursor never sits flush
+	// against the top with an orphaned header off-screen.
+	if cursorLine < view.top {
+		view.top = cursorLine
+	}
+	if cursorLine >= view.top+height {
+		view.top = cursorLine - height + 1
+	}
+	// Clamp so the LAST window is full (no short tail): never scroll past the point
+	// where the final listHeight lines are shown.
+	if maxTop := len(lines) - height; view.top > maxTop {
+		view.top = maxTop
 	}
 	if view.top < 0 {
 		view.top = 0
 	}
-}
-
-// sectionHeader renders one bold + accent-coloured section header line (matching the
-// table's accent header), with a blank line above and below so the two sections are
-// clearly separated. ui.Heading is bold + the theme accent (restyled per theme by
-// ui.Apply), the same accent the highlight uses.
-func (view *LocalModels) sectionHeader(label string) string {
-	return "\n" + ui.Heading.Render(label) + "\n\n"
 }
 
 // contentLine renders one model row's "NAME  DESCRIPTION" content as a single plain
@@ -595,9 +635,9 @@ func (view *LocalModels) View() string {
 	if len(view.models) > 0 {
 		body.WriteString(view.listView())
 	}
-	if view.flash != "" {
-		body.WriteString("\n" + view.flash)
-	}
+	// Always emit the flash slot as the LAST line (blank when empty) so the list above
+	// keeps its fixed height and the bottom sits at the constant margin.
+	body.WriteString("\n" + flashLine(view.flash))
 	return body.String()
 }
 
@@ -612,40 +652,39 @@ func selectedStyle() lipgloss.Style {
 		Background(ui.Accent())
 }
 
-// listView renders the two sections (each with a padded, accent-coloured header) and
-// the model rows in the current scroll window, highlighting the cursor's model row
-// with the Cloud-Models-identical Selected style spanning the full width.
+// listView renders the visible DISPLAY-line window (section headers + model rows) at a
+// FIXED height: it shows exactly listHeight lines from view.top, highlighting the
+// cursor's model row with the Cloud-Models-identical Selected style spanning the full
+// width, and PADS with blank lines if the window is short — so the block height (and
+// thus the bottom margin) is constant at every scroll position, no matter how many
+// section headers the window currently straddles.
 func (view *LocalModels) listView() string {
-	capacity := view.listCapacity()
+	lines := view.displayLines()
+	height := view.listHeight()
 	first := view.top
-	last := view.top + capacity
-	if last > len(view.models) {
-		last = len(view.models)
+	if first < 0 {
+		first = 0
+	}
+	last := first + height
+	if last > len(lines) {
+		last = len(lines)
 	}
 	selected := selectedStyle()
 
-	var body strings.Builder
-	wroteInstalled := false
-	wroteInstallable := false
+	rendered := make([]string, 0, height)
 	for index := first; index < last; index++ {
-		// Emit the section header the first time we cross into each section within the
-		// visible window, with blank-line padding above and below.
-		if index < view.installedCount {
-			if !wroteInstalled {
-				body.WriteString(view.sectionHeader("Installed"))
-				wroteInstalled = true
-			}
-		} else if !wroteInstallable {
-			body.WriteString(view.sectionHeader("Installable"))
-			wroteInstallable = true
+		line := lines[index]
+		text := line.text
+		if line.modelIndex >= 0 && line.modelIndex == view.cursor {
+			text = selected.Render(text)
 		}
-		line := view.contentLine(view.models[index])
-		if index == view.cursor {
-			line = selected.Render(line)
-		}
-		body.WriteString(line + "\n")
+		rendered = append(rendered, text)
 	}
-	return body.String()
+	// Pad to the fixed height so the bottom never moves with scroll.
+	for len(rendered) < height {
+		rendered = append(rendered, "")
+	}
+	return strings.Join(rendered, "\n")
 }
 
 // drillView renders the per-model tag picker: each tag marked ● installed / ○ not,

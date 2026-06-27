@@ -306,6 +306,75 @@ func TestWindowSizeSetsViewportWithoutPanic(test *testing.T) {
 	}
 }
 
+// fillView is a View whose content fills exactly the content size it is given, so the
+// body's inner margins can be measured against fully-occupied content.
+type fillView struct {
+	width, height int
+}
+
+func (view *fillView) Init() tea.Cmd          { return nil }
+func (view *fillView) Update(tea.Msg) tea.Cmd { return nil }
+func (view *fillView) Title() string          { return "Fill" }
+func (view *fillView) Hints() string          { return "" }
+func (view *fillView) SetSize(width, height int) {
+	view.width, view.height = width, height
+}
+func (view *fillView) View() string {
+	row := strings.Repeat("X", view.width)
+	rows := make([]string, view.height)
+	for index := range rows {
+		rows[index] = row
+	}
+	return strings.Join(rows, "\n")
+}
+
+// The body must total the window dimensions (no overflow / no right-or-bottom gap) and
+// carry a SYMMETRIC inner margin: the blank rows above/below the content and the blank
+// columns left/right of it are all equal to bodyPadX (== bodyPadY). This pins part A
+// (the vertical margin) against the existing horizontal margin.
+func TestBodySymmetricMargin(test *testing.T) {
+	application := &app{views: []View{&fillView{}}, width: 100, height: 40}
+	application.resizeViews()
+	contentWidth, contentHeight := application.bodyContentSize()
+
+	rendered := application.body(application.views[0].View())
+	lines := strings.Split(rendered, "\n")
+
+	// Total body height = content + both vertical pads + the two border rows, and it
+	// must equal what JoinVertical will stack into the window (chrome + this).
+	wantBodyHeight := contentHeight + 2*bodyPadY + borderRows
+	if len(lines) != wantBodyHeight {
+		test.Fatalf("body height = %d lines, want %d (content %d + 2*pad %d + border %d)",
+			len(lines), wantBodyHeight, contentHeight, 2*bodyPadY, borderRows)
+	}
+	if lipgloss.Width(rendered) != contentWidth+2*bodyPadX+borderCols {
+		test.Fatalf("body width = %d, want %d", lipgloss.Width(rendered), contentWidth+2*bodyPadX+borderCols)
+	}
+
+	// The content rows are the 'X' rows; the inner blank margin above the first and
+	// below the last must each equal bodyPadY, and equal the horizontal margin bodyPadX.
+	firstContent, lastContent := -1, -1
+	for index, line := range lines {
+		if strings.Contains(line, "X") {
+			if firstContent < 0 {
+				firstContent = index
+			}
+			lastContent = index
+		}
+	}
+	if firstContent < 0 {
+		test.Fatalf("no content rows rendered:\n%s", rendered)
+	}
+	topGap := firstContent - 1                // minus the top border row
+	bottomGap := len(lines) - 2 - lastContent // minus the bottom border row
+	if topGap != bodyPadY || bottomGap != bodyPadY {
+		test.Fatalf("vertical margins: top=%d bottom=%d, want both %d", topGap, bottomGap, bodyPadY)
+	}
+	if topGap != bodyPadX || bottomGap != bodyPadX {
+		test.Fatalf("vertical margin (%d/%d) must equal the horizontal margin %d", topGap, bottomGap, bodyPadX)
+	}
+}
+
 func tabKey() tea.KeyMsg      { return tea.KeyMsg{Type: tea.KeyTab} }
 func shiftTabKey() tea.KeyMsg { return tea.KeyMsg{Type: tea.KeyShiftTab} }
 func rightKey() tea.KeyMsg    { return tea.KeyMsg{Type: tea.KeyRight} }

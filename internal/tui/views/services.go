@@ -100,12 +100,14 @@ func (view *Services) Hints() string {
 	return "enter/d describe · s start · x stop · r restart · p update · e enable/disable · o console · l logs"
 }
 
-// SetSize fits the table + the describe/logs panes to the content area.
+// SetSize fits the table + the describe/logs panes to the content area. One row is
+// reserved for the flash slot (always rendered, blank when empty) so the table fills
+// a FIXED height and its bottom never moves whether or not a flash shows.
 func (view *Services) SetSize(width, height int) {
 	view.table.SetStyles(ui.TableStyles()) // pick up a live theme change
 	view.table.SetWidth(width)
-	if height > 0 {
-		view.table.SetHeight(height)
+	if tableHeight := height - 1; tableHeight > 0 {
+		view.table.SetHeight(tableHeight)
 	}
 	view.describe.setSize(width, height)
 	view.logs.setSize(width, height)
@@ -388,10 +390,9 @@ func (view *Services) View() string {
 	if !view.loaded {
 		return ui.Muted.Render("loading service status…")
 	}
-	if view.flash != "" {
-		return view.flash + "\n" + view.table.View()
-	}
-	return view.table.View()
+	// Always emit the flash slot as the LAST line (blank when empty) so the table
+	// above keeps its fixed height and the bottom sits at the constant margin.
+	return view.table.View() + "\n" + flashLine(view.flash)
 }
 
 // describeService renders a service's full detail for the describe pane.

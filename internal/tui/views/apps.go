@@ -61,12 +61,14 @@ func (view *Apps) Hints() string {
 	return "a add · x remove · u update · s start · t stop · R restart · r refresh"
 }
 
-// SetSize fits the table to the content area and re-picks live theme styles.
+// SetSize fits the table to the content area and re-picks live theme styles. One row
+// is reserved for the flash slot (always rendered, blank when empty) so the table
+// fills a FIXED height and its bottom never moves whether or not a flash shows.
 func (view *Apps) SetSize(width, height int) {
 	view.table.SetStyles(ui.TableStyles())
 	view.table.SetWidth(width)
-	if height > 0 {
-		view.table.SetHeight(height)
+	if tableHeight := height - 1; tableHeight > 0 {
+		view.table.SetHeight(tableHeight)
 	}
 }
 
@@ -171,11 +173,9 @@ func (view *Apps) View() string {
 	if !view.loaded {
 		return ui.Muted.Render("loading apps…")
 	}
-	body := view.table.View()
-	if view.flash != "" {
-		return view.flash + "\n" + body
-	}
-	return body
+	// Always emit the flash slot as the LAST line (blank when empty) so the table
+	// above keeps its fixed height and the bottom sits at the constant margin.
+	return view.table.View() + "\n" + flashLine(view.flash)
 }
 
 func appRows(statuses []apps.Status) []table.Row {

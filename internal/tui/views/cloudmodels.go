@@ -117,7 +117,10 @@ func (view *CloudModels) fitTable() {
 	view.table.SetWidth(view.width)
 	view.table.SetColumns(ui.StretchColumns(view.columns, view.width))
 	if view.height > 0 {
-		tableHeight := view.height - view.headerLines()
+		// Reserve the header rows plus one row for the always-rendered flash slot, so
+		// the table fills the remaining content height EXACTLY and its bottom sits at
+		// the constant margin regardless of scroll or whether a flash shows.
+		tableHeight := view.height - view.headerLines() - 1
 		if tableHeight < 1 {
 			tableHeight = 1
 		}
@@ -374,9 +377,9 @@ func (view *CloudModels) View() string {
 	if len(view.models) > 0 {
 		body.WriteString(view.table.View())
 	}
-	if view.flash != "" {
-		body.WriteString("\n" + view.flash)
-	}
+	// Always emit the flash slot as the LAST line (blank when empty) so the table
+	// above keeps its fixed height and the bottom sits at the constant margin.
+	body.WriteString("\n" + flashLine(view.flash))
 	return body.String()
 }
 

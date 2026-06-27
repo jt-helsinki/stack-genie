@@ -74,12 +74,14 @@ func (view *Sessions) Hints() string {
 	return "a/enter attach · n new agent · k kill · r refresh"
 }
 
-// SetSize fits the table to the content area.
+// SetSize fits the table to the content area. One row is reserved for the flash slot
+// (always rendered, blank when empty) so the table fills a FIXED height and its
+// bottom never moves whether or not a flash/empty-hint shows.
 func (view *Sessions) SetSize(width, height int) {
 	view.table.SetStyles(ui.TableStyles()) // pick up a live theme change
 	view.table.SetWidth(width)
-	if height > 0 {
-		view.table.SetHeight(height)
+	if tableHeight := height - 1; tableHeight > 0 {
+		view.table.SetHeight(tableHeight)
 	}
 }
 
@@ -184,14 +186,14 @@ func (view *Sessions) View() string {
 	if !view.loaded {
 		return ui.Muted.Render("loading sessions…")
 	}
-	body := view.table.View()
-	if len(view.sessions) == 0 {
-		body = ui.Muted.Render("no sessions yet — press n to start an agent, or a to open a shell") + "\n" + body
+	// The flash slot (always the LAST line, blank when empty) keeps the table at a
+	// fixed height. When there are no sessions, surface the hint there rather than
+	// prepending a line that would push the table past the content height.
+	flash := view.flash
+	if flash == "" && len(view.sessions) == 0 {
+		flash = ui.Muted.Render("no sessions yet — press n to start an agent, or a to open a shell")
 	}
-	if view.flash != "" {
-		return view.flash + "\n" + body
-	}
-	return body
+	return view.table.View() + "\n" + flashLine(flash)
 }
 
 func sessionRows(sessions []workspace.Session) []table.Row {

@@ -2,6 +2,7 @@ package views
 
 import (
 	"errors"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -245,6 +246,63 @@ func TestLocalModelsSourceNoCacheFlash(test *testing.T) {
 	drive(view, view.Init())
 	if !strings.Contains(view.View(), "no cached copy") {
 		test.Errorf("expected the no-cache warning:\n%s", view.View())
+	}
+}
+
+// renderedHeight is the number of lines a rendered block occupies (newlines + 1).
+func renderedHeight(rendered string) int { return strings.Count(rendered, "\n") + 1 }
+
+// bottomGap is the number of trailing blank (whitespace-only, ANSI-stripped) lines —
+// the gap between the last visible content and the bottom of the rendered block.
+func bottomGap(rendered string) int {
+	lines := strings.Split(rendered, "\n")
+	gap := 0
+	for index := len(lines) - 1; index >= 0; index-- {
+		if strings.TrimSpace(stripANSI(lines[index])) != "" {
+			break
+		}
+		gap++
+	}
+	return gap
+}
+
+// The Local Models list must render a CONSTANT height regardless of scroll position,
+// and must fill the content height (no growing blank gap above the bottom as you
+// scroll down). This pins the windowing+padding fix: a short tail no longer shrinks
+// the block, and the per-window section-header count no longer changes the row count.
+func TestLocalModelsListFillsConstantHeightOnScroll(test *testing.T) {
+	// Enough models that the list overflows a small pane and must scroll.
+	library := make([]ollama.LibraryModel, 0, 30)
+	for index := 0; index < 30; index++ {
+		name := "model" + string(rune('a'+index%26)) + strconv.Itoa(index)
+		library = append(library, ollama.LibraryModel{Name: name, Description: "desc", Tags: []string{"7b"}, RepoURL: "x"})
+	}
+	view := buildLocal(test,
+		[]ollama.Model{{Name: library[0].Name + ":7b", Size: 100, ParameterSize: "7B"}},
+		library,
+		noShow,
+	)
+	// A small pane forces a scroll window smaller than the model count.
+	view.SetSize(120, 18)
+
+	baseHeight := renderedHeight(view.View())
+	baseGap := bottomGap(view.View())
+	if baseGap > 1 {
+		test.Fatalf("at top the list should fill the content (bottom gap %d, want <=1):\n%s", baseGap, view.View())
+	}
+
+	// Drive the cursor down through the whole list; the rendered height and the
+	// bottom gap must stay invariant at every step.
+	for step := 0; step < len(view.models)+5; step++ {
+		_ = view.Update(tea.KeyMsg{Type: tea.KeyDown})
+		rendered := view.View()
+		if got := renderedHeight(rendered); got != baseHeight {
+			test.Fatalf("step %d: rendered height = %d, want constant %d:\n%s", step, got, baseHeight, rendered)
+		}
+		if got := bottomGap(rendered); got != baseGap {
+			test.Fatalf("step %d: bottom gap = %d, want constant %d (the bottom moved on scroll):\n%s",
+				step, got, baseGap, rendered)
+		}
 	}
 }
 

@@ -37,6 +37,38 @@ func TestServicesPopulatesTableOnRefresh(test *testing.T) {
 	}
 }
 
+// A bubbles/table view must FILL the content height it is sized to (the table pads
+// with blank rows) and keep a CONSTANT total height whether or not a flash is shown —
+// so its bottom sits at the fixed body margin. This pins the per-table height-fill fix
+// (reserve exactly one row for the always-rendered flash slot).
+func TestServicesTableFillsConstantHeight(test *testing.T) {
+	statuses := []setup.ServiceStatus{
+		{Name: "litellm", State: "running", Healthy: true},
+		{Name: "ollama", State: "running", Healthy: true},
+	}
+	view := NewServices(func() ([]setup.ServiceStatus, error) { return statuses, nil }, noControl, noUpdate, noOpen, noTail)
+	_ = view.Update(view.Init()())
+
+	const contentHeight = 20
+	view.SetSize(100, contentHeight)
+
+	noFlash := view.View()
+	if got := renderedHeight(noFlash); got != contentHeight {
+		test.Fatalf("table view height = %d, want it to FILL the content height %d:\n%s", got, contentHeight, noFlash)
+	}
+
+	// Set a flash; the total height must stay the same (the flash slot was already
+	// reserved, so the table shrinks by the one slot rather than the frame growing).
+	view.flash = "did a thing"
+	withFlash := view.View()
+	if got := renderedHeight(withFlash); got != contentHeight {
+		test.Fatalf("with a flash the view height = %d, want constant %d:\n%s", got, contentHeight, withFlash)
+	}
+	if !strings.Contains(withFlash, "did a thing") {
+		test.Errorf("the flash must be rendered in the slot:\n%s", withFlash)
+	}
+}
+
 func TestServicesSurfacesFetchError(test *testing.T) {
 	view := NewServices(func() ([]setup.ServiceStatus, error) {
 		return nil, errors.New("docker is not running")

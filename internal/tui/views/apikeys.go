@@ -75,8 +75,10 @@ func (view *APIKeys) Hints() string {
 func (view *APIKeys) SetSize(width, height int) {
 	view.table.SetStyles(ui.TableStyles()) // pick up a live theme change
 	view.table.SetWidth(width)
-	// heading (1) + action footer (2) + hidden-prompt note (1) + flash (1) = 5.
-	if tableHeight := height - 5; tableHeight > 0 {
+	// heading (1) + actions line (1) + hidden-prompt note (1) + flash slot (1) = 4.
+	// The flash slot is always rendered (blank when empty) so the table fills a fixed
+	// height and its bottom sits at the constant margin whether or not a flash shows.
+	if tableHeight := height - 4; tableHeight > 0 {
 		view.table.SetHeight(tableHeight)
 	}
 }
@@ -177,9 +179,9 @@ func (view *APIKeys) View() string {
 			ui.Primary.Render("r") + ui.Muted.Render(" refresh"))
 		body.WriteString("\n" + ui.Muted.Render("add/edit opens a prompt for the key — input is hidden as you type"))
 	}
-	if view.flash != "" {
-		body.WriteString("\n" + view.flash)
-	}
+	// Always emit the flash slot as the LAST line (blank when empty) so the table
+	// above keeps its fixed height and the bottom sits at the constant margin.
+	body.WriteString("\n" + flashLine(view.flash))
 	return body.String()
 }
 

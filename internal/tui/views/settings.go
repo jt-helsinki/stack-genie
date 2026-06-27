@@ -55,8 +55,10 @@ func (view *Settings) Hints() string { return "enter apply theme · ↑/↓ sele
 func (view *Settings) SetSize(width, height int) {
 	view.table.SetStyles(ui.TableStyles())
 	view.table.SetWidth(width)
-	// Reserve a few lines for the headings, flash, and the platform info block.
-	if tableHeight := height - 7; tableHeight > 0 {
+	// Reserve the exact non-table lines View() emits (must match it): Theme heading
+	// (1) + flash slot (1) + Platform heading (1) + role/gateway/change lines (3) = 6,
+	// so the table fills the rest and the block sits at the constant bottom margin.
+	if tableHeight := height - 6; tableHeight > 0 {
 		view.table.SetHeight(tableHeight)
 	}
 }
@@ -108,17 +110,18 @@ func (view *Settings) Update(msg tea.Msg) tea.Cmd {
 	return cmd
 }
 
-// View renders the theme picker above a read-only platform info block.
+// View renders the theme picker above a read-only platform info block. The line
+// budget here MUST match SetSize's reserve so the table fills the content height and
+// the block sits at the constant bottom margin (the flash slot is always rendered,
+// blank when empty, so the height is invariant whether or not a flash shows).
 func (view *Settings) View() string {
 	var body strings.Builder
-	body.WriteString(ui.Heading.Render("Theme") + "\n")
-	body.WriteString(view.table.View() + "\n")
-	if view.flash != "" {
-		body.WriteString(view.flash + "\n")
-	}
-	body.WriteString("\n" + ui.Heading.Render("Platform") + "\n")
-	body.WriteString(field("role", view.role))
-	body.WriteString(field("gateway", view.gateway))
-	body.WriteString(ui.Muted.Render("  (change with `ai gateway` / `ai setup`)"))
+	body.WriteString(ui.Heading.Render("Theme") + "\n")                            // 1
+	body.WriteString(view.table.View() + "\n")                                     // table + flash slot:
+	body.WriteString(flashLine(view.flash) + "\n")                                 // 1 (blank when empty)
+	body.WriteString(ui.Heading.Render("Platform") + "\n")                         // 1
+	body.WriteString(field("role", view.role))                                     // 1
+	body.WriteString(field("gateway", view.gateway))                               // 1
+	body.WriteString(ui.Muted.Render("  (change with `ai gateway` / `ai setup`)")) // 1
 	return body.String()
 }
