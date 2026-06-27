@@ -5,6 +5,8 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/mattn/go-runewidth"
+
 	"github.com/jt-helsinki/ideal-robot/internal/litellm"
 	"github.com/jt-helsinki/ideal-robot/internal/ui"
 )
@@ -131,21 +133,16 @@ func truncate(value string, limit int) string {
 	return string(runes[:limit]) + "\n… (truncated)"
 }
 
-// truncateRunes clips a CELL value to width runes with a trailing ellipsis. The
-// bubbles/table truncation is NOT ANSI-aware, so cell VALUES are kept plain (no
-// inline colour) and clipped here; row highlight comes from the Selected style.
+// truncateRunes clips a CELL value to width DISPLAY CELLS (terminal columns, not
+// rune count) with a trailing ellipsis when clipped. Measuring by display width is
+// what keeps columns aligned when a value contains wide runes (emoji like 🌋/🎩 or
+// CJK occupy two cells each). Cell VALUES are kept plain (no inline colour) and
+// clipped here; the row highlight comes from the Selected style.
 func truncateRunes(value string, width int) string {
-	runes := []rune(value)
 	if width <= 0 {
 		return ""
 	}
-	if len(runes) <= width {
-		return value
-	}
-	if width == 1 {
-		return string(runes[:1])
-	}
-	return string(runes[:width-1]) + "…"
+	return runewidth.Truncate(value, width, "…")
 }
 
 // flashLine renders a view's flash message as EXACTLY one line: the message when

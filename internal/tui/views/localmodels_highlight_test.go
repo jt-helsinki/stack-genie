@@ -23,9 +23,9 @@ func forceTrueColor(test *testing.T) {
 // (#FF66FF), used as the Selected row Background by the highlight style.
 const selectedBackgroundANSI = "48;2;255;102;255"
 
-// accentForegroundANSI is the truecolor SGR for the default theme accent (#FF66FF) as
-// a FOREGROUND — what ui.Heading uses to colour the bold section headers.
-const accentForegroundANSI = "38;2;255;102;255"
+// secondaryForegroundANSI is the truecolor SGR for the default theme secondary
+// (#33FFFF) as a FOREGROUND — what the Installed/Installable section headers use.
+const secondaryForegroundANSI = "38;2;51;255;255"
 
 // The active/selected model row must be visibly highlighted: the cursor sits on a
 // MODEL row (never a header) after load and after ↓, and the rendered output carries
@@ -63,8 +63,8 @@ func TestLocalModelsSelectedRowHighlighted(test *testing.T) {
 	assertHighlightOnCursorLine(test, view, "after ↓")
 }
 
-// The two section headers must be bold + accent-coloured with a blank line above and
-// below each, so they clearly separate the Installed and Installable sections.
+// The two section headers must be bold + secondary-coloured with a blank line above
+// and below each, so they clearly separate the Installed and Installable sections.
 func TestLocalModelsSectionHeadersStyled(test *testing.T) {
 	forceTrueColor(test)
 	view := buildLocal(test,
@@ -81,17 +81,17 @@ func TestLocalModelsSectionHeadersStyled(test *testing.T) {
 	for _, label := range []string{"Installed", "Installable"} {
 		headerIndex := -1
 		for index, line := range lines {
-			// The header line carries the label, the accent FOREGROUND, and the bold
+			// The header line carries the label, the secondary FOREGROUND, and the bold
 			// SGR (1) — and is NOT the highlighted cursor row (no accent background).
 			if strings.Contains(line, label) &&
-				strings.Contains(line, accentForegroundANSI) &&
+				strings.Contains(line, secondaryForegroundANSI) &&
 				!strings.Contains(line, selectedBackgroundANSI) {
 				headerIndex = index
 				break
 			}
 		}
 		if headerIndex < 0 {
-			test.Fatalf("section header %q must be present, bold + accent-coloured:\n%s", label, rendered)
+			test.Fatalf("section header %q must be present, bold + secondary-coloured:\n%s", label, rendered)
 		}
 		// Blank line above and below the header (top + bottom padding).
 		if headerIndex == 0 || strings.TrimSpace(stripANSI(lines[headerIndex-1])) != "" {

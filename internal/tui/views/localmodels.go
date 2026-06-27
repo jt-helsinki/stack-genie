@@ -6,6 +6,8 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/mattn/go-runewidth"
+
 	"github.com/jt-helsinki/ideal-robot/internal/ollama"
 	"github.com/jt-helsinki/ideal-robot/internal/ui"
 )
@@ -69,7 +71,7 @@ type tagPicker struct {
 // everything left over (the widest column). There is no TAGS column — tags are shown
 // in the per-model drill-down (Enter). The row sums to the full pane width so the
 // highlight bar fills the row with no wrap (see contentLine).
-const localNameWidth = 22
+const localNameWidth = 26
 
 // LocalModels is the Local Models tab: the local Ollama store (installed) + the
 // installable ollama.com library, grouped into an "Installed" section (library models
@@ -604,10 +606,53 @@ func (view *LocalModels) clampWindow() {
 // Tags are NOT shown here — they live in the per-model drill-down.
 func (view *LocalModels) contentLine(model localModel) string {
 	descWidth := view.descriptionWidth()
-	name := padCell(model.name, localNameWidth)
-	desc := padCell(truncateRunes(model.description, descWidth), descWidth)
+	// Both columns are clipped to their DISPLAY width (cells) so the description
+	// always starts at the same column (the name never overruns localNameWidth) and
+	// the row never overflows the pane (so the right border stays aligned), even when
+	// a value contains wide runes. Emoji are stripped from the description first.
+	name := padCell(truncateRunes(model.name, localNameWidth), localNameWidth)
+	desc := truncateRunes(stripEmoji(model.description), descWidth)
 	line := " " + name + "  " + desc
 	return padToWidth(line, view.width)
+}
+
+// stripEmoji removes pictographic emoji (and their joiners / variation selectors)
+// from a plain description and collapses the whitespace they leave behind, so the
+// NAME · DESCRIPTION list stays clean and column-aligned. Non-emoji symbols and
+// letters (e.g. the Σ in "MathΣtral") are kept.
+func stripEmoji(text string) string {
+	var builder strings.Builder
+	for _, char := range text {
+		if isEmoji(char) {
+			continue
+		}
+		builder.WriteRune(char)
+	}
+	return strings.Join(strings.Fields(builder.String()), " ")
+}
+
+// isEmoji reports whether char is a pictographic emoji rune (or an emoji
+// modifier/joiner) that should be stripped from a description.
+func isEmoji(char rune) bool {
+	switch {
+	case char >= 0x1F300 && char <= 0x1FAFF: // symbols & pictographs, emoticons, transport, supplemental
+		return true
+	case char >= 0x2600 && char <= 0x27BF: // misc symbols + dingbats
+		return true
+	case char >= 0x2B00 && char <= 0x2BFF: // stars, arrows-as-emoji
+		return true
+	case char >= 0x2300 && char <= 0x23FF: // watches, hourglasses, media controls
+		return true
+	case char >= 0x1F1E6 && char <= 0x1F1FF: // regional-indicator (flag) letters
+		return true
+	case char == 0x200D: // zero-width joiner
+		return true
+	case char == 0x20E3: // combining enclosing keycap
+		return true
+	case char >= 0xFE00 && char <= 0xFE0F: // variation selectors
+		return true
+	}
+	return false
 }
 
 // descriptionWidth is the WIDEST column: everything left after NAME and the spacing.
@@ -799,27 +844,22 @@ func copyBoolMap(source map[string]bool) map[string]bool {
 	return out
 }
 
-// padCell right-pads (or, when overlong, leaves) a plain cell value to width runes so
-// the columns align. The value is assumed already clipped to width by truncateRunes.
+// padCell right-pads (or, when overlong, leaves) a plain cell value to width DISPLAY
+// CELLS so the columns align even with wide runes. The value is assumed already
+// clipped to width by truncateRunes.
 func padCell(value string, width int) string {
-	gap := width - len([]rune(value))
-	if gap <= 0 {
-		return value
-	}
-	return value + strings.Repeat(" ", gap)
+	return runewidth.FillRight(value, width)
 }
 
-// padToWidth right-pads a plain (un-styled) line to width runes so a highlight bar
-// applied over it spans the full pane; a line already at/over width is returned as-is.
+// padToWidth right-pads a plain (un-styled) line to width DISPLAY CELLS so a highlight
+// bar applied over it spans the full pane; a line already at/over width is returned
+// as-is. Measuring by display width (not rune count) keeps the right border aligned
+// when a row contains wide runes.
 func padToWidth(line string, width int) string {
 	if width <= 0 {
 		return line
 	}
-	gap := width - len([]rune(line))
-	if gap <= 0 {
-		return line
-	}
-	return line + strings.Repeat(" ", gap)
+	return runewidth.FillRight(line, width)
 }
 
 // sortTags orders tags by ascending parameter magnitude where parseable (270m < 1b <

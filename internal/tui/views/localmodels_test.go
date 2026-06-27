@@ -9,6 +9,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/jt-helsinki/ideal-robot/internal/litellm"
 	"github.com/jt-helsinki/ideal-robot/internal/ollama"
+	"github.com/mattn/go-runewidth"
 )
 
 // noShow is a Show fetcher stub for tests that don't open the describe pane.
@@ -327,5 +328,40 @@ func TestLocalModelsDrillEnterInstalledShowsDetail(test *testing.T) {
 	}
 	if !strings.Contains(view.View(), "qwen") {
 		test.Errorf("describe pane should show the /api/show detail:\n%s", view.View())
+	}
+}
+
+// TestStripEmojiRemovesPictographsKeepsLetters verifies emoji (and the whitespace
+// they leave) are stripped from descriptions while non-emoji letters/symbols stay.
+func TestStripEmojiRemovesPictographsKeepsLetters(t *testing.T) {
+	cases := map[string]string{
+		"🌋 LLaVA is a model":  "LLaVA is a model",
+		"🎩 Magicoder family":  "Magicoder family",
+		"MathΣtral reasoning": "MathΣtral reasoning", // Greek Σ is NOT an emoji — kept
+		"plain text":          "plain text",
+		"a 🚀 b":               "a b", // collapse the gap the emoji left
+	}
+	for input, want := range cases {
+		if got := stripEmoji(input); got != want {
+			t.Errorf("stripEmoji(%q) = %q, want %q", input, got, want)
+		}
+	}
+}
+
+// TestContentLineAlignsToPaneWidth verifies every rendered row is EXACTLY the pane's
+// display width — the name never overruns its column and a wide-rune (emoji) or long
+// name never pushes the line past the right border.
+func TestContentLineAlignsToPaneWidth(t *testing.T) {
+	view := &LocalModels{width: 80}
+	rows := []localModel{
+		{name: "phi", description: "short"},
+		{name: "paraphrase-multilingual-very-long-name", description: "a long description that surely runs well past the available space and must be clipped"},
+		{name: "llava", description: "🌋 vision model with emoji"},
+	}
+	for _, model := range rows {
+		line := view.contentLine(model)
+		if width := runewidth.StringWidth(line); width != view.width {
+			t.Errorf("contentLine(%q) display width = %d, want %d", model.name, width, view.width)
+		}
 	}
 }
