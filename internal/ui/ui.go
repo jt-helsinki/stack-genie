@@ -73,6 +73,19 @@ func Enabled(emitter *output.Emitter) bool {
 	return term.IsTerminal(os.Stdin.Fd()) && term.IsTerminal(os.Stderr.Fd())
 }
 
+// EmbeddedTerminalEnv is set to "1" in the child's environment by the `ai ui`
+// terminal pane, so a nested `ai` command knows it is running INSIDE the pane. There
+// the pane already renders the child's PTY through its own emulator, so a nested
+// animated bubbletea spinner would fight the child's own streaming progress (msb's
+// layered pull, ollama/docker downloads) for cursor control of the shared PTY —
+// producing flicker, cascaded/garbled lines, and an apparent hang. Commands consult
+// EmbeddedTerminal() to run the work directly (progress streams cleanly) instead.
+const EmbeddedTerminalEnv = "AI_UI_TERMINAL"
+
+// EmbeddedTerminal reports whether this process is running inside the `ai ui`
+// terminal pane (see EmbeddedTerminalEnv).
+func EmbeddedTerminal() bool { return os.Getenv(EmbeddedTerminalEnv) == "1" }
+
 // HuhTheme is the form theme for the shared prompt helpers, so prompts match the
 // rest of the UI. It reflects the active theme (see Apply / `ai theme`).
 func HuhTheme() *huh.Theme {

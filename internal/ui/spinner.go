@@ -14,6 +14,21 @@ import (
 // The spinner animates on its own ticks while work runs in the tea runtime, so
 // the user never sees a frozen screen.
 func RunWithSpinner(out io.Writer, title string, work func() error) error {
+	if EmbeddedTerminal() {
+		// Inside the `ai ui` terminal pane a nested bubbletea spinner would fight the
+		// child's own streaming progress (msb's layered pull, ollama/docker downloads)
+		// for cursor control of the shared PTY — the flicker/garbled/hung output. Run
+		// the work directly so its progress streams cleanly into the pane; print the
+		// title up front (labelling the streaming output) and a final ✓/✗ line.
+		_, _ = fmt.Fprintf(out, "%s\n", title)
+		err := work()
+		if err != nil {
+			_, _ = fmt.Fprintf(out, "%s %s\n", Failure.Render(IconFail), title)
+		} else {
+			_, _ = fmt.Fprintf(out, "%s %s\n", Success.Render(IconOK), title)
+		}
+		return err
+	}
 	model := spinnerModel{spinner: newSpinner(), title: title, work: work}
 	finished, runErr := tea.NewProgram(model, tea.WithOutput(out)).Run()
 	if runErr != nil {

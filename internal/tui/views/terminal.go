@@ -121,7 +121,11 @@ func (term *Terminal) Init() tea.Cmd {
 // output into the emulator. Runs in a bubbletea command goroutine.
 func (term *Terminal) spawn() tea.Msg {
 	command := exec.Command(term.argv[0], term.argv[1:]...) // #nosec G204 — argv is built from fixed `ai` subcommands, not user input
-	command.Env = append(os.Environ(), "TERM=xterm-256color")
+	// Mark the child as embedded so nested `ai` commands skip their own animated
+	// bubbletea spinner (which would fight the child's streaming progress for cursor
+	// control of this PTY — flicker/garbled output); their progress streams cleanly
+	// into this pane's emulator instead. See ui.EmbeddedTerminalEnv.
+	command.Env = append(os.Environ(), "TERM=xterm-256color", ui.EmbeddedTerminalEnv+"=1")
 	ptmx, err := pty.Start(command)
 	if err != nil {
 		return terminalExitMsg{err: err}
