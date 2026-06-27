@@ -69,7 +69,7 @@ func TestLocalModelsTwoSectionGrouping(test *testing.T) {
 		test.Fatalf("row 1 should be installable llama3.2, got %+v", view.models[1])
 	}
 	rendered := view.View()
-	for _, want := range []string{"— Installed —", "— Installable —", "qwen2.5", "llama3.2", "Qwen 2.5"} {
+	for _, want := range []string{"Installed", "Installable", "qwen2.5", "llama3.2", "Qwen 2.5"} {
 		if !strings.Contains(rendered, want) {
 			test.Errorf("rendered view missing %q:\n%s", want, rendered)
 		}

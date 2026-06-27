@@ -20,18 +20,12 @@ func forceTrueColor(test *testing.T) {
 }
 
 // selectedBackgroundANSI is the truecolor SGR for the default theme accent
-// (#FF66FF), used as the Selected row Background by ui.TableStyles().
+// (#FF66FF), used as the Selected row Background by the highlight style.
 const selectedBackgroundANSI = "48;2;255;102;255"
 
-// cursorRow returns the table-row index of the cursor and the models[] index it maps
-// to (-1 for a header row).
-func cursorRow(view *LocalModels) (int, int) {
-	cursor := view.table.Cursor()
-	if cursor < 0 || cursor >= len(view.rowModel) {
-		return cursor, -2
-	}
-	return cursor, view.rowModel[cursor]
-}
+// accentForegroundANSI is the truecolor SGR for the default theme accent (#FF66FF) as
+// a FOREGROUND — what ui.Heading uses to colour the bold section headers.
+const accentForegroundANSI = "38;2;255;102;255"
 
 // The active/selected model row must be visibly highlighted: the cursor sits on a
 // MODEL row (never a header) after load and after ↓, and the rendered output carries
@@ -48,42 +42,96 @@ func TestLocalModelsSelectedRowHighlighted(test *testing.T) {
 		noShow,
 	)
 
-	// (a) After load the cursor is on a model row, not a header.
-	_, modelIndex := cursorRow(view)
-	if modelIndex < 0 {
-		test.Fatalf("after load the cursor must sit on a model row, got rowModel index %d", modelIndex)
+	// (a) After load the cursor is on a model row.
+	if view.cursor < 0 || view.cursor >= len(view.models) {
+		test.Fatalf("after load the cursor must sit on a model row, got cursor %d of %d models", view.cursor, len(view.models))
 	}
 
 	// (b) The rendered output carries the Selected background on the highlighted
-	// model row's line, and ONLY there among the model/header lines.
+	// model row's line, and ONLY there.
 	assertHighlightOnCursorLine(test, view, "after load")
 
 	// (c) ↓ moves the highlight to the next model row, still highlighted.
-	before, _ := cursorRow(view)
+	before := view.cursor
 	_ = view.Update(tea.KeyMsg{Type: tea.KeyDown})
-	after, afterModel := cursorRow(view)
-	if after == before {
-		test.Fatalf("↓ should move the cursor, stayed at row %d", before)
+	if view.cursor == before {
+		test.Fatalf("↓ should move the cursor, stayed at %d", before)
 	}
-	if afterModel < 0 {
-		test.Fatalf("after ↓ the cursor must sit on a model row, got rowModel index %d", afterModel)
+	if view.cursor < 0 || view.cursor >= len(view.models) {
+		test.Fatalf("after ↓ the cursor must sit on a model row, got %d", view.cursor)
 	}
 	assertHighlightOnCursorLine(test, view, "after ↓")
 }
 
+// The two section headers must be bold + accent-coloured with a blank line above and
+// below each, so they clearly separate the Installed and Installable sections.
+func TestLocalModelsSectionHeadersStyled(test *testing.T) {
+	forceTrueColor(test)
+	view := buildLocal(test,
+		[]ollama.Model{{Name: "qwen2.5:7b", Size: 4700000000, ParameterSize: "7.6B"}},
+		[]ollama.LibraryModel{
+			{Name: "qwen2.5", Description: "Qwen 2.5", Tags: []string{"7b", "72b"}},
+			{Name: "llama3.2", Description: "Llama 3.2", Tags: []string{"1b", "3b"}},
+		},
+		noShow,
+	)
+	rendered := view.View()
+	lines := strings.Split(rendered, "\n")
+
+	for _, label := range []string{"Installed", "Installable"} {
+		headerIndex := -1
+		for index, line := range lines {
+			// The header line carries the label, the accent FOREGROUND, and the bold
+			// SGR (1) — and is NOT the highlighted cursor row (no accent background).
+			if strings.Contains(line, label) &&
+				strings.Contains(line, accentForegroundANSI) &&
+				!strings.Contains(line, selectedBackgroundANSI) {
+				headerIndex = index
+				break
+			}
+		}
+		if headerIndex < 0 {
+			test.Fatalf("section header %q must be present, bold + accent-coloured:\n%s", label, rendered)
+		}
+		// Blank line above and below the header (top + bottom padding).
+		if headerIndex == 0 || strings.TrimSpace(stripANSI(lines[headerIndex-1])) != "" {
+			test.Errorf("section header %q must have a blank line above it:\n%s", label, rendered)
+		}
+		if headerIndex+1 >= len(lines) || strings.TrimSpace(stripANSI(lines[headerIndex+1])) != "" {
+			test.Errorf("section header %q must have a blank line below it:\n%s", label, rendered)
+		}
+	}
+}
+
+// stripANSI removes SGR escape sequences so a "blank" padding line (which may carry a
+// reset) is recognised as visually empty.
+func stripANSI(line string) string {
+	var out strings.Builder
+	for {
+		start := strings.IndexByte(line, '\x1b')
+		if start < 0 {
+			out.WriteString(line)
+			break
+		}
+		out.WriteString(line[:start])
+		end := strings.IndexByte(line[start:], 'm')
+		if end < 0 {
+			break
+		}
+		line = line[start+end+1:]
+	}
+	return out.String()
+}
+
 // assertHighlightOnCursorLine renders the view and asserts the Selected background is
-// present on the table line at the cursor and on no other model/header line.
+// present on the list line at the cursor and on no other line.
 func assertHighlightOnCursorLine(test *testing.T, view *LocalModels, when string) {
 	test.Helper()
-	cursor := view.table.Cursor()
 	rendered := view.View()
 	if !strings.Contains(rendered, selectedBackgroundANSI) {
 		test.Fatalf("%s: the Selected background %q is absent from the rendered view:\n%s",
 			when, selectedBackgroundANSI, rendered)
 	}
-	// Locate the table body lines (the rows after the header chrome). The table's
-	// own lines are those rendering a model name / section header; find the one that
-	// carries the highlight and confirm its content matches the cursor row.
 	lines := strings.Split(rendered, "\n")
 	highlighted := 0
 	for _, line := range lines {
@@ -94,12 +142,11 @@ func assertHighlightOnCursorLine(test *testing.T, view *LocalModels, when string
 	if highlighted != 1 {
 		test.Fatalf("%s: expected exactly one highlighted line, got %d:\n%s", when, highlighted, rendered)
 	}
-	// The highlighted line must contain the cursor row's model name AND the
-	// highlight must span the full row — the closing reset is the LAST escape on the
-	// line (no unstyled trailing pad spaces after it), so the background bar reaches
-	// the right edge rather than stopping short and looking ragged.
-	index := view.rowModel[cursor]
-	wantName := view.models[index].name
+	// The highlighted line must contain the cursor row's model name AND the highlight
+	// must span the full row — the closing reset is the LAST escape on the line (no
+	// unstyled trailing pad spaces after it), so the background bar reaches the right
+	// edge rather than stopping short and looking ragged.
+	wantName := view.models[view.cursor].name
 	for _, line := range lines {
 		if !strings.Contains(line, selectedBackgroundANSI) {
 			continue

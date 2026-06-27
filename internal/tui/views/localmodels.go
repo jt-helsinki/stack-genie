@@ -4,8 +4,8 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/charmbracelet/bubbles/table"
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 	"github.com/jt-helsinki/ideal-robot/internal/ollama"
 	"github.com/jt-helsinki/ideal-robot/internal/ui"
 )
@@ -26,7 +26,7 @@ type ModelShowFetcher func(model string) (ollama.ModelInfo, error)
 
 // localModel is one model row of the Local Models view: a library model (or a
 // synthesized row for an installed custom not in the library) plus the set of its
-// tags that are installed locally. The table shows NAME · DESCRIPTION · TAGS; enter
+// tags that are installed locally. The list shows NAME · DESCRIPTION · TAGS; enter
 // drills into the per-tag picker.
 type localModel struct {
 	name        string          // base model name (e.g. "qwen2.5")
@@ -65,26 +65,66 @@ type tagPicker struct {
 	selected map[string]bool // not-installed tags ticked for pull
 }
 
+// Column widths for the NAME · DESCRIPTION · TAGS list. NAME is fixed; TAGS flexes
+// with the pane (see tagsWidth); DESCRIPTION takes everything left over so it is the
+// WIDEST column, and the row sums to the full pane width (the highlight bar fills the
+// row with no wrap — see contentLine).
+const (
+	localNameWidth = 22
+	localTagsMin   = 24
+	localTagsMax   = 48
+)
+
+// tagsWidth is the TAGS column width: ~40% of the space left after the fixed NAME
+// column, clamped to [localTagsMin, localTagsMax] and never more than half that space
+// so DESCRIPTION (the remainder) always stays the widest column. It scales with the
+// pane (wide windows show more tags) and never overflows narrow ones.
+func (view *LocalModels) tagsWidth() int {
+	available := view.width - localNameWidth - 6 // gaps: leading+trailing (2) + two inter-column (4)
+	if available < 2 {
+		return 1
+	}
+	width := available * 2 / 5 // ~40%
+	if width < localTagsMin {
+		width = localTagsMin
+	}
+	if width > localTagsMax {
+		width = localTagsMax
+	}
+	if half := available/2 - 1; width > half { // keep DESCRIPTION ≥ TAGS
+		width = half
+	}
+	if width < 1 {
+		width = 1
+	}
+	return width
+}
+
 // LocalModels is the Local Models tab: the local Ollama store (installed) + the
 // installable ollama.com library, grouped into an "Installed" section (library models
 // with ≥1 pulled tag, plus installed customs) and an "Installable" section (the rest).
-// One cursor spans both sections (header rows are skipped). enter drills into a
-// per-model tag picker to pull/remove/test individual tags. Keys: enter manage, r
-// refresh, t test, d remove.
+// The two sections are rendered as a custom viewport-windowed list (NOT a bubbles
+// table) so each section header can be bold + accent-coloured with blank-line padding
+// above and below — a styled header cannot live in a single-line, ANSI-unaware table
+// cell. One cursor spans both sections over MODEL ROWS ONLY (it never lands on a
+// header or padding line); the highlighted model row is rendered with the SAME style
+// as ui.TableStyles().Selected, stretched to the full pane width so it looks identical
+// to the Cloud Models highlight. enter drills into a per-model tag picker to
+// pull/remove/test individual tags. Keys: enter manage, r refresh, t test, d remove.
 type LocalModels struct {
 	test    ModelTester
 	list    LocalModelLister
 	library LibraryLister
 	show    ModelShowFetcher
 
-	table    table.Model
-	columns  []table.Column
 	describe describePane
 	drill    *tagPicker
 
-	models    []localModel // every model row (installed-first then installable)
-	rowModel  []int        // table-row index → models index (-1 for a header row)
-	installed map[string]bool
+	models         []localModel // every model row (installed-first then installable)
+	installedCount int          // how many of models are in the Installed section
+	cursor         int          // index into models (the highlighted model row)
+	top            int          // first visible model index (scroll window top)
+	installed      map[string]bool
 
 	source     ollama.Source
 	libraryErr error
@@ -99,14 +139,7 @@ type LocalModels struct {
 // NewLocalModels builds the Local Models view over the injected installed-store
 // lister, library lister, per-model /api/show fetcher, and gateway tester.
 func NewLocalModels(list LocalModelLister, library LibraryLister, show ModelShowFetcher, test ModelTester) *LocalModels {
-	columns := []table.Column{
-		{Title: "NAME", Width: 22},
-		{Title: "DESCRIPTION", Width: 44},
-		{Title: "TAGS", Width: 30},
-	}
-	built := table.New(table.WithColumns(columns), table.WithFocused(true))
-	built.SetStyles(ui.TableStyles())
-	return &LocalModels{list: list, library: library, show: show, test: test, table: built, columns: columns, describe: newDescribePane()}
+	return &LocalModels{list: list, library: library, show: show, test: test, describe: newDescribePane()}
 }
 
 func (view *LocalModels) Title() string { return "Local Models" }
@@ -115,25 +148,12 @@ func (view *LocalModels) Hints() string {
 	return "↑/↓ select · enter manage tags · t test · d remove · r refresh"
 }
 
-// SetSize records the pane dimensions and fits the table + describe pane.
+// SetSize records the pane dimensions and fits the describe pane.
 func (view *LocalModels) SetSize(width, height int) {
 	view.width = width
 	view.height = height
-	view.fitTable()
+	view.clampWindow()
 	view.describe.setSize(width, height)
-}
-
-func (view *LocalModels) fitTable() {
-	view.table.SetStyles(ui.TableStyles())
-	view.table.SetWidth(view.width)
-	view.table.SetColumns(ui.StretchColumns(view.columns, view.width))
-	if view.height > 0 {
-		tableHeight := view.height - view.headerLines()
-		if tableHeight < 1 {
-			tableHeight = 1
-		}
-		view.table.SetHeight(tableHeight)
-	}
 }
 
 // Init kicks off the first install-store list + library load.
@@ -165,7 +185,7 @@ func (view *LocalModels) testCmd(model string) tea.Cmd {
 }
 
 // Update advances the view: a refresh rebuilds the two sections; the drill-down
-// owns keys while open; otherwise the action keys + table navigation apply.
+// owns keys while open; otherwise the action keys + list navigation apply.
 func (view *LocalModels) Update(msg tea.Msg) tea.Cmd {
 	switch message := msg.(type) {
 	case localModelsRefreshedMsg:
@@ -175,7 +195,7 @@ func (view *LocalModels) Update(msg tea.Msg) tea.Cmd {
 		view.source = message.source
 		view.buildModels(message.installed, message.library)
 		view.libraryFlash()
-		view.fitTable()
+		view.clampWindow()
 		return nil
 	case modelTestDoneMsg:
 		view.flash = modelTestFlash(message)
@@ -183,12 +203,7 @@ func (view *LocalModels) Update(msg tea.Msg) tea.Cmd {
 	case tea.KeyMsg:
 		return view.handleKey(message)
 	}
-	if view.describe.active() || view.drill != nil {
-		return nil
-	}
-	var cmd tea.Cmd
-	view.table, cmd = view.table.Update(msg)
-	return cmd
+	return nil
 }
 
 // handleKey routes a key: the drill-down first (when open), then the describe pane,
@@ -244,10 +259,7 @@ func (view *LocalModels) handleKey(key tea.KeyMsg) tea.Cmd {
 		view.moveCursor(1)
 		return nil
 	}
-	var cmd tea.Cmd
-	view.table, cmd = view.table.Update(key)
-	view.snapCursorToModel(1)
-	return cmd
+	return nil
 }
 
 // firstTestRef returns the first installed tag's full ref (name:tag) for a quick `t`
@@ -366,8 +378,7 @@ func (picker *tagPicker) selectedRefs() []string {
 // --- data build -------------------------------------------------------------
 
 // buildModels groups the installed store + the library into Installed-first then
-// Installable rows, rebuilds the table (with section header rows), and seats the
-// cursor on the first selectable row.
+// Installable rows and seats the cursor on the first model row.
 func (view *LocalModels) buildModels(installed []ollama.Model, library []ollama.LibraryModel) {
 	// Index installed tags by base name.
 	installedTags := make(map[string]map[string]bool)
@@ -436,90 +447,35 @@ func (view *LocalModels) buildModels(installed []ollama.Model, library []ollama.
 	sort.Slice(installableRows, func(left, right int) bool { return installableRows[left].name < installableRows[right].name })
 
 	view.models = append(installedRows, installableRows...)
-	view.rebuildTable(len(installedRows))
+	view.installedCount = len(installedRows)
+	view.cursor = 0
+	view.top = 0
 }
 
-// rebuildTable lays the two sections into the bubbles table with non-selectable
-// header rows, keeping rowModel[] in sync (header rows map to -1). installedCount is
-// how many of view.models are in the Installed section.
-func (view *LocalModels) rebuildTable(installedCount int) {
-	tableRows := make([]table.Row, 0, len(view.models)+2)
-	view.rowModel = make([]int, 0, len(view.models)+2)
-
-	addHeader := func(label string) {
-		tableRows = append(tableRows, table.Row{label, "", ""})
-		view.rowModel = append(view.rowModel, -1)
-	}
-	addModel := func(index int) {
-		model := view.models[index]
-		tableRows = append(tableRows, table.Row{
-			model.name,
-			truncateRunes(model.description, 44),
-			truncateRunes(tagSummary(model.tags, model.installed), 30),
-		})
-		view.rowModel = append(view.rowModel, index)
-	}
-
-	if installedCount > 0 {
-		addHeader("— Installed —————————————————————————")
-		for index := 0; index < installedCount; index++ {
-			addModel(index)
-		}
-	}
-	if installedCount < len(view.models) {
-		addHeader("— Installable ———————————————————————")
-		for index := installedCount; index < len(view.models); index++ {
-			addModel(index)
-		}
-	}
-	view.table.SetRows(tableRows)
-	// Seat the cursor on the first selectable (model) row.
-	view.table.SetCursor(0)
-	view.snapCursorToModel(1)
-}
-
-// moveCursor steps the table cursor by step (±1) and skips header rows.
+// moveCursor steps the cursor by step (±1) over MODEL rows only (it never lands on a
+// section header or padding line, since the cursor indexes view.models directly), then
+// keeps it inside the scroll window.
 func (view *LocalModels) moveCursor(step int) {
-	if len(view.rowModel) == 0 {
+	if len(view.models) == 0 {
 		return
 	}
-	next := view.table.Cursor() + step
-	for next >= 0 && next < len(view.rowModel) {
-		if view.rowModel[next] >= 0 {
-			view.table.SetCursor(next)
-			return
-		}
-		next += step
+	next := view.cursor + step
+	if next < 0 {
+		next = 0
 	}
+	if next > len(view.models)-1 {
+		next = len(view.models) - 1
+	}
+	view.cursor = next
+	view.clampWindow()
 }
 
-// snapCursorToModel nudges the cursor off a header row in the direction step (after
-// a table.Update moved it); it never lands on a header.
-func (view *LocalModels) snapCursorToModel(step int) {
-	if len(view.rowModel) == 0 {
-		return
-	}
-	cursor := view.table.Cursor()
-	if cursor >= 0 && cursor < len(view.rowModel) && view.rowModel[cursor] >= 0 {
-		return
-	}
-	view.moveCursor(step)
-	if cursor := view.table.Cursor(); cursor < 0 || cursor >= len(view.rowModel) || view.rowModel[cursor] < 0 {
-		view.moveCursor(-step)
-	}
-}
-
-// selectedModel returns the model under the cursor (skipping header rows).
+// selectedModel returns the model under the cursor.
 func (view *LocalModels) selectedModel() (localModel, bool) {
-	cursor := view.table.Cursor()
-	if cursor < 0 || cursor >= len(view.rowModel) {
+	if view.cursor < 0 || view.cursor >= len(view.models) {
 		return localModel{}, false
 	}
-	index := view.rowModel[cursor]
-	if index < 0 || index >= len(view.models) {
-		return localModel{}, false
-	}
-	return view.models[index], true
+	return view.models[view.cursor], true
 }
 
 // libraryFlash sets the source-availability warning when the library fetch failed:
@@ -544,10 +500,12 @@ func (view *LocalModels) hasLibraryRows() bool {
 	return false
 }
 
-// headerLines counts the rendered header lines (used to size the table).
+// --- rendering --------------------------------------------------------------
+
+// headerLines counts the rendered top-header lines (used to size the scroll window).
 func (view *LocalModels) headerLines() int { return strings.Count(view.header(), "\n") }
 
-// header renders everything above the table.
+// header renders everything above the two-section list.
 func (view *LocalModels) header() string {
 	var body strings.Builder
 	body.WriteString(ui.Heading.Render("Local models — Ollama store + installable library") + "\n")
@@ -561,7 +519,98 @@ func (view *LocalModels) header() string {
 	return body.String()
 }
 
-// View renders the drill-down, the describe pane, or the two-section table.
+// listCapacity is how many MODEL rows fit in the scroll window, after reserving the
+// top header, the section-header lines (header + blank above + blank below, per
+// section), and a line for the flash. At least one row is always shown.
+func (view *LocalModels) listCapacity() int {
+	if view.height <= 0 {
+		return len(view.models)
+	}
+	reserved := view.headerLines() + view.sectionChromeLines() + 1 // +1 for the flash line
+	capacity := view.height - reserved
+	if capacity < 1 {
+		capacity = 1
+	}
+	return capacity
+}
+
+// sectionChromeLines counts the non-model lines the section structure adds: per
+// section a blank line above the header, the header itself, and a blank line below it
+// (3 lines), for whichever of the two sections are present.
+func (view *LocalModels) sectionChromeLines() int {
+	lines := 0
+	if view.installedCount > 0 {
+		lines += 3
+	}
+	if view.installedCount < len(view.models) {
+		lines += 3
+	}
+	return lines
+}
+
+// clampWindow keeps the cursor inside the visible window [top, top+capacity).
+func (view *LocalModels) clampWindow() {
+	if len(view.models) == 0 {
+		view.top = 0
+		return
+	}
+	if view.cursor < 0 {
+		view.cursor = 0
+	}
+	if view.cursor > len(view.models)-1 {
+		view.cursor = len(view.models) - 1
+	}
+	capacity := view.listCapacity()
+	if view.cursor < view.top {
+		view.top = view.cursor
+	}
+	if view.cursor >= view.top+capacity {
+		view.top = view.cursor - capacity + 1
+	}
+	if view.top < 0 {
+		view.top = 0
+	}
+}
+
+// sectionHeader renders one bold + accent-coloured section header line (matching the
+// table's accent header), with a blank line above and below so the two sections are
+// clearly separated. ui.Heading is bold + the theme accent (restyled per theme by
+// ui.Apply), the same accent the highlight uses.
+func (view *LocalModels) sectionHeader(label string) string {
+	return "\n" + ui.Heading.Render(label) + "\n\n"
+}
+
+// contentLine renders one model row's "NAME  DESCRIPTION  TAGS" content as a single
+// plain (un-highlighted) line padded to the full pane width, so a later highlight bar
+// fills the whole row. The DESCRIPTION column flexes to fill the slack between the
+// fixed NAME and TAGS columns (mirroring ui.StretchColumns on the old table).
+func (view *LocalModels) contentLine(model localModel) string {
+	descWidth := view.descriptionWidth()
+	tagWidth := view.tagsWidth()
+	name := padCell(model.name, localNameWidth)
+	desc := padCell(truncateRunes(model.description, descWidth), descWidth)
+	tags := padCell(truncateRunes(tagSummary(model.tags, model.installed), tagWidth), tagWidth)
+	line := " " + name + "  " + desc + "  " + tags + " "
+	return padToWidth(line, view.width)
+}
+
+// descriptionWidth is the WIDEST column: everything left after NAME, TAGS, and the
+// inter-column padding. It is the EXACT remainder (not floored) so NAME + DESCRIPTION
+// + TAGS + gaps sum to exactly the pane width — the highlight bar fills the row on one
+// line with no wrap. Guarded at ≥1 for a degenerate (tiny) pane.
+func (view *LocalModels) descriptionWidth() int {
+	if view.width <= 0 {
+		return 44
+	}
+	// Leading + trailing space (2) + two inter-column gaps (2 each, 4) = 6.
+	desc := view.width - localNameWidth - view.tagsWidth() - 6
+	if desc < 1 {
+		return 1
+	}
+	return desc
+}
+
+// View renders the drill-down, the describe pane, or the two-section list.
 func (view *LocalModels) View() string {
 	if view.drill != nil {
 		return view.drillView()
@@ -575,10 +624,57 @@ func (view *LocalModels) View() string {
 	var body strings.Builder
 	body.WriteString(view.header())
 	if len(view.models) > 0 {
-		body.WriteString(view.table.View())
+		body.WriteString(view.listView())
 	}
 	if view.flash != "" {
 		body.WriteString("\n" + view.flash)
+	}
+	return body.String()
+}
+
+// selectedStyle is the highlight applied to the cursor's model row: IDENTICAL to
+// ui.TableStyles().Selected (bold, secondary foreground on the accent background), so
+// the Local Models highlight matches the Cloud Models highlight exactly. The content
+// line is already padded to the full pane width, so the background bar spans the whole
+// row (no ragged short highlight).
+func selectedStyle() lipgloss.Style {
+	return lipgloss.NewStyle().Bold(true).
+		Foreground(ui.Secondary()).
+		Background(ui.Accent())
+}
+
+// listView renders the two sections (each with a padded, accent-coloured header) and
+// the model rows in the current scroll window, highlighting the cursor's model row
+// with the Cloud-Models-identical Selected style spanning the full width.
+func (view *LocalModels) listView() string {
+	capacity := view.listCapacity()
+	first := view.top
+	last := view.top + capacity
+	if last > len(view.models) {
+		last = len(view.models)
+	}
+	selected := selectedStyle()
+
+	var body strings.Builder
+	wroteInstalled := false
+	wroteInstallable := false
+	for index := first; index < last; index++ {
+		// Emit the section header the first time we cross into each section within the
+		// visible window, with blank-line padding above and below.
+		if index < view.installedCount {
+			if !wroteInstalled {
+				body.WriteString(view.sectionHeader("Installed"))
+				wroteInstalled = true
+			}
+		} else if !wroteInstallable {
+			body.WriteString(view.sectionHeader("Installable"))
+			wroteInstallable = true
+		}
+		line := view.contentLine(view.models[index])
+		if index == view.cursor {
+			line = selected.Render(line)
+		}
+		body.WriteString(line + "\n")
 	}
 	return body.String()
 }
@@ -686,6 +782,29 @@ func copyBoolMap(source map[string]bool) map[string]bool {
 		out[key] = value
 	}
 	return out
+}
+
+// padCell right-pads (or, when overlong, leaves) a plain cell value to width runes so
+// the columns align. The value is assumed already clipped to width by truncateRunes.
+func padCell(value string, width int) string {
+	gap := width - len([]rune(value))
+	if gap <= 0 {
+		return value
+	}
+	return value + strings.Repeat(" ", gap)
+}
+
+// padToWidth right-pads a plain (un-styled) line to width runes so a highlight bar
+// applied over it spans the full pane; a line already at/over width is returned as-is.
+func padToWidth(line string, width int) string {
+	if width <= 0 {
+		return line
+	}
+	gap := width - len([]rune(line))
+	if gap <= 0 {
+		return line
+	}
+	return line + strings.Repeat(" ", gap)
 }
 
 // sortTags orders tags by ascending parameter magnitude where parseable (270m < 1b <
