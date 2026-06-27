@@ -160,32 +160,3 @@ func sourceFlash(source string, cached bool) string {
 	return ui.Warn.Render(ui.IconArrow + " couldn't reach the " + source +
 		" and no cached copy — connect and press r")
 }
-
-// tagSummary renders a compact tag column: the first few tags + an overflow count,
-// with the installed count called out (e.g. "7b, 14b, 72b (+2) · 1 installed").
-func tagSummary(tags []string, installed map[string]bool) string {
-	if len(tags) == 0 {
-		return "—"
-	}
-	const showFirst = 3
-	shown := tags
-	overflow := 0
-	if len(tags) > showFirst {
-		shown = tags[:showFirst]
-		overflow = len(tags) - showFirst
-	}
-	summary := strings.Join(shown, ", ")
-	if overflow > 0 {
-		summary += fmt.Sprintf(" (+%d)", overflow)
-	}
-	installedCount := 0
-	for _, tag := range tags {
-		if installed[tag] {
-			installedCount++
-		}
-	}
-	if installedCount > 0 {
-		summary += fmt.Sprintf(" · %d installed", installedCount)
-	}
-	return summary
-}

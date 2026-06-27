@@ -194,11 +194,16 @@ func (application *app) tabBar() string {
 // to the window. The content (the active view, or an overlay) renders INSIDE it.
 func (application *app) body(content string) string {
 	width, height := application.bodyContentSize()
+	// lipgloss Width(w) is the box width INCLUDING horizontal padding (content wraps
+	// at w-2*padX), so to give the content the full bodyContentSize width we set Width
+	// to that width PLUS the padding. Without this the real content area is 2*bodyPadX
+	// narrower than every view was sized to, so full-width rows (e.g. the selected-row
+	// highlight) overflow by that much and wrap.
 	border := lipgloss.NewStyle().
 		Border(lipgloss.RoundedBorder()).
 		BorderForeground(ui.Accent()).
 		Padding(0, bodyPadX).
-		Width(width).
+		Width(width + 2*bodyPadX).
 		Height(height)
 	return border.Render(content)
 }

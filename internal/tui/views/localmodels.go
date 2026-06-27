@@ -65,40 +65,11 @@ type tagPicker struct {
 	selected map[string]bool // not-installed tags ticked for pull
 }
 
-// Column widths for the NAME · DESCRIPTION · TAGS list. NAME is fixed; TAGS flexes
-// with the pane (see tagsWidth); DESCRIPTION takes everything left over so it is the
-// WIDEST column, and the row sums to the full pane width (the highlight bar fills the
-// row with no wrap — see contentLine).
-const (
-	localNameWidth = 22
-	localTagsMin   = 24
-	localTagsMax   = 48
-)
-
-// tagsWidth is the TAGS column width: ~40% of the space left after the fixed NAME
-// column, clamped to [localTagsMin, localTagsMax] and never more than half that space
-// so DESCRIPTION (the remainder) always stays the widest column. It scales with the
-// pane (wide windows show more tags) and never overflows narrow ones.
-func (view *LocalModels) tagsWidth() int {
-	available := view.width - localNameWidth - 6 // gaps: leading+trailing (2) + two inter-column (4)
-	if available < 2 {
-		return 1
-	}
-	width := available * 2 / 5 // ~40%
-	if width < localTagsMin {
-		width = localTagsMin
-	}
-	if width > localTagsMax {
-		width = localTagsMax
-	}
-	if half := available/2 - 1; width > half { // keep DESCRIPTION ≥ TAGS
-		width = half
-	}
-	if width < 1 {
-		width = 1
-	}
-	return width
-}
+// Column widths for the NAME · DESCRIPTION list. NAME is fixed; DESCRIPTION takes
+// everything left over (the widest column). There is no TAGS column — tags are shown
+// in the per-model drill-down (Enter). The row sums to the full pane width so the
+// highlight bar fills the row with no wrap (see contentLine).
+const localNameWidth = 22
 
 // LocalModels is the Local Models tab: the local Ollama store (installed) + the
 // installable ollama.com library, grouped into an "Installed" section (library models
@@ -580,30 +551,28 @@ func (view *LocalModels) sectionHeader(label string) string {
 	return "\n" + ui.Heading.Render(label) + "\n\n"
 }
 
-// contentLine renders one model row's "NAME  DESCRIPTION  TAGS" content as a single
-// plain (un-highlighted) line padded to the full pane width, so a later highlight bar
-// fills the whole row. The DESCRIPTION column flexes to fill the slack between the
-// fixed NAME and TAGS columns (mirroring ui.StretchColumns on the old table).
+// contentLine renders one model row's "NAME  DESCRIPTION" content as a single plain
+// (un-highlighted) line padded to the full pane width, so a later highlight bar fills
+// the whole row. DESCRIPTION takes everything left over after the fixed NAME column.
+// Tags are NOT shown here — they live in the per-model drill-down.
 func (view *LocalModels) contentLine(model localModel) string {
 	descWidth := view.descriptionWidth()
-	tagWidth := view.tagsWidth()
 	name := padCell(model.name, localNameWidth)
 	desc := padCell(truncateRunes(model.description, descWidth), descWidth)
-	tags := padCell(truncateRunes(tagSummary(model.tags, model.installed), tagWidth), tagWidth)
-	line := " " + name + "  " + desc + "  " + tags + " "
+	line := " " + name + "  " + desc
 	return padToWidth(line, view.width)
 }
 
-// descriptionWidth is the WIDEST column: everything left after NAME, TAGS, and the
-// inter-column padding. It is the EXACT remainder (not floored) so NAME + DESCRIPTION
-// + TAGS + gaps sum to exactly the pane width — the highlight bar fills the row on one
-// line with no wrap. Guarded at ≥1 for a degenerate (tiny) pane.
+// descriptionWidth is the WIDEST column: everything left after NAME and the spacing.
+// It is the EXACT remainder so " " + NAME + "  " + DESCRIPTION sums to exactly the
+// pane width — the highlight bar fills the row on one line with no wrap. Guarded at
+// ≥1 for a degenerate (tiny) pane.
 func (view *LocalModels) descriptionWidth() int {
 	if view.width <= 0 {
 		return 44
 	}
-	// Leading + trailing space (2) + two inter-column gaps (2 each, 4) = 6.
-	desc := view.width - localNameWidth - view.tagsWidth() - 6
+	// Leading space (1) + inter-column gap (2) = 3.
+	desc := view.width - localNameWidth - 3
 	if desc < 1 {
 		return 1
 	}
