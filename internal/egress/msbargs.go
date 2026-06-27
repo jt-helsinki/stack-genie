@@ -39,14 +39,15 @@ const gatewayToken = "gateway"
 //
 // Emission order is stable and deterministic:
 //  1. the always-on host-gateway allow rule,
-//  2. --net-default-egress (deny for deny/public, allow for unrestricted),
-//  3. for public mode, the broad allow:egress@public rule,
-//  4. one allow rule per AllowHostServices entry (in slice order),
-//  5. one -p publish-port flag per PublishPorts entry (in slice order).
+//  2. the always-on DNS allow rules (udp/53 + tcp/53 to the `host` group),
+//  3. --net-default-egress (deny for deny/public, allow for unrestricted),
+//  4. for public mode, the broad allow:egress@public rule,
+//  5. one allow rule per AllowHostServices entry (in slice order),
+//  6. one -p publish-port flag per PublishPorts entry (in slice order).
 func MsbNetworkArgs(network config.NetworkConfig, gatewayHost string, gatewayPort int) []string {
 	mode := network.ResolvedEgress()
 
-	args := make([]string, 0, 4+2*len(network.AllowHostServices)+2*len(network.PublishPorts))
+	args := make([]string, 0, 6+2*len(network.AllowHostServices)+2*len(network.PublishPorts))
 
 	// (1) Always allow the resolved model gateway on gatewayHost:gatewayPort. The
 	// local gateway (host.microsandbox.internal) is a private/link-local address
@@ -54,6 +55,20 @@ func MsbNetworkArgs(network config.NetworkConfig, gatewayHost string, gatewayPor
 	// "public"/"unrestricted" modes (in "unrestricted" it is harmless but kept for
 	// clarity). In client mode gatewayHost is the remote server.
 	args = append(args, "--net-rule", fmt.Sprintf("allow:egress@%s:tcp:%d", gatewayHost, gatewayPort))
+
+	// (1b) Always allow DNS to the LOCAL msb gateway forwarder. Under a
+	// default-deny egress policy msb filters DNS like any other egress, and a
+	// policy whose rules are all IP/host-name based matches nothing at
+	// DNS-decision time (the query name hasn't resolved to an IP yet) — so every
+	// lookup is denied and the guest can resolve nothing. msb's `host` GROUP
+	// token is the documented matcher for "the gateway forwarder the query is
+	// delivered to" (the convenience Rule::allow_dns(); see networking/dns docs).
+	// Verified live: this is the only target that re-opens DNS under default-deny
+	// (public/private/the resolved gateway name all fail). It always targets the
+	// local `host` group — the DNS forwarder is local even in client mode — and
+	// is emitted in every mode so name resolution works regardless of the policy.
+	args = append(args, "--net-rule", "allow:egress@host:udp:53")
+	args = append(args, "--net-rule", "allow:egress@host:tcp:53")
 
 	// (2) Default fallthrough action.
 	switch mode {

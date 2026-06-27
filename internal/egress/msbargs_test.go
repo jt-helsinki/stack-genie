@@ -25,16 +25,24 @@ func TestHostGatewayTargetMatchesRuntime(t *testing.T) {
 	}
 }
 
-func gatewayRule() []string {
-	return []string{"--net-rule", "allow:egress@host.microsandbox.internal:tcp:18787"}
+// gatewayPrefix is the always-on rule prefix every invocation emits: the
+// model-gateway tcp allow followed by the two DNS allow rules (udp/53 + tcp/53 to
+// the `host` group). msb filters DNS under default-deny, and the `host` group is
+// the only target that re-opens it (see MsbNetworkArgs (1b)).
+func gatewayPrefix() []string {
+	return []string{
+		"--net-rule", "allow:egress@host.microsandbox.internal:tcp:18787",
+		"--net-rule", "allow:egress@host:udp:53",
+		"--net-rule", "allow:egress@host:tcp:53",
+	}
 }
 
 func TestMsbNetworkArgsPublicDefault(t *testing.T) {
 	// Empty Egress now resolves to "public" (allow-outbound) — a zero NetworkConfig
 	// emits the broad public allow rule on top of the default-deny fallthrough and
-	// the always-on host-gateway allow.
+	// the always-on gateway + DNS allows.
 	got := MsbNetworkArgs(config.NetworkConfig{}, testGatewayHost, testGatewayPort)
-	want := append(gatewayRule(), "--net-default-egress", "deny", "--net-rule", "allow:egress@public")
+	want := append(gatewayPrefix(), "--net-default-egress", "deny", "--net-rule", "allow:egress@public")
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("public default:\n got %#v\nwant %#v", got, want)
 	}
@@ -50,13 +58,12 @@ func TestMsbNetworkArgsDenyWithAllowList(t *testing.T) {
 		},
 	}
 	got := MsbNetworkArgs(network, testGatewayHost, testGatewayPort)
-	want := []string{
-		"--net-rule", "allow:egress@host.microsandbox.internal:tcp:18787",
+	want := append(gatewayPrefix(),
 		"--net-default-egress", "deny",
 		"--net-rule", "allow:egress@host.microsandbox.internal:tcp:5442",
 		"--net-rule", "allow:egress@host.microsandbox.internal:tcp:6379",
 		"--net-rule", "allow:egress@db.internal:tcp:5432",
-	}
+	)
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("deny+allowlist:\n got %#v\nwant %#v", got, want)
 	}
@@ -68,12 +75,11 @@ func TestMsbNetworkArgsPublic(t *testing.T) {
 		AllowHostServices: []config.HostService{{Host: "gateway", Port: 5442}},
 	}
 	got := MsbNetworkArgs(network, testGatewayHost, testGatewayPort)
-	want := []string{
-		"--net-rule", "allow:egress@host.microsandbox.internal:tcp:18787",
+	want := append(gatewayPrefix(),
 		"--net-default-egress", "deny",
 		"--net-rule", "allow:egress@public",
 		"--net-rule", "allow:egress@host.microsandbox.internal:tcp:5442",
-	}
+	)
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("public:\n got %#v\nwant %#v", got, want)
 	}
@@ -82,10 +88,7 @@ func TestMsbNetworkArgsPublic(t *testing.T) {
 func TestMsbNetworkArgsUnrestricted(t *testing.T) {
 	network := config.NetworkConfig{Egress: "unrestricted"}
 	got := MsbNetworkArgs(network, testGatewayHost, testGatewayPort)
-	want := []string{
-		"--net-rule", "allow:egress@host.microsandbox.internal:tcp:18787",
-		"--net-default-egress", "allow",
-	}
+	want := append(gatewayPrefix(), "--net-default-egress", "allow")
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("unrestricted:\n got %#v\nwant %#v", got, want)
 	}
@@ -104,12 +107,11 @@ func TestMsbNetworkArgsPublishPorts(t *testing.T) {
 		},
 	}
 	got := MsbNetworkArgs(network, testGatewayHost, testGatewayPort)
-	want := []string{
-		"--net-rule", "allow:egress@host.microsandbox.internal:tcp:18787",
+	want := append(gatewayPrefix(),
 		"--net-default-egress", "deny",
 		"-p", "8080:80",
 		"-p", "9090:9000",
-	}
+	)
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("publish ports:\n got %#v\nwant %#v", got, want)
 	}
@@ -142,8 +144,12 @@ func TestMsbNetworkArgsAlwaysHasGatewayRuleFirst(t *testing.T) {
 	}
 	for _, network := range cases {
 		got := MsbNetworkArgs(network, testGatewayHost, 9999)
-		if len(got) < 2 || got[0] != "--net-rule" || got[1] != "allow:egress@host.microsandbox.internal:tcp:9999" {
-			t.Fatalf("egress %q: gateway rule not first: %#v", network.ResolvedEgress(), got)
+		// Gateway tcp rule first, then the DNS allow pair (host udp/53 + tcp/53).
+		if len(got) < 6 ||
+			got[0] != "--net-rule" || got[1] != "allow:egress@host.microsandbox.internal:tcp:9999" ||
+			got[2] != "--net-rule" || got[3] != "allow:egress@host:udp:53" ||
+			got[4] != "--net-rule" || got[5] != "allow:egress@host:tcp:53" {
+			t.Fatalf("egress %q: gateway+dns prefix not first: %#v", network.ResolvedEgress(), got)
 		}
 	}
 }
@@ -157,12 +163,11 @@ func TestMsbNetworkArgsDomainAndWildcard(t *testing.T) {
 		},
 	}
 	got := MsbNetworkArgs(network, testGatewayHost, testGatewayPort)
-	want := []string{
-		"--net-rule", "allow:egress@host.microsandbox.internal:tcp:18787",
+	want := append(gatewayPrefix(),
 		"--net-default-egress", "deny",
 		"--net-rule", "allow:egress@api.github.com:tcp:443",
 		"--net-rule", "allow:egress@*.npmjs.org:tcp:443",
-	}
+	)
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("domain+wildcard:\n got %#v\nwant %#v", got, want)
 	}
@@ -172,6 +177,8 @@ func TestMsbNetworkArgsGatewayPortRespected(t *testing.T) {
 	got := MsbNetworkArgs(config.NetworkConfig{Egress: "deny"}, testGatewayHost, 8123)
 	want := []string{
 		"--net-rule", "allow:egress@host.microsandbox.internal:tcp:8123",
+		"--net-rule", "allow:egress@host:udp:53",
+		"--net-rule", "allow:egress@host:tcp:53",
 		"--net-default-egress", "deny",
 	}
 	if !reflect.DeepEqual(got, want) {
@@ -180,11 +187,14 @@ func TestMsbNetworkArgsGatewayPortRespected(t *testing.T) {
 }
 
 // In client mode the always-on gateway allow rule targets the remote server
-// (the resolved AIPlatformHost), not host.microsandbox.internal.
+// (the resolved AIPlatformHost), but the DNS allow still targets the LOCAL `host`
+// group — the DNS forwarder is local even when the model gateway is remote.
 func TestMsbNetworkArgsRemoteGatewayHost(t *testing.T) {
 	got := MsbNetworkArgs(config.NetworkConfig{Egress: "deny"}, "demo-server", 9999)
 	want := []string{
 		"--net-rule", "allow:egress@demo-server:tcp:9999",
+		"--net-rule", "allow:egress@host:udp:53",
+		"--net-rule", "allow:egress@host:tcp:53",
 		"--net-default-egress", "deny",
 	}
 	if !reflect.DeepEqual(got, want) {
@@ -195,10 +205,7 @@ func TestMsbNetworkArgsRemoteGatewayHost(t *testing.T) {
 // The local gateway host still emits the local allow rule (standalone fallback).
 func TestMsbNetworkArgsLocalGatewayHost(t *testing.T) {
 	got := MsbNetworkArgs(config.NetworkConfig{Egress: "deny"}, testGatewayHost, testGatewayPort)
-	want := []string{
-		"--net-rule", "allow:egress@host.microsandbox.internal:tcp:18787",
-		"--net-default-egress", "deny",
-	}
+	want := append(gatewayPrefix(), "--net-default-egress", "deny")
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("local gateway host:\n got %#v\nwant %#v", got, want)
 	}
