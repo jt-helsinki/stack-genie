@@ -394,7 +394,20 @@ func (manager Manager) ensureContainerd(name string) {
 	// Boot containerd detached so it survives this exec returning. setsid +
 	// background keeps the daemon running for the VM's life; output is redirected
 	// to a log for later inspection.
-	bootCmd := fmt.Sprintf("setsid sh -c 'containerd >%s 2>&1 &'", shellQuoteGuest(containerdLog))
+	//
+	// CRITICAL: after backgrounding, WAIT for the control socket to appear before
+	// returning. The boot exec returns the instant the outer sh backgrounds the
+	// daemon (the `&`), and msb tears down the exec's process group on return — so
+	// without the wait the just-forked containerd is killed before it establishes
+	// (verified live: the log file is created but stays 0 bytes). Polling the socket
+	// keeps this exec alive until the daemon is fully up (it boots in ~10ms, so this
+	// returns in 1-2 iterations normally) and bounds the wait to ~10s so a genuinely
+	// broken runtime never hangs the workspace start.
+	bootCmd := fmt.Sprintf(
+		"setsid sh -c 'containerd >%s 2>&1 &'; "+
+			"iters=0; while [ $iters -lt 100 ]; do [ -S /run/containerd/containerd.sock ] && break; "+
+			"iters=$((iters+1)); sleep 0.1; done",
+		shellQuoteGuest(containerdLog))
 	result, err := manager.Sandbox.ExecRoot(name, []string{"sh", "-c", bootCmd})
 	if err != nil {
 		_, _ = fmt.Fprintf(os.Stderr, "warning: could not start the in-VM container runtime in workspace %q: %v\n", name, err)

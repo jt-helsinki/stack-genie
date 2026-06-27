@@ -167,19 +167,26 @@ func (sandbox realSandbox) Exec(name string, argv []string) (ExecResult, error) 
 	return sandbox.execAs(name, "workspace", argv)
 }
 
-// ExecRoot runs argv as the image's ROOT user — `msb exec <name> -- <argv>` with
-// no `-u workspace` — for privileged operations the unprivileged workspace user
-// cannot perform (notably booting the rootful in-VM containerd). A non-zero inner
-// exit is data in ExecResult; only an infra failure is a Go error (§4.5).
+// ExecRoot runs argv as the image's ROOT user — `msb exec -u root <name> -- <argv>`
+// — for privileged operations the unprivileged workspace user cannot perform
+// (notably booting the rootful in-VM containerd). A non-zero inner exit is data in
+// ExecResult; only an infra failure is a Go error (§4.5).
+//
+// The `-u root` is REQUIRED and verified live: `msb exec` with NO `-u` does NOT
+// run as root — it defaults to the unprivileged `workspace` user (uid 1000), so a
+// rootful boot fails with "Permission denied" (e.g. writing /var/log) and is
+// silently swallowed. Passing `-u root` is the only way to get uid 0.
 //
 // hardware bring-up: msb's daemon-persistence (a setsid'd containerd surviving
 // the exec) is verified on a provisioned host; the argv assembly is unit-tested.
 func (sandbox realSandbox) ExecRoot(name string, argv []string) (ExecResult, error) {
-	return sandbox.execAs(name, "", argv)
+	return sandbox.execAs(name, "root", argv)
 }
 
-// execAs runs argv inside the running microVM, optionally as a specific user
-// (empty user → the image's root). The inner command's exit code is faithfully
+// execAs runs argv inside the running microVM as a specific user, passed through
+// as msb's `-u`. NOTE: an empty user means "omit -u", which is msb's DEFAULT exec
+// user — the unprivileged `workspace` (uid 1000), NOT root; callers needing root
+// pass "root" (see ExecRoot). The inner command's exit code is faithfully
 // propagated by msb to its own process exit; a non-zero inner exit is data
 // carried in ExecResult, NOT a Go error. Only infrastructure failures (microVM
 // down, msb missing) are returned as errors (§4.5).
