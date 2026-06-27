@@ -141,6 +141,13 @@ type displayLine struct {
 // displayLines flattens the two sections into the full sequence of rendered lines:
 // each present section's header (blank · header · blank) followed by its model rows.
 // The cursor highlight is applied later, at render time, to the matching modelIndex.
+// sectionHeadingStyle is the bold, secondary-coloured style for the "Installed" /
+// "Installable" section headers — distinct from ui.Heading (the accent colour) so the
+// section labels read as the secondary colour.
+func sectionHeadingStyle() lipgloss.Style {
+	return lipgloss.NewStyle().Bold(true).Foreground(ui.Secondary())
+}
+
 func (view *LocalModels) displayLines() []displayLine {
 	lines := make([]displayLine, 0, len(view.models)+6)
 	appendSection := func(label string, from, to int) {
@@ -149,7 +156,7 @@ func (view *LocalModels) displayLines() []displayLine {
 		}
 		lines = append(lines,
 			displayLine{text: "", modelIndex: -1},
-			displayLine{text: ui.Heading.Render(label), modelIndex: -1},
+			displayLine{text: sectionHeadingStyle().Render(label), modelIndex: -1},
 			displayLine{text: "", modelIndex: -1},
 		)
 		for index := from; index < to; index++ {
