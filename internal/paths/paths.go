@@ -57,6 +57,18 @@ func VolumesDir() (string, error) {
 	return filepath.Join(p, "volumes"), nil
 }
 
+// CacheDir is ~/.ai-platform/cache — the home for fetched caches (the models.dev
+// catalog, the Ollama library list, …). Unlike volumes/ (persistent SYSTEM data),
+// these are re-fetchable copies; the dir is created on use via MkdirAll by its
+// consumer, mirroring VolumesDir, and is removed by `ai uninstall --purge`.
+func CacheDir() (string, error) {
+	p, err := PlatformDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(p, "cache"), nil
+}
+
 // OverlaysDir is ~/.ai-platform/overlays — per-workspace persistent overlays
 // (arch §26). Host-local persistence, not git material and not a backup.
 func OverlaysDir() (string, error) {

@@ -47,8 +47,28 @@ import (
 // DefaultURL is the canonical models.dev catalog endpoint.
 const DefaultURL = "https://models.dev/catalog.json"
 
-// catalogFileName is the on-disk name under the volumes dir.
+// catalogFileName is the on-disk name under the cache dir.
 const catalogFileName = "catalog.json"
+
+// Source records whether a returned catalog came from a fresh network fetch or
+// from the on-disk cache (used by callers to message source availability).
+type Source int
+
+const (
+	// SourceFresh means the catalog was fetched live and the cache was refreshed.
+	SourceFresh Source = iota
+	// SourceCached means the live fetch failed and a cached copy was used (or no
+	// data was available at all).
+	SourceCached
+)
+
+// String returns "fresh" or "cached".
+func (source Source) String() string {
+	if source == SourceFresh {
+		return "fresh"
+	}
+	return "cached"
+}
 
 // Model is a single catalog model entry, carrying exactly the fields the
 // upstream catalog actually populates. The id is kept VERBATIM (e.g.
@@ -278,13 +298,42 @@ func Fetch(ctx context.Context, httpClient *http.Client, url string) (*Catalog, 
 	return Parse(body)
 }
 
-// Path returns the on-disk catalog location: ~/.ai-platform/volumes/catalog.json.
+// Path returns the on-disk catalog location: ~/.ai-platform/cache/catalog.json.
+// It lazily migrates a legacy volumes/catalog.json copy into place (best-effort).
 func Path() (string, error) {
-	volumes, err := paths.VolumesDir()
+	cache, err := paths.CacheDir()
 	if err != nil {
 		return "", err
 	}
-	return filepath.Join(volumes, catalogFileName), nil
+	migrateLegacyCatalog()
+	return filepath.Join(cache, catalogFileName), nil
+}
+
+// migrateLegacyCatalog moves a pre-existing volumes/catalog.json to the new
+// cache/catalog.json location once, when the cache copy is absent and the legacy
+// copy exists. It is best-effort: any error (including a missing dir) is ignored
+// so an existing install's catalog isn't lost and no orphan lingers.
+func migrateLegacyCatalog() {
+	cache, err := paths.CacheDir()
+	if err != nil {
+		return
+	}
+	volumes, err := paths.VolumesDir()
+	if err != nil {
+		return
+	}
+	newPath := filepath.Join(cache, catalogFileName)
+	legacyPath := filepath.Join(volumes, catalogFileName)
+	if _, err := os.Stat(newPath); err == nil {
+		return // cache copy already present
+	}
+	if _, err := os.Stat(legacyPath); err != nil {
+		return // no legacy copy to migrate
+	}
+	if err := os.MkdirAll(cache, 0o755); err != nil {
+		return
+	}
+	_ = os.Rename(legacyPath, newPath)
 }
 
 // Save writes the catalog's RAW source JSON atomically (temp file + rename) so
@@ -350,4 +399,24 @@ func LoadOrFetch(ctx context.Context, httpClient *http.Client, url string) (*Cat
 		return saved, nil
 	}
 	return nil, fmt.Errorf("catalog: load-or-fetch: fetch failed (%v) and no saved copy (%v)", fetchErr, loadErr)
+}
+
+// LoadOrFetchStatus is LoadOrFetch but reports the data SOURCE so callers can
+// message source availability. On a successful live fetch it persists the cache
+// and returns (cat, SourceFresh, nil). When the live fetch fails it returns
+// SourceCached: with a saved copy it returns (cachedCat, SourceCached, fetchErr)
+// — the error is the live-fetch error so callers can warn while still using the
+// cache; with no saved copy it returns (nil, SourceCached, fetchErr).
+func LoadOrFetchStatus(ctx context.Context, httpClient *http.Client, url string) (*Catalog, Source, error) {
+	fetched, fetchErr := Fetch(ctx, httpClient, url)
+	if fetchErr == nil {
+		// Best-effort persist; a save failure must not lose a good fetch.
+		_ = Save(fetched)
+		return fetched, SourceFresh, nil
+	}
+	saved, loadErr := Load()
+	if loadErr == nil {
+		return saved, SourceCached, fetchErr
+	}
+	return nil, SourceCached, fetchErr
 }

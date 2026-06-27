@@ -144,14 +144,14 @@ func TestGroupByProviderCorrectness(t *testing.T) {
 	}
 }
 
-func TestPathUnderVolumes(t *testing.T) {
+func TestPathUnderCache(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	path, err := catalog.Path()
 	if err != nil {
 		t.Fatalf("Path: %v", err)
 	}
-	want := filepath.Join(home, ".ai-platform", "volumes", "catalog.json")
+	want := filepath.Join(home, ".ai-platform", "cache", "catalog.json")
 	if path != want {
 		t.Errorf("Path() = %q, want %q", path, want)
 	}
