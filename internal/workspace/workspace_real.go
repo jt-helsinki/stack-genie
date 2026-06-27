@@ -64,8 +64,14 @@ func (builder realBuilder) Build(projectRoot, imageRef string) error {
 		return fmt.Errorf("could not export the workspace image")
 	}
 
-	// 3. Load the image tar into Microsandbox.
-	if err := runStreaming("msb", "load", "--input", tarPath); err != nil {
+	// 3. Load the image tar into Microsandbox, FORCING the tag onto this freshly
+	//    imported image (`--tag <ref>`). Without an explicit tag, `msb load` does not
+	//    re-point an existing `<name>:latest` reference to the new content, so
+	//    `msb create --replace` (which rebuilds the rootfs from that tag every start)
+	//    would keep booting a STALE earlier image — e.g. one built before a Dockerfile
+	//    change such as adding tmux. `--tag` makes each start boot exactly what was
+	//    just built. (Verified against msb 0.5.10: `load -t <REF>`.)
+	if err := runStreaming("msb", "load", "--tag", imageRef, "--input", tarPath); err != nil {
 		return fmt.Errorf("could not load the workspace image into Microsandbox")
 	}
 	return nil
