@@ -64,7 +64,7 @@ keep the precedence rules in arch §27 explicit), `slog` (structured logs), stdl
 │   ├── uihosts/                # UI-vhost logic: the litellm.<domain> host vhost + its /etc/hosts entry (composes services + hostsfile)
 │   ├── console/                # host-display endpoint registry (UI subdomains + gateway paths off the nginx port)
 │   ├── litellm/                 # host lifecycle, config gen, health, routing, guardrails, virtual-key + credential KeyManager (keys-in-LiteLLM; fronted by `ai keys` in cli/keys.go)
-│   ├── ollama/                  # required local-model service + bundled Ollama catalogue (models.yaml)
+│   ├── ollama/                  # required local-model service + live ollama.com installable library (library.go)
 │   ├── agentcfg/                # in-VM agent provider config (base_url→nginx gateway, virtual key, picker models, refresh-models)
 │   ├── contextopt/              # per-project Headroom strategy (→ host Headroom proxy per-request knobs) + in-workspace Caveman skill
 │   ├── envimage/                # compose .ai-platform/Dockerfile (OS template + stack snippets + agent CLIs) + build OCI image

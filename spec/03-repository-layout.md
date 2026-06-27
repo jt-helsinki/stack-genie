@@ -38,7 +38,7 @@ All platform-wide data is stored under:
 ~/.ai-platform/
 ├── agents/
 ├── audit/
-├── cache/
+├── cache/         # re-fetchable caches: catalog.json (models.dev), ollama-library.json
 ├── config/        # global settings + projects index (no per-project state)
 ├── logs/
 ├── overlays/
@@ -123,6 +123,8 @@ Rules:
 ```
 
 ```text id="h6"
+catalog.json          # models.dev catalog (moved from volumes/catalog.json; one-shot migrated)
+ollama-library.json   # live ollama.com installable-library list
 models/
 downloads/
 temp/
@@ -130,9 +132,13 @@ temp/
 
 Rules:
 
-* fully disposable
-* may be rebuilt at any time
+* fully disposable — all entries are **re-fetchable** copies, not SYSTEM data
+* may be rebuilt at any time (`catalog.json` / `ollama-library.json` are re-downloaded
+  on next use, falling back to the cached copy only while the source is unreachable)
+* `catalog.json` was **moved here from the legacy `volumes/catalog.json`** with a
+  one-shot lazy migration (`catalog.Path`); `volumes/` is now ONLY true host data
 * never contains secrets
+* removed by `ai uninstall --purge` (which `RemoveAll`s `~/.ai-platform`)
 
 ---
 

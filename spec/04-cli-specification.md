@@ -979,45 +979,34 @@ is **no hardcoded catalog** — installable suggestions live behind `ai models
 popular` (§8.3.2). The human output is a NAME / SIZE / PARAMS table; `--json`
 returns the installed list (each entry carries `installed: true`).
 
-### 8.3.2 Popular (installable, bundled snapshot)
+### 8.3.2 Popular (installable, live library)
 
 ```bash id="c23p"
 ai models popular
 ```
 
-Lists popular **installable** models from a **bundled, embedded snapshot**
-(`internal/ollama/models.yaml`, compiled into the binary via `go:embed`), captured
-from `ollama.com/library?sort=popular` (the most-pulled models) and capped to a
-sensible top N (~20) **models**. It reads **instantly and offline — there is no
-runtime network call**.
+Lists **installable** models from the **live ollama.com library**
+(`internal/ollama/library.go`, `ollama.Library()`): a GET of the library endpoint
+`https://ollama-models.zwz.workers.dev/` returning a JSON array of
+`{name, description, tags}`. The result is **cached** at
+`~/.ai-platform/cache/ollama-library.json`; when the endpoint is unreachable the
+**cached copy is used**, and with no cache the command errors only when nothing is
+available. There is **no bundled `models.yaml` and no offline fallback set**.
 
-**Each parameter-size variant is its OWN entry**, because each size is a distinct,
-separately-pullable model with its own parameter count and download size. So a model
-like `qwen2.5` expands into one entry per size — `qwen2.5:0.5b`, `qwen2.5:7b`,
-`qwen2.5:72b`, … — rather than a single lumped row. A model that lists no size
-variants (e.g. an embedding model like `nomic-embed-text`) is a single entry with the
-bare model name. For each entry it reports:
+Each library model carries its set of pullable **tags** (size variants, e.g.
+`7b`, `72b`) — pull a specific variant with `ai models pull <name>:<tag>`. For each
+entry it reports:
 
-* **name** — the exact pullable reference **including the size tag** (e.g.
-  `qwen2.5:7b`), or the bare model name for a no-variant model
-* **params** — that single size (the `x-test-size` tag, e.g. `7b`); rendered `—`
-  for a no-variant model
-* the **download size** in bytes for **that tag's** manifest on the public Ollama
-  registry (`GET registry.ollama.ai/v2/library/<model>/manifests/<size-tag>`,
-  summing `layers[].size`); an unknown size renders `—`
-* the **repo link** (`https://ollama.com/library/<model>`, shared by all of a
-  model's variants)
+* **name** — the base model name (e.g. `qwen2.5`)
+* **tags** — the model's pullable size tags
+* **size** — always rendered `—`: the library endpoint reports **no per-tag download
+  size**
+* the **repo link** — **derived** as `https://ollama.com/library/<name>` (the
+  endpoint carries no `repo_url`)
 
-The human output is a NAME / PARAMS / SIZE / REPO table; `--json` returns the
-structured list. The snapshot is **regenerable, not a dead hand-typed list**:
-maintainers refresh it with `make models-refresh` (equivalently
-`go generate ./internal/ollama/...`), which re-scrapes ollama.com by its
-`x-test-*` markers, **expands each model into its size variants**, re-looks-up each
-variant's per-tag size, and rewrites `models.yaml` (a variant whose manifest cannot
-be resolved is omitted, so the list stays clean). Only the regeneration tool touches
-the network — the runtime never does (and `go test` never hits the network). `ai
-models pull` always also accepts a free-text reference, so an out-of-date snapshot
-never blocks pulling anything.
+The human output is a NAME / TAGS / SIZE / REPO table; `--json` returns the
+structured list. `ai models pull` always also accepts a free-text reference, so an
+out-of-date or unreachable library never blocks pulling anything.
 
 ### 8.3.3 Pull (install / update)
 
@@ -1035,12 +1024,11 @@ ai models pull [name...]
   de-duplicated; the run **continues past a failure** and reports a per-model
   summary, exiting non-zero (mapped from the last failure) if any failed.
 * On a terminal with **no** arguments: the user gets a **checkbox multi-select** of
-  the **popular** model variants (the bundled snapshot — §8.3.2, each labelled
-  "name — size", where name already carries the size tag, e.g. `qwen2.5:7b`), plus a
-  final **"✎ enter custom model(s)…"** checkbox that, when ticked, prompts for
-  free-text references (space- or comma-separated). If the snapshot is somehow
-  unavailable it falls back to just the custom-entry prompt — the picker never
-  blocks pulling.
+  the live library's pullable `name:tag` references (§8.3.2 — one option per tag,
+  e.g. `qwen2.5:7b`), plus a final **"✎ enter custom model(s)…"** checkbox that, when
+  ticked, prompts for free-text references (space- or comma-separated). If the
+  library is unavailable (and uncached) it falls back to just the custom-entry
+  prompt — the picker never blocks pulling.
 
 The pull **streams** Ollama's NDJSON progress while a spinner shows ongoing work.
 There is **no separate update verb** — re-pulling an installed model updates it.
@@ -1520,7 +1508,8 @@ first sub-tab); otherwise it opens on the server (Services) view. The switcher
 reaches any project in the index, and a new project may be created from it (see
 below).
 
-**Top-level tabs** (four; cycled by `tab`/`←→` or the `:` menu, which also has an
+**Top-level tabs** (Services · Projects (Workspaces) · Local Models · Cloud Models ·
+API Keys · Settings; cycled by `tab`/`←→` or the `:` menu, which also has an
 **Exit** item):
 
 * **Services** — live service-tier + container status; `s`/`x`/`r` start/stop/
@@ -1552,9 +1541,24 @@ below).
     session, `k` kills the selected one, `r` refreshes. Attaching opens the live
     embedded terminal running `ai attach <session> <name>` (the same
     pane as the Project sub-tab's `e` shell).
-* **Models** — LiteLLM routing status; `t` tests the **selected** model (round-trips
-  the cursor's model through the gateway; the catalog-driven system has no default
-  model). `enter` details · `p` pull · `d` remove · `r` refresh.
+* **Local Models** — the local Ollama store ⨯ the **live ollama.com installable
+  library**, in one NAME · DESCRIPTION · TAGS table split into an **Installed**
+  section (library models with ≥1 pulled tag, plus installed customs) and an
+  **Installable** section (the rest of the library). `enter` opens a per-model **tag
+  drill-down**: `space` ticks 1+ NOT-installed tags, `enter`/`p` pulls the ticked
+  tags, `d` removes the installed tag under the cursor, `t` tests it (and `enter` on
+  an installed tag opens its `/api/show` detail); `esc` backs out to the list. List
+  keys: `enter` manage tags · `t` test (first installed tag) · `d` remove (first
+  installed tag) · `r` refresh. When the library endpoint is unreachable the cached
+  copy is used and a source-availability message is flashed; with no cache the
+  Installable section is empty with that message.
+* **Cloud Models** — the **models.dev catalog** ⨯ the gateway's live registered set,
+  in a MODEL · PROVIDER · STATUS · CONTEXT table (registered-first). `enter` opens
+  the catalog metadata in a describe pane; `t` tests a **registered** model
+  (round-trips it through the gateway; the catalog-driven system has no default
+  model); `r` re-fetches the catalog + resyncs the gateway. Provider keys are added
+  in the **API Keys** tab, not here. When models.dev is unreachable the cached copy
+  is used and a source-availability message is flashed.
 * **API Keys** — the LiteLLM-routable catalog providers (PROVIDER / NAME / KEY? /
   MODELS); `a` adds a key for the selected provider, `d` removes it (each runs
   `ai keys add|remove <provider>` in the live embedded terminal — the hidden key
