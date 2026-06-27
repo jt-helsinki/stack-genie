@@ -28,7 +28,7 @@ flowchart LR
       litellm["aip-litellm :4000<br/>router + always-on guardrails<br/>admin UI via /llm + litellm.&lt;domain&gt; (internal only)"]
       db[("aip-litellm-db<br/>Postgres (loopback :5442)<br/>keys · spend · creds")]
       presidio["aip-presidio-{analyzer,anonymizer}<br/>secret masking"]
-      ollama["aip-ollama :11434<br/>local models (default gemma)<br/>(internal only)"]
+      ollama["aip-ollama :11434<br/>local models (no default — DB-backed)<br/>(internal only)"]
       dns["aip-dns (loopback :15353)<br/>CoreDNS egress audit"]
     end
   end
@@ -36,14 +36,14 @@ flowchart LR
   cli["Host CLI / UI<br/>(loopback 127.0.0.1:18787)"]
   cloud["Cloud providers<br/>OpenAI · Anthropic · Gemini · Groq<br/>(real keys held in LiteLLM)"]
 
-  agent -->|"OpenAI API · base_url http://host:18787/v1<br/>Authorization: scoped LiteLLM virtual key"| proxy
+  agent -->|"OpenAI API · base_url http://host.microsandbox.internal:18787/v1<br/>Authorization: scoped LiteLLM virtual key"| proxy
   apps -->|"same gateway path (model calls)"| proxy
   cli -->|"/v1 model path · /llm + /ollama admin"| proxy
   agent -. "every DNS name (audited);<br/>egress default PUBLIC, re-lockable to deny" .-> dns
   proxy --> headroom --> litellm
   litellm <-->|"pre/post-call guardrails"| presidio
   litellm --- db
-  litellm -->|"local route (default: ollama/gemma)"| ollama
+  litellm -->|"local route (registered ollama model)"| ollama
   litellm -->|"cloud route (real provider key)"| cloud
 ```
 
@@ -60,7 +60,7 @@ flowchart LR
  │  │ nerdctl; opt-in apps Open      │                                         │
  │  │ WebUI / AnythingLLM (nerdctl)  │                                         │
  │  └───────────────┬───────────────┘                                         │
- │                  │ OpenAI API, base_url = http://host:18787/v1             │
+ │                  │ OpenAI API, base_url = http://host.microsandbox.internal:18787/v1             │
  │                  │ Authorization: scoped LiteLLM virtual key (no real keys)│
  │  Docker service tier (aip-net) — every container internal-only but nginx     │
  │                  ▼                  (loopback exceptions: DB :5442, DNS :15353)│
@@ -85,7 +85,7 @@ flowchart LR
 ## The path, in words
 
 1. The **agent CLI** runs inside a hardware-isolated **Microsandbox microVM**. Its
-   provider config points `base_url` at the host gateway (`http://host:18787/v1`)
+   provider config points `base_url` at the host gateway (`http://host.microsandbox.internal:18787/v1`)
    and authenticates with a **scoped LiteLLM virtual key** — the real provider
    keys are never on the workspace.
 2. Workspace **egress defaults to "public"** (Microsandbox net-rules applied at
@@ -106,8 +106,9 @@ flowchart LR
    secret masking + `hide-secrets`, a **tool-firewall** (`tool_permission`) that
    denies destructive command tool-calls, and an in-process **prompt-injection**
    detector. Its admin UI / virtual keys / spend live in **aip-litellm-db**.
-5. LiteLLM routes to **aip-ollama** (local models — the default `gemma`) or to a
-   **cloud provider** using the real key it holds. The response streams back along
+5. LiteLLM routes to **aip-ollama** (a registered local Ollama model) or to a
+   **cloud provider** using the real key it holds. The model set is DB-backed and
+   catalog-driven with **no built-in default model**. The response streams back along
    the same path (SSE-friendly through nginx) to the agent.
 
 Each workspace microVM ships a **rootful in-VM container runtime** (containerd +

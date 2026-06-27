@@ -584,8 +584,10 @@ and **AnythingLLM** (`mintplexlabs/anythingllm:latest`, web port 3001, storage
 service tier), container port, persisted data dir, an optional `/workspace` mount,
 a memory limit, and a gateway-pointing env builder. Each app is routed through the
 **same model gateway** the agent CLIs use — `http://host.microsandbox.internal:18787/v1`
-(the resolved gateway) with the workspace's own scoped LiteLLM virtual key and the
-default model — via `OPENAI_API_BASE_URL`/`OPENAI_API_KEY` (Open WebUI, plus
+(the resolved gateway) with the workspace's own scoped LiteLLM virtual key (the
+catalog-driven system has **no default model**, so the model handle passed is
+empty and the app's user picks a served model) — via
+`OPENAI_API_BASE_URL`/`OPENAI_API_KEY` (Open WebUI, plus
 `ENABLE_OLLAMA_API=false`/`WEBUI_AUTH=false` for a single-user in-VM instance) and
 `LLM_PROVIDER=generic-openai` + `GENERIC_OPEN_AI_*` (AnythingLLM).
 
@@ -1595,8 +1597,8 @@ the workspace persist independently of the read-only image:
   at workspace start, as a Microsandbox named volume (§6.2, §7)
 * survives workspace stop/start and `ai destroy` recreation
   (destroy keeps the overlay; `ai start` re-mounts it)
-* removed only on **permanent** removal: `ai agent remove` (that agent's
-  overlay) or `ai delete` (all the project's overlays)
+* removed only on **permanent** removal: `ai delete` removes the workspace overlay
+  (via `overlay.Remove`); `ai destroy` keeps it for the next `ai start`
 * it is **local persistence, not a backup** — if the host disk is lost the
   overlay is lost; reinstall (source is in git, §32)
 * when `.ai-platform/Dockerfile` changes and the workspace is rebuilt, the same
@@ -1880,9 +1882,18 @@ network:
 `ai network` manages the **declaration** in `config.yaml`. The actual enforcement
 is the Microsandbox **NetworkPolicy**: workspace create translates this block into
 `msb` net-rules (`egress.MsbNetworkArgs`) — the allow-list entries, the
-default-egress mode, and the port maps — which the runtime enforces. (The
-`gateway` token resolves to the §29.2 host gateway, the pinned
-`host.microsandbox.internal` — see §29.5.) App-data connections
+default-egress mode, and the port maps — which the runtime enforces. Two rules are
+emitted **always, in every mode**, ahead of the declared ones: the model-gateway
+allow (§29.2) and a DNS allow pair
+(`allow:egress@host:udp:53` + `allow:egress@host:tcp:53`, msb's `host` group =
+`Rule::allow_dns()`) so name resolution survives default-deny (§29.7).
+Host-reaching rules MUST use msb's `host` GROUP token (`allow:egress@host:tcp:<port>`),
+NOT the `host.microsandbox.internal` NAME — only the `host` group engages msb's
+host-forwarding; a NAME target lets the guest connect to the msb gateway but is
+never forwarded to the host service (empty reply, verified live). So when the
+gateway is local (standalone) its allow rule and the `gateway`-token host-service
+entries target `host`; a remote gateway (client mode) and explicit domain/IP
+host-services stay verbatim (see §29.5). App-data connections
 (DB/Kafka/HTTP) go **direct** under this policy — they do not pass through the
 model gateway.
 
@@ -1916,20 +1927,22 @@ This cleanly splits **audit** from **enforcement**:
 * **Names only — not connection verdicts, not direct-IP egress.** It is a record
   of attempted *resolutions*, not of allowed/blocked connections, and traffic to a
   literal IP never touches DNS so never appears here.
-* **Default-deny interacts with visibility (verified, msb 0.5.7).** Under a
-  `deny`/`public` posture msb's DNS interception filters a denied name *before* it
-  reaches the resolver, so denied names are **absent** from the audit; under
-  `unrestricted` the resolver sees every queried name. This was confirmed by
-  controlled testing: with the platform's specific per-host/domain allow rules
-  (and regardless of `--net-default-egress deny` vs `--net-default deny`, or a
-  narrow `allow@host:udp:53`/`:15353` rule) only allow-listed names reach the
-  resolver. Denied names become visible **only** with a broad `allow@host` rule —
-  which would let the workspace reach every host service, a default-deny breach we
-  deliberately do **not** take. So capturing denied attempts under `deny`/`public`
-  is not achievable without sacrificing the egress boundary. The audit is
-  therefore most complete as a record of names a workspace was permitted to look
-  up; it is not a substitute for the policy shown in `ai network show`, which
-  remains the source of truth for what is reachable.
+* **DNS resolves under default-deny via the `host` group (verified, msb 0.5.7).**
+  Under a `deny`/`public` posture msb filters DNS like any other egress, so a
+  policy whose rules are all host-name/IP based matches nothing at DNS-decision
+  time (the query name has not resolved to an IP yet) and *every* lookup would be
+  denied. To keep name resolution working, `egress.MsbNetworkArgs` emits an
+  always-on DNS allow pair — `allow:egress@host:udp:53` + `allow:egress@host:tcp:53`
+  (msb's `host` GROUP token = the convenience `Rule::allow_dns()`) — in **every**
+  mode. The `host` group matches the local gateway forwarder the query is
+  delivered to (the only target that re-opens DNS, scoped to port 53), so it does
+  **not** open general host-service access — the default-deny boundary is fully
+  preserved. Because the guest's resolver is `aip-dns`, those permitted lookups
+  reach CoreDNS and appear in the audit. A *denied* destination's name still
+  resolves (so it may appear in the log), but the connection to its IP is blocked
+  at L3/L4 — the audit is a record of *attempted resolutions*, not of
+  allowed/blocked connections, and is not a substitute for the policy shown in
+  `ai network show`, which remains the source of truth for what is reachable.
 
 ---
 

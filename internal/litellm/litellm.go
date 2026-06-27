@@ -38,7 +38,8 @@ type Routing struct {
 // catalog-driven system manages the model list in the DB, so nothing is baked in
 // here. Kept for the callers that still pass a Routing through (workspace agent
 // config, refresh script) — they degrade to "no static handles", sourcing the
-// in-VM picker from the installed Ollama models + the curated cloud seed.
+// in-VM picker from exactly the models the gateway currently serves (its live
+// DB-backed model list), with no curated cloud seed.
 func DefaultRouting() Routing {
 	return Routing{}
 }

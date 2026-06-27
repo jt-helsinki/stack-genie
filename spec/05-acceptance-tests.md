@@ -21,7 +21,7 @@ These tests validate:
 * agent system behavior
 * environment (Dockerfile) + persistence
 * model routing
-* secrets integration
+* keys-in-LiteLLM integration
 * context optimization
 * cross-platform support
 
@@ -368,10 +368,12 @@ unknown project with a missing confirmation:
 
 # 4. Agent System Tests — Removed
 
-There is no platform "agent" abstraction and no `ai agent` commands (architecture
-§20, CLI §5). Running multiple AI agents on a project is the in-workspace agent
-CLI's concern, so there are no platform-level agent tests. The `[S3]` tag is
-retired.
+There is no platform multi-agent ORCHESTRATION abstraction — no platform-managed
+agent identities, branches, or worktrees (architecture §20, CLI §5) — so there are
+no platform-level orchestration tests. (The flat `ai agent` / `ai attach` /
+`ai sessions` commands DO exist and are exercised with the other workspace-session
+commands, CLI §4.5b; they are session launchers, not orchestration.) The `[S3]`
+tag is retired.
 
 ---
 

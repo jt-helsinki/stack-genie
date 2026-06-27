@@ -7,13 +7,15 @@ VERSION_PKG := $(PKG)/internal/version
 VERSION     ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo 0.0.0-dev)
 LDFLAGS     := -X $(VERSION_PKG).Version=$(VERSION)
 
-.PHONY: all build release fmt fmt-check vet lint test test-acceptance test-integration tidy clean models-refresh
+.PHONY: all build release fmt fmt-check vet lint test test-acceptance test-integration tidy clean models-refresh check
 
 # Release targets. Asset names are ai-<os>-<arch> — the exact names
 # installers/install.sh downloads. macOS is Apple Silicon only (arch §6.2).
 DIST_PLATFORMS := darwin/arm64 linux/amd64 linux/arm64
 
 all: build
+
+check: fmt-check vet lint test build ## Pre-commit gate: everything that must pass before committing
 
 build: ## Build the ai binary into ./bin
 	@mkdir -p bin
@@ -58,6 +60,9 @@ tidy: ## Sync go.mod/go.sum
 
 models-refresh: ## Re-scrape ollama.com and rewrite the bundled popular-models snapshot (internal/ollama/models.yaml). Needs internet; maintainer-only.
 	go run ./internal/ollama/internal/gen
+
+diagram:
+	mmdc -i docs/architecture.mmd -o docs/architecture.png -s 3 -w 2400 -H 1600 -b white
 
 clean:
 	rm -rf bin dist

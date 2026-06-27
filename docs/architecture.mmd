@@ -23,14 +23,14 @@ flowchart LR
     LLM["LiteLLM · aip-litellm :4000<br/><b>router + always-on guardrails</b><br/>admin UI via /llm + litellm.&lt;domain&gt; (internal-only)"]:::core
     PG[("Postgres · aip-litellm-db<br/>(loopback :5442)<br/>virtual keys · spend · provider creds")]:::store
     PRES["Presidio · aip-presidio-{analyzer,anonymizer}<br/>secret masking (pre/post-call)"]:::core
-    OLL["Ollama · aip-ollama :11434<br/>local models (default: gemma · internal-only)"]:::core
+    OLL["Ollama · aip-ollama :11434<br/>local models (no default · DB-backed · internal-only)"]:::core
     DNS["CoreDNS · aip-dns (loopback :15353)<br/>egress audit log"]:::core
   end
 
   CLI["Host CLI / UI<br/>loopback 127.0.0.1:18787"]:::vm
   CLOUD["Cloud providers<br/>OpenAI · Anthropic · Gemini · Groq<br/><b>real provider keys live in LiteLLM</b>"]:::cloud
 
-  AGENT == "OpenAI API · base_url http://host:18787/v1<br/>egress default PUBLIC (DNS-audited) — re-lockable to deny" ==> PROXY
+  AGENT == "OpenAI API · base_url http://host.microsandbox.internal:18787/v1<br/>egress default PUBLIC (DNS-audited) — re-lockable to deny" ==> PROXY
   APPS == "same gateway path (model calls)" ==> PROXY
   CLI -- "/v1 model path · /llm + /ollama admin" --> PROXY
   AGENT -. "every DNS name audited" .-> DNS

@@ -868,12 +868,15 @@ workspace verb does:
 
 ---
 
-# 5. Agent Commands — Removed (not a platform concern)
+# 5. Multi-Agent Orchestration — Removed (not a platform concern)
 
-There are **no `ai agent` commands**. The platform provides one workspace per
-project (§4); running multiple AI agents on a project, and any git they need
-(branches, worktrees, commits, merges, rebases), is the **in-workspace agent
-CLI's** job — not the platform's (architecture §20–22).
+The platform does **not** manage agent identities, branches, worktrees, commits,
+merges, or rebases — running multiple AI agents on a project and any git they need
+is the **in-workspace agent CLI's** job, not the platform's (architecture §20–22).
+The `[S3]` orchestration slice is retired. Note this is NOT the `ai agent` /
+`ai attach` / `ai sessions` commands (§4.5b): those DO exist and are thin
+tmux-transparent launchers/reattachers for an in-workspace agent-CLI session — a
+session surface, not an agent-orchestration system.
 
 ---
 

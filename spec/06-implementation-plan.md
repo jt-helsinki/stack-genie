@@ -63,8 +63,7 @@ keep the precedence rules in arch §27 explicit), `slog` (structured logs), stdl
 │   ├── hostsfile/              # managed /etc/hosts block writer (delimited, idempotent)
 │   ├── uihosts/                # UI-vhost logic: the litellm.<domain> host vhost + its /etc/hosts entry (composes services + hostsfile)
 │   ├── console/                # host-display endpoint registry (UI subdomains + gateway paths off the nginx port)
-│   ├── litellm/                 # host lifecycle, config gen, health, routing, guardrails, virtual-key KeyManager
-│   ├── secrets/                 # keys-in-LiteLLM credential broker (fronts the LiteLLM credential store; virtual-key minting)
+│   ├── litellm/                 # host lifecycle, config gen, health, routing, guardrails, virtual-key + credential KeyManager (keys-in-LiteLLM; fronted by `ai keys` in cli/keys.go)
 │   ├── ollama/                  # required local-model service + bundled Ollama catalogue (models.yaml)
 │   ├── agentcfg/                # in-VM agent provider config (base_url→nginx gateway, virtual key, picker models, refresh-models)
 │   ├── contextopt/              # per-project Headroom strategy (→ host Headroom proxy per-request knobs) + in-workspace Caveman skill
@@ -183,8 +182,7 @@ images in `internal/apps`, not in the host `versions.yaml`.)
 | Adapter | Integration | Run mode | First slice |
 |---|---|---|---|
 | `sandbox/` | Microsandbox Go SDK / `msb`; names `aip-<project>[-<agent>]`; microVM lifecycle map (arch §7) | microVM runtime (no daemon) | S1 |
-| `litellm/` | container via `runtime/`; config rendered from routing; `/health` poll | container | S1 |
-| `secrets/` | keys-in-LiteLLM credential store; mint scoped virtual key for the workspace agent | container (LiteLLM) | S1 |
+| `litellm/` | container via `runtime/`; config rendered from routing; `/health` poll; `KeyManager` mints scoped virtual keys + stores provider credentials (keys-in-LiteLLM, fronted by `ai keys`) | container | S1 |
 | `contextopt/` | per-project Headroom strategy (drives the host `aip-headroom` proxy per-request) + Caveman skill installed in the workspace | container (Headroom) / workspace (Caveman) | S2 |
 
 ---
@@ -279,10 +277,11 @@ Slice 1 is complete only when every `[S1]` test passes with no manual config.
   strategy; per-project Caveman skill installed into
   `<project>/.ai-platform/skills/`; `ai context status|strategy|caveman`. (No
   platform memory — agent owns it.) Tests `[S2]`.
-* **S3 — Removed.** Multi-agent and git worktrees are the in-workspace agent
-  CLI's concern, not the platform's: one workspace per project, no `ai agent`
-  commands, no platform-managed branches/worktrees (arch §20–22). The `[S3]` tag
-  is retired.
+* **S3 — Removed.** Multi-agent ORCHESTRATION and git worktrees are the
+  in-workspace agent CLI's concern, not the platform's: one workspace per project,
+  no platform-managed agent identities/branches/worktrees (arch §20–22). The flat
+  `ai agent` / `ai attach` / `ai sessions` commands that exist are tmux session
+  launchers, not orchestration (CLI §4.5b). The `[S3]` tag is retired.
 * **S4 Overlay persistence.** `overlay/`: per-workspace persistent overlay so
   installs + agent state survive restart/recreation (arch §26). No snapshot
   versioning/upgrade/rollback and no backup (arch §25, §32). Tests `[S4]`.

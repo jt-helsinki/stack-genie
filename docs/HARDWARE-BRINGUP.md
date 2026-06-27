@@ -28,11 +28,37 @@ code.
 - **Egress net-rules** — the project `network` block is rendered by
   `egress.MsbNetworkArgs` and applied at `realSandbox.Create` (default-deny +
   allow-listed host services + published ports).
+- **In-VM gateway + host-service reachability** — `egress.MsbNetworkArgs` targets
+  msb's `host` GROUP token (`allow:egress@host:tcp:<port>`) for the LOCAL gateway
+  rule (standalone) and the `gateway`/empty host-service allow-list entries — NOT
+  the resolved `host.microsandbox.internal` NAME. A host-NAME target lets the guest
+  connect to the msb gateway but does NOT engage msb's host-forwarding, so the
+  request never reaches the host service and the guest gets an empty reply (verified
+  live). A remote gateway (client mode) and explicit domain/IP host-services stay
+  verbatim. Verified live: the in-VM agent reaches the gateway (`/v1/models` → 200
+  with the served list) and `refresh-models` succeeds.
+- **In-VM DNS under default-deny** — `egress.MsbNetworkArgs` emits an always-on
+  DNS allow pair (`allow:egress@host:udp:53` + `allow:egress@host:tcp:53`, msb's
+  `host` GROUP token = `Rule::allow_dns()`) right after the gateway allow rule, in
+  EVERY mode. Without it, a default-deny policy whose rules are all host-name/IP
+  based matches nothing at DNS-decision time and every lookup is denied; the `host`
+  group matches the local gateway forwarder the query is delivered to (the only
+  target that re-opens DNS). Verified live — name resolution works under
+  `egress deny`.
 - **DNS egress audit** — `aip-dns` (CoreDNS) logs every queried name;
   `ai network log` surfaces it.
+- **In-VM container runtime boots and persists** — `Manager.ensureContainerd`
+  (`internal/workspace/workspace.go`) probes `nerdctl info` and, if down, boots
+  containerd detached then **polls for `/run/containerd/containerd.sock`** so the
+  daemon establishes before the boot exec returns (msb tears down the exec's
+  process group on return, which would otherwise kill the just-forked daemon).
+  `Sandbox.ExecRoot` runs `msb exec -u root` (msb's no-`-u` default is the
+  unprivileged `workspace` uid 1000, NOT root — so the earlier rootful boot failed
+  with a silently-swallowed permission error). Verified live: a plain `ai start`
+  now leaves containerd running, which also unblocks the in-VM apps.
 - **Virtual-key minting + provider-key storage** — `litellm.KeyManager` mints the
-  scoped agent virtual key; `secrets.Broker` stores provider keys in LiteLLM's
-  credential store (keys-in-LiteLLM, §17).
+  scoped agent virtual key and stores provider keys in LiteLLM's credential store
+  (keys-in-LiteLLM, §17), fronted by `ai keys`.
 - **Live Ollama health probe** — `internal/ollama` `RealProbe` does a real
   `GET /api/version`; wired into `ai doctor` and `realServices.serviceHealthy`.
 
@@ -245,24 +271,27 @@ extracted to `/usr/local`) in every OS base Dockerfile, plus the runtime OS deps
 CNI needs (`ca-certificates`, `iptables`/`iptables-nft`, `iproute`/`iproute2`).
 The runtime is **started at workspace start**, not baked running into the image:
 `Manager.Start` calls `ensureContainerd`, which probes `nerdctl info` (as root via
-the new `Sandbox.ExecRoot`) and, if the daemon is not up, boots it **detached**
-(`setsid sh -c 'containerd >/var/log/containerd.log 2>&1 &'`) so it survives the
-exec and runs for the VM's life. This is **best-effort** — a failure logs a
-warning and does NOT fail the workspace start.
+`Sandbox.ExecRoot` = `msb exec -u root`) and, if the daemon is not up, boots it
+**detached** (`setsid sh -c 'containerd >/var/log/containerd.log 2>&1 &'`) then
+**polls for `/run/containerd/containerd.sock`** to keep the boot exec alive until
+the daemon establishes — msb tears down the exec's process group on return, which
+would otherwise kill the just-forked daemon. This is **best-effort** — a failure
+logs a warning and does NOT fail the workspace start.
 
-The host-side wiring (the Dockerfile install lines, `ExecRoot` argv assembly, the
-probe + boot argv, and the best-effort swallowing) is unit-tested. The LIVE
-behaviour is a bring-up item:
+The containerd boot and its daemon-persistence are **verified on the Apple Silicon
+host** (a plain `ai start` leaves containerd running, which also unblocks the in-VM
+apps); the host-side wiring (Dockerfile install lines, `ExecRoot` argv assembly,
+the probe + boot argv with the socket poll, the best-effort swallowing) is
+unit-tested. What remains:
 
-- [ ] **containerd boots and persists in the microVM** — on a provisioned host,
-      confirm `msb exec <name> -- nerdctl info` reports a running daemon after
-      `ai start` (the detached `setsid` containerd survives the exec that started
-      it), and `msb exec <name> -- nerdctl run --rm hello-world` works (proves
-      runc + CNI + image pull through the now-`public` egress).
-- [ ] **`msb exec` daemon-persistence** — verify the `setsid` background daemon is
-      not reaped when the boot exec returns (the assumption `ensureContainerd`
-      relies on). If msb tears down the exec's process group, switch the boot to a
-      persistence mechanism msb keeps alive (e.g. a transient unit / init service).
+- [x] **containerd boots and persists in the microVM** — verified: `nerdctl info`
+      reports a running daemon after `ai start` (the socket-poll keeps the detached
+      daemon alive past the boot exec's return), and `ExecRoot` running as `-u root`
+      gives the rootful runtime the uid 0 it needs.
+- [ ] **`nerdctl run` end-to-end** — confirm `msb exec <name> -- nerdctl run --rm
+      hello-world` works (proves runc + CNI + image pull through the now-`public`
+      egress) — the live `nerdctl run`/`pull` is still a bring-up item (it overlaps
+      §2.7's in-VM apps).
 - [ ] **arch-aware tarball** — confirm `uname -m` → `arm64` on Apple Silicon
       selects `nerdctl-full-2.3.3-linux-arm64.tar.gz` (and `amd64` on Linux x86_64).
 
@@ -276,7 +305,8 @@ fully unit-tested with fakes:
 
 - the manifest env (each app points at the resolved gateway
   `http://host.microsandbox.internal:18787/v1` with the workspace's scoped virtual
-  key + default model);
+  key — the catalog-driven system has no default model, so the model handle is
+  empty);
 - **port allocation** — a unique host port per `(workspace, app)`, reserved
   machine-wide across all workspaces' configs and persisted in the project
   `config.yaml`'s `apps:` block, published ONLY while installed via the existing
@@ -349,9 +379,9 @@ pass):
    view attaches/kills via `ai attach`. (Needs `tmux` in the image — now
    in every OS Dockerfile — and a booted microVM, so it is verified during
    bring-up alongside the shell.)
-6. `ai secrets set openai --stdin` + `ai secrets map openai --env OPENAI_API_KEY`;
-   `ai models test gpt-5` → works (real key lives in LiteLLM, only a scoped
-   virtual key in the workspace).
+6. `ai keys add openai --stdin` (registers that provider's catalog models in the
+   gateway); `ai models test gpt-5` → works (real key lives encrypted in LiteLLM,
+   only a scoped virtual key in the workspace).
 7. The default egress mode is **"public"** — from a fresh workspace the open
    internet is reachable (in-VM `nerdctl` can pull images) while private ranges stay
    blocked, and `ai network log` shows the resolved names. Re-lock with `ai network

@@ -253,8 +253,10 @@ ai context caveman <lite|full|ultra|wenyan>
 The platform provides **one workspace per directory**. Running multiple AI agents
 in a workspace — and any git they need (branches, worktrees, merges, rebases) — is
 the **in-workspace agent CLI's** job, not the platform's (architecture §20–22).
-There are no `ai agent` commands and no platform-managed worktrees. The `[S3]`
-acceptance tag is retired.
+There are no platform-managed agent identities or worktrees, and the `[S3]`
+acceptance tag is retired. (The flat `ai agent` / `ai attach` / `ai sessions`
+commands that DO exist are thin tmux session launchers/reattachers for an
+in-workspace agent CLI — a session surface, not orchestration; see CLI §4.5b.)
 
 ---
 
