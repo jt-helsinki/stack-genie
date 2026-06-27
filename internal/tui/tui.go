@@ -668,6 +668,9 @@ func (application *app) updateTerminal(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 			commands = append(commands, application.localModelsView.Init())
 		}
 		if application.cloudModelsView != nil {
+			// Cloud Models lists ONLY models whose provider has a key, so a
+			// `keys add`/`keys remove` overlay closing must re-fetch the registered
+			// set so the list reflects the change immediately.
 			commands = append(commands, application.cloudModelsView.Init())
 		}
 		if application.apiKeysView != nil {
