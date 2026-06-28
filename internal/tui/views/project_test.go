@@ -8,6 +8,11 @@ import (
 	"github.com/jt-helsinki/ideal-robot/internal/project"
 )
 
+// stubLog is a no-op embedded workspace log for Project view tests.
+func stubLog() *WorkspaceLog {
+	return NewWorkspaceLog(func() (string, error) { return "", nil }, func() string { return "" })
+}
+
 // TestProjectDetailLifecycleKeyEmitsActionRequest: a lifecycle key emits a
 // WorkspaceActionRequestedMsg so the parent runs it as a suspended subprocess
 // (streaming msb output to the terminal), rather than calling msb on the alt-screen.
@@ -16,6 +21,7 @@ func TestProjectDetailLifecycleKeyEmitsActionRequest(test *testing.T) {
 		func(name string) (project.Entry, bool, error) {
 			return project.Entry{Name: name, OS: "ubuntu", Status: "stopped"}, true, nil
 		},
+		stubLog(),
 	)
 	view.SetProject("app")
 	_ = view.Update(view.Init()()) // refresh the summary
@@ -37,6 +43,7 @@ func TestProjectDetailExecKeyRequestsShell(test *testing.T) {
 		func(name string) (project.Entry, bool, error) {
 			return project.Entry{Name: name, OS: "ubuntu", Status: "started"}, true, nil
 		},
+		stubLog(),
 	)
 	view.SetProject("app")
 	_ = view.Update(view.Init()()) // refresh the summary
@@ -59,6 +66,7 @@ func TestProjectDetailShellGuardedWhenNotRunning(test *testing.T) {
 		func(name string) (project.Entry, bool, error) {
 			return project.Entry{Name: name, OS: "ubuntu", Status: "none"}, true, nil
 		},
+		stubLog(),
 	)
 	view.SetProject("app")
 	_ = view.Update(view.Init()())
@@ -72,7 +80,7 @@ func TestProjectDetailShellGuardedWhenNotRunning(test *testing.T) {
 }
 
 func TestProjectDetailNoSelection(test *testing.T) {
-	view := NewProject(nil)
+	view := NewProject(nil, stubLog())
 	if cmd := view.Init(); cmd != nil {
 		test.Error("Init with no project selected must be a no-op")
 	}
@@ -90,7 +98,7 @@ func TestProjectDetailNoSelection(test *testing.T) {
 func TestProjectPendingShowsSpinner(test *testing.T) {
 	view := NewProject(func(name string) (project.Entry, bool, error) {
 		return project.Entry{Name: name, OS: "ubuntu", Status: "none"}, true, nil
-	})
+	}, stubLog())
 	view.SetProject("app")
 	_ = view.Update(view.Init()())
 

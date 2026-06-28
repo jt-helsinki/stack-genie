@@ -83,7 +83,19 @@ func Run(cwd string) error {
 		tailService, // logs are viewed from the Services view (the `l` key)
 	)
 	projectsView := views.NewProjects(project.List)
-	projectDetail := views.NewProject(projectInfo)
+	// The workspace log is embedded in the Workspace (project detail) view, beneath
+	// the summary — not a separate tab. It streams the microVM's captured output (msb
+	// logs) for the live current project; with no project the tailer returns nothing.
+	workspaceLogView := views.NewWorkspaceLog(
+		func() (string, error) {
+			if application.currentProject == "" {
+				return "", nil
+			}
+			return workspace.RealManager(goruntime.GOOS, nowRFC3339).WorkspaceLogTail(application.currentProject, 1000)
+		},
+		func() string { return application.currentProject },
+	)
+	projectDetail := views.NewProject(projectInfo, workspaceLogView)
 	// The Sessions view resolves the LIVE current project at fetch time (over the
 	// real Manager), so switching projects reflects immediately. With no current
 	// project the lister is not invoked (the view shows "no project selected").
@@ -112,18 +124,6 @@ func Run(cwd string) error {
 				return nil, err
 			}
 			return manager.List()
-		},
-		func() string { return application.currentProject },
-	)
-	// The Workspace Log sub-tab streams the microVM's captured output (msb logs) for
-	// the live current project, polling so new lines stream in. With no current
-	// project the tailer returns nothing (the view shows "no workspace selected").
-	workspaceLogView := views.NewWorkspaceLog(
-		func() (string, error) {
-			if application.currentProject == "" {
-				return "", nil
-			}
-			return workspace.RealManager(goruntime.GOOS, nowRFC3339).WorkspaceLogTail(application.currentProject, 1000)
 		},
 		func() string { return application.currentProject },
 	)
@@ -199,13 +199,14 @@ func Run(cwd string) error {
 
 	// The Workspaces tab is a two-level hub: it opens on the switcher (the
 	// workspace list) and, once a workspace is selected, reveals per-workspace
-	// sub-tabs — Workspace · Network · Context · Shell · Workspace Log · Apps — for it.
-	// The "Shell" tab is the session manager (sessionsView): list/attach/new/kill,
-	// with the interactive shell itself run in the real terminal via ExecProcess.
+	// sub-tabs — Workspace · Network · Context · Shell · Apps — for it. The Workspace
+	// tab embeds the workspace log beneath the summary (no separate log tab). The
+	// "Shell" tab is the session manager (sessionsView): list/attach/new/kill, with
+	// the interactive shell run in the real terminal via ExecProcess.
 	projectsHub := views.NewProjectsHub(
 		projectsView,
-		[]views.Screen{projectDetail, networkView, contextView, sessionsView, workspaceLogView, appsView},
-		[]string{"Workspace", "Network", "Context", "Shell", "Workspace Log", "Apps"},
+		[]views.Screen{projectDetail, networkView, contextView, sessionsView, appsView},
+		[]string{"Workspace", "Network", "Context", "Shell", "Apps"},
 	)
 
 	// Top-level tab order = menu order: Services · Workspaces · Local Models · Cloud

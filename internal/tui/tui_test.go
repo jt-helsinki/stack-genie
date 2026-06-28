@@ -48,6 +48,7 @@ func newTestHubApp(test *testing.T, subTitles ...string) (*app, *views.ProjectsH
 	test.Helper()
 	detail := views.NewProject(
 		func(string) (project.Entry, bool, error) { return project.Entry{Name: "app"}, true, nil },
+		views.NewWorkspaceLog(func() (string, error) { return "", nil }, func() string { return "" }),
 	)
 	subViews := make([]views.Screen, 0, len(subTitles))
 	for index, title := range subTitles {
@@ -190,7 +191,7 @@ func TestCreateConfirmedClosesOverlayAndRunsWizard(test *testing.T) {
 func TestExecRequestedRunsInRealTerminal(test *testing.T) {
 	application := &app{
 		views:         []View{&fakeView{title: "Project"}},
-		projectDetail: views.NewProject(func(string) (project.Entry, bool, error) { return project.Entry{}, false, nil }),
+		projectDetail: views.NewProject(func(string) (project.Entry, bool, error) { return project.Entry{}, false, nil }, views.NewWorkspaceLog(func() (string, error) { return "", nil }, func() string { return "" })),
 	}
 	_, cmd := application.Update(views.ExecRequestedMsg{Project: "app"})
 	if application.terminal != nil {
@@ -488,6 +489,7 @@ func TestWorkspaceDeleteOpensOverlay(test *testing.T) {
 		views: []View{&fakeView{title: "Workspace"}},
 		projectDetail: views.NewProject(
 			func(string) (project.Entry, bool, error) { return project.Entry{}, false, nil },
+			views.NewWorkspaceLog(func() (string, error) { return "", nil }, func() string { return "" }),
 		),
 	}
 	application.Update(views.WorkspaceActionRequestedMsg{Action: "delete", Project: "app"})
