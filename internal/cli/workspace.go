@@ -5,8 +5,10 @@ import (
 	"fmt"
 	goruntime "runtime"
 	"strconv"
+	"strings"
 	"time"
 
+	"github.com/charmbracelet/huh"
 	"github.com/jt-helsinki/ideal-robot/internal/output"
 	"github.com/jt-helsinki/ideal-robot/internal/state"
 	"github.com/jt-helsinki/ideal-robot/internal/ui"
@@ -85,26 +87,100 @@ func secondArg(args []string) string {
 	return ""
 }
 
-// openWorkspaceShell is the shared body of `ai shell`: an interactive login shell
-// inside the project's running workspace microVM (a real PTY via msb exec -t). It
-// is interactive-only — it owns the terminal and emits no JSON envelope — so it is
-// rejected under --json / a non-TTY (exit 2). On a clean exit it leaves no stdout
-// envelope (like `ai ui`).
-func openWorkspaceShell(emitter *output.Emitter, exit *int, name string) {
-	if !interactive(emitter) {
-		*exit = emitter.Failure("workspace.shell", output.Errorf(output.ExitInvalidInput,
-			"ai shell is interactive and needs a terminal (not available with --json or when piped)"))
-		return
-	}
-	if err := workspace.RealManager(goruntime.GOOS, nowRFC3339).Shell(name); err != nil {
-		*exit = emitter.Failure("workspace.shell", mapWorkspaceErr(err))
+// defaultShellSession is the session name pre-filled in the `ai shell` new-session
+// prompt — the conventional shell session (matching the platform default), so the
+// common "just give me a shell" case is one Enter away.
+const defaultShellSession = "shell"
+
+// newSessionSentinel is the non-typeable select value standing for "create a new
+// session" in the `ai shell` picker (it can't collide with a real session name —
+// session names are validated to letters/digits/'-'/'_').
+const newSessionSentinel = "\x00new"
+
+// runAttach opens (creating it if absent) the named tmux session in the workspace
+// and reports the outcome under commandKey. The interactive gate is the caller's
+// (shell/attach are TTY-only); a clean inner-shell exit leaves no stdout envelope.
+func runAttach(emitter *output.Emitter, exit *int, commandKey, name, session string) {
+	if err := workspace.RealManager(goruntime.GOOS, nowRFC3339).Attach(name, session); err != nil {
+		*exit = emitter.Failure(commandKey, mapWorkspaceErr(err))
 		return
 	}
 	*exit = output.ExitOK
 }
 
-// workspaceShellRunE is the RunE for `ai shell [name]`: resolve the workspace
-// (explicit name, --project, or cwd) and open an interactive login shell inside it.
+// sessionNames projects the session list to its names (for the pickers).
+func sessionNames(sessions []workspace.Session) []string {
+	names := make([]string, 0, len(sessions))
+	for _, session := range sessions {
+		names = append(names, session.Name)
+	}
+	return names
+}
+
+// validateSessionName enforces a tmux-safe session name (tmux forbids '.'/':' and
+// whitespace), so a newly-created session name can't break the tmux invocation.
+func validateSessionName(value string) error {
+	trimmed := strings.TrimSpace(value)
+	if trimmed == "" {
+		return fmt.Errorf("a session name is required")
+	}
+	for _, char := range trimmed {
+		switch {
+		case char == '-', char == '_',
+			char >= 'a' && char <= 'z', char >= 'A' && char <= 'Z', char >= '0' && char <= '9':
+		default:
+			return fmt.Errorf("use only letters, digits, '-' or '_'")
+		}
+	}
+	return nil
+}
+
+// promptShellSession is the `ai shell` picker: in ONE form, choose an existing
+// session to attach to OR create a new one (typing its name, shown only when "new"
+// is selected). Returns the chosen session name. With no existing sessions it opens
+// straight on the new-session name (pre-filled with the default), so first use is a
+// single Enter.
+func promptShellSession(existing []string) (string, error) {
+	choice := newSessionSentinel
+	newName := defaultShellSession
+	if len(existing) > 0 {
+		choice = existing[0] // pre-select the first existing session to attach
+	}
+
+	options := make([]huh.Option[string], 0, len(existing)+1)
+	for _, name := range existing {
+		options = append(options, huh.NewOption("attach: "+name, name))
+	}
+	options = append(options, huh.NewOption("＋ new session…", newSessionSentinel))
+
+	selectGroup := huh.NewGroup(
+		huh.NewSelect[string]().
+			Title("Workspace session").
+			Description("Attach to an existing session, or create a new one.").
+			Options(options...).
+			Value(&choice),
+	)
+	// The name input only appears (and only validates) when "new session" is chosen.
+	nameGroup := huh.NewGroup(
+		huh.NewInput().
+			Title("New session name").
+			Description("Letters, digits, '-' or '_'.").
+			Value(&newName).
+			Validate(validateSessionName),
+	).WithHideFunc(func() bool { return choice != newSessionSentinel })
+
+	if err := runForm(selectGroup, nameGroup); err != nil {
+		return "", err
+	}
+	if choice != newSessionSentinel {
+		return choice, nil
+	}
+	return strings.TrimSpace(newName), nil
+}
+
+// workspaceShellRunE is the RunE for `ai shell [name]`: resolve the workspace, then
+// offer to ATTACH to an existing session or CREATE a new one (an explicit
+// `--session` skips the picker and attaches/creates that one directly).
 func workspaceShellRunE(emitter *output.Emitter, exit *int) func(*cobra.Command, []string) error {
 	return func(cmd *cobra.Command, args []string) error {
 		// Gate the TTY first (the cheap check); a bad name still reports cleanly
@@ -119,7 +195,28 @@ func workspaceShellRunE(emitter *output.Emitter, exit *int) func(*cobra.Command,
 			*exit = emitter.Failure("workspace.shell", err)
 			return nil
 		}
-		openWorkspaceShell(emitter, exit, name)
+		// An explicit --session attaches/creates that session directly (scriptable,
+		// and skips the picker).
+		if session, _ := cmd.Flags().GetString("session"); session != "" {
+			if validateErr := validateSessionName(session); validateErr != nil {
+				*exit = emitter.Failure("workspace.shell", output.Errorf(output.ExitInvalidInput, "%s", validateErr))
+				return nil
+			}
+			runAttach(emitter, exit, "workspace.shell", name, session)
+			return nil
+		}
+		// Otherwise offer attach-or-create over the workspace's current sessions.
+		sessions, err := workspace.RealManager(goruntime.GOOS, nowRFC3339).ListSessions(name)
+		if err != nil {
+			*exit = emitter.Failure("workspace.shell", mapWorkspaceErr(err))
+			return nil
+		}
+		session, err := promptShellSession(sessionNames(sessions))
+		if err != nil {
+			*exit = emitter.Failure("workspace.shell", err)
+			return nil
+		}
+		runAttach(emitter, exit, "workspace.shell", name, session)
 		return nil
 	}
 }
@@ -127,13 +224,15 @@ func workspaceShellRunE(emitter *output.Emitter, exit *int) func(*cobra.Command,
 // newShellCmd builds the canonical top-level `ai shell [name]` (defaults to the
 // current directory's workspace).
 func newShellCmd(emitter *output.Emitter, exit *int) *cobra.Command {
-	return &cobra.Command{
+	cmd := &cobra.Command{
 		Use:               "shell [name]",
-		Short:             "Open an interactive shell inside the workspace (defaults to the current directory)",
+		Short:             "Open a workspace session: attach to one or create a new one (defaults to the current directory)",
 		Args:              cobra.MaximumNArgs(1),
 		ValidArgsFunction: completeProjectArg,
 		RunE:              workspaceShellRunE(emitter, exit),
 	}
+	cmd.Flags().String("session", "", "attach to (or create) this session directly, skipping the picker")
+	return cmd
 }
 
 // openWorkspaceAgent is the shared body of `ai agent <cli> [name]`: start (or
@@ -186,26 +285,23 @@ func newAgentCmd(emitter *output.Emitter, exit *int) *cobra.Command {
 	}
 }
 
-// openWorkspaceAttach is the shared body of `ai attach [session] [name]`: attach
-// to (creating it if needed) a persistent tmux session inside the project's
-// running workspace microVM, defaulting to the "shell" session. Interactive-only
-// like the shell (exit 2 under --json/no-TTY).
-func openWorkspaceAttach(emitter *output.Emitter, exit *int, name, session string) {
-	if !interactive(emitter) {
-		*exit = emitter.Failure("workspace.attach", output.Errorf(output.ExitInvalidInput,
-			"ai attach is interactive and needs a terminal (not available with --json or when piped)"))
-		return
-	}
-	if err := workspace.RealManager(goruntime.GOOS, nowRFC3339).Attach(name, session); err != nil {
-		*exit = emitter.Failure("workspace.attach", mapWorkspaceErr(err))
-		return
-	}
-	*exit = output.ExitOK
+// attachNoSessionsResult is the `ai attach` payload when the workspace has no
+// sessions to attach to — it points the user at `ai shell` to create one.
+type attachNoSessionsResult struct {
+	Project string `json:"project"`
 }
 
-// workspaceAttachRunE is the RunE for `ai attach [session] [name]`: the optional
-// [session] is the first positional (default "shell"), the optional trailing
-// [name] resolves the workspace (else --project, else cwd).
+// Human tells the user there is nothing to attach to and how to make one.
+func (result attachNoSessionsResult) Human() string {
+	return ui.Muted.Render("No sessions in workspace ") + ui.Value.Render(result.Project) +
+		ui.Muted.Render(" — run ") + ui.Primary.Render("`ai shell`") + ui.Muted.Render(" to create one.")
+}
+
+// workspaceAttachRunE is the RunE for `ai attach [session] [name]`. With an explicit
+// [session] it attaches directly; with none it LISTS the workspace's sessions and
+// lets the user pick one — and if there are none, it says so and points at
+// `ai shell`. The optional trailing [name] resolves the workspace (else --project,
+// else cwd).
 func workspaceAttachRunE(emitter *output.Emitter, exit *int) func(*cobra.Command, []string) error {
 	return func(cmd *cobra.Command, args []string) error {
 		if !interactive(emitter) {
@@ -218,9 +314,47 @@ func workspaceAttachRunE(emitter *output.Emitter, exit *int) func(*cobra.Command
 			*exit = emitter.Failure("workspace.attach", err)
 			return nil
 		}
-		openWorkspaceAttach(emitter, exit, name, firstArg(args))
+		// An explicit session name attaches directly (no picker).
+		if session := firstArg(args); session != "" {
+			runAttach(emitter, exit, "workspace.attach", name, session)
+			return nil
+		}
+		// No session given: list the workspace's sessions and let the user choose.
+		sessions, err := workspace.RealManager(goruntime.GOOS, nowRFC3339).ListSessions(name)
+		if err != nil {
+			*exit = emitter.Failure("workspace.attach", mapWorkspaceErr(err))
+			return nil
+		}
+		if len(sessions) == 0 {
+			// Nothing to attach to — attach never CREATES; that is `ai shell`'s job.
+			*exit = emitter.Success("workspace.attach", attachNoSessionsResult{Project: name})
+			return nil
+		}
+		session, err := promptChoice("Attach to session",
+			"Pick a running workspace session.", sessionOptions(sessions), sessions[0].Name)
+		if err != nil {
+			*exit = emitter.Failure("workspace.attach", err)
+			return nil
+		}
+		runAttach(emitter, exit, "workspace.attach", name, session)
 		return nil
 	}
+}
+
+// sessionOptions renders the session list as labelled select options (name + an
+// "attached"/idle hint) for the attach picker.
+func sessionOptions(sessions []workspace.Session) []huh.Option[string] {
+	options := make([]huh.Option[string], 0, len(sessions))
+	for _, session := range sessions {
+		label := session.Name
+		if session.Attached {
+			label += " (attached)"
+		} else if idle := sessionIdle(session.Activity); idle != "-" {
+			label += " (idle " + idle + ")"
+		}
+		options = append(options, huh.NewOption(label, session.Name))
+	}
+	return options
 }
 
 // newAttachCmd builds the canonical top-level `ai attach [session] [name]`
@@ -228,7 +362,7 @@ func workspaceAttachRunE(emitter *output.Emitter, exit *int) func(*cobra.Command
 func newAttachCmd(emitter *output.Emitter, exit *int) *cobra.Command {
 	return &cobra.Command{
 		Use:   "attach [session] [name]",
-		Short: "Attach to a workspace session (default: shell; defaults to the current directory)",
+		Short: "Attach to a workspace session — lists them to choose from (defaults to the current directory)",
 		Args:  cobra.MaximumNArgs(2),
 		RunE:  workspaceAttachRunE(emitter, exit),
 	}

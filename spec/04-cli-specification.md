@@ -701,18 +701,27 @@ Exit semantics — **platform failure is distinct from inner-command failure**:
 ## 4.5a Interactive Shell (`ai shell`)
 
 ```bash
-ai shell [<name>]             # defaults to the current directory's workspace
+ai shell [<name>]               # defaults to the current directory's workspace
+ai shell --session <s> [<name>] # attach to / create session <s> directly (no picker)
 ```
 
-Opens an **interactive login shell inside the running workspace microVM** — a real
-PTY via `msb exec -t`, with the caller's stdin/stdout/stderr wired straight
-through (distinct from `ai exec`, which is one-shot and buffered). It is
+Opens an **interactive shell inside the running workspace microVM** — a real PTY
+via `msb exec -t`, with the caller's stdin/stdout/stderr wired straight through
+(distinct from `ai exec`, which is one-shot and buffered). It is
 **interactive-only**: it owns the terminal and emits no JSON envelope, so under
-`--json` or a non-TTY it is exit `2`. On a clean exit (the shell ends) there is no
-stdout envelope, like `ai ui`. The same path backs the TUI Workspace view's `e` key
-(via `tea.ExecProcess`) and the `ai create` attach-to-existing flow. A
-platform failure (workspace not running, msb missing) maps per §18 (3/4); the
-inner shell exiting is a clean end, not a failure.
+`--json` or a non-TTY it is exit `2`.
+
+On a TTY (no `--session`) it first **lists the workspace's existing sessions** and
+prompts: **attach to one of them, or create a NEW session** (typing its name —
+validated to letters/digits/`-`/`_`; the new-session name is pre-filled with the
+default **`shell`**, so first use is a single Enter). The chosen session is opened
+via the **create-or-attach** path (`tmux new-session -A`), so a new name is created
+and an existing one is reattached. `--session <s>` skips the picker and
+attaches/creates `<s>` directly (scriptable). On a clean exit (the shell ends)
+there is no stdout envelope, like `ai ui`. The same create-or-attach path backs the
+TUI Workspace view's `e` key (via `tea.ExecProcess`) and the `ai create`
+attach-to-existing flow. A platform failure (workspace not running, msb missing)
+maps per §18 (3/4); the inner shell exiting is a clean end, not a failure.
 
 ---
 
@@ -750,15 +759,19 @@ tmux ≥ 3.2 (`terminal-features`/`extended-keys`), which all four bases satisfy
 graphics, sixel) through, so a TUI's image-rendering features will not work inside
 the tmux session.
 
-* **`ai shell`** (§4.5a) opens the persistent **`shell`**
-  session — a login shell in `/workspace`. `tmux new-session -A` makes this
-  **create-or-attach**: the first call creates it, every later call reattaches.
+* **`ai shell`** (§4.5a) **creates or attaches** a session in `/workspace` — on a
+  TTY it offers a picker (attach an existing session, or create a new one by name;
+  default new name **`shell`**), or `--session <s>` to go straight to `<s>`. The
+  underlying `tmux new-session -A` is create-or-attach.
 * **`ai agent <cli>`** starts (or reattaches to) a **per-CLI** session named after
   the CLI — `opencode`, `pi`, `claude-code` (runs `claude`), `codex`, `gemini` —
   so each agent has one durable session and several can run side by side. An
   **unknown `<cli>`** is exit `2` with the valid set listed.
-* **`ai attach [session]`** attaches to (creating it if absent) a named session,
-  defaulting to **`shell`**. A freshly-created session opens the default shell.
+* **`ai attach [session]`** attaches to an **existing** session (it never creates —
+  that is `ai shell`'s job). With an explicit `[session]` it attaches directly; with
+  none it **lists the workspace's sessions and prompts** for which to attach. When
+  the workspace has **no sessions** it prints a hint pointing at **`ai shell`** to
+  create one (exit `0`, nothing to attach to).
 
 `ai agent` and `ai attach` are **interactive-only** (they own the terminal and
 emit no JSON envelope), so under `--json` or a non-TTY they are exit `2`, exactly

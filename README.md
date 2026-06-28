@@ -119,10 +119,10 @@ state persist across restarts via the overlay):
 ```bash
 cd my-app
 ai start                     # the cwd's project; also: ai stop, ai restart
-ai shell                     # an interactive shell inside (reattachable tmux session)
+ai shell                     # pick a session to attach, or create a new one (tmux)
 ai agent opencode            # launch an agent CLI in its own session
 ai exec -- bash              # run a one-off command inside
-ai sessions                  # list sessions; ai attach reattaches one
+ai sessions                  # list sessions; ai attach picks one to reattach
 ai sessions kill build       # kill a named tmux session
 ```
 
