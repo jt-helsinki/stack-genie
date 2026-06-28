@@ -4,7 +4,6 @@ import (
 	"errors"
 	"fmt"
 	goruntime "runtime"
-	"strconv"
 	"strings"
 
 	"github.com/charmbracelet/huh"
@@ -240,7 +239,7 @@ func resolveAllowTarget(emitter *output.Emitter, provided, prompt string) (strin
 			"a bare host defaults to port 443 (e.g. api.github.com); use host:port for a specific port (e.g. gateway:5432)",
 			provided,
 			func(candidate string) error {
-				_, _, validateErr := splitHostPort(strings.TrimSpace(candidate))
+				_, _, validateErr := egress.SplitHostPort(strings.TrimSpace(candidate))
 				return validateErr
 			},
 		)
@@ -251,7 +250,7 @@ func resolveAllowTarget(emitter *output.Emitter, provided, prompt string) (strin
 	} else if value == "" {
 		return "", 0, output.Errorf(output.ExitInvalidInput, "provide host:port, or run on a terminal to enter it")
 	}
-	host, port, err := splitHostPort(value)
+	host, port, err := egress.SplitHostPort(value)
 	if err != nil {
 		return "", 0, output.Errorf(output.ExitInvalidInput, "%s", err)
 	}
@@ -267,7 +266,7 @@ func resolvePortPair(emitter *output.Emitter, provided, prompt string) (int, int
 			"the guest port inside the workspace and the host port it is reachable at (e.g. 3000:3000)",
 			provided,
 			func(candidate string) error {
-				_, _, validateErr := splitPortPair(strings.TrimSpace(candidate))
+				_, _, validateErr := egress.SplitPortPair(strings.TrimSpace(candidate))
 				return validateErr
 			},
 		)
@@ -278,7 +277,7 @@ func resolvePortPair(emitter *output.Emitter, provided, prompt string) (int, int
 	} else if value == "" {
 		return 0, 0, output.Errorf(output.ExitInvalidInput, "provide guest:host, or run on a terminal to enter the mapping")
 	}
-	guest, host, err := splitPortPair(value)
+	guest, host, err := egress.SplitPortPair(value)
 	if err != nil {
 		return 0, 0, output.Errorf(output.ExitInvalidInput, "%s", err)
 	}
@@ -401,36 +400,5 @@ func newNetworkUnpublishCmd(emitter *output.Emitter, exit *int) *cobra.Command {
 // optional: a bare host with no ":" (e.g. "api.github.com" or "*.npmjs.org")
 // defaults to 443 (HTTPS). An explicit "host:port" (e.g. "db.internal:5432" or
 // "*.npmjs.org:8443") is split on the LAST colon. IPv6 literals are not supported.
-func splitHostPort(value string) (string, int, error) {
-	index := strings.LastIndex(value, ":")
-	if index < 0 {
-		// No port given — default to HTTPS. (A bare wildcard like "*.npmjs.org"
-		// or a domain like "api.github.com" lands here.)
-		return value, 443, nil
-	}
-	if index == 0 || index == len(value)-1 {
-		return "", 0, fmt.Errorf("expected host or host:port, got %q", value)
-	}
-	port, err := strconv.Atoi(value[index+1:])
-	if err != nil {
-		return "", 0, fmt.Errorf("invalid port in %q: %s", value, err)
-	}
-	return value[:index], port, nil
-}
 
 // splitPortPair parses "guest:host" (two ports).
-func splitPortPair(value string) (int, int, error) {
-	parts := strings.Split(value, ":")
-	if len(parts) != 2 {
-		return 0, 0, fmt.Errorf("expected guest:host, got %q", value)
-	}
-	guest, err := strconv.Atoi(parts[0])
-	if err != nil {
-		return 0, 0, fmt.Errorf("invalid guest port in %q: %s", value, err)
-	}
-	host, err := strconv.Atoi(parts[1])
-	if err != nil {
-		return 0, 0, fmt.Errorf("invalid host port in %q: %s", value, err)
-	}
-	return guest, host, nil
-}

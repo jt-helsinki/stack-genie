@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+	"strconv"
 	"strings"
 
 	"github.com/jt-helsinki/ideal-robot/internal/config"
@@ -17,6 +18,45 @@ import (
 
 // ErrInvalidMode is returned for an egress mode outside config.EgressModes.
 var ErrInvalidMode = errors.New("invalid egress mode")
+
+// SplitHostPort parses an allow target. The host may be a hostname/IP/domain, a
+// "*.suffix" wildcard, or the "gateway" token for the host machine. The port is
+// optional: a bare host with no ":" (e.g. "api.github.com" or "*.npmjs.org")
+// defaults to 443 (HTTPS). An explicit "host:port" is split on the LAST colon. IPv6
+// literals are not supported. Shared by `ai network allow/disallow` and the TUI.
+func SplitHostPort(value string) (string, int, error) {
+	value = strings.TrimSpace(value)
+	index := strings.LastIndex(value, ":")
+	if index < 0 {
+		return value, 443, nil
+	}
+	if index == 0 || index == len(value)-1 {
+		return "", 0, fmt.Errorf("expected host or host:port, got %q", value)
+	}
+	port, err := strconv.Atoi(value[index+1:])
+	if err != nil {
+		return "", 0, fmt.Errorf("invalid port in %q: %s", value, err)
+	}
+	return value[:index], port, nil
+}
+
+// SplitPortPair parses "guest:host" (two ports). Shared by `ai network
+// publish/unpublish` and the TUI.
+func SplitPortPair(value string) (int, int, error) {
+	parts := strings.Split(strings.TrimSpace(value), ":")
+	if len(parts) != 2 {
+		return 0, 0, fmt.Errorf("expected guest:host, got %q", value)
+	}
+	guest, err := strconv.Atoi(parts[0])
+	if err != nil {
+		return 0, 0, fmt.Errorf("invalid guest port in %q: %s", value, err)
+	}
+	host, err := strconv.Atoi(parts[1])
+	if err != nil {
+		return 0, 0, fmt.Errorf("invalid host port in %q: %s", value, err)
+	}
+	return guest, host, nil
+}
 
 // ErrInvalidPort is returned for a port outside 1–65535.
 var ErrInvalidPort = errors.New("port out of range")

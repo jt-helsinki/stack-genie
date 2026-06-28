@@ -127,7 +127,39 @@ func Run(cwd string) error {
 		},
 		func() string { return application.currentProject },
 	)
-	networkView := views.NewNetwork(currentRoot, egress.Get, egress.SetMode)
+	// Network management: add/remove allow-list entries + published ports. The view
+	// collects the raw "host[:port]" / "guest:host" string; the wiring parses it via
+	// egress.Split* and applies it, so the view holds no egress parsing.
+	networkView := views.NewNetwork(currentRoot, egress.Get, egress.SetMode,
+		func(root, raw string) error {
+			host, port, err := egress.SplitHostPort(raw)
+			if err != nil {
+				return err
+			}
+			return egress.Allow(root, host, port)
+		},
+		func(root, raw string) error {
+			host, port, err := egress.SplitHostPort(raw)
+			if err != nil {
+				return err
+			}
+			return egress.Deny(root, host, port)
+		},
+		func(root, raw string) error {
+			guest, host, err := egress.SplitPortPair(raw)
+			if err != nil {
+				return err
+			}
+			return egress.Publish(root, guest, host)
+		},
+		func(root, raw string) error {
+			_, host, err := egress.SplitPortPair(raw)
+			if err != nil {
+				return err
+			}
+			return egress.Unpublish(root, host)
+		},
+	)
 	contextView := views.NewContext(currentRoot, contextopt.GetStatus, contextopt.SetStrategy, contextopt.SetCavemanLevel)
 	// Local Models: the installed Ollama store + the installable ollama.com library
 	// (live, cache-backed), with a per-model tag drill-down and the gateway tester.

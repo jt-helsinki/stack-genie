@@ -8,6 +8,9 @@ import (
 	"github.com/jt-helsinki/ideal-robot/internal/config"
 )
 
+// noMutator is a no-op egress mutator for tests that do not exercise add/remove.
+func noMutator(string, string) error { return nil }
+
 func TestNetworkPopulatesOnRefresh(test *testing.T) {
 	network := config.NetworkConfig{
 		Egress:            "public",
@@ -18,6 +21,7 @@ func TestNetworkPopulatesOnRefresh(test *testing.T) {
 		func() (string, bool) { return "/proj", true },
 		func(string) (config.NetworkConfig, error) { return network, nil },
 		func(string, string) error { return nil },
+		noMutator, noMutator, noMutator, noMutator,
 	)
 
 	_ = view.Update(view.Init()())
@@ -42,6 +46,7 @@ func TestNetworkNoProjectSelected(test *testing.T) {
 		func() (string, bool) { return "", false },
 		func(string) (config.NetworkConfig, error) { return config.NetworkConfig{}, nil },
 		func(string, string) error { return nil },
+		noMutator, noMutator, noMutator, noMutator,
 	)
 	if cmd := view.Init(); cmd != nil {
 		test.Error("Init with no project selected must be a no-op")
@@ -61,6 +66,7 @@ func TestNetworkCycleModeInvokesSetter(test *testing.T) {
 		func() (string, bool) { return "/proj", true },
 		func(string) (config.NetworkConfig, error) { return network, nil },
 		func(root, mode string) error { calls = append(calls, [2]string{root, mode}); return nil },
+		noMutator, noMutator, noMutator, noMutator,
 	)
 	_ = view.Update(view.Init()())
 
@@ -86,5 +92,38 @@ func TestNextEgressModeWraps(test *testing.T) {
 	}
 	if got := nextEgressMode("nonsense"); got != config.EgressModes[0] {
 		test.Errorf("nextEgressMode of unknown = %q, want %q", got, config.EgressModes[0])
+	}
+}
+
+// Pressing `a` opens the allow prompt; typing a target + enter calls the allow
+// mutator with the raw value, then refreshes.
+func TestNetworkAllowPromptApplies(test *testing.T) {
+	var got [2]string
+	view := NewNetwork(
+		func() (string, bool) { return "/proj", true },
+		func(string) (config.NetworkConfig, error) { return config.NetworkConfig{Egress: "public"}, nil },
+		func(string, string) error { return nil },
+		func(root, raw string) error { got = [2]string{root, raw}; return nil },
+		noMutator, noMutator, noMutator,
+	)
+	_ = view.Update(view.Init()())
+
+	if cmd := view.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("a")}); cmd != nil {
+		test.Fatal("pressing a should open the prompt, not run a command yet")
+	}
+	if view.inputMode != "allow" {
+		test.Fatalf("a must enter allow input mode, got %q", view.inputMode)
+	}
+	view.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("api.example.com")})
+	cmd := view.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if cmd == nil {
+		test.Fatal("enter must run the allow mutator")
+	}
+	_ = cmd()
+	if got != [2]string{"/proj", "api.example.com"} {
+		test.Fatalf("allow mutator called with %v, want [/proj api.example.com]", got)
+	}
+	if view.inputMode != "" {
+		test.Fatal("input mode must close after enter")
 	}
 }

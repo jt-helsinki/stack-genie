@@ -23,6 +23,12 @@ type NetworkGetter func(root string) (config.NetworkConfig, error)
 // egress.SetMode(root, mode).
 type EgressModeSetter func(root, mode string) error
 
+// NetworkMutator adds or removes one egress entry from a raw "host[:port]" or
+// "guest:host" string. Injected; the parent wires egress.Allow/Deny/Publish/
+// Unpublish (parsing the raw value via egress.SplitHostPort/SplitPortPair), so the
+// view holds no parsing logic.
+type NetworkMutator func(root, raw string) error
+
 type networkRefreshedMsg struct {
 	network config.NetworkConfig
 	err     error
@@ -31,28 +37,46 @@ type networkModeDoneMsg struct {
 	mode string
 	err  error
 }
+type networkMutateDoneMsg struct {
+	action string
+	err    error
+}
 
 // Network is the per-project view of the workspace egress policy: the resolved
 // mode, the host-service allow-list, and published ports, with a key to cycle
 // the egress mode through config.EgressModes.
 type Network struct {
-	current CurrentRoot
-	get     NetworkGetter
-	setMode EgressModeSetter
-	network config.NetworkConfig
-	flash   string
-	err     error
-	loaded  bool
+	current   CurrentRoot
+	get       NetworkGetter
+	setMode   EgressModeSetter
+	allow     NetworkMutator
+	disallow  NetworkMutator
+	publish   NetworkMutator
+	unpublish NetworkMutator
+	network   config.NetworkConfig
+	flash     string
+	err       error
+	loaded    bool
+	// inputMode is the active inline prompt ("allow"/"disallow"/"publish"/
+	// "unpublish"), empty when not prompting; input is the value typed so far.
+	inputMode string
+	input     string
 }
 
 // NewNetwork builds the network view over the injected current-project resolver,
-// policy getter, and mode setter.
-func NewNetwork(current CurrentRoot, get NetworkGetter, setMode EgressModeSetter) *Network {
-	return &Network{current: current, get: get, setMode: setMode}
+// policy getter, mode setter, and the four egress mutators (add/remove allow + port).
+func NewNetwork(current CurrentRoot, get NetworkGetter, setMode EgressModeSetter,
+	allow, disallow, publish, unpublish NetworkMutator) *Network {
+	return &Network{
+		current: current, get: get, setMode: setMode,
+		allow: allow, disallow: disallow, publish: publish, unpublish: unpublish,
+	}
 }
 
-func (view *Network) Title() string    { return "Network" }
-func (view *Network) Hints() string    { return "m cycle mode" }
+func (view *Network) Title() string { return "Network" }
+func (view *Network) Hints() string {
+	return "m mode · a allow · d disallow · p publish · u unpublish"
+}
 func (view *Network) SetSize(int, int) {}
 
 // Init refreshes the current project's egress policy (no-op with no project).
@@ -90,16 +114,99 @@ func (view *Network) Update(msg tea.Msg) tea.Cmd {
 			return nil
 		}
 		return view.refreshCmd(root)
-	case tea.KeyMsg:
-		if message.String() == "m" {
-			root, ok := view.current()
-			if !ok {
-				return nil
-			}
-			next := nextEgressMode(view.network.ResolvedEgress())
-			view.flash = ui.Muted.Render("setting egress " + next + "…")
-			return view.modeCmd(root, next)
+	case networkMutateDoneMsg:
+		if message.err != nil {
+			view.flash = ui.Failure.Render(ui.IconFail + " " + message.action + ": " + message.err.Error())
+		} else {
+			view.flash = ui.Success.Render(ui.IconOK + " " + message.action + " applied")
 		}
+		root, ok := view.current()
+		if !ok {
+			return nil
+		}
+		return view.refreshCmd(root) // reflect the change immediately
+	case tea.KeyMsg:
+		if view.inputMode != "" {
+			return view.handleInputKey(message)
+		}
+		return view.handleActionKey(message)
+	}
+	return nil
+}
+
+// handleActionKey starts the mode cycle or an inline add/remove prompt.
+func (view *Network) handleActionKey(key tea.KeyMsg) tea.Cmd {
+	root, ok := view.current()
+	if !ok {
+		return nil
+	}
+	switch key.String() {
+	case "m":
+		next := nextEgressMode(view.network.ResolvedEgress())
+		view.flash = ui.Muted.Render("setting egress " + next + "…")
+		return view.modeCmd(root, next)
+	case "a", "d", "p", "u":
+		view.inputMode = map[string]string{"a": "allow", "d": "disallow", "p": "publish", "u": "unpublish"}[key.String()]
+		view.input = ""
+		view.flash = ""
+	}
+	return nil
+}
+
+// handleInputKey edits the inline prompt: runes append, backspace deletes, enter
+// applies the value via the matching mutator, esc cancels. Spaces are dropped.
+func (view *Network) handleInputKey(key tea.KeyMsg) tea.Cmd {
+	switch key.Type {
+	case tea.KeyEsc:
+		view.inputMode, view.input = "", ""
+		return nil
+	case tea.KeyEnter:
+		action, raw := view.inputMode, strings.TrimSpace(view.input)
+		view.inputMode, view.input = "", ""
+		root, ok := view.current()
+		if raw == "" || !ok {
+			return nil
+		}
+		view.flash = ui.Muted.Render(action + " " + raw + "…")
+		return view.mutateCmd(action, root, raw)
+	case tea.KeyBackspace:
+		runes := []rune(view.input)
+		if len(runes) > 0 {
+			view.input = string(runes[:len(runes)-1])
+		}
+		return nil
+	case tea.KeyRunes:
+		for _, char := range key.Runes {
+			if char != ' ' {
+				view.input += string(char)
+			}
+		}
+		return nil
+	}
+	return nil
+}
+
+// mutateCmd runs the chosen egress mutation off the UI thread.
+func (view *Network) mutateCmd(action, root, raw string) tea.Cmd {
+	mutator := view.mutatorFor(action)
+	return func() tea.Msg {
+		if mutator == nil {
+			return networkMutateDoneMsg{action: action}
+		}
+		return networkMutateDoneMsg{action: action, err: mutator(root, raw)}
+	}
+}
+
+func (view *Network) mutatorFor(action string) NetworkMutator {
+	switch action {
+	case "allow":
+		return view.allow
+	case "disallow":
+		return view.disallow
+	case "publish":
+		return view.publish
+	case "unpublish":
+		return view.unpublish
 	}
 	return nil
 }
@@ -138,7 +245,15 @@ func (view *Network) View() string {
 	body.WriteString(field("mode", view.network.ResolvedEgress()))
 	body.WriteString(field("allow-list", egressAllowList(view.network.AllowHostServices)))
 	body.WriteString(field("published ports", egressPublishPorts(view.network.PublishPorts)))
-	if view.flash != "" {
+	switch {
+	case view.inputMode != "":
+		hint := "host[:port]"
+		if view.inputMode == "publish" || view.inputMode == "unpublish" {
+			hint = "guest:host"
+		}
+		body.WriteString("\n" + ui.Heading.Render(view.inputMode+" ") + view.input + "▏" +
+			ui.Muted.Render("  ("+hint+" · enter apply · esc cancel)"))
+	case view.flash != "":
 		body.WriteString("\n" + view.flash)
 	}
 	return body.String()

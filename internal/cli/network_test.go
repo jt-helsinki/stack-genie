@@ -315,19 +315,19 @@ func TestSplitHostPort(test *testing.T) {
 		{"host:notaport", "", 0, true},
 	}
 	for _, testCase := range cases {
-		host, port, err := splitHostPort(testCase.input)
+		host, port, err := egress.SplitHostPort(testCase.input)
 		if testCase.wantErr {
 			if err == nil {
-				test.Errorf("splitHostPort(%q) = (%q,%d,nil), want error", testCase.input, host, port)
+				test.Errorf("egress.SplitHostPort(%q) = (%q,%d,nil), want error", testCase.input, host, port)
 			}
 			continue
 		}
 		if err != nil {
-			test.Errorf("splitHostPort(%q) unexpected error: %v", testCase.input, err)
+			test.Errorf("egress.SplitHostPort(%q) unexpected error: %v", testCase.input, err)
 			continue
 		}
 		if host != testCase.wantHost || port != testCase.wantPort {
-			test.Errorf("splitHostPort(%q) = (%q,%d), want (%q,%d)",
+			test.Errorf("egress.SplitHostPort(%q) = (%q,%d), want (%q,%d)",
 				testCase.input, host, port, testCase.wantHost, testCase.wantPort)
 		}
 	}
