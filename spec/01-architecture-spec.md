@@ -569,13 +569,18 @@ containerd + nerdctl + runc + CNI plugins + buildkit, installed from the pinned
 `nerdctl-full` release tarball (one static, distro-agnostic artifact, arch-aware
 amd64/arm64) into `/usr/local` in every OS base Dockerfile, alongside the CNI
 runtime deps (`ca-certificates`, `iptables`, `iproute`). The runtime is **started
-at workspace start** (not baked running into the image): the platform probes
-`nerdctl info` as root and, if needed, boots `containerd` detached (`setsid`, as
-root) so it runs for the VM's life, then **polls for
-`/run/containerd/containerd.sock`** so the daemon establishes before the exec
-returns (msb tears down the exec's process group on return, which would otherwise
-kill the just-forked daemon). Bringing it up is **best-effort** — a failure does
-not fail the workspace start. (The applications that run *on* this runtime are a later phase.)
+at workspace start** (not baked running into the image): `ensureContainerd`
+(`internal/workspace`) probes `nerdctl info` as root and, if needed, boots
+`containerd` detached (`setsid`, as root) so it runs for the VM's life, then **polls
+`nerdctl info`** (true readiness — the daemon serving requests, NOT merely the
+`/run/containerd/containerd.sock` file existing) so the runtime is actually up
+before the exec returns (msb tears down the exec's process group on return, which
+would otherwise kill the just-forked daemon). The poll is bounded (~30s, 150 ×
+0.2s) so a broken runtime never hangs forever, and `ensureContainerd` **returns
+whether containerd is READY**. Bringing it up is **best-effort** — a failure does
+not fail the workspace start; `Start` only launches the in-VM apps when the runtime
+IS ready, otherwise it skips them with one warning (no per-app "cannot access
+containerd socket" fatal).
 
 #### In-VM apps (Phase 1)
 

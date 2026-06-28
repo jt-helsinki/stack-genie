@@ -49,13 +49,17 @@ code.
   `ai network log` surfaces it.
 - **In-VM container runtime boots and persists** — `Manager.ensureContainerd`
   (`internal/workspace/workspace.go`) probes `nerdctl info` and, if down, boots
-  containerd detached then **polls for `/run/containerd/containerd.sock`** so the
-  daemon establishes before the boot exec returns (msb tears down the exec's
-  process group on return, which would otherwise kill the just-forked daemon).
-  `Sandbox.ExecRoot` runs `msb exec -u root` (msb's no-`-u` default is the
-  unprivileged `workspace` uid 1000, NOT root — so the earlier rootful boot failed
-  with a silently-swallowed permission error). Verified live: a plain `ai start`
-  now leaves containerd running, which also unblocks the in-VM apps.
+  containerd detached then **polls `nerdctl info` for true readiness** (bounded to
+  ~30s, 150 × 0.2s) so the daemon both establishes AND serves requests before the
+  boot exec returns (msb tears down the exec's process group on return, which would
+  otherwise kill the just-forked daemon; the poll also keeps the exec alive until
+  then). It **returns whether the runtime is ready**, and `Manager.Start` starts the
+  in-VM apps only when it is — otherwise it skips them with one clear warning rather
+  than letting nerdctl fatal on a dead socket. `Sandbox.ExecRoot` runs `msb exec -u
+  root` (msb's no-`-u` default is the unprivileged `workspace` uid 1000, NOT root —
+  so the earlier rootful boot failed with a silently-swallowed permission error).
+  Verified live: a plain `ai start` now leaves containerd running, which also
+  unblocks the in-VM apps.
 - **Virtual-key minting + provider-key storage** — `litellm.KeyManager` mints the
   scoped agent virtual key and stores provider keys in LiteLLM's credential store
   (keys-in-LiteLLM, §17), fronted by `ai keys`.
@@ -273,10 +277,12 @@ The runtime is **started at workspace start**, not baked running into the image:
 `Manager.Start` calls `ensureContainerd`, which probes `nerdctl info` (as root via
 `Sandbox.ExecRoot` = `msb exec -u root`) and, if the daemon is not up, boots it
 **detached** (`setsid sh -c 'containerd >/var/log/containerd.log 2>&1 &'`) then
-**polls for `/run/containerd/containerd.sock`** to keep the boot exec alive until
-the daemon establishes — msb tears down the exec's process group on return, which
-would otherwise kill the just-forked daemon. This is **best-effort** — a failure
-logs a warning and does NOT fail the workspace start.
+**polls `nerdctl info` for true readiness** (bounded to ~30s) to keep the boot exec
+alive until the daemon both establishes and serves requests — msb tears down the
+exec's process group on return, which would otherwise kill the just-forked daemon.
+`ensureContainerd` returns whether the runtime came up ready, and `Start` runs the
+in-VM apps only when it did (else it skips them with one warning). This is
+**best-effort** — a failure logs a warning and does NOT fail the workspace start.
 
 The containerd boot and its daemon-persistence are **verified on the Apple Silicon
 host** (a plain `ai start` leaves containerd running, which also unblocks the in-VM
@@ -285,9 +291,9 @@ the probe + boot argv with the socket poll, the best-effort swallowing) is
 unit-tested. What remains:
 
 - [x] **containerd boots and persists in the microVM** — verified: `nerdctl info`
-      reports a running daemon after `ai start` (the socket-poll keeps the detached
-      daemon alive past the boot exec's return), and `ExecRoot` running as `-u root`
-      gives the rootful runtime the uid 0 it needs.
+      reports a running daemon after `ai start` (the `nerdctl info` readiness poll
+      keeps the detached daemon alive past the boot exec's return), and `ExecRoot`
+      running as `-u root` gives the rootful runtime the uid 0 it needs.
 - [ ] **`nerdctl run` end-to-end** — confirm `msb exec <name> -- nerdctl run --rm
       hello-world` works (proves runc + CNI + image pull through the now-`public`
       egress) — the live `nerdctl run`/`pull` is still a bring-up item (it overlaps

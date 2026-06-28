@@ -1543,11 +1543,20 @@ number keys `1`-`9`. There is **no `:` command palette** — `q`/`ctrl+c` quits 
   INTO it, revealing a **sub-tab bar** for that project (the project name + the
   sub-tabs below). `tab`/`←→` cycle the sub-tabs; the focused sub-view's pane is
   acted on directly; `esc` backs UP to the switcher. The per-project sub-tabs are:
-  * **Workspace** — the project's summary + workspace lifecycle `s`/`x`/`r`/`d`
-    (start/stop/restart/delete) and `e` (an interactive shell). Lifecycle verbs open
-    the **live embedded terminal** overlay (see below) running the corresponding
-    workspace verb IN the pane (the TUI is not suspended for these). `e` opens the
-    shell in the REAL terminal (see Shell, below).
+  * **Workspace** — a fixed summary block (name / OS / agents / workspace status /
+    path) and, BELOW it, the **embedded workspace log** (the scrollable, read-only
+    `msb logs <vm> --tail` view — there is **no separate log sub-tab**). Workspace
+    lifecycle is `s`/`x`/`r`/`d` (start/stop/restart/delete) and `e` (an interactive
+    shell). `s`/`x`/`r` run **DETACHED** from the TUI: the app spawns
+    `ai <action> <name>` in its own session (`setsid` + `Process.Release`, stdio to
+    `/dev/null`) so the microVM build/boot keeps running even if `ai ui` is closed,
+    then shows an **animated spinner** on the workspace status line and polls the
+    state handle until the target status (or a ~6m timeout). The TUI stays navigable
+    and **no log/terminal pane is shown** for these. `d` (delete) still runs in the
+    confirm **terminal overlay** (see below). `e` opens the shell in the REAL
+    terminal (see Shell, below). The remaining keys drive the embedded log:
+    `↑/↓`/`PgUp`/`PgDn`/arrows scroll, `f`/`enter` follows the tail in the real
+    terminal (`msb logs -f`).
   * **Network** — egress mode + allow-list + published ports, managed inline:
     `m` cycles the mode, `a` allow · `d` disallow a destination, `p` publish · `u`
     unpublish a port (the value is typed at an inline prompt). CLI mirror:
@@ -1561,13 +1570,18 @@ number keys `1`-`9`. There is **no `:` command palette** — `q`/`ctrl+c` quits 
     <name>` / `ai shell <name>`, restoring on exit) — NOT an embedded emulator — so
     keys, native text selection, and in-place output all work. CLI mirror: `ai shell`
     / `ai attach` / `ai agent` / `ai sessions` (+ `ai sessions kill`).
-  * **Workspace Log** — a READ-ONLY (no command input), scrollable, selectable,
-    auto-refreshing view of the microVM's captured output (`msb logs <vm> --tail`,
-    re-polled every 2s); follows the tail unless scrolled up. The text is passed
-    through a terminal-output normalizer (interpreting `\r`/cursor-moves/erase-line)
-    so progress redraws (image pulls) collapse IN PLACE while the full scrollback +
-    plain selectable text are kept. `r` refreshes; `↑/↓`/`PgUp`/`PgDn` scroll.
   * **Apps** — the in-VM AI apps (install/start/stop/restart/remove).
+
+  The **workspace log** is **embedded in the Workspace sub-tab** (above), not a
+  separate tab: a READ-ONLY (no command input), scrollable, selectable,
+  auto-refreshing view of the microVM's captured output (`msb logs <vm> --tail`,
+  re-polled ~2s; `Manager.WorkspaceLogTail`), following the tail unless scrolled up
+  and freezing while scrolled up. The text is passed through a terminal-output
+  normalizer (interpreting `\r`/cursor-moves/erase-line) so progress redraws (image
+  pulls) collapse IN PLACE while the full scrollback + plain selectable text are
+  kept; it does NOT gate on the "started" state handle (it shows during startup; a
+  not-yet-created sandbox reads as empty). `f`/`enter` opens a live `msb logs -f`
+  follow in the REAL terminal.
   `ai ui` does NOT capture the mouse (so the host terminal's native text selection
   works on every pane); scrollable panes scroll by keyboard.
 * **Local Models** — the local Ollama store ⨯ the **live ollama.com installable
@@ -1603,16 +1617,23 @@ number keys `1`-`9`. There is **no `:` command palette** — `q`/`ctrl+c` quits 
   a read-only platform info block (deployment role + model gateway, changed via
   `ai gateway` / `ai setup`).
 
-**Live embedded terminal.** Workspace lifecycle (start/stop/restart/delete) and
-the interactive sessions (shell/agent/attach) run inside a **live terminal overlay**
-that fills the body — the platform runs the corresponding workspace verb
-on a pseudo-terminal (`creack/pty`) and renders the program's screen with a vt10x
-emulator, forwarding keystrokes to it. So msb's build/boot progress AND a full
-interactive shell (or agent CLI) both render IN the pane, with the TUI chrome around
-them and never suspended. While it is open, keys go to the program; **ctrl+q**
-force-detaches, and once the program exits **any key** closes the overlay (the
-project detail + sessions refresh on close). The in-VM behavior of `msb exec -t`
-over this PTY is verified during hardware bring-up.
+**Live embedded terminal.** A **live terminal overlay** that fills the body — the
+platform runs the corresponding command on a pseudo-terminal (`creack/pty`) and
+renders the program's screen with a vt10x emulator, forwarding keystrokes to it —
+backs the flows that need an in-pane TTY *without* suspending the TUI: workspace
+**delete** (its confirm prompt), the **Apps** lifecycle actions, **models**
+pull/rm, and **API Keys** add/remove (its hidden key prompt shows there). While it
+is open, keys go to the program; **ctrl+q** force-detaches, and once the program
+exits **any key** closes the overlay (the affected views refresh on close).
+
+Workspace **start/stop/restart** do NOT use this overlay — they run **DETACHED**
+(`setsid` + `Process.Release`, stdio to `/dev/null`) with a spinner on the Workspace
+sub-tab's status line (above), so there is no log/terminal pane for them and the
+build/boot survives closing `ai ui`. The interactive **sessions** (shell/agent/
+attach) likewise bypass the embedded emulator: they run in the user's **REAL
+terminal** via `tea.ExecProcess` (the TUI suspends, then restores on exit) so keys,
+native text selection, and in-place output all work. The in-VM behavior of
+`msb exec -t` over the session PTY is verified during hardware bring-up.
 
 Navigation is **keyboard-only**: `tab`/`⇧tab`/`←→` cycle the top-level tabs and
 the number keys `1`-`9` jump straight to one (there is no `:` command palette).
