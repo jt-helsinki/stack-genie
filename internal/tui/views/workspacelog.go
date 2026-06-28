@@ -107,6 +107,23 @@ func (view *WorkspaceLog) Hints() string {
 // control codes), restoring the TUI on exit.
 type WorkspaceLogFollowRequestedMsg struct{ Project string }
 
+// Reset clears the displayed log immediately and discards any in-flight poll
+// (by bumping the generation). The parent calls this when a lifecycle action
+// starts (start/restart/stop) so the PREVIOUS session's captured output does not
+// linger on screen while the microVM is recreated — the view shows "loading…" and
+// then streams the fresh log.
+func (view *WorkspaceLog) Reset() {
+	view.generation++
+	view.loaded = false
+	view.empty = false
+	view.notRunning = false
+	view.err = nil
+	view.pending = ""
+	view.polling = false
+	view.viewport.SetContent("")
+	view.viewport.GotoTop()
+}
+
 func (view *WorkspaceLog) SetSize(width, height int) {
 	view.width = width
 	view.height = height

@@ -714,10 +714,14 @@ via `msb exec -t`, with the caller's stdin/stdout/stderr wired straight through
 On a TTY (no `--session`) it first **lists the workspace's existing sessions** and
 prompts: **attach to one of them, or create a NEW session** (typing its name —
 validated to letters/digits/`-`/`_`; the new-session name is pre-filled with the
-default **`shell`**, so first use is a single Enter). The chosen session is opened
-via the **create-or-attach** path (`tmux new-session -A`), so a new name is created
-and an existing one is reattached. `--session <s>` skips the picker and
-attaches/creates `<s>` directly (scriptable). On a clean exit (the shell ends)
+default **`shell`**, so first use is a single Enter). The chosen session is
+**created DETACHED first** (`tmux new-session -d`, in a returning non-interactive
+exec, so the tmux server daemonizes and the session persists and is listed by
+`ai sessions` independent of any client) and then **attached** (`tmux
+attach-session`). A new name is created; an existing one is reattached. `--session
+<s>` skips the picker and attaches/creates `<s>` directly (scriptable). Note that a
+session persists when you **detach** (or close the terminal); typing `exit` ends
+the session's shell and so removes the session. On a clean exit (the shell ends)
 there is no stdout envelope, like `ai ui`. The same create-or-attach path backs the
 TUI Workspace view's `e` key (via `tea.ExecProcess`) and the `ai create`
 attach-to-existing flow. A platform failure (workspace not running, msb missing)
@@ -762,7 +766,8 @@ the tmux session.
 * **`ai shell`** (§4.5a) **creates or attaches** a session in `/workspace` — on a
   TTY it offers a picker (attach an existing session, or create a new one by name;
   default new name **`shell`**), or `--session <s>` to go straight to `<s>`. The
-  underlying `tmux new-session -A` is create-or-attach.
+  session is created **detached** (`tmux new-session -d`, so it persists and is
+  listed) then **attached** (`tmux attach-session`).
 * **`ai agent <cli>`** starts (or reattaches to) a **per-CLI** session named after
   the CLI — `opencode`, `pi`, `claude-code` (runs `claude`), `codex`, `gemini` —
   so each agent has one durable session and several can run side by side. An

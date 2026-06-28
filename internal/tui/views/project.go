@@ -72,11 +72,15 @@ func NewProject(info ProjectInfoFetcher, log *WorkspaceLog) *Project {
 }
 
 // StartPending shows the "<action>ing…" spinner on the workspace status line; the
-// parent calls this when it kicks off a detached lifecycle action.
+// parent calls this when it kicks off a detached lifecycle action. It also CLEARS
+// the embedded workspace log so the previous session's captured output does not
+// linger while the microVM is (re)created — the log then streams fresh once the
+// workspace is running again.
 func (view *Project) StartPending(action string) {
 	view.pending = action
 	view.pendingFrame = 0
 	view.flash = ""
+	view.log.Reset()
 }
 
 // TickSpinner advances the pending spinner one frame (driven by the parent's poll).

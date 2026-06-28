@@ -446,30 +446,40 @@ func TestStartUnknownProject(test *testing.T) {
 }
 
 // Shell opens a PERSISTENT, reattachable tmux session named "shell" in /workspace
-// running a login shell (tmux new-session -A makes it create-or-attach).
+// running a login shell: it is created DETACHED first (via ExecContext, so the tmux
+// server daemonizes and the session persists) then ATTACHED (via ExecInteractive).
 func TestShellOpensPersistentTmuxSession(test *testing.T) {
 	seedStartedWorkspace(test, "app")
 	sandbox := &fakeSandbox{}
 	if err := newManager(&fakeBuilder{}, sandbox).Shell("app"); err != nil {
 		test.Fatal(err)
 	}
-	want := []string{"tmux", "new-session", "-A", "-s", "shell", "-c", "/workspace", "bash", "-l"}
-	if got := sandbox.interactiveArgv; !equalStrings(got, want) {
-		test.Fatalf("Shell ran %v via ExecInteractive, want %v", got, want)
+	// The detached create is the LAST ExecContext call (after the tmux-presence probe).
+	wantCreate := []string{"tmux", "new-session", "-d", "-s", "shell", "-c", "/workspace", "bash", "-l"}
+	if got := sandbox.execArgv; !equalStrings(got, wantCreate) {
+		test.Fatalf("Shell created %v via ExecContext, want %v", got, wantCreate)
+	}
+	wantAttach := []string{"tmux", "attach-session", "-t", "shell"}
+	if got := sandbox.interactiveArgv; !equalStrings(got, wantAttach) {
+		test.Fatalf("Shell attached %v via ExecInteractive, want %v", got, wantAttach)
 	}
 }
 
 // Agent starts (or reattaches to) a per-CLI tmux session named after the CLI,
-// running that CLI's launch command in /workspace.
+// running that CLI's launch command in /workspace (detached create, then attach).
 func TestAgentStartsPerCLITmuxSession(test *testing.T) {
 	seedStartedWorkspace(test, "app")
 	sandbox := &fakeSandbox{}
 	if err := newManager(&fakeBuilder{}, sandbox).Agent("app", "opencode"); err != nil {
 		test.Fatal(err)
 	}
-	want := []string{"tmux", "new-session", "-A", "-s", "opencode", "-c", "/workspace", "opencode"}
-	if got := sandbox.interactiveArgv; !equalStrings(got, want) {
-		test.Fatalf("Agent ran %v via ExecInteractive, want %v", got, want)
+	wantCreate := []string{"tmux", "new-session", "-d", "-s", "opencode", "-c", "/workspace", "opencode"}
+	if got := sandbox.execArgv; !equalStrings(got, wantCreate) {
+		test.Fatalf("Agent created %v via ExecContext, want %v", got, wantCreate)
+	}
+	wantAttach := []string{"tmux", "attach-session", "-t", "opencode"}
+	if got := sandbox.interactiveArgv; !equalStrings(got, wantAttach) {
+		test.Fatalf("Agent attached %v via ExecInteractive, want %v", got, wantAttach)
 	}
 }
 
@@ -480,9 +490,13 @@ func TestAgentMapsClaudeCodeLaunch(test *testing.T) {
 	if err := newManager(&fakeBuilder{}, sandbox).Agent("app", "claude-code"); err != nil {
 		test.Fatal(err)
 	}
-	want := []string{"tmux", "new-session", "-A", "-s", "claude-code", "-c", "/workspace", "claude"}
-	if got := sandbox.interactiveArgv; !equalStrings(got, want) {
-		test.Fatalf("Agent(claude-code) ran %v, want %v", got, want)
+	wantCreate := []string{"tmux", "new-session", "-d", "-s", "claude-code", "-c", "/workspace", "claude"}
+	if got := sandbox.execArgv; !equalStrings(got, wantCreate) {
+		test.Fatalf("Agent(claude-code) created %v, want %v", got, wantCreate)
+	}
+	wantAttach := []string{"tmux", "attach-session", "-t", "claude-code"}
+	if got := sandbox.interactiveArgv; !equalStrings(got, wantAttach) {
+		test.Fatalf("Agent(claude-code) attached %v, want %v", got, wantAttach)
 	}
 }
 
@@ -500,26 +514,31 @@ func TestAgentUnknownCLI(test *testing.T) {
 	}
 }
 
-// Attach attaches to (or creates) a named session with no command (so a fresh
-// session opens the default shell); a blank session attaches the default "shell".
+// Attach ensures a named session exists DETACHED (no command, so a fresh session
+// opens the default shell) then attaches to it; a blank session targets the default
+// "shell".
 func TestAttachSession(test *testing.T) {
 	seedStartedWorkspace(test, "app")
 	sandbox := &fakeSandbox{}
 	if err := newManager(&fakeBuilder{}, sandbox).Attach("app", "opencode"); err != nil {
 		test.Fatal(err)
 	}
-	want := []string{"tmux", "new-session", "-A", "-s", "opencode", "-c", "/workspace"}
-	if got := sandbox.interactiveArgv; !equalStrings(got, want) {
-		test.Fatalf("Attach ran %v, want %v", got, want)
+	wantCreate := []string{"tmux", "new-session", "-d", "-s", "opencode", "-c", "/workspace"}
+	if got := sandbox.execArgv; !equalStrings(got, wantCreate) {
+		test.Fatalf("Attach created %v via ExecContext, want %v", got, wantCreate)
+	}
+	wantAttach := []string{"tmux", "attach-session", "-t", "opencode"}
+	if got := sandbox.interactiveArgv; !equalStrings(got, wantAttach) {
+		test.Fatalf("Attach attached %v, want %v", got, wantAttach)
 	}
 
 	defaulted := &fakeSandbox{}
 	if err := newManager(&fakeBuilder{}, defaulted).Attach("app", ""); err != nil {
 		test.Fatal(err)
 	}
-	wantDefault := []string{"tmux", "new-session", "-A", "-s", "shell", "-c", "/workspace"}
+	wantDefault := []string{"tmux", "attach-session", "-t", "shell"}
 	if got := defaulted.interactiveArgv; !equalStrings(got, wantDefault) {
-		test.Fatalf("Attach(\"\") ran %v, want the default shell session %v", got, wantDefault)
+		test.Fatalf("Attach(\"\") attached %v, want the default shell session %v", got, wantDefault)
 	}
 }
 
