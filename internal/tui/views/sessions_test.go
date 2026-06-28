@@ -62,22 +62,53 @@ func TestSessionsAttachKeysEmitAttachRequest(test *testing.T) {
 	}
 }
 
-// `n` (new agent) emits an attach request for the default agent session (which is
-// created on attach).
-func TestSessionsNewAgentEmitsDefaultAttach(test *testing.T) {
+// `n` opens the inline new-session prompt; typing a name + enter emits an attach
+// request that creates (and attaches to) that named session.
+func TestSessionsNewSessionPromptCreates(test *testing.T) {
 	view := NewSessions(
 		func() ([]workspace.Session, error) { return nil, nil },
 		noKill,
 		func() string { return "app" },
 	)
 	_ = view.Update(view.Init()())
-	cmd := view.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("n")})
+	// n enters create mode (no command yet — it's just opening the prompt).
+	if cmd := view.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("n")}); cmd != nil {
+		test.Fatal("n should open the prompt, not emit a command yet")
+	}
+	if !view.creating {
+		test.Fatal("n must enter create mode")
+	}
+	// Type a name (a space is dropped — not a valid tmux session name).
+	view.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("feat")})
+	view.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("x")})
+	cmd := view.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	if cmd == nil {
-		test.Fatal("n must emit an attach request for the default agent session")
+		test.Fatal("enter must emit an attach request for the new named session")
 	}
 	requested, ok := cmd().(AttachRequestedMsg)
-	if !ok || requested.Session != defaultAgentSession {
-		test.Fatalf("want AttachRequestedMsg{session=%q}, got %#v", defaultAgentSession, cmd())
+	if !ok || requested.Session != "featx" {
+		test.Fatalf("want AttachRequestedMsg{session=%q}, got %#v", "featx", cmd())
+	}
+	if view.creating {
+		test.Fatal("create mode must close after enter")
+	}
+}
+
+// esc cancels the inline new-session prompt without emitting anything.
+func TestSessionsNewSessionPromptCancels(test *testing.T) {
+	view := NewSessions(
+		func() ([]workspace.Session, error) { return nil, nil },
+		noKill,
+		func() string { return "app" },
+	)
+	_ = view.Update(view.Init()())
+	view.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("n")})
+	view.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("abc")})
+	if cmd := view.Update(tea.KeyMsg{Type: tea.KeyEsc}); cmd != nil {
+		test.Fatal("esc must cancel without emitting a command")
+	}
+	if view.creating || view.nameInput != "" {
+		test.Fatal("esc must clear create mode + the typed name")
 	}
 }
 

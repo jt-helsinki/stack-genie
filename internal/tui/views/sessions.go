@@ -20,18 +20,16 @@ type SessionLister func() ([]workspace.Session, error)
 // Injected; the parent wires workspace.RealManager(...).KillSession.
 type SessionKiller func(session string) error
 
-// AttachRequestedMsg is emitted when the user asks to attach to a workspace
-// session (the `a`/`enter` keys) or to start a default agent session (`n`). The
-// parent app suspends the TUI and runs `ai attach <session> <name>`
-// via tea.ExecProcess, restoring the TUI on exit.
+// AttachRequestedMsg is emitted when the user asks to attach to (or create) a
+// workspace session — `a`/`enter` attach the selected one, `n` creates a new named
+// one (`tmux new-session -A` creates it on attach). The parent app SUSPENDS the TUI
+// and runs `ai attach <session> <name>` via tea.ExecProcess so the interactive shell
+// runs in the user's real terminal (full keys, native selection, in-place output),
+// restoring the TUI on exit.
 type AttachRequestedMsg struct {
 	Project string
 	Session string
 }
-
-// defaultAgentSession is the session `n` (new agent) attaches/creates for v1 —
-// the default agent CLI's session. Attaching to it creates it if absent.
-const defaultAgentSession = "opencode"
 
 type sessionsRefreshedMsg struct {
 	sessions []workspace.Session
@@ -39,9 +37,11 @@ type sessionsRefreshedMsg struct {
 }
 type sessionKilledMsg struct{ err error }
 
-// Sessions is the view of the current project's persistent workspace sessions
-// (the tmux sessions backing `ai shell`/`ai agent`/`ai attach`). It attaches to,
-// starts, and kills sessions on the selected row.
+// Sessions is the "Shell" tab: the per-workspace session manager over the tmux
+// sessions backing `ai shell`/`ai agent`/`ai attach`. It lists sessions and, on the
+// selected row, attaches (in the real terminal), creates a new named session, and
+// kills. The actual interactive shell runs via the parent's tea.ExecProcess, not an
+// embedded emulator, so it behaves like a normal terminal.
 type Sessions struct {
 	list     SessionLister
 	kill     SessionKiller
@@ -51,6 +51,11 @@ type Sessions struct {
 	flash    string
 	err      error
 	loaded   bool
+
+	// creating + nameInput drive the inline "new session" name prompt (n): while
+	// creating, keystrokes edit the name and enter attaches/creates it.
+	creating  bool
+	nameInput string
 }
 
 // NewSessions builds the sessions view over the injected lister, killer, and
@@ -67,11 +72,11 @@ func NewSessions(list SessionLister, kill SessionKiller, project func() string) 
 }
 
 // Title is the view's name (used by the menu/header).
-func (view *Sessions) Title() string { return "Sessions" }
+func (view *Sessions) Title() string { return "Shell" }
 
 // Hints are the context-sensitive key bindings shown in the footer.
 func (view *Sessions) Hints() string {
-	return "a/enter attach · n new agent · k kill · r refresh"
+	return "enter/a attach · n new · d kill · r refresh"
 }
 
 // SetSize fits the table to the content area. One row is reserved for the flash slot
@@ -117,6 +122,10 @@ func (view *Sessions) Update(msg tea.Msg) tea.Cmd {
 		}
 		return view.fetchCmd() // reflect the kill immediately
 	case tea.KeyMsg:
+		// The inline "new session" name prompt owns the keyboard while open.
+		if view.creating {
+			return view.handleCreateKey(message)
+		}
 		if cmd, handled := view.handleAction(message); handled {
 			return cmd
 		}
@@ -132,7 +141,11 @@ func (view *Sessions) handleAction(key tea.KeyMsg) (tea.Cmd, bool) {
 	project := view.project()
 	if project == "" {
 		// With no project selected there is nothing to act on.
-		return nil, key.String() == "a" || key.String() == "n" || key.String() == "k" || key.String() == "r"
+		switch key.String() {
+		case "a", "enter", "n", "d", "k", "r":
+			return nil, true
+		}
+		return nil, false
 	}
 	switch key.String() {
 	case "a", "enter":
@@ -142,10 +155,12 @@ func (view *Sessions) handleAction(key tea.KeyMsg) (tea.Cmd, bool) {
 		}
 		return func() tea.Msg { return AttachRequestedMsg{Project: project, Session: session} }, true
 	case "n":
-		// Start (attach-or-create) the default agent session. v1 keeps it minimal:
-		// it attaches the default agent CLI's session, creating it if absent.
-		return func() tea.Msg { return AttachRequestedMsg{Project: project, Session: defaultAgentSession} }, true
-	case "k":
+		// Begin the inline new-session name prompt; the next keystrokes edit the name.
+		view.creating = true
+		view.nameInput = ""
+		view.flash = ""
+		return nil, true
+	case "d", "k":
 		session := view.selectedSession()
 		if session == "" {
 			return nil, true
@@ -156,6 +171,42 @@ func (view *Sessions) handleAction(key tea.KeyMsg) (tea.Cmd, bool) {
 		return view.fetchCmd(), true
 	}
 	return nil, false
+}
+
+// handleCreateKey edits the inline new-session name: runes append, backspace
+// deletes, enter attaches/creates the named session (in the real terminal via the
+// parent), and esc cancels. Spaces/dots are dropped (not valid tmux session names).
+func (view *Sessions) handleCreateKey(key tea.KeyMsg) tea.Cmd {
+	switch key.Type {
+	case tea.KeyEsc:
+		view.creating = false
+		view.nameInput = ""
+		return nil
+	case tea.KeyEnter:
+		name := strings.TrimSpace(view.nameInput)
+		view.creating = false
+		view.nameInput = ""
+		project := view.project()
+		if name == "" || project == "" {
+			return nil
+		}
+		return func() tea.Msg { return AttachRequestedMsg{Project: project, Session: name} }
+	case tea.KeyBackspace:
+		runes := []rune(view.nameInput)
+		if len(runes) > 0 {
+			view.nameInput = string(runes[:len(runes)-1])
+		}
+		return nil
+	case tea.KeyRunes:
+		for _, char := range key.Runes {
+			if char == ' ' || char == '.' || char == ':' {
+				continue
+			}
+			view.nameInput += string(char)
+		}
+		return nil
+	}
+	return nil
 }
 
 func (view *Sessions) killCmd(session string) tea.Cmd {
@@ -186,14 +237,18 @@ func (view *Sessions) View() string {
 	if !view.loaded {
 		return ui.Muted.Render("loading sessions…")
 	}
-	// The flash slot (always the LAST line, blank when empty) keeps the table at a
-	// fixed height. When there are no sessions, surface the hint there rather than
-	// prepending a line that would push the table past the content height.
-	flash := view.flash
-	if flash == "" && len(view.sessions) == 0 {
-		flash = ui.Muted.Render("no sessions yet — press n to start an agent, or a to open a shell")
+	// The last line is the inline new-session prompt while creating, else the flash
+	// slot (blank when empty, or a hint when there are no sessions) — either way one
+	// line, so the table keeps a fixed height.
+	last := flashLine(view.flash)
+	switch {
+	case view.creating:
+		last = ui.Heading.Render("new session: ") + view.nameInput + "▏" +
+			ui.Muted.Render("  (enter create · esc cancel)")
+	case view.flash == "" && len(view.sessions) == 0:
+		last = flashLine(ui.Muted.Render("no sessions yet — press n to create one"))
 	}
-	return view.table.View() + "\n" + flashLine(flash)
+	return view.table.View() + "\n" + last
 }
 
 func sessionRows(sessions []workspace.Session) []table.Row {

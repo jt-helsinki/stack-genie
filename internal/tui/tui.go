@@ -115,9 +115,6 @@ func Run(cwd string) error {
 		},
 		func() string { return application.currentProject },
 	)
-	// The Shell sub-tab drops into the workspace's interactive shell (the terminal
-	// overlay running `ai shell` for the live current project).
-	shellView := views.NewShell(func() string { return application.currentProject })
 	// The Sandbox Log sub-tab streams the microVM's captured output (msb logs) for
 	// the live current project, polling so new lines stream in. With no current
 	// project the tailer returns nothing (the view shows "no workspace selected").
@@ -170,12 +167,13 @@ func Run(cwd string) error {
 
 	// The Workspaces tab is a two-level hub: it opens on the switcher (the
 	// workspace list) and, once a workspace is selected, reveals per-workspace
-	// sub-tabs — Workspace · Network · Context · Sessions · Shell · Sandbox Log ·
-	// Apps — for it.
+	// sub-tabs — Workspace · Network · Context · Shell · Sandbox Log · Apps — for it.
+	// The "Shell" tab is the session manager (sessionsView): list/attach/new/kill,
+	// with the interactive shell itself run in the real terminal via ExecProcess.
 	projectsHub := views.NewProjectsHub(
 		projectsView,
-		[]views.Screen{projectDetail, networkView, contextView, sessionsView, shellView, sandboxLogView, appsView},
-		[]string{"Workspace", "Network", "Context", "Sessions", "Shell", "Sandbox Log", "Apps"},
+		[]views.Screen{projectDetail, networkView, contextView, sessionsView, sandboxLogView, appsView},
+		[]string{"Workspace", "Network", "Context", "Shell", "Sandbox Log", "Apps"},
 	)
 
 	// Top-level tab order = menu order: Services · Workspaces · Local Models · Cloud
@@ -196,10 +194,10 @@ func Run(cwd string) error {
 	// project is opened only when the user selects it from the Projects switcher.
 	application.buildPalette()
 
-	// Mouse cell-motion is enabled so the scrollable panes (Sandbox Log, describe,
-	// and the terminal pane's scrollback) respond to the wheel. (Hold Shift to use the
-	// host terminal's native text selection while mouse reporting is on.)
-	program := tea.NewProgram(application, tea.WithAltScreen(), tea.WithMouseCellMotion(), tea.WithOutput(os.Stderr))
+	// Mouse reporting is intentionally NOT enabled: capturing the mouse would disable
+	// the host terminal's native text selection. Scrollable panes scroll by keyboard
+	// (PgUp/PgDn/arrows), and text stays selectable with the mouse.
+	program := tea.NewProgram(application, tea.WithAltScreen(), tea.WithOutput(os.Stderr))
 	_, runErr := program.Run()
 	return runErr
 }
@@ -234,6 +232,11 @@ func executablePath() string {
 // has returned. (Workspace lifecycle / shell / attach run in the live embedded
 // terminal overlay instead — see openTerminal — so they have no finished message.)
 type createFinishedMsg struct{ err error }
+
+// sessionFinishedMsg reports that a suspended interactive shell/attach subprocess
+// (run via tea.ExecProcess in the user's real terminal) has exited, so the TUI can
+// refresh the session list + project detail.
+type sessionFinishedMsg struct{ err error }
 
 // projectInfo returns the current state of one project by name (over project.List).
 func projectInfo(name string) (project.Entry, bool, error) {
@@ -531,18 +534,35 @@ func (application *app) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return application, cmd
 
 	case views.ExecRequestedMsg:
-		// Open an interactive shell inside the workspace microVM, live in
-		// the pane (a real PTY via `ai shell` → msb exec -t).
-		return application, application.openTerminal(
-			"shell "+message.Project,
-			[]string{"shell", message.Project}, true)
+		// An interactive shell runs in the user's REAL terminal: suspend the TUI and
+		// run `ai shell <name>` via tea.ExecProcess (full keys, native selection,
+		// in-place output via the host terminal), restoring the TUI on exit. The
+		// embedded emulator is not used for interactive sessions.
+		command := exec.Command(executablePath(), "shell", message.Project)
+		return application, tea.ExecProcess(command, func(execErr error) tea.Msg {
+			return sessionFinishedMsg{err: execErr}
+		})
 
 	case views.AttachRequestedMsg:
-		// Attach to (or create) a workspace session, live in the pane (`ai attach
-		// <session> <name>` → tmux new-session -A).
-		return application, application.openTerminal(
-			"attach "+message.Session+" "+message.Project,
-			[]string{"attach", message.Session, message.Project}, true)
+		// Attach to (or create) a workspace session in the user's REAL terminal:
+		// suspend the TUI and run `ai attach <session> <name>` via tea.ExecProcess
+		// (tmux new-session -A creates it if absent), restoring the TUI on exit.
+		command := exec.Command(executablePath(), "attach", message.Session, message.Project)
+		return application, tea.ExecProcess(command, func(execErr error) tea.Msg {
+			return sessionFinishedMsg{err: execErr}
+		})
+
+	case sessionFinishedMsg:
+		// Back from an interactive shell/attach — refresh the Shell (sessions) list
+		// and the project detail so a newly-created/exited session is reflected.
+		commands := []tea.Cmd{}
+		if application.sessionsView != nil {
+			commands = append(commands, application.sessionsView.Init())
+		}
+		if application.projectDetail != nil {
+			commands = append(commands, application.projectDetail.Init())
+		}
+		return application, tea.Batch(commands...)
 
 	case views.AppActionRequestedMsg:
 		// Run an apps lifecycle action live in the terminal overlay (`ai apps

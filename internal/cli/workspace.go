@@ -20,6 +20,18 @@ type sessionsResult struct {
 	Sessions []workspace.Session `json:"sessions"`
 }
 
+// sessionKillResult is the typed payload of `ai sessions kill`.
+type sessionKillResult struct {
+	Project string `json:"project"`
+	Session string `json:"session"`
+}
+
+// Human confirms which session was killed.
+func (result sessionKillResult) Human() string {
+	return ui.Success.Render(ui.IconOK+" killed session ") + ui.Value.Render(result.Session) +
+		ui.Muted.Render(" in ") + ui.Value.Render(result.Project)
+}
+
 // Human renders the workspace sessions as a table NAME, ATTACHED, IDLE, or a
 // friendly hint when there are none.
 func (result sessionsResult) Human() string {
@@ -249,14 +261,49 @@ func workspaceSessionsRunE(emitter *output.Emitter, exit *int) func(*cobra.Comma
 }
 
 // newSessionsCmd builds the canonical top-level `ai sessions [name]` (defaults to
-// the current directory's workspace).
+// the current directory's workspace), with a `kill` subcommand to delete a session.
 func newSessionsCmd(emitter *output.Emitter, exit *int) *cobra.Command {
-	return &cobra.Command{
+	cmd := &cobra.Command{
 		Use:               "sessions [name]",
 		Short:             "List the workspace's persistent sessions (defaults to the current directory)",
 		Args:              cobra.MaximumNArgs(1),
 		ValidArgsFunction: completeProjectArg,
 		RunE:              workspaceSessionsRunE(emitter, exit),
+	}
+	cmd.AddCommand(newSessionsKillCmd(emitter, exit))
+	return cmd
+}
+
+// newSessionsKillCmd builds `ai sessions kill <session> [name]` — delete (kill) a
+// workspace tmux session by name.
+func newSessionsKillCmd(emitter *output.Emitter, exit *int) *cobra.Command {
+	return &cobra.Command{
+		Use:   "kill <session> [name]",
+		Short: "Kill a workspace session by name (defaults to the current directory's workspace)",
+		Args:  cobra.RangeArgs(1, 2),
+		RunE:  workspaceSessionsKillRunE(emitter, exit),
+	}
+}
+
+// workspaceSessionsKillRunE is the RunE for `ai sessions kill <session> [name]`.
+func workspaceSessionsKillRunE(emitter *output.Emitter, exit *int) func(*cobra.Command, []string) error {
+	return func(cmd *cobra.Command, args []string) error {
+		session := args[0]
+		nameArg := ""
+		if len(args) > 1 {
+			nameArg = args[1]
+		}
+		name, err := resolveProjectName(cmd, nameArg)
+		if err != nil {
+			*exit = emitter.Failure("workspace.sessions.kill", err)
+			return nil
+		}
+		if err := workspace.RealManager(goruntime.GOOS, nowRFC3339).KillSession(name, session); err != nil {
+			*exit = emitter.Failure("workspace.sessions.kill", mapWorkspaceErr(err))
+			return nil
+		}
+		*exit = emitter.Success("workspace.sessions.kill", sessionKillResult{Project: name, Session: session})
+		return nil
 	}
 }
 

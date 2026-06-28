@@ -243,26 +243,26 @@ func TestCreateConfirmedClosesOverlayAndRunsWizard(test *testing.T) {
 	}
 }
 
-// ExecRequestedMsg opens the live embedded-terminal overlay (running the shell in
-// the pane) and returns its spawn command. The spawn is deferred to that command,
-// so this test never launches a process by merely sending the message.
-func TestExecRequestedOpensTerminal(test *testing.T) {
+// ExecRequestedMsg runs the interactive shell in the user's REAL terminal via
+// tea.ExecProcess (suspends the TUI) — it does NOT open the embedded overlay. It
+// returns the ExecProcess command and leaves application.terminal nil.
+func TestExecRequestedRunsInRealTerminal(test *testing.T) {
 	application := &app{
 		views:         []View{&fakeView{title: "Project"}},
 		projectDetail: views.NewProject(func(string) (project.Entry, bool, error) { return project.Entry{}, false, nil }),
 	}
 	_, cmd := application.Update(views.ExecRequestedMsg{Project: "app"})
-	if application.terminal == nil {
-		test.Fatal("ExecRequestedMsg must open the terminal overlay")
+	if application.terminal != nil {
+		test.Fatal("ExecRequestedMsg must NOT open the embedded overlay (it suspends to the real terminal)")
 	}
 	if cmd == nil {
-		test.Fatal("opening the terminal must return its spawn command")
+		test.Fatal("ExecRequestedMsg must return the ExecProcess command")
 	}
 }
 
-// AttachRequestedMsg also opens the terminal overlay (running `ai workspace attach`
-// live in the pane).
-func TestAttachRequestedOpensTerminal(test *testing.T) {
+// AttachRequestedMsg runs `ai attach` in the user's REAL terminal via tea.ExecProcess
+// (suspends the TUI) — not the embedded overlay.
+func TestAttachRequestedRunsInRealTerminal(test *testing.T) {
 	sessionsView := views.NewSessions(
 		func() ([]workspace.Session, error) { return nil, nil },
 		func(string) error { return nil },
@@ -272,11 +272,12 @@ func TestAttachRequestedOpensTerminal(test *testing.T) {
 		views:        []View{sessionsView},
 		sessionsView: sessionsView,
 	}
-	if _, cmd := application.Update(views.AttachRequestedMsg{Project: "app", Session: "shell"}); cmd == nil {
-		test.Fatal("AttachRequestedMsg must return the terminal spawn command")
+	_, cmd := application.Update(views.AttachRequestedMsg{Project: "app", Session: "shell"})
+	if cmd == nil {
+		test.Fatal("AttachRequestedMsg must return the ExecProcess command")
 	}
-	if application.terminal == nil {
-		test.Fatal("AttachRequestedMsg must open the terminal overlay")
+	if application.terminal != nil {
+		test.Fatal("AttachRequestedMsg must NOT open the embedded overlay (it suspends to the real terminal)")
 	}
 }
 
