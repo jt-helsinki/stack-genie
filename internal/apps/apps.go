@@ -64,8 +64,15 @@ type Deps struct {
 	PortFree portChecker
 	// Exec runs nerdctl (and probes) inside the workspace microVM as root. It is
 	// nil when the workspace is not running; lifecycle methods that need the VM
-	// (start/stop/run/pull) return ErrWorkspaceNotRunning then.
+	// (start/stop/run/pull) return ErrWorkspaceNotRunning then. It is intentionally
+	// UNBOUNDED so a legitimately long op (a heavy `nerdctl pull`) is not killed.
 	Exec ExecRunner
+	// ProbeExec runs a SHORT, time-bounded command inside the microVM for the
+	// running-status probe in List (`nerdctl ps`), so listing fails fast (and the
+	// caller can classify a stale/overloaded VM) instead of hanging behind a busy
+	// microVM. It is wired alongside Exec when the workspace is running; nil falls
+	// back to Exec (so existing callers/tests keep working).
+	ProbeExec ExecRunner
 	// EnsureRuntime makes the in-VM container runtime (containerd) ready before an
 	// app container is run, and recovers it if it became unreachable (e.g. it
 	// crashed/restarted mid-pull). Optional; nil skips the check.
@@ -334,7 +341,14 @@ func (manager *Manager) List() ([]Status, error) {
 	}
 	running := map[string]bool{}
 	if manager.deps.Exec != nil {
-		running = manager.runningContainers()
+		probed, err := manager.runningContainers()
+		if err != nil {
+			// The in-VM running-status probe failed/timed out (busy or wedged VM). Surface
+			// it so the caller (CLI/TUI) can classify it into a precise, actionable error
+			// (stale vs. overloaded), rather than misreporting every app as stopped.
+			return nil, err
+		}
+		running = probed
 	}
 	statuses := make([]Status, 0, len(catalogue))
 	for _, manifest := range catalogue {
@@ -478,14 +492,23 @@ func runArgs(manifest Manifest, port int, gatewayURL, apiKey, defaultModel strin
 }
 
 // runningContainers returns the set of app container names currently running in
-// the microVM, by name (nerdctl ps name filter). A probe error yields an empty
-// set (treated as "nothing running"), never an error — List must not fail on a
-// transient probe issue.
-func (manager *Manager) runningContainers() map[string]bool {
+// the microVM, by name (nerdctl ps name filter), using the bounded ProbeExec so it
+// can't hang behind a busy VM. An INFRASTRUCTURE error (the bounded exec failed —
+// VM gone, msb missing, or the probe timed out) is returned so List can classify
+// it; only a non-zero nerdctl exit (e.g. containerd not up yet — an empty set) is
+// treated as "nothing running", never an error.
+func (manager *Manager) runningContainers() (map[string]bool, error) {
 	running := map[string]bool{}
-	result, err := manager.deps.Exec([]string{"nerdctl", "ps", "--format", "{{.Names}}"})
-	if err != nil || result.ExitCode != 0 {
-		return running
+	probe := manager.deps.ProbeExec
+	if probe == nil {
+		probe = manager.deps.Exec
+	}
+	result, err := probe([]string{"nerdctl", "ps", "--format", "{{.Names}}"})
+	if err != nil {
+		return nil, err
+	}
+	if result.ExitCode != 0 {
+		return running, nil
 	}
 	for _, line := range strings.Split(result.Stdout, "\n") {
 		name := strings.TrimSpace(line)
@@ -493,5 +516,5 @@ func (manager *Manager) runningContainers() map[string]bool {
 			running[name] = true
 		}
 	}
-	return running
+	return running, nil
 }

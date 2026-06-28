@@ -72,13 +72,40 @@ const workspaceWorkdir = "/workspace"
 var ErrUnknownProject = errors.New("unknown project")
 
 // ErrWorkspaceUnresponsive is returned when an in-VM probe (tmux/session listing)
-// times out — the microVM is up but not responding in time (e.g. its exec is busy
-// behind a long image pull, or it is wedged). Mapped to exit 4 (runtime failure).
-var ErrWorkspaceUnresponsive = errors.New("workspace is not responding (it may be busy — e.g. pulling an image) — try again shortly")
+// times out OR fails but a liveness probe confirms the microVM IS present: the VM
+// is up but not answering execs in time (overloaded — e.g. behind a long image
+// pull, or wedged). The message stays generic (it does NOT assume an image pull —
+// that was misleading) and points at the actionable fix. Mapped to exit 4 (runtime
+// failure).
+var ErrWorkspaceUnresponsive = errors.New("workspace is running but not responding — it may be overloaded; try `ai restart`")
+
+// ErrWorkspaceStale is returned when the platform's lifecycle handle says the
+// workspace is "started" but a bounded liveness probe finds NO running microVM for
+// it (the VM is gone, was never fully booted, or msb lost it) — i.e. the saved
+// state is stale. It is distinct from ErrNotStarted (handle not started) and
+// ErrWorkspaceUnresponsive (VM present but slow): here the fix is to recreate the
+// VM, so the message points at `ai restart`. Mapped to exit 4 (runtime failure).
+var ErrWorkspaceStale = errors.New("workspace is marked started but its microVM isn't running (stale state) — run `ai restart`")
 
 // inVMProbeTimeout bounds the short buffered in-VM probes (tmux presence, session
-// listing) so the CLI/TUI fail fast instead of hanging when the workspace is busy.
-const inVMProbeTimeout = 15 * time.Second
+// listing, apps `nerdctl ps`) so the CLI/TUI fail fast instead of hanging when the
+// workspace is busy. After such a probe times out OR fails, the manager runs the
+// much shorter livenessProbeTimeout-bounded VM-liveness check to classify the
+// error precisely (stale VM vs. unresponsive VM) — the liveness probe is NOT on
+// the happy path, so a healthy workspace pays no extra latency.
+//
+// Timeout budget (must stay coherent with the TUI view backstop): the worst-case
+// manager classification is inVMProbeTimeout + livenessProbeTimeout (in-VM exec
+// gives up, then the liveness probe classifies). The TUI's fetch backstop
+// (views.viewFetchTimeout) is set LARGER than that sum so the manager's PRECISE
+// classified error always wins over the view's generic timeout message.
+const inVMProbeTimeout = 6 * time.Second
+
+// livenessProbeTimeout bounds the metadata-only VM-liveness probe (`msb inspect`),
+// run ONLY to classify an in-VM exec that already failed/timed out. It is short so
+// the classification itself can never hang: the user sees a specific, actionable
+// message within a couple of seconds of the in-VM probe giving up.
+const livenessProbeTimeout = 3 * time.Second
 
 // ErrNotStarted is returned when an operation needs a RUNNING workspace but it is
 // stopped or was never started (→ exit 2). The message is the user-facing nudge to
@@ -167,6 +194,11 @@ type Sandbox interface {
 	// inner exit is carried in ExecResult; only an infrastructure failure (microVM
 	// down, msb missing) is a Go error.
 	ExecRoot(name string, argv []string) (ExecResult, error)
+	// ExecRootContext is ExecRoot bounded by ctx — used for the short root probes
+	// (the apps `nerdctl ps` listing) so they fail fast (killing the hung msb exec
+	// with ErrWorkspaceUnresponsive) instead of hanging when the workspace is busy or
+	// wedged. The unbounded ExecRoot stays for the deliberately-long containerd boot.
+	ExecRootContext(ctx context.Context, name string, argv []string) (ExecResult, error)
 	// ExecInteractive runs argv inside the running microVM with the CALLER'S
 	// terminal attached — a real PTY via `msb exec -t`, with stdin/stdout/stderr
 	// wired straight through — for interactive shells and agent CLIs. Only an
@@ -187,6 +219,14 @@ type Sandbox interface {
 	// workspace is not running) and ErrMsbMissing when msb is not installed —
 	// both of which callers treat as "show the declared policy only", not an error.
 	InspectNetwork(name string) (NetworkPolicy, error)
+	// IsRunning reports whether a microVM named name actually exists/runs, via a
+	// bounded metadata query (`msb inspect`, bounded by ctx). It is a fast liveness
+	// probe — NOT an in-VM exec — so it cannot wedge the way `msb exec` can against a
+	// gone/booting VM. (false, nil) means the VM is not present (stale handle);
+	// (true, nil) means it is present. A timeout/cancel or msb error is returned as
+	// the error so the caller can decide (an unknown liveness is treated as "present
+	// but slow" → unresponsive, never as a confident "stale").
+	IsRunning(ctx context.Context, name string) (bool, error)
 }
 
 // KeyMinter mints (and rotates) scoped LiteLLM virtual keys. It is the small
@@ -495,10 +535,24 @@ func (manager Manager) AppManager(name, project, root, gatewayURL string) *apps.
 // otherwise Exec is wired only when the workspace is recorded running.
 func (manager Manager) buildAppManager(name, project, root, gatewayURL string, forceExec bool) *apps.Manager {
 	var exec apps.ExecRunner
+	var probeExec apps.ExecRunner
 	if forceExec {
 		exec = func(argv []string) (apps.ExecResult, error) {
 			result, err := manager.Sandbox.ExecRoot(name, argv)
 			return apps.ExecResult{ExitCode: result.ExitCode, Stdout: result.Stdout, Stderr: result.Stderr}, err
+		}
+		// The running-status probe (`nerdctl ps`) is bounded so a busy/wedged VM fails
+		// fast; on failure it is classified into a precise error (stale vs. overloaded
+		// VM), matching the sessions path. The unbounded exec above still serves the
+		// legitimately-long lifecycle ops (image pulls).
+		probeExec = func(argv []string) (apps.ExecResult, error) {
+			ctx, cancel := context.WithTimeout(context.Background(), inVMProbeTimeout)
+			defer cancel()
+			result, err := manager.Sandbox.ExecRootContext(ctx, name, argv)
+			if err != nil {
+				return apps.ExecResult{}, manager.classifyInVMFailure(project, err)
+			}
+			return apps.ExecResult{ExitCode: result.ExitCode, Stdout: result.Stdout, Stderr: result.Stderr}, nil
 		}
 	}
 	return apps.NewManager(apps.Deps{
@@ -506,6 +560,7 @@ func (manager Manager) buildAppManager(name, project, root, gatewayURL string, f
 		SaveConfig:    func(updated *config.Config) error { return config.WriteProject(root, updated) },
 		ReservedPorts: apps.ReservedPortsAcrossWorkspaces,
 		Exec:          exec,
+		ProbeExec:     probeExec,
 		// Make containerd ready before running an app, and recover it if it became
 		// unreachable (crashed/restarted under load). Only wired when Exec is.
 		EnsureRuntime: func() error {
@@ -762,6 +817,42 @@ func (manager Manager) requireRunning(project string) error {
 	return nil
 }
 
+// classifyInVMFailure turns a failed/timed-out in-VM exec into a PRECISE,
+// actionable error by running the bounded VM-liveness probe AFTER the fact (so the
+// happy path pays no probe latency). The handle is already known "started" by the
+// time an in-VM op is attempted, so the only two remaining cases are:
+//
+//   - the microVM is NOT actually present (liveness probe says false) → the saved
+//     handle is stale → ErrWorkspaceStale ("run `ai restart`").
+//   - the microVM IS present (or its liveness can't be determined fast) but the
+//     exec didn't answer in time → ErrWorkspaceUnresponsive ("it may be
+//     overloaded; try `ai restart`").
+//
+// It is only called once an in-VM exec has already failed, so it never masks a
+// healthy path. cause is the original exec error/timeout, returned unchanged if it
+// is already a classified sentinel.
+func (manager Manager) classifyInVMFailure(project string, cause error) error {
+	// Already a precise sentinel (e.g. ErrTmuxMissing, ErrMsbMissing) — keep it.
+	if errors.Is(cause, ErrMsbMissing) || errors.Is(cause, ErrTmuxMissing) || errors.Is(cause, ErrNotStarted) {
+		return cause
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), livenessProbeTimeout)
+	defer cancel()
+	running, probeErr := manager.Sandbox.IsRunning(ctx, Name(project))
+	if probeErr != nil {
+		// Couldn't confirm liveness fast (probe timed out or msb errored). Don't
+		// claim "stale" on uncertainty — treat it as present-but-slow.
+		if errors.Is(probeErr, ErrMsbMissing) {
+			return probeErr
+		}
+		return ErrWorkspaceUnresponsive
+	}
+	if !running {
+		return ErrWorkspaceStale
+	}
+	return ErrWorkspaceUnresponsive
+}
+
 // ExecInteractive runs argv inside the project's running workspace microVM with
 // the caller's terminal attached (a real PTY), for interactive shells and agent
 // CLIs. It checks the microVM is up first so a not-yet-started workspace fails
@@ -815,7 +906,11 @@ func (manager Manager) requireTmux(project string) error {
 	defer cancel()
 	result, err := manager.Sandbox.ExecContext(ctx, Name(project), []string{"sh", "-c", "command -v tmux >/dev/null 2>&1"})
 	if err != nil {
-		return err
+		// The probe failed/timed out before we could even check tmux — classify it
+		// (stale VM vs. overloaded VM) so the interactive entry points (shell/agent/
+		// attach) report a precise, actionable error instead of attaching a PTY to a
+		// missing/wedged VM.
+		return manager.classifyInVMFailure(project, err)
 	}
 	if result.ExitCode != 0 {
 		return ErrTmuxMissing
@@ -893,7 +988,9 @@ func (manager Manager) ListSessions(project string) ([]Session, error) {
 		"tmux", "list-sessions", "-F", "#{session_name}\t#{session_attached}\t#{session_activity}",
 	})
 	if err != nil {
-		return nil, err
+		// The in-VM exec failed/timed out — classify it (stale VM vs. overloaded VM)
+		// so the user gets a specific, actionable message instead of a generic hang.
+		return nil, manager.classifyInVMFailure(project, err)
 	}
 	if result.ExitCode != 0 {
 		// `tmux list-sessions` with no running tmux server yet is a non-zero exit —

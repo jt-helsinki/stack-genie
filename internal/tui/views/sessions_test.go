@@ -171,3 +171,22 @@ func TestSessionsSurfacesFetchError(test *testing.T) {
 		test.Error("rendered view must surface the fetch error")
 	}
 }
+
+// The PRECISE manager sentinel messages (stale / overloaded VM) reach the rendered
+// view verbatim — NOT the old blanket "may be busy (e.g. pulling an image)" line.
+func TestSessionsSurfacesPreciseManagerError(test *testing.T) {
+	for _, message := range []string{
+		"workspace is marked started but its microVM isn't running (stale state) — run `ai restart`",
+		"workspace is running but not responding — it may be overloaded; try `ai restart`",
+	} {
+		view := NewSessions(
+			func() ([]workspace.Session, error) { return nil, errors.New(message) },
+			noKill,
+			func() string { return "app" },
+		)
+		_ = view.Update(view.Init()())
+		if rendered := view.View(); !strings.Contains(rendered, message) {
+			test.Errorf("view must show the precise manager error %q:\n%s", message, rendered)
+		}
+	}
+}

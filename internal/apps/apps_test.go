@@ -206,6 +206,48 @@ func TestListReportsInstalledAndRunning(test *testing.T) {
 	}
 }
 
+// When the running-status probe fails (a busy/wedged VM), List returns the probe
+// error so the caller can classify it — rather than silently misreporting every app
+// as stopped.
+func TestListPropagatesProbeError(test *testing.T) {
+	probeErr := errors.New("workspace is running but not responding")
+	deps, _ := newTestDeps(&config.Config{Apps: []config.AppEntry{{Key: "openwebui", Port: 21000}}}, func(argv []string) (ExecResult, error) {
+		return ExecResult{}, nil // unbounded Exec is never the probe here
+	})
+	deps.ProbeExec = func(argv []string) (ExecResult, error) {
+		return ExecResult{}, probeErr
+	}
+	manager := NewManager(deps)
+	if _, err := manager.List(); !errors.Is(err, probeErr) {
+		test.Fatalf("List must surface the probe error, got %v", err)
+	}
+}
+
+// When ProbeExec is set, List's running-status probe uses it (the bounded path), not
+// the unbounded Exec.
+func TestListUsesProbeExecWhenSet(test *testing.T) {
+	probe := &fakeExec{psOutput: "aip-app-openwebui\n"}
+	deps, _ := newTestDeps(&config.Config{Apps: []config.AppEntry{{Key: "openwebui", Port: 21000}}}, func(argv []string) (ExecResult, error) {
+		test.Fatalf("Exec must not be used for the running-status probe when ProbeExec is set; got %v", argv)
+		return ExecResult{}, nil
+	})
+	deps.ProbeExec = probe.run
+	manager := NewManager(deps)
+	statuses, err := manager.List()
+	if err != nil {
+		test.Fatal(err)
+	}
+	var openwebui Status
+	for _, status := range statuses {
+		if status.Key == "openwebui" {
+			openwebui = status
+		}
+	}
+	if !openwebui.Running {
+		test.Fatalf("openwebui should be running via the ProbeExec result: %+v", openwebui)
+	}
+}
+
 func TestStartInstalledBestEffort(test *testing.T) {
 	// The second app's run fails; the first must still be attempted and no error
 	// returned (best-effort), with a warning collected.

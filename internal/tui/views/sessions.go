@@ -98,11 +98,14 @@ func (view *Sessions) SetSize(width, height int) {
 // Init kicks off the first session listing.
 func (view *Sessions) Init() tea.Cmd { return view.fetchCmd() }
 
-// sessionFetchTimeout bounds the session listing so the tab never hangs on
-// "loading…" when the in-VM `msb exec tmux list-sessions` is slow or blocked (e.g.
-// while the workspace is busy pulling an image); it degrades to an error the user can
-// retry with `r`.
-const sessionFetchTimeout = 8 * time.Second
+// viewFetchTimeout is the TUI's BACKSTOP for an in-VM listing (sessions / apps) so a
+// tab never hangs on "loading…". It is deliberately LARGER than the manager's
+// worst-case classification time (workspace.inVMProbeTimeout +
+// livenessProbeTimeout ≈ 9s) so the manager's PRECISE error — stale VM, overloaded
+// VM, not started — wins over this generic backstop. The backstop only fires if the
+// manager itself wedges (it shouldn't, the in-VM exec is context-bounded); when it
+// does, errBackstopTimedOut is shown and `r` retries.
+const viewFetchTimeout = 12 * time.Second
 
 func (view *Sessions) fetchCmd() tea.Cmd {
 	list := view.list
@@ -115,8 +118,8 @@ func (view *Sessions) fetchCmd() tea.Cmd {
 		select {
 		case got := <-done:
 			return got
-		case <-time.After(sessionFetchTimeout):
-			return sessionsRefreshedMsg{err: errTimedOut("listing sessions")}
+		case <-time.After(viewFetchTimeout):
+			return sessionsRefreshedMsg{err: errBackstopTimedOut("listing sessions")}
 		}
 	}
 }
@@ -276,10 +279,13 @@ func (view *Sessions) View() string {
 	return view.table.View() + "\n" + last
 }
 
-// errTimedOut is the shared error a view's fetch returns when an in-VM read blocks
-// past its timeout, so the pane shows a retryable message instead of hanging.
-func errTimedOut(action string) error {
-	return fmt.Errorf("timed out %s — the workspace may be busy (e.g. pulling an image); press r to retry", action)
+// errBackstopTimedOut is the shared error a view's fetch returns when the in-VM read
+// blocks past the TUI BACKSTOP (viewFetchTimeout) — a last resort if the manager's
+// own bounded probe + classification somehow wedged. The precise diagnosis (stale
+// VM, overloaded VM, not started) normally comes from the manager and is shown
+// verbatim; this generic line only appears when even that didn't return in time.
+func errBackstopTimedOut(action string) error {
+	return fmt.Errorf("timed out %s — the workspace isn't responding; press r to retry, or `ai restart` it", action)
 }
 
 func sessionRows(sessions []workspace.Session) []table.Row {

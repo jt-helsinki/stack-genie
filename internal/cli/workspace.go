@@ -452,6 +452,10 @@ func mapWorkspaceErr(err error) error {
 		return output.Errorf(output.ExitInvalidInput, "%s", err)
 	case errors.Is(err, workspace.ErrContainerRuntimeMissing), errors.Is(err, workspace.ErrMsbMissing), errors.Is(err, workspace.ErrTmuxMissing):
 		return output.Errorf(output.ExitMissingDep, "%s", err)
+	case errors.Is(err, workspace.ErrWorkspaceStale), errors.Is(err, workspace.ErrWorkspaceUnresponsive):
+		// A stale or overloaded microVM is a runtime condition the user fixes with
+		// `ai restart` (the sentinels carry that nudge) — exit 4.
+		return output.Errorf(output.ExitRuntimeFailure, "%s", err)
 	default:
 		return output.Errorf(output.ExitRuntimeFailure, "%s", err)
 	}

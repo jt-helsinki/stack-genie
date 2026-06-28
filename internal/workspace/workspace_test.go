@@ -39,12 +39,21 @@ type fakeSandbox struct {
 	execRootArgv                         [][]string // every ExecRoot call's argv, in order
 	execRootResult                       ExecResult
 	execRootErr                          error
-	written                              map[string][]byte
-	inspectPolicy                        NetworkPolicy
-	inspectErr                           error
-	logTail                              string
-	logTailLines                         int
-	logTailErr                           error
+	execRootCtxResult                    ExecResult
+	execRootCtxErr                       error
+	// isRunning controls the IsRunning liveness probe: it reports this value (default
+	// true — VM present) unless isRunningErr is set. The classification path uses it
+	// AFTER an in-VM exec fails to tell a stale VM (false) from an overloaded one
+	// (true).
+	isRunning     bool
+	isRunningSet  bool
+	isRunningErr  error
+	written       map[string][]byte
+	inspectPolicy NetworkPolicy
+	inspectErr    error
+	logTail       string
+	logTailLines  int
+	logTailErr    error
 }
 
 func (sandbox *fakeSandbox) Create(_, _, projectMount, overlayPath string, netArgs []string) error {
@@ -68,6 +77,21 @@ func (sandbox *fakeSandbox) ExecContext(_ context.Context, _ string, argv []stri
 func (sandbox *fakeSandbox) ExecRoot(_ string, argv []string) (ExecResult, error) {
 	sandbox.execRootArgv = append(sandbox.execRootArgv, argv)
 	return sandbox.execRootResult, sandbox.execRootErr
+}
+func (sandbox *fakeSandbox) ExecRootContext(_ context.Context, _ string, argv []string) (ExecResult, error) {
+	sandbox.execRootArgv = append(sandbox.execRootArgv, argv)
+	return sandbox.execRootCtxResult, sandbox.execRootCtxErr
+}
+func (sandbox *fakeSandbox) IsRunning(context.Context, string) (bool, error) {
+	if sandbox.isRunningErr != nil {
+		return false, sandbox.isRunningErr
+	}
+	// Default to "present" so the happy-path classification (an exec that fails for a
+	// reason other than a missing VM) reports unresponsive, not stale.
+	if !sandbox.isRunningSet {
+		return true, nil
+	}
+	return sandbox.isRunning, nil
 }
 func (sandbox *fakeSandbox) ExecInteractive(_ string, argv []string) error {
 	sandbox.interactiveArgv = argv
@@ -554,6 +578,68 @@ func TestListSessionsOtherFailureIsError(test *testing.T) {
 	sandbox := &fakeSandbox{execResult: ExecResult{ExitCode: 1, Stderr: "tmux: command not found"}}
 	if _, err := newManager(&fakeBuilder{}, sandbox).ListSessions("app"); err == nil {
 		test.Fatal("a non-'no server running' failure must be an error")
+	}
+}
+
+// When the in-VM session listing fails AND the liveness probe confirms the microVM
+// is GONE (handle says started, but no VM), ListSessions reports ErrWorkspaceStale
+// so the user is told the state is stale and to `ai restart`.
+func TestListSessionsStaleHandleClassified(test *testing.T) {
+	seedStartedWorkspace(test, "app")
+	sandbox := &fakeSandbox{
+		execErr:      ErrWorkspaceUnresponsive, // the in-VM exec timed out
+		isRunningSet: true, isRunning: false,   // liveness probe: VM not present
+	}
+	_, err := newManager(&fakeBuilder{}, sandbox).ListSessions("app")
+	if !errors.Is(err, ErrWorkspaceStale) {
+		test.Fatalf("stale VM: want ErrWorkspaceStale, got %v", err)
+	}
+}
+
+// When the in-VM session listing fails but the liveness probe confirms the microVM
+// IS present (just slow), ListSessions reports ErrWorkspaceUnresponsive — overloaded,
+// not stale.
+func TestListSessionsUnresponsiveClassified(test *testing.T) {
+	seedStartedWorkspace(test, "app")
+	sandbox := &fakeSandbox{
+		execErr:      ErrWorkspaceUnresponsive, // the in-VM exec timed out
+		isRunningSet: true, isRunning: true,    // liveness probe: VM present
+	}
+	_, err := newManager(&fakeBuilder{}, sandbox).ListSessions("app")
+	if !errors.Is(err, ErrWorkspaceUnresponsive) {
+		test.Fatalf("present-but-slow VM: want ErrWorkspaceUnresponsive, got %v", err)
+	}
+	if errors.Is(err, ErrWorkspaceStale) {
+		test.Fatal("a present VM must NOT be classified stale")
+	}
+}
+
+// When the liveness probe ITSELF can't determine the VM state (its own error/
+// timeout), the listing degrades to ErrWorkspaceUnresponsive — never a confident
+// "stale" on uncertainty.
+func TestListSessionsIndeterminateLivenessIsUnresponsive(test *testing.T) {
+	seedStartedWorkspace(test, "app")
+	sandbox := &fakeSandbox{
+		execErr:      ErrWorkspaceUnresponsive,
+		isRunningErr: errors.New("liveness probe timed out"),
+	}
+	_, err := newManager(&fakeBuilder{}, sandbox).ListSessions("app")
+	if !errors.Is(err, ErrWorkspaceUnresponsive) {
+		test.Fatalf("indeterminate liveness: want ErrWorkspaceUnresponsive, got %v", err)
+	}
+}
+
+// A missing msb surfaced by the liveness probe stays ErrMsbMissing (a missing dep,
+// not a runtime failure), even on the classification path.
+func TestListSessionsMsbMissingPreserved(test *testing.T) {
+	seedStartedWorkspace(test, "app")
+	sandbox := &fakeSandbox{
+		execErr:      ErrWorkspaceUnresponsive,
+		isRunningErr: ErrMsbMissing,
+	}
+	_, err := newManager(&fakeBuilder{}, sandbox).ListSessions("app")
+	if !errors.Is(err, ErrMsbMissing) {
+		test.Fatalf("missing msb: want ErrMsbMissing, got %v", err)
 	}
 }
 

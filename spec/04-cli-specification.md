@@ -783,12 +783,27 @@ named session (over `Manager.KillSession`), emitting a confirmation result.
 Platform failures (workspace not running, msb missing) map per §18 (3/4).
 The TUI **Shell** tab (§14.4) is the session manager and drives the same paths
 (attach/create via `ai attach`, delete via the kill path).
-The interactive entry points (shell / agent / attach) and the session list first
-verify the workspace is **running** — they read the platform's lifecycle handle
-(set by start/stop), so a **stopped or never-started** workspace fails fast with
-`ErrNotStarted` (exit 2, "workspace is not running — run `ai start`
-first") rather than invoking `msb exec`, which HANGS on a stopped microVM (and
-`msb exec -t` on a missing one can leave the terminal in raw mode). The
+The interactive entry points (shell / agent / attach), the session list, **and the
+in-VM apps listing** first verify the workspace is **running** — they read the
+platform's lifecycle handle (set by start/stop), so a **stopped or never-started**
+workspace fails fast with `ErrNotStarted` (exit 2, "workspace is not running — run
+`ai start` first") rather than invoking `msb exec`, which HANGS on a stopped
+microVM (and `msb exec -t` on a missing one can leave the terminal in raw mode).
+The handle alone is not enough, though: it can say **"started"** while the real
+microVM is gone (the VM was reaped, never finished booting, or msb lost it), in
+which case every in-VM `msb exec` (tmux list-sessions, `nerdctl ps`) hangs until a
+timeout. So the in-VM probes are **time-bounded** (`inVMProbeTimeout`), and on a
+timeout/failure the manager runs a short, metadata-only **VM-liveness probe**
+(`msb inspect`, `livenessProbeTimeout`) — NOT on the happy path, so a healthy
+workspace pays no extra latency — to CLASSIFY the failure into a precise, actionable
+error: a microVM that is **not actually present** → `ErrWorkspaceStale` (exit 4,
+"workspace is marked started but its microVM isn't running (stale state) — run
+`ai restart`"); a microVM that **is present but didn't answer in time** →
+`ErrWorkspaceUnresponsive` (exit 4, "workspace is running but not responding — it
+may be overloaded; try `ai restart`"). The TUI Shell/Apps tabs surface these exact
+messages (no longer a blanket "may be busy — e.g. pulling an image"), and the
+TUI's own fetch backstop is sized larger than the manager's worst-case
+classification so the precise message always wins. The
 TUI Workspace view additionally guards its `e` shell key with an inline "workspace
 not running — press s to start" hint, so it never suspends into a doomed subprocess.
 The session launchers also verify **tmux is present in the workspace image** (a

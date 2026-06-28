@@ -203,6 +203,14 @@ func (sandbox realSandbox) ExecRoot(name string, argv []string) (ExecResult, err
 	return sandbox.execAs(context.Background(), name, "root", argv)
 }
 
+// ExecRootContext is ExecRoot bounded by ctx — used for the short root probes (the
+// apps `nerdctl ps` listing) so they fail fast (killing the hung msb exec and
+// returning ErrWorkspaceUnresponsive) instead of hanging when the workspace is busy
+// or wedged. The unbounded ExecRoot stays for the deliberately-long containerd boot.
+func (sandbox realSandbox) ExecRootContext(ctx context.Context, name string, argv []string) (ExecResult, error) {
+	return sandbox.execAs(ctx, name, "root", argv)
+}
+
 // execAs runs argv inside the running microVM as a specific user, passed through
 // as msb's `-u`. NOTE: an empty user means "omit -u", which is msb's DEFAULT exec
 // user — the unprivileged `workspace` (uid 1000), NOT root; callers needing root
@@ -351,6 +359,45 @@ func (sandbox realSandbox) InspectNetwork(name string) (NetworkPolicy, error) {
 		return NetworkPolicy{}, fmt.Errorf("msb inspect %s: %w", name, err)
 	}
 	return parseInspectNetwork(stdout.Bytes())
+}
+
+// IsRunning reports whether a microVM named name actually exists/runs, via a
+// bounded `msb inspect <name> --format json` (the same verified metadata query
+// InspectNetwork uses, here bounded by ctx). It is a fast LIVENESS probe — metadata
+// only, NOT an in-VM `msb exec` — so it cannot wedge the way an exec can against a
+// gone or still-booting VM. msb exits non-zero for a name that resolves to no
+// sandbox, which we report as (false, nil) = stale handle; a clean inspect is
+// (true, nil) = present. A missing msb is ErrMsbMissing; a ctx timeout/cancel is
+// returned so the caller treats an indeterminate liveness as present-but-slow,
+// never as a confident "stale".
+//
+// hardware bring-up: the live `msb inspect` is verified on a provisioned host; the
+// argv + non-zero-exit handling are unit-tested with the fake sandbox.
+func (sandbox realSandbox) IsRunning(ctx context.Context, name string) (bool, error) {
+	if err := sandbox.ensureInstalled(); err != nil {
+		return false, err
+	}
+	command := exec.CommandContext(ctx, "msb", "inspect", name, "--format", "json")
+	var stdout, stderr bytes.Buffer
+	command.Stdout = &stdout
+	command.Stderr = &stderr
+	err := command.Run()
+	if err == nil {
+		return true, nil
+	}
+	// ctx timed out / was cancelled: liveness is indeterminate — surface it so the
+	// caller does NOT misclassify a slow host as a stale VM.
+	if ctx.Err() != nil {
+		return false, fmt.Errorf("liveness probe timed out for workspace %q: %w", name, ctx.Err())
+	}
+	// A non-existent sandbox (workspace not running / stale handle) surfaces as a
+	// non-zero exit — that is the definitive "not running" answer.
+	var exitError *exec.ExitError
+	if errors.As(err, &exitError) {
+		return false, nil
+	}
+	// Anything else (couldn't launch msb, signal, …) is an infra failure.
+	return false, fmt.Errorf("msb inspect %s: %w", name, err)
 }
 
 // msbInspect mirrors the subset of `msb inspect --format json` (msb 0.5.7) the
