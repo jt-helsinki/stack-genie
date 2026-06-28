@@ -825,17 +825,31 @@ func (manager Manager) Agent(project, cli string) error {
 }
 
 // SandboxLogTail returns the last lines of the project's workspace microVM
-// captured output (`msb logs`). It backs the TUI "Sandbox Log" tab. A not-yet-
-// started workspace reports cleanly via requireRunning rather than surfacing a raw
-// msb "sandbox not found" error.
+// captured output (`msb logs`). It backs the TUI "Sandbox Log" tab. It does NOT gate
+// on the platform's "started" state handle: `msb logs` works for any sandbox that
+// exists in msb (created/starting/running), and the log is most useful DURING startup
+// (build + image-pull progress) — before the handle flips to "started". A sandbox
+// that does not exist yet (never created) surfaces msb's "sandbox not found", which is
+// reported as an EMPTY log (not an error), so the tab reads "no output yet" instead
+// of a false "not running".
 func (manager Manager) SandboxLogTail(project string, lines int) (string, error) {
 	if _, err := resolveProjectRoot(project); err != nil {
 		return "", err
 	}
-	if err := manager.requireRunning(project); err != nil {
+	out, err := manager.Sandbox.LogTail(Name(project), lines)
+	if err != nil {
+		if isSandboxNotFound(err) {
+			return "", nil
+		}
 		return "", err
 	}
-	return manager.Sandbox.LogTail(Name(project), lines)
+	return out, nil
+}
+
+// isSandboxNotFound reports whether an error is msb's "sandbox not found" (the
+// microVM has not been created yet), as opposed to a real read failure.
+func isSandboxNotFound(err error) bool {
+	return err != nil && strings.Contains(strings.ToLower(err.Error()), "not found")
 }
 
 // ListSessions returns the tmux sessions running in the project's workspace
