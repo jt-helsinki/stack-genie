@@ -857,16 +857,27 @@ func (manager Manager) ListSessions(project string) ([]Session, error) {
 		return nil, err
 	}
 	if result.ExitCode != 0 {
-		// `tmux list-sessions` with no running server is a non-zero exit carrying
-		// "no server running" — treat it as an empty session list, not a failure.
-		// Exec returns the inner non-zero exit as data (not a Go error), so the
-		// check is on the ExecResult, not err (§4.5).
-		if strings.Contains(result.Stderr, "no server running") {
+		// `tmux list-sessions` with no running tmux server yet is a non-zero exit —
+		// treat it as ZERO sessions, not a failure. The message varies by tmux build:
+		// "no server running on …" OR "error connecting to /tmp/tmux-…/default (No such
+		// file or directory)" (the socket doesn't exist until the first session). Exec
+		// returns the inner non-zero exit as data (not a Go error), so the check is on
+		// the ExecResult (§4.5).
+		if isNoTmuxServer(result.Stderr) {
 			return []Session{}, nil
 		}
 		return nil, fmt.Errorf("tmux list-sessions exited %d: %s", result.ExitCode, strings.TrimSpace(result.Stderr))
 	}
 	return parseSessions(result.Stdout), nil
+}
+
+// isNoTmuxServer reports whether a tmux stderr indicates simply that no tmux server
+// is running yet (no sessions), across tmux builds that word it differently.
+func isNoTmuxServer(stderr string) bool {
+	lower := strings.ToLower(stderr)
+	return strings.Contains(lower, "no server running") ||
+		strings.Contains(lower, "error connecting to") ||
+		strings.Contains(lower, "no such file or directory")
 }
 
 // KillSession kills the named tmux session in the project's workspace microVM,

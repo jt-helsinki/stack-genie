@@ -524,13 +524,20 @@ func TestListSessionsParsesOutput(test *testing.T) {
 // the inner non-zero exit as data, so the check is on the ExecResult.
 func TestListSessionsNoServerIsEmpty(test *testing.T) {
 	seedStartedWorkspace(test, "app")
-	sandbox := &fakeSandbox{execResult: ExecResult{ExitCode: 1, Stderr: "no server running on /tmp/tmux-1000/default"}}
-	sessions, err := newManager(&fakeBuilder{}, sandbox).ListSessions("app")
-	if err != nil {
-		test.Fatalf("no running tmux server must be empty, not an error: %v", err)
-	}
-	if len(sessions) != 0 {
-		test.Fatalf("want zero sessions, got %+v", sessions)
+	// Different tmux builds word "no server running yet" differently — both must be
+	// treated as ZERO sessions, not an error.
+	for _, stderr := range []string{
+		"no server running on /tmp/tmux-1000/default",
+		"error connecting to /tmp/tmux-1000/default (No such file or directory)",
+	} {
+		sandbox := &fakeSandbox{execResult: ExecResult{ExitCode: 1, Stderr: stderr}}
+		sessions, err := newManager(&fakeBuilder{}, sandbox).ListSessions("app")
+		if err != nil {
+			test.Fatalf("no running tmux server (%q) must be empty, not an error: %v", stderr, err)
+		}
+		if len(sessions) != 0 {
+			test.Fatalf("want zero sessions for %q, got %+v", stderr, sessions)
+		}
 	}
 }
 
