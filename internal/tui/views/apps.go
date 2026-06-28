@@ -1,6 +1,8 @@
 package views
 
 import (
+	"time"
+
 	"github.com/charmbracelet/bubbles/table"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/jt-helsinki/ideal-robot/internal/apps"
@@ -78,8 +80,19 @@ func (view *Apps) Init() tea.Cmd { return view.fetchCmd() }
 func (view *Apps) fetchCmd() tea.Cmd {
 	list := view.list
 	return func() tea.Msg {
-		statuses, err := list()
-		return appsRefreshedMsg{apps: statuses, err: err}
+		done := make(chan appsRefreshedMsg, 1)
+		go func() {
+			statuses, err := list()
+			done <- appsRefreshedMsg{apps: statuses, err: err}
+		}()
+		// Bound the in-VM `nerdctl ps` read so the tab never hangs on "loading…" when
+		// the workspace is busy (e.g. pulling an image); degrade to a retryable error.
+		select {
+		case got := <-done:
+			return got
+		case <-time.After(sessionFetchTimeout):
+			return appsRefreshedMsg{err: errTimedOut("listing apps")}
+		}
 	}
 }
 

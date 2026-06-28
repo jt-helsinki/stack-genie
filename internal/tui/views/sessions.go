@@ -1,6 +1,7 @@
 package views
 
 import (
+	"fmt"
 	"strconv"
 	"strings"
 	"time"
@@ -93,11 +94,26 @@ func (view *Sessions) SetSize(width, height int) {
 // Init kicks off the first session listing.
 func (view *Sessions) Init() tea.Cmd { return view.fetchCmd() }
 
+// sessionFetchTimeout bounds the session listing so the tab never hangs on
+// "loading…" when the in-VM `msb exec tmux list-sessions` is slow or blocked (e.g.
+// while the workspace is busy pulling an image); it degrades to an error the user can
+// retry with `r`.
+const sessionFetchTimeout = 8 * time.Second
+
 func (view *Sessions) fetchCmd() tea.Cmd {
 	list := view.list
 	return func() tea.Msg {
-		sessions, err := list()
-		return sessionsRefreshedMsg{sessions: sessions, err: err}
+		done := make(chan sessionsRefreshedMsg, 1)
+		go func() {
+			sessions, err := list()
+			done <- sessionsRefreshedMsg{sessions: sessions, err: err}
+		}()
+		select {
+		case got := <-done:
+			return got
+		case <-time.After(sessionFetchTimeout):
+			return sessionsRefreshedMsg{err: errTimedOut("listing sessions")}
+		}
 	}
 }
 
@@ -249,6 +265,12 @@ func (view *Sessions) View() string {
 		last = flashLine(ui.Muted.Render("no sessions yet — press n to create one"))
 	}
 	return view.table.View() + "\n" + last
+}
+
+// errTimedOut is the shared error a view's fetch returns when an in-VM read blocks
+// past its timeout, so the pane shows a retryable message instead of hanging.
+func errTimedOut(action string) error {
+	return fmt.Errorf("timed out %s — the workspace may be busy (e.g. pulling an image); press r to retry", action)
 }
 
 func sessionRows(sessions []workspace.Session) []table.Row {

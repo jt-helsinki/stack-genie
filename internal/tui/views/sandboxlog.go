@@ -48,6 +48,11 @@ type SandboxLog struct {
 	generation int
 	width      int
 	height     int
+	// pending holds the latest normalized content while the user has scrolled UP
+	// (not at the bottom): the view is FROZEN so a 2s refresh does not re-render the
+	// pane and wipe an in-progress text selection. It is applied when the user scrolls
+	// back to the bottom.
+	pending string
 }
 
 // NewSandboxLog builds the Sandbox Log view over the injected tailer + current-
@@ -105,15 +110,20 @@ func (view *SandboxLog) Update(msg tea.Msg) tea.Cmd {
 		view.loaded = true
 		view.err = message.err
 		if message.err == nil {
-			view.empty = strings.TrimSpace(message.content) == ""
 			// Apply the terminal control codes (\r / cursor moves / erase-line) so
-			// progress redraws (docker/nerdctl pulls) collapse IN PLACE, then show the
-			// result in the scrollable, selectable viewport.
-			atBottom := view.viewport.AtBottom()
-			view.viewport.SetContent(normalizeTerminalOutput(message.content))
-			// Follow the tail unless the user has scrolled up to read history.
-			if atBottom {
+			// progress redraws collapse IN PLACE.
+			content := normalizeTerminalOutput(message.content)
+			view.empty = strings.TrimSpace(content) == ""
+			if view.viewport.AtBottom() {
+				// Following the tail: re-render + pin to the bottom.
+				view.viewport.SetContent(content)
 				view.viewport.GotoBottom()
+				view.pending = ""
+			} else {
+				// Scrolled up to read/select: FREEZE the visible content (don't
+				// re-render, which would wipe a text selection); buffer the latest and
+				// apply it when the user returns to the bottom.
+				view.pending = content
 			}
 		}
 		return nil
@@ -129,6 +139,13 @@ func (view *SandboxLog) Update(msg tea.Msg) tea.Cmd {
 	}
 	var cmd tea.Cmd
 	view.viewport, cmd = view.viewport.Update(msg)
+	// Returning to the bottom resumes following: apply the content buffered while the
+	// view was frozen (scrolled up).
+	if view.pending != "" && view.viewport.AtBottom() {
+		view.viewport.SetContent(view.pending)
+		view.viewport.GotoBottom()
+		view.pending = ""
+	}
 	return cmd
 }
 
