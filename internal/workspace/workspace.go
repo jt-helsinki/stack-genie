@@ -411,8 +411,13 @@ const containerdLog = "/var/log/containerd.log"
 func (manager Manager) ensureContainerd(name string) bool {
 	// Probe: if `nerdctl info` reaches the daemon, containerd is already up. Bound it
 	// with `timeout` so a wedged daemon (socket present but not responding) can't hang
-	// the probe — and therefore the workspace start — indefinitely.
-	if result, err := manager.Sandbox.ExecRoot(name, []string{"timeout", "5", "nerdctl", "info"}); err == nil && result.ExitCode == 0 {
+	// the probe — and therefore the workspace start — indefinitely. Its OUTPUT is
+	// discarded (`>/dev/null 2>&1`): on a fresh VM containerd is legitimately not up
+	// yet, so nerdctl emits a `level=fatal "cannot access containerd socket"` line —
+	// that is EXPECTED probe noise (we boot containerd next), not a failure to show
+	// the user; we only consume the exit code.
+	probeCmd := "timeout 5 nerdctl info >/dev/null 2>&1"
+	if result, err := manager.Sandbox.ExecRoot(name, []string{"sh", "-c", probeCmd}); err == nil && result.ExitCode == 0 {
 		return true
 	}
 	// Boot containerd detached so it survives this exec returning. setsid +

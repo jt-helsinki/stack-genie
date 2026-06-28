@@ -540,15 +540,22 @@ func newDeleteCmd(emitter *output.Emitter, exit *int, use string) *cobra.Command
 			// runtime is tolerated — there is nothing running to tear down — but any
 			// other teardown failure is surfaced rather than silently leaking a VM.
 			manager := workspace.RealManager(goruntime.GOOS, nowRFC3339)
+			var warnings []string
 			if err := manager.DestroyIfPresent(name); err != nil && !errors.Is(err, workspace.ErrMsbMissing) {
-				*exit = emitter.Failure("project.delete", mapWorkspaceErr(err))
-				return nil
+				// The microVM could not be torn down (e.g. an msb error or an odd
+				// VM state). The user asked to delete the workspace, so removing
+				// the platform state is still the right outcome — DON'T abort and
+				// leave .ai-platform behind. Warn so any orphaned microVM can be
+				// cleaned up manually.
+				warnings = append(warnings, fmt.Sprintf(
+					"workspace microVM teardown failed (%s); removed platform state anyway — if a microVM lingers, run: msb remove -f %s",
+					err, workspace.Name(name)))
 			}
 			if err := project.Delete(name, purge); err != nil {
 				*exit = emitter.Failure("project.delete", mapProjectErr(err))
 				return nil
 			}
-			*exit = emitter.Success("project.delete", map[string]any{"name": name, "purged": purge})
+			*exit = emitter.Success("project.delete", map[string]any{"name": name, "purged": purge}, warnings...)
 			return nil
 		},
 	}

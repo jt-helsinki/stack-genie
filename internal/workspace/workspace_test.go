@@ -265,8 +265,10 @@ func TestStartEnsuresContainerdWhenDown(test *testing.T) {
 		test.Fatalf("expected a probe + a boot ExecRoot call, got %d: %v", len(sandbox.execRootArgv), sandbox.execRootArgv)
 	}
 	probe := strings.Join(sandbox.execRootArgv[0], " ")
-	if probe != "timeout 5 nerdctl info" {
-		test.Errorf("first ExecRoot must probe the runtime (bounded), got %q", probe)
+	// The probe is a quiet, bounded `nerdctl info` (output discarded — the
+	// expected first-boot "cannot access containerd socket" fatal is not shown).
+	if probe != "sh -c timeout 5 nerdctl info >/dev/null 2>&1" {
+		test.Errorf("first ExecRoot must probe the runtime quietly (bounded), got %q", probe)
 	}
 	boot := strings.Join(sandbox.execRootArgv[1], " ")
 	if !strings.Contains(boot, "setsid") || !strings.Contains(boot, "containerd") {

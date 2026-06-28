@@ -272,26 +272,51 @@ func Delete(name string, purge bool) error {
 		return fmt.Errorf("%w: %q", ErrUnknownProject, name)
 	}
 
+	// Choose the removal target: --purge removes the ENTIRE project directory
+	// (the user's files too); a normal delete de-platforms the directory by
+	// removing only the .ai-platform tree (config + run state — the platform's
+	// footprint), keeping the user's OTHER files.
+	target := filepath.Join(entry.Path, ".ai-platform")
 	if purge {
-		// --purge: remove the ENTIRE project directory (the user's files too).
-		if err := os.RemoveAll(entry.Path); err != nil {
-			return err
-		}
-	} else {
-		// Normal delete de-platforms the directory: remove the whole .ai-platform
-		// dir (config + run state — the platform's footprint), keeping the user's
-		// OTHER files in the directory. Use --purge to remove everything.
-		if err := os.RemoveAll(filepath.Join(entry.Path, ".ai-platform")); err != nil {
-			return err
-		}
+		target = entry.Path
 	}
+	removeErr := forceRemoveAll(target)
 
 	// Permanent removal: drop the project's persistent overlay (arch §26).
-	// Unlike `ai destroy`, deleting the project removes the overlay.
-	if err := overlay.Remove(workspace.Name(name)); err != nil {
-		return err
+	// Unlike `ai destroy`, deleting the project removes the overlay. Best-effort
+	// — an overlay-removal failure must NOT keep the project registered (and the
+	// .ai-platform dir is already gone), so we record it but still de-register.
+	if err := overlay.Remove(workspace.Name(name)); err != nil && removeErr == nil {
+		removeErr = err
 	}
 
+	// Always de-register the project, even if a removal above failed, so a
+	// half-removed workspace never lingers in `ai list` pointing at a gone dir.
 	delete(index.Projects, name)
-	return state.SaveIndex(index)
+	if err := state.SaveIndex(index); err != nil {
+		return err
+	}
+	return removeErr
+}
+
+// forceRemoveAll removes path, retrying once after clearing restrictive
+// permissions if the first attempt is blocked by a read-only/owned file
+// somewhere in the tree — so `ai delete` reliably removes the whole footprint.
+func forceRemoveAll(path string) error {
+	if err := os.RemoveAll(path); err == nil {
+		return nil
+	}
+	// Best-effort widen permissions on everything under path, then retry.
+	_ = filepath.Walk(path, func(name string, info os.FileInfo, walkErr error) error {
+		if walkErr != nil || info == nil {
+			return nil //nolint:nilerr // keep walking; the retry surfaces real failures
+		}
+		mode := os.FileMode(0o600)
+		if info.IsDir() {
+			mode = 0o700
+		}
+		_ = os.Chmod(name, mode)
+		return nil
+	})
+	return os.RemoveAll(path)
 }
