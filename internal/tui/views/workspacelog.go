@@ -11,19 +11,26 @@ import (
 
 // WorkspaceLogTailer returns the recent captured output of the CURRENT workspace
 // microVM (msb logs --tail). Injected; the parent wires Manager.WorkspaceLogTail for
-// the live current project. With no current project it returns "", nil; when the
-// workspace is not running it returns an error (surfaced in the pane).
+// the live current project.
 type WorkspaceLogTailer func() (string, error)
+
+// WorkspaceRunning reports whether the CURRENT workspace microVM is running. The log
+// is only fetched/shown while it is — a stopped workspace shows nothing rather than
+// the stale captured output of a previous session. Injected; the parent wires it
+// over the project's live status.
+type WorkspaceRunning func() bool
 
 // workspaceLogRefreshInterval is how often the tab re-polls the Workspace Log so new
 // output "streams in" while the tab is open.
 const workspaceLogRefreshInterval = 2 * time.Second
 
 // workspaceLogLoadedMsg carries one poll result, tagged with the generation it was
-// issued under so a result from a previous activation is discarded.
+// issued under so a result from a previous activation is discarded. notRunning marks
+// that the workspace was not running at poll time (show nothing, not stale output).
 type workspaceLogLoadedMsg struct {
 	content    string
 	err        error
+	notRunning bool
 	generation int
 }
 
@@ -39,11 +46,13 @@ type workspaceLogTickMsg struct{ generation int }
 // cycle rather than stacking timers.
 type WorkspaceLog struct {
 	tail    WorkspaceLogTailer
+	running WorkspaceRunning
 	project func() string
 
 	viewport   viewport.Model
 	loaded     bool
 	empty      bool
+	notRunning bool
 	err        error
 	generation int
 	width      int
@@ -55,10 +64,11 @@ type WorkspaceLog struct {
 	pending string
 }
 
-// NewWorkspaceLog builds the Workspace Log view over the injected tailer + current-
-// project resolver.
-func NewWorkspaceLog(tail WorkspaceLogTailer, project func() string) *WorkspaceLog {
-	return &WorkspaceLog{tail: tail, project: project, viewport: viewport.New(0, 0)}
+// NewWorkspaceLog builds the Workspace Log view over the injected tailer, a
+// running-check (the log is only fetched/shown while the workspace is running), and
+// the current-project resolver.
+func NewWorkspaceLog(tail WorkspaceLogTailer, running WorkspaceRunning, project func() string) *WorkspaceLog {
+	return &WorkspaceLog{tail: tail, running: running, project: project, viewport: viewport.New(0, 0)}
 }
 
 func (view *WorkspaceLog) Title() string { return "Workspace Log" }
@@ -83,19 +93,29 @@ func (view *WorkspaceLog) SetSize(width, height int) {
 }
 
 // Init starts a fresh poll cycle for the current project. Re-init (returning to the
-// tab, or a workspace change) bumps the generation so the previous tick chain stops.
+// tab, a workspace change, or after a suspended shell) bumps the generation so the
+// previous tick chain stops, and resets the viewport to FOLLOW the tail — so a
+// re-activation never leaves the view stuck frozen at a stale scroll position.
 func (view *WorkspaceLog) Init() tea.Cmd {
 	if view.project() == "" {
 		return nil
 	}
 	view.generation++
 	view.loaded = false
+	view.pending = ""
+	view.viewport.GotoBottom()
 	return tea.Batch(view.loadCmd(view.generation), view.tickCmd(view.generation))
 }
 
 func (view *WorkspaceLog) loadCmd(generation int) tea.Cmd {
 	tail := view.tail
+	running := view.running
 	return func() tea.Msg {
+		// Only read the log while the workspace is running — a stopped workspace must
+		// show nothing, not the stale captured output of a previous session.
+		if running != nil && !running() {
+			return workspaceLogLoadedMsg{notRunning: true, generation: generation}
+		}
 		content, err := tail()
 		return workspaceLogLoadedMsg{content: content, err: err, generation: generation}
 	}
@@ -114,6 +134,14 @@ func (view *WorkspaceLog) Update(msg tea.Msg) tea.Cmd {
 			return nil // a stale poll from a previous activation
 		}
 		view.loaded = true
+		if message.notRunning {
+			// Workspace not running: show nothing (not the previous session's log).
+			view.notRunning = true
+			view.err = nil
+			view.empty = false
+			return nil
+		}
+		view.notRunning = false
 		view.err = message.err
 		if message.err == nil {
 			// Apply the terminal control codes (\r / cursor moves / erase-line) so
@@ -164,6 +192,9 @@ func (view *WorkspaceLog) Update(msg tea.Msg) tea.Cmd {
 func (view *WorkspaceLog) View() string {
 	if view.project() == "" {
 		return ui.Muted.Render("no workspace selected — open one from the Workspaces view")
+	}
+	if view.notRunning {
+		return ui.Muted.Render("workspace not running — its log appears here while it is running (press s to start)")
 	}
 	if view.err != nil {
 		return ui.Failure.Render(ui.IconFail + " " + view.err.Error())

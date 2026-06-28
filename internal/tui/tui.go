@@ -93,6 +93,15 @@ func Run(cwd string) error {
 			}
 			return workspace.RealManager(goruntime.GOOS, nowRFC3339).WorkspaceLogTail(application.currentProject, 1000)
 		},
+		func() bool {
+			// The log is shown only while the workspace is RUNNING (started), so a
+			// stopped workspace shows nothing instead of the previous session's log.
+			if application.currentProject == "" {
+				return false
+			}
+			entry, found, err := projectInfo(application.currentProject)
+			return err == nil && found && entry.Status == string(state.StatusStarted)
+		},
 		func() string { return application.currentProject },
 	)
 	projectDetail := views.NewProject(projectInfo, workspaceLogView)

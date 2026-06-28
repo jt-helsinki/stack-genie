@@ -12,6 +12,7 @@ func TestWorkspaceLogLoadsAndShowsContent(test *testing.T) {
 	project := "demo"
 	view := NewWorkspaceLog(
 		func() (string, error) { return "boot line 1\nboot line 2\n", nil },
+		func() bool { return true },
 		func() string { return project },
 	)
 	view.SetSize(80, 10)
@@ -34,7 +35,7 @@ func TestWorkspaceLogLoadsAndShowsContent(test *testing.T) {
 // TestWorkspaceLogStaleResultIgnored verifies a result tagged with an old generation
 // (from a previous activation) is discarded.
 func TestWorkspaceLogStaleResultIgnored(test *testing.T) {
-	view := NewWorkspaceLog(func() (string, error) { return "", nil }, func() string { return "demo" })
+	view := NewWorkspaceLog(func() (string, error) { return "", nil }, func() bool { return true }, func() string { return "demo" })
 	view.generation = 5
 	view.Update(workspaceLogLoadedMsg{content: "stale", generation: 4})
 	if view.loaded {
@@ -46,6 +47,7 @@ func TestWorkspaceLogStaleResultIgnored(test *testing.T) {
 func TestWorkspaceLogSurfacesError(test *testing.T) {
 	view := NewWorkspaceLog(
 		func() (string, error) { return "", errors.New("workspace microVM is not running") },
+		func() bool { return true },
 		func() string { return "demo" },
 	)
 	view.SetSize(80, 10)
@@ -58,11 +60,38 @@ func TestWorkspaceLogSurfacesError(test *testing.T) {
 
 // TestWorkspaceLogNoProject shows the no-workspace hint and does not start a cycle.
 func TestWorkspaceLogNoProject(test *testing.T) {
-	view := NewWorkspaceLog(func() (string, error) { return "", nil }, func() string { return "" })
+	view := NewWorkspaceLog(func() (string, error) { return "", nil }, func() bool { return true }, func() string { return "" })
 	if cmd := view.Init(); cmd != nil {
 		test.Error("Init with no project should not start a poll cycle")
 	}
 	if !strings.Contains(view.View(), "no workspace selected") {
 		test.Errorf("expected no-workspace hint:\n%s", view.View())
+	}
+}
+
+// TestWorkspaceLogNotRunningShowsNoStaleLog verifies that when the workspace is not
+// running, the log shows the "not running" hint — NOT the previous session's output.
+func TestWorkspaceLogNotRunningShowsNoStaleLog(test *testing.T) {
+	running := true
+	view := NewWorkspaceLog(
+		func() (string, error) { return "old session output", nil },
+		func() bool { return running },
+		func() string { return "demo" },
+	)
+	view.SetSize(80, 10)
+	view.generation = 1
+	// Running: shows the log.
+	view.Update(view.loadCmd(1)())
+	if !strings.Contains(view.View(), "old session output") {
+		test.Fatalf("running: should show the log:\n%s", view.View())
+	}
+	// Stopped: the loadCmd reports notRunning, so the view shows the hint, not the log.
+	running = false
+	view.Update(view.loadCmd(1)())
+	if strings.Contains(view.View(), "old session output") {
+		test.Errorf("stopped: must NOT show the stale previous-session log:\n%s", view.View())
+	}
+	if !strings.Contains(view.View(), "not running") {
+		test.Errorf("stopped: should show the 'not running' hint:\n%s", view.View())
 	}
 }
