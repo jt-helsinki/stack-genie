@@ -72,8 +72,12 @@ func NewSessions(list SessionLister, kill SessionKiller, project func() string) 
 	return &Sessions{list: list, kill: kill, project: project, table: built}
 }
 
-// Title is the view's name (used by the menu/header).
+// Title is the view's name (used by the header).
 func (view *Sessions) Title() string { return "Shell" }
+
+// CapturingInput reports whether the inline new-session name prompt is open, so the
+// app routes all keys here (not the global shortcuts) while the user types a name.
+func (view *Sessions) CapturingInput() bool { return view.creating }
 
 // Hints are the context-sensitive key bindings shown in the footer.
 func (view *Sessions) Hints() string {

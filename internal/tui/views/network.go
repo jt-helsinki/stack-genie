@@ -74,6 +74,11 @@ func NewNetwork(current CurrentRoot, get NetworkGetter, setMode EgressModeSetter
 }
 
 func (view *Network) Title() string { return "Network" }
+
+// CapturingInput reports whether an inline allow/publish prompt is open, so the app
+// routes all keys here (so e.g. ':' in a guest:host mapping isn't stolen).
+func (view *Network) CapturingInput() bool { return view.inputMode != "" }
+
 func (view *Network) Hints() string {
 	return "m mode · a allow · d disallow · p publish · u unpublish"
 }

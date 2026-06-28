@@ -224,7 +224,6 @@ func Run(cwd string) error {
 
 	// Always land on the home screen (Services, index 0 — current's zero value); a
 	// project is opened only when the user selects it from the Projects switcher.
-	application.buildPalette()
 
 	// Mouse reporting is intentionally NOT enabled: capturing the mouse would disable
 	// the host terminal's native text selection. Scrollable panes scroll by keyboard
@@ -464,35 +463,20 @@ type app struct {
 	// the overlay is opened; reset by openTerminal.
 	terminalEscCloses bool
 
-	paletteOpen   bool
-	palette       []paletteItem
-	paletteCursor int
-	paletteFilter string
-
 	helpOpen bool
 	quitting bool
 }
 
-type paletteKind int
+// textInputCapturer is implemented by a view (or the hub on behalf of its active
+// sub-view) that currently has an inline text prompt open. While it captures input,
+// the app routes EVERY key to it so typed characters (':', 'q', '?', …) are not
+// stolen by the global shortcuts.
+type textInputCapturer interface{ CapturingInput() bool }
 
-const (
-	paletteSwitch paletteKind = iota
-	paletteExit
-)
-
-type paletteItem struct {
-	label string
-	kind  paletteKind
-	view  int
-}
-
-func (application *app) buildPalette() {
-	items := make([]paletteItem, 0, len(application.views)+1)
-	for index, view := range application.views {
-		items = append(items, paletteItem{label: view.Title(), kind: paletteSwitch, view: index})
-	}
-	items = append(items, paletteItem{label: "Exit", kind: paletteExit})
-	application.palette = items
+// capturingInput reports whether view currently owns text input.
+func capturingInput(view View) bool {
+	capturer, ok := view.(textInputCapturer)
+	return ok && capturer.CapturingInput()
 }
 
 // Init initializes every view (each begins its own refresh) so switching between
@@ -653,8 +637,11 @@ func (application *app) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			application.helpOpen = false
 			return application, nil
 		}
-		if application.paletteOpen {
-			return application.updatePalette(message)
+		// A view with an inline text prompt open (e.g. the Shell "new session" or the
+		// Network allow/publish prompts) owns EVERY key, so typed characters like ':',
+		// 'q' or '?' are not stolen by the global shortcuts.
+		if capturingInput(application.views[application.current]) {
+			return application, application.views[application.current].Update(msg)
 		}
 		// When the active view captures navigation (the Projects hub with a project
 		// open), Tab/←→ cycle ITS sub-tabs and esc backs up a level inside it — so
@@ -664,11 +651,6 @@ func (application *app) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "ctrl+c", "q":
 			application.quitting = true
 			return application, tea.Quit
-		case ":", "/":
-			application.paletteOpen = true
-			application.paletteCursor = application.current
-			application.paletteFilter = ""
-			return application, nil
 		case "?":
 			application.helpOpen = true
 			return application, nil
@@ -819,66 +801,6 @@ func (application *app) resizeViews() {
 	}
 }
 
-// updatePalette handles input while the menu overlay is open. Typing letters
-// filters the menu (case-insensitive substring); ↑/↓ + enter operate on the
-// filtered list; backspace edits the filter; esc closes.
-func (application *app) updatePalette(key tea.KeyMsg) (tea.Model, tea.Cmd) {
-	filtered := application.filteredPalette()
-	switch key.String() {
-	case "esc":
-		application.paletteOpen = false
-		application.paletteFilter = ""
-	case "up":
-		if application.paletteCursor > 0 {
-			application.paletteCursor--
-		}
-	case "down":
-		if application.paletteCursor < len(filtered)-1 {
-			application.paletteCursor++
-		}
-	case "enter":
-		if application.paletteCursor < len(filtered) {
-			item := filtered[application.paletteCursor]
-			application.paletteOpen = false
-			application.paletteFilter = ""
-			if item.kind == paletteExit {
-				application.quitting = true
-				return application, tea.Quit
-			}
-			application.current = item.view
-		}
-	case "backspace":
-		if application.paletteFilter != "" {
-			runes := []rune(application.paletteFilter)
-			application.paletteFilter = string(runes[:len(runes)-1])
-			application.paletteCursor = 0
-		}
-	default:
-		// A single printable rune extends the filter.
-		if key.Type == tea.KeyRunes && len(key.Runes) == 1 {
-			application.paletteFilter += string(key.Runes)
-			application.paletteCursor = 0
-		}
-	}
-	return application, nil
-}
-
-// filteredPalette returns the menu items matching the current filter (all items
-// when the filter is empty), in palette order.
-func (application *app) filteredPalette() []paletteItem {
-	if application.paletteFilter == "" {
-		return application.palette
-	}
-	needle := strings.ToLower(application.paletteFilter)
-	filtered := make([]paletteItem, 0, len(application.palette))
-	for _, item := range application.palette {
-		if strings.Contains(strings.ToLower(item.label), needle) {
-			filtered = append(filtered, item)
-		}
-	}
-	return filtered
-}
-
 func (application *app) View() string {
 	if application.quitting {
 		return ""
@@ -899,14 +821,12 @@ func (application *app) View() string {
 		content = application.createView.View()
 	case application.helpOpen:
 		content = application.helpView()
-	case application.paletteOpen:
-		content = application.paletteView()
 	default:
 		content = application.views[application.current].View()
 	}
 	// header / tab bar / bordered body / footer, stacked top-to-bottom. The
-	// overlays (palette/help/create/describe) render INSIDE the body border, just
-	// as the active view does.
+	// overlays (help/create/describe) render INSIDE the body border, just as the
+	// active view does.
 	return lipgloss.JoinVertical(
 		lipgloss.Left,
 		application.header(),
@@ -925,7 +845,6 @@ func (application *app) helpView() string {
 	help.WriteString("  tab/⇧tab  cycle tabs\n")
 	help.WriteString("  ←/→       previous/next tab\n")
 	help.WriteString("  1-9       jump to tab\n")
-	help.WriteString("  :, /      open the menu\n")
 	help.WriteString("  ?         toggle this help\n")
 	help.WriteString("  ↑/↓       navigate\n")
 	help.WriteString("  q         quit\n\n")
@@ -944,29 +863,6 @@ func (application *app) footer() string {
 	}
 	return ui.Muted.Render(fmt.Sprintf("ai ui · role:%s · gateway:%s · scope:%s · view:%s",
 		application.role, application.gateway, scope, application.activeTitle()))
-}
-
-func (application *app) paletteView() string {
-	var menu strings.Builder
-	title := "Menu"
-	if application.paletteFilter != "" {
-		title += "  /" + application.paletteFilter
-	}
-	menu.WriteString(ui.Heading.Render(title) + "\n")
-	filtered := application.filteredPalette()
-	if len(filtered) == 0 {
-		menu.WriteString(ui.Muted.Render("  (no match)") + "\n")
-	}
-	for index, item := range filtered {
-		marker := "  "
-		label := item.label
-		if index == application.paletteCursor {
-			marker = ui.Success.Render(ui.IconArrow) + " "
-			label = ui.Heading.Render(label)
-		}
-		menu.WriteString(marker + label + "\n")
-	}
-	return menu.String()
 }
 
 func roleLabel() string {

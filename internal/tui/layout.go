@@ -143,8 +143,6 @@ func (application *app) currentHints() []keyHint {
 		return parseHints(application.createView.Hints())
 	case application.helpOpen:
 		return []keyHint{{"any key", "close help"}}
-	case application.paletteOpen:
-		return []keyHint{{"type", "filter"}, {"↑/↓", "select"}, {"enter", "choose"}, {"esc", "close"}}
 	}
 	active := application.views[application.current]
 	hints := parseHints(active.Hints())
@@ -152,10 +150,10 @@ func (application *app) currentHints() []keyHint {
 		// Inside an open project: Tab cycles the sub-tabs and esc backs up.
 		return append(hints,
 			keyHint{"tab/←→", "sub-tab"}, keyHint{"esc", "back"},
-			keyHint{":", "menu"}, keyHint{"?", "help"}, keyHint{"q", "quit"})
+			keyHint{"?", "help"}, keyHint{"q", "quit"})
 	}
 	return append(hints,
-		keyHint{"tab/←→", "switch tab"}, keyHint{":", "menu"}, keyHint{"?", "help"}, keyHint{"q", "quit"})
+		keyHint{"tab/←→", "switch tab"}, keyHint{"?", "help"}, keyHint{"q", "quit"})
 }
 
 // parseHints splits a view's " · "-joined Hints() string into key/action pairs

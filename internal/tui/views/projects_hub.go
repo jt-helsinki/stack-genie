@@ -69,6 +69,21 @@ func (hub *ProjectsHub) Title() string { return "Workspaces" }
 // project is open (so the app cycles sub-tabs instead of top-level tabs).
 func (hub *ProjectsHub) CapturesNav() bool { return hub.open }
 
+// inputCapturer is a sub-view with an inline text prompt open (Shell new-session,
+// Network allow/publish) that must receive every key while the prompt is up.
+type inputCapturer interface{ CapturingInput() bool }
+
+// CapturingInput reports whether the focused sub-view (in an open project) has an
+// inline prompt open, so the app routes every key to the hub (and on to that
+// sub-view) rather than the global shortcuts or the hub's own nav keys.
+func (hub *ProjectsHub) CapturingInput() bool {
+	if !hub.open {
+		return false
+	}
+	capturer, ok := hub.active().(inputCapturer)
+	return ok && capturer.CapturingInput()
+}
+
 // OpenProject drops into a project: it points the project-aware sub-views at it and
 // returns the batch of sub-view refreshes. The caller (the app) is responsible for
 // having set the live current-project state first, so the closure-driven sub-views
@@ -114,6 +129,11 @@ func (hub *ProjectsHub) active() Screen { return hub.subViews[hub.subIndex] }
 func (hub *ProjectsHub) Update(msg tea.Msg) tea.Cmd {
 	if key, ok := msg.(tea.KeyMsg); ok {
 		if hub.open {
+			// While the focused sub-view has an inline prompt open, it owns EVERY key
+			// (so typed characters aren't taken by the hub's tab/esc navigation).
+			if hub.CapturingInput() {
+				return hub.active().Update(msg)
+			}
 			switch key.String() {
 			case "tab", "right":
 				hub.subIndex = (hub.subIndex + 1) % len(hub.subViews)

@@ -28,67 +28,11 @@ func newTestApp(titles ...string) *app {
 		views = append(views, &fakeView{title: title})
 	}
 	application := &app{views: views}
-	application.buildPalette()
 	return application
 }
 
-func colon() tea.KeyMsg { return tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(":")} }
-func enter() tea.KeyMsg { return tea.KeyMsg{Type: tea.KeyEnter} }
-func qKey() tea.KeyMsg  { return tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("q")} }
-func esc() tea.KeyMsg   { return tea.KeyMsg{Type: tea.KeyEsc} }
-
-func TestColonOpensMenuAndEscCloses(test *testing.T) {
-	application := newTestApp("Services")
-	application.Update(colon())
-	if !application.paletteOpen {
-		test.Fatal(": must open the menu")
-	}
-	application.Update(esc())
-	if application.paletteOpen {
-		test.Fatal("esc must close the menu")
-	}
-}
-
-func TestMenuExitSetsQuitting(test *testing.T) {
-	application := newTestApp("Services")
-	application.Update(colon())
-	// The palette is [Services, Exit]; select the last entry (Exit).
-	application.paletteCursor = len(application.palette) - 1
-	application.Update(enter())
-	if !application.quitting {
-		test.Fatal("choosing the Exit menu item must set quitting")
-	}
-}
-
-func TestMenuSwitchesView(test *testing.T) {
-	application := newTestApp("Services", "Project")
-	application.Update(colon())
-	application.paletteCursor = 1 // "Project"
-	application.Update(enter())
-	if application.current != 1 {
-		test.Fatalf("current view = %d, want 1", application.current)
-	}
-	if application.paletteOpen {
-		test.Error("menu should close after a selection")
-	}
-}
-
-func TestPaletteTypeToFilter(test *testing.T) {
-	application := newTestApp("Services", "Projects", "Models")
-	application.Update(colon())
-	// Typing "p" filters to items whose label contains it (only "Projects").
-	application.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("p")})
-	if filtered := application.filteredPalette(); len(filtered) != 1 || filtered[0].label != "Projects" {
-		test.Fatalf("filter 'p' = %v, want [Projects]", filtered)
-	}
-	application.Update(enter())
-	if application.current != 1 {
-		test.Fatalf("after filter+enter current = %d, want 1 (Projects)", application.current)
-	}
-	if application.paletteOpen {
-		test.Error("enter should close the palette")
-	}
-}
+func qKey() tea.KeyMsg { return tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("q")} }
+func esc() tea.KeyMsg  { return tea.KeyMsg{Type: tea.KeyEsc} }
 
 func TestQuitKey(test *testing.T) {
 	application := newTestApp("Services")
@@ -120,7 +64,6 @@ func newTestHubApp(test *testing.T, subTitles ...string) (*app, *views.ProjectsH
 		projectDetail: detail,
 		projectsIndex: 1,
 	}
-	application.buildPalette()
 	return application, hub
 }
 
@@ -165,7 +108,6 @@ func TestProjectsHubEscClosesSubViewOverlayBeforeBackingOut(test *testing.T) {
 		projectsHub:   hub,
 		projectsIndex: 1,
 	}
-	application.buildPalette()
 	application.Update(views.ProjectSelectedMsg{Name: "app"})
 
 	// First esc: the sub-view's overlay absorbs it; still inside the project.
@@ -212,7 +154,6 @@ func TestProjectsHubSubTabNavAndEscBack(test *testing.T) {
 
 func TestNewProjectRequestedOpensCreateOverlay(test *testing.T) {
 	application := &app{cwd: test.TempDir(), views: []View{&fakeView{title: "Projects"}}}
-	application.buildPalette()
 
 	application.Update(views.NewProjectRequestedMsg{})
 	if application.createView == nil {
@@ -393,7 +334,7 @@ func TestHeaderShowsLogoAndCommands(test *testing.T) {
 	if !strings.Contains(header, "█") {
 		test.Error("header should contain the ASCII logo")
 	}
-	if !strings.Contains(header, "menu") || !strings.Contains(header, "quit") {
+	if !strings.Contains(header, "help") || !strings.Contains(header, "quit") {
 		test.Errorf("header command grid missing global keys: %q", header)
 	}
 }
@@ -506,5 +447,35 @@ func TestTinyWindowClampsBodySize(test *testing.T) {
 	// View() must not panic on a degenerate window.
 	if application.View() == "" {
 		test.Error("View() should render chrome even on a tiny window")
+	}
+}
+
+// capturingTestView is a view with an always-open inline prompt: it records the keys
+// it receives, to prove the app routes global keys (q/:) to it, not the shortcuts.
+type capturingTestView struct {
+	fakeView
+	got []string
+}
+
+func (view *capturingTestView) CapturingInput() bool { return true }
+func (view *capturingTestView) Update(msg tea.Msg) tea.Cmd {
+	if key, ok := msg.(tea.KeyMsg); ok {
+		view.got = append(view.got, key.String())
+	}
+	return nil
+}
+
+// While a view captures text input, global keys (q, etc.) reach the view instead of
+// triggering the global shortcut (so typed characters aren't stolen).
+func TestCapturingViewReceivesGlobalKeys(test *testing.T) {
+	view := &capturingTestView{fakeView: fakeView{title: "Network"}}
+	application := &app{views: []View{view}}
+
+	application.Update(qKey())
+	if application.quitting {
+		test.Fatal("q must NOT quit while a view is capturing input")
+	}
+	if len(view.got) != 1 || view.got[0] != "q" {
+		test.Fatalf("the capturing view should receive 'q', got %v", view.got)
 	}
 }
