@@ -568,6 +568,15 @@ func (application *app) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return sessionFinishedMsg{err: execErr}
 		})
 
+	case views.SandboxLogFollowRequestedMsg:
+		// Follow the microVM log live in the user's REAL terminal (msb logs -f on the
+		// host), so it renders natively — selectable, and in place when the captured
+		// stream carries the control codes. Returns to the TUI on exit (Ctrl-C).
+		command := exec.Command("msb", "logs", workspace.Name(message.Project), "-f")
+		return application, tea.ExecProcess(command, func(execErr error) tea.Msg {
+			return sessionFinishedMsg{err: execErr}
+		})
+
 	case sessionFinishedMsg:
 		// Back from an interactive shell/attach — refresh the Shell (sessions) list
 		// and the project detail so a newly-created/exited session is reflected.

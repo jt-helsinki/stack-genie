@@ -251,20 +251,19 @@ func (view *Sessions) View() string {
 	if view.project() == "" {
 		return ui.Muted.Render("no workspace selected — open one from the Workspaces view")
 	}
-	if view.err != nil {
-		return ui.Failure.Render(ui.IconFail + " " + view.err.Error())
-	}
 	if !view.loaded {
 		return ui.Muted.Render("loading sessions…")
 	}
-	// The last line is the inline new-session prompt while creating, else the flash
-	// slot (blank when empty, or a hint when there are no sessions) — either way one
-	// line, so the table keeps a fixed height.
+	// A listing error (e.g. the in-VM read timed out while the workspace was busy) is
+	// shown in the flash slot, NOT in place of the view — so the table + actions stay
+	// available and you can still press n to create or attach a session.
 	last := flashLine(view.flash)
 	switch {
 	case view.creating:
 		last = ui.Heading.Render("new session: ") + view.nameInput + "▏" +
 			ui.Muted.Render("  (enter create · esc cancel)")
+	case view.err != nil:
+		last = flashLine(ui.Failure.Render(ui.IconFail + " " + view.err.Error()))
 	case view.flash == "" && len(view.sessions) == 0:
 		last = flashLine(ui.Muted.Render("no sessions yet — press n to create one"))
 	}

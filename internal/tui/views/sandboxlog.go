@@ -64,8 +64,14 @@ func NewSandboxLog(tail SandboxLogTailer, project func() string) *SandboxLog {
 func (view *SandboxLog) Title() string { return "Sandbox Log" }
 
 func (view *SandboxLog) Hints() string {
-	return "↑/↓ scroll · PgUp/PgDn page · r refresh"
+	return "↑/↓ scroll · PgUp/PgDn page · f follow in terminal · r refresh"
 }
+
+// SandboxLogFollowRequestedMsg asks the parent to open a live `msb logs -f` follow in
+// the user's REAL terminal (via tea.ExecProcess) — a non-embedded view that renders
+// natively (selectable, and animated in place when the captured stream has the
+// control codes), restoring the TUI on exit.
+type SandboxLogFollowRequestedMsg struct{ Project string }
 
 func (view *SandboxLog) SetSize(width, height int) {
 	view.width = width
@@ -133,8 +139,14 @@ func (view *SandboxLog) Update(msg tea.Msg) tea.Cmd {
 		}
 		return tea.Batch(view.loadCmd(view.generation), view.tickCmd(view.generation))
 	case tea.KeyMsg:
-		if message.String() == "r" {
+		switch message.String() {
+		case "r":
 			return view.loadCmd(view.generation)
+		case "f", "enter":
+			if project := view.project(); project != "" {
+				return func() tea.Msg { return SandboxLogFollowRequestedMsg{Project: project} }
+			}
+			return nil
 		}
 	}
 	var cmd tea.Cmd
