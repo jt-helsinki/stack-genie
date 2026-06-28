@@ -412,43 +412,6 @@ func workspaceRestartRunE(emitter *output.Emitter, exit *int) func(*cobra.Comman
 	}
 }
 
-// workspaceDestroyRunE is the RunE for `ai destroy [name]`. Non-destructive
-// (§4.4): keeps the overlay + host source, so no --yes is required; on a TTY it
-// confirms first.
-func workspaceDestroyRunE(emitter *output.Emitter, exit *int) func(*cobra.Command, []string) error {
-	return func(cmd *cobra.Command, args []string) error {
-		name, err := resolveProjectName(cmd, firstArg(args))
-		if err != nil {
-			*exit = emitter.Failure("workspace.destroy", err)
-			return nil
-		}
-		// On a terminal (and not --json) confirm before destroying the
-		// runtime handle; declining cancels with a success envelope (exit 0).
-		// Under --json / no TTY the behavior is unchanged: it proceeds directly
-		// (this command has never required --yes), so callers are not broken.
-		// --yes bypasses the dialog.
-		if yes, _ := cmd.Flags().GetBool("yes"); !yes && interactive(emitter) {
-			ok, promptErr := promptConfirm(
-				fmt.Sprintf("Destroy the workspace %q?", name),
-				"Removes the microVM/runtime handle only — the overlay and your source are kept.")
-			if promptErr != nil {
-				*exit = emitter.Failure("workspace.destroy", promptErr)
-				return nil
-			}
-			if !ok {
-				*exit = emitter.Success("workspace.destroy", map[string]any{"cancelled": true})
-				return nil
-			}
-		}
-		if err := workspace.RealManager(goruntime.GOOS, nowRFC3339).Destroy(name); err != nil {
-			*exit = emitter.Failure("workspace.destroy", mapWorkspaceErr(err))
-			return nil
-		}
-		*exit = emitter.Success("workspace.destroy", map[string]any{"project": name})
-		return nil
-	}
-}
-
 // workspaceExecRunE is the RunE for `ai exec [name] -- <command>`.
 func workspaceExecRunE(emitter *output.Emitter, exit *int) func(*cobra.Command, []string) error {
 	return func(cmd *cobra.Command, args []string) error {

@@ -273,12 +273,15 @@ func Delete(name string, purge bool) error {
 	}
 
 	if purge {
+		// --purge: remove the ENTIRE project directory (the user's files too).
 		if err := os.RemoveAll(entry.Path); err != nil {
 			return err
 		}
 	} else {
-		// Keep tracked source; clear only the gitignored run/ state.
-		if err := os.RemoveAll(filepath.Join(entry.Path, ".ai-platform", "run")); err != nil {
+		// Normal delete de-platforms the directory: remove the whole .ai-platform
+		// dir (config + run state — the platform's footprint), keeping the user's
+		// OTHER files in the directory. Use --purge to remove everything.
+		if err := os.RemoveAll(filepath.Join(entry.Path, ".ai-platform")); err != nil {
 			return err
 		}
 	}

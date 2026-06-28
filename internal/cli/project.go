@@ -483,7 +483,8 @@ func newDeleteCmd(emitter *output.Emitter, exit *int, use string) *cobra.Command
 	var purge bool
 	cmd := &cobra.Command{
 		Use:               use,
-		Short:             "Delete a workspace (host source kept unless --purge)",
+		Aliases:           []string{"destroy"},
+		Short:             "Delete a workspace: tear down its microVM + remove its .ai-platform state (your other files kept unless --purge)",
 		Args:              cobra.MaximumNArgs(1),
 		ValidArgsFunction: completeProjectArg,
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -517,7 +518,7 @@ func newDeleteCmd(emitter *output.Emitter, exit *int, use string) *cobra.Command
 				if interactive(emitter) {
 					ok, promptErr := promptConfirm(
 						fmt.Sprintf("Delete workspace %q? This removes its microVM and platform state.", name),
-						"This destroys the workspace microVM and removes the workspace from the platform. Your source directory is kept unless --purge.")
+						"Tears down the workspace microVM and removes its .ai-platform directory (config + state) and platform registration. Your OTHER files in the directory are kept unless --purge.")
 					if promptErr != nil {
 						*exit = emitter.Failure("project.delete", promptErr)
 						return nil
@@ -557,9 +558,9 @@ func newDeleteCmd(emitter *output.Emitter, exit *int, use string) *cobra.Command
 
 // deletePlan is the side-effect-free action list for --dry-run (§17.1).
 func deletePlan(name, root string, purge bool) []string {
-	removal := "clear " + filepath.Join(root, ".ai-platform", "run") + " (host source kept)"
+	removal := "remove " + filepath.Join(root, ".ai-platform") + " (your other files kept)"
 	if purge {
-		removal = "remove host source " + root
+		removal = "remove the whole directory " + root
 	}
 	return []string{
 		"destroy workspace microVM " + workspace.Name(name) + " (if running)",

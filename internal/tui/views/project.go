@@ -56,7 +56,7 @@ func (view *Project) Hints() string {
 	if view.name == "" {
 		return "open a workspace from the Workspaces view"
 	}
-	return "s start · x stop · r restart · d destroy · e shell"
+	return "s start · x stop · r restart · d delete · e shell"
 }
 func (view *Project) SetSize(int, int) {}
 
@@ -108,7 +108,7 @@ func (view *Project) Update(msg tea.Msg) tea.Cmd {
 			}
 			return func() tea.Msg { return ExecRequestedMsg{Project: name} }
 		}
-		action, ok := map[string]string{"s": "start", "x": "stop", "r": "restart", "d": "destroy"}[message.String()]
+		action, ok := map[string]string{"s": "start", "x": "stop", "r": "restart", "d": "delete"}[message.String()]
 		if !ok {
 			return nil
 		}

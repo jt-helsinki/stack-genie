@@ -20,7 +20,7 @@ func TestProjectDetailLifecycleKeyEmitsActionRequest(test *testing.T) {
 	view.SetProject("app")
 	_ = view.Update(view.Init()()) // refresh the summary
 
-	for key, wantAction := range map[string]string{"s": "start", "x": "stop", "r": "restart", "d": "destroy"} {
+	for key, wantAction := range map[string]string{"s": "start", "x": "stop", "r": "restart", "d": "delete"} {
 		cmd := view.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(key)})
 		if cmd == nil {
 			test.Fatalf("pressing %q must emit a workspace action request", key)

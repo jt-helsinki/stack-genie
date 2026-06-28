@@ -761,6 +761,15 @@ func (application *app) updateTerminal(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 	if key.String() == "ctrl+q" || escCancels || term.Exited() {
 		term.Close()
 		application.terminal = nil
+		// If the open workspace was just deleted it no longer exists — back out to the
+		// switcher rather than leaving the hub on a gone project.
+		if application.currentProject != "" {
+			if _, ok := resolveProjectRoot(application.currentProject); !ok {
+				application.currentProject = ""
+				application.switchTab(application.projectsIndex)
+				return application, application.projectsHub.Reset()
+			}
+		}
 		commands := []tea.Cmd{application.projectDetail.Init()}
 		if application.sessionsView != nil {
 			commands = append(commands, application.sessionsView.Init())

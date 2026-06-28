@@ -172,22 +172,27 @@ func TestListReturnsProjects(test *testing.T) {
 	}
 }
 
-func TestDeleteKeepsSourceClearsRun(test *testing.T) {
+func TestDeleteRemovesPlatformDirKeepsOtherFiles(test *testing.T) {
 	withTemplates(test)
 	root, err := Scaffold(sampleSpec(), "t")
 	if err != nil {
 		test.Fatal(err)
 	}
-	// Simulate run/ state then delete (no purge).
-	_ = os.MkdirAll(filepath.Join(root, ".ai-platform", "run", "workspaces"), 0o755)
+	// A user file OUTSIDE .ai-platform (their actual code) must survive a plain delete.
+	userFile := filepath.Join(root, "main.go")
+	if err := os.WriteFile(userFile, []byte("package main"), 0o644); err != nil {
+		test.Fatal(err)
+	}
 	if err := Delete("my-app", false); err != nil {
 		test.Fatal(err)
 	}
-	if _, err := os.Stat(filepath.Join(root, ".ai-platform", "Dockerfile")); err != nil {
-		test.Errorf("tracked source should be kept: %v", err)
+	// The whole .ai-platform directory (the platform's footprint) is removed.
+	if _, err := os.Stat(filepath.Join(root, ".ai-platform")); !os.IsNotExist(err) {
+		test.Errorf(".ai-platform should be removed on a plain delete, got %v", err)
 	}
-	if _, err := os.Stat(filepath.Join(root, ".ai-platform", "run")); !os.IsNotExist(err) {
-		test.Errorf("run/ should be cleared, got %v", err)
+	// The user's other files are kept (only --purge removes the whole directory).
+	if _, err := os.Stat(userFile); err != nil {
+		test.Errorf("the user's other files should be kept: %v", err)
 	}
 	index, _ := state.LoadIndex()
 	if _, ok := index.Projects["my-app"]; ok {

@@ -565,10 +565,10 @@ Behavior:
 
 ---
 
-# 4. Workspace microVM Commands (start / stop / restart / destroy / exec / …)
+# 4. Workspace microVM Commands (start / stop / restart / delete / exec / …)
 
 > **Flat surface.** The commands are the **top-level verbs** below
-> (`ai start` / `ai stop` / `ai restart` / `ai destroy` / `ai exec` / `ai shell`
+> (`ai start` / `ai stop` / `ai restart` / `ai delete` / `ai exec` / `ai shell`
 > / `ai agent` / `ai attach` / `ai sessions` / `ai doctor`). Each takes an
 > **optional `[name]`** positional that defaults to the workspace owning the
 > current directory (then `--project`). There are **no** `ai workspace …` command
@@ -644,20 +644,26 @@ Behavior:
 
 ---
 
-## 4.4 Destroy Workspace
+## 4.4 Destroy / Delete Workspace (consolidated)
 
 ```bash id="c11"
-ai destroy [<name>]
+ai delete [<name>]            # `ai destroy` is an ALIAS of this
+ai delete [<name>] --purge
 ```
 
-Behavior:
+`destroy` and `delete` are **one command** (`destroy` is a cobra alias of
+`delete`): there is no separate "tear down the microVM but keep the project"
+operation — use `ai stop` to pause a workspace and `ai start`/`ai restart` to
+(re)build it. Behavior of delete:
 
-* deletes the Microsandbox microVM / runtime handle only
-* **keeps the persistent overlay** (architecture §26) and the host source
-* fully recoverable: `ai start` rebuilds the workspace and re-mounts
-  the same overlay
-* **non-destructive** — no confirmation needed (nothing the user can't
-  reconstruct is lost); see §20
+* tears down the Microsandbox microVM (idempotent — a no-op if not running)
+* removes the project's **`.ai-platform` directory** (config + run state — the
+  platform's footprint) and its persistent overlay (architecture §26)
+* de-registers it from `config/projects.yaml`
+* **keeps the user's OTHER files** in the directory; `--purge` additionally
+  removes the WHOLE project directory
+* **destructive** — confirms on a TTY; requires `--yes` under `--json`/no-TTY
+  (§20). `--dry-run` prints the side-effect-free plan.
 
 ---
 
@@ -899,7 +905,7 @@ upgrade/rollback verbs. A project's environment is its
 `<project>/.ai-platform/Dockerfile` (architecture §25):
 
 * to change the environment, edit `.ai-platform/Dockerfile` and recreate the
-  workspace (`ai destroy` then `ai start`, which rebuilds)
+  workspace (`ai restart`, which rebuilds)
 * the Dockerfile is git-tracked, so its history *is* the version record
 * ad-hoc installs in a running workspace persist via the overlay without
   editing the Dockerfile
@@ -1534,7 +1540,7 @@ API Keys · Settings; cycled by `tab`/`←→` or the `:` menu, which also has a
   sub-tabs below). `tab`/`←→` cycle the sub-tabs; the focused sub-view's pane is
   acted on directly; `esc` backs UP to the switcher. The per-project sub-tabs are:
   * **Workspace** — the project's summary + workspace lifecycle `s`/`x`/`r`/`d`
-    (start/stop/restart/destroy) and `e` (an interactive shell). Lifecycle verbs open
+    (start/stop/restart/delete) and `e` (an interactive shell). Lifecycle verbs open
     the **live embedded terminal** overlay (see below) running the corresponding
     workspace verb IN the pane (the TUI is not suspended for these). `e` opens the
     shell in the REAL terminal (see Shell, below).
@@ -1590,7 +1596,7 @@ API Keys · Settings; cycled by `tab`/`←→` or the `:` menu, which also has a
   a read-only platform info block (deployment role + model gateway, changed via
   `ai gateway` / `ai setup`).
 
-**Live embedded terminal.** Workspace lifecycle (start/stop/restart/destroy) and
+**Live embedded terminal.** Workspace lifecycle (start/stop/restart/delete) and
 the interactive sessions (shell/agent/attach) run inside a **live terminal overlay**
 that fills the body — the platform runs the corresponding workspace verb
 on a pseudo-terminal (`creack/pty`) and renders the program's screen with a vt10x
@@ -1704,7 +1710,7 @@ Global flags (accepted by every command and subcommand):
 ### Project resolution
 
 Project-scoped commands (the workspace lifecycle verbs `start`/`stop`/`restart`/
-`destroy`/`exec`/`shell`/`agent`/`attach`/`sessions`/`delete`, `context *`,
+`exec`/`shell`/`agent`/`attach`/`sessions`/`delete` (`destroy` alias), `context *`,
 `network *`, `doctor`, `logs --workspace`) resolve their target project with this
 precedence:
 
