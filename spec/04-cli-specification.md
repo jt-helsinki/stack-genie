@@ -716,6 +716,7 @@ inner shell exiting is a clean end, not a failure.
 ai agent <cli> [<name>]
 ai attach [session] [<name>]
 ai sessions [<name>]
+ai sessions kill <session> [<name>]
 # each [<name>] defaults to the current directory's workspace
 ```
 
@@ -758,8 +759,11 @@ emit no JSON envelope), so under `--json` or a non-TTY they are exit `2`, exactl
 like `ai shell`. `ai sessions` is a **normal command**: it lists the workspace's
 sessions as a table (NAME / ATTACHED / IDLE) by default and the JSON envelope
 under `--json`. A no-running-tmux-server workspace lists **zero** sessions, not an
-error. Platform failures (workspace not running, msb missing) map per §18 (3/4).
-The TUI **Sessions** view (§14.4) drives the same path via `ai attach`.
+error. **`ai sessions kill <session> [<name>]`** is a normal command that kills a
+named session (over `Manager.KillSession`), emitting a confirmation result.
+Platform failures (workspace not running, msb missing) map per §18 (3/4).
+The TUI **Shell** tab (§14.4) is the session manager and drives the same paths
+(attach/create via `ai attach`, delete via the kill path).
 The interactive entry points (shell / agent / attach) and the session list first
 verify the workspace is **running** — they read the platform's lifecycle handle
 (set by start/stop), so a **stopped or never-started** workspace fails fast with
@@ -1529,27 +1533,30 @@ API Keys · Settings; cycled by `tab`/`←→` or the `:` menu, which also has a
   INTO it, revealing a **sub-tab bar** for that project (the project name + the
   sub-tabs below). `tab`/`←→` cycle the sub-tabs; the focused sub-view's pane is
   acted on directly; `esc` backs UP to the switcher. The per-project sub-tabs are:
-  * **Project** — the project's summary + workspace lifecycle `s`/`x`/`r`/`d`
-    (start/stop/restart/destroy) and `e` (an interactive shell in the workspace).
-    Each of these opens the **live embedded terminal** overlay (see below) running
-    the corresponding workspace verb, so the work happens IN the pane —
-    the TUI is never suspended.
+  * **Workspace** — the project's summary + workspace lifecycle `s`/`x`/`r`/`d`
+    (start/stop/restart/destroy) and `e` (an interactive shell). Lifecycle verbs open
+    the **live embedded terminal** overlay (see below) running the corresponding
+    workspace verb IN the pane (the TUI is not suspended for these). `e` opens the
+    shell in the REAL terminal (see Shell, below).
   * **Network** — egress mode + allow-list + published ports; `m` cycles the mode.
   * **Context** — Headroom strategy + Caveman level; `s`/`c` cycle them.
-  * **Sessions** — the persistent tmux sessions in the workspace (NAME / ATTACHED /
-    IDLE); `a`/`enter` attach the selected session, `n` starts a default agent
-    session, `k` kills the selected one, `r` refreshes. Attaching opens the live
-    embedded terminal running `ai attach <session> <name>` (the same
-    pane as the Project sub-tab's `e` shell).
-  * **Shell** — a launcher into the workspace's interactive shell; `enter` opens the
-    live embedded terminal running `ai shell <name>` (the persistent, reattachable
-    tmux shell). It is a launcher (not an embedded pane) because the live PTY pane is
-    an app-level overlay.
-  * **Sandbox log** — a scrollable, auto-refreshing view of the microVM's captured
-    output (`msb logs <vm> --tail`, re-polled every 2s so new lines stream in);
-    follows the tail unless scrolled up. `r` refreshes; `↑/↓`/`PgUp`/`PgDn`/mouse
-    wheel scroll.
+  * **Shell** — the per-workspace **session manager** over the tmux sessions
+    (NAME / ATTACHED / IDLE): `enter`/`a` attach the selected session, `n` opens an
+    inline prompt to create a new named session, `d`/`k` kill the selected one, `r`
+    refreshes. Attaching/creating runs the interactive shell in the user's **REAL
+    terminal** via `tea.ExecProcess` (the TUI suspends and runs `ai attach <session>
+    <name>` / `ai shell <name>`, restoring on exit) — NOT an embedded emulator — so
+    keys, native text selection, and in-place output all work. CLI mirror: `ai shell`
+    / `ai attach` / `ai agent` / `ai sessions` (+ `ai sessions kill`).
+  * **Sandbox Log** — a READ-ONLY (no command input), scrollable, selectable,
+    auto-refreshing view of the microVM's captured output (`msb logs <vm> --tail`,
+    re-polled every 2s); follows the tail unless scrolled up. The text is passed
+    through a terminal-output normalizer (interpreting `\r`/cursor-moves/erase-line)
+    so progress redraws (image pulls) collapse IN PLACE while the full scrollback +
+    plain selectable text are kept. `r` refreshes; `↑/↓`/`PgUp`/`PgDn` scroll.
   * **Apps** — the in-VM AI apps (install/start/stop/restart/remove).
+  `ai ui` does NOT capture the mouse (so the host terminal's native text selection
+  works on every pane); scrollable panes scroll by keyboard.
 * **Local Models** — the local Ollama store ⨯ the **live ollama.com installable
   library**, in one **NAME · DESCRIPTION** list (there is **no TAGS column** — tags
   appear only in the per-model drill-down) split into an **Installed** section
