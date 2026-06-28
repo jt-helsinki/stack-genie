@@ -163,7 +163,7 @@ type Sandbox interface {
 	WriteFile(name, guestPath string, content []byte) error
 	// LogTail returns the microVM's captured output (`msb logs <name> --tail
 	// <lines>` — the merged stdout/stderr the sandbox produced). lines ≤ 0 returns
-	// the full captured log. Backs the TUI "Sandbox Log" tab. ErrMsbMissing when msb
+	// the full captured log. Backs the TUI "Workspace Log" tab. ErrMsbMissing when msb
 	// is absent; a non-running/unknown sandbox surfaces as a Go error carrying msb's
 	// message.
 	LogTail(name string, lines int) (string, error)
@@ -824,15 +824,15 @@ func (manager Manager) Agent(project, cli string) error {
 	return manager.launchTmuxSession(project, tmuxNewSession(cli, launch))
 }
 
-// SandboxLogTail returns the last lines of the project's workspace microVM
-// captured output (`msb logs`). It backs the TUI "Sandbox Log" tab. It does NOT gate
+// WorkspaceLogTail returns the last lines of the project's workspace microVM
+// captured output (`msb logs`). It backs the TUI "Workspace Log" tab. It does NOT gate
 // on the platform's "started" state handle: `msb logs` works for any sandbox that
 // exists in msb (created/starting/running), and the log is most useful DURING startup
 // (build + image-pull progress) — before the handle flips to "started". A sandbox
 // that does not exist yet (never created) surfaces msb's "sandbox not found", which is
 // reported as an EMPTY log (not an error), so the tab reads "no output yet" instead
 // of a false "not running".
-func (manager Manager) SandboxLogTail(project string, lines int) (string, error) {
+func (manager Manager) WorkspaceLogTail(project string, lines int) (string, error) {
 	if _, err := resolveProjectRoot(project); err != nil {
 		return "", err
 	}

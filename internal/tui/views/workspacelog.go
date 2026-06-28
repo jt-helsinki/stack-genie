@@ -9,36 +9,36 @@ import (
 	"github.com/jt-helsinki/ideal-robot/internal/ui"
 )
 
-// SandboxLogTailer returns the recent captured output of the CURRENT workspace
-// microVM (msb logs --tail). Injected; the parent wires Manager.SandboxLogTail for
+// WorkspaceLogTailer returns the recent captured output of the CURRENT workspace
+// microVM (msb logs --tail). Injected; the parent wires Manager.WorkspaceLogTail for
 // the live current project. With no current project it returns "", nil; when the
 // workspace is not running it returns an error (surfaced in the pane).
-type SandboxLogTailer func() (string, error)
+type WorkspaceLogTailer func() (string, error)
 
-// sandboxLogRefreshInterval is how often the tab re-polls the Sandbox Log so new
+// workspaceLogRefreshInterval is how often the tab re-polls the Workspace Log so new
 // output "streams in" while the tab is open.
-const sandboxLogRefreshInterval = 2 * time.Second
+const workspaceLogRefreshInterval = 2 * time.Second
 
-// sandboxLogLoadedMsg carries one poll result, tagged with the generation it was
+// workspaceLogLoadedMsg carries one poll result, tagged with the generation it was
 // issued under so a result from a previous activation is discarded.
-type sandboxLogLoadedMsg struct {
+type workspaceLogLoadedMsg struct {
 	content    string
 	err        error
 	generation int
 }
 
-// sandboxLogTickMsg re-arms the auto-refresh. Its generation lets a stale tick chain
+// workspaceLogTickMsg re-arms the auto-refresh. Its generation lets a stale tick chain
 // (from a previous Init) die so only the latest activation keeps polling.
-type sandboxLogTickMsg struct{ generation int }
+type workspaceLogTickMsg struct{ generation int }
 
-// SandboxLog is the per-workspace "Sandbox Log" sub-tab: a scrollable, auto-
+// WorkspaceLog is the per-workspace "Workspace Log" sub-tab: a scrollable, auto-
 // refreshing view of the microVM's captured output (msb logs). It re-polls on a
 // timer so new lines stream in, follows the tail unless the user has scrolled up,
 // and is fully scrollable (mouse wheel / PgUp/PgDn / arrows). Polling is generation-
 // guarded so re-entering the tab (or switching workspace) starts a single fresh
 // cycle rather than stacking timers.
-type SandboxLog struct {
-	tail    SandboxLogTailer
+type WorkspaceLog struct {
+	tail    WorkspaceLogTailer
 	project func() string
 
 	viewport   viewport.Model
@@ -55,25 +55,25 @@ type SandboxLog struct {
 	pending string
 }
 
-// NewSandboxLog builds the Sandbox Log view over the injected tailer + current-
+// NewWorkspaceLog builds the Workspace Log view over the injected tailer + current-
 // project resolver.
-func NewSandboxLog(tail SandboxLogTailer, project func() string) *SandboxLog {
-	return &SandboxLog{tail: tail, project: project, viewport: viewport.New(0, 0)}
+func NewWorkspaceLog(tail WorkspaceLogTailer, project func() string) *WorkspaceLog {
+	return &WorkspaceLog{tail: tail, project: project, viewport: viewport.New(0, 0)}
 }
 
-func (view *SandboxLog) Title() string { return "Sandbox Log" }
+func (view *WorkspaceLog) Title() string { return "Workspace Log" }
 
-func (view *SandboxLog) Hints() string {
+func (view *WorkspaceLog) Hints() string {
 	return "↑/↓ scroll · PgUp/PgDn page · f follow in terminal · r refresh"
 }
 
-// SandboxLogFollowRequestedMsg asks the parent to open a live `msb logs -f` follow in
+// WorkspaceLogFollowRequestedMsg asks the parent to open a live `msb logs -f` follow in
 // the user's REAL terminal (via tea.ExecProcess) — a non-embedded view that renders
 // natively (selectable, and animated in place when the captured stream has the
 // control codes), restoring the TUI on exit.
-type SandboxLogFollowRequestedMsg struct{ Project string }
+type WorkspaceLogFollowRequestedMsg struct{ Project string }
 
-func (view *SandboxLog) SetSize(width, height int) {
+func (view *WorkspaceLog) SetSize(width, height int) {
 	view.width = width
 	view.height = height
 	view.viewport.Width = width
@@ -84,7 +84,7 @@ func (view *SandboxLog) SetSize(width, height int) {
 
 // Init starts a fresh poll cycle for the current project. Re-init (returning to the
 // tab, or a workspace change) bumps the generation so the previous tick chain stops.
-func (view *SandboxLog) Init() tea.Cmd {
+func (view *WorkspaceLog) Init() tea.Cmd {
 	if view.project() == "" {
 		return nil
 	}
@@ -93,23 +93,23 @@ func (view *SandboxLog) Init() tea.Cmd {
 	return tea.Batch(view.loadCmd(view.generation), view.tickCmd(view.generation))
 }
 
-func (view *SandboxLog) loadCmd(generation int) tea.Cmd {
+func (view *WorkspaceLog) loadCmd(generation int) tea.Cmd {
 	tail := view.tail
 	return func() tea.Msg {
 		content, err := tail()
-		return sandboxLogLoadedMsg{content: content, err: err, generation: generation}
+		return workspaceLogLoadedMsg{content: content, err: err, generation: generation}
 	}
 }
 
-func (view *SandboxLog) tickCmd(generation int) tea.Cmd {
-	return tea.Tick(sandboxLogRefreshInterval, func(time.Time) tea.Msg {
-		return sandboxLogTickMsg{generation: generation}
+func (view *WorkspaceLog) tickCmd(generation int) tea.Cmd {
+	return tea.Tick(workspaceLogRefreshInterval, func(time.Time) tea.Msg {
+		return workspaceLogTickMsg{generation: generation}
 	})
 }
 
-func (view *SandboxLog) Update(msg tea.Msg) tea.Cmd {
+func (view *WorkspaceLog) Update(msg tea.Msg) tea.Cmd {
 	switch message := msg.(type) {
-	case sandboxLogLoadedMsg:
+	case workspaceLogLoadedMsg:
 		if message.generation != view.generation {
 			return nil // a stale poll from a previous activation
 		}
@@ -133,7 +133,7 @@ func (view *SandboxLog) Update(msg tea.Msg) tea.Cmd {
 			}
 		}
 		return nil
-	case sandboxLogTickMsg:
+	case workspaceLogTickMsg:
 		if message.generation != view.generation {
 			return nil // a stale tick chain
 		}
@@ -144,7 +144,7 @@ func (view *SandboxLog) Update(msg tea.Msg) tea.Cmd {
 			return view.loadCmd(view.generation)
 		case "f", "enter":
 			if project := view.project(); project != "" {
-				return func() tea.Msg { return SandboxLogFollowRequestedMsg{Project: project} }
+				return func() tea.Msg { return WorkspaceLogFollowRequestedMsg{Project: project} }
 			}
 			return nil
 		}
@@ -161,7 +161,7 @@ func (view *SandboxLog) Update(msg tea.Msg) tea.Cmd {
 	return cmd
 }
 
-func (view *SandboxLog) View() string {
+func (view *WorkspaceLog) View() string {
 	if view.project() == "" {
 		return ui.Muted.Render("no workspace selected — open one from the Workspaces view")
 	}
@@ -169,10 +169,10 @@ func (view *SandboxLog) View() string {
 		return ui.Failure.Render(ui.IconFail + " " + view.err.Error())
 	}
 	if !view.loaded {
-		return ui.Muted.Render("loading sandbox log…")
+		return ui.Muted.Render("loading workspace log…")
 	}
 	if view.empty {
-		return ui.Muted.Render("no sandbox output captured yet — it streams in as the workspace runs")
+		return ui.Muted.Render("no workspace output captured yet — it streams in as the workspace runs")
 	}
 	return view.viewport.View()
 }

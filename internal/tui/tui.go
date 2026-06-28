@@ -115,15 +115,15 @@ func Run(cwd string) error {
 		},
 		func() string { return application.currentProject },
 	)
-	// The Sandbox Log sub-tab streams the microVM's captured output (msb logs) for
+	// The Workspace Log sub-tab streams the microVM's captured output (msb logs) for
 	// the live current project, polling so new lines stream in. With no current
 	// project the tailer returns nothing (the view shows "no workspace selected").
-	sandboxLogView := views.NewSandboxLog(
+	workspaceLogView := views.NewWorkspaceLog(
 		func() (string, error) {
 			if application.currentProject == "" {
 				return "", nil
 			}
-			return workspace.RealManager(goruntime.GOOS, nowRFC3339).SandboxLogTail(application.currentProject, 1000)
+			return workspace.RealManager(goruntime.GOOS, nowRFC3339).WorkspaceLogTail(application.currentProject, 1000)
 		},
 		func() string { return application.currentProject },
 	)
@@ -199,13 +199,13 @@ func Run(cwd string) error {
 
 	// The Workspaces tab is a two-level hub: it opens on the switcher (the
 	// workspace list) and, once a workspace is selected, reveals per-workspace
-	// sub-tabs — Workspace · Network · Context · Shell · Sandbox Log · Apps — for it.
+	// sub-tabs — Workspace · Network · Context · Shell · Workspace Log · Apps — for it.
 	// The "Shell" tab is the session manager (sessionsView): list/attach/new/kill,
 	// with the interactive shell itself run in the real terminal via ExecProcess.
 	projectsHub := views.NewProjectsHub(
 		projectsView,
-		[]views.Screen{projectDetail, networkView, contextView, sessionsView, sandboxLogView, appsView},
-		[]string{"Workspace", "Network", "Context", "Shell", "Sandbox Log", "Apps"},
+		[]views.Screen{projectDetail, networkView, contextView, sessionsView, workspaceLogView, appsView},
+		[]string{"Workspace", "Network", "Context", "Shell", "Workspace Log", "Apps"},
 	)
 
 	// Top-level tab order = menu order: Services · Workspaces · Local Models · Cloud
@@ -568,7 +568,7 @@ func (application *app) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return sessionFinishedMsg{err: execErr}
 		})
 
-	case views.SandboxLogFollowRequestedMsg:
+	case views.WorkspaceLogFollowRequestedMsg:
 		// Follow the microVM log live in the user's REAL terminal (msb logs -f on the
 		// host), so it renders natively — selectable, and in place when the captured
 		// stream carries the control codes. Returns to the TUI on exit (Ctrl-C).

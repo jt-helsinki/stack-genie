@@ -1561,7 +1561,7 @@ number keys `1`-`9`. There is **no `:` command palette** — `q`/`ctrl+c` quits 
     <name>` / `ai shell <name>`, restoring on exit) — NOT an embedded emulator — so
     keys, native text selection, and in-place output all work. CLI mirror: `ai shell`
     / `ai attach` / `ai agent` / `ai sessions` (+ `ai sessions kill`).
-  * **Sandbox Log** — a READ-ONLY (no command input), scrollable, selectable,
+  * **Workspace Log** — a READ-ONLY (no command input), scrollable, selectable,
     auto-refreshing view of the microVM's captured output (`msb logs <vm> --tail`,
     re-polled every 2s); follows the tail unless scrolled up. The text is passed
     through a terminal-output normalizer (interpreting `\r`/cursor-moves/erase-line)
