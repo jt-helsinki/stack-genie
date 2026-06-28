@@ -15,7 +15,7 @@ import (
 // workspace is not running it returns an error (surfaced in the pane).
 type SandboxLogTailer func() (string, error)
 
-// sandboxLogRefreshInterval is how often the tab re-polls the sandbox log so new
+// sandboxLogRefreshInterval is how often the tab re-polls the Sandbox Log so new
 // output "streams in" while the tab is open.
 const sandboxLogRefreshInterval = 2 * time.Second
 
@@ -31,7 +31,7 @@ type sandboxLogLoadedMsg struct {
 // (from a previous Init) die so only the latest activation keeps polling.
 type sandboxLogTickMsg struct{ generation int }
 
-// SandboxLog is the per-workspace "Sandbox log" sub-tab: a scrollable, auto-
+// SandboxLog is the per-workspace "Sandbox Log" sub-tab: a scrollable, auto-
 // refreshing view of the microVM's captured output (msb logs). It re-polls on a
 // timer so new lines stream in, follows the tail unless the user has scrolled up,
 // and is fully scrollable (mouse wheel / PgUp/PgDn / arrows). Polling is generation-
@@ -50,13 +50,13 @@ type SandboxLog struct {
 	height     int
 }
 
-// NewSandboxLog builds the Sandbox log view over the injected tailer + current-
+// NewSandboxLog builds the Sandbox Log view over the injected tailer + current-
 // project resolver.
 func NewSandboxLog(tail SandboxLogTailer, project func() string) *SandboxLog {
 	return &SandboxLog{tail: tail, project: project, viewport: viewport.New(0, 0)}
 }
 
-func (view *SandboxLog) Title() string { return "Sandbox log" }
+func (view *SandboxLog) Title() string { return "Sandbox Log" }
 
 func (view *SandboxLog) Hints() string {
 	return "↑/↓ scroll · PgUp/PgDn page · r refresh"
@@ -106,8 +106,11 @@ func (view *SandboxLog) Update(msg tea.Msg) tea.Cmd {
 		view.err = message.err
 		if message.err == nil {
 			view.empty = strings.TrimSpace(message.content) == ""
+			// Apply the terminal control codes (\r / cursor moves / erase-line) so
+			// progress redraws (docker/nerdctl pulls) collapse IN PLACE, then show the
+			// result in the scrollable, selectable viewport.
 			atBottom := view.viewport.AtBottom()
-			view.viewport.SetContent(message.content)
+			view.viewport.SetContent(normalizeTerminalOutput(message.content))
 			// Follow the tail unless the user has scrolled up to read history.
 			if atBottom {
 				view.viewport.GotoBottom()
