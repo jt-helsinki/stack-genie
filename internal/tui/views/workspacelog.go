@@ -57,6 +57,16 @@ type WorkspaceLog struct {
 	generation int
 	width      int
 	height     int
+	// paused is set while the Workspace sub-tab is NOT the visible one: the 2s
+	// heartbeat tick keeps running (cheap) but issues NO `msb logs` call, so the
+	// background poll never contends with the active tab's in-VM exec calls
+	// (sessions/apps/shell). The hub toggles it via SetActive on every sub-tab
+	// switch. Resuming issues an immediate refresh.
+	paused bool
+	// polling guards against stacking: a slow `msb logs` (VM busy) must not let the
+	// 2s tick fire a second concurrent call on top of the first. True while a poll
+	// is in flight; the tick skips issuing another until the result lands.
+	polling bool
 	// pending holds the latest normalized content while the user has scrolled UP
 	// (not at the bottom): the view is FROZEN so a 2s refresh does not re-render the
 	// pane and wipe an in-progress text selection. It is applied when the user scrolls
@@ -72,6 +82,20 @@ func NewWorkspaceLog(tail WorkspaceLogTailer, running WorkspaceRunning, project 
 }
 
 func (view *WorkspaceLog) Title() string { return "Workspace Log" }
+
+// SetActive marks whether the Workspace sub-tab is currently the visible one. While
+// inactive the poll is PAUSED — the heartbeat tick keeps running but issues no
+// `msb logs` call — so it does not contend with the active tab's in-VM exec calls.
+// It only sets the flag; the Init() the hub calls right after does the immediate
+// refresh (and re-follows the tail).
+func (view *WorkspaceLog) SetActive(active bool) { view.paused = !active }
+
+// issueLoad fires one poll and arms the in-flight guard so the 2s tick cannot stack
+// a second concurrent `msb logs` on top of a slow one.
+func (view *WorkspaceLog) issueLoad() tea.Cmd {
+	view.polling = true
+	return view.loadCmd(view.generation)
+}
 
 func (view *WorkspaceLog) Hints() string {
 	return "↑/↓ scroll · PgUp/PgDn page · f follow in terminal · r refresh"
@@ -103,8 +127,15 @@ func (view *WorkspaceLog) Init() tea.Cmd {
 	view.generation++
 	view.loaded = false
 	view.pending = ""
+	view.polling = false
 	view.viewport.GotoBottom()
-	return tea.Batch(view.loadCmd(view.generation), view.tickCmd(view.generation))
+	// Start the heartbeat tick always; issue the first poll only when the tab is
+	// visible (not paused) so a re-init while parked on another sub-tab does not
+	// fire a `msb logs` call.
+	if view.paused {
+		return view.tickCmd(view.generation)
+	}
+	return tea.Batch(view.issueLoad(), view.tickCmd(view.generation))
 }
 
 func (view *WorkspaceLog) loadCmd(generation int) tea.Cmd {
@@ -133,6 +164,7 @@ func (view *WorkspaceLog) Update(msg tea.Msg) tea.Cmd {
 		if message.generation != view.generation {
 			return nil // a stale poll from a previous activation
 		}
+		view.polling = false // this poll landed — the tick may issue the next
 		view.loaded = true
 		if message.notRunning {
 			// Workspace not running: show nothing (not the previous session's log).
@@ -165,11 +197,20 @@ func (view *WorkspaceLog) Update(msg tea.Msg) tea.Cmd {
 		if message.generation != view.generation {
 			return nil // a stale tick chain
 		}
-		return tea.Batch(view.loadCmd(view.generation), view.tickCmd(view.generation))
+		// Always re-arm the heartbeat. Issue a poll only when visible and no poll is
+		// already in flight — so a parked tab makes no `msb logs` call and a slow
+		// call never stacks a second.
+		if view.paused || view.polling {
+			return view.tickCmd(view.generation)
+		}
+		return tea.Batch(view.issueLoad(), view.tickCmd(view.generation))
 	case tea.KeyMsg:
 		switch message.String() {
 		case "r":
-			return view.loadCmd(view.generation)
+			if view.polling {
+				return nil // a poll is already in flight
+			}
+			return view.issueLoad()
 		case "f", "enter":
 			if project := view.project(); project != "" {
 				return func() tea.Msg { return WorkspaceLogFollowRequestedMsg{Project: project} }

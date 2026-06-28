@@ -112,6 +112,11 @@ func (view *Project) SetSize(width, height int) {
 // the user selects one in the switcher).
 func (view *Project) SetProject(name string) { view.name = name }
 
+// SetActive forwards the hub's sub-tab visibility to the embedded log, so the 2s
+// `msb logs` poll only runs while the Workspace tab is the visible one (and not
+// contending with the Apps/Shell tabs' in-VM exec calls).
+func (view *Project) SetActive(active bool) { view.log.SetActive(active) }
+
 // Init refreshes the current project AND starts the embedded log polling (no-op
 // until a workspace is selected).
 func (view *Project) Init() tea.Cmd {

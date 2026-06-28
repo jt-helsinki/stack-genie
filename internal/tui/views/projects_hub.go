@@ -31,6 +31,15 @@ type Screen interface {
 // live current project through their injected closures.
 type projectAware interface{ SetProject(name string) }
 
+// activatable is implemented by a sub-view that runs a BACKGROUND poll (the Project
+// detail view's embedded workspace log) and must pause it while another sub-tab is
+// visible — so its repeated `msb logs` does not contend with the active tab's in-VM
+// exec calls. SetActive(true) returns an immediate-refresh cmd. Sub-views that load
+// once (Sessions/Apps) do not implement it; they simply re-load on Init.
+type activatable interface {
+	SetActive(active bool)
+}
+
 // escConsumer is implemented by a sub-view that has an open overlay (e.g. a
 // describe pane) which should absorb esc itself — so esc closes that overlay
 // before the hub uses esc to back out of the open project (esc goes up one level:
@@ -85,21 +94,42 @@ func (hub *ProjectsHub) CapturingInput() bool {
 }
 
 // OpenProject drops into a project: it points the project-aware sub-views at it and
-// returns the batch of sub-view refreshes. The caller (the app) is responsible for
+// initialises ONLY the active sub-view. The caller (the app) is responsible for
 // having set the live current-project state first, so the closure-driven sub-views
 // (Network/Context/Sessions) resolve the right project when they refetch.
+//
+// Each sub-view is loaded LAZILY — only when its sub-tab is first shown (see the
+// tab-switch handler) — rather than all at once on open: firing every sub-view's
+// in-VM call (workspace log + tmux ls + nerdctl ps) simultaneously hammered the one
+// microVM and made the exec calls time out. One tab = at most one in-VM call.
 func (hub *ProjectsHub) OpenProject(name string) tea.Cmd {
 	hub.project = name
 	hub.open = true
 	hub.subIndex = 0
-	commands := make([]tea.Cmd, 0, len(hub.subViews))
 	for _, sub := range hub.subViews {
 		if aware, ok := sub.(projectAware); ok {
 			aware.SetProject(name)
 		}
-		commands = append(commands, sub.Init())
 	}
-	return tea.Batch(commands...)
+	hub.setActive(hub.subIndex, true)
+	return hub.active().Init()
+}
+
+// setActive toggles a sub-view's background poll (if it runs one) for visibility.
+func (hub *ProjectsHub) setActive(index int, active bool) {
+	if view, ok := hub.subViews[index].(activatable); ok {
+		view.SetActive(active)
+	}
+}
+
+// RefreshActive re-initialises only the sub-view under the current sub-tab — used
+// after a terminal overlay closes so the visible tab reflects the change without
+// firing every other sub-view's in-VM call at once.
+func (hub *ProjectsHub) RefreshActive() tea.Cmd {
+	if !hub.open {
+		return nil
+	}
+	return hub.active().Init()
 }
 
 // Reset backs out to the switcher and refreshes it (used after the create wizard
@@ -109,18 +139,25 @@ func (hub *ProjectsHub) Reset() tea.Cmd {
 	return hub.switcher.Init()
 }
 
-// Init initialises the switcher and every sub-view so switching is instant.
+// Init initialises ONLY the switcher (the project list). Sub-views are loaded
+// lazily when their project is opened / their sub-tab is shown, so app startup does
+// not fire every per-project in-VM call before a workspace is even chosen.
 func (hub *ProjectsHub) Init() tea.Cmd {
-	commands := make([]tea.Cmd, 0, len(hub.subViews)+1)
-	commands = append(commands, hub.switcher.Init())
-	for _, sub := range hub.subViews {
-		commands = append(commands, sub.Init())
-	}
-	return tea.Batch(commands...)
+	return hub.switcher.Init()
 }
 
 // active is the sub-view under the current sub-tab.
 func (hub *ProjectsHub) active() Screen { return hub.subViews[hub.subIndex] }
+
+// switchSub moves to sub-tab next: it PAUSES the outgoing view's background poll,
+// activates the incoming one, and lazily (re)loads it — so at most one sub-view is
+// making in-VM calls at a time.
+func (hub *ProjectsHub) switchSub(next int) tea.Cmd {
+	hub.setActive(hub.subIndex, false)
+	hub.subIndex = next
+	hub.setActive(hub.subIndex, true)
+	return hub.active().Init()
+}
 
 // Update routes input. While a project is open the hub owns Tab/←→ (sub-tab cycle)
 // and esc (back to the switcher); everything else delegates to the focused
@@ -136,12 +173,10 @@ func (hub *ProjectsHub) Update(msg tea.Msg) tea.Cmd {
 			}
 			switch key.String() {
 			case "tab", "right":
-				hub.subIndex = (hub.subIndex + 1) % len(hub.subViews)
-				return hub.active().Init()
+				return hub.switchSub((hub.subIndex + 1) % len(hub.subViews))
 			case "shift+tab", "left":
 				count := len(hub.subViews)
-				hub.subIndex = ((hub.subIndex-1)%count + count) % count
-				return hub.active().Init()
+				return hub.switchSub(((hub.subIndex-1)%count + count) % count)
 			case "esc":
 				// If the active sub-view has an open overlay (e.g. a describe pane),
 				// let it consume esc first; only back out to the switcher once the
@@ -149,6 +184,7 @@ func (hub *ProjectsHub) Update(msg tea.Msg) tea.Cmd {
 				if consumer, ok := hub.active().(escConsumer); ok && consumer.WantsEsc() {
 					return hub.active().Update(msg)
 				}
+				hub.setActive(hub.subIndex, false) // pause the outgoing log poll
 				hub.open = false
 				return hub.switcher.Init()
 			}

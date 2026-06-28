@@ -848,13 +848,11 @@ func (application *app) updateTerminal(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 				return application, application.projectsHub.Reset()
 			}
 		}
-		commands := []tea.Cmd{application.projectDetail.Init()}
-		if application.sessionsView != nil {
-			commands = append(commands, application.sessionsView.Init())
-		}
-		if application.appsView != nil {
-			commands = append(commands, application.appsView.Init())
-		}
+		// Refresh ONLY the sub-view under the active sub-tab (not the workspace log +
+		// sessions + apps all at once — that fired three concurrent in-VM calls on
+		// every overlay close and timed them out). The top-level model/key views are
+		// cheap host-side fetches, so they always refresh.
+		commands := []tea.Cmd{application.projectsHub.RefreshActive()}
 		if application.localModelsView != nil {
 			commands = append(commands, application.localModelsView.Init())
 		}
