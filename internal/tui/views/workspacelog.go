@@ -148,6 +148,12 @@ func (view *WorkspaceLog) loadCmd(generation int) tea.Cmd {
 			return workspaceLogLoadedMsg{notRunning: true, generation: generation}
 		}
 		content, err := tail()
+		if err == nil {
+			// Apply the terminal control codes HERE — in the async poll goroutine, NOT
+			// in Update — so this (potentially heavy on a large TUI-redraw buffer) work
+			// never runs on the bubbletea event loop and stalls input.
+			content = normalizeTerminalOutput(content)
+		}
 		return workspaceLogLoadedMsg{content: content, err: err, generation: generation}
 	}
 }
@@ -176,9 +182,10 @@ func (view *WorkspaceLog) Update(msg tea.Msg) tea.Cmd {
 		view.notRunning = false
 		view.err = message.err
 		if message.err == nil {
-			// Apply the terminal control codes (\r / cursor moves / erase-line) so
-			// progress redraws collapse IN PLACE.
-			content := normalizeTerminalOutput(message.content)
+			// Content is already normalized in the poll goroutine (loadCmd) — the
+			// terminal control codes (\r / cursor moves / erase-line) have collapsed
+			// progress redraws in place. Just place it; no heavy work on the event loop.
+			content := message.content
 			view.empty = strings.TrimSpace(content) == ""
 			if view.viewport.AtBottom() {
 				// Following the tail: re-render + pin to the bottom.

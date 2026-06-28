@@ -40,19 +40,29 @@ func normalizeTerminalOutput(raw string) string {
 			}
 		}
 	}
-	return strings.Join(grid.lines, "\n")
+	var builder strings.Builder
+	for index, line := range grid.lines {
+		if index > 0 {
+			builder.WriteByte('\n')
+		}
+		builder.WriteString(string(line))
+	}
+	return builder.String()
 }
 
-// lineGrid is an unbounded virtual screen: a slice of rows plus a cursor. Unlike a
-// real terminal it never scrolls content off the top, so all history is kept.
+// lineGrid is an unbounded virtual screen: rows of runes plus a cursor. Unlike a
+// real terminal it never scrolls content off the top, so all history is kept. Rows
+// are kept as []rune (not string) so writes are O(1) amortised — a string-backed
+// grid re-converted the whole row on EVERY character (O(L²) per line), which made
+// normalizing a 1000-line TUI-redraw buffer slow enough to stall the event loop.
 type lineGrid struct {
-	lines    []string
+	lines    [][]rune
 	row, col int
 }
 
 func (grid *lineGrid) ensureRow() {
 	for len(grid.lines) <= grid.row {
-		grid.lines = append(grid.lines, "")
+		grid.lines = append(grid.lines, nil)
 	}
 }
 
@@ -63,10 +73,10 @@ func (grid *lineGrid) newline() {
 }
 
 // put writes a rune at the cursor (padding with spaces if the cursor is past the end
-// of the row) and advances the column.
+// of the row) and advances the column. Operates on the row's []rune in place.
 func (grid *lineGrid) put(char rune) {
 	grid.ensureRow()
-	runes := []rune(grid.lines[grid.row])
+	runes := grid.lines[grid.row]
 	for len(runes) < grid.col {
 		runes = append(runes, ' ')
 	}
@@ -75,7 +85,7 @@ func (grid *lineGrid) put(char rune) {
 	} else {
 		runes = append(runes, char)
 	}
-	grid.lines[grid.row] = string(runes)
+	grid.lines[grid.row] = runes
 	grid.col++
 }
 
@@ -83,20 +93,20 @@ func (grid *lineGrid) put(char rune) {
 // 2 = whole line.
 func (grid *lineGrid) eraseLine(mode int) {
 	grid.ensureRow()
-	runes := []rune(grid.lines[grid.row])
+	runes := grid.lines[grid.row]
 	switch mode {
 	case 1:
 		for index := 0; index < grid.col && index < len(runes); index++ {
 			runes[index] = ' '
 		}
 	case 2:
-		runes = nil
+		runes = runes[:0]
 	default: // 0
 		if grid.col < len(runes) {
 			runes = runes[:grid.col]
 		}
 	}
-	grid.lines[grid.row] = string(runes)
+	grid.lines[grid.row] = runes
 }
 
 // applyEscape interprets the escape sequence starting at data[0] (which is ESC),
