@@ -290,10 +290,17 @@ func (manager Manager) Start(project string) (*state.Workspace, error) {
 	// inside the workspace. BEST-EFFORT: a failure here must NOT fail the workspace
 	// start — a non-container workspace is still fully usable, and Phase 1's app
 	// start surfaces a clear error if the runtime is down. We only log a warning.
-	manager.ensureContainerd(name)
-	// Start the installed in-VM apps (best-effort PER app: one failing must not
-	// fail the workspace or the other apps — see startInstalledApps).
-	manager.startInstalledApps(name, project, root, gatewayURL)
+	// Start the installed in-VM apps ONLY once the container runtime is actually
+	// ready (nerdctl can reach containerd) — otherwise nerdctl fatals on a dead
+	// socket. If the runtime never comes up, skip the apps with one clear warning
+	// instead of letting each app spam a "cannot access containerd socket" fatal.
+	if manager.ensureContainerd(name) {
+		manager.startInstalledApps(name, project, root, gatewayURL)
+	} else {
+		_, _ = fmt.Fprintf(os.Stderr,
+			"warning: in-VM container runtime not ready in workspace %q — skipping in-VM apps (see %s in the VM)\n",
+			name, containerdLog)
+	}
 	now := manager.Now()
 	handle := &state.Workspace{
 		ID:          name,
@@ -384,46 +391,49 @@ const containerdLog = "/var/log/containerd.log"
 // started it and runs for the VM's life. Both run as ROOT (ExecRoot) because the
 // runtime is rootful and the unprivileged workspace user cannot start it.
 //
-// It is BEST-EFFORT: any failure (probe error, boot error, non-zero exit) is
-// logged as a warning and swallowed — a workspace with no running runtime is
-// still fully usable, and Phase 1's app start surfaces a clear error if the
-// runtime is down. It never returns an error and never fails the workspace start.
+// It is BEST-EFFORT: it returns whether containerd is READY (nerdctl can reach it)
+// so the caller can skip the in-VM apps cleanly when it is not, rather than letting
+// each app fatal on a dead socket. It never returns an error and never fails the
+// workspace start — a workspace with no running runtime is still fully usable.
 //
 // hardware bring-up: the daemon-persistence of `msb exec` + setsid and the real
 // containerd boot are verified on a provisioned Apple Silicon host. The host-side
-// orchestration (the probe, the boot argv, the best-effort swallowing) is
-// unit-tested here against the fake sandbox.
-func (manager Manager) ensureContainerd(name string) {
+// orchestration (the probe, the boot argv, the readiness poll) is unit-tested here
+// against the fake sandbox.
+func (manager Manager) ensureContainerd(name string) bool {
 	// Probe: if `nerdctl info` reaches the daemon, containerd is already up.
 	if result, err := manager.Sandbox.ExecRoot(name, []string{"nerdctl", "info"}); err == nil && result.ExitCode == 0 {
-		return
+		return true
 	}
 	// Boot containerd detached so it survives this exec returning. setsid +
 	// background keeps the daemon running for the VM's life; output is redirected
 	// to a log for later inspection.
 	//
-	// CRITICAL: after backgrounding, WAIT for the control socket to appear before
-	// returning. The boot exec returns the instant the outer sh backgrounds the
-	// daemon (the `&`), and msb tears down the exec's process group on return — so
-	// without the wait the just-forked containerd is killed before it establishes
-	// (verified live: the log file is created but stays 0 bytes). Polling the socket
-	// keeps this exec alive until the daemon is fully up (it boots in ~10ms, so this
-	// returns in 1-2 iterations normally) and bounds the wait to ~10s so a genuinely
-	// broken runtime never hangs the workspace start.
+	// CRITICAL: after backgrounding, WAIT for the runtime to be READY before
+	// returning — poll `nerdctl info` (which talks to the daemon), not merely the
+	// socket file: the socket can exist a moment before containerd serves requests,
+	// and on first boot (or while the VM is busy building/pulling) it can take a few
+	// seconds. The boot exec also returns the instant the outer sh backgrounds the
+	// daemon (the `&`) and msb tears down the exec's process group on return, so the
+	// poll doubles as keeping this exec alive until the setsid'd daemon establishes.
+	// Bounded to ~30s (150 × 0.2s) so a genuinely broken runtime never hangs forever;
+	// exit 0 = ready, exit 1 = gave up.
 	bootCmd := fmt.Sprintf(
 		"setsid sh -c 'containerd >%s 2>&1 &'; "+
-			"iters=0; while [ $iters -lt 100 ]; do [ -S /run/containerd/containerd.sock ] && break; "+
-			"iters=$((iters+1)); sleep 0.1; done",
+			"iters=0; while [ $iters -lt 150 ]; do nerdctl info >/dev/null 2>&1 && exit 0; "+
+			"iters=$((iters+1)); sleep 0.2; done; exit 1",
 		shellQuoteGuest(containerdLog))
 	result, err := manager.Sandbox.ExecRoot(name, []string{"sh", "-c", bootCmd})
 	if err != nil {
 		_, _ = fmt.Fprintf(os.Stderr, "warning: could not start the in-VM container runtime in workspace %q: %v\n", name, err)
-		return
+		return false
 	}
 	if result.ExitCode != 0 {
-		_, _ = fmt.Fprintf(os.Stderr, "warning: in-VM container runtime did not start cleanly in workspace %q (exit %d): %s\n",
-			name, result.ExitCode, strings.TrimSpace(result.Stderr))
+		_, _ = fmt.Fprintf(os.Stderr, "warning: in-VM container runtime did not become ready in workspace %q (see %s in the VM)\n",
+			name, containerdLog)
+		return false
 	}
+	return true
 }
 
 // mergePublishPorts overlays the app-derived publish mappings onto the project's
