@@ -7,11 +7,13 @@
 package workspace
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"os"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/jt-helsinki/ideal-robot/internal/agentcfg"
 	"github.com/jt-helsinki/ideal-robot/internal/apps"
@@ -68,6 +70,15 @@ const workspaceWorkdir = "/workspace"
 // ErrUnknownProject is returned when a project name is not in the global index
 // (→ exit 2).
 var ErrUnknownProject = errors.New("unknown project")
+
+// ErrWorkspaceUnresponsive is returned when an in-VM probe (tmux/session listing)
+// times out — the microVM is up but not responding in time (e.g. its exec is busy
+// behind a long image pull, or it is wedged). Mapped to exit 4 (runtime failure).
+var ErrWorkspaceUnresponsive = errors.New("workspace is not responding (it may be busy — e.g. pulling an image) — try again shortly")
+
+// inVMProbeTimeout bounds the short buffered in-VM probes (tmux presence, session
+// listing) so the CLI/TUI fail fast instead of hanging when the workspace is busy.
+const inVMProbeTimeout = 15 * time.Second
 
 // ErrNotStarted is returned when an operation needs a RUNNING workspace but it is
 // stopped or was never started (→ exit 2). The message is the user-facing nudge to
@@ -145,6 +156,10 @@ type Sandbox interface {
 	Stop(name string) error
 	Destroy(name string) error
 	Exec(name string, argv []string) (ExecResult, error)
+	// ExecContext is Exec bounded by ctx — used for the short in-VM probes so they
+	// fail fast (killing the hung msb exec) instead of hanging when the workspace is
+	// busy or wedged.
+	ExecContext(ctx context.Context, name string, argv []string) (ExecResult, error)
 	// ExecRoot runs argv inside the running microVM as the image's ROOT user
 	// (`msb exec -u root` — msb's no-`-u` default is the unprivileged `workspace`
 	// user, NOT root), for privileged operations the unprivileged workspace user
@@ -287,20 +302,13 @@ func (manager Manager) Start(project string) (*state.Workspace, error) {
 		return nil, err
 	}
 	// Bring up the rootful in-VM container runtime (containerd) so nerdctl works
-	// inside the workspace. BEST-EFFORT: a failure here must NOT fail the workspace
-	// start — a non-container workspace is still fully usable, and Phase 1's app
-	// start surfaces a clear error if the runtime is down. We only log a warning.
-	// Start the installed in-VM apps ONLY once the container runtime is actually
-	// ready (nerdctl can reach containerd) — otherwise nerdctl fatals on a dead
-	// socket. If the runtime never comes up, skip the apps with one clear warning
-	// instead of letting each app spam a "cannot access containerd socket" fatal.
-	if manager.ensureContainerd(name) {
-		manager.startInstalledApps(name, project, root, gatewayURL)
-	} else {
-		_, _ = fmt.Fprintf(os.Stderr,
-			"warning: in-VM container runtime not ready in workspace %q — skipping in-VM apps (see %s in the VM)\n",
-			name, containerdLog)
-	}
+	// inside the workspace. BEST-EFFORT + bounded — a failure here must NOT fail the
+	// workspace start. The installed in-VM apps are NOT auto-started here: pulling a
+	// heavy app image (Open WebUI etc.) is slow and, because in-VM execs contend,
+	// would block the workspace start AND every other exec (shell, session list) for
+	// the whole pull, leaving the workspace unresponsive. Apps are started ON DEMAND
+	// via `ai apps start` (which brings containerd up if needed and shows progress).
+	manager.ensureContainerd(name)
 	now := manager.Now()
 	handle := &state.Workspace{
 		ID:          name,
@@ -401,8 +409,10 @@ const containerdLog = "/var/log/containerd.log"
 // orchestration (the probe, the boot argv, the readiness poll) is unit-tested here
 // against the fake sandbox.
 func (manager Manager) ensureContainerd(name string) bool {
-	// Probe: if `nerdctl info` reaches the daemon, containerd is already up.
-	if result, err := manager.Sandbox.ExecRoot(name, []string{"nerdctl", "info"}); err == nil && result.ExitCode == 0 {
+	// Probe: if `nerdctl info` reaches the daemon, containerd is already up. Bound it
+	// with `timeout` so a wedged daemon (socket present but not responding) can't hang
+	// the probe — and therefore the workspace start — indefinitely.
+	if result, err := manager.Sandbox.ExecRoot(name, []string{"timeout", "5", "nerdctl", "info"}); err == nil && result.ExitCode == 0 {
 		return true
 	}
 	// Boot containerd detached so it survives this exec returning. setsid +
@@ -420,7 +430,7 @@ func (manager Manager) ensureContainerd(name string) bool {
 	// exit 0 = ready, exit 1 = gave up.
 	bootCmd := fmt.Sprintf(
 		"setsid sh -c 'containerd >%s 2>&1 &'; "+
-			"iters=0; while [ $iters -lt 150 ]; do nerdctl info >/dev/null 2>&1 && exit 0; "+
+			"iters=0; while [ $iters -lt 150 ]; do timeout 5 nerdctl info >/dev/null 2>&1 && exit 0; "+
 			"iters=$((iters+1)); sleep 0.2; done; exit 1",
 		shellQuoteGuest(containerdLog))
 	result, err := manager.Sandbox.ExecRoot(name, []string{"sh", "-c", bootCmd})
@@ -545,21 +555,6 @@ func (manager Manager) appGatewayKey(name, project string) (string, error) {
 //
 // hardware bring-up: the live `nerdctl run` for each app executes only inside a
 // booted microVM with containerd up; the orchestration is unit-tested with a fake.
-func (manager Manager) startInstalledApps(name, project, root, gatewayURL string) {
-	// The microVM is running here even though the lifecycle handle is not saved
-	// yet, so wire Exec directly (AppManager's requireRunning gate would see no
-	// handle and leave Exec nil). buildAppManager(..., true) forces Exec on.
-	appManager := manager.buildAppManager(name, project, root, gatewayURL, true)
-	warnings, err := appManager.StartInstalled()
-	if err != nil {
-		_, _ = fmt.Fprintf(os.Stderr, "warning: could not start in-VM apps in workspace %q: %v\n", name, err)
-		return
-	}
-	for _, warning := range warnings {
-		_, _ = fmt.Fprintf(os.Stderr, "warning: %s\n", warning)
-	}
-}
-
 // installRefreshScript generates the per-workspace `refresh-models` script and
 // installs it on PATH inside the running microVM at /usr/local/bin/refresh-models
 // (executable). The script fetches the served models LIVE from the gateway's
@@ -811,7 +806,9 @@ func (manager Manager) launchTmuxSession(project string, argv []string) error {
 // missing tmux surfaces as a clear ErrTmuxMissing instead of msb failing to exec
 // tmux through the PTY (which returns a misleading success).
 func (manager Manager) requireTmux(project string) error {
-	result, err := manager.Sandbox.Exec(Name(project), []string{"sh", "-c", "command -v tmux >/dev/null 2>&1"})
+	ctx, cancel := context.WithTimeout(context.Background(), inVMProbeTimeout)
+	defer cancel()
+	result, err := manager.Sandbox.ExecContext(ctx, Name(project), []string{"sh", "-c", "command -v tmux >/dev/null 2>&1"})
 	if err != nil {
 		return err
 	}
@@ -885,7 +882,9 @@ func (manager Manager) ListSessions(project string) ([]Session, error) {
 	if err := manager.requireRunning(project); err != nil {
 		return nil, err
 	}
-	result, err := manager.Sandbox.Exec(Name(project), []string{
+	ctx, cancel := context.WithTimeout(context.Background(), inVMProbeTimeout)
+	defer cancel()
+	result, err := manager.Sandbox.ExecContext(ctx, Name(project), []string{
 		"tmux", "list-sessions", "-F", "#{session_name}\t#{session_attached}\t#{session_activity}",
 	})
 	if err != nil {

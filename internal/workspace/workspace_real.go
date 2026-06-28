@@ -2,6 +2,7 @@ package workspace
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -176,7 +177,14 @@ func (sandbox realSandbox) Exec(name string, argv []string) (ExecResult, error) 
 	// Run as the `workspace` user (the image's home owner, matching WriteFile) so
 	// commands, shells, agents, and tmux all share that user's home + the agent
 	// provider configs under /home/workspace.
-	return sandbox.execAs(name, "workspace", argv)
+	return sandbox.execAs(context.Background(), name, "workspace", argv)
+}
+
+// ExecContext is Exec bounded by ctx — used for the short in-VM probes (tmux/session
+// listing) so they fail fast (and the hung msb process is killed) instead of hanging
+// the CLI/TUI forever when the workspace is busy or wedged.
+func (sandbox realSandbox) ExecContext(ctx context.Context, name string, argv []string) (ExecResult, error) {
+	return sandbox.execAs(ctx, name, "workspace", argv)
 }
 
 // ExecRoot runs argv as the image's ROOT user — `msb exec -u root <name> -- <argv>`
@@ -192,7 +200,7 @@ func (sandbox realSandbox) Exec(name string, argv []string) (ExecResult, error) 
 // hardware bring-up: msb's daemon-persistence (a setsid'd containerd surviving
 // the exec) is verified on a provisioned host; the argv assembly is unit-tested.
 func (sandbox realSandbox) ExecRoot(name string, argv []string) (ExecResult, error) {
-	return sandbox.execAs(name, "root", argv)
+	return sandbox.execAs(context.Background(), name, "root", argv)
 }
 
 // execAs runs argv inside the running microVM as a specific user, passed through
@@ -202,7 +210,7 @@ func (sandbox realSandbox) ExecRoot(name string, argv []string) (ExecResult, err
 // propagated by msb to its own process exit; a non-zero inner exit is data
 // carried in ExecResult, NOT a Go error. Only infrastructure failures (microVM
 // down, msb missing) are returned as errors (§4.5).
-func (sandbox realSandbox) execAs(name, user string, argv []string) (ExecResult, error) {
+func (sandbox realSandbox) execAs(ctx context.Context, name, user string, argv []string) (ExecResult, error) {
 	if err := sandbox.ensureInstalled(); err != nil {
 		return ExecResult{}, err
 	}
@@ -212,7 +220,7 @@ func (sandbox realSandbox) execAs(name, user string, argv []string) (ExecResult,
 	}
 	args = append(args, name, "--")
 	args = append(args, argv...)
-	command := exec.Command("msb", args...)
+	command := exec.CommandContext(ctx, "msb", args...)
 	var stdout, stderr bytes.Buffer
 	command.Stdout = &stdout
 	command.Stderr = &stderr
@@ -222,6 +230,11 @@ func (sandbox realSandbox) execAs(name, user string, argv []string) (ExecResult,
 	if err == nil {
 		result.ExitCode = 0
 		return result, nil
+	}
+	// ctx timed out / was cancelled: the msb exec is killed (CommandContext) and we
+	// report a clear "unresponsive" error rather than a generic failure.
+	if ctx.Err() != nil {
+		return ExecResult{}, ErrWorkspaceUnresponsive
 	}
 	// A non-zero inner exit surfaces as *exec.ExitError; that is the command's
 	// own exit code (data), not a platform failure.

@@ -1,6 +1,7 @@
 package workspace
 
 import (
+	"context"
 	"errors"
 	"os"
 	"path/filepath"
@@ -57,6 +58,10 @@ func (sandbox *fakeSandbox) Start(string) error   { sandbox.started = true; retu
 func (sandbox *fakeSandbox) Stop(string) error    { sandbox.stopped = true; return nil }
 func (sandbox *fakeSandbox) Destroy(string) error { sandbox.destroyed = true; return nil }
 func (sandbox *fakeSandbox) Exec(_ string, argv []string) (ExecResult, error) {
+	sandbox.execArgv = argv
+	return sandbox.execResult, sandbox.execErr
+}
+func (sandbox *fakeSandbox) ExecContext(_ context.Context, _ string, argv []string) (ExecResult, error) {
 	sandbox.execArgv = argv
 	return sandbox.execResult, sandbox.execErr
 }
@@ -260,8 +265,8 @@ func TestStartEnsuresContainerdWhenDown(test *testing.T) {
 		test.Fatalf("expected a probe + a boot ExecRoot call, got %d: %v", len(sandbox.execRootArgv), sandbox.execRootArgv)
 	}
 	probe := strings.Join(sandbox.execRootArgv[0], " ")
-	if probe != "nerdctl info" {
-		test.Errorf("first ExecRoot must probe the runtime, got %q", probe)
+	if probe != "timeout 5 nerdctl info" {
+		test.Errorf("first ExecRoot must probe the runtime (bounded), got %q", probe)
 	}
 	boot := strings.Join(sandbox.execRootArgv[1], " ")
 	if !strings.Contains(boot, "setsid") || !strings.Contains(boot, "containerd") {
@@ -992,7 +997,7 @@ func TestMergePublishPorts(test *testing.T) {
 }
 
 // TestStartPublishesInstalledAppPorts checks that an installed app's allocated
-// port is published as an msb -p mapping and its container is run in the VM.
+// port is published as an msb -p mapping (apps are NOT auto-started anymore).
 func TestStartPublishesInstalledAppPorts(test *testing.T) {
 	root := seedProject(test, "app")
 	// Record an installed app in the project config before start.
@@ -1010,16 +1015,16 @@ func TestStartPublishesInstalledAppPorts(test *testing.T) {
 	if _, err := manager.Start("app"); err != nil {
 		test.Fatal(err)
 	}
-	// The app's host port is published (host:guest same number).
+	// The app's host port is still published at create (host:guest same number) so an
+	// on-demand `ai apps start` is reachable — even though apps are NOT auto-started.
 	if !strings.Contains(strings.Join(sandbox.netArgs, " "), "-p 21000:21000") {
 		test.Fatalf("app port not published in netArgs: %#v", sandbox.netArgs)
 	}
-	// The app container was run via ExecRoot (nerdctl run ... aip-app-openwebui).
-	if !execRootRan(sandbox, "aip-app-openwebui") {
-		test.Fatalf("app container not run in VM; ExecRoot calls: %#v", sandbox.execRootArgv)
+	// Apps are NOT auto-started during workspace start (a heavy pull would block it) —
+	// they start on demand, so no `nerdctl run` for the app container happens here.
+	if execRootRan(sandbox, "aip-app-openwebui") {
+		test.Fatalf("app container must NOT be auto-run during start (apps are on-demand): %#v", sandbox.execRootArgv)
 	}
-	// The apps key alias is rotated/minted (project-apps), distinct from the agent
-	// key alias.
 }
 
 // TestStartNoAppPortsWhenNoneInstalled confirms nothing extra is published when
