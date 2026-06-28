@@ -111,8 +111,8 @@ Rules:
 * **all state writes are atomic**: write to a temp file in the same directory,
   then `rename()` over the target, so a crash mid-write can never produce a
   partial or corrupt state file
-* `ai state repair` rebuilds `run/` from the project + Microsandbox/git; discovery
-  uses `projects.yaml`
+* `ai state repair` rebuilds `run/` from the project + Microsandbox; discovery
+  uses `projects.yaml` (VCS is out of scope — no git is consulted)
 
 ---
 

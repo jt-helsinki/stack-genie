@@ -123,8 +123,12 @@ ai shell                     # an interactive shell inside (reattachable tmux se
 ai agent opencode            # launch an agent CLI in its own session
 ai exec -- bash              # run a one-off command inside
 ai sessions                  # list sessions; ai attach reattaches one
-ai destroy                   # non-destructive: keeps the overlay
+ai sessions kill build       # kill a named tmux session
 ```
+
+`ai delete` (alias `ai destroy`) is the single removal verb: it tears down the
+microVM, drops the project's `.ai-platform/` dir + overlay, and de-registers it,
+keeping your other files; `ai delete --purge` removes the whole directory.
 
 **Run an in-VM app** (Open WebUI / AnythingLLM run as nerdctl containers inside the
 microVM, on the rootful in-VM container runtime, routed through the same gateway and
@@ -146,6 +150,8 @@ ai context caveman  ultra            # Caveman:  lite | full | ultra | wenyan
 ai network show                      # egress policy (declared + live in-force)
 ai network egress deny               # deny | public (default) | unrestricted
 ai network allow api.github.com      # allow a host/domain (port defaults to 443; *.suffix ok)
+ai network disallow api.github.com   # remove an allow-listed host/domain
+ai network publish 8080:8080         # publish a guest port to the host (unpublish removes it)
 ai network log                       # attempted-egress audit (domains the workspace resolved)
 
 ai gateway show                      # the model gateway every workspace on this machine routes through
@@ -170,7 +176,21 @@ ai services update                   # re-pull the latest service images and rec
 ai litellm password                  # set/rotate the LiteLLM admin UI password (secures the gateway)
 ai logs --tail                       # project + platform logs
 ai state show                        # global + project state
+ai theme                             # show/select the CLI + TUI colour theme
 ```
+
+**Manage it all from a TUI:**
+
+```bash
+ai ui                                # K9s-style dashboard: Services · Workspaces ·
+                                     #   Local/Cloud Models · API Keys · Settings
+```
+
+`ai ui` navigates with Tab/←→/number keys (quit `q`); it does not capture the
+mouse, so native text selection works. The per-workspace view has Workspace ·
+Network · Context · **Shell** (session manager — attach/new/kill) · **Sandbox
+Log** (read-only live `msb logs`) · Apps sub-tabs; interactive shells run in your
+real terminal.
 
 ## Uninstall
 

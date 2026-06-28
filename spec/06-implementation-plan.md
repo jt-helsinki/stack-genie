@@ -193,8 +193,8 @@ Slice 1 target (roadmap §2): macOS (Apple Silicon), Docker rootless service tie
 Microsandbox microVM workspaces, debian-trixie, single agent, LiteLLM,
 keys-in-LiteLLM credentials (agent holds a scoped virtual key), zero manual config.
 Commands (exactly the `[S1]`-tested surface): `ai setup`,
-`ai create` (interactive wizard), `ai delete`,
-`ai start|stop|destroy|exec`, `ai services status`,
+`ai create` (interactive wizard), `ai delete` (alias `ai destroy`),
+`ai start|stop|restart|exec`, `ai services status`,
 `ai keys add|list|remove`, `ai models status|test`, `ai state show|repair`,
 `ai doctor`, `ai logs`.
 (No snapshot/upgrade/rollback commands — the environment is the project's

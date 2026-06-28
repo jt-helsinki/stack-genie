@@ -1245,11 +1245,13 @@ Behavior:
 # 10a. Network (workspace egress policy)
 
 ```bash id="c27b"
-ai network show    [project]                              # show the egress policy
-ai network egress  [deny|public|unrestricted] [project]  # set the default posture
-ai network allow   [host[:port]] [project] [--remove]    # allow/revoke an external destination
-ai network publish [guest:host] [project] [--remove]     # publish/unpublish a workspace port
-ai network log     [project] [--tail N]                  # attempted-egress-by-name audit (host-wide)
+ai network show      [project]                              # show the egress policy
+ai network egress    [deny|public|unrestricted] [project]  # set the default posture
+ai network allow     [host[:port]] [project]               # allow an external destination
+ai network disallow  [host[:port]] [project]               # revoke an allowed destination
+ai network publish   [guest:host] [project]                # publish a workspace port
+ai network unpublish [guest:host] [project]                # unpublish a workspace port
+ai network log       [project] [--tail N]                  # attempted-egress-by-name audit (host-wide)
 ```
 
 Each verb takes an optional trailing `[project]` (after its own value) which, like
@@ -1269,8 +1271,9 @@ host-local/infra services (Postgres, MySQL, Redis, Kafka, MongoDB, RabbitMQ,
 Elasticsearch — host defaults to `gateway`) and common developer domains (npm
 `registry.npmjs.org`, PyPI `pypi.org` / `files.pythonhosted.org`, GitHub
 `github.com` / `api.github.com` / `raw.githubusercontent.com`, GHCR `ghcr.io` —
-all tcp/443) plus a custom `host[:port]` entry; `publish` (no arg) prompts for the
-ports. With `--json` or no TTY, the value must be passed as an argument.
+all tcp/443) plus a custom `host[:port]` entry; `disallow` / `publish` /
+`unpublish` (no arg) likewise prompt for the value. With `--json` or no TTY, the
+value must be passed as an argument.
 
 * `show` lists the project's **declared** egress policy (egress mode, allowed
   host services, published ports — from `config.yaml`). When the project's
@@ -1300,10 +1303,10 @@ ports. With `--json` or no TTY, the value must be passed as an argument.
   hostname/IP/domain, a `*.suffix` wildcard (e.g. `*.npmjs.org`), or the
   `gateway` token for a service on the host machine. The port is **optional**
   and **defaults to 443 (HTTPS)**, so a bare domain like `api.github.com` allows
-  it on 443. `--remove` revokes it.
+  it on 443. **`disallow <host[:port]>`** revokes it.
 * `publish <guest:host>` publishes a workspace (guest) port to a host port — the
   guest port inside the workspace followed by the host port it is reachable at
-  (e.g. `3000:3000`); `--remove` undoes it.
+  (e.g. `3000:3000`); **`unpublish <guest:host>`** undoes it.
 * `log [project] [--tail N]` prints the **attempted-egress-by-name audit**: the
   DNS names workspaces tried to resolve, read from the platform's **`aip-dns`**
   resolver (architecture §29.7). Every workspace microVM forwards its DNS to that
@@ -1519,8 +1522,9 @@ The switcher reaches any project in the index, and a new project may be created 
 it (see below).
 
 **Top-level tabs** (Services · Projects (Workspaces) · Local Models · Cloud Models ·
-API Keys · Settings; cycled by `tab`/`←→` or the `:` menu, which also has an
-**Exit** item):
+API Keys · Settings; cycled by `tab`/`⇧tab`/`←→` or jumped to directly with the
+number keys `1`-`9`. There is **no `:` command palette** — `q`/`ctrl+c` quits and
+`?` toggles the key-binding help):
 
 * **Services** — live service-tier + container status; `s`/`x`/`r` start/stop/
   restart the selected service (only when it is enabled), `e` enables/disables it
@@ -1544,7 +1548,10 @@ API Keys · Settings; cycled by `tab`/`←→` or the `:` menu, which also has a
     the **live embedded terminal** overlay (see below) running the corresponding
     workspace verb IN the pane (the TUI is not suspended for these). `e` opens the
     shell in the REAL terminal (see Shell, below).
-  * **Network** — egress mode + allow-list + published ports; `m` cycles the mode.
+  * **Network** — egress mode + allow-list + published ports, managed inline:
+    `m` cycles the mode, `a` allow · `d` disallow a destination, `p` publish · `u`
+    unpublish a port (the value is typed at an inline prompt). CLI mirror:
+    `ai network egress`/`allow`/`disallow`/`publish`/`unpublish`.
   * **Context** — Headroom strategy + Caveman level; `s`/`c` cycle them.
   * **Shell** — the per-workspace **session manager** over the tmux sessions
     (NAME / ATTACHED / IDLE): `enter`/`a` attach the selected session, `n` opens an
@@ -1607,8 +1614,9 @@ force-detaches, and once the program exits **any key** closes the overlay (the
 project detail + sessions refresh on close). The in-VM behavior of `msb exec -t`
 over this PTY is verified during hardware bring-up.
 
-The `:` menu is **type-to-filter** (type to narrow, ↑/↓ + enter to choose) over the
-top-level tabs. On the list views `d` opens a scrollable describe pane and `l`
+Navigation is **keyboard-only**: `tab`/`⇧tab`/`←→` cycle the top-level tabs and
+the number keys `1`-`9` jump straight to one (there is no `:` command palette).
+On the list views `d` opens a scrollable describe pane and `l`
 (Services) opens the full-pane log viewer. **`esc` backs out one level** everywhere
 it makes sense — it closes the describe/logs pane, backs an open project out to the
 Projects switcher, closes the menu/help overlay, or cancels the create flow,
@@ -1839,11 +1847,10 @@ The platform has no AI-approval flow (AI merge/conflict resolution was removed �
 architecture §22). The only interactive gate is confirmation of **destructive**
 actions — those that remove something the user cannot trivially reconstruct:
 
-* `ai delete` (removes the project record and overlay, and — with
-  `--purge` — host source)
-
-`ai destroy` is **not** destructive — it preserves source and overlay
-and is fully recoverable (§4.4), so it needs no confirmation.
+* `ai delete` (tears down the microVM and removes the project's `.ai-platform`
+  state + overlay + index entry — keeping the user's other files — and, with
+  `--purge`, the whole project directory). `ai destroy` is a **cobra alias** of
+  `ai delete` (the same destructive command, §4.4), so it gates identically.
 
 * interactive runs prompt for confirmation
 * `--yes` confirms non-interactively (used by the acceptance harness)

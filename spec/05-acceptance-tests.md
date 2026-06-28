@@ -185,10 +185,11 @@ real provider.
 
 ### Non-Interactive Confirmation
 
-Destructive commands (`ai delete`) are confirmed non-interactively with `--yes`
-(CLI §20). `ai destroy` is **not** destructive — it keeps the overlay and host
-source and needs no `--yes` (§4.4) — so it is excluded. There is no AI-approval
-flow.
+Destructive commands (`ai delete`, and its alias `ai destroy`) are confirmed
+non-interactively with `--yes` (CLI §20). `ai destroy` is a **cobra alias** of
+`ai delete` — the same destructive command (§4.4), so it gates identically (the
+microVM is paused with `ai stop`, which needs no confirmation). There is no
+AI-approval flow.
 
 ### Thresholds
 
@@ -314,19 +315,22 @@ cd "$AIP_TEST_HOME/work/app" && ai create app --os debian-trixie --json
 
 ---
 
-## 3.3 Workspace Destroy Safety `[S1]`
+## 3.3 Workspace Stop/Start Recovery `[S1]`
 
 ### Test
 
 ```bash id="t7"
-ai destroy test-project --json
+ai stop test-project --json
+ai start test-project --json
 ```
 
 ### Expected Result
 
-* the Microsandbox workspace microVM is destroyed; the overlay and host source remain intact
-* `ai start test-project` recovers the workspace (re-mounts the overlay)
-* no `--yes` needed — destroy is non-destructive (CLI §20)
+* `ai stop` stops the Microsandbox workspace microVM but keeps everything — the
+  overlay, host source, and project definition remain intact
+* no `--yes` needed — stop is non-destructive (CLI §20); pausing a workspace is
+  `ai stop`, not `ai delete`/`ai destroy` (which are the same destructive removal)
+* `ai start test-project` recovers the workspace (re-mounts the same overlay)
 
 ---
 
@@ -357,10 +361,11 @@ unknown project with a missing confirmation:
   still appears in `config/projects.yaml`
 * **(b)** exits `2` **because the project is unknown** — `--yes` is present, so a
   missing confirmation cannot be the cause; nothing is removed
-* **(c)** default delete: workspaces + overlays removed; `config/projects.yaml`
-  no longer lists `del-test`; tracked `<project>/.ai-platform/` files
-  (Dockerfile / config / profile / project.yaml / `skills/caveman/`) **remain**;
-  `.ai-platform/run/` is **cleared**
+* **(c)** default delete: the microVM is torn down, the overlay removed, and the
+  project's **whole `<project>/.ai-platform/` directory** removed (config /
+  profile / project.yaml / Dockerfile / `skills/caveman/` / `run/` all gone);
+  `config/projects.yaml` no longer lists `del-test`; the user's **OTHER** files in
+  the directory are **kept**
 * `--purge` (e.g. `ai delete <p> --purge --yes` on a separately created
   disposable project) additionally removes the project directory entirely
 
@@ -417,10 +422,9 @@ ai exec env-test --json -- cat /etc/os-release
 ### Test
 
 ```bash
-# edit the project's Dockerfile to add a package, then recreate (debian-trixie → apt)
+# edit the project's Dockerfile to add a package, then rebuild (debian-trixie → apt)
 printf '\nRUN apt-get update && apt-get install -y jq && rm -rf /var/lib/apt/lists/*\n' >> <project>/.ai-platform/Dockerfile
-ai destroy env-test --json
-ai start   env-test --json
+ai start   env-test --json   # start rebuilds the OCI image (`msb create --replace`)
 ai exec    env-test --json -- command -v jq
 ```
 
@@ -717,7 +721,7 @@ ai setup --json
 persistence guarantee is the overlay: installed programs and agent state survive
 restart and recreation.)
 
-## 13.1 Writes Persist Across Recreation `[S4]`
+## 13.1 Writes Persist Across Stop/Start `[S4]`
 
 Deterministic — no package manager, network, or `sudo` (so it doesn't depend on
 distro mirrors or whether the image grants sudo).
@@ -728,19 +732,20 @@ distro mirrors or whether the image grants sudo).
 # write an executable into the overlay
 ai exec test-project --json -- sh -c \
   'mkdir -p ~/.local/bin && printf "#!/bin/sh\necho overlay-ok\n" > ~/.local/bin/overlay-tool && chmod +x ~/.local/bin/overlay-tool'
-# destroy (non-destructive) and recreate the workspace
-ai destroy test-project --json
-ai start   test-project --json
+# stop (non-destructive) and start the workspace again
+ai stop  test-project --json
+ai start test-project --json
 # the file is still there
 ai exec test-project --json -- sh -c '~/.local/bin/overlay-tool'
 ```
 
 ### Expected Result
 
-* after recreation the tool runs: `data.stdout` is `overlay-ok`,
+* after restart the tool runs: `data.stdout` is `overlay-ok`,
   `data.exit_code == 0`
-* it survived because it lives in the per-workspace overlay (§26); `destroy`
-  kept the overlay and `start` re-mounted it
+* it survived because it lives in the per-workspace overlay (§26); `ai stop`
+  kept the overlay and `ai start` re-mounted it (whereas `ai delete`/`ai destroy`
+  would have removed it)
 
 ---
 
@@ -750,8 +755,8 @@ ai exec test-project --json -- sh -c '~/.local/bin/overlay-tool'
 
 ```bash id="t22"
 ai exec test-project --json -- sh -c 'echo hi > ~/.local/agent-state'
-ai destroy test-project --json
-ai start   test-project --json
+ai stop  test-project --json
+ai start test-project --json
 ai exec test-project --json -- sh -c 'cat ~/.local/agent-state'
 ```
 

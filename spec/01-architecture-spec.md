@@ -663,14 +663,16 @@ per-workspace detail is retrievable via `ai logs --workspace <project>`.
 
 Cleanup depends on whether the removal is recoverable:
 
-* **`ai destroy`** deletes only the Microsandbox microVM/runtime handle.
-  It **keeps the persistent overlay** (§26) and the host source. The workspace
-  is fully recoverable with `ai start`, which rebuilds from
-  `.ai-platform/Dockerfile` and re-mounts the same overlay. (Non-destructive.)
-* **`ai delete`** is permanent for the workspace: delete its workspace and
-  **its overlay**, remove the project's `projects.yaml` index entry, and clear
-  `<project>/.ai-platform/run/`. Host source is preserved unless `--purge` is
-  given.
+* **`ai stop`** stops the Microsandbox microVM but **keeps everything** —
+  state, overlay, definition. The workspace is fully recoverable with `ai start`
+  (which rebuilds from `.ai-platform/Dockerfile` and re-mounts the same overlay)
+  or `ai restart`. (Non-destructive — this is how you pause a workspace.)
+* **`ai delete`** (alias `ai destroy`) is permanent: it tears down the microVM
+  (idempotent), removes the project's whole `.ai-platform` directory **and its
+  overlay**, and de-registers it from `config/projects.yaml`. The user's OTHER
+  files are kept unless `--purge` is given (which removes the whole project
+  directory). There is **no** separate "tear down the microVM but keep the
+  project" verb — use `ai stop` to pause.
 
 ---
 
@@ -1609,10 +1611,10 @@ the workspace persist independently of the read-only image:
 
 * mounted over the microVM root (the image built from `.ai-platform/Dockerfile`)
   at workspace start, as a Microsandbox named volume (§6.2, §7)
-* survives workspace stop/start and `ai destroy` recreation
-  (destroy keeps the overlay; `ai start` re-mounts it)
-* removed only on **permanent** removal: `ai delete` removes the workspace overlay
-  (via `overlay.Remove`); `ai destroy` keeps it for the next `ai start`
+* survives workspace stop/start
+  (`ai stop` keeps the overlay; `ai start`/`ai restart` re-mounts it)
+* removed only on **permanent** removal: `ai delete` (alias `ai destroy`) removes
+  the workspace overlay (via `overlay.Remove`)
 * it is **local persistence, not a backup** — if the host disk is lost the
   overlay is lost; reinstall (source is in git, §32)
 * when `.ai-platform/Dockerfile` changes and the workspace is rebuilt, the same

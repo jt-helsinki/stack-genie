@@ -163,8 +163,8 @@ general_settings:
 ```bash id="c1"
 ai setup
 ai create
-ai delete
-ai start|stop|destroy|exec
+ai delete            # `ai destroy` is an alias of this
+ai start|stop|restart|exec
 ai services status
 ai keys add|list|remove
 ai models status|test
@@ -275,7 +275,7 @@ versioning/upgrade/rollback.)
 
 * per-workspace persistent writable overlay (architecture §26)
 * overlay mounted over the image built from `.ai-platform/Dockerfile`
-* overlay survives stop/start and `ai destroy` recreation
+* overlay survives stop/start (`ai stop` → `ai start`/`ai restart` re-mount)
 * overlay removed only when its workspace is permanently removed
 
 ---
