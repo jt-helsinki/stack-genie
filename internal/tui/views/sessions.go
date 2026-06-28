@@ -254,6 +254,14 @@ func (view *Sessions) View() string {
 	if !view.loaded {
 		return ui.Muted.Render("loading sessions…")
 	}
+	// Empty workspace (no tmux server yet, not an error): show a clear, friendly
+	// message instead of a blank table. The new-session prompt still takes precedence
+	// so n works from here.
+	if !view.creating && view.err == nil && len(view.sessions) == 0 {
+		return ui.Heading.Render("No sessions yet") + "\n\n" +
+			ui.Muted.Render("This workspace has no running shell or agent sessions.\n\nPress ") +
+			ui.Primary.Render("n") + ui.Muted.Render(" to start a new shell session.")
+	}
 	// A listing error (e.g. the in-VM read timed out while the workspace was busy) is
 	// shown in the flash slot, NOT in place of the view — so the table + actions stay
 	// available and you can still press n to create or attach a session.
@@ -264,8 +272,6 @@ func (view *Sessions) View() string {
 			ui.Muted.Render("  (enter create · esc cancel)")
 	case view.err != nil:
 		last = flashLine(ui.Failure.Render(ui.IconFail + " " + view.err.Error()))
-	case view.flash == "" && len(view.sessions) == 0:
-		last = flashLine(ui.Muted.Render("no sessions yet — press n to create one"))
 	}
 	return view.table.View() + "\n" + last
 }
