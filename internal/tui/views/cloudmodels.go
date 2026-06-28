@@ -83,6 +83,10 @@ type CloudModels struct {
 	height int
 	flash  string
 	loaded bool
+	// refreshing marks a plain `r` reload so the transient "refreshing…" notice is
+	// cleared when the result lands — without wiping a resync success message (that
+	// path leaves refreshing false so its flash survives the follow-up reload).
+	refreshing bool
 }
 
 // NewCloudModels builds the Cloud Models view over the injected catalog loader, live
@@ -178,6 +182,13 @@ func (view *CloudModels) Update(msg tea.Msg) tea.Cmd {
 		view.liveErr = message.liveErr
 		view.source = message.source
 		view.buildModels(message.cloud, message.registered)
+		// Clear the transient "refreshing…" notice (a plain reload); a resync success
+		// message is preserved (refreshing was not set on that path). catalogFlash
+		// re-sets a source-availability warning only when the catalog fetch failed.
+		if view.refreshing {
+			view.flash = ""
+			view.refreshing = false
+		}
 		view.catalogFlash()
 		view.fitTable()
 		return nil
@@ -234,6 +245,7 @@ func (view *CloudModels) handleAction(key tea.KeyMsg) (tea.Cmd, bool) {
 			return resync, true
 		}
 		view.flash = ui.Muted.Render("refreshing…")
+		view.refreshing = true
 		return view.loadCmd(), true
 	}
 	return nil, false

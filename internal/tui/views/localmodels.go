@@ -219,6 +219,9 @@ func (view *LocalModels) Update(msg tea.Msg) tea.Cmd {
 		view.libraryErr = message.libraryErr
 		view.source = message.source
 		view.buildModels(message.installed, message.library)
+		// Clear the transient "refreshing…" notice; libraryFlash re-sets a
+		// source-availability warning only when the live library fetch failed.
+		view.flash = ""
 		view.libraryFlash()
 		view.clampWindow()
 		return nil
