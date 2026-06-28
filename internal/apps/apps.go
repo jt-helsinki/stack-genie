@@ -66,6 +66,10 @@ type Deps struct {
 	// nil when the workspace is not running; lifecycle methods that need the VM
 	// (start/stop/run/pull) return ErrWorkspaceNotRunning then.
 	Exec ExecRunner
+	// EnsureRuntime makes the in-VM container runtime (containerd) ready before an
+	// app container is run, and recovers it if it became unreachable (e.g. it
+	// crashed/restarted mid-pull). Optional; nil skips the check.
+	EnsureRuntime func() error
 	// Gateway supplies the resolved model-gateway base URL (".../v1"), the
 	// workspace's scoped LiteLLM virtual key, and the model preference the app
 	// containers are configured with — EMPTY in the catalog-driven system (no
@@ -400,18 +404,47 @@ func (manager *Manager) runContainer(manifest Manifest, port int) error {
 	if err != nil {
 		return err
 	}
-	// Idempotent recreate: drop any existing container first (ignore its result —
-	// a missing container is fine), then run fresh.
-	_, _ = manager.deps.Exec([]string{"nerdctl", "rm", "-f", manifest.ContainerName()})
+	// Ensure the in-VM container runtime is up before talking to it.
+	if manager.deps.EnsureRuntime != nil {
+		if err := manager.deps.EnsureRuntime(); err != nil {
+			return err
+		}
+	}
 	argv := runArgs(manifest, port, gatewayURL, apiKey, defaultModel)
-	result, err := manager.deps.Exec(argv)
+	run := func() (ExecResult, error) {
+		// Idempotent recreate: drop any existing container first (ignore its result —
+		// a missing container is fine), then run fresh.
+		_, _ = manager.deps.Exec([]string{"nerdctl", "rm", "-f", manifest.ContainerName()})
+		return manager.deps.Exec(argv)
+	}
+	result, err := run()
 	if err != nil {
 		return err
+	}
+	// If the runtime became unreachable mid-op (it crashed/restarted — e.g. memory
+	// pressure during a large image pull), re-ensure it and retry once.
+	if result.ExitCode != 0 && runtimeUnreachable(result.Stderr) && manager.deps.EnsureRuntime != nil {
+		if err := manager.deps.EnsureRuntime(); err != nil {
+			return err
+		}
+		if result, err = run(); err != nil {
+			return err
+		}
 	}
 	if result.ExitCode != 0 {
 		return fmt.Errorf("nerdctl run %s exited %d: %s", manifest.ContainerName(), result.ExitCode, strings.TrimSpace(result.Stderr))
 	}
 	return nil
+}
+
+// runtimeUnreachable reports whether a nerdctl stderr indicates the in-VM container
+// runtime (containerd) was not reachable (socket missing or refusing connections),
+// as opposed to an ordinary container error.
+func runtimeUnreachable(stderr string) bool {
+	lower := strings.ToLower(stderr)
+	return strings.Contains(lower, "containerd.sock") ||
+		strings.Contains(lower, "connection refused") ||
+		strings.Contains(lower, "cannot access containerd")
 }
 
 // runArgs builds the `nerdctl run -d` argv for an app container. The env is

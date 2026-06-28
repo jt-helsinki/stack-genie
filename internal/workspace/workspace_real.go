@@ -77,6 +77,12 @@ func (builder realBuilder) Build(projectRoot, imageRef string) error {
 	return nil
 }
 
+// microVMMemory is the memory allocated to each workspace microVM. It must hold the
+// guest OS + the rootful in-VM containerd + any in-VM app containers (Open WebUI /
+// AnythingLLM are heavy); 1G was too small — pulling/running an app could OOM-kill
+// containerd mid-pull ("connection refused" on its socket), so the default is 4G.
+const microVMMemory = "4G"
+
 // dnsNameserver is the fixed host-loopback address of the platform's aip-dns
 // egress-audit resolver (arch §29). Every workspace microVM is booted with
 // `--dns-nameserver` pointing here, so msb's netstack forwards guest DNS to it
@@ -107,7 +113,7 @@ func (sandbox realSandbox) Create(name, imageRef, projectMount, overlayPath stri
 	args := []string{
 		"create", imageRef,
 		"--name", name,
-		"--memory", "1G",
+		"--memory", microVMMemory,
 		"--volume", projectMount + ":/workspace",
 		"--volume", overlayPath + ":/persist",
 		"--workdir", "/workspace",

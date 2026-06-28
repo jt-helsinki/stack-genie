@@ -491,6 +491,17 @@ func (manager Manager) buildAppManager(name, project, root, gatewayURL string, f
 		SaveConfig:    func(updated *config.Config) error { return config.WriteProject(root, updated) },
 		ReservedPorts: apps.ReservedPortsAcrossWorkspaces,
 		Exec:          exec,
+		// Make containerd ready before running an app, and recover it if it became
+		// unreachable (crashed/restarted under load). Only wired when Exec is.
+		EnsureRuntime: func() error {
+			if exec == nil {
+				return nil
+			}
+			if manager.ensureContainerd(name) {
+				return nil
+			}
+			return fmt.Errorf("in-VM container runtime (containerd) is not ready")
+		},
 		Gateway: func() (string, string, string, error) {
 			apiKey, err := manager.appGatewayKey(name, project)
 			if err != nil {
