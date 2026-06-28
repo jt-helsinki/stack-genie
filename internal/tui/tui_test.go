@@ -479,3 +479,19 @@ func TestCapturingViewReceivesGlobalKeys(test *testing.T) {
 		test.Fatalf("the capturing view should receive 'q', got %v", view.got)
 	}
 }
+
+// A delete lifecycle action opens the confirm terminal overlay (it prompts inline);
+// start/stop/restart do not (they run detached with a spinner) — tested via the
+// Project view spinner, not here, to avoid spawning a real detached process.
+func TestWorkspaceDeleteOpensOverlay(test *testing.T) {
+	application := &app{
+		views: []View{&fakeView{title: "Workspace"}},
+		projectDetail: views.NewProject(
+			func(string) (project.Entry, bool, error) { return project.Entry{}, false, nil },
+		),
+	}
+	application.Update(views.WorkspaceActionRequestedMsg{Action: "delete", Project: "app"})
+	if application.terminal == nil {
+		test.Fatal("a delete action must open the confirm terminal overlay")
+	}
+}

@@ -8,6 +8,9 @@ import (
 	"github.com/jt-helsinki/ideal-robot/internal/ui"
 )
 
+// spinnerFrames are the braille spinner glyphs for the in-flight lifecycle status.
+var spinnerFrames = []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"}
+
 // ProjectInfoFetcher returns the current state of one project (name, OS, agents,
 // workspace status). Injected; the parent wires it over project.List.
 type ProjectInfoFetcher func(name string) (project.Entry, bool, error)
@@ -20,10 +23,10 @@ type ExecRequestedMsg struct {
 }
 
 // WorkspaceActionRequestedMsg is emitted for a workspace lifecycle action
-// (start/stop/restart/destroy). The parent app suspends the TUI and runs
-// `ai <action> <name>` via tea.ExecProcess, so msb's image-build /
-// boot progress streams to the REAL terminal (not the alt-screen, which it would
-// otherwise corrupt) and the TUI is restored — and refreshed — on return.
+// (start/stop/restart/delete). For start/stop/restart the parent app runs
+// `ai <action> <name>` DETACHED (it keeps running even if `ai ui` is closed) and
+// shows a spinner + status here while polling — the TUI stays navigable and no log
+// is shown. delete runs in the confirm overlay.
 type WorkspaceActionRequestedMsg struct {
 	Action  string
 	Project string
@@ -36,7 +39,7 @@ type projectRefreshedMsg struct {
 }
 
 // Project is the detail view for the current project: its summary and workspace
-// lifecycle (start/stop/restart/destroy).
+// lifecycle (start/stop/restart/delete).
 type Project struct {
 	info     ProjectInfoFetcher
 	name     string
@@ -44,12 +47,37 @@ type Project struct {
 	hasEntry bool
 	flash    string
 	err      error
+	// pending is the in-flight lifecycle action ("start"/"stop"/"restart"), shown as
+	// an animated spinner on the workspace status line; empty when idle. The parent
+	// sets/clears it (StartPending/ClearPending) and advances the frame (TickSpinner)
+	// while it polls the detached action — so the spinner animates regardless of which
+	// tab is focused.
+	pending      string
+	pendingFrame int
 }
 
 // NewProject builds the project-detail view over the injected info fetcher.
 func NewProject(info ProjectInfoFetcher) *Project {
 	return &Project{info: info}
 }
+
+// StartPending shows the "<action>ing…" spinner on the workspace status line; the
+// parent calls this when it kicks off a detached lifecycle action.
+func (view *Project) StartPending(action string) {
+	view.pending = action
+	view.pendingFrame = 0
+	view.flash = ""
+}
+
+// TickSpinner advances the pending spinner one frame (driven by the parent's poll).
+func (view *Project) TickSpinner() { view.pendingFrame++ }
+
+// ClearPending stops the spinner (the action finished or timed out).
+func (view *Project) ClearPending() { view.pending = "" }
+
+// SetFlash shows a one-line message under the summary (e.g. a failure to launch a
+// detached lifecycle action).
+func (view *Project) SetFlash(message string) { view.flash = message }
 
 func (view *Project) Title() string { return "Workspace" }
 func (view *Project) Hints() string {
@@ -94,6 +122,10 @@ func (view *Project) Update(msg tea.Msg) tea.Cmd {
 		}
 		return nil
 	case tea.KeyMsg:
+		// While a lifecycle action is in flight, ignore further lifecycle keys.
+		if view.pending != "" {
+			return nil
+		}
 		if view.name == "" {
 			return nil
 		}
@@ -112,8 +144,8 @@ func (view *Project) Update(msg tea.Msg) tea.Cmd {
 		if !ok {
 			return nil
 		}
-		// Lifecycle runs as a suspended subprocess (the app handles this msg), so
-		// msb's progress streams to the terminal instead of corrupting the TUI.
+		// The app handles this: start/stop/restart run DETACHED with a spinner here
+		// (TUI stays navigable, no log); delete confirms in the terminal overlay.
 		return func() tea.Msg { return WorkspaceActionRequestedMsg{Action: action, Project: name} }
 	}
 	return nil
@@ -133,7 +165,12 @@ func (view *Project) View() string {
 	body.WriteString(ui.Heading.Render(view.entry.Name) + "\n")
 	body.WriteString(field("OS", view.entry.OS))
 	body.WriteString(field("agents", strings.Join(view.entry.Agents, ", ")))
-	body.WriteString(field("workspace", view.entry.Status))
+	if view.pending != "" {
+		glyph := ui.Success.Render(spinnerFrames[view.pendingFrame%len(spinnerFrames)])
+		body.WriteString(field("workspace", glyph+ui.Muted.Render(" "+view.pending+"ing…")))
+	} else {
+		body.WriteString(field("workspace", view.entry.Status))
+	}
 	body.WriteString(field("path", view.entry.Path))
 	if view.flash != "" {
 		body.WriteString("\n" + view.flash)

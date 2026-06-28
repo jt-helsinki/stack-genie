@@ -465,6 +465,10 @@ type app struct {
 
 	helpOpen bool
 	quitting bool
+
+	// lifecycle tracks an in-flight detached start/stop/restart (nil when idle), so
+	// the poll knows what it is waiting for.
+	lifecycle *lifecycleOp
 }
 
 // textInputCapturer is implemented by a view (or the hub on behalf of its active
@@ -538,16 +542,39 @@ func (application *app) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return application, application.projectsHub.Reset()
 
 	case views.WorkspaceActionRequestedMsg:
-		// Run a workspace lifecycle action (start/stop/restart/destroy) in the live
-		// embedded terminal: msb's verbose build/boot progress streams INTO the pane
-		// (no suspend, no flicker) and a destructive `destroy` can prompt inline.
-		cmd := application.openTerminal(
-			message.Action+" "+message.Project,
-			[]string{message.Action, message.Project}, false)
-		// A lifecycle action is not an interactive program that owns <esc>, so let
-		// <esc> cancel/close the pane (same as ctrl+q) — the user's escape hatch.
-		application.terminalEscCloses = true
-		return application, cmd
+		if message.Action == "delete" {
+			// Delete confirms inline, so run it in the embedded terminal overlay (its
+			// y/n prompt shows in the pane); esc cancels the pane.
+			cmd := application.openTerminal(
+				"delete "+message.Project, []string{"delete", message.Project}, false)
+			application.terminalEscCloses = true
+			return application, cmd
+		}
+		// start/stop/restart run DETACHED (a new session via setsid) so the microVM
+		// build/boot keeps going even if `ai ui` is closed, and the TUI stays
+		// navigable — no log pane, just a spinner + status that we poll for.
+		return application, application.startLifecycle(message.Action, message.Project)
+
+	case lifecyclePollMsg:
+		op := application.lifecycle
+		if op == nil {
+			return application, nil
+		}
+		application.projectDetail.TickSpinner()
+		entry, found, _ := projectInfo(op.project)
+		done := false
+		switch op.action {
+		case "start", "restart":
+			done = found && entry.Status == string(state.StatusStarted)
+		case "stop":
+			done = !found || entry.Status != string(state.StatusStarted)
+		}
+		if done || time.Since(op.started) > lifecycleTimeout {
+			application.lifecycle = nil
+			application.projectDetail.ClearPending()
+			return application, application.projectDetail.Init() // final status refresh
+		}
+		return application, application.lifecyclePollCmd()
 
 	case views.ExecRequestedMsg:
 		// An interactive shell runs in the user's REAL terminal: suspend the TUI and
@@ -699,6 +726,47 @@ func (application *app) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return application, application.createView.Update(msg)
 	}
 	return application, application.views[application.current].Update(msg)
+}
+
+// lifecycleOp tracks an in-flight detached start/stop/restart so the poll knows what
+// it is waiting for.
+type lifecycleOp struct {
+	project string
+	action  string
+	started time.Time
+}
+
+// lifecyclePollMsg fires on a timer while a detached lifecycle action runs.
+type lifecyclePollMsg struct{}
+
+const (
+	lifecyclePollInterval = 300 * time.Millisecond
+	lifecycleTimeout      = 6 * time.Minute
+)
+
+// startLifecycle runs `ai <action> <project>` DETACHED (its own session via setsid,
+// stdio to /dev/null) so the microVM build/boot keeps running even if `ai ui` exits,
+// then shows a spinner on the workspace status line and begins polling for the action
+// to take effect — the TUI stays navigable and no log is shown.
+func (application *app) startLifecycle(action, project string) tea.Cmd {
+	command := exec.Command(executablePath(), action, project)
+	command.SysProcAttr = detachedSysProcAttr()
+	command.Stdin, command.Stdout, command.Stderr = nil, nil, nil
+	if err := command.Start(); err != nil {
+		application.projectDetail.SetFlash(ui.Failure.Render(ui.IconFail + " could not " + action + ": " + err.Error()))
+		return nil
+	}
+	// Detach from the started process: we poll the state handle for completion, not
+	// the process exit, so it can outlive `ai ui`.
+	_ = command.Process.Release()
+	application.lifecycle = &lifecycleOp{project: project, action: action, started: time.Now()}
+	application.projectDetail.StartPending(action)
+	return application.lifecyclePollCmd()
+}
+
+// lifecyclePollCmd schedules the next lifecycle poll tick.
+func (application *app) lifecyclePollCmd() tea.Cmd {
+	return tea.Tick(lifecyclePollInterval, func(time.Time) tea.Msg { return lifecyclePollMsg{} })
 }
 
 // openTerminal opens the live embedded-terminal overlay running `ai <args…>` on a

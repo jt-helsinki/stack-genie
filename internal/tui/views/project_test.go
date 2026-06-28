@@ -84,3 +84,28 @@ func TestProjectDetailNoSelection(test *testing.T) {
 		test.Error("action keys must be inert with no project selected")
 	}
 }
+
+// While a lifecycle action is pending, the workspace status line shows an animated
+// spinner + "<action>ing…", and clearing it restores the real status.
+func TestProjectPendingShowsSpinner(test *testing.T) {
+	view := NewProject(func(name string) (project.Entry, bool, error) {
+		return project.Entry{Name: name, OS: "ubuntu", Status: "none"}, true, nil
+	})
+	view.SetProject("app")
+	_ = view.Update(view.Init()())
+
+	view.StartPending("start")
+	view.TickSpinner()
+	out := view.View()
+	if !strings.Contains(out, "starting…") {
+		test.Errorf("pending view should show 'starting…':\n%s", out)
+	}
+	// While pending, lifecycle keys are ignored (no new action emitted).
+	if cmd := view.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("s")}); cmd != nil {
+		test.Error("lifecycle keys must be ignored while an action is pending")
+	}
+	view.ClearPending()
+	if strings.Contains(view.View(), "starting…") {
+		test.Error("clearing pending should remove the spinner")
+	}
+}
