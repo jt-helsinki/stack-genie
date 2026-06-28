@@ -32,7 +32,9 @@ func newNetworkCmd(emitter *output.Emitter, exit *int) *cobra.Command {
 		newNetworkShowCmd(emitter, exit),
 		newNetworkEgressCmd(emitter, exit),
 		newNetworkAllowCmd(emitter, exit),
+		newNetworkDisallowCmd(emitter, exit),
 		newNetworkPublishCmd(emitter, exit),
+		newNetworkUnpublishCmd(emitter, exit),
 		newNetworkLogCmd(emitter, exit),
 	)
 	return cmd
@@ -227,17 +229,73 @@ func newNetworkEgressCmd(emitter *output.Emitter, exit *int) *cobra.Command {
 	}
 }
 
+// resolveAllowTarget resolves a host:port for the allow/disallow commands: on a
+// terminal it prompts (pre-seeded with any arg); off-terminal it requires the arg.
+// Parse/validation failures come back as exit-2 errors.
+func resolveAllowTarget(emitter *output.Emitter, provided, prompt string) (string, int, error) {
+	value := provided
+	if interactive(emitter) {
+		entered, err := promptText(
+			prompt+" (host, host:port, '*.suffix' wildcard, or 'gateway')",
+			"a bare host defaults to port 443 (e.g. api.github.com); use host:port for a specific port (e.g. gateway:5432)",
+			provided,
+			func(candidate string) error {
+				_, _, validateErr := splitHostPort(strings.TrimSpace(candidate))
+				return validateErr
+			},
+		)
+		if err != nil {
+			return "", 0, err
+		}
+		value = entered
+	} else if value == "" {
+		return "", 0, output.Errorf(output.ExitInvalidInput, "provide host:port, or run on a terminal to enter it")
+	}
+	host, port, err := splitHostPort(value)
+	if err != nil {
+		return "", 0, output.Errorf(output.ExitInvalidInput, "%s", err)
+	}
+	return host, port, nil
+}
+
+// resolvePortPair resolves a guest:host pair for the publish/unpublish commands.
+func resolvePortPair(emitter *output.Emitter, provided, prompt string) (int, int, error) {
+	value := provided
+	if interactive(emitter) {
+		entered, err := promptText(
+			prompt+" (guest:host)",
+			"the guest port inside the workspace and the host port it is reachable at (e.g. 3000:3000)",
+			provided,
+			func(candidate string) error {
+				_, _, validateErr := splitPortPair(strings.TrimSpace(candidate))
+				return validateErr
+			},
+		)
+		if err != nil {
+			return 0, 0, err
+		}
+		value = entered
+	} else if value == "" {
+		return 0, 0, output.Errorf(output.ExitInvalidInput, "provide guest:host, or run on a terminal to enter the mapping")
+	}
+	guest, host, err := splitPortPair(value)
+	if err != nil {
+		return 0, 0, output.Errorf(output.ExitInvalidInput, "%s", err)
+	}
+	return guest, host, nil
+}
+
 func newNetworkAllowCmd(emitter *output.Emitter, exit *int) *cobra.Command {
-	var remove bool
-	cmd := &cobra.Command{
+	return &cobra.Command{
 		Use:   "allow [host[:port]] [project]",
-		Short: "Allow the workspace to reach an external service (prompts on a terminal, pre-seeded; --remove to revoke)",
+		Short: "Allow the workspace to reach an external service (prompts on a terminal, pre-seeded)",
 		Long: "Allow an egress destination the workspace may reach directly (a database,\n" +
 			"Kafka broker, or a specific API/domain). host may be a hostname/IP/domain,\n" +
 			"a \"*.suffix\" wildcard (e.g. *.npmjs.org), or \"gateway\" for a service on\n" +
 			"the host machine. The port is optional and defaults to 443 (HTTPS), so a\n" +
 			"bare domain like api.github.com allows it on 443. Omit the host on a terminal\n" +
-			"to be prompted (pre-seeded with any value you pass). Use --remove to revoke.",
+			"to be prompted (pre-seeded with any value you pass). Revoke with\n" +
+			"`ai network disallow`.",
 		Args: cobra.MaximumNArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			root, err := networkResolve(cmd, args, 1)
@@ -245,78 +303,51 @@ func newNetworkAllowCmd(emitter *output.Emitter, exit *int) *cobra.Command {
 				*exit = emitter.Failure("network.allow", mapEgressErr(err))
 				return nil
 			}
-			provided := ""
-			if len(args) >= 1 {
-				provided = args[0]
-			}
-			var host string
-			var port int
-			switch {
-			case remove:
-				// --remove targets an existing rule by host:port; it is given on the
-				// command line (no seeded prompt — there is nothing to pre-fill).
-				if provided == "" {
-					*exit = emitter.Failure("network.allow", output.Errorf(output.ExitInvalidInput, "--remove needs a host:port"))
-					return nil
-				}
-				host, port, err = splitHostPort(provided)
-				if err != nil {
-					*exit = emitter.Failure("network.allow", output.Errorf(output.ExitInvalidInput, "%s", err))
-					return nil
-				}
-			case interactive(emitter):
-				// On a terminal always prompt, PRE-SEEDED with any value given on the
-				// command line (§21, §1.8).
-				entered, promptErr := promptText(
-					"Service to allow (host, host:port, '*.suffix' wildcard, or 'gateway')",
-					"a bare host defaults to port 443 (e.g. api.github.com); use host:port for a specific port (e.g. gateway:5432)",
-					provided,
-					func(candidate string) error {
-						_, _, validateErr := splitHostPort(strings.TrimSpace(candidate))
-						return validateErr
-					},
-				)
-				if promptErr != nil {
-					*exit = emitter.Failure("network.allow", promptErr)
-					return nil
-				}
-				host, port, err = splitHostPort(entered)
-				if err != nil {
-					*exit = emitter.Failure("network.allow", output.Errorf(output.ExitInvalidInput, "%s", err))
-					return nil
-				}
-			case provided != "":
-				host, port, err = splitHostPort(provided)
-				if err != nil {
-					*exit = emitter.Failure("network.allow", output.Errorf(output.ExitInvalidInput, "%s", err))
-					return nil
-				}
-			default:
-				*exit = emitter.Failure("network.allow", output.Errorf(output.ExitInvalidInput,
-					"provide host:port, or run on a terminal to enter it"))
+			host, port, err := resolveAllowTarget(emitter, firstArg(args), "Service to allow")
+			if err != nil {
+				*exit = emitter.Failure("network.allow", err)
 				return nil
 			}
-			action := egress.Allow
-			if remove {
-				action = egress.Deny
-			}
-			if err := action(root, host, port); err != nil {
+			if err := egress.Allow(root, host, port); err != nil {
 				*exit = emitter.Failure("network.allow", mapEgressErr(err))
 				return nil
 			}
-			*exit = emitter.Success("network.allow", map[string]any{"host": host, "port": port, "removed": remove})
+			*exit = emitter.Success("network.allow", map[string]any{"host": host, "port": port})
 			return nil
 		},
 	}
-	cmd.Flags().BoolVar(&remove, "remove", false, "revoke this allow rule instead of adding it")
-	return cmd
+}
+
+func newNetworkDisallowCmd(emitter *output.Emitter, exit *int) *cobra.Command {
+	return &cobra.Command{
+		Use:   "disallow [host[:port]] [project]",
+		Short: "Revoke an allowed egress destination (prompts on a terminal, pre-seeded)",
+		Args:  cobra.MaximumNArgs(2),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			root, err := networkResolve(cmd, args, 1)
+			if err != nil {
+				*exit = emitter.Failure("network.disallow", mapEgressErr(err))
+				return nil
+			}
+			host, port, err := resolveAllowTarget(emitter, firstArg(args), "Service to disallow")
+			if err != nil {
+				*exit = emitter.Failure("network.disallow", err)
+				return nil
+			}
+			if err := egress.Deny(root, host, port); err != nil {
+				*exit = emitter.Failure("network.disallow", mapEgressErr(err))
+				return nil
+			}
+			*exit = emitter.Success("network.disallow", map[string]any{"host": host, "port": port})
+			return nil
+		},
+	}
 }
 
 func newNetworkPublishCmd(emitter *output.Emitter, exit *int) *cobra.Command {
-	var remove bool
-	cmd := &cobra.Command{
+	return &cobra.Command{
 		Use:   "publish [guest:host] [project]",
-		Short: "Publish a workspace port to the host (prompts on a terminal, pre-seeded; --remove to revoke)",
+		Short: "Publish a workspace port to the host (prompts on a terminal, pre-seeded)",
 		Args:  cobra.MaximumNArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			root, err := networkResolve(cmd, args, 1)
@@ -324,70 +355,45 @@ func newNetworkPublishCmd(emitter *output.Emitter, exit *int) *cobra.Command {
 				*exit = emitter.Failure("network.publish", mapEgressErr(err))
 				return nil
 			}
-			provided := ""
-			if len(args) >= 1 {
-				provided = args[0]
-			}
-			var guest, host int
-			switch {
-			case remove:
-				// --remove targets an existing mapping; given on the command line.
-				if provided == "" {
-					*exit = emitter.Failure("network.publish", output.Errorf(output.ExitInvalidInput, "--remove needs a guest:host"))
-					return nil
-				}
-				guest, host, err = splitPortPair(provided)
-				if err != nil {
-					*exit = emitter.Failure("network.publish", output.Errorf(output.ExitInvalidInput, "%s", err))
-					return nil
-				}
-			case interactive(emitter):
-				// On a terminal always prompt, PRE-SEEDED with any value given on the
-				// command line (§21, §1.8).
-				entered, promptErr := promptText(
-					"Port mapping to publish (guest:host)",
-					"the guest port inside the workspace and the host port it is reachable at (e.g. 3000:3000)",
-					provided,
-					func(candidate string) error {
-						_, _, validateErr := splitPortPair(strings.TrimSpace(candidate))
-						return validateErr
-					},
-				)
-				if promptErr != nil {
-					*exit = emitter.Failure("network.publish", promptErr)
-					return nil
-				}
-				guest, host, err = splitPortPair(entered)
-				if err != nil {
-					*exit = emitter.Failure("network.publish", output.Errorf(output.ExitInvalidInput, "%s", err))
-					return nil
-				}
-			case provided != "":
-				guest, host, err = splitPortPair(provided)
-				if err != nil {
-					*exit = emitter.Failure("network.publish", output.Errorf(output.ExitInvalidInput, "%s", err))
-					return nil
-				}
-			default:
-				*exit = emitter.Failure("network.publish", output.Errorf(output.ExitInvalidInput,
-					"provide guest:host, or run on a terminal to enter the mapping"))
+			guest, host, err := resolvePortPair(emitter, firstArg(args), "Port mapping to publish")
+			if err != nil {
+				*exit = emitter.Failure("network.publish", err)
 				return nil
 			}
-			if remove {
-				if err := egress.Unpublish(root, host); err != nil {
-					*exit = emitter.Failure("network.publish", mapEgressErr(err))
-					return nil
-				}
-			} else if err := egress.Publish(root, guest, host); err != nil {
+			if err := egress.Publish(root, guest, host); err != nil {
 				*exit = emitter.Failure("network.publish", mapEgressErr(err))
 				return nil
 			}
-			*exit = emitter.Success("network.publish", map[string]any{"guest": guest, "host": host, "removed": remove})
+			*exit = emitter.Success("network.publish", map[string]any{"guest": guest, "host": host})
 			return nil
 		},
 	}
-	cmd.Flags().BoolVar(&remove, "remove", false, "remove this published port instead of adding it")
-	return cmd
+}
+
+func newNetworkUnpublishCmd(emitter *output.Emitter, exit *int) *cobra.Command {
+	return &cobra.Command{
+		Use:   "unpublish [guest:host] [project]",
+		Short: "Remove a published workspace port (prompts on a terminal, pre-seeded)",
+		Args:  cobra.MaximumNArgs(2),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			root, err := networkResolve(cmd, args, 1)
+			if err != nil {
+				*exit = emitter.Failure("network.unpublish", mapEgressErr(err))
+				return nil
+			}
+			guest, host, err := resolvePortPair(emitter, firstArg(args), "Port mapping to remove")
+			if err != nil {
+				*exit = emitter.Failure("network.unpublish", err)
+				return nil
+			}
+			if err := egress.Unpublish(root, host); err != nil {
+				*exit = emitter.Failure("network.unpublish", mapEgressErr(err))
+				return nil
+			}
+			*exit = emitter.Success("network.unpublish", map[string]any{"guest": guest, "host": host})
+			return nil
+		},
+	}
 }
 
 // splitHostPort parses an allow target. The host may be a hostname/IP/domain, a

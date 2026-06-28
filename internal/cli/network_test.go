@@ -215,17 +215,36 @@ func TestNetworkValueRequiredNonInteractive(test *testing.T) {
 	}
 }
 
-// --remove with no value stays exit 2 (no prompt — a remove needs an explicit
-// target) on both allow and publish.
+// disallow/unpublish with no value (off a TTY) stay exit 2 — they need an explicit
+// target.
 func TestNetworkRemoveRequiresValue(test *testing.T) {
 	root := seedProjectAt(test, "app")
 	test.Chdir(root)
 
-	if exit := runNetwork(test, "allow", "--remove"); exit != output.ExitInvalidInput {
-		test.Fatalf("allow --remove with no host: exit = %d, want %d", exit, output.ExitInvalidInput)
+	if exit := runNetwork(test, "disallow"); exit != output.ExitInvalidInput {
+		test.Fatalf("disallow with no host: exit = %d, want %d", exit, output.ExitInvalidInput)
 	}
-	if exit := runNetwork(test, "publish", "--remove"); exit != output.ExitInvalidInput {
-		test.Fatalf("publish --remove with no ports: exit = %d, want %d", exit, output.ExitInvalidInput)
+	if exit := runNetwork(test, "unpublish"); exit != output.ExitInvalidInput {
+		test.Fatalf("unpublish with no ports: exit = %d, want %d", exit, output.ExitInvalidInput)
+	}
+}
+
+// disallow revokes an allow rule added by allow; unpublish removes a published port.
+func TestNetworkDisallowAndUnpublish(test *testing.T) {
+	root := seedProjectAt(test, "app")
+	test.Chdir(root)
+
+	if exit := runNetwork(test, "allow", "api.example.com:443"); exit != output.ExitOK {
+		test.Fatalf("allow: exit = %d, want 0", exit)
+	}
+	if exit := runNetwork(test, "disallow", "api.example.com:443"); exit != output.ExitOK {
+		test.Fatalf("disallow: exit = %d, want 0", exit)
+	}
+	if exit := runNetwork(test, "publish", "3000:3000"); exit != output.ExitOK {
+		test.Fatalf("publish: exit = %d, want 0", exit)
+	}
+	if exit := runNetwork(test, "unpublish", "3000:3000"); exit != output.ExitOK {
+		test.Fatalf("unpublish: exit = %d, want 0", exit)
 	}
 }
 
