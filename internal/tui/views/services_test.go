@@ -9,19 +9,44 @@ import (
 	"github.com/jt-helsinki/ideal-robot/internal/setup"
 )
 
-// noControl / noUpdate / noOpen / noTail are stubs for tests that don't exercise
-// those actions.
-func noControl(string, string) error  { return nil }
-func noUpdate(string) error           { return nil }
-func noOpen(string) error             { return nil }
-func noTail(string) ([]string, error) { return nil, nil }
+// noControl / noOpen are stubs for tests that don't exercise those actions.
+func noControl(string, string) error { return nil }
+func noOpen(string) error            { return nil }
+
+// newServicesForTest builds a Services list wired to a per-service detail whose
+// container log + status fetcher are derived from the SAME status set, so the tests
+// can drive both levels without re-wiring. control backs both the list toggle and
+// the detail's in-place lifecycle.
+func newServicesForTest(fetch ServiceFetcher, control ServiceController) *Services {
+	statusByName := func(service string) (setup.ServiceStatus, bool) {
+		statuses, err := fetch()
+		if err != nil {
+			return setup.ServiceStatus{}, false
+		}
+		for _, status := range statuses {
+			if status.Name == service {
+				return status, true
+			}
+		}
+		return setup.ServiceStatus{}, false
+	}
+	log := NewLogView(
+		func() (string, error) { return "container log line\n", nil },
+		func() bool { return true },
+		func() string { return "" }, // the detail re-points the subject via SetService
+		LogViewLabels{Loading: "loading container log…"},
+		nil,
+	)
+	detail := NewServiceDetail(statusByName, control, noOpen, log)
+	return NewServices(fetch, control, detail)
+}
 
 func TestServicesPopulatesTableOnRefresh(test *testing.T) {
 	statuses := []setup.ServiceStatus{
 		{Name: "litellm", Mode: "container", State: "running", Healthy: true, Address: "127.0.0.1:14000"},
 		{Name: "ollama", Mode: "container", State: "stopped", Healthy: false},
 	}
-	view := NewServices(func() ([]setup.ServiceStatus, error) { return statuses, nil }, noControl, noUpdate, noOpen, noTail)
+	view := newServicesForTest(func() ([]setup.ServiceStatus, error) { return statuses, nil }, noControl)
 
 	// Run the fetch command Init returns, then feed its message back in.
 	_ = view.Update(view.Init()())
@@ -38,15 +63,13 @@ func TestServicesPopulatesTableOnRefresh(test *testing.T) {
 }
 
 // A bubbles/table view must FILL the content height it is sized to (the table pads
-// with blank rows) and keep a CONSTANT total height whether or not a flash is shown —
-// so its bottom sits at the fixed body margin. This pins the per-table height-fill fix
-// (reserve exactly one row for the always-rendered flash slot).
+// with blank rows) and keep a CONSTANT total height whether or not a flash is shown.
 func TestServicesTableFillsConstantHeight(test *testing.T) {
 	statuses := []setup.ServiceStatus{
 		{Name: "litellm", State: "running", Healthy: true},
 		{Name: "ollama", State: "running", Healthy: true},
 	}
-	view := NewServices(func() ([]setup.ServiceStatus, error) { return statuses, nil }, noControl, noUpdate, noOpen, noTail)
+	view := newServicesForTest(func() ([]setup.ServiceStatus, error) { return statuses, nil }, noControl)
 	_ = view.Update(view.Init()())
 
 	const contentHeight = 20
@@ -57,8 +80,6 @@ func TestServicesTableFillsConstantHeight(test *testing.T) {
 		test.Fatalf("table view height = %d, want it to FILL the content height %d:\n%s", got, contentHeight, noFlash)
 	}
 
-	// Set a flash; the total height must stay the same (the flash slot was already
-	// reserved, so the table shrinks by the one slot rather than the frame growing).
 	view.flash = "did a thing"
 	withFlash := view.View()
 	if got := renderedHeight(withFlash); got != contentHeight {
@@ -70,9 +91,9 @@ func TestServicesTableFillsConstantHeight(test *testing.T) {
 }
 
 func TestServicesSurfacesFetchError(test *testing.T) {
-	view := NewServices(func() ([]setup.ServiceStatus, error) {
+	view := newServicesForTest(func() ([]setup.ServiceStatus, error) {
 		return nil, errors.New("docker is not running")
-	}, noControl, noUpdate, noOpen, noTail)
+	}, noControl)
 
 	_ = view.Update(view.Init()())
 
@@ -84,99 +105,126 @@ func TestServicesSurfacesFetchError(test *testing.T) {
 	}
 }
 
-func TestServicesStartActionInvokesController(test *testing.T) {
-	var calls []string
-	view := NewServices(
-		func() ([]setup.ServiceStatus, error) {
-			return []setup.ServiceStatus{{Name: "litellm", State: "stopped"}}, nil
-		},
-		func(action, service string) error { calls = append(calls, action+":"+service); return nil },
-		noUpdate,
-		noOpen,
-		noTail,
-	)
-	_ = view.Update(view.Init()()) // load rows so a row is selected
-
-	// Press "s" on the selected service → an async control command.
-	cmd := view.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("s")})
-	if cmd == nil {
-		test.Fatal("pressing s must return a control command")
-	}
-	done := cmd() // runs the controller
-	if len(calls) != 1 || calls[0] != "start:litellm" {
-		test.Fatalf("controller calls = %v, want [start:litellm]", calls)
-	}
-	// Feeding the done message back sets a success flash.
-	_ = view.Update(done)
-	if !strings.Contains(view.View(), "started litellm") {
-		test.Errorf("expected a success flash, got view:\n%s", view.View())
-	}
-}
-
-func TestServicesDescribeTogglesPane(test *testing.T) {
-	view := NewServices(
-		func() ([]setup.ServiceStatus, error) {
-			return []setup.ServiceStatus{{Name: "litellm", State: "running", Console: "http://localhost:14000/ui"}}, nil
-		},
-		noControl, noUpdate, noOpen, noTail,
-	)
-	_ = view.Update(view.Init()())
-	view.SetSize(80, 20) // give the describe viewport room to render
-
-	_ = view.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("d")})
-	if !view.describe.active() {
-		test.Fatal("d must open the describe pane")
-	}
-	if !strings.Contains(view.View(), "http://localhost:14000/ui") {
-		test.Errorf("describe pane should show the console URL, got:\n%s", view.View())
-	}
-	_ = view.Update(tea.KeyMsg{Type: tea.KeyEsc})
-	if view.describe.active() {
-		test.Fatal("esc must close the describe pane")
-	}
-}
-
-func TestServicesLogsPaneOpensAndEscReturns(test *testing.T) {
-	view := NewServices(
-		func() ([]setup.ServiceStatus, error) {
-			return []setup.ServiceStatus{{Name: "litellm", State: "running"}}, nil
-		},
-		noControl, noUpdate, noOpen,
-		func(service string) ([]string, error) { return []string{"line one", "line two"}, nil },
-	)
+// TestServicesDrillsIntoDetailAndEscBacksOut: enter/d opens the per-service detail
+// (summary + embedded container log); esc backs out to the list. This is the
+// workspace-style drill-down behavior.
+func TestServicesDrillsIntoDetailAndEscBacksOut(test *testing.T) {
+	view := newServicesForTest(func() ([]setup.ServiceStatus, error) {
+		return []setup.ServiceStatus{{Name: "litellm", State: "running", Console: "http://localhost:14000/ui"}}, nil
+	}, noControl)
 	_ = view.Update(view.Init()())
 	view.SetSize(80, 20)
 
-	// `l` opens the full-pane log viewer for the selected service.
-	_ = view.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("l")})
-	if !view.logs.active() {
-		test.Fatal("l must open the logs pane")
+	// enter drills in; the detail is now shown (the list table is hidden).
+	_ = view.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if !view.drilled || !view.CapturesNav() {
+		test.Fatal("enter must drill into the service detail (drilled + CapturesNav)")
 	}
+	// Feed the detail's status refresh so its summary renders.
+	_ = view.Update(view.detail.refreshCmd()())
 	rendered := view.View()
-	if !strings.Contains(rendered, "logs · litellm") || !strings.Contains(rendered, "line one") {
-		test.Errorf("logs pane should fill the view with the tailed logs, got:\n%s", rendered)
+	if !strings.Contains(rendered, "Container log") {
+		test.Errorf("the detail should embed the container log, got:\n%s", rendered)
 	}
 	if strings.Contains(rendered, "SERVICE") {
-		test.Error("the service table should be hidden while the logs pane is open")
+		test.Error("the list table must be hidden while the detail is open")
 	}
-	// esc returns to the table.
+	// esc backs out to the list.
 	_ = view.Update(tea.KeyMsg{Type: tea.KeyEsc})
-	if view.logs.active() {
-		test.Fatal("esc must return from the logs pane to the table")
+	if view.drilled || view.CapturesNav() {
+		test.Fatal("esc must back out of the detail to the list")
 	}
 }
 
-// TestServicesEnableKeyTogglesOptional: `e` enables a disabled optional service
-// (and would disable an enabled one), driving the control func with enable/disable.
+// TestServicesDetailLifecycleStaysInDetail is the regression for the bounce-back bug:
+// s/x/r in the detail act IN PLACE (controller called, spinner shown) and do NOT pop
+// back to the list.
+func TestServicesDetailLifecycleStaysInDetail(test *testing.T) {
+	var calls []string
+	view := newServicesForTest(
+		func() ([]setup.ServiceStatus, error) {
+			return []setup.ServiceStatus{{Name: "litellm", State: "running"}}, nil
+		},
+		func(action, service string) error { calls = append(calls, action+":"+service); return nil },
+	)
+	_ = view.Update(view.Init()())
+	view.SetSize(80, 20)
+	_ = view.Update(tea.KeyMsg{Type: tea.KeyEnter}) // drill in
+	_ = view.Update(view.detail.refreshCmd()())
+
+	// Press "r" (restart) in the detail.
+	cmd := view.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("r")})
+	if cmd == nil {
+		test.Fatal("restart in the detail must return a command")
+	}
+	if !view.drilled {
+		test.Fatal("a lifecycle key in the detail must NOT pop back to the list")
+	}
+	if view.detail.pending != "restart" {
+		test.Fatalf("the detail should show an in-flight restart spinner, got pending=%q", view.detail.pending)
+	}
+	// Running the batch yields a lifecycle-done + a spinner tick; run the done message.
+	done := cmd()
+	if batch, ok := done.(tea.BatchMsg); ok {
+		for _, sub := range batch {
+			if sub != nil {
+				if msg := sub(); msg != nil {
+					_ = view.Update(msg)
+				}
+			}
+		}
+	} else {
+		_ = view.Update(done)
+	}
+	if len(calls) != 1 || calls[0] != "restart:litellm" {
+		test.Fatalf("controller calls = %v, want [restart:litellm]", calls)
+	}
+	if !view.drilled {
+		test.Fatal("after the action lands the view must STILL be in the detail (no bounce to list)")
+	}
+	if view.detail.pending != "" {
+		test.Errorf("the spinner should clear once the action lands, got pending=%q", view.detail.pending)
+	}
+}
+
+// TestServicesDetailUpdateEmitsRequest: `p` in the detail emits a
+// ServiceUpdateRequestedMsg (routed by the parent to the terminal overlay so the CLI
+// pull spinner shows) and STAYS in the detail.
+func TestServicesDetailUpdateEmitsRequest(test *testing.T) {
+	view := newServicesForTest(func() ([]setup.ServiceStatus, error) {
+		return []setup.ServiceStatus{{Name: "litellm", State: "running"}}, nil
+	}, noControl)
+	_ = view.Update(view.Init()())
+	view.SetSize(80, 20)
+	_ = view.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	_ = view.Update(view.detail.refreshCmd()())
+
+	cmd := view.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("p")})
+	if cmd == nil {
+		test.Fatal("p in the detail must return an update-request command")
+	}
+	msg := cmd()
+	request, ok := msg.(ServiceUpdateRequestedMsg)
+	if !ok {
+		test.Fatalf("p must emit a ServiceUpdateRequestedMsg, got %T", msg)
+	}
+	if request.Service != "litellm" {
+		test.Fatalf("update request service = %q, want litellm", request.Service)
+	}
+	if !view.drilled {
+		test.Fatal("p must NOT pop back to the list")
+	}
+}
+
+// TestServicesEnableKeyTogglesOptional: `e` on the LIST enables a disabled optional
+// service (and would disable an enabled one), driving the control func.
 func TestServicesEnableKeyTogglesOptional(test *testing.T) {
 	var controlled string
-	view := NewServices(
+	view := newServicesForTest(
 		func() ([]setup.ServiceStatus, error) {
 			return []setup.ServiceStatus{{Name: "open-webui", State: "disabled", Optional: true}}, nil
 		},
 		func(action, service string) error { controlled = action + ":" + service; return nil },
-		noUpdate,
-		noOpen, noTail,
 	)
 	_ = view.Update(view.Init()())
 
@@ -190,13 +238,11 @@ func TestServicesEnableKeyTogglesOptional(test *testing.T) {
 	}
 }
 
-// TestServicesEnableKeyRejectsCore: `e` on a core service is a no-op with a hint
-// (core services are always on).
+// TestServicesEnableKeyRejectsCore: `e` on a core service is a no-op with a hint.
 func TestServicesEnableKeyRejectsCore(test *testing.T) {
-	view := NewServices(
-		func() ([]setup.ServiceStatus, error) {
-			return []setup.ServiceStatus{{Name: "litellm", State: "running"}}, nil
-		}, noControl, noUpdate, noOpen, noTail)
+	view := newServicesForTest(func() ([]setup.ServiceStatus, error) {
+		return []setup.ServiceStatus{{Name: "litellm", State: "running"}}, nil
+	}, noControl)
 	_ = view.Update(view.Init()())
 
 	if cmd := view.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("e")}); cmd != nil {
@@ -207,146 +253,28 @@ func TestServicesEnableKeyRejectsCore(test *testing.T) {
 	}
 }
 
-// TestServicesStartGatedOnDisabledOptional: start/stop/restart are blocked on a
-// disabled optional service (the user must enable it first) — no control call.
-func TestServicesStartGatedOnDisabledOptional(test *testing.T) {
-	controlled := false
-	view := NewServices(
-		func() ([]setup.ServiceStatus, error) {
-			return []setup.ServiceStatus{{Name: "odysseus", State: "disabled", Optional: true}}, nil
-		},
-		func(string, string) error { controlled = true; return nil },
-		noUpdate,
-		noOpen, noTail,
-	)
-	_ = view.Update(view.Init()())
-
-	if cmd := view.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("s")}); cmd != nil {
-		test.Fatal("start on a disabled optional must not return a control command")
-	}
-	if controlled {
-		test.Fatal("start on a disabled optional must not control anything")
-	}
-	if !strings.Contains(view.View(), "disabled") {
-		test.Errorf("expected a 'press e to enable' hint, got:\n%s", view.View())
-	}
-}
-
-// TestServicesMenuKeysWorkWhilePaneOpen is the regression for the pane-trap bug:
-// once a service's describe/logs pane is open, the menu keys must still work — `l`
-// jumps from describe to logs (and `d` back), and an operation key closes the pane
-// and acts — without needing esc first.
-func TestServicesMenuKeysWorkWhilePaneOpen(test *testing.T) {
-	var controlled string
-	view := NewServices(
-		func() ([]setup.ServiceStatus, error) {
-			return []setup.ServiceStatus{{Name: "litellm", State: "running", Console: "http://x/ui"}}, nil
-		},
-		func(action, service string) error { controlled = action + ":" + service; return nil },
-		noUpdate,
-		noOpen,
-		func(string) ([]string, error) { return []string{"a log line"}, nil },
-	)
+// TestServicesSetActiveOnlyAffectsOpenDetail: SetActive is a no-op on the list and
+// toggles the detail's log poll while drilled — so the container-log poll only runs
+// while the Services tab is visible AND a detail is open.
+func TestServicesSetActiveOnlyAffectsOpenDetail(test *testing.T) {
+	view := newServicesForTest(func() ([]setup.ServiceStatus, error) {
+		return []setup.ServiceStatus{{Name: "litellm", State: "running"}}, nil
+	}, noControl)
 	_ = view.Update(view.Init()())
 	view.SetSize(80, 20)
 
-	// Open describe, then jump straight to logs with `l` (no esc).
-	_ = view.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("d")})
-	_ = view.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("l")})
-	if !view.logs.active() || view.describe.active() {
-		test.Fatalf("l from describe must switch to the logs pane (logs=%v describe=%v)",
-			view.logs.active(), view.describe.active())
-	}
-	// `d` jumps back to describe, closing logs.
-	_ = view.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("d")})
-	if !view.describe.active() || view.logs.active() {
-		test.Fatalf("d from logs must switch back to describe (logs=%v describe=%v)",
-			view.logs.active(), view.describe.active())
-	}
-	// An operation key (restart) works while a pane is open: it closes the pane and
-	// runs the action so the result is visible over the table.
-	cmd := view.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("r")})
-	if view.describe.active() || view.logs.active() {
-		test.Fatal("an operation key must close the open pane")
-	}
-	if cmd == nil {
-		test.Fatal("restart must return a control command")
-	}
-	cmd()
-	if controlled != "restart:litellm" {
-		test.Fatalf("restart should control the service, got %q", controlled)
-	}
-}
+	// On the list (not drilled): SetActive is a no-op — it must not touch the detail.
+	view.SetActive(false)
 
-// TestServicesUpdateKeyInvokesUpdater: `p` re-pulls/updates the selected service
-// via the injected updater and flashes the result.
-func TestServicesUpdateKeyInvokesUpdater(test *testing.T) {
-	var updated string
-	view := NewServices(
-		func() ([]setup.ServiceStatus, error) {
-			return []setup.ServiceStatus{{Name: "litellm", State: "running"}}, nil
-		},
-		noControl,
-		func(service string) error { updated = service; return nil },
-		noOpen, noTail,
-	)
-	_ = view.Update(view.Init()())
-
-	cmd := view.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("p")})
-	if cmd == nil {
-		test.Fatal("pressing p must return an update command")
+	// Drill in: switching the top-level tab away (SetActive(false)) pauses the
+	// detail's container-log poll, and returning (SetActive(true)) resumes it.
+	_ = view.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	view.SetActive(false)
+	if !view.detail.log.paused {
+		test.Fatal("SetActive(false) must pause the open detail's container-log poll")
 	}
-	done := cmd()
-	if updated != "litellm" {
-		test.Fatalf("updater service = %q, want litellm", updated)
-	}
-	_ = view.Update(done)
-	if !strings.Contains(view.View(), "updated litellm") {
-		test.Errorf("expected an 'updated' flash, got view:\n%s", view.View())
-	}
-}
-
-// TestServicesUpdateGatedOnDisabledOptional: `p` on a disabled optional service is
-// blocked (enable it first) — no updater call.
-func TestServicesUpdateGatedOnDisabledOptional(test *testing.T) {
-	updatedCalled := false
-	view := NewServices(
-		func() ([]setup.ServiceStatus, error) {
-			return []setup.ServiceStatus{{Name: "odysseus", State: "disabled", Optional: true}}, nil
-		},
-		noControl,
-		func(string) error { updatedCalled = true; return nil },
-		noOpen, noTail,
-	)
-	_ = view.Update(view.Init()())
-
-	if cmd := view.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("p")}); cmd != nil {
-		test.Fatal("p on a disabled optional must not return an update command")
-	}
-	if updatedCalled {
-		test.Fatal("p on a disabled optional must not update anything")
-	}
-}
-
-func TestServicesOpenConsoleUsesURL(test *testing.T) {
-	var opened string
-	view := NewServices(
-		func() ([]setup.ServiceStatus, error) {
-			return []setup.ServiceStatus{{Name: "litellm", Console: "http://localhost:14000/ui"}}, nil
-		},
-		noControl,
-		noUpdate,
-		func(url string) error { opened = url; return nil },
-		noTail,
-	)
-	_ = view.Update(view.Init()())
-
-	cmd := view.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("o")})
-	if cmd == nil {
-		test.Fatal("pressing o on a service with a console must return a command")
-	}
-	cmd()
-	if opened != "http://localhost:14000/ui" {
-		test.Fatalf("opened URL = %q, want the console URL", opened)
+	view.SetActive(true)
+	if view.detail.log.paused {
+		test.Fatal("SetActive(true) must resume the open detail's container-log poll")
 	}
 }

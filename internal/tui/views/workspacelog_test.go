@@ -23,7 +23,7 @@ func TestWorkspaceLogLoadsAndShowsContent(test *testing.T) {
 	}
 	// Feed a load result for the current generation.
 	view.generation = 1
-	view.Update(workspaceLogLoadedMsg{content: "boot line 1\nboot line 2\n", generation: 1})
+	view.Update(logViewLoadedMsg{content: "boot line 1\nboot line 2\n", generation: 1})
 	if !view.loaded || view.empty {
 		test.Fatalf("expected loaded non-empty after a content result")
 	}
@@ -37,7 +37,7 @@ func TestWorkspaceLogLoadsAndShowsContent(test *testing.T) {
 func TestWorkspaceLogStaleResultIgnored(test *testing.T) {
 	view := NewWorkspaceLog(func() (string, error) { return "", nil }, func() bool { return true }, func() string { return "demo" })
 	view.generation = 5
-	view.Update(workspaceLogLoadedMsg{content: "stale", generation: 4})
+	view.Update(logViewLoadedMsg{content: "stale", generation: 4})
 	if view.loaded {
 		test.Error("a stale-generation result must be ignored")
 	}
@@ -52,7 +52,7 @@ func TestWorkspaceLogSurfacesError(test *testing.T) {
 	)
 	view.SetSize(80, 10)
 	view.generation = 1
-	view.Update(workspaceLogLoadedMsg{err: errors.New("workspace microVM is not running"), generation: 1})
+	view.Update(logViewLoadedMsg{err: errors.New("workspace microVM is not running"), generation: 1})
 	if !strings.Contains(view.View(), "not running") {
 		test.Errorf("expected the error surfaced in the view:\n%s", view.View())
 	}

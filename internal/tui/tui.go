@@ -10,7 +10,6 @@ package tui
 import (
 	"context"
 	"fmt"
-	"io"
 	"os"
 	"os/exec"
 	goruntime "runtime"
@@ -24,7 +23,6 @@ import (
 	"github.com/jt-helsinki/ideal-robot/internal/contextopt"
 	"github.com/jt-helsinki/ideal-robot/internal/egress"
 	"github.com/jt-helsinki/ideal-robot/internal/litellm"
-	"github.com/jt-helsinki/ideal-robot/internal/logs"
 	"github.com/jt-helsinki/ideal-robot/internal/ollama"
 	"github.com/jt-helsinki/ideal-robot/internal/project"
 	"github.com/jt-helsinki/ideal-robot/internal/runtime"
@@ -67,21 +65,53 @@ func Run(cwd string) error {
 	// fetch time, so switching projects reflects immediately without re-wiring.
 	currentRoot := func() (string, bool) { return resolveProjectRoot(application.currentProject) }
 
-	servicesView := views.NewServices(
-		func() ([]setup.ServiceStatus, error) { return setup.ServicesStatus(deps) },
-		func(action, service string) error {
-			_, err := setup.ControlService(deps, action, service)
-			return err
+	// The Services tab mirrors the Workspaces hub: a LIST that drills into a
+	// per-service DETAIL (summary + the live CONTAINER LOG embedded beneath it +
+	// in-place lifecycle). The container log is the SAME generic LogView the workspace
+	// log uses (views.NewLogView), configured for a service container and tailed via
+	// the docker-logs tailer (setup.ServiceLogTail) — the service-tier analogue of
+	// Manager.WorkspaceLogTail's `msb logs`. The container log shows while the service
+	// is RUNNING; a stopped service shows the "not running" hint.
+	servicesControl := func(action, service string) error {
+		_, err := setup.ControlService(deps, action, service)
+		return err
+	}
+	servicesStatus := func() ([]setup.ServiceStatus, error) { return setup.ServicesStatus(deps) }
+	// serviceDetail is declared up front so the log closures can read the OPEN service
+	// (set on it by the list's drill-in) — the same late-binding the per-project
+	// sub-views use via application.currentProject.
+	var serviceDetail *views.ServiceDetail
+	serviceLogView := views.NewLogView(
+		func() (string, error) {
+			if serviceDetail.Service() == "" {
+				return "", nil
+			}
+			return setup.ServiceLogTail(deps, serviceDetail.Service(), setup.ServiceLogTailLines)
 		},
-		func(service string) error {
-			// Re-pull latest images + recreate. The TUI owns the screen, so the
-			// native pull progress is discarded here (the flash reports completion).
-			_, err := setup.UpdateService(deps, service, io.Discard, nil)
-			return err
+		func() bool {
+			// The container log is shown only while the service is RUNNING, so a stopped
+			// service shows the "not running" hint instead of stale output.
+			if serviceDetail.Service() == "" {
+				return false
+			}
+			status, found := serviceStatusByName(servicesStatus, serviceDetail.Service())
+			return found && status.State == "running"
 		},
-		openURL,
-		tailService, // logs are viewed from the Services view (the `l` key)
+		func() string { return serviceDetail.Service() },
+		views.LogViewLabels{
+			NotRunning: "service not running — its container log appears here while it is running (press s to start)",
+			Loading:    "loading container log…",
+			Empty:      "no container output captured yet — it streams in as the service runs",
+		},
+		func(subject string) tea.Msg { return views.ServiceLogFollowRequestedMsg{Service: subject} },
 	)
+	serviceDetail = views.NewServiceDetail(
+		func(service string) (setup.ServiceStatus, bool) { return serviceStatusByName(servicesStatus, service) },
+		servicesControl,
+		openURL,
+		serviceLogView,
+	)
+	servicesView := views.NewServices(servicesStatus, servicesControl, serviceDetail)
 	projectsView := views.NewProjects(project.List)
 	// The workspace log is embedded in the Workspace (project detail) view, beneath
 	// the summary — not a separate tab. It streams the microVM's captured output (msb
@@ -224,6 +254,7 @@ func Run(cwd string) error {
 	// (the `l` key).
 	application.views = []View{servicesView, projectsHub, localModelsView, cloudModelsView, apiKeysView, settingsView}
 	application.projectsIndex = 1
+	application.servicesView = servicesView
 	application.projectsHub = projectsHub
 	application.projectDetail = projectDetail
 	application.sessionsView = sessionsView
@@ -293,19 +324,22 @@ func projectInfo(name string) (project.Entry, bool, error) {
 	return project.Entry{}, false, nil
 }
 
-// tailService resolves the host service's log source under ~/.ai-platform/logs
-// (the first matching *.log file) and returns its last logs.TailLines lines. A
-// service with nothing on disk yet yields an empty result (not an error) — live
-// capture is wired during hardware bring-up.
-func tailService(service string) ([]string, error) {
-	sources, err := logs.Sources("", service)
+// serviceStatusByName fetches the current service-tier statuses and returns the one
+// matching name (and whether it was found). It is the per-service projection the
+// Services detail view + its container-log running-check resolve through, mirroring
+// projectInfo for the workspace detail. A fetch error reads as "not found" (the
+// detail then shows its loading/not-running hint rather than a hard error).
+func serviceStatusByName(fetch func() ([]setup.ServiceStatus, error), name string) (setup.ServiceStatus, bool) {
+	statuses, err := fetch()
 	if err != nil {
-		return nil, err
+		return setup.ServiceStatus{}, false
 	}
-	if len(sources) == 0 {
-		return []string{}, nil
+	for _, status := range statuses {
+		if status.Name == name {
+			return status, true
+		}
 	}
-	return logs.Tail(sources[0], logs.TailLines)
+	return setup.ServiceStatus{}, false
 }
 
 // listAPIKeyProviders joins the model catalog's LiteLLM-routable providers with the
@@ -439,6 +473,10 @@ type app struct {
 	projectDetail  *views.Project
 	projectsIndex  int
 	currentProject string
+
+	// servicesView lets the app refresh the Services view (list or open detail) when
+	// a `services update` terminal overlay returns.
+	servicesView *views.Services
 
 	// sessionsView lets the app refresh the Sessions view when an attach
 	// subprocess returns (the user may have created/killed a session).
@@ -613,6 +651,25 @@ func (application *app) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return application, tea.ExecProcess(command, func(execErr error) tea.Msg {
 			return sessionFinishedMsg{err: execErr}
 		})
+
+	case views.ServiceLogFollowRequestedMsg:
+		// Follow a service's container log live in the user's REAL terminal, the twin of
+		// the workspace-log follow above. It runs `ai logs --service <svc> --follow`
+		// (setup.FollowServiceLogs → `<runtime> logs -f`), restoring the TUI on Ctrl-C.
+		command := exec.Command(executablePath(), "logs", "--service", message.Service, "--follow")
+		return application, tea.ExecProcess(command, func(execErr error) tea.Msg {
+			return sessionFinishedMsg{err: execErr}
+		})
+
+	case views.ServiceUpdateRequestedMsg:
+		// `p` (update) in the service detail: run `ai services update <svc>` live in the
+		// embedded terminal overlay (a real PTY → the CLI's pull spinner renders),
+		// EXACTLY like models pull / apps actions. The Services view refreshes when the
+		// overlay closes; esc cancels it.
+		cmd := application.openTerminal(
+			"services update "+message.Service, []string{"services", "update", message.Service}, false)
+		application.terminalEscCloses = true
+		return application, cmd
 
 	case sessionFinishedMsg:
 		// Back from an interactive shell/attach — refresh the Shell (sessions) list
@@ -853,6 +910,11 @@ func (application *app) updateTerminal(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 		// every overlay close and timed them out). The top-level model/key views are
 		// cheap host-side fetches, so they always refresh.
 		commands := []tea.Cmd{application.projectsHub.RefreshActive()}
+		if application.servicesView != nil {
+			// A `services update` overlay closing must re-fetch the Services list / open
+			// detail so the recreated container's state + log are reflected.
+			commands = append(commands, application.servicesView.RefreshActive())
+		}
 		if application.localModelsView != nil {
 			commands = append(commands, application.localModelsView.Init())
 		}
@@ -870,14 +932,28 @@ func (application *app) updateTerminal(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return application, term.Update(key)
 }
 
+// tabActivatable is a top-level view that runs a BACKGROUND poll (the Services view's
+// embedded container log) and must pause it while another top-level tab is visible —
+// mirroring the per-project sub-views' activatable contract in the hub.
+type tabActivatable interface{ SetActive(active bool) }
+
 // switchTab moves the active tab to index, wrapping around the ends so Tab/←/→ cycle
 // (a direct number jump passes an in-range index). A no-op when there are no views.
+// It pauses the OUTGOING view's background poll and resumes the INCOMING one (for
+// views that run one), so the Services container-log poll only ticks while the
+// Services tab is visible.
 func (application *app) switchTab(index int) {
 	count := len(application.views)
 	if count == 0 {
 		return
 	}
+	if outgoing, ok := application.views[application.current].(tabActivatable); ok {
+		outgoing.SetActive(false)
+	}
 	application.current = ((index % count) + count) % count
+	if incoming, ok := application.views[application.current].(tabActivatable); ok {
+		incoming.SetActive(true)
+	}
 }
 
 // resizeViews pushes the current inner body size (inside the border) to every view

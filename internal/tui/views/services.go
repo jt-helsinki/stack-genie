@@ -6,7 +6,6 @@
 package views
 
 import (
-	"strings"
 	"time"
 
 	"github.com/charmbracelet/bubbles/table"
@@ -19,64 +18,53 @@ import (
 // testable; the parent wires setup.ServicesStatus(deps).
 type ServiceFetcher func() ([]setup.ServiceStatus, error)
 
-// ServiceController applies a lifecycle action (start/stop/restart) to one named
-// service. Injected; the parent wires setup.ControlService(deps, action, name).
+// ServiceController applies a lifecycle action (start/stop/restart/enable/disable)
+// to one named service. Injected; the parent wires setup.ControlService(deps,
+// action, name).
 type ServiceController func(action, service string) error
 
-// ServiceUpdater re-pulls the latest images for one named service (or "" for all)
-// and recreates its container. Injected; the parent wires
-// setup.UpdateService(deps, service, …). It backs the `p` (pull/update) key.
-type ServiceUpdater func(service string) error
-
-// URLOpener opens a console URL in the host browser. Injected; the parent wires
-// the OS opener (open / xdg-open).
+// URLOpener opens a console URL in the host browser. Injected; the parent wires the
+// OS opener (open / xdg-open).
 type URLOpener func(url string) error
 
-// LogTailer returns the recent log lines for a service. Injected; the parent
-// wires it over internal/logs (Sources + Tail). Logs are viewed from the
-// Services view (the `l` key) — there is no separate Logs tab.
-type LogTailer func(service string) ([]string, error)
-
-// ServicesRefreshInterval is how often the live view re-polls status;
-// logsRefreshInterval is how often the open log pane re-tails its service.
-const (
-	ServicesRefreshInterval = 2 * time.Second
-	logsRefreshInterval     = 1500 * time.Millisecond
-)
+// ServicesRefreshInterval is how often the live LIST re-polls status.
+const ServicesRefreshInterval = 2 * time.Second
 
 type servicesRefreshedMsg struct {
 	statuses []setup.ServiceStatus
 	err      error
 }
 type servicesTickMsg struct{}
-type logsTickMsg struct{}
-type serviceActionDoneMsg struct {
+type servicesToggleDoneMsg struct {
 	action  string
 	service string
 	err     error
 }
 
-// Services is the live view of the host service tier + their containers, with
-// start/stop/restart and open-console actions on the selected row.
+// Services is the live LIST of the host service tier + their containers. It behaves
+// like the Workspaces hub's switcher: `enter`/`d` drills into a per-service DETAIL
+// (ServiceDetail — summary + embedded container log + in-place lifecycle), and `esc`
+// backs out to the list. `e` toggles an optional service from the list (core
+// services are always on). The list auto-refreshes on a 2s tick; the detail owns its
+// own (paused-when-hidden) container-log poll.
 type Services struct {
-	fetch      ServiceFetcher
-	control    ServiceController
-	update     ServiceUpdater
-	open       URLOpener
-	tail       LogTailer
-	table      table.Model
-	describe   describePane
-	logs       describePane // full-pane log viewer for the selected service
-	logService string       // the service whose logs the pane is following
-	statuses   []setup.ServiceStatus
-	flash      string
-	err        error
-	loaded     bool
+	fetch    ServiceFetcher
+	control  ServiceController
+	detail   *ServiceDetail
+	table    table.Model
+	statuses []setup.ServiceStatus
+	flash    string
+	err      error
+	loaded   bool
+	// drilled is true while a service detail is open (the list is hidden). esc backs
+	// out to the list, mirroring the Workspaces hub's open/switcher levels.
+	drilled bool
 }
 
-// NewServices builds the services view over the injected status fetcher,
-// lifecycle controller, image updater, URL opener, and log tailer.
-func NewServices(fetch ServiceFetcher, control ServiceController, update ServiceUpdater, open URLOpener, tail LogTailer) *Services {
+// NewServices builds the services list over the injected status fetcher + lifecycle
+// controller, and the per-service detail drilled into on enter/d (built in tui.go,
+// like Project, so the docker-logs LogView + console opener are wired by the parent).
+func NewServices(fetch ServiceFetcher, control ServiceController, detail *ServiceDetail) *Services {
 	columns := []table.Column{
 		{Title: "SERVICE", Width: 20},
 		{Title: "MODE", Width: 10},
@@ -86,35 +74,61 @@ func NewServices(fetch ServiceFetcher, control ServiceController, update Service
 	}
 	built := table.New(table.WithColumns(columns), table.WithFocused(true))
 	built.SetStyles(ui.TableStyles())
-	return &Services{
-		fetch: fetch, control: control, update: update, open: open, tail: tail,
-		table: built, describe: newDescribePane(), logs: newDescribePane(),
-	}
+	return &Services{fetch: fetch, control: control, detail: detail, table: built}
 }
 
 // Title is the view's name (used by the menu/header).
 func (view *Services) Title() string { return "Services" }
 
-// Hints are the context-sensitive key bindings shown in the footer.
+// Hints are the context-sensitive key bindings shown in the footer — the detail's
+// own keys while drilled in, else the list keys.
 func (view *Services) Hints() string {
-	return "enter/d describe · s start · x stop · r restart · p update · e enable/disable · o console · l logs"
+	if view.drilled {
+		return view.detail.Hints()
+	}
+	return "enter/d open · e enable/disable · r refresh"
 }
 
-// SetSize fits the table + the describe/logs panes to the content area. One row is
-// reserved for the flash slot (always rendered, blank when empty) so the table fills
-// a FIXED height and its bottom never moves whether or not a flash shows.
+// CapturesNav reports whether the view wants Tab/←→/esc for itself — true while a
+// service detail is open, so the app cycles WITHIN the detail (esc backs out) rather
+// than switching top-level tabs. Mirrors ProjectsHub.CapturesNav.
+func (view *Services) CapturesNav() bool { return view.drilled }
+
+// SetActive forwards the top-level tab's visibility to the open detail's embedded
+// container log, so the 2s `<runtime> logs` poll only runs while the Services tab is
+// visible AND a detail is open (paused on the list or while another top-level tab is
+// shown). A no-op when no detail is open.
+func (view *Services) SetActive(active bool) {
+	if view.drilled {
+		view.detail.SetActive(active)
+	}
+}
+
+// SetSize fits the list table (when showing the list) or the detail (when drilled).
+// One row is reserved for the flash slot so the table fills a FIXED height and its
+// bottom never moves whether or not a flash shows.
 func (view *Services) SetSize(width, height int) {
 	view.table.SetStyles(ui.TableStyles()) // pick up a live theme change
 	view.table.SetWidth(width)
 	if tableHeight := height - 1; tableHeight > 0 {
 		view.table.SetHeight(tableHeight)
 	}
-	view.describe.setSize(width, height)
-	view.logs.setSize(width, height)
+	view.detail.SetSize(width, height)
 }
 
-// Init kicks off the first status fetch.
+// Init kicks off the first list fetch.
 func (view *Services) Init() tea.Cmd { return view.fetchCmd() }
+
+// RefreshActive re-loads whichever level is visible: the open detail (so a
+// `services update` overlay closing reflects in the detail + restarts its log poll)
+// when drilled in, else the list. Used by the app after the embedded terminal
+// overlay closes, mirroring ProjectsHub.RefreshActive.
+func (view *Services) RefreshActive() tea.Cmd {
+	if view.drilled {
+		return view.detail.Init()
+	}
+	return view.fetchCmd()
+}
 
 func (view *Services) fetchCmd() tea.Cmd {
 	fetch := view.fetch
@@ -128,9 +142,11 @@ func servicesTick() tea.Cmd {
 	return tea.Tick(ServicesRefreshInterval, func(time.Time) tea.Msg { return servicesTickMsg{} })
 }
 
-// Update advances the view: refresh results repopulate the table and re-arm the
-// tick; the tick triggers the next fetch; s/x/r/o act on the selected service;
-// other keys drive table navigation.
+// Update advances the view. While drilled into a detail it owns esc (back to the
+// list) and delegates everything else to the detail; on the list a refresh
+// repopulates the table + re-arms the tick, `enter`/`d` drills in, and `e` toggles an
+// optional service. Async list messages (refresh/tick) are always handled so the
+// list stays current even while the detail is open.
 func (view *Services) Update(msg tea.Msg) tea.Cmd {
 	switch message := msg.(type) {
 	case servicesRefreshedMsg:
@@ -143,28 +159,28 @@ func (view *Services) Update(msg tea.Msg) tea.Cmd {
 		return servicesTick()
 	case servicesTickMsg:
 		return view.fetchCmd()
-	case logsTickMsg:
-		// Keep the open log pane live: re-tail and refresh until it is closed.
-		if view.logs.active() && view.logService != "" {
-			view.logs.refresh(view.serviceLogs(view.logService))
-			return logsTick()
-		}
-		return nil
-	case serviceActionDoneMsg:
-		view.flash = actionFlash(message)
-		return view.fetchCmd() // reflect the action immediately
+	case servicesToggleDoneMsg:
+		view.flash = toggleFlash(message)
+		return view.fetchCmd() // reflect the toggle immediately
 	case tea.KeyMsg:
-		// Menu keys stay live even while a pane is open, so the user can jump
-		// straight from describe to logs (or run an action) without esc-ing out
-		// first. Scroll keys + esc fall through to whichever pane is active.
-		if cmd, handled := view.handleAction(message); handled {
+		if view.drilled {
+			if message.String() == "esc" {
+				// Back out to the list (mirrors the Workspaces hub's esc → switcher). Pause
+				// the detail's container-log poll so it does not run while hidden.
+				view.detail.SetActive(false)
+				view.drilled = false
+				return view.fetchCmd()
+			}
+			return view.detail.Update(msg)
+		}
+		if cmd, handled := view.handleListKey(message); handled {
 			return cmd
 		}
-		if view.logs.active() {
-			return view.logs.update(message)
-		}
-		if view.describe.active() {
-			return view.describe.update(message)
+	default:
+		// Async messages (the detail's log poll/tick, lifecycle/refresh results) drive
+		// the open detail.
+		if view.drilled {
+			return view.detail.Update(msg)
 		}
 	}
 	var cmd tea.Cmd
@@ -172,80 +188,43 @@ func (view *Services) Update(msg tea.Msg) tea.Cmd {
 	return cmd
 }
 
-// handleAction maps the action keys to async commands; the bool reports whether
-// the key was an action (so it is not also passed to the table for navigation).
-// Each branch delegates to a per-action helper so this stays a flat dispatch; the
-// helpers own the (now-shared) selection + controllability guards.
-func (view *Services) handleAction(key tea.KeyMsg) (tea.Cmd, bool) {
-	switch keyName := key.String(); keyName {
-	case "s", "x", "r":
-		return view.handleLifecycle(keyName), true
-	case "p":
-		return view.handleUpdate(), true
+// handleListKey maps the list-level keys; the bool reports whether the key was
+// handled (so it is not also passed to the table for navigation).
+func (view *Services) handleListKey(key tea.KeyMsg) (tea.Cmd, bool) {
+	switch key.String() {
+	case "enter", "d":
+		return view.drillIn(), true
 	case "e":
 		return view.handleToggle(), true
-	case "o":
-		return view.handleOpenConsole(), true
-	case "enter", "d":
-		return view.handleDescribe(), true
-	case "l":
-		return view.handleShowLogs(), true
+	case "r":
+		return view.fetchCmd(), true
 	}
 	return nil, false
 }
 
-// selectedControllable resolves the selected service for a lifecycle/update action
-// and reports whether it can be acted on now: it returns ("", false) when nothing
-// is selected, or flashes a hint and returns ("", false) when the service is a
-// disabled optional one (which must be enabled with `e` first). On success it
-// returns the service name and true.
-func (view *Services) selectedControllable() (string, bool) {
+// drillIn opens the selected service's detail view (summary + embedded container
+// log + in-place lifecycle), mirroring ProjectsHub.OpenProject.
+func (view *Services) drillIn() tea.Cmd {
 	service := view.selectedService()
 	if service == "" {
-		return "", false
-	}
-	// A disabled optional service must be enabled before it can be controlled.
-	if status := view.statusByName(service); status.Optional && !status.Enabled() {
-		view.flash = ui.Muted.Render(service + " is disabled — press e to enable it first")
-		view.closePanes() // show the hint over the table
-		return "", false
-	}
-	return service, true
-}
-
-// handleLifecycle runs a start/stop/restart on the selected controllable service.
-func (view *Services) handleLifecycle(keyName string) tea.Cmd {
-	service, ok := view.selectedControllable()
-	if !ok {
 		return nil
 	}
-	action := map[string]string{"s": "start", "x": "stop", "r": "restart"}[keyName]
-	view.flash = ui.Muted.Render(action + "ing " + service + "…")
-	view.closePanes() // surface the action's result over the table
-	return view.controlCmd(action, service)
+	view.drilled = true
+	view.flash = ""
+	view.detail.SetService(service)
+	view.detail.SetActive(true)
+	return view.detail.Init()
 }
 
-// handleUpdate re-pulls the latest images for the selected controllable service
-// and recreates its container.
-func (view *Services) handleUpdate() tea.Cmd {
-	service, ok := view.selectedControllable()
-	if !ok {
-		return nil
-	}
-	view.flash = ui.Muted.Render("updating " + service + " (re-pulling images)…")
-	view.closePanes()
-	return view.updateCmd(service)
-}
-
-// handleToggle enables/disables the selected service (optional services only —
-// core services are always on).
+// handleToggle enables/disables the selected service (optional services only — core
+// services are always on). Lifecycle (start/stop/restart) + update now live in the
+// detail; the list keeps only the enable/disable toggle.
 func (view *Services) handleToggle() tea.Cmd {
 	service := view.selectedService()
 	if service == "" {
 		return nil
 	}
 	status := view.statusByName(service)
-	view.closePanes()
 	if !status.Optional {
 		view.flash = ui.Muted.Render(service + " is a core service — always enabled")
 		return nil
@@ -255,77 +234,11 @@ func (view *Services) handleToggle() tea.Cmd {
 		action, gerund = "disable", "disabling"
 	}
 	view.flash = ui.Muted.Render(gerund + " " + service + "…")
-	return view.controlCmd(action, service)
+	return view.toggleCmd(action, service)
 }
 
-// handleOpenConsole opens the selected service's admin console (if it has one).
-func (view *Services) handleOpenConsole() tea.Cmd {
-	service := view.selectedService()
-	if service == "" {
-		return nil
-	}
-	url := view.consoleURL(service)
-	if url == "" {
-		view.flash = ui.Muted.Render(service + " has no admin console")
-		view.closePanes()
-		return nil
-	}
-	return view.openCmd(service, url)
-}
-
-// handleDescribe drills into the selected service's detail pane (closing the logs
-// pane if it was the one open).
-func (view *Services) handleDescribe() tea.Cmd {
-	service := view.selectedService()
-	if service == "" {
-		return nil
-	}
-	view.logs.close()
-	view.describe.show(describeService(view.statusByName(service)))
-	return nil
-}
-
-// handleShowLogs switches to the live logs pane for the selected service (closing
-// the describe pane if it was open).
-func (view *Services) handleShowLogs() tea.Cmd {
-	service := view.selectedService()
-	if service == "" {
-		return nil
-	}
-	view.describe.close()
-	view.logService = service
-	view.logs.showLive(view.serviceLogs(service))
-	return logsTick() // start following the tail
-}
-
-// closePanes hides both the describe and logs panes so the table (and any flash)
-// is visible again — used by the operation actions (start/stop/restart/enable).
-func (view *Services) closePanes() {
-	view.describe.close()
-	view.logs.close()
-}
-
-func logsTick() tea.Cmd {
-	return tea.Tick(logsRefreshInterval, func(time.Time) tea.Msg { return logsTickMsg{} })
-}
-
-// serviceLogs returns the tailed log content for the full-pane log viewer (or a
-// friendly placeholder when there is nothing on disk / capture isn't wired yet).
-func (view *Services) serviceLogs(service string) string {
-	heading := ui.Heading.Render("logs · " + service)
-	lines, err := view.tail(service)
-	if err != nil {
-		return heading + "\n" + ui.Failure.Render(ui.IconFail+" "+err.Error())
-	}
-	if len(lines) == 0 {
-		return heading + "\n" + ui.Muted.Render("no logs on disk yet for "+service+
-			" (live capture is wired during hardware bring-up)")
-	}
-	return heading + "\n" + strings.Join(lines, "\n")
-}
-
-// statusByName returns the cached status for a service (a name-only fallback if
-// it is not in the latest fetch).
+// statusByName returns the cached status for a service (a name-only fallback if it is
+// not in the latest fetch).
 func (view *Services) statusByName(service string) setup.ServiceStatus {
 	for _, status := range view.statuses {
 		if status.Name == service {
@@ -335,24 +248,10 @@ func (view *Services) statusByName(service string) setup.ServiceStatus {
 	return setup.ServiceStatus{Name: service}
 }
 
-func (view *Services) controlCmd(action, service string) tea.Cmd {
+func (view *Services) toggleCmd(action, service string) tea.Cmd {
 	control := view.control
 	return func() tea.Msg {
-		return serviceActionDoneMsg{action: action, service: service, err: control(action, service)}
-	}
-}
-
-func (view *Services) updateCmd(service string) tea.Cmd {
-	update := view.update
-	return func() tea.Msg {
-		return serviceActionDoneMsg{action: "update", service: service, err: update(service)}
-	}
-}
-
-func (view *Services) openCmd(service, url string) tea.Cmd {
-	open := view.open
-	return func() tea.Msg {
-		return serviceActionDoneMsg{action: "open", service: service, err: open(url)}
+		return servicesToggleDoneMsg{action: action, service: service, err: control(action, service)}
 	}
 }
 
@@ -365,24 +264,11 @@ func (view *Services) selectedService() string {
 	return row[0]
 }
 
-// consoleURL returns the admin-console URL for the named service (or "").
-func (view *Services) consoleURL(service string) string {
-	for _, status := range view.statuses {
-		if status.Name == service {
-			return status.Console
-		}
-	}
-	return ""
-}
-
-// View renders the full-pane logs or describe pane when open, else the table
-// (with any flash). The panes fill the body; esc returns to the table.
+// View renders the open service detail when drilled in, else the list table (with
+// any flash).
 func (view *Services) View() string {
-	if view.logs.active() {
-		return view.logs.view()
-	}
-	if view.describe.active() {
-		return view.describe.view()
+	if view.drilled {
+		return view.detail.View()
 	}
 	if view.err != nil {
 		return ui.Failure.Render(ui.IconFail + " " + view.err.Error())
@@ -390,29 +276,9 @@ func (view *Services) View() string {
 	if !view.loaded {
 		return ui.Muted.Render("loading service status…")
 	}
-	// Always emit the flash slot as the LAST line (blank when empty) so the table
-	// above keeps its fixed height and the bottom sits at the constant margin.
+	// Always emit the flash slot as the LAST line (blank when empty) so the table above
+	// keeps its fixed height and the bottom sits at the constant margin.
 	return view.table.View() + "\n" + flashLine(view.flash)
-}
-
-// describeService renders a service's full detail for the describe pane.
-func describeService(status setup.ServiceStatus) string {
-	health := "no"
-	if status.Healthy {
-		health = "yes"
-	}
-	var body strings.Builder
-	body.WriteString(ui.Heading.Render(status.Name) + "\n")
-	body.WriteString(field("mode", status.Mode))
-	body.WriteString(field("state", status.State))
-	if status.Optional {
-		body.WriteString(field("optional", "yes (press e to enable/disable)"))
-	}
-	body.WriteString(field("healthy", health))
-	body.WriteString(field("address", status.Address))
-	body.WriteString(field("console", status.Console))
-	body.WriteString(field("detail", status.Detail))
-	return body.String()
 }
 
 func serviceRows(statuses []setup.ServiceStatus) []table.Row {
@@ -427,12 +293,9 @@ func serviceRows(statuses []setup.ServiceStatus) []table.Row {
 	return rows
 }
 
-// actionFlash renders the outcome of a lifecycle/console action.
-func actionFlash(msg serviceActionDoneMsg) string {
-	verbs := map[string]string{
-		"start": "started", "stop": "stopped", "restart": "restarted", "open": "opened console for",
-		"enable": "enabled", "disable": "disabled", "update": "updated",
-	}
+// toggleFlash renders the outcome of an enable/disable toggle.
+func toggleFlash(msg servicesToggleDoneMsg) string {
+	verbs := map[string]string{"enable": "enabled", "disable": "disabled"}
 	if msg.err != nil {
 		return ui.Failure.Render(ui.IconFail + " " + msg.action + " " + msg.service + ": " + msg.err.Error())
 	}

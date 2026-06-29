@@ -1535,8 +1535,8 @@ Without `--follow`, `ai logs` shows the latest on-disk snapshot (refreshed by
 `ai setup` / `ai services status`). **`--follow`** streams a `--service`'s logs
 live (`<runtime> logs -f`) to stdout until Ctrl-C — human-only (it streams
 continuously, so it is rejected under `--json`, and it requires a `--service`).
-The `ai ui` Services view shows the same logs full-pane and auto-refreshing via
-the `l` key (§14.4).
+The `ai ui` Services view embeds the same live container log (`<runtime> logs
+--tail`) beneath the per-service detail summary, auto-refreshing (§14.4).
 
 ---
 
@@ -1613,16 +1613,31 @@ API Keys · Settings; cycled by `tab`/`⇧tab`/`←→` or jumped to directly wi
 number keys `1`-`9`. There is **no `:` command palette** — `q`/`ctrl+c` quits and
 `?` toggles the key-binding help):
 
-* **Services** — live service-tier + container status; `s`/`x`/`r` start/stop/
-  restart the selected service (only when it is enabled), `e` enables/disables it
-  when it is an **optional** service (toggling on its current state; core services
-  are always on), `o` opens its admin console, `d` describes it, and `l` shows its
-  **logs full-pane** (the table hides; the log pane fills the body and scrolls;
-  `esc` returns to the table). The menu keys stay **live while a pane is open** —
-  `l` jumps straight from describe to logs (and `d`/`enter` back), and an operation
-  key (start/stop/restart/enable) closes the pane and acts — so you never have to
-  `esc` out first. Logs are consolidated here — there is no separate Logs tab — and
-  share `internal/logs` with `ai logs`.
+* **Services** — a **two-level drill-down** mirroring the Workspaces hub. It opens
+  on the *list* (live service-tier + container status: SERVICE / MODE / STATE /
+  HEALTH / ADDRESS); `e` enables/disables an **optional** service from the list
+  (toggling on its current state; core services are always on), `r` refreshes, and
+  `enter`/`d` **drills into a per-service DETAIL** (`esc` backs out to the list).
+  The detail shows a fixed **summary** (name / mode / state / health / address /
+  console) on top with the **live container log embedded beneath it** — the SAME
+  scrollable, READ-ONLY, selectable, auto-refreshing component the Workspace tab
+  embeds (the generic `LogView`), here tailing the container via
+  `setup.ServiceLogTail` (`<runtime> logs --tail <n> <container>` — the service-tier
+  analogue of the workspace log's `msb logs --tail`; a multi-container service like
+  Presidio concatenates per-container sections under a `── <container> ──` heading).
+  The log shows only while the service is RUNNING (a stopped service shows a "not
+  running" hint, not stale output), follows the tail unless scrolled up, passes
+  through the terminal-output normalizer, and PAUSES while the Services tab is not
+  the visible top-level tab or the user has backed out to the list. In the detail,
+  `s`/`x`/`r` start/stop/restart THIS service **in place** (an animated braille
+  spinner on the state line while in flight, then a refresh — they do **not** pop
+  back to the list), `p` (update) re-pulls + recreates the service via the **live
+  embedded terminal overlay** (`ai services update <svc>`, whose CLI pull spinner
+  shows the image-pull progress) and stays in the detail, `o` opens its admin
+  console, and the remaining keys drive the embedded log: `↑/↓`/`PgUp`/`PgDn` scroll,
+  `f`/`enter` follows the container log live in the REAL terminal
+  (`ai logs --service <svc> --follow` → `<runtime> logs -f`). There is no separate
+  Logs tab; the file-backed `internal/logs` reader still backs `ai logs`.
 * **Projects** — a **two-level hub**. It opens on the *switcher*: every project
   (name / OS / workspace status / agents); `enter` opens one, `n` creates a new one
   (a directory picker validated by the create rules, then the `ai create`
@@ -1729,14 +1744,16 @@ native text selection, and in-place output all work. The in-VM behavior of
 
 Navigation is **keyboard-only**: `tab`/`⇧tab`/`←→` cycle the top-level tabs and
 the number keys `1`-`9` jump straight to one (there is no `:` command palette).
-On the list views `d` opens a scrollable describe pane and `l`
-(Services) opens the full-pane log viewer. **`esc` backs out one level** everywhere
-it makes sense — it closes the describe/logs pane, backs an open project out to the
-Projects switcher, closes the menu/help overlay, or cancels the create flow,
+On the model/Projects list views `d`/`enter` opens a scrollable describe pane; on
+the **Services** list `enter`/`d` drills into the per-service detail (its embedded
+container log). **`esc` backs out one level** everywhere
+it makes sense — it closes a describe pane, backs an open project / open service
+detail out to its list, closes the menu/help overlay, or cancels the create flow,
 returning to the level above; at the top level it is a no-op (`q` quits). `?` shows
 the key bindings. The UI honours the theme set by `ai theme`
-(§14.3). Live service/microVM **log** capture and richer container detail are
-wired during hardware bring-up, so the log pane shows whatever is already on disk.
+(§14.3). The embedded workspace/container **logs** auto-refresh from the live
+`msb logs` / `<runtime> logs` tail; the live execution of those tails against a
+running runtime is exercised during hardware bring-up.
 
 ---
 

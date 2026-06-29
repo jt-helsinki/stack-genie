@@ -29,24 +29,6 @@ func (pane *describePane) show(content string) {
 	pane.viewport.GotoTop()
 }
 
-// showLive opens the pane pinned to the BOTTOM (newest first), for live logs.
-func (pane *describePane) showLive(content string) {
-	pane.on = true
-	pane.viewport.SetContent(content)
-	pane.viewport.GotoBottom()
-}
-
-// refresh replaces the content in place, keeping the scroll position — except it
-// stays pinned to the bottom when already there, so live logs follow the tail
-// until the user scrolls up to read history (k9s behaviour).
-func (pane *describePane) refresh(content string) {
-	atBottom := pane.viewport.AtBottom()
-	pane.viewport.SetContent(content)
-	if atBottom {
-		pane.viewport.GotoBottom()
-	}
-}
-
 func (pane *describePane) setSize(width, height int) {
 	pane.viewport.Width = width
 	if height > 0 {

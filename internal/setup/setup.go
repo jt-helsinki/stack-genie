@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"io"
 	"slices"
+	"strconv"
 	"strings"
 
 	"github.com/jt-helsinki/ideal-robot/internal/config"
@@ -779,4 +780,67 @@ func ServicesStatus(deps Deps) ([]ServiceStatus, error) {
 		return nil, output.Errorf(output.ExitRuntimeFailure, "service status: %s", err)
 	}
 	return append(statuses, serviceStatuses...), nil
+}
+
+// ServiceLogTailLines is how many trailing lines per container ServiceLogTail
+// returns — bounded so a busy container's full history can't flood the UI (it
+// mirrors logCaptureTailLines, the on-disk snapshot's tail).
+const ServiceLogTailLines = 200
+
+// ServiceLogTail returns the recent LIVE container logs for a logical service via
+// the container runtime (`<runtime> logs --tail N <container>`) — the service-tier
+// analogue of Manager.WorkspaceLogTail's `msb logs --tail` for a workspace microVM.
+// It is what the `ai ui` Services-tab detail view embeds beneath the service summary
+// (re-polled ~2s).
+//
+// A service may own several containers (services.ContainerNames — Presidio's
+// analyzer + anonymizer; LiteLLM + its db). For a single-container service the raw
+// logs are returned as-is; for a multi-container one each container's logs are
+// returned under a "── <container> ──" heading so the source of each section is
+// clear. A container that is not running (no logs / unknown) contributes an empty
+// section rather than failing the whole tail. tail defaults to ServiceLogTailLines
+// when <= 0.
+//
+// hardware bring-up: the live `<runtime> logs` round-trip runs only against a
+// running engine; the argv construction + multi-container layout are unit-tested
+// against a fake prober.
+func ServiceLogTail(deps Deps, service string, tail int) (string, error) {
+	containers := serviceContainers(service)
+	if len(containers) == 0 {
+		return "", output.Errorf(output.ExitInvalidInput, "unknown service %q", service)
+	}
+	containerRuntime, err := runtime.ContainerRuntimeName(deps.Prober)
+	if err != nil {
+		return "", output.Errorf(output.ExitMissingDep, "no container runtime for logs: %s", err)
+	}
+	if tail <= 0 {
+		tail = ServiceLogTailLines
+	}
+	tailArg := strconv.Itoa(tail)
+	// Single container: the raw log text, no heading (the detail view already labels
+	// the pane with the service name).
+	if len(containers) == 1 {
+		out, runErr := deps.Prober.Run(containerRuntime.Name, "logs", "--tail", tailArg, containers[0])
+		if runErr != nil {
+			// A stopped/absent container is not an error for the viewer — it just has
+			// nothing to show yet (the same tolerance CaptureServiceLogs uses).
+			return "", nil
+		}
+		return string(out), nil
+	}
+	// Multiple containers: concatenate per-container sections under a heading so the
+	// origin of each block is clear (e.g. presidio's analyzer + anonymizer).
+	var combined strings.Builder
+	for index, container := range containers {
+		if index > 0 {
+			combined.WriteString("\n")
+		}
+		combined.WriteString("── " + container + " ──\n")
+		out, runErr := deps.Prober.Run(containerRuntime.Name, "logs", "--tail", tailArg, container)
+		if runErr != nil {
+			continue // best-effort: a not-running companion contributes an empty section
+		}
+		combined.Write(out)
+	}
+	return combined.String(), nil
 }
