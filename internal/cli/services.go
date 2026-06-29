@@ -1,8 +1,13 @@
 package cli
 
 import (
+	"bytes"
 	"fmt"
+	"io"
 	goruntime "runtime"
+	"strings"
+	"sync"
+	"time"
 
 	"github.com/charmbracelet/huh"
 	"github.com/jt-helsinki/ideal-robot/internal/console"
@@ -318,21 +323,42 @@ func newServicesUpdateCmd(em *output.Emitter, exit *int) *cobra.Command {
 					targets = []string{""} // "" == all platform services
 				}
 			}
-			// Stream native pull progress to stderr on a human run (kept off the JSON
-			// stdout envelope), like the `ai setup` pre-pull.
+			// Progress feedback during the (potentially slow) image pull + restart.
+			// On a TTY: an animated spinner whose label is the LATEST pull line —
+			// docker's own multi-line progress can't share the terminal with a spinner,
+			// so capture it and surface the current line (the full output is shown only
+			// on failure). Non-TTY: stream the status lines plainly. JSON: stay quiet
+			// (the envelope is on stdout).
+			out := io.Writer(em.Err)
 			progress := func(string) {}
-			if !em.JSON {
+			var spin *pullSpinner
+			var captured *lineLabelWriter
+			switch {
+			case em.JSON:
+				out = io.Discard
+			case interactive(em):
+				spin = newPullSpinner(em.Err, "updating service images (re-pulling latest)…")
+				captured = &lineLabelWriter{spin: spin}
+				out, progress = captured, spin.setLabel
+			default:
 				_, _ = fmt.Fprintln(em.Err, "Updating service images (re-pulling latest)…")
 				progress = func(line string) { _, _ = fmt.Fprintln(em.Err, line) }
 			}
 			var statuses []setup.ServiceStatus
 			for _, name := range targets {
-				applied, err := setup.UpdateService(deps, name, em.Err, progress)
+				applied, err := setup.UpdateService(deps, name, out, progress)
 				if err != nil {
+					if spin != nil {
+						spin.stopWith(ui.Failure.Render(ui.IconFail + " update failed"))
+						_, _ = io.Copy(em.Err, bytes.NewReader(captured.full.Bytes())) // show the captured pull output
+					}
 					*exit = em.Failure("services.update", err)
 					return nil
 				}
 				statuses = applied
+			}
+			if spin != nil {
+				spin.stopWith(ui.Success.Render(ui.IconOK + " service images updated"))
 			}
 			*exit = em.Success("services.update", servicesResult{Services: statuses})
 			return nil
@@ -402,4 +428,99 @@ func newServicesStatusCmd(em *output.Emitter, exit *int) *cobra.Command {
 			return nil
 		},
 	}
+}
+
+// --- pull progress spinner (ai services update) ---------------------------------
+
+// spinnerFrames are the braille spinner glyphs animated during an image pull.
+var spinnerFrames = []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"}
+
+// pullSpinner is a minimal single-line animated stderr spinner shown while
+// `ai services update` pulls images. docker's own (multi-line) progress can't share
+// the line with it, so the pull output is captured and the spinner's LABEL is set to
+// the latest progress line — giving live feedback without the noisy native bars. Its
+// label is updated concurrently from the pull goroutine, so it is mutex-guarded.
+type pullSpinner struct {
+	out   io.Writer
+	mu    sync.Mutex
+	label string
+	stop  chan struct{}
+	done  chan struct{}
+}
+
+func newPullSpinner(out io.Writer, label string) *pullSpinner {
+	spin := &pullSpinner{out: out, label: label, stop: make(chan struct{}), done: make(chan struct{})}
+	go spin.run()
+	return spin
+}
+
+func (spin *pullSpinner) run() {
+	defer close(spin.done)
+	ticker := time.NewTicker(90 * time.Millisecond)
+	defer ticker.Stop()
+	for frame := 0; ; frame++ {
+		select {
+		case <-spin.stop:
+			return
+		case <-ticker.C:
+			spin.mu.Lock()
+			label := spin.label
+			spin.mu.Unlock()
+			// CR + clear-to-end-of-line, then glyph + the (truncated) current label.
+			_, _ = fmt.Fprintf(spin.out, "\r\033[K%s %s",
+				ui.Primary.Render(spinnerFrames[frame%len(spinnerFrames)]), truncateLabel(label, 100))
+		}
+	}
+}
+
+// setLabel updates the spinner's line (ignoring blanks).
+func (spin *pullSpinner) setLabel(label string) {
+	label = strings.TrimSpace(label)
+	if label == "" {
+		return
+	}
+	spin.mu.Lock()
+	spin.label = label
+	spin.mu.Unlock()
+}
+
+// stopWith halts the animation, clears the spinner line, and prints final.
+func (spin *pullSpinner) stopWith(final string) {
+	close(spin.stop)
+	<-spin.done
+	_, _ = fmt.Fprintf(spin.out, "\r\033[K%s\n", final)
+}
+
+// truncateLabel keeps the spinner to a single terminal line.
+func truncateLabel(label string, max int) string {
+	runes := []rune(label)
+	if len(runes) <= max {
+		return label
+	}
+	return string(runes[:max-1]) + "…"
+}
+
+// lineLabelWriter feeds the LATEST written line to a spinner's label while keeping
+// the FULL output buffered (surfaced only if the pull fails). It is the `out` writer
+// passed to setup.UpdateService so docker's progress drives the spinner line.
+type lineLabelWriter struct {
+	spin    *pullSpinner
+	full    bytes.Buffer
+	partial []byte
+}
+
+func (writer *lineLabelWriter) Write(payload []byte) (int, error) {
+	writer.full.Write(payload)
+	writer.partial = append(writer.partial, payload...)
+	// Split on both \n and \r so docker's in-line progress updates advance the label.
+	for {
+		index := bytes.IndexAny(writer.partial, "\n\r")
+		if index < 0 {
+			break
+		}
+		line := strings.TrimSpace(string(writer.partial[:index]))
+		writer.partial = writer.partial[index+1:]
+		writer.spin.setLabel(line)
+	}
+	return len(payload), nil
 }
