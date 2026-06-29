@@ -38,15 +38,16 @@ type sessionsRefreshedMsg struct {
 }
 type sessionKilledMsg struct{ err error }
 
-// sessionsRetryMsg re-arms the auto-retry that lets the Shell tab self-heal after the
-// workspace was briefly unreachable (e.g. a host sleep). Generation-guarded so a
-// stale chain (from a previous activation) dies.
-type sessionsRetryMsg struct{ generation int }
+// sessionsRefreshMsg re-arms the steady auto-refresh that keeps the Shell tab LIVE
+// while it is visible: it reflects sessions appearing/being killed and the workspace
+// being stopped/started (and self-heals after a host sleep) without a manual `r`.
+// Generation-guarded so a stale chain (from a previous activation) dies.
+type sessionsRefreshMsg struct{ generation int }
 
-// sessionsRetryInterval is how often the Shell tab re-lists while it is in an ERROR
-// state, so it recovers on its own once the workspace responds — instead of freezing
-// on a stale error until the user presses r. It only ticks while the tab is active.
-const sessionsRetryInterval = 3 * time.Second
+// sessionsRefreshInterval is how often the Shell tab re-lists while it is the active
+// tab — so its state stays current. It only ticks while the tab is active (the hub
+// pauses it on leave), so a background tab makes no in-VM calls.
+const sessionsRefreshInterval = 3 * time.Second
 
 // Sessions is the "Shell" tab: the per-workspace session manager over the tmux
 // sessions backing `ai shell`/`ai agent`/`ai attach`. It lists sessions and, on the
@@ -137,9 +138,9 @@ func (view *Sessions) SetActive(active bool) {
 // does, errBackstopTimedOut is shown and `r` retries.
 const viewFetchTimeout = 12 * time.Second
 
-func (view *Sessions) retryTickCmd(generation int) tea.Cmd {
-	return tea.Tick(sessionsRetryInterval, func(time.Time) tea.Msg {
-		return sessionsRetryMsg{generation: generation}
+func (view *Sessions) refreshTickCmd(generation int) tea.Cmd {
+	return tea.Tick(sessionsRefreshInterval, func(time.Time) tea.Msg {
+		return sessionsRefreshMsg{generation: generation}
 	})
 }
 
@@ -170,17 +171,19 @@ func (view *Sessions) Update(msg tea.Msg) tea.Cmd {
 		view.err = message.err
 		if message.err == nil {
 			view.sessions = message.sessions
+			cursor := view.table.Cursor()
 			view.table.SetRows(sessionRows(message.sessions))
-			return nil
+			view.table.SetCursor(cursor) // keep the selection across the periodic refresh
 		}
-		// The workspace was unreachable (e.g. just after a host sleep, or mid-restart).
-		// Auto-retry while this tab is active so the list recovers on its own once the
-		// workspace responds, instead of staying frozen on the error until `r`.
+		// Keep the list LIVE while this tab is active: re-poll on a timer so it reflects
+		// sessions created/killed and the workspace being stopped/started (and recovers
+		// after a host sleep). Generation- and active-guarded (paused when the tab is
+		// left), so only the visible tab makes in-VM calls.
 		if view.active {
-			return view.retryTickCmd(view.generation)
+			return view.refreshTickCmd(view.generation)
 		}
 		return nil
-	case sessionsRetryMsg:
+	case sessionsRefreshMsg:
 		if message.generation != view.generation || !view.active {
 			return nil // stale chain or the tab was left
 		}

@@ -29,13 +29,15 @@ type appsRefreshedMsg struct {
 	err  error
 }
 
-// appsRetryMsg re-arms the auto-retry that lets the Apps tab self-heal after the
-// workspace was briefly unreachable (e.g. a host sleep). Generation-guarded.
-type appsRetryMsg struct{ generation int }
+// appsRefreshMsg re-arms the steady auto-refresh that keeps the Apps tab LIVE while
+// it is visible: it reflects containers starting/stopping and the workspace being
+// stopped/started (and self-heals after a host sleep) without a manual `r`.
+// Generation-guarded so a stale chain dies.
+type appsRefreshMsg struct{ generation int }
 
-// appsRetryInterval is how often the Apps tab re-lists while in an ERROR state, so it
-// recovers on its own once the workspace responds. Only ticks while the tab is active.
-const appsRetryInterval = 3 * time.Second
+// appsRefreshInterval is how often the Apps tab re-lists while it is the active tab.
+// It only ticks while the tab is active (the hub pauses it on leave).
+const appsRefreshInterval = 3 * time.Second
 
 // Apps is the per-workspace view of the in-VM AI apps (Open WebUI, AnythingLLM):
 // a Services-style table APP / STATUS / URL with keys to add/remove/update and
@@ -103,9 +105,9 @@ func (view *Apps) SetActive(active bool) {
 	}
 }
 
-func (view *Apps) retryTickCmd(generation int) tea.Cmd {
-	return tea.Tick(appsRetryInterval, func(time.Time) tea.Msg {
-		return appsRetryMsg{generation: generation}
+func (view *Apps) refreshTickCmd(generation int) tea.Cmd {
+	return tea.Tick(appsRefreshInterval, func(time.Time) tea.Msg {
+		return appsRefreshMsg{generation: generation}
 	})
 }
 
@@ -139,16 +141,19 @@ func (view *Apps) Update(msg tea.Msg) tea.Cmd {
 		view.err = message.err
 		if message.err == nil {
 			view.apps = message.apps
+			cursor := view.table.Cursor()
 			view.table.SetRows(appRows(message.apps))
-			return nil
+			view.table.SetCursor(cursor) // keep the selection across the periodic refresh
 		}
-		// Unreachable workspace (e.g. just after a host sleep, or mid-restart):
-		// auto-retry while this tab is active so the list recovers on its own.
+		// Keep the Apps list LIVE while this tab is active: re-poll on a timer so it
+		// reflects containers starting/stopping and the workspace being stopped/started
+		// (a stop returns Running=false with NO error, which the error-only path missed).
+		// Generation- and active-guarded, so only the visible tab makes in-VM calls.
 		if view.active {
-			return view.retryTickCmd(view.generation)
+			return view.refreshTickCmd(view.generation)
 		}
 		return nil
-	case appsRetryMsg:
+	case appsRefreshMsg:
 		if message.generation != view.generation || !view.active {
 			return nil // stale chain or the tab was left
 		}
