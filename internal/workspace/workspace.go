@@ -304,6 +304,25 @@ type Manager struct {
 	Served ServedModels
 	Now    func() string
 	GOOS   string
+	// Sleep prevents the HOST from idle-sleeping while a workspace is running, so the
+	// microVM's exec channel doesn't wedge on a host suspend/resume. Optional (nil →
+	// no-op): the lifecycle never fails on an inhibitor error.
+	Sleep SleepInhibitor
+}
+
+// SleepInhibitor holds an OS power assertion that keeps the host awake while a
+// workspace microVM is running. On a host suspend/resume the microVM's vsock exec
+// channel wedges (unrecoverable without a restart), so the platform prevents idle
+// sleep for the workspace's lifetime. Inhibit is taken at start, Release at
+// stop/destroy. Implementations are best-effort — a failure must never block the
+// lifecycle. NOTE: this prevents IDLE/timeout sleep only; closing a laptop lid still
+// suspends the host (that needs system power settings, out of scope).
+type SleepInhibitor interface {
+	// Inhibit starts (or re-uses) the power assertion for the project. root is the
+	// project's host source dir (the assertion's pid is tracked under its run/ dir).
+	Inhibit(project, root string) error
+	// Release drops the project's power assertion (no-op if none is held).
+	Release(project, root string) error
 }
 
 func resolveProjectRoot(project string) (string, error) {
@@ -413,6 +432,11 @@ func (manager Manager) Start(project string) (*state.Workspace, error) {
 		return nil, err
 	}
 	started = false // handle saved — disarm the rollback, keep the running microVM
+	// Keep the host awake while this workspace runs: a host idle-sleep suspends the
+	// microVM and wedges its exec channel on resume. Best-effort — never fail start.
+	if manager.Sleep != nil {
+		_ = manager.Sleep.Inhibit(project, root)
+	}
 	return handle, nil
 }
 
@@ -845,6 +869,10 @@ func (manager Manager) Stop(project string) error {
 	if err := manager.Sandbox.Stop(name); err != nil {
 		return err
 	}
+	// The workspace is no longer running — drop the keep-awake assertion.
+	if manager.Sleep != nil {
+		_ = manager.Sleep.Release(project, root)
+	}
 	return manager.updateStatus(root, name, project, state.StatusStopped)
 }
 
@@ -926,6 +954,10 @@ func (manager Manager) Destroy(project string) error {
 	name := Name(project)
 	if err := manager.Sandbox.Destroy(name); err != nil {
 		return err
+	}
+	// The microVM is gone — drop the keep-awake assertion.
+	if manager.Sleep != nil {
+		_ = manager.Sleep.Release(project, root)
 	}
 	return manager.updateStatus(root, name, project, state.StatusDestroyed)
 }

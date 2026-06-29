@@ -13,6 +13,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/jt-helsinki/ideal-robot/internal/litellm"
@@ -579,5 +580,89 @@ func RealManager(goos string, now func() string) Manager {
 		Served:  servedModelsClient{manager: keyManager},
 		Now:     now,
 		GOOS:    goos,
+		Sleep:   realSleepInhibitor{goos: goos},
 	}
+}
+
+// realSleepInhibitor keeps the host awake while a workspace runs (see SleepInhibitor).
+// macOS uses `caffeinate -i` (prevent idle system sleep); Linux uses `systemd-inhibit
+// … sleep infinity`. The inhibitor runs DETACHED (setsid, so it outlives this short-
+// lived `ai` invocation) and its PID is tracked under the project run dir so Release
+// can stop it. LIMITATION: `caffeinate -i` prevents IDLE/timeout sleep only — closing
+// a laptop lid still suspends the host (that needs `sudo pmset` settings, out of scope).
+type realSleepInhibitor struct{ goos string }
+
+// sleepInhibitorCommand is the argv that holds an "awake" assertion until killed, per
+// OS (nil = unsupported → best-effort no-op).
+func sleepInhibitorCommand(goos string) []string {
+	switch goos {
+	case "darwin":
+		return []string{"caffeinate", "-i"} // prevent idle system sleep; waits until killed
+	case "linux":
+		return []string{"systemd-inhibit", "--what=sleep", "--mode=block",
+			"--why=ai workspace running", "sleep", "infinity"}
+	default:
+		return nil
+	}
+}
+
+func sleepInhibitorPidPath(root string) string {
+	return filepath.Join(root, ".ai-platform", "run", "sleep-inhibitor.pid")
+}
+
+func (inhibitor realSleepInhibitor) Inhibit(_, root string) error {
+	argv := sleepInhibitorCommand(inhibitor.goos)
+	if argv == nil {
+		return nil // unsupported OS — best-effort no-op
+	}
+	pidPath := sleepInhibitorPidPath(root)
+	if pid, ok := readPidFile(pidPath); ok && processAlive(pid) {
+		return nil // already holding the assertion for this workspace
+	}
+	if err := os.MkdirAll(filepath.Dir(pidPath), 0o755); err != nil {
+		return err
+	}
+	command := exec.Command(argv[0], argv[1:]...)            // #nosec G204 — fixed argv per OS
+	command.SysProcAttr = &syscall.SysProcAttr{Setsid: true} // outlive this `ai` process
+	command.Stdin, command.Stdout, command.Stderr = nil, nil, nil
+	if err := command.Start(); err != nil {
+		return err
+	}
+	pid := command.Process.Pid
+	_ = command.Process.Release()
+	return os.WriteFile(pidPath, []byte(strconv.Itoa(pid)), 0o600)
+}
+
+func (inhibitor realSleepInhibitor) Release(_, root string) error {
+	pidPath := sleepInhibitorPidPath(root)
+	pid, ok := readPidFile(pidPath)
+	if !ok {
+		return nil
+	}
+	if process, err := os.FindProcess(pid); err == nil {
+		_ = process.Signal(syscall.SIGTERM)
+	}
+	return os.Remove(pidPath)
+}
+
+// readPidFile reads a positive PID from a pid file (false if absent/unparseable).
+func readPidFile(path string) (int, bool) {
+	data, err := os.ReadFile(path) // #nosec G304 — platform-controlled run-dir path
+	if err != nil {
+		return 0, false
+	}
+	pid, err := strconv.Atoi(strings.TrimSpace(string(data)))
+	if err != nil || pid <= 0 {
+		return 0, false
+	}
+	return pid, true
+}
+
+// processAlive reports whether a PID names a live process (signal 0 probe).
+func processAlive(pid int) bool {
+	process, err := os.FindProcess(pid)
+	if err != nil {
+		return false
+	}
+	return process.Signal(syscall.Signal(0)) == nil
 }

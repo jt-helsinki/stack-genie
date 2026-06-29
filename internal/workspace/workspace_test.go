@@ -1376,3 +1376,45 @@ func execRootRan(sandbox *fakeSandbox, name string) bool {
 	}
 	return false
 }
+
+// fakeSleepInhibitor records Inhibit/Release calls for the sleep-prevention wiring.
+type fakeSleepInhibitor struct{ inhibited, released int }
+
+func (inhibitor *fakeSleepInhibitor) Inhibit(_, _ string) error { inhibitor.inhibited++; return nil }
+func (inhibitor *fakeSleepInhibitor) Release(_, _ string) error { inhibitor.released++; return nil }
+
+// Start takes the keep-awake assertion; Stop releases it (so the host can idle-sleep
+// only when no workspace is running).
+func TestStartInhibitsSleepStopReleases(test *testing.T) {
+	seedProject(test, "app")
+	sleep := &fakeSleepInhibitor{}
+	manager := Manager{
+		Builder: &fakeBuilder{}, Sandbox: &fakeSandbox{}, Keys: &fakeKeyMinter{},
+		Now: func() string { return "t" }, Sleep: sleep,
+	}
+	if _, err := manager.Start("app"); err != nil {
+		test.Fatal(err)
+	}
+	if sleep.inhibited != 1 {
+		test.Fatalf("Start must take the keep-awake assertion once, got %d", sleep.inhibited)
+	}
+	if err := manager.Stop("app"); err != nil {
+		test.Fatal(err)
+	}
+	if sleep.released != 1 {
+		test.Fatalf("Stop must release the keep-awake assertion once, got %d", sleep.released)
+	}
+}
+
+// sleepInhibitorCommand maps the OS to its keep-awake command (nil = unsupported).
+func TestSleepInhibitorCommand(test *testing.T) {
+	if got := sleepInhibitorCommand("darwin"); len(got) == 0 || got[0] != "caffeinate" {
+		test.Errorf("darwin should use caffeinate, got %v", got)
+	}
+	if got := sleepInhibitorCommand("linux"); len(got) == 0 || got[0] != "systemd-inhibit" {
+		test.Errorf("linux should use systemd-inhibit, got %v", got)
+	}
+	if got := sleepInhibitorCommand("plan9"); got != nil {
+		test.Errorf("an unsupported OS should be a no-op (nil), got %v", got)
+	}
+}
