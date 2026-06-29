@@ -52,7 +52,7 @@ func TestRealMicroVM(test *testing.T) {
 	if err := builder.Build(projectRoot, imageRef); err != nil {
 		test.Fatalf("Build: %v", err)
 	}
-	if err := sandbox.Create(name, imageRef, projectRoot, overlayPath, nil); err != nil {
+	if err := sandbox.Create(name, imageRef, projectRoot, overlayPath, VMResources{}, nil); err != nil {
 		test.Fatalf("Create: %v", err)
 	}
 

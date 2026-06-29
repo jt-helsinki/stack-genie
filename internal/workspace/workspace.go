@@ -183,11 +183,20 @@ type Builder interface {
 }
 
 // Sandbox drives Microsandbox microVMs (Go SDK / msb). Create mounts the
+// VMResources is the per-workspace microVM resource allocation passed to
+// `msb create`, sourced from the project config's `workspace.cpu_limit` /
+// `workspace.memory_limit`. CPUs ≤ 0 omits `--cpus` (msb's default vCPU count);
+// an empty Memory falls back to the platform default (see microVMMemory).
+type VMResources struct {
+	CPUs   int
+	Memory string
+}
+
 // read-only image, the host project source, and the persistent overlay (arch
 // §26) as a volume, and applies the project's egress policy via netArgs (the
 // `msb create` network-rule fragment from egress.MsbNetworkArgs).
 type Sandbox interface {
-	Create(name, imageRef, projectMount, overlayPath string, netArgs []string) error
+	Create(name, imageRef, projectMount, overlayPath string, resources VMResources, netArgs []string) error
 	Start(name string) error
 	Stop(name string) error
 	Destroy(name string) error
@@ -331,7 +340,14 @@ func (manager Manager) Start(project string) (*state.Workspace, error) {
 	netArgs := egress.MsbNetworkArgs(networkForStart, gatewayHost, gatewayPort)
 	// The microVM mounts the host project path directly. Supported hosts are
 	// macOS and Linux, so no path translation is needed (arch §7).
-	if err := manager.Sandbox.Create(name, imageRef, root, overlayPath, netArgs); err != nil {
+	// Apply the project's declared microVM resource limits (config.yaml
+	// `workspace.cpu_limit`/`memory_limit`) to `msb create`. Empty/zero values fall
+	// back to msb's default vCPU count and the platform default memory.
+	resources := VMResources{
+		CPUs:   projectConfig.Workspace.CPULimit,
+		Memory: projectConfig.Workspace.MemoryLimit,
+	}
+	if err := manager.Sandbox.Create(name, imageRef, root, overlayPath, resources, netArgs); err != nil {
 		return nil, err
 	}
 	if err := manager.Sandbox.Start(name); err != nil {

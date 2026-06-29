@@ -79,10 +79,12 @@ func (builder realBuilder) Build(projectRoot, imageRef string) error {
 	return nil
 }
 
-// microVMMemory is the memory allocated to each workspace microVM. It must hold the
-// guest OS + the rootful in-VM containerd + any in-VM app containers (Open WebUI /
-// AnythingLLM are heavy); 1G was too small — pulling/running an app could OOM-kill
-// containerd mid-pull ("connection refused" on its socket), so the default is 4G.
+// microVMMemory is the DEFAULT memory allocated to a workspace microVM when the
+// project config does not set `workspace.memory_limit`. It must hold the guest OS +
+// the rootful in-VM containerd + any in-VM app containers (Open WebUI / AnythingLLM
+// are heavy); 1G was too small — pulling/running an app could OOM-kill containerd
+// mid-pull ("connection refused" on its socket), so the fallback is 4G. (A freshly
+// created project's config sets memory_limit to 8G; this only applies when it's empty.)
 const microVMMemory = "4G"
 
 // dnsNameserver is the fixed host-loopback address of the platform's aip-dns
@@ -108,14 +110,18 @@ func (sandbox realSandbox) ensureInstalled() error {
 // /persist so writes outside the project mount survive stop/start and destroy
 // recreation. The egress policy is applied via netArgs. `--replace` makes
 // recreation idempotent.
-func (sandbox realSandbox) Create(name, imageRef, projectMount, overlayPath string, netArgs []string) error {
+func (sandbox realSandbox) Create(name, imageRef, projectMount, overlayPath string, resources VMResources, netArgs []string) error {
 	if err := sandbox.ensureInstalled(); err != nil {
 		return err
+	}
+	memory := resources.Memory
+	if memory == "" {
+		memory = microVMMemory // fall back to the platform default when unset
 	}
 	args := []string{
 		"create", imageRef,
 		"--name", name,
-		"--memory", microVMMemory,
+		"--memory", memory,
 		"--volume", projectMount + ":/workspace",
 		"--volume", overlayPath + ":/persist",
 		"--workdir", "/workspace",
@@ -124,6 +130,11 @@ func (sandbox realSandbox) Create(name, imageRef, projectMount, overlayPath stri
 		// net-rules in netArgs (a resolver answer cannot bypass them).
 		"--dns-nameserver", dnsNameserver,
 		"--replace",
+	}
+	// Apply the configured vCPU count when set; ≤ 0 omits --cpus so msb uses its
+	// default. msb's flags: `-m/--memory <e.g. 1G>`, `-c/--cpus <int>`.
+	if resources.CPUs > 0 {
+		args = append(args, "--cpus", strconv.Itoa(resources.CPUs))
 	}
 	args = append(args, netArgs...)
 	if err := runStreaming("msb", args...); err != nil {

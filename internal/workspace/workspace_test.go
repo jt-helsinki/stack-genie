@@ -31,6 +31,7 @@ type fakeSandbox struct {
 	created, started, stopped, destroyed bool
 	projectMount                         string
 	overlayMount                         string
+	resources                            VMResources
 	netArgs                              []string
 	execResult                           ExecResult
 	execErr                              error
@@ -59,10 +60,11 @@ type fakeSandbox struct {
 	logTailErr       error
 }
 
-func (sandbox *fakeSandbox) Create(_, _, projectMount, overlayPath string, netArgs []string) error {
+func (sandbox *fakeSandbox) Create(_, _, projectMount, overlayPath string, resources VMResources, netArgs []string) error {
 	sandbox.created = true
 	sandbox.projectMount = projectMount
 	sandbox.overlayMount = overlayPath
+	sandbox.resources = resources
 	sandbox.netArgs = netArgs
 	return nil
 }
@@ -1159,6 +1161,27 @@ func TestMergePublishPorts(test *testing.T) {
 	)
 	if len(conflict) != 1 || conflict[0].Guest != 21000 {
 		test.Fatalf("clash resolution = %v, want the app mapping to win", conflict)
+	}
+}
+
+// Start passes the project config's workspace resource limits through to
+// Sandbox.Create (→ msb --memory/--cpus); an empty memory_limit is left for the
+// real Create to default.
+func TestStartAppliesConfiguredResourceLimits(test *testing.T) {
+	root := seedProject(test, "app")
+	if err := config.WriteProject(root, &config.Config{
+		OS:        "debian-trixie",
+		Workspace: config.WorkspaceConfig{CPULimit: 6, MemoryLimit: "8G"},
+	}); err != nil {
+		test.Fatal(err)
+	}
+	sandbox := &fakeSandbox{}
+	manager := Manager{Builder: &fakeBuilder{}, Sandbox: sandbox, Keys: &fakeKeyMinter{}, Now: func() string { return "t" }}
+	if _, err := manager.Start("app"); err != nil {
+		test.Fatal(err)
+	}
+	if sandbox.resources.CPUs != 6 || sandbox.resources.Memory != "8G" {
+		test.Fatalf("Start passed resources %+v, want {CPUs:6 Memory:8G}", sandbox.resources)
 	}
 }
 
