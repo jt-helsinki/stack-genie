@@ -322,8 +322,13 @@ fully unit-tested with fakes:
   `nerdctl run -d` argv (`-p <port>:<containerPort>`, `-v
   /persist/apps/<key>:<DataDir>`, optional `-v /workspace:/workspace`, the gateway
   `-e` env, `--restart always`);
-- best-effort start at workspace start (one app failing does not fail the
-  workspace or the others).
+- **on-demand** start: apps are NOT auto-started at `ai start` (a heavy image pull
+  is a long in-VM exec that would block the workspace start and every other exec for
+  its duration). `Manager.Start` only publishes their ports and brings containerd up;
+  each app starts when requested via `ai apps start`/`add`/`restart` (`runContainer`
+  calls `EnsureRuntime` to bring containerd up first, retrying once if the runtime is
+  unreachable). The microVM is created with 4G memory so a heavy app pull does not
+  OOM-kill the in-VM containerd.
 
 The LIVE `nerdctl` behaviour is the bring-up item (grep `hardware bring-up` in
 `internal/apps` and `internal/workspace`):

@@ -604,8 +604,9 @@ context:
                            # (mapped to Headroom per-request knobs keep_turns/output_buffer_tokens)
   caveman_level: full      # Caveman output compression: lite | full | ultra | wenyan
 workspace:
-  cpu_limit: 4             # microVM resource limits (applied at workspace start)
-  memory_limit: 8G
+  cpu_limit: 4             # declared microVM resource limits (schema fields; NOT yet
+  memory_limit: 8G         # wired into `msb create` — the microVM currently boots with a
+                           # fixed 4G (`workspace_real.go` microVMMemory) and no `--cpus`)
 network:                   # workspace networking (arch §29.6); all fields managed via `ai network`
                            # enforced as a Microsandbox NetworkPolicy (no egress proxy); DNS-audited
   egress: public           # public (DEFAULT, allow-outbound; private ranges still blocked) | deny | unrestricted
@@ -616,8 +617,9 @@ network:                   # workspace networking (arch §29.6); all fields mana
     - { guest: 3000, host: 3000 }
 apps:                      # opt-in in-VM AI apps (arch §7), chosen via `ai create --apps` / `ai apps add`
                            # each runs as a rootful nerdctl container in the workspace microVM, gateway-routed,
-                           # published on its allocated unique host port (stable across restarts)
-  - { key: openwebui, port: 41001 }   # key one of: openwebui, anythingllm
+                           # published on its allocated unique host port (stable across restarts;
+                           # allocated from the 21000–21999 window — internal/apps/ports.go)
+  - { key: openwebui, port: 21000 }   # key one of: openwebui, anythingllm
 ```
 
 ## 12.5 `config/runtime.yaml` (platform-global, non-project)

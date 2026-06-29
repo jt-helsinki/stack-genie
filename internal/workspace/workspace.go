@@ -542,9 +542,9 @@ func mergePublishPorts(declared, appPorts []config.PortMapping) []config.PortMap
 // config.yaml, port reservations span every workspace, and the gateway env is the
 // resolved gateway URL + a freshly-minted scoped virtual key + the model
 // preference (litellm.DefaultRouting().Default, which is EMPTY in the catalog-driven
-// system — no built-in default model). It is used by `ai apps` and by
-// startInstalledApps. exec is nil when the workspace is not running, so the
-// lifecycle methods that need the VM report ErrWorkspaceNotRunning.
+// system — no built-in default model). It backs `ai apps` and the TUI Apps tab. exec
+// is nil when the workspace is not running, so the lifecycle methods that need the VM
+// report ErrWorkspaceNotRunning (and List degrades to installed-but-not-running).
 func (manager Manager) AppManager(name, project, root, gatewayURL string) *apps.Manager {
 	return manager.buildAppManager(name, project, root, gatewayURL, manager.requireRunning(project) == nil)
 }
@@ -632,13 +632,6 @@ func (manager Manager) appGatewayKey(name, project string) (string, error) {
 	})
 }
 
-// startInstalledApps brings up every installed in-VM app at workspace start. It is
-// BEST-EFFORT and never fails the workspace start: if the gateway key cannot be
-// minted, or an individual app fails to start, it logs a warning and continues. A
-// workspace with a degraded app is still fully usable.
-//
-// hardware bring-up: the live `nerdctl run` for each app executes only inside a
-// booted microVM with containerd up; the orchestration is unit-tested with a fake.
 // installRefreshScript generates the per-workspace `refresh-models` script and
 // installs it on PATH inside the running microVM at /usr/local/bin/refresh-models
 // (executable). The script fetches the served models LIVE from the gateway's

@@ -656,7 +656,11 @@ ai delete [<name>] --purge
 operation — use `ai stop` to pause a workspace and `ai start`/`ai restart` to
 (re)build it. Behavior of delete:
 
-* tears down the Microsandbox microVM (idempotent — a no-op if not running)
+* tears down the Microsandbox microVM (idempotent — a no-op if not running). If
+  the teardown FAILS (an msb error or an odd VM state — but not a missing msb),
+  the platform state is removed **anyway** (the user asked to delete) and a
+  **warning** carries the manual cleanup (`msb remove -f aip-<name>`), rather than
+  aborting and leaking `.ai-platform`.
 * removes the project's **`.ai-platform` directory** (config + run state — the
   platform's footprint) and its persistent overlay (architecture §26)
 * de-registers it from `config/projects.yaml`
@@ -1624,9 +1628,14 @@ number keys `1`-`9`. There is **no `:` command palette** — `q`/`ctrl+c` quits 
   and freezing while scrolled up. The text is passed through a terminal-output
   normalizer (interpreting `\r`/cursor-moves/erase-line) so progress redraws (image
   pulls) collapse IN PLACE while the full scrollback + plain selectable text are
-  kept; it does NOT gate on the "started" state handle (it shows during startup; a
-  not-yet-created sandbox reads as empty). `f`/`enter` opens a live `msb logs -f`
-  follow in the REAL terminal.
+  kept. The fetch itself (`Manager.WorkspaceLogTail`) does NOT gate on the "started"
+  handle — it shows the live `msb logs` DURING startup (build + image-pull progress,
+  before the handle flips to started; a not-yet-created sandbox reads as empty). The
+  **view**, however, only polls/shows the log while the workspace is RUNNING: a
+  STOPPED workspace shows a "not running" hint, not the previous session's stale
+  captured output, and the poll PAUSES while the Workspace sub-tab is not visible
+  (the normalize pass runs off the bubbletea event loop so it never stalls tab
+  switches). `f`/`enter` opens a live `msb logs -f` follow in the REAL terminal.
   `ai ui` does NOT capture the mouse (so the host terminal's native text selection
   works on every pane); scrollable panes scroll by keyboard.
 * **Local Models** — the local Ollama store ⨯ the **live ollama.com installable
