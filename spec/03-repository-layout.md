@@ -344,10 +344,25 @@ config.yaml          # tracked — project config (§12.4)
 profile.yaml         # tracked — project profile (language/toolchain)
 project.yaml         # tracked — { name, os, created } (§12.1)
 skills/caveman/      # tracked — platform-seeded Caveman skill (architecture §9)
+agents/              # tracked — KEYLESS, user-editable agent CLI templates (§12.1c)
+  opencode.json      #   opencode static settings + gateway base URL (no key)
+  pi.json            #   pi static settings + gateway base URL (no key)
+  codex.toml         #   codex gateway provider block (key via env_key, no key)
 .gitignore           # ignores run/
 run/                 # gitignored — host-local runtime state
   workspaces/<workspace-id>.json   # (§12.2)
 ```
+
+The `agents/` templates hold each agent CLI's **static, user-editable** settings
+plus the gateway **base URL** (not a secret) — but **never the scoped virtual key**.
+At workspace start the platform reads each template, deep-merges in the dynamic,
+key-bearing values (the freshly-minted scoped key, the served-model picker, the
+Headroom knobs), and writes the **final config INTO the microVM** — so the key lives
+only in the VM, never on platform disk (architecture §15). A user's edits survive
+restart (a present template is merged, never clobbered with the key-bearing form);
+only an absent template is re-scaffolded keyless. claude-code/codex/gemini route via
+**env vars** written into the VM agent env file (sourced by every session), so all
+five CLIs reach the gateway by default.
 
 The platform seeds the **Caveman** agent skill into `skills/caveman/` at
 project creation (not into the workspace image) so the in-workspace agent picks

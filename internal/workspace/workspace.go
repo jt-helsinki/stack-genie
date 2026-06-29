@@ -11,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 	"time"
@@ -41,12 +42,27 @@ func resolveGateway() (host string, port int, url string) {
 }
 
 // Guest paths the agent provider configs are written to inside the microVM. The
-// workspace image creates a `workspace` user; both files live under its home.
+// workspace image creates a `workspace` user; all files live under its home.
+//
+//   - openCode/pi: JSON config files (opencode/pi route via a config file).
+//   - codex: ~/.codex/config.toml (a keyless provider block; the key is env-supplied).
+//   - agentEnv: the gateway env vars the env-routed CLIs (claude-code, codex,
+//     gemini) read — written here (key in-VM only) and sourced by every session.
 const (
-	openCodeGuestPath = "/home/workspace/.config/opencode/opencode.json"
-	piGuestPath       = "/home/workspace/.pi/agent/models.json"
-	tmuxConfGuestPath = "/home/workspace/.tmux.conf"
+	openCodeGuestPath    = "/home/workspace/.config/opencode/opencode.json"
+	piGuestPath          = "/home/workspace/.pi/agent/models.json"
+	codexGuestPath       = agentcfg.CodexConfigGuestPath
+	agentEnvGuestPath    = agentcfg.AgentEnvFileGuestPath
+	bashProfileGuestPath = "/home/workspace/.bash_profile"
+	tmuxConfGuestPath    = "/home/workspace/.tmux.conf"
 )
+
+// agentTemplateDir is the host-side, user-editable directory the keyless agent
+// CLI templates live in (<project>/.ai-platform/agents/). At start the platform
+// reads each template, merges in the dynamic values, and writes the FINAL config
+// into the microVM — the host templates NEVER hold the scoped virtual key
+// (arch §15, repo-layout §12.1c).
+const agentTemplateDir = "agents"
 
 // refresh-models guest paths. The generated script is first written to a home
 // staging path (WriteFile runs as the `workspace` user and keeps the payload off
@@ -374,7 +390,7 @@ func (manager Manager) Start(project string) (*state.Workspace, error) {
 	// talk to the host Headroom proxy through a per-workspace scoped LiteLLM
 	// virtual key (arch §15, §17). The key flows host→VM only; it is never
 	// written to platform disk.
-	if err := manager.registerAgentProviders(name, project, projectConfig, gatewayURL); err != nil {
+	if err := manager.registerAgentProviders(name, project, root, projectConfig, gatewayURL); err != nil {
 		return nil, err
 	}
 	// Bring up the rootful in-VM container runtime (containerd) so nerdctl works
@@ -400,13 +416,24 @@ func (manager Manager) Start(project string) (*state.Workspace, error) {
 	return handle, nil
 }
 
-// registerAgentProviders mints a scoped LiteLLM virtual key for the workspace
-// and writes the opencode + pi provider configs into the running microVM so the
-// agent CLIs reach the host Headroom proxy with that key. The per-project
-// Headroom strategy maps to the two per-request knobs opencode bakes into each
-// model's request body; pi cannot inject per-request fields and uses Headroom's
-// server-side defaults (see internal/agentcfg).
-func (manager Manager) registerAgentProviders(name, project string, projectConfig *config.Config, gatewayURL string) error {
+// registerAgentProviders mints a scoped LiteLLM virtual key for the workspace and
+// routes ALL FIVE agent CLIs through the host Headroom proxy with that key. It
+// reads each CLI's KEYLESS host-side template from <project>/.ai-platform/agents/
+// (scaffolding the default templates back if absent — without the key), merges in
+// the dynamic values (the freshly-minted key, the served-model picker, the Headroom
+// knobs), and writes the FINAL key-bearing config INTO the microVM (key host→VM
+// only — never to platform disk):
+//
+//   - opencode / pi: a merged JSON config file (the per-request Headroom knobs ride
+//     on opencode only; pi cannot inject per-request fields → Headroom defaults).
+//   - codex: a keyless ~/.codex/config.toml provider block (key via env_key).
+//   - claude-code / codex / gemini: the gateway env vars in the in-VM agent env
+//     file, sourced by every shell + agent session.
+//
+// User edits to the host templates survive across restarts: a present template is
+// read and merged (only its absence triggers re-scaffolding), and the key-bearing
+// version is never written back to the host.
+func (manager Manager) registerAgentProviders(name, project, root string, projectConfig *config.Config, gatewayURL string) error {
 	// Rotate: revoke any key left from a previous start of this project before
 	// minting a new one. LiteLLM requires unique key aliases, so re-using the
 	// project name as the alias would otherwise fail the second start with "alias
@@ -432,7 +459,15 @@ func (manager Manager) registerAgentProviders(name, project string, projectConfi
 	const defaultModel = ""
 	models := manager.pickerModels()
 
-	openCodeConfig, err := agentcfg.OpenCodeConfig(gatewayURL, apiKey, defaultModel, models, keepTurns, outputBufferTokens)
+	// Ensure the keyless host-side templates exist (back-fill for older projects);
+	// then read each and merge in the dynamic, key-bearing values for the in-VM
+	// final config. ensureAgentTemplates writes ONLY keyless defaults to host disk.
+	if err := ensureAgentTemplates(root, gatewayURL, keepTurns, outputBufferTokens); err != nil {
+		return err
+	}
+
+	openCodeTemplate := readAgentTemplate(root, agentcfg.OpenCodeTemplateFile)
+	openCodeConfig, err := agentcfg.MergeOpenCodeConfig(openCodeTemplate, gatewayURL, apiKey, defaultModel, models, keepTurns, outputBufferTokens)
 	if err != nil {
 		return err
 	}
@@ -440,11 +475,32 @@ func (manager Manager) registerAgentProviders(name, project string, projectConfi
 		return err
 	}
 
-	piConfig, err := agentcfg.PiConfig(gatewayURL, apiKey, defaultModel, models)
+	piTemplate := readAgentTemplate(root, agentcfg.PiTemplateFile)
+	piConfig, err := agentcfg.MergePiConfig(piTemplate, gatewayURL, apiKey, defaultModel, models)
 	if err != nil {
 		return err
 	}
 	if err := manager.Sandbox.WriteFile(name, piGuestPath, piConfig); err != nil {
+		return err
+	}
+
+	// codex: a KEYLESS provider block written into the VM (the key is supplied via
+	// the env_key env var below, not the file). The host template is keyless too, so
+	// we write the canonical generated TOML into the VM regardless of edits — the
+	// dynamic part (the env var) is in the agent env file.
+	if err := manager.Sandbox.WriteFile(name, codexGuestPath, agentcfg.CodexConfig(gatewayURL, defaultModel)); err != nil {
+		return err
+	}
+
+	// claude-code / codex / gemini route through the gateway via environment
+	// variables. Write the agent env file INTO the VM (key in-VM only); the agent
+	// launch wrapper sources it directly, and the managed ~/.bash_profile below
+	// sources it for every interactive login shell (`ai shell` / `ai attach`), so a
+	// user running `claude`/`codex`/`gemini` by hand is routed too.
+	if err := manager.Sandbox.WriteFile(name, agentEnvGuestPath, agentcfg.AgentEnvScript(gatewayURL, apiKey)); err != nil {
+		return err
+	}
+	if err := manager.Sandbox.WriteFile(name, bashProfileGuestPath, agentcfg.BashProfile()); err != nil {
 		return err
 	}
 
@@ -687,6 +743,61 @@ func (manager Manager) installRefreshScript(name, gatewayURL, apiKey, defaultMod
 // command run inside the microVM (POSIX single-quote escaping).
 func shellQuoteGuest(value string) string {
 	return "'" + strings.ReplaceAll(value, "'", `'\''`) + "'"
+}
+
+// agentTemplatePath returns the host path of a keyless agent template file under
+// <project>/.ai-platform/agents/.
+func agentTemplatePath(root, file string) string {
+	return filepath.Join(root, ".ai-platform", agentTemplateDir, file)
+}
+
+// readAgentTemplate reads a keyless host-side agent template, returning nil when it
+// is absent or unreadable (the merge generators degrade to a freshly-generated
+// config on a nil template). It NEVER fails the start — a missing/corrupt template
+// just means the dynamic config is used as-is.
+func readAgentTemplate(root, file string) []byte {
+	content, err := os.ReadFile(agentTemplatePath(root, file))
+	if err != nil {
+		return nil
+	}
+	return content
+}
+
+// ensureAgentTemplates scaffolds the KEYLESS default agent templates under
+// <project>/.ai-platform/agents/ when they are MISSING — so older projects (created
+// before host templates existed) gain editable templates, and a fresh project that
+// was scaffolded with them keeps the user's edits (a present file is left UNTOUCHED).
+// It writes ONLY keyless content (the scoped key is never on host disk): the gateway
+// base URL and Headroom knobs are not secrets. It is best-effort-shaped but returns
+// an error so a genuinely broken project dir surfaces at start.
+func ensureAgentTemplates(root, gatewayURL string, keepTurns, outputBufferTokens int) error {
+	dir := filepath.Join(root, ".ai-platform", agentTemplateDir)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return err
+	}
+	openCode, err := agentcfg.OpenCodeTemplate(gatewayURL, keepTurns, outputBufferTokens)
+	if err != nil {
+		return err
+	}
+	pi, err := agentcfg.PiTemplate(gatewayURL)
+	if err != nil {
+		return err
+	}
+	templates := map[string][]byte{
+		agentcfg.OpenCodeTemplateFile: openCode,
+		agentcfg.PiTemplateFile:       pi,
+		agentcfg.CodexTemplateFile:    agentcfg.CodexConfig(gatewayURL, ""),
+	}
+	for file, content := range templates {
+		path := agentTemplatePath(root, file)
+		if _, statErr := os.Stat(path); statErr == nil {
+			continue // present — preserve the user's edits
+		}
+		if err := os.WriteFile(path, content, 0o644); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // pickerModels builds the concrete model list the in-VM agent CLIs offer in their
@@ -1166,16 +1277,34 @@ func AgentCLINames() []string {
 
 // agentLaunchCommand maps an agent CLI name to its in-VM launch command. An
 // unknown CLI returns ErrUnknownAgentCLI with the valid set listed (→ exit 2).
+//
+// The launch is wrapped in a LOGIN shell that first sources the in-VM agent env
+// file (the gateway env vars for claude-code/codex/gemini, key in-VM only) and then
+// execs the CLI — so the env-routed CLIs reach the gateway with the workspace's
+// scoped virtual key. opencode/pi take their config from a file and ignore the env,
+// but wrapping them uniformly is harmless (they still get a normal login env).
 func agentLaunchCommand(cli string) ([]string, error) {
-	if launch, ok := agentValidCLIs[cli]; ok {
-		return launch, nil
+	launch, ok := agentValidCLIs[cli]
+	if !ok {
+		valid := make([]string, 0, len(agentValidCLIs))
+		for name := range agentValidCLIs {
+			valid = append(valid, name)
+		}
+		sort.Strings(valid)
+		return nil, fmt.Errorf("%w %q (valid: %s)", ErrUnknownAgentCLI, cli, strings.Join(valid, ", "))
 	}
-	valid := make([]string, 0, len(agentValidCLIs))
-	for name := range agentValidCLIs {
-		valid = append(valid, name)
-	}
-	sort.Strings(valid)
-	return nil, fmt.Errorf("%w %q (valid: %s)", ErrUnknownAgentCLI, cli, strings.Join(valid, ", "))
+	return wrapWithAgentEnv(launch), nil
+}
+
+// wrapWithAgentEnv wraps an in-VM command so it runs in a login shell that first
+// sources the agent env file (if present) and then execs the command. The command
+// argv is passed as positional parameters ($1, $2, …) so values never need
+// re-quoting. A missing env file is tolerated (the test `-f` guard), so a
+// not-yet-provisioned VM still launches the CLI.
+func wrapWithAgentEnv(command []string) []string {
+	script := "[ -f " + shellQuoteGuest(agentEnvGuestPath) + " ] && . " + shellQuoteGuest(agentEnvGuestPath) + "; exec \"$@\""
+	argv := []string{"bash", "-lc", script, "bash"}
+	return append(argv, command...)
 }
 
 // parseSessions turns tmux's tab-separated list-sessions output (one session per

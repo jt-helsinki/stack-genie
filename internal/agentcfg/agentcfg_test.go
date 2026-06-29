@@ -141,6 +141,135 @@ func TestConfigsAreIndented(test *testing.T) {
 	}
 }
 
+// TestTemplatesAreKeyless verifies the host-side templates render with NO apiKey
+// and no model picker — the dynamic, key-bearing values are injected only into the
+// in-VM final config (the scoped key never reaches host disk).
+func TestTemplatesAreKeyless(test *testing.T) {
+	openCode, err := OpenCodeTemplate(testGateway, 5, 8000)
+	if err != nil {
+		test.Fatal(err)
+	}
+	pi, err := PiTemplate(testGateway)
+	if err != nil {
+		test.Fatal(err)
+	}
+	for name, content := range map[string][]byte{"opencode": openCode, "pi": pi, "codex": CodexConfig(testGateway, "")} {
+		text := string(content)
+		if strings.Contains(text, testKey) || strings.Contains(text, "sk-") {
+			test.Errorf("%s template must be keyless:\n%s", name, text)
+		}
+		// The gateway base URL (not a secret) IS present so the file is useful.
+		if !strings.Contains(text, "host.microsandbox.internal:18787") {
+			test.Errorf("%s template missing the gateway base URL:\n%s", name, text)
+		}
+	}
+	// opencode/pi templates carry an empty apiKey field (the shape the user sees).
+	var doc map[string]any
+	if err := json.Unmarshal(openCode, &doc); err != nil {
+		test.Fatal(err)
+	}
+	provider := nested(test, doc, "provider", ProviderID)
+	options := provider["options"].(map[string]any)
+	if options["apiKey"] != "" {
+		test.Errorf("opencode template apiKey = %v, want empty", options["apiKey"])
+	}
+}
+
+// TestMergeOpenCodeConfigInjectsDynamic verifies the merge keeps a user's
+// template key (a custom top-level field) AND overlays the dynamic provider block
+// (baseURL, apiKey, models) on top.
+func TestMergeOpenCodeConfigInjectsDynamic(test *testing.T) {
+	template := []byte(`{"theme":"dracula","provider":{}}`)
+	merged, err := MergeOpenCodeConfig(template, testGateway, testKey, "", []string{"gemma4"}, 5, 8000)
+	if err != nil {
+		test.Fatal(err)
+	}
+	var doc map[string]any
+	if err := json.Unmarshal(merged, &doc); err != nil {
+		test.Fatalf("merged config not valid JSON: %v", err)
+	}
+	if doc["theme"] != "dracula" {
+		test.Errorf("user theme not preserved: %v", doc["theme"])
+	}
+	provider := nested(test, doc, "provider", ProviderID)
+	options := provider["options"].(map[string]any)
+	if options["apiKey"] != testKey {
+		test.Errorf("dynamic apiKey not injected: %v", options["apiKey"])
+	}
+	if options["baseURL"] != testGateway {
+		test.Errorf("dynamic baseURL not injected: %v", options["baseURL"])
+	}
+}
+
+// TestMergeNilTemplateFallsBack verifies a nil/empty/corrupt template degrades to
+// the freshly-generated config (older projects, or a broken edit, still work).
+func TestMergeNilTemplateFallsBack(test *testing.T) {
+	merged, err := MergeOpenCodeConfig(nil, testGateway, testKey, "", []string{"gemma4"}, 5, 8000)
+	if err != nil {
+		test.Fatal(err)
+	}
+	generated, err := OpenCodeConfig(testGateway, testKey, "", []string{"gemma4"}, 5, 8000)
+	if err != nil {
+		test.Fatal(err)
+	}
+	if string(merged) != string(generated) {
+		test.Errorf("nil template must yield the generated config verbatim")
+	}
+	// A corrupt template also falls back rather than erroring.
+	corrupt, err := MergeOpenCodeConfig([]byte("{not json"), testGateway, testKey, "", []string{"gemma4"}, 5, 8000)
+	if err != nil {
+		test.Fatalf("corrupt template must not error: %v", err)
+	}
+	if string(corrupt) != string(generated) {
+		test.Error("corrupt template must fall back to the generated config")
+	}
+}
+
+// TestCodexConfig verifies codex's config.toml routes through the gateway via the
+// RESPONSES wire API with a keyless, env-supplied key (env_key).
+func TestCodexConfig(test *testing.T) {
+	toml := string(CodexConfig(testGateway, "gemma4"))
+	for _, want := range []string{
+		`model_provider = "` + ProviderID + `"`,
+		`model = "gemma4"`,
+		`[model_providers.` + ProviderID + `]`,
+		`base_url = "` + testGateway + `"`,
+		`env_key = "AIP_GATEWAY_KEY"`,
+		`wire_api = "responses"`,
+	} {
+		if !strings.Contains(toml, want) {
+			test.Errorf("codex config.toml missing %q:\n%s", want, toml)
+		}
+	}
+	// No default model → no top-level model line.
+	if strings.Contains(string(CodexConfig(testGateway, "")), "\nmodel = ") {
+		test.Error("codex config must omit the model line when no default is set")
+	}
+}
+
+// TestAgentEnvScript verifies the env-routed CLIs get the right gateway env vars,
+// with claude-code/gemini base URLs stripped of the /v1 suffix (they append their
+// own path) and the scoped key present.
+func TestAgentEnvScript(test *testing.T) {
+	env := string(AgentEnvScript(testGateway, testKey))
+	root := "http://host.microsandbox.internal:18787" // testGateway minus /v1
+	for _, want := range []string{
+		`export ANTHROPIC_BASE_URL='` + root + `'`,
+		`export ANTHROPIC_AUTH_TOKEN='` + testKey + `'`,
+		`export AIP_GATEWAY_KEY='` + testKey + `'`,
+		`export GOOGLE_GEMINI_BASE_URL='` + root + `'`,
+		`export GEMINI_API_KEY='` + testKey + `'`,
+	} {
+		if !strings.Contains(env, want) {
+			test.Errorf("agent env missing %q:\n%s", want, env)
+		}
+	}
+	// The claude-code/gemini base URLs must NOT carry the /v1 suffix.
+	if strings.Contains(env, root+"/v1") {
+		test.Errorf("claude-code/gemini base URL must be the gateway root (no /v1):\n%s", env)
+	}
+}
+
 // nested walks document[key1][key2] asserting each level is an object.
 func nested(test *testing.T, document map[string]any, key1, key2 string) map[string]any {
 	test.Helper()

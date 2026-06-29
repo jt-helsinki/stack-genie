@@ -1,12 +1,22 @@
 // Package agentcfg renders the provider configuration the in-workspace agent
-// CLIs (opencode, pi) need to talk to the host Headroom proxy through a scoped
-// LiteLLM virtual key (arch §15, §17). At workspace start the platform mints a
-// per-workspace virtual key and writes one provider file per agent CLI into the
-// microVM so the agent reaches the host gateway with that key.
+// CLIs need to talk to the host Headroom proxy through a scoped LiteLLM virtual
+// key (arch §15, §17). At workspace start the platform mints a per-workspace
+// virtual key and routes ALL FIVE agent CLIs through the gateway with that key:
 //
-// These are pure generators: they marshal stable, indented JSON and never touch
-// disk or any external tool, so they are exhaustively unit-tested. The virtual
-// key flows host→VM only and is never written to platform disk.
+//   - opencode / pi route via a JSON config file written into the microVM
+//     (OpenCodeConfig / PiConfig).
+//   - claude-code (`claude`), codex, and gemini route via environment variables
+//     (claude-code: ANTHROPIC_BASE_URL + ANTHROPIC_AUTH_TOKEN; gemini:
+//     GOOGLE_GEMINI_BASE_URL + GEMINI_API_KEY) plus, for codex, a TOML provider
+//     block in ~/.codex/config.toml that references an env-supplied key — see
+//     AgentEnvScript / CodexConfig. The env vars are written into the in-VM agent
+//     env file (key in-VM only) and sourced by every shell + agent session.
+//
+// These are pure generators: they marshal stable, indented JSON/TOML/shell and
+// never touch disk or any external tool, so they are exhaustively unit-tested.
+// The virtual key flows host→VM only and is never written to platform disk: the
+// host-side templates under <project>/.ai-platform/agents/ are KEYLESS, and the
+// key is injected solely into the final config/env written INTO the microVM.
 package agentcfg
 
 import (
@@ -147,6 +157,214 @@ set -sg escape-time 10
 // keys, so the output is stable across runs (no spurious workspace-start diffs).
 func marshalStable(document any) ([]byte, error) {
 	return json.MarshalIndent(document, "", "  ")
+}
+
+// Host-side keyless template paths, relative to <project>/.ai-platform/agents/.
+// These are the USER-EDITABLE templates scaffolded at `ai create`: they carry the
+// agent CLIs' static, non-secret settings (and the gateway base URL, which is not
+// a secret) but NEVER the scoped virtual key. At workspace start the platform
+// reads each template, merges in the dynamic values (the freshly-minted key, the
+// served-model picker), and writes the FINAL config INTO the microVM — so the key
+// lives only in the VM. (repo-layout §12.1c, arch §15.)
+const (
+	OpenCodeTemplateFile = "opencode.json"
+	PiTemplateFile       = "pi.json"
+	CodexTemplateFile    = "codex.toml"
+)
+
+// OpenCodeTemplate / PiTemplate render the KEYLESS host-side default templates.
+// They are byte-identical to OpenCodeConfig / PiConfig with an EMPTY apiKey and an
+// EMPTY model picker (the dynamic values are injected at start), so a user editing
+// the template sees the real shape. The key is the empty string by construction,
+// guaranteeing the on-disk template never holds a credential.
+func OpenCodeTemplate(gatewayURL string, keepTurns, outputBufferTokens int) ([]byte, error) {
+	return OpenCodeConfig(gatewayURL, "", "", nil, keepTurns, outputBufferTokens)
+}
+
+// PiTemplate renders the keyless pi host-side default template.
+func PiTemplate(gatewayURL string) ([]byte, error) {
+	return PiConfig(gatewayURL, "", "", nil)
+}
+
+// MergeOpenCodeConfig produces the FINAL in-VM opencode config from a (keyless)
+// host template plus the dynamic values minted at start. It parses the template
+// JSON and deep-merges the generated provider config over it, so the dynamic
+// provider block (baseURL, apiKey, the served-model picker, Headroom knobs) always
+// wins while any other user-added top-level keys (themes, MCP servers, …) survive.
+// A nil/empty/invalid template falls back to the freshly-generated config, so an
+// older project (no template) or a corrupt edit still yields a working config. The
+// apiKey reaches only this RESULT (written into the VM), never the template.
+func MergeOpenCodeConfig(template []byte, gatewayURL, apiKey, defaultModel string, models []string, keepTurns, outputBufferTokens int) ([]byte, error) {
+	generated, err := OpenCodeConfig(gatewayURL, apiKey, defaultModel, models, keepTurns, outputBufferTokens)
+	if err != nil {
+		return nil, err
+	}
+	return mergeJSONOver(template, generated)
+}
+
+// MergePiConfig produces the FINAL in-VM pi config from a (keyless) host template
+// plus the dynamic values. Like MergeOpenCodeConfig, the generated provider block
+// wins and other user keys survive; the key reaches only the in-VM result.
+func MergePiConfig(template []byte, gatewayURL, apiKey, defaultModel string, models []string) ([]byte, error) {
+	generated, err := PiConfig(gatewayURL, apiKey, defaultModel, models)
+	if err != nil {
+		return nil, err
+	}
+	return mergeJSONOver(template, generated)
+}
+
+// mergeJSONOver deep-merges generated over template (generated wins) and renders
+// the result with marshalStable. A nil/empty/unparseable template degrades to the
+// generated bytes verbatim, so a missing or corrupt host template never breaks the
+// workspace start.
+func mergeJSONOver(template, generated []byte) ([]byte, error) {
+	var base map[string]any
+	if len(bytes.TrimSpace(template)) == 0 || json.Unmarshal(template, &base) != nil {
+		return generated, nil
+	}
+	var overlay map[string]any
+	if err := json.Unmarshal(generated, &overlay); err != nil {
+		return nil, err
+	}
+	return marshalStable(deepMergeJSON(base, overlay))
+}
+
+// deepMergeJSON returns base with overlay applied on top; nested objects merge
+// recursively and overlay scalars/arrays win. Inputs are not mutated.
+func deepMergeJSON(base, overlay map[string]any) map[string]any {
+	result := make(map[string]any, len(base))
+	for key, value := range base {
+		result[key] = value
+	}
+	for key, overlayValue := range overlay {
+		if existing, ok := result[key]; ok {
+			if existingMap, isMap := existing.(map[string]any); isMap {
+				if overlayMap, isOverlayMap := overlayValue.(map[string]any); isOverlayMap {
+					result[key] = deepMergeJSON(existingMap, overlayMap)
+					continue
+				}
+			}
+		}
+		result[key] = overlayValue
+	}
+	return result
+}
+
+// AgentEnvVarName / AgentEnvFileGuestPath name the env-routing surface for the
+// CLIs that take their gateway config from environment variables (claude-code,
+// codex, gemini). The env file is written INTO the microVM (key in-VM only) and
+// sourced by every shell + agent session.
+const (
+	// AgentEnvFileGuestPath is the in-VM file the agent env vars are written to.
+	AgentEnvFileGuestPath = "/home/workspace/.config/aip/agent-env.sh"
+
+	// claudeBaseURLVar / claudeAuthVar route claude-code (`claude`) through the
+	// gateway's Anthropic-compatible surface. The base URL is the gateway WITHOUT
+	// the /v1 suffix — claude-code appends /v1/messages itself — and the bearer
+	// token goes in ANTHROPIC_AUTH_TOKEN (Authorization: Bearer), which the LiteLLM
+	// gateway reads. (code.claude.com/docs/en/llm-gateway-connect.)
+	claudeBaseURLVar = "ANTHROPIC_BASE_URL"
+	claudeAuthVar    = "ANTHROPIC_AUTH_TOKEN"
+
+	// codexKeyVar is the env var codex's config.toml provider block references via
+	// env_key — codex reads the gateway key from the environment, never from the
+	// committed TOML. (developers.openai.com/codex/config-reference.)
+	codexKeyVar = "AIP_GATEWAY_KEY"
+
+	// geminiBaseURLVar / geminiKeyVar route google gemini-cli through the gateway:
+	// the @google/genai SDK honours GOOGLE_GEMINI_BASE_URL (the gateway ROOT, no
+	// /v1) and GEMINI_API_KEY. (docs.litellm.ai/docs/tutorials/litellm_gemini_cli.)
+	geminiBaseURLVar = "GOOGLE_GEMINI_BASE_URL"
+	geminiKeyVar     = "GEMINI_API_KEY"
+)
+
+// gatewayRoot strips a trailing /v1 (and any trailing slash) from the gateway URL,
+// for the CLIs whose SDK appends its own version/path segment (claude-code adds
+// /v1/messages; gemini-cli's genai SDK adds its own path). opencode/pi/codex keep
+// the /v1-suffixed URL verbatim.
+func gatewayRoot(gatewayURL string) string {
+	trimmed := strings.TrimRight(gatewayURL, "/")
+	return strings.TrimSuffix(trimmed, "/v1")
+}
+
+// AgentEnvScript renders the POSIX shell snippet that exports the gateway env vars
+// the env-routed agent CLIs read (claude-code, codex, gemini). It is written INTO
+// the microVM at AgentEnvFileGuestPath (the scoped key flows host→VM only) and
+// sourced by every shell + agent session, so all three CLIs reach the gateway with
+// the workspace's scoped virtual key by default. gatewayURL carries the /v1 suffix
+// (codex keeps it); the claude-code / gemini base URLs are derived as the gateway
+// root. apiKey is the scoped virtual key.
+func AgentEnvScript(gatewayURL, apiKey string) []byte {
+	root := gatewayRoot(gatewayURL)
+	var buffer bytes.Buffer
+	buffer.WriteString("# Managed by the AI Development Platform — gateway env for the env-routed\n")
+	buffer.WriteString("# agent CLIs (claude-code, codex, gemini). Written into the microVM at\n")
+	buffer.WriteString("# workspace start and sourced by every shell + agent session. Do not edit by\n")
+	buffer.WriteString("# hand; this file is rewritten on every workspace start and holds the\n")
+	buffer.WriteString("# workspace's scoped virtual key (it never leaves the VM).\n")
+	// claude-code: Anthropic-compatible surface at the gateway root + bearer token.
+	buffer.WriteString("export " + claudeBaseURLVar + "=" + shellQuote(root) + "\n")
+	buffer.WriteString("export " + claudeAuthVar + "=" + shellQuote(apiKey) + "\n")
+	// codex: the key its config.toml provider block reads via env_key.
+	buffer.WriteString("export " + codexKeyVar + "=" + shellQuote(apiKey) + "\n")
+	// gemini-cli: the genai SDK's base-URL + key overrides (gateway root).
+	buffer.WriteString("export " + geminiBaseURLVar + "=" + shellQuote(root) + "\n")
+	buffer.WriteString("export " + geminiKeyVar + "=" + shellQuote(apiKey) + "\n")
+	return buffer.Bytes()
+}
+
+// BashProfile renders the managed ~/.bash_profile written into the microVM at
+// workspace start. It sources the standard ~/.bashrc (so an interactive login
+// shell behaves normally) and then the agent env file (the gateway env vars for
+// the env-routed CLIs), so a user running claude/codex/gemini from `ai shell` or
+// `ai attach` is routed through the gateway with the workspace's scoped key. It is
+// rewritten on every start; the agent env file it sources holds the key (in-VM).
+func BashProfile() []byte {
+	var buffer bytes.Buffer
+	buffer.WriteString("# Managed by the AI Development Platform — sources the agent gateway env for\n")
+	buffer.WriteString("# interactive login shells. Do not edit by hand; rewritten on every start.\n")
+	buffer.WriteString("[ -f \"$HOME/.bashrc\" ] && . \"$HOME/.bashrc\"\n")
+	buffer.WriteString("[ -f " + shellQuote(AgentEnvFileGuestPath) + " ] && . " + shellQuote(AgentEnvFileGuestPath) + "\n")
+	return buffer.Bytes()
+}
+
+// CodexConfigGuestPath is the in-VM path codex reads its config from.
+const CodexConfigGuestPath = "/home/workspace/.codex/config.toml"
+
+// CodexConfig renders codex's ~/.codex/config.toml routing it through the gateway.
+// codex requires the OpenAI RESPONSES wire API (chat-completions support was
+// removed); the LiteLLM gateway exposes a /responses surface, so the provider's
+// base_url keeps the /v1 suffix and wire_api is "responses". The provider key is
+// supplied via the env_key env var (codexKeyVar), NEVER written into this file, so
+// this config is KEYLESS and safe as a host-side template too.
+// (developers.openai.com/codex/config-reference.)
+//
+// defaultModel is optional: when non-empty it is written as the top-level `model`
+// so codex defaults to a gateway-served model; empty omits it (codex falls back to
+// its own default selection, matching the catalog-driven no-default policy).
+func CodexConfig(gatewayURL, defaultModel string) []byte {
+	var buffer bytes.Buffer
+	buffer.WriteString("# Managed by the AI Development Platform — route codex through the gateway.\n")
+	buffer.WriteString("# Keyless by design: the gateway key is read from the " + codexKeyVar + " env var\n")
+	buffer.WriteString("# (set in the in-VM agent env), never written here.\n")
+	buffer.WriteString("model_provider = " + tomlString(ProviderID) + "\n")
+	if defaultModel != "" {
+		buffer.WriteString("model = " + tomlString(defaultModel) + "\n")
+	}
+	buffer.WriteString("\n[model_providers." + ProviderID + "]\n")
+	buffer.WriteString("name = " + tomlString("AI Platform Gateway") + "\n")
+	buffer.WriteString("base_url = " + tomlString(strings.TrimRight(gatewayURL, "/")) + "\n")
+	buffer.WriteString("env_key = " + tomlString(codexKeyVar) + "\n")
+	buffer.WriteString("wire_api = " + tomlString("responses") + "\n")
+	return buffer.Bytes()
+}
+
+// tomlString renders a Go string as a TOML basic string (escaping backslash and
+// double-quote). The values here are simple URLs / identifiers, so this is enough.
+func tomlString(value string) string {
+	escaped := strings.ReplaceAll(value, `\`, `\\`)
+	escaped = strings.ReplaceAll(escaped, `"`, `\"`)
+	return `"` + escaped + `"`
 }
 
 // Guest paths the agent provider configs live at inside the workspace microVM.

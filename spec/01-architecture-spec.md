@@ -1194,6 +1194,23 @@ needs its provider key present in the gateway (§17). The catalog id is the publ
 `model_name` verbatim; the catalog-id→LiteLLM-prefix map (e.g. `google` → `gemini`)
 supplies the routing prefix. There is no default model.
 
+### In-VM agent provider config — keyless host templates, key in-VM only
+
+All **five** agent CLIs route through the gateway **by default**. Their provider
+config lives as **keyless, user-editable host templates** under
+`<project>/.ai-platform/agents/` (scaffolded at `ai create`; repo-layout §12.1c) and
+is (re)loaded into the microVM on **every workspace start/restart** by
+`workspace.registerAgentProviders` (over `internal/agentcfg`). opencode + pi route
+via a JSON config file (the keyless template is **deep-merged** with the dynamic,
+key-bearing values and written into the VM — user edits survive, the dynamic provider
+block wins); claude-code/codex/gemini route via **environment variables** written into
+the in-VM agent env file (`ANTHROPIC_BASE_URL`+`ANTHROPIC_AUTH_TOKEN`;
+`GOOGLE_GEMINI_BASE_URL`+`GEMINI_API_KEY`; codex via a keyless `~/.codex/config.toml`
+`[model_providers.aip-gateway]` block with `wire_api = "responses"` and an env-supplied
+`env_key`). The **scoped virtual key is NEVER on host disk** (the templates are
+keyless; the base URL is not a secret) — it is injected only into the final config/env
+written **into the microVM**.
+
 ### In-VM model picker
 
 For discoverability the in-VM agent CLIs are seeded with a **picker** built at

@@ -101,6 +101,31 @@ func TestScaffoldRefreshesStaleTemplates(test *testing.T) {
 	}
 }
 
+// TestScaffoldWritesKeylessAgentTemplates verifies create scaffolds the
+// user-editable agent CLI templates under .ai-platform/agents/, and that they
+// contain NO scoped/provider key (the key is injected only into the in-VM config).
+func TestScaffoldWritesKeylessAgentTemplates(test *testing.T) {
+	withTemplates(test)
+	root, err := Scaffold(sampleSpec(), "t")
+	if err != nil {
+		test.Fatal(err)
+	}
+	dir := filepath.Join(root, ".ai-platform", "agents")
+	for _, file := range []string{"opencode.json", "pi.json", "codex.toml"} {
+		content, err := os.ReadFile(filepath.Join(dir, file))
+		if err != nil {
+			test.Fatalf("missing agent template %s: %v", file, err)
+		}
+		if strings.Contains(string(content), "sk-") {
+			test.Errorf("agent template %s must be keyless:\n%s", file, content)
+		}
+		// The gateway base URL (not a secret) is present so the template is useful.
+		if !strings.Contains(string(content), "host.microsandbox.internal:18787") {
+			test.Errorf("agent template %s missing the gateway base URL", file)
+		}
+	}
+}
+
 func TestScaffoldAtExplicitRoot(test *testing.T) {
 	withTemplates(test)
 	home, _ := os.UserHomeDir()

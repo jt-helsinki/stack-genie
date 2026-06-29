@@ -873,6 +873,41 @@ Exit codes (§18): invalid app/args → `2`; a lifecycle verb (`update`/`start`/
 workspace when none is running → `3`; runtime failures → `4`. The TUI **Apps**
 view (§14) drives the same path via `ai apps`.
 
+### In-workspace agent CLI provider config — keyless host templates, key in-VM only
+
+All **five** agent CLIs route through the LiteLLM gateway **by default**. Their
+provider config lives as **keyless, user-editable host templates** under
+`<project>/.ai-platform/agents/` (scaffolded at `ai create`; see repo-layout §12.1c),
+and is (re)loaded into the microVM on **every workspace start/restart** by
+`workspace.registerAgentProviders` (over `internal/agentcfg`):
+
+* **opencode** (`~/.config/opencode/opencode.json`) and **pi**
+  (`~/.pi/agent/models.json`) — JSON config files. At start the platform reads the
+  keyless host template, **deep-merges** in the dynamic values (the freshly-minted
+  scoped virtual key, the served-model picker, and — opencode only — the per-request
+  Headroom knobs), and writes the **final config INTO the microVM**. The dynamic
+  provider block wins; any other user keys in the template survive. A user's edits
+  are preserved across restarts (a present template is never clobbered with the
+  key-bearing form); only an absent template is re-scaffolded keyless.
+* **claude-code** (`claude`), **codex**, and **gemini** — routed via **environment
+  variables** written into the in-VM agent env file (`~/.config/aip/agent-env.sh`,
+  sourced by every shell + agent session) plus, for codex, a keyless TOML provider
+  block (`~/.codex/config.toml`):
+  * claude-code: `ANTHROPIC_BASE_URL` (the gateway root — LiteLLM's
+    Anthropic-compatible `/v1/messages`) + `ANTHROPIC_AUTH_TOKEN` (bearer token).
+  * codex: `~/.codex/config.toml` with a `[model_providers.aip-gateway]` block
+    (`base_url = "<gateway>/v1"`, `wire_api = "responses"` — codex requires the
+    OpenAI Responses API, which LiteLLM exposes — and `env_key = "AIP_GATEWAY_KEY"`);
+    the key is supplied via that env var, never written into the file.
+  * gemini: `GOOGLE_GEMINI_BASE_URL` (the gateway root, honoured by the `@google/genai`
+    SDK) + `GEMINI_API_KEY`.
+
+**The scoped virtual key (and any real key) is NEVER written to host disk** — the
+host templates are keyless (base URL is not a secret), and the key is injected only
+into the final config/env written **into the microVM** (`Sandbox.WriteFile`), where
+it stays. An older project (no `agents/` dir) is back-filled with keyless defaults at
+start.
+
 ### In-workspace `refresh-models` — re-pull the model picker without restarting
 
 At workspace start the platform installs a self-contained **`refresh-models`**
@@ -890,9 +925,12 @@ refresh-models      # run from any workspace session (ai shell / ai agent)
 It re-fetches the models the gateway currently **serves** (its DB-backed models)
 from the gateway's `/v1/models` endpoint — authenticated with the workspace's scoped
 virtual key — dedups + sorts them **exactly** as a fresh workspace start does, and
-rewrites the agent CLI configs (`opencode.json`, pi `models.json`) **in place,
-byte-identical** to what a restart would produce. Restart the agent CLI afterwards
-to pick up the new list. It **degrades**: if the gateway is unreachable it leaves the
+rewrites the **opencode** + **pi** configs (`opencode.json`, pi `models.json`)
+**in place, byte-identical** to the canonical (non-template-merged) config a fresh
+start produces. Restart the agent CLI afterwards to pick up the new list. (It
+rewrites the canonical opencode/pi configs only; host-template edits and the
+env-routed CLIs — claude-code/codex/gemini, whose served model set is discovered at
+request time, not baked — are re-applied on the next workspace start.) It **degrades**: if the gateway is unreachable it leaves the
 existing configs **untouched** (it never wipes them to an empty list) and exits
 non-zero with a warning; a missing `curl` (image without it) errors clearly. The
 host-side generation and the script's own logic are unit-tested (the generated
