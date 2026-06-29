@@ -805,10 +805,22 @@ error: a microVM that is **not actually present** → `ErrWorkspaceStale` (exit 
 "workspace is marked started but its microVM isn't running (stale state) — run
 `ai restart`"); a microVM that **is present but didn't answer in time** →
 `ErrWorkspaceUnresponsive` (exit 4, "workspace is running but not responding — it
-may be overloaded; try `ai restart`"). The TUI Shell/Apps tabs surface these exact
-messages (no longer a blanket "may be busy — e.g. pulling an image"), and the
-TUI's own fetch backstop is sized larger than the manager's worst-case
-classification so the precise message always wins. The
+may be overloaded; try `ai restart`"). msb reporting **"sandbox not found"** (a
+stale handle whose microVM was removed) is likewise classified as
+`ErrWorkspaceStale`, not surfaced as a raw `tmux`/`nerdctl` exit. The TUI Shell/Apps
+tabs surface these exact messages (no longer a blanket "may be busy — e.g. pulling
+an image"), and the TUI's own fetch backstop is sized larger than the manager's
+worst-case classification so the precise message always wins.
+
+**Sleep recovery.** When the host sleeps, the hypervisor pauses the microVM; on wake
+the first `msb exec` typically hangs while the vsock re-establishes, and the guest
+clock has drifted. So each bounded in-VM probe is **retried once** on a timeout
+(`inVMProbeAttempts`) — a fresh `msb exec` after the kill usually succeeds, so the
+Apps/Shell views self-heal after a sleep instead of forcing a manual restart — and
+**`ai start`/restart sync the guest clock** to host UTC (`Sandbox.SyncClock`, `date
+-u -s` as root) so the post-sleep skew can't break in-VM TLS (e.g. an image pull's
+cert validation). A microVM that stays wedged past the retries still reports
+`ErrWorkspaceUnresponsive` (run `ai restart`). The
 TUI Workspace view additionally guards its `e` shell key with an inline "workspace
 not running — press s to start" hint, so it never suspends into a doomed subprocess.
 The session launchers also verify **tmux is present in the workspace image** (a
