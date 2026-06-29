@@ -36,6 +36,43 @@ func TestSessionsPopulatesTableOnRefresh(test *testing.T) {
 	}
 }
 
+// When a refresh errors AND the tab is active, the view schedules an auto-retry so
+// it self-heals once the workspace responds (e.g. after a host sleep); when the tab
+// is inactive it does not (no background in-VM calls).
+func TestSessionsAutoRetriesOnErrorWhenActive(test *testing.T) {
+	view := NewSessions(
+		func() ([]workspace.Session, error) { return nil, errors.New("not responding") },
+		noKill,
+		func() string { return "app" },
+	)
+	view.SetActive(true)
+	if cmd := view.Update(sessionsRefreshedMsg{err: errors.New("not responding")}); cmd == nil {
+		test.Fatal("an active tab must schedule an auto-retry after an error")
+	}
+	view.SetActive(false)
+	if cmd := view.Update(sessionsRefreshedMsg{err: errors.New("not responding")}); cmd != nil {
+		test.Fatal("an inactive tab must NOT schedule an auto-retry")
+	}
+}
+
+// A retry tick re-fetches only when its generation is current and the tab is active;
+// a stale generation (the tab was left/re-entered) is dropped.
+func TestSessionsRetryTickGenerationGuard(test *testing.T) {
+	view := NewSessions(
+		func() ([]workspace.Session, error) { return nil, nil },
+		noKill,
+		func() string { return "app" },
+	)
+	view.SetActive(true)
+	current := view.generation
+	if cmd := view.Update(sessionsRetryMsg{generation: current}); cmd == nil {
+		test.Fatal("a current-generation retry tick on an active tab must re-fetch")
+	}
+	if cmd := view.Update(sessionsRetryMsg{generation: current - 1}); cmd != nil {
+		test.Fatal("a stale-generation retry tick must be dropped")
+	}
+}
+
 // a/enter on the selected row emit an AttachRequestedMsg for that session.
 func TestSessionsAttachKeysEmitAttachRequest(test *testing.T) {
 	for _, key := range []tea.KeyMsg{

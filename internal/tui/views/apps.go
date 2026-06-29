@@ -29,6 +29,14 @@ type appsRefreshedMsg struct {
 	err  error
 }
 
+// appsRetryMsg re-arms the auto-retry that lets the Apps tab self-heal after the
+// workspace was briefly unreachable (e.g. a host sleep). Generation-guarded.
+type appsRetryMsg struct{ generation int }
+
+// appsRetryInterval is how often the Apps tab re-lists while in an ERROR state, so it
+// recovers on its own once the workspace responds. Only ticks while the tab is active.
+const appsRetryInterval = 3 * time.Second
+
 // Apps is the per-workspace view of the in-VM AI apps (Open WebUI, AnythingLLM):
 // a Services-style table APP / STATUS / URL with keys to add/remove/update and
 // start/stop/restart the selected app. It honours the active theme.
@@ -40,6 +48,11 @@ type Apps struct {
 	flash   string
 	err     error
 	loaded  bool
+
+	// active marks the visible sub-tab; generation guards the auto-retry chain so it
+	// runs only on the active tab and stops when the tab is left.
+	active     bool
+	generation int
 }
 
 // NewApps builds the apps view over the injected lister and current-project
@@ -74,8 +87,27 @@ func (view *Apps) SetSize(width, height int) {
 	}
 }
 
-// Init kicks off the first app listing.
-func (view *Apps) Init() tea.Cmd { return view.fetchCmd() }
+// Init kicks off a fresh app listing (bumping the generation so any pending
+// auto-retry from a previous activation is discarded).
+func (view *Apps) Init() tea.Cmd {
+	view.generation++
+	return view.fetchCmd()
+}
+
+// SetActive marks whether the Apps tab is the visible one; leaving it stops the
+// auto-retry chain so a background tab makes no in-VM calls.
+func (view *Apps) SetActive(active bool) {
+	view.active = active
+	if !active {
+		view.generation++
+	}
+}
+
+func (view *Apps) retryTickCmd(generation int) tea.Cmd {
+	return tea.Tick(appsRetryInterval, func(time.Time) tea.Msg {
+		return appsRetryMsg{generation: generation}
+	})
+}
 
 func (view *Apps) fetchCmd() tea.Cmd {
 	list := view.list
@@ -108,8 +140,19 @@ func (view *Apps) Update(msg tea.Msg) tea.Cmd {
 		if message.err == nil {
 			view.apps = message.apps
 			view.table.SetRows(appRows(message.apps))
+			return nil
+		}
+		// Unreachable workspace (e.g. just after a host sleep, or mid-restart):
+		// auto-retry while this tab is active so the list recovers on its own.
+		if view.active {
+			return view.retryTickCmd(view.generation)
 		}
 		return nil
+	case appsRetryMsg:
+		if message.generation != view.generation || !view.active {
+			return nil // stale chain or the tab was left
+		}
+		return view.fetchCmd()
 	case tea.KeyMsg:
 		if cmd, handled := view.handleAction(message); handled {
 			return cmd

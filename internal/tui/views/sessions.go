@@ -38,6 +38,16 @@ type sessionsRefreshedMsg struct {
 }
 type sessionKilledMsg struct{ err error }
 
+// sessionsRetryMsg re-arms the auto-retry that lets the Shell tab self-heal after the
+// workspace was briefly unreachable (e.g. a host sleep). Generation-guarded so a
+// stale chain (from a previous activation) dies.
+type sessionsRetryMsg struct{ generation int }
+
+// sessionsRetryInterval is how often the Shell tab re-lists while it is in an ERROR
+// state, so it recovers on its own once the workspace responds — instead of freezing
+// on a stale error until the user presses r. It only ticks while the tab is active.
+const sessionsRetryInterval = 3 * time.Second
+
 // Sessions is the "Shell" tab: the per-workspace session manager over the tmux
 // sessions backing `ai shell`/`ai agent`/`ai attach`. It lists sessions and, on the
 // selected row, attaches (in the real terminal), creates a new named session, and
@@ -57,6 +67,12 @@ type Sessions struct {
 	// creating, keystrokes edit the name and enter attaches/creates it.
 	creating  bool
 	nameInput string
+
+	// active is set while this is the visible sub-tab; generation guards the
+	// auto-retry chain so it stops when the tab is left (and on re-entry a fresh one
+	// starts). Together they keep the recovery polling on the active tab only.
+	active     bool
+	generation int
 }
 
 // NewSessions builds the sessions view over the injected lister, killer, and
@@ -95,8 +111,22 @@ func (view *Sessions) SetSize(width, height int) {
 	}
 }
 
-// Init kicks off the first session listing.
-func (view *Sessions) Init() tea.Cmd { return view.fetchCmd() }
+// Init kicks off a fresh session listing (bumping the generation so any pending
+// auto-retry from a previous activation is discarded).
+func (view *Sessions) Init() tea.Cmd {
+	view.generation++
+	return view.fetchCmd()
+}
+
+// SetActive marks whether the Shell tab is the visible one. The hub calls it on every
+// sub-tab switch; leaving the tab stops the auto-retry chain (bump generation) so a
+// background tab makes no in-VM calls.
+func (view *Sessions) SetActive(active bool) {
+	view.active = active
+	if !active {
+		view.generation++
+	}
+}
 
 // viewFetchTimeout is the TUI's BACKSTOP for an in-VM listing (sessions / apps) so a
 // tab never hangs on "loading…". It is deliberately LARGER than the manager's
@@ -106,6 +136,12 @@ func (view *Sessions) Init() tea.Cmd { return view.fetchCmd() }
 // manager itself wedges (it shouldn't, the in-VM exec is context-bounded); when it
 // does, errBackstopTimedOut is shown and `r` retries.
 const viewFetchTimeout = 12 * time.Second
+
+func (view *Sessions) retryTickCmd(generation int) tea.Cmd {
+	return tea.Tick(sessionsRetryInterval, func(time.Time) tea.Msg {
+		return sessionsRetryMsg{generation: generation}
+	})
+}
 
 func (view *Sessions) fetchCmd() tea.Cmd {
 	list := view.list
@@ -135,8 +171,20 @@ func (view *Sessions) Update(msg tea.Msg) tea.Cmd {
 		if message.err == nil {
 			view.sessions = message.sessions
 			view.table.SetRows(sessionRows(message.sessions))
+			return nil
+		}
+		// The workspace was unreachable (e.g. just after a host sleep, or mid-restart).
+		// Auto-retry while this tab is active so the list recovers on its own once the
+		// workspace responds, instead of staying frozen on the error until `r`.
+		if view.active {
+			return view.retryTickCmd(view.generation)
 		}
 		return nil
+	case sessionsRetryMsg:
+		if message.generation != view.generation || !view.active {
+			return nil // stale chain or the tab was left
+		}
+		return view.fetchCmd()
 	case sessionKilledMsg:
 		if message.err != nil {
 			view.flash = ui.Failure.Render(ui.IconFail + " kill: " + message.err.Error())
