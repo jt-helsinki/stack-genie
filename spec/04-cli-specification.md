@@ -718,11 +718,11 @@ via `msb exec -t`, with the caller's stdin/stdout/stderr wired straight through
 On a TTY (no `--session`) it first **lists the workspace's existing sessions** and
 prompts: **attach to one of them, or create a NEW session** (typing its name —
 validated to letters/digits/`-`/`_`; the new-session name is pre-filled with the
-default **`shell`**, so first use is a single Enter). The chosen session is
-**created DETACHED first** (`tmux new-session -d`, in a returning non-interactive
-exec, so the tmux server daemonizes and the session persists and is listed by
-`ai sessions` independent of any client) and then **attached** (`tmux
-attach-session`). A new name is created; an existing one is reattached. `--session
+default **`shell`**, so first use is a single Enter). The chosen session is opened
+with one atomic **`tmux new-session -A`** (create-or-attach) in the interactive
+exec — the tmux server daemonizes, so the session persists after a DETACH and is
+listed by `ai sessions`. A new name is created; an existing one is reattached.
+`--session
 <s>` skips the picker and attaches/creates `<s>` directly (scriptable). Note that a
 session persists when you **detach** (or close the terminal); typing `exit` ends
 the session's shell and so removes the session. On a clean exit (the shell ends)
@@ -770,8 +770,8 @@ the tmux session.
 * **`ai shell`** (§4.5a) **creates or attaches** a session in `/workspace` — on a
   TTY it offers a picker (attach an existing session, or create a new one by name;
   default new name **`shell`**), or `--session <s>` to go straight to `<s>`. The
-  session is created **detached** (`tmux new-session -d`, so it persists and is
-  listed) then **attached** (`tmux attach-session`).
+  session is opened with one atomic **`tmux new-session -A`** (create-or-attach;
+  the daemonized server makes it persist after a detach + listed).
 * **`ai agent <cli>`** starts (or reattaches to) a **per-CLI** session named after
   the CLI — `opencode`, `pi`, `claude-code` (runs `claude`), `codex`, `gemini` —
   so each agent has one durable session and several can run side by side. An

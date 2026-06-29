@@ -1095,18 +1095,14 @@ func (manager Manager) launchTmuxSession(project, session string, command []stri
 	if err := manager.requireTmux(project); err != nil {
 		return err
 	}
-	// Ensure the session exists DETACHED first, in a NON-interactive exec that
-	// returns: the tmux server daemonizes and the session persists independent of the
-	// interactive client that follows — so `ai sessions` lists it and `ai attach` can
-	// reattach it later. (Creating it inside the interactive attach tied the session's
-	// life to that one PTY.) A pre-existing session makes this a no-op non-zero exit
-	// ("duplicate session"); we only need it to EXIST, so the result is ignored. It is
-	// bounded by the in-VM probe timeout so a wedged VM can't hang here — the
-	// interactive attach then surfaces a clear error.
-	ctx, cancel := context.WithTimeout(context.Background(), inVMProbeTimeout)
-	defer cancel()
-	_, _ = manager.Sandbox.ExecContext(ctx, Name(project), tmuxEnsureDetached(session, command))
-	return manager.Sandbox.ExecInteractive(Name(project), tmuxAttach(session))
+	// Create-or-attach in a SINGLE interactive exec: `tmux new-session -A` creates the
+	// session on first use and reattaches on later calls. The tmux server daemonizes,
+	// so the session persists after the client DETACHES (and `ai sessions` lists it);
+	// it ends only when its shell EXITS. Doing this as ONE interactive command — rather
+	// than a separate detached create then attach — avoids a race where msb tears down
+	// the create exec's process group before the attach connects, which left the attach
+	// with no session and bounced the user straight back to the TUI.
+	return manager.Sandbox.ExecInteractive(Name(project), tmuxNewSessionAttach(session, command))
 }
 
 // requireTmux verifies tmux is on PATH inside the running microVM before a tmux
@@ -1265,24 +1261,17 @@ func (manager Manager) KillSession(project, session string) error {
 	return nil
 }
 
-// tmuxEnsureDetached builds the argv that creates session DETACHED (`-d`) in
-// /workspace, so the tmux server daemonizes and the session PERSISTS independent of
-// any attached client — it is listed by `ai sessions` the moment it exists and can
-// be reattached later. Running this in a non-interactive exec that RETURNS (before
-// the interactive attach) is what makes the session outlive a single client:
-// creating it inside the interactive attach instead tied the session's life to that
-// one PTY, so exiting it lost the session. When command is non-empty it is the
-// session's program (an agent CLI or a login shell); nil opens the default shell. A
-// pre-existing session makes this exit non-zero ("duplicate session"); callers
-// ignore that — they only need the session to EXIST before attaching.
-func tmuxEnsureDetached(session string, command []string) []string {
-	argv := []string{"tmux", "new-session", "-d", "-s", session, "-c", workspaceWorkdir}
+// tmuxNewSessionAttach builds an attach-or-create tmux invocation opening in
+// /workspace: `tmux new-session -A -s <session> -c /workspace [command]`. `-A` makes
+// it idempotent and reattachable — it creates the session named session on first use
+// and reattaches on every later call, in ONE interactive command (so there is no
+// window between a separate detached create and the attach for msb to tear down).
+// The tmux server daemonizes, so the session survives a DETACH (and is listed by
+// `ai sessions`); it ends only when its shell exits. When command is non-empty it is
+// the session's program (an agent CLI or a login shell); nil opens the default shell.
+func tmuxNewSessionAttach(session string, command []string) []string {
+	argv := []string{"tmux", "new-session", "-A", "-s", session, "-c", workspaceWorkdir}
 	return append(argv, command...)
-}
-
-// tmuxAttach builds the argv that attaches the caller's PTY to an existing session.
-func tmuxAttach(session string) []string {
-	return []string{"tmux", "attach-session", "-t", session}
 }
 
 // agentValidCLIs is the set of agent CLIs the platform knows how to launch in a
