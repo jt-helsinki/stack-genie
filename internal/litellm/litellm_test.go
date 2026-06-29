@@ -14,8 +14,9 @@ import (
 
 // TestRenderDefaultRouting verifies the catalog-driven (DB-backed) config: NO
 // model_list and NO default_model (models are added via /model/new), but
-// general_settings.store_model_in_db: true so the added models persist, plus the
-// unchanged in-process prompt-injection callback and the always-on guardrails.
+// general_settings.store_model_in_db: true so the added models persist, NO
+// prompt-injection callback (removed — it false-positived on coding traffic), and
+// the always-on guardrails.
 func TestRenderDefaultRouting(test *testing.T) {
 	test.Setenv("HOME", test.TempDir())
 	if err := Render(DefaultRouting(), ""); err != nil {
@@ -51,9 +52,11 @@ func TestRenderDefaultRouting(test *testing.T) {
 	if cfg.LitellmSettings.DefaultModel != "" {
 		test.Errorf("default_model = %q, want empty (no default model)", cfg.LitellmSettings.DefaultModel)
 	}
-	// Prompt-injection is the IN-PROCESS detector (replaces the removed LLM Guard).
-	if len(cfg.LitellmSettings.Callbacks) != 1 || cfg.LitellmSettings.Callbacks[0] != "detect_prompt_injection" {
-		test.Fatalf("litellm_settings.callbacks = %v, want [detect_prompt_injection]", cfg.LitellmSettings.Callbacks)
+	// The in-process prompt-injection callback was REMOVED (it false-positived on
+	// ordinary coding/Ollama traffic — "Rejected message. This is a prompt injection
+	// attack."), so no callback is configured.
+	if len(cfg.LitellmSettings.Callbacks) != 0 {
+		test.Fatalf("litellm_settings.callbacks = %v, want none (detect_prompt_injection removed)", cfg.LitellmSettings.Callbacks)
 	}
 
 	// Always-on guardrails: Presidio pre/post + hide-secrets (secret masking,

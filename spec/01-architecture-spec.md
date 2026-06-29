@@ -1094,12 +1094,12 @@ carries `DATABASE_URL` (inline; it carries no secret) and the Presidio endpoints
 
 ---
 
-## Guardrails (always-on: secret masking, tool firewall, prompt-injection)
+## Guardrails (always-on: secret masking, tool firewall)
 
 The rendered LiteLLM config carries a top-level `guardrails:` block, **all
 `default_on: true`** so **no request can opt out**: three secret-masking entries
-plus a **tool firewall** (below), and an in-process **prompt-injection** callback
-in `litellm_settings`. The masking is
+plus a **tool firewall** (below). (An in-process prompt-injection callback was
+removed — see below.) The masking is
 deliberately scoped to **secrets and credentials, NOT general PII**: a coding
 agent's prompts legitimately contain names, places, paths and emails, and masking
 those corrupts the prompt before the model sees it (e.g. "capital of France" →
@@ -1141,9 +1141,6 @@ guardrails:
             allowed_param_patterns: { command: "<destructive-command regex>" } }
         - { id: deny-destructive-arguments-command, tool_name: "<shell-tool regex>", decision: deny,
             allowed_param_patterns: { arguments.command: "<destructive-command regex>" } }
-
-litellm_settings:
-  callbacks: ["detect_prompt_injection"]   # in-process prompt-injection, no external service
 ```
 
 ### Tool firewall (destructive command tool-calls)
@@ -1166,15 +1163,18 @@ like push/terraform/kubectl) remain the hard boundary. The exact shell-tool name
 paths per agent CLI are a `hardware bring-up` verification item
 (`docs/HARDWARE-BRINGUP.md`).
 
-### Prompt-injection (in-process)
+### Prompt-injection scanning — REMOVED
 
-`litellm_settings.callbacks: ["detect_prompt_injection"]` enables LiteLLM's
-in-process prompt-injection detector (a local heuristic — similarity against known
-injection patterns — with no external API or container). It replaces the **removed**
-LLM Guard (`laiyer/llm-guard-api`), which was unmaintained, shipped only an
-unpinnable multi-GB image, and aimed at the lower-priority layer for this use case.
-**Guardrails AI** remains deferred (it needs a Guardrails Hub token + manual
-per-guard install, so it cannot ship fully automated).
+The platform does **not** scan prompt content for injection. The in-process
+`detect_prompt_injection` callback was removed: it is a crude local heuristic
+(similarity to known attack strings) that **false-positives on ordinary coding
+traffic** — including normal Ollama requests, which it rejected with
+`400: Rejected message. This is a prompt injection attack.`. Like the earlier
+removal of general-PII masking and the unmaintained **LLM Guard**
+(`laiyer/llm-guard-api`), it corrupted legitimate use, so it is gone. For a
+sandboxed coding agent the real risk is destructive **tool execution** (the tool
+firewall above), not prompt content. **Guardrails AI** remains deferred (it needs a
+Guardrails Hub token + manual per-guard install, so it cannot ship fully automated).
 
 ---
 

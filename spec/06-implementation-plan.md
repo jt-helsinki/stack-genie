@@ -225,9 +225,9 @@ refer to the CLI spec and architecture spec respectively.
 * **M4 — Model layer + secrets.** LiteLLM config gen + routing default
   (the generated config also renders **always-on guardrails**, all
   `default_on: true` so no request — cloud included — can bypass them: Presidio
-  scoped to financial/identity **secrets** input+output, `hide-secrets`, the
-  `detect_prompt_injection` callback, and the `tool_permission` tool firewall;
-  general-PII masking and the unmaintained LLM Guard were removed);
+  scoped to financial/identity **secrets** input+output, `hide-secrets`, and the
+  `tool_permission` tool firewall; general-PII masking, the unmaintained LLM Guard,
+  and the false-positive-prone `detect_prompt_injection` callback were removed);
   `ai keys add/remove`; `ai models status`, `ai models test` against the mock
   provider. Tests: AT §7.1, §7.2.
 * **M5 — debian-trixie image + Microsandbox.** Seed `.ai-platform/Dockerfile` from the

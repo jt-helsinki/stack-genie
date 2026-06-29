@@ -107,13 +107,14 @@ func build() map[string]any {
 		"general_settings": map[string]any{
 			"store_model_in_db": true,
 		},
-		// callbacks wires LiteLLM's IN-PROCESS prompt-injection detector
-		// (detect_prompt_injection) — a local heuristic scanner that needs no
-		// external API and no companion container. It replaces the removed
-		// (unmaintained) LLM Guard legacy callback.
-		"litellm_settings": map[string]any{
-			"callbacks": []string{"detect_prompt_injection"},
-		},
+		// NOTE: the in-process prompt-injection detector (detect_prompt_injection) was
+		// REMOVED. It is a crude local heuristic (similarity to known attack strings)
+		// that false-positives on ordinary coding traffic — including normal Ollama
+		// requests, which it rejected with "400: Rejected message. This is a prompt
+		// injection attack." Like the removed PII masking and LLM Guard, it corrupted
+		// legitimate use, so it is gone. For a CODING agent the real risk is destructive
+		// TOOL EXECUTION, which the always-on tool_permission firewall (buildGuardrails)
+		// handles; prompt-content scanning is low-value and high-false-positive here.
 		"guardrails": buildGuardrails(),
 	}
 }
@@ -197,11 +198,7 @@ var commandParamPaths = []string{"command", "command[]", "cmd"}
 //	    150+ plugins) — strips API keys/tokens/credentials from the prompt. No
 //	    external server.
 //
-//	(b) In-process prompt-injection — detect_prompt_injection (see build()'s
-//	    litellm_settings.callbacks). A local heuristic detector with no external
-//	    API/container; it REPLACES the removed (unmaintained) LLM Guard.
-//
-//	(c) tool-firewall — a tool_permission guardrail that DENIES destructive command
+//	(b) tool-firewall — a tool_permission guardrail that DENIES destructive command
 //	    tool-calls (git push --force, rm -rf, terraform destroy, kubectl delete, …).
 //	    For sandboxed coding agents the real risk is destructive TOOL EXECUTION, not
 //	    prompt content, so this catches the model's tool-CALLS at the gateway —

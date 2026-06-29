@@ -372,8 +372,8 @@ These are implemented progressively across slices.
     IBAN_CODE, CRYPTO), backed by the `aip-presidio-analyzer` +
     `aip-presidio-anonymizer` service-tier containers
   * `hide-secrets` (LiteLLM's in-process detect-secrets) for API keys/tokens
-  * an in-process `detect_prompt_injection` callback (local heuristic, no
-    external service)
+  * (the in-process `detect_prompt_injection` callback was REMOVED — it
+    false-positived on ordinary coding/Ollama traffic)
   * a `tool_permission` **tool firewall** (post_call) that DENIES destructive
     command tool-calls (`git push --force`, `rm -rf`, `terraform destroy`,
     `kubectl delete`, …) — for coding agents the bigger risk is destructive tool
@@ -398,9 +398,10 @@ These are implemented progressively across slices.
   processes reach the internet, DNS-audited and re-lockable), with `deny` the
   locked-down posture; no egress proxy
 * **secret masking / audit**: LiteLLM's always-on guardrails on every request
-  (Presidio scoped to financial/identity secrets + `hide-secrets` +
-  `detect_prompt_injection` + the `tool_permission` tool firewall), which cloud
-  routes cannot bypass (§8.1); plus per-domain DNS egress audit via the `aip-dns`
+  (Presidio scoped to financial/identity secrets + `hide-secrets` + the
+  `tool_permission` tool firewall; the `detect_prompt_injection` callback was
+  removed as a false-positive source), which cloud routes cannot bypass (§8.1);
+  plus per-domain DNS egress audit via the `aip-dns`
   CoreDNS resolver, surfaced by `ai network log`
 
 ---
