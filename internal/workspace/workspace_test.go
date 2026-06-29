@@ -45,15 +45,18 @@ type fakeSandbox struct {
 	// true — VM present) unless isRunningErr is set. The classification path uses it
 	// AFTER an in-VM exec fails to tell a stale VM (false) from an overloaded one
 	// (true).
-	isRunning     bool
-	isRunningSet  bool
-	isRunningErr  error
-	written       map[string][]byte
-	inspectPolicy NetworkPolicy
-	inspectErr    error
-	logTail       string
-	logTailLines  int
-	logTailErr    error
+	isRunning        bool
+	isRunningSet     bool
+	isRunningErr     error
+	clockSynced      bool
+	execCtxCalls     int
+	execCtxFailFirst int
+	written          map[string][]byte
+	inspectPolicy    NetworkPolicy
+	inspectErr       error
+	logTail          string
+	logTailLines     int
+	logTailErr       error
 }
 
 func (sandbox *fakeSandbox) Create(_, _, projectMount, overlayPath string, netArgs []string) error {
@@ -72,6 +75,12 @@ func (sandbox *fakeSandbox) Exec(_ string, argv []string) (ExecResult, error) {
 }
 func (sandbox *fakeSandbox) ExecContext(_ context.Context, _ string, argv []string) (ExecResult, error) {
 	sandbox.execArgv = argv
+	sandbox.execCtxCalls++
+	// Simulate a post-sleep stale connection: the first execCtxFailFirst calls time
+	// out (ErrWorkspaceUnresponsive), exercising probeInVM's retry/recovery.
+	if sandbox.execCtxCalls <= sandbox.execCtxFailFirst {
+		return ExecResult{}, ErrWorkspaceUnresponsive
+	}
 	return sandbox.execResult, sandbox.execErr
 }
 func (sandbox *fakeSandbox) ExecRoot(_ string, argv []string) (ExecResult, error) {
@@ -82,6 +91,7 @@ func (sandbox *fakeSandbox) ExecRootContext(_ context.Context, _ string, argv []
 	sandbox.execRootArgv = append(sandbox.execRootArgv, argv)
 	return sandbox.execRootCtxResult, sandbox.execRootCtxErr
 }
+func (sandbox *fakeSandbox) SyncClock(string) error { sandbox.clockSynced = true; return nil }
 func (sandbox *fakeSandbox) IsRunning(context.Context, string) (bool, error) {
 	if sandbox.isRunningErr != nil {
 		return false, sandbox.isRunningErr
@@ -567,6 +577,54 @@ func TestListSessionsParsesOutput(test *testing.T) {
 	}
 	if sessions[1].Name != "opencode" || sessions[1].Attached {
 		test.Fatalf("session[1] = %+v", sessions[1])
+	}
+}
+
+// A transient post-sleep timeout on the FIRST in-VM probe is retried (probeInVM /
+// sleep recovery): the second attempt succeeds and ListSessions returns the
+// sessions instead of erroring.
+func TestListSessionsRetriesPastTransientTimeout(test *testing.T) {
+	seedStartedWorkspace(test, "app")
+	sandbox := &fakeSandbox{
+		execCtxFailFirst: 1, // first probe "hangs" (timeout), retry succeeds
+		execResult:       ExecResult{ExitCode: 0, Stdout: "shell|1|1700000000\n"},
+	}
+	sessions, err := newManager(&fakeBuilder{}, sandbox).ListSessions("app")
+	if err != nil {
+		test.Fatalf("ListSessions should recover via retry, got %v", err)
+	}
+	if len(sessions) != 1 || sessions[0].Name != "shell" {
+		test.Fatalf("want one session 'shell' after retry, got %+v", sessions)
+	}
+	if sandbox.execCtxCalls != 2 {
+		test.Fatalf("expected 2 probe attempts (1 timeout + 1 success), got %d", sandbox.execCtxCalls)
+	}
+}
+
+// msb reporting "sandbox not found" (a stale handle: started in state, but the
+// microVM is gone) must surface as ErrWorkspaceStale ("run ai restart"), NOT as a
+// raw tmux error or "no sessions".
+func TestListSessionsSandboxNotFoundIsStale(test *testing.T) {
+	seedStartedWorkspace(test, "app")
+	sandbox := &fakeSandbox{execResult: ExecResult{
+		ExitCode: 1,
+		Stderr:   "error: sandbox not found: aip-app",
+	}}
+	_, err := newManager(&fakeBuilder{}, sandbox).ListSessions("app")
+	if !errors.Is(err, ErrWorkspaceStale) {
+		test.Fatalf("want ErrWorkspaceStale for a gone sandbox, got %v", err)
+	}
+}
+
+// Start syncs the guest clock (so a post-sleep clock skew doesn't break in-VM TLS).
+func TestStartSyncsGuestClock(test *testing.T) {
+	seedProject(test, "app")
+	sandbox := &fakeSandbox{}
+	if _, err := newManager(&fakeBuilder{}, sandbox).Start("app"); err != nil {
+		test.Fatal(err)
+	}
+	if !sandbox.clockSynced {
+		test.Fatal("Start must sync the guest clock (SyncClock)")
 	}
 }
 

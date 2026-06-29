@@ -13,6 +13,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/jt-helsinki/ideal-robot/internal/litellm"
 	"github.com/jt-helsinki/ideal-robot/internal/runtime"
@@ -398,6 +399,22 @@ func (sandbox realSandbox) IsRunning(ctx context.Context, name string) (bool, er
 	}
 	// Anything else (couldn't launch msb, signal, …) is an infra failure.
 	return false, fmt.Errorf("msb inspect %s: %w", name, err)
+}
+
+// SyncClock sets the guest clock to the host's current UTC time, as root and
+// bounded by inVMProbeTimeout. A microVM's clock freezes during host sleep and
+// jumps backward on wake; correcting it keeps in-VM TLS (e.g. `nerdctl pull` cert
+// validation) working. `date -u -s` accepts the ISO-8601 stamp; only root may set
+// the clock. Best-effort for the caller — a non-zero inner exit is ignored here.
+func (sandbox realSandbox) SyncClock(name string) error {
+	if err := sandbox.ensureInstalled(); err != nil {
+		return err
+	}
+	stamp := time.Now().UTC().Format("2006-01-02 15:04:05")
+	ctx, cancel := context.WithTimeout(context.Background(), inVMProbeTimeout)
+	defer cancel()
+	_, err := sandbox.execAs(ctx, name, "root", []string{"date", "-u", "-s", stamp})
+	return err
 }
 
 // msbInspect mirrors the subset of `msb inspect --format json` (msb 0.5.7) the

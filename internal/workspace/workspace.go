@@ -95,11 +95,20 @@ var ErrWorkspaceStale = errors.New("workspace is marked started but its microVM 
 // the happy path, so a healthy workspace pays no extra latency.
 //
 // Timeout budget (must stay coherent with the TUI view backstop): the worst-case
-// manager classification is inVMProbeTimeout + livenessProbeTimeout (in-VM exec
-// gives up, then the liveness probe classifies). The TUI's fetch backstop
-// (views.viewFetchTimeout) is set LARGER than that sum so the manager's PRECISE
-// classified error always wins over the view's generic timeout message.
-const inVMProbeTimeout = 6 * time.Second
+// manager classification is inVMProbeTimeout*inVMProbeAttempts + livenessProbeTimeout
+// (in-VM exec gives up after its retries, then the liveness probe classifies). The
+// TUI's fetch backstop (views.viewFetchTimeout) is set LARGER than that sum so the
+// manager's PRECISE classified error always wins over the view's generic timeout.
+const inVMProbeTimeout = 4 * time.Second
+
+// inVMProbeAttempts is how many times a bounded in-VM probe is tried before the
+// manager gives up and classifies the failure. The retry is the SLEEP-RECOVERY
+// path: the FIRST `msb exec` after the host wakes from sleep often hangs while the
+// VM's vsock connection re-establishes; killing it (the per-attempt timeout) and
+// reconnecting on a fresh `msb exec` typically succeeds — so the Apps/Shell views
+// self-heal after a sleep instead of forcing a manual `ai restart`. Only timeouts
+// are retried (a definite error like msb-missing is not).
+const inVMProbeAttempts = 2
 
 // livenessProbeTimeout bounds the metadata-only VM-liveness probe (`msb inspect`),
 // run ONLY to classify an in-VM exec that already failed/timed out. It is short so
@@ -227,6 +236,12 @@ type Sandbox interface {
 	// the error so the caller can decide (an unknown liveness is treated as "present
 	// but slow" → unresponsive, never as a confident "stale").
 	IsRunning(ctx context.Context, name string) (bool, error)
+	// SyncClock sets the guest clock to the host's current time (best-effort,
+	// bounded, as root). A microVM's clock FREEZES while the host sleeps and jumps
+	// backward on wake; left uncorrected the drift breaks in-VM TLS (e.g. an image
+	// `nerdctl pull` failing cert validation). Called at workspace start/restart.
+	// ErrMsbMissing when msb is absent.
+	SyncClock(name string) error
 }
 
 // KeyMinter mints (and rotates) scoped LiteLLM virtual keys. It is the small
@@ -322,6 +337,11 @@ func (manager Manager) Start(project string) (*state.Workspace, error) {
 	if err := manager.Sandbox.Start(name); err != nil {
 		return nil, err
 	}
+	// Correct the guest clock before anything time-sensitive runs (agent provider
+	// TLS, in-VM image pulls): a fresh boot — or a recreate after the host slept —
+	// can leave the VM's clock skewed by the sleep duration. Best-effort: a failure
+	// must never fail the start.
+	_ = manager.Sandbox.SyncClock(name)
 	// The microVM is now running but no state handle is saved yet. Arm a
 	// best-effort rollback so that ANY failure on the remaining post-start steps
 	// (agent-provider registration AND the state-handle write) tears the microVM
@@ -546,11 +566,15 @@ func (manager Manager) buildAppManager(name, project, root, gatewayURL string, f
 		// VM), matching the sessions path. The unbounded exec above still serves the
 		// legitimately-long lifecycle ops (image pulls).
 		probeExec = func(argv []string) (apps.ExecResult, error) {
-			ctx, cancel := context.WithTimeout(context.Background(), inVMProbeTimeout)
-			defer cancel()
-			result, err := manager.Sandbox.ExecRootContext(ctx, name, argv)
+			result, err := manager.probeInVM(project, func(ctx context.Context) (ExecResult, error) {
+				return manager.Sandbox.ExecRootContext(ctx, name, argv)
+			})
 			if err != nil {
-				return apps.ExecResult{}, manager.classifyInVMFailure(project, err)
+				return apps.ExecResult{}, err // classified (stale / unresponsive), retried for sleep recovery
+			}
+			// msb reporting the sandbox is gone (stale handle) → stale, not an app error.
+			if result.ExitCode != 0 && stderrSandboxNotFound(result.Stderr) {
+				return apps.ExecResult{}, ErrWorkspaceStale
 			}
 			return apps.ExecResult{ExitCode: result.ExitCode, Stdout: result.Stdout, Stderr: result.Stderr}, nil
 		}
@@ -831,6 +855,32 @@ func (manager Manager) requireRunning(project string) error {
 // It is only called once an in-VM exec has already failed, so it never masks a
 // healthy path. cause is the original exec error/timeout, returned unchanged if it
 // is already a classified sentinel.
+// probeInVM runs a bounded in-VM exec with retry-on-timeout, returning the first
+// successful ExecResult or — once the attempts are exhausted — a CLASSIFIED error
+// (stale VM vs. unresponsive VM). The retry is the sleep-recovery path: a stale
+// post-wake vsock connection makes the first `msb exec` hang, but a fresh one
+// usually succeeds (see inVMProbeAttempts). `run` is given a fresh bounded context
+// per attempt. A non-zero INNER exit (e.g. tmux "no server") comes back as
+// (result, nil) and is the caller's to interpret — only a transport timeout/error
+// is retried/classified here.
+func (manager Manager) probeInVM(project string, run func(context.Context) (ExecResult, error)) (ExecResult, error) {
+	var lastErr error
+	for attempt := 0; attempt < inVMProbeAttempts; attempt++ {
+		ctx, cancel := context.WithTimeout(context.Background(), inVMProbeTimeout)
+		result, err := run(ctx)
+		cancel()
+		if err == nil {
+			return result, nil
+		}
+		lastErr = err
+		// A definite, non-transient failure won't be cured by reconnecting.
+		if errors.Is(err, ErrMsbMissing) {
+			break
+		}
+	}
+	return ExecResult{}, manager.classifyInVMFailure(project, lastErr)
+}
+
 func (manager Manager) classifyInVMFailure(project string, cause error) error {
 	// Already a precise sentinel (e.g. ErrTmuxMissing, ErrMsbMissing) — keep it.
 	if errors.Is(cause, ErrMsbMissing) || errors.Is(cause, ErrTmuxMissing) || errors.Is(cause, ErrNotStarted) {
@@ -912,17 +962,20 @@ func (manager Manager) launchTmuxSession(project, session string, command []stri
 // missing tmux surfaces as a clear ErrTmuxMissing instead of msb failing to exec
 // tmux through the PTY (which returns a misleading success).
 func (manager Manager) requireTmux(project string) error {
-	ctx, cancel := context.WithTimeout(context.Background(), inVMProbeTimeout)
-	defer cancel()
-	result, err := manager.Sandbox.ExecContext(ctx, Name(project), []string{"sh", "-c", "command -v tmux >/dev/null 2>&1"})
+	// Probe with retry so the interactive entry points (shell/agent/attach) recover
+	// from a transient post-sleep stale connection instead of erroring; a real
+	// failure is classified (stale VM vs. overloaded VM).
+	result, err := manager.probeInVM(project, func(ctx context.Context) (ExecResult, error) {
+		return manager.Sandbox.ExecContext(ctx, Name(project), []string{"sh", "-c", "command -v tmux >/dev/null 2>&1"})
+	})
 	if err != nil {
-		// The probe failed/timed out before we could even check tmux — classify it
-		// (stale VM vs. overloaded VM) so the interactive entry points (shell/agent/
-		// attach) report a precise, actionable error instead of attaching a PTY to a
-		// missing/wedged VM.
-		return manager.classifyInVMFailure(project, err)
+		return err // classified
 	}
 	if result.ExitCode != 0 {
+		// msb reporting the sandbox is gone (stale handle) is NOT "tmux missing".
+		if stderrSandboxNotFound(result.Stderr) {
+			return ErrWorkspaceStale
+		}
 		return ErrTmuxMissing
 	}
 	return nil
@@ -992,23 +1045,28 @@ func (manager Manager) ListSessions(project string) ([]Session, error) {
 	if err := manager.requireRunning(project); err != nil {
 		return nil, err
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), inVMProbeTimeout)
-	defer cancel()
 	// Delimit fields with '|', NOT a tab: `msb exec` MANGLES tab bytes in argv (a
 	// '\t' in the format string arrives in the guest as '_'), which collapsed every
 	// row into a single field so parseSessions skipped them all and `ai sessions`
 	// ALWAYS reported zero sessions (verified against a live VM). '|' survives the
 	// transport intact and can never occur in a field (session names are validated to
-	// letters/digits/'-'/'_', attached is 0/1, activity is a Unix epoch).
-	result, err := manager.Sandbox.ExecContext(ctx, Name(project), []string{
-		"tmux", "list-sessions", "-F", "#{session_name}|#{session_attached}|#{session_activity}",
+	// letters/digits/'-'/'_', attached is 0/1, activity is a Unix epoch). The probe
+	// retries on a timeout so a wedged-after-sleep VM self-heals (see probeInVM).
+	result, err := manager.probeInVM(project, func(ctx context.Context) (ExecResult, error) {
+		return manager.Sandbox.ExecContext(ctx, Name(project), []string{
+			"tmux", "list-sessions", "-F", "#{session_name}|#{session_attached}|#{session_activity}",
+		})
 	})
 	if err != nil {
-		// The in-VM exec failed/timed out — classify it (stale VM vs. overloaded VM)
-		// so the user gets a specific, actionable message instead of a generic hang.
-		return nil, manager.classifyInVMFailure(project, err)
+		return nil, err // already classified (stale / unresponsive)
 	}
 	if result.ExitCode != 0 {
+		// msb itself reporting the sandbox is gone (the handle is stale, e.g. after a
+		// sleep/teardown) surfaces as a non-zero exit with "sandbox not found" — that
+		// is NOT a tmux failure; report it as stale so the user runs `ai restart`.
+		if stderrSandboxNotFound(result.Stderr) {
+			return nil, ErrWorkspaceStale
+		}
 		// `tmux list-sessions` with no running tmux server yet is a non-zero exit —
 		// treat it as ZERO sessions, not a failure. The message varies by tmux build:
 		// "no server running on …" OR "error connecting to /tmp/tmux-…/default (No such
@@ -1021,6 +1079,13 @@ func (manager Manager) ListSessions(project string) ([]Session, error) {
 		return nil, fmt.Errorf("tmux list-sessions exited %d: %s", result.ExitCode, strings.TrimSpace(result.Stderr))
 	}
 	return parseSessions(result.Stdout), nil
+}
+
+// stderrSandboxNotFound reports whether msb stderr says the sandbox does not exist
+// (a stale lifecycle handle: the workspace is marked started but its microVM is
+// gone). It is distinct from isSandboxNotFound, which inspects a Go error.
+func stderrSandboxNotFound(stderr string) bool {
+	return strings.Contains(strings.ToLower(stderr), "sandbox not found")
 }
 
 // isNoTmuxServer reports whether a tmux stderr indicates simply that no tmux server
