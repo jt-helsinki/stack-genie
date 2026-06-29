@@ -994,8 +994,14 @@ func (manager Manager) ListSessions(project string) ([]Session, error) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), inVMProbeTimeout)
 	defer cancel()
+	// Delimit fields with '|', NOT a tab: `msb exec` MANGLES tab bytes in argv (a
+	// '\t' in the format string arrives in the guest as '_'), which collapsed every
+	// row into a single field so parseSessions skipped them all and `ai sessions`
+	// ALWAYS reported zero sessions (verified against a live VM). '|' survives the
+	// transport intact and can never occur in a field (session names are validated to
+	// letters/digits/'-'/'_', attached is 0/1, activity is a Unix epoch).
 	result, err := manager.Sandbox.ExecContext(ctx, Name(project), []string{
-		"tmux", "list-sessions", "-F", "#{session_name}\t#{session_attached}\t#{session_activity}",
+		"tmux", "list-sessions", "-F", "#{session_name}|#{session_attached}|#{session_activity}",
 	})
 	if err != nil {
 		// The in-VM exec failed/timed out — classify it (stale VM vs. overloaded VM)
@@ -1108,7 +1114,9 @@ func parseSessions(stdout string) []Session {
 		if strings.TrimSpace(line) == "" {
 			continue
 		}
-		fields := strings.Split(line, "\t")
+		// Fields are '|'-delimited (see ListSessions — a tab does not survive
+		// `msb exec`). SplitN keeps any stray '|' out of the first two fields.
+		fields := strings.SplitN(line, "|", 3)
 		if len(fields) < 3 {
 			continue
 		}

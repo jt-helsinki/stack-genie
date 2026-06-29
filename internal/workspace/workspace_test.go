@@ -542,19 +542,20 @@ func TestAttachSession(test *testing.T) {
 	}
 }
 
-// ListSessions parses tmux's tab-separated list-sessions output (name, attached,
-// activity), reading the attached flag and raw activity epoch.
+// ListSessions parses tmux's '|'-separated list-sessions output (name, attached,
+// activity), reading the attached flag and raw activity epoch. The delimiter is '|'
+// not a tab because `msb exec` mangles tab bytes in argv.
 func TestListSessionsParsesOutput(test *testing.T) {
 	seedStartedWorkspace(test, "app")
 	sandbox := &fakeSandbox{execResult: ExecResult{
 		ExitCode: 0,
-		Stdout:   "shell\t1\t1700000000\nopencode\t0\t1700000500\n",
+		Stdout:   "shell|1|1700000000\nopencode|0|1700000500\n",
 	}}
 	sessions, err := newManager(&fakeBuilder{}, sandbox).ListSessions("app")
 	if err != nil {
 		test.Fatal(err)
 	}
-	want := []string{"tmux", "list-sessions", "-F", "#{session_name}\t#{session_attached}\t#{session_activity}"}
+	want := []string{"tmux", "list-sessions", "-F", "#{session_name}|#{session_attached}|#{session_activity}"}
 	if !equalStrings(sandbox.execArgv, want) {
 		test.Fatalf("ListSessions ran %v, want %v", sandbox.execArgv, want)
 	}
