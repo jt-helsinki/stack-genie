@@ -153,7 +153,38 @@ func Run(cwd string) error {
 		func() string { return application.currentProject },
 		workspaceLogStream,
 	)
-	projectDetail := views.NewProject(projectInfo, workspaceLogView)
+	application.workspaceLogView = workspaceLogView
+	// Live sandbox configuration (diagnostics), shown under the Workspace tab's
+	// "Sandbox Configuration" heading, fetched alongside the summary.
+	configFetcher := func(name string) ([]views.ConfigField, error) {
+		fields, err := workspaceManager.WorkspaceConfig(name)
+		if err != nil {
+			return nil, err
+		}
+		out := make([]views.ConfigField, len(fields))
+		for index, configField := range fields {
+			out[index] = views.ConfigField{Label: configField.Label, Value: configField.Value}
+		}
+		return out, nil
+	}
+	projectDetail := views.NewProject(projectInfo, configFetcher)
+
+	// The Metrics sub-tab streams live sandbox metrics (sb.MetricsStream) into a table
+	// when the backend supports it; otherwise it reports metrics unavailable.
+	var metricsOpener views.MetricsStreamOpener
+	if workspaceManager.SupportsMetrics() {
+		metricsOpener = func(ctx context.Context) (views.MetricsStream, error) {
+			if application.currentProject == "" {
+				return nil, fmt.Errorf("no workspace selected")
+			}
+			stream, err := workspaceManager.OpenWorkspaceMetricsStream(ctx, application.currentProject, 2*time.Second)
+			if err != nil {
+				return nil, err
+			}
+			return stream, nil
+		}
+	}
+	metricsView := views.NewMetrics(metricsOpener, application.workspaceLogReadable, func() string { return application.currentProject })
 	// The Sessions view resolves the LIVE current project at fetch time (over the
 	// real Manager), so switching projects reflects immediately. With no current
 	// project the lister is not invoked (the view shows "no project selected").
@@ -263,8 +294,8 @@ func Run(cwd string) error {
 	// the interactive shell run in the real terminal via ExecProcess.
 	projectsHub := views.NewProjectsHub(
 		projectsView,
-		[]views.Screen{projectDetail, networkView, contextView, sessionsView, appsView},
-		[]string{"Workspace", "Network", "Context", "Shell", "Apps"},
+		[]views.Screen{projectDetail, workspaceLogView, metricsView, networkView, contextView, sessionsView, appsView},
+		[]string{"Workspace", "Sandbox Logs", "Metrics", "Network", "Context", "Shell", "Apps"},
 	)
 
 	// Top-level tab order = menu order: Services · Workspaces · Local Models · Cloud
@@ -506,6 +537,9 @@ type app struct {
 	// releases it on project switch and closes it on exit, so only one workspace
 	// connection is ever active and none linger past the TUI.
 	workspaceManager workspace.Manager
+	// workspaceLogView is the standalone "Sandbox Logs" sub-tab, kept so a lifecycle
+	// action can Reset it (clear the previous session's log while the VM recreates).
+	workspaceLogView *views.WorkspaceLog
 
 	// servicesView lets the app refresh the Services view (list or open detail) when
 	// a `services update` terminal overlay returns.
@@ -886,6 +920,11 @@ func (application *app) startLifecycle(action, project string) tea.Cmd {
 	_ = command.Process.Release()
 	application.lifecycle = &lifecycleOp{project: project, action: action, started: time.Now()}
 	application.projectDetail.StartPending(action)
+	// Clear the Sandbox Logs tab so the previous session's output does not linger
+	// while the microVM is (re)created — it streams fresh on the next view.
+	if application.workspaceLogView != nil {
+		application.workspaceLogView.Reset()
+	}
 	return tea.Batch(application.projectDetail.Init(), application.lifecyclePollCmd())
 }
 

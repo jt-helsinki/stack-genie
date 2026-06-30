@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"path"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -170,6 +171,217 @@ func (sandbox *sdkSandbox) OpenLogStream(ctx context.Context, name string) (LogS
 		return nil, fmt.Errorf("could not open the workspace log stream for %q", name)
 	}
 	return &sdkLogStream{handle: handle}, nil
+}
+
+// MetricsSnapshot is one sample of a workspace microVM's resource usage, surfaced by
+// the Metrics tab. It is the subset of the SDK's Metrics we display.
+type MetricsSnapshot struct {
+	CPUPercent       float64
+	MemoryBytes      uint64
+	MemoryLimitBytes uint64
+	DiskReadBytes    uint64
+	DiskWriteBytes   uint64
+	NetRxBytes       uint64
+	NetTxBytes       uint64
+	Uptime           time.Duration
+}
+
+// MetricsStream is a live metrics subscription: Recv blocks for the next sample
+// (emitted every interval), and Close stops it. The CLI backend does not implement
+// metrics streaming.
+type MetricsStream interface {
+	Recv(ctx context.Context) (MetricsSnapshot, error)
+	Close() error
+}
+
+// metricsStreamer is the optional capability a Sandbox backend may implement to open
+// a live MetricsStream. Only the SDK backend does.
+type metricsStreamer interface {
+	OpenMetricsStream(ctx context.Context, name string, interval time.Duration) (MetricsStream, error)
+}
+
+// ErrMetricsUnsupported is returned by OpenWorkspaceMetricsStream on a backend that
+// cannot stream metrics (the CLI backend).
+var ErrMetricsUnsupported = errors.New("metrics streaming is not supported by this workspace backend")
+
+// SupportsMetrics reports whether the active backend can stream metrics.
+func (manager Manager) SupportsMetrics() bool {
+	_, ok := manager.Sandbox.(metricsStreamer)
+	return ok
+}
+
+// OpenWorkspaceMetricsStream opens a live metrics stream for the project's microVM,
+// sampling every interval, or ErrMetricsUnsupported on the CLI backend. The caller
+// owns the stream and must Close it.
+func (manager Manager) OpenWorkspaceMetricsStream(ctx context.Context, project string, interval time.Duration) (MetricsStream, error) {
+	streamer, ok := manager.Sandbox.(metricsStreamer)
+	if !ok {
+		return nil, ErrMetricsUnsupported
+	}
+	return streamer.OpenMetricsStream(ctx, Name(project), interval)
+}
+
+// sdkMetricsStream adapts a microsandbox MetricsStreamHandle to MetricsStream.
+type sdkMetricsStream struct {
+	handle *microsandbox.MetricsStreamHandle
+}
+
+func (stream *sdkMetricsStream) Recv(ctx context.Context) (MetricsSnapshot, error) {
+	metrics, err := stream.handle.Recv(ctx)
+	if err != nil {
+		return MetricsSnapshot{}, err
+	}
+	if metrics == nil {
+		return MetricsSnapshot{}, io.EOF
+	}
+	return MetricsSnapshot{
+		CPUPercent:       metrics.CPUPercent,
+		MemoryBytes:      metrics.MemoryBytes,
+		MemoryLimitBytes: metrics.MemoryLimitBytes,
+		DiskReadBytes:    metrics.DiskReadBytes,
+		DiskWriteBytes:   metrics.DiskWriteBytes,
+		NetRxBytes:       metrics.NetRxBytes,
+		NetTxBytes:       metrics.NetTxBytes,
+		Uptime:           metrics.Uptime,
+	}, nil
+}
+
+func (stream *sdkMetricsStream) Close() error { return stream.handle.Close() }
+
+// WorkspaceConfigField is one diagnostic key/value of the live sandbox configuration
+// (image, memory, cpus, network, ports, …), surfaced under the Workspace tab's
+// "Sandbox Configuration" heading.
+type WorkspaceConfigField struct {
+	Label string
+	Value string
+}
+
+// configInspector is the optional capability a backend may implement to report the
+// live sandbox configuration. Only the SDK backend does.
+type configInspector interface {
+	InspectConfig(ctx context.Context, name string) ([]WorkspaceConfigField, error)
+}
+
+// ErrConfigUnsupported is returned by WorkspaceConfig on a backend that cannot report
+// the live configuration (the CLI backend).
+var ErrConfigUnsupported = errors.New("live sandbox configuration is not available on this workspace backend")
+
+// WorkspaceConfig returns the live sandbox configuration as ordered diagnostic
+// fields, or ErrConfigUnsupported on the CLI backend / ErrNotRunning when the
+// sandbox does not exist. Metadata-only (no relay handle), bounded so it cannot hang.
+func (manager Manager) WorkspaceConfig(project string) ([]WorkspaceConfigField, error) {
+	inspector, ok := manager.Sandbox.(configInspector)
+	if !ok {
+		return nil, ErrConfigUnsupported
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), livenessProbeTimeout)
+	defer cancel()
+	return inspector.InspectConfig(ctx, Name(project))
+}
+
+// InspectConfig reads the named microVM's stored configuration (SandboxConfig) and
+// renders the diagnostic fields. ErrNotRunning when no such sandbox exists.
+func (sandbox *sdkSandbox) InspectConfig(ctx context.Context, name string) ([]WorkspaceConfigField, error) {
+	if err := sandbox.ensure(); err != nil {
+		return nil, err
+	}
+	meta, err := microsandbox.GetSandbox(ctx, name)
+	if err != nil {
+		if microsandbox.IsKind(err, microsandbox.ErrSandboxNotFound) {
+			return nil, ErrNotRunning
+		}
+		return nil, fmt.Errorf("could not read workspace %q configuration", name)
+	}
+	configuration, err := meta.Config()
+	if err != nil {
+		return nil, fmt.Errorf("could not read workspace %q configuration", name)
+	}
+	return sandboxConfigFields(configuration), nil
+}
+
+// sandboxConfigFields renders a SandboxConfig into the ordered diagnostic field list.
+func sandboxConfigFields(configuration *microsandbox.SandboxConfig) []WorkspaceConfigField {
+	image := configuration.Image
+	switch {
+	case configuration.ImageBind != "":
+		image = configuration.ImageBind + " (bind rootfs)"
+	case configuration.Snapshot != "":
+		image = configuration.Snapshot + " (snapshot)"
+	}
+	user := configuration.User
+	if user == "" {
+		user = "workspace (default)"
+	}
+	fields := []WorkspaceConfigField{
+		{Label: "status", Value: string(microsandbox.SandboxStatusRunning)},
+		{Label: "image", Value: image},
+		{Label: "memory", Value: fmt.Sprintf("%d MiB", configuration.MemoryMiB)},
+		{Label: "vcpus", Value: strconv.Itoa(int(configuration.CPUs))},
+		{Label: "workdir", Value: configuration.Workdir},
+		{Label: "user", Value: user},
+		{Label: "idle timeout", Value: durationOrUnlimited(configuration.IdleTimeout)},
+	}
+	if configuration.MaxDuration > 0 {
+		fields = append(fields, WorkspaceConfigField{Label: "max duration", Value: configuration.MaxDuration.String()})
+	}
+	fields = append(fields, WorkspaceConfigField{Label: "detached", Value: strconv.FormatBool(configuration.Detached)})
+	fields = append(fields, WorkspaceConfigField{Label: "published ports", Value: portsSummary(configuration)})
+	if configuration.Network != nil {
+		fields = append(fields, WorkspaceConfigField{
+			Label: "egress",
+			Value: fmt.Sprintf("default %s, %d rule(s)", egressDefault(configuration.Network), len(configuration.Network.Rules)),
+		})
+		if configuration.Network.DNS != nil && len(configuration.Network.DNS.Nameservers) > 0 {
+			fields = append(fields, WorkspaceConfigField{Label: "dns", Value: strings.Join(configuration.Network.DNS.Nameservers, ", ")})
+		}
+	}
+	return fields
+}
+
+func durationOrUnlimited(duration time.Duration) string {
+	if duration <= 0 {
+		return "unlimited"
+	}
+	return duration.String()
+}
+
+func egressDefault(network *microsandbox.NetworkConfig) string {
+	if network.DefaultEgress == "" {
+		return "allow"
+	}
+	return string(network.DefaultEgress)
+}
+
+func portsSummary(configuration *microsandbox.SandboxConfig) string {
+	total := len(configuration.Ports) + len(configuration.PortsUDP) + len(configuration.PortBindings)
+	if total == 0 {
+		return "none"
+	}
+	parts := make([]string, 0, total)
+	for host, guest := range configuration.Ports {
+		parts = append(parts, fmt.Sprintf("%d→%d/tcp", host, guest))
+	}
+	for host, guest := range configuration.PortsUDP {
+		parts = append(parts, fmt.Sprintf("%d→%d/udp", host, guest))
+	}
+	sort.Strings(parts)
+	return strings.Join(parts, ", ")
+}
+
+// OpenMetricsStream opens a metrics stream over the workspace's CONNECTED handle
+// (unlike logs, metrics need a live agent connection). It reuses the single active
+// handle (background ctx for the connection; the caller's ctx governs the stream so
+// cancelling it unblocks Recv without dropping the connection).
+func (sandbox *sdkSandbox) OpenMetricsStream(ctx context.Context, name string, interval time.Duration) (MetricsStream, error) {
+	live, err := sandbox.handle(context.Background(), name)
+	if err != nil {
+		return nil, err
+	}
+	handle, err := live.MetricsStream(ctx, interval)
+	if err != nil {
+		return nil, fmt.Errorf("could not open the metrics stream for %q", name)
+	}
+	return &sdkMetricsStream{handle: handle}, nil
 }
 
 // sdkSandbox drives Microsandbox microVMs via the in-process Go SDK. It keeps ONE

@@ -8,11 +8,6 @@ import (
 	"github.com/jt-helsinki/ideal-robot/internal/project"
 )
 
-// stubLog is a no-op embedded workspace log for Project view tests.
-func stubLog() *WorkspaceLog {
-	return NewWorkspaceLog(func() (string, error) { return "", nil }, func() bool { return true }, func() string { return "" }, nil)
-}
-
 // TestProjectDetailLifecycleKeyEmitsActionRequest: a lifecycle key emits a
 // WorkspaceActionRequestedMsg so the parent runs it as a suspended subprocess
 // (streaming msb output to the terminal), rather than calling msb on the alt-screen.
@@ -21,7 +16,7 @@ func TestProjectDetailLifecycleKeyEmitsActionRequest(test *testing.T) {
 		func(name string) (project.Entry, bool, error) {
 			return project.Entry{Name: name, OS: "ubuntu", Status: "stopped"}, true, nil
 		},
-		stubLog(),
+		nil,
 	)
 	view.SetProject("app")
 	_ = view.Update(view.Init()()) // refresh the summary
@@ -43,7 +38,7 @@ func TestProjectDetailExecKeyRequestsShell(test *testing.T) {
 		func(name string) (project.Entry, bool, error) {
 			return project.Entry{Name: name, OS: "ubuntu", Status: "started"}, true, nil
 		},
-		stubLog(),
+		nil,
 	)
 	view.SetProject("app")
 	_ = view.Update(view.Init()()) // refresh the summary
@@ -66,7 +61,7 @@ func TestProjectDetailShellGuardedWhenNotRunning(test *testing.T) {
 		func(name string) (project.Entry, bool, error) {
 			return project.Entry{Name: name, OS: "ubuntu", Status: "none"}, true, nil
 		},
-		stubLog(),
+		nil,
 	)
 	view.SetProject("app")
 	_ = view.Update(view.Init()())
@@ -80,7 +75,7 @@ func TestProjectDetailShellGuardedWhenNotRunning(test *testing.T) {
 }
 
 func TestProjectDetailNoSelection(test *testing.T) {
-	view := NewProject(nil, stubLog())
+	view := NewProject(nil, nil)
 	if cmd := view.Init(); cmd != nil {
 		test.Error("Init with no project selected must be a no-op")
 	}
@@ -98,7 +93,7 @@ func TestProjectDetailNoSelection(test *testing.T) {
 func TestProjectPendingShowsSpinner(test *testing.T) {
 	view := NewProject(func(name string) (project.Entry, bool, error) {
 		return project.Entry{Name: name, OS: "ubuntu", Status: "none"}, true, nil
-	}, stubLog())
+	}, nil)
 	view.SetProject("app")
 	_ = view.Update(view.Init()())
 
@@ -115,5 +110,27 @@ func TestProjectPendingShowsSpinner(test *testing.T) {
 	view.ClearPending()
 	if strings.Contains(view.View(), "starting…") {
 		test.Error("clearing pending should remove the spinner")
+	}
+}
+
+// TestProjectShowsSandboxConfiguration: the live sandbox config fetched alongside the
+// summary is rendered under the "Sandbox Configuration" heading.
+func TestProjectShowsSandboxConfiguration(test *testing.T) {
+	view := NewProject(
+		func(name string) (project.Entry, bool, error) {
+			return project.Entry{Name: name, OS: "ubuntu", Status: "started"}, true, nil
+		},
+		func(name string) ([]ConfigField, error) {
+			return []ConfigField{{Label: "image", Value: "aip-app:local"}, {Label: "memory", Value: "4096 MiB"}}, nil
+		},
+	)
+	view.SetProject("app")
+	_ = view.Update(view.Init()())
+	out := view.View()
+	if !strings.Contains(out, "Sandbox Configuration") {
+		test.Errorf("expected the Sandbox Configuration heading:\n%s", out)
+	}
+	if !strings.Contains(out, "aip-app:local") || !strings.Contains(out, "4096 MiB") {
+		test.Errorf("expected the live config fields rendered:\n%s", out)
 	}
 }

@@ -15,6 +15,14 @@ var spinnerFrames = []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "�
 // workspace status). Injected; the parent wires it over project.List.
 type ProjectInfoFetcher func(name string) (project.Entry, bool, error)
 
+// ConfigField is one diagnostic key/value of the live sandbox configuration, shown
+// under the "Sandbox Configuration" heading. ConfigFetcher returns them for the named
+// workspace (a nil fetcher, an error, or no fields → the block shows a hint instead).
+type ConfigField struct{ Label, Value string }
+
+// ConfigFetcher returns the live sandbox configuration fields for a workspace.
+type ConfigFetcher func(name string) ([]ConfigField, error)
+
 // ExecRequestedMsg is emitted when the user asks to open an interactive shell in
 // the current project's workspace (the "e" key). The parent app suspends the TUI
 // and tea.ExecProcess an interactive shell via `ai shell`.
@@ -33,22 +41,19 @@ type WorkspaceActionRequestedMsg struct {
 }
 
 type projectRefreshedMsg struct {
-	entry project.Entry
-	found bool
-	err   error
+	entry     project.Entry
+	found     bool
+	err       error
+	config    []ConfigField
+	configErr error
 }
 
-// summaryRows is the fixed height of the detail summary block above the embedded
-// workspace log: name (1) + OS/agents/workspace/path (4) + flash slot (1) + blank
-// (1) + the "Workspace log" heading (1) = 8.
-const summaryRows = 8
-
 // Project is the detail view for the current project: its summary + workspace
-// lifecycle (start/stop/restart/delete), with the workspace LOG embedded below the
-// summary (the log is not a separate tab).
+// lifecycle (start/stop/restart/delete). The workspace LOG and METRICS are their own
+// sub-tabs (Sandbox Logs / Metrics) — not embedded here.
 type Project struct {
 	info     ProjectInfoFetcher
-	log      *WorkspaceLog
+	configOf ConfigFetcher
 	name     string
 	entry    project.Entry
 	hasEntry bool
@@ -56,6 +61,10 @@ type Project struct {
 	err      error
 	width    int
 	height   int
+	// configFields is the live sandbox configuration (diagnostics), refreshed with the
+	// summary; configErr explains why it is unavailable (not running / CLI backend).
+	configFields []ConfigField
+	configErr    error
 	// pending is the in-flight lifecycle action ("start"/"stop"/"restart"), shown as
 	// an animated spinner on the workspace status line; empty when idle. The parent
 	// sets/clears it (StartPending/ClearPending) and advances the frame (TickSpinner)
@@ -65,22 +74,19 @@ type Project struct {
 	pendingFrame int
 }
 
-// NewProject builds the project-detail view over the injected info fetcher and the
-// workspace-log component shown beneath the summary.
-func NewProject(info ProjectInfoFetcher, log *WorkspaceLog) *Project {
-	return &Project{info: info, log: log}
+// NewProject builds the project-detail (summary) view over the injected info fetcher
+// and a live sandbox-configuration fetcher (for the "Sandbox Configuration" block;
+// may be nil).
+func NewProject(info ProjectInfoFetcher, configOf ConfigFetcher) *Project {
+	return &Project{info: info, configOf: configOf}
 }
 
 // StartPending shows the "<action>ing…" spinner on the workspace status line; the
-// parent calls this when it kicks off a detached lifecycle action. It also CLEARS
-// the embedded workspace log so the previous session's captured output does not
-// linger while the microVM is (re)created — the log then streams fresh once the
-// workspace is running again.
+// parent calls this when it kicks off a detached lifecycle action.
 func (view *Project) StartPending(action string) {
 	view.pending = action
 	view.pendingFrame = 0
 	view.flash = ""
-	view.log.Reset()
 }
 
 // TickSpinner advances the pending spinner one frame (driven by the parent's poll).
@@ -98,49 +104,41 @@ func (view *Project) Hints() string {
 	if view.name == "" {
 		return "open a workspace from the Workspaces view"
 	}
-	return "s start · x stop · r restart · d delete · e shell · ↑/↓ scroll log · f follow"
+	return "s start · x stop · r restart · d delete · e shell"
 }
 
-// SetSize splits the pane: a fixed summary block on top, the embedded workspace log
-// fills the rest.
 func (view *Project) SetSize(width, height int) {
 	view.width, view.height = width, height
-	logHeight := height - summaryRows
-	if logHeight < 1 {
-		logHeight = 1
-	}
-	view.log.SetSize(width, logHeight)
 }
 
 // SetProject points the view at a project (the parent calls this, then Init, when
 // the user selects one in the switcher).
 func (view *Project) SetProject(name string) { view.name = name }
 
-// SetActive forwards the hub's sub-tab visibility to the embedded log, so the 2s
-// `msb logs` poll only runs while the Workspace tab is the visible one (and not
-// contending with the Apps/Shell tabs' in-VM exec calls).
-func (view *Project) SetActive(active bool) { view.log.SetActive(active) }
-
-// Init refreshes the current project AND starts the embedded log polling (no-op
-// until a workspace is selected).
+// Init refreshes the current project summary (no-op until a workspace is selected).
 func (view *Project) Init() tea.Cmd {
 	if view.name == "" {
 		return nil
 	}
-	return tea.Batch(view.refreshCmd(), view.log.Init())
+	return view.refreshCmd()
 }
 
 func (view *Project) refreshCmd() tea.Cmd {
 	info := view.info
+	configOf := view.configOf
 	name := view.name
 	return func() tea.Msg {
 		entry, found, err := info(name)
-		return projectRefreshedMsg{entry: entry, found: found, err: err}
+		message := projectRefreshedMsg{entry: entry, found: found, err: err}
+		if configOf != nil {
+			message.config, message.configErr = configOf(name)
+		}
+		return message
 	}
 }
 
-// Update advances the detail view: a refresh fills the summary; s/x/r/d act on the
-// workspace; an action result flashes and re-refreshes.
+// Update advances the detail view: a refresh fills the summary; s/x/r/d/e act on the
+// workspace.
 func (view *Project) Update(msg tea.Msg) tea.Cmd {
 	switch message := msg.(type) {
 	case projectRefreshedMsg:
@@ -150,12 +148,13 @@ func (view *Project) Update(msg tea.Msg) tea.Cmd {
 			view.entry = message.entry
 			view.flash = "" // a fresh status supersedes any stale hint
 		}
+		view.configFields = message.config
+		view.configErr = message.configErr
 		return nil
 	case tea.KeyMsg:
 		name := view.name
 		// Lifecycle keys act on the workspace (unless one is already in flight or no
-		// workspace is selected); every OTHER key drives the embedded log (scroll /
-		// follow), so the log is usable without a separate tab.
+		// workspace is selected).
 		if name != "" && view.pending == "" {
 			if message.String() == "e" {
 				if view.entry.Status != "started" {
@@ -170,11 +169,8 @@ func (view *Project) Update(msg tea.Msg) tea.Cmd {
 				return func() tea.Msg { return WorkspaceActionRequestedMsg{Action: action, Project: name} }
 			}
 		}
-		return view.log.Update(msg)
-	default:
-		// Async log messages (poll tick / loaded) drive the embedded log.
-		return view.log.Update(msg)
 	}
+	return nil
 }
 
 func (view *Project) View() string {
@@ -187,24 +183,33 @@ func (view *Project) View() string {
 	if !view.hasEntry {
 		return ui.Muted.Render("loading " + view.name + "…")
 	}
-	// Fixed summary block (summaryRows lines), then the embedded workspace log fills
-	// the rest of the pane. The flash slot is always emitted (blank when empty) so the
-	// summary height is constant and the log below never shifts.
 	var body strings.Builder
-	body.WriteString(ui.Heading.Render(view.entry.Name) + "\n")              // 1
-	body.WriteString(field("OS", view.entry.OS))                             // 2
-	body.WriteString(field("agents", strings.Join(view.entry.Agents, ", "))) // 3
+	body.WriteString(ui.Heading.Render(view.entry.Name) + "\n")
+	body.WriteString(field("OS", view.entry.OS))
+	body.WriteString(field("agents", strings.Join(view.entry.Agents, ", ")))
 	if view.pending != "" {
 		glyph := ui.Success.Render(spinnerFrames[view.pendingFrame%len(spinnerFrames)])
-		body.WriteString(field("workspace", glyph+ui.Muted.Render(" "+view.pending+"ing…"))) // 4
+		body.WriteString(field("workspace", glyph+ui.Muted.Render(" "+view.pending+"ing…")))
 	} else {
-		body.WriteString(field("workspace", view.entry.Status)) // 4
+		body.WriteString(field("workspace", view.entry.Status))
 	}
-	body.WriteString(field("path", view.entry.Path))            // 5
-	body.WriteString(view.flash + "\n")                         // 6 (flash slot, blank when empty)
-	body.WriteString("\n")                                      // 7
-	body.WriteString(ui.Heading.Render("Workspace log") + "\n") // 8
-	body.WriteString(view.log.View())
+	body.WriteString(field("path", view.entry.Path))
+	if view.flash != "" {
+		body.WriteString(view.flash + "\n")
+	}
+	// Sandbox Configuration (diagnostics): the live msb/SDK sandbox config.
+	body.WriteString("\n")
+	body.WriteString(ui.Heading.Render("Sandbox Configuration") + "\n")
+	switch {
+	case len(view.configFields) > 0:
+		for _, configField := range view.configFields {
+			body.WriteString(field(configField.Label, configField.Value))
+		}
+	case view.configErr != nil:
+		body.WriteString("  " + ui.Muted.Render("unavailable — "+view.configErr.Error()) + "\n")
+	default:
+		body.WriteString("  " + ui.Muted.Render("not running — start the workspace to see its live configuration") + "\n")
+	}
 	return body.String()
 }
 
