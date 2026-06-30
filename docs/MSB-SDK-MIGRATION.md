@@ -177,3 +177,32 @@ Verified against real source + examples. Two gaps I flagged earlier are now CLOS
 - **P3**: interactive sessions → SSH `Attach` (real terminal).
 - **P4**: cleanup; reconcile AGENTS.md (`workspace.go:201` "Go SDK / msb" finally
   true) + `spec/`; CGO build/CI changes; fakes/tests; `make check`.
+
+## Update — live validation + Phase 2 (2026-06-30, msb upgraded to 0.6.1)
+
+**Live FFI/runtime validation PASSED on the host (no VM created):** a throwaway CGO
+program reported `SDKVersion: 0.6.1`, `EnsureInstalled: OK`, and crucially
+`RuntimeVersion: 0.6.1` — the embedded FFI **dlopen'd successfully** (not the 0-byte
+sentinel) and the native runtime is reachable. The biggest unknown (does the FFI
+load) is resolved positively; full microVM lifecycle is still the remaining live
+check. msb runtime is now 0.6.1 (has the 128-client relay ceiling).
+
+**Phase 2 DONE:**
+- The TUI's poll closures used to build a fresh `RealManager` per tick — on the SDK
+  backend that meant a NEW `sdkSandbox` (empty cache) and a NEW relay client every
+  poll, never released: the bug, reintroduced. Fixed: the TUI now constructs **one
+  shared `workspaceManager`** reused across all Sessions/Apps/log polls.
+- `sdkSandbox` keeps **exactly one active handle at a time** (single `current`, not a
+  map): connecting to a different workspace detaches the previous first.
+- `Manager.ReleaseConnection(project)` (TUI project switch + Stop/Destroy) and
+  `Manager.Close()` (TUI exit) fan out to the SDK backend via an optional
+  `connectionReleaser` interface; both are no-ops on the CLI backend.
+- Reconnect on switch: the new project's logs/sessions/apps fetch on their next poll;
+  the workspace log keeps showing new entries via the **relay-free** `Logs` poll
+  (`GetSandbox.Logs` needs no handle — no relay cost). The proven poll-based `LogView`
+  is kept (not rewritten blind); true push-streaming via `LogStream` remains an
+  optional future enhancement.
+
+**Still pending:** full live microVM lifecycle exercise on the SDK backend (create/
+exec/sessions/apps), flipping the default backend to `sdk` after that, P3 (SSH
+interactive), and P4 (the `make release` cross-compile CGO rework).

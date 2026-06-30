@@ -52,13 +52,45 @@ func selectSandbox(prober runtime.Prober) Sandbox {
 	return realSandbox{prober: prober}
 }
 
-// sdkSandbox drives Microsandbox microVMs via the in-process Go SDK. It caches one
-// live (Connect-derived, non-lifecycle-owning) handle per workspace name so repeated
-// calls reuse a single relay connection. Concurrency-safe: the SDK's *Sandbox is
-// goroutine-safe, and handles guards the cache map.
+// connectionReleaser is the optional lifecycle surface a Sandbox backend may
+// implement to release pooled per-workspace connections. The CLI backend holds no
+// persistent connections (it shells out per call) and does not implement it; the SDK
+// backend does. Manager.ReleaseConnection / Manager.Close fan out to it when present,
+// so callers (notably the long-lived management TUI) can drop a workspace's live
+// relay connection on project switch and close them all on exit.
+type connectionReleaser interface {
+	ReleaseConnection(name string)
+	CloseConnections()
+}
+
+// ReleaseConnection drops the live SDK handle for project so only one workspace
+// connection is held at a time — called on TUI project switch (and implicitly by
+// Stop/Destroy). A no-op on the CLI backend, which keeps no connections.
+func (manager Manager) ReleaseConnection(project string) {
+	if releaser, ok := manager.Sandbox.(connectionReleaser); ok {
+		releaser.ReleaseConnection(Name(project))
+	}
+}
+
+// Close releases ALL live SDK connections — called when the management TUI exits, so
+// no relay client lingers past the process's interactive session. A no-op on the CLI
+// backend.
+func (manager Manager) Close() {
+	if releaser, ok := manager.Sandbox.(connectionReleaser); ok {
+		releaser.CloseConnections()
+	}
+}
+
+// sdkSandbox drives Microsandbox microVMs via the in-process Go SDK. It keeps ONE
+// live (Connect-derived, non-lifecycle-owning) handle at a time — for the workspace
+// currently being driven — so repeated calls reuse a single relay connection.
+// Connecting to a different workspace detaches the previous handle first, so there is
+// always at most one active connection (never an accumulating pool). Concurrency-safe:
+// the SDK's *Sandbox is goroutine-safe, and mu guards the current handle.
 type sdkSandbox struct {
-	mu      sync.Mutex
-	handles map[string]*microsandbox.Sandbox
+	mu          sync.Mutex
+	current     *microsandbox.Sandbox
+	currentName string
 
 	ensureOnce sync.Once
 	ensureErr  error
@@ -79,17 +111,27 @@ func (sandbox *sdkSandbox) ensure() error {
 	return nil
 }
 
-// handle returns the cached live handle for name, connecting (and caching) on first
-// use. The cached handle is Connect-derived, so it does NOT own the VM lifecycle —
-// evicting it releases only the relay connection, never stopping the VM.
+// handle returns the single live handle, connecting on first use for name. If a
+// DIFFERENT workspace is currently connected, its handle is detached first so only
+// one connection is ever active. The handle is Connect-derived, so it does NOT own
+// the VM lifecycle — detaching releases only the relay connection, never stopping the
+// VM (Close, by contrast, can stop a detached sandbox — see the Detach-vs-Close
+// footgun in docs/MSB-SDK-MIGRATION.md).
 func (sandbox *sdkSandbox) handle(ctx context.Context, name string) (*microsandbox.Sandbox, error) {
 	if err := sandbox.ensure(); err != nil {
 		return nil, err
 	}
 	sandbox.mu.Lock()
 	defer sandbox.mu.Unlock()
-	if existing, ok := sandbox.handles[name]; ok && existing != nil {
-		return existing, nil
+	if sandbox.current != nil && sandbox.currentName == name {
+		return sandbox.current, nil
+	}
+	// A different workspace (or none) is connected — enforce one active handle by
+	// detaching the previous before connecting the new one.
+	if sandbox.current != nil {
+		_ = sandbox.current.Detach(context.Background())
+		sandbox.current = nil
+		sandbox.currentName = ""
 	}
 	meta, err := microsandbox.GetSandbox(ctx, name)
 	if err != nil {
@@ -99,20 +141,34 @@ func (sandbox *sdkSandbox) handle(ctx context.Context, name string) (*microsandb
 	if err != nil {
 		return nil, fmt.Errorf("could not connect to workspace %q — is it running? start it with `ai start`", name)
 	}
-	if sandbox.handles == nil {
-		sandbox.handles = make(map[string]*microsandbox.Sandbox)
-	}
-	sandbox.handles[name] = live
+	sandbox.current = live
+	sandbox.currentName = name
 	return live, nil
 }
 
-// evict drops the cached handle for name and Detaches it — Detach releases the
-// Rust-side handle WITHOUT stopping the VM (Close, by contrast, can stop a detached
-// sandbox — see docs/MSB-SDK-MIGRATION.md, the Detach-vs-Close footgun).
-func (sandbox *sdkSandbox) evict(name string) {
+// ReleaseConnection detaches the live handle if it is for name (a no-op otherwise).
+// Detach releases the Rust-side handle WITHOUT stopping the VM. Called on TUI project
+// switch and from Stop/Destroy so the connection drops promptly.
+func (sandbox *sdkSandbox) ReleaseConnection(name string) {
 	sandbox.mu.Lock()
-	live := sandbox.handles[name]
-	delete(sandbox.handles, name)
+	live := sandbox.current
+	if live == nil || sandbox.currentName != name {
+		sandbox.mu.Unlock()
+		return
+	}
+	sandbox.current = nil
+	sandbox.currentName = ""
+	sandbox.mu.Unlock()
+	_ = live.Detach(context.Background())
+}
+
+// CloseConnections detaches the live handle, if any. Called when the application
+// closes so no relay connection lingers past the process's interactive session.
+func (sandbox *sdkSandbox) CloseConnections() {
+	sandbox.mu.Lock()
+	live := sandbox.current
+	sandbox.current = nil
+	sandbox.currentName = ""
 	sandbox.mu.Unlock()
 	if live != nil {
 		_ = live.Detach(context.Background())
@@ -179,7 +235,7 @@ func (sandbox *sdkSandbox) Stop(name string) error {
 	if err := sandbox.ensure(); err != nil {
 		return err
 	}
-	sandbox.evict(name)
+	sandbox.ReleaseConnection(name)
 	meta, err := microsandbox.GetSandbox(context.Background(), name)
 	if err != nil {
 		// Not present: nothing to stop.
@@ -196,7 +252,7 @@ func (sandbox *sdkSandbox) Destroy(name string) error {
 	if err := sandbox.ensure(); err != nil {
 		return err
 	}
-	sandbox.evict(name)
+	sandbox.ReleaseConnection(name)
 	if meta, err := microsandbox.GetSandbox(context.Background(), name); err == nil {
 		_ = meta.Stop(context.Background())
 	}
@@ -223,7 +279,7 @@ func (sandbox *sdkSandbox) execAs(ctx context.Context, name, user string, argv [
 		if ctx.Err() != nil {
 			return ExecResult{}, ErrWorkspaceUnresponsive
 		}
-		sandbox.evict(name)
+		sandbox.ReleaseConnection(name)
 		return ExecResult{}, fmt.Errorf("could not run the command in workspace %q — is it running? start it with `ai start`", name)
 	}
 	return ExecResult{ExitCode: output.ExitCode(), Stdout: output.Stdout(), Stderr: output.Stderr()}, nil

@@ -62,6 +62,14 @@ func Run(cwd string) error {
 
 	deps := setup.RealDeps(goruntime.GOOS, goruntime.GOARCH, nowRFC3339)
 	litellmClient := litellm.RealClient()
+	// One long-lived workspace Manager for the whole TUI session. Constructing it
+	// fresh per poll-closure (as the inline RealManager calls used to) would, on the
+	// SDK backend, build a new Sandbox with an EMPTY handle cache every tick — opening
+	// (and never releasing) a fresh agent-relay client per poll, the very churn that
+	// walks an idle sandbox's relay to "max clients reached". Sharing one Manager keeps
+	// a single reused relay connection per workspace across all Sessions/Apps/log polls.
+	workspaceManager := workspace.RealManager(goruntime.GOOS, nowRFC3339)
+	application.workspaceManager = workspaceManager
 	// The per-project views (Network/Context) resolve the LIVE current project at
 	// fetch time, so switching projects reflects immediately without re-wiring.
 	currentRoot := func() (string, bool) { return resolveProjectRoot(application.currentProject) }
@@ -122,7 +130,7 @@ func Run(cwd string) error {
 			if application.currentProject == "" {
 				return "", nil
 			}
-			return workspace.RealManager(goruntime.GOOS, nowRFC3339).WorkspaceLogTail(application.currentProject, 1000)
+			return workspaceManager.WorkspaceLogTail(application.currentProject, 1000)
 		},
 		application.workspaceLogReadable,
 		func() string { return application.currentProject },
@@ -136,10 +144,10 @@ func Run(cwd string) error {
 			if application.currentProject == "" {
 				return nil, nil
 			}
-			return workspace.RealManager(goruntime.GOOS, nowRFC3339).ListSessions(application.currentProject)
+			return workspaceManager.ListSessions(application.currentProject)
 		},
 		func(session string) error {
-			return workspace.RealManager(goruntime.GOOS, nowRFC3339).KillSession(application.currentProject, session)
+			return workspaceManager.KillSession(application.currentProject, session)
 		},
 		func() string { return application.currentProject },
 	)
@@ -151,7 +159,7 @@ func Run(cwd string) error {
 			if application.currentProject == "" {
 				return nil, nil
 			}
-			manager, err := workspace.RealManager(goruntime.GOOS, nowRFC3339).AppManagerFor(application.currentProject)
+			manager, err := workspaceManager.AppManagerFor(application.currentProject)
 			if err != nil {
 				return nil, err
 			}
@@ -270,6 +278,8 @@ func Run(cwd string) error {
 	// (PgUp/PgDn/arrows), and text stays selectable with the mouse.
 	program := tea.NewProgram(application, tea.WithAltScreen(), tea.WithOutput(os.Stderr))
 	_, runErr := program.Run()
+	// Release any live workspace connection so no relay client lingers past the TUI.
+	application.workspaceManager.Close()
 	return runErr
 }
 
@@ -473,6 +483,12 @@ type app struct {
 	projectsIndex  int
 	currentProject string
 
+	// workspaceManager is the ONE long-lived workspace Manager for the whole session.
+	// On the SDK backend it holds a single reused relay connection at a time; the app
+	// releases it on project switch and closes it on exit, so only one workspace
+	// connection is ever active and none linger past the TUI.
+	workspaceManager workspace.Manager
+
 	// servicesView lets the app refresh the Services view (list or open detail) when
 	// a `services update` terminal overlay returns.
 	servicesView *views.Services
@@ -563,7 +579,12 @@ func (application *app) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case views.ProjectSelectedMsg:
 		// The switcher chose a project — make it current (so the closure-driven
-		// sub-views resolve it) and drop into it inside the Projects hub.
+		// sub-views resolve it) and drop into it inside the Projects hub. Release the
+		// PREVIOUS workspace's live connection first so only one is ever active; the
+		// new project's logs/sessions/apps reconnect on their next poll.
+		if application.currentProject != "" && application.currentProject != message.Name {
+			application.workspaceManager.ReleaseConnection(application.currentProject)
+		}
 		application.currentProject = message.Name
 		application.switchTab(application.projectsIndex)
 		return application, application.projectsHub.OpenProject(message.Name)
@@ -933,6 +954,7 @@ func (application *app) updateTerminal(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 		// switcher rather than leaving the hub on a gone project.
 		if application.currentProject != "" {
 			if _, ok := resolveProjectRoot(application.currentProject); !ok {
+				application.workspaceManager.ReleaseConnection(application.currentProject)
 				application.currentProject = ""
 				application.switchTab(application.projectsIndex)
 				return application, application.projectsHub.Reset()
