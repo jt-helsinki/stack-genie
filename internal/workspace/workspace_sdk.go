@@ -734,32 +734,15 @@ func (sandbox *sdkSandbox) SyncClock(name string) error {
 	return nil
 }
 
-// parseMemoryMiB converts a config memory string ("4G", "512M", "2Gi", "2048") to
-// the MiB count the SDK's WithMemory wants. An unset or unparsable value falls back
-// to the platform default (microVMMemory).
+// parseMemoryMiB converts a config memory string ("4G", "512M", "2Gi", "2048") to the
+// MiB count the SDK's WithMemory wants, via the canonical config.ParseMemoryMiB. An
+// unset or unparsable value falls back to the platform default (microVMMemory).
 func parseMemoryMiB(value string) uint32 {
-	value = strings.TrimSpace(value)
-	if value == "" {
-		value = microVMMemory
+	mib, err := config.ParseMemoryMiB(value)
+	if err != nil {
+		mib, _ = config.ParseMemoryMiB(microVMMemory)
 	}
-	upper := strings.ToUpper(value)
-	multiplier := 1.0
-	number := upper
-	switch {
-	case strings.HasSuffix(upper, "GI"):
-		multiplier, number = 1024, strings.TrimSuffix(upper, "GI")
-	case strings.HasSuffix(upper, "G"):
-		multiplier, number = 1024, strings.TrimSuffix(upper, "G")
-	case strings.HasSuffix(upper, "MI"):
-		multiplier, number = 1, strings.TrimSuffix(upper, "MI")
-	case strings.HasSuffix(upper, "M"):
-		multiplier, number = 1, strings.TrimSuffix(upper, "M")
-	}
-	parsed, err := strconv.ParseFloat(strings.TrimSpace(number), 64)
-	if err != nil || parsed <= 0 {
-		return parseMemoryMiB(microVMMemory)
-	}
-	return uint32(parsed * multiplier)
+	return uint32(mib)
 }
 
 // parseIdleTimeout parses a Go-style duration ("24h", "30m"), falling back to the

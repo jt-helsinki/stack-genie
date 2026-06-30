@@ -12,6 +12,8 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/jt-helsinki/ideal-robot/internal/conffile"
@@ -100,6 +102,56 @@ func ValidateIdleTimeout(value string) error {
 	duration, err := time.ParseDuration(value)
 	if err != nil || duration <= 0 {
 		return fmt.Errorf("microsandbox.idle_timeout: %q (positive duration, e.g. 30s, 5m, 24h)", value)
+	}
+	return nil
+}
+
+// ParseMemoryMiB parses a memory string ("8G", "512M", "2Gi", "2048") into a MiB
+// count. A bare number is treated as MiB. G/Gi → ×1024; M/Mi → ×1. It errors on an
+// unparseable or non-positive value. Shared by config validation and the workspace
+// runtime so the units are interpreted identically everywhere.
+func ParseMemoryMiB(value string) (uint64, error) {
+	trimmed := strings.TrimSpace(value)
+	if trimmed == "" {
+		return 0, fmt.Errorf("empty memory value")
+	}
+	upper := strings.ToUpper(trimmed)
+	multiplier := uint64(1)
+	number := upper
+	switch {
+	case strings.HasSuffix(upper, "GI"):
+		multiplier, number = 1024, strings.TrimSuffix(upper, "GI")
+	case strings.HasSuffix(upper, "G"):
+		multiplier, number = 1024, strings.TrimSuffix(upper, "G")
+	case strings.HasSuffix(upper, "MI"):
+		multiplier, number = 1, strings.TrimSuffix(upper, "MI")
+	case strings.HasSuffix(upper, "M"):
+		multiplier, number = 1, strings.TrimSuffix(upper, "M")
+	}
+	amount, err := strconv.ParseFloat(strings.TrimSpace(number), 64)
+	if err != nil || amount <= 0 {
+		return 0, fmt.Errorf("invalid memory %q (e.g. 512M, 4G, 2048)", value)
+	}
+	return uint64(amount * float64(multiplier)), nil
+}
+
+// ValidateMemory checks a workspace memory_limit. Empty is allowed (the platform
+// default applies); otherwise it must parse to a positive MiB count.
+func ValidateMemory(value string) error {
+	if value == "" {
+		return nil
+	}
+	if _, err := ParseMemoryMiB(value); err != nil {
+		return fmt.Errorf("workspace.memory_limit: %s", err)
+	}
+	return nil
+}
+
+// ValidateCPUs checks a workspace cpu_limit. 0 means "use the runtime default"; a
+// negative count is invalid.
+func ValidateCPUs(cpus int) error {
+	if cpus < 0 {
+		return fmt.Errorf("workspace.cpu_limit: %d (must be >= 0; 0 uses the default)", cpus)
 	}
 	return nil
 }

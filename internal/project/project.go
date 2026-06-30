@@ -50,8 +50,18 @@ type Spec struct {
 	// `msb create --idle-timeout` at every workspace start/restart. Empty defaults to
 	// config.DefaultMicrosandboxIdleTimeout.
 	IdleTimeout string
-	// Root is the host source directory for the project — the directory `ai
-	// project create` runs in. Empty falls back to ~/projects/<name> (RootPath).
+	// CPUs is the workspace vCPU limit written to config.yaml workspace.cpu_limit and
+	// applied to the microVM at start. 0 uses the platform default.
+	CPUs int
+	// Memory is the workspace memory limit (e.g. "8G") written to
+	// config.yaml workspace.memory_limit. Empty uses the platform default.
+	Memory string
+	// PublishPorts are the host↔guest ports to open into the sandbox, written to
+	// config.yaml network.publish_ports.
+	PublishPorts []config.PortMapping
+	// Root is the host source directory for the workspace. Empty falls back to
+	// ~/projects/<name> (RootPath); `ai create` sets it explicitly to the chosen
+	// location.
 	Root string
 }
 
@@ -106,7 +116,55 @@ func EnsureCreatable(name, root string) error {
 	if _, err := os.Stat(filepath.Join(root, ".ai-platform", "project.yaml")); err == nil {
 		return fmt.Errorf("%w: %s is already a project", ErrAlreadyExists, root)
 	}
+	// Forbid nesting: a workspace may not be created inside another workspace.
+	if ancestor, found, err := nearestAncestorProject(root); err != nil {
+		return err
+	} else if found {
+		return fmt.Errorf("%w: %s is inside an existing workspace at %s", ErrAlreadyExists, root, ancestor)
+	}
 	return nil
+}
+
+// ValidateNewLocation reports whether dir is a valid location for a NEW workspace:
+// it must not itself be a workspace, nor be nested inside one (no ancestor with a
+// .ai-platform/project.yaml). It does not require the directory to exist (create
+// makes it). Used for early feedback in the create wizard.
+func ValidateNewLocation(dir string) error {
+	abs, err := filepath.Abs(dir)
+	if err != nil {
+		return err
+	}
+	if _, err := os.Stat(filepath.Join(abs, ".ai-platform", "project.yaml")); err == nil {
+		return fmt.Errorf("%w: %s is already a workspace", ErrAlreadyExists, abs)
+	}
+	if ancestor, found, err := nearestAncestorProject(abs); err != nil {
+		return err
+	} else if found {
+		return fmt.Errorf("%w: %s is inside an existing workspace at %s", ErrAlreadyExists, abs, ancestor)
+	}
+	return nil
+}
+
+// nearestAncestorProject walks up from dir's PARENT looking for a directory that holds
+// .ai-platform/project.yaml (an existing workspace). It returns that ancestor and true
+// if found — used to forbid creating a workspace nested inside another. The directory
+// itself is not checked (callers handle the self case).
+func nearestAncestorProject(dir string) (string, bool, error) {
+	abs, err := filepath.Abs(dir)
+	if err != nil {
+		return "", false, err
+	}
+	current := filepath.Dir(abs)
+	for {
+		if _, err := os.Stat(filepath.Join(current, ".ai-platform", "project.yaml")); err == nil {
+			return current, true, nil
+		}
+		parent := filepath.Dir(current)
+		if parent == current {
+			return "", false, nil // reached the filesystem root
+		}
+		current = parent
+	}
 }
 
 // Path returns a registered project's root and whether it exists in the index.
@@ -169,10 +227,22 @@ func Scaffold(spec Spec, createdAt string) (string, error) {
 	if idleTimeout == "" {
 		idleTimeout = config.DefaultMicrosandboxIdleTimeout
 	}
+	// Resource limits: an unset CPU/memory falls back to the platform default so the
+	// written config is self-describing (diagnostics + the Sandbox Configuration tab).
+	cpus := spec.CPUs
+	if cpus <= 0 {
+		cpus = config.Default().Workspace.CPULimit
+	}
+	memory := spec.Memory
+	if memory == "" {
+		memory = config.Default().Workspace.MemoryLimit
+	}
 	projectConfig := &config.Config{
 		OS:           spec.OS,
 		Agent:        config.AgentConfig{Tools: spec.AgentCLIs, DefaultTool: spec.DefaultTool},
+		Workspace:    config.WorkspaceConfig{CPULimit: cpus, MemoryLimit: memory},
 		Microsandbox: config.MicrosandboxConfig{IdleTimeout: idleTimeout},
+		Network:      config.NetworkConfig{PublishPorts: spec.PublishPorts},
 		Apps:         appEntries,
 	}
 	if err := config.WriteProject(root, projectConfig); err != nil {

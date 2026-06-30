@@ -384,15 +384,16 @@ Idempotent: safe to re-run after a partial or completed uninstall.
 
 ```bash id="c4"
 ai create [<name>] [--name <name>] [--os <os>] [--agents <list>] [--stacks <list>] [--apps <list>]
+          [--cpus <n>] [--memory <size>] [--ports <list>] [--location <dir>]
 ```
 
-`ai create` sets up a new environment **in the current working
-directory**. On a terminal with no create flags it runs an **interactive
-wizard**; for non-interactive use — and for external programs via `--json` —
-**every input also has a flag**, so the whole workspace is specifiable in one
-command:
+`ai create` sets up a new environment at the chosen **location** (default: the
+current working directory). On a terminal with no create flags it runs an
+**interactive wizard**; for non-interactive use — and for external programs via
+`--json` — **every input also has a flag**, so the whole workspace is specifiable in
+one command:
 
-* `--name <name>` (or the `[<name>]` positional) — defaults to the current
+* `--name <name>` (or the `[<name>]` positional) — defaults to the location
   directory's basename
 * `--os <os>` — one of `debian-trixie|debian-bookworm|ubuntu|alma`; **required**
   when running non-interactively
@@ -406,18 +407,35 @@ command:
   pre-seeds the wizard's apps multi-select on a terminal and drives the selection
   directly under `--json`/no-TTY. Each selected app is allocated a unique host port
   at create time (see §4.5c)
+* `--cpus <n>` — workspace vCPUs, written to `workspace.cpu_limit`. Defaults to the
+  global default (4) and is **capped at the host's logical CPU count** — a larger
+  request exits `2`.
+* `--memory <size>` — workspace memory limit (e.g. `2G`, `4096`), written to
+  `workspace.memory_limit`. Defaults to the global default (`8G`) and is **capped at
+  the host's total RAM** when it can be determined — a larger request exits `2`.
+* `--ports <list>` — comma-separated host↔guest ports to open into the workspace,
+  each `PORT` (host == guest) or `HOST:GUEST` (Docker-style host-first), written to
+  `network.publish_ports`. Malformed/out-of-range ports exit `2`.
+* `--location <dir>` — the workspace directory (default: cwd). **Created if it does
+  not exist.** It must **not** be — or be nested inside — an existing workspace
+  (a directory with a `.ai-platform/project.yaml` at it or any ancestor); otherwise
+  create exits `2`. In the wizard the location field offers **path autocompletion**;
+  the flag offers shell directory completion.
 
 On a terminal (with `--json` off) the wizard **always** runs, **pre-seeded** with
 any flags you passed — flags set the defaults rather than bypassing the UI. Under
 `--json` or no terminal, the spec is built straight from flags with **no prompt**.
-Unknown flag values — or a missing `--os` when non-interactive — exit `2`.
-`--dry-run` prints the plan in either mode.
+Unknown flag values, an over-host `--cpus`/`--memory`, a malformed `--ports`, a
+location nested in an existing workspace, or a missing `--os` when non-interactive
+all exit `2`. `--dry-run` prints the plan in either mode.
 
-The workspace lives wherever you run the command — there is no fixed projects
+The workspace lives at the location you choose — there is no fixed projects
 directory. The chosen path is recorded in the global index
 (`config/projects.yaml`), and every later command resolves the workspace **by
-name** through that index. With no name given, the name defaults to the current
-directory's basename.
+name** through that index. With no name given, the name defaults to the location
+directory's basename. The microVM itself is created through the **Microsandbox Go
+SDK** (`internal/workspace` SDK backend), with the resolved CPU/memory/ports applied
+to the sandbox at start.
 
 **Version control is out of scope.** `ai create` does **not** init or
 clone a git repo — it only writes the `.ai-platform/` environment definition into
