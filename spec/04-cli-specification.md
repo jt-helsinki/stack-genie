@@ -92,7 +92,10 @@ CLI must behave identically on:
 
 * The `ai` CLI and all platform tooling — installers, state management,
   Microsandbox orchestration, runtime abstraction, and diagnostics — are
-  implemented in **Go** and shipped as a **single static binary** per host.
+  implemented in **Go** and shipped as a **single self-contained binary** per host.
+  (It links the Microsandbox **Go SDK**, a cgo binding that `go:embed`s an FFI
+  library extracted at first run — so `CGO_ENABLED=1` is required; it is one binary
+  but no longer a pure-static `CGO_ENABLED=0` build. See docs/MSB-SDK-MIGRATION.md.)
 * Host bootstrap uses **thin launchers only** (bash / zsh / PowerShell) whose
   sole job is to download/locate and exec the compiled Go binary. No platform
   logic lives in shell scripts.
@@ -1674,19 +1677,26 @@ number keys `1`-`9`. There is **no `:` command palette** — `q`/`ctrl+c` quits 
   sub-tabs below). `tab`/`←→` cycle the sub-tabs; the focused sub-view's pane is
   acted on directly; `esc` backs UP to the switcher. The per-project sub-tabs are:
   * **Workspace** — a fixed summary block (name / OS / agents / workspace status /
-    path) and, BELOW it, the **embedded workspace log** (the scrollable, read-only
-    `msb logs <vm> --tail` view — there is **no separate log sub-tab**). Workspace
-    lifecycle is `s`/`x`/`r`/`d` (start/stop/restart/delete) and `e` (an interactive
-    shell). `s`/`x`/`r` run **DETACHED** from the TUI: the app spawns
+    path) and a live **Sandbox Configuration** diagnostics block (the SDK
+    `SandboxConfig`: image, memory, vcpus, workdir, user, idle timeout, detached,
+    published ports, egress default + rule count, dns — `Manager.WorkspaceConfig`).
+    Workspace lifecycle is `s`/`x`/`r`/`d` (start/stop/restart/delete) and `e` (an
+    interactive shell). `s`/`x`/`r` run **DETACHED** from the TUI: the app spawns
     `ai <action> <name>` in its own session (`setsid` + `Process.Release`, stdio to
     `/dev/null`) so the microVM build/boot keeps running even if `ai ui` is closed,
     then shows an **animated spinner** on the workspace status line and polls the
-    state handle until the target status (or a ~6m timeout). The TUI stays navigable
-    and **no log/terminal pane is shown** for these. `d` (delete) still runs in the
-    confirm **terminal overlay** (see below). `e` opens the shell in the REAL
-    terminal (see Shell, below). The remaining keys drive the embedded log:
-    `↑/↓`/`PgUp`/`PgDn`/arrows scroll, `f`/`enter` follows the tail in the real
-    terminal (`msb logs -f`).
+    state handle until the target status (or a ~6m timeout). The TUI stays navigable.
+    `d` (delete) runs in the confirm **terminal overlay** (see below). `e` opens the
+    shell in the REAL terminal (see Shell, below).
+  * **Sandbox Logs** — the workspace log as its own sub-tab: a READ-ONLY, scrollable,
+    selectable view of the microVM's captured output. On the SDK backend it STREAMS
+    (`Manager.OpenWorkspaceLogStream` → one relay-free `LogStream{Follow:true}`:
+    history first, then new entries pushed — no polling); on the CLI backend it falls
+    back to the `Manager.WorkspaceLogTail` ~2s poll. `f`/`enter` follows live in the
+    real terminal.
+  * **Metrics** — live sandbox metrics streamed from `sb.MetricsStream` into a table
+    (CPU / memory / disk / net / uptime), updated ~2s, over the single reused relay
+    handle.
   * **Network** — egress mode + allow-list + published ports, managed inline:
     `m` cycles the mode, `a` allow · `d` disallow a destination, `p` publish · `u`
     unpublish a port (the value is typed at an inline prompt). CLI mirror:
@@ -1702,21 +1712,19 @@ number keys `1`-`9`. There is **no `:` command palette** — `q`/`ctrl+c` quits 
     / `ai attach` / `ai agent` / `ai sessions` (+ `ai sessions kill`).
   * **Apps** — the in-VM AI apps (install/start/stop/restart/remove).
 
-  The **workspace log** is **embedded in the Workspace sub-tab** (above), not a
-  separate tab: a READ-ONLY (no command input), scrollable, selectable,
-  auto-refreshing view of the microVM's captured output (`msb logs <vm> --tail`,
-  re-polled ~2s; `Manager.WorkspaceLogTail`), following the tail unless scrolled up
-  and freezing while scrolled up. The text is passed through a terminal-output
-  normalizer (interpreting `\r`/cursor-moves/erase-line) so progress redraws (image
-  pulls) collapse IN PLACE while the full scrollback + plain selectable text are
-  kept. The fetch itself (`Manager.WorkspaceLogTail`) does NOT gate on the "started"
-  handle — it shows the live `msb logs` DURING startup (build + image-pull progress,
-  before the handle flips to started; a not-yet-created sandbox reads as empty). The
-  **view**, however, only polls/shows the log while the workspace is RUNNING: a
-  STOPPED workspace shows a "not running" hint, not the previous session's stale
-  captured output, and the poll PAUSES while the Workspace sub-tab is not visible
-  (the normalize pass runs off the bubbletea event loop so it never stalls tab
-  switches). `f`/`enter` opens a live `msb logs -f` follow in the REAL terminal.
+  The **workspace log** lives in the **Sandbox Logs** sub-tab (above): a READ-ONLY
+  (no command input), scrollable, selectable view of the microVM's captured output,
+  following the tail unless scrolled up and freezing while scrolled up. On the SDK
+  backend it STREAMS — one `LogStream` delivers recent history then pushes new entries
+  (re-armed `Recv` commands, generation-guarded + cancelable-ctx teardown, over the
+  relay-free host log channel so it costs no agent-relay client); on the CLI backend
+  it falls back to the `Manager.WorkspaceLogTail` ~2s poll. The text is passed through
+  a terminal-output normalizer (interpreting `\r`/cursor-moves/erase-line) so progress
+  redraws (image pulls) collapse IN PLACE while the full scrollback + plain selectable
+  text are kept; the normalize pass runs off the bubbletea event loop. The view only
+  shows the log while the workspace is RUNNING (a STOPPED workspace shows a "not
+  running" hint, not stale output) and the stream is closed when the sub-tab is not
+  visible / on workspace switch. `f`/`enter` opens a live follow in the REAL terminal.
   `ai ui` does NOT capture the mouse (so the host terminal's native text selection
   works on every pane); scrollable panes scroll by keyboard.
 * **Local Models** — the local Ollama store ⨯ the **live ollama.com installable

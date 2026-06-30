@@ -28,7 +28,8 @@ external-tool integration approach, the Slice 1 build sequence, and CI/testing.
 
 * **Language: Go.** The `ai` CLI, installers, state management, Microsandbox
   orchestration, runtime abstraction, and diagnostics are all
-  Go, shipped as a **single static binary** per host.
+  Go, shipped as a **single self-contained binary** per host (cgo: it links the
+  Microsandbox Go SDK, which embeds + dlopens an FFI library — `CGO_ENABLED=1`).
 * **Thin launchers only** (bash/zsh) bootstrap the binary; no platform logic in
   shell. Supported hosts are macOS (Apple Silicon) and Linux — there is no
   Windows/PowerShell path.
