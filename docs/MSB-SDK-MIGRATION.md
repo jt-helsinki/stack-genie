@@ -214,6 +214,29 @@ check. msb runtime is now 0.6.1 (has the 128-client relay ceiling).
   log there falls back to the existing tailer poll — behaviour unchanged. The Services
   container log still polls (different, host-docker backend).
 
-**Still pending:** full live microVM lifecycle exercise on the SDK backend (create/
-exec/sessions/apps + the live log stream), flipping the default backend to `sdk`
-after that, P3 (SSH interactive), and P4 (the `make release` cross-compile CGO rework).
+## Live microVM lifecycle validated + DEFAULT FLIPPED (2026-06-30)
+
+Ran a bounded lifecycle smoke against the real runtime (msb 0.6.1) on the host. ALL
+passed (VM created + cleaned up):
+- `CreateSandbox` (boot), `Exec` as root, `FS` Write+Read, **`LogStream` history +
+  follow** (the new streaming log — confirmed live), `Detach`→`GetSandbox`→`Connect`
+  reconnect, `Stop`+`RemoveSandbox`.
+- **Image-load gap CLOSED:** built a platform-style image (with a `workspace` user),
+  `msb load`ed it, and the **SDK booted it via `WithImage(<tag>)` + `PullPolicy=Never`**
+  — `msb load` (CLI Builder) and the SDK share the store. Exec as `workspace` returned
+  `workspace`. So `sdkSandbox.Create` now sets `WithPullPolicy(Never)` (workspace
+  images are always locally built/loaded, never pulled).
+- (The earlier `workspace`-user exec failure in the first smoke was vanilla alpine
+  lacking the user — not a bug; platform images create it, as re-confirmed here.)
+
+**The SDK backend is now the DEFAULT** (`selectSandbox`); `AIP_WORKSPACE_BACKEND=cli`
+forces the msb-CLI backend as an escape hatch.
+
+**Validated only by real use (not reproducible in headless CI — need a TTY/full
+platform):** interactive SSH **Attach** (`ai shell`/`ai attach`/`ai agent`) and the
+full `ai create`→`start`→agent-config flow with a live aip-dns/gateway + overlay
+mounts + in-VM apps. If interactive shells misbehave, revert with
+`AIP_WORKSPACE_BACKEND=cli` and report — that's the remaining P3 work.
+
+**Still pending:** P3 (confirm/season SSH interactive Attach parity on a TTY) and P4
+(the `make release` cross-compile CGO rework — still pins `CGO_ENABLED=0`).

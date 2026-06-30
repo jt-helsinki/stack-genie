@@ -26,11 +26,12 @@ import (
 // (a single Rust-side relay connection) and reuses it across every Exec/FS/SSH call.
 // That collapses the per-call connection churn the TUI's polling otherwise creates.
 //
-// hardware bring-up: this backend COMPILES against the real SDK and faithfully
-// mirrors realSandbox's contract, but its LIVE behaviour (microVM boot, exec, the
-// handle-reuse churn win, SSH attach parity) is validated only on a provisioned
-// Apple Silicon host. Until then the msb-CLI backend (realSandbox) stays the default;
-// opt in with AIP_WORKSPACE_BACKEND=sdk (see selectSandbox).
+// This backend is now the DEFAULT (see selectSandbox). Live-validated on Apple
+// Silicon (msb 0.6.1): microVM create/boot, exec (incl. as root), FS write/read, log
+// streaming (history + follow), Detach→reconnect, stop/remove, and that an `msb
+// load`ed local image resolves via WithImage. Set AIP_WORKSPACE_BACKEND=cli to fall
+// back to the msb-CLI backend. The interactive SSH Attach path (`ai shell`/agent) and
+// the full create→start→agent-config flow are validated by real use on a TTY/host.
 
 // Compile-time assertion that the SDK backend satisfies the Sandbox interface.
 var _ Sandbox = (*sdkSandbox)(nil)
@@ -39,19 +40,25 @@ var _ Sandbox = (*sdkSandbox)(nil)
 // msb + libkrunfw from GitHub on first use), so a stalled download can't hang forever.
 const sdkEnsureTimeout = 10 * time.Minute
 
-// workspaceBackendEnv selects the Sandbox backend. Unset (or anything but "sdk")
-// keeps the battle-tested msb-CLI backend (realSandbox); "sdk" opts into the
-// in-process Go SDK backend. The CLI stays the default until the SDK backend is
-// validated on Apple Silicon (see the hardware-bring-up note above).
+// workspaceBackendEnv selects the Sandbox backend. The DEFAULT is now the in-process
+// Go SDK backend (sdkSandbox) — one reused relay connection per workspace, the
+// relay-exhaustion fix. Set AIP_WORKSPACE_BACKEND=cli (or "msb") to fall back to the
+// msb-CLI backend (realSandbox) — an escape hatch if the SDK path misbehaves on a
+// given host. Live-validated on Apple Silicon (msb 0.6.1): create/exec/root-exec/FS/
+// log-stream/reconnect/stop + `msb load`→WithImage resolution + the workspace user.
+// Still TTY/platform-validated by use: interactive SSH Attach (`ai shell`/agent) and
+// the full create→start→agent-config flow.
 const workspaceBackendEnv = "AIP_WORKSPACE_BACKEND"
 
-// selectSandbox returns the Sandbox backend chosen by workspaceBackendEnv,
-// defaulting to the msb-CLI implementation.
+// selectSandbox returns the Sandbox backend chosen by workspaceBackendEnv, defaulting
+// to the in-process SDK backend; "cli"/"msb" force the msb-CLI backend.
 func selectSandbox(prober runtime.Prober) Sandbox {
-	if strings.EqualFold(os.Getenv(workspaceBackendEnv), "sdk") {
+	switch strings.ToLower(os.Getenv(workspaceBackendEnv)) {
+	case "cli", "msb":
+		return realSandbox{prober: prober}
+	default:
 		return &sdkSandbox{}
 	}
-	return realSandbox{prober: prober}
 }
 
 // connectionReleaser is the optional lifecycle surface a Sandbox backend may
@@ -270,6 +277,10 @@ func (sandbox *sdkSandbox) Create(name, imageRef, projectMount, overlayPath stri
 	}
 	options := []microsandbox.SandboxOption{
 		microsandbox.WithImage(imageRef),
+		// Workspace images are always built locally and loaded into the shared msb
+		// store by the Builder (`msb load`); they are never in a registry. Never pull
+		// — use the loaded image (verified: an `msb load`ed tag resolves via WithImage).
+		microsandbox.WithPullPolicy(microsandbox.PullPolicyNever),
 		microsandbox.WithReplace(),
 		microsandbox.WithDetached(),
 		microsandbox.WithMemory(parseMemoryMiB(resources.Memory)),
