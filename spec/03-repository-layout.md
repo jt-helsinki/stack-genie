@@ -619,9 +619,10 @@ context:
                            # (mapped to Headroom per-request knobs keep_turns/output_buffer_tokens)
   caveman_level: full      # Caveman output compression: lite | full | ultra | wenyan
 workspace:
-  cpu_limit: 4             # declared microVM resource limits (schema fields; NOT yet
-  memory_limit: 8G         # wired into `msb create` — the microVM currently boots with a
-                           # fixed 4G (`workspace_real.go` microVMMemory) and no `--cpus`)
+  cpu_limit: 4             # microVM resource limits wired into `msb create --cpus/--memory`
+  memory_limit: 8G         # empty memory falls back to the platform default (4G)
+microsandbox:
+  idle_timeout: 24h        # `msb create --idle-timeout`; default set by `ai create`, editable later
 network:                   # workspace networking (arch §29.6); all fields managed via `ai network`
                            # enforced as a Microsandbox NetworkPolicy (no egress proxy); DNS-audited
   egress: public           # public (DEFAULT, allow-outbound; private ranges still blocked) | deny | unrestricted

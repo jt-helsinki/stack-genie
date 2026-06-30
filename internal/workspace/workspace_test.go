@@ -123,6 +123,10 @@ func (sandbox *fakeSandbox) LogTail(_ string, lines int) (string, error) {
 	sandbox.logTailLines = lines
 	return sandbox.logTail, sandbox.logTailErr
 }
+func (sandbox *fakeSandbox) LogTailContext(_ context.Context, _ string, lines int) (string, error) {
+	sandbox.logTailLines = lines
+	return sandbox.logTail, sandbox.logTailErr
+}
 
 // fakeKeyMinter records GenerateKey/DeleteKeyByAlias calls and returns a fixed key
 // (or an error).
@@ -163,6 +167,20 @@ func seedProject(test *testing.T, project string) string {
 		test.Fatal(err)
 	}
 	return root
+}
+
+func writeGlobalConfig(test *testing.T, content string) {
+	test.Helper()
+	path, err := config.GlobalPath()
+	if err != nil {
+		test.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		test.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		test.Fatal(err)
+	}
 }
 
 // seedStartedWorkspace seeds a project AND a started lifecycle handle, so the
@@ -209,6 +227,9 @@ func TestStartBuildsAndRecordsStartedHandle(test *testing.T) {
 	}
 	if !builder.built || !sandbox.created || !sandbox.started {
 		test.Fatalf("lifecycle not driven: builder=%v sandbox=%+v", builder.built, sandbox)
+	}
+	if sandbox.resources.IdleTimeout != config.DefaultMicrosandboxIdleTimeout {
+		test.Fatalf("Start should pass default idle timeout %q, got %q", config.DefaultMicrosandboxIdleTimeout, sandbox.resources.IdleTimeout)
 	}
 	// Start must mint a scoped virtual key tied to this workspace and write both
 	// agent provider configs into the microVM (arch §15, §17).
@@ -278,6 +299,74 @@ func TestStartBuildsAndRecordsStartedHandle(test *testing.T) {
 	workspaces, err := state.OpenStore(root).ListWorkspaces()
 	if err != nil || len(workspaces) != 1 || workspaces[0].Status != state.StatusStarted {
 		test.Fatalf("persisted workspaces=%+v err=%v", workspaces, err)
+	}
+}
+
+func TestStartReadsConfiguredMicrosandboxIdleTimeout(test *testing.T) {
+	root := seedProject(test, "app")
+	if err := config.WriteProject(root, &config.Config{Microsandbox: config.MicrosandboxConfig{IdleTimeout: "2h"}}); err != nil {
+		test.Fatal(err)
+	}
+	sandbox := &fakeSandbox{}
+	manager := Manager{Builder: &fakeBuilder{}, Sandbox: sandbox, Keys: &fakeKeyMinter{}, Now: func() string { return "t" }}
+	if _, err := manager.Start("app"); err != nil {
+		test.Fatal(err)
+	}
+	if sandbox.resources.IdleTimeout != "2h" {
+		test.Fatalf("Start should pass configured idle timeout 2h, got %q", sandbox.resources.IdleTimeout)
+	}
+}
+
+func TestStartUsesMergedConfigWithProjectPriority(test *testing.T) {
+	root := seedProject(test, "app")
+	writeGlobalConfig(test, `
+workspace:
+  cpu_limit: 2
+  memory_limit: 16G
+microsandbox:
+  idle_timeout: 30m
+network:
+  publish_ports:
+    - guest: 8080
+      host: 18080
+`)
+	if err := config.WriteProject(root, &config.Config{
+		Workspace:    config.WorkspaceConfig{CPULimit: 6},
+		Microsandbox: config.MicrosandboxConfig{IdleTimeout: "2h"},
+	}); err != nil {
+		test.Fatal(err)
+	}
+	sandbox := &fakeSandbox{}
+	manager := Manager{Builder: &fakeBuilder{}, Sandbox: sandbox, Keys: &fakeKeyMinter{}, Now: func() string { return "t" }}
+	if _, err := manager.Start("app"); err != nil {
+		test.Fatal(err)
+	}
+	if sandbox.resources.CPUs != 6 {
+		test.Fatalf("project cpu_limit should override global cpu_limit, got %d", sandbox.resources.CPUs)
+	}
+	if sandbox.resources.Memory != "16G" {
+		test.Fatalf("global memory_limit should survive when project omits it, got %q", sandbox.resources.Memory)
+	}
+	if sandbox.resources.IdleTimeout != "2h" {
+		test.Fatalf("project idle_timeout should override global idle_timeout, got %q", sandbox.resources.IdleTimeout)
+	}
+	if !strings.Contains(strings.Join(sandbox.netArgs, " "), "-p 18080:8080") {
+		test.Fatalf("global publish_ports should be passed to msb when project omits them: %#v", sandbox.netArgs)
+	}
+}
+
+func TestStartRejectsInvalidMicrosandboxIdleTimeout(test *testing.T) {
+	root := seedProject(test, "app")
+	if err := config.WriteProject(root, &config.Config{Microsandbox: config.MicrosandboxConfig{IdleTimeout: "0s"}}); err != nil {
+		test.Fatal(err)
+	}
+	sandbox := &fakeSandbox{}
+	manager := Manager{Builder: &fakeBuilder{}, Sandbox: sandbox, Keys: &fakeKeyMinter{}, Now: func() string { return "t" }}
+	if _, err := manager.Start("app"); err == nil || !strings.Contains(err.Error(), "microsandbox.idle_timeout") {
+		test.Fatalf("Start should reject invalid microsandbox.idle_timeout, got %v", err)
+	}
+	if sandbox.created {
+		test.Fatal("Start must validate idle timeout before creating the microVM")
 	}
 }
 
@@ -603,6 +692,40 @@ func TestShellOpensPersistentTmuxSession(test *testing.T) {
 	}
 }
 
+// Before handing the user's real terminal to `msb exec -t`, Shell warms up tmux with
+// a bounded, buffered probe. This prevents the flaky first post-start tmux/server/PTY
+// path from becoming a blank/frozen real terminal.
+func TestShellPreflightsTmuxBeforeInteractiveAttach(test *testing.T) {
+	seedStartedWorkspace(test, "app")
+	sandbox := &fakeSandbox{}
+	if err := newManager(&fakeBuilder{}, sandbox).Shell("app"); err != nil {
+		test.Fatal(err)
+	}
+	if sandbox.execCtxCalls < 2 {
+		test.Fatalf("Shell should run requireTmux + readiness probes before interactive attach, got %d ExecContext calls", sandbox.execCtxCalls)
+	}
+	if got := strings.Join(sandbox.execArgv, " "); !strings.Contains(got, "tmux new-session -d") || !strings.Contains(got, "aip-probe-aip_app") {
+		test.Fatalf("last preflight argv should create/kill a probe tmux session, got %v", sandbox.execArgv)
+	}
+	if sandbox.interactiveArgv == nil {
+		test.Fatal("Shell should still hand off to the interactive tmux attach after preflight")
+	}
+}
+
+func TestShellReadinessProbeRetriesTransientTimeout(test *testing.T) {
+	seedStartedWorkspace(test, "app")
+	sandbox := &fakeSandbox{execCtxFailFirst: 1}
+	if err := newManager(&fakeBuilder{}, sandbox).Shell("app"); err != nil {
+		test.Fatal(err)
+	}
+	if sandbox.execCtxCalls < 3 {
+		test.Fatalf("transient preflight timeout should be retried before interactive attach, got %d calls", sandbox.execCtxCalls)
+	}
+	if sandbox.interactiveArgv == nil {
+		test.Fatal("Shell should continue to interactive attach after the retry succeeds")
+	}
+}
+
 // Agent starts (or reattaches to) a per-CLI tmux session named after the CLI,
 // running that CLI's launch command in /workspace (detached create, then attach).
 func TestAgentStartsPerCLITmuxSession(test *testing.T) {
@@ -685,9 +808,8 @@ func TestListSessionsParsesOutput(test *testing.T) {
 	if err != nil {
 		test.Fatal(err)
 	}
-	want := []string{"tmux", "list-sessions", "-F", "#{session_name}|#{session_attached}|#{session_activity}"}
-	if !equalStrings(sandbox.execArgv, want) {
-		test.Fatalf("ListSessions ran %v, want %v", sandbox.execArgv, want)
+	if len(sandbox.execArgv) != 3 || sandbox.execArgv[0] != "sh" || sandbox.execArgv[1] != "-c" || !strings.Contains(sandbox.execArgv[2], "tmux list-sessions") {
+		test.Fatalf("ListSessions ran unexpected argv: %v", sandbox.execArgv)
 	}
 	if len(sessions) != 2 {
 		test.Fatalf("parsed %d sessions, want 2: %+v", len(sessions), sessions)
@@ -1359,14 +1481,14 @@ func execRootRan(sandbox *fakeSandbox, name string) bool {
 	return false
 }
 
-// fakeSleepInhibitor records Inhibit/Release calls for the sleep-prevention wiring.
+// fakeSleepInhibitor records Inhibit/Release calls for optional lifecycle hooks.
 type fakeSleepInhibitor struct{ inhibited, released int }
 
 func (inhibitor *fakeSleepInhibitor) Inhibit(_, _ string) error { inhibitor.inhibited++; return nil }
 func (inhibitor *fakeSleepInhibitor) Release(_, _ string) error { inhibitor.released++; return nil }
 
-// Start takes the keep-awake assertion; Stop releases it (so the host can idle-sleep
-// only when no workspace is running).
+// Start/Stop still honour an injected SleepInhibitor for tests/future opt-in hooks,
+// but RealManager does not wire host sleep prevention by default.
 func TestStartInhibitsSleepStopReleases(test *testing.T) {
 	seedProject(test, "app")
 	sleep := &fakeSleepInhibitor{}
@@ -1385,18 +1507,5 @@ func TestStartInhibitsSleepStopReleases(test *testing.T) {
 	}
 	if sleep.released != 1 {
 		test.Fatalf("Stop must release the keep-awake assertion once, got %d", sleep.released)
-	}
-}
-
-// sleepInhibitorCommand maps the OS to its keep-awake command (nil = unsupported).
-func TestSleepInhibitorCommand(test *testing.T) {
-	if got := sleepInhibitorCommand("darwin"); len(got) == 0 || got[0] != "caffeinate" {
-		test.Errorf("darwin should use caffeinate, got %v", got)
-	}
-	if got := sleepInhibitorCommand("linux"); len(got) == 0 || got[0] != "systemd-inhibit" {
-		test.Errorf("linux should use systemd-inhibit, got %v", got)
-	}
-	if got := sleepInhibitorCommand("plan9"); got != nil {
-		test.Errorf("an unsupported OS should be a no-op (nil), got %v", got)
 	}
 }

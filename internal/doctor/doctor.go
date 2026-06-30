@@ -118,6 +118,11 @@ type WorkspaceRuntime struct {
 	Virtualization string
 	// Available reports whether the microVM virtualization is usable.
 	Available bool
+	// LiveChecks are optional target-workspace probes supplied by the CLI when a
+	// concrete workspace is resolved: microVM presence, log readability, and exec
+	// responsiveness. Keeping them as Checks preserves doctor.Run's pure rendering
+	// role and avoids this package importing the workspace runtime.
+	LiveChecks []Check
 }
 
 // DomainURL is one UI subdomain's display URL for the DOMAIN section.
@@ -276,7 +281,9 @@ func workspaceChecks(workspace WorkspaceRuntime) []Check {
 			Suggestion: "enable hardware virtualization for the microVM runtime (Apple Silicon HVF / Linux KVM)",
 		}
 	}
-	return []Check{rootless, virt}
+	checks := []Check{rootless, virt}
+	checks = append(checks, workspace.LiveChecks...)
+	return checks
 }
 
 // domainChecks renders the platform UI-subdomain posture: the resolved base

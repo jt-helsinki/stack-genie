@@ -12,6 +12,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"time"
 
 	"github.com/jt-helsinki/ideal-robot/internal/conffile"
 	"github.com/jt-helsinki/ideal-robot/internal/paths"
@@ -25,7 +26,11 @@ type Config struct {
 	Agent     AgentConfig     `yaml:"agent,omitempty" json:"agent,omitempty"`
 	Context   ContextConfig   `yaml:"context,omitempty" json:"context,omitempty"`
 	Workspace WorkspaceConfig `yaml:"workspace,omitempty" json:"workspace,omitempty"`
-	Network   NetworkConfig   `yaml:"network,omitempty" json:"network,omitempty"`
+	// Microsandbox holds per-project options passed to the workspace microVM runtime.
+	// It is separate from WorkspaceConfig (resource limits) so msb lifecycle/runtime
+	// knobs have a stable namespace in config.yaml.
+	Microsandbox MicrosandboxConfig `yaml:"microsandbox,omitempty" json:"microsandbox,omitempty"`
+	Network      NetworkConfig      `yaml:"network,omitempty" json:"network,omitempty"`
 	// Apps are the opt-in AI applications installed in this workspace, run as
 	// in-VM nerdctl containers (arch §7). Each carries the unique host port it is
 	// published on so concurrently-running workspaces never collide.
@@ -62,6 +67,41 @@ type ContextConfig struct {
 type WorkspaceConfig struct {
 	CPULimit    int    `yaml:"cpu_limit,omitempty" json:"cpu_limit,omitempty"`
 	MemoryLimit string `yaml:"memory_limit,omitempty" json:"memory_limit,omitempty"`
+}
+
+// MicrosandboxConfig holds options passed to `msb create` at workspace start.
+type MicrosandboxConfig struct {
+	// IdleTimeout is the duration passed to `msb create --idle-timeout`. Empty means
+	// use DefaultMicrosandboxIdleTimeout. Microsandbox accepts Go-like second/minute/
+	// hour strings such as 30s, 5m, 1h, 24h.
+	IdleTimeout string `yaml:"idle_timeout,omitempty" json:"idle_timeout,omitempty"`
+}
+
+// DefaultMicrosandboxIdleTimeout is the default for new projects and for missing
+// config values in older projects. It keeps development workspaces alive across
+// normal breaks without a heartbeat loop or host sleep prevention.
+const DefaultMicrosandboxIdleTimeout = "24h"
+
+// ResolvedIdleTimeout returns the effective msb idle timeout.
+func (microsandbox MicrosandboxConfig) ResolvedIdleTimeout() string {
+	if microsandbox.IdleTimeout == "" {
+		return DefaultMicrosandboxIdleTimeout
+	}
+	return microsandbox.IdleTimeout
+}
+
+// ValidateIdleTimeout checks a Microsandbox idle-timeout duration. The CLI accepts
+// positive Go duration strings (30s, 5m, 1h, 24h). A zero/negative value is rejected
+// because `msb --idle-timeout 0` would be an immediate idle stop, not "disabled".
+func ValidateIdleTimeout(value string) error {
+	if value == "" {
+		return nil
+	}
+	duration, err := time.ParseDuration(value)
+	if err != nil || duration <= 0 {
+		return fmt.Errorf("microsandbox.idle_timeout: %q (positive duration, e.g. 30s, 5m, 24h)", value)
+	}
+	return nil
 }
 
 // NetworkConfig configures the workspace's two local-dev networking directions
@@ -118,7 +158,10 @@ func Default() *Config {
 		Agent:     AgentConfig{Tools: []string{"opencode", "pi"}, DefaultTool: "opencode"},
 		Context:   ContextConfig{Strategy: "balanced", CavemanLevel: "full"},
 		Workspace: WorkspaceConfig{CPULimit: 4, MemoryLimit: "8G"},
-		Network:   NetworkConfig{Egress: "public"},
+		Microsandbox: MicrosandboxConfig{
+			IdleTimeout: DefaultMicrosandboxIdleTimeout,
+		},
+		Network: NetworkConfig{Egress: "public"},
 	}
 }
 

@@ -95,8 +95,7 @@ type LocalModels struct {
 
 	models         []localModel // every model row (installed-first then installable)
 	installedCount int          // how many of models are in the Installed section
-	cursor         int          // index into models (the highlighted model row)
-	top            int          // first visible model index (scroll window top)
+	window         listWindow   // the reusable windowed-list layout + anchor scroll
 	installed      map[string]bool
 
 	source     ollama.Source
@@ -125,24 +124,14 @@ func (view *LocalModels) Hints() string {
 func (view *LocalModels) SetSize(width, height int) {
 	view.width = width
 	view.height = height
-	view.clampWindow()
+	view.syncWindow()
 	view.describe.setSize(width, height)
 }
 
-// displayLine is one rendered line of the two-section list: either a section
-// header / blank-padding line (modelIndex < 0) or a model content row (modelIndex
-// = its index into view.models). The list is windowed over these DISPLAY lines so
-// the rendered block is a CONSTANT height regardless of how many section headers the
-// current window straddles (the bug being that the old per-model capacity reserved
-// chrome for BOTH sections always, shrinking the row count as you scrolled).
-type displayLine struct {
-	text       string
-	modelIndex int
-}
-
-// displayLines flattens the two sections into the full sequence of rendered lines:
-// each present section's header (blank · header · blank) followed by its model rows.
-// The cursor highlight is applied later, at render time, to the matching modelIndex.
+// windowLines flattens the two sections into the full sequence of rendered lines for
+// the reusable listWindow: each present section's header (blank · header · blank)
+// followed by its model rows (marked Selectable). The cursor highlight + windowing is
+// handled by the listWindow; this only produces the styled line text.
 // sectionHeadingStyle is the bold, secondary-coloured style for the "Installed" /
 // "Installable" section headers — distinct from ui.Heading (the accent colour) so the
 // section labels read as the secondary colour.
@@ -150,19 +139,19 @@ func sectionHeadingStyle() lipgloss.Style {
 	return lipgloss.NewStyle().Bold(true).Foreground(ui.Secondary())
 }
 
-func (view *LocalModels) displayLines() []displayLine {
-	lines := make([]displayLine, 0, len(view.models)+6)
+func (view *LocalModels) windowLines() []ListLine {
+	lines := make([]ListLine, 0, len(view.models)+6)
 	appendSection := func(label string, from, to int) {
 		if from >= to {
 			return
 		}
 		lines = append(lines,
-			displayLine{text: "", modelIndex: -1},
-			displayLine{text: sectionHeadingStyle().Render(label), modelIndex: -1},
-			displayLine{text: "", modelIndex: -1},
+			ListLine{Text: ""},
+			ListLine{Text: sectionHeadingStyle().Render(label)},
+			ListLine{Text: ""},
 		)
 		for index := from; index < to; index++ {
-			lines = append(lines, displayLine{text: view.contentLine(view.models[index]), modelIndex: index})
+			lines = append(lines, ListLine{Text: view.contentLine(view.models[index]), Selectable: true})
 		}
 	}
 	appendSection("Installed", 0, view.installedCount)
@@ -170,15 +159,12 @@ func (view *LocalModels) displayLines() []displayLine {
 	return lines
 }
 
-// modelLineIndex returns the display-line index of model row modelIndex (-1 if not
-// found) — used to keep the cursor's row inside the scroll window.
-func modelLineIndex(lines []displayLine, modelIndex int) int {
-	for index, line := range lines {
-		if line.modelIndex == modelIndex {
-			return index
-		}
-	}
-	return -1
+// syncWindow pushes the current rendered lines + pane geometry into the listWindow,
+// re-clamping the cursor + scroll position. Called before any move/clamp/render so the
+// window always reflects the latest data + size (header line count can change with
+// errors/empties, so the list height is recomputed here each time).
+func (view *LocalModels) syncWindow() {
+	view.window.SetContent(view.windowLines(), view.width, view.listHeight())
 }
 
 // Init kicks off the first install-store list + library load.
@@ -223,7 +209,7 @@ func (view *LocalModels) Update(msg tea.Msg) tea.Cmd {
 		// source-availability warning only when the live library fetch failed.
 		view.flash = ""
 		view.libraryFlash()
-		view.clampWindow()
+		view.syncWindow()
 		return nil
 	case modelTestDoneMsg:
 		view.flash = modelTestFlash(message)
@@ -476,34 +462,27 @@ func (view *LocalModels) buildModels(installed []ollama.Model, library []ollama.
 
 	view.models = append(installedRows, installableRows...)
 	view.installedCount = len(installedRows)
-	view.cursor = 0
-	view.top = 0
+	view.window.Reset() // reseat the cursor on the first model + scroll to the top
 }
 
-// moveCursor steps the cursor by step (±1) over MODEL rows only (it never lands on a
-// section header or padding line, since the cursor indexes view.models directly), then
-// keeps it inside the scroll window.
+// moveCursor steps the cursor by step (±1) over MODEL rows only (the listWindow never
+// lands the cursor on a section header or padding line), keeping it inside the scroll
+// window.
 func (view *LocalModels) moveCursor(step int) {
 	if len(view.models) == 0 {
 		return
 	}
-	next := view.cursor + step
-	if next < 0 {
-		next = 0
-	}
-	if next > len(view.models)-1 {
-		next = len(view.models) - 1
-	}
-	view.cursor = next
-	view.clampWindow()
+	view.syncWindow() // ensure the window reflects the current content/size first
+	view.window.Move(step)
 }
 
 // selectedModel returns the model under the cursor.
 func (view *LocalModels) selectedModel() (localModel, bool) {
-	if view.cursor < 0 || view.cursor >= len(view.models) {
+	cursor := view.window.Cursor()
+	if cursor < 0 || cursor >= len(view.models) {
 		return localModel{}, false
 	}
-	return view.models[view.cursor], true
+	return view.models[cursor], true
 }
 
 // libraryFlash sets the source-availability warning when the library fetch failed:
@@ -560,47 +539,6 @@ func (view *LocalModels) listHeight() int {
 		height = 1
 	}
 	return height
-}
-
-// clampWindow keeps the cursor inside the visible DISPLAY-line window. view.top is the
-// first visible display-line index; it is chosen so the cursor's row is visible AND
-// the last page is full (top clamped to totalLines-listHeight), so a short tail never
-// leaves a growing gap above the bottom margin.
-func (view *LocalModels) clampWindow() {
-	if len(view.models) == 0 {
-		view.top = 0
-		return
-	}
-	if view.cursor < 0 {
-		view.cursor = 0
-	}
-	if view.cursor > len(view.models)-1 {
-		view.cursor = len(view.models) - 1
-	}
-	lines := view.displayLines()
-	height := view.listHeight()
-	cursorLine := modelLineIndex(lines, view.cursor)
-	if cursorLine < 0 {
-		view.top = 0
-		return
-	}
-	// Scroll just enough to keep the cursor's line visible. When scrolling up to the
-	// cursor, include the section header(s) above it so the cursor never sits flush
-	// against the top with an orphaned header off-screen.
-	if cursorLine < view.top {
-		view.top = cursorLine
-	}
-	if cursorLine >= view.top+height {
-		view.top = cursorLine - height + 1
-	}
-	// Clamp so the LAST window is full (no short tail): never scroll past the point
-	// where the final listHeight lines are shown.
-	if maxTop := len(lines) - height; view.top > maxTop {
-		view.top = maxTop
-	}
-	if view.top < 0 {
-		view.top = 0
-	}
 }
 
 // contentLine renders one model row's "NAME  DESCRIPTION" content as a single plain
@@ -707,39 +645,14 @@ func selectedStyle() lipgloss.Style {
 		Background(ui.Accent())
 }
 
-// listView renders the visible DISPLAY-line window (section headers + model rows) at a
-// FIXED height: it shows exactly listHeight lines from view.top, highlighting the
-// cursor's model row with the Cloud-Models-identical Selected style spanning the full
-// width, and PADS with blank lines if the window is short — so the block height (and
-// thus the bottom margin) is constant at every scroll position, no matter how many
-// section headers the window currently straddles.
+// listView renders the two-section list through the reusable listWindow: a FIXED-height
+// window of section headers + model rows, the cursor's model row highlighted with the
+// Cloud-Models-identical Selected style spanning the full width, padded to a constant
+// height so the bottom margin never moves with scroll. The windowing/anchor-scroll
+// rules live in listWindow (defined once); this just feeds it the current lines + size.
 func (view *LocalModels) listView() string {
-	lines := view.displayLines()
-	height := view.listHeight()
-	first := view.top
-	if first < 0 {
-		first = 0
-	}
-	last := first + height
-	if last > len(lines) {
-		last = len(lines)
-	}
-	selected := selectedStyle()
-
-	rendered := make([]string, 0, height)
-	for index := first; index < last; index++ {
-		line := lines[index]
-		text := line.text
-		if line.modelIndex >= 0 && line.modelIndex == view.cursor {
-			text = selected.Render(text)
-		}
-		rendered = append(rendered, text)
-	}
-	// Pad to the fixed height so the bottom never moves with scroll.
-	for len(rendered) < height {
-		rendered = append(rendered, "")
-	}
-	return strings.Join(rendered, "\n")
+	view.syncWindow()
+	return view.window.View(selectedStyle())
 }
 
 // drillView renders the per-model tag picker: each tag marked ● installed / ○ not,

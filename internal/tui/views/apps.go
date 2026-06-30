@@ -3,7 +3,6 @@ package views
 import (
 	"time"
 
-	"github.com/charmbracelet/bubbles/table"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/jt-helsinki/ideal-robot/internal/apps"
 	"github.com/jt-helsinki/ideal-robot/internal/ui"
@@ -45,7 +44,7 @@ const appsRefreshInterval = 3 * time.Second
 type Apps struct {
 	list    AppLister
 	project func() string
-	table   table.Model
+	table   listTable
 	apps    []apps.Status
 	flash   string
 	err     error
@@ -60,14 +59,12 @@ type Apps struct {
 // NewApps builds the apps view over the injected lister and current-project
 // accessor.
 func NewApps(list AppLister, project func() string) *Apps {
-	columns := []table.Column{
-		{Title: "APP", Width: 16},
-		{Title: "STATUS", Width: 20},
-		{Title: "URL", Width: 28},
+	columns := []listColumn{
+		{title: "APP", width: 16},
+		{title: "STATUS", width: 20},
+		{title: "URL", width: 28},
 	}
-	built := table.New(table.WithColumns(columns), table.WithFocused(true))
-	built.SetStyles(ui.TableStyles())
-	return &Apps{list: list, project: project, table: built}
+	return &Apps{list: list, project: project, table: newListTable(columns)}
 }
 
 // Title is the view's name (used by the sub-tab bar/header).
@@ -82,10 +79,8 @@ func (view *Apps) Hints() string {
 // is reserved for the flash slot (always rendered, blank when empty) so the table
 // fills a FIXED height and its bottom never moves whether or not a flash shows.
 func (view *Apps) SetSize(width, height int) {
-	view.table.SetStyles(ui.TableStyles())
-	view.table.SetWidth(width)
 	if tableHeight := height - 1; tableHeight > 0 {
-		view.table.SetHeight(tableHeight)
+		view.table.SetSize(width, tableHeight)
 	}
 }
 
@@ -163,9 +158,7 @@ func (view *Apps) Update(msg tea.Msg) tea.Cmd {
 			return cmd
 		}
 	}
-	var cmd tea.Cmd
-	view.table, cmd = view.table.Update(msg)
-	return cmd
+	return view.table.Update(msg)
 }
 
 // actionForKey maps a key to its apps lifecycle action ("" when the key is not an
@@ -240,10 +233,10 @@ func (view *Apps) View() string {
 	return view.table.View() + "\n" + flashLine(view.flash)
 }
 
-func appRows(statuses []apps.Status) []table.Row {
-	rows := make([]table.Row, 0, len(statuses))
+func appRows(statuses []apps.Status) [][]string {
+	rows := make([][]string, 0, len(statuses))
 	for _, status := range statuses {
-		rows = append(rows, table.Row{status.Name, appStatusCell(status), orDashApps(status.URL)})
+		rows = append(rows, []string{status.Name, appStatusCell(status), orDashApps(status.URL)})
 	}
 	return rows
 }

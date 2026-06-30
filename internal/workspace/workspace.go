@@ -93,7 +93,7 @@ var ErrUnknownProject = errors.New("unknown project")
 // pull, or wedged). The message stays generic (it does NOT assume an image pull —
 // that was misleading) and points at the actionable fix. Mapped to exit 4 (runtime
 // failure).
-var ErrWorkspaceUnresponsive = errors.New("workspace is running but not responding — it may be overloaded; try `ai restart`")
+var ErrWorkspaceUnresponsive = errors.New("workspace microVM is running, but msb exec is not responding — logs may still be available; try `ai restart`")
 
 // ErrWorkspaceStale is returned when the platform's lifecycle handle says the
 // workspace is "started" but a bounded liveness probe finds NO running microVM for
@@ -199,13 +199,14 @@ type Builder interface {
 }
 
 // Sandbox drives Microsandbox microVMs (Go SDK / msb). Create mounts the
-// VMResources is the per-workspace microVM resource allocation passed to
-// `msb create`, sourced from the project config's `workspace.cpu_limit` /
-// `workspace.memory_limit`. CPUs ≤ 0 omits `--cpus` (msb's default vCPU count);
-// an empty Memory falls back to the platform default (see microVMMemory).
+// VMResources is the per-workspace microVM runtime allocation/options passed to
+// `msb create`, sourced from the project config. CPUs ≤ 0 omits `--cpus` (msb's
+// default vCPU count); an empty Memory falls back to the platform default (see
+// microVMMemory); an empty IdleTimeout falls back to config.DefaultMicrosandboxIdleTimeout.
 type VMResources struct {
-	CPUs   int
-	Memory string
+	CPUs        int
+	Memory      string
+	IdleTimeout string
 }
 
 // read-only image, the host project source, and the persistent overlay (arch
@@ -248,6 +249,9 @@ type Sandbox interface {
 	// is absent; a non-running/unknown sandbox surfaces as a Go error carrying msb's
 	// message.
 	LogTail(name string, lines int) (string, error)
+	// LogTailContext is LogTail bounded by ctx, used for live health diagnostics so a
+	// stuck log command cannot hang doctor.
+	LogTailContext(ctx context.Context, name string, lines int) (string, error)
 	// InspectNetwork reads the egress policy in force on the named microVM via
 	// `msb inspect`. It returns ErrNotRunning when no such sandbox exists (the
 	// workspace is not running) and ErrMsbMissing when msb is not installed —
@@ -304,19 +308,18 @@ type Manager struct {
 	Served ServedModels
 	Now    func() string
 	GOOS   string
-	// Sleep prevents the HOST from idle-sleeping while a workspace is running, so the
-	// microVM's exec channel doesn't wedge on a host suspend/resume. Optional (nil →
-	// no-op): the lifecycle never fails on an inhibitor error.
+	// Sleep is an OPTIONAL lifecycle hook for callers/tests that want to hold an
+	// external assertion while a workspace is running. The real manager leaves it nil:
+	// workspace idle reaping is handled by the msb create-time idle timeout, not by
+	// preventing host sleep or running a background heartbeat.
 	Sleep SleepInhibitor
 }
 
-// SleepInhibitor holds an OS power assertion that keeps the host awake while a
-// workspace microVM is running. On a host suspend/resume the microVM's vsock exec
-// channel wedges (unrecoverable without a restart), so the platform prevents idle
-// sleep for the workspace's lifetime. Inhibit is taken at start, Release at
+// SleepInhibitor is an optional start/stop hook. It is deliberately generic (not
+// necessarily a host power assertion): Inhibit is called at start and Release at
 // stop/destroy. Implementations are best-effort — a failure must never block the
-// lifecycle. NOTE: this prevents IDLE/timeout sleep only; closing a laptop lid still
-// suspends the host (that needs system power settings, out of scope).
+// lifecycle. RealManager does not install one by default, so the platform does not
+// keep the host awake just because a workspace is running.
 type SleepInhibitor interface {
 	// Inhibit starts (or re-uses) the power assertion for the project. root is the
 	// project's host source dir (the assertion's pid is tracked under its run/ dir).
@@ -356,12 +359,15 @@ func (manager Manager) Start(project string) (*state.Workspace, error) {
 	if err != nil {
 		return nil, err
 	}
-	// Translate the project's egress policy into the msb network argv fragment;
+	// Translate the effective egress policy into the msb network argv fragment;
 	// the configured model gateway is always allowed on its Headroom port (arch
 	// §29.2). In standalone/local mode this is host.microsandbox.internal:18787;
 	// in client mode it is the remote server `ai gateway set` configured.
-	projectConfig, err := config.LoadProjectConfig(root)
+	projectConfig, err := config.Load(root)
 	if err != nil {
+		return nil, err
+	}
+	if err := config.ValidateIdleTimeout(projectConfig.Microsandbox.IdleTimeout); err != nil {
 		return nil, err
 	}
 	gatewayHost, gatewayPort, gatewayURL := resolveGateway()
@@ -375,12 +381,13 @@ func (manager Manager) Start(project string) (*state.Workspace, error) {
 	netArgs := egress.MsbNetworkArgs(networkForStart, gatewayHost, gatewayPort)
 	// The microVM mounts the host project path directly. Supported hosts are
 	// macOS and Linux, so no path translation is needed (arch §7).
-	// Apply the project's declared microVM resource limits (config.yaml
+	// Apply the effective microVM resource limits (merged config.yaml
 	// `workspace.cpu_limit`/`memory_limit`) to `msb create`. Empty/zero values fall
 	// back to msb's default vCPU count and the platform default memory.
 	resources := VMResources{
-		CPUs:   projectConfig.Workspace.CPULimit,
-		Memory: projectConfig.Workspace.MemoryLimit,
+		CPUs:        projectConfig.Workspace.CPULimit,
+		Memory:      projectConfig.Workspace.MemoryLimit,
+		IdleTimeout: projectConfig.Microsandbox.ResolvedIdleTimeout(),
 	}
 	if err := manager.Sandbox.Create(name, imageRef, root, overlayPath, resources, netArgs); err != nil {
 		return nil, err
@@ -432,8 +439,8 @@ func (manager Manager) Start(project string) (*state.Workspace, error) {
 		return nil, err
 	}
 	started = false // handle saved — disarm the rollback, keep the running microVM
-	// Keep the host awake while this workspace runs: a host idle-sleep suspends the
-	// microVM and wedges its exec channel on resume. Best-effort — never fail start.
+	// Run any optional lifecycle hook (RealManager leaves this nil; tests/future
+	// callers may inject one). Best-effort — never fail start.
 	if manager.Sleep != nil {
 		_ = manager.Sleep.Inhibit(project, root)
 	}
@@ -869,7 +876,7 @@ func (manager Manager) Stop(project string) error {
 	if err := manager.Sandbox.Stop(name); err != nil {
 		return err
 	}
-	// The workspace is no longer running — drop the keep-awake assertion.
+	// The workspace is no longer running — drop any optional lifecycle assertion.
 	if manager.Sleep != nil {
 		_ = manager.Sleep.Release(project, root)
 	}
@@ -955,7 +962,7 @@ func (manager Manager) Destroy(project string) error {
 	if err := manager.Sandbox.Destroy(name); err != nil {
 		return err
 	}
-	// The microVM is gone — drop the keep-awake assertion.
+	// The microVM is gone — drop any optional lifecycle assertion.
 	if manager.Sleep != nil {
 		_ = manager.Sleep.Release(project, root)
 	}
@@ -1095,6 +1102,9 @@ func (manager Manager) launchTmuxSession(project, session string, command []stri
 	if err := manager.requireTmux(project); err != nil {
 		return err
 	}
+	if err := manager.ensureTmuxReady(project); err != nil {
+		return err
+	}
 	// Create-or-attach in a SINGLE interactive exec: `tmux new-session -A` creates the
 	// session on first use and reattaches on later calls. The tmux server daemonizes,
 	// so the session persists after the client DETACHES (and `ai sessions` lists it);
@@ -1103,6 +1113,32 @@ func (manager Manager) launchTmuxSession(project, session string, command []stri
 	// the create exec's process group before the attach connects, which left the attach
 	// with no session and bounced the user straight back to the TUI.
 	return manager.Sandbox.ExecInteractive(Name(project), tmuxNewSessionAttach(session, command))
+}
+
+// ensureTmuxReady warms up the tmux server path with a bounded, NON-interactive exec
+// before the user's real terminal is handed to `msb exec -t`. Live msb can be flaky on
+// the first interactive PTY shortly after VM start: tmux/server setup or the vsock PTY
+// path can race, leaving the host terminal on a blank/frozen client. Creating and
+// killing a short probe session proves tmux can create a server/session and exercises
+// the first msb exec/tmux startup path while output is buffered and recoverable. The
+// actual user session still uses the atomic `tmux new-session -A` below.
+func (manager Manager) ensureTmuxReady(project string) error {
+	probeName := "aip-probe-" + strings.ReplaceAll(Name(project), "-", "_")
+	command := "tmux new-session -d -s " + shellQuote(probeName) + " -c " + shellQuote(workspaceWorkdir) +
+		" sleep 1 >/dev/null 2>&1 || exit $?; tmux has-session -t " + shellQuote(probeName) + " >/dev/null 2>&1; tmux kill-session -t " + shellQuote(probeName) + " >/dev/null 2>&1 || true"
+	result, err := manager.probeInVM(project, func(ctx context.Context) (ExecResult, error) {
+		return manager.Sandbox.ExecContext(ctx, Name(project), []string{"sh", "-c", command})
+	})
+	if err != nil {
+		return err
+	}
+	if result.ExitCode != 0 {
+		if stderrSandboxNotFound(result.Stderr) {
+			return ErrWorkspaceStale
+		}
+		return ErrWorkspaceUnresponsive
+	}
+	return nil
 }
 
 // requireTmux verifies tmux is on PATH inside the running microVM before a tmux
@@ -1201,9 +1237,7 @@ func (manager Manager) ListSessions(project string) ([]Session, error) {
 	// letters/digits/'-'/'_', attached is 0/1, activity is a Unix epoch). The probe
 	// retries on a timeout so a wedged-after-sleep VM self-heals (see probeInVM).
 	result, err := manager.probeInVM(project, func(ctx context.Context) (ExecResult, error) {
-		return manager.Sandbox.ExecContext(ctx, Name(project), []string{
-			"tmux", "list-sessions", "-F", "#{session_name}|#{session_attached}|#{session_activity}",
-		})
+		return manager.Sandbox.ExecContext(ctx, Name(project), []string{"sh", "-c", tmuxListSessionsCommand()})
 	})
 	if err != nil {
 		return nil, err // already classified (stale / unresponsive)
@@ -1243,6 +1277,15 @@ func isNoTmuxServer(stderr string) bool {
 	return strings.Contains(lower, "no server running") ||
 		strings.Contains(lower, "error connecting to") ||
 		strings.Contains(lower, "no such file or directory")
+}
+
+func tmuxListSessionsCommand() string {
+	format := "#{session_name}|#{session_attached}|#{session_activity}"
+	return "err=$(mktemp); " +
+		"tmux list-sessions -F " + shellQuote(format) + " 2>\"$err\"; code=$?; " +
+		"if [ $code -eq 0 ]; then rm -f \"$err\"; exit 0; fi; " +
+		"if grep -Eqi 'no server running|error connecting|no such file or directory' \"$err\"; then rm -f \"$err\"; exit 0; fi; " +
+		"cat \"$err\" >&2; rm -f \"$err\"; exit $code"
 }
 
 // KillSession kills the named tmux session in the project's workspace microVM,

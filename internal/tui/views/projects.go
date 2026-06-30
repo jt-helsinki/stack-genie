@@ -3,7 +3,6 @@ package views
 import (
 	"strings"
 
-	"github.com/charmbracelet/bubbles/table"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/jt-helsinki/ideal-robot/internal/project"
 	"github.com/jt-helsinki/ideal-robot/internal/ui"
@@ -33,7 +32,7 @@ type projectsLoadedMsg struct {
 // (from ~/.ai-platform/config/projects.yaml); selecting one makes it current.
 type Projects struct {
 	list     ProjectLister
-	table    table.Model
+	table    listTable
 	describe describePane
 	entries  []project.Entry
 	err      error
@@ -42,25 +41,21 @@ type Projects struct {
 
 // NewProjects builds the switcher over the injected project lister.
 func NewProjects(list ProjectLister) *Projects {
-	columns := []table.Column{
-		{Title: "NAME", Width: 22},
-		{Title: "OS", Width: 16},
-		{Title: "STATUS", Width: 12},
-		{Title: "AGENTS", Width: 28},
+	columns := []listColumn{
+		{title: "NAME", width: 22},
+		{title: "OS", width: 16},
+		{title: "STATUS", width: 12},
+		{title: "AGENTS", width: 28},
 	}
-	built := table.New(table.WithColumns(columns), table.WithFocused(true))
-	built.SetStyles(ui.TableStyles())
-	return &Projects{list: list, table: built, describe: newDescribePane()}
+	return &Projects{list: list, table: newListTable(columns), describe: newDescribePane()}
 }
 
 func (view *Projects) Title() string { return "Workspaces" }
 func (view *Projects) Hints() string { return "enter open · n new · d describe · r refresh" }
 
 func (view *Projects) SetSize(width, height int) {
-	view.table.SetStyles(ui.TableStyles()) // pick up a live theme change
-	view.table.SetWidth(width)
 	if height > 0 {
-		view.table.SetHeight(height)
+		view.table.SetSize(width, height)
 	}
 	view.describe.setSize(width, height)
 }
@@ -111,9 +106,7 @@ func (view *Projects) Update(msg tea.Msg) tea.Cmd {
 			return view.describe.update(message)
 		}
 	}
-	var cmd tea.Cmd
-	view.table, cmd = view.table.Update(msg)
-	return cmd
+	return view.table.Update(msg)
 }
 
 // selectedEntry returns the highlighted project entry (matched by name).
@@ -157,8 +150,8 @@ func describeProject(entry project.Entry) string {
 	return body.String()
 }
 
-func projectRows(entries []project.Entry) []table.Row {
-	rows := make([]table.Row, 0, len(entries))
+func projectRows(entries []project.Entry) [][]string {
+	rows := make([][]string, 0, len(entries))
 	for _, entry := range entries {
 		agents := ""
 		for index, agent := range entry.Agents {
@@ -167,7 +160,7 @@ func projectRows(entries []project.Entry) []table.Row {
 			}
 			agents += agent
 		}
-		rows = append(rows, table.Row{entry.Name, entry.OS, entry.Status, agents})
+		rows = append(rows, []string{entry.Name, entry.OS, entry.Status, agents})
 	}
 	return rows
 }

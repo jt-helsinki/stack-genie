@@ -46,6 +46,10 @@ type Spec struct {
 	// Apps are the opt-in in-VM AI applications to install (subset of apps.Keys()).
 	// Empty by default — apps are opt-in.
 	Apps []string
+	// IdleTimeout is written to config.yaml microsandbox.idle_timeout and passed to
+	// `msb create --idle-timeout` at every workspace start/restart. Empty defaults to
+	// config.DefaultMicrosandboxIdleTimeout.
+	IdleTimeout string
 	// Root is the host source directory for the project — the directory `ai
 	// project create` runs in. Empty falls back to ~/projects/<name> (RootPath).
 	Root string
@@ -161,10 +165,15 @@ func Scaffold(spec Spec, createdAt string) (string, error) {
 	if err != nil {
 		return "", err
 	}
+	idleTimeout := spec.IdleTimeout
+	if idleTimeout == "" {
+		idleTimeout = config.DefaultMicrosandboxIdleTimeout
+	}
 	projectConfig := &config.Config{
-		OS:    spec.OS,
-		Agent: config.AgentConfig{Tools: spec.AgentCLIs, DefaultTool: spec.DefaultTool},
-		Apps:  appEntries,
+		OS:           spec.OS,
+		Agent:        config.AgentConfig{Tools: spec.AgentCLIs, DefaultTool: spec.DefaultTool},
+		Microsandbox: config.MicrosandboxConfig{IdleTimeout: idleTimeout},
+		Apps:         appEntries,
 	}
 	if err := config.WriteProject(root, projectConfig); err != nil {
 		return "", err

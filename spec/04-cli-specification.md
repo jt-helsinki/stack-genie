@@ -827,6 +827,16 @@ cert validation). A microVM that stays wedged past the retries still reports
 `ErrWorkspaceUnresponsive` (run `ai restart`). The
 TUI Workspace view additionally guards its `e` shell key with an inline "workspace
 not running — press s to start" hint, so it never suspends into a doomed subprocess.
+Workspace creation also passes an explicit **Microsandbox idle timeout** sourced from
+the project config (`<project>/.ai-platform/config.yaml`
+`microsandbox.idle_timeout`, default `24h`, set at create time by
+`ai create --idle-timeout <duration>` and editable later in the config). The value is
+read on every `ai start`/`ai restart` and rendered as `msb create --idle-timeout
+<value>`, so a development VM is not reaped after a short no-traffic window while the
+host remains awake. This is a create-time runtime policy, not a heartbeat loop or host
+power assertion: it performs no periodic work, does not tax CPU/battery, and does not
+prevent the computer from sleeping. If the host sleeps, the VM sleeps with it and the
+retry/clock-sync behaviour above handles wake-up.
 The session launchers also verify **tmux is present in the workspace image** (a
 buffered probe before the PTY); a tmux-less image — e.g. a project created with an
 older `ai` whose template predates tmux — fails with `ErrTmuxMissing` (exit 3) and

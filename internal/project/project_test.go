@@ -70,6 +70,38 @@ func TestScaffoldWritesArtifactsAndIndex(test *testing.T) {
 	}
 }
 
+func TestScaffoldWritesDefaultMicrosandboxIdleTimeout(test *testing.T) {
+	withTemplates(test)
+	root, err := Scaffold(sampleSpec(), "t")
+	if err != nil {
+		test.Fatal(err)
+	}
+	projectConfig, err := config.LoadProjectConfig(root)
+	if err != nil {
+		test.Fatal(err)
+	}
+	if got := projectConfig.Microsandbox.IdleTimeout; got != config.DefaultMicrosandboxIdleTimeout {
+		test.Fatalf("microsandbox.idle_timeout = %q, want %q", got, config.DefaultMicrosandboxIdleTimeout)
+	}
+}
+
+func TestScaffoldWritesConfiguredMicrosandboxIdleTimeout(test *testing.T) {
+	withTemplates(test)
+	spec := sampleSpec()
+	spec.IdleTimeout = "2h"
+	root, err := Scaffold(spec, "t")
+	if err != nil {
+		test.Fatal(err)
+	}
+	projectConfig, err := config.LoadProjectConfig(root)
+	if err != nil {
+		test.Fatal(err)
+	}
+	if got := projectConfig.Microsandbox.IdleTimeout; got != "2h" {
+		test.Fatalf("microsandbox.idle_timeout = %q, want 2h", got)
+	}
+}
+
 // TestScaffoldRefreshesStaleTemplates: create must overwrite an on-disk template
 // left by an OLDER ai (here a tmux-less base) with THIS binary's embedded copy, so
 // a binary upgrade alone fixes the generated Dockerfile without re-running setup.

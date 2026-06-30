@@ -62,7 +62,7 @@ func TestServicesPopulatesTableOnRefresh(test *testing.T) {
 	}
 }
 
-// A bubbles/table view must FILL the content height it is sized to (the table pads
+// A listTable view must FILL the content height it is sized to (the table pads
 // with blank rows) and keep a CONSTANT total height whether or not a flash is shown.
 func TestServicesTableFillsConstantHeight(test *testing.T) {
 	statuses := []setup.ServiceStatus{

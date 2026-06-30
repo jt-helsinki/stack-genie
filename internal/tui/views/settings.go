@@ -3,7 +3,6 @@ package views
 import (
 	"strings"
 
-	"github.com/charmbracelet/bubbles/table"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/jt-helsinki/ideal-robot/internal/ui"
 )
@@ -28,7 +27,7 @@ type Settings struct {
 	apply   ThemeApplier
 	role    string
 	gateway string
-	table   table.Model
+	table   listTable
 	flash   string
 }
 
@@ -36,9 +35,8 @@ type Settings struct {
 // currently-applied theme, the apply+persist func, and the platform role/gateway
 // to display.
 func NewSettings(themes []string, current func() string, apply ThemeApplier, role, gateway string) *Settings {
-	columns := []table.Column{{Title: "THEME", Width: 22}, {Title: "", Width: 16}}
-	built := table.New(table.WithColumns(columns), table.WithFocused(true))
-	built.SetStyles(ui.TableStyles())
+	columns := []listColumn{{title: "THEME", width: 22}, {title: "", width: 16}}
+	built := newListTable(columns)
 	view := &Settings{themes: themes, current: current, apply: apply, role: role, gateway: gateway, table: built}
 	view.refreshRows()
 	return view
@@ -51,15 +49,12 @@ func (view *Settings) Title() string { return "Settings" }
 func (view *Settings) Hints() string { return "enter apply theme · ↑/↓ select" }
 
 // SetSize fits the theme table, leaving room for the platform info block below.
-// It also re-applies the table styles so a just-applied theme recolors the table.
 func (view *Settings) SetSize(width, height int) {
-	view.table.SetStyles(ui.TableStyles())
-	view.table.SetWidth(width)
 	// Reserve the exact non-table lines View() emits (must match it): Theme heading
 	// (1) + flash slot (1) + Platform heading (1) + role/gateway/change lines (3) = 6,
 	// so the table fills the rest and the block sits at the constant bottom margin.
 	if tableHeight := height - 6; tableHeight > 0 {
-		view.table.SetHeight(tableHeight)
+		view.table.SetSize(width, tableHeight)
 	}
 }
 
@@ -69,19 +64,18 @@ func (view *Settings) Init() tea.Cmd { return nil }
 // refreshRows rebuilds the theme rows, marking the currently-applied one.
 func (view *Settings) refreshRows() {
 	current := view.current()
-	rows := make([]table.Row, 0, len(view.themes))
+	rows := make([][]string, 0, len(view.themes))
 	for _, name := range view.themes {
 		marker := ""
 		if name == current {
 			marker = "● applied"
 		}
-		// Cell values are PLAIN (no ANSI): bubbles/table truncates cells with a
-		// width function that is NOT ANSI-aware, so colour codes inside a cell get
-		// counted as width — cutting the visible text early and slicing through a
-		// colour sequence (the stray "[[0m" artefact). The applied theme is marked
-		// by the "● applied" text; the highlighted row is coloured by the table's
-		// own Selected style (ui.TableStyles), which is applied AFTER truncation.
-		rows = append(rows, table.Row{name, marker})
+		// Cell values are PLAIN (no ANSI): the table truncates cells with a width
+		// function that is NOT ANSI-aware, so colour codes inside a cell get counted as
+		// width — cutting the visible text early. The applied theme is marked by the
+		// "● applied" text; the highlighted row is coloured by the table's own Selected
+		// style, which is applied AFTER truncation.
+		rows = append(rows, []string{name, marker})
 	}
 	view.table.SetRows(rows)
 }
@@ -105,9 +99,7 @@ func (view *Settings) Update(msg tea.Msg) tea.Cmd {
 		view.refreshRows()
 		return func() tea.Msg { return ThemeChangedMsg{Name: name} }
 	}
-	var cmd tea.Cmd
-	view.table, cmd = view.table.Update(msg)
-	return cmd
+	return view.table.Update(msg)
 }
 
 // View renders the theme picker above a read-only platform info block. The line

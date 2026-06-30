@@ -10,6 +10,20 @@ import (
 	"github.com/jt-helsinki/ideal-robot/internal/config"
 )
 
+func writeGlobalConfig(test *testing.T, content string) {
+	test.Helper()
+	path, err := config.GlobalPath()
+	if err != nil {
+		test.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		test.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		test.Fatal(err)
+	}
+}
+
 func TestSetStrategy(test *testing.T) {
 	root := test.TempDir()
 	if err := SetStrategy(root, "aggressive"); err != nil {
@@ -79,6 +93,7 @@ func TestSetCavemanLevelInvalid(test *testing.T) {
 }
 
 func TestStatusReflectsConfigAndSkill(test *testing.T) {
+	test.Setenv("HOME", test.TempDir())
 	root := test.TempDir()
 	before, err := GetStatus(root)
 	if err != nil {
@@ -104,6 +119,30 @@ func TestStatusReflectsConfigAndSkill(test *testing.T) {
 	}
 	if after.Headroom != nil {
 		test.Fatal("Headroom metrics need the running proxy; expected nil host-side")
+	}
+}
+
+func TestStatusReturnsMergedConfigWithProjectPriority(test *testing.T) {
+	test.Setenv("HOME", test.TempDir())
+	root := test.TempDir()
+	writeGlobalConfig(test, `
+context:
+  strategy: aggressive
+  caveman_level: ultra
+`)
+	if err := config.WriteProject(root, &config.Config{Context: config.ContextConfig{Strategy: "conservative"}}); err != nil {
+		test.Fatal(err)
+	}
+
+	status, err := GetStatus(root)
+	if err != nil {
+		test.Fatal(err)
+	}
+	if status.Strategy != "conservative" {
+		test.Fatalf("project strategy should override global strategy, got %q", status.Strategy)
+	}
+	if status.CavemanLevel != "ultra" {
+		test.Fatalf("global caveman level should survive when project omits it, got %q", status.CavemanLevel)
 	}
 }
 

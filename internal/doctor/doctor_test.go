@@ -216,6 +216,27 @@ func TestWorkspaceSectionRendersWhenPresent(test *testing.T) {
 	}
 }
 
+func TestWorkspaceSectionAppendsLiveChecks(test *testing.T) {
+	report := Run(Deps{
+		GOOS: "darwin", GOARCH: "arm64",
+		Prober: fakeProber{bins: map[string]bool{"docker": true, "msb": true}},
+		Workspace: &WorkspaceRuntime{
+			Project: "demo", Rootless: true, Virtualization: "hvf", Available: true,
+			LiveChecks: []Check{
+				{Name: "workspace microVM", Status: StatusOK, Detail: "running"},
+				{Name: "workspace logs", Status: StatusOK, Detail: "readable"},
+				{Name: "workspace exec", Status: StatusError, Detail: "msb exec timed out"},
+			},
+		},
+	})
+	if got := checkByName(report, "workspace exec").Status; got != StatusError {
+		test.Fatalf("workspace exec live check status = %q, want error", got)
+	}
+	if report.OK {
+		test.Fatal("a failing live workspace check must fail the doctor report")
+	}
+}
+
 // A missing-runtime / virtualization shortfall is folded into error Checks rather
 // than aborting (the old `ai workspace doctor` exited 3/4 here).
 func TestWorkspaceSectionFoldsFailuresIntoChecks(test *testing.T) {

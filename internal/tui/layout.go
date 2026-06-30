@@ -196,6 +196,12 @@ func (application *app) tabBar() string {
 // to the window. The content (the active view, or an overlay) renders INSIDE it.
 func (application *app) body(content string) string {
 	width, height := application.bodyContentSize()
+	// Clip the content to the pane so it can NEVER overflow the border and break the
+	// chrome (footer/border). No-sub-tab tabs flow through the body viewport (already
+	// exactly this size, so this is a no-op for them); tabs WITH sub-tabs are rendered
+	// directly and this keeps the sub-tab bar pinned by truncating any overflow below
+	// it rather than spilling past the border.
+	content = lipgloss.NewStyle().MaxWidth(width).MaxHeight(height).Render(content)
 	// lipgloss Width(w)/Height(h) are the box dimensions INCLUDING padding (the content
 	// area is w-2*padX × h-2*padY), so to give the content the full bodyContentSize we
 	// add the padding back onto both dimensions. Without this the real content area is

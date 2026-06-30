@@ -6,7 +6,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/charmbracelet/bubbles/table"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/jt-helsinki/ideal-robot/internal/ui"
 	"github.com/jt-helsinki/ideal-robot/internal/workspace"
@@ -58,7 +57,7 @@ type Sessions struct {
 	list     SessionLister
 	kill     SessionKiller
 	project  func() string
-	table    table.Model
+	table    listTable
 	sessions []workspace.Session
 	flash    string
 	err      error
@@ -79,14 +78,12 @@ type Sessions struct {
 // NewSessions builds the sessions view over the injected lister, killer, and
 // current-project accessor.
 func NewSessions(list SessionLister, kill SessionKiller, project func() string) *Sessions {
-	columns := []table.Column{
-		{Title: "NAME", Width: 24},
-		{Title: "ATTACHED", Width: 10},
-		{Title: "IDLE", Width: 10},
+	columns := []listColumn{
+		{title: "NAME", width: 24},
+		{title: "ATTACHED", width: 10},
+		{title: "IDLE", width: 10},
 	}
-	built := table.New(table.WithColumns(columns), table.WithFocused(true))
-	built.SetStyles(ui.TableStyles())
-	return &Sessions{list: list, kill: kill, project: project, table: built}
+	return &Sessions{list: list, kill: kill, project: project, table: newListTable(columns)}
 }
 
 // Title is the view's name (used by the header).
@@ -105,10 +102,8 @@ func (view *Sessions) Hints() string {
 // (always rendered, blank when empty) so the table fills a FIXED height and its
 // bottom never moves whether or not a flash/empty-hint shows.
 func (view *Sessions) SetSize(width, height int) {
-	view.table.SetStyles(ui.TableStyles()) // pick up a live theme change
-	view.table.SetWidth(width)
 	if tableHeight := height - 1; tableHeight > 0 {
-		view.table.SetHeight(tableHeight)
+		view.table.SetSize(width, tableHeight)
 	}
 }
 
@@ -204,9 +199,7 @@ func (view *Sessions) Update(msg tea.Msg) tea.Cmd {
 			return cmd
 		}
 	}
-	var cmd tea.Cmd
-	view.table, cmd = view.table.Update(msg)
-	return cmd
+	return view.table.Update(msg)
 }
 
 // handleAction maps the action keys; the bool reports whether the key was an
@@ -339,14 +332,14 @@ func errBackstopTimedOut(action string) error {
 	return fmt.Errorf("timed out %s — the workspace isn't responding; press r to retry, or `ai restart` it", action)
 }
 
-func sessionRows(sessions []workspace.Session) []table.Row {
-	rows := make([]table.Row, 0, len(sessions))
+func sessionRows(sessions []workspace.Session) [][]string {
+	rows := make([][]string, 0, len(sessions))
 	for _, session := range sessions {
 		attached := "no"
 		if session.Attached {
 			attached = "yes"
 		}
-		rows = append(rows, table.Row{session.Name, attached, sessionIdle(session.Activity)})
+		rows = append(rows, []string{session.Name, attached, sessionIdle(session.Activity)})
 	}
 	return rows
 }

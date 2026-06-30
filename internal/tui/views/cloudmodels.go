@@ -4,7 +4,6 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/charmbracelet/bubbles/table"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/jt-helsinki/ideal-robot/internal/catalog"
 	"github.com/jt-helsinki/ideal-robot/internal/litellm"
@@ -68,8 +67,7 @@ type CloudModels struct {
 	refresh     CatalogRefresher
 	test        ModelTester
 
-	table    table.Model
-	columns  []table.Column
+	table    listTable
 	describe describePane
 
 	models      []cloudModel
@@ -92,15 +90,13 @@ type CloudModels struct {
 // NewCloudModels builds the Cloud Models view over the injected catalog loader, live
 // (registered) lister, catalog refresher, and gateway tester.
 func NewCloudModels(load CloudCatalogLoader, live LiveModelLister, refresh CatalogRefresher, test ModelTester) *CloudModels {
-	columns := []table.Column{
-		{Title: "MODEL", Width: 34},
-		{Title: "PROVIDER", Width: 14},
-		{Title: "STATUS", Width: 11},
-		{Title: "CONTEXT", Width: 9},
+	columns := []listColumn{
+		{title: "MODEL", width: 34},
+		{title: "PROVIDER", width: 14},
+		{title: "STATUS", width: 11},
+		{title: "CONTEXT", width: 9},
 	}
-	built := table.New(table.WithColumns(columns), table.WithFocused(true))
-	built.SetStyles(ui.TableStyles())
-	return &CloudModels{loadCatalog: load, listLive: live, refresh: refresh, test: test, table: built, columns: columns, describe: newDescribePane()}
+	return &CloudModels{loadCatalog: load, listLive: live, refresh: refresh, test: test, table: newListTable(columns), describe: newDescribePane()}
 }
 
 func (view *CloudModels) Title() string { return "Cloud Models" }
@@ -117,18 +113,16 @@ func (view *CloudModels) SetSize(width, height int) {
 }
 
 func (view *CloudModels) fitTable() {
-	view.table.SetStyles(ui.TableStyles())
-	view.table.SetWidth(view.width)
-	view.table.SetColumns(ui.StretchColumns(view.columns, view.width))
 	if view.height > 0 {
 		// Reserve the header rows plus one row for the always-rendered flash slot, so
 		// the table fills the remaining content height EXACTLY and its bottom sits at
-		// the constant margin regardless of scroll or whether a flash shows.
+		// the constant margin regardless of scroll or whether a flash shows. The last
+		// column is stretched to the pane width by listTable so the highlight spans it.
 		tableHeight := view.height - view.headerLines() - 1
 		if tableHeight < 1 {
 			tableHeight = 1
 		}
-		view.table.SetHeight(tableHeight)
+		view.table.SetSize(view.width, tableHeight)
 	}
 }
 
@@ -210,9 +204,7 @@ func (view *CloudModels) Update(msg tea.Msg) tea.Cmd {
 			return view.describe.update(message)
 		}
 	}
-	var cmd tea.Cmd
-	view.table, cmd = view.table.Update(msg)
-	return cmd
+	return view.table.Update(msg)
 }
 
 func (view *CloudModels) handleAction(key tea.KeyMsg) (tea.Cmd, bool) {
@@ -396,8 +388,8 @@ func (view *CloudModels) View() string {
 }
 
 // cloudRows builds the table rows MODEL · PROVIDER · STATUS · CONTEXT.
-func cloudRows(models []cloudModel) []table.Row {
-	rows := make([]table.Row, 0, len(models))
+func cloudRows(models []cloudModel) [][]string {
+	rows := make([][]string, 0, len(models))
 	for _, model := range models {
 		context := "-"
 		if model.contextLen > 0 {
@@ -407,7 +399,7 @@ func cloudRows(models []cloudModel) []table.Row {
 		if provider == "" {
 			provider = "-"
 		}
-		rows = append(rows, table.Row{model.name, provider, string(model.status), context})
+		rows = append(rows, []string{model.name, provider, string(model.status), context})
 	}
 	return rows
 }

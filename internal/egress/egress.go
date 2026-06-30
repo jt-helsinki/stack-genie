@@ -102,9 +102,10 @@ func ValidateHost(host string) error {
 	return nil
 }
 
-// Get returns the project's network config (for `ai network show`).
+// Get returns the effective network config (global defaults merged with the
+// project's config, with project values taking priority) for `ai network show`.
 func Get(projectRoot string) (config.NetworkConfig, error) {
-	projectConfig, err := config.LoadProjectConfig(projectRoot)
+	projectConfig, err := config.Load(projectRoot)
 	if err != nil {
 		return config.NetworkConfig{}, err
 	}

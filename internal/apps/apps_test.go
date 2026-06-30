@@ -21,6 +21,9 @@ func (exec *fakeExec) run(argv []string) (ExecResult, error) {
 	if len(argv) >= 2 && argv[0] == "nerdctl" && argv[1] == "ps" {
 		return ExecResult{Stdout: exec.psOutput}, nil
 	}
+	if len(argv) >= 3 && argv[0] == "sh" && argv[1] == "-c" && strings.Contains(argv[2], "nerdctl ps") {
+		return ExecResult{Stdout: exec.psOutput}, nil
+	}
 	return exec.result, exec.err
 }
 

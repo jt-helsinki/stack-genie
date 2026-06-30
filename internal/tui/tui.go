@@ -16,6 +16,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/jt-helsinki/ideal-robot/internal/apps"
@@ -123,15 +124,7 @@ func Run(cwd string) error {
 			}
 			return workspace.RealManager(goruntime.GOOS, nowRFC3339).WorkspaceLogTail(application.currentProject, 1000)
 		},
-		func() bool {
-			// The log is shown only while the workspace is RUNNING (started), so a
-			// stopped workspace shows nothing instead of the previous session's log.
-			if application.currentProject == "" {
-				return false
-			}
-			entry, found, err := projectInfo(application.currentProject)
-			return err == nil && found && entry.Status == string(state.StatusStarted)
-		},
+		application.workspaceLogReadable,
 		func() string { return application.currentProject },
 	)
 	projectDetail := views.NewProject(projectInfo, workspaceLogView)
@@ -262,6 +255,12 @@ func Run(cwd string) error {
 	application.localModelsView = localModelsView
 	application.cloudModelsView = cloudModelsView
 	application.apiKeysView = apiKeysView
+
+	// The body-level scroll viewport clips + scrolls a no-sub-tab tab's pane when its
+	// content overflows the body (e.g. a tall table on a small window). Tabs WITH
+	// sub-tabs do not use it — their content is rendered directly (the sub-tab bar
+	// stays pinned) and their sub-panes scroll themselves. See scrollsBody / body().
+	application.bodyViewport = viewport.New(0, 0)
 
 	// Always land on the home screen (Services, index 0 — current's zero value); a
 	// project is opened only when the user selects it from the Projects switcher.
@@ -514,6 +513,14 @@ type app struct {
 	helpOpen bool
 	quitting bool
 
+	// bodyViewport scrolls the active top-level tab's pane when it has NO sub-tabs and
+	// its content overflows the body height (the small-window case). A tab WITH
+	// sub-tabs (CapturesNav) is rendered directly and clipped — its sub-tab bar stays
+	// pinned and its sub-panes do the scrolling. PgUp/PgDn (and ctrl+u/ctrl+d) drive
+	// this scroll, intercepted only while the pane overflows so the view keeps ↑/↓ and
+	// its own paging otherwise.
+	bodyViewport viewport.Model
+
 	// lifecycle tracks an in-flight detached start/stop/restart (nil when idle), so
 	// the poll knows what it is waiting for.
 	lifecycle *lifecycleOp
@@ -750,6 +757,18 @@ func (application *app) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// open), Tab/←→ cycle ITS sub-tabs and esc backs up a level inside it — so
 		// those keys are delegated to the view rather than switching top-level tabs.
 		captures := capturesNav(application.views[application.current])
+		// On a no-sub-tab tab whose pane OVERFLOWS the body, the dedicated body-scroll
+		// keys (PgUp/PgDn, ctrl+u/ctrl+d) drive the outer viewport — but ONLY while it
+		// overflows, so in the common fits-the-pane case those keys still reach the view
+		// (e.g. a table's own paging). ↑/↓ always stay with the view.
+		if !captures && application.bodyOverflowing() {
+			switch message.String() {
+			case "pgup", "pgdown", "ctrl+u", "ctrl+d":
+				var cmd tea.Cmd
+				application.bodyViewport, cmd = application.bodyViewport.Update(message)
+				return application, cmd
+			}
+		}
 		switch message.String() {
 		case "ctrl+c", "q":
 			application.quitting = true
@@ -828,7 +847,21 @@ func (application *app) startLifecycle(action, project string) tea.Cmd {
 	_ = command.Process.Release()
 	application.lifecycle = &lifecycleOp{project: project, action: action, started: time.Now()}
 	application.projectDetail.StartPending(action)
-	return application.lifecyclePollCmd()
+	return tea.Batch(application.projectDetail.Init(), application.lifecyclePollCmd())
+}
+
+func (application *app) workspaceLogReadable() bool {
+	if application.currentProject == "" {
+		return false
+	}
+	if application.lifecycle != nil && application.lifecycle.project == application.currentProject {
+		switch application.lifecycle.action {
+		case "start", "restart":
+			return true
+		}
+	}
+	entry, found, err := projectInfo(application.currentProject)
+	return err == nil && found && entry.Status == string(state.StatusStarted)
 }
 
 // lifecyclePollCmd schedules the next lifecycle poll tick.
@@ -951,9 +984,32 @@ func (application *app) switchTab(index int) {
 		outgoing.SetActive(false)
 	}
 	application.current = ((index % count) + count) % count
+	// A fresh tab starts at the top of its (possibly overflowing) pane.
+	application.bodyViewport.GotoTop()
 	if incoming, ok := application.views[application.current].(tabActivatable); ok {
 		incoming.SetActive(true)
 	}
+}
+
+// scrollsBody reports whether the active top-level tab gets the body-level scroll:
+// true when no overlay is open AND the active view has NO sub-tabs (it does not
+// capture nav). A tab WITH sub-tabs renders directly (clipped) so its sub-tab bar
+// stays pinned and its sub-panes scroll themselves.
+func (application *app) scrollsBody() bool {
+	if application.terminal != nil || application.createView != nil || application.helpOpen {
+		return false
+	}
+	if len(application.views) == 0 {
+		return false
+	}
+	return !capturesNav(application.views[application.current])
+}
+
+// bodyOverflowing reports whether the body viewport's current content is taller than
+// the pane — the condition under which the dedicated body-scroll keys are engaged.
+func (application *app) bodyOverflowing() bool {
+	return application.bodyViewport.Height > 0 &&
+		application.bodyViewport.TotalLineCount() > application.bodyViewport.Height
 }
 
 // resizeViews pushes the current inner body size (inside the border) to every view
@@ -963,6 +1019,8 @@ func (application *app) resizeViews() {
 	for _, view := range application.views {
 		view.SetSize(bodyWidth, bodyHeight)
 	}
+	application.bodyViewport.Width = bodyWidth
+	application.bodyViewport.Height = bodyHeight
 	if application.createView != nil {
 		application.createView.SetSize(bodyWidth, bodyHeight)
 	}
@@ -992,7 +1050,20 @@ func (application *app) View() string {
 	case application.helpOpen:
 		content = application.helpView()
 	default:
-		content = application.views[application.current].View()
+		view := application.views[application.current]
+		if capturesNav(view) {
+			// A tab WITH sub-tabs renders directly; body() clips it so the sub-tab bar
+			// stays pinned and the outer pane never scrolls (sub-panes scroll themselves).
+			content = view.View()
+		} else {
+			// A no-sub-tab tab flows through the body viewport so its pane scrolls when
+			// the content overflows the body height (e.g. a tall table on a small window).
+			bodyWidth, bodyHeight := application.bodyContentSize()
+			application.bodyViewport.Width = bodyWidth
+			application.bodyViewport.Height = bodyHeight
+			application.bodyViewport.SetContent(view.View())
+			content = application.bodyViewport.View()
+		}
 	}
 	// header / tab bar / bordered body / footer, stacked top-to-bottom. The
 	// overlays (help/create/describe) render INSIDE the body border, just as the
@@ -1017,6 +1088,7 @@ func (application *app) helpView() string {
 	help.WriteString("  1-9       jump to tab\n")
 	help.WriteString("  ?         toggle this help\n")
 	help.WriteString("  ↑/↓       navigate\n")
+	help.WriteString("  PgUp/PgDn scroll the pane (when it overflows)\n")
 	help.WriteString("  q         quit\n\n")
 	help.WriteString(ui.Muted.Render(application.views[application.current].Title()+" view") + "\n")
 	help.WriteString("  " + application.views[application.current].Hints() + "\n")

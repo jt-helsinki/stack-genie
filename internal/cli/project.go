@@ -12,6 +12,7 @@ import (
 	"github.com/charmbracelet/huh"
 	"github.com/charmbracelet/x/term"
 	"github.com/jt-helsinki/ideal-robot/internal/apps"
+	"github.com/jt-helsinki/ideal-robot/internal/config"
 	"github.com/jt-helsinki/ideal-robot/internal/contextopt"
 	"github.com/jt-helsinki/ideal-robot/internal/output"
 	"github.com/jt-helsinki/ideal-robot/internal/project"
@@ -27,9 +28,25 @@ type projectsResult struct {
 	Projects []project.Entry `json:"projects"`
 }
 
+type createResult struct {
+	Name       string   `json:"name"`
+	Root       string   `json:"root"`
+	OS         string   `json:"os"`
+	Tools      []string `json:"tools"`
+	Stacks     []string `json:"stacks"`
+	Apps       []string `json:"apps"`
+	ConfigYAML string   `json:"-"`
+}
+
+// Human prints the exact project config.yaml written to disk so the screen output
+// mirrors the persisted workspace configuration, including agent.default_tool.
+func (result createResult) Human() string {
+	return strings.TrimRight(result.ConfigYAML, "\n")
+}
+
 // Human renders the workspaces as a table with every field: NAME, OS, AGENTS,
 // STATUS, plus the microVM handle details ID, CREATED, LAST-STARTED (agents joined
-// with ",", "—" for an empty cell), or a friendly hint when there are none.
+// readably, "—" for an empty cell), or a friendly hint when there are none.
 func (result projectsResult) Human() string {
 	if len(result.Projects) == 0 {
 		return ui.Muted.Render("No workspaces yet — create one with ") + ui.Primary.Render("`ai create`") + ui.Muted.Render(".")
@@ -39,7 +56,7 @@ func (result projectsResult) Human() string {
 		rows = append(rows, []string{
 			ui.Value.Render(entry.Name),
 			ui.Value.Render(orDash(entry.OS)),
-			ui.Value.Render(orDash(strings.Join(entry.Agents, ","))),
+			ui.Value.Render(orDash(formatAgentCLIs(entry.Agents))),
 			styleWorkspaceStatus(entry.Status),
 			ui.Value.Render(orDash(entry.ID)),
 			ui.Value.Render(orDash(entry.Created)),
@@ -75,6 +92,10 @@ func orDash(value string) string {
 	return value
 }
 
+func formatAgentCLIs(agents []string) string {
+	return strings.Join(agents, ", ")
+}
+
 // Selectable options for the create wizard. All four OS templates ship as of
 // S5 (debian-trixie in S1; debian-bookworm, ubuntu, alma added in S5). The user
 // always picks the OS — none is applied silently (arch §25).
@@ -84,6 +105,11 @@ var (
 	supportedAgentCLIs = []string{"opencode", "pi", "claude-code", "codex", "gemini"}
 	// supportedApps are the opt-in in-VM AI applications (apps.Keys()). Default OFF.
 	supportedApps = apps.Keys()
+)
+
+const (
+	projectCreateCommand = "project.create"
+	projectDeleteCommand = "project.delete"
 )
 
 func mapProjectErr(err error) error {
@@ -116,11 +142,11 @@ func newCreateCmd(emitter *output.Emitter, exit *int, use string) *cobra.Command
 			// one — attach to it instead (bubbling up like other commands). This
 			// makes `ai create` idempotent per directory.
 			if existing, found, err := currentProjectName(); err != nil {
-				*exit = emitter.Failure("project.create", output.Errorf(output.ExitRuntimeFailure, "%s", err))
+				*exit = emitter.Failure(projectCreateCommand, output.Errorf(output.ExitRuntimeFailure, "%s", err))
 				return nil
 			} else if found {
 				if dryRun {
-					*exit = emitter.Success("project.create", map[string]any{"dry_run": true, "attach": existing})
+					*exit = emitter.Success(projectCreateCommand, map[string]any{"dry_run": true, "attach": existing})
 					return nil
 				}
 				attachWorkspace(emitter, exit, existing)
@@ -133,6 +159,7 @@ func newCreateCmd(emitter *output.Emitter, exit *int, use string) *cobra.Command
 			agentsFlag, _ := cmd.Flags().GetStringSlice("agents")
 			stacksFlag, _ := cmd.Flags().GetStringSlice("stacks")
 			appsFlag, _ := cmd.Flags().GetStringSlice("apps")
+			idleTimeoutFlag, _ := cmd.Flags().GetString("idle-timeout")
 
 			// A workspace is fully specifiable in one command via flags, so external
 			// programs can create it non-interactively with --json (§1.8, §3.1).
@@ -144,26 +171,26 @@ func newCreateCmd(emitter *output.Emitter, exit *int, use string) *cobra.Command
 
 			var spec project.Spec
 			if interactiveTTY {
-				if err := validateProvidedCreateFlags(osFlag, agentsFlag, stacksFlag, appsFlag); err != nil {
-					*exit = emitter.Failure("project.create", err)
+				if err := validateProvidedCreateFlags(osFlag, agentsFlag, stacksFlag, appsFlag, idleTimeoutFlag); err != nil {
+					*exit = emitter.Failure(projectCreateCommand, err)
 					return nil
 				}
-				built, cancelled, err := runCreateWizard(seedSpec(nameFlag, osFlag, agentsFlag, stacksFlag, appsFlag, defaultName))
+				built, cancelled, err := runCreateWizard(seedSpec(nameFlag, osFlag, agentsFlag, stacksFlag, appsFlag, idleTimeoutFlag, defaultName))
 				if err != nil {
 					// Defensive: the wizard still failed despite a TTY (§3.1).
-					*exit = emitter.Failure("project.create",
+					*exit = emitter.Failure(projectCreateCommand,
 						output.Errorf(output.ExitInvalidInput, "a terminal is required for the workspace wizard (or pass --name/--os/--agents/--stacks with --json)"))
 					return nil
 				}
 				if cancelled {
-					*exit = emitter.Success("project.create", map[string]any{"cancelled": true})
+					*exit = emitter.Success(projectCreateCommand, map[string]any{"cancelled": true})
 					return nil
 				}
 				spec = built
 			} else {
-				built, err := specFromFlags(nameFlag, osFlag, agentsFlag, stacksFlag, appsFlag, defaultName)
+				built, err := specFromFlags(nameFlag, osFlag, agentsFlag, stacksFlag, appsFlag, idleTimeoutFlag, defaultName)
 				if err != nil {
-					*exit = emitter.Failure("project.create", err)
+					*exit = emitter.Failure(projectCreateCommand, err)
 					return nil
 				}
 				spec = built
@@ -174,41 +201,47 @@ func newCreateCmd(emitter *output.Emitter, exit *int, use string) *cobra.Command
 			// own git; existing files in the directory are left untouched.
 			root, err := os.Getwd()
 			if err != nil {
-				*exit = emitter.Failure("project.create", output.Errorf(output.ExitRuntimeFailure, "%s", err))
+				*exit = emitter.Failure(projectCreateCommand, output.Errorf(output.ExitRuntimeFailure, "%s", err))
 				return nil
 			}
 			spec.Root = root
 
 			if dryRun {
-				*exit = emitter.Success("project.create", map[string]any{"dry_run": true, "plan": createPlan(spec, root)})
+				*exit = emitter.Success(projectCreateCommand, map[string]any{"dry_run": true, "plan": createPlan(spec, root)})
 				return nil
 			}
 
 			if err := project.EnsureCreatable(spec.Name, root); err != nil {
-				*exit = emitter.Failure("project.create", mapProjectErr(err))
+				*exit = emitter.Failure(projectCreateCommand, mapProjectErr(err))
 				return nil
 			}
 			if _, err := project.Scaffold(spec, nowRFC3339()); err != nil {
-				*exit = emitter.Failure("project.create", mapProjectErr(err))
+				*exit = emitter.Failure(projectCreateCommand, mapProjectErr(err))
 				return nil
 			}
 			// Seed context-optimization defaults so the project config is
 			// self-describing, and install the Caveman skill (arch §9, Slice 2).
 			if err := contextopt.SetStrategy(root, contextopt.DefaultStrategy); err != nil {
-				*exit = emitter.Failure("project.create", output.Errorf(output.ExitRuntimeFailure, "seed context strategy: %s", err))
+				*exit = emitter.Failure(projectCreateCommand, output.Errorf(output.ExitRuntimeFailure, "seed context strategy: %s", err))
 				return nil
 			}
 			if err := contextopt.SetCavemanLevel(root, contextopt.DefaultCavemanLevel); err != nil {
-				*exit = emitter.Failure("project.create", output.Errorf(output.ExitRuntimeFailure, "seed caveman skill: %s", err))
+				*exit = emitter.Failure(projectCreateCommand, output.Errorf(output.ExitRuntimeFailure, "seed caveman skill: %s", err))
 				return nil
 			}
-			*exit = emitter.Success("project.create", map[string]any{
-				"name":   spec.Name,
-				"root":   root,
-				"os":     spec.OS,
-				"tools":  spec.AgentCLIs,
-				"stacks": spec.Stacks,
-				"apps":   spec.Apps,
+			configYAML, err := os.ReadFile(config.ProjectPath(root))
+			if err != nil {
+				*exit = emitter.Failure(projectCreateCommand, output.Errorf(output.ExitRuntimeFailure, "read config.yaml: %s", err))
+				return nil
+			}
+			*exit = emitter.Success(projectCreateCommand, createResult{
+				Name:       spec.Name,
+				Root:       root,
+				OS:         spec.OS,
+				Tools:      spec.AgentCLIs,
+				Stacks:     spec.Stacks,
+				Apps:       spec.Apps,
+				ConfigYAML: string(configYAML),
 			})
 			return nil
 		},
@@ -221,6 +254,7 @@ func newCreateCmd(emitter *output.Emitter, exit *int, use string) *cobra.Command
 	cmd.Flags().StringSlice("agents", nil, "agent CLIs to install (default: opencode,pi): "+strings.Join(supportedAgentCLIs, ","))
 	cmd.Flags().StringSlice("stacks", nil, "software stacks to install: "+strings.Join(supportedStacks, ","))
 	cmd.Flags().StringSlice("apps", nil, "in-VM AI apps to install (default: none): "+strings.Join(supportedApps, ","))
+	cmd.Flags().String("idle-timeout", "", "Microsandbox idle timeout (default: "+config.DefaultMicrosandboxIdleTimeout+", e.g. 30m, 24h)")
 	_ = cmd.RegisterFlagCompletionFunc("os", fixedValues(supportedOSes...))
 	_ = cmd.RegisterFlagCompletionFunc("agents", fixedValues(supportedAgentCLIs...))
 	_ = cmd.RegisterFlagCompletionFunc("stacks", fixedValues(supportedStacks...))
@@ -237,20 +271,20 @@ func attachWorkspace(emitter *output.Emitter, exit *int, name string) {
 	// exec an interactive login shell. The Exec is NOT spinner-wrapped: it takes
 	// over the terminal.
 	if _, err := startWorkspace(emitter, name); err != nil {
-		*exit = emitter.Failure("project.create", mapWorkspaceErr(err))
+		*exit = emitter.Failure(projectCreateCommand, mapWorkspaceErr(err))
 		return
 	}
 	manager := workspace.RealManager(goruntime.GOOS, nowRFC3339)
 	// Without a terminal (e.g. --json) we can't open a shell — report the started
 	// workspace instead.
 	if !interactive(emitter) {
-		*exit = emitter.Success("project.create", map[string]any{"project": name, "attached": false})
+		*exit = emitter.Success(projectCreateCommand, map[string]any{"project": name, "attached": false})
 		return
 	}
 	// Hand the terminal to a real interactive login shell in the microVM (a PTY
 	// via msb exec -t); the inner shell exiting is a clean end, not a failure.
 	if err := manager.Shell(name); err != nil {
-		*exit = emitter.Failure("project.create", mapWorkspaceErr(err))
+		*exit = emitter.Failure(projectCreateCommand, mapWorkspaceErr(err))
 		return
 	}
 	*exit = output.ExitOK
@@ -261,6 +295,7 @@ func createPlan(spec project.Spec, root string) []string {
 	return []string{
 		"use current directory " + root,
 		fmt.Sprintf("write .ai-platform/Dockerfile (os=%s, stacks=%s, agent CLIs=%s)", spec.OS, strings.Join(spec.Stacks, ", "), strings.Join(spec.AgentCLIs, ", ")),
+		fmt.Sprintf("write Microsandbox idle timeout: %s", spec.IdleTimeout),
 		fmt.Sprintf("install in-VM apps: %s", orNone(strings.Join(spec.Apps, ", "))),
 		"write config.yaml, profile.yaml, project.yaml, .gitignore",
 		"register " + spec.Name + " in config/projects.yaml",
@@ -313,6 +348,7 @@ func runCreateWizard(seed project.Spec) (project.Spec, bool, error) {
 	defaultTool := seed.DefaultTool
 	stacks := seed.Stacks
 	selectedApps := seed.Apps
+	idleTimeout := seed.IdleTimeout
 
 	form := huh.NewForm(
 		huh.NewGroup(
@@ -329,7 +365,7 @@ func runCreateWizard(seed project.Spec) (project.Spec, bool, error) {
 		),
 		huh.NewGroup(
 			huh.NewSelect[string]().Title("Default agent CLI").
-				OptionsFunc(func() []huh.Option[string] { return huh.NewOptions(agentCLIs...) }, &agentCLIs).
+				OptionsFunc(func() []huh.Option[string] { return agentCLIOptions(agentCLIs) }, &agentCLIs).
 				Value(&defaultTool),
 		),
 		huh.NewGroup(
@@ -340,6 +376,12 @@ func runCreateWizard(seed project.Spec) (project.Spec, bool, error) {
 			huh.NewMultiSelect[string]().Title("AI apps to run in the workspace (space to toggle; default none)").
 				Options(appOptions()...).Value(&selectedApps),
 		),
+		huh.NewGroup(
+			huh.NewInput().Title("Microsandbox idle timeout").
+				Description("How long msb may leave the workspace idle before stopping it (default 24h)").
+				Value(&idleTimeout).
+				Validate(func(value string) error { return config.ValidateIdleTimeout(value) }),
+		),
 	)
 
 	if err := form.Run(); err != nil {
@@ -349,6 +391,8 @@ func runCreateWizard(seed project.Spec) (project.Spec, bool, error) {
 		return project.Spec{}, false, err
 	}
 
+	defaultTool = normalizeDefaultAgentCLI(defaultTool, agentCLIs)
+
 	return project.Spec{
 		Name:        name,
 		OS:          osKey,
@@ -356,6 +400,7 @@ func runCreateWizard(seed project.Spec) (project.Spec, bool, error) {
 		AgentCLIs:   agentCLIs,
 		DefaultTool: defaultTool,
 		Apps:        selectedApps,
+		IdleTimeout: idleTimeout,
 	}, false, nil
 }
 
@@ -367,6 +412,20 @@ func appOptions() []huh.Option[string] {
 		options = append(options, huh.NewOption(manifest.Name, manifest.Key))
 	}
 	return options
+}
+
+func agentCLIOptions(agentCLIs []string) []huh.Option[string] {
+	return huh.NewOptions(agentCLIs...)
+}
+
+func normalizeDefaultAgentCLI(defaultTool string, agentCLIs []string) string {
+	if len(agentCLIs) == 0 {
+		return ""
+	}
+	if slices.Contains(agentCLIs, defaultTool) {
+		return defaultTool
+	}
+	return agentCLIs[0]
 }
 
 func wizardNameValidator(value string) error { return project.ValidateName(value) }
@@ -381,7 +440,7 @@ func wizardAtLeastOne(selected []string) error {
 // validateProvidedCreateFlags rejects any non-empty create flag whose value is
 // not a known option (a typo'd --os/--agents/--stacks → exit 2). Empty flags are
 // left for defaults. Shared by the interactive (seed) and non-interactive paths.
-func validateProvidedCreateFlags(osKey string, agents, stacks, appsList []string) error {
+func validateProvidedCreateFlags(osKey string, agents, stacks, appsList []string, idleTimeout string) error {
 	if osKey != "" && !slices.Contains(supportedOSes, osKey) {
 		return output.Errorf(output.ExitInvalidInput,
 			"unknown --os %q (one of: %s)", osKey, strings.Join(supportedOSes, ", "))
@@ -404,6 +463,9 @@ func validateProvidedCreateFlags(osKey string, agents, stacks, appsList []string
 				"unknown --apps value %q (one of: %s)", app, strings.Join(supportedApps, ", "))
 		}
 	}
+	if err := config.ValidateIdleTimeout(idleTimeout); err != nil {
+		return output.Errorf(output.ExitInvalidInput, "%s", err)
+	}
 	return nil
 }
 
@@ -411,7 +473,7 @@ func validateProvidedCreateFlags(osKey string, agents, stacks, appsList []string
 // wizard's pre-seeded starting point on a terminal: flags fill the defaults, the
 // wizard supplies the rest (name → cwd basename, OS → debian-trixie, agents →
 // opencode+pi). The user can still change anything in the wizard.
-func seedSpec(name, osKey string, agents, stacks, appsList []string, defaultName string) project.Spec {
+func seedSpec(name, osKey string, agents, stacks, appsList []string, idleTimeout, defaultName string) project.Spec {
 	if name == "" {
 		name = defaultName
 	}
@@ -421,15 +483,18 @@ func seedSpec(name, osKey string, agents, stacks, appsList []string, defaultName
 	if len(agents) == 0 {
 		agents = []string{"opencode", "pi"}
 	}
+	if idleTimeout == "" {
+		idleTimeout = config.DefaultMicrosandboxIdleTimeout
+	}
 	// Apps are opt-in: an unset --apps seeds the wizard with NOTHING selected.
-	return project.Spec{Name: name, OS: osKey, Stacks: stacks, AgentCLIs: agents, DefaultTool: agents[0], Apps: appsList}
+	return project.Spec{Name: name, OS: osKey, Stacks: stacks, AgentCLIs: agents, DefaultTool: normalizeDefaultAgentCLI(agents[0], agents), Apps: appsList, IdleTimeout: idleTimeout}
 }
 
 // specFromFlags builds and validates a project.Spec from the non-interactive
 // create flags (the path external programs use with --json). --os is required;
 // agents default to opencode+pi; stacks are optional. The default agent CLI is
 // the first one listed. Unknown values map to exit 2.
-func specFromFlags(name, osKey string, agents, stacks, appsList []string, defaultName string) (project.Spec, error) {
+func specFromFlags(name, osKey string, agents, stacks, appsList []string, idleTimeout, defaultName string) (project.Spec, error) {
 	if name == "" {
 		name = defaultName
 	}
@@ -440,19 +505,23 @@ func specFromFlags(name, osKey string, agents, stacks, appsList []string, defaul
 		return project.Spec{}, output.Errorf(output.ExitInvalidInput,
 			"--os is required (one of: %s)", strings.Join(supportedOSes, ", "))
 	}
-	if err := validateProvidedCreateFlags(osKey, agents, stacks, appsList); err != nil {
+	if err := validateProvidedCreateFlags(osKey, agents, stacks, appsList, idleTimeout); err != nil {
 		return project.Spec{}, err
 	}
 	if len(agents) == 0 {
 		agents = []string{"opencode", "pi"}
+	}
+	if idleTimeout == "" {
+		idleTimeout = config.DefaultMicrosandboxIdleTimeout
 	}
 	return project.Spec{
 		Name:        name,
 		OS:          osKey,
 		Stacks:      stacks,
 		AgentCLIs:   agents,
-		DefaultTool: agents[0],
+		DefaultTool: normalizeDefaultAgentCLI(agents[0], agents),
 		Apps:        appsList,
+		IdleTimeout: idleTimeout,
 	}, nil
 }
 
@@ -490,22 +559,22 @@ func newDeleteCmd(emitter *output.Emitter, exit *int, use string) *cobra.Command
 		RunE: func(cmd *cobra.Command, args []string) error {
 			name, err := resolveProjectName(cmd, firstArg(args))
 			if err != nil {
-				*exit = emitter.Failure("project.delete", err)
+				*exit = emitter.Failure(projectDeleteCommand, err)
 				return nil
 			}
 			root, exists, err := project.Path(name)
 			if err != nil {
-				*exit = emitter.Failure("project.delete", output.Errorf(output.ExitRuntimeFailure, "%s", err))
+				*exit = emitter.Failure(projectDeleteCommand, output.Errorf(output.ExitRuntimeFailure, "%s", err))
 				return nil
 			}
 			if !exists {
-				*exit = emitter.Failure("project.delete",
+				*exit = emitter.Failure(projectDeleteCommand,
 					output.Errorf(output.ExitInvalidInput, "%s: %q", project.ErrUnknownProject, name))
 				return nil
 			}
 
 			if dryRun, _ := cmd.Flags().GetBool("dry-run"); dryRun {
-				*exit = emitter.Success("project.delete", map[string]any{"dry_run": true, "plan": deletePlan(name, root, purge)})
+				*exit = emitter.Success(projectDeleteCommand, map[string]any{"dry_run": true, "plan": deletePlan(name, root, purge)})
 				return nil
 			}
 
@@ -520,15 +589,15 @@ func newDeleteCmd(emitter *output.Emitter, exit *int, use string) *cobra.Command
 						fmt.Sprintf("Delete workspace %q? This removes its microVM and platform state.", name),
 						"Tears down the workspace microVM and removes its .ai-platform directory (config + state) and platform registration. Your OTHER files in the directory are kept unless --purge.")
 					if promptErr != nil {
-						*exit = emitter.Failure("project.delete", promptErr)
+						*exit = emitter.Failure(projectDeleteCommand, promptErr)
 						return nil
 					}
 					if !ok {
-						*exit = emitter.Success("project.delete", map[string]any{"cancelled": true})
+						*exit = emitter.Success(projectDeleteCommand, map[string]any{"cancelled": true})
 						return nil
 					}
 				} else {
-					*exit = emitter.Failure("project.delete",
+					*exit = emitter.Failure(projectDeleteCommand,
 						output.Errorf(output.ExitInvalidInput, "destructive: pass --yes to confirm"))
 					return nil
 				}
@@ -552,10 +621,10 @@ func newDeleteCmd(emitter *output.Emitter, exit *int, use string) *cobra.Command
 					err, workspace.Name(name)))
 			}
 			if err := project.Delete(name, purge); err != nil {
-				*exit = emitter.Failure("project.delete", mapProjectErr(err))
+				*exit = emitter.Failure(projectDeleteCommand, mapProjectErr(err))
 				return nil
 			}
-			*exit = emitter.Success("project.delete", map[string]any{"name": name, "purged": purge}, warnings...)
+			*exit = emitter.Success(projectDeleteCommand, map[string]any{"name": name, "purged": purge}, warnings...)
 			return nil
 		},
 	}

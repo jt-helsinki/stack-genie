@@ -24,6 +24,8 @@ func TestMergeProjectOverGlobal(test *testing.T) {
 	writeFile(test, gp, `
 workspace:
   cpu_limit: 4
+microsandbox:
+  idle_timeout: 12h
 context:
   caveman_level: full
   strategy: balanced
@@ -42,6 +44,9 @@ context:
 	if cfg.Workspace.CPULimit != 4 { // from global, untouched by project
 		test.Errorf("cpu_limit = %d, want 4", cfg.Workspace.CPULimit)
 	}
+	if cfg.Microsandbox.IdleTimeout != "12h" { // from global, untouched by project
+		test.Errorf("microsandbox.idle_timeout = %q, want 12h", cfg.Microsandbox.IdleTimeout)
+	}
 	if cfg.OS != "alma" { // only in project
 		test.Errorf("os = %q, want alma", cfg.OS)
 	}
@@ -50,6 +55,29 @@ context:
 	}
 	if cfg.Context.Strategy != "aggressive" { // project wins on the overlapping key
 		test.Errorf("strategy = %q, want aggressive", cfg.Context.Strategy)
+	}
+}
+
+func TestDefaultMicrosandboxIdleTimeout(t *testing.T) {
+	cfg := Default()
+	if got := cfg.Microsandbox.IdleTimeout; got != DefaultMicrosandboxIdleTimeout {
+		t.Fatalf("default microsandbox.idle_timeout = %q, want %q", got, DefaultMicrosandboxIdleTimeout)
+	}
+	if got := (MicrosandboxConfig{}).ResolvedIdleTimeout(); got != DefaultMicrosandboxIdleTimeout {
+		t.Fatalf("empty resolved idle timeout = %q, want %q", got, DefaultMicrosandboxIdleTimeout)
+	}
+}
+
+func TestMicrosandboxIdleTimeoutValidation(t *testing.T) {
+	for _, value := range []string{"30s", "5m", "24h"} {
+		if err := ValidateIdleTimeout(value); err != nil {
+			t.Fatalf("%s should be valid: %v", value, err)
+		}
+	}
+	for _, value := range []string{"0", "0s", "-1h", "soon"} {
+		if err := ValidateIdleTimeout(value); err == nil {
+			t.Fatalf("%s should be invalid", value)
+		}
 	}
 }
 

@@ -2,10 +2,29 @@ package egress
 
 import (
 	"errors"
+	"os"
+	"path/filepath"
 	"testing"
+
+	"github.com/jt-helsinki/ideal-robot/internal/config"
 )
 
+func writeGlobalConfig(test *testing.T, content string) {
+	test.Helper()
+	path, err := config.GlobalPath()
+	if err != nil {
+		test.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		test.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		test.Fatal(err)
+	}
+}
+
 func TestEgressLifecycle(test *testing.T) {
+	test.Setenv("HOME", test.TempDir())
 	root := test.TempDir()
 
 	// Default (no config yet) resolves to public (allow-outbound) — the workspace
@@ -77,6 +96,41 @@ func TestEgressLifecycle(test *testing.T) {
 	}
 	if network, _ := Get(root); len(network.PublishPorts) != 0 {
 		test.Errorf("after unpublish want 0, got %+v", network.PublishPorts)
+	}
+}
+
+func TestGetReturnsMergedConfigWithProjectPriority(test *testing.T) {
+	test.Setenv("HOME", test.TempDir())
+	root := test.TempDir()
+	writeGlobalConfig(test, `
+network:
+  egress: deny
+  allow_host_services:
+    - host: global-db
+      port: 5432
+  publish_ports:
+    - guest: 8080
+      host: 18080
+`)
+	if err := config.WriteProject(root, &config.Config{Network: config.NetworkConfig{
+		Egress:            "public",
+		AllowHostServices: []config.HostService{{Host: "project-db", Port: 15432}},
+	}}); err != nil {
+		test.Fatal(err)
+	}
+
+	network, err := Get(root)
+	if err != nil {
+		test.Fatal(err)
+	}
+	if network.Egress != "public" {
+		test.Fatalf("project egress should override global egress, got %q", network.Egress)
+	}
+	if len(network.AllowHostServices) != 1 || network.AllowHostServices[0].Host != "project-db" {
+		test.Fatalf("project allow-list should override global allow-list, got %+v", network.AllowHostServices)
+	}
+	if len(network.PublishPorts) != 1 || network.PublishPorts[0].Host != 18080 {
+		test.Fatalf("global publish ports should survive when project omits them, got %+v", network.PublishPorts)
 	}
 }
 

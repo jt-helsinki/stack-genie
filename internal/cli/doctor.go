@@ -1,14 +1,27 @@
 package cli
 
 import (
+	"context"
+	"fmt"
 	goruntime "runtime"
+	"strings"
+	"time"
 
 	"github.com/jt-helsinki/ideal-robot/internal/doctor"
 	"github.com/jt-helsinki/ideal-robot/internal/output"
 	"github.com/jt-helsinki/ideal-robot/internal/runtime"
 	"github.com/jt-helsinki/ideal-robot/internal/setup"
 	"github.com/jt-helsinki/ideal-robot/internal/uihosts"
+	"github.com/jt-helsinki/ideal-robot/internal/workspace"
 	"github.com/spf13/cobra"
+)
+
+const doctorLiveProbeTimeout = 4 * time.Second
+
+const (
+	doctorWorkspaceMicroVMCheck = "workspace microVM"
+	doctorWorkspaceLogsCheck    = "workspace logs"
+	doctorWorkspaceExecLabel    = "workspace exec"
 )
 
 // newDoctorCmd builds the consolidated `ai doctor [name]` (CLI §10.1, §12.1):
@@ -33,8 +46,8 @@ func newDoctorCmd(emitter *output.Emitter, exit *int) *cobra.Command {
 			}
 			// Add the workspace-runtime section only when a name is given OR the
 			// cwd resolves to a workspace; otherwise omit it (not an error).
-			if workspace := resolveDoctorWorkspace(firstArg(args)); workspace != nil {
-				deps.Workspace = workspace
+			if workspaceRuntime := resolveDoctorWorkspace(firstArg(args)); workspaceRuntime != nil {
+				deps.Workspace = workspaceRuntime
 			}
 			report := doctor.Run(deps)
 			*exit = emitter.Success("doctor", report)
@@ -125,18 +138,100 @@ func resolveDoctorWorkspace(explicit string) *doctor.WorkspaceRuntime {
 		}
 		name = resolved
 	}
-	workspace := &doctor.WorkspaceRuntime{Project: name}
+	workspaceRuntime := &doctor.WorkspaceRuntime{Project: name}
 	info, err := runtime.Detect(goruntime.GOOS, goruntime.GOARCH, runtime.RealProber(), nowRFC3339())
 	if err != nil {
 		// Missing container runtime or Microsandbox — surfaced as an error Check.
-		workspace.RuntimeErr = err
-		return workspace
+		workspaceRuntime.RuntimeErr = err
+		return workspaceRuntime
 	}
-	workspace.Rootless = info.Rootless
-	workspace.Virtualization = info.Microsandbox.Virtualization
-	workspace.Available = info.Microsandbox.Available
+	workspaceRuntime.Rootless = info.Rootless
+	workspaceRuntime.Virtualization = info.Microsandbox.Virtualization
+	workspaceRuntime.Available = info.Microsandbox.Available
 	if verifyErr := runtime.Verify(info); verifyErr != nil {
-		workspace.VerifyErr = verifyErr
+		workspaceRuntime.VerifyErr = verifyErr
 	}
-	return workspace
+	workspaceRuntime.LiveChecks = doctorWorkspaceLiveChecks(name, workspace.RealManager(goruntime.GOOS, nowRFC3339).Sandbox)
+	return workspaceRuntime
+}
+
+func doctorWorkspaceLiveChecks(project string, sandbox workspace.Sandbox) []doctor.Check {
+	if sandbox == nil {
+		return nil
+	}
+	vmName := workspace.Name(project)
+	checks := make([]doctor.Check, 0, 3)
+	ctx, cancel := context.WithTimeout(context.Background(), doctorLiveProbeTimeout)
+	running, err := sandbox.IsRunning(ctx, vmName)
+	cancel()
+	if err != nil {
+		return []doctor.Check{{
+			Name: doctorWorkspaceMicroVMCheck, Status: doctor.StatusError,
+			Detail:     "liveness probe failed: " + err.Error(),
+			Suggestion: "run `ai restart " + project + "` if the workspace should be running",
+		}}
+	}
+	if !running {
+		return []doctor.Check{{
+			Name: doctorWorkspaceMicroVMCheck, Status: doctor.StatusError,
+			Detail:     "not running",
+			Suggestion: "run `ai start " + project + "`",
+		}}
+	}
+	checks = append(checks, doctor.Check{Name: doctorWorkspaceMicroVMCheck, Status: doctor.StatusOK, Detail: "running"})
+	checks = append(checks, doctorWorkspaceLogCheck(project, vmName, sandbox))
+	checks = append(checks, doctorWorkspaceExecCheck(project, vmName, sandbox))
+	return checks
+}
+
+func doctorWorkspaceLogCheck(project, vmName string, sandbox workspace.Sandbox) doctor.Check {
+	ctx, cancel := context.WithTimeout(context.Background(), doctorLiveProbeTimeout)
+	logTail, err := sandbox.LogTailContext(ctx, vmName, 20)
+	timedOut := ctx.Err() != nil
+	cancel()
+	if err != nil || timedOut {
+		detail := errorDetail("log tail", err, timedOut)
+		return doctor.Check{
+			Name: doctorWorkspaceLogsCheck, Status: doctor.StatusError,
+			Detail:     detail,
+			Suggestion: "run `msb logs " + vmName + " --tail 200` for details, then `ai restart " + project + "` if needed",
+		}
+	}
+	detail := "readable"
+	if strings.TrimSpace(logTail) == "" {
+		detail = "readable; no output captured"
+	}
+	return doctor.Check{Name: doctorWorkspaceLogsCheck, Status: doctor.StatusOK, Detail: detail}
+}
+
+func doctorWorkspaceExecCheck(project, vmName string, sandbox workspace.Sandbox) doctor.Check {
+	ctx, cancel := context.WithTimeout(context.Background(), doctorLiveProbeTimeout)
+	result, err := sandbox.ExecContext(ctx, vmName, []string{"true"})
+	timedOut := ctx.Err() != nil
+	cancel()
+	if err != nil || timedOut {
+		return doctor.Check{
+			Name: doctorWorkspaceExecLabel, Status: doctor.StatusError,
+			Detail:     errorDetail("msb exec", err, timedOut),
+			Suggestion: "workspace logs may still be available; run `ai restart " + project + "` to recover the exec channel",
+		}
+	}
+	if result.ExitCode != 0 {
+		return doctor.Check{
+			Name: doctorWorkspaceExecLabel, Status: doctor.StatusError,
+			Detail:     fmt.Sprintf("probe exited %d: %s", result.ExitCode, strings.TrimSpace(result.Stderr)),
+			Suggestion: "run `ai restart " + project + "`",
+		}
+	}
+	return doctor.Check{Name: doctorWorkspaceExecLabel, Status: doctor.StatusOK, Detail: "responsive"}
+}
+
+func errorDetail(label string, err error, timedOut bool) string {
+	if timedOut {
+		return label + " timed out"
+	}
+	if err != nil {
+		return err.Error()
+	}
+	return label + " failed"
 }

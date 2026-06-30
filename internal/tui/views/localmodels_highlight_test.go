@@ -43,8 +43,8 @@ func TestLocalModelsSelectedRowHighlighted(test *testing.T) {
 	)
 
 	// (a) After load the cursor is on a model row.
-	if view.cursor < 0 || view.cursor >= len(view.models) {
-		test.Fatalf("after load the cursor must sit on a model row, got cursor %d of %d models", view.cursor, len(view.models))
+	if view.window.Cursor() < 0 || view.window.Cursor() >= len(view.models) {
+		test.Fatalf("after load the cursor must sit on a model row, got cursor %d of %d models", view.window.Cursor(), len(view.models))
 	}
 
 	// (b) The rendered output carries the Selected background on the highlighted
@@ -52,13 +52,13 @@ func TestLocalModelsSelectedRowHighlighted(test *testing.T) {
 	assertHighlightOnCursorLine(test, view, "after load")
 
 	// (c) ↓ moves the highlight to the next model row, still highlighted.
-	before := view.cursor
+	before := view.window.Cursor()
 	_ = view.Update(tea.KeyMsg{Type: tea.KeyDown})
-	if view.cursor == before {
+	if view.window.Cursor() == before {
 		test.Fatalf("↓ should move the cursor, stayed at %d", before)
 	}
-	if view.cursor < 0 || view.cursor >= len(view.models) {
-		test.Fatalf("after ↓ the cursor must sit on a model row, got %d", view.cursor)
+	if view.window.Cursor() < 0 || view.window.Cursor() >= len(view.models) {
+		test.Fatalf("after ↓ the cursor must sit on a model row, got %d", view.window.Cursor())
 	}
 	assertHighlightOnCursorLine(test, view, "after ↓")
 }
@@ -146,7 +146,7 @@ func assertHighlightOnCursorLine(test *testing.T, view *LocalModels, when string
 	// must span the full row — the closing reset is the LAST escape on the line (no
 	// unstyled trailing pad spaces after it), so the background bar reaches the right
 	// edge rather than stopping short and looking ragged.
-	wantName := view.models[view.cursor].name
+	wantName := view.models[view.window.Cursor()].name
 	for _, line := range lines {
 		if !strings.Contains(line, selectedBackgroundANSI) {
 			continue

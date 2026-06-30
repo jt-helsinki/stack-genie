@@ -4,7 +4,6 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/charmbracelet/bubbles/table"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/jt-helsinki/ideal-robot/internal/ui"
 )
@@ -43,7 +42,7 @@ type APIKeyRemoveRequestedMsg struct{ Provider string }
 // remove`), and refresh. The key value never enters this view.
 type APIKeys struct {
 	list      APIKeyLister
-	table     table.Model
+	table     listTable
 	providers []APIKeyProvider
 	flash     string
 	err       error
@@ -52,15 +51,13 @@ type APIKeys struct {
 
 // NewAPIKeys builds the API Keys view over the injected provider lister.
 func NewAPIKeys(list APIKeyLister) *APIKeys {
-	columns := []table.Column{
-		{Title: "PROVIDER", Width: 16},
-		{Title: "NAME", Width: 24},
-		{Title: "KEY?", Width: 6},
-		{Title: "MODELS", Width: 8},
+	columns := []listColumn{
+		{title: "PROVIDER", width: 16},
+		{title: "NAME", width: 24},
+		{title: "KEY?", width: 6},
+		{title: "MODELS", width: 8},
 	}
-	built := table.New(table.WithColumns(columns), table.WithFocused(true))
-	built.SetStyles(ui.TableStyles())
-	return &APIKeys{list: list, table: built}
+	return &APIKeys{list: list, table: newListTable(columns)}
 }
 
 func (view *APIKeys) Title() string { return "API Keys" }
@@ -73,13 +70,11 @@ func (view *APIKeys) Hints() string {
 // the table claims the full body height and the heading+footer overflow it, pushing
 // the whole frame (header included) to scroll off the top.
 func (view *APIKeys) SetSize(width, height int) {
-	view.table.SetStyles(ui.TableStyles()) // pick up a live theme change
-	view.table.SetWidth(width)
 	// heading (1) + actions line (1) + hidden-prompt note (1) + flash slot (1) = 4.
 	// The flash slot is always rendered (blank when empty) so the table fills a fixed
 	// height and its bottom sits at the constant margin whether or not a flash shows.
 	if tableHeight := height - 4; tableHeight > 0 {
-		view.table.SetHeight(tableHeight)
+		view.table.SetSize(width, tableHeight)
 	}
 }
 
@@ -136,9 +131,7 @@ func (view *APIKeys) Update(msg tea.Msg) tea.Cmd {
 			return view.refreshCmd()
 		}
 	}
-	var cmd tea.Cmd
-	view.table, cmd = view.table.Update(msg)
-	return cmd
+	return view.table.Update(msg)
 }
 
 // selectedProvider returns the provider in the highlighted table row.
@@ -186,14 +179,14 @@ func (view *APIKeys) View() string {
 }
 
 // apiKeyRows builds the table rows PROVIDER · NAME · KEY? · MODELS.
-func apiKeyRows(providers []APIKeyProvider) []table.Row {
-	rows := make([]table.Row, 0, len(providers))
+func apiKeyRows(providers []APIKeyProvider) [][]string {
+	rows := make([][]string, 0, len(providers))
 	for _, provider := range providers {
 		key := "—"
 		if provider.HasKey {
 			key = "yes"
 		}
-		rows = append(rows, table.Row{provider.Provider, provider.Name, key, strconv.Itoa(provider.Models)})
+		rows = append(rows, []string{provider.Provider, provider.Name, key, strconv.Itoa(provider.Models)})
 	}
 	return rows
 }

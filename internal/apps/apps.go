@@ -503,7 +503,7 @@ func (manager *Manager) runningContainers() (map[string]bool, error) {
 	if probe == nil {
 		probe = manager.deps.Exec
 	}
-	result, err := probe([]string{"nerdctl", "ps", "--format", "{{.Names}}"})
+	result, err := probe([]string{"sh", "-c", "nerdctl ps --format '{{.Names}}' 2>/dev/null"})
 	if err != nil {
 		return nil, err
 	}

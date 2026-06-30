@@ -13,9 +13,9 @@ import (
 	"sort"
 	"strconv"
 	"strings"
-	"syscall"
 	"time"
 
+	"github.com/jt-helsinki/ideal-robot/internal/config"
 	"github.com/jt-helsinki/ideal-robot/internal/litellm"
 	"github.com/jt-helsinki/ideal-robot/internal/runtime"
 )
@@ -115,9 +115,24 @@ func (sandbox realSandbox) Create(name, imageRef, projectMount, overlayPath stri
 	if err := sandbox.ensureInstalled(); err != nil {
 		return err
 	}
+	args := sandboxCreateArgs(name, imageRef, projectMount, overlayPath, resources, netArgs)
+	if err := runStreaming("msb", args...); err != nil {
+		return fmt.Errorf("could not create workspace %q — run `ai doctor` to check Microsandbox and disk space", name)
+	}
+	return nil
+}
+
+// sandboxCreateArgs renders the `msb create` argv for a workspace microVM. It is a
+// helper so the important lifecycle flags (especially --idle-timeout) are unit-tested
+// without spawning the real external tool.
+func sandboxCreateArgs(name, imageRef, projectMount, overlayPath string, resources VMResources, netArgs []string) []string {
 	memory := resources.Memory
 	if memory == "" {
 		memory = microVMMemory // fall back to the platform default when unset
+	}
+	idleTimeout := resources.IdleTimeout
+	if idleTimeout == "" {
+		idleTimeout = config.DefaultMicrosandboxIdleTimeout
 	}
 	args := []string{
 		"create", imageRef,
@@ -130,6 +145,10 @@ func (sandbox realSandbox) Create(name, imageRef, projectMount, overlayPath stri
 		// §29). A fixed platform setting; egress enforcement stays on the
 		// net-rules in netArgs (a resolver answer cannot bypass them).
 		"--dns-nameserver", dnsNameserver,
+		// Keep a development workspace alive across normal breaks WITHOUT a heartbeat
+		// loop or host sleep prevention. This avoids msb's short idle reaping while not
+		// taxing CPU/battery and not blocking real computer sleep.
+		"--idle-timeout", idleTimeout,
 		"--replace",
 	}
 	// Apply the configured vCPU count when set; ≤ 0 omits --cpus so msb uses its
@@ -138,10 +157,7 @@ func (sandbox realSandbox) Create(name, imageRef, projectMount, overlayPath stri
 		args = append(args, "--cpus", strconv.Itoa(resources.CPUs))
 	}
 	args = append(args, netArgs...)
-	if err := runStreaming("msb", args...); err != nil {
-		return fmt.Errorf("could not create workspace %q — run `ai doctor` to check Microsandbox and disk space", name)
-	}
-	return nil
+	return args
 }
 
 func (sandbox realSandbox) Start(name string) error {
@@ -326,6 +342,10 @@ func (sandbox realSandbox) WriteFile(name, guestPath string, content []byte) err
 // content is on stdout; on a non-zero exit (e.g. the sandbox is not running) msb
 // writes a diagnostic to stderr, which is surfaced in the error.
 func (sandbox realSandbox) LogTail(name string, lines int) (string, error) {
+	return sandbox.LogTailContext(context.Background(), name, lines)
+}
+
+func (sandbox realSandbox) LogTailContext(ctx context.Context, name string, lines int) (string, error) {
 	if err := sandbox.ensureInstalled(); err != nil {
 		return "", err
 	}
@@ -333,7 +353,7 @@ func (sandbox realSandbox) LogTail(name string, lines int) (string, error) {
 	if lines > 0 {
 		args = append(args, "--tail", strconv.Itoa(lines))
 	}
-	command := exec.Command("msb", args...)
+	command := exec.CommandContext(ctx, "msb", args...)
 	var stdout, stderr bytes.Buffer
 	command.Stdout = &stdout
 	command.Stderr = &stderr
@@ -575,94 +595,14 @@ func RealManager(goos string, now func() string) Manager {
 	keyManager := litellm.NewKeyManager(prober)
 	return Manager{
 		Builder: realBuilder{prober: prober},
-		Sandbox: realSandbox{prober: prober},
+		Sandbox: selectSandbox(prober),
 		Keys:    keyManager,
 		Served:  servedModelsClient{manager: keyManager},
 		Now:     now,
 		GOOS:    goos,
-		Sleep:   realSleepInhibitor{goos: goos},
+		// Do not hold a host sleep assertion by default. Workspace idling is handled by
+		// the msb --idle-timeout at create time; explicit/idle host sleep should remain
+		// a real sleep and must not be blocked by the platform.
+		Sleep: nil,
 	}
-}
-
-// realSleepInhibitor keeps the host awake while a workspace runs (see SleepInhibitor).
-// macOS uses `caffeinate -i` (prevent idle system sleep); Linux uses `systemd-inhibit
-// … sleep infinity`. The inhibitor runs DETACHED (setsid, so it outlives this short-
-// lived `ai` invocation) and its PID is tracked under the project run dir so Release
-// can stop it. LIMITATION: `caffeinate -i` prevents IDLE/timeout sleep only — closing
-// a laptop lid still suspends the host (that needs `sudo pmset` settings, out of scope).
-type realSleepInhibitor struct{ goos string }
-
-// sleepInhibitorCommand is the argv that holds an "awake" assertion until killed, per
-// OS (nil = unsupported → best-effort no-op).
-func sleepInhibitorCommand(goos string) []string {
-	switch goos {
-	case "darwin":
-		return []string{"caffeinate", "-i"} // prevent idle system sleep; waits until killed
-	case "linux":
-		return []string{"systemd-inhibit", "--what=sleep", "--mode=block",
-			"--why=ai workspace running", "sleep", "infinity"}
-	default:
-		return nil
-	}
-}
-
-func sleepInhibitorPidPath(root string) string {
-	return filepath.Join(root, ".ai-platform", "run", "sleep-inhibitor.pid")
-}
-
-func (inhibitor realSleepInhibitor) Inhibit(_, root string) error {
-	argv := sleepInhibitorCommand(inhibitor.goos)
-	if argv == nil {
-		return nil // unsupported OS — best-effort no-op
-	}
-	pidPath := sleepInhibitorPidPath(root)
-	if pid, ok := readPidFile(pidPath); ok && processAlive(pid) {
-		return nil // already holding the assertion for this workspace
-	}
-	if err := os.MkdirAll(filepath.Dir(pidPath), 0o755); err != nil {
-		return err
-	}
-	command := exec.Command(argv[0], argv[1:]...)            // #nosec G204 — fixed argv per OS
-	command.SysProcAttr = &syscall.SysProcAttr{Setsid: true} // outlive this `ai` process
-	command.Stdin, command.Stdout, command.Stderr = nil, nil, nil
-	if err := command.Start(); err != nil {
-		return err
-	}
-	pid := command.Process.Pid
-	_ = command.Process.Release()
-	return os.WriteFile(pidPath, []byte(strconv.Itoa(pid)), 0o600)
-}
-
-func (inhibitor realSleepInhibitor) Release(_, root string) error {
-	pidPath := sleepInhibitorPidPath(root)
-	pid, ok := readPidFile(pidPath)
-	if !ok {
-		return nil
-	}
-	if process, err := os.FindProcess(pid); err == nil {
-		_ = process.Signal(syscall.SIGTERM)
-	}
-	return os.Remove(pidPath)
-}
-
-// readPidFile reads a positive PID from a pid file (false if absent/unparseable).
-func readPidFile(path string) (int, bool) {
-	data, err := os.ReadFile(path) // #nosec G304 — platform-controlled run-dir path
-	if err != nil {
-		return 0, false
-	}
-	pid, err := strconv.Atoi(strings.TrimSpace(string(data)))
-	if err != nil || pid <= 0 {
-		return 0, false
-	}
-	return pid, true
-}
-
-// processAlive reports whether a PID names a live process (signal 0 probe).
-func processAlive(pid int) bool {
-	process, err := os.FindProcess(pid)
-	if err != nil {
-		return false
-	}
-	return process.Signal(syscall.Signal(0)) == nil
 }

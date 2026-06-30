@@ -33,9 +33,9 @@ up everything they create (the suite workspace + any dummy keys) via
 |-------|------|-----------|
 | 1 | `TestGroup01SetupHealth` | `ai setup --mode standalone` (idempotent, non-interactive); `ai doctor` every check ok; catalog file on disk; gateway healthy |
 | 2 | `TestGroup02Services` | `ai services status` all running; restart `presidio` → back to running; `ai logs --service litellm` returns output |
-| 3 | `TestGroup03ModelsKeys` | local `ollama/all-minilm:22m` served; **dummy** key add → models registered + `keys list` keyed; key remove → models drop |
+| 3 | `TestGroup03ModelsKeys` | local `ollama/smollm:135m` served; **dummy** key add → models registered + `keys list` keyed; key remove → models drop |
 | 4 | `TestGroup04WorkspaceLifecycle` | `create` → `start` → `exec echo` → in-VM `nerdctl` (containerd) → `refresh-models` → `apps add openwebui` reachable on its host port → egress `deny` blocks / `public` allows (restart between) → `stop` + `delete --purge` |
-| 5 | `TestGroup05GatewayInference` | `ai models test ollama/all-minilm:22m` → real local chat completion through nginx → Headroom → LiteLLM → Ollama |
+| 5 | `TestGroup05GatewayInference` | `ai models test ollama/smollm:135m` → real local chat completion through nginx → Headroom → LiteLLM → Ollama |
 | 6 | `TestGroup06Uninstall` | `ai uninstall --dry-run` plan (always); destructive `--purge --yes` only when gated (see below) |
 
 Each step in group 4 asserts independently and logs the exact `ai` output on
@@ -56,7 +56,7 @@ failure — those failures are real bring-up findings, which is the point.
   `--json` / non-interactive paths.
 - **Real cloud inference** without a provider key — only registration is
   exercised by default; live cloud calls require `AIP_INTEGRATION_<PROVIDER>_KEY`.
-- **`ai models rm`** — `all-minilm:22m` is the only pulled model and the user keeps
+- **`ai models rm`** — `smollm:135m` is the only pulled model and the user keeps
   it, so removal is not exercised (no throwaway model is pulled).
 - **`sudo`-requiring host mutations without NOPASSWD** — e.g. the `/etc/hosts`
   UI-subdomain block. `ai doctor` reports it; the suite does not mutate it.

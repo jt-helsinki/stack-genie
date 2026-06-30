@@ -3,6 +3,7 @@ package workspace
 import (
 	"errors"
 	"os/exec"
+	"slices"
 	"testing"
 )
 
@@ -36,4 +37,53 @@ func TestRealBuilderNoContainerRuntime(test *testing.T) {
 	if !errors.Is(err, ErrContainerRuntimeMissing) {
 		test.Fatalf("want ErrContainerRuntimeMissing, got %v", err)
 	}
+}
+
+// Workspace microVMs must opt out of msb's short default idle reaping with an
+// explicit, long idle timeout. This is intentionally a create-time policy (no
+// heartbeat loop), so it does not wake the CPU periodically and does not block host
+// sleep.
+func TestSandboxCreateArgsIncludesLongIdleTimeout(t *testing.T) {
+	args := sandboxCreateArgs(
+		"aip-app", "aip-app:latest", "/projects/app", "/overlays/aip-app",
+		VMResources{CPUs: 2, Memory: "8G", IdleTimeout: "2h"}, []string{"--net-rule", "allow@public"},
+	)
+	if !containsArgPair(args, "--idle-timeout", "2h") {
+		t.Fatalf("create args must include configured --idle-timeout 2h, got %v", args)
+	}
+	if slices.Contains(args, "--max-duration") {
+		t.Fatalf("create args must not impose a max duration on dev workspaces: %v", args)
+	}
+	if !containsArgPair(args, "--cpus", "2") || !containsArgPair(args, "--memory", "8G") {
+		t.Fatalf("create args should preserve resources, got %v", args)
+	}
+	if !containsArgPair(args, "--net-rule", "allow@public") {
+		t.Fatalf("create args should append network rules, got %v", args)
+	}
+}
+
+func TestSandboxCreateArgsDefaultsIdleTimeout(t *testing.T) {
+	args := sandboxCreateArgs("aip-app", "aip-app:latest", "/projects/app", "/overlays/aip-app", VMResources{}, nil)
+	if !containsArgPair(args, "--idle-timeout", "24h") {
+		t.Fatalf("create args must default --idle-timeout to 24h, got %v", args)
+	}
+}
+
+// The real manager must not install a host sleep inhibitor by default: explicit or
+// idle host sleep should remain a real sleep, and the idle fix must not burn battery
+// by keeping the machine awake.
+func TestRealManagerDoesNotPreventHostSleepByDefault(t *testing.T) {
+	manager := RealManager("darwin", func() string { return "now" })
+	if manager.Sleep != nil {
+		t.Fatalf("RealManager should not wire host sleep prevention by default; got %#v", manager.Sleep)
+	}
+}
+
+func containsArgPair(args []string, key, value string) bool {
+	for index := 0; index < len(args)-1; index++ {
+		if args[index] == key && args[index+1] == value {
+			return true
+		}
+	}
+	return false
 }

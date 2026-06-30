@@ -8,7 +8,6 @@ package views
 import (
 	"time"
 
-	"github.com/charmbracelet/bubbles/table"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/jt-helsinki/ideal-robot/internal/setup"
 	"github.com/jt-helsinki/ideal-robot/internal/ui"
@@ -51,7 +50,7 @@ type Services struct {
 	fetch    ServiceFetcher
 	control  ServiceController
 	detail   *ServiceDetail
-	table    table.Model
+	table    listTable
 	statuses []setup.ServiceStatus
 	flash    string
 	err      error
@@ -65,16 +64,14 @@ type Services struct {
 // controller, and the per-service detail drilled into on enter/d (built in tui.go,
 // like Project, so the docker-logs LogView + console opener are wired by the parent).
 func NewServices(fetch ServiceFetcher, control ServiceController, detail *ServiceDetail) *Services {
-	columns := []table.Column{
-		{Title: "SERVICE", Width: 20},
-		{Title: "MODE", Width: 10},
-		{Title: "STATE", Width: 14},
-		{Title: "HEALTH", Width: 7},
-		{Title: "ADDRESS", Width: 50},
+	columns := []listColumn{
+		{title: "SERVICE", width: 20},
+		{title: "MODE", width: 10},
+		{title: "STATE", width: 14},
+		{title: "HEALTH", width: 7},
+		{title: "ADDRESS", width: 50},
 	}
-	built := table.New(table.WithColumns(columns), table.WithFocused(true))
-	built.SetStyles(ui.TableStyles())
-	return &Services{fetch: fetch, control: control, detail: detail, table: built}
+	return &Services{fetch: fetch, control: control, detail: detail, table: newListTable(columns)}
 }
 
 // Title is the view's name (used by the menu/header).
@@ -108,10 +105,8 @@ func (view *Services) SetActive(active bool) {
 // One row is reserved for the flash slot so the table fills a FIXED height and its
 // bottom never moves whether or not a flash shows.
 func (view *Services) SetSize(width, height int) {
-	view.table.SetStyles(ui.TableStyles()) // pick up a live theme change
-	view.table.SetWidth(width)
 	if tableHeight := height - 1; tableHeight > 0 {
-		view.table.SetHeight(tableHeight)
+		view.table.SetSize(width, tableHeight)
 	}
 	view.detail.SetSize(width, height)
 }
@@ -183,9 +178,7 @@ func (view *Services) Update(msg tea.Msg) tea.Cmd {
 			return view.detail.Update(msg)
 		}
 	}
-	var cmd tea.Cmd
-	view.table, cmd = view.table.Update(msg)
-	return cmd
+	return view.table.Update(msg)
 }
 
 // handleListKey maps the list-level keys; the bool reports whether the key was
@@ -281,14 +274,14 @@ func (view *Services) View() string {
 	return view.table.View() + "\n" + flashLine(view.flash)
 }
 
-func serviceRows(statuses []setup.ServiceStatus) []table.Row {
-	rows := make([]table.Row, 0, len(statuses))
+func serviceRows(statuses []setup.ServiceStatus) [][]string {
+	rows := make([][]string, 0, len(statuses))
 	for _, status := range statuses {
 		health := ui.IconFail
 		if status.Healthy {
 			health = ui.IconOK
 		}
-		rows = append(rows, table.Row{status.Name, status.Mode, status.State, health, status.Address})
+		rows = append(rows, []string{status.Name, status.Mode, status.State, health, status.Address})
 	}
 	return rows
 }

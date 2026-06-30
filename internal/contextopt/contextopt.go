@@ -168,7 +168,7 @@ func orUnset(value string) string {
 // GetStatus reports the configured strategy + Caveman level and whether the
 // Caveman skill is installed. Live Headroom metrics need the running proxy.
 func GetStatus(projectRoot string) (Status, error) {
-	projectConfig, err := config.LoadProjectConfig(projectRoot)
+	projectConfig, err := config.Load(projectRoot)
 	if err != nil {
 		return Status{}, err
 	}

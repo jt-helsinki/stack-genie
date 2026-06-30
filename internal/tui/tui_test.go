@@ -1,10 +1,12 @@
 package tui
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 
-	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/bubbles/viewport"
+	"github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/jt-helsinki/ideal-robot/internal/project"
 	"github.com/jt-helsinki/ideal-robot/internal/tui/views"
@@ -495,5 +497,114 @@ func TestWorkspaceDeleteOpensOverlay(test *testing.T) {
 	application.Update(views.WorkspaceActionRequestedMsg{Action: "delete", Project: "app"})
 	if application.terminal == nil {
 		test.Fatal("a delete action must open the confirm terminal overlay")
+	}
+}
+
+func TestWorkspaceLogReadableDuringPendingStart(test *testing.T) {
+	application := &app{
+		currentProject: "app",
+		lifecycle:      &lifecycleOp{project: "app", action: "start"},
+	}
+	if !application.workspaceLogReadable() {
+		test.Fatal("workspace log should poll while start is pending so startup diagnostics stream")
+	}
+	application.lifecycle.action = "restart"
+	if !application.workspaceLogReadable() {
+		test.Fatal("workspace log should poll while restart is pending so boot diagnostics stream")
+	}
+}
+
+func pgDownKey() tea.KeyMsg { return tea.KeyMsg{Type: tea.KeyPgDown} }
+
+// tallView is a no-sub-tab view whose content is always taller than any pane, so it
+// overflows the body and exercises the body-level scroll. It records the keys it
+// receives so a test can prove the body scroll keys are NOT delegated to it.
+type tallView struct {
+	fakeView
+	got []string
+}
+
+func (view *tallView) Update(msg tea.Msg) tea.Cmd {
+	if key, ok := msg.(tea.KeyMsg); ok {
+		view.got = append(view.got, key.String())
+	}
+	return nil
+}
+func (view *tallView) View() string {
+	rows := make([]string, 200)
+	for index := range rows {
+		rows[index] = fmt.Sprintf("line-%03d", index)
+	}
+	return strings.Join(rows, "\n")
+}
+
+// navTallView is the same overflowing content but reports CapturesNav() — i.e. a tab
+// WITH sub-tabs — so the outer body must NOT scroll; the keys are delegated to it.
+type navTallView struct{ tallView }
+
+func (view *navTallView) CapturesNav() bool { return true }
+
+// TestScrollsBodyOnlyForTabsWithoutSubTabs: a plain tab gets the body-level scroll; a
+// nav-capturing tab (one with sub-tabs) does not, and an open overlay disables it.
+func TestScrollsBodyOnlyForTabsWithoutSubTabs(test *testing.T) {
+	plain := &app{views: []View{&fakeView{title: "Settings"}}}
+	if !plain.scrollsBody() {
+		test.Fatal("a tab without sub-tabs should get the body-level scroll")
+	}
+	navApp := &app{views: []View{&navTallView{}}}
+	if navApp.scrollsBody() {
+		test.Fatal("a tab WITH sub-tabs must NOT scroll the outer body")
+	}
+	// An open overlay (help) suspends the body scroll regardless of the tab.
+	plain.helpOpen = true
+	if plain.scrollsBody() {
+		test.Fatal("an open overlay must disable the body scroll")
+	}
+}
+
+// TestBodyPaneScrollsWhenOverflowing: on a no-sub-tab tab whose content overflows the
+// pane, PgDn scrolls the body viewport (the rendered body changes), the keystroke is
+// NOT delegated to the view, and the chrome stays intact (no overflow break).
+func TestBodyPaneScrollsWhenOverflowing(test *testing.T) {
+	view := &tallView{}
+	application := &app{views: []View{view}, bodyViewport: viewport.New(0, 0)}
+	application.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+
+	first := application.View() // sets the viewport content
+	if !application.bodyOverflowing() {
+		test.Fatal("a 200-line view must overflow a 24-row window")
+	}
+	application.Update(pgDownKey())
+	second := application.View()
+	if first == second {
+		test.Fatal("PgDn should scroll the body pane (rendered output unchanged)")
+	}
+	for _, key := range view.got {
+		if key == "pgdown" {
+			test.Fatal("PgDn must drive the body scroll, not be delegated to the view")
+		}
+	}
+	if !strings.Contains(second, "ai ui") {
+		test.Error("the footer chrome must survive an overflowing pane (no overflow break)")
+	}
+}
+
+// TestTabWithSubTabsDelegatesScrollKeys: a nav-capturing tab (sub-tabs) does not use
+// the outer body scroll — PgDn is delegated to the view (whose sub-panes scroll).
+func TestTabWithSubTabsDelegatesScrollKeys(test *testing.T) {
+	view := &navTallView{}
+	application := &app{views: []View{view}, bodyViewport: viewport.New(0, 0)}
+	application.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	application.View()
+
+	application.Update(pgDownKey())
+	found := false
+	for _, key := range view.got {
+		if key == "pgdown" {
+			found = true
+		}
+	}
+	if !found {
+		test.Fatal("a tab with sub-tabs should delegate PgDn to the view, not scroll the outer pane")
 	}
 }

@@ -307,6 +307,105 @@ func TestLocalModelsListFillsConstantHeightOnScroll(test *testing.T) {
 	}
 }
 
+// When the cursor scrolls down and then back up to the FIRST model row, the window
+// must scroll to reveal the "Installed" section heading above it (not just the first
+// model row) — i.e. it scrolls to the content, not the first selectable item.
+func TestLocalModelsHeadingVisibleAfterScrollBackToTop(test *testing.T) {
+	library := make([]ollama.LibraryModel, 0, 30)
+	for index := 0; index < 30; index++ {
+		name := "model" + string(rune('a'+index%26)) + strconv.Itoa(index)
+		library = append(library, ollama.LibraryModel{Name: name, Description: "desc", Tags: []string{"7b"}, RepoURL: "x"})
+	}
+	// Mark several models installed so the "Installed" section has multiple rows.
+	installed := []ollama.Model{
+		{Name: library[0].Name + ":7b", Size: 100},
+		{Name: library[1].Name + ":7b", Size: 100},
+		{Name: library[2].Name + ":7b", Size: 100},
+	}
+	view := buildLocal(test, installed, library, noShow)
+	// A small pane forces a scroll window smaller than the model count.
+	view.SetSize(120, 18)
+
+	headingVisible := func() bool {
+		for _, line := range strings.Split(view.View(), "\n") {
+			if strings.Contains(stripANSI(line), "Installed") {
+				return true
+			}
+		}
+		return false
+	}
+
+	if !headingVisible() {
+		test.Fatalf("the Installed heading should be visible at the top:\n%s", view.View())
+	}
+	// Scroll all the way down…
+	for step := 0; step < len(view.models)+5; step++ {
+		_ = view.Update(tea.KeyMsg{Type: tea.KeyDown})
+	}
+	// …then all the way back up to the first model row.
+	for step := 0; step < len(view.models)+5; step++ {
+		_ = view.Update(tea.KeyMsg{Type: tea.KeyUp})
+	}
+	if view.window.Cursor() != 0 {
+		test.Fatalf("cursor should be back on the first model, got %d", view.window.Cursor())
+	}
+	if !headingVisible() {
+		test.Fatalf("after scrolling back to the top the Installed heading must be visible again:\n%s", view.View())
+	}
+}
+
+// The PARTIAL-scroll case: scroll down just far enough that ONLY the header leaves the
+// window (the first model row is still visible), then scroll back up. The window must
+// scroll up far enough to re-show the heading once the cursor returns to the first
+// model — even though the cursor row itself never left the window.
+func TestLocalModelsHeadingRevealedOnPartialScrollBackUp(test *testing.T) {
+	library := make([]ollama.LibraryModel, 0, 30)
+	for index := 0; index < 30; index++ {
+		name := "model" + string(rune('a'+index%26)) + strconv.Itoa(index)
+		library = append(library, ollama.LibraryModel{Name: name, Description: "desc", Tags: []string{"7b"}, RepoURL: "x"})
+	}
+	installed := []ollama.Model{
+		{Name: library[0].Name + ":7b", Size: 100},
+		{Name: library[1].Name + ":7b", Size: 100},
+		{Name: library[2].Name + ":7b", Size: 100},
+	}
+	view := buildLocal(test, installed, library, noShow)
+	view.SetSize(120, 18)
+
+	headingVisible := func() bool {
+		for _, line := range strings.Split(view.View(), "\n") {
+			if strings.Contains(stripANSI(line), "Installed") {
+				return true
+			}
+		}
+		return false
+	}
+
+	// Step DOWN one row at a time only until the heading first scrolls off-screen.
+	steps := 0
+	for headingVisible() && steps < len(view.models) {
+		_ = view.Update(tea.KeyMsg{Type: tea.KeyDown})
+		steps++
+	}
+	if headingVisible() {
+		test.Fatal("the heading should have scrolled off after stepping down")
+	}
+	if steps >= len(view.models)-1 {
+		test.Fatalf("the heading left the window only at the very bottom (steps=%d); expected a PARTIAL scroll", steps)
+	}
+	// Step back UP the same number of rows: the cursor returns to the first model and
+	// the heading must be on-screen again.
+	for index := 0; index < steps; index++ {
+		_ = view.Update(tea.KeyMsg{Type: tea.KeyUp})
+	}
+	if view.window.Cursor() != 0 {
+		test.Fatalf("cursor should be back on the first model, got %d", view.window.Cursor())
+	}
+	if !headingVisible() {
+		test.Fatalf("scrolling back up must reveal the heading once the cursor returns to the first model:\n%s", view.View())
+	}
+}
+
 // enter on an installed tag with no selection opens the /api/show describe pane.
 func TestLocalModelsDrillEnterInstalledShowsDetail(test *testing.T) {
 	var shown string
