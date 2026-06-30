@@ -468,16 +468,16 @@ func mapWorkspaceErr(err error) error {
 // the `ai start` cwd shortcut, and project attach.
 func startWorkspace(emitter *output.Emitter, name string) (*state.Workspace, error) {
 	manager := workspace.RealManager(goruntime.GOOS, nowRFC3339)
-	if !ui.Enabled(emitter) {
-		return manager.Start(name)
+	// The image BUILD + `msb load` + microVM create stream their OWN native progress
+	// (docker BuildKit layers, msb load/pull bars) to the terminal — a bubbletea
+	// spinner cannot share the screen with them (it garbles INTO the build output, as
+	// observed). So we DON'T spin: print a one-line header (on a TTY) and let the
+	// native progress show, exactly like `ai setup`'s pre-pull. Under --json/no-TTY no
+	// header is printed and the envelope path is unchanged.
+	if ui.Enabled(emitter) {
+		_, _ = fmt.Fprintln(emitter.Err, "Starting workspace "+name+" (building image + booting microVM)…")
 	}
-	var handle *state.Workspace
-	err := ui.RunWithSpinner(emitter.Err, "starting workspace "+name, func() error {
-		var workErr error
-		handle, workErr = manager.Start(name)
-		return workErr
-	})
-	return handle, err
+	return manager.Start(name)
 }
 
 // restartWorkspace restarts the existing workspace microVM (rebuild + recreate to
@@ -485,16 +485,12 @@ func startWorkspace(emitter *output.Emitter, name string) (*state.Workspace, err
 // startWorkspace it animates a spinner on a TTY and runs directly otherwise.
 func restartWorkspace(emitter *output.Emitter, name string) (*state.Workspace, error) {
 	manager := workspace.RealManager(goruntime.GOOS, nowRFC3339)
-	if !ui.Enabled(emitter) {
-		return manager.Restart(name)
+	// As with start: the rebuild + image-load + recreate stream native progress, so no
+	// spinner (it would garble into the build output). Header on a TTY, then stream.
+	if ui.Enabled(emitter) {
+		_, _ = fmt.Fprintln(emitter.Err, "Restarting workspace "+name+" (rebuilding image + booting microVM)…")
 	}
-	var handle *state.Workspace
-	err := ui.RunWithSpinner(emitter.Err, "restarting workspace "+name, func() error {
-		var workErr error
-		handle, workErr = manager.Restart(name)
-		return workErr
-	})
-	return handle, err
+	return manager.Restart(name)
 }
 
 // workspaceStartRunE is the RunE for `ai start [name]`.
