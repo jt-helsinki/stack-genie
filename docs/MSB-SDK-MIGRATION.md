@@ -240,3 +240,27 @@ mounts + in-VM apps. If interactive shells misbehave, revert with
 
 **Still pending:** P3 (confirm/season SSH interactive Attach parity on a TTY) and P4
 (the `make release` cross-compile CGO rework — still pins `CGO_ENABLED=0`).
+
+## Status — migration + follow-ups (2026-06-30)
+
+Done and committed (each green on `make check`): Phase 1 (SDK backend), Phase 2
+(single reused relay handle in the TUI), log streaming, **default flipped to SDK**,
+the Sandbox Logs / Metrics tabs + Sandbox Configuration block, the `ai create`
+overhaul (host-capped CPU/memory + ports + location, SDK-created), the **cgo build
+rework** (`make release` native; `CGO_ENABLED=1` exported — P4 done), the AGENTS.md +
+spec reconcile, and review fixes (default resource host-cap, memory-parse overflow
+guard, live config status, the post-close `Recv` re-arm panic).
+
+Outstanding (need a live host/TTY or are upstream):
+- **Interactive Attach (P3)** and the **full create→start→apps flow** — validate by
+  real use; see §2.8 of docs/HARDWARE-BRINGUP.md.
+- **Relay connect/disconnect churn under a wedged VM** — observed live after a
+  restart (`agent relay: client connected/disconnected slot=1` cycling). Hypothesis:
+  the upstream relay wedge interacts with our self-heal (`execAs` evicts + reconnects
+  the handle on each failed poll, producing connect→fail→disconnect→reconnect at poll
+  cadence). Mitigation to evaluate: stop evicting on transient exec errors (reuse the
+  handle; a wedged VM then shows errors WITHOUT churning connections) and evict only
+  on lifecycle actions / project switch. The root cause remains the upstream
+  relay-lifecycle bug — file it against `microsandbox/microsandbox`.
+- **Scrollable Sandbox Configuration view** — make the Workspace tab's config block
+  scroll when it overflows.

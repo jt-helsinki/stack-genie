@@ -467,8 +467,11 @@ required and is detected from `docker info` (Podman is rootless by default).
 ## 6.2 microVM Runtime (workspaces)
 
 Workspaces run as **Microsandbox microVMs** (libkrun), not containers. This
-runtime is driven directly by the `ai` CLI through the Microsandbox **Go SDK /
-`msb` CLI** — there is no daemon and no host Docker socket involved (§7, §30).
+runtime is driven directly by the `ai` CLI through the **in-process Microsandbox
+Go SDK** (the default backend — a cgo binding that holds one reused relay
+connection per workspace; the legacy `msb`-CLI shell-out is a fallback selected
+with `AIP_WORKSPACE_BACKEND=cli`). There is no daemon and no host Docker socket
+involved (§7, §30).
 
 Host requirements:
 
