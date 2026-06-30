@@ -168,8 +168,12 @@ func (view *LogView) SetActive(active bool) {
 	}
 }
 
-// closeStream cancels the in-flight Recv and closes the live stream handle (idempotent).
+// closeStream cancels the in-flight Recv and closes the live stream handle
+// (idempotent). It bumps the generation so any chunk a Recv returns AFTER close —
+// even a successful one that races the cancel — is dropped by the generation guard
+// and never re-arms a Recv on the now-nil handle.
 func (view *LogView) closeStream() {
+	view.generation++
 	if view.streamCancel != nil {
 		view.streamCancel()
 		view.streamCancel = nil

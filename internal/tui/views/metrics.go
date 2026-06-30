@@ -93,7 +93,11 @@ func (view *Metrics) SetActive(active bool) {
 	}
 }
 
+// closeStream cancels the in-flight Recv and closes the stream (idempotent). It bumps
+// the generation so any sample a Recv returns AFTER close is dropped by the generation
+// guard and never re-arms a Recv on the now-nil handle.
 func (view *Metrics) closeStream() {
+	view.generation++
 	if view.streamCancel != nil {
 		view.streamCancel()
 		view.streamCancel = nil
