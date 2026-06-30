@@ -343,6 +343,38 @@ The LIVE `nerdctl` behaviour is the bring-up item (grep `hardware bring-up` in
 - [ ] **persisted data survives restart** — data written under
       `/persist/apps/<key>` (the overlay) is retained across `ai restart`.
 
+### 2.8 SDK workspace backend — live validation (arch §7; docs/MSB-SDK-MIGRATION.md)
+
+The default workspace backend is now the in-process **Microsandbox Go SDK**
+(`internal/workspace/workspace_sdk.go`; `AIP_WORKSPACE_BACKEND=cli` reverts to the
+msb-CLI backend). A bounded lifecycle smoke (create/boot, exec incl. root, FS
+write/read, `LogStream` history+follow, Detach→reconnect, stop/remove, and an
+`msb load`-ed local image booting via `WithImage` + `PullPolicy=Never`) **passed**
+on Apple Silicon (msb 0.6.1). The seams that still need validation **by real use**
+(a TTY and/or the full service tier — not reproducible headless):
+
+- [ ] **Interactive Attach (P3)** — `ai shell` / `ai attach` / `ai agent` route
+      through `sdkSandbox.ExecInteractive` → `sb.Attach(ctx, tmux…)` (a relay-native
+      PTY; no guest sshd). Validate on a real terminal: tmux truecolor, CSI-u
+      extended keys (OpenCode shift+enter / ctrl-combos), and **window-resize
+      forwarding** on SIGWINCH. If `sb.Attach` does not relay resize as cleanly as the
+      SDK's `SSH().OpenClient().Attach` (which documents PTY-resize relay), switch the
+      interactive path to the SSH client. The CLI already guards a non-TTY caller
+      (`interactive(emitter)`), so `ExecInteractive` is only reached with a real TTY.
+- [ ] **Full create→start→agent-config flow (item 4)** — `ai create` (SDK-created
+      microVM with the resolved `--cpus`/`--memory`/`--ports`/`--location`) →
+      `ai start` with a live aip-dns/gateway + overlay mounts → agent provider config
+      injection (`registerAgentProviders` via `Sandbox.WriteFile`/`Exec`) → in-VM apps
+      (`ai apps`). Confirm the published ports reach the guest and the resource caps
+      apply.
+- [ ] **Streaming log + metrics tabs live** — the Workspace **Sandbox Logs** tab
+      (SDK `LogStream`, relay-free) streams history then new entries; the **Metrics**
+      tab (`sb.MetricsStream`) updates the table every 2s; the **Sandbox
+      Configuration** block shows the live `SandboxConfig`.
+- [ ] **Single-handle churn fix** — confirm a long `ai ui` session holds at most one
+      relay client per workspace (no "max clients" growth) and releases it on project
+      switch / exit.
+
 ## 3. Turn on the remaining acceptance tests
 
 In `test/acceptance/` (harness, PTY driver, and the runnable `[S1]` subset already
