@@ -1,5 +1,12 @@
 # AI Development Platform — build tooling.
-# The CLI is a single static binary (CLI spec §1.5).
+#
+# The CLI links the Microsandbox Go SDK, a cgo binding that dlopens an embedded FFI
+# library at runtime (docs/MSB-SDK-MIGRATION.md). The build therefore requires CGO —
+# it is NO LONGER a pure CGO_ENABLED=0 static binary. We export CGO_ENABLED=1 for
+# every compiling target so the build is deterministic regardless of the runner's
+# default. The library bytes are embedded (go:embed) and extracted at first run, so
+# the result is still a single self-contained binary per platform.
+export CGO_ENABLED := 1
 
 BINARY      := ai
 PKG         := github.com/jt-helsinki/ideal-robot
@@ -9,26 +16,25 @@ LDFLAGS     := -X $(VERSION_PKG).Version=$(VERSION)
 
 .PHONY: all build release fmt fmt-check vet lint test test-acceptance test-integration tidy clean check
 
-# Release targets. Asset names are ai-<os>-<arch> — the exact names
-# installers/install.sh downloads. macOS is Apple Silicon only (arch §6.2).
-DIST_PLATFORMS := darwin/arm64 linux/amd64 linux/arm64
+# Release assets are named ai-<os>-<arch> — the exact names installers/install.sh
+# downloads. macOS is Apple Silicon only (arch §6.2). Because cgo cross-compilation
+# needs a C toolchain per target, multi-arch assets are produced by a CI matrix that
+# runs `make release` on each platform (darwin/arm64, linux/amd64, linux/arm64) — every
+# runner builds its OWN native arch; `make release` here builds the host arch only.
 
 all: build
 
 check: fmt-check vet lint test build ## Pre-commit gate: everything that must pass before committing
 
-build: ## Build the ai binary into ./bin
+build: ## Build the ai binary into ./bin (cgo)
 	@mkdir -p bin
 	go build -ldflags "$(LDFLAGS)" -o bin/$(BINARY) ./cmd/ai
 
-release: ## Cross-compile static release binaries into ./dist (ai-<os>-<arch>)
+release: ## Build the release binary for the HOST platform into ./dist (ai-<os>-<arch>)
 	@mkdir -p dist
-	@for platform in $(DIST_PLATFORMS); do \
-		os=$${platform%/*}; arch=$${platform#*/}; \
-		echo "building dist/$(BINARY)-$$os-$$arch"; \
-		GOOS=$$os GOARCH=$$arch CGO_ENABLED=0 \
-			go build -ldflags "$(LDFLAGS)" -o dist/$(BINARY)-$$os-$$arch ./cmd/ai || exit 1; \
-	done
+	@os=$$(go env GOOS); arch=$$(go env GOARCH); \
+		echo "building dist/$(BINARY)-$$os-$$arch (cgo, native)"; \
+		go build -ldflags "$(LDFLAGS)" -o dist/$(BINARY)-$$os-$$arch ./cmd/ai
 
 fmt: ## Format all Go source
 	gofmt -w .
