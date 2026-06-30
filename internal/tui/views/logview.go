@@ -1,6 +1,9 @@
 package views
 
 import (
+	"context"
+	"errors"
+	"io"
 	"strings"
 	"time"
 
@@ -8,6 +11,23 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/jt-helsinki/ideal-robot/internal/ui"
 )
+
+// LogStream is a live log subscription: Recv blocks for the next chunk (history first,
+// then new entries), and Close stops it. Satisfied structurally by workspace.LogStream
+// (the SDK-backed stream the parent wires in for the workspace log).
+type LogStream interface {
+	Recv(ctx context.Context) (string, error)
+	Close() error
+}
+
+// LogStreamOpener opens a fresh stream for the CURRENT subject. When set on a LogView,
+// the component STREAMS (push) instead of polling: it loads recent history then
+// appends new entries as they arrive, with full scrollback. nil → poll mode.
+type LogStreamOpener func(ctx context.Context) (LogStream, error)
+
+// logStreamBufferCap bounds the in-memory streamed scrollback (trimmed on a line
+// boundary), so a long-lived stream cannot grow without limit.
+const logStreamBufferCap = 256 * 1024
 
 // LogTextTailer returns the recent captured output of the subject being followed —
 // a workspace microVM (`msb logs --tail`) or a host service container
@@ -54,6 +74,28 @@ type logViewLoadedMsg struct {
 // (from a previous Init) die so only the latest activation keeps polling.
 type logViewTickMsg struct{ generation int }
 
+// logViewStreamOpenedMsg carries the opened stream (or an open error), tagged with its
+// generation. cancel cancels the stream's context (unblocking a pending Recv).
+type logViewStreamOpenedMsg struct {
+	stream     LogStream
+	ctx        context.Context
+	cancel     context.CancelFunc
+	err        error
+	generation int
+}
+
+// logViewStreamChunkMsg carries one Recv result from the stream, tagged with its
+// generation so chunks from a previous activation/subject are discarded. raw is the
+// accumulated (capped) scrollback; content is its normalized render — both computed
+// in the Recv command goroutine so the (potentially heavy) normalize never runs on
+// the bubbletea event loop.
+type logViewStreamChunkMsg struct {
+	raw        string
+	content    string
+	err        error
+	generation int
+}
+
 // LogView is the reusable scrollable, auto-refreshing log component embedded beneath
 // a detail summary (the workspace log under the Workspace tab; the container log
 // under the Services detail). It re-polls on a timer so new lines stream in, follows
@@ -91,6 +133,16 @@ type LogView struct {
 	// at the bottom): the view is FROZEN so a refresh does not re-render the pane and
 	// wipe an in-progress text selection. Applied when the user scrolls back down.
 	pending string
+
+	// Streaming mode (set when openStream != nil): the component opens ONE live log
+	// stream per activation, loads history then appends new entries via re-armed Recv
+	// commands — no polling. streamBuf is the accumulated raw scrollback (capped);
+	// streamCtx/streamCancel govern the in-flight Recv so closeStream can unblock it.
+	openStream   LogStreamOpener
+	streamHandle LogStream
+	streamCtx    context.Context
+	streamCancel context.CancelFunc
+	streamBuf    string
 }
 
 // NewLogView builds a generic log component over the injected tailer, an optional
@@ -105,11 +157,32 @@ func NewLogView(tail LogTextTailer, running LogSubjectRunning, subject func() st
 
 func (view *LogView) Title() string { return "Log" }
 
-// SetActive marks whether the embedding view is currently visible. While inactive
-// the poll is PAUSED — the heartbeat tick keeps running but issues no tailer call —
-// so it does not contend with the active view's calls. It only sets the flag; the
-// Init() the embedder calls right after does the immediate refresh.
-func (view *LogView) SetActive(active bool) { view.paused = !active }
+// SetActive marks whether the embedding view is currently visible. While inactive the
+// poll is PAUSED. In streaming mode, going inactive also CLOSES the live stream (it is
+// reopened on the next Init when the view becomes visible) so no Recv lingers on a
+// hidden tab; the embedder calls SetActive(true) then Init() on (re)activation.
+func (view *LogView) SetActive(active bool) {
+	view.paused = !active
+	if !active && view.openStream != nil {
+		view.closeStream()
+	}
+}
+
+// closeStream cancels the in-flight Recv and closes the live stream handle (idempotent).
+func (view *LogView) closeStream() {
+	if view.streamCancel != nil {
+		view.streamCancel()
+		view.streamCancel = nil
+	}
+	view.streamCtx = nil
+	if view.streamHandle != nil {
+		_ = view.streamHandle.Close()
+		view.streamHandle = nil
+	}
+}
+
+// streaming reports whether this view is configured for push streaming.
+func (view *LogView) streaming() bool { return view.openStream != nil }
 
 // issueLoad fires one poll and arms the in-flight guard so the tick cannot stack a
 // second concurrent tailer call on top of a slow one.
@@ -137,6 +210,10 @@ func (view *LogView) Reset() {
 	view.err = nil
 	view.pending = ""
 	view.polling = false
+	if view.streaming() {
+		view.closeStream()
+		view.streamBuf = ""
+	}
 	view.viewport.SetContent("")
 	view.viewport.GotoTop()
 }
@@ -162,12 +239,74 @@ func (view *LogView) Init() tea.Cmd {
 	view.pending = ""
 	view.polling = false
 	view.viewport.GotoBottom()
-	// Start the heartbeat tick always; issue the first poll only when visible (not
-	// paused) so a re-init while parked on another tab fires no tailer call.
+
+	// Streaming mode: open ONE live stream for this activation (history + follow). A
+	// stopped subject shows nothing rather than a stale stream. Bumping the generation
+	// above already orphans any previous stream's chunks; close its handle too.
+	if view.streaming() {
+		view.closeStream()
+		view.streamBuf = ""
+		view.notRunning = false
+		if view.running != nil && !view.running() {
+			view.loaded = true
+			view.notRunning = true
+			return nil
+		}
+		if view.paused {
+			return nil // opened on (re)activation
+		}
+		return view.openStreamCmd(view.generation)
+	}
+
+	// Poll mode: start the heartbeat tick always; issue the first poll only when
+	// visible (not paused) so a re-init while parked on another tab fires no call.
 	if view.paused {
 		return view.tickCmd(view.generation)
 	}
 	return tea.Batch(view.issueLoad(), view.tickCmd(view.generation))
+}
+
+// openStreamCmd opens the live stream off the event loop, under a fresh cancelable
+// context so closeStream can unblock a pending Recv.
+func (view *LogView) openStreamCmd(generation int) tea.Cmd {
+	opener := view.openStream
+	return func() tea.Msg {
+		ctx, cancel := context.WithCancel(context.Background())
+		stream, err := opener(ctx)
+		if err != nil {
+			cancel()
+			return logViewStreamOpenedMsg{err: err, generation: generation}
+		}
+		return logViewStreamOpenedMsg{stream: stream, ctx: ctx, cancel: cancel, generation: generation}
+	}
+}
+
+// recvCmd blocks for the next chunk on the stream, appends it to buffer (the caller's
+// current scrollback snapshot — chunks are processed one at a time through Update, so
+// the snapshot is race-free), caps it, and normalizes — all off the event loop. ctx
+// is the stream's cancelable context; cancelling it (closeStream) makes Recv return.
+func (view *LogView) recvCmd(stream LogStream, ctx context.Context, buffer string, generation int) tea.Cmd {
+	return func() tea.Msg {
+		chunk, err := stream.Recv(ctx)
+		if err != nil {
+			return logViewStreamChunkMsg{err: err, generation: generation}
+		}
+		buffer = capLogBuffer(buffer + chunk)
+		return logViewStreamChunkMsg{raw: buffer, content: normalizeTerminalOutput(buffer), generation: generation}
+	}
+}
+
+// capLogBuffer bounds the streamed scrollback to logStreamBufferCap, trimming whole
+// leading lines so the kept text starts on a clean line boundary.
+func capLogBuffer(buffer string) string {
+	if len(buffer) <= logStreamBufferCap {
+		return buffer
+	}
+	trimmed := buffer[len(buffer)-logStreamBufferCap:]
+	if index := strings.IndexByte(trimmed, '\n'); index >= 0 && index+1 <= len(trimmed) {
+		trimmed = trimmed[index+1:]
+	}
+	return trimmed
 }
 
 func (view *LogView) loadCmd(generation int) tea.Cmd {
@@ -232,6 +371,54 @@ func (view *LogView) Update(msg tea.Msg) tea.Cmd {
 			}
 		}
 		return nil
+	case logViewStreamOpenedMsg:
+		if message.generation != view.generation {
+			// Stale (the view re-initialised or switched subject): close the orphan so
+			// no Recv lingers and no relay/log connection leaks.
+			if message.cancel != nil {
+				message.cancel()
+			}
+			if message.stream != nil {
+				_ = message.stream.Close()
+			}
+			return nil
+		}
+		view.loaded = true
+		if message.err != nil {
+			view.err = message.err
+			return nil
+		}
+		view.err = nil
+		view.streamHandle = message.stream
+		view.streamCtx = message.ctx
+		view.streamCancel = message.cancel
+		// First Recv from an empty buffer; history streams in entry-by-entry, then live.
+		return view.recvCmd(message.stream, message.ctx, "", view.generation)
+	case logViewStreamChunkMsg:
+		if message.generation != view.generation {
+			return nil // a chunk from a previous activation/subject
+		}
+		view.loaded = true
+		if message.err != nil {
+			// EOF / context-cancel are normal endings (subject stopped, or we closed the
+			// stream on switch); only a real error is surfaced. The buffer stays so the
+			// last output remains visible and scrollable.
+			if !errors.Is(message.err, io.EOF) && !errors.Is(message.err, context.Canceled) {
+				view.err = message.err
+			}
+			return nil
+		}
+		view.streamBuf = message.raw
+		view.empty = strings.TrimSpace(message.content) == ""
+		if view.viewport.AtBottom() {
+			view.viewport.SetContent(message.content)
+			view.viewport.GotoBottom()
+			view.pending = ""
+		} else {
+			// Scrolled up to read/select: freeze; buffer the latest for when they return.
+			view.pending = message.content
+		}
+		return view.recvCmd(view.streamHandle, view.streamCtx, view.streamBuf, view.generation)
 	case logViewTickMsg:
 		if message.generation != view.generation {
 			return nil // a stale tick chain
@@ -246,6 +433,24 @@ func (view *LogView) Update(msg tea.Msg) tea.Cmd {
 	case tea.KeyMsg:
 		switch message.String() {
 		case "r":
+			if view.streaming() {
+				// Reconnect: drop the current stream and re-open from history.
+				if view.subject() == "" {
+					return nil
+				}
+				view.closeStream()
+				view.generation++
+				view.streamBuf = ""
+				view.loaded = false
+				view.notRunning = false
+				view.viewport.GotoBottom()
+				if view.running != nil && !view.running() {
+					view.loaded = true
+					view.notRunning = true
+					return nil
+				}
+				return view.openStreamCmd(view.generation)
+			}
 			if view.polling {
 				return nil // a poll is already in flight
 			}

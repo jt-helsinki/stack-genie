@@ -10,7 +10,7 @@ import (
 
 // stubLog is a no-op embedded workspace log for Project view tests.
 func stubLog() *WorkspaceLog {
-	return NewWorkspaceLog(func() (string, error) { return "", nil }, func() bool { return true }, func() string { return "" })
+	return NewWorkspaceLog(func() (string, error) { return "", nil }, func() bool { return true }, func() string { return "" }, nil)
 }
 
 // TestProjectDetailLifecycleKeyEmitsActionRequest: a lifecycle key emits a

@@ -125,6 +125,23 @@ func Run(cwd string) error {
 	// The workspace log is embedded in the Workspace (project detail) view, beneath
 	// the summary — not a separate tab. It streams the microVM's captured output (msb
 	// logs) for the live current project; with no project the tailer returns nothing.
+	// On a backend that supports it (SDK), the workspace log STREAMS — loads history
+	// then pushes new entries via one live, relay-free stream (no polling). On the CLI
+	// backend (no streaming) the opener is nil and the view falls back to the tailer
+	// poll below.
+	var workspaceLogStream views.LogStreamOpener
+	if workspaceManager.SupportsLogStreaming() {
+		workspaceLogStream = func(ctx context.Context) (views.LogStream, error) {
+			if application.currentProject == "" {
+				return nil, fmt.Errorf("no workspace selected")
+			}
+			stream, err := workspaceManager.OpenWorkspaceLogStream(ctx, application.currentProject)
+			if err != nil {
+				return nil, err
+			}
+			return stream, nil
+		}
+	}
 	workspaceLogView := views.NewWorkspaceLog(
 		func() (string, error) {
 			if application.currentProject == "" {
@@ -134,6 +151,7 @@ func Run(cwd string) error {
 		},
 		application.workspaceLogReadable,
 		func() string { return application.currentProject },
+		workspaceLogStream,
 	)
 	projectDetail := views.NewProject(projectInfo, workspaceLogView)
 	// The Sessions view resolves the LIVE current project at fetch time (over the

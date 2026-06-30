@@ -197,12 +197,23 @@ check. msb runtime is now 0.6.1 (has the 128-client relay ceiling).
 - `Manager.ReleaseConnection(project)` (TUI project switch + Stop/Destroy) and
   `Manager.Close()` (TUI exit) fan out to the SDK backend via an optional
   `connectionReleaser` interface; both are no-ops on the CLI backend.
-- Reconnect on switch: the new project's logs/sessions/apps fetch on their next poll;
-  the workspace log keeps showing new entries via the **relay-free** `Logs` poll
-  (`GetSandbox.Logs` needs no handle — no relay cost). The proven poll-based `LogView`
-  is kept (not rewritten blind); true push-streaming via `LogStream` remains an
-  optional future enhancement.
+- Reconnect on switch: the new project's sessions/apps fetch on their next poll; the
+  workspace log STREAMS (see below).
+
+**Workspace log is now true push-streaming (no polling), on the SDK backend:**
+- `Manager.OpenWorkspaceLogStream` / `sdkSandbox.OpenLogStream` open one SDK
+  `LogStream{Follow:true}` over the **relay-free** host log channel (no agent-relay
+  client). It reads recent **history first**, then follows new entries.
+- The shared `LogView` gained a streaming mode (`LogStreamOpener`): it opens one
+  stream per activation and appends entries via **re-armed `Recv` commands** —
+  bubbletea runs each blocking `Recv` in its own goroutine; a generation guard + a
+  cancelable ctx (`closeStream`) tear it down on switch/Reset/hide with no leak.
+  Scrollback is preserved (capped in-memory buffer) so you can scroll back through
+  earlier messages; the freeze-while-scrolled-up behaviour is unchanged.
+- The CLI backend does not stream (`SupportsLogStreaming()` false), so the workspace
+  log there falls back to the existing tailer poll — behaviour unchanged. The Services
+  container log still polls (different, host-docker backend).
 
 **Still pending:** full live microVM lifecycle exercise on the SDK backend (create/
-exec/sessions/apps), flipping the default backend to `sdk` after that, P3 (SSH
-interactive), and P4 (the `make release` cross-compile CGO rework).
+exec/sessions/apps + the live log stream), flipping the default backend to `sdk`
+after that, P3 (SSH interactive), and P4 (the `make release` cross-compile CGO rework).

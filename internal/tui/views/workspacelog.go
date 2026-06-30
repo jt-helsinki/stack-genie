@@ -32,9 +32,12 @@ type WorkspaceLogFollowRequestedMsg struct{ Project string }
 // NewWorkspaceLog builds the workspace embedded log over the injected tailer, a
 // running-check (the log is only fetched/shown while the workspace is running), and
 // the current-project resolver. It configures the generic LogView with the
-// workspace-specific labels + the `msb logs -f` follow message.
-func NewWorkspaceLog(tail WorkspaceLogTailer, running WorkspaceRunning, project func() string) *WorkspaceLog {
-	return NewLogView(tail, running, project,
+// workspace-specific labels + the `msb logs -f` follow message. When stream is
+// non-nil (the SDK backend supports live streaming) the view STREAMS — loads history
+// then appends new entries with no polling; when nil (the CLI backend) it falls back
+// to the tailer poll.
+func NewWorkspaceLog(tail WorkspaceLogTailer, running WorkspaceRunning, project func() string, stream LogStreamOpener) *WorkspaceLog {
+	view := NewLogView(tail, running, project,
 		LogViewLabels{
 			NoSubject:  "no workspace selected — open one from the Workspaces view",
 			NotRunning: "workspace not running — its log appears here while it is running (press s to start)",
@@ -43,4 +46,6 @@ func NewWorkspaceLog(tail WorkspaceLogTailer, running WorkspaceRunning, project 
 		},
 		func(subject string) tea.Msg { return WorkspaceLogFollowRequestedMsg{Project: subject} },
 	)
+	view.openStream = stream
+	return view
 }

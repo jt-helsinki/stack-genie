@@ -2,7 +2,9 @@ package workspace
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path"
 	"strconv"
@@ -79,6 +81,88 @@ func (manager Manager) Close() {
 	if releaser, ok := manager.Sandbox.(connectionReleaser); ok {
 		releaser.CloseConnections()
 	}
+}
+
+// LogStream is a live log subscription: Recv blocks for the next chunk (recent
+// history first, then new entries as they land), and Close stops it. Backed by the
+// SDK's relay-free host log channel (no agent-relay client). The CLI backend does not
+// implement streaming; callers fall back to the LogTail poll path there.
+type LogStream interface {
+	Recv(ctx context.Context) (string, error)
+	Close() error
+}
+
+// logStreamer is the optional capability a Sandbox backend may implement to open a
+// live LogStream. Only the SDK backend does.
+type logStreamer interface {
+	OpenLogStream(ctx context.Context, name string) (LogStream, error)
+}
+
+// ErrLogStreamUnsupported is returned by OpenWorkspaceLogStream when the active
+// Sandbox backend cannot stream (the CLI backend); the caller then polls instead.
+var ErrLogStreamUnsupported = errors.New("log streaming is not supported by this workspace backend")
+
+// SupportsLogStreaming reports whether the active backend can stream logs (the SDK
+// backend yes, the CLI backend no). Callers use it to choose the streaming log view
+// vs. the tailer poll fallback.
+func (manager Manager) SupportsLogStreaming() bool {
+	_, ok := manager.Sandbox.(logStreamer)
+	return ok
+}
+
+// OpenWorkspaceLogStream opens a live log stream for the project's microVM (recent
+// history then follow), or ErrLogStreamUnsupported on the CLI backend. It rides the
+// relay-free host log channel, so it consumes no agent-relay client. The caller owns
+// the returned stream and must Close it.
+func (manager Manager) OpenWorkspaceLogStream(ctx context.Context, project string) (LogStream, error) {
+	streamer, ok := manager.Sandbox.(logStreamer)
+	if !ok {
+		return nil, ErrLogStreamUnsupported
+	}
+	return streamer.OpenLogStream(ctx, Name(project))
+}
+
+// sdkLogStream adapts a microsandbox LogStreamHandle to LogStream, mapping a nil
+// entry (end of stream) to io.EOF.
+type sdkLogStream struct{ handle *microsandbox.LogStreamHandle }
+
+func (stream *sdkLogStream) Recv(ctx context.Context) (string, error) {
+	entry, err := stream.handle.Recv(ctx)
+	if err != nil {
+		return "", err
+	}
+	if entry == nil {
+		return "", io.EOF
+	}
+	return entry.Text(), nil
+}
+
+func (stream *sdkLogStream) Close() error { return stream.handle.Close() }
+
+// OpenLogStream opens a follow-from-beginning log stream for the named microVM —
+// recent history first, then new entries — over the relay-free host log channel.
+// LogStream works without a live agent connection (it reads the persisted exec.log),
+// so it does not consume the single active relay handle.
+func (sandbox *sdkSandbox) OpenLogStream(ctx context.Context, name string) (LogStream, error) {
+	if err := sandbox.ensure(); err != nil {
+		return nil, err
+	}
+	meta, err := microsandbox.GetSandbox(ctx, name)
+	if err != nil {
+		return nil, fmt.Errorf("could not open the workspace log stream for %q", name)
+	}
+	handle, err := meta.LogStream(ctx, microsandbox.LogStreamOptions{
+		Sources: []microsandbox.LogSource{
+			microsandbox.LogSourceStdout,
+			microsandbox.LogSourceStderr,
+			microsandbox.LogSourceSystem,
+		},
+		Follow: true,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("could not open the workspace log stream for %q", name)
+	}
+	return &sdkLogStream{handle: handle}, nil
 }
 
 // sdkSandbox drives Microsandbox microVMs via the in-process Go SDK. It keeps ONE
