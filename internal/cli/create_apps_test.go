@@ -122,6 +122,31 @@ func TestParsePublishPorts(test *testing.T) {
 	}
 }
 
+func TestCappedResourcesCapsDefaultAtHost(test *testing.T) {
+	// Small host: the 4-cpu / 8G defaults are capped down to the host's 2 cpu / 4096 MiB.
+	cpus, memory := cappedResources(0, "", 2, 4096, true)
+	if cpus != 2 {
+		test.Errorf("cpus = %d, want capped to host 2", cpus)
+	}
+	if memory != "4096M" {
+		test.Errorf("memory = %q, want capped to host 4096M", memory)
+	}
+	// Large host: defaults fit, so they pass through unchanged.
+	cpus, memory = cappedResources(0, "", 16, 32768, true)
+	if cpus != config.Default().Workspace.CPULimit || memory != config.Default().Workspace.MemoryLimit {
+		test.Errorf("large host: got %d/%q, want defaults %d/%q", cpus, memory, config.Default().Workspace.CPULimit, config.Default().Workspace.MemoryLimit)
+	}
+	// Explicit values are preserved (capping only fills unset).
+	cpus, memory = cappedResources(1, "2G", 2, 4096, true)
+	if cpus != 1 || memory != "2G" {
+		test.Errorf("explicit values changed: got %d/%q, want 1/2G", cpus, memory)
+	}
+	// Unknown host RAM: the memory default is left as-is (no cap when we can't tell).
+	if _, memory = cappedResources(0, "", 2, 0, false); memory != config.Default().Workspace.MemoryLimit {
+		test.Errorf("unknown host RAM: memory = %q, want default unchanged", memory)
+	}
+}
+
 func TestValidateResourcesWithinHostRejectsOverCommit(test *testing.T) {
 	// A clearly-impossible CPU request must be rejected (host has far fewer).
 	if err := validateResourcesWithinHost(1<<20, ""); err == nil {

@@ -242,6 +242,36 @@ func validateResourcesWithinHost(cpus int, memory string) error {
 	return nil
 }
 
+// cappedDefaultResources resolves an UNSET cpu/memory to the platform default and
+// then caps it at the host — so a host smaller than the default (e.g. 4 GiB RAM vs the
+// 8G default) never yields a workspace configured larger than the machine. Explicit
+// over-host values are rejected earlier by validateResourcesWithinHost; this handles
+// only the unset case, which must not error.
+func cappedDefaultResources(cpus int, memory string) (int, string) {
+	hostMiB, ok := sysinfo.MemoryMiB()
+	return cappedResources(cpus, memory, sysinfo.CPUs(), hostMiB, ok)
+}
+
+// cappedResources is the host-agnostic core (host values injected so it is testable):
+// an unset cpu/memory becomes the platform default capped at the host.
+func cappedResources(cpus int, memory string, hostCPUs int, hostMiB uint64, hostMiBKnown bool) (int, string) {
+	if cpus <= 0 {
+		cpus = config.Default().Workspace.CPULimit
+		if hostCPUs > 0 && cpus > hostCPUs {
+			cpus = hostCPUs
+		}
+	}
+	if memory == "" {
+		memory = config.Default().Workspace.MemoryLimit
+		if hostMiBKnown {
+			if defaultMiB, err := config.ParseMemoryMiB(memory); err == nil && defaultMiB > hostMiB {
+				memory = fmt.Sprintf("%dM", hostMiB)
+			}
+		}
+	}
+	return cpus, memory
+}
+
 // dirSuggestions lists directories matching the typed path prefix, for the create
 // wizard's location autocompletion.
 func dirSuggestions(path string) []string {
@@ -359,11 +389,14 @@ func newCreateCmd(emitter *output.Emitter, exit *int, use string) *cobra.Command
 			}
 			spec.Root = root
 
-			// Cap CPU/memory at the host's actual resources.
+			// Reject an EXPLICIT over-host CPU/memory request, then resolve an UNSET
+			// value to the platform default capped at the host — so the persisted config
+			// is never larger than the machine.
 			if err := validateResourcesWithinHost(spec.CPUs, spec.Memory); err != nil {
 				*exit = emitter.Failure(projectCreateCommand, err)
 				return nil
 			}
+			spec.CPUs, spec.Memory = cappedDefaultResources(spec.CPUs, spec.Memory)
 
 			if dryRun {
 				*exit = emitter.Success(projectCreateCommand, map[string]any{"dry_run": true, "plan": createPlan(spec, root)})

@@ -296,11 +296,16 @@ func (sandbox *sdkSandbox) InspectConfig(ctx context.Context, name string) ([]Wo
 	if err != nil {
 		return nil, fmt.Errorf("could not read workspace %q configuration", name)
 	}
-	return sandboxConfigFields(configuration), nil
+	return sandboxConfigFields(configuration, string(meta.Status())), nil
 }
 
 // sandboxConfigFields renders a SandboxConfig into the ordered diagnostic field list.
-func sandboxConfigFields(configuration *microsandbox.SandboxConfig) []WorkspaceConfigField {
+// status is the live sandbox status (the config resolves for a stopped-but-existing
+// sandbox too, so the status must be read, not assumed running).
+func sandboxConfigFields(configuration *microsandbox.SandboxConfig, status string) []WorkspaceConfigField {
+	if status == "" {
+		status = "unknown"
+	}
 	image := configuration.Image
 	switch {
 	case configuration.ImageBind != "":
@@ -313,7 +318,7 @@ func sandboxConfigFields(configuration *microsandbox.SandboxConfig) []WorkspaceC
 		user = "workspace (default)"
 	}
 	fields := []WorkspaceConfigField{
-		{Label: "status", Value: string(microsandbox.SandboxStatusRunning)},
+		{Label: "status", Value: status},
 		{Label: "image", Value: image},
 		{Label: "memory", Value: fmt.Sprintf("%d MiB", configuration.MemoryMiB)},
 		{Label: "vcpus", Value: strconv.Itoa(int(configuration.CPUs))},

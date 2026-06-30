@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"math"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -129,10 +130,17 @@ func ParseMemoryMiB(value string) (uint64, error) {
 		multiplier, number = 1, strings.TrimSuffix(upper, "M")
 	}
 	amount, err := strconv.ParseFloat(strings.TrimSpace(number), 64)
-	if err != nil || amount <= 0 {
-		return 0, fmt.Errorf("invalid memory %q (e.g. 512M, 4G, 2048)", value)
+	if err != nil || amount <= 0 || math.IsInf(amount, 0) || math.IsNaN(amount) {
+		return 0, fmt.Errorf("invalid memory %q (e.g. 512M, 4G, 2048; suffix M/Mi/G/Gi or a bare MiB number)", value)
 	}
-	return uint64(amount * float64(multiplier)), nil
+	mib := amount * float64(multiplier)
+	// Guard the float→uint conversion against absurd input (e.g. "9e99G"), whose
+	// uint64 cast is implementation-defined. 1<<30 MiB (1 PiB) is far above any real host.
+	const maxMiB = 1 << 30
+	if mib > maxMiB {
+		return 0, fmt.Errorf("memory %q is unreasonably large", value)
+	}
+	return uint64(mib), nil
 }
 
 // ValidateMemory checks a workspace memory_limit. Empty is allowed (the platform
