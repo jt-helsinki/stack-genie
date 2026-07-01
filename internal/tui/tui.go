@@ -295,7 +295,7 @@ func Run(cwd string) error {
 	projectsHub := views.NewProjectsHub(
 		projectsView,
 		[]views.Screen{projectDetail, workspaceLogView, metricsView, networkView, contextView, sessionsView, appsView},
-		[]string{"Workspace", "Sandbox Logs", "Metrics", "Network", "Context", "Shell", "Apps"},
+		[]string{"Workspace", "Logs", "Metrics", "Network", "Context", "Shell", "Apps"},
 	)
 
 	// Top-level tab order = menu order: Services · Workspaces · Local Models · Cloud

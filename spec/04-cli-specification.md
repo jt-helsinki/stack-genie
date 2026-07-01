@@ -1690,7 +1690,7 @@ number keys `1`-`9`. There is **no `:` command palette** — `q`/`ctrl+c` quits 
     state handle until the target status (or a ~6m timeout). The TUI stays navigable.
     `d` (delete) runs in the confirm **terminal overlay** (see below). `e` opens the
     shell in the REAL terminal (see Shell, below).
-  * **Sandbox Logs** — the workspace log as its own sub-tab: a READ-ONLY, scrollable,
+  * **Logs** — the workspace log as its own sub-tab: a READ-ONLY, scrollable,
     selectable view of the microVM's captured output. On the SDK backend it STREAMS
     (`Manager.OpenWorkspaceLogStream` → one relay-free `LogStream{Follow:true}`:
     history first, then new entries pushed — no polling); on the CLI backend it falls
@@ -1714,7 +1714,7 @@ number keys `1`-`9`. There is **no `:` command palette** — `q`/`ctrl+c` quits 
     / `ai attach` / `ai agent` / `ai sessions` (+ `ai sessions kill`).
   * **Apps** — the in-VM AI apps (install/start/stop/restart/remove).
 
-  The **workspace log** lives in the **Sandbox Logs** sub-tab (above): a READ-ONLY
+  The **workspace log** lives in the **Logs** sub-tab (above): a READ-ONLY
   (no command input), scrollable, selectable view of the microVM's captured output,
   following the tail unless scrolled up and freezing while scrolled up. On the SDK
   backend it STREAMS — one `LogStream` delivers recent history then pushes new entries

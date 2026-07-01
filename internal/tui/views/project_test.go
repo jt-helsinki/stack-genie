@@ -114,6 +114,40 @@ func TestProjectPendingShowsSpinner(test *testing.T) {
 	}
 }
 
+// TestProjectStatusLabels: a running workspace shows "running", a lifecycle action in
+// flight shows the progress verb ("starting"/"restarting"), and other states map.
+func TestProjectStatusLabels(test *testing.T) {
+	if got := workspaceStatusLabel("started"); !strings.Contains(got, "running") {
+		test.Errorf("started → %q, want 'running'", got)
+	}
+	if got := workspaceStatusLabel("running"); !strings.Contains(got, "running") {
+		test.Errorf("running → %q, want 'running'", got)
+	}
+	if got := workspaceStatusLabel("stopped"); !strings.Contains(got, "stopped") {
+		test.Errorf("stopped → %q, want 'stopped'", got)
+	}
+	if got := workspaceStatusLabel("none"); !strings.Contains(got, "not created") {
+		test.Errorf("none → %q, want 'not created'", got)
+	}
+	if pendingVerb("start") != "starting" || pendingVerb("restart") != "restarting" || pendingVerb("stop") != "stopping" {
+		test.Errorf("pendingVerb: got %q/%q/%q", pendingVerb("start"), pendingVerb("restart"), pendingVerb("stop"))
+	}
+
+	// Rendered: a started workspace shows "running"; a pending restart shows "restarting".
+	view := NewProject(func(name string) (project.Entry, bool, error) {
+		return project.Entry{Name: name, OS: "ubuntu", Status: "started"}, true, nil
+	}, nil)
+	view.SetProject("app")
+	_ = view.Update(view.Init()())
+	if !strings.Contains(view.View(), "running") {
+		test.Errorf("started workspace view should show 'running':\n%s", view.View())
+	}
+	view.StartPending("restart")
+	if out := view.View(); !strings.Contains(out, "restarting") {
+		test.Errorf("pending restart view should show 'restarting':\n%s", out)
+	}
+}
+
 // TestProjectConfigScrollsWhenSized: a config taller than the pane is scrollable.
 func TestProjectConfigScrollsWhenSized(test *testing.T) {
 	fields := make([]ConfigField, 0, 30)

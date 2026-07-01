@@ -216,10 +216,12 @@ func (view *Project) renderBody() string {
 	body.WriteString(field("OS", view.entry.OS))
 	body.WriteString(field("agents", strings.Join(view.entry.Agents, ", ")))
 	if view.pending != "" {
-		glyph := ui.Success.Render(spinnerFrames[view.pendingFrame%len(spinnerFrames)])
-		body.WriteString(field("workspace", glyph+ui.Muted.Render(" "+view.pending+"ing…")))
+		// A lifecycle action is in flight: show the progress verb in orange with a spinner
+		// (starting / restarting / stopping) — the workspace is NOT usable yet.
+		glyph := ui.Warn.Render(spinnerFrames[view.pendingFrame%len(spinnerFrames)])
+		body.WriteString(field("workspace", glyph+" "+ui.Warn.Render(pendingVerb(view.pending)+"…")))
 	} else {
-		body.WriteString(field("workspace", view.entry.Status))
+		body.WriteString(field("workspace", workspaceStatusLabel(view.entry.Status)))
 	}
 	body.WriteString(field("path", view.entry.Path))
 	if view.flash != "" {
@@ -239,6 +241,37 @@ func (view *Project) renderBody() string {
 		body.WriteString("  " + ui.Muted.Render("not running — start the workspace to see its live configuration") + "\n")
 	}
 	return body.String()
+}
+
+// pendingVerb turns a lifecycle action into its progress verb (start → starting).
+func pendingVerb(action string) string {
+	switch action {
+	case "start":
+		return "starting"
+	case "restart":
+		return "restarting"
+	case "stop":
+		return "stopping"
+	default:
+		return action + "ing"
+	}
+}
+
+// workspaceStatusLabel renders the workspace lifecycle status with a semantic colour:
+// a running workspace is green ("running"); stopped / not-yet-created are muted. It
+// maps both the state-handle vocabulary ("started") and the live SDK vocabulary
+// ("running") to the same "running" label.
+func workspaceStatusLabel(status string) string {
+	switch status {
+	case "started", "running":
+		return ui.Success.Render("running")
+	case "stopped":
+		return ui.Muted.Render("stopped")
+	case "none", "":
+		return ui.Muted.Render("not created")
+	default:
+		return status
+	}
 }
 
 func field(label, value string) string {
