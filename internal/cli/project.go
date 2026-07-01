@@ -246,6 +246,15 @@ func validateResourcesWithinHost(cpus int, memory string) error {
 	return nil
 }
 
+// hostMemoryGB returns the host RAM in whole GB (0 when unknown), for the create
+// wizard's memory-field hint (memory is entered as a plain number of GB).
+func hostMemoryGB() int {
+	if mib, ok := sysinfo.MemoryMiB(); ok {
+		return int(mib / 1024)
+	}
+	return 0
+}
+
 // cappedDefaultResources resolves an UNSET cpu/memory to the platform default and
 // then caps it at the host — so a host smaller than the default (e.g. 4 GiB RAM vs the
 // 8G default) never yields a workspace configured larger than the machine. Explicit
@@ -458,7 +467,7 @@ func newCreateCmd(emitter *output.Emitter, exit *int, use string) *cobra.Command
 	cmd.Flags().StringSlice("apps", nil, "in-VM AI apps to install (default: none): "+strings.Join(supportedApps, ","))
 	cmd.Flags().String("idle-timeout", "", "Microsandbox idle timeout (default: "+config.DefaultMicrosandboxIdleTimeout+", e.g. 30m, 24h)")
 	cmd.Flags().Int("cpus", 0, fmt.Sprintf("workspace vCPUs (default: %d; max: host's %d)", config.Default().Workspace.CPULimit, sysinfo.CPUs()))
-	cmd.Flags().String("memory", "", "workspace memory limit (default: "+config.Default().Workspace.MemoryLimit+", e.g. 2G, 4096; max: host RAM)")
+	cmd.Flags().String("memory", "", "workspace memory in GB, a plain number (default: "+config.Default().Workspace.MemoryLimit+"; max: host RAM in GB)")
 	cmd.Flags().StringSlice("ports", nil, "ports to open into the workspace: PORT or HOST:GUEST (e.g. 8080,9000:3000)")
 	cmd.Flags().String("location", "", "workspace directory (default: current directory; created if missing)")
 	_ = cmd.RegisterFlagCompletionFunc("os", fixedValues(supportedOSes...))
@@ -618,8 +627,8 @@ func runCreateWizard(seed project.Spec) (project.Spec, bool, error) {
 			huh.NewInput().Title("Workspace vCPUs").
 				Description(fmt.Sprintf("Blank uses the default (%d); host has %d", config.Default().Workspace.CPULimit, sysinfo.CPUs())).
 				Value(&cpusText).Validate(wizardCPUsValidator),
-			huh.NewInput().Title("Workspace memory").
-				Description("e.g. 2G, 4096 (MiB); blank uses the default ("+config.Default().Workspace.MemoryLimit+")").
+			huh.NewInput().Title("Workspace memory (GB)").
+				Description(fmt.Sprintf("A plain number in GB; blank uses the default (%s); host has %d GB", config.Default().Workspace.MemoryLimit, hostMemoryGB())).
 				Value(&memory).Validate(wizardMemoryValidator),
 			huh.NewInput().Title("Ports to open (comma-separated)").
 				Description("PORT or HOST:GUEST, e.g. 8080,9000:3000").

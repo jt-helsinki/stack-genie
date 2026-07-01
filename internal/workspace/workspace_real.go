@@ -85,8 +85,23 @@ func (builder realBuilder) Build(projectRoot, imageRef string) error {
 // the rootful in-VM containerd + any in-VM app containers (Open WebUI / AnythingLLM
 // are heavy); 1G was too small — pulling/running an app could OOM-kill containerd
 // mid-pull ("connection refused" on its socket), so the fallback is 4G. (A freshly
-// created project's config sets memory_limit to 8G; this only applies when it's empty.)
+// created project's config sets memory_limit to 8 (GB); this only applies when it's empty.)
 const microVMMemory = "4G"
+
+// msbMemory renders a memory value for msb's `--memory` flag, which wants a unit
+// (e.g. 8G). The platform's memory config is a plain number of GB, so a unit-less
+// value gets a "G" suffix; a value that already carries a unit (or the empty
+// fallback) is handled directly.
+func msbMemory(value string) string {
+	trimmed := strings.TrimSpace(value)
+	if trimmed == "" {
+		return microVMMemory
+	}
+	if strings.ContainsAny(strings.ToUpper(trimmed), "MG") {
+		return trimmed
+	}
+	return trimmed + "G"
+}
 
 // dnsNameserver is the fixed host-loopback address of the platform's aip-dns
 // egress-audit resolver (arch §29). Every workspace microVM is booted with
@@ -126,10 +141,7 @@ func (sandbox realSandbox) Create(name, imageRef, projectMount, overlayPath stri
 // helper so the important lifecycle flags (especially --idle-timeout) are unit-tested
 // without spawning the real external tool.
 func sandboxCreateArgs(name, imageRef, projectMount, overlayPath string, resources VMResources, netArgs []string) []string {
-	memory := resources.Memory
-	if memory == "" {
-		memory = microVMMemory // fall back to the platform default when unset
-	}
+	memory := msbMemory(resources.Memory)
 	idleTimeout := resources.IdleTimeout
 	if idleTimeout == "" {
 		idleTimeout = config.DefaultMicrosandboxIdleTimeout

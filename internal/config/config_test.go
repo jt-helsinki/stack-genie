@@ -177,3 +177,42 @@ func TestAppsOmittedWhenEmpty(test *testing.T) {
 		test.Fatalf("apps = %v, want empty", loaded.Apps)
 	}
 }
+
+// TestParseMemoryMiBBareNumberIsGB pins the memory semantics: a bare number is
+// GIGABYTES (the config is "just a number, in GB"); unit suffixes still work.
+func TestParseMemoryMiBBareNumberIsGB(test *testing.T) {
+	cases := map[string]uint64{
+		"8":     8192,  // 8 GB
+		"24":    24576, // 24 GB
+		"1":     1024,  // 1 GB
+		"4G":    4096,  // suffix still honored
+		"2Gi":   2048,
+		"512M":  512,
+		"512Mi": 512,
+	}
+	for in, want := range cases {
+		got, err := ParseMemoryMiB(in)
+		if err != nil {
+			test.Errorf("ParseMemoryMiB(%q): %v", in, err)
+			continue
+		}
+		if got != want {
+			test.Errorf("ParseMemoryMiB(%q) = %d MiB, want %d", in, got, want)
+		}
+	}
+}
+
+// TestValidateMemoryMinimum guards the boot-minimum (and the old unit footgun: a
+// tiny value like "0.1" or "256M" is rejected).
+func TestValidateMemoryMinimum(test *testing.T) {
+	for _, ok := range []string{"", "8", "24", "1", "4G", "512M"} {
+		if err := ValidateMemory(ok); err != nil {
+			test.Errorf("ValidateMemory(%q) should be valid: %v", ok, err)
+		}
+	}
+	for _, bad := range []string{"256M", "0.1", "0.25"} {
+		if err := ValidateMemory(bad); err == nil {
+			test.Errorf("ValidateMemory(%q) should be rejected (below %d MiB)", bad, MinWorkspaceMemoryMiB)
+		}
+	}
+}

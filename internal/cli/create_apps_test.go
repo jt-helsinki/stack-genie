@@ -156,9 +156,13 @@ func TestValidateResourcesWithinHostRejectsOverCommit(test *testing.T) {
 	if err := validateResourcesWithinHost(-1, ""); err == nil {
 		test.Error("a negative CPU count must be rejected")
 	}
-	// A reasonable request (1 CPU, small memory) passes on any host.
-	if err := validateResourcesWithinHost(1, "256M"); err != nil {
-		test.Errorf("1 CPU / 256M should be valid: %v", err)
+	// A reasonable request (1 CPU, 1 GB) passes on any host.
+	if err := validateResourcesWithinHost(1, "1"); err != nil {
+		test.Errorf("1 CPU / 1 GB should be valid: %v", err)
+	}
+	// Below the boot minimum is rejected (also guards the unit footgun).
+	if err := validateResourcesWithinHost(1, "256M"); err == nil {
+		test.Error("256M (below the 512 MiB minimum) must be rejected")
 	}
 }
 

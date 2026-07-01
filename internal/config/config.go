@@ -117,7 +117,10 @@ func ParseMemoryMiB(value string) (uint64, error) {
 		return 0, fmt.Errorf("empty memory value")
 	}
 	upper := strings.ToUpper(trimmed)
-	multiplier := uint64(1)
+	// A BARE number is GIGABYTES (the memory config is "just a number, in GB"), so
+	// the default multiplier is 1024 MiB/GiB. Unit suffixes stay supported for
+	// back-compat: G/Gi = GiB, M/Mi = MiB.
+	multiplier := uint64(1024)
 	number := upper
 	switch {
 	case strings.HasSuffix(upper, "GI"):
@@ -131,7 +134,7 @@ func ParseMemoryMiB(value string) (uint64, error) {
 	}
 	amount, err := strconv.ParseFloat(strings.TrimSpace(number), 64)
 	if err != nil || amount <= 0 || math.IsInf(amount, 0) || math.IsNaN(amount) {
-		return 0, fmt.Errorf("invalid memory %q (e.g. 512M, 4G, 2048; suffix M/Mi/G/Gi or a bare MiB number)", value)
+		return 0, fmt.Errorf("invalid memory %q (a bare number is GB, e.g. 8 or 16; a unit like 512M/4G also works)", value)
 	}
 	mib := amount * float64(multiplier)
 	// Guard the float→uint conversion against absurd input (e.g. "9e99G"), whose
@@ -145,12 +148,21 @@ func ParseMemoryMiB(value string) (uint64, error) {
 
 // ValidateMemory checks a workspace memory_limit. Empty is allowed (the platform
 // default applies); otherwise it must parse to a positive MiB count.
+// MinWorkspaceMemoryMiB is the smallest workspace memory that can boot the guest
+// kernel + the in-VM runtime. It also catches the common unit footgun: a bare
+// number is MiB, so "24" (meaning 24 GB) parses to 24 MiB — far too little.
+const MinWorkspaceMemoryMiB = 512
+
 func ValidateMemory(value string) error {
 	if value == "" {
 		return nil
 	}
-	if _, err := ParseMemoryMiB(value); err != nil {
+	mib, err := ParseMemoryMiB(value)
+	if err != nil {
 		return fmt.Errorf("workspace.memory_limit: %s", err)
+	}
+	if mib < MinWorkspaceMemoryMiB {
+		return fmt.Errorf("workspace.memory_limit %q is only %d MiB, below the %d MiB minimum needed to boot a workspace (the value is in GB — try 8)", value, mib, MinWorkspaceMemoryMiB)
 	}
 	return nil
 }
@@ -217,7 +229,7 @@ func Default() *Config {
 	return &Config{
 		Agent:     AgentConfig{Tools: []string{"opencode", "pi"}, DefaultTool: "opencode"},
 		Context:   ContextConfig{Strategy: "balanced", CavemanLevel: "full"},
-		Workspace: WorkspaceConfig{CPULimit: 4, MemoryLimit: "8G"},
+		Workspace: WorkspaceConfig{CPULimit: 4, MemoryLimit: "8"},
 		Microsandbox: MicrosandboxConfig{
 			IdleTimeout: DefaultMicrosandboxIdleTimeout,
 		},
