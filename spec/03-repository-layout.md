@@ -204,11 +204,14 @@ Rules:
   **uv** (Astral's Python package/tool manager, installed for the workspace user
   onto `~/.local/bin`), and **Graphify** (PyPI `graphifyy`, CLI `graphify`) via
   `uv tool install "graphifyy[pdf,office,video,postgres,google,svg,sql,terraform,ollama,openai,gemini,anthropic]"`
-  (all optional extras except the region/DB-specific `chinese,azure,bedrock,falkordb,neo4j,leiden,dm`);
-  each selected agent-CLI snippet then registers Graphify with itself
-  (`graphify install` for claude-code, `graphify install --platform <cli>` for
-  codex/gemini/opencode/pi) — arch §12. **Python is therefore not a `--stacks`
-  option** (the `stacks/python` snippet below is retained for legacy projects only).
+  (all optional extras except the region/DB-specific `chinese,azure,bedrock,falkordb,neo4j,leiden,dm`).
+  Graphify is then registered with each selected agent CLI at WORKSPACE START (not
+  in the Dockerfile) — `graphify install --project [--platform <cli>]` run in
+  `~/project` (`Manager.registerGraphify`) — because `--project` writes into the
+  bind-mounted project dir, which only exists at runtime (arch §12). **Python is
+  therefore not a `--stacks` option** (the `stacks/python` snippet below is retained
+  for legacy projects only), and the agent-CLI snippets now only `npm install` their
+  CLI (Node itself is in the base).
 * the stack list is **extensible** — adding `stacks/<name>/Dockerfile.snippet`
   makes `<name>` selectable
 * after creation the project owns its Dockerfile; templates/snippets are no

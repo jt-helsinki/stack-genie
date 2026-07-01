@@ -229,27 +229,12 @@ func TestAgentCLISnippetKnownCLIs(t *testing.T) {
 			if strings.TrimSpace(got) == "" {
 				t.Fatalf("AgentCLISnippet(%q) returned blank content", cli)
 			}
-			// Every agent-CLI snippet registers Graphify with itself: `graphify
-			// install` for claude-code (the default platform) and `graphify install
-			// … --platform <cli>` for the others. Assert it registers Graphify and,
-			// where applicable, targets its own platform — tolerant of extra flags
-			// (e.g. --project).
-			graphifyFlag := map[string]string{
-				"claude-code": "",
-				"codex":       "--platform codex",
-				"gemini":      "--platform gemini",
-				"opencode":    "--platform opencode",
-				"pi":          "--platform pi",
-			}
-			if flag, ok := graphifyFlag[cli]; ok {
-				if !strings.Contains(got, "graphify install") {
-					t.Errorf("AgentCLISnippet(%q) missing `graphify install`:\n%s", cli, got)
-				}
-				if flag != "" && !strings.Contains(got, flag) {
-					t.Errorf("AgentCLISnippet(%q) missing %q:\n%s", cli, flag, got)
-				}
-			} else if strings.Contains(got, "graphify install") {
-				t.Errorf("AgentCLISnippet(%q) unexpectedly registers Graphify (unknown platform)", cli)
+			// Graphify registration is NO LONGER in the snippets — it moved to
+			// RUNTIME (workspace start: `graphify install --project` in ~/project,
+			// where the project is bind-mounted). A snippet only installs its CLI, so
+			// it must not run graphify at image-build time.
+			if strings.Contains(got, "graphify") {
+				t.Errorf("AgentCLISnippet(%q) should not run graphify (registration moved to runtime):\n%s", cli, got)
 			}
 		})
 	}

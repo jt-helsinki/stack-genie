@@ -435,6 +435,10 @@ func (manager Manager) Start(project string) (*state.Workspace, error) {
 	// Create the per-project Python virtualenv (.venv-msb) using the guest's baked-in
 	// Python. Best-effort — never fails the workspace start.
 	manager.ensureVenv(name)
+	// Register Graphify with each selected agent CLI. Runs HERE (not at image build)
+	// because `graphify install --project` writes into the project dir (~/project),
+	// which is only bind-mounted at runtime. Best-effort — never fails the start.
+	manager.registerGraphify(name, projectConfig)
 	now := manager.Now()
 	handle := &state.Workspace{
 		ID:          name,
@@ -586,6 +590,50 @@ func (manager Manager) ensureVenv(name string) {
 	script := "command -v python3 >/dev/null 2>&1 || exit 0; " +
 		"test -f " + venvPath + "/pyvenv.cfg || python3 -m venv " + venvPath
 	_, _ = manager.Sandbox.ExecContext(ctx, name, []string{"sh", "-lc", script})
+}
+
+// graphifyInstallTimeout bounds each per-CLI `graphify install` (config-only, no
+// network — it just writes skill/plugin/hook files into the project).
+const graphifyInstallTimeout = 60 * time.Second
+
+// graphifyPlatformFlag maps an agent CLI to its `graphify install --platform` value.
+// claude-code is Graphify's DEFAULT platform, so it takes no --platform flag.
+// A CLI absent from this map is not a Graphify platform and is skipped.
+var graphifyPlatformFlag = map[string]string{
+	"claude-code": "",
+	"codex":       "codex",
+	"gemini":      "gemini",
+	"opencode":    "opencode",
+	"pi":          "pi",
+}
+
+// registerGraphify registers Graphify (baked into the image via `uv tool install`)
+// with each SELECTED agent CLI, at workspace start. It MUST run here rather than at
+// image-build time: `graphify install --project` writes project-scoped skill/plugin/
+// hook files (e.g. opencode's `.opencode/plugins/graphify.js`, `AGENTS.md`) into the
+// project directory, which is only bind-mounted (at ~/project = workspaceWorkdir) at
+// runtime. Those files are DISTINCT from the platform's global agent configs under
+// ~/.config, so there is no clobber. Each install is config-only (no network) and
+// best-effort — a failure never fails the workspace start.
+func (manager Manager) registerGraphify(name string, projectConfig *config.Config) {
+	if projectConfig == nil {
+		return
+	}
+	for _, cli := range projectConfig.Agent.Tools {
+		platform, known := graphifyPlatformFlag[cli]
+		if !known {
+			continue
+		}
+		install := "graphify install --project"
+		if platform != "" {
+			install += " --platform " + platform
+		}
+		// Run in the mounted project dir so --project writes there.
+		script := "command -v graphify >/dev/null 2>&1 || exit 0; cd " + workspaceWorkdir + " && " + install
+		ctx, cancel := context.WithTimeout(context.Background(), graphifyInstallTimeout)
+		_, _ = manager.Sandbox.ExecContext(ctx, name, []string{"sh", "-lc", script})
+		cancel()
+	}
 }
 
 // ensureContainerd makes the rootful in-VM container runtime (containerd)

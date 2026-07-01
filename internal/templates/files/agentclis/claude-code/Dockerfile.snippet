@@ -4,8 +4,3 @@
 USER root
 RUN npm install -g @anthropic-ai/claude-code
 USER workspace
-
-# Register Graphify with Claude Code so it consults the knowledge graph automatically
-# (github.com/safishamsi/graphify — Claude Code is the default `graphify install`
-# platform). Best-effort: never fail the image build.
-RUN cd ~/workspace && graphify install --project install || echo "graphify: claude-code registration skipped (verify on hardware bring-up)"

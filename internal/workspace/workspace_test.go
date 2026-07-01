@@ -1540,3 +1540,42 @@ func TestStartCreatesVenv(test *testing.T) {
 		test.Errorf("Start should create the .venv-msb virtualenv; execs: %v", sandbox.allExecArgv)
 	}
 }
+
+// Start registers Graphify with each selected agent CLI at RUNTIME (not image
+// build), running `graphify install --project …` in the mounted project dir
+// (~/project) so its project-scoped files land where the CLI reads them.
+func TestStartRegistersGraphify(test *testing.T) {
+	root := seedProject(test, "app")
+	// The selected agent CLIs come from the project config.yaml (written by
+	// `ai create`); seed opencode + pi so registerGraphify has tools to register.
+	if err := config.WriteProject(root, &config.Config{
+		OS:    "debian-trixie",
+		Agent: config.AgentConfig{Tools: []string{"opencode", "pi"}, DefaultTool: "opencode"},
+	}); err != nil {
+		test.Fatal(err)
+	}
+	sandbox := &fakeSandbox{}
+	manager := Manager{
+		Builder: &fakeBuilder{}, Sandbox: sandbox, Keys: &fakeKeyMinter{},
+		Now: func() string { return "t" },
+	}
+	if _, err := manager.Start("app"); err != nil {
+		test.Fatal(err)
+	}
+	var sawOpencode, sawPi bool
+	for _, argv := range sandbox.allExecArgv {
+		joined := strings.Join(argv, " ")
+		if !strings.Contains(joined, "cd /home/workspace/project") {
+			continue
+		}
+		if strings.Contains(joined, "graphify install --project --platform opencode") {
+			sawOpencode = true
+		}
+		if strings.Contains(joined, "graphify install --project --platform pi") {
+			sawPi = true
+		}
+	}
+	if !sawOpencode || !sawPi {
+		test.Errorf("Start should register Graphify (--project) for opencode + pi in ~/project; execs: %v", sandbox.allExecArgv)
+	}
+}

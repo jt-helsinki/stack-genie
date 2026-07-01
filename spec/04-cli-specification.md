@@ -414,9 +414,10 @@ one command:
   **Graphify** (`graphifyy`, the knowledge-graph CLI skill; installed via
   `uv tool install "graphifyy[…extras]"` with all optional extras except the
   region/DB-specific chinese/azure/bedrock/falkordb/neo4j/leiden/dm) are baked into
-  every OS base image by default, each selected agent CLI registers Graphify with
-  itself (`graphify install --platform <cli>`), and each workspace gets a
-  per-project **`.venv-msb`** virtualenv created at start (see §7/§25)
+  every OS base image by default; each selected agent CLI registers Graphify with
+  itself at workspace START (`graphify install --project [--platform <cli>]` in
+  `~/project` — not at image build, since it writes project-scoped files); and each
+  workspace gets a per-project **`.venv-msb`** virtualenv created at start (see §7/§25)
 * `--apps <list>` — comma-separated in-VM AI apps to install
   (`openwebui,anythingllm`); **opt-in, default none**. Like `--stacks` it
   pre-seeds the wizard's apps multi-select on a terminal and drives the selection

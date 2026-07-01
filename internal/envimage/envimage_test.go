@@ -156,9 +156,9 @@ func TestAllOSTemplatesExposeIdenticalBaseSurface(test *testing.T) {
 				test.Errorf("%s: base surface missing %q:\n%s", osKey, fragment, dockerfile)
 			}
 		}
-		// The user's selections are appended regardless of OS, and the selected
-		// agent CLI registers Graphify with itself.
-		for _, fragment := range []string{"# stack: go", "# agent CLI: opencode", "--platform opencode"} {
+		// The user's selections are appended regardless of OS. (Graphify is no longer
+		// registered in the snippet — that moved to runtime.)
+		for _, fragment := range []string{"# stack: go", "# agent CLI: opencode", "opencode-ai"} {
 			if !strings.Contains(dockerfile, fragment) {
 				test.Errorf("%s: missing selection %q", osKey, fragment)
 			}

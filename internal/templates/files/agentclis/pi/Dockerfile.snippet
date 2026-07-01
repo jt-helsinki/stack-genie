@@ -12,7 +12,3 @@
 USER root
 RUN npm install -g @earendil-works/pi-coding-agent
 USER workspace
-
-# Register Graphify with pi (github.com/safishamsi/graphify). Best-effort: never
-# fail the image build.
-RUN cd ~/workspace && graphify install --project --platform pi || echo "graphify: pi registration skipped (verify on hardware bring-up)"

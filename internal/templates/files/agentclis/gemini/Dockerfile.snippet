@@ -4,7 +4,3 @@
 USER root
 RUN npm install -g @google/gemini-cli
 USER workspace
-
-# Register Graphify with the Gemini CLI (github.com/safishamsi/graphify). Best-effort:
-# never fail the image build.
-RUN cd ~/workspace && graphify install --project --platform gemini || echo "graphify: gemini registration skipped (verify on hardware bring-up)"
