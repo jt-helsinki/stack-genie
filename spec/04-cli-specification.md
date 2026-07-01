@@ -945,46 +945,47 @@ Exit codes (§18): invalid app/args → `2`; a lifecycle verb (`update`/`start`/
 workspace when none is running → `3`; runtime failures → `4`. The TUI **Apps**
 view (§14) drives the same path via `ai apps`.
 
-### In-workspace agent CLI provider config — keyless host templates, key in-VM only
+### In-workspace agent CLI provider config — keyless per-CLI project configs, key in-VM only
 
-All **five** agent CLIs route through the LiteLLM gateway **by default**. Their
-provider config lives as **keyless, user-editable host templates** under
-`<project>/.ai-platform/agents/` (scaffolded at `ai create`; see repo-layout §12.1c),
-and is (re)loaded into the microVM on **every workspace start/restart** by
-`workspace.registerAgentProviders` (over `internal/agentcfg`):
+All **five** agent CLIs route through the LiteLLM gateway **by default**. At every
+workspace start/restart `workspace.registerAgentProviders` (over `internal/agentcfg`)
+writes each CLI's provider config at **that CLI's own default per-project location**
+inside the bind-mounted project dir (`<project>/…` on host = `/home/workspace/project/…`
+in-VM). Every on-disk config is **KEYLESS** (the scoped virtual key is env-supplied, never
+on disk) and any pre-existing file is **deep-merged** so the managed block wins while the
+user's other keys survive:
 
-* **opencode** (`~/.config/opencode/opencode.json`) and **pi**
-  (`~/.pi/agent/models.json`) — JSON config files. At start the platform reads the
-  keyless host template, **deep-merges** in the dynamic values (the freshly-minted
-  scoped virtual key, the served-model picker, and — opencode only — the per-request
-  Headroom knobs), and writes the **final config INTO the microVM**. The dynamic
-  provider block wins; any other user keys in the template survive. A user's edits
-  are preserved across restarts (a present template is never clobbered with the
-  key-bearing form); only an absent template is re-scaffolded keyless.
-* **claude-code** (`claude`), **codex**, and **gemini** — routed via **environment
-  variables** written into the in-VM agent env file (`~/.config/aip/agent-env.sh`,
-  sourced by every shell + agent session) plus, for codex, a keyless TOML provider
-  block (`~/.codex/config.toml`):
-  * claude-code: `ANTHROPIC_BASE_URL` (the gateway root — LiteLLM's
-    Anthropic-compatible `/v1/messages`) + `ANTHROPIC_AUTH_TOKEN` (bearer token).
-  * codex: `~/.codex/config.toml` with a `[model_providers.aip-gateway]` block
-    (`base_url = "<gateway>/v1"`, `wire_api = "responses"` — codex requires the
-    OpenAI Responses API, which LiteLLM exposes — and `env_key = "AIP_GATEWAY_KEY"`);
-    the key is supplied via that env var, never written into the file.
-  * gemini: `GOOGLE_GEMINI_BASE_URL` (the gateway root, honoured by the `@google/genai`
-    SDK) + `GEMINI_API_KEY`.
+* **opencode** → `<project>/.opencode/opencode.json` (`apiKey: "{env:AIP_GATEWAY_KEY}"`);
+  the in-VM agent env file exports `OPENCODE_CONFIG` pointing opencode at this file. It
+  carries the per-request Headroom knobs on every model.
+* **pi** → `<project>/.pi/models.json` (`apiKey: "$AIP_GATEWAY_KEY"`) +
+  `<project>/.pi/settings.json` (default provider + skills/prompts resource paths). pi
+  cannot inject per-request fields, so it uses Headroom's server-side defaults.
+* **claude-code** → `<project>/.claude/settings.json` — an `env` block setting only
+  `ANTHROPIC_BASE_URL` (the gateway root — LiteLLM's Anthropic-compatible surface, it
+  appends `/v1/messages`); the bearer token stays in the exported `ANTHROPIC_AUTH_TOKEN`
+  env var (settings.json has no `${VAR}` interpolation), so the file is keyless.
+* **codex** → `<project>/.codex/config.toml` — a keyless `[model_providers.aip-gateway]`
+  block (`base_url = "<gateway>/v1"`, `wire_api = "responses"` — codex requires the OpenAI
+  Responses API, which LiteLLM exposes — `env_key = "AIP_GATEWAY_KEY"`) PLUS a global in-VM
+  `~/.codex/config.toml` trust entry (`[projects."/home/workspace/project"]
+  trust_level = "trusted"`, off host disk) so codex loads the project config.
+* **gemini** → **env-only** (no settings key for a base URL exists): `GOOGLE_GEMINI_BASE_URL`
+  (the gateway root, honoured by the `@google/genai` SDK) + `GEMINI_API_KEY`, via the in-VM
+  agent env file.
 
-Each final in-VM config is written at that CLI's **default location** (the `~/…`
-paths above, under the `workspace` user's home); nothing relocates a CLI config — no
-`OPENCODE_CONFIG`/`CODEX_HOME`/`CLAUDE_CONFIG_DIR`/`XDG_CONFIG_HOME` override — and
-`.ai-platform/agents/` is only the keyless host template/persistence layer, never an
-in-VM config directory.
-
-**The scoped virtual key (and any real key) is NEVER written to host disk** — the
-host templates are keyless (base URL is not a secret), and the key is injected only
-into the final config/env written **into the microVM** (`Sandbox.WriteFile`), where
-it stays. An older project (no `agents/` dir) is back-filled with keyless defaults at
-start.
+**The scoped virtual key (and any real key) is NEVER written to host disk.** It lives
+ONLY in the in-VM agent env file `~/.config/aip/agent-env.sh` (`Sandbox.WriteFile`, sourced
+by every shell + agent session), which exports `AIP_GATEWAY_KEY` (opencode/pi/codex),
+`ANTHROPIC_AUTH_TOKEN` (claude-code), and `GEMINI_API_KEY` (gemini). The on-disk configs
+reference the key by env interpolation (`{env:}`/`$VAR`), codex via `env_key`, claude via
+the exported token — all keyless. A user's edits to the on-disk configs survive restart
+(present files are deep-merged, never clobbered). The `<project>/.ai-platform/{agents,
+skills,prompts,projects}` shared resource pool is symlinked into each installed CLI's
+per-project dir at start (repo-layout §12.1c). *(hardware bring-up: opencode honouring
+`.opencode/opencode.json` via `OPENCODE_CONFIG`; codex loading the trusted project config;
+pi reading `.pi/models.json` + settings resource paths; the symlinks resolving in-VM — all
+not yet verified live.)*
 
 ### In-workspace `refresh-models` — re-pull the model picker without restarting
 
@@ -1003,12 +1004,15 @@ refresh-models      # run from any workspace session (ai shell / ai agent)
 It re-fetches the models the gateway currently **serves** (its DB-backed models)
 from the gateway's `/v1/models` endpoint — authenticated with the workspace's scoped
 virtual key — dedups + sorts them **exactly** as a fresh workspace start does, and
-rewrites the **opencode** + **pi** configs (`opencode.json`, pi `models.json`)
-**in place, byte-identical** to the canonical (non-template-merged) config a fresh
-start produces. Restart the agent CLI afterwards to pick up the new list. (It
-rewrites the canonical opencode/pi configs only; host-template edits and the
-env-routed CLIs — claude-code/codex/gemini, whose served model set is discovered at
-request time, not baked — are re-applied on the next workspace start.) It **degrades**: if the gateway is unreachable it leaves the
+rewrites the **opencode** + **pi** PROJECT configs
+(`/home/workspace/project/.opencode/opencode.json`,
+`/home/workspace/project/.pi/models.json`) **in place, byte-identical** to the canonical
+config a fresh start produces — and **KEYLESS** (the `{env:}`/`$VAR` key refs are
+preserved; the fetched key authenticates the `/v1/models` call only, never entering the
+rewritten files). Restart the agent CLI afterwards to pick up the new list. (It rewrites
+the canonical opencode/pi configs only; any user deep-merge edits and the env-routed CLIs
+— claude-code/codex/gemini, whose served model set is discovered at request time, not
+baked — are re-applied on the next workspace start.) It **degrades**: if the gateway is unreachable it leaves the
 existing configs **untouched** (it never wipes them to an empty list) and exits
 non-zero with a warning; a missing `curl` (image without it) errors clearly. The
 host-side generation and the script's own logic are unit-tested (the generated

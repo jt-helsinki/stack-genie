@@ -355,33 +355,60 @@ the agent into this source tree — the platform does not manage them.
 ```
 
 ```text id="p4"
-Dockerfile           # tracked — environment (architecture §25)
-config.yaml          # tracked — project config (§12.4)
-profile.yaml         # tracked — project profile (language/toolchain)
-project.yaml         # tracked — { name, os, created } (§12.1)
-skills/caveman/      # tracked — platform-seeded Caveman skill (architecture §9)
-agents/              # tracked — KEYLESS, user-editable agent CLI templates (§12.1c)
-  opencode.json      #   opencode static settings + gateway base URL (no key)
-  pi.json            #   pi static settings + gateway base URL (no key)
-  codex.toml         #   codex gateway provider block (key via env_key, no key)
-.gitignore           # ignores run/
-run/                 # gitignored — host-local runtime state
-  workspaces/<workspace-id>.json   # (§12.2)
+.ai-platform/
+  Dockerfile           # tracked — environment (architecture §25)
+  config.yaml          # tracked — project config (§12.4)
+  profile.yaml         # tracked — project profile (language/toolchain)
+  project.yaml         # tracked — { name, os, created } (§12.1)
+  skills/caveman/      # tracked — platform-seeded Caveman skill (architecture §9)
+  agents/  skills/  prompts/  projects/   # shared resource pool (§12.1c) — symlinked into each CLI's dir
+  .gitignore           # ignores run/
+  run/                 # gitignored — host-local runtime state
+    workspaces/<workspace-id>.json   # (§12.2)
+
+# per-CLI provider configs — KEYLESS, written at workspace start (§12.1c, architecture §15):
+.opencode/opencode.json         # opencode provider config; apiKey "{env:AIP_GATEWAY_KEY}"
+.pi/models.json  .pi/settings.json   # pi provider config (apiKey "$AIP_GATEWAY_KEY") + settings
+.claude/settings.json           # claude-code env block (base URL only; token via env)
+.codex/config.toml              # codex provider block (key via env_key)
 ```
 
-The `agents/` templates hold each agent CLI's **static, user-editable** settings
-plus the gateway **base URL** (not a secret) — but **never the scoped virtual key**.
-At workspace start the platform reads each template, deep-merges in the dynamic,
-key-bearing values (the freshly-minted scoped key, the served-model picker, the
-Headroom knobs), and writes the **final config INTO the microVM at that CLI's default
-location** (`~/.config/opencode/opencode.json`, `~/.pi/agent/models.json`,
-`~/.codex/config.toml`; nothing relocates a CLI config) — so the key lives only in the
-VM, never on platform disk (architecture §15). `agents/` is the host template layer,
-not an in-VM config directory. A user's edits survive
-restart (a present template is merged, never clobbered with the key-bearing form);
-only an absent template is re-scaffolded keyless. claude-code/codex/gemini route via
-**env vars** written into the VM agent env file (sourced by every session), so all
-five CLIs reach the gateway by default.
+### 12.1c Per-CLI project configs + shared resource pool
+
+The old `<project>/.ai-platform/agents/` keyless-template layer is **retired**. Instead,
+at workspace start the platform writes each agent CLI's provider config at **that CLI's
+own default per-project location** under the project root (in the bind-mounted project
+dir = host disk, so the project is self-describing and portable). Every on-disk config is
+**KEYLESS** — the scoped virtual key is env-supplied and never written to disk — and any
+existing file is deep-merged so the managed block wins while the user's other keys survive:
+
+* **opencode** → `.opencode/opencode.json` (`apiKey: "{env:AIP_GATEWAY_KEY}"`); the in-VM
+  agent env file exports `OPENCODE_CONFIG` to point opencode at it.
+* **pi** → `.pi/models.json` (`apiKey: "$AIP_GATEWAY_KEY"`) + `.pi/settings.json`
+  (default provider + skills/prompts resource paths).
+* **claude-code** → `.claude/settings.json` — an `env` block with `ANTHROPIC_BASE_URL`;
+  the token stays in the exported `ANTHROPIC_AUTH_TOKEN` env var (no key in the file).
+* **codex** → `.codex/config.toml` (keyless, `env_key = "AIP_GATEWAY_KEY"`,
+  `wire_api = "responses"`) + a global in-VM `~/.codex/config.toml` trust entry so codex
+  loads the project config.
+* **gemini** → env-only (`GOOGLE_GEMINI_BASE_URL` + `GEMINI_API_KEY` in the in-VM agent
+  env file; no settings key for a base URL exists).
+
+The scoped virtual key lives **only** in the in-VM agent env file
+`~/.config/aip/agent-env.sh` (off host disk), sourced by every shell + agent session
+(architecture §15). A user's edits to the on-disk configs survive restart (present files
+are deep-merged, never clobbered).
+
+**Shared resource pool.** `<project>/.ai-platform/{agents,skills,prompts,projects}` holds
+ONE copy of the project's agents / skills / prompts. At workspace start (BEFORE Graphify
+registration) each pool is symlinked (relative) into each **installed** CLI's real
+per-project dir: `skills` → `.opencode/skills`/`.claude/skills`/`.pi/skills`; `agents` →
+`.opencode/agents`/`.claude/agents`; `prompts` →
+`.opencode/commands`/`.claude/commands`/`.gemini/commands`/`.pi/prompts`. Kinds a CLI has
+no concept for are skipped (codex/gemini have no skills/agents). Caveman
+(`skills/caveman/SKILL.md`) is thereby shared to every skills-capable client. *(hardware
+bring-up: the symlinks resolving in-VM, and each CLI honouring its project config, are not
+yet verified live.)*
 
 The platform seeds the **Caveman** agent skill into `skills/caveman/` at
 project creation (not into the workspace image) so the in-workspace agent picks

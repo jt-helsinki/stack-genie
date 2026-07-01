@@ -638,7 +638,8 @@ host  ~/.ai-platform/overlays/<workspace-id>  →  workspace  /persist    (overl
   This is a SUBDIRECTORY of the `workspace` user's home `/home/workspace` —
   deliberately not the home itself and not a top-level `/workspace`, so the bind
   mount does not shadow the baked-in `~/.local/bin` (uv/Graphify) or the key-bearing
-  agent configs under `~/.config` (which must stay off the host).
+  in-VM agent env file under `~/.config/aip/` (which must stay off the host). The
+  per-CLI provider configs ARE keyless and live in this project dir (§15).
 * the per-workspace overlay (§26) is mounted at `/persist`
 * no persistent data is written outside the mounted paths
 * (a shared read-only mount of `~/.ai-platform/agents,skills,prompts,templates`
@@ -1231,32 +1232,63 @@ needs its provider key present in the gateway (§17). The catalog id is the publ
 `model_name` verbatim; the catalog-id→LiteLLM-prefix map (e.g. `google` → `gemini`)
 supplies the routing prefix. There is no default model.
 
-### In-VM agent provider config — keyless host templates, key in-VM only
+### In-VM agent provider config — keyless per-CLI project configs, key in-VM only
 
-All **five** agent CLIs route through the gateway **by default**. Their provider
-config lives as **keyless, user-editable host templates** under
-`<project>/.ai-platform/agents/` (scaffolded at `ai create`; repo-layout §12.1c) and
-is (re)loaded into the microVM on **every workspace start/restart** by
-`workspace.registerAgentProviders` (over `internal/agentcfg`). opencode + pi route
-via a JSON config file (the keyless template is **deep-merged** with the dynamic,
-key-bearing values and written into the VM — user edits survive, the dynamic provider
-block wins); claude-code/codex/gemini route via **environment variables** written into
-the in-VM agent env file (`ANTHROPIC_BASE_URL`+`ANTHROPIC_AUTH_TOKEN`;
-`GOOGLE_GEMINI_BASE_URL`+`GEMINI_API_KEY`; codex via a keyless `~/.codex/config.toml`
-`[model_providers.aip-gateway]` block with `wire_api = "responses"` and an env-supplied
-`env_key`). The **scoped virtual key is NEVER on host disk** (the templates are
-keyless; the base URL is not a secret) — it is injected only into the final config/env
-written **into the microVM**. Each final in-VM config is written at that CLI's **default
-location** — `~/.config/opencode/opencode.json`, `~/.pi/agent/models.json`,
-`~/.codex/config.toml`, `~/.config/aip/agent-env.sh` (all under the `workspace` user's
-home) — nothing relocates a CLI config (no `OPENCODE_CONFIG`/`CODEX_HOME`/
-`CLAUDE_CONFIG_DIR`/`XDG_CONFIG_HOME` override); `.ai-platform/agents/` is purely the
-keyless host template/persistence layer, not an in-VM config directory. When the project
-has a configured Graphify model
-(`agent.graphify_model`), the same agent env file also exports `OPENAI_BASE_URL`
-(the gateway `/v1`), `OPENAI_API_KEY` (the scoped virtual key), and
-`OPENAI_MODEL=ollama/<model>`, so `graphify --backend openai` routes through the
-gateway (nginx → Headroom → LiteLLM → Ollama) rather than directly to Ollama.
+All **five** agent CLIs route through the gateway **by default**. Each CLI's provider
+config is written at **that CLI's own default per-project location** inside the
+bind-mounted project dir (`~/project` = `/home/workspace/project`, one directory shared
+host↔guest, so the project is self-describing on host disk), (re)generated on **every
+workspace start/restart** by `workspace.registerAgentProviders` (over `internal/agentcfg`).
+Every on-disk config is **KEYLESS** — the scoped virtual key is referenced by env
+interpolation, never written to disk — and any pre-existing file is **deep-merged** so
+the dynamic managed block wins while the user's other keys survive:
+
+* **opencode** → `<project>/.opencode/opencode.json` (`apiKey: "{env:AIP_GATEWAY_KEY}"`);
+  the in-VM env file exports `OPENCODE_CONFIG` pointing opencode at this file. It carries
+  the per-request Headroom knobs (keep-turns / output-buffer-tokens) on every model.
+* **pi** → `<project>/.pi/models.json` (`apiKey: "$AIP_GATEWAY_KEY"`) +
+  `<project>/.pi/settings.json` (default provider + skills/prompts resource paths pointing
+  at the symlinked shared pools). pi cannot inject per-request body fields, so it uses
+  Headroom's server-side defaults.
+* **claude-code** → `<project>/.claude/settings.json` — an `env` block setting only
+  `ANTHROPIC_BASE_URL` (the gateway root, no `/v1`); the bearer token stays in the
+  exported `ANTHROPIC_AUTH_TOKEN` env var (settings.json has no `${VAR}` interpolation),
+  so the file is keyless.
+* **codex** → `<project>/.codex/config.toml` — a keyless `[model_providers.aip-gateway]`
+  block with `wire_api = "responses"` and `env_key = "AIP_GATEWAY_KEY"`, plus a **global
+  in-VM** `~/.codex/config.toml` trust entry (`[projects."/home/workspace/project"]
+  trust_level = "trusted"`, off host disk) so codex loads the keyless project config.
+* **gemini** → **env-only** (no settings key for a base URL exists): `GOOGLE_GEMINI_BASE_URL`
+  + `GEMINI_API_KEY` via the in-VM agent env file.
+
+The **scoped virtual key is NEVER on host disk**. It lives ONLY in the in-VM agent env
+file `~/.config/aip/agent-env.sh` (`agentcfg.AgentEnvScript`, written into the microVM,
+sourced by every shell + agent session), which exports `AIP_GATEWAY_KEY` (opencode/pi/codex),
+`ANTHROPIC_AUTH_TOKEN` (claude-code), `GEMINI_API_KEY`/`GOOGLE_GEMINI_BASE_URL` (gemini),
+`OPENCODE_CONFIG`, and — when the project has a configured Graphify model
+(`agent.graphify_model`) — `OPENAI_BASE_URL` (the gateway `/v1`), `OPENAI_API_KEY` (the
+scoped virtual key), and `OPENAI_MODEL=ollama/<model>`, so `graphify --backend openai`
+routes through the gateway (nginx → Headroom → LiteLLM → Ollama) rather than directly to
+Ollama.
+
+**hardware bring-up** (not yet verified live): opencode honouring `.opencode/opencode.json`
+via `OPENCODE_CONFIG`; codex loading the trusted project config; pi reading `.pi/models.json`
++ its settings resource paths; the shared-pool symlinks (below) resolving in-VM.
+
+#### Shared resource pool + per-CLI symlinks
+
+`<project>/.ai-platform/{agents,skills,prompts,projects}` is a **shared resource pool** —
+ONE copy of the project's agents / skills / prompts. At workspace start (BEFORE Graphify
+registration, so Graphify's per-CLI skill files land in the pool) each pool is symlinked
+(relative) into each **installed** CLI's real per-project dir:
+
+* `skills` → `.opencode/skills`, `.claude/skills`, `.pi/skills`
+* `agents` → `.opencode/agents`, `.claude/agents`
+* `prompts` → `.opencode/commands`, `.claude/commands`, `.gemini/commands`, `.pi/prompts`
+
+Kinds a CLI has no concept for are skipped (codex/gemini have no skills/agents). Caveman
+still lives at `<project>/.ai-platform/skills/caveman/SKILL.md` (§9) and is thereby shared
+to every skills-capable client through the symlink.
 
 ### In-VM model picker
 
@@ -1270,9 +1302,10 @@ is written** to the agent configs. The platform also installs an in-VM
 `refresh-models` command (`/usr/local/bin/refresh-models`, from
 `agentcfg.RefreshScript`) that re-fetches the served list from the gateway's
 `/v1/models` endpoint (authenticated with the scoped virtual key) and rewrites the
-agent-CLI configs to match a fresh start, so models registered after start can be
-picked up without recreating the workspace; on failure it leaves the configs
-untouched. (The installable Ollama library backing the *host-side* `ai models`
+opencode + pi PROJECT configs (`/home/workspace/project/.opencode/opencode.json`,
+`/home/workspace/project/.pi/models.json`) — KEYLESS — to match a fresh start, so
+models registered after start can be picked up without recreating the workspace;
+on failure it leaves the configs untouched. (The installable Ollama library backing the *host-side* `ai models`
 browse + the TUI Local Models tab is **scraped LIVE from ollama.com** —
 `internal/ollama/library.go`, `ollama.Library()` GETs the `/library` index for every
 model then each model's `/library/<model>/tags` table for the per-variant
@@ -1476,11 +1509,19 @@ Workspace mount location (guest):
   config.yaml        # tracked
   profile.yaml       # tracked
   project.yaml       # tracked — { name, os, created }
-  skills/caveman/    # tracked — platform-seeded Caveman skill (§9)
+  # shared resource pool — symlinked into each installed CLI's dir at start (§15):
+  agents/            #   agent definitions
+  skills/caveman/    #   platform-seeded Caveman skill (§9), shared to CLIs
+  prompts/           #   prompt/command definitions
+  projects/          #   reserved
   .gitignore         # ignores run/
   run/               # gitignored — workspace/agent runtime state
 
-.worktrees/
+# per-CLI provider configs (keyless, written at workspace start; §15):
+.opencode/opencode.json
+.pi/models.json  .pi/settings.json
+.claude/settings.json
+.codex/config.toml
 
 docs/
 
@@ -1494,8 +1535,10 @@ README.md
 ```
 
 `<project>/.ai-platform/` holds the project's environment (Dockerfile), config,
-and gitignored runtime state — no platform-managed memory (delegated to the
-agent, §11). MCP is configured by the agent, not the platform. This matches the
+gitignored runtime state, and the shared resource pool (§15) — no platform-managed
+memory (delegated to the agent, §11). The per-CLI provider configs live at each CLI's
+own default location under the project root (all keyless; the scoped key is env-supplied
+in-VM only, §15/§17). MCP is configured by the agent, not the platform. This matches the
 canonical project layout in `03-repository-layout.md` §2.1.
 
 ---
