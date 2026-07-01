@@ -15,6 +15,7 @@ import (
 	"github.com/jt-helsinki/ideal-robot/internal/apps"
 	"github.com/jt-helsinki/ideal-robot/internal/config"
 	"github.com/jt-helsinki/ideal-robot/internal/contextopt"
+	"github.com/jt-helsinki/ideal-robot/internal/ollama"
 	"github.com/jt-helsinki/ideal-robot/internal/output"
 	"github.com/jt-helsinki/ideal-robot/internal/project"
 	"github.com/jt-helsinki/ideal-robot/internal/sysinfo"
@@ -447,6 +448,9 @@ func newCreateCmd(emitter *output.Emitter, exit *int, use string) *cobra.Command
 				*exit = emitter.Failure(projectCreateCommand, output.Errorf(output.ExitRuntimeFailure, "read config.yaml: %s", err))
 				return nil
 			}
+			// Pull the chosen Graphify model into the local store (best-effort — a
+			// pull failure becomes a warning, never fails the create).
+			warnings := pullGraphifyModelIfAbsent(emitter, spec.GraphifyModel)
 			*exit = emitter.Success(projectCreateCommand, createResult{
 				Name:       spec.Name,
 				Root:       root,
@@ -455,7 +459,7 @@ func newCreateCmd(emitter *output.Emitter, exit *int, use string) *cobra.Command
 				Stacks:     spec.Stacks,
 				Apps:       spec.Apps,
 				ConfigYAML: string(configYAML),
-			})
+			}, warnings...)
 			return nil
 		},
 	}
@@ -479,6 +483,50 @@ func newCreateCmd(emitter *output.Emitter, exit *int, use string) *cobra.Command
 	_ = cmd.RegisterFlagCompletionFunc("apps", fixedValues(supportedApps...))
 	_ = cmd.MarkFlagDirname("location")
 	return cmd
+}
+
+// pullGraphifyModelIfAbsent pulls the configured Graphify Ollama model into the
+// local (Ollama) store — and registers it in the gateway — unless it is already
+// installed. It is BEST-EFFORT: any failure returns a warning string rather than
+// failing `ai create`; the model can always be pulled later with `ai models pull`.
+func pullGraphifyModelIfAbsent(emitter *output.Emitter, ref string) []string {
+	ref = strings.TrimSpace(ref)
+	if ref == "" {
+		return nil
+	}
+	client := ollamaClient()
+	if installed, err := client.List(); err == nil && modelInstalled(installed, ref) {
+		return nil
+	}
+	pull := func() error { return client.Pull(ref, func(ollama.PullProgress) {}) }
+	var err error
+	if ui.Enabled(emitter) {
+		err = ui.RunWithSpinner(emitter.Err, fmt.Sprintf("pulling Graphify model %s…", ref), pull)
+	} else {
+		err = pull()
+	}
+	if err != nil {
+		return []string{fmt.Sprintf("could not pull Graphify model %q: %s — pull it later with `ai models pull %s`", ref, err, ref)}
+	}
+	// Best-effort gateway registration so the model is routable (ollama/<name>) and
+	// appears in the live catalogue; a gateway that is down must not fail the create.
+	_ = modelRegistrarFactory().RegisterOllamaModel(ref)
+	return nil
+}
+
+// modelInstalled reports whether ref matches an installed Ollama model, treating a
+// bare name as name:latest (Ollama's default tag).
+func modelInstalled(installed []ollama.Model, ref string) bool {
+	want := ref
+	if !strings.Contains(want, ":") {
+		want += ":latest"
+	}
+	for _, model := range installed {
+		if model.Name == ref || model.Name == want {
+			return true
+		}
+	}
+	return false
 }
 
 // attachWorkspace connects to an existing workspace's microVM: it starts the
@@ -594,7 +642,18 @@ func runCreateWizard(seed project.Spec) (project.Spec, bool, error) {
 	memory := seed.Memory
 	portsText := formatPublishPorts(seed.PublishPorts)
 
-	form := huh.NewForm(
+	// Graphify's LLM backend is an Ollama model chosen from the installable library
+	// (like the Models page), pulled if absent (see pullGraphifyModelIfAbsent). The
+	// picker is a model select + a tag select; blank/"(none)" leaves Graphify without
+	// a configured model. The library is cache-first — if it can't be loaded (offline,
+	// no cache) the group is omitted and only a --graphify-model flag can set it.
+	graphifyName, graphifyTag := splitModelRef(seed.GraphifyModel)
+	// Cache-only: the wizard must never stall on a cold-cache network scrape. If no
+	// cache exists yet (no prior `ai setup` / `ai models`), the group is omitted and
+	// --graphify-model is the only way to set it (it is still pulled if absent).
+	graphifyLibrary, _ := ollama.LoadLibrary()
+
+	groups := []*huh.Group{
 		huh.NewGroup(
 			huh.NewInput().Title("Workspace name").Value(&name).Validate(wizardNameValidator),
 			huh.NewInput().Title("Location (workspace directory)").
@@ -643,7 +702,19 @@ func runCreateWizard(seed project.Spec) (project.Spec, bool, error) {
 				Value(&idleTimeout).
 				Validate(func(value string) error { return config.ValidateIdleTimeout(value) }),
 		),
-	).WithTheme(ui.HuhTheme()).WithWidth(formWidth())
+	}
+	if len(graphifyLibrary) > 0 {
+		groups = append(groups, huh.NewGroup(
+			huh.NewSelect[string]().Title("Graphify model (Ollama; optional)").
+				Description("Routed through the gateway; pulled if not installed. Type to filter.").
+				Options(graphifyModelOptions(graphifyLibrary)...).Value(&graphifyName),
+			huh.NewSelect[string]().Title("Graphify model tag").
+				OptionsFunc(func() []huh.Option[string] { return graphifyTagOptions(graphifyLibrary, graphifyName) }, &graphifyName).
+				Value(&graphifyTag),
+		))
+	}
+
+	form := huh.NewForm(groups...).WithTheme(ui.HuhTheme()).WithWidth(formWidth())
 
 	if err := form.Run(); err != nil {
 		if errors.Is(err, huh.ErrUserAborted) {
@@ -660,18 +731,83 @@ func runCreateWizard(seed project.Spec) (project.Spec, bool, error) {
 	ports, _ := parsePublishPorts(splitCommaList(portsText))
 
 	return project.Spec{
-		Name:         name,
-		OS:           osKey,
-		Stacks:       stacks,
-		AgentCLIs:    agentCLIs,
-		DefaultTool:  defaultTool,
-		Apps:         selectedApps,
-		IdleTimeout:  idleTimeout,
-		CPUs:         cpus,
-		Memory:       strings.TrimSpace(memory),
-		PublishPorts: ports,
-		Root:         location,
+		Name:          name,
+		OS:            osKey,
+		Stacks:        stacks,
+		AgentCLIs:     agentCLIs,
+		DefaultTool:   defaultTool,
+		Apps:          selectedApps,
+		IdleTimeout:   idleTimeout,
+		CPUs:          cpus,
+		Memory:        strings.TrimSpace(memory),
+		PublishPorts:  ports,
+		Root:          location,
+		GraphifyModel: joinModelRef(graphifyName, graphifyTag),
 	}, false, nil
+}
+
+// splitModelRef splits an Ollama reference "name:tag" into its name and tag at the
+// LAST colon; a bare name yields an empty tag. A blank ref yields two empties.
+func splitModelRef(ref string) (name, tag string) {
+	ref = strings.TrimSpace(ref)
+	if ref == "" {
+		return "", ""
+	}
+	if index := strings.LastIndex(ref, ":"); index >= 0 {
+		return ref[:index], ref[index+1:]
+	}
+	return ref, ""
+}
+
+// joinModelRef reassembles a "name:tag" reference from the wizard's two selects. A
+// blank name (the "(none)" option) yields "" — Graphify gets no model. A blank tag
+// yields the bare name (Ollama resolves it to :latest).
+func joinModelRef(name, tag string) string {
+	name = strings.TrimSpace(name)
+	tag = strings.TrimSpace(tag)
+	if name == "" {
+		return ""
+	}
+	if tag == "" {
+		return name
+	}
+	return name + ":" + tag
+}
+
+// graphifyModelOptions builds the Graphify model select: a leading "(none)" (empty
+// value) followed by every library model name, so the choice is optional.
+func graphifyModelOptions(library []ollama.LibraryModel) []huh.Option[string] {
+	options := make([]huh.Option[string], 0, len(library)+1)
+	options = append(options, huh.NewOption("(none)", ""))
+	for _, model := range library {
+		options = append(options, huh.NewOption(model.Name, model.Name))
+	}
+	return options
+}
+
+// graphifyTagOptions builds the tag select for the currently-selected Graphify
+// model. With no model selected it offers only "(none)"; otherwise it lists the
+// model's scraped tags (falling back to "latest" when the tag table is empty).
+func graphifyTagOptions(library []ollama.LibraryModel, modelName string) []huh.Option[string] {
+	modelName = strings.TrimSpace(modelName)
+	if modelName == "" {
+		return []huh.Option[string]{huh.NewOption("(none)", "")}
+	}
+	for _, model := range library {
+		if model.Name != modelName {
+			continue
+		}
+		tags := model.TagNames()
+		if len(tags) == 0 {
+			return []huh.Option[string]{huh.NewOption("latest", "latest")}
+		}
+		options := make([]huh.Option[string], 0, len(tags))
+		for _, tag := range tags {
+			options = append(options, huh.NewOption(tag, tag))
+		}
+		return options
+	}
+	return []huh.Option[string]{huh.NewOption("latest", "latest")}
 }
 
 // splitCommaList splits a comma-separated input into trimmed, non-empty items.

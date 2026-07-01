@@ -540,7 +540,7 @@ func (manager Manager) registerAgentProviders(name, project, root string, projec
 	// launch wrapper sources it directly, and the managed ~/.bash_profile below
 	// sources it for every interactive login shell (`ai shell` / `ai attach`), so a
 	// user running `claude`/`codex`/`gemini` by hand is routed too.
-	if err := manager.Sandbox.WriteFile(name, agentEnvGuestPath, agentcfg.AgentEnvScript(gatewayURL, apiKey)); err != nil {
+	if err := manager.Sandbox.WriteFile(name, agentEnvGuestPath, agentcfg.AgentEnvScript(gatewayURL, apiKey, projectConfig.Agent.GraphifyModel)); err != nil {
 		return err
 	}
 	if err := manager.Sandbox.WriteFile(name, bashProfileGuestPath, agentcfg.BashProfile()); err != nil {
@@ -619,6 +619,7 @@ func (manager Manager) registerGraphify(name string, projectConfig *config.Confi
 	if projectConfig == nil {
 		return
 	}
+	installs := make([]string, 0, len(projectConfig.Agent.Tools))
 	for _, cli := range projectConfig.Agent.Tools {
 		platform, known := graphifyPlatformFlag[cli]
 		if !known {
@@ -628,12 +629,24 @@ func (manager Manager) registerGraphify(name string, projectConfig *config.Confi
 		if platform != "" {
 			install += " --platform " + platform
 		}
-		// Run in the mounted project dir so --project writes there.
-		script := "command -v graphify >/dev/null 2>&1 || exit 0; cd " + workspaceWorkdir + " && " + install
-		ctx, cancel := context.WithTimeout(context.Background(), graphifyInstallTimeout)
-		_, _ = manager.Sandbox.ExecContext(ctx, name, []string{"sh", "-lc", script})
-		cancel()
+		installs = append(installs, install)
 	}
+	if len(installs) == 0 {
+		return
+	}
+	// Run ONCE per project: `graphify install` OVERWRITES its skill files each run,
+	// so a marker under the (persistent) .ai-platform dir guards re-runs — this keeps
+	// user edits to graphify's project files from being clobbered on every restart.
+	// All installs run in ~/project so --project writes there; the marker is touched
+	// only after they all succeed (a failure retries next start). Best-effort.
+	marker := workspaceWorkdir + "/.ai-platform/.graphify-installed"
+	script := "command -v graphify >/dev/null 2>&1 || exit 0; " +
+		"test -f " + marker + " && exit 0; " +
+		"mkdir -p " + workspaceWorkdir + "/.ai-platform && cd " + workspaceWorkdir + " && " +
+		strings.Join(installs, " && ") + " && touch " + marker
+	ctx, cancel := context.WithTimeout(context.Background(), graphifyInstallTimeout)
+	defer cancel()
+	_, _ = manager.Sandbox.ExecContext(ctx, name, []string{"sh", "-lc", script})
 }
 
 // ensureContainerd makes the rootful in-VM container runtime (containerd)

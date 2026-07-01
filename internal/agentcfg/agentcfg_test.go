@@ -258,7 +258,7 @@ func TestCodexConfig(test *testing.T) {
 // with claude-code/gemini base URLs stripped of the /v1 suffix (they append their
 // own path) and the scoped key present.
 func TestAgentEnvScript(test *testing.T) {
-	env := string(AgentEnvScript(testGateway, testKey))
+	env := string(AgentEnvScript(testGateway, testKey, ""))
 	root := "http://host.microsandbox.internal:18787" // testGateway minus /v1
 	for _, want := range []string{
 		`export ANTHROPIC_BASE_URL='` + root + `'`,
@@ -274,6 +274,26 @@ func TestAgentEnvScript(test *testing.T) {
 	// The claude-code/gemini base URLs must NOT carry the /v1 suffix.
 	if strings.Contains(env, root+"/v1") {
 		test.Errorf("claude-code/gemini base URL must be the gateway root (no /v1):\n%s", env)
+	}
+	// With no graphify model configured, no OPENAI_* vars are exported.
+	if strings.Contains(env, "OPENAI_") {
+		test.Errorf("no graphify model → no OPENAI_* vars expected:\n%s", env)
+	}
+}
+
+// TestAgentEnvScriptGraphify verifies that when a graphify model IS configured,
+// its OpenAI-compatible backend is routed through the gateway's /v1 endpoint with
+// the scoped virtual key and the ollama/<model> public name.
+func TestAgentEnvScriptGraphify(test *testing.T) {
+	env := string(AgentEnvScript(testGateway, testKey, "llama3.1:8b"))
+	for _, want := range []string{
+		`export OPENAI_BASE_URL='` + testGateway + `'`, // keeps /v1 (OpenAI SDK appends /chat/completions)
+		`export OPENAI_API_KEY='` + testKey + `'`,
+		`export OPENAI_MODEL='ollama/llama3.1:8b'`,
+	} {
+		if !strings.Contains(env, want) {
+			test.Errorf("graphify env missing %q:\n%s", want, env)
+		}
 	}
 }
 

@@ -301,7 +301,7 @@ func gatewayRoot(gatewayURL string) string {
 // the workspace's scoped virtual key by default. gatewayURL carries the /v1 suffix
 // (codex keeps it); the claude-code / gemini base URLs are derived as the gateway
 // root. apiKey is the scoped virtual key.
-func AgentEnvScript(gatewayURL, apiKey string) []byte {
+func AgentEnvScript(gatewayURL, apiKey, graphifyModel string) []byte {
 	root := gatewayRoot(gatewayURL)
 	var buffer bytes.Buffer
 	buffer.WriteString("# Managed by the AI Development Platform — gateway env for the env-routed\n")
@@ -317,6 +317,15 @@ func AgentEnvScript(gatewayURL, apiKey string) []byte {
 	// gemini-cli: the genai SDK's base-URL + key overrides (gateway root).
 	buffer.WriteString("export " + geminiBaseURLVar + "=" + shellQuote(root) + "\n")
 	buffer.WriteString("export " + geminiKeyVar + "=" + shellQuote(apiKey) + "\n")
+	// Graphify's headless LLM backend, when a model is configured: route through the
+	// gateway's OpenAI-compatible endpoint (nginx → Headroom → LiteLLM → Ollama).
+	// Invoke as `graphify --backend openai`. No real provider key — the scoped
+	// virtual key; nothing else in the platform reads OPENAI_*.
+	if graphifyModel != "" {
+		buffer.WriteString("export OPENAI_BASE_URL=" + shellQuote(gatewayURL) + "\n") // .../v1
+		buffer.WriteString("export OPENAI_API_KEY=" + shellQuote(apiKey) + "\n")
+		buffer.WriteString("export OPENAI_MODEL=" + shellQuote("ollama/"+graphifyModel) + "\n")
+	}
 	return buffer.Bytes()
 }
 
