@@ -6,7 +6,7 @@
 FROM almalinux:10
 
 RUN dnf install -y --setopt=install_weak_deps=False \
-      ca-certificates curl git sudo tmux tar gzip ncurses-term \
+      ca-certificates curl git sudo tmux tar gzip nano less git ncurses-term \
       iptables-nft iproute \
  && dnf clean all
 

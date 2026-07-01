@@ -1680,8 +1680,10 @@ number keys `1`-`9`. There is **no `:` command palette** — `q`/`ctrl+c` quits 
     path) and a live **Sandbox Configuration** diagnostics block (the SDK
     `SandboxConfig`: image, memory, vcpus, workdir, user, idle timeout, detached,
     published ports, egress default + rule count, dns — `Manager.WorkspaceConfig`).
-    Workspace lifecycle is `s`/`x`/`r`/`d` (start/stop/restart/delete) and `e` (an
-    interactive shell). `s`/`x`/`r` run **DETACHED** from the TUI: the app spawns
+    The pane is **scrollable** (`↑/↓`/`PgUp`/`PgDn`) so the summary + configuration
+    stay reachable when they overflow. Workspace lifecycle is `s`/`x`/`r`/`d`
+    (start/stop/restart/delete) and `e` (an interactive shell). `s`/`x`/`r` run
+    **DETACHED** from the TUI: the app spawns
     `ai <action> <name>` in its own session (`setsid` + `Process.Release`, stdio to
     `/dev/null`) so the microVM build/boot keeps running even if `ai ui` is closed,
     then shows an **animated spinner** on the workspace status line and polls the

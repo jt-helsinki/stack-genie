@@ -3,6 +3,7 @@ package views
 import (
 	"strings"
 
+	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/jt-helsinki/ideal-robot/internal/project"
 	"github.com/jt-helsinki/ideal-robot/internal/ui"
@@ -72,13 +73,18 @@ type Project struct {
 	// tab is focused.
 	pending      string
 	pendingFrame int
+	// viewport makes the summary + Sandbox Configuration block scrollable when it
+	// overflows the pane (e.g. a config with many fields). rendered caches the last
+	// body so SetContent (and thus a scroll-position reset risk) only fires on change.
+	viewport viewport.Model
+	rendered string
 }
 
 // NewProject builds the project-detail (summary) view over the injected info fetcher
 // and a live sandbox-configuration fetcher (for the "Sandbox Configuration" block;
 // may be nil).
 func NewProject(info ProjectInfoFetcher, configOf ConfigFetcher) *Project {
-	return &Project{info: info, configOf: configOf}
+	return &Project{info: info, configOf: configOf, viewport: viewport.New(0, 0)}
 }
 
 // StartPending shows the "<action>ing…" spinner on the workspace status line; the
@@ -104,11 +110,15 @@ func (view *Project) Hints() string {
 	if view.name == "" {
 		return "open a workspace from the Workspaces view"
 	}
-	return "s start · x stop · r restart · d delete · e shell"
+	return "s start · x stop · r restart · d delete · e shell · ↑/↓ scroll"
 }
 
 func (view *Project) SetSize(width, height int) {
 	view.width, view.height = width, height
+	view.viewport.Width = width
+	if height > 0 {
+		view.viewport.Height = height
+	}
 }
 
 // SetProject points the view at a project (the parent calls this, then Init, when
@@ -170,7 +180,10 @@ func (view *Project) Update(msg tea.Msg) tea.Cmd {
 			}
 		}
 	}
-	return nil
+	// Non-lifecycle keys (scroll) and other messages drive the scrollable viewport.
+	var cmd tea.Cmd
+	view.viewport, cmd = view.viewport.Update(msg)
+	return cmd
 }
 
 func (view *Project) View() string {
@@ -183,6 +196,21 @@ func (view *Project) View() string {
 	if !view.hasEntry {
 		return ui.Muted.Render("loading " + view.name + "…")
 	}
+	body := view.renderBody()
+	// Before the layout sizes the pane, render inline (no scroll); once sized, render
+	// into the viewport so the summary + config scroll when they overflow.
+	if view.viewport.Height <= 0 {
+		return body
+	}
+	if body != view.rendered {
+		view.viewport.SetContent(body)
+		view.rendered = body
+	}
+	return view.viewport.View()
+}
+
+// renderBody builds the summary + Sandbox Configuration text shown in the viewport.
+func (view *Project) renderBody() string {
 	var body strings.Builder
 	body.WriteString(ui.Heading.Render(view.entry.Name) + "\n")
 	body.WriteString(field("OS", view.entry.OS))

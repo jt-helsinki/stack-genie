@@ -1,6 +1,7 @@
 package views
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 
@@ -110,6 +111,32 @@ func TestProjectPendingShowsSpinner(test *testing.T) {
 	view.ClearPending()
 	if strings.Contains(view.View(), "starting…") {
 		test.Error("clearing pending should remove the spinner")
+	}
+}
+
+// TestProjectConfigScrollsWhenSized: a config taller than the pane is scrollable.
+func TestProjectConfigScrollsWhenSized(test *testing.T) {
+	fields := make([]ConfigField, 0, 30)
+	for index := 0; index < 30; index++ {
+		fields = append(fields, ConfigField{Label: fmt.Sprintf("k%d", index), Value: "v"})
+	}
+	view := NewProject(
+		func(name string) (project.Entry, bool, error) {
+			return project.Entry{Name: name, OS: "ubuntu", Status: "started"}, true, nil
+		},
+		func(name string) ([]ConfigField, error) { return fields, nil },
+	)
+	view.SetProject("app")
+	view.SetSize(80, 8) // small pane → the 30-field config overflows → must scroll
+	_ = view.Update(view.Init()())
+	_ = view.View() // render into the viewport
+	if view.viewport.TotalLineCount() <= view.viewport.Height {
+		test.Fatalf("expected overflowing content (%d lines > height %d)", view.viewport.TotalLineCount(), view.viewport.Height)
+	}
+	before := view.viewport.YOffset
+	view.Update(tea.KeyMsg{Type: tea.KeyPgDown})
+	if view.viewport.YOffset == before {
+		test.Errorf("PgDown should scroll the config viewport (offset stayed %d)", before)
 	}
 }
 
