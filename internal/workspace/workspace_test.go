@@ -688,8 +688,10 @@ func TestShellOpensPersistentTmuxSession(test *testing.T) {
 	if err := newManager(&fakeBuilder{}, sandbox).Shell("app"); err != nil {
 		test.Fatal(err)
 	}
-	// One atomic create-or-attach in the interactive exec (`tmux new-session -A`).
-	want := []string{"tmux", "new-session", "-A", "-s", "shell", "-c", "/home/workspace/project", "bash", "-l"}
+	// One atomic create-or-attach in the interactive exec (`tmux new-session -A`),
+	// running a login shell that starts in ~/project.
+	want := append([]string{"tmux", "new-session", "-A", "-s", "shell", "-c", "/home/workspace/project"},
+		projectLoginShell()...)
 	if got := sandbox.interactiveArgv; !equalStrings(got, want) {
 		test.Fatalf("Shell ran %v via ExecInteractive, want %v", got, want)
 	}
@@ -775,15 +777,17 @@ func TestAgentUnknownCLI(test *testing.T) {
 	}
 }
 
-// Attach create-or-attaches a named session with no command (so a fresh session opens
-// the default shell); a blank session targets the default "shell".
+// Attach create-or-attaches a named session running a login shell that starts in
+// ~/project (a fresh session opens there); a blank session targets the default
+// "shell".
 func TestAttachSession(test *testing.T) {
 	seedStartedWorkspace(test, "app")
 	sandbox := &fakeSandbox{}
 	if err := newManager(&fakeBuilder{}, sandbox).Attach("app", "opencode"); err != nil {
 		test.Fatal(err)
 	}
-	want := []string{"tmux", "new-session", "-A", "-s", "opencode", "-c", "/home/workspace/project"}
+	want := append([]string{"tmux", "new-session", "-A", "-s", "opencode", "-c", "/home/workspace/project"},
+		projectLoginShell()...)
 	if got := sandbox.interactiveArgv; !equalStrings(got, want) {
 		test.Fatalf("Attach ran %v via ExecInteractive, want %v", got, want)
 	}
@@ -792,7 +796,8 @@ func TestAttachSession(test *testing.T) {
 	if err := newManager(&fakeBuilder{}, defaulted).Attach("app", ""); err != nil {
 		test.Fatal(err)
 	}
-	wantDefault := []string{"tmux", "new-session", "-A", "-s", "shell", "-c", "/home/workspace/project"}
+	wantDefault := append([]string{"tmux", "new-session", "-A", "-s", "shell", "-c", "/home/workspace/project"},
+		projectLoginShell()...)
 	if got := defaulted.interactiveArgv; !equalStrings(got, wantDefault) {
 		test.Fatalf("Attach(\"\") ran %v, want the default shell session %v", got, wantDefault)
 	}

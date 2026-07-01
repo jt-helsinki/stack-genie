@@ -1186,7 +1186,18 @@ func (manager Manager) ExecInteractive(project string, argv []string) error {
 // running in it) survives DETACHING and is reattachable. The session opens in
 // /workspace with a login shell.
 func (manager Manager) Shell(project string) error {
-	return manager.launchTmuxSession(project, shellSessionName, []string{"bash", "-l"})
+	return manager.launchTmuxSession(project, shellSessionName, projectLoginShell())
+}
+
+// projectLoginShell is the command for the default interactive workspace shell: a
+// login shell that starts in the project directory (~/project = workspaceWorkdir).
+// tmux's `-c` already sets the start dir for a FRESHLY-created session, but the
+// explicit `cd` guarantees the shell opens in ~/project even when a login profile
+// would otherwise leave it in $HOME. `exec bash -l` then hands over to a clean
+// interactive login shell whose cwd is ~/project. (`tmux new-session -A` reuses an
+// existing session and ignores this command, so it only affects new sessions.)
+func projectLoginShell() []string {
+	return []string{"bash", "-lc", "cd " + shellQuoteGuest(workspaceWorkdir) + " 2>/dev/null; exec bash -l"}
 }
 
 // launchTmuxSession is the shared entry for the tmux-backed interactive sessions
@@ -1271,14 +1282,15 @@ func (manager Manager) requireTmux(project string) error {
 
 // Attach opens (creating it if needed) the named tmux session in the project's
 // workspace microVM. A missing/empty session name attaches the default "shell"
-// session. When the session is created fresh it has no command, so it opens the
-// image's default login shell in /workspace; an existing session is reattached
-// as-is. This backs `ai attach [session]` and the TUI Sessions view.
+// session. When the session is created fresh it opens a login shell that starts in
+// the project directory (~/project); an existing session is reattached as-is. This
+// backs `ai attach [session]`, the `ai shell` picker's create path, and the TUI
+// Sessions view.
 func (manager Manager) Attach(project, session string) error {
 	if session == "" {
 		session = shellSessionName
 	}
-	return manager.launchTmuxSession(project, session, nil)
+	return manager.launchTmuxSession(project, session, projectLoginShell())
 }
 
 // Agent starts (or reattaches to) a per-CLI tmux session running the named agent
@@ -1409,7 +1421,7 @@ func (manager Manager) KillSession(project, session string) error {
 }
 
 // tmuxNewSessionAttach builds an attach-or-create tmux invocation opening in
-// /workspace: `tmux new-session -A -s <session> -c /workspace [command]`. `-A` makes
+// ~/project: `tmux new-session -A -s <session> -c ~/project [command]`. `-A` makes
 // it idempotent and reattachable — it creates the session named session on first use
 // and reattaches on every later call, in ONE interactive command (so there is no
 // window between a separate detached create and the attach for msb to tear down).
