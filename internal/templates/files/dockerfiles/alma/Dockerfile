@@ -3,11 +3,20 @@
 # base surface as every other OS template, via dnf rather than apt. Selected
 # software stacks and agent CLIs are appended below this base by
 # `ai project create`.
-FROM almalinux:10
+FROM almalinux:10.2-minimal
 
 RUN dnf install -y --setopt=install_weak_deps=False \
-      ca-certificates curl git sudo tmux tar gzip nano less git ncurses-term \
-      iptables-nft iproute \
+    ca-certificates \
+    curl \
+    git \
+    gnupg \
+    less \
+    nano \
+    sudo \
+    tmux \
+    ncurses-term \
+    iptables \
+    iproute2 \
  && dnf clean all
 
 # In-VM OCI container runtime (arch §7): containerd + nerdctl + runc + CNI +
@@ -15,7 +24,7 @@ RUN dnf install -y --setopt=install_weak_deps=False \
 # distro-agnostic artifact) into /usr/local. Arch-aware (amd64/arm64). The
 # runtime is rootful and is started at workspace start, not in the image. (On
 # RHEL-family the iptables provider is iptables-nft and the package is iproute.)
-ENV NERDCTL_VERSION=2.3.3
+ENV NERDCTL_VERSION=2.3.4
 RUN arch="$(uname -m)" \
  && case "$arch" in \
       x86_64)  nerdctl_arch=amd64 ;; \

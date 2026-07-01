@@ -6,15 +6,24 @@ FROM debian:trixie-slim
 ENV DEBIAN_FRONTEND=noninteractive
 RUN apt-get update \
  && apt-get install -y --no-install-recommends \
-      ca-certificates curl git gnupg sudo tmux nano less git ncurses-term \
-      iptables iproute2 \
- && rm -rf /var/lib/apt/lists/*
+    ca-certificates \
+    curl \
+    git \
+    gnupg \
+    less \
+    nano \
+    sudo \
+    tmux \
+    ncurses-term \
+    iptables \
+    iproute2 \
+  && rm -rf /var/lib/apt/lists/*
 
 # In-VM OCI container runtime (arch §7): containerd + nerdctl + runc + CNI +
 # buildkit, installed from the pinned nerdctl-full release tarball (one static,
 # distro-agnostic artifact) into /usr/local. Arch-aware (amd64/arm64). The
 # runtime is rootful and is started at workspace start, not in the image.
-ENV NERDCTL_VERSION=2.3.3
+ENV NERDCTL_VERSION=2.3.4
 RUN arch="$(uname -m)" \
  && case "$arch" in \
       x86_64)  nerdctl_arch=amd64 ;; \

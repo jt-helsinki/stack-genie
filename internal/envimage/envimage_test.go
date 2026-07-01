@@ -126,7 +126,7 @@ func TestAllOSTemplatesExposeIdenticalBaseSurface(test *testing.T) {
 		"USER workspace",
 		// In-VM OCI container runtime (arch §7): the pinned nerdctl-full tarball
 		// (containerd + nerdctl + runc + CNI + buildkit) is installed on every OS.
-		"NERDCTL_VERSION=2.3.3",
+		"NERDCTL_VERSION=2.3.4",
 		"nerdctl-full-",
 	}
 

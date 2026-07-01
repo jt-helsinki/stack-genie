@@ -126,7 +126,7 @@ func TestBaseDockerfileShipsContainerRuntime(t *testing.T) {
 				t.Fatalf("BaseDockerfile(%q): %v", osKey, err)
 			}
 			for _, fragment := range []string{
-				"NERDCTL_VERSION=2.3.3",
+				"NERDCTL_VERSION=2.3.4",
 				"nerdctl-full-",
 				"tar -C /usr/local",
 			} {
