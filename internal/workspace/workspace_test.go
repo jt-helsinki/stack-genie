@@ -1567,3 +1567,66 @@ func TestStartRegistersGraphify(test *testing.T) {
 		test.Errorf("Start should register Graphify (--project) for opencode + pi in ~/project; execs: %v", sandbox.allExecArgv)
 	}
 }
+
+// TestStartLinksSharedResources verifies the shared .ai-platform/{agents,skills,
+// prompts,projects} pool is created and symlinked into each INSTALLED CLI's real
+// per-project dirs (relative symlinks), skipping kinds a CLI has no concept for.
+func TestStartLinksSharedResources(test *testing.T) {
+	root := seedProject(test, "app")
+	if err := config.WriteProject(root, &config.Config{
+		OS:    "debian-trixie",
+		Agent: config.AgentConfig{Tools: []string{"opencode", "claude-code", "pi", "gemini", "codex"}, DefaultTool: "opencode"},
+	}); err != nil {
+		test.Fatal(err)
+	}
+	sandbox := &fakeSandbox{}
+	manager := Manager{Builder: &fakeBuilder{}, Sandbox: sandbox, Keys: &fakeKeyMinter{}, Now: func() string { return "t" }}
+	if _, err := manager.Start("app"); err != nil {
+		test.Fatal(err)
+	}
+
+	// The shared pools exist.
+	for _, kind := range []string{"agents", "skills", "prompts", "projects"} {
+		if info, err := os.Stat(filepath.Join(root, ".ai-platform", kind)); err != nil || !info.IsDir() {
+			test.Errorf(".ai-platform/%s pool not created: %v", kind, err)
+		}
+	}
+
+	// Per-CLI symlinks resolve to the shared pools (relative, one level up).
+	wantLinks := map[string]string{
+		".opencode/skills":   "../.ai-platform/skills",
+		".claude/skills":     "../.ai-platform/skills",
+		".pi/skills":         "../.ai-platform/skills",
+		".opencode/agents":   "../.ai-platform/agents",
+		".claude/agents":     "../.ai-platform/agents",
+		".opencode/commands": "../.ai-platform/prompts",
+		".claude/commands":   "../.ai-platform/prompts",
+		".gemini/commands":   "../.ai-platform/prompts",
+		".pi/prompts":        "../.ai-platform/prompts",
+	}
+	for rel, wantTarget := range wantLinks {
+		got, err := os.Readlink(filepath.Join(root, filepath.FromSlash(rel)))
+		if err != nil {
+			test.Errorf("%s is not a symlink: %v", rel, err)
+			continue
+		}
+		if got != filepath.FromSlash(wantTarget) {
+			test.Errorf("%s -> %s, want %s", rel, got, wantTarget)
+		}
+	}
+
+	// codex/gemini have no skills/agents concept — no such symlinks.
+	for _, rel := range []string{".codex/skills", ".codex/agents", ".gemini/skills", ".gemini/agents"} {
+		if _, err := os.Lstat(filepath.Join(root, filepath.FromSlash(rel))); err == nil {
+			test.Errorf("%s must not exist (CLI has no such concept)", rel)
+		}
+	}
+
+	// pi settings.json points its resource paths at the symlinked pools.
+	piSettings := readProjectConfig(test, root, ".pi", "settings.json")
+	for _, want := range []string{`"skills"`, `"prompts"`, `"defaultProvider"`} {
+		if !strings.Contains(piSettings, want) {
+			test.Errorf("pi settings.json missing %s:\n%s", want, piSettings)
+		}
+	}
+}

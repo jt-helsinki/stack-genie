@@ -193,6 +193,28 @@ func TestProjectConfigsAreKeyless(test *testing.T) {
 	}
 }
 
+// TestPiSettings verifies pi's per-project settings set the gateway default provider
+// and point the skills/prompts resource paths at the symlinked shared pools.
+func TestPiSettings(test *testing.T) {
+	settings, err := PiSettings()
+	if err != nil {
+		test.Fatal(err)
+	}
+	var doc map[string]any
+	if err := json.Unmarshal(settings, &doc); err != nil {
+		test.Fatalf("pi settings not valid JSON: %v", err)
+	}
+	if doc["defaultProvider"] != ProviderID {
+		test.Errorf("defaultProvider = %v, want %s", doc["defaultProvider"], ProviderID)
+	}
+	for _, key := range []string{"skills", "prompts"} {
+		paths, ok := doc[key].([]any)
+		if !ok || len(paths) == 0 {
+			test.Errorf("pi settings %q resource path missing: %v", key, doc[key])
+		}
+	}
+}
+
 // TestMergeOpenCodeConfigInjectsDynamic verifies the merge keeps a user's
 // template key (a custom top-level field) AND overlays the dynamic provider block
 // (baseURL, apiKey, models) on top.

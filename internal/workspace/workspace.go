@@ -425,6 +425,14 @@ func (manager Manager) Start(project string) (*state.Workspace, error) {
 	// Create the per-project Python virtualenv (.venv-msb) using the guest's baked-in
 	// Python. Best-effort — never fails the workspace start.
 	manager.ensureVenv(name)
+	// Wire the shared <project>/.ai-platform/{agents,skills,prompts} pool into each
+	// installed CLI's real per-project dirs via relative symlinks, so one copy of a
+	// skill/agent/prompt (incl. Caveman) serves every client. Host-side + best-effort;
+	// MUST run BEFORE registerGraphify so graphify's per-CLI skill files land in the
+	// shared pool through the symlinks.
+	if err := linkSharedResources(root, projectConfig.Agent.Tools); err != nil {
+		_, _ = fmt.Fprintf(os.Stderr, "warning: could not link shared agent resources in workspace %q: %v\n", name, err)
+	}
 	// Register Graphify with each selected agent CLI. Runs HERE (not at image build)
 	// because `graphify install --project` writes into the project dir (~/project),
 	// which is only bind-mounted at runtime. Best-effort — never fails the start.
@@ -515,6 +523,15 @@ func (manager Manager) registerAgentProviders(name, project, root string, projec
 		return err
 	}
 	if err := writeHostFile(projectConfigPath(root, ".pi", "models.json"), piConfig); err != nil {
+		return err
+	}
+	// pi settings: default provider + skills/prompts resource paths pointing at the
+	// symlinked shared pools (linkSharedResources creates .pi/skills, .pi/prompts).
+	piSettings, err := agentcfg.MergePiSettings(readHostFileOrNil(projectConfigPath(root, ".pi", "settings.json")))
+	if err != nil {
+		return err
+	}
+	if err := writeHostFile(projectConfigPath(root, ".pi", "settings.json"), piSettings); err != nil {
 		return err
 	}
 
@@ -898,6 +915,89 @@ func writeHostFile(path string, content []byte) error {
 		return err
 	}
 	return os.WriteFile(path, content, 0o644)
+}
+
+// sharedResourceKinds are the shared pools under <project>/.ai-platform/ that hold ONE
+// copy of the project's agents / skills / prompts (and a reserved `projects` dir),
+// symlinked into each CLI's own dirs so a single copy serves every client.
+var sharedResourceKinds = []string{"agents", "skills", "prompts", "projects"}
+
+// sharedResourceLink maps a shared pool dir to each CLI's REAL per-project directory
+// for that kind. A CLI absent from a kind's map has no concept for it and is skipped
+// (codex/gemini have no skills/agents; gemini only has commands). The CLI dirs are one
+// level under the project root, so the symlink target is always ../.ai-platform/<pool>.
+type sharedResourceLink struct {
+	pool   string            // .ai-platform/<pool>
+	perCLI map[string]string // agent CLI -> project-relative dir
+}
+
+var sharedResourceLinks = []sharedResourceLink{
+	{pool: "skills", perCLI: map[string]string{
+		"opencode":    ".opencode/skills",
+		"claude-code": ".claude/skills",
+		"pi":          ".pi/skills",
+	}},
+	{pool: "agents", perCLI: map[string]string{
+		"opencode":    ".opencode/agents",
+		"claude-code": ".claude/agents",
+	}},
+	{pool: "prompts", perCLI: map[string]string{
+		"opencode":    ".opencode/commands",
+		"claude-code": ".claude/commands",
+		"gemini":      ".gemini/commands",
+		"pi":          ".pi/prompts",
+	}},
+}
+
+// linkSharedResources ensures the shared .ai-platform pools exist and symlinks each
+// into the installed CLIs' real per-project dirs (relative symlinks, so they resolve
+// identically on host and in the guest — the project dir is one directory shared
+// host↔guest). Idempotent: a correct symlink is left as-is, a wrong one is replaced,
+// and a real (non-symlink) dir a user created is left untouched.
+func linkSharedResources(root string, tools []string) error {
+	for _, kind := range sharedResourceKinds {
+		if err := os.MkdirAll(filepath.Join(root, ".ai-platform", kind), 0o755); err != nil {
+			return err
+		}
+	}
+	installed := make(map[string]bool, len(tools))
+	for _, tool := range tools {
+		installed[tool] = true
+	}
+	for _, link := range sharedResourceLinks {
+		for cli, relDir := range link.perCLI {
+			if !installed[cli] {
+				continue
+			}
+			linkPath := filepath.Join(root, relDir)
+			if err := os.MkdirAll(filepath.Dir(linkPath), 0o755); err != nil {
+				return err
+			}
+			// The CLI dir is one level under root, so the pool is ../.ai-platform/<pool>.
+			if err := ensureRelSymlink(linkPath, filepath.Join("..", ".ai-platform", link.pool)); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+// ensureRelSymlink makes linkPath a symlink to target (relative), idempotently: an
+// existing symlink pointing at target is left as-is, a symlink pointing elsewhere is
+// replaced, and a real file/dir at linkPath (e.g. user content) is left untouched so
+// nothing is destroyed.
+func ensureRelSymlink(linkPath, target string) error {
+	if current, err := os.Readlink(linkPath); err == nil {
+		if current == target {
+			return nil
+		}
+		if err := os.Remove(linkPath); err != nil {
+			return err
+		}
+	} else if _, statErr := os.Lstat(linkPath); statErr == nil {
+		return nil // a real dir/file — do not clobber user content
+	}
+	return os.Symlink(target, linkPath)
 }
 
 // pickerModels builds the concrete model list the in-VM agent CLIs offer in their
