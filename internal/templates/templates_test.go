@@ -129,8 +129,8 @@ func TestBaseDockerfileShipsContainerRuntime(t *testing.T) {
 				"NERDCTL_VERSION=2.3.4",
 				"nerdctl-full-",
 				"tar -C /usr/local",
-				// Node.js 22 LTS (NodeSource) baked into every OS base.
-				"NODE_MAJOR=22",
+				// Node.js 24 LTS (NodeSource) baked into every OS base.
+				"NODE_MAJOR=24",
 				"nodesource.com",
 				"python3",
 				// Graphify installs via uv (Astral) with the bundled extras.

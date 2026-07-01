@@ -128,9 +128,9 @@ func TestAllOSTemplatesExposeIdenticalBaseSurface(test *testing.T) {
 		// (containerd + nerdctl + runc + CNI + buildkit) is installed on every OS.
 		"NERDCTL_VERSION=2.3.4",
 		"nerdctl-full-",
-		// Node.js 22 LTS (NodeSource) is baked into every OS base — the distro apt
+		// Node.js 24 LTS (NodeSource) is baked into every OS base — the distro apt
 		// Node is too old for the agent CLIs (pi's undici needs Node >= 22.10).
-		"NODE_MAJOR=22",
+		"NODE_MAJOR=24",
 		"nodesource.com",
 		// Python 3, uv, and Graphify are baked into every OS base by default (§12,
 		// §25). Graphify installs via `uv tool install` with the bundled extras.

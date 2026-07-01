@@ -8,7 +8,7 @@
 # (a scoped virtual key) — NOT a real provider secret; LiteLLM holds the real
 # provider credentials (arch §17), so no agent CLI ever holds a provider API key.
 # Verify the exact npm package + custom-provider config on hardware bring-up.
-# Node is installed in the OS base image (pinned Node 22 LTS), so this only adds pi.
+# Node is installed in the OS base image (pinned Node 24 LTS), so this only adds pi.
 USER root
 RUN npm install -g @earendil-works/pi-coding-agent
 USER workspace
