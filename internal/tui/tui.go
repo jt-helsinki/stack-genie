@@ -13,6 +13,7 @@ import (
 	"os"
 	"os/exec"
 	goruntime "runtime"
+	"strconv"
 	"strings"
 	"time"
 
@@ -21,6 +22,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	"github.com/jt-helsinki/ideal-robot/internal/apps"
 	"github.com/jt-helsinki/ideal-robot/internal/catalog"
+	"github.com/jt-helsinki/ideal-robot/internal/config"
 	"github.com/jt-helsinki/ideal-robot/internal/contextopt"
 	"github.com/jt-helsinki/ideal-robot/internal/egress"
 	"github.com/jt-helsinki/ideal-robot/internal/litellm"
@@ -154,18 +156,21 @@ func Run(cwd string) error {
 		workspaceLogStream,
 	)
 	application.workspaceLogView = workspaceLogView
-	// Live sandbox configuration (diagnostics), shown under the Workspace tab's
-	// "Sandbox Configuration" heading, fetched alongside the summary.
+	// Sandbox Configuration block (diagnostics), shown under the Workspace tab. It reads
+	// the DECLARED project config (config.yaml) — not the live sandbox — so edits via
+	// `ai network`/`ai create` (published ports, cpu/memory, egress) reflect as soon as
+	// the tab is (re)viewed, and the Workspace tab makes NO relay call. It re-reads on
+	// each activation (the hub Inits the sub-view on switch).
 	configFetcher := func(name string) ([]views.ConfigField, error) {
-		fields, err := workspaceManager.WorkspaceConfig(name)
+		root, ok := resolveProjectRoot(name)
+		if !ok {
+			return nil, fmt.Errorf("workspace %q not found", name)
+		}
+		projectConfig, err := config.LoadProjectConfig(root)
 		if err != nil {
 			return nil, err
 		}
-		out := make([]views.ConfigField, len(fields))
-		for index, configField := range fields {
-			out[index] = views.ConfigField{Label: configField.Label, Value: configField.Value}
-		}
-		return out, nil
+		return workspaceConfigFields(projectConfig), nil
 	}
 	projectDetail := views.NewProject(projectInfo, configFetcher)
 
@@ -944,6 +949,64 @@ func (application *app) workspaceLogReadable() bool {
 	}
 	entry, found, err := projectInfo(application.currentProject)
 	return err == nil && found && entry.Status == string(state.StatusStarted)
+}
+
+// workspaceConfigFields renders the DECLARED project config (config.yaml) as the
+// Workspace tab's Sandbox Configuration diagnostics — the values `ai create`/`ai
+// network` set, so edits reflect immediately (no live-sandbox read, no relay call).
+func workspaceConfigFields(projectConfig *config.Config) []views.ConfigField {
+	fields := []views.ConfigField{
+		{Label: "os", Value: dashIfEmpty(projectConfig.OS)},
+		{Label: "vcpus", Value: cpuLimitValue(projectConfig.Workspace.CPULimit)},
+		{Label: "memory", Value: valueOr(projectConfig.Workspace.MemoryLimit, config.Default().Workspace.MemoryLimit)},
+		{Label: "idle timeout", Value: projectConfig.Microsandbox.ResolvedIdleTimeout()},
+		{Label: "egress", Value: projectConfig.Network.ResolvedEgress()},
+		{Label: "published ports", Value: publishPortsValue(projectConfig.Network.PublishPorts)},
+	}
+	if count := len(projectConfig.Network.AllowHostServices); count > 0 {
+		fields = append(fields, views.ConfigField{Label: "allowed host services", Value: strconv.Itoa(count)})
+	}
+	if count := len(projectConfig.Apps); count > 0 {
+		fields = append(fields, views.ConfigField{Label: "apps", Value: strconv.Itoa(count)})
+	}
+	return fields
+}
+
+func cpuLimitValue(cpus int) string {
+	if cpus <= 0 {
+		cpus = config.Default().Workspace.CPULimit
+	}
+	return strconv.Itoa(cpus)
+}
+
+func dashIfEmpty(value string) string {
+	if value == "" {
+		return "—"
+	}
+	return value
+}
+
+func valueOr(value, fallback string) string {
+	if value == "" {
+		return fallback
+	}
+	return value
+}
+
+// publishPortsValue formats declared published ports for the config block.
+func publishPortsValue(ports []config.PortMapping) string {
+	if len(ports) == 0 {
+		return "none"
+	}
+	parts := make([]string, 0, len(ports))
+	for _, mapping := range ports {
+		if mapping.Host == mapping.Guest {
+			parts = append(parts, strconv.Itoa(mapping.Host))
+		} else {
+			parts = append(parts, fmt.Sprintf("%d→%d", mapping.Host, mapping.Guest))
+		}
+	}
+	return strings.Join(parts, ", ")
 }
 
 // lifecyclePollCmd schedules the next lifecycle poll tick.

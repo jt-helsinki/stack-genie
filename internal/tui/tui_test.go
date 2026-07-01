@@ -8,6 +8,7 @@ import (
 	"github.com/charmbracelet/bubbles/viewport"
 	"github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/jt-helsinki/ideal-robot/internal/config"
 	"github.com/jt-helsinki/ideal-robot/internal/project"
 	"github.com/jt-helsinki/ideal-robot/internal/tui/views"
 	"github.com/jt-helsinki/ideal-robot/internal/workspace"
@@ -606,5 +607,30 @@ func TestTabWithSubTabsDelegatesScrollKeys(test *testing.T) {
 	}
 	if !found {
 		test.Fatal("a tab with sub-tabs should delegate PgDn to the view, not scroll the outer pane")
+	}
+}
+
+// TestWorkspaceConfigFieldsReflectDeclaredConfig verifies the Sandbox Configuration
+// block is built from config.yaml (so published-port / resource edits reflect).
+func TestWorkspaceConfigFieldsReflectDeclaredConfig(test *testing.T) {
+	projectConfig := &config.Config{
+		OS:        "ubuntu",
+		Workspace: config.WorkspaceConfig{CPULimit: 2, MemoryLimit: "4G"},
+		Network: config.NetworkConfig{PublishPorts: []config.PortMapping{
+			{Host: 8080, Guest: 8080}, {Host: 9000, Guest: 3000},
+		}},
+	}
+	got := map[string]string{}
+	for _, field := range workspaceConfigFields(projectConfig) {
+		got[field.Label] = field.Value
+	}
+	if got["published ports"] != "8080, 9000→3000" {
+		test.Errorf("published ports = %q, want '8080, 9000→3000'", got["published ports"])
+	}
+	if got["vcpus"] != "2" || got["memory"] != "4G" {
+		test.Errorf("resources = %q/%q, want 2/4G", got["vcpus"], got["memory"])
+	}
+	if publishPortsValue(nil) != "none" {
+		test.Errorf("empty ports = %q, want 'none'", publishPortsValue(nil))
 	}
 }
