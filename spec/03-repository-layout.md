@@ -206,9 +206,12 @@ Rules:
   `uv tool install "graphifyy[pdf,office,video,postgres,google,svg,sql,terraform,ollama,openai,gemini,anthropic]"`
   (all optional extras except the region/DB-specific `chinese,azure,bedrock,falkordb,neo4j,leiden,dm`).
   Graphify is then registered with each selected agent CLI at WORKSPACE START (not
-  in the Dockerfile) — `graphify install --project [--platform <cli>]` run in
-  `~/project` (`Manager.registerGraphify`) — because `--project` writes into the
-  bind-mounted project dir, which only exists at runtime (arch §12). **Python is
+  in the Dockerfile), ONCE per project (guarded by a `.ai-platform/.graphify-installed`
+  marker) — `graphify install --project [--platform <cli>]` run in `~/project`
+  (`Manager.registerGraphify`) — because `--project` writes into the bind-mounted
+  project dir, which only exists at runtime (arch §12). Graphify's headless LLM
+  backend is an Ollama model chosen at `ai create` (`agent.graphify_model`, §12.4),
+  routed through the gateway as `ollama/<model>`. **Python is
   therefore not a `--stacks` option** (the `stacks/python` snippet below is retained
   for legacy projects only), and the agent-CLI snippets now only `npm install` their
   CLI (Node itself is in the base).
@@ -627,13 +630,14 @@ os: alma                   # alma | debian-trixie | debian-bookworm | ubuntu
 agent:
   tools: [opencode, pi]    # installed agent CLIs (any subset of: opencode, pi, claude-code, codex, gemini-cli); opencode + pi by default
   default_tool: opencode   # default agent CLI; must be one of agent.tools
+  graphify_model: qwen2.5-coder:7b  # optional: Ollama model Graphify uses (chosen at `ai create`, routed through the gateway as ollama/<model>); omitted = none
 context:
   strategy: balanced       # Headroom input compression: conservative | balanced | aggressive
                            # (mapped to Headroom per-request knobs keep_turns/output_buffer_tokens)
   caveman_level: full      # Caveman output compression: lite | full | ultra | wenyan
 workspace:
   cpu_limit: 4             # microVM resource limits wired into `msb create --cpus/--memory`
-  memory_limit: 8G         # empty memory falls back to the platform default (4G)
+  memory_limit: 8          # memory in GB (a plain number; a 512M/4G suffix still works); empty falls back to the microVM default (4G)
 microsandbox:
   idle_timeout: 24h        # `msb create --idle-timeout`; default set by `ai create`, editable later
 network:                   # workspace networking (arch §29.6); all fields managed via `ai network`

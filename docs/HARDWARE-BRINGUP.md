@@ -18,7 +18,7 @@ code.
 - **Workspace build + microVM lifecycle** — `internal/workspace/workspace_real.go`:
   `realBuilder.Build` runs `<rt> build` then `msb load`; `realSandbox`
   Create/Start/Stop/Destroy/Exec/WriteFile drive `msb`; the project mounts at
-  `/workspace`, the overlay (§26) at `/persist`, and the microVM boots with
+  `~/project` (`/home/workspace/project`), the overlay (§26) at `/persist`, and the microVM boots with
   `--dns-nameserver` at the `aip-dns` audit resolver.
 - **Service-tier launch** — `internal/setup/setup_real.go`: `realServices.Reconcile`
   brings up the container tier on `aip-net` in order **network → DNS → Ollama →

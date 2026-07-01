@@ -160,7 +160,7 @@ microVMs.)
 
 The Project Layer is the top-level, user-facing artifact: host-stored source in
 the project directory (the cwd at `ai create`), bind-mounted into the workspace
-at `/workspace`.
+at `~/project` (i.e. `/home/workspace/project`, §12).
 
 ## 4.2 Model-Request Path (how a call flows)
 
@@ -907,10 +907,21 @@ templates (§25); it is identical across all OSes:
   Graphify's extras **except** the region/DB-specific ones (`chinese`, `azure`,
   `bedrock`, `falkordb`, `neo4j`, `leiden`, `dm`) — i.e. the included set is
   `pdf,office,video,postgres,google,svg,sql,terraform,ollama,openai,gemini,anthropic`.
-  Each selected agent CLI then **registers Graphify with itself** in its Dockerfile
-  snippet: `graphify install` for Claude Code (the default `graphify` platform),
-  and `graphify install --platform <cli>` for Codex, the Gemini CLI, OpenCode, and
-  Pi.
+  Each selected agent CLI then **registers Graphify with itself at workspace
+  start** (NOT at image build): `Manager.registerGraphify` runs `graphify install`
+  for Claude Code (the default `graphify` platform) and `graphify install --platform
+  <cli>` for Codex, the Gemini CLI, OpenCode, and Pi, all in `~/project`. It must run
+  at start because `--project` writes project-scoped skill/plugin/hook files into the
+  bind-mounted project dir (which does not exist at build); it runs **once per
+  project**, guarded by a marker file (`~/project/.ai-platform/.graphify-installed`)
+  so user edits to those files are not clobbered on every restart.
+  Graphify's headless LLM backend is an **Ollama model chosen at `ai create`** (the
+  wizard's optional model+tag select, or `--graphify-model`), stored as
+  `agent.graphify_model` in the project `config.yaml`. The chosen model is pulled
+  into the local Ollama store and registered in LiteLLM if absent (best-effort — a
+  pull failure is a create warning, not a failure), and at workspace start Graphify
+  is routed through the gateway as `ollama/<model>` via `OPENAI_*` env vars (see
+  §17) — never directly to Ollama.
 
 ## Agent CLIs (selected per environment)
 
@@ -1235,7 +1246,11 @@ the in-VM agent env file (`ANTHROPIC_BASE_URL`+`ANTHROPIC_AUTH_TOKEN`;
 `[model_providers.aip-gateway]` block with `wire_api = "responses"` and an env-supplied
 `env_key`). The **scoped virtual key is NEVER on host disk** (the templates are
 keyless; the base URL is not a secret) — it is injected only into the final config/env
-written **into the microVM**.
+written **into the microVM**. When the project has a configured Graphify model
+(`agent.graphify_model`), the same agent env file also exports `OPENAI_BASE_URL`
+(the gateway `/v1`), `OPENAI_API_KEY` (the scoped virtual key), and
+`OPENAI_MODEL=ollama/<model>`, so `graphify --backend openai` routes through the
+gateway (nginx → Headroom → LiteLLM → Ollama) rather than directly to Ollama.
 
 ### In-VM model picker
 
@@ -1442,7 +1457,7 @@ Host location (the project directory — the cwd at `ai create`, not a fixed roo
 Workspace mount location (guest):
 
 ```text
-/workspace
+~/project  (= /home/workspace/project)
 ```
 
 ---
@@ -1648,7 +1663,7 @@ Anything written in the workspace persists across stop / start / recreation:
 
 The whole writable layer is persisted — there is no manifest of "declared
 paths" to maintain. (Project source in the project directory is separately
-bind-mounted at `/workspace` and is the user's git repo.)
+bind-mounted at `~/project` and is the user's git repo.)
 
 ## Scope
 

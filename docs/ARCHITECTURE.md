@@ -116,22 +116,26 @@ flowchart LR
 Each workspace microVM ships a **rootful in-VM container runtime** (containerd +
 nerdctl + runc + CNI), on which the platform runs **opt-in AI apps** (`internal/apps`)
 as `nerdctl` containers *inside* the VM — **Open WebUI** and **AnythingLLM**,
-selected with `ai create --apps` or managed with `ai apps`. Each app is mounted on
-`/workspace`, published on a unique per-`(workspace, app)` host port, and points at
+selected with `ai create --apps` or managed with `ai apps`. Each app gets the
+workspace project dir (`~/project`) mounted at `/workspace` in its container,
+published on a unique per-`(workspace, app)` host port, and points at
 the *same* gateway path (`http://host.microsandbox.internal:18787/v1` with the
 workspace's scoped virtual key) — never LiteLLM directly. There are no optional
 **host** services: the former host Open WebUI is now this in-VM app, and Odysseus
 was removed entirely.
 
 Every OS base image also bakes in a common dev-tooling layer: Git, the GitHub CLI,
-the latest **Python 3** (system-wide, backing the per-project `/workspace/.venv-msb`
+the latest **Python 3** (system-wide, backing the per-project `~/project/.venv-msb`
 virtualenv created at start), **uv** (Astral's Python package/tool manager, installed
 for the workspace user onto `~/.local/bin`), and **Graphify** (the knowledge-graph
 skill for AI coding assistants — PyPI `graphifyy`, CLI `graphify`), installed via
 `uv tool install "graphifyy[…extras]"` with all optional extras except the
 region/DB-specific `chinese,azure,bedrock,falkordb,neo4j,leiden,dm`. Each selected
-agent CLI registers Graphify with itself in its Dockerfile snippet (`graphify install`
-for claude-code, `graphify install --platform <cli>` for codex/gemini/opencode/pi).
+agent CLI registers Graphify with itself **at workspace start**, once per project
+(`graphify install` for claude-code, `graphify install --platform <cli>` for
+codex/gemini/opencode/pi) — not in the Dockerfile, since `--project` writes into the
+bind-mounted project dir. Graphify's headless LLM backend is an Ollama model chosen
+at `ai create` (`--graphify-model`), routed through the gateway as `ollama/<model>`.
 Python is therefore **not** a `--stacks` option; the selectable software stacks are
 `go`, `node`, `rust`, `java`, `maven`, `deno`. See `spec/01-architecture-spec.md`
 for the full design and `AGENTS.md` for the container/wiring summary.

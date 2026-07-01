@@ -415,9 +415,17 @@ one command:
   `uv tool install "graphifyy[…extras]"` with all optional extras except the
   region/DB-specific chinese/azure/bedrock/falkordb/neo4j/leiden/dm) are baked into
   every OS base image by default; each selected agent CLI registers Graphify with
-  itself at workspace START (`graphify install --project [--platform <cli>]` in
-  `~/project` — not at image build, since it writes project-scoped files); and each
-  workspace gets a per-project **`.venv-msb`** virtualenv created at start (see §7/§25)
+  itself at workspace START, once per project (`graphify install --project
+  [--platform <cli>]` in `~/project` — not at image build, since it writes
+  project-scoped files); and each workspace gets a per-project **`.venv-msb`**
+  virtualenv created at start (see §7/§25)
+* `--graphify-model <ref>` — the **Ollama model Graphify uses** for its headless LLM
+  backend, e.g. `qwen2.5-coder:7b`; optional (blank = none). On a terminal the wizard
+  offers an optional model+tag select from the cached Ollama library; the chosen model
+  is stored as `agent.graphify_model`, pulled into the local Ollama store and
+  registered in the gateway if absent (best-effort — a pull failure is a create
+  warning, not a failure), and routed through the gateway as `ollama/<model>` at
+  workspace start (architecture §17)
 * `--apps <list>` — comma-separated in-VM AI apps to install
   (`openwebui,anythingllm`); **opt-in, default none**. Like `--stacks` it
   pre-seeds the wizard's apps multi-select on a terminal and drives the selection
@@ -426,8 +434,9 @@ one command:
 * `--cpus <n>` — workspace vCPUs, written to `workspace.cpu_limit`. Defaults to the
   global default (4) and is **capped at the host's logical CPU count** — a larger
   request exits `2`.
-* `--memory <size>` — workspace memory limit (e.g. `2G`, `4096`), written to
-  `workspace.memory_limit`. Defaults to the global default (`8G`) and is **capped at
+* `--memory <size>` — workspace memory in **GB, a plain number** (e.g. `8`, `16`;
+  a `512M`/`4G` unit suffix is still accepted for back-compat), written to
+  `workspace.memory_limit`. Defaults to the global default (`8` GB) and is **capped at
   the host's total RAM** when it can be determined — a larger request exits `2`.
 * `--ports <list>` — comma-separated host↔guest ports to open into the workspace,
   each `PORT` (host == guest) or `HOST:GUEST` (Docker-style host-first), written to
@@ -498,16 +507,30 @@ Steps, in order:
 4. **Default agent CLI** — single-select from the CLIs chosen in step 3; default
    `OpenCode` (recorded as `agent.default_tool`).
 5. **Software stacks** — **multi-select checkboxes**; choose the language/tool
-   stacks to install into the environment (e.g. `Java`, `Maven`, `Node`, `Deno`,
-   `Go`, `Python`, `Rust` — the list is extensible, §25). None pre-checked (a
-   project may need nothing beyond the base image). Selected stacks are installed
-   into the generated `.ai-platform/Dockerfile` and recorded in `profile.yaml`.
+   stacks to install into the environment (`Go`, `Node`, `Rust`, `Java`, `Maven`,
+   `Deno` — the list is extensible, §25). **Python is not a stack** — Python 3, uv,
+   and Graphify are baked into every base by default. None pre-checked (a project
+   may need nothing beyond the base image). Selected stacks are installed into the
+   generated `.ai-platform/Dockerfile` and recorded in `profile.yaml`.
 6. **AI apps** — **multi-select checkboxes**; choose the opt-in in-VM AI
    applications to install into the workspace (`Open WebUI`, `AnythingLLM`).
    **None pre-checked** (apps are opt-in). Pre-seeded from `--apps`. Each selected
    app is recorded in `config.yaml`'s `apps:` block and allocated a unique host
    port; the containers run inside the microVM and are managed later via
    `ai apps` (§4.5c).
+7. **Resources & ports** — text inputs for **vCPUs** (`--cpus`, default 4,
+   host-capped), **memory in GB** (`--memory`, a plain number, default 8,
+   host-capped), and **ports to open** (`--ports`, comma-separated `PORT` or
+   `HOST:GUEST`). Blank accepts the default; over-host or malformed values are
+   rejected in place.
+8. **Idle timeout** — text input for the Microsandbox idle timeout (`--idle-timeout`,
+   default 24h).
+9. **Graphify model** *(shown only when the Ollama library cache is available)* —
+   an **optional** single-select of an Ollama model + a tag select (blank = none),
+   mirroring the Models page. The choice is stored as `agent.graphify_model`, pulled
+   into the local Ollama store + registered in the gateway if absent, and routed
+   through the gateway as `ollama/<model>`. Also settable non-interactively via
+   `--graphify-model`.
 
 There is no separate confirm step — completing the last group (Enter) creates
 the project; **Abort** at any point cancels.
@@ -806,7 +829,7 @@ tmux ≥ 3.2 (`terminal-features`/`extended-keys`), which all four bases satisfy
 graphics, sixel) through, so a TUI's image-rendering features will not work inside
 the tmux session.
 
-* **`ai shell`** (§4.5a) **creates or attaches** a session in `/workspace` — on a
+* **`ai shell`** (§4.5a) **creates or attaches** a session in `~/project` — on a
   TTY it offers a picker (attach an existing session, or create a new one by name;
   default new name **`shell`**), or `--session <s>` to go straight to `<s>`. The
   session is opened with one atomic **`tmux new-session -A`** (create-or-attach;

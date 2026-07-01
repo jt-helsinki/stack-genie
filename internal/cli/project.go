@@ -469,7 +469,7 @@ func newCreateCmd(emitter *output.Emitter, exit *int, use string) *cobra.Command
 	cmd.Flags().String("name", "", "workspace name (default: the [name] argument or the current directory)")
 	cmd.Flags().String("os", "", "base OS: "+strings.Join(supportedOSes, "|"))
 	cmd.Flags().StringSlice("agents", nil, "agent CLIs to install (default: opencode,pi): "+strings.Join(supportedAgentCLIs, ","))
-	cmd.Flags().StringSlice("stacks", nil, "extra software stacks ("+strings.Join(supportedStacks, ",")+"); Python 3.x, uv, and Graphify are installed by default")
+	cmd.Flags().StringSlice("stacks", nil, "extra software stacks ("+strings.Join(supportedStacks, ",")+"); Python 3.x, uv, Node 24.x and Graphify are installed by default")
 	cmd.Flags().StringSlice("apps", nil, "in-VM AI apps to install (default: none): "+strings.Join(supportedApps, ","))
 	cmd.Flags().String("idle-timeout", "", "Microsandbox idle timeout (default: "+config.DefaultMicrosandboxIdleTimeout+", e.g. 30m, 24h)")
 	cmd.Flags().Int("cpus", 0, fmt.Sprintf("workspace vCPUs (default: %d; max: host's %d)", config.Default().Workspace.CPULimit, sysinfo.CPUs()))
@@ -678,7 +678,7 @@ func runCreateWizard(seed project.Spec) (project.Spec, bool, error) {
 		),
 		huh.NewGroup(
 			huh.NewMultiSelect[string]().Title("Software stacks (space to toggle)").
-				Description("Python 3.x, uv, and Graphify are installed by default").
+				Description("Python 3.x, uv, Node 24.x and Graphify are installed by default").
 				Options(huh.NewOptions(supportedStacks...)...).Value(&stacks),
 		),
 		huh.NewGroup(
