@@ -200,6 +200,15 @@ Rules:
   container runtime** (containerd + nerdctl + runc + CNI + buildkit, from the
   pinned `nerdctl-full` tarball into `/usr/local`, arch-aware) plus its CNI deps
   (`iptables`, `iproute`); the runtime is started at workspace start (arch §7)
+* every OS base template also bakes in the latest **Python 3** (system-wide),
+  **uv** (Astral's Python package/tool manager, installed for the workspace user
+  onto `~/.local/bin`), and **Graphify** (PyPI `graphifyy`, CLI `graphify`) via
+  `uv tool install "graphifyy[pdf,office,video,postgres,google,svg,sql,terraform,ollama,openai,gemini,anthropic]"`
+  (all optional extras except the region/DB-specific `chinese,azure,bedrock,falkordb,neo4j,leiden,dm`);
+  each selected agent-CLI snippet then registers Graphify with itself
+  (`graphify install` for claude-code, `graphify install --platform <cli>` for
+  codex/gemini/opencode/pi) — arch §12. **Python is therefore not a `--stacks`
+  option** (the `stacks/python` snippet below is retained for legacy projects only).
 * the stack list is **extensible** — adding `stacks/<name>/Dockerfile.snippet`
   makes `<name>` selectable
 * after creation the project owns its Dockerfile; templates/snippets are no

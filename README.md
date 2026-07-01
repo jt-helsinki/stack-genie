@@ -113,6 +113,15 @@ ai list
 ai delete --yes              # the current project, plus its overlay
 ```
 
+Every OS base bakes in a common tooling layer — Git, the GitHub CLI, the latest
+**Python 3**, **uv** (Astral's Python package/tool manager), and **Graphify**
+(PyPI `graphifyy`, CLI `graphify`; a knowledge-graph skill for AI coding
+assistants, installed via `uv tool install` with all extras except the
+region/DB-specific `chinese,azure,bedrock,falkordb,neo4j,leiden,dm`). Each selected
+agent CLI registers Graphify with itself (`graphify install [--platform <cli>]`).
+Python is baked in, so it is **not** a `--stacks` option — the selectable stacks
+are `go,node,rust,java,maven,deno`.
+
 **Work in the workspace** (one microVM per project; installed programs and agent
 state persist across restarts via the overlay):
 

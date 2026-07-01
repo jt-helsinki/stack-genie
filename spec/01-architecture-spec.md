@@ -891,6 +891,23 @@ templates (§25); it is identical across all OSes:
 
 * Git
 * GitHub CLI
+* **Python 3** — the base image's latest, installed system-wide (`python3` +
+  `python3-venv` where the distro splits it out). This backs the per-project
+  `/workspace/.venv-msb` virtualenv created at workspace start (§26).
+* **uv** — Astral's Python package/tool manager, installed for the **workspace
+  user** (`curl -LsSf https://astral.sh/uv/install.sh | sh`, onto
+  `~/.local/bin`, which is on `PATH`).
+* **Graphify** — the knowledge-graph skill for AI coding assistants
+  (github.com/safishamsi/graphify, PyPI package `graphifyy`, CLI `graphify`),
+  installed by default for the workspace user via
+  `uv tool install "graphifyy[<extras>]"`. The bundled optional extras are all of
+  Graphify's extras **except** the region/DB-specific ones (`chinese`, `azure`,
+  `bedrock`, `falkordb`, `neo4j`, `leiden`, `dm`) — i.e. the included set is
+  `pdf,office,video,postgres,google,svg,sql,terraform,ollama,openai,gemini,anthropic`.
+  Each selected agent CLI then **registers Graphify with itself** in its Dockerfile
+  snippet: `graphify install` for Claude Code (the default `graphify` platform),
+  and `graphify install --platform <cli>` for Codex, the Gemini CLI, OpenCode, and
+  Pi.
 
 ## Agent CLIs (selected per environment)
 
@@ -1575,8 +1592,12 @@ seed a new project's `.ai-platform/Dockerfile`:
 ## Software Stacks
 
 The user selects the language/tool stacks to install when setting up the
-environment (CLI §3.1, step 5) — a **multi-select** of e.g. `java`, `maven`,
-`node`, `deno`, `go`, `python`, `rust`. The set is **extensible**: each stack is
+environment (CLI §3.1, step 5) — a **multi-select** of `java`, `maven`,
+`node`, `deno`, `go`, `rust`. **Python is not a stack option**: the latest
+**Python 3**, **uv**, and **Graphify** are baked into every OS base by default
+(§12: Base tooling), so there is nothing to select. (A legacy `python`
+stack snippet is retained under `templates/stacks/python` for old projects only.)
+The set is **extensible**: each stack is
 a small install snippet the platform ships under
 `~/.ai-platform/templates/stacks/<stack>` (repo-layout §1.5), and the
 `ai create` Dockerfile generator composes the selected snippets into the

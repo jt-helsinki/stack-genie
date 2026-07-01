@@ -13,6 +13,7 @@ flowchart LR
     direction TB
     AGENT["Agent CLI<br/>opencode · pi · claude · codex · gemini<br/><b>holds only a scoped LiteLLM virtual key</b>"]:::vm
     RT["In-VM container runtime<br/>rootful containerd · nerdctl · runc · CNI"]:::core
+    TOOLS["Baked-in dev tooling<br/>Python 3 · uv · <b>Graphify</b> (graphifyy, uv tool install)<br/>registered with each agent CLI · per-project /workspace/.venv-msb"]:::core
     APPS["Opt-in in-VM apps (nerdctl)<br/>Open WebUI · AnythingLLM<br/>per-(workspace,app) host port · /workspace mount"]:::opt
   end
 
@@ -34,6 +35,7 @@ flowchart LR
   APPS == "same gateway path (model calls)" ==> PROXY
   CLI -- "/v1 model path · /llm + /ollama admin" --> PROXY
   AGENT -. "every DNS name audited" .-> DNS
+  AGENT -. "consults <b>Graphify</b> knowledge graph" .-> TOOLS
   PROXY -- "/ + /v1" --> HEAD --> LLM
   PROXY -. "/llm · litellm.&lt;domain&gt;" .-> LLM
   PROXY -. "/ollama" .-> OLL

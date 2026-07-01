@@ -121,5 +121,17 @@ selected with `ai create --apps` or managed with `ai apps`. Each app is mounted 
 the *same* gateway path (`http://host.microsandbox.internal:18787/v1` with the
 workspace's scoped virtual key) — never LiteLLM directly. There are no optional
 **host** services: the former host Open WebUI is now this in-VM app, and Odysseus
-was removed entirely. See `spec/01-architecture-spec.md` for the full design and
-`AGENTS.md` for the container/wiring summary.
+was removed entirely.
+
+Every OS base image also bakes in a common dev-tooling layer: Git, the GitHub CLI,
+the latest **Python 3** (system-wide, backing the per-project `/workspace/.venv-msb`
+virtualenv created at start), **uv** (Astral's Python package/tool manager, installed
+for the workspace user onto `~/.local/bin`), and **Graphify** (the knowledge-graph
+skill for AI coding assistants — PyPI `graphifyy`, CLI `graphify`), installed via
+`uv tool install "graphifyy[…extras]"` with all optional extras except the
+region/DB-specific `chinese,azure,bedrock,falkordb,neo4j,leiden,dm`. Each selected
+agent CLI registers Graphify with itself in its Dockerfile snippet (`graphify install`
+for claude-code, `graphify install --platform <cli>` for codex/gemini/opencode/pi).
+Python is therefore **not** a `--stacks` option; the selectable software stacks are
+`go`, `node`, `rust`, `java`, `maven`, `deno`. See `spec/01-architecture-spec.md`
+for the full design and `AGENTS.md` for the container/wiring summary.
