@@ -31,11 +31,12 @@ type ModelShowFetcher func(model string) (ollama.ModelInfo, error)
 // tags that are installed locally. The list shows NAME · DESCRIPTION (the tags are
 // shown only in the per-model drill-down); enter drills into the per-tag picker.
 type localModel struct {
-	name        string          // base model name (e.g. "qwen2.5")
-	description string          // library description ("" for a synthesized custom)
-	tags        []string        // all known tags (library tags ∪ installed tags)
-	installed   map[string]bool // which of tags are installed locally
-	sizes       map[string]int64
+	name        string                       // base model name (e.g. "qwen2.5")
+	description string                       // library description ("" for a synthesized custom)
+	tags        []string                     // all known tags (library tags ∪ installed tags)
+	installed   map[string]bool              // which of tags are installed locally
+	sizes       map[string]int64             // on-disk byte size of installed tags
+	tagInfo     map[string]ollama.LibraryTag // library size/context/input by short tag
 }
 
 // anyInstalled reports whether at least one of the model's tags is installed.
@@ -413,7 +414,11 @@ func (view *LocalModels) buildModels(installed []ollama.Model, library []ollama.
 	rows := make([]localModel, 0, len(library)+len(installedTags))
 	for _, libModel := range library {
 		seen[libModel.Name] = true
-		tags := append([]string(nil), libModel.Tags...)
+		tags := libModel.TagNames()
+		tagInfo := make(map[string]ollama.LibraryTag, len(libModel.Tags))
+		for _, tag := range libModel.Tags {
+			tagInfo[tag.Name] = tag
+		}
 		instTags := installedTags[libModel.Name]
 		// Fold in any installed tag the library doesn't list (a custom tag of a
 		// library model), so installed tags always show in the drill-down.
@@ -428,6 +433,7 @@ func (view *LocalModels) buildModels(installed []ollama.Model, library []ollama.
 			tags:        sortTags(tags),
 			installed:   copyBoolMap(instTags),
 			sizes:       installedSizes[libModel.Name],
+			tagInfo:     tagInfo,
 		})
 	}
 	// Synthesize rows for installed customs not present in the library.
@@ -675,8 +681,8 @@ func (view *LocalModels) drillView() string {
 			check = "x"
 		}
 		line := marker + " [" + check + "] " + tag
-		if size, ok := drill.model.sizes[tag]; ok && size > 0 {
-			line += ui.Muted.Render("  " + ollama.HumanByteSize(size))
+		if detail := tagDetail(drill.model, tag); detail != "" {
+			line += ui.Muted.Render("  " + detail)
 		}
 		if index == drill.cursor {
 			line = ui.Primary.Bold(true).Render("› ") + line
@@ -689,6 +695,31 @@ func (view *LocalModels) drillView() string {
 		body.WriteString("\n" + view.flash)
 	}
 	return body.String()
+}
+
+// tagDetail renders a compact "size · context ctx · input" summary for a tag from
+// the scraped library metadata (ollama.com /tags columns), falling back to the
+// on-disk byte size for an installed tag the library doesn't describe.
+func tagDetail(model localModel, tag string) string {
+	if info, ok := model.tagInfo[tag]; ok {
+		parts := make([]string, 0, 3)
+		if info.Size != "" {
+			parts = append(parts, info.Size)
+		}
+		if info.Context != "" {
+			parts = append(parts, info.Context+" ctx")
+		}
+		if info.Input != "" {
+			parts = append(parts, info.Input)
+		}
+		if len(parts) > 0 {
+			return strings.Join(parts, " · ")
+		}
+	}
+	if size, ok := model.sizes[tag]; ok && size > 0 {
+		return ollama.HumanByteSize(size)
+	}
+	return ""
 }
 
 // describeTag renders the full /api/show detail for an installed ref (name:tag) into

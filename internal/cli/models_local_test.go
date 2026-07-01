@@ -258,13 +258,27 @@ func TestModelsListHumanTable(test *testing.T) {
 	}
 }
 
+// libTags builds library tags from short names (test convenience).
+func libTags(names ...string) []ollama.LibraryTag {
+	tags := make([]ollama.LibraryTag, len(names))
+	for index, name := range names {
+		tags[index] = ollama.LibraryTag{Name: name}
+	}
+	return tags
+}
+
 func TestModelsPopularHumanTableAndJSON(test *testing.T) {
 	result := modelsPopularResult{Models: toPopularEntries([]ollama.LibraryModel{
-		{Name: "gemma4", Description: "Google Gemma", Tags: []string{"4b", "31b"}, RepoURL: "https://ollama.com/library/gemma4"},
+		{Name: "gemma4", Description: "Google Gemma", RepoURL: "https://ollama.com/library/gemma4", Tags: []ollama.LibraryTag{
+			{Name: "latest", Size: "3.3GB", Context: "128K", Input: "Text"},
+			{Name: "4b", Size: "3.3GB", Context: "128K", Input: "Text"},
+		}},
 		{Name: "nomic-embed-text", Description: "An embedding model", Tags: nil, RepoURL: "https://ollama.com/library/nomic-embed-text"},
 	})}
 	human := result.Human()
-	for _, want := range []string{"NAME", "TAGS", "SIZE", "REPO", "gemma4", "4b, 31b", "ollama.com/library/gemma4", "—"} {
+	// Columns: NAME / SIZE / CONTEXT / INPUT / REPO. The representative tag's
+	// values are shown; a model with no tags shows dashes.
+	for _, want := range []string{"NAME", "SIZE", "CONTEXT", "INPUT", "REPO", "gemma4", "3.3GB", "128K", "Text", "ollama.com/library/gemma4", "—"} {
 		if !strings.Contains(human, want) {
 			test.Fatalf("Human() missing %q:\n%s", want, human)
 		}
@@ -282,7 +296,7 @@ func withFakeLibrary(test *testing.T, models []ollama.LibraryModel, source ollam
 
 func TestModelsPopularSuccess(test *testing.T) {
 	withFakeLibrary(test, []ollama.LibraryModel{
-		{Name: "gemma4", Tags: []string{"31b"}, RepoURL: "https://ollama.com/library/gemma4"},
+		{Name: "gemma4", Tags: libTags("31b"), RepoURL: "https://ollama.com/library/gemma4"},
 	}, ollama.SourceFresh, nil)
 	exit := output.ExitOK
 	cmd := newModelsPopularCmd(jsonEmitter(), &exit)
@@ -297,7 +311,7 @@ func TestModelsPopularSuccess(test *testing.T) {
 // A cached copy (live fetch failed but cache present) still succeeds.
 func TestModelsPopularCachedStillSucceeds(test *testing.T) {
 	withFakeLibrary(test, []ollama.LibraryModel{
-		{Name: "gemma4", Tags: []string{"31b"}, RepoURL: "https://ollama.com/library/gemma4"},
+		{Name: "gemma4", Tags: libTags("31b"), RepoURL: "https://ollama.com/library/gemma4"},
 	}, ollama.SourceCached, errors.New("no internet"))
 	exit := output.ExitOK
 	cmd := newModelsPopularCmd(jsonEmitter(), &exit)
@@ -323,7 +337,7 @@ func TestModelsPopularFetchFailureExits4(test *testing.T) {
 
 func TestLibraryPullRefs(test *testing.T) {
 	refs := libraryPullRefs([]ollama.LibraryModel{
-		{Name: "qwen2.5", Tags: []string{"7b", "72b"}},
+		{Name: "qwen2.5", Tags: libTags("7b", "72b")},
 		{Name: "nomic-embed-text", Tags: nil},
 	})
 	want := []string{"qwen2.5:7b", "qwen2.5:72b", "nomic-embed-text"}

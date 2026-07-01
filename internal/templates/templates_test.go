@@ -130,7 +130,10 @@ func TestBaseDockerfileShipsContainerRuntime(t *testing.T) {
 				"nerdctl-full-",
 				"tar -C /usr/local",
 				"python3",
-				"graphifyy",
+				// Graphify installs via uv (Astral) with the bundled extras.
+				"astral.sh/uv/install.sh",
+				"uv tool install",
+				"graphifyy[",
 			} {
 				if !strings.Contains(got, fragment) {
 					t.Errorf("%s: base Dockerfile missing container-runtime install %q:\n%s", osKey, fragment, got)
@@ -220,6 +223,23 @@ func TestAgentCLISnippetKnownCLIs(t *testing.T) {
 			}
 			if strings.TrimSpace(got) == "" {
 				t.Fatalf("AgentCLISnippet(%q) returned blank content", cli)
+			}
+			// Every agent-CLI snippet registers Graphify with itself via its
+			// `graphify install --platform <cli>` (claude-code uses the default
+			// platform, i.e. a bare `graphify install`).
+			graphifyPlatform := map[string]string{
+				"claude-code": "graphify install",
+				"codex":       "graphify install --platform codex",
+				"gemini":      "graphify install --platform gemini",
+				"opencode":    "graphify install --platform opencode",
+				"pi":          "graphify install --platform pi",
+			}
+			if want, ok := graphifyPlatform[cli]; ok {
+				if !strings.Contains(got, want) {
+					t.Errorf("AgentCLISnippet(%q) missing Graphify registration %q:\n%s", cli, want, got)
+				}
+			} else if strings.Contains(got, "graphify install") {
+				t.Errorf("AgentCLISnippet(%q) unexpectedly registers Graphify (unknown platform)", cli)
 			}
 		})
 	}

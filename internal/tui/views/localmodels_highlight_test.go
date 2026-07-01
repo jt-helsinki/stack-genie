@@ -35,9 +35,9 @@ func TestLocalModelsSelectedRowHighlighted(test *testing.T) {
 	view := buildLocal(test,
 		[]ollama.Model{{Name: "qwen2.5:7b", Size: 4700000000, ParameterSize: "7.6B"}},
 		[]ollama.LibraryModel{
-			{Name: "qwen2.5", Description: "Qwen 2.5", Tags: []string{"7b", "72b"}},
-			{Name: "gemma3", Description: "Gemma 3", Tags: []string{"1b", "4b"}},
-			{Name: "llama3.2", Description: "Llama 3.2", Tags: []string{"1b", "3b"}},
+			{Name: "qwen2.5", Description: "Qwen 2.5", Tags: libTags("7b", "72b")},
+			{Name: "gemma3", Description: "Gemma 3", Tags: libTags("1b", "4b")},
+			{Name: "llama3.2", Description: "Llama 3.2", Tags: libTags("1b", "3b")},
 		},
 		noShow,
 	)
@@ -70,8 +70,8 @@ func TestLocalModelsSectionHeadersStyled(test *testing.T) {
 	view := buildLocal(test,
 		[]ollama.Model{{Name: "qwen2.5:7b", Size: 4700000000, ParameterSize: "7.6B"}},
 		[]ollama.LibraryModel{
-			{Name: "qwen2.5", Description: "Qwen 2.5", Tags: []string{"7b", "72b"}},
-			{Name: "llama3.2", Description: "Llama 3.2", Tags: []string{"1b", "3b"}},
+			{Name: "qwen2.5", Description: "Qwen 2.5", Tags: libTags("7b", "72b")},
+			{Name: "llama3.2", Description: "Llama 3.2", Tags: libTags("1b", "3b")},
 		},
 		noShow,
 	)

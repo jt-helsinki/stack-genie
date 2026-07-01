@@ -41,14 +41,21 @@ import (
 	"sort"
 	"strings"
 
+	"gopkg.in/yaml.v3"
+
 	"github.com/jt-helsinki/ideal-robot/internal/paths"
 )
 
 // DefaultURL is the canonical models.dev catalog endpoint.
 const DefaultURL = "https://models.dev/catalog.json"
 
-// catalogFileName is the on-disk name under the cache dir.
-const catalogFileName = "catalog.json"
+// catalogFileName is the on-disk cache name under the cache dir. The upstream
+// fetch is JSON (models.dev serves JSON), but the local cache is persisted as YAML
+// (human-inspectable), converting a legacy catalog.json copy on first access.
+const catalogFileName = "catalog.yaml"
+
+// legacyCatalogFileName is the pre-YAML cache name, migrated on first access.
+const legacyCatalogFileName = "catalog.json"
 
 // Source records whether a returned catalog came from a fresh network fetch or
 // from the on-disk cache (used by callers to message source availability).
@@ -104,30 +111,30 @@ type Model struct {
 // rawModel mirrors the upstream JSON snake_case keys. Extra fields the catalog
 // carries (benchmarks, weights, cost, npm, …) are tolerated and ignored.
 type rawModel struct {
-	ID          string `json:"id"`
-	Name        string `json:"name"`
-	Family      string `json:"family"`
-	Knowledge   string `json:"knowledge"`
-	ReleaseDate string `json:"release_date"`
-	LastUpdated string `json:"last_updated"`
-	OpenWeights bool   `json:"open_weights"`
-	Reasoning   bool   `json:"reasoning"`
-	ToolCall    bool   `json:"tool_call"`
-	Attachment  bool   `json:"attachment"`
+	ID          string `json:"id" yaml:"id"`
+	Name        string `json:"name" yaml:"name"`
+	Family      string `json:"family" yaml:"family,omitempty"`
+	Knowledge   string `json:"knowledge" yaml:"knowledge,omitempty"`
+	ReleaseDate string `json:"release_date" yaml:"release_date,omitempty"`
+	LastUpdated string `json:"last_updated" yaml:"last_updated,omitempty"`
+	OpenWeights bool   `json:"open_weights" yaml:"open_weights,omitempty"`
+	Reasoning   bool   `json:"reasoning" yaml:"reasoning,omitempty"`
+	ToolCall    bool   `json:"tool_call" yaml:"tool_call,omitempty"`
+	Attachment  bool   `json:"attachment" yaml:"attachment,omitempty"`
 
-	StructuredOutput bool `json:"structured_output"`
-	Temperature      bool `json:"temperature"`
+	StructuredOutput bool `json:"structured_output" yaml:"structured_output,omitempty"`
+	Temperature      bool `json:"temperature" yaml:"temperature,omitempty"`
 
 	Limit struct {
-		Context int `json:"context"`
-		Output  int `json:"output"`
-		Input   int `json:"input"`
-	} `json:"limit"`
+		Context int `json:"context" yaml:"context,omitempty"`
+		Output  int `json:"output" yaml:"output,omitempty"`
+		Input   int `json:"input" yaml:"input,omitempty"`
+	} `json:"limit" yaml:"limit,omitempty"`
 
 	Modalities struct {
-		Input  []string `json:"input"`
-		Output []string `json:"output"`
-	} `json:"modalities"`
+		Input  []string `json:"input" yaml:"input,omitempty"`
+		Output []string `json:"output" yaml:"output,omitempty"`
+	} `json:"modalities" yaml:"modalities,omitempty"`
 }
 
 func (raw rawModel) toModel() Model {
@@ -166,33 +173,48 @@ type Provider struct {
 // rawProvider mirrors the upstream "providers" map entry. We only need
 // id/name/env here; other fields (npm/api/doc/models) are tolerated/ignored.
 type rawProvider struct {
-	ID   string   `json:"id"`
-	Name string   `json:"name"`
-	Env  []string `json:"env"`
+	ID   string   `json:"id" yaml:"id"`
+	Name string   `json:"name" yaml:"name,omitempty"`
+	Env  []string `json:"env" yaml:"env,omitempty"`
 }
 
 // rawCatalog mirrors the catalog's two top-level keys.
 type rawCatalog struct {
-	Models    map[string]rawModel    `json:"models"`
-	Providers map[string]rawProvider `json:"providers"`
+	Models    map[string]rawModel    `json:"models" yaml:"models"`
+	Providers map[string]rawProvider `json:"providers" yaml:"providers,omitempty"`
 }
 
-// Catalog is the parsed, provider-grouped model catalog. It also retains the raw
-// bytes it was parsed from so Save can persist the exact source-of-truth JSON.
+// Catalog is the parsed, provider-grouped model catalog. It also retains the
+// parsed raw form so Save can persist it as YAML.
 type Catalog struct {
 	providers map[string]Provider // keyed by provider id
 	order     []string            // provider ids, sorted ascending
-	raw       []byte              // the exact JSON this Catalog was parsed from
+	source    rawCatalog          // the parsed raw form, re-marshaled to YAML by Save
 }
 
-// Parse parses catalog JSON into a provider-grouped Catalog. It tolerates extra
-// fields (the catalog carries many we don't model). The supplied bytes are
-// retained so Save can write back the exact source JSON.
+// Parse parses catalog JSON (the upstream models.dev format) into a provider-
+// grouped Catalog. It tolerates extra fields (the catalog carries many we don't
+// model).
 func Parse(data []byte) (*Catalog, error) {
 	var raw rawCatalog
 	if err := json.Unmarshal(data, &raw); err != nil {
 		return nil, fmt.Errorf("catalog: parse: %w", err)
 	}
+	return build(raw)
+}
+
+// parseYAML parses the local YAML cache (the format Save writes) into a Catalog.
+func parseYAML(data []byte) (*Catalog, error) {
+	var raw rawCatalog
+	if err := yaml.Unmarshal(data, &raw); err != nil {
+		return nil, fmt.Errorf("catalog: parse yaml: %w", err)
+	}
+	return build(raw)
+}
+
+// build groups a raw catalog by provider prefix into a Catalog, retaining the raw
+// form for YAML persistence. It is the shared tail of Parse and parseYAML.
+func build(raw rawCatalog) (*Catalog, error) {
 	if len(raw.Models) == 0 {
 		return nil, errors.New("catalog: parse: no models in catalog")
 	}
@@ -235,7 +257,7 @@ func Parse(data []byte) (*Catalog, error) {
 	}
 	sort.Strings(order)
 
-	return &Catalog{providers: providers, order: order, raw: data}, nil
+	return &Catalog{providers: providers, order: order, source: raw}, nil
 }
 
 // Providers returns every provider, sorted by id ascending.
@@ -263,11 +285,6 @@ func (catalog *Catalog) Models() []Model {
 		return result[left].ID < result[right].ID
 	})
 	return result
-}
-
-// Raw returns the exact JSON bytes this Catalog was parsed from.
-func (catalog *Catalog) Raw() []byte {
-	return catalog.raw
 }
 
 // Fetch GETs the catalog from url (use DefaultURL) over httpClient and parses it.
@@ -298,8 +315,9 @@ func Fetch(ctx context.Context, httpClient *http.Client, url string) (*Catalog, 
 	return Parse(body)
 }
 
-// Path returns the on-disk catalog location: ~/.ai-platform/cache/catalog.json.
-// It lazily migrates a legacy volumes/catalog.json copy into place (best-effort).
+// Path returns the on-disk catalog location: ~/.ai-platform/cache/catalog.yaml.
+// It lazily converts a legacy JSON copy (cache/catalog.json or the older
+// volumes/catalog.json) into the YAML cache (best-effort).
 func Path() (string, error) {
 	cache, err := paths.CacheDir()
 	if err != nil {
@@ -309,43 +327,62 @@ func Path() (string, error) {
 	return filepath.Join(cache, catalogFileName), nil
 }
 
-// migrateLegacyCatalog moves a pre-existing volumes/catalog.json to the new
-// cache/catalog.json location once, when the cache copy is absent and the legacy
-// copy exists. It is best-effort: any error (including a missing dir) is ignored
-// so an existing install's catalog isn't lost and no orphan lingers.
+// migrateLegacyCatalog converts a pre-existing legacy JSON catalog into the new
+// cache/catalog.yaml once, when the YAML copy is absent and a legacy JSON copy
+// exists (checked at cache/catalog.json first, then the older volumes/catalog.json).
+// It parses the JSON and re-serializes to YAML, then removes the legacy file. It is
+// best-effort: any error (including a missing dir) is ignored so an existing
+// install's catalog isn't lost — it just re-fetches on the next online run.
 func migrateLegacyCatalog() {
 	cache, err := paths.CacheDir()
 	if err != nil {
 		return
 	}
-	volumes, err := paths.VolumesDir()
-	if err != nil {
-		return
-	}
 	newPath := filepath.Join(cache, catalogFileName)
-	legacyPath := filepath.Join(volumes, catalogFileName)
 	if _, err := os.Stat(newPath); err == nil {
-		return // cache copy already present
+		return // YAML cache already present
 	}
-	if _, err := os.Stat(legacyPath); err != nil {
-		return // no legacy copy to migrate
+	candidates := []string{filepath.Join(cache, legacyCatalogFileName)}
+	if volumes, volErr := paths.VolumesDir(); volErr == nil {
+		candidates = append(candidates, filepath.Join(volumes, legacyCatalogFileName))
 	}
-	if err := os.MkdirAll(cache, 0o755); err != nil {
+	for _, legacy := range candidates {
+		data, readErr := os.ReadFile(legacy)
+		if readErr != nil {
+			continue
+		}
+		parsed, parseErr := Parse(data)
+		if parseErr != nil {
+			continue
+		}
+		out, marshalErr := yaml.Marshal(parsed.source)
+		if marshalErr != nil {
+			continue
+		}
+		if err := os.MkdirAll(cache, 0o755); err != nil {
+			return
+		}
+		if err := os.WriteFile(newPath, out, 0o644); err != nil {
+			return
+		}
+		_ = os.Remove(legacy) // best-effort cleanup of the legacy JSON copy
 		return
 	}
-	_ = os.Rename(legacyPath, newPath)
 }
 
-// Save writes the catalog's RAW source JSON atomically (temp file + rename) so
-// the on-disk copy is byte-for-byte the source-of-truth JSON. It creates the
-// volumes dir on demand.
+// Save writes the catalog as YAML atomically (temp file + rename), converting the
+// upstream JSON form to the local YAML cache. It creates the cache dir on demand.
 func Save(catalog *Catalog) error {
-	if catalog == nil || len(catalog.raw) == 0 {
+	if catalog == nil || len(catalog.source.Models) == 0 {
 		return errors.New("catalog: save: nothing to write")
 	}
 	path, err := Path()
 	if err != nil {
 		return err
+	}
+	data, err := yaml.Marshal(catalog.source)
+	if err != nil {
+		return fmt.Errorf("catalog: save: marshal: %w", err)
 	}
 	dir := filepath.Dir(path)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
@@ -357,7 +394,7 @@ func Save(catalog *Catalog) error {
 	}
 	tempName := temp.Name()
 	defer func() { _ = os.Remove(tempName) }() // no-op once renamed
-	if _, err := temp.Write(catalog.raw); err != nil {
+	if _, err := temp.Write(data); err != nil {
 		_ = temp.Close()
 		return fmt.Errorf("catalog: save: write: %w", err)
 	}
@@ -370,7 +407,7 @@ func Save(catalog *Catalog) error {
 	return nil
 }
 
-// Load reads and parses the saved catalog copy.
+// Load reads and parses the saved YAML catalog copy.
 func Load() (*Catalog, error) {
 	path, err := Path()
 	if err != nil {
@@ -380,7 +417,7 @@ func Load() (*Catalog, error) {
 	if err != nil {
 		return nil, fmt.Errorf("catalog: load: %w", err)
 	}
-	return Parse(data)
+	return parseYAML(data)
 }
 
 // LoadOrFetch prefers a fresh network fetch and, on success, persists it before

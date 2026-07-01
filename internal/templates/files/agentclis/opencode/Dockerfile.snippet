@@ -5,3 +5,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends nodejs npm \
  && rm -rf /var/lib/apt/lists/* \
  && npm install -g opencode-ai
 USER workspace
+
+# Register Graphify with OpenCode (github.com/safishamsi/graphify). Best-effort:
+# never fail the image build.
+RUN graphify install --platform opencode || echo "graphify: opencode registration skipped (verify on hardware bring-up)"

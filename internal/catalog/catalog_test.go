@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/jt-helsinki/ideal-robot/internal/catalog"
@@ -151,7 +152,7 @@ func TestPathUnderCache(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Path: %v", err)
 	}
-	want := filepath.Join(home, ".ai-platform", "cache", "catalog.json")
+	want := filepath.Join(home, ".ai-platform", "cache", "catalog.yaml")
 	if path != want {
 		t.Errorf("Path() = %q, want %q", path, want)
 	}
@@ -168,14 +169,17 @@ func TestSaveLoadRoundTrip(t *testing.T) {
 		t.Fatalf("Save: %v", err)
 	}
 
-	// Save writes the RAW bytes byte-for-byte.
+	// Save writes YAML (converted from the upstream JSON), not the raw bytes.
 	path, _ := catalog.Path()
 	onDisk, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatalf("read saved: %v", err)
 	}
-	if !reflect.DeepEqual(onDisk, raw) {
-		t.Error("saved bytes != raw fixture bytes")
+	if !strings.HasSuffix(path, ".yaml") {
+		t.Errorf("cache path = %q, want a .yaml file", path)
+	}
+	if len(onDisk) == 0 || !strings.Contains(string(onDisk), "models:") {
+		t.Errorf("saved catalog is not the expected YAML:\n%.200s", onDisk)
 	}
 
 	// Load re-parses to an equivalent catalog.
@@ -183,11 +187,74 @@ func TestSaveLoadRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
+	// The JSON→YAML→parse round-trip preserves the model/provider set and the
+	// meaningful per-model fields. (A raw DeepEqual is intentionally avoided: YAML
+	// omitempty can turn an empty slice into nil, an irrelevant representational
+	// difference across the format boundary.)
 	if got := len(loaded.Models()); got != len(parsed.Models()) {
 		t.Errorf("loaded models = %d, want %d", got, len(parsed.Models()))
 	}
-	if !reflect.DeepEqual(loaded.Providers(), parsed.Providers()) {
-		t.Error("loaded providers != parsed providers")
+	loadedProviders := loaded.Providers()
+	parsedProviders := parsed.Providers()
+	if len(loadedProviders) != len(parsedProviders) {
+		t.Fatalf("loaded providers = %d, want %d", len(loadedProviders), len(parsedProviders))
+	}
+	for index := range parsedProviders {
+		if loadedProviders[index].ID != parsedProviders[index].ID ||
+			loadedProviders[index].Name != parsedProviders[index].Name ||
+			len(loadedProviders[index].Models) != len(parsedProviders[index].Models) {
+			t.Errorf("provider %d mismatch: %+v vs %+v", index, loadedProviders[index], parsedProviders[index])
+		}
+	}
+	// Spot-check a model's fields survive the round-trip.
+	byID := func(models []catalog.Model, id string) (catalog.Model, bool) {
+		for _, model := range models {
+			if model.ID == id {
+				return model, true
+			}
+		}
+		return catalog.Model{}, false
+	}
+	for _, want := range parsed.Models() {
+		got, ok := byID(loaded.Models(), want.ID)
+		if !ok {
+			t.Errorf("model %q missing after round-trip", want.ID)
+			continue
+		}
+		if got.Name != want.Name || got.Limit.Context != want.Limit.Context || got.Reasoning != want.Reasoning {
+			t.Errorf("model %q fields changed: got %+v want %+v", want.ID, got, want)
+		}
+	}
+}
+
+func TestMigrateLegacyJSONToYAML(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	// Seed a legacy cache/catalog.json (the pre-YAML format).
+	cacheDir := filepath.Join(home, ".ai-platform", "cache")
+	if err := os.MkdirAll(cacheDir, 0o755); err != nil {
+		t.Fatalf("mkdir cache: %v", err)
+	}
+	legacy := filepath.Join(cacheDir, "catalog.json")
+	if err := os.WriteFile(legacy, readFixture(t), 0o644); err != nil {
+		t.Fatalf("seed legacy: %v", err)
+	}
+
+	// Load triggers Path()'s lazy migration: the JSON is converted to catalog.yaml
+	// and the legacy JSON removed.
+	loaded, err := catalog.Load()
+	if err != nil {
+		t.Fatalf("Load (after seeding legacy json): %v", err)
+	}
+	if len(loaded.Models()) == 0 {
+		t.Fatal("migrated catalog has no models")
+	}
+	if _, err := os.Stat(filepath.Join(cacheDir, "catalog.yaml")); err != nil {
+		t.Errorf("catalog.yaml not created by migration: %v", err)
+	}
+	if _, err := os.Stat(legacy); !os.IsNotExist(err) {
+		t.Errorf("legacy catalog.json not removed (stat err = %v)", err)
 	}
 }
 

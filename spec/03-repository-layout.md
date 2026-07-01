@@ -38,7 +38,7 @@ All platform-wide data is stored under:
 ~/.ai-platform/
 ├── agents/
 ├── audit/
-├── cache/         # re-fetchable caches: catalog.json (models.dev), ollama-library.json
+├── cache/         # re-fetchable caches: catalog.yaml (models.dev), ollama-models.yaml (ollama.com)
 ├── config/        # global settings + projects index (no per-project state)
 ├── logs/
 ├── overlays/
@@ -123,8 +123,8 @@ Rules:
 ```
 
 ```text id="h6"
-catalog.json          # models.dev catalog (moved from volumes/catalog.json; one-shot migrated)
-ollama-library.json   # live ollama.com installable-library list
+catalog.yaml          # models.dev catalog (fetched as JSON, persisted as YAML; legacy catalog.json one-shot converted)
+ollama-models.yaml    # ollama.com installable-library list, scraped (name/size/context/input), YAML
 models/
 downloads/
 temp/
@@ -133,10 +133,11 @@ temp/
 Rules:
 
 * fully disposable — all entries are **re-fetchable** copies, not SYSTEM data
-* may be rebuilt at any time (`catalog.json` / `ollama-library.json` are re-downloaded
+* may be rebuilt at any time (`catalog.yaml` / `ollama-models.yaml` are re-downloaded
   on next use, falling back to the cached copy only while the source is unreachable)
-* `catalog.json` was **moved here from the legacy `volumes/catalog.json`** with a
-  one-shot lazy migration (`catalog.Path`); `volumes/` is now ONLY true host data
+* `catalog.yaml` is the models.dev catalog fetched as JSON and **persisted as YAML**;
+  a legacy `catalog.json` (or the older `volumes/catalog.json`) is **one-shot
+  converted** to YAML (`catalog.Path`); `volumes/` is now ONLY true host data
 * never contains secrets
 * removed by `ai uninstall --purge` (which `RemoveAll`s `~/.ai-platform`)
 

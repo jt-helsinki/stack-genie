@@ -332,9 +332,9 @@ func (view *CloudModels) describeCloud(model cloudModel) string {
 	var body strings.Builder
 	body.WriteString(ui.Heading.Render(model.name) + "\n")
 	if model.registered() {
-		body.WriteString(ui.Success.Render(ui.IconOK+" registered — the gateway serves this model") + "\n")
+		body.WriteString(ui.Success.Render(ui.IconOK+" Registered — the gateway serves this model") + "\n")
 	} else {
-		body.WriteString(ui.Muted.Render("available — add the provider key (API Keys tab) to register it") + "\n")
+		body.WriteString(ui.Muted.Render("Available — add the provider key (API Keys tab) to register it") + "\n")
 	}
 	body.WriteString("\n" + ui.Heading.Render("catalog (models.dev)") + "\n")
 	body.WriteString(field("provider", model.provider))
@@ -361,9 +361,9 @@ func (view *CloudModels) header() string {
 	var body strings.Builder
 	body.WriteString(ui.Heading.Render("Cloud models — providers with an API key") + "\n")
 	if len(view.models) == 0 {
-		body.WriteString(ui.Muted.Render("no cloud models — add a provider key in the API Keys tab to register its models") + "\n")
+		body.WriteString(ui.Muted.Render("No cloud models — add a provider key in the API Keys tab to register its models") + "\n")
 	}
-	body.WriteString(ui.Muted.Render("only models for providers with a stored key are shown (add keys in the API Keys tab)") + "\n")
+	body.WriteString(ui.Muted.Render("Only models for providers with a stored key are shown (add keys in the API Keys tab)") + "\n")
 	return body.String()
 }
 
@@ -374,7 +374,7 @@ func (view *CloudModels) View() string {
 		return view.describe.view()
 	}
 	if !view.loaded {
-		return ui.Muted.Render("loading cloud models…")
+		return ui.Muted.Render("Loading cloud models…")
 	}
 	var body strings.Builder
 	body.WriteString(view.header())

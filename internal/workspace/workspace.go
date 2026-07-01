@@ -85,7 +85,7 @@ const workspaceWorkdir = "/workspace"
 
 // ErrUnknownProject is returned when a project name is not in the global index
 // (→ exit 2).
-var ErrUnknownProject = errors.New("unknown project")
+var ErrUnknownProject = errors.New("Unknown project")
 
 // ErrWorkspaceUnresponsive is returned when an in-VM probe (tmux/session listing)
 // times out OR fails but a liveness probe confirms the microVM IS present: the VM
@@ -93,7 +93,7 @@ var ErrUnknownProject = errors.New("unknown project")
 // pull, or wedged). The message stays generic (it does NOT assume an image pull —
 // that was misleading) and points at the actionable fix. Mapped to exit 4 (runtime
 // failure).
-var ErrWorkspaceUnresponsive = errors.New("workspace microVM is running, but msb exec is not responding — logs may still be available; try `ai restart`")
+var ErrWorkspaceUnresponsive = errors.New("Workspace microVM is running, but msb exec is not responding — logs may still be available; try `ai restart`")
 
 // ErrWorkspaceStale is returned when the platform's lifecycle handle says the
 // workspace is "started" but a bounded liveness probe finds NO running microVM for
@@ -101,7 +101,7 @@ var ErrWorkspaceUnresponsive = errors.New("workspace microVM is running, but msb
 // state is stale. It is distinct from ErrNotStarted (handle not started) and
 // ErrWorkspaceUnresponsive (VM present but slow): here the fix is to recreate the
 // VM, so the message points at `ai restart`. Mapped to exit 4 (runtime failure).
-var ErrWorkspaceStale = errors.New("workspace is marked started but its microVM isn't running (stale state) — run `ai restart`")
+var ErrWorkspaceStale = errors.New("Workspace is marked started but its microVM isn't running (stale state) — run `ai restart`")
 
 // inVMProbeTimeout bounds the short buffered in-VM probes (tmux presence, session
 // listing, apps `nerdctl ps`) so the CLI/TUI fail fast instead of hanging when the
@@ -136,12 +136,12 @@ const livenessProbeTimeout = 3 * time.Second
 // stopped or was never started (→ exit 2). The message is the user-facing nudge to
 // start it; it covers both cases (the platform tracks the running state in the
 // lifecycle handle, set by start/stop).
-var ErrNotStarted = errors.New("workspace is not running — run `ai start` first")
+var ErrNotStarted = errors.New("Workspace is not running — run `ai start` first")
 
 // ErrAlreadyStopped lets a Sandbox.Stop signal that the microVM was already
 // stopped. Restart treats this as a no-op (it only needs the microVM down before
 // starting it again) rather than a failure.
-var ErrAlreadyStopped = errors.New("workspace microVM is already stopped")
+var ErrAlreadyStopped = errors.New("Workspace microVM is already stopped")
 
 // ErrTmuxMissing is returned when the workspace image has no tmux, which the
 // persistent-session model (shell/agent/attach) requires. It carries the
@@ -157,7 +157,7 @@ func Name(project string) string {
 
 // ErrUnknownAgentCLI is returned when `ai agent <cli>` names a CLI the platform
 // does not know how to launch (→ exit 2). Its message lists the valid set.
-var ErrUnknownAgentCLI = errors.New("unknown agent CLI")
+var ErrUnknownAgentCLI = errors.New("Unknown agent CLI")
 
 // Session is one tmux session inside the workspace microVM — a persistent,
 // reattachable shell or agent CLI. The platform exposes these via `ai sessions`.

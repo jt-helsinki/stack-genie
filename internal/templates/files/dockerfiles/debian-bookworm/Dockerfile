@@ -45,18 +45,27 @@ RUN curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
  && apt-get install -y --no-install-recommends gh \
  && rm -rf /var/lib/apt/lists/*
 
-# Python 3 (the base image's latest) + Graphify — installed by default in every
-# workspace. python3-venv backs the per-project /workspace/.venv-msb created at
-# workspace start; Graphify (graphify.net / PyPI `graphifyy`) is a knowledge-graph CLI
-# skill for AI coding assistants, installed globally onto PATH.
+# Python 3 (the base image's latest), installed system-wide; python3-venv backs the
+# per-project /workspace/.venv-msb created at workspace start.
 RUN apt-get update \
  && apt-get install -y --no-install-recommends python3 python3-venv python3-pip \
- && rm -rf /var/lib/apt/lists/* \
- && python3 -m pip install --break-system-packages --no-cache-dir graphifyy
+ && rm -rf /var/lib/apt/lists/*
 
 # Non-root workspace user with passwordless sudo, so runtime installs work and
 # persist via the overlay (arch §25, §26).
 RUN useradd --create-home --shell /bin/bash workspace \
  && echo 'workspace ALL=(ALL) NOPASSWD:ALL' > /etc/sudoers.d/workspace
+# uv + Graphify install onto the workspace user's PATH (~/.local/bin) below, so
+# each agent-CLI snippet can register Graphify with its assistant.
+ENV PATH="/home/workspace/.local/bin:${PATH}"
 USER workspace
 WORKDIR /home/workspace
+
+# uv (Astral's Python package/tool manager) + Graphify — installed by default in
+# every workspace, for the WORKSPACE USER. Graphify (github.com/safishamsi/graphify,
+# PyPI `graphifyy`) is a knowledge-graph skill for AI coding assistants; the optional
+# extras are bundled (all except the region/DB-specific chinese, azure, bedrock,
+# falkordb, neo4j, leiden, dm). Each selected agent-CLI snippet then registers it via
+# `graphify install --platform …`. Verify the extras resolve on hardware bring-up.
+RUN curl -LsSf https://astral.sh/uv/install.sh | sh \
+ && uv tool install "graphifyy[pdf,office,video,postgres,google,svg,sql,terraform,ollama,openai,gemini,anthropic]"

@@ -73,7 +73,7 @@ func TestGroup01SetupHealth(test *testing.T) {
 		if err != nil {
 			test.Fatalf("home: %v", err)
 		}
-		catalogPath := filepath.Join(home, ".ai-platform", "volumes", "catalog.json")
+		catalogPath := filepath.Join(home, ".ai-platform", "cache", "catalog.yaml")
 		if _, err := os.Stat(catalogPath); err != nil {
 			test.Errorf("catalog file %s not present: %v", catalogPath, err)
 		}

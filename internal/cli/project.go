@@ -103,9 +103,10 @@ func formatAgentCLIs(agents []string) string {
 // always picks the OS — none is applied silently (arch §25).
 var (
 	supportedOSes = []string{"debian-trixie", "debian-bookworm", "ubuntu", "alma"}
-	// Python is NOT offered here — Python 3.x + Graphify are baked into every OS base
-	// by default (see the OS Dockerfiles). The stack machinery still supports a
-	// "python" snippet for backward compatibility with older projects.
+	// Python is NOT offered here — Python 3.x, uv, and Graphify (via `uv tool install`)
+	// are baked into every OS base by default (see the OS Dockerfiles), and each
+	// selected agent CLI registers Graphify with itself. The stack machinery still
+	// supports a "python" snippet for backward compatibility with older projects.
 	supportedStacks    = []string{"go", "node", "rust", "java", "maven", "deno"}
 	supportedAgentCLIs = []string{"opencode", "pi", "claude-code", "codex", "gemini"}
 	// supportedApps are the opt-in in-VM AI applications (apps.Keys()). Default OFF.
@@ -453,7 +454,7 @@ func newCreateCmd(emitter *output.Emitter, exit *int, use string) *cobra.Command
 	cmd.Flags().String("name", "", "workspace name (default: the [name] argument or the current directory)")
 	cmd.Flags().String("os", "", "base OS: "+strings.Join(supportedOSes, "|"))
 	cmd.Flags().StringSlice("agents", nil, "agent CLIs to install (default: opencode,pi): "+strings.Join(supportedAgentCLIs, ","))
-	cmd.Flags().StringSlice("stacks", nil, "extra software stacks ("+strings.Join(supportedStacks, ",")+"); Python 3.x + Graphify are installed by default")
+	cmd.Flags().StringSlice("stacks", nil, "extra software stacks ("+strings.Join(supportedStacks, ",")+"); Python 3.x, uv, and Graphify are installed by default")
 	cmd.Flags().StringSlice("apps", nil, "in-VM AI apps to install (default: none): "+strings.Join(supportedApps, ","))
 	cmd.Flags().String("idle-timeout", "", "Microsandbox idle timeout (default: "+config.DefaultMicrosandboxIdleTimeout+", e.g. 30m, 24h)")
 	cmd.Flags().Int("cpus", 0, fmt.Sprintf("workspace vCPUs (default: %d; max: host's %d)", config.Default().Workspace.CPULimit, sysinfo.CPUs()))
@@ -606,7 +607,7 @@ func runCreateWizard(seed project.Spec) (project.Spec, bool, error) {
 		),
 		huh.NewGroup(
 			huh.NewMultiSelect[string]().Title("Software stacks (space to toggle)").
-				Description("Python 3.x + Graphify are installed by default").
+				Description("Python 3.x, uv, and Graphify are installed by default").
 				Options(huh.NewOptions(supportedStacks...)...).Value(&stacks),
 		),
 		huh.NewGroup(

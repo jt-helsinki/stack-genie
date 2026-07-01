@@ -24,8 +24,17 @@ func ThemeFactory(palette Palette) func() *huh.Theme {
 func ThemeFromPalette(palette Palette) *huh.Theme {
 	theme := huh.ThemeBase()
 
+	// huh's base theme borders the focused field with a HEAVY vertical (lipgloss
+	// ThickBorder, `┃`). That glyph does not tile top-to-bottom in many terminal
+	// fonts, so a run of it reads as a dashed/striped bar. Use the LIGHT vertical
+	// (`│`, NormalBorder) instead — it tiles seamlessly AND matches the light
+	// RoundedBorder used everywhere else in the UI (ai ui panes + tables), so the
+	// focus bar is consistent across the whole app. BorderLeft + PaddingLeft are
+	// inherited from the base; only the glyph style changes.
 	theme.Focused.Base =
-		theme.Focused.Base.BorderForeground(palette.Primary)
+		theme.Focused.Base.
+			BorderStyle(lipgloss.NormalBorder()).
+			BorderForeground(palette.Primary)
 
 	theme.Focused.Card = theme.Focused.Base
 

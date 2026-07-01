@@ -128,9 +128,12 @@ func TestAllOSTemplatesExposeIdenticalBaseSurface(test *testing.T) {
 		// (containerd + nerdctl + runc + CNI + buildkit) is installed on every OS.
 		"NERDCTL_VERSION=2.3.4",
 		"nerdctl-full-",
-		// Python 3 + Graphify are baked into every OS base by default (§12, §25).
+		// Python 3, uv, and Graphify are baked into every OS base by default (§12,
+		// §25). Graphify installs via `uv tool install` with the bundled extras.
 		"python3",
-		"graphifyy",
+		"astral.sh/uv/install.sh",
+		"uv tool install",
+		"graphifyy[",
 	}
 
 	for osKey, fromLine := range osBaseImage {
@@ -146,8 +149,9 @@ func TestAllOSTemplatesExposeIdenticalBaseSurface(test *testing.T) {
 				test.Errorf("%s: base surface missing %q:\n%s", osKey, fragment, dockerfile)
 			}
 		}
-		// The user's selections are appended regardless of OS.
-		for _, fragment := range []string{"# stack: go", "# agent CLI: opencode"} {
+		// The user's selections are appended regardless of OS, and the selected
+		// agent CLI registers Graphify with itself.
+		for _, fragment := range []string{"# stack: go", "# agent CLI: opencode", "graphify install --platform opencode"} {
 			if !strings.Contains(dockerfile, fragment) {
 				test.Errorf("%s: missing selection %q", osKey, fragment)
 			}

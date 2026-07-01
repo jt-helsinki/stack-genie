@@ -21,6 +21,16 @@ func noTest(model string) (litellm.TestResult, error) {
 }
 
 // freshLibrary returns a library lister stub serving the given models, fresh.
+// libTags builds library tags from short names (test convenience; the scraped
+// size/context/input are exercised separately in the ollama package).
+func libTags(names ...string) []ollama.LibraryTag {
+	tags := make([]ollama.LibraryTag, len(names))
+	for index, name := range names {
+		tags[index] = ollama.LibraryTag{Name: name}
+	}
+	return tags
+}
+
 func freshLibrary(models []ollama.LibraryModel) LibraryLister {
 	return func() ([]ollama.LibraryModel, ollama.Source, error) {
 		return models, ollama.SourceFresh, nil
@@ -54,8 +64,8 @@ func TestLocalModelsTwoSectionGrouping(test *testing.T) {
 	view := buildLocal(test,
 		[]ollama.Model{{Name: "qwen2.5:7b", Size: 4700000000, ParameterSize: "7.6B"}},
 		[]ollama.LibraryModel{
-			{Name: "qwen2.5", Description: "Qwen 2.5", Tags: []string{"7b", "72b"}, RepoURL: "https://ollama.com/library/qwen2.5"},
-			{Name: "llama3.2", Description: "Llama 3.2", Tags: []string{"1b", "3b"}, RepoURL: "https://ollama.com/library/llama3.2"},
+			{Name: "qwen2.5", Description: "Qwen 2.5", Tags: libTags("7b", "72b"), RepoURL: "https://ollama.com/library/qwen2.5"},
+			{Name: "llama3.2", Description: "Llama 3.2", Tags: libTags("1b", "3b"), RepoURL: "https://ollama.com/library/llama3.2"},
 		},
 		noShow,
 	)
@@ -83,7 +93,7 @@ func TestLocalModelsTwoSectionGrouping(test *testing.T) {
 func TestLocalModelsSynthesizesInstalledCustom(test *testing.T) {
 	view := buildLocal(test,
 		[]ollama.Model{{Name: "mycustom:latest", Size: 100, ParameterSize: "1B"}},
-		[]ollama.LibraryModel{{Name: "llama3.2", Tags: []string{"1b"}, RepoURL: "x"}},
+		[]ollama.LibraryModel{{Name: "llama3.2", Tags: libTags("1b"), RepoURL: "x"}},
 		noShow,
 	)
 	var found bool
@@ -102,7 +112,7 @@ func TestLocalModelsSynthesizesInstalledCustom(test *testing.T) {
 func TestLocalModelsDrillSelectsAndPulls(test *testing.T) {
 	view := buildLocal(test,
 		nil,
-		[]ollama.LibraryModel{{Name: "qwen2.5", Tags: []string{"7b", "72b"}, RepoURL: "x"}},
+		[]ollama.LibraryModel{{Name: "qwen2.5", Tags: libTags("7b", "72b"), RepoURL: "x"}},
 		noShow,
 	)
 	// enter the drill-down on the (only) model.
@@ -139,7 +149,7 @@ func TestLocalModelsDrillSelectsAndPulls(test *testing.T) {
 func TestLocalModelsDrillNoSelectionFlashes(test *testing.T) {
 	view := buildLocal(test,
 		nil,
-		[]ollama.LibraryModel{{Name: "qwen2.5", Tags: []string{"7b"}, RepoURL: "x"}},
+		[]ollama.LibraryModel{{Name: "qwen2.5", Tags: libTags("7b"), RepoURL: "x"}},
 		noShow,
 	)
 	_ = view.Update(tea.KeyMsg{Type: tea.KeyEnter}) // open drill (cursor on not-installed 7b)
@@ -156,7 +166,7 @@ func TestLocalModelsDrillNoSelectionFlashes(test *testing.T) {
 func TestLocalModelsDrillRemovesInstalledTag(test *testing.T) {
 	view := buildLocal(test,
 		[]ollama.Model{{Name: "qwen2.5:7b", Size: 100, ParameterSize: "7B"}},
-		[]ollama.LibraryModel{{Name: "qwen2.5", Tags: []string{"7b", "72b"}, RepoURL: "x"}},
+		[]ollama.LibraryModel{{Name: "qwen2.5", Tags: libTags("7b", "72b"), RepoURL: "x"}},
 		noShow,
 	)
 	_ = view.Update(tea.KeyMsg{Type: tea.KeyEnter}) // drill on qwen2.5 (cursor on 7b, installed)
@@ -177,7 +187,7 @@ func TestLocalModelsDrillTestsInstalledTag(test *testing.T) {
 		func() ([]ollama.Model, error) {
 			return []ollama.Model{{Name: "qwen2.5:7b", Size: 100, ParameterSize: "7B"}}, nil
 		},
-		freshLibrary([]ollama.LibraryModel{{Name: "qwen2.5", Tags: []string{"7b"}, RepoURL: "x"}}),
+		freshLibrary([]ollama.LibraryModel{{Name: "qwen2.5", Tags: libTags("7b"), RepoURL: "x"}}),
 		noShow,
 		func(model string) (litellm.TestResult, error) {
 			tested = model
@@ -205,7 +215,7 @@ func TestLocalModelsDrillTestsInstalledTag(test *testing.T) {
 // esc backs out of the drill to the list.
 func TestLocalModelsDrillEscBacksOut(test *testing.T) {
 	view := buildLocal(test, nil,
-		[]ollama.LibraryModel{{Name: "qwen2.5", Tags: []string{"7b"}, RepoURL: "x"}},
+		[]ollama.LibraryModel{{Name: "qwen2.5", Tags: libTags("7b"), RepoURL: "x"}},
 		noShow)
 	_ = view.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	if view.drill == nil {
@@ -222,7 +232,7 @@ func TestLocalModelsSourceCachedFlash(test *testing.T) {
 	view := NewLocalModels(
 		func() ([]ollama.Model, error) { return nil, nil },
 		func() ([]ollama.LibraryModel, ollama.Source, error) {
-			return []ollama.LibraryModel{{Name: "qwen2.5", Tags: []string{"7b"}, RepoURL: "x"}},
+			return []ollama.LibraryModel{{Name: "qwen2.5", Tags: libTags("7b"), RepoURL: "x"}},
 				ollama.SourceCached, errors.New("dns failure")
 		},
 		noShow, noTest,
@@ -276,7 +286,7 @@ func TestLocalModelsListFillsConstantHeightOnScroll(test *testing.T) {
 	library := make([]ollama.LibraryModel, 0, 30)
 	for index := 0; index < 30; index++ {
 		name := "model" + string(rune('a'+index%26)) + strconv.Itoa(index)
-		library = append(library, ollama.LibraryModel{Name: name, Description: "desc", Tags: []string{"7b"}, RepoURL: "x"})
+		library = append(library, ollama.LibraryModel{Name: name, Description: "desc", Tags: libTags("7b"), RepoURL: "x"})
 	}
 	view := buildLocal(test,
 		[]ollama.Model{{Name: library[0].Name + ":7b", Size: 100, ParameterSize: "7B"}},
@@ -314,7 +324,7 @@ func TestLocalModelsHeadingVisibleAfterScrollBackToTop(test *testing.T) {
 	library := make([]ollama.LibraryModel, 0, 30)
 	for index := 0; index < 30; index++ {
 		name := "model" + string(rune('a'+index%26)) + strconv.Itoa(index)
-		library = append(library, ollama.LibraryModel{Name: name, Description: "desc", Tags: []string{"7b"}, RepoURL: "x"})
+		library = append(library, ollama.LibraryModel{Name: name, Description: "desc", Tags: libTags("7b"), RepoURL: "x"})
 	}
 	// Mark several models installed so the "Installed" section has multiple rows.
 	installed := []ollama.Model{
@@ -362,7 +372,7 @@ func TestLocalModelsHeadingRevealedOnPartialScrollBackUp(test *testing.T) {
 	library := make([]ollama.LibraryModel, 0, 30)
 	for index := 0; index < 30; index++ {
 		name := "model" + string(rune('a'+index%26)) + strconv.Itoa(index)
-		library = append(library, ollama.LibraryModel{Name: name, Description: "desc", Tags: []string{"7b"}, RepoURL: "x"})
+		library = append(library, ollama.LibraryModel{Name: name, Description: "desc", Tags: libTags("7b"), RepoURL: "x"})
 	}
 	installed := []ollama.Model{
 		{Name: library[0].Name + ":7b", Size: 100},
@@ -411,7 +421,7 @@ func TestLocalModelsDrillEnterInstalledShowsDetail(test *testing.T) {
 	var shown string
 	view := buildLocal(test,
 		[]ollama.Model{{Name: "qwen2.5:7b", Size: 100, ParameterSize: "7B"}},
-		[]ollama.LibraryModel{{Name: "qwen2.5", Tags: []string{"7b"}, RepoURL: "x"}},
+		[]ollama.LibraryModel{{Name: "qwen2.5", Tags: libTags("7b"), RepoURL: "x"}},
 		func(ref string) (ollama.ModelInfo, error) {
 			shown = ref
 			return ollama.ModelInfo{Name: ref, Family: "qwen", ParameterSize: "7.6B"}, nil

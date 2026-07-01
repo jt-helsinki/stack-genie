@@ -139,10 +139,24 @@ func newModelsListCmd(emitter *output.Emitter, exit *int) *cobra.Command {
 // `ai models pull <name>:<tag>`. The library carries no per-tag download size, so
 // SIZE is shown as "—". RepoURL is the model's ollama.com/library page.
 type popularModelEntry struct {
-	Name        string   `json:"name"`
-	Description string   `json:"description,omitempty"`
-	Tags        []string `json:"tags,omitempty"`
-	RepoURL     string   `json:"repo_url"`
+	Name        string              `json:"name"`
+	Description string              `json:"description,omitempty"`
+	Tags        []ollama.LibraryTag `json:"tags,omitempty"`
+	RepoURL     string              `json:"repo_url"`
+}
+
+// representativeTag returns the tag whose size/context/input best represents the
+// model in a one-row overview: the "latest" tag when present, else the first.
+func (entry popularModelEntry) representativeTag() (ollama.LibraryTag, bool) {
+	for _, tag := range entry.Tags {
+		if tag.Name == "latest" {
+			return tag, true
+		}
+	}
+	if len(entry.Tags) > 0 {
+		return entry.Tags[0], true
+	}
+	return ollama.LibraryTag{}, false
 }
 
 // modelsPopularResult is the `ai models popular` payload.
@@ -150,33 +164,46 @@ type modelsPopularResult struct {
 	Models []popularModelEntry `json:"models"`
 }
 
-// Human renders the library list as a NAME / TAGS / SIZE / REPO table. The library
-// has no per-tag download size, so SIZE is always "—".
+// Human renders the library list as a NAME / SIZE / CONTEXT / INPUT / REPO table.
+// SIZE/CONTEXT/INPUT are the "latest" (or first) tag's values scraped from the
+// model's ollama.com /tags table; a dash marks a column the table omits.
 func (result modelsPopularResult) Human() string {
 	if len(result.Models) == 0 {
 		return ui.Muted.Render("no popular models returned")
 	}
 	var builder strings.Builder
-	_, _ = fmt.Fprintf(&builder, "%s  %s  %s  %s\n",
+	_, _ = fmt.Fprintf(&builder, "%s  %s  %s  %s  %s\n",
 		ui.Label.Render(fmt.Sprintf("%-24s", "NAME")),
-		ui.Label.Render(fmt.Sprintf("%-22s", "TAGS")),
 		ui.Label.Render(fmt.Sprintf("%-9s", "SIZE")),
+		ui.Label.Render(fmt.Sprintf("%-8s", "CONTEXT")),
+		ui.Label.Render(fmt.Sprintf("%-13s", "INPUT")),
 		ui.Label.Render("REPO"))
 	for _, entry := range result.Models {
-		tags := strings.Join(entry.Tags, ", ")
-		if tags == "" {
-			tags = "-"
+		size, context, input := "—", "—", "—"
+		if tag, ok := entry.representativeTag(); ok {
+			size = valueOrDash(tag.Size)
+			context = valueOrDash(tag.Context)
+			input = valueOrDash(tag.Input)
 		}
-		_, _ = fmt.Fprintf(&builder, "%s  %s  %s  %s\n",
+		_, _ = fmt.Fprintf(&builder, "%s  %s  %s  %s  %s\n",
 			ui.Value.Render(fmt.Sprintf("%-24s", entry.Name)),
-			ui.Value.Render(fmt.Sprintf("%-22s", truncateCell(tags, 22))),
-			ui.Value.Render(fmt.Sprintf("%-9s", "—")),
+			ui.Value.Render(fmt.Sprintf("%-9s", size)),
+			ui.Value.Render(fmt.Sprintf("%-8s", context)),
+			ui.Value.Render(fmt.Sprintf("%-13s", truncateCell(input, 13))),
 			ui.Value.Render(entry.RepoURL))
 	}
 	builder.WriteString("\n" + ui.Muted.Render("pull any of these with ") +
 		ui.Primary.Render("ai models pull <name>:<tag>") +
-		ui.Muted.Render(" (size — = not reported by the library · live from ollama.com)"))
+		ui.Muted.Render(" (size/context/input = the model's default tag · live from ollama.com)"))
 	return strings.TrimRight(builder.String(), "\n")
+}
+
+// valueOrDash returns value, or "—" when it is empty.
+func valueOrDash(value string) string {
+	if value == "" {
+		return "—"
+	}
+	return value
 }
 
 // truncateCell clips a cell value to width runes with a trailing ellipsis so the
@@ -444,7 +471,7 @@ func libraryPullRefs(library []ollama.LibraryModel) []string {
 			continue
 		}
 		for _, tag := range model.Tags {
-			refs = append(refs, model.Name+":"+tag)
+			refs = append(refs, model.Name+":"+tag.Name)
 		}
 	}
 	return refs

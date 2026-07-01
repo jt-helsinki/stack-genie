@@ -7,21 +7,22 @@ import (
 	"github.com/jt-helsinki/ideal-robot/internal/output"
 )
 
-// Phase E: under --json / no TTY (interactive=false), offerCloudKeysAndSync skips
-// the API-key OFFER entirely (no SetCredential) but still runs the initial model
-// sync — reflecting whatever providers are already keyed + installed Ollama models.
-func TestOfferCloudKeysAndSyncNonInteractiveSyncsOnly(test *testing.T) {
+// setup no longer prompts for cloud-provider API keys — those are added from the
+// TUI (API Keys tab) or `ai keys add`. syncInitialModels only runs the initial
+// catalog → gateway model sync, reflecting whatever providers are already keyed +
+// installed Ollama models. It never sets a credential.
+func TestSyncInitialModelsSyncsWithoutAddingKeys(test *testing.T) {
 	gateway := newFakeKeysGateway()
 	// Pre-key one provider so the keyed set is observable in the sync inputs.
 	_ = gateway.SetCredential("openai", "sk-existing")
 	withKeysFakes(test, keysTestCatalog(test), nil, gateway, []string{"llama3.2:3b"})
 
 	emitter := &output.Emitter{Out: io.Discard, Err: io.Discard, JSON: true}
-	offerCloudKeysAndSync(emitter, false /* interactive */)
+	syncInitialModels(emitter, true /* interactive */)
 
-	// The OFFER is interactive-only: no NEW credential is set under --json.
+	// No NEW credential is ever set by setup (the pre-existing one is untouched).
 	if len(gateway.credSet) != 1 {
-		test.Fatalf("non-interactive run must not add keys; credSet=%v", gateway.credSet)
+		test.Fatalf("setup must not add keys; credSet=%v", gateway.credSet)
 	}
 	// The initial sync ran exactly once with the LIVE keyed set + installed Ollama.
 	if gateway.syncCalls != 1 {
@@ -37,15 +38,15 @@ func TestOfferCloudKeysAndSyncNonInteractiveSyncsOnly(test *testing.T) {
 
 // With NO providers keyed and no Ollama models, the initial sync still runs (a
 // no-op desired set) — NO default models are added by setup.
-func TestOfferCloudKeysAndSyncRegistersNoDefaults(test *testing.T) {
+func TestSyncInitialModelsRegistersNoDefaults(test *testing.T) {
 	gateway := newFakeKeysGateway()
 	withKeysFakes(test, keysTestCatalog(test), nil, gateway, nil)
 
 	emitter := &output.Emitter{Out: io.Discard, Err: io.Discard, JSON: true}
-	offerCloudKeysAndSync(emitter, false)
+	syncInitialModels(emitter, false)
 
 	if len(gateway.credSet) != 0 {
-		test.Fatalf("setup must add no keys when none are offered/keyed; credSet=%v", gateway.credSet)
+		test.Fatalf("setup must add no keys; credSet=%v", gateway.credSet)
 	}
 	if gateway.syncCalls != 1 {
 		test.Fatalf("SyncModels calls = %d, want 1", gateway.syncCalls)
@@ -56,14 +57,13 @@ func TestOfferCloudKeysAndSyncRegistersNoDefaults(test *testing.T) {
 	}
 }
 
-// A catalog-load failure is tolerated: the offer + sync are skipped (no panic, no
-// credential or sync calls).
-func TestOfferCloudKeysAndSyncToleratesNoCatalog(test *testing.T) {
+// A catalog-load failure is tolerated: the sync is skipped (no panic, no sync call).
+func TestSyncInitialModelsToleratesNoCatalog(test *testing.T) {
 	gateway := newFakeKeysGateway()
 	withKeysFakes(test, nil, errNoCatalog, gateway, nil)
 
 	emitter := &output.Emitter{Out: io.Discard, Err: io.Discard, JSON: true}
-	offerCloudKeysAndSync(emitter, false)
+	syncInitialModels(emitter, false)
 
 	if gateway.syncCalls != 0 {
 		test.Fatalf("no catalog → no sync, got %d sync calls", gateway.syncCalls)

@@ -299,11 +299,13 @@ resolution best-effort:
   records → this server's IP, terminate TLS at nginx).
 * **client** — nothing (no local UIs).
 
-Missing **provider credentials are not a setup hard-fail**: `setup` may prompt
-interactively but otherwise proceeds and warns; `ai doctor` flags any absent
-credential, and a model call fails (exit `5`) only when that credential is
-actually needed (architecture §17, plan §7). Missing **dependencies** (runtime,
-virtualization, git) do fail fast with exit `3`.
+Missing **provider credentials are not a setup hard-fail**: `setup` does **not**
+prompt for cloud-provider API keys — add those anytime from `ai ui` (the API Keys
+tab) or `ai keys add <provider>`. Setup only runs the initial catalog → gateway
+model sync (reflecting any already-keyed providers + installed Ollama models);
+`ai doctor` flags any absent credential, and a model call fails (exit `5`) only
+when that credential is actually needed (architecture §17, plan §7). Missing
+**dependencies** (runtime, virtualization, git) do fail fast with exit `3`.
 
 Idempotent:
 
@@ -405,8 +407,12 @@ one command:
   first listed becomes the default agent CLI
 * `--stacks <list>` — comma-separated EXTRA software stacks
   (`go,node,rust,java,maven,deno`); optional. **Python is not a stack option** —
-  the latest **Python 3** and **Graphify** (`graphifyy`, the knowledge-graph CLI
-  skill) are baked into every OS base image by default, and each workspace gets a
+  the latest **Python 3**, **uv** (Astral's Python package/tool manager), and
+  **Graphify** (`graphifyy`, the knowledge-graph CLI skill; installed via
+  `uv tool install "graphifyy[…extras]"` with all optional extras except the
+  region/DB-specific chinese/azure/bedrock/falkordb/neo4j/leiden/dm) are baked into
+  every OS base image by default, each selected agent CLI registers Graphify with
+  itself (`graphify install --platform <cli>`), and each workspace gets a
   per-project **`.venv-msb`** virtualenv created at start (see §7/§25)
 * `--apps <list>` — comma-separated in-VM AI apps to install
   (`openwebui,anythingllm`); **opt-in, default none**. Like `--stacks` it
@@ -1116,28 +1122,31 @@ returns the installed list (each entry carries `installed: true`).
 ai models popular
 ```
 
-Lists **installable** models from the **live ollama.com library**
-(`internal/ollama/library.go`, `ollama.Library()`): a GET of the library endpoint
-`https://ollama-models.zwz.workers.dev/` returning a JSON array of
-`{name, description, tags}`. The result is **cached** at
-`~/.ai-platform/cache/ollama-library.json`; when the endpoint is unreachable the
-**cached copy is used**, and with no cache the command errors only when nothing is
-available. There is **no bundled `models.yaml` and no offline fallback set**.
+Lists **installable** models **scraped from the live ollama.com library**
+(`internal/ollama/library.go`, `ollama.Library()`): a GET of the
+`https://ollama.com/library` index enumerates every model (name + description),
+then each model's `https://ollama.com/library/<model>/tags` table is fetched
+(bounded concurrency) for the per-variant **size / context / input**. The result is
+**cached as YAML** at `~/.ai-platform/cache/ollama-models.yaml`; when ollama.com is
+unreachable the **cached copy is used**, and with no cache the command errors only
+when nothing is available. There is **no bundled `models.yaml` and no offline
+fallback set**. (The old third-party `ollama-models.zwz.workers.dev` JSON endpoint
+was stale and has been removed.)
 
-Each library model carries its set of pullable **tags** (size variants, e.g.
-`7b`, `72b`) — pull a specific variant with `ai models pull <name>:<tag>`. For each
-entry it reports:
+Each library model carries its pullable **tags** (variants, e.g. `7b`, `72b`), each
+with a scraped `size` / `context` / `input` — pull a specific variant with
+`ai models pull <name>:<tag>`. For each entry it reports:
 
 * **name** — the base model name (e.g. `qwen2.5`)
-* **tags** — the model's pullable size tags
-* **size** — always rendered `—`: the library endpoint reports **no per-tag download
-  size**
-* the **repo link** — **derived** as `https://ollama.com/library/<name>` (the
-  endpoint carries no `repo_url`)
+* **size / context / input** — the default (`latest`, else first) tag's values from
+  the model's ollama.com /tags table; a `—` marks a column the table omits
+* the **repo link** — **derived** as `https://ollama.com/library/<name>` (the index
+  carries no `repo_url`)
 
-The human output is a NAME / TAGS / SIZE / REPO table; `--json` returns the
-structured list. `ai models pull` always also accepts a free-text reference, so an
-out-of-date or unreachable library never blocks pulling anything.
+The human output is a NAME / SIZE / CONTEXT / INPUT / REPO table; `--json` returns
+the structured list (each tag carries `{name,size,context,input}`). `ai models pull`
+always also accepts a free-text reference, so an out-of-date or unreachable library
+never blocks pulling anything.
 
 ### 8.3.3 Pull (install / update)
 

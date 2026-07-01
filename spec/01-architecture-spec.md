@@ -228,7 +228,7 @@ Contains:
 ~/.ai-platform/
 ├── agents/
 ├── audit/
-├── cache/          # re-fetchable caches: catalog.json (models.dev), ollama-library.json
+├── cache/          # re-fetchable caches: catalog.yaml (models.dev), ollama-models.yaml (ollama.com)
 ├── config/         # global settings + projects index (no per-project state)
 ├── logs/
 ├── overlays/
@@ -1000,8 +1000,8 @@ provides only a unified endpoint and failover; it makes no model-selection decis
 not in the rendered config — there is **no `model_list`, no named aliases, no
 per-provider wildcards, and no default model** in the generated `config.yaml`
 (`litellm.DefaultRouting()` is the zero `Routing`). The served set is reconciled
-from the **models.dev catalog** (`internal/catalog`, fetched to
-`~/.ai-platform/cache/catalog.json`) keyed by which providers the user has
+from the **models.dev catalog** (`internal/catalog`, fetched as JSON and cached as
+YAML at `~/.ai-platform/cache/catalog.yaml`) keyed by which providers the user has
 supplied an API key for: adding a provider key (`ai keys add`, §17) registers
 that provider's catalog models into the DB via `litellm.SyncModels`, and an
 `ollama pull`/`rm` registers/unregisters the corresponding `ollama/<name>` served
@@ -1048,9 +1048,10 @@ piece of the service tier.
 `~/.ai-platform`) removes them all (no scattered Docker named volumes). Today:
 `volumes/litellm-db` (the Postgres data dir above) and `volumes/models` (the Ollama
 model store) — `volumes/` is ONLY true host data. **Re-fetchable caches live under
-`~/.ai-platform/cache/<name>` instead** (`paths.CacheDir`): `cache/catalog.json` (the
-models.dev catalog, moved from the legacy `volumes/catalog.json` with a one-shot lazy
-migration) and `cache/ollama-library.json` (the live Ollama installable-library list);
+`~/.ai-platform/cache/<name>` instead** (`paths.CacheDir`): `cache/catalog.yaml` (the
+models.dev catalog, fetched as JSON but persisted as YAML; a legacy `catalog.json` or
+the older `volumes/catalog.json` is one-shot converted) and `cache/ollama-models.yaml`
+(the Ollama installable-library list scraped from ollama.com);
 these are re-downloadable copies, not SYSTEM data, and are likewise removed by
 `ai uninstall --purge`. Config files (the LiteLLM/DNS/nginx configs under `config/`)
 and the per-project workspace overlays are NOT system volumes and stay where they are.
@@ -1185,9 +1186,9 @@ Guardrails Hub token + manual per-guard install, so it cannot ship fully automat
 
 The served catalogue is **DB-backed and key-driven**: the rendered LiteLLM config
 carries no `model_list` (§14). Models are reconciled into the gateway DB from the
-**models.dev catalog** (`internal/catalog`, saved at
-`~/.ai-platform/cache/catalog.json` — moved from the legacy `volumes/catalog.json`
-with a one-shot lazy migration — refreshed at `ai setup` and on the Cloud Models
+**models.dev catalog** (`internal/catalog`, fetched as JSON and saved as YAML at
+`~/.ai-platform/cache/catalog.yaml` — a legacy `catalog.json` or the older
+`volumes/catalog.json` is one-shot converted — refreshed at `ai setup` and on the Cloud Models
 tab's `r` key) keyed by which providers the user has supplied a key for: adding a
 provider key (`ai keys add`, §17) registers that provider's catalog models via
 `litellm.SyncModels`; removing it unregisters them; an `ollama pull`/`rm`
@@ -1229,12 +1230,12 @@ is written** to the agent configs. The platform also installs an in-VM
 agent-CLI configs to match a fresh start, so models registered after start can be
 picked up without recreating the workspace; on failure it leaves the configs
 untouched. (The installable Ollama library backing the *host-side* `ai models`
-browse + the TUI Local Models tab is fetched LIVE from the ollama.com library
-endpoint — `internal/ollama/library.go`, `ollama.Library()` GETs
-`https://ollama-models.zwz.workers.dev/` and caches it at
-`~/.ai-platform/cache/ollama-library.json`, falling back to that cache when the
-endpoint is unreachable — and is a separate concern from the in-VM picker. There is
-no bundled `models.yaml` and no offline fallback set.)
+browse + the TUI Local Models tab is **scraped LIVE from ollama.com** —
+`internal/ollama/library.go`, `ollama.Library()` GETs the `/library` index for every
+model then each model's `/library/<model>/tags` table for the per-variant
+size/context/input, and caches it as YAML at `~/.ai-platform/cache/ollama-models.yaml`,
+falling back to that cache when ollama.com is unreachable — and is a separate concern
+from the in-VM picker. There is no bundled `models.yaml` and no offline fallback set.)
 
 ---
 
