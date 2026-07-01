@@ -43,6 +43,10 @@ type Spec struct {
 	Stacks      []string
 	AgentCLIs   []string
 	DefaultTool string
+	// GraphifyModel is the Ollama model Graphify uses, written to config.yaml
+	// agent.graphify_model. Chosen at create from the Ollama library (pulled if
+	// absent). Empty leaves Graphify's backend unconfigured.
+	GraphifyModel string
 	// Apps are the opt-in in-VM AI applications to install (subset of apps.Keys()).
 	// Empty by default — apps are opt-in.
 	Apps []string
@@ -239,7 +243,7 @@ func Scaffold(spec Spec, createdAt string) (string, error) {
 	}
 	projectConfig := &config.Config{
 		OS:           spec.OS,
-		Agent:        config.AgentConfig{Tools: spec.AgentCLIs, DefaultTool: spec.DefaultTool},
+		Agent:        config.AgentConfig{Tools: spec.AgentCLIs, DefaultTool: spec.DefaultTool, GraphifyModel: spec.GraphifyModel},
 		Workspace:    config.WorkspaceConfig{CPULimit: cpus, MemoryLimit: memory},
 		Microsandbox: config.MicrosandboxConfig{IdleTimeout: idleTimeout},
 		Network:      config.NetworkConfig{PublishPorts: spec.PublishPorts},

@@ -55,6 +55,12 @@ type AgentConfig struct {
 	Tools []string `yaml:"tools,omitempty" json:"tools,omitempty"`
 	// DefaultTool is the default agent CLI; must be one of Tools.
 	DefaultTool string `yaml:"default_tool,omitempty" json:"default_tool,omitempty"`
+	// GraphifyModel is the Ollama model Graphify uses for its (headless) LLM backend,
+	// reached THROUGH the gateway as `ollama/<GraphifyModel>` (nginx → LiteLLM →
+	// Ollama). It is chosen at `ai create` from the Ollama library and pulled if not
+	// already installed. Empty leaves Graphify's backend unconfigured (the in-session
+	// /graphify skill still uses the agent session's own model).
+	GraphifyModel string `yaml:"graphify_model,omitempty" json:"graphify_model,omitempty"`
 }
 
 // ContextConfig holds the per-project context-optimization settings: the

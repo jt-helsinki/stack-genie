@@ -137,17 +137,18 @@ func mapProjectErr(err error) error {
 // fully specifiable in one invocation for --json / external callers). defaultName is
 // the fallback workspace name (the [name] arg or the cwd basename).
 type createFlags struct {
-	name        string
-	osKey       string
-	agents      []string
-	stacks      []string
-	apps        []string
-	idleTimeout string
-	cpus        int
-	memory      string
-	ports       []string
-	location    string
-	defaultName string
+	name          string
+	osKey         string
+	agents        []string
+	stacks        []string
+	apps          []string
+	idleTimeout   string
+	cpus          int
+	memory        string
+	ports         []string
+	location      string
+	graphifyModel string
+	defaultName   string
 }
 
 // readCreateFlags reads every create flag (and the optional [name] positional).
@@ -162,10 +163,11 @@ func readCreateFlags(cmd *cobra.Command, args []string) createFlags {
 	memory, _ := cmd.Flags().GetString("memory")
 	ports, _ := cmd.Flags().GetStringSlice("ports")
 	location, _ := cmd.Flags().GetString("location")
+	graphifyModel, _ := cmd.Flags().GetString("graphify-model")
 	return createFlags{
 		name: name, osKey: osKey, agents: agents, stacks: stacks, apps: appsList,
 		idleTimeout: idleTimeout, cpus: cpus, memory: memory, ports: ports,
-		location: location, defaultName: defaultProjectName(args),
+		location: location, graphifyModel: graphifyModel, defaultName: defaultProjectName(args),
 	}
 }
 
@@ -470,6 +472,7 @@ func newCreateCmd(emitter *output.Emitter, exit *int, use string) *cobra.Command
 	cmd.Flags().String("memory", "", "workspace memory in GB, a plain number (default: "+config.Default().Workspace.MemoryLimit+"; max: host RAM in GB)")
 	cmd.Flags().StringSlice("ports", nil, "ports to open into the workspace: PORT or HOST:GUEST (e.g. 8080,9000:3000)")
 	cmd.Flags().String("location", "", "workspace directory (default: current directory; created if missing)")
+	cmd.Flags().String("graphify-model", "", "Ollama model Graphify uses (e.g. qwen2.5-coder:7b); chosen in the wizard from the Ollama library and pulled if absent")
 	_ = cmd.RegisterFlagCompletionFunc("os", fixedValues(supportedOSes...))
 	_ = cmd.RegisterFlagCompletionFunc("agents", fixedValues(supportedAgentCLIs...))
 	_ = cmd.RegisterFlagCompletionFunc("stacks", fixedValues(supportedStacks...))
@@ -815,16 +818,17 @@ func seedSpec(flags createFlags) project.Spec {
 	ports, _ := parsePublishPorts(flags.ports)
 	// Apps are opt-in: an unset --apps seeds the wizard with NOTHING selected.
 	return project.Spec{
-		Name:         name,
-		OS:           osKey,
-		Stacks:       flags.stacks,
-		AgentCLIs:    agents,
-		DefaultTool:  normalizeDefaultAgentCLI(agents[0], agents),
-		Apps:         flags.apps,
-		IdleTimeout:  idleTimeout,
-		CPUs:         flags.cpus,
-		Memory:       flags.memory,
-		PublishPorts: ports,
+		Name:          name,
+		OS:            osKey,
+		Stacks:        flags.stacks,
+		AgentCLIs:     agents,
+		DefaultTool:   normalizeDefaultAgentCLI(agents[0], agents),
+		Apps:          flags.apps,
+		IdleTimeout:   idleTimeout,
+		CPUs:          flags.cpus,
+		Memory:        flags.memory,
+		PublishPorts:  ports,
+		GraphifyModel: flags.graphifyModel,
 	}
 }
 
@@ -857,16 +861,17 @@ func specFromFlags(flags createFlags) (project.Spec, error) {
 	}
 	ports, _ := parsePublishPorts(flags.ports)
 	return project.Spec{
-		Name:         name,
-		OS:           flags.osKey,
-		Stacks:       flags.stacks,
-		AgentCLIs:    agents,
-		DefaultTool:  normalizeDefaultAgentCLI(agents[0], agents),
-		Apps:         flags.apps,
-		IdleTimeout:  idleTimeout,
-		CPUs:         flags.cpus,
-		Memory:       flags.memory,
-		PublishPorts: ports,
+		Name:          name,
+		OS:            flags.osKey,
+		Stacks:        flags.stacks,
+		AgentCLIs:     agents,
+		DefaultTool:   normalizeDefaultAgentCLI(agents[0], agents),
+		Apps:          flags.apps,
+		IdleTimeout:   idleTimeout,
+		CPUs:          flags.cpus,
+		Memory:        flags.memory,
+		PublishPorts:  ports,
+		GraphifyModel: flags.graphifyModel,
 	}, nil
 }
 
