@@ -35,7 +35,8 @@ type fakeSandbox struct {
 	netArgs                              []string
 	execResult                           ExecResult
 	execErr                              error
-	execArgv                             []string
+	execArgv                             []string   // the LAST Exec/ExecContext argv
+	allExecArgv                          [][]string // every Exec/ExecContext argv, in order
 	interactiveArgv                      []string
 	execRootArgv                         [][]string // every ExecRoot call's argv, in order
 	execRootResult                       ExecResult
@@ -73,10 +74,12 @@ func (sandbox *fakeSandbox) Stop(string) error    { sandbox.stopped = true; retu
 func (sandbox *fakeSandbox) Destroy(string) error { sandbox.destroyed = true; return nil }
 func (sandbox *fakeSandbox) Exec(_ string, argv []string) (ExecResult, error) {
 	sandbox.execArgv = argv
+	sandbox.allExecArgv = append(sandbox.allExecArgv, argv)
 	return sandbox.execResult, sandbox.execErr
 }
 func (sandbox *fakeSandbox) ExecContext(_ context.Context, _ string, argv []string) (ExecResult, error) {
 	sandbox.execArgv = argv
+	sandbox.allExecArgv = append(sandbox.allExecArgv, argv)
 	sandbox.execCtxCalls++
 	// Simulate a post-sleep stale connection: the first execCtxFailFirst calls time
 	// out (ErrWorkspaceUnresponsive), exercising probeInVM's retry/recovery.
@@ -1045,12 +1048,17 @@ func TestStartInstallsRefreshScript(test *testing.T) {
 	}
 
 	// It must be installed onto PATH executable via sudo install -m 0755, then the
-	// staging copy removed.
-	installed := strings.Join(sandbox.execArgv, " ")
-	if !strings.Contains(installed, "install -m 0755") ||
-		!strings.Contains(installed, refreshScriptStagePath) ||
-		!strings.Contains(installed, refreshScriptBinPath) {
-		test.Errorf("refresh-models not installed executable onto PATH; exec was: %v", sandbox.execArgv)
+	// staging copy removed. Search ALL execs (later best-effort steps — venv creation
+	// — run after it, so it is not necessarily the last exec).
+	var installed string
+	for _, argv := range sandbox.allExecArgv {
+		joined := strings.Join(argv, " ")
+		if strings.Contains(joined, "install -m 0755") && strings.Contains(joined, refreshScriptStagePath) && strings.Contains(joined, refreshScriptBinPath) {
+			installed = joined
+		}
+	}
+	if installed == "" {
+		test.Errorf("refresh-models not installed executable onto PATH; execs were: %v", sandbox.allExecArgv)
 	}
 }
 
@@ -1507,5 +1515,28 @@ func TestStartInhibitsSleepStopReleases(test *testing.T) {
 	}
 	if sleep.released != 1 {
 		test.Fatalf("Stop must release the keep-awake assertion once, got %d", sleep.released)
+	}
+}
+
+// TestStartCreatesVenv: workspace start creates the per-project .venv-msb virtualenv
+// with the guest's baked-in Python (best-effort, guarded by pyvenv.cfg).
+func TestStartCreatesVenv(test *testing.T) {
+	_ = seedProject(test, "app")
+	sandbox := &fakeSandbox{}
+	manager := Manager{
+		Builder: &fakeBuilder{}, Sandbox: sandbox, Keys: &fakeKeyMinter{},
+		Now: func() string { return "t" },
+	}
+	if _, err := manager.Start("app"); err != nil {
+		test.Fatal(err)
+	}
+	found := false
+	for _, argv := range sandbox.allExecArgv {
+		if strings.Contains(strings.Join(argv, " "), "python3 -m venv /workspace/.venv-msb") {
+			found = true
+		}
+	}
+	if !found {
+		test.Errorf("Start should create the .venv-msb virtualenv; execs: %v", sandbox.allExecArgv)
 	}
 }

@@ -129,6 +129,8 @@ func TestBaseDockerfileShipsContainerRuntime(t *testing.T) {
 				"NERDCTL_VERSION=2.3.4",
 				"nerdctl-full-",
 				"tar -C /usr/local",
+				"python3",
+				"graphifyy",
 			} {
 				if !strings.Contains(got, fragment) {
 					t.Errorf("%s: base Dockerfile missing container-runtime install %q:\n%s", osKey, fragment, got)

@@ -128,6 +128,9 @@ func TestAllOSTemplatesExposeIdenticalBaseSurface(test *testing.T) {
 		// (containerd + nerdctl + runc + CNI + buildkit) is installed on every OS.
 		"NERDCTL_VERSION=2.3.4",
 		"nerdctl-full-",
+		// Python 3 + Graphify are baked into every OS base by default (§12, §25).
+		"python3",
+		"graphifyy",
 	}
 
 	for osKey, fromLine := range osBaseImage {

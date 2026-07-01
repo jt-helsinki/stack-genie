@@ -42,6 +42,14 @@ RUN dnf install -y 'dnf-command(config-manager)' \
  && dnf install -y --setopt=install_weak_deps=False gh \
  && dnf clean all
 
+# Python 3 + Graphify — installed by default in every workspace. python3 backs the
+# per-project /workspace/.venv-msb created at workspace start; Graphify (graphify.net
+# / PyPI `graphifyy`) is a knowledge-graph CLI skill for AI coding assistants,
+# installed globally onto PATH.
+RUN dnf install -y --setopt=install_weak_deps=False python3 python3-pip \
+ && dnf clean all \
+ && python3 -m pip install --break-system-packages --no-cache-dir graphifyy
+
 # Non-root workspace user with passwordless sudo, so runtime installs work and
 # persist via the overlay (arch §25, §26).
 RUN useradd --create-home --shell /bin/bash workspace \

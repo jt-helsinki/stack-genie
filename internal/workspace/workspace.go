@@ -427,6 +427,9 @@ func (manager Manager) Start(project string) (*state.Workspace, error) {
 	// the whole pull, leaving the workspace unresponsive. Apps are started ON DEMAND
 	// via `ai apps start` (which brings containerd up if needed and shows progress).
 	manager.ensureContainerd(name)
+	// Create the per-project Python virtualenv (.venv-msb) using the guest's baked-in
+	// Python. Best-effort — never fails the workspace start.
+	manager.ensureVenv(name)
 	now := manager.Now()
 	handle := &state.Workspace{
 		ID:          name,
@@ -554,6 +557,31 @@ func (manager Manager) registerAgentProviders(name, project, root string, projec
 // containerdLog is the in-VM path containerd's stdout/stderr is redirected to
 // when ensureContainerd boots it, so the daemon's output is inspectable.
 const containerdLog = "/var/log/containerd.log"
+
+// venvPath is the per-project Python virtualenv created inside the workspace. It lives
+// in the bind-mounted project dir (workspaceWorkdir), so it is ONE directory visible
+// on both the host and the guest — but it is a LINUX venv, usable only INSIDE the
+// sandbox (a venv hard-codes its interpreter path + carries platform-specific
+// binaries, so it is not portable across the macOS host and the Linux guest; see
+// docs/MSB-SDK-MIGRATION.md / the venv note). The sandbox IS the dev environment, so
+// this single venv is all in-sandbox Python work needs.
+const venvPath = workspaceWorkdir + "/.venv-msb"
+
+// venvCreateTimeout bounds the one-time `python3 -m venv` (which bootstraps pip).
+const venvCreateTimeout = 90 * time.Second
+
+// ensureVenv creates the per-project virtualenv (.venv-msb) inside the running microVM
+// with the guest's baked-in Python, if it does not already exist. Best-effort and
+// bounded — a failure never fails the workspace start, and an existing venv (guarded
+// by its pyvenv.cfg) is left untouched. Runs as the workspace user, which owns the
+// bind-mounted project dir.
+func (manager Manager) ensureVenv(name string) {
+	ctx, cancel := context.WithTimeout(context.Background(), venvCreateTimeout)
+	defer cancel()
+	script := "command -v python3 >/dev/null 2>&1 || exit 0; " +
+		"test -f " + venvPath + "/pyvenv.cfg || python3 -m venv " + venvPath
+	_, _ = manager.Sandbox.ExecContext(ctx, name, []string{"sh", "-lc", script})
+}
 
 // ensureContainerd makes the rootful in-VM container runtime (containerd)
 // available so nerdctl works inside the workspace (arch §7). It probes whether

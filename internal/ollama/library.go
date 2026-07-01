@@ -17,7 +17,7 @@ import (
 // LibraryURL is the live source for the installable-Ollama library list. It
 // returns a JSON array [{ "name": "...", "description": "...", "tags": ["7b", …] }]
 // (no repo_url, no download size).
-const LibraryURL = "https://ollama-models.zwz.workers.dev/"
+const LibraryURL = " and"
 
 // libraryFileName is the on-disk cache name under the cache dir.
 const libraryFileName = "ollama-library.json"

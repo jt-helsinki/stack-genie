@@ -44,6 +44,15 @@ RUN curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
  && apt-get install -y --no-install-recommends gh \
  && rm -rf /var/lib/apt/lists/*
 
+# Python 3 (the base image's latest) + Graphify — installed by default in every
+# workspace. python3-venv backs the per-project /workspace/.venv-msb created at
+# workspace start; Graphify (graphify.net / PyPI `graphifyy`) is a knowledge-graph CLI
+# skill for AI coding assistants, installed globally onto PATH.
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends python3 python3-venv python3-pip \
+ && rm -rf /var/lib/apt/lists/* \
+ && python3 -m pip install --break-system-packages --no-cache-dir graphifyy
+
 # Non-root workspace user with passwordless sudo, so runtime installs work and
 # persist via the overlay (arch §25, §26).
 RUN useradd --create-home --shell /bin/bash workspace \

@@ -403,8 +403,11 @@ one command:
 * `--agents <list>` — comma-separated agent CLIs
   (`opencode,pi,claude-code,codex,gemini`); defaults to `opencode,pi`, and the
   first listed becomes the default agent CLI
-* `--stacks <list>` — comma-separated software stacks
-  (`go,node,python,rust,java,maven,deno`); optional
+* `--stacks <list>` — comma-separated EXTRA software stacks
+  (`go,node,rust,java,maven,deno`); optional. **Python is not a stack option** —
+  the latest **Python 3** and **Graphify** (`graphifyy`, the knowledge-graph CLI
+  skill) are baked into every OS base image by default, and each workspace gets a
+  per-project **`.venv-msb`** virtualenv created at start (see §7/§25)
 * `--apps <list>` — comma-separated in-VM AI apps to install
   (`openwebui,anythingllm`); **opt-in, default none**. Like `--stacks` it
   pre-seeds the wizard's apps multi-select on a terminal and drives the selection
