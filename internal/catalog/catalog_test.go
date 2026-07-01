@@ -323,3 +323,27 @@ func TestParseRejectsEmpty(t *testing.T) {
 		t.Error("expected error for invalid json")
 	}
 }
+
+// TestLoadCachedOrFetchStatusUsesCacheWithoutNetwork proves the cache-first path
+// returns the cached catalog WITHOUT calling the network (the client always fails;
+// if it were used the call would error).
+func TestLoadCachedOrFetchStatusUsesCacheWithoutNetwork(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	parsed, err := catalog.Parse(readFixture(t))
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if err := catalog.Save(parsed); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	got, source, err := catalog.LoadCachedOrFetchStatus(context.Background(), failingClient(), catalog.DefaultURL)
+	if err != nil {
+		t.Fatalf("cache-first must not error with a cache present: %v", err)
+	}
+	if source != catalog.SourceCached {
+		t.Errorf("source = %v, want cached", source)
+	}
+	if len(got.Models()) != len(parsed.Models()) {
+		t.Errorf("cached models = %d, want %d", len(got.Models()), len(parsed.Models()))
+	}
+}

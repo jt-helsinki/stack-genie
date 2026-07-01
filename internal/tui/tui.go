@@ -259,7 +259,8 @@ func Run(cwd string) error {
 	// (live, cache-backed), with a per-model tag drill-down and the gateway tester.
 	localModelsView := views.NewLocalModels(
 		ollama.RealClient().List,
-		ollama.Library,
+		ollama.Library,        // CACHE-FIRST: opening the tab uses the cached library
+		ollama.RefreshLibrary, // the `r` key force-re-scrapes ollama.com + re-caches
 		ollama.RealClient().Show,
 		litellmClient.Test,
 	)
@@ -439,14 +440,15 @@ func listAPIKeyProviders() ([]views.APIKeyProvider, error) {
 	return rows, nil
 }
 
-// loadCloudCatalog loads the models.dev catalog for the Cloud Models view, reporting
-// the data SOURCE (fresh vs cached) + the live-fetch error so the view can message
-// availability. It prefers a fresh fetch (persisting it) and falls back to the
-// on-disk cache, mirroring catalog.LoadOrFetchStatus.
+// loadCloudCatalog loads the models.dev catalog for the Cloud Models view. It is
+// CACHE-FIRST: a cached catalog is used as-is (no network) because it changes
+// rarely — the live fetch happens only on a first run (no cache) or the `r`
+// refresh (refreshModelCatalog). It reports the data SOURCE + any fetch error so
+// the view can message availability.
 func loadCloudCatalog() (*catalog.Catalog, catalog.Source, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
-	return catalog.LoadOrFetchStatus(ctx, nil, "")
+	return catalog.LoadCachedOrFetchStatus(ctx, nil, "")
 }
 
 // refreshModelCatalog is the Models view's `r`-refresh network work: it re-fetches

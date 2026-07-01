@@ -30,6 +30,13 @@ func TestOpenCodeConfigStructure(test *testing.T) {
 		test.Errorf("default model = %v, want aip-gateway/gemma4", document["model"])
 	}
 
+	// opencode is restricted to ONLY the gateway provider, so the model picker is
+	// exactly the LiteLLM-served set (no auto-loaded built-in providers / models.dev).
+	enabled, ok := document["enabled_providers"].([]any)
+	if !ok || len(enabled) != 1 || enabled[0] != ProviderID {
+		test.Errorf("enabled_providers = %v, want [%s]", document["enabled_providers"], ProviderID)
+	}
+
 	provider := nested(test, document, "provider", ProviderID)
 	if provider["npm"] != "@ai-sdk/openai-compatible" {
 		test.Errorf("npm = %v", provider["npm"])

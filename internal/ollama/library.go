@@ -370,14 +370,35 @@ func LoadOrFetchLibrary(ctx context.Context, httpClient *http.Client, baseURL st
 	return nil, SourceCached, fetchErr
 }
 
+// LoadCachedOrFetchLibrary is CACHE-FIRST: when a cached copy exists it is used
+// as-is with NO network call (the installable library changes rarely, and the live
+// scrape is expensive — hundreds of tag-page GETs). Only when no cache exists does
+// it scrape live (and persist). Use RefreshLibrary / LoadOrFetchLibrary to force a
+// fresh scrape (the `r` refresh). Never panics.
+func LoadCachedOrFetchLibrary(ctx context.Context, httpClient *http.Client, baseURL string) ([]LibraryModel, Source, error) {
+	if cached, err := LoadLibrary(); err == nil {
+		return cached, SourceCached, nil
+	}
+	return LoadOrFetchLibrary(ctx, httpClient, baseURL)
+}
+
 // libraryFetchTimeout bounds a full library scrape (the index plus every model's
 // tag page). It is generous: a cold refresh fans out hundreds of tag-page GETs.
 const libraryFetchTimeout = 3 * time.Minute
 
 // Library is a package-level func var (so tests can stub it) that loads the
-// installable library, scraping live with a generous timeout and falling back to
-// the cache. It never panics.
+// installable library CACHE-FIRST: a cached copy is returned as-is, and only a
+// first run (no cache) scrapes live. It never panics.
 var Library = func() ([]LibraryModel, Source, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), libraryFetchTimeout)
+	defer cancel()
+	return LoadCachedOrFetchLibrary(ctx, http.DefaultClient, LibraryBaseURL)
+}
+
+// RefreshLibrary FORCE-scrapes the library live and refreshes the cache (the `r`
+// refresh in the TUI). On a live failure it falls back to the cache. It never
+// panics.
+var RefreshLibrary = func() ([]LibraryModel, Source, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), libraryFetchTimeout)
 	defer cancel()
 	return LoadOrFetchLibrary(ctx, http.DefaultClient, LibraryBaseURL)

@@ -257,3 +257,23 @@ func TestLoadOrFetchLibraryEmptyOnLiveFailNoCache(test *testing.T) {
 		test.Errorf("models = %v, want empty", models)
 	}
 }
+
+// TestLoadCachedOrFetchLibraryUsesCacheWithoutNetwork proves the cache-first path
+// returns the cached copy WITHOUT contacting the network (the base URL is
+// unreachable — if it were used the call would error).
+func TestLoadCachedOrFetchLibraryUsesCacheWithoutNetwork(test *testing.T) {
+	test.Setenv("HOME", test.TempDir())
+	if err := SaveLibrary([]LibraryModel{{Name: "cached-model", Tags: []LibraryTag{{Name: "1b"}}}}); err != nil {
+		test.Fatalf("SaveLibrary: %v", err)
+	}
+	models, source, err := LoadCachedOrFetchLibrary(context.Background(), http.DefaultClient, "http://127.0.0.1:0/")
+	if err != nil {
+		test.Fatalf("cache-first must not error when a cache exists: %v", err)
+	}
+	if source != SourceCached {
+		test.Errorf("source = %v, want cached", source)
+	}
+	if len(models) != 1 || models[0].Name != "cached-model" {
+		test.Fatalf("cache-first must return the cached copy, got %+v", models)
+	}
+}

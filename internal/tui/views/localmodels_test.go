@@ -50,6 +50,7 @@ func buildLocal(test *testing.T, installed []ollama.Model, library []ollama.Libr
 	view := NewLocalModels(
 		func() ([]ollama.Model, error) { return installed, nil },
 		freshLibrary(library),
+		nil, // refresh: nil → the `r` path reuses the library lister
 		show,
 		noTest,
 	)
@@ -188,6 +189,7 @@ func TestLocalModelsDrillTestsInstalledTag(test *testing.T) {
 			return []ollama.Model{{Name: "qwen2.5:7b", Size: 100, ParameterSize: "7B"}}, nil
 		},
 		freshLibrary([]ollama.LibraryModel{{Name: "qwen2.5", Tags: libTags("7b"), RepoURL: "x"}}),
+		nil,
 		noShow,
 		func(model string) (litellm.TestResult, error) {
 			tested = model
@@ -235,6 +237,7 @@ func TestLocalModelsSourceCachedFlash(test *testing.T) {
 			return []ollama.LibraryModel{{Name: "qwen2.5", Tags: libTags("7b"), RepoURL: "x"}},
 				ollama.SourceCached, errors.New("dns failure")
 		},
+		nil,
 		noShow, noTest,
 	)
 	view.SetSize(120, 40)
@@ -251,6 +254,7 @@ func TestLocalModelsSourceNoCacheFlash(test *testing.T) {
 		func() ([]ollama.LibraryModel, ollama.Source, error) {
 			return nil, ollama.SourceCached, errors.New("dns failure")
 		},
+		nil,
 		noShow, noTest,
 	)
 	view.SetSize(120, 40)

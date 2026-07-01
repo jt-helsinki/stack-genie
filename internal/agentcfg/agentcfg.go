@@ -57,6 +57,13 @@ func OpenCodeConfig(gatewayURL, apiKey, defaultModel string, models []string, ke
 	}
 	document := map[string]any{
 		"$schema": "https://opencode.ai/config.json",
+		// Restrict opencode to ONLY the platform gateway provider, so the model
+		// picker is exactly the models LiteLLM serves — opencode never falls back to
+		// an auto-loaded built-in provider or the public models.dev catalog for model
+		// selection. (opencode has no officially-supported flag to fully disable the
+		// models.dev startup fetch yet — sst/opencode#4959 — but with only this
+		// provider enabled its catalog is unused.)
+		"enabled_providers": []string{ProviderID},
 		"provider": map[string]any{
 			ProviderID: map[string]any{
 				"npm":  "@ai-sdk/openai-compatible",

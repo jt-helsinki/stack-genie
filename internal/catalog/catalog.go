@@ -457,3 +457,14 @@ func LoadOrFetchStatus(ctx context.Context, httpClient *http.Client, url string)
 	}
 	return nil, SourceCached, fetchErr
 }
+
+// LoadCachedOrFetchStatus is CACHE-FIRST: when a cached catalog exists it is used
+// as-is with NO network call (the catalog changes rarely). Only when none exists
+// does it fetch (and persist). Callers use this for normal reads and
+// LoadOrFetchStatus (fetch-first) only for an explicit refresh (the `r` key).
+func LoadCachedOrFetchStatus(ctx context.Context, httpClient *http.Client, url string) (*Catalog, Source, error) {
+	if cached, err := Load(); err == nil {
+		return cached, SourceCached, nil
+	}
+	return LoadOrFetchStatus(ctx, httpClient, url)
+}

@@ -89,7 +89,8 @@ const localNameWidth = 26
 type LocalModels struct {
 	test    ModelTester
 	list    LocalModelLister
-	library LibraryLister
+	library LibraryLister // CACHE-FIRST load (normal open); no network when cached
+	refresh LibraryLister // FORCE re-scrape (the `r` key); nil falls back to library
 	show    ModelShowFetcher
 
 	describe describePane
@@ -111,9 +112,11 @@ type LocalModels struct {
 }
 
 // NewLocalModels builds the Local Models view over the injected installed-store
-// lister, library lister, per-model /api/show fetcher, and gateway tester.
-func NewLocalModels(list LocalModelLister, library LibraryLister, show ModelShowFetcher, test ModelTester) *LocalModels {
-	return &LocalModels{list: list, library: library, show: show, test: test, describe: newDescribePane()}
+// lister, the CACHE-FIRST library lister (normal open), the FORCE-refresh library
+// lister (the `r` key; may be nil to reuse library), the per-model /api/show
+// fetcher, and the gateway tester.
+func NewLocalModels(list LocalModelLister, library, refresh LibraryLister, show ModelShowFetcher, test ModelTester) *LocalModels {
+	return &LocalModels{list: list, library: library, refresh: refresh, show: show, test: test, describe: newDescribePane()}
 }
 
 func (view *LocalModels) Title() string { return "Local Models" }
@@ -169,14 +172,19 @@ func (view *LocalModels) syncWindow() {
 	view.window.SetContent(view.windowLines(), view.width, view.listHeight())
 }
 
-// Init kicks off the first install-store list + library load.
-func (view *LocalModels) Init() tea.Cmd { return view.listCmd() }
+// Init kicks off the first install-store list + library load (CACHE-FIRST — a
+// cached library is used as-is, so opening the tab never blocks on a live scrape).
+func (view *LocalModels) Init() tea.Cmd { return view.listCmd(false) }
 
-// listCmd lists the installed store and loads the library (live, cache-backed). Each
-// degrades independently.
-func (view *LocalModels) listCmd() tea.Cmd {
+// listCmd lists the installed store and loads the library. When force is false the
+// library load is CACHE-FIRST (no network when cached); when true (the `r` key) it
+// FORCE re-scrapes via the refresh lister. Each side degrades independently.
+func (view *LocalModels) listCmd(force bool) tea.Cmd {
 	list := view.list
 	library := view.library
+	if force && view.refresh != nil {
+		library = view.refresh
+	}
 	return func() tea.Msg {
 		var msg localModelsRefreshedMsg
 		if list != nil {
@@ -267,7 +275,7 @@ func (view *LocalModels) handleKey(key tea.KeyMsg) tea.Cmd {
 		return func() tea.Msg { return ModelRemoveRequestedMsg{Name: ref} }
 	case "r":
 		view.flash = ui.Muted.Render("refreshing…")
-		return view.listCmd()
+		return view.listCmd(true)
 	case "up", "k":
 		view.moveCursor(-1)
 		return nil
