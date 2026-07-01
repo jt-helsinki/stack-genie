@@ -1691,12 +1691,15 @@ number keys `1`-`9`. There is **no `:` command palette** — `q`/`ctrl+c` quits 
   Logs tab; the file-backed `internal/logs` reader still backs `ai logs`.
 * **Projects** — a **two-level hub**. It opens on the *switcher*: every project
   (name / OS / workspace status / agents); `enter` opens one, `n` creates a new one
-  (a **location text field** starting in the current directory, with directory
-  autocompletion [`tab` accepts, `↑/↓` cycle], leading-`~` expansion, and inline
-  validation by the create rules — a path that IS or is NESTED INSIDE an existing
-  workspace is rejected; a non-existent path is created, with intermediate folders,
-  on confirm — then the `ai create` wizard runs in that dir), `d` describes the
-  selected one. Opening a project drops
+  (a **location field** starting in the current directory: a text input above a
+  live **dropdown of the folders** under the entered path — type to filter it and
+  `tab` to complete the highlighted folder, or `↓`/`↑` to select a folder row;
+  folders that are ALREADY a workspace are **greyed out and not selectable** with a
+  "workspace already exists" note; a leading `~` expands to home; the entered path
+  is validated by the create rules — a path that IS or is NESTED INSIDE an existing
+  workspace is rejected — and a non-existent path is created, with intermediate
+  folders, on `enter` before the `ai create` wizard runs in that dir), `d`
+  describes the selected one. Opening a project drops
   INTO it, revealing a **sub-tab bar** for that project (the project name + the
   sub-tabs below). `tab`/`←→` cycle the sub-tabs; the focused sub-view's pane is
   acted on directly; `esc` backs UP to the switcher. The per-project sub-tabs are:

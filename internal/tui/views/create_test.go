@@ -142,15 +142,15 @@ func TestCreateAutocompletionPrefixMatchesChildDirs(test *testing.T) {
 	wantProjects := ensureTrailingSep(filepath.Join(base, "projects"))
 	found := false
 	for _, suggestion := range suggestions {
-		if suggestion == wantProjects {
+		if suggestion.path == wantProjects {
 			found = true
 		}
-		if strings.Contains(suggestion, "photos") {
-			test.Errorf("prefix 'pro' must not suggest photos/: %v", suggestions)
+		if suggestion.name == "photos" {
+			test.Errorf("prefix 'pro' must not suggest photos/: %+v", suggestions)
 		}
 	}
 	if !found {
-		test.Errorf("prefix 'pro' should suggest projects/, got %v", suggestions)
+		test.Errorf("prefix 'pro' should suggest projects/, got %+v", suggestions)
 	}
 }
 
@@ -165,12 +165,71 @@ func TestCreateAutocompletionExpandsTilde(test *testing.T) {
 	want := ensureTrailingSep(filepath.Join(home, "work"))
 	found := false
 	for _, suggestion := range suggestions {
-		if suggestion == want {
+		if suggestion.path == want {
 			found = true
 		}
 	}
 	if !found {
-		test.Errorf("~/ should list home children as absolute paths, got %v", suggestions)
+		test.Errorf("~/ should list home children as absolute paths, got %+v", suggestions)
+	}
+}
+
+func TestCreateDropdownGreysOutAndSkipsWorkspaceFolders(test *testing.T) {
+	test.Setenv("HOME", test.TempDir())
+	base := test.TempDir()
+	seedProject(test, base, "hasws") // base/hasws is already a workspace
+	if err := os.MkdirAll(filepath.Join(base, "plain"), 0o755); err != nil {
+		test.Fatal(err)
+	}
+
+	view := NewCreate(base)
+
+	// Both folders appear; the workspace one is disabled, the plain one selectable.
+	var hasWorkspace, plain *folderRow
+	for index := range view.suggestions {
+		switch view.suggestions[index].name {
+		case "hasws":
+			hasWorkspace = &view.suggestions[index]
+		case "plain":
+			plain = &view.suggestions[index]
+		}
+	}
+	if hasWorkspace == nil || plain == nil {
+		test.Fatalf("expected both folders in the dropdown, got %+v", view.suggestions)
+	}
+	if !hasWorkspace.disabled {
+		test.Error("a folder that is already a workspace must be disabled")
+	}
+	if plain.disabled {
+		test.Error("a plain folder must be selectable")
+	}
+	// The greyed row carries the message.
+	if !strings.Contains(view.View(), "workspace already exists") {
+		test.Errorf("a disabled row must show the message, got view:\n%s", view.View())
+	}
+
+	// ↓ from the input row skips the disabled workspace folder and lands on "plain".
+	view.Update(tea.KeyMsg{Type: tea.KeyDown})
+	if view.selected < 0 || view.suggestions[view.selected].disabled {
+		test.Fatalf("↓ must land on a selectable folder, selected=%d", view.selected)
+	}
+	if view.suggestions[view.selected].name != "plain" {
+		test.Errorf("↓ should skip the workspace folder to 'plain', got %q", view.suggestions[view.selected].name)
+	}
+}
+
+func TestCreateTabCompletesFirstSelectableFolder(test *testing.T) {
+	test.Setenv("HOME", test.TempDir())
+	base := test.TempDir()
+	seedProject(test, base, "hasws") // sorts before "plain" but must be skipped
+	if err := os.MkdirAll(filepath.Join(base, "plain"), 0o755); err != nil {
+		test.Fatal(err)
+	}
+
+	view := NewCreate(base)
+	view.Update(tea.KeyMsg{Type: tea.KeyTab})
+	if got, want := view.input.Value(), ensureTrailingSep(filepath.Join(base, "plain")); got != want {
+		test.Errorf("tab should complete the first SELECTABLE folder %q, got %q", want, got)
 	}
 }
 
