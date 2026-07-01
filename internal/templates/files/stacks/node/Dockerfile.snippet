@@ -1,5 +1,3 @@
-# stack: node
-USER root
-RUN apt-get update && apt-get install -y --no-install-recommends nodejs npm \
- && rm -rf /var/lib/apt/lists/*
-USER workspace
+# stack: node — Node.js (pinned Node 22 LTS) is already installed in every OS base
+# image, so selecting the node stack adds nothing further. Kept as a selectable
+# stack for discoverability and back-compat.

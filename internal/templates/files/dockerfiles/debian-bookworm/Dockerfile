@@ -45,6 +45,15 @@ RUN curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
  && apt-get install -y --no-install-recommends gh \
  && rm -rf /var/lib/apt/lists/*
 
+# Node.js 22 LTS from NodeSource. The distro apt Node (18/20) is too old for the
+# agent CLIs — pi's bundled undici calls webidl.markAsUncloneable, added in Node
+# 22.10 and never backported to 20.x. Installed ONCE here so every Node-based agent
+# CLI + the `node` stack share this one pinned Node (they no longer install it).
+ENV NODE_MAJOR=22
+RUN curl -fsSL https://deb.nodesource.com/setup_${NODE_MAJOR}.x | bash - \
+ && apt-get install -y --no-install-recommends nodejs \
+ && rm -rf /var/lib/apt/lists/*
+
 # Python 3 (the base image's latest), installed system-wide; python3-venv backs the
 # per-project /workspace/.venv-msb created at workspace start.
 RUN apt-get update \

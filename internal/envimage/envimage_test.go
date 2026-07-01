@@ -128,6 +128,10 @@ func TestAllOSTemplatesExposeIdenticalBaseSurface(test *testing.T) {
 		// (containerd + nerdctl + runc + CNI + buildkit) is installed on every OS.
 		"NERDCTL_VERSION=2.3.4",
 		"nerdctl-full-",
+		// Node.js 22 LTS (NodeSource) is baked into every OS base — the distro apt
+		// Node is too old for the agent CLIs (pi's undici needs Node >= 22.10).
+		"NODE_MAJOR=22",
+		"nodesource.com",
 		// Python 3, uv, and Graphify are baked into every OS base by default (§12,
 		// §25). Graphify installs via `uv tool install` with the bundled extras.
 		"python3",
@@ -154,7 +158,7 @@ func TestAllOSTemplatesExposeIdenticalBaseSurface(test *testing.T) {
 		}
 		// The user's selections are appended regardless of OS, and the selected
 		// agent CLI registers Graphify with itself.
-		for _, fragment := range []string{"# stack: go", "# agent CLI: opencode", "graphify install --platform opencode"} {
+		for _, fragment := range []string{"# stack: go", "# agent CLI: opencode", "--platform opencode"} {
 			if !strings.Contains(dockerfile, fragment) {
 				test.Errorf("%s: missing selection %q", osKey, fragment)
 			}

@@ -629,8 +629,9 @@ func ensureHeadroom(prober runtime.Prober, containerRuntime string) error {
 }
 
 // ensureDNS runs the aip-dns CoreDNS resolver on the shared network, published to
-// the host loopback at dnsHostPort/udp so microVMs (booted with --dns-nameserver
-// DNSNameserver) forward their DNS there for the attempted-egress-by-name audit
+// the host loopback at dnsHostPort on BOTH udp/53 and tcp/53 so microVMs (booted
+// with --dns-nameserver DNSNameserver) forward their DNS there — including the
+// TCP fallback path — for the attempted-egress-by-name audit
 // (arch §29). It renders a Corefile to ~/.ai-platform/config/dns/Corefile with the
 // `log` plugin (the audit source), a `forward` to public upstreams, and a short
 // cache. Idempotent: skips if already running, removes any stale container first.
@@ -655,7 +656,12 @@ func ensureDNS(prober runtime.Prober, containerRuntime string) error {
 	args := []string{
 		"run", "-d", "--name", dnsContainer,
 		"--network", platformNetwork,
+		// Publish on BOTH udp/53 and tcp/53. The Microsandbox DNS forwarder resolves
+		// upstream over UDP normally but falls back to TCP (truncated/large answers,
+		// EDNS); a UDP-only publish makes that TCP fallback hit a closed port, so a
+		// workspace can fail to resolve public names ("Could not resolve host").
 		"-p", "127.0.0.1:" + dnsHostPort + ":53/udp",
+		"-p", "127.0.0.1:" + dnsHostPort + ":53/tcp",
 		"-v", corefilePath + ":/Corefile",
 		containerImage("dns"),
 		"-conf", "/Corefile",

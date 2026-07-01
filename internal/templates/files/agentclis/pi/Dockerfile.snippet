@@ -8,9 +8,11 @@
 # (a scoped virtual key) — NOT a real provider secret; LiteLLM holds the real
 # provider credentials (arch §17), so no agent CLI ever holds a provider API key.
 # Verify the exact npm package + custom-provider config on hardware bring-up.
+# Node is installed in the OS base image (pinned Node 22 LTS), so this only adds pi.
 USER root
-RUN apt-get update && apt-get install -y --no-install-recommends nodejs npm \
- && rm -rf /var/lib/apt/lists/* \
- && npm install -g --ignore-scripts @earendil-works/pi-coding-agent \
- && graphify install --platform pi || echo "graphify: pi registration skipped (verify on hardware bring-up)"
+RUN npm install -g @earendil-works/pi-coding-agent
 USER workspace
+
+# Register Graphify with pi (github.com/safishamsi/graphify). Best-effort: never
+# fail the image build.
+RUN cd ~/workspace && graphify install --project --platform pi || echo "graphify: pi registration skipped (verify on hardware bring-up)"

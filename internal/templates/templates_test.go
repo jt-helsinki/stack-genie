@@ -129,6 +129,9 @@ func TestBaseDockerfileShipsContainerRuntime(t *testing.T) {
 				"NERDCTL_VERSION=2.3.4",
 				"nerdctl-full-",
 				"tar -C /usr/local",
+				// Node.js 22 LTS (NodeSource) baked into every OS base.
+				"NODE_MAJOR=22",
+				"nodesource.com",
 				"python3",
 				// Graphify installs via uv (Astral) with the bundled extras.
 				"astral.sh/uv/install.sh",
@@ -226,19 +229,24 @@ func TestAgentCLISnippetKnownCLIs(t *testing.T) {
 			if strings.TrimSpace(got) == "" {
 				t.Fatalf("AgentCLISnippet(%q) returned blank content", cli)
 			}
-			// Every agent-CLI snippet registers Graphify with itself via its
-			// `graphify install --platform <cli>` (claude-code uses the default
-			// platform, i.e. a bare `graphify install`).
-			graphifyPlatform := map[string]string{
-				"claude-code": "graphify install",
-				"codex":       "graphify install --platform codex",
-				"gemini":      "graphify install --platform gemini",
-				"opencode":    "graphify install --platform opencode",
-				"pi":          "graphify install --platform pi",
+			// Every agent-CLI snippet registers Graphify with itself: `graphify
+			// install` for claude-code (the default platform) and `graphify install
+			// … --platform <cli>` for the others. Assert it registers Graphify and,
+			// where applicable, targets its own platform — tolerant of extra flags
+			// (e.g. --project).
+			graphifyFlag := map[string]string{
+				"claude-code": "",
+				"codex":       "--platform codex",
+				"gemini":      "--platform gemini",
+				"opencode":    "--platform opencode",
+				"pi":          "--platform pi",
 			}
-			if want, ok := graphifyPlatform[cli]; ok {
-				if !strings.Contains(got, want) {
-					t.Errorf("AgentCLISnippet(%q) missing Graphify registration %q:\n%s", cli, want, got)
+			if flag, ok := graphifyFlag[cli]; ok {
+				if !strings.Contains(got, "graphify install") {
+					t.Errorf("AgentCLISnippet(%q) missing `graphify install`:\n%s", cli, got)
+				}
+				if flag != "" && !strings.Contains(got, flag) {
+					t.Errorf("AgentCLISnippet(%q) missing %q:\n%s", cli, flag, got)
 				}
 			} else if strings.Contains(got, "graphify install") {
 				t.Errorf("AgentCLISnippet(%q) unexpectedly registers Graphify (unknown platform)", cli)

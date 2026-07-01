@@ -1,12 +1,11 @@
 # agent CLI: claude-code
-# Verify the exact npm package on hardware bring-up before relying on this.
+# Node is installed in the OS base image (pinned Node 22 LTS), so this only adds
+# the CLI. Verify the exact npm package on hardware bring-up before relying on this.
 USER root
-RUN apt-get update && apt-get install -y --no-install-recommends nodejs npm \
- && rm -rf /var/lib/apt/lists/* \
- && npm install -g @anthropic-ai/claude-code
+RUN npm install -g @anthropic-ai/claude-code
 USER workspace
 
 # Register Graphify with Claude Code so it consults the knowledge graph automatically
 # (github.com/safishamsi/graphify — Claude Code is the default `graphify install`
 # platform). Best-effort: never fail the image build.
-RUN graphify install || echo "graphify: claude-code registration skipped (verify on hardware bring-up)"
+RUN cd ~/workspace && graphify install --project install || echo "graphify: claude-code registration skipped (verify on hardware bring-up)"

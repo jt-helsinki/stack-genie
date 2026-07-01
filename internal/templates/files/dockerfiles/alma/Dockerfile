@@ -43,6 +43,15 @@ RUN dnf install -y 'dnf-command(config-manager)' \
  && dnf install -y --setopt=install_weak_deps=False gh \
  && dnf clean all
 
+# Node.js 22 LTS from NodeSource (rpm). The distro module Node is too old for the
+# agent CLIs — pi's bundled undici calls webidl.markAsUncloneable, added in Node
+# 22.10 and never backported to 20.x. Installed ONCE here so every Node-based agent
+# CLI + the `node` stack share this one pinned Node (they no longer install it).
+ENV NODE_MAJOR=22
+RUN curl -fsSL https://rpm.nodesource.com/setup_${NODE_MAJOR}.x | bash - \
+ && dnf install -y --setopt=install_weak_deps=False nodejs \
+ && dnf clean all
+
 # Python 3 — installed system-wide; python3 backs the per-project
 # /workspace/.venv-msb created at workspace start.
 RUN dnf install -y --setopt=install_weak_deps=False python3 python3-pip \
