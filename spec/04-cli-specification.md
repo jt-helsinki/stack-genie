@@ -250,8 +250,11 @@ Purpose:
 * configures runtime
 * installs, configures, and starts the host services as the single control
   plane — see architecture §5, "Host Services Control Plane". The host service
-  set is Ollama (required) + Presidio (analyzer + anonymizer) + LiteLLM
-  (+ Postgres) + Headroom — all containers on the `aip-net` network — plus the
+  set is the `aip-dns` CoreDNS egress-audit resolver + Ollama (required) +
+  Presidio (analyzer + anonymizer) + LiteLLM (+ Postgres) + Headroom + the
+  `aip-proxy` nginx gateway (the SOLE host entry, reconciled LAST) — all
+  containers on the `aip-net` network, reconciled in order network → DNS → Ollama
+  → Presidio → LiteLLM(+DB) → Headroom → proxy — plus verification of the
   Microsandbox workspace runtime.
 * renders each service config from the platform config and verifies the
   Microsandbox runtime + host virtualization (no docker compose; the whole
@@ -662,15 +665,20 @@ ai restart [<name>]
 
 Behavior:
 
-* restarts the **existing** microVM — stops it (tolerating an already-stopped
-  microVM) then starts it again
-* does **not** rebuild the OCI image and does **not** recreate the microVM (the
-  persistent overlay and host source are untouched); use `start` for a fresh
-  build
+* restarts the **existing** workspace — it stops the microVM (tolerating an
+  already-stopped microVM) then runs the **full start path** again
+  (`Manager.Restart` → `Manager.Start`), which **rebuilds the OCI image and
+  recreates the microVM** (`Sandbox.Create`). This is deliberate: recreating
+  re-derives the network / published-port set, so a restart picks up config
+  changes — notably a newly added/removed in-VM app's host port, which `msb` only
+  applies at create (a bare stop+start with no recreate would leave it
+  unpublished). Provider/containerd/app setup is re-run.
+* the persistent overlay and host source are **untouched** across the rebuild —
+  installs and agent state survive (architecture §26)
 * preserves state and refreshes the handle to `started` with a new
   `last_started`
 * requires a workspace that was previously started; if none exists it fails with
-  exit `2` and directs the user to `ai start` first
+  `ErrNotStarted` (exit `2`) and directs the user to `ai start` first
 
 ---
 

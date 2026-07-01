@@ -299,8 +299,10 @@ Microsandbox microVM runtime are installed, configured, and supervised by the
 `docker compose`, `msb`, `launchctl`, or `systemctl` directly. The whole service
 tier is containers: they share a private docker network (`aip-net`) and are
 reconciled in order: network → DNS → Ollama → Presidio → LiteLLM (+ DB) → Headroom → nginx proxy (last).
-(Prompt-injection detection and the destructive-tool-call firewall are in-process
-in LiteLLM — they need no companion container, §15.)
+(The destructive-tool-call firewall and the `hide-secrets` detector are in-process
+in LiteLLM — they need no companion container; only Presidio, which backs the
+secret-masking guardrail, runs as its own analyzer + anonymizer containers. §15.
+The in-process prompt-injection detector was removed — §15.)
 (Headroom is now a shared host container, no longer installed in the workspace
 image, §10. It is INTERNAL-ONLY behind the `aip-proxy` nginx reverse proxy, which
 is the gateway entry on host :18787 — see §10/§15.)

@@ -150,9 +150,9 @@ chain itself. The remaining verification work:
   the agent writes then runs, free-text-parsed actions, and obfuscation
   (`rm -r -f`, `$(echo rm) -rf`) are invisible. The microVM isolation + default-deny
   egress remain the hard boundary; the firewall is thin defence-in-depth.
-- [ ] **In-process prompt-injection** — confirm the `detect_prompt_injection`
-      callback flags an injection attempt without corrupting ordinary coding prompts
-      (watch for false positives, the reason general PII masking was dropped).
+  (There is no prompt-injection callback to verify — the in-process
+  `detect_prompt_injection` and the unmaintained LLM Guard were both removed as
+  false-positive sources on ordinary coding/Ollama traffic; see arch §15.)
 - [ ] **nginx → Headroom → LiteLLM gateway path** — confirm the `aip-proxy` nginx
       entry on host :18787 forwards to the internal-only Headroom
       (`aip-headroom:8787`) and on to LiteLLM end-to-end, including **streamed

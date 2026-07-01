@@ -188,12 +188,14 @@ ai ui                                # K9s-style dashboard: Services · Workspac
 
 `ai ui` navigates with Tab/←→/number keys (quit `q`); it does not capture the
 mouse, so native text selection works. The per-workspace view has Workspace ·
-Network · Context · **Shell** (session manager — attach/new/kill) · Apps
-sub-tabs; the **Workspace** tab shows the summary with the workspace log (live,
-read-only `msb logs`) embedded beneath it (`f`/`enter` follows it live). Workspace
-start/stop/restart run in the background (the microVM build/boot survives closing
-`ai ui` — a spinner tracks progress), and interactive shells run in your real
-terminal.
+**Logs** · **Metrics** · Network · Context · **Shell** (session manager —
+attach/new/kill) · Apps sub-tabs; the **Workspace** tab shows the summary plus a
+scrollable live **Sandbox Configuration** block, the **Logs** tab is the live,
+read-only workspace log (streamed on the SDK backend; `f`/`enter` follows it live
+in your real terminal), and the **Metrics** tab streams CPU/memory/disk/net.
+Workspace start/stop/restart run in the background (the microVM build/boot
+survives closing `ai ui` — a spinner tracks progress), and interactive shells run
+in your real terminal.
 
 ## Uninstall
 

@@ -73,8 +73,8 @@ flowchart LR
  │                  ▼                                                          │
  │            aip-litellm  :4000   ── guardrails ──▶ aip-presidio (secrets)    │
  │              router (admin UI via /llm + litellm.<domain>, internal-only)    │
- │                  │  └── aip-litellm-db (Postgres) (+ tool-firewall,          │
- │          ┌───────┴────────┐                         prompt-injection)        │
+ │                  │  └── aip-litellm-db (Postgres) (+ tool-firewall)          │
+ │          ┌───────┴────────┐                                                 │
  │          ▼                ▼                                                 │
  │     aip-ollama       Cloud providers (OpenAI/Anthropic/Gemini/Groq)         │
  │     :11434           real provider keys live IN LiteLLM, never in the VM    │
@@ -103,9 +103,11 @@ flowchart LR
    directly. The host CLI reaches the gateway on loopback `127.0.0.1:18787`.
 4. **aip-litellm** is the router. Always-on **guardrails** run on every request and
    every route (cloud included, since all traffic traverses the proxy): **Presidio**
-   secret masking + `hide-secrets`, a **tool-firewall** (`tool_permission`) that
-   denies destructive command tool-calls, and an in-process **prompt-injection**
-   detector. Its admin UI / virtual keys / spend live in **aip-litellm-db**.
+   secret masking (financial/identity secrets only, not general PII) + `hide-secrets`,
+   and a **tool-firewall** (`tool_permission`) that denies destructive command
+   tool-calls. (The in-process prompt-injection detector and the unmaintained LLM
+   Guard were both removed — they false-positived on ordinary coding/Ollama traffic.)
+   Its admin UI / virtual keys / spend live in **aip-litellm-db**.
 5. LiteLLM routes to **aip-ollama** (a registered local Ollama model) or to a
    **cloud provider** using the real key it holds. The model set is DB-backed and
    catalog-driven with **no built-in default model**. The response streams back along

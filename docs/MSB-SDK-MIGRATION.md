@@ -238,8 +238,10 @@ full `ai create`→`start`→agent-config flow with a live aip-dns/gateway + ove
 mounts + in-VM apps. If interactive shells misbehave, revert with
 `AIP_WORKSPACE_BACKEND=cli` and report — that's the remaining P3 work.
 
-**Still pending:** P3 (confirm/season SSH interactive Attach parity on a TTY) and P4
-(the `make release` cross-compile CGO rework — still pins `CGO_ENABLED=0`).
+**Still pending:** P3 (confirm/season SSH interactive Attach parity on a TTY). P4 is
+DONE — the build now exports `CGO_ENABLED=1` (Makefile) and `make release` builds
+the host arch natively; the cross-compile matrix runs `make release` per platform
+(each runner builds its own native arch, since cgo needs a per-target C toolchain).
 
 ## Status — migration + follow-ups (2026-06-30)
 
