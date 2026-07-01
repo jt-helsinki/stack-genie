@@ -122,6 +122,38 @@ func networkResolve(cmd *cobra.Command, args []string, index int) (string, error
 	return resolveProjectRoot(name)
 }
 
+// offerWorkspaceRestart, after a per-project network/config change that only takes
+// effect when the microVM is (re)created, asks on a TTY whether to restart the
+// workspace now to apply it — and does so. It is a no-op under --json / no-TTY (the
+// change applies on the next `ai start`/`ai restart`) and when the workspace isn't
+// currently running (there is nothing to re-apply against). It is best-effort: it
+// runs AFTER the command has already reported success, so a restart decline or
+// failure never changes the command's exit code.
+func offerWorkspaceRestart(emitter *output.Emitter, root string) {
+	if !interactive(emitter) {
+		return
+	}
+	manager := workspace.RealManager(goruntime.GOOS, nowRFC3339)
+	if !manager.IsRunning(root) {
+		return // not running: the change is picked up on the next start
+	}
+	restart, err := promptConfirmDefault(
+		"Restart the workspace now to apply this change?",
+		"The change takes effect when the workspace microVM is (re)created; restarting rebuilds and reboots it.",
+		false,
+	)
+	if err != nil || !restart {
+		_, _ = fmt.Fprintln(emitter.Err, ui.Muted.Render("Not restarted — the change applies on the next `ai restart`."))
+		return
+	}
+	_, _ = fmt.Fprintln(emitter.Err, ui.Heading.Render("Restarting workspace")+ui.Muted.Render("…"))
+	if _, err := manager.Restart(root); err != nil {
+		_, _ = fmt.Fprintf(emitter.Err, "%s\n", ui.Failure.Render(ui.IconFail+" restart failed: "+err.Error()))
+		return
+	}
+	_, _ = fmt.Fprintln(emitter.Err, ui.Success.Render(ui.IconOK+" workspace restarted"))
+}
+
 func newNetworkShowCmd(emitter *output.Emitter, exit *int) *cobra.Command {
 	return &cobra.Command{
 		Use:               "show [project]",
@@ -223,6 +255,7 @@ func newNetworkEgressCmd(emitter *output.Emitter, exit *int) *cobra.Command {
 				return nil
 			}
 			*exit = emitter.Success("network.egress", map[string]any{"egress": mode})
+			offerWorkspaceRestart(emitter, root)
 			return nil
 		},
 	}
@@ -312,6 +345,7 @@ func newNetworkAllowCmd(emitter *output.Emitter, exit *int) *cobra.Command {
 				return nil
 			}
 			*exit = emitter.Success("network.allow", map[string]any{"host": host, "port": port})
+			offerWorkspaceRestart(emitter, root)
 			return nil
 		},
 	}
@@ -338,6 +372,7 @@ func newNetworkDisallowCmd(emitter *output.Emitter, exit *int) *cobra.Command {
 				return nil
 			}
 			*exit = emitter.Success("network.disallow", map[string]any{"host": host, "port": port})
+			offerWorkspaceRestart(emitter, root)
 			return nil
 		},
 	}
@@ -364,6 +399,7 @@ func newNetworkPublishCmd(emitter *output.Emitter, exit *int) *cobra.Command {
 				return nil
 			}
 			*exit = emitter.Success("network.publish", map[string]any{"guest": guest, "host": host})
+			offerWorkspaceRestart(emitter, root)
 			return nil
 		},
 	}
@@ -390,6 +426,7 @@ func newNetworkUnpublishCmd(emitter *output.Emitter, exit *int) *cobra.Command {
 				return nil
 			}
 			*exit = emitter.Success("network.unpublish", map[string]any{"guest": guest, "host": host})
+			offerWorkspaceRestart(emitter, root)
 			return nil
 		},
 	}

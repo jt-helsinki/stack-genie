@@ -114,6 +114,9 @@ func newContextStrategyCmd(emitter *output.Emitter, exit *int) *cobra.Command {
 				return nil
 			}
 			*exit = emitter.Success("context.strategy", map[string]any{"project": name, "strategy": value})
+			// The Headroom knobs are baked into the agent config at workspace start,
+			// so offer to restart a running workspace to apply the new strategy.
+			offerWorkspaceRestart(emitter, root)
 			return nil
 		},
 	}

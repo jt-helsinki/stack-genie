@@ -1031,6 +1031,13 @@ func (manager Manager) requireRunning(project string) error {
 	return nil
 }
 
+// IsRunning reports whether the project's workspace microVM is currently RUNNING
+// (its lifecycle handle is "started"). It reads the platform's own handle, not msb,
+// so it never blocks. Any resolution error means "not running" (false).
+func (manager Manager) IsRunning(project string) bool {
+	return manager.requireRunning(project) == nil
+}
+
 // classifyInVMFailure turns a failed/timed-out in-VM exec into a PRECISE,
 // actionable error by running the bounded VM-liveness probe AFTER the fact (so the
 // happy path pays no probe latency). The handle is already known "started" by the
