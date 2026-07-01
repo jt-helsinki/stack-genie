@@ -974,6 +974,12 @@ and is (re)loaded into the microVM on **every workspace start/restart** by
   * gemini: `GOOGLE_GEMINI_BASE_URL` (the gateway root, honoured by the `@google/genai`
     SDK) + `GEMINI_API_KEY`.
 
+Each final in-VM config is written at that CLI's **default location** (the `~/…`
+paths above, under the `workspace` user's home); nothing relocates a CLI config — no
+`OPENCODE_CONFIG`/`CODEX_HOME`/`CLAUDE_CONFIG_DIR`/`XDG_CONFIG_HOME` override — and
+`.ai-platform/agents/` is only the keyless host template/persistence layer, never an
+in-VM config directory.
+
 **The scoped virtual key (and any real key) is NEVER written to host disk** — the
 host templates are keyless (base URL is not a secret), and the key is injected only
 into the final config/env written **into the microVM** (`Sandbox.WriteFile`), where

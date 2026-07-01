@@ -248,23 +248,20 @@ func TestStartBuildsAndRecordsStartedHandle(test *testing.T) {
 		test.Fatalf("expected a delete-by-alias rotate for %q, got %d call(s) for %q",
 			"app", minter.deleteCalls, minter.deletedAlias)
 	}
-	openCodeConfig, wrote := sandbox.written["/home/workspace/.config/opencode/opencode.json"]
-	if !wrote {
-		test.Fatal("opencode provider config not written into the microVM")
+	openCodeConfig := readProjectConfig(test, root, ".opencode", "opencode.json")
+	piConfig := readProjectConfig(test, root, ".pi", "models.json")
+	// The project configs are KEYLESS (they reference the key via env interpolation,
+	// not the literal value); pi must not carry the per-request Headroom knobs.
+	if !strings.Contains(openCodeConfig, agentcfg.OpenCodeAPIKeyRef) {
+		test.Error("opencode config is missing the env key-ref")
 	}
-	piConfig, wrote := sandbox.written["/home/workspace/.pi/agent/models.json"]
-	if !wrote {
-		test.Fatal("pi provider config not written into the microVM")
+	if strings.Contains(openCodeConfig, "sk-fake-workspace-key") {
+		test.Error("opencode project config must be keyless")
 	}
-	// The minted key must reach the agent configs (host→VM only) and pi must not
-	// carry the per-request Headroom knobs.
-	if !strings.Contains(string(openCodeConfig), "sk-fake-workspace-key") {
-		test.Error("opencode config is missing the virtual key")
-	}
-	if !strings.Contains(string(openCodeConfig), "headroom_keep_turns") {
+	if !strings.Contains(openCodeConfig, "headroom_keep_turns") {
 		test.Error("opencode config is missing the Headroom knobs")
 	}
-	if strings.Contains(string(piConfig), "headroom_keep_turns") {
+	if strings.Contains(piConfig, "headroom_keep_turns") {
 		test.Error("pi config must not carry the Headroom knobs")
 	}
 	if handle.ID != "aip-app" || handle.Status != state.StatusStarted {
@@ -296,7 +293,7 @@ func TestStartBuildsAndRecordsStartedHandle(test *testing.T) {
 	if !strings.Contains(strings.Join(sandbox.netArgs, " "), "allow:egress@host:tcp:18787") {
 		test.Fatalf("netArgs missing local gateway allow rule: %#v", sandbox.netArgs)
 	}
-	if !strings.Contains(string(openCodeConfig), "http://host.microsandbox.internal:18787/v1") {
+	if !strings.Contains(openCodeConfig, "http://host.microsandbox.internal:18787/v1") {
 		test.Error("opencode config is missing the local gateway URL")
 	}
 	workspaces, err := state.OpenStore(root).ListWorkspaces()
@@ -387,33 +384,33 @@ func TestStartRoutesAllFiveAgentCLIs(test *testing.T) {
 
 	const key = "sk-fake-workspace-key"
 
-	// (1) The in-VM final configs must each carry the scoped key.
-	for _, guestPath := range []string{
-		"/home/workspace/.config/opencode/opencode.json",
-		"/home/workspace/.pi/agent/models.json",
-	} {
-		content, wrote := sandbox.written[guestPath]
-		if !wrote {
-			test.Fatalf("no in-VM config written to %s", guestPath)
-		}
-		if !strings.Contains(string(content), key) {
-			test.Errorf("in-VM config %s is missing the scoped key", guestPath)
-		}
+	// (1) Each CLI's config is written into its DEFAULT PROJECT location on host disk,
+	// KEYLESS (base URL + an env key-ref), so the project is self-describing.
+	opencode := readProjectConfig(test, root, ".opencode", "opencode.json")
+	if !strings.Contains(opencode, agentcfg.OpenCodeAPIKeyRef) || !strings.Contains(opencode, "host.microsandbox.internal:18787/v1") {
+		test.Errorf("opencode project config missing key-ref/baseURL:\n%s", opencode)
+	}
+	pi := readProjectConfig(test, root, ".pi", "models.json")
+	if !strings.Contains(pi, agentcfg.PiAPIKeyRef) {
+		test.Errorf("pi project config missing key ref:\n%s", pi)
+	}
+	claude := readProjectConfig(test, root, ".claude", "settings.json")
+	if !strings.Contains(claude, "ANTHROPIC_BASE_URL") || !strings.Contains(claude, "host.microsandbox.internal:18787") {
+		test.Errorf("claude settings missing the base-URL env block:\n%s", claude)
+	}
+	codex := readProjectConfig(test, root, ".codex", "config.toml")
+	if !strings.Contains(codex, "env_key") || !strings.Contains(codex, "wire_api") {
+		test.Errorf("codex project config missing provider block:\n%s", codex)
 	}
 
-	// (2) codex.toml is written into the VM but is KEYLESS (the key is env-supplied
-	// via env_key); the agent env file carries the key for claude-code/codex/gemini.
-	codex, wrote := sandbox.written[codexGuestPath]
-	if !wrote {
-		test.Fatal("codex config not written into the microVM")
-	}
-	if strings.Contains(string(codex), key) {
-		test.Error("codex config.toml must be keyless (key comes from env_key)")
-	}
-	if !strings.Contains(string(codex), "env_key") || !strings.Contains(string(codex), "wire_api") {
-		test.Errorf("codex config.toml missing provider block:\n%s", codex)
+	// (2) codex's project-trust entry is written IN-VM (global ~/.codex/config.toml),
+	// keyless — so codex loads the per-project provider block.
+	if trust, wrote := sandbox.written[agentcfg.CodexConfigGuestPath]; !wrote || !strings.Contains(string(trust), "trust_level") {
+		test.Errorf("codex trust entry not written in-VM: %q", trust)
 	}
 
+	// (3) The agent env file (IN-VM ONLY) carries the scoped key + gateway env vars +
+	// OPENCODE_CONFIG (pointing opencode at its project config).
 	agentEnv, wrote := sandbox.written[agentEnvGuestPath]
 	if !wrote {
 		test.Fatal("agent env file not written into the microVM")
@@ -422,51 +419,55 @@ func TestStartRoutesAllFiveAgentCLIs(test *testing.T) {
 	if !strings.Contains(envText, key) {
 		test.Error("agent env file must carry the scoped key (in-VM only)")
 	}
-	for _, want := range []string{"ANTHROPIC_BASE_URL", "ANTHROPIC_AUTH_TOKEN", "GOOGLE_GEMINI_BASE_URL", "GEMINI_API_KEY", "AIP_GATEWAY_KEY"} {
+	for _, want := range []string{"ANTHROPIC_BASE_URL", "ANTHROPIC_AUTH_TOKEN", "GOOGLE_GEMINI_BASE_URL", "GEMINI_API_KEY", "AIP_GATEWAY_KEY", "OPENCODE_CONFIG"} {
 		if !strings.Contains(envText, want) {
 			test.Errorf("agent env file missing %q:\n%s", want, envText)
 		}
 	}
 
-	// (3) The managed bash_profile sources the agent env (so `ai shell` routes too).
+	// (4) The managed bash_profile sources the agent env (so `ai shell` routes too).
 	if profile, wrote := sandbox.written[bashProfileGuestPath]; !wrote || !strings.Contains(string(profile), agentEnvGuestPath) {
 		test.Errorf("managed bash_profile must source the agent env file: %q", profile)
 	}
 
-	// (4) HARD security constraint: the KEYLESS host-side templates must contain NO
-	// key anywhere under <project>/.ai-platform/agents/.
-	assertHostTemplatesKeyless(test, root, key)
+	// (5) HARD security constraint: NO host-disk project config contains the scoped key.
+	assertProjectConfigsKeyless(test, root, key)
 }
 
-// assertHostTemplatesKeyless fails if any host-side agent template contains the
-// scoped key (the key must live only in the microVM).
-func assertHostTemplatesKeyless(test *testing.T, root, key string) {
+// readProjectConfig reads a per-CLI project config file written under the project root.
+func readProjectConfig(test *testing.T, root string, parts ...string) string {
 	test.Helper()
-	dir := filepath.Join(root, ".ai-platform", "agents")
-	entries, err := os.ReadDir(dir)
+	content, err := os.ReadFile(filepath.Join(append([]string{root}, parts...)...))
 	if err != nil {
-		test.Fatalf("agents template dir not scaffolded: %v", err)
+		test.Fatalf("project config %v not written: %v", parts, err)
 	}
-	if len(entries) == 0 {
-		test.Fatal("no host-side agent templates scaffolded")
-	}
-	for _, entry := range entries {
-		content, err := os.ReadFile(filepath.Join(dir, entry.Name()))
+	return string(content)
+}
+
+// assertProjectConfigsKeyless fails if any on-disk (host, project) per-CLI config
+// contains the scoped key (the key must live only in the in-VM agent env file).
+func assertProjectConfigsKeyless(test *testing.T, root, key string) {
+	test.Helper()
+	for _, parts := range [][]string{
+		{".opencode", "opencode.json"}, {".pi", "models.json"},
+		{".claude", "settings.json"}, {".codex", "config.toml"},
+	} {
+		content, err := os.ReadFile(filepath.Join(append([]string{root}, parts...)...))
 		if err != nil {
-			test.Fatal(err)
+			test.Fatalf("project config %v not written: %v", parts, err)
 		}
 		if strings.Contains(string(content), key) {
-			test.Errorf("host template %s contains the scoped key — it MUST be keyless", entry.Name())
+			test.Errorf("project config %v contains the scoped key — it MUST be keyless", parts)
 		}
 	}
 }
 
-// TestStartPreservesAgentTemplateEdits verifies a user's edit to a host template is
-// preserved across start (not clobbered) and merged into the in-VM config, while the
-// scoped key is still injected only into the in-VM result (not the host template).
-func TestStartPreservesAgentTemplateEdits(test *testing.T) {
+// TestStartPreservesProjectConfigEdits verifies a user's edit to a project config
+// (a custom top-level key) is preserved across start (deep-merged, not clobbered) and
+// the merged result stays KEYLESS — the key is referenced via env, never embedded.
+func TestStartPreservesProjectConfigEdits(test *testing.T) {
 	root := seedProject(test, "app")
-	dir := filepath.Join(root, ".ai-platform", "agents")
+	dir := filepath.Join(root, ".opencode")
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		test.Fatal(err)
 	}
@@ -482,25 +483,19 @@ func TestStartPreservesAgentTemplateEdits(test *testing.T) {
 		test.Fatal(err)
 	}
 
-	// The host template is untouched (still the user's edit, still keyless).
-	onDisk, err := os.ReadFile(filepath.Join(dir, "opencode.json"))
-	if err != nil {
-		test.Fatal(err)
+	merged := readProjectConfig(test, root, ".opencode", "opencode.json")
+	if !strings.Contains(merged, "my-custom-theme") {
+		test.Errorf("user edit not preserved in the merged project config:\n%s", merged)
 	}
-	if string(onDisk) != string(edited) {
-		test.Errorf("host template was clobbered: %s", onDisk)
+	if !strings.Contains(merged, "host.microsandbox.internal:18787/v1") {
+		test.Errorf("merged config missing the gateway provider:\n%s", merged)
 	}
-	// The in-VM config merges the user's key in AND carries the gateway provider +
-	// the scoped key (dynamic values win, user key survives).
-	inVM := string(sandbox.written["/home/workspace/.config/opencode/opencode.json"])
-	if !strings.Contains(inVM, "my-custom-theme") {
-		test.Errorf("user template edit not merged into the in-VM config:\n%s", inVM)
+	// KEYLESS: references the key via {env:…}, never the literal scoped key.
+	if !strings.Contains(merged, agentcfg.OpenCodeAPIKeyRef) {
+		test.Errorf("merged config must reference the key via env, not embed it:\n%s", merged)
 	}
-	if !strings.Contains(inVM, "sk-fake-workspace-key") {
-		test.Errorf("in-VM config missing the scoped key:\n%s", inVM)
-	}
-	if !strings.Contains(inVM, "host.microsandbox.internal:18787/v1") {
-		test.Errorf("in-VM config missing the gateway provider:\n%s", inVM)
+	if strings.Contains(merged, "sk-fake-workspace-key") {
+		test.Errorf("merged project config must be keyless:\n%s", merged)
 	}
 }
 
@@ -1311,7 +1306,7 @@ func (source fakeServedModels) ServedModels() ([]string, error) {
 // the set of models the gateway currently serves (its DB-backed models), deduped +
 // sorted, and that it is written into both agent provider configs.
 func TestStartPickerIsServedModels(test *testing.T) {
-	_ = seedProject(test, "app")
+	root := seedProject(test, "app")
 	sandbox := &fakeSandbox{}
 	served := fakeServedModels{models: []string{
 		"ollama/qwen2.5:7b",
@@ -1327,24 +1322,18 @@ func TestStartPickerIsServedModels(test *testing.T) {
 		test.Fatal(err)
 	}
 
-	for _, guestPath := range []string{
-		"/home/workspace/.config/opencode/opencode.json",
-		"/home/workspace/.pi/agent/models.json",
-	} {
-		config := string(sandbox.written[guestPath])
-		if config == "" {
-			test.Fatalf("no config written to %s", guestPath)
-		}
+	for _, parts := range [][]string{{".opencode", "opencode.json"}, {".pi", "models.json"}} {
+		config := readProjectConfig(test, root, parts...)
 		// Every served model is present.
 		for _, want := range []string{"ollama/llama3.2:latest", "ollama/qwen2.5:7b", "anthropic/claude-opus-4-8"} {
 			if !strings.Contains(config, want) {
-				test.Errorf("%s missing served model %q", guestPath, want)
+				test.Errorf("%v missing served model %q", parts, want)
 			}
 		}
 	}
 	// The duplicate served entry is collapsed: in opencode's model map the model id
 	// appears as a JSON key exactly once (`"anthropic/claude-opus-4-8":`), not twice.
-	openCode := string(sandbox.written["/home/workspace/.config/opencode/opencode.json"])
+	openCode := readProjectConfig(test, root, ".opencode", "opencode.json")
 	if got := strings.Count(openCode, `"anthropic/claude-opus-4-8":`); got != 1 {
 		test.Errorf("opencode: served model keyed %d times, want 1 (deduped)", got)
 	}
@@ -1358,7 +1347,7 @@ func TestStartPickerIsServedModels(test *testing.T) {
 // when ServedModels errors (the gateway is down at start), the picker is empty but
 // the workspace still starts.
 func TestStartPickerDegradesWhenGatewayDown(test *testing.T) {
-	_ = seedProject(test, "app")
+	root := seedProject(test, "app")
 	sandbox := &fakeSandbox{}
 	served := fakeServedModels{err: errors.New("litellm: connection refused")}
 	manager := Manager{
@@ -1369,10 +1358,7 @@ func TestStartPickerDegradesWhenGatewayDown(test *testing.T) {
 		test.Fatalf("Start must NOT fail when the served-models lookup fails: %v", err)
 	}
 
-	config := string(sandbox.written["/home/workspace/.config/opencode/opencode.json"])
-	if config == "" {
-		test.Fatal("no opencode config written")
-	}
+	config := readProjectConfig(test, root, ".opencode", "opencode.json")
 	// The picker is empty — no model ids at all.
 	if strings.Contains(config, "ollama/") || strings.Contains(config, "anthropic/") {
 		test.Errorf("degraded config must have an empty picker:\n%s", config)
@@ -1382,7 +1368,7 @@ func TestStartPickerDegradesWhenGatewayDown(test *testing.T) {
 // TestStartPickerNilSourceIsEmpty verifies a nil ServedModels source (Manager
 // without the dep) also degrades to an empty picker without panicking.
 func TestStartPickerNilSourceIsEmpty(test *testing.T) {
-	_ = seedProject(test, "app")
+	root := seedProject(test, "app")
 	sandbox := &fakeSandbox{}
 	manager := Manager{
 		Builder: &fakeBuilder{}, Sandbox: sandbox, Keys: &fakeKeyMinter{},
@@ -1391,10 +1377,7 @@ func TestStartPickerNilSourceIsEmpty(test *testing.T) {
 	if _, err := manager.Start("app"); err != nil {
 		test.Fatalf("Start must not fail with a nil ServedModels source: %v", err)
 	}
-	config := string(sandbox.written["/home/workspace/.config/opencode/opencode.json"])
-	if config == "" {
-		test.Fatal("no opencode config written")
-	}
+	config := readProjectConfig(test, root, ".opencode", "opencode.json")
 	if strings.Contains(config, "ollama/") || strings.Contains(config, "anthropic/") {
 		test.Errorf("config must have an empty picker with a nil source:\n%s", config)
 	}

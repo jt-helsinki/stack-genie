@@ -373,8 +373,11 @@ The `agents/` templates hold each agent CLI's **static, user-editable** settings
 plus the gateway **base URL** (not a secret) — but **never the scoped virtual key**.
 At workspace start the platform reads each template, deep-merges in the dynamic,
 key-bearing values (the freshly-minted scoped key, the served-model picker, the
-Headroom knobs), and writes the **final config INTO the microVM** — so the key lives
-only in the VM, never on platform disk (architecture §15). A user's edits survive
+Headroom knobs), and writes the **final config INTO the microVM at that CLI's default
+location** (`~/.config/opencode/opencode.json`, `~/.pi/agent/models.json`,
+`~/.codex/config.toml`; nothing relocates a CLI config) — so the key lives only in the
+VM, never on platform disk (architecture §15). `agents/` is the host template layer,
+not an in-VM config directory. A user's edits survive
 restart (a present template is merged, never clobbered with the key-bearing form);
 only an absent template is re-scaffolded keyless. claude-code/codex/gemini route via
 **env vars** written into the VM agent env file (sourced by every session), so all

@@ -41,28 +41,18 @@ func resolveGateway() (host string, port int, url string) {
 	return runtime.ResolveGateway(info.HostAddress())
 }
 
-// Guest paths the agent provider configs are written to inside the microVM. The
-// workspace image creates a `workspace` user; all files live under its home.
+// In-VM (KEYED) files written under the `workspace` user's home. The per-CLI provider
+// configs no longer live here — they are written KEYLESS into each CLI's default
+// PROJECT location (see registerAgentProviders). These three are in-VM only:
 //
-//   - openCode/pi: JSON config files (opencode/pi route via a config file).
-//   - codex: ~/.codex/config.toml (a keyless provider block; the key is env-supplied).
-//   - agentEnv: the gateway env vars the env-routed CLIs (claude-code, codex,
-//     gemini) read — written here (key in-VM only) and sourced by every session.
+//   - agentEnv: the gateway env vars the CLIs read, incl. the scoped virtual key and
+//     OPENCODE_CONFIG — sourced by every session (key in-VM only, off host disk).
+//   - bashProfile / tmuxConf: the managed login profile + transparent tmux config.
 const (
-	openCodeGuestPath    = "/home/workspace/.config/opencode/opencode.json"
-	piGuestPath          = "/home/workspace/.pi/agent/models.json"
-	codexGuestPath       = agentcfg.CodexConfigGuestPath
 	agentEnvGuestPath    = agentcfg.AgentEnvFileGuestPath
 	bashProfileGuestPath = "/home/workspace/.bash_profile"
 	tmuxConfGuestPath    = "/home/workspace/.tmux.conf"
 )
-
-// agentTemplateDir is the host-side, user-editable directory the keyless agent
-// CLI templates live in (<project>/.ai-platform/agents/). At start the platform
-// reads each template, merges in the dynamic values, and writes the FINAL config
-// into the microVM — the host templates NEVER hold the scoped virtual key
-// (arch §15, repo-layout §12.1c).
-const agentTemplateDir = "agents"
 
 // refresh-models guest paths. The generated script is first written to a home
 // staging path (WriteFile runs as the `workspace` user and keeps the payload off
@@ -502,44 +492,56 @@ func (manager Manager) registerAgentProviders(name, project, root string, projec
 	const defaultModel = ""
 	models := manager.pickerModels()
 
-	// Ensure the keyless host-side templates exist (back-fill for older projects);
-	// then read each and merge in the dynamic, key-bearing values for the in-VM
-	// final config. ensureAgentTemplates writes ONLY keyless defaults to host disk.
-	if err := ensureAgentTemplates(root, gatewayURL, keepTurns, outputBufferTokens); err != nil {
-		return err
-	}
-
-	openCodeTemplate := readAgentTemplate(root, agentcfg.OpenCodeTemplateFile)
-	openCodeConfig, err := agentcfg.MergeOpenCodeConfig(openCodeTemplate, gatewayURL, apiKey, defaultModel, models, keepTurns, outputBufferTokens)
+	// Write the KEYLESS per-CLI provider configs into each CLI's DEFAULT PROJECT
+	// location (under the bind-mounted project dir = host disk, so the project is
+	// self-describing and portable). The scoped virtual key is NEVER written here:
+	// opencode/pi reference it via {env:}/$VAR interpolation, codex via env_key, claude
+	// via the exported ANTHROPIC_AUTH_TOKEN — the key lives ONLY in the in-VM agent env
+	// file below. Existing files are deep-merged so user edits survive across restarts.
+	openCodeConfig, err := agentcfg.MergeOpenCodeConfig(
+		readHostFileOrNil(projectConfigPath(root, ".opencode", "opencode.json")),
+		gatewayURL, agentcfg.OpenCodeAPIKeyRef, defaultModel, models, keepTurns, outputBufferTokens)
 	if err != nil {
 		return err
 	}
-	if err := manager.Sandbox.WriteFile(name, openCodeGuestPath, openCodeConfig); err != nil {
+	if err := writeHostFile(projectConfigPath(root, ".opencode", "opencode.json"), openCodeConfig); err != nil {
 		return err
 	}
 
-	piTemplate := readAgentTemplate(root, agentcfg.PiTemplateFile)
-	piConfig, err := agentcfg.MergePiConfig(piTemplate, gatewayURL, apiKey, defaultModel, models)
+	piConfig, err := agentcfg.MergePiConfig(
+		readHostFileOrNil(projectConfigPath(root, ".pi", "models.json")),
+		gatewayURL, agentcfg.PiAPIKeyRef, defaultModel, models)
 	if err != nil {
 		return err
 	}
-	if err := manager.Sandbox.WriteFile(name, piGuestPath, piConfig); err != nil {
+	if err := writeHostFile(projectConfigPath(root, ".pi", "models.json"), piConfig); err != nil {
 		return err
 	}
 
-	// codex: a KEYLESS provider block written into the VM (the key is supplied via
-	// the env_key env var below, not the file). The host template is keyless too, so
-	// we write the canonical generated TOML into the VM regardless of edits — the
-	// dynamic part (the env var) is in the agent env file.
-	if err := manager.Sandbox.WriteFile(name, codexGuestPath, agentcfg.CodexConfig(gatewayURL, defaultModel)); err != nil {
+	claudeConfig, err := agentcfg.MergeClaudeSettings(
+		readHostFileOrNil(projectConfigPath(root, ".claude", "settings.json")), gatewayURL)
+	if err != nil {
+		return err
+	}
+	if err := writeHostFile(projectConfigPath(root, ".claude", "settings.json"), claudeConfig); err != nil {
 		return err
 	}
 
-	// claude-code / codex / gemini route through the gateway via environment
-	// variables. Write the agent env file INTO the VM (key in-VM only); the agent
-	// launch wrapper sources it directly, and the managed ~/.bash_profile below
-	// sources it for every interactive login shell (`ai shell` / `ai attach`), so a
-	// user running `claude`/`codex`/`gemini` by hand is routed too.
+	// codex: the KEYLESS per-project provider block (fully platform-managed, so it is
+	// overwritten each start; the key is env-supplied via env_key). Plus a global in-VM
+	// trust entry (off host disk) so codex loads the per-project config.
+	if err := writeHostFile(projectConfigPath(root, ".codex", "config.toml"), agentcfg.CodexConfig(gatewayURL, defaultModel)); err != nil {
+		return err
+	}
+	if err := manager.Sandbox.WriteFile(name, agentcfg.CodexConfigGuestPath, agentcfg.CodexTrustConfig()); err != nil {
+		return err
+	}
+
+	// The KEYED files stay IN-VM only (off host disk): the gateway env vars — the
+	// scoped virtual key (ANTHROPIC_AUTH_TOKEN/AIP_GATEWAY_KEY/GEMINI_API_KEY), the
+	// gemini/claude base URLs, and OPENCODE_CONFIG (pointing opencode at its project
+	// config) — sourced by every shell + agent session. gemini is env-only (no config
+	// file supports a base URL).
 	if err := manager.Sandbox.WriteFile(name, agentEnvGuestPath, agentcfg.AgentEnvScript(gatewayURL, apiKey, projectConfig.Agent.GraphifyModel)); err != nil {
 		return err
 	}
@@ -870,59 +872,32 @@ func shellQuoteGuest(value string) string {
 	return "'" + strings.ReplaceAll(value, "'", `'\''`) + "'"
 }
 
-// agentTemplatePath returns the host path of a keyless agent template file under
-// <project>/.ai-platform/agents/.
-func agentTemplatePath(root, file string) string {
-	return filepath.Join(root, ".ai-platform", agentTemplateDir, file)
+// projectConfigPath returns the host path of a per-CLI project config file under the
+// project root (e.g. <root>/.opencode/opencode.json). These live in the bind-mounted
+// project dir so they are visible in-VM at /home/workspace/project/… too.
+func projectConfigPath(root string, parts ...string) string {
+	return filepath.Join(append([]string{root}, parts...)...)
 }
 
-// readAgentTemplate reads a keyless host-side agent template, returning nil when it
-// is absent or unreadable (the merge generators degrade to a freshly-generated
-// config on a nil template). It NEVER fails the start — a missing/corrupt template
-// just means the dynamic config is used as-is.
-func readAgentTemplate(root, file string) []byte {
-	content, err := os.ReadFile(agentTemplatePath(root, file))
+// readHostFileOrNil reads a host file, returning nil when it is absent or unreadable
+// (the merge generators degrade to a freshly-generated config on a nil input, so a
+// missing/corrupt project config never fails the start).
+func readHostFileOrNil(path string) []byte {
+	content, err := os.ReadFile(path)
 	if err != nil {
 		return nil
 	}
 	return content
 }
 
-// ensureAgentTemplates scaffolds the KEYLESS default agent templates under
-// <project>/.ai-platform/agents/ when they are MISSING — so older projects (created
-// before host templates existed) gain editable templates, and a fresh project that
-// was scaffolded with them keeps the user's edits (a present file is left UNTOUCHED).
-// It writes ONLY keyless content (the scoped key is never on host disk): the gateway
-// base URL and Headroom knobs are not secrets. It is best-effort-shaped but returns
-// an error so a genuinely broken project dir surfaces at start.
-func ensureAgentTemplates(root, gatewayURL string, keepTurns, outputBufferTokens int) error {
-	dir := filepath.Join(root, ".ai-platform", agentTemplateDir)
-	if err := os.MkdirAll(dir, 0o755); err != nil {
+// writeHostFile writes content to a host path, creating parent dirs. Used for the
+// KEYLESS per-CLI project configs — safe on host disk because the scoped virtual key
+// is never in them (it is referenced via env interpolation / supplied via env vars).
+func writeHostFile(path string, content []byte) error {
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return err
 	}
-	openCode, err := agentcfg.OpenCodeTemplate(gatewayURL, keepTurns, outputBufferTokens)
-	if err != nil {
-		return err
-	}
-	pi, err := agentcfg.PiTemplate(gatewayURL)
-	if err != nil {
-		return err
-	}
-	templates := map[string][]byte{
-		agentcfg.OpenCodeTemplateFile: openCode,
-		agentcfg.PiTemplateFile:       pi,
-		agentcfg.CodexTemplateFile:    agentcfg.CodexConfig(gatewayURL, ""),
-	}
-	for file, content := range templates {
-		path := agentTemplatePath(root, file)
-		if _, statErr := os.Stat(path); statErr == nil {
-			continue // present — preserve the user's edits
-		}
-		if err := os.WriteFile(path, content, 0o644); err != nil {
-			return err
-		}
-	}
-	return nil
+	return os.WriteFile(path, content, 0o644)
 }
 
 // pickerModels builds the concrete model list the in-VM agent CLIs offer in their

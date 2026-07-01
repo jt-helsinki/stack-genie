@@ -12,15 +12,12 @@ import (
 	"path/filepath"
 	"regexp"
 
-	"github.com/jt-helsinki/ideal-robot/internal/agentcfg"
 	"github.com/jt-helsinki/ideal-robot/internal/apps"
 	"github.com/jt-helsinki/ideal-robot/internal/conffile"
 	"github.com/jt-helsinki/ideal-robot/internal/config"
-	"github.com/jt-helsinki/ideal-robot/internal/contextopt"
 	"github.com/jt-helsinki/ideal-robot/internal/envimage"
 	"github.com/jt-helsinki/ideal-robot/internal/overlay"
 	"github.com/jt-helsinki/ideal-robot/internal/paths"
-	"github.com/jt-helsinki/ideal-robot/internal/runtime"
 	"github.com/jt-helsinki/ideal-robot/internal/state"
 	"github.com/jt-helsinki/ideal-robot/internal/templates"
 	"github.com/jt-helsinki/ideal-robot/internal/workspace"
@@ -258,13 +255,12 @@ func Scaffold(spec Spec, createdAt string) (string, error) {
 		return "", err
 	}
 
-	// agents/ — the KEYLESS, user-editable agent CLI templates (repo-layout §12.1c).
-	// At workspace start the platform reads these, merges in the dynamic, key-bearing
-	// values, and writes the final config into the microVM — so the scoped virtual key
-	// is NEVER on host disk. Scaffolded here so they appear immediately for editing.
-	if err := writeAgentTemplates(root); err != nil {
-		return "", err
-	}
+	// The per-CLI gateway configs are no longer scaffolded here as `.ai-platform/agents/`
+	// templates — at workspace start the platform writes each CLI's KEYLESS config into
+	// its own DEFAULT project location (<project>/.opencode/, .claude/, .codex/, .pi/;
+	// gemini is env-only) with the scoped key supplied via env vars, so the key is never
+	// on host disk. The shared <project>/.ai-platform/{agents,skills,prompts,projects}
+	// pool + per-CLI symlinks are set up at start too.
 
 	// project.yaml (tracked).
 	if err := state.OpenStore(root).SaveProject(&state.Project{Name: spec.Name, OS: spec.OS, Created: createdAt}); err != nil {
@@ -290,42 +286,6 @@ func writeProfile(root string, stacks []string) error {
 	}
 	return conffile.WriteAtomic(filepath.Join(root, ".ai-platform", "profile.yaml"),
 		profileFile{SchemaVersion: 1, Stacks: stacks})
-}
-
-// writeAgentTemplates scaffolds the KEYLESS default agent CLI templates under
-// <project>/.ai-platform/agents/ (opencode.json, pi.json, codex.toml). They carry
-// each CLI's static settings + the gateway base URL (not a secret) but NEVER a key:
-// the scoped virtual key is injected only into the in-VM final config at start. The
-// defaults use the local-standalone gateway URL and the default Headroom strategy;
-// a workspace whose gateway differs has the dynamic provider block re-derived at
-// start regardless. Empty allow-listed values are written so the files appear for
-// editing immediately.
-func writeAgentTemplates(root string) error {
-	dir := filepath.Join(root, ".ai-platform", "agents")
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return err
-	}
-	_, _, gatewayURL := runtime.ResolveGateway("")
-	keepTurns, outputBufferTokens := contextopt.HeadroomParams("")
-	openCode, err := agentcfg.OpenCodeTemplate(gatewayURL, keepTurns, outputBufferTokens)
-	if err != nil {
-		return err
-	}
-	pi, err := agentcfg.PiTemplate(gatewayURL)
-	if err != nil {
-		return err
-	}
-	files := map[string][]byte{
-		agentcfg.OpenCodeTemplateFile: openCode,
-		agentcfg.PiTemplateFile:       pi,
-		agentcfg.CodexTemplateFile:    agentcfg.CodexConfig(gatewayURL, ""),
-	}
-	for file, content := range files {
-		if err := os.WriteFile(filepath.Join(dir, file), content, 0o644); err != nil {
-			return err
-		}
-	}
-	return nil
 }
 
 // Entry is one row of `ai list` (CLI §3.3): name, os, the active agent CLIs, the

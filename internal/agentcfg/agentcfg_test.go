@@ -148,37 +148,48 @@ func TestConfigsAreIndented(test *testing.T) {
 	}
 }
 
-// TestTemplatesAreKeyless verifies the host-side templates render with NO apiKey
-// and no model picker — the dynamic, key-bearing values are injected only into the
-// in-VM final config (the scoped key never reaches host disk).
-func TestTemplatesAreKeyless(test *testing.T) {
-	openCode, err := OpenCodeTemplate(testGateway, 5, 8000)
+// TestProjectConfigsAreKeyless verifies the on-disk (host, project) per-CLI configs
+// render KEYLESS: the scoped key is referenced via env interpolation ({env:}/$VAR) or
+// env_key, never written literally — so the key never reaches host disk. The gateway
+// base URL (not a secret) IS present so the config is useful.
+func TestProjectConfigsAreKeyless(test *testing.T) {
+	openCode, err := OpenCodeConfig(testGateway, OpenCodeAPIKeyRef, "", testModels, 5, 8000)
 	if err != nil {
 		test.Fatal(err)
 	}
-	pi, err := PiTemplate(testGateway)
+	pi, err := PiConfig(testGateway, PiAPIKeyRef, "", testModels)
 	if err != nil {
 		test.Fatal(err)
 	}
-	for name, content := range map[string][]byte{"opencode": openCode, "pi": pi, "codex": CodexConfig(testGateway, "")} {
-		text := string(content)
-		if strings.Contains(text, testKey) || strings.Contains(text, "sk-") {
-			test.Errorf("%s template must be keyless:\n%s", name, text)
-		}
-		// The gateway base URL (not a secret) IS present so the file is useful.
-		if !strings.Contains(text, "host.microsandbox.internal:18787") {
-			test.Errorf("%s template missing the gateway base URL:\n%s", name, text)
-		}
-	}
-	// opencode/pi templates carry an empty apiKey field (the shape the user sees).
-	var doc map[string]any
-	if err := json.Unmarshal(openCode, &doc); err != nil {
+	claude, err := ClaudeSettings(testGateway)
+	if err != nil {
 		test.Fatal(err)
 	}
-	provider := nested(test, doc, "provider", ProviderID)
-	options := provider["options"].(map[string]any)
-	if options["apiKey"] != "" {
-		test.Errorf("opencode template apiKey = %v, want empty", options["apiKey"])
+	configs := map[string][]byte{
+		"opencode": openCode, "pi": pi, "codex": CodexConfig(testGateway, ""),
+		"claude": claude, "codex-trust": CodexTrustConfig(),
+	}
+	for name, content := range configs {
+		if text := string(content); strings.Contains(text, testKey) || strings.Contains(text, "sk-") {
+			test.Errorf("%s project config must be keyless:\n%s", name, text)
+		}
+	}
+	// opencode/pi reference the key via env interpolation, not a literal value.
+	if !strings.Contains(string(openCode), OpenCodeAPIKeyRef) {
+		test.Errorf("opencode must reference the key via %s:\n%s", OpenCodeAPIKeyRef, openCode)
+	}
+	if !strings.Contains(string(pi), PiAPIKeyRef) {
+		test.Errorf("pi must reference the key via %s:\n%s", PiAPIKeyRef, pi)
+	}
+	// The gateway base URL is present in every config-file CLI (opencode/pi/codex keep
+	// /v1; claude carries the gateway ROOT in its env block).
+	for name, content := range configs {
+		if name == "codex-trust" {
+			continue // trust file carries no base URL
+		}
+		if !strings.Contains(string(content), "host.microsandbox.internal:18787") {
+			test.Errorf("%s config missing the gateway base URL:\n%s", name, content)
+		}
 	}
 }
 

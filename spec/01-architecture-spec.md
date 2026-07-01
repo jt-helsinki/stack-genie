@@ -1246,7 +1246,13 @@ the in-VM agent env file (`ANTHROPIC_BASE_URL`+`ANTHROPIC_AUTH_TOKEN`;
 `[model_providers.aip-gateway]` block with `wire_api = "responses"` and an env-supplied
 `env_key`). The **scoped virtual key is NEVER on host disk** (the templates are
 keyless; the base URL is not a secret) — it is injected only into the final config/env
-written **into the microVM**. When the project has a configured Graphify model
+written **into the microVM**. Each final in-VM config is written at that CLI's **default
+location** — `~/.config/opencode/opencode.json`, `~/.pi/agent/models.json`,
+`~/.codex/config.toml`, `~/.config/aip/agent-env.sh` (all under the `workspace` user's
+home) — nothing relocates a CLI config (no `OPENCODE_CONFIG`/`CODEX_HOME`/
+`CLAUDE_CONFIG_DIR`/`XDG_CONFIG_HOME` override); `.ai-platform/agents/` is purely the
+keyless host template/persistence layer, not an in-VM config directory. When the project
+has a configured Graphify model
 (`agent.graphify_model`), the same agent env file also exports `OPENAI_BASE_URL`
 (the gateway `/v1`), `OPENAI_API_KEY` (the scoped virtual key), and
 `OPENAI_MODEL=ollama/<model>`, so `graphify --backend openai` routes through the

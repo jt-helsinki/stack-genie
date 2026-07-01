@@ -124,13 +124,15 @@ func TestRefreshScriptParityWithGenerators(test *testing.T) {
 		"ollama/llama3.2:latest", "anthropic/claude-opus-4-8",
 	})
 
+	// refresh-models rewrites KEYLESS configs (the {env:}/$VAR refs), never the literal
+	// scoped key — so parity is against the generators called with the key refs.
 	wantOpenCode, err := OpenCodeConfig(
-		"http://host.microsandbox.internal:18787/v1", "sk-workspace-scoped-1234", "", merged, 5, 8000)
+		"http://host.microsandbox.internal:18787/v1", OpenCodeAPIKeyRef, "", merged, 5, 8000)
 	if err != nil {
 		test.Fatal(err)
 	}
 	wantPi, err := PiConfig(
-		"http://host.microsandbox.internal:18787/v1", "sk-workspace-scoped-1234", "", merged)
+		"http://host.microsandbox.internal:18787/v1", PiAPIKeyRef, "", merged)
 	if err != nil {
 		test.Fatal(err)
 	}
@@ -140,6 +142,11 @@ func TestRefreshScriptParityWithGenerators(test *testing.T) {
 	}
 	if string(gotPi) != string(wantPi) {
 		test.Fatalf("models.json not byte-identical to PiConfig:\n--- got ---\n%s\n--- want ---\n%s", gotPi, wantPi)
+	}
+	// Security invariant: the rewritten (host-disk, project) configs are KEYLESS — the
+	// scoped key used for the fetch must NEVER be baked into them.
+	if strings.Contains(string(gotOpenCode), "sk-workspace-scoped-1234") || strings.Contains(string(gotPi), "sk-workspace-scoped-1234") {
+		test.Fatal("refresh-models must not write the scoped key into the on-disk configs")
 	}
 }
 

@@ -166,41 +166,14 @@ func marshalStable(document any) ([]byte, error) {
 	return json.MarshalIndent(document, "", "  ")
 }
 
-// Host-side keyless template paths, relative to <project>/.ai-platform/agents/.
-// These are the USER-EDITABLE templates scaffolded at `ai create`: they carry the
-// agent CLIs' static, non-secret settings (and the gateway base URL, which is not
-// a secret) but NEVER the scoped virtual key. At workspace start the platform
-// reads each template, merges in the dynamic values (the freshly-minted key, the
-// served-model picker), and writes the FINAL config INTO the microVM — so the key
-// lives only in the VM. (repo-layout §12.1c, arch §15.)
-const (
-	OpenCodeTemplateFile = "opencode.json"
-	PiTemplateFile       = "pi.json"
-	CodexTemplateFile    = "codex.toml"
-)
-
-// OpenCodeTemplate / PiTemplate render the KEYLESS host-side default templates.
-// They are byte-identical to OpenCodeConfig / PiConfig with an EMPTY apiKey and an
-// EMPTY model picker (the dynamic values are injected at start), so a user editing
-// the template sees the real shape. The key is the empty string by construction,
-// guaranteeing the on-disk template never holds a credential.
-func OpenCodeTemplate(gatewayURL string, keepTurns, outputBufferTokens int) ([]byte, error) {
-	return OpenCodeConfig(gatewayURL, "", "", nil, keepTurns, outputBufferTokens)
-}
-
-// PiTemplate renders the keyless pi host-side default template.
-func PiTemplate(gatewayURL string) ([]byte, error) {
-	return PiConfig(gatewayURL, "", "", nil)
-}
-
-// MergeOpenCodeConfig produces the FINAL in-VM opencode config from a (keyless)
-// host template plus the dynamic values minted at start. It parses the template
-// JSON and deep-merges the generated provider config over it, so the dynamic
-// provider block (baseURL, apiKey, the served-model picker, Headroom knobs) always
-// wins while any other user-added top-level keys (themes, MCP servers, …) survive.
-// A nil/empty/invalid template falls back to the freshly-generated config, so an
-// older project (no template) or a corrupt edit still yields a working config. The
-// apiKey reaches only this RESULT (written into the VM), never the template.
+// MergeOpenCodeConfig produces the FINAL opencode config from any EXISTING project
+// config plus the dynamic values minted at start. It parses the existing JSON and
+// deep-merges the generated provider config over it, so the dynamic provider block
+// (baseURL, the {env:} key ref, the served-model picker, Headroom knobs) always wins
+// while any other user-added top-level keys (themes, MCP servers, …) survive. A
+// nil/empty/invalid input falls back to the freshly-generated config, so a brand-new
+// project (no file) or a corrupt edit still yields a working config. When called with
+// the keyless key ref (OpenCodeAPIKeyRef) the result is keyless — safe on host disk.
 func MergeOpenCodeConfig(template []byte, gatewayURL, apiKey, defaultModel string, models []string, keepTurns, outputBufferTokens int) ([]byte, error) {
 	generated, err := OpenCodeConfig(gatewayURL, apiKey, defaultModel, models, keepTurns, outputBufferTokens)
 	if err != nil {
@@ -283,6 +256,34 @@ const (
 	// /v1) and GEMINI_API_KEY. (docs.litellm.ai/docs/tutorials/litellm_gemini_cli.)
 	geminiBaseURLVar = "GOOGLE_GEMINI_BASE_URL"
 	geminiKeyVar     = "GEMINI_API_KEY"
+
+	// openCodeConfigVar points opencode at its per-project config FILE. opencode's
+	// documented project config is <project>/opencode.json at the repo root; setting
+	// OPENCODE_CONFIG to the file we write under .opencode/ makes opencode load it
+	// regardless of the root-vs-subdir convention (it is a documented precedence
+	// entry). (opencode.ai/docs/config.)
+	openCodeConfigVar = "OPENCODE_CONFIG"
+)
+
+// Env-interpolation references for the on-disk (keyless) PROJECT configs: the scoped
+// virtual key is supplied via the AIP_GATEWAY_KEY env var (exported by
+// AgentEnvScript, in-VM only) and NEVER written to disk. opencode uses {env:VAR}
+// and pi uses $VAR — both officially documented interpolation forms.
+const (
+	OpenCodeAPIKeyRef = "{env:" + codexKeyVar + "}"
+	PiAPIKeyRef       = "$" + codexKeyVar
+)
+
+// In-VM paths of the per-CLI PROJECT configs, under the bind-mounted project dir
+// (/home/workspace/project — mirrors workspace.workspaceWorkdir; the project dir is
+// ONE directory shared host↔guest). The keyless configs live here so the project is
+// self-describing; OPENCODE_CONFIG points opencode at its file, refresh-models
+// rewrites the opencode/pi files in place, and codex is told to trust this project.
+const (
+	projectDirGuest            = "/home/workspace/project"
+	OpenCodeProjectConfigGuest = projectDirGuest + "/.opencode/opencode.json"
+	PiProjectModelsGuest       = projectDirGuest + "/.pi/models.json"
+	CodexProjectConfigGuest    = projectDirGuest + "/.codex/config.toml"
 )
 
 // gatewayRoot strips a trailing /v1 (and any trailing slash) from the gateway URL,
@@ -317,6 +318,9 @@ func AgentEnvScript(gatewayURL, apiKey, graphifyModel string) []byte {
 	// gemini-cli: the genai SDK's base-URL + key overrides (gateway root).
 	buffer.WriteString("export " + geminiBaseURLVar + "=" + shellQuote(root) + "\n")
 	buffer.WriteString("export " + geminiKeyVar + "=" + shellQuote(apiKey) + "\n")
+	// opencode: point it at the per-project config file we write under .opencode/
+	// (keyless; the key resolves from AIP_GATEWAY_KEY via {env:} interpolation).
+	buffer.WriteString("export " + openCodeConfigVar + "=" + shellQuote(OpenCodeProjectConfigGuest) + "\n")
 	// Graphify's headless LLM backend, when a model is configured: route through the
 	// gateway's OpenAI-compatible endpoint (nginx → Headroom → LiteLLM → Ollama).
 	// Invoke as `graphify --backend openai`. No real provider key — the scoped
@@ -383,12 +387,56 @@ func tomlString(value string) string {
 	return `"` + escaped + `"`
 }
 
-// Guest paths the agent provider configs live at inside the workspace microVM.
-// RefreshScript rewrites these two files in place. They mirror the constants the
-// workspace package writes at start (openCodeGuestPath/piGuestPath).
+// ClaudeProjectConfigGuest is the in-VM path claude-code reads its per-project
+// settings from.
+const ClaudeProjectConfigGuest = projectDirGuest + "/.claude/settings.json"
+
+// ClaudeSettings renders claude-code's per-project .claude/settings.json, routing it
+// through the gateway. It sets ONLY the base URL (via the settings `env` block); the
+// bearer token comes from the exported ANTHROPIC_AUTH_TOKEN env var (settings.json has
+// no ${VAR} interpolation), so this file is KEYLESS and safe on host disk. The base URL
+// is the gateway ROOT (no /v1 — claude-code appends /v1/messages itself).
+// (code.claude.com/docs/en/settings, .../llm-gateway-connect.)
+func ClaudeSettings(gatewayURL string) ([]byte, error) {
+	document := map[string]any{
+		"env": map[string]any{
+			claudeBaseURLVar: gatewayRoot(gatewayURL),
+		},
+	}
+	return marshalStable(document)
+}
+
+// MergeClaudeSettings deep-merges the generated keyless env block over an existing
+// project .claude/settings.json — the user's other settings survive and the gateway
+// base URL wins. A nil/corrupt existing file degrades to the generated settings.
+func MergeClaudeSettings(existing []byte, gatewayURL string) ([]byte, error) {
+	generated, err := ClaudeSettings(gatewayURL)
+	if err != nil {
+		return nil, err
+	}
+	return mergeJSONOver(existing, generated)
+}
+
+// CodexTrustConfig renders the GLOBAL ~/.codex/config.toml (CodexConfigGuestPath)
+// marking the workspace project dir as trusted, so codex loads the keyless
+// per-project .codex/config.toml provider block (codex loads a project config only
+// for TRUSTED projects). It carries no key.
+// (developers.openai.com/codex/config-advanced.)
+func CodexTrustConfig() []byte {
+	var buffer bytes.Buffer
+	buffer.WriteString("# Managed by the AI Development Platform — trust the workspace project\n")
+	buffer.WriteString("# so codex loads its keyless per-project .codex/config.toml provider block.\n")
+	buffer.WriteString("[projects." + tomlString(projectDirGuest) + "]\n")
+	buffer.WriteString("trust_level = " + tomlString("trusted") + "\n")
+	return buffer.Bytes()
+}
+
+// The agent provider configs live at each CLI's per-project location inside the
+// bind-mounted project dir; RefreshScript rewrites the opencode + pi files in place.
+// (These alias the exported project-config guest paths declared above.)
 const (
-	openCodeGuestPath = "/home/workspace/.config/opencode/opencode.json"
-	piGuestPath       = "/home/workspace/.pi/agent/models.json"
+	openCodeGuestPath = OpenCodeProjectConfigGuest
+	piGuestPath       = PiProjectModelsGuest
 )
 
 // modelSentinel is the per-model token the shell substitutes with each real model
@@ -428,20 +476,23 @@ const (
 //
 // gatewayBaseURL is the SAME url written into the agent configs (carrying the /v1
 // suffix); the script GETs the /models endpoint at that base. apiKey is the scoped
-// virtual key (host→VM only). defaultModel is optional (empty → no default written).
+// virtual key (host→VM only) — used ONLY to authenticate the /models fetch, NEVER
+// baked into the rewritten configs (those stay keyless via the {env:}/$VAR refs, so
+// the on-disk project configs never gain the key). defaultModel is optional.
 func RefreshScript(gatewayBaseURL, apiKey, defaultModel string, keepTurns, outputBufferTokens int) ([]byte, error) {
 	// Render the two JSON skeletons with a single sentinel model so we can split
 	// each into a prefix / per-model template / suffix the shell splices into. The
 	// rendered fragments inherit MarshalIndent's exact indentation, guaranteeing
-	// byte parity with OpenCodeConfig / PiConfig for the same merged list.
+	// byte parity with OpenCodeConfig / PiConfig for the same merged list. The bodies
+	// use the KEYLESS key-refs (not apiKey), matching the configs written at start.
 	openCode, err := splitSkeleton(func(models []string) ([]byte, error) {
-		return OpenCodeConfig(gatewayBaseURL, apiKey, defaultModel, models, keepTurns, outputBufferTokens)
+		return OpenCodeConfig(gatewayBaseURL, OpenCodeAPIKeyRef, defaultModel, models, keepTurns, outputBufferTokens)
 	})
 	if err != nil {
 		return nil, fmt.Errorf("render opencode skeleton: %w", err)
 	}
 	pi, err := splitSkeleton(func(models []string) ([]byte, error) {
-		return PiConfig(gatewayBaseURL, apiKey, defaultModel, models)
+		return PiConfig(gatewayBaseURL, PiAPIKeyRef, defaultModel, models)
 	})
 	if err != nil {
 		return nil, fmt.Errorf("render pi skeleton: %w", err)
