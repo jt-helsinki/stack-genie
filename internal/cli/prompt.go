@@ -37,13 +37,46 @@ func interactive(emitter *output.Emitter) bool {
 	return !emitter.JSON && term.IsTerminal(os.Stdin.Fd())
 }
 
+// formWidth returns the width to give every huh form so option rows never fill
+// the terminal EXACTLY. huh's default layout leaves the width unchanged and its
+// form defaults to the FULL terminal width (form.go WindowSizeMsg handler when
+// width==0); each field then renders with styles.Base.Width(w), padding every
+// line with trailing spaces up to w. A line that reaches the last terminal column
+// phantom-wraps in many terminals, inserting a blank line between option rows —
+// the "gap" bug. huh only trims trailing spaces on a group's LAST line, so the
+// rows above still overflow. Bounding the form a couple of columns short of the
+// terminal keeps every padded line strictly inside the viewport, so nothing
+// wraps. Falls back to a sane default when the terminal size is unavailable.
+func formWidth() int {
+	const (
+		margin       = 2  // columns of headroom below the terminal width
+		fallback     = 80 // used when the terminal size is unknown
+		maxFormWidth = 96 // a form wider than this reads poorly regardless
+	)
+	width, _, err := term.GetSize(os.Stdout.Fd())
+	if err != nil || width <= 0 {
+		width, _, err = term.GetSize(os.Stdin.Fd())
+	}
+	if err != nil || width <= 0 {
+		return fallback
+	}
+	width -= margin
+	if width > maxFormWidth {
+		width = maxFormWidth
+	}
+	if width < 1 {
+		width = 1
+	}
+	return width
+}
+
 // runForm runs a huh form built from the given groups and normalizes the outcome
 // to the platform's exit codes: a user abort (ctrl-c / esc) and any other form
 // error both surface as exit 2 (invalid input), with abort reported as a plain
 // "cancelled". Pass every prompt for one command as groups of a SINGLE call so
 // the user can navigate back between them (see the back-navigation note above).
 func runForm(groups ...*huh.Group) error {
-	form := huh.NewForm(groups...).WithTheme(ui.HuhTheme())
+	form := huh.NewForm(groups...).WithTheme(ui.HuhTheme()).WithWidth(formWidth())
 	if err := form.Run(); err != nil {
 		if errors.Is(err, huh.ErrUserAborted) {
 			return output.Errorf(output.ExitInvalidInput, "cancelled")
@@ -73,7 +106,7 @@ func promptConfirmDefault(title, description string, initial bool) (bool, error)
 	if description != "" {
 		field = field.Description(description)
 	}
-	form := huh.NewForm(huh.NewGroup(field)).WithTheme(ui.HuhTheme())
+	form := huh.NewForm(huh.NewGroup(field)).WithTheme(ui.HuhTheme()).WithWidth(formWidth())
 	if err := form.Run(); err != nil {
 		if errors.Is(err, huh.ErrUserAborted) {
 			return false, nil
