@@ -474,3 +474,39 @@ func TestContentLineAlignsToPaneWidth(t *testing.T) {
 		}
 	}
 }
+
+// TestLocalModelsDrillDownScrolls verifies the per-model tag drill-down WINDOWS a
+// long tag list so it scrolls to keep the cursor visible (some models have dozens
+// of tags — the list must not run off the pane).
+func TestLocalModelsDrillDownScrolls(test *testing.T) {
+	test.Setenv("HOME", test.TempDir())
+	// Zero-pad so the sorted (lexical) tag order matches numeric order: tag00 first,
+	// tag29 last.
+	tags := make([]ollama.LibraryTag, 0, 30)
+	for index := 0; index < 30; index++ {
+		suffix := strconv.Itoa(index)
+		if len(suffix) == 1 {
+			suffix = "0" + suffix
+		}
+		tags = append(tags, ollama.LibraryTag{Name: "tag" + suffix})
+	}
+	view := buildLocal(test, nil, []ollama.LibraryModel{{Name: "big", Tags: tags, RepoURL: "x"}}, nil)
+	view.SetSize(80, 12) // a short pane forces windowing
+	view.openDrill(view.models[0])
+
+	// Move the cursor to the last tag (tag29).
+	for index := 0; index < 29; index++ {
+		view.Update(tea.KeyMsg{Type: tea.KeyDown})
+	}
+	out := view.drillView()
+
+	if !strings.Contains(out, "↑ more") {
+		test.Errorf("with the cursor at the bottom the drill must have scrolled (↑ more marker):\n%s", out)
+	}
+	if !strings.Contains(out, "] tag29") {
+		test.Errorf("the selected (last) tag must be visible after scrolling:\n%s", out)
+	}
+	if strings.Contains(out, "] tag00") {
+		test.Errorf("early tags should have scrolled off the top:\n%s", out)
+	}
+}

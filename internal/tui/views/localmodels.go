@@ -65,6 +65,7 @@ type tagPicker struct {
 	model    localModel
 	tags     []string        // the model's tags, in display order
 	cursor   int             // index into tags
+	scroll   int             // first visible tag row (the list scrolls to keep cursor visible)
 	selected map[string]bool // not-installed tags ticked for pull
 }
 
@@ -532,6 +533,25 @@ func (view *LocalModels) header() string {
 	return body.String()
 }
 
+// drillMaxVisible is how many tag rows the drill-down window shows: the content
+// height minus the drill header (name + optional description + hint + blank) and a
+// reserve for the flash slot and the ↑/↓ overflow markers. When the height is
+// unknown it shows every tag (no windowing).
+func (view *LocalModels) drillMaxVisible() int {
+	if view.height <= 0 {
+		return len(view.drill.tags)
+	}
+	header := 3 // name + hint + blank-after-hint
+	if view.drill.model.description != "" {
+		header++
+	}
+	visible := view.height - header - 3 // flash slot (1) + ↑/↓ markers (2)
+	if visible < 3 {
+		visible = 3
+	}
+	return visible
+}
+
 // listHeight is the FIXED number of rendered lines the two-section list block
 // occupies: the content height minus the top header and the one always-rendered flash
 // slot. The list is padded to this height so its bottom never moves with scroll. At
@@ -662,7 +682,9 @@ func (view *LocalModels) listView() string {
 }
 
 // drillView renders the per-model tag picker: each tag marked ● installed / ○ not,
-// the cursor highlighted, ticked not-installed tags marked [x].
+// the cursor highlighted, ticked not-installed tags marked [x]. A long tag list
+// (some models have dozens of tags) is WINDOWED so it scrolls to keep the cursor
+// visible, with ↑/↓ overflow markers.
 func (view *LocalModels) drillView() string {
 	drill := view.drill
 	var body strings.Builder
@@ -671,7 +693,28 @@ func (view *LocalModels) drillView() string {
 		body.WriteString(ui.Muted.Render(drill.model.description) + "\n")
 	}
 	body.WriteString(ui.Muted.Render("space select a tag to pull · enter/p pull · d remove · t test · esc back") + "\n\n")
-	for index, tag := range drill.tags {
+
+	// Anchor-scroll the window so the cursor row stays on screen.
+	maxVisible := view.drillMaxVisible()
+	if drill.cursor < drill.scroll {
+		drill.scroll = drill.cursor
+	}
+	if drill.cursor >= drill.scroll+maxVisible {
+		drill.scroll = drill.cursor - maxVisible + 1
+	}
+	if drill.scroll < 0 {
+		drill.scroll = 0
+	}
+	end := drill.scroll + maxVisible
+	if end > len(drill.tags) {
+		end = len(drill.tags)
+	}
+
+	if drill.scroll > 0 {
+		body.WriteString(ui.Muted.Render("  ↑ more") + "\n")
+	}
+	for index := drill.scroll; index < end; index++ {
+		tag := drill.tags[index]
 		marker := ui.Muted.Render("○")
 		if drill.model.installed[tag] {
 			marker = ui.Success.Render("●")
@@ -690,6 +733,9 @@ func (view *LocalModels) drillView() string {
 			line = "  " + line
 		}
 		body.WriteString(line + "\n")
+	}
+	if end < len(drill.tags) {
+		body.WriteString(ui.Muted.Render("  ↓ more") + "\n")
 	}
 	if view.flash != "" {
 		body.WriteString("\n" + view.flash)
