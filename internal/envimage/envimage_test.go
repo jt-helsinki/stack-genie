@@ -134,6 +134,9 @@ func TestAllOSTemplatesExposeIdenticalBaseSurface(test *testing.T) {
 		"astral.sh/uv/install.sh",
 		"uv tool install",
 		"graphifyy[",
+		// Keep-alive so the detached microVM stays up (the image's default shell
+		// would exit immediately and msb would stop the sandbox).
+		`CMD ["sleep", "infinity"]`,
 	}
 
 	for osKey, fromLine := range osBaseImage {

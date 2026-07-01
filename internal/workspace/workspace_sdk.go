@@ -503,6 +503,16 @@ func (sandbox *sdkSandbox) Create(name, imageRef, projectMount, overlayPath stri
 		microsandbox.WithMemory(parseMemoryMiB(resources.Memory)),
 		microsandbox.WithIdleTimeout(parseIdleTimeout(resources.IdleTimeout)),
 		microsandbox.WithWorkdir(workspaceWorkdir),
+		// Keep-alive workload: msb boots the microVM running the image's entrypoint/
+		// cmd, and when it exits the sandbox stops. A plain workspace image's default
+		// shell exits immediately on the detached VM's empty stdin — so pin a
+		// long-running entrypoint here. This keeps the VM up INDEPENDENTLY of the
+		// image's CMD (so a workspace whose image predates the Dockerfile keep-alive
+		// still stays running after a recreate). All real work runs via Exec (tmux
+		// sessions / agent CLIs); this process is just the anchor. The `sh -c`
+		// wrapper ignores any image CMD msb may append as positional args (so it can
+		// never turn into an invalid `sleep infinity <cmd>`).
+		microsandbox.WithEntrypoint("sh", "-c", "exec sleep infinity"),
 		microsandbox.WithMounts(map[string]microsandbox.MountConfig{
 			workspaceWorkdir: microsandbox.Mount.Bind(projectMount, microsandbox.MountOptions{}),
 			"/persist":       microsandbox.Mount.Bind(overlayPath, microsandbox.MountOptions{}),

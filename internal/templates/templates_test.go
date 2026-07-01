@@ -134,6 +134,8 @@ func TestBaseDockerfileShipsContainerRuntime(t *testing.T) {
 				"astral.sh/uv/install.sh",
 				"uv tool install",
 				"graphifyy[",
+				// Keep-alive so the detached microVM stays running.
+				`CMD ["sleep", "infinity"]`,
 			} {
 				if !strings.Contains(got, fragment) {
 					t.Errorf("%s: base Dockerfile missing container-runtime install %q:\n%s", osKey, fragment, got)

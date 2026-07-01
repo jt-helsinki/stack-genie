@@ -69,3 +69,10 @@ WORKDIR /home/workspace
 # `graphify install --platform …`. Verify the extras resolve on hardware bring-up.
 RUN curl -LsSf https://astral.sh/uv/install.sh | sh \
  && uv tool install "graphifyy[pdf,office,video,postgres,google,svg,sql,terraform,ollama,openai,gemini,anthropic]"
+
+# Keep-alive command. Microsandbox boots the microVM running the IMAGE'S command,
+# so the workspace image needs a long-running one — otherwise the base image's
+# default shell exits immediately on the empty stdin of a detached VM and msb stops
+# the sandbox right after boot. All real work runs via `msb exec` (the tmux
+# sessions / agent CLIs); this just keeps the microVM up.
+CMD ["sleep", "infinity"]
