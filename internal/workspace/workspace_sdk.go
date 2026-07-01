@@ -591,7 +591,13 @@ func (sandbox *sdkSandbox) execAs(ctx context.Context, name, user string, argv [
 		if ctx.Err() != nil {
 			return ExecResult{}, ErrWorkspaceUnresponsive
 		}
-		sandbox.ReleaseConnection(name)
+		// Do NOT evict the handle on a transient exec failure. A wedged or still-booting
+		// VM makes Exec fail, and evicting + reconnecting on EVERY failed poll produced a
+		// relay connect/disconnect churn (`agent relay: client connected/disconnected
+		// slot=N` cycling) that kept the sandbox from stabilising. Keep the one reused
+		// handle so the error surfaces WITHOUT churning connections; the handle is
+		// refreshed only on lifecycle actions / project switch (Manager.ReleaseConnection)
+		// — see docs/MSB-SDK-MIGRATION.md.
 		return ExecResult{}, fmt.Errorf("could not run the command in workspace %q — is it running? start it with `ai start`", name)
 	}
 	return ExecResult{ExitCode: output.ExitCode(), Stdout: output.Stdout(), Stderr: output.Stderr()}, nil

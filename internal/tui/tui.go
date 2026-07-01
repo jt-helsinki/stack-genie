@@ -925,6 +925,10 @@ func (application *app) startLifecycle(action, project string) tea.Cmd {
 	if application.workspaceLogView != nil {
 		application.workspaceLogView.Reset()
 	}
+	// Drop the cached relay handle: start/stop/restart change the microVM out from
+	// under it, so the next poll reconnects ONCE to the fresh VM. This is the self-heal
+	// path that replaces the per-poll evict-on-error (which churned the relay).
+	application.workspaceManager.ReleaseConnection(project)
 	return tea.Batch(application.projectDetail.Init(), application.lifecyclePollCmd())
 }
 
