@@ -89,11 +89,17 @@ func TestValidateCreateTarget(test *testing.T) {
 	if err := ValidateCreateTarget(root); err == nil {
 		test.Error("creating in an existing project root must be rejected")
 	}
-	// A child of a project directory is allowed (not itself a project root).
-	if err := ValidateCreateTarget(filepath.Join(root, "child")); err != nil {
-		test.Errorf("child of a project dir must be allowed: %v", err)
+	// A child (nested inside a project directory) is rejected — no nested workspaces.
+	if err := ValidateCreateTarget(filepath.Join(root, "child")); err == nil {
+		test.Error("a directory nested inside a workspace must be rejected")
 	}
-	// A parent of a project directory is allowed.
+	// A DEEPLY nested, not-yet-existing path inside a project is also rejected
+	// (validation walks the existing ancestors).
+	if err := ValidateCreateTarget(filepath.Join(root, "a", "b", "c")); err == nil {
+		test.Error("a deep non-existent path inside a workspace must be rejected")
+	}
+	// A parent of a project directory (it merely contains a project deeper in its
+	// tree) is allowed.
 	if err := ValidateCreateTarget(filepath.Dir(root)); err != nil {
 		test.Errorf("parent of a project dir must be allowed: %v", err)
 	}

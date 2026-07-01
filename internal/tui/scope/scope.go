@@ -12,7 +12,8 @@
 //     to the server (services) scope.
 //
 // A new project may be created anywhere EXCEPT a directory that is already a
-// project root; a child or parent of an existing project directory is allowed.
+// project root or is nested inside one; a parent of an existing project directory
+// (one that merely contains a project deeper in its tree) is allowed.
 package scope
 
 import (
@@ -96,9 +97,13 @@ func IsProjectRoot(dir string) bool {
 	return ok && sameDir(root, dir)
 }
 
-// ValidateCreateTarget checks that a new project may be created in dir: the
-// directory must exist (or be creatable) and must not ALREADY be a project root.
-// A child or parent of an existing project directory is allowed.
+// ValidateCreateTarget checks that a new workspace may be created at dir: dir must
+// not itself be a workspace root, nor be nested inside one (no ancestor holds
+// .ai-platform/project.yaml). The directory need NOT exist yet — create makes it,
+// including intermediate folders — so a non-existent target is validated against
+// its existing ancestors. This mirrors the CLI's project.ValidateNewLocation so the
+// TUI create flow and `ai create` agree. A parent of an existing workspace (a
+// directory that merely contains one deeper in its tree) is allowed.
 func ValidateCreateTarget(dir string) error {
 	if dir == "" {
 		return fmt.Errorf("choose a directory for the new workspace")
@@ -110,8 +115,14 @@ func ValidateCreateTarget(dir string) error {
 	if info, statErr := os.Stat(absolute); statErr == nil && !info.IsDir() {
 		return fmt.Errorf("%q is not a directory", absolute)
 	}
-	if IsProjectRoot(absolute) {
-		return fmt.Errorf("%q is already a workspace — select it instead of creating a new one", absolute)
+	// FindProjectRoot checks absolute itself and walks up its ancestors, so this
+	// rejects BOTH a directory that is already a workspace and one nested inside an
+	// existing workspace.
+	if root, ok := state.FindProjectRoot(absolute); ok {
+		if sameDir(root, absolute) {
+			return fmt.Errorf("%q is already a workspace — select it instead of creating a new one", absolute)
+		}
+		return fmt.Errorf("%q is inside an existing workspace at %q — choose a location outside it", absolute, root)
 	}
 	return nil
 }

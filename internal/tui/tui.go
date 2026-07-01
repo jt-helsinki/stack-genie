@@ -647,7 +647,7 @@ func (application *app) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return application, application.projectsHub.OpenProject(message.Name)
 
 	case views.NewProjectRequestedMsg:
-		// Open the create overlay (a directory picker) starting at the cwd.
+		// Open the create overlay (a location field) starting in the current directory.
 		create := views.NewCreate(application.cwd)
 		bodyWidth, bodyHeight := application.bodyContentSize()
 		create.SetSize(bodyWidth, bodyHeight)
