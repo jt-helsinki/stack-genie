@@ -473,7 +473,9 @@ func runArgs(manifest Manifest, port int, gatewayURL, apiKey, defaultModel strin
 		"-v", fmt.Sprintf("%s:%s", dataVolume, manifest.DataDir),
 	}
 	if manifest.MountWorkspace {
-		argv = append(argv, "-v", "/workspace:/workspace")
+		// Mount the in-VM project dir (workspace.workspaceWorkdir = ~/project; can't
+		// import that package here — cycle) into the app container at /workspace.
+		argv = append(argv, "-v", "/home/workspace/project:/workspace")
 	}
 	if manifest.Memory != "" {
 		argv = append(argv, "--memory", manifest.Memory)

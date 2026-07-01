@@ -80,8 +80,13 @@ const (
 const shellSessionName = "shell"
 
 // workspaceWorkdir is the guest path the project source is mounted at and where
-// every tmux session opens (matches the microVM --workdir in Create).
-const workspaceWorkdir = "/workspace"
+// every tmux session opens (matches the microVM --workdir in Create). It is a
+// SUBDIRECTORY of the workspace user's home (~/project) — deliberately NOT the home
+// itself and NOT a top-level /workspace: mounting under ~ keeps the project beside
+// the user's tooling while the bind mount does NOT shadow the baked-in ~/.local/bin
+// (uv/Graphify) or ~/.config (the agent configs, which hold the scoped key and must
+// stay OFF the host — a bind at ~ would write them to host disk).
+const workspaceWorkdir = "/home/workspace/project"
 
 // ErrUnknownProject is returned when a project name is not in the global index
 // (→ exit 2).

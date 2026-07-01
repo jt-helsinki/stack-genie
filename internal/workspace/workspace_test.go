@@ -680,7 +680,7 @@ func TestStartUnknownProject(test *testing.T) {
 	}
 }
 
-// Shell opens a PERSISTENT, reattachable tmux session named "shell" in /workspace
+// Shell opens a PERSISTENT, reattachable tmux session named "shell" in ~/project
 // running a login shell, via a single atomic `tmux new-session -A` (create-or-attach).
 func TestShellOpensPersistentTmuxSession(test *testing.T) {
 	seedStartedWorkspace(test, "app")
@@ -689,7 +689,7 @@ func TestShellOpensPersistentTmuxSession(test *testing.T) {
 		test.Fatal(err)
 	}
 	// One atomic create-or-attach in the interactive exec (`tmux new-session -A`).
-	want := []string{"tmux", "new-session", "-A", "-s", "shell", "-c", "/workspace", "bash", "-l"}
+	want := []string{"tmux", "new-session", "-A", "-s", "shell", "-c", "/home/workspace/project", "bash", "-l"}
 	if got := sandbox.interactiveArgv; !equalStrings(got, want) {
 		test.Fatalf("Shell ran %v via ExecInteractive, want %v", got, want)
 	}
@@ -730,7 +730,7 @@ func TestShellReadinessProbeRetriesTransientTimeout(test *testing.T) {
 }
 
 // Agent starts (or reattaches to) a per-CLI tmux session named after the CLI,
-// running that CLI's launch command in /workspace (detached create, then attach).
+// running that CLI's launch command in ~/project (detached create, then attach).
 func TestAgentStartsPerCLITmuxSession(test *testing.T) {
 	seedStartedWorkspace(test, "app")
 	sandbox := &fakeSandbox{}
@@ -739,7 +739,7 @@ func TestAgentStartsPerCLITmuxSession(test *testing.T) {
 	}
 	// The launch is wrapped in a login shell that sources the in-VM agent env file
 	// (gateway env vars for the env-routed CLIs) then execs the CLI.
-	want := append([]string{"tmux", "new-session", "-A", "-s", "opencode", "-c", "/workspace"},
+	want := append([]string{"tmux", "new-session", "-A", "-s", "opencode", "-c", "/home/workspace/project"},
 		wrapWithAgentEnv([]string{"opencode"})...)
 	if got := sandbox.interactiveArgv; !equalStrings(got, want) {
 		test.Fatalf("Agent ran %v via ExecInteractive, want %v", got, want)
@@ -754,7 +754,7 @@ func TestAgentMapsClaudeCodeLaunch(test *testing.T) {
 		test.Fatal(err)
 	}
 	// claude-code maps to the `claude` binary, wrapped to source the agent env.
-	want := append([]string{"tmux", "new-session", "-A", "-s", "claude-code", "-c", "/workspace"},
+	want := append([]string{"tmux", "new-session", "-A", "-s", "claude-code", "-c", "/home/workspace/project"},
 		wrapWithAgentEnv([]string{"claude"})...)
 	if got := sandbox.interactiveArgv; !equalStrings(got, want) {
 		test.Fatalf("Agent(claude-code) ran %v via ExecInteractive, want %v", got, want)
@@ -783,7 +783,7 @@ func TestAttachSession(test *testing.T) {
 	if err := newManager(&fakeBuilder{}, sandbox).Attach("app", "opencode"); err != nil {
 		test.Fatal(err)
 	}
-	want := []string{"tmux", "new-session", "-A", "-s", "opencode", "-c", "/workspace"}
+	want := []string{"tmux", "new-session", "-A", "-s", "opencode", "-c", "/home/workspace/project"}
 	if got := sandbox.interactiveArgv; !equalStrings(got, want) {
 		test.Fatalf("Attach ran %v via ExecInteractive, want %v", got, want)
 	}
@@ -792,7 +792,7 @@ func TestAttachSession(test *testing.T) {
 	if err := newManager(&fakeBuilder{}, defaulted).Attach("app", ""); err != nil {
 		test.Fatal(err)
 	}
-	wantDefault := []string{"tmux", "new-session", "-A", "-s", "shell", "-c", "/workspace"}
+	wantDefault := []string{"tmux", "new-session", "-A", "-s", "shell", "-c", "/home/workspace/project"}
 	if got := defaulted.interactiveArgv; !equalStrings(got, wantDefault) {
 		test.Fatalf("Attach(\"\") ran %v, want the default shell session %v", got, wantDefault)
 	}
@@ -1532,7 +1532,7 @@ func TestStartCreatesVenv(test *testing.T) {
 	}
 	found := false
 	for _, argv := range sandbox.allExecArgv {
-		if strings.Contains(strings.Join(argv, " "), "python3 -m venv /workspace/.venv-msb") {
+		if strings.Contains(strings.Join(argv, " "), "python3 -m venv /home/workspace/project/.venv-msb") {
 			found = true
 		}
 	}

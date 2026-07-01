@@ -128,7 +128,7 @@ func TestRunArgsShape(test *testing.T) {
 		"--restart always",
 		"-p 21000:8080",
 		"-v /persist/apps/openwebui:/app/backend/data",
-		"-v /workspace:/workspace",
+		"-v /home/workspace/project:/workspace",
 		"--memory 2g",
 		"-e OPENAI_API_BASE_URL=http://gw/v1",
 		"ghcr.io/open-webui/open-webui:latest",

@@ -627,15 +627,18 @@ failing must not fail the workspace or the others.
 ### Mount Rules
 
 ```text
-host  <project dir> (the cwd at `ai create`)  →  workspace  /workspace  (read-write)
+host  <project dir> (the cwd at `ai create`)  →  workspace  ~/project (= /home/workspace/project)  (read-write)
 host  ~/.ai-platform/overlays/<workspace-id>  →  workspace  /persist    (overlay, §26)
 ```
 
 * the project is created **in the current working directory** (no fixed
   `~/projects` root — that path survives only as an unused fallback); the host
   project directory is the single source of truth, bind-mounted read-write at
-  `/workspace` (the workspace working directory). The `workspace` user's home is
-  `/home/workspace`, distinct from the project mount.
+  `~/project` (i.e. `/home/workspace/project`, the workspace working directory).
+  This is a SUBDIRECTORY of the `workspace` user's home `/home/workspace` —
+  deliberately not the home itself and not a top-level `/workspace`, so the bind
+  mount does not shadow the baked-in `~/.local/bin` (uv/Graphify) or the key-bearing
+  agent configs under `~/.config` (which must stay off the host).
 * the per-workspace overlay (§26) is mounted at `/persist`
 * no persistent data is written outside the mounted paths
 * (a shared read-only mount of `~/.ai-platform/agents,skills,prompts,templates`
@@ -893,7 +896,7 @@ templates (§25); it is identical across all OSes:
 * GitHub CLI
 * **Python 3** — the base image's latest, installed system-wide (`python3` +
   `python3-venv` where the distro splits it out). This backs the per-project
-  `/workspace/.venv-msb` virtualenv created at workspace start (§26).
+  `~/project/.venv-msb` virtualenv created at workspace start (§26).
 * **uv** — Astral's Python package/tool manager, installed for the **workspace
   user** (`curl -LsSf https://astral.sh/uv/install.sh | sh`, onto
   `~/.local/bin`, which is on `PATH`).

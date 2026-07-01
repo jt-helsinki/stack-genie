@@ -150,9 +150,9 @@ func sandboxCreateArgs(name, imageRef, projectMount, overlayPath string, resourc
 		"create", imageRef,
 		"--name", name,
 		"--memory", memory,
-		"--volume", projectMount + ":/workspace",
+		"--volume", projectMount + ":" + workspaceWorkdir,
 		"--volume", overlayPath + ":/persist",
-		"--workdir", "/workspace",
+		"--workdir", workspaceWorkdir,
 		// Forward all guest DNS to the platform's aip-dns audit resolver (arch
 		// §29). A fixed platform setting; egress enforcement stays on the
 		// net-rules in netArgs (a resolver answer cannot bypass them).
