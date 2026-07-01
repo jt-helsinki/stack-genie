@@ -143,6 +143,15 @@ type LogView struct {
 	streamCtx    context.Context
 	streamCancel context.CancelFunc
 	streamBuf    string
+
+	// debugFilter identifies high-volume, low-signal "debug" lines (e.g. the
+	// microsandbox agent-relay connect/disconnect churn) that are HIDDEN unless the
+	// user toggles debug on with `d`. nil → no filtering / no toggle. content caches
+	// the last full (unfiltered, normalized) text so a toggle re-renders without a
+	// re-fetch, honouring the scroll freeze.
+	debugFilter func(string) bool
+	showDebug   bool
+	content     string
 }
 
 // NewLogView builds a generic log component over the injected tailer, an optional
@@ -188,6 +197,45 @@ func (view *LogView) closeStream() {
 // streaming reports whether this view is configured for push streaming.
 func (view *LogView) streaming() bool { return view.openStream != nil }
 
+// setContent caches the full (unfiltered) normalized content and renders the visible
+// view (debug lines filtered unless toggled on), honouring the scroll freeze.
+func (view *LogView) setContent(content string) {
+	view.content = content
+	view.renderContent()
+}
+
+// renderContent re-applies the debug filter + scroll freeze to the cached content.
+func (view *LogView) renderContent() {
+	display := view.visibleContent()
+	view.empty = strings.TrimSpace(display) == ""
+	if view.viewport.AtBottom() {
+		// Following the tail: re-render + pin to the bottom.
+		view.viewport.SetContent(display)
+		view.viewport.GotoBottom()
+		view.pending = ""
+	} else {
+		// Scrolled up to read/select: FREEZE (don't re-render, which would wipe a text
+		// selection); buffer the latest and apply it when the user returns to the bottom.
+		view.pending = display
+	}
+}
+
+// visibleContent is the cached content with debug lines removed unless showDebug is on.
+func (view *LogView) visibleContent() string {
+	if view.debugFilter == nil || view.showDebug {
+		return view.content
+	}
+	lines := strings.Split(view.content, "\n")
+	kept := make([]string, 0, len(lines))
+	for _, line := range lines {
+		if view.debugFilter(line) {
+			continue
+		}
+		kept = append(kept, line)
+	}
+	return strings.Join(kept, "\n")
+}
+
 // issueLoad fires one poll and arms the in-flight guard so the tick cannot stack a
 // second concurrent tailer call on top of a slow one.
 func (view *LogView) issueLoad() tea.Cmd {
@@ -196,10 +244,19 @@ func (view *LogView) issueLoad() tea.Cmd {
 }
 
 func (view *LogView) Hints() string {
-	if view.follow == nil {
-		return "↑/↓ scroll · PgUp/PgDn page · r refresh"
+	hint := "↑/↓ scroll · PgUp/PgDn page"
+	if view.follow != nil {
+		hint += " · f follow in terminal"
 	}
-	return "↑/↓ scroll · PgUp/PgDn page · f follow in terminal · r refresh"
+	hint += " · r refresh"
+	if view.debugFilter != nil {
+		state := "off"
+		if view.showDebug {
+			state = "on"
+		}
+		hint += " · d debug (" + state + ")"
+	}
+	return hint
 }
 
 // Reset clears the displayed log immediately and discards any in-flight poll (by
@@ -218,6 +275,7 @@ func (view *LogView) Reset() {
 		view.closeStream()
 		view.streamBuf = ""
 	}
+	view.content = ""
 	view.viewport.SetContent("")
 	view.viewport.GotoTop()
 }
@@ -357,22 +415,9 @@ func (view *LogView) Update(msg tea.Msg) tea.Cmd {
 		view.notRunning = false
 		view.err = message.err
 		if message.err == nil {
-			// Content is already normalized in the poll goroutine (loadCmd) — the terminal
-			// control codes (\r / cursor moves / erase-line) have collapsed progress
-			// redraws in place. Just place it; no heavy work on the event loop.
-			content := message.content
-			view.empty = strings.TrimSpace(content) == ""
-			if view.viewport.AtBottom() {
-				// Following the tail: re-render + pin to the bottom.
-				view.viewport.SetContent(content)
-				view.viewport.GotoBottom()
-				view.pending = ""
-			} else {
-				// Scrolled up to read/select: FREEZE the visible content (don't re-render,
-				// which would wipe a text selection); buffer the latest and apply it when
-				// the user returns to the bottom.
-				view.pending = content
-			}
+			// Content is already normalized in the poll goroutine (loadCmd). setContent
+			// applies the debug filter + scroll freeze; no heavy work on the event loop.
+			view.setContent(message.content)
 		}
 		return nil
 	case logViewStreamOpenedMsg:
@@ -413,15 +458,7 @@ func (view *LogView) Update(msg tea.Msg) tea.Cmd {
 			return nil
 		}
 		view.streamBuf = message.raw
-		view.empty = strings.TrimSpace(message.content) == ""
-		if view.viewport.AtBottom() {
-			view.viewport.SetContent(message.content)
-			view.viewport.GotoBottom()
-			view.pending = ""
-		} else {
-			// Scrolled up to read/select: freeze; buffer the latest for when they return.
-			view.pending = message.content
-		}
+		view.setContent(message.content)
 		return view.recvCmd(view.streamHandle, view.streamCtx, view.streamBuf, view.generation)
 	case logViewTickMsg:
 		if message.generation != view.generation {
@@ -436,6 +473,13 @@ func (view *LogView) Update(msg tea.Msg) tea.Cmd {
 		return tea.Batch(view.issueLoad(), view.tickCmd(view.generation))
 	case tea.KeyMsg:
 		switch message.String() {
+		case "d":
+			// Toggle debug lines (e.g. the relay connect/disconnect churn) on/off.
+			if view.debugFilter != nil {
+				view.showDebug = !view.showDebug
+				view.renderContent()
+			}
+			return nil
 		case "r":
 			if view.streaming() {
 				// Reconnect: drop the current stream and re-open from history.

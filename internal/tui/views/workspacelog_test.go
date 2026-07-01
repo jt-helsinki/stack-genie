@@ -4,6 +4,8 @@ import (
 	"errors"
 	"strings"
 	"testing"
+
+	tea "github.com/charmbracelet/bubbletea"
 )
 
 // driveSandbox runs the view's Init/Update synchronously by executing the returned
@@ -96,5 +98,44 @@ func TestWorkspaceLogNotRunningShowsNoStaleLog(test *testing.T) {
 	}
 	if !strings.Contains(view.View(), "not running") {
 		test.Errorf("stopped: should show the 'not running' hint:\n%s", view.View())
+	}
+}
+
+// TestWorkspaceLogHidesRelayNoiseUntilDebugToggled: the relay connect/disconnect
+// churn is hidden by default and revealed by the `d` debug toggle.
+func TestWorkspaceLogHidesRelayNoiseUntilDebugToggled(test *testing.T) {
+	view := NewWorkspaceLog(
+		func() (string, error) { return "", nil },
+		func() bool { return true },
+		func() string { return "demo" },
+		nil, // poll mode; the debug filter applies to rendered content either way
+	)
+	view.SetSize(80, 20)
+	view.generation = 1
+	content := "boot line 1\n" +
+		"INFO microsandbox_runtime::relay: agent relay: client connected slot=0\n" +
+		"boot line 2\n" +
+		"INFO microsandbox_runtime::relay: agent relay: client disconnected slot=0\n"
+	view.Update(logViewLoadedMsg{content: content, generation: 1})
+
+	// Default: relay noise hidden, real lines kept.
+	got := view.View()
+	if strings.Contains(got, "agent relay: client") {
+		test.Errorf("relay noise should be hidden by default:\n%s", got)
+	}
+	if !strings.Contains(got, "boot line 1") || !strings.Contains(got, "boot line 2") {
+		test.Errorf("non-debug lines must remain visible:\n%s", got)
+	}
+	// Hint shows the toggle state.
+	if !strings.Contains(view.Hints(), "d debug (off)") {
+		test.Errorf("hints should advertise the debug toggle: %q", view.Hints())
+	}
+	// `d` reveals the relay lines.
+	view.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("d")})
+	if !strings.Contains(view.View(), "agent relay: client connected") {
+		test.Errorf("d should reveal the relay debug lines:\n%s", view.View())
+	}
+	if !strings.Contains(view.Hints(), "d debug (on)") {
+		test.Errorf("hints should show debug on: %q", view.Hints())
 	}
 }

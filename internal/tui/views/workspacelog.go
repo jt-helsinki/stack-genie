@@ -1,8 +1,18 @@
 package views
 
 import (
+	"strings"
+
 	tea "github.com/charmbracelet/bubbletea"
 )
+
+// relayNoiseLine matches the microsandbox agent-relay client connect/disconnect log
+// lines — high-volume, low-signal churn (a client connects for an operation and
+// disconnects when it finishes). The workspace log HIDES these by default; the `d`
+// key toggles them back on for debugging.
+func relayNoiseLine(line string) bool {
+	return strings.Contains(line, "agent relay: client ")
+}
 
 // WorkspaceLogTailer returns the recent captured output of the CURRENT workspace
 // microVM (msb logs --tail). Injected; the parent wires Manager.WorkspaceLogTail for
@@ -47,5 +57,6 @@ func NewWorkspaceLog(tail WorkspaceLogTailer, running WorkspaceRunning, project 
 		func(subject string) tea.Msg { return WorkspaceLogFollowRequestedMsg{Project: subject} },
 	)
 	view.openStream = stream
+	view.debugFilter = relayNoiseLine // hide the relay connect/disconnect churn (toggle: d)
 	return view
 }

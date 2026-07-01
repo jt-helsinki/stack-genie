@@ -1694,8 +1694,9 @@ number keys `1`-`9`. There is **no `:` command palette** — `q`/`ctrl+c` quits 
     selectable view of the microVM's captured output. On the SDK backend it STREAMS
     (`Manager.OpenWorkspaceLogStream` → one relay-free `LogStream{Follow:true}`:
     history first, then new entries pushed — no polling); on the CLI backend it falls
-    back to the `Manager.WorkspaceLogTail` ~2s poll. `f`/`enter` follows live in the
-    real terminal.
+    back to the `Manager.WorkspaceLogTail` ~2s poll. The high-volume agent-relay
+    connect/disconnect lines are **hidden by default**; `d` toggles them on/off (the
+    hint shows `d debug (on|off)`). `f`/`enter` follows live in the real terminal.
   * **Metrics** — live sandbox metrics streamed from `sb.MetricsStream` into a table
     (CPU / memory / disk / net / uptime), updated ~2s, over the single reused relay
     handle.
