@@ -631,7 +631,7 @@ func runCreateWizard(seed project.Spec) (project.Spec, bool, error) {
 				Value(&idleTimeout).
 				Validate(func(value string) error { return config.ValidateIdleTimeout(value) }),
 		),
-	)
+	).WithTheme(ui.HuhTheme()).WithWidth(formWidth())
 
 	if err := form.Run(); err != nil {
 		if errors.Is(err, huh.ErrUserAborted) {

@@ -190,7 +190,7 @@ func confirmRemoveDep(dep uninstall.ExternalDep) bool {
 			Affirmative("Yes, remove it").
 			Negative("No, keep it").
 			Value(&yes),
-	))
+	)).WithTheme(ui.HuhTheme()).WithWidth(formWidth())
 	if err := form.Run(); err != nil {
 		return false
 	}
