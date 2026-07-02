@@ -215,12 +215,25 @@ func TestDeleteRemovesPlatformDirKeepsOtherFiles(test *testing.T) {
 	if err := os.WriteFile(userFile, []byte("package main"), 0o644); err != nil {
 		test.Fatal(err)
 	}
+	// The per-CLI agent config dirs + venv the platform writes into the project folder
+	// at workspace start (here only some exist — a missing one must be ignored).
+	for _, dir := range []string{".opencode", ".claude", ".pi", ".venv-msb"} {
+		if err := os.MkdirAll(filepath.Join(root, dir), 0o755); err != nil {
+			test.Fatal(err)
+		}
+	}
 	if err := Delete("my-app", false); err != nil {
 		test.Fatal(err)
 	}
 	// The whole .ai-platform directory (the platform's footprint) is removed.
 	if _, err := os.Stat(filepath.Join(root, ".ai-platform")); !os.IsNotExist(err) {
 		test.Errorf(".ai-platform should be removed on a plain delete, got %v", err)
+	}
+	// Every per-CLI agent dir + venv is removed too (existing or not).
+	for _, dir := range []string{".opencode", ".claude", ".codex", ".pi", ".gemini", ".venv-msb"} {
+		if _, err := os.Stat(filepath.Join(root, dir)); !os.IsNotExist(err) {
+			test.Errorf("%s should be removed on a plain delete, got %v", dir, err)
+		}
 	}
 	// The user's other files are kept (only --purge removes the whole directory).
 	if _, err := os.Stat(userFile); err != nil {

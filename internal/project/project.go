@@ -347,6 +347,11 @@ func workspaceHandle(name, root string) (id, status, created, lastStarted string
 	return id, status, "", ""
 }
 
+// agentArtifactDirs are the per-CLI agent config dirs and the Python venv the platform
+// writes into the PROJECT folder (outside .ai-platform) at workspace start. A plain
+// `ai delete` removes them too, best-effort — a missing one is ignored.
+var agentArtifactDirs = []string{".opencode", ".claude", ".codex", ".pi", ".gemini", ".venv-msb"}
+
 // Delete removes a project from the index, clears its host-local run/ state, and
 // removes the project's persistent overlay. With purge it also removes the host
 // source tree; host source is otherwise preserved (CLI §3.4). Destroying the
@@ -371,6 +376,19 @@ func Delete(name string, purge bool) error {
 		target = entry.Path
 	}
 	removeErr := forceRemoveAll(target)
+
+	// A plain delete also removes the per-CLI agent config dirs + the Python venv the
+	// platform writes into the PROJECT folder at workspace start (outside .ai-platform),
+	// so de-platforming a directory leaves no agent-CLI/gateway config behind. Missing
+	// dirs are fine (forceRemoveAll → RemoveAll returns nil). --purge removed the whole
+	// tree above, so this is only needed for the normal (non-purge) delete.
+	if !purge {
+		for _, dir := range agentArtifactDirs {
+			if err := forceRemoveAll(filepath.Join(entry.Path, dir)); err != nil && removeErr == nil {
+				removeErr = err
+			}
+		}
+	}
 
 	// Permanent removal: drop the project's persistent overlay (arch §26).
 	// Unlike `ai destroy`, deleting the project removes the overlay. Best-effort
