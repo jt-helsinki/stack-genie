@@ -238,7 +238,7 @@ const (
 	// plugin — a host-wide attempted-egress-by-name audit, surfaced by
 	// `ai network log`. It is a pure resolver: enforcement stays on the msb
 	// net-rules (L3/L4); a resolver answer cannot bypass them. CoreDNS forwards
-	// to public upstreams and caches briefly. Published to the host LOOPBACK at
+	// to the HOST's resolver (Docker's embedded DNS) and caches briefly. Published to the host LOOPBACK at
 	// dnsHostPort so msb's netstack can forward guest DNS to it; not exposed off
 	// the machine. The image reference is resolved from versions.yaml (CoreDNS).
 	dnsContainer = "aip-dns"
@@ -247,9 +247,15 @@ const (
 	// --dns-nameserver` (a fixed platform setting). msb's netstack forwards guest
 	// DNS to this host loopback address.
 	DNSNameserver = "127.0.0.1:" + dnsHostPort
-	// dnsUpstreams are the public resolvers CoreDNS forwards to (Cloudflare +
-	// Google). Audit-only; not security-sensitive.
-	dnsUpstreams = "1.1.1.1 8.8.8.8"
+	// dnsUpstreams is what aip-dns (CoreDNS) forwards to. It is the CONTAINER'S OWN
+	// /etc/resolv.conf — i.e. Docker's embedded DNS (127.0.0.11), which resolves via
+	// the HOST's configured resolvers. Forwarding to the host's DNS (rather than
+	// hardcoded public resolvers like 1.1.1.1/8.8.8.8) is essential on restricted or
+	// corporate networks that block direct external DNS: there, forwarding to public
+	// resolvers times out and workspaces "Could not resolve host", while the host's own
+	// resolver works. This way the workspace resolves names exactly like the host does
+	// (corporate DNS, VPN split-DNS, etc.). Audit-only; not security-sensitive.
+	dnsUpstreams = "/etc/resolv.conf"
 )
 
 // proxyNginxConf renders the nginx reverse-proxy config written to
@@ -633,7 +639,7 @@ func ensureHeadroom(prober runtime.Prober, containerRuntime string) error {
 // with --dns-nameserver DNSNameserver) forward their DNS there — including the
 // TCP fallback path — for the attempted-egress-by-name audit
 // (arch §29). It renders a Corefile to ~/.ai-platform/config/dns/Corefile with the
-// `log` plugin (the audit source), a `forward` to public upstreams, and a short
+// `log` plugin (the audit source), a `forward` to the host's resolver, and a short
 // cache. Idempotent: skips if already running, removes any stale container first.
 func ensureDNS(prober runtime.Prober, containerRuntime string) error {
 	if containerRunning(prober, containerRuntime, dnsContainer) {
