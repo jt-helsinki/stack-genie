@@ -1,4 +1,10 @@
 # stack: deno (official installer, for the workspace user)
+# The installer unpacks a .zip, so it needs `unzip` (or 7z) present — the base image
+# does not ship it, so install it as root first (matching the go/java stack pattern).
+USER root
+RUN apt-get update && apt-get install -y --no-install-recommends unzip \
+ && rm -rf /var/lib/apt/lists/*
+USER workspace
 RUN curl -fsSL https://deno.land/install.sh | sh
 ENV DENO_INSTALL="/home/workspace/.deno"
 ENV PATH="${DENO_INSTALL}/bin:${PATH}"
