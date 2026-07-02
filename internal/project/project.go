@@ -352,9 +352,10 @@ func workspaceHandle(name, root string) (id, status, created, lastStarted string
 // `ai delete` removes them too, best-effort — a missing one is ignored.
 var agentArtifactDirs = []string{".opencode", ".claude", ".codex", ".pi", ".gemini", ".venv-msb"}
 
-// Delete removes a project from the index, clears its host-local run/ state, and
-// removes the project's persistent overlay. With purge it also removes the host
-// source tree; host source is otherwise preserved (CLI §3.4). Destroying the
+// Delete removes a project from the index and removes its persistent overlay. A plain
+// delete removes the whole .ai-platform tree (config + run state) and — when
+// removeAgentDirs is set — the per-CLI agent config folders + venv; the user's OTHER
+// files are kept. With purge it removes the ENTIRE project directory. Destroying the
 // workspace microVM is layered on by the CLI caller (workspace.DestroyIfPresent)
 // before this runs, so a delete never leaves a running microVM orphaned.
 func Delete(name string, purge, removeAgentDirs bool) error {

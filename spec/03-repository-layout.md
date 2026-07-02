@@ -182,13 +182,11 @@ dockerfiles/debian-trixie/Dockerfile
 dockerfiles/debian-bookworm/Dockerfile
 dockerfiles/ubuntu/Dockerfile
 
+stacks/go/Dockerfile.snippet
+stacks/rust/Dockerfile.snippet
 stacks/java/Dockerfile.snippet
 stacks/maven/Dockerfile.snippet
-stacks/node/Dockerfile.snippet
 stacks/deno/Dockerfile.snippet
-stacks/go/Dockerfile.snippet
-stacks/python/Dockerfile.snippet
-stacks/rust/Dockerfile.snippet
 ```
 
 Rules:
@@ -200,7 +198,9 @@ Rules:
   container runtime** (containerd + nerdctl + runc + CNI + buildkit, from the
   pinned `nerdctl-full` tarball into `/usr/local`, arch-aware) plus its CNI deps
   (`iptables`, `iproute`); the runtime is started at workspace start (arch §7)
-* every OS base template also bakes in the latest **Python 3** (system-wide),
+* every OS base template also bakes in **Node.js** (pinned Node 24 LTS,
+  system-wide — so the agent-CLI snippets only `npm install -g` their CLI), the
+  latest **Python 3** (system-wide),
   **uv** (Astral's Python package/tool manager, installed for the workspace user
   onto `~/.local/bin`), and **Graphify** (PyPI `graphifyy`, CLI `graphify`) via
   `uv tool install "graphifyy[pdf,office,video,postgres,google,svg,sql,terraform,ollama,openai,gemini,anthropic]"`
@@ -211,9 +211,10 @@ Rules:
   (`Manager.registerGraphify`) — because `--project` writes into the bind-mounted
   project dir, which only exists at runtime (arch §12). Graphify's headless LLM
   backend is an Ollama model chosen at `ai create` (`agent.graphify_model`, §12.4),
-  routed through the gateway as `ollama/<model>`. **Python is
-  therefore not a `--stacks` option** (the `stacks/python` snippet below is retained
-  for legacy projects only), and the agent-CLI snippets now only `npm install` their
+  routed through the gateway as `ollama/<model>`. **Neither Python nor Node is
+  a `--stacks` option** — both are baked into the base (the no-op `python`/`node`
+  stack snippets were removed entirely), so the selectable stacks are `go`, `rust`,
+  `java`, `maven`, `deno`, and the agent-CLI snippets now only `npm install` their
   CLI (Node itself is in the base).
 * the stack list is **extensible** — adding `stacks/<name>/Dockerfile.snippet`
   makes `<name>` selectable
@@ -440,7 +441,7 @@ agents inside a workspace and those agents use worktrees (e.g. under
 Inside the workspace microVM:
 
 ```text id="w1"
-~/workspace/
+~/project/   (= /home/workspace/project)
 ```
 
 ---
@@ -448,7 +449,7 @@ Inside the workspace microVM:
 ## 3.1 Workspace Structure
 
 ```text id="w2"
-~/workspace/
+~/project/   (= /home/workspace/project)
 ├── .ai-platform/
 ├── src/
 ├── tests/
@@ -469,7 +470,7 @@ Host project:
 Mounted into:
 
 ```text id="w4"
-~/workspace
+~/project   (= /home/workspace/project)
 ```
 
 Rules:
@@ -613,7 +614,7 @@ environment (architecture §25), chosen in the create wizard (CLI §3.1 step 5):
 
 ```yaml id="sc1a"
 schema_version: 1
-stacks: [node, go]   # any subset of the available stack snippets (§1.5)
+stacks: [go, rust]   # any subset of the available stack snippets (§1.5)
 ```
 
 * tracked in git so the environment is reproducible

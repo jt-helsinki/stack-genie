@@ -409,8 +409,9 @@ one command:
   (`opencode,pi,claude-code,codex,gemini`); defaults to `opencode,pi`, and the
   first listed becomes the default agent CLI
 * `--stacks <list>` — comma-separated EXTRA software stacks
-  (`go,node,rust,java,maven,deno`); optional. **Python is not a stack option** —
-  the latest **Python 3**, **uv** (Astral's Python package/tool manager), and
+  (`go,rust,java,maven,deno`); optional. **Neither Python nor Node is a stack
+  option** — Node.js and the latest **Python 3**, **uv** (Astral's Python
+  package/tool manager), and
   **Graphify** (`graphifyy`, the knowledge-graph CLI skill; installed via
   `uv tool install "graphifyy[…extras]"` with all optional extras except the
   region/DB-specific chinese/azure/bedrock/falkordb/neo4j/leiden/dm) are baked into
@@ -436,8 +437,12 @@ one command:
   request exits `2`.
 * `--memory <size>` — workspace memory in **GB, a plain number** (e.g. `8`, `16`;
   a `512M`/`4G` unit suffix is still accepted for back-compat), written to
-  `workspace.memory_limit`. Defaults to the global default (`8` GB) and is **capped at
-  the host's total RAM** when it can be determined — a larger request exits `2`.
+  `workspace.memory_limit`. Defaults to the global default (`8` GB) and is **capped
+  BELOW the host's total RAM** — the platform reserves headroom for the host OS,
+  service tier, and hypervisor (`config.UsableHostMemoryMiB` reserves the larger of
+  2 GiB or 25% of host RAM), because a microVM given all host RAM cannot boot. A
+  request above the usable ceiling exits `2`; an unset value resolves to the default
+  clamped at that ceiling.
 * `--ports <list>` — comma-separated host↔guest ports to open into the workspace,
   each `PORT` (host == guest) or `HOST:GUEST` (Docker-style host-first), written to
   `network.publish_ports`. Malformed/out-of-range ports exit `2`.
@@ -507,9 +512,10 @@ Steps, in order:
 4. **Default agent CLI** — single-select from the CLIs chosen in step 3; default
    `OpenCode` (recorded as `agent.default_tool`).
 5. **Software stacks** — **multi-select checkboxes**; choose the language/tool
-   stacks to install into the environment (`Go`, `Node`, `Rust`, `Java`, `Maven`,
-   `Deno` — the list is extensible, §25). **Python is not a stack** — Python 3, uv,
-   and Graphify are baked into every base by default. None pre-checked (a project
+   stacks to install into the environment (`Go`, `Rust`, `Java`, `Maven`,
+   `Deno` — the list is extensible, §25). **Neither Python nor Node is a stack** —
+   Node.js and Python 3, uv, and Graphify are baked into every base by default.
+   None pre-checked (a project
    may need nothing beyond the base image). Selected stacks are installed into the
    generated `.ai-platform/Dockerfile` and recorded in `profile.yaml`.
 6. **AI apps** — **multi-select checkboxes**; choose the opt-in in-VM AI
@@ -592,33 +598,18 @@ Output (one row per workspace), columns:
 ## 3.4 Delete Workspace
 
 ```bash id="c7a"
-ai delete [<name>]
+ai delete [<name>]            # `ai destroy` is an ALIAS of this
+ai delete [<name>] --purge
 ```
 
-Removes the **whole workspace** — definition, index entry, and microVM. With no
-`[<name>]` it targets the workspace that owns the current directory (or `--project`).
-
-Options:
-
-```bash
---purge          also delete the host source directory
---yes            skip the interactive confirmation
-```
-
-Behavior:
-
-* destroys the workspace microVM (Microsandbox `rm`)
-* removes the workspace's persistent overlay (`overlay.Remove`)
-* removes the workspace's entry from the global `config/projects.yaml` index
-* **without `--purge`** (default): preserves host source, including the tracked
-  `.ai-platform/` files (`Dockerfile`, `config.yaml`, `profile.yaml`,
-  `project.yaml`); **clears the gitignored `.ai-platform/run/`** (stale
-  workspace/agent runtime handles) so no orphaned state remains
-* **with `--purge`**: additionally removes the host source directory entirely
-* destructive: requires interactive confirmation, or `--yes`; refuses and exits
-  `2` if neither is present in a non-interactive context
-* `--dry-run` lists exactly what would be removed and changes nothing
-* provider credentials are untouched (held in the LiteLLM gateway, §16.1)
+`ai delete` (with `ai destroy` as its cobra alias) is the single removal verb. With
+no `[<name>]` it targets the workspace that owns the current directory (or
+`--project`). The **full, consolidated behavior — including the `--purge` and
+`--keep-agent-config` prompts — is specified in §4.4**; the summary is: a plain
+delete tears down the microVM, removes the project's `.ai-platform` tree + overlay,
+and de-registers it, keeping the user's OTHER files; `--purge` removes the whole
+project directory. Provider credentials are untouched (held in the LiteLLM
+gateway, §16.1).
 
 ---
 
@@ -723,13 +714,23 @@ operation — use `ai stop` to pause a workspace and `ai start`/`ai restart` to
   the platform state is removed **anyway** (the user asked to delete) and a
   **warning** carries the manual cleanup (`msb remove -f aip-<name>`), rather than
   aborting and leaking `.ai-platform`.
-* removes the project's **`.ai-platform` directory** (config + run state — the
-  platform's footprint) and its persistent overlay (architecture §26)
+* removes the project's **`.ai-platform` directory** (config + run state + the
+  shared `{agents,skills,prompts,projects}` resource pool — the platform's
+  footprint) and its persistent overlay (architecture §26)
 * de-registers it from `config/projects.yaml`
 * **keeps the user's OTHER files** in the directory; `--purge` additionally
   removes the WHOLE project directory
-* **destructive** — confirms on a TTY; requires `--yes` under `--json`/no-TTY
-  (§20). `--dry-run` prints the side-effect-free plan.
+* the **per-CLI agent config folders** (`.opencode`/`.claude`/`.codex`/`.pi`/
+  `.gemini`) and the `.venv-msb` virtualenv — which the platform wrote into the
+  project dir at workspace start, outside `.ai-platform` — are removed too on a
+  plain delete UNLESS kept with **`--keep-agent-config`** (or by answering the
+  interactive prompt). When they are KEPT, their symlinks into the shared
+  `.ai-platform` pool are **materialized into real files** before `.ai-platform`
+  is removed, so nothing dangles. (`--purge` removes everything regardless.)
+* **destructive** — on a TTY it interactively prompts for `--purge` (delete the
+  whole project dir) and, when not purging, for removing those agent config
+  folders; under `--json`/no-TTY it requires `--yes` (§20) and is driven by
+  `--purge` / `--keep-agent-config`. `--dry-run` prints the side-effect-free plan.
 
 ---
 
@@ -1689,7 +1690,7 @@ non-TTY invocation is exit `2`.
 
 **Scope on launch.** `ai ui` is a global project switcher. It **always opens on the
 home screen (Services)** with no project selected — the active view is not persisted
-across restarts (the cwd is still kept for the create overlay's default directory).
+across restarts (the cwd is still kept for the create wizard's default location).
 The switcher reaches any project in the index, and a new project may be created from
 it (see below).
 
@@ -1724,16 +1725,22 @@ number keys `1`-`9`. There is **no `:` command palette** — `q`/`ctrl+c` quits 
   (`ai logs --service <svc> --follow` → `<runtime> logs -f`). There is no separate
   Logs tab; the file-backed `internal/logs` reader still backs `ai logs`.
 * **Projects** — a **two-level hub**. It opens on the *switcher*: every project
-  (name / OS / workspace status / agents); `enter` opens one, `n` creates a new one
-  (a **location field** starting in the current directory: a text input above a
+  (name / OS / workspace status / agents); `enter` opens one, `n` starts a
+  **fully in-TUI, multi-step create wizard** (no subprocess — it runs the shared
+  `create.Execute` IN-PROCESS, so it behaves identically to `ai create`), `d`
+  describes the selected one. The wizard walks native `ai ui` widgets: a
+  **location field** starting in the current directory (a text input above a
   live **dropdown of the folders** under the entered path — type to filter it and
   `tab` to complete the highlighted folder, or `↓`/`↑` to select a folder row;
   folders that are ALREADY a workspace are **greyed out and not selectable** with a
   "workspace already exists" note; a leading `~` expands to home; the entered path
   is validated by the create rules — a path that IS or is NESTED INSIDE an existing
-  workspace is rejected — and a non-existent path is created, with intermediate
-  folders, on `enter` before the `ai create` wizard runs in that dir), `d`
-  describes the selected one. Opening a project drops
+  workspace is rejected — and a non-existent path is created with intermediate
+  folders), then **text inputs** (name / cpus / memory / ports / idle timeout),
+  **`listWindow` single/multi-selects** (OS / agent CLIs / default agent CLI /
+  stacks / apps), and a **Graphify model picker** mirroring the Local Models pane.
+  On confirm it runs `create.Execute` off the event loop and refreshes the hub.
+  Opening a project drops
   INTO it, revealing a **sub-tab bar** for that project (the project name + the
   sub-tabs below). `tab`/`←→` cycle the sub-tabs; the focused sub-view's pane is
   acted on directly; `esc` backs UP to the switcher. The per-project sub-tabs are:
@@ -1745,19 +1752,24 @@ number keys `1`-`9`. There is **no `:` command palette** — `q`/`ctrl+c` quits 
     stay reachable when they overflow. Workspace lifecycle is `s`/`x`/`r`/`d`
     (start/stop/restart/delete) and `e` (an interactive shell). `s`/`x`/`r` run
     **DETACHED** from the TUI: the app spawns
-    `ai <action> <name>` in its own session (`setsid` + `Process.Release`, stdio to
-    `/dev/null`) so the microVM build/boot keeps running even if `ai ui` is closed,
-    then shows an **animated spinner** on the workspace status line and polls the
-    state handle until the target status (or a ~6m timeout). The TUI stays navigable.
+    `ai <action> <name>` in its own session (`setsid` + `Process.Release`) with its
+    stdout+stderr **tee'd to `<project>/.ai-platform/run/<action>.log`** (the build
+    log; falling back to `/dev/null` only if that file can't be opened) so the microVM
+    build/boot keeps running even if `ai ui` is closed, then shows an **animated
+    spinner** on the workspace status line and polls the state handle until the target
+    status (or a ~6m timeout). The TUI stays navigable.
     `d` (delete) runs in the confirm **terminal overlay** (see below). `e` opens the
     shell in the REAL terminal (see Shell, below).
   * **Logs** — the workspace log as its own sub-tab: a READ-ONLY, scrollable,
     selectable view of the microVM's captured output. On the SDK backend it STREAMS
     (`Manager.OpenWorkspaceLogStream` → one relay-free `LogStream{Follow:true}`:
     history first, then new entries pushed — no polling); on the CLI backend it falls
-    back to the `Manager.WorkspaceLogTail` ~2s poll. The high-volume agent-relay
-    connect/disconnect lines are **hidden by default**; `d` toggles them on/off (the
-    hint shows `d debug (on|off)`). `f`/`enter` follows live in the real terminal.
+    back to the `Manager.WorkspaceLogTail` ~2s poll. Before the microVM exists (a
+    detached start/restart still building), it falls back to the tee'd **build log**
+    at `.ai-platform/run/<action>.log` so the build output is visible. The high-volume
+    agent-relay connect/disconnect lines are **hidden by default**; `d` toggles them
+    on/off (the hint shows `d debug (on|off)`). `f`/`enter` follows live in the real
+    terminal.
   * **Metrics** — live sandbox metrics streamed from `sb.MetricsStream` into a table
     (CPU / memory / disk / net / uptime), updated ~2s, over the single reused relay
     handle.
@@ -1834,7 +1846,8 @@ is open, keys go to the program; **ctrl+q** force-detaches, and once the program
 exits **any key** closes the overlay (the affected views refresh on close).
 
 Workspace **start/stop/restart** do NOT use this overlay — they run **DETACHED**
-(`setsid` + `Process.Release`, stdio to `/dev/null`) with a spinner on the Workspace
+(`setsid` + `Process.Release`, stdout+stderr tee'd to
+`.ai-platform/run/<action>.log`) with a spinner on the Workspace
 sub-tab's status line (above), so there is no log/terminal pane for them and the
 build/boot survives closing `ai ui`. The interactive **sessions** (shell/agent/
 attach) likewise bypass the embedded emulator: they run in the user's **REAL

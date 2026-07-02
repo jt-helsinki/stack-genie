@@ -136,6 +136,7 @@ agent CLI registers Graphify with itself **at workspace start**, once per projec
 codex/gemini/opencode/pi) — not in the Dockerfile, since `--project` writes into the
 bind-mounted project dir. Graphify's headless LLM backend is an Ollama model chosen
 at `ai create` (`--graphify-model`), routed through the gateway as `ollama/<model>`.
-Python is therefore **not** a `--stacks` option; the selectable software stacks are
-`go`, `node`, `rust`, `java`, `maven`, `deno`. See `spec/01-architecture-spec.md`
+Node.js is likewise baked into every base, so neither Python nor Node is a
+`--stacks` option; the selectable software stacks are
+`go`, `rust`, `java`, `maven`, `deno`. See `spec/01-architecture-spec.md`
 for the full design and `AGENTS.md` for the container/wiring summary.

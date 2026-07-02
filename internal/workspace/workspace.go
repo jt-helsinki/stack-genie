@@ -1289,7 +1289,7 @@ func (manager Manager) ExecInteractive(project string, argv []string) error {
 // Shell opens the project's PERSISTENT default shell session — a tmux session
 // named "shell", created detached then attached, so the shell (and anything left
 // running in it) survives DETACHING and is reattachable. The session opens in
-// /workspace with a login shell.
+// ~/project with a login shell.
 func (manager Manager) Shell(project string) error {
 	return manager.launchTmuxSession(project, shellSessionName, projectLoginShell())
 }
@@ -1399,7 +1399,7 @@ func (manager Manager) Attach(project, session string) error {
 }
 
 // Agent starts (or reattaches to) a per-CLI tmux session running the named agent
-// CLI in /workspace. The session is named after the CLI (opencode, pi, …) so each
+// CLI in ~/project. The session is named after the CLI (opencode, pi, …) so each
 // agent has one persistent, reattachable session and multiple agents can run
 // concurrently. An unknown CLI returns ErrUnknownAgentCLI (→ exit 2).
 func (manager Manager) Agent(project, cli string) error {

@@ -642,9 +642,11 @@ host  ~/.ai-platform/overlays/<workspace-id>  →  workspace  /persist    (overl
   per-CLI provider configs ARE keyless and live in this project dir (§15).
 * the per-workspace overlay (§26) is mounted at `/persist`
 * no persistent data is written outside the mounted paths
-* (a shared read-only mount of `~/.ai-platform/agents,skills,prompts,templates`
+* (a shared read-only mount of the GLOBAL `~/.ai-platform/agents,skills,prompts,templates`
   into the workspace is **deferred** — not currently wired into the `msb`
-  run-args)
+  run-args. This is distinct from the PER-PROJECT
+  `<project>/.ai-platform/{agents,skills,prompts,projects}` shared pool, which IS
+  wired — symlinked into each CLI's dirs at start, §15.)
 
 ### Lifecycle Mapping
 
@@ -895,6 +897,9 @@ templates (§25); it is identical across all OSes:
 
 * Git
 * GitHub CLI
+* **Node.js** — pinned **Node 24 LTS**, installed system-wide. It backs every
+  agent-CLI install snippet (which only `npm install -g` their CLI, since Node is
+  in the base) and is why `node` is **not** a `--stacks` option.
 * **Python 3** — the base image's latest, installed system-wide (`python3` +
   `python3-venv` where the distro splits it out). This backs the per-project
   `~/project/.venv-msb` virtualenv created at workspace start (§26).
@@ -1645,7 +1650,8 @@ seed a new project's `.ai-platform/Dockerfile`:
   wizard; the wizard always shows and the user confirms or changes the
   recommended default (`debian-trixie`). The chosen key selects which template
   seeds `.ai-platform/Dockerfile`.
-* each template installs the **base** tooling layer (§12: Git, GitHub CLI) on its
+* each template installs the **base** tooling layer (§12: Git, GitHub CLI, Node.js,
+  Python 3, uv, Graphify, and the in-VM container runtime) on its
   base image — identical across all OSes; the **agent CLIs** and **software stacks**
   selected at creation (§12; see Software Stacks below) are then added to the
   project's generated `.ai-platform/Dockerfile` (acceptance tests §6)
@@ -1659,11 +1665,11 @@ seed a new project's `.ai-platform/Dockerfile`:
 ## Software Stacks
 
 The user selects the language/tool stacks to install when setting up the
-environment (CLI §3.1, step 5) — a **multi-select** of `java`, `maven`,
-`node`, `deno`, `go`, `rust`. **Python is not a stack option**: the latest
-**Python 3**, **uv**, and **Graphify** are baked into every OS base by default
-(§12: Base tooling), so there is nothing to select. (A legacy `python`
-stack snippet is retained under `templates/stacks/python` for old projects only.)
+environment (CLI §3.1, step 5) — a **multi-select** of `go`, `rust`, `java`,
+`maven`, `deno`. **Neither Python nor Node is a stack option**: the latest
+**Python 3**, **uv**, **Graphify**, and **Node.js** are baked into every OS base
+by default (§12: Base tooling), so there is nothing to select. (The no-op
+`python`/`node` stack snippets have been removed entirely.)
 The set is **extensible**: each stack is
 a small install snippet the platform ships under
 `~/.ai-platform/templates/stacks/<stack>` (repo-layout §1.5), and the
@@ -1776,6 +1782,14 @@ Purpose:
 
 * prevent runaway agents
 * improve system stability
+
+**Host caps.** `cpu_limit` is capped at the host's logical CPU count; `memory_limit`
+is capped **BELOW** the host's total RAM — the platform reserves headroom for the host
+OS, service tier, and hypervisor (`config.UsableHostMemoryMiB` reserves the larger of
+2 GiB or 25% of host RAM), because a microVM given all of host RAM cannot boot. An
+explicit over-ceiling `--cpus`/`--memory` is rejected at create (exit 2, CLI §3.1); an
+unset value resolves to the default clamped at the ceiling, and the value is clamped
+again at microVM creation (`workspace_sdk.go`/`workspace_real.go`) as a backstop.
 
 ---
 

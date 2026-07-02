@@ -466,21 +466,23 @@ ai exec cli-test --json -- sh -c 'command -v gemini'   # NOT selected
 
 ```bash
 # select software stacks
-ai create stack-test --os debian-trixie --stacks go,node --json
-ai exec stack-test --json -- sh -c 'command -v go && command -v node'
-ai exec stack-test --json -- sh -c 'command -v python3'   # NOT selected
+ai create stack-test --os debian-trixie --stacks go,rust --json
+ai exec stack-test --json -- sh -c 'command -v go && command -v cargo'
+ai exec stack-test --json -- sh -c 'command -v deno'      # NOT selected
 ```
 
 ### Expected Result
 
-* the create envelope reports `data.stacks == [go, node]`
-* `profile.yaml` records `stacks: [go, node]` and the matching `# stack: <name>`
-  snippets appear in `.ai-platform/Dockerfile`; an unselected stack (`python`)
+* the create envelope reports `data.stacks == [go, rust]`
+* `profile.yaml` records `stacks: [go, rust]` and the matching `# stack: <name>`
+  snippets appear in `.ai-platform/Dockerfile`; an unselected stack (`deno`)
   does **not** (§25, repo-layout §1.5; asserted on-disk, runnable without a
   microVM)
-* in the workspace (hardware-gated): the `go` + `node` probe succeeds
-  (`data.exit_code == 0`), and the unselected `python3` probe fails
+* in the workspace (hardware-gated): the `go` + `cargo` probe succeeds
+  (`data.exit_code == 0`), and the unselected `deno` probe fails
   (`data.exit_code != 0`)
+* Node.js and Python 3 are **baked into every base** (not stacks), so
+  `command -v node` / `command -v python3` succeed regardless of `--stacks`
 * default selection (`ai create x --os <key>`, no `--stacks`) installs **no**
   stacks beyond the base image (`profile.yaml` `stacks: []`)
 

@@ -13,7 +13,7 @@ flowchart LR
     direction TB
     AGENT["Agent CLI<br/>opencode · pi · claude · codex · gemini<br/><b>holds only a scoped LiteLLM virtual key</b>"]:::vm
     RT["In-VM container runtime<br/>rootful containerd · nerdctl · runc · CNI"]:::core
-    TOOLS["Baked-in dev tooling<br/>Python 3 · uv · <b>Graphify</b> (graphifyy, uv tool install)<br/>registered with each agent CLI at start · per-project ~/project/.venv-msb"]:::core
+    TOOLS["Baked-in dev tooling<br/>Node.js · Python 3 · uv · <b>Graphify</b> (graphifyy, uv tool install)<br/>registered with each agent CLI at start · per-project ~/project/.venv-msb"]:::core
     APPS["Opt-in in-VM apps (nerdctl)<br/>Open WebUI · AnythingLLM<br/>per-(workspace,app) host port · /workspace mount"]:::opt
   end
 

@@ -78,7 +78,7 @@ keep the precedence rules in arch §27 explicit), `slog` (structured logs), stdl
 │   ├── templates/               # embedded source templates + installer into ~/.ai-platform/templates
 │   │   └── files/
 │   │       ├── dockerfiles/<os>/Dockerfile        # one base Dockerfile per OS key (alma, debian-trixie, debian-bookworm, ubuntu)
-│   │       ├── stacks/<stack>/Dockerfile.snippet  # one install snippet per stack (java, maven, node, deno, go, python, rust)
+│   │       ├── stacks/<stack>/Dockerfile.snippet  # one install snippet per stack (go, rust, java, maven, deno — Node/Python are baked into the base, not stacks)
 │   │       └── agentclis/                          # per-agent-CLI install snippets
 │   ├── uninstall/               # native `ai uninstall` teardown
 │   └── doctor/                  # consolidated health checks → repair suggestions
