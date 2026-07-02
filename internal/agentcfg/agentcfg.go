@@ -156,6 +156,9 @@ set -g default-terminal "tmux-256color"
 set -as terminal-features ",*:RGB"
 set -as terminal-features ",*:extkeys"
 set -s extended-keys on
+# Emit extended keys in CSI-u form (not the legacy xterm form). Modern agent TUIs
+# (pi, opencode) expect csi-u for shift+enter / ctrl-combos; tmux defaults to xterm.
+set -g extended-keys-format csi-u
 set -sg escape-time 10
 `)
 }

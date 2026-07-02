@@ -84,6 +84,13 @@ func TestSetCavemanLevelInstallsSkill(test *testing.T) {
 	if !strings.Contains(string(skill), "level: ultra") {
 		test.Fatalf("skill missing level:\n%s", skill)
 	}
+	// The Agent Skills standard (pi/claude/opencode) requires YAML frontmatter with a
+	// name + description — pi rejects a skill without a description.
+	for _, want := range []string{"name: caveman", "description:"} {
+		if !strings.Contains(string(skill), want) {
+			test.Errorf("skill SKILL.md missing frontmatter %q:\n%s", want, skill)
+		}
+	}
 }
 
 func TestSetCavemanLevelInvalid(test *testing.T) {

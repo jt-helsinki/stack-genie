@@ -104,7 +104,15 @@ func InstallCavemanSkill(projectRoot, level string) error {
 }
 
 func cavemanSkill(level string) string {
-	return fmt.Sprintf(`# Caveman — output compression
+	// The Agent Skills standard (claude/opencode/pi all read it) requires YAML
+	// frontmatter with `name` and `description` — pi rejects a skill missing the
+	// description. Keep the body's `level:` line so the level is visible + testable.
+	return fmt.Sprintf(`---
+name: caveman
+description: Output-compression guidance (level %s) — steer responses toward terse output to cut output tokens; the output-side complement to Headroom input compression.
+---
+
+# Caveman — output compression
 
 level: %s
 
@@ -115,7 +123,7 @@ the output-side complement to Headroom (input compression).
 Levels: lite | full | ultra | wenyan. Change with:
 
     ai context caveman <project> <level>
-`, level)
+`, level, level)
 }
 
 // HeadroomMetrics are live input-compression metrics from the running proxy.

@@ -363,6 +363,7 @@ func TestTmuxConfig(test *testing.T) {
 		`set -as terminal-features ",*:RGB"`,
 		`set -as terminal-features ",*:extkeys"`,
 		"set -s extended-keys on",
+		"set -g extended-keys-format csi-u",
 	} {
 		if !strings.Contains(conf, want) {
 			test.Errorf("tmux.conf missing %q:\n%s", want, conf)
