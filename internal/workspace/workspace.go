@@ -494,12 +494,32 @@ func (manager Manager) registerAgentProviders(name, project, root string, projec
 	}
 
 	keepTurns, outputBufferTokens := contextopt.HeadroomParams(projectConfig.Context.Strategy)
-	// The in-VM picker is the models the gateway currently SERVES (its DB-backed
-	// models). There is NO built-in default model in the catalog-driven system, so
-	// the empty default is passed through (the agent CLIs fall back to their own
-	// default selection).
-	const defaultModel = ""
 	models := manager.pickerModels()
+
+	// Persist the agent CLIs' state dirs to the overlay so a CLI's per-project memory —
+	// notably opencode's last-used model — survives microVM restarts (see below).
+	manager.linkAgentStateDirs(name)
+
+	// SEED-THEN-REMEMBER default (chosen behavior): the model picked at setup (stored as
+	// agent.graphify_model, registered in the gateway as ollama/<model>) is SEEDED as
+	// every CLI's default on the FIRST start only. A host marker under .ai-platform (same
+	// dir on host + in-VM) records that. On LATER starts we pass an empty default, which
+	// makes MergeOpenCodeConfig/MergePiSettings actively DROP the pinned model so the
+	// user's persisted /model choice wins (opencode ranks config "model" above last-used,
+	// so a stale pin would defeat remembering). No setup model → never seed.
+	setupModel := ""
+	if projectConfig.Agent.GraphifyModel != "" {
+		setupModel = "ollama/" + projectConfig.Agent.GraphifyModel
+	}
+	seedMarker := filepath.Join(root, ".ai-platform", ".agent-default-seeded")
+	defaultModel := ""
+	seedingNow := false
+	if setupModel != "" {
+		if _, statErr := os.Stat(seedMarker); os.IsNotExist(statErr) {
+			defaultModel = setupModel
+			seedingNow = true
+		}
+	}
 
 	// Write the KEYLESS per-CLI provider configs into each CLI's DEFAULT PROJECT
 	// location (under the bind-mounted project dir = host disk, so the project is
@@ -517,18 +537,20 @@ func (manager Manager) registerAgentProviders(name, project, root string, projec
 		return err
 	}
 
-	piConfig, err := agentcfg.MergePiConfig(
-		readHostFileOrNil(projectConfigPath(root, ".pi", "models.json")),
-		gatewayURL, agentcfg.PiAPIKeyRef, defaultModel, models)
+	// pi reads the GLOBAL ~/.pi/agent/models.json (NOT a project .pi/models.json), so
+	// write the served-model provider config there — pi then lists the SAME gateway
+	// models as opencode. In-VM home (off host disk); keyless via $AIP_GATEWAY_KEY.
+	piModels, err := agentcfg.PiConfig(gatewayURL, agentcfg.PiAPIKeyRef, defaultModel, models)
 	if err != nil {
 		return err
 	}
-	if err := writeHostFile(projectConfigPath(root, ".pi", "models.json"), piConfig); err != nil {
+	if err := manager.Sandbox.WriteFile(name, agentcfg.PiGlobalModelsGuest, piModels); err != nil {
 		return err
 	}
-	// pi settings: default provider + skills/prompts resource paths pointing at the
+	// pi settings (project-scoped, which pi DOES read): the gateway as default provider,
+	// the workspace default model, and skills/prompts resource paths pointing at the
 	// symlinked shared pools (linkSharedResources creates .pi/skills, .pi/prompts).
-	piSettings, err := agentcfg.MergePiSettings(readHostFileOrNil(projectConfigPath(root, ".pi", "settings.json")))
+	piSettings, err := agentcfg.MergePiSettings(readHostFileOrNil(projectConfigPath(root, ".pi", "settings.json")), defaultModel)
 	if err != nil {
 		return err
 	}
@@ -555,6 +577,16 @@ func (manager Manager) registerAgentProviders(name, project, root string, projec
 		return err
 	}
 
+	// Record that the setup model has been seeded, so subsequent starts stop pinning it
+	// and defer to each CLI's persisted last-used selection. Best-effort: if the marker
+	// can't be written we simply re-seed next start (harmless — opencode records the same
+	// model as last-used anyway).
+	if seedingNow {
+		if err := os.WriteFile(seedMarker, []byte(setupModel+"\n"), 0o644); err != nil {
+			_, _ = fmt.Fprintf(os.Stderr, "warning: could not record the agent default-seed marker in workspace %q (continuing): %v\n", name, err)
+		}
+	}
+
 	// The KEYED files stay IN-VM only (off host disk): the gateway env vars — the
 	// scoped virtual key (ANTHROPIC_AUTH_TOKEN/AIP_GATEWAY_KEY/GEMINI_API_KEY), the
 	// gemini/claude base URLs, and OPENCODE_CONFIG (pointing opencode at its project
@@ -576,7 +608,10 @@ func (manager Manager) registerAgentProviders(name, project, root string, projec
 	// flows host→VM only. BEST-EFFORT: a convenience helper must never fail the whole
 	// workspace start (the msb rootfs persists across starts, so a prior copy can
 	// already be present) — warn and continue.
-	if err := manager.installRefreshScript(name, gatewayURL, apiKey, defaultModel, keepTurns, outputBufferTokens); err != nil {
+	// refresh-models NEVER pins a default (it passes an empty default, which drops the
+	// "model" key) — it refreshes the served-model LIST on demand and must not clobber
+	// the user's persisted last-used selection.
+	if err := manager.installRefreshScript(name, gatewayURL, apiKey, "", keepTurns, outputBufferTokens); err != nil {
 		_, _ = fmt.Fprintf(os.Stderr, "warning: could not install the in-VM refresh-models helper in workspace %q (continuing): %v\n", name, err)
 	}
 
@@ -617,6 +652,29 @@ func (manager Manager) ensureVenv(name string) {
 // graphifyInstallTimeout bounds each per-CLI `graphify install` (config-only, no
 // network — it just writes skill/plugin/hook files into the project).
 const graphifyInstallTimeout = 60 * time.Second
+
+// linkAgentStateDirs points the agent CLIs' mutable STATE directories at the persistent
+// overlay (/persist) so a CLI's per-project memory survives microVM restarts — the VM
+// home does NOT persist, so without this opencode forgets the last-used /model on every
+// restart. opencode persists under ~/.local/share/opencode (its XDG_DATA_HOME); pi under
+// ~/.pi (into which the served-models config is then written). /persist is root-owned, so
+// the per-CLI dirs are created + handed to the workspace user as root, then symlinked in
+// as the workspace user. Best-effort: a failure just falls back to the ephemeral home.
+func (manager Manager) linkAgentStateDirs(name string) {
+	if _, err := manager.Sandbox.ExecRoot(name, []string{"sh", "-c",
+		"mkdir -p /persist/agents/opencode /persist/agents/pi && chown -R workspace /persist/agents"}); err != nil {
+		_, _ = fmt.Fprintf(os.Stderr, "warning: could not prepare persistent agent state in workspace %q (continuing): %v\n", name, err)
+		return
+	}
+	// rm -rf on a symlink removes only the link (a re-start's existing symlink), not the
+	// /persist target, so accumulated state is preserved across restarts.
+	link := "set -e; mkdir -p ~/.local/share; " +
+		"rm -rf ~/.local/share/opencode; ln -sfn /persist/agents/opencode ~/.local/share/opencode; " +
+		"rm -rf ~/.pi; ln -sfn /persist/agents/pi ~/.pi"
+	if _, err := manager.Sandbox.Exec(name, []string{"bash", "-lc", link}); err != nil {
+		_, _ = fmt.Fprintf(os.Stderr, "warning: could not link persistent agent state in workspace %q (continuing): %v\n", name, err)
+	}
+}
 
 // graphifyPlatformFlag maps an agent CLI to its `graphify install --platform` value.
 // claude-code is Graphify's DEFAULT platform, so it takes no --platform flag.

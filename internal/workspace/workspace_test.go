@@ -249,7 +249,7 @@ func TestStartBuildsAndRecordsStartedHandle(test *testing.T) {
 			"app", minter.deleteCalls, minter.deletedAlias)
 	}
 	openCodeConfig := readProjectConfig(test, root, ".opencode", "opencode.json")
-	piConfig := readProjectConfig(test, root, ".pi", "models.json")
+	piConfig := readGuestFile(test, sandbox, agentcfg.PiGlobalModelsGuest)
 	// The project configs are KEYLESS (they reference the key via env interpolation,
 	// not the literal value); pi must not carry the per-request Headroom knobs.
 	if !strings.Contains(openCodeConfig, agentcfg.OpenCodeAPIKeyRef) {
@@ -390,9 +390,10 @@ func TestStartRoutesAllFiveAgentCLIs(test *testing.T) {
 	if !strings.Contains(opencode, agentcfg.OpenCodeAPIKeyRef) || !strings.Contains(opencode, "host.microsandbox.internal:18787/v1") {
 		test.Errorf("opencode project config missing key-ref/baseURL:\n%s", opencode)
 	}
-	pi := readProjectConfig(test, root, ".pi", "models.json")
+	// pi reads the GLOBAL ~/.pi/agent/models.json (written into the VM), not a host file.
+	pi := readGuestFile(test, sandbox, agentcfg.PiGlobalModelsGuest)
 	if !strings.Contains(pi, agentcfg.PiAPIKeyRef) {
-		test.Errorf("pi project config missing key ref:\n%s", pi)
+		test.Errorf("pi global models config missing key ref:\n%s", pi)
 	}
 	claude := readProjectConfig(test, root, ".claude", "settings.json")
 	if !strings.Contains(claude, "ANTHROPIC_BASE_URL") || !strings.Contains(claude, "host.microsandbox.internal:18787") {
@@ -444,12 +445,37 @@ func readProjectConfig(test *testing.T, root string, parts ...string) string {
 	return string(content)
 }
 
+// readGuestFile reads a file written into the microVM via Sandbox.WriteFile (recorded
+// by the fake). pi's models config lives at the GLOBAL in-VM path pi reads, not on host.
+func readGuestFile(test *testing.T, sandbox *fakeSandbox, guestPath string) string {
+	test.Helper()
+	content, ok := sandbox.written[guestPath]
+	if !ok {
+		test.Fatalf("guest file %q not written via WriteFile", guestPath)
+	}
+	return string(content)
+}
+
+// runtimeExecRootCalls filters the recorded ExecRoot calls to the in-VM container-runtime
+// bring-up (nerdctl/containerd), ignoring unrelated root ops such as the /persist agent-
+// state prep, so containerd tests can assert the exact probe/boot sequence.
+func runtimeExecRootCalls(sandbox *fakeSandbox) [][]string {
+	var calls [][]string
+	for _, argv := range sandbox.execRootArgv {
+		joined := strings.Join(argv, " ")
+		if strings.Contains(joined, "nerdctl") || strings.Contains(joined, "containerd") {
+			calls = append(calls, argv)
+		}
+	}
+	return calls
+}
+
 // assertProjectConfigsKeyless fails if any on-disk (host, project) per-CLI config
 // contains the scoped key (the key must live only in the in-VM agent env file).
 func assertProjectConfigsKeyless(test *testing.T, root, key string) {
 	test.Helper()
 	for _, parts := range [][]string{
-		{".opencode", "opencode.json"}, {".pi", "models.json"},
+		{".opencode", "opencode.json"}, {".pi", "settings.json"},
 		{".claude", "settings.json"}, {".codex", "config.toml"},
 	} {
 		content, err := os.ReadFile(filepath.Join(append([]string{root}, parts...)...))
@@ -515,16 +541,17 @@ func TestStartEnsuresContainerdWhenDown(test *testing.T) {
 	if _, err := manager.Start("app"); err != nil {
 		test.Fatalf("Start must succeed even when containerd is down (best-effort): %v", err)
 	}
-	if len(sandbox.execRootArgv) != 2 {
-		test.Fatalf("expected a probe + a boot ExecRoot call, got %d: %v", len(sandbox.execRootArgv), sandbox.execRootArgv)
+	runtimeCalls := runtimeExecRootCalls(sandbox)
+	if len(runtimeCalls) != 2 {
+		test.Fatalf("expected a probe + a boot ExecRoot call, got %d: %v", len(runtimeCalls), runtimeCalls)
 	}
-	probe := strings.Join(sandbox.execRootArgv[0], " ")
+	probe := strings.Join(runtimeCalls[0], " ")
 	// The probe is a quiet, bounded `nerdctl info` (output discarded — the
 	// expected first-boot "cannot access containerd socket" fatal is not shown).
 	if probe != "sh -c timeout 5 nerdctl info >/dev/null 2>&1" {
 		test.Errorf("first ExecRoot must probe the runtime quietly (bounded), got %q", probe)
 	}
-	boot := strings.Join(sandbox.execRootArgv[1], " ")
+	boot := strings.Join(runtimeCalls[1], " ")
 	if !strings.Contains(boot, "setsid") || !strings.Contains(boot, "containerd") {
 		test.Errorf("second ExecRoot must boot containerd detached via setsid, got %q", boot)
 	}
@@ -540,8 +567,8 @@ func TestStartSkipsContainerdBootWhenUp(test *testing.T) {
 	if _, err := manager.Start("app"); err != nil {
 		test.Fatal(err)
 	}
-	if len(sandbox.execRootArgv) != 1 {
-		test.Fatalf("expected only the probe ExecRoot when containerd is up, got %v", sandbox.execRootArgv)
+	if runtimeCalls := runtimeExecRootCalls(sandbox); len(runtimeCalls) != 1 {
+		test.Fatalf("expected only the probe ExecRoot when containerd is up, got %v", runtimeCalls)
 	}
 }
 
@@ -1323,24 +1350,90 @@ func TestStartPickerIsServedModels(test *testing.T) {
 		test.Fatal(err)
 	}
 
-	for _, parts := range [][]string{{".opencode", "opencode.json"}, {".pi", "models.json"}} {
-		config := readProjectConfig(test, root, parts...)
+	// opencode's config is on host; pi's is at the GLOBAL in-VM path pi reads.
+	configs := map[string]string{
+		"opencode": readProjectConfig(test, root, ".opencode", "opencode.json"),
+		"pi":       readGuestFile(test, sandbox, agentcfg.PiGlobalModelsGuest),
+	}
+	for name, config := range configs {
 		// Every served model is present.
 		for _, want := range []string{"ollama/llama3.2:latest", "ollama/qwen2.5:7b", "anthropic/claude-opus-4-8"} {
 			if !strings.Contains(config, want) {
-				test.Errorf("%v missing served model %q", parts, want)
+				test.Errorf("%s config missing served model %q", name, want)
 			}
 		}
 	}
 	// The duplicate served entry is collapsed: in opencode's model map the model id
 	// appears as a JSON key exactly once (`"anthropic/claude-opus-4-8":`), not twice.
-	openCode := readProjectConfig(test, root, ".opencode", "opencode.json")
+	openCode := configs["opencode"]
 	if got := strings.Count(openCode, `"anthropic/claude-opus-4-8":`); got != 1 {
 		test.Errorf("opencode: served model keyed %d times, want 1 (deduped)", got)
 	}
-	// No built-in default model is written (the catalog-driven system has none).
+	// This project chose no setup model, so no top-level default is written (the default
+	// is the workspace-setup model, tested in TestStartDefaultsToSetupModel).
 	if strings.Contains(openCode, `"model":`) {
 		test.Errorf("opencode config must not carry a top-level default model:\n%s", openCode)
+	}
+}
+
+// TestStartDefaultsToSetupModel verifies the model chosen at workspace setup (stored as
+// agent.graphify_model) becomes the DEFAULT model for every agent CLI — registered as
+// ollama/<model> in the gateway. opencode gets a top-level model, pi's settings get a
+// defaultModel, and codex gets a model line.
+func TestStartDefaultsToSetupModel(test *testing.T) {
+	root := seedProject(test, "app")
+	if err := config.WriteProject(root, &config.Config{Agent: config.AgentConfig{GraphifyModel: "qwen2.5-coder:7b"}}); err != nil {
+		test.Fatal(err)
+	}
+	sandbox := &fakeSandbox{}
+	served := fakeServedModels{models: []string{"ollama/qwen2.5-coder:7b"}}
+	manager := Manager{Builder: &fakeBuilder{}, Sandbox: sandbox, Keys: &fakeKeyMinter{}, Served: served, Now: func() string { return "t" }}
+	if _, err := manager.Start("app"); err != nil {
+		test.Fatal(err)
+	}
+
+	openCode := readProjectConfig(test, root, ".opencode", "opencode.json")
+	if !strings.Contains(openCode, `"aip-gateway/ollama/qwen2.5-coder:7b"`) {
+		test.Errorf("opencode config missing the setup default model:\n%s", openCode)
+	}
+	piSettings := readProjectConfig(test, root, ".pi", "settings.json")
+	if !strings.Contains(piSettings, `"ollama/qwen2.5-coder:7b"`) {
+		test.Errorf("pi settings missing the setup default model:\n%s", piSettings)
+	}
+	codex := readProjectConfig(test, root, ".codex", "config.toml")
+	if !strings.Contains(codex, `ollama/qwen2.5-coder:7b`) {
+		test.Errorf("codex config missing the setup default model:\n%s", codex)
+	}
+}
+
+// TestStartDropsSeededDefaultOnSecondStart verifies the seed-then-remember behavior:
+// the first start pins the setup model, but a subsequent start DROPS the pinned model
+// (opencode ranks config "model" above last-used, so leaving it would defeat the user's
+// persisted /model choice). The seed marker under .ai-platform gates this.
+func TestStartDropsSeededDefaultOnSecondStart(test *testing.T) {
+	root := seedProject(test, "app")
+	if err := config.WriteProject(root, &config.Config{Agent: config.AgentConfig{GraphifyModel: "qwen2.5-coder:7b"}}); err != nil {
+		test.Fatal(err)
+	}
+	sandbox := &fakeSandbox{}
+	served := fakeServedModels{models: []string{"ollama/qwen2.5-coder:7b"}}
+	manager := Manager{Builder: &fakeBuilder{}, Sandbox: sandbox, Keys: &fakeKeyMinter{}, Served: served, Now: func() string { return "t" }}
+
+	if _, err := manager.Start("app"); err != nil {
+		test.Fatal(err)
+	}
+	if first := readProjectConfig(test, root, ".opencode", "opencode.json"); !strings.Contains(first, `"aip-gateway/ollama/qwen2.5-coder:7b"`) {
+		test.Fatalf("first start should seed the default model:\n%s", first)
+	}
+
+	if _, err := manager.Start("app"); err != nil {
+		test.Fatal(err)
+	}
+	if second := readProjectConfig(test, root, ".opencode", "opencode.json"); strings.Contains(second, `"model":`) {
+		test.Errorf("second start must not pin a default model (remember last-used):\n%s", second)
+	}
+	if piSettings := readProjectConfig(test, root, ".pi", "settings.json"); strings.Contains(piSettings, "defaultModel") {
+		test.Errorf("second start must drop pi's defaultModel:\n%s", piSettings)
 	}
 }
 

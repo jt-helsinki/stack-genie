@@ -196,7 +196,7 @@ func TestProjectConfigsAreKeyless(test *testing.T) {
 // TestPiSettings verifies pi's per-project settings set the gateway default provider
 // and point the skills/prompts resource paths at the symlinked shared pools.
 func TestPiSettings(test *testing.T) {
-	settings, err := PiSettings()
+	settings, err := PiSettings("ollama/gemma4")
 	if err != nil {
 		test.Fatal(err)
 	}
@@ -207,11 +207,26 @@ func TestPiSettings(test *testing.T) {
 	if doc["defaultProvider"] != ProviderID {
 		test.Errorf("defaultProvider = %v, want %s", doc["defaultProvider"], ProviderID)
 	}
+	if doc["defaultModel"] != "ollama/gemma4" {
+		test.Errorf("defaultModel = %v, want ollama/gemma4", doc["defaultModel"])
+	}
 	for _, key := range []string{"skills", "prompts"} {
 		paths, ok := doc[key].([]any)
 		if !ok || len(paths) == 0 {
 			test.Errorf("pi settings %q resource path missing: %v", key, doc[key])
 		}
+	}
+	// An empty default omits the key (no forced model — CLIs fall back to their own).
+	empty, err := PiSettings("")
+	if err != nil {
+		test.Fatal(err)
+	}
+	var emptyDoc map[string]any
+	if err := json.Unmarshal(empty, &emptyDoc); err != nil {
+		test.Fatal(err)
+	}
+	if _, present := emptyDoc["defaultModel"]; present {
+		test.Errorf("empty default should omit defaultModel, got %v", emptyDoc["defaultModel"])
 	}
 }
 
