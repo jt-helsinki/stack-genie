@@ -2,10 +2,38 @@ package views
 
 import (
 	"context"
+	"errors"
 	"io"
 	"strings"
 	"testing"
 )
+
+// TestLogViewStreamOpenErrorFallsBackToTailer: when the live stream can't open (e.g.
+// the microVM doesn't exist yet — the image is still building), the view must NOT
+// surface a hard error; it degrades to the tailer poll (which shows the build log and,
+// once the VM is up, the microVM log), returning a follow-up command.
+func TestLogViewStreamOpenErrorFallsBackToTailer(test *testing.T) {
+	opener := func(ctx context.Context) (LogStream, error) { return nil, errors.New("no sandbox yet") }
+	view := NewWorkspaceLog(
+		func() (string, error) { return "build log line\n", nil },
+		func() bool { return true },
+		func() string { return "demo" },
+		opener,
+	)
+	view.SetSize(80, 10)
+
+	openCmd := view.Init()
+	if openCmd == nil {
+		test.Fatal("Init in streaming mode should return an open-stream command")
+	}
+	fallbackCmd := view.Update(openCmd())
+	if view.err != nil {
+		test.Fatalf("a stream-open failure must not surface as a hard error: %v", view.err)
+	}
+	if fallbackCmd == nil {
+		test.Fatal("a stream-open failure must fall back to a tailer poll (non-nil cmd)")
+	}
+}
 
 // fakeLogStream is a scripted LogStream: it returns each chunk in turn, then io.EOF.
 type fakeLogStream struct {

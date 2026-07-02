@@ -150,7 +150,17 @@ func Run(cwd string) error {
 			if application.currentProject == "" {
 				return "", nil
 			}
-			return workspaceManager.WorkspaceLogTail(application.currentProject, 1000)
+			text, err := workspaceManager.WorkspaceLogTail(application.currentProject, 1000)
+			if err == nil && strings.TrimSpace(text) != "" {
+				return text, nil
+			}
+			// No microVM log yet — the image is still building, so no msb sandbox
+			// exists. Show the tee'd lifecycle build log so the Logs tab has output FROM
+			// THE BEGINNING; once the VM boots, WorkspaceLogTail returns the microVM log.
+			if buildLog, ok := readLatestLifecycleLog(application.currentProject); ok {
+				return buildLog, nil
+			}
+			return text, err
 		},
 		application.workspaceLogReadable,
 		func() string { return application.currentProject },
@@ -971,6 +981,36 @@ func lifecycleLogPath(projectName, action string) (string, bool) {
 		return "", false
 	}
 	return filepath.Join(root, ".ai-platform", "run", action+".log"), true
+}
+
+// readLatestLifecycleLog returns the tee'd output of the most recent detached
+// lifecycle action (start/restart) for the project — the build log — so the Logs tab
+// can show progress from the beginning while the microVM image is still building (no
+// msb sandbox log exists yet). ok=false when no lifecycle log is present.
+func readLatestLifecycleLog(projectName string) (string, bool) {
+	var newestPath string
+	var newestMod time.Time
+	for _, action := range []string{"start", "restart"} {
+		logPath, ok := lifecycleLogPath(projectName, action)
+		if !ok {
+			continue
+		}
+		info, err := os.Stat(logPath)
+		if err != nil {
+			continue
+		}
+		if newestPath == "" || info.ModTime().After(newestMod) {
+			newestPath, newestMod = logPath, info.ModTime()
+		}
+	}
+	if newestPath == "" {
+		return "", false
+	}
+	content, err := os.ReadFile(newestPath)
+	if err != nil {
+		return "", false
+	}
+	return string(content), true
 }
 
 // openLifecycleLog opens (truncating) the per-workspace lifecycle log, writing a header

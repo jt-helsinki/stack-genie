@@ -434,8 +434,14 @@ func (view *LogView) Update(msg tea.Msg) tea.Cmd {
 		}
 		view.loaded = true
 		if message.err != nil {
-			view.err = message.err
-			return nil
+			// The live stream can't open YET — typically the microVM does not exist yet
+			// (the image is still building) or is mid-boot. Rather than surface a hard
+			// error, DEGRADE to the tailer poll: it shows the build log from the
+			// beginning and, once the VM is up, the tailer returns the microVM log — so
+			// logs are continuous across build → boot even without the live stream.
+			// Re-activating the tab (or `r`) re-attempts the relay-free live stream.
+			view.err = nil
+			return tea.Batch(view.issueLoad(), view.tickCmd(view.generation))
 		}
 		view.err = nil
 		view.streamHandle = message.stream
