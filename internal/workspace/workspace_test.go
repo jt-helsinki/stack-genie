@@ -1062,18 +1062,19 @@ func TestStartInstallsRefreshScript(test *testing.T) {
 	}
 }
 
-// TestStartFailsWhenRefreshInstallFails: a non-zero exit from the install step
-// fails Start (and the orphan rollback tears the microVM down) — the user is not
-// left with a half-provisioned workspace silently missing refresh-models.
-func TestStartFailsWhenRefreshInstallFails(test *testing.T) {
+// TestStartToleratesRefreshInstallFailure: refresh-models is a CONVENIENCE helper, so
+// a non-zero exit from its install must NOT fail Start or tear the microVM down — the
+// workspace still comes up (warn + continue). The msb rootfs persists across starts,
+// so an install hiccup ("File exists" on a leftover copy) must never wedge the start.
+func TestStartToleratesRefreshInstallFailure(test *testing.T) {
 	_ = seedProject(test, "app")
-	sandbox := &fakeSandbox{execResult: ExecResult{ExitCode: 1, Stderr: "install: permission denied"}}
+	sandbox := &fakeSandbox{execResult: ExecResult{ExitCode: 1, Stderr: "install: File exists"}}
 	manager := newManager(&fakeBuilder{}, sandbox)
-	if _, err := manager.Start("app"); err == nil {
-		test.Fatal("Start must fail when the refresh-models install exits non-zero")
+	if _, err := manager.Start("app"); err != nil {
+		test.Fatalf("Start must tolerate a refresh-models install failure: %v", err)
 	}
-	if !sandbox.destroyed {
-		test.Fatal("a failed refresh-models install must roll back the microVM (orphan rollback)")
+	if sandbox.destroyed {
+		test.Fatal("a refresh-models install failure must NOT roll back the microVM")
 	}
 }
 

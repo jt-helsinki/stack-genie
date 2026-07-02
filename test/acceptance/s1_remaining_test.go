@@ -139,7 +139,7 @@ func TestSoftwareStackSelectionReflected(test *testing.T) {
 	harness.installTemplates(test)
 
 	created, code := harness.CreateProjectFull(test, "stack-test", "debian-trixie",
-		nil, []string{"go", "node"})
+		nil, []string{"go", "rust"})
 	AssertOK(test, created, code, "project.create")
 
 	var createData struct {
@@ -147,13 +147,13 @@ func TestSoftwareStackSelectionReflected(test *testing.T) {
 		Root   string   `json:"root"`
 	}
 	created.dataInto(test, &createData)
-	if !equalStrings(createData.Stacks, []string{"go", "node"}) {
-		test.Fatalf("create reported stacks %v, want [go node]", createData.Stacks)
+	if !equalStrings(createData.Stacks, []string{"go", "rust"}) {
+		test.Fatalf("create reported stacks %v, want [go rust]", createData.Stacks)
 	}
 
 	// profile.yaml records the selected stacks.
 	profile := projectArtifact(test, createData.Root, "profile.yaml")
-	for _, want := range []string{"go", "node"} {
+	for _, want := range []string{"go", "rust"} {
 		if !strings.Contains(profile, want) {
 			test.Errorf("profile.yaml missing stack %q:\n%s", want, profile)
 		}
@@ -161,7 +161,7 @@ func TestSoftwareStackSelectionReflected(test *testing.T) {
 
 	// Both selected stacks appear in the Dockerfile; the unselected one does not.
 	dockerfile := projectArtifact(test, createData.Root, "Dockerfile")
-	for _, want := range []string{"# stack: go", "# stack: node"} {
+	for _, want := range []string{"# stack: go", "# stack: rust"} {
 		if !strings.Contains(dockerfile, want) {
 			test.Errorf("Dockerfile missing %q:\n%s", want, dockerfile)
 		}

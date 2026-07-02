@@ -573,9 +573,11 @@ func (manager Manager) registerAgentProviders(name, project, root string, projec
 	// gateway URL, scoped key, default, and Headroom knobs as the configs above; at
 	// run time it re-fetches the served models from the gateway's /v1/models endpoint
 	// and rewrites the configs, reproducing pickerModels' result. The minted key
-	// flows host→VM only.
+	// flows host→VM only. BEST-EFFORT: a convenience helper must never fail the whole
+	// workspace start (the msb rootfs persists across starts, so a prior copy can
+	// already be present) — warn and continue.
 	if err := manager.installRefreshScript(name, gatewayURL, apiKey, defaultModel, keepTurns, outputBufferTokens); err != nil {
-		return err
+		_, _ = fmt.Fprintf(os.Stderr, "warning: could not install the in-VM refresh-models helper in workspace %q (continuing): %v\n", name, err)
 	}
 
 	// Write the managed tmux.conf so the workspace session model is transparent
@@ -871,8 +873,13 @@ func (manager Manager) installRefreshScript(name, gatewayURL, apiKey, defaultMod
 	}
 	// Move the staged script onto PATH, executable, then drop the staging copy. A
 	// single shell keeps it one exec; sudo is passwordless for the workspace user.
-	installCmd := fmt.Sprintf("sudo install -m 0755 %s %s && rm -f %s",
-		shellQuoteGuest(refreshScriptStagePath), shellQuoteGuest(refreshScriptBinPath), shellQuoteGuest(refreshScriptStagePath))
+	// REMOVE the destination first so this is idempotent: the msb rootfs persists
+	// across workspace starts, so a prior /usr/local/bin/refresh-models is already
+	// present and `install` can fail with "File exists" on it.
+	installCmd := fmt.Sprintf("sudo rm -f %s && sudo install -m 0755 %s %s && rm -f %s",
+		shellQuoteGuest(refreshScriptBinPath),
+		shellQuoteGuest(refreshScriptStagePath), shellQuoteGuest(refreshScriptBinPath),
+		shellQuoteGuest(refreshScriptStagePath))
 	result, err := manager.Sandbox.Exec(name, []string{"sh", "-c", installCmd})
 	if err != nil {
 		return err

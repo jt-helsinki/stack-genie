@@ -104,11 +104,12 @@ func formatAgentCLIs(agents []string) string {
 // always picks the OS — none is applied silently (arch §25).
 var (
 	supportedOSes = []string{"debian-trixie", "debian-bookworm", "ubuntu", "alma"}
-	// Python is NOT offered here — Python 3.x, uv, and Graphify (via `uv tool install`)
-	// are baked into every OS base by default (see the OS Dockerfiles), and each
-	// selected agent CLI registers Graphify with itself. The stack machinery still
-	// supports a "python" snippet for backward compatibility with older projects.
-	supportedStacks    = []string{"go", "node", "rust", "java", "maven", "deno"}
+	// Python AND Node are NOT offered here — Python 3.x + uv + Graphify, and Node.js
+	// 24 LTS, are baked into every OS base by default (see the OS Dockerfiles), so
+	// selecting them as a stack would add nothing. The stack machinery still supports
+	// the "python"/"node" snippets for backward compatibility with older projects
+	// (the "node" snippet is a no-op comment; "python" is a no-op too).
+	supportedStacks    = []string{"go", "rust", "java", "maven", "deno"}
 	supportedAgentCLIs = []string{"opencode", "pi", "claude-code", "codex", "gemini"}
 	// supportedApps are the opt-in in-VM AI applications (apps.Keys()). Default OFF.
 	supportedApps = apps.Keys()
