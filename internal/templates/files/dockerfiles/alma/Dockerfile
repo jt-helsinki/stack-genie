@@ -6,6 +6,10 @@
 FROM almalinux:10.2-minimal
 
 
+# Base tooling + Python 3 in ONE layer. Python is a distro package (no external
+# repo), so it folds in here; it backs the per-project ~/project/.venv-msb created at
+# workspace start. curl/ca-certificates/gnupg are needed by the external-repo setup
+# (gh, NodeSource) below, so they land in this first layer.
 RUN dnf install -y --setopt=install_weak_deps=False \
     ca-certificates \
     curl \
@@ -18,6 +22,8 @@ RUN dnf install -y --setopt=install_weak_deps=False \
     ncurses-term \
     iptables \
     iproute2 \
+    python3 \
+    python3-pip \
  && dnf clean all
 
 # In-VM OCI container runtime (arch §7): containerd + nerdctl + runc + CNI +
@@ -37,24 +43,17 @@ RUN arch="$(uname -m)" \
  && tar -C /usr/local -xzf /tmp/nerdctl-full.tar.gz \
  && rm -f /tmp/nerdctl-full.tar.gz
 
-# GitHub CLI (gh) from the official GitHub CLI rpm repo.
+# GitHub CLI (gh) + Node.js 24 LTS (NodeSource rpm) in ONE layer — both just add an
+# external dnf repo, so their repo setup + a single install share a layer. Node 24:
+# the distro module Node is too old for the agent CLIs — pi's bundled undici calls
+# webidl.markAsUncloneable, added in Node 22.10 and never backported to 20.x. Node is
+# installed ONCE here so every Node-based agent CLI + the `node` stack share this one
+# pinned Node (they no longer install it).
+ENV NODE_MAJOR=24
 RUN dnf install -y 'dnf-command(config-manager)' \
  && dnf config-manager --add-repo https://cli.github.com/packages/rpm/gh-cli.repo \
- && dnf install -y --setopt=install_weak_deps=False gh \
- && dnf clean all
-
-# Node.js 24 LTS from NodeSource (rpm). The distro module Node is too old for the
-# agent CLIs — pi's bundled undici calls webidl.markAsUncloneable, added in Node
-# 22.10 and never backported to 20.x. Installed ONCE here so every Node-based agent
-# CLI + the `node` stack share this one pinned Node (they no longer install it).
-ENV NODE_MAJOR=24
-RUN curl -fsSL https://rpm.nodesource.com/setup_${NODE_MAJOR}.x | bash - \
- && dnf install -y --setopt=install_weak_deps=False nodejs \
- && dnf clean all
-
-# Python 3 — installed system-wide; python3 backs the per-project
-# /workspace/.venv-msb created at workspace start.
-RUN dnf install -y --setopt=install_weak_deps=False python3 python3-pip \
+ && curl -fsSL https://rpm.nodesource.com/setup_${NODE_MAJOR}.x | bash - \
+ && dnf install -y --setopt=install_weak_deps=False gh nodejs \
  && dnf clean all
 
 # Non-root workspace user with passwordless sudo, so runtime installs work and

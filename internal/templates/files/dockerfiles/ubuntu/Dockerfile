@@ -4,6 +4,10 @@
 # this base by `ai project create`.
 FROM ubuntu:24.04
 
+# Base tooling + Python 3 in ONE layer. Python is a distro package (no external
+# repo), so it folds in here; python3-venv backs the per-project ~/project/.venv-msb
+# created at workspace start. ca-certificates/curl/gnupg are needed by the
+# external-repo setup (gh, NodeSource) below, so they land in this first layer.
 ENV DEBIAN_FRONTEND=noninteractive
 RUN apt-get update \
  && apt-get install -y --no-install-recommends \
@@ -18,6 +22,9 @@ RUN apt-get update \
     ncurses-term \
     iptables \
     iproute2 \
+    python3 \
+    python3-venv \
+    python3-pip \
  && rm -rf /var/lib/apt/lists/*
 
 # In-VM OCI container runtime (arch §7): containerd + nerdctl + runc + CNI +
@@ -36,28 +43,20 @@ RUN arch="$(uname -m)" \
  && tar -C /usr/local -xzf /tmp/nerdctl-full.tar.gz \
  && rm -f /tmp/nerdctl-full.tar.gz
 
-# GitHub CLI (gh).
+# GitHub CLI (gh) + Node.js 24 LTS (NodeSource) in ONE layer — both just add an
+# external apt repo, so their keyring/repo setup + a single install share a layer
+# (NodeSource's setup script runs apt-get update, which also refreshes the gh repo
+# added just before it). Node 24: the distro apt Node (18/20) is too old for the agent
+# CLIs — pi's bundled undici calls webidl.markAsUncloneable, added in Node 22.10 and
+# never backported to 20.x. Node is installed ONCE here so every Node-based agent CLI
+# + the `node` stack share this one pinned Node (they no longer install it).
+ENV NODE_MAJOR=24
 RUN curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
       -o /usr/share/keyrings/githubcli-archive-keyring.gpg \
  && echo "deb [signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" \
       > /etc/apt/sources.list.d/github-cli.list \
- && apt-get update \
- && apt-get install -y --no-install-recommends gh \
- && rm -rf /var/lib/apt/lists/*
-
-# Node.js 24 LTS from NodeSource. The distro apt Node (18/20) is too old for the
-# agent CLIs — pi's bundled undici calls webidl.markAsUncloneable, added in Node
-# 22.10 and never backported to 20.x. Installed ONCE here so every Node-based agent
-# CLI + the `node` stack share this one pinned Node (they no longer install it).
-ENV NODE_MAJOR=24
-RUN curl -fsSL https://deb.nodesource.com/setup_${NODE_MAJOR}.x | bash - \
- && apt-get install -y --no-install-recommends nodejs \
- && rm -rf /var/lib/apt/lists/*
-
-# Python 3 (the base image's latest), installed system-wide; python3-venv backs the
-# per-project /workspace/.venv-msb created at workspace start.
-RUN apt-get update \
- && apt-get install -y --no-install-recommends python3 python3-venv python3-pip \
+ && curl -fsSL https://deb.nodesource.com/setup_${NODE_MAJOR}.x | bash - \
+ && apt-get install -y --no-install-recommends gh nodejs \
  && rm -rf /var/lib/apt/lists/*
 
 # Non-root workspace user with passwordless sudo, so runtime installs work and
