@@ -357,7 +357,7 @@ var agentArtifactDirs = []string{".opencode", ".claude", ".codex", ".pi", ".gemi
 // source tree; host source is otherwise preserved (CLI §3.4). Destroying the
 // workspace microVM is layered on by the CLI caller (workspace.DestroyIfPresent)
 // before this runs, so a delete never leaves a running microVM orphaned.
-func Delete(name string, purge bool) error {
+func Delete(name string, purge, removeAgentDirs bool) error {
 	index, err := state.LoadIndex()
 	if err != nil {
 		return err
@@ -367,27 +367,38 @@ func Delete(name string, purge bool) error {
 		return fmt.Errorf("%w: %q", ErrUnknownProject, name)
 	}
 
-	// Choose the removal target: --purge removes the ENTIRE project directory
-	// (the user's files too); a normal delete de-platforms the directory by
-	// removing only the .ai-platform tree (config + run state — the platform's
-	// footprint), keeping the user's OTHER files.
+	// The per-CLI agent config dirs + the Python venv the platform writes into the
+	// PROJECT folder at workspace start (outside .ai-platform). On a non-purge delete the
+	// caller chooses whether to remove them; when KEPT, their symlinks into the shared
+	// .ai-platform pool must be MATERIALIZED first (the pool is about to be removed).
+	var removeErr error
+	if !purge {
+		if removeAgentDirs {
+			for _, dir := range agentArtifactDirs {
+				if err := forceRemoveAll(filepath.Join(entry.Path, dir)); err != nil && removeErr == nil {
+					removeErr = err
+				}
+			}
+		} else {
+			for _, dir := range agentArtifactDirs {
+				if err := materializeSymlinks(filepath.Join(entry.Path, dir)); err != nil && removeErr == nil {
+					removeErr = err
+				}
+			}
+		}
+	}
+
+	// Choose the removal target: --purge removes the ENTIRE project directory (the
+	// user's files too); a normal delete de-platforms the directory by removing only the
+	// .ai-platform tree (config + run state — the platform's footprint), keeping the
+	// user's OTHER files. (Symlinks into it were materialized above if the agent dirs are
+	// kept, so nothing dangles.)
 	target := filepath.Join(entry.Path, ".ai-platform")
 	if purge {
 		target = entry.Path
 	}
-	removeErr := forceRemoveAll(target)
-
-	// A plain delete also removes the per-CLI agent config dirs + the Python venv the
-	// platform writes into the PROJECT folder at workspace start (outside .ai-platform),
-	// so de-platforming a directory leaves no agent-CLI/gateway config behind. Missing
-	// dirs are fine (forceRemoveAll → RemoveAll returns nil). --purge removed the whole
-	// tree above, so this is only needed for the normal (non-purge) delete.
-	if !purge {
-		for _, dir := range agentArtifactDirs {
-			if err := forceRemoveAll(filepath.Join(entry.Path, dir)); err != nil && removeErr == nil {
-				removeErr = err
-			}
-		}
+	if err := forceRemoveAll(target); err != nil && removeErr == nil {
+		removeErr = err
 	}
 
 	// Permanent removal: drop the project's persistent overlay (arch §26).
@@ -427,4 +438,66 @@ func forceRemoveAll(path string) error {
 		return nil
 	})
 	return os.RemoveAll(path)
+}
+
+// materializeSymlinks replaces every direct SYMLINK child of dir with a real copy of
+// its target's contents, so a KEPT per-CLI dir survives the removal of the shared
+// .ai-platform pool its symlinks point into (the original is deleted). A missing dir is
+// a no-op; a dangling/unresolvable symlink is simply dropped (nothing to preserve).
+func materializeSymlinks(dir string) error {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return err
+	}
+	for _, entry := range entries {
+		linkPath := filepath.Join(dir, entry.Name())
+		info, err := os.Lstat(linkPath)
+		if err != nil || info.Mode()&os.ModeSymlink == 0 {
+			continue // not a symlink — leave it as-is
+		}
+		realTarget, err := filepath.EvalSymlinks(linkPath)
+		if err != nil {
+			_ = os.Remove(linkPath) // dangling — drop it
+			continue
+		}
+		if err := os.Remove(linkPath); err != nil {
+			return err
+		}
+		if err := copyTree(realTarget, linkPath); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// copyTree recursively copies the file or directory at src to dst, preserving file
+// permission bits — used to materialize a symlinked directory into real files.
+func copyTree(src, dst string) error {
+	info, err := os.Stat(src)
+	if err != nil {
+		return err
+	}
+	if info.IsDir() {
+		if err := os.MkdirAll(dst, info.Mode().Perm()); err != nil {
+			return err
+		}
+		entries, err := os.ReadDir(src)
+		if err != nil {
+			return err
+		}
+		for _, entry := range entries {
+			if err := copyTree(filepath.Join(src, entry.Name()), filepath.Join(dst, entry.Name())); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+	data, err := os.ReadFile(src)
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(dst, data, info.Mode().Perm())
 }

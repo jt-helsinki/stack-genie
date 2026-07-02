@@ -932,28 +932,53 @@ func newDeleteCmd(emitter *output.Emitter, exit *int, use string) *cobra.Command
 				return nil
 			}
 
+			keepAgentConfig, _ := cmd.Flags().GetBool("keep-agent-config")
+			removeAgentDirs := !keepAgentConfig
 			confirmed, _ := cmd.Flags().GetBool("yes") // global --yes (§20)
 			if !confirmed {
-				// On a terminal (and not --json) show a themed confirm dialog
-				// before this destructive action; declining cancels with a success
-				// envelope (exit 0). Under --json / no TTY the contract is unchanged:
-				// --yes is required, and its absence is exit 2.
-				if interactive(emitter) {
-					ok, promptErr := promptConfirm(
-						fmt.Sprintf("Delete workspace %q? This removes its microVM and platform state.", name),
-						"Tears down the workspace microVM and removes its .ai-platform directory (config + state) and platform registration. Your OTHER files in the directory are kept unless --purge.")
+				// On a terminal (and not --json) show themed confirm dialogs before this
+				// destructive action; declining the first cancels with a success envelope
+				// (exit 0). Under --json / no TTY the contract is unchanged: --yes is
+				// required (absence is exit 2) and --purge / --keep-agent-config drive the
+				// choices directly.
+				if !interactive(emitter) {
+					*exit = emitter.Failure(projectDeleteCommand,
+						output.Errorf(output.ExitInvalidInput, "destructive: pass --yes to confirm"))
+					return nil
+				}
+				ok, promptErr := promptConfirm(
+					fmt.Sprintf("Delete workspace %q? This removes its microVM and platform state.", name),
+					"Tears down the workspace microVM and removes its .ai-platform directory (config + state) and platform registration.")
+				if promptErr != nil {
+					*exit = emitter.Failure(projectDeleteCommand, promptErr)
+					return nil
+				}
+				if !ok {
+					*exit = emitter.Success(projectDeleteCommand, map[string]any{"cancelled": true})
+					return nil
+				}
+				// Purge — the whole project directory (all the user's files), not just
+				// the platform state. Seeded by --purge.
+				purge, promptErr = promptConfirmDefault(
+					"Purge — also delete the ENTIRE project directory (all your files in it)?",
+					"Decline to keep your other files and remove only the platform's .ai-platform state.",
+					purge)
+				if promptErr != nil {
+					*exit = emitter.Failure(projectDeleteCommand, promptErr)
+					return nil
+				}
+				// The per-CLI agent config folders + venv (only meaningful when NOT
+				// purging — purge removes the whole directory anyway). Seeded by
+				// --keep-agent-config.
+				if !purge {
+					removeAgentDirs, promptErr = promptConfirmDefault(
+						"Also delete the agent config folders (.opencode, .claude, .codex, .pi, .gemini, .venv-msb)?",
+						"If kept, their symlinked skills/agents/prompts are converted to real files first (the platform's shared copy is being removed).",
+						removeAgentDirs)
 					if promptErr != nil {
 						*exit = emitter.Failure(projectDeleteCommand, promptErr)
 						return nil
 					}
-					if !ok {
-						*exit = emitter.Success(projectDeleteCommand, map[string]any{"cancelled": true})
-						return nil
-					}
-				} else {
-					*exit = emitter.Failure(projectDeleteCommand,
-						output.Errorf(output.ExitInvalidInput, "destructive: pass --yes to confirm"))
-					return nil
 				}
 			}
 			// Tear down the workspace microVM first so deleting the project never
@@ -974,7 +999,7 @@ func newDeleteCmd(emitter *output.Emitter, exit *int, use string) *cobra.Command
 					"workspace microVM teardown failed (%s); removed platform state anyway — if a microVM lingers, run: msb remove -f %s",
 					err, workspace.Name(name)))
 			}
-			if err := project.Delete(name, purge); err != nil {
+			if err := project.Delete(name, purge, removeAgentDirs); err != nil {
 				*exit = emitter.Failure(projectDeleteCommand, mapProjectErr(err))
 				return nil
 			}
@@ -982,7 +1007,8 @@ func newDeleteCmd(emitter *output.Emitter, exit *int, use string) *cobra.Command
 			return nil
 		},
 	}
-	cmd.Flags().BoolVar(&purge, "purge", false, "also delete the host source directory")
+	cmd.Flags().BoolVar(&purge, "purge", false, "also delete the whole project directory (all your files, not just platform state)")
+	cmd.Flags().Bool("keep-agent-config", false, "keep the per-CLI agent config folders (.opencode/.claude/.codex/.pi/.gemini/.venv-msb); their symlinked content is materialized")
 	return cmd
 }
 
@@ -992,9 +1018,13 @@ func deletePlan(name, root string, purge bool) []string {
 	if purge {
 		removal = "remove the whole directory " + root
 	}
-	return []string{
+	plan := []string{
 		"destroy workspace microVM " + workspace.Name(name) + " (if running)",
 		"remove " + name + " from config/projects.yaml",
 		removal,
 	}
+	if !purge {
+		plan = append(plan, "remove the agent config folders (.opencode/.claude/.codex/.pi/.gemini/.venv-msb) unless kept with --keep-agent-config")
+	}
+	return plan
 }

@@ -222,7 +222,7 @@ func TestDeleteRemovesPlatformDirKeepsOtherFiles(test *testing.T) {
 			test.Fatal(err)
 		}
 	}
-	if err := Delete("my-app", false); err != nil {
+	if err := Delete("my-app", false, true); err != nil {
 		test.Fatal(err)
 	}
 	// The whole .ai-platform directory (the platform's footprint) is removed.
@@ -245,13 +245,59 @@ func TestDeleteRemovesPlatformDirKeepsOtherFiles(test *testing.T) {
 	}
 }
 
+// TestDeleteKeepsAgentDirsAndMaterializesSymlinks: when the agent config folders are
+// KEPT (removeAgentDirs=false), their symlinks into the shared .ai-platform pool are
+// converted to real files before .ai-platform is removed, so the kept content survives.
+func TestDeleteKeepsAgentDirsAndMaterializesSymlinks(test *testing.T) {
+	withTemplates(test)
+	root, err := Scaffold(sampleSpec(), "t")
+	if err != nil {
+		test.Fatal(err)
+	}
+	// Seed a shared pool with a skill, and a per-CLI dir symlinking into it (as
+	// linkSharedResources does at workspace start).
+	pool := filepath.Join(root, ".ai-platform", "skills", "caveman")
+	if err := os.MkdirAll(pool, 0o755); err != nil {
+		test.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(pool, "SKILL.md"), []byte("# caveman"), 0o644); err != nil {
+		test.Fatal(err)
+	}
+	opencodeSkills := filepath.Join(root, ".opencode", "skills")
+	if err := os.MkdirAll(filepath.Join(root, ".opencode"), 0o755); err != nil {
+		test.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Join("..", ".ai-platform", "skills"), opencodeSkills); err != nil {
+		test.Fatal(err)
+	}
+
+	if err := Delete("my-app", false, false); err != nil {
+		test.Fatal(err)
+	}
+	// .ai-platform is gone, but .opencode is KEPT with the skill materialized as a REAL
+	// file (not a now-dangling symlink).
+	if _, err := os.Stat(filepath.Join(root, ".ai-platform")); !os.IsNotExist(err) {
+		test.Errorf(".ai-platform should be removed, got %v", err)
+	}
+	info, err := os.Lstat(opencodeSkills)
+	if err != nil {
+		test.Fatalf(".opencode/skills should be kept: %v", err)
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		test.Error(".opencode/skills must be materialized to a real dir, not left a (dangling) symlink")
+	}
+	if data, err := os.ReadFile(filepath.Join(opencodeSkills, "caveman", "SKILL.md")); err != nil || string(data) != "# caveman" {
+		test.Errorf("materialized skill content missing: %q err=%v", data, err)
+	}
+}
+
 func TestDeletePurgeRemovesSource(test *testing.T) {
 	withTemplates(test)
 	root, err := Scaffold(sampleSpec(), "t")
 	if err != nil {
 		test.Fatal(err)
 	}
-	if err := Delete("my-app", true); err != nil {
+	if err := Delete("my-app", true, true); err != nil {
 		test.Fatal(err)
 	}
 	if _, err := os.Stat(root); !os.IsNotExist(err) {
@@ -269,7 +315,7 @@ func TestDeleteRemovesOverlay(test *testing.T) {
 	if _, err := overlay.Ensure(workspaceID); err != nil {
 		test.Fatal(err)
 	}
-	if err := Delete("my-app", false); err != nil {
+	if err := Delete("my-app", false, true); err != nil {
 		test.Fatal(err)
 	}
 	// Deleting the project is permanent removal (arch §26): the overlay goes too.
@@ -281,7 +327,7 @@ func TestDeleteRemovesOverlay(test *testing.T) {
 
 func TestDeleteUnknown(test *testing.T) {
 	withTemplates(test)
-	if err := Delete("ghost", false); !errors.Is(err, ErrUnknownProject) {
+	if err := Delete("ghost", false, true); !errors.Is(err, ErrUnknownProject) {
 		test.Fatalf("want ErrUnknownProject, got %v", err)
 	}
 }
