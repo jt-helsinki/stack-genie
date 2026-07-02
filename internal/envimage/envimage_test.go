@@ -40,7 +40,7 @@ func TestComposeSelectedOnly(test *testing.T) {
 		}
 	}
 	// Unselected stacks/CLIs must not leak in.
-	for _, fragment := range []string{"# stack: node", "# stack: python", "# agent CLI: gemini"} {
+	for _, fragment := range []string{"# stack: rust", "# stack: deno", "# agent CLI: gemini"} {
 		if strings.Contains(dockerfile, fragment) {
 			test.Errorf("composed Dockerfile unexpectedly contains %q", fragment)
 		}
@@ -49,11 +49,11 @@ func TestComposeSelectedOnly(test *testing.T) {
 
 func TestComposeMultipleSelections(test *testing.T) {
 	installTemplates(test)
-	dockerfile, err := Compose("debian-trixie", []string{"go", "node"}, []string{"opencode", "codex"})
+	dockerfile, err := Compose("debian-trixie", []string{"go", "rust"}, []string{"opencode", "codex"})
 	if err != nil {
 		test.Fatal(err)
 	}
-	for _, fragment := range []string{"# stack: go", "# stack: node", "# agent CLI: opencode", "# agent CLI: codex"} {
+	for _, fragment := range []string{"# stack: go", "# stack: rust", "# agent CLI: opencode", "# agent CLI: codex"} {
 		if !strings.Contains(dockerfile, fragment) {
 			test.Errorf("missing %q", fragment)
 		}
@@ -169,14 +169,14 @@ func TestAllOSTemplatesExposeIdenticalBaseSurface(test *testing.T) {
 func TestWriteProjectDockerfile(test *testing.T) {
 	installTemplates(test)
 	projectRoot := test.TempDir()
-	if err := Write(projectRoot, "debian-trixie", []string{"python"}, []string{"opencode"}); err != nil {
+	if err := Write(projectRoot, "debian-trixie", []string{"go"}, []string{"opencode"}); err != nil {
 		test.Fatal(err)
 	}
 	written, err := os.ReadFile(filepath.Join(projectRoot, ".ai-platform", "Dockerfile"))
 	if err != nil {
 		test.Fatal(err)
 	}
-	if !strings.Contains(string(written), "# stack: python") {
-		test.Errorf("written Dockerfile missing python stack:\n%s", written)
+	if !strings.Contains(string(written), "# stack: go") {
+		test.Errorf("written Dockerfile missing go stack:\n%s", written)
 	}
 }

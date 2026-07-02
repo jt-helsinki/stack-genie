@@ -48,7 +48,7 @@ RUN arch="$(uname -m)" \
 # added just before it). Node 24: the distro apt Node (18/20) is too old for the agent
 # CLIs — pi's bundled undici calls webidl.markAsUncloneable, added in Node 22.10 and
 # never backported to 20.x. Node is installed ONCE here so every Node-based agent CLI
-# + the `node` stack share this one pinned Node (they no longer install it).
+# shares this one pinned Node (they no longer install it; there is no `node` stack).
 ENV NODE_MAJOR=24
 RUN curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
       -o /usr/share/keyrings/githubcli-archive-keyring.gpg \

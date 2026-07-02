@@ -47,8 +47,8 @@ RUN arch="$(uname -m)" \
 # external dnf repo, so their repo setup + a single install share a layer. Node 24:
 # the distro module Node is too old for the agent CLIs — pi's bundled undici calls
 # webidl.markAsUncloneable, added in Node 22.10 and never backported to 20.x. Node is
-# installed ONCE here so every Node-based agent CLI + the `node` stack share this one
-# pinned Node (they no longer install it).
+# installed ONCE here so every Node-based agent CLI shares this one pinned Node (they
+# no longer install it; there is no `node` stack).
 ENV NODE_MAJOR=24
 RUN dnf install -y 'dnf-command(config-manager)' \
  && dnf config-manager --add-repo https://cli.github.com/packages/rpm/gh-cli.repo \

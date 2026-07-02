@@ -13,7 +13,7 @@ import (
 // internal/templates/files. Keep these in sync with that tree.
 var (
 	osKeys    = []string{"alma", "debian-bookworm", "debian-trixie", "ubuntu"}
-	stacks    = []string{"deno", "go", "java", "maven", "node", "python", "rust"}
+	stacks    = []string{"deno", "go", "java", "maven", "rust"}
 	agentCLIs = []string{"claude-code", "codex", "gemini", "opencode", "pi"}
 )
 
@@ -53,7 +53,7 @@ func TestInstallCopiesTreeToDisk(t *testing.T) {
 		filepath.Join("dockerfiles", "debian-trixie", "Dockerfile"),
 		filepath.Join("dockerfiles", "alma", "Dockerfile"),
 		filepath.Join("stacks", "go", "Dockerfile.snippet"),
-		filepath.Join("stacks", "python", "Dockerfile.snippet"),
+		filepath.Join("stacks", "rust", "Dockerfile.snippet"),
 		filepath.Join("agentclis", "opencode", "Dockerfile.snippet"),
 		filepath.Join("agentclis", "claude-code", "Dockerfile.snippet"),
 	}
