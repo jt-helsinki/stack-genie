@@ -173,6 +173,26 @@ func ValidateMemory(value string) error {
 	return nil
 }
 
+// UsableHostMemoryMiB is the largest workspace memory that leaves enough host RAM for
+// the host OS, the Docker service tier, and the hypervisor. Allocating the WHOLE host
+// to a single microVM lets the guest boot its agent relay but leaves it unbackable, so
+// the sandbox wedges and msb stops it. Reserve the LARGER of 2 GiB or 25% of host RAM
+// (so the VM gets at most ~75% of host and the request is always strictly below host),
+// floored at the boot minimum.
+func UsableHostMemoryMiB(hostMiB uint64) uint64 {
+	reserve := uint64(2048)
+	if quarter := hostMiB / 4; quarter > reserve {
+		reserve = quarter
+	}
+	if hostMiB <= reserve {
+		return MinWorkspaceMemoryMiB
+	}
+	if usable := hostMiB - reserve; usable > MinWorkspaceMemoryMiB {
+		return usable
+	}
+	return MinWorkspaceMemoryMiB
+}
+
 // ValidateCPUs checks a workspace cpu_limit. 0 means "use the runtime default"; a
 // negative count is invalid.
 func ValidateCPUs(cpus int) error {

@@ -123,13 +123,14 @@ func TestParsePublishPorts(test *testing.T) {
 }
 
 func TestCappedResourcesCapsDefaultAtHost(test *testing.T) {
-	// Small host: the 4-cpu / 8G defaults are capped down to the host's 2 cpu / 4096 MiB.
+	// Small host: the 4-cpu / 8G defaults are capped down to the host's 2 cpu and the
+	// USABLE memory (4096 MiB host → reserve max(2048, 4096/4=1024)=2048 → 2048 usable).
 	cpus, memory := cappedResources(0, "", 2, 4096, true)
 	if cpus != 2 {
 		test.Errorf("cpus = %d, want capped to host 2", cpus)
 	}
-	if memory != "4096M" {
-		test.Errorf("memory = %q, want capped to host 4096M", memory)
+	if memory != "2048M" {
+		test.Errorf("memory = %q, want capped to usable 2048M", memory)
 	}
 	// Large host: defaults fit, so they pass through unchanged.
 	cpus, memory = cappedResources(0, "", 16, 32768, true)

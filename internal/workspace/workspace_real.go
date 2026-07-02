@@ -93,14 +93,18 @@ const microVMMemory = "4G"
 // value gets a "G" suffix; a value that already carries a unit (or the empty
 // fallback) is handled directly.
 func msbMemory(value string) string {
-	trimmed := strings.TrimSpace(value)
-	if trimmed == "" {
-		return microVMMemory
+	mib, err := config.ParseMemoryMiB(value)
+	if err != nil {
+		mib, _ = config.ParseMemoryMiB(microVMMemory)
 	}
-	if strings.ContainsAny(strings.ToUpper(trimmed), "MG") {
-		return trimmed
+	// Clamp to the usable host ceiling (leaving headroom for the host + service tier);
+	// a microVM given all host RAM cannot boot. Render with a unit msb accepts (G for
+	// whole GiB, else M).
+	mib = clampWorkspaceMemoryMiB(mib)
+	if mib%1024 == 0 {
+		return fmt.Sprintf("%dG", mib/1024)
 	}
-	return trimmed + "G"
+	return fmt.Sprintf("%dM", mib)
 }
 
 // dnsNameserver is the fixed host-loopback address of the platform's aip-dns

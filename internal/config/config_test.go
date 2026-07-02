@@ -216,3 +216,26 @@ func TestValidateMemoryMinimum(test *testing.T) {
 		}
 	}
 }
+
+// TestUsableHostMemoryMiB verifies the workspace memory ceiling always leaves host
+// headroom (strictly below host RAM) — a microVM given all host RAM cannot boot.
+func TestUsableHostMemoryMiB(test *testing.T) {
+	cases := map[uint64]uint64{
+		24576: 18432, // 24 GiB → reserve max(2048, 6144)=6144 → 18432 (the reported bug)
+		16384: 12288, // 16 GiB → reserve 4096 → 12288
+		8192:  6144,  // 8 GiB  → reserve max(2048, 2048)=2048 → 6144
+		4096:  2048,  // 4 GiB  → reserve 2048 → 2048
+	}
+	for host, want := range cases {
+		if got := UsableHostMemoryMiB(host); got != want {
+			test.Errorf("UsableHostMemoryMiB(%d) = %d, want %d", host, got, want)
+		}
+		if UsableHostMemoryMiB(host) >= host {
+			test.Errorf("UsableHostMemoryMiB(%d) must be strictly below host RAM", host)
+		}
+	}
+	// A tiny host still yields the bootable minimum, never zero.
+	if got := UsableHostMemoryMiB(2048); got != MinWorkspaceMemoryMiB {
+		test.Errorf("UsableHostMemoryMiB(2048) = %d, want the %d MiB minimum", got, MinWorkspaceMemoryMiB)
+	}
+}

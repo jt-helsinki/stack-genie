@@ -25,6 +25,7 @@ import (
 	"github.com/jt-helsinki/ideal-robot/internal/overlay"
 	"github.com/jt-helsinki/ideal-robot/internal/runtime"
 	"github.com/jt-helsinki/ideal-robot/internal/state"
+	"github.com/jt-helsinki/ideal-robot/internal/sysinfo"
 )
 
 // resolveGateway derives the model-gateway host, port, and base URL every
@@ -915,6 +916,28 @@ func writeHostFile(path string, content []byte) error {
 		return err
 	}
 	return os.WriteFile(path, content, 0o644)
+}
+
+// clampWorkspaceMemoryMiB caps the requested microVM memory at the usable host
+// ceiling (config.UsableHostMemoryMiB), leaving headroom for the host OS, the Docker
+// service tier, and the hypervisor. This is a HARD safety clamp applied at VM
+// creation: a microVM handed the whole host RAM boots its agent relay but cannot be
+// backed, so the sandbox wedges and msb stops it. It also self-heals projects whose
+// config.yaml requests too much (e.g. `memory_limit: 24` on a 24 GB host). It warns on
+// stderr when it clamps so the effective value is visible. Host RAM unknown → no clamp.
+func clampWorkspaceMemoryMiB(requested uint64) uint64 {
+	hostMiB, ok := sysinfo.MemoryMiB()
+	if !ok {
+		return requested
+	}
+	usable := config.UsableHostMemoryMiB(hostMiB)
+	if requested > usable {
+		_, _ = fmt.Fprintf(os.Stderr,
+			"warning: capping workspace memory at %d MiB (requested %d MiB; host has %d MiB — reserving headroom for the host + service tier + hypervisor). A microVM given all host RAM cannot boot.\n",
+			usable, requested, hostMiB)
+		return usable
+	}
+	return requested
 }
 
 // sharedResourceKinds are the shared pools under <project>/.ai-platform/ that hold ONE

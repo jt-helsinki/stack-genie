@@ -757,13 +757,15 @@ func (sandbox *sdkSandbox) SyncClock(name string) error {
 
 // parseMemoryMiB converts a config memory string ("4G", "512M", "2Gi", "2048") to the
 // MiB count the SDK's WithMemory wants, via the canonical config.ParseMemoryMiB. An
-// unset or unparsable value falls back to the platform default (microVMMemory).
+// unset or unparsable value falls back to the platform default (microVMMemory). The
+// result is clamped to the usable host ceiling — a microVM given all host RAM boots
+// its relay but cannot be backed, wedging the sandbox.
 func parseMemoryMiB(value string) uint32 {
 	mib, err := config.ParseMemoryMiB(value)
 	if err != nil {
 		mib, _ = config.ParseMemoryMiB(microVMMemory)
 	}
-	return uint32(mib)
+	return uint32(clampWorkspaceMemoryMiB(mib))
 }
 
 // parseIdleTimeout parses a Go-style duration ("24h", "30m"), falling back to the

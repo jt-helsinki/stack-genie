@@ -241,8 +241,12 @@ func validateResourcesWithinHost(cpus int, memory string) error {
 	}
 	if memory != "" {
 		if requested, err := config.ParseMemoryMiB(memory); err == nil {
-			if hostMiB, ok := sysinfo.MemoryMiB(); ok && requested > hostMiB {
-				return output.Errorf(output.ExitInvalidInput, "--memory %s exceeds the host's %d MiB of RAM", memory, hostMiB)
+			if hostMiB, ok := sysinfo.MemoryMiB(); ok {
+				if usable := config.UsableHostMemoryMiB(hostMiB); requested > usable {
+					return output.Errorf(output.ExitInvalidInput,
+						"--memory %s (%d MiB) exceeds the usable %d MiB — the platform reserves headroom for the host, service tier, and hypervisor (host has %d MiB; a microVM given all host RAM cannot boot)",
+						memory, requested, usable, hostMiB)
+				}
 			}
 		}
 	}
@@ -254,6 +258,16 @@ func validateResourcesWithinHost(cpus int, memory string) error {
 func hostMemoryGB() int {
 	if mib, ok := sysinfo.MemoryMiB(); ok {
 		return int(mib / 1024)
+	}
+	return 0
+}
+
+// usableHostMemoryGB is the largest workspace memory (whole GB) the platform will
+// allocate — the host RAM minus the reserve for the host OS + service tier +
+// hypervisor (config.UsableHostMemoryMiB). A microVM given all host RAM cannot boot.
+func usableHostMemoryGB() int {
+	if mib, ok := sysinfo.MemoryMiB(); ok {
+		return int(config.UsableHostMemoryMiB(mib) / 1024)
 	}
 	return 0
 }
@@ -280,8 +294,9 @@ func cappedResources(cpus int, memory string, hostCPUs int, hostMiB uint64, host
 	if memory == "" {
 		memory = config.Default().Workspace.MemoryLimit
 		if hostMiBKnown {
-			if defaultMiB, err := config.ParseMemoryMiB(memory); err == nil && defaultMiB > hostMiB {
-				memory = fmt.Sprintf("%dM", hostMiB)
+			usable := config.UsableHostMemoryMiB(hostMiB)
+			if defaultMiB, err := config.ParseMemoryMiB(memory); err == nil && defaultMiB > usable {
+				memory = fmt.Sprintf("%dM", usable)
 			}
 		}
 	}
@@ -473,7 +488,7 @@ func newCreateCmd(emitter *output.Emitter, exit *int, use string) *cobra.Command
 	cmd.Flags().StringSlice("apps", nil, "in-VM AI apps to install (default: none): "+strings.Join(supportedApps, ","))
 	cmd.Flags().String("idle-timeout", "", "Microsandbox idle timeout (default: "+config.DefaultMicrosandboxIdleTimeout+", e.g. 30m, 24h)")
 	cmd.Flags().Int("cpus", 0, fmt.Sprintf("workspace vCPUs (default: %d; max: host's %d)", config.Default().Workspace.CPULimit, sysinfo.CPUs()))
-	cmd.Flags().String("memory", "", "workspace memory in GB, a plain number (default: "+config.Default().Workspace.MemoryLimit+"; max: host RAM in GB)")
+	cmd.Flags().String("memory", "", "workspace memory in GB, a plain number (default: "+config.Default().Workspace.MemoryLimit+"; capped below host RAM, reserving headroom for the host + service tier)")
 	cmd.Flags().StringSlice("ports", nil, "ports to open into the workspace: PORT or HOST:GUEST (e.g. 8080,9000:3000)")
 	cmd.Flags().String("location", "", "workspace directory (default: current directory; created if missing)")
 	cmd.Flags().String("graphify-model", "", "Ollama model Graphify uses (e.g. qwen2.5-coder:7b); chosen in the wizard from the Ollama library and pulled if absent")
@@ -690,7 +705,7 @@ func runCreateWizard(seed project.Spec) (project.Spec, bool, error) {
 				Description(fmt.Sprintf("Blank uses the default (%d); host has %d", config.Default().Workspace.CPULimit, sysinfo.CPUs())).
 				Value(&cpusText).Validate(wizardCPUsValidator),
 			huh.NewInput().Title("Workspace memory (GB)").
-				Description(fmt.Sprintf("A plain number in GB; blank uses the default (%s); host has %d GB", config.Default().Workspace.MemoryLimit, hostMemoryGB())).
+				Description(fmt.Sprintf("A plain number in GB; blank uses the default (%s); usable max %d GB (host %d GB, minus headroom for the host + service tier)", config.Default().Workspace.MemoryLimit, usableHostMemoryGB(), hostMemoryGB())).
 				Value(&memory).Validate(wizardMemoryValidator),
 			huh.NewInput().Title("Ports to open (comma-separated)").
 				Description("PORT or HOST:GUEST, e.g. 8080,9000:3000").
