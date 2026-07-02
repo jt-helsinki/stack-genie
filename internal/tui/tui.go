@@ -25,6 +25,7 @@ import (
 	"github.com/jt-helsinki/ideal-robot/internal/catalog"
 	"github.com/jt-helsinki/ideal-robot/internal/config"
 	"github.com/jt-helsinki/ideal-robot/internal/contextopt"
+	"github.com/jt-helsinki/ideal-robot/internal/create"
 	"github.com/jt-helsinki/ideal-robot/internal/egress"
 	"github.com/jt-helsinki/ideal-robot/internal/litellm"
 	"github.com/jt-helsinki/ideal-robot/internal/ollama"
@@ -375,10 +376,14 @@ func executablePath() string {
 	return path
 }
 
-// createFinishedMsg reports that the suspended workspace-create wizard subprocess
-// has returned. (Workspace lifecycle / shell / attach run in the live embedded
-// terminal overlay instead — see openTerminal — so they have no finished message.)
-type createFinishedMsg struct{ err error }
+// createDoneMsg reports that the in-process create.Execute for a new workspace has
+// finished (running off the event loop). warnings are best-effort issues (e.g. the
+// Graphify model pull); err is a hard failure.
+type createDoneMsg struct {
+	name     string
+	warnings []string
+	err      error
+}
 
 // sessionFinishedMsg reports that a suspended interactive shell/attach subprocess
 // (run via tea.ExecProcess in the user's real terminal) has exited, so the TUI can
@@ -580,9 +585,16 @@ type app struct {
 	// `ai keys add|remove` subprocess returns from the terminal overlay.
 	apiKeysView *views.APIKeys
 
-	// createView is the modal directory-picker overlay for creating a new
-	// project; non-nil only while it is open (it is not a menu/slice view).
+	// createView is the modal multi-step new-workspace wizard overlay; non-nil only
+	// while it is open (it is not a menu/slice view).
 	createView *views.Create
+
+	// creating holds the name of a workspace whose in-process create.Execute is
+	// running (async); the View shows a "creating…" pane while it is non-empty.
+	creating string
+	// createFlash is a transient banner shown after a create completes (an error, or
+	// best-effort warnings); cleared on the next tab switch.
+	createFlash string
 
 	// terminal is the live embedded-terminal overlay (workspace start/stop/…,
 	// shell, agent, attach); non-nil only while it is open. While set it owns all
@@ -660,32 +672,45 @@ func (application *app) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return application, application.projectsHub.OpenProject(message.Name)
 
 	case views.NewProjectRequestedMsg:
-		// Open the create overlay (a location field) starting in the current directory.
-		create := views.NewCreate(application.cwd)
+		// Open the multi-step create WIZARD in-TUI (no subprocess). Seed it with the
+		// current directory, the cached Ollama library (for the Graphify-model step;
+		// cache-only so it never blocks), and the host resource caps for the hints.
+		library, _ := ollama.LoadLibrary()
+		wizard := views.NewCreate(application.cwd, library, create.HostMemoryGB(), create.UsableHostMemoryGB())
 		bodyWidth, bodyHeight := application.bodyContentSize()
-		create.SetSize(bodyWidth, bodyHeight)
-		application.createView = create
-		return application, create.Init()
+		wizard.SetSize(bodyWidth, bodyHeight)
+		application.createView = wizard
+		application.createFlash = ""
+		return application, wizard.Init()
 
 	case views.CreateCancelledMsg:
 		application.createView = nil
 		return application, nil
 
 	case views.CreateConfirmedMsg:
-		// Run the existing project-create wizard in the chosen directory (it
-		// targets cwd), suspending the TUI for the interactive subprocess.
+		// Run create IN-PROCESS (shared create.Execute) off the event loop so the slow
+		// step (a Graphify model pull) doesn't freeze the UI; show a "creating…" pane
+		// until createDoneMsg arrives.
 		application.createView = nil
-		command := exec.Command(executablePath(), "create")
-		command.Dir = message.Dir
-		return application, tea.ExecProcess(command, func(execErr error) tea.Msg {
-			return createFinishedMsg{err: execErr}
-		})
+		spec := message.Spec
+		application.creating = spec.Name
+		return application, func() tea.Msg {
+			_, warnings, err := create.Execute(spec, nowRFC3339())
+			return createDoneMsg{name: spec.Name, warnings: warnings, err: err}
+		}
 
-	case createFinishedMsg:
-		// Back from the wizard — show the switcher (backed out of any open project)
-		// and refresh it so a newly created project appears.
+	case createDoneMsg:
+		application.creating = ""
 		application.switchTab(application.projectsIndex)
-		return application, application.projectsHub.Reset()
+		if message.err != nil {
+			application.createFlash = ui.Failure.Render(ui.IconFail + " create failed: " + message.err.Error())
+			return application, application.projectsHub.Reset()
+		}
+		if len(message.warnings) > 0 {
+			application.createFlash = ui.Warn.Render(ui.IconDot + " created " + message.name + " with warnings: " + strings.Join(message.warnings, "; "))
+		}
+		// Land on the freshly-created workspace.
+		return application, tea.Sequence(application.projectsHub.Reset(), application.projectsHub.OpenProject(message.name))
 
 	case views.WorkspaceActionRequestedMsg:
 		if message.Action == "delete" {
@@ -1225,6 +1250,7 @@ func (application *app) switchTab(index int) {
 		outgoing.SetActive(false)
 	}
 	application.current = ((index % count) + count) % count
+	application.createFlash = "" // a transient create banner is dismissed on any tab switch
 	// A fresh tab starts at the top of its (possibly overflowing) pane.
 	application.bodyViewport.GotoTop()
 	if incoming, ok := application.views[application.current].(tabActivatable); ok {
@@ -1286,6 +1312,9 @@ func (application *app) View() string {
 			content = lipgloss.JoinVertical(lipgloss.Left,
 				application.projectsHub.SubTabBar(), "", content)
 		}
+	case application.creating != "":
+		content = ui.Heading.Render("Creating workspace "+application.creating+"…") + "\n\n" +
+			ui.Muted.Render("Scaffolding the project and pulling the Graphify model (if configured).\nThis can take a while on a first model pull; the UI stays responsive.")
 	case application.createView != nil:
 		content = application.createView.View()
 	case application.helpOpen:
@@ -1305,6 +1334,11 @@ func (application *app) View() string {
 			application.bodyViewport.SetContent(view.View())
 			content = application.bodyViewport.View()
 		}
+	}
+	// A create result (error / warnings) shows as a transient banner above the body
+	// until the next tab switch.
+	if application.createFlash != "" {
+		content = application.createFlash + "\n\n" + content
 	}
 	// header / tab bar / bordered body / footer, stacked top-to-bottom. The
 	// overlays (help/create/describe) render INSIDE the body border, just as the

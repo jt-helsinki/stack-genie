@@ -158,6 +158,9 @@ func cappedResources(cpus int, memory string, hostCPUs int, hostMiB uint64, host
 	return cpus, memory
 }
 
+// HostCPUs returns the host's logical CPU count (for the create wizard's vCPU hint).
+func HostCPUs() int { return sysinfo.CPUs() }
+
 // HostMemoryGB returns the host's total RAM in whole GB (0 if undeterminable).
 func HostMemoryGB() int {
 	if mib, ok := sysinfo.MemoryMiB(); ok {

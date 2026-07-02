@@ -167,7 +167,7 @@ func TestNewProjectRequestedOpensCreateOverlay(test *testing.T) {
 
 func TestCreateCancelledClosesOverlay(test *testing.T) {
 	application := &app{cwd: test.TempDir(), views: []View{&fakeView{title: "Projects"}}}
-	application.createView = views.NewCreate(application.cwd)
+	application.createView = views.NewCreate(application.cwd, nil, 0, 0)
 
 	application.Update(views.CreateCancelledMsg{})
 	if application.createView != nil {
@@ -175,16 +175,21 @@ func TestCreateCancelledClosesOverlay(test *testing.T) {
 	}
 }
 
-func TestCreateConfirmedClosesOverlayAndRunsWizard(test *testing.T) {
+func TestCreateConfirmedClosesOverlayAndRunsCreate(test *testing.T) {
 	application := &app{cwd: test.TempDir(), projectsIndex: 0, views: []View{&fakeView{title: "Projects"}}}
-	application.createView = views.NewCreate(application.cwd)
+	application.createView = views.NewCreate(application.cwd, nil, 0, 0)
 
-	_, cmd := application.Update(views.CreateConfirmedMsg{Dir: test.TempDir()})
+	// CreateConfirmedMsg closes the overlay, marks the workspace as creating, and
+	// returns the in-process create.Execute command (run off the event loop).
+	_, cmd := application.Update(views.CreateConfirmedMsg{Spec: project.Spec{Name: "demo", Root: test.TempDir()}})
 	if application.createView != nil {
 		test.Fatal("CreateConfirmedMsg must close the overlay")
 	}
+	if application.creating != "demo" {
+		test.Fatalf("CreateConfirmedMsg must mark the workspace creating; got %q", application.creating)
+	}
 	if cmd == nil {
-		test.Fatal("CreateConfirmedMsg must return a command (the create wizard subprocess)")
+		test.Fatal("CreateConfirmedMsg must return the in-process create command")
 	}
 }
 

@@ -102,15 +102,14 @@ func formatAgentCLIs(agents []string) string {
 // Selectable options for the create wizard. All four OS templates ship as of
 // S5 (debian-trixie in S1; debian-bookworm, ubuntu, alma added in S5). The user
 // always picks the OS — none is applied silently (arch §25).
+// The selectable create options are defined once in internal/create (shared with the
+// in-TUI wizard, which cannot import cli). Python + Node + uv + Graphify are baked into
+// every base by default, so they are NOT stacks.
 var (
-	supportedOSes = []string{"debian-trixie", "debian-bookworm", "ubuntu", "alma"}
-	// Python AND Node are NOT stacks — Python 3.x + uv + Graphify, and Node.js 24 LTS,
-	// are baked into every OS base by default (see the OS Dockerfiles), so selecting
-	// them as a stack would add nothing. Their snippets were removed entirely.
-	supportedStacks    = []string{"go", "rust", "java", "maven", "deno"}
-	supportedAgentCLIs = []string{"opencode", "pi", "claude-code", "codex", "gemini"}
-	// supportedApps are the opt-in in-VM AI applications (apps.Keys()). Default OFF.
-	supportedApps = apps.Keys()
+	supportedOSes      = create.SupportedOSes()
+	supportedStacks    = create.SupportedStacks()
+	supportedAgentCLIs = create.SupportedAgentCLIs()
+	supportedApps      = create.SupportedApps()
 )
 
 const (
