@@ -613,8 +613,19 @@ func (sandbox *sdkSandbox) execAs(ctx context.Context, name, user string, argv [
 	return ExecResult{ExitCode: output.ExitCode(), Stdout: output.Stdout(), Stderr: output.Stderr()}, nil
 }
 
+// sdkOpTimeout bounds a single buffered relay operation (one-shot Exec / file write)
+// that would otherwise run on context.Background(). Without it, a wedged or contended
+// relay makes a post-start step (config write, refresh-models install) hang FOREVER —
+// Start never returns, the "started" handle is never saved, and the workspace is stuck
+// "starting…" while the VM sits idle. The bound lets the op fail so Start completes or
+// rolls back. It is generous (config writes + a sudo install + the ~30s containerd
+// bring-up all fit); callers that need a tighter bound pass their own ctx.
+const sdkOpTimeout = 90 * time.Second
+
 func (sandbox *sdkSandbox) Exec(name string, argv []string) (ExecResult, error) {
-	return sandbox.execAs(context.Background(), name, "workspace", argv)
+	ctx, cancel := context.WithTimeout(context.Background(), sdkOpTimeout)
+	defer cancel()
+	return sandbox.execAs(ctx, name, "workspace", argv)
 }
 
 func (sandbox *sdkSandbox) ExecContext(ctx context.Context, name string, argv []string) (ExecResult, error) {
@@ -622,7 +633,9 @@ func (sandbox *sdkSandbox) ExecContext(ctx context.Context, name string, argv []
 }
 
 func (sandbox *sdkSandbox) ExecRoot(name string, argv []string) (ExecResult, error) {
-	return sandbox.execAs(context.Background(), name, "root", argv)
+	ctx, cancel := context.WithTimeout(context.Background(), sdkOpTimeout)
+	defer cancel()
+	return sandbox.execAs(ctx, name, "root", argv)
 }
 
 func (sandbox *sdkSandbox) ExecRootContext(ctx context.Context, name string, argv []string) (ExecResult, error) {
@@ -647,14 +660,16 @@ func (sandbox *sdkSandbox) ExecInteractive(name string, argv []string) error {
 // WriteFile writes content to guestPath, creating parent directories (mkdir -p as
 // the workspace user, matching the file owner) before the SDK filesystem write.
 func (sandbox *sdkSandbox) WriteFile(name, guestPath string, content []byte) error {
-	live, err := sandbox.handle(context.Background(), name)
+	ctx, cancel := context.WithTimeout(context.Background(), sdkOpTimeout)
+	defer cancel()
+	live, err := sandbox.handle(ctx, name)
 	if err != nil {
 		return err
 	}
 	if dir := path.Dir(guestPath); dir != "" && dir != "." && dir != "/" {
-		_, _ = live.Exec(context.Background(), "mkdir", []string{"-p", dir}, microsandbox.WithExecUser("workspace"))
+		_, _ = live.Exec(ctx, "mkdir", []string{"-p", dir}, microsandbox.WithExecUser("workspace"))
 	}
-	if err := live.FS().Write(context.Background(), guestPath, content); err != nil {
+	if err := live.FS().Write(ctx, guestPath, content); err != nil {
 		return fmt.Errorf("could not write %s in workspace %q: %w", guestPath, name, err)
 	}
 	return nil
