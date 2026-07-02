@@ -709,7 +709,15 @@ func (application *app) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if len(message.warnings) > 0 {
 			application.createFlash = ui.Warn.Render(ui.IconDot + " created " + message.name + " with warnings: " + strings.Join(message.warnings, "; "))
 		}
-		// Land on the freshly-created workspace.
+		// Land on the freshly-created workspace. Set currentProject FIRST (as
+		// ProjectSelectedMsg does) so the sub-views' closures (Logs/Metrics/Sessions)
+		// resolve it immediately — otherwise the Logs tab reports "no workspace selected"
+		// until the user backs out and reopens. Release any previous workspace's live
+		// connection so only one is ever active.
+		if application.currentProject != "" && application.currentProject != message.name {
+			application.workspaceManager.ReleaseConnection(application.currentProject)
+		}
+		application.currentProject = message.name
 		return application, tea.Sequence(application.projectsHub.Reset(), application.projectsHub.OpenProject(message.name))
 
 	case views.WorkspaceActionRequestedMsg:
