@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	goruntime "runtime"
 	"strconv"
 	"strings"
@@ -705,8 +706,18 @@ func (application *app) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			done = !found || entry.Status != string(state.StatusStarted)
 		}
 		if done || time.Since(op.started) > lifecycleTimeout {
+			timedOut := !done
 			application.lifecycle = nil
 			application.projectDetail.ClearPending()
+			if timedOut {
+				// The action never took effect within the window — point the user at the
+				// detached process's tee'd log so the hang/error is inspectable.
+				hint := op.action + " did not complete in time"
+				if logPath, ok := lifecycleLogPath(op.project, op.action); ok {
+					hint += " — see " + logPath
+				}
+				application.projectDetail.SetFlash(ui.Warn.Render(ui.IconDot + " " + hint))
+			}
 			return application, application.projectDetail.Init() // final status refresh
 		}
 		return application, application.lifecyclePollCmd()
@@ -917,7 +928,18 @@ const (
 func (application *app) startLifecycle(action, project string) tea.Cmd {
 	command := exec.Command(executablePath(), action, project)
 	command.SysProcAttr = detachedSysProcAttr()
-	command.Stdin, command.Stdout, command.Stderr = nil, nil, nil
+	command.Stdin = nil
+	// Tee the detached process's stdout+stderr to a per-workspace log so this flow is
+	// DEBUGGABLE: it runs detached (stdio would otherwise go to /dev/null) and the
+	// parent polls the state handle, not the process, so it never sees the output.
+	// Best-effort — if the log can't be opened, discard output (nil → /dev/null) as
+	// before. The child dup's the fd on Start, so the parent copy is closed after.
+	if logFile := openLifecycleLog(project, action); logFile != nil {
+		command.Stdout, command.Stderr = logFile, logFile
+		defer func() { _ = logFile.Close() }()
+	} else {
+		command.Stdout, command.Stderr = nil, nil
+	}
 	if err := command.Start(); err != nil {
 		application.projectDetail.SetFlash(ui.Failure.Render(ui.IconFail + " could not " + action + ": " + err.Error()))
 		return nil
@@ -937,6 +959,37 @@ func (application *app) startLifecycle(action, project string) tea.Cmd {
 	// path that replaces the per-poll evict-on-error (which churned the relay).
 	application.workspaceManager.ReleaseConnection(project)
 	return tea.Batch(application.projectDetail.Init(), application.lifecyclePollCmd())
+}
+
+// lifecycleLogPath is the per-workspace file a detached lifecycle action tees its
+// stdout+stderr to: <project>/.ai-platform/run/<action>.log (run/ is gitignored). The
+// param is projectName so the `project` package resolves inside. ok=false when the
+// project root can't be resolved (the caller then discards output).
+func lifecycleLogPath(projectName, action string) (string, bool) {
+	root, found, err := project.Path(projectName)
+	if err != nil || !found || root == "" {
+		return "", false
+	}
+	return filepath.Join(root, ".ai-platform", "run", action+".log"), true
+}
+
+// openLifecycleLog opens (truncating) the per-workspace lifecycle log, writing a header
+// so it is self-describing. Best-effort: nil on any failure, so startLifecycle falls
+// back to discarding the detached process's output.
+func openLifecycleLog(projectName, action string) *os.File {
+	logPath, ok := lifecycleLogPath(projectName, action)
+	if !ok {
+		return nil
+	}
+	if err := os.MkdirAll(filepath.Dir(logPath), 0o755); err != nil {
+		return nil
+	}
+	file, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o644)
+	if err != nil {
+		return nil
+	}
+	_, _ = fmt.Fprintf(file, "=== ai %s %s @ %s ===\n", action, projectName, time.Now().Format(time.RFC3339))
+	return file
 }
 
 func (application *app) workspaceLogReadable() bool {
