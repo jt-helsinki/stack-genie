@@ -122,51 +122,6 @@ func TestParsePublishPorts(test *testing.T) {
 	}
 }
 
-func TestCappedResourcesCapsDefaultAtHost(test *testing.T) {
-	// Small host: the 4-cpu / 8G defaults are capped down to the host's 2 cpu and the
-	// USABLE memory (4096 MiB host → reserve max(2048, 4096/4=1024)=2048 → 2048 usable).
-	cpus, memory := cappedResources(0, "", 2, 4096, true)
-	if cpus != 2 {
-		test.Errorf("cpus = %d, want capped to host 2", cpus)
-	}
-	if memory != "2048M" {
-		test.Errorf("memory = %q, want capped to usable 2048M", memory)
-	}
-	// Large host: defaults fit, so they pass through unchanged.
-	cpus, memory = cappedResources(0, "", 16, 32768, true)
-	if cpus != config.Default().Workspace.CPULimit || memory != config.Default().Workspace.MemoryLimit {
-		test.Errorf("large host: got %d/%q, want defaults %d/%q", cpus, memory, config.Default().Workspace.CPULimit, config.Default().Workspace.MemoryLimit)
-	}
-	// Explicit values are preserved (capping only fills unset).
-	cpus, memory = cappedResources(1, "2G", 2, 4096, true)
-	if cpus != 1 || memory != "2G" {
-		test.Errorf("explicit values changed: got %d/%q, want 1/2G", cpus, memory)
-	}
-	// Unknown host RAM: the memory default is left as-is (no cap when we can't tell).
-	if _, memory = cappedResources(0, "", 2, 0, false); memory != config.Default().Workspace.MemoryLimit {
-		test.Errorf("unknown host RAM: memory = %q, want default unchanged", memory)
-	}
-}
-
-func TestValidateResourcesWithinHostRejectsOverCommit(test *testing.T) {
-	// A clearly-impossible CPU request must be rejected (host has far fewer).
-	if err := validateResourcesWithinHost(1<<20, ""); err == nil {
-		test.Error("an over-host CPU request must be rejected")
-	}
-	// A negative CPU count is invalid.
-	if err := validateResourcesWithinHost(-1, ""); err == nil {
-		test.Error("a negative CPU count must be rejected")
-	}
-	// A reasonable request (1 CPU, 1 GB) passes on any host.
-	if err := validateResourcesWithinHost(1, "1"); err != nil {
-		test.Errorf("1 CPU / 1 GB should be valid: %v", err)
-	}
-	// Below the boot minimum is rejected (also guards the unit footgun).
-	if err := validateResourcesWithinHost(1, "256M"); err == nil {
-		test.Error("256M (below the 512 MiB minimum) must be rejected")
-	}
-}
-
 func TestAgentCLIOptionsReflectSelectedAgents(test *testing.T) {
 	options := agentCLIOptions([]string{"codex", "gemini"})
 	if len(options) != 2 {

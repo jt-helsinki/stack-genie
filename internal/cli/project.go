@@ -14,7 +14,7 @@ import (
 	"github.com/charmbracelet/x/term"
 	"github.com/jt-helsinki/ideal-robot/internal/apps"
 	"github.com/jt-helsinki/ideal-robot/internal/config"
-	"github.com/jt-helsinki/ideal-robot/internal/contextopt"
+	"github.com/jt-helsinki/ideal-robot/internal/create"
 	"github.com/jt-helsinki/ideal-robot/internal/ollama"
 	"github.com/jt-helsinki/ideal-robot/internal/output"
 	"github.com/jt-helsinki/ideal-robot/internal/project"
@@ -226,82 +226,6 @@ func formatPublishPorts(ports []config.PortMapping) string {
 	return strings.Join(parts, ",")
 }
 
-// validateResourcesWithinHost rejects a CPU/memory request that exceeds the host's
-// actual resources (so a workspace can never be configured larger than the machine).
-func validateResourcesWithinHost(cpus int, memory string) error {
-	if err := config.ValidateCPUs(cpus); err != nil {
-		return output.Errorf(output.ExitInvalidInput, "%s", err)
-	}
-	if hostCPUs := sysinfo.CPUs(); cpus > hostCPUs {
-		return output.Errorf(output.ExitInvalidInput, "--cpus %d exceeds the host's %d logical CPUs", cpus, hostCPUs)
-	}
-	if err := config.ValidateMemory(memory); err != nil {
-		return output.Errorf(output.ExitInvalidInput, "%s", err)
-	}
-	if memory != "" {
-		if requested, err := config.ParseMemoryMiB(memory); err == nil {
-			if hostMiB, ok := sysinfo.MemoryMiB(); ok {
-				if usable := config.UsableHostMemoryMiB(hostMiB); requested > usable {
-					return output.Errorf(output.ExitInvalidInput,
-						"--memory %s (%d MiB) exceeds the usable %d MiB — the platform reserves headroom for the host, service tier, and hypervisor (host has %d MiB; a microVM given all host RAM cannot boot)",
-						memory, requested, usable, hostMiB)
-				}
-			}
-		}
-	}
-	return nil
-}
-
-// hostMemoryGB returns the host RAM in whole GB (0 when unknown), for the create
-// wizard's memory-field hint (memory is entered as a plain number of GB).
-func hostMemoryGB() int {
-	if mib, ok := sysinfo.MemoryMiB(); ok {
-		return int(mib / 1024)
-	}
-	return 0
-}
-
-// usableHostMemoryGB is the largest workspace memory (whole GB) the platform will
-// allocate — the host RAM minus the reserve for the host OS + service tier +
-// hypervisor (config.UsableHostMemoryMiB). A microVM given all host RAM cannot boot.
-func usableHostMemoryGB() int {
-	if mib, ok := sysinfo.MemoryMiB(); ok {
-		return int(config.UsableHostMemoryMiB(mib) / 1024)
-	}
-	return 0
-}
-
-// cappedDefaultResources resolves an UNSET cpu/memory to the platform default and
-// then caps it at the host — so a host smaller than the default (e.g. 4 GiB RAM vs the
-// 8G default) never yields a workspace configured larger than the machine. Explicit
-// over-host values are rejected earlier by validateResourcesWithinHost; this handles
-// only the unset case, which must not error.
-func cappedDefaultResources(cpus int, memory string) (int, string) {
-	hostMiB, ok := sysinfo.MemoryMiB()
-	return cappedResources(cpus, memory, sysinfo.CPUs(), hostMiB, ok)
-}
-
-// cappedResources is the host-agnostic core (host values injected so it is testable):
-// an unset cpu/memory becomes the platform default capped at the host.
-func cappedResources(cpus int, memory string, hostCPUs int, hostMiB uint64, hostMiBKnown bool) (int, string) {
-	if cpus <= 0 {
-		cpus = config.Default().Workspace.CPULimit
-		if hostCPUs > 0 && cpus > hostCPUs {
-			cpus = hostCPUs
-		}
-	}
-	if memory == "" {
-		memory = config.Default().Workspace.MemoryLimit
-		if hostMiBKnown {
-			usable := config.UsableHostMemoryMiB(hostMiB)
-			if defaultMiB, err := config.ParseMemoryMiB(memory); err == nil && defaultMiB > usable {
-				memory = fmt.Sprintf("%dM", usable)
-			}
-		}
-	}
-	return cpus, memory
-}
-
 // dirSuggestions lists directories matching the typed path prefix, for the create
 // wizard's location autocompletion.
 func dirSuggestions(path string) []string {
@@ -419,60 +343,35 @@ func newCreateCmd(emitter *output.Emitter, exit *int, use string) *cobra.Command
 			}
 			spec.Root = root
 
-			// Reject an EXPLICIT over-host CPU/memory request, then resolve an UNSET
-			// value to the platform default capped at the host — so the persisted config
-			// is never larger than the machine.
-			if err := validateResourcesWithinHost(spec.CPUs, spec.Memory); err != nil {
+			// Dry-run: emit the side-effect-free plan, reflecting the effective
+			// (host-capped) resources — validate + cap first, but do NOT scaffold.
+			if dryRun {
+				if err := create.ValidateResourcesWithinHost(spec.CPUs, spec.Memory); err != nil {
+					*exit = emitter.Failure(projectCreateCommand, err)
+					return nil
+				}
+				planSpec := spec
+				planSpec.CPUs, planSpec.Memory = create.CappedDefaultResources(spec.CPUs, spec.Memory)
+				*exit = emitter.Success(projectCreateCommand, map[string]any{"dry_run": true, "plan": createPlan(planSpec, root)})
+				return nil
+			}
+
+			// Create in-process via the shared path (identical for `ai ui`'s wizard):
+			// validate + cap resources, scaffold the tracked files, seed context-opt
+			// defaults, and pull the Graphify model (best-effort → warnings).
+			result, warnings, err := create.Execute(spec, nowRFC3339())
+			if err != nil {
 				*exit = emitter.Failure(projectCreateCommand, err)
 				return nil
 			}
-			spec.CPUs, spec.Memory = cappedDefaultResources(spec.CPUs, spec.Memory)
-
-			if dryRun {
-				*exit = emitter.Success(projectCreateCommand, map[string]any{"dry_run": true, "plan": createPlan(spec, root)})
-				return nil
-			}
-
-			if err := project.EnsureCreatable(spec.Name, root); err != nil {
-				*exit = emitter.Failure(projectCreateCommand, mapProjectErr(err))
-				return nil
-			}
-			// Create the location if it does not exist (Scaffold also MkdirAll's, but be
-			// explicit so a brand-new path is clearly the workspace root).
-			if err := os.MkdirAll(root, 0o755); err != nil {
-				*exit = emitter.Failure(projectCreateCommand, output.Errorf(output.ExitRuntimeFailure, "create location %s: %s", root, err))
-				return nil
-			}
-			if _, err := project.Scaffold(spec, nowRFC3339()); err != nil {
-				*exit = emitter.Failure(projectCreateCommand, mapProjectErr(err))
-				return nil
-			}
-			// Seed context-optimization defaults so the project config is
-			// self-describing, and install the Caveman skill (arch §9, Slice 2).
-			if err := contextopt.SetStrategy(root, contextopt.DefaultStrategy); err != nil {
-				*exit = emitter.Failure(projectCreateCommand, output.Errorf(output.ExitRuntimeFailure, "seed context strategy: %s", err))
-				return nil
-			}
-			if err := contextopt.SetCavemanLevel(root, contextopt.DefaultCavemanLevel); err != nil {
-				*exit = emitter.Failure(projectCreateCommand, output.Errorf(output.ExitRuntimeFailure, "seed caveman skill: %s", err))
-				return nil
-			}
-			configYAML, err := os.ReadFile(config.ProjectPath(root))
-			if err != nil {
-				*exit = emitter.Failure(projectCreateCommand, output.Errorf(output.ExitRuntimeFailure, "read config.yaml: %s", err))
-				return nil
-			}
-			// Pull the chosen Graphify model into the local store (best-effort — a
-			// pull failure becomes a warning, never fails the create).
-			warnings := pullGraphifyModelIfAbsent(emitter, spec.GraphifyModel)
 			*exit = emitter.Success(projectCreateCommand, createResult{
-				Name:       spec.Name,
-				Root:       root,
-				OS:         spec.OS,
-				Tools:      spec.AgentCLIs,
-				Stacks:     spec.Stacks,
-				Apps:       spec.Apps,
-				ConfigYAML: string(configYAML),
+				Name:       result.Name,
+				Root:       result.Root,
+				OS:         result.OS,
+				Tools:      result.Tools,
+				Stacks:     result.Stacks,
+				Apps:       result.Apps,
+				ConfigYAML: result.ConfigYAML,
 			}, warnings...)
 			return nil
 		},
@@ -497,50 +396,6 @@ func newCreateCmd(emitter *output.Emitter, exit *int, use string) *cobra.Command
 	_ = cmd.RegisterFlagCompletionFunc("apps", fixedValues(supportedApps...))
 	_ = cmd.MarkFlagDirname("location")
 	return cmd
-}
-
-// pullGraphifyModelIfAbsent pulls the configured Graphify Ollama model into the
-// local (Ollama) store — and registers it in the gateway — unless it is already
-// installed. It is BEST-EFFORT: any failure returns a warning string rather than
-// failing `ai create`; the model can always be pulled later with `ai models pull`.
-func pullGraphifyModelIfAbsent(emitter *output.Emitter, ref string) []string {
-	ref = strings.TrimSpace(ref)
-	if ref == "" {
-		return nil
-	}
-	client := ollamaClient()
-	if installed, err := client.List(); err == nil && modelInstalled(installed, ref) {
-		return nil
-	}
-	pull := func() error { return client.Pull(ref, func(ollama.PullProgress) {}) }
-	var err error
-	if ui.Enabled(emitter) {
-		err = ui.RunWithSpinner(emitter.Err, fmt.Sprintf("pulling Graphify model %s…", ref), pull)
-	} else {
-		err = pull()
-	}
-	if err != nil {
-		return []string{fmt.Sprintf("could not pull Graphify model %q: %s — pull it later with `ai models pull %s`", ref, err, ref)}
-	}
-	// Best-effort gateway registration so the model is routable (ollama/<name>) and
-	// appears in the live catalogue; a gateway that is down must not fail the create.
-	_ = modelRegistrarFactory().RegisterOllamaModel(ref)
-	return nil
-}
-
-// modelInstalled reports whether ref matches an installed Ollama model, treating a
-// bare name as name:latest (Ollama's default tag).
-func modelInstalled(installed []ollama.Model, ref string) bool {
-	want := ref
-	if !strings.Contains(want, ":") {
-		want += ":latest"
-	}
-	for _, model := range installed {
-		if model.Name == ref || model.Name == want {
-			return true
-		}
-	}
-	return false
 }
 
 // attachWorkspace connects to an existing workspace's microVM: it starts the
@@ -704,7 +559,7 @@ func runCreateWizard(seed project.Spec) (project.Spec, bool, error) {
 				Description(fmt.Sprintf("Blank uses the default (%d); host has %d", config.Default().Workspace.CPULimit, sysinfo.CPUs())).
 				Value(&cpusText).Validate(wizardCPUsValidator),
 			huh.NewInput().Title("Workspace memory (GB)").
-				Description(fmt.Sprintf("A plain number in GB; blank uses the default (%s); usable max %d GB (host %d GB, minus headroom for the host + service tier)", config.Default().Workspace.MemoryLimit, usableHostMemoryGB(), hostMemoryGB())).
+				Description(fmt.Sprintf("A plain number in GB; blank uses the default (%s); usable max %d GB (host %d GB, minus headroom for the host + service tier)", config.Default().Workspace.MemoryLimit, create.UsableHostMemoryGB(), create.HostMemoryGB())).
 				Value(&memory).Validate(wizardMemoryValidator),
 			huh.NewInput().Title("Ports to open (comma-separated)").
 				Description("PORT or HOST:GUEST, e.g. 8080,9000:3000").
@@ -858,12 +713,12 @@ func wizardCPUsValidator(value string) error {
 	if err != nil {
 		return fmt.Errorf("enter a whole number of vCPUs")
 	}
-	return validateResourcesWithinHost(cpus, "")
+	return create.ValidateResourcesWithinHost(cpus, "")
 }
 
 // wizardMemoryValidator validates the memory field (blank = default).
 func wizardMemoryValidator(value string) error {
-	return validateResourcesWithinHost(0, strings.TrimSpace(value))
+	return create.ValidateResourcesWithinHost(0, strings.TrimSpace(value))
 }
 
 // wizardPortsValidator validates the comma-separated ports field.
@@ -935,7 +790,7 @@ func validateProvidedCreateFlags(flags createFlags) error {
 	if err := config.ValidateIdleTimeout(flags.idleTimeout); err != nil {
 		return output.Errorf(output.ExitInvalidInput, "%s", err)
 	}
-	if err := validateResourcesWithinHost(flags.cpus, flags.memory); err != nil {
+	if err := create.ValidateResourcesWithinHost(flags.cpus, flags.memory); err != nil {
 		return err
 	}
 	if _, err := parsePublishPorts(flags.ports); err != nil {
