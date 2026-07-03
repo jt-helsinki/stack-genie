@@ -668,7 +668,9 @@ func (step *locationStep) dropdownView() string {
 		case row.disabled:
 			builder.WriteString(ui.Muted.Render("  "+name+"  — workspace already exists") + "\n")
 		case index == step.selected:
-			builder.WriteString(ui.Primary.Bold(true).Render("› "+name) + "\n")
+			// Match every other list in the app: a full-width highlighted row
+			// (selectedStyle) rather than a bespoke chevron marker.
+			builder.WriteString(selectedStyle().Render(padToWidth("  "+name, step.width)) + "\n")
 		default:
 			builder.WriteString("  " + ui.Value.Render(name) + "\n")
 		}
