@@ -1437,6 +1437,62 @@ func TestStartDropsSeededDefaultOnSecondStart(test *testing.T) {
 	}
 }
 
+// TestAttachRefreshesModelList verifies attaching a shell to an ALREADY-RUNNING workspace
+// refreshes the opencode + pi served-model lists from the live gateway (so a model added
+// via `ai models`/`ai keys` since the last start is visible without a restart).
+func TestAttachRefreshesModelList(test *testing.T) {
+	root := seedStartedWorkspace(test, "app")
+	sandbox := &fakeSandbox{}
+	served := fakeServedModels{models: []string{"ollama/fresh:latest"}}
+	manager := Manager{Builder: &fakeBuilder{}, Sandbox: sandbox, Keys: &fakeKeyMinter{}, Served: served, Now: func() string { return "t" }}
+
+	if err := manager.Shell("app"); err != nil {
+		test.Fatalf("Shell: %v", err)
+	}
+	if openCode := readProjectConfig(test, root, ".opencode", "opencode.json"); !strings.Contains(openCode, "ollama/fresh:latest") {
+		test.Errorf("attach did not refresh the opencode model list:\n%s", openCode)
+	}
+	if pi := readGuestFile(test, sandbox, agentcfg.PiGlobalModelsGuest); !strings.Contains(pi, "ollama/fresh:latest") {
+		test.Errorf("attach did not refresh the pi model list:\n%s", pi)
+	}
+	// The attach refresh must NOT rotate the scoped key (that would invalidate a running
+	// agent) — the list-only refresh mints no key.
+	if minter, ok := manager.Keys.(*fakeKeyMinter); ok && minter.calls != 0 {
+		test.Errorf("attach refresh must not mint a key, got %d GenerateKey calls", minter.calls)
+	}
+}
+
+// TestRestartDropsRemovedModel verifies the opencode list is REPLACED (not unioned)
+// across restarts: a model removed upstream (via `ai models rm`/`ai keys remove`) between
+// starts must disappear from the config, while still-served models remain.
+func TestRestartDropsRemovedModel(test *testing.T) {
+	root := seedProject(test, "app")
+	sandbox := &fakeSandbox{}
+	minter := &fakeKeyMinter{}
+	first := Manager{Builder: &fakeBuilder{}, Sandbox: sandbox, Keys: minter, Now: func() string { return "t" },
+		Served: fakeServedModels{models: []string{"ollama/a:latest", "ollama/b:latest"}}}
+	if _, err := first.Start("app"); err != nil {
+		test.Fatal(err)
+	}
+	if got := readProjectConfig(test, root, ".opencode", "opencode.json"); !strings.Contains(got, "ollama/b:latest") {
+		test.Fatalf("first start should list b:\n%s", got)
+	}
+
+	// b removed upstream; the next start must drop it (not keep a stale union entry).
+	second := Manager{Builder: &fakeBuilder{}, Sandbox: sandbox, Keys: minter, Now: func() string { return "t" },
+		Served: fakeServedModels{models: []string{"ollama/a:latest"}}}
+	if _, err := second.Start("app"); err != nil {
+		test.Fatal(err)
+	}
+	got := readProjectConfig(test, root, ".opencode", "opencode.json")
+	if strings.Contains(got, "ollama/b:latest") {
+		test.Errorf("restart must drop the removed model b (list REPLACED, not unioned):\n%s", got)
+	}
+	if !strings.Contains(got, "ollama/a:latest") {
+		test.Errorf("restart must keep the still-served model a:\n%s", got)
+	}
+}
+
 // TestStartPickerDegradesWhenGatewayDown verifies the picker degrades gracefully:
 // when ServedModels errors (the gateway is down at start), the picker is empty but
 // the workspace still starts.

@@ -182,11 +182,20 @@ func MergeOpenCodeConfig(template []byte, gatewayURL, apiKey, defaultModel strin
 	if err != nil {
 		return nil, err
 	}
+	// When we have a served list, REPLACE the provider's models map wholesale (rather than
+	// deep-merging, which would UNION and leave models removed upstream lingering forever)
+	// — the list is authoritative. When the list is EMPTY (gateway unreachable), DON'T
+	// replace: fall back to the preserving merge so a transient outage never WIPES the
+	// existing on-disk list. Every other user key (themes, MCP servers, enabled_providers,
+	// the provider's baseURL/apiKey/options) still merges/survives either way.
+	var replacePaths []string
+	if len(models) > 0 {
+		replacePaths = []string{"provider." + ProviderID + ".models"}
+	}
 	// With no default to seed, actively DROP any previously-seeded top-level "model" so
 	// opencode's persisted last-used selection wins (config "model" outranks last-used;
-	// a stale one would re-pin it every launch — this is the "remember" half of the
-	// seed-then-remember default).
-	return mergeJSONOver(template, generated, dropKeysWhenNoDefault(defaultModel, "model")...)
+	// a stale one would re-pin it every launch — the "remember" half of seed-then-remember).
+	return mergeJSONReplacing(template, generated, replacePaths, dropKeysWhenNoDefault(defaultModel, "model"))
 }
 
 // dropKeysWhenNoDefault returns keys to strip from a merged config when no default
@@ -238,6 +247,15 @@ func MergePiSettings(existing []byte, defaultModel string) ([]byte, error) {
 // previously-written key (e.g. a seeded "model") that must not linger, since the merge
 // would otherwise preserve the template's copy of it.
 func mergeJSONOver(template, generated []byte, dropKeys ...string) ([]byte, error) {
+	return mergeJSONReplacing(template, generated, nil, dropKeys)
+}
+
+// mergeJSONReplacing is mergeJSONOver with, additionally, a set of dotted key-paths whose
+// value is taken WHOLESALE from the generated overlay instead of being deep-merged. This
+// is how an authoritative collection (e.g. opencode's `provider.<id>.models`) is REPLACED
+// rather than unioned — so entries removed upstream disappear — while every OTHER user key
+// still merges/survives.
+func mergeJSONReplacing(template, generated []byte, replacePaths, dropKeys []string) ([]byte, error) {
 	var overlay map[string]any
 	if err := json.Unmarshal(generated, &overlay); err != nil {
 		return nil, err
@@ -245,7 +263,11 @@ func mergeJSONOver(template, generated []byte, dropKeys ...string) ([]byte, erro
 	merged := overlay
 	var base map[string]any
 	if len(bytes.TrimSpace(template)) > 0 && json.Unmarshal(template, &base) == nil {
-		merged = deepMergeJSON(base, overlay)
+		replace := make(map[string]bool, len(replacePaths))
+		for _, path := range replacePaths {
+			replace[path] = true
+		}
+		merged = deepMergeJSONPath(base, overlay, "", replace)
 	}
 	for _, key := range dropKeys {
 		delete(merged, key)
@@ -253,19 +275,28 @@ func mergeJSONOver(template, generated []byte, dropKeys ...string) ([]byte, erro
 	return marshalStable(merged)
 }
 
-// deepMergeJSON returns base with overlay applied on top; nested objects merge
-// recursively and overlay scalars/arrays win. Inputs are not mutated.
-func deepMergeJSON(base, overlay map[string]any) map[string]any {
+// deepMergeJSONPath returns base with overlay applied on top; nested objects merge
+// recursively and overlay scalars/arrays win (inputs are not mutated). It tracks the
+// dotted path to each key; a key whose path is in `replace` is overwritten wholesale from
+// overlay (not recursed into), so an authoritative sub-object replaces rather than unions
+// with the base's copy.
+func deepMergeJSONPath(base, overlay map[string]any, prefix string, replace map[string]bool) map[string]any {
 	result := make(map[string]any, len(base))
 	for key, value := range base {
 		result[key] = value
 	}
 	for key, overlayValue := range overlay {
-		if existing, ok := result[key]; ok {
-			if existingMap, isMap := existing.(map[string]any); isMap {
-				if overlayMap, isOverlayMap := overlayValue.(map[string]any); isOverlayMap {
-					result[key] = deepMergeJSON(existingMap, overlayMap)
-					continue
+		path := key
+		if prefix != "" {
+			path = prefix + "." + key
+		}
+		if !replace[path] {
+			if existing, ok := result[key]; ok {
+				if existingMap, isMap := existing.(map[string]any); isMap {
+					if overlayMap, isOverlayMap := overlayValue.(map[string]any); isOverlayMap {
+						result[key] = deepMergeJSONPath(existingMap, overlayMap, path, replace)
+						continue
+					}
 				}
 			}
 		}

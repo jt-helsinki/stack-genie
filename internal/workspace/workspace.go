@@ -521,30 +521,13 @@ func (manager Manager) registerAgentProviders(name, project, root string, projec
 		}
 	}
 
-	// Write the KEYLESS per-CLI provider configs into each CLI's DEFAULT PROJECT
-	// location (under the bind-mounted project dir = host disk, so the project is
-	// self-describing and portable). The scoped virtual key is NEVER written here:
-	// opencode/pi reference it via {env:}/$VAR interpolation, codex via env_key, claude
-	// via the exported ANTHROPIC_AUTH_TOKEN — the key lives ONLY in the in-VM agent env
-	// file below. Existing files are deep-merged so user edits survive across restarts.
-	openCodeConfig, err := agentcfg.MergeOpenCodeConfig(
-		readHostFileOrNil(projectConfigPath(root, ".opencode", "opencode.json")),
-		gatewayURL, agentcfg.OpenCodeAPIKeyRef, defaultModel, models, keepTurns, outputBufferTokens)
-	if err != nil {
-		return err
-	}
-	if err := writeHostFile(projectConfigPath(root, ".opencode", "opencode.json"), openCodeConfig); err != nil {
-		return err
-	}
-
-	// pi reads the GLOBAL ~/.pi/agent/models.json (NOT a project .pi/models.json), so
-	// write the served-model provider config there — pi then lists the SAME gateway
-	// models as opencode. In-VM home (off host disk); keyless via $AIP_GATEWAY_KEY.
-	piModels, err := agentcfg.PiConfig(gatewayURL, agentcfg.PiAPIKeyRef, defaultModel, models)
-	if err != nil {
-		return err
-	}
-	if err := manager.Sandbox.WriteFile(name, agentcfg.PiGlobalModelsGuest, piModels); err != nil {
+	// Write the KEYLESS per-CLI provider configs into each CLI's DEFAULT location. The
+	// scoped virtual key is NEVER written here: opencode/pi reference it via {env:}/$VAR
+	// interpolation, codex via env_key, claude via the exported ANTHROPIC_AUTH_TOKEN — the
+	// key lives ONLY in the in-VM agent env file below. opencode + pi carry the served-
+	// model LIST (writeModelListConfigs — the same helper used to refresh it on attach);
+	// codex/gemini/claude carry no list (they name any served model per request).
+	if err := manager.writeModelListConfigs(name, root, gatewayURL, defaultModel, models, keepTurns, outputBufferTokens); err != nil {
 		return err
 	}
 	// pi settings (project-scoped, which pi DOES read): the gateway as default provider,
@@ -673,6 +656,61 @@ func (manager Manager) linkAgentStateDirs(name string) {
 		"rm -rf ~/.pi; ln -sfn /persist/agents/pi ~/.pi"
 	if _, err := manager.Sandbox.Exec(name, []string{"bash", "-lc", link}); err != nil {
 		_, _ = fmt.Fprintf(os.Stderr, "warning: could not link persistent agent state in workspace %q (continuing): %v\n", name, err)
+	}
+}
+
+// writeModelListConfigs writes the agent CLIs that carry a SERVED-MODEL LIST — opencode
+// (host project config: the list is REPLACED wholesale while all other user keys merge/
+// survive) and pi (its GLOBAL in-VM ~/.pi/agent/models.json, the path pi actually reads,
+// written whole). codex/gemini/claude carry NO list (they name any served model per
+// request), so they are not touched here. A defaultModel of "" pins no model and drops
+// any previously-seeded one (so a CLI's persisted last-used selection wins). When the
+// served list is EMPTY (gateway unreachable), the existing lists are LEFT UNTOUCHED —
+// opencode's merge preserves them and pi's whole-file write is skipped — so a transient
+// outage never wipes a good list. This is the shared refresh used at start AND on attach.
+func (manager Manager) writeModelListConfigs(name, root, gatewayURL, defaultModel string, models []string, keepTurns, outputBufferTokens int) error {
+	openCodeConfig, err := agentcfg.MergeOpenCodeConfig(
+		readHostFileOrNil(projectConfigPath(root, ".opencode", "opencode.json")),
+		gatewayURL, agentcfg.OpenCodeAPIKeyRef, defaultModel, models, keepTurns, outputBufferTokens)
+	if err != nil {
+		return err
+	}
+	if err := writeHostFile(projectConfigPath(root, ".opencode", "opencode.json"), openCodeConfig); err != nil {
+		return err
+	}
+	// pi: whole-file managed provider config. Skip on an empty list so a transient
+	// gateway-down never wipes the in-VM list.
+	if len(models) == 0 {
+		return nil
+	}
+	piModels, err := agentcfg.PiConfig(gatewayURL, agentcfg.PiAPIKeyRef, defaultModel, models)
+	if err != nil {
+		return err
+	}
+	return manager.Sandbox.WriteFile(name, agentcfg.PiGlobalModelsGuest, piModels)
+}
+
+// refreshAgentModels re-writes the opencode + pi served-model LIST against the LIVE
+// gateway for an already-running workspace, so a model added/removed since the last
+// start (via `ai models`/`ai keys`) becomes visible in the session about to open. It is
+// LIST-ONLY: it passes an empty default (no model is pinned — each CLI's persisted
+// last-used selection wins) and does NOT rotate the scoped key, rebuild the env files, or
+// re-seed — that would invalidate a running agent's key. Best-effort: any error (gateway
+// down, config load, VM write) is warned and swallowed so it never fails the attach.
+func (manager Manager) refreshAgentModels(project string) {
+	root, err := resolveProjectRoot(project)
+	if err != nil {
+		return
+	}
+	projectConfig, err := config.Load(root)
+	if err != nil {
+		return
+	}
+	_, _, gatewayURL := resolveGateway()
+	keepTurns, outputBufferTokens := contextopt.HeadroomParams(projectConfig.Context.Strategy)
+	models := manager.pickerModels()
+	if err := manager.writeModelListConfigs(Name(project), root, gatewayURL, "", models, keepTurns, outputBufferTokens); err != nil {
+		_, _ = fmt.Fprintf(os.Stderr, "warning: could not refresh agent model lists in workspace %q (continuing): %v\n", Name(project), err)
 	}
 }
 
@@ -1383,6 +1421,12 @@ func (manager Manager) launchTmuxSession(project, session string, command []stri
 	if err := manager.ensureTmuxReady(project); err != nil {
 		return err
 	}
+	// Refresh the served-model LIST for opencode + pi against the LIVE gateway before
+	// handing over the session, so a model added/removed since the last start (via
+	// `ai models`/`ai keys`) is immediately visible here — the "refresh when a shell is
+	// attached" requirement. List-only + best-effort (never rotates the key, preserves
+	// other settings, never fails the attach; skips the write when the gateway is down).
+	manager.refreshAgentModels(project)
 	// Create-or-attach in a SINGLE interactive exec: `tmux new-session -A` creates the
 	// session on first use and reattaches on later calls. The tmux server daemonizes,
 	// so the session persists after the client DETACHES (and `ai sessions` lists it);

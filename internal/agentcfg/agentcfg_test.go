@@ -256,6 +256,38 @@ func TestMergeOpenCodeConfigInjectsDynamic(test *testing.T) {
 	}
 }
 
+// TestMergeOpenCodeConfigReplacesModelList verifies the served-model list is REPLACED
+// wholesale (not unioned) so a model removed upstream disappears, while a user's other
+// keys survive — and that an EMPTY served list (gateway down) PRESERVES the existing list
+// rather than wiping it.
+func TestMergeOpenCodeConfigReplacesModelList(test *testing.T) {
+	// Existing config: an OLD model under the gateway provider + a user's custom top-level key.
+	template := []byte(`{"theme":"dracula","provider":{"aip-gateway":{"models":{"ollama/old:latest":{"name":"ollama/old:latest"}}}}}`)
+
+	merged, err := MergeOpenCodeConfig(template, testGateway, testKey, "", []string{"ollama/new:latest"}, 5, 8000)
+	if err != nil {
+		test.Fatal(err)
+	}
+	if !strings.Contains(string(merged), "ollama/new:latest") {
+		test.Errorf("new served model missing:\n%s", merged)
+	}
+	if strings.Contains(string(merged), "ollama/old:latest") {
+		test.Errorf("removed model must be dropped (list REPLACED, not unioned):\n%s", merged)
+	}
+	if !strings.Contains(string(merged), "dracula") {
+		test.Errorf("user top-level key must survive the list replace:\n%s", merged)
+	}
+
+	// Empty served list (gateway down) must PRESERVE the existing list — never wipe it.
+	preserved, err := MergeOpenCodeConfig(template, testGateway, testKey, "", nil, 5, 8000)
+	if err != nil {
+		test.Fatal(err)
+	}
+	if !strings.Contains(string(preserved), "ollama/old:latest") {
+		test.Errorf("empty served list must not wipe the existing models:\n%s", preserved)
+	}
+}
+
 // TestMergeNilTemplateFallsBack verifies a nil/empty/corrupt template degrades to
 // the freshly-generated config (older projects, or a broken edit, still work).
 func TestMergeNilTemplateFallsBack(test *testing.T) {
