@@ -37,7 +37,9 @@ func newServicesForTest(fetch ServiceFetcher, control ServiceController) *Servic
 		LogViewLabels{Loading: "loading container log…"},
 		nil,
 	)
-	detail := NewServiceDetail(statusByName, control, noOpen, log)
+	detail := NewServiceDetail(statusByName,
+		func(string) ([]setup.ContainerStats, error) { return nil, nil },
+		control, noOpen, log)
 	return NewServices(fetch, control, detail)
 }
 
@@ -121,10 +123,11 @@ func TestServicesDrillsIntoDetailAndEscBacksOut(test *testing.T) {
 		test.Fatal("enter must drill into the service detail (drilled + CapturesNav)")
 	}
 	// Feed the detail's status refresh so its summary renders.
-	_ = view.Update(view.detail.refreshCmd()())
+	_ = view.Update(view.detail.refreshCmd(view.detail.generation)())
 	rendered := view.View()
-	if !strings.Contains(rendered, "Container log") {
-		test.Errorf("the detail should embed the container log, got:\n%s", rendered)
+	// The detail opens on the Service sub-tab (summary + metrics), not the list.
+	if !strings.Contains(rendered, "Containers") {
+		test.Errorf("the detail should show the Service sub-tab summary, got:\n%s", rendered)
 	}
 	if strings.Contains(rendered, "SERVICE") {
 		test.Error("the list table must be hidden while the detail is open")
@@ -150,7 +153,7 @@ func TestServicesDetailLifecycleStaysInDetail(test *testing.T) {
 	_ = view.Update(view.Init()())
 	view.SetSize(80, 20)
 	_ = view.Update(tea.KeyMsg{Type: tea.KeyEnter}) // drill in
-	_ = view.Update(view.detail.refreshCmd()())
+	_ = view.Update(view.detail.refreshCmd(view.detail.generation)())
 
 	// Press "r" (restart) in the detail.
 	cmd := view.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("r")})
@@ -197,7 +200,7 @@ func TestServicesDetailUpdateEmitsRequest(test *testing.T) {
 	_ = view.Update(view.Init()())
 	view.SetSize(80, 20)
 	_ = view.Update(tea.KeyMsg{Type: tea.KeyEnter})
-	_ = view.Update(view.detail.refreshCmd()())
+	_ = view.Update(view.detail.refreshCmd(view.detail.generation)())
 
 	cmd := view.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("p")})
 	if cmd == nil {
@@ -253,6 +256,33 @@ func TestServicesEnableKeyRejectsCore(test *testing.T) {
 	}
 }
 
+// TestServicesListRestartKeys verifies the list-level keys: `r` restarts the selected
+// service, `a` restarts them all (control with an empty target), neither drilling in.
+func TestServicesListRestartKeys(test *testing.T) {
+	var calls []string
+	view := newServicesForTest(
+		func() ([]setup.ServiceStatus, error) {
+			return []setup.ServiceStatus{{Name: "litellm", State: "running"}, {Name: "ollama", State: "running"}}, nil
+		},
+		func(action, service string) error { calls = append(calls, action+":"+service); return nil },
+	)
+	_ = view.Update(view.Init()())
+	view.SetSize(80, 20)
+
+	if cmd := view.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("r")}); cmd != nil {
+		_ = view.Update(cmd())
+	}
+	if cmd := view.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("a")}); cmd != nil {
+		_ = view.Update(cmd())
+	}
+	if len(calls) != 2 || calls[0] != "restart:litellm" || calls[1] != "restart:" {
+		test.Fatalf("want [restart:litellm restart:], got %v", calls)
+	}
+	if view.drilled {
+		test.Error("the restart keys must not drill into the detail")
+	}
+}
+
 // TestServicesSetActiveOnlyAffectsOpenDetail: SetActive is a no-op on the list and
 // toggles the detail's log poll while drilled — so the container-log poll only runs
 // while the Services tab is visible AND a detail is open.
@@ -266,9 +296,18 @@ func TestServicesSetActiveOnlyAffectsOpenDetail(test *testing.T) {
 	// On the list (not drilled): SetActive is a no-op — it must not touch the detail.
 	view.SetActive(false)
 
-	// Drill in: switching the top-level tab away (SetActive(false)) pauses the
-	// detail's container-log poll, and returning (SetActive(true)) resumes it.
+	// Drill in — opens on the Service sub-tab, where the container-log poll is PAUSED
+	// (the log runs only on the Logs sub-tab now).
 	_ = view.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if !view.detail.log.paused {
+		test.Fatal("the container-log poll must be paused on the Service sub-tab")
+	}
+	// Switch to the Logs sub-tab: the poll resumes while the tab is visible.
+	_ = view.Update(tea.KeyMsg{Type: tea.KeyTab})
+	if view.detail.log.paused {
+		test.Fatal("switching to the Logs sub-tab must resume the container-log poll")
+	}
+	// Switching the top-level tab away pauses it; returning resumes it.
 	view.SetActive(false)
 	if !view.detail.log.paused {
 		test.Fatal("SetActive(false) must pause the open detail's container-log poll")

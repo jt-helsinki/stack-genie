@@ -9,7 +9,8 @@ import (
 )
 
 // newDetailForTest builds a ServiceDetail pointed at a single fake service whose
-// container log returns a fixed line. follow toggles the f/enter follow message.
+// container log returns a fixed line and whose stats fetch returns one container.
+// follow toggles the f/enter follow message.
 func newDetailForTest(status setup.ServiceStatus, logLine string, follow bool) *ServiceDetail {
 	var followFn func(string) tea.Msg
 	if follow {
@@ -26,38 +27,71 @@ func newDetailForTest(status setup.ServiceStatus, logLine string, follow bool) *
 		},
 		followFn,
 	)
+	statsFn := func(string) ([]setup.ContainerStats, error) {
+		return []setup.ContainerStats{{
+			Container: status.Name, ID: "abc123def456", State: status.State,
+			Found: status.State == "running", CPUPercent: "2.00%", MemUsage: "10MiB / 20MiB",
+		}}, nil
+	}
 	detail := NewServiceDetail(
 		func(string) (setup.ServiceStatus, bool) { return status, true },
-		noControl, noOpen, log,
+		statsFn, noControl, noOpen, log,
 	)
 	detail.SetService(status.Name)
 	detail.SetActive(true)
+	detail.SetSize(80, 20)
 	return detail
 }
 
-// TestServiceDetailRendersSummaryAndEmbeddedLog: the detail shows the service summary
-// on top with the container log embedded beneath (the workspace-detail shape).
-func TestServiceDetailRendersSummaryAndEmbeddedLog(test *testing.T) {
+// primeInfo starts the Service sub-tab's poll and feeds one status+stats refresh so the
+// summary + metrics render.
+func primeInfo(detail *ServiceDetail) {
+	_ = detail.Init()
+	_ = detail.Update(detail.refreshCmd(detail.generation)())
+}
+
+// showLogs switches to the Logs sub-tab and feeds one log load so the container log
+// renders.
+func showLogs(detail *ServiceDetail) {
+	_ = detail.Update(tea.KeyMsg{Type: tea.KeyTab})
+	_ = detail.Update(detail.log.loadCmd(detail.log.generation)())
+}
+
+// TestServiceDetailServiceTabShowsSummaryAndMetrics: the Service sub-tab shows the
+// summary + a live per-container metrics block (no log — that is on the Logs tab).
+func TestServiceDetailServiceTabShowsSummaryAndMetrics(test *testing.T) {
 	detail := newDetailForTest(
 		setup.ServiceStatus{Name: "litellm", Mode: "container", State: "running", Healthy: true, Console: "http://x/ui"},
 		"container boot line\n", true)
-	detail.SetSize(80, 20)
-
-	// Feed the status refresh + a log load so both render.
-	_ = detail.Update(detail.refreshCmd()())
-	detail.log.generation = 1
-	_ = detail.Update(detail.log.loadCmd(1)())
+	primeInfo(detail)
 
 	rendered := detail.View()
-	for _, want := range []string{"litellm", "Container log", "container boot line"} {
+	for _, want := range []string{"litellm", "running", "abc123def456", "2.00%", "Containers"} {
 		if !strings.Contains(rendered, want) {
-			test.Errorf("detail view should contain %q, got:\n%s", want, rendered)
+			test.Errorf("Service sub-tab should contain %q, got:\n%s", want, rendered)
 		}
+	}
+	// The log lives on the OTHER sub-tab — not here.
+	if strings.Contains(rendered, "container boot line") {
+		test.Errorf("the log must not render on the Service sub-tab:\n%s", rendered)
 	}
 }
 
-// TestServiceDetailLifecycleSpinnerAndStaysPut: a lifecycle key shows an in-place
-// spinner (pending set) and the action lands without leaving the detail.
+// TestServiceDetailLogsTabShowsLog: switching to the Logs sub-tab shows the scrollable
+// container log.
+func TestServiceDetailLogsTabShowsLog(test *testing.T) {
+	detail := newDetailForTest(
+		setup.ServiceStatus{Name: "litellm", State: "running"}, "container boot line\n", true)
+	primeInfo(detail)
+	showLogs(detail)
+
+	if !strings.Contains(detail.View(), "container boot line") {
+		test.Errorf("the Logs sub-tab should show the container log, got:\n%s", detail.View())
+	}
+}
+
+// TestServiceDetailLifecycleStaysPut: a lifecycle key on the Service tab shows an
+// in-place spinner (pending set) and lands without leaving the detail.
 func TestServiceDetailLifecycleStaysPut(test *testing.T) {
 	var controlled string
 	log := NewLogView(func() (string, error) { return "", nil }, func() bool { return true },
@@ -66,12 +100,14 @@ func TestServiceDetailLifecycleStaysPut(test *testing.T) {
 		func(string) (setup.ServiceStatus, bool) {
 			return setup.ServiceStatus{Name: "litellm", State: "running"}, true
 		},
+		func(string) ([]setup.ContainerStats, error) { return nil, nil },
 		func(action, service string) error { controlled = action + ":" + service; return nil },
 		noOpen, log,
 	)
 	detail.SetService("litellm")
+	detail.SetActive(true)
 	detail.SetSize(80, 20)
-	_ = detail.Update(detail.refreshCmd()())
+	primeInfo(detail)
 
 	cmd := detail.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("s")})
 	if cmd == nil {
@@ -80,11 +116,9 @@ func TestServiceDetailLifecycleStaysPut(test *testing.T) {
 	if detail.pending != "start" {
 		test.Fatalf("pending should be 'start' (the in-place spinner), got %q", detail.pending)
 	}
-	// The detail view must show the spinner-ed state line, not bounce away.
 	if !strings.Contains(detail.View(), "starting…") {
 		test.Errorf("the state line should show the in-flight spinner, got:\n%s", detail.View())
 	}
-	// Run the batch's lifecycle-done sub-command.
 	if batch, ok := cmd().(tea.BatchMsg); ok {
 		for _, sub := range batch {
 			if msg := sub(); msg != nil {
@@ -102,12 +136,10 @@ func TestServiceDetailLifecycleStaysPut(test *testing.T) {
 	}
 }
 
-// TestServiceDetailUpdateEmitsRequest: `p` emits the update request (handled by the
-// parent's terminal overlay), not an in-view controller call.
+// TestServiceDetailUpdateEmitsRequest: `p` on the Service tab emits the update request.
 func TestServiceDetailUpdateEmitsRequest(test *testing.T) {
 	detail := newDetailForTest(setup.ServiceStatus{Name: "ollama", State: "running"}, "", false)
-	detail.SetSize(80, 20)
-	_ = detail.Update(detail.refreshCmd()())
+	primeInfo(detail)
 
 	cmd := detail.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("p")})
 	if cmd == nil {
@@ -118,14 +150,12 @@ func TestServiceDetailUpdateEmitsRequest(test *testing.T) {
 	}
 }
 
-// TestServiceDetailFollowEmitsRequest: `f` asks the parent to follow the container
-// log live in the real terminal.
+// TestServiceDetailFollowEmitsRequest: `f` on the Logs sub-tab asks the parent to
+// follow the container log live in the real terminal.
 func TestServiceDetailFollowEmitsRequest(test *testing.T) {
 	detail := newDetailForTest(setup.ServiceStatus{Name: "litellm", State: "running"}, "x\n", true)
-	detail.SetSize(80, 20)
-	_ = detail.Update(detail.refreshCmd()())
-	detail.log.generation = 1
-	_ = detail.Update(detail.log.loadCmd(1)())
+	primeInfo(detail)
+	showLogs(detail)
 
 	cmd := detail.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("f")})
 	if cmd == nil {
@@ -136,14 +166,12 @@ func TestServiceDetailFollowEmitsRequest(test *testing.T) {
 	}
 }
 
-// TestServiceDetailStoppedShowsNotRunning: a stopped service shows the "not running"
-// hint in the embedded log, not stale output.
+// TestServiceDetailStoppedShowsNotRunning: a stopped service's Logs sub-tab shows the
+// "not running" hint, not stale output.
 func TestServiceDetailStoppedShowsNotRunning(test *testing.T) {
 	detail := newDetailForTest(setup.ServiceStatus{Name: "ollama", State: "stopped"}, "old output\n", false)
-	detail.SetSize(80, 20)
-	_ = detail.Update(detail.refreshCmd()())
-	detail.log.generation = 1
-	_ = detail.Update(detail.log.loadCmd(1)())
+	primeInfo(detail)
+	showLogs(detail)
 
 	rendered := detail.View()
 	if strings.Contains(rendered, "old output") {
@@ -151,5 +179,22 @@ func TestServiceDetailStoppedShowsNotRunning(test *testing.T) {
 	}
 	if !strings.Contains(rendered, "not running") {
 		test.Errorf("a stopped service should show the 'not running' hint:\n%s", rendered)
+	}
+}
+
+// TestServiceDetailTabSwitchesSubTabs verifies Tab cycles Service ↔ Logs.
+func TestServiceDetailTabSwitchesSubTabs(test *testing.T) {
+	detail := newDetailForTest(setup.ServiceStatus{Name: "ollama", State: "running"}, "line\n", false)
+	primeInfo(detail)
+	if detail.subIndex != serviceTabInfo {
+		test.Fatalf("should open on the Service sub-tab, got %d", detail.subIndex)
+	}
+	_ = detail.Update(tea.KeyMsg{Type: tea.KeyTab})
+	if detail.subIndex != serviceTabLogs {
+		test.Errorf("Tab should switch to the Logs sub-tab, got %d", detail.subIndex)
+	}
+	_ = detail.Update(tea.KeyMsg{Type: tea.KeyTab})
+	if detail.subIndex != serviceTabInfo {
+		test.Errorf("Tab should switch back to the Service sub-tab, got %d", detail.subIndex)
 	}
 }

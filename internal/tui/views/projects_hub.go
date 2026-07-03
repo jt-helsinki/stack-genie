@@ -11,7 +11,6 @@ package views
 import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
-	"github.com/jt-helsinki/ideal-robot/internal/ui"
 )
 
 // Screen is the structural twin of tui.View — the hub composes sub-views through
@@ -230,21 +229,7 @@ func (hub *ProjectsHub) SubTabBar() string {
 // subTabBar renders "<project> ▸ [Project] Network Context Sessions Apps" with
 // the active sub-tab filled in the theme accent (mirroring the chrome's tab bar).
 func (hub *ProjectsHub) subTabBar() string {
-	activeStyle := lipgloss.NewStyle().Bold(true).
-		Foreground(lipgloss.Color("0")).Background(ui.Accent()).Padding(0, 1)
-	inactiveStyle := lipgloss.NewStyle().
-		Foreground(lipgloss.Color("252")).Background(lipgloss.Color("238")).Padding(0, 1)
-
-	cells := make([]string, 0, len(hub.subTitles)+1)
-	cells = append(cells, ui.Heading.Render(hub.project)+ui.Muted.Render("  ▸ "))
-	for index, title := range hub.subTitles {
-		if index == hub.subIndex {
-			cells = append(cells, activeStyle.Render(title))
-			continue
-		}
-		cells = append(cells, inactiveStyle.Render(title))
-	}
-	return lipgloss.JoinHorizontal(lipgloss.Top, cells...)
+	return renderSubTabBar(hub.project, hub.subTitles, hub.subIndex)
 }
 
 // Hints feeds the chrome's command grid: the switcher's keys when showing the list,

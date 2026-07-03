@@ -120,6 +120,7 @@ func Run(cwd string) error {
 	)
 	serviceDetail = views.NewServiceDetail(
 		func(service string) (setup.ServiceStatus, bool) { return serviceStatusByName(servicesStatus, service) },
+		func(service string) ([]setup.ContainerStats, error) { return setup.ServiceStats(deps, service) },
 		servicesControl,
 		openURL,
 		serviceLogView,

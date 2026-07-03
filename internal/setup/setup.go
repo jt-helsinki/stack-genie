@@ -9,11 +9,13 @@
 package setup
 
 import (
+	"encoding/json"
 	"fmt"
 	"io"
 	"slices"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/jt-helsinki/ideal-robot/internal/config"
 	"github.com/jt-helsinki/ideal-robot/internal/console"
@@ -843,4 +845,148 @@ func ServiceLogTail(deps Deps, service string, tail int) (string, error) {
 		combined.Write(out)
 	}
 	return combined.String(), nil
+}
+
+// ContainerStats is a live resource snapshot of ONE container backing a service.
+// The rate fields are the container runtime's OWN pre-formatted strings (e.g.
+// "3.20%", "180MiB / 512MiB", "1.2kB / 0B") so the UI renders them verbatim. A
+// container that is not running yields Found=false (State carries why) and empty
+// rate fields.
+type ContainerStats struct {
+	Container  string `json:"container"`   // container name (e.g. aip-litellm)
+	ID         string `json:"id"`          // short (12-char) container id
+	State      string `json:"state"`       // running | exited | not found | …
+	Found      bool   `json:"found"`       // the container exists AND is running
+	CPUPercent string `json:"cpu_percent"` // "3.20%"
+	MemUsage   string `json:"mem_usage"`   // "180MiB / 512MiB"
+	MemPercent string `json:"mem_percent"` // "35.20%"
+	NetIO      string `json:"net_io"`      // "1.2kB / 0B"  (rx / tx)
+	BlockIO    string `json:"block_io"`    // "10MB / 4MB"  (read / write)
+	Pids       string `json:"pids"`        // "12"
+	Ports      string `json:"ports"`       // "4000/tcp" (comma-joined, from inspect)
+	StartedAt  string `json:"started_at"`  // RFC3339 last-start time ("" if never)
+	Uptime     string `json:"uptime"`      // now-StartedAt, rounded ("" if not running)
+}
+
+// dockerStatsLine is the shape of one `<runtime> stats --no-stream --format '{{json .}}'`
+// object (docker + nerdctl share these field names).
+type dockerStatsLine struct {
+	CPUPerc  string `json:"CPUPerc"`
+	MemUsage string `json:"MemUsage"`
+	MemPerc  string `json:"MemPerc"`
+	NetIO    string `json:"NetIO"`
+	BlockIO  string `json:"BlockIO"`
+	PIDs     string `json:"PIDs"`
+}
+
+// ServiceStats returns a live resource snapshot per container of a logical service
+// (a service may own several — Presidio's analyzer+anonymizer, LiteLLM + its db), via
+// the container runtime's `stats --no-stream` + `inspect`. It backs the `ai ui`
+// Services detail's Service sub-tab (polled ~2s), the service-tier analogue of the
+// workspace Metrics stream. A stopped/absent container yields a Found=false entry
+// rather than failing the whole call. Unknown service → exit 2; no runtime → exit 3.
+//
+// hardware bring-up: the live `<runtime> stats`/`inspect` round-trips run only against
+// a running engine; the argv + JSON parsing are unit-tested against a fake prober.
+func ServiceStats(deps Deps, service string) ([]ContainerStats, error) {
+	containers := serviceContainers(service)
+	if len(containers) == 0 {
+		return nil, output.Errorf(output.ExitInvalidInput, "unknown service %q", service)
+	}
+	containerRuntime, err := runtime.ContainerRuntimeName(deps.Prober)
+	if err != nil {
+		return nil, output.Errorf(output.ExitMissingDep, "no container runtime for stats: %s", err)
+	}
+	now := statsNow(deps.Now)
+	stats := make([]ContainerStats, 0, len(containers))
+	for _, container := range containers {
+		stats = append(stats, containerStats(deps.Prober, containerRuntime.Name, container, now))
+	}
+	return stats, nil
+}
+
+// containerStats inspects one container for its id/state/ports/start-time, then — when
+// running — layers on the runtime's live stats line. Best-effort: any failed probe
+// leaves that field empty rather than erroring (a stopped container is normal).
+func containerStats(prober runtime.Prober, containerRuntime, name string, now time.Time) ContainerStats {
+	stats := ContainerStats{Container: name, State: "not found"}
+	out, err := prober.Run(containerRuntime, "inspect", "--format",
+		"{{.Id}}\t{{.State.Status}}\t{{.State.StartedAt}}\t{{json .NetworkSettings.Ports}}", name)
+	if err != nil {
+		return stats // absent — Found stays false
+	}
+	fields := strings.SplitN(strings.TrimSpace(string(out)), "\t", 4)
+	if len(fields) == 4 {
+		stats.ID = shortContainerID(fields[0])
+		stats.State = fields[1]
+		stats.StartedAt = fields[2]
+		stats.Ports = parseContainerPorts(fields[3])
+		if started, perr := time.Parse(time.RFC3339Nano, fields[2]); perr == nil && !started.IsZero() && !now.IsZero() && stats.State == "running" {
+			stats.Uptime = now.Sub(started).Round(time.Second).String()
+		}
+	}
+	if stats.State != "running" {
+		return stats
+	}
+	stats.Found = true
+	statsOut, serr := prober.Run(containerRuntime, "stats", "--no-stream", "--format", "{{json .}}", name)
+	if serr != nil {
+		return stats
+	}
+	var line dockerStatsLine
+	if json.Unmarshal([]byte(strings.TrimSpace(string(statsOut))), &line) == nil {
+		stats.CPUPercent = line.CPUPerc
+		stats.MemUsage = line.MemUsage
+		stats.MemPercent = line.MemPerc
+		stats.NetIO = line.NetIO
+		stats.BlockIO = line.BlockIO
+		stats.Pids = line.PIDs
+	}
+	return stats
+}
+
+// statsNow resolves the reference time for uptime: the injected Now (RFC3339, for
+// determinism) when set + parseable, else the wall clock; a zero time skips uptime.
+func statsNow(nowFn func() string) time.Time {
+	if nowFn != nil {
+		if parsed, err := time.Parse(time.RFC3339, nowFn()); err == nil {
+			return parsed
+		}
+	}
+	return time.Now()
+}
+
+// shortContainerID truncates a full container id to the conventional 12 chars.
+func shortContainerID(id string) string {
+	if len(id) > 12 {
+		return id[:12]
+	}
+	return id
+}
+
+// parseContainerPorts renders the inspect `.NetworkSettings.Ports` JSON map as a
+// comma-joined, sorted list of container ports ("4000/tcp"), appending "→<hostPort>"
+// when a port is published to the host. Empty/null map → "".
+func parseContainerPorts(raw string) string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" || raw == "null" || raw == "{}" {
+		return ""
+	}
+	var ports map[string][]struct {
+		HostIP   string `json:"HostIp"`
+		HostPort string `json:"HostPort"`
+	}
+	if json.Unmarshal([]byte(raw), &ports) != nil {
+		return ""
+	}
+	entries := make([]string, 0, len(ports))
+	for port, bindings := range ports {
+		entry := port
+		if len(bindings) > 0 && bindings[0].HostPort != "" {
+			entry += "→" + bindings[0].HostPort
+		}
+		entries = append(entries, entry)
+	}
+	slices.Sort(entries)
+	return strings.Join(entries, ", ")
 }

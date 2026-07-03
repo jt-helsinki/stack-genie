@@ -40,6 +40,13 @@ type servicesToggleDoneMsg struct {
 	err     error
 }
 
+// servicesRestartDoneMsg reports the result of a list-level restart — one service
+// (target = its name) or ALL of them (target = "").
+type servicesRestartDoneMsg struct {
+	target string
+	err    error
+}
+
 // Services is the live LIST of the host service tier + their containers. It behaves
 // like the Workspaces hub's switcher: `enter`/`d` drills into a per-service DETAIL
 // (ServiceDetail — summary + embedded container log + in-place lifecycle), and `esc`
@@ -83,7 +90,7 @@ func (view *Services) Hints() string {
 	if view.drilled {
 		return view.detail.Hints()
 	}
-	return "enter/d open · e enable/disable · r refresh"
+	return "enter/d open · r restart · a restart all · e enable/disable"
 }
 
 // CapturesNav reports whether the view wants Tab/←→/esc for itself — true while a
@@ -111,8 +118,16 @@ func (view *Services) SetSize(width, height int) {
 	view.detail.SetSize(width, height)
 }
 
-// Init kicks off the first list fetch.
-func (view *Services) Init() tea.Cmd { return view.fetchCmd() }
+// Init kicks off the list fetch and, when a detail is open (e.g. re-entering the
+// Services top-level tab while drilled in), restarts the detail's status/metrics/log
+// poll too — otherwise its tick chain (dropped while another tab was focused) would
+// not resume and the detail would freeze.
+func (view *Services) Init() tea.Cmd {
+	if view.drilled {
+		return tea.Batch(view.fetchCmd(), view.detail.Init())
+	}
+	return view.fetchCmd()
+}
 
 // RefreshActive re-loads whichever level is visible: the open detail (so a
 // `services update` overlay closing reflects in the detail + restarts its log poll)
@@ -157,6 +172,9 @@ func (view *Services) Update(msg tea.Msg) tea.Cmd {
 	case servicesToggleDoneMsg:
 		view.flash = toggleFlash(message)
 		return view.fetchCmd() // reflect the toggle immediately
+	case servicesRestartDoneMsg:
+		view.flash = restartFlash(message)
+		return view.fetchCmd() // reflect the new state immediately
 	case tea.KeyMsg:
 		if view.drilled {
 			if message.String() == "esc" {
@@ -190,9 +208,35 @@ func (view *Services) handleListKey(key tea.KeyMsg) (tea.Cmd, bool) {
 	case "e":
 		return view.handleToggle(), true
 	case "r":
-		return view.fetchCmd(), true
+		return view.restartSelected(), true
+	case "a":
+		return view.restartAll(), true
 	}
 	return nil, false
+}
+
+// restartSelected restarts the highlighted service in place (the list keeps
+// auto-polling, so no manual refresh is needed — that key is gone).
+func (view *Services) restartSelected() tea.Cmd {
+	service := view.selectedService()
+	if service == "" {
+		return nil
+	}
+	view.flash = ui.Muted.Render("restarting " + service + "…")
+	return view.restartCmd(service)
+}
+
+// restartAll restarts every service (control with an empty target).
+func (view *Services) restartAll() tea.Cmd {
+	view.flash = ui.Muted.Render("restarting all services…")
+	return view.restartCmd("")
+}
+
+func (view *Services) restartCmd(target string) tea.Cmd {
+	control := view.control
+	return func() tea.Msg {
+		return servicesRestartDoneMsg{target: target, err: control("restart", target)}
+	}
 }
 
 // drillIn opens the selected service's detail view (summary + embedded container
@@ -293,4 +337,16 @@ func toggleFlash(msg servicesToggleDoneMsg) string {
 		return ui.Failure.Render(ui.IconFail + " " + msg.action + " " + msg.service + ": " + msg.err.Error())
 	}
 	return ui.Success.Render(ui.IconOK + " " + verbs[msg.action] + " " + msg.service)
+}
+
+// restartFlash renders the outcome of a list-level restart (one service or all).
+func restartFlash(msg servicesRestartDoneMsg) string {
+	label := msg.target
+	if label == "" {
+		label = "all services"
+	}
+	if msg.err != nil {
+		return ui.Failure.Render(ui.IconFail + " restart " + label + ": " + msg.err.Error())
+	}
+	return ui.Success.Render(ui.IconOK + " restarted " + label)
 }
