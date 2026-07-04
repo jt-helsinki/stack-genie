@@ -585,6 +585,17 @@ func ensureOllama(prober runtime.Prober, containerRuntime, bindHost string) erro
 // change; the tuned values apply on the next `ai services restart ollama` / `ai setup`
 // (which recreates the container). Sorted for a deterministic, testable argv.
 func ollamaEnvArgs() []string {
+	args := make([]string, 0, len(ollamaEnvPairs())*2)
+	for _, pair := range ollamaEnvPairs() {
+		args = append(args, "-e", pair)
+	}
+	return args
+}
+
+// ollamaEnvPairs returns the Ollama container's env as KEY=VALUE pairs (the single
+// source of truth for both ollamaEnvArgs' `-e` flags and the docker-compose renderer).
+// OLLAMA_MODELS is platform-managed; every other OLLAMA_* comes from the process env.
+func ollamaEnvPairs() []string {
 	forwarded := map[string]string{}
 	for _, entry := range os.Environ() {
 		key, value, found := strings.Cut(entry, "=")
@@ -599,12 +610,11 @@ func ollamaEnvArgs() []string {
 	}
 	slices.Sort(keys)
 
-	// OLLAMA_MODELS first (platform-managed), then the forwarded user vars.
-	args := []string{"-e", "OLLAMA_MODELS=" + ollamaModelsGuest}
+	pairs := []string{"OLLAMA_MODELS=" + ollamaModelsGuest}
 	for _, key := range keys {
-		args = append(args, "-e", key+"="+forwarded[key])
+		pairs = append(pairs, key+"="+forwarded[key])
 	}
-	return args
+	return pairs
 }
 
 // ensurePresidio runs the Presidio analyzer + anonymizer containers that back

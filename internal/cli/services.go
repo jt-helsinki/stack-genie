@@ -87,8 +87,46 @@ func newServicesCmd(em *output.Emitter, exit *int) *cobra.Command {
 		newServicesToggleCmd("enable", em, exit),
 		newServicesToggleCmd("disable", em, exit),
 		newServicesConsoleCmd(em, exit),
+		newServicesComposeCmd(em, exit),
 	)
 	return cmd
+}
+
+// newServicesComposeCmd builds `ai services compose`: it writes a docker-compose.yml
+// DEBUG ARTIFACT for the service tier to ~/.ai-platform/docker-compose.yml (mirroring
+// what `ai setup` runs) so a developer can bring the SAME stack up under compose's
+// tooling for debugging — it is NOT the launcher (the per-container reconcile still owns
+// startup). Prints the path + how to use it.
+func newServicesComposeCmd(em *output.Emitter, exit *int) *cobra.Command {
+	return &cobra.Command{
+		Use:   "compose",
+		Short: "Write a docker-compose.yml for the service tier (debug artifact)",
+		Args:  cobra.NoArgs,
+		RunE: func(_ *cobra.Command, _ []string) error {
+			path, err := setup.WriteComposeFile()
+			if err != nil {
+				*exit = em.Failure("services.compose", err)
+				return nil
+			}
+			*exit = em.Success("services.compose", composeResult{Path: path})
+			return nil
+		},
+	}
+}
+
+// composeResult is the `ai services compose` payload.
+type composeResult struct {
+	Path string `json:"path"`
+}
+
+// Human renders the written-path + usage hint.
+func (result composeResult) Human() string {
+	return ui.Success.Render(ui.IconOK+" wrote "+result.Path) + "\n\n" +
+		ui.Muted.Render("Bring the SAME stack up under docker compose for debugging:\n") +
+		"  ai services stop\n" +
+		"  docker compose -f " + result.Path + " up -d\n" +
+		ui.Muted.Render("then ") + "docker compose -f " + result.Path + " logs -f <service>" + ui.Muted.Render(" / ps / restart <service>.\n") +
+		ui.Muted.Render("Export the LiteLLM secrets (or source ~/.ai-platform/.ai-platform.env) first — they are passthrough.")
 }
 
 // newServicesToggleCmd builds `ai services enable|disable <service>`: it toggles
