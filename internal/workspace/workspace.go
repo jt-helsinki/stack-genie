@@ -752,16 +752,23 @@ func (manager Manager) registerGraphify(name string, projectConfig *config.Confi
 	if len(installs) == 0 {
 		return
 	}
-	// Run ONCE per project: `graphify install` OVERWRITES its skill files each run,
-	// so a marker under the (persistent) .ai-platform dir guards re-runs — this keeps
-	// user edits to graphify's project files from being clobbered on every restart.
-	// All installs run in ~/project so --project writes there; the marker is touched
-	// only after they all succeed (a failure retries next start). Best-effort.
-	marker := workspaceWorkdir + "/.ai-platform/.graphify-installed"
+	// Two ONCE-guarded steps, run in ~/project in a single exec:
+	//   1. `graphify install --project` per CLI — OVERWRITES its skill files each run, so
+	//      a marker (.graphify-installed) guards re-runs, keeping user edits from being
+	//      clobbered on every restart; the marker is touched only after all installs
+	//      succeed (a failure retries next start).
+	//   2. `graphify hook install` — installs Graphify's git hook, but ONLY when the
+	//      project is a git repo (a `.git` dir). It has its OWN marker
+	//      (.graphify-hook-installed) checked each start, so a project that becomes a git
+	//      repo AFTER the first start still gets the hook exactly once.
+	// Both markers live under the persistent .ai-platform dir. Best-effort.
+	installMarker := workspaceWorkdir + "/.ai-platform/.graphify-installed"
+	hookMarker := workspaceWorkdir + "/.ai-platform/.graphify-hook-installed"
 	script := "command -v graphify >/dev/null 2>&1 || exit 0; " +
-		"test -f " + marker + " && exit 0; " +
-		"mkdir -p " + workspaceWorkdir + "/.ai-platform && cd " + workspaceWorkdir + " && " +
-		strings.Join(installs, " && ") + " && touch " + marker
+		"cd " + workspaceWorkdir + " 2>/dev/null || exit 0; " +
+		"mkdir -p " + workspaceWorkdir + "/.ai-platform; " +
+		"if [ ! -f " + installMarker + " ]; then " + strings.Join(installs, " && ") + " && touch " + installMarker + "; fi; " +
+		"if [ -d .git ] && [ ! -f " + hookMarker + " ]; then graphify hook install && touch " + hookMarker + "; fi"
 	ctx, cancel := context.WithTimeout(context.Background(), graphifyInstallTimeout)
 	defer cancel()
 	_, _ = manager.Sandbox.ExecContext(ctx, name, []string{"sh", "-lc", script})

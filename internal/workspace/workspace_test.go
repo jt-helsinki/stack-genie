@@ -1718,6 +1718,41 @@ func TestStartRegistersGraphify(test *testing.T) {
 	}
 }
 
+// TestStartInstallsGraphifyGitHook verifies the Graphify registration also installs the
+// git hook — gated on the project being a git repo (`[ -d .git ]`) and guarded by its
+// OWN once-marker (.graphify-hook-installed), so it runs once for git projects.
+func TestStartInstallsGraphifyGitHook(test *testing.T) {
+	root := seedProject(test, "app")
+	if err := config.WriteProject(root, &config.Config{
+		OS:    "debian-trixie",
+		Agent: config.AgentConfig{Tools: []string{"pi"}, DefaultTool: "pi"},
+	}); err != nil {
+		test.Fatal(err)
+	}
+	sandbox := &fakeSandbox{}
+	manager := Manager{Builder: &fakeBuilder{}, Sandbox: sandbox, Keys: &fakeKeyMinter{}, Now: func() string { return "t" }}
+	if _, err := manager.Start("app"); err != nil {
+		test.Fatal(err)
+	}
+	var found bool
+	for _, argv := range sandbox.allExecArgv {
+		joined := strings.Join(argv, " ")
+		if !strings.Contains(joined, "graphify hook install") {
+			continue
+		}
+		found = true
+		if !strings.Contains(joined, "[ -d .git ]") {
+			test.Errorf("`graphify hook install` must be gated on a git repo ([ -d .git ]): %s", joined)
+		}
+		if !strings.Contains(joined, ".graphify-hook-installed") {
+			test.Errorf("`graphify hook install` must be guarded by its own once-marker: %s", joined)
+		}
+	}
+	if !found {
+		test.Errorf("Start should include `graphify hook install` in the graphify exec; execs: %v", sandbox.allExecArgv)
+	}
+}
+
 // TestStartLinksSharedResources verifies the shared .ai-platform/{agents,skills,
 // prompts,projects} pool is created and symlinked into each INSTALLED CLI's real
 // per-project dirs (relative symlinks), skipping kinds a CLI has no concept for.
