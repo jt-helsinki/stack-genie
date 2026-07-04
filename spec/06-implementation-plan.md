@@ -386,7 +386,7 @@ are grep-able (`hardware bring-up`) and tracked in `docs/HARDWARE-BRINGUP.md`.
      deny-fallthrough + allow-rule model with no `utun`/NetworkExtension/admin
      prompt/kext.
 3. **Headroom placement (decided).** Headroom runs as a **host service-tier
-   container** (`aip-headroom`, pulled image `ghcr.io/chopratejas/headroom:slim`,
+   container** (`aip-headroom`, pulled image `ghcr.io/chopratejas/headroom:latest`,
    internal :8787) — an input-compression proxy **in front of LiteLLM**, no longer
    baked into the workspace image, and now **internal-only on `aip-net` behind the
    nginx gateway** (no host publish). The per-project strategy

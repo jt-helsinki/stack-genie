@@ -202,7 +202,7 @@ Introduce Headroom + Caveman.
 ## Scope
 
 * Headroom context management (input compression) — host service-tier proxy
-  (`aip-headroom`, pulled image `ghcr.io/chopratejas/headroom:slim`, internal
+  (`aip-headroom`, pulled image `ghcr.io/chopratejas/headroom:latest`, internal
   port :8787) in front of LiteLLM; no longer baked into the workspace image, and
   now **internal-only on `aip-net`** behind the nginx gateway (no host publish).
   Per-project strategy maps to Headroom per-request knobs.
@@ -415,8 +415,13 @@ These are implemented progressively across slices.
   start via the injected `workspace.ServedModels` source
   (`litellm.KeyManager.ListModels`) and built by `workspace.Manager.pickerModels`.
   It is **not** a union of aliases + Ollama + a cloud seed — there are no aliases
-  and no `cloud_models.yaml`. When the gateway is unreachable it degrades to an
-  **empty** picker and writes **no** default model.
+  and no `cloud_models.yaml`. When the gateway is unreachable the picker degrades to
+  **empty** and leaves the existing served-model lists untouched. The workspace
+  **default** model is separate: it follows **seed-then-remember** — the `ai create`
+  model (`agent.graphify_model` → `ollama/<model>`) is seeded as every CLI's default on
+  the FIRST start only (`.ai-platform/.agent-default-seeded` marker), independent of the
+  picker; later starts pass an empty default so each CLI's persisted last-used selection
+  wins (agent state dirs symlinked to the `/persist` overlay so it survives restarts).
 
 (MCP is not a platform concern — the agent manages it.)
 

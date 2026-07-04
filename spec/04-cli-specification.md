@@ -959,9 +959,11 @@ user's other keys survive:
 * **opencode** → `<project>/.opencode/opencode.json` (`apiKey: "{env:AIP_GATEWAY_KEY}"`);
   the in-VM agent env file exports `OPENCODE_CONFIG` pointing opencode at this file. It
   carries the per-request Headroom knobs on every model.
-* **pi** → `<project>/.pi/models.json` (`apiKey: "$AIP_GATEWAY_KEY"`) +
-  `<project>/.pi/settings.json` (default provider + skills/prompts resource paths). pi
-  cannot inject per-request fields, so it uses Headroom's server-side defaults.
+* **pi** → the GLOBAL in-VM `~/.pi/agent/models.json` (the path pi actually reads;
+  `apiKey: "$AIP_GATEWAY_KEY"`, written into the microVM via `Sandbox.WriteFile`, off host
+  disk — a project `.pi/models.json` is NOT read) + `<project>/.pi/settings.json` (default
+  provider + default model + skills/prompts resource paths). pi cannot inject per-request
+  fields, so it uses Headroom's server-side defaults.
 * **claude-code** → `<project>/.claude/settings.json` — an `env` block setting only
   `ANTHROPIC_BASE_URL` (the gateway root — LiteLLM's Anthropic-compatible surface, it
   appends `/v1/messages`); the bearer token stays in the exported `ANTHROPIC_AUTH_TOKEN`
@@ -985,8 +987,8 @@ the exported token — all keyless. A user's edits to the on-disk configs surviv
 skills,prompts,projects}` shared resource pool is symlinked into each installed CLI's
 per-project dir at start (repo-layout §12.1c). *(hardware bring-up: opencode honouring
 `.opencode/opencode.json` via `OPENCODE_CONFIG`; codex loading the trusted project config;
-pi reading `.pi/models.json` + settings resource paths; the symlinks resolving in-VM — all
-not yet verified live.)*
+pi reading its global `~/.pi/agent/models.json` + settings resource paths; the symlinks
+resolving in-VM — all not yet verified live.)*
 
 ### In-workspace `refresh-models` — re-pull the model picker without restarting
 
@@ -1005,9 +1007,9 @@ refresh-models      # run from any workspace session (ai shell / ai agent)
 It re-fetches the models the gateway currently **serves** (its DB-backed models)
 from the gateway's `/v1/models` endpoint — authenticated with the workspace's scoped
 virtual key — dedups + sorts them **exactly** as a fresh workspace start does, and
-rewrites the **opencode** + **pi** PROJECT configs
-(`/home/workspace/project/.opencode/opencode.json`,
-`/home/workspace/project/.pi/models.json`) **in place, byte-identical** to the canonical
+rewrites the **opencode** PROJECT config
+(`/home/workspace/project/.opencode/opencode.json`) + **pi**'s global
+`~/.pi/agent/models.json` **in place, byte-identical** to the canonical
 config a fresh start produces — and **KEYLESS** (the `{env:}`/`$VAR` key refs are
 preserved; the fetched key authenticates the `/v1/models` call only, never entering the
 rewritten files). Restart the agent CLI afterwards to pick up the new list. (It rewrites

@@ -755,7 +755,10 @@ Caveman integrates as an agent skill **seeded per project** into
 workspace image). It is **git-tracked** — committed with the project like the
 Dockerfile, so it travels with the repo and the project stays reproducible from
 git alone; it is not re-installed or auto-upgraded on workspace start. It is the
-output-side complement to Headroom.
+output-side complement to Headroom. The seeded `SKILL.md` carries the Agent-Skills
+standard **YAML frontmatter** (`name` + `description`) that claude/opencode/pi all read —
+pi rejects a skill missing the `description` — with the compression `level:` line kept in
+the body (`internal/contextopt.cavemanSkill`).
 
 ---
 
@@ -788,7 +791,7 @@ Headroom shrinks what goes *in*; Caveman shrinks what comes *out*.
 Headroom manages context budgets.
 
 Headroom now runs as a **shared host container** (`aip-headroom`, image
-`ghcr.io/chopratejas/headroom:slim` — pulled, never built, listening on `:8787`).
+`ghcr.io/chopratejas/headroom:latest` — pulled, never built, listening on `:8787`).
 It is the **input-compression proxy in front of LiteLLM**, forwarding to LiteLLM
 via `OPENAI_TARGET_API_URL=http://aip-litellm:4000`. Headroom is now
 **INTERNAL-ONLY** on `aip-net` (no host publish): the gateway ENTRY is the
@@ -920,7 +923,11 @@ templates (§25); it is identical across all OSes:
   at start because `--project` writes project-scoped skill/plugin/hook files into the
   bind-mounted project dir (which does not exist at build); it runs **once per
   project**, guarded by a marker file (`~/project/.ai-platform/.graphify-installed`)
-  so user edits to those files are not clobbered on every restart.
+  so user edits to those files are not clobbered on every restart. When the project is
+  a **git repo** (a `.git` dir), `registerGraphify` also runs `graphify hook install`
+  ONCE — guarded by its own marker (`~/project/.ai-platform/.graphify-hook-installed`),
+  re-checked each start so a project that becomes a git repo AFTER the first start still
+  gets the hook exactly once.
   Graphify's headless LLM backend is an **Ollama model chosen at `ai create`** (the
   wizard's optional model+tag select, or `--graphify-model`), stored as
   `agent.graphify_model` in the project `config.yaml`. The chosen model is pulled
@@ -1251,10 +1258,12 @@ the dynamic managed block wins while the user's other keys survive:
 * **opencode** → `<project>/.opencode/opencode.json` (`apiKey: "{env:AIP_GATEWAY_KEY}"`);
   the in-VM env file exports `OPENCODE_CONFIG` pointing opencode at this file. It carries
   the per-request Headroom knobs (keep-turns / output-buffer-tokens) on every model.
-* **pi** → `<project>/.pi/models.json` (`apiKey: "$AIP_GATEWAY_KEY"`) +
-  `<project>/.pi/settings.json` (default provider + skills/prompts resource paths pointing
-  at the symlinked shared pools). pi cannot inject per-request body fields, so it uses
-  Headroom's server-side defaults.
+* **pi** → the **global in-VM** `~/.pi/agent/models.json` (the path pi actually reads —
+  a project `.pi/models.json` is NOT read; `apiKey: "$AIP_GATEWAY_KEY"`, written into the
+  microVM via `Sandbox.WriteFile`, off host disk) + `<project>/.pi/settings.json` (default
+  provider + default model + skills/prompts resource paths pointing at the symlinked shared
+  pools). pi cannot inject per-request body fields, so it uses Headroom's server-side
+  defaults.
 * **claude-code** → `<project>/.claude/settings.json` — an `env` block setting only
   `ANTHROPIC_BASE_URL` (the gateway root, no `/v1`); the bearer token stays in the
   exported `ANTHROPIC_AUTH_TOKEN` env var (settings.json has no `${VAR}` interpolation),
@@ -1277,8 +1286,9 @@ routes through the gateway (nginx → Headroom → LiteLLM → Ollama) rather th
 Ollama.
 
 **hardware bring-up** (not yet verified live): opencode honouring `.opencode/opencode.json`
-via `OPENCODE_CONFIG`; codex loading the trusted project config; pi reading `.pi/models.json`
-+ its settings resource paths; the shared-pool symlinks (below) resolving in-VM.
+via `OPENCODE_CONFIG`; codex loading the trusted project config; pi reading its global
+`~/.pi/agent/models.json` + its settings resource paths; the shared-pool symlinks (below)
+resolving in-VM.
 
 #### Shared resource pool + per-CLI symlinks
 
@@ -1302,15 +1312,23 @@ workspace start (`internal/workspace.pickerModels`): it is **exactly the set of
 models the LiteLLM gateway currently serves** — its live DB-backed models — sourced
 via the injected `workspace.ServedModels` → `litellm.KeyManager.ListModels`,
 deduped and sorted. If the gateway is unreachable the picker **degrades to an empty
-list** (never fatal — it must never fail a workspace start), and **no default model
-is written** to the agent configs. The platform also installs an in-VM
+list** (never fatal — it must never fail a workspace start), and an empty picker
+LEAVES the existing served-model lists untouched (a transient outage never wipes them).
+The workspace **default model** is separate from the picker and follows a
+**seed-then-remember** policy: the model chosen at `ai create` (`agent.graphify_model`
+→ `ollama/<model>`) is SEEDED as every CLI's default on the **FIRST start only**
+(guarded by a `<project>/.ai-platform/.agent-default-seeded` marker), independent of
+picker/gateway reachability; LATER starts pass an EMPTY default so each CLI's persisted
+last-used selection wins — the agent state dirs (`~/.local/share/opencode`, `~/.pi`) are
+symlinked to the `/persist` overlay (`workspace.linkAgentStateDirs`) so that selection
+survives microVM restarts. The platform also installs an in-VM
 `refresh-models` command (`/usr/local/bin/refresh-models`, from
 `agentcfg.RefreshScript`) that re-fetches the served list from the gateway's
 `/v1/models` endpoint (authenticated with the scoped virtual key) and rewrites the
-opencode + pi PROJECT configs (`/home/workspace/project/.opencode/opencode.json`,
-`/home/workspace/project/.pi/models.json`) — KEYLESS — to match a fresh start, so
-models registered after start can be picked up without recreating the workspace;
-on failure it leaves the configs untouched. (The installable Ollama library backing the *host-side* `ai models`
+opencode PROJECT config (`/home/workspace/project/.opencode/opencode.json`) + pi's global
+`~/.pi/agent/models.json` — KEYLESS — to match a fresh start, so models registered after
+start can be picked up without recreating the workspace; on failure it leaves the configs
+untouched. (The installable Ollama library backing the *host-side* `ai models`
 browse + the TUI Local Models tab is **scraped LIVE from ollama.com** —
 `internal/ollama/library.go`, `ollama.Library()` GETs the `/library` index for every
 model then each model's `/library/<model>/tags` table for the per-variant
@@ -1524,7 +1542,7 @@ Workspace mount location (guest):
 
 # per-CLI provider configs (keyless, written at workspace start; §15):
 .opencode/opencode.json
-.pi/models.json  .pi/settings.json
+.pi/settings.json    # pi's models.json is the GLOBAL in-VM ~/.pi/agent/models.json, NOT on host disk
 .claude/settings.json
 .codex/config.toml
 

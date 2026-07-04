@@ -209,7 +209,9 @@ Rules:
   in the Dockerfile), ONCE per project (guarded by a `.ai-platform/.graphify-installed`
   marker) — `graphify install --project [--platform <cli>]` run in `~/project`
   (`Manager.registerGraphify`) — because `--project` writes into the bind-mounted
-  project dir, which only exists at runtime (arch §12). Graphify's headless LLM
+  project dir, which only exists at runtime (arch §12). For a git repo (a `.git` dir)
+  it also runs `graphify hook install` ONCE (its own `.ai-platform/.graphify-hook-installed`
+  marker, re-checked each start). Graphify's headless LLM
   backend is an Ollama model chosen at `ai create` (`agent.graphify_model`, §12.4),
   routed through the gateway as `ollama/<model>`. **Neither Python nor Node is
   a `--stacks` option** — both are baked into the base (the no-op `python`/`node`
@@ -369,7 +371,7 @@ the agent into this source tree — the platform does not manage them.
 
 # per-CLI provider configs — KEYLESS, written at workspace start (§12.1c, architecture §15):
 .opencode/opencode.json         # opencode provider config; apiKey "{env:AIP_GATEWAY_KEY}"
-.pi/models.json  .pi/settings.json   # pi provider config (apiKey "$AIP_GATEWAY_KEY") + settings
+.pi/settings.json               # pi settings (default provider/model + resource paths); models.json is the GLOBAL in-VM ~/.pi/agent/models.json, NOT on host disk
 .claude/settings.json           # claude-code env block (base URL only; token via env)
 .codex/config.toml              # codex provider block (key via env_key)
 ```
@@ -385,8 +387,10 @@ existing file is deep-merged so the managed block wins while the user's other ke
 
 * **opencode** → `.opencode/opencode.json` (`apiKey: "{env:AIP_GATEWAY_KEY}"`); the in-VM
   agent env file exports `OPENCODE_CONFIG` to point opencode at it.
-* **pi** → `.pi/models.json` (`apiKey: "$AIP_GATEWAY_KEY"`) + `.pi/settings.json`
-  (default provider + skills/prompts resource paths).
+* **pi** → the GLOBAL in-VM `~/.pi/agent/models.json` (the path pi actually reads;
+  `apiKey: "$AIP_GATEWAY_KEY"`, written into the microVM via `Sandbox.WriteFile`, off host
+  disk — a project `.pi/models.json` is NOT read) + `.pi/settings.json` (default provider +
+  default model + skills/prompts resource paths).
 * **claude-code** → `.claude/settings.json` — an `env` block with `ANTHROPIC_BASE_URL`;
   the token stays in the exported `ANTHROPIC_AUTH_TOKEN` env var (no key in the file).
 * **codex** → `.codex/config.toml` (keyless, `env_key = "AIP_GATEWAY_KEY"`,
