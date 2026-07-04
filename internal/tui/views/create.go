@@ -120,7 +120,7 @@ func (view *Create) Hints() string {
 	nav := " · shift+tab back · esc cancel"
 	switch view.step {
 	case stepLocation:
-		return "type to filter · ↓/↑ folder · tab complete · enter next" + nav
+		return "type to filter · ↓/↑ pick folder · tab open folder · enter next" + nav
 	case stepAgents, stepStacks, stepApps:
 		return "↑/↓ move · space toggle · enter next" + nav
 	case stepOS, stepDefault, stepModel:
@@ -462,8 +462,12 @@ type locationStep struct {
 	scroll        int
 	validationErr error
 	dir           string // set on a successful confirm
-	width         int
-	height        int
+	// typed is the last value the USER typed, captured so moving the selection back
+	// above the list restores it (moving DOWN autocompletes the highlighted folder into
+	// the input; moving back to the top restores what was typed).
+	typed  string
+	width  int
+	height int
 }
 
 func newLocationStep(startDir string) *locationStep {
@@ -474,7 +478,7 @@ func newLocationStep(startDir string) *locationStep {
 	input.SetValue(ensureTrailingSep(createStartDir(startDir)))
 	input.CursorEnd()
 	input.Focus()
-	step := &locationStep{input: input, selected: -1}
+	step := &locationStep{input: input, selected: -1, typed: input.Value()}
 	step.refreshSuggestions()
 	return step
 }
@@ -522,6 +526,7 @@ func (step *locationStep) Update(msg tea.Msg) (advance bool, cmd tea.Cmd) {
 	before := step.input.Value()
 	step.input, cmd = step.input.Update(msg)
 	if step.input.Value() != before {
+		step.typed = step.input.Value()
 		step.refreshSuggestions()
 		step.selected = -1
 		step.scroll = 0
@@ -530,7 +535,21 @@ func (step *locationStep) Update(msg tea.Msg) (advance bool, cmd tea.Cmd) {
 	return false, cmd
 }
 
+// previewSelection autocompletes the highlighted folder into the input as the selection
+// moves — WITHOUT regenerating the suggestion list, so the user keeps navigating the same
+// siblings (enter confirms the previewed path; tab drills into it). Moving back above the
+// list (selected < 0) restores what the user had typed.
+func (step *locationStep) previewSelection() {
+	if step.selected >= 0 && step.selected < len(step.suggestions) {
+		step.input.SetValue(step.suggestions[step.selected].path)
+	} else {
+		step.input.SetValue(step.typed)
+	}
+	step.input.CursorEnd()
+}
+
 func (step *locationStep) moveSelection(delta int) {
+	defer step.previewSelection() // autocomplete the highlighted folder into the input
 	if len(step.suggestions) == 0 {
 		step.selected = -1
 		step.scroll = 0
@@ -574,6 +593,7 @@ func (step *locationStep) complete() {
 	}
 	step.input.SetValue(step.suggestions[index].path)
 	step.input.CursorEnd()
+	step.typed = step.input.Value()
 	step.refreshSuggestions()
 	step.selected = -1
 	step.scroll = 0

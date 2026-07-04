@@ -266,3 +266,38 @@ func TestCreateWizardModelDrillDown(test *testing.T) {
 		test.Errorf("picker.Value() = %q, want qwen2.5-coder:7b", picker.Value())
 	}
 }
+
+// TestLocationAutocompletesOnMove verifies moving the folder selection autocompletes the
+// highlighted folder into the input, and moving back above the list restores what was typed.
+func TestLocationAutocompletesOnMove(test *testing.T) {
+	test.Setenv("HOME", test.TempDir())
+	base := test.TempDir()
+	for _, name := range []string{"alpha", "beta"} {
+		if err := os.MkdirAll(filepath.Join(base, name), 0o755); err != nil {
+			test.Fatal(err)
+		}
+	}
+	step := newLocationStep(base)
+	step.input.SetValue(ensureTrailingSep(base)) // list the children of base
+	step.typed = step.input.Value()
+	step.refreshSuggestions()
+	step.selected = -1
+	if len(step.suggestions) == 0 {
+		test.Fatal("expected child-folder suggestions for base")
+	}
+
+	// Moving down autocompletes the highlighted folder's path into the input.
+	step.moveSelection(1)
+	first := step.suggestions[step.selected].path
+	if step.input.Value() != first {
+		test.Errorf("moving down should autocomplete the folder into the input: got %q, want %q", step.input.Value(), first)
+	}
+	// Moving back above the list restores the typed prefix.
+	step.moveSelection(-1)
+	if step.selected != -1 {
+		test.Fatalf("moving up past the top should clear the selection, got %d", step.selected)
+	}
+	if step.input.Value() != ensureTrailingSep(base) {
+		test.Errorf("moving above the list should restore the typed prefix: got %q, want %q", step.input.Value(), ensureTrailingSep(base))
+	}
+}
