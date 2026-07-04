@@ -566,14 +566,45 @@ func ensureOllama(prober runtime.Prober, containerRuntime, bindHost string) erro
 		"run", "-d", "--name", ollamaContainer,
 		"--network", platformNetwork,
 		"-v", modelsDir + ":" + ollamaModelsGuest,
-		"-e", "OLLAMA_MODELS=" + ollamaModelsGuest,
-		containerImage("ollama"),
 	}
+	args = append(args, ollamaEnvArgs()...)
+	args = append(args, containerImage("ollama"))
 	if _, err := prober.Run(containerRuntime, args...); err != nil {
 		return output.Errorf(output.ExitRuntimeFailure,
 			"could not start Ollama — stop any local Ollama using port 11434, then re-run `ai setup`")
 	}
 	return nil
+}
+
+// ollamaEnvArgs builds the `-e OLLAMA_*` flags for the Ollama container. OLLAMA_MODELS is
+// ALWAYS the platform's in-container store path (it backs the host bind mount) and is
+// never taken from the environment. Every OTHER OLLAMA_-prefixed variable present in this
+// process's environment — notably the ones loaded from ~/.ai-platform/.ai-platform.env at
+// startup — is forwarded verbatim, so a user can tune the Ollama server
+// (OLLAMA_KV_CACHE_TYPE, OLLAMA_FLASH_ATTENTION, OLLAMA_NUM_PARALLEL, …) without a code
+// change; the tuned values apply on the next `ai services restart ollama` / `ai setup`
+// (which recreates the container). Sorted for a deterministic, testable argv.
+func ollamaEnvArgs() []string {
+	forwarded := map[string]string{}
+	for _, entry := range os.Environ() {
+		key, value, found := strings.Cut(entry, "=")
+		if !found || !strings.HasPrefix(key, "OLLAMA_") || key == "OLLAMA_MODELS" {
+			continue
+		}
+		forwarded[key] = value
+	}
+	keys := make([]string, 0, len(forwarded))
+	for key := range forwarded {
+		keys = append(keys, key)
+	}
+	slices.Sort(keys)
+
+	// OLLAMA_MODELS first (platform-managed), then the forwarded user vars.
+	args := []string{"-e", "OLLAMA_MODELS=" + ollamaModelsGuest}
+	for _, key := range keys {
+		args = append(args, "-e", key+"="+forwarded[key])
+	}
+	return args
 }
 
 // ensurePresidio runs the Presidio analyzer + anonymizer containers that back

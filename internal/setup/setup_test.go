@@ -1564,3 +1564,26 @@ func TestEnsureOllamaModelsUnderVolumesDir(test *testing.T) {
 		test.Errorf("expected the models dir %q to be created: %v", wantSrc, err)
 	}
 }
+
+// TestOllamaEnvArgsForwardsPrefixed verifies the Ollama container gets every OLLAMA_*
+// var from the process env (i.e. from ~/.ai-platform/.ai-platform.env) EXCEPT
+// OLLAMA_MODELS, which stays the platform-managed store path (not user-overridable).
+func TestOllamaEnvArgsForwardsPrefixed(test *testing.T) {
+	test.Setenv("OLLAMA_FLASH_ATTENTION", "1")
+	test.Setenv("OLLAMA_KV_CACHE_TYPE", "q8_0")
+	test.Setenv("OLLAMA_MODELS", "/should/not/win") // platform-managed; must be ignored
+	test.Setenv("NOT_OLLAMA", "nope")
+
+	joined := strings.Join(ollamaEnvArgs(), " ")
+	for _, want := range []string{"-e OLLAMA_FLASH_ATTENTION=1", "-e OLLAMA_KV_CACHE_TYPE=q8_0", "-e OLLAMA_MODELS=" + ollamaModelsGuest} {
+		if !strings.Contains(joined, want) {
+			test.Errorf("ollama env args missing %q: %q", want, joined)
+		}
+	}
+	if strings.Contains(joined, "/should/not/win") {
+		test.Errorf("OLLAMA_MODELS must NOT be overridable from the environment: %q", joined)
+	}
+	if strings.Contains(joined, "NOT_OLLAMA") {
+		test.Errorf("non-OLLAMA_ vars must not be forwarded: %q", joined)
+	}
+}
