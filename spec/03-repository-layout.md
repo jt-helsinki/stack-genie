@@ -663,7 +663,7 @@ config blocks.
 ```yaml id="sc6"
 os: alma                   # alma | debian-trixie | debian-bookworm | ubuntu
 agent:
-  tools: [opencode, pi]    # installed agent CLIs (any subset of: opencode, pi, claude-code, codex, gemini-cli); opencode + pi by default
+  tools: [opencode, pi]    # installed agent CLIs (any subset of: opencode, pi, omp, claude-code, codex, gemini-cli); opencode + pi by default
   default_tool: opencode   # default agent CLI; must be one of agent.tools
   graphify_model: qwen2.5-coder:7b  # optional: Ollama model Graphify uses (chosen at `ai create`, routed through the gateway as ollama/<model>); omitted = none
 context:

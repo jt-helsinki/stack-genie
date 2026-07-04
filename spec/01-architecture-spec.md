@@ -943,6 +943,7 @@ environment setup (`ai create`, CLI §3.1) from the supported list:
 
 * **OpenCode** — the default; pre-selected and the default agent
 * **Pi** — pre-selected by default (also wired to LiteLLM)
+* **omp** ("Oh My Pi", a Pi fork) — selectable; when chosen, wired to LiteLLM like Pi
 * **Claude Code**
 * **Codex**
 * **Gemini CLI**
@@ -1246,7 +1247,7 @@ supplies the routing prefix. There is no default model.
 
 ### In-VM agent provider config — keyless per-CLI project configs, key in-VM only
 
-All **five** agent CLIs route through the gateway **by default**. Each CLI's provider
+All **six** agent CLIs route through the gateway **by default**. Each CLI's provider
 config is written at **that CLI's own default per-project location** inside the
 bind-mounted project dir (`~/project` = `/home/workspace/project`, one directory shared
 host↔guest, so the project is self-describing on host disk), (re)generated on **every

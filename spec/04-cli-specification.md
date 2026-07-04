@@ -406,7 +406,7 @@ one command:
 * `--os <os>` — one of `debian-trixie|debian-bookworm|ubuntu|alma`; **required**
   when running non-interactively
 * `--agents <list>` — comma-separated agent CLIs
-  (`opencode,pi,claude-code,codex,gemini`); defaults to `opencode,pi`, and the
+  (`opencode,pi,omp,claude-code,codex,gemini`); defaults to `opencode,pi`, and the
   first listed becomes the default agent CLI
 * `--stacks <list>` — comma-separated EXTRA software stacks
   (`go,rust,java,maven,deno`); optional. **Neither Python nor Node is a stack
@@ -836,7 +836,7 @@ the tmux session.
   session is opened with one atomic **`tmux new-session -A`** (create-or-attach;
   the daemonized server makes it persist after a detach + listed).
 * **`ai agent <cli>`** starts (or reattaches to) a **per-CLI** session named after
-  the CLI — `opencode`, `pi`, `claude-code` (runs `claude`), `codex`, `gemini` —
+  the CLI — `opencode`, `pi`, `omp`, `claude-code` (runs `claude`), `codex`, `gemini` —
   so each agent has one durable session and several can run side by side. An
   **unknown `<cli>`** is exit `2` with the valid set listed.
 * **`ai attach [session]`** attaches to an **existing** session (it never creates —
