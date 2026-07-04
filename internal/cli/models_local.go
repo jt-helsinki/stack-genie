@@ -335,19 +335,19 @@ func newModelsPullCmd(emitter *output.Emitter, exit *int) *cobra.Command {
 			anyFailed := false
 			var lastErr error
 			for index, name := range names {
-				label := fmt.Sprintf("pulling %s… (%d/%d)", name, index+1, len(names))
-				pull := func() error {
-					return client.Pull(name, func(progress ollama.PullProgress) {
-						// hardware bring-up: a future revision can render a live byte-
-						// progress bar; the spinner already reflects ongoing work.
-						_ = progress
-					})
-				}
+				label := fmt.Sprintf("pulling %s (%d/%d)", name, index+1, len(names))
 				var err error
 				if ui.Enabled(emitter) {
-					err = ui.RunWithSpinner(emitter.Err, label, pull)
+					// Render a live download progress bar from Ollama's streamed
+					// total/completed frames (the meter overwrites in place, and also
+					// renders in the ai ui embedded terminal via the \r LogView normalize).
+					bar := ui.NewProgressBar(emitter.Err, label)
+					err = client.Pull(name, func(progress ollama.PullProgress) {
+						bar.Update(progress.Completed, progress.Total, progress.Status)
+					})
+					bar.Finish(err)
 				} else {
-					err = pull()
+					err = client.Pull(name, func(ollama.PullProgress) {})
 				}
 				if err != nil {
 					anyFailed = true
