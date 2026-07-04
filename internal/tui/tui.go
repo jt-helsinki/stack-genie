@@ -276,6 +276,7 @@ func Run(cwd string) error {
 		ollama.RefreshLibrary, // the `r` key force-re-scrapes ollama.com + re-caches
 		ollama.RealClient().Show,
 		litellmClient.Test,
+		syncLocalModelsToGateway, // `r` also registers the installed models with the gateway
 	)
 	// Cloud Models: the models.dev catalog (with its data source for availability
 	// messaging), the gateway's live (registered) set, the `r`-refresh (re-fetch the
@@ -520,9 +521,25 @@ func catalogIDsForCredentials(cat *catalog.Catalog, creds []litellm.Credential) 
 	return ids
 }
 
+// syncLocalModelsToGateway registers the installed Ollama models with the LiteLLM
+// gateway (idempotent, ADD-only), returning the model_names it newly registered. It
+// backs the Local Models `r` refresh so refreshing local models makes them available in
+// the gateway — the recovery path when a model is still installed in Ollama but missing
+// from LiteLLM (e.g. after a resync dropped it). A down/empty Ollama yields no models to
+// register (nil), never an error that would derail the refresh.
+func syncLocalModelsToGateway() ([]string, error) {
+	installed := installedOllamaModels()
+	if len(installed) == 0 {
+		return nil, nil
+	}
+	return litellm.NewKeyManager(runtime.RealProber()).RegisterOllamaModels(installed)
+}
+
 // installedOllamaModels lists the installed Ollama model names so a resync
 // re-registers the local models alongside the keyed cloud providers. A down/empty
-// Ollama is tolerated (returns nil) — it must never fail the resync.
+// Ollama is tolerated (returns nil) — it must never fail the resync. Returning nil is
+// SAFE: SyncModels never DELETES registered ollama/* models (it shields them from the
+// delete pass), so a transient Ollama outage here cannot wipe them from LiteLLM.
 func installedOllamaModels() []string {
 	installed, err := ollama.RealClient().List()
 	if err != nil {

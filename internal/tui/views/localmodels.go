@@ -1,6 +1,7 @@
 package views
 
 import (
+	"fmt"
 	"sort"
 	"strings"
 
@@ -58,6 +59,21 @@ type localModelsRefreshedMsg struct {
 	libraryErr error
 }
 
+// LocalModelSyncer registers the installed Ollama models with the LiteLLM gateway
+// (idempotent, ADD-only), returning the model_names it newly registered. Injected; the
+// parent wires it over litellm.KeyManager.RegisterOllamaModels(installed). It is how the
+// Local Models `r` refresh makes installed models available in the gateway — the
+// service-tier analogue of what `ai models pull` does at pull time. A nil syncer skips
+// the step (tests that don't exercise it).
+type LocalModelSyncer func() ([]string, error)
+
+// localModelsSyncedMsg reports the outcome of the register-installed-into-LiteLLM step
+// that runs alongside the `r` refresh.
+type localModelsSyncedMsg struct {
+	added []string
+	err   error
+}
+
 // tagPicker is the in-view drill-down sub-state: the selected model's tags, each
 // installed or not, with a moving cursor and a multi-select of NOT-installed tags to
 // pull. esc backs out to the list.
@@ -87,11 +103,12 @@ const localNameWidth = 26
 // to the Cloud Models highlight. enter drills into a per-model tag picker to
 // pull/remove/test individual tags. Keys: enter manage, r refresh, t test, d remove.
 type LocalModels struct {
-	test    ModelTester
-	list    LocalModelLister
-	library LibraryLister // CACHE-FIRST load (normal open); no network when cached
-	refresh LibraryLister // FORCE re-scrape (the `r` key); nil falls back to library
-	show    ModelShowFetcher
+	test     ModelTester
+	list     LocalModelLister
+	library  LibraryLister // CACHE-FIRST load (normal open); no network when cached
+	refresh  LibraryLister // FORCE re-scrape (the `r` key); nil falls back to library
+	show     ModelShowFetcher
+	syncGway LocalModelSyncer // registers installed models into LiteLLM on `r` (nilable)
 
 	describe describePane
 	drill    *tagPicker
@@ -109,14 +126,18 @@ type LocalModels struct {
 	height int
 	flash  string
 	loaded bool
+	// syncFlash marks that the flash holds the gateway-register result (from the `r`
+	// sync), so the concurrent display-refresh handler does not clear it — whichever of
+	// the two batched commands lands last, the sync result survives.
+	syncFlash bool
 }
 
 // NewLocalModels builds the Local Models view over the injected installed-store
 // lister, the CACHE-FIRST library lister (normal open), the FORCE-refresh library
 // lister (the `r` key; may be nil to reuse library), the per-model /api/show
 // fetcher, and the gateway tester.
-func NewLocalModels(list LocalModelLister, library, refresh LibraryLister, show ModelShowFetcher, test ModelTester) *LocalModels {
-	return &LocalModels{list: list, library: library, refresh: refresh, show: show, test: test, describe: newDescribePane()}
+func NewLocalModels(list LocalModelLister, library, refresh LibraryLister, show ModelShowFetcher, test ModelTester, syncGway LocalModelSyncer) *LocalModels {
+	return &LocalModels{list: list, library: library, refresh: refresh, show: show, test: test, syncGway: syncGway, describe: newDescribePane()}
 }
 
 func (view *LocalModels) Title() string { return "Local Models" }
@@ -197,6 +218,30 @@ func (view *LocalModels) listCmd(force bool) tea.Cmd {
 	}
 }
 
+// syncCmd registers the installed Ollama models with the gateway (ADD-only). A nil
+// syncer (tests) yields no command, so no sync flash appears.
+func (view *LocalModels) syncCmd() tea.Cmd {
+	syncGway := view.syncGway
+	if syncGway == nil {
+		return nil
+	}
+	return func() tea.Msg {
+		added, err := syncGway()
+		return localModelsSyncedMsg{added: added, err: err}
+	}
+}
+
+// localSyncFlash renders the outcome of the gateway-register step.
+func localSyncFlash(msg localModelsSyncedMsg) string {
+	if msg.err != nil {
+		return ui.Failure.Render(ui.IconFail + " register local models with the gateway: " + msg.err.Error())
+	}
+	if len(msg.added) == 0 {
+		return ui.Muted.Render("local models already registered with the gateway")
+	}
+	return ui.Success.Render(ui.IconOK + fmt.Sprintf(" registered %d local model(s) with the gateway", len(msg.added)))
+}
+
 func (view *LocalModels) testCmd(model string) tea.Cmd {
 	test := view.test
 	return func() tea.Msg {
@@ -216,10 +261,17 @@ func (view *LocalModels) Update(msg tea.Msg) tea.Cmd {
 		view.source = message.source
 		view.buildModels(message.installed, message.library)
 		// Clear the transient "refreshing…" notice; libraryFlash re-sets a
-		// source-availability warning only when the live library fetch failed.
-		view.flash = ""
-		view.libraryFlash()
+		// source-availability warning only when the live library fetch failed. But do NOT
+		// clobber the gateway-register result (the `r` sync runs concurrently).
+		if !view.syncFlash {
+			view.flash = ""
+			view.libraryFlash()
+		}
 		view.syncWindow()
+		return nil
+	case localModelsSyncedMsg:
+		view.syncFlash = true
+		view.flash = localSyncFlash(message)
 		return nil
 	case modelTestDoneMsg:
 		view.flash = modelTestFlash(message)
@@ -274,8 +326,12 @@ func (view *LocalModels) handleKey(key tea.KeyMsg) tea.Cmd {
 		}
 		return func() tea.Msg { return ModelRemoveRequestedMsg{Name: ref} }
 	case "r":
-		view.flash = ui.Muted.Render("refreshing…")
-		return view.listCmd(true)
+		// Refresh the display AND register the installed Ollama models with the gateway
+		// (ADD-only) so `r` makes local models available in LiteLLM — recovering any that
+		// drifted out. Both run concurrently; the sync result shows as a flash.
+		view.syncFlash = false
+		view.flash = ui.Muted.Render("refreshing + registering local models with the gateway…")
+		return tea.Batch(view.listCmd(true), view.syncCmd())
 	case "up", "k":
 		view.moveCursor(-1)
 		return nil

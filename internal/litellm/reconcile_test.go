@@ -161,3 +161,50 @@ func TestSyncModelsAppliesDiff(test *testing.T) {
 		test.Errorf("gateway saw deletes (by id) %v, want [stale]", deleted)
 	}
 }
+
+// TestSyncModelsPreservesOllamaWhenListEmpty is the regression for the data-loss bug:
+// a cloud-key resync called with NO ollama models (e.g. installedOllamaModels() returned
+// nil because the Ollama daemon was momentarily unreachable) must NOT delete the
+// ollama/* models already registered in LiteLLM — they are still installed in Ollama and
+// are owned by `ai models pull`/`rm`, not by this resync. Only stale CLOUD models delete.
+func TestSyncModelsPreservesOllamaWhenListEmpty(test *testing.T) {
+	var deleted []string
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		switch request.URL.Path {
+		case "/model/info":
+			_, _ = writer.Write([]byte(`{"data":[
+				{"model_name":"ollama/gemma4","litellm_params":{"model":"ollama/gemma4"},"model_info":{"id":"ollama-keep"}},
+				{"model_name":"ollama/qwen3","litellm_params":{"model":"ollama/qwen3"},"model_info":{"id":"ollama-keep-2"}},
+				{"model_name":"openai/old","litellm_params":{"model":"openai/old"},"model_info":{"id":"cloud-stale"}}
+			]}`))
+		case "/model/delete":
+			payload, _ := io.ReadAll(request.Body)
+			var body map[string]any
+			_ = json.Unmarshal(payload, &body)
+			deleted = append(deleted, body["id"].(string))
+			_, _ = writer.Write([]byte(`{}`))
+		case "/model/new":
+			_, _ = writer.Write([]byte(`{}`))
+		default:
+			test.Errorf("unexpected %s %s", request.Method, request.URL.Path)
+		}
+	}))
+	defer server.Close()
+	test.Setenv("LITELLM_BASE_URL", server.URL)
+
+	manager := NewKeyManager(okProber())
+	// No keyed providers and — crucially — NO ollama models (the daemon-down case).
+	result, err := manager.SyncModels(testCatalog(test), nil, nil)
+	if err != nil {
+		test.Fatalf("SyncModels: %v", err)
+	}
+	// Only the stale CLOUD model is deleted; both ollama/* registrations survive.
+	if strings.Join(deleted, ",") != "cloud-stale" {
+		test.Errorf("gateway saw deletes %v, want only [cloud-stale] — ollama models must be preserved", deleted)
+	}
+	for _, name := range result.Deleted {
+		if strings.HasPrefix(name, "ollama/") {
+			test.Errorf("a resync must not delete ollama model %q", name)
+		}
+	}
+}

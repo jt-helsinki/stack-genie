@@ -185,6 +185,40 @@ func (manager *KeyManager) RegisterOllamaModel(name string) error {
 		ModelParams{Model: modelName, APIBase: OllamaAPIBase}, ModelInfo{})
 }
 
+// RegisterOllamaModels registers every given local Ollama model in LiteLLM that is not
+// ALREADY served (idempotent), returning the model_names it newly added. It lists the
+// current set ONCE (unlike calling RegisterOllamaModel per name, which lists each call), so
+// a bulk reconcile of the installed store is one list + one AddModel per missing model.
+// It only ADDS — it never deletes — so it safely re-registers models the gateway lost
+// (e.g. a model still installed in Ollama but missing from LiteLLM) without touching the
+// rest. Stops at the first AddModel error, returning what was added so far.
+func (manager *KeyManager) RegisterOllamaModels(names []string) ([]string, error) {
+	current, err := manager.ListModels()
+	if err != nil {
+		return nil, err
+	}
+	served := make(map[string]bool, len(current))
+	for _, model := range current {
+		served[model.Name] = true
+	}
+	var added []string
+	for _, name := range names {
+		if name == "" {
+			continue
+		}
+		modelName := OllamaModelName(name)
+		if served[modelName] {
+			continue
+		}
+		if err := manager.AddModel(modelName, ModelParams{Model: modelName, APIBase: OllamaAPIBase}, ModelInfo{}); err != nil {
+			return added, err
+		}
+		served[modelName] = true
+		added = append(added, modelName)
+	}
+	return added, nil
+}
+
 // UnregisterOllamaModel removes the DB-backed model registered for a local Ollama
 // model. It looks up the entry whose model_name == "ollama/<name>" (OllamaModelName)
 // and deletes it by its LiteLLM-assigned id. A no-op (no error) when no such model is

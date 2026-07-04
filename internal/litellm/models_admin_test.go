@@ -8,6 +8,42 @@ import (
 	"testing"
 )
 
+// TestRegisterOllamaModelsAddsOnlyMissing verifies the bulk local-model reconcile
+// registers installed Ollama models that are NOT already served and skips ones that
+// are — the recovery path behind the Local Models `r` refresh.
+func TestRegisterOllamaModelsAddsOnlyMissing(test *testing.T) {
+	var added []string
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		switch request.URL.Path {
+		case "/model/info":
+			// gemma4 already served; qwen3-coder is not.
+			_, _ = writer.Write([]byte(`{"data":[{"model_name":"ollama/gemma4","litellm_params":{"model":"ollama/gemma4"},"model_info":{"id":"g"}}]}`))
+		case "/model/new":
+			payload, _ := io.ReadAll(request.Body)
+			var body map[string]any
+			_ = json.Unmarshal(payload, &body)
+			added = append(added, body["model_name"].(string))
+			_, _ = writer.Write([]byte(`{}`))
+		default:
+			test.Errorf("unexpected %s %s", request.Method, request.URL.Path)
+		}
+	}))
+	defer server.Close()
+	test.Setenv("LITELLM_BASE_URL", server.URL)
+
+	manager := NewKeyManager(okProber())
+	got, err := manager.RegisterOllamaModels([]string{"gemma4", "qwen3-coder:30b"})
+	if err != nil {
+		test.Fatalf("RegisterOllamaModels: %v", err)
+	}
+	if len(got) != 1 || got[0] != "ollama/qwen3-coder:30b" {
+		test.Errorf("registered = %v, want [ollama/qwen3-coder:30b]", got)
+	}
+	if len(added) != 1 || added[0] != "ollama/qwen3-coder:30b" {
+		test.Errorf("gateway saw adds %v, want [ollama/qwen3-coder:30b] (gemma4 already served)", added)
+	}
+}
+
 // TestSetCredentialRequestShape verifies SetCredential deletes any prior credential
 // of the same name then POSTs /credentials with the documented body
 // (credential_name, credential_info.custom_llm_provider, credential_values.api_key)

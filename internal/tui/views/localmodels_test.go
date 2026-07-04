@@ -53,6 +53,7 @@ func buildLocal(test *testing.T, installed []ollama.Model, library []ollama.Libr
 		nil, // refresh: nil → the `r` path reuses the library lister
 		show,
 		noTest,
+		nil, // syncGway: not exercised here
 	)
 	view.SetSize(120, 40)
 	drive(view, view.Init())
@@ -195,6 +196,7 @@ func TestLocalModelsDrillTestsInstalledTag(test *testing.T) {
 			tested = model
 			return litellm.TestResult{Model: model, OK: true, LatencyMS: 12}, nil
 		},
+		nil, // syncGway
 	)
 	view.SetSize(120, 40)
 	drive(view, view.Init())
@@ -239,6 +241,7 @@ func TestLocalModelsSourceCachedFlash(test *testing.T) {
 		},
 		nil,
 		noShow, noTest,
+		nil,
 	)
 	view.SetSize(120, 40)
 	drive(view, view.Init())
@@ -256,11 +259,51 @@ func TestLocalModelsSourceNoCacheFlash(test *testing.T) {
 		},
 		nil,
 		noShow, noTest,
+		nil,
 	)
 	view.SetSize(120, 40)
 	drive(view, view.Init())
 	if !strings.Contains(view.View(), "no cached copy") {
 		test.Errorf("expected the no-cache warning:\n%s", view.View())
+	}
+}
+
+// TestLocalModelsRefreshSyncsToGateway verifies the `r` refresh registers the installed
+// models with the gateway (the syncer is invoked) and flashes the count, and that the
+// concurrent display refresh does not clobber that flash.
+func TestLocalModelsRefreshSyncsToGateway(test *testing.T) {
+	var syncCalled bool
+	view := NewLocalModels(
+		func() ([]ollama.Model, error) {
+			return []ollama.Model{{Name: "qwen3-coder:30b", Size: 100, ParameterSize: "30B"}}, nil
+		},
+		freshLibrary([]ollama.LibraryModel{{Name: "qwen3-coder", Tags: libTags("30b"), RepoURL: "x"}}),
+		nil,
+		noShow, noTest,
+		func() ([]string, error) {
+			syncCalled = true
+			return []string{"ollama/qwen3-coder:30b"}, nil
+		},
+	)
+	view.SetSize(120, 40)
+	drive(view, view.Init())
+
+	// `r` returns a batch: the display refresh AND the gateway sync. Run both.
+	cmd := view.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("r")})
+	if batch, ok := cmd().(tea.BatchMsg); ok {
+		for _, sub := range batch {
+			if sub != nil {
+				if msg := sub(); msg != nil {
+					_ = view.Update(msg)
+				}
+			}
+		}
+	}
+	if !syncCalled {
+		test.Fatal("`r` must invoke the gateway syncer so installed models are registered")
+	}
+	if !strings.Contains(stripANSI(view.View()), "registered 1 local model") {
+		test.Errorf("expected the register-count flash after refresh, got:\n%s", view.View())
 	}
 }
 

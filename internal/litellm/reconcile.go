@@ -9,6 +9,7 @@ package litellm
 
 import (
 	"sort"
+	"strings"
 
 	"github.com/jt-helsinki/ideal-robot/internal/catalog"
 )
@@ -163,7 +164,27 @@ func (manager *KeyManager) SyncModels(cat *catalog.Catalog, keyedProviders []str
 		return SyncResult{}, err
 	}
 	plan := Reconcile(desired, current)
+	// A cloud-key/catalog resync must NEVER delete local Ollama models: those are owned
+	// exclusively by `ai models pull`/`rm` (Register/UnregisterOllamaModel). Without this
+	// guard, a transient Ollama-list failure at the CALLER (which drops ollama/* from the
+	// desired set — installedOllamaModels() returns nil when the daemon is unreachable)
+	// would wipe every registered ollama model from LiteLLM even though it is still
+	// installed in Ollama. Keep only the non-ollama deletes; ollama adds still apply.
+	plan.Delete = nonOllamaModels(plan.Delete)
 	return manager.ApplyPlan(plan)
+}
+
+// nonOllamaModels returns the models whose public name is NOT an "ollama/<name>" route,
+// shielding local Ollama registrations from the cloud-key resync's delete pass.
+func nonOllamaModels(models []LiveModel) []LiveModel {
+	kept := make([]LiveModel, 0, len(models))
+	for _, model := range models {
+		if strings.HasPrefix(model.Name, "ollama/") {
+			continue
+		}
+		kept = append(kept, model)
+	}
+	return kept
 }
 
 // ApplyPlan applies a reconcile Plan: adds each desired model then deletes each
