@@ -417,3 +417,48 @@ func TestTmuxConfig(test *testing.T) {
 		}
 	}
 }
+
+// TestOmpModelsConfig verifies omp's global models.yml is keyless YAML with the
+// aip-gateway provider using openai-models-list discovery (no static model list).
+func TestOmpModelsConfig(test *testing.T) {
+	raw, err := OmpModelsConfig(testGateway, OmpAPIKeyRef)
+	if err != nil {
+		test.Fatal(err)
+	}
+	out := string(raw)
+	for _, want := range []string{"providers:", ProviderID + ":", "baseUrl: " + testGateway, "api: openai-completions", "openai-models-list", "apiKey: " + OmpAPIKeyRef} {
+		if !strings.Contains(out, want) {
+			test.Errorf("omp models.yml missing %q:\n%s", want, out)
+		}
+	}
+	// KEYLESS: the apiKey names the env var, the real scoped key is never written.
+	if strings.Contains(out, testKey) {
+		test.Errorf("omp models.yml must be keyless (env-var name, not the key):\n%s", out)
+	}
+	// Discovery-based: no explicit models list.
+	if strings.Contains(out, "models:") {
+		test.Errorf("omp uses discovery, not a static models list:\n%s", out)
+	}
+}
+
+// TestOmpConfigSeedThenRemember verifies the project config.yml carries the provider
+// order always and modelRoles.default ONLY when a default is seeded.
+func TestOmpConfigSeedThenRemember(test *testing.T) {
+	seeded, err := OmpConfig("ollama/qwen3-coder:30b")
+	if err != nil {
+		test.Fatal(err)
+	}
+	if !strings.Contains(string(seeded), "modelProviderOrder:") || !strings.Contains(string(seeded), ProviderID) {
+		test.Errorf("omp config.yml missing provider order:\n%s", seeded)
+	}
+	if !strings.Contains(string(seeded), "default: "+ProviderID+"/ollama/qwen3-coder:30b") {
+		test.Errorf("seeded omp config.yml missing modelRoles.default:\n%s", seeded)
+	}
+	empty, err := OmpConfig("")
+	if err != nil {
+		test.Fatal(err)
+	}
+	if strings.Contains(string(empty), "modelRoles") {
+		test.Errorf("un-seeded omp config.yml must omit modelRoles (last-used wins):\n%s", empty)
+	}
+}

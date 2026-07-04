@@ -1815,3 +1815,50 @@ func TestStartLinksSharedResources(test *testing.T) {
 		}
 	}
 }
+
+// TestStartWiresOmpWhenSelected verifies selecting omp writes its keyless, discovery-based
+// provider config (global models.yml, in-VM) + project config.yml (host), and symlinks the
+// shared skills/agents/commands pools into omp's native .omp dirs.
+func TestStartWiresOmpWhenSelected(test *testing.T) {
+	root := seedProject(test, "app")
+	if err := config.WriteProject(root, &config.Config{
+		OS:    "debian-trixie",
+		Agent: config.AgentConfig{Tools: []string{"omp"}, DefaultTool: "omp"},
+	}); err != nil {
+		test.Fatal(err)
+	}
+	sandbox := &fakeSandbox{}
+	served := fakeServedModels{models: []string{"ollama/qwen3:latest"}}
+	manager := Manager{Builder: &fakeBuilder{}, Sandbox: sandbox, Keys: &fakeKeyMinter{}, Served: served, Now: func() string { return "t" }}
+	if _, err := manager.Start("app"); err != nil {
+		test.Fatal(err)
+	}
+
+	// Global models.yml (in-VM): keyless, openai-models-list discovery, no key literal.
+	models := readGuestFile(test, sandbox, agentcfg.OmpGlobalModelsGuest)
+	if !strings.Contains(models, "openai-models-list") || !strings.Contains(models, agentcfg.OmpAPIKeyRef) {
+		test.Errorf("omp models.yml missing discovery/keyless ref:\n%s", models)
+	}
+	if strings.Contains(models, "sk-fake-workspace-key") {
+		test.Errorf("omp models.yml must be keyless:\n%s", models)
+	}
+	// Project config.yml (host): the gateway provider order.
+	if cfg := readProjectConfig(test, root, ".omp", "config.yml"); !strings.Contains(cfg, "modelProviderOrder") || !strings.Contains(cfg, "aip-gateway") {
+		test.Errorf("omp config.yml missing provider order:\n%s", cfg)
+	}
+	// Shared pools symlinked into omp's native dirs (omp skips .claude/agents, so .omp/agents is required).
+	for rel, want := range map[string]string{
+		".omp/skills":   "../.ai-platform/skills",
+		".omp/agents":   "../.ai-platform/agents",
+		".omp/commands": "../.ai-platform/prompts",
+	} {
+		got, err := os.Readlink(filepath.Join(root, filepath.FromSlash(rel)))
+		if err != nil {
+			test.Errorf("%s is not a symlink: %v", rel, err)
+			continue
+		}
+		if got != filepath.FromSlash(want) {
+			test.Errorf("%s -> %s, want %s", rel, got, want)
+		}
+	}
+}

@@ -21,7 +21,7 @@ func SupportedStacks() []string {
 // SupportedAgentCLIs are the agent CLIs installable into a workspace (opencode + pi are
 // the defaults).
 func SupportedAgentCLIs() []string {
-	return []string{"opencode", "pi", "claude-code", "codex", "gemini"}
+	return []string{"opencode", "pi", "omp", "claude-code", "codex", "gemini"}
 }
 
 // SupportedApps are the opt-in in-VM AI applications (default none).

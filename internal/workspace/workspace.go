@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -560,6 +561,29 @@ func (manager Manager) registerAgentProviders(name, project, root string, projec
 		return err
 	}
 
+	// omp (Oh My Pi) — written only when selected. Its provider/models config is KEYLESS
+	// YAML at the GLOBAL ~/.omp/agent/models.yml (the path omp reads; in-VM, off host
+	// disk) with openai-models-list discovery so omp lists exactly the served models; the
+	// project default + provider order live in <project>/.omp/config.yml (host, seeded per
+	// seed-then-remember). ~/.omp is symlinked to /persist (linkAgentStateDirs) so omp's
+	// last-used selection + hindsight memory survive restarts.
+	if slices.Contains(projectConfig.Agent.Tools, "omp") {
+		ompModels, err := agentcfg.OmpModelsConfig(gatewayURL, agentcfg.OmpAPIKeyRef)
+		if err != nil {
+			return err
+		}
+		if err := manager.Sandbox.WriteFile(name, agentcfg.OmpGlobalModelsGuest, ompModels); err != nil {
+			return err
+		}
+		ompConfig, err := agentcfg.OmpConfig(defaultModel)
+		if err != nil {
+			return err
+		}
+		if err := writeHostFile(projectConfigPath(root, ".omp", "config.yml"), ompConfig); err != nil {
+			return err
+		}
+	}
+
 	// Record that the setup model has been seeded, so subsequent starts stop pinning it
 	// and defer to each CLI's persisted last-used selection. Best-effort: if the marker
 	// can't be written we simply re-seed next start (harmless — opencode records the same
@@ -645,15 +669,17 @@ const graphifyInstallTimeout = 60 * time.Second
 // as the workspace user. Best-effort: a failure just falls back to the ephemeral home.
 func (manager Manager) linkAgentStateDirs(name string) {
 	if _, err := manager.Sandbox.ExecRoot(name, []string{"sh", "-c",
-		"mkdir -p /persist/agents/opencode /persist/agents/pi && chown -R workspace /persist/agents"}); err != nil {
+		"mkdir -p /persist/agents/opencode /persist/agents/pi /persist/agents/omp && chown -R workspace /persist/agents"}); err != nil {
 		_, _ = fmt.Fprintf(os.Stderr, "warning: could not prepare persistent agent state in workspace %q (continuing): %v\n", name, err)
 		return
 	}
 	// rm -rf on a symlink removes only the link (a re-start's existing symlink), not the
-	// /persist target, so accumulated state is preserved across restarts.
+	// /persist target, so accumulated state is preserved across restarts. omp keeps its
+	// last-used model + hindsight memory in ~/.omp (agent.db), so persist it too.
 	link := "set -e; mkdir -p ~/.local/share; " +
 		"rm -rf ~/.local/share/opencode; ln -sfn /persist/agents/opencode ~/.local/share/opencode; " +
-		"rm -rf ~/.pi; ln -sfn /persist/agents/pi ~/.pi"
+		"rm -rf ~/.pi; ln -sfn /persist/agents/pi ~/.pi; " +
+		"rm -rf ~/.omp; ln -sfn /persist/agents/omp ~/.omp"
 	if _, err := manager.Sandbox.Exec(name, []string{"bash", "-lc", link}); err != nil {
 		_, _ = fmt.Fprintf(os.Stderr, "warning: could not link persistent agent state in workspace %q (continuing): %v\n", name, err)
 	}
@@ -1069,16 +1095,21 @@ var sharedResourceLinks = []sharedResourceLink{
 		"opencode":    ".opencode/skills",
 		"claude-code": ".claude/skills",
 		"pi":          ".pi/skills",
+		"omp":         ".omp/skills",
 	}},
 	{pool: "agents", perCLI: map[string]string{
 		"opencode":    ".opencode/agents",
 		"claude-code": ".claude/agents",
+		// omp reads its OWN native .omp/agents for task-agents and deliberately SKIPS
+		// .claude/agents (schema differs), so it needs its own symlink to get the pool.
+		"omp": ".omp/agents",
 	}},
 	{pool: "prompts", perCLI: map[string]string{
 		"opencode":    ".opencode/commands",
 		"claude-code": ".claude/commands",
 		"gemini":      ".gemini/commands",
 		"pi":          ".pi/prompts",
+		"omp":         ".omp/commands",
 	}},
 }
 

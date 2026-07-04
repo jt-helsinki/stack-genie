@@ -14,7 +14,7 @@ import (
 var (
 	osKeys    = []string{"alma", "debian-bookworm", "debian-trixie", "ubuntu"}
 	stacks    = []string{"deno", "go", "java", "maven", "rust"}
-	agentCLIs = []string{"claude-code", "codex", "gemini", "opencode", "pi"}
+	agentCLIs = []string{"claude-code", "codex", "gemini", "omp", "opencode", "pi"}
 )
 
 // redirectHome points HOME (and USERPROFILE for portability) at a temp dir so

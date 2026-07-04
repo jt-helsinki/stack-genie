@@ -25,6 +25,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+
+	"gopkg.in/yaml.v3"
 )
 
 // ProviderID is the provider handle both agent CLIs use for the host gateway.
@@ -167,6 +169,70 @@ set -sg escape-time 10
 // keys, so the output is stable across runs (no spurious workspace-start diffs).
 func marshalStable(document any) ([]byte, error) {
 	return json.MarshalIndent(document, "", "  ")
+}
+
+// marshalYAML produces deterministic, 2-space-indented YAML (yaml.v3 sorts map keys),
+// used for omp's config files (omp reads YAML natively; a written .json would be
+// one-shot migrated to .yml).
+func marshalYAML(document any) ([]byte, error) {
+	var buffer bytes.Buffer
+	encoder := yaml.NewEncoder(&buffer)
+	encoder.SetIndent(2)
+	if err := encoder.Encode(document); err != nil {
+		return nil, err
+	}
+	_ = encoder.Close()
+	return buffer.Bytes(), nil
+}
+
+// omp ("Oh My Pi", a Pi fork) routes through the gateway like pi/opencode, but reads
+// YAML: a GLOBAL ~/.omp/agent/models.yml provider definition (the path omp reads for
+// custom providers) + a PROJECT <project>/.omp/config.yml for the default model + provider
+// order. Both are KEYLESS — the provider apiKey NAMES the AIP_GATEWAY_KEY env var (omp
+// resolves a value that names an existing env var as the key), so the real scoped key
+// lives only in the in-VM agent env file. The provider uses `openai-models-list`
+// DISCOVERY, so omp lists exactly the models the gateway serves each launch (no static
+// list to write/refresh — the pi/opencode list-refresh does not apply to omp).
+const (
+	// OmpAPIKeyRef is written as the provider apiKey: the NAME of the env var omp resolves
+	// at runtime (NOT the key), keeping the on-disk config keyless.
+	OmpAPIKeyRef = "AIP_GATEWAY_KEY"
+	// OmpGlobalModelsGuest is omp's global provider/models config (the path it reads).
+	OmpGlobalModelsGuest = "/home/workspace/.omp/agent/models.yml"
+	// OmpProjectConfigGuest is omp's project-local settings (default model + provider order).
+	OmpProjectConfigGuest = projectDirGuest + "/.omp/config.yml"
+)
+
+// OmpModelsConfig renders ~/.omp/agent/models.yml: the aip-gateway provider as an
+// OpenAI-completions endpoint with openai-models-list discovery, keyless (apiKey names
+// the env var). gatewayURL carries the /v1 suffix.
+func OmpModelsConfig(gatewayURL, apiKey string) ([]byte, error) {
+	document := map[string]any{
+		"providers": map[string]any{
+			ProviderID: map[string]any{
+				"baseUrl":   gatewayURL,
+				"api":       "openai-completions",
+				"apiKey":    apiKey,
+				"discovery": map[string]any{"type": "openai-models-list"},
+			},
+		},
+	}
+	return marshalYAML(document)
+}
+
+// OmpConfig renders <project>/.omp/config.yml: the gateway provider first in the order
+// and, when a default model is seeded, modelRoles.default = aip-gateway/<model>. Fully
+// platform-managed (rewritten each start); an EMPTY defaultModel omits the role so omp's
+// persisted last-used selection (agent.db on the /persist overlay) wins — the
+// seed-then-remember policy, matching the other CLIs.
+func OmpConfig(defaultModel string) ([]byte, error) {
+	document := map[string]any{
+		"modelProviderOrder": []string{ProviderID},
+	}
+	if defaultModel != "" {
+		document["modelRoles"] = map[string]any{"default": ProviderID + "/" + defaultModel}
+	}
+	return marshalYAML(document)
 }
 
 // MergeOpenCodeConfig produces the FINAL opencode config from any EXISTING project
@@ -425,6 +491,12 @@ func BashProfile() []byte {
 	buffer.WriteString("# interactive login shells. Do not edit by hand; rewritten on every start.\n")
 	buffer.WriteString("[ -f \"$HOME/.bashrc\" ] && . \"$HOME/.bashrc\"\n")
 	buffer.WriteString("[ -f " + shellQuote(AgentEnvFileGuestPath) + " ] && . " + shellQuote(AgentEnvFileGuestPath) + "\n")
+	// Terminal setup for Ghostty (and any host terminal whose TERM the guest lacks a
+	// terminfo entry for — kitty, wezterm, …): if $TERM does not resolve in the in-VM
+	// terminfo DB, fall back to xterm-256color (always present) so keys/colours render
+	// instead of "unknown terminal". Inside a session tmux already sets tmux-256color;
+	// this covers the pre-tmux / non-tmux exec path (e.g. Ghostty's TERM=xterm-ghostty).
+	buffer.WriteString("command -v infocmp >/dev/null 2>&1 && ! infocmp \"$TERM\" >/dev/null 2>&1 && export TERM=xterm-256color\n")
 	return buffer.Bytes()
 }
 
