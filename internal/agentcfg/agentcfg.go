@@ -157,7 +157,9 @@ set -g history-limit 50000
 set -g default-terminal "tmux-256color"
 set -as terminal-features ",*:RGB"
 set -as terminal-features ",*:extkeys"
-set -s extended-keys on
+# extended-keys must be set GLOBAL (-g), not just server (-s): agent TUIs (pi) probe
+# the global value, and setting it server-only leaves that reading off.
+set -g extended-keys on
 # Emit extended keys in CSI-u form (not the legacy xterm form). Modern agent TUIs
 # (pi, opencode) expect csi-u for shift+enter / ctrl-combos; tmux defaults to xterm.
 set -g extended-keys-format csi-u

@@ -409,7 +409,7 @@ func TestTmuxConfig(test *testing.T) {
 		`set -g default-terminal "tmux-256color"`,
 		`set -as terminal-features ",*:RGB"`,
 		`set -as terminal-features ",*:extkeys"`,
-		"set -s extended-keys on",
+		"set -g extended-keys on",
 		"set -g extended-keys-format csi-u",
 	} {
 		if !strings.Contains(conf, want) {
