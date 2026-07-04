@@ -41,7 +41,22 @@ type Result struct {
 // seeds the context-optimization defaults (+ Caveman skill), and pulls the chosen
 // Graphify model (best-effort → warnings). Errors carry the right exit code
 // (*output.Error) where it matters.
-func Execute(spec project.Spec, now string) (Result, []string, error) {
+// Progress is a create-flow progress event: a human Step label plus, when the step is a
+// model download, live byte counters (Completed/Total; 0 when not a download). Execute
+// calls report (nil-safe) as it advances, so the CLI can render a progress bar + the TUI
+// can stream a live log of what's happening.
+type Progress struct {
+	Step      string
+	Completed int64
+	Total     int64
+}
+
+// Execute runs the deterministic create work. report (may be nil) receives Progress
+// events for each phase + the Graphify-model pull, so callers can show progress.
+func Execute(spec project.Spec, now string, report func(Progress)) (Result, []string, error) {
+	if report == nil {
+		report = func(Progress) {}
+	}
 	// Reject an EXPLICIT over-host CPU/memory request, then resolve an UNSET value to
 	// the platform default capped at the host — so the persisted config is never
 	// larger than the machine.
@@ -58,11 +73,13 @@ func Execute(spec project.Spec, now string) (Result, []string, error) {
 	if err := os.MkdirAll(spec.Root, 0o755); err != nil {
 		return Result{}, nil, output.Errorf(output.ExitRuntimeFailure, "create location %s: %s", spec.Root, err)
 	}
+	report(Progress{Step: "scaffolding project (Dockerfile, config, skills)"})
 	if _, err := project.Scaffold(spec, now); err != nil {
 		return Result{}, nil, mapProjectErr(err)
 	}
 	// Seed context-optimization defaults so the project config is self-describing, and
 	// install the Caveman skill (arch §9).
+	report(Progress{Step: "seeding context optimization + Caveman skill"})
 	if err := contextopt.SetStrategy(spec.Root, contextopt.DefaultStrategy); err != nil {
 		return Result{}, nil, output.Errorf(output.ExitRuntimeFailure, "seed context strategy: %s", err)
 	}
@@ -73,7 +90,8 @@ func Execute(spec project.Spec, now string) (Result, []string, error) {
 	if err != nil {
 		return Result{}, nil, output.Errorf(output.ExitRuntimeFailure, "read config.yaml: %s", err)
 	}
-	warnings := pullGraphifyModelIfAbsent(spec.GraphifyModel)
+	warnings := pullGraphifyModelIfAbsent(spec.GraphifyModel, report)
+	report(Progress{Step: "workspace scaffolded — start it to build the image + boot the microVM"})
 	return Result{
 		Name:       spec.Name,
 		Root:       spec.Root,
@@ -196,7 +214,7 @@ var newRegistrar = func() modelRegistrar { return litellm.NewKeyManager(runtime.
 // store (and registers it in the gateway) unless already installed. BEST-EFFORT: any
 // failure is returned as a warning, never an error — the model can be pulled later with
 // `ai models pull`.
-func pullGraphifyModelIfAbsent(ref string) []string {
+func pullGraphifyModelIfAbsent(ref string, report func(Progress)) []string {
 	ref = strings.TrimSpace(ref)
 	if ref == "" {
 		return nil
@@ -205,9 +223,14 @@ func pullGraphifyModelIfAbsent(ref string) []string {
 	if installed, err := client.List(); err == nil && modelInstalled(installed, ref) {
 		return nil
 	}
-	if err := client.Pull(ref, func(ollama.PullProgress) {}); err != nil {
+	step := "pulling Graphify model " + ref
+	report(Progress{Step: step})
+	if err := client.Pull(ref, func(progress ollama.PullProgress) {
+		report(Progress{Step: step, Completed: progress.Completed, Total: progress.Total})
+	}); err != nil {
 		return []string{fmt.Sprintf("could not pull Graphify model %q: %s — pull it later with `ai models pull %s`", ref, err, ref)}
 	}
+	report(Progress{Step: "registering Graphify model " + ref + " with the gateway"})
 	_ = newRegistrar().RegisterOllamaModel(ref)
 	return nil
 }

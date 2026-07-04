@@ -387,6 +387,27 @@ type createDoneMsg struct {
 	err      error
 }
 
+// createProgressMsg carries one create.Progress event streamed from the in-process
+// create.Execute (via a channel), so the "creating…" pane shows a live log + a download
+// progress bar instead of a static message.
+type createProgressMsg struct {
+	progress create.Progress
+	ch       chan create.Progress // the source channel, re-read to stream the next event
+}
+
+// waitCreateProgress reads the next create.Progress from ch into a createProgressMsg
+// (carrying ch so the handler re-arms). A closed channel (Execute finished) yields nil,
+// stopping the pump.
+func waitCreateProgress(ch chan create.Progress) tea.Cmd {
+	return func() tea.Msg {
+		progress, ok := <-ch
+		if !ok {
+			return nil
+		}
+		return createProgressMsg{progress: progress, ch: ch}
+	}
+}
+
 // sessionFinishedMsg reports that a suspended interactive shell/attach subprocess
 // (run via tea.ExecProcess in the user's real terminal) has exited, so the TUI can
 // refresh the session list + project detail.
@@ -610,6 +631,11 @@ type app struct {
 	// creating holds the name of a workspace whose in-process create.Execute is
 	// running (async); the View shows a "creating…" pane while it is non-empty.
 	creating string
+	// createSteps is the accumulated log of create.Progress step labels, and createPull
+	// is the latest download frame (Total>0 → an active model pull to render as a bar) —
+	// both shown in the "creating…" pane.
+	createSteps []string
+	createPull  create.Progress
 	// createFlash is a transient banner shown after a create completes (an error, or
 	// best-effort warnings); cleared on the next tab switch.
 	createFlash string
@@ -712,13 +738,41 @@ func (application *app) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		application.createView = nil
 		spec := message.Spec
 		application.creating = spec.Name
-		return application, func() tea.Msg {
-			_, warnings, err := create.Execute(spec, nowRFC3339())
-			return createDoneMsg{name: spec.Name, warnings: warnings, err: err}
+		application.createSteps = nil
+		application.createPull = create.Progress{}
+		// Stream progress off the event loop: the goroutine reports each phase into a
+		// buffered channel (best-effort — dropped if full so create never blocks on the
+		// UI) and sends createDoneMsg when finished. Two cmds pump the two channels.
+		progressCh := make(chan create.Progress, 64)
+		doneCh := make(chan createDoneMsg, 1)
+		go func() {
+			_, warnings, err := create.Execute(spec, nowRFC3339(), func(progress create.Progress) {
+				select {
+				case progressCh <- progress:
+				default:
+				}
+			})
+			doneCh <- createDoneMsg{name: spec.Name, warnings: warnings, err: err}
+			close(progressCh)
+		}()
+		return application, tea.Batch(
+			waitCreateProgress(progressCh),
+			func() tea.Msg { return <-doneCh },
+		)
+
+	case createProgressMsg:
+		application.createPull = create.Progress{}
+		if message.progress.Total > 0 {
+			application.createPull = message.progress // an active download → render a bar
+		} else if step := message.progress.Step; step != "" {
+			application.createSteps = append(application.createSteps, step)
 		}
+		return application, waitCreateProgress(message.ch)
 
 	case createDoneMsg:
 		application.creating = ""
+		application.createSteps = nil
+		application.createPull = create.Progress{}
 		application.switchTab(application.projectsIndex)
 		if message.err != nil {
 			application.createFlash = ui.Failure.Render(ui.IconFail + " create failed: " + message.err.Error())
@@ -893,6 +947,17 @@ func (application *app) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// While the create overlay is open it owns all input.
 		if application.createView != nil {
 			return application, application.createView.Update(msg)
+		}
+		// A workspace create is running: the "creating…" pane is MODAL — swallow keys
+		// (except quit) so tab/←→/number navigation can't move the tab bar while the
+		// pane stays fixed on the create progress (the desync bug). It clears itself on
+		// createDoneMsg; the async progress messages still flow (they are not KeyMsgs).
+		if application.creating != "" {
+			if key := message.String(); key == "ctrl+c" || key == "q" {
+				application.quitting = true
+				return application, tea.Quit
+			}
+			return application, nil
 		}
 		// The help overlay is dismissed by any key.
 		if application.helpOpen {
@@ -1339,8 +1404,7 @@ func (application *app) View() string {
 				application.projectsHub.SubTabBar(), "", content)
 		}
 	case application.creating != "":
-		content = ui.Heading.Render("Creating workspace "+application.creating+"…") + "\n\n" +
-			ui.Muted.Render("Scaffolding the project and pulling the Graphify model (if configured).\nThis can take a while on a first model pull; the UI stays responsive.")
+		content = application.creatingView()
 	case application.createView != nil:
 		content = application.createView.View()
 	case application.helpOpen:
@@ -1377,6 +1441,31 @@ func (application *app) View() string {
 		application.body(content),
 		application.footer(),
 	)
+}
+
+// creatingView renders the live "creating…" pane: the accumulated step log (✓ per done
+// step, → on the one in progress) with a download progress bar beneath the Graphify-model
+// pull while it runs. Streamed from create.Execute via createProgressMsg.
+func (application *app) creatingView() string {
+	var body strings.Builder
+	body.WriteString(ui.Heading.Render("Creating workspace "+application.creating+"…") + "\n\n")
+	if len(application.createSteps) == 0 {
+		body.WriteString(ui.Muted.Render("  starting…") + "\n")
+	}
+	for index, step := range application.createSteps {
+		last := index == len(application.createSteps)-1
+		marker := ui.Success.Render(ui.IconOK)
+		if last {
+			marker = ui.Primary.Render("→")
+		}
+		body.WriteString("  " + marker + " " + step + "\n")
+		// A live download bar under the active pull step.
+		if last && application.createPull.Total > 0 && application.createPull.Step == step {
+			body.WriteString("      " + ui.ProgressBarLine(application.createPull.Completed, application.createPull.Total) + "\n")
+		}
+	}
+	body.WriteString("\n" + ui.Muted.Render("The UI stays responsive; start the workspace afterwards to build the image + boot the microVM."))
+	return body.String()
 }
 
 // helpView lists the global key bindings plus the active view's own bindings.

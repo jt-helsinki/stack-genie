@@ -358,7 +358,7 @@ func newCreateCmd(emitter *output.Emitter, exit *int, use string) *cobra.Command
 			// Create in-process via the shared path (identical for `ai ui`'s wizard):
 			// validate + cap resources, scaffold the tracked files, seed context-opt
 			// defaults, and pull the Graphify model (best-effort → warnings).
-			result, warnings, err := create.Execute(spec, nowRFC3339())
+			result, warnings, err := create.Execute(spec, nowRFC3339(), createProgressReporter(emitter))
 			if err != nil {
 				*exit = emitter.Failure(projectCreateCommand, err)
 				return nil
@@ -426,6 +426,36 @@ func attachWorkspace(emitter *output.Emitter, exit *int, name string) {
 }
 
 // createPlan is the ordered, side-effect-free action list for --dry-run (§17.1).
+// createProgressReporter returns a create.Execute progress callback that renders the
+// flow on a TTY: each phase as a "→ step" line, and the Graphify-model download as a live
+// ui.ProgressBar (the same meter as `ai models pull`). Returns nil under --json / no-TTY,
+// so scripted/JSON runs stay quiet.
+func createProgressReporter(emitter *output.Emitter) func(create.Progress) {
+	if !ui.Enabled(emitter) {
+		return nil
+	}
+	var bar *ui.ProgressBar
+	var barStep string
+	return func(progress create.Progress) {
+		if progress.Total > 0 { // a model-download frame → live bar for this step
+			if bar == nil || barStep != progress.Step {
+				if bar != nil {
+					bar.Finish(nil)
+				}
+				bar = ui.NewProgressBar(emitter.Err, progress.Step)
+				barStep = progress.Step
+			}
+			bar.Update(progress.Completed, progress.Total, "")
+			return
+		}
+		if bar != nil { // a new non-download step ends any active bar
+			bar.Finish(nil)
+			bar, barStep = nil, ""
+		}
+		_, _ = fmt.Fprintln(emitter.Err, ui.Muted.Render("→ "+progress.Step))
+	}
+}
+
 func createPlan(spec project.Spec, root string) []string {
 	return []string{
 		"use location " + root + " (created if missing)",

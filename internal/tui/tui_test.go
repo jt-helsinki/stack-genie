@@ -9,6 +9,7 @@ import (
 	"github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/jt-helsinki/ideal-robot/internal/config"
+	"github.com/jt-helsinki/ideal-robot/internal/create"
 	"github.com/jt-helsinki/ideal-robot/internal/project"
 	"github.com/jt-helsinki/ideal-robot/internal/tui/views"
 	"github.com/jt-helsinki/ideal-robot/internal/workspace"
@@ -637,5 +638,44 @@ func TestWorkspaceConfigFieldsReflectDeclaredConfig(test *testing.T) {
 	}
 	if publishPortsValue(nil) != "none" {
 		test.Errorf("empty ports = %q, want 'none'", publishPortsValue(nil))
+	}
+}
+
+// TestCreatingSwallowsNavKeys verifies the "creating…" pane is MODAL: nav keys are
+// swallowed while a create runs, so the tab bar can't desync from the fixed pane.
+func TestCreatingSwallowsNavKeys(test *testing.T) {
+	application := newTestApp("Services", "Workspaces")
+	application.current = 0
+	application.creating = "app"
+	application.Update(tabKey())
+	if application.current != 0 {
+		test.Errorf("tab must be swallowed while creating; current = %d, want 0", application.current)
+	}
+	if application.creating != "app" {
+		test.Error("a swallowed key must not clear the creating state")
+	}
+}
+
+// TestCreateProgressAccumulates verifies streamed create.Progress builds the step log +
+// a live download bar in the creating pane.
+func TestCreateProgressAccumulates(test *testing.T) {
+	application := newTestApp("Services")
+	application.creating = "app"
+	ch := make(chan create.Progress)
+	application.Update(createProgressMsg{progress: create.Progress{Step: "scaffolding"}, ch: ch})
+	application.Update(createProgressMsg{progress: create.Progress{Step: "pulling model"}, ch: ch})
+	application.Update(createProgressMsg{progress: create.Progress{Step: "pulling model", Completed: 1, Total: 2}, ch: ch})
+
+	if len(application.createSteps) != 2 || application.createSteps[0] != "scaffolding" || application.createSteps[1] != "pulling model" {
+		test.Errorf("step log = %v, want [scaffolding, pulling model]", application.createSteps)
+	}
+	if application.createPull.Total != 2 || application.createPull.Completed != 1 {
+		test.Errorf("createPull = %+v, want the live pull frame", application.createPull)
+	}
+	view := application.creatingView()
+	for _, want := range []string{"scaffolding", "pulling model", "50%"} {
+		if !strings.Contains(view, want) {
+			test.Errorf("creating view missing %q:\n%s", want, view)
+		}
 	}
 }

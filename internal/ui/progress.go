@@ -32,20 +32,29 @@ func (bar *ProgressBar) Update(completed, total int64, status string) {
 	var line string
 	switch {
 	case total > 0:
-		fraction := float64(completed) / float64(total)
-		if fraction > 1 {
-			fraction = 1
-		}
-		filled := int(fraction * float64(progressBarWidth))
-		meter := strings.Repeat("█", filled) + strings.Repeat("░", progressBarWidth-filled)
-		line = fmt.Sprintf("%s  %s %3.0f%%  %s / %s",
-			bar.label, meter, fraction*100, humanBytes(completed), humanBytes(total))
+		line = bar.label + "  " + ProgressBarLine(completed, total)
 	case status != "":
 		line = bar.label + "  " + status
 	default:
 		line = bar.label
 	}
 	_, _ = fmt.Fprintf(bar.out, "\r%s\033[K", line)
+}
+
+// ProgressBarLine renders just the meter + percent + human byte counts (no label), e.g.
+// "████████░░░░ 62%  2.9 GiB / 4.7 GiB". Shared by ProgressBar (the \r-streaming CLI bar)
+// and static string renderers like the TUI create-progress pane.
+func ProgressBarLine(completed, total int64) string {
+	if total <= 0 {
+		return ""
+	}
+	fraction := float64(completed) / float64(total)
+	if fraction > 1 {
+		fraction = 1
+	}
+	filled := int(fraction * float64(progressBarWidth))
+	meter := strings.Repeat("█", filled) + strings.Repeat("░", progressBarWidth-filled)
+	return fmt.Sprintf("%s %3.0f%%  %s / %s", meter, fraction*100, humanBytes(completed), humanBytes(total))
 }
 
 // Finish clears the progress line and prints the terminal ✓/✗ summary line.

@@ -73,7 +73,7 @@ func TestPullGraphifyModelSkipsWhenInstalled(test *testing.T) {
 	ollamaClient = func() ollama.Client { return fake }
 	defer func() { ollamaClient = restore }()
 
-	if warnings := pullGraphifyModelIfAbsent("llama3.2"); len(warnings) != 0 {
+	if warnings := pullGraphifyModelIfAbsent("llama3.2", func(Progress) {}); len(warnings) != 0 {
 		test.Fatalf("warnings = %v, want none (already installed)", warnings)
 	}
 	if fake.PulledNames != nil {
@@ -88,7 +88,7 @@ func TestPullGraphifyModelBlankNoOp(test *testing.T) {
 	ollamaClient = func() ollama.Client { return fake }
 	defer func() { ollamaClient = restore }()
 
-	if warnings := pullGraphifyModelIfAbsent("  "); warnings != nil {
+	if warnings := pullGraphifyModelIfAbsent("  ", func(Progress) {}); warnings != nil {
 		test.Fatalf("blank ref should be a no-op, got %v", warnings)
 	}
 	if fake.PulledNames != nil {
@@ -108,7 +108,7 @@ func TestPullGraphifyModelPullsAndRegisters(test *testing.T) {
 	newRegistrar = func() modelRegistrar { return registrar }
 	defer func() { newRegistrar = restoreReg }()
 
-	if warnings := pullGraphifyModelIfAbsent("qwen2.5-coder:7b"); len(warnings) != 0 {
+	if warnings := pullGraphifyModelIfAbsent("qwen2.5-coder:7b", func(Progress) {}); len(warnings) != 0 {
 		test.Fatalf("warnings = %v, want none", warnings)
 	}
 	if len(fake.PulledNames) != 1 || fake.PulledNames[0] != "qwen2.5-coder:7b" {
