@@ -144,12 +144,12 @@ func TestRenderDefaultRouting(test *testing.T) {
 	}
 }
 
-// TestRenderEnablesValkeyClusterCache pins the response cache config: it must be
-// enabled and point at the Valkey container as a CLUSTER node via
-// redis_startup_nodes (NOT host/port) — aip-valkey runs as a one-node cluster, and a
-// standalone host/port client hits CROSSSLOT on multi-key ops so caching would
-// silently fail.
-func TestRenderEnablesValkeyClusterCache(test *testing.T) {
+// TestRenderEnablesStandaloneRedisCache pins the response cache config: enabled with a
+// standalone redis backend. Per the LiteLLM quick-start the connection comes from the
+// REDIS_HOST/REDIS_PORT env on the container (asserted in the setup package), so
+// cache_params carries ONLY the type — NO host/port and NO redis_startup_nodes (aip-valkey
+// is a standalone single instance, not a cluster).
+func TestRenderEnablesStandaloneRedisCache(test *testing.T) {
 	test.Setenv("HOME", test.TempDir())
 	if err := Render(DefaultRouting(), ""); err != nil {
 		test.Fatal(err)
@@ -163,13 +163,10 @@ func TestRenderEnablesValkeyClusterCache(test *testing.T) {
 		LitellmSettings struct {
 			Cache       bool `yaml:"cache"`
 			CacheParams struct {
-				Type              string `yaml:"type"`
-				Host              string `yaml:"host"`
-				Port              string `yaml:"port"`
-				RedisStartupNodes []struct {
-					Host string `yaml:"host"`
-					Port string `yaml:"port"`
-				} `yaml:"redis_startup_nodes"`
+				Type              string           `yaml:"type"`
+				Host              string           `yaml:"host"`
+				Port              string           `yaml:"port"`
+				RedisStartupNodes []map[string]any `yaml:"redis_startup_nodes"`
 			} `yaml:"cache_params"`
 		} `yaml:"litellm_settings"`
 	}
@@ -182,15 +179,14 @@ func TestRenderEnablesValkeyClusterCache(test *testing.T) {
 	if cfg.LitellmSettings.CacheParams.Type != "redis" {
 		test.Errorf("cache_params.type = %q, want redis", cfg.LitellmSettings.CacheParams.Type)
 	}
-	// Cluster mode: startup nodes set, NOT the standalone host/port (which would
-	// mis-handle the cluster node).
-	if cfg.LitellmSettings.CacheParams.Host != "" || cfg.LitellmSettings.CacheParams.Port != "" {
-		test.Errorf("cache_params should use redis_startup_nodes for the cluster, not host/port (got host=%q port=%q)",
-			cfg.LitellmSettings.CacheParams.Host, cfg.LitellmSettings.CacheParams.Port)
+	// Standalone: no cluster startup nodes, and no literal host/port (the connection is
+	// supplied via REDIS_HOST/REDIS_PORT env).
+	if len(cfg.LitellmSettings.CacheParams.RedisStartupNodes) != 0 {
+		test.Errorf("cache_params.redis_startup_nodes = %+v, want none (standalone, not cluster)", cfg.LitellmSettings.CacheParams.RedisStartupNodes)
 	}
-	nodes := cfg.LitellmSettings.CacheParams.RedisStartupNodes
-	if len(nodes) != 1 || nodes[0].Host != "aip-valkey" || nodes[0].Port != "6379" {
-		test.Errorf("cache_params.redis_startup_nodes = %+v, want [{aip-valkey 6379}]", nodes)
+	if cfg.LitellmSettings.CacheParams.Host != "" || cfg.LitellmSettings.CacheParams.Port != "" {
+		test.Errorf("cache_params should carry only type (connection via REDIS_* env), got host=%q port=%q",
+			cfg.LitellmSettings.CacheParams.Host, cfg.LitellmSettings.CacheParams.Port)
 	}
 }
 

@@ -445,6 +445,13 @@ func litellmRunArgs(configPath, bindHost, image string) []string {
 		// the always-on PII guardrail has a backend (no secret in these values).
 		"-e", "PRESIDIO_ANALYZER_API_BASE=" + presidioAnalyzerURL,
 		"-e", "PRESIDIO_ANONYMIZER_API_BASE=" + presidioAnonymizerURL,
+		// Response cache: the DOCUMENTED way to point LiteLLM at a standalone Redis is
+		// the REDIS_HOST/REDIS_PORT env (the proxy reads them automatically); config.yaml
+		// only sets litellm_settings.cache:true + cache_params.type:redis. aip-valkey is a
+		// standalone single instance on the shared network, no auth (docs.litellm.ai/docs/
+		// proxy/caching).
+		"-e", "REDIS_HOST=" + valkeyContainer,
+		"-e", "REDIS_PORT=6379",
 		image,
 		"--config", "/app/config.yaml", "--port", "4000",
 	}
@@ -659,20 +666,12 @@ func ensurePresidio(prober runtime.Prober, containerRuntime string) error {
 }
 
 // ensureValkey runs the Valkey (Redis-compatible) cache LiteLLM uses for response
-// caching. A SINGLE instance, INTERNAL-ONLY (reached by name aip-valkey:6379 on the
-// shared network); no persistence volume — it is a cache. Idempotent.
-//
-// It runs in CLUSTER MODE as a one-node cluster owning all 16384 slots. This is required
-// by valkey-admin: the admin image (DEPLOYMENT_MODE=Web, its only server mode) drives ALL
-// monitoring through cluster topology discovery and CANNOT observe a standalone node —
-// against a non-cluster instance it loops forever on "This instance has cluster support
-// disabled" and the UI stays empty (VALKEY_ENDPOINT_TYPE=node does NOT bypass discovery).
-// A single-node cluster owning every slot keeps it a single instance, lets valkey-admin
-// discover it cleanly, AND stays transparent to LiteLLM's plain (non-cluster) redis
-// client: with one node holding all slots there are never MOVED redirects, so ordinary
-// GET/SET works (verified empirically). cluster_state converges to ok a few seconds after
-// the slots are assigned; valkey-admin (10s reconcile loop) and LiteLLM (best-effort
-// cache) both retry, so the brief window is self-healing.
+// caching. A STANDARD, standalone SINGLE instance (the default image entrypoint =
+// valkey-server on :6379, cluster mode OFF), INTERNAL-ONLY (reached by name
+// aip-valkey:6379 on the shared network); no auth, no persistence volume — it is a cache.
+// LiteLLM points at it via REDIS_HOST/REDIS_PORT (see litellmRunArgs) with a standalone
+// redis client, which is why it must NOT run in cluster mode: a cluster node rejects the
+// cache's cross-slot multi-key ops (MGET/pipelines) with CROSSSLOT. Idempotent.
 func ensureValkey(prober runtime.Prober, containerRuntime string) error {
 	if containerRunning(prober, containerRuntime, valkeyContainer) {
 		return nil
@@ -682,36 +681,11 @@ func ensureValkey(prober runtime.Prober, containerRuntime string) error {
 		"run", "-d", "--name", valkeyContainer,
 		"--network", platformNetwork,
 		containerImage("valkey"),
-		"valkey-server",
-		"--cluster-enabled", "yes",
-		"--cluster-config-file", "nodes.conf",
-		// A single node necessarily covers all slots; don't refuse writes while it settles.
-		"--cluster-require-full-coverage", "no",
-		"--appendonly", "no",
 	}
 	if _, err := prober.Run(containerRuntime, args...); err != nil {
 		return serviceStartError("Valkey cache")
 	}
-	initValkeyCluster(prober, containerRuntime)
 	return nil
-}
-
-// initValkeyCluster makes aip-valkey a one-node cluster: wait for the server to accept
-// connections, then assign ALL 16384 hash slots to it so cluster_state reaches ok. Both
-// steps are best-effort — assigning an already-owned slot errors harmlessly ("Slot N is
-// already busy"), so a recreate (no persistence volume) re-initializes cleanly, and if
-// the node is momentarily unreachable valkey-admin/LiteLLM retry once it is up.
-func initValkeyCluster(prober runtime.Prober, containerRuntime string) {
-	for attempt := 0; attempt < 20; attempt++ {
-		out, err := prober.Run(containerRuntime, "exec", valkeyContainer, "valkey-cli", "ping")
-		if err == nil && strings.TrimSpace(string(out)) == "PONG" {
-			break
-		}
-		time.Sleep(time.Second)
-	}
-	// Idempotent enough: on an already-initialized node this is a no-op error we ignore.
-	_, _ = prober.Run(containerRuntime, "exec", valkeyContainer,
-		"valkey-cli", "cluster", "addslotsrange", "0", "16383")
 }
 
 // ensureValkeyAdmin runs the Valkey Admin web UI, INTERNAL-ONLY on :8080 (reached through

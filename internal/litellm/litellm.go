@@ -107,22 +107,17 @@ func build() map[string]any {
 		"general_settings": map[string]any{
 			"store_model_in_db": true,
 		},
-		// Response caching backed by the Valkey (Redis-compatible) container on the
-		// shared network — a SINGLE instance, INTERNAL-ONLY (aip-valkey:6379, no auth on
-		// the private network). Valkey runs in CLUSTER mode (a one-node cluster owning all
-		// slots — required so aip-valkey-admin can monitor it), so LiteLLM MUST use a
-		// cluster-aware client: `redis_startup_nodes` (NOT host/port). A standalone
-		// host/port client issues cross-slot multi-key ops (MGET/pipelines) that a cluster
-		// node rejects with CROSSSLOT, so caching silently fails. `type` stays "redis";
-		// the cluster is selected by the presence of redis_startup_nodes (docs.litellm.ai/
-		// docs/proxy/caching). Port is a string, matching LiteLLM's documented example.
+		// Response caching backed by the Valkey (Redis-compatible) container — a STANDARD,
+		// standalone SINGLE instance on the shared network (aip-valkey:6379, no auth). Per
+		// the LiteLLM caching quick-start (docs.litellm.ai/docs/proxy/caching), the proxy
+		// reads the connection from the REDIS_HOST/REDIS_PORT ENV VARS (set on the LiteLLM
+		// container in litellmRunArgs) automatically; config.yaml only enables the cache
+		// and selects the redis backend. This is the documented, reliable path — literal
+		// host/port inside cache_params did not initialize the cache.
 		"litellm_settings": map[string]any{
 			"cache": true,
 			"cache_params": map[string]any{
 				"type": "redis",
-				"redis_startup_nodes": []map[string]any{
-					{"host": "aip-valkey", "port": "6379"},
-				},
 			},
 		},
 		// NOTE: the in-process prompt-injection detector (detect_prompt_injection) was

@@ -119,11 +119,9 @@ func ServicesComposeYAML(bindHost string) ([]byte, error) {
 				Image: containerImage("presidio-anonymizer"), ContainerName: presidioAnonymizerContainer, Networks: []string{net}, Restart: "unless-stopped",
 			},
 			valkeyContainer: {
+				// Standard standalone single instance (default image entrypoint = valkey-server
+				// on :6379, no cluster) — LiteLLM caches against it with a standalone redis client.
 				Image: containerImage("valkey"), ContainerName: valkeyContainer, Networks: []string{net}, Restart: "unless-stopped",
-				// One-node cluster owning all slots — required by valkey-admin (see ensureValkey).
-				// Slots are assigned at reconcile via `valkey-cli cluster addslotsrange` (not
-				// expressible in compose); this debug artifact still needs `--cluster-enabled yes`.
-				Command: []string{"valkey-server", "--cluster-enabled", "yes", "--cluster-config-file", "nodes.conf", "--cluster-require-full-coverage", "no", "--appendonly", "no"},
 			},
 			valkeyAdminContainer: {
 				Image: containerImage("valkey-admin"), ContainerName: valkeyAdminContainer, Networks: []string{net}, Restart: "unless-stopped",
@@ -149,6 +147,9 @@ func ServicesComposeYAML(bindHost string) ([]byte, error) {
 					"DATABASE_URL=" + litellmDatabaseURL,
 					"PRESIDIO_ANALYZER_API_BASE=" + presidioAnalyzerURL,
 					"PRESIDIO_ANONYMIZER_API_BASE=" + presidioAnonymizerURL,
+					// Response cache → the standalone Valkey (LiteLLM reads REDIS_* env).
+					"REDIS_HOST=" + valkeyContainer,
+					"REDIS_PORT=6379",
 				},
 				Command:   []string{"--config", "/app/config.yaml", "--port", "4000"},
 				DependsOn: []string{litellmDBContainer, presidioAnalyzerContainer, presidioAnonymizerContainer, valkeyContainer},
