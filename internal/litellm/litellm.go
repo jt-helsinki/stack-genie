@@ -107,6 +107,17 @@ func build() map[string]any {
 		"general_settings": map[string]any{
 			"store_model_in_db": true,
 		},
+		// Response caching backed by the Valkey (Redis-compatible) container on the
+		// shared network — single instance, INTERNAL-ONLY (aip-valkey:6379, no auth on
+		// the private network). Valkey speaks the Redis protocol, so type "redis".
+		"litellm_settings": map[string]any{
+			"cache": true,
+			"cache_params": map[string]any{
+				"type": "redis",
+				"host": "aip-valkey",
+				"port": "6379",
+			},
+		},
 		// NOTE: the in-process prompt-injection detector (detect_prompt_injection) was
 		// REMOVED. It is a crude local heuristic (similarity to known attack strings)
 		// that false-positives on ordinary coding traffic — including normal Ollama

@@ -162,6 +162,36 @@ var registry = []Service{
 		},
 	},
 	{
+		// Valkey (Redis-compatible) — LiteLLM's response cache. Single instance,
+		// INTERNAL-ONLY on :6379 (reached by name aip-valkey by LiteLLM); no console.
+		Name:     "valkey",
+		Endpoint: Endpoint{},
+		LogScope: "valkey",
+		Components: []Component{
+			{
+				ImageKey:  "valkey",
+				Container: "aip-valkey",
+				Pin:       Pin{Mode: ModeContainer, Image: "valkey/valkey", Tag: "9.1.0-alpine"},
+			},
+		},
+	},
+	{
+		// Valkey Admin — the web UI for the cache, reached through the nginx gateway at
+		// valkey.<domain>:GatewayPort (served at ROOT; its :8080 container port is
+		// internal-only). Points at aip-valkey.
+		Name:        "valkey-admin",
+		Endpoint:    Endpoint{HasConsole: true, UISubdomain: "valkey"},
+		LogScope:    "valkey-admin",
+		UISubdomain: "valkey",
+		Components: []Component{
+			{
+				ImageKey:  "valkey-admin",
+				Container: "aip-valkey-admin",
+				Pin:       Pin{Mode: ModeContainer, Image: "valkey/valkey-admin", Tag: "latest"},
+			},
+		},
+	},
+	{
 		Name: "litellm",
 		// The :14000 host port is GONE — LiteLLM is internal-only on aip-net now. Its
 		// admin UI is reached through the nginx gateway at litellm.<domain>:GatewayPort/ui.
@@ -379,6 +409,10 @@ type UIVhost struct {
 	Subdomain string
 	Optional  bool
 	Upstream  string
+	// ConsolePath is the service's UI path — nginx redirects the vhost root there when
+	// non-empty + not "/" (e.g. litellm serves its UI at /ui). Empty ("" or "/") means
+	// the UI is at the root, so no redirect (e.g. valkey-admin).
+	ConsolePath string
 }
 
 // uiUpstreams maps each UI service to the in-network upstream nginx proxies its
@@ -387,7 +421,8 @@ type UIVhost struct {
 // shared aip-net). These bypass Headroom — they serve the app UI, not the model
 // path (the apps' MODEL calls ride the gateway's /v1 → Headroom route).
 var uiUpstreams = map[string]string{
-	"litellm": "http://aip-litellm:4000",
+	"litellm":      "http://aip-litellm:4000",
+	"valkey-admin": "http://aip-valkey-admin:8080",
 }
 
 // UIVhosts returns every service that is served as a Host-based UI vhost (those
@@ -400,10 +435,11 @@ func UIVhosts() []UIVhost {
 			continue
 		}
 		vhosts = append(vhosts, UIVhost{
-			Name:      service.Name,
-			Subdomain: service.UISubdomain,
-			Optional:  service.Optional,
-			Upstream:  uiUpstreams[service.Name],
+			Name:        service.Name,
+			Subdomain:   service.UISubdomain,
+			Optional:    service.Optional,
+			Upstream:    uiUpstreams[service.Name],
+			ConsolePath: service.Endpoint.ConsolePath,
 		})
 	}
 	return vhosts

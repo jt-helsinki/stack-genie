@@ -22,6 +22,8 @@ var expectedServices = map[string]string{
 	"proxy":               "container",
 	"ollama":              "container",
 	"dns":                 "container",
+	"valkey":              "container",
+	"valkey-admin":        "container",
 }
 
 func TestDefaultSchemaVersion(t *testing.T) {

@@ -13,6 +13,8 @@ func TestLogScopesMatchesCurrent(test *testing.T) {
 		"microsandbox",
 		"ollama",
 		"presidio",
+		"valkey",
+		"valkey-admin",
 		"litellm",
 		"headroom",
 		"proxy",
@@ -40,6 +42,8 @@ func TestLogScopesIsFreshCopy(test *testing.T) {
 func TestEndpointsMatchCurrentConsoleRegistry(test *testing.T) {
 	want := map[string]Endpoint{
 		"litellm":      {ConsolePath: "/ui", HasConsole: true, UISubdomain: "litellm"},
+		"valkey":       {},
+		"valkey-admin": {HasConsole: true, UISubdomain: "valkey"},
 		"ollama":       {GatewayPath: "/ollama"},
 		"proxy":        {Port: 18787},
 		"dns":          {LoopbackAddress: "127.0.0.1:15353/udp"},
@@ -67,6 +71,8 @@ func TestVersionPinsMatchCurrentDefault(test *testing.T) {
 		"proxy":               {Mode: ModeContainer, Image: "nginx", Tag: "stable-alpine3.23-slim"},
 		"ollama":              {Mode: ModeContainer, Image: "ollama/ollama", Tag: "latest"},
 		"dns":                 {Mode: ModeContainer, Image: "coredns/coredns", Tag: "latest"},
+		"valkey":              {Mode: ModeContainer, Image: "valkey/valkey", Tag: "9.1.0-alpine"},
+		"valkey-admin":        {Mode: ModeContainer, Image: "valkey/valkey-admin", Tag: "latest"},
 	}
 	got := VersionPins()
 	if !reflect.DeepEqual(got, want) {
@@ -77,7 +83,7 @@ func TestVersionPinsMatchCurrentDefault(test *testing.T) {
 // TestCoreAndOptionalServiceNames pins the logical core/optional partition (the
 // frozen API the internal/setup migration consumes).
 func TestCoreAndOptionalServiceNames(test *testing.T) {
-	wantCore := []string{"ollama", "presidio", "litellm", "headroom", "proxy", "dns"}
+	wantCore := []string{"ollama", "presidio", "valkey", "valkey-admin", "litellm", "headroom", "proxy", "dns"}
 	if got := CoreServiceNames(); !reflect.DeepEqual(got, wantCore) {
 		test.Errorf("CoreServiceNames() = %v, want %v", got, wantCore)
 	}
@@ -212,7 +218,8 @@ func TestUIVhostsMapping(test *testing.T) {
 		subdomain string
 		optional  bool
 	}{
-		"litellm": {"litellm", false},
+		"litellm":      {"litellm", false},
+		"valkey-admin": {"valkey", false},
 	}
 	vhosts := UIVhosts()
 	if len(vhosts) != len(want) {

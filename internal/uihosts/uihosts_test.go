@@ -19,13 +19,13 @@ func TestGatewayPortMatchesRuntime(t *testing.T) {
 // removed), so the /etc/hosts entry carries just litellm.<domain>.
 func TestNamesAlwaysAllSubdomains(t *testing.T) {
 	names := Names("aip.example.com")
-	want := []string{"litellm.aip.example.com"}
+	want := map[string]bool{"litellm.aip.example.com": true, "valkey.aip.example.com": true}
 	if len(names) != len(want) {
 		t.Fatalf("got %v want %v", names, want)
 	}
-	for index, name := range want {
-		if names[index] != name {
-			t.Fatalf("name[%d]=%q want %q (full: %v)", index, names[index], name, names)
+	for _, name := range names {
+		if !want[name] {
+			t.Fatalf("unexpected UI subdomain %q (full: %v)", name, names)
 		}
 	}
 }
@@ -38,15 +38,15 @@ func TestEntriesSingleLoopbackEntry(t *testing.T) {
 	if entries[0].IP != "127.0.0.1" {
 		t.Fatalf("UI subdomains must resolve to loopback, got %q", entries[0].IP)
 	}
-	if len(entries[0].Names) != 1 {
-		t.Fatalf("expected 1 name (the only UI subdomain), got %v", entries[0].Names)
+	if len(entries[0].Names) != 2 {
+		t.Fatalf("expected 2 names (the UI subdomains), got %v", entries[0].Names)
 	}
 }
 
 func TestURLsUseGatewayPort(t *testing.T) {
 	urls := URLs("aip.local")
-	if len(urls) != 1 {
-		t.Fatalf("expected the single UI URL, got %d", len(urls))
+	if len(urls) != 2 {
+		t.Fatalf("expected 2 UI URLs, got %d", len(urls))
 	}
 	for _, url := range urls {
 		if !strings.HasSuffix(url.URL, ":18787") {

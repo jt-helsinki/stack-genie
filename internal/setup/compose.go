@@ -118,6 +118,14 @@ func ServicesComposeYAML(bindHost string) ([]byte, error) {
 			presidioAnonymizerContainer: {
 				Image: containerImage("presidio-anonymizer"), ContainerName: presidioAnonymizerContainer, Networks: []string{net}, Restart: "unless-stopped",
 			},
+			valkeyContainer: {
+				Image: containerImage("valkey"), ContainerName: valkeyContainer, Networks: []string{net}, Restart: "unless-stopped",
+			},
+			valkeyAdminContainer: {
+				Image: containerImage("valkey-admin"), ContainerName: valkeyAdminContainer, Networks: []string{net}, Restart: "unless-stopped",
+				Environment: []string{"DEPLOYMENT_MODE=Web", "VALKEY_HOST=" + valkeyContainer, "VALKEY_PORT=6379", "VALKEY_TLS=false"},
+				DependsOn:   []string{valkeyContainer},
+			},
 			litellmDBContainer: {
 				Image: containerImage("litellm-db"), ContainerName: litellmDBContainer, Networks: []string{net}, Restart: "unless-stopped",
 				Ports:       []string{"127.0.0.1:" + litellmDBHostPort + ":5432"},
@@ -139,7 +147,7 @@ func ServicesComposeYAML(bindHost string) ([]byte, error) {
 					"PRESIDIO_ANONYMIZER_API_BASE=" + presidioAnonymizerURL,
 				},
 				Command:   []string{"--config", "/app/config.yaml", "--port", "4000"},
-				DependsOn: []string{litellmDBContainer, presidioAnalyzerContainer, presidioAnonymizerContainer},
+				DependsOn: []string{litellmDBContainer, presidioAnalyzerContainer, presidioAnonymizerContainer, valkeyContainer},
 			},
 			headroomContainer: {
 				Image: containerImage("headroom"), ContainerName: headroomContainer, Networks: []string{net}, Restart: "unless-stopped",

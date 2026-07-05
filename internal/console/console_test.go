@@ -25,14 +25,14 @@ func TestURLAndKnown(test *testing.T) {
 
 func TestWithConsolesSortedAndFiltered(test *testing.T) {
 	named := WithConsoles()
-	// litellm is now the ONLY host service exposing a console. Its console URL must
-	// be an nginx subdomain vhost on the gateway port — never a direct (now
-	// internal-only) per-service port.
-	if len(named) != 1 || named[0].Name != "litellm" {
-		test.Fatalf("WithConsoles = %+v, want [litellm]", named)
+	// litellm + valkey-admin expose consoles, each as an nginx subdomain vhost on the
+	// gateway port (never a direct, now internal-only, per-service port). Sorted by name.
+	if len(named) != 2 || named[0].Name != "litellm" || named[1].Name != "valkey-admin" {
+		test.Fatalf("WithConsoles = %+v, want [litellm valkey-admin]", named)
 	}
 	want := map[string]string{
-		"litellm": "http://litellm.localhost:18787/ui",
+		"litellm":      "http://litellm.localhost:18787/ui",
+		"valkey-admin": "http://valkey.localhost:18787",
 	}
 	for _, namedURL := range named {
 		if namedURL.URL != want[namedURL.Name] {

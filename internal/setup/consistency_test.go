@@ -78,12 +78,14 @@ func TestNoOrphanLogScopes(test *testing.T) {
 // the other.
 func TestSetupContainerConstsMatchRegistry(test *testing.T) {
 	expected := map[string][]string{
-		"ollama":   {ollamaContainer},
-		"presidio": {presidioAnalyzerContainer, presidioAnonymizerContainer},
-		"litellm":  {litellmContainer, litellmDBContainer},
-		"headroom": {headroomContainer},
-		"proxy":    {proxyContainer},
-		"dns":      {dnsContainer},
+		"ollama":       {ollamaContainer},
+		"presidio":     {presidioAnalyzerContainer, presidioAnonymizerContainer},
+		"litellm":      {litellmContainer, litellmDBContainer},
+		"valkey":       {valkeyContainer},
+		"valkey-admin": {valkeyAdminContainer},
+		"headroom":     {headroomContainer},
+		"proxy":        {proxyContainer},
+		"dns":          {dnsContainer},
 	}
 	for _, spec := range desiredServices() {
 		want, ok := expected[spec.Name]
