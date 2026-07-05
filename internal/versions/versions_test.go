@@ -246,3 +246,28 @@ func TestLoadAbsentReturnsNilNil(t *testing.T) {
 		t.Errorf("Load() on absent file = %+v, want nil", loaded)
 	}
 }
+
+// Load distinguishes "absent" (nil, nil) from "present but unreadable": a
+// malformed versions.yaml (here an unknown field, which conffile.Read rejects)
+// must surface a non-nil error rather than be silently treated as absent.
+func TestLoadMalformedFileReturnsError(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	path, err := versions.Path()
+	if err != nil {
+		t.Fatalf("Path: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// An unknown top-level key — conffile.Read enforces KnownFields.
+	if err := os.WriteFile(path, []byte("schema_version: 1\nbogus_unknown_key: true\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := versions.Load()
+	if err == nil {
+		t.Fatal("Load() on a malformed file must return an error, not nil")
+	}
+	if loaded != nil {
+		t.Errorf("Load() on error = %+v, want nil", loaded)
+	}
+}

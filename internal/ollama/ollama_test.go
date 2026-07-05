@@ -42,3 +42,27 @@ func TestProbeNon200(test *testing.T) {
 		test.Fatal("expected an error on non-200 status")
 	}
 }
+
+// HumanByteSize selects the right binary unit and rounds to one decimal. The
+// boundary at exactly 1024 must roll over to the next unit ("1.0 KB", not
+// "1024 B"), and sub-KB values keep the plain "N B" form.
+func TestHumanByteSize(test *testing.T) {
+	cases := []struct {
+		bytes int64
+		want  string
+	}{
+		{0, "0 B"},
+		{512, "512 B"},
+		{1023, "1023 B"},    // still bytes just below the unit
+		{1024, "1.0 KB"},    // exact rollover to KB
+		{1536, "1.5 KB"},    // rounds to one decimal
+		{1048576, "1.0 MB"}, // 1024*1024
+		{1610612736, "1.5 GB"},
+		{1099511627776, "1.0 TB"},
+	}
+	for _, testCase := range cases {
+		if got := HumanByteSize(testCase.bytes); got != testCase.want {
+			test.Errorf("HumanByteSize(%d) = %q, want %q", testCase.bytes, got, testCase.want)
+		}
+	}
+}

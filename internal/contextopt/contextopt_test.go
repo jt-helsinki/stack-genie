@@ -99,6 +99,23 @@ func TestSetCavemanLevelInvalid(test *testing.T) {
 	}
 }
 
+// InstallCavemanSkill called with an empty level seeds the skill at
+// DefaultCavemanLevel rather than writing a blank level — this is the path used
+// when a project has no configured level yet.
+func TestInstallCavemanSkillEmptyLevelUsesDefault(test *testing.T) {
+	root := test.TempDir()
+	if err := InstallCavemanSkill(root, ""); err != nil {
+		test.Fatal(err)
+	}
+	skill, err := os.ReadFile(filepath.Join(root, ".ai-platform", "skills", "caveman", "SKILL.md"))
+	if err != nil {
+		test.Fatalf("skill not installed: %v", err)
+	}
+	if !strings.Contains(string(skill), "level: "+DefaultCavemanLevel) {
+		test.Fatalf("empty level should default to %q:\n%s", DefaultCavemanLevel, skill)
+	}
+}
+
 func TestStatusReflectsConfigAndSkill(test *testing.T) {
 	test.Setenv("HOME", test.TempDir())
 	root := test.TempDir()

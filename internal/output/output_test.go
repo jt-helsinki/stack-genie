@@ -3,6 +3,7 @@ package output
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"testing"
 )
 
@@ -124,5 +125,111 @@ func TestJSONFlagStillEmitsJSON(test *testing.T) {
 	em.Success("x", humanData{Name: "kept"})
 	if got := out.String(); len(got) == 0 || got[0] != '{' {
 		test.Fatalf("--json should emit a JSON envelope, got %q", got)
+	}
+}
+
+// Error() must return the message verbatim (so *Error satisfies the error
+// interface), and WithDetails must attach the payload AND return the same
+// *Error so callers can chain output.Errorf(...).WithDetails(...).
+func TestErrorMethodAndWithDetailsChaining(test *testing.T) {
+	details := map[string]any{"missing": []string{"docker", "msb"}}
+	platformErr := Errorf(ExitMissingDep, "need %d deps", 2).WithDetails(details)
+
+	if platformErr.Error() != "need 2 deps" {
+		test.Fatalf("Error() = %q, want %q", platformErr.Error(), "need 2 deps")
+	}
+	// WithDetails returns the SAME pointer (chainable), with Details set.
+	if platformErr.Details == nil {
+		test.Fatal("WithDetails did not attach the payload")
+	}
+
+	// The details ride through the JSON envelope on failure.
+	em, out, _ := newTestEmitter(true)
+	code := em.Failure("setup", platformErr)
+	if code != ExitMissingDep {
+		test.Fatalf("exit = %d, want %d", code, ExitMissingDep)
+	}
+	var env struct {
+		Error struct {
+			Kind    string `json:"kind"`
+			Details struct {
+				Missing []string `json:"missing"`
+			} `json:"details"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal(out.Bytes(), &env); err != nil {
+		test.Fatalf("invalid JSON: %v", err)
+	}
+	if env.Error.Kind != KindMissingDep {
+		test.Fatalf("kind = %q, want %q", env.Error.Kind, KindMissingDep)
+	}
+	if len(env.Error.Details.Missing) != 2 || env.Error.Details.Missing[0] != "docker" {
+		test.Fatalf("details did not survive the envelope: %+v", env.Error.Details)
+	}
+}
+
+// asError (exercised via Failure) coerces a nil or untyped error into a
+// KindGeneral *Error with the general exit code, while an existing *Error is
+// passed through with its own code.
+func TestFailureCoercesNilAndUntypedErrors(test *testing.T) {
+	cases := []struct {
+		name     string
+		err      error
+		wantCode int
+		wantMsg  string
+	}{
+		{"nil error", nil, ExitGeneral, "unknown error"},
+		{"untyped error", errors.New("disk full"), ExitGeneral, "disk full"},
+		{"typed error keeps its code", Errorf(ExitPermission, "denied"), ExitPermission, "denied"},
+	}
+	for _, testCase := range cases {
+		test.Run(testCase.name, func(test *testing.T) {
+			em, out, _ := newTestEmitter(true)
+			code := em.Failure("cmd", testCase.err)
+			if code != testCase.wantCode {
+				test.Fatalf("exit = %d, want %d", code, testCase.wantCode)
+			}
+			var env struct {
+				Error *Error `json:"error"`
+			}
+			if err := json.Unmarshal(out.Bytes(), &env); err != nil {
+				test.Fatalf("invalid JSON: %v", err)
+			}
+			if env.Error.Message != testCase.wantMsg {
+				test.Fatalf("message = %q, want %q", env.Error.Message, testCase.wantMsg)
+			}
+			// error.code must always equal the exit code (§19).
+			if env.Error.Code != code {
+				test.Fatalf("error.code = %d, exit = %d", env.Error.Code, code)
+			}
+		})
+	}
+}
+
+// A human-mode success writes any warnings to stderr (never stdout) and, for
+// nil data, produces no stdout at all.
+func TestHumanSuccessRendersWarningsAndSkipsNilData(test *testing.T) {
+	em, out, errb := newTestEmitter(false)
+	code := em.Success("cmd", nil, "cache stale", "using fallback")
+	if code != ExitOK {
+		test.Fatalf("exit = %d, want %d", code, ExitOK)
+	}
+	if out.Len() != 0 {
+		test.Fatalf("nil data must not write to stdout, got %q", out.String())
+	}
+	for _, want := range []string{"warning: cache stale", "warning: using fallback"} {
+		if !bytes.Contains(errb.Bytes(), []byte(want)) {
+			test.Errorf("stderr missing %q:\n%s", want, errb.String())
+		}
+	}
+}
+
+// A plain string payload is printed as-is (with a trailing newline) in human
+// mode — distinct from the YAML fallback used for structured data.
+func TestHumanStringPayloadPrintedVerbatim(test *testing.T) {
+	em, out, _ := newTestEmitter(false)
+	em.Success("cmd", "just text")
+	if got := out.String(); got != "just text\n" {
+		test.Fatalf("string payload = %q, want %q", got, "just text\n")
 	}
 }

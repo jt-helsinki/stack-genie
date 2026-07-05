@@ -347,3 +347,77 @@ func TestLoadCachedOrFetchStatusUsesCacheWithoutNetwork(t *testing.T) {
 		t.Errorf("cached models = %d, want %d", len(got.Models()), len(parsed.Models()))
 	}
 }
+
+// build() derives a model's ID (and its provider group) from the map key when
+// the entry omits an explicit "id" field — the map key is the verbatim
+// "<provider>/<model>" id in that case.
+func TestParseModelIDFallsBackToMapKey(t *testing.T) {
+	// cohere/command-r has NO "id" field; its ID must come from the map key and
+	// it must group under the "cohere" provider.
+	raw := []byte(`{
+		"models": {
+			"cohere/command-r": {"name": "Command R", "family": "command"}
+		},
+		"providers": {
+			"cohere": {"id": "cohere", "name": "Cohere", "env": ["COHERE_API_KEY"]}
+		}
+	}`)
+	parsed, err := catalog.Parse(raw)
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	provider, ok := parsed.Provider("cohere")
+	if !ok {
+		t.Fatal("cohere provider missing — id was not derived from the map key")
+	}
+	if len(provider.Models) != 1 {
+		t.Fatalf("cohere models = %d, want 1", len(provider.Models))
+	}
+	if provider.Models[0].ID != "cohere/command-r" {
+		t.Errorf("model id = %q, want the map key %q", provider.Models[0].ID, "cohere/command-r")
+	}
+	if provider.Name != "Cohere" {
+		t.Errorf("provider name = %q, want enriched %q", provider.Name, "Cohere")
+	}
+}
+
+// LoadOrFetchStatus (fetch-first, source-reporting) returns SourceFresh and
+// persists the cache on a live fetch, then SourceCached WITH the live-fetch
+// error when a later fetch fails but a cache exists — the error is surfaced so
+// callers can warn while still using the cache (unlike LoadOrFetch, which
+// swallows it).
+func TestLoadOrFetchStatusFreshThenCachedWithError(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	raw := readFixture(t)
+
+	freshClient := &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+		return newJSONResponse(http.StatusOK, raw), nil
+	})}
+	got, source, err := catalog.LoadOrFetchStatus(context.Background(), freshClient, catalog.DefaultURL)
+	if err != nil {
+		t.Fatalf("live fetch: %v", err)
+	}
+	if source != catalog.SourceFresh {
+		t.Errorf("source = %v, want fresh", source)
+	}
+	if len(got.Models()) != 4 {
+		t.Fatalf("fresh models = %d, want 4", len(got.Models()))
+	}
+	// The successful fetch must have persisted the cache.
+	path, _ := catalog.Path()
+	if _, statErr := os.Stat(path); statErr != nil {
+		t.Fatalf("fresh fetch did not persist cache: %v", statErr)
+	}
+
+	// Now the live fetch fails: cached copy is returned WITH the fetch error.
+	cached, cachedSource, fetchErr := catalog.LoadOrFetchStatus(context.Background(), failingClient(), catalog.DefaultURL)
+	if fetchErr == nil {
+		t.Fatal("expected the live-fetch error to be surfaced alongside the cache")
+	}
+	if cachedSource != catalog.SourceCached {
+		t.Errorf("source = %v, want cached", cachedSource)
+	}
+	if cached == nil || len(cached.Models()) != 4 {
+		t.Fatalf("cached catalog not returned on fetch failure: %+v", cached)
+	}
+}
