@@ -75,7 +75,7 @@ WORKDIR /home/workspace
 # `graphify install --platform …`. Verify the extras resolve on hardware bring-up.
 RUN curl -LsSf https://astral.sh/uv/install.sh | sh \
  && uv tool install "graphifyy[pdf,office,video,postgres,google,svg,sql,terraform,ollama,openai,gemini,anthropic]" \
- && uv tool install "headroom-ai[all]"
+ && uv tool install "headroom-ai[proxy]"
 
 # Interactive-shell frameworks for the workspace user: oh-my-bash and oh-my-zsh, both
 # installed UNATTENDED (they write ~/.bashrc / ~/.zshrc + ~/.oh-my-*). zsh itself is in

@@ -77,14 +77,14 @@ func TestComposeInstallsCopilot(test *testing.T) {
 
 func TestComposeBakesHeadroom(test *testing.T) {
 	installTemplates(test)
-	// Headroom is now installed IN each workspace image (via uv tool, headroom-ai[all])
+	// Headroom is now installed IN each workspace image (via uv tool, headroom-ai[proxy])
 	// so each agent CLI can be wrapped (`headroom wrap <cli>`) to compress provider-API
 	// traffic before it leaves the microVM — it is no longer a shared host container.
 	dockerfile, err := Compose("debian-trixie", nil, []string{"opencode"})
 	if err != nil {
 		test.Fatal(err)
 	}
-	if !strings.Contains(dockerfile, `uv tool install "headroom-ai[all]"`) {
+	if !strings.Contains(dockerfile, `uv tool install "headroom-ai[proxy]"`) {
 		test.Errorf("composed Dockerfile should install Headroom (headroom-ai) in the workspace image:\n%s", dockerfile)
 	}
 }

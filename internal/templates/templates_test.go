@@ -179,7 +179,7 @@ func TestBaseDockerfileShipsTerminfo(t *testing.T) {
 
 // TestBaseDockerfileShipsShellsAndHeadroom asserts every OS base ships the
 // interactive-shell frameworks (zsh + oh-my-bash + oh-my-zsh) and the Headroom CLI
-// (installed via uv tool as headroom-ai[all]). The shell frameworks back the per-
+// (installed via uv tool as headroom-ai[proxy]). The shell frameworks back the per-
 // workspace bash/zsh choice; Headroom is installed in-VM so each agent CLI can be
 // wrapped (`headroom wrap <cli>`) to compress provider-API traffic before it leaves
 // the microVM. All are installed for the workspace user; the package/command names
@@ -203,7 +203,7 @@ func TestBaseDockerfileShipsShellsAndHeadroom(t *testing.T) {
 				"ohmyzsh/ohmyzsh",
 				"--unattended",
 				// Headroom CLI, installed via uv tool alongside Graphify.
-				`uv tool install "headroom-ai[all]"`,
+				`uv tool install "headroom-ai[proxy]"`,
 			} {
 				if !strings.Contains(got, fragment) {
 					t.Errorf("%s: base Dockerfile missing %q:\n%s", osKey, fragment, got)
