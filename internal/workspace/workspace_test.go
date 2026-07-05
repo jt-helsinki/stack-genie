@@ -477,10 +477,11 @@ func TestStartAppliesZshLoginShell(test *testing.T) {
 		return false
 	}
 
-	// zsh: a chsh -s to zsh for the workspace user is issued (as root).
+	// zsh: a chsh -s to zsh for the workspace user is issued (as root). codex is set to
+	// OAUTH so it (a Headroom-wrappable CLI bypassing the gateway) gets a wrap alias.
 	rootZsh := seedProject(test, "zapp")
 	if err := config.WriteProject(rootZsh, &config.Config{
-		Agent:     config.AgentConfig{Tools: []string{"opencode", "codex", "pi"}},
+		Agent:     config.AgentConfig{Tools: []string{"opencode", "codex", "pi"}, AuthModes: map[string]string{"codex": "oauth"}},
 		Workspace: config.WorkspaceConfig{Shell: "zsh"},
 	}); err != nil {
 		test.Fatal(err)
@@ -493,12 +494,14 @@ func TestStartAppliesZshLoginShell(test *testing.T) {
 	if !chshRun(sandboxZsh) {
 		test.Errorf("zsh workspace must chsh the login shell to zsh:\n%v", sandboxZsh.execRootArgv)
 	}
-	// The wrappable installed CLIs (opencode/codex) get wrap aliases; pi does not.
+	// Only OAUTH-mode wrappable CLIs get an alias: codex (oauth) does; opencode (gateway
+	// only, never oauth) and pi (api-key + not wrappable) do not.
 	aliases := readGuestFile(test, sandboxZsh, shellAliasesGuestPath)
-	for _, want := range []string{"alias opencode='headroom wrap opencode'", "alias codex='headroom wrap codex'"} {
-		if !strings.Contains(aliases, want) {
-			test.Errorf("shell-aliases snippet missing %q:\n%s", want, aliases)
-		}
+	if !strings.Contains(aliases, "alias codex='headroom wrap codex'") {
+		test.Errorf("oauth codex must be Headroom-wrap aliased:\n%s", aliases)
+	}
+	if strings.Contains(aliases, "alias opencode=") {
+		test.Errorf("api-key/gateway opencode must NOT be aliased:\n%s", aliases)
 	}
 	if strings.Contains(aliases, "alias pi=") {
 		test.Errorf("pi is not Headroom-wrappable and must not be aliased:\n%s", aliases)
@@ -513,6 +516,99 @@ func TestStartAppliesZshLoginShell(test *testing.T) {
 	}
 	if chshRun(sandboxBash) {
 		test.Errorf("bash workspace must NOT chsh:\n%v", sandboxBash.execRootArgv)
+	}
+}
+
+// TestStartOAuthAgentBypassesGateway verifies an OAuTH-mode claude-code: its gateway env
+// is omitted (so its own subscription login wins), its cred dir ~/.claude is symlinked to
+// /persist, it gets the `headroom wrap claude` alias, and the no-key-on-host invariant
+// holds. api-key agents (opencode/pi) keep their gateway env.
+func TestStartOAuthAgentBypassesGateway(test *testing.T) {
+	root := seedProject(test, "app")
+	if err := config.WriteProject(root, &config.Config{
+		Agent: config.AgentConfig{
+			Tools:     []string{"opencode", "claude-code", "gemini"},
+			AuthModes: map[string]string{"claude-code": "oauth", "gemini": "api-key"},
+		},
+	}); err != nil {
+		test.Fatal(err)
+	}
+	sandbox := &fakeSandbox{}
+	served := fakeServedModels{models: []string{"ollama/llama3.2:latest"}}
+	manager := Manager{Builder: &fakeBuilder{}, Sandbox: sandbox, Keys: &fakeKeyMinter{}, Served: served, Now: func() string { return "t" }}
+	if _, err := manager.Start("app"); err != nil {
+		test.Fatal(err)
+	}
+	const key = "sk-fake-workspace-key"
+
+	// (1) The agent env file must NOT carry claude-code's gateway env (oauth), but MUST
+	// keep gemini's (api-key) and the shared AIP_GATEWAY_KEY (opencode/pi).
+	envText := readGuestFile(test, sandbox, agentEnvGuestPath)
+	for _, absent := range []string{"ANTHROPIC_BASE_URL", "ANTHROPIC_AUTH_TOKEN"} {
+		if strings.Contains(envText, absent) {
+			test.Errorf("oauth claude-code must not export %q:\n%s", absent, envText)
+		}
+	}
+	for _, want := range []string{"GEMINI_API_KEY", "AIP_GATEWAY_KEY"} {
+		if !strings.Contains(envText, want) {
+			test.Errorf("agent env missing api-key/shared var %q:\n%s", want, envText)
+		}
+	}
+
+	// (2) claude's project settings must carry NO gateway base URL (oauth), so its own
+	// login reaches Anthropic directly.
+	claude := readProjectConfig(test, root, ".claude", "settings.json")
+	if strings.Contains(claude, "ANTHROPIC_BASE_URL") {
+		test.Errorf("oauth claude settings must not carry the gateway base URL:\n%s", claude)
+	}
+
+	// (3) ~/.claude is symlinked to /persist so the native login survives restarts, and
+	// the wrap alias is present for the oauth claude.
+	linkedClaude := false
+	for _, argv := range sandbox.allExecArgv {
+		if strings.Contains(strings.Join(argv, " "), "ln -sfn /persist/agents/claude ~/.claude") {
+			linkedClaude = true
+		}
+	}
+	if !linkedClaude {
+		test.Errorf("oauth claude-code must symlink ~/.claude to /persist:\n%v", sandbox.allExecArgv)
+	}
+	aliases := readGuestFile(test, sandbox, shellAliasesGuestPath)
+	if !strings.Contains(aliases, "alias claude='headroom wrap claude'") {
+		test.Errorf("oauth claude-code must be Headroom-wrap aliased:\n%s", aliases)
+	}
+
+	// (4) The scoped key never touches host disk.
+	assertProjectConfigsKeyless(test, root, key)
+}
+
+// TestStartAPIKeyAgentRoutesThroughGateway verifies an api-key claude-code keeps its
+// gateway env and gets NO wrap alias (it already routes through the gateway).
+func TestStartAPIKeyAgentRoutesThroughGateway(test *testing.T) {
+	root := seedProject(test, "app")
+	if err := config.WriteProject(root, &config.Config{
+		Agent: config.AgentConfig{Tools: []string{"claude-code"}, AuthModes: map[string]string{"claude-code": "api-key"}},
+	}); err != nil {
+		test.Fatal(err)
+	}
+	sandbox := &fakeSandbox{}
+	manager := Manager{Builder: &fakeBuilder{}, Sandbox: sandbox, Keys: &fakeKeyMinter{}, Now: func() string { return "t" }}
+	if _, err := manager.Start("app"); err != nil {
+		test.Fatal(err)
+	}
+	envText := readGuestFile(test, sandbox, agentEnvGuestPath)
+	for _, want := range []string{"ANTHROPIC_BASE_URL", "ANTHROPIC_AUTH_TOKEN"} {
+		if !strings.Contains(envText, want) {
+			test.Errorf("api-key claude-code must keep its gateway env %q:\n%s", want, envText)
+		}
+	}
+	aliases := readGuestFile(test, sandbox, shellAliasesGuestPath)
+	if strings.Contains(aliases, "alias claude=") {
+		test.Errorf("api-key claude-code routes through the gateway and must NOT be wrap-aliased:\n%s", aliases)
+	}
+	claude := readProjectConfig(test, root, ".claude", "settings.json")
+	if !strings.Contains(claude, "ANTHROPIC_BASE_URL") {
+		test.Errorf("api-key claude settings must carry the gateway base URL:\n%s", claude)
 	}
 }
 

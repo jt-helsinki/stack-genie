@@ -308,3 +308,60 @@ func TestLocationAutocompletesOnMove(test *testing.T) {
 		test.Errorf("moving above the list should restore the typed prefix: got %q, want %q", step.input.Value(), ensureTrailingSep(base))
 	}
 }
+
+// TestCreateWizardAuthModeStep drives the wizard selecting the OAuth-capable claude-code,
+// confirming an auth-mode step appears for it and populates Spec.AuthModes.
+func TestCreateWizardAuthModeStep(test *testing.T) {
+	test.Setenv("HOME", test.TempDir())
+	base := test.TempDir()
+	target := filepath.Join(base, "demo-ws")
+
+	wizard := NewCreate(base, nil, 24, 18) // nil library → the model step auto-advances
+	wizard.SetSize(80, 24)
+	enter := func() tea.Cmd { return wizard.Update(tea.KeyMsg{Type: tea.KeyEnter}) }
+	press := func(k tea.KeyType) { wizard.Update(tea.KeyMsg{Type: k}) }
+	space := func() { wizard.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(" ")}) }
+
+	wizard.location.input.SetValue(target)
+	enter() // location
+	wizard.name.input.SetValue("demo-ws")
+	enter() // name
+	enter() // OS
+	enter() // shell
+	// agents: add claude-code (index 3) to the opencode+pi defaults.
+	for index := 0; index < 3; index++ {
+		press(tea.KeyDown)
+	}
+	space() // toggle claude-code on
+	enter() // agents
+	enter() // default agent
+	enter() // stacks
+	enter() // apps
+	enter() // cpus
+	enter() // memory
+	enter() // ports
+	enter() // idle → model
+	if wizard.step != stepModel {
+		test.Fatalf("expected the model step, got step %d", wizard.step)
+	}
+	enter() // model (nil library) → auth phase
+	if wizard.step != stepAuth {
+		test.Fatalf("expected the auth step for the selected claude-code, got step %d", wizard.step)
+	}
+	if len(wizard.authAgents) != 1 || wizard.authAgents[0] != "claude-code" {
+		test.Fatalf("authAgents = %v, want [claude-code]", wizard.authAgents)
+	}
+	// Pick oauth (the second option) and finish.
+	press(tea.KeyDown)
+	cmd := enter()
+	if cmd == nil {
+		test.Fatal("selecting the auth mode should finish and emit a command")
+	}
+	confirmed, ok := cmd().(CreateConfirmedMsg)
+	if !ok {
+		test.Fatalf("want CreateConfirmedMsg, got %#v", cmd())
+	}
+	if confirmed.Spec.AuthModes["claude-code"] != "oauth" {
+		test.Errorf("Spec.AuthModes = %v, want claude-code=oauth", confirmed.Spec.AuthModes)
+	}
+}

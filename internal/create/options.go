@@ -1,6 +1,9 @@
 package create
 
-import "github.com/jt-helsinki/ideal-robot/internal/apps"
+import (
+	"github.com/jt-helsinki/ideal-robot/internal/apps"
+	"github.com/jt-helsinki/ideal-robot/internal/config"
+)
 
 // The selectable create options — the SINGLE source of truth shared by the CLI's `ai
 // create` wizard/flags and the `ai ui` in-TUI create wizard (the TUI cannot import cli,
@@ -30,3 +33,14 @@ func SupportedApps() []string { return apps.Keys() }
 // SupportedShells are the interactive shells a workspace can default to. bash is the
 // platform default (today's behavior); zsh is the alternative.
 func SupportedShells() []string { return []string{"bash", "zsh"} }
+
+// SupportedAuthModes are the per-agent authentication modes: "api-key" (route through
+// the gateway with the scoped virtual key — keeps the tool firewall + secret masking)
+// and "oauth" (the CLI's own subscription login, direct to the provider — bypasses the
+// gateway guardrails). Only the OAuth-capable CLIs (OAuthCapableCLIs) can be "oauth".
+func SupportedAuthModes() []string { return []string{"api-key", "oauth"} }
+
+// OAuthCapableCLIs are the agent CLIs that can be set to "oauth" (they have a first-party
+// subscription login). Re-exported from config so the CLI/TUI create wizards share one
+// source of truth without importing config's other surface.
+func OAuthCapableCLIs() []string { return config.OAuthCapableCLIs() }

@@ -258,3 +258,66 @@ func TestUsableHostMemoryMiB(test *testing.T) {
 		test.Errorf("UsableHostMemoryMiB(2048) = %d, want the %d MiB minimum", got, MinWorkspaceMemoryMiB)
 	}
 }
+
+// TestAuthModeDefault verifies AuthMode defaults an absent/empty CLI to api-key.
+func TestAuthModeDefault(test *testing.T) {
+	agent := AgentConfig{AuthModes: map[string]string{"claude-code": "oauth", "codex": ""}}
+	cases := map[string]string{
+		"claude-code": "oauth",   // explicit
+		"codex":       "api-key", // empty → default
+		"gemini":      "api-key", // absent → default
+	}
+	for cli, want := range cases {
+		if got := agent.AuthMode(cli); got != want {
+			test.Errorf("AuthMode(%q) = %q, want %q", cli, got, want)
+		}
+	}
+	// A nil map still defaults cleanly.
+	if got := (AgentConfig{}).AuthMode("claude-code"); got != "api-key" {
+		test.Errorf("AuthMode on nil map = %q, want api-key", got)
+	}
+}
+
+// TestValidateAuthMode covers the accepted values and a rejection.
+func TestValidateAuthMode(test *testing.T) {
+	for _, ok := range []string{"", "api-key", "oauth"} {
+		if err := ValidateAuthMode(ok); err != nil {
+			test.Errorf("ValidateAuthMode(%q) should be valid: %v", ok, err)
+		}
+	}
+	if err := ValidateAuthMode("sso"); err == nil {
+		test.Error("ValidateAuthMode(\"sso\") should be rejected")
+	}
+}
+
+// TestOAuthCapableCLIs pins the single source of truth for the OAuth-capable set.
+func TestOAuthCapableCLIs(test *testing.T) {
+	got := OAuthCapableCLIs()
+	want := []string{"claude-code", "codex", "gemini"}
+	if len(got) != len(want) {
+		test.Fatalf("OAuthCapableCLIs() = %v, want %v", got, want)
+	}
+	for index, cli := range want {
+		if got[index] != cli {
+			test.Errorf("OAuthCapableCLIs()[%d] = %q, want %q", index, got[index], cli)
+		}
+	}
+}
+
+// TestAuthModesRoundTrip verifies auth_modes survives a project config write/read.
+func TestAuthModesRoundTrip(test *testing.T) {
+	root := test.TempDir()
+	want := map[string]string{"claude-code": "oauth", "codex": "api-key"}
+	if err := WriteProject(root, &Config{Agent: AgentConfig{Tools: []string{"claude-code", "codex"}, AuthModes: want}}); err != nil {
+		test.Fatal(err)
+	}
+	loaded, err := LoadProjectConfig(root)
+	if err != nil {
+		test.Fatal(err)
+	}
+	for cli, mode := range want {
+		if got := loaded.Agent.AuthModes[cli]; got != mode {
+			test.Errorf("round-trip auth_modes[%q] = %q, want %q", cli, got, mode)
+		}
+	}
+}

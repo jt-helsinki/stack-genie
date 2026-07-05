@@ -11,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"slices"
 	"strings"
 
 	"github.com/jt-helsinki/ideal-robot/internal/config"
@@ -91,6 +92,7 @@ func Execute(spec project.Spec, now string, report func(Progress)) (Result, []st
 		return Result{}, nil, output.Errorf(output.ExitRuntimeFailure, "read config.yaml: %s", err)
 	}
 	warnings := pullGraphifyModelIfAbsent(spec.GraphifyModel, report)
+	warnings = append(warnings, oauthWarnings(spec)...)
 	report(Progress{Step: "workspace scaffolded — start it to build the image + boot the microVM"})
 	return Result{
 		Name:       spec.Name,
@@ -101,6 +103,24 @@ func Execute(spec project.Spec, now string, report func(Progress)) (Result, []st
 		Apps:       spec.Apps,
 		ConfigYAML: string(configYAML),
 	}, warnings, nil
+}
+
+// oauthWarnings returns a security warning for each agent set to OAuth/plan mode: that
+// mode routes the agent DIRECTLY to its provider, bypassing the gateway — so the tool
+// firewall, secret masking, and content-level egress audit do NOT apply to it. Selected +
+// OAuth-capable CLIs only (Scaffold filters the persisted set the same way).
+func oauthWarnings(spec project.Spec) []string {
+	var warnings []string
+	for _, cli := range config.OAuthCapableCLIs() {
+		if !slices.Contains(spec.AgentCLIs, cli) {
+			continue
+		}
+		if spec.AuthModes[cli] == "oauth" {
+			warnings = append(warnings, fmt.Sprintf(
+				"OAuth/plan mode routes %s DIRECTLY to the provider, bypassing the gateway — the tool firewall, secret masking, and content-level egress audit do NOT apply to it (see docs/deferred/oauth-agent-firewall-via-gateway.md)", cli))
+		}
+	}
+	return warnings
 }
 
 // mapProjectErr maps a project error to a platform exit code (invalid input for the

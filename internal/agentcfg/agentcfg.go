@@ -453,7 +453,16 @@ func gatewayRoot(gatewayURL string) string {
 // the workspace's scoped virtual key by default. gatewayURL carries the /v1 suffix
 // (codex keeps it); the claude-code / gemini base URLs are derived as the gateway
 // root. apiKey is the scoped virtual key.
-func AgentEnvScript(gatewayURL, apiKey, graphifyModel string) []byte {
+//
+// oauthAgents is the set of installed CLIs configured for OAUTH (subscription) auth —
+// those talk DIRECTLY to their provider with their own native login, so their gateway
+// env is OMITTED here: an oauth claude-code gets no ANTHROPIC_BASE_URL/ANTHROPIC_AUTH_TOKEN
+// (so its ~/.claude OAuth credentials win) and an oauth gemini gets no
+// GOOGLE_GEMINI_BASE_URL/GEMINI_API_KEY. AIP_GATEWAY_KEY is shared with opencode/pi (and
+// api-key codex), so it is always exported; an oauth codex simply doesn't reference it
+// (its config.toml uses the ChatGPT login — see CodexConfigOAuth). The Graphify OPENAI_*
+// env is independent of any agent's auth mode.
+func AgentEnvScript(gatewayURL, apiKey, graphifyModel string, oauthAgents map[string]bool) []byte {
 	root := gatewayRoot(gatewayURL)
 	var buffer bytes.Buffer
 	buffer.WriteString("# Managed by the AI Development Platform — gateway env for the env-routed\n")
@@ -461,14 +470,23 @@ func AgentEnvScript(gatewayURL, apiKey, graphifyModel string) []byte {
 	buffer.WriteString("# workspace start and sourced by every shell + agent session. Do not edit by\n")
 	buffer.WriteString("# hand; this file is rewritten on every workspace start and holds the\n")
 	buffer.WriteString("# workspace's scoped virtual key (it never leaves the VM).\n")
-	// claude-code: Anthropic-compatible surface at the gateway root + bearer token.
-	buffer.WriteString("export " + claudeBaseURLVar + "=" + shellQuote(root) + "\n")
-	buffer.WriteString("export " + claudeAuthVar + "=" + shellQuote(apiKey) + "\n")
-	// codex: the key its config.toml provider block reads via env_key.
+	// claude-code (api-key mode only): Anthropic-compatible surface at the gateway root +
+	// bearer token. OMITTED for oauth so Claude Code's own subscription login is used and
+	// reaches Anthropic directly.
+	if !oauthAgents["claude-code"] {
+		buffer.WriteString("export " + claudeBaseURLVar + "=" + shellQuote(root) + "\n")
+		buffer.WriteString("export " + claudeAuthVar + "=" + shellQuote(apiKey) + "\n")
+	}
+	// codex: the key its config.toml provider block reads via env_key. Shared with
+	// opencode/pi (their {env:}/$VAR key ref), so always exported — an oauth codex just
+	// doesn't reference it.
 	buffer.WriteString("export " + codexKeyVar + "=" + shellQuote(apiKey) + "\n")
-	// gemini-cli: the genai SDK's base-URL + key overrides (gateway root).
-	buffer.WriteString("export " + geminiBaseURLVar + "=" + shellQuote(root) + "\n")
-	buffer.WriteString("export " + geminiKeyVar + "=" + shellQuote(apiKey) + "\n")
+	// gemini-cli (api-key mode only): the genai SDK's base-URL + key overrides (gateway
+	// root). OMITTED for oauth so gemini's own login reaches Google directly.
+	if !oauthAgents["gemini"] {
+		buffer.WriteString("export " + geminiBaseURLVar + "=" + shellQuote(root) + "\n")
+		buffer.WriteString("export " + geminiKeyVar + "=" + shellQuote(apiKey) + "\n")
+	}
 	// opencode: point it at the per-project config file we write under .opencode/
 	// (keyless; the key resolves from AIP_GATEWAY_KEY via {env:} interpolation).
 	buffer.WriteString("export " + openCodeConfigVar + "=" + shellQuote(OpenCodeProjectConfigGuest) + "\n")
@@ -526,6 +544,23 @@ func HeadroomWrapName(cli string) (string, bool) {
 	default:
 		return "", false
 	}
+}
+
+// oauthProviderDomains maps each OAuth-capable CLI to the egress domains its native
+// (subscription/OAuth) login talks to DIRECTLY when it bypasses the gateway. They are
+// added to the project egress allow-list at create so an oauth agent can reach its
+// provider even under `deny` mode (and is explicit under `public`). Best-effort / verify:
+// derived from each vendor's documented API + auth hosts; adjust if a vendor moves them.
+var oauthProviderDomains = map[string][]string{
+	"claude-code": {"api.anthropic.com"},
+	"codex":       {"api.openai.com", "chatgpt.com", "auth.openai.com"},
+	"gemini":      {"generativelanguage.googleapis.com", "oauth2.googleapis.com", "accounts.google.com", "cloudcode-pa.googleapis.com"},
+}
+
+// OAuthProviderDomains returns the egress domains an oauth-mode CLI reaches directly
+// (nil for an unknown CLI). Best-effort — see oauthProviderDomains.
+func OAuthProviderDomains(cli string) []string {
+	return oauthProviderDomains[cli]
 }
 
 // ShellAliasesFileGuestPath is the in-VM path of the managed Headroom-wrap alias snippet,
@@ -617,6 +652,25 @@ func CodexConfig(gatewayURL, defaultModel string) []byte {
 	return buffer.Bytes()
 }
 
+// CodexConfigOAuth renders codex's ~/.codex/config.toml for OAUTH (subscription) mode:
+// codex logs in with its OWN ChatGPT account and talks DIRECTLY to OpenAI, bypassing the
+// platform gateway — so NO gateway provider block is written (the platform's tool
+// firewall + secret masking do not apply to it). forced_login_method = "chatgpt" pins the
+// subscription login and cli_auth_credentials_store = "file" persists it to
+// ~/.codex/auth.json (symlinked to /persist so the login survives microVM restarts). The
+// project trust entry (CodexTrustConfig) is still written so codex loads this config.
+// (developers.openai.com/codex/config-reference.)
+func CodexConfigOAuth() []byte {
+	var buffer bytes.Buffer
+	buffer.WriteString("# Managed by the AI Development Platform — codex in OAuth/subscription mode.\n")
+	buffer.WriteString("# codex logs in with its own ChatGPT account and talks DIRECTLY to OpenAI,\n")
+	buffer.WriteString("# BYPASSING the platform gateway (its tool firewall + secret masking do not\n")
+	buffer.WriteString("# apply). Do not edit by hand; rewritten on every workspace start.\n")
+	buffer.WriteString("forced_login_method = " + tomlString("chatgpt") + "\n")
+	buffer.WriteString("cli_auth_credentials_store = " + tomlString("file") + "\n")
+	return buffer.Bytes()
+}
+
 // tomlString renders a Go string as a TOML basic string (escaping backslash and
 // double-quote). The values here are simple URLs / identifiers, so this is enough.
 func tomlString(value string) string {
@@ -653,6 +707,21 @@ func MergeClaudeSettings(existing []byte, gatewayURL string) ([]byte, error) {
 		return nil, err
 	}
 	return mergeJSONOver(existing, generated)
+}
+
+// MergeClaudeSettingsOAuth produces claude-code's per-project settings for OAUTH mode:
+// it REPLACES the settings `env` block with an empty one, so any ANTHROPIC_BASE_URL left
+// by a prior api-key start is removed and Claude Code's own subscription login
+// (~/.claude/.credentials.json) reaches Anthropic directly. The user's OTHER top-level
+// settings survive. A nil/corrupt existing file degrades to the empty-env settings.
+func MergeClaudeSettingsOAuth(existing []byte) ([]byte, error) {
+	generated, err := marshalStable(map[string]any{"env": map[string]any{}})
+	if err != nil {
+		return nil, err
+	}
+	// Replace the whole "env" block wholesale (not deep-merge) so a stale gateway base URL
+	// cannot linger; every other user key still merges/survives.
+	return mergeJSONReplacing(existing, generated, []string{"env"}, nil)
 }
 
 // CodexTrustConfig renders the GLOBAL ~/.codex/config.toml (CodexConfigGuestPath)

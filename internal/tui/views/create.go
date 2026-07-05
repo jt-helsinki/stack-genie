@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -43,8 +44,12 @@ const (
 	stepPorts
 	stepIdle
 	stepModel
+	stepAuth // dynamic: one auth-mode select per OAuth-capable selected agent
 	stepCount
 )
+
+// authModeDesc explains the per-agent auth-mode choice (mirrors the CLI wizard note).
+const authModeDesc = "How this agent authenticates. api-key routes through the gateway (keeps the tool firewall + secret masking); oauth uses the agent's own subscription login DIRECTLY, bypassing the gateway (guardrails do NOT apply)."
 
 // stepTitles labels each step for the header.
 var stepTitles = map[int]string{
@@ -84,8 +89,18 @@ type Create struct {
 	idle        *textStep
 	model       *modelPicker // nil when no Ollama library is cached (step skipped)
 
+	// Per-agent auth-mode phase (stepAuth): one selectList per OAuth-capable selected
+	// agent, built when leaving the model step. authIndex walks them one at a time.
+	authAgents []string
+	authLists  []*selectList
+	authIndex  int
+
 	width  int
 	height int
+	// stepW/stepH are the per-step body size (recorded so auth-mode lists built mid-wizard
+	// can be sized to match the pane).
+	stepW int
+	stepH int
 }
 
 // NewCreate builds the wizard. startDir seeds the location field; library is the cached
@@ -127,7 +142,7 @@ func (view *Create) Hints() string {
 		return "type to filter · ↓/↑ pick folder · tab open folder · enter next" + nav
 	case stepAgents, stepStacks, stepApps:
 		return "↑/↓ move · space toggle · enter next" + nav
-	case stepOS, stepShell, stepDefault, stepModel:
+	case stepOS, stepShell, stepDefault, stepModel, stepAuth:
 		return "↑/↓ move · enter select/next" + nav
 	default:
 		return "type · enter next" + nav
@@ -141,6 +156,10 @@ func (view *Create) SetSize(width, height int) {
 	stepWidth, stepHeight := width, height-2
 	if stepHeight < 3 {
 		stepHeight = 3
+	}
+	view.stepW, view.stepH = stepWidth, stepHeight
+	for _, list := range view.authLists {
+		list.SetSize(stepWidth, stepHeight)
 	}
 	view.location.SetSize(stepWidth, stepHeight)
 	view.name.SetSize(stepWidth, stepHeight)
@@ -196,6 +215,11 @@ func (view *Create) Update(msg tea.Msg) tea.Cmd {
 			return view.next()
 		}
 		return nil
+	case stepAuth:
+		if len(view.authLists) == 0 {
+			return view.next()
+		}
+		return view.updateSelectStep(view.authLists[view.authIndex], msg)
 	}
 	return nil
 }
@@ -288,10 +312,25 @@ func (view *Create) multiStepFor(step int) *multiSelectList {
 	}
 }
 
-// next advances to the following step, applying any cross-step wiring; finishing after
-// the last step emits the assembled spec.
+// next advances to the following step, applying any cross-step wiring. Leaving the model
+// step enters the dynamic auth-mode phase (one select per OAuth-capable selected agent);
+// finishing the last auth step (or the model step with no oauth-capable agents) emits the
+// assembled spec.
 func (view *Create) next() tea.Cmd {
-	if view.step >= stepModel {
+	switch view.step {
+	case stepModel:
+		view.buildAuthSteps()
+		if len(view.authAgents) == 0 {
+			return view.finish()
+		}
+		view.step = stepAuth
+		view.authIndex = 0
+		return nil
+	case stepAuth:
+		if view.authIndex+1 < len(view.authAgents) {
+			view.authIndex++
+			return nil
+		}
 		return view.finish()
 	}
 	view.step++
@@ -303,10 +342,36 @@ func (view *Create) next() tea.Cmd {
 	return nil
 }
 
-// prev goes back a step (no-op at the first step).
+// prev goes back a step (no-op at the first step). Within the auth phase it walks back
+// through the per-agent selects, then to the model step.
 func (view *Create) prev() {
-	if view.step > stepLocation {
+	switch {
+	case view.step == stepAuth:
+		if view.authIndex > 0 {
+			view.authIndex--
+			return
+		}
+		view.step = stepModel
+	case view.step > stepLocation:
 		view.step--
+	}
+}
+
+// buildAuthSteps computes the auth-mode phase from the current agent selection: one
+// api-key/oauth select per OAuth-capable selected agent, seeded to api-key. Rebuilt each
+// time the model step is left, so toggling agents earlier is reflected.
+func (view *Create) buildAuthSteps() {
+	view.authAgents = nil
+	view.authLists = nil
+	selected := view.agents.Values()
+	for _, cli := range create.OAuthCapableCLIs() {
+		if !slices.Contains(selected, cli) {
+			continue
+		}
+		list := newSelectList(cli+" — "+authModeDesc, create.SupportedAuthModes(), "api-key")
+		list.SetSize(view.stepW, view.stepH)
+		view.authAgents = append(view.authAgents, cli)
+		view.authLists = append(view.authLists, list)
 	}
 }
 
@@ -321,12 +386,20 @@ func (view *Create) finish() tea.Cmd {
 	if view.model != nil {
 		graphifyModel = view.model.Value()
 	}
+	var authModes map[string]string
+	if len(view.authAgents) > 0 {
+		authModes = make(map[string]string, len(view.authAgents))
+		for index, cli := range view.authAgents {
+			authModes[cli] = view.authLists[index].Value()
+		}
+	}
 	spec := project.Spec{
 		Name:          view.name.Value(),
 		OS:            view.osList.Value(),
 		Shell:         view.shell.Value(),
 		AgentCLIs:     view.agents.Values(),
 		DefaultTool:   view.defaultTool.Value(),
+		AuthModes:     authModes,
 		Stacks:        view.stacks.Values(),
 		Apps:          view.apps.Values(),
 		CPUs:          cpus,
@@ -339,11 +412,19 @@ func (view *Create) finish() tea.Cmd {
 	return func() tea.Msg { return CreateConfirmedMsg{Spec: spec} }
 }
 
-// View renders the step header (title + N/M) and the current step's body.
+// View renders the step header (title + N/M) and the current step's body. The auth-mode
+// phase is dynamic, so the total step count grows once the (per-agent) auth steps are known.
 func (view *Create) View() string {
-	total := stepCount
-	header := ui.Heading.Render(stepTitles[view.step]) +
-		ui.Muted.Render(fmt.Sprintf("   (step %d of %d)", view.step+1, total)) + "\n\n"
+	baseSteps := stepModel + 1 // location..model inclusive
+	total := baseSteps + len(view.authAgents)
+	title := stepTitles[view.step]
+	current := view.step + 1
+	if view.step == stepAuth {
+		title = view.authAgents[view.authIndex] + " authentication"
+		current = baseSteps + view.authIndex + 1
+	}
+	header := ui.Heading.Render(title) +
+		ui.Muted.Render(fmt.Sprintf("   (step %d of %d)", current, total)) + "\n\n"
 	return header + view.stepBody()
 }
 
@@ -378,6 +459,11 @@ func (view *Create) stepBody() string {
 			return ui.Muted.Render("No Ollama library cached — the Graphify model is left unset (run `ai models` to populate it).")
 		}
 		return view.model.View()
+	case stepAuth:
+		if len(view.authLists) == 0 {
+			return ""
+		}
+		return view.authLists[view.authIndex].View()
 	}
 	return ""
 }

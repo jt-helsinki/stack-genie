@@ -11,7 +11,9 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 
+	"github.com/jt-helsinki/ideal-robot/internal/agentcfg"
 	"github.com/jt-helsinki/ideal-robot/internal/apps"
 	"github.com/jt-helsinki/ideal-robot/internal/conffile"
 	"github.com/jt-helsinki/ideal-robot/internal/config"
@@ -40,6 +42,10 @@ type Spec struct {
 	Stacks      []string
 	AgentCLIs   []string
 	DefaultTool string
+	// AuthModes records the per-CLI auth mode ("api-key"|"oauth") for the OAuth-capable
+	// CLIs (claude-code/codex/gemini). Written to config.yaml agent.auth_modes for the
+	// selected + OAuth-capable CLIs only; an absent CLI defaults to "api-key".
+	AuthModes map[string]string
 	// GraphifyModel is the Ollama model Graphify uses, written to config.yaml
 	// agent.graphify_model. Chosen at create from the Ollama library (pulled if
 	// absent). Empty leaves Graphify's backend unconfigured.
@@ -246,12 +252,36 @@ func Scaffold(spec Spec, createdAt string) (string, error) {
 	if shell == "" {
 		shell = "bash"
 	}
+	// Per-agent auth modes: record ONLY the CLIs that are both selected AND OAuth-capable
+	// (claude-code/codex/gemini). Everything else is always gateway/api-key and is omitted.
+	// For each agent set to oauth, allow-list its provider egress domains so its native
+	// login can reach the provider even under `deny` (explicit under `public`).
+	authModes := map[string]string{}
+	var oauthAllow []config.HostService
+	for _, cli := range config.OAuthCapableCLIs() {
+		if !slices.Contains(spec.AgentCLIs, cli) {
+			continue
+		}
+		mode := spec.AuthModes[cli]
+		if mode == "" {
+			mode = "api-key"
+		}
+		authModes[cli] = mode
+		if mode == "oauth" {
+			for _, domain := range agentcfg.OAuthProviderDomains(cli) {
+				oauthAllow = appendUniqueHostService(oauthAllow, config.HostService{Host: domain, Port: 443})
+			}
+		}
+	}
+	if len(authModes) == 0 {
+		authModes = nil
+	}
 	projectConfig := &config.Config{
 		OS:           spec.OS,
-		Agent:        config.AgentConfig{Tools: spec.AgentCLIs, DefaultTool: spec.DefaultTool, GraphifyModel: spec.GraphifyModel},
+		Agent:        config.AgentConfig{Tools: spec.AgentCLIs, DefaultTool: spec.DefaultTool, GraphifyModel: spec.GraphifyModel, AuthModes: authModes},
 		Workspace:    config.WorkspaceConfig{CPULimit: cpus, MemoryLimit: memory, Shell: shell},
 		Microsandbox: config.MicrosandboxConfig{IdleTimeout: idleTimeout},
-		Network:      config.NetworkConfig{PublishPorts: spec.PublishPorts},
+		Network:      config.NetworkConfig{PublishPorts: spec.PublishPorts, AllowHostServices: oauthAllow},
 		Apps:         appEntries,
 	}
 	if err := config.WriteProject(root, projectConfig); err != nil {
@@ -286,6 +316,17 @@ func Scaffold(spec Spec, createdAt string) (string, error) {
 		return "", err
 	}
 	return root, nil
+}
+
+// appendUniqueHostService appends service to list unless an identical host:port entry is
+// already present (de-duplicated allow-list, e.g. two oauth agents sharing a domain).
+func appendUniqueHostService(list []config.HostService, service config.HostService) []config.HostService {
+	for _, existing := range list {
+		if existing.Host == service.Host && existing.Port == service.Port {
+			return list
+		}
+	}
+	return append(list, service)
 }
 
 func writeProfile(root string, stacks []string) error {

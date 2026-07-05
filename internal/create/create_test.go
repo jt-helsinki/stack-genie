@@ -4,6 +4,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/jt-helsinki/ideal-robot/internal/config"
@@ -286,4 +287,30 @@ type fakeModelRegistrar struct {
 func (fake *fakeModelRegistrar) RegisterOllamaModel(name string) error {
 	fake.registered = append(fake.registered, name)
 	return nil
+}
+
+// TestExecuteWarnsOnOAuth verifies Execute emits a bypass warning for each oauth agent,
+// and none when all agents are api-key.
+func TestExecuteWarnsOnOAuth(test *testing.T) {
+	test.Setenv("HOME", test.TempDir())
+	root := filepath.Join(test.TempDir(), "location")
+	spec := project.Spec{
+		Name:        "oauth-app",
+		OS:          SupportedOSes()[0],
+		AgentCLIs:   []string{"opencode", "claude-code", "gemini"},
+		DefaultTool: "opencode",
+		AuthModes:   map[string]string{"claude-code": "oauth", "gemini": "api-key"},
+		Root:        root,
+	}
+	_, warnings, err := Execute(spec, "2026-07-05T00:00:00Z", nil)
+	if err != nil {
+		test.Fatalf("Execute returned error: %v", err)
+	}
+	joined := strings.Join(warnings, "\n")
+	if !strings.Contains(joined, "claude-code") || !strings.Contains(joined, "bypassing the gateway") {
+		test.Errorf("expected an OAuth bypass warning for claude-code, got: %v", warnings)
+	}
+	if strings.Contains(joined, "gemini DIRECTLY") {
+		test.Errorf("api-key gemini must not trigger a bypass warning: %v", warnings)
+	}
 }

@@ -149,6 +149,7 @@ type createFlags struct {
 	location      string
 	graphifyModel string
 	shell         string
+	authMode      string
 	defaultName   string
 }
 
@@ -166,10 +167,12 @@ func readCreateFlags(cmd *cobra.Command, args []string) createFlags {
 	location, _ := cmd.Flags().GetString("location")
 	graphifyModel, _ := cmd.Flags().GetString("graphify-model")
 	shell, _ := cmd.Flags().GetString("shell")
+	authMode, _ := cmd.Flags().GetString("auth-mode")
 	return createFlags{
 		name: name, osKey: osKey, agents: agents, stacks: stacks, apps: appsList,
 		idleTimeout: idleTimeout, cpus: cpus, memory: memory, ports: ports,
-		location: location, graphifyModel: graphifyModel, shell: shell, defaultName: defaultProjectName(args),
+		location: location, graphifyModel: graphifyModel, shell: shell, authMode: authMode,
+		defaultName: defaultProjectName(args),
 	}
 }
 
@@ -393,6 +396,7 @@ func newCreateCmd(emitter *output.Emitter, exit *int, use string) *cobra.Command
 	cmd.Flags().String("location", "", "workspace directory (default: current directory; created if missing)")
 	cmd.Flags().String("graphify-model", "", "Ollama model Graphify uses (e.g. qwen2.5-coder:7b); chosen in the wizard from the Ollama library and pulled if absent")
 	cmd.Flags().String("shell", "bash", "default interactive shell for workspace sessions: "+strings.Join(supportedShells, "|"))
+	cmd.Flags().String("auth-mode", "", "per-agent auth mode for claude-code/codex/gemini as cli=mode (api-key|oauth), comma-separated (e.g. claude-code=oauth,codex=api-key); default api-key")
 	_ = cmd.RegisterFlagCompletionFunc("os", fixedValues(supportedOSes...))
 	_ = cmd.RegisterFlagCompletionFunc("shell", fixedValues(supportedShells...))
 	_ = cmd.RegisterFlagCompletionFunc("agents", fixedValues(supportedAgentCLIs...))
@@ -538,6 +542,11 @@ func runCreateWizard(seed project.Spec) (project.Spec, bool, error) {
 	}
 	agentCLIs := seed.AgentCLIs
 	defaultTool := seed.DefaultTool
+	// Per-agent auth mode (only for the OAuth-capable CLIs, and only when selected). Seeded
+	// from the flag; each defaults to api-key (gateway-routed, full guardrails).
+	authClaude := seededAuthMode(seed.AuthModes, "claude-code")
+	authCodex := seededAuthMode(seed.AuthModes, "codex")
+	authGemini := seededAuthMode(seed.AuthModes, "gemini")
 	stacks := seed.Stacks
 	selectedApps := seed.Apps
 	idleTimeout := seed.IdleTimeout
@@ -585,6 +594,9 @@ func runCreateWizard(seed project.Spec) (project.Spec, bool, error) {
 				OptionsFunc(func() []huh.Option[string] { return agentCLIOptions(agentCLIs) }, &agentCLIs).
 				Value(&defaultTool),
 		),
+		authModeGroup("claude-code", "Claude Code", &authClaude, &agentCLIs),
+		authModeGroup("codex", "Codex", &authCodex, &agentCLIs),
+		authModeGroup("gemini", "Gemini", &authGemini, &agentCLIs),
 		huh.NewGroup(
 			huh.NewMultiSelect[string]().Title("Software stacks (space to toggle)").
 				Description("Python 3.x, uv, Node 24.x and Graphify are installed by default").
@@ -639,6 +651,10 @@ func runCreateWizard(seed project.Spec) (project.Spec, bool, error) {
 	}
 	ports, _ := parsePublishPorts(splitCommaList(portsText))
 
+	authModes := collectAuthModes(agentCLIs, map[string]string{
+		"claude-code": authClaude, "codex": authCodex, "gemini": authGemini,
+	})
+
 	return project.Spec{
 		Name:          name,
 		OS:            osKey,
@@ -646,6 +662,7 @@ func runCreateWizard(seed project.Spec) (project.Spec, bool, error) {
 		Stacks:        stacks,
 		AgentCLIs:     agentCLIs,
 		DefaultTool:   defaultTool,
+		AuthModes:     authModes,
 		Apps:          selectedApps,
 		IdleTimeout:   idleTimeout,
 		CPUs:          cpus,
@@ -654,6 +671,52 @@ func runCreateWizard(seed project.Spec) (project.Spec, bool, error) {
 		Root:          location,
 		GraphifyModel: joinModelRef(graphifyName, graphifyTag),
 	}, false, nil
+}
+
+// seededAuthMode returns the pre-seeded auth mode for a CLI, defaulting to "api-key".
+func seededAuthMode(modes map[string]string, cli string) string {
+	if mode := modes[cli]; mode == "oauth" {
+		return "oauth"
+	}
+	return "api-key"
+}
+
+// authModeGroup builds the per-agent auth-mode select, shown ONLY when that OAuth-capable
+// CLI is among the selected agents (a HideFunc keyed off the live agents selection). The
+// choice is api-key (gateway, full guardrails) vs oauth (direct to provider, bypasses the
+// firewall). label is the human CLI name for the title.
+func authModeGroup(cli, label string, value *string, agentCLIs *[]string) *huh.Group {
+	options := []huh.Option[string]{
+		huh.NewOption("API keys (routed through the gateway — keeps the tool firewall & secret masking)", "api-key"),
+		huh.NewOption("Plan / OAuth login (direct to the provider — bypasses the firewall)", "oauth"),
+	}
+	return huh.NewGroup(
+		huh.NewSelect[string]().
+			Title(label + " authentication").
+			Description("OAuth/plan mode talks DIRECTLY to the provider, bypassing the gateway — the tool firewall, secret masking, and content-level egress audit do NOT apply.").
+			Options(options...).
+			Value(value),
+	).WithHideFunc(func() bool { return !slices.Contains(*agentCLIs, cli) })
+}
+
+// collectAuthModes assembles the per-agent auth-mode map from the wizard vars, keeping
+// only the OAuth-capable CLIs that were actually selected. Returns nil when none apply.
+func collectAuthModes(agentCLIs []string, chosen map[string]string) map[string]string {
+	modes := map[string]string{}
+	for _, cli := range config.OAuthCapableCLIs() {
+		if !slices.Contains(agentCLIs, cli) {
+			continue
+		}
+		mode := chosen[cli]
+		if mode == "" {
+			mode = "api-key"
+		}
+		modes[cli] = mode
+	}
+	if len(modes) == 0 {
+		return nil
+	}
+	return modes
 }
 
 // splitModelRef splits an Ollama reference "name:tag" into its name and tag at the
@@ -840,7 +903,61 @@ func validateProvidedCreateFlags(flags createFlags) error {
 	if _, err := parsePublishPorts(flags.ports); err != nil {
 		return err
 	}
+	if _, err := parseAuthModes(flags.authMode, effectiveAgents(flags)); err != nil {
+		return err
+	}
 	return nil
+}
+
+// effectiveAgents resolves the create flags' agent CLIs, applying the opencode+pi default
+// when --agents is unset (matching seedSpec/specFromFlags). Used to validate --auth-mode
+// keys against the actually-selected agents.
+func effectiveAgents(flags createFlags) []string {
+	if len(flags.agents) == 0 {
+		return []string{"opencode", "pi"}
+	}
+	return flags.agents
+}
+
+// parseAuthModes parses the --auth-mode flag — a comma list of cli=mode (e.g.
+// "claude-code=oauth,codex=api-key") — into a map. Each key must be an OAuth-capable CLI
+// (config.OAuthCapableCLIs) that is ALSO among the selected agents; each value must be
+// api-key|oauth. An empty flag yields a nil map. All errors are exit 2 (invalid input).
+func parseAuthModes(raw string, agents []string) (map[string]string, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return nil, nil
+	}
+	modes := map[string]string{}
+	for _, entry := range strings.Split(raw, ",") {
+		entry = strings.TrimSpace(entry)
+		if entry == "" {
+			continue
+		}
+		cli, mode, ok := strings.Cut(entry, "=")
+		cli = strings.TrimSpace(cli)
+		mode = strings.TrimSpace(mode)
+		if !ok || cli == "" || mode == "" {
+			return nil, output.Errorf(output.ExitInvalidInput,
+				"invalid --auth-mode %q (expected cli=mode, e.g. claude-code=oauth)", entry)
+		}
+		if !slices.Contains(config.OAuthCapableCLIs(), cli) {
+			return nil, output.Errorf(output.ExitInvalidInput,
+				"--auth-mode: %q has no subscription login — only %s can use oauth", cli, strings.Join(config.OAuthCapableCLIs(), ", "))
+		}
+		if !slices.Contains(agents, cli) {
+			return nil, output.Errorf(output.ExitInvalidInput,
+				"--auth-mode: %q is not among the selected agents (%s)", cli, strings.Join(agents, ", "))
+		}
+		if err := config.ValidateAuthMode(mode); err != nil {
+			return nil, output.Errorf(output.ExitInvalidInput, "--auth-mode %q: %s", entry, err)
+		}
+		modes[cli] = mode
+	}
+	if len(modes) == 0 {
+		return nil, nil
+	}
+	return modes, nil
 }
 
 // seedSpec applies defaults to the (already-validated) create flags to produce the
@@ -865,6 +982,9 @@ func seedSpec(flags createFlags) project.Spec {
 		idleTimeout = config.DefaultMicrosandboxIdleTimeout
 	}
 	ports, _ := parsePublishPorts(flags.ports)
+	// Auth modes were validated by validateProvidedCreateFlags (called before seeding), so
+	// a parse error here is impossible — ignore it and seed the wizard's per-agent selects.
+	authModes, _ := parseAuthModes(flags.authMode, agents)
 	// Apps are opt-in: an unset --apps seeds the wizard with NOTHING selected.
 	return project.Spec{
 		Name:          name,
@@ -873,6 +993,7 @@ func seedSpec(flags createFlags) project.Spec {
 		Stacks:        flags.stacks,
 		AgentCLIs:     agents,
 		DefaultTool:   normalizeDefaultAgentCLI(agents[0], agents),
+		AuthModes:     authModes,
 		Apps:          flags.apps,
 		IdleTimeout:   idleTimeout,
 		CPUs:          flags.cpus,
@@ -910,6 +1031,10 @@ func specFromFlags(flags createFlags) (project.Spec, error) {
 		idleTimeout = config.DefaultMicrosandboxIdleTimeout
 	}
 	ports, _ := parsePublishPorts(flags.ports)
+	authModes, err := parseAuthModes(flags.authMode, agents)
+	if err != nil {
+		return project.Spec{}, err
+	}
 	return project.Spec{
 		Name:          name,
 		OS:            flags.osKey,
@@ -917,6 +1042,7 @@ func specFromFlags(flags createFlags) (project.Spec, error) {
 		Stacks:        flags.stacks,
 		AgentCLIs:     agents,
 		DefaultTool:   normalizeDefaultAgentCLI(agents[0], agents),
+		AuthModes:     authModes,
 		Apps:          flags.apps,
 		IdleTimeout:   idleTimeout,
 		CPUs:          flags.cpus,

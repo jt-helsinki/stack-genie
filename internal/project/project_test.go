@@ -366,3 +366,70 @@ func TestScaffoldNoAppsByDefault(test *testing.T) {
 		test.Fatalf("apps default to %v, want empty", cfg.Apps)
 	}
 }
+
+// TestScaffoldWritesAuthModesAndOAuthEgress verifies Scaffold persists auth_modes for the
+// selected OAuth-capable CLIs and allow-lists an oauth agent's provider egress domains.
+func TestScaffoldWritesAuthModesAndOAuthEgress(test *testing.T) {
+	withTemplates(test)
+	spec := sampleSpec()
+	spec.AgentCLIs = []string{"opencode", "claude-code", "gemini"}
+	spec.AuthModes = map[string]string{"claude-code": "oauth", "gemini": "api-key"}
+
+	root, err := Scaffold(spec, "t")
+	if err != nil {
+		test.Fatal(err)
+	}
+	projectConfig, err := config.LoadProjectConfig(root)
+	if err != nil {
+		test.Fatal(err)
+	}
+	// claude-code oauth + gemini api-key persisted; opencode (not OAuth-capable) omitted.
+	if got := projectConfig.Agent.AuthModes["claude-code"]; got != "oauth" {
+		test.Errorf("auth_modes[claude-code] = %q, want oauth", got)
+	}
+	if got := projectConfig.Agent.AuthModes["gemini"]; got != "api-key" {
+		test.Errorf("auth_modes[gemini] = %q, want api-key", got)
+	}
+	if _, present := projectConfig.Agent.AuthModes["opencode"]; present {
+		test.Error("opencode is not OAuth-capable and must not appear in auth_modes")
+	}
+	// The oauth claude-code's provider domain is allow-listed; gemini (api-key) adds none.
+	if !hasAllowedHost(projectConfig.Network.AllowHostServices, "api.anthropic.com") {
+		test.Errorf("oauth claude-code must allow-list api.anthropic.com: %+v", projectConfig.Network.AllowHostServices)
+	}
+	if hasAllowedHost(projectConfig.Network.AllowHostServices, "generativelanguage.googleapis.com") {
+		test.Errorf("api-key gemini must NOT allow-list its provider domains: %+v", projectConfig.Network.AllowHostServices)
+	}
+}
+
+// TestScaffoldNoAuthModesWhenAllAPIKey verifies a default (all api-key) create writes no
+// auth_modes and no oauth egress rules.
+func TestScaffoldNoAuthModesWhenAllAPIKey(test *testing.T) {
+	withTemplates(test)
+	spec := sampleSpec()
+	spec.AgentCLIs = []string{"opencode", "claude-code"}
+	// No AuthModes → default api-key everywhere.
+	root, err := Scaffold(spec, "t")
+	if err != nil {
+		test.Fatal(err)
+	}
+	projectConfig, err := config.LoadProjectConfig(root)
+	if err != nil {
+		test.Fatal(err)
+	}
+	if got := projectConfig.Agent.AuthMode("claude-code"); got != "api-key" {
+		test.Errorf("default claude-code AuthMode = %q, want api-key", got)
+	}
+	if len(projectConfig.Network.AllowHostServices) != 0 {
+		test.Errorf("all-api-key create must add no egress allow rules: %+v", projectConfig.Network.AllowHostServices)
+	}
+}
+
+func hasAllowedHost(services []config.HostService, host string) bool {
+	for _, service := range services {
+		if service.Host == host {
+			return true
+		}
+	}
+	return false
+}

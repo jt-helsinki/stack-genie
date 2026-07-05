@@ -509,9 +509,23 @@ func (manager Manager) registerAgentProviders(name, project, root string, projec
 	keepTurns, outputBufferTokens := contextopt.HeadroomParams(projectConfig.Context.Strategy)
 	models := manager.pickerModels()
 
+	// Per-agent auth mode: the OAuth-capable CLIs (claude-code/codex/gemini) set to
+	// "oauth" use their OWN subscription login and talk DIRECTLY to the provider,
+	// bypassing the gateway (and its firewall). Everything else (incl. api-key
+	// claude-code/codex/gemini and always opencode/pi/omp) routes through the gateway.
+	// oauthList preserves tool order (for the deterministic shell aliases); oauthSet is
+	// the lookup used to omit gateway env / pick the oauth config variants.
+	oauthList := oauthAgentList(projectConfig)
+	oauthSet := make(map[string]bool, len(oauthList))
+	for _, cli := range oauthList {
+		oauthSet[cli] = true
+	}
+
 	// Persist the agent CLIs' state dirs to the overlay so a CLI's per-project memory —
-	// notably opencode's last-used model — survives microVM restarts (see below).
-	manager.linkAgentStateDirs(name)
+	// notably opencode's last-used model — survives microVM restarts (see below). For
+	// oauth agents this ALSO persists their native-login credential dir (~/.claude,
+	// ~/.codex, ~/.gemini) so the subscription login survives a restart.
+	manager.linkAgentStateDirs(name, oauthSet)
 
 	// SEED-THEN-REMEMBER default (chosen behavior): the model picked at setup (stored as
 	// agent.graphify_model, registered in the gateway as ollama/<model>) is SEEDED as
@@ -554,8 +568,15 @@ func (manager Manager) registerAgentProviders(name, project, root string, projec
 		return err
 	}
 
-	claudeConfig, err := agentcfg.MergeClaudeSettings(
-		readHostFileOrNil(projectConfigPath(root, ".claude", "settings.json")), gatewayURL)
+	// claude-code: api-key mode gets the gateway base-URL env block; oauth mode gets an
+	// EMPTY env block (no base URL) so its own subscription login reaches Anthropic direct.
+	claudeExisting := readHostFileOrNil(projectConfigPath(root, ".claude", "settings.json"))
+	var claudeConfig []byte
+	if oauthSet["claude-code"] {
+		claudeConfig, err = agentcfg.MergeClaudeSettingsOAuth(claudeExisting)
+	} else {
+		claudeConfig, err = agentcfg.MergeClaudeSettings(claudeExisting, gatewayURL)
+	}
 	if err != nil {
 		return err
 	}
@@ -563,10 +584,15 @@ func (manager Manager) registerAgentProviders(name, project, root string, projec
 		return err
 	}
 
-	// codex: the KEYLESS per-project provider block (fully platform-managed, so it is
-	// overwritten each start; the key is env-supplied via env_key). Plus a global in-VM
-	// trust entry (off host disk) so codex loads the per-project config.
-	if err := writeHostFile(projectConfigPath(root, ".codex", "config.toml"), agentcfg.CodexConfig(gatewayURL, defaultModel)); err != nil {
+	// codex: api-key mode gets the KEYLESS gateway provider block (fully platform-managed,
+	// overwritten each start; the key is env-supplied via env_key). oauth mode gets the
+	// ChatGPT-subscription config (no gateway provider — direct to OpenAI). Either way a
+	// global in-VM trust entry (off host disk) is written so codex loads the project config.
+	codexConfig := agentcfg.CodexConfig(gatewayURL, defaultModel)
+	if oauthSet["codex"] {
+		codexConfig = agentcfg.CodexConfigOAuth()
+	}
+	if err := writeHostFile(projectConfigPath(root, ".codex", "config.toml"), codexConfig); err != nil {
 		return err
 	}
 	if err := manager.Sandbox.WriteFile(name, agentcfg.CodexConfigGuestPath, agentcfg.CodexTrustConfig()); err != nil {
@@ -611,18 +637,20 @@ func (manager Manager) registerAgentProviders(name, project, root string, projec
 	// gemini/claude base URLs, and OPENCODE_CONFIG (pointing opencode at its project
 	// config) — sourced by every shell + agent session. gemini is env-only (no config
 	// file supports a base URL).
-	if err := manager.Sandbox.WriteFile(name, agentEnvGuestPath, agentcfg.AgentEnvScript(gatewayURL, apiKey, projectConfig.Agent.GraphifyModel)); err != nil {
+	if err := manager.Sandbox.WriteFile(name, agentEnvGuestPath, agentcfg.AgentEnvScript(gatewayURL, apiKey, projectConfig.Agent.GraphifyModel, oauthSet)); err != nil {
 		return err
 	}
 	if err := manager.Sandbox.WriteFile(name, bashProfileGuestPath, agentcfg.BashProfile()); err != nil {
 		return err
 	}
 
-	// Write the Headroom-wrap alias snippet (each installed, wrappable CLI gets
-	// `alias <cli>='headroom wrap <cli>'`) and make the chosen interactive shell source
-	// it + the agent env. The wrap aliases are what let a user type `claude`/`codex`/
-	// `opencode` and transparently get Headroom input-compression in front of the CLI.
-	if err := manager.Sandbox.WriteFile(name, shellAliasesGuestPath, agentcfg.ShellAliases(projectConfig.Agent.Tools)); err != nil {
+	// Write the Headroom-wrap alias snippet and make the chosen interactive shell source
+	// it + the agent env. Aliases are written ONLY for OAUTH-mode agents Headroom can wrap
+	// (claude-code→claude, codex→codex): those bypass the gateway and go direct, so wrapping
+	// them with `headroom wrap` restores input-compression in front of the CLI. api-key
+	// agents already route through the gateway (where Headroom sits) and get NO alias;
+	// gemini is not Headroom-wrappable so an oauth gemini gets no alias either.
+	if err := manager.Sandbox.WriteFile(name, shellAliasesGuestPath, agentcfg.ShellAliases(oauthList)); err != nil {
 		return err
 	}
 	manager.applyShellChoice(name, projectConfig.Workspace.Shell)
@@ -740,22 +768,64 @@ const graphifyInstallTimeout = 60 * time.Second
 // ~/.pi (into which the served-models config is then written). /persist is root-owned, so
 // the per-CLI dirs are created + handed to the workspace user as root, then symlinked in
 // as the workspace user. Best-effort: a failure just falls back to the ephemeral home.
-func (manager Manager) linkAgentStateDirs(name string) {
-	if _, err := manager.Sandbox.ExecRoot(name, []string{"sh", "-c",
-		"mkdir -p /persist/agents/opencode /persist/agents/pi /persist/agents/omp && chown -R workspace /persist/agents"}); err != nil {
+func (manager Manager) linkAgentStateDirs(name string, oauthAgents map[string]bool) {
+	// stateLink pairs an in-VM home path with its /persist/agents/<key> target. The
+	// always-present agent STATE dirs come first; oauth agents ALSO get their native-login
+	// credential dir persisted so a subscription login survives a microVM restart.
+	type stateLink struct{ home, key string }
+	links := []stateLink{
+		{"~/.local/share/opencode", "opencode"},
+		{"~/.pi", "pi"},
+		{"~/.omp", "omp"},
+	}
+	for _, cli := range config.OAuthCapableCLIs() {
+		if !oauthAgents[cli] {
+			continue
+		}
+		switch cli {
+		case "claude-code":
+			links = append(links, stateLink{"~/.claude", "claude"})
+		case "codex":
+			links = append(links, stateLink{"~/.codex", "codex"})
+		case "gemini":
+			links = append(links, stateLink{"~/.gemini", "gemini"})
+		}
+	}
+
+	// Create + own every /persist target as root (/persist is root-owned).
+	mkdir := "mkdir -p"
+	for _, entry := range links {
+		mkdir += " /persist/agents/" + entry.key
+	}
+	mkdir += " && chown -R workspace /persist/agents"
+	if _, err := manager.Sandbox.ExecRoot(name, []string{"sh", "-c", mkdir}); err != nil {
 		_, _ = fmt.Fprintf(os.Stderr, "warning: could not prepare persistent agent state in workspace %q (continuing): %v\n", name, err)
 		return
 	}
 	// rm -rf on a symlink removes only the link (a re-start's existing symlink), not the
 	// /persist target, so accumulated state is preserved across restarts. omp keeps its
-	// last-used model + hindsight memory in ~/.omp (agent.db), so persist it too.
-	link := "set -e; mkdir -p ~/.local/share; " +
-		"rm -rf ~/.local/share/opencode; ln -sfn /persist/agents/opencode ~/.local/share/opencode; " +
-		"rm -rf ~/.pi; ln -sfn /persist/agents/pi ~/.pi; " +
-		"rm -rf ~/.omp; ln -sfn /persist/agents/omp ~/.omp"
+	// last-used model + hindsight memory in ~/.omp (agent.db); an oauth agent's ~/.claude/
+	// ~/.codex/~/.gemini holds its OAuth credentials.
+	link := "set -e; mkdir -p ~/.local/share"
+	for _, entry := range links {
+		link += "; rm -rf " + entry.home + "; ln -sfn /persist/agents/" + entry.key + " " + entry.home
+	}
 	if _, err := manager.Sandbox.Exec(name, []string{"bash", "-lc", link}); err != nil {
 		_, _ = fmt.Fprintf(os.Stderr, "warning: could not link persistent agent state in workspace %q (continuing): %v\n", name, err)
 	}
+}
+
+// oauthAgentList returns the installed CLIs configured for OAUTH (subscription) auth, in
+// the project's tool order. Only OAuth-capable CLIs (claude-code/codex/gemini) can be
+// oauth; everything else is always gateway/api-key and never appears here.
+func oauthAgentList(projectConfig *config.Config) []string {
+	var list []string
+	for _, cli := range projectConfig.Agent.Tools {
+		if slices.Contains(config.OAuthCapableCLIs(), cli) && projectConfig.Agent.AuthMode(cli) == "oauth" {
+			list = append(list, cli)
+		}
+	}
+	return list
 }
 
 // writeModelListConfigs writes the agent CLIs that carry a SERVED-MODEL LIST — opencode

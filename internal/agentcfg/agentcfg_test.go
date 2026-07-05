@@ -338,7 +338,7 @@ func TestCodexConfig(test *testing.T) {
 // with claude-code/gemini base URLs stripped of the /v1 suffix (they append their
 // own path) and the scoped key present.
 func TestAgentEnvScript(test *testing.T) {
-	env := string(AgentEnvScript(testGateway, testKey, ""))
+	env := string(AgentEnvScript(testGateway, testKey, "", nil))
 	root := "http://host.microsandbox.internal:18787" // testGateway minus /v1
 	for _, want := range []string{
 		`export ANTHROPIC_BASE_URL='` + root + `'`,
@@ -365,7 +365,7 @@ func TestAgentEnvScript(test *testing.T) {
 // its OpenAI-compatible backend is routed through the gateway's /v1 endpoint with
 // the scoped virtual key and the ollama/<model> public name.
 func TestAgentEnvScriptGraphify(test *testing.T) {
-	env := string(AgentEnvScript(testGateway, testKey, "llama3.1:8b"))
+	env := string(AgentEnvScript(testGateway, testKey, "llama3.1:8b", nil))
 	for _, want := range []string{
 		`export OPENAI_BASE_URL='` + testGateway + `'`, // keeps /v1 (OpenAI SDK appends /chat/completions)
 		`export OPENAI_API_KEY='` + testKey + `'`,
@@ -375,6 +375,90 @@ func TestAgentEnvScriptGraphify(test *testing.T) {
 			test.Errorf("graphify env missing %q:\n%s", want, env)
 		}
 	}
+}
+
+// TestAgentEnvScriptOAuth verifies that an OAuTH-mode agent's gateway env is OMITTED so
+// its native login wins, while api-key agents keep theirs. AIP_GATEWAY_KEY is shared with
+// opencode/pi, so it is always exported.
+func TestAgentEnvScriptOAuth(test *testing.T) {
+	// claude-code + gemini in oauth: their gateway env must be gone.
+	oauth := string(AgentEnvScript(testGateway, testKey, "", map[string]bool{"claude-code": true, "gemini": true}))
+	for _, absent := range []string{"ANTHROPIC_BASE_URL", "ANTHROPIC_AUTH_TOKEN", "GOOGLE_GEMINI_BASE_URL", "GEMINI_API_KEY", "ANTHROPIC_API_KEY"} {
+		if strings.Contains(oauth, absent) {
+			test.Errorf("oauth agent env must NOT export %q:\n%s", absent, oauth)
+		}
+	}
+	// The shared gateway key (used by opencode/pi) is still exported.
+	if !strings.Contains(oauth, "export AIP_GATEWAY_KEY='"+testKey+"'") {
+		test.Errorf("AIP_GATEWAY_KEY (shared with opencode/pi) must still be exported:\n%s", oauth)
+	}
+
+	// api-key claude-code (empty/absent oauth set) keeps the ANTHROPIC_* exports.
+	apiKey := string(AgentEnvScript(testGateway, testKey, "", map[string]bool{"gemini": true}))
+	if !strings.Contains(apiKey, "ANTHROPIC_BASE_URL") || !strings.Contains(apiKey, "ANTHROPIC_AUTH_TOKEN") {
+		test.Errorf("api-key claude-code must keep its ANTHROPIC_* env:\n%s", apiKey)
+	}
+	if strings.Contains(apiKey, "GEMINI_API_KEY") {
+		test.Errorf("oauth gemini must NOT export GEMINI_API_KEY:\n%s", apiKey)
+	}
+}
+
+// TestCodexConfigOAuth verifies the OAuth codex config pins the ChatGPT login and file
+// credential store, and carries NO gateway provider block.
+func TestCodexConfigOAuth(test *testing.T) {
+	toml := string(CodexConfigOAuth())
+	for _, want := range []string{`forced_login_method = "chatgpt"`, `cli_auth_credentials_store = "file"`} {
+		if !strings.Contains(toml, want) {
+			test.Errorf("codex oauth config missing %q:\n%s", want, toml)
+		}
+	}
+	if strings.Contains(toml, "model_providers") || strings.Contains(toml, "env_key") {
+		test.Errorf("codex oauth config must NOT write a gateway provider block:\n%s", toml)
+	}
+}
+
+// TestMergeClaudeSettingsOAuth verifies the oauth merge strips a stale gateway base URL
+// (empty env block) while keeping the user's other top-level settings.
+func TestMergeClaudeSettingsOAuth(test *testing.T) {
+	existing := []byte(`{"env":{"ANTHROPIC_BASE_URL":"http://gw/","OTHER":"x"},"theme":"dark"}`)
+	merged, err := MergeClaudeSettingsOAuth(existing)
+	if err != nil {
+		test.Fatal(err)
+	}
+	text := string(merged)
+	if strings.Contains(text, "ANTHROPIC_BASE_URL") {
+		test.Errorf("oauth claude settings must drop the gateway base URL:\n%s", text)
+	}
+	if !strings.Contains(text, `"theme": "dark"`) {
+		test.Errorf("oauth claude settings must keep the user's other keys:\n%s", text)
+	}
+}
+
+// TestOAuthProviderDomains checks the per-CLI egress domain lists.
+func TestOAuthProviderDomains(test *testing.T) {
+	cases := map[string]string{
+		"claude-code": "api.anthropic.com",
+		"codex":       "chatgpt.com",
+		"gemini":      "generativelanguage.googleapis.com",
+	}
+	for cli, want := range cases {
+		domains := OAuthProviderDomains(cli)
+		if !contains(domains, want) {
+			test.Errorf("OAuthProviderDomains(%q) = %v, want to contain %q", cli, domains, want)
+		}
+	}
+	if domains := OAuthProviderDomains("opencode"); domains != nil {
+		test.Errorf("opencode is not OAuth-capable; OAuthProviderDomains should be nil, got %v", domains)
+	}
+}
+
+func contains(list []string, value string) bool {
+	for _, item := range list {
+		if item == value {
+			return true
+		}
+	}
+	return false
 }
 
 // nested walks document[key1][key2] asserting each level is an object.

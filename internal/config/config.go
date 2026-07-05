@@ -61,6 +61,32 @@ type AgentConfig struct {
 	// already installed. Empty leaves Graphify's backend unconfigured (the in-session
 	// /graphify skill still uses the agent session's own model).
 	GraphifyModel string `yaml:"graphify_model,omitempty" json:"graphify_model,omitempty"`
+	// AuthModes records the per-CLI authentication mode for the CLIs that have a
+	// first-party subscription login (claude-code, codex, gemini): "api-key" (the
+	// DEFAULT — route through the platform gateway with the scoped virtual key, so the
+	// tool firewall + secret masking apply) or "oauth" (the CLI's OWN subscription/OAuth
+	// login, talking DIRECTLY to the provider, bypassing the gateway and its guardrails).
+	// Keyed by CLI name; a CLI absent from the map defaults to "api-key" (see AuthMode).
+	// opencode/pi/omp have no subscription and are never recorded here — they are always
+	// gateway/api-key.
+	AuthModes map[string]string `yaml:"auth_modes,omitempty" json:"auth_modes,omitempty"`
+}
+
+// OAuthCapableCLIs are the agent CLIs with a first-party subscription/OAuth login that
+// the workspace can use INSTEAD of the gateway (the single source of truth for which
+// CLIs may be set to "oauth"). opencode/pi/omp have no subscription and are always
+// gateway/api-key, so they are never in this set.
+func OAuthCapableCLIs() []string {
+	return []string{"claude-code", "codex", "gemini"}
+}
+
+// AuthMode returns the recorded auth mode for a CLI, defaulting to "api-key" (the
+// gateway-routed default) when the CLI is absent from AuthModes or the map is nil.
+func (agent AgentConfig) AuthMode(cli string) string {
+	if mode, ok := agent.AuthModes[cli]; ok && mode != "" {
+		return mode
+	}
+	return "api-key"
 }
 
 // ContextConfig holds the per-project context-optimization settings: the
@@ -206,6 +232,17 @@ func ValidateShell(value string) error {
 		return nil
 	default:
 		return fmt.Errorf("workspace.shell: %q (one of bash|zsh)", value)
+	}
+}
+
+// ValidateAuthMode checks a per-agent auth mode. Empty is allowed (callers treat it as
+// "api-key" — the default, gateway-routed); otherwise it must be "api-key" or "oauth".
+func ValidateAuthMode(value string) error {
+	switch value {
+	case "", "api-key", "oauth":
+		return nil
+	default:
+		return fmt.Errorf("agent.auth_modes: %q (one of api-key|oauth)", value)
 	}
 }
 
