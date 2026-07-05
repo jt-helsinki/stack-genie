@@ -120,10 +120,14 @@ func ServicesComposeYAML(bindHost string) ([]byte, error) {
 			},
 			valkeyContainer: {
 				Image: containerImage("valkey"), ContainerName: valkeyContainer, Networks: []string{net}, Restart: "unless-stopped",
+				// One-node cluster owning all slots — required by valkey-admin (see ensureValkey).
+				// Slots are assigned at reconcile via `valkey-cli cluster addslotsrange` (not
+				// expressible in compose); this debug artifact still needs `--cluster-enabled yes`.
+				Command: []string{"valkey-server", "--cluster-enabled", "yes", "--cluster-config-file", "nodes.conf", "--cluster-require-full-coverage", "no", "--appendonly", "no"},
 			},
 			valkeyAdminContainer: {
 				Image: containerImage("valkey-admin"), ContainerName: valkeyAdminContainer, Networks: []string{net}, Restart: "unless-stopped",
-				Environment: []string{"DEPLOYMENT_MODE=Web", "VALKEY_HOST=" + valkeyContainer, "VALKEY_PORT=6379", "VALKEY_ENDPOINT_TYPE=node", "VALKEY_TLS=false"},
+				Environment: []string{"DEPLOYMENT_MODE=Web", "VALKEY_HOST=" + valkeyContainer, "VALKEY_PORT=6379", "VALKEY_TLS=false"},
 				DependsOn:   []string{valkeyContainer},
 			},
 			litellmDBContainer: {

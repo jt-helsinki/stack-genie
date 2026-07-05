@@ -659,8 +659,20 @@ func ensurePresidio(prober runtime.Prober, containerRuntime string) error {
 }
 
 // ensureValkey runs the Valkey (Redis-compatible) cache LiteLLM uses for response
-// caching. Single instance, INTERNAL-ONLY (reached by name aip-valkey:6379 on the shared
-// network); no persistence volume — it is a cache. Idempotent.
+// caching. A SINGLE instance, INTERNAL-ONLY (reached by name aip-valkey:6379 on the
+// shared network); no persistence volume — it is a cache. Idempotent.
+//
+// It runs in CLUSTER MODE as a one-node cluster owning all 16384 slots. This is required
+// by valkey-admin: the admin image (DEPLOYMENT_MODE=Web, its only server mode) drives ALL
+// monitoring through cluster topology discovery and CANNOT observe a standalone node —
+// against a non-cluster instance it loops forever on "This instance has cluster support
+// disabled" and the UI stays empty (VALKEY_ENDPOINT_TYPE=node does NOT bypass discovery).
+// A single-node cluster owning every slot keeps it a single instance, lets valkey-admin
+// discover it cleanly, AND stays transparent to LiteLLM's plain (non-cluster) redis
+// client: with one node holding all slots there are never MOVED redirects, so ordinary
+// GET/SET works (verified empirically). cluster_state converges to ok a few seconds after
+// the slots are assigned; valkey-admin (10s reconcile loop) and LiteLLM (best-effort
+// cache) both retry, so the brief window is self-healing.
 func ensureValkey(prober runtime.Prober, containerRuntime string) error {
 	if containerRunning(prober, containerRuntime, valkeyContainer) {
 		return nil
@@ -670,21 +682,44 @@ func ensureValkey(prober runtime.Prober, containerRuntime string) error {
 		"run", "-d", "--name", valkeyContainer,
 		"--network", platformNetwork,
 		containerImage("valkey"),
+		"valkey-server",
+		"--cluster-enabled", "yes",
+		"--cluster-config-file", "nodes.conf",
+		// A single node necessarily covers all slots; don't refuse writes while it settles.
+		"--cluster-require-full-coverage", "no",
+		"--appendonly", "no",
 	}
 	if _, err := prober.Run(containerRuntime, args...); err != nil {
 		return serviceStartError("Valkey cache")
 	}
+	initValkeyCluster(prober, containerRuntime)
 	return nil
+}
+
+// initValkeyCluster makes aip-valkey a one-node cluster: wait for the server to accept
+// connections, then assign ALL 16384 hash slots to it so cluster_state reaches ok. Both
+// steps are best-effort — assigning an already-owned slot errors harmlessly ("Slot N is
+// already busy"), so a recreate (no persistence volume) re-initializes cleanly, and if
+// the node is momentarily unreachable valkey-admin/LiteLLM retry once it is up.
+func initValkeyCluster(prober runtime.Prober, containerRuntime string) {
+	for attempt := 0; attempt < 20; attempt++ {
+		out, err := prober.Run(containerRuntime, "exec", valkeyContainer, "valkey-cli", "ping")
+		if err == nil && strings.TrimSpace(string(out)) == "PONG" {
+			break
+		}
+		time.Sleep(time.Second)
+	}
+	// Idempotent enough: on an already-initialized node this is a no-op error we ignore.
+	_, _ = prober.Run(containerRuntime, "exec", valkeyContainer,
+		"valkey-cli", "cluster", "addslotsrange", "0", "16383")
 }
 
 // ensureValkeyAdmin runs the Valkey Admin web UI, INTERNAL-ONLY on :8080 (reached through
 // the nginx gateway at valkey.<domain>). It points at the aip-valkey cache with no
-// auth/TLS — the cache is unauthenticated on the private network. VALKEY_ENDPOINT_TYPE
-// MUST be "node": aip-valkey is a SINGLE standalone instance (cluster mode disabled), and
-// valkey-admin defaults VALKEY_ENDPOINT_TYPE to "cluster-endpoint" — which runs cluster
-// topology discovery against the host and never establishes a working connection to a
-// non-cluster node, so the UI comes up empty. "node" treats VALKEY_HOST/PORT as one node.
-// Idempotent.
+// auth/TLS — the cache is unauthenticated on the private network. It discovers aip-valkey
+// via the DEFAULT cluster-endpoint discovery (aip-valkey runs as a one-node cluster — see
+// ensureValkey): DEPLOYMENT_MODE=Web is the image's only server mode and always monitors
+// via cluster topology, so a cluster-enabled target is required. Idempotent.
 func ensureValkeyAdmin(prober runtime.Prober, containerRuntime string) error {
 	if containerRunning(prober, containerRuntime, valkeyAdminContainer) {
 		return nil
@@ -696,7 +731,6 @@ func ensureValkeyAdmin(prober runtime.Prober, containerRuntime string) error {
 		"-e", "DEPLOYMENT_MODE=Web",
 		"-e", "VALKEY_HOST=" + valkeyContainer,
 		"-e", "VALKEY_PORT=6379",
-		"-e", "VALKEY_ENDPOINT_TYPE=node",
 		"-e", "VALKEY_TLS=false",
 		containerImage("valkey-admin"),
 	}
