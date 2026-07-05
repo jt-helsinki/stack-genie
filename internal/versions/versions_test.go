@@ -23,7 +23,7 @@ var expectedServices = map[string]string{
 	"ollama":              "container",
 	"dns":                 "container",
 	"valkey":              "container",
-	"valkey-admin":        "container",
+	"redisinsight":        "container",
 }
 
 func TestDefaultSchemaVersion(t *testing.T) {

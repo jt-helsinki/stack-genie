@@ -82,7 +82,7 @@ func TestSetupContainerConstsMatchRegistry(test *testing.T) {
 		"presidio":     {presidioAnalyzerContainer, presidioAnonymizerContainer},
 		"litellm":      {litellmContainer, litellmDBContainer},
 		"valkey":       {valkeyContainer},
-		"valkey-admin": {valkeyAdminContainer},
+		"redisinsight": {redisInsightContainer},
 		"headroom":     {headroomContainer},
 		"proxy":        {proxyContainer},
 		"dns":          {dnsContainer},

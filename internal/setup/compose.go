@@ -123,9 +123,9 @@ func ServicesComposeYAML(bindHost string) ([]byte, error) {
 				// on :6379, no cluster) — LiteLLM caches against it with a standalone redis client.
 				Image: containerImage("valkey"), ContainerName: valkeyContainer, Networks: []string{net}, Restart: "unless-stopped",
 			},
-			valkeyAdminContainer: {
-				Image: containerImage("valkey-admin"), ContainerName: valkeyAdminContainer, Networks: []string{net}, Restart: "unless-stopped",
-				Environment: []string{"DEPLOYMENT_MODE=Web", "VALKEY_HOST=" + valkeyContainer, "VALKEY_PORT=6379", "VALKEY_TLS=false"},
+			redisInsightContainer: {
+				Image: containerImage("redisinsight"), ContainerName: redisInsightContainer, Networks: []string{net}, Restart: "unless-stopped",
+				Environment: []string{"RI_REDIS_HOST=" + valkeyContainer, "RI_REDIS_PORT=6379", "RI_REDIS_ALIAS=" + valkeyContainer, "RI_ACCEPT_TERMS_AND_CONDITIONS=true"},
 				DependsOn:   []string{valkeyContainer},
 			},
 			litellmDBContainer: {

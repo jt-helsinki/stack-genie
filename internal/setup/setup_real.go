@@ -213,10 +213,10 @@ const (
 
 	// Valkey (Redis-compatible) is LiteLLM's response cache — single instance,
 	// INTERNAL-ONLY on aip-net (aip-valkey:6379; LiteLLM's cache_params point here). No
-	// persistence volume: it is a cache. aip-valkey-admin is its web UI (:8080 internal,
-	// reached through nginx at valkey.<domain>), pointed at aip-valkey.
-	valkeyContainer      = "aip-valkey"
-	valkeyAdminContainer = "aip-valkey-admin"
+	// persistence volume: it is a cache. aip-redisinsight is its web UI (:5540 internal,
+	// reached through nginx at valkey.<domain>), preconfigured to aip-valkey.
+	valkeyContainer       = "aip-valkey"
+	redisInsightContainer = "aip-redisinsight"
 
 	// aip-proxy is the nginx reverse proxy that is the SOLE host ENTRY to the service
 	// tier: every other service container is internal-only on aip-net and only nginx
@@ -330,10 +330,10 @@ func proxyNginxConf(domain string) string {
 	builder.WriteString(proxyLocation("/", proxyTargetURL))
 	builder.WriteString("  }\n")
 	// One Host-based UI vhost per service with a UISubdomain (data-driven from the
-	// registry: litellm.<domain> → the LiteLLM admin UI at /ui; valkey.<domain> → Valkey
-	// Admin at root). BYPASS Headroom (they serve app UIs, not the model path). A
+	// registry: litellm.<domain> → the LiteLLM admin UI at /ui; valkey.<domain> →
+	// RedisInsight at root). BYPASS Headroom (they serve app UIs, not the model path). A
 	// ConsolePath other than "/" is the root redirect (litellm → /ui); root-served UIs
-	// (valkey-admin) get none.
+	// (redisinsight) get none.
 	for _, vhost := range services.UIVhosts() {
 		rootRedirect := vhost.ConsolePath
 		if rootRedirect == "/" {
@@ -688,28 +688,28 @@ func ensureValkey(prober runtime.Prober, containerRuntime string) error {
 	return nil
 }
 
-// ensureValkeyAdmin runs the Valkey Admin web UI, INTERNAL-ONLY on :8080 (reached through
-// the nginx gateway at valkey.<domain>). It points at the aip-valkey cache with no
-// auth/TLS — the cache is unauthenticated on the private network. It discovers aip-valkey
-// via the DEFAULT cluster-endpoint discovery (aip-valkey runs as a one-node cluster — see
-// ensureValkey): DEPLOYMENT_MODE=Web is the image's only server mode and always monitors
-// via cluster topology, so a cluster-enabled target is required. Idempotent.
-func ensureValkeyAdmin(prober runtime.Prober, containerRuntime string) error {
-	if containerRunning(prober, containerRuntime, valkeyAdminContainer) {
+// ensureRedisInsight runs RedisInsight (Redis's official GUI), INTERNAL-ONLY on :5540
+// (reached through the nginx gateway at valkey.<domain>, served at ROOT). It is
+// preconfigured at startup with a SINGLE connection to the standalone aip-valkey cache via
+// RI_REDIS_HOST/RI_REDIS_PORT (no auth/TLS — the cache is unauthenticated on the private
+// network); RI_ACCEPT_TERMS_AND_CONDITIONS skips the EULA. Unlike valkey-admin it supports
+// a standalone (non-cluster) target. Idempotent.
+func ensureRedisInsight(prober runtime.Prober, containerRuntime string) error {
+	if containerRunning(prober, containerRuntime, redisInsightContainer) {
 		return nil
 	}
-	_, _ = prober.Run(containerRuntime, "rm", "-f", valkeyAdminContainer)
+	_, _ = prober.Run(containerRuntime, "rm", "-f", redisInsightContainer)
 	args := []string{
-		"run", "-d", "--name", valkeyAdminContainer,
+		"run", "-d", "--name", redisInsightContainer,
 		"--network", platformNetwork,
-		"-e", "DEPLOYMENT_MODE=Web",
-		"-e", "VALKEY_HOST=" + valkeyContainer,
-		"-e", "VALKEY_PORT=6379",
-		"-e", "VALKEY_TLS=false",
-		containerImage("valkey-admin"),
+		"-e", "RI_REDIS_HOST=" + valkeyContainer,
+		"-e", "RI_REDIS_PORT=6379",
+		"-e", "RI_REDIS_ALIAS=" + valkeyContainer,
+		"-e", "RI_ACCEPT_TERMS_AND_CONDITIONS=true",
+		containerImage("redisinsight"),
 	}
 	if _, err := prober.Run(containerRuntime, args...); err != nil {
-		return serviceStartError("Valkey Admin")
+		return serviceStartError("RedisInsight")
 	}
 	return nil
 }
@@ -885,8 +885,8 @@ func serviceContainers(service string) []string {
 		return []string{litellmContainer, litellmDBContainer}
 	case "valkey":
 		return []string{valkeyContainer}
-	case "valkey-admin":
-		return []string{valkeyAdminContainer}
+	case "redisinsight":
+		return []string{redisInsightContainer}
 	case "headroom":
 		return []string{headroomContainer}
 	case "proxy":
@@ -1285,13 +1285,13 @@ func (services realServices) Reconcile(providerConfig, bindHost string, optional
 		return nil, err
 	}
 	// Valkey cache before LiteLLM (LiteLLM's cache_params point at aip-valkey:6379), then
-	// its admin UI.
+	// its GUI.
 	progress("  • Valkey cache (aip-valkey)…")
 	if err := ensureValkey(services.prober, containerRuntime.Name); err != nil {
 		return nil, err
 	}
-	progress("  • Valkey Admin UI (aip-valkey-admin)…")
-	if err := ensureValkeyAdmin(services.prober, containerRuntime.Name); err != nil {
+	progress("  • RedisInsight (aip-redisinsight, Valkey GUI)…")
+	if err := ensureRedisInsight(services.prober, containerRuntime.Name); err != nil {
 		return nil, err
 	}
 	progress("  • LiteLLM gateway + Postgres (waiting for it to become healthy)…")
@@ -1523,15 +1523,15 @@ func (services realServices) serviceHealthy(name string) bool {
 		}
 		out, pingErr := services.prober.Run(containerRuntime.Name, "exec", valkeyContainer, "valkey-cli", "ping")
 		return pingErr == nil && strings.TrimSpace(string(out)) == "PONG"
-	case "valkey-admin":
-		// Internal-only web UI on :8080 (no external health endpoint wired here);
+	case "redisinsight":
+		// Internal-only web UI on :5540 (no external health endpoint wired here);
 		// the container running is the readiness signal, matching headroom/presidio.
 		// Without this case it was pinned at "starting" and its Logs tab never showed.
 		containerRuntime, err := runtime.ContainerRuntimeName(services.prober)
 		if err != nil {
 			return false
 		}
-		return containerRunning(services.prober, containerRuntime.Name, valkeyAdminContainer)
+		return containerRunning(services.prober, containerRuntime.Name, redisInsightContainer)
 	default:
 		return false
 	}
@@ -1609,9 +1609,9 @@ func (services realServices) Control(action, service string) ([]ServiceStatus, e
 		{"valkey",
 			func() error { return ensureValkey(services.prober, containerRuntime.Name) },
 			func() error { return stopContainer(valkeyContainer) }},
-		{"valkey-admin",
-			func() error { return ensureValkeyAdmin(services.prober, containerRuntime.Name) },
-			func() error { return stopContainer(valkeyAdminContainer) }},
+		{"redisinsight",
+			func() error { return ensureRedisInsight(services.prober, containerRuntime.Name) },
+			func() error { return stopContainer(redisInsightContainer) }},
 		{"headroom",
 			func() error { return ensureHeadroom(services.prober, containerRuntime.Name) },
 			func() error { return stopContainer(headroomContainer) }},

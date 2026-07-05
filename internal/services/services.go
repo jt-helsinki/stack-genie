@@ -176,18 +176,18 @@ var registry = []Service{
 		},
 	},
 	{
-		// Valkey Admin — the web UI for the cache, reached through the nginx gateway at
-		// valkey.<domain>:GatewayPort (served at ROOT; its :8080 container port is
-		// internal-only). Points at aip-valkey.
-		Name:        "valkey-admin",
+		// RedisInsight — Redis's official GUI for the cache, reached through the nginx
+		// gateway at valkey.<domain>:GatewayPort (served at ROOT; its :5540 container
+		// port is internal-only). Preconfigured to the standalone aip-valkey.
+		Name:        "redisinsight",
 		Endpoint:    Endpoint{HasConsole: true, UISubdomain: "valkey"},
-		LogScope:    "valkey-admin",
+		LogScope:    "redisinsight",
 		UISubdomain: "valkey",
 		Components: []Component{
 			{
-				ImageKey:  "valkey-admin",
-				Container: "aip-valkey-admin",
-				Pin:       Pin{Mode: ModeContainer, Image: "valkey/valkey-admin", Tag: "latest"},
+				ImageKey:  "redisinsight",
+				Container: "aip-redisinsight",
+				Pin:       Pin{Mode: ModeContainer, Image: "redis/redisinsight", Tag: "latest"},
 			},
 		},
 	},
@@ -411,7 +411,7 @@ type UIVhost struct {
 	Upstream  string
 	// ConsolePath is the service's UI path — nginx redirects the vhost root there when
 	// non-empty + not "/" (e.g. litellm serves its UI at /ui). Empty ("" or "/") means
-	// the UI is at the root, so no redirect (e.g. valkey-admin).
+	// the UI is at the root, so no redirect (e.g. redisinsight).
 	ConsolePath string
 }
 
@@ -422,7 +422,7 @@ type UIVhost struct {
 // path (the apps' MODEL calls ride the gateway's /v1 → Headroom route).
 var uiUpstreams = map[string]string{
 	"litellm":      "http://aip-litellm:4000",
-	"valkey-admin": "http://aip-valkey-admin:8080",
+	"redisinsight": "http://aip-redisinsight:5540",
 }
 
 // UIVhosts returns every service that is served as a Host-based UI vhost (those

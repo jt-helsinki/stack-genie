@@ -14,7 +14,7 @@ func TestLogScopesMatchesCurrent(test *testing.T) {
 		"ollama",
 		"presidio",
 		"valkey",
-		"valkey-admin",
+		"redisinsight",
 		"litellm",
 		"headroom",
 		"proxy",
@@ -43,7 +43,7 @@ func TestEndpointsMatchCurrentConsoleRegistry(test *testing.T) {
 	want := map[string]Endpoint{
 		"litellm":      {ConsolePath: "/ui", HasConsole: true, UISubdomain: "litellm"},
 		"valkey":       {},
-		"valkey-admin": {HasConsole: true, UISubdomain: "valkey"},
+		"redisinsight": {HasConsole: true, UISubdomain: "valkey"},
 		"ollama":       {GatewayPath: "/ollama"},
 		"proxy":        {Port: 18787},
 		"dns":          {LoopbackAddress: "127.0.0.1:15353/udp"},
@@ -72,7 +72,7 @@ func TestVersionPinsMatchCurrentDefault(test *testing.T) {
 		"ollama":              {Mode: ModeContainer, Image: "ollama/ollama", Tag: "latest"},
 		"dns":                 {Mode: ModeContainer, Image: "coredns/coredns", Tag: "latest"},
 		"valkey":              {Mode: ModeContainer, Image: "valkey/valkey", Tag: "9.1.0-alpine"},
-		"valkey-admin":        {Mode: ModeContainer, Image: "valkey/valkey-admin", Tag: "latest"},
+		"redisinsight":        {Mode: ModeContainer, Image: "redis/redisinsight", Tag: "latest"},
 	}
 	got := VersionPins()
 	if !reflect.DeepEqual(got, want) {
@@ -83,7 +83,7 @@ func TestVersionPinsMatchCurrentDefault(test *testing.T) {
 // TestCoreAndOptionalServiceNames pins the logical core/optional partition (the
 // frozen API the internal/setup migration consumes).
 func TestCoreAndOptionalServiceNames(test *testing.T) {
-	wantCore := []string{"ollama", "presidio", "valkey", "valkey-admin", "litellm", "headroom", "proxy", "dns"}
+	wantCore := []string{"ollama", "presidio", "valkey", "redisinsight", "litellm", "headroom", "proxy", "dns"}
 	if got := CoreServiceNames(); !reflect.DeepEqual(got, wantCore) {
 		test.Errorf("CoreServiceNames() = %v, want %v", got, wantCore)
 	}
@@ -219,7 +219,7 @@ func TestUIVhostsMapping(test *testing.T) {
 		optional  bool
 	}{
 		"litellm":      {"litellm", false},
-		"valkey-admin": {"valkey", false},
+		"redisinsight": {"valkey", false},
 	}
 	vhosts := UIVhosts()
 	if len(vhosts) != len(want) {
