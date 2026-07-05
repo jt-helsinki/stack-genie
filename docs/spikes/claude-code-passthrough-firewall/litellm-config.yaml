@@ -1,0 +1,69 @@
+# LiteLLM config for the Claude-Code-OAuth-through-pass-through + firewall spike.
+#
+# Pure config, NO database (store_model_in_db: false). Verified key sources:
+#   pass-through:            https://docs.litellm.ai/docs/proxy/pass_through
+#   pass-through guardrails: https://docs.litellm.ai/docs/proxy/pass_through_guardrails
+#   forward client headers:  https://docs.litellm.ai/docs/proxy/forward_client_headers
+#   tool_permission:         https://docs.litellm.ai/docs/proxy/guardrails/tool_permission
+#
+# We do NOT rely on forwarding the caller's Authorization header: LiteLLM ALWAYS
+# strips its own proxy Authorization header and never forwards it upstream. The
+# agent's provider OAuth is delivered upstream via the `x-pass-` prefix (always
+# forwarded on pass-through, prefix stripped) and, as an alternative, via
+# `forward_llm_provider_auth_headers` (forwards x-api-key et al).
+
+# No models registered - this spike is purely the Anthropic pass-through route.
+model_list: []
+
+general_settings:
+  # LiteLLM proxy authentication. Caller must present this in Authorization.
+  # (This is the litellm virtual/master key, NOT the provider credential.)
+  master_key: "sk-spike-litellm-master"
+
+  store_model_in_db: false
+
+  # Forward non-reserved client headers upstream, and forward recognised LLM
+  # provider auth headers (x-api-key, x-goog-api-key, api-key,
+  # ocp-apim-subscription-key). The proxy Authorization header is still stripped.
+  forward_client_headers_to_llm_api: true
+  forward_llm_provider_auth_headers: true
+
+  pass_through_endpoints:
+    # AUTHENTICATED pass-through (requires the litellm master key on Authorization).
+    # Guardrail attached so tool_permission runs on the upstream response.
+    - path: "/anthropic/v1/messages"
+      target: "http://host.docker.internal:8899/v1/messages"
+      forward_headers: true
+      guardrails:
+        tool-firewall:
+
+    # UNAUTHENTICATED variant (no litellm key required). Used by E2 to check
+    # whether guardrails still run and whether the caller's raw Authorization
+    # leaks upstream when the proxy is not doing its own auth on this route.
+    - path: "/open/v1/messages"
+      target: "http://host.docker.internal:8899/v1/messages"
+      forward_headers: true
+      auth: false
+      guardrails:
+        tool-firewall:
+
+# The destructive-command tool firewall, mirroring the platform's intent:
+# allow Bash ONLY when its command is not one of the destructive patterns;
+# everything else falls through to default_action: deny -> blocked.
+guardrails:
+  - guardrail_name: "tool-firewall"
+    litellm_params:
+      guardrail: tool_permission
+      mode: "post_call"
+      rules:
+        - id: "allow_safe_bash"
+          tool_name: "Bash"
+          decision: "allow"
+          allowed_param_patterns:
+            "command": '^(?!.*(rm\s+-rf|git\s+push\s+--force|terraform\s+destroy|kubectl\s+delete)).*$'
+      default_action: "deny"
+      on_disallowed_action: "block"
+      violation_message_template: "SPIKE-FIREWALL-BLOCKED tool '{tool_name}' by rule '{rule_id}': {default_message}"
+
+litellm_settings:
+  set_verbose: true
