@@ -70,8 +70,8 @@ func TestWriteComposeFile(test *testing.T) {
 	if err != nil {
 		test.Fatal(err)
 	}
-	if !strings.HasSuffix(path, "docker-compose.yml") {
-		test.Errorf("path = %q, want …/docker-compose.yml", path)
+	if !strings.HasSuffix(path, "docker-compose.yaml") {
+		test.Errorf("path = %q, want …/docker-compose.yaml", path)
 	}
 	if _, err := os.Stat(path); err != nil {
 		test.Fatalf("compose file not written: %v", err)

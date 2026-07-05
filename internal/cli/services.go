@@ -92,15 +92,15 @@ func newServicesCmd(em *output.Emitter, exit *int) *cobra.Command {
 	return cmd
 }
 
-// newServicesComposeCmd builds `ai services compose`: it writes a docker-compose.yml
-// DEBUG ARTIFACT for the service tier to ~/.ai-platform/docker-compose.yml (mirroring
+// newServicesComposeCmd builds `ai services compose`: it writes a docker-compose.yaml
+// DEBUG ARTIFACT for the service tier to ~/.ai-platform/docker-compose.yaml (mirroring
 // what `ai setup` runs) so a developer can bring the SAME stack up under compose's
 // tooling for debugging — it is NOT the launcher (the per-container reconcile still owns
 // startup). Prints the path + how to use it.
 func newServicesComposeCmd(em *output.Emitter, exit *int) *cobra.Command {
 	return &cobra.Command{
 		Use:   "compose",
-		Short: "Write a docker-compose.yml for the service tier (debug artifact)",
+		Short: "Write a docker-compose.yaml for the service tier (debug artifact)",
 		Args:  cobra.NoArgs,
 		RunE: func(_ *cobra.Command, _ []string) error {
 			path, err := setup.WriteComposeFile()

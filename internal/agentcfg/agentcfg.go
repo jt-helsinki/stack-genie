@@ -190,7 +190,10 @@ func marshalYAML(document any) ([]byte, error) {
 // omp ("Oh My Pi", a Pi fork) routes through the gateway like pi/opencode, but reads
 // YAML: a GLOBAL ~/.omp/agent/models.yml provider definition (the path omp reads for
 // custom providers) + a PROJECT <project>/.omp/config.yml for the default model + provider
-// order. Both are KEYLESS — the provider apiKey NAMES the AIP_GATEWAY_KEY env var (omp
+// order. NB: the `.yml` extension here is the ONE exception to the platform's `.yaml`-only
+// rule — these are the exact filenames the omp tool itself reads (documented as `.yml`),
+// NOT files whose name we choose, so they must stay `.yml`. Every YAML file the platform
+// OWNS the naming of uses `.yaml`. Both are KEYLESS — the provider apiKey NAMES the AIP_GATEWAY_KEY env var (omp
 // resolves a value that names an existing env var as the key), so the real scoped key
 // lives only in the in-VM agent env file. The provider uses `openai-models-list`
 // DISCOVERY, so omp lists exactly the models the gateway serves each launch (no static
