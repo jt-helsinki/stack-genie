@@ -144,6 +144,56 @@ func TestRenderDefaultRouting(test *testing.T) {
 	}
 }
 
+// TestRenderEnablesValkeyClusterCache pins the response cache config: it must be
+// enabled and point at the Valkey container as a CLUSTER node via
+// redis_startup_nodes (NOT host/port) — aip-valkey runs as a one-node cluster, and a
+// standalone host/port client hits CROSSSLOT on multi-key ops so caching would
+// silently fail.
+func TestRenderEnablesValkeyClusterCache(test *testing.T) {
+	test.Setenv("HOME", test.TempDir())
+	if err := Render(DefaultRouting(), ""); err != nil {
+		test.Fatal(err)
+	}
+	path, _ := ConfigPath()
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		test.Fatal(err)
+	}
+	var cfg struct {
+		LitellmSettings struct {
+			Cache       bool `yaml:"cache"`
+			CacheParams struct {
+				Type              string `yaml:"type"`
+				Host              string `yaml:"host"`
+				Port              string `yaml:"port"`
+				RedisStartupNodes []struct {
+					Host string `yaml:"host"`
+					Port string `yaml:"port"`
+				} `yaml:"redis_startup_nodes"`
+			} `yaml:"cache_params"`
+		} `yaml:"litellm_settings"`
+	}
+	if err := yaml.Unmarshal(raw, &cfg); err != nil {
+		test.Fatalf("rendered config is not valid yaml: %v\n%s", err, raw)
+	}
+	if !cfg.LitellmSettings.Cache {
+		test.Errorf("litellm_settings.cache = false, want true")
+	}
+	if cfg.LitellmSettings.CacheParams.Type != "redis" {
+		test.Errorf("cache_params.type = %q, want redis", cfg.LitellmSettings.CacheParams.Type)
+	}
+	// Cluster mode: startup nodes set, NOT the standalone host/port (which would
+	// mis-handle the cluster node).
+	if cfg.LitellmSettings.CacheParams.Host != "" || cfg.LitellmSettings.CacheParams.Port != "" {
+		test.Errorf("cache_params should use redis_startup_nodes for the cluster, not host/port (got host=%q port=%q)",
+			cfg.LitellmSettings.CacheParams.Host, cfg.LitellmSettings.CacheParams.Port)
+	}
+	nodes := cfg.LitellmSettings.CacheParams.RedisStartupNodes
+	if len(nodes) != 1 || nodes[0].Host != "aip-valkey" || nodes[0].Port != "6379" {
+		test.Errorf("cache_params.redis_startup_nodes = %+v, want [{aip-valkey 6379}]", nodes)
+	}
+}
+
 // TestDestructiveCommandRegexBlocksOnlyDestructive guards the tool-firewall's core
 // behavior: LiteLLM's tool_permission matches allowed_param_patterns with
 // re.fullmatch, so the regex MUST fullmatch a command that contains a destructive

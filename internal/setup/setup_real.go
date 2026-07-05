@@ -1534,6 +1534,30 @@ func (services realServices) serviceHealthy(name string) bool {
 			return false
 		}
 		return containerRunning(services.prober, containerRuntime.Name, dnsContainer)
+	case "valkey":
+		// Readiness = the server answering PING (not merely the container running):
+		// it boots as a one-node cluster and needs a moment to assign slots, and a
+		// PONG proves it is actually serving. Without this case Status pinned valkey
+		// at "starting" forever (default:false), which also hid its Logs/Metrics
+		// sub-tabs in the TUI (both gated to a running service).
+		containerRuntime, err := runtime.ContainerRuntimeName(services.prober)
+		if err != nil {
+			return false
+		}
+		if !containerRunning(services.prober, containerRuntime.Name, valkeyContainer) {
+			return false
+		}
+		out, pingErr := services.prober.Run(containerRuntime.Name, "exec", valkeyContainer, "valkey-cli", "ping")
+		return pingErr == nil && strings.TrimSpace(string(out)) == "PONG"
+	case "valkey-admin":
+		// Internal-only web UI on :8080 (no external health endpoint wired here);
+		// the container running is the readiness signal, matching headroom/presidio.
+		// Without this case it was pinned at "starting" and its Logs tab never showed.
+		containerRuntime, err := runtime.ContainerRuntimeName(services.prober)
+		if err != nil {
+			return false
+		}
+		return containerRunning(services.prober, containerRuntime.Name, valkeyAdminContainer)
 	default:
 		return false
 	}
