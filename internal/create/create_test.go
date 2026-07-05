@@ -1,11 +1,133 @@
 package create
 
 import (
+	"errors"
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/jt-helsinki/ideal-robot/internal/config"
+	"github.com/jt-helsinki/ideal-robot/internal/contextopt"
 	"github.com/jt-helsinki/ideal-robot/internal/ollama"
+	"github.com/jt-helsinki/ideal-robot/internal/output"
+	"github.com/jt-helsinki/ideal-robot/internal/project"
 )
+
+// Execute runs the full in-process create against a fresh location: it scaffolds the
+// project, seeds the context-optimization defaults + Caveman skill, and reports the
+// expected progress steps in order. A blank GraphifyModel keeps the path network-free
+// (no Ollama pull), so no fakes are needed for the happy path.
+func TestExecuteHappyPath(test *testing.T) {
+	test.Setenv("HOME", test.TempDir())
+
+	root := filepath.Join(test.TempDir(), "location")
+	spec := project.Spec{
+		Name:        "my-app",
+		OS:          SupportedOSes()[0],
+		Stacks:      []string{SupportedStacks()[0]},
+		AgentCLIs:   []string{"opencode", "pi"},
+		DefaultTool: "opencode",
+		Root:        root,
+	}
+
+	var steps []string
+	report := func(progress Progress) { steps = append(steps, progress.Step) }
+
+	result, warnings, err := Execute(spec, "2026-07-05T00:00:00Z", report)
+	if err != nil {
+		test.Fatalf("Execute returned error: %v", err)
+	}
+	if len(warnings) != 0 {
+		test.Fatalf("warnings = %v, want none (blank Graphify model is network-free)", warnings)
+	}
+
+	// The Result mirrors the spec.
+	if result.Name != "my-app" || result.Root != root || result.OS != spec.OS {
+		test.Fatalf("Result = %+v, want name=my-app root=%q os=%q", result, root, spec.OS)
+	}
+	if len(result.Tools) != 2 || result.Tools[0] != "opencode" || result.Tools[1] != "pi" {
+		test.Fatalf("Result.Tools = %v, want [opencode pi]", result.Tools)
+	}
+	if len(result.Stacks) != 1 || result.Stacks[0] != SupportedStacks()[0] {
+		test.Fatalf("Result.Stacks = %v, want [%s]", result.Stacks, SupportedStacks()[0])
+	}
+	if result.ConfigYAML == "" {
+		test.Error("Result.ConfigYAML is empty, want the scaffolded config.yaml contents")
+	}
+
+	// config.yaml was scaffolded and is readable.
+	if _, err := os.Stat(config.ProjectPath(root)); err != nil {
+		test.Fatalf("config.yaml not scaffolded on disk: %v", err)
+	}
+	projectConfig, err := config.LoadProjectConfig(root)
+	if err != nil {
+		test.Fatalf("LoadProjectConfig: %v", err)
+	}
+
+	// The context-optimization defaults + Caveman level were seeded.
+	if projectConfig.Context.Strategy != contextopt.DefaultStrategy {
+		test.Errorf("context strategy = %q, want %q", projectConfig.Context.Strategy, contextopt.DefaultStrategy)
+	}
+	if projectConfig.Context.CavemanLevel != contextopt.DefaultCavemanLevel {
+		test.Errorf("caveman level = %q, want %q", projectConfig.Context.CavemanLevel, contextopt.DefaultCavemanLevel)
+	}
+	// The Caveman skill file was written by SetCavemanLevel.
+	if _, err := os.Stat(filepath.Join(root, ".ai-platform", "skills", "caveman", "SKILL.md")); err != nil {
+		test.Errorf("Caveman SKILL.md not seeded: %v", err)
+	}
+
+	// The report callback saw the expected steps, in order (no pull step for a blank
+	// Graphify model).
+	want := []string{
+		"scaffolding project (Dockerfile, config, skills)",
+		"seeding context optimization + Caveman skill",
+		"workspace scaffolded — start it to build the image + boot the microVM",
+	}
+	if len(steps) != len(want) {
+		test.Fatalf("progress steps = %v, want %v", steps, want)
+	}
+	for index := range want {
+		if steps[index] != want[index] {
+			test.Fatalf("progress step %d = %q, want %q (full: %v)", index, steps[index], want[index], steps)
+		}
+	}
+}
+
+// An explicit over-host CPU request is rejected with exit 2 (invalid input) before any
+// scaffolding happens.
+func TestExecuteRejectsOverHostResources(test *testing.T) {
+	test.Setenv("HOME", test.TempDir())
+	spec := project.Spec{
+		Name: "big-app",
+		OS:   SupportedOSes()[0],
+		Root: filepath.Join(test.TempDir(), "location"),
+		CPUs: 1 << 20, // far more than any host has
+	}
+	_, _, err := Execute(spec, "t", nil)
+	if err == nil {
+		test.Fatal("Execute must reject an over-host CPU request")
+	}
+	var platformErr *output.Error
+	if !errors.As(err, &platformErr) {
+		test.Fatalf("error %v is not an *output.Error", err)
+	}
+	if platformErr.Code != output.ExitInvalidInput {
+		test.Fatalf("exit code = %d, want %d (invalid input)", platformErr.Code, output.ExitInvalidInput)
+	}
+}
+
+// mapProjectErr maps the project sentinels (here ErrAlreadyExists — creating over an
+// existing workspace) to exit 2, so create surfaces the right code.
+func TestMapProjectErrAlreadyExistsIsInvalidInput(test *testing.T) {
+	err := mapProjectErr(project.ErrAlreadyExists)
+	var platformErr *output.Error
+	if !errors.As(err, &platformErr) {
+		test.Fatalf("mapProjectErr returned %v, not an *output.Error", err)
+	}
+	if platformErr.Code != output.ExitInvalidInput {
+		test.Fatalf("exit code = %d, want %d for ErrAlreadyExists", platformErr.Code, output.ExitInvalidInput)
+	}
+}
 
 func TestCappedResourcesCapsDefaultAtHost(test *testing.T) {
 	// Small host: the 4-cpu / 8G defaults are capped down to the host's 2 cpu and the

@@ -172,6 +172,45 @@ func TestValidateHost(test *testing.T) {
 	}
 }
 
+func TestSplitPortPair(test *testing.T) {
+	cases := []struct {
+		input     string
+		wantGuest int
+		wantHost  int
+		wantErr   bool
+	}{
+		// Valid "guest:host".
+		{"3000:8080", 3000, 8080, false},
+		// Surrounding whitespace is trimmed.
+		{" 3000:8080 ", 3000, 8080, false},
+		// Missing colon.
+		{"3000", 0, 0, true},
+		// Too many parts.
+		{"1:2:3", 0, 0, true},
+		// Non-numeric guest port.
+		{"x:8080", 0, 0, true},
+		// Non-numeric host port.
+		{"3000:y", 0, 0, true},
+	}
+	for _, testCase := range cases {
+		guest, host, err := SplitPortPair(testCase.input)
+		if testCase.wantErr {
+			if err == nil {
+				test.Errorf("SplitPortPair(%q) = (%d,%d,nil), want error", testCase.input, guest, host)
+			}
+			continue
+		}
+		if err != nil {
+			test.Errorf("SplitPortPair(%q) unexpected error: %v", testCase.input, err)
+			continue
+		}
+		if guest != testCase.wantGuest || host != testCase.wantHost {
+			test.Errorf("SplitPortPair(%q) = (%d,%d), want (%d,%d)",
+				testCase.input, guest, host, testCase.wantGuest, testCase.wantHost)
+		}
+	}
+}
+
 func TestAllowRejectsBadHost(test *testing.T) {
 	root := test.TempDir()
 	if err := Allow(root, "http://api.github.com", 443); !errors.Is(err, ErrInvalidHost) {
