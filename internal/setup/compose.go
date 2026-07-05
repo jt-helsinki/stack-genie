@@ -123,7 +123,7 @@ func ServicesComposeYAML(bindHost string) ([]byte, error) {
 			},
 			valkeyAdminContainer: {
 				Image: containerImage("valkey-admin"), ContainerName: valkeyAdminContainer, Networks: []string{net}, Restart: "unless-stopped",
-				Environment: []string{"DEPLOYMENT_MODE=Web", "VALKEY_HOST=" + valkeyContainer, "VALKEY_PORT=6379", "VALKEY_TLS=false"},
+				Environment: []string{"DEPLOYMENT_MODE=Web", "VALKEY_HOST=" + valkeyContainer, "VALKEY_PORT=6379", "VALKEY_ENDPOINT_TYPE=node", "VALKEY_TLS=false"},
 				DependsOn:   []string{valkeyContainer},
 			},
 			litellmDBContainer: {

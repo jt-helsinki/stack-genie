@@ -679,7 +679,12 @@ func ensureValkey(prober runtime.Prober, containerRuntime string) error {
 
 // ensureValkeyAdmin runs the Valkey Admin web UI, INTERNAL-ONLY on :8080 (reached through
 // the nginx gateway at valkey.<domain>). It points at the aip-valkey cache with no
-// auth/TLS — the cache is unauthenticated on the private network. Idempotent.
+// auth/TLS — the cache is unauthenticated on the private network. VALKEY_ENDPOINT_TYPE
+// MUST be "node": aip-valkey is a SINGLE standalone instance (cluster mode disabled), and
+// valkey-admin defaults VALKEY_ENDPOINT_TYPE to "cluster-endpoint" — which runs cluster
+// topology discovery against the host and never establishes a working connection to a
+// non-cluster node, so the UI comes up empty. "node" treats VALKEY_HOST/PORT as one node.
+// Idempotent.
 func ensureValkeyAdmin(prober runtime.Prober, containerRuntime string) error {
 	if containerRunning(prober, containerRuntime, valkeyAdminContainer) {
 		return nil
@@ -691,6 +696,7 @@ func ensureValkeyAdmin(prober runtime.Prober, containerRuntime string) error {
 		"-e", "DEPLOYMENT_MODE=Web",
 		"-e", "VALKEY_HOST=" + valkeyContainer,
 		"-e", "VALKEY_PORT=6379",
+		"-e", "VALKEY_ENDPOINT_TYPE=node",
 		"-e", "VALKEY_TLS=false",
 		containerImage("valkey-admin"),
 	}
