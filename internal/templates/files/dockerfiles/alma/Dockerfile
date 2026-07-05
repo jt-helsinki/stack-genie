@@ -19,6 +19,7 @@ RUN dnf install -y --setopt=install_weak_deps=False \
     nano \
     sudo \
     tmux \
+    zsh \
     ncurses-term \
     iptables \
     iproute2 \
@@ -73,7 +74,16 @@ WORKDIR /home/workspace
 # falkordb, neo4j, leiden, dm). Each selected agent-CLI snippet then registers it via
 # `graphify install --platform …`. Verify the extras resolve on hardware bring-up.
 RUN curl -LsSf https://astral.sh/uv/install.sh | sh \
- && uv tool install "graphifyy[pdf,office,video,postgres,google,svg,sql,terraform,ollama,openai,gemini,anthropic]"
+ && uv tool install "graphifyy[pdf,office,video,postgres,google,svg,sql,terraform,ollama,openai,gemini,anthropic]" \
+ && uv tool install "headroom-ai[all]"
+
+# Interactive-shell frameworks for the workspace user: oh-my-bash and oh-my-zsh, both
+# installed UNATTENDED (they write ~/.bashrc / ~/.zshrc + ~/.oh-my-*). zsh itself is in
+# the base layer above. The default shell (bash or zsh) is chosen per workspace at
+# `ai create` and applied at start; both frameworks ship so either works. RUNZSH/CHSH=no
+# stop the oh-my-zsh installer launching zsh or calling chsh at build time.
+RUN bash -c "$(curl -fsSL https://raw.githubusercontent.com/ohmybash/oh-my-bash/master/tools/install.sh)" --unattended \
+ && RUNZSH=no CHSH=no sh -c "$(curl -fsSL https://raw.githubusercontent.com/ohmyzsh/ohmyzsh/master/tools/install.sh)" "" --unattended
 
 # Keep-alive command. Microsandbox boots the microVM running the IMAGE'S command,
 # so the workspace image needs a long-running one — otherwise the base image's

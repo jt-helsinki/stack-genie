@@ -177,6 +177,42 @@ func TestBaseDockerfileShipsTerminfo(t *testing.T) {
 	}
 }
 
+// TestBaseDockerfileShipsShellsAndHeadroom asserts every OS base ships the
+// interactive-shell frameworks (zsh + oh-my-bash + oh-my-zsh) and the Headroom CLI
+// (installed via uv tool as headroom-ai[all]). The shell frameworks back the per-
+// workspace bash/zsh choice; Headroom is installed in-VM so each agent CLI can be
+// wrapped (`headroom wrap <cli>`) to compress provider-API traffic before it leaves
+// the microVM. All are installed for the workspace user; the package/command names
+// are the same across apt (debian/ubuntu) and dnf (almalinux).
+func TestBaseDockerfileShipsShellsAndHeadroom(t *testing.T) {
+	redirectHome(t)
+	if err := templates.Install(); err != nil {
+		t.Fatalf("Install: %v", err)
+	}
+	for _, osKey := range osKeys {
+		t.Run(osKey, func(t *testing.T) {
+			got, err := templates.BaseDockerfile(osKey)
+			if err != nil {
+				t.Fatalf("BaseDockerfile(%q): %v", osKey, err)
+			}
+			for _, fragment := range []string{
+				// zsh package in the base layer (bash ships with every distro).
+				"    zsh \\",
+				// oh-my-bash + oh-my-zsh, installed unattended for the workspace user.
+				"ohmybash/oh-my-bash",
+				"ohmyzsh/ohmyzsh",
+				"--unattended",
+				// Headroom CLI, installed via uv tool alongside Graphify.
+				`uv tool install "headroom-ai[all]"`,
+			} {
+				if !strings.Contains(got, fragment) {
+					t.Errorf("%s: base Dockerfile missing %q:\n%s", osKey, fragment, got)
+				}
+			}
+		})
+	}
+}
+
 func TestBaseDockerfileUnknownKey(t *testing.T) {
 	redirectHome(t)
 	if err := templates.Install(); err != nil {

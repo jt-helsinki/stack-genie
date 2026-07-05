@@ -60,19 +60,17 @@ func TestComposeMultipleSelections(test *testing.T) {
 	}
 }
 
-func TestComposeDoesNotBakeHeadroom(test *testing.T) {
+func TestComposeBakesHeadroom(test *testing.T) {
 	installTemplates(test)
-	// Headroom now runs as a shared host container in front of LiteLLM, so it must
-	// NOT be installed into the workspace image (arch §8–10, §15). Agents reach the
-	// host Headroom at AI_PLATFORM_HOST:18787 instead.
+	// Headroom is now installed IN each workspace image (via uv tool, headroom-ai[all])
+	// so each agent CLI can be wrapped (`headroom wrap <cli>`) to compress provider-API
+	// traffic before it leaves the microVM — it is no longer a shared host container.
 	dockerfile, err := Compose("debian-trixie", nil, []string{"opencode"})
 	if err != nil {
 		test.Fatal(err)
 	}
-	for _, fragment := range []string{"headroom", "headroom-ai", "18787"} {
-		if strings.Contains(dockerfile, fragment) {
-			test.Errorf("composed Dockerfile unexpectedly bakes in Headroom (%q):\n%s", fragment, dockerfile)
-		}
+	if !strings.Contains(dockerfile, `uv tool install "headroom-ai[all]"`) {
+		test.Errorf("composed Dockerfile should install Headroom (headroom-ai) in the workspace image:\n%s", dockerfile)
 	}
 }
 
