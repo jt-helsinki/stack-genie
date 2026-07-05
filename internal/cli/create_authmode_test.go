@@ -54,6 +54,29 @@ func TestParseAuthModesRejectsBadInput(test *testing.T) {
 	}
 }
 
+// TestParseAuthModesCopilotForcedOAuth verifies copilot (forced-oauth) rejects api-key
+// with exit 2 but accepts oauth (its only mode).
+func TestParseAuthModesCopilotForcedOAuth(test *testing.T) {
+	agents := []string{"opencode", "copilot"}
+	// api-key is rejected.
+	_, err := parseAuthModes("copilot=api-key", agents)
+	if err == nil {
+		test.Fatal("parseAuthModes(copilot=api-key) should be rejected")
+	}
+	var platformErr *output.Error
+	if !errors.As(err, &platformErr) || platformErr.Code != output.ExitInvalidInput {
+		test.Errorf("copilot=api-key error should be exit %d, got %v", output.ExitInvalidInput, err)
+	}
+	// oauth is accepted.
+	modes, err := parseAuthModes("copilot=oauth", agents)
+	if err != nil {
+		test.Fatalf("parseAuthModes(copilot=oauth) should be accepted: %v", err)
+	}
+	if modes["copilot"] != "oauth" {
+		test.Errorf("modes[copilot] = %q, want oauth", modes["copilot"])
+	}
+}
+
 // TestParseAuthModesEmpty yields a nil map (no per-agent modes recorded).
 func TestParseAuthModesEmpty(test *testing.T) {
 	modes, err := parseAuthModes("", []string{"claude-code"})

@@ -60,6 +60,21 @@ func TestComposeMultipleSelections(test *testing.T) {
 	}
 }
 
+// TestComposeInstallsCopilot verifies the GitHub Copilot CLI snippet composes and installs
+// the @github/copilot npm package.
+func TestComposeInstallsCopilot(test *testing.T) {
+	installTemplates(test)
+	dockerfile, err := Compose("debian-trixie", nil, []string{"copilot"})
+	if err != nil {
+		test.Fatal(err)
+	}
+	for _, fragment := range []string{"# agent CLI: copilot", "npm install -g @github/copilot"} {
+		if !strings.Contains(dockerfile, fragment) {
+			test.Errorf("composed Dockerfile missing %q:\n%s", fragment, dockerfile)
+		}
+	}
+}
+
 func TestComposeBakesHeadroom(test *testing.T) {
 	installTemplates(test)
 	// Headroom is now installed IN each workspace image (via uv tool, headroom-ai[all])

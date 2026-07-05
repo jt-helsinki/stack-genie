@@ -252,12 +252,19 @@ func Scaffold(spec Spec, createdAt string) (string, error) {
 	if shell == "" {
 		shell = "bash"
 	}
-	// Per-agent auth modes: record ONLY the CLIs that are both selected AND OAuth-capable
-	// (claude-code/codex/gemini). Everything else is always gateway/api-key and is omitted.
-	// For each agent set to oauth, allow-list its provider egress domains so its native
-	// login can reach the provider even under `deny` (explicit under `public`).
+	// Per-agent auth modes: record ONLY the CLIs that are both selected AND OAuth-eligible.
+	// The OAuth-CAPABLE CLIs (claude-code/codex/gemini) take the user's chosen mode
+	// (default api-key); the FORCED-oauth CLIs (copilot) are always "oauth" — they have no
+	// api-key mode. Everything else is always gateway/api-key and is omitted. For each
+	// agent in oauth, allow-list its provider egress domains so its native login can reach
+	// the provider even under `deny` (explicit under `public`).
 	authModes := map[string]string{}
 	var oauthAllow []config.HostService
+	allowOAuthDomains := func(cli string) {
+		for _, domain := range agentcfg.OAuthProviderDomains(cli) {
+			oauthAllow = appendUniqueHostService(oauthAllow, config.HostService{Host: domain, Port: 443})
+		}
+	}
 	for _, cli := range config.OAuthCapableCLIs() {
 		if !slices.Contains(spec.AgentCLIs, cli) {
 			continue
@@ -268,10 +275,15 @@ func Scaffold(spec Spec, createdAt string) (string, error) {
 		}
 		authModes[cli] = mode
 		if mode == "oauth" {
-			for _, domain := range agentcfg.OAuthProviderDomains(cli) {
-				oauthAllow = appendUniqueHostService(oauthAllow, config.HostService{Host: domain, Port: 443})
-			}
+			allowOAuthDomains(cli)
 		}
+	}
+	for _, cli := range config.ForcedOAuthCLIs() {
+		if !slices.Contains(spec.AgentCLIs, cli) {
+			continue
+		}
+		authModes[cli] = "oauth"
+		allowOAuthDomains(cli)
 	}
 	if len(authModes) == 0 {
 		authModes = nil

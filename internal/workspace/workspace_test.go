@@ -612,6 +612,61 @@ func TestStartAPIKeyAgentRoutesThroughGateway(test *testing.T) {
 	}
 }
 
+// TestStartCopilotForcedOAuth verifies a workspace with copilot (forced-oauth, gateway-
+// incapable): it gets the `headroom wrap copilot` alias, its cred dir ~/.copilot is
+// symlinked to /persist, Graphify is registered with --platform copilot, and NO gateway
+// env or on-disk gateway config is written for it (it authenticates natively to GitHub).
+func TestStartCopilotForcedOAuth(test *testing.T) {
+	root := seedProject(test, "app")
+	// No AuthModes recorded — copilot must be treated as oauth regardless.
+	if err := config.WriteProject(root, &config.Config{
+		OS:    "debian-trixie",
+		Agent: config.AgentConfig{Tools: []string{"opencode", "copilot"}, DefaultTool: "opencode"},
+	}); err != nil {
+		test.Fatal(err)
+	}
+	sandbox := &fakeSandbox{}
+	manager := Manager{Builder: &fakeBuilder{}, Sandbox: sandbox, Keys: &fakeKeyMinter{}, Now: func() string { return "t" }}
+	if _, err := manager.Start("app"); err != nil {
+		test.Fatal(err)
+	}
+
+	// (1) Headroom-wrap alias for copilot.
+	aliases := readGuestFile(test, sandbox, shellAliasesGuestPath)
+	if !strings.Contains(aliases, "alias copilot='headroom wrap copilot'") {
+		test.Errorf("copilot must be Headroom-wrap aliased:\n%s", aliases)
+	}
+
+	// (2) ~/.copilot symlinked to /persist so the native GitHub login survives restarts.
+	linkedCopilot := false
+	sawGraphifyCopilot := false
+	for _, argv := range sandbox.allExecArgv {
+		joined := strings.Join(argv, " ")
+		if strings.Contains(joined, "ln -sfn /persist/agents/copilot ~/.copilot") {
+			linkedCopilot = true
+		}
+		if strings.Contains(joined, "cd /home/workspace/project") && strings.Contains(joined, "graphify install --project --platform copilot") {
+			sawGraphifyCopilot = true
+		}
+	}
+	if !linkedCopilot {
+		test.Errorf("copilot must symlink ~/.copilot to /persist:\n%v", sandbox.allExecArgv)
+	}
+	// (3) Graphify registered with --platform copilot at start.
+	if !sawGraphifyCopilot {
+		test.Errorf("Start must register Graphify with --platform copilot:\n%v", sandbox.allExecArgv)
+	}
+
+	// (4) No gateway env or gateway config is written for copilot (it can't route through
+	// the gateway). The agent env script never mentions copilot/github.
+	envText := readGuestFile(test, sandbox, agentEnvGuestPath)
+	for _, absent := range []string{"copilot", "githubcopilot", "GH_TOKEN"} {
+		if strings.Contains(envText, absent) {
+			test.Errorf("copilot must have no gateway env (found %q):\n%s", absent, envText)
+		}
+	}
+}
+
 // readProjectConfig reads a per-CLI project config file written under the project root.
 func readProjectConfig(test *testing.T, root string, parts ...string) string {
 	test.Helper()

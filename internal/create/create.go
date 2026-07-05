@@ -105,10 +105,12 @@ func Execute(spec project.Spec, now string, report func(Progress)) (Result, []st
 	}, warnings, nil
 }
 
-// oauthWarnings returns a security warning for each agent set to OAuth/plan mode: that
-// mode routes the agent DIRECTLY to its provider, bypassing the gateway — so the tool
-// firewall, secret masking, and content-level egress audit do NOT apply to it. Selected +
-// OAuth-capable CLIs only (Scaffold filters the persisted set the same way).
+// oauthWarnings returns a security warning for each agent that runs in OAuth/plan mode:
+// that mode routes the agent DIRECTLY to its provider, bypassing the gateway — so the tool
+// firewall, secret masking, and content-level egress audit do NOT apply to it. Covers the
+// OAuth-capable CLIs set to oauth AND the forced-oauth CLIs (copilot — always oauth, since
+// it cannot route through the gateway at all). Selected agents only (Scaffold filters the
+// persisted set the same way).
 func oauthWarnings(spec project.Spec) []string {
 	var warnings []string
 	for _, cli := range config.OAuthCapableCLIs() {
@@ -119,6 +121,13 @@ func oauthWarnings(spec project.Spec) []string {
 			warnings = append(warnings, fmt.Sprintf(
 				"OAuth/plan mode routes %s DIRECTLY to the provider, bypassing the gateway — the tool firewall, secret masking, and content-level egress audit do NOT apply to it (see docs/deferred/oauth-agent-firewall-via-gateway.md)", cli))
 		}
+	}
+	for _, cli := range config.ForcedOAuthCLIs() {
+		if !slices.Contains(spec.AgentCLIs, cli) {
+			continue
+		}
+		warnings = append(warnings, fmt.Sprintf(
+			"%s authenticates natively to its provider and talks DIRECTLY to it — it cannot route through the gateway, so the tool firewall, secret masking, and content-level egress audit do NOT apply to it (see docs/deferred/oauth-agent-firewall-via-gateway.md)", cli))
 	}
 	return warnings
 }

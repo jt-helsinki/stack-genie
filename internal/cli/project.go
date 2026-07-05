@@ -920,9 +920,11 @@ func effectiveAgents(flags createFlags) []string {
 }
 
 // parseAuthModes parses the --auth-mode flag — a comma list of cli=mode (e.g.
-// "claude-code=oauth,codex=api-key") — into a map. Each key must be an OAuth-capable CLI
-// (config.OAuthCapableCLIs) that is ALSO among the selected agents; each value must be
-// api-key|oauth. An empty flag yields a nil map. All errors are exit 2 (invalid input).
+// "claude-code=oauth,codex=api-key") — into a map. Each key must be an OAuth-eligible CLI
+// that is ALSO among the selected agents; each value must be api-key|oauth. A FORCED-oauth
+// CLI (copilot) accepts only "oauth" — it has no api-key/gateway mode, so "copilot=api-key"
+// is rejected (Scaffold records it as "oauth" automatically regardless). An empty flag
+// yields a nil map. All errors are exit 2 (invalid input).
 func parseAuthModes(raw string, agents []string) (map[string]string, error) {
 	raw = strings.TrimSpace(raw)
 	if raw == "" {
@@ -940,6 +942,19 @@ func parseAuthModes(raw string, agents []string) (map[string]string, error) {
 		if !ok || cli == "" || mode == "" {
 			return nil, output.Errorf(output.ExitInvalidInput,
 				"invalid --auth-mode %q (expected cli=mode, e.g. claude-code=oauth)", entry)
+		}
+		if slices.Contains(config.ForcedOAuthCLIs(), cli) {
+			// Forced-oauth: it can ONLY be oauth (no api-key/gateway mode exists).
+			if mode != "oauth" {
+				return nil, output.Errorf(output.ExitInvalidInput,
+					"--auth-mode: %q only supports oauth/plan login (it authenticates natively and cannot route through the gateway)", cli)
+			}
+			if !slices.Contains(agents, cli) {
+				return nil, output.Errorf(output.ExitInvalidInput,
+					"--auth-mode: %q is not among the selected agents (%s)", cli, strings.Join(agents, ", "))
+			}
+			modes[cli] = mode
+			continue
 		}
 		if !slices.Contains(config.OAuthCapableCLIs(), cli) {
 			return nil, output.Errorf(output.ExitInvalidInput,

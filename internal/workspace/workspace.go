@@ -472,7 +472,8 @@ func (manager Manager) Start(project string) (*state.Workspace, error) {
 }
 
 // registerAgentProviders mints a scoped LiteLLM virtual key for the workspace and
-// routes ALL FIVE agent CLIs through the host Headroom proxy with that key. It
+// routes the gateway-capable agent CLIs through the host Headroom proxy with that key
+// (copilot is gateway-incapable — forced-oauth, native GitHub auth — so it is skipped). It
 // reads each CLI's KEYLESS host-side template from <project>/.ai-platform/agents/
 // (scaffolding the default templates back if absent — without the key), merges in
 // the dynamic values (the freshly-minted key, the served-model picker, the Headroom
@@ -778,17 +779,18 @@ func (manager Manager) linkAgentStateDirs(name string, oauthAgents map[string]bo
 		{"~/.pi", "pi"},
 		{"~/.omp", "omp"},
 	}
-	for _, cli := range config.OAuthCapableCLIs() {
-		if !oauthAgents[cli] {
-			continue
-		}
-		switch cli {
-		case "claude-code":
-			links = append(links, stateLink{"~/.claude", "claude"})
-		case "codex":
-			links = append(links, stateLink{"~/.codex", "codex"})
-		case "gemini":
-			links = append(links, stateLink{"~/.gemini", "gemini"})
+	// oauthCredDirs maps each OAuth-eligible CLI to its native-login credential dir. An
+	// oauth agent's dir is persisted so the subscription login survives a microVM restart.
+	// Iterated in a fixed order for a deterministic set of exec commands.
+	oauthCredDirs := []struct{ cli, home, key string }{
+		{"claude-code", "~/.claude", "claude"},
+		{"codex", "~/.codex", "codex"},
+		{"gemini", "~/.gemini", "gemini"},
+		{"copilot", "~/.copilot", "copilot"},
+	}
+	for _, entry := range oauthCredDirs {
+		if oauthAgents[entry.cli] {
+			links = append(links, stateLink{entry.home, entry.key})
 		}
 	}
 
@@ -816,12 +818,14 @@ func (manager Manager) linkAgentStateDirs(name string, oauthAgents map[string]bo
 }
 
 // oauthAgentList returns the installed CLIs configured for OAUTH (subscription) auth, in
-// the project's tool order. Only OAuth-capable CLIs (claude-code/codex/gemini) can be
-// oauth; everything else is always gateway/api-key and never appears here.
+// the project's tool order. This is every OAuth-ELIGIBLE CLI whose resolved auth mode is
+// oauth: the OAuth-capable CLIs (claude-code/codex/gemini) set to oauth, plus the
+// forced-oauth CLIs (copilot — always oauth). Everything else is always gateway/api-key
+// and never appears here.
 func oauthAgentList(projectConfig *config.Config) []string {
 	var list []string
 	for _, cli := range projectConfig.Agent.Tools {
-		if slices.Contains(config.OAuthCapableCLIs(), cli) && projectConfig.Agent.AuthMode(cli) == "oauth" {
+		if config.IsOAuthEligible(cli) && projectConfig.Agent.AuthMode(cli) == "oauth" {
 			list = append(list, cli)
 		}
 	}
@@ -892,6 +896,7 @@ var graphifyPlatformFlag = map[string]string{
 	"gemini":      "gemini",
 	"opencode":    "opencode",
 	"pi":          "pi",
+	"copilot":     "copilot",
 }
 
 // registerGraphify registers Graphify (baked into the image via `uv tool install`)

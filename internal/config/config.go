@@ -13,6 +13,7 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -68,21 +69,46 @@ type AgentConfig struct {
 	// login, talking DIRECTLY to the provider, bypassing the gateway and its guardrails).
 	// Keyed by CLI name; a CLI absent from the map defaults to "api-key" (see AuthMode).
 	// opencode/pi/omp have no subscription and are never recorded here — they are always
-	// gateway/api-key.
+	// gateway/api-key. The FORCED-oauth CLIs (ForcedOAuthCLIs, e.g. copilot) are recorded
+	// as "oauth" and can be nothing else — see AuthMode.
 	AuthModes map[string]string `yaml:"auth_modes,omitempty" json:"auth_modes,omitempty"`
 }
 
 // OAuthCapableCLIs are the agent CLIs with a first-party subscription/OAuth login that
-// the workspace can use INSTEAD of the gateway (the single source of truth for which
-// CLIs may be set to "oauth"). opencode/pi/omp have no subscription and are always
-// gateway/api-key, so they are never in this set.
+// the workspace can CHOOSE to use INSTEAD of the gateway (the single source of truth for
+// which CLIs are OFFERED an api-key-vs-oauth choice). opencode/pi/omp have no subscription
+// and are always gateway/api-key, so they are never in this set. Forced-oauth CLIs
+// (ForcedOAuthCLIs) are NOT here — they have no api-key mode, so there is no choice to
+// offer.
 func OAuthCapableCLIs() []string {
 	return []string{"claude-code", "codex", "gemini"}
 }
 
-// AuthMode returns the recorded auth mode for a CLI, defaulting to "api-key" (the
-// gateway-routed default) when the CLI is absent from AuthModes or the map is nil.
+// ForcedOAuthCLIs are agent CLIs that can ONLY authenticate via their own native (OAuth/
+// subscription) login — they have NO api-key/gateway mode at all, so they are ALWAYS
+// "oauth" and are never offered an auth-mode choice. GitHub Copilot CLI (`copilot`) is
+// OAuth-only: it authenticates natively to GitHub (device-flow login, or a GH_TOKEN/
+// GITHUB_TOKEN PAT) and talks DIRECTLY to GitHub's Copilot backend — it cannot accept an
+// API key and cannot be pointed at the platform gateway, so it can never be "api-key".
+func ForcedOAuthCLIs() []string {
+	return []string{"copilot"}
+}
+
+// IsOAuthEligible reports whether a CLI can run in oauth mode — either it may CHOOSE oauth
+// (OAuthCapableCLIs) or it is oauth-only (ForcedOAuthCLIs). Everything else is always
+// gateway/api-key.
+func IsOAuthEligible(cli string) bool {
+	return slices.Contains(OAuthCapableCLIs(), cli) || slices.Contains(ForcedOAuthCLIs(), cli)
+}
+
+// AuthMode returns the recorded auth mode for a CLI. A forced-oauth CLI (ForcedOAuthCLIs)
+// is ALWAYS "oauth" regardless of what the map says (it has no api-key mode). Otherwise it
+// defaults to "api-key" (the gateway-routed default) when the CLI is absent from AuthModes
+// or the map is nil.
 func (agent AgentConfig) AuthMode(cli string) string {
+	if slices.Contains(ForcedOAuthCLIs(), cli) {
+		return "oauth"
+	}
 	if mode, ok := agent.AuthModes[cli]; ok && mode != "" {
 		return mode
 	}

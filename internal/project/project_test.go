@@ -402,6 +402,33 @@ func TestScaffoldWritesAuthModesAndOAuthEgress(test *testing.T) {
 	}
 }
 
+// TestScaffoldForcesCopilotOAuth verifies selecting copilot (forced-oauth) persists
+// auth_modes["copilot"]="oauth" automatically and allow-lists its provider egress domains,
+// with no auth-mode choice required.
+func TestScaffoldForcesCopilotOAuth(test *testing.T) {
+	withTemplates(test)
+	spec := sampleSpec()
+	spec.AgentCLIs = []string{"opencode", "copilot"}
+	// No AuthModes provided — copilot must still become oauth.
+	root, err := Scaffold(spec, "t")
+	if err != nil {
+		test.Fatal(err)
+	}
+	projectConfig, err := config.LoadProjectConfig(root)
+	if err != nil {
+		test.Fatal(err)
+	}
+	if got := projectConfig.Agent.AuthModes["copilot"]; got != "oauth" {
+		test.Errorf("auth_modes[copilot] = %q, want oauth (forced)", got)
+	}
+	if got := projectConfig.Agent.AuthMode("copilot"); got != "oauth" {
+		test.Errorf("copilot AuthMode = %q, want oauth", got)
+	}
+	if !hasAllowedHost(projectConfig.Network.AllowHostServices, "api.githubcopilot.com") {
+		test.Errorf("copilot must allow-list api.githubcopilot.com: %+v", projectConfig.Network.AllowHostServices)
+	}
+}
+
 // TestScaffoldNoAuthModesWhenAllAPIKey verifies a default (all api-key) create writes no
 // auth_modes and no oauth egress rules.
 func TestScaffoldNoAuthModesWhenAllAPIKey(test *testing.T) {
