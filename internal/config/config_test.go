@@ -81,6 +81,25 @@ func TestMicrosandboxIdleTimeoutValidation(t *testing.T) {
 	}
 }
 
+func TestDefaultShellIsBash(test *testing.T) {
+	if got := Default().Workspace.Shell; got != "bash" {
+		test.Fatalf("default workspace.shell = %q, want %q", got, "bash")
+	}
+}
+
+func TestValidateShell(test *testing.T) {
+	for _, value := range []string{"", "bash", "zsh"} {
+		if err := ValidateShell(value); err != nil {
+			test.Errorf("ValidateShell(%q) should be valid: %v", value, err)
+		}
+	}
+	for _, value := range []string{"fish", "sh", "BASH", "zsh ", "powershell"} {
+		if err := ValidateShell(value); err == nil {
+			test.Errorf("ValidateShell(%q) should be rejected", value)
+		}
+	}
+}
+
 func TestUnknownFieldRejected(test *testing.T) {
 	home := test.TempDir()
 	test.Setenv("HOME", home)

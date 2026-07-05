@@ -95,6 +95,43 @@ func TestExecuteHappyPath(test *testing.T) {
 
 // An explicit over-host CPU request is rejected with exit 2 (invalid input) before any
 // scaffolding happens.
+// TestExecutePersistsShellChoice verifies the create wizard/flag shell choice flows
+// through project.Spec → Scaffold → config.yaml: an explicit zsh persists
+// workspace.shell: zsh, while an unset shell defaults to bash.
+func TestExecutePersistsShellChoice(test *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		shell string
+		want  string
+	}{
+		{name: "zsh-explicit", shell: "zsh", want: "zsh"},
+		{name: "default-bash", shell: "", want: "bash"},
+	} {
+		test.Run(tc.name, func(test *testing.T) {
+			test.Setenv("HOME", test.TempDir())
+			root := filepath.Join(test.TempDir(), "location")
+			spec := project.Spec{
+				Name:        "shell-app",
+				OS:          SupportedOSes()[0],
+				AgentCLIs:   []string{"opencode", "pi"},
+				DefaultTool: "opencode",
+				Shell:       tc.shell,
+				Root:        root,
+			}
+			if _, _, err := Execute(spec, "2026-07-05T00:00:00Z", nil); err != nil {
+				test.Fatalf("Execute: %v", err)
+			}
+			projectConfig, err := config.LoadProjectConfig(root)
+			if err != nil {
+				test.Fatalf("LoadProjectConfig: %v", err)
+			}
+			if projectConfig.Workspace.Shell != tc.want {
+				test.Errorf("workspace.shell = %q, want %q", projectConfig.Workspace.Shell, tc.want)
+			}
+		})
+	}
+}
+
 func TestExecuteRejectsOverHostResources(test *testing.T) {
 	test.Setenv("HOME", test.TempDir())
 	spec := project.Spec{

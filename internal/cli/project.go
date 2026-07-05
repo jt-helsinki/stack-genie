@@ -110,6 +110,7 @@ var (
 	supportedStacks    = create.SupportedStacks()
 	supportedAgentCLIs = create.SupportedAgentCLIs()
 	supportedApps      = create.SupportedApps()
+	supportedShells    = create.SupportedShells()
 )
 
 const (
@@ -147,6 +148,7 @@ type createFlags struct {
 	ports         []string
 	location      string
 	graphifyModel string
+	shell         string
 	defaultName   string
 }
 
@@ -163,10 +165,11 @@ func readCreateFlags(cmd *cobra.Command, args []string) createFlags {
 	ports, _ := cmd.Flags().GetStringSlice("ports")
 	location, _ := cmd.Flags().GetString("location")
 	graphifyModel, _ := cmd.Flags().GetString("graphify-model")
+	shell, _ := cmd.Flags().GetString("shell")
 	return createFlags{
 		name: name, osKey: osKey, agents: agents, stacks: stacks, apps: appsList,
 		idleTimeout: idleTimeout, cpus: cpus, memory: memory, ports: ports,
-		location: location, graphifyModel: graphifyModel, defaultName: defaultProjectName(args),
+		location: location, graphifyModel: graphifyModel, shell: shell, defaultName: defaultProjectName(args),
 	}
 }
 
@@ -389,7 +392,9 @@ func newCreateCmd(emitter *output.Emitter, exit *int, use string) *cobra.Command
 	cmd.Flags().StringSlice("ports", nil, "ports to open into the workspace: PORT or HOST:GUEST (e.g. 8080,9000:3000)")
 	cmd.Flags().String("location", "", "workspace directory (default: current directory; created if missing)")
 	cmd.Flags().String("graphify-model", "", "Ollama model Graphify uses (e.g. qwen2.5-coder:7b); chosen in the wizard from the Ollama library and pulled if absent")
+	cmd.Flags().String("shell", "bash", "default interactive shell for workspace sessions: "+strings.Join(supportedShells, "|"))
 	_ = cmd.RegisterFlagCompletionFunc("os", fixedValues(supportedOSes...))
+	_ = cmd.RegisterFlagCompletionFunc("shell", fixedValues(supportedShells...))
 	_ = cmd.RegisterFlagCompletionFunc("agents", fixedValues(supportedAgentCLIs...))
 	_ = cmd.RegisterFlagCompletionFunc("stacks", fixedValues(supportedStacks...))
 	_ = cmd.RegisterFlagCompletionFunc("apps", fixedValues(supportedApps...))
@@ -527,6 +532,10 @@ func runCreateWizard(seed project.Spec) (project.Spec, bool, error) {
 	// Pre-seed every field from the caller (flags become the wizard's defaults).
 	name := seed.Name
 	osKey := seed.OS
+	shell := seed.Shell
+	if shell == "" {
+		shell = "bash"
+	}
 	agentCLIs := seed.AgentCLIs
 	defaultTool := seed.DefaultTool
 	stacks := seed.Stacks
@@ -563,6 +572,8 @@ func runCreateWizard(seed project.Spec) (project.Spec, bool, error) {
 		huh.NewGroup(
 			huh.NewSelect[string]().Title("Operating system").
 				Options(huh.NewOptions(supportedOSes...)...).Value(&osKey),
+			huh.NewSelect[string]().Title("Default interactive shell").
+				Options(huh.NewOptions(supportedShells...)...).Value(&shell),
 		),
 		huh.NewGroup(
 			huh.NewMultiSelect[string]().Title("Agent CLIs (space to toggle)").
@@ -631,6 +642,7 @@ func runCreateWizard(seed project.Spec) (project.Spec, bool, error) {
 	return project.Spec{
 		Name:          name,
 		OS:            osKey,
+		Shell:         shell,
 		Stacks:        stacks,
 		AgentCLIs:     agentCLIs,
 		DefaultTool:   defaultTool,
@@ -819,6 +831,9 @@ func validateProvidedCreateFlags(flags createFlags) error {
 	if err := config.ValidateIdleTimeout(flags.idleTimeout); err != nil {
 		return output.Errorf(output.ExitInvalidInput, "%s", err)
 	}
+	if err := config.ValidateShell(flags.shell); err != nil {
+		return output.Errorf(output.ExitInvalidInput, "%s", err)
+	}
 	if err := create.ValidateResourcesWithinHost(flags.cpus, flags.memory); err != nil {
 		return err
 	}
@@ -854,6 +869,7 @@ func seedSpec(flags createFlags) project.Spec {
 	return project.Spec{
 		Name:          name,
 		OS:            osKey,
+		Shell:         flags.shell,
 		Stacks:        flags.stacks,
 		AgentCLIs:     agents,
 		DefaultTool:   normalizeDefaultAgentCLI(agents[0], agents),
@@ -897,6 +913,7 @@ func specFromFlags(flags createFlags) (project.Spec, error) {
 	return project.Spec{
 		Name:          name,
 		OS:            flags.osKey,
+		Shell:         flags.shell,
 		Stacks:        flags.stacks,
 		AgentCLIs:     agents,
 		DefaultTool:   normalizeDefaultAgentCLI(agents[0], agents),

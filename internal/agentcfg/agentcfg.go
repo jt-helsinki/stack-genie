@@ -484,11 +484,18 @@ func AgentEnvScript(gatewayURL, apiKey, graphifyModel string) []byte {
 	return buffer.Bytes()
 }
 
+// terminfoFallbackLine falls back to xterm-256color when $TERM has no in-VM terminfo
+// entry (Ghostty's xterm-ghostty, kitty, wezterm, …), so keys/colours render instead of
+// "unknown terminal". Inside a session tmux already sets tmux-256color; this covers the
+// pre-tmux / non-tmux exec path. It is POSIX, so it is reused verbatim by bash + zsh.
+const terminfoFallbackLine = "command -v infocmp >/dev/null 2>&1 && ! infocmp \"$TERM\" >/dev/null 2>&1 && export TERM=xterm-256color\n"
+
 // BashProfile renders the managed ~/.bash_profile written into the microVM at
 // workspace start. It sources the standard ~/.bashrc (so an interactive login
 // shell behaves normally) and then the agent env file (the gateway env vars for
-// the env-routed CLIs), so a user running claude/codex/gemini from `ai shell` or
-// `ai attach` is routed through the gateway with the workspace's scoped key. It is
+// the env-routed CLIs) plus the Headroom-wrap alias snippet, so a user running
+// claude/codex/opencode from `ai shell` or `ai attach` is routed through the gateway
+// with the workspace's scoped key AND gets the `headroom wrap` aliases. It is
 // rewritten on every start; the agent env file it sources holds the key (in-VM).
 func BashProfile() []byte {
 	var buffer bytes.Buffer
@@ -496,12 +503,86 @@ func BashProfile() []byte {
 	buffer.WriteString("# interactive login shells. Do not edit by hand; rewritten on every start.\n")
 	buffer.WriteString("[ -f \"$HOME/.bashrc\" ] && . \"$HOME/.bashrc\"\n")
 	buffer.WriteString("[ -f " + shellQuote(AgentEnvFileGuestPath) + " ] && . " + shellQuote(AgentEnvFileGuestPath) + "\n")
-	// Terminal setup for Ghostty (and any host terminal whose TERM the guest lacks a
-	// terminfo entry for — kitty, wezterm, …): if $TERM does not resolve in the in-VM
-	// terminfo DB, fall back to xterm-256color (always present) so keys/colours render
-	// instead of "unknown terminal". Inside a session tmux already sets tmux-256color;
-	// this covers the pre-tmux / non-tmux exec path (e.g. Ghostty's TERM=xterm-ghostty).
-	buffer.WriteString("command -v infocmp >/dev/null 2>&1 && ! infocmp \"$TERM\" >/dev/null 2>&1 && export TERM=xterm-256color\n")
+	buffer.WriteString("[ -f " + shellQuote(ShellAliasesFileGuestPath) + " ] && . " + shellQuote(ShellAliasesFileGuestPath) + "\n")
+	buffer.WriteString(terminfoFallbackLine)
+	return buffer.Bytes()
+}
+
+// HeadroomWrapName maps a platform agent CLI to the token Headroom's `wrap` subcommand
+// accepts, and reports whether Headroom can wrap it. Headroom `wrap` supports only a
+// FIXED set of agent tokens (claude, codex, copilot, cursor, aider, opencode, cline,
+// continue, goose, openhands, openclaw, vibe); of this platform's CLIs only claude-code,
+// codex, and opencode are wrappable. pi, omp, and gemini are NOT — aliasing them would
+// break at runtime — so they return ok=false and get no alias. This mirrors the
+// graphifyPlatformFlag guard: an unsupported CLI is simply skipped.
+func HeadroomWrapName(cli string) (string, bool) {
+	switch cli {
+	case "claude-code":
+		return "claude", true
+	case "codex":
+		return "codex", true
+	case "opencode":
+		return "opencode", true
+	default:
+		return "", false
+	}
+}
+
+// ShellAliasesFileGuestPath is the in-VM path of the managed Headroom-wrap alias snippet,
+// sourced by every interactive shell (bash + zsh). It is dedicated (not a framework rc), so
+// the platform can rewrite it whole on every start without disturbing oh-my-bash/oh-my-zsh.
+const ShellAliasesFileGuestPath = "/home/workspace/.config/aip/shell-aliases.sh"
+
+// ShellAliases renders the managed POSIX snippet (written to ShellAliasesFileGuestPath)
+// that aliases each Headroom-wrappable agent CLI to `headroom wrap <name>`, so typing e.g.
+// `claude` runs `headroom wrap claude` (input compression via the host Headroom CLI, which
+// is already installed in-VM). Only the installed CLIs Headroom supports (HeadroomWrapName)
+// get an alias; the rest (pi, omp, gemini) are skipped. Tools are iterated in the order
+// given and de-duplicated, so the output is deterministic.
+func ShellAliases(tools []string) []byte {
+	var buffer bytes.Buffer
+	buffer.WriteString("# Managed by the AI Development Platform — Headroom wrap aliases for the\n")
+	buffer.WriteString("# installed agent CLIs. Sourced by every interactive shell (bash + zsh) so\n")
+	buffer.WriteString("# typing e.g. `claude` runs `headroom wrap claude`. Do not edit by hand;\n")
+	buffer.WriteString("# this file is rewritten on every workspace start.\n")
+	seen := make(map[string]bool, len(tools))
+	for _, tool := range tools {
+		name, ok := HeadroomWrapName(tool)
+		if !ok || seen[name] {
+			continue
+		}
+		seen[name] = true
+		buffer.WriteString("alias " + name + "=" + shellQuote("headroom wrap "+name) + "\n")
+	}
+	return buffer.Bytes()
+}
+
+// ShellRCMarkerBegin / ShellRCMarkerEnd bound the managed block appended to the
+// framework-owned interactive rc files (oh-my-bash's ~/.bashrc, oh-my-zsh's ~/.zshrc).
+// The platform NEVER overwrites those files — the block is stripped and re-appended
+// idempotently on every workspace start, keyed off these markers. They carry no regex
+// metacharacters (no slash/dot) so they can be used directly in a sed address.
+const (
+	ShellRCMarkerBegin = "# >>> AI Development Platform managed >>>"
+	ShellRCMarkerEnd   = "# <<< AI Development Platform managed <<<"
+)
+
+// ShellRCBlock renders the managed, marker-delimited block appended to the framework rc
+// of BOTH interactive shells (bash + zsh). It sources the agent gateway env file (the
+// scoped key + gateway env vars) and the Headroom-wrap alias snippet, and applies the
+// terminfo fallback — so an interactive shell / tmux pane in either shell routes through
+// the gateway AND has the `headroom wrap` aliases defined. The workspace layer strips any
+// prior copy between the markers and re-appends this block idempotently on every start.
+func ShellRCBlock() []byte {
+	var buffer bytes.Buffer
+	buffer.WriteString(ShellRCMarkerBegin + "\n")
+	buffer.WriteString("# Managed by the AI Development Platform — do not edit between the markers;\n")
+	buffer.WriteString("# rewritten on every workspace start. Sources the agent gateway env + the\n")
+	buffer.WriteString("# Headroom-wrap aliases for interactive shells (incl. tmux panes).\n")
+	buffer.WriteString("[ -f " + shellQuote(AgentEnvFileGuestPath) + " ] && . " + shellQuote(AgentEnvFileGuestPath) + "\n")
+	buffer.WriteString("[ -f " + shellQuote(ShellAliasesFileGuestPath) + " ] && . " + shellQuote(ShellAliasesFileGuestPath) + "\n")
+	buffer.WriteString(terminfoFallbackLine)
+	buffer.WriteString(ShellRCMarkerEnd + "\n")
 	return buffer.Bytes()
 }
 

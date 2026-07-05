@@ -56,6 +56,18 @@ const (
 	tmuxConfGuestPath    = "/home/workspace/.tmux.conf"
 )
 
+// Interactive-shell config written at start. The framework rc files (oh-my-bash owns
+// ~/.bashrc, oh-my-zsh owns ~/.zshrc) are NEVER overwritten — a managed, marker-delimited
+// block (agentcfg.ShellRCBlock) is appended idempotently to BOTH so either shell sources
+// the agent gateway env + the Headroom-wrap aliases (agentcfg.ShellAliases, written whole
+// to shellAliasesGuestPath). The chosen default shell (config.Workspace.Shell) is applied
+// with chsh for zsh (best-effort); bash needs no chsh.
+const (
+	shellAliasesGuestPath = agentcfg.ShellAliasesFileGuestPath
+	bashrcGuestPath       = "/home/workspace/.bashrc"
+	zshrcGuestPath        = "/home/workspace/.zshrc"
+)
+
 // refresh-models guest paths. The generated script is first written to a home
 // staging path (WriteFile runs as the `workspace` user and keeps the payload off
 // argv), then installed onto PATH at /usr/local/bin via passwordless sudo so the
@@ -606,6 +618,15 @@ func (manager Manager) registerAgentProviders(name, project, root string, projec
 		return err
 	}
 
+	// Write the Headroom-wrap alias snippet (each installed, wrappable CLI gets
+	// `alias <cli>='headroom wrap <cli>'`) and make the chosen interactive shell source
+	// it + the agent env. The wrap aliases are what let a user type `claude`/`codex`/
+	// `opencode` and transparently get Headroom input-compression in front of the CLI.
+	if err := manager.Sandbox.WriteFile(name, shellAliasesGuestPath, agentcfg.ShellAliases(projectConfig.Agent.Tools)); err != nil {
+		return err
+	}
+	manager.applyShellChoice(name, projectConfig.Workspace.Shell)
+
 	// Install the in-VM `refresh-models` command so the user can re-pull the model
 	// picker (after adding a provider key with `ai keys` or pulling/removing an
 	// Ollama model on the host) WITHOUT restarting the workspace. It bakes the SAME
@@ -625,6 +646,58 @@ func (manager Manager) registerAgentProviders(name, project, root string, projec
 	// Write the managed tmux.conf so the workspace session model is transparent
 	// (mouse scroll, hidden status bar) — the user never types a tmux command.
 	return manager.Sandbox.WriteFile(name, tmuxConfGuestPath, agentcfg.TmuxConfig())
+}
+
+// applyShellChoice makes every interactive shell (bash + zsh) source the managed agent
+// gateway env + Headroom-wrap aliases, and — when the project selected zsh — switches the
+// workspace user's login shell to zsh. It appends agentcfg.ShellRCBlock idempotently to
+// the framework-owned ~/.bashrc AND ~/.zshrc (oh-my-bash / oh-my-zsh own those files, so
+// they are never overwritten — the block is stripped and re-appended between its markers).
+// Both shells are configured regardless of the choice so a manually-launched shell still
+// gets the aliases; only the login DEFAULT changes. All steps are BEST-EFFORT: a failure
+// leaves a usable workspace, so it warns and continues rather than failing the start.
+//
+// hardware bring-up: the in-VM `chsh` taking effect for future sessions and both rc files
+// sourcing the block (so `headroom wrap` aliases resolve in a real shell / tmux pane) are
+// verified on a provisioned Apple Silicon host; the host-side orchestration (the append
+// argv, the shell selection) is unit-tested against the fake sandbox.
+func (manager Manager) applyShellChoice(name, shell string) {
+	block := agentcfg.ShellRCBlock()
+	for _, rcPath := range []string{bashrcGuestPath, zshrcGuestPath} {
+		if err := manager.appendManagedBlock(name, rcPath, block); err != nil {
+			_, _ = fmt.Fprintf(os.Stderr, "warning: could not update %s in workspace %q (continuing): %v\n", rcPath, name, err)
+		}
+	}
+	if shell == "zsh" {
+		// Switch the workspace user's login shell to zsh. Best-effort — the rc block is
+		// already in place for both shells, so a chsh failure just leaves bash as default.
+		if _, err := manager.Sandbox.ExecRoot(name, []string{"sh", "-c", `chsh -s "$(command -v zsh)" workspace`}); err != nil {
+			_, _ = fmt.Fprintf(os.Stderr, "warning: could not set the zsh login shell in workspace %q (continuing): %v\n", name, err)
+		}
+	}
+}
+
+// appendManagedBlock appends a marker-delimited managed block to a framework-owned rc file
+// inside the microVM, idempotently: it stages the block to a temp path via WriteFile
+// (payload off argv, as the workspace user who owns the rc files), then runs an Exec that
+// strips any prior copy between the markers and re-appends the fresh block, and removes the
+// temp file. Re-running yields the same result, so restarts never duplicate the block.
+func (manager Manager) appendManagedBlock(name, rcPath string, block []byte) error {
+	stage := rcPath + ".aip-block"
+	if err := manager.Sandbox.WriteFile(name, stage, block); err != nil {
+		return err
+	}
+	// `sed '/begin/,/end/d'` drops any prior managed block (a no-op on the first start,
+	// when the file has no markers); we then append the fresh staged block. `touch`
+	// tolerates a not-yet-created rc file. The markers carry no sed metacharacters.
+	script := fmt.Sprintf(
+		"touch %[1]s && tmp=%[1]s.aip.$$ && "+
+			"{ sed '/%[3]s/,/%[4]s/d' %[1]s 2>/dev/null || cat %[1]s; } > \"$tmp\" && "+
+			"cat %[2]s >> \"$tmp\" && mv \"$tmp\" %[1]s && rm -f %[2]s",
+		shellQuoteGuest(rcPath), shellQuoteGuest(stage),
+		agentcfg.ShellRCMarkerBegin, agentcfg.ShellRCMarkerEnd)
+	_, err := manager.Sandbox.Exec(name, []string{"sh", "-c", script})
+	return err
 }
 
 // containerdLog is the in-VM path containerd's stdout/stderr is redirected to

@@ -76,6 +76,11 @@ type ContextConfig struct {
 type WorkspaceConfig struct {
 	CPULimit    int    `yaml:"cpu_limit,omitempty" json:"cpu_limit,omitempty"`
 	MemoryLimit string `yaml:"memory_limit,omitempty" json:"memory_limit,omitempty"`
+	// Shell is the workspace's default interactive shell: "bash" (the platform
+	// default, today's behavior) or "zsh". It is chosen at `ai create` and applied at
+	// workspace start (the interactive-shell rc block, and — for zsh — chsh of the
+	// workspace user's login shell). Empty is treated as bash by callers.
+	Shell string `yaml:"shell,omitempty" json:"shell,omitempty"`
 }
 
 // MicrosandboxConfig holds options passed to `msb create` at workspace start.
@@ -193,6 +198,17 @@ func UsableHostMemoryMiB(hostMiB uint64) uint64 {
 	return MinWorkspaceMemoryMiB
 }
 
+// ValidateShell checks a workspace shell choice. Empty is allowed (callers treat it as
+// bash — the platform default, today's behavior); otherwise it must be "bash" or "zsh".
+func ValidateShell(value string) error {
+	switch value {
+	case "", "bash", "zsh":
+		return nil
+	default:
+		return fmt.Errorf("workspace.shell: %q (one of bash|zsh)", value)
+	}
+}
+
 // ValidateCPUs checks a workspace cpu_limit. 0 means "use the runtime default"; a
 // negative count is invalid.
 func ValidateCPUs(cpus int) error {
@@ -255,7 +271,7 @@ func Default() *Config {
 	return &Config{
 		Agent:     AgentConfig{Tools: []string{"opencode", "pi"}, DefaultTool: "opencode"},
 		Context:   ContextConfig{Strategy: "balanced", CavemanLevel: "full"},
-		Workspace: WorkspaceConfig{CPULimit: 4, MemoryLimit: "8"},
+		Workspace: WorkspaceConfig{CPULimit: 4, MemoryLimit: "8", Shell: "bash"},
 		Microsandbox: MicrosandboxConfig{
 			IdleTimeout: DefaultMicrosandboxIdleTimeout,
 		},

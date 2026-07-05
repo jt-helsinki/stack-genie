@@ -33,6 +33,7 @@ const (
 	stepLocation = iota
 	stepName
 	stepOS
+	stepShell
 	stepAgents
 	stepDefault
 	stepStacks
@@ -50,6 +51,7 @@ var stepTitles = map[int]string{
 	stepLocation: "Location",
 	stepName:     "Name",
 	stepOS:       "Operating system",
+	stepShell:    "Shell",
 	stepAgents:   "Agent CLIs",
 	stepDefault:  "Default agent",
 	stepStacks:   "Software stacks",
@@ -71,6 +73,7 @@ type Create struct {
 	location    *locationStep
 	name        *textStep
 	osList      *selectList
+	shell       *selectList
 	agents      *multiSelectList
 	defaultTool *selectList
 	stacks      *multiSelectList
@@ -98,6 +101,7 @@ func NewCreate(startDir string, library []ollama.LibraryModel, hostGB, usableGB 
 		location:    newLocationStep(startDir),
 		name:        newTextStep("name", "The workspace name (lowercase letters, digits, hyphens).", "my-workspace", "", validateNameField),
 		osList:      newSelectList("Base operating system.", create.SupportedOSes(), "debian-trixie"),
+		shell:       newSelectList("Default interactive shell for workspace sessions.", create.SupportedShells(), "bash"),
 		agents:      newMultiSelectList("Agent CLIs to install (space to toggle; opencode + pi are the defaults).", create.SupportedAgentCLIs(), []string{"opencode", "pi"}),
 		defaultTool: newSelectList("The agent CLI launched by default.", []string{"opencode"}, "opencode"),
 		stacks:      newMultiSelectList("Extra software stacks (Python, Node, uv + Graphify are installed by default).", create.SupportedStacks(), nil),
@@ -123,7 +127,7 @@ func (view *Create) Hints() string {
 		return "type to filter · ↓/↑ pick folder · tab open folder · enter next" + nav
 	case stepAgents, stepStacks, stepApps:
 		return "↑/↓ move · space toggle · enter next" + nav
-	case stepOS, stepDefault, stepModel:
+	case stepOS, stepShell, stepDefault, stepModel:
 		return "↑/↓ move · enter select/next" + nav
 	default:
 		return "type · enter next" + nav
@@ -141,6 +145,7 @@ func (view *Create) SetSize(width, height int) {
 	view.location.SetSize(stepWidth, stepHeight)
 	view.name.SetSize(stepWidth, stepHeight)
 	view.osList.SetSize(stepWidth, stepHeight)
+	view.shell.SetSize(stepWidth, stepHeight)
 	view.agents.SetSize(stepWidth, stepHeight)
 	view.defaultTool.SetSize(stepWidth, stepHeight)
 	view.stacks.SetSize(stepWidth, stepHeight)
@@ -179,7 +184,7 @@ func (view *Create) Update(msg tea.Msg) tea.Cmd {
 		return cmd
 	case stepName, stepCPUs, stepMemory, stepPorts, stepIdle:
 		return view.updateTextStep(view.textStepFor(view.step), msg)
-	case stepOS, stepDefault:
+	case stepOS, stepShell, stepDefault:
 		return view.updateSelectStep(view.selectStepFor(view.step), msg)
 	case stepAgents, stepStacks, stepApps:
 		return view.updateMultiStep(view.multiStepFor(view.step), msg)
@@ -262,10 +267,14 @@ func (view *Create) textStepFor(step int) *textStep {
 }
 
 func (view *Create) selectStepFor(step int) *selectList {
-	if step == stepOS {
+	switch step {
+	case stepOS:
 		return view.osList
+	case stepShell:
+		return view.shell
+	default:
+		return view.defaultTool
 	}
-	return view.defaultTool
 }
 
 func (view *Create) multiStepFor(step int) *multiSelectList {
@@ -315,6 +324,7 @@ func (view *Create) finish() tea.Cmd {
 	spec := project.Spec{
 		Name:          view.name.Value(),
 		OS:            view.osList.Value(),
+		Shell:         view.shell.Value(),
 		AgentCLIs:     view.agents.Values(),
 		DefaultTool:   view.defaultTool.Value(),
 		Stacks:        view.stacks.Values(),
@@ -345,6 +355,8 @@ func (view *Create) stepBody() string {
 		return view.name.View()
 	case stepOS:
 		return view.osList.View()
+	case stepShell:
+		return view.shell.View()
 	case stepAgents:
 		return view.agents.View()
 	case stepDefault:

@@ -26,3 +26,7 @@ func SupportedAgentCLIs() []string {
 
 // SupportedApps are the opt-in in-VM AI applications (default none).
 func SupportedApps() []string { return apps.Keys() }
+
+// SupportedShells are the interactive shells a workspace can default to. bash is the
+// platform default (today's behavior); zsh is the alternative.
+func SupportedShells() []string { return []string{"bash", "zsh"} }

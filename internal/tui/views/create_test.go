@@ -203,10 +203,14 @@ func TestCreateWizardAssemblesSpec(test *testing.T) {
 	// Step 2: name.
 	wizard.name.input.SetValue("demo-ws")
 	enter()
-	// Step 3: OS (default debian-trixie). Step 4: agents (default opencode+pi).
+	// Step 3: OS (default debian-trixie). Step 4: shell (default bash). Step 5: agents.
 	enter() // OS
+	if wizard.step != stepShell {
+		test.Fatalf("after OS, step = %d, want stepShell", wizard.step)
+	}
+	enter() // shell (default bash)
 	if wizard.step != stepAgents {
-		test.Fatalf("after OS, step = %d, want stepAgents", wizard.step)
+		test.Fatalf("after shell, step = %d, want stepAgents", wizard.step)
 	}
 	enter() // agents (defaults satisfy the ≥1 requirement)
 	enter() // default agent
@@ -234,6 +238,9 @@ func TestCreateWizardAssemblesSpec(test *testing.T) {
 	}
 	if spec.OS != "debian-trixie" {
 		test.Errorf("spec.OS = %q, want debian-trixie", spec.OS)
+	}
+	if spec.Shell != "bash" {
+		test.Errorf("spec.Shell = %q, want bash (default)", spec.Shell)
 	}
 	if spec.Root != target {
 		test.Errorf("spec.Root = %q, want %q", spec.Root, target)

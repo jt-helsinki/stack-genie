@@ -462,3 +462,92 @@ func TestOmpConfigSeedThenRemember(test *testing.T) {
 		test.Errorf("un-seeded omp config.yml must omit modelRoles (last-used wins):\n%s", empty)
 	}
 }
+
+// TestHeadroomWrapName pins the mapping from this platform's agent CLIs to Headroom's
+// fixed `wrap` tokens: claude-code→claude, codex→codex, opencode→opencode are wrappable;
+// pi, omp, and gemini are NOT (aliasing them would break at runtime).
+func TestHeadroomWrapName(test *testing.T) {
+	wrappable := map[string]string{
+		"claude-code": "claude",
+		"codex":       "codex",
+		"opencode":    "opencode",
+	}
+	for cli, want := range wrappable {
+		got, ok := HeadroomWrapName(cli)
+		if !ok || got != want {
+			test.Errorf("HeadroomWrapName(%q) = (%q, %v), want (%q, true)", cli, got, ok, want)
+		}
+	}
+	for _, cli := range []string{"pi", "omp", "gemini", "unknown", ""} {
+		if got, ok := HeadroomWrapName(cli); ok {
+			test.Errorf("HeadroomWrapName(%q) = (%q, true), want ok=false (not Headroom-wrappable)", cli, got)
+		}
+	}
+}
+
+// TestShellAliases verifies the snippet aliases each wrappable installed CLI to
+// `headroom wrap <name>` and OMITS the non-wrappable ones (pi, omp, gemini).
+func TestShellAliases(test *testing.T) {
+	snippet := string(ShellAliases([]string{"opencode", "pi", "omp", "claude-code", "codex", "gemini"}))
+	for _, want := range []string{
+		`alias claude='headroom wrap claude'`,
+		`alias codex='headroom wrap codex'`,
+		`alias opencode='headroom wrap opencode'`,
+	} {
+		if !strings.Contains(snippet, want) {
+			test.Errorf("ShellAliases missing %q:\n%s", want, snippet)
+		}
+	}
+	for _, absent := range []string{"alias pi=", "alias omp=", "alias gemini="} {
+		if strings.Contains(snippet, absent) {
+			test.Errorf("ShellAliases must not alias a non-wrappable CLI (%q):\n%s", absent, snippet)
+		}
+	}
+	// Deterministic + de-duplicated: a repeated tool yields exactly one alias line.
+	repeated := string(ShellAliases([]string{"claude-code", "claude-code"}))
+	if strings.Count(repeated, "alias claude=") != 1 {
+		test.Errorf("ShellAliases must de-duplicate; got:\n%s", repeated)
+	}
+	// No tools → no alias lines (just the managed-by header comments).
+	if strings.Contains(string(ShellAliases(nil)), "alias ") {
+		test.Errorf("ShellAliases(nil) should define no aliases")
+	}
+}
+
+// TestShellRCBlock verifies the managed rc block is marker-delimited and sources BOTH the
+// agent gateway env file and the Headroom-wrap alias snippet, so bash + zsh interactive
+// shells route through the gateway with the aliases defined.
+func TestShellRCBlock(test *testing.T) {
+	block := string(ShellRCBlock())
+	for _, want := range []string{
+		ShellRCMarkerBegin,
+		ShellRCMarkerEnd,
+		AgentEnvFileGuestPath,
+		ShellAliasesFileGuestPath,
+	} {
+		if !strings.Contains(block, want) {
+			test.Errorf("ShellRCBlock missing %q:\n%s", want, block)
+		}
+	}
+	if !strings.HasPrefix(block, ShellRCMarkerBegin) {
+		test.Errorf("ShellRCBlock must start with the begin marker:\n%s", block)
+	}
+	if !strings.Contains(block, "&& . '"+AgentEnvFileGuestPath+"'") {
+		test.Errorf("ShellRCBlock must SOURCE the agent env file:\n%s", block)
+	}
+	if !strings.Contains(block, "&& . '"+ShellAliasesFileGuestPath+"'") {
+		test.Errorf("ShellRCBlock must SOURCE the shell-aliases file:\n%s", block)
+	}
+}
+
+// TestBashProfileSourcesAliases verifies the managed ~/.bash_profile also sources the
+// Headroom-wrap alias snippet (alongside the agent env), keeping login shells consistent.
+func TestBashProfileSourcesAliases(test *testing.T) {
+	profile := string(BashProfile())
+	if !strings.Contains(profile, ShellAliasesFileGuestPath) {
+		test.Errorf("BashProfile must source the shell-aliases file:\n%s", profile)
+	}
+	if !strings.Contains(profile, AgentEnvFileGuestPath) {
+		test.Errorf("BashProfile must still source the agent env file:\n%s", profile)
+	}
+}

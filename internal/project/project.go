@@ -57,6 +57,9 @@ type Spec struct {
 	// Memory is the workspace memory limit (e.g. "8G") written to
 	// config.yaml workspace.memory_limit. Empty uses the platform default.
 	Memory string
+	// Shell is the workspace's default interactive shell ("bash" or "zsh"), written to
+	// config.yaml workspace.shell. Empty defaults to "bash" (today's behavior).
+	Shell string
 	// PublishPorts are the host↔guest ports to open into the sandbox, written to
 	// config.yaml network.publish_ports.
 	PublishPorts []config.PortMapping
@@ -238,10 +241,15 @@ func Scaffold(spec Spec, createdAt string) (string, error) {
 	if memory == "" {
 		memory = config.Default().Workspace.MemoryLimit
 	}
+	// Default interactive shell: bash unless the create wizard/flag chose zsh.
+	shell := spec.Shell
+	if shell == "" {
+		shell = "bash"
+	}
 	projectConfig := &config.Config{
 		OS:           spec.OS,
 		Agent:        config.AgentConfig{Tools: spec.AgentCLIs, DefaultTool: spec.DefaultTool, GraphifyModel: spec.GraphifyModel},
-		Workspace:    config.WorkspaceConfig{CPULimit: cpus, MemoryLimit: memory},
+		Workspace:    config.WorkspaceConfig{CPULimit: cpus, MemoryLimit: memory, Shell: shell},
 		Microsandbox: config.MicrosandboxConfig{IdleTimeout: idleTimeout},
 		Network:      config.NetworkConfig{PublishPorts: spec.PublishPorts},
 		Apps:         appEntries,

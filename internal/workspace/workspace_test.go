@@ -431,8 +431,89 @@ func TestStartRoutesAllFiveAgentCLIs(test *testing.T) {
 		test.Errorf("managed bash_profile must source the agent env file: %q", profile)
 	}
 
-	// (5) HARD security constraint: NO host-disk project config contains the scoped key.
+	// (5) The Headroom-wrap alias snippet is written IN-VM and the managed rc block is
+	// appended to BOTH framework shells' rc so an interactive shell sources it (the alias
+	// CONTENT for installed wrappable CLIs is asserted in TestStartAppliesZshLoginShell,
+	// which seeds a config with agent tools).
+	readGuestFile(test, sandbox, shellAliasesGuestPath)
+	assertRCBlockAppended(test, sandbox, bashrcGuestPath)
+	assertRCBlockAppended(test, sandbox, zshrcGuestPath)
+
+	// (6) HARD security constraint: NO host-disk project config contains the scoped key.
 	assertProjectConfigsKeyless(test, root, key)
+}
+
+// assertRCBlockAppended checks that Start staged the managed rc block for rcPath and ran an
+// Exec that strips the prior block (sed on the markers) and appends the fresh one.
+func assertRCBlockAppended(test *testing.T, sandbox *fakeSandbox, rcPath string) {
+	test.Helper()
+	staged, ok := sandbox.written[rcPath+".aip-block"]
+	if !ok || !strings.Contains(string(staged), agentcfg.ShellRCMarkerBegin) {
+		test.Errorf("managed rc block not staged for %s", rcPath)
+	}
+	found := false
+	for _, argv := range sandbox.allExecArgv {
+		joined := strings.Join(argv, " ")
+		if strings.Contains(joined, rcPath) && strings.Contains(joined, agentcfg.ShellRCMarkerBegin) {
+			found = true
+			break
+		}
+	}
+	if !found {
+		test.Errorf("no Exec appended the managed rc block to %s:\n%v", rcPath, sandbox.allExecArgv)
+	}
+}
+
+// TestStartAppliesZshLoginShell verifies that a zsh workspace runs a best-effort chsh to
+// zsh as ROOT, while a bash (default) workspace does NOT — both still get the rc block +
+// aliases so either shell is fully configured.
+func TestStartAppliesZshLoginShell(test *testing.T) {
+	chshRun := func(sandbox *fakeSandbox) bool {
+		for _, argv := range sandbox.execRootArgv {
+			if strings.Contains(strings.Join(argv, " "), "chsh -s") {
+				return true
+			}
+		}
+		return false
+	}
+
+	// zsh: a chsh -s to zsh for the workspace user is issued (as root).
+	rootZsh := seedProject(test, "zapp")
+	if err := config.WriteProject(rootZsh, &config.Config{
+		Agent:     config.AgentConfig{Tools: []string{"opencode", "codex", "pi"}},
+		Workspace: config.WorkspaceConfig{Shell: "zsh"},
+	}); err != nil {
+		test.Fatal(err)
+	}
+	sandboxZsh := &fakeSandbox{}
+	managerZsh := Manager{Builder: &fakeBuilder{}, Sandbox: sandboxZsh, Keys: &fakeKeyMinter{}, Now: func() string { return "t" }}
+	if _, err := managerZsh.Start("zapp"); err != nil {
+		test.Fatal(err)
+	}
+	if !chshRun(sandboxZsh) {
+		test.Errorf("zsh workspace must chsh the login shell to zsh:\n%v", sandboxZsh.execRootArgv)
+	}
+	// The wrappable installed CLIs (opencode/codex) get wrap aliases; pi does not.
+	aliases := readGuestFile(test, sandboxZsh, shellAliasesGuestPath)
+	for _, want := range []string{"alias opencode='headroom wrap opencode'", "alias codex='headroom wrap codex'"} {
+		if !strings.Contains(aliases, want) {
+			test.Errorf("shell-aliases snippet missing %q:\n%s", want, aliases)
+		}
+	}
+	if strings.Contains(aliases, "alias pi=") {
+		test.Errorf("pi is not Headroom-wrappable and must not be aliased:\n%s", aliases)
+	}
+
+	// bash (default, unset shell): no chsh — the shell stays bash.
+	seedProject(test, "bapp")
+	sandboxBash := &fakeSandbox{}
+	managerBash := Manager{Builder: &fakeBuilder{}, Sandbox: sandboxBash, Keys: &fakeKeyMinter{}, Now: func() string { return "t" }}
+	if _, err := managerBash.Start("bapp"); err != nil {
+		test.Fatal(err)
+	}
+	if chshRun(sandboxBash) {
+		test.Errorf("bash workspace must NOT chsh:\n%v", sandboxBash.execRootArgv)
+	}
 }
 
 // readProjectConfig reads a per-CLI project config file written under the project root.
