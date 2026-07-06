@@ -203,7 +203,7 @@ func TestBaseDockerfileShipsShellsAndHeadroom(t *testing.T) {
 				"ohmyzsh/ohmyzsh",
 				"--unattended",
 				// Headroom CLI, installed via uv tool alongside Graphify.
-				`uv tool install "headroom-ai[proxy]"`,
+				`uv tool install --no-cache "headroom-ai[proxy]"`,
 			} {
 				if !strings.Contains(got, fragment) {
 					t.Errorf("%s: base Dockerfile missing %q:\n%s", osKey, fragment, got)

@@ -84,7 +84,7 @@ func TestComposeBakesHeadroom(test *testing.T) {
 	if err != nil {
 		test.Fatal(err)
 	}
-	if !strings.Contains(dockerfile, `uv tool install "headroom-ai[proxy]"`) {
+	if !strings.Contains(dockerfile, `uv tool install --no-cache "headroom-ai[proxy]"`) {
 		test.Errorf("composed Dockerfile should install Headroom (headroom-ai) in the workspace image:\n%s", dockerfile)
 	}
 }
