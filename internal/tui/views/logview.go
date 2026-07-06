@@ -143,6 +143,10 @@ type LogView struct {
 	streamCtx    context.Context
 	streamCancel context.CancelFunc
 	streamBuf    string
+	// streamDisabled temporarily forces POLL mode even when openStream is set — used
+	// during a workspace lifecycle op so the Logs pane tails the live build log
+	// instead of the microVM stream (see SetStreamingEnabled).
+	streamDisabled bool
 
 	// debugFilter identifies high-volume, low-signal "debug" lines (e.g. the
 	// microsandbox agent-relay connect/disconnect churn) that are HIDDEN unless the
@@ -194,8 +198,28 @@ func (view *LogView) closeStream() {
 	}
 }
 
-// streaming reports whether this view is configured for push streaming.
-func (view *LogView) streaming() bool { return view.openStream != nil }
+// streaming reports whether this view is currently in push-streaming mode: it needs
+// a configured opener AND must not be temporarily disabled (SetStreamingEnabled).
+func (view *LogView) streaming() bool { return view.openStream != nil && !view.streamDisabled }
+
+// SetStreamingEnabled toggles push-streaming at runtime. The embedder DISABLES it for
+// the duration of a workspace lifecycle op (start/restart): while disabled the Logs
+// pane uses the POLL path, so it tails the live build log (the detached `ai
+// start/restart` progress + in-VM install output tee'd to run/<action>.log) instead
+// of the microVM log stream — which during a restart shows the OLD VM shutting down
+// and then stalls before the new VM's log appears. Disabling closes any open stream;
+// on re-enable the embedder Resets + reactivates the view to open a fresh stream. A
+// no-op on a view with no stream opener (the CLI backend, already poll-only).
+func (view *LogView) SetStreamingEnabled(enabled bool) {
+	if view.openStream == nil {
+		return
+	}
+	view.streamDisabled = !enabled
+	if !enabled {
+		view.closeStream()
+		view.streamBuf = ""
+	}
+}
 
 // setContent caches the full (unfiltered) normalized content and renders the visible
 // view (debug lines filtered unless toggled on), honouring the scroll freeze.

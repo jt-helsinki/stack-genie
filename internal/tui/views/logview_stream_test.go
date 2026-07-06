@@ -35,6 +35,48 @@ func TestLogViewStreamOpenErrorFallsBackToTailer(test *testing.T) {
 	}
 }
 
+// TestLogViewSetStreamingEnabledFallsBackToTailer: disabling streaming (as the app
+// does for the duration of a start/restart) makes the view use the POLL path so it
+// tails the live BUILD LOG rather than the microVM stream (which during a restart
+// shows the old VM shutting down and stalls). Re-enabling restores the stream.
+func TestLogViewSetStreamingEnabledFallsBackToTailer(test *testing.T) {
+	opener := func(ctx context.Context) (LogStream, error) {
+		return &fakeLogStream{chunks: []string{"vm log\n"}}, nil
+	}
+	view := NewWorkspaceLog(
+		func() (string, error) { return "=== ai restart demo ===\ninstalling…\n", nil },
+		func() bool { return true },
+		func() string { return "demo" },
+		opener,
+	)
+	view.SetSize(80, 10)
+
+	// Configured for streaming by default.
+	if !view.streaming() {
+		test.Fatal("a stream-configured view must start in streaming mode")
+	}
+	// Disable: Init must now take the POLL path (issue a tailer load + tick), NOT open
+	// a stream — so the build log is what renders.
+	view.SetStreamingEnabled(false)
+	if view.streaming() {
+		test.Fatal("SetStreamingEnabled(false) must leave streaming() false")
+	}
+	if view.Init() == nil {
+		test.Fatal("poll mode Init should return a load+tick batch")
+	}
+	// Drive the tailer load (same generation as Init) and feed its result back: the
+	// build log must render, proving the poll path (not the stream) is in use.
+	view.Update(view.issueLoad()())
+	if !strings.Contains(view.content, "installing") {
+		test.Errorf("with streaming disabled the build log must render, got %q", view.content)
+	}
+	// Re-enable: streaming resumes for the next activation.
+	view.SetStreamingEnabled(true)
+	if !view.streaming() {
+		test.Fatal("SetStreamingEnabled(true) must restore streaming mode")
+	}
+}
+
 // fakeLogStream is a scripted LogStream: it returns each chunk in turn, then io.EOF.
 type fakeLogStream struct {
 	chunks []string

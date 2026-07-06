@@ -134,6 +134,35 @@ func TestSessionsNewSessionPromptCreates(test *testing.T) {
 	}
 }
 
+// The new-session prompt renders (and accepts typing) even when the session list has
+// NOT loaded yet — a slow/starting workspace makes tmux ls hang, so `loaded` stays
+// false; the loading gate must NOT pre-empt the prompt (else the pane looks blank and
+// unresponsive after pressing n). Regression guard for that reported bug.
+func TestSessionsNewPromptShowsWhileListUnloaded(test *testing.T) {
+	view := NewSessions(
+		// A lister that never returns keeps the view UNLOADED (as a hung tmux ls would).
+		func() ([]workspace.Session, error) { select {} },
+		noKill,
+		func() string { return "app" },
+	)
+	if view.loaded {
+		test.Fatal("precondition: the view must be unloaded")
+	}
+	// n opens the prompt; typing must build the name and render it despite !loaded.
+	view.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("n")})
+	if !view.creating {
+		test.Fatal("n must enter create mode even before the list loads")
+	}
+	view.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("dev")})
+	rendered := view.View()
+	if strings.Contains(rendered, "loading sessions") {
+		test.Errorf("the loading gate must not pre-empt the new-session prompt:\n%s", rendered)
+	}
+	if !strings.Contains(rendered, "new session:") || !strings.Contains(rendered, "dev") {
+		test.Errorf("the prompt must render the typed name while unloaded:\n%s", rendered)
+	}
+}
+
 // esc cancels the inline new-session prompt without emitting anything.
 func TestSessionsNewSessionPromptCancels(test *testing.T) {
 	view := NewSessions(

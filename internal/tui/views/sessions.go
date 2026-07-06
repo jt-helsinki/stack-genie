@@ -298,13 +298,25 @@ func (view *Sessions) View() string {
 	if view.project() == "" {
 		return ui.Muted.Render("no workspace selected — open one from the Workspaces view")
 	}
+	// The inline new-session prompt ALWAYS takes precedence: once the user presses n
+	// the pane must show an editable "new session:" line and accept keystrokes even
+	// if the session list is still loading, empty, or errored (a slow/starting
+	// workspace made tmux ls hang, so loaded stayed false — without this the loading
+	// gate below pre-empted the prompt and the pane looked blank/unresponsive).
+	if view.creating {
+		prompt := ui.Heading.Render("new session: ") + view.nameInput + "▏" +
+			ui.Muted.Render("  (enter create · esc cancel)")
+		if !view.loaded || len(view.sessions) == 0 {
+			return prompt
+		}
+		return view.table.View() + "\n" + prompt
+	}
 	if !view.loaded {
 		return ui.Muted.Render("loading sessions…")
 	}
 	// Empty workspace (no tmux server yet, not an error): show a clear, friendly
-	// message instead of a blank table. The new-session prompt still takes precedence
-	// so n works from here.
-	if !view.creating && view.err == nil && len(view.sessions) == 0 {
+	// message instead of a blank table.
+	if view.err == nil && len(view.sessions) == 0 {
 		return ui.Heading.Render("No sessions yet") + "\n\n" +
 			ui.Muted.Render("This workspace has no running shell or agent sessions.\n\nPress ") +
 			ui.Primary.Render("n") + ui.Muted.Render(" to start a new shell session.")
@@ -313,11 +325,7 @@ func (view *Sessions) View() string {
 	// shown in the flash slot, NOT in place of the view — so the table + actions stay
 	// available and you can still press n to create or attach a session.
 	last := flashLine(view.flash)
-	switch {
-	case view.creating:
-		last = ui.Heading.Render("new session: ") + view.nameInput + "▏" +
-			ui.Muted.Render("  (enter create · esc cancel)")
-	case view.err != nil:
+	if view.err != nil {
 		last = flashLine(ui.Failure.Render(ui.IconFail + " " + view.err.Error()))
 	}
 	return view.table.View() + "\n" + last

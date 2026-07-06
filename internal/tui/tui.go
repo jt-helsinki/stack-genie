@@ -152,6 +152,17 @@ func Run(cwd string) error {
 			if application.currentProject == "" {
 				return "", nil
 			}
+			// While a start/restart is IN FLIGHT for this workspace, the authoritative
+			// live output is the detached `ai start|restart` build log — the CLI's
+			// progress + the in-VM install/setup output tee'd to run/<action>.log. Prefer
+			// it over the microVM stream, which during a RESTART shows the OLD VM shutting
+			// down ("reboot: Power down") and then stalls before the new VM's log appears.
+			// (startLifecycle disables streaming for the duration so this poll path runs.)
+			if application.lifecycle != nil && application.lifecycle.project == application.currentProject {
+				if buildLog, ok := readLatestLifecycleLog(application.currentProject); ok {
+					return buildLog, nil
+				}
+			}
 			text, err := workspaceManager.WorkspaceLogTail(application.currentProject, 1000)
 			if err == nil && strings.TrimSpace(text) != "" {
 				return text, nil
@@ -833,7 +844,16 @@ func (application *app) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 				application.projectDetail.SetFlash(ui.Warn.Render(ui.IconDot + " " + hint))
 			}
-			return application, application.projectDetail.Init() // final status refresh
+			// Re-enable live streaming (disabled during the op) and clear the build-log
+			// content so the next activation opens a fresh microVM stream. RefreshActive
+			// re-inits whatever sub-tab is visible: the Logs tab reopens the live stream,
+			// the Workspace tab refreshes its status (spinner cleared). projectDetail.Init
+			// also runs so the summary refreshes even when another sub-tab is showing.
+			if application.workspaceLogView != nil {
+				application.workspaceLogView.SetStreamingEnabled(true)
+				application.workspaceLogView.Reset()
+			}
+			return application, tea.Batch(application.projectDetail.Init(), application.projectsHub.RefreshActive())
 		}
 		return application, application.lifecyclePollCmd()
 
@@ -1076,8 +1096,12 @@ func (application *app) startLifecycle(action, project string) tea.Cmd {
 	application.lifecycle = &lifecycleOp{project: project, action: action, started: time.Now()}
 	application.projectDetail.StartPending(action)
 	// Clear the Sandbox Logs tab so the previous session's output does not linger
-	// while the microVM is (re)created — it streams fresh on the next view.
+	// while the microVM is (re)created. DISABLE streaming for the duration so the Logs
+	// tab TAILS the live build log (the detached action's progress + install output)
+	// via the poll path — the microVM stream would otherwise show the old VM shutting
+	// down and stall. Streaming is re-enabled on completion (lifecyclePollMsg).
 	if application.workspaceLogView != nil {
+		application.workspaceLogView.SetStreamingEnabled(false)
 		application.workspaceLogView.Reset()
 	}
 	// Drop the cached relay handle: start/stop/restart change the microVM out from
