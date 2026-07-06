@@ -192,6 +192,22 @@ var registry = []Service{
 		},
 	},
 	{
+		// Headroom precedes LiteLLM: it is a LiteLLM pre_call compression GUARDRAIL
+		// (LiteLLM POSTs to aip-headroom:8787/v1/compress in-process), so it must be
+		// up before LiteLLM. It is a standalone service, NOT an nginx proxy in front
+		// of LiteLLM. Internal-only on :8787.
+		Name:     "headroom",
+		Endpoint: Endpoint{}, // internal-only on :8787, called by LiteLLM by name
+		LogScope: "headroom",
+		Components: []Component{
+			{
+				ImageKey:  "headroom",
+				Container: "aip-headroom",
+				Pin:       Pin{Mode: ModeContainer, Image: "ghcr.io/chopratejas/headroom", Tag: "latest"},
+			},
+		},
+	},
+	{
 		Name: "litellm",
 		// The :14000 host port is GONE — LiteLLM is internal-only on aip-net now. Its
 		// admin UI is reached through the nginx gateway at litellm.<domain>:GatewayPort/ui.
@@ -203,7 +219,10 @@ var registry = []Service{
 				ImageKey:  "litellm",
 				Container: "aip-litellm",
 				LogScope:  "litellm",
-				Pin:       Pin{Mode: ModeContainer, Image: "ghcr.io/berriai/litellm", Tag: "latest"},
+				// TEMPORARY pin: v1.92.0-rc.1 is the first release carrying the
+				// `headroom` compression guardrail (see litellm.buildGuardrails).
+				// Revert to "latest" once that guardrail ships in a stable release.
+				Pin: Pin{Mode: ModeContainer, Image: "ghcr.io/berriai/litellm", Tag: "v1.92.0-rc.1"},
 			},
 			{
 				// The Postgres backing LiteLLM's admin UI / virtual keys. A separate
@@ -211,18 +230,6 @@ var registry = []Service{
 				ImageKey:  "litellm-db",
 				Container: "aip-litellm-db",
 				Pin:       Pin{Mode: ModeContainer, Image: "postgres", Tag: "18.4-alpine3.23"},
-			},
-		},
-	},
-	{
-		Name:     "headroom",
-		Endpoint: Endpoint{}, // internal-only on :8787 behind nginx
-		LogScope: "headroom",
-		Components: []Component{
-			{
-				ImageKey:  "headroom",
-				Container: "aip-headroom",
-				Pin:       Pin{Mode: ModeContainer, Image: "ghcr.io/chopratejas/headroom", Tag: "latest"},
 			},
 		},
 	},

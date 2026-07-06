@@ -22,6 +22,13 @@ import (
 // shared docker network (aip-net), used as the api_base for ollama/* models.
 const OllamaAPIBase = "http://aip-ollama:11434"
 
+// HeadroomAPIBase is where LiteLLM reaches the Headroom input-compression service
+// on the shared docker network (aip-net). Headroom is no longer an nginx proxy in
+// FRONT of LiteLLM — it is a LiteLLM pre_call GUARDRAIL: LiteLLM POSTs the request
+// messages to {HeadroomAPIBase}/v1/compress in-process before dispatch (see the
+// headroom-compression guardrail in buildGuardrails). Requires LiteLLM v1.92.x+.
+const HeadroomAPIBase = "http://aip-headroom:8787"
+
 // Routing is the platform's model routing. The named handles + per-provider
 // wildcards were intentionally REMOVED in the catalog-driven model system
 // (Phase B): models are now DB-backed (added via /model/new, see models_admin.go
@@ -218,6 +225,14 @@ var commandParamPaths = []string{"command", "command[]", "cmd"}
 //	    tool-agnostic across opencode/pi/claude-code. It is DEFENCE-IN-DEPTH: the
 //	    microVM isolation + default-deny egress remain the hard boundary.
 //
+//	(c) headroom-compression — a pre_call guardrail (guardrail: headroom) that hands
+//	    the request to the Headroom input-compression service: LiteLLM POSTs the
+//	    messages to {api_base}/v1/compress (api_base = HeadroomAPIBase) and swaps in
+//	    the compressed result before dispatching upstream. Headroom is no longer an
+//	    nginx proxy in front of LiteLLM (that risked a litellm→headroom→litellm loop);
+//	    it is a standalone compression service LiteLLM calls in-process. Requires
+//	    LiteLLM v1.92.x+ (see docs.litellm.ai/docs/proxy/headroom).
+//
 // Guardrails AI remains deferred (it needs a Guardrails Hub token + manual
 // per-guard install, so it cannot be shipped fully automated).
 func buildGuardrails() []map[string]any {
@@ -273,6 +288,19 @@ func buildGuardrails() []map[string]any {
 				"default_action":       "allow",
 				"on_disallowed_action": "block",
 				"rules":                toolFirewallRules(),
+			},
+		},
+		// headroom-compression: input compression. LiteLLM POSTs the request messages
+		// to {api_base}/v1/compress and swaps in the compressed result before dispatch.
+		// Headroom is a standalone service on aip-net (HeadroomAPIBase), NOT an nginx
+		// proxy in front of LiteLLM. Requires LiteLLM v1.92.x+.
+		{
+			"guardrail_name": "headroom-compression",
+			"litellm_params": map[string]any{
+				"guardrail":  "headroom",
+				"mode":       "pre_call",
+				"api_base":   HeadroomAPIBase,
+				"default_on": true,
 			},
 		},
 	}

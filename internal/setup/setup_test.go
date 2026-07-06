@@ -896,9 +896,10 @@ func serviceIndex(specs []serviceSpec, name string) int {
 }
 
 // TestDesiredServicesOrder pins the reconcile order that the guardrail/gateway
-// wiring depends on: Presidio (the secret-masking guardrail backend) starts BEFORE
-// litellm (LiteLLM is launched with PRESIDIO_*_API_BASE pointing at it), and the
-// nginx proxy starts AFTER headroom (it forwards to Headroom).
+// wiring depends on: Presidio (the secret-masking guardrail backend) AND Headroom
+// (the compression guardrail backend) both start BEFORE litellm (LiteLLM is launched
+// with PRESIDIO_*_API_BASE and calls Headroom at aip-headroom:8787/v1/compress), and
+// the nginx proxy starts AFTER litellm (it forwards the model path to LiteLLM).
 func TestDesiredServicesOrder(test *testing.T) {
 	specs := desiredServices()
 	presidio := serviceIndex(specs, "presidio")
@@ -908,8 +909,11 @@ func TestDesiredServicesOrder(test *testing.T) {
 	if presidio >= litellm {
 		test.Errorf("presidio must be before litellm: presidio=%d litellm=%d", presidio, litellm)
 	}
-	if headroom >= proxy {
-		test.Errorf("proxy must be after headroom: headroom=%d proxy=%d", headroom, proxy)
+	if headroom >= litellm {
+		test.Errorf("headroom must be before litellm (LiteLLM's guardrail calls it): headroom=%d litellm=%d", headroom, litellm)
+	}
+	if litellm >= proxy {
+		test.Errorf("proxy must be after litellm: litellm=%d proxy=%d", litellm, proxy)
 	}
 }
 
@@ -1031,9 +1035,14 @@ func TestEnsureProxyRendersGatewayConfig(test *testing.T) {
 	if !strings.Contains(rendered, "listen 80 default_server;") {
 		test.Errorf("default server must be the default_server on :80:\n%s", rendered)
 	}
-	// The agent CHAT path (/v1) stays routed to Headroom — preserved unchanged.
-	if !strings.Contains(rendered, "location /v1/ {") || !strings.Contains(rendered, "proxy_pass http://aip-headroom:8787;") {
-		test.Errorf("nginx.conf must keep the /v1 → Headroom model path:\n%s", rendered)
+	// The agent CHAT path (/v1) now routes to LiteLLM DIRECTLY (LiteLLM calls
+	// Headroom as an in-process compression guardrail — nginx no longer hops to it).
+	if !strings.Contains(rendered, "location /v1/ {") || !strings.Contains(rendered, "proxy_pass http://aip-litellm:4000;") {
+		test.Errorf("nginx.conf must route the /v1 model path to LiteLLM directly:\n%s", rendered)
+	}
+	// Headroom must NOT appear as an nginx upstream anymore.
+	if strings.Contains(rendered, "aip-headroom") {
+		test.Errorf("nginx.conf must not reference aip-headroom (it is a LiteLLM guardrail now):\n%s", rendered)
 	}
 	// The LiteLLM admin surface is fronted on /llm (prefix stripped → :4000).
 	if !strings.Contains(rendered, "location /llm/ {") || !strings.Contains(rendered, "proxy_pass http://aip-litellm:4000/;") {
@@ -1091,10 +1100,10 @@ func TestProxyNginxConfThreadsDomain(test *testing.T) {
 	if !strings.Contains(rendered, "return 302 /ui;") {
 		test.Errorf("litellm vhost should redirect / → /ui:\n%s", rendered)
 	}
-	// The litellm UI vhost BYPASSES Headroom (it proxies to :4000, not aip-headroom).
+	// The litellm UI vhost proxies to :4000 directly (Headroom is not an upstream).
 	litellmBlock := rendered[strings.Index(rendered, "server_name litellm.dev.example.com;"):]
 	if strings.Contains(litellmBlock[:strings.Index(litellmBlock, "}")], "aip-headroom") {
-		test.Errorf("the litellm UI vhost must bypass Headroom:\n%s", rendered)
+		test.Errorf("the litellm UI vhost must not reference aip-headroom:\n%s", rendered)
 	}
 	// No chat./odysseus. vhosts render anymore.
 	if strings.Contains(rendered, "chat.dev.example.com") || strings.Contains(rendered, "odysseus.dev.example.com") {
@@ -1285,7 +1294,10 @@ func TestStatusForDisplayDomain(test *testing.T) {
 }
 
 // TestEnsureHeadroomIsInternalOnly: Headroom no longer publishes the gateway port
-// 18787 — nginx (aip-proxy) owns it now. The launch must carry no host publish.
+// 18787 — nginx (aip-proxy) owns it now. The launch must carry no host publish. It
+// is a standalone compression SERVICE LiteLLM calls as a guardrail, so it must NOT
+// carry OPENAI_TARGET_API_URL (that would loop litellm→headroom→litellm) and MUST
+// disable telemetry.
 func TestEnsureHeadroomIsInternalOnly(test *testing.T) {
 	prober := &recordingProber{}
 	if err := ensureHeadroom(prober, "docker"); err != nil {
@@ -1295,8 +1307,11 @@ func TestEnsureHeadroomIsInternalOnly(test *testing.T) {
 	if strings.Contains(launch, "18787") || strings.Contains(launch, "-p ") {
 		test.Errorf("headroom must be internal-only (no 18787 publish): %s", launch)
 	}
-	if !strings.Contains(launch, "OPENAI_TARGET_API_URL=") {
-		test.Errorf("headroom run missing OPENAI_TARGET_API_URL: %s", launch)
+	if strings.Contains(launch, "OPENAI_TARGET_API_URL") {
+		test.Errorf("headroom must NOT set OPENAI_TARGET_API_URL (guardrail, not a proxy): %s", launch)
+	}
+	if !strings.Contains(launch, "HEADROOM_TELEMETRY=off") {
+		test.Errorf("headroom run missing HEADROOM_TELEMETRY=off: %s", launch)
 	}
 }
 

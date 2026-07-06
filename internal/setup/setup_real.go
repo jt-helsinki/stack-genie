@@ -61,12 +61,14 @@ type serviceSpec struct{ Name, Mode string }
 
 // coreServices is the always-on host-service set (arch §5), all containers:
 // Ollama (required local model backend), Presidio (PII guardrail backend),
-// LiteLLM (gateway/router), Headroom (input compression proxy in front of
-// LiteLLM), the nginx gateway proxy, and the aip-dns egress-audit resolver.
-// Ollama is required — LiteLLM routes local model traffic to it (arch §14, §16).
-// Headroom runs as a shared host-side proxy (agents point at :18787, it forwards
-// to LiteLLM); the per-project Caveman skill handles output compression inside
-// the workspace (arch §8–10). These are reconciled on every `ai setup`. The set
+// Headroom (the input-compression service LiteLLM calls as a pre_call guardrail),
+// LiteLLM (gateway/router), the nginx gateway proxy, and the aip-dns egress-audit
+// resolver. Ollama is required — LiteLLM routes local model traffic to it (arch
+// §14, §16). Headroom is a standalone service on :8787 that LiteLLM POSTs to at
+// /v1/compress (NOT a proxy in front of LiteLLM); the per-project Caveman skill
+// handles output compression inside the workspace (arch §8–10). Headroom precedes
+// LiteLLM because LiteLLM's guardrail calls it. These are reconciled on every
+// `ai setup`. The set
 // (and its order) is derived from the internal/services registry, the single
 // source of truth for the service topology — these are all container-mode.
 func coreServices() []serviceSpec {
@@ -203,13 +205,15 @@ const (
 	// all system data lives in one discoverable place under ~/.ai-platform.
 	litellmDBVolume = "litellm-db"
 
-	// Headroom is the input-compression proxy in front of LiteLLM. Official image
-	// (no build). It is now INTERNAL-ONLY on aip-net at :8787 (no host publish) —
-	// the nginx reverse proxy (aip-proxy) is the gateway entry on host :18787 and
-	// forwards to Headroom by name; Headroom forwards to LiteLLM via
-	// OPENAI_TARGET_API_URL.
+	// Headroom is the input-compression service. It is NO LONGER a proxy in front of
+	// LiteLLM — it is a LiteLLM pre_call GUARDRAIL: LiteLLM POSTs the request messages
+	// to aip-headroom:8787/v1/compress in-process (see litellm.buildGuardrails, api_base
+	// = litellm.HeadroomAPIBase) and swaps in the compressed result before dispatch.
+	// It runs standalone on :8787 (the image's default `headroom proxy --host 0.0.0.0
+	// --port 8787` CMD), INTERNAL-ONLY on aip-net (no host publish), reached by LiteLLM
+	// by name. It needs NO OPENAI_TARGET_API_URL (dropping it also prevents a
+	// litellm→headroom→litellm loop). Official image (no build).
 	headroomContainer = "aip-headroom"
-	headroomTargetURL = "http://" + litellmContainer + ":4000"
 
 	// Valkey (Redis-compatible) is LiteLLM's response cache — single instance,
 	// INTERNAL-ONLY on aip-net (aip-valkey:6379; LiteLLM's cache_params point here). No
@@ -220,15 +224,19 @@ const (
 
 	// aip-proxy is the nginx reverse proxy that is the SOLE host ENTRY to the service
 	// tier: every other service container is internal-only on aip-net and only nginx
-	// publishes to the host. It fronts the model path (host :18787 /v1 → Headroom →
-	// LiteLLM, what resolveGateway returns — transparent to workspaces), the LiteLLM
-	// admin (/llm) and Ollama (/ollama) surfaces on the same :18787, and the LiteLLM
-	// admin UI as a Host-based vhost on that SAME :18787 (litellm.<domain>
-	// — no separate host ports). nginx terminates TLS later (the future HTTPS endpoint,
-	// per-vhost :443 + http→https redirect). Pinned minor tag.
+	// publishes to the host. It fronts the model path (host :18787 /v1 → LiteLLM
+	// DIRECTLY, what resolveGateway returns — transparent to workspaces; LiteLLM in
+	// turn calls Headroom as an in-process compression guardrail), the LiteLLM admin
+	// (/llm) and Ollama (/ollama) surfaces on the same :18787, and the LiteLLM admin
+	// UI as a Host-based vhost on that SAME :18787 (litellm.<domain> — no separate host
+	// ports). Headroom is NO LONGER an nginx upstream. nginx terminates TLS later (the
+	// future HTTPS endpoint, per-vhost :443 + http→https redirect). Pinned minor tag.
 	proxyContainer = "aip-proxy"
 	proxyHostPort  = "18787"
-	proxyTargetURL = "http://" + headroomContainer + ":8787"
+	// proxyModelTargetURL is the upstream the model path (/ and /v1) forwards to:
+	// LiteLLM directly (NOT Headroom — Headroom is a LiteLLM guardrail now). No
+	// trailing slash so /v1/... is forwarded verbatim.
+	proxyModelTargetURL = "http://" + litellmContainer + ":4000"
 
 	// Presidio backs LiteLLM's always-on PII guardrail (arch §17). The analyzer
 	// detects PII and the anonymizer masks it; LiteLLM reaches both by name on the
@@ -275,18 +283,21 @@ const (
 //
 //   - the DEFAULT server (server_name <domain> localhost _; default_server) — the
 //     model path + LiteLLM/Ollama management surfaces:
-//   - location /     → Headroom (aip-headroom:8787) → LiteLLM: the DEFAULT route.
+//   - location /     → LiteLLM (aip-litellm:4000) DIRECTLY: the DEFAULT route.
 //     The host CLI (localhost:18787) and the microVM gateway
 //     (host.microsandbox.internal:18787) hit this; agents + the UIs' MODEL calls
-//     ride it. Goes through Headroom (compression + always-on guardrails).
-//   - location /v1/  → Headroom too, with the SSE-friendly settings (the agent
+//     ride it. LiteLLM runs the always-on guardrails, including the headroom
+//     compression guardrail (it POSTs to aip-headroom:8787/v1/compress in-process).
+//   - location /v1/  → LiteLLM too, with the SSE-friendly settings (the agent
 //     CHAT path; what every workspace agent's base_url=…/v1 hits) — PRESERVED.
 //   - location /llm/ → aip-litellm:4000 (prefix stripped): the LiteLLM ADMIN/
-//     management surface. BYPASSES Headroom (direct to LiteLLM).
+//     management surface.
 //   - location /ollama/ → aip-ollama:11434 (prefix stripped): the Ollama HTTP API.
-//     BYPASSES Headroom.
 //   - server_name litellm.<domain>; → aip-litellm:4000 at ROOT (the LiteLLM admin
-//     UI is served at /ui; / redirects there). BYPASSES Headroom.
+//     UI is served at /ui; / redirects there).
+//
+// Headroom is NO LONGER an nginx upstream — it is a LiteLLM guardrail LiteLLM calls
+// by name. Every location forwards to LiteLLM (or Ollama), never to aip-headroom.
 //
 // litellm.<domain> is now the ONLY host UI vhost: Open WebUI moved to a per-workspace
 // in-VM app and Odysseus was removed from the platform.
@@ -312,26 +323,26 @@ func proxyNginxConf(domain string) string {
 	// i.e. http MUST 301-redirect to https on the single :18787 entry. We do NOT
 	// emit that redirect now — there is no https listener yet, so a 301 would break
 	// every plain-http caller (the host CLI, the microVM gateway, the UIs).
-	// The DEFAULT server: the model path (/ + /v1 → Headroom) plus the LiteLLM
+	// The DEFAULT server: the model path (/ + /v1 → LiteLLM directly) plus the LiteLLM
 	// admin (/llm) and Ollama (/ollama) management surfaces. default_server so it
 	// answers localhost, host.microsandbox.internal, and any unmatched Host.
 	builder.WriteString("  server {\n")
 	builder.WriteString("    listen 80 default_server;\n")
 	builder.WriteString("    server_name " + domain + " localhost _;\n")
 	// LiteLLM admin/management surface (prefix stripped by the trailing slash).
-	// BYPASSES Headroom (direct to LiteLLM).
 	builder.WriteString(proxyLocation("/llm/", "http://"+litellmContainer+":4000/"))
-	// Ollama HTTP API (prefix stripped). BYPASSES Headroom.
+	// Ollama HTTP API (prefix stripped).
 	builder.WriteString(proxyLocation("/ollama/", "http://"+ollamaContainer+":11434/"))
-	// The agent CHAT path → Headroom → LiteLLM (PRESERVED). No trailing slash on
-	// the target: /v1/... is forwarded to Headroom verbatim.
-	builder.WriteString(proxyLocation("/v1/", proxyTargetURL))
-	// Catch-all DEFAULT route: any other model-path call also goes to Headroom.
-	builder.WriteString(proxyLocation("/", proxyTargetURL))
+	// The agent CHAT path → LiteLLM directly (PRESERVED). LiteLLM runs the headroom
+	// compression guardrail in-process. No trailing slash: /v1/... is forwarded
+	// verbatim.
+	builder.WriteString(proxyLocation("/v1/", proxyModelTargetURL))
+	// Catch-all DEFAULT route: any other model-path call also goes to LiteLLM.
+	builder.WriteString(proxyLocation("/", proxyModelTargetURL))
 	builder.WriteString("  }\n")
 	// One Host-based UI vhost per service with a UISubdomain (data-driven from the
 	// registry: litellm.<domain> → the LiteLLM admin UI at /ui; valkey.<domain> →
-	// RedisInsight at root). BYPASS Headroom (they serve app UIs, not the model path). A
+	// RedisInsight at root). They serve app UIs, not the model path. A
 	// ConsolePath other than "/" is the root redirect (litellm → /ui); root-served UIs
 	// (redisinsight) get none.
 	for _, vhost := range services.UIVhosts() {
@@ -361,8 +372,8 @@ func proxyLocation(prefix, target string) string {
 
 // proxyUIVhost renders a Host-based `server { server_name <name>; ... }` vhost (on
 // the SHARED :80, host :18787) fronting a web UI at root, with WebSocket upgrade
-// headers (the UIs use websockets). It BYPASSES Headroom — it serves the app UI,
-// not the model path (the apps' model calls ride the default server's /v1 route).
+// headers (the UIs use websockets). It serves the app UI, not the model path (the
+// apps' model calls ride the default server's /v1 route).
 // rootRedirect, when non-empty, makes `/` 302 to that path (e.g. LiteLLM's /ui).
 // The block is structured so a `listen 443 ssl;` + ssl_* directives can be added
 // per-vhost later (TLS termination).
@@ -427,8 +438,9 @@ func litellmRunArgs(configPath, bindHost, image string) []string {
 		"run", "-d", "--name", litellmContainer,
 		"--network", platformNetwork,
 		// INTERNAL-ONLY: no host publish. LiteLLM is reached by name on aip-net
-		// (aip-litellm:4000) — by Headroom (the model path) and by the nginx gateway's
-		// /llm route (the admin surface). nginx (aip-proxy) is the only host entry.
+		// (aip-litellm:4000) — by the nginx gateway's model path (/ + /v1) and its
+		// /llm route (the admin surface); LiteLLM in turn calls Headroom (the
+		// compression guardrail) by name. nginx (aip-proxy) is the only host entry.
 		"-v", configPath + ":/app/config.yaml",
 		"-e", "UI_USERNAME=" + litellmUIUsername,
 		"-e", "UI_PASSWORD",
@@ -714,11 +726,13 @@ func ensureRedisInsight(prober runtime.Prober, containerRuntime string) error {
 	return nil
 }
 
-// ensureHeadroom runs the Headroom input-compression proxy in front of LiteLLM:
-// the nginx gateway (aip-proxy) forwards to it by name on :8787, and it forwards
-// to LiteLLM via OPENAI_TARGET_API_URL. Headroom is INTERNAL-ONLY (no host
-// publish) — nginx is the host gateway entry on :18787. Pulled image (no build).
-// Idempotent.
+// ensureHeadroom runs the Headroom input-compression SERVICE. Headroom is no longer
+// a proxy in front of LiteLLM — it is a LiteLLM pre_call GUARDRAIL: LiteLLM POSTs
+// requests to aip-headroom:8787/v1/compress in-process (see litellm.buildGuardrails).
+// So it needs NO OPENAI_TARGET_API_URL (dropping it also prevents a
+// litellm→headroom→litellm loop). It runs the image's default `headroom proxy` CMD
+// on :8787 with telemetry off, INTERNAL-ONLY on aip-net (no host publish) — nginx is
+// the host gateway entry on :18787. Pulled image (no build). Idempotent.
 func ensureHeadroom(prober runtime.Prober, containerRuntime string) error {
 	// Skip only if it is running AND already internal-only. A Headroom left over
 	// from the pre-nginx topology still host-publishes :18787, which collides with
@@ -732,12 +746,8 @@ func ensureHeadroom(prober runtime.Prober, containerRuntime string) error {
 	args := []string{
 		"run", "-d", "--name", headroomContainer,
 		"--network", platformNetwork,
-		"-e", "OPENAI_TARGET_API_URL=" + headroomTargetURL,
-		// Headroom otherwise injects an empty `tools:[]` (its CCR retrieve-tool
-		// path) into every request, which flips LiteLLM/Ollama into tool-calling
-		// mode and corrupts answers regardless of prompt size. Disabling the tool
-		// injection keeps compression enabled while forwarding requests faithfully.
-		"-e", "HEADROOM_NO_CCR_INJECT_TOOL=1",
+		// Disable Headroom's usage telemetry — this is an internal, offline service.
+		"-e", "HEADROOM_TELEMETRY=off",
 		containerImage("headroom"),
 	}
 	if _, err := prober.Run(containerRuntime, args...); err != nil {
@@ -791,7 +801,8 @@ func ensureDNS(prober runtime.Prober, containerRuntime string) error {
 }
 
 // ensureProxy runs the nginx reverse proxy that is the SOLE host entry to the
-// service tier: microVM/host → nginx (bindHost:18787) → Headroom (:8787) → LiteLLM,
+// service tier: microVM/host → nginx (bindHost:18787) → LiteLLM (:4000) DIRECTLY
+// (LiteLLM in turn calls Headroom as an in-process compression guardrail),
 // plus the LiteLLM /llm + Ollama /ollama admin routes and the single LiteLLM admin
 // UI Host-based vhost (litellm.<domain>) — ALL on the single :18787. It renders
 // the nginx config (proxyNginxConf, threading the resolved domain) to
@@ -839,10 +850,10 @@ func ensureProxy(prober runtime.Prober, containerRuntime, bindHost, domain strin
 
 // proxyReadinessURL is the host entry the proxy readiness probe GETs (arch §2.3).
 // It targets LiteLLM's unauthenticated liveness path THROUGH the nginx gateway
-// (:18787 → aip-headroom:8787 → aip-litellm), so a 200 means the whole forward
-// chain is live; but proxyReachable treats ANY HTTP response (even 404/502) as
-// "the proxy is up and forwarding", and only a transport error as down — so the
-// probe stays meaningful even before Headroom/LiteLLM are fully healthy.
+// (:18787 → aip-litellm:4000 directly), so a 200 means the forward chain is live;
+// but proxyReachable treats ANY HTTP response (even 404/502) as "the proxy is up
+// and forwarding", and only a transport error as down — so the probe stays
+// meaningful even before LiteLLM is fully healthy.
 const proxyReadinessURL = "http://127.0.0.1:" + proxyHostPort + "/health/liveliness"
 
 // proxyHTTPGet is the indirection the proxy readiness probe uses to make its HTTP
@@ -1260,12 +1271,13 @@ func (services realServices) Reconcile(providerConfig, bindHost string, optional
 	// (LiteLLM's config is rendered by ensureLiteLLM below — passing providerConfig
 	// through — so the same render happens whether launched here or by Control.)
 	// Bring up the container tier on the shared network: Ollama (local models),
-	// Presidio (the secret-masking guardrail backend), LiteLLM (+ its DB), the
-	// Headroom compression proxy, and the nginx gateway in front of Headroom.
-	// Presidio precedes LiteLLM because the LiteLLM container is launched with
-	// PRESIDIO_*_API_BASE pointing at it. The prompt-injection (detect_prompt_
-	// injection) and tool-firewall guardrails are in-process in LiteLLM — they need
-	// no companion container.
+	// Presidio (the secret-masking guardrail backend), Headroom (the input-compression
+	// service), LiteLLM (+ its DB), and the nginx gateway. Presidio AND Headroom both
+	// precede LiteLLM: the LiteLLM container is launched with PRESIDIO_*_API_BASE
+	// pointing at Presidio, and its always-on headroom guardrail POSTs to Headroom at
+	// aip-headroom:8787/v1/compress — so both backends must be up first. The
+	// tool-firewall guardrail is in-process in LiteLLM — it needs no companion
+	// container.
 	containerRuntime, err := runtime.ContainerRuntimeName(services.prober)
 	if err != nil {
 		return nil, err
@@ -1294,12 +1306,14 @@ func (services realServices) Reconcile(providerConfig, bindHost string, optional
 	if err := ensureRedisInsight(services.prober, containerRuntime.Name); err != nil {
 		return nil, err
 	}
-	progress("  • LiteLLM gateway + Postgres (waiting for it to become healthy)…")
-	if err := services.ensureLiteLLM(filepath.Join(configDir, "litellm", "config.yaml"), bindHost, providerConfig); err != nil {
+	// Headroom BEFORE LiteLLM: LiteLLM's always-on headroom guardrail calls it at
+	// aip-headroom:8787/v1/compress, so the compression service must be up first.
+	progress("  • Headroom (compression service)…")
+	if err := ensureHeadroom(services.prober, containerRuntime.Name); err != nil {
 		return nil, err
 	}
-	progress("  • Headroom (compression proxy)…")
-	if err := ensureHeadroom(services.prober, containerRuntime.Name); err != nil {
+	progress("  • LiteLLM gateway + Postgres (waiting for it to become healthy)…")
+	if err := services.ensureLiteLLM(filepath.Join(configDir, "litellm", "config.yaml"), bindHost, providerConfig); err != nil {
 		return nil, err
 	}
 	// The platform base domain the nginx UI vhost hangs off (runtime.yaml domain,
@@ -1309,8 +1323,8 @@ func (services realServices) Reconcile(providerConfig, bindHost string, optional
 	// a per-workspace in-VM app and Odysseus was removed). The optional mechanism is
 	// retained (optional is still threaded through for status reporting), so a future
 	// host optional service would be brought up here, BEFORE the nginx proxy.
-	// nginx LAST: it is the SOLE host entry, fronting the gateway (/ + /v1 →
-	// Headroom), the LiteLLM /llm + Ollama /ollama admin routes, and the LiteLLM admin
+	// nginx LAST: it is the SOLE host entry, fronting the gateway (/ + /v1 → LiteLLM
+	// directly), the LiteLLM /llm + Ollama /ollama admin routes, and the LiteLLM admin
 	// UI as a Host-based vhost on the same port. The UI vhost hangs off the resolved
 	// platform base domain (runtime.yaml domain, default aip.local).
 	progress("  • nginx reverse proxy (sole host entry → service tier)…")
@@ -1603,18 +1617,20 @@ func (services realServices) Control(action, service string) ([]ServiceStatus, e
 				}
 				return stopContainer(presidioAnonymizerContainer)
 			}},
-		{"litellm",
-			func() error { return services.ensureLiteLLM(configPath, bindHost, "") },
-			func() error { return stopContainer(litellmContainer) }},
 		{"valkey",
 			func() error { return ensureValkey(services.prober, containerRuntime.Name) },
 			func() error { return stopContainer(valkeyContainer) }},
 		{"redisinsight",
 			func() error { return ensureRedisInsight(services.prober, containerRuntime.Name) },
 			func() error { return stopContainer(redisInsightContainer) }},
+		// Headroom BEFORE LiteLLM: LiteLLM's headroom guardrail calls it at
+		// aip-headroom:8787/v1/compress, so it must be up first.
 		{"headroom",
 			func() error { return ensureHeadroom(services.prober, containerRuntime.Name) },
 			func() error { return stopContainer(headroomContainer) }},
+		{"litellm",
+			func() error { return services.ensureLiteLLM(configPath, bindHost, "") },
+			func() error { return stopContainer(litellmContainer) }},
 		{"proxy",
 			func() error {
 				return ensureProxy(services.prober, containerRuntime.Name, bindHost, reconcileDomain())

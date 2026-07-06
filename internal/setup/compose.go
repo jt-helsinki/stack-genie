@@ -151,19 +151,25 @@ func ServicesComposeYAML(bindHost string) ([]byte, error) {
 					"REDIS_HOST=" + valkeyContainer,
 					"REDIS_PORT=6379",
 				},
-				Command:   []string{"--config", "/app/config.yaml", "--port", "4000"},
-				DependsOn: []string{litellmDBContainer, presidioAnalyzerContainer, presidioAnonymizerContainer, valkeyContainer},
+				Command: []string{"--config", "/app/config.yaml", "--port", "4000"},
+				// LiteLLM depends on Headroom: its always-on headroom guardrail POSTs to
+				// aip-headroom:8787/v1/compress, so Headroom must be up first.
+				DependsOn: []string{litellmDBContainer, presidioAnalyzerContainer, presidioAnonymizerContainer, valkeyContainer, headroomContainer},
 			},
 			headroomContainer: {
+				// Headroom is a standalone input-compression SERVICE LiteLLM calls as a
+				// pre_call guardrail (NOT a proxy in front of LiteLLM) — no
+				// OPENAI_TARGET_API_URL (that would loop) and no dependency on LiteLLM.
 				Image: containerImage("headroom"), ContainerName: headroomContainer, Networks: []string{net}, Restart: "unless-stopped",
-				Environment: []string{"OPENAI_TARGET_API_URL=" + headroomTargetURL, "HEADROOM_NO_CCR_INJECT_TOOL=1"},
-				DependsOn:   []string{litellmContainer},
+				Environment: []string{"HEADROOM_TELEMETRY=off"},
 			},
 			proxyContainer: {
+				// nginx is the sole host entry; it forwards the model path to LiteLLM
+				// directly (LiteLLM calls Headroom in-process), so it depends on LiteLLM.
 				Image: containerImage("proxy"), ContainerName: proxyContainer, Networks: []string{net}, Restart: "unless-stopped",
 				Ports:     []string{bindHost + ":" + proxyHostPort + ":80"},
 				Volumes:   []string{nginxConf + ":/etc/nginx/nginx.conf:ro"},
-				DependsOn: []string{headroomContainer},
+				DependsOn: []string{litellmContainer},
 			},
 		},
 	}

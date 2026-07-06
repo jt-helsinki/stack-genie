@@ -60,8 +60,9 @@ func TestRenderDefaultRouting(test *testing.T) {
 	}
 
 	// Always-on guardrails: Presidio pre/post + hide-secrets (secret masking,
-	// unchanged) and the tool-firewall (tool_permission) — all default_on, so no
-	// request, cloud included, can bypass them (arch §17).
+	// unchanged), the tool-firewall (tool_permission), and headroom-compression
+	// (input compression, guardrail: headroom) — all default_on, so no request,
+	// cloud included, can bypass them (arch §17).
 	var guards struct {
 		Guardrails []struct {
 			GuardrailName string `yaml:"guardrail_name"`
@@ -69,6 +70,7 @@ func TestRenderDefaultRouting(test *testing.T) {
 				Guardrail          string `yaml:"guardrail"`
 				Mode               string `yaml:"mode"`
 				DefaultOn          bool   `yaml:"default_on"`
+				APIBase            string `yaml:"api_base"`
 				FilterScope        string `yaml:"presidio_filter_scope"`
 				DefaultAction      string `yaml:"default_action"`
 				OnDisallowedAction string `yaml:"on_disallowed_action"`
@@ -91,6 +93,7 @@ func TestRenderDefaultRouting(test *testing.T) {
 		"presidio-secrets-output": "presidio",
 		"hide-secrets":            "hide-secrets",
 		"tool-firewall":           "tool_permission",
+		"headroom-compression":    "headroom",
 	}
 	if len(guards.Guardrails) != len(wantBackends) {
 		test.Fatalf("guardrails = %d, want %d", len(guards.Guardrails), len(wantBackends))
@@ -107,6 +110,16 @@ func TestRenderDefaultRouting(test *testing.T) {
 		}
 		if !guard.LitellmParams.DefaultOn {
 			test.Errorf("guardrail %q not default_on (would be bypassable)", guard.GuardrailName)
+		}
+		// headroom-compression is a pre_call guardrail pointed at the standalone
+		// Headroom service; LiteLLM POSTs to {api_base}/v1/compress.
+		if guard.GuardrailName == "headroom-compression" {
+			if guard.LitellmParams.Mode != "pre_call" {
+				test.Errorf("headroom-compression mode = %q, want pre_call", guard.LitellmParams.Mode)
+			}
+			if guard.LitellmParams.APIBase != "http://aip-headroom:8787" {
+				test.Errorf("headroom-compression api_base = %q, want http://aip-headroom:8787", guard.LitellmParams.APIBase)
+			}
 		}
 		if guard.GuardrailName != "tool-firewall" {
 			continue
