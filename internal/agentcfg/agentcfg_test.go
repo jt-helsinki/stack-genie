@@ -486,15 +486,16 @@ func nested(test *testing.T, document map[string]any, key1, key2 string) map[str
 	return level2
 }
 
-// TmuxConfig renders the managed transparent tmux config: mouse on (wheel
-// scrollback), status off (invisible), vi copy-mode keys, and a history limit,
-// PLUS the terminal-capability directives modern TUI agent CLIs need to render
-// correctly through tmux (truecolor + extended keys + a modern terminfo entry).
+// TmuxConfig renders the managed transparent tmux config: mouse OFF (so the host
+// terminal handles native selection + scrollback), status off (invisible), vi copy-mode
+// keys, and a history limit, PLUS the terminal-capability directives modern TUI agent
+// CLIs need to render correctly through tmux (truecolor + extended keys + a modern
+// terminfo entry).
 func TestTmuxConfig(test *testing.T) {
 	conf := string(TmuxConfig())
 	for _, want := range []string{
 		// Existing transparency settings.
-		"set -g mouse on",
+		"set -g mouse off",
 		"set -g status off",
 		"setw -g mode-keys vi",
 		"history-limit",

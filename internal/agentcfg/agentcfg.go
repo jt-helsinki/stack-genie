@@ -151,7 +151,13 @@ func PiConfig(gatewayURL, apiKey, defaultModel string, models []string) ([]byte,
 func TmuxConfig() []byte {
 	return []byte(`# Managed by the AI Development Platform — tmux-transparent workspace sessions.
 # Do not edit by hand; this file is rewritten on every workspace start.
-set -g mouse on
+# mouse OFF so the HOST terminal handles the mouse natively: click-drag text selection
+# (copy to the host clipboard) and wheel scrollback both work as they do outside tmux.
+# With mouse ON, tmux intercepts the drag into its own copy-mode and clears the
+# selection on release — the reported "select then it deselects". Keyboard scroll still
+# works (the agent TUIs handle PgUp/arrows); losing tmux mouse-scroll is the accepted
+# trade for reliable native selection.
+set -g mouse off
 set -g status off
 setw -g mode-keys vi
 set -g history-limit 50000
@@ -592,6 +598,7 @@ func ShellAliases(tools []string) []byte {
 	buffer.WriteString("# installed agent CLIs. Sourced by every interactive shell (bash + zsh) so\n")
 	buffer.WriteString("# typing e.g. `claude` runs `headroom wrap claude`. Do not edit by hand;\n")
 	buffer.WriteString("# this file is rewritten on every workspace start.\n")
+	var aliases bytes.Buffer
 	seen := make(map[string]bool, len(tools))
 	for _, tool := range tools {
 		name, ok := HeadroomWrapName(tool)
@@ -599,8 +606,17 @@ func ShellAliases(tools []string) []byte {
 			continue
 		}
 		seen[name] = true
-		buffer.WriteString("alias " + name + "=" + shellQuote("headroom wrap "+name) + "\n")
+		aliases.WriteString("  alias " + name + "=" + shellQuote("headroom wrap "+name) + "\n")
 	}
+	if aliases.Len() == 0 {
+		return buffer.Bytes()
+	}
+	// Guard on headroom being present: if it isn't (e.g. an image built before it was
+	// installed), define NO alias so the agent CLI still runs natively rather than failing
+	// with "headroom: command not found". When headroom is on PATH the aliases apply.
+	buffer.WriteString("if command -v headroom >/dev/null 2>&1; then\n")
+	buffer.Write(aliases.Bytes())
+	buffer.WriteString("fi\n")
 	return buffer.Bytes()
 }
 
@@ -626,6 +642,12 @@ func ShellRCBlock() []byte {
 	buffer.WriteString("# Managed by the AI Development Platform — do not edit between the markers;\n")
 	buffer.WriteString("# rewritten on every workspace start. Sources the agent gateway env + the\n")
 	buffer.WriteString("# Headroom-wrap aliases for interactive shells (incl. tmux panes).\n")
+	// Guarantee the uv-tool bin dir is on PATH: `uv tool install` puts headroom + graphify
+	// in ~/.local/bin. The image sets ENV PATH, but an msb-exec'd interactive shell does not
+	// reliably inherit it (and oh-my-bash/oh-my-zsh may reset PATH), so without this the
+	// `headroom wrap` aliases fail with "headroom: command not found". Idempotent — only
+	// prepended if absent, so nested shells don't stack duplicates.
+	buffer.WriteString(`case ":$PATH:" in *":$HOME/.local/bin:"*) ;; *) export PATH="$HOME/.local/bin:$PATH" ;; esac` + "\n")
 	buffer.WriteString("[ -f " + shellQuote(AgentEnvFileGuestPath) + " ] && . " + shellQuote(AgentEnvFileGuestPath) + "\n")
 	buffer.WriteString("[ -f " + shellQuote(ShellAliasesFileGuestPath) + " ] && . " + shellQuote(ShellAliasesFileGuestPath) + "\n")
 	buffer.WriteString(terminfoFallbackLine)

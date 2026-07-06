@@ -301,8 +301,10 @@ func TestRegisterOllamaModelRequestShape(test *testing.T) {
 		test.Errorf("model_name = %v, want ollama/llama3.2:3b", addBody["model_name"])
 	}
 	params, _ := addBody["litellm_params"].(map[string]any)
-	if params["model"] != "ollama/llama3.2:3b" {
-		test.Errorf("litellm_params.model = %v, want ollama/llama3.2:3b", params["model"])
+	// PUBLIC handle stays ollama/<name>, but LiteLLM ROUTES on ollama_chat/<name> so it
+	// uses Ollama's /api/chat (messages + tools + streaming), not the legacy /api/generate.
+	if params["model"] != "ollama_chat/llama3.2:3b" {
+		test.Errorf("litellm_params.model = %v, want ollama_chat/llama3.2:3b", params["model"])
 	}
 	if params["api_base"] != OllamaAPIBase {
 		test.Errorf("api_base = %v, want %s", params["api_base"], OllamaAPIBase)

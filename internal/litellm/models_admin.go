@@ -158,12 +158,26 @@ func OllamaModelName(name string) string {
 	return "ollama/" + name
 }
 
+// OllamaRoutedModel is the value LiteLLM ROUTES on (litellm_params.model) for a local
+// Ollama model: "ollama_chat/<name>", NOT "ollama/<name>". LiteLLM's `ollama` provider
+// targets Ollama's legacy /api/generate (a single-prompt completion endpoint) which does
+// NOT properly handle a chat `messages` array, `tools`, or streamed tool-call deltas — so
+// a coding agent (opencode/pi) sees the request reach Ollama but gets no usable output.
+// The `ollama_chat` provider targets /api/chat, which supports chat messages, function
+// calling, and proper streaming (docs.litellm.ai — "we recommend using ollama_chat for
+// chat"). The PUBLIC handle stays "ollama/<name>" (OllamaModelName), so the agent-facing
+// model id is unchanged; only the internal routing switches to the chat endpoint.
+func OllamaRoutedModel(name string) string {
+	return "ollama_chat/" + name
+}
+
 // RegisterOllamaModel registers a locally-installed Ollama model as a DB-backed model
 // in the gateway, so a freshly-pulled model appears in the live catalogue with its own
-// id. The public model_name and the routed litellm_params.model are both
-// "ollama/<name>" (OllamaModelName); api_base is the in-network Ollama the gateway
-// reaches on aip-net (OllamaAPIBase = http://aip-ollama:11434), and no credential is
-// referenced (Ollama needs none).
+// id. The public model_name is "ollama/<name>" (OllamaModelName, the agent-facing handle)
+// while the routed litellm_params.model is "ollama_chat/<name>" (OllamaRoutedModel) so
+// LiteLLM uses Ollama's /api/chat (messages + tools + streaming) instead of the legacy
+// /api/generate; api_base is the in-network Ollama the gateway reaches on aip-net
+// (OllamaAPIBase = http://aip-ollama:11434), and no credential is referenced (Ollama needs none).
 //
 // Idempotent-ish: if a model with this model_name already exists (ListModels), the add
 // is skipped so re-pulling does not create a duplicate.
@@ -182,7 +196,7 @@ func (manager *KeyManager) RegisterOllamaModel(name string) error {
 		}
 	}
 	return manager.AddModel(modelName,
-		ModelParams{Model: modelName, APIBase: OllamaAPIBase}, ModelInfo{})
+		ModelParams{Model: OllamaRoutedModel(name), APIBase: OllamaAPIBase}, ModelInfo{})
 }
 
 // RegisterOllamaModels registers every given local Ollama model in LiteLLM that is not
@@ -210,7 +224,7 @@ func (manager *KeyManager) RegisterOllamaModels(names []string) ([]string, error
 		if served[modelName] {
 			continue
 		}
-		if err := manager.AddModel(modelName, ModelParams{Model: modelName, APIBase: OllamaAPIBase}, ModelInfo{}); err != nil {
+		if err := manager.AddModel(modelName, ModelParams{Model: OllamaRoutedModel(name), APIBase: OllamaAPIBase}, ModelInfo{}); err != nil {
 			return added, err
 		}
 		served[modelName] = true

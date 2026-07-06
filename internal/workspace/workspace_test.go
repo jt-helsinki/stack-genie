@@ -1250,7 +1250,7 @@ func TestStartWritesTmuxConf(test *testing.T) {
 	if !wrote {
 		test.Fatal("Start must write the managed tmux.conf into the microVM")
 	}
-	if !strings.Contains(string(conf), "status off") || !strings.Contains(string(conf), "mouse on") {
+	if !strings.Contains(string(conf), "status off") || !strings.Contains(string(conf), "mouse off") {
 		test.Errorf("tmux.conf missing transparent settings:\n%s", conf)
 	}
 }
