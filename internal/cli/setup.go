@@ -14,6 +14,7 @@ import (
 	"github.com/charmbracelet/huh"
 	"github.com/charmbracelet/x/term"
 	"github.com/jt-helsinki/ideal-robot/internal/envfile"
+	"github.com/jt-helsinki/ideal-robot/internal/litellm"
 	"github.com/jt-helsinki/ideal-robot/internal/output"
 	"github.com/jt-helsinki/ideal-robot/internal/runtime"
 	"github.com/jt-helsinki/ideal-robot/internal/setup"
@@ -31,6 +32,7 @@ func newSetupCmd(em *output.Emitter, exit *int) *cobra.Command {
 	var mode string
 	var serverAddr string
 	var optional string
+	var guardrails string
 	cmd := &cobra.Command{
 		Use:   "setup",
 		Short: "Install, configure, and start the platform host services (idempotent)",
@@ -53,25 +55,36 @@ func newSetupCmd(em *output.Emitter, exit *int) *cobra.Command {
 			interactive := !em.JSON && term.IsTerminal(os.Stdin.Fd())
 			var optionalSet bool
 			var optionalServices []string
+			// The enabled LiteLLM guardrail set (Headroom default-on; the rest opt-in),
+			// collected by the setup picker on a TTY or the --guardrails flag otherwise.
+			var guardrailsSet bool
+			var guardrailServices []string
 			// serverDomain is the hostname clients/browsers reach a SERVER-role host
 			// at — it drives the UI subdomains + DNS guidance. Empty for
 			// standalone/client; the server branch prompts for it (default localhost)
 			// on a TTY, or uses the persisted/default under --json / no TTY.
 			var serverDomain string
 			if interactive {
-				selectedMode, selectedServer, selectedOptional, selectedDomain, promptErr := promptSetupConfig(mode, serverAddr, optional)
+				selectedMode, selectedServer, selectedOptional, selectedGuardrails, selectedDomain, promptErr := promptSetupConfig(mode, serverAddr, optional, guardrails)
 				if promptErr != nil {
 					*exit = em.Failure("setup", promptErr)
 					return nil
 				}
 				mode, serverAddr = selectedMode, selectedServer
 				optionalServices, optionalSet = selectedOptional, true
+				guardrailServices, guardrailsSet = selectedGuardrails, true
 				serverDomain = selectedDomain
 			} else {
 				var optErr error
 				optionalSet, optionalServices, optErr = optionalServicesFromFlag(optional)
 				if optErr != nil {
 					*exit = em.Failure("setup", optErr)
+					return nil
+				}
+				var guardrailErr error
+				guardrailsSet, guardrailServices, guardrailErr = guardrailsFromFlag(guardrails)
+				if guardrailErr != nil {
+					*exit = em.Failure("setup", guardrailErr)
 					return nil
 				}
 				// Non-interactive server hostname: keep the persisted domain (or the
@@ -91,6 +104,8 @@ func newSetupCmd(em *output.Emitter, exit *int) *cobra.Command {
 				ServerAddr:     serverAddr,
 				Optional:       optionalServices,
 				OptionalSet:    optionalSet,
+				Guardrails:     guardrailServices,
+				GuardrailsSet:  guardrailsSet,
 				Domain:         serverDomain,
 			}
 			// Preflight: check prerequisites FIRST — before pulling any images. On a
@@ -123,7 +138,11 @@ func newSetupCmd(em *output.Emitter, exit *int) *cobra.Command {
 				// persisted > first-run default).
 				persisted, _ := runtime.Load()
 				enabledOptional := setup.ResolveOptional(opts, persisted)
-				if err := deps.Services.PullImages(enabledOptional, em.Err, func(line string) { _, _ = fmt.Fprintln(em.Err, line) }); err != nil {
+				// Guardrails from THIS run's opts (not runtime.yaml, persisted later in
+				// setup.Run) so a changed selection is honoured — an ON→OFF secret-masking
+				// change must not pull the Presidio images.
+				enabledGuardrails := setup.ResolveGuardrails(opts, persisted)
+				if err := deps.Services.PullImages(enabledOptional, enabledGuardrails, em.Err, func(line string) { _, _ = fmt.Fprintln(em.Err, line) }); err != nil {
 					_, _ = fmt.Fprintf(em.Err, "warning: image pre-pull incomplete (%s) — continuing; the reconcile will retry\n", err)
 				}
 			}
@@ -178,6 +197,8 @@ func newSetupCmd(em *output.Emitter, exit *int) *cobra.Command {
 		"client mode: address of the remote service tier to route to (host or host:port); seeds the prompt on a TTY")
 	cmd.Flags().StringVar(&optional, "optional", "",
 		"comma-separated opt-in host services to enable, or \"none\" to disable them all; seeds the checkbox on a TTY (there are currently no optional host services, so this is a no-op)")
+	cmd.Flags().StringVar(&guardrails, "guardrails", "",
+		"comma-separated LiteLLM guardrails to enable (headroom, secret-masking, hide-secrets, tool-firewall), or \"none\" to disable them all; seeds the checkbox on a TTY (default: headroom only)")
 	return cmd
 }
 
@@ -297,7 +318,7 @@ func printPrerequisiteInstructions(em *output.Emitter, prereq setup.Prerequisite
 // The returned serverDomain is the hostname clients/browsers reach a SERVER-role
 // host at (it drives the UI subdomains + DNS guidance); it is "" for
 // standalone/client (those use their own defaults and are not newly prompted).
-func promptSetupConfig(seedMode, seedServer, seedOptional string) (mode, serverAddr string, optional []string, serverDomain string, err error) {
+func promptSetupConfig(seedMode, seedServer, seedOptional, seedGuardrails string) (mode, serverAddr string, optional []string, guardrails []string, serverDomain string, err error) {
 	persisted, _ := runtime.Load()
 
 	// Role seed: flag > persisted > standalone.
@@ -325,7 +346,7 @@ func promptSetupConfig(seedMode, seedServer, seedOptional string) (mode, serverA
 	case strings.TrimSpace(seedOptional) != "":
 		parsed, parseErr := parseOptionalFlag(seedOptional)
 		if parseErr != nil {
-			return "", "", nil, "", parseErr
+			return "", "", nil, nil, "", parseErr
 		}
 		preChecked = parsed
 	case persisted != nil && persisted.OptionalServices != nil:
@@ -334,6 +355,23 @@ func promptSetupConfig(seedMode, seedServer, seedOptional string) (mode, serverA
 		preChecked = setup.DefaultOptionalServices()
 	}
 	selectedOptional := append([]string(nil), preChecked...)
+
+	// Guardrail seed (the pre-checked boxes): flag > persisted > default (Headroom
+	// only). A bad --guardrails name is exit 2 even on a TTY (validate inputs).
+	var preCheckedGuardrails []string
+	switch {
+	case strings.TrimSpace(seedGuardrails) != "":
+		parsed, parseErr := parseGuardrailsFlag(seedGuardrails)
+		if parseErr != nil {
+			return "", "", nil, nil, "", parseErr
+		}
+		preCheckedGuardrails = parsed
+	case persisted != nil && persisted.Guardrails != nil:
+		preCheckedGuardrails = persisted.Guardrails
+	default:
+		preCheckedGuardrails = litellm.DefaultGuardrails()
+	}
+	selectedGuardrails := append([]string(nil), preCheckedGuardrails...)
 
 	roleGroup := huh.NewGroup(
 		huh.NewSelect[string]().
@@ -379,21 +417,32 @@ func promptSetupConfig(seedMode, seedServer, seedOptional string) (mode, serverA
 			Value(&selectedOptional),
 	).WithHideFunc(func() bool { return !hasOptional || mode == runtime.RoleClient })
 
-	if formErr := runForm(roleGroup, serverGroup, serverHostnameGroup, optionalGroup); formErr != nil {
-		return "", "", nil, "", formErr
+	// LiteLLM guardrails: the user chooses which the gateway installs. Headroom (input
+	// compression) is pre-checked by default; the security guardrails are opt-in. Shown
+	// only for standalone/server (a client runs no local gateway).
+	guardrailGroup := huh.NewGroup(
+		huh.NewMultiSelect[string]().
+			Title("LiteLLM guardrails").
+			Description(guardrailsPickerDescription).
+			Options(guardrailOptions()...).
+			Value(&selectedGuardrails),
+	).WithHideFunc(func() bool { return mode == runtime.RoleClient })
+
+	if formErr := runForm(roleGroup, serverGroup, serverHostnameGroup, optionalGroup, guardrailGroup); formErr != nil {
+		return "", "", nil, nil, "", formErr
 	}
 	switch mode {
 	case runtime.RoleClient:
-		// The optional group was hidden; selectedOptional is the untouched seed —
-		// return it so a later switch to standalone doesn't clobber the choice. A
-		// client has no local UIs, so no server domain.
-		return mode, strings.TrimSpace(serverAddr), selectedOptional, "", nil
+		// The optional + guardrail groups were hidden; the selections are the untouched
+		// seeds — return them so a later switch to standalone doesn't clobber the choice.
+		// A client has no local UIs, so no server domain.
+		return mode, strings.TrimSpace(serverAddr), selectedOptional, selectedGuardrails, "", nil
 	case runtime.RoleServer:
 		// Thread the chosen server hostname through to Options.Domain.
-		return mode, "", selectedOptional, strings.TrimSpace(serverDomain), nil
+		return mode, "", selectedOptional, selectedGuardrails, strings.TrimSpace(serverDomain), nil
 	default:
 		// Standalone: keep the aip.local default (Domain empty → preserved/default).
-		return mode, "", selectedOptional, "", nil
+		return mode, "", selectedOptional, selectedGuardrails, "", nil
 	}
 }
 
@@ -461,6 +510,62 @@ func parseOptionalFlag(flagValue string) ([]string, error) {
 		selected = append(selected, name)
 	}
 	return selected, nil
+}
+
+// guardrailsFromFlag parses the --guardrails CSV. An empty flag means "unspecified"
+// (set=false → keep the persisted/default set). Any value (including "none") is an
+// explicit choice (set=true).
+func guardrailsFromFlag(flagValue string) (bool, []string, error) {
+	if strings.TrimSpace(flagValue) == "" {
+		return false, nil, nil
+	}
+	selected, err := parseGuardrailsFlag(flagValue)
+	if err != nil {
+		return false, nil, err
+	}
+	return true, selected, nil
+}
+
+// parseGuardrailsFlag turns the --guardrails CSV into a validated guardrail-key list.
+// The sentinel "none" (case-insensitive) yields an empty set (disable them all); any
+// unknown key is exit 2.
+func parseGuardrailsFlag(flagValue string) ([]string, error) {
+	if strings.EqualFold(strings.TrimSpace(flagValue), "none") {
+		return []string{}, nil
+	}
+	universe := litellm.GuardrailKeys()
+	var selected []string
+	for _, part := range strings.Split(flagValue, ",") {
+		key := strings.TrimSpace(part)
+		if key == "" {
+			continue
+		}
+		if !slices.Contains(universe, key) {
+			return nil, output.Errorf(output.ExitInvalidInput,
+				"unknown guardrail %q (one of %v, or \"none\")", key, universe)
+		}
+		selected = append(selected, key)
+	}
+	return selected, nil
+}
+
+// guardrailsPickerDescription is the hint shown above the guardrails checkbox.
+const guardrailsPickerDescription = "Choose which guardrails the LiteLLM gateway installs. " +
+	"Headroom (input compression) is on by default; the secret-masking, detect-secrets, and " +
+	"tool-firewall security guardrails are opt-in. All run on every request when enabled."
+
+// guardrailOptions builds the checkbox options for the selectable LiteLLM guardrails,
+// labelling each with its title + description, in the litellm.Guardrails catalog order.
+func guardrailOptions() []huh.Option[string] {
+	options := make([]huh.Option[string], 0, len(litellm.Guardrails))
+	for _, guardrail := range litellm.Guardrails {
+		label := guardrail.Title
+		if guardrail.Description != "" {
+			label += " — " + guardrail.Description
+		}
+		options = append(options, huh.NewOption(label, guardrail.Key))
+	}
+	return options
 }
 
 // optionalServicesWarning is the SECURITY WARNING shown on the optional-tools

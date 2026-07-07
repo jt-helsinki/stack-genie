@@ -118,8 +118,14 @@ type Info struct {
 	// Domain is the platform base domain the nginx UI subdomains hang off
 	// (litellm.<domain>). Empty falls back to
 	// DefaultDomain (aip.local); operators override it in server mode (`ai domain`).
-	Domain     string `json:"domain,omitempty" yaml:"domain,omitempty"`
-	DetectedAt string `json:"detected_at" yaml:"detected_at"`
+	Domain string `json:"domain,omitempty" yaml:"domain,omitempty"`
+	// Guardrails is the set of LiteLLM guardrail keys enabled on the gateway
+	// (litellm.GuardrailHeadroom, …). Chosen at `ai setup` and persisted machine-wide.
+	// nil (a legacy install, or never set) means "use the default" (Headroom only,
+	// litellm.DefaultGuardrails); a non-nil set — including an explicit empty one — is
+	// honoured verbatim. Only reconciled when this host runs the service tier.
+	Guardrails []string `json:"guardrails,omitempty" yaml:"guardrails,omitempty"`
+	DetectedAt string   `json:"detected_at" yaml:"detected_at"`
 }
 
 // ResolveDomain returns the configured platform base domain, falling back to

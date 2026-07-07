@@ -7,10 +7,12 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
 	"github.com/jt-helsinki/ideal-robot/internal/conffile"
+	"github.com/jt-helsinki/ideal-robot/internal/litellm"
 	"github.com/jt-helsinki/ideal-robot/internal/output"
 	"github.com/jt-helsinki/ideal-robot/internal/paths"
 	"github.com/jt-helsinki/ideal-robot/internal/runtime"
@@ -40,17 +42,19 @@ func (prober fakeProber) Run(name string, _ ...string) ([]byte, error) {
 func (prober fakeProber) Exists(path string) bool { return prober.files[path] }
 
 type fakeServices struct {
-	reconciled     bool
-	provider       string
-	bindHost       string
-	optional       []string
-	pulledEnabled  []string
-	updatedImages  bool
-	updatedEnabled []string
-	installed      bool
-	capturedLogs   bool
-	controlAction  string
-	controlService string
+	reconciled        bool
+	provider          string
+	bindHost          string
+	optional          []string
+	pulledEnabled     []string
+	pulledGuardrails  []string
+	updatedImages     bool
+	updatedEnabled    []string
+	updatedGuardrails []string
+	installed         bool
+	capturedLogs      bool
+	controlAction     string
+	controlService    string
 }
 
 func (services *fakeServices) Reconcile(providerConfig, bindHost string, optional []string, progress func(string)) ([]ServiceStatus, error) {
@@ -84,16 +88,18 @@ func slicesContains(values []string, want string) bool {
 	}
 	return false
 }
-func (services *fakeServices) PullImages(enabled []string, _ io.Writer, progress func(string)) error {
-	services.pulledEnabled = enabled
+func (services *fakeServices) PullImages(optional []string, guardrails []string, _ io.Writer, progress func(string)) error {
+	services.pulledEnabled = optional
+	services.pulledGuardrails = guardrails
 	if progress != nil {
 		progress("pulling (fake)")
 	}
 	return nil
 }
-func (services *fakeServices) UpdateImages(enabled []string, _ io.Writer, progress func(string)) error {
+func (services *fakeServices) UpdateImages(optional []string, guardrails []string, _ io.Writer, progress func(string)) error {
 	services.updatedImages = true
-	services.updatedEnabled = enabled
+	services.updatedEnabled = optional
+	services.updatedGuardrails = guardrails
 	if progress != nil {
 		progress("updating (fake)")
 	}
@@ -921,9 +927,10 @@ func TestDesiredServicesOrder(test *testing.T) {
 // containerImage ref (repo:tag form) for every service-tier container, including
 // the ones that have no Status line — litellm-db is the notable omission from
 // desiredServices and must be present here, alongside proxy and dns. There are no
-// optional host services, so this is the full set.
+// optional host services, so this is the full set. Every guardrail is enabled
+// (GuardrailKeys) so the Presidio images are included.
 func TestRequiredImagesCoversEveryService(test *testing.T) {
-	images := requiredImages(optionalServiceNames()) // all optional enabled (none)
+	images := requiredImages(optionalServiceNames(), litellm.GuardrailKeys()) // all optional (none) + all guardrails
 	have := make(map[string]bool, len(images))
 	for _, ref := range images {
 		if !strings.Contains(ref, ":") {
@@ -943,6 +950,28 @@ func TestRequiredImagesCoversEveryService(test *testing.T) {
 		if !have[ref] {
 			test.Errorf("requiredImages missing %q (%s); got %v", service, ref, images)
 		}
+	}
+}
+
+// TestRequiredImagesSkipsPresidioWhenGuardrailOff: with the secret-masking guardrail
+// NOT selected (the default), the Presidio images are NOT pulled — no point consuming
+// the bandwidth/disk for a guardrail that isn't rendered. The core images still pull.
+func TestRequiredImagesSkipsPresidioWhenGuardrailOff(test *testing.T) {
+	images := requiredImages(optionalServiceNames(), litellm.DefaultGuardrails()) // Headroom only
+	presidio := containerImage("presidio-analyzer")
+	for _, ref := range images {
+		if ref == presidio {
+			test.Errorf("Presidio image %q must NOT be pulled when secret-masking is off: %v", presidio, images)
+		}
+	}
+	// Sanity: a core image (litellm) is still present.
+	if !slices.Contains(images, containerImage("litellm")) {
+		test.Errorf("core litellm image must still be pulled: %v", images)
+	}
+	// And WITH secret-masking enabled, Presidio IS pulled.
+	withMasking := requiredImages(optionalServiceNames(), []string{litellm.GuardrailSecretMasking})
+	if !slices.Contains(withMasking, presidio) {
+		test.Errorf("Presidio image must be pulled when secret-masking is on: %v", withMasking)
 	}
 }
 
@@ -1164,6 +1193,35 @@ func TestResolveOptionalPrecedence(test *testing.T) {
 	}
 }
 
+// TestResolveGuardrailsPrecedence pins the guardrail selection precedence: explicit
+// choice (incl. empty "none") > persisted > default (Headroom only). Unknown keys are
+// dropped and the result follows the litellm.Guardrails catalog order.
+func TestResolveGuardrailsPrecedence(test *testing.T) {
+	// First run, no explicit choice, no persisted set → the default (Headroom only).
+	got := ResolveGuardrails(Options{}, nil)
+	if len(got) != 1 || got[0] != litellm.GuardrailHeadroom {
+		test.Errorf("default first-run guardrails = %v, want [%q]", got, litellm.GuardrailHeadroom)
+	}
+	// Explicit "none" (GuardrailsSet with an empty slice) → empty (every guardrail off).
+	if got := ResolveGuardrails(Options{GuardrailsSet: true, Guardrails: []string{}}, nil); len(got) != 0 {
+		test.Errorf("explicit none = %v, want []", got)
+	}
+	// An explicit choice wins over both persisted and default.
+	explicit := ResolveGuardrails(Options{GuardrailsSet: true, Guardrails: []string{litellm.GuardrailToolFirewall}}, &runtime.Info{Guardrails: []string{litellm.GuardrailHeadroom}})
+	if len(explicit) != 1 || explicit[0] != litellm.GuardrailToolFirewall {
+		test.Errorf("explicit choice = %v, want [%q]", explicit, litellm.GuardrailToolFirewall)
+	}
+	// A persisted set (no explicit choice) is honoured verbatim.
+	persistedSet := ResolveGuardrails(Options{}, &runtime.Info{Guardrails: []string{litellm.GuardrailSecretMasking, litellm.GuardrailHeadroom}})
+	if len(persistedSet) != 2 {
+		test.Errorf("persisted set = %v, want the 2 persisted guardrails", persistedSet)
+	}
+	// Unknown keys (a retired guardrail) are dropped.
+	if got := ResolveGuardrails(Options{GuardrailsSet: true, Guardrails: []string{"bogus", litellm.GuardrailHeadroom}}, nil); len(got) != 1 || got[0] != litellm.GuardrailHeadroom {
+		test.Errorf("unknown key should be dropped: %v", got)
+	}
+}
+
 // TestRunPersistsNoOptional: a first run persists no optional services (there are
 // none) and reconciles none.
 func TestRunPersistsNoOptional(test *testing.T) {
@@ -1185,6 +1243,33 @@ func TestRunPersistsNoOptional(test *testing.T) {
 	}
 	if len(persisted.OptionalServices) != 0 {
 		test.Errorf("runtime.yaml should persist no optional services: %v", persisted.OptionalServices)
+	}
+	// A first run with no guardrail choice persists the default (Headroom only).
+	if len(persisted.Guardrails) != 1 || persisted.Guardrails[0] != litellm.GuardrailHeadroom {
+		test.Errorf("first run should persist the default guardrails [%q], got %v", litellm.GuardrailHeadroom, persisted.Guardrails)
+	}
+}
+
+// TestRunPersistsChosenGuardrails: an explicit guardrail selection is persisted to
+// runtime.yaml verbatim (so the litellm render + Presidio gate pick it up on the next
+// reconcile).
+func TestRunPersistsChosenGuardrails(test *testing.T) {
+	test.Setenv("HOME", test.TempDir())
+	deps, _ := healthyDeps()
+	chosen := []string{litellm.GuardrailHeadroom, litellm.GuardrailToolFirewall}
+	report, err := Run(Options{GuardrailsSet: true, Guardrails: chosen}, deps)
+	if err != nil {
+		test.Fatal(err)
+	}
+	if len(report.Runtime.Guardrails) != 2 {
+		test.Errorf("report should carry the 2 chosen guardrails, got %v", report.Runtime.Guardrails)
+	}
+	persisted, err := runtime.Load()
+	if err != nil || persisted == nil {
+		test.Fatalf("load runtime.yaml: %v", err)
+	}
+	if len(persisted.Guardrails) != 2 {
+		test.Errorf("runtime.yaml should persist the 2 chosen guardrails, got %v", persisted.Guardrails)
 	}
 }
 
@@ -1218,6 +1303,35 @@ func TestStatusForHasNoOptional(test *testing.T) {
 		if status.Optional {
 			test.Errorf("no service should be Optional, got %q", status.Name)
 		}
+	}
+}
+
+// TestStatusForPresidioDisabledWhenGuardrailOff: with no persisted guardrail set
+// (default = Headroom only, secret-masking OFF), statusFor reports Presidio as
+// "disabled" — intentionally not running, not a "stopped"/unhealthy error — while
+// remaining a core (non-optional) service.
+func TestStatusForPresidioDisabledWhenGuardrailOff(test *testing.T) {
+	test.Setenv("HOME", test.TempDir())
+	services := realServices{prober: fakeProber{}}
+	statuses, err := services.statusFor(nil)
+	if err != nil {
+		test.Fatal(err)
+	}
+	var seen bool
+	for _, status := range statuses {
+		if status.Name != "presidio" {
+			continue
+		}
+		seen = true
+		if status.State != "disabled" {
+			test.Errorf("presidio state = %q, want disabled (secret-masking off)", status.State)
+		}
+		if status.Optional {
+			test.Errorf("presidio must stay a core (non-optional) service even when disabled")
+		}
+	}
+	if !seen {
+		test.Fatal("presidio missing from statusFor output")
 	}
 }
 

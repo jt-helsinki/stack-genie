@@ -21,6 +21,7 @@ import (
 	"github.com/jt-helsinki/ideal-robot/internal/console"
 	"github.com/jt-helsinki/ideal-robot/internal/doctor"
 	"github.com/jt-helsinki/ideal-robot/internal/layout"
+	"github.com/jt-helsinki/ideal-robot/internal/litellm"
 	"github.com/jt-helsinki/ideal-robot/internal/output"
 	"github.com/jt-helsinki/ideal-robot/internal/runtime"
 	"github.com/jt-helsinki/ideal-robot/internal/templates"
@@ -83,22 +84,23 @@ type Services interface {
 	Reconcile(providerConfig string, bindHost string, optional []string, progress func(string)) ([]ServiceStatus, error)
 	// PullImages pre-pulls every service-tier image that is not already present
 	// locally, streaming the runtime's native pull progress to out (so a multi-GB
-	// first-run pull does not look hung behind a captured `docker run`). enabled is
-	// the set of opt-in optional services to include — core images are always
-	// pulled, but a disabled optional service's (potentially large) images are
-	// skipped. progress is called (never nil) with a short message before each
-	// pull. Already-present images are skipped. Best-effort: a pull error is
-	// returned but is non-fatal — the subsequent `docker run` re-pulls anything
-	// still missing.
-	PullImages(enabled []string, out io.Writer, progress func(string)) error
+	// first-run pull does not look hung behind a captured `docker run`). optional is
+	// the set of opt-in optional services to include and guardrails the enabled
+	// LiteLLM guardrail set — core images are always pulled, but a disabled optional
+	// service's images (and the Presidio images when the secret-masking guardrail is
+	// off) are skipped. progress is called (never nil) with a short message before
+	// each pull. Already-present images are skipped. Best-effort: a pull error is
+	// returned but is non-fatal — the subsequent `docker run` re-pulls anything still
+	// missing.
+	PullImages(optional []string, guardrails []string, out io.Writer, progress func(string)) error
 	// UpdateImages force-pulls the latest service-tier images (UNLIKE PullImages it
 	// does NOT skip already-present images — it re-pulls so a moved tag like
-	// `latest` is updated), streaming native progress to out. enabled gates the
-	// optional services exactly like PullImages. It backs `ai services update`:
-	// after it pulls, the caller restarts the affected services to recreate their
-	// containers against the freshly-pulled images. Best-effort: returns the first
-	// pull error (non-fatal — a still-old image just means no update for that one).
-	UpdateImages(enabled []string, out io.Writer, progress func(string)) error
+	// `latest` is updated), streaming native progress to out. optional + guardrails
+	// gate the image set exactly like PullImages (an unselected Presidio guardrail
+	// skips its images). It backs `ai services update`: after it pulls, the caller
+	// restarts the affected services to recreate their containers against the
+	// freshly-pulled images. Best-effort: returns the first pull error (non-fatal).
+	UpdateImages(optional []string, guardrails []string, out io.Writer, progress func(string)) error
 	// Status reports current health without mutating anything.
 	Status() ([]ServiceStatus, error)
 	// Control performs a lifecycle action (start|stop|restart) on one service,
@@ -167,6 +169,14 @@ type Options struct {
 	// OptionalSet distinguishes a deliberately-empty Optional ("none") from an
 	// unspecified one (nil), so automation can disable every optional service.
 	OptionalSet bool
+	// Guardrails is the enabled LiteLLM guardrail set for this run (keys from
+	// litellm.GuardrailKeys). nil means "unspecified" — Run falls back to the persisted
+	// runtime.yaml set, else the default (litellm.DefaultGuardrails — Headroom only).
+	// The `ai setup` picker collects it (standalone/server); a client runs no gateway.
+	Guardrails []string
+	// GuardrailsSet distinguishes a deliberately-empty Guardrails (every guardrail off)
+	// from an unspecified one (nil).
+	GuardrailsSet bool
 }
 
 // OptionalServiceNames returns the universe of opt-in service names (in
@@ -277,7 +287,7 @@ func UpdateService(deps Deps, service string, out io.Writer, progress func(strin
 	// Force-pull the enabled image set (the whole set; pulling an already-current
 	// image is cheap, and the per-service image subset is an internal detail).
 	progress("pulling latest images…")
-	if err := deps.Services.UpdateImages(enabledOptionalServices(), out, progress); err != nil {
+	if err := deps.Services.UpdateImages(enabledOptionalServices(), reconcileGuardrails(), out, progress); err != nil {
 		// Non-fatal: a pull miss just means no update for that image; still restart
 		// so any image that DID update is picked up.
 		progress("warning: some images did not update — continuing")
@@ -610,6 +620,32 @@ func ResolveOptional(options Options, persisted *runtime.Info) []string {
 	return enabled
 }
 
+// ResolveGuardrails resolves the enabled LiteLLM guardrail set for a setup run,
+// mirroring ResolveOptional: an explicit choice (options.GuardrailsSet — the setup
+// picker or a --guardrails flag, including the empty "none" set) wins; else the set
+// persisted in runtime.yaml; else the default (litellm.DefaultGuardrails — Headroom
+// only). Unknown keys are dropped and the result is returned in the litellm.Guardrails
+// catalog order, de-duplicated — so a stale persisted key can't reference a removed
+// guardrail.
+func ResolveGuardrails(options Options, persisted *runtime.Info) []string {
+	var chosen []string
+	switch {
+	case options.GuardrailsSet:
+		chosen = options.Guardrails
+	case persisted != nil && persisted.Guardrails != nil:
+		chosen = persisted.Guardrails
+	default:
+		chosen = litellm.DefaultGuardrails()
+	}
+	enabled := make([]string, 0, len(litellm.GuardrailKeys()))
+	for _, key := range litellm.GuardrailKeys() {
+		if slices.Contains(chosen, key) {
+			enabled = append(enabled, key)
+		}
+	}
+	return enabled
+}
+
 // Run performs `ai setup`. Returned errors are *output.Error carrying the exit
 // code (§18): missing deps → 3, capability/other failures → 4. Idempotent.
 func Run(options Options, deps Deps) (*Report, error) {
@@ -676,6 +712,12 @@ func Run(options Options, deps Deps) (*Report, error) {
 	if detected.Domain == "" && persisted != nil {
 		detected.Domain = strings.TrimSpace(persisted.Domain)
 	}
+	// Resolve + persist the enabled LiteLLM guardrail set (the setup picker's / a
+	// --guardrails flag's explicit choice, else the persisted set, else the default —
+	// Headroom only). Persisted BEFORE the reconcile so the litellm render + the
+	// Presidio-container gate (reconcileGuardrails) reflect it. Only meaningful when
+	// this host runs the gateway (standalone/server); harmless on a client.
+	detected.Guardrails = ResolveGuardrails(options, persisted)
 
 	// 2. Initialize the host layout and install the environment templates.
 	progress("Initializing ~/.ai-platform and installing templates…")

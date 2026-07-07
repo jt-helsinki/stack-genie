@@ -16,10 +16,12 @@ import (
 // model_list and NO default_model (models are added via /model/new), but
 // general_settings.store_model_in_db: true so the added models persist, NO
 // prompt-injection callback (removed — it false-positived on coding traffic), and
-// the always-on guardrails.
+// the guardrails. Rendered here with EVERY guardrail enabled (GuardrailKeys) so the
+// per-guardrail assertions below exercise all of them; the ENABLED-SET selection
+// behaviour (default = Headroom only) is covered by TestBuildGuardrailsSelection.
 func TestRenderDefaultRouting(test *testing.T) {
 	test.Setenv("HOME", test.TempDir())
-	if err := Render(DefaultRouting(), ""); err != nil {
+	if err := Render(DefaultRouting(), "", GuardrailKeys()); err != nil {
 		test.Fatal(err)
 	}
 	p, _ := ConfigPath()
@@ -157,6 +159,73 @@ func TestRenderDefaultRouting(test *testing.T) {
 	}
 }
 
+// renderedGuardrailNames renders a config with the given enabled guardrail set and
+// returns the guardrail_name values in the config, in order.
+func renderedGuardrailNames(test *testing.T, enabled []string) []string {
+	test.Helper()
+	test.Setenv("HOME", test.TempDir())
+	if err := Render(DefaultRouting(), "", enabled); err != nil {
+		test.Fatal(err)
+	}
+	path, _ := ConfigPath()
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		test.Fatal(err)
+	}
+	var cfg struct {
+		Guardrails []struct {
+			GuardrailName string `yaml:"guardrail_name"`
+		} `yaml:"guardrails"`
+	}
+	if err := yaml.Unmarshal(raw, &cfg); err != nil {
+		test.Fatalf("rendered config not valid yaml: %v\n%s", err, raw)
+	}
+	names := make([]string, 0, len(cfg.Guardrails))
+	for _, guard := range cfg.Guardrails {
+		names = append(names, guard.GuardrailName)
+	}
+	return names
+}
+
+// TestBuildGuardrailsSelection: only the ENABLED guardrails are rendered — the default
+// (Headroom only), a chosen subset, secret-masking's input+output expansion, and the
+// empty (all-off) set. An unselected guardrail must not appear at all (so it never
+// references a backend that isn't running).
+func TestBuildGuardrailsSelection(test *testing.T) {
+	// DefaultGuardrails = Headroom only.
+	if got := DefaultGuardrails(); len(got) != 1 || got[0] != GuardrailHeadroom {
+		test.Fatalf("DefaultGuardrails() = %v, want [%q]", got, GuardrailHeadroom)
+	}
+	if got := renderedGuardrailNames(test, DefaultGuardrails()); len(got) != 1 || got[0] != "headroom-compression" {
+		test.Errorf("default render = %v, want [headroom-compression]", got)
+	}
+	// A subset: tool-firewall + headroom. No presidio/hide-secrets entries.
+	got := renderedGuardrailNames(test, []string{GuardrailToolFirewall, GuardrailHeadroom})
+	want := map[string]bool{"tool-firewall": true, "headroom-compression": true}
+	if len(got) != len(want) {
+		test.Fatalf("subset render = %v, want the 2 selected guardrails", got)
+	}
+	for _, name := range got {
+		if !want[name] {
+			test.Errorf("subset render included unselected guardrail %q: %v", name, got)
+		}
+	}
+	// secret-masking is ONE option that expands to the presidio input+output pair.
+	masking := renderedGuardrailNames(test, []string{GuardrailSecretMasking})
+	if len(masking) != 2 {
+		test.Fatalf("secret-masking render = %v, want the 2 presidio entries", masking)
+	}
+	for _, name := range masking {
+		if name != "presidio-secrets-input" && name != "presidio-secrets-output" {
+			test.Errorf("secret-masking rendered unexpected guardrail %q", name)
+		}
+	}
+	// The empty (all-off) set renders no guardrails.
+	if got := renderedGuardrailNames(test, []string{}); len(got) != 0 {
+		test.Errorf("empty selection render = %v, want no guardrails", got)
+	}
+}
+
 // TestRenderEnablesStandaloneRedisCache pins the response cache config: enabled with a
 // standalone redis backend. Per the LiteLLM quick-start the connection comes from the
 // REDIS_HOST/REDIS_PORT env on the container (asserted in the setup package), so
@@ -164,7 +233,7 @@ func TestRenderDefaultRouting(test *testing.T) {
 // is a standalone single instance, not a cluster).
 func TestRenderEnablesStandaloneRedisCache(test *testing.T) {
 	test.Setenv("HOME", test.TempDir())
-	if err := Render(DefaultRouting(), ""); err != nil {
+	if err := Render(DefaultRouting(), "", DefaultGuardrails()); err != nil {
 		test.Fatal(err)
 	}
 	path, _ := ConfigPath()
@@ -253,7 +322,9 @@ func TestRenderProviderConfigPassthrough(test *testing.T) {
 	if err := os.WriteFile(src, []byte(want), 0o644); err != nil {
 		test.Fatal(err)
 	}
-	if err := Render(DefaultRouting(), src); err != nil {
+	// providerConfigPath set → the file is used verbatim; the guardrail selection
+	// (here nil) is ignored, so the passed-through model_list survives untouched.
+	if err := Render(DefaultRouting(), src, nil); err != nil {
 		test.Fatal(err)
 	}
 	p, _ := ConfigPath()

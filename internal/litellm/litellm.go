@@ -62,9 +62,10 @@ func ConfigPath() (string, error) {
 
 // Render writes the LiteLLM config. When providerConfigPath is set (e.g. the
 // acceptance harness's mock-provider config, or a real provider config), its
-// contents are used verbatim; otherwise a config is generated from routing with
-// placeholder credentials only.
-func Render(routing Routing, providerConfigPath string) error {
+// contents are used verbatim (guardrails come from that file); otherwise a config is
+// generated from routing with placeholder credentials, rendering ONLY the enabled
+// guardrails (the user's `ai setup` selection — DefaultGuardrails when none).
+func Render(routing Routing, providerConfigPath string, guardrails []string) error {
 	destination, err := ConfigPath()
 	if err != nil {
 		return err
@@ -82,7 +83,7 @@ func Render(routing Routing, providerConfigPath string) error {
 			return fmt.Errorf("provider config: %w", err)
 		}
 	} else {
-		rendered, err = yaml.Marshal(build())
+		rendered, err = yaml.Marshal(build(guardrails))
 		if err != nil {
 			return err
 		}
@@ -105,7 +106,7 @@ func Render(routing Routing, providerConfigPath string) error {
 // in-process prompt-injection callback are unchanged (always-on). With no static
 // model_list there is also no default_model (the user adds keys / pulls Ollama and
 // the sync engine registers models).
-func build() map[string]any {
+func build(guardrails []string) map[string]any {
 	return map[string]any{
 		// store_model_in_db persists models added over the admin API (/model/new)
 		// and their stored credentials in the Postgres DB (encrypted at rest by
@@ -133,9 +134,11 @@ func build() map[string]any {
 		// requests, which it rejected with "400: Rejected message. This is a prompt
 		// injection attack." Like the removed PII masking and LLM Guard, it corrupted
 		// legitimate use, so it is gone. For a CODING agent the real risk is destructive
-		// TOOL EXECUTION, which the always-on tool_permission firewall (buildGuardrails)
-		// handles; prompt-content scanning is low-value and high-false-positive here.
-		"guardrails": buildGuardrails(),
+		// TOOL EXECUTION, which the tool_permission firewall (buildGuardrails) handles
+		// when enabled; prompt-content scanning is low-value and high-false-positive here.
+		// The rendered guardrail set is the user's `ai setup` selection (Headroom by
+		// default) — see buildGuardrails.
+		"guardrails": buildGuardrails(guardrails),
 	}
 }
 
@@ -201,41 +204,94 @@ const shellToolNameRegex = `(?i)^(bash|shell|sh|run|run_command|run_shell_comman
 // which matches nothing (the guardrail evaluates the PARSED arguments object).
 var commandParamPaths = []string{"command", "command[]", "cmd"}
 
-// buildGuardrails renders the platform's always-on guardrails (arch §17). All are
-// default_on:true, so no client request can opt out — and because every route,
-// including cloud providers, passes through the LiteLLM proxy, cloud calls are
-// guarded too. The platform ships only fully self-hostable, zero-config-token
-// guardrails (no Hub tokens, no cloud APIs):
-//
-//	(a) Secret masking (UNCHANGED) — scoped to SECRETS/CREDENTIALS, not general PII:
-//	  - Presidio (pre_call masks secrets out of the prompt before the model sees
-//	    them; post_call masks them out of the response), restricted to
-//	    secretEntities — financial/identity secrets only. Backed by the
-//	    analyzer/anonymizer containers reached via PRESIDIO_*_API_BASE on the
-//	    LiteLLM container (see setup_real.go), launched by setup so the config
-//	    never references a guardrail with no backend.
-//	  - hide-secrets: LiteLLM's in-process secret detector (bundled detect-secrets,
-//	    150+ plugins) — strips API keys/tokens/credentials from the prompt. No
-//	    external server.
-//
-//	(b) tool-firewall — a tool_permission guardrail that DENIES destructive command
-//	    tool-calls (git push --force, rm -rf, terraform destroy, kubectl delete, …).
-//	    For sandboxed coding agents the real risk is destructive TOOL EXECUTION, not
-//	    prompt content, so this catches the model's tool-CALLS at the gateway —
-//	    tool-agnostic across opencode/pi/claude-code. It is DEFENCE-IN-DEPTH: the
-//	    microVM isolation + default-deny egress remain the hard boundary.
-//
-//	(c) headroom-compression — a pre_call guardrail (guardrail: headroom) that hands
-//	    the request to the Headroom input-compression service: LiteLLM POSTs the
-//	    messages to {api_base}/v1/compress (api_base = HeadroomAPIBase) and swaps in
-//	    the compressed result before dispatching upstream. Headroom is no longer an
-//	    nginx proxy in front of LiteLLM (that risked a litellm→headroom→litellm loop);
-//	    it is a standalone compression service LiteLLM calls in-process. Requires
-//	    LiteLLM v1.92.x+ (see docs.litellm.ai/docs/proxy/headroom).
-//
-// Guardrails AI remains deferred (it needs a Guardrails Hub token + manual
-// per-guard install, so it cannot be shipped fully automated).
-func buildGuardrails() []map[string]any {
+// Guardrail keys — the stable identifiers the user selects at `ai setup`, persisted
+// in runtime.yaml (Info.Guardrails) and consumed by buildGuardrails. GuardrailSecretMasking
+// is ONE selectable option that expands to the presidio input+output config pair.
+const (
+	GuardrailHeadroom      = "headroom"       // Headroom input-compression (DEFAULT ON)
+	GuardrailSecretMasking = "secret-masking" // Presidio secret masking (input + output)
+	GuardrailHideSecrets   = "hide-secrets"   // detect-secrets API-key/token stripping
+	GuardrailToolFirewall  = "tool-firewall"  // tool_permission destructive-command firewall
+)
+
+// Guardrail is one selectable LiteLLM guardrail the `ai setup` picker offers. Key is
+// the stable identifier (persisted); Title/Description drive the picker; DefaultOn
+// marks the guardrails enabled out of the box — only Headroom (the user opts the rest
+// in). A guardrail is "installed" only when its key is in the enabled set passed to
+// buildGuardrails; an unselected one is not rendered into the gateway config at all
+// (so a disabled guardrail never references a backend that isn't running).
+type Guardrail struct {
+	Key         string
+	Title       string
+	Description string
+	DefaultOn   bool
+}
+
+// Guardrails lists the selectable guardrails in `ai setup` picker order. The platform
+// ships only fully self-hostable, zero-config-token guardrails (no Hub tokens, no cloud
+// APIs). Presidio's input+output pair is ONE option (buildGuardrails expands it).
+// Guardrails AI remains deferred (needs a Hub token + manual per-guard install).
+var Guardrails = []Guardrail{
+	{
+		Key:         GuardrailHeadroom,
+		Title:       "Input compression (Headroom)",
+		Description: "Compresses request messages via the Headroom service before dispatch to cut token use.",
+		DefaultOn:   true,
+	},
+	{
+		Key:         GuardrailSecretMasking,
+		Title:       "Secret masking (Presidio)",
+		Description: "Masks financial/identity secrets (credit card, SSN, IBAN, …) out of prompts and responses. Requires the Presidio containers.",
+		DefaultOn:   false,
+	},
+	{
+		Key:         GuardrailHideSecrets,
+		Title:       "API-key / token detection (detect-secrets)",
+		Description: "LiteLLM's in-process secret detector — strips API keys/tokens/credentials from prompts. No external server.",
+		DefaultOn:   false,
+	},
+	{
+		Key:         GuardrailToolFirewall,
+		Title:       "Destructive-command tool firewall",
+		Description: "Denies destructive command tool-calls (rm -rf, git push --force, terraform destroy, kubectl delete, …) at the gateway.",
+		DefaultOn:   false,
+	},
+}
+
+// DefaultGuardrails returns the guardrail keys enabled by default (Headroom only). A
+// runtime.yaml with no persisted selection (a legacy install, or a client) falls back
+// to this.
+func DefaultGuardrails() []string {
+	keys := make([]string, 0, 1)
+	for _, guardrail := range Guardrails {
+		if guardrail.DefaultOn {
+			keys = append(keys, guardrail.Key)
+		}
+	}
+	return keys
+}
+
+// GuardrailKeys returns every selectable guardrail key (for input validation).
+func GuardrailKeys() []string {
+	keys := make([]string, 0, len(Guardrails))
+	for _, guardrail := range Guardrails {
+		keys = append(keys, guardrail.Key)
+	}
+	return keys
+}
+
+// buildGuardrails renders ONLY the enabled guardrails (arch §17) — the set the user
+// chose at `ai setup` (persisted in runtime.yaml), defaulting to Headroom. Each
+// rendered guardrail is default_on:true (active on every request; because every route,
+// cloud included, traverses the proxy, cloud calls are covered too); an UNSELECTED
+// guardrail is omitted entirely, so a disabled one never references a backend that
+// isn't running. The order matches the `Guardrails` catalog. A nil/empty enabled set
+// renders no guardrails.
+func buildGuardrails(enabled []string) []map[string]any {
+	on := make(map[string]bool, len(enabled))
+	for _, key := range enabled {
+		on[key] = true
+	}
 	// Mask only the scoped secret entities, at a high confidence threshold to
 	// avoid false positives on ordinary code/text.
 	entityActions := make(map[string]any, len(secretEntities))
@@ -243,43 +299,56 @@ func buildGuardrails() []map[string]any {
 		entityActions[entity] = "MASK"
 	}
 	scoredThresholds := map[string]any{"DEFAULT": 0.6}
-	return []map[string]any{
-		{
-			"guardrail_name": "presidio-secrets-input",
-			"litellm_params": map[string]any{
-				"guardrail":                 "presidio",
-				"mode":                      "pre_call",
-				"default_on":                true,
-				"presidio_filter_scope":     "input",
-				"pii_entities_config":       entityActions,
-				"presidio_score_thresholds": scoredThresholds,
+
+	guardrails := make([]map[string]any, 0, len(Guardrails)+1)
+	// Secret masking (Presidio): pre_call masks secrets out of the prompt before the
+	// model sees them; post_call masks them out of the response. Restricted to
+	// secretEntities. Backed by the analyzer/anonymizer containers reached via
+	// PRESIDIO_*_API_BASE on the LiteLLM container (see setup_real.go) — started only
+	// when this guardrail is enabled.
+	if on[GuardrailSecretMasking] {
+		guardrails = append(guardrails,
+			map[string]any{
+				"guardrail_name": "presidio-secrets-input",
+				"litellm_params": map[string]any{
+					"guardrail":                 "presidio",
+					"mode":                      "pre_call",
+					"default_on":                true,
+					"presidio_filter_scope":     "input",
+					"pii_entities_config":       entityActions,
+					"presidio_score_thresholds": scoredThresholds,
+				},
 			},
-		},
-		{
-			"guardrail_name": "presidio-secrets-output",
-			"litellm_params": map[string]any{
-				"guardrail":                 "presidio",
-				"mode":                      "post_call",
-				"default_on":                true,
-				"presidio_filter_scope":     "output",
-				"pii_entities_config":       entityActions,
-				"presidio_score_thresholds": scoredThresholds,
+			map[string]any{
+				"guardrail_name": "presidio-secrets-output",
+				"litellm_params": map[string]any{
+					"guardrail":                 "presidio",
+					"mode":                      "post_call",
+					"default_on":                true,
+					"presidio_filter_scope":     "output",
+					"pii_entities_config":       entityActions,
+					"presidio_score_thresholds": scoredThresholds,
+				},
 			},
-		},
-		{
+		)
+	}
+	// hide-secrets: LiteLLM's in-process secret detector (bundled detect-secrets) —
+	// strips API keys/tokens/credentials from the prompt. No external server.
+	if on[GuardrailHideSecrets] {
+		guardrails = append(guardrails, map[string]any{
 			"guardrail_name": "hide-secrets",
 			"litellm_params": map[string]any{
 				"guardrail":  "hide-secrets",
 				"mode":       "pre_call",
 				"default_on": true,
 			},
-		},
-		// tool-firewall: LiteLLM's tool_permission guardrail. default_action allow
-		// (everything is permitted) EXCEPT the per-path deny rules; on_disallowed_action
-		// block rejects the response when a destructive shell tool-call is matched.
-		// One deny rule per command param path (commandParamPaths), each fullmatching
-		// a destructive command via destructiveCommandRegex.
-		{
+		})
+	}
+	// tool-firewall: LiteLLM's tool_permission guardrail. default_action allow
+	// (everything permitted) EXCEPT the per-path deny rules; on_disallowed_action block
+	// rejects the response when a destructive shell tool-call is matched.
+	if on[GuardrailToolFirewall] {
+		guardrails = append(guardrails, map[string]any{
 			"guardrail_name": "tool-firewall",
 			"litellm_params": map[string]any{
 				"guardrail":            "tool_permission",
@@ -289,12 +358,14 @@ func buildGuardrails() []map[string]any {
 				"on_disallowed_action": "block",
 				"rules":                toolFirewallRules(),
 			},
-		},
-		// headroom-compression: input compression. LiteLLM POSTs the request messages
-		// to {api_base}/v1/compress and swaps in the compressed result before dispatch.
-		// Headroom is a standalone service on aip-net (HeadroomAPIBase), NOT an nginx
-		// proxy in front of LiteLLM. Requires LiteLLM v1.92.x+.
-		{
+		})
+	}
+	// headroom-compression: input compression. LiteLLM POSTs the request messages to
+	// {api_base}/v1/compress and swaps in the compressed result before dispatch. Headroom
+	// is a standalone service on aip-net (HeadroomAPIBase), NOT an nginx proxy in front
+	// of LiteLLM. Requires LiteLLM v1.92.x+.
+	if on[GuardrailHeadroom] {
+		guardrails = append(guardrails, map[string]any{
 			"guardrail_name": "headroom-compression",
 			"litellm_params": map[string]any{
 				"guardrail":  "headroom",
@@ -302,8 +373,9 @@ func buildGuardrails() []map[string]any {
 				"api_base":   HeadroomAPIBase,
 				"default_on": true,
 			},
-		},
+		})
 	}
+	return guardrails
 }
 
 // toolFirewallRules builds one tool_permission deny rule per command param path

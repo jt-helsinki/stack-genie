@@ -133,19 +133,32 @@ func serviceImageKeys(service string) []string {
 	return services.ImageKeys(service)
 }
 
+// presidioSelected reports whether the secret-masking (Presidio) guardrail is in the
+// enabled guardrail set — the ONLY thing that needs the aip-presidio-* containers. When
+// it is off the containers are neither PULLED (requiredImages) nor STARTED (Reconcile /
+// Control), and Status reports them "disabled" — there is no point consuming the
+// resources for a guardrail that isn't rendered into the gateway config.
+func presidioSelected(guardrails []string) bool {
+	return slices.Contains(guardrails, litellm.GuardrailSecretMasking)
+}
+
 // requiredImages returns the image references (repo:tag) to pre-pull, gated by the
-// enabled optional-service set: CORE images are always included, but an OPTIONAL
-// service's images are included ONLY when that service is in enabled — so a
-// disabled optional service never triggers a pull of its (large) images. References are
-// resolved via containerImage; desiredServices lists the services but NOT
-// litellm-db (no health line / Status entry), so it is added explicitly. A few
-// services expand to several images (serviceImageKeys). Pure and testable;
-// duplicate refs are de-duplicated so a shared image is only pulled once.
-func requiredImages(enabled []string) []string {
+// enabled optional-service set AND the guardrail selection: CORE images are included,
+// but an OPTIONAL service's images are included ONLY when that service is in optional,
+// and the PRESIDIO images ONLY when the secret-masking guardrail is enabled — so a
+// disabled optional service or an unselected Presidio guardrail never triggers a pull
+// of its (large) images. References are resolved via containerImage; desiredServices
+// lists the services but NOT litellm-db (no health line / Status entry), so it is added
+// explicitly. A few services expand to several images (serviceImageKeys). Pure and
+// testable; duplicate refs are de-duplicated so a shared image is only pulled once.
+func requiredImages(optional []string, guardrails []string) []string {
 	serviceKeys := []string{"litellm-db"}
 	for _, service := range desiredServices() {
-		if isOptionalService(service.Name) && !slices.Contains(enabled, service.Name) {
+		if isOptionalService(service.Name) && !slices.Contains(optional, service.Name) {
 			continue // a not-enabled optional service: don't pull its images
+		}
+		if service.Name == "presidio" && !presidioSelected(guardrails) {
+			continue // secret-masking guardrail off: don't pull the Presidio images
 		}
 		serviceKeys = append(serviceKeys, serviceImageKeys(service.Name)...)
 	}
@@ -1137,6 +1150,20 @@ func reconcileDomain() string {
 	return info.ResolveDomain()
 }
 
+// reconcileGuardrails resolves the enabled LiteLLM guardrail set the litellm render +
+// the Presidio-container gate should use, from the persisted runtime.yaml
+// (Info.Guardrails), falling back to litellm.DefaultGuardrails (Headroom only) when the
+// field is absent (a legacy install / never set) or runtime.yaml is unreadable. A
+// non-nil persisted set — INCLUDING an explicit empty one (every guardrail off) — is
+// honoured verbatim. It is the guardrail source for the Reconcile/Control/Status paths
+// (Run persists the selection before the reconcile).
+func reconcileGuardrails() []string {
+	if info, err := runtime.Load(); err == nil && info != nil && info.Guardrails != nil {
+		return info.Guardrails
+	}
+	return litellm.DefaultGuardrails()
+}
+
 func RelaunchLiteLLMWithAuth(password, masterKey string) error {
 	containerRuntime, err := runtime.ContainerRuntimeName(runtime.RealProber())
 	if err != nil {
@@ -1152,7 +1179,7 @@ func RelaunchLiteLLMWithAuth(password, masterKey string) error {
 		return err
 	}
 	// Ensure the mounted config exists (and is a file, not a Docker-created dir).
-	if err := litellm.Render(litellm.DefaultRouting(), ""); err != nil {
+	if err := litellm.Render(litellm.DefaultRouting(), "", reconcileGuardrails()); err != nil {
 		return err
 	}
 	// Best-effort removal of the running (likely unsecured) container.
@@ -1189,16 +1216,16 @@ type realServices struct {
 // skipped. Already-present images are skipped (fast re-runs). Best-effort: it
 // returns the first pull error but the caller treats it as non-fatal — the
 // reconcile's per-service `docker run` re-pulls anything still missing.
-func (services realServices) PullImages(enabled []string, out io.Writer, progress func(string)) error {
-	return services.pullImages(enabled, out, progress, false)
+func (services realServices) PullImages(optional []string, guardrails []string, out io.Writer, progress func(string)) error {
+	return services.pullImages(optional, guardrails, out, progress, false)
 }
 
 // UpdateImages force-pulls every required image — UNLIKE PullImages it does NOT
 // skip already-present ones, so a moved tag like `latest` is refreshed. It backs
 // `ai services update`; the caller restarts the affected services afterwards to
 // recreate their containers against the freshly-pulled images.
-func (services realServices) UpdateImages(enabled []string, out io.Writer, progress func(string)) error {
-	return services.pullImages(enabled, out, progress, true)
+func (services realServices) UpdateImages(optional []string, guardrails []string, out io.Writer, progress func(string)) error {
+	return services.pullImages(optional, guardrails, out, progress, true)
 }
 
 // pullImages pulls the required service-tier images, streaming native progress to
@@ -1206,7 +1233,7 @@ func (services realServices) UpdateImages(enabled []string, out io.Writer, progr
 // pre-pull, fast re-runs); when force is true it pulls every one (the update path).
 // Best-effort: it returns the first pull error but the caller treats it as
 // non-fatal.
-func (services realServices) pullImages(enabled []string, out io.Writer, progress func(string), force bool) error {
+func (services realServices) pullImages(optional []string, guardrails []string, out io.Writer, progress func(string), force bool) error {
 	if progress == nil {
 		progress = func(string) {}
 	}
@@ -1215,7 +1242,7 @@ func (services realServices) pullImages(enabled []string, out io.Writer, progres
 		return err
 	}
 	var firstErr error
-	for _, ref := range requiredImages(enabled) {
+	for _, ref := range requiredImages(optional, guardrails) {
 		if !force {
 			// Present locally? Skip — `image inspect` returning an error means absent.
 			if _, err := services.prober.Run(containerRuntime.Name, "image", "inspect", ref); err == nil {
@@ -1271,17 +1298,19 @@ func (services realServices) Reconcile(providerConfig, bindHost string, optional
 	// (LiteLLM's config is rendered by ensureLiteLLM below — passing providerConfig
 	// through — so the same render happens whether launched here or by Control.)
 	// Bring up the container tier on the shared network: Ollama (local models),
-	// Presidio (the secret-masking guardrail backend), Headroom (the input-compression
-	// service), LiteLLM (+ its DB), and the nginx gateway. Presidio AND Headroom both
-	// precede LiteLLM: the LiteLLM container is launched with PRESIDIO_*_API_BASE
-	// pointing at Presidio, and its always-on headroom guardrail POSTs to Headroom at
-	// aip-headroom:8787/v1/compress — so both backends must be up first. The
-	// tool-firewall guardrail is in-process in LiteLLM — it needs no companion
-	// container.
+	// Headroom (the input-compression service), LiteLLM (+ its DB), and the nginx
+	// gateway. Headroom precedes LiteLLM (its always-on headroom guardrail POSTs to
+	// Headroom at aip-headroom:8787/v1/compress, so the backend must be up first).
+	// Presidio is started ONLY when the secret-masking guardrail is enabled (else its
+	// containers are skipped — no point running the PII backend for a guardrail that
+	// isn't rendered); when it IS enabled it precedes LiteLLM (the LiteLLM container is
+	// launched with PRESIDIO_*_API_BASE pointing at it). The tool-firewall guardrail is
+	// in-process in LiteLLM — no companion container.
 	containerRuntime, err := runtime.ContainerRuntimeName(services.prober)
 	if err != nil {
 		return nil, err
 	}
+	presidioOn := presidioSelected(reconcileGuardrails())
 	ensurePlatformNetwork(services.prober, containerRuntime.Name)
 	// aip-dns first: microVMs need the resolver up before they boot (arch §29).
 	progress("  • DNS resolver (aip-dns)…")
@@ -1292,9 +1321,11 @@ func (services realServices) Reconcile(providerConfig, bindHost string, optional
 	if err := ensureOllama(services.prober, containerRuntime.Name, bindHost); err != nil {
 		return nil, err
 	}
-	progress("  • Presidio (PII guardrail backend)…")
-	if err := ensurePresidio(services.prober, containerRuntime.Name); err != nil {
-		return nil, err
+	if presidioOn {
+		progress("  • Presidio (secret-masking guardrail backend)…")
+		if err := ensurePresidio(services.prober, containerRuntime.Name); err != nil {
+			return nil, err
+		}
 	}
 	// Valkey cache before LiteLLM (LiteLLM's cache_params point at aip-valkey:6379), then
 	// its GUI.
@@ -1360,7 +1391,7 @@ func (services realServices) ensureLiteLLM(configPath, bindHost, providerConfig 
 	// and guarantees the file exists (a missing `-v` source makes Docker create a
 	// directory → LiteLLM IsADirectoryError). providerConfig is "" for the Control
 	// path (default routing) and the acceptance/real provider file for Reconcile.
-	if err := litellm.Render(litellm.DefaultRouting(), providerConfig); err != nil {
+	if err := litellm.Render(litellm.DefaultRouting(), providerConfig, reconcileGuardrails()); err != nil {
 		return output.Errorf(output.ExitRuntimeFailure, "render litellm config: %s", err)
 	}
 	// Preserve the existing UI password + master key across the relaunch so a
@@ -1410,15 +1441,20 @@ func (services realServices) statusFor(enabled []string) ([]ServiceStatus, error
 	// under it). reconcileDomain resolves it from runtime.yaml (aip.local default,
 	// or the server-role domain). The per-service direct ports are internal-only.
 	displayDomain := reconcileDomain()
+	// Presidio is a core service that is only reconciled when the secret-masking
+	// guardrail is enabled; when it is off, report it "disabled" (listed, not probed)
+	// rather than "stopped"/unhealthy — it is intentionally not running.
+	presidioOff := !presidioSelected(reconcileGuardrails())
 	statuses := make([]ServiceStatus, 0, len(specs))
 	for _, service := range specs {
 		endpoint, _ := console.EndpointForHost(service.Name, displayDomain)
 		optional := isOptionalService(service.Name)
-		if optional && !slices.Contains(enabled, service.Name) {
-			// Not enabled: surfaced so it is discoverable, but not probed.
+		if (optional && !slices.Contains(enabled, service.Name)) || (service.Name == "presidio" && presidioOff) {
+			// Not enabled (an opt-in tool, or Presidio with secret-masking off):
+			// surfaced so it is discoverable, but not probed.
 			statuses = append(statuses, ServiceStatus{
 				Name: service.Name, Mode: service.Mode, State: "disabled", Healthy: false,
-				Address: endpoint.Address, Console: endpoint.Console, Optional: true,
+				Address: endpoint.Address, Console: endpoint.Console, Optional: optional,
 			})
 			continue
 		}
@@ -1648,8 +1684,16 @@ func (services realServices) Control(action, service string) ([]ServiceStatus, e
 		// services currently enabled (there are none today, but the gate is retained
 		// so a future host optional service is handled). A named target bypasses this
 		// (and is gated by ControlService).
+		presidioOn := presidioSelected(reconcileGuardrails())
 		for _, entry := range managed {
 			if isOptionalService(entry.name) && !slices.Contains(enabledOptional, entry.name) {
+				continue
+			}
+			// Presidio is only started by "all" when the secret-masking guardrail is
+			// enabled (an explicit `ai services start presidio` still forces it via the
+			// default branch below). STOP still applies to everything so a leftover
+			// container from a previous selection is cleaned up.
+			if entry.name == "presidio" && !presidioOn && action != "stop" {
 				continue
 			}
 			targets = append(targets, entry)
