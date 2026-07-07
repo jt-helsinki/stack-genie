@@ -1335,6 +1335,33 @@ func TestStatusForPresidioDisabledWhenGuardrailOff(test *testing.T) {
 	}
 }
 
+// TestStatusForListsPostgres: the Postgres backing LiteLLM (aip-litellm-db) is surfaced
+// as its own "postgres" status line, positioned immediately after litellm — users
+// expect to SEE it in the services list even though it is managed with litellm.
+func TestStatusForListsPostgres(test *testing.T) {
+	test.Setenv("HOME", test.TempDir())
+	services := realServices{prober: fakeProber{}}
+	statuses, err := services.statusFor(nil)
+	if err != nil {
+		test.Fatal(err)
+	}
+	litellmIdx, postgresIdx := -1, -1
+	for index, status := range statuses {
+		switch status.Name {
+		case "litellm":
+			litellmIdx = index
+		case "postgres":
+			postgresIdx = index
+		}
+	}
+	if postgresIdx < 0 {
+		test.Fatalf("postgres missing from statusFor output: %+v", statuses)
+	}
+	if litellmIdx < 0 || postgresIdx != litellmIdx+1 {
+		test.Errorf("postgres must appear immediately after litellm: litellm=%d postgres=%d", litellmIdx, postgresIdx)
+	}
+}
+
 // TestStatusForDisplayDomain: statusFor renders host-reachable endpoints through
 // the single nginx gateway against the platform base DOMAIN — UI services as
 // <subdomain>.<domain>:18787 vhosts, ollama as the host-CLI gateway path

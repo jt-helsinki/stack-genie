@@ -1474,6 +1474,22 @@ func (services realServices) statusFor(enabled []string) ([]ServiceStatus, error
 			Name: service.Name, Mode: service.Mode, State: state, Healthy: healthy,
 			Address: endpoint.Address, Console: endpoint.Console, Optional: optional,
 		})
+		// Surface the Postgres backing LiteLLM's admin UI / virtual keys as its OWN
+		// status line, right after litellm — it is a distinct container (aip-litellm-db,
+		// reconciled by ensureLiteLLMDB as part of litellm) that users expect to SEE in
+		// the services list even though it is managed with litellm (no separate lifecycle
+		// verb). Internal-only (loopback :5442), so no host endpoint. running when the
+		// container is up, else stopped.
+		if service.Name == "litellm" {
+			dbState := "stopped"
+			if containerRuntime, err := runtime.ContainerRuntimeName(services.prober); err == nil &&
+				containerRunning(services.prober, containerRuntime.Name, litellmDBContainer) {
+				dbState = "running"
+			}
+			statuses = append(statuses, ServiceStatus{
+				Name: "postgres", Mode: "container", State: dbState, Healthy: dbState == "running",
+			})
+		}
 	}
 	return statuses, nil
 }
