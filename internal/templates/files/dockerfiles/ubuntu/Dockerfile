@@ -77,9 +77,17 @@ WORKDIR /home/workspace
 # extras are bundled (all except the region/DB-specific chinese, azure, bedrock,
 # falkordb, neo4j, leiden, dm). Each selected agent-CLI snippet then registers it via
 # `graphify install --platform …`. Verify the extras resolve on hardware bring-up.
+# rtk (github.com/rtk-ai/rtk, "Rust Token Killer") is also installed for the workspace
+# user via its official install.sh — a prebuilt aarch64 Linux binary dropped in
+# ~/.local/bin (already on PATH; no root). It is a CLI proxy that compresses common
+# dev-command output to cut agent token use. Claude Code's rtk PreToolUse hook (added
+# by `rtk init`) shells out to `rtk`, so the binary must be on PATH — without it the
+# hook fails with `rtk: command not found` (exit 127). NB: rtk's crates.io name
+# collides with an unrelated package, so we use install.sh, never `cargo install rtk`.
 RUN curl -LsSf https://astral.sh/uv/install.sh | sh \
  && uv tool install --no-cache "graphifyy[pdf,office,video,postgres,google,svg,sql,terraform,ollama,openai,gemini,anthropic]" \
  && uv tool install --no-cache "headroom-ai[proxy]" \
+ && curl -fsSL https://raw.githubusercontent.com/rtk-ai/rtk/master/install.sh | sh \
  && rm -rf "$HOME/.cache/uv"
 
 # Interactive-shell frameworks for the workspace user: oh-my-bash and oh-my-zsh, both

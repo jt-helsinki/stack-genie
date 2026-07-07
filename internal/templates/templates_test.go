@@ -137,6 +137,9 @@ func TestBaseDockerfileShipsContainerRuntime(t *testing.T) {
 				"astral.sh/uv/install.sh",
 				"uv tool install",
 				"graphifyy[",
+				// rtk ("Rust Token Killer") installed via its official install.sh so
+				// Claude Code's rtk PreToolUse hook finds the binary on PATH.
+				"rtk-ai/rtk/master/install.sh",
 				// Keep-alive so the detached microVM stays running.
 				`CMD ["sleep", "infinity"]`,
 			} {
