@@ -19,9 +19,9 @@ flowchart LR
 
   subgraph TIER["Host · Docker service tier (aip-net) — internal-only but nginx (loopback: DB, DNS)"]
     direction TB
-    PROXY["nginx gateway · aip-proxy<br/>host :18787 — <b>SOLE host entry</b>, TLS-ready<br/>/ &amp; /v1 → Headroom · /llm → LiteLLM · /ollama → Ollama<br/>vhost: litellm.&lt;domain&gt;"]:::gw
-    HEAD["Headroom · aip-headroom :8787<br/>input compression (internal-only)"]:::gw
-    LLM["LiteLLM · aip-litellm :4000<br/><b>router + always-on guardrails</b><br/>admin UI via /llm + litellm.&lt;domain&gt; (internal-only)"]:::core
+    PROXY["nginx gateway · aip-proxy<br/>host :18787 — <b>SOLE host entry</b>, TLS-ready<br/>/ &amp; /v1 → LiteLLM · /llm → LiteLLM · /ollama → Ollama<br/>vhost: litellm.&lt;domain&gt;"]:::gw
+    HEAD["Headroom · aip-headroom :8787<br/>input-compression guardrail service<br/>LiteLLM calls in-process (internal-only)"]:::gw
+    LLM["LiteLLM · aip-litellm :4000<br/><b>router + user-selectable guardrails</b><br/>(Headroom on by default; secret-masking/<br/>hide-secrets/tool-firewall opt-in)<br/>admin UI via /llm + litellm.&lt;domain&gt; (internal-only)"]:::core
     PG[("Postgres · aip-litellm-db<br/>(loopback :5442)<br/>virtual keys · spend · provider creds")]:::store
     PRES["Presidio · aip-presidio-{analyzer,anonymizer}<br/>secret masking (pre/post-call)"]:::core
     OLL["Ollama · aip-ollama :11434<br/>local models (no default · DB-backed · internal-only)"]:::core
@@ -36,10 +36,11 @@ flowchart LR
   CLI -- "/v1 model path · /llm + /ollama admin" --> PROXY
   AGENT -. "every DNS name audited" .-> DNS
   AGENT -. "consults <b>Graphify</b> knowledge graph" .-> TOOLS
-  PROXY -- "/ + /v1" --> HEAD --> LLM
+  PROXY -- "/ + /v1" --> LLM
   PROXY -. "/llm · litellm.&lt;domain&gt;" .-> LLM
   PROXY -. "/ollama" .-> OLL
-  LLM <-. "guardrails" .-> PRES
+  LLM -- "pre_call compress" --> HEAD
+  LLM <-. "guardrails (when enabled)" .-> PRES
   LLM --- PG
   LLM -- "local route" --> OLL
   LLM == "cloud route (real key attached)" ==> CLOUD

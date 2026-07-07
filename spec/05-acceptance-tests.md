@@ -138,7 +138,8 @@ for the rare TTY-only human-wizard cases and is not used here.)
   host behavior. In `deny` mode the **Microsandbox NetworkPolicy** (applied
   per-workspace as Microsandbox net-rules at workspace create via the `msb` CLI,
   plan §3.4) permits the workspace to reach only the **host gateway** (the
-  always-on allow rule: nginx `aip-proxy` → Headroom → LiteLLM, default
+  always-on allow rule: nginx `aip-proxy` → LiteLLM (which calls Headroom
+  in-process as a `pre_call` guardrail), default
   `host.microsandbox.internal:18787` — workspaces never reach LiteLLM directly)
   plus the allow-listed `$MOCK_PROVIDER_URL` (§ Setup). It is rendered from this
   fixture (parameterized by `$MOCK_PROVIDER_URL`) so the source of "what is
@@ -219,14 +220,17 @@ ai setup --json
 * **Docker detected, rootless** (Podman is `[S6]`; Slice 1 service tier is Docker-only)
 * **Microsandbox runtime + host virtualization verified** (Apple Silicon on macOS)
 * the service tier started as containers, reconciled in order (network → DNS →
-  Ollama → Presidio → LiteLLM(+DB) → Headroom → nginx proxy): `aip-dns`,
-  `aip-ollama`, the `aip-presidio-analyzer`/`aip-presidio-anonymizer` pair,
-  `aip-litellm` (+ `aip-litellm-db` Postgres), `aip-headroom`, and `aip-proxy`
-  (the nginx gateway) — all on `aip-net`
+  Ollama → Presidio → Valkey(+RedisInsight) → Headroom → LiteLLM(+DB) → nginx
+  proxy): `aip-dns`, `aip-ollama`, the
+  `aip-presidio-analyzer`/`aip-presidio-anonymizer` pair, `aip-headroom`,
+  `aip-litellm` (+ `aip-litellm-db` Postgres), and `aip-proxy` (the nginx gateway)
+  — all on `aip-net` (Headroom PRECEDES LiteLLM because LiteLLM calls it in-process
+  as a `pre_call` compression guardrail)
 * in **standalone** (default) the shared services bind **127.0.0.1**; the nginx
   gateway (`aip-proxy`) is the SOLE host entry on `:18787`, with `aip-headroom`
-  now INTERNAL-ONLY behind it (no host publish); the host tier has **no optional
-  services** (Open WebUI is now a per-workspace in-VM app and Odysseus was removed)
+  now INTERNAL-ONLY (reached only by LiteLLM by name, no host publish); the host
+  tier has **no optional services** (Open WebUI is now a per-workspace in-VM app
+  and Odysseus was removed)
 * command exits `0`
 
 ---
@@ -791,8 +795,12 @@ It always exits `0`; per-check status conveys health.
   `microsandbox runtime`, `host virtualization`
 * the SERVICES section lists every managed service — `ollama`, `presidio`,
   `litellm`, `headroom`, `proxy`, `dns` (the names appear even when stopped
-  off-hardware). The host tier has no optional services (Open WebUI is now a
-  per-workspace in-VM app and Odysseus was removed)
+  off-hardware). `presidio` reads **`disabled`** when the `secret-masking`
+  guardrail is off (listed but not probed). The host tier has no optional services
+  (Open WebUI is now a per-workspace in-VM app and Odysseus was removed).
+  (`ai services status` additionally surfaces a **display-only `postgres` line**
+  immediately after `litellm` for the LiteLLM Postgres `aip-litellm-db`, which has
+  no independent lifecycle verb.)
 * `ai doctor ghost` (unknown name) still exits `0` with a report — a shortfall is
   folded into the checks, not a non-zero exit
 
@@ -893,7 +901,8 @@ The per-project egress default is now `public` (allow-outbound), so to assert
 *confinement* the harness sets **`deny` mode** via the egress policy fixture
 (§1.6). Under `deny` the **Microsandbox NetworkPolicy** allows the workspace to
 reach only the **host gateway** (the always-on allow rule the platform injects —
-`nginx aip-proxy → Headroom → LiteLLM`, the SOLE model path; default
+`nginx aip-proxy → LiteLLM` (which calls Headroom in-process as a `pre_call`
+guardrail), the SOLE model path; default
 `host.microsandbox.internal:18787`) plus the allow-listed `$MOCK_PROVIDER_URL`
 (arch §29.4). Workspaces never reach LiteLLM directly. The policy comes from the
 **egress policy fixture** (§1.6) — so this test asserts against a defined policy,

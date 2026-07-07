@@ -67,7 +67,7 @@ keep the precedence rules in arch §27 explicit), `slog` (structured logs), stdl
 │   ├── litellm/                 # host lifecycle, config gen, health, routing, guardrails, virtual-key + credential KeyManager (keys-in-LiteLLM; fronted by `ai keys` in cli/keys.go)
 │   ├── ollama/                  # required local-model service + live ollama.com installable library (library.go)
 │   ├── agentcfg/                # in-VM agent provider config (base_url→nginx gateway, virtual key, picker models, refresh-models)
-│   ├── contextopt/              # per-project Headroom strategy (→ host Headroom proxy per-request knobs) + in-workspace Caveman skill
+│   ├── contextopt/              # per-project Headroom strategy (→ per-request knobs fed to LiteLLM's headroom compress-guardrail call) + in-workspace Caveman skill
 │   ├── envimage/                # compose .ai-platform/Dockerfile (OS template + stack snippets + agent CLIs) + build OCI image
 │   ├── workspace/               # workspace lifecycle + tmux-transparent sessions (Builder/Sandbox/Manager)
 │   ├── apps/                     # opt-in in-VM AI apps (Open WebUI / AnythingLLM) — declarative manifests + per-(workspace,app) lifecycle over nerdctl; unique host-port allocation
@@ -153,11 +153,12 @@ The `ai` CLI is the **single control plane** for host services (architecture §5
 behind uniform `ai services` verbs — **no docker compose**:
 
 * **container tier**, reconciled in order network → DNS → Ollama → Presidio →
-  LiteLLM(+DB) → Headroom → nginx proxy: the `aip-dns` CoreDNS
-  egress-audit resolver, the containerized Ollama `aip-ollama`, the Presidio
-  secret-masking pair `aip-presidio-analyzer`/`aip-presidio-anonymizer`, LiteLLM
-  `aip-litellm` + its Postgres `aip-litellm-db`, the Headroom proxy
-  `aip-headroom`, and the `aip-proxy` nginx gateway: managed directly via the
+  Valkey(+RedisInsight) → Headroom → LiteLLM(+DB) → nginx proxy: the `aip-dns`
+  CoreDNS egress-audit resolver, the containerized Ollama `aip-ollama`, the
+  Presidio secret-masking pair `aip-presidio-analyzer`/`aip-presidio-anonymizer`,
+  the Headroom compression service `aip-headroom` (which LiteLLM CALLS as a
+  `pre_call` guardrail, so it PRECEDES LiteLLM), LiteLLM `aip-litellm` + its
+  Postgres `aip-litellm-db`, and the `aip-proxy` nginx gateway: managed directly via the
   `runtime/` abstraction (run by image+tag, restart policy, health poll) on the
   private `aip-net` network, so docker and podman stay interchangeable. **Only the
   `aip-proxy` nginx gateway is host-published** (host port `18787`, the sole
@@ -184,7 +185,7 @@ images in `internal/apps`, not in the host `versions.yaml`.)
 |---|---|---|---|
 | `sandbox/` | Microsandbox Go SDK / `msb`; names `aip-<project>[-<agent>]`; microVM lifecycle map (arch §7) | microVM runtime (no daemon) | S1 |
 | `litellm/` | container via `runtime/`; config rendered from routing; `/health` poll; `KeyManager` mints scoped virtual keys + stores provider credentials (keys-in-LiteLLM, fronted by `ai keys`) | container | S1 |
-| `contextopt/` | per-project Headroom strategy (drives the host `aip-headroom` proxy per-request) + Caveman skill installed in the workspace | container (Headroom) / workspace (Caveman) | S2 |
+| `contextopt/` | per-project Headroom strategy (drives per-request knobs on LiteLLM's headroom compress-guardrail call to `aip-headroom`) + Caveman skill installed in the workspace | container (Headroom) / workspace (Caveman) | S2 |
 
 ---
 
@@ -224,11 +225,16 @@ refer to the CLI spec and architecture spec respectively.
   **idempotent**.
   Tests: AT §2.1, §2.2, §2.3, §12.1 (macOS install).
 * **M4 — Model layer + secrets.** LiteLLM config gen + routing default
-  (the generated config also renders **always-on guardrails**, all
-  `default_on: true` so no request — cloud included — can bypass them: Presidio
-  scoped to financial/identity **secrets** input+output, `hide-secrets`, and the
-  `tool_permission` tool firewall; general-PII masking, the unmaintained LLM Guard,
-  and the false-positive-prone `detect_prompt_injection` callback were removed);
+  (the generated config renders **user-selectable guardrails** chosen at
+  `ai setup` — a picker + `--guardrails` flag, persisted in `runtime.yaml`
+  `guardrails:`; only ENABLED guardrails are rendered and each rendered one is
+  `default_on: true`, so a client can't opt out of an ENABLED one — cloud included.
+  Headroom is the only default-on guardrail; the security guardrails are opt-in:
+  `secret-masking` (the Presidio pair scoped to financial/identity **secrets**
+  input+output — its containers are pulled/started only when selected),
+  `hide-secrets`, and the `tool-firewall`; general-PII masking, the unmaintained
+  LLM Guard, and the false-positive-prone `detect_prompt_injection` callback were
+  removed);
   `ai keys add/remove`; `ai models status`, `ai models test` against the mock
   provider. Tests: AT §7.1, §7.2.
 * **M5 — debian-trixie image + Microsandbox.** Seed `.ai-platform/Dockerfile` from the
@@ -237,7 +243,8 @@ refer to the CLI spec and architecture spec respectively.
   `msb` net-rules at create** — deny fallthrough + allow rules, default mode
   `public`, §3.4); mounts/volumes;
   `ai exec`; write the in-VM agent provider config so the agent reaches the host
-  nginx gateway (`http://<gateway>:18787/v1` → Headroom → LiteLLM, resolved via
+  nginx gateway (`http://<gateway>:18787/v1` → LiteLLM, which calls Headroom
+  in-process as a `pre_call` guardrail; resolved via
   `runtime.ResolveGateway`) with its scoped virtual key (arch §17). Tests: AT §6.1,
   harness workspace-start threshold, AT §16.2, AT §16.3.
 * **M6 — `ai create` wizard + delete.** In-process `charmbracelet/huh` wizard
@@ -273,9 +280,10 @@ Slice 1 is complete only when every `[S1]` test passes with no manual config.
 
 # 5. Later Slices (sequencing)
 
-* **S2 Context Optimization.** `contextopt/`: host Headroom proxy (`aip-headroom`)
-  on the request path in front of LiteLLM, driven per-request by the per-project
-  strategy; per-project Caveman skill installed into
+* **S2 Context Optimization.** `contextopt/`: the Headroom compression service
+  (`aip-headroom`), which LiteLLM calls as a `pre_call` guardrail
+  (`/v1/compress`), driven per-request by the per-project strategy; per-project
+  Caveman skill installed into
   `<project>/.ai-platform/skills/`; `ai context status|strategy|caveman`. (No
   platform memory — agent owns it.) Tests `[S2]`.
 * **S3 — Removed.** Multi-agent ORCHESTRATION and git worktrees are the
@@ -360,7 +368,8 @@ are grep-able (`hardware bring-up`) and tracked in `docs/HARDWARE-BRINGUP.md`.
 
 1. **Service provisioning — RESOLVED.** `ai setup` installs and manages
    all host services itself (LiteLLM + its Postgres, the containerized Ollama,
-   the Presidio PII-guardrail pair, and the Headroom proxy) as the single control
+   the Presidio secret-masking pair, and Headroom the input-compression guardrail
+   service) as the single control
    plane, and verifies the Microsandbox workspace runtime;
    the user pre-installs only the container runtime. No docker compose:
    container-tier services run via the runtime abstraction, and
@@ -387,12 +396,16 @@ are grep-able (`hardware bring-up`) and tracked in `docs/HARDWARE-BRINGUP.md`.
      prompt/kext.
 3. **Headroom placement (decided).** Headroom runs as a **host service-tier
    container** (`aip-headroom`, pulled image `ghcr.io/chopratejas/headroom:latest`,
-   internal :8787) — an input-compression proxy **in front of LiteLLM**, no longer
-   baked into the workspace image, and now **internal-only on `aip-net` behind the
-   nginx gateway** (no host publish). The per-project strategy
-   (`ai context strategy`) maps to Headroom per-request knobs
-   (`keep_turns`/`output_buffer_tokens` via `contextopt.HeadroomParams`). Caveman
-   remains the symmetric in-workspace output-compression skill.
+   internal :8787, **internal-only on `aip-net`**, no host publish) that LiteLLM
+   CALLS as a `pre_call` guardrail — NOT an nginx proxy: LiteLLM's `headroom`
+   guardrail POSTs the request to `http://aip-headroom:8787/v1/compress` and swaps
+   in the compressed result before dispatch (requires LiteLLM v1.92.x+; image
+   pinned to `v1.92.0-rc.1`). It is ALSO installed inside each workspace image
+   (`uv tool install "headroom-ai[proxy]"`) for a future in-VM `headroom wrap`.
+   The per-project strategy (`ai context strategy`) maps to Headroom per-request
+   knobs (`keep_turns`/`output_buffer_tokens` via `contextopt.HeadroomParams`) fed
+   to that compress call. Caveman remains the symmetric in-workspace
+   output-compression skill.
 4. **Image build.** The workspace OCI image is built from `.ai-platform/Dockerfile`
    with the detected container runtime and booted as a Microsandbox microVM;
    confirm rootless build works for all OS templates and that each image boots

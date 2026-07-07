@@ -22,8 +22,10 @@ code.
   `--dns-nameserver` at the `aip-dns` audit resolver.
 - **Service-tier launch** — `internal/setup/setup_real.go`: `realServices.Reconcile`
   brings up the container tier on `aip-net` in order **network → DNS → Ollama →
-  Presidio → LiteLLM (+ DB) → Headroom →
-  nginx proxy (LAST)**, via the detected runtime (docker|podman). nginx
+  Presidio → Valkey (+ RedisInsight) → Headroom → LiteLLM (+ DB) →
+  nginx proxy (LAST)**, via the detected runtime (docker|podman). Headroom now
+  PRECEDES LiteLLM because LiteLLM's `headroom` compression guardrail calls it
+  in-process. nginx
   (`aip-proxy`) is the sole host entry — all other containers are internal-only.
 - **Egress net-rules** — the project `network` block is rendered by
   `egress.MsbNetworkArgs` and applied at `realSandbox.Create` (default-deny +
@@ -106,8 +108,9 @@ allow-listed host services that use the `gateway` token resolve to it in every m
      is reachable while **private ranges** stay blocked by the default-deny
      fallthrough — verify both;
   3. a **published** guest port (`network.publish_ports`) is reachable from the host;
-  4. the model-gateway path (nginx → Headroom → LiteLLM) remains reachable in
-     every mode (the always-on host-gateway allow rule).
+  4. the model-gateway path (nginx → LiteLLM, where LiteLLM calls Headroom
+     in-process as a `pre_call` guardrail) remains reachable in every mode (the
+     always-on host-gateway allow rule).
 
 ### 2.2 Live service/microVM log capture (`ai logs`)
 
@@ -124,9 +127,10 @@ allow-listed host services that use the `gateway` token resolve to it in every m
 
 `realServices.serviceHealthy("proxy")` now runs a **live** readiness probe
 (`proxyReachable` → GET `http://127.0.0.1:18787/health/liveliness` through the
-nginx → Headroom → LiteLLM chain; any HTTP response = up-and-forwarding, only a
-transport error = down). What remains is live-host verification of the forward
-chain itself. The remaining verification work:
+nginx → LiteLLM chain (LiteLLM calls Headroom in-process as a `pre_call`
+guardrail); any HTTP response = up-and-forwarding, only a transport error = down).
+What remains is live-host verification of the forward chain itself. The remaining
+verification work:
 
 - [ ] **Tool-firewall (`tool_permission`) live verification** — the firewall denies
       destructive command tool-calls (`rm -rf`, `git push --force`, `git reset
@@ -153,13 +157,15 @@ chain itself. The remaining verification work:
   (There is no prompt-injection callback to verify — the in-process
   `detect_prompt_injection` and the unmaintained LLM Guard were both removed as
   false-positive sources on ordinary coding/Ollama traffic; see arch §15.)
-- [ ] **nginx → Headroom → LiteLLM gateway path** — confirm the `aip-proxy` nginx
-      entry on host :18787 forwards to the internal-only Headroom
-      (`aip-headroom:8787`) and on to LiteLLM end-to-end, including **streamed
-      (SSE)** responses flushing through (buffering off, long timeouts). In server
-      mode verify the 0.0.0.0:18787 bind reaches a remote client. (The live
-      `serviceHealthy("proxy")` readiness probe is already wired — see §2.3 intro;
-      this item is the live end-to-end confirmation of the forward chain.)
+- [ ] **nginx → LiteLLM gateway path (LiteLLM calls Headroom in-process)** —
+      confirm the `aip-proxy` nginx entry on host :18787 forwards `/v1` **directly**
+      to LiteLLM (`aip-litellm:4000`) end-to-end, including **streamed (SSE)**
+      responses flushing through (buffering off, long timeouts), AND that LiteLLM in
+      turn reaches the internal-only Headroom (`aip-headroom:8787/v1/compress`) as
+      its `pre_call` compression guardrail (nginx no longer routes to Headroom
+      itself). In server mode verify the 0.0.0.0:18787 bind reaches a remote client.
+      (The live `serviceHealthy("proxy")` readiness probe is already wired — see
+      §2.3 intro; this item is the live end-to-end confirmation of the forward chain.)
 - [ ] **nginx as the SOLE host entry — the new routes** — every service container
       is now INTERNAL-ONLY on `aip-net` (LiteLLM, Ollama, Presidio, Headroom no
       longer host-publish); only nginx publishes. Verify on a live
@@ -173,15 +179,16 @@ chain itself. The remaining verification work:
     → `/ollama/api/tags|pull|delete|show|version`), prefix stripped to
     `aip-ollama:11434/*`;
   - the chat test (`ai models test`) on `localhost:18787/v1/chat/completions` still
-    goes through Headroom → LiteLLM (the real model path), NOT `/llm`;
-  - the agent microVM `/v1` path (`host.microsandbox.internal:18787/v1` → Headroom)
+    goes **directly to LiteLLM** (the real model path — LiteLLM applies the Headroom
+    compression guardrail in-process), NOT `/llm`;
+  - the agent microVM `/v1` path (`host.microsandbox.internal:18787/v1` → LiteLLM)
     is unchanged — confirm a workspace agent still routes correctly.
 
 - [ ] **UI Host-based vhost on the single :18787 (the new topology)** — the single
       host UI is now a subdomain (NOT a separate host port): nginx matches it by
       `server_name` on the same :18787. Verify on a live host:
   - `http://litellm.<domain>:18787/` serves the LiteLLM admin UI (redirects `/` →
-    `/ui`; proxies to `aip-litellm:4000`, bypassing Headroom);
+    `/ui`; proxies to `aip-litellm:4000`);
   - `<domain>` is the resolved platform base domain (default `aip.local`; `ai domain`).
   - (Open WebUI is now a per-workspace in-VM app, not a host vhost; Odysseus was removed.)
 - [ ] **Standalone `/etc/hosts` write (the sudo seam)** — `ai setup` in standalone
@@ -224,23 +231,49 @@ chain itself. The remaining verification work:
 
 ### 2.4 Headroom strategy verification (arch §8–10)
 
-- [ ] Headroom runs as the shared host container `aip-headroom`. The per-project
-      `context.strategy` (conservative/balanced/aggressive) maps to Headroom's two
-      real per-request body knobs `keep_turns`/`output_buffer_tokens` —
-      (8,12000)/(5,8000)/(2,4000), `internal/contextopt.HeadroomParams` — baked
-      into the agent CLI's request `extra_body` at workspace start. Verify the
-      knobs take effect live against the running proxy.
+- [ ] Headroom runs as the shared host container `aip-headroom`, now called
+      IN-PROCESS by LiteLLM's `headroom` compression guardrail
+      (`pre_call`, POSTing to `aip-headroom:8787/v1/compress`) — no longer an nginx
+      proxy. The per-project `context.strategy`
+      (conservative/balanced/aggressive) maps to Headroom's two real per-request body
+      knobs `keep_turns`/`output_buffer_tokens` — (8,12000)/(5,8000)/(2,4000),
+      `internal/contextopt.HeadroomParams` — baked into the agent CLI's request
+      `extra_body` at workspace start. Verify the knobs take effect live, and confirm
+      whether LiteLLM's `headroom` guardrail forwards the `extra_body` knobs to
+      `/v1/compress`.
 
 ### 2.5 Secret/credential masking round-trip (arch §15, §17)
 
-- [ ] Verify the live guardrails on every route (cloud included): the always-on
+- [ ] Guardrails are now **user-selectable** (chosen at `ai setup` via a picker /
+      `--guardrails`, persisted machine-wide in `runtime.yaml` `guardrails:`; only
+      the enabled ones are rendered into the LiteLLM config, and an unselected one is
+      omitted entirely). The security guardrails — secret-masking (Presidio),
+      hide-secrets, and the tool-firewall — are **opt-in** (Headroom compression is
+      the only default-on guardrail). When **secret-masking** is enabled, verify the
+      live guardrails on every route (cloud included): the
       Presidio **secret** guardrails (`presidio-secrets-input` pre_call /
       `presidio-secrets-output` post_call, scoped to CREDIT_CARD, US_SSN,
-      US_BANK_NUMBER, IBAN_CODE, CRYPTO) plus `hide-secrets` mask
-      secrets/credentials, while ordinary coding prompts pass untouched (general
-      PII masking is deliberately not done). Because the guardrails are
-      `default_on: true` and every route traverses the proxy, a cloud route cannot
-      bypass them.
+      US_BANK_NUMBER, IBAN_CODE, CRYPTO; action MASK, score threshold 0.6) plus
+      `hide-secrets` mask secrets/credentials, while ordinary coding prompts pass
+      untouched (general PII masking is deliberately not done). Because each ENABLED
+      guardrail is rendered `default_on: true` and every route traverses the proxy, a
+      cloud route cannot bypass an enabled guardrail.
+- [ ] **Presidio gated on secret-masking.** The Presidio containers
+      (`aip-presidio-analyzer`, `aip-presidio-anonymizer`) are pulled AND started
+      **only when the `secret-masking` guardrail is selected** (`presidioSelected`
+      gates `requiredImages`/`PullImages`/`UpdateImages`, the reconcile's
+      `ensurePresidio`, and the Control "all" path). Verify: with secret-masking OFF,
+      `ai setup` does not pull/start Presidio and `ai services status` lists it as
+      **"disabled"** (present but not probed — discoverable); an explicit
+      `ai services start presidio` STILL forces it (bypasses the gate). Presidio
+      remains a CORE service, now conditionally reconciled.
+- [ ] **`postgres` status line.** The LiteLLM Postgres (`aip-litellm-db`, reconciled
+      by `ensureLiteLLMDB` as part of litellm) surfaces its OWN **display-only**
+      `postgres` line in `ai services` / the TUI, immediately AFTER the litellm line:
+      State "running" when the container is up else "stopped"; Mode "container"; no
+      host endpoint (internal-only loopback :5442). Managed WITH litellm — there is
+      NO separate start/stop/restart verb (`ai services <action> litellm-db` →
+      "unknown service"). Verify the line appears and tracks the container state.
 
 ### 2.5b LiteLLM Postgres data-dir on a host bind mount
 
@@ -300,6 +333,22 @@ unit-tested. What remains:
       §2.7's in-VM apps).
 - [ ] **arch-aware tarball** — confirm `uname -m` → `arm64` on Apple Silicon
       selects `nerdctl-full-2.3.3-linux-arm64.tar.gz` (and `amd64` on Linux x86_64).
+
+### 2.6b Base-image per-user dev tooling — rtk (arch §7)
+
+rtk ("Rust Token Killer", `github.com/rtk-ai/rtk`) is baked into ALL FOUR OS base
+images (debian-trixie, debian-bookworm, ubuntu, alma) for the workspace user via its
+official `install.sh` (prebuilt **aarch64** Linux binary → `~/.local/bin`, on PATH,
+no root). It is a CLI proxy that compresses common dev-command output to cut agent
+token use; Claude Code's rtk PreToolUse hook (added by the user's `rtk init`) shells
+out to `rtk`, so the binary must be present. It is installed via `install.sh`, NEVER
+`cargo install rtk` (crates.io name collision) — mirroring the existing
+uv/graphify/headroom per-user installs.
+
+- [ ] **rtk install.sh resolves the aarch64 binary.** Confirm on the live Apple
+      Silicon build that `install.sh` selects and installs the prebuilt aarch64 Linux
+      binary to `~/.local/bin`, that `rtk` is on PATH for the workspace user, and that
+      a Claude Code `rtk`-based PreToolUse hook can shell out to it.
 
 ### 2.7 In-VM apps (Phase 1 — arch §7, CLI §4.5c)
 
@@ -400,9 +449,11 @@ pass):
 ## 4. Smoke sequence (manual, on the host)
 
 1. `ai doctor` → all checks green.
-2. `ai setup` → exit 0; the core service tier (DNS, Ollama, Presidio, LiteLLM +
-   DB, Headroom, and the nginx proxy LAST) up; templates installed. There are no
-   optional host services.
+2. `ai setup` → exit 0 (choose the guardrails at the picker / `--guardrails`); the
+   core service tier (DNS, Ollama, Valkey (+ RedisInsight), Headroom, LiteLLM + DB,
+   and the nginx proxy LAST) up — Presidio starts **only when secret-masking is
+   selected** (`ai services status` shows it "disabled" otherwise); templates
+   installed. There are no optional host services.
 3. `ai create --name demo --os debian-trixie` → **scaffold-only**: writes the
    project's `.ai-platform/` files in the cwd and registers it; it does **not**
    build the image or boot a microVM.

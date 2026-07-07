@@ -23,9 +23,9 @@ flowchart LR
     end
 
     subgraph tier["Docker service tier — aip-net (all internal-only except nginx + loopback DB/DNS)"]
-      proxy["aip-proxy<br/>nginx · host :18787 — SOLE ENTRY, TLS-ready<br/>/ &amp; /v1 → Headroom · /llm → LiteLLM · /ollama → Ollama<br/>vhost: litellm.&lt;domain&gt;"]
-      headroom["aip-headroom :8787<br/>input compression<br/>(internal only)"]
-      litellm["aip-litellm :4000<br/>router + always-on guardrails<br/>admin UI via /llm + litellm.&lt;domain&gt; (internal only)"]
+      proxy["aip-proxy<br/>nginx · host :18787 — SOLE ENTRY, TLS-ready<br/>/ &amp; /v1 → LiteLLM · /llm → LiteLLM · /ollama → Ollama<br/>vhost: litellm.&lt;domain&gt;"]
+      headroom["aip-headroom :8787<br/>input-compression guardrail service<br/>LiteLLM calls it in-process (internal only)"]
+      litellm["aip-litellm :4000<br/>router + user-selectable guardrails<br/>(Headroom compression on by default;<br/>secret-masking/hide-secrets/tool-firewall opt-in)<br/>admin UI via /llm + litellm.&lt;domain&gt; (internal only)"]
       db[("aip-litellm-db<br/>Postgres (loopback :5442)<br/>keys · spend · creds")]
       presidio["aip-presidio-{analyzer,anonymizer}<br/>secret masking"]
       ollama["aip-ollama :11434<br/>local models (no default — DB-backed)<br/>(internal only)"]
@@ -40,8 +40,9 @@ flowchart LR
   apps -->|"same gateway path (model calls)"| proxy
   cli -->|"/v1 model path · /llm + /ollama admin"| proxy
   agent -. "every DNS name (audited);<br/>egress default PUBLIC, re-lockable to deny" .-> dns
-  proxy --> headroom --> litellm
-  litellm <-->|"pre/post-call guardrails"| presidio
+  proxy --> litellm
+  litellm -->|"pre_call compress"| headroom
+  litellm <-->|"pre/post-call guardrails (when enabled)"| presidio
   litellm --- db
   litellm -->|"local route (registered ollama model)"| ollama
   litellm -->|"cloud route (real provider key)"| cloud
@@ -65,15 +66,14 @@ flowchart LR
  │  Docker service tier (aip-net) — every container internal-only but nginx     │
  │                  ▼                  (loopback exceptions: DB :5442, DNS :15353)│
  │            aip-proxy (nginx, host :18787 — SOLE host entry)                  │
- │              / & /v1 → Headroom · /llm → LiteLLM · /ollama → Ollama          │
+ │              / & /v1 → LiteLLM · /llm → LiteLLM · /ollama → Ollama           │
  │              vhost: litellm.<domain>  (the only host UI — LiteLLM admin)     │
  │                  ▼                    ▲                                      │
- │            aip-headroom :8787         └── host CLI / UI (loopback :18787)    │
- │              (input compression, internal-only)                              │
- │                  ▼                                                          │
- │            aip-litellm  :4000   ── guardrails ──▶ aip-presidio (secrets)    │
- │              router (admin UI via /llm + litellm.<domain>, internal-only)    │
- │                  │  └── aip-litellm-db (Postgres) (+ tool-firewall)          │
+ │            aip-litellm  :4000         └── host CLI / UI (loopback :18787)    │
+ │              router · user-selectable guardrails (internal-only)            │
+ │              ├─ pre_call compress ─▶ aip-headroom :8787 (internal-only)      │
+ │              ├─ secret masking (opt-in) ─▶ aip-presidio (secrets)           │
+ │              └─ tool-firewall (opt-in) · aip-litellm-db (Postgres, :5442)   │
  │          ┌───────┴────────┐                                                 │
  │          ▼                ▼                                                 │
  │     aip-ollama       Cloud providers (OpenAI/Anthropic/Gemini/Groq)         │
@@ -97,17 +97,27 @@ flowchart LR
 3. The request hits **aip-proxy** (nginx, host `:18787` — the TLS-termination point
    and the **sole** host entry; every other service container is internal-only on
    `aip-net`, the only loopback exceptions being Postgres `:5442` and `aip-dns`
-   `:15353`). The default `/` and `/v1` routes forward to **aip-headroom** (input
-   compression), then to **aip-litellm**; `/llm` and `/ollama` (and the
-   `litellm.<domain>` vhost) front the LiteLLM admin + Ollama HTTP surfaces
-   directly. The host CLI reaches the gateway on loopback `127.0.0.1:18787`.
-4. **aip-litellm** is the router. Always-on **guardrails** run on every request and
-   every route (cloud included, since all traffic traverses the proxy): **Presidio**
-   secret masking (financial/identity secrets only, not general PII) + `hide-secrets`,
-   and a **tool-firewall** (`tool_permission`) that denies destructive command
-   tool-calls. (The in-process prompt-injection detector and the unmaintained LLM
-   Guard were both removed — they false-positived on ordinary coding/Ollama traffic.)
-   Its admin UI / virtual keys / spend live in **aip-litellm-db**.
+   `:15353`). The default `/` and `/v1` routes forward **directly to aip-litellm**;
+   `/llm` and `/ollama` (and the `litellm.<domain>` vhost) front the LiteLLM admin +
+   Ollama HTTP surfaces. nginx no longer routes to Headroom at all. The host CLI
+   reaches the gateway on loopback `127.0.0.1:18787`.
+4. **aip-litellm** is the router. **Guardrails are user-selectable** (chosen at
+   `ai setup` via a picker / `--guardrails`, persisted in `runtime.yaml`); only the
+   enabled ones are rendered into the LiteLLM config, and each rendered guardrail is
+   `default_on: true` — so since every route (cloud included) traverses the proxy, a
+   client cannot opt out of an **enabled** guardrail. **Headroom input compression**
+   (`headroom-compression`, `pre_call`) is the only guardrail on by default: LiteLLM
+   calls it **in-process**, POSTing the request messages to
+   `http://aip-headroom:8787/v1/compress` and swapping in the compressed result
+   before dispatch. The security guardrails are **opt-in**: **Presidio** secret
+   masking (financial/identity secrets only, not general PII — CREDIT_CARD, US_SSN,
+   US_BANK_NUMBER, IBAN_CODE, CRYPTO), `hide-secrets` API-key/token detection, and a
+   **tool-firewall** (`tool_permission`) that denies destructive command tool-calls.
+   An unselected guardrail is omitted entirely (never references a backend that isn't
+   running — e.g. Presidio is only launched when secret-masking is selected). (The
+   in-process prompt-injection detector and the unmaintained LLM Guard were both
+   removed — they false-positived on ordinary coding/Ollama traffic.) Its admin UI /
+   virtual keys / spend live in **aip-litellm-db**.
 5. LiteLLM routes to **aip-ollama** (a registered local Ollama model) or to a
    **cloud provider** using the real key it holds. The model set is DB-backed and
    catalog-driven with **no built-in default model**. The response streams back along

@@ -727,12 +727,14 @@ apps:                      # opt-in in-VM AI apps (arch §7), chosen via `ai cre
 {
   "schema_version": 1,
   "services": {
-    "litellm":      { "mode": "container", "image": "ghcr.io/berriai/litellm", "tag": "latest" },
+    "litellm":      { "mode": "container", "image": "ghcr.io/berriai/litellm", "tag": "v1.92.0-rc.1" },
     "litellm-db":   { "mode": "container", "image": "postgres", "tag": "18.4-alpine3.23" },
     "headroom":     { "mode": "container", "image": "ghcr.io/chopratejas/headroom", "tag": "latest" },
     "ollama":       { "mode": "container", "image": "ollama/ollama", "tag": "latest" },
     "presidio-analyzer":   { "mode": "container", "image": "mcr.microsoft.com/presidio-analyzer",   "tag": "latest" },
     "presidio-anonymizer": { "mode": "container", "image": "mcr.microsoft.com/presidio-anonymizer", "tag": "latest" },
+    "valkey":       { "mode": "container", "image": "valkey/valkey", "tag": "9.1.0-alpine" },
+    "redisinsight": { "mode": "container", "image": "redis/redisinsight", "tag": "latest" },
     "proxy":        { "mode": "container", "image": "nginx", "tag": "stable-alpine3.23-slim" },
     "dns":          { "mode": "container", "image": "coredns/coredns", "tag": "latest" }
   }
@@ -742,8 +744,11 @@ apps:                      # opt-in in-VM AI apps (arch §7), chosen via `ai cre
 * `mode`: `container` | `native`
 * This file is the **source of truth** for the service-tier image references:
   container services are pinned by **image + tag** — most use the `latest` tag, but
-  some are intentionally pinned to a specific tag (e.g. `litellm-db` →
-  `postgres:18.4-alpine3.23`, `proxy` → `nginx:stable-alpine3.23-slim`) — **not by
+  some are intentionally pinned to a specific tag (e.g. `litellm` →
+  `ghcr.io/berriai/litellm:v1.92.0-rc.1`, TEMPORARILY pinned for the in-process
+  `headroom` compression guardrail [LiteLLM v1.92.x+; revert to `latest` once it
+  ships stable]; `litellm-db` → `postgres:18.4-alpine3.23`, `proxy` →
+  `nginx:stable-alpine3.23-slim`, `valkey` → `valkey/valkey:9.1.0-alpine`) — **not by
   digest** (digests are platform/arch specific, so a digest pin breaks
   cross-platform pulls).
 * The **native microsandbox runtime is NOT pinned here**: it is a user-installed

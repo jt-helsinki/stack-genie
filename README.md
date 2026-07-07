@@ -5,9 +5,13 @@ hardware-isolated [Microsandbox](https://microsandbox.dev) microVM; the model
 path and guardrails run as a shared host container tier. One Go binary, `ai`, is
 the entire control plane.
 
-**Model path:** agent → nginx gateway → Headroom (input compression) → LiteLLM
-(always-on secret-masking guardrails) → containerized Ollama or a cloud
-provider. A single nginx reverse proxy (`aip-proxy`) is the only host entry to
+**Model path:** agent → nginx gateway → LiteLLM → containerized Ollama or a cloud
+provider. LiteLLM applies a **user-selectable guardrail set** chosen at `ai setup`:
+the **Headroom** input-compression guardrail (LiteLLM POSTs the request to
+`aip-headroom:8787/v1/compress` in-process) is on by default, while Presidio
+secret-masking, detect-secrets, and a destructive-command tool-firewall are
+opt-in — Headroom is a compression service LiteLLM calls, not an nginx hop. A
+single nginx reverse proxy (`aip-proxy`) is the only host entry to
 the service tier — everything else runs internal-only on the `aip-net` network.
 Real provider API keys live only in the LiteLLM gateway (keys-in-LiteLLM),
 encrypted in its DB and added with `ai keys` — never on platform disk, in

@@ -199,7 +199,7 @@ than requiring everything on the command line. The rules (implemented once in
 ### ai setup
 
 ```bash id="c2"
-ai setup [--provider-config <file>] [--mode standalone|server|client] [--server <addr>] [--optional <csv>]
+ai setup [--provider-config <file>] [--mode standalone|server|client] [--server <addr>] [--optional <csv>] [--guardrails <csv>]
 ```
 
 `--provider-config <file>` points LiteLLM at a provider/endpoint config (model
@@ -243,6 +243,29 @@ the platform entirely.) The `--optional <csv>` flag is retained for forward
 compatibility but accepts only the sentinel `none` (a safe no-op); any other value
 is unknown → exit `2`. Omitting `--optional` keeps the empty set.
 
+**Guardrails.** The LiteLLM gateway guardrails are **user-selectable** at setup.
+On a TTY (standalone/server) the form presents a multi-select checkbox; under
+`--json` / no TTY the `--guardrails <csv>` flag drives it. The four options are:
+
+* `headroom` — "Input compression (Headroom)" — **default on** (the only
+  default-on guardrail out of the box)
+* `secret-masking` — "Secret masking (Presidio)" — opt-in; expands to the Presidio
+  input (`pre_call`) + output (`post_call`) pair and gates the Presidio containers
+* `hide-secrets` — "API-key / token detection (detect-secrets)" — opt-in
+* `tool-firewall` — "Destructive-command tool firewall" — opt-in
+
+`--guardrails` takes a comma-separated subset of those keys, or the literal `none`
+to disable all. On a TTY the flag **seeds** the checkbox; the default is Headroom
+only; an unknown name exits `2`. The selection is persisted machine-wide in
+`runtime.yaml` (`guardrails:`); an absent field means the default (Headroom only),
+a present set — including an explicit empty one — is honoured verbatim. Only the
+enabled guardrails are rendered into LiteLLM's config; an unselected guardrail is
+omitted entirely (never referencing a backend that isn't running). Each rendered
+guardrail is `default_on` (active on every request, and since every route —
+including cloud — traverses the proxy, a client cannot opt out of an **enabled**
+guardrail); the security guardrails (secret-masking, hide-secrets, tool-firewall)
+are opt-in (architecture §15/§17).
+
 Purpose:
 
 * installs platform dependencies
@@ -251,11 +274,14 @@ Purpose:
 * installs, configures, and starts the host services as the single control
   plane — see architecture §5, "Host Services Control Plane". The host service
   set is the `aip-dns` CoreDNS egress-audit resolver + Ollama (required) +
-  Presidio (analyzer + anonymizer) + LiteLLM (+ Postgres) + Headroom + the
-  `aip-proxy` nginx gateway (the SOLE host entry, reconciled LAST) — all
-  containers on the `aip-net` network, reconciled in order network → DNS → Ollama
-  → Presidio → LiteLLM(+DB) → Headroom → proxy — plus verification of the
-  Microsandbox workspace runtime.
+  Presidio (analyzer + anonymizer, reconciled only when the `secret-masking`
+  guardrail is selected) + Valkey (+ RedisInsight) + Headroom + LiteLLM
+  (+ Postgres) + the `aip-proxy` nginx gateway (the SOLE host entry, reconciled
+  LAST) — all containers on the `aip-net` network, reconciled in order network →
+  DNS → Ollama → Presidio → Valkey(+RedisInsight) → Headroom → LiteLLM(+DB) →
+  proxy (Headroom PRECEDES LiteLLM because LiteLLM's `headroom` compression
+  guardrail calls it in-process) — plus verification of the Microsandbox
+  workspace runtime.
 * renders each service config from the platform config and verifies the
   Microsandbox runtime + host virtualization (no docker compose; the whole
   service tier runs as containers, so there is no native OS service to register)
@@ -1270,10 +1296,12 @@ ai context strategy [project] [conservative|balanced|aggressive]
 Both positionals are **optional**: the project resolves like every project-scoped
 command (§17), and on a terminal omitting the value **presents a select menu**
 (pre-seeded with the current/given strategy); under `--json` / no TTY the value
-must be passed. The strategy is kept per project (default `balanced`). Because Headroom now runs
-as a shared **host** container (not in the workspace), the strategy maps to the
-per-request compression knobs (`keep_turns` / `output_buffer_tokens`) sent to the
-host Headroom proxy.
+must be passed. The strategy is kept per project (default `balanced`). Headroom runs
+as a shared **host** container (`aip-headroom`, internal-only on `:8787`) that
+LiteLLM invokes in-process as a `pre_call` compression guardrail (it is no longer
+an nginx proxy); the strategy maps to the per-request compression knobs
+(`keep_turns` / `output_buffer_tokens`) baked into the agent's request body, which
+LiteLLM's `headroom` guardrail forwards to Headroom's `/v1/compress`.
 
 ---
 
@@ -1302,10 +1330,11 @@ ai doctor [<name>]
 * **Platform dependencies** — Microsandbox runtime + host virtualization (Apple
   Silicon / KVM), Docker/Podman
 * **All service-tier services** — Ollama, Presidio (analyzer + anonymizer back
-  LiteLLM's always-on secret-masking guardrails; architecture §15), LiteLLM
-  (health + that the configured provider keys are present in the gateway — a
-  missing key is warned, not fatal; architecture §17), Headroom, the nginx proxy,
-  and DNS (there are no optional host services)
+  LiteLLM's opt-in `secret-masking` guardrail; reconciled only when it is enabled;
+  architecture §15), LiteLLM (health + that the configured provider keys are
+  present in the gateway — a missing key is warned, not fatal; architecture §17),
+  Headroom (the input-compression service LiteLLM calls as a `pre_call` guardrail),
+  the nginx proxy, and DNS (there are no optional host services)
 
 **Additionally**, it reports the **workspace-runtime** section (per-workspace
 runtime / virtualization check, §12.1) **only** when run inside a workspace
@@ -1355,7 +1384,13 @@ Behavior:
 
 * `status` reports each service's health and pinned version; `--json` returns the
   §19 envelope with a `data.services` array. (The optional set is empty, so every
-  listed service is a core service.)
+  listed service is a core service.) A **display-only `postgres` line** appears
+  immediately after `litellm` — it surfaces the LiteLLM Postgres (`aip-litellm-db`,
+  reconciled with LiteLLM by `ensureLiteLLMDB`): State `running`/`stopped`, Mode
+  `container`, no host endpoint (loopback-only `:5442`). It has **no** independent
+  lifecycle verb (`ai services <action> litellm-db` → "unknown service"); it is
+  managed with `litellm`. When the `secret-masking` guardrail is off, `presidio`
+  is still listed but reads **`disabled`** (surfaced, not probed).
 * lifecycle verbs (`start`/`stop`/`restart`) act on the **platform-owned container
   set** via the runtime abstraction (§6). With no service, or `all`, they act on
   every **enabled** container in **dependency order** (a disabled optional service
@@ -1519,7 +1554,7 @@ ai gateway clear              # back to the local standalone gateway
 ```
 
 The address is a **bare host or `host:port`** (NOT a URL). The default port is
-`18787` (the Headroom port). Resolution:
+`18787` (the nginx gateway port). Resolution:
 
 * empty → `host.microsandbox.internal:18787` (standalone/local — the in-VM name for
   the host machine);

@@ -201,11 +201,16 @@ Introduce Headroom + Caveman.
 
 ## Scope
 
-* Headroom context management (input compression) — host service-tier proxy
-  (`aip-headroom`, pulled image `ghcr.io/chopratejas/headroom:latest`, internal
-  port :8787) in front of LiteLLM; no longer baked into the workspace image, and
-  now **internal-only on `aip-net`** behind the nginx gateway (no host publish).
-  Per-project strategy maps to Headroom per-request knobs.
+* Headroom context management (input compression) — a LiteLLM `pre_call`
+  **guardrail**, NOT an nginx proxy. The `aip-headroom` service (pulled image
+  `ghcr.io/chopratejas/headroom:latest`, internal port :8787, **internal-only on
+  `aip-net`**, no host publish) is called BY LiteLLM: LiteLLM's `headroom`
+  guardrail POSTs the request messages to `http://aip-headroom:8787/v1/compress`
+  and swaps in the compressed result before dispatch (requires LiteLLM v1.92.x+;
+  the litellm image is temporarily pinned to `v1.92.0-rc.1`). It is also installed
+  INSIDE each workspace image (`uv tool install "headroom-ai[proxy]"`) for a future
+  in-VM `headroom wrap <cli>`. Per-project strategy maps to Headroom per-request
+  knobs fed to the guardrail's compress call.
 * Caveman output compression — in-agent skill
 
 (No platform memory system — agent memory is the agent's concern, architecture
@@ -363,18 +368,28 @@ These are implemented progressively across slices.
   catalog when a provider key is added (`ai keys add`) and from Ollama when a
   local model is pulled (`ai models pull` → `ollama/<name>`); the rendered config
   has no `model_list`, no wildcards, and no named aliases
-* **always-on guardrails** rendered into the generated LiteLLM config (all
-  `default_on: true`, so no request — cloud included — can bypass them), scoped
-  to **secrets/credentials, not general PII** (masking general PII was removed —
-  it corrupted ordinary coding prompts):
-  * `presidio-secrets-input` (pre_call) + `presidio-secrets-output` (post_call)
-    mask only financial/identity secrets (CREDIT_CARD, US_SSN, US_BANK_NUMBER,
-    IBAN_CODE, CRYPTO), backed by the `aip-presidio-analyzer` +
-    `aip-presidio-anonymizer` service-tier containers
+* **user-selectable guardrails** rendered into the generated LiteLLM config.
+  `ai setup` presents a guardrail multi-select (+ `--guardrails` flag,
+  comma-separated subset or `none`); the choice is persisted machine-wide in
+  `runtime.yaml` `guardrails:`. Only ENABLED guardrails are rendered — an
+  unselected one is omitted entirely (never references a backend that isn't
+  running). Each RENDERED guardrail is `default_on: true`, so a client can't opt
+  out of an ENABLED guardrail; since every route (cloud included) traverses the
+  proxy, cloud calls can't bypass an enabled guardrail. Headroom is the ONLY
+  default-on guardrail out of the box; the security guardrails below are opt-in.
+  The set is scoped to **secrets/credentials, not general PII** (masking general
+  PII was removed — it corrupted ordinary coding prompts):
+  * `headroom` — input compression (see Slice 2) — the only default-on guardrail
+  * `secret-masking` — the `presidio-secrets-input` (pre_call) +
+    `presidio-secrets-output` (post_call) pair as ONE option, masking only
+    financial/identity secrets (CREDIT_CARD, US_SSN, US_BANK_NUMBER, IBAN_CODE,
+    CRYPTO; MASK action, 0.6 score threshold), backed by the
+    `aip-presidio-analyzer` + `aip-presidio-anonymizer` service-tier containers
+    (which are pulled + started ONLY when this guardrail is selected)
   * `hide-secrets` (LiteLLM's in-process detect-secrets) for API keys/tokens
   * (the in-process `detect_prompt_injection` callback was REMOVED — it
     false-positived on ordinary coding/Ollama traffic)
-  * a `tool_permission` **tool firewall** (post_call) that DENIES destructive
+  * a `tool-firewall` (`tool_permission`, post_call) that DENIES destructive
     command tool-calls (`git push --force`, `rm -rf`, `terraform destroy`,
     `kubectl delete`, …) — for coding agents the bigger risk is destructive tool
     execution, not prompt content
@@ -397,10 +412,11 @@ These are implemented progressively across slices.
   internet, private ranges still blocked; lets in-VM apps pull images and AI
   processes reach the internet, DNS-audited and re-lockable), with `deny` the
   locked-down posture; no egress proxy
-* **secret masking / audit**: LiteLLM's always-on guardrails on every request
-  (Presidio scoped to financial/identity secrets + `hide-secrets` + the
-  `tool_permission` tool firewall; the `detect_prompt_injection` callback was
-  removed as a false-positive source), which cloud routes cannot bypass (§8.1);
+* **secret masking / audit**: LiteLLM's user-selectable guardrails, applied on
+  every request once enabled (the opt-in `secret-masking` Presidio pair scoped to
+  financial/identity secrets + `hide-secrets` + the `tool-firewall`; the
+  `detect_prompt_injection` callback was removed as a false-positive source),
+  which cloud routes cannot bypass once enabled (§8.1);
   plus per-domain DNS egress audit via the `aip-dns`
   CoreDNS resolver, surfaced by `ai network log`
 
@@ -451,7 +467,7 @@ one Microsandbox microVM per workspace (hardware isolation, libkrun)
 The container runtime (Docker/Podman) is used only for the service tier
 (the `aip-dns` CoreDNS egress-audit resolver, the containerized Ollama
 `aip-ollama`, the Presidio secret-masking pair, LiteLLM + its Postgres, the
-Headroom input-compression proxy, and the `aip-proxy` nginx gateway), never to run
+Headroom input-compression guardrail service, and the `aip-proxy` nginx gateway), never to run
 a workspace. The host tier has no optional services (Open WebUI is now a
 per-workspace **in-VM** app and Odysseus was removed). All service-tier containers
 share the private `aip-net` network, and **only the `aip-proxy` nginx gateway is
@@ -465,8 +481,9 @@ host-published** (the host port `18787`); every other service is internal-only o
 * the **`aip-proxy` nginx gateway is the SOLE host entry** to the service tier,
   on host port `18787`. It binds **127.0.0.1** in standalone/client roles and
   **0.0.0.0** in server role (`internal/setup` `currentBindHost()`). It forwards
-  to the internal-only Headroom (`aip-headroom:8787`) → LiteLLM
-  (`aip-litellm:4000`), and serves the Host-based UI subdomain
+  the model path DIRECTLY to LiteLLM (`aip-litellm:4000`), which calls Headroom
+  (`aip-headroom:8787/v1/compress`) in-process as a `pre_call` guardrail (nginx no
+  longer routes to Headroom at all), and serves the Host-based UI subdomain
   (`litellm.<domain>` — the only host UI vhost) plus host-CLI gateway paths
   (`/v1` model path, `/ollama`, `/llm`). The platform base domain is set by
   `ai domain` (default `aip.local`; host-CLI URLs render under `localhost:18787`).
