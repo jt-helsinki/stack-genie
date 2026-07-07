@@ -73,16 +73,17 @@ func TestExecuteHappyPath(test *testing.T) {
 	if projectConfig.Context.CavemanLevel != contextopt.DefaultCavemanLevel {
 		test.Errorf("caveman level = %q, want %q", projectConfig.Context.CavemanLevel, contextopt.DefaultCavemanLevel)
 	}
-	// The Caveman skill file was written by SetCavemanLevel.
-	if _, err := os.Stat(filepath.Join(root, ".ai-platform", "skills", "caveman", "SKILL.md")); err != nil {
-		test.Errorf("Caveman SKILL.md not seeded: %v", err)
+	// The Caveman skill is NOT seeded at create — it is installed by the real toolkit at
+	// workspace start (workspace.registerCaveman).
+	if _, err := os.Stat(filepath.Join(root, ".ai-platform", "skills", "caveman", "SKILL.md")); err == nil {
+		test.Error("Caveman SKILL.md should not be seeded at create (installed at workspace start)")
 	}
 
 	// The report callback saw the expected steps, in order (no pull step for a blank
 	// Graphify model).
 	want := []string{
 		"scaffolding project (Dockerfile, config, skills)",
-		"seeding context optimization + Caveman skill",
+		"seeding context-optimization defaults",
 		"workspace scaffolded — start it to build the image + boot the microVM",
 	}
 	if len(steps) != len(want) {

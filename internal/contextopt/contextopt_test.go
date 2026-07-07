@@ -65,7 +65,9 @@ func TestHeadroomParams(test *testing.T) {
 	}
 }
 
-func TestSetCavemanLevelInstallsSkill(test *testing.T) {
+// SetCavemanLevel records the level in config. It no longer writes a skill file —
+// the real Caveman toolkit installs the skill at workspace start.
+func TestSetCavemanLevelSetsConfig(test *testing.T) {
 	root := test.TempDir()
 	if err := SetCavemanLevel(root, "ultra"); err != nil {
 		test.Fatal(err)
@@ -77,42 +79,15 @@ func TestSetCavemanLevelInstallsSkill(test *testing.T) {
 	if loaded.Context.CavemanLevel != "ultra" {
 		test.Fatalf("caveman level = %q", loaded.Context.CavemanLevel)
 	}
-	skill, err := os.ReadFile(filepath.Join(root, ".ai-platform", "skills", "caveman", "SKILL.md"))
-	if err != nil {
-		test.Fatalf("skill not installed: %v", err)
-	}
-	if !strings.Contains(string(skill), "level: ultra") {
-		test.Fatalf("skill missing level:\n%s", skill)
-	}
-	// The Agent Skills standard (pi/claude/opencode) requires YAML frontmatter with a
-	// name + description — pi rejects a skill without a description.
-	for _, want := range []string{"name: caveman", "description:"} {
-		if !strings.Contains(string(skill), want) {
-			test.Errorf("skill SKILL.md missing frontmatter %q:\n%s", want, skill)
-		}
+	// The stub SKILL.md is no longer seeded by SetCavemanLevel.
+	if _, err := os.Stat(filepath.Join(root, ".ai-platform", "skills", "caveman", "SKILL.md")); err == nil {
+		test.Fatal("SetCavemanLevel should not write a skill file (installed at workspace start)")
 	}
 }
 
 func TestSetCavemanLevelInvalid(test *testing.T) {
 	if err := SetCavemanLevel(test.TempDir(), "mega"); !errors.Is(err, ErrInvalidCavemanLevel) {
 		test.Fatalf("want ErrInvalidCavemanLevel, got %v", err)
-	}
-}
-
-// InstallCavemanSkill called with an empty level seeds the skill at
-// DefaultCavemanLevel rather than writing a blank level — this is the path used
-// when a project has no configured level yet.
-func TestInstallCavemanSkillEmptyLevelUsesDefault(test *testing.T) {
-	root := test.TempDir()
-	if err := InstallCavemanSkill(root, ""); err != nil {
-		test.Fatal(err)
-	}
-	skill, err := os.ReadFile(filepath.Join(root, ".ai-platform", "skills", "caveman", "SKILL.md"))
-	if err != nil {
-		test.Fatalf("skill not installed: %v", err)
-	}
-	if !strings.Contains(string(skill), "level: "+DefaultCavemanLevel) {
-		test.Fatalf("empty level should default to %q:\n%s", DefaultCavemanLevel, skill)
 	}
 }
 
@@ -134,12 +109,30 @@ func TestStatusReflectsConfigAndSkill(test *testing.T) {
 		test.Fatal(err)
 	}
 
+	afterConfig, err := GetStatus(root)
+	if err != nil {
+		test.Fatal(err)
+	}
+	// Config is set, but the skill is still absent until it is installed at start.
+	if afterConfig.Strategy != "balanced" || afterConfig.CavemanLevel != "lite" || afterConfig.CavemanInstalled {
+		test.Fatalf("status after config: %+v", afterConfig)
+	}
+
+	// Simulate the workspace-start installer landing the caveman skill in the pool.
+	skillPath := filepath.Join(root, ".ai-platform", "skills", "caveman", "SKILL.md")
+	if err := os.MkdirAll(filepath.Dir(skillPath), 0o755); err != nil {
+		test.Fatal(err)
+	}
+	if err := os.WriteFile(skillPath, []byte("---\nname: caveman\n---\n"), 0o644); err != nil {
+		test.Fatal(err)
+	}
+
 	after, err := GetStatus(root)
 	if err != nil {
 		test.Fatal(err)
 	}
-	if after.Strategy != "balanced" || after.CavemanLevel != "lite" || !after.CavemanInstalled {
-		test.Fatalf("status: %+v", after)
+	if !after.CavemanInstalled {
+		test.Fatalf("caveman should be installed once the skill file exists: %+v", after)
 	}
 	if after.Headroom != nil {
 		test.Fatal("Headroom metrics need the running proxy; expected nil host-side")

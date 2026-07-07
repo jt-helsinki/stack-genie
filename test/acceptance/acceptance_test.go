@@ -230,13 +230,14 @@ func TestContextOptimizationFlow(test *testing.T) {
 		CavemanInstalled bool   `json:"caveman_installed"`
 	}
 
-	// Create seeds the Caveman skill at the default level.
+	// Create seeds the Caveman LEVEL at the default; the skill itself is installed by
+	// the real toolkit at workspace start, so it is not yet present after create.
 	status, code := harness.Run(test, "context", "status", "context-test")
 	AssertOK(test, status, code, "context.status")
 	var initial statusData
 	status.dataInto(test, &initial)
-	if !initial.CavemanInstalled || initial.CavemanLevel != "full" {
-		test.Fatalf("expected seeded full caveman skill, got %+v", initial)
+	if initial.CavemanInstalled || initial.CavemanLevel != "full" {
+		test.Fatalf("expected default caveman level full and skill not yet installed, got %+v", initial)
 	}
 
 	// An invalid strategy is rejected with exit 2.

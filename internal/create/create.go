@@ -78,14 +78,15 @@ func Execute(spec project.Spec, now string, report func(Progress)) (Result, []st
 	if _, err := project.Scaffold(spec, now); err != nil {
 		return Result{}, nil, mapProjectErr(err)
 	}
-	// Seed context-optimization defaults so the project config is self-describing, and
-	// install the Caveman skill (arch §9).
-	report(Progress{Step: "seeding context optimization + Caveman skill"})
+	// Seed context-optimization defaults so the project config is self-describing. The
+	// Caveman level is recorded here; the Caveman skill itself is installed by the real
+	// toolkit at workspace start (workspace.registerCaveman), not scaffolded (arch §9).
+	report(Progress{Step: "seeding context-optimization defaults"})
 	if err := contextopt.SetStrategy(spec.Root, contextopt.DefaultStrategy); err != nil {
 		return Result{}, nil, output.Errorf(output.ExitRuntimeFailure, "seed context strategy: %s", err)
 	}
 	if err := contextopt.SetCavemanLevel(spec.Root, contextopt.DefaultCavemanLevel); err != nil {
-		return Result{}, nil, output.Errorf(output.ExitRuntimeFailure, "seed caveman skill: %s", err)
+		return Result{}, nil, output.Errorf(output.ExitRuntimeFailure, "seed caveman level: %s", err)
 	}
 	configYAML, err := os.ReadFile(config.ProjectPath(spec.Root))
 	if err != nil {

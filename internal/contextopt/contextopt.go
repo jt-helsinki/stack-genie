@@ -68,8 +68,14 @@ func SetStrategy(projectRoot, strategy string) error {
 	return config.WriteProject(projectRoot, projectConfig)
 }
 
-// SetCavemanLevel sets the Caveman output-compression level on a project and
-// (re)installs the Caveman skill at that level.
+// SetCavemanLevel records the project's Caveman output-compression level in config.
+// The Caveman skill itself is NO LONGER a platform-written stub — it is installed by
+// the REAL Caveman toolkit (https://github.com/JuliusBrussee/caveman) at workspace
+// start via workspace.registerCaveman, which runs the upstream installer so each
+// detected CLI gets caveman's native skills/agents/commands + the opencode plugin,
+// claude hooks + statusline, and the gemini extension (pi/omp receive the skill via
+// the shared .ai-platform pool). This level is advisory: the installed skill controls
+// its own intensity at runtime via `/caveman <level>`.
 func SetCavemanLevel(projectRoot, level string) error {
 	if !slices.Contains(CavemanLevels, level) {
 		return fmt.Errorf("%w: %q (one of %v)", ErrInvalidCavemanLevel, level, CavemanLevels)
@@ -79,51 +85,14 @@ func SetCavemanLevel(projectRoot, level string) error {
 		return err
 	}
 	projectConfig.Context.CavemanLevel = level
-	if err := config.WriteProject(projectRoot, projectConfig); err != nil {
-		return err
-	}
-	return InstallCavemanSkill(projectRoot, level)
+	return config.WriteProject(projectRoot, projectConfig)
 }
 
-// cavemanSkillPath is the project's Caveman skill file (arch §9, repo-layout §2.2).
+// cavemanSkillPath is the project's Caveman skill file in the shared pool. The real
+// Caveman toolkit installs it here (its `caveman` skill dir) at workspace start; its
+// presence is what CavemanInstalled reports (arch §9, repo-layout §2.2).
 func cavemanSkillPath(projectRoot string) string {
 	return filepath.Join(projectRoot, ".ai-platform", "skills", "caveman", "SKILL.md")
-}
-
-// InstallCavemanSkill seeds (or refreshes) the per-project Caveman skill at the
-// given level. It is git-tracked and loaded by the in-workspace agent (arch §9).
-func InstallCavemanSkill(projectRoot, level string) error {
-	if level == "" {
-		level = DefaultCavemanLevel
-	}
-	path := cavemanSkillPath(projectRoot)
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		return err
-	}
-	return os.WriteFile(path, []byte(cavemanSkill(level)), 0o644)
-}
-
-func cavemanSkill(level string) string {
-	// The Agent Skills standard (claude/opencode/pi all read it) requires YAML
-	// frontmatter with `name` and `description` — pi rejects a skill missing the
-	// description. Keep the body's `level:` line so the level is visible + testable.
-	return fmt.Sprintf(`---
-name: caveman
-description: Output-compression guidance (level %s) — steer responses toward terse output to cut output tokens; the output-side complement to Headroom input compression.
----
-
-# Caveman — output compression
-
-level: %s
-
-This platform-seeded skill steers the in-workspace agent toward terse output to
-reduce output tokens (Caveman: https://github.com/JuliusBrussee/caveman). It is
-the output-side complement to Headroom (input compression).
-
-Levels: lite | full | ultra | wenyan. Change with:
-
-    ai context caveman <project> <level>
-`, level, level)
 }
 
 // HeadroomMetrics are live input-compression metrics from the running proxy.

@@ -1985,6 +1985,70 @@ func TestStartInstallsGraphifyGitHook(test *testing.T) {
 	}
 }
 
+// TestStartRegistersCaveman verifies Start runs the real Caveman installer for each
+// caveman-detectable selected CLI (with --only tokens + --non-interactive --with-hooks),
+// then mirrors opencode's caveman dirs into the shared pool for pi/omp — all once-guarded.
+func TestStartRegistersCaveman(test *testing.T) {
+	root := seedProject(test, "app")
+	if err := config.WriteProject(root, &config.Config{
+		OS:    "debian-trixie",
+		Agent: config.AgentConfig{Tools: []string{"opencode", "claude-code", "pi"}, DefaultTool: "opencode"},
+	}); err != nil {
+		test.Fatal(err)
+	}
+	sandbox := &fakeSandbox{}
+	manager := Manager{Builder: &fakeBuilder{}, Sandbox: sandbox, Keys: &fakeKeyMinter{}, Now: func() string { return "t" }}
+	if _, err := manager.Start("app"); err != nil {
+		test.Fatal(err)
+	}
+	var found bool
+	for _, argv := range sandbox.allExecArgv {
+		joined := strings.Join(argv, " ")
+		if !strings.Contains(joined, "caveman/main/install.sh") {
+			continue
+		}
+		found = true
+		for _, want := range []string{
+			"--non-interactive", "--with-hooks",
+			"--only opencode", "--only claude", // pi is NOT caveman-detectable → no --only
+			".caveman-installed", // once-guard marker
+			`cp -a "$src/."`,     // pool mirror for pi/omp
+		} {
+			if !strings.Contains(joined, want) {
+				test.Errorf("caveman install exec missing %q: %s", want, joined)
+			}
+		}
+		if strings.Contains(joined, "--only pi") {
+			test.Errorf("pi is not caveman-detectable and must not get an --only token: %s", joined)
+		}
+	}
+	if !found {
+		test.Errorf("Start should run the Caveman installer; execs: %v", sandbox.allExecArgv)
+	}
+}
+
+// TestStartSkipsCavemanWhenNoDetectableCLI verifies that when only undetectable CLIs
+// (pi/omp) are selected, Start makes no Caveman network call at all.
+func TestStartSkipsCavemanWhenNoDetectableCLI(test *testing.T) {
+	root := seedProject(test, "app")
+	if err := config.WriteProject(root, &config.Config{
+		OS:    "debian-trixie",
+		Agent: config.AgentConfig{Tools: []string{"pi", "omp"}, DefaultTool: "pi"},
+	}); err != nil {
+		test.Fatal(err)
+	}
+	sandbox := &fakeSandbox{}
+	manager := Manager{Builder: &fakeBuilder{}, Sandbox: sandbox, Keys: &fakeKeyMinter{}, Now: func() string { return "t" }}
+	if _, err := manager.Start("app"); err != nil {
+		test.Fatal(err)
+	}
+	for _, argv := range sandbox.allExecArgv {
+		if strings.Contains(strings.Join(argv, " "), "caveman/main/install.sh") {
+			test.Errorf("no caveman-detectable CLI selected — the installer must not run: %v", argv)
+		}
+	}
+}
+
 // TestStartLinksSharedResources verifies the shared .ai-platform/{agents,skills,
 // prompts,projects} pool is created and symlinked into each INSTALLED CLI's real
 // per-project dirs (relative symlinks), skipping kinds a CLI has no concept for.

@@ -441,9 +441,9 @@ func (manager Manager) Start(project string) (*state.Workspace, error) {
 	manager.ensureVenv(name)
 	// Wire the shared <project>/.ai-platform/{agents,skills,prompts} pool into each
 	// installed CLI's real per-project dirs via relative symlinks, so one copy of a
-	// skill/agent/prompt (incl. Caveman) serves every client. Host-side + best-effort;
-	// MUST run BEFORE registerGraphify so graphify's per-CLI skill files land in the
-	// shared pool through the symlinks.
+	// skill/agent/prompt serves every client. Host-side + best-effort; MUST run BEFORE
+	// registerGraphify + registerCaveman so their per-CLI skill files land in the shared
+	// pool through the symlinks.
 	if err := linkSharedResources(root, projectConfig.Agent.Tools); err != nil {
 		_, _ = fmt.Fprintf(os.Stderr, "warning: could not link shared agent resources in workspace %q: %v\n", name, err)
 	}
@@ -451,6 +451,10 @@ func (manager Manager) Start(project string) (*state.Workspace, error) {
 	// because `graphify install --project` writes into the project dir (~/project),
 	// which is only bind-mounted at runtime. Best-effort — never fails the start.
 	manager.registerGraphify(name, projectConfig)
+	// Install the Caveman output-compression toolkit into each detected CLI (native
+	// skills/plugin/hooks/statusline/extension) and mirror its skills into the shared
+	// pool for pi/omp. Once-guarded, network-bound, best-effort — never fails the start.
+	manager.registerCaveman(name, projectConfig)
 	now := manager.Now()
 	handle := &state.Workspace{
 		ID:          name,
@@ -762,6 +766,12 @@ func (manager Manager) ensureVenv(name string) {
 // network — it just writes skill/plugin/hook files into the project).
 const graphifyInstallTimeout = 60 * time.Second
 
+// cavemanInstallTimeout bounds the in-VM Caveman install. Unlike graphify it is
+// NETWORK-bound (fetches the installer + the caveman package via npx/git and each
+// CLI's native plugin/extension), so it gets a generous bound; it is once-guarded and
+// best-effort, so a slow or blocked network never wedges the workspace.
+const cavemanInstallTimeout = 4 * time.Minute
+
 // linkAgentStateDirs points the agent CLIs' mutable STATE directories at the persistent
 // overlay (/persist) so a CLI's per-project memory survives microVM restarts — the VM
 // home does NOT persist, so without this opencode forgets the last-used /model on every
@@ -946,6 +956,78 @@ func (manager Manager) registerGraphify(name string, projectConfig *config.Confi
 	ctx, cancel := context.WithTimeout(context.Background(), graphifyInstallTimeout)
 	defer cancel()
 	_, _ = manager.Sandbox.ExecContext(ctx, name, []string{"sh", "-lc", script})
+}
+
+// cavemanOnlyAgent maps a selected agent CLI to Caveman's `install.sh --only <agent>`
+// token. Caveman AUTO-DETECTS these CLIs and installs its native skills/agents/commands
+// PLUS the CLI-native extras the shared pool cannot carry: the opencode plugin, claude
+// hooks + statusline, and the gemini extension. pi, omp and copilot are absent — Caveman
+// cannot detect them, so they receive the skill via the shared pool (below) instead.
+var cavemanOnlyAgent = map[string]string{
+	"claude-code": "claude",
+	"gemini":      "gemini",
+	"opencode":    "opencode",
+	"codex":       "codex",
+}
+
+// registerCaveman installs the Caveman output-compression toolkit
+// (https://github.com/JuliusBrussee/caveman) into the workspace at start, best-effort.
+//
+// It runs Caveman's OWN installer so each detected CLI gets caveman's CLI-NATIVE
+// integration — skills, agents, commands, the opencode plugin, claude hooks + statusline,
+// the gemini extension — which the platform's shared-pool symlinks cannot carry. It then
+// mirrors the caveman skill/agent/command dirs opencode received (its GLOBAL
+// ~/.config/opencode output — the richest plain-markdown copy) INTO the shared
+// <project>/.ai-platform/{skills,agents,prompts} pool, where linkSharedResources' symlinks
+// distribute them to pi + omp (which read skills ONLY from that pool and are NOT
+// caveman-detectable). The same-content skills also re-appear for opencode/claude via the
+// pool symlinks — a harmless duplicate of identical files.
+//
+// It is NETWORK-dependent (fetches the installer + the caveman package), so it only
+// succeeds under an egress policy that allows outbound (the `public` default); under
+// `deny` it is a no-op. ONCE-guarded by a marker under the persistent .ai-platform dir so
+// a restart neither re-runs it nor clobbers user edits. Best-effort — never fails start.
+func (manager Manager) registerCaveman(name string, projectConfig *config.Config) {
+	if projectConfig == nil {
+		return
+	}
+	only := make([]string, 0, len(projectConfig.Agent.Tools))
+	for _, cli := range projectConfig.Agent.Tools {
+		if agent, ok := cavemanOnlyAgent[cli]; ok {
+			only = append(only, "--only "+agent)
+		}
+	}
+	// No caveman-detectable CLI selected → nothing to install and no opencode output to
+	// mirror into the pool, so skip the network call entirely.
+	if len(only) == 0 {
+		return
+	}
+	pool := workspaceWorkdir + "/.ai-platform"
+	installMarker := pool + "/.caveman-installed"
+	// One guarded exec in ~/project:
+	//   1. Fetch + run Caveman's installer non-interactively for the detected CLIs
+	//      (--with-hooks wires the claude hooks + statusline; the opencode plugin and
+	//      gemini extension come from their native adapters).
+	//   2. Mirror opencode's GLOBAL caveman dirs into the shared pool (skills→skills,
+	//      agents→agents, commands→prompts) so pi/omp pick them up via the symlinks.
+	installCmd := "curl -fsSL https://raw.githubusercontent.com/JuliusBrussee/caveman/main/install.sh | " +
+		"bash -s -- --non-interactive --with-hooks " + strings.Join(only, " ")
+	mirror := `og="${XDG_CONFIG_HOME:-$HOME/.config}/opencode"; ` +
+		`for pair in "skills:skills" "agents:agents" "commands:prompts"; do ` +
+		`src="$og/${pair%%:*}"; dst="` + pool + `/${pair##*:}"; ` +
+		`[ -d "$src" ] || continue; mkdir -p "$dst"; cp -a "$src/." "$dst/" 2>/dev/null || true; done`
+	// The marker is touched ONLY after a successful install + mirror (chained with &&),
+	// so a failed first attempt (e.g. no network) retries on the next start rather than
+	// being wrongly recorded as done.
+	script := "cd " + workspaceWorkdir + " 2>/dev/null || exit 0; " +
+		"mkdir -p " + pool + "; " +
+		"[ -f " + installMarker + " ] && exit 0; " +
+		installCmd + " && " +
+		mirror + " && " +
+		"touch " + installMarker
+	ctx, cancel := context.WithTimeout(context.Background(), cavemanInstallTimeout)
+	defer cancel()
+	_, _ = manager.Sandbox.ExecContext(ctx, name, []string{"bash", "-lc", script})
 }
 
 // ensureContainerd makes the rootful in-VM container runtime (containerd)
