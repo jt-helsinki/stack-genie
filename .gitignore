@@ -9,3 +9,10 @@
 *.test
 *.out
 coverage.txt
+
+.venv
+.env
+
+.agents
+.tokensave
+skills-lock.json
