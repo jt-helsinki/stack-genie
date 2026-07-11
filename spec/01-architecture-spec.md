@@ -125,7 +125,7 @@ Host Layer
  └─ Container Runtime (Docker / Podman)            ← service tier (network aip-net)
      └─ nginx reverse proxy (aip-proxy — SOLE host entry, publishes :18787)
          └─ INTERNAL-ONLY containers on aip-net (no host publish):
-            Headroom · LiteLLM (+ Postgres) · Presidio (analyzer + anonymizer) · Ollama · DNS audit (CoreDNS)
+            Headroom · LiteLLM (+ Postgres) · Presidio (analyzer + anonymizer) · Ollama · Valkey · RedisInsight · DNS audit (CoreDNS)
 ```
 
 Workspaces are **microVMs** (hardware isolation), not containers. The
@@ -141,8 +141,10 @@ Microsandbox                                            — microVM runtime, dri
 ```
 
 The entire host service tier is containers on `aip-net`: nginx (`aip-proxy`),
-Ollama, Presidio (analyzer + anonymizer), LiteLLM (+ Postgres), Headroom, and the
-CoreDNS egress-audit resolver. There are no optional host services. There is no
+Ollama, Presidio (analyzer + anonymizer), LiteLLM (+ Postgres), Headroom, Valkey
+(`aip-valkey`, the LiteLLM response cache) and its RedisInsight GUI
+(`aip-redisinsight`), and the CoreDNS egress-audit resolver. There are no optional
+host services. There is no
 native host service. **`aip-proxy` (nginx) is the SOLE host entry point** — every
 other service container is INTERNAL-ONLY on `aip-net` (reached by name, no host
 publish), except the two loopback-published support containers `aip-litellm-db`
@@ -333,10 +335,12 @@ by `server_name` (Host-based vhosts):
     surface.
   - `location /ollama/` → `aip-ollama:11434` (prefix stripped) — the Ollama HTTP
     API.
-- The **single web UI is a Host-based VHOST (subdomain)** on the SAME :18787, NOT
-  a separate host port: `litellm.<domain>` → `aip-litellm:4000` (the admin UI at
-  `/ui`; litellm is the ONLY host UI vhost). The vhost carries WebSocket upgrade
-  headers (it serves the admin UI directly). The
+- The **web UIs are Host-based VHOSTS (subdomains)** on the SAME :18787, NOT
+  separate host ports — rendered data-driven from `services.UIVhosts()`: there are
+  two, `litellm.<domain>` → `aip-litellm:4000` (the admin UI at `/ui`) and
+  `valkey.<domain>` → `aip-redisinsight:5540` (the RedisInsight GUI), both always
+  on. The vhosts carry WebSocket upgrade headers (they serve the admin UIs
+  directly). The
   `<domain>` is the resolved platform base domain (`runtime.yaml` `domain`, default
   `aip.local`; `ai domain`). (Open WebUI is now a per-workspace in-VM app — see
   `internal/apps`, §7 — not a host service; Odysseus has been removed from the
@@ -344,7 +348,7 @@ by `server_name` (Host-based vhosts):
 
 In **standalone** mode `ai setup` writes an `/etc/hosts` block (with consent + sudo;
 on no-TTY/--json/declined it prints the block to add manually) pointing
-`litellm.<domain>` at `127.0.0.1` (litellm is the only host UI vhost). In
+the UI subdomains (`litellm.<domain>` and `valkey.<domain>`) at `127.0.0.1`. In
 **server** mode the platform
 does NOT edit `/etc/hosts` — `ai setup`/`ai doctor` print the operator contract:
 create real DNS (`*.<domain>` wildcard or per-host) → this server's IP and provide
@@ -379,7 +383,7 @@ ai logs --service <svc>      one log surface
 
 | Service | Run mode | Why |
 |---|---|---|
-| nginx proxy | container (via Runtime) `aip-proxy` (`nginx:stable-alpine3.23-slim`) | the SOLE host ENTRY to the service tier: publishes ONLY :18787 — the default server (`/`+`/v1`→LiteLLM directly, `/llm`→LiteLLM, `/ollama`→Ollama) plus the single Host-based UI vhost on the same port (`litellm.<domain>`); HTTPS termination point later (§10) |
+| nginx proxy | container (via Runtime) `aip-proxy` (`nginx:stable-alpine3.23-slim`) | the SOLE host ENTRY to the service tier: publishes ONLY :18787 — the default server (`/`+`/v1`→LiteLLM directly, `/llm`→LiteLLM, `/ollama`→Ollama) plus the two Host-based UI vhosts on the same port (`litellm.<domain>` → LiteLLM admin UI, `valkey.<domain>` → RedisInsight); HTTPS termination point later (§10) |
 | Headroom | container (via Runtime) `aip-headroom` (`ghcr.io/chopratejas/headroom:latest`) | LiteLLM's `pre_call` input-compression guardrail backend, called at `aip-headroom:8787/v1/compress`; INTERNAL-ONLY on :8787 on aip-net (no host publish, nginx never routes to it); carries only `HEADROOM_TELEMETRY=off`; HTTP only (§10) |
 | LiteLLM | container (via Runtime) `aip-litellm` (image pinned `v1.92.0-rc.1`) (+ `aip-litellm-db` Postgres, surfaced as its own `postgres` status line) | INTERNAL-ONLY: no host publish, reached by name (`aip-litellm:4000`) by nginx's model path + `/llm` route; it calls Headroom in-process; HTTP only; no host privileges |
 | Presidio | two containers (via Runtime) `aip-presidio-analyzer` + `aip-presidio-anonymizer` | back LiteLLM's secret-masking guardrail; started ONLY when `secret-masking` is selected (§15); internal-only, not published |
@@ -828,11 +832,13 @@ nginx additionally fronts the LiteLLM admin/management surface on **`location /l
 `/key*`, `/credentials`, …) and the Ollama HTTP API on **`location /ollama`** (→
 `aip-ollama:11434`, prefix stripped) — the specific `/llm` and `/ollama` prefixes
 match before the catch-all `/` (the default route, also → LiteLLM directly). The
-single web UI is served as a **Host-based vhost on the SAME :18787**, NOT a separate
-host port: `litellm.<domain>` → `aip-litellm:4000` (admin UI at `/ui`; litellm is
-the ONLY host UI vhost, with WebSocket upgrade headers). `<domain>`
+web UIs are served as **Host-based vhosts on the SAME :18787**, NOT separate
+host ports (data-driven from `services.UIVhosts()`): `litellm.<domain>` →
+`aip-litellm:4000` (admin UI at `/ui`) and `valkey.<domain>` →
+`aip-redisinsight:5540` (the RedisInsight GUI), both always on and carrying
+WebSocket upgrade headers. `<domain>`
 is the resolved platform base domain (`runtime.yaml` `domain`, default `aip.local`;
-`ai domain`). Standalone points that name at `127.0.0.1` via an `/etc/hosts`
+`ai domain`). Standalone points those names at `127.0.0.1` via an `/etc/hosts`
 managed block written by `ai setup` (consent + sudo, else a manual block);
 server mode does NOT edit `/etc/hosts` and instead prints the DNS (`*.<domain>` →
 this server) + TLS (cert terminated at nginx) operator contract. Because nginx is

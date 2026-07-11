@@ -9,9 +9,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jt-helsinki/ideal-robot/internal/doctor"
-	"github.com/jt-helsinki/ideal-robot/internal/litellm"
-	"github.com/jt-helsinki/ideal-robot/internal/setup"
+	"github.com/jt-helsinki/stack-genie/internal/doctor"
+	"github.com/jt-helsinki/stack-genie/internal/litellm"
+	"github.com/jt-helsinki/stack-genie/internal/setup"
 )
 
 // Group 1: Setup / health.

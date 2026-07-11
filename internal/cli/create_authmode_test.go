@@ -4,7 +4,7 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/jt-helsinki/ideal-robot/internal/output"
+	"github.com/jt-helsinki/stack-genie/internal/output"
 )
 
 // TestSpecFromFlagsCarriesAuthModes verifies --auth-mode is parsed into Spec.AuthModes for

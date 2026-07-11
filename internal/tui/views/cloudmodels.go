@@ -5,9 +5,9 @@ import (
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
-	"github.com/jt-helsinki/ideal-robot/internal/catalog"
-	"github.com/jt-helsinki/ideal-robot/internal/litellm"
-	"github.com/jt-helsinki/ideal-robot/internal/ui"
+	"github.com/jt-helsinki/stack-genie/internal/catalog"
+	"github.com/jt-helsinki/stack-genie/internal/litellm"
+	"github.com/jt-helsinki/stack-genie/internal/ui"
 )
 
 // CloudCatalogLoader returns the models.dev catalog plus the data source (fresh vs

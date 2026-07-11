@@ -5,8 +5,8 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/jt-helsinki/ideal-robot/internal/conffile"
-	"github.com/jt-helsinki/ideal-robot/internal/versions"
+	"github.com/jt-helsinki/stack-genie/internal/conffile"
+	"github.com/jt-helsinki/stack-genie/internal/versions"
 )
 
 // expectedServices documents the pins the default registry must carry, together

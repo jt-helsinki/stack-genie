@@ -18,9 +18,9 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/jt-helsinki/ideal-robot/internal/paths"
-	"github.com/jt-helsinki/ideal-robot/internal/project"
-	"github.com/jt-helsinki/ideal-robot/internal/services"
+	"github.com/jt-helsinki/stack-genie/internal/paths"
+	"github.com/jt-helsinki/stack-genie/internal/project"
+	"github.com/jt-helsinki/stack-genie/internal/services"
 )
 
 // TailLines is how many trailing lines a tail keeps per source.

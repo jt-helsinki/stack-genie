@@ -16,7 +16,7 @@ import (
 	"github.com/charmbracelet/huh"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/x/term"
-	"github.com/jt-helsinki/ideal-robot/internal/output"
+	"github.com/jt-helsinki/stack-genie/internal/output"
 )
 
 // Palette — lipgloss adapts these to the terminal's colour profile and strips

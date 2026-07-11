@@ -5,7 +5,7 @@ import (
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
-	"github.com/jt-helsinki/ideal-robot/internal/project"
+	"github.com/jt-helsinki/stack-genie/internal/project"
 )
 
 func TestProjectsLoadsAndSelectEmitsMsg(test *testing.T) {

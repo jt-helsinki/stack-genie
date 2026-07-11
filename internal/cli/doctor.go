@@ -7,12 +7,12 @@ import (
 	"strings"
 	"time"
 
-	"github.com/jt-helsinki/ideal-robot/internal/doctor"
-	"github.com/jt-helsinki/ideal-robot/internal/output"
-	"github.com/jt-helsinki/ideal-robot/internal/runtime"
-	"github.com/jt-helsinki/ideal-robot/internal/setup"
-	"github.com/jt-helsinki/ideal-robot/internal/uihosts"
-	"github.com/jt-helsinki/ideal-robot/internal/workspace"
+	"github.com/jt-helsinki/stack-genie/internal/doctor"
+	"github.com/jt-helsinki/stack-genie/internal/output"
+	"github.com/jt-helsinki/stack-genie/internal/runtime"
+	"github.com/jt-helsinki/stack-genie/internal/setup"
+	"github.com/jt-helsinki/stack-genie/internal/uihosts"
+	"github.com/jt-helsinki/stack-genie/internal/workspace"
 	"github.com/spf13/cobra"
 )
 

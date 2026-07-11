@@ -13,7 +13,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/jt-helsinki/ideal-robot/internal/config"
+	"github.com/jt-helsinki/stack-genie/internal/config"
 )
 
 // ErrInvalidMode is returned for an egress mode outside config.EgressModes.

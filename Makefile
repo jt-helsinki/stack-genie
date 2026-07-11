@@ -9,7 +9,7 @@
 export CGO_ENABLED := 1
 
 BINARY      := ai
-PKG         := github.com/jt-helsinki/ideal-robot
+PKG         := github.com/jt-helsinki/stack-genie
 VERSION_PKG := $(PKG)/internal/version
 VERSION     ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo 0.0.0-dev)
 LDFLAGS     := -X $(VERSION_PKG).Version=$(VERSION)

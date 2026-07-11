@@ -6,13 +6,13 @@ import (
 	"testing"
 
 	"github.com/charmbracelet/bubbles/viewport"
-	"github.com/charmbracelet/bubbletea"
+	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
-	"github.com/jt-helsinki/ideal-robot/internal/config"
-	"github.com/jt-helsinki/ideal-robot/internal/create"
-	"github.com/jt-helsinki/ideal-robot/internal/project"
-	"github.com/jt-helsinki/ideal-robot/internal/tui/views"
-	"github.com/jt-helsinki/ideal-robot/internal/workspace"
+	"github.com/jt-helsinki/stack-genie/internal/config"
+	"github.com/jt-helsinki/stack-genie/internal/create"
+	"github.com/jt-helsinki/stack-genie/internal/project"
+	"github.com/jt-helsinki/stack-genie/internal/tui/views"
+	"github.com/jt-helsinki/stack-genie/internal/workspace"
 	"github.com/muesli/termenv"
 )
 
@@ -43,6 +43,49 @@ func TestQuitKey(test *testing.T) {
 	application.Update(qKey())
 	if !application.quitting {
 		test.Fatal("q must set quitting")
+	}
+}
+
+// leftClick builds a left-button press at (x, y).
+func leftClick(x, y int) tea.MouseMsg {
+	return tea.MouseMsg{X: x, Y: y, Action: tea.MouseActionPress, Button: tea.MouseButtonLeft}
+}
+
+func TestMouseClickSwitchesTopTab(test *testing.T) {
+	application := newTestApp("Services", "Workspaces", "Settings")
+	tabRow := lipgloss.Height(application.header()) + headerGapRows
+
+	// "Services" renders 10 cells wide (title + 1 pad each side) — clicking just
+	// past it lands on "Workspaces".
+	application.Update(leftClick(lipgloss.Width("Services")+2+1, tabRow))
+	if application.current != 1 {
+		test.Fatalf("click on the second tab: current = %d, want 1", application.current)
+	}
+
+	// A click on the same row past every tab changes nothing.
+	application.Update(leftClick(500, tabRow))
+	if application.current != 1 {
+		test.Errorf("click past the tabs must not switch, current = %d", application.current)
+	}
+
+	// A click on a different row changes nothing.
+	application.Update(leftClick(2, tabRow+10))
+	if application.current != 1 {
+		test.Errorf("click off the tab bar must not switch, current = %d", application.current)
+	}
+
+	// Non-press / non-left events are ignored even on the bar.
+	application.Update(tea.MouseMsg{X: 2, Y: tabRow, Action: tea.MouseActionRelease, Button: tea.MouseButtonLeft})
+	application.Update(tea.MouseMsg{X: 2, Y: tabRow, Action: tea.MouseActionPress, Button: tea.MouseButtonRight})
+	if application.current != 1 {
+		test.Errorf("release/right-click must not switch, current = %d", application.current)
+	}
+
+	// While a modal overlay is open, tab clicks are inert.
+	application.helpOpen = true
+	application.Update(leftClick(2, tabRow))
+	if application.current != 1 {
+		test.Errorf("click during the help overlay must not switch, current = %d", application.current)
 	}
 }
 

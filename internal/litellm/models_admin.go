@@ -27,7 +27,7 @@ import (
 	"net/http"
 	"net/url"
 
-	"github.com/jt-helsinki/ideal-robot/internal/output"
+	"github.com/jt-helsinki/stack-genie/internal/output"
 )
 
 // Credential is a stored provider credential as returned by GET /credentials. The

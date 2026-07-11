@@ -7,8 +7,8 @@ import (
 	"os/exec"
 	"strings"
 
-	"github.com/jt-helsinki/ideal-robot/internal/hostsfile"
-	"github.com/jt-helsinki/ideal-robot/internal/runtime"
+	"github.com/jt-helsinki/stack-genie/internal/hostsfile"
+	"github.com/jt-helsinki/stack-genie/internal/runtime"
 )
 
 // DefaultHostsPath is the production hosts file location.

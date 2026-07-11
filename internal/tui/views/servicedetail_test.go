@@ -5,7 +5,7 @@ import (
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
-	"github.com/jt-helsinki/ideal-robot/internal/setup"
+	"github.com/jt-helsinki/stack-genie/internal/setup"
 )
 
 // newDetailForTest builds a ServiceDetail pointed at a single fake service whose

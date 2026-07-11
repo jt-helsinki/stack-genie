@@ -3,8 +3,8 @@ package cli
 import (
 	"testing"
 
-	"github.com/jt-helsinki/ideal-robot/internal/config"
-	"github.com/jt-helsinki/ideal-robot/internal/output"
+	"github.com/jt-helsinki/stack-genie/internal/config"
+	"github.com/jt-helsinki/stack-genie/internal/output"
 )
 
 func TestSpecFromFlagsCarriesApps(test *testing.T) {

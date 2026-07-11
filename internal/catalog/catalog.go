@@ -41,9 +41,8 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/jt-helsinki/stack-genie/internal/paths"
 	"gopkg.in/yaml.v3"
-
-	"github.com/jt-helsinki/ideal-robot/internal/paths"
 )
 
 // DefaultURL is the canonical models.dev catalog endpoint.

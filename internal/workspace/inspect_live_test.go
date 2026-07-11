@@ -5,7 +5,7 @@ package workspace
 import (
 	"testing"
 
-	"github.com/jt-helsinki/ideal-robot/internal/runtime"
+	"github.com/jt-helsinki/stack-genie/internal/runtime"
 )
 
 // TestInspectNetworkLive drives the REAL realSandbox.InspectNetwork against a

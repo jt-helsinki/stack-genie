@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/jt-helsinki/ideal-robot/internal/templates"
+	"github.com/jt-helsinki/stack-genie/internal/templates"
 )
 
 // installTemplates lays the embedded templates under a throwaway HOME so Compose

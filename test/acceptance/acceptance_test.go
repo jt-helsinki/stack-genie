@@ -5,7 +5,7 @@ import (
 	"os/exec"
 	"testing"
 
-	"github.com/jt-helsinki/ideal-robot/internal/templates"
+	"github.com/jt-helsinki/stack-genie/internal/templates"
 )
 
 // installTemplates lays down ~/.ai-platform/templates into the harness HOME.

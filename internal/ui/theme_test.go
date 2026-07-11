@@ -79,6 +79,51 @@ func TestLoadSaveThemeRoundTrip(test *testing.T) {
 	}
 }
 
+func TestLoadSaveMouseEnabledRoundTrip(test *testing.T) {
+	test.Setenv("HOME", test.TempDir())
+
+	// No file yet → the default (mouse capture ON).
+	if !LoadMouseEnabled() {
+		test.Fatal("LoadMouseEnabled (absent) = false, want the default true")
+	}
+	if err := SaveMouseEnabled(false); err != nil {
+		test.Fatalf("SaveMouseEnabled(false): %v", err)
+	}
+	if LoadMouseEnabled() {
+		test.Fatal("LoadMouseEnabled after saving false = true, want false")
+	}
+	if err := SaveMouseEnabled(true); err != nil {
+		test.Fatalf("SaveMouseEnabled(true): %v", err)
+	}
+	if !LoadMouseEnabled() {
+		test.Fatal("LoadMouseEnabled after saving true = false, want true")
+	}
+}
+
+// The two settings share ui.yaml, so saving one must never clobber the other.
+func TestThemeAndMousePrefsCoexist(test *testing.T) {
+	test.Setenv("HOME", test.TempDir())
+
+	if err := SaveMouseEnabled(false); err != nil {
+		test.Fatalf("SaveMouseEnabled: %v", err)
+	}
+	if err := SaveThemeName("dracula"); err != nil {
+		test.Fatalf("SaveThemeName: %v", err)
+	}
+	if LoadMouseEnabled() {
+		test.Fatal("SaveThemeName clobbered the saved mouse setting")
+	}
+	if got := LoadThemeName(); got != "dracula" {
+		test.Fatalf("LoadThemeName = %q, want dracula", got)
+	}
+	if err := SaveMouseEnabled(true); err != nil {
+		test.Fatalf("SaveMouseEnabled: %v", err)
+	}
+	if got := LoadThemeName(); got != "dracula" {
+		test.Fatalf("SaveMouseEnabled clobbered the saved theme: LoadThemeName = %q", got)
+	}
+}
+
 func TestLoadThemeNameFallsBackOnUnknownSaved(test *testing.T) {
 	test.Setenv("HOME", test.TempDir())
 

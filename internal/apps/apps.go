@@ -5,7 +5,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/jt-helsinki/ideal-robot/internal/config"
+	"github.com/jt-helsinki/stack-genie/internal/config"
 )
 
 // ExecResult is the outcome of running a command inside the workspace microVM

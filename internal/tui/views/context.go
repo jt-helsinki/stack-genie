@@ -5,8 +5,8 @@ import (
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
-	"github.com/jt-helsinki/ideal-robot/internal/contextopt"
-	"github.com/jt-helsinki/ideal-robot/internal/ui"
+	"github.com/jt-helsinki/stack-genie/internal/contextopt"
+	"github.com/jt-helsinki/stack-genie/internal/ui"
 )
 
 // ContextGetter returns the per-project context-optimization status (Headroom

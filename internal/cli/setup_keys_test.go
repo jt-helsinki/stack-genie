@@ -4,7 +4,7 @@ import (
 	"io"
 	"testing"
 
-	"github.com/jt-helsinki/ideal-robot/internal/output"
+	"github.com/jt-helsinki/stack-genie/internal/output"
 )
 
 // setup no longer prompts for cloud-provider API keys — those are added from the

@@ -11,7 +11,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/jt-helsinki/ideal-robot/internal/runtime"
+	"github.com/jt-helsinki/stack-genie/internal/runtime"
 )
 
 // The host CLI reaches LiteLLM ONLY through the nginx gateway (aip-proxy) on the
@@ -69,7 +69,18 @@ type realClient struct {
 	adminURL   string
 	gatewayURL string
 	httpClient *http.Client
+	// chatClient probes the model path (`ai models test`). It needs a FAR longer
+	// timeout than the admin client: a `test` triggers a real completion, and a
+	// COLD Ollama model must first load into memory before the first token — tens
+	// of seconds for a small model, minutes for a large one. Reusing the 5s admin
+	// client made `ai models test <model>` fail with a misleading "could not reach
+	// LiteLLM" every time the model was not already warm.
+	chatClient *http.Client
 }
+
+// chatTestTimeout bounds a single `ai models test` completion, generous enough to
+// cover a cold model load (a 36B Ollama model cold-loads in ~20-60s locally).
+const chatTestTimeout = 3 * time.Minute
 
 // RealClient returns a Client bound to the local LiteLLM gateway via nginx.
 func RealClient() Client {
@@ -77,6 +88,7 @@ func RealClient() Client {
 		adminURL:   AdminBaseURL(),
 		gatewayURL: GatewayBaseURL(),
 		httpClient: &http.Client{Timeout: 5 * time.Second},
+		chatClient: &http.Client{Timeout: chatTestTimeout},
 	}
 }
 
@@ -250,7 +262,14 @@ func (client realClient) Test(model string) (TestResult, error) {
 		request.Header.Set("Authorization", "Bearer "+key)
 	}
 	start := time.Now()
-	response, err := client.httpClient.Do(request)
+	// Use the long-timeout chat client: a cold model load can take tens of seconds
+	// (see chatTestTimeout). Fall back to the admin client only if chatClient is
+	// unset (e.g. a hand-built realClient in a test).
+	probe := client.chatClient
+	if probe == nil {
+		probe = client.httpClient
+	}
+	response, err := probe.Do(request)
 	if err != nil {
 		return TestResult{Model: model, OK: false}, err
 	}

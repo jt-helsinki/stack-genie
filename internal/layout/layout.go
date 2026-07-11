@@ -7,7 +7,7 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/jt-helsinki/ideal-robot/internal/paths"
+	"github.com/jt-helsinki/stack-genie/internal/paths"
 )
 
 // dirs are the global subdirectories under ~/.ai-platform (repo-layout §5).

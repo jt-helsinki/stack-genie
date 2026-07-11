@@ -19,8 +19,8 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/jt-helsinki/ideal-robot/internal/hostsfile"
-	"github.com/jt-helsinki/ideal-robot/internal/services"
+	"github.com/jt-helsinki/stack-genie/internal/hostsfile"
+	"github.com/jt-helsinki/stack-genie/internal/services"
 )
 
 // loopbackIP is where the UI subdomains resolve in standalone mode (the service

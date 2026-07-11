@@ -8,8 +8,8 @@ import (
 	"path/filepath"
 	"sort"
 
-	"github.com/jt-helsinki/ideal-robot/internal/conffile"
-	"github.com/jt-helsinki/ideal-robot/internal/paths"
+	"github.com/jt-helsinki/stack-genie/internal/conffile"
+	"github.com/jt-helsinki/stack-genie/internal/paths"
 )
 
 // writeState and readState delegate to the shared conffile package (atomic YAML

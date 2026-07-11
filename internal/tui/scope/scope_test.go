@@ -4,7 +4,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/jt-helsinki/ideal-robot/internal/state"
+	"github.com/jt-helsinki/stack-genie/internal/state"
 )
 
 // seedProject writes a project at <home>/projects/<name> and indexes it, mirroring

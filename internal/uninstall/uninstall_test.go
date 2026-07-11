@@ -6,9 +6,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/jt-helsinki/ideal-robot/internal/hostsfile"
-	"github.com/jt-helsinki/ideal-robot/internal/runtime"
-	"github.com/jt-helsinki/ideal-robot/internal/uihosts"
+	"github.com/jt-helsinki/stack-genie/internal/hostsfile"
+	"github.com/jt-helsinki/stack-genie/internal/runtime"
+	"github.com/jt-helsinki/stack-genie/internal/uihosts"
 )
 
 // withHostsSeams redirects the /etc/hosts removal seams to a temp file + a stub
@@ -254,6 +254,71 @@ func TestRunIdempotentOnCleanHome(test *testing.T) {
 	}
 	if report.RemovedContainers != 0 || report.RemovedBinary != "" || len(report.CleanedRC) != 0 {
 		test.Errorf("expected an empty report on a clean home, got %+v", report)
+	}
+}
+
+// TestPlan pins the --dry-run step list to the keep-models-by-default semantics: a
+// plain uninstall removes ~/.ai-platform but keeps volumes/models; --purge removes
+// everything. Both leave project directories untouched.
+func TestPlan(test *testing.T) {
+	plain := strings.Join(Plan(false), "\n")
+	purged := strings.Join(Plan(true), "\n")
+
+	if !strings.Contains(plain, "KEEP downloaded models") {
+		test.Errorf("Plan(false) must keep the models:\n%s", plain)
+	}
+	if strings.Contains(plain, "including downloaded models") {
+		test.Errorf("Plan(false) must not claim it removes the models:\n%s", plain)
+	}
+	if !strings.Contains(purged, "including downloaded models") {
+		test.Errorf("Plan(true) must remove the models too:\n%s", purged)
+	}
+	for _, steps := range []string{plain, purged} {
+		if !strings.Contains(steps, "leave your project directories untouched") {
+			test.Errorf("every plan must promise project dirs are untouched:\n%s", steps)
+		}
+	}
+}
+
+func TestRunKeepsModelsWithoutPurge(test *testing.T) {
+	home := test.TempDir()
+	test.Setenv("HOME", home)
+	test.Setenv("ZDOTDIR", "")
+
+	// Lay down platform state: config, cache, credentials env file, a legacy
+	// litellm-db volume, and the (expensive) downloaded model store.
+	configFile := filepath.Join(home, ".ai-platform", "config", "config.yaml")
+	cacheFile := filepath.Join(home, ".ai-platform", "cache", "catalog.yaml")
+	envFile := filepath.Join(home, ".ai-platform", ".ai-platform.env")
+	dbFile := filepath.Join(home, ".ai-platform", "volumes", "litellm-db", "PG_VERSION")
+	modelBlob := filepath.Join(home, ".ai-platform", "volumes", "models", "blobs", "sha256-abc")
+	for _, path := range []string{configFile, cacheFile, envFile, dbFile, modelBlob} {
+		mustWrite(test, path, "x")
+	}
+
+	prober := &fakeProber{present: map[string]bool{}}
+	withHostsSeams(test, filepath.Join(home, "etc-hosts"), func(string, []byte) error { return nil })
+
+	report, err := Run(Options{}, prober, nil) // plain uninstall, no purge
+	if err != nil {
+		test.Fatalf("Run: %v", err)
+	}
+	if !report.RemovedState {
+		test.Error("RemovedState = false, want true")
+	}
+	if report.Purged {
+		test.Error("Purged = true on a non-purge uninstall")
+	}
+
+	// Everything but the model store is gone.
+	for _, gone := range []string{configFile, cacheFile, envFile, dbFile} {
+		if _, statErr := os.Stat(gone); !os.IsNotExist(statErr) {
+			test.Errorf("expected %q removed on plain uninstall, but it still exists", gone)
+		}
+	}
+	// The downloaded models survive for a reinstall.
+	if _, statErr := os.Stat(modelBlob); statErr != nil {
+		test.Errorf("downloaded models must survive a non-purge uninstall: %v", statErr)
 	}
 }
 

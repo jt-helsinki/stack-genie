@@ -6,7 +6,7 @@ import (
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
-	"github.com/jt-helsinki/ideal-robot/internal/workspace"
+	"github.com/jt-helsinki/stack-genie/internal/workspace"
 )
 
 func noKill(string) error { return nil }

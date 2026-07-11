@@ -6,9 +6,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/jt-helsinki/ideal-robot/internal/output"
-	"github.com/jt-helsinki/ideal-robot/internal/runtime"
-	"github.com/jt-helsinki/ideal-robot/internal/uihosts"
+	"github.com/jt-helsinki/stack-genie/internal/output"
+	"github.com/jt-helsinki/stack-genie/internal/runtime"
+	"github.com/jt-helsinki/stack-genie/internal/uihosts"
 )
 
 // parseOptionalFlag turns the --optional CSV (the non-interactive setup contract)

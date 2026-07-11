@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/jt-helsinki/ideal-robot/internal/conffile"
+	"github.com/jt-helsinki/stack-genie/internal/conffile"
 )
 
 type sampleRecord struct {

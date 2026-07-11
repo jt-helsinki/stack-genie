@@ -16,15 +16,15 @@ import (
 	"strings"
 	"time"
 
-	"github.com/jt-helsinki/ideal-robot/internal/catalog"
-	"github.com/jt-helsinki/ideal-robot/internal/console"
-	"github.com/jt-helsinki/ideal-robot/internal/litellm"
-	"github.com/jt-helsinki/ideal-robot/internal/ollama"
-	"github.com/jt-helsinki/ideal-robot/internal/output"
-	"github.com/jt-helsinki/ideal-robot/internal/paths"
-	"github.com/jt-helsinki/ideal-robot/internal/runtime"
-	"github.com/jt-helsinki/ideal-robot/internal/services"
-	"github.com/jt-helsinki/ideal-robot/internal/versions"
+	"github.com/jt-helsinki/stack-genie/internal/catalog"
+	"github.com/jt-helsinki/stack-genie/internal/console"
+	"github.com/jt-helsinki/stack-genie/internal/litellm"
+	"github.com/jt-helsinki/stack-genie/internal/ollama"
+	"github.com/jt-helsinki/stack-genie/internal/output"
+	"github.com/jt-helsinki/stack-genie/internal/paths"
+	"github.com/jt-helsinki/stack-genie/internal/runtime"
+	"github.com/jt-helsinki/stack-genie/internal/services"
+	"github.com/jt-helsinki/stack-genie/internal/versions"
 )
 
 // serviceStartError builds the user-facing error for a failed service-tier

@@ -4,10 +4,9 @@ import (
 	"os"
 	"path/filepath"
 
+	"github.com/jt-helsinki/stack-genie/internal/output"
+	"github.com/jt-helsinki/stack-genie/internal/paths"
 	"gopkg.in/yaml.v3"
-
-	"github.com/jt-helsinki/ideal-robot/internal/output"
-	"github.com/jt-helsinki/ideal-robot/internal/paths"
 )
 
 // This file renders a docker-compose.yaml for the service tier as a DEBUG ARTIFACT. It

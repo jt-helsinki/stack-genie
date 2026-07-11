@@ -5,10 +5,10 @@ import (
 	"slices"
 	"strings"
 
-	"github.com/jt-helsinki/ideal-robot/internal/logs"
-	"github.com/jt-helsinki/ideal-robot/internal/output"
-	"github.com/jt-helsinki/ideal-robot/internal/setup"
-	"github.com/jt-helsinki/ideal-robot/internal/ui"
+	"github.com/jt-helsinki/stack-genie/internal/logs"
+	"github.com/jt-helsinki/stack-genie/internal/output"
+	"github.com/jt-helsinki/stack-genie/internal/setup"
+	"github.com/jt-helsinki/stack-genie/internal/ui"
 	"github.com/spf13/cobra"
 )
 

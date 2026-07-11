@@ -8,13 +8,13 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/jt-helsinki/ideal-robot/internal/agentcfg"
-	"github.com/jt-helsinki/ideal-robot/internal/config"
-	"github.com/jt-helsinki/ideal-robot/internal/contextopt"
-	"github.com/jt-helsinki/ideal-robot/internal/litellm"
-	"github.com/jt-helsinki/ideal-robot/internal/overlay"
-	"github.com/jt-helsinki/ideal-robot/internal/runtime"
-	"github.com/jt-helsinki/ideal-robot/internal/state"
+	"github.com/jt-helsinki/stack-genie/internal/agentcfg"
+	"github.com/jt-helsinki/stack-genie/internal/config"
+	"github.com/jt-helsinki/stack-genie/internal/contextopt"
+	"github.com/jt-helsinki/stack-genie/internal/litellm"
+	"github.com/jt-helsinki/stack-genie/internal/overlay"
+	"github.com/jt-helsinki/stack-genie/internal/runtime"
+	"github.com/jt-helsinki/stack-genie/internal/state"
 )
 
 type fakeBuilder struct {
@@ -139,6 +139,11 @@ type fakeKeyMinter struct {
 	scope        litellm.KeyScope
 	deletedAlias string
 	deleteCalls  int
+	// keyInfoErr, when set, makes KeyInfo report the key as invalid (orphaned),
+	// driving the attach-path self-heal. keyInfoCalls records the probe count.
+	keyInfoErr   error
+	keyInfoCalls int
+	lastKeyInfo  string
 }
 
 func (minter *fakeKeyMinter) GenerateKey(scope litellm.KeyScope) (string, error) {
@@ -154,6 +159,15 @@ func (minter *fakeKeyMinter) DeleteKeyByAlias(alias string) error {
 	minter.deleteCalls++
 	minter.deletedAlias = alias
 	return nil
+}
+
+func (minter *fakeKeyMinter) KeyInfo(key string) (litellm.KeyDetails, error) {
+	minter.keyInfoCalls++
+	minter.lastKeyInfo = key
+	if minter.keyInfoErr != nil {
+		return litellm.KeyDetails{}, minter.keyInfoErr
+	}
+	return litellm.KeyDetails{}, nil
 }
 
 func seedProject(test *testing.T, project string) string {
@@ -213,6 +227,238 @@ func newManager(builder Builder, sandbox Sandbox) Manager {
 func TestName(test *testing.T) {
 	if got := Name("app"); got != "aip-app" {
 		test.Errorf("workspace name = %q", got)
+	}
+}
+
+func TestIsSandboxNotFound(test *testing.T) {
+	cases := []struct {
+		err  error
+		want bool
+	}{
+		{err: nil, want: false},
+		{err: errors.New("sandbox not found"), want: true},
+		{err: errors.New("Sandbox Not Found"), want: true}, // case-insensitive
+		{err: errors.New("connection refused"), want: false},
+	}
+	for _, tc := range cases {
+		if got := isSandboxNotFound(tc.err); got != tc.want {
+			test.Errorf("isSandboxNotFound(%v) = %v, want %v", tc.err, got, tc.want)
+		}
+	}
+}
+
+func TestWorkspaceLogTail(test *testing.T) {
+	seedProject(test, "my-app")
+
+	// A not-yet-created sandbox ("not found") is an EMPTY log, not an error.
+	sandbox := &fakeSandbox{logTailErr: errors.New("sandbox not found")}
+	manager := newManager(&fakeBuilder{}, sandbox)
+	out, err := manager.WorkspaceLogTail("my-app", 50)
+	if err != nil || out != "" {
+		test.Errorf("not-found should yield (\"\", nil), got (%q, %v)", out, err)
+	}
+
+	// A real read failure surfaces.
+	sandbox.logTailErr = errors.New("relay exploded")
+	if _, err := manager.WorkspaceLogTail("my-app", 50); err == nil {
+		test.Error("a real LogTail failure must surface")
+	}
+
+	// The happy path returns the tail and passes the line count through.
+	sandbox.logTailErr = nil
+	sandbox.logTail = "line1\nline2"
+	out, err = manager.WorkspaceLogTail("my-app", 25)
+	if err != nil || out != "line1\nline2" {
+		test.Errorf("LogTail = (%q, %v), want the tail text", out, err)
+	}
+	if sandbox.logTailLines != 25 {
+		test.Errorf("lines passed to the sandbox = %d, want 25", sandbox.logTailLines)
+	}
+
+	// An unknown workspace errors before touching the sandbox.
+	if _, err := manager.WorkspaceLogTail("nope", 10); err == nil {
+		test.Error("unknown workspace must error")
+	}
+}
+
+func TestIsRunningFalseWithoutHandle(test *testing.T) {
+	seedProject(test, "my-app")
+	manager := newManager(&fakeBuilder{}, &fakeSandbox{})
+	// No workspace handle saved → not running (and never an error/panic).
+	if manager.IsRunning("my-app") {
+		test.Error("IsRunning without a started handle should be false")
+	}
+}
+
+func TestAppGatewayKeyRotatesPerWorkspaceAlias(test *testing.T) {
+	minter := &fakeKeyMinter{}
+	manager := Manager{Keys: minter}
+	key, err := manager.appGatewayKey("aip-my-app", "my-app")
+	if err != nil {
+		test.Fatalf("appGatewayKey: %v", err)
+	}
+	if key == "" {
+		test.Error("appGatewayKey must return the minted key")
+	}
+	// Rotation: delete the previous key under the apps alias, then mint fresh.
+	if minter.deleteCalls != 1 || minter.deletedAlias != "my-app-apps" {
+		test.Errorf("delete calls/alias = %d/%q, want 1/my-app-apps", minter.deleteCalls, minter.deletedAlias)
+	}
+	if minter.scope.Alias != "my-app-apps" {
+		test.Errorf("minted alias = %q, want my-app-apps (must not collide with the agent key)", minter.scope.Alias)
+	}
+}
+
+func TestCurrentAgentKeyReadsFromVM(test *testing.T) {
+	sandbox := &fakeSandbox{execResult: ExecResult{Stdout: "sk-live-r2wg\n"}}
+	manager := newManager(&fakeBuilder{}, sandbox)
+	if got := manager.currentAgentKey("aip-app"); got != "sk-live-r2wg" {
+		test.Errorf("currentAgentKey = %q, want %q (trimmed VM stdout)", got, "sk-live-r2wg")
+	}
+	// A failed exec (wedged VM) yields no key, so the caller won't churn.
+	sandbox.execResult = ExecResult{ExitCode: 1}
+	if got := manager.currentAgentKey("aip-app"); got != "" {
+		test.Errorf("currentAgentKey on nonzero exit = %q, want empty", got)
+	}
+}
+
+func TestAgentKeyIsOrphaned(test *testing.T) {
+	valid := &fakeKeyMinter{}
+	orphaned := &fakeKeyMinter{keyInfoErr: errors.New("Unable to find token")}
+
+	cases := []struct {
+		name string
+		keys KeyMinter
+		key  string
+		want bool
+	}{
+		{name: "no minter", keys: nil, key: "sk-x", want: false},
+		{name: "empty key (unreadable VM)", keys: valid, key: "", want: false},
+		{name: "valid key at gateway", keys: valid, key: "sk-x", want: false},
+		{name: "orphaned key (401 from gateway)", keys: orphaned, key: "sk-x", want: true},
+	}
+	for _, tc := range cases {
+		test.Run(tc.name, func(test *testing.T) {
+			manager := Manager{Keys: tc.keys}
+			if got := manager.agentKeyIsOrphaned(tc.key); got != tc.want {
+				test.Errorf("agentKeyIsOrphaned = %v, want %v", got, tc.want)
+			}
+		})
+	}
+	// A valid-key probe must actually reach the gateway with the exact key value.
+	if valid.keyInfoCalls == 0 || valid.lastKeyInfo != "sk-x" {
+		test.Errorf("KeyInfo probe not invoked with the VM key: calls=%d last=%q", valid.keyInfoCalls, valid.lastKeyInfo)
+	}
+}
+
+func TestRegisterCavemanRespectsToggle(test *testing.T) {
+	execedCaveman := func(argv [][]string) bool {
+		for _, args := range argv {
+			for _, token := range args {
+				if strings.Contains(token, "caveman") {
+					return true
+				}
+			}
+		}
+		return false
+	}
+	disabled := false
+	enabled := true
+	for _, tc := range []struct {
+		name        string
+		cavemanCfg  *bool
+		tools       []string
+		wantInstall bool
+	}{
+		{name: "disabled skips install", cavemanCfg: &disabled, tools: []string{"opencode"}, wantInstall: false},
+		{name: "enabled with detectable CLI installs", cavemanCfg: &enabled, tools: []string{"opencode"}, wantInstall: true},
+		{name: "enabled without detectable CLI skips", cavemanCfg: &enabled, tools: []string{"pi"}, wantInstall: false},
+	} {
+		test.Run(tc.name, func(test *testing.T) {
+			sandbox := &fakeSandbox{}
+			manager := newManager(&fakeBuilder{}, sandbox)
+			projectConfig := &config.Config{
+				Agent:   config.AgentConfig{Tools: tc.tools},
+				Context: config.ContextConfig{CavemanEnabled: tc.cavemanCfg},
+			}
+			manager.registerCaveman("aip-app", projectConfig)
+			if got := execedCaveman(sandbox.allExecArgv); got != tc.wantInstall {
+				test.Errorf("caveman install exec = %v, want %v (execs: %v)", got, tc.wantInstall, sandbox.allExecArgv)
+			}
+		})
+	}
+}
+
+// findCavemanScript returns the shell script from the single `bash -lc <script>`
+// caveman-install exec recorded on the fake sandbox (empty if none).
+func findCavemanScript(argv [][]string) string {
+	for _, args := range argv {
+		if len(args) == 3 && args[0] == "bash" && args[1] == "-lc" && strings.Contains(args[2], "caveman") {
+			return args[2]
+		}
+	}
+	return ""
+}
+
+// TestRegisterCavemanScript pins the shape of the in-VM install script: it must
+// run Caveman's LOCAL installer (`git clone` + `node bin/install.js --only …`) from
+// $HOME (never ~/project — a submodule .git file there dies git repo-discovery), and
+// gate the once-guard marker on the caveman SKILL.md actually landing in the shared
+// pool so a failed/empty install retries on the next start.
+func TestRegisterCavemanScript(test *testing.T) {
+	sandbox := &fakeSandbox{}
+	manager := newManager(&fakeBuilder{}, sandbox)
+	enabled := true
+	projectConfig := &config.Config{
+		// Two detectable CLIs → two --only flags; pi is NOT detectable (shared pool only).
+		Agent:   config.AgentConfig{Tools: []string{"opencode", "claude-code", "pi"}},
+		Context: config.ContextConfig{CavemanEnabled: &enabled},
+	}
+	manager.registerCaveman("aip-app", projectConfig)
+
+	script := findCavemanScript(sandbox.allExecArgv)
+	if script == "" {
+		test.Fatalf("no caveman install exec recorded: %v", sandbox.allExecArgv)
+	}
+	// Runs from $HOME, not the bind-mounted project dir.
+	if !strings.HasPrefix(script, `cd "$HOME";`) {
+		test.Errorf("script must run from $HOME, got: %q", script)
+	}
+	if strings.Contains(script, "curl") || strings.Contains(script, "npx") {
+		test.Errorf("script must not use the curl|bash / npx path: %q", script)
+	}
+	// Clone + local installer.
+	if !strings.Contains(script, "git clone --depth 1 https://github.com/JuliusBrussee/caveman /tmp/caveman-src") {
+		test.Errorf("script must clone caveman: %q", script)
+	}
+	if !strings.Contains(script, "node bin/install.js --non-interactive --with-hooks") {
+		test.Errorf("script must run the local installer: %q", script)
+	}
+	// Both detectable CLIs mapped to --only tokens; pi absent.
+	if !strings.Contains(script, "--only opencode") || !strings.Contains(script, "--only claude") {
+		test.Errorf("script missing per-CLI --only flags: %q", script)
+	}
+	if strings.Contains(script, "--only pi") {
+		test.Errorf("pi is not caveman-detectable and must not get an --only flag: %q", script)
+	}
+	// Marker is gated on SKILL.md landing in the shared pool, and only touched after
+	// the install succeeded (installed exit code checked, chained with &&).
+	if !strings.Contains(script, workspaceWorkdir+"/.ai-platform/skills/caveman/SKILL.md") {
+		test.Errorf("script must gate on the caveman SKILL.md in the pool: %q", script)
+	}
+	if !strings.Contains(script, `[ "$installed" -eq 0 ] && { `) {
+		test.Errorf("mirror + marker must be gated on install success in a brace group: %q", script)
+	}
+	if !strings.Contains(script, "touch "+workspaceWorkdir+"/.ai-platform/.caveman-installed") {
+		test.Errorf("script must touch the once-guard marker: %q", script)
+	}
+	// The gate, the SKILL.md check, and the marker touch must be one &&-chain so the
+	// marker is never recorded when the install failed or dropped nothing.
+	gateIdx := strings.Index(script, `[ "$installed" -eq 0 ] &&`)
+	skillIdx := strings.Index(script, "/skills/caveman/SKILL.md ] &&")
+	touchIdx := strings.LastIndex(script, "touch "+workspaceWorkdir+"/.ai-platform/.caveman-installed")
+	if gateIdx < 0 || gateIdx >= skillIdx || skillIdx >= touchIdx {
+		test.Errorf("gate → SKILL.md check → marker touch must be an ordered &&-chain: %q", script)
 	}
 }
 
@@ -584,6 +830,49 @@ func TestStartOAuthAgentBypassesGateway(test *testing.T) {
 
 // TestStartAPIKeyAgentRoutesThroughGateway verifies an api-key claude-code keeps its
 // gateway env and gets NO wrap alias (it already routes through the gateway).
+// TestStartRoutesOpenClawAndHermes verifies the two new gateway/api-key agent CLIs: each
+// gets its GLOBAL config written IN-VM (off host disk) pointing at the gateway and KEYLESS
+// (openclaw via ${AIP_GATEWAY_KEY}, hermes via key_env), and neither gets a Headroom wrap
+// alias (they route through the gateway where the Headroom guardrail already applies).
+func TestStartRoutesOpenClawAndHermes(test *testing.T) {
+	root := seedProject(test, "app")
+	if err := config.WriteProject(root, &config.Config{
+		OS:    "debian-trixie",
+		Agent: config.AgentConfig{Tools: []string{"openclaw", "hermes"}, DefaultTool: "openclaw"},
+	}); err != nil {
+		test.Fatal(err)
+	}
+	sandbox := &fakeSandbox{}
+	served := fakeServedModels{models: []string{"ollama/llama3.2:latest"}}
+	manager := Manager{Builder: &fakeBuilder{}, Sandbox: sandbox, Keys: &fakeKeyMinter{}, Served: served, Now: func() string { return "t" }}
+	if _, err := manager.Start("app"); err != nil {
+		test.Fatal(err)
+	}
+
+	openClaw := readGuestFile(test, sandbox, agentcfg.OpenClawConfigGuest)
+	if !strings.Contains(openClaw, agentcfg.OpenClawAPIKeyRef) || !strings.Contains(openClaw, "host.microsandbox.internal:18787/v1") {
+		test.Errorf("openclaw config missing key-ref/baseURL:\n%s", openClaw)
+	}
+	if !strings.Contains(openClaw, "ollama/llama3.2:latest") {
+		test.Errorf("openclaw config must enumerate the served model:\n%s", openClaw)
+	}
+	hermes := readGuestFile(test, sandbox, agentcfg.HermesConfigGuest)
+	if !strings.Contains(hermes, agentcfg.HermesKeyEnv) || !strings.Contains(hermes, "host.microsandbox.internal:18787/v1") {
+		test.Errorf("hermes config missing key_env/base_url:\n%s", hermes)
+	}
+	// Both configs are keyless (the scoped key lives only in the agent env file).
+	for name, content := range map[string]string{"openclaw": openClaw, "hermes": hermes} {
+		if strings.Contains(content, "sk-fake-workspace-key") {
+			test.Errorf("%s config must be keyless (no scoped key on disk):\n%s", name, content)
+		}
+	}
+	// api-key agents get NO wrap alias.
+	aliases := readGuestFile(test, sandbox, shellAliasesGuestPath)
+	if strings.Contains(aliases, "openclaw") || strings.Contains(aliases, "hermes") {
+		test.Errorf("openclaw/hermes route through the gateway and must NOT be wrap-aliased:\n%s", aliases)
+	}
+}
+
 func TestStartAPIKeyAgentRoutesThroughGateway(test *testing.T) {
 	root := seedProject(test, "app")
 	if err := config.WriteProject(root, &config.Config{
@@ -2004,15 +2293,18 @@ func TestStartRegistersCaveman(test *testing.T) {
 	var found bool
 	for _, argv := range sandbox.allExecArgv {
 		joined := strings.Join(argv, " ")
-		if !strings.Contains(joined, "caveman/main/install.sh") {
+		if !strings.Contains(joined, "node bin/install.js") {
 			continue
 		}
 		found = true
 		for _, want := range []string{
+			`cd "$HOME";`, // run from $HOME, never ~/project (submodule .git file kills git discovery)
+			"git clone --depth 1 https://github.com/JuliusBrussee/caveman", // LOCAL clone (not curl|bash → npx)
 			"--non-interactive", "--with-hooks",
 			"--only opencode", "--only claude", // pi is NOT caveman-detectable → no --only
-			".caveman-installed", // once-guard marker
-			`cp -a "$src/."`,     // pool mirror for pi/omp
+			"skills/caveman/SKILL.md", // marker gated on the caveman skill landing in the pool
+			".caveman-installed",      // once-guard marker
+			`cp -a "$src/."`,          // pool mirror for pi/omp
 		} {
 			if !strings.Contains(joined, want) {
 				test.Errorf("caveman install exec missing %q: %s", want, joined)
@@ -2043,7 +2335,7 @@ func TestStartSkipsCavemanWhenNoDetectableCLI(test *testing.T) {
 		test.Fatal(err)
 	}
 	for _, argv := range sandbox.allExecArgv {
-		if strings.Contains(strings.Join(argv, " "), "caveman/main/install.sh") {
+		if strings.Contains(strings.Join(argv, " "), "node bin/install.js") {
 			test.Errorf("no caveman-detectable CLI selected — the installer must not run: %v", argv)
 		}
 	}
@@ -2080,6 +2372,7 @@ func TestStartLinksSharedResources(test *testing.T) {
 		".pi/skills":         "../.ai-platform/skills",
 		".opencode/agents":   "../.ai-platform/agents",
 		".claude/agents":     "../.ai-platform/agents",
+		".pi/agents":         "../.ai-platform/agents",
 		".opencode/commands": "../.ai-platform/prompts",
 		".claude/commands":   "../.ai-platform/prompts",
 		".gemini/commands":   "../.ai-platform/prompts",

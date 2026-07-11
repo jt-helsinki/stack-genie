@@ -1,11 +1,10 @@
 package views
 
 import (
-	"github.com/charmbracelet/lipgloss"
-	"github.com/mattn/go-runewidth"
-
 	tea "github.com/charmbracelet/bubbletea"
-	"github.com/jt-helsinki/ideal-robot/internal/ui"
+	"github.com/charmbracelet/lipgloss"
+	"github.com/jt-helsinki/stack-genie/internal/ui"
+	"github.com/mattn/go-runewidth"
 )
 
 // listColumn is one column of a listTable: a title and a fixed display width. A width

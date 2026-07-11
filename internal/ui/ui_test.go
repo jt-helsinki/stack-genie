@@ -3,7 +3,7 @@ package ui
 import (
 	"testing"
 
-	"github.com/jt-helsinki/ideal-robot/internal/output"
+	"github.com/jt-helsinki/stack-genie/internal/output"
 )
 
 func TestEnabledOffForMachineModes(test *testing.T) {

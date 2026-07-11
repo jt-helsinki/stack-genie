@@ -15,8 +15,8 @@ import (
 
 	microsandbox "github.com/superradcompany/microsandbox/sdk/go"
 
-	"github.com/jt-helsinki/ideal-robot/internal/config"
-	"github.com/jt-helsinki/ideal-robot/internal/runtime"
+	"github.com/jt-helsinki/stack-genie/internal/config"
+	"github.com/jt-helsinki/stack-genie/internal/runtime"
 )
 
 // workspace_sdk.go is the in-process Microsandbox Go SDK backend for the Sandbox

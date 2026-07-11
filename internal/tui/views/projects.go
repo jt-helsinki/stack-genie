@@ -4,8 +4,8 @@ import (
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
-	"github.com/jt-helsinki/ideal-robot/internal/project"
-	"github.com/jt-helsinki/ideal-robot/internal/ui"
+	"github.com/jt-helsinki/stack-genie/internal/project"
+	"github.com/jt-helsinki/stack-genie/internal/ui"
 )
 
 // ProjectLister returns all registered projects (the global switcher list).

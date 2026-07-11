@@ -10,12 +10,12 @@ import (
 	"strings"
 	"time"
 
-	"github.com/jt-helsinki/ideal-robot/internal/catalog"
-	"github.com/jt-helsinki/ideal-robot/internal/litellm"
-	"github.com/jt-helsinki/ideal-robot/internal/ollama"
-	"github.com/jt-helsinki/ideal-robot/internal/output"
-	"github.com/jt-helsinki/ideal-robot/internal/runtime"
-	"github.com/jt-helsinki/ideal-robot/internal/ui"
+	"github.com/jt-helsinki/stack-genie/internal/catalog"
+	"github.com/jt-helsinki/stack-genie/internal/litellm"
+	"github.com/jt-helsinki/stack-genie/internal/ollama"
+	"github.com/jt-helsinki/stack-genie/internal/output"
+	"github.com/jt-helsinki/stack-genie/internal/runtime"
+	"github.com/jt-helsinki/stack-genie/internal/ui"
 	"github.com/spf13/cobra"
 )
 

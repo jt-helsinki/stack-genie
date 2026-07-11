@@ -11,7 +11,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/jt-helsinki/ideal-robot/internal/catalog"
+	"github.com/jt-helsinki/stack-genie/internal/catalog"
 )
 
 // DesiredModel is one model the platform wants the gateway to serve. Name is the

@@ -1,4 +1,4 @@
-module github.com/jt-helsinki/ideal-robot
+module github.com/jt-helsinki/stack-genie
 
 go 1.26.4
 

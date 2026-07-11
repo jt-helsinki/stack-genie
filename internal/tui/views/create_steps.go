@@ -5,8 +5,8 @@ import (
 
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
-	"github.com/jt-helsinki/ideal-robot/internal/ollama"
-	"github.com/jt-helsinki/ideal-robot/internal/ui"
+	"github.com/jt-helsinki/stack-genie/internal/ollama"
+	"github.com/jt-helsinki/stack-genie/internal/ui"
 )
 
 // The create wizard's step widgets — all built on the SAME primitives as the other

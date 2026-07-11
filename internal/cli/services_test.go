@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/jt-helsinki/ideal-robot/internal/setup"
+	"github.com/jt-helsinki/stack-genie/internal/setup"
 )
 
 // servicesResult.Human() renders a table with the column headers and each

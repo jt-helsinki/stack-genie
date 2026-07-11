@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jt-helsinki/ideal-robot/internal/litellm"
+	"github.com/jt-helsinki/stack-genie/internal/litellm"
 )
 
 // Group 5: Gateway inference.

@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/jt-helsinki/ideal-robot/internal/runtime"
+	"github.com/jt-helsinki/stack-genie/internal/runtime"
 )
 
 // TestRealMicroVM exercises the REAL Builder + Sandbox against the host's

@@ -4,8 +4,8 @@ import (
 	"os"
 
 	"github.com/charmbracelet/x/term"
-	"github.com/jt-helsinki/ideal-robot/internal/output"
-	"github.com/jt-helsinki/ideal-robot/internal/tui"
+	"github.com/jt-helsinki/stack-genie/internal/output"
+	"github.com/jt-helsinki/stack-genie/internal/tui"
 	"github.com/spf13/cobra"
 )
 

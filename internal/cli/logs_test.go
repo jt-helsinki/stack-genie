@@ -5,8 +5,8 @@ import (
 	"slices"
 	"testing"
 
-	"github.com/jt-helsinki/ideal-robot/internal/logs"
-	"github.com/jt-helsinki/ideal-robot/internal/output"
+	"github.com/jt-helsinki/stack-genie/internal/logs"
+	"github.com/jt-helsinki/stack-genie/internal/output"
 )
 
 // runLogs drives a single `ai logs [args...]` invocation against a fresh command

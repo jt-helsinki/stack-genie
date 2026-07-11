@@ -5,7 +5,7 @@ import (
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
-	"github.com/jt-helsinki/ideal-robot/internal/contextopt"
+	"github.com/jt-helsinki/stack-genie/internal/contextopt"
 )
 
 func TestContextPopulatesOnRefresh(test *testing.T) {

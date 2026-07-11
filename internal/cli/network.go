@@ -7,12 +7,12 @@ import (
 	"strings"
 
 	"github.com/charmbracelet/huh"
-	"github.com/jt-helsinki/ideal-robot/internal/config"
-	"github.com/jt-helsinki/ideal-robot/internal/egress"
-	"github.com/jt-helsinki/ideal-robot/internal/output"
-	"github.com/jt-helsinki/ideal-robot/internal/project"
-	"github.com/jt-helsinki/ideal-robot/internal/ui"
-	"github.com/jt-helsinki/ideal-robot/internal/workspace"
+	"github.com/jt-helsinki/stack-genie/internal/config"
+	"github.com/jt-helsinki/stack-genie/internal/egress"
+	"github.com/jt-helsinki/stack-genie/internal/output"
+	"github.com/jt-helsinki/stack-genie/internal/project"
+	"github.com/jt-helsinki/stack-genie/internal/ui"
+	"github.com/jt-helsinki/stack-genie/internal/workspace"
 	"github.com/spf13/cobra"
 )
 

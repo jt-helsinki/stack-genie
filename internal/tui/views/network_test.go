@@ -5,7 +5,7 @@ import (
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
-	"github.com/jt-helsinki/ideal-robot/internal/config"
+	"github.com/jt-helsinki/stack-genie/internal/config"
 )
 
 // noMutator is a no-op egress mutator for tests that do not exercise add/remove.

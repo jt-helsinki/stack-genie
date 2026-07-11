@@ -4,8 +4,8 @@ import (
 	"io"
 	"testing"
 
-	"github.com/jt-helsinki/ideal-robot/internal/contextopt"
-	"github.com/jt-helsinki/ideal-robot/internal/output"
+	"github.com/jt-helsinki/stack-genie/internal/contextopt"
+	"github.com/jt-helsinki/stack-genie/internal/output"
 )
 
 // runContext drives a single `ai context <sub> [args...]` invocation against a

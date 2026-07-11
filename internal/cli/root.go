@@ -7,10 +7,10 @@ import (
 	"os"
 	"strings"
 
-	"github.com/jt-helsinki/ideal-robot/internal/envfile"
-	"github.com/jt-helsinki/ideal-robot/internal/output"
-	"github.com/jt-helsinki/ideal-robot/internal/ui"
-	"github.com/jt-helsinki/ideal-robot/internal/version"
+	"github.com/jt-helsinki/stack-genie/internal/envfile"
+	"github.com/jt-helsinki/stack-genie/internal/output"
+	"github.com/jt-helsinki/stack-genie/internal/ui"
+	"github.com/jt-helsinki/stack-genie/internal/version"
 	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"
 )

@@ -1,17 +1,19 @@
 package cli
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"slices"
 	"sort"
 	"strings"
 
 	"github.com/charmbracelet/huh"
-	"github.com/jt-helsinki/ideal-robot/internal/litellm"
-	"github.com/jt-helsinki/ideal-robot/internal/ollama"
-	"github.com/jt-helsinki/ideal-robot/internal/output"
-	"github.com/jt-helsinki/ideal-robot/internal/runtime"
-	"github.com/jt-helsinki/ideal-robot/internal/ui"
+	"github.com/jt-helsinki/stack-genie/internal/litellm"
+	"github.com/jt-helsinki/stack-genie/internal/ollama"
+	"github.com/jt-helsinki/stack-genie/internal/output"
+	"github.com/jt-helsinki/stack-genie/internal/runtime"
+	"github.com/jt-helsinki/stack-genie/internal/ui"
 	"github.com/spf13/cobra"
 )
 
@@ -135,9 +137,15 @@ func newModelsTestCmd(em *output.Emitter, exit *int) *cobra.Command {
 				res, err = litellmClient().Test(model)
 			}
 			if err != nil {
-				// Transport-level failure: the gateway itself was unreachable.
+				// Transport-level failure: the gateway was unreachable OR the request
+				// exceeded the (generous) chat-test timeout. A timeout usually means a
+				// cold model is still loading, not that the gateway is down.
+				hint := "is it running? run `ai doctor`"
+				if errors.Is(err, context.DeadlineExceeded) || strings.Contains(err.Error(), "context deadline exceeded") {
+					hint = "the model may still be loading — try again once it is warm, or pick a smaller model"
+				}
 				*exit = em.Failure("models.test", output.Errorf(output.ExitRuntimeFailure,
-					"could not reach LiteLLM (is it running? run `ai doctor`): %s", err))
+					"could not reach LiteLLM (%s): %s", hint, err))
 				return nil
 			}
 			if !res.OK {

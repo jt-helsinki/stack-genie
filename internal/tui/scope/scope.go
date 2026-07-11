@@ -22,7 +22,7 @@ import (
 	"path/filepath"
 	"sort"
 
-	"github.com/jt-helsinki/ideal-robot/internal/state"
+	"github.com/jt-helsinki/stack-genie/internal/state"
 )
 
 // Kind is whether the UI is scoped to a project or to the server (services) view.

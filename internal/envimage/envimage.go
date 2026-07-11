@@ -10,7 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/jt-helsinki/ideal-robot/internal/templates"
+	"github.com/jt-helsinki/stack-genie/internal/templates"
 )
 
 // Compose builds the full Dockerfile content for a project from the installed

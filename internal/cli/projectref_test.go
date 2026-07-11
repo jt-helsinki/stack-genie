@@ -5,7 +5,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/jt-helsinki/ideal-robot/internal/state"
+	"github.com/jt-helsinki/stack-genie/internal/state"
 	"github.com/spf13/cobra"
 )
 

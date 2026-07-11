@@ -13,16 +13,16 @@ import (
 	"regexp"
 	"slices"
 
-	"github.com/jt-helsinki/ideal-robot/internal/agentcfg"
-	"github.com/jt-helsinki/ideal-robot/internal/apps"
-	"github.com/jt-helsinki/ideal-robot/internal/conffile"
-	"github.com/jt-helsinki/ideal-robot/internal/config"
-	"github.com/jt-helsinki/ideal-robot/internal/envimage"
-	"github.com/jt-helsinki/ideal-robot/internal/overlay"
-	"github.com/jt-helsinki/ideal-robot/internal/paths"
-	"github.com/jt-helsinki/ideal-robot/internal/state"
-	"github.com/jt-helsinki/ideal-robot/internal/templates"
-	"github.com/jt-helsinki/ideal-robot/internal/workspace"
+	"github.com/jt-helsinki/stack-genie/internal/agentcfg"
+	"github.com/jt-helsinki/stack-genie/internal/apps"
+	"github.com/jt-helsinki/stack-genie/internal/conffile"
+	"github.com/jt-helsinki/stack-genie/internal/config"
+	"github.com/jt-helsinki/stack-genie/internal/envimage"
+	"github.com/jt-helsinki/stack-genie/internal/overlay"
+	"github.com/jt-helsinki/stack-genie/internal/paths"
+	"github.com/jt-helsinki/stack-genie/internal/state"
+	"github.com/jt-helsinki/stack-genie/internal/templates"
+	"github.com/jt-helsinki/stack-genie/internal/workspace"
 )
 
 // namePattern validates project names (arch §19): lowercase alphanumeric and
@@ -66,6 +66,10 @@ type Spec struct {
 	// Shell is the workspace's default interactive shell ("bash" or "zsh"), written to
 	// config.yaml workspace.shell. Empty defaults to "bash" (today's behavior).
 	Shell string
+	// CavemanEnabled records whether the Caveman output-compression toolkit is
+	// installed into the workspace at start, written to config.yaml
+	// context.caveman_enabled. Chosen at `ai create` (default true).
+	CavemanEnabled bool
 	// PublishPorts are the host↔guest ports to open into the sandbox, written to
 	// config.yaml network.publish_ports.
 	PublishPorts []config.PortMapping
@@ -288,10 +292,14 @@ func Scaffold(spec Spec, createdAt string) (string, error) {
 	if len(authModes) == 0 {
 		authModes = nil
 	}
+	// Persist the Caveman on/off choice here; create.Execute's later SetStrategy/
+	// SetCavemanLevel calls are read-modify-write and preserve it.
+	cavemanEnabled := spec.CavemanEnabled
 	projectConfig := &config.Config{
 		OS:           spec.OS,
 		Agent:        config.AgentConfig{Tools: spec.AgentCLIs, DefaultTool: spec.DefaultTool, GraphifyModel: spec.GraphifyModel, AuthModes: authModes},
 		Workspace:    config.WorkspaceConfig{CPULimit: cpus, MemoryLimit: memory, Shell: shell},
+		Context:      config.ContextConfig{CavemanEnabled: &cavemanEnabled},
 		Microsandbox: config.MicrosandboxConfig{IdleTimeout: idleTimeout},
 		Network:      config.NetworkConfig{PublishPorts: spec.PublishPorts, AllowHostServices: oauthAllow},
 		Apps:         appEntries,
@@ -411,7 +419,7 @@ func workspaceHandle(name, root string) (id, status, created, lastStarted string
 // agentArtifactDirs are the per-CLI agent config dirs and the Python venv the platform
 // writes into the PROJECT folder (outside .ai-platform) at workspace start. A plain
 // `ai delete` removes them too, best-effort — a missing one is ignored.
-var agentArtifactDirs = []string{".opencode", ".claude", ".codex", ".pi", ".gemini", ".venv-msb"}
+var agentArtifactDirs = []string{".opencode", ".claude", ".codex", ".pi", ".omp", ".gemini", ".copilot", ".venv-msb"}
 
 // Delete removes a project from the index and removes its persistent overlay. A plain
 // delete removes the whole .ai-platform tree (config + run state) and — when

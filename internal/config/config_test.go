@@ -308,8 +308,13 @@ func TestForcedOAuthCLIs(test *testing.T) {
 			test.Errorf("%s must be OAuth-eligible", cli)
 		}
 	}
-	if IsOAuthEligible("opencode") || IsOAuthEligible("pi") {
-		test.Error("opencode/pi are gateway-only and must not be OAuth-eligible")
+	for _, cli := range []string{"opencode", "pi", "omp", "openclaw", "hermes"} {
+		if IsOAuthEligible(cli) {
+			test.Errorf("%s is a gateway-only agent and must not be OAuth-eligible", cli)
+		}
+		if (&AgentConfig{}).AuthMode(cli) != "api-key" {
+			test.Errorf("%s must default to api-key auth mode", cli)
+		}
 	}
 }
 

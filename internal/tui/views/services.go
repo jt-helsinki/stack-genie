@@ -9,8 +9,8 @@ import (
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
-	"github.com/jt-helsinki/ideal-robot/internal/setup"
-	"github.com/jt-helsinki/ideal-robot/internal/ui"
+	"github.com/jt-helsinki/stack-genie/internal/setup"
+	"github.com/jt-helsinki/stack-genie/internal/ui"
 )
 
 // ServiceFetcher returns the current service-tier status. Injected so the view is
@@ -299,6 +299,15 @@ func (view *Services) selectedService() string {
 		return ""
 	}
 	return row[0]
+}
+
+// ClickSubTab forwards a sub-tab-bar click to the drilled service detail (whose
+// bar is the first row of this view's content). Not handled while the list shows.
+func (view *Services) ClickSubTab(x int) (cmd tea.Cmd, handled bool) {
+	if !view.drilled {
+		return nil, false
+	}
+	return view.detail.ClickSubTab(x)
 }
 
 // View renders the open service detail when drilled in, else the list table (with

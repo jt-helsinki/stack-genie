@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/jt-helsinki/ideal-robot/internal/litellm"
+	"github.com/jt-helsinki/stack-genie/internal/litellm"
 )
 
 // TestAppsEnvCarriesNoBakedDefaultModel guards the catalog-driven invariant: there

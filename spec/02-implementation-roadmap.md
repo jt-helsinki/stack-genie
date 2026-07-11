@@ -483,8 +483,8 @@ host-published** (the host port `18787`); every other service is internal-only o
   **0.0.0.0** in server role (`internal/setup` `currentBindHost()`). It forwards
   the model path DIRECTLY to LiteLLM (`aip-litellm:4000`), which calls Headroom
   (`aip-headroom:8787/v1/compress`) in-process as a `pre_call` guardrail (nginx no
-  longer routes to Headroom at all), and serves the Host-based UI subdomain
-  (`litellm.<domain>` — the only host UI vhost) plus host-CLI gateway paths
+  longer routes to Headroom at all), and serves the Host-based UI subdomains
+  (`litellm.<domain>` → LiteLLM admin UI, `valkey.<domain>` → RedisInsight) plus host-CLI gateway paths
   (`/v1` model path, `/ollama`, `/llm`). The platform base domain is set by
   `ai domain` (default `aip.local`; host-CLI URLs render under `localhost:18787`).
   TLS/HTTPS termination at nginx is still deferred.

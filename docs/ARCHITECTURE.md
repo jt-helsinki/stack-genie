@@ -67,7 +67,7 @@ flowchart LR
  │                  ▼                  (loopback exceptions: DB :5442, DNS :15353)│
  │            aip-proxy (nginx, host :18787 — SOLE host entry)                  │
  │              / & /v1 → LiteLLM · /llm → LiteLLM · /ollama → Ollama           │
- │              vhost: litellm.<domain>  (the only host UI — LiteLLM admin)     │
+ │              vhosts: litellm.<domain> · valkey.<domain> (UIs → :4000/:5540)  │
  │                  ▼                    ▲                                      │
  │            aip-litellm  :4000         └── host CLI / UI (loopback :18787)    │
  │              router · user-selectable guardrails (internal-only)            │
@@ -98,8 +98,8 @@ flowchart LR
    and the **sole** host entry; every other service container is internal-only on
    `aip-net`, the only loopback exceptions being Postgres `:5442` and `aip-dns`
    `:15353`). The default `/` and `/v1` routes forward **directly to aip-litellm**;
-   `/llm` and `/ollama` (and the `litellm.<domain>` vhost) front the LiteLLM admin +
-   Ollama HTTP surfaces. nginx no longer routes to Headroom at all. The host CLI
+   `/llm` and `/ollama` (and the `litellm.<domain>` + `valkey.<domain>` vhosts) front
+   the LiteLLM admin + Ollama + RedisInsight surfaces. nginx no longer routes to Headroom at all. The host CLI
    reaches the gateway on loopback `127.0.0.1:18787`.
 4. **aip-litellm** is the router. **Guardrails are user-selectable** (chosen at
    `ai setup` via a picker / `--guardrails`, persisted in `runtime.yaml`); only the

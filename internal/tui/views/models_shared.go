@@ -5,10 +5,9 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/jt-helsinki/stack-genie/internal/litellm"
+	"github.com/jt-helsinki/stack-genie/internal/ui"
 	"github.com/mattn/go-runewidth"
-
-	"github.com/jt-helsinki/ideal-robot/internal/litellm"
-	"github.com/jt-helsinki/ideal-robot/internal/ui"
 )
 
 // This file holds the bits shared by the two model views (Local Models and Cloud

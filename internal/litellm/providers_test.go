@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/jt-helsinki/ideal-robot/internal/catalog"
+	"github.com/jt-helsinki/stack-genie/internal/catalog"
 )
 
 // testCatalog parses a small catalog with both LiteLLM-routable providers

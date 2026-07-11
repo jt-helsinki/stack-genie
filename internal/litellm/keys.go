@@ -9,8 +9,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/jt-helsinki/ideal-robot/internal/output"
-	"github.com/jt-helsinki/ideal-robot/internal/runtime"
+	"github.com/jt-helsinki/stack-genie/internal/output"
+	"github.com/jt-helsinki/stack-genie/internal/runtime"
 )
 
 // litellmContainer is the platform-owned LiteLLM container whose environment

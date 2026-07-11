@@ -5,7 +5,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/jt-helsinki/ideal-robot/internal/layout"
+	"github.com/jt-helsinki/stack-genie/internal/layout"
 )
 
 // expectedDirs mirrors the documented global subdirectories under ~/.ai-platform

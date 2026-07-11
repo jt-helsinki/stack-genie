@@ -8,11 +8,11 @@ import (
 
 	"github.com/charmbracelet/huh"
 	"github.com/charmbracelet/x/term"
-	"github.com/jt-helsinki/ideal-robot/internal/output"
-	"github.com/jt-helsinki/ideal-robot/internal/runtime"
-	"github.com/jt-helsinki/ideal-robot/internal/ui"
-	"github.com/jt-helsinki/ideal-robot/internal/uihosts"
-	"github.com/jt-helsinki/ideal-robot/internal/uninstall"
+	"github.com/jt-helsinki/stack-genie/internal/output"
+	"github.com/jt-helsinki/stack-genie/internal/runtime"
+	"github.com/jt-helsinki/stack-genie/internal/ui"
+	"github.com/jt-helsinki/stack-genie/internal/uihosts"
+	"github.com/jt-helsinki/stack-genie/internal/uninstall"
 	"github.com/spf13/cobra"
 )
 
@@ -48,10 +48,11 @@ func newUninstallCmd(em *output.Emitter, exit *int) *cobra.Command {
 	var purge, removeDeps bool
 	cmd := &cobra.Command{
 		Use:   "uninstall",
-		Short: "Uninstall the platform (binary, PATH/completion entries, containers; --purge also removes state)",
+		Short: "Uninstall the platform (binary, PATH/completion entries, containers, state; --purge also removes models)",
 		Long: "Remove the platform from this host. Stops the platform containers, removes\n" +
-			"the ai binary and the PATH/completion entries, and (with --purge) the\n" +
-			"platform state under ~/.ai-platform. Runs entirely from this binary — no\n" +
+			"the ai binary, the PATH/completion entries, and the platform state under\n" +
+			"~/.ai-platform — keeping only the downloaded models (volumes/models); pass\n" +
+			"--purge to remove those too. Runs entirely from this binary — no\n" +
 			"network or external script. On a terminal it asks, per external dependency\n" +
 			"(msb), whether to uninstall it too. Never touches your project directories\n" +
 			"(your source lives wherever you created it).",
@@ -89,12 +90,14 @@ func newUninstallCmd(em *output.Emitter, exit *int) *cobra.Command {
 					*exit = em.Success("uninstall", uninstallResult{Aborted: true})
 					return nil
 				}
-				// Whether to also remove platform state (~/.ai-platform) is an
-				// interactive input; the --purge flag seeds its default (Yes when set,
-				// No otherwise), per the §1.8 flags-seed-the-prompt convention.
+				// A plain uninstall already removes ~/.ai-platform EXCEPT the
+				// downloaded models; --purge additionally deletes those. This prompt
+				// is only about the models. The --purge flag seeds its default (Yes
+				// when set, No otherwise), per the §1.8 flags-seed-the-prompt convention.
 				purgeAnswer, purgeErr := promptConfirmDefault(
-					"Also remove platform state (~/.ai-platform)?",
-					"Deletes downloaded models, config, credentials and runtime state. "+
+					"Also remove the downloaded models (volumes/models)?",
+					"Platform state (config, credentials, caches, overlays) is removed either way. "+
+						"Say yes to also delete the downloaded models — otherwise they are kept for a reinstall. "+
 						"Your project directories are left untouched.",
 					purge,
 				)
@@ -153,6 +156,7 @@ func newUninstallCmd(em *output.Emitter, exit *int) *cobra.Command {
 
 			*exit = em.Success("uninstall", uninstallResult{
 				Purged:            report.Purged,
+				RemovedState:      report.RemovedState,
 				RemovedContainers: report.RemovedContainers,
 				CleanedRC:         report.CleanedRC,
 				RemovedBinary:     report.RemovedBinary,
@@ -164,7 +168,7 @@ func newUninstallCmd(em *output.Emitter, exit *int) *cobra.Command {
 		},
 	}
 	cmd.Flags().BoolVar(&purge, "purge", false,
-		"also remove ~/.ai-platform; on a terminal this is prompted and --purge seeds the default to yes (never your project directories)")
+		"also remove the downloaded models (volumes/models); a plain uninstall already removes the rest of ~/.ai-platform (never your project directories)")
 	cmd.Flags().BoolVar(&removeDeps, "remove-deps", false,
 		"also uninstall the external dependencies (msb) without prompting")
 	return cmd
@@ -212,6 +216,7 @@ func presentDepNames(prober runtime.Prober) []string {
 // uninstallResult is the `ai uninstall` payload.
 type uninstallResult struct {
 	Purged            bool     `json:"purged"`
+	RemovedState      bool     `json:"removed_state,omitempty"`
 	RemovedContainers int      `json:"removed_containers,omitempty"`
 	CleanedRC         []string `json:"cleaned_rc,omitempty"`
 	RemovedBinary     string   `json:"removed_binary,omitempty"`
@@ -239,9 +244,9 @@ func (result uninstallResult) Human() string {
 		return strings.Join(lines, "\n")
 	}
 
-	tail := "Platform state was kept — re-run with --purge to remove " + ui.Value.Render("~/.ai-platform") + "."
+	tail := "Removed platform state (" + ui.Value.Render("~/.ai-platform") + "); kept downloaded models — re-run with --purge to remove them too."
 	if result.Purged {
-		tail = "Removed platform state (" + ui.Value.Render("~/.ai-platform") + ")."
+		tail = "Removed all platform state (" + ui.Value.Render("~/.ai-platform") + "), including downloaded models."
 	}
 	summary := ui.Success.Render(ui.IconOK+" Uninstall complete.") + " " + tail
 	if len(result.RemovedDeps) > 0 {

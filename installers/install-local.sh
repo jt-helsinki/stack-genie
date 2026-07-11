@@ -7,10 +7,10 @@
 # Usage — pick one:
 #
 #   # straight from the file (curl supports file://):
-#   curl -fsSL file:///Users/jordan/Documents/workspace/ideal-robot/installers/install-local.sh | sh
+#   curl -fsSL file:///Users/jordan/Documents/workspace/stack-genie/installers/install-local.sh | sh
 #
 #   # or serve the repo over HTTP and curl it (closer to the real remote flow):
-#   ( cd /Users/jordan/Documents/workspace/ideal-robot && python3 -m http.server 8000 ) &
+#   ( cd /Users/jordan/Documents/workspace/stack-genie && python3 -m http.server 8000 ) &
 #   curl -fsSL http://localhost:8000/installers/install-local.sh | sh
 #
 # How it works: a script piped to `sh` has no source path, so it can't find the
@@ -25,10 +25,10 @@
 # After it finishes, run `ai setup`.
 set -eu
 
-AIP_REPO="${AIP_REPO:-/Users/jordan/Documents/workspace/ideal-robot}"
+AIP_REPO="${AIP_REPO:-/Users/jordan/Documents/workspace/stack-genie}"
 
 if [ ! -f "$AIP_REPO/installers/install.sh" ]; then
-  printf 'error: repo not found at %s — set AIP_REPO=/path/to/ideal-robot\n' "$AIP_REPO" >&2
+  printf 'error: repo not found at %s — set AIP_REPO=/path/to/stack-genie\n' "$AIP_REPO" >&2
   exit 1
 fi
 if ! command -v go >/dev/null 2>&1; then

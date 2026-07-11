@@ -232,6 +232,23 @@ func (hub *ProjectsHub) subTabBar() string {
 	return renderSubTabBar(hub.project, hub.subTitles, hub.subIndex)
 }
 
+// ClickSubTab switches to the sub-tab under click column x (the bar's own
+// coordinates — the chrome subtracts the body border/padding). handled is false
+// when the hub is showing the workspace list (no bar) or x hits no tab.
+func (hub *ProjectsHub) ClickSubTab(x int) (cmd tea.Cmd, handled bool) {
+	if !hub.open {
+		return nil, false
+	}
+	index := subTabHitIndex(hub.project, hub.subTitles, x)
+	if index < 0 {
+		return nil, false
+	}
+	if index == hub.subIndex {
+		return nil, true // already there — a click never re-loads the pane
+	}
+	return hub.switchSub(index), true
+}
+
 // Hints feeds the chrome's command grid: the switcher's keys when showing the list,
 // else the focused sub-view's keys (the chrome adds tab/esc for the sub-tab nav,
 // recognising the hub as a nav-capturer).

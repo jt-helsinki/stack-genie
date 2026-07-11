@@ -3,7 +3,7 @@ package cli
 import (
 	"testing"
 
-	"github.com/jt-helsinki/ideal-robot/internal/ollama"
+	"github.com/jt-helsinki/stack-genie/internal/ollama"
 )
 
 func TestSpecFromFlagsCarriesGraphifyModel(test *testing.T) {

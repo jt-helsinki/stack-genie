@@ -4,9 +4,9 @@ import (
 	"slices"
 	"testing"
 
-	"github.com/jt-helsinki/ideal-robot/internal/console"
-	"github.com/jt-helsinki/ideal-robot/internal/logs"
-	"github.com/jt-helsinki/ideal-robot/internal/services"
+	"github.com/jt-helsinki/stack-genie/internal/console"
+	"github.com/jt-helsinki/stack-genie/internal/logs"
+	"github.com/jt-helsinki/stack-genie/internal/services"
 )
 
 // The service set is, by necessity, expressed at several granularities across

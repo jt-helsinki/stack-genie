@@ -8,8 +8,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/jt-helsinki/ideal-robot/internal/hostsfile"
-	"github.com/jt-helsinki/ideal-robot/internal/runtime"
+	"github.com/jt-helsinki/stack-genie/internal/hostsfile"
+	"github.com/jt-helsinki/stack-genie/internal/runtime"
 )
 
 func tempHosts(t *testing.T, content string) string {

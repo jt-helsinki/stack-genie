@@ -7,8 +7,8 @@ import (
 
 	"github.com/charmbracelet/huh"
 	"github.com/charmbracelet/lipgloss"
-	"github.com/jt-helsinki/ideal-robot/internal/conffile"
-	"github.com/jt-helsinki/ideal-robot/internal/paths"
+	"github.com/jt-helsinki/stack-genie/internal/conffile"
+	"github.com/jt-helsinki/stack-genie/internal/paths"
 )
 
 // This file makes the platform's look-and-feel selectable. A theme bundles a huh
@@ -131,7 +131,15 @@ func Apply(name string) error {
 // uiPrefs is the persisted UI preferences file (~/.ai-platform/config/ui.yaml).
 type uiPrefs struct {
 	Theme string `yaml:"theme,omitempty"`
+	// Mouse is the `ai ui` mouse-capture setting (clickable tab bars). A pointer
+	// distinguishes "never set" (absent → MouseDefault, capture ON) from an
+	// explicit false (capture OFF, so native text selection needs no modifier).
+	Mouse *bool `yaml:"mouse,omitempty"`
 }
+
+// MouseDefault is the mouse-capture setting applied when none is persisted:
+// enabled, so the `ai ui` tab bars are clickable out of the box.
+const MouseDefault = true
 
 func uiPrefsPath() (string, error) {
 	dir, err := paths.ConfigDir()
@@ -141,18 +149,37 @@ func uiPrefsPath() (string, error) {
 	return filepath.Join(dir, "ui.yaml"), nil
 }
 
+// loadPrefs best-effort reads the persisted UI preferences, returning the zero
+// value when the file is absent or unreadable (callers apply their defaults).
+func loadPrefs() uiPrefs {
+	path, err := uiPrefsPath()
+	if err != nil {
+		return uiPrefs{}
+	}
+	var prefs uiPrefs
+	if err := conffile.Read(path, &prefs); err != nil {
+		return uiPrefs{}
+	}
+	return prefs
+}
+
+// savePrefs applies mutate to the current preferences and writes them back, so
+// each setting's Save* preserves the others (theme vs mouse).
+func savePrefs(mutate func(prefs *uiPrefs)) error {
+	path, err := uiPrefsPath()
+	if err != nil {
+		return err
+	}
+	prefs := loadPrefs()
+	mutate(&prefs)
+	return conffile.WriteAtomic(path, prefs)
+}
+
 // LoadThemeName returns the persisted theme name, falling back to DefaultTheme
 // when nothing is saved, the file is absent/unreadable, or the saved name is no
 // longer a known theme.
 func LoadThemeName() string {
-	path, err := uiPrefsPath()
-	if err != nil {
-		return DefaultTheme
-	}
-	var prefs uiPrefs
-	if err := conffile.Read(path, &prefs); err != nil {
-		return DefaultTheme
-	}
+	prefs := loadPrefs()
 	if !IsTheme(prefs.Theme) {
 		return DefaultTheme
 	}
@@ -160,11 +187,24 @@ func LoadThemeName() string {
 }
 
 // SaveThemeName persists the chosen theme name (the caller validates it first via
-// IsTheme / Apply).
+// IsTheme / Apply), preserving the other saved preferences.
 func SaveThemeName(name string) error {
-	path, err := uiPrefsPath()
-	if err != nil {
-		return err
+	return savePrefs(func(prefs *uiPrefs) { prefs.Theme = name })
+}
+
+// LoadMouseEnabled returns the persisted `ai ui` mouse-capture setting (clickable
+// tab bars), falling back to MouseDefault when nothing is saved or the file is
+// absent/unreadable.
+func LoadMouseEnabled() bool {
+	prefs := loadPrefs()
+	if prefs.Mouse == nil {
+		return MouseDefault
 	}
-	return conffile.WriteAtomic(path, uiPrefs{Theme: name})
+	return *prefs.Mouse
+}
+
+// SaveMouseEnabled persists the `ai ui` mouse-capture setting, preserving the
+// other saved preferences (the theme).
+func SaveMouseEnabled(enabled bool) error {
+	return savePrefs(func(prefs *uiPrefs) { prefs.Mouse = &enabled })
 }

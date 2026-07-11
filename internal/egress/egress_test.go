@@ -6,7 +6,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/jt-helsinki/ideal-robot/internal/config"
+	"github.com/jt-helsinki/stack-genie/internal/config"
 )
 
 func writeGlobalConfig(test *testing.T, content string) {

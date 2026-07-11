@@ -13,7 +13,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	"github.com/creack/pty"
 	"github.com/hinshun/vt10x"
-	"github.com/jt-helsinki/ideal-robot/internal/ui"
+	"github.com/jt-helsinki/stack-genie/internal/ui"
 )
 
 // vt10x glyph attribute bits (it does not export them). Mirrors the iota order in

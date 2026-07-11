@@ -5,9 +5,9 @@ import (
 	"strings"
 
 	"github.com/charmbracelet/huh"
-	"github.com/jt-helsinki/ideal-robot/internal/contextopt"
-	"github.com/jt-helsinki/ideal-robot/internal/output"
-	"github.com/jt-helsinki/ideal-robot/internal/project"
+	"github.com/jt-helsinki/stack-genie/internal/contextopt"
+	"github.com/jt-helsinki/stack-genie/internal/output"
+	"github.com/jt-helsinki/stack-genie/internal/project"
 	"github.com/spf13/cobra"
 )
 

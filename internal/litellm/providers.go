@@ -15,7 +15,7 @@ package litellm
 import (
 	"strings"
 
-	"github.com/jt-helsinki/ideal-robot/internal/catalog"
+	"github.com/jt-helsinki/stack-genie/internal/catalog"
 )
 
 // litellmProviderPrefix maps a models.dev catalog provider id to the LiteLLM

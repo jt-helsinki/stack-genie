@@ -11,7 +11,7 @@ import (
 	"strings"
 
 	"github.com/charmbracelet/lipgloss"
-	"github.com/jt-helsinki/ideal-robot/internal/ui"
+	"github.com/jt-helsinki/stack-genie/internal/ui"
 )
 
 // Chrome geometry. The header height is dynamic (logo + wrapped command grid), so

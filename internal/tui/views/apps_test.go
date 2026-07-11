@@ -6,7 +6,7 @@ import (
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
-	"github.com/jt-helsinki/ideal-robot/internal/apps"
+	"github.com/jt-helsinki/stack-genie/internal/apps"
 )
 
 func sampleStatuses() []apps.Status {

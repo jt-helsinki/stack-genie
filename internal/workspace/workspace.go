@@ -17,16 +17,17 @@ import (
 	"strings"
 	"time"
 
-	"github.com/jt-helsinki/ideal-robot/internal/agentcfg"
-	"github.com/jt-helsinki/ideal-robot/internal/apps"
-	"github.com/jt-helsinki/ideal-robot/internal/config"
-	"github.com/jt-helsinki/ideal-robot/internal/contextopt"
-	"github.com/jt-helsinki/ideal-robot/internal/egress"
-	"github.com/jt-helsinki/ideal-robot/internal/litellm"
-	"github.com/jt-helsinki/ideal-robot/internal/overlay"
-	"github.com/jt-helsinki/ideal-robot/internal/runtime"
-	"github.com/jt-helsinki/ideal-robot/internal/state"
-	"github.com/jt-helsinki/ideal-robot/internal/sysinfo"
+	"github.com/jt-helsinki/stack-genie/internal/agentcfg"
+	"github.com/jt-helsinki/stack-genie/internal/apps"
+	"github.com/jt-helsinki/stack-genie/internal/config"
+	"github.com/jt-helsinki/stack-genie/internal/contextopt"
+	"github.com/jt-helsinki/stack-genie/internal/egress"
+	"github.com/jt-helsinki/stack-genie/internal/litellm"
+	"github.com/jt-helsinki/stack-genie/internal/overlay"
+	"github.com/jt-helsinki/stack-genie/internal/runtime"
+	"github.com/jt-helsinki/stack-genie/internal/state"
+	"github.com/jt-helsinki/stack-genie/internal/sysinfo"
+	"github.com/jt-helsinki/stack-genie/internal/ui"
 )
 
 // resolveGateway derives the model-gateway host, port, and base URL every
@@ -291,6 +292,10 @@ type Sandbox interface {
 type KeyMinter interface {
 	GenerateKey(scope litellm.KeyScope) (string, error)
 	DeleteKeyByAlias(alias string) error
+	// KeyInfo returns LiteLLM's metadata for a virtual key. It errors when the key
+	// is unknown (revoked / cleared from the token table) OR the gateway is
+	// unreachable; the self-heal on attach uses it to detect an orphaned in-VM key.
+	KeyInfo(key string) (litellm.KeyDetails, error)
 }
 
 // ServedModels lists the models the LiteLLM gateway currently SERVES — its
@@ -627,6 +632,22 @@ func (manager Manager) registerAgentProviders(name, project, root string, projec
 		}
 	}
 
+	// hermes — written only when selected. KEYLESS YAML at the GLOBAL ~/.hermes/config.yaml
+	// (the path hermes reads; in-VM, off host disk): an aip-gateway provider whose key_env
+	// NAMES AIP_GATEWAY_KEY, plus external_dirs pointing at the shared skills pool. Hermes
+	// lists models by endpoint discovery, so — like omp — there is no served list to refresh
+	// (nothing in writeModelListConfigs). ~/.hermes is symlinked to /persist so its last-used
+	// selection + skills survive restarts.
+	if slices.Contains(projectConfig.Agent.Tools, "hermes") {
+		hermesConfig, err := agentcfg.HermesConfig(gatewayURL, defaultModel)
+		if err != nil {
+			return err
+		}
+		if err := manager.Sandbox.WriteFile(name, agentcfg.HermesConfigGuest, hermesConfig); err != nil {
+			return err
+		}
+	}
+
 	// Record that the setup model has been seeded, so subsequent starts stop pinning it
 	// and defer to each CLI's persisted last-used selection. Best-effort: if the marker
 	// can't be written we simply re-seed next start (harmless — opencode records the same
@@ -788,6 +809,10 @@ func (manager Manager) linkAgentStateDirs(name string, oauthAgents map[string]bo
 		{"~/.local/share/opencode", "opencode"},
 		{"~/.pi", "pi"},
 		{"~/.omp", "omp"},
+		// openclaw + hermes keep their global config + state (last-used model, memory,
+		// skills) in ~/.openclaw and ~/.hermes; persist them so a restart remembers.
+		{"~/.openclaw", "openclaw"},
+		{"~/.hermes", "hermes"},
 	}
 	// oauthCredDirs maps each OAuth-eligible CLI to its native-login credential dir. An
 	// oauth agent's dir is persisted so the subscription login survives a microVM restart.
@@ -861,8 +886,8 @@ func (manager Manager) writeModelListConfigs(name, root, gatewayURL, defaultMode
 	if err := writeHostFile(projectConfigPath(root, ".opencode", "opencode.json"), openCodeConfig); err != nil {
 		return err
 	}
-	// pi: whole-file managed provider config. Skip on an empty list so a transient
-	// gateway-down never wipes the in-VM list.
+	// pi + openclaw: whole-file managed GLOBAL configs enumerating the served models.
+	// Skip on an empty list so a transient gateway-down never wipes the in-VM lists.
 	if len(models) == 0 {
 		return nil
 	}
@@ -870,7 +895,17 @@ func (manager Manager) writeModelListConfigs(name, root, gatewayURL, defaultMode
 	if err != nil {
 		return err
 	}
-	return manager.Sandbox.WriteFile(name, agentcfg.PiGlobalModelsGuest, piModels)
+	if err := manager.Sandbox.WriteFile(name, agentcfg.PiGlobalModelsGuest, piModels); err != nil {
+		return err
+	}
+	// openclaw: aip-gateway provider with the served models enumerated (keyless). Same
+	// refresh contract as pi — rewritten at start and on attach so `ai models`/`ai keys`
+	// changes appear without a full restart.
+	openClawConfig, err := agentcfg.OpenClawConfig(gatewayURL, agentcfg.OpenClawAPIKeyRef, defaultModel, models)
+	if err != nil {
+		return err
+	}
+	return manager.Sandbox.WriteFile(name, agentcfg.OpenClawConfigGuest, openClawConfig)
 }
 
 // refreshAgentModels re-writes the opencode + pi served-model LIST against the LIVE
@@ -890,11 +925,62 @@ func (manager Manager) refreshAgentModels(project string) {
 		return
 	}
 	_, _, gatewayURL := resolveGateway()
+	name := Name(project)
+
+	// Self-heal an orphaned scoped key. The gateway key is minted once at start and
+	// baked into the VM; if the gateway's token table was cleared since (e.g. a
+	// LiteLLM Postgres re-init), the VM holds a DEAD key and every agent request
+	// 401s. Detect that here on the attach path and re-register — which re-mints the
+	// key and rewrites the env + agent configs — healing WITHOUT a full workspace
+	// restart. A healthy key skips this and falls through to the list-only refresh
+	// (attach must never gratuitously rotate a valid key).
+	if manager.agentKeyIsOrphaned(manager.currentAgentKey(name)) {
+		if regErr := manager.registerAgentProviders(name, project, root, projectConfig, gatewayURL); regErr != nil {
+			_, _ = fmt.Fprintf(os.Stderr, "warning: workspace %q gateway key looked invalid but could not be re-minted (agent calls may 401 until `ai restart`): %v\n", name, regErr)
+		} else {
+			_, _ = fmt.Fprintf(os.Stderr, "note: re-minted the gateway key for workspace %q (the previous key was no longer valid at the gateway)\n", name)
+			return // registerAgentProviders already rewrote the model-list configs
+		}
+	}
+
 	keepTurns, outputBufferTokens := contextopt.HeadroomParams(projectConfig.Context.Strategy)
 	models := manager.pickerModels()
-	if err := manager.writeModelListConfigs(Name(project), root, gatewayURL, "", models, keepTurns, outputBufferTokens); err != nil {
-		_, _ = fmt.Fprintf(os.Stderr, "warning: could not refresh agent model lists in workspace %q (continuing): %v\n", Name(project), err)
+	if err := manager.writeModelListConfigs(name, root, gatewayURL, "", models, keepTurns, outputBufferTokens); err != nil {
+		_, _ = fmt.Fprintf(os.Stderr, "warning: could not refresh agent model lists in workspace %q (continuing): %v\n", name, err)
 	}
+}
+
+// agentKeyProbeTimeout bounds the in-VM read of the baked gateway key on attach so a
+// wedged microVM cannot stall the self-heal probe.
+const agentKeyProbeTimeout = 15 * time.Second
+
+// currentAgentKey reads the scoped gateway key (AIP_GATEWAY_KEY) baked into the
+// workspace's in-VM agent-env file. Returns "" when unreadable/unset. The key lives
+// ONLY inside the VM (HARD invariant: never on host disk); this reads it into host
+// MEMORY only, for the validity probe.
+func (manager Manager) currentAgentKey(name string) string {
+	ctx, cancel := context.WithTimeout(context.Background(), agentKeyProbeTimeout)
+	defer cancel()
+	script := ". " + shellQuoteGuest(agentEnvGuestPath) + " 2>/dev/null; printf %s \"$AIP_GATEWAY_KEY\""
+	result, err := manager.Sandbox.ExecContext(ctx, name, []string{"bash", "-lc", script})
+	if err != nil || result.ExitCode != 0 {
+		return ""
+	}
+	return strings.TrimSpace(result.Stdout)
+}
+
+// agentKeyIsOrphaned reports whether the workspace's baked gateway key is no longer
+// valid at the gateway and can be re-minted. It returns false when the key is still
+// valid or when there is nothing to check (no minter, no key read from the VM), so a
+// transient VM/gateway hiccup never churns a healthy workspace. A gateway that is
+// merely unreachable also fails KeyInfo → the caller attempts a re-mint that likewise
+// fails and is reported, leaving the VM untouched.
+func (manager Manager) agentKeyIsOrphaned(key string) bool {
+	if manager.Keys == nil || key == "" {
+		return false
+	}
+	_, err := manager.Keys.KeyInfo(key)
+	return err != nil
 }
 
 // graphifyPlatformFlag maps an agent CLI to its `graphify install --platform` value.
@@ -968,6 +1054,8 @@ var cavemanOnlyAgent = map[string]string{
 	"gemini":      "gemini",
 	"opencode":    "opencode",
 	"codex":       "codex",
+	"openclaw":    "openclaw",
+	"hermes":      "hermes",
 }
 
 // registerCaveman installs the Caveman output-compression toolkit
@@ -991,43 +1079,91 @@ func (manager Manager) registerCaveman(name string, projectConfig *config.Config
 	if projectConfig == nil {
 		return
 	}
+	// Honor the create-time choice (config.yaml context.caveman_enabled). Unset
+	// defaults to enabled for pre-toggle projects; an explicit false skips it.
+	if !projectConfig.Context.CavemanEnabledOrDefault() {
+		return
+	}
+	// Explicitly-enabled (chosen at create) vs the nil back-compat default. We surface
+	// warnings only for an EXPLICIT opt-in so pre-toggle pi/omp-only projects stay quiet.
+	explicit := projectConfig.Context.CavemanEnabled != nil && *projectConfig.Context.CavemanEnabled
 	only := make([]string, 0, len(projectConfig.Agent.Tools))
 	for _, cli := range projectConfig.Agent.Tools {
 		if agent, ok := cavemanOnlyAgent[cli]; ok {
 			only = append(only, "--only "+agent)
 		}
 	}
-	// No caveman-detectable CLI selected → nothing to install and no opencode output to
-	// mirror into the pool, so skip the network call entirely.
+	// Caveman's installer only integrates with the detectable CLIs (opencode/claude-code/
+	// codex/gemini); pi/omp receive its skills/agents/commands via the shared pool. With
+	// none of those selected there is nothing to install or mirror.
 	if len(only) == 0 {
+		if explicit {
+			_, _ = fmt.Fprintln(os.Stderr, ui.Warn.Render("Caveman is enabled but no compatible CLI "+
+				"(opencode, claude-code, codex, or gemini) is selected — skipping install."))
+		}
 		return
 	}
 	pool := workspaceWorkdir + "/.ai-platform"
 	installMarker := pool + "/.caveman-installed"
-	// One guarded exec in ~/project:
-	//   1. Fetch + run Caveman's installer non-interactively for the detected CLIs
-	//      (--with-hooks wires the claude hooks + statusline; the opencode plugin and
-	//      gemini extension come from their native adapters).
-	//   2. Mirror opencode's GLOBAL caveman dirs into the shared pool (skills→skills,
-	//      agents→agents, commands→prompts) so pi/omp pick them up via the symlinks.
-	installCmd := "curl -fsSL https://raw.githubusercontent.com/JuliusBrussee/caveman/main/install.sh | " +
-		"bash -s -- --non-interactive --with-hooks " + strings.Join(only, " ")
+	// One guarded exec, run from $HOME — NEVER from ~/project: a bind-mounted
+	// project that is a git SUBMODULE on the host has a `.git` FILE whose gitdir
+	// points outside the mount, and git's repo discovery from that cwd dies
+	// `fatal: not a git repository` (exit 128), killing any npm/npx invocation
+	// there before it does anything (verified live).
+	//   1. Clone Caveman and run its installer LOCALLY (`node bin/install.js`) —
+	//      the curl|bash → npx path is NOT usable: Caveman's opencode NATIVE
+	//      install (the skills/agents/commands drop into ~/.config/opencode)
+	//      requires a local repo clone and fails under npx by design (its own
+	//      installer says so). --with-hooks wires the claude hooks + statusline;
+	//      the opencode plugin and gemini extension come from their adapters.
+	//   2. Mirror opencode's GLOBAL caveman dirs into the shared pool
+	//      (skills→skills, agents→agents, commands→prompts) so pi/omp pick them
+	//      up via the symlinks.
+	//   3. Require the caveman skill to actually be IN the pool before recording
+	//      success — a "successful" install that dropped nothing must retry, not
+	//      silently mark itself done.
+	clone := "rm -rf /tmp/caveman-src && " +
+		"git clone --depth 1 https://github.com/JuliusBrussee/caveman /tmp/caveman-src"
+	installCmd := "cd /tmp/caveman-src && node bin/install.js --non-interactive --with-hooks " +
+		strings.Join(only, " ")
 	mirror := `og="${XDG_CONFIG_HOME:-$HOME/.config}/opencode"; ` +
 		`for pair in "skills:skills" "agents:agents" "commands:prompts"; do ` +
 		`src="$og/${pair%%:*}"; dst="` + pool + `/${pair##*:}"; ` +
 		`[ -d "$src" ] || continue; mkdir -p "$dst"; cp -a "$src/." "$dst/" 2>/dev/null || true; done`
-	// The marker is touched ONLY after a successful install + mirror (chained with &&),
-	// so a failed first attempt (e.g. no network) retries on the next start rather than
-	// being wrongly recorded as done.
-	script := "cd " + workspaceWorkdir + " 2>/dev/null || exit 0; " +
+	// The marker is touched ONLY after install + mirror succeeded AND the caveman
+	// skill is verifiably in the pool (chained with &&), so a failed or empty
+	// attempt (no network, adapter failure) retries on the next start rather than
+	// being wrongly recorded as done. The clone is always cleaned up.
+	// `mirror` contains an internal `;` (an assignment then a for-loop), so it MUST be
+	// wrapped in a brace group here — otherwise that `;` would split the statement and
+	// the `[ "$installed" -eq 0 ] &&` gate would guard only the assignment, letting the
+	// loop + marker-touch run even when the install failed.
+	script := "cd \"$HOME\"; " +
 		"mkdir -p " + pool + "; " +
 		"[ -f " + installMarker + " ] && exit 0; " +
-		installCmd + " && " +
-		mirror + " && " +
+		"{ " + clone + " && " + installCmd + "; }; installed=$?; rm -rf /tmp/caveman-src; " +
+		"[ \"$installed\" -eq 0 ] && " +
+		"{ " + mirror + "; } && " +
+		"[ -f " + pool + "/skills/caveman/SKILL.md ] && " +
 		"touch " + installMarker
 	ctx, cancel := context.WithTimeout(context.Background(), cavemanInstallTimeout)
 	defer cancel()
-	_, _ = manager.Sandbox.ExecContext(ctx, name, []string{"bash", "-lc", script})
+	// Best-effort, but no longer SILENT for an explicit opt-in: a network/install
+	// failure leaves the marker untouched (so the next start retries) and, when the
+	// user explicitly chose Caveman, is surfaced so "installed: no" is explained.
+	// A nonzero in-VM exit is a failure too (ExecContext errors only on transport).
+	result, err := manager.Sandbox.ExecContext(ctx, name, []string{"bash", "-lc", script})
+	if explicit && (err != nil || result.ExitCode != 0) {
+		reason := strings.TrimSpace(result.Stderr)
+		if err != nil {
+			reason = err.Error()
+		}
+		if reason == "" {
+			reason = fmt.Sprintf("exit %d", result.ExitCode)
+		}
+		_, _ = fmt.Fprintln(os.Stderr, ui.Warn.Render("Caveman install did not complete "+
+			"(it will retry on the next workspace start): "+reason))
+	}
 }
 
 // ensureContainerd makes the rootful in-VM container runtime (containerd)
@@ -1326,13 +1462,22 @@ var sharedResourceLinks = []sharedResourceLink{
 		"claude-code": ".claude/skills",
 		"pi":          ".pi/skills",
 		"omp":         ".omp/skills",
+		// openclaw + hermes are gateway agents like pi/omp. Hermes reads skills from
+		// its config's external_dirs (HermesConfig points one at .hermes/skills);
+		// openclaw's skills dir is not documented upstream, so .openclaw/skills is a
+		// best-effort mirror alongside Caveman's own --only install. hardware bring-up:
+		// confirm both dirs resolve in-VM.
+		"openclaw": ".openclaw/skills",
+		"hermes":   ".hermes/skills",
 	}},
 	{pool: "agents", perCLI: map[string]string{
 		"opencode":    ".opencode/agents",
 		"claude-code": ".claude/agents",
-		// omp reads its OWN native .omp/agents for task-agents and deliberately SKIPS
-		// .claude/agents (schema differs), so it needs its own symlink to get the pool.
+		// omp and pi read their OWN native <cli>/agents dirs (they deliberately SKIP
+		// .claude/agents — schema differs), so each needs its own symlink to receive
+		// the shared pool (including Caveman's agents).
 		"omp": ".omp/agents",
+		"pi":  ".pi/agents",
 	}},
 	{pool: "prompts", perCLI: map[string]string{
 		"opencode":    ".opencode/commands",
@@ -1340,6 +1485,9 @@ var sharedResourceLinks = []sharedResourceLink{
 		"gemini":      ".gemini/commands",
 		"pi":          ".pi/prompts",
 		"omp":         ".omp/commands",
+		// openclaw exposes slash-commands; hermes derives them from skills (no separate
+		// dir) so it gets NO prompts link — a CLI a kind lacks is skipped, like codex/gemini.
+		"openclaw": ".openclaw/commands",
 	}},
 }
 
@@ -1686,15 +1834,16 @@ func (manager Manager) launchTmuxSession(project, session string, command []stri
 	if err := manager.requireTmux(project); err != nil {
 		return err
 	}
-	if err := manager.ensureTmuxReady(project); err != nil {
-		return err
-	}
 	// Refresh the served-model LIST for opencode + pi against the LIVE gateway before
 	// handing over the session, so a model added/removed since the last start (via
 	// `ai models`/`ai keys`) is immediately visible here — the "refresh when a shell is
-	// attached" requirement. List-only + best-effort (never rotates the key, preserves
-	// other settings, never fails the attach; skips the write when the gateway is down).
+	// attached" requirement. Also self-heals an orphaned gateway key (see
+	// refreshAgentModels). Best-effort; never fails the attach. Runs BEFORE the tmux
+	// warm-up so that warm-up stays the LAST preflight exec right before the PTY attach.
 	manager.refreshAgentModels(project)
+	if err := manager.ensureTmuxReady(project); err != nil {
+		return err
+	}
 	// Create-or-attach in a SINGLE interactive exec: `tmux new-session -A` creates the
 	// session on first use and reattaches on later calls. The tmux server daemonizes,
 	// so the session persists after the client DETACHES (and `ai sessions` lists it);
@@ -1914,9 +2063,12 @@ func tmuxNewSessionAttach(session string, command []string) []string {
 var agentValidCLIs = map[string][]string{
 	"opencode":    {"opencode"},
 	"pi":          {"pi"},
+	"omp":         {"omp"},
 	"claude-code": {"claude"},
 	"codex":       {"codex"},
 	"gemini":      {"gemini"},
+	"openclaw":    {"openclaw"},
+	"hermes":      {"hermes"},
 }
 
 // AgentCLINames returns the sorted set of agent CLI names the platform can launch

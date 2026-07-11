@@ -5,7 +5,7 @@ import (
 	"io"
 	"testing"
 
-	"github.com/jt-helsinki/ideal-robot/internal/output"
+	"github.com/jt-helsinki/stack-genie/internal/output"
 )
 
 // runCompletion drives a single `ai completion [args...]` invocation against a

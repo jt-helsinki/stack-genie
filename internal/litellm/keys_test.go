@@ -9,7 +9,7 @@ import (
 	"os"
 	"testing"
 
-	"github.com/jt-helsinki/ideal-robot/internal/output"
+	"github.com/jt-helsinki/stack-genie/internal/output"
 )
 
 // asError is errors.As specialized for the test assertions below.

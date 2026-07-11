@@ -19,12 +19,14 @@ flowchart LR
 
   subgraph TIER["Host · Docker service tier (aip-net) — internal-only but nginx (loopback: DB, DNS)"]
     direction TB
-    PROXY["nginx gateway · aip-proxy<br/>host :18787 — <b>SOLE host entry</b>, TLS-ready<br/>/ &amp; /v1 → LiteLLM · /llm → LiteLLM · /ollama → Ollama<br/>vhost: litellm.&lt;domain&gt;"]:::gw
+    PROXY["nginx gateway · aip-proxy<br/>host :18787 — <b>SOLE host entry</b>, TLS-ready<br/>/ &amp; /v1 → LiteLLM · /llm → LiteLLM · /ollama → Ollama<br/>vhosts: litellm.&lt;domain&gt; · valkey.&lt;domain&gt;"]:::gw
     HEAD["Headroom · aip-headroom :8787<br/>input-compression guardrail service<br/>LiteLLM calls in-process (internal-only)"]:::gw
     LLM["LiteLLM · aip-litellm :4000<br/><b>router + user-selectable guardrails</b><br/>(Headroom on by default; secret-masking/<br/>hide-secrets/tool-firewall opt-in)<br/>admin UI via /llm + litellm.&lt;domain&gt; (internal-only)"]:::core
     PG[("Postgres · aip-litellm-db<br/>(loopback :5442)<br/>virtual keys · spend · provider creds")]:::store
     PRES["Presidio · aip-presidio-{analyzer,anonymizer}<br/>secret masking (pre/post-call)"]:::core
     OLL["Ollama · aip-ollama :11434<br/>local models (no default · DB-backed · internal-only)"]:::core
+    VALKEY[("Valkey · aip-valkey :6379<br/>LiteLLM response cache (standalone · internal-only)")]:::store
+    RI["RedisInsight · aip-redisinsight :5540<br/>Valkey GUI · vhost valkey.&lt;domain&gt; (internal-only)"]:::gw
     DNS["CoreDNS · aip-dns (loopback :15353)<br/>egress audit log"]:::core
   end
 
@@ -43,4 +45,7 @@ flowchart LR
   LLM <-. "guardrails (when enabled)" .-> PRES
   LLM --- PG
   LLM -- "local route" --> OLL
+  LLM -. "response cache" .-> VALKEY
+  RI -. "monitors" .-> VALKEY
+  PROXY -. "valkey.&lt;domain&gt;" .-> RI
   LLM == "cloud route (real key attached)" ==> CLOUD

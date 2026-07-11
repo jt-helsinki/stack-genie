@@ -1,0 +1,13 @@
+# agent CLI: openclaw (https://github.com/openclaw/openclaw) — a gateway/api-key agent
+# like opencode/pi. It reaches models ONLY through the platform gateway: an
+# `aip-gateway` OpenAI-compatible provider (baseUrl → the host nginx gateway :18787,
+# which forwards to LiteLLM; api: openai-completions) is written KEYLESS to the GLOBAL
+# ~/.openclaw/openclaw.json at workspace start (apiKey names the AIP_GATEWAY_KEY env
+# var via ${AIP_GATEWAY_KEY} — never a real provider secret; LiteLLM holds the real
+# credentials, arch §17). Headroom input-compression applies automatically at the
+# gateway (LiteLLM pre_call guardrail), so no client-side wrap is needed.
+# Node is installed in the OS base image (pinned Node 24 LTS), so this only adds the CLI.
+# hardware bring-up: verify the npm package name + config schema live before relying on this.
+USER root
+RUN npm install -g openclaw@latest
+USER workspace

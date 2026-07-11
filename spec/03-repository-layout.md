@@ -283,8 +283,9 @@ Rules:
 
 In **standalone** mode `ai setup` also writes an AI-platform-owned block to
 `/etc/hosts` (a privileged write, outside `~/.ai-platform/`) mapping the UI
-subdomain (`litellm.<domain>` — the only host UI vhost; Open WebUI is now a
-per-workspace in-VM app and Odysseus was removed) to `127.0.0.1`, so the nginx
+subdomains (`litellm.<domain>` → LiteLLM admin UI and `valkey.<domain>` →
+RedisInsight; Open WebUI is now a per-workspace in-VM app and Odysseus was
+removed) to `127.0.0.1`, so the nginx
 gateway's vhost resolves locally. Only the platform's delimited block is touched;
 `ai uninstall` removes it. (`internal/hostsfile` writes the managed block;
 `internal/uihosts` computes the entries from the service registry.)
@@ -398,6 +399,13 @@ existing file is deep-merged so the managed block wins while the user's other ke
   loads the project config.
 * **gemini** → env-only (`GOOGLE_GEMINI_BASE_URL` + `GEMINI_API_KEY` in the in-VM agent
   env file; no settings key for a base URL exists).
+* **omp** (a Pi fork) → the GLOBAL in-VM `~/.omp/agent/models.yml` (YAML, keyless — the
+  provider `apiKey` names the `AIP_GATEWAY_KEY` env var, `openai-models-list` discovery)
+  + `.omp/config.yml` (provider order + seed-then-remember `modelRoles.default`). These
+  use the `.yml` extension because omp documents those paths that way (the one external-tool
+  exception to the platform's `.yaml` rule).
+* **copilot** (GitHub Copilot CLI) → NO platform-written config (forced-OAuth /
+  gateway-incapable; it manages its own `~/.copilot`).
 
 The scoped virtual key lives **only** in the in-VM agent env file
 `~/.config/aip/agent-env.sh` (off host disk), sourced by every shell + agent session
@@ -663,7 +671,7 @@ config blocks.
 ```yaml id="sc6"
 os: alma                   # alma | debian-trixie | debian-bookworm | ubuntu
 agent:
-  tools: [opencode, pi]    # installed agent CLIs (any subset of: opencode, pi, omp, claude-code, codex, gemini-cli); opencode + pi by default
+  tools: [opencode, pi]    # installed agent CLIs (any subset of: opencode, pi, omp, claude-code, codex, gemini, copilot); opencode + pi by default
   default_tool: opencode   # default agent CLI; must be one of agent.tools
   graphify_model: qwen2.5-coder:7b  # optional: Ollama model Graphify uses (chosen at `ai create`, routed through the gateway as ollama/<model>); omitted = none
 context:
@@ -673,6 +681,7 @@ context:
 workspace:
   cpu_limit: 4             # microVM resource limits wired into `msb create --cpus/--memory`
   memory_limit: 8          # memory in GB (a plain number; a 512M/4G suffix still works); empty falls back to the microVM default (4G)
+  shell: bash              # default interactive shell (bash | zsh), chosen at `ai create --shell`; applied at every start
 microsandbox:
   idle_timeout: 24h        # `msb create --idle-timeout`; default set by `ai create`, editable later
 network:                   # workspace networking (arch §29.6); all fields managed via `ai network`
@@ -717,8 +726,8 @@ apps:                      # opt-in in-VM AI apps (arch §7), chosen via `ai cre
   routes through (`ai gateway set` / `ai setup --mode client --server`).
 * `host_gateway`: the guest-visible host address (arch §29.2), default
   `host.microsandbox.internal`.
-* `domain`: the platform base domain the nginx UI subdomain hangs off
-  (`litellm.<domain>` — the only host UI vhost); empty resolves to the default
+* `domain`: the platform base domain the nginx UI subdomains hang off
+  (`litellm.<domain>` and `valkey.<domain>`); empty resolves to the default
   `aip.local` (`ai domain` shows/sets it).
 
 ## 12.6 `config/versions.yaml` (pinned host-service versions)

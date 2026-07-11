@@ -4,8 +4,8 @@ import (
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
-	"github.com/jt-helsinki/ideal-robot/internal/apps"
-	"github.com/jt-helsinki/ideal-robot/internal/ui"
+	"github.com/jt-helsinki/stack-genie/internal/apps"
+	"github.com/jt-helsinki/stack-genie/internal/ui"
 )
 
 // AppLister returns the current workspace's apps + status. Injected so the view is

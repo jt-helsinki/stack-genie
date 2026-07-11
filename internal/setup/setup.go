@@ -17,16 +17,16 @@ import (
 	"strings"
 	"time"
 
-	"github.com/jt-helsinki/ideal-robot/internal/config"
-	"github.com/jt-helsinki/ideal-robot/internal/console"
-	"github.com/jt-helsinki/ideal-robot/internal/doctor"
-	"github.com/jt-helsinki/ideal-robot/internal/layout"
-	"github.com/jt-helsinki/ideal-robot/internal/litellm"
-	"github.com/jt-helsinki/ideal-robot/internal/output"
-	"github.com/jt-helsinki/ideal-robot/internal/runtime"
-	"github.com/jt-helsinki/ideal-robot/internal/templates"
-	"github.com/jt-helsinki/ideal-robot/internal/ui"
-	"github.com/jt-helsinki/ideal-robot/internal/versions"
+	"github.com/jt-helsinki/stack-genie/internal/config"
+	"github.com/jt-helsinki/stack-genie/internal/console"
+	"github.com/jt-helsinki/stack-genie/internal/doctor"
+	"github.com/jt-helsinki/stack-genie/internal/layout"
+	"github.com/jt-helsinki/stack-genie/internal/litellm"
+	"github.com/jt-helsinki/stack-genie/internal/output"
+	"github.com/jt-helsinki/stack-genie/internal/runtime"
+	"github.com/jt-helsinki/stack-genie/internal/templates"
+	"github.com/jt-helsinki/stack-genie/internal/ui"
+	"github.com/jt-helsinki/stack-genie/internal/versions"
 )
 
 // ServiceStatus describes one managed service (or the workspace runtime).

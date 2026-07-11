@@ -9,8 +9,8 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 
-	"github.com/jt-helsinki/ideal-robot/internal/ui"
-	"github.com/jt-helsinki/ideal-robot/internal/workspace"
+	"github.com/jt-helsinki/stack-genie/internal/ui"
+	"github.com/jt-helsinki/stack-genie/internal/workspace"
 )
 
 // MetricsStream is a live metrics subscription: Recv blocks for the next sample, Close

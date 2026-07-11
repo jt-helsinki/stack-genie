@@ -6,7 +6,7 @@ import (
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
-	"github.com/jt-helsinki/ideal-robot/internal/setup"
+	"github.com/jt-helsinki/stack-genie/internal/setup"
 )
 
 // noControl / noOpen are stubs for tests that don't exercise those actions.

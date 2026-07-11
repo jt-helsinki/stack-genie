@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jt-helsinki/ideal-robot/internal/workspace"
+	"github.com/jt-helsinki/stack-genie/internal/workspace"
 )
 
 type fakeMetricsStream struct {

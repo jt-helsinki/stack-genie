@@ -18,9 +18,9 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/jt-helsinki/ideal-robot/internal/conffile"
-	"github.com/jt-helsinki/ideal-robot/internal/paths"
-	"github.com/jt-helsinki/ideal-robot/internal/sandbox"
+	"github.com/jt-helsinki/stack-genie/internal/conffile"
+	"github.com/jt-helsinki/stack-genie/internal/paths"
+	"github.com/jt-helsinki/stack-genie/internal/sandbox"
 )
 
 // DefaultGatewayHost is the in-microVM address that resolves to the host machine

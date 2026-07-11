@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jt-helsinki/ideal-robot/internal/setup"
+	"github.com/jt-helsinki/stack-genie/internal/setup"
 )
 
 // servicesResult mirrors the `ai services status` data payload.

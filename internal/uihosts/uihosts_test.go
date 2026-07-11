@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/jt-helsinki/ideal-robot/internal/runtime"
+	"github.com/jt-helsinki/stack-genie/internal/runtime"
 )
 
 func TestGatewayPortMatchesRuntime(t *testing.T) {

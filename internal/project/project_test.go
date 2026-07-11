@@ -7,11 +7,11 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/jt-helsinki/ideal-robot/internal/config"
-	"github.com/jt-helsinki/ideal-robot/internal/overlay"
-	"github.com/jt-helsinki/ideal-robot/internal/state"
-	"github.com/jt-helsinki/ideal-robot/internal/templates"
-	"github.com/jt-helsinki/ideal-robot/internal/workspace"
+	"github.com/jt-helsinki/stack-genie/internal/config"
+	"github.com/jt-helsinki/stack-genie/internal/overlay"
+	"github.com/jt-helsinki/stack-genie/internal/state"
+	"github.com/jt-helsinki/stack-genie/internal/templates"
+	"github.com/jt-helsinki/stack-genie/internal/workspace"
 )
 
 func withTemplates(test *testing.T) {
@@ -217,7 +217,7 @@ func TestDeleteRemovesPlatformDirKeepsOtherFiles(test *testing.T) {
 	}
 	// The per-CLI agent config dirs + venv the platform writes into the project folder
 	// at workspace start (here only some exist — a missing one must be ignored).
-	for _, dir := range []string{".opencode", ".claude", ".pi", ".venv-msb"} {
+	for _, dir := range []string{".opencode", ".claude", ".pi", ".omp", ".copilot", ".venv-msb"} {
 		if err := os.MkdirAll(filepath.Join(root, dir), 0o755); err != nil {
 			test.Fatal(err)
 		}
@@ -230,7 +230,7 @@ func TestDeleteRemovesPlatformDirKeepsOtherFiles(test *testing.T) {
 		test.Errorf(".ai-platform should be removed on a plain delete, got %v", err)
 	}
 	// Every per-CLI agent dir + venv is removed too (existing or not).
-	for _, dir := range []string{".opencode", ".claude", ".codex", ".pi", ".gemini", ".venv-msb"} {
+	for _, dir := range []string{".opencode", ".claude", ".codex", ".pi", ".omp", ".gemini", ".copilot", ".venv-msb"} {
 		if _, err := os.Stat(filepath.Join(root, dir)); !os.IsNotExist(err) {
 			test.Errorf("%s should be removed on a plain delete, got %v", dir, err)
 		}

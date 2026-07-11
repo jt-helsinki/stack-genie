@@ -10,7 +10,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/jt-helsinki/ideal-robot/internal/catalog"
+	"github.com/jt-helsinki/stack-genie/internal/catalog"
 )
 
 func readFixture(t *testing.T) []byte {

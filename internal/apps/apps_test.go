@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/jt-helsinki/ideal-robot/internal/config"
+	"github.com/jt-helsinki/stack-genie/internal/config"
 )
 
 // fakeExec records the nerdctl argv it is handed and returns a scripted result.

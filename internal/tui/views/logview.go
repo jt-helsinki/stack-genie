@@ -9,7 +9,7 @@ import (
 
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
-	"github.com/jt-helsinki/ideal-robot/internal/ui"
+	"github.com/jt-helsinki/stack-genie/internal/ui"
 )
 
 // LogStream is a live log subscription: Recv blocks for the next chunk (history first,

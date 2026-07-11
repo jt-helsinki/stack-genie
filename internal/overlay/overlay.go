@@ -15,7 +15,7 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/jt-helsinki/ideal-robot/internal/paths"
+	"github.com/jt-helsinki/stack-genie/internal/paths"
 )
 
 // Path returns the host directory backing the overlay for a workspace ID. It

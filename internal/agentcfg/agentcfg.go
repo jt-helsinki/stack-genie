@@ -252,6 +252,90 @@ func OmpConfig(defaultModel string) ([]byte, error) {
 	return marshalYAML(document)
 }
 
+// openclaw + hermes are gateway/api-key agents like opencode/pi/omp: they reach models
+// ONLY through the gateway, keyless. Their config is GLOBAL (one file per tool), written
+// whole via Sandbox.WriteFile (off host disk) — mirroring pi's/omp's global configs.
+// nginx :18787 fronts LiteLLM :4000; Headroom input-compression is a LiteLLM pre_call
+// guardrail on that path, so both get compression automatically with no client-side wrap.
+const (
+	// OpenClawAPIKeyRef is written as openclaw's provider apiKey: an ${VAR} substitution
+	// naming AIP_GATEWAY_KEY (openclaw resolves uppercase ${ENV} at load), keeping the
+	// on-disk config keyless. The real scoped key lives only in the in-VM agent env file.
+	OpenClawAPIKeyRef = "${" + codexKeyVar + "}"
+	// OpenClawConfigGuest is openclaw's global config (the path it reads).
+	OpenClawConfigGuest = "/home/workspace/.openclaw/openclaw.json"
+	// HermesKeyEnv is written as hermes' provider key_env: the NAME of the env var hermes
+	// resolves at runtime (NOT the key), keeping the on-disk config keyless.
+	HermesKeyEnv = codexKeyVar
+	// HermesConfigGuest is hermes' global config (the path it reads).
+	HermesConfigGuest = "/home/workspace/.hermes/config.yaml"
+	// HermesSkillsExternalDir is the project-relative skills pool hermes is pointed at via
+	// its config's external_dirs (the shared-pool symlink target for hermes; see
+	// workspace.sharedResourceLinks). Slash-commands derive from skills, so this is the
+	// only resource dir hermes needs.
+	HermesSkillsExternalDir = projectDirGuest + "/.hermes/skills"
+)
+
+// OpenClawConfig renders ~/.openclaw/openclaw.json: an aip-gateway OpenAI-completions
+// provider (keyless — apiKey is the ${AIP_GATEWAY_KEY} substitution) with the served
+// models enumerated, merged over openclaw's defaults (models.mode:"merge"). A non-empty
+// defaultModel seeds agents.defaults.model.primary; an empty one omits it so openclaw's
+// persisted last-used selection wins (seed-then-remember, matching the other CLIs).
+// gatewayURL carries the /v1 suffix. The served list is rewritten each start + on attach
+// (see workspace.writeModelListConfigs), so a model added via `ai models`/`ai keys` shows
+// up without a full restart — the opencode/pi list-refresh contract.
+func OpenClawConfig(gatewayURL, apiKey, defaultModel string, models []string) ([]byte, error) {
+	providerModels := make([]map[string]any, 0, len(models))
+	for _, model := range models {
+		providerModels = append(providerModels, map[string]any{"id": model, "name": model})
+	}
+	document := map[string]any{
+		"models": map[string]any{
+			"mode": "merge",
+			"providers": map[string]any{
+				ProviderID: map[string]any{
+					"baseUrl": gatewayURL,
+					"apiKey":  apiKey,
+					"api":     "openai-completions",
+					"models":  providerModels,
+				},
+			},
+		},
+	}
+	if defaultModel != "" {
+		document["agents"] = map[string]any{
+			"defaults": map[string]any{
+				"model": map[string]any{"primary": ProviderID + "/" + defaultModel},
+			},
+		}
+	}
+	return marshalStable(document)
+}
+
+// HermesConfig renders ~/.hermes/config.yaml: an aip-gateway provider (keyless — key_env
+// NAMES the AIP_GATEWAY_KEY env var) selected as the model provider, plus external_dirs
+// pointing at the shared skills pool so hermes picks up the platform's + Caveman's skills.
+// Hermes lists models by endpoint discovery (no static array), so there is no served-list
+// to refresh — like omp. A non-empty defaultModel seeds model.default; empty omits it so
+// hermes' persisted selection wins. gatewayURL carries the /v1 suffix.
+func HermesConfig(gatewayURL, defaultModel string) ([]byte, error) {
+	model := map[string]any{"provider": ProviderID}
+	if defaultModel != "" {
+		model["default"] = defaultModel
+	}
+	document := map[string]any{
+		"providers": map[string]any{
+			ProviderID: map[string]any{
+				"base_url": gatewayURL,
+				"key_env":  HermesKeyEnv,
+			},
+		},
+		"model":         model,
+		"external_dirs": []string{HermesSkillsExternalDir},
+	}
+	return marshalYAML(document)
+}
+
 // MergeOpenCodeConfig produces the FINAL opencode config from any EXISTING project
 // config plus the dynamic values minted at start. It parses the existing JSON and
 // deep-merges the generated provider config over it, so the dynamic provider block

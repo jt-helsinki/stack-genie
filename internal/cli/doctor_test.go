@@ -5,8 +5,8 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/jt-helsinki/ideal-robot/internal/doctor"
-	"github.com/jt-helsinki/ideal-robot/internal/workspace"
+	"github.com/jt-helsinki/stack-genie/internal/doctor"
+	"github.com/jt-helsinki/stack-genie/internal/workspace"
 )
 
 type fakeDoctorSandbox struct {

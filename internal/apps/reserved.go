@@ -1,8 +1,8 @@
 package apps
 
 import (
-	"github.com/jt-helsinki/ideal-robot/internal/config"
-	"github.com/jt-helsinki/ideal-robot/internal/state"
+	"github.com/jt-helsinki/stack-genie/internal/config"
+	"github.com/jt-helsinki/stack-genie/internal/state"
 )
 
 // ReservedPortsAcrossWorkspaces returns the set of host ports already allocated to

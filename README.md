@@ -1,4 +1,4 @@
-# AI Development Platform
+# Stack Genie - the local AI Development Platform
 
 Reproducible, isolated, AI-powered development environments. Each workspace is a
 hardware-isolated [Microsandbox](https://microsandbox.dev) microVM; the model
@@ -28,7 +28,7 @@ project. Caveman is a per-project output-compression skill inside the workspace.
 ## Install
 
 ```bash
-curl -fsSL https://github.com/jt-helsinki/ideal-robot/releases/latest/download/install.sh | bash
+curl -fsSL https://github.com/jt-helsinki/stack-genie/releases/latest/download/install.sh | bash
 ```
 
 Fetches the installer (published with each release), which downloads the
@@ -68,12 +68,13 @@ Hypervisor) or **Linux with KVM**.
 `ai setup` **never installs software** — it detects what's missing and prints how
 to install it (command + web address); `ai doctor` reports the same anytime. The
 service tier (the nginx gateway, Ollama, Presidio, LiteLLM + Postgres, Headroom,
-and the DNS egress-audit resolver) is launched by
+Valkey + its RedisInsight GUI, and the DNS egress-audit resolver) is launched by
 `ai setup` as host containers on the `aip-net` network — you don't install those.
 Only the nginx gateway (`aip-proxy`) publishes a host port (`:18787`); every other
-service is internal-only and reached through it. The single host UI is served as a
-Host-based subdomain off a platform base domain (default `aip.local`, set with
-`ai domain`): `litellm.<domain>` (the LiteLLM admin UI) — on `:18787`. (Open WebUI
+service is internal-only and reached through it. The host UIs are served as
+Host-based subdomains off a platform base domain (default `aip.local`, set with
+`ai domain`), both on `:18787`: `litellm.<domain>` (the LiteLLM admin UI) and
+`valkey.<domain>` (the RedisInsight GUI for the LiteLLM response cache). (Open WebUI
 is now a per-workspace in-VM app, run with `ai apps`; Odysseus has been removed.)
 In standalone mode `ai setup` offers to add the matching `/etc/hosts`
 entries; in server mode it prints the DNS + TLS contract for an operator.
@@ -117,14 +118,15 @@ ai list
 ai delete --yes              # the current project, plus its overlay
 ```
 
-Every OS base bakes in a common tooling layer — Git, the GitHub CLI, the latest
-**Python 3**, **uv** (Astral's Python package/tool manager), and **Graphify**
-(PyPI `graphifyy`, CLI `graphify`; a knowledge-graph skill for AI coding
-assistants, installed via `uv tool install` with all extras except the
-region/DB-specific `chinese,azure,bedrock,falkordb,neo4j,leiden,dm`). Each selected
-agent CLI registers Graphify with itself (`graphify install [--platform <cli>]`).
-Python is baked in, so it is **not** a `--stacks` option — the selectable stacks
-are `go,node,rust,java,maven,deno`.
+Every OS base bakes in a common tooling layer — Git, the GitHub CLI, **Node.js**
+(pinned 24 LTS), the latest **Python 3**, **uv** (Astral's Python package/tool
+manager), **Graphify** (PyPI `graphifyy`, CLI `graphify`; a knowledge-graph skill
+for AI coding assistants, installed via `uv tool install` with all extras except
+the region/DB-specific `chinese,azure,bedrock,falkordb,neo4j,leiden,dm`), and
+**rtk** (Rust Token Killer). Each selected agent CLI registers Graphify with
+itself (`graphify install [--platform <cli>]`). Node.js and Python are baked in,
+so neither is a `--stacks` option — the selectable stacks are
+`go,rust,java,maven,deno`.
 
 **Work in the workspace** (one microVM per project; installed programs and agent
 state persist across restarts via the overlay):
@@ -216,8 +218,8 @@ A native, offline teardown built into the binary; it prompts for confirmation
 first and **never touches `~/projects`** (your source):
 
 ```bash
-ai uninstall                 # binary, PATH/completion entries, aip-* containers
-ai uninstall --purge         # also ~/.ai-platform
+ai uninstall                 # binary, PATH/completion entries, aip-* containers, ~/.ai-platform state (KEEPS downloaded models)
+ai uninstall --purge         # also the downloaded model store — removes ~/.ai-platform in full
 ai uninstall --remove-deps   # also uninstall msb
 ai uninstall --yes           # skip the prompt (automation); --dry-run to preview
 ```

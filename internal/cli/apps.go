@@ -7,10 +7,10 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/jt-helsinki/ideal-robot/internal/apps"
-	"github.com/jt-helsinki/ideal-robot/internal/output"
-	"github.com/jt-helsinki/ideal-robot/internal/ui"
-	"github.com/jt-helsinki/ideal-robot/internal/workspace"
+	"github.com/jt-helsinki/stack-genie/internal/apps"
+	"github.com/jt-helsinki/stack-genie/internal/output"
+	"github.com/jt-helsinki/stack-genie/internal/ui"
+	"github.com/jt-helsinki/stack-genie/internal/workspace"
 	"github.com/spf13/cobra"
 )
 

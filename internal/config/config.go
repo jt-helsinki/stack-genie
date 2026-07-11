@@ -18,8 +18,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/jt-helsinki/ideal-robot/internal/conffile"
-	"github.com/jt-helsinki/ideal-robot/internal/paths"
+	"github.com/jt-helsinki/stack-genie/internal/conffile"
+	"github.com/jt-helsinki/stack-genie/internal/paths"
 	"gopkg.in/yaml.v3"
 )
 
@@ -121,6 +121,19 @@ func (agent AgentConfig) AuthMode(cli string) string {
 type ContextConfig struct {
 	Strategy     string `yaml:"strategy,omitempty" json:"strategy,omitempty"`
 	CavemanLevel string `yaml:"caveman_level,omitempty" json:"caveman_level,omitempty"`
+	// CavemanEnabled records whether the Caveman output-compression toolkit is
+	// installed into the workspace at start (chosen at `ai create`). A pointer so
+	// three states are distinct: unset (nil), explicit true, explicit false. Unset
+	// defaults to enabled for backward compatibility with projects created before
+	// the toggle existed — see CavemanEnabledOrDefault.
+	CavemanEnabled *bool `yaml:"caveman_enabled,omitempty" json:"caveman_enabled,omitempty"`
+}
+
+// CavemanEnabledOrDefault reports whether Caveman should be installed at workspace
+// start. An unset (nil) value defaults to true so pre-toggle projects keep today's
+// auto-install behavior; an explicit false disables it.
+func (settings ContextConfig) CavemanEnabledOrDefault() bool {
+	return settings.CavemanEnabled == nil || *settings.CavemanEnabled
 }
 
 // WorkspaceConfig holds the microVM resource limits applied at workspace start

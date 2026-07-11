@@ -16,8 +16,8 @@ import (
 	"path/filepath"
 	"slices"
 
-	"github.com/jt-helsinki/ideal-robot/internal/config"
-	"github.com/jt-helsinki/ideal-robot/internal/ui"
+	"github.com/jt-helsinki/stack-genie/internal/config"
+	"github.com/jt-helsinki/stack-genie/internal/ui"
 )
 
 // Strategies and CavemanLevels are the valid choices (config repo-layout §12.4).

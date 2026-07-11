@@ -7,8 +7,8 @@ import (
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
-	"github.com/jt-helsinki/ideal-robot/internal/ollama"
-	"github.com/jt-helsinki/ideal-robot/internal/state"
+	"github.com/jt-helsinki/stack-genie/internal/ollama"
+	"github.com/jt-helsinki/stack-genie/internal/state"
 )
 
 // seedProject writes a project root at <parent>/<name> (mirroring what `ai create`
@@ -212,16 +212,19 @@ func TestCreateWizardAssemblesSpec(test *testing.T) {
 	if wizard.step != stepAgents {
 		test.Fatalf("after shell, step = %d, want stepAgents", wizard.step)
 	}
-	enter() // agents (defaults satisfy the ≥1 requirement)
+	enter() // agents + apps combined (defaults satisfy the ≥1 requirement)
 	enter() // default agent
 	enter() // stacks (none)
-	enter() // apps (none)
 	enter() // cpus (blank)
 	enter() // memory (blank)
 	enter() // ports (blank)
-	enter() // idle (blank) → advances to model step
+	enter() // idle (blank) → advances to caveman step
+	if wizard.step != stepCaveman {
+		test.Fatalf("after idle, step = %d, want stepCaveman", wizard.step)
+	}
+	enter() // caveman (default install) → advances to model step
 	if wizard.step != stepModel {
-		test.Fatalf("after idle, step = %d, want stepModel", wizard.step)
+		test.Fatalf("after caveman, step = %d, want stepModel", wizard.step)
 	}
 	// Model step: "(none)" is the first row — enter selects it and finishes.
 	cmd := enter()
@@ -253,6 +256,9 @@ func TestCreateWizardAssemblesSpec(test *testing.T) {
 	}
 	if spec.GraphifyModel != "" {
 		test.Errorf("spec.GraphifyModel = %q, want empty (none selected)", spec.GraphifyModel)
+	}
+	if !spec.CavemanEnabled {
+		test.Error("spec.CavemanEnabled = false, want true (default install)")
 	}
 }
 
@@ -333,14 +339,14 @@ func TestCreateWizardAuthModeStep(test *testing.T) {
 		press(tea.KeyDown)
 	}
 	space() // toggle claude-code on
-	enter() // agents
+	enter() // agents + apps combined
 	enter() // default agent
 	enter() // stacks
-	enter() // apps
 	enter() // cpus
 	enter() // memory
 	enter() // ports
-	enter() // idle → model
+	enter() // idle → caveman
+	enter() // caveman → model
 	if wizard.step != stepModel {
 		test.Fatalf("expected the model step, got step %d", wizard.step)
 	}

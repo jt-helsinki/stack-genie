@@ -21,21 +21,21 @@ import (
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
-	"github.com/jt-helsinki/ideal-robot/internal/apps"
-	"github.com/jt-helsinki/ideal-robot/internal/catalog"
-	"github.com/jt-helsinki/ideal-robot/internal/config"
-	"github.com/jt-helsinki/ideal-robot/internal/contextopt"
-	"github.com/jt-helsinki/ideal-robot/internal/create"
-	"github.com/jt-helsinki/ideal-robot/internal/egress"
-	"github.com/jt-helsinki/ideal-robot/internal/litellm"
-	"github.com/jt-helsinki/ideal-robot/internal/ollama"
-	"github.com/jt-helsinki/ideal-robot/internal/project"
-	"github.com/jt-helsinki/ideal-robot/internal/runtime"
-	"github.com/jt-helsinki/ideal-robot/internal/setup"
-	"github.com/jt-helsinki/ideal-robot/internal/state"
-	"github.com/jt-helsinki/ideal-robot/internal/tui/views"
-	"github.com/jt-helsinki/ideal-robot/internal/ui"
-	"github.com/jt-helsinki/ideal-robot/internal/workspace"
+	"github.com/jt-helsinki/stack-genie/internal/apps"
+	"github.com/jt-helsinki/stack-genie/internal/catalog"
+	"github.com/jt-helsinki/stack-genie/internal/config"
+	"github.com/jt-helsinki/stack-genie/internal/contextopt"
+	"github.com/jt-helsinki/stack-genie/internal/create"
+	"github.com/jt-helsinki/stack-genie/internal/egress"
+	"github.com/jt-helsinki/stack-genie/internal/litellm"
+	"github.com/jt-helsinki/stack-genie/internal/ollama"
+	"github.com/jt-helsinki/stack-genie/internal/project"
+	"github.com/jt-helsinki/stack-genie/internal/runtime"
+	"github.com/jt-helsinki/stack-genie/internal/setup"
+	"github.com/jt-helsinki/stack-genie/internal/state"
+	"github.com/jt-helsinki/stack-genie/internal/tui/views"
+	"github.com/jt-helsinki/stack-genie/internal/ui"
+	"github.com/jt-helsinki/stack-genie/internal/workspace"
 )
 
 // View is one screen of the UI. Views are pointer models that mutate in place;
@@ -304,8 +304,10 @@ func Run(cwd string) error {
 	// `ai keys add|remove <provider>` live in the terminal overlay (the hidden key
 	// prompt shows there) — the view never sees a key value.
 	apiKeysView := views.NewAPIKeys(listAPIKeyProviders)
-	// The Settings tab is a live theme picker plus read-only platform info.
-	// Applying a theme persists it and recolors the whole UI (ThemeChangedMsg).
+	// The Settings tab is a live theme picker + the mouse tab-clicking toggle plus
+	// read-only platform info. Applying a theme persists it and recolors the whole
+	// UI (ThemeChangedMsg); toggling the mouse persists the setting and switches
+	// mouse capture live (MouseToggledMsg).
 	settingsView := views.NewSettings(
 		ui.ThemeNames(), ui.CurrentTheme,
 		func(name string) error {
@@ -314,6 +316,7 @@ func Run(cwd string) error {
 			}
 			return ui.SaveThemeName(name)
 		},
+		ui.LoadMouseEnabled(), ui.SaveMouseEnabled,
 		application.role, application.gateway,
 	)
 
@@ -353,10 +356,18 @@ func Run(cwd string) error {
 	// Always land on the home screen (Services, index 0 — current's zero value); a
 	// project is opened only when the user selects it from the Projects switcher.
 
-	// Mouse reporting is intentionally NOT enabled: capturing the mouse would disable
-	// the host terminal's native text selection. Scrollable panes scroll by keyboard
-	// (PgUp/PgDn/arrows), and text stays selectable with the mouse.
-	program := tea.NewProgram(application, tea.WithAltScreen(), tea.WithOutput(os.Stderr))
+	// Mouse reporting (a persisted user setting, default ON — ui.LoadMouseEnabled,
+	// toggled live in the Settings tab with `m`) makes the top-level tab bar and the
+	// per-workspace / service-detail sub-tab bars CLICKABLE (handleMouse). The
+	// trade-off: with the mouse captured, the host terminal's native text selection
+	// needs the terminal's selection modifier (Shift on most, Option on macOS
+	// terminals) — turning the setting OFF restores modifier-free selection.
+	// Scrolling remains keyboard-driven (PgUp/PgDn/arrows) either way.
+	programOptions := []tea.ProgramOption{tea.WithAltScreen(), tea.WithOutput(os.Stderr)}
+	if ui.LoadMouseEnabled() {
+		programOptions = append(programOptions, tea.WithMouseCellMotion())
+	}
+	program := tea.NewProgram(application, programOptions...)
 	_, runErr := program.Run()
 	// Release any live workspace connection so no relay client lingers past the TUI.
 	application.workspaceManager.Close()
@@ -708,11 +719,24 @@ func (application *app) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		application.resizeViews()
 		return application, nil
 
+	case tea.MouseMsg:
+		return application, application.handleMouse(message)
+
 	case views.ThemeChangedMsg:
 		// A theme was applied in Settings — re-push sizes so every view's table
 		// re-picks the new styles (the chrome already reads the accent live).
 		application.resizeViews()
 		return application, nil
+
+	case views.MouseToggledMsg:
+		// The mouse tab-clicking setting was toggled (and persisted) in Settings —
+		// switch mouse capture live. While disabled, the terminal delivers no mouse
+		// events, so handleMouse simply never fires and native text selection works
+		// without a modifier.
+		if message.Enabled {
+			return application, tea.EnableMouseCellMotion
+		}
+		return application, tea.DisableMouse
 
 	case views.ProjectSelectedMsg:
 		// The switcher chose a project — make it current (so the closure-driven
@@ -1350,6 +1374,57 @@ func (application *app) updateTerminal(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 // embedded container log) and must pause it while another top-level tab is visible —
 // mirroring the per-project sub-views' activatable contract in the hub.
 type tabActivatable interface{ SetActive(active bool) }
+
+// subTabClicker is implemented by views whose first content row is a sub-tab bar
+// (the Workspaces hub while drilled, the Services list while a detail is open), so
+// a click on that row can switch the sub-tab. x is the bar's own column (the
+// chrome has already subtracted the body border + padding).
+type subTabClicker interface {
+	ClickSubTab(x int) (tea.Cmd, bool)
+}
+
+// handleMouse makes the tab bars clickable: a left-click on the top-level tab bar
+// switches to the tab under the pointer, and a left-click on the first body row
+// is offered to the active view's sub-tab bar (subTabClicker). Everything else is
+// ignored; clicks are inert while any overlay (terminal/create/creating/help) is
+// open so a modal can never be escaped by mouse.
+func (application *app) handleMouse(msg tea.MouseMsg) tea.Cmd {
+	if msg.Action != tea.MouseActionPress || msg.Button != tea.MouseButtonLeft {
+		return nil
+	}
+	if application.terminal != nil || application.createView != nil ||
+		application.creating != "" || application.helpOpen {
+		return nil
+	}
+	tabRow := lipgloss.Height(application.header()) + headerGapRows
+	switch msg.Y {
+	case tabRow:
+		// Top-level tabs: each cell is its title plus Padding(0,1) — see tabBar().
+		offset := 0
+		for index, view := range application.views {
+			width := lipgloss.Width(view.Title()) + 2
+			if msg.X >= offset && msg.X < offset+width {
+				if index != application.current {
+					application.switchTab(index)
+				}
+				return nil
+			}
+			offset += width
+		}
+	case tabRow + 1 + 1 + bodyPadY:
+		// First body-content row (tab bar → border line → padding row): the active
+		// view's sub-tab bar when it has one. Translate to the bar's own column.
+		clickX := msg.X - 1 - bodyPadX
+		if clickX < 0 {
+			return nil
+		}
+		if clicker, ok := application.views[application.current].(subTabClicker); ok {
+			cmd, _ := clicker.ClickSubTab(clickX)
+			return cmd
+		}
+	}
+	return nil
+}
 
 // switchTab moves the active tab to index, wrapping around the ends so Tab/←/→ cycle
 // (a direct number jump passes an in-range index). A no-op when there are no views.

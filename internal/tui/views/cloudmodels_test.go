@@ -6,8 +6,8 @@ import (
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
-	"github.com/jt-helsinki/ideal-robot/internal/catalog"
-	"github.com/jt-helsinki/ideal-robot/internal/litellm"
+	"github.com/jt-helsinki/stack-genie/internal/catalog"
+	"github.com/jt-helsinki/stack-genie/internal/litellm"
 )
 
 // cloudTestCatalogJSON has two cloud models: an openai model and a google model,

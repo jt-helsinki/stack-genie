@@ -52,15 +52,21 @@ keep the precedence rules in arch §27 explicit), `slog` (structured logs), stdl
 ├── internal/
 │   ├── cli/                     # cobra commands → thin; delegate to packages
 │   ├── output/                  # JSON envelope (CLI §19) + human renderer + exit codes (CLI §18)
+│   ├── version/                 # binary version string (injected via -ldflags)
 │   ├── paths/                   # ~/.ai-platform layout helpers (workspaces live in the cwd, not a fixed ~/projects)
+│   ├── layout/                  # creates the global ~/.ai-platform directory tree (idempotent)
 │   ├── conffile/                # atomic YAML read/write (temp file + rename; rejects unknown fields)
 │   ├── state/                   # project-local state (<project>/.ai-platform/run) + projects index; atomic writes
+│   ├── project/                 # project entry/spec types + projects-index resolution
 │   ├── config/                  # config load/merge (project > global)
+│   ├── catalog/                 # models.dev model catalog (fetch as JSON, persist as YAML cache)
+│   ├── sysinfo/                 # host CPU/RAM inspection (resource caps for `ai create`)
 │   ├── versions/                # service-tier image refs (image+tag, no digest) — source of truth for setup
 │   ├── envfile/                 # ~/.ai-platform/.ai-platform.env (opt-in 0600 secrets passthrough: UI password, master key)
 │   ├── runtime/                 # docker/podman detect + rootless verify + role/domain/gateway resolution (service tier)
 │   ├── sandbox/                 # Microsandbox SDK wrapper: naming, mounts/volumes, microVM lifecycle
 │   ├── services/               # service-tier topology registry (names, ports, UI subdomains, gateway paths)
+│   ├── setup/                  # service-tier reconcile orchestrator (network→DNS→Ollama→Presidio→Valkey→RedisInsight→Headroom→LiteLLM+DB→nginx) + `ai setup`/uninstall service control
 │   ├── hostsfile/              # managed /etc/hosts block writer (delimited, idempotent)
 │   ├── uihosts/                # UI-vhost logic: the litellm.<domain> host vhost + its /etc/hosts entry (composes services + hostsfile)
 │   ├── console/                # host-display endpoint registry (UI subdomains + gateway paths off the nginx port)
@@ -69,11 +75,13 @@ keep the precedence rules in arch §27 explicit), `slog` (structured logs), stdl
 │   ├── agentcfg/                # in-VM agent provider config (base_url→nginx gateway, virtual key, picker models, refresh-models)
 │   ├── contextopt/              # per-project Headroom strategy (→ per-request knobs fed to LiteLLM's headroom compress-guardrail call) + in-workspace Caveman skill
 │   ├── envimage/                # compose .ai-platform/Dockerfile (OS template + stack snippets + agent CLIs) + build OCI image
+│   ├── create/                  # shared `ai create` logic (validate/cap resources, scaffold, seed) — used by CLI + TUI wizard
 │   ├── workspace/               # workspace lifecycle + tmux-transparent sessions (Builder/Sandbox/Manager)
 │   ├── apps/                     # opt-in in-VM AI apps (Open WebUI / AnythingLLM) — declarative manifests + per-(workspace,app) lifecycle over nerdctl; unique host-port allocation
 │   ├── egress/                  # per-project egress policy → msb net-rules (MsbNetworkArgs)
 │   ├── overlay/                 # per-workspace persistent overlay
 │   ├── audit/                   # append-only audit log (no secrets)
+│   ├── logs/                    # file-backed log reader (backs `ai logs`)
 │   ├── ui/ + tui/               # theme registry + the K9s-style `ai ui` management TUI
 │   ├── templates/               # embedded source templates + installer into ~/.ai-platform/templates
 │   │   └── files/
@@ -174,8 +182,8 @@ workspace microVMs; `ai setup` only verifies it is installed and the host
 supports virtualization.
 
 Each service's config is **rendered** from the platform config into
-`config/<service>/` (including the nginx vhost map for the `litellm.<domain>` UI
-subdomain — the only host UI vhost — and the `/v1`, `/ollama`, `/llm` gateway
+`config/<service>/` (including the nginx vhost map for the `litellm.<domain>` and
+`valkey.<domain>` UI subdomains and the `/v1`, `/ollama`, `/llm` gateway
 paths); real provider keys stay only in the LiteLLM gateway (keys-in-LiteLLM).
 Service-tier image refs are pinned by **image+tag** (no digest — digests are
 platform/arch specific) in `config/versions.yaml`. (The in-VM apps pin their own

@@ -10,12 +10,12 @@ import (
 
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
-	"github.com/jt-helsinki/ideal-robot/internal/config"
-	"github.com/jt-helsinki/ideal-robot/internal/create"
-	"github.com/jt-helsinki/ideal-robot/internal/ollama"
-	"github.com/jt-helsinki/ideal-robot/internal/project"
-	"github.com/jt-helsinki/ideal-robot/internal/tui/scope"
-	"github.com/jt-helsinki/ideal-robot/internal/ui"
+	"github.com/jt-helsinki/stack-genie/internal/config"
+	"github.com/jt-helsinki/stack-genie/internal/create"
+	"github.com/jt-helsinki/stack-genie/internal/ollama"
+	"github.com/jt-helsinki/stack-genie/internal/project"
+	"github.com/jt-helsinki/stack-genie/internal/tui/scope"
+	"github.com/jt-helsinki/stack-genie/internal/ui"
 )
 
 // CreateConfirmedMsg is emitted when the user completes the create wizard. Spec is the
@@ -35,14 +35,14 @@ const (
 	stepName
 	stepOS
 	stepShell
-	stepAgents
+	stepAgents // combined: agent CLIs + in-VM AI apps on one screen
 	stepDefault
 	stepStacks
-	stepApps
 	stepCPUs
 	stepMemory
 	stepPorts
 	stepIdle
+	stepCaveman
 	stepModel
 	stepAuth // dynamic: one auth-mode select per OAuth-capable selected agent
 	stepCount
@@ -57,16 +57,23 @@ var stepTitles = map[int]string{
 	stepName:     "Name",
 	stepOS:       "Operating system",
 	stepShell:    "Shell",
-	stepAgents:   "Agent CLIs",
+	stepAgents:   "Agent CLIs & AI apps",
 	stepDefault:  "Default agent",
 	stepStacks:   "Software stacks",
-	stepApps:     "AI apps",
 	stepCPUs:     "vCPUs",
 	stepMemory:   "Memory",
 	stepPorts:    "Ports",
 	stepIdle:     "Idle timeout",
+	stepCaveman:  "Caveman",
 	stepModel:    "Graphify model",
 }
+
+// cavemanInstall/cavemanSkip are the two Caveman-step choices (a bool rendered as a
+// two-option select, matching the CLI --caveman flag).
+const (
+	cavemanInstall = "install"
+	cavemanSkip    = "skip"
+)
 
 // Create is the in-TUI new-workspace wizard: a multi-step form built from the same
 // bubbles widgets as the other views (textinput, the reusable listWindow), replacing
@@ -75,14 +82,16 @@ var stepTitles = map[int]string{
 type Create struct {
 	step int
 
-	location    *locationStep
-	name        *textStep
-	osList      *selectList
-	shell       *selectList
-	agents      *multiSelectList
+	location *locationStep
+	name     *textStep
+	osList   *selectList
+	shell    *selectList
+	caveman  *selectList
+	// agentApps is the combined agent-CLIs + in-VM-apps multi-select (agents listed
+	// first, then apps); split into AgentCLIs vs Apps via selectedAgentsAndApps.
+	agentApps   *multiSelectList
 	defaultTool *selectList
 	stacks      *multiSelectList
-	apps        *multiSelectList
 	cpus        *textStep
 	memory      *textStep
 	ports       *textStep
@@ -117,10 +126,10 @@ func NewCreate(startDir string, library []ollama.LibraryModel, hostGB, usableGB 
 		name:        newTextStep("name", "The workspace name (lowercase letters, digits, hyphens).", "my-workspace", "", validateNameField),
 		osList:      newSelectList("Base operating system.", create.SupportedOSes(), "debian-trixie"),
 		shell:       newSelectList("Default interactive shell for workspace sessions.", create.SupportedShells(), "bash"),
-		agents:      newMultiSelectList("Agent CLIs to install (space to toggle; opencode + pi are the defaults).", create.SupportedAgentCLIs(), []string{"opencode", "pi"}),
+		caveman:     newSelectList("Install the Caveman output-compression toolkit at workspace start (after the agent CLIs).", []string{cavemanInstall, cavemanSkip}, cavemanInstall),
+		agentApps:   newMultiSelectList("Agent CLIs (opencode + pi are the defaults) and opt-in in-VM AI apps — space to toggle. Apps are the last rows.", combinedAgentAppOptions(), []string{"opencode", "pi"}),
 		defaultTool: newSelectList("The agent CLI launched by default.", []string{"opencode"}, "opencode"),
 		stacks:      newMultiSelectList("Extra software stacks (Python, Node, uv + Graphify are installed by default).", create.SupportedStacks(), nil),
-		apps:        newMultiSelectList("In-VM AI apps to install (opt-in; default none).", create.SupportedApps(), nil),
 		cpus:        newTextStep("vCPUs", cpuHint, "", "", validateCPUsField),
 		memory:      newTextStep("memory (GB)", memHint, "", "", validateMemoryField),
 		ports:       newTextStep("ports", "Ports to open: PORT or HOST:GUEST, comma-separated (e.g. 8080,9000:3000).", "", "", validatePortsField),
@@ -140,9 +149,9 @@ func (view *Create) Hints() string {
 	switch view.step {
 	case stepLocation:
 		return "type to filter · ↓/↑ pick folder · tab open folder · enter next" + nav
-	case stepAgents, stepStacks, stepApps:
+	case stepAgents, stepStacks:
 		return "↑/↓ move · space toggle · enter next" + nav
-	case stepOS, stepShell, stepDefault, stepModel, stepAuth:
+	case stepOS, stepShell, stepCaveman, stepDefault, stepModel, stepAuth:
 		return "↑/↓ move · enter select/next" + nav
 	default:
 		return "type · enter next" + nav
@@ -165,10 +174,10 @@ func (view *Create) SetSize(width, height int) {
 	view.name.SetSize(stepWidth, stepHeight)
 	view.osList.SetSize(stepWidth, stepHeight)
 	view.shell.SetSize(stepWidth, stepHeight)
-	view.agents.SetSize(stepWidth, stepHeight)
+	view.caveman.SetSize(stepWidth, stepHeight)
+	view.agentApps.SetSize(stepWidth, stepHeight)
 	view.defaultTool.SetSize(stepWidth, stepHeight)
 	view.stacks.SetSize(stepWidth, stepHeight)
-	view.apps.SetSize(stepWidth, stepHeight)
 	view.cpus.SetSize(stepWidth, stepHeight)
 	view.memory.SetSize(stepWidth, stepHeight)
 	view.ports.SetSize(stepWidth, stepHeight)
@@ -203,9 +212,9 @@ func (view *Create) Update(msg tea.Msg) tea.Cmd {
 		return cmd
 	case stepName, stepCPUs, stepMemory, stepPorts, stepIdle:
 		return view.updateTextStep(view.textStepFor(view.step), msg)
-	case stepOS, stepShell, stepDefault:
+	case stepOS, stepShell, stepCaveman, stepDefault:
 		return view.updateSelectStep(view.selectStepFor(view.step), msg)
-	case stepAgents, stepStacks, stepApps:
+	case stepAgents, stepStacks:
 		return view.updateMultiStep(view.multiStepFor(view.step), msg)
 	case stepModel:
 		if view.model == nil {
@@ -296,19 +305,34 @@ func (view *Create) selectStepFor(step int) *selectList {
 		return view.osList
 	case stepShell:
 		return view.shell
+	case stepCaveman:
+		return view.caveman
 	default:
 		return view.defaultTool
 	}
 }
 
+// combinedAgentAppOptions is the option list for the combined Agent-CLIs-&-apps
+// step: every agent CLI first, then the in-VM apps. Entries are the RAW keys (no
+// decoration) so they match the defaults and split cleanly by set membership.
+func combinedAgentAppOptions() []string {
+	options := append([]string{}, create.SupportedAgentCLIs()...)
+	return append(options, create.SupportedApps()...)
+}
+
+// selectedAgentsAndApps splits the combined step's selection into agent CLIs vs app
+// keys by set membership (order-independent), so downstream (default-agent options,
+// auth steps, the Spec) never confuses an app for an agent.
+func (view *Create) selectedAgentsAndApps() (agentCLIs, appKeys []string) {
+	return create.SplitAgentsAndApps(view.agentApps.Values())
+}
+
 func (view *Create) multiStepFor(step int) *multiSelectList {
 	switch step {
 	case stepAgents:
-		return view.agents
-	case stepStacks:
-		return view.stacks
+		return view.agentApps
 	default:
-		return view.apps
+		return view.stacks
 	}
 }
 
@@ -334,10 +358,11 @@ func (view *Create) next() tea.Cmd {
 		return view.finish()
 	}
 	view.step++
-	// Entering the default-agent step: its options are exactly the chosen agents.
+	// Entering the default-agent step: its options are exactly the chosen agent CLIs
+	// (apps from the combined screen are excluded — a default agent is never an app).
 	if view.step == stepDefault {
-		agents := view.agents.Values()
-		view.defaultTool.SetOptions(agents)
+		agentCLIs, _ := view.selectedAgentsAndApps()
+		view.defaultTool.SetOptions(agentCLIs)
 	}
 	return nil
 }
@@ -363,7 +388,7 @@ func (view *Create) prev() {
 func (view *Create) buildAuthSteps() {
 	view.authAgents = nil
 	view.authLists = nil
-	selected := view.agents.Values()
+	selected, _ := view.selectedAgentsAndApps()
 	for _, cli := range create.OAuthCapableCLIs() {
 		if !slices.Contains(selected, cli) {
 			continue
@@ -393,21 +418,23 @@ func (view *Create) finish() tea.Cmd {
 			authModes[cli] = view.authLists[index].Value()
 		}
 	}
+	agentCLIs, appKeys := view.selectedAgentsAndApps()
 	spec := project.Spec{
-		Name:          view.name.Value(),
-		OS:            view.osList.Value(),
-		Shell:         view.shell.Value(),
-		AgentCLIs:     view.agents.Values(),
-		DefaultTool:   view.defaultTool.Value(),
-		AuthModes:     authModes,
-		Stacks:        view.stacks.Values(),
-		Apps:          view.apps.Values(),
-		CPUs:          cpus,
-		Memory:        view.memory.Value(),
-		PublishPorts:  ports,
-		IdleTimeout:   view.idle.Value(),
-		GraphifyModel: graphifyModel,
-		Root:          view.location.dir,
+		Name:           view.name.Value(),
+		OS:             view.osList.Value(),
+		Shell:          view.shell.Value(),
+		AgentCLIs:      agentCLIs,
+		DefaultTool:    view.defaultTool.Value(),
+		AuthModes:      authModes,
+		Stacks:         view.stacks.Values(),
+		Apps:           appKeys,
+		CPUs:           cpus,
+		Memory:         view.memory.Value(),
+		PublishPorts:   ports,
+		IdleTimeout:    view.idle.Value(),
+		GraphifyModel:  graphifyModel,
+		CavemanEnabled: view.caveman.Value() == cavemanInstall,
+		Root:           view.location.dir,
 	}
 	return func() tea.Msg { return CreateConfirmedMsg{Spec: spec} }
 }
@@ -439,13 +466,11 @@ func (view *Create) stepBody() string {
 	case stepShell:
 		return view.shell.View()
 	case stepAgents:
-		return view.agents.View()
+		return view.agentApps.View()
 	case stepDefault:
 		return view.defaultTool.View()
 	case stepStacks:
 		return view.stacks.View()
-	case stepApps:
-		return view.apps.View()
 	case stepCPUs:
 		return view.cpus.View()
 	case stepMemory:
@@ -454,6 +479,8 @@ func (view *Create) stepBody() string {
 		return view.ports.View()
 	case stepIdle:
 		return view.idle.View()
+	case stepCaveman:
+		return view.caveman.View()
 	case stepModel:
 		if view.model == nil {
 			return ui.Muted.Render("No Ollama library cached — the Graphify model is left unset (run `ai models` to populate it).")

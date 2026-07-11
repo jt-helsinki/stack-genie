@@ -11,10 +11,10 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/jt-helsinki/ideal-robot/internal/console"
-	"github.com/jt-helsinki/ideal-robot/internal/runtime"
-	"github.com/jt-helsinki/ideal-robot/internal/sandbox"
-	"github.com/jt-helsinki/ideal-robot/internal/ui"
+	"github.com/jt-helsinki/stack-genie/internal/console"
+	"github.com/jt-helsinki/stack-genie/internal/runtime"
+	"github.com/jt-helsinki/stack-genie/internal/sandbox"
+	"github.com/jt-helsinki/stack-genie/internal/ui"
 )
 
 // statusStyle maps a check Status to its semantic lipgloss style (green/orange/red).

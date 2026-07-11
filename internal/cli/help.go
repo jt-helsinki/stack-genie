@@ -4,7 +4,7 @@ import (
 	"regexp"
 	"text/template"
 
-	"github.com/jt-helsinki/ideal-robot/internal/ui"
+	"github.com/jt-helsinki/stack-genie/internal/ui"
 	"github.com/spf13/cobra"
 )
 

@@ -8,11 +8,11 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/jt-helsinki/ideal-robot/internal/config"
-	"github.com/jt-helsinki/ideal-robot/internal/contextopt"
-	"github.com/jt-helsinki/ideal-robot/internal/ollama"
-	"github.com/jt-helsinki/ideal-robot/internal/output"
-	"github.com/jt-helsinki/ideal-robot/internal/project"
+	"github.com/jt-helsinki/stack-genie/internal/config"
+	"github.com/jt-helsinki/stack-genie/internal/contextopt"
+	"github.com/jt-helsinki/stack-genie/internal/ollama"
+	"github.com/jt-helsinki/stack-genie/internal/output"
+	"github.com/jt-helsinki/stack-genie/internal/project"
 )
 
 // Execute runs the full in-process create against a fresh location: it scaffolds the
@@ -130,6 +130,45 @@ func TestExecutePersistsShellChoice(test *testing.T) {
 			}
 			if projectConfig.Workspace.Shell != tc.want {
 				test.Errorf("workspace.shell = %q, want %q", projectConfig.Workspace.Shell, tc.want)
+			}
+		})
+	}
+}
+
+// TestExecutePersistsCavemanChoice verifies the create wizard/flag Caveman toggle
+// flows through project.Spec → Scaffold → config.yaml context.caveman_enabled, and
+// that CavemanEnabledOrDefault reflects it.
+func TestExecutePersistsCavemanChoice(test *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		enabled bool
+	}{
+		{name: "enabled", enabled: true},
+		{name: "disabled", enabled: false},
+	} {
+		test.Run(tc.name, func(test *testing.T) {
+			test.Setenv("HOME", test.TempDir())
+			root := filepath.Join(test.TempDir(), "location")
+			spec := project.Spec{
+				Name:           "caveman-app",
+				OS:             SupportedOSes()[0],
+				AgentCLIs:      []string{"opencode", "pi"},
+				DefaultTool:    "opencode",
+				Root:           root,
+				CavemanEnabled: tc.enabled,
+			}
+			if _, _, err := Execute(spec, "2026-07-05T00:00:00Z", nil); err != nil {
+				test.Fatalf("Execute: %v", err)
+			}
+			projectConfig, err := config.LoadProjectConfig(root)
+			if err != nil {
+				test.Fatalf("LoadProjectConfig: %v", err)
+			}
+			if projectConfig.Context.CavemanEnabled == nil {
+				test.Fatal("context.caveman_enabled should be persisted (non-nil)")
+			}
+			if got := projectConfig.Context.CavemanEnabledOrDefault(); got != tc.enabled {
+				test.Errorf("CavemanEnabledOrDefault = %v, want %v", got, tc.enabled)
 			}
 		})
 	}
@@ -321,6 +360,39 @@ func TestExecuteWarnsOnOAuth(test *testing.T) {
 func TestSupportedAgentCLIsIncludesCopilot(test *testing.T) {
 	if !slices.Contains(SupportedAgentCLIs(), "copilot") {
 		test.Errorf("SupportedAgentCLIs() must include copilot: %v", SupportedAgentCLIs())
+	}
+}
+
+// TestSupportedAgentCLIsIncludesOpenClawAndHermes pins the two gateway-agent additions,
+// and confirms SplitAgentsAndApps classes them as AGENTS (not apps).
+func TestSupportedAgentCLIsIncludesOpenClawAndHermes(test *testing.T) {
+	for _, cli := range []string{"openclaw", "hermes"} {
+		if !slices.Contains(SupportedAgentCLIs(), cli) {
+			test.Errorf("SupportedAgentCLIs() must include %q: %v", cli, SupportedAgentCLIs())
+		}
+	}
+	agentCLIs, appKeys := SplitAgentsAndApps([]string{"openclaw", "hermes", "openwebui"})
+	if !slices.Contains(agentCLIs, "openclaw") || !slices.Contains(agentCLIs, "hermes") {
+		test.Errorf("openclaw/hermes must split as agents, got agents=%v apps=%v", agentCLIs, appKeys)
+	}
+	if slices.Contains(appKeys, "openclaw") || slices.Contains(appKeys, "hermes") {
+		test.Errorf("openclaw/hermes must NOT be classed as apps: %v", appKeys)
+	}
+}
+
+// TestSplitAgentsAndApps verifies the combined agents+apps wizard selection splits into
+// the two known sets regardless of selection order, dropping unknown values.
+func TestSplitAgentsAndApps(test *testing.T) {
+	agentCLIs, appKeys := SplitAgentsAndApps([]string{"anythingllm", "opencode", "openwebui", "pi", "bogus"})
+	if strings.Join(agentCLIs, ",") != "opencode,pi" {
+		test.Errorf("agent CLIs = %v, want [opencode pi]", agentCLIs)
+	}
+	if strings.Join(appKeys, ",") != "anythingllm,openwebui" {
+		test.Errorf("app keys = %v, want [anythingllm openwebui]", appKeys)
+	}
+	agentCLIs, appKeys = SplitAgentsAndApps(nil)
+	if len(agentCLIs) != 0 || len(appKeys) != 0 {
+		test.Errorf("empty selection must split to empty sides, got %v / %v", agentCLIs, appKeys)
 	}
 }
 

@@ -7,7 +7,7 @@ package main
 import (
 	"os"
 
-	"github.com/jt-helsinki/ideal-robot/internal/cli"
+	"github.com/jt-helsinki/stack-genie/internal/cli"
 )
 
 func main() {

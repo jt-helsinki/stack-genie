@@ -12,7 +12,7 @@ import (
 	"os/exec"
 	"sort"
 
-	"github.com/jt-helsinki/ideal-robot/internal/services"
+	"github.com/jt-helsinki/stack-genie/internal/services"
 )
 
 // Endpoint is what a host service exposes. Address is the host-reachable URL or

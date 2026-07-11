@@ -21,7 +21,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/jt-helsinki/ideal-robot/internal/paths"
+	"github.com/jt-helsinki/stack-genie/internal/paths"
 )
 
 // fileName is the env file's base name inside the platform state directory.

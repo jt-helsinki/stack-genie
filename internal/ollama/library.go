@@ -14,9 +14,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/jt-helsinki/stack-genie/internal/paths"
 	"gopkg.in/yaml.v3"
-
-	"github.com/jt-helsinki/ideal-robot/internal/paths"
 )
 
 // LibraryBaseURL is the live source for the installable-Ollama library. The list
@@ -33,7 +32,7 @@ const libraryFileName = "ollama-models.yaml"
 
 // libraryUserAgent is sent on every scrape request; ollama.com serves the
 // server-rendered HTML we parse to a browser-like UA.
-const libraryUserAgent = "Mozilla/5.0 (compatible; ai-platform/ollama-library; +https://github.com/jt-helsinki/ideal-robot)"
+const libraryUserAgent = "Mozilla/5.0 (compatible; ai-platform/ollama-library; +https://github.com/jt-helsinki/stack-genie)"
 
 // tagFetchConcurrency bounds the per-model tag-page fetches so a refresh does not
 // hammer ollama.com with hundreds of simultaneous requests.

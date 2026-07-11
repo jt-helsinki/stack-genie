@@ -1,10 +1,10 @@
 package cli
 
 import (
-	"github.com/jt-helsinki/ideal-robot/internal/console"
-	"github.com/jt-helsinki/ideal-robot/internal/project"
-	"github.com/jt-helsinki/ideal-robot/internal/setup"
-	"github.com/jt-helsinki/ideal-robot/internal/workspace"
+	"github.com/jt-helsinki/stack-genie/internal/console"
+	"github.com/jt-helsinki/stack-genie/internal/project"
+	"github.com/jt-helsinki/stack-genie/internal/setup"
+	"github.com/jt-helsinki/stack-genie/internal/workspace"
 	"github.com/spf13/cobra"
 )
 

@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/jt-helsinki/ideal-robot/internal/templates"
+	"github.com/jt-helsinki/stack-genie/internal/templates"
 )
 
 // osKeys, stacks, and agentCLIs mirror the directories embedded under
@@ -56,6 +56,8 @@ func TestInstallCopiesTreeToDisk(t *testing.T) {
 		filepath.Join("stacks", "rust", "Dockerfile.snippet"),
 		filepath.Join("agentclis", "opencode", "Dockerfile.snippet"),
 		filepath.Join("agentclis", "claude-code", "Dockerfile.snippet"),
+		filepath.Join("agentclis", "openclaw", "Dockerfile.snippet"),
+		filepath.Join("agentclis", "hermes", "Dockerfile.snippet"),
 	}
 	for _, relative := range representative {
 		path := filepath.Join(root, relative)

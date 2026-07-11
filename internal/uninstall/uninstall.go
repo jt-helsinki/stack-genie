@@ -12,9 +12,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/jt-helsinki/ideal-robot/internal/paths"
-	"github.com/jt-helsinki/ideal-robot/internal/runtime"
-	"github.com/jt-helsinki/ideal-robot/internal/uihosts"
+	"github.com/jt-helsinki/stack-genie/internal/paths"
+	"github.com/jt-helsinki/stack-genie/internal/runtime"
+	"github.com/jt-helsinki/stack-genie/internal/uihosts"
 )
 
 // LogName is the uninstall transcript written to the home directory. It lives at
@@ -52,7 +52,8 @@ type Report struct {
 	CleanedRC         []string `json:"cleaned_rc"`
 	RemovedBinary     string   `json:"removed_binary,omitempty"`
 	RemovedDeps       []string `json:"removed_deps,omitempty"`
-	Purged            bool     `json:"purged"`
+	RemovedState      bool     `json:"removed_state,omitempty"`       // ~/.ai-platform state removed, models kept
+	Purged            bool     `json:"purged"`                        // ~/.ai-platform removed in full (models too)
 	LogPath           string   `json:"log_path,omitempty"`            // ~/ai-uninstall.log
 	RemovedHostsBlock bool     `json:"removed_hosts_block,omitempty"` // standalone /etc/hosts UI subdomains
 }
@@ -217,17 +218,22 @@ func Run(options Options, prober runtime.Prober, progress Progress) (Report, err
 		}
 	}
 
-	if options.Purge {
-		if platformDir, err := paths.PlatformDir(); err == nil {
+	// A plain uninstall removes ALL platform state under ~/.ai-platform EXCEPT
+	// the downloaded model store (volumes/models) — the one expensive-to-refetch
+	// piece a user usually wants to keep across a reinstall. --purge removes that
+	// too, leaving nothing behind. Either way project directories are untouched.
+	if platformDir, err := paths.PlatformDir(); err == nil {
+		if options.Purge {
 			_ = os.RemoveAll(platformDir)
+			report.Purged = true
+			record("Purged ~/.ai-platform including downloaded models (your project directories were left untouched)")
+		} else if removePlatformStateKeepModels(platformDir) {
+			report.RemovedState = true
+			record("Removed ~/.ai-platform state; kept downloaded models (volumes/models) — re-run with --purge to remove them too")
 		}
-		if removeVolumes(prober) > 0 {
-			record("Removed LEGACY platform data volumes (aip-*)")
-		}
-		report.Purged = true
-		record("Purged ~/.ai-platform (your project directories were left untouched)")
-	} else {
-		record("Left ~/.ai-platform in place — re-run with --purge to remove it")
+	}
+	if options.Purge && removeVolumes(prober) > 0 {
+		record("Removed LEGACY platform data volumes (aip-*)")
 	}
 
 	writeLog(logFile, "=== uninstall finished ===")
@@ -272,9 +278,9 @@ func Plan(purge bool) []string {
 		"strip the managed PATH/completion lines from the shell rc files",
 	}
 	if purge {
-		steps = append(steps, "remove platform state (~/.ai-platform)")
+		steps = append(steps, "remove ALL platform state (~/.ai-platform), including downloaded models")
 	} else {
-		steps = append(steps, "keep platform state (~/.ai-platform) — pass --purge to remove")
+		steps = append(steps, "remove platform state (~/.ai-platform) but KEEP downloaded models (volumes/models) — pass --purge to remove them too")
 	}
 	steps = append(steps, "ask, per external dependency (msb), whether to uninstall it too")
 	steps = append(steps, "leave your project directories untouched")
@@ -334,6 +340,55 @@ func removeVolumes(prober runtime.Prober) int {
 		total += len(names)
 	}
 	return total
+}
+
+// modelsVolumeSubdir is the downloaded-model store under VolumesDir
+// (~/.ai-platform/volumes/models). Kept verbatim in sync with
+// setup.ollamaModelsVolume; a plain (non-purge) uninstall preserves it so a
+// reinstall need not re-download tens of GB of models.
+const modelsVolumeSubdir = "models"
+
+// removePlatformStateKeepModels removes every entry under ~/.ai-platform EXCEPT
+// the downloaded model store (volumes/models). It is what makes a plain
+// uninstall a real uninstall — config, credentials, caches, overlays, logs and
+// the legacy resource pools are all gone, while the one expensive-to-refetch
+// piece survives. Best-effort; returns true if anything was removed.
+func removePlatformStateKeepModels(platformDir string) bool {
+	entries, err := os.ReadDir(platformDir)
+	if err != nil {
+		return false
+	}
+	removedAny := false
+	for _, entry := range entries {
+		if entry.Name() == "volumes" {
+			removedAny = pruneVolumesKeepModels(filepath.Join(platformDir, entry.Name())) || removedAny
+			continue
+		}
+		if os.RemoveAll(filepath.Join(platformDir, entry.Name())) == nil {
+			removedAny = true
+		}
+	}
+	return removedAny
+}
+
+// pruneVolumesKeepModels removes everything under volumes/ except the models
+// subdir, leaving the volumes dir itself in place to hold it. Best-effort;
+// returns true if anything was removed.
+func pruneVolumesKeepModels(volumesDir string) bool {
+	entries, err := os.ReadDir(volumesDir)
+	if err != nil {
+		return false
+	}
+	removedAny := false
+	for _, entry := range entries {
+		if entry.Name() == modelsVolumeSubdir {
+			continue
+		}
+		if os.RemoveAll(filepath.Join(volumesDir, entry.Name())) == nil {
+			removedAny = true
+		}
+	}
+	return removedAny
 }
 
 // stripRCFile removes the managed PATH line and completion block from one rc

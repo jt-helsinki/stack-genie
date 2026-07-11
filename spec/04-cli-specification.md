@@ -116,7 +116,9 @@ CLI must behave identically on:
 ## 1.6 Binary & Command Naming
 
 There is **one binary**, `ai`, installed on `PATH`. There are **no hyphenated
-command names and no command aliases or symlinks**. Every command follows a
+command names and no symlinks**, and essentially no command aliases — the only
+ones are the documented `destroy` alias of `ai delete` (§4.4) and the
+`remove`/`delete` aliases of `ai models rm`. Every command follows a
 single, consistent pattern:
 
 ```text
@@ -311,9 +313,10 @@ Purpose:
   likewise held by the gateway — passed as env passthrough at launch and/or in
   LiteLLM's Postgres-backed store — never written to platform disk
 
-**Platform base domain & name resolution.** The host UI is served on an nginx
-subdomain of the platform base domain (`litellm.<domain>` — the only host UI vhost
-— on the single gateway port `:18787`; `ai domain`, §10.5). In
+**Platform base domain & name resolution.** The host UIs are served on nginx
+subdomains of the platform base domain (`litellm.<domain>` → LiteLLM admin UI and
+`valkey.<domain>` → RedisInsight, both on the single gateway port `:18787`;
+`ai domain`, §10.5). In
 **server** mode the form additionally prompts for the **server hostname / domain**
 (the name clients and browsers reach this host at, default **`localhost`**),
 persisted as the `domain`. Once the domain is known, `setup` wires name
@@ -373,7 +376,10 @@ Behavior:
   platform containers (`aip-*`), removing the `ai` binary, removing the
   completion scripts, and stripping the managed PATH/completion lines from the
   shell rc files (leaving the user's own lines intact)
-* `--purge` additionally removes the platform state under `~/.ai-platform`
+* **removes the platform state under `~/.ai-platform` but KEEPS the downloaded
+  model store (`volumes/models`)** — the one expensive-to-refetch piece a user
+  usually wants to keep across a reinstall; `--purge` removes `~/.ai-platform`
+  in full, including the downloaded models
 * **asks, per external dependency, whether to also uninstall it** — for `msb`
   (Microsandbox) that is detected on the host, it prompts (on a terminal) before
   removing that tool's install artifacts. Microsandbox ships no uninstaller, so
@@ -431,9 +437,19 @@ one command:
   directory's basename
 * `--os <os>` — one of `debian-trixie|debian-bookworm|ubuntu|alma`; **required**
   when running non-interactively
+* `--shell <shell>` — the workspace's default interactive shell, `bash|zsh`
+  (default `bash`), written to `workspace.shell` and applied at every start by
+  `applyShellChoice`
 * `--agents <list>` — comma-separated agent CLIs
-  (`opencode,pi,omp,claude-code,codex,gemini`); defaults to `opencode,pi`, and the
-  first listed becomes the default agent CLI
+  (`opencode,pi,omp,claude-code,codex,gemini,copilot`); defaults to `opencode,pi`,
+  and the first listed becomes the default agent CLI (`copilot` is forced-OAuth /
+  gateway-incapable)
+* `--auth-mode <cli=mode>` — per-agent auth mode, repeatable/comma-separated, for
+  the OAuth-capable CLIs `claude-code`/`codex`/`gemini` (`api-key`|`oauth`;
+  default `api-key`). `api-key` routes through the gateway with the scoped virtual
+  key (firewall + masking apply); `oauth` uses the CLI's own subscription login,
+  bypassing the gateway. `copilot=api-key` is rejected (exit 2 — copilot is
+  forced-OAuth); opencode/pi/omp are always gateway/api-key and never accept it
 * `--stacks <list>` — comma-separated EXTRA software stacks
   (`go,rust,java,maven,deno`); optional. **Neither Python nor Node is a stack
   option** — Node.js and the latest **Python 3**, **uv** (Astral's Python
@@ -530,11 +546,17 @@ Steps, in order:
    sanitized to the naming rules in §10) that the user accepts or edits.
 2. **OS** — single-select from the supported keys; default `debian-trixie`
    (Slice 1 ships only `debian-trixie`; Slice 5 adds `alma`, `debian-bookworm`,
-   `ubuntu`). Selects the template that seeds `.ai-platform/Dockerfile`.
+   `ubuntu`). Selects the template that seeds `.ai-platform/Dockerfile`. The same
+   group also carries a **Default interactive shell** single-select (`--shell`,
+   `bash`|`zsh`, default `bash`, recorded as `workspace.shell`) — applied at
+   every workspace start (`applyShellChoice`): the managed agent-env/alias block
+   is appended to both `~/.bashrc` and `~/.zshrc`, and choosing `zsh` `chsh`es
+   the workspace user's login shell to zsh.
 3. **Agent CLIs** — **multi-select checkboxes**; `OpenCode` and `Pi` pre-checked
-   (both installed by default); choose any subset of `OpenCode`, `Pi`,
-   `Claude Code`, `Codex`, `Gemini CLI` (at least one). All connect to models
-   through LiteLLM.
+   (both installed by default); choose any subset of `OpenCode`, `Pi`, `Omp`,
+   `Claude Code`, `Codex`, `Gemini`, `Copilot` (at least one). All connect to
+   models through LiteLLM **except** `Copilot` (GitHub Copilot CLI), which is
+   forced-OAuth / gateway-incapable and talks directly to GitHub.
 4. **Default agent CLI** — single-select from the CLIs chosen in step 3; default
    `OpenCode` (recorded as `agent.default_tool`).
 5. **Software stacks** — **multi-select checkboxes**; choose the language/tool
@@ -1065,7 +1087,7 @@ workspace verb does:
 * an explicit `[<name>]` positional, then the `--project` flag, then the
   workspace that owns the **current directory** — found by walking **up** parent
   directories until a **workspace root** is found, defined as a directory that
-  contains a `.ai-platform` directory
+  contains a `.ai-platform/project.yaml` marker file (matching §17)
 * the emitted envelope `command` is `workspace.start` / `workspace.stop` /
   `workspace.restart` (the envelope keys are unchanged by the flat surface)
 * when **no name resolves** — none given, no `--project`, and the cwd is not
@@ -1373,6 +1395,7 @@ ai services update  [<service>]    # re-pull the latest image(s) and recreate on
 ai services enable  <service>      # enable an optional service (and bring it up)
 ai services disable <service>      # disable an optional service (and bring it down)
 ai services console [<service>]    # list/open a service's admin console (--print for the URL)
+ai services compose                # write a DEBUG-ONLY ~/.ai-platform/docker-compose.yaml mirroring the service-tier topology (NOT the launcher)
 ```
 
 `<service>`: `ollama` | `presidio` | `litellm` | `headroom` | `proxy` | `dns` |
@@ -1410,8 +1433,11 @@ Behavior:
   service's container(s). Because the optional set is currently empty, enabling a
   core service or naming an unknown service exits `2`; with no `runtime.yaml`
   (setup not run) they exit `3`.
-* docker compose is not used; container-tier services are managed through the
-  runtime abstraction (§6)
+* docker compose is not the launcher; container-tier services are managed through
+  the runtime abstraction (§6). `ai services compose` writes a **debug-only**
+  `~/.ai-platform/docker-compose.yaml` mirroring the topology (generated from the
+  same consts/helpers so it stays in sync) for a developer to bring the same stack
+  up under compose's tooling — it never owns startup
 * service install/upgrade is handled by `ai setup` / `ai setup --upgrade`, not by
   these verbs
 * an unknown service exits `2`. `ai services console [<service>]` lists/opens a
@@ -1578,8 +1604,8 @@ Human-readable output by default; `--json` emits the standard §19 envelope.
 
 # 10.5 Platform Base Domain (`ai domain`)
 
-Configure, machine-wide, the platform **base domain** the nginx UI subdomain hangs
-off: `litellm.<domain>` (the only host UI vhost). The value is
+Configure, machine-wide, the platform **base domain** the nginx UI subdomains hang
+off: `litellm.<domain>` (LiteLLM admin UI) and `valkey.<domain>` (RedisInsight). The value is
 persisted in `config/runtime.yaml` as `domain`. The default is **`aip.local`** for
 local/standalone; operators **override it in server mode** so the UI is served on
 a routable hostname.
@@ -1838,8 +1864,13 @@ number keys `1`-`9`. There is **no `:` command palette** — `q`/`ctrl+c` quits 
   shows the log while the workspace is RUNNING (a STOPPED workspace shows a "not
   running" hint, not stale output) and the stream is closed when the sub-tab is not
   visible / on workspace switch. `f`/`enter` opens a live follow in the REAL terminal.
-  `ai ui` does NOT capture the mouse (so the host terminal's native text selection
-  works on every pane); scrollable panes scroll by keyboard.
+  `ai ui` captures the mouse so the top-level tab bar and the sub-tab bars
+  (Workspaces hub, Services detail) are clickable; native text selection then needs
+  the terminal's selection modifier (Shift on most terminals, Option on macOS).
+  Mouse capture is a persisted user setting (default ON, stored in
+  `~/.ai-platform/config/ui.yaml` alongside the theme): the Settings tab's `m` key
+  toggles it live and persists it across restarts, and with it OFF native text
+  selection needs no modifier. Scrollable panes scroll by keyboard either way.
 * **Local Models** — the local Ollama store ⨯ the **live ollama.com installable
   library**, in one **NAME · DESCRIPTION** list (there is **no TAGS column** — tags
   appear only in the per-model drill-down) split into an **Installed** section
@@ -1870,8 +1901,10 @@ number keys `1`-`9`. There is **no `:` command palette** — `q`/`ctrl+c` quits 
   refreshes; `esc` backs out of the add/edit terminal overlay.
 * **Settings** — a live **theme** picker (every `ai theme` theme; `enter` applies
   the selected one to the whole UI immediately and persists it, `↑/↓` select) above
-  a read-only platform info block (deployment role + model gateway, changed via
-  `ai gateway` / `ai setup`).
+  the **mouse tab-clicking toggle** (`m` flips it, applied live and persisted in
+  `~/.ai-platform/config/ui.yaml`; OFF frees native text selection from the
+  terminal's selection modifier) and a read-only platform info block (deployment
+  role + model gateway, changed via `ai gateway` / `ai setup`).
 
 **Live embedded terminal.** A **live terminal overlay** that fills the body — the
 platform runs the corresponding command on a pseudo-terminal (`creack/pty`) and
@@ -1990,6 +2023,7 @@ Global flags (accepted by every command and subcommand):
 --help, -h             show usage for this command/subcommand and exit 0
 --json                 machine-readable output (see §19)
 --verbose              extra human-readable detail (ignored with --json)
+--plain                plain, non-interactive human output (no TUI: no spinners/colour), keeps human-readable text (§1.3)
 --dry-run              compute and print the planned actions; mutate nothing
 --project <name>       scope the command to a project (overrides the default)
 --yes                  assume "yes" for destructive confirmation prompts

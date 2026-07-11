@@ -6,8 +6,8 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
-	"github.com/jt-helsinki/ideal-robot/internal/setup"
-	"github.com/jt-helsinki/ideal-robot/internal/ui"
+	"github.com/jt-helsinki/stack-genie/internal/setup"
+	"github.com/jt-helsinki/stack-genie/internal/ui"
 )
 
 // ServiceStatusFetcher returns the current status of ONE named service (and whether
@@ -290,6 +290,22 @@ func (view *ServiceDetail) switchSub() tea.Cmd {
 	view.subIndex = serviceTabInfo
 	view.log.SetActive(false)
 	return view.startStatsPoll()
+}
+
+// ClickSubTab switches to the sub-tab under click column x (the bar's own
+// coordinates). handled is false when no service is open or x hits no tab.
+func (view *ServiceDetail) ClickSubTab(x int) (cmd tea.Cmd, handled bool) {
+	if view.name == "" {
+		return nil, false
+	}
+	index := subTabHitIndex(view.name, serviceSubTabTitles, x)
+	if index < 0 {
+		return nil, false
+	}
+	if index == view.subIndex {
+		return nil, true // already there
+	}
+	return view.switchSub(), true // two tabs, so a switch is always a toggle
 }
 
 // startLifecycle runs the control action as an in-view async command and shows an

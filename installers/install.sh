@@ -13,7 +13,7 @@ set -euo pipefail
 
 INSTALL_DIR="${AIP_INSTALL_DIR:-$HOME/.ai-platform/bin}"
 # Base URL for release artifacts named ai-<os>-<arch>. Override for forks/mirrors.
-RELEASE_BASE_URL="${AIP_RELEASE_BASE_URL:-https://github.com/jt-helsinki/ideal-robot/releases/latest/download}"
+RELEASE_BASE_URL="${AIP_RELEASE_BASE_URL:-https://github.com/jt-helsinki/stack-genie/releases/latest/download}"
 VERSION="${AIP_VERSION:-latest}"
 
 main() {
@@ -179,9 +179,9 @@ ensure_on_path() {
 
   update_rc "$rc" "$line"
   if [ "$sourceable" = "1" ]; then
-    reload_rc "$rc"
+    reload_rc "$rc" "$shell_name"
   else
-    info "Restart your shell (or re-source $rc) to pick up ai."
+    info "Restart your shell (or run 'exec $shell_name') to pick up ai."
   fi
 }
 
@@ -205,19 +205,24 @@ update_rc() {
 
 # reload_rc sources the rc into the current shell so the new PATH applies without
 # a manual step. This persists into the user's shell only when the installer is
-# itself sourced (`. install.sh`); when executed normally it primes this process
-# and we still hint to restart. An rc can legitimately exit non-zero or reference
-# unset vars (interactive guards), so errexit/nounset are relaxed around it.
+# itself sourced (`. install.sh`); when executed normally (or via `make install`,
+# curl | sh, etc.) it only primes THIS subprocess, so the user's own interactive
+# shell still needs to pick up the new PATH — hence we always recommend
+# `exec <shell>` (which replaces the current shell with a fresh login that reads
+# the rc). An rc can legitimately exit non-zero or reference unset vars
+# (interactive guards), so errexit/nounset are relaxed around it.
 reload_rc() {
   local rc="$1"
+  local shell_name="${2:-}"
+  local activate="exec ${shell_name:-\$SHELL}"
   set +eu
   # shellcheck disable=SC1090
   . "$rc" >/dev/null 2>&1
   set -eu
   if command -v ai >/dev/null 2>&1; then
-    info "Sourced $rc — ai is on PATH."
+    info "Sourced $rc — ai is on PATH here. In your current shell, run '$activate' to activate it."
   else
-    info "Sourced $rc. If 'ai' isn't found, restart your shell or run:  source \"$rc\""
+    info "Sourced $rc. If 'ai' isn't found, run '$activate' (or restart your shell)."
   fi
 }
 

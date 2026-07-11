@@ -12,15 +12,15 @@ import (
 
 	"github.com/charmbracelet/huh"
 	"github.com/charmbracelet/x/term"
-	"github.com/jt-helsinki/ideal-robot/internal/apps"
-	"github.com/jt-helsinki/ideal-robot/internal/config"
-	"github.com/jt-helsinki/ideal-robot/internal/create"
-	"github.com/jt-helsinki/ideal-robot/internal/ollama"
-	"github.com/jt-helsinki/ideal-robot/internal/output"
-	"github.com/jt-helsinki/ideal-robot/internal/project"
-	"github.com/jt-helsinki/ideal-robot/internal/sysinfo"
-	"github.com/jt-helsinki/ideal-robot/internal/ui"
-	"github.com/jt-helsinki/ideal-robot/internal/workspace"
+	"github.com/jt-helsinki/stack-genie/internal/apps"
+	"github.com/jt-helsinki/stack-genie/internal/config"
+	"github.com/jt-helsinki/stack-genie/internal/create"
+	"github.com/jt-helsinki/stack-genie/internal/ollama"
+	"github.com/jt-helsinki/stack-genie/internal/output"
+	"github.com/jt-helsinki/stack-genie/internal/project"
+	"github.com/jt-helsinki/stack-genie/internal/sysinfo"
+	"github.com/jt-helsinki/stack-genie/internal/ui"
+	"github.com/jt-helsinki/stack-genie/internal/workspace"
 	"github.com/spf13/cobra"
 )
 
@@ -150,6 +150,7 @@ type createFlags struct {
 	graphifyModel string
 	shell         string
 	authMode      string
+	caveman       bool
 	defaultName   string
 }
 
@@ -168,10 +169,12 @@ func readCreateFlags(cmd *cobra.Command, args []string) createFlags {
 	graphifyModel, _ := cmd.Flags().GetString("graphify-model")
 	shell, _ := cmd.Flags().GetString("shell")
 	authMode, _ := cmd.Flags().GetString("auth-mode")
+	caveman, _ := cmd.Flags().GetBool("caveman")
 	return createFlags{
 		name: name, osKey: osKey, agents: agents, stacks: stacks, apps: appsList,
 		idleTimeout: idleTimeout, cpus: cpus, memory: memory, ports: ports,
 		location: location, graphifyModel: graphifyModel, shell: shell, authMode: authMode,
+		caveman:     caveman,
 		defaultName: defaultProjectName(args),
 	}
 }
@@ -397,6 +400,7 @@ func newCreateCmd(emitter *output.Emitter, exit *int, use string) *cobra.Command
 	cmd.Flags().String("graphify-model", "", "Ollama model Graphify uses (e.g. qwen2.5-coder:7b); chosen in the wizard from the Ollama library and pulled if absent")
 	cmd.Flags().String("shell", "bash", "default interactive shell for workspace sessions: "+strings.Join(supportedShells, "|"))
 	cmd.Flags().String("auth-mode", "", "per-agent auth mode for claude-code/codex/gemini as cli=mode (api-key|oauth), comma-separated (e.g. claude-code=oauth,codex=api-key); default api-key")
+	cmd.Flags().Bool("caveman", true, "install the Caveman output-compression toolkit into the workspace at start (--caveman=false to skip)")
 	_ = cmd.RegisterFlagCompletionFunc("os", fixedValues(supportedOSes...))
 	_ = cmd.RegisterFlagCompletionFunc("shell", fixedValues(supportedShells...))
 	_ = cmd.RegisterFlagCompletionFunc("agents", fixedValues(supportedAgentCLIs...))
@@ -540,7 +544,10 @@ func runCreateWizard(seed project.Spec) (project.Spec, bool, error) {
 	if shell == "" {
 		shell = "bash"
 	}
-	agentCLIs := seed.AgentCLIs
+	// The agent CLIs and the in-VM AI apps share ONE combined multi-select screen;
+	// the selection is split back into the two sets after the form runs
+	// (create.SplitAgentsAndApps), so selection order never matters.
+	agentAppSelection := append(append([]string{}, seed.AgentCLIs...), seed.Apps...)
 	defaultTool := seed.DefaultTool
 	// Per-agent auth mode (only for the OAuth-capable CLIs, and only when selected). Seeded
 	// from the flag; each defaults to api-key (gateway-routed, full guardrails).
@@ -548,7 +555,6 @@ func runCreateWizard(seed project.Spec) (project.Spec, bool, error) {
 	authCodex := seededAuthMode(seed.AuthModes, "codex")
 	authGemini := seededAuthMode(seed.AuthModes, "gemini")
 	stacks := seed.Stacks
-	selectedApps := seed.Apps
 	idleTimeout := seed.IdleTimeout
 	location := seed.Root
 	cpusText := ""
@@ -563,6 +569,7 @@ func runCreateWizard(seed project.Spec) (project.Spec, bool, error) {
 	// picker is a model select + a tag select; blank/"(none)" leaves Graphify without
 	// a configured model. The library is cache-first — if it can't be loaded (offline,
 	// no cache) the group is omitted and only a --graphify-model flag can set it.
+	caveman := seed.CavemanEnabled
 	graphifyName, graphifyTag := splitModelRef(seed.GraphifyModel)
 	// Cache-only: the wizard must never stall on a cold-cache network scrape. If no
 	// cache exists yet (no prior `ai setup` / `ai models`), the group is omitted and
@@ -585,26 +592,26 @@ func runCreateWizard(seed project.Spec) (project.Spec, bool, error) {
 				Options(huh.NewOptions(supportedShells...)...).Value(&shell),
 		),
 		huh.NewGroup(
-			huh.NewMultiSelect[string]().Title("Agent CLIs (space to toggle)").
-				Options(huh.NewOptions(supportedAgentCLIs...)...).Value(&agentCLIs).
-				Validate(wizardAtLeastOne),
+			huh.NewMultiSelect[string]().Title("Agent CLIs & AI apps (space to toggle)").
+				Description("Agent CLIs first, then the opt-in in-VM AI apps — pick at least one agent CLI").
+				Options(agentAndAppOptions()...).Value(&agentAppSelection).
+				Validate(wizardAtLeastOneAgent),
 		),
 		huh.NewGroup(
 			huh.NewSelect[string]().Title("Default agent CLI").
-				OptionsFunc(func() []huh.Option[string] { return agentCLIOptions(agentCLIs) }, &agentCLIs).
+				OptionsFunc(func() []huh.Option[string] {
+					selectedAgents, _ := create.SplitAgentsAndApps(agentAppSelection)
+					return agentCLIOptions(selectedAgents)
+				}, &agentAppSelection).
 				Value(&defaultTool),
 		),
-		authModeGroup("claude-code", "Claude Code", &authClaude, &agentCLIs),
-		authModeGroup("codex", "Codex", &authCodex, &agentCLIs),
-		authModeGroup("gemini", "Gemini", &authGemini, &agentCLIs),
+		authModeGroup("claude-code", "Claude Code", &authClaude, &agentAppSelection),
+		authModeGroup("codex", "Codex", &authCodex, &agentAppSelection),
+		authModeGroup("gemini", "Gemini", &authGemini, &agentAppSelection),
 		huh.NewGroup(
 			huh.NewMultiSelect[string]().Title("Software stacks (space to toggle)").
 				Description("Python 3.x, uv, Node 24.x and Graphify are installed by default").
 				Options(huh.NewOptions(supportedStacks...)...).Value(&stacks),
-		),
-		huh.NewGroup(
-			huh.NewMultiSelect[string]().Title("AI apps to run in the workspace (space to toggle; default none)").
-				Options(appOptions()...).Value(&selectedApps),
 		),
 		huh.NewGroup(
 			huh.NewInput().Title("Workspace vCPUs").
@@ -635,6 +642,14 @@ func runCreateWizard(seed project.Spec) (project.Spec, bool, error) {
 		))
 	}
 
+	// Caveman is the LAST step: it is installed at workspace start after the agent
+	// CLIs are set up, so it reads naturally as the final choice here too.
+	groups = append(groups, huh.NewGroup(
+		huh.NewConfirm().Title("Install the Caveman output-compression toolkit?").
+			Description("Runs Caveman's installer in the workspace at start (after the agent CLIs) to add its skills, agents, commands and CLI-native plugins/hooks.").
+			Value(&caveman),
+	))
+
 	form := huh.NewForm(groups...).WithTheme(ui.HuhTheme()).WithWidth(formWidth())
 
 	if err := form.Run(); err != nil {
@@ -644,6 +659,7 @@ func runCreateWizard(seed project.Spec) (project.Spec, bool, error) {
 		return project.Spec{}, false, err
 	}
 
+	agentCLIs, selectedApps := create.SplitAgentsAndApps(agentAppSelection)
 	defaultTool = normalizeDefaultAgentCLI(defaultTool, agentCLIs)
 	cpus := 0
 	if trimmed := strings.TrimSpace(cpusText); trimmed != "" {
@@ -656,20 +672,21 @@ func runCreateWizard(seed project.Spec) (project.Spec, bool, error) {
 	})
 
 	return project.Spec{
-		Name:          name,
-		OS:            osKey,
-		Shell:         shell,
-		Stacks:        stacks,
-		AgentCLIs:     agentCLIs,
-		DefaultTool:   defaultTool,
-		AuthModes:     authModes,
-		Apps:          selectedApps,
-		IdleTimeout:   idleTimeout,
-		CPUs:          cpus,
-		Memory:        strings.TrimSpace(memory),
-		PublishPorts:  ports,
-		Root:          location,
-		GraphifyModel: joinModelRef(graphifyName, graphifyTag),
+		Name:           name,
+		OS:             osKey,
+		Shell:          shell,
+		Stacks:         stacks,
+		AgentCLIs:      agentCLIs,
+		DefaultTool:    defaultTool,
+		AuthModes:      authModes,
+		Apps:           selectedApps,
+		IdleTimeout:    idleTimeout,
+		CPUs:           cpus,
+		Memory:         strings.TrimSpace(memory),
+		PublishPorts:   ports,
+		Root:           location,
+		GraphifyModel:  joinModelRef(graphifyName, graphifyTag),
+		CavemanEnabled: caveman,
 	}, false, nil
 }
 
@@ -682,10 +699,11 @@ func seededAuthMode(modes map[string]string, cli string) string {
 }
 
 // authModeGroup builds the per-agent auth-mode select, shown ONLY when that OAuth-capable
-// CLI is among the selected agents (a HideFunc keyed off the live agents selection). The
-// choice is api-key (gateway, full guardrails) vs oauth (direct to provider, bypasses the
-// firewall). label is the human CLI name for the title.
-func authModeGroup(cli, label string, value *string, agentCLIs *[]string) *huh.Group {
+// CLI is among the selected agents (a HideFunc keyed off the live combined agents+apps
+// selection — app keys never collide with CLI names). The choice is api-key (gateway,
+// full guardrails) vs oauth (direct to provider, bypasses the firewall). label is the
+// human CLI name for the title.
+func authModeGroup(cli, label string, value *string, agentAppSelection *[]string) *huh.Group {
 	options := []huh.Option[string]{
 		huh.NewOption("API keys (routed through the gateway — keeps the tool firewall & secret masking)", "api-key"),
 		huh.NewOption("Plan / OAuth login (direct to the provider — bypasses the firewall)", "oauth"),
@@ -696,7 +714,7 @@ func authModeGroup(cli, label string, value *string, agentCLIs *[]string) *huh.G
 			Description("OAuth/plan mode talks DIRECTLY to the provider, bypassing the gateway — the tool firewall, secret masking, and content-level egress audit do NOT apply.").
 			Options(options...).
 			Value(value),
-	).WithHideFunc(func() bool { return !slices.Contains(*agentCLIs, cli) })
+	).WithHideFunc(func() bool { return !slices.Contains(*agentAppSelection, cli) })
 }
 
 // collectAuthModes assembles the per-agent auth-mode map from the wizard vars, keeping
@@ -831,12 +849,14 @@ func wizardPortsValidator(value string) error {
 	return err
 }
 
-// appOptions renders the app multi-select options with the human label but the
-// stable key as the value (so the wizard returns keys, matching --apps).
-func appOptions() []huh.Option[string] {
-	options := make([]huh.Option[string], 0, len(apps.All()))
+// agentAndAppOptions renders the combined "Agent CLIs & AI apps" multi-select: the
+// agent CLIs first (label == value), then the opt-in in-VM apps labeled
+// "<Name> (app)" with the stable app key as the value (so the wizard returns keys,
+// matching --apps).
+func agentAndAppOptions() []huh.Option[string] {
+	options := huh.NewOptions(supportedAgentCLIs...)
 	for _, manifest := range apps.All() {
-		options = append(options, huh.NewOption(manifest.Name, manifest.Key))
+		options = append(options, huh.NewOption(manifest.Name+" (app)", manifest.Key))
 	}
 	return options
 }
@@ -857,8 +877,11 @@ func normalizeDefaultAgentCLI(defaultTool string, agentCLIs []string) string {
 
 func wizardNameValidator(value string) error { return project.ValidateName(value) }
 
-func wizardAtLeastOne(selected []string) error {
-	if len(selected) == 0 {
+// wizardAtLeastOneAgent validates the combined agents+apps multi-select: at least one
+// AGENT CLI must be checked (apps alone do not satisfy it — they are opt-in extras).
+func wizardAtLeastOneAgent(selected []string) error {
+	agentCLIs, _ := create.SplitAgentsAndApps(selected)
+	if len(agentCLIs) == 0 {
 		return errors.New("select at least one agent CLI")
 	}
 	return nil
@@ -1002,19 +1025,20 @@ func seedSpec(flags createFlags) project.Spec {
 	authModes, _ := parseAuthModes(flags.authMode, agents)
 	// Apps are opt-in: an unset --apps seeds the wizard with NOTHING selected.
 	return project.Spec{
-		Name:          name,
-		OS:            osKey,
-		Shell:         flags.shell,
-		Stacks:        flags.stacks,
-		AgentCLIs:     agents,
-		DefaultTool:   normalizeDefaultAgentCLI(agents[0], agents),
-		AuthModes:     authModes,
-		Apps:          flags.apps,
-		IdleTimeout:   idleTimeout,
-		CPUs:          flags.cpus,
-		Memory:        flags.memory,
-		PublishPorts:  ports,
-		GraphifyModel: flags.graphifyModel,
+		Name:           name,
+		OS:             osKey,
+		Shell:          flags.shell,
+		Stacks:         flags.stacks,
+		AgentCLIs:      agents,
+		DefaultTool:    normalizeDefaultAgentCLI(agents[0], agents),
+		AuthModes:      authModes,
+		Apps:           flags.apps,
+		IdleTimeout:    idleTimeout,
+		CPUs:           flags.cpus,
+		Memory:         flags.memory,
+		PublishPorts:   ports,
+		GraphifyModel:  flags.graphifyModel,
+		CavemanEnabled: flags.caveman,
 	}
 }
 
@@ -1051,19 +1075,20 @@ func specFromFlags(flags createFlags) (project.Spec, error) {
 		return project.Spec{}, err
 	}
 	return project.Spec{
-		Name:          name,
-		OS:            flags.osKey,
-		Shell:         flags.shell,
-		Stacks:        flags.stacks,
-		AgentCLIs:     agents,
-		DefaultTool:   normalizeDefaultAgentCLI(agents[0], agents),
-		AuthModes:     authModes,
-		Apps:          flags.apps,
-		IdleTimeout:   idleTimeout,
-		CPUs:          flags.cpus,
-		Memory:        flags.memory,
-		PublishPorts:  ports,
-		GraphifyModel: flags.graphifyModel,
+		Name:           name,
+		OS:             flags.osKey,
+		Shell:          flags.shell,
+		Stacks:         flags.stacks,
+		AgentCLIs:      agents,
+		DefaultTool:    normalizeDefaultAgentCLI(agents[0], agents),
+		AuthModes:      authModes,
+		Apps:           flags.apps,
+		IdleTimeout:    idleTimeout,
+		CPUs:           flags.cpus,
+		Memory:         flags.memory,
+		PublishPorts:   ports,
+		GraphifyModel:  flags.graphifyModel,
+		CavemanEnabled: flags.caveman,
 	}, nil
 }
 
