@@ -1174,7 +1174,29 @@ func readLatestLifecycleLog(projectName string) (string, bool) {
 	if err != nil {
 		return "", false
 	}
+	// Append the DETACHED Caveman install log if present: that install runs in the
+	// background (setsid) past the end of `ai start`, so its output lands in its own
+	// file rather than the lifecycle log — concatenating it here surfaces its progress
+	// in the Logs view alongside the start transcript.
+	if caveman, ok := readCavemanInstallLog(projectName); ok {
+		content = append(content, "\n── caveman install (background) ──\n"...)
+		content = append(content, caveman...)
+	}
 	return string(content), true
+}
+
+// readCavemanInstallLog returns the detached Caveman install log for the project
+// (<project>/.ai-platform/run/caveman-install.log), empty ok=false when absent.
+func readCavemanInstallLog(projectName string) ([]byte, bool) {
+	root, found, err := project.Path(projectName)
+	if err != nil || !found || root == "" {
+		return nil, false
+	}
+	content, err := os.ReadFile(filepath.Join(root, ".ai-platform", "run", "caveman-install.log"))
+	if err != nil {
+		return nil, false
+	}
+	return content, true
 }
 
 // openLifecycleLog opens (truncating) the per-workspace lifecycle log, writing a header

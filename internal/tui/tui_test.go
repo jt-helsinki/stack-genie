@@ -2,6 +2,8 @@ package tui
 
 import (
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -11,6 +13,7 @@ import (
 	"github.com/jt-helsinki/stack-genie/internal/config"
 	"github.com/jt-helsinki/stack-genie/internal/create"
 	"github.com/jt-helsinki/stack-genie/internal/project"
+	"github.com/jt-helsinki/stack-genie/internal/state"
 	"github.com/jt-helsinki/stack-genie/internal/tui/views"
 	"github.com/jt-helsinki/stack-genie/internal/workspace"
 	"github.com/muesli/termenv"
@@ -784,5 +787,41 @@ func TestCreateProgressAccumulates(test *testing.T) {
 		if !strings.Contains(view, want) {
 			test.Errorf("creating view missing %q:\n%s", want, view)
 		}
+	}
+}
+
+// TestReadLatestLifecycleLogAppendsCavemanLog verifies the Logs view's lifecycle
+// reader concatenates the detached Caveman install log (which is written past the
+// end of `ai start`) after the start transcript, so both are visible in the pane.
+func TestReadLatestLifecycleLogAppendsCavemanLog(test *testing.T) {
+	home := test.TempDir()
+	test.Setenv("HOME", home)
+
+	root := filepath.Join(home, "projects", "app")
+	runDir := filepath.Join(root, ".ai-platform", "run")
+	if err := os.MkdirAll(runDir, 0o755); err != nil {
+		test.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(runDir, "start.log"), []byte("▸ booting microVM\n"), 0o644); err != nil {
+		test.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(runDir, "caveman-install.log"), []byte("cloning caveman...\n"), 0o644); err != nil {
+		test.Fatal(err)
+	}
+	index := state.NewProjectsIndex()
+	index.Projects["app"] = state.ProjectIndexEntry{Path: root}
+	if err := state.SaveIndex(index); err != nil {
+		test.Fatal(err)
+	}
+
+	content, ok := readLatestLifecycleLog("app")
+	if !ok {
+		test.Fatal("expected a lifecycle log")
+	}
+	if !strings.Contains(content, "booting microVM") {
+		test.Errorf("missing the start transcript:\n%s", content)
+	}
+	if !strings.Contains(content, "caveman install (background)") || !strings.Contains(content, "cloning caveman") {
+		test.Errorf("missing the appended caveman install log:\n%s", content)
 	}
 }

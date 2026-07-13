@@ -356,6 +356,16 @@ func resolveProjectRoot(project string) (string, error) {
 
 // Start builds the image and creates+starts the project's workspace microVM,
 // recording a started handle. Idempotent enough to re-run (recreates the handle).
+// logStep prints a workspace-lifecycle progress line to stdout. When `ai start`/
+// `ai create` runs (directly, or DETACHED from the TUI with stdout tee'd to
+// run/<action>.log), these lines make the setup sequence — image build, microVM
+// boot, agent-provider registration, containerd, venv, Graphify, Caveman —
+// visible in the `ai ui` Logs view (which tails that build log during a lifecycle
+// op) and on the terminal, so a stall or failure is no longer invisible.
+func logStep(format string, args ...any) {
+	_, _ = fmt.Fprintf(os.Stdout, "▸ "+format+"\n", args...)
+}
+
 func (manager Manager) Start(project string) (*state.Workspace, error) {
 	root, err := resolveProjectRoot(project)
 	if err != nil {
@@ -363,6 +373,7 @@ func (manager Manager) Start(project string) (*state.Workspace, error) {
 	}
 	name := Name(project)
 	imageRef := name + ":latest"
+	logStep("building workspace image %s", imageRef)
 	if err := manager.Builder.Build(root, imageRef); err != nil {
 		return nil, err
 	}
@@ -403,9 +414,11 @@ func (manager Manager) Start(project string) (*state.Workspace, error) {
 		Memory:      projectConfig.Workspace.MemoryLimit,
 		IdleTimeout: projectConfig.Microsandbox.ResolvedIdleTimeout(),
 	}
+	logStep("creating microVM")
 	if err := manager.Sandbox.Create(name, imageRef, root, overlayPath, resources, netArgs); err != nil {
 		return nil, err
 	}
+	logStep("booting microVM")
 	if err := manager.Sandbox.Start(name); err != nil {
 		return nil, err
 	}
@@ -430,9 +443,11 @@ func (manager Manager) Start(project string) (*state.Workspace, error) {
 	// talk to the host Headroom proxy through a per-workspace scoped LiteLLM
 	// virtual key (arch §15, §17). The key flows host→VM only; it is never
 	// written to platform disk.
+	logStep("registering agent providers (scoped gateway key + model configs)")
 	if err := manager.registerAgentProviders(name, project, root, projectConfig, gatewayURL); err != nil {
 		return nil, err
 	}
+	logStep("starting in-VM container runtime (containerd)")
 	// Bring up the rootful in-VM container runtime (containerd) so nerdctl works
 	// inside the workspace. BEST-EFFORT + bounded — a failure here must NOT fail the
 	// workspace start. The installed in-VM apps are NOT auto-started here: pulling a
@@ -441,9 +456,11 @@ func (manager Manager) Start(project string) (*state.Workspace, error) {
 	// the whole pull, leaving the workspace unresponsive. Apps are started ON DEMAND
 	// via `ai apps start` (which brings containerd up if needed and shows progress).
 	manager.ensureContainerd(name)
+	logStep("creating project virtualenv (.venv-msb)")
 	// Create the per-project Python virtualenv (.venv-msb) using the guest's baked-in
 	// Python. Best-effort — never fails the workspace start.
 	manager.ensureVenv(name)
+	logStep("linking shared agent resources (skills/agents/prompts)")
 	// Wire the shared <project>/.ai-platform/{agents,skills,prompts} pool into each
 	// installed CLI's real per-project dirs via relative symlinks, so one copy of a
 	// skill/agent/prompt serves every client. Host-side + best-effort; MUST run BEFORE
@@ -455,11 +472,13 @@ func (manager Manager) Start(project string) (*state.Workspace, error) {
 	// Register Graphify with each selected agent CLI. Runs HERE (not at image build)
 	// because `graphify install --project` writes into the project dir (~/project),
 	// which is only bind-mounted at runtime. Best-effort — never fails the start.
+	logStep("registering Graphify with the selected agent CLIs")
 	manager.registerGraphify(name, projectConfig)
 	// Install the Caveman output-compression toolkit into each detected CLI (native
 	// skills/plugin/hooks/statusline/extension) and mirror its skills into the shared
 	// pool for pi/omp. Once-guarded, network-bound, best-effort — never fails the start.
 	manager.registerCaveman(name, projectConfig)
+	logStep("workspace %q started", project)
 	now := manager.Now()
 	handle := &state.Workspace{
 		ID:          name,
@@ -1177,6 +1196,7 @@ func (manager Manager) registerCaveman(name string, projectConfig *config.Config
 	// install's output does NOT appear in the create/start log stream (in-VM exec
 	// output never does; only the image build is teed), so this file is where to look.
 	logPath := pool + "/run/caveman-install.log"
+	logStep("installing Caveman in the background (detached) → %s", logPath)
 	launch := fmt.Sprintf("mkdir -p %s && setsid bash %s </dev/null >%s 2>&1 & exit 0",
 		shellQuoteGuest(pool+"/run"), shellQuoteGuest(cavemanScriptGuest), shellQuoteGuest(logPath))
 	ctx, cancel := context.WithTimeout(context.Background(), cavemanLaunchTimeout)

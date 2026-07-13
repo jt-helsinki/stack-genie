@@ -1829,7 +1829,11 @@ number keys `1`-`9`. There is **no `:` command palette** — `q`/`ctrl+c` quits 
     history first, then new entries pushed — no polling); on the CLI backend it falls
     back to the `Manager.WorkspaceLogTail` ~2s poll. Before the microVM exists (a
     detached start/restart still building), it falls back to the tee'd **build log**
-    at `.ai-platform/run/<action>.log` so the build output is visible. The high-volume
+    at `.ai-platform/run/<action>.log` so the build output is visible. `Manager.Start`
+    emits `▸` step-progress lines (image build → boot → agent providers → containerd →
+    venv → Graphify → Caveman) into that log, and `readLatestLifecycleLog` appends the
+    detached `run/caveman-install.log`, so the full setup sequence + background Caveman
+    install are visible in the Logs view. The high-volume
     agent-relay connect/disconnect lines are **hidden by default**; `d` toggles them
     on/off (the hint shows `d debug (on|off)`). `f`/`enter` follows live in the real
     terminal.
