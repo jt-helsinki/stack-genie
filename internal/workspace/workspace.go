@@ -787,11 +787,17 @@ func (manager Manager) ensureVenv(name string) {
 // network — it just writes skill/plugin/hook files into the project).
 const graphifyInstallTimeout = 60 * time.Second
 
-// cavemanInstallTimeout bounds the in-VM Caveman install. Unlike graphify it is
-// NETWORK-bound (fetches the installer + the caveman package via npx/git and each
-// CLI's native plugin/extension), so it gets a generous bound; it is once-guarded and
-// best-effort, so a slow or blocked network never wedges the workspace.
-const cavemanInstallTimeout = 4 * time.Minute
+// The Caveman install is a multi-minute network + node operation, so it runs
+// DETACHED (setsid) rather than as a blocking exec — see registerCaveman. These
+// bound/locate the DETACHED launch, not the install itself (which runs in the
+// background for as long as it needs, once-guarded by its marker).
+const (
+	// cavemanLaunchTimeout bounds only the tiny launcher exec that setsid-backgrounds
+	// the install and returns; the install runs on past it.
+	cavemanLaunchTimeout = 30 * time.Second
+	// cavemanScriptGuest is where the once-guarded install script is staged in-VM.
+	cavemanScriptGuest = "/tmp/caveman-install.sh"
+)
 
 // linkAgentStateDirs points the agent CLIs' mutable STATE directories at the persistent
 // overlay (/persist) so a CLI's per-project memory survives microVM restarts — the VM
@@ -1138,31 +1144,46 @@ func (manager Manager) registerCaveman(name string, projectConfig *config.Config
 	// wrapped in a brace group here — otherwise that `;` would split the statement and
 	// the `[ "$installed" -eq 0 ] &&` gate would guard only the assignment, letting the
 	// loop + marker-touch run even when the install failed.
-	script := "cd \"$HOME\"; " +
+	script := "#!/usr/bin/env bash\n" +
+		"cd \"$HOME\"; " +
 		"mkdir -p " + pool + "; " +
 		"[ -f " + installMarker + " ] && exit 0; " +
 		"{ " + clone + " && " + installCmd + "; }; installed=$?; rm -rf /tmp/caveman-src; " +
 		"[ \"$installed\" -eq 0 ] && " +
 		"{ " + mirror + "; } && " +
 		"[ -f " + pool + "/skills/caveman/SKILL.md ] && " +
-		"touch " + installMarker
-	ctx, cancel := context.WithTimeout(context.Background(), cavemanInstallTimeout)
+		"touch " + installMarker + "\n"
+
+	// The install is a multi-MINUTE network + node operation (git clone + the
+	// caveman installer). Running it as a BLOCKING exec at workspace start stalled
+	// the start AND saturated the single msb relay, so other execs — and the install
+	// exec itself — timed out with "msb exec is not responding". So DETACH it, exactly
+	// like the containerd boot: stage the script to a file, then `setsid` it into a new
+	// session (fully detached from stdin/out and from the exec's process group, so it
+	// survives msb tearing that group down when the launcher exec returns). The launcher
+	// exec returns in milliseconds. The script itself is once-guarded (the marker is
+	// touched ONLY on success), so a failed/killed background run simply retries on the
+	// next start — no synchronous exit code to surface, which also removes the confusing
+	// "did not complete" warning that fired whenever the relay was merely busy.
+	if err := manager.Sandbox.WriteFile(name, cavemanScriptGuest, []byte(script)); err != nil {
+		if explicit {
+			_, _ = fmt.Fprintln(os.Stderr, ui.Warn.Render("Caveman install could not be staged "+
+				"(it will retry on the next workspace start): "+err.Error()))
+		}
+		return
+	}
+	// Write the log to the project run/ dir (bind-mounted, so it is readable on the
+	// HOST at <project>/.ai-platform/run/caveman-install.log AND in-VM) — the detached
+	// install's output does NOT appear in the create/start log stream (in-VM exec
+	// output never does; only the image build is teed), so this file is where to look.
+	logPath := pool + "/run/caveman-install.log"
+	launch := fmt.Sprintf("mkdir -p %s && setsid bash %s </dev/null >%s 2>&1 & exit 0",
+		shellQuoteGuest(pool+"/run"), shellQuoteGuest(cavemanScriptGuest), shellQuoteGuest(logPath))
+	ctx, cancel := context.WithTimeout(context.Background(), cavemanLaunchTimeout)
 	defer cancel()
-	// Best-effort, but no longer SILENT for an explicit opt-in: a network/install
-	// failure leaves the marker untouched (so the next start retries) and, when the
-	// user explicitly chose Caveman, is surfaced so "installed: no" is explained.
-	// A nonzero in-VM exit is a failure too (ExecContext errors only on transport).
-	result, err := manager.Sandbox.ExecContext(ctx, name, []string{"bash", "-lc", script})
-	if explicit && (err != nil || result.ExitCode != 0) {
-		reason := strings.TrimSpace(result.Stderr)
-		if err != nil {
-			reason = err.Error()
-		}
-		if reason == "" {
-			reason = fmt.Sprintf("exit %d", result.ExitCode)
-		}
-		_, _ = fmt.Fprintln(os.Stderr, ui.Warn.Render("Caveman install did not complete "+
-			"(it will retry on the next workspace start): "+reason))
+	if _, err := manager.Sandbox.ExecContext(ctx, name, []string{"bash", "-lc", launch}); err != nil && explicit {
+		_, _ = fmt.Fprintln(os.Stderr, ui.Warn.Render("Caveman install could not be launched "+
+			"(it will retry on the next workspace start): "+err.Error()))
 	}
 }
 

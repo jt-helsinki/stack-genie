@@ -391,13 +391,22 @@ func TestRegisterCavemanRespectsToggle(test *testing.T) {
 
 // findCavemanScript returns the shell script from the single `bash -lc <script>`
 // caveman-install exec recorded on the fake sandbox (empty if none).
-func findCavemanScript(argv [][]string) string {
+// findCavemanScript returns the once-guarded install script STAGED in-VM (it is
+// written to a file, then launched DETACHED via setsid — see registerCaveman).
+func findCavemanScript(sandbox *fakeSandbox) string {
+	return string(sandbox.written[cavemanScriptGuest])
+}
+
+// cavemanLaunched reports whether a detached-launch exec (setsid bash <script>) was
+// issued for the staged install script.
+func cavemanLaunched(argv [][]string) bool {
 	for _, args := range argv {
-		if len(args) == 3 && args[0] == "bash" && args[1] == "-lc" && strings.Contains(args[2], "caveman") {
-			return args[2]
+		if len(args) == 3 && args[0] == "bash" && args[1] == "-lc" &&
+			strings.Contains(args[2], "setsid bash") && strings.Contains(args[2], cavemanScriptGuest) {
+			return true
 		}
 	}
-	return ""
+	return false
 }
 
 // TestRegisterCavemanScript pins the shape of the in-VM install script: it must
@@ -416,12 +425,17 @@ func TestRegisterCavemanScript(test *testing.T) {
 	}
 	manager.registerCaveman("aip-app", projectConfig)
 
-	script := findCavemanScript(sandbox.allExecArgv)
+	script := findCavemanScript(sandbox)
 	if script == "" {
-		test.Fatalf("no caveman install exec recorded: %v", sandbox.allExecArgv)
+		test.Fatalf("no caveman install script staged in-VM: %v", sandbox.written)
+	}
+	// The install is DETACHED: the script is staged to a file and launched via setsid
+	// (so the multi-minute install neither blocks start nor wedges the msb relay).
+	if !cavemanLaunched(sandbox.allExecArgv) {
+		test.Errorf("install must be launched detached (setsid bash %s): %v", cavemanScriptGuest, sandbox.allExecArgv)
 	}
 	// Runs from $HOME, not the bind-mounted project dir.
-	if !strings.HasPrefix(script, `cd "$HOME";`) {
+	if !strings.Contains(script, `cd "$HOME";`) {
 		test.Errorf("script must run from $HOME, got: %q", script)
 	}
 	if strings.Contains(script, "curl") || strings.Contains(script, "npx") {
@@ -2290,32 +2304,30 @@ func TestStartRegistersCaveman(test *testing.T) {
 	if _, err := manager.Start("app"); err != nil {
 		test.Fatal(err)
 	}
-	var found bool
-	for _, argv := range sandbox.allExecArgv {
-		joined := strings.Join(argv, " ")
-		if !strings.Contains(joined, "node bin/install.js") {
-			continue
-		}
-		found = true
-		for _, want := range []string{
-			`cd "$HOME";`, // run from $HOME, never ~/project (submodule .git file kills git discovery)
-			"git clone --depth 1 https://github.com/JuliusBrussee/caveman", // LOCAL clone (not curl|bash → npx)
-			"--non-interactive", "--with-hooks",
-			"--only opencode", "--only claude", // pi is NOT caveman-detectable → no --only
-			"skills/caveman/SKILL.md", // marker gated on the caveman skill landing in the pool
-			".caveman-installed",      // once-guard marker
-			`cp -a "$src/."`,          // pool mirror for pi/omp
-		} {
-			if !strings.Contains(joined, want) {
-				test.Errorf("caveman install exec missing %q: %s", want, joined)
-			}
-		}
-		if strings.Contains(joined, "--only pi") {
-			test.Errorf("pi is not caveman-detectable and must not get an --only token: %s", joined)
+	// The install is staged as a script file and launched DETACHED (setsid).
+	script := findCavemanScript(sandbox)
+	if script == "" {
+		test.Fatalf("Start should stage the Caveman install script; written: %v", sandbox.written)
+	}
+	if !cavemanLaunched(sandbox.allExecArgv) {
+		test.Errorf("Start should launch the Caveman install detached; execs: %v", sandbox.allExecArgv)
+	}
+	for _, want := range []string{
+		`cd "$HOME";`, // run from $HOME, never ~/project (submodule .git file kills git discovery)
+		"git clone --depth 1 https://github.com/JuliusBrussee/caveman", // LOCAL clone (not curl|bash → npx)
+		"node bin/install.js",
+		"--non-interactive", "--with-hooks",
+		"--only opencode", "--only claude", // pi is NOT caveman-detectable → no --only
+		"skills/caveman/SKILL.md", // marker gated on the caveman skill landing in the pool
+		".caveman-installed",      // once-guard marker
+		`cp -a "$src/."`,          // pool mirror for pi/omp
+	} {
+		if !strings.Contains(script, want) {
+			test.Errorf("caveman install script missing %q: %s", want, script)
 		}
 	}
-	if !found {
-		test.Errorf("Start should run the Caveman installer; execs: %v", sandbox.allExecArgv)
+	if strings.Contains(script, "--only pi") {
+		test.Errorf("pi is not caveman-detectable and must not get an --only token: %s", script)
 	}
 }
 
@@ -2334,10 +2346,11 @@ func TestStartSkipsCavemanWhenNoDetectableCLI(test *testing.T) {
 	if _, err := manager.Start("app"); err != nil {
 		test.Fatal(err)
 	}
-	for _, argv := range sandbox.allExecArgv {
-		if strings.Contains(strings.Join(argv, " "), "node bin/install.js") {
-			test.Errorf("no caveman-detectable CLI selected — the installer must not run: %v", argv)
-		}
+	if script := findCavemanScript(sandbox); script != "" {
+		test.Errorf("no caveman-detectable CLI selected — no install script must be staged: %s", script)
+	}
+	if cavemanLaunched(sandbox.allExecArgv) {
+		test.Errorf("no caveman-detectable CLI selected — the installer must not launch: %v", sandbox.allExecArgv)
 	}
 }
 
