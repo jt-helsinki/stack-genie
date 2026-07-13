@@ -1389,6 +1389,31 @@ type subTabClicker interface {
 // ignored; clicks are inert while any overlay (terminal/create/creating/help) is
 // open so a modal can never be escaped by mouse.
 func (application *app) handleMouse(msg tea.MouseMsg) tea.Cmd {
+	// Wheel: scroll the focused list/table/viewport. Translated to the SAME up/down
+	// the keyboard uses so every scrollable surface (bubbles tables, the viewport-
+	// windowed lists, logview, the Project/Workspace pane) responds identically —
+	// one row per wheel notch, k9s-style. Overlays own their own scrollback keys, so
+	// wheel is inert while one is open.
+	if msg.Button == tea.MouseButtonWheelUp || msg.Button == tea.MouseButtonWheelDown {
+		if application.terminal != nil || application.createView != nil ||
+			application.creating != "" || application.helpOpen {
+			return nil
+		}
+		keyMsg := tea.KeyMsg{Type: tea.KeyDown}
+		if msg.Button == tea.MouseButtonWheelUp {
+			keyMsg = tea.KeyMsg{Type: tea.KeyUp}
+		}
+		// A no-sub-tab pane that OVERFLOWS the body scrolls via the outer viewport
+		// (mirroring PgUp/PgDn); otherwise the active view scrolls its own content
+		// (moving a table/list selection or its internal viewport).
+		if !capturesNav(application.views[application.current]) && application.bodyOverflowing() {
+			var cmd tea.Cmd
+			application.bodyViewport, cmd = application.bodyViewport.Update(keyMsg)
+			return cmd
+		}
+		return application.views[application.current].Update(keyMsg)
+	}
+
 	if msg.Action != tea.MouseActionPress || msg.Button != tea.MouseButtonLeft {
 		return nil
 	}
@@ -1577,7 +1602,7 @@ func (application *app) helpView() string {
 	help.WriteString("  1-9       jump to tab\n")
 	help.WriteString("  ?         toggle this help\n")
 	help.WriteString("  ↑/↓       navigate\n")
-	help.WriteString("  PgUp/PgDn scroll the pane (when it overflows)\n")
+	help.WriteString("  PgUp/PgDn or the mouse wheel scroll the pane / move a list\n")
 	help.WriteString("  q         quit\n\n")
 	help.WriteString(ui.Muted.Render(application.views[application.current].Title()+" view") + "\n")
 	help.WriteString("  " + application.views[application.current].Hints() + "\n")

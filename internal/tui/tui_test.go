@@ -594,6 +594,70 @@ type navTallView struct{ tallView }
 
 func (view *navTallView) CapturesNav() bool { return true }
 
+// shortRecordingView fits the pane (never overflows) and records the keys it gets, so a
+// test can prove a wheel event is delegated to the view as up/down.
+type shortRecordingView struct {
+	fakeView
+	got []string
+}
+
+func (view *shortRecordingView) Update(msg tea.Msg) tea.Cmd {
+	if key, ok := msg.(tea.KeyMsg); ok {
+		view.got = append(view.got, key.String())
+	}
+	return nil
+}
+func (view *shortRecordingView) View() string { return "one line" }
+
+func wheel(up bool) tea.MouseMsg {
+	button := tea.MouseButtonWheelDown
+	if up {
+		button = tea.MouseButtonWheelUp
+	}
+	return tea.MouseMsg{Action: tea.MouseActionPress, Button: button}
+}
+
+// TestMouseWheelScrollsFocusedList: on a non-overflowing pane the wheel is delegated to
+// the active view as up/down (moves a list/table selection); an open overlay swallows it.
+func TestMouseWheelScrollsFocusedList(test *testing.T) {
+	view := &shortRecordingView{}
+	application := &app{views: []View{view}, bodyViewport: viewport.New(0, 0)}
+	application.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+
+	application.Update(wheel(false)) // wheel down
+	application.Update(wheel(true))  // wheel up
+	if len(view.got) != 2 || view.got[0] != "down" || view.got[1] != "up" {
+		test.Fatalf("wheel must delegate down/up to the view, got %v", view.got)
+	}
+
+	application.helpOpen = true
+	application.Update(wheel(false))
+	if len(view.got) != 2 {
+		test.Errorf("wheel must be inert while an overlay is open, got %v", view.got)
+	}
+}
+
+// TestMouseWheelScrollsOverflowingBody: on a no-sub-tab pane that overflows, the wheel
+// scrolls the outer body viewport (rendered output changes) and is NOT delegated.
+func TestMouseWheelScrollsOverflowingBody(test *testing.T) {
+	view := &tallView{}
+	application := &app{views: []View{view}, bodyViewport: viewport.New(0, 0)}
+	application.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	first := application.View()
+	if !application.bodyOverflowing() {
+		test.Fatal("a 200-line view must overflow a 24-row window")
+	}
+	application.Update(wheel(false))
+	if application.View() == first {
+		test.Fatal("wheel-down should scroll the overflowing body pane")
+	}
+	for _, key := range view.got {
+		if key == "down" || key == "up" {
+			test.Fatal("body scroll must not be delegated to the view on wheel")
+		}
+	}
+}
+
 // TestScrollsBodyOnlyForTabsWithoutSubTabs: a plain tab gets the body-level scroll; a
 // nav-capturing tab (one with sub-tabs) does not, and an open overlay disables it.
 func TestScrollsBodyOnlyForTabsWithoutSubTabs(test *testing.T) {

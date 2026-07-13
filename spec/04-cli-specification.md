@@ -1870,7 +1870,9 @@ number keys `1`-`9`. There is **no `:` command palette** — `q`/`ctrl+c` quits 
   Mouse capture is a persisted user setting (default ON, stored in
   `~/.ai-platform/config/ui.yaml` alongside the theme): the Settings tab's `m` key
   toggles it live and persists it across restarts, and with it OFF native text
-  selection needs no modifier. Scrollable panes scroll by keyboard either way.
+  selection needs no modifier. When mouse capture is ON the wheel scrolls the
+  focused list/table/viewport (one row per notch); keyboard scroll (PgUp/PgDn/
+  arrows) works either way.
 * **Local Models** — the local Ollama store ⨯ the **live ollama.com installable
   library**, in one **NAME · DESCRIPTION** list (there is **no TAGS column** — tags
   appear only in the per-model drill-down) split into an **Installed** section
