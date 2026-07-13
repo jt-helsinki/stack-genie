@@ -57,6 +57,16 @@ func OpenCodeConfig(gatewayURL, apiKey, defaultModel string, models []string, ke
 	for _, model := range models {
 		modelEntries[model] = map[string]any{
 			"name": model,
+			// tool_call MUST be declared for opencode to drive the model agentically
+			// (send the tool schema + apply the returned tool calls). These gateway
+			// models are not in opencode's models.dev catalog, so without this flag
+			// opencode defaults them to NON-tool-capable and the agent "does nothing" —
+			// it only chats, never edits files. The gateway passes tools through to the
+			// model (LiteLLM ollama_chat → Ollama /api/chat), so declaring it here lets
+			// any tool-capable served model do real work. (A model that lacks tool
+			// support — e.g. Ollama phi4 — still won't act, but that is the model's
+			// limitation, not the config's.)
+			"tool_call": true,
 			"options": map[string]any{
 				"headroom_keep_turns":           keepTurns,
 				"headroom_output_buffer_tokens": outputBufferTokens,

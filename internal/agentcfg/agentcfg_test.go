@@ -67,6 +67,11 @@ func TestOpenCodeConfigStructure(test *testing.T) {
 		if !ok {
 			test.Fatalf("model %q missing: %v", model, modelsNode[model])
 		}
+		// tool_call MUST be declared so opencode drives the model agentically (sends
+		// tools + applies edits); without it a custom ollama/* model "does nothing".
+		if entry["tool_call"] != true {
+			test.Errorf("model %q must declare tool_call:true (else opencode never uses tools): %v", model, entry["tool_call"])
+		}
 		modelOptions, ok := entry["options"].(map[string]any)
 		if !ok {
 			test.Fatalf("model %q options missing: %v", model, entry["options"])
