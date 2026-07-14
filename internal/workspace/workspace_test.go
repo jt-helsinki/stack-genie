@@ -1127,6 +1127,48 @@ func TestStartSucceedsWhenContainerdEnsureErrors(test *testing.T) {
 	}
 }
 
+// pinHostGatewayIPv4 must rewrite the guest /etc/hosts so the local msb gateway
+// name resolves to IPv4 only — the fix for agents failing over the IPv6 record that
+// msb's host-forward resets ("socket connection was closed unexpectedly").
+func TestPinHostGatewayIPv4RewritesGuestHosts(test *testing.T) {
+	sandbox := &fakeSandbox{}
+	manager := Manager{Sandbox: sandbox}
+
+	manager.pinHostGatewayIPv4("aip-app", runtime.DefaultGatewayHost)
+
+	if len(sandbox.execRootArgv) != 1 {
+		test.Fatalf("expected exactly one ExecRoot call, got %d: %v", len(sandbox.execRootArgv), sandbox.execRootArgv)
+	}
+	script := strings.Join(sandbox.execRootArgv[0], " ")
+	for _, want := range []string{"getent ahostsv4", "/etc/hosts", "sed -i", runtime.DefaultGatewayHost} {
+		if !strings.Contains(script, want) {
+			test.Errorf("pin script must contain %q; got %q", want, script)
+		}
+	}
+}
+
+// A local-gateway start must issue the /etc/hosts pin; the failure of that
+// best-effort step must not fail the start.
+func TestStartPinsHostGatewayIPv4(test *testing.T) {
+	seedProject(test, "app")
+	sandbox := &fakeSandbox{}
+	manager := newManager(&fakeBuilder{}, sandbox)
+
+	if _, err := manager.Start("app"); err != nil {
+		test.Fatalf("Start failed: %v", err)
+	}
+	pinned := false
+	for _, argv := range sandbox.execRootArgv {
+		if strings.Contains(strings.Join(argv, " "), "/etc/hosts") {
+			pinned = true
+			break
+		}
+	}
+	if !pinned {
+		test.Fatal("a local-gateway Start must issue the /etc/hosts IPv4 pin ExecRoot")
+	}
+}
+
 func TestStartFailsWhenKeyMintFails(test *testing.T) {
 	root := seedProject(test, "app")
 	minter := &fakeKeyMinter{lastErr: errors.New("litellm gateway is not reachable")}
@@ -2253,9 +2295,9 @@ func TestStartRegistersGraphify(test *testing.T) {
 	}
 }
 
-// TestStartInstallsGraphifyGitHook verifies the Graphify registration also installs the
-// git hook — gated on the project being a git repo (`[ -d .git ]`) and guarded by its
-// OWN once-marker (.graphify-hook-installed), so it runs once for git projects.
+// TestStartInstallsGraphifyGitHook verifies the Graphify registration installs the git
+// hook — gated on the project being a git repo (`[ -d .git ]`) and, per requirement, run
+// on EVERY start with NO marker (hook install is idempotent), so the hook stays current.
 func TestStartInstallsGraphifyGitHook(test *testing.T) {
 	root := seedProject(test, "app")
 	if err := config.WriteProject(root, &config.Config{
@@ -2279,12 +2321,39 @@ func TestStartInstallsGraphifyGitHook(test *testing.T) {
 		if !strings.Contains(joined, "[ -d .git ]") {
 			test.Errorf("`graphify hook install` must be gated on a git repo ([ -d .git ]): %s", joined)
 		}
-		if !strings.Contains(joined, ".graphify-hook-installed") {
-			test.Errorf("`graphify hook install` must be guarded by its own once-marker: %s", joined)
+		if strings.Contains(joined, ".graphify-hook-installed") {
+			test.Errorf("`graphify hook install` must NOT be once-guarded — it runs every start: %s", joined)
 		}
 	}
 	if !found {
 		test.Errorf("Start should include `graphify hook install` in the graphify exec; execs: %v", sandbox.allExecArgv)
+	}
+}
+
+// TestStartInstallsGraphifyGitHookForNonPlatformCLIs verifies the git hook still installs
+// for a git repo even when NO selected CLI is a graphify platform (e.g. omp-only) — the
+// hook step must not be gated behind the per-CLI install list.
+func TestStartInstallsGraphifyGitHookForNonPlatformCLIs(test *testing.T) {
+	root := seedProject(test, "app")
+	if err := config.WriteProject(root, &config.Config{
+		OS:    "debian-trixie",
+		Agent: config.AgentConfig{Tools: []string{"omp"}, DefaultTool: "omp"},
+	}); err != nil {
+		test.Fatal(err)
+	}
+	sandbox := &fakeSandbox{}
+	manager := Manager{Builder: &fakeBuilder{}, Sandbox: sandbox, Keys: &fakeKeyMinter{}, Now: func() string { return "t" }}
+	if _, err := manager.Start("app"); err != nil {
+		test.Fatal(err)
+	}
+	var found bool
+	for _, argv := range sandbox.allExecArgv {
+		if strings.Contains(strings.Join(argv, " "), "graphify hook install") {
+			found = true
+		}
+	}
+	if !found {
+		test.Error("a git repo with only non-platform CLIs must still install the graphify git hook")
 	}
 }
 

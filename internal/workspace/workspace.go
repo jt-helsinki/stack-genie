@@ -427,6 +427,21 @@ func (manager Manager) Start(project string) (*state.Workspace, error) {
 	// can leave the VM's clock skewed by the sleep duration. Best-effort: a failure
 	// must never fail the start.
 	_ = manager.Sandbox.SyncClock(name)
+	// Pin the host-gateway name to its IPv4 address inside the VM. msb seeds the
+	// guest /etc/hosts with BOTH an A and AAAA record for host.microsandbox.internal,
+	// and glibc getaddrinfo prefers the IPv6 one — but msb only forwards guest→host
+	// traffic over IPv4 (the host nginx publish is IPv4-only), so an IPv6 connect to
+	// the gateway reaches the msb gateway then RESETs (Node fetch surfaces this as
+	// "socket connection was closed unexpectedly"; curl as "Recv failure: Connection
+	// reset by peer"). Rewriting /etc/hosts to the IPv4-only entry makes every in-VM
+	// client (Node agents, curl, Go, Rust) reach the gateway regardless of resolver
+	// order — language-agnostic, unlike a gai.conf precedence tweak (which Node's
+	// verbatim dns.lookup ignores). Only for the LOCAL msb gateway; a remote gateway
+	// (client mode) is a real routable address and must not be touched. Best-effort:
+	// a failure must never fail the start.
+	if gatewayHost == runtime.DefaultGatewayHost {
+		manager.pinHostGatewayIPv4(name, gatewayHost)
+	}
 	// The microVM is now running but no state handle is saved yet. Arm a
 	// best-effort rollback so that ANY failure on the remaining post-start steps
 	// (agent-provider registration AND the state-handle write) tears the microVM
@@ -1044,26 +1059,33 @@ func (manager Manager) registerGraphify(name string, projectConfig *config.Confi
 		}
 		installs = append(installs, install)
 	}
-	if len(installs) == 0 {
-		return
-	}
-	// Two ONCE-guarded steps, run in ~/project in a single exec:
+	// Two steps, run in ~/project in a single exec. The graphify binary is baked into
+	// every image, so we always attempt the exec (the `command -v` guard exits cleanly
+	// if it is somehow absent) — the hook step below must run for ANY git repo even when
+	// no graphify-platform CLI is selected (e.g. an omp/openclaw/hermes-only project), so
+	// we do NOT early-return on an empty install list.
 	//   1. `graphify install --project` per CLI — OVERWRITES its skill files each run, so
 	//      a marker (.graphify-installed) guards re-runs, keeping user edits from being
 	//      clobbered on every restart; the marker is touched only after all installs
-	//      succeed (a failure retries next start).
-	//   2. `graphify hook install` — installs Graphify's git hook, but ONLY when the
-	//      project is a git repo (a `.git` dir). It has its OWN marker
-	//      (.graphify-hook-installed) checked each start, so a project that becomes a git
-	//      repo AFTER the first start still gets the hook exactly once.
-	// Both markers live under the persistent .ai-platform dir. Best-effort.
+	//      succeed (a failure retries next start). Skipped entirely when no CLI needs it.
+	//   2. `graphify hook install` — installs Graphify's git hook. It runs on EVERY start
+	//      when the project is a git repo (a `.git` dir). `hook install` is idempotent
+	//      (it rewrites the managed hook), so there is deliberately NO marker: a repo that
+	//      becomes a git repo after the first start is covered, and the hook is kept
+	//      current on every container start.
+	// The install marker lives under the persistent .ai-platform dir. Best-effort.
 	installMarker := workspaceWorkdir + "/.ai-platform/.graphify-installed"
-	hookMarker := workspaceWorkdir + "/.ai-platform/.graphify-hook-installed"
-	script := "command -v graphify >/dev/null 2>&1 || exit 0; " +
-		"cd " + workspaceWorkdir + " 2>/dev/null || exit 0; " +
-		"mkdir -p " + workspaceWorkdir + "/.ai-platform; " +
-		"if [ ! -f " + installMarker + " ]; then " + strings.Join(installs, " && ") + " && touch " + installMarker + "; fi; " +
-		"if [ -d .git ] && [ ! -f " + hookMarker + " ]; then graphify hook install && touch " + hookMarker + "; fi"
+	clauses := []string{
+		"command -v graphify >/dev/null 2>&1 || exit 0",
+		"cd " + workspaceWorkdir + " 2>/dev/null || exit 0",
+		"mkdir -p " + workspaceWorkdir + "/.ai-platform",
+	}
+	if len(installs) > 0 {
+		clauses = append(clauses,
+			"if [ ! -f "+installMarker+" ]; then "+strings.Join(installs, " && ")+" && touch "+installMarker+"; fi")
+	}
+	clauses = append(clauses, "if [ -d .git ]; then graphify hook install; fi")
+	script := strings.Join(clauses, "; ")
 	ctx, cancel := context.WithTimeout(context.Background(), graphifyInstallTimeout)
 	defer cancel()
 	_, _ = manager.Sandbox.ExecContext(ctx, name, []string{"sh", "-lc", script})
@@ -1204,6 +1226,40 @@ func (manager Manager) registerCaveman(name string, projectConfig *config.Config
 	if _, err := manager.Sandbox.ExecContext(ctx, name, []string{"bash", "-lc", launch}); err != nil && explicit {
 		_, _ = fmt.Fprintln(os.Stderr, ui.Warn.Render("Caveman install could not be launched "+
 			"(it will retry on the next workspace start): "+err.Error()))
+	}
+}
+
+// pinHostGatewayIPv4 rewrites the guest /etc/hosts so gatewayHost resolves to its
+// IPv4 address ONLY. msb seeds /etc/hosts with both an A and an AAAA record for the
+// host-gateway name; glibc getaddrinfo (and therefore Node's dns.lookup, curl, Go,
+// Rust) prefers the IPv6 record, but msb forwards guest→host traffic only over IPv4
+// (the host nginx publish is IPv4-only), so an IPv6 connect reaches the msb gateway
+// then RESETs — the agent CLIs report it as "socket connection was closed
+// unexpectedly". Stripping the AAAA record and pinning the resolved IPv4 makes every
+// in-VM client reach the gateway regardless of resolver order. Runs as ROOT (the
+// workspace user cannot edit /etc/hosts) and is BEST-EFFORT: any failure is logged to
+// stderr and the start proceeds — a stale-but-present hosts file is no worse than the
+// state before this step. Called only for the LOCAL msb gateway (see the caller's
+// runtime.DefaultGatewayHost guard); a remote/client-mode gateway is a real routable
+// address and is left untouched.
+func (manager Manager) pinHostGatewayIPv4(name, gatewayHost string) {
+	// getent ahostsv4 returns only A records; take the first. Escape dots in the sed
+	// address so the delete pattern matches the literal name, not any char.
+	quotedHost := shellQuoteGuest(gatewayHost)
+	sedPattern := strings.ReplaceAll(gatewayHost, ".", `\.`)
+	cmd := fmt.Sprintf(
+		"V4=$(getent ahostsv4 %s | awk '{print $1; exit}'); "+
+			"[ -n \"$V4\" ] || exit 3; "+
+			"sed -i '/%s/d' /etc/hosts; "+
+			"printf '%%s\\t%s\\n' \"$V4\" >> /etc/hosts",
+		quotedHost, sedPattern, gatewayHost)
+	result, err := manager.Sandbox.ExecRoot(name, []string{"sh", "-c", cmd})
+	if err != nil {
+		_, _ = fmt.Fprintf(os.Stderr, "warning: could not pin the host-gateway IPv4 in workspace %q: %v\n", name, err)
+		return
+	}
+	if result.ExitCode != 0 {
+		_, _ = fmt.Fprintf(os.Stderr, "warning: could not resolve the host-gateway IPv4 in workspace %q (agents may fail to reach the gateway over IPv6)\n", name)
 	}
 }
 
