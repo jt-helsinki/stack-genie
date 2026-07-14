@@ -101,6 +101,35 @@ func TestWorkspaceLogNotRunningShowsNoStaleLog(test *testing.T) {
 	}
 }
 
+// TestWorkspaceLogNoisePatterns pins what the default debug filter hides: the relay
+// churn and the Shell-tab session-list poll echo (`name|attached|epoch`), while real
+// log lines (including pipe-containing ones that aren't the session format) stay.
+func TestWorkspaceLogNoisePatterns(test *testing.T) {
+	hidden := []string{
+		"INFO microsandbox_runtime::relay: agent relay: client connected slot=0",
+		"test|1|1784013044",
+		"shell|0|1700000500",
+		"my-session|1|42",
+	}
+	for _, line := range hidden {
+		if !workspaceLogNoise(line) {
+			test.Errorf("expected %q to be filtered as noise", line)
+		}
+	}
+	kept := []string{
+		"boot line 1",
+		"▸ registering agent providers",
+		"cloning caveman...",
+		"a|b|c",                  // not the session format (not 0/1 + epoch)
+		"level=INFO msg=started", // ordinary structured log
+	}
+	for _, line := range kept {
+		if workspaceLogNoise(line) {
+			test.Errorf("expected %q to be kept (not noise)", line)
+		}
+	}
+}
+
 // TestWorkspaceLogHidesRelayNoiseUntilDebugToggled: the relay connect/disconnect
 // churn is hidden by default and revealed by the `d` debug toggle.
 func TestWorkspaceLogHidesRelayNoiseUntilDebugToggled(test *testing.T) {

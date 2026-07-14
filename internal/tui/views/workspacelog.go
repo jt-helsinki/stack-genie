@@ -1,17 +1,32 @@
 package views
 
 import (
+	"regexp"
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
 )
 
+// sessionListLine matches the raw output of the Shell tab's tmux session-list poll —
+// `<session-name>|<attached 0|1>|<last-activity-epoch>` (see
+// workspace.tmuxListSessionsCommand). That poll runs every couple seconds and msb's
+// log stream captures its exec stdout, so these lines otherwise spam the workspace
+// log. They are pure noise here (the Shell tab renders them properly), so the
+// workspace log hides them by default alongside the relay churn.
+var sessionListLine = regexp.MustCompile(`^\s*[A-Za-z0-9_.-]+\|[01]\|\d+\s*$`)
+
 // relayNoiseLine matches the microsandbox agent-relay client connect/disconnect log
 // lines — high-volume, low-signal churn (a client connects for an operation and
-// disconnects when it finishes). The workspace log HIDES these by default; the `d`
-// key toggles them back on for debugging.
+// disconnects when it finishes).
 func relayNoiseLine(line string) bool {
 	return strings.Contains(line, "agent relay: client ")
+}
+
+// workspaceLogNoise is the workspace log's default debug filter: high-volume,
+// low-signal lines HIDDEN by default (the `d` key toggles them back on) — the relay
+// connect/disconnect churn and the Shell-tab session-list poll echo.
+func workspaceLogNoise(line string) bool {
+	return relayNoiseLine(line) || sessionListLine.MatchString(line)
 }
 
 // WorkspaceLogTailer returns the recent captured output of the CURRENT workspace
@@ -57,6 +72,6 @@ func NewWorkspaceLog(tail WorkspaceLogTailer, running WorkspaceRunning, project 
 		func(subject string) tea.Msg { return WorkspaceLogFollowRequestedMsg{Project: subject} },
 	)
 	view.openStream = stream
-	view.debugFilter = relayNoiseLine // hide the relay connect/disconnect churn (toggle: d)
+	view.debugFilter = workspaceLogNoise // hide relay churn + session-list poll echo (toggle: d)
 	return view
 }
