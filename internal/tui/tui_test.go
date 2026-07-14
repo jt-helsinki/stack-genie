@@ -825,3 +825,34 @@ func TestReadLatestLifecycleLogAppendsCavemanLog(test *testing.T) {
 		test.Errorf("missing the appended caveman install log:\n%s", content)
 	}
 }
+
+// TestWheelTargetRouting pins which surface the wheel drives per app state — in
+// particular that the create wizard overlay receives wheel scroll (the reported
+// gap: wizard lists weren't scrollable), while the terminal/creating overlays don't.
+func TestWheelTargetRouting(test *testing.T) {
+	base := func() *app {
+		return &app{views: []View{&shortRecordingView{}}, bodyViewport: viewport.New(80, 24)}
+	}
+
+	if got := base().wheelTarget(); got != wheelActiveView {
+		test.Errorf("plain view: wheelTarget = %d, want wheelActiveView", got)
+	}
+
+	withCreate := base()
+	withCreate.createView = views.NewCreate(test.TempDir(), nil, 16, 12)
+	if got := withCreate.wheelTarget(); got != wheelCreate {
+		test.Errorf("create wizard open: wheelTarget = %d, want wheelCreate (its lists must scroll)", got)
+	}
+
+	withHelp := base()
+	withHelp.helpOpen = true
+	if got := withHelp.wheelTarget(); got != wheelBody {
+		test.Errorf("help open: wheelTarget = %d, want wheelBody", got)
+	}
+
+	withCreating := base()
+	withCreating.creating = "app"
+	if got := withCreating.wheelTarget(); got != wheelNone {
+		test.Errorf("creating pane: wheelTarget = %d, want wheelNone (modal)", got)
+	}
+}

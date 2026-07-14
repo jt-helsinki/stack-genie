@@ -1417,23 +1417,22 @@ func (application *app) handleMouse(msg tea.MouseMsg) tea.Cmd {
 	// one row per wheel notch, k9s-style. Overlays own their own scrollback keys, so
 	// wheel is inert while one is open.
 	if msg.Button == tea.MouseButtonWheelUp || msg.Button == tea.MouseButtonWheelDown {
-		if application.terminal != nil || application.createView != nil ||
-			application.creating != "" || application.helpOpen {
-			return nil
-		}
 		keyMsg := tea.KeyMsg{Type: tea.KeyDown}
 		if msg.Button == tea.MouseButtonWheelUp {
 			keyMsg = tea.KeyMsg{Type: tea.KeyUp}
 		}
-		// A no-sub-tab pane that OVERFLOWS the body scrolls via the outer viewport
-		// (mirroring PgUp/PgDn); otherwise the active view scrolls its own content
-		// (moving a table/list selection or its internal viewport).
-		if !capturesNav(application.views[application.current]) && application.bodyOverflowing() {
+		switch application.wheelTarget() {
+		case wheelNone:
+			return nil
+		case wheelCreate:
+			return application.createView.Update(keyMsg)
+		case wheelBody:
 			var cmd tea.Cmd
 			application.bodyViewport, cmd = application.bodyViewport.Update(keyMsg)
 			return cmd
+		default: // wheelActiveView
+			return application.views[application.current].Update(keyMsg)
 		}
-		return application.views[application.current].Update(keyMsg)
 	}
 
 	if msg.Action != tea.MouseActionPress || msg.Button != tea.MouseButtonLeft {
@@ -1471,6 +1470,36 @@ func (application *app) handleMouse(msg tea.MouseMsg) tea.Cmd {
 		}
 	}
 	return nil
+}
+
+// wheelSurface is which scrollable surface a mouse-wheel event drives.
+type wheelSurface int
+
+const (
+	wheelNone       wheelSurface = iota // nothing (terminal owns its keys; creating is modal)
+	wheelCreate                         // the create wizard overlay (its current step's list)
+	wheelBody                           // the outer body viewport (help text, or an overflowing no-sub-tab pane)
+	wheelActiveView                     // the active view (its table/list selection or internal viewport)
+)
+
+// wheelTarget decides which surface a wheel/trackpad scroll drives, honouring the
+// same precedence as key routing: the embedded terminal + the modal "creating…"
+// pane are left alone; the create wizard and help overlays scroll even though they
+// are overlays (they contain lists / scrollable text); otherwise the active view
+// scrolls (its own content, or the body viewport when a no-sub-tab pane overflows).
+func (application *app) wheelTarget() wheelSurface {
+	switch {
+	case application.terminal != nil || application.creating != "":
+		return wheelNone
+	case application.createView != nil:
+		return wheelCreate
+	case application.helpOpen:
+		return wheelBody
+	case !capturesNav(application.views[application.current]) && application.bodyOverflowing():
+		return wheelBody
+	default:
+		return wheelActiveView
+	}
 }
 
 // switchTab moves the active tab to index, wrapping around the ends so Tab/←/→ cycle
