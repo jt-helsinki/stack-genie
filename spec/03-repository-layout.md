@@ -364,8 +364,10 @@ the agent into this source tree — the platform does not manage them.
   config.yaml          # tracked — project config (§12.4)
   profile.yaml         # tracked — project profile (language/toolchain)
   project.yaml         # tracked — { name, os, created } (§12.1)
-  skills/caveman/      # tracked — platform-seeded Caveman skill (architecture §9)
-  agents/  skills/  prompts/  projects/   # shared resource pool (§12.1c) — symlinked into each CLI's dir
+  agents/  skills/  prompts/  projects/   # shared resource pool (§12.1c) — dirs
+                       #   scaffolded empty; populated at workspace start (Caveman
+                       #   install + Graphify + symlinks into each CLI's dir).
+                       #   Caveman is NOT platform-seeded/git-tracked (architecture §9)
   .gitignore           # ignores run/
   run/                 # gitignored — host-local runtime state
     workspaces/<workspace-id>.json   # (§12.2)
@@ -375,6 +377,10 @@ the agent into this source tree — the platform does not manage them.
 .pi/settings.json               # pi settings (default provider/model + resource paths); models.json is the GLOBAL in-VM ~/.pi/agent/models.json, NOT on host disk
 .claude/settings.json           # claude-code env block (base URL only; token via env)
 .codex/config.toml              # codex provider block (key via env_key)
+.omp/config.yml                 # omp provider order + default model (models.yml is GLOBAL in-VM ~/.omp/agent/models.yml)
+.openclaw/…                     # openclaw: config is the GLOBAL in-VM ~/.openclaw/openclaw.json (keyless)
+.hermes/…                       # hermes: config is the GLOBAL in-VM ~/.hermes/config.yaml (keyless)
+# (gemini is ENV-only — no on-disk provider file; copilot manages its own ~/.copilot)
 ```
 
 ### 12.1c Per-CLI project configs + shared resource pool

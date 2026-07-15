@@ -110,28 +110,26 @@ for the rare TTY-only human-wizard cases and is not used here.)
 
 * **HOME**: a throwaway `$AIP_TEST_HOME`; `~/.ai-platform` resolves under it.
   Removed on teardown.
-* **sample dir**: `fixtures/sample-app` — a small multi-language directory used
-  as a working directory for `ai create` (the project is created in
-  place). The platform does no git, so there is no clone/repo fixture. (There
-  are also no merge/conflict tests — git is the in-workspace agent's job, not
-  the platform's; architecture §21–§22.)
-* **large repo**: `fixtures/large-repo` (synthetic, >1M LOC) for performance
-  tests, generated deterministically by `fixtures/gen-large-repo` from a fixed
-  seed.
-* **mock provider**: `fixtures/mock-provider` — a local **HTTPS** server that
-  emulates an OpenAI-compatible model endpoint with deterministic responses and
-  records the provider credential on each inbound request (used to assert that
-  LiteLLM attached the real key). It serves TLS with a test cert the harness
-  trusts (arch §17). LiteLLM holds the real provider key (keys-in-LiteLLM) and
-  attaches it on the upstream call, so the injection tests (§9.1) assert the key
-  is present in the request the mock provider records — end-to-end over HTTPS.
+* **sample dir**: a throwaway working directory (`t.TempDir()`) used as the
+  location for `ai create` (the project is created in place). There is **no**
+  `fixtures/` tree on disk — the harness builds everything it needs inline.
+* **large repo / performance**: the >1M-LOC perf thresholds (§8.2/§15.1) are `[S2]`
+  and **not yet implemented**; there is no large-repo fixture today.
+* **mock provider**: an **in-process** HTTPS server (`httptest`, `mockprovider_test.go`)
+  emulating an OpenAI-compatible endpoint with deterministic responses that records
+  the provider credential on each inbound request (to assert LiteLLM attached the real
+  key). It serves TLS with a test cert the harness trusts (arch §17); the provider
+  config is written **inline** (`writeProviderConfig`/`writeCertPEM`), not from a file
+  fixture. LiteLLM holds the real provider key (keys-in-LiteLLM) and attaches it on the
+  upstream call, so the injection tests (§9.1) assert the key is present in the request
+  the mock records — end-to-end over HTTPS.
 * **credential sentinel**: the test credential stored in the LiteLLM gateway has
   a known, unique value `AIP_TEST_SENTINEL_<uuid>` (env: `AIP_TEST_SENTINEL`).
   Secret assertions are exact: the sentinel must appear in the mock provider's
   recorded request, and must appear **nowhere** in the workspace env, the
   workspace filesystem, `~/.ai-platform`, or `~/projects`. The workspace agent
   holds only a scoped LiteLLM **virtual key**, never the provider secret.
-* **egress policy fixture** (`fixtures/egress-policy`): the per-project egress
+* **egress policy**: the per-project egress
   default is now `public` (allow-outbound), so to assert *confinement* the harness
   configures the egress controls explicitly — it sets **`deny` mode** via
   `ai network` so tests run against a *known* locked-down policy rather than ambient
@@ -141,10 +139,9 @@ for the rare TTY-only human-wizard cases and is not used here.)
   always-on allow rule: nginx `aip-proxy` → LiteLLM (which calls Headroom
   in-process as a `pre_call` guardrail), default
   `host.microsandbox.internal:18787` — workspaces never reach LiteLLM directly)
-  plus the allow-listed `$MOCK_PROVIDER_URL` (§ Setup). It is rendered from this
-  fixture (parameterized by `$MOCK_PROVIDER_URL`) so the source of "what is
-  allowed" is the fixture, not a test's expectation. There is **no egress proxy** —
-  confinement is the net-rules applied at workspace create (arch §29.4–29.5).
+  plus the allow-listed `$MOCK_PROVIDER_URL` (§ Setup), configured inline via
+  `ai network allow` (parameterized by `$MOCK_PROVIDER_URL`). There is **no egress
+  proxy** — confinement is the net-rules applied at workspace create (arch §29.4–29.5).
 
 ### Setup / Teardown
 
@@ -159,13 +156,13 @@ setup:
   export AIP_TEST_HOME=$(mktemp -d)
   export HOME="$AIP_TEST_HOME"                 # ~/.ai-platform, ~/projects resolve here
   export AIP_TEST_SENTINEL="AIP_TEST_SENTINEL_$(uuidgen)"
-  export MOCK_PROVIDER_URL=$(start fixtures/mock-provider)   # starts the local HTTPS OpenAI-compatible endpoint; prints its https:// base URL (reachable from the workspace) — also the one allow-listed destination (egress policy fixture). The harness trusts its test cert.
-  ai setup --json --provider-config fixtures/mock-provider/litellm.yaml
+  export MOCK_PROVIDER_URL=$(start in-process httptest mock)   # in-process HTTPS OpenAI-compatible endpoint (mockprovider_test.go); its https:// base URL is reachable from the workspace and is the one allow-listed destination. The harness trusts its test cert.
+  ai setup --json --provider-config <inline temp file>   # config written inline by the harness, not a checked-in fixture
   printf '%s' "$AIP_TEST_SENTINEL" | ai keys add openai --stdin --json   # stored encrypted in the LiteLLM DB (keys-in-LiteLLM)
 
 teardown:
   ai delete <each> --purge --yes                # best effort
-  stop fixtures/mock-provider
+  (the in-process mock stops with the test process)
   rm -rf "$AIP_TEST_HOME"
 ```
 
@@ -304,7 +301,7 @@ ai create test-project --os debian-trixie --json   # flag-driven, non-interactiv
 ### Test
 
 ```bash id="t6"
-# A directory with pre-existing files (the platform runs no git).
+# A directory with pre-existing files (ai create runs no git and leaves them untouched).
 mkdir -p "$AIP_TEST_HOME/work/app" && echo hi > "$AIP_TEST_HOME/work/app/README.md"
 cd "$AIP_TEST_HOME/work/app" && ai create app --os debian-trixie --json
 ```
@@ -388,10 +385,10 @@ tag is retired.
 
 # 5. Git Workflow Tests — Removed
 
-The platform performs no git at all (architecture §21) — not even at project
-creation — so there are no platform-level git-workflow tests. Init/clone,
-branching, merging, and rebasing are the user's and the in-workspace agent's
-job.
+The platform runs no git **workflow** operations (architecture §21) — the only git it
+runs is an internal `git init` at workspace start to seat the Graphify hook — so there
+are no platform-level git-workflow tests. Clone, branching, merging, and rebasing are
+the user's and the in-workspace agent's job.
 
 ---
 
@@ -417,7 +414,8 @@ ai exec env-test --json -- cat /etc/os-release
 * the workspace image is built from that Dockerfile; `data.stdout` of
   `os-release` shows Debian trixie (the in-VM half is hardware-gated)
 
-(Caveman is seeded from Slice 2, not asserted here; see §8.)
+(Caveman is installed at workspace start by its own upstream installer, not seeded at
+create; not asserted here — see §8.)
 
 ---
 

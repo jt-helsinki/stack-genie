@@ -269,7 +269,9 @@ State is split between **global** and **project-local**:
 ├── config.yaml       # tracked — project config
 ├── profile.yaml      # tracked — project profile
 ├── project.yaml      # tracked — { name, os, created }
-├── skills/caveman/   # tracked — platform-seeded Caveman skill (§9)
+├── {agents,skills,prompts,projects}/  # shared resource pool — dirs scaffolded empty;
+│                     #   populated at workspace start (Caveman install + Graphify +
+│                     #   symlinks). Caveman is NOT platform-seeded/git-tracked (§9).
 ├── .gitignore        # ignores run/
 └── run/              # gitignored — host-local runtime state
     └── workspaces/<workspace-id>.json
@@ -278,7 +280,7 @@ State is split between **global** and **project-local**:
 Rules:
 
 * **tracked** files (`Dockerfile`, `config.yaml`, `profile.yaml`,
-  `project.yaml`, `skills/caveman/`) are the environment + config definition —
+  `project.yaml`) are the environment + config definition —
   committable so the project is reproducible from git
 * **`run/`** holds host-local runtime handles (Microsandbox sandbox ids, status)
   and is **gitignored** — machine-specific, never committed
@@ -766,15 +768,16 @@ Caveman exposes selectable compression levels:
 
 ## Caveman Integration
 
-Caveman integrates as an agent skill **seeded per project** into
-`<project>/.ai-platform/skills/caveman/` at project creation (not baked into the
-workspace image). It is **git-tracked** — committed with the project like the
-Dockerfile, so it travels with the repo and the project stays reproducible from
-git alone; it is not re-installed or auto-upgraded on workspace start. It is the
-output-side complement to Headroom (the input-compression guardrail, §10). The seeded `SKILL.md` carries the Agent-Skills
-standard **YAML frontmatter** (`name` + `description`) that claude/opencode/pi all read —
-pi rejects a skill missing the `description` — with the compression `level:` line kept in
-the body (`internal/contextopt.cavemanSkill`).
+Caveman integrates as an agent skill, but it is **NOT** platform-seeded at create and
+is **NOT git-tracked**. It is installed at **workspace start** by Caveman's own
+upstream installer (`workspace.registerCaveman`, once-guarded, network-bound,
+best-effort — not baked into the image, not written by `Scaffold`). The install gives
+each caveman-detectable CLI its native skills/agents/commands; `registerCaveman` then
+mirrors opencode's global caveman dirs into the shared `.ai-platform/{skills,agents,
+prompts}` pool so the symlinks distribute it to the pool-only CLIs (pi/omp). It is the
+output-side complement to Headroom (the input-compression guardrail, §10). `ai context
+caveman <project> <level>` sets an advisory level in config; the installed skill
+controls intensity at runtime via `/caveman <level>`.
 
 ---
 
@@ -928,6 +931,12 @@ templates (§25); it is identical across all OSes:
 
 * Git
 * GitHub CLI
+* **Shells** — `bash` + `zsh` with **oh-my-bash** and **oh-my-zsh**. The workspace's
+  default interactive shell is a first-class create input (`--shell`/the wizard,
+  `config.Workspace.Shell`, default `bash`), applied at every start by
+  `applyShellChoice`, which idempotently appends the managed agent-env/alias block to
+  both `~/.bashrc` and `~/.zshrc` and, when zsh is chosen, `chsh`es the workspace user's
+  login shell to zsh.
 * **Node.js** — pinned **Node 24 LTS**, installed system-wide. It backs every
   agent-CLI install snippet (which only `npm install -g` their CLI, since Node is
   in the base) and is why `node` is **not** a `--stacks` option.
@@ -947,15 +956,20 @@ templates (§25); it is identical across all OSes:
   Each selected agent CLI then **registers Graphify with itself at workspace
   start** (NOT at image build): `Manager.registerGraphify` runs `graphify install`
   for Claude Code (the default `graphify` platform) and `graphify install --platform
-  <cli>` for Codex, the Gemini CLI, OpenCode, and Pi, all in `~/project`. It must run
+  <cli>` for Codex, the Gemini CLI, OpenCode, Pi, and Copilot, all in `~/project`
+  (omp/openclaw/hermes are not Graphify platforms — they inherit the skill via the
+  shared pool). It must run
   at start because `--project` writes project-scoped skill/plugin/hook files into the
-  bind-mounted project dir (which does not exist at build); it runs **once per
-  project**, guarded by a marker file (`~/project/.ai-platform/.graphify-installed`)
-  so user edits to those files are not clobbered on every restart. When the project is
-  a **git repo** (a `.git` dir), `registerGraphify` also runs `graphify hook install`
-  ONCE — guarded by its own marker (`~/project/.ai-platform/.graphify-hook-installed`),
-  re-checked each start so a project that becomes a git repo AFTER the first start still
-  gets the hook exactly once.
+  bind-mounted project dir (which does not exist at build); the `graphify install` step
+  runs **once per project**, guarded by a marker file
+  (`~/project/.ai-platform/.graphify-installed`) so user edits to those files are not
+  clobbered on every restart. Immediately BEFORE that install, when the project is not
+  already a git repo, `registerGraphify` runs **`git init`** (so every workspace is
+  git-backed; this writes `.git` into the bind-mounted project on the host). It then
+  runs **`graphify hook install` on EVERY start** when a `.git` dir is present — `hook
+  install` is idempotent (it rewrites the managed hook), so there is deliberately no
+  marker, and the hook step is decoupled from the per-CLI install list (it runs even for
+  an omp/openclaw/hermes-only project).
   Graphify's headless LLM backend is an **Ollama model chosen at `ai create`** (the
   wizard's optional model+tag select, or `--graphify-model`), stored as
   `agent.graphify_model` in the project `config.yaml`. The chosen model is pulled
@@ -982,6 +996,9 @@ environment setup (`ai create`, CLI §3.1) from the supported list:
 * **Claude Code**
 * **Codex**
 * **Gemini CLI**
+* **Copilot** (GitHub Copilot CLI) — forced-OAuth / gateway-incapable (see auth modes)
+* **OpenClaw** — selectable; wired to LiteLLM (gateway/api-key) like OpenCode/Pi
+* **Hermes** — selectable; wired to LiteLLM (gateway/api-key) like OpenCode/Pi
 
 Selection is **multi-select**: install any subset (at least one), with **OpenCode
 and Pi** pre-selected by default. The chosen CLIs are written into the project's
@@ -989,6 +1006,16 @@ and Pi** pre-selected by default. The chosen CLIs are written into the project's
 the project rather than a fixed, baked-in surface. The **default agent** — which
 CLI new agents use unless told otherwise — is recorded as `agent.default_tool`
 (repo-layout §12.4) and must be one of the installed CLIs (default OpenCode).
+
+**Per-agent auth mode** (`agent.auth_modes`, chosen at `ai create`): each gateway-capable
+CLI records `api-key` (DEFAULT — route through the gateway with a scoped LiteLLM virtual
+key, so the tool firewall + secret masking apply) or, for the three CLIs with a first-party
+subscription login (**Claude Code, Codex, Gemini** — `config.OAuthCapableCLIs()`), `oauth`
+(the CLI's own subscription login, talking DIRECTLY to the provider, **bypassing the gateway
+and all guardrails**). OpenCode/Pi/omp/OpenClaw/Hermes have no subscription and are ALWAYS
+gateway/api-key. **Copilot** is forced-OAuth (`config.ForcedOAuthCLIs()`): gateway-incapable,
+authenticates natively to GitHub, never offered an auth-mode choice. `ai create` WARNS that
+an oauth agent's traffic bypasses the firewall/masking/egress audit.
 
 Context optimization (§8–10):
 
@@ -999,9 +1026,10 @@ Context optimization (§8–10):
   tuning rides in the request body (§10). Headroom is now **also installed inside the
   workspace image** (`uv tool install "headroom-ai[proxy]"`) for a future in-VM
   `headroom wrap <cli>` (wired in a follow-up).
-* **Caveman** — output compression, **not** baked into the image: seeded per
-  project into `<project>/.ai-platform/skills/caveman/` at creation and
-  **git-tracked** (an agent skill, see §9), so it travels with the project.
+* **Caveman** — output compression, **not** baked into the image and **not**
+  git-tracked: installed at workspace start by its own upstream installer
+  (`registerCaveman`, network-bound, best-effort) and mirrored into the shared skills
+  pool (an agent skill, see §9).
 
 MCP servers are configured and run by the agent itself (the platform does not
 manage MCP).
@@ -1339,7 +1367,10 @@ supplies the routing prefix. There is no default model.
 
 ### In-VM agent provider config — keyless per-CLI project configs, key in-VM only
 
-All **six** agent CLIs route through the gateway **by default**. Each CLI's provider
+The **eight** gateway-capable agent CLIs (all except forced-OAuth Copilot) route through
+the gateway **by default** — subject to per-agent auth mode: an `oauth`-mode Claude
+Code/Codex/Gemini goes direct to its provider and gets no gateway config (see auth modes
+above). Each CLI's provider
 config is written at **that CLI's own default per-project location** inside the
 bind-mounted project dir (`~/project` = `/home/workspace/project`, one directory shared
 host↔guest, so the project is self-describing on host disk), (re)generated on **every
@@ -1390,9 +1421,11 @@ ONE copy of the project's agents / skills / prompts. At workspace start (BEFORE 
 registration, so Graphify's per-CLI skill files land in the pool) each pool is symlinked
 (relative) into each **installed** CLI's real per-project dir:
 
-* `skills` → `.opencode/skills`, `.claude/skills`, `.pi/skills`
-* `agents` → `.opencode/agents`, `.claude/agents`
-* `prompts` → `.opencode/commands`, `.claude/commands`, `.gemini/commands`, `.pi/prompts`
+* `skills` → `.opencode/skills`, `.claude/skills`, `.pi/skills`, `.omp/skills`
+* `agents` → `.opencode/agents`, `.claude/agents`, `.omp/agents` (omp reads its own
+  native `.omp/agents` and deliberately skips `.claude/agents`)
+* `prompts` → `.opencode/commands`, `.claude/commands`, `.gemini/commands`,
+  `.pi/prompts`, `.omp/commands`
 
 Kinds a CLI has no concept for are skipped (codex/gemini have no skills/agents). Caveman
 still lives at `<project>/.ai-platform/skills/caveman/SKILL.md` (§9) and is thereby shared
@@ -1628,7 +1661,7 @@ Workspace mount location (guest):
   project.yaml       # tracked — { name, os, created }
   # shared resource pool — symlinked into each installed CLI's dir at start (§15):
   agents/            #   agent definitions
-  skills/caveman/    #   platform-seeded Caveman skill (§9), shared to CLIs
+  skills/            #   skills — incl. Caveman (installed at start, §9) + Graphify
   prompts/           #   prompt/command definitions
   projects/          #   reserved
   .gitignore         # ignores run/
@@ -1689,13 +1722,17 @@ platform never creates per-agent workspaces, branches, or worktrees.
 
 # 21. Git Workflow
 
-The platform has **no git involvement at all** — version control is out of
-scope. It does not init, clone, branch, commit, or merge. `ai create`
-only writes the `.ai-platform/` environment definition into the current
-directory and leaves any existing files (including an existing repo) untouched.
-**All git is the user's and the in-workspace agent's job** — init, clone,
-branches, commits, rebases, merges, conflict resolution, worktrees, and pull
-requests. The platform makes no model calls and runs no git.
+Version control is **largely** out of scope — with ONE deliberate exception. The
+`ai create` command writes only the `.ai-platform/` environment definition into the
+current directory and leaves existing files (including an existing repo) untouched; it
+does not clone, branch, commit, or merge. **The one git the platform runs** is an
+internal `git init` at every **workspace start** when the project is not already a git
+repo (immediately before Graphify registration, so the Graphify git hook — installed
+every start — always has a repo to attach to; this writes `.git` into the bind-mounted
+project on the host, §12). Everything else — clone, branches, commits, rebases, merges,
+conflict resolution, worktrees, remotes, and pull requests — is the user's and the
+in-workspace agent's job. The platform makes no model calls, and runs no git beyond
+that `git init` + `graphify hook install`.
 
 ---
 
@@ -1812,11 +1849,11 @@ Image    (built from <project>/.ai-platform/Dockerfile, §25; read-only)
  + Overlay (persistent writable layer, host-backed)
 ```
 
-The **overlay is the persistence mechanism**, implemented with a Microsandbox
-**named volume** per workspace. The microVM root (from the OCI image) is
-disposable; everything written on top of it lands in the overlay volume, which
-is stored on the host and re-mounted every time the workspace starts or is
-recreated.
+The **overlay is the persistence mechanism**, implemented as a **host bind mount**
+of `~/.ai-platform/overlays/<workspace-id>` into the microVM at `/persist` (per
+workspace) — not a Microsandbox named volume. The microVM root (from the OCI image)
+is disposable; everything written on top of it lands in the overlay dir on the host,
+re-mounted every time the workspace starts or is recreated.
 
 ## What Persists
 
@@ -1843,8 +1880,8 @@ the workspace persist independently of the read-only image:
 
 ## Lifecycle
 
-* mounted over the microVM root (the image built from `.ai-platform/Dockerfile`)
-  at workspace start, as a Microsandbox named volume (§6.2, §7)
+* mounted into the microVM at `/persist` at workspace start, as a host bind mount
+  of `~/.ai-platform/overlays/<workspace-id>` (§6.2, §7)
 * survives workspace stop/start
   (`ai stop` keeps the overlay; `ai start`/`ai restart` re-mounts it)
 * removed only on **permanent** removal: `ai delete` (alias `ai destroy`) removes
@@ -2190,7 +2227,7 @@ This cleanly splits **audit** from **enforcement**:
 * **Names only — not connection verdicts, not direct-IP egress.** It is a record
   of attempted *resolutions*, not of allowed/blocked connections, and traffic to a
   literal IP never touches DNS so never appears here.
-* **DNS resolves under default-deny via the `host` group (verified, msb 0.5.7).**
+* **DNS resolves under default-deny via the `host` group (verified, msb 0.6.1).**
   Under a `deny`/`public` posture msb filters DNS like any other egress, so a
   policy whose rules are all host-name/IP based matches nothing at DNS-decision
   time (the query name has not resolved to an IP yet) and *every* lookup would be

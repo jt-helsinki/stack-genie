@@ -201,8 +201,11 @@ ai ui                                # K9s-style dashboard: Services · Workspac
                                      #   Local/Cloud Models · API Keys · Settings
 ```
 
-`ai ui` navigates with Tab/←→/number keys (quit `q`); it does not capture the
-mouse, so native text selection works. The per-workspace view has Workspace ·
+`ai ui` navigates with Tab/←→/number keys (quit `q`) and captures the mouse by
+default — the tab bars are clickable and the wheel scrolls the focused list.
+Toggle capture off in the **Settings** tab (`m`) to restore modifier-free native
+text selection (with capture on, selection needs the terminal's modifier —
+Shift, or Option on macOS). The per-workspace view has Workspace ·
 **Logs** · **Metrics** · Network · Context · **Shell** (session manager —
 attach/new/kill) · Apps sub-tabs; the **Workspace** tab shows the summary plus a
 scrollable live **Sandbox Configuration** block, the **Logs** tab is the live,
@@ -231,8 +234,8 @@ It streams progress, asks per external dependency (`msb`), and logs to
 
 ```bash
 make build                    # -> bin/ai
-make fmt-check vet test build  # the pre-commit gate
-make lint                     # golangci-lint
+make check                     # the pre-commit gate: fmt-check vet lint test build
+make lint                     # golangci-lint (also run standalone)
 ```
 
 ## Releasing

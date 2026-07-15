@@ -1,86 +1,15 @@
 # AI Development Platform — architecture
 
-Top-level containers and the model data path. The diagram below is
-[Mermaid](https://mermaid.live) — it renders to an image on GitHub and in most
-Markdown viewers; an ASCII version follows for terminals.
+Top-level containers and the model data path in words. The **canonical diagram** is
+[`docs/architecture.mmd`](architecture.mmd) (Mermaid source, complete and
+authoritative — includes every service: proxy, headroom, litellm + DB, presidio,
+ollama, valkey, redisinsight, dns); its rendered export `docs/architecture.png` is
+embedded in [`architecture-overview.md`](architecture-overview.md).
 
-> **Note:** `docs/architecture.png` (used by `docs/architecture-overview.md`) is a
-> rendered export of `docs/architecture.mmd` and must be **regenerated from that
-> Mermaid source** after any architecture change (e.g.
-> `mmdc -i docs/architecture.mmd -o docs/architecture.png`).
-
-## Containers + model data flow (Mermaid)
-
-```mermaid
-flowchart LR
-  subgraph host["Host machine (macOS Apple Silicon / Linux)"]
-    direction LR
-
-    subgraph vm["Microsandbox microVM — one per project workspace (msb)"]
-      agent["Agent CLI<br/>opencode · pi · claude · codex · gemini<br/>(in a tmux session)"]
-      runtime["In-VM container runtime<br/>rootful containerd · nerdctl · runc · CNI"]
-      apps["Opt-in in-VM apps (nerdctl)<br/>Open WebUI · AnythingLLM<br/>per-(workspace,app) host port"]
-    end
-
-    subgraph tier["Docker service tier — aip-net (all internal-only except nginx + loopback DB/DNS)"]
-      proxy["aip-proxy<br/>nginx · host :18787 — SOLE ENTRY, TLS-ready<br/>/ &amp; /v1 → LiteLLM · /llm → LiteLLM · /ollama → Ollama<br/>vhost: litellm.&lt;domain&gt;"]
-      headroom["aip-headroom :8787<br/>input-compression guardrail service<br/>LiteLLM calls it in-process (internal only)"]
-      litellm["aip-litellm :4000<br/>router + user-selectable guardrails<br/>(Headroom compression on by default;<br/>secret-masking/hide-secrets/tool-firewall opt-in)<br/>admin UI via /llm + litellm.&lt;domain&gt; (internal only)"]
-      db[("aip-litellm-db<br/>Postgres (loopback :5442)<br/>keys · spend · creds")]
-      presidio["aip-presidio-{analyzer,anonymizer}<br/>secret masking"]
-      ollama["aip-ollama :11434<br/>local models (no default — DB-backed)<br/>(internal only)"]
-      dns["aip-dns (loopback :15353)<br/>CoreDNS egress audit"]
-    end
-  end
-
-  cli["Host CLI / UI<br/>(loopback 127.0.0.1:18787)"]
-  cloud["Cloud providers<br/>OpenAI · Anthropic · Gemini · Groq<br/>(real keys held in LiteLLM)"]
-
-  agent -->|"OpenAI API · base_url http://host.microsandbox.internal:18787/v1<br/>Authorization: scoped LiteLLM virtual key"| proxy
-  apps -->|"same gateway path (model calls)"| proxy
-  cli -->|"/v1 model path · /llm + /ollama admin"| proxy
-  agent -. "every DNS name (audited);<br/>egress default PUBLIC, re-lockable to deny" .-> dns
-  proxy --> litellm
-  litellm -->|"pre_call compress"| headroom
-  litellm <-->|"pre/post-call guardrails (when enabled)"| presidio
-  litellm --- db
-  litellm -->|"local route (registered ollama model)"| ollama
-  litellm -->|"cloud route (real provider key)"| cloud
-```
-
-## Same thing in ASCII
-
-```text
-                     Host machine
- ┌───────────────────────────────────────────────────────────────────────────┐
- │  Microsandbox microVM (per workspace)                                       │
- │  ┌───────────────────────────────┐                                         │
- │  │ agent CLI (opencode/pi/…)      │   egress: DEFAULT PUBLIC (msb net-rules)│
- │  │ tmux session                   │ ······ DNS ······▶ aip-dns (audit)      │
- │  │ in-VM runtime: containerd+     │   DNS-audited; re-lockable to deny      │
- │  │ nerdctl; opt-in apps Open      │                                         │
- │  │ WebUI / AnythingLLM (nerdctl)  │                                         │
- │  └───────────────┬───────────────┘                                         │
- │                  │ OpenAI API, base_url = http://host.microsandbox.internal:18787/v1             │
- │                  │ Authorization: scoped LiteLLM virtual key (no real keys)│
- │  Docker service tier (aip-net) — every container internal-only but nginx     │
- │                  ▼                  (loopback exceptions: DB :5442, DNS :15353)│
- │            aip-proxy (nginx, host :18787 — SOLE host entry)                  │
- │              / & /v1 → LiteLLM · /llm → LiteLLM · /ollama → Ollama           │
- │              vhosts: litellm.<domain> · valkey.<domain> (UIs → :4000/:5540)  │
- │                  ▼                    ▲                                      │
- │            aip-litellm  :4000         └── host CLI / UI (loopback :18787)    │
- │              router · user-selectable guardrails (internal-only)            │
- │              ├─ pre_call compress ─▶ aip-headroom :8787 (internal-only)      │
- │              ├─ secret masking (opt-in) ─▶ aip-presidio (secrets)           │
- │              └─ tool-firewall (opt-in) · aip-litellm-db (Postgres, :5442)   │
- │          ┌───────┴────────┐                                                 │
- │          ▼                ▼                                                 │
- │     aip-ollama       Cloud providers (OpenAI/Anthropic/Gemini/Groq)         │
- │     :11434           real provider keys live IN LiteLLM, never in the VM    │
- │     local models                                                            │
- └───────────────────────────────────────────────────────────────────────────┘
-```
+> **Note:** after any architecture change, edit `docs/architecture.mmd` and
+> regenerate the PNG from it (e.g. `mmdc -i docs/architecture.mmd -o
+> docs/architecture.png`). Do not hand-maintain a separate diagram here — the single
+> source avoids drift.
 
 ## The path, in words
 
@@ -137,13 +66,15 @@ was removed entirely.
 Every OS base image also bakes in a common dev-tooling layer: Git, the GitHub CLI,
 the latest **Python 3** (system-wide, backing the per-project `~/project/.venv-msb`
 virtualenv created at start), **uv** (Astral's Python package/tool manager, installed
-for the workspace user onto `~/.local/bin`), and **Graphify** (the knowledge-graph
+for the workspace user onto `~/.local/bin`), **Graphify** (the knowledge-graph
 skill for AI coding assistants — PyPI `graphifyy`, CLI `graphify`), installed via
 `uv tool install "graphifyy[…extras]"` with all optional extras except the
-region/DB-specific `chinese,azure,bedrock,falkordb,neo4j,leiden,dm`. Each selected
+region/DB-specific `chinese,azure,bedrock,falkordb,neo4j,leiden,dm`, **rtk**
+(`rtk-ai/rtk`, a dev-command output compressor, via its `install.sh`), and the
+**Headroom** CLI (`headroom-ai[proxy]`, for in-VM `headroom wrap <cli>`). Each selected
 agent CLI registers Graphify with itself **at workspace start**, once per project
 (`graphify install` for claude-code, `graphify install --platform <cli>` for
-codex/gemini/opencode/pi) — not in the Dockerfile, since `--project` writes into the
+codex/gemini/opencode/pi/copilot) — not in the Dockerfile, since `--project` writes into the
 bind-mounted project dir. Graphify's headless LLM backend is an Ollama model chosen
 at `ai create` (`--graphify-model`), routed through the gateway as `ollama/<model>`.
 Node.js is likewise baked into every base, so neither Python nor Node is a

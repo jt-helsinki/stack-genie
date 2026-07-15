@@ -36,7 +36,9 @@ external-tool integration approach, the Slice 1 build sequence, and CI/testing.
 * **Declarative config/templates** in YAML/JSON; never executable logic.
 * External components are invoked as subprocesses or over HTTP, never
   reimplemented: Microsandbox (the `msb` CLI), LiteLLM (host service over HTTP),
-  docker / podman (subprocess). Version control is out of scope — no `git`/`gh`.
+  docker / podman (subprocess). Version control is largely out of scope — no `gh`, no
+  clone/remote, and no `git` HOST prerequisite; the only git is an internal in-VM `git
+  init` at workspace start (to seat the Graphify hook, architecture §12).
 
 Key libraries: `cobra` (commands), `viper`-free hand-rolled config merge (to
 keep the precedence rules in arch §27 explicit), `slog` (structured logs), stdlib
@@ -91,8 +93,11 @@ keep the precedence rules in arch §27 explicit), `slog` (structured logs), stdl
 │   ├── uninstall/               # native `ai uninstall` teardown
 │   └── doctor/                  # consolidated health checks → repair suggestions
 ├── installers/                  # install.sh (+ install-local.sh) thin launchers (macOS/Linux)
-├── test/acceptance/             # Go acceptance harness + fixtures (AT §1.6) — [S1] stub
-│   └── fixtures/                # sample-app, large-repo gen, mock-provider
+├── test/acceptance/             # Go acceptance harness (AT §1.6); in-process mock
+│                                #   provider (httptest) + inline provider config —
+│                                #   NO fixtures/ dir (mock is code, not files)
+├── test/integration/           # live black-box suite (//go:build integration,
+│                                #   `make test-integration`) against a real stack
 ├── go.mod
 ├── Makefile
 └── .github/workflows/ci.yml
@@ -264,7 +269,8 @@ refer to the CLI spec and architecture spec respectively.
   on a TTY
   (the wizard always shows); under `--json`/no-TTY the spec is built straight from
   the flags with no prompt and `--os` is **required** (missing `--os` → exit 2).
-  Then, in the current directory (no git — VCS is out of scope), write
+  Then, in the current directory (the `create` command runs no git; the workspace
+  START git-inits a non-git project — architecture §12), write
   `.ai-platform/` (Dockerfile = OS template + selected stack snippets + selected
   CLIs / config incl. `agent.tools`+`default_tool` + any selected `apps` (with an
   allocated unique host port each) / `profile.yaml` incl. `stacks` / project.yaml /
@@ -277,9 +283,9 @@ refer to the CLI spec and architecture spec respectively.
   Tests: AT §3.1 (incl. no-TTY + abort), §6.3 (CLI selection), §6.4 (stack
   selection), §3.3, §9.1, §9.2.
 * **M7 — `ai doctor`.** All S1 dependency/health checks with actionable output.
-  Tests: AT §10.1, §14.1.
-* **M8 — Acceptance harness.** Go harness (ephemeral `$AIP_TEST_HOME`, fixtures,
-  mock-provider, credential sentinel) with all `[S1]` tests green. Tests: AT
+  Tests: AT §11.1, §14.1.
+* **M8 — Acceptance harness.** Go harness (ephemeral `$AIP_TEST_HOME`, in-process
+  mock provider, credential sentinel) with all `[S1]` tests green. Tests: AT
   §1.6 plus every `[S1]`-tagged case, AT §16.1.
 
 Slice 1 is complete only when every `[S1]` test passes with no manual config.
@@ -335,9 +341,14 @@ are grep-able (`hardware bring-up`) and tracked in `docs/HARDWARE-BRINGUP.md`.
 * **Unit tests** per package (state atomicity, config merge precedence, runtime
   detection, sandbox name/lifecycle mapping, output envelope).
 * **Acceptance harness** (`test/acceptance/`) implements AT §1.6: ephemeral HOME,
-  fixtures, mock provider that records injected credentials, non-interactive
-  confirmation via `--yes`. Tests assert the CLI §19 JSON envelope and CLI §18
-  exit codes — never scraped text.
+  an **in-process** mock provider (`httptest`) that records injected credentials,
+  provider config written inline (no `fixtures/` dir), non-interactive confirmation
+  via `--yes`. Tests assert the CLI §19 JSON envelope and CLI §18 exit codes — never
+  scraped text.
+* **Integration suite** (`test/integration/`, `//go:build integration`, `make
+  test-integration`) — a live black-box suite that drives the real service stack
+  (setup/services/keys/workspace/apps/egress/inference/uninstall). Runs only where a
+  full stack is available (Apple Silicon), separate from the hosted unit lane.
 * **CI** (`ci.yml`), split by hardware needs:
   * **hosted runners** (every push): build the binary, `go vet`/`golangci-lint`,
     and the full unit-test suite. No virtualization required.

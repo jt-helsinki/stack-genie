@@ -108,8 +108,9 @@ CLI must behave identically on:
   (YAML / JSON). They are never executable application logic.
 * External components (Microsandbox via the `msb` CLI, LiteLLM, Headroom,
   Presidio, Ollama, docker / podman) are invoked as subprocesses or over their
-  HTTP APIs — never reimplemented. Version control is out of scope: the platform
-  runs no `git`/`gh`.
+  HTTP APIs — never reimplemented. Version control is largely out of scope: the CLI
+  exposes no git commands and never runs `gh`; the only git it runs is an internal
+  `git init` at workspace start (to seat the Graphify hook — §6), never clone/remote.
 
 ---
 
@@ -423,8 +424,10 @@ Idempotent: safe to re-run after a partial or completed uninstall.
 ## 3.1 Create Workspace
 
 ```bash id="c4"
-ai create [<name>] [--name <name>] [--os <os>] [--agents <list>] [--stacks <list>] [--apps <list>]
+ai create [<name>] [--name <name>] [--os <os>] [--shell <bash|zsh>] [--agents <list>]
+          [--auth-mode <cli=mode>] [--stacks <list>] [--apps <list>] [--graphify-model <ref>]
           [--cpus <n>] [--memory <size>] [--ports <list>] [--location <dir>]
+          [--idle-timeout <dur>] [--caveman[=false]]
 ```
 
 `ai create` sets up a new environment at the chosen **location** (default: the
@@ -441,9 +444,11 @@ one command:
   (default `bash`), written to `workspace.shell` and applied at every start by
   `applyShellChoice`
 * `--agents <list>` — comma-separated agent CLIs
-  (`opencode,pi,omp,claude-code,codex,gemini,copilot`); defaults to `opencode,pi`,
-  and the first listed becomes the default agent CLI (`copilot` is forced-OAuth /
-  gateway-incapable)
+  (`opencode,pi,omp,claude-code,codex,gemini,copilot,openclaw,hermes`); defaults to
+  `opencode,pi`, and the first listed becomes the default agent CLI. `opencode`/`pi`/
+  `omp`/`openclaw`/`hermes` are always gateway/api-key; `claude-code`/`codex`/`gemini`
+  are gateway by default but OAuth-selectable (see `--auth-mode`); `copilot` is
+  forced-OAuth / gateway-incapable
 * `--auth-mode <cli=mode>` — per-agent auth mode, repeatable/comma-separated, for
   the OAuth-capable CLIs `claude-code`/`codex`/`gemini` (`api-key`|`oauth`;
   default `api-key`). `api-key` routes through the gateway with the scoped virtual
@@ -493,6 +498,10 @@ one command:
   (a directory with a `.ai-platform/project.yaml` at it or any ancestor); otherwise
   create exits `2`. In the wizard the location field offers **path autocompletion**;
   the flag offers shell directory completion.
+* `--idle-timeout <dur>` — the microVM idle timeout (e.g. `24h`), written to
+  `microsandbox.idle_timeout`.
+* `--caveman[=false]` — install the Caveman output-compression toolkit (default
+  `true`); `--caveman=false` skips it.
 
 On a terminal (with `--json` off) the wizard **always** runs, **pre-seeded** with
 any flags you passed — flags set the defaults rather than bypassing the UI. Under
@@ -509,10 +518,12 @@ directory's basename. The microVM itself is created through the **Microsandbox G
 SDK** (`internal/workspace` SDK backend), with the resolved CPU/memory/ports applied
 to the sandbox at start.
 
-**Version control is out of scope.** `ai create` does **not** init or
-clone a git repo — it only writes the `.ai-platform/` environment definition into
-the directory and leaves any existing files untouched. Bring your own git
-(architecture §21).
+**Git.** The `ai create` command itself does **not** init or clone a git repo — it
+only writes the `.ai-platform/` environment definition and leaves existing files
+untouched. However, at every **workspace start** the platform runs `git init` in the
+project dir when it is not already a git repo (right before Graphify registration, so
+the Graphify git hook always has a repo to attach to); this writes `.git` into the
+bind-mounted project on the host. Cloning remains out of scope — bring your own remote.
 
 **Attach if one already exists.** If the current directory (or any parent) is
 already a workspace, `create` does **not** scaffold a new one — it **attaches** to
@@ -554,9 +565,9 @@ Steps, in order:
    the workspace user's login shell to zsh.
 3. **Agent CLIs** — **multi-select checkboxes**; `OpenCode` and `Pi` pre-checked
    (both installed by default); choose any subset of `OpenCode`, `Pi`, `Omp`,
-   `Claude Code`, `Codex`, `Gemini`, `Copilot` (at least one). All connect to
-   models through LiteLLM **except** `Copilot` (GitHub Copilot CLI), which is
-   forced-OAuth / gateway-incapable and talks directly to GitHub.
+   `Claude Code`, `Codex`, `Gemini`, `Copilot`, `OpenClaw`, `Hermes` (at least one).
+   All connect to models through LiteLLM **except** `Copilot` (GitHub Copilot CLI),
+   which is forced-OAuth / gateway-incapable and talks directly to GitHub.
 4. **Default agent CLI** — single-select from the CLIs chosen in step 3; default
    `OpenCode` (recorded as `agent.default_tool`).
 5. **Software stacks** — **multi-select checkboxes**; choose the language/tool
@@ -884,7 +895,8 @@ the tmux session.
   session is opened with one atomic **`tmux new-session -A`** (create-or-attach;
   the daemonized server makes it persist after a detach + listed).
 * **`ai agent <cli>`** starts (or reattaches to) a **per-CLI** session named after
-  the CLI — `opencode`, `pi`, `omp`, `claude-code` (runs `claude`), `codex`, `gemini` —
+  the CLI — `opencode`, `pi`, `omp`, `claude-code` (runs `claude`), `codex`, `gemini`,
+  `copilot`, `openclaw`, `hermes` —
   so each agent has one durable session and several can run side by side. An
   **unknown `<cli>`** is exit `2` with the valid set listed.
 * **`ai attach [session]`** attaches to an **existing** session (it never creates —
@@ -1112,9 +1124,12 @@ session surface, not an agent-orchestration system.
 
 # 6. Git Commands — Removed
 
-The platform runs no git at all (§3.1, architecture §21). It exposes no git
-commands; init/clone, branching, merging, and conflict resolution are the user's
-and the in-workspace agent's job.
+The platform exposes **no git commands** in its CLI surface; branching, merging,
+committing, and conflict resolution are the user's and the in-workspace agent's job.
+The one exception is internal, not a command: at every **workspace start** the platform
+runs `git init` on a non-git project (right before Graphify registration, so the
+Graphify git hook has a repo — §3.1, architecture §12/§21). It never clones, adds a
+remote, or manages worktrees.
 
 ---
 
@@ -1379,8 +1394,8 @@ fail) conveys health, rather than the process exit code.
 ## 10.2 Service Management
 
 The `ai` CLI is the single control plane for all host services — the platform
-containers `dns`, `ollama`, `presidio`, `litellm`, `headroom`, and `proxy` (there
-are no optional host services). The user never
+containers `dns`, `ollama`, `presidio`, `valkey`, `redisinsight`, `litellm`,
+`headroom`, and `proxy` (there are no optional host services). The user never
 invokes `docker compose`, `launchctl`, or `systemctl` directly. The whole service
 tier runs as containers (see architecture §5, "Host Services Control Plane").
 (The Microsandbox workspace runtime is not a long-running service — it is driven
@@ -1399,9 +1414,10 @@ ai services compose                # write a DEBUG-ONLY ~/.ai-platform/docker-co
 ```
 
 `<service>`: `ollama` | `presidio` | `litellm` | `headroom` | `proxy` | `dns` |
-`all` (no arg = all). All six are **core** (always on). The optional host-service
-set is currently **empty**, so `enable`/`disable` have nothing to act on
-(retained for forward compatibility).
+`valkey` | `redisinsight` | `all` (no arg = all). All eight are **core** (always on).
+The optional host-service set is currently **empty**, so `enable`/`disable` have
+nothing to act on (retained for forward compatibility). (`presidio` reports
+"disabled" unless the `secret-masking` guardrail is selected at `ai setup`.)
 
 Behavior:
 
@@ -1443,12 +1459,12 @@ Behavior:
 * an unknown service exits `2`. `ai services console [<service>]` lists/opens a
   service's admin dashboard: with no argument it lists the services that have a
   console; with a name it **opens** that console in the browser, or — with
-  `--print` (and always under `--json`) — prints the URL instead. The only host
-  console is the **nginx subdomain UI** served on the single gateway port `:18787`:
-  `litellm.<domain>:18787/ui` (the LiteLLM admin UI) — where `<domain>` is the
-  platform base domain (`ai domain`, default `aip.local`). It is **not** the old
-  direct container port. (Open WebUI is now a per-workspace in-VM app; Odysseus was
-  removed.)
+  `--print` (and always under `--json`) — prints the URL instead. Host consoles are
+  **nginx subdomain UIs** served on the single gateway port `:18787`:
+  `litellm.<domain>:18787/ui` (the LiteLLM admin UI) and `valkey.<domain>:18787`
+  (RedisInsight, the Valkey cache GUI) — where `<domain>` is the platform base domain
+  (`ai domain`, default `aip.local`). These are **not** direct container ports. (Open
+  WebUI is now a per-workspace in-VM app; Odysseus was removed.)
 
 ## 10.3 LiteLLM gateway (`ai litellm`)
 
@@ -1672,7 +1688,7 @@ Options:
 
 ```bash id="c32"
 --workspace <project>
---service <microsandbox|ollama|presidio|litellm|headroom|proxy|dns>
+--service <microsandbox|ollama|presidio|valkey|redisinsight|litellm|headroom|proxy|dns>
 --tail
 --follow
 ```

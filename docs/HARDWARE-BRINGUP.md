@@ -78,8 +78,9 @@ code.
 - [ ] **Microsandbox** (`msb`) on `PATH`, code-signed with the
       `com.apple.security.hypervisor` entitlement under Developer ID + notarization.
 - [ ] `git`, `gh` — workspace agent tooling and the acceptance suite's
-      `requireGit` gate; the platform itself runs no git (VCS is out of scope, so
-      `ai create` does **not** use git).
+      `requireGit` gate. `ai create` does **not** use git; the only git the platform
+      runs is an internal in-VM `git init` at workspace start (to seat the Graphify
+      hook). No clone/remote/`gh`.
 
 ## 2. Remaining seams to wire/verify
 
@@ -119,9 +120,12 @@ allow-listed host services that use the `gateway` token resolve to it in every m
       service's logs full-pane, auto-refreshing (the `l` key). The on-disk
       snapshot (`ai setup` / `ai services status` → `~/.ai-platform/logs`) remains
       for the non-follow path.
-- [ ] **microVM (`msb`) log follow** — `msb logs -f <name>` streaming for
-      `ai logs --workspace <p> --follow` is the remaining piece (needs a running
-      microVM to verify).
+- [ ] **microVM (`msb`) log follow (CLI backend only)** — on the DEFAULT SDK
+      backend the workspace log already streams live over the relay-free
+      `LogStream` (see §2.8), so `ai ui`'s Logs sub-tab and `ai logs --workspace
+      <p> --follow` follow without polling. The remaining piece is the CLI-backend
+      (`AIP_WORKSPACE_BACKEND=cli`) fallback that shells out to `msb logs -f
+      <name>` (needs a running microVM under the CLI backend to verify).
 
 ### 2.3 Tool-firewall verification + nginx proxy readiness probe
 
@@ -303,7 +307,7 @@ Every host-persisted **system** volume now lives under `~/.ai-platform/volumes/<
 
 Every workspace microVM image now ships a **rootful** OCI container runtime —
 containerd + nerdctl + runc + CNI plugins + buildkit — installed from the pinned
-`nerdctl-full` release tarball (`NERDCTL_VERSION=2.3.3`, arch-aware amd64/arm64,
+`nerdctl-full` release tarball (`NERDCTL_VERSION=2.3.4`, arch-aware amd64/arm64,
 extracted to `/usr/local`) in every OS base Dockerfile, plus the runtime OS deps
 CNI needs (`ca-certificates`, `iptables`/`iptables-nft`, `iproute`/`iproute2`).
 The runtime is **started at workspace start**, not baked running into the image:
@@ -332,7 +336,7 @@ unit-tested. What remains:
       egress) — the live `nerdctl run`/`pull` is still a bring-up item (it overlaps
       §2.7's in-VM apps).
 - [ ] **arch-aware tarball** — confirm `uname -m` → `arm64` on Apple Silicon
-      selects `nerdctl-full-2.3.3-linux-arm64.tar.gz` (and `amd64` on Linux x86_64).
+      selects `nerdctl-full-2.3.4-linux-arm64.tar.gz` (and `amd64` on Linux x86_64).
 
 ### 2.6b Base-image per-user dev tooling — rtk (arch §7)
 
@@ -376,8 +380,9 @@ fully unit-tested with fakes:
   its duration). `Manager.Start` only publishes their ports and brings containerd up;
   each app starts when requested via `ai apps start`/`add`/`restart` (`runContainer`
   calls `EnsureRuntime` to bring containerd up first, retrying once if the runtime is
-  unreachable). The microVM is created with 4G memory so a heavy app pull does not
-  OOM-kill the in-VM containerd.
+  unreachable). The microVM is created with the project's `workspace.memory_limit`
+  (create default 8 GB, capped below host RAM) so a heavy app pull does not OOM-kill
+  the in-VM containerd; an unset/unparsable value falls back to 4G.
 
 The LIVE `nerdctl` behaviour is the bring-up item (grep `hardware bring-up` in
 `internal/apps` and `internal/workspace`):
@@ -435,11 +440,20 @@ pass):
 - [x] Core service `[S1]` tests written (gated by `hardwareAvailable()`) —
       `test/acceptance/s1_hardware_test.go`: §9.1 credentialed request, §16.2
       workspace isolation, §16.3 egress confinement.
+- [ ] **Update the stale `[S1]` hardware tests before the live run.** Two assertions
+      reference retired surface and will fail on hardware as written:
+      (a) `s1_hardware_test.go` still calls `ai secrets set`/`secrets map` — the
+      `secrets` command and `internal/secrets` are GONE; rewrite to `ai keys add
+      <provider> --stdin` (there is no per-project env mapping anymore).
+      (b) `s1_remaining_test.go` `TestModelStatusOnHardware` asserts a non-empty
+      default model, but `litellm.DefaultRouting()` now returns the zero `Routing{}`
+      (catalog-driven, no default model) so `StatusInfo.Default` is always empty —
+      drop that assertion (assert `Providers`/`Healthy` only).
 - [x] Remaining `[S1]` tests written — `test/acceptance/s1_remaining_test.go`:
       §6.1/§6.3/§6.4 Dockerfile/agent-CLI/stack probes (run host-side), §2.1–2.3
       setup/idempotency and §7.1/§7.2 model status/test (gated by
       `hardwareAvailable()`). The hardware-gated ones still need live-host
-      verification (next item).
+      verification (next item) after the updates above land.
 - [ ] Run/verify the acceptance suite on hardware — `make test-acceptance` already
       runs `go test -count=1 ./test/acceptance/` (the package passes `go test ./...`);
       confirm the `hardwareAvailable()`-gated `[S1]` tests go green on a live host and
