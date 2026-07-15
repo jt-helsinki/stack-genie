@@ -1197,6 +1197,25 @@ func RelaunchLiteLLMWithAuth(password, masterKey string) error {
 	if _, err := command.CombinedOutput(); err != nil {
 		return serviceStartError("LiteLLM gateway")
 	}
+	// LiteLLM was just recreated, so on the aip-net bridge it likely came up on a
+	// NEW container IP. nginx resolves the literal `aip-litellm` proxy_pass upstream
+	// to an IP at config-LOAD and caches it for the worker's lifetime (no `resolver`
+	// directive) — so it keeps forwarding to the stale, now-dead IP and every
+	// gateway request returns 502 Bad Gateway. The reconcile sidesteps this by
+	// bringing nginx up LAST; the password relaunch is the one path that recreates
+	// an upstream AFTER nginx, so it must re-reconcile the proxy here to re-resolve
+	// the upstream. Best-effort — a proxy hiccup must not fail the secure step.
+	_ = ensureProxy(runtime.RealProber(), containerRuntime.Name, currentBindHost(), reconcileDomain())
+	// Poll for the gateway to come back healthy THROUGH the freshly-recreated proxy
+	// so callers (e.g. the initial model sync) don't hit it before LiteLLM is
+	// serving — mirrors ensureLiteLLM's post-launch readiness wait.
+	services := realServices{prober: runtime.RealProber()}
+	for attempt := 0; attempt < 15; attempt++ {
+		if services.serviceHealthy("litellm") {
+			break
+		}
+		time.Sleep(time.Second)
+	}
 	return nil
 }
 
