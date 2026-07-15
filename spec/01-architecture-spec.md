@@ -151,12 +151,10 @@ publish), except the two loopback-published support containers `aip-litellm-db`
 (`127.0.0.1:5442`) and `aip-dns` (`127.0.0.1:15353/udp`, for the microVM
 `--dns-nameserver`). See §5/§10 for the full nginx routing model.
 
-Headroom is a **shared host container** (`aip-headroom`, §10) that **LiteLLM calls
-in-process as a `pre_call` compression guardrail** (LiteLLM POSTs the request
-messages to `http://aip-headroom:8787/v1/compress`) — it is **no longer an nginx
-proxy in front of LiteLLM**; nginx routes to Headroom for nothing. Headroom is now
-**also installed inside each workspace image** (`uv tool install "headroom-ai[proxy]"`)
-for a future in-VM `headroom wrap <cli>` (wired in a follow-up).
+Headroom is a **shared host container** (`aip-headroom`) that LiteLLM calls
+in-process as a `pre_call` compression guardrail; nginx does not route to it, and it
+is also installed inside each workspace image for a future in-VM `headroom wrap
+<cli>` (§10).
 
 (The model-request path below involves the Headroom/LiteLLM/Presidio subset;
 Ollama is a container-tier service too — see §5. Microsandbox is not a
@@ -182,20 +180,13 @@ Provider · Caveman steers output                         (Context Optimization)
 ```
 
 Context Optimization sits *between* the agent and the model (Caveman steers the
-agent's output; Headroom compresses the input). Headroom is a **shared host
-container** (`aip-headroom`, §10) that LiteLLM calls **in-process as a `pre_call`
-guardrail**: the agent sends to the **nginx gateway** (host :18787) across the
-microVM boundary via `AI_PLATFORM_HOST`, nginx (`location /v1`) forwards
-**directly to LiteLLM** (internal-only on :4000), and LiteLLM's `headroom` guardrail
-POSTs the request messages to `http://aip-headroom:8787/v1/compress` and swaps in
-the compressed result before dispatch. LiteLLM runs the
-user-selected guardrails on every request (§15) — only enabled ones are rendered,
-and each rendered guardrail is `default_on` so even cloud calls can't opt out of an
-enabled guardrail. The real
-provider API keys live **in the LiteLLM gateway** (§17), never in the workspace;
-the workspace agent holds only a scoped LiteLLM virtual key. The
-LiteLLM → provider hops are host-side. See Sections 8–9 (context optimization),
-15 (LiteLLM + guardrails), 17 (keys-in-LiteLLM), and **29 (the full
+agent's output; Headroom compresses the input). The path: the agent sends to the
+**nginx gateway** across the microVM boundary via `AI_PLATFORM_HOST`, nginx forwards
+`/v1` **directly to LiteLLM**, which compresses the input via its in-process
+`headroom` guardrail (§10), runs the other enabled guardrails (§15), and attaches the
+real provider key from its own store on cloud calls (keys-in-LiteLLM, §17). The
+workspace agent holds only a scoped LiteLLM virtual key. See Sections 8–9 (context
+optimization), 15 (LiteLLM + guardrails), 17 (keys-in-LiteLLM), and **29 (the full
 per-component networking model + Microsandbox egress policy)** for detail.
 
 ---
@@ -314,58 +305,31 @@ in LiteLLM — they need no companion container; only Presidio, which backs the
 secret-masking guardrail, runs as its own analyzer + anonymizer containers, and it
 is reconciled only when the `secret-masking` guardrail is selected. §15.
 The in-process prompt-injection detector was removed — §15.)
-(Headroom is a shared host container that LiteLLM calls as a `pre_call` guardrail at
-`aip-headroom:8787/v1/compress`, §10. It is INTERNAL-ONLY on `aip-net` (nginx never
-routes to it); the `aip-proxy` nginx reverse proxy is the gateway entry on host
-:18787 — see §10/§15.)
+(Headroom is a shared host container that LiteLLM calls as a `pre_call` guardrail,
+INTERNAL-ONLY on `aip-net`; the `aip-proxy` nginx reverse proxy is the sole gateway
+entry on host :18787 — see §10.)
 
 **`aip-proxy` (nginx) is the SOLE host entry point to the service tier.** Every
 other service container is INTERNAL-ONLY on `aip-net` (reached by name) — none
 publishes a port to the host. Only nginx publishes, and it publishes a **single
 port**: host **:18787**. Everything is served on that one port, split by route and
-by `server_name` (Host-based vhosts):
+by `server_name` — the default server (the model path + the `/llm`/`/ollama`
+management surfaces) plus the two Host-based UI vhosts (`litellm.<domain>` → LiteLLM
+admin UI, `valkey.<domain>` → RedisInsight). The full route table, the UI vhosts, and
+the standalone `/etc/hosts` vs server-mode DNS operator contract are specified in §10.
+(Open WebUI is now a per-workspace in-VM app, §7 — not a host service; Odysseus has
+been removed from the platform entirely.)
 
-- The **DEFAULT server** (`server_name <domain> localhost _;`, `default_server`) —
-  the model path + management surfaces, what the host CLI (`127.0.0.1:18787` — IPv4,
-  not `localhost`, which can resolve to IPv6 `::1`) and
-  the microVM gateway (`host.microsandbox.internal:18787`) hit:
-  - `location /` → `aip-litellm:4000` (the DEFAULT route; agents + the UIs' model
-    calls ride this). LiteLLM compresses input via its in-process `headroom`
-    guardrail — nginx does not route to Headroom.
-  - `location /v1/` → `aip-litellm:4000` too (the agent chat path, SSE-friendly, unchanged).
-  - `location /llm/` → `aip-litellm:4000` (prefix stripped) — the LiteLLM admin
-    surface.
-  - `location /ollama/` → `aip-ollama:11434` (prefix stripped) — the Ollama HTTP
-    API.
-- The **web UIs are Host-based VHOSTS (subdomains)** on the SAME :18787, NOT
-  separate host ports — rendered data-driven from `services.UIVhosts()`: there are
-  two, `litellm.<domain>` → `aip-litellm:4000` (the admin UI at `/ui`) and
-  `valkey.<domain>` → `aip-redisinsight:5540` (the RedisInsight GUI), both always
-  on. The vhosts carry WebSocket upgrade headers (they serve the admin UIs
-  directly). The
-  `<domain>` is the resolved platform base domain (`runtime.yaml` `domain`, default
-  `aip.local`; `ai domain`). (Open WebUI is now a per-workspace in-VM app — see
-  `internal/apps`, §7 — not a host service; Odysseus has been removed from the
-  platform entirely.)
-
-In **standalone** mode `ai setup` writes an `/etc/hosts` block (with consent + sudo;
-on no-TTY/--json/declined it prints the block to add manually) pointing
-the UI subdomains (`litellm.<domain>` and `valkey.<domain>`) at `127.0.0.1`. In
-**server** mode the platform
-does NOT edit `/etc/hosts` — `ai setup`/`ai doctor` print the operator contract:
-create real DNS (`*.<domain>` wildcard or per-host) → this server's IP and provide
-a TLS cert terminated at nginx. The blocks are structured so a per-vhost
-`listen 443 ssl;` + ssl directives can be added later (TLS termination, out of
-scope now) — TLS terminates **per-vhost at nginx**, and once HTTPS is configured the
+TLS terminates **per-vhost at nginx** (out of scope now): the blocks are structured
+so a per-vhost `listen 443 ssl;` can be added later, and once HTTPS is configured the
 `:80`/http listener on the single :18787 entry **MUST** `return 301
-https://$host$request_uri;` (http → https redirect); no redirect is emitted today
-because there is no https listener yet (a 301 with no :443 would break every
-plain-http caller). nginx is reconciled LAST so its upstreams are
-up first. (`aip-litellm-db` and `aip-dns` stay loopback-published — DNS must stay
-`127.0.0.1:15353` for the microVM `--dns-nameserver`.) The live end-to-end routing
-through these nginx routes — and especially the litellm UI vhost and the sudo
-`/etc/hosts` write — is a **hardware bring-up** verification item
-(`docs/HARDWARE-BRINGUP.md`).
+https://$host$request_uri;` (no redirect is emitted today because there is no https
+listener yet — a 301 with no :443 would break every plain-http caller). nginx is
+reconciled LAST so its upstreams are up first. (`aip-litellm-db` and `aip-dns` stay
+loopback-published — DNS must stay `127.0.0.1:15353` for the microVM
+`--dns-nameserver`.) The live end-to-end routing through these nginx routes — the
+litellm UI vhost and the sudo `/etc/hosts` write — is a **hardware bring-up**
+verification item (`docs/HARDWARE-BRINGUP.md`).
 
 ### One Tool, Uniform Lifecycle
 
@@ -417,9 +381,9 @@ service configs live under `config/<service>/`.
   §27); native binaries are downloaded as pinned, checksum-verified release
   artifacts into `tools/<name>/<version>/`
 * **configure**: rendered from platform config — the LiteLLM config carries no
-  model list (models are DB-backed, §14–15), so the **real provider credentials
-  live in the LiteLLM gateway**, stored **encrypted in its Postgres DB** under
-  `LITELLM_SALT_KEY` and managed via `ai keys` (§17) — never on platform disk;
+  model list (models are DB-backed, §14–15) and no key references; the real
+  provider credentials live in the LiteLLM gateway, managed via `ai keys`
+  (keys-in-LiteLLM, §17) — never on platform disk;
   Microsandbox driven non-interactively per workspace (image, mounts/volumes,
   resource limits) via the Go SDK / `msb`; Ollama registered as a LiteLLM
   provider (required local backend)
@@ -434,11 +398,10 @@ service configs live under `config/<service>/`.
 
 ### Secrets Boundary
 
-Real provider keys live **only in the LiteLLM gateway** (env passthrough at
-launch / its Postgres-backed store, §17), never on platform disk and never in the
-workspace. The workspace agent holds only a scoped LiteLLM **virtual key** (the
-gateway key), not provider secrets — so no plaintext provider credential reaches
-the Microsandbox workspace, the rendered config on disk, or a backup.
+Real provider keys live **only in the LiteLLM gateway**, never on platform disk and
+never in the workspace; the workspace agent holds only a scoped LiteLLM **virtual
+key** (the gateway key), so no plaintext provider credential reaches the workspace,
+the rendered config, or a backup (keys-in-LiteLLM, §17).
 
 ---
 
@@ -1019,13 +982,10 @@ an oauth agent's traffic bypasses the firewall/masking/egress audit.
 
 Context optimization (§8–10):
 
-* **Headroom** — input compression, a **shared host container** (`aip-headroom`,
-  §10) that **LiteLLM calls as a `pre_call` guardrail**. The agent sends its model
-  calls to the nginx gateway (via `AI_PLATFORM_HOST`), which forwards directly to
-  LiteLLM; LiteLLM compresses the input via the `headroom` guardrail. Per-project
-  tuning rides in the request body (§10). Headroom is now **also installed inside the
-  workspace image** (`uv tool install "headroom-ai[proxy]"`) for a future in-VM
-  `headroom wrap <cli>` (wired in a follow-up).
+* **Headroom** — input compression via LiteLLM's `pre_call` `headroom` guardrail;
+  per-project tuning rides in the request body (§8, §10). Also installed inside the
+  workspace image (`uv tool install "headroom-ai[proxy]"`) for a future in-VM
+  `headroom wrap <cli>`.
 * **Caveman** — output compression, **not** baked into the image and **not**
   git-tracked: installed at workspace start by its own upstream installer
   (`registerCaveman`, network-bound, best-effort) and mirrored into the shared skills
@@ -1071,12 +1031,11 @@ agent:
 
 # 14. Model Layer
 
-All model access flows through LiteLLM. On the full path, the agent sends to the
-**nginx gateway** (host :18787), which routes `/v1` **directly to LiteLLM**; LiteLLM
-compresses the input via its `pre_call` `headroom` guardrail (calling
-`aip-headroom:8787/v1/compress`), applies any other enabled guardrails (§15), and
-attaches the real provider key — held **in the LiteLLM gateway** (§17) — to the
-upstream request.
+All model access flows through LiteLLM. On the full path the agent sends to the
+nginx gateway, which routes `/v1` directly to LiteLLM; LiteLLM compresses the input
+via its `pre_call` `headroom` guardrail (§10), applies any other enabled guardrails
+(§15), and attaches the real provider key held in the gateway (§17). The full
+per-component networking path is in §29.3.
 
 ```text
 Agent
