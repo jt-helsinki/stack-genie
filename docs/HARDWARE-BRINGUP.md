@@ -440,15 +440,13 @@ pass):
 - [x] Core service `[S1]` tests written (gated by `hardwareAvailable()`) —
       `test/acceptance/s1_hardware_test.go`: §9.1 credentialed request, §16.2
       workspace isolation, §16.3 egress confinement.
-- [ ] **Update the stale `[S1]` hardware tests before the live run.** Two assertions
-      reference retired surface and will fail on hardware as written:
-      (a) `s1_hardware_test.go` still calls `ai secrets set`/`secrets map` — the
-      `secrets` command and `internal/secrets` are GONE; rewrite to `ai keys add
-      <provider> --stdin` (there is no per-project env mapping anymore).
-      (b) `s1_remaining_test.go` `TestModelStatusOnHardware` asserts a non-empty
-      default model, but `litellm.DefaultRouting()` now returns the zero `Routing{}`
-      (catalog-driven, no default model) so `StatusInfo.Default` is always empty —
-      drop that assertion (assert `Providers`/`Healthy` only).
+- [x] **Stale `[S1]` hardware tests updated to the current surface.**
+      `s1_hardware_test.go` now uses `ai keys add openai --value <sentinel>`
+      (keys-in-LiteLLM) instead of the retired `ai secrets set`/`secrets map`; and
+      `s1_remaining_test.go` `TestModelStatusOnHardware` no longer asserts a non-empty
+      default model (`litellm.DefaultRouting()` returns the zero `Routing{}` —
+      catalog-driven, no default), keeping only the gateway-health + provider-set
+      checks.
 - [x] Remaining `[S1]` tests written — `test/acceptance/s1_remaining_test.go`:
       §6.1/§6.3/§6.4 Dockerfile/agent-CLI/stack probes (run host-side), §2.1–2.3
       setup/idempotency and §7.1/§7.2 model status/test (gated by
