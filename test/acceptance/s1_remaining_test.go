@@ -343,9 +343,11 @@ func TestModelStatusOnHardware(test *testing.T) {
 	if !data.Healthy {
 		test.Fatal("models status: gateway is not healthy")
 	}
-	if data.Default == "" {
-		test.Fatal("models status: no default model in the routing")
-	}
+	// NB: the model set is catalog-driven and DB-backed — litellm.DefaultRouting()
+	// returns the zero Routing, so `default` is intentionally always empty. Do NOT
+	// assert a non-empty default. Assert only gateway health + a non-empty served
+	// provider set.
+	_ = data.Default
 	if len(data.Providers) == 0 {
 		test.Fatal("models status: no providers listed")
 	}

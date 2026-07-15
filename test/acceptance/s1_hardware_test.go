@@ -63,15 +63,14 @@ func TestCredentialedRequestOnHardware(test *testing.T) {
 	setupEnvelope, code := harness.Run(test, "setup", "--provider-config", providerConfig)
 	AssertOK(test, setupEnvelope, code, "setup")
 
-	// Load the real provider key into the LiteLLM gateway (env passthrough at
-	// launch); the agent only ever sees a virtual-key placeholder.
-	set, code := harness.Run(test, "secrets", "set", "OPENAI_API_KEY", "--value", sentinel)
-	AssertOK(test, set, code, "secrets.set")
+	// Load the real provider key into the LiteLLM credential store (keys-in-LiteLLM:
+	// encrypted at rest, syncs the provider's models into the gateway). The agent only
+	// ever sees a scoped virtual key — there is no per-project env mapping.
+	set, code := harness.Run(test, "keys", "add", "openai", "--value", sentinel)
+	AssertOK(test, set, code, "keys.add")
 
 	created, code := harness.CreateProject(test, "cred-test")
 	AssertOK(test, created, code, "project.create")
-	mapped, code := harness.Run(test, "secrets", "map", "OPENAI_API_KEY", "--env", "OPENAI_API_KEY")
-	AssertOK(test, mapped, code, "secrets.map")
 
 	// A model call must reach the provider carrying the REAL credential — proof
 	// that LiteLLM attached the real provider key when it called the provider.
