@@ -2330,6 +2330,42 @@ func TestStartInstallsGraphifyGitHook(test *testing.T) {
 	}
 }
 
+// TestStartInitsGitRepoBeforeGraphify verifies a non-git project is `git init`ed (guarded
+// on [ ! -d .git ]) BEFORE graphify install/hook run, so the hook always has a repo.
+func TestStartInitsGitRepoBeforeGraphify(test *testing.T) {
+	root := seedProject(test, "app")
+	if err := config.WriteProject(root, &config.Config{
+		OS:    "debian-trixie",
+		Agent: config.AgentConfig{Tools: []string{"pi"}, DefaultTool: "pi"},
+	}); err != nil {
+		test.Fatal(err)
+	}
+	sandbox := &fakeSandbox{}
+	manager := Manager{Builder: &fakeBuilder{}, Sandbox: sandbox, Keys: &fakeKeyMinter{}, Now: func() string { return "t" }}
+	if _, err := manager.Start("app"); err != nil {
+		test.Fatal(err)
+	}
+	var script string
+	for _, argv := range sandbox.allExecArgv {
+		joined := strings.Join(argv, " ")
+		if strings.Contains(joined, "graphify hook install") {
+			script = joined
+			break
+		}
+	}
+	if script == "" {
+		test.Fatalf("graphify exec not found; execs: %v", sandbox.allExecArgv)
+	}
+	if !strings.Contains(script, "[ ! -d .git ]") || !strings.Contains(script, "git init") {
+		test.Errorf("script must `git init` guarded on a missing .git: %s", script)
+	}
+	gitInit := strings.Index(script, "git init")
+	hook := strings.Index(script, "graphify hook install")
+	if gitInit < 0 || hook < 0 || gitInit >= hook {
+		test.Errorf("`git init` must precede `graphify hook install`: %s", script)
+	}
+}
+
 // TestStartInstallsGraphifyGitHookForNonPlatformCLIs verifies the git hook still installs
 // for a git repo even when NO selected CLI is a graphify platform (e.g. omp-only) — the
 // hook step must not be gated behind the per-CLI install list.

@@ -1059,26 +1059,31 @@ func (manager Manager) registerGraphify(name string, projectConfig *config.Confi
 		}
 		installs = append(installs, install)
 	}
-	// Two steps, run in ~/project in a single exec. The graphify binary is baked into
+	// Three steps, run in ~/project in a single exec. The graphify binary is baked into
 	// every image, so we always attempt the exec (the `command -v` guard exits cleanly
-	// if it is somehow absent) — the hook step below must run for ANY git repo even when
+	// if it is somehow absent) — the hook step below must run for ANY project even when
 	// no graphify-platform CLI is selected (e.g. an omp/openclaw/hermes-only project), so
 	// we do NOT early-return on an empty install list.
-	//   1. `graphify install --project` per CLI — OVERWRITES its skill files each run, so
+	//   1. `git init` — if the project is NOT already a git repo, initialize one, RIGHT
+	//      BEFORE the graphify install so every workspace is git-backed and step 3's hook
+	//      always installs. Guarded on `[ ! -d .git ]` (idempotent) and on git being
+	//      present. This writes `.git` into the bind-mounted project dir, so the host
+	//      project becomes a git repo too — intended.
+	//   2. `graphify install --project` per CLI — OVERWRITES its skill files each run, so
 	//      a marker (.graphify-installed) guards re-runs, keeping user edits from being
 	//      clobbered on every restart; the marker is touched only after all installs
 	//      succeed (a failure retries next start). Skipped entirely when no CLI needs it.
-	//   2. `graphify hook install` — installs Graphify's git hook. It runs on EVERY start
-	//      when the project is a git repo (a `.git` dir). `hook install` is idempotent
-	//      (it rewrites the managed hook), so there is deliberately NO marker: a repo that
-	//      becomes a git repo after the first start is covered, and the hook is kept
-	//      current on every container start.
+	//   3. `graphify hook install` — installs Graphify's git hook. It runs on EVERY start
+	//      (step 1 guarantees a `.git` dir exists). `hook install` is idempotent (it
+	//      rewrites the managed hook), so there is deliberately NO marker — the hook is
+	//      kept current on every container start.
 	// The install marker lives under the persistent .ai-platform dir. Best-effort.
 	installMarker := workspaceWorkdir + "/.ai-platform/.graphify-installed"
 	clauses := []string{
 		"command -v graphify >/dev/null 2>&1 || exit 0",
 		"cd " + workspaceWorkdir + " 2>/dev/null || exit 0",
 		"mkdir -p " + workspaceWorkdir + "/.ai-platform",
+		"if [ ! -d .git ]; then command -v git >/dev/null 2>&1 && git init >/dev/null 2>&1; fi",
 	}
 	if len(installs) > 0 {
 		clauses = append(clauses,
