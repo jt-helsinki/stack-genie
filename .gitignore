@@ -13,6 +13,9 @@ coverage.txt
 .venv
 .env
 
+ai
+
 .agents
 .tokensave
 skills-lock.json
+graphify-out/
