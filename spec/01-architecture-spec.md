@@ -927,9 +927,14 @@ templates (§25); it is identical across all OSes:
   runs **once per project**, guarded by a marker file
   (`~/project/.ai-platform/.graphify-installed`) so user edits to those files are not
   clobbered on every restart. Immediately BEFORE that install, when the project is not
-  already a git repo, `registerGraphify` runs **`git init`** (so every workspace is
-  git-backed; this writes `.git` into the bind-mounted project on the host). It then
-  runs **`graphify hook install` on EVERY start** when a `.git` dir is present — `hook
+  already a valid git working tree — detected with `git rev-parse --is-inside-work-tree`,
+  which recognizes both a `.git` DIRECTORY and a `.git`-file gitlink (worktree/submodule),
+  unlike a bare `[ -d .git ]` test — `registerGraphify` runs **`git init`** (so every
+  workspace is git-backed; this writes `.git` into the bind-mounted project on the host).
+  A DANGLING `.git` gitlink FILE (a submodule checkout whose superproject/gitdir is absent,
+  which git rejects as "not a git repository") is removed first so `git init` produces a
+  real standalone repo rather than following the dead pointer; a `.git` DIRECTORY is never
+  removed. It then runs **`graphify hook install` on EVERY start** for a valid repo — `hook
   install` is idempotent (it rewrites the managed hook), so there is deliberately no
   marker, and the hook step is decoupled from the per-CLI install list (it runs even for
   an omp/openclaw/hermes-only project).

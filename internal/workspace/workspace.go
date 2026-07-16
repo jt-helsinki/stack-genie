@@ -1064,32 +1064,42 @@ func (manager Manager) registerGraphify(name string, projectConfig *config.Confi
 	// if it is somehow absent) — the hook step below must run for ANY project even when
 	// no graphify-platform CLI is selected (e.g. an omp/openclaw/hermes-only project), so
 	// we do NOT early-return on an empty install list.
-	//   1. `git init` — if the project is NOT already a git repo, initialize one, RIGHT
-	//      BEFORE the graphify install so every workspace is git-backed and step 3's hook
-	//      always installs. Guarded on `[ ! -d .git ]` (idempotent) and on git being
-	//      present. This writes `.git` into the bind-mounted project dir, so the host
-	//      project becomes a git repo too — intended.
+	//   1. `git init` — if the project is NOT already a valid git working tree, initialize
+	//      one, RIGHT BEFORE the graphify install so every workspace is git-backed and
+	//      step 3's hook always installs. Detection uses `git rev-parse
+	//      --is-inside-work-tree`, NOT `[ -d .git ]`: a valid repo can be a `.git`
+	//      DIRECTORY *or* a `.git` FILE (a gitlink — worktree/submodule), and a bare
+	//      `-d .git` test misses the file form. When rev-parse rejects the tree AND a
+	//      `.git` FILE is present, it is a DANGLING gitlink (points at an absent gitdir —
+	//      e.g. a submodule checkout without its superproject); remove just that file (it
+	//      references no reachable git data, so nothing is lost) so `git init` produces a
+	//      real standalone repo instead of following the dead pointer. A `.git` DIRECTORY
+	//      is never removed (a corrupt real repo is the user's to fix). This writes `.git`
+	//      into the bind-mounted project dir, so the host project becomes a git repo too —
+	//      intended.
 	//   2. `graphify install --project` per CLI — OVERWRITES its skill files each run, so
 	//      a marker (.graphify-installed) guards re-runs, keeping user edits from being
 	//      clobbered on every restart; the marker is touched only after all installs
 	//      succeed (a failure retries next start). Skipped entirely when no CLI needs it.
 	//   3. `graphify hook install` — installs Graphify's git hook. It runs on EVERY start
-	//      (step 1 guarantees a `.git` dir exists). `hook install` is idempotent (it
-	//      rewrites the managed hook), so there is deliberately NO marker — the hook is
-	//      kept current on every container start.
+	//      when the tree is a valid repo (step 1 makes it one). `hook install` is
+	//      idempotent (it rewrites the managed hook), so there is deliberately NO marker —
+	//      the hook is kept current on every container start.
 	// The install marker lives under the persistent .ai-platform dir. Best-effort.
 	installMarker := workspaceWorkdir + "/.ai-platform/.graphify-installed"
+	const gitPresent = "command -v git >/dev/null 2>&1"
+	const isRepo = "git rev-parse --is-inside-work-tree >/dev/null 2>&1"
 	clauses := []string{
 		"command -v graphify >/dev/null 2>&1 || exit 0",
 		"cd " + workspaceWorkdir + " 2>/dev/null || exit 0",
 		"mkdir -p " + workspaceWorkdir + "/.ai-platform",
-		"if [ ! -d .git ]; then command -v git >/dev/null 2>&1 && git init >/dev/null 2>&1; fi",
+		"if " + gitPresent + " && ! " + isRepo + "; then [ -f .git ] && rm -f .git; git init >/dev/null 2>&1; fi",
 	}
 	if len(installs) > 0 {
 		clauses = append(clauses,
 			"if [ ! -f "+installMarker+" ]; then "+strings.Join(installs, " && ")+" && touch "+installMarker+"; fi")
 	}
-	clauses = append(clauses, "if [ -d .git ]; then graphify hook install; fi")
+	clauses = append(clauses, "if "+gitPresent+" && "+isRepo+"; then graphify hook install; fi")
 	script := strings.Join(clauses, "; ")
 	ctx, cancel := context.WithTimeout(context.Background(), graphifyInstallTimeout)
 	defer cancel()

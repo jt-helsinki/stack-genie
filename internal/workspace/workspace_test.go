@@ -2296,8 +2296,9 @@ func TestStartRegistersGraphify(test *testing.T) {
 }
 
 // TestStartInstallsGraphifyGitHook verifies the Graphify registration installs the git
-// hook — gated on the project being a git repo (`[ -d .git ]`) and, per requirement, run
-// on EVERY start with NO marker (hook install is idempotent), so the hook stays current.
+// hook — gated on the tree being a valid git repo (via `git rev-parse`, which covers a
+// .git DIR *and* a .git-file gitlink) and, per requirement, run on EVERY start with NO
+// marker (hook install is idempotent), so the hook stays current.
 func TestStartInstallsGraphifyGitHook(test *testing.T) {
 	root := seedProject(test, "app")
 	if err := config.WriteProject(root, &config.Config{
@@ -2318,8 +2319,8 @@ func TestStartInstallsGraphifyGitHook(test *testing.T) {
 			continue
 		}
 		found = true
-		if !strings.Contains(joined, "[ -d .git ]") {
-			test.Errorf("`graphify hook install` must be gated on a git repo ([ -d .git ]): %s", joined)
+		if !strings.Contains(joined, "rev-parse --is-inside-work-tree") {
+			test.Errorf("`graphify hook install` must be gated on a valid repo via git rev-parse (not `[ -d .git ]`): %s", joined)
 		}
 		if strings.Contains(joined, ".graphify-hook-installed") {
 			test.Errorf("`graphify hook install` must NOT be once-guarded — it runs every start: %s", joined)
@@ -2330,8 +2331,9 @@ func TestStartInstallsGraphifyGitHook(test *testing.T) {
 	}
 }
 
-// TestStartInitsGitRepoBeforeGraphify verifies a non-git project is `git init`ed (guarded
-// on [ ! -d .git ]) BEFORE graphify install/hook run, so the hook always has a repo.
+// TestStartInitsGitRepoBeforeGraphify verifies a non-repo tree is `git init`ed (gated on
+// `git rev-parse` failing, and dropping a dangling `.git` gitlink file first) BEFORE
+// graphify install/hook run, so the hook always has a repo.
 func TestStartInitsGitRepoBeforeGraphify(test *testing.T) {
 	root := seedProject(test, "app")
 	if err := config.WriteProject(root, &config.Config{
@@ -2356,8 +2358,11 @@ func TestStartInitsGitRepoBeforeGraphify(test *testing.T) {
 	if script == "" {
 		test.Fatalf("graphify exec not found; execs: %v", sandbox.allExecArgv)
 	}
-	if !strings.Contains(script, "[ ! -d .git ]") || !strings.Contains(script, "git init") {
-		test.Errorf("script must `git init` guarded on a missing .git: %s", script)
+	if !strings.Contains(script, "! git rev-parse --is-inside-work-tree") || !strings.Contains(script, "git init") {
+		test.Errorf("script must `git init` gated on rev-parse failing: %s", script)
+	}
+	if !strings.Contains(script, "rm -f .git") {
+		test.Errorf("script must drop a dangling `.git` gitlink before init: %s", script)
 	}
 	gitInit := strings.Index(script, "git init")
 	hook := strings.Index(script, "graphify hook install")
