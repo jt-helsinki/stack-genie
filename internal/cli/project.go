@@ -1207,7 +1207,7 @@ func newDeleteCmd(emitter *output.Emitter, exit *int, use string) *cobra.Command
 				// --keep-agent-config.
 				if !purge {
 					removeAgentDirs, promptErr = promptConfirmDefault(
-						"Also delete the agent config folders (.opencode, .claude, .codex, .pi, .gemini, .venv-msb)?",
+						"Also delete the agent config folders (.opencode, .claude, .codex, .pi, .gemini, .openclaw, .hermes, .venv-msb)?",
 						"If kept, their symlinked skills/agents/prompts are converted to real files first (the platform's shared copy is being removed).",
 						removeAgentDirs)
 					if promptErr != nil {
@@ -1243,7 +1243,7 @@ func newDeleteCmd(emitter *output.Emitter, exit *int, use string) *cobra.Command
 		},
 	}
 	cmd.Flags().BoolVar(&purge, "purge", false, "also delete the whole project directory (all your files, not just platform state)")
-	cmd.Flags().Bool("keep-agent-config", false, "keep the per-CLI agent config folders (.opencode/.claude/.codex/.pi/.gemini/.venv-msb); their symlinked content is materialized")
+	cmd.Flags().Bool("keep-agent-config", false, "keep the per-CLI agent config folders (.opencode/.claude/.codex/.pi/.gemini/.openclaw/.hermes/.venv-msb); their symlinked content is materialized")
 	return cmd
 }
 
@@ -1259,7 +1259,7 @@ func deletePlan(name, root string, purge bool) []string {
 		removal,
 	}
 	if !purge {
-		plan = append(plan, "remove the agent config folders (.opencode/.claude/.codex/.pi/.gemini/.venv-msb) unless kept with --keep-agent-config")
+		plan = append(plan, "remove the agent config folders (.opencode/.claude/.codex/.pi/.gemini/.openclaw/.hermes/.venv-msb) unless kept with --keep-agent-config")
 	}
 	return plan
 }

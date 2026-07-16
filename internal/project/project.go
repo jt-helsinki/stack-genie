@@ -432,7 +432,7 @@ func workspaceHandle(name, root string) (id, status, created, lastStarted string
 // agentArtifactDirs are the per-CLI agent config dirs and the Python venv the platform
 // writes into the PROJECT folder (outside .ai-platform) at workspace start. A plain
 // `ai delete` removes them too, best-effort — a missing one is ignored.
-var agentArtifactDirs = []string{".opencode", ".claude", ".codex", ".pi", ".omp", ".gemini", ".copilot", ".venv-msb"}
+var agentArtifactDirs = []string{".opencode", ".claude", ".codex", ".pi", ".omp", ".gemini", ".copilot", ".openclaw", ".hermes", ".venv-msb"}
 
 // Delete removes a project from the index and removes its persistent overlay. A plain
 // delete removes the whole .ai-platform tree (config + run state) and — when
