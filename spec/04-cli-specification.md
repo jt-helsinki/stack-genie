@@ -454,7 +454,7 @@ one command:
   default `api-key`). `api-key` routes through the gateway with the scoped virtual
   key (firewall + masking apply); `oauth` uses the CLI's own subscription login,
   bypassing the gateway. `copilot=api-key` is rejected (exit 2 — copilot is
-  forced-OAuth); opencode/pi/omp are always gateway/api-key and never accept it
+  forced-OAuth); opencode/pi/omp/openclaw/hermes are always gateway/api-key and never accept it
 * `--stacks <list>` — comma-separated EXTRA software stacks
   (`go,rust,java,maven,deno`); optional. **Neither Python nor Node is a stack
   option** — Node.js and the latest **Python 3**, **uv** (Astral's Python

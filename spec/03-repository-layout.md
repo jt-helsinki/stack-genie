@@ -209,9 +209,12 @@ Rules:
   in the Dockerfile), ONCE per project (guarded by a `.ai-platform/.graphify-installed`
   marker) — `graphify install --project [--platform <cli>]` run in `~/project`
   (`Manager.registerGraphify`) — because `--project` writes into the bind-mounted
-  project dir, which only exists at runtime (arch §12). For a git repo (a `.git` dir)
-  it also runs `graphify hook install` ONCE (its own `.ai-platform/.graphify-hook-installed`
-  marker, re-checked each start). Graphify's headless LLM
+  project dir, which only exists at runtime (arch §12). Immediately BEFORE that install,
+  when the project is not already a valid git working tree (detected with `git rev-parse
+  --is-inside-work-tree`, dropping a dangling `.git` gitlink file first) `registerGraphify`
+  runs `git init` so every workspace is git-backed; it then runs `graphify hook install`
+  on EVERY start for a valid repo (the hook is idempotent, so there is deliberately no
+  marker, and it runs even for an omp/openclaw/hermes-only project). Graphify's headless LLM
   backend is an Ollama model chosen at `ai create` (`agent.graphify_model`, §12.4),
   routed through the gateway as `ollama/<model>`. **Neither Python nor Node is
   a `--stacks` option** — both are baked into the base (the no-op `python`/`node`
@@ -677,7 +680,7 @@ config blocks.
 ```yaml id="sc6"
 os: alma                   # alma | debian-trixie | debian-bookworm | ubuntu
 agent:
-  tools: [opencode, pi]    # installed agent CLIs (any subset of: opencode, pi, omp, claude-code, codex, gemini, copilot); opencode + pi by default
+  tools: [opencode, pi]    # installed agent CLIs (any subset of: opencode, pi, omp, claude-code, codex, gemini, copilot, openclaw, hermes); opencode + pi by default
   default_tool: opencode   # default agent CLI; must be one of agent.tools
   graphify_model: qwen2.5-coder:7b  # optional: Ollama model Graphify uses (chosen at `ai create`, routed through the gateway as ollama/<model>); omitted = none
 context:
