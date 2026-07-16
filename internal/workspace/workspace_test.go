@@ -476,6 +476,35 @@ func TestRegisterCavemanScript(test *testing.T) {
 	}
 }
 
+// TestRegisterCavemanSkipsGeminiAndBounds verifies the gemini adapter is skipped — its
+// `gemini extensions install` blocks on a TTY trust prompt that hangs the detached
+// install and exhausts the msb relay — while the OTHER detectable CLIs still install,
+// and the node installer is `timeout`-bounded as defense-in-depth.
+func TestRegisterCavemanSkipsGeminiAndBounds(test *testing.T) {
+	sandbox := &fakeSandbox{}
+	manager := newManager(&fakeBuilder{}, sandbox)
+	enabled := true
+	projectConfig := &config.Config{
+		Agent:   config.AgentConfig{Tools: []string{"opencode", "gemini", "codex"}},
+		Context: config.ContextConfig{CavemanEnabled: &enabled},
+	}
+	manager.registerCaveman("aip-app", projectConfig)
+
+	script := findCavemanScript(sandbox)
+	if script == "" {
+		test.Fatalf("no caveman install script staged: %v", sandbox.written)
+	}
+	if strings.Contains(script, "--only gemini") {
+		test.Errorf("gemini adapter must be skipped (its extension install hangs on a trust prompt): %q", script)
+	}
+	if !strings.Contains(script, "--only opencode") || !strings.Contains(script, "--only codex") {
+		test.Errorf("other detectable CLIs must still install: %q", script)
+	}
+	if !strings.Contains(script, "timeout ") || !strings.Contains(script, "node bin/install.js") {
+		test.Errorf("node installer must be timeout-bounded: %q", script)
+	}
+}
+
 func TestStartBuildsAndRecordsStartedHandle(test *testing.T) {
 	root := seedProject(test, "app")
 	builder := &fakeBuilder{}

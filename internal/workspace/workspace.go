@@ -1151,13 +1151,26 @@ func (manager Manager) registerCaveman(name string, projectConfig *config.Config
 	explicit := projectConfig.Context.CavemanEnabled != nil && *projectConfig.Context.CavemanEnabled
 	only := make([]string, 0, len(projectConfig.Agent.Tools))
 	for _, cli := range projectConfig.Agent.Tools {
+		// Skip the gemini adapter: Caveman's gemini step shells out to
+		// `gemini extensions install`, and the Gemini CLI prompts for workspace-trust
+		// ("trust this workspace? [Y/n]") that it reads from the controlling TTY and
+		// which IGNORES Caveman's own --non-interactive. Under the detached, TTY-less
+		// install it BLOCKS FOREVER; the accumulated hung installs then exhaust the msb
+		// agent-relay (the "msb exec is not responding" wedge seen at the Caveman step).
+		// gemini still receives Caveman's commands via the shared pool (prompts →
+		// .gemini/commands), exactly like pi/omp — so we lose only the native gemini
+		// extension, not the skill itself. (Verified live: the hang is in gemini, not
+		// Caveman.)
+		if cli == "gemini" {
+			continue
+		}
 		if agent, ok := cavemanOnlyAgent[cli]; ok {
 			only = append(only, "--only "+agent)
 		}
 	}
-	// Caveman's installer only integrates with the detectable CLIs (opencode/claude-code/
-	// codex/gemini); pi/omp receive its skills/agents/commands via the shared pool. With
-	// none of those selected there is nothing to install or mirror.
+	// Caveman's installer natively integrates opencode/claude-code/codex (gemini is
+	// skipped above); pi/omp/gemini receive its skills/agents/commands via the shared
+	// pool. With none of the native CLIs selected there is nothing to install or mirror.
 	if len(only) == 0 {
 		if explicit {
 			_, _ = fmt.Fprintln(os.Stderr, ui.Warn.Render("Caveman is enabled but no compatible CLI "+
@@ -1186,7 +1199,12 @@ func (manager Manager) registerCaveman(name string, projectConfig *config.Config
 	//      silently mark itself done.
 	clone := "rm -rf /tmp/caveman-src && " +
 		"git clone --depth 1 https://github.com/JuliusBrussee/caveman /tmp/caveman-src"
-	installCmd := "cd /tmp/caveman-src && node bin/install.js --non-interactive --with-hooks " +
+	// Defense-in-depth: bound the node installer with `timeout` (coreutils, present in
+	// every base) so any future adapter that blocks on a TTY/network prompt self-kills
+	// instead of hanging forever and exhausting the msb agent-relay (see the gemini
+	// skip above). On timeout the installer exits non-zero, the marker is not touched,
+	// and the next start retries. `--kill-after` SIGKILLs a child that ignores SIGTERM.
+	installCmd := "cd /tmp/caveman-src && timeout --kill-after=30s 600s node bin/install.js --non-interactive --with-hooks " +
 		strings.Join(only, " ")
 	mirror := `og="${XDG_CONFIG_HOME:-$HOME/.config}/opencode"; ` +
 		`for pair in "skills:skills" "agents:agents" "commands:prompts"; do ` +
