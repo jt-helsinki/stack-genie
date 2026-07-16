@@ -69,7 +69,7 @@ virtualenv created at start), **uv** (Astral's Python package/tool manager, inst
 for the workspace user onto `~/.local/bin`), **Graphify** (the knowledge-graph
 skill for AI coding assistants — PyPI `graphifyy`, CLI `graphify`), installed via
 `uv tool install "graphifyy[…extras]"` with all optional extras except the
-region/DB-specific `chinese,azure,bedrock,falkordb,neo4j,leiden,dm`, **rtk**
+region/DB/niche-specific `chinese,azure,bedrock,falkordb,neo4j,leiden,dm,pascal`, **rtk**
 (`rtk-ai/rtk`, a dev-command output compressor, via its `install.sh`), and the
 **Headroom** CLI (`headroom-ai[proxy]`, for in-VM `headroom wrap <cli>`). Each selected
 agent CLI registers Graphify with itself **at workspace start**, once per project

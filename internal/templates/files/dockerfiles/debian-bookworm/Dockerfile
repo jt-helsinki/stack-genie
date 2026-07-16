@@ -71,10 +71,10 @@ USER workspace
 WORKDIR /home/workspace
 
 # uv (Astral's Python package/tool manager) + Graphify — installed by default in
-# every workspace, for the WORKSPACE USER. Graphify (github.com/safishamsi/graphify,
+# every workspace, for the WORKSPACE USER. Graphify (github.com/Graphify-Labs/graphify,
 # PyPI `graphifyy`) is a knowledge-graph skill for AI coding assistants; the optional
-# extras are bundled (all except the region/DB-specific chinese, azure, bedrock,
-# falkordb, neo4j, leiden, dm). Each selected agent-CLI snippet then registers it via
+# extras are bundled (all incl. mcp except the region/DB/niche-specific chinese, azure,
+# bedrock, falkordb, neo4j, leiden, dm, pascal). Each selected agent-CLI snippet then registers it via
 # `graphify install --platform …`. Verify the extras resolve on hardware bring-up.
 # rtk (github.com/rtk-ai/rtk, "Rust Token Killer") is also installed for the workspace
 # user via its official install.sh — a prebuilt aarch64 Linux binary dropped in
@@ -84,7 +84,7 @@ WORKDIR /home/workspace
 # hook fails with `rtk: command not found` (exit 127). NB: rtk's crates.io name
 # collides with an unrelated package, so we use install.sh, never `cargo install rtk`.
 RUN curl -LsSf https://astral.sh/uv/install.sh | sh \
- && uv tool install --no-cache "graphifyy[pdf,office,video,postgres,google,svg,sql,terraform,ollama,openai,gemini,anthropic]" \
+ && uv tool install --no-cache "graphifyy[pdf,office,video,postgres,google,svg,sql,terraform,ollama,openai,gemini,anthropic,mcp]" \
  && uv tool install --no-cache "headroom-ai[proxy]" \
  && curl -fsSL https://raw.githubusercontent.com/rtk-ai/rtk/master/install.sh | sh \
  && rm -rf "$HOME/.cache/uv"

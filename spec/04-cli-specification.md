@@ -465,7 +465,7 @@ one command:
   package/tool manager), and
   **Graphify** (`graphifyy`, the knowledge-graph CLI skill; installed via
   `uv tool install "graphifyy[…extras]"` with all optional extras except the
-  region/DB-specific chinese/azure/bedrock/falkordb/neo4j/leiden/dm) are baked into
+  region/DB/niche-specific chinese/azure/bedrock/falkordb/neo4j/leiden/dm/pascal) are baked into
   every OS base image by default; each selected agent CLI registers Graphify with
   itself at workspace START, once per project (`graphify install --project
   [--platform <cli>]` in `~/project` — not at image build, since it writes

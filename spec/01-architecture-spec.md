@@ -910,12 +910,12 @@ templates (§25); it is identical across all OSes:
   user** (`curl -LsSf https://astral.sh/uv/install.sh | sh`, onto
   `~/.local/bin`, which is on `PATH`).
 * **Graphify** — the knowledge-graph skill for AI coding assistants
-  (github.com/safishamsi/graphify, PyPI package `graphifyy`, CLI `graphify`),
+  (github.com/Graphify-Labs/graphify, PyPI package `graphifyy`, CLI `graphify`),
   installed by default for the workspace user via
   `uv tool install "graphifyy[<extras>]"`. The bundled optional extras are all of
-  Graphify's extras **except** the region/DB-specific ones (`chinese`, `azure`,
-  `bedrock`, `falkordb`, `neo4j`, `leiden`, `dm`) — i.e. the included set is
-  `pdf,office,video,postgres,google,svg,sql,terraform,ollama,openai,gemini,anthropic`.
+  Graphify's extras **except** the region/DB/niche-specific ones (`chinese`, `azure`,
+  `bedrock`, `falkordb`, `neo4j`, `leiden`, `dm`, `pascal`) — i.e. the included set is
+  `pdf,office,video,postgres,google,svg,sql,terraform,ollama,openai,gemini,anthropic,mcp`.
   Each selected agent CLI then **registers Graphify with itself at workspace
   start** (NOT at image build): `Manager.registerGraphify` runs `graphify install`
   for Claude Code (the default `graphify` platform) and `graphify install --platform

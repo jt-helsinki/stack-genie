@@ -122,7 +122,7 @@ Every OS base bakes in a common tooling layer — Git, the GitHub CLI, **Node.js
 (pinned 24 LTS), the latest **Python 3**, **uv** (Astral's Python package/tool
 manager), **Graphify** (PyPI `graphifyy`, CLI `graphify`; a knowledge-graph skill
 for AI coding assistants, installed via `uv tool install` with all extras except
-the region/DB-specific `chinese,azure,bedrock,falkordb,neo4j,leiden,dm`), and
+the region/DB/niche-specific `chinese,azure,bedrock,falkordb,neo4j,leiden,dm,pascal`), and
 **rtk** (Rust Token Killer). Each selected agent CLI registers Graphify with
 itself (`graphify install [--platform <cli>]`). Node.js and Python are baked in,
 so neither is a `--stacks` option — the selectable stacks are

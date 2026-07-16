@@ -204,7 +204,7 @@ Rules:
   **uv** (Astral's Python package/tool manager, installed for the workspace user
   onto `~/.local/bin`), and **Graphify** (PyPI `graphifyy`, CLI `graphify`) via
   `uv tool install "graphifyy[pdf,office,video,postgres,google,svg,sql,terraform,ollama,openai,gemini,anthropic]"`
-  (all optional extras except the region/DB-specific `chinese,azure,bedrock,falkordb,neo4j,leiden,dm`).
+  (all optional extras — including `mcp` — except the region/DB/niche-specific `chinese,azure,bedrock,falkordb,neo4j,leiden,dm,pascal`).
   Graphify is then registered with each selected agent CLI at WORKSPACE START (not
   in the Dockerfile), ONCE per project (guarded by a `.ai-platform/.graphify-installed`
   marker) — `graphify install --project [--platform <cli>]` run in `~/project`
