@@ -219,7 +219,8 @@ ai setup --json
 * the service tier started as containers, reconciled in order (network → DNS →
   Ollama → Presidio → Valkey(+RedisInsight) → Headroom → LiteLLM(+DB) → nginx
   proxy): `aip-dns`, `aip-ollama`, the
-  `aip-presidio-analyzer`/`aip-presidio-anonymizer` pair, `aip-headroom`,
+  `aip-presidio-analyzer`/`aip-presidio-anonymizer` pair, `aip-valkey`
+  (+ `aip-redisinsight`), `aip-headroom`,
   `aip-litellm` (+ `aip-litellm-db` Postgres), and `aip-proxy` (the nginx gateway)
   — all on `aip-net` (Headroom PRECEDES LiteLLM because LiteLLM calls it in-process
   as a `pre_call` compression guardrail)
@@ -286,7 +287,7 @@ ai create test-project --os debian-trixie --json   # flag-driven, non-interactiv
 * project scaffolded in the current directory; `data.root` points at it, and the
   project is indexed in `config/projects.yaml`
 * state written under `<root>/.ai-platform/` (Dockerfile / config.yaml /
-  profile.yaml / project.yaml / `skills/caveman/`)
+  profile.yaml / project.yaml)
 
 ### Negative case
 
@@ -364,7 +365,7 @@ unknown project with a missing confirmation:
   missing confirmation cannot be the cause; nothing is removed
 * **(c)** default delete: the microVM is torn down, the overlay removed, and the
   project's **whole `<project>/.ai-platform/` directory** removed (config /
-  profile / project.yaml / Dockerfile / `skills/caveman/` / `run/` all gone);
+  profile / project.yaml / Dockerfile / `run/` all gone);
   `config/projects.yaml` no longer lists `del-test`; the user's **OTHER** files in
   the directory are **kept**
 * `--purge` (e.g. `ai delete <p> --purge --yes` on a separately created
@@ -536,7 +537,7 @@ ai context caveman test-project full --json
 ### Expected Result
 
 * the Caveman skill is present at `<project>/.ai-platform/skills/caveman/`
-  (seeded at create from Slice 2)
+  (installed at workspace start by its own upstream installer, not seeded at create)
 * Caveman level applied
 * agent output tokens reduced
 * technical accuracy preserved (code, URLs, facts unchanged)
@@ -792,7 +793,7 @@ It always exits `0`; per-check status conveys health.
 * the platform-dependency checks are always present: `container runtime`,
   `microsandbox runtime`, `host virtualization`
 * the SERVICES section lists every managed service — `ollama`, `presidio`,
-  `litellm`, `headroom`, `proxy`, `dns` (the names appear even when stopped
+  `valkey`, `redisinsight`, `litellm`, `headroom`, `proxy`, `dns` (the names appear even when stopped
   off-hardware). `presidio` reads **`disabled`** when the `secret-masking`
   guardrail is off (listed but not probed). The host tier has no optional services
   (Open WebUI is now a per-workspace in-VM app and Odysseus was removed).

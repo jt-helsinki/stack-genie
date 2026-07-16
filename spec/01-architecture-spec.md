@@ -118,7 +118,7 @@ purposes:
 Host Layer
  ├─ Microsandbox microVM runtime (libkrun)         ← workspaces
  │   └─ Sandbox Layer (workspace microVM)
- │       ├─ AI Tooling Layer (OpenCode + Pi by default; Claude Code / Codex / Gemini CLI optional — selected per env)
+ │       ├─ AI Tooling Layer (OpenCode + Pi by default; Claude Code / Codex / Gemini / omp / Copilot / OpenClaw / Hermes optional — selected per env)
  │       ├─ In-VM OCI runtime (rootful containerd + nerdctl) → opt-in apps: Open WebUI · AnythingLLM (§7)
  │       └─ Context Optimization (Caveman skill — per project, §8–10; Headroom is a host-side LiteLLM guardrail, §10)
  │
@@ -1007,9 +1007,13 @@ Supported providers (selected per environment, §12):
 
 * OpenCode — default
 * Pi — also pre-selected by default
+* omp ("Oh My Pi", a Pi fork)
 * Claude Code
 * Codex
 * Gemini CLI
+* Copilot (GitHub Copilot CLI — forced-OAuth / gateway-incapable, talks directly to GitHub)
+* OpenClaw
+* Hermes
 
 Future providers:
 
@@ -1752,10 +1756,10 @@ seed a new project's `.ai-platform/Dockerfile`:
 
 | OS key (wizard choice) | base image | template |
 |---|---|---|
-| `alma` | Alma 10 (`almalinux:10`) | `templates/dockerfiles/alma/Dockerfile` |
+| `alma` | Alma 10 (`almalinux:10.2-minimal`) | `templates/dockerfiles/alma/Dockerfile` |
 | `debian-trixie` | `debian:trixie-slim` | `templates/dockerfiles/debian-trixie/Dockerfile` |
 | `debian-bookworm` | `debian:bookworm-slim` | `templates/dockerfiles/debian-bookworm/Dockerfile` |
-| `ubuntu` | Ubuntu minimal | `templates/dockerfiles/ubuntu/Dockerfile` |
+| `ubuntu` | Ubuntu (`ubuntu:24.04`) | `templates/dockerfiles/ubuntu/Dockerfile` |
 
 * **The OS is always chosen by the user** at creation, from the supported list,
   via the interactive setup wizard (CLI §3.1) — on a TTY no default is applied
@@ -2305,9 +2309,10 @@ Monitoring is required for:
 * Podman
 * Caveman
 * Headroom
+* Valkey (+ RedisInsight)
 
-(`ai doctor` reports every service-tier service — dns, ollama, presidio, litellm,
-headroom, proxy — §5.)
+(`ai doctor` reports every service-tier service — dns, ollama, presidio, valkey,
+redisinsight, litellm, headroom, proxy — §5.)
 
 ---
 

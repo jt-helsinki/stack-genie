@@ -432,15 +432,13 @@ no concept for are skipped (codex/gemini have no skills/agents). Caveman
 bring-up: the symlinks resolving in-VM, and each CLI honouring its project config, are not
 yet verified live.)*
 
-The platform seeds the **Caveman** agent skill into `skills/caveman/` at
-project creation (not into the workspace image) so the in-workspace agent picks
-it up for that project. Like the Dockerfile, it is **git-tracked**: it is seeded
-once at creation and then committed with the project, so the skill travels with
-the repo and the project stays reproducible from git alone. It is not
-re-installed or auto-upgraded on workspace start (the project owns it; refresh it
-by re-seeding explicitly).
+The **Caveman** agent skill is **not** seeded at project creation and **not**
+git-tracked. It is installed into the shared `.ai-platform/skills` pool at
+workspace **start** by its own upstream installer (`registerCaveman`,
+once-guarded, network-bound, best-effort — `Scaffold` writes no caveman files),
+so `skills/caveman/` appears only after the first workspace start.
 
-* the tracked files (including `skills/caveman/`) define the environment + config
+* the tracked files define the environment + config
   and are committable, so the project is reproducible from git
 * `run/` holds machine-specific runtime handles (Microsandbox ids, status) and is
   gitignored

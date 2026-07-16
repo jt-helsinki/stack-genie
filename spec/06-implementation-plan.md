@@ -230,7 +230,7 @@ refer to the CLI spec and architecture spec respectively.
   Tests: AT §11.1.
 * **M3 — `ai setup` + services.** Preflight (exit 3 on missing deps),
   init `~/.ai-platform/`, install/configure/start the container service tier
-  (DNS resolver, Ollama, Presidio pair, LiteLLM + its DB, Headroom, nginx gateway)
+  (DNS resolver, Ollama, Presidio pair, Valkey (+ RedisInsight), LiteLLM + its DB, Headroom, nginx gateway)
   with the role-driven bind host (server 0.0.0.0,
   standalone/client loopback) + verify the Microsandbox runtime; provider keys
   live in the LiteLLM gateway (keys-in-LiteLLM, §8.2); render the per-project

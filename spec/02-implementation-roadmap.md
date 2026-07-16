@@ -312,7 +312,7 @@ Add the remaining OS Dockerfile templates (Slice 1 ships the debian-trixie templ
 
 * `alma` template (Alma 10)
 * `debian-bookworm` template (`debian:bookworm-slim`)
-* `ubuntu` template (Ubuntu minimal)
+* `ubuntu` template (`ubuntu:24.04`)
 
 ---
 
@@ -467,7 +467,8 @@ one Microsandbox microVM per workspace (hardware isolation, libkrun)
 The container runtime (Docker/Podman) is used only for the service tier
 (the `aip-dns` CoreDNS egress-audit resolver, the containerized Ollama
 `aip-ollama`, the Presidio secret-masking pair, LiteLLM + its Postgres, the
-Headroom input-compression guardrail service, and the `aip-proxy` nginx gateway), never to run
+Headroom input-compression guardrail service, the `aip-valkey` cache
+(+ its `aip-redisinsight` GUI), and the `aip-proxy` nginx gateway), never to run
 a workspace. The host tier has no optional services (Open WebUI is now a
 per-workspace **in-VM** app and Odysseus was removed). All service-tier containers
 share the private `aip-net` network, and **only the `aip-proxy` nginx gateway is
@@ -527,7 +528,7 @@ System is complete when:
 
 ```bash id="g1"
 ai setup
-ai create --name my-project   # interactive wizard: pick OS + agent CLIs (defaults: debian-trixie, OpenCode)
+ai create --name my-project   # interactive wizard: pick OS + agent CLIs (defaults: debian-trixie, OpenCode + Pi)
 ```
 
 produces (for the OS the user selected):

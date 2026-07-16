@@ -338,7 +338,11 @@ tab) or `ai keys add <provider>`. Setup only runs the initial catalog → gatewa
 model sync (reflecting any already-keyed providers + installed Ollama models);
 `ai doctor` flags any absent credential, and a model call fails (exit `5`) only
 when that credential is actually needed (architecture §17, plan §7). Missing
-**dependencies** (runtime, virtualization, git) do fail fast with exit `3`.
+**dependencies** fail fast: a missing container or Microsandbox runtime exits `3`,
+while an unmet host capability (virtualization, rootless posture) exits `4`
+(internal/setup/setup.go — `installablePrograms` = container/microsandbox runtime
+only). git is **not** a prerequisite — the only git the platform runs is an
+internal `git init` at workspace start.
 
 Idempotent:
 
@@ -1008,7 +1012,7 @@ view (§14) drives the same path via `ai apps`.
 
 ### In-workspace agent CLI provider config — keyless per-CLI project configs, key in-VM only
 
-All **five** agent CLIs route through the LiteLLM gateway **by default**. At every
+All **eight** gateway-capable agent CLIs (every CLI except forced-OAuth Copilot) route through the LiteLLM gateway **by default**. At every
 workspace start/restart `workspace.registerAgentProviders` (over `internal/agentcfg`)
 writes each CLI's provider config at **that CLI's own default per-project location**
 inside the bind-mounted project dir (`<project>/…` on host = `/home/workspace/project/…`
@@ -2114,7 +2118,7 @@ Standardized:
 
 | Condition | Code |
 |---|---|
-| missing Docker/Podman/Microsandbox/LiteLLM (`doctor`, `setup`) | 3 |
+| missing Docker/Podman/Microsandbox (`doctor`, `setup`) | 3 |
 | unknown project / agent / OS key | 2 |
 | Microsandbox or runtime operation failed | 4 |
 | rootless required but unavailable | 4 |
