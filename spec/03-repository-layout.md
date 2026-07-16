@@ -171,10 +171,12 @@ Rules:
 ```text id="h9"
 ~/.ai-platform/templates/dockerfiles/
 ~/.ai-platform/templates/stacks/
+~/.ai-platform/templates/agentclis/
+~/.ai-platform/templates/tools/
 ```
 
-One Dockerfile template per supported OS key, and one install snippet per
-software stack (architecture §25):
+One Dockerfile template per supported OS key, one install snippet per software
+stack, per agent CLI, and per opt-in dev tool (architecture §25):
 
 ```text id="h10"
 dockerfiles/alma/Dockerfile
@@ -187,6 +189,10 @@ stacks/rust/Dockerfile.snippet
 stacks/java/Dockerfile.snippet
 stacks/maven/Dockerfile.snippet
 stacks/deno/Dockerfile.snippet
+
+# opt-in dev tools — appended to the project Dockerfile only when selected at create
+tools/code-review-graph/Dockerfile.snippet
+tools/codebase-memory-mcp/Dockerfile.snippet
 ```
 
 Rules:

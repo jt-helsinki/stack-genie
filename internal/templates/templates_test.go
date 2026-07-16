@@ -142,12 +142,6 @@ func TestBaseDockerfileShipsContainerRuntime(t *testing.T) {
 				// rtk ("Rust Token Killer") installed via its official install.sh so
 				// Claude Code's rtk PreToolUse hook finds the binary on PATH.
 				"rtk-ai/rtk/master/install.sh",
-				// code-review-graph (opt-in per-CLI MCP code-graph tool) baked via uv,
-				// and codebase-memory-mcp (opt-in per-CLI MCP code-memory server) baked
-				// via its install.sh with the --ui variant + --skip-config.
-				"uv tool install --no-cache code-review-graph",
-				"DeusData/codebase-memory-mcp/main/install.sh",
-				"--ui --skip-config",
 				// Keep-alive so the detached microVM stays running.
 				`CMD ["sleep", "infinity"]`,
 			} {
@@ -160,6 +154,43 @@ func TestBaseDockerfileShipsContainerRuntime(t *testing.T) {
 				t.Errorf("%s: base Dockerfile missing iptables (CNI bridge dep)", osKey)
 			}
 		})
+	}
+}
+
+// TestOptInToolsAreConditionalSnippetsNotBaked asserts the opt-in code-graph tools live
+// as conditional Dockerfile snippets (appended only when selected) and are NOT baked into
+// any OS base — so an unselected tool's installer never runs at build.
+func TestOptInToolsAreConditionalSnippetsNotBaked(t *testing.T) {
+	redirectHome(t)
+	if err := templates.Install(); err != nil {
+		t.Fatalf("Install: %v", err)
+	}
+	// The base must NOT contain either tool's installer.
+	for _, osKey := range osKeys {
+		got, err := templates.BaseDockerfile(osKey)
+		if err != nil {
+			t.Fatalf("BaseDockerfile(%q): %v", osKey, err)
+		}
+		for _, absent := range []string{"code-review-graph", "codebase-memory-mcp"} {
+			if strings.Contains(got, "install --no-cache "+absent) || strings.Contains(got, absent+"/main/install.sh") {
+				t.Errorf("%s: opt-in tool %q must NOT be baked into the base Dockerfile", osKey, absent)
+			}
+		}
+	}
+	// The snippets must exist and carry the install command.
+	crg, err := templates.ToolSnippet("code-review-graph")
+	if err != nil {
+		t.Fatalf("ToolSnippet(code-review-graph): %v", err)
+	}
+	if !strings.Contains(crg, "uv tool install --no-cache code-review-graph") {
+		t.Errorf("code-review-graph snippet missing its install command:\n%s", crg)
+	}
+	cmm, err := templates.ToolSnippet("codebase-memory-mcp")
+	if err != nil {
+		t.Fatalf("ToolSnippet(codebase-memory-mcp): %v", err)
+	}
+	if !strings.Contains(cmm, "DeusData/codebase-memory-mcp/main/install.sh") || !strings.Contains(cmm, "--ui --skip-config") {
+		t.Errorf("codebase-memory-mcp snippet missing its install command:\n%s", cmm)
 	}
 }
 

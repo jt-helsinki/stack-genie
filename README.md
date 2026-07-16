@@ -125,9 +125,10 @@ for AI coding assistants, installed via `uv tool install` with all extras except
 the region/DB/niche-specific `chinese,azure,bedrock,falkordb,neo4j,leiden,dm,pascal`), and
 **rtk** (Rust Token Killer). Each selected agent CLI registers Graphify with
 itself (`graphify install [--platform <cli>]`). Two OPT-IN per-workspace code-graph
-tools are also baked in and, when chosen at `ai create` (`--code-review-graph` /
-`--codebase-memory`, or the wizard's tooling step), registered as an MCP server with
-every installed agent CLI at workspace start: **code-review-graph**
+tools are appended to the project image **only when chosen** at `ai create`
+(`--code-review-graph` / `--codebase-memory`, or the wizard's tooling step) — as
+conditional Dockerfile snippets, not baked into every base — and registered as an MCP
+server with every installed agent CLI at workspace start: **code-review-graph**
 (`code-review-graph.com`; also writes a D3 graph visualization) and
 **codebase-memory-mcp** (`github.com/DeusData/codebase-memory-mcp`; ships an optional
 on-demand 3D graph UI at `:9749`). Both are local and need no API key. Node.js and Python are baked in,

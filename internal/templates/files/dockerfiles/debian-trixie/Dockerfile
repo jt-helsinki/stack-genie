@@ -82,21 +82,15 @@ WORKDIR /home/workspace
 # by `rtk init`) shells out to `rtk`, so the binary must be on PATH — without it the
 # hook fails with `rtk: command not found` (exit 127). NB: rtk's crates.io name
 # collides with an unrelated package, so we use install.sh, never `cargo install rtk`.
-# code-review-graph (code-review-graph.com, PyPI `code-review-graph`) and codebase-memory-mcp
-# (github.com/DeusData/codebase-memory-mcp) are OPT-IN per-workspace code-graph / code-memory
-# MCP servers, registered with the installed agent CLIs at workspace start
-# (workspace.registerCodeReviewGraph / registerCodebaseMemory). The binaries are baked here;
-# registration + config runs at start against the bind-mounted project. code-review-graph
-# installs via uv WITHOUT the embeddings extra (no torch), and its `visualize` writes a static
-# D3 graph HTML. codebase-memory-mcp installs the `--ui` variant (a static binary, no root)
-# with `--skip-config` (no project is mounted at build); its optional 3D graph UI is launched
-# on demand with `codebase-memory-mcp --ui=true --port=9749`.
+# The opt-in code-graph tools code-review-graph + codebase-memory-mcp are NOT baked here.
+# They are appended to the project Dockerfile as CONDITIONAL snippets (see
+# internal/templates/files/tools/) only when selected at `ai create`, so an unselected
+# tool's installer never runs at build. They are registered with the installed agent CLIs
+# at workspace start (workspace.registerCodeReviewGraph / registerCodebaseMemory).
 RUN curl -LsSf https://astral.sh/uv/install.sh | sh \
  && uv tool install --no-cache "graphifyy[pdf,office,video,postgres,google,svg,sql,terraform,ollama,openai,gemini,anthropic,mcp]" \
  && uv tool install --no-cache "headroom-ai[proxy]" \
  && curl -fsSL https://raw.githubusercontent.com/rtk-ai/rtk/master/install.sh | sh \
- && uv tool install --no-cache code-review-graph \
- && curl -fsSL https://raw.githubusercontent.com/DeusData/codebase-memory-mcp/main/install.sh | bash -s -- --ui --skip-config \
  && rm -rf "$HOME/.cache/uv"
 
 # Interactive-shell frameworks for the workspace user: oh-my-bash and oh-my-zsh, both

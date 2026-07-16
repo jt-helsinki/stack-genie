@@ -22,7 +22,7 @@ func installTemplates(test *testing.T) {
 func TestComposeSelectedOnly(test *testing.T) {
 	installTemplates(test)
 
-	dockerfile, err := Compose("debian-trixie", []string{"go"}, []string{"opencode"})
+	dockerfile, err := Compose("debian-trixie", []string{"go"}, []string{"opencode"}, nil)
 	if err != nil {
 		test.Fatal(err)
 	}
@@ -45,11 +45,17 @@ func TestComposeSelectedOnly(test *testing.T) {
 			test.Errorf("composed Dockerfile unexpectedly contains %q", fragment)
 		}
 	}
+	// No opt-in tool was selected, so neither tool's installer may appear.
+	for _, fragment := range []string{"# tool: code-review-graph", "# tool: codebase-memory-mcp"} {
+		if strings.Contains(dockerfile, fragment) {
+			test.Errorf("composed Dockerfile must not contain unselected tool %q", fragment)
+		}
+	}
 }
 
 func TestComposeMultipleSelections(test *testing.T) {
 	installTemplates(test)
-	dockerfile, err := Compose("debian-trixie", []string{"go", "rust"}, []string{"opencode", "codex"})
+	dockerfile, err := Compose("debian-trixie", []string{"go", "rust"}, []string{"opencode", "codex"}, nil)
 	if err != nil {
 		test.Fatal(err)
 	}
@@ -60,11 +66,32 @@ func TestComposeMultipleSelections(test *testing.T) {
 	}
 }
 
+// TestComposeAppendsSelectedTools verifies the opt-in code-graph tools are appended
+// (and ONLY when selected).
+func TestComposeAppendsSelectedTools(test *testing.T) {
+	installTemplates(test)
+	dockerfile, err := Compose("debian-trixie", nil, []string{"opencode"},
+		[]string{"code-review-graph", "codebase-memory-mcp"})
+	if err != nil {
+		test.Fatal(err)
+	}
+	for _, fragment := range []string{
+		"# tool: code-review-graph",
+		"uv tool install --no-cache code-review-graph",
+		"# tool: codebase-memory-mcp",
+		"DeusData/codebase-memory-mcp/main/install.sh",
+	} {
+		if !strings.Contains(dockerfile, fragment) {
+			test.Errorf("composed Dockerfile missing selected tool fragment %q:\n%s", fragment, dockerfile)
+		}
+	}
+}
+
 // TestComposeInstallsCopilot verifies the GitHub Copilot CLI snippet composes and installs
 // the @github/copilot npm package.
 func TestComposeInstallsCopilot(test *testing.T) {
 	installTemplates(test)
-	dockerfile, err := Compose("debian-trixie", nil, []string{"copilot"})
+	dockerfile, err := Compose("debian-trixie", nil, []string{"copilot"}, nil)
 	if err != nil {
 		test.Fatal(err)
 	}
@@ -80,7 +107,7 @@ func TestComposeBakesHeadroom(test *testing.T) {
 	// Headroom is now installed IN each workspace image (via uv tool, headroom-ai[proxy])
 	// so each agent CLI can be wrapped (`headroom wrap <cli>`) to compress provider-API
 	// traffic before it leaves the microVM — it is no longer a shared host container.
-	dockerfile, err := Compose("debian-trixie", nil, []string{"opencode"})
+	dockerfile, err := Compose("debian-trixie", nil, []string{"opencode"}, nil)
 	if err != nil {
 		test.Fatal(err)
 	}
@@ -91,7 +118,7 @@ func TestComposeBakesHeadroom(test *testing.T) {
 
 func TestComposeNoStacks(test *testing.T) {
 	installTemplates(test)
-	dockerfile, err := Compose("debian-trixie", nil, []string{"opencode"})
+	dockerfile, err := Compose("debian-trixie", nil, []string{"opencode"}, nil)
 	if err != nil {
 		test.Fatal(err)
 	}
@@ -102,14 +129,17 @@ func TestComposeNoStacks(test *testing.T) {
 
 func TestComposeUnknownInputs(test *testing.T) {
 	installTemplates(test)
-	if _, err := Compose("no-such-os", nil, []string{"opencode"}); err == nil {
+	if _, err := Compose("no-such-os", nil, []string{"opencode"}, nil); err == nil {
 		test.Error("expected error for unknown OS")
 	}
-	if _, err := Compose("debian-trixie", []string{"cobol"}, nil); err == nil {
+	if _, err := Compose("debian-trixie", []string{"cobol"}, nil, nil); err == nil {
 		test.Error("expected error for unknown stack")
 	}
-	if _, err := Compose("debian-trixie", nil, []string{"emacs"}); err == nil {
+	if _, err := Compose("debian-trixie", nil, []string{"emacs"}, nil); err == nil {
 		test.Error("expected error for unknown agent CLI")
+	}
+	if _, err := Compose("debian-trixie", nil, []string{"opencode"}, []string{"no-such-tool"}); err == nil {
+		test.Error("expected error for unknown tool")
 	}
 }
 
@@ -157,7 +187,7 @@ func TestAllOSTemplatesExposeIdenticalBaseSurface(test *testing.T) {
 	}
 
 	for osKey, fromLine := range osBaseImage {
-		dockerfile, err := Compose(osKey, []string{"go"}, []string{"opencode"})
+		dockerfile, err := Compose(osKey, []string{"go"}, []string{"opencode"}, nil)
 		if err != nil {
 			test.Fatalf("compose %s: %v", osKey, err)
 		}
@@ -182,7 +212,7 @@ func TestAllOSTemplatesExposeIdenticalBaseSurface(test *testing.T) {
 func TestWriteProjectDockerfile(test *testing.T) {
 	installTemplates(test)
 	projectRoot := test.TempDir()
-	if err := Write(projectRoot, "debian-trixie", []string{"go"}, []string{"opencode"}); err != nil {
+	if err := Write(projectRoot, "debian-trixie", []string{"go"}, []string{"opencode"}, []string{"code-review-graph"}); err != nil {
 		test.Fatal(err)
 	}
 	written, err := os.ReadFile(filepath.Join(projectRoot, ".ai-platform", "Dockerfile"))
@@ -191,5 +221,8 @@ func TestWriteProjectDockerfile(test *testing.T) {
 	}
 	if !strings.Contains(string(written), "# stack: go") {
 		test.Errorf("written Dockerfile missing go stack:\n%s", written)
+	}
+	if !strings.Contains(string(written), "# tool: code-review-graph") {
+		test.Errorf("written Dockerfile missing selected tool:\n%s", written)
 	}
 }

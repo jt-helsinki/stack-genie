@@ -21,6 +21,7 @@ const (
 	dockerfilesDir = "dockerfiles" // one Dockerfile per OS key
 	stacksDir      = "stacks"      // one Dockerfile.snippet per software stack
 	agentCLIsDir   = "agentclis"   // one Dockerfile.snippet per agent CLI
+	toolsDir       = "tools"       // one Dockerfile.snippet per opt-in dev tool
 )
 
 // InstalledRoot returns ~/.ai-platform/templates.
@@ -75,6 +76,13 @@ func StackSnippet(stack string) (string, error) {
 // AgentCLISnippet returns the installed Dockerfile snippet for an agent CLI.
 func AgentCLISnippet(cli string) (string, error) {
 	return readInstalled(filepath.Join(agentCLIsDir, cli, "Dockerfile.snippet"))
+}
+
+// ToolSnippet returns the installed Dockerfile snippet for an opt-in dev tool
+// (e.g. code-review-graph, codebase-memory-mcp) — appended to the project
+// Dockerfile only when that tool is selected at `ai create`.
+func ToolSnippet(tool string) (string, error) {
+	return readInstalled(filepath.Join(toolsDir, tool, "Dockerfile.snippet"))
 }
 
 func readInstalled(relative string) (string, error) {

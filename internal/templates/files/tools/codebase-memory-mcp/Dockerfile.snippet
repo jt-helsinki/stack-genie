@@ -1,0 +1,9 @@
+# tool: codebase-memory-mcp (github.com/DeusData/codebase-memory-mcp) — OPT-IN, appended
+# to the project Dockerfile ONLY when selected at `ai create`
+# (context.codebase_memory_enabled). An MCP server giving agents persistent codebase
+# memory; registered with the installed agent CLIs at workspace start
+# (workspace.registerCodebaseMemory). Its optional 3D graph UI (:9749) is launched on
+# demand, not auto-started/published. Installs the `--ui` static binary (no root) with
+# `--skip-config` (no project is mounted at build).
+USER workspace
+RUN curl -fsSL https://raw.githubusercontent.com/DeusData/codebase-memory-mcp/main/install.sh | bash -s -- --ui --skip-config

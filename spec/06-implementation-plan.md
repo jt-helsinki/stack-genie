@@ -89,7 +89,8 @@ keep the precedence rules in arch §27 explicit), `slog` (structured logs), stdl
 │   │   └── files/
 │   │       ├── dockerfiles/<os>/Dockerfile        # one base Dockerfile per OS key (alma, debian-trixie, debian-bookworm, ubuntu)
 │   │       ├── stacks/<stack>/Dockerfile.snippet  # one install snippet per stack (go, rust, java, maven, deno — Node/Python are baked into the base, not stacks)
-│   │       └── agentclis/                          # per-agent-CLI install snippets
+│   │       ├── agentclis/                          # per-agent-CLI install snippets
+│   │       └── tools/<tool>/Dockerfile.snippet    # opt-in dev tools (code-review-graph, codebase-memory-mcp) — appended only when selected
 │   ├── uninstall/               # native `ai uninstall` teardown
 │   └── doctor/                  # consolidated health checks → repair suggestions
 ├── installers/                  # install.sh (+ install-local.sh) thin launchers (macOS/Linux)

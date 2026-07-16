@@ -14,9 +14,12 @@ import (
 )
 
 // Compose builds the full Dockerfile content for a project from the installed
-// templates (~/.ai-platform/templates). An unknown OS key, stack, or agent CLI
-// is an error.
-func Compose(osKey string, stacks, agentCLIs []string) (string, error) {
+// templates (~/.ai-platform/templates): the OS base, then each selected software
+// stack, each selected agent CLI, and finally each selected OPT-IN dev tool
+// (code-review-graph / codebase-memory-mcp) — the tools are appended only when the
+// project selected them, so an unselected tool never bloats the image. An unknown
+// OS key, stack, agent CLI, or tool is an error.
+func Compose(osKey string, stacks, agentCLIs, tools []string) (string, error) {
 	base, err := templates.BaseDockerfile(osKey)
 	if err != nil {
 		return "", fmt.Errorf("os %q: %w", osKey, err)
@@ -45,6 +48,15 @@ func Compose(osKey string, stacks, agentCLIs []string) (string, error) {
 		}
 		appendSection(&builder, snippet)
 	}
+	// Opt-in dev tools LAST — appended only for the tools the project selected, so an
+	// unselected tool's installer never runs at build time (arch §12/§25).
+	for _, tool := range tools {
+		snippet, err := templates.ToolSnippet(tool)
+		if err != nil {
+			return "", fmt.Errorf("tool %q: %w", tool, err)
+		}
+		appendSection(&builder, snippet)
+	}
 	return builder.String(), nil
 }
 
@@ -55,8 +67,8 @@ func appendSection(builder *strings.Builder, snippet string) {
 }
 
 // Write composes and writes <projectRoot>/.ai-platform/Dockerfile.
-func Write(projectRoot, osKey string, stacks, agentCLIs []string) error {
-	content, err := Compose(osKey, stacks, agentCLIs)
+func Write(projectRoot, osKey string, stacks, agentCLIs, tools []string) error {
+	content, err := Compose(osKey, stacks, agentCLIs, tools)
 	if err != nil {
 		return err
 	}

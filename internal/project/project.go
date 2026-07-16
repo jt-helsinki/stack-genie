@@ -230,8 +230,17 @@ func Scaffold(spec Spec, createdAt string) (string, error) {
 	if err := templates.Install(); err != nil {
 		return "", err
 	}
-	// Dockerfile = OS base + selected stacks + selected agent CLIs (§25, §12).
-	if err := envimage.Write(root, spec.OS, spec.Stacks, spec.AgentCLIs); err != nil {
+	// Dockerfile = OS base + selected stacks + selected agent CLIs + selected opt-in
+	// tools (§25, §12). The opt-in tools are baked ONLY when selected, so an
+	// unselected tool's installer never runs at build.
+	var tools []string
+	if spec.CodeReviewGraphEnabled {
+		tools = append(tools, "code-review-graph")
+	}
+	if spec.CodebaseMemoryEnabled {
+		tools = append(tools, "codebase-memory-mcp")
+	}
+	if err := envimage.Write(root, spec.OS, spec.Stacks, spec.AgentCLIs, tools); err != nil {
 		return "", err
 	}
 

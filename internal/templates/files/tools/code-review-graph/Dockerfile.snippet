@@ -1,0 +1,9 @@
+# tool: code-review-graph (code-review-graph.com, PyPI `code-review-graph`) — OPT-IN,
+# appended to the project Dockerfile ONLY when selected at `ai create`
+# (context.code_review_graph_enabled). A code-review knowledge-graph MCP server for
+# coding agents; registered with the installed agent CLIs at workspace start
+# (workspace.registerCodeReviewGraph), whose `visualize` writes a static D3 graph HTML.
+# Installed WITHOUT the embeddings extra (no torch), via uv, onto the workspace user's
+# ~/.local/bin (uv itself is installed in the base layer).
+USER workspace
+RUN uv tool install --no-cache code-review-graph
