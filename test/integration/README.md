@@ -37,9 +37,14 @@ up everything they create (the suite workspace + any dummy keys) via
 | 4 | `TestGroup04WorkspaceLifecycle` | `create` → `start` → `exec echo` → in-VM `nerdctl` (containerd) → `refresh-models` → `apps add openwebui` reachable on its host port → egress `deny` blocks / `public` allows (restart between) → `stop` + `delete --purge` |
 | 5 | `TestGroup05GatewayInference` | `ai models test ollama/smollm:135m` → real local chat completion through nginx → Headroom → LiteLLM → Ollama |
 | 6 | `TestGroup06Uninstall` | `ai uninstall --dry-run` plan (always); destructive `--purge --yes` only when gated (see below) |
+| — | `TestWorkspaceCreateTeardown` | fast, scenario-rich `ai create`/`delete`/`destroy` coverage — scaffold + registration, delete keeps user files, `--purge` removes the dir, missing/unknown `--os` → exit 2, flags persist to `config.yaml`, nested/duplicate locations rejected, `--dry-run` no side effects, unknown-delete error, `destroy` alias. Needs only installed templates (`requireSetup`), **not** a running stack, so it runs in seconds without building a microVM |
 
 Each step in group 4 asserts independently and logs the exact `ai` output on
 failure — those failures are real bring-up findings, which is the point.
+`TestWorkspaceCreateTeardown` (in `workspace_lifecycle_test.go`) is the
+lightweight counterpart to group 4: it exercises only the non-interactive
+create/teardown surface (no `start`, no microVM), one scenario per subtest, each
+self-cleaning via `t.Cleanup`.
 
 ## Env gates
 
