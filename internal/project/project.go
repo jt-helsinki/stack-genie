@@ -70,6 +70,16 @@ type Spec struct {
 	// installed into the workspace at start, written to config.yaml
 	// context.caveman_enabled. Chosen at `ai create` (default true).
 	CavemanEnabled bool
+	// CodeReviewGraphEnabled records whether the code-review-graph toolkit is
+	// installed into the workspace at start and registered as an MCP server with each
+	// installed agent CLI, written to config.yaml context.code_review_graph_enabled.
+	// Chosen at `ai create` (OPT-IN, default false).
+	CodeReviewGraphEnabled bool
+	// CodebaseMemoryEnabled records whether the codebase-memory-mcp server is
+	// installed into the workspace at start and registered as an MCP server with each
+	// installed agent CLI, written to config.yaml context.codebase_memory_enabled.
+	// Chosen at `ai create` (OPT-IN, default false).
+	CodebaseMemoryEnabled bool
 	// PublishPorts are the host↔guest ports to open into the sandbox, written to
 	// config.yaml network.publish_ports.
 	PublishPorts []config.PortMapping
@@ -292,14 +302,17 @@ func Scaffold(spec Spec, createdAt string) (string, error) {
 	if len(authModes) == 0 {
 		authModes = nil
 	}
-	// Persist the Caveman on/off choice here; create.Execute's later SetStrategy/
-	// SetCavemanLevel calls are read-modify-write and preserve it.
+	// Persist the Caveman + code-review-graph + codebase-memory-mcp on/off choices here;
+	// create.Execute's later SetStrategy/SetCavemanLevel calls are read-modify-write and
+	// preserve them.
 	cavemanEnabled := spec.CavemanEnabled
+	codeReviewGraphEnabled := spec.CodeReviewGraphEnabled
+	codebaseMemoryEnabled := spec.CodebaseMemoryEnabled
 	projectConfig := &config.Config{
 		OS:           spec.OS,
 		Agent:        config.AgentConfig{Tools: spec.AgentCLIs, DefaultTool: spec.DefaultTool, GraphifyModel: spec.GraphifyModel, AuthModes: authModes},
 		Workspace:    config.WorkspaceConfig{CPULimit: cpus, MemoryLimit: memory, Shell: shell},
-		Context:      config.ContextConfig{CavemanEnabled: &cavemanEnabled},
+		Context:      config.ContextConfig{CavemanEnabled: &cavemanEnabled, CodeReviewGraphEnabled: &codeReviewGraphEnabled, CodebaseMemoryEnabled: &codebaseMemoryEnabled},
 		Microsandbox: config.MicrosandboxConfig{IdleTimeout: idleTimeout},
 		Network:      config.NetworkConfig{PublishPorts: spec.PublishPorts, AllowHostServices: oauthAllow},
 		Apps:         appEntries,

@@ -945,6 +945,23 @@ templates (§25); it is identical across all OSes:
   pull failure is a create warning, not a failure), and at workspace start Graphify
   is routed through the gateway as `ollama/<model>` via `OPENAI_*` env vars (see
   §17) — never directly to Ollama.
+* **code-review-graph** and **codebase-memory-mcp** — two OPT-IN (default off)
+  per-workspace code-graph tools baked into every OS base and, when chosen at
+  `ai create` (`--code-review-graph` / `--codebase-memory`, or the wizard's tooling
+  step), registered as an **MCP server** with each installed agent CLI **at workspace
+  start** (`Manager.registerCodeReviewGraph` / `registerCodebaseMemory`, mirroring
+  `registerGraphify`/`registerCaveman`: once-guarded by a marker under
+  `~/project/.ai-platform`, best-effort, never failing the start). **code-review-graph**
+  (code-review-graph.com, PyPI `code-review-graph`) runs `code-review-graph install
+  --platform <cli>` for each supported CLI (opencode/claude-code/codex/gemini/copilot —
+  pi/omp/openclaw/hermes are not code-review-graph platforms), then `build`s the graph
+  and writes a D3 force-directed graph **visualization** HTML at
+  `.code-review-graph/graph.html`; it is DETACHED (the `build` can be long, like the
+  Caveman install). **codebase-memory-mcp** (github.com/DeusData/codebase-memory-mcp) runs
+  the auto-detecting `codebase-memory-mcp install` (bounded blocking, config-only) and
+  ships an optional on-demand **3D graph UI** (`codebase-memory-mcp --ui=true --port=9749`,
+  not auto-started). Both default to LOCAL operation and need no API key, so neither
+  touches the gateway or a provider key.
 * **rtk** — "Rust Token Killer" (github.com/rtk-ai/rtk), a CLI proxy that compresses
   common dev-command output to cut agent token use. Installed for the **workspace
   user** via its official `install.sh` (a prebuilt aarch64 Linux binary → `~/.local/bin`,

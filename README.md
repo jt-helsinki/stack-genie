@@ -124,7 +124,13 @@ manager), **Graphify** (PyPI `graphifyy`, CLI `graphify`; a knowledge-graph skil
 for AI coding assistants, installed via `uv tool install` with all extras except
 the region/DB/niche-specific `chinese,azure,bedrock,falkordb,neo4j,leiden,dm,pascal`), and
 **rtk** (Rust Token Killer). Each selected agent CLI registers Graphify with
-itself (`graphify install [--platform <cli>]`). Node.js and Python are baked in,
+itself (`graphify install [--platform <cli>]`). Two OPT-IN per-workspace code-graph
+tools are also baked in and, when chosen at `ai create` (`--code-review-graph` /
+`--codebase-memory`, or the wizard's tooling step), registered as an MCP server with
+every installed agent CLI at workspace start: **code-review-graph**
+(`code-review-graph.com`; also writes a D3 graph visualization) and
+**codebase-memory-mcp** (`github.com/DeusData/codebase-memory-mcp`; ships an optional
+on-demand 3D graph UI at `:9749`). Both are local and need no API key. Node.js and Python are baked in,
 so neither is a `--stacks` option — the selectable stacks are
 `go,rust,java,maven,deno`.
 

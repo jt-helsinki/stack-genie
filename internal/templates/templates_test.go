@@ -142,6 +142,12 @@ func TestBaseDockerfileShipsContainerRuntime(t *testing.T) {
 				// rtk ("Rust Token Killer") installed via its official install.sh so
 				// Claude Code's rtk PreToolUse hook finds the binary on PATH.
 				"rtk-ai/rtk/master/install.sh",
+				// code-review-graph (opt-in per-CLI MCP code-graph tool) baked via uv,
+				// and codebase-memory-mcp (opt-in per-CLI MCP code-memory server) baked
+				// via its install.sh with the --ui variant + --skip-config.
+				"uv tool install --no-cache code-review-graph",
+				"DeusData/codebase-memory-mcp/main/install.sh",
+				"--ui --skip-config",
 				// Keep-alive so the detached microVM stays running.
 				`CMD ["sleep", "infinity"]`,
 			} {

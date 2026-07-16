@@ -493,6 +493,12 @@ func (manager Manager) Start(project string) (*state.Workspace, error) {
 	// skills/plugin/hooks/statusline/extension) and mirror its skills into the shared
 	// pool for pi/omp. Once-guarded, network-bound, best-effort — never fails the start.
 	manager.registerCaveman(name, projectConfig)
+	// Install the opt-in code-graph / code-memory tools and register each as an MCP server
+	// with the installed agent CLIs. code-review-graph is DETACHED (its codebase `build`
+	// can be long); codebase-memory-mcp is a bounded blocking config-only exec. Both are
+	// once-guarded + best-effort — never fail the start, retry next start on failure.
+	manager.registerCodeReviewGraph(name, projectConfig)
+	manager.registerCodebaseMemory(name, projectConfig)
 	logStep("workspace %q started", project)
 	now := manager.Now()
 	handle := &state.Workspace{
@@ -832,6 +838,24 @@ const (
 	// cavemanScriptGuest is where the once-guarded install script is staged in-VM.
 	cavemanScriptGuest = "/tmp/caveman-install.sh"
 )
+
+// The code-review-graph registration runs its per-CLI `install` + a full-codebase
+// `build` + a `visualize`, so — like the Caveman install — it is DETACHED (setsid) rather
+// than a blocking exec: the `build` can be long on a large repo and must never block the
+// workspace start or wedge the single msb agent-relay (see registerCodeReviewGraph).
+const (
+	// codeReviewGraphLaunchTimeout bounds only the tiny launcher exec that
+	// setsid-backgrounds the install and returns; the install runs on past it.
+	codeReviewGraphLaunchTimeout = 30 * time.Second
+	// codeReviewGraphScriptGuest is where the once-guarded install script is staged in-VM.
+	codeReviewGraphScriptGuest = "/tmp/code-review-graph-install.sh"
+)
+
+// codebaseMemoryInstallTimeout bounds the codebase-memory-mcp `install` exec. It is
+// config-only (the binary is baked into the image; `install` just auto-detects the
+// installed agent CLIs and writes their MCP config), so — like `graphify install` — it
+// runs as a bounded BLOCKING exec, with an in-script `timeout` guard as defense-in-depth.
+const codebaseMemoryInstallTimeout = 60 * time.Second
 
 // linkAgentStateDirs points the agent CLIs' mutable STATE directories at the persistent
 // overlay (/persist) so a CLI's per-project memory survives microVM restarts — the VM
@@ -1259,6 +1283,142 @@ func (manager Manager) registerCaveman(name string, projectConfig *config.Config
 	if _, err := manager.Sandbox.ExecContext(ctx, name, []string{"bash", "-lc", launch}); err != nil && explicit {
 		_, _ = fmt.Fprintln(os.Stderr, ui.Warn.Render("Caveman install could not be launched "+
 			"(it will retry on the next workspace start): "+err.Error()))
+	}
+}
+
+// codeReviewGraphPlatformFlag maps a selected agent CLI to code-review-graph's
+// `install --platform <token>` value. code-review-graph writes each listed platform's
+// MCP config (and, where supported, hooks/skills). Only the CLIs code-review-graph
+// actually supports are present: pi, omp, openclaw and hermes are NOT among its
+// platforms, so they receive no code-review-graph MCP registration (they still get its
+// analysis by pointing them at the same on-disk graph, but there is no per-CLI hook).
+var codeReviewGraphPlatformFlag = map[string]string{
+	"claude-code": "claude-code",
+	"codex":       "codex",
+	"gemini":      "gemini-cli",
+	"opencode":    "opencode",
+	"copilot":     "copilot-cli",
+}
+
+// registerCodeReviewGraph installs code-review-graph (https://code-review-graph.com,
+// baked into the image via `uv tool install code-review-graph`) and registers it as an
+// MCP server with each SELECTED, supported agent CLI, at workspace start. Like Graphify,
+// it MUST run here rather than at image-build time: `code-review-graph install --platform`
+// writes project-scoped MCP config (e.g. `.opencode.json`, `.mcp.json`, `.gemini/settings.json`)
+// into the project directory, only bind-mounted at runtime; and `build`/`visualize` parse
+// the mounted codebase.
+//
+// It is DETACHED (setsid), exactly like registerCaveman: `code-review-graph build` parses
+// the whole codebase, which can take minutes on a large repo — a blocking exec would stall
+// the start AND saturate the single msb agent-relay. The launcher exec returns in
+// milliseconds; the staged script is once-guarded (marker under the persistent .ai-platform
+// dir, touched ONLY on success) so a failed/killed background run simply retries on the next
+// start. No API key is used: code-review-graph defaults to LOCAL embeddings, so it never
+// touches the gateway or a provider key. Best-effort — never fails the start.
+func (manager Manager) registerCodeReviewGraph(name string, projectConfig *config.Config) {
+	if projectConfig == nil {
+		return
+	}
+	// Honor the create-time choice (config.yaml context.code_review_graph_enabled). It is
+	// OPT-IN: unset (nil) defaults to disabled, so it is a no-op unless explicitly chosen.
+	if !projectConfig.Context.CodeReviewGraphEnabledOrDefault() {
+		return
+	}
+	installs := make([]string, 0, len(projectConfig.Agent.Tools))
+	for _, cli := range projectConfig.Agent.Tools {
+		platform, known := codeReviewGraphPlatformFlag[cli]
+		if !known {
+			continue
+		}
+		installs = append(installs, "code-review-graph install --platform "+platform)
+	}
+	if len(installs) == 0 {
+		_, _ = fmt.Fprintln(os.Stderr, ui.Warn.Render("code-review-graph is enabled but no supported CLI "+
+			"(opencode, claude-code, codex, gemini, or copilot) is selected — skipping install."))
+		return
+	}
+	pool := workspaceWorkdir + "/.ai-platform"
+	installMarker := pool + "/.code-review-graph-installed"
+	// The per-CLI MCP registration, then a full-codebase `build`, then `visualize` (which
+	// writes a static D3 force-directed graph HTML at .code-review-graph/graph.html — that
+	// IS the visualization "UI"; there is no server to launch). Run from ~/project so the
+	// project-scoped MCP configs + the graph land in the bind-mounted project dir.
+	steps := append(installs, "code-review-graph build", "code-review-graph visualize")
+	// Bound the whole run with `timeout` (coreutils, present in every base) as
+	// defense-in-depth so a wedged build self-kills instead of hanging the background
+	// process; on timeout the marker is not touched and the next start retries.
+	// `--kill-after` SIGKILLs a child that ignores SIGTERM. The joined command contains no
+	// single quote, so single-quoting it for `bash -c` is safe.
+	inner := strings.Join(steps, " && ")
+	script := "#!/usr/bin/env bash\n" +
+		"cd " + workspaceWorkdir + " 2>/dev/null || exit 0; " +
+		"mkdir -p " + pool + "; " +
+		"[ -f " + installMarker + " ] && exit 0; " +
+		"command -v code-review-graph >/dev/null 2>&1 || exit 0; " +
+		"timeout --kill-after=30s 600s bash -c '" + inner + "'; installed=$?; " +
+		"[ \"$installed\" -eq 0 ] && touch " + installMarker + "\n"
+	if err := manager.Sandbox.WriteFile(name, codeReviewGraphScriptGuest, []byte(script)); err != nil {
+		_, _ = fmt.Fprintln(os.Stderr, ui.Warn.Render("code-review-graph install could not be staged "+
+			"(it will retry on the next workspace start): "+err.Error()))
+		return
+	}
+	// The detached install's output is written to the project run/ dir (bind-mounted, so it
+	// is readable on the HOST at <project>/.ai-platform/run/code-review-graph-install.log).
+	logPath := pool + "/run/code-review-graph-install.log"
+	logStep("installing code-review-graph in the background (detached) → %s", logPath)
+	launch := fmt.Sprintf("mkdir -p %s && setsid bash %s </dev/null >%s 2>&1 & exit 0",
+		shellQuoteGuest(pool+"/run"), shellQuoteGuest(codeReviewGraphScriptGuest), shellQuoteGuest(logPath))
+	ctx, cancel := context.WithTimeout(context.Background(), codeReviewGraphLaunchTimeout)
+	defer cancel()
+	if _, err := manager.Sandbox.ExecContext(ctx, name, []string{"bash", "-lc", launch}); err != nil {
+		_, _ = fmt.Fprintln(os.Stderr, ui.Warn.Render("code-review-graph install could not be launched "+
+			"(it will retry on the next workspace start): "+err.Error()))
+	}
+}
+
+// registerCodebaseMemory registers codebase-memory-mcp
+// (https://github.com/DeusData/codebase-memory-mcp, baked into the image via its install.sh
+// with the `--ui` variant + `--skip-config`) as an MCP server with each installed agent CLI,
+// at workspace start. `codebase-memory-mcp install` AUTO-DETECTS the installed agent CLIs and
+// writes their MCP config (project-scoped where the CLI uses a project config — `.mcp.json`,
+// `.gemini/settings.json`, `.opencode.json` — global otherwise), so it MUST run here, after
+// the CLIs are set up and the project is bind-mounted at ~/project. Unlike Graphify /
+// code-review-graph there is no per-platform flag — the single `install` configures whatever
+// it detects.
+//
+// It is config-only (the binary is baked; `install` writes config, no network and no build),
+// so — like `graphify install` — it runs as a bounded BLOCKING exec, with an in-script
+// `timeout` guard as defense-in-depth so any hang self-kills instead of wedging the msb
+// agent-relay. No API key is used (codebase-memory-mcp needs none), so it never touches the
+// gateway or a provider key. The optional 3D graph UI ships in the baked `--ui` variant and is
+// launched ON DEMAND with `codebase-memory-mcp --ui=true --port=9749` (not auto-started —
+// nothing publishes :9749). ONCE-guarded by a marker under the persistent .ai-platform dir.
+// Best-effort — never fails the start.
+func (manager Manager) registerCodebaseMemory(name string, projectConfig *config.Config) {
+	if projectConfig == nil {
+		return
+	}
+	// Honor the create-time choice (config.yaml context.codebase_memory_enabled). It is
+	// OPT-IN: unset (nil) defaults to disabled, so it is a no-op unless explicitly chosen.
+	if !projectConfig.Context.CodebaseMemoryEnabledOrDefault() {
+		return
+	}
+	pool := workspaceWorkdir + "/.ai-platform"
+	installMarker := pool + "/.codebase-memory-installed"
+	// `codebase-memory-mcp install` OVERWRITES the agent MCP entries each run, so a marker
+	// guards re-runs (keeping user edits from being clobbered on every restart); it is
+	// touched only after install succeeds (a failure retries next start). Run from ~/project
+	// so the project-scoped MCP configs land in the bind-mounted project dir.
+	script := "cd " + workspaceWorkdir + " 2>/dev/null || exit 0; " +
+		"mkdir -p " + pool + "; " +
+		"[ -f " + installMarker + " ] && exit 0; " +
+		"command -v codebase-memory-mcp >/dev/null 2>&1 || exit 0; " +
+		"timeout --kill-after=15s 45s codebase-memory-mcp install && touch " + installMarker
+	ctx, cancel := context.WithTimeout(context.Background(), codebaseMemoryInstallTimeout)
+	defer cancel()
+	if _, err := manager.Sandbox.ExecContext(ctx, name, []string{"sh", "-lc", script}); err != nil {
+		_, _ = fmt.Fprintln(os.Stderr, ui.Warn.Render("codebase-memory-mcp registration could not "+
+			"complete (it will retry on the next workspace start): "+err.Error()))
 	}
 }
 

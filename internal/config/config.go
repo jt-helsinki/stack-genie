@@ -127,6 +127,20 @@ type ContextConfig struct {
 	// defaults to enabled for backward compatibility with projects created before
 	// the toggle existed — see CavemanEnabledOrDefault.
 	CavemanEnabled *bool `yaml:"caveman_enabled,omitempty" json:"caveman_enabled,omitempty"`
+	// CodeReviewGraphEnabled records whether the code-review-graph toolkit
+	// (https://code-review-graph.com) is installed into the workspace at start and
+	// registered with each installed agent CLI as an MCP server (chosen at `ai
+	// create`). A pointer so three states are distinct: unset (nil), explicit true,
+	// explicit false. It is OPT-IN — unset (nil) defaults to DISABLED (unlike Caveman)
+	// so existing projects are unaffected — see CodeReviewGraphEnabledOrDefault.
+	CodeReviewGraphEnabled *bool `yaml:"code_review_graph_enabled,omitempty" json:"code_review_graph_enabled,omitempty"`
+	// CodebaseMemoryEnabled records whether the codebase-memory-mcp server
+	// (https://github.com/DeusData/codebase-memory-mcp) is installed into the
+	// workspace at start and registered with each installed agent CLI as an MCP
+	// server (chosen at `ai create`). A pointer so three states are distinct: unset
+	// (nil), explicit true, explicit false. It is OPT-IN — unset (nil) defaults to
+	// DISABLED (unlike Caveman) — see CodebaseMemoryEnabledOrDefault.
+	CodebaseMemoryEnabled *bool `yaml:"codebase_memory_enabled,omitempty" json:"codebase_memory_enabled,omitempty"`
 }
 
 // CavemanEnabledOrDefault reports whether Caveman should be installed at workspace
@@ -134,6 +148,20 @@ type ContextConfig struct {
 // auto-install behavior; an explicit false disables it.
 func (settings ContextConfig) CavemanEnabledOrDefault() bool {
 	return settings.CavemanEnabled == nil || *settings.CavemanEnabled
+}
+
+// CodeReviewGraphEnabledOrDefault reports whether code-review-graph should be
+// installed at workspace start. It is OPT-IN: an unset (nil) value defaults to FALSE,
+// so it is only ever installed when explicitly chosen at `ai create`.
+func (settings ContextConfig) CodeReviewGraphEnabledOrDefault() bool {
+	return settings.CodeReviewGraphEnabled != nil && *settings.CodeReviewGraphEnabled
+}
+
+// CodebaseMemoryEnabledOrDefault reports whether codebase-memory-mcp should be
+// installed at workspace start. It is OPT-IN: an unset (nil) value defaults to FALSE,
+// so it is only ever installed when explicitly chosen at `ai create`.
+func (settings ContextConfig) CodebaseMemoryEnabledOrDefault() bool {
+	return settings.CodebaseMemoryEnabled != nil && *settings.CodebaseMemoryEnabled
 }
 
 // WorkspaceConfig holds the microVM resource limits applied at workspace start

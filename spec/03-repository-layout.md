@@ -685,6 +685,11 @@ context:
   strategy: balanced       # Headroom input compression: conservative | balanced | aggressive
                            # (mapped to Headroom per-request knobs keep_turns/output_buffer_tokens)
   caveman_level: full      # Caveman output compression: lite | full | ultra | wenyan
+  caveman_enabled: true    # install Caveman at workspace start (chosen at create; default true)
+  code_review_graph_enabled: false  # OPT-IN: install code-review-graph (code-review-graph.com) + register it
+                                     # as an MCP server with each installed agent CLI at start
+  codebase_memory_enabled: false     # OPT-IN: install codebase-memory-mcp (DeusData/codebase-memory-mcp) +
+                                     # register it as an MCP server with each installed agent CLI at start
 workspace:
   cpu_limit: 4             # microVM resource limits wired into `msb create --cpus/--memory`
   memory_limit: 8          # memory in GB (a plain number; a 512M/4G suffix still works); empty falls back to the microVM default (4G)

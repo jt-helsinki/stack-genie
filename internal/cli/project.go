@@ -137,21 +137,23 @@ func mapProjectErr(err error) error {
 // fully specifiable in one invocation for --json / external callers). defaultName is
 // the fallback workspace name (the [name] arg or the cwd basename).
 type createFlags struct {
-	name          string
-	osKey         string
-	agents        []string
-	stacks        []string
-	apps          []string
-	idleTimeout   string
-	cpus          int
-	memory        string
-	ports         []string
-	location      string
-	graphifyModel string
-	shell         string
-	authMode      string
-	caveman       bool
-	defaultName   string
+	name            string
+	osKey           string
+	agents          []string
+	stacks          []string
+	apps            []string
+	idleTimeout     string
+	cpus            int
+	memory          string
+	ports           []string
+	location        string
+	graphifyModel   string
+	shell           string
+	authMode        string
+	caveman         bool
+	codeReviewGraph bool
+	codebaseMemory  bool
+	defaultName     string
 }
 
 // readCreateFlags reads every create flag (and the optional [name] positional).
@@ -170,12 +172,16 @@ func readCreateFlags(cmd *cobra.Command, args []string) createFlags {
 	shell, _ := cmd.Flags().GetString("shell")
 	authMode, _ := cmd.Flags().GetString("auth-mode")
 	caveman, _ := cmd.Flags().GetBool("caveman")
+	codeReviewGraph, _ := cmd.Flags().GetBool("code-review-graph")
+	codebaseMemory, _ := cmd.Flags().GetBool("codebase-memory")
 	return createFlags{
 		name: name, osKey: osKey, agents: agents, stacks: stacks, apps: appsList,
 		idleTimeout: idleTimeout, cpus: cpus, memory: memory, ports: ports,
 		location: location, graphifyModel: graphifyModel, shell: shell, authMode: authMode,
-		caveman:     caveman,
-		defaultName: defaultProjectName(args),
+		caveman:         caveman,
+		codeReviewGraph: codeReviewGraph,
+		codebaseMemory:  codebaseMemory,
+		defaultName:     defaultProjectName(args),
 	}
 }
 
@@ -401,6 +407,8 @@ func newCreateCmd(emitter *output.Emitter, exit *int, use string) *cobra.Command
 	cmd.Flags().String("shell", "bash", "default interactive shell for workspace sessions: "+strings.Join(supportedShells, "|"))
 	cmd.Flags().String("auth-mode", "", "per-agent auth mode for claude-code/codex/gemini as cli=mode (api-key|oauth), comma-separated (e.g. claude-code=oauth,codex=api-key); default api-key")
 	cmd.Flags().Bool("caveman", true, "install the Caveman output-compression toolkit into the workspace at start (--caveman=false to skip)")
+	cmd.Flags().Bool("code-review-graph", false, "install code-review-graph (code-review-graph.com) and register it as an MCP server with each installed agent CLI at workspace start (opt-in)")
+	cmd.Flags().Bool("codebase-memory", false, "install codebase-memory-mcp (github.com/DeusData/codebase-memory-mcp) and register it as an MCP server with each installed agent CLI at workspace start (opt-in)")
 	_ = cmd.RegisterFlagCompletionFunc("os", fixedValues(supportedOSes...))
 	_ = cmd.RegisterFlagCompletionFunc("shell", fixedValues(supportedShells...))
 	_ = cmd.RegisterFlagCompletionFunc("agents", fixedValues(supportedAgentCLIs...))
@@ -570,6 +578,8 @@ func runCreateWizard(seed project.Spec) (project.Spec, bool, error) {
 	// a configured model. The library is cache-first — if it can't be loaded (offline,
 	// no cache) the group is omitted and only a --graphify-model flag can set it.
 	caveman := seed.CavemanEnabled
+	codeReviewGraph := seed.CodeReviewGraphEnabled
+	codebaseMemory := seed.CodebaseMemoryEnabled
 	graphifyName, graphifyTag := splitModelRef(seed.GraphifyModel)
 	// Cache-only: the wizard must never stall on a cold-cache network scrape. If no
 	// cache exists yet (no prior `ai setup` / `ai models`), the group is omitted and
@@ -648,6 +658,12 @@ func runCreateWizard(seed project.Spec) (project.Spec, bool, error) {
 		huh.NewConfirm().Title("Install the Caveman output-compression toolkit?").
 			Description("Runs Caveman's installer in the workspace at start (after the agent CLIs) to add its skills, agents, commands and CLI-native plugins/hooks.").
 			Value(&caveman),
+		huh.NewConfirm().Title("Install code-review-graph?").
+			Description("Builds a code-review knowledge graph (code-review-graph.com) and registers it as an MCP server with each installed agent CLI at start; also writes a D3 graph visualization. Local, no API key.").
+			Value(&codeReviewGraph),
+		huh.NewConfirm().Title("Install codebase-memory-mcp?").
+			Description("Installs codebase-memory-mcp (github.com/DeusData/codebase-memory-mcp) and registers it as an MCP server with each installed agent CLI at start; ships an optional on-demand 3D graph UI. Local, no API key.").
+			Value(&codebaseMemory),
 	))
 
 	form := huh.NewForm(groups...).WithTheme(ui.HuhTheme()).WithWidth(formWidth())
@@ -672,21 +688,23 @@ func runCreateWizard(seed project.Spec) (project.Spec, bool, error) {
 	})
 
 	return project.Spec{
-		Name:           name,
-		OS:             osKey,
-		Shell:          shell,
-		Stacks:         stacks,
-		AgentCLIs:      agentCLIs,
-		DefaultTool:    defaultTool,
-		AuthModes:      authModes,
-		Apps:           selectedApps,
-		IdleTimeout:    idleTimeout,
-		CPUs:           cpus,
-		Memory:         strings.TrimSpace(memory),
-		PublishPorts:   ports,
-		Root:           location,
-		GraphifyModel:  joinModelRef(graphifyName, graphifyTag),
-		CavemanEnabled: caveman,
+		Name:                   name,
+		OS:                     osKey,
+		Shell:                  shell,
+		Stacks:                 stacks,
+		AgentCLIs:              agentCLIs,
+		DefaultTool:            defaultTool,
+		AuthModes:              authModes,
+		Apps:                   selectedApps,
+		IdleTimeout:            idleTimeout,
+		CPUs:                   cpus,
+		Memory:                 strings.TrimSpace(memory),
+		PublishPorts:           ports,
+		Root:                   location,
+		GraphifyModel:          joinModelRef(graphifyName, graphifyTag),
+		CavemanEnabled:         caveman,
+		CodeReviewGraphEnabled: codeReviewGraph,
+		CodebaseMemoryEnabled:  codebaseMemory,
 	}, false, nil
 }
 
@@ -1025,20 +1043,22 @@ func seedSpec(flags createFlags) project.Spec {
 	authModes, _ := parseAuthModes(flags.authMode, agents)
 	// Apps are opt-in: an unset --apps seeds the wizard with NOTHING selected.
 	return project.Spec{
-		Name:           name,
-		OS:             osKey,
-		Shell:          flags.shell,
-		Stacks:         flags.stacks,
-		AgentCLIs:      agents,
-		DefaultTool:    normalizeDefaultAgentCLI(agents[0], agents),
-		AuthModes:      authModes,
-		Apps:           flags.apps,
-		IdleTimeout:    idleTimeout,
-		CPUs:           flags.cpus,
-		Memory:         flags.memory,
-		PublishPorts:   ports,
-		GraphifyModel:  flags.graphifyModel,
-		CavemanEnabled: flags.caveman,
+		Name:                   name,
+		OS:                     osKey,
+		Shell:                  flags.shell,
+		Stacks:                 flags.stacks,
+		AgentCLIs:              agents,
+		DefaultTool:            normalizeDefaultAgentCLI(agents[0], agents),
+		AuthModes:              authModes,
+		Apps:                   flags.apps,
+		IdleTimeout:            idleTimeout,
+		CPUs:                   flags.cpus,
+		Memory:                 flags.memory,
+		PublishPorts:           ports,
+		GraphifyModel:          flags.graphifyModel,
+		CavemanEnabled:         flags.caveman,
+		CodeReviewGraphEnabled: flags.codeReviewGraph,
+		CodebaseMemoryEnabled:  flags.codebaseMemory,
 	}
 }
 
@@ -1075,20 +1095,22 @@ func specFromFlags(flags createFlags) (project.Spec, error) {
 		return project.Spec{}, err
 	}
 	return project.Spec{
-		Name:           name,
-		OS:             flags.osKey,
-		Shell:          flags.shell,
-		Stacks:         flags.stacks,
-		AgentCLIs:      agents,
-		DefaultTool:    normalizeDefaultAgentCLI(agents[0], agents),
-		AuthModes:      authModes,
-		Apps:           flags.apps,
-		IdleTimeout:    idleTimeout,
-		CPUs:           flags.cpus,
-		Memory:         flags.memory,
-		PublishPorts:   ports,
-		GraphifyModel:  flags.graphifyModel,
-		CavemanEnabled: flags.caveman,
+		Name:                   name,
+		OS:                     flags.osKey,
+		Shell:                  flags.shell,
+		Stacks:                 flags.stacks,
+		AgentCLIs:              agents,
+		DefaultTool:            normalizeDefaultAgentCLI(agents[0], agents),
+		AuthModes:              authModes,
+		Apps:                   flags.apps,
+		IdleTimeout:            idleTimeout,
+		CPUs:                   flags.cpus,
+		Memory:                 flags.memory,
+		PublishPorts:           ports,
+		GraphifyModel:          flags.graphifyModel,
+		CavemanEnabled:         flags.caveman,
+		CodeReviewGraphEnabled: flags.codeReviewGraph,
+		CodebaseMemoryEnabled:  flags.codebaseMemory,
 	}, nil
 }
 

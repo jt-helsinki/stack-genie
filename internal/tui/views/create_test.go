@@ -222,9 +222,17 @@ func TestCreateWizardAssemblesSpec(test *testing.T) {
 	if wizard.step != stepCaveman {
 		test.Fatalf("after idle, step = %d, want stepCaveman", wizard.step)
 	}
-	enter() // caveman (default install) → advances to model step
+	enter() // caveman (default install) → code-review-graph step
+	if wizard.step != stepCodeReviewGraph {
+		test.Fatalf("after caveman, step = %d, want stepCodeReviewGraph", wizard.step)
+	}
+	enter() // code-review-graph (default skip) → codebase-memory step
+	if wizard.step != stepCodebaseMemory {
+		test.Fatalf("after code-review-graph, step = %d, want stepCodebaseMemory", wizard.step)
+	}
+	enter() // codebase-memory (default skip) → model step
 	if wizard.step != stepModel {
-		test.Fatalf("after caveman, step = %d, want stepModel", wizard.step)
+		test.Fatalf("after codebase-memory, step = %d, want stepModel", wizard.step)
 	}
 	// Model step: "(none)" is the first row — enter selects it and finishes.
 	cmd := enter()
@@ -259,6 +267,12 @@ func TestCreateWizardAssemblesSpec(test *testing.T) {
 	}
 	if !spec.CavemanEnabled {
 		test.Error("spec.CavemanEnabled = false, want true (default install)")
+	}
+	if spec.CodeReviewGraphEnabled {
+		test.Error("spec.CodeReviewGraphEnabled = true, want false (opt-in, default skip)")
+	}
+	if spec.CodebaseMemoryEnabled {
+		test.Error("spec.CodebaseMemoryEnabled = true, want false (opt-in, default skip)")
 	}
 }
 
@@ -346,7 +360,9 @@ func TestCreateWizardAuthModeStep(test *testing.T) {
 	enter() // memory
 	enter() // ports
 	enter() // idle → caveman
-	enter() // caveman → model
+	enter() // caveman → code-review-graph
+	enter() // code-review-graph → codebase-memory
+	enter() // codebase-memory → model
 	if wizard.step != stepModel {
 		test.Fatalf("expected the model step, got step %d", wizard.step)
 	}

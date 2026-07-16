@@ -174,6 +174,50 @@ func TestExecutePersistsCavemanChoice(test *testing.T) {
 	}
 }
 
+// TestExecutePersistsCodeGraphAndMemoryChoices verifies the opt-in code-review-graph /
+// codebase-memory-mcp create toggles flow through project.Spec → Scaffold → config.yaml
+// (context.code_review_graph_enabled / context.codebase_memory_enabled) and that the
+// *OrDefault helpers reflect them.
+func TestExecutePersistsCodeGraphAndMemoryChoices(test *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		codeReview bool
+		codeMemory bool
+	}{
+		{name: "both off (default)", codeReview: false, codeMemory: false},
+		{name: "both on", codeReview: true, codeMemory: true},
+		{name: "code-review-graph only", codeReview: true, codeMemory: false},
+		{name: "codebase-memory only", codeReview: false, codeMemory: true},
+	} {
+		test.Run(tc.name, func(test *testing.T) {
+			test.Setenv("HOME", test.TempDir())
+			root := filepath.Join(test.TempDir(), "location")
+			spec := project.Spec{
+				Name:                   "tools-app",
+				OS:                     SupportedOSes()[0],
+				AgentCLIs:              []string{"opencode", "pi"},
+				DefaultTool:            "opencode",
+				Root:                   root,
+				CodeReviewGraphEnabled: tc.codeReview,
+				CodebaseMemoryEnabled:  tc.codeMemory,
+			}
+			if _, _, err := Execute(spec, "2026-07-05T00:00:00Z", nil); err != nil {
+				test.Fatalf("Execute: %v", err)
+			}
+			projectConfig, err := config.LoadProjectConfig(root)
+			if err != nil {
+				test.Fatalf("LoadProjectConfig: %v", err)
+			}
+			if got := projectConfig.Context.CodeReviewGraphEnabledOrDefault(); got != tc.codeReview {
+				test.Errorf("CodeReviewGraphEnabledOrDefault = %v, want %v", got, tc.codeReview)
+			}
+			if got := projectConfig.Context.CodebaseMemoryEnabledOrDefault(); got != tc.codeMemory {
+				test.Errorf("CodebaseMemoryEnabledOrDefault = %v, want %v", got, tc.codeMemory)
+			}
+		})
+	}
+}
+
 func TestExecuteRejectsOverHostResources(test *testing.T) {
 	test.Setenv("HOME", test.TempDir())
 	spec := project.Spec{

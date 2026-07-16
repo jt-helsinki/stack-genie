@@ -77,6 +77,13 @@ agent CLI registers Graphify with itself **at workspace start**, once per projec
 codex/gemini/opencode/pi/copilot) — not in the Dockerfile, since `--project` writes into the
 bind-mounted project dir. Graphify's headless LLM backend is an Ollama model chosen
 at `ai create` (`--graphify-model`), routed through the gateway as `ollama/<model>`.
+Two further OPT-IN per-workspace code-graph tools are baked in and, when chosen at
+`ai create` (`--code-review-graph` / `--codebase-memory`), registered as an MCP server
+with each installed agent CLI **at workspace start** (`workspace.registerCodeReviewGraph`
+/ `registerCodebaseMemory`, once-guarded + best-effort): **code-review-graph**
+(`code-review-graph.com`; per-CLI `install --platform`, then `build` + a D3 graph
+visualization) and **codebase-memory-mcp** (`DeusData/codebase-memory-mcp`; auto-detecting
+`install`, optional on-demand 3D graph UI on `:9749`). Both are local and keyless.
 Node.js is likewise baked into every base, so neither Python nor Node is a
 `--stacks` option; the selectable software stacks are
 `go`, `rust`, `java`, `maven`, `deno`. See `spec/01-architecture-spec.md`

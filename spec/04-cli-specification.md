@@ -432,6 +432,7 @@ ai create [<name>] [--name <name>] [--os <os>] [--shell <bash|zsh>] [--agents <l
           [--auth-mode <cli=mode>] [--stacks <list>] [--apps <list>] [--graphify-model <ref>]
           [--cpus <n>] [--memory <size>] [--ports <list>] [--location <dir>]
           [--idle-timeout <dur>] [--caveman[=false]]
+          [--code-review-graph] [--codebase-memory]
 ```
 
 `ai create` sets up a new environment at the chosen **location** (default: the
@@ -506,6 +507,16 @@ one command:
   `microsandbox.idle_timeout`.
 * `--caveman[=false]` — install the Caveman output-compression toolkit (default
   `true`); `--caveman=false` skips it.
+* `--code-review-graph` — OPT-IN (default `false`): install code-review-graph
+  (`code-review-graph.com`, PyPI `code-review-graph`) and register it as an MCP server
+  with each installed, supported agent CLI at workspace start (`code-review-graph install
+  --platform <cli>` for opencode/claude-code/codex/gemini/copilot), then `build` the graph
+  and write its D3 visualization HTML. Written to `context.code_review_graph_enabled`.
+* `--codebase-memory` — OPT-IN (default `false`): install codebase-memory-mcp
+  (`github.com/DeusData/codebase-memory-mcp`) and register it as an MCP server with each
+  installed agent CLI at workspace start (`codebase-memory-mcp install`, which auto-detects
+  the CLIs). Ships an optional on-demand 3D graph UI (`codebase-memory-mcp --ui=true
+  --port=9749`). Written to `context.codebase_memory_enabled`.
 
 On a terminal (with `--json` off) the wizard **always** runs, **pre-seeded** with
 any flags you passed — flags set the defaults rather than bypassing the UI. Under

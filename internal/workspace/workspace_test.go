@@ -505,6 +505,139 @@ func TestRegisterCavemanSkipsGeminiAndBounds(test *testing.T) {
 	}
 }
 
+// codeReviewGraphLaunched reports whether a detached-launch exec (setsid bash <script>)
+// was issued for the staged code-review-graph install script.
+func codeReviewGraphLaunched(argv [][]string) bool {
+	for _, args := range argv {
+		if len(args) == 3 && args[0] == "bash" && args[1] == "-lc" &&
+			strings.Contains(args[2], "setsid bash") && strings.Contains(args[2], codeReviewGraphScriptGuest) {
+			return true
+		}
+	}
+	return false
+}
+
+// TestRegisterCodeReviewGraphOptIn verifies the opt-in gate: nil (unset) and explicit
+// false are both no-ops; only an explicit true installs.
+func TestRegisterCodeReviewGraphOptIn(test *testing.T) {
+	disabled := false
+	enabled := true
+	for _, tc := range []struct {
+		name        string
+		cfg         *bool
+		tools       []string
+		wantInstall bool
+	}{
+		{name: "unset (nil) is opt-out", cfg: nil, tools: []string{"opencode"}, wantInstall: false},
+		{name: "explicit false skips", cfg: &disabled, tools: []string{"opencode"}, wantInstall: false},
+		{name: "enabled with supported CLI installs", cfg: &enabled, tools: []string{"opencode"}, wantInstall: true},
+		{name: "enabled but only unsupported CLIs skips", cfg: &enabled, tools: []string{"pi", "omp"}, wantInstall: false},
+	} {
+		test.Run(tc.name, func(test *testing.T) {
+			sandbox := &fakeSandbox{}
+			manager := newManager(&fakeBuilder{}, sandbox)
+			projectConfig := &config.Config{
+				Agent:   config.AgentConfig{Tools: tc.tools},
+				Context: config.ContextConfig{CodeReviewGraphEnabled: tc.cfg},
+			}
+			manager.registerCodeReviewGraph("aip-app", projectConfig)
+			staged := string(sandbox.written[codeReviewGraphScriptGuest]) != ""
+			if staged != tc.wantInstall {
+				test.Errorf("code-review-graph staged = %v, want %v (execs: %v)", staged, tc.wantInstall, sandbox.allExecArgv)
+			}
+		})
+	}
+}
+
+// TestRegisterCodeReviewGraphScript pins the shape of the in-VM install script: it maps
+// each SUPPORTED CLI to its `install --platform` token (skipping unsupported ones), runs
+// `build` + `visualize`, is DETACHED via setsid, and touches the once-guard marker only on
+// success.
+func TestRegisterCodeReviewGraphScript(test *testing.T) {
+	sandbox := &fakeSandbox{}
+	manager := newManager(&fakeBuilder{}, sandbox)
+	enabled := true
+	projectConfig := &config.Config{
+		// opencode + gemini are supported (→ opencode / gemini-cli tokens); pi is not.
+		Agent:   config.AgentConfig{Tools: []string{"opencode", "gemini", "pi"}},
+		Context: config.ContextConfig{CodeReviewGraphEnabled: &enabled},
+	}
+	manager.registerCodeReviewGraph("aip-app", projectConfig)
+
+	script := string(sandbox.written[codeReviewGraphScriptGuest])
+	if script == "" {
+		test.Fatalf("no code-review-graph install script staged: %v", sandbox.written)
+	}
+	if !codeReviewGraphLaunched(sandbox.allExecArgv) {
+		test.Errorf("install must be launched detached (setsid bash %s): %v", codeReviewGraphScriptGuest, sandbox.allExecArgv)
+	}
+	if !strings.Contains(script, "code-review-graph install --platform opencode") {
+		test.Errorf("opencode must map to --platform opencode: %q", script)
+	}
+	if !strings.Contains(script, "code-review-graph install --platform gemini-cli") {
+		test.Errorf("gemini must map to --platform gemini-cli: %q", script)
+	}
+	if strings.Contains(script, "--platform pi") {
+		test.Errorf("pi is not a code-review-graph platform and must be skipped: %q", script)
+	}
+	if !strings.Contains(script, "code-review-graph build") || !strings.Contains(script, "code-review-graph visualize") {
+		test.Errorf("script must build the graph and write the visualization: %q", script)
+	}
+	if !strings.Contains(script, "timeout --kill-after") {
+		test.Errorf("the run must be timeout-bounded: %q", script)
+	}
+	if !strings.Contains(script, "touch "+workspaceWorkdir+"/.ai-platform/.code-review-graph-installed") {
+		test.Errorf("script must touch the once-guard marker: %q", script)
+	}
+}
+
+// TestRegisterCodebaseMemory verifies the opt-in gate and that, when enabled, it runs the
+// binary's auto-detecting `install` (bounded by timeout) and touches the once-guard marker.
+func TestRegisterCodebaseMemory(test *testing.T) {
+	execed := func(argv [][]string) string {
+		for _, args := range argv {
+			if len(args) == 3 && args[0] == "sh" && args[1] == "-lc" &&
+				strings.Contains(args[2], "codebase-memory-mcp install") {
+				return args[2]
+			}
+		}
+		return ""
+	}
+	disabled := false
+	enabled := true
+	for _, tc := range []struct {
+		name    string
+		cfg     *bool
+		wantRun bool
+	}{
+		{name: "unset (nil) is opt-out", cfg: nil, wantRun: false},
+		{name: "explicit false skips", cfg: &disabled, wantRun: false},
+		{name: "enabled runs install", cfg: &enabled, wantRun: true},
+	} {
+		test.Run(tc.name, func(test *testing.T) {
+			sandbox := &fakeSandbox{}
+			manager := newManager(&fakeBuilder{}, sandbox)
+			projectConfig := &config.Config{
+				Agent:   config.AgentConfig{Tools: []string{"opencode", "claude-code"}},
+				Context: config.ContextConfig{CodebaseMemoryEnabled: tc.cfg},
+			}
+			manager.registerCodebaseMemory("aip-app", projectConfig)
+			script := execed(sandbox.allExecArgv)
+			if (script != "") != tc.wantRun {
+				test.Fatalf("codebase-memory-mcp install run = %v, want %v (execs: %v)", script != "", tc.wantRun, sandbox.allExecArgv)
+			}
+			if tc.wantRun {
+				if !strings.Contains(script, "timeout --kill-after") {
+					test.Errorf("install must be timeout-bounded: %q", script)
+				}
+				if !strings.Contains(script, "touch "+workspaceWorkdir+"/.ai-platform/.codebase-memory-installed") {
+					test.Errorf("script must touch the once-guard marker: %q", script)
+				}
+			}
+		})
+	}
+}
+
 func TestStartBuildsAndRecordsStartedHandle(test *testing.T) {
 	root := seedProject(test, "app")
 	builder := &fakeBuilder{}
