@@ -292,8 +292,8 @@ Purpose:
   that backs LiteLLM's DB-only features (admin UI login, virtual keys, spend
   tracking — PostgreSQL is the only engine LiteLLM supports for these). It runs
   on a private docker network (`aip-net`) with trust auth (so `DATABASE_URL`
-  carries no secret) and a loopback host port `127.0.0.1:5442` (non-default, to
-  avoid clashing with other Postgres). This is the one **stateful** service-tier
+  carries no secret) and is INTERNAL-ONLY — no host port; LiteLLM reaches it by
+  name at `aip-litellm-db:5432`. This is the one **stateful** service-tier
   container (a named volume); LiteLLM reaches it over the private network
 * secures the **LiteLLM admin UI**: the container is launched with `UI_USERNAME`
   (`admin`), `UI_PASSWORD`, and `LITELLM_MASTER_KEY` passed as **env passthrough**
@@ -1441,7 +1441,7 @@ Behavior:
   listed service is a core service.) A **display-only `postgres` line** appears
   immediately after `litellm` — it surfaces the LiteLLM Postgres (`aip-litellm-db`,
   reconciled with LiteLLM by `ensureLiteLLMDB`): State `running`/`stopped`, Mode
-  `container`, no host endpoint (loopback-only `:5442`). It has **no** independent
+  `container`, no host endpoint (INTERNAL-ONLY, no host port). It has **no** independent
   lifecycle verb (`ai services <action> litellm-db` → "unknown service"); it is
   managed with `litellm`. When the `secret-masking` guardrail is off, `presidio`
   is still listed but reads **`disabled`** (surfaced, not probed).

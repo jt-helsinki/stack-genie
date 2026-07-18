@@ -27,7 +27,6 @@ func TestServicesComposeYAML(test *testing.T) {
 		"aip-litellm-db:", "aip-litellm:", "aip-headroom:", "aip-proxy:",
 		"name: aip-net", "container_name: aip-litellm",
 		"127.0.0.1:18787:80",       // proxy publish
-		"127.0.0.1:5442:5432",      // db loopback
 		"OLLAMA_MODELS=/models",    // platform-managed ollama env
 		"OLLAMA_FLASH_ATTENTION=1", // forwarded ollama env
 	} {

@@ -263,13 +263,16 @@ func newServicesControlCmd(action string, em *output.Emitter, exit *int) *cobra.
 const allServicesSentinel = "all"
 
 // controllableServices drops the workspace runtime (Mode == "runtime", i.e.
-// microsandbox) from the status list so only the platform-owned containers — the
-// services start/stop/restart can actually act on — are offered in the checkbox.
-// The full list (runtime included) is still shown by `ai services status`.
+// microsandbox) and the display-only "postgres" line from the status list so only
+// the platform-owned containers — the ones start/stop/restart can actually act on —
+// are offered in the checkbox. Postgres is reconciled WITH litellm (no lifecycle
+// verb of its own), and ControlService rejects it as "unknown service", so offering
+// it in the checkbox errors. The full list (runtime + postgres) is still shown by
+// `ai services status`.
 func controllableServices(statuses []setup.ServiceStatus) []setup.ServiceStatus {
 	controllable := make([]setup.ServiceStatus, 0, len(statuses))
 	for _, service := range statuses {
-		if service.Mode == "runtime" {
+		if service.Mode == "runtime" || service.Name == "postgres" {
 			continue
 		}
 		controllable = append(controllable, service)

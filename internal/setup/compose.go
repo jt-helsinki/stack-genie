@@ -128,8 +128,9 @@ func ServicesComposeYAML(bindHost string) ([]byte, error) {
 				DependsOn:   []string{valkeyContainer},
 			},
 			litellmDBContainer: {
+				// INTERNAL-ONLY: no host port publish (mirrors ensureLiteLLMDB) — LiteLLM
+				// reaches it by name over the platform network.
 				Image: containerImage("litellm-db"), ContainerName: litellmDBContainer, Networks: []string{net}, Restart: "unless-stopped",
-				Ports:       []string{"127.0.0.1:" + litellmDBHostPort + ":5432"},
 				Volumes:     []string{filepath.Join(volumesDir, litellmDBVolume) + ":/var/lib/postgresql"},
 				Environment: []string{"POSTGRES_USER=" + litellmDBUser, "POSTGRES_DB=" + litellmDBName, "POSTGRES_HOST_AUTH_METHOD=trust"},
 			},

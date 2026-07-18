@@ -147,9 +147,9 @@ Ollama, Presidio (analyzer + anonymizer), LiteLLM (+ Postgres), Headroom, Valkey
 host services. There is no
 native host service. **`aip-proxy` (nginx) is the SOLE host entry point** — every
 other service container is INTERNAL-ONLY on `aip-net` (reached by name, no host
-publish), except the two loopback-published support containers `aip-litellm-db`
-(`127.0.0.1:5442`) and `aip-dns` (`127.0.0.1:15353/udp`, for the microVM
-`--dns-nameserver`). See §5/§10 for the full nginx routing model.
+publish), except the loopback-published support container `aip-dns`
+(`127.0.0.1:15353/udp`, for the microVM `--dns-nameserver`); `aip-litellm-db` is
+also INTERNAL-ONLY (no host port, reached at `aip-litellm-db:5432`). See §5/§10 for the full nginx routing model.
 
 Headroom is a **shared host container** (`aip-headroom`) that LiteLLM calls
 in-process as a `pre_call` compression guardrail; nginx does not route to it, and it
@@ -1140,12 +1140,12 @@ Its DB-backed admin UI / virtual keys require
 PostgreSQL: container `aip-litellm-db` (image `postgres:18.4-alpine3.23`, the data
 dir **HOST-BIND-MOUNTED** from `~/.ai-platform/volumes/litellm-db` at
 `/var/lib/postgresql` — NOT a Docker named volume — `trust` auth on the private
-network, host port bound at `127.0.0.1:5442`). This Postgres is the one stateful
+network, INTERNAL-ONLY with no host port). This Postgres is the one stateful
 piece of the service tier. It is reconciled by `ensureLiteLLMDB` as part of litellm
 and is surfaced as its **own display-only `postgres` status line** in `ai services` /
 the TUI (positioned immediately after the litellm line): State `running` when the
-container is up else `stopped`, Mode `container`, no host endpoint (internal-only
-loopback :5442). It is managed WITH litellm — there is no separate
+container is up else `stopped`, Mode `container`, no host endpoint (internal-only,
+no host port). It is managed WITH litellm — there is no separate
 start/stop/restart verb (`ai services <action> litellm-db` = "unknown service").
 
 **All host-persisted SYSTEM data volumes live under `~/.ai-platform/volumes/<name>`**

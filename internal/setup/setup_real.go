@@ -193,10 +193,8 @@ const (
 	litellmDBUser      = "litellm"
 	litellmDBName      = "litellm"
 	litellmDatabaseURL = "postgresql://" + litellmDBUser + "@" + litellmDBContainer + ":5432/" + litellmDBName
-	// Published on the host at 5442 (not the default 5432) and bound to loopback,
-	// to avoid clashing with any other Postgres on the machine. LiteLLM itself
-	// reaches the DB over the private network (5432), not this host port.
-	litellmDBHostPort = "5442"
+	// INTERNAL-ONLY: Postgres is never host-published. LiteLLM reaches it over the
+	// private network at aip-litellm-db:5432; no host port is exposed.
 
 	// Ollama runs as a container on aip-net (so LiteLLM reaches it by name at
 	// aip-ollama:11434). It is INTERNAL-ONLY — no host publish; the host CLI reaches
@@ -510,7 +508,7 @@ func systemVolumeDir(name string, perm os.FileMode) (string, error) {
 
 // ensureLiteLLMDB starts the Postgres that backs LiteLLM's admin UI / virtual
 // keys, unless it is already running. Trust auth on the private network (no
-// password); the host port is loopback-bound at litellmDBHostPort. Idempotent.
+// password); INTERNAL-ONLY — no host port is published. Idempotent.
 //
 // The data dir is a HOST BIND MOUNT at ~/.ai-platform/volumes/litellm-db (created
 // 0700 before launch) → /var/lib/postgresql in the container — not a Docker named
@@ -540,10 +538,12 @@ func ensureLiteLLMDB(prober runtime.Prober, containerRuntime string) error {
 		return err
 	}
 	_, _ = prober.Run(containerRuntime, "rm", "-f", litellmDBContainer) // clear any stopped one
+	// INTERNAL-ONLY: no host port publish. LiteLLM reaches Postgres by name over
+	// platformNetwork (aip-litellm-db:5432); the DB is never accessed from the host,
+	// so exposing a host port only widens the attack surface.
 	args := []string{
 		"run", "-d", "--name", litellmDBContainer,
 		"--network", platformNetwork,
-		"-p", "127.0.0.1:" + litellmDBHostPort + ":5432",
 		"-e", "POSTGRES_USER=" + litellmDBUser,
 		"-e", "POSTGRES_DB=" + litellmDBName,
 		"-e", "POSTGRES_HOST_AUTH_METHOD=trust",
@@ -1497,7 +1497,7 @@ func (services realServices) statusFor(enabled []string) ([]ServiceStatus, error
 		// status line, right after litellm — it is a distinct container (aip-litellm-db,
 		// reconciled by ensureLiteLLMDB as part of litellm) that users expect to SEE in
 		// the services list even though it is managed with litellm (no separate lifecycle
-		// verb). Internal-only (loopback :5442), so no host endpoint. running when the
+		// verb). Internal-only (no host port), so no host endpoint. running when the
 		// container is up, else stopped.
 		if service.Name == "litellm" {
 			dbState := "stopped"
@@ -1655,6 +1655,13 @@ func (services realServices) Control(action, service string) ([]ServiceStatus, e
 	bindHost := currentBindHost()
 
 	stopContainer := func(name string) error {
+		// A disabled/never-started service (e.g. Presidio when secret-masking is off)
+		// has no container, and `<runtime> stop` on a missing/stopped container errors.
+		// Skip the stop when it isn't running — leftover running containers are still
+		// stopped, so a stale container from a previous selection is cleaned up.
+		if !containerRunning(services.prober, containerRuntime.Name, name) {
+			return nil
+		}
 		if _, err := services.prober.Run(containerRuntime.Name, "stop", name); err != nil {
 			return output.Errorf(output.ExitRuntimeFailure, "stop %s via %s: %s", name, containerRuntime.Name, err)
 		}
