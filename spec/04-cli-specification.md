@@ -515,15 +515,20 @@ one command:
     CONDITIONAL `tools/graphify/` Dockerfile snippet (no longer in the OS base) and
     registered per agent CLI at start (`graphify install --platform <cli>`).
   * `code-review-graph` — install code-review-graph (`code-review-graph.com`, PyPI
-    `code-review-graph`) via a conditional snippet and register it as an MCP server with
-    each installed, supported agent CLI at start (`code-review-graph install --platform
-    <cli>` for opencode/claude-code/codex/gemini/copilot), then `build` the graph and write
-    its D3 visualization HTML.
+    `code-review-graph`) via a conditional snippet and register it as an MCP server. For the
+    CLIs whose config the platform does not own it uses the tool's native
+    `code-review-graph install --platform <cli>` (opencode/claude-code/gemini/copilot —
+    `codeReviewGraphPlatformFlag`; codex was removed because its config is
+    platform-rewritten); codex/omp/openclaw/hermes instead get its MCP server
+    (`code-review-graph serve`) injected into their platform-managed configs. Then `build`
+    the graph and write its D3 visualization HTML.
   * `codebase-memory-mcp` — install codebase-memory-mcp
     (`github.com/DeusData/codebase-memory-mcp`) via a conditional snippet and register it
-    as an MCP server with each installed agent CLI at start (`codebase-memory-mcp install`,
-    auto-detecting the CLIs). Ships an optional on-demand 3D graph UI
-    (`codebase-memory-mcp --ui=true --port=9749`).
+    as an MCP server: the tool's own `codebase-memory-mcp install` auto-detects
+    claude-code/opencode/codex/gemini/copilot/openclaw/hermes (not omp), but because
+    codex/openclaw/hermes configs are platform-rewritten and omp isn't detected, those four
+    get its MCP server injected into their managed configs instead. Ships an optional
+    on-demand 3D graph UI (`codebase-memory-mcp --ui=true --port=9749`).
 
 On a terminal (with `--json` off) the wizard **always** runs, **pre-seeded** with
 any flags you passed — flags set the defaults rather than bypassing the UI. Under

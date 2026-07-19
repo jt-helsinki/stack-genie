@@ -316,6 +316,121 @@ func HermesConfig(gatewayURL, defaultModel string) ([]byte, error) {
 	return marshalYAML(document)
 }
 
+// MCPServer is a stdio MCP server the platform registers into the agent configs it
+// MANAGES WHOLE (codex/openclaw/hermes/omp — the CLIs whose single config file the
+// platform rewrites each start). Their MCP entries must be part of that render, or the
+// rewrite would clobber whatever the tool's own installer wrote. The CLIs whose configs
+// the platform does NOT own (claude/opencode/gemini/copilot) instead get these tools via
+// the tools' native `install --platform` / auto-detect, which is not clobbered.
+type MCPServer struct {
+	Name    string
+	Command string
+	Args    []string
+}
+
+// OmpMcpConfigGuest is omp's project MCP config (the path omp reads stdio MCP servers from,
+// distinct from .omp/config.yml; project entries shadow the user file).
+const OmpMcpConfigGuest = projectDirGuest + "/.omp/mcp.json"
+
+// GraphifyMCPArgs is the argv (after the venv python) that runs graphify's stdio MCP
+// server against the project's built graph. graphifyy[mcp] is installed INTO the project
+// venv (.venv-msb) so a plain `python -m graphify.serve` works — the uv-tool install is
+// isolated and not importable this way. The graph is built lazily (git hook / `graphify
+// update`); until it exists the server yields no tools.
+var GraphifyMCPArgs = []string{"-m", "graphify.serve", "graphify-out/graph.json"}
+
+// EnabledMCPServers returns the MCP servers for the enabled AI tools, in a stable order.
+// codeReviewGraph/codebaseMemory run their own installed binaries; graphify runs from the
+// project venv (venvPython = <project>/.venv-msb/bin/python) where graphifyy[mcp] lives.
+// A blank venvPython omits graphify (venv path unknown).
+func EnabledMCPServers(codeReviewGraph, codebaseMemory, graphify bool, venvPython string) []MCPServer {
+	var servers []MCPServer
+	if codeReviewGraph {
+		servers = append(servers, MCPServer{Name: "code-review-graph", Command: "code-review-graph", Args: []string{"serve"}})
+	}
+	if codebaseMemory {
+		servers = append(servers, MCPServer{Name: "codebase-memory-mcp", Command: "codebase-memory-mcp"})
+	}
+	if graphify && venvPython != "" {
+		servers = append(servers, MCPServer{Name: "graphify", Command: venvPython, Args: append([]string{}, GraphifyMCPArgs...)})
+	}
+	return servers
+}
+
+// mcpServerMap renders the MCP servers as the {name: {command, args}} object shape shared
+// by openclaw (mcp.servers), omp (mcpServers), and (as a nested map) hermes (mcp_servers).
+func mcpServerMap(servers []MCPServer) map[string]any {
+	out := make(map[string]any, len(servers))
+	for _, server := range servers {
+		entry := map[string]any{"command": server.Command}
+		if len(server.Args) > 0 {
+			entry["args"] = server.Args
+		}
+		out[server.Name] = entry
+	}
+	return out
+}
+
+// OmpMcpConfig renders omp's <project>/.omp/mcp.json: a top-level mcpServers object. omp
+// reads stdio MCP servers from here (project entries shadow ~/.omp/agent/mcp.json), so
+// this is a STANDALONE file — it does not collide with the platform-managed .omp/config.yml.
+func OmpMcpConfig(servers []MCPServer) ([]byte, error) {
+	return marshalStable(map[string]any{"mcpServers": mcpServerMap(servers)})
+}
+
+// InjectOpenClawMCP adds the MCP servers to openclaw's rendered config under mcp.servers
+// (the shape `openclaw mcp add` writes). It parses OpenClawConfig's JSON and re-marshals so
+// the servers ride in the SAME openclaw.json the platform rewrites each start. No servers →
+// the config is returned unchanged.
+func InjectOpenClawMCP(config []byte, servers []MCPServer) ([]byte, error) {
+	if len(servers) == 0 {
+		return config, nil
+	}
+	var document map[string]any
+	if err := json.Unmarshal(config, &document); err != nil {
+		return nil, fmt.Errorf("parse openclaw config for MCP injection: %w", err)
+	}
+	document["mcp"] = map[string]any{"servers": mcpServerMap(servers)}
+	return marshalStable(document)
+}
+
+// InjectHermesMCP adds the MCP servers to hermes' rendered config under mcp_servers (the
+// documented key). It parses HermesConfig's YAML and re-marshals. No servers → unchanged.
+func InjectHermesMCP(config []byte, servers []MCPServer) ([]byte, error) {
+	if len(servers) == 0 {
+		return config, nil
+	}
+	var document map[string]any
+	if err := yaml.Unmarshal(config, &document); err != nil {
+		return nil, fmt.Errorf("parse hermes config for MCP injection: %w", err)
+	}
+	document["mcp_servers"] = mcpServerMap(servers)
+	return marshalYAML(document)
+}
+
+// AppendCodexMCP appends [mcp_servers.<name>] TOML tables to codex's rendered config so the
+// servers ride in the SAME config.toml the platform rewrites each start. Table names may
+// contain hyphens (valid TOML bare keys). No servers → the config is returned unchanged.
+func AppendCodexMCP(config []byte, servers []MCPServer) []byte {
+	if len(servers) == 0 {
+		return config
+	}
+	var buffer bytes.Buffer
+	buffer.Write(config)
+	for _, server := range servers {
+		buffer.WriteString("\n[mcp_servers." + server.Name + "]\n")
+		buffer.WriteString("command = " + tomlString(server.Command) + "\n")
+		if len(server.Args) > 0 {
+			quoted := make([]string, len(server.Args))
+			for index, arg := range server.Args {
+				quoted[index] = tomlString(arg)
+			}
+			buffer.WriteString("args = [" + strings.Join(quoted, ", ") + "]\n")
+		}
+	}
+	return buffer.Bytes()
+}
+
 // MergeOpenCodeConfig produces the FINAL opencode config from any EXISTING project
 // config plus the dynamic values minted at start. It parses the existing JSON and
 // deep-merges the generated provider config over it, so the dynamic provider block

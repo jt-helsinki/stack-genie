@@ -603,7 +603,18 @@ func (manager Manager) registerAgentProviders(name, project, root string, projec
 	// key lives ONLY in the in-VM agent env file below. opencode carries the served-
 	// model LIST (writeModelListConfigs — the same helper used to refresh it on attach);
 	// codex/gemini/claude carry no list (they name any served model per request).
-	if err := manager.writeModelListConfigs(name, root, gatewayURL, defaultModel, models, keepTurns, outputBufferTokens); err != nil {
+	//
+	// Enabled AI-tool MCP servers, injected into the configs the platform manages WHOLE
+	// (codex/openclaw/hermes/omp) so they survive each start's rewrite (the CLIs whose
+	// configs the platform does NOT own get these tools via their native install instead).
+	// graphify runs from the project venv (.venv-msb, where graphifyy[mcp] is installed).
+	mcpServers := agentcfg.EnabledMCPServers(
+		projectConfig.Context.CodeReviewGraphEnabledOrDefault(),
+		projectConfig.Context.CodebaseMemoryEnabledOrDefault(),
+		projectConfig.Context.GraphifyEnabledOrDefault(),
+		workspaceWorkdir+"/.venv-msb/bin/python",
+	)
+	if err := manager.writeModelListConfigs(name, root, gatewayURL, defaultModel, models, keepTurns, outputBufferTokens, mcpServers); err != nil {
 		return err
 	}
 
@@ -627,10 +638,13 @@ func (manager Manager) registerAgentProviders(name, project, root string, projec
 	// overwritten each start; the key is env-supplied via env_key). oauth mode gets the
 	// ChatGPT-subscription config (no gateway provider — direct to OpenAI). Either way a
 	// global in-VM trust entry (off host disk) is written so codex loads the project config.
+	// The enabled tools' MCP servers are appended as [mcp_servers.*] tables (local tools —
+	// they work regardless of auth mode).
 	codexConfig := agentcfg.CodexConfig(gatewayURL, defaultModel)
 	if oauthSet["codex"] {
 		codexConfig = agentcfg.CodexConfigOAuth()
 	}
+	codexConfig = agentcfg.AppendCodexMCP(codexConfig, mcpServers)
 	if err := writeHostFile(projectConfigPath(root, ".codex", "config.toml"), codexConfig); err != nil {
 		return err
 	}
@@ -659,6 +673,18 @@ func (manager Manager) registerAgentProviders(name, project, root string, projec
 		if err := writeHostFile(projectConfigPath(root, ".omp", "config.yml"), ompConfig); err != nil {
 			return err
 		}
+		// omp reads stdio MCP servers from a SEPARATE .omp/mcp.json (project entries shadow
+		// the user file) — not auto-detected by the tools' installers, so the platform writes
+		// the enabled tools' servers here.
+		if len(mcpServers) > 0 {
+			ompMCP, err := agentcfg.OmpMcpConfig(mcpServers)
+			if err != nil {
+				return err
+			}
+			if err := writeHostFile(projectConfigPath(root, ".omp", "mcp.json"), ompMCP); err != nil {
+				return err
+			}
+		}
 	}
 
 	// hermes — written only when selected. KEYLESS YAML at the GLOBAL ~/.hermes/config.yaml
@@ -669,6 +695,12 @@ func (manager Manager) registerAgentProviders(name, project, root string, projec
 	// selection + skills survive restarts.
 	if slices.Contains(projectConfig.Agent.Tools, "hermes") {
 		hermesConfig, err := agentcfg.HermesConfig(gatewayURL, defaultModel)
+		if err != nil {
+			return err
+		}
+		// The enabled tools' MCP servers ride in the SAME config.yaml (mcp_servers) the
+		// platform rewrites each start.
+		hermesConfig, err = agentcfg.InjectHermesMCP(hermesConfig, mcpServers)
 		if err != nil {
 			return err
 		}
@@ -838,6 +870,9 @@ const (
 	codeReviewGraphLaunchTimeout = 30 * time.Second
 	// codeReviewGraphScriptGuest is where the once-guarded install script is staged in-VM.
 	codeReviewGraphScriptGuest = "/tmp/code-review-graph-install.sh"
+	// graphifyMCPScriptGuest is where the detached graphify-MCP setup script (venv install
+	// of graphifyy[mcp] + offline graph build) is staged in-VM.
+	graphifyMCPScriptGuest = "/tmp/graphify-mcp-setup.sh"
 )
 
 // codebaseMemoryInstallTimeout bounds the codebase-memory-mcp `install` exec. It is
@@ -927,7 +962,7 @@ func oauthAgentList(projectConfig *config.Config) []string {
 // served list is EMPTY (gateway unreachable), the existing lists are LEFT UNTOUCHED —
 // opencode's merge preserves them — so a transient
 // outage never wipes a good list. This is the shared refresh used at start AND on attach.
-func (manager Manager) writeModelListConfigs(name, root, gatewayURL, defaultModel string, models []string, keepTurns, outputBufferTokens int) error {
+func (manager Manager) writeModelListConfigs(name, root, gatewayURL, defaultModel string, models []string, keepTurns, outputBufferTokens int, mcpServers []agentcfg.MCPServer) error {
 	openCodeConfig, err := agentcfg.MergeOpenCodeConfig(
 		readHostFileOrNil(projectConfigPath(root, ".opencode", "opencode.json")),
 		gatewayURL, agentcfg.OpenCodeAPIKeyRef, defaultModel, models, keepTurns, outputBufferTokens)
@@ -946,6 +981,12 @@ func (manager Manager) writeModelListConfigs(name, root, gatewayURL, defaultMode
 	// Rewritten at start and on attach so `ai models`/`ai keys` changes appear without a
 	// full restart.
 	openClawConfig, err := agentcfg.OpenClawConfig(gatewayURL, agentcfg.OpenClawAPIKeyRef, defaultModel, models)
+	if err != nil {
+		return err
+	}
+	// The enabled tools' MCP servers ride in the SAME openclaw.json (mcp.servers) the
+	// platform rewrites, so this refresh (start + attach) keeps them registered.
+	openClawConfig, err = agentcfg.InjectOpenClawMCP(openClawConfig, mcpServers)
 	if err != nil {
 		return err
 	}
@@ -989,7 +1030,13 @@ func (manager Manager) refreshAgentModels(project string) {
 
 	keepTurns, outputBufferTokens := contextopt.HeadroomParams(projectConfig.Context.Strategy)
 	models := manager.pickerModels()
-	if err := manager.writeModelListConfigs(name, root, gatewayURL, "", models, keepTurns, outputBufferTokens); err != nil {
+	mcpServers := agentcfg.EnabledMCPServers(
+		projectConfig.Context.CodeReviewGraphEnabledOrDefault(),
+		projectConfig.Context.CodebaseMemoryEnabledOrDefault(),
+		projectConfig.Context.GraphifyEnabledOrDefault(),
+		workspaceWorkdir+"/.venv-msb/bin/python",
+	)
+	if err := manager.writeModelListConfigs(name, root, gatewayURL, "", models, keepTurns, outputBufferTokens, mcpServers); err != nil {
 		_, _ = fmt.Fprintf(os.Stderr, "warning: could not refresh agent model lists in workspace %q (continuing): %v\n", name, err)
 	}
 }
@@ -1108,18 +1155,53 @@ func (manager Manager) registerGraphify(name string, projectConfig *config.Confi
 	ctx, cancel := context.WithTimeout(context.Background(), graphifyInstallTimeout)
 	defer cancel()
 	_, _ = manager.Sandbox.ExecContext(ctx, name, []string{"sh", "-lc", script})
+
+	// When Graphify is enabled, also set up its stdio MCP server (registered into the
+	// managed configs for codex/omp/openclaw/hermes): install graphifyy[mcp] INTO the
+	// project venv (.venv-msb — the uv-tool install is isolated and not importable via
+	// `python -m`) and build the graph offline so the server has data on first use. This
+	// is a multi-minute network op, so — like the Caveman install — it is DETACHED.
+	if graphifyOn {
+		manager.setupGraphifyMCP(name)
+	}
+}
+
+// setupGraphifyMCP installs graphifyy[mcp] into the project venv and builds the graph,
+// DETACHED and best-effort. The MCP server (agentcfg.GraphifyMCPArgs) runs
+// `<venv>/bin/python -m graphify.serve graphify-out/graph.json`, so the package must be
+// importable from that venv. `graphify update .` is AST-only (no API cost); the git hook
+// keeps the graph fresh after. Failures never fail the start (the server just yields no
+// tools until a graph exists).
+func (manager Manager) setupGraphifyMCP(name string) {
+	pool := workspaceWorkdir + "/.ai-platform"
+	logPath := pool + "/run/graphify-mcp-setup.log"
+	venvPython := venvPath + "/bin/python"
+	script := "cd " + workspaceWorkdir + " 2>/dev/null || exit 0\n" +
+		"[ -x " + venvPython + " ] || exit 0\n" +
+		"uv pip install --python " + venvPython + " --quiet \"graphifyy[mcp]\"\n" +
+		"command -v graphify >/dev/null 2>&1 && graphify update . || true\n"
+	if err := manager.Sandbox.WriteFile(name, graphifyMCPScriptGuest, []byte(script)); err != nil {
+		return
+	}
+	launch := fmt.Sprintf("mkdir -p %s && setsid sh %s </dev/null >%s 2>&1 & exit 0",
+		shellQuoteGuest(pool+"/run"), shellQuoteGuest(graphifyMCPScriptGuest), shellQuoteGuest(logPath))
+	ctx, cancel := context.WithTimeout(context.Background(), cavemanLaunchTimeout)
+	defer cancel()
+	_, _ = manager.Sandbox.ExecContext(ctx, name, []string{"bash", "-lc", launch})
 }
 
 // cavemanOnlyAgent maps a selected agent CLI to Caveman's `install.sh --only <agent>`
-// token. Caveman AUTO-DETECTS these CLIs and installs its native skills/agents/commands
-// PLUS the CLI-native extras the shared pool cannot carry: the opencode plugin, claude
-// hooks + statusline, and the gemini extension. omp and copilot are absent — Caveman
-// cannot detect them, so they receive the skill via the shared pool (below) instead.
+// token. Caveman installs its native skills/agents/commands for these CLIs PLUS the
+// CLI-native extras the shared pool cannot carry: the opencode plugin, claude hooks +
+// statusline, and the gemini extension. copilot is a "soft probe" — Caveman won't
+// auto-detect it, so it additionally needs `--with-init` (handled in registerCaveman).
+// omp is absent — Caveman has no omp token, so it receives the skill via the shared pool.
 var cavemanOnlyAgent = map[string]string{
 	"claude-code": "claude",
 	"gemini":      "gemini",
 	"opencode":    "opencode",
 	"codex":       "codex",
+	"copilot":     "copilot",
 	"openclaw":    "openclaw",
 	"hermes":      "hermes",
 }
@@ -1208,8 +1290,14 @@ func (manager Manager) registerCaveman(name string, projectConfig *config.Config
 	// instead of hanging forever and exhausting the msb agent-relay (see the gemini
 	// skip above). On timeout the installer exits non-zero, the marker is not touched,
 	// and the next start retries. `--kill-after` SIGKILLs a child that ignores SIGTERM.
-	installCmd := "cd /tmp/caveman-src && timeout --kill-after=30s 600s node bin/install.js --non-interactive --with-hooks " +
-		strings.Join(only, " ")
+	// copilot is a Caveman "soft probe": it is not auto-detected even with `--only copilot`,
+	// so it additionally needs `--with-init` to write its integration.
+	withInit := ""
+	if slices.Contains(projectConfig.Agent.Tools, "copilot") {
+		withInit = " --with-init"
+	}
+	installCmd := "cd /tmp/caveman-src && timeout --kill-after=30s 600s node bin/install.js --non-interactive --with-hooks" +
+		withInit + " " + strings.Join(only, " ")
 	mirror := `og="${XDG_CONFIG_HOME:-$HOME/.config}/opencode"; ` +
 		`for pair in "skills:skills" "agents:agents" "commands:prompts"; do ` +
 		`src="$og/${pair%%:*}"; dst="` + pool + `/${pair##*:}"; ` +
@@ -1267,14 +1355,15 @@ func (manager Manager) registerCaveman(name string, projectConfig *config.Config
 }
 
 // codeReviewGraphPlatformFlag maps a selected agent CLI to code-review-graph's
-// `install --platform <token>` value. code-review-graph writes each listed platform's
-// MCP config (and, where supported, hooks/skills). Only the CLIs code-review-graph
-// actually supports are present: omp, openclaw and hermes are NOT among its
-// platforms, so they receive no code-review-graph MCP registration (they still get its
-// analysis by pointing them at the same on-disk graph, but there is no per-CLI hook).
+// `install --platform <token>` value, used for the CLIs whose config the platform does
+// NOT rewrite (so code-review-graph's native install is not clobbered). codex is
+// deliberately ABSENT: its config.toml is platform-managed (rewritten each start), so a
+// native install there would be wiped — codex instead gets code-review-graph's MCP server
+// injected into config.toml by registerAgentProviders (AppendCodexMCP). omp/openclaw/hermes
+// are not code-review-graph platforms either and likewise get the MCP server via injection
+// into their managed configs.
 var codeReviewGraphPlatformFlag = map[string]string{
 	"claude-code": "claude-code",
-	"codex":       "codex",
 	"gemini":      "gemini-cli",
 	"opencode":    "opencode",
 	"copilot":     "copilot-cli",

@@ -476,6 +476,76 @@ func TestRegisterCavemanScript(test *testing.T) {
 	}
 }
 
+// TestRegisterCavemanCopilotWithInit verifies copilot is caveman-installable: it gets an
+// `--only copilot` token AND the `--with-init` flag (copilot is a soft probe Caveman won't
+// auto-detect without it).
+func TestRegisterCavemanCopilotWithInit(test *testing.T) {
+	sandbox := &fakeSandbox{}
+	manager := newManager(&fakeBuilder{}, sandbox)
+	enabled := true
+	projectConfig := &config.Config{
+		Agent:   config.AgentConfig{Tools: []string{"opencode", "copilot"}},
+		Context: config.ContextConfig{CavemanEnabled: &enabled},
+	}
+	manager.registerCaveman("aip-app", projectConfig)
+
+	script := findCavemanScript(sandbox)
+	if script == "" {
+		test.Fatalf("no caveman install script staged in-VM: %v", sandbox.written)
+	}
+	if !strings.Contains(script, "--only copilot") {
+		test.Errorf("copilot must get an --only token: %q", script)
+	}
+	if !strings.Contains(script, "--with-init") {
+		test.Errorf("copilot (soft probe) needs --with-init: %q", script)
+	}
+}
+
+// TestStartInjectsToolMCPServers verifies that when an AI tool is enabled, its MCP server
+// is injected into the configs the platform manages WHOLE (codex config.toml, openclaw
+// openclaw.json, hermes config.yaml, omp .omp/mcp.json) — so the start-time rewrite does
+// not clobber it.
+func TestStartInjectsToolMCPServers(test *testing.T) {
+	root := seedProject(test, "app")
+	crg := true
+	graphifyOff := false
+	// Persist a project config selecting the managed-config CLIs + code-review-graph on,
+	// graphify off (so the assertion is deterministic and venv-independent).
+	projectConfig := config.Default()
+	projectConfig.Agent.Tools = []string{"opencode", "codex", "openclaw", "omp", "hermes"}
+	projectConfig.Context.CodeReviewGraphEnabled = &crg
+	projectConfig.Context.GraphifyEnabled = &graphifyOff
+	if err := config.WriteProject(root, projectConfig); err != nil {
+		test.Fatal(err)
+	}
+	sandbox := &fakeSandbox{}
+	served := fakeServedModels{models: []string{"ollama/llama3.2:latest"}}
+	manager := Manager{Builder: &fakeBuilder{}, Sandbox: sandbox, Keys: &fakeKeyMinter{}, Served: served, Now: func() string { return "t" }}
+	if _, err := manager.Start("app"); err != nil {
+		test.Fatal(err)
+	}
+
+	// codex config.toml (host project file): [mcp_servers.code-review-graph].
+	codex := readProjectConfig(test, root, ".codex", "config.toml")
+	if !strings.Contains(codex, "[mcp_servers.code-review-graph]") {
+		test.Errorf("codex config missing injected MCP server:\n%s", codex)
+	}
+	// omp reads a SEPARATE .omp/mcp.json.
+	ompMCP := readProjectConfig(test, root, ".omp", "mcp.json")
+	if !strings.Contains(ompMCP, "code-review-graph") {
+		test.Errorf("omp mcp.json missing injected MCP server:\n%s", ompMCP)
+	}
+	// openclaw + hermes are written IN-VM (global configs).
+	openClaw := string(readGuestFile(test, sandbox, agentcfg.OpenClawConfigGuest))
+	if !strings.Contains(openClaw, "code-review-graph") {
+		test.Errorf("openclaw config missing injected MCP server:\n%s", openClaw)
+	}
+	hermes := string(readGuestFile(test, sandbox, agentcfg.HermesConfigGuest))
+	if !strings.Contains(hermes, "code-review-graph") {
+		test.Errorf("hermes config missing injected MCP server:\n%s", hermes)
+	}
+}
+
 // TestRegisterCavemanSkipsGeminiAndBounds verifies the gemini adapter is skipped — its
 // `gemini extensions install` blocks on a TTY trust prompt that hangs the detached
 // install and exhausts the msb relay — while the OTHER detectable CLIs still install,

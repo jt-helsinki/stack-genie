@@ -241,8 +241,12 @@ Rules:
 
 ## 1.6 MCP Registry — Removed
 
-The platform does not manage MCP. MCP servers are configured and run by the
-in-workspace agent (architecture §12). There is no platform MCP registry.
+There is no platform MCP registry. Most MCP servers are configured and run by the
+in-workspace agent (architecture §12). The one exception: for the agent configs the
+platform rewrites whole on every start (codex/openclaw/hermes/omp), it INJECTS the
+enabled AI tools' MCP servers (code-review-graph/codebase-memory-mcp/graphify) directly
+into that render so the rewrite doesn't clobber them (architecture §12); the CLIs whose
+configs the platform does not own get those same servers via the tools' own native install.
 (Any provider credentials those MCP servers need are resolved through the
 keys-in-LiteLLM credential store, not stored on platform disk — architecture
 §17.)
@@ -390,6 +394,7 @@ the agent into this source tree — the platform does not manage them.
 .claude/settings.json           # claude-code env block (base URL only; token via env)
 .codex/config.toml              # codex provider block (key via env_key)
 .omp/config.yml                 # omp provider order + default model (models.yml is GLOBAL in-VM ~/.omp/agent/models.yml)
+.omp/mcp.json                   # omp MCP servers — injected AI-tool MCP servers, rewritten whole at start
 .openclaw/…                     # openclaw: config is the GLOBAL in-VM ~/.openclaw/openclaw.json (keyless)
 .hermes/…                       # hermes: config is the GLOBAL in-VM ~/.hermes/config.yaml (keyless)
 # (gemini is ENV-only — no on-disk provider file; copilot manages its own ~/.copilot)
@@ -420,6 +425,14 @@ existing file is deep-merged so the managed block wins while the user's other ke
   exception to the platform's `.yaml` rule).
 * **copilot** (GitHub Copilot CLI) → NO platform-written config (forced-OAuth /
   gateway-incapable; it manages its own `~/.copilot`).
+
+**Injected MCP servers.** The four configs the platform rewrites whole on every start —
+codex's `.codex/config.toml`, openclaw's global `~/.openclaw/openclaw.json`, hermes's
+global `~/.hermes/config.yaml`, and omp's `.omp/mcp.json` — carry the enabled AI tools'
+(code-review-graph/codebase-memory-mcp/graphify) MCP servers, injected into the render so
+the start-time rewrite can't clobber them (architecture §12). CLIs whose configs the
+platform does not own (claude-code/opencode/gemini/copilot) get those servers via the
+tools' own native `install --platform`/auto-detect.
 
 The scoped virtual key lives **only** in the in-VM agent env file
 `~/.config/aip/agent-env.sh` (off host disk), sourced by every shell + agent session

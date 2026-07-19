@@ -735,7 +735,9 @@ Caveman integrates as an agent skill, but it is **NOT** platform-seeded at creat
 is **NOT git-tracked**. It is installed at **workspace start** by Caveman's own
 upstream installer (`workspace.registerCaveman`, once-guarded, network-bound,
 best-effort — not baked into the image, not written by `Scaffold`). The install gives
-each caveman-detectable CLI its native skills/agents/commands; `registerCaveman` then
+each caveman-detectable CLI (claude-code/opencode/gemini/codex/copilot/openclaw/hermes;
+copilot is a "soft probe", so `registerCaveman` appends `--with-init` when copilot is
+selected) its native skills/agents/commands; `registerCaveman` then
 mirrors opencode's global caveman dirs into the shared `.ai-platform/{skills,agents,
 prompts}` pool so the symlinks distribute it to the pool-only CLIs (omp). It is the
 output-side complement to Headroom (the input-compression guardrail, §10). `ai context
@@ -949,6 +951,15 @@ templates (§25); it is identical across all OSes:
   pull failure is a create warning, not a failure), and at workspace start Graphify
   is routed through the gateway as `ollama/<model>` via `OPENAI_*` env vars (see
   §17) — never directly to Ollama.
+  Graphify stays usable by every CLI as a **skill** (native `graphify install --platform`
+  for the platform CLIs opencode/claude-code/codex/gemini/copilot; the shared skill pool for
+  omp/openclaw/hermes) — unchanged; ADDITIONALLY its stdio **MCP server** is registered into
+  the platform-managed configs (codex/openclaw/hermes/omp) via the injection described below.
+  The platform installs `graphifyy[mcp]` into the project venv `.venv-msb` (detached
+  best-effort — the uv-tool install is isolated and not importable via `python -m`) and
+  builds the graph offline (`graphify update .`, AST-only) at start (`workspace.setupGraphifyMCP`),
+  so `python -m graphify.serve graphify-out/graph.json` has data; the git hook keeps it fresh
+  (gated on `context.graphify_enabled`).
 * **code-review-graph** and **codebase-memory-mcp** — two OPT-IN (default off)
   per-workspace code-graph tools baked into every OS base and, when chosen at
   `ai create` (`--code-review-graph` / `--codebase-memory`, or the wizard's tooling
@@ -957,15 +968,34 @@ templates (§25); it is identical across all OSes:
   `registerGraphify`/`registerCaveman`: once-guarded by a marker under
   `~/project/.ai-platform`, best-effort, never failing the start). **code-review-graph**
   (code-review-graph.com, PyPI `code-review-graph`) runs `code-review-graph install
-  --platform <cli>` for each supported CLI (opencode/claude-code/codex/gemini/copilot —
-  omp/openclaw/hermes are not code-review-graph platforms), then `build`s the graph
+  --platform <cli>` for each supported CLI (opencode/claude-code/gemini/copilot —
+  `codeReviewGraphPlatformFlag`; **codex was removed** because its `config.toml` is
+  platform-rewritten and a native install would be clobbered — codex/omp/openclaw/hermes
+  get its MCP server via injection, below), then `build`s the graph
   and writes a D3 force-directed graph **visualization** HTML at
   `.code-review-graph/graph.html`; it is DETACHED (the `build` can be long, like the
   Caveman install). **codebase-memory-mcp** (github.com/DeusData/codebase-memory-mcp) runs
-  the auto-detecting `codebase-memory-mcp install` (bounded blocking, config-only) and
+  the auto-detecting `codebase-memory-mcp install` (bounded blocking, config-only; it
+  auto-detects claude-code/opencode/codex/gemini/copilot/openclaw/hermes, not omp) and
   ships an optional on-demand **3D graph UI** (`codebase-memory-mcp --ui=true --port=9749`,
   not auto-started). Both default to LOCAL operation and need no API key, so neither
   touches the gateway or a provider key.
+
+  **MCP-injection architecture.** The four agent configs the platform rewrites whole on
+  every start — codex's `.codex/config.toml`, openclaw's global `~/.openclaw/openclaw.json`,
+  hermes's global `~/.hermes/config.yaml`, and omp's new `<project>/.omp/mcp.json` — would
+  clobber any native `install --platform`/auto-detect, so the platform instead INJECTS the
+  enabled AI tools' MCP servers directly into that render (`agentcfg.EnabledMCPServers` →
+  `AppendCodexMCP` [appends `[mcp_servers.<name>]` TOML tables] / `InjectOpenClawMCP` [adds
+  `mcp.servers`] / `InjectHermesMCP` [adds `mcp_servers`] / `OmpMcpConfig` [the standalone
+  `.omp/mcp.json`], wired in `registerAgentProviders` for codex/hermes/omp and in
+  `writeModelListConfigs` for openclaw so it refreshes on attach). The injected commands:
+  code-review-graph = `code-review-graph serve`, codebase-memory-mcp = the
+  `codebase-memory-mcp` binary, graphify = `<project>/.venv-msb/bin/python -m
+  graphify.serve graphify-out/graph.json`. So codex/openclaw/hermes/omp reach
+  code-review-graph + codebase-memory + graphify via injection; the CLIs whose configs the
+  platform does not own (claude-code `~/.claude.json`, opencode, gemini `settings.json`,
+  copilot `mcp-config.json`) keep getting them via the tools' own native install/auto-detect.
 * **rtk** — "Rust Token Killer" (github.com/rtk-ai/rtk), a CLI proxy that compresses
   common dev-command output to cut agent token use. Installed for the **workspace
   user** via its official `install.sh` (a prebuilt aarch64 Linux binary → `~/.local/bin`,
