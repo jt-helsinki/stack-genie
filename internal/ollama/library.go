@@ -187,10 +187,13 @@ func fetchPage(ctx context.Context, httpClient *http.Client, url string) (string
 }
 
 var (
-	// libraryTitleRe captures each model's canonical name from the index page's
-	// per-model <div x-test-model-title title="NAME"> marker.
-	libraryTitleRe = regexp.MustCompile(`x-test-model-title title="([^"]+)"`)
-	// libraryDescRe captures the model description <p> that follows the title.
+	// libraryIndexAnchorRe captures each model's canonical name from its index-page
+	// card anchor `href="/library/<name>"`. ollama.com dropped the old
+	// `x-test-model-title` marker; the per-model link is now the stable anchor. The
+	// trailing `"` (no `:` allowed in the name class) excludes tag links like
+	// `/library/<name>:<tag>` and sub-paths like `/library/<name>/tags`.
+	libraryIndexAnchorRe = regexp.MustCompile(`href="/library/([a-zA-Z0-9][a-zA-Z0-9._-]*)"`)
+	// libraryDescRe captures the model description <p> that follows the anchor.
 	libraryDescRe = regexp.MustCompile(`<p[^>]*text-md[^>]*>([^<]*)`)
 	// tagSizeRe matches a size cell like "2.0GB" / "500MB".
 	tagSizeRe = regexp.MustCompile(`\d+(?:\.\d+)?\s*[GMK]B`)
@@ -209,21 +212,24 @@ var (
 // model on the index is a `<li x-test-model …>` block carrying an
 // `x-test-model-title title="NAME"` and a description `<p …text-md>`.
 func parseLibraryIndex(body string) []LibraryModel {
-	blocks := strings.Split(body, "x-test-model ")
-	models := make([]LibraryModel, 0, len(blocks))
-	seen := make(map[string]bool, len(blocks))
-	for _, block := range blocks {
-		title := libraryTitleRe.FindStringSubmatch(block)
-		if title == nil {
-			continue
-		}
-		name := strings.TrimSpace(html.UnescapeString(title[1]))
+	// Each model is a card anchor `href="/library/<name>"`; the description is the
+	// following <p ...text-md> within that card, bounded by the NEXT model anchor so it
+	// can't bleed into the following card.
+	anchors := libraryIndexAnchorRe.FindAllStringSubmatchIndex(body, -1)
+	models := make([]LibraryModel, 0, len(anchors))
+	seen := make(map[string]bool, len(anchors))
+	for position, anchor := range anchors {
+		name := strings.TrimSpace(html.UnescapeString(body[anchor[2]:anchor[3]]))
 		if name == "" || seen[name] {
 			continue
 		}
 		seen[name] = true
+		regionEnd := len(body)
+		if position+1 < len(anchors) {
+			regionEnd = anchors[position+1][0]
+		}
 		description := ""
-		if desc := libraryDescRe.FindStringSubmatch(block); desc != nil {
+		if desc := libraryDescRe.FindStringSubmatch(body[anchor[0]:regionEnd]); desc != nil {
 			description = strings.TrimSpace(html.UnescapeString(desc[1]))
 		}
 		models = append(models, LibraryModel{Name: name, Description: description})

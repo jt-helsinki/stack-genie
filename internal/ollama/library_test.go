@@ -10,26 +10,31 @@ import (
 	"testing"
 )
 
-// indexFixture mirrors the ollama.com/library index structure: per-model
-// `x-test-model` <li> blocks each carrying an `x-test-model-title title="NAME"`
-// and a description <p …text-md>. qwen2.5 is listed before llama3.2 to exercise
-// the by-name sort.
+// indexFixture mirrors the CURRENT ollama.com/library index structure: each model is a
+// card anchor `href="/library/<name>"` (ollama.com REMOVED the old
+// `x-test-model-title`/`x-test-model` markers — see the regression this guards) whose card
+// carries the name in the title div and a description <p …text-md>. qwen2.5 is listed
+// before llama3.2 to exercise the by-name sort. A trailing tag link (`/library/<name>:tag`)
+// and a sub-path (`/tags`) are included to prove the anchor regex does NOT treat those as
+// models.
 const indexFixture = `<ul role="list">
-  <li x-test-model class="flex">
+  <li class="flex">
     <a href="/library/qwen2.5" class="group w-full space-y-5">
-      <div x-test-model-title title="qwen2.5" class="flex flex-col">
-        <h2><span>qwen2.5</span></h2>
+      <div title="qwen2.5" class="flex flex-col">
+        <h2 class="truncate text-xl"><div class="flex space-x-2 items-center"><span class="group-hover:underline truncate">qwen2.5</span></div></h2>
         <p class="max-w-lg break-words text-neutral-800 text-md">Qwen 2.5 models.</p>
       </div>
-      <span x-test-size>7b</span>
+      <span class="text-xs">7b</span>
     </a>
   </li>
-  <li x-test-model class="flex">
+  <li class="flex">
     <a href="/library/llama3.2" class="group w-full space-y-5">
-      <div x-test-model-title title="llama3.2" class="flex flex-col">
-        <h2><span>llama3.2</span></h2>
+      <div title="llama3.2" class="flex flex-col">
+        <h2 class="truncate text-xl"><div class="flex space-x-2 items-center"><span class="group-hover:underline truncate">llama3.2</span></div></h2>
         <p class="max-w-lg break-words text-neutral-800 text-md">Llama 3.2 &amp; friends.</p>
       </div>
+      <a href="/library/llama3.2:3b" class="tag">llama3.2:3b</a>
+      <a href="/library/llama3.2/tags" class="all">See all</a>
     </a>
   </li>
 </ul>`
@@ -73,6 +78,38 @@ func newLibraryServer(tags map[string]string) *httptest.Server {
 			writer.WriteHeader(http.StatusNotFound)
 		}
 	}))
+}
+
+// REGRESSION GUARD: ollama.com dropped the `x-test-model-title` marker the index parser
+// used to key on, which silently produced ZERO models ("no models parsed") — blanking the
+// Local Models installable list. The parser must enumerate models from the card anchors
+// `href="/library/<name>"` and must NOT treat tag links (`:tag`) or sub-paths (`/tags`) as
+// models.
+func TestParseLibraryIndexUsesAnchorsNotTestMarker(test *testing.T) {
+	if strings.Contains(indexFixture, "x-test-model-title") {
+		test.Fatal("fixture must reflect the current ollama.com HTML (no x-test-model-title)")
+	}
+	models := parseLibraryIndex(indexFixture)
+	names := make([]string, 0, len(models))
+	byName := make(map[string]LibraryModel, len(models))
+	for _, model := range models {
+		names = append(names, model.Name)
+		byName[model.Name] = model
+	}
+	if len(models) != 2 {
+		test.Fatalf("parseLibraryIndex = %v, want exactly [llama3.2 qwen2.5] (tag/sub-path links excluded)", names)
+	}
+	if _, ok := byName["qwen2.5"]; !ok {
+		test.Errorf("qwen2.5 missing from parsed models: %v", names)
+	}
+	if byName["llama3.2"].Description != "Llama 3.2 & friends." {
+		test.Errorf("llama3.2 description = %q, want the card <p text-md> text", byName["llama3.2"].Description)
+	}
+	for _, bad := range []string{"llama3.2:3b", "llama3.2/tags"} {
+		if _, ok := byName[bad]; ok {
+			test.Errorf("%q is a tag/sub-path link, not a model — must not be parsed as one", bad)
+		}
+	}
 }
 
 func TestFetchLibraryParsesIndexAndTags(test *testing.T) {
