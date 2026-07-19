@@ -72,7 +72,7 @@ WORKDIR /home/workspace
 # opt-in tools/ snippet (context.graphify_enabled, default on) appended to the project
 # Dockerfile only when selected at `ai create`, then registered per agent CLI at start.
 # rtk (github.com/rtk-ai/rtk, "Rust Token Killer") is also installed for the workspace
-# user via its official install.sh — a prebuilt aarch64 Linux binary dropped in
+# user via its official install.sh — which auto-detects the arch (amd64/arm64) and drops the prebuilt Linux binary in
 # ~/.local/bin (already on PATH; no root). It is a CLI proxy that compresses common
 # dev-command output to cut agent token use. Claude Code's rtk PreToolUse hook (added
 # by `rtk init`) shells out to `rtk`, so the binary must be on PATH — without it the
