@@ -11,7 +11,7 @@ import (
 func TestProjectsLoadsAndSelectEmitsMsg(test *testing.T) {
 	view := NewProjects(func() ([]project.Entry, error) {
 		return []project.Entry{
-			{Name: "app", Path: "/p/app", OS: "debian-trixie", Status: "started", Agents: []string{"opencode", "pi"}},
+			{Name: "app", Path: "/p/app", OS: "debian-trixie", Status: "started", Agents: []string{"opencode", "omp"}},
 		}, nil
 	})
 	_ = view.Update(view.Init()()) // load

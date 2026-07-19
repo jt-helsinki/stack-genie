@@ -58,11 +58,11 @@ func writeFakeCurl(test *testing.T, dir, modelsJSON string, reachable bool) {
 	}
 }
 
-// runRefresh writes the generated script to a temp dir, redirects the config paths
-// at temp files, and runs it with binDir prepended to PATH so the fake curl is
-// found. It returns the rewritten opencode + pi config bytes plus whether each file
+// runRefresh writes the generated script to a temp dir, redirects the config path
+// at a temp file, and runs it with binDir prepended to PATH so the fake curl is
+// found. It returns the rewritten opencode config bytes plus whether the file
 // was written (the degrade-to-untouched path writes nothing).
-func runRefresh(test *testing.T, binDir string) (openCode, pi []byte, ranOK bool) {
+func runRefresh(test *testing.T, binDir string) (openCode []byte, ranOK bool) {
 	test.Helper()
 	bash := requireBash(test)
 
@@ -77,13 +77,11 @@ func runRefresh(test *testing.T, binDir string) (openCode, pi []byte, ranOK bool
 		test.Fatal(err)
 	}
 
-	// Redirect the two guest paths to temp files. The script hard-codes the guest
-	// paths; rather than write to /home/workspace we rewrite the path literals.
+	// Redirect the guest path to a temp file. The script hard-codes the guest
+	// path; rather than write to /home/workspace we rewrite the path literal.
 	openCodeFile := filepath.Join(work, "opencode.json")
-	piFile := filepath.Join(work, "models.json")
 	rewritten := strings.NewReplacer(
 		openCodeGuestPath, openCodeFile,
-		piGuestPath, piFile,
 	).Replace(string(scriptBytes))
 
 	scriptPath := filepath.Join(work, "refresh-models")
@@ -98,13 +96,12 @@ func runRefresh(test *testing.T, binDir string) (openCode, pi []byte, ranOK bool
 	ranOK = runErr == nil
 
 	openCode, _ = os.ReadFile(openCodeFile)
-	pi, _ = os.ReadFile(piFile)
-	return openCode, pi, ranOK
+	return openCode, ranOK
 }
 
 // TestRefreshScriptParityWithGenerators executes the generated script with a fake
-// curl returning a served-model list, and asserts the rewritten configs are
-// BYTE-IDENTICAL to OpenCodeConfig / PiConfig for the deduped+sorted served list —
+// curl returning a served-model list, and asserts the rewritten config is
+// BYTE-IDENTICAL to OpenCodeConfig for the deduped+sorted served list —
 // so an in-VM refresh matches a fresh workspace start.
 func TestRefreshScriptParityWithGenerators(test *testing.T) {
 	binDir := test.TempDir()
@@ -113,7 +110,7 @@ func TestRefreshScriptParityWithGenerators(test *testing.T) {
 	models := `{"data":[{"id":"ollama/qwen2.5:7b"},{"id":"anthropic/claude-opus-4-8"},{"id":"ollama/llama3.2:latest"},{"id":"anthropic/claude-opus-4-8"}]}`
 	writeFakeCurl(test, binDir, models, true)
 
-	gotOpenCode, gotPi, ranOK := runRefresh(test, binDir)
+	gotOpenCode, ranOK := runRefresh(test, binDir)
 	if !ranOK {
 		test.Fatal("refresh-models must succeed when the gateway is reachable")
 	}
@@ -124,15 +121,10 @@ func TestRefreshScriptParityWithGenerators(test *testing.T) {
 		"ollama/llama3.2:latest", "anthropic/claude-opus-4-8",
 	})
 
-	// refresh-models rewrites KEYLESS configs (the {env:}/$VAR refs), never the literal
-	// scoped key — so parity is against the generators called with the key refs.
+	// refresh-models rewrites a KEYLESS config (the {env:}/$VAR refs), never the literal
+	// scoped key — so parity is against the generator called with the key ref.
 	wantOpenCode, err := OpenCodeConfig(
 		"http://host.microsandbox.internal:18787/v1", OpenCodeAPIKeyRef, "", merged, 5, 8000)
-	if err != nil {
-		test.Fatal(err)
-	}
-	wantPi, err := PiConfig(
-		"http://host.microsandbox.internal:18787/v1", PiAPIKeyRef, "", merged)
 	if err != nil {
 		test.Fatal(err)
 	}
@@ -140,13 +132,10 @@ func TestRefreshScriptParityWithGenerators(test *testing.T) {
 	if string(gotOpenCode) != string(wantOpenCode) {
 		test.Fatalf("opencode.json not byte-identical to OpenCodeConfig:\n--- got ---\n%s\n--- want ---\n%s", gotOpenCode, wantOpenCode)
 	}
-	if string(gotPi) != string(wantPi) {
-		test.Fatalf("models.json not byte-identical to PiConfig:\n--- got ---\n%s\n--- want ---\n%s", gotPi, wantPi)
-	}
-	// Security invariant: the rewritten (host-disk, project) configs are KEYLESS — the
-	// scoped key used for the fetch must NEVER be baked into them.
-	if strings.Contains(string(gotOpenCode), "sk-workspace-scoped-1234") || strings.Contains(string(gotPi), "sk-workspace-scoped-1234") {
-		test.Fatal("refresh-models must not write the scoped key into the on-disk configs")
+	// Security invariant: the rewritten (host-disk, project) config is KEYLESS — the
+	// scoped key used for the fetch must NEVER be baked into it.
+	if strings.Contains(string(gotOpenCode), "sk-workspace-scoped-1234") {
+		test.Fatal("refresh-models must not write the scoped key into the on-disk config")
 	}
 }
 
@@ -157,12 +146,12 @@ func TestRefreshScriptDegradesWhenGatewayUnreachable(test *testing.T) {
 	binDir := test.TempDir()
 	writeFakeCurl(test, binDir, "", false) // curl exits non-zero for every URL
 
-	gotOpenCode, gotPi, ranOK := runRefresh(test, binDir)
+	gotOpenCode, ranOK := runRefresh(test, binDir)
 	if ranOK {
 		test.Fatal("refresh-models must exit non-zero when the gateway is unreachable")
 	}
-	if len(gotOpenCode) != 0 || len(gotPi) != 0 {
-		test.Fatalf("an unreachable gateway must leave the configs untouched (wrote opencode=%dB pi=%dB)", len(gotOpenCode), len(gotPi))
+	if len(gotOpenCode) != 0 {
+		test.Fatalf("an unreachable gateway must leave the config untouched (wrote opencode=%dB)", len(gotOpenCode))
 	}
 }
 
@@ -178,10 +167,8 @@ func TestRefreshScriptErrorsWhenCurlMissing(test *testing.T) {
 		test.Fatal(err)
 	}
 	openCodeFile := filepath.Join(work, "opencode.json")
-	piFile := filepath.Join(work, "models.json")
 	rewritten := strings.NewReplacer(
 		openCodeGuestPath, openCodeFile,
-		piGuestPath, piFile,
 	).Replace(string(scriptBytes))
 	scriptPath := filepath.Join(work, "refresh-models")
 	if err := os.WriteFile(scriptPath, []byte(rewritten), 0o755); err != nil {

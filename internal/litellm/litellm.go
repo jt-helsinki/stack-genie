@@ -189,7 +189,7 @@ func destructiveCommandRegex() string {
 }
 
 // shellToolNameRegex matches the shell-tool NAMES the supported agent CLIs expose,
-// verified against their tool schemas: opencode/pi `bash`, claude-code `Bash`
+// verified against their tool schemas: opencode `bash`, claude-code `Bash`
 // (case-insensitive), codex `shell`/`shell_command`/`exec_command`, gemini
 // `run_shell_command`. hardware bring-up: confirm these against the LIVE tool
 // schemas on a provisioned host — a destructive call under an unmatched tool name
@@ -198,7 +198,7 @@ const shellToolNameRegex = `(?i)^(bash|shell|sh|run|run_command|run_shell_comman
 
 // commandParamPaths are the tool-call argument paths that carry the shell command
 // across the supported agents, in LiteLLM tool_permission's flattened dot/`[]`
-// notation (verified against its source): `command` (opencode/pi/claude-code/gemini/
+// notation (verified against its source): `command` (opencode/claude-code/gemini/
 // codex shell_command — string), `command[]` (codex `shell` — array, matched
 // per-element), and `cmd` (codex exec_command — string). NOT `arguments.command`,
 // which matches nothing (the guardrail evaluates the PARSED arguments object).

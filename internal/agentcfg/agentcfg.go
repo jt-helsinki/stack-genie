@@ -4,8 +4,7 @@
 // virtual key and routes the gateway-capable agent CLIs through the gateway with
 // that key:
 //
-//   - opencode / pi route via a JSON config file written into the microVM
-//     (OpenCodeConfig / PiConfig).
+//   - opencode routes via a JSON config file written into the microVM (OpenCodeConfig).
 //   - claude-code (`claude`), codex, and gemini route via environment variables
 //     (claude-code: ANTHROPIC_BASE_URL + ANTHROPIC_AUTH_TOKEN; gemini:
 //     GOOGLE_GEMINI_BASE_URL + GEMINI_API_KEY) plus, for codex, a TOML provider
@@ -100,35 +99,6 @@ func OpenCodeConfig(gatewayURL, apiKey, defaultModel string, models []string, ke
 	return marshalStable(document)
 }
 
-// PiConfig renders pi's provider config (`~/.pi/agent/models.json`).
-//
-// pi talks to the gateway as an OpenAI-completions provider. Unlike opencode, pi
-// CANNOT inject per-request body fields, so the Headroom knobs are deliberately
-// NOT written here — pi's requests fall back to Headroom's server-side defaults.
-// Per-project compression tuning therefore applies to opencode only; pi uses the
-// host Headroom defaults. The baseUrl carries the required /v1 suffix and apiKey
-// carries the scoped virtual key.
-func PiConfig(gatewayURL, apiKey, defaultModel string, models []string) ([]byte, error) {
-	modelEntries := make([]map[string]any, 0, len(models))
-	for _, model := range models {
-		modelEntries = append(modelEntries, map[string]any{
-			"id":   model,
-			"name": model,
-		})
-	}
-	document := map[string]any{
-		"providers": map[string]any{
-			ProviderID: map[string]any{
-				"baseUrl": gatewayURL,
-				"api":     "openai-completions",
-				"apiKey":  apiKey,
-				"models":  modelEntries,
-			},
-		},
-	}
-	return marshalStable(document)
-}
-
 // TmuxConfig renders the managed tmux configuration written to
 // `/home/workspace/.tmux.conf` at workspace start. The platform's workspace
 // session model is "tmux-transparent": persistent, reattachable per-CLI tmux
@@ -179,11 +149,11 @@ set -g history-limit 50000
 set -g default-terminal "tmux-256color"
 set -as terminal-features ",*:RGB"
 set -as terminal-features ",*:extkeys"
-# extended-keys must be set GLOBAL (-g), not just server (-s): agent TUIs (pi) probe
+# extended-keys must be set GLOBAL (-g), not just server (-s): agent TUIs (opencode, omp) probe
 # the global value, and setting it server-only leaves that reading off.
 set -g extended-keys on
 # Emit extended keys in CSI-u form (not the legacy xterm form). Modern agent TUIs
-# (pi, opencode) expect csi-u for shift+enter / ctrl-combos; tmux defaults to xterm.
+# (opencode, omp) expect csi-u for shift+enter / ctrl-combos; tmux defaults to xterm.
 set -g extended-keys-format csi-u
 set -sg escape-time 10
 `)
@@ -209,7 +179,7 @@ func marshalYAML(document any) ([]byte, error) {
 	return buffer.Bytes(), nil
 }
 
-// omp ("Oh My Pi", a Pi fork) routes through the gateway like pi/opencode, but reads
+// omp ("Oh My Pi", a Pi fork) routes through the gateway like opencode, but reads
 // YAML: a GLOBAL ~/.omp/agent/models.yml provider definition (the path omp reads for
 // custom providers) + a PROJECT <project>/.omp/config.yml for the default model + provider
 // order. NB: the `.yml` extension here is the ONE exception to the platform's `.yaml`-only
@@ -219,7 +189,7 @@ func marshalYAML(document any) ([]byte, error) {
 // resolves a value that names an existing env var as the key), so the real scoped key
 // lives only in the in-VM agent env file. The provider uses `openai-models-list`
 // DISCOVERY, so omp lists exactly the models the gateway serves each launch (no static
-// list to write/refresh — the pi/opencode list-refresh does not apply to omp).
+// list to write/refresh — the opencode list-refresh does not apply to omp).
 const (
 	// OmpAPIKeyRef is written as the provider apiKey: the NAME of the env var omp resolves
 	// at runtime (NOT the key), keeping the on-disk config keyless.
@@ -264,7 +234,7 @@ func OmpConfig(defaultModel string) ([]byte, error) {
 
 // openclaw + hermes are gateway/api-key agents like opencode/pi/omp: they reach models
 // ONLY through the gateway, keyless. Their config is GLOBAL (one file per tool), written
-// whole via Sandbox.WriteFile (off host disk) — mirroring pi's/omp's global configs.
+// whole via Sandbox.WriteFile (off host disk) — mirroring omp's global config.
 // nginx :18787 fronts LiteLLM :4000; Headroom input-compression is a LiteLLM pre_call
 // guardrail on that path, so both get compression automatically with no client-side wrap.
 const (
@@ -293,7 +263,7 @@ const (
 // persisted last-used selection wins (seed-then-remember, matching the other CLIs).
 // gatewayURL carries the /v1 suffix. The served list is rewritten each start + on attach
 // (see workspace.writeModelListConfigs), so a model added via `ai models`/`ai keys` shows
-// up without a full restart — the opencode/pi list-refresh contract.
+// up without a full restart — the opencode list-refresh contract.
 func OpenClawConfig(gatewayURL, apiKey, defaultModel string, models []string) ([]byte, error) {
 	providerModels := make([]map[string]any, 0, len(models))
 	for _, model := range models {
@@ -382,37 +352,6 @@ func dropKeysWhenNoDefault(defaultModel string, keys ...string) []string {
 		return nil
 	}
 	return keys
-}
-
-// PiProjectSettingsGuest is the in-VM path of pi's per-project settings.
-const PiProjectSettingsGuest = projectDirGuest + "/.pi/settings.json"
-
-// PiSettings renders pi's per-project .pi/settings.json: it makes the gateway the
-// default provider, sets the workspace default model (when one was chosen at setup),
-// and points pi's skills/prompts RESOURCE PATHS at the symlinked shared pools (pi
-// resolves these paths relative to .pi, where we symlink skills/ and prompts/ into the
-// shared .ai-platform pools). Keyless. (pi.dev/docs/latest/settings.)
-func PiSettings(defaultModel string) ([]byte, error) {
-	document := map[string]any{
-		"defaultProvider": ProviderID,
-		"skills":          []string{"skills"},
-		"prompts":         []string{"prompts"},
-	}
-	if defaultModel != "" {
-		document["defaultModel"] = defaultModel
-	}
-	return marshalStable(document)
-}
-
-// MergePiSettings deep-merges the generated pi settings over an existing project
-// .pi/settings.json — the user's other settings survive, the managed keys win.
-func MergePiSettings(existing []byte, defaultModel string) ([]byte, error) {
-	generated, err := PiSettings(defaultModel)
-	if err != nil {
-		return nil, err
-	}
-	// Same seed-then-remember rule as opencode: drop a stale defaultModel when not seeding.
-	return mergeJSONOver(existing, generated, dropKeysWhenNoDefault(defaultModel, "defaultModel")...)
 }
 
 // mergeJSONOver deep-merges generated over template (generated wins) and renders
@@ -517,35 +456,26 @@ const (
 	openCodeConfigVar = "OPENCODE_CONFIG"
 )
 
-// Env-interpolation references for the on-disk (keyless) PROJECT configs: the scoped
+// Env-interpolation reference for the on-disk (keyless) PROJECT configs: the scoped
 // virtual key is supplied via the AIP_GATEWAY_KEY env var (exported by
-// AgentEnvScript, in-VM only) and NEVER written to disk. opencode uses {env:VAR}
-// and pi uses $VAR — both officially documented interpolation forms.
-const (
-	OpenCodeAPIKeyRef = "{env:" + codexKeyVar + "}"
-	PiAPIKeyRef       = "$" + codexKeyVar
-)
+// AgentEnvScript, in-VM only) and NEVER written to disk. opencode uses {env:VAR} — its
+// officially documented interpolation form.
+const OpenCodeAPIKeyRef = "{env:" + codexKeyVar + "}"
 
 // In-VM paths of the per-CLI PROJECT configs, under the bind-mounted project dir
 // (/home/workspace/project — mirrors workspace.workspaceWorkdir; the project dir is
 // ONE directory shared host↔guest). The keyless configs live here so the project is
 // self-describing; OPENCODE_CONFIG points opencode at its file, refresh-models
-// rewrites the opencode/pi files in place, and codex is told to trust this project.
+// rewrites the opencode file in place, and codex is told to trust this project.
 const (
 	projectDirGuest            = "/home/workspace/project"
 	OpenCodeProjectConfigGuest = projectDirGuest + "/.opencode/opencode.json"
 	CodexProjectConfigGuest    = projectDirGuest + "/.codex/config.toml"
 )
 
-// PiGlobalModelsGuest is pi's models config at the path pi ACTUALLY reads —
-// ~/.pi/agent/models.json (GLOBAL, in-VM home). pi does NOT read a project
-// .pi/models.json, so the served-model provider config is written here so pi lists the
-// SAME gateway models as opencode. In-VM home (off host disk); keyless via $VAR.
-const PiGlobalModelsGuest = "/home/workspace/.pi/agent/models.json"
-
 // gatewayRoot strips a trailing /v1 (and any trailing slash) from the gateway URL,
 // for the CLIs whose SDK appends its own version/path segment (claude-code adds
-// /v1/messages; gemini-cli's genai SDK adds its own path). opencode/pi/codex keep
+// /v1/messages; gemini-cli's genai SDK adds its own path). opencode/codex keep
 // the /v1-suffixed URL verbatim.
 func gatewayRoot(gatewayURL string) string {
 	trimmed := strings.TrimRight(gatewayURL, "/")
@@ -564,7 +494,7 @@ func gatewayRoot(gatewayURL string) string {
 // those talk DIRECTLY to their provider with their own native login, so their gateway
 // env is OMITTED here: an oauth claude-code gets no ANTHROPIC_BASE_URL/ANTHROPIC_AUTH_TOKEN
 // (so its ~/.claude OAuth credentials win) and an oauth gemini gets no
-// GOOGLE_GEMINI_BASE_URL/GEMINI_API_KEY. AIP_GATEWAY_KEY is shared with opencode/pi (and
+// GOOGLE_GEMINI_BASE_URL/GEMINI_API_KEY. AIP_GATEWAY_KEY is shared with opencode (and
 // api-key codex), so it is always exported; an oauth codex simply doesn't reference it
 // (its config.toml uses the ChatGPT login — see CodexConfigOAuth). The Graphify OPENAI_*
 // env is independent of any agent's auth mode.
@@ -584,7 +514,7 @@ func AgentEnvScript(gatewayURL, apiKey, graphifyModel string, oauthAgents map[st
 		buffer.WriteString("export " + claudeAuthVar + "=" + shellQuote(apiKey) + "\n")
 	}
 	// codex: the key its config.toml provider block reads via env_key. Shared with
-	// opencode/pi (their {env:}/$VAR key ref), so always exported — an oauth codex just
+	// opencode (its {env:} key ref), so always exported — an oauth codex just
 	// doesn't reference it.
 	buffer.WriteString("export " + codexKeyVar + "=" + shellQuote(apiKey) + "\n")
 	// gemini-cli (api-key mode only): the genai SDK's base-URL + key overrides (gateway
@@ -636,7 +566,7 @@ func BashProfile() []byte {
 // accepts, and reports whether Headroom can wrap it. Headroom `wrap` supports only a
 // FIXED set of agent tokens (claude, codex, copilot, cursor, aider, opencode, cline,
 // continue, goose, openhands, openclaw, vibe); of this platform's CLIs claude-code,
-// codex, opencode, and copilot are wrappable. pi, omp, and gemini are NOT — aliasing them
+// codex, opencode, and copilot are wrappable. omp and gemini are NOT — aliasing them
 // would break at runtime — so they return ok=false and get no alias. This mirrors the
 // graphifyPlatformFlag guard: an unsupported CLI is simply skipped.
 func HeadroomWrapName(cli string) (string, bool) {
@@ -684,7 +614,7 @@ const ShellAliasesFileGuestPath = "/home/workspace/.config/aip/shell-aliases.sh"
 // that aliases each Headroom-wrappable agent CLI to `headroom wrap <name>`, so typing e.g.
 // `claude` runs `headroom wrap claude` (input compression via the host Headroom CLI, which
 // is already installed in-VM). Only the installed CLIs Headroom supports (HeadroomWrapName)
-// get an alias; the rest (pi, omp, gemini) are skipped. Tools are iterated in the order
+// get an alias; the rest (omp, gemini) are skipped. Tools are iterated in the order
 // given and de-duplicated, so the output is deterministic.
 func ShellAliases(tools []string) []byte {
 	var buffer bytes.Buffer
@@ -867,11 +797,10 @@ func CodexTrustConfig() []byte {
 }
 
 // The agent provider configs live at each CLI's per-project location inside the
-// bind-mounted project dir; RefreshScript rewrites the opencode + pi files in place.
+// bind-mounted project dir; RefreshScript rewrites the opencode file in place.
 // (These alias the exported project-config guest paths declared above.)
 const (
 	openCodeGuestPath = OpenCodeProjectConfigGuest
-	piGuestPath       = PiGlobalModelsGuest
 )
 
 // modelSentinel is the per-model token the shell substitutes with each real model
@@ -902,8 +831,7 @@ const (
 //     the "id":"…" fields — no jq/python);
 //   - dedups + sorts them (LC_ALL=C sort -u) exactly as workspace.pickerModels does,
 //     so the result matches a fresh workspace start;
-//   - rewrites opencode.json + pi models.json BYTE-IDENTICAL to what OpenCodeConfig
-//     / PiConfig would produce for that served list, default, gateway, and key —
+//   - rewrites opencode.json BYTE-IDENTICAL to what OpenCodeConfig would produce for that served list, default, gateway, and key —
 //     by splicing the model fragments into Go-rendered JSON skeletons;
 //   - DEGRADES: if the fetch fails it leaves the existing configs untouched and
 //     warns (it never wipes them to an empty list);
@@ -918,19 +846,13 @@ func RefreshScript(gatewayBaseURL, apiKey, defaultModel string, keepTurns, outpu
 	// Render the two JSON skeletons with a single sentinel model so we can split
 	// each into a prefix / per-model template / suffix the shell splices into. The
 	// rendered fragments inherit MarshalIndent's exact indentation, guaranteeing
-	// byte parity with OpenCodeConfig / PiConfig for the same merged list. The bodies
+	// byte parity with OpenCodeConfig for the same merged list. The bodies
 	// use the KEYLESS key-refs (not apiKey), matching the configs written at start.
 	openCode, err := splitSkeleton(func(models []string) ([]byte, error) {
 		return OpenCodeConfig(gatewayBaseURL, OpenCodeAPIKeyRef, defaultModel, models, keepTurns, outputBufferTokens)
 	})
 	if err != nil {
 		return nil, fmt.Errorf("render opencode skeleton: %w", err)
-	}
-	pi, err := splitSkeleton(func(models []string) ([]byte, error) {
-		return PiConfig(gatewayBaseURL, PiAPIKeyRef, defaultModel, models)
-	})
-	if err != nil {
-		return nil, fmt.Errorf("render pi skeleton: %w", err)
 	}
 
 	var script bytes.Buffer
@@ -951,8 +873,7 @@ set -u
 	script.WriteString("GATEWAY_URL=" + shellQuote(gatewayBaseURL) + "\n")
 	script.WriteString("MODELS_URL=" + shellQuote(modelsURL(gatewayBaseURL)) + "\n")
 	script.WriteString("API_KEY=" + shellQuote(apiKey) + "\n")
-	script.WriteString("OPENCODE_PATH=" + shellQuote(openCodeGuestPath) + "\n")
-	script.WriteString("PI_PATH=" + shellQuote(piGuestPath) + "\n\n")
+	script.WriteString("OPENCODE_PATH=" + shellQuote(openCodeGuestPath) + "\n\n")
 
 	// The four JSON fragments per config, base64-encoded so arbitrary bytes
 	// (newlines, quotes, indentation, the inter-entry separator) survive embedding
@@ -960,11 +881,7 @@ set -u
 	script.WriteString("OPENCODE_PREFIX=" + b64Literal(openCode.prefix) + "\n")
 	script.WriteString("OPENCODE_ITEM=" + b64Literal(openCode.item) + "\n")
 	script.WriteString("OPENCODE_SEP=" + b64Literal(openCode.separator) + "\n")
-	script.WriteString("OPENCODE_SUFFIX=" + b64Literal(openCode.suffix) + "\n")
-	script.WriteString("PI_PREFIX=" + b64Literal(pi.prefix) + "\n")
-	script.WriteString("PI_ITEM=" + b64Literal(pi.item) + "\n")
-	script.WriteString("PI_SEP=" + b64Literal(pi.separator) + "\n")
-	script.WriteString("PI_SUFFIX=" + b64Literal(pi.suffix) + "\n\n")
+	script.WriteString("OPENCODE_SUFFIX=" + b64Literal(openCode.suffix) + "\n\n")
 
 	script.WriteString(refreshScriptBody)
 	return script.Bytes(), nil
@@ -1033,10 +950,8 @@ write_config() {
 }
 
 opencode_json="$(render "$OPENCODE_PREFIX" "$OPENCODE_ITEM" "$OPENCODE_SEP" "$OPENCODE_SUFFIX")"
-pi_json="$(render "$PI_PREFIX" "$PI_ITEM" "$PI_SEP" "$PI_SUFFIX")"
 
 write_config "$OPENCODE_PATH" "$opencode_json" || { echo "refresh-models: failed to write $OPENCODE_PATH" >&2; exit 1; }
-write_config "$PI_PATH" "$pi_json" || { echo "refresh-models: failed to write $PI_PATH" >&2; exit 1; }
 
 echo "refreshed: $merged_count served models — restart your agent CLI to pick them up"
 `)

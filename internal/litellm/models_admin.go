@@ -162,7 +162,7 @@ func OllamaModelName(name string) string {
 // Ollama model: "ollama_chat/<name>", NOT "ollama/<name>". LiteLLM's `ollama` provider
 // targets Ollama's legacy /api/generate (a single-prompt completion endpoint) which does
 // NOT properly handle a chat `messages` array, `tools`, or streamed tool-call deltas — so
-// a coding agent (opencode/pi) sees the request reach Ollama but gets no usable output.
+// a coding agent (opencode) sees the request reach Ollama but gets no usable output.
 // The `ollama_chat` provider targets /api/chat, which supports chat messages, function
 // calling, and proper streaming (docs.litellm.ai — "we recommend using ollama_chat for
 // chat"). The PUBLIC handle stays "ollama/<name>" (OllamaModelName), so the agent-facing

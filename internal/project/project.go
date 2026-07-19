@@ -68,8 +68,15 @@ type Spec struct {
 	Shell string
 	// CavemanEnabled records whether the Caveman output-compression toolkit is
 	// installed into the workspace at start, written to config.yaml
-	// context.caveman_enabled. Chosen at `ai create` (default true).
+	// context.caveman_enabled. Chosen at `ai create` from the unified AI-tools list
+	// (default on).
 	CavemanEnabled bool
+	// GraphifyEnabled records whether the Graphify knowledge-graph toolkit is baked
+	// into the workspace image (conditional Dockerfile snippet) and registered with
+	// each installed agent CLI at start, written to config.yaml
+	// context.graphify_enabled. Chosen at `ai create` from the unified AI-tools list
+	// (default on).
+	GraphifyEnabled bool
 	// CodeReviewGraphEnabled records whether the code-review-graph toolkit is
 	// installed into the workspace at start and registered as an MCP server with each
 	// installed agent CLI, written to config.yaml context.code_review_graph_enabled.
@@ -234,6 +241,9 @@ func Scaffold(spec Spec, createdAt string) (string, error) {
 	// tools (§25, §12). The opt-in tools are baked ONLY when selected, so an
 	// unselected tool's installer never runs at build.
 	var tools []string
+	if spec.GraphifyEnabled {
+		tools = append(tools, "graphify")
+	}
 	if spec.CodeReviewGraphEnabled {
 		tools = append(tools, "code-review-graph")
 	}
@@ -311,17 +321,18 @@ func Scaffold(spec Spec, createdAt string) (string, error) {
 	if len(authModes) == 0 {
 		authModes = nil
 	}
-	// Persist the Caveman + code-review-graph + codebase-memory-mcp on/off choices here;
-	// create.Execute's later SetStrategy/SetCavemanLevel calls are read-modify-write and
-	// preserve them.
+	// Persist the AI-tools on/off choices (caveman + graphify + code-review-graph +
+	// codebase-memory-mcp) here; create.Execute's later SetStrategy/SetCavemanLevel calls
+	// are read-modify-write and preserve them.
 	cavemanEnabled := spec.CavemanEnabled
+	graphifyEnabled := spec.GraphifyEnabled
 	codeReviewGraphEnabled := spec.CodeReviewGraphEnabled
 	codebaseMemoryEnabled := spec.CodebaseMemoryEnabled
 	projectConfig := &config.Config{
 		OS:           spec.OS,
 		Agent:        config.AgentConfig{Tools: spec.AgentCLIs, DefaultTool: spec.DefaultTool, GraphifyModel: spec.GraphifyModel, AuthModes: authModes},
 		Workspace:    config.WorkspaceConfig{CPULimit: cpus, MemoryLimit: memory, Shell: shell},
-		Context:      config.ContextConfig{CavemanEnabled: &cavemanEnabled, CodeReviewGraphEnabled: &codeReviewGraphEnabled, CodebaseMemoryEnabled: &codebaseMemoryEnabled},
+		Context:      config.ContextConfig{CavemanEnabled: &cavemanEnabled, GraphifyEnabled: &graphifyEnabled, CodeReviewGraphEnabled: &codeReviewGraphEnabled, CodebaseMemoryEnabled: &codebaseMemoryEnabled},
 		Microsandbox: config.MicrosandboxConfig{IdleTimeout: idleTimeout},
 		Network:      config.NetworkConfig{PublishPorts: spec.PublishPorts, AllowHostServices: oauthAllow},
 		Apps:         appEntries,
@@ -337,7 +348,7 @@ func Scaffold(spec Spec, createdAt string) (string, error) {
 
 	// The per-CLI gateway configs are no longer scaffolded here as `.ai-platform/agents/`
 	// templates — at workspace start the platform writes each CLI's KEYLESS config into
-	// its own DEFAULT project location (<project>/.opencode/, .claude/, .codex/, .pi/;
+	// its own DEFAULT project location (<project>/.opencode/, .claude/, .codex/;
 	// gemini is env-only) with the scoped key supplied via env vars, so the key is never
 	// on host disk. The shared <project>/.ai-platform/{agents,skills,prompts,projects}
 	// pool + per-CLI symlinks are set up at start too.
@@ -441,7 +452,7 @@ func workspaceHandle(name, root string) (id, status, created, lastStarted string
 // agentArtifactDirs are the per-CLI agent config dirs and the Python venv the platform
 // writes into the PROJECT folder (outside .ai-platform) at workspace start. A plain
 // `ai delete` removes them too, best-effort — a missing one is ignored.
-var agentArtifactDirs = []string{".opencode", ".claude", ".codex", ".pi", ".omp", ".gemini", ".copilot", ".openclaw", ".hermes", ".venv-msb"}
+var agentArtifactDirs = []string{".opencode", ".claude", ".codex", ".omp", ".gemini", ".copilot", ".openclaw", ".hermes", ".venv-msb"}
 
 // Delete removes a project from the index and removes its persistent overlay. A plain
 // delete removes the whole .ai-platform tree (config + run state) and — when

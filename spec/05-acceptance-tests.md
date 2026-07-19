@@ -71,8 +71,8 @@ harness.CreateProjectWithOS(name, osKey)  →  ai create <name> --os <key> --jso
 * `ai create` is **scaffold-only** — it writes the project's `.ai-platform/`
   artifacts and indexes the project; it does **not** build or boot a workspace.
   `ai start` builds the image and boots the microVM.
-* the default base OS is `debian-trixie` and the default agent CLIs are
-  `opencode`, `pi`
+* the default base OS is `debian-trixie` and the default agent CLI is
+  `opencode`
 * `--os` is **required** on this non-interactive path; a missing or unknown value
   exits `2`
 * the result is the `--json` envelope on stdout (envelope `command: project.create`)
@@ -283,7 +283,7 @@ ai create test-project --os debian-trixie --json   # flag-driven, non-interactiv
 
 * the envelope is `command: project.create`, `ok == true`, exit `0`
 * `data.name == test-project`, `data.os == debian-trixie`
-* `data.tools` is `[opencode, pi]` (the default agent CLIs)
+* `data.tools` is `[opencode]` (the default agent CLI)
 * project scaffolded in the current directory; `data.root` points at it, and the
   project is indexed in `config/projects.yaml`
 * state written under `<root>/.ai-platform/` (Dockerfile / config.yaml /
@@ -459,7 +459,7 @@ ai exec cli-test --json -- sh -c 'command -v gemini'   # NOT selected
   (`data.exit_code == 0`), and the unselected `gemini` probe fails
   (`data.exit_code != 0`)
 * default selection (`ai create x --os <key>`, no `--agents`) yields
-  `data.tools == [opencode, pi]` (§3.1)
+  `data.tools == [opencode]` (§3.1)
 
 ---
 

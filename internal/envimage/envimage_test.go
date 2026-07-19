@@ -172,15 +172,15 @@ func TestAllOSTemplatesExposeIdenticalBaseSurface(test *testing.T) {
 		"NERDCTL_VERSION=2.3.4",
 		"nerdctl-full-",
 		// Node.js 24 LTS (NodeSource) is baked into every OS base — the distro apt
-		// Node is too old for the agent CLIs (pi's undici needs Node >= 22.10).
+		// Node is too old for the agent CLIs (omp's undici needs Node >= 22.10).
 		"NODE_MAJOR=24",
 		"nodesource.com",
-		// Python 3, uv, and Graphify are baked into every OS base by default (§12,
-		// §25). Graphify installs via `uv tool install` with the bundled extras.
+		// Python 3 + uv are baked into every OS base by default (§12, §25); uv backs the
+		// opt-in graphify / code-review-graph tool snippets. Graphify itself is NO LONGER
+		// baked — it is a conditional tools/ snippet appended only when selected.
 		"python3",
 		"astral.sh/uv/install.sh",
 		"uv tool install",
-		"graphifyy[",
 		// Keep-alive so the detached microVM stays up (the image's default shell
 		// would exit immediately and msb would stop the sandbox).
 		`CMD ["sleep", "infinity"]`,

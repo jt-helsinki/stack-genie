@@ -431,8 +431,7 @@ Idempotent: safe to re-run after a partial or completed uninstall.
 ai create [<name>] [--name <name>] [--os <os>] [--shell <bash|zsh>] [--agents <list>]
           [--auth-mode <cli=mode>] [--stacks <list>] [--apps <list>] [--graphify-model <ref>]
           [--cpus <n>] [--memory <size>] [--ports <list>] [--location <dir>]
-          [--idle-timeout <dur>] [--caveman[=false]]
-          [--code-review-graph] [--codebase-memory]
+          [--idle-timeout <dur>] [--tools <list>]
 ```
 
 `ai create` sets up a new environment at the chosen **location** (default: the
@@ -449,8 +448,8 @@ one command:
   (default `bash`), written to `workspace.shell` and applied at every start by
   `applyShellChoice`
 * `--agents <list>` — comma-separated agent CLIs
-  (`opencode,pi,omp,claude-code,codex,gemini,copilot,openclaw,hermes`); defaults to
-  `opencode,pi`, and the first listed becomes the default agent CLI. `opencode`/`pi`/
+  (`opencode,omp,claude-code,codex,gemini,copilot,openclaw,hermes`); defaults to
+  `opencode`, and the first listed becomes the default agent CLI. `opencode`/
   `omp`/`openclaw`/`hermes` are always gateway/api-key; `claude-code`/`codex`/`gemini`
   are gateway by default but OAuth-selectable (see `--auth-mode`); `copilot` is
   forced-OAuth / gateway-incapable
@@ -459,19 +458,20 @@ one command:
   default `api-key`). `api-key` routes through the gateway with the scoped virtual
   key (firewall + masking apply); `oauth` uses the CLI's own subscription login,
   bypassing the gateway. `copilot=api-key` is rejected (exit 2 — copilot is
-  forced-OAuth); opencode/pi/omp/openclaw/hermes are always gateway/api-key and never accept it
+  forced-OAuth); opencode/omp/openclaw/hermes are always gateway/api-key and never accept it
 * `--stacks <list>` — comma-separated EXTRA software stacks
   (`go,rust,java,maven,deno`); optional. **Neither Python nor Node is a stack
-  option** — Node.js and the latest **Python 3**, **uv** (Astral's Python
-  package/tool manager), and
-  **Graphify** (`graphifyy`, the knowledge-graph CLI skill; installed via
-  `uv tool install "graphifyy[…extras]"` with all optional extras except the
-  region/DB/niche-specific chinese/azure/bedrock/falkordb/neo4j/leiden/dm/pascal) are baked into
-  every OS base image by default; each selected agent CLI registers Graphify with
-  itself at workspace START, once per project (`graphify install --project
-  [--platform <cli>]` in `~/project` — not at image build, since it writes
-  project-scoped files); and each workspace gets a per-project **`.venv-msb`**
-  virtualenv created at start (see §7/§25)
+  option** — Node.js and the latest **Python 3** + **uv** (Astral's Python
+  package/tool manager) are baked into every OS base image by default.
+  **Graphify** (`graphifyy`, the knowledge-graph CLI skill) is NO LONGER baked into the
+  base — it is a selectable **AI tool** (`--tools graphify`, default on) installed via a
+  CONDITIONAL `tools/graphify/` Dockerfile snippet (`uv tool install "graphifyy[…extras]"`
+  with all optional extras except the region/DB/niche-specific
+  chinese/azure/bedrock/falkordb/neo4j/leiden/dm/pascal) only when selected; when selected,
+  each agent CLI registers Graphify with itself at workspace START, once per project
+  (`graphify install --project [--platform <cli>]` in `~/project` — not at image build,
+  since it writes project-scoped files). Each workspace gets a per-project **`.venv-msb`**
+  virtualenv created at start regardless (see §7/§25)
 * `--graphify-model <ref>` — the **Ollama model Graphify uses** for its headless LLM
   backend, e.g. `qwen2.5-coder:7b`; optional (blank = none). On a terminal the wizard
   offers an optional model+tag select from the cached Ollama library; the chosen model
@@ -505,18 +505,25 @@ one command:
   the flag offers shell directory completion.
 * `--idle-timeout <dur>` — the microVM idle timeout (e.g. `24h`), written to
   `microsandbox.idle_timeout`.
-* `--caveman[=false]` — install the Caveman output-compression toolkit (default
-  `true`); `--caveman=false` skips it.
-* `--code-review-graph` — OPT-IN (default `false`): install code-review-graph
-  (`code-review-graph.com`, PyPI `code-review-graph`) and register it as an MCP server
-  with each installed, supported agent CLI at workspace start (`code-review-graph install
-  --platform <cli>` for opencode/claude-code/codex/gemini/copilot), then `build` the graph
-  and write its D3 visualization HTML. Written to `context.code_review_graph_enabled`.
-* `--codebase-memory` — OPT-IN (default `false`): install codebase-memory-mcp
-  (`github.com/DeusData/codebase-memory-mcp`) and register it as an MCP server with each
-  installed agent CLI at workspace start (`codebase-memory-mcp install`, which auto-detects
-  the CLIs). Ships an optional on-demand 3D graph UI (`codebase-memory-mcp --ui=true
-  --port=9749`). Written to `context.codebase_memory_enabled`.
+* `--tools <list>` — the per-project **AI tools** to install, a comma-separated
+  multi-select (like `--agents`) chosen from `caveman`, `graphify`, `code-review-graph`,
+  `codebase-memory-mcp`. Default (flag omitted): `caveman,graphify,code-review-graph`;
+  `--tools=""` selects none. An unknown value exits `2`. Each maps to a
+  `context.<tool>_enabled` bool. The tools:
+  * `caveman` — the Caveman output-compression toolkit, installed at workspace start.
+  * `graphify` — the Graphify knowledge-graph toolkit; baked into the image via a
+    CONDITIONAL `tools/graphify/` Dockerfile snippet (no longer in the OS base) and
+    registered per agent CLI at start (`graphify install --platform <cli>`).
+  * `code-review-graph` — install code-review-graph (`code-review-graph.com`, PyPI
+    `code-review-graph`) via a conditional snippet and register it as an MCP server with
+    each installed, supported agent CLI at start (`code-review-graph install --platform
+    <cli>` for opencode/claude-code/codex/gemini/copilot), then `build` the graph and write
+    its D3 visualization HTML.
+  * `codebase-memory-mcp` — install codebase-memory-mcp
+    (`github.com/DeusData/codebase-memory-mcp`) via a conditional snippet and register it
+    as an MCP server with each installed agent CLI at start (`codebase-memory-mcp install`,
+    auto-detecting the CLIs). Ships an optional on-demand 3D graph UI
+    (`codebase-memory-mcp --ui=true --port=9749`).
 
 On a terminal (with `--json` off) the wizard **always** runs, **pre-seeded** with
 any flags you passed — flags set the defaults rather than bypassing the UI. Under
@@ -578,8 +585,8 @@ Steps, in order:
    every workspace start (`applyShellChoice`): the managed agent-env/alias block
    is appended to both `~/.bashrc` and `~/.zshrc`, and choosing `zsh` `chsh`es
    the workspace user's login shell to zsh.
-3. **Agent CLIs** — **multi-select checkboxes**; `OpenCode` and `Pi` pre-checked
-   (both installed by default); choose any subset of `OpenCode`, `Pi`, `Omp`,
+3. **Agent CLIs** — **multi-select checkboxes**; `OpenCode` pre-checked
+   (installed by default); choose any subset of `OpenCode`, `Omp`,
    `Claude Code`, `Codex`, `Gemini`, `Copilot`, `OpenClaw`, `Hermes` (at least one).
    All connect to models through LiteLLM **except** `Copilot` (GitHub Copilot CLI),
    which is forced-OAuth / gateway-incapable and talks directly to GitHub.
@@ -588,7 +595,8 @@ Steps, in order:
 5. **Software stacks** — **multi-select checkboxes**; choose the language/tool
    stacks to install into the environment (`Go`, `Rust`, `Java`, `Maven`,
    `Deno` — the list is extensible, §25). **Neither Python nor Node is a stack** —
-   Node.js and Python 3, uv, and Graphify are baked into every base by default.
+   Node.js, Python 3 and uv are baked into every base by default (Graphify is now a
+   selectable AI tool, step 9).
    None pre-checked (a project
    may need nothing beyond the base image). Selected stacks are installed into the
    generated `.ai-platform/Dockerfile` and recorded in `profile.yaml`.
@@ -605,12 +613,16 @@ Steps, in order:
    rejected in place.
 8. **Idle timeout** — text input for the Microsandbox idle timeout (`--idle-timeout`,
    default 24h).
-9. **Graphify model** *(shown only when the Ollama library cache is available)* —
-   an **optional** single-select of an Ollama model + a tag select (blank = none),
-   mirroring the Models page. The choice is stored as `agent.graphify_model`, pulled
-   into the local Ollama store + registered in the gateway if absent, and routed
-   through the gateway as `ollama/<model>`. Also settable non-interactively via
-   `--graphify-model`.
+9. **AI tools** — **multi-select checkboxes** (like the agent-CLI list, not a screen
+   each): `caveman`, `graphify`, `code-review-graph`, `codebase-memory-mcp`. Pre-checked
+   with the default set (`caveman,graphify,code-review-graph`); pre-seeded from `--tools`.
+   Each is recorded as a `context.<tool>_enabled` bool.
+10. **Graphify model** *(shown only when `graphify` is selected in step 9 AND the Ollama
+   library cache is available)* — an **optional** single-select of an Ollama model + a tag
+   select (blank = none), mirroring the Models page. The choice is stored as
+   `agent.graphify_model`, pulled into the local Ollama store + registered in the gateway if
+   absent, and routed through the gateway as `ollama/<model>`. Also settable
+   non-interactively via `--graphify-model`.
 
 There is no separate confirm step — completing the last group (Enter) creates
 the project; **Abort** at any point cancels.
@@ -794,7 +806,7 @@ operation — use `ai stop` to pause a workspace and `ai start`/`ai restart` to
 * de-registers it from `config/projects.yaml`
 * **keeps the user's OTHER files** in the directory; `--purge` additionally
   removes the WHOLE project directory
-* the **per-CLI agent config folders** (`.opencode`/`.claude`/`.codex`/`.pi`/
+* the **per-CLI agent config folders** (`.opencode`/`.claude`/`.codex`/
   `.gemini`) and the `.venv-msb` virtualenv — which the platform wrote into the
   project dir at workspace start, outside `.ai-platform` — are removed too on a
   plain delete UNLESS kept with **`--keep-agent-config`** (or by answering the
@@ -910,7 +922,7 @@ the tmux session.
   session is opened with one atomic **`tmux new-session -A`** (create-or-attach;
   the daemonized server makes it persist after a detach + listed).
 * **`ai agent <cli>`** starts (or reattaches to) a **per-CLI** session named after
-  the CLI — `opencode`, `pi`, `omp`, `claude-code` (runs `claude`), `codex`, `gemini`,
+  the CLI — `opencode`, `omp`, `claude-code` (runs `claude`), `codex`, `gemini`,
   `copilot`, `openclaw`, `hermes` —
   so each agent has one durable session and several can run side by side. An
   **unknown `<cli>`** is exit `2` with the valid set listed.
@@ -1034,11 +1046,6 @@ user's other keys survive:
 * **opencode** → `<project>/.opencode/opencode.json` (`apiKey: "{env:AIP_GATEWAY_KEY}"`);
   the in-VM agent env file exports `OPENCODE_CONFIG` pointing opencode at this file. It
   carries the per-request Headroom knobs on every model.
-* **pi** → the GLOBAL in-VM `~/.pi/agent/models.json` (the path pi actually reads;
-  `apiKey: "$AIP_GATEWAY_KEY"`, written into the microVM via `Sandbox.WriteFile`, off host
-  disk — a project `.pi/models.json` is NOT read) + `<project>/.pi/settings.json` (default
-  provider + default model + skills/prompts resource paths). pi cannot inject per-request
-  fields, so it uses Headroom's server-side defaults.
 * **claude-code** → `<project>/.claude/settings.json` — an `env` block setting only
   `ANTHROPIC_BASE_URL` (the gateway root — LiteLLM's Anthropic-compatible surface, it
   appends `/v1/messages`); the bearer token stays in the exported `ANTHROPIC_AUTH_TOKEN`
@@ -1054,7 +1061,7 @@ user's other keys survive:
 
 **The scoped virtual key (and any real key) is NEVER written to host disk.** It lives
 ONLY in the in-VM agent env file `~/.config/aip/agent-env.sh` (`Sandbox.WriteFile`, sourced
-by every shell + agent session), which exports `AIP_GATEWAY_KEY` (opencode/pi/codex),
+by every shell + agent session), which exports `AIP_GATEWAY_KEY` (opencode/codex),
 `ANTHROPIC_AUTH_TOKEN` (claude-code), and `GEMINI_API_KEY` (gemini). The on-disk configs
 reference the key by env interpolation (`{env:}`/`$VAR`), codex via `env_key`, claude via
 the exported token — all keyless. A user's edits to the on-disk configs survive restart
@@ -1062,8 +1069,7 @@ the exported token — all keyless. A user's edits to the on-disk configs surviv
 skills,prompts,projects}` shared resource pool is symlinked into each installed CLI's
 per-project dir at start (repo-layout §12.1c). *(hardware bring-up: opencode honouring
 `.opencode/opencode.json` via `OPENCODE_CONFIG`; codex loading the trusted project config;
-pi reading its global `~/.pi/agent/models.json` + settings resource paths; the symlinks
-resolving in-VM — all not yet verified live.)*
+the symlinks resolving in-VM — all not yet verified live.)*
 
 ### In-workspace `refresh-models` — re-pull the model picker without restarting
 
@@ -1083,12 +1089,11 @@ It re-fetches the models the gateway currently **serves** (its DB-backed models)
 from the gateway's `/v1/models` endpoint — authenticated with the workspace's scoped
 virtual key — dedups + sorts them **exactly** as a fresh workspace start does, and
 rewrites the **opencode** PROJECT config
-(`/home/workspace/project/.opencode/opencode.json`) + **pi**'s global
-`~/.pi/agent/models.json` **in place, byte-identical** to the canonical
+(`/home/workspace/project/.opencode/opencode.json`) **in place, byte-identical** to the canonical
 config a fresh start produces — and **KEYLESS** (the `{env:}`/`$VAR` key refs are
 preserved; the fetched key authenticates the `/v1/models` call only, never entering the
 rewritten files). Restart the agent CLI afterwards to pick up the new list. (It rewrites
-the canonical opencode/pi configs only; any user deep-merge edits and the env-routed CLIs
+the canonical opencode config only; any user deep-merge edits and the env-routed CLIs
 — claude-code/codex/gemini, whose served model set is discovered at request time, not
 baked — are re-applied on the next workspace start.) It **degrades**: if the gateway is unreachable it leaves the
 existing configs **untouched** (it never wipes them to an empty list) and exits
@@ -1619,7 +1624,7 @@ The address is a **bare host or `host:port`** (NOT a URL). The default port is
 * `host:port` → that host and port.
 
 microVMs reach the gateway at `http://<host>:<port>/v1` (the `/v1` suffix opencode
-and pi require), and the workspace egress policy always allows `<host>:tcp:<port>`.
+requires), and the workspace egress policy always allows `<host>:tcp:<port>`.
 
 * `show`/`clear` take no arguments. `set` takes an **optional** address: on a
   terminal it always prompts (pre-seeded with any address passed); under `--json` /

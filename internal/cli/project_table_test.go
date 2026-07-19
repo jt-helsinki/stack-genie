@@ -13,14 +13,14 @@ import (
 // projectsResult.Human() renders the table headers and a sample row.
 func TestProjectsResultHuman(test *testing.T) {
 	result := projectsResult{Projects: []project.Entry{
-		{Name: "alpha", OS: "debian-trixie", Agents: []string{"opencode", "pi"}, Status: "running",
+		{Name: "alpha", OS: "debian-trixie", Agents: []string{"opencode", "omp"}, Status: "running",
 			ID: "aip-alpha", Created: "2026-06-20T00:00:00Z", LastStarted: "2026-06-21T00:00:00Z"},
 		{Name: "beta", Status: "none", ID: "aip-beta"},
 	}}
 	rendered := result.Human()
 	for _, want := range []string{
 		"NAME", "OS", "AGENTS", "STATUS", "ID", "CREATED", "LAST-STARTED",
-		"alpha", "debian-trixie", "opencode, pi", "running", "aip-alpha", "2026-06-20T00:00:00Z", "2026-06-21T00:00:00Z",
+		"alpha", "debian-trixie", "opencode, omp", "running", "aip-alpha", "2026-06-20T00:00:00Z", "2026-06-21T00:00:00Z",
 		"beta", "aip-beta",
 	} {
 		if !strings.Contains(rendered, want) {

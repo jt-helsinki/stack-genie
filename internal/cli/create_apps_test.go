@@ -133,7 +133,7 @@ func TestAgentCLIOptionsReflectSelectedAgents(test *testing.T) {
 }
 
 func TestNormalizeDefaultAgentCLI(test *testing.T) {
-	if got := normalizeDefaultAgentCLI("pi", []string{"opencode", "pi"}); got != "pi" {
+	if got := normalizeDefaultAgentCLI("omp", []string{"opencode", "omp"}); got != "omp" {
 		test.Fatalf("valid default changed to %q", got)
 	}
 	if got := normalizeDefaultAgentCLI("opencode", []string{"codex", "gemini"}); got != "codex" {

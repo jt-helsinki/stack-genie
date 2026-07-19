@@ -23,12 +23,12 @@ func SupportedStacks() []string {
 	return []string{"go", "rust", "java", "maven", "deno"}
 }
 
-// SupportedAgentCLIs are the agent CLIs installable into a workspace (opencode + pi are
-// the defaults). copilot (GitHub Copilot CLI) is OAuth-only / gateway-incapable — see
-// config.ForcedOAuthCLIs. openclaw + hermes are gateway/api-key agents like opencode/pi/omp
+// SupportedAgentCLIs are the agent CLIs installable into a workspace (opencode is the
+// default). copilot (GitHub Copilot CLI) is OAuth-only / gateway-incapable — see
+// config.ForcedOAuthCLIs. openclaw + hermes are gateway/api-key agents like opencode/omp
 // (always route through the gateway, never OAuth).
 func SupportedAgentCLIs() []string {
-	return []string{"opencode", "pi", "omp", "claude-code", "codex", "gemini", "copilot", "openclaw", "hermes"}
+	return []string{"opencode", "omp", "claude-code", "codex", "gemini", "copilot", "openclaw", "hermes"}
 }
 
 // SupportedApps are the opt-in in-VM AI applications (default none).
@@ -51,6 +51,40 @@ func SplitAgentsAndApps(selected []string) (agentCLIs, appKeys []string) {
 		}
 	}
 	return agentCLIs, appKeys
+}
+
+// AI-tool keys for the "AI tools" multi-select (like the agent-CLI list): the
+// per-project code/context tooling installed at workspace start. Values match the
+// config.yaml context flags and, for the image-baked ones, the tools/<key> Dockerfile
+// snippet name.
+const (
+	AIToolCaveman         = "caveman"
+	AIToolGraphify        = "graphify"
+	AIToolCodeReviewGraph = "code-review-graph"
+	AIToolCodebaseMemory  = "codebase-memory-mcp"
+)
+
+// SupportedAITools are the per-project AI tools the user picks from one multi-select
+// (mirroring the agent-CLI list) at `ai create`, instead of a screen/flag each. Order is
+// the display order.
+func SupportedAITools() []string {
+	return []string{AIToolCaveman, AIToolGraphify, AIToolCodeReviewGraph, AIToolCodebaseMemory}
+}
+
+// DefaultAITools are the tools pre-selected when the user gives no --tools flag (and the
+// wizard's initial checkboxes): caveman + graphify + code-review-graph on, codebase-memory
+// off.
+func DefaultAITools() []string {
+	return []string{AIToolCaveman, AIToolGraphify, AIToolCodeReviewGraph}
+}
+
+// SplitAITools reports, from a selected AI-tools list, whether each tool is enabled. Used
+// by both create wizards to set the project.Spec bool flags from one selection.
+func SplitAITools(tools []string) (caveman, graphify, codeReviewGraph, codebaseMemory bool) {
+	return slices.Contains(tools, AIToolCaveman),
+		slices.Contains(tools, AIToolGraphify),
+		slices.Contains(tools, AIToolCodeReviewGraph),
+		slices.Contains(tools, AIToolCodebaseMemory)
 }
 
 // SupportedShells are the interactive shells a workspace can default to. bash is the

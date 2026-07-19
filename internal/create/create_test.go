@@ -27,7 +27,7 @@ func TestExecuteHappyPath(test *testing.T) {
 		Name:        "my-app",
 		OS:          SupportedOSes()[0],
 		Stacks:      []string{SupportedStacks()[0]},
-		AgentCLIs:   []string{"opencode", "pi"},
+		AgentCLIs:   []string{"opencode", "omp"},
 		DefaultTool: "opencode",
 		Root:        root,
 	}
@@ -47,8 +47,8 @@ func TestExecuteHappyPath(test *testing.T) {
 	if result.Name != "my-app" || result.Root != root || result.OS != spec.OS {
 		test.Fatalf("Result = %+v, want name=my-app root=%q os=%q", result, root, spec.OS)
 	}
-	if len(result.Tools) != 2 || result.Tools[0] != "opencode" || result.Tools[1] != "pi" {
-		test.Fatalf("Result.Tools = %v, want [opencode pi]", result.Tools)
+	if len(result.Tools) != 2 || result.Tools[0] != "opencode" || result.Tools[1] != "omp" {
+		test.Fatalf("Result.Tools = %v, want [opencode omp]", result.Tools)
 	}
 	if len(result.Stacks) != 1 || result.Stacks[0] != SupportedStacks()[0] {
 		test.Fatalf("Result.Stacks = %v, want [%s]", result.Stacks, SupportedStacks()[0])
@@ -116,7 +116,7 @@ func TestExecutePersistsShellChoice(test *testing.T) {
 			spec := project.Spec{
 				Name:        "shell-app",
 				OS:          SupportedOSes()[0],
-				AgentCLIs:   []string{"opencode", "pi"},
+				AgentCLIs:   []string{"opencode", "omp"},
 				DefaultTool: "opencode",
 				Shell:       tc.shell,
 				Root:        root,
@@ -152,7 +152,7 @@ func TestExecutePersistsCavemanChoice(test *testing.T) {
 			spec := project.Spec{
 				Name:           "caveman-app",
 				OS:             SupportedOSes()[0],
-				AgentCLIs:      []string{"opencode", "pi"},
+				AgentCLIs:      []string{"opencode", "omp"},
 				DefaultTool:    "opencode",
 				Root:           root,
 				CavemanEnabled: tc.enabled,
@@ -195,7 +195,7 @@ func TestExecutePersistsCodeGraphAndMemoryChoices(test *testing.T) {
 			spec := project.Spec{
 				Name:                   "tools-app",
 				OS:                     SupportedOSes()[0],
-				AgentCLIs:              []string{"opencode", "pi"},
+				AgentCLIs:              []string{"opencode", "omp"},
 				DefaultTool:            "opencode",
 				Root:                   root,
 				CodeReviewGraphEnabled: tc.codeReview,
@@ -213,6 +213,49 @@ func TestExecutePersistsCodeGraphAndMemoryChoices(test *testing.T) {
 			}
 			if got := projectConfig.Context.CodebaseMemoryEnabledOrDefault(); got != tc.codeMemory {
 				test.Errorf("CodebaseMemoryEnabledOrDefault = %v, want %v", got, tc.codeMemory)
+			}
+		})
+	}
+}
+
+// TestExecutePersistsGraphifyChoice verifies that the Graphify AI-tool toggle flows
+// through project.Spec → Scaffold → config.yaml (context.graphify_enabled) AND controls
+// whether the graphify install lands in the scaffolded Dockerfile (conditional snippet,
+// no longer baked into the base).
+func TestExecutePersistsGraphifyChoice(test *testing.T) {
+	for _, enabled := range []bool{true, false} {
+		name := "graphify-off"
+		if enabled {
+			name = "graphify-on"
+		}
+		test.Run(name, func(test *testing.T) {
+			test.Setenv("HOME", test.TempDir())
+			root := filepath.Join(test.TempDir(), "location")
+			spec := project.Spec{
+				Name:            "g-app",
+				OS:              SupportedOSes()[0],
+				AgentCLIs:       []string{"opencode", "omp"},
+				DefaultTool:     "opencode",
+				Root:            root,
+				GraphifyEnabled: enabled,
+			}
+			if _, _, err := Execute(spec, "2026-07-05T00:00:00Z", nil); err != nil {
+				test.Fatalf("Execute: %v", err)
+			}
+			projectConfig, err := config.LoadProjectConfig(root)
+			if err != nil {
+				test.Fatalf("LoadProjectConfig: %v", err)
+			}
+			if got := projectConfig.Context.GraphifyEnabledOrDefault(); got != enabled {
+				test.Errorf("GraphifyEnabledOrDefault = %v, want %v", got, enabled)
+			}
+			dockerfile, err := os.ReadFile(filepath.Join(root, ".ai-platform", "Dockerfile"))
+			if err != nil {
+				test.Fatalf("read Dockerfile: %v", err)
+			}
+			hasGraphify := strings.Contains(string(dockerfile), "graphifyy[")
+			if hasGraphify != enabled {
+				test.Errorf("Dockerfile contains graphify install = %v, want %v", hasGraphify, enabled)
 			}
 		})
 	}
@@ -427,9 +470,9 @@ func TestSupportedAgentCLIsIncludesOpenClawAndHermes(test *testing.T) {
 // TestSplitAgentsAndApps verifies the combined agents+apps wizard selection splits into
 // the two known sets regardless of selection order, dropping unknown values.
 func TestSplitAgentsAndApps(test *testing.T) {
-	agentCLIs, appKeys := SplitAgentsAndApps([]string{"anythingllm", "opencode", "openwebui", "pi", "bogus"})
-	if strings.Join(agentCLIs, ",") != "opencode,pi" {
-		test.Errorf("agent CLIs = %v, want [opencode pi]", agentCLIs)
+	agentCLIs, appKeys := SplitAgentsAndApps([]string{"anythingllm", "opencode", "openwebui", "omp", "bogus"})
+	if strings.Join(agentCLIs, ",") != "opencode,omp" {
+		test.Errorf("agent CLIs = %v, want [opencode omp]", agentCLIs)
 	}
 	if strings.Join(appKeys, ",") != "anythingllm,openwebui" {
 		test.Errorf("app keys = %v, want [anythingllm openwebui]", appKeys)

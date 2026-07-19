@@ -372,7 +372,7 @@ func TestRegisterCavemanRespectsToggle(test *testing.T) {
 	}{
 		{name: "disabled skips install", cavemanCfg: &disabled, tools: []string{"opencode"}, wantInstall: false},
 		{name: "enabled with detectable CLI installs", cavemanCfg: &enabled, tools: []string{"opencode"}, wantInstall: true},
-		{name: "enabled without detectable CLI skips", cavemanCfg: &enabled, tools: []string{"pi"}, wantInstall: false},
+		{name: "enabled without detectable CLI skips", cavemanCfg: &enabled, tools: []string{"omp"}, wantInstall: false},
 	} {
 		test.Run(tc.name, func(test *testing.T) {
 			sandbox := &fakeSandbox{}
@@ -419,8 +419,8 @@ func TestRegisterCavemanScript(test *testing.T) {
 	manager := newManager(&fakeBuilder{}, sandbox)
 	enabled := true
 	projectConfig := &config.Config{
-		// Two detectable CLIs → two --only flags; pi is NOT detectable (shared pool only).
-		Agent:   config.AgentConfig{Tools: []string{"opencode", "claude-code", "pi"}},
+		// Two detectable CLIs → two --only flags; omp is NOT detectable (shared pool only).
+		Agent:   config.AgentConfig{Tools: []string{"opencode", "claude-code", "omp"}},
 		Context: config.ContextConfig{CavemanEnabled: &enabled},
 	}
 	manager.registerCaveman("aip-app", projectConfig)
@@ -448,12 +448,12 @@ func TestRegisterCavemanScript(test *testing.T) {
 	if !strings.Contains(script, "node bin/install.js --non-interactive --with-hooks") {
 		test.Errorf("script must run the local installer: %q", script)
 	}
-	// Both detectable CLIs mapped to --only tokens; pi absent.
+	// Both detectable CLIs mapped to --only tokens; omp absent.
 	if !strings.Contains(script, "--only opencode") || !strings.Contains(script, "--only claude") {
 		test.Errorf("script missing per-CLI --only flags: %q", script)
 	}
-	if strings.Contains(script, "--only pi") {
-		test.Errorf("pi is not caveman-detectable and must not get an --only flag: %q", script)
+	if strings.Contains(script, "--only omp") {
+		test.Errorf("omp is not caveman-detectable and must not get an --only flag: %q", script)
 	}
 	// Marker is gated on SKILL.md landing in the shared pool, and only touched after
 	// the install succeeded (installed exit code checked, chained with &&).
@@ -531,7 +531,7 @@ func TestRegisterCodeReviewGraphOptIn(test *testing.T) {
 		{name: "unset (nil) is opt-out", cfg: nil, tools: []string{"opencode"}, wantInstall: false},
 		{name: "explicit false skips", cfg: &disabled, tools: []string{"opencode"}, wantInstall: false},
 		{name: "enabled with supported CLI installs", cfg: &enabled, tools: []string{"opencode"}, wantInstall: true},
-		{name: "enabled but only unsupported CLIs skips", cfg: &enabled, tools: []string{"pi", "omp"}, wantInstall: false},
+		{name: "enabled but only unsupported CLIs skips", cfg: &enabled, tools: []string{"omp"}, wantInstall: false},
 	} {
 		test.Run(tc.name, func(test *testing.T) {
 			sandbox := &fakeSandbox{}
@@ -558,8 +558,8 @@ func TestRegisterCodeReviewGraphScript(test *testing.T) {
 	manager := newManager(&fakeBuilder{}, sandbox)
 	enabled := true
 	projectConfig := &config.Config{
-		// opencode + gemini are supported (→ opencode / gemini-cli tokens); pi is not.
-		Agent:   config.AgentConfig{Tools: []string{"opencode", "gemini", "pi"}},
+		// opencode + gemini are supported (→ opencode / gemini-cli tokens); omp is not.
+		Agent:   config.AgentConfig{Tools: []string{"opencode", "gemini", "omp"}},
 		Context: config.ContextConfig{CodeReviewGraphEnabled: &enabled},
 	}
 	manager.registerCodeReviewGraph("aip-app", projectConfig)
@@ -577,8 +577,8 @@ func TestRegisterCodeReviewGraphScript(test *testing.T) {
 	if !strings.Contains(script, "code-review-graph install --platform gemini-cli") {
 		test.Errorf("gemini must map to --platform gemini-cli: %q", script)
 	}
-	if strings.Contains(script, "--platform pi") {
-		test.Errorf("pi is not a code-review-graph platform and must be skipped: %q", script)
+	if strings.Contains(script, "--platform omp") {
+		test.Errorf("omp is not a code-review-graph platform and must be skipped: %q", script)
 	}
 	if !strings.Contains(script, "code-review-graph build") || !strings.Contains(script, "code-review-graph visualize") {
 		test.Errorf("script must build the graph and write the visualization: %q", script)
@@ -671,9 +671,8 @@ func TestStartBuildsAndRecordsStartedHandle(test *testing.T) {
 			"app", minter.deleteCalls, minter.deletedAlias)
 	}
 	openCodeConfig := readProjectConfig(test, root, ".opencode", "opencode.json")
-	piConfig := readGuestFile(test, sandbox, agentcfg.PiGlobalModelsGuest)
 	// The project configs are KEYLESS (they reference the key via env interpolation,
-	// not the literal value); pi must not carry the per-request Headroom knobs.
+	// not the literal value).
 	if !strings.Contains(openCodeConfig, agentcfg.OpenCodeAPIKeyRef) {
 		test.Error("opencode config is missing the env key-ref")
 	}
@@ -682,9 +681,6 @@ func TestStartBuildsAndRecordsStartedHandle(test *testing.T) {
 	}
 	if !strings.Contains(openCodeConfig, "headroom_keep_turns") {
 		test.Error("opencode config is missing the Headroom knobs")
-	}
-	if strings.Contains(piConfig, "headroom_keep_turns") {
-		test.Error("pi config must not carry the Headroom knobs")
 	}
 	if handle.ID != "aip-app" || handle.Status != state.StatusStarted {
 		test.Fatalf("handle: %+v", handle)
@@ -812,11 +808,6 @@ func TestStartRoutesAllFiveAgentCLIs(test *testing.T) {
 	if !strings.Contains(opencode, agentcfg.OpenCodeAPIKeyRef) || !strings.Contains(opencode, "host.microsandbox.internal:18787/v1") {
 		test.Errorf("opencode project config missing key-ref/baseURL:\n%s", opencode)
 	}
-	// pi reads the GLOBAL ~/.pi/agent/models.json (written into the VM), not a host file.
-	pi := readGuestFile(test, sandbox, agentcfg.PiGlobalModelsGuest)
-	if !strings.Contains(pi, agentcfg.PiAPIKeyRef) {
-		test.Errorf("pi global models config missing key ref:\n%s", pi)
-	}
 	claude := readProjectConfig(test, root, ".claude", "settings.json")
 	if !strings.Contains(claude, "ANTHROPIC_BASE_URL") || !strings.Contains(claude, "host.microsandbox.internal:18787") {
 		test.Errorf("claude settings missing the base-URL env block:\n%s", claude)
@@ -903,7 +894,7 @@ func TestStartAppliesZshLoginShell(test *testing.T) {
 	// OAUTH so it (a Headroom-wrappable CLI bypassing the gateway) gets a wrap alias.
 	rootZsh := seedProject(test, "zapp")
 	if err := config.WriteProject(rootZsh, &config.Config{
-		Agent:     config.AgentConfig{Tools: []string{"opencode", "codex", "pi"}, AuthModes: map[string]string{"codex": "oauth"}},
+		Agent:     config.AgentConfig{Tools: []string{"opencode", "codex"}, AuthModes: map[string]string{"codex": "oauth"}},
 		Workspace: config.WorkspaceConfig{Shell: "zsh"},
 	}); err != nil {
 		test.Fatal(err)
@@ -917,16 +908,13 @@ func TestStartAppliesZshLoginShell(test *testing.T) {
 		test.Errorf("zsh workspace must chsh the login shell to zsh:\n%v", sandboxZsh.execRootArgv)
 	}
 	// Only OAUTH-mode wrappable CLIs get an alias: codex (oauth) does; opencode (gateway
-	// only, never oauth) and pi (api-key + not wrappable) do not.
+	// only, never oauth) does not.
 	aliases := readGuestFile(test, sandboxZsh, shellAliasesGuestPath)
 	if !strings.Contains(aliases, "alias codex='headroom wrap codex'") {
 		test.Errorf("oauth codex must be Headroom-wrap aliased:\n%s", aliases)
 	}
 	if strings.Contains(aliases, "alias opencode=") {
 		test.Errorf("api-key/gateway opencode must NOT be aliased:\n%s", aliases)
-	}
-	if strings.Contains(aliases, "alias pi=") {
-		test.Errorf("pi is not Headroom-wrappable and must not be aliased:\n%s", aliases)
 	}
 
 	// bash (default, unset shell): no chsh — the shell stays bash.
@@ -944,7 +932,7 @@ func TestStartAppliesZshLoginShell(test *testing.T) {
 // TestStartOAuthAgentBypassesGateway verifies an OAuTH-mode claude-code: its gateway env
 // is omitted (so its own subscription login wins), its cred dir ~/.claude is symlinked to
 // /persist, it gets the `headroom wrap claude` alias, and the no-key-on-host invariant
-// holds. api-key agents (opencode/pi) keep their gateway env.
+// holds. api-key agents (opencode) keep their gateway env.
 func TestStartOAuthAgentBypassesGateway(test *testing.T) {
 	root := seedProject(test, "app")
 	if err := config.WriteProject(root, &config.Config{
@@ -964,7 +952,7 @@ func TestStartOAuthAgentBypassesGateway(test *testing.T) {
 	const key = "sk-fake-workspace-key"
 
 	// (1) The agent env file must NOT carry claude-code's gateway env (oauth), but MUST
-	// keep gemini's (api-key) and the shared AIP_GATEWAY_KEY (opencode/pi).
+	// keep gemini's (api-key) and the shared AIP_GATEWAY_KEY (opencode).
 	envText := readGuestFile(test, sandbox, agentEnvGuestPath)
 	for _, absent := range []string{"ANTHROPIC_BASE_URL", "ANTHROPIC_AUTH_TOKEN"} {
 		if strings.Contains(envText, absent) {
@@ -1143,7 +1131,7 @@ func readProjectConfig(test *testing.T, root string, parts ...string) string {
 }
 
 // readGuestFile reads a file written into the microVM via Sandbox.WriteFile (recorded
-// by the fake). pi's models config lives at the GLOBAL in-VM path pi reads, not on host.
+// by the fake). Some CLIs' configs live at a GLOBAL in-VM path they read, not on host.
 func readGuestFile(test *testing.T, sandbox *fakeSandbox, guestPath string) string {
 	test.Helper()
 	content, ok := sandbox.written[guestPath]
@@ -1172,7 +1160,7 @@ func runtimeExecRootCalls(sandbox *fakeSandbox) [][]string {
 func assertProjectConfigsKeyless(test *testing.T, root, key string) {
 	test.Helper()
 	for _, parts := range [][]string{
-		{".opencode", "opencode.json"}, {".pi", "settings.json"},
+		{".opencode", "opencode.json"},
 		{".claude", "settings.json"}, {".codex", "config.toml"},
 	} {
 		content, err := os.ReadFile(filepath.Join(append([]string{root}, parts...)...))
@@ -2089,10 +2077,9 @@ func TestStartPickerIsServedModels(test *testing.T) {
 		test.Fatal(err)
 	}
 
-	// opencode's config is on host; pi's is at the GLOBAL in-VM path pi reads.
+	// opencode's config is on host.
 	configs := map[string]string{
 		"opencode": readProjectConfig(test, root, ".opencode", "opencode.json"),
-		"pi":       readGuestFile(test, sandbox, agentcfg.PiGlobalModelsGuest),
 	}
 	for name, config := range configs {
 		// Every served model is present.
@@ -2117,8 +2104,8 @@ func TestStartPickerIsServedModels(test *testing.T) {
 
 // TestStartDefaultsToSetupModel verifies the model chosen at workspace setup (stored as
 // agent.graphify_model) becomes the DEFAULT model for every agent CLI — registered as
-// ollama/<model> in the gateway. opencode gets a top-level model, pi's settings get a
-// defaultModel, and codex gets a model line.
+// ollama/<model> in the gateway. opencode gets a top-level model, and codex gets a
+// model line.
 func TestStartDefaultsToSetupModel(test *testing.T) {
 	root := seedProject(test, "app")
 	if err := config.WriteProject(root, &config.Config{Agent: config.AgentConfig{GraphifyModel: "qwen2.5-coder:7b"}}); err != nil {
@@ -2134,10 +2121,6 @@ func TestStartDefaultsToSetupModel(test *testing.T) {
 	openCode := readProjectConfig(test, root, ".opencode", "opencode.json")
 	if !strings.Contains(openCode, `"aip-gateway/ollama/qwen2.5-coder:7b"`) {
 		test.Errorf("opencode config missing the setup default model:\n%s", openCode)
-	}
-	piSettings := readProjectConfig(test, root, ".pi", "settings.json")
-	if !strings.Contains(piSettings, `"ollama/qwen2.5-coder:7b"`) {
-		test.Errorf("pi settings missing the setup default model:\n%s", piSettings)
 	}
 	codex := readProjectConfig(test, root, ".codex", "config.toml")
 	if !strings.Contains(codex, `ollama/qwen2.5-coder:7b`) {
@@ -2171,13 +2154,10 @@ func TestStartDropsSeededDefaultOnSecondStart(test *testing.T) {
 	if second := readProjectConfig(test, root, ".opencode", "opencode.json"); strings.Contains(second, `"model":`) {
 		test.Errorf("second start must not pin a default model (remember last-used):\n%s", second)
 	}
-	if piSettings := readProjectConfig(test, root, ".pi", "settings.json"); strings.Contains(piSettings, "defaultModel") {
-		test.Errorf("second start must drop pi's defaultModel:\n%s", piSettings)
-	}
 }
 
 // TestAttachRefreshesModelList verifies attaching a shell to an ALREADY-RUNNING workspace
-// refreshes the opencode + pi served-model lists from the live gateway (so a model added
+// refreshes the opencode served-model list from the live gateway (so a model added
 // via `ai models`/`ai keys` since the last start is visible without a restart).
 func TestAttachRefreshesModelList(test *testing.T) {
 	root := seedStartedWorkspace(test, "app")
@@ -2190,9 +2170,6 @@ func TestAttachRefreshesModelList(test *testing.T) {
 	}
 	if openCode := readProjectConfig(test, root, ".opencode", "opencode.json"); !strings.Contains(openCode, "ollama/fresh:latest") {
 		test.Errorf("attach did not refresh the opencode model list:\n%s", openCode)
-	}
-	if pi := readGuestFile(test, sandbox, agentcfg.PiGlobalModelsGuest); !strings.Contains(pi, "ollama/fresh:latest") {
-		test.Errorf("attach did not refresh the pi model list:\n%s", pi)
 	}
 	// The attach refresh must NOT rotate the scoped key (that would invalidate a running
 	// agent) — the list-only refresh mints no key.
@@ -2424,10 +2401,10 @@ func TestStartCreatesVenv(test *testing.T) {
 func TestStartRegistersGraphify(test *testing.T) {
 	root := seedProject(test, "app")
 	// The selected agent CLIs come from the project config.yaml (written by
-	// `ai create`); seed opencode + pi so registerGraphify has tools to register.
+	// `ai create`); seed opencode + codex so registerGraphify has tools to register.
 	if err := config.WriteProject(root, &config.Config{
 		OS:    "debian-trixie",
-		Agent: config.AgentConfig{Tools: []string{"opencode", "pi"}, DefaultTool: "opencode"},
+		Agent: config.AgentConfig{Tools: []string{"opencode", "codex"}, DefaultTool: "opencode"},
 	}); err != nil {
 		test.Fatal(err)
 	}
@@ -2439,7 +2416,7 @@ func TestStartRegistersGraphify(test *testing.T) {
 	if _, err := manager.Start("app"); err != nil {
 		test.Fatal(err)
 	}
-	var sawOpencode, sawPi bool
+	var sawOpencode, sawCodex bool
 	for _, argv := range sandbox.allExecArgv {
 		joined := strings.Join(argv, " ")
 		if !strings.Contains(joined, "cd /home/workspace/project") {
@@ -2448,12 +2425,12 @@ func TestStartRegistersGraphify(test *testing.T) {
 		if strings.Contains(joined, "graphify install --project --platform opencode") {
 			sawOpencode = true
 		}
-		if strings.Contains(joined, "graphify install --project --platform pi") {
-			sawPi = true
+		if strings.Contains(joined, "graphify install --project --platform codex") {
+			sawCodex = true
 		}
 	}
-	if !sawOpencode || !sawPi {
-		test.Errorf("Start should register Graphify (--project) for opencode + pi in ~/project; execs: %v", sandbox.allExecArgv)
+	if !sawOpencode || !sawCodex {
+		test.Errorf("Start should register Graphify (--project) for opencode + codex in ~/project; execs: %v", sandbox.allExecArgv)
 	}
 }
 
@@ -2465,7 +2442,7 @@ func TestStartInstallsGraphifyGitHook(test *testing.T) {
 	root := seedProject(test, "app")
 	if err := config.WriteProject(root, &config.Config{
 		OS:    "debian-trixie",
-		Agent: config.AgentConfig{Tools: []string{"pi"}, DefaultTool: "pi"},
+		Agent: config.AgentConfig{Tools: []string{"opencode"}, DefaultTool: "opencode"},
 	}); err != nil {
 		test.Fatal(err)
 	}
@@ -2500,7 +2477,7 @@ func TestStartInitsGitRepoBeforeGraphify(test *testing.T) {
 	root := seedProject(test, "app")
 	if err := config.WriteProject(root, &config.Config{
 		OS:    "debian-trixie",
-		Agent: config.AgentConfig{Tools: []string{"pi"}, DefaultTool: "pi"},
+		Agent: config.AgentConfig{Tools: []string{"opencode"}, DefaultTool: "opencode"},
 	}); err != nil {
 		test.Fatal(err)
 	}
@@ -2562,12 +2539,12 @@ func TestStartInstallsGraphifyGitHookForNonPlatformCLIs(test *testing.T) {
 
 // TestStartRegistersCaveman verifies Start runs the real Caveman installer for each
 // caveman-detectable selected CLI (with --only tokens + --non-interactive --with-hooks),
-// then mirrors opencode's caveman dirs into the shared pool for pi/omp — all once-guarded.
+// then mirrors opencode's caveman dirs into the shared pool for omp — all once-guarded.
 func TestStartRegistersCaveman(test *testing.T) {
 	root := seedProject(test, "app")
 	if err := config.WriteProject(root, &config.Config{
 		OS:    "debian-trixie",
-		Agent: config.AgentConfig{Tools: []string{"opencode", "claude-code", "pi"}, DefaultTool: "opencode"},
+		Agent: config.AgentConfig{Tools: []string{"opencode", "claude-code", "omp"}, DefaultTool: "opencode"},
 	}); err != nil {
 		test.Fatal(err)
 	}
@@ -2589,27 +2566,27 @@ func TestStartRegistersCaveman(test *testing.T) {
 		"git clone --depth 1 https://github.com/JuliusBrussee/caveman", // LOCAL clone (not curl|bash → npx)
 		"node bin/install.js",
 		"--non-interactive", "--with-hooks",
-		"--only opencode", "--only claude", // pi is NOT caveman-detectable → no --only
+		"--only opencode", "--only claude", // omp is NOT caveman-detectable → no --only
 		"skills/caveman/SKILL.md", // marker gated on the caveman skill landing in the pool
 		".caveman-installed",      // once-guard marker
-		`cp -a "$src/."`,          // pool mirror for pi/omp
+		`cp -a "$src/."`,          // pool mirror for omp
 	} {
 		if !strings.Contains(script, want) {
 			test.Errorf("caveman install script missing %q: %s", want, script)
 		}
 	}
-	if strings.Contains(script, "--only pi") {
-		test.Errorf("pi is not caveman-detectable and must not get an --only token: %s", script)
+	if strings.Contains(script, "--only omp") {
+		test.Errorf("omp is not caveman-detectable and must not get an --only token: %s", script)
 	}
 }
 
 // TestStartSkipsCavemanWhenNoDetectableCLI verifies that when only undetectable CLIs
-// (pi/omp) are selected, Start makes no Caveman network call at all.
+// (omp) are selected, Start makes no Caveman network call at all.
 func TestStartSkipsCavemanWhenNoDetectableCLI(test *testing.T) {
 	root := seedProject(test, "app")
 	if err := config.WriteProject(root, &config.Config{
 		OS:    "debian-trixie",
-		Agent: config.AgentConfig{Tools: []string{"pi", "omp"}, DefaultTool: "pi"},
+		Agent: config.AgentConfig{Tools: []string{"omp"}, DefaultTool: "omp"},
 	}); err != nil {
 		test.Fatal(err)
 	}
@@ -2633,7 +2610,7 @@ func TestStartLinksSharedResources(test *testing.T) {
 	root := seedProject(test, "app")
 	if err := config.WriteProject(root, &config.Config{
 		OS:    "debian-trixie",
-		Agent: config.AgentConfig{Tools: []string{"opencode", "claude-code", "pi", "gemini", "codex"}, DefaultTool: "opencode"},
+		Agent: config.AgentConfig{Tools: []string{"opencode", "claude-code", "gemini", "codex"}, DefaultTool: "opencode"},
 	}); err != nil {
 		test.Fatal(err)
 	}
@@ -2654,14 +2631,11 @@ func TestStartLinksSharedResources(test *testing.T) {
 	wantLinks := map[string]string{
 		".opencode/skills":   "../.ai-platform/skills",
 		".claude/skills":     "../.ai-platform/skills",
-		".pi/skills":         "../.ai-platform/skills",
 		".opencode/agents":   "../.ai-platform/agents",
 		".claude/agents":     "../.ai-platform/agents",
-		".pi/agents":         "../.ai-platform/agents",
 		".opencode/commands": "../.ai-platform/prompts",
 		".claude/commands":   "../.ai-platform/prompts",
 		".gemini/commands":   "../.ai-platform/prompts",
-		".pi/prompts":        "../.ai-platform/prompts",
 	}
 	for rel, wantTarget := range wantLinks {
 		got, err := os.Readlink(filepath.Join(root, filepath.FromSlash(rel)))
@@ -2681,13 +2655,6 @@ func TestStartLinksSharedResources(test *testing.T) {
 		}
 	}
 
-	// pi settings.json points its resource paths at the symlinked pools.
-	piSettings := readProjectConfig(test, root, ".pi", "settings.json")
-	for _, want := range []string{`"skills"`, `"prompts"`, `"defaultProvider"`} {
-		if !strings.Contains(piSettings, want) {
-			test.Errorf("pi settings.json missing %s:\n%s", want, piSettings)
-		}
-	}
 }
 
 // TestStartWiresOmpWhenSelected verifies selecting omp writes its keyless, discovery-based

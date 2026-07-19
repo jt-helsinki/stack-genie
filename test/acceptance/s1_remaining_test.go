@@ -115,7 +115,7 @@ func TestAgentCLISelectionReflected(test *testing.T) {
 }
 
 // TestAgentCLIDefaultSelection covers the §6.3/§3.1 default: a plain create
-// (no --agents) yields the default agent CLIs (opencode + pi).
+// (no --agents) yields the default agent CLI (opencode).
 func TestAgentCLIDefaultSelection(test *testing.T) {
 	harness := New(test)
 	harness.installTemplates(test)
@@ -126,8 +126,8 @@ func TestAgentCLIDefaultSelection(test *testing.T) {
 		Tools []string `json:"tools"`
 	}
 	created.dataInto(test, &createData)
-	if !equalStrings(createData.Tools, []string{"opencode", "pi"}) {
-		test.Fatalf("default create reported tools %v, want [opencode pi]", createData.Tools)
+	if !equalStrings(createData.Tools, []string{"opencode"}) {
+		test.Fatalf("default create reported tools %v, want [opencode]", createData.Tools)
 	}
 }
 

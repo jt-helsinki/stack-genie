@@ -73,7 +73,7 @@ func SetStrategy(projectRoot, strategy string) error {
 // the REAL Caveman toolkit (https://github.com/JuliusBrussee/caveman) at workspace
 // start via workspace.registerCaveman, which runs the upstream installer so each
 // detected CLI gets caveman's native skills/agents/commands + the opencode plugin,
-// claude hooks + statusline, and the gemini extension (pi/omp receive the skill via
+// claude hooks + statusline, and the gemini extension (omp receives the skill via
 // the shared .ai-platform pool). This level is advisory: the installed skill controls
 // its own intensity at runtime via `/caveman <level>`.
 func SetCavemanLevel(projectRoot, level string) error {

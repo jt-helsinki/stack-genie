@@ -12,7 +12,7 @@ import (
 // rather than a pseudo-terminal.
 
 // CreateProject creates a project with the default base OS (debian-trixie) and
-// the default agent CLIs (opencode, pi).
+// the default agent CLI (opencode).
 func (harness *Harness) CreateProject(test *testing.T, name string) (Envelope, int) {
 	return harness.CreateProjectWithOS(test, name, "debian-trixie")
 }
@@ -26,7 +26,7 @@ func (harness *Harness) CreateProjectWithOS(test *testing.T, name, osKey string)
 // CreateProjectFull creates a project pinning every input — base OS, agent CLIs
 // (--agents), and software stacks (--stacks) — so the §6.1/§6.3/§6.4 file-probe
 // tests can drive an exact selection non-interactively. Empty agents/stacks
-// slices fall back to the create command's own defaults (opencode,pi / none).
+// slices fall back to the create command's own defaults (opencode / none).
 func (harness *Harness) CreateProjectFull(test *testing.T, name, osKey string, agents, stacks []string) (Envelope, int) {
 	test.Helper()
 	args := []string{"create", name, "--os", osKey}

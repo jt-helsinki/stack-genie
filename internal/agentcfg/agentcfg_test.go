@@ -87,55 +87,6 @@ func TestOpenCodeConfigStructure(test *testing.T) {
 	}
 }
 
-func TestPiConfigStructure(test *testing.T) {
-	raw, err := PiConfig(testGateway, testKey, "gemma4", testModels)
-	if err != nil {
-		test.Fatal(err)
-	}
-	var document map[string]any
-	if err := json.Unmarshal(raw, &document); err != nil {
-		test.Fatalf("output is not valid JSON: %v", err)
-	}
-
-	provider := nested(test, document, "providers", ProviderID)
-	if provider["baseUrl"] != testGateway {
-		test.Errorf("baseUrl = %v, want %v", provider["baseUrl"], testGateway)
-	}
-	if provider["api"] != "openai-completions" {
-		test.Errorf("api = %v, want openai-completions", provider["api"])
-	}
-	if provider["apiKey"] != testKey {
-		test.Errorf("apiKey = %v, want %v", provider["apiKey"], testKey)
-	}
-
-	rawModels, ok := provider["models"].([]any)
-	if !ok {
-		test.Fatalf("models not an array: %v", provider["models"])
-	}
-	if len(rawModels) != len(testModels) {
-		test.Fatalf("models count = %d, want %d", len(rawModels), len(testModels))
-	}
-	for index, item := range rawModels {
-		entry, ok := item.(map[string]any)
-		if !ok {
-			test.Fatalf("model[%d] not an object: %v", index, item)
-		}
-		if entry["id"] != testModels[index] {
-			test.Errorf("model[%d] id = %v, want %v", index, entry["id"], testModels[index])
-		}
-		// pi CANNOT inject per-request body fields, so the Headroom knobs must be
-		// absent: pi falls back to Headroom's server-side defaults.
-		if _, present := entry["options"]; present {
-			test.Errorf("model[%d] must not carry per-request options: %v", index, entry["options"])
-		}
-	}
-
-	// The whole document must be free of the Headroom knobs for pi.
-	if strings.Contains(string(raw), "headroom_keep_turns") || strings.Contains(string(raw), "headroom_output_buffer_tokens") {
-		test.Errorf("pi config must not contain Headroom knobs:\n%s", raw)
-	}
-}
-
 func TestOpenClawConfigStructure(test *testing.T) {
 	raw, err := OpenClawConfig(testGateway, OpenClawAPIKeyRef, "gemma4", testModels)
 	if err != nil {
@@ -230,13 +181,6 @@ func TestConfigsAreIndented(test *testing.T) {
 	if !strings.Contains(string(openCode), "\n  ") {
 		test.Error("opencode config is not indented")
 	}
-	pi, err := PiConfig(testGateway, testKey, "gemma4", testModels)
-	if err != nil {
-		test.Fatal(err)
-	}
-	if !strings.Contains(string(pi), "\n  ") {
-		test.Error("pi config is not indented")
-	}
 }
 
 // TestProjectConfigsAreKeyless verifies the on-disk (host, project) per-CLI configs
@@ -248,16 +192,12 @@ func TestProjectConfigsAreKeyless(test *testing.T) {
 	if err != nil {
 		test.Fatal(err)
 	}
-	pi, err := PiConfig(testGateway, PiAPIKeyRef, "", testModels)
-	if err != nil {
-		test.Fatal(err)
-	}
 	claude, err := ClaudeSettings(testGateway)
 	if err != nil {
 		test.Fatal(err)
 	}
 	configs := map[string][]byte{
-		"opencode": openCode, "pi": pi, "codex": CodexConfig(testGateway, ""),
+		"opencode": openCode, "codex": CodexConfig(testGateway, ""),
 		"claude": claude, "codex-trust": CodexTrustConfig(),
 	}
 	for name, content := range configs {
@@ -265,14 +205,11 @@ func TestProjectConfigsAreKeyless(test *testing.T) {
 			test.Errorf("%s project config must be keyless:\n%s", name, text)
 		}
 	}
-	// opencode/pi reference the key via env interpolation, not a literal value.
+	// opencode references the key via env interpolation, not a literal value.
 	if !strings.Contains(string(openCode), OpenCodeAPIKeyRef) {
 		test.Errorf("opencode must reference the key via %s:\n%s", OpenCodeAPIKeyRef, openCode)
 	}
-	if !strings.Contains(string(pi), PiAPIKeyRef) {
-		test.Errorf("pi must reference the key via %s:\n%s", PiAPIKeyRef, pi)
-	}
-	// The gateway base URL is present in every config-file CLI (opencode/pi/codex keep
+	// The gateway base URL is present in every config-file CLI (opencode/codex keep
 	// /v1; claude carries the gateway ROOT in its env block).
 	for name, content := range configs {
 		if name == "codex-trust" {
@@ -281,43 +218,6 @@ func TestProjectConfigsAreKeyless(test *testing.T) {
 		if !strings.Contains(string(content), "host.microsandbox.internal:18787") {
 			test.Errorf("%s config missing the gateway base URL:\n%s", name, content)
 		}
-	}
-}
-
-// TestPiSettings verifies pi's per-project settings set the gateway default provider
-// and point the skills/prompts resource paths at the symlinked shared pools.
-func TestPiSettings(test *testing.T) {
-	settings, err := PiSettings("ollama/gemma4")
-	if err != nil {
-		test.Fatal(err)
-	}
-	var doc map[string]any
-	if err := json.Unmarshal(settings, &doc); err != nil {
-		test.Fatalf("pi settings not valid JSON: %v", err)
-	}
-	if doc["defaultProvider"] != ProviderID {
-		test.Errorf("defaultProvider = %v, want %s", doc["defaultProvider"], ProviderID)
-	}
-	if doc["defaultModel"] != "ollama/gemma4" {
-		test.Errorf("defaultModel = %v, want ollama/gemma4", doc["defaultModel"])
-	}
-	for _, key := range []string{"skills", "prompts"} {
-		paths, ok := doc[key].([]any)
-		if !ok || len(paths) == 0 {
-			test.Errorf("pi settings %q resource path missing: %v", key, doc[key])
-		}
-	}
-	// An empty default omits the key (no forced model — CLIs fall back to their own).
-	empty, err := PiSettings("")
-	if err != nil {
-		test.Fatal(err)
-	}
-	var emptyDoc map[string]any
-	if err := json.Unmarshal(empty, &emptyDoc); err != nil {
-		test.Fatal(err)
-	}
-	if _, present := emptyDoc["defaultModel"]; present {
-		test.Errorf("empty default should omit defaultModel, got %v", emptyDoc["defaultModel"])
 	}
 }
 
@@ -470,7 +370,7 @@ func TestAgentEnvScriptGraphify(test *testing.T) {
 
 // TestAgentEnvScriptOAuth verifies that an OAuTH-mode agent's gateway env is OMITTED so
 // its native login wins, while api-key agents keep theirs. AIP_GATEWAY_KEY is shared with
-// opencode/pi, so it is always exported.
+// opencode, so it is always exported.
 func TestAgentEnvScriptOAuth(test *testing.T) {
 	// claude-code + gemini in oauth: their gateway env must be gone.
 	oauth := string(AgentEnvScript(testGateway, testKey, "", map[string]bool{"claude-code": true, "gemini": true}))
@@ -479,9 +379,9 @@ func TestAgentEnvScriptOAuth(test *testing.T) {
 			test.Errorf("oauth agent env must NOT export %q:\n%s", absent, oauth)
 		}
 	}
-	// The shared gateway key (used by opencode/pi) is still exported.
+	// The shared gateway key (used by opencode) is still exported.
 	if !strings.Contains(oauth, "export AIP_GATEWAY_KEY='"+testKey+"'") {
-		test.Errorf("AIP_GATEWAY_KEY (shared with opencode/pi) must still be exported:\n%s", oauth)
+		test.Errorf("AIP_GATEWAY_KEY (shared with opencode) must still be exported:\n%s", oauth)
 	}
 
 	// api-key claude-code (empty/absent oauth set) keeps the ANTHROPIC_* exports.
@@ -652,7 +552,7 @@ func TestOmpConfigSeedThenRemember(test *testing.T) {
 
 // TestHeadroomWrapName pins the mapping from this platform's agent CLIs to Headroom's
 // fixed `wrap` tokens: claude-code→claude, codex→codex, opencode→opencode are wrappable;
-// pi, omp, and gemini are NOT (aliasing them would break at runtime).
+// omp and gemini are NOT (aliasing them would break at runtime).
 func TestHeadroomWrapName(test *testing.T) {
 	wrappable := map[string]string{
 		"claude-code": "claude",
@@ -666,7 +566,7 @@ func TestHeadroomWrapName(test *testing.T) {
 			test.Errorf("HeadroomWrapName(%q) = (%q, %v), want (%q, true)", cli, got, ok, want)
 		}
 	}
-	for _, cli := range []string{"pi", "omp", "gemini", "unknown", ""} {
+	for _, cli := range []string{"omp", "gemini", "unknown", ""} {
 		if got, ok := HeadroomWrapName(cli); ok {
 			test.Errorf("HeadroomWrapName(%q) = (%q, true), want ok=false (not Headroom-wrappable)", cli, got)
 		}
@@ -674,9 +574,9 @@ func TestHeadroomWrapName(test *testing.T) {
 }
 
 // TestShellAliases verifies the snippet aliases each wrappable installed CLI to
-// `headroom wrap <name>` and OMITS the non-wrappable ones (pi, omp, gemini).
+// `headroom wrap <name>` and OMITS the non-wrappable ones (omp, gemini).
 func TestShellAliases(test *testing.T) {
-	snippet := string(ShellAliases([]string{"opencode", "pi", "omp", "claude-code", "codex", "gemini"}))
+	snippet := string(ShellAliases([]string{"opencode", "omp", "claude-code", "codex", "gemini"}))
 	for _, want := range []string{
 		`alias claude='headroom wrap claude'`,
 		`alias codex='headroom wrap codex'`,
@@ -686,7 +586,7 @@ func TestShellAliases(test *testing.T) {
 			test.Errorf("ShellAliases missing %q:\n%s", want, snippet)
 		}
 	}
-	for _, absent := range []string{"alias pi=", "alias omp=", "alias gemini="} {
+	for _, absent := range []string{"alias omp=", "alias gemini="} {
 		if strings.Contains(snippet, absent) {
 			test.Errorf("ShellAliases must not alias a non-wrappable CLI (%q):\n%s", absent, snippet)
 		}

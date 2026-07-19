@@ -61,18 +61,16 @@ RUN dnf install -y 'dnf-command(config-manager)' \
 # persist via the overlay (arch §25, §26).
 RUN useradd --create-home --shell /bin/bash workspace \
  && echo 'workspace ALL=(ALL) NOPASSWD:ALL' > /etc/sudoers.d/workspace
-# uv + Graphify install onto the workspace user's PATH (~/.local/bin) below, so
-# each agent-CLI snippet can register Graphify with its assistant.
+# uv installs onto the workspace user's PATH (~/.local/bin) below; Graphify is
+# appended as a conditional tools/ snippet when selected at `ai create`.
 ENV PATH="/home/workspace/.local/bin:${PATH}"
 USER workspace
 WORKDIR /home/workspace
 
-# uv (Astral's Python package/tool manager) + Graphify — installed by default in
-# every workspace, for the WORKSPACE USER. Graphify (github.com/Graphify-Labs/graphify,
-# PyPI `graphifyy`) is a knowledge-graph skill for AI coding assistants; the optional
-# extras are bundled (all incl. mcp except the region/DB/niche-specific chinese, azure,
-# bedrock, falkordb, neo4j, leiden, dm, pascal). Each selected agent-CLI snippet then registers it via
-# `graphify install --platform …`. Verify the extras resolve on hardware bring-up.
+# uv (Astral's Python package/tool manager) — installed by default in every workspace,
+# for the WORKSPACE USER. Graphify (PyPI `graphifyy`) is NO LONGER baked here: it is an
+# opt-in tools/ snippet (context.graphify_enabled, default on) appended to the project
+# Dockerfile only when selected at `ai create`, then registered per agent CLI at start.
 # rtk (github.com/rtk-ai/rtk, "Rust Token Killer") is also installed for the workspace
 # user via its official install.sh — a prebuilt aarch64 Linux binary dropped in
 # ~/.local/bin (already on PATH; no root). It is a CLI proxy that compresses common
@@ -80,13 +78,12 @@ WORKDIR /home/workspace
 # by `rtk init`) shells out to `rtk`, so the binary must be on PATH — without it the
 # hook fails with `rtk: command not found` (exit 127). NB: rtk's crates.io name
 # collides with an unrelated package, so we use install.sh, never `cargo install rtk`.
-# The opt-in code-graph tools code-review-graph + codebase-memory-mcp are NOT baked here.
+# The opt-in tools graphify, code-review-graph + codebase-memory-mcp are NOT baked here.
 # They are appended to the project Dockerfile as CONDITIONAL snippets (see
 # internal/templates/files/tools/) only when selected at `ai create`, so an unselected
 # tool's installer never runs at build. They are registered with the installed agent CLIs
 # at workspace start (workspace.registerCodeReviewGraph / registerCodebaseMemory).
 RUN curl -LsSf https://astral.sh/uv/install.sh | sh \
- && uv tool install --no-cache "graphifyy[pdf,office,video,postgres,google,svg,sql,terraform,ollama,openai,gemini,anthropic,mcp]" \
  && uv tool install --no-cache "headroom-ai[proxy]" \
  && curl -fsSL https://raw.githubusercontent.com/rtk-ai/rtk/master/install.sh | sh \
  && rm -rf "$HOME/.cache/uv"

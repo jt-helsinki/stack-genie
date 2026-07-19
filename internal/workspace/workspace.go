@@ -81,7 +81,7 @@ const (
 
 // shellSessionName is the tmux session that backs the default interactive shell
 // (`ai shell` / `ai attach` with no session). Per-agent sessions are named after
-// the agent CLI (opencode, pi, …).
+// the agent CLI (opencode, omp, …).
 const shellSessionName = "shell"
 
 // workspaceWorkdir is the guest path the project source is mounted at and where
@@ -173,7 +173,7 @@ var ErrUnknownAgentCLI = errors.New("unknown agent CLI")
 // reattachable shell or agent CLI. The platform exposes these via `ai sessions`.
 type Session struct {
 	// Name is the tmux session name ("shell" for the default shell; the agent CLI
-	// name — opencode, pi, … — for an agent session).
+	// name — opencode, omp, … — for an agent session).
 	Name string `json:"name"`
 	// Attached is true when a client is currently attached to the session.
 	Attached bool `json:"attached"`
@@ -454,7 +454,7 @@ func (manager Manager) Start(project string) (*state.Workspace, error) {
 			_ = manager.Sandbox.Destroy(name)
 		}
 	}()
-	// Register the agent CLIs' provider config so opencode/pi inside the microVM
+	// Register the agent CLIs' provider config so opencode inside the microVM
 	// talk to the host Headroom proxy through a per-workspace scoped LiteLLM
 	// virtual key (arch §15, §17). The key flows host→VM only; it is never
 	// written to platform disk.
@@ -491,7 +491,7 @@ func (manager Manager) Start(project string) (*state.Workspace, error) {
 	manager.registerGraphify(name, projectConfig)
 	// Install the Caveman output-compression toolkit into each detected CLI (native
 	// skills/plugin/hooks/statusline/extension) and mirror its skills into the shared
-	// pool for pi/omp. Once-guarded, network-bound, best-effort — never fails the start.
+	// pool for omp. Once-guarded, network-bound, best-effort — never fails the start.
 	manager.registerCaveman(name, projectConfig)
 	// Install the opt-in code-graph / code-memory tools and register each as an MCP server
 	// with the installed agent CLIs. code-review-graph is DETACHED (its codebase `build`
@@ -529,8 +529,7 @@ func (manager Manager) Start(project string) (*state.Workspace, error) {
 // knobs), and writes the FINAL key-bearing config INTO the microVM (key host→VM
 // only — never to platform disk):
 //
-//   - opencode / pi: a merged JSON config file (the per-request Headroom knobs ride
-//     on opencode only; pi cannot inject per-request fields → Headroom defaults).
+//   - opencode: a merged JSON config file (the per-request Headroom knobs ride on it).
 //   - codex: a keyless ~/.codex/config.toml provider block (key via env_key).
 //   - claude-code / codex / gemini: the gateway env vars in the in-VM agent env
 //     file, sourced by every shell + agent session.
@@ -562,7 +561,7 @@ func (manager Manager) registerAgentProviders(name, project, root string, projec
 	// Per-agent auth mode: the OAuth-capable CLIs (claude-code/codex/gemini) set to
 	// "oauth" use their OWN subscription login and talk DIRECTLY to the provider,
 	// bypassing the gateway (and its firewall). Everything else (incl. api-key
-	// claude-code/codex/gemini and always opencode/pi/omp) routes through the gateway.
+	// claude-code/codex/gemini and always opencode/omp) routes through the gateway.
 	// oauthList preserves tool order (for the deterministic shell aliases); oauthSet is
 	// the lookup used to omit gateway env / pick the oauth config variants.
 	oauthList := oauthAgentList(projectConfig)
@@ -581,7 +580,7 @@ func (manager Manager) registerAgentProviders(name, project, root string, projec
 	// agent.graphify_model, registered in the gateway as ollama/<model>) is SEEDED as
 	// every CLI's default on the FIRST start only. A host marker under .ai-platform (same
 	// dir on host + in-VM) records that. On LATER starts we pass an empty default, which
-	// makes MergeOpenCodeConfig/MergePiSettings actively DROP the pinned model so the
+	// makes MergeOpenCodeConfig actively DROP the pinned model so the
 	// user's persisted /model choice wins (opencode ranks config "model" above last-used,
 	// so a stale pin would defeat remembering). No setup model → never seed.
 	setupModel := ""
@@ -599,22 +598,12 @@ func (manager Manager) registerAgentProviders(name, project, root string, projec
 	}
 
 	// Write the KEYLESS per-CLI provider configs into each CLI's DEFAULT location. The
-	// scoped virtual key is NEVER written here: opencode/pi reference it via {env:}/$VAR
+	// scoped virtual key is NEVER written here: opencode references it via {env:}
 	// interpolation, codex via env_key, claude via the exported ANTHROPIC_AUTH_TOKEN — the
-	// key lives ONLY in the in-VM agent env file below. opencode + pi carry the served-
+	// key lives ONLY in the in-VM agent env file below. opencode carries the served-
 	// model LIST (writeModelListConfigs — the same helper used to refresh it on attach);
 	// codex/gemini/claude carry no list (they name any served model per request).
 	if err := manager.writeModelListConfigs(name, root, gatewayURL, defaultModel, models, keepTurns, outputBufferTokens); err != nil {
-		return err
-	}
-	// pi settings (project-scoped, which pi DOES read): the gateway as default provider,
-	// the workspace default model, and skills/prompts resource paths pointing at the
-	// symlinked shared pools (linkSharedResources creates .pi/skills, .pi/prompts).
-	piSettings, err := agentcfg.MergePiSettings(readHostFileOrNil(projectConfigPath(root, ".pi", "settings.json")), defaultModel)
-	if err != nil {
-		return err
-	}
-	if err := writeHostFile(projectConfigPath(root, ".pi", "settings.json"), piSettings); err != nil {
 		return err
 	}
 
@@ -860,8 +849,7 @@ const codebaseMemoryInstallTimeout = 60 * time.Second
 // linkAgentStateDirs points the agent CLIs' mutable STATE directories at the persistent
 // overlay (/persist) so a CLI's per-project memory survives microVM restarts — the VM
 // home does NOT persist, so without this opencode forgets the last-used /model on every
-// restart. opencode persists under ~/.local/share/opencode (its XDG_DATA_HOME); pi under
-// ~/.pi (into which the served-models config is then written). /persist is root-owned, so
+// restart. opencode persists under ~/.local/share/opencode (its XDG_DATA_HOME). /persist is root-owned, so
 // the per-CLI dirs are created + handed to the workspace user as root, then symlinked in
 // as the workspace user. Best-effort: a failure just falls back to the ephemeral home.
 func (manager Manager) linkAgentStateDirs(name string, oauthAgents map[string]bool) {
@@ -871,7 +859,6 @@ func (manager Manager) linkAgentStateDirs(name string, oauthAgents map[string]bo
 	type stateLink struct{ home, key string }
 	links := []stateLink{
 		{"~/.local/share/opencode", "opencode"},
-		{"~/.pi", "pi"},
 		{"~/.omp", "omp"},
 		// openclaw + hermes keep their global config + state (last-used model, memory,
 		// skills) in ~/.openclaw and ~/.hermes; persist them so a restart remembers.
@@ -933,12 +920,12 @@ func oauthAgentList(projectConfig *config.Config) []string {
 
 // writeModelListConfigs writes the agent CLIs that carry a SERVED-MODEL LIST — opencode
 // (host project config: the list is REPLACED wholesale while all other user keys merge/
-// survive) and pi (its GLOBAL in-VM ~/.pi/agent/models.json, the path pi actually reads,
+// survive). openclaw's global config (its served-model list,
 // written whole). codex/gemini/claude carry NO list (they name any served model per
 // request), so they are not touched here. A defaultModel of "" pins no model and drops
 // any previously-seeded one (so a CLI's persisted last-used selection wins). When the
 // served list is EMPTY (gateway unreachable), the existing lists are LEFT UNTOUCHED —
-// opencode's merge preserves them and pi's whole-file write is skipped — so a transient
+// opencode's merge preserves them — so a transient
 // outage never wipes a good list. This is the shared refresh used at start AND on attach.
 func (manager Manager) writeModelListConfigs(name, root, gatewayURL, defaultModel string, models []string, keepTurns, outputBufferTokens int) error {
 	openCodeConfig, err := agentcfg.MergeOpenCodeConfig(
@@ -950,21 +937,14 @@ func (manager Manager) writeModelListConfigs(name, root, gatewayURL, defaultMode
 	if err := writeHostFile(projectConfigPath(root, ".opencode", "opencode.json"), openCodeConfig); err != nil {
 		return err
 	}
-	// pi + openclaw: whole-file managed GLOBAL configs enumerating the served models.
-	// Skip on an empty list so a transient gateway-down never wipes the in-VM lists.
+	// openclaw: whole-file managed GLOBAL config enumerating the served models.
+	// Skip on an empty list so a transient gateway-down never wipes the in-VM list.
 	if len(models) == 0 {
 		return nil
 	}
-	piModels, err := agentcfg.PiConfig(gatewayURL, agentcfg.PiAPIKeyRef, defaultModel, models)
-	if err != nil {
-		return err
-	}
-	if err := manager.Sandbox.WriteFile(name, agentcfg.PiGlobalModelsGuest, piModels); err != nil {
-		return err
-	}
-	// openclaw: aip-gateway provider with the served models enumerated (keyless). Same
-	// refresh contract as pi — rewritten at start and on attach so `ai models`/`ai keys`
-	// changes appear without a full restart.
+	// openclaw: aip-gateway provider with the served models enumerated (keyless).
+	// Rewritten at start and on attach so `ai models`/`ai keys` changes appear without a
+	// full restart.
 	openClawConfig, err := agentcfg.OpenClawConfig(gatewayURL, agentcfg.OpenClawAPIKeyRef, defaultModel, models)
 	if err != nil {
 		return err
@@ -972,7 +952,7 @@ func (manager Manager) writeModelListConfigs(name, root, gatewayURL, defaultMode
 	return manager.Sandbox.WriteFile(name, agentcfg.OpenClawConfigGuest, openClawConfig)
 }
 
-// refreshAgentModels re-writes the opencode + pi served-model LIST against the LIVE
+// refreshAgentModels re-writes the opencode served-model LIST against the LIVE
 // gateway for an already-running workspace, so a model added/removed since the last
 // start (via `ai models`/`ai keys`) becomes visible in the session about to open. It is
 // LIST-ONLY: it passes an empty default (no model is pinned — each CLI's persisted
@@ -1055,7 +1035,6 @@ var graphifyPlatformFlag = map[string]string{
 	"codex":       "codex",
 	"gemini":      "gemini",
 	"opencode":    "opencode",
-	"pi":          "pi",
 	"copilot":     "copilot",
 }
 
@@ -1071,59 +1050,60 @@ func (manager Manager) registerGraphify(name string, projectConfig *config.Confi
 	if projectConfig == nil {
 		return
 	}
+	// Graphify is an opt-in AI tool (context.graphify_enabled, default on when unset). When
+	// disabled its binary is NOT baked into the image, so its install/hook steps are skipped —
+	// but the git-init step still runs so every workspace stays git-backed regardless.
+	graphifyOn := projectConfig.Context.GraphifyEnabledOrDefault()
 	installs := make([]string, 0, len(projectConfig.Agent.Tools))
-	for _, cli := range projectConfig.Agent.Tools {
-		platform, known := graphifyPlatformFlag[cli]
-		if !known {
-			continue
+	if graphifyOn {
+		for _, cli := range projectConfig.Agent.Tools {
+			platform, known := graphifyPlatformFlag[cli]
+			if !known {
+				continue
+			}
+			install := "graphify install --project"
+			if platform != "" {
+				install += " --platform " + platform
+			}
+			installs = append(installs, install)
 		}
-		install := "graphify install --project"
-		if platform != "" {
-			install += " --platform " + platform
-		}
-		installs = append(installs, install)
 	}
-	// Three steps, run in ~/project in a single exec. The graphify binary is baked into
-	// every image, so we always attempt the exec (the `command -v` guard exits cleanly
-	// if it is somehow absent) — the hook step below must run for ANY project even when
-	// no graphify-platform CLI is selected (e.g. an omp/openclaw/hermes-only project), so
-	// we do NOT early-return on an empty install list.
-	//   1. `git init` — if the project is NOT already a valid git working tree, initialize
-	//      one, RIGHT BEFORE the graphify install so every workspace is git-backed and
-	//      step 3's hook always installs. Detection uses `git rev-parse
-	//      --is-inside-work-tree`, NOT `[ -d .git ]`: a valid repo can be a `.git`
-	//      DIRECTORY *or* a `.git` FILE (a gitlink — worktree/submodule), and a bare
-	//      `-d .git` test misses the file form. When rev-parse rejects the tree AND a
-	//      `.git` FILE is present, it is a DANGLING gitlink (points at an absent gitdir —
-	//      e.g. a submodule checkout without its superproject); remove just that file (it
-	//      references no reachable git data, so nothing is lost) so `git init` produces a
-	//      real standalone repo instead of following the dead pointer. A `.git` DIRECTORY
-	//      is never removed (a corrupt real repo is the user's to fix). This writes `.git`
-	//      into the bind-mounted project dir, so the host project becomes a git repo too —
-	//      intended.
-	//   2. `graphify install --project` per CLI — OVERWRITES its skill files each run, so
-	//      a marker (.graphify-installed) guards re-runs, keeping user edits from being
-	//      clobbered on every restart; the marker is touched only after all installs
-	//      succeed (a failure retries next start). Skipped entirely when no CLI needs it.
-	//   3. `graphify hook install` — installs Graphify's git hook. It runs on EVERY start
-	//      when the tree is a valid repo (step 1 makes it one). `hook install` is
-	//      idempotent (it rewrites the managed hook), so there is deliberately NO marker —
-	//      the hook is kept current on every container start.
-	// The install marker lives under the persistent .ai-platform dir. Best-effort.
+	// The steps below run in ~/project in a single exec, best-effort:
+	//   1. `git init` — ALWAYS (independent of Graphify): if the project is NOT already a
+	//      valid git working tree, initialize one so every workspace is git-backed. Detection
+	//      uses `git rev-parse --is-inside-work-tree`, NOT `[ -d .git ]`: a valid repo can be
+	//      a `.git` DIRECTORY *or* a `.git` FILE (a gitlink — worktree/submodule), and a bare
+	//      `-d .git` test misses the file form. When rev-parse rejects the tree AND a `.git`
+	//      FILE is present, it is a DANGLING gitlink (points at an absent gitdir — e.g. a
+	//      submodule checkout without its superproject); remove just that file (it references
+	//      no reachable git data, so nothing is lost) so `git init` produces a real standalone
+	//      repo instead of following the dead pointer. A `.git` DIRECTORY is never removed (a
+	//      corrupt real repo is the user's to fix). This writes `.git` into the bind-mounted
+	//      project dir, so the host project becomes a git repo too — intended.
+	//   2. `graphify install --project` per CLI (Graphify ON only) — OVERWRITES its skill
+	//      files each run, so a marker (.graphify-installed) guards re-runs, keeping user edits
+	//      from being clobbered on every restart; the marker is touched only after all installs
+	//      succeed (a failure retries next start). Skipped when no CLI needs it.
+	//   3. `graphify hook install` (Graphify ON only) — installs Graphify's git hook. It runs
+	//      on EVERY start when the tree is a valid repo (step 1 makes it one). `hook install`
+	//      is idempotent (it rewrites the managed hook), so there is deliberately NO marker.
+	// The install marker lives under the persistent .ai-platform dir.
 	installMarker := workspaceWorkdir + "/.ai-platform/.graphify-installed"
 	const gitPresent = "command -v git >/dev/null 2>&1"
 	const isRepo = "git rev-parse --is-inside-work-tree >/dev/null 2>&1"
+	const graphifyPresent = "command -v graphify >/dev/null 2>&1"
 	clauses := []string{
-		"command -v graphify >/dev/null 2>&1 || exit 0",
 		"cd " + workspaceWorkdir + " 2>/dev/null || exit 0",
 		"mkdir -p " + workspaceWorkdir + "/.ai-platform",
 		"if " + gitPresent + " && ! " + isRepo + "; then [ -f .git ] && rm -f .git; git init >/dev/null 2>&1; fi",
 	}
-	if len(installs) > 0 {
-		clauses = append(clauses,
-			"if [ ! -f "+installMarker+" ]; then "+strings.Join(installs, " && ")+" && touch "+installMarker+"; fi")
+	if graphifyOn {
+		if len(installs) > 0 {
+			clauses = append(clauses,
+				"if "+graphifyPresent+" && [ ! -f "+installMarker+" ]; then "+strings.Join(installs, " && ")+" && touch "+installMarker+"; fi")
+		}
+		clauses = append(clauses, "if "+graphifyPresent+" && "+gitPresent+" && "+isRepo+"; then graphify hook install; fi")
 	}
-	clauses = append(clauses, "if "+gitPresent+" && "+isRepo+"; then graphify hook install; fi")
 	script := strings.Join(clauses, "; ")
 	ctx, cancel := context.WithTimeout(context.Background(), graphifyInstallTimeout)
 	defer cancel()
@@ -1133,7 +1113,7 @@ func (manager Manager) registerGraphify(name string, projectConfig *config.Confi
 // cavemanOnlyAgent maps a selected agent CLI to Caveman's `install.sh --only <agent>`
 // token. Caveman AUTO-DETECTS these CLIs and installs its native skills/agents/commands
 // PLUS the CLI-native extras the shared pool cannot carry: the opencode plugin, claude
-// hooks + statusline, and the gemini extension. pi, omp and copilot are absent — Caveman
+// hooks + statusline, and the gemini extension. omp and copilot are absent — Caveman
 // cannot detect them, so they receive the skill via the shared pool (below) instead.
 var cavemanOnlyAgent = map[string]string{
 	"claude-code": "claude",
@@ -1153,7 +1133,7 @@ var cavemanOnlyAgent = map[string]string{
 // mirrors the caveman skill/agent/command dirs opencode received (its GLOBAL
 // ~/.config/opencode output — the richest plain-markdown copy) INTO the shared
 // <project>/.ai-platform/{skills,agents,prompts} pool, where linkSharedResources' symlinks
-// distribute them to pi + omp (which read skills ONLY from that pool and are NOT
+// distribute them to omp (which reads skills ONLY from that pool and is NOT
 // caveman-detectable). The same-content skills also re-appear for opencode/claude via the
 // pool symlinks — a harmless duplicate of identical files.
 //
@@ -1171,7 +1151,7 @@ func (manager Manager) registerCaveman(name string, projectConfig *config.Config
 		return
 	}
 	// Explicitly-enabled (chosen at create) vs the nil back-compat default. We surface
-	// warnings only for an EXPLICIT opt-in so pre-toggle pi/omp-only projects stay quiet.
+	// warnings only for an EXPLICIT opt-in so pre-toggle omp-only projects stay quiet.
 	explicit := projectConfig.Context.CavemanEnabled != nil && *projectConfig.Context.CavemanEnabled
 	only := make([]string, 0, len(projectConfig.Agent.Tools))
 	for _, cli := range projectConfig.Agent.Tools {
@@ -1182,7 +1162,7 @@ func (manager Manager) registerCaveman(name string, projectConfig *config.Config
 		// install it BLOCKS FOREVER; the accumulated hung installs then exhaust the msb
 		// agent-relay (the "msb exec is not responding" wedge seen at the Caveman step).
 		// gemini still receives Caveman's commands via the shared pool (prompts →
-		// .gemini/commands), exactly like pi/omp — so we lose only the native gemini
+		// .gemini/commands), exactly like omp — so we lose only the native gemini
 		// extension, not the skill itself. (Verified live: the hang is in gemini, not
 		// Caveman.)
 		if cli == "gemini" {
@@ -1193,7 +1173,7 @@ func (manager Manager) registerCaveman(name string, projectConfig *config.Config
 		}
 	}
 	// Caveman's installer natively integrates opencode/claude-code/codex (gemini is
-	// skipped above); pi/omp/gemini receive its skills/agents/commands via the shared
+	// skipped above); omp/gemini receive its skills/agents/commands via the shared
 	// pool. With none of the native CLIs selected there is nothing to install or mirror.
 	if len(only) == 0 {
 		if explicit {
@@ -1289,7 +1269,7 @@ func (manager Manager) registerCaveman(name string, projectConfig *config.Config
 // codeReviewGraphPlatformFlag maps a selected agent CLI to code-review-graph's
 // `install --platform <token>` value. code-review-graph writes each listed platform's
 // MCP config (and, where supported, hooks/skills). Only the CLIs code-review-graph
-// actually supports are present: pi, omp, openclaw and hermes are NOT among its
+// actually supports are present: omp, openclaw and hermes are NOT among its
 // platforms, so they receive no code-review-graph MCP registration (they still get its
 // analysis by pointing them at the same on-disk graph, but there is no per-CLI hook).
 var codeReviewGraphPlatformFlag = map[string]string{
@@ -1750,9 +1730,8 @@ var sharedResourceLinks = []sharedResourceLink{
 	{pool: "skills", perCLI: map[string]string{
 		"opencode":    ".opencode/skills",
 		"claude-code": ".claude/skills",
-		"pi":          ".pi/skills",
 		"omp":         ".omp/skills",
-		// openclaw + hermes are gateway agents like pi/omp. Hermes reads skills from
+		// openclaw + hermes are gateway agents like omp. Hermes reads skills from
 		// its config's external_dirs (HermesConfig points one at .hermes/skills);
 		// openclaw's skills dir is not documented upstream, so .openclaw/skills is a
 		// best-effort mirror alongside Caveman's own --only install. hardware bring-up:
@@ -1763,17 +1742,15 @@ var sharedResourceLinks = []sharedResourceLink{
 	{pool: "agents", perCLI: map[string]string{
 		"opencode":    ".opencode/agents",
 		"claude-code": ".claude/agents",
-		// omp and pi read their OWN native <cli>/agents dirs (they deliberately SKIP
-		// .claude/agents — schema differs), so each needs its own symlink to receive
-		// the shared pool (including Caveman's agents).
+		// omp reads its OWN native .omp/agents dir (it deliberately SKIPS .claude/agents —
+		// schema differs), so it needs its own symlink to receive the shared pool
+		// (including Caveman's agents).
 		"omp": ".omp/agents",
-		"pi":  ".pi/agents",
 	}},
 	{pool: "prompts", perCLI: map[string]string{
 		"opencode":    ".opencode/commands",
 		"claude-code": ".claude/commands",
 		"gemini":      ".gemini/commands",
-		"pi":          ".pi/prompts",
 		"omp":         ".omp/commands",
 		// openclaw exposes slash-commands; hermes derives them from skills (no separate
 		// dir) so it gets NO prompts link — a CLI a kind lacks is skipped, like codex/gemini.
@@ -2124,7 +2101,7 @@ func (manager Manager) launchTmuxSession(project, session string, command []stri
 	if err := manager.requireTmux(project); err != nil {
 		return err
 	}
-	// Refresh the served-model LIST for opencode + pi against the LIVE gateway before
+	// Refresh the served-model LIST for opencode against the LIVE gateway before
 	// handing over the session, so a model added/removed since the last start (via
 	// `ai models`/`ai keys`) is immediately visible here — the "refresh when a shell is
 	// attached" requirement. Also self-heals an orphaned gateway key (see
@@ -2208,7 +2185,7 @@ func (manager Manager) Attach(project, session string) error {
 }
 
 // Agent starts (or reattaches to) a per-CLI tmux session running the named agent
-// CLI in ~/project. The session is named after the CLI (opencode, pi, …) so each
+// CLI in ~/project. The session is named after the CLI (opencode, omp, …) so each
 // agent has one persistent, reattachable session and multiple agents can run
 // concurrently. An unknown CLI returns ErrUnknownAgentCLI (→ exit 2).
 func (manager Manager) Agent(project, cli string) error {
@@ -2352,7 +2329,6 @@ func tmuxNewSessionAttach(session string, command []string) []string {
 // create`'s agent choices.
 var agentValidCLIs = map[string][]string{
 	"opencode":    {"opencode"},
-	"pi":          {"pi"},
 	"omp":         {"omp"},
 	"claude-code": {"claude"},
 	"codex":       {"codex"},
@@ -2378,7 +2354,7 @@ func AgentCLINames() []string {
 // The launch is wrapped in a LOGIN shell that first sources the in-VM agent env
 // file (the gateway env vars for claude-code/codex/gemini, key in-VM only) and then
 // execs the CLI — so the env-routed CLIs reach the gateway with the workspace's
-// scoped virtual key. opencode/pi take their config from a file and ignore the env,
+// scoped virtual key. opencode takes its config from a file and ignores the env,
 // but wrapping them uniformly is harmless (they still get a normal login env).
 func agentLaunchCommand(cli string) ([]string, error) {
 	launch, ok := agentValidCLIs[cli]

@@ -218,23 +218,18 @@ func TestCreateWizardAssemblesSpec(test *testing.T) {
 	enter() // cpus (blank)
 	enter() // memory (blank)
 	enter() // ports (blank)
-	enter() // idle (blank) → advances to caveman step
-	if wizard.step != stepCaveman {
-		test.Fatalf("after idle, step = %d, want stepCaveman", wizard.step)
+	enter() // idle (blank) → advances to the AI-tools step
+	if wizard.step != stepTools {
+		test.Fatalf("after idle, step = %d, want stepTools", wizard.step)
 	}
-	enter() // caveman (default install) → code-review-graph step
-	if wizard.step != stepCodeReviewGraph {
-		test.Fatalf("after caveman, step = %d, want stepCodeReviewGraph", wizard.step)
-	}
-	enter() // code-review-graph (default skip) → codebase-memory step
-	if wizard.step != stepCodebaseMemory {
-		test.Fatalf("after code-review-graph, step = %d, want stepCodebaseMemory", wizard.step)
-	}
-	enter() // codebase-memory (default skip) → model step
+	// AI tools: defaults are caveman + graphify + code-review-graph. Graphify is selected
+	// and this wizard HAS a cached library, so the Graphify-model step is shown next.
+	enter()
 	if wizard.step != stepModel {
-		test.Fatalf("after codebase-memory, step = %d, want stepModel", wizard.step)
+		test.Fatalf("after AI-tools, step = %d, want stepModel", wizard.step)
 	}
-	// Model step: "(none)" is the first row — enter selects it and finishes.
+	// Model step: "(none)" is the first row — enter selects it and finishes (no
+	// OAuth-capable agents in the default opencode selection).
 	cmd := enter()
 	if cmd == nil {
 		test.Fatal("selecting the model (none) should finish and emit a command")
@@ -256,8 +251,8 @@ func TestCreateWizardAssemblesSpec(test *testing.T) {
 	if spec.Root != target {
 		test.Errorf("spec.Root = %q, want %q", spec.Root, target)
 	}
-	if strings.Join(spec.AgentCLIs, ",") != "opencode,pi" {
-		test.Errorf("spec.AgentCLIs = %v, want [opencode pi]", spec.AgentCLIs)
+	if strings.Join(spec.AgentCLIs, ",") != "opencode" {
+		test.Errorf("spec.AgentCLIs = %v, want [opencode]", spec.AgentCLIs)
 	}
 	if spec.DefaultTool != "opencode" {
 		test.Errorf("spec.DefaultTool = %q, want opencode", spec.DefaultTool)
@@ -265,14 +260,18 @@ func TestCreateWizardAssemblesSpec(test *testing.T) {
 	if spec.GraphifyModel != "" {
 		test.Errorf("spec.GraphifyModel = %q, want empty (none selected)", spec.GraphifyModel)
 	}
+	// AI-tools defaults: caveman + graphify + code-review-graph on, codebase-memory off.
 	if !spec.CavemanEnabled {
-		test.Error("spec.CavemanEnabled = false, want true (default install)")
+		test.Error("spec.CavemanEnabled = false, want true (default)")
 	}
-	if spec.CodeReviewGraphEnabled {
-		test.Error("spec.CodeReviewGraphEnabled = true, want false (opt-in, default skip)")
+	if !spec.GraphifyEnabled {
+		test.Error("spec.GraphifyEnabled = false, want true (default)")
+	}
+	if !spec.CodeReviewGraphEnabled {
+		test.Error("spec.CodeReviewGraphEnabled = false, want true (default)")
 	}
 	if spec.CodebaseMemoryEnabled {
-		test.Error("spec.CodebaseMemoryEnabled = true, want false (opt-in, default skip)")
+		test.Error("spec.CodebaseMemoryEnabled = true, want false (default off)")
 	}
 }
 
@@ -348,8 +347,8 @@ func TestCreateWizardAuthModeStep(test *testing.T) {
 	enter() // name
 	enter() // OS
 	enter() // shell
-	// agents: add claude-code (index 3) to the opencode+pi defaults.
-	for index := 0; index < 3; index++ {
+	// agents: add claude-code (index 2: opencode, omp, claude-code) to the opencode default.
+	for index := 0; index < 2; index++ {
 		press(tea.KeyDown)
 	}
 	space() // toggle claude-code on
@@ -359,14 +358,13 @@ func TestCreateWizardAuthModeStep(test *testing.T) {
 	enter() // cpus
 	enter() // memory
 	enter() // ports
-	enter() // idle → caveman
-	enter() // caveman → code-review-graph
-	enter() // code-review-graph → codebase-memory
-	enter() // codebase-memory → model
-	if wizard.step != stepModel {
-		test.Fatalf("expected the model step, got step %d", wizard.step)
+	enter() // idle → AI tools
+	if wizard.step != stepTools {
+		test.Fatalf("expected the AI-tools step, got step %d", wizard.step)
 	}
-	enter() // model (nil library) → auth phase
+	// nil library → the model step auto-advances, so leaving AI tools goes straight to the
+	// auth phase for the selected claude-code.
+	enter() // AI tools → (model skipped) → auth phase
 	if wizard.step != stepAuth {
 		test.Fatalf("expected the auth step for the selected claude-code, got step %d", wizard.step)
 	}

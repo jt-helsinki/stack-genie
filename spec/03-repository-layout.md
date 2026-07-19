@@ -190,7 +190,8 @@ stacks/java/Dockerfile.snippet
 stacks/maven/Dockerfile.snippet
 stacks/deno/Dockerfile.snippet
 
-# opt-in dev tools — appended to the project Dockerfile only when selected at create
+# opt-in AI tools — appended to the project Dockerfile only when selected at create (--tools)
+tools/graphify/Dockerfile.snippet
 tools/code-review-graph/Dockerfile.snippet
 tools/codebase-memory-mcp/Dockerfile.snippet
 ```
@@ -207,18 +208,21 @@ Rules:
 * every OS base template also bakes in **Node.js** (pinned Node 24 LTS,
   system-wide — so the agent-CLI snippets only `npm install -g` their CLI), the
   latest **Python 3** (system-wide),
-  **uv** (Astral's Python package/tool manager, installed for the workspace user
-  onto `~/.local/bin`), and **Graphify** (PyPI `graphifyy`, CLI `graphify`) via
-  `uv tool install "graphifyy[pdf,office,video,postgres,google,svg,sql,terraform,ollama,openai,gemini,anthropic]"`
-  (all optional extras — including `mcp` — except the region/DB/niche-specific `chinese,azure,bedrock,falkordb,neo4j,leiden,dm,pascal`).
-  Graphify is then registered with each selected agent CLI at WORKSPACE START (not
-  in the Dockerfile), ONCE per project (guarded by a `.ai-platform/.graphify-installed`
-  marker) — `graphify install --project [--platform <cli>]` run in `~/project`
-  (`Manager.registerGraphify`) — because `--project` writes into the bind-mounted
-  project dir, which only exists at runtime (arch §12). Immediately BEFORE that install,
-  when the project is not already a valid git working tree (detected with `git rev-parse
-  --is-inside-work-tree`, dropping a dangling `.git` gitlink file first) `registerGraphify`
-  runs `git init` so every workspace is git-backed; it then runs `graphify hook install`
+  and **uv** (Astral's Python package/tool manager, installed for the workspace user
+  onto `~/.local/bin`). **Graphify** (PyPI `graphifyy`, CLI `graphify`) is NO LONGER baked
+  into the base — it is a selectable AI tool (`--tools graphify`, default on) installed by a
+  CONDITIONAL `tools/graphify/Dockerfile.snippet`
+  (`uv tool install "graphifyy[pdf,office,video,postgres,google,svg,sql,terraform,ollama,openai,gemini,anthropic,mcp]"`,
+  all optional extras except the region/DB/niche-specific `chinese,azure,bedrock,falkordb,neo4j,leiden,dm,pascal`)
+  appended only when selected. When selected, Graphify is then registered with each agent CLI
+  at WORKSPACE START (not in the Dockerfile), ONCE per project (guarded by a
+  `.ai-platform/.graphify-installed` marker) — `graphify install --project [--platform <cli>]`
+  run in `~/project` (`Manager.registerGraphify`, gated on `context.graphify_enabled`) —
+  because `--project` writes into the bind-mounted project dir, which only exists at runtime
+  (arch §12). REGARDLESS of the Graphify selection, when the project is not already a valid
+  git working tree (detected with `git rev-parse --is-inside-work-tree`, dropping a dangling
+  `.git` gitlink file first) `registerGraphify` runs `git init` so every workspace is
+  git-backed; when Graphify is selected it then runs `graphify hook install`
   on EVERY start for a valid repo (the hook is idempotent, so there is deliberately no
   marker, and it runs even for an omp/openclaw/hermes-only project). Graphify's headless LLM
   backend is an Ollama model chosen at `ai create` (`agent.graphify_model`, §12.4),
@@ -383,7 +387,6 @@ the agent into this source tree — the platform does not manage them.
 
 # per-CLI provider configs — KEYLESS, written at workspace start (§12.1c, architecture §15):
 .opencode/opencode.json         # opencode provider config; apiKey "{env:AIP_GATEWAY_KEY}"
-.pi/settings.json               # pi settings (default provider/model + resource paths); models.json is the GLOBAL in-VM ~/.pi/agent/models.json, NOT on host disk
 .claude/settings.json           # claude-code env block (base URL only; token via env)
 .codex/config.toml              # codex provider block (key via env_key)
 .omp/config.yml                 # omp provider order + default model (models.yml is GLOBAL in-VM ~/.omp/agent/models.yml)
@@ -403,10 +406,6 @@ existing file is deep-merged so the managed block wins while the user's other ke
 
 * **opencode** → `.opencode/opencode.json` (`apiKey: "{env:AIP_GATEWAY_KEY}"`); the in-VM
   agent env file exports `OPENCODE_CONFIG` to point opencode at it.
-* **pi** → the GLOBAL in-VM `~/.pi/agent/models.json` (the path pi actually reads;
-  `apiKey: "$AIP_GATEWAY_KEY"`, written into the microVM via `Sandbox.WriteFile`, off host
-  disk — a project `.pi/models.json` is NOT read) + `.pi/settings.json` (default provider +
-  default model + skills/prompts resource paths).
 * **claude-code** → `.claude/settings.json` — an `env` block with `ANTHROPIC_BASE_URL`;
   the token stays in the exported `ANTHROPIC_AUTH_TOKEN` env var (no key in the file).
 * **codex** → `.codex/config.toml` (keyless, `env_key = "AIP_GATEWAY_KEY"`,
@@ -430,9 +429,9 @@ are deep-merged, never clobbered).
 **Shared resource pool.** `<project>/.ai-platform/{agents,skills,prompts,projects}` holds
 ONE copy of the project's agents / skills / prompts. At workspace start (BEFORE Graphify
 registration) each pool is symlinked (relative) into each **installed** CLI's real
-per-project dir: `skills` → `.opencode/skills`/`.claude/skills`/`.pi/skills`; `agents` →
+per-project dir: `skills` → `.opencode/skills`/`.claude/skills`; `agents` →
 `.opencode/agents`/`.claude/agents`; `prompts` →
-`.opencode/commands`/`.claude/commands`/`.gemini/commands`/`.pi/prompts`. Kinds a CLI has
+`.opencode/commands`/`.claude/commands`/`.gemini/commands`. Kinds a CLI has
 no concept for are skipped (codex/gemini have no skills/agents). Caveman
 (`skills/caveman/SKILL.md`) is thereby shared to every skills-capable client. *(hardware
 bring-up: the symlinks resolving in-VM, and each CLI honouring its project config, are not
@@ -684,7 +683,7 @@ config blocks.
 ```yaml id="sc6"
 os: alma                   # alma | debian-trixie | debian-bookworm | ubuntu
 agent:
-  tools: [opencode, pi]    # installed agent CLIs (any subset of: opencode, pi, omp, claude-code, codex, gemini, copilot, openclaw, hermes); opencode + pi by default
+  tools: [opencode]        # installed agent CLIs (any subset of: opencode, omp, claude-code, codex, gemini, copilot, openclaw, hermes); opencode by default
   default_tool: opencode   # default agent CLI; must be one of agent.tools
   graphify_model: qwen2.5-coder:7b  # optional: Ollama model Graphify uses (chosen at `ai create`, routed through the gateway as ollama/<model>); omitted = none
 context:

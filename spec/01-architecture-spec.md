@@ -118,7 +118,7 @@ purposes:
 Host Layer
  ├─ Microsandbox microVM runtime (libkrun)         ← workspaces
  │   └─ Sandbox Layer (workspace microVM)
- │       ├─ AI Tooling Layer (OpenCode + Pi by default; Claude Code / Codex / Gemini / omp / Copilot / OpenClaw / Hermes optional — selected per env)
+ │       ├─ AI Tooling Layer (OpenCode by default; Claude Code / Codex / Gemini / omp / Copilot / OpenClaw / Hermes optional — selected per env)
  │       ├─ In-VM OCI runtime (rootful containerd + nerdctl) → opt-in apps: Open WebUI · AnythingLLM (§7)
  │       └─ Context Optimization (Caveman skill — per project, §8–10; Headroom is a host-side LiteLLM guardrail, §10)
  │
@@ -737,7 +737,7 @@ upstream installer (`workspace.registerCaveman`, once-guarded, network-bound,
 best-effort — not baked into the image, not written by `Scaffold`). The install gives
 each caveman-detectable CLI its native skills/agents/commands; `registerCaveman` then
 mirrors opencode's global caveman dirs into the shared `.ai-platform/{skills,agents,
-prompts}` pool so the symlinks distribute it to the pool-only CLIs (pi/omp). It is the
+prompts}` pool so the symlinks distribute it to the pool-only CLIs (omp). It is the
 output-side complement to Headroom (the input-compression guardrail, §10). `ai context
 caveman <project> <level>` sets an advisory level in config; the installed skill
 controls intensity at runtime via `/caveman <level>`.
@@ -910,27 +910,31 @@ templates (§25); it is identical across all OSes:
   user** (`curl -LsSf https://astral.sh/uv/install.sh | sh`, onto
   `~/.local/bin`, which is on `PATH`).
 * **Graphify** — the knowledge-graph skill for AI coding assistants
-  (github.com/Graphify-Labs/graphify, PyPI package `graphifyy`, CLI `graphify`),
-  installed by default for the workspace user via
-  `uv tool install "graphifyy[<extras>]"`. The bundled optional extras are all of
-  Graphify's extras **except** the region/DB/niche-specific ones (`chinese`, `azure`,
-  `bedrock`, `falkordb`, `neo4j`, `leiden`, `dm`, `pascal`) — i.e. the included set is
+  (github.com/Graphify-Labs/graphify, PyPI package `graphifyy`, CLI `graphify`). It is a
+  selectable **AI tool** (`--tools graphify`, default on), NO LONGER baked into the OS base:
+  when selected it is installed for the workspace user by a CONDITIONAL Dockerfile snippet
+  (`tools/graphify/`) via `uv tool install "graphifyy[<extras>]"`. The bundled optional
+  extras are all of Graphify's extras **except** the region/DB/niche-specific ones
+  (`chinese`, `azure`, `bedrock`, `falkordb`, `neo4j`, `leiden`, `dm`, `pascal`) — i.e. the
+  included set is
   `pdf,office,video,postgres,google,svg,sql,terraform,ollama,openai,gemini,anthropic,mcp`.
-  Each selected agent CLI then **registers Graphify with itself at workspace
-  start** (NOT at image build): `Manager.registerGraphify` runs `graphify install`
+  When selected, each agent CLI then **registers Graphify with itself at workspace
+  start** (NOT at image build; gated on `context.graphify_enabled`):
+  `Manager.registerGraphify` runs `graphify install`
   for Claude Code (the default `graphify` platform) and `graphify install --platform
-  <cli>` for Codex, the Gemini CLI, OpenCode, Pi, and Copilot, all in `~/project`
+  <cli>` for Codex, the Gemini CLI, OpenCode, and Copilot, all in `~/project`
   (omp/openclaw/hermes are not Graphify platforms — they inherit the skill via the
   shared pool). It must run
   at start because `--project` writes project-scoped skill/plugin/hook files into the
   bind-mounted project dir (which does not exist at build); the `graphify install` step
   runs **once per project**, guarded by a marker file
   (`~/project/.ai-platform/.graphify-installed`) so user edits to those files are not
-  clobbered on every restart. Immediately BEFORE that install, when the project is not
-  already a valid git working tree — detected with `git rev-parse --is-inside-work-tree`,
-  which recognizes both a `.git` DIRECTORY and a `.git`-file gitlink (worktree/submodule),
-  unlike a bare `[ -d .git ]` test — `registerGraphify` runs **`git init`** (so every
-  workspace is git-backed; this writes `.git` into the bind-mounted project on the host).
+  clobbered on every restart. `registerGraphify` ALSO runs **`git init`** — ALWAYS,
+  independent of whether Graphify is selected — when the project is not already a valid git
+  working tree, detected with `git rev-parse --is-inside-work-tree`, which recognizes both a
+  `.git` DIRECTORY and a `.git`-file gitlink (worktree/submodule), unlike a bare `[ -d .git ]`
+  test (so every workspace is git-backed; this writes `.git` into the bind-mounted project on
+  the host). The Graphify install + hook steps are the only parts gated on the selection.
   A DANGLING `.git` gitlink FILE (a submodule checkout whose superproject/gitdir is absent,
   which git rejects as "not a git repository") is removed first so `git init` produces a
   real standalone repo rather than following the dead pointer; a `.git` DIRECTORY is never
@@ -954,7 +958,7 @@ templates (§25); it is identical across all OSes:
   `~/project/.ai-platform`, best-effort, never failing the start). **code-review-graph**
   (code-review-graph.com, PyPI `code-review-graph`) runs `code-review-graph install
   --platform <cli>` for each supported CLI (opencode/claude-code/codex/gemini/copilot —
-  pi/omp/openclaw/hermes are not code-review-graph platforms), then `build`s the graph
+  omp/openclaw/hermes are not code-review-graph platforms), then `build`s the graph
   and writes a D3 force-directed graph **visualization** HTML at
   `.code-review-graph/graph.html`; it is DETACHED (the `build` can be long, like the
   Caveman install). **codebase-memory-mcp** (github.com/DeusData/codebase-memory-mcp) runs
@@ -976,17 +980,16 @@ The AI coding-agent CLIs are **not** all baked in. One or more are chosen at
 environment setup (`ai create`, CLI §3.1) from the supported list:
 
 * **OpenCode** — the default; pre-selected and the default agent
-* **Pi** — pre-selected by default (also wired to LiteLLM)
-* **omp** ("Oh My Pi", a Pi fork) — selectable; when chosen, wired to LiteLLM like Pi
+* **omp** ("Oh My Pi", a Pi fork) — selectable; when chosen, wired to LiteLLM like OpenCode
 * **Claude Code**
 * **Codex**
 * **Gemini CLI**
 * **Copilot** (GitHub Copilot CLI) — forced-OAuth / gateway-incapable (see auth modes)
-* **OpenClaw** — selectable; wired to LiteLLM (gateway/api-key) like OpenCode/Pi
-* **Hermes** — selectable; wired to LiteLLM (gateway/api-key) like OpenCode/Pi
+* **OpenClaw** — selectable; wired to LiteLLM (gateway/api-key) like OpenCode
+* **Hermes** — selectable; wired to LiteLLM (gateway/api-key) like OpenCode
 
-Selection is **multi-select**: install any subset (at least one), with **OpenCode
-and Pi** pre-selected by default. The chosen CLIs are written into the project's
+Selection is **multi-select**: install any subset (at least one), with **OpenCode**
+pre-selected by default. The chosen CLIs are written into the project's
 `.ai-platform/Dockerfile` at creation, so the installed set is reproducible from
 the project rather than a fixed, baked-in surface. The **default agent** — which
 CLI new agents use unless told otherwise — is recorded as `agent.default_tool`
@@ -997,7 +1000,7 @@ CLI records `api-key` (DEFAULT — route through the gateway with a scoped LiteL
 key, so the tool firewall + secret masking apply) or, for the three CLIs with a first-party
 subscription login (**Claude Code, Codex, Gemini** — `config.OAuthCapableCLIs()`), `oauth`
 (the CLI's own subscription login, talking DIRECTLY to the provider, **bypassing the gateway
-and all guardrails**). OpenCode/Pi/omp/OpenClaw/Hermes have no subscription and are ALWAYS
+and all guardrails**). OpenCode/omp/OpenClaw/Hermes have no subscription and are ALWAYS
 gateway/api-key. **Copilot** is forced-OAuth (`config.ForcedOAuthCLIs()`): gateway-incapable,
 authenticates natively to GitHub, never offered an auth-mode choice. `ai create` WARNS that
 an oauth agent's traffic bypasses the firewall/masking/egress audit.
@@ -1023,7 +1026,6 @@ manage MCP).
 Supported providers (selected per environment, §12):
 
 * OpenCode — default
-* Pi — also pre-selected by default
 * omp ("Oh My Pi", a Pi fork)
 * Claude Code
 * Codex
@@ -1310,7 +1312,7 @@ and **denies** ones whose shell command matches a destructive pattern
 (`destructiveCommandPatterns` in `internal/litellm`): default-allow, with deny rules
 matching a shell-tool-name regex against the `command` / `arguments.command` arg;
 `on_disallowed_action: block` rejects the response. Because every agent
-(opencode/pi/claude-code) routes model calls through LiteLLM, this is tool-agnostic.
+(opencode/claude-code) routes model calls through LiteLLM, this is tool-agnostic.
 
 It is **defence-in-depth**, not the only control: it catches the model's tool-calls
 (the agent path), but the microVM isolation + the per-project egress policy (§29.6 —
@@ -1367,12 +1369,6 @@ the dynamic managed block wins while the user's other keys survive:
 * **opencode** → `<project>/.opencode/opencode.json` (`apiKey: "{env:AIP_GATEWAY_KEY}"`);
   the in-VM env file exports `OPENCODE_CONFIG` pointing opencode at this file. It carries
   the per-request Headroom knobs (keep-turns / output-buffer-tokens) on every model.
-* **pi** → the **global in-VM** `~/.pi/agent/models.json` (the path pi actually reads —
-  a project `.pi/models.json` is NOT read; `apiKey: "$AIP_GATEWAY_KEY"`, written into the
-  microVM via `Sandbox.WriteFile`, off host disk) + `<project>/.pi/settings.json` (default
-  provider + default model + skills/prompts resource paths pointing at the symlinked shared
-  pools). pi cannot inject per-request body fields, so it uses Headroom's server-side
-  defaults.
 * **claude-code** → `<project>/.claude/settings.json` — an `env` block setting only
   `ANTHROPIC_BASE_URL` (the gateway root, no `/v1`); the bearer token stays in the
   exported `ANTHROPIC_AUTH_TOKEN` env var (settings.json has no `${VAR}` interpolation),
@@ -1386,7 +1382,7 @@ the dynamic managed block wins while the user's other keys survive:
 
 The **scoped virtual key is NEVER on host disk**. It lives ONLY in the in-VM agent env
 file `~/.config/aip/agent-env.sh` (`agentcfg.AgentEnvScript`, written into the microVM,
-sourced by every shell + agent session), which exports `AIP_GATEWAY_KEY` (opencode/pi/codex),
+sourced by every shell + agent session), which exports `AIP_GATEWAY_KEY` (opencode/codex),
 `ANTHROPIC_AUTH_TOKEN` (claude-code), `GEMINI_API_KEY`/`GOOGLE_GEMINI_BASE_URL` (gemini),
 `OPENCODE_CONFIG`, and — when the project has a configured Graphify model
 (`agent.graphify_model`) — `OPENAI_BASE_URL` (the gateway `/v1`), `OPENAI_API_KEY` (the
@@ -1395,8 +1391,7 @@ routes through the gateway (nginx → LiteLLM → Ollama, LiteLLM compressing in
 its `headroom` guardrail) rather than directly to Ollama.
 
 **hardware bring-up** (not yet verified live): opencode honouring `.opencode/opencode.json`
-via `OPENCODE_CONFIG`; codex loading the trusted project config; pi reading its global
-`~/.pi/agent/models.json` + its settings resource paths; the shared-pool symlinks (below)
+via `OPENCODE_CONFIG`; codex loading the trusted project config; the shared-pool symlinks (below)
 resolving in-VM.
 
 #### Shared resource pool + per-CLI symlinks
@@ -1406,11 +1401,11 @@ ONE copy of the project's agents / skills / prompts. At workspace start (BEFORE 
 registration, so Graphify's per-CLI skill files land in the pool) each pool is symlinked
 (relative) into each **installed** CLI's real per-project dir:
 
-* `skills` → `.opencode/skills`, `.claude/skills`, `.pi/skills`, `.omp/skills`
+* `skills` → `.opencode/skills`, `.claude/skills`, `.omp/skills`
 * `agents` → `.opencode/agents`, `.claude/agents`, `.omp/agents` (omp reads its own
   native `.omp/agents` and deliberately skips `.claude/agents`)
 * `prompts` → `.opencode/commands`, `.claude/commands`, `.gemini/commands`,
-  `.pi/prompts`, `.omp/commands`
+  `.omp/commands`
 
 Kinds a CLI has no concept for are skipped (codex/gemini have no skills/agents). Caveman
 still lives at `<project>/.ai-platform/skills/caveman/SKILL.md` (§9) and is thereby shared
@@ -1430,14 +1425,13 @@ The workspace **default model** is separate from the picker and follows a
 → `ollama/<model>`) is SEEDED as every CLI's default on the **FIRST start only**
 (guarded by a `<project>/.ai-platform/.agent-default-seeded` marker), independent of
 picker/gateway reachability; LATER starts pass an EMPTY default so each CLI's persisted
-last-used selection wins — the agent state dirs (`~/.local/share/opencode`, `~/.pi`) are
+last-used selection wins — the agent state dirs (`~/.local/share/opencode`) are
 symlinked to the `/persist` overlay (`workspace.linkAgentStateDirs`) so that selection
 survives microVM restarts. The platform also installs an in-VM
 `refresh-models` command (`/usr/local/bin/refresh-models`, from
 `agentcfg.RefreshScript`) that re-fetches the served list from the gateway's
 `/v1/models` endpoint (authenticated with the scoped virtual key) and rewrites the
-opencode PROJECT config (`/home/workspace/project/.opencode/opencode.json`) + pi's global
-`~/.pi/agent/models.json` — KEYLESS — to match a fresh start, so models registered after
+opencode PROJECT config (`/home/workspace/project/.opencode/opencode.json`) — KEYLESS — to match a fresh start, so models registered after
 start can be picked up without recreating the workspace; on failure it leaves the configs
 untouched. (The installable Ollama library backing the *host-side* `ai models`
 browse + the TUI Local Models tab is **scraped LIVE from ollama.com** —
@@ -1654,7 +1648,6 @@ Workspace mount location (guest):
 
 # per-CLI provider configs (keyless, written at workspace start; §15):
 .opencode/opencode.json
-.pi/settings.json    # pi's models.json is the GLOBAL in-VM ~/.pi/agent/models.json, NOT on host disk
 .claude/settings.json
 .codex/config.toml
 
@@ -1801,8 +1794,9 @@ seed a new project's `.ai-platform/Dockerfile`:
 The user selects the language/tool stacks to install when setting up the
 environment (CLI §3.1, step 5) — a **multi-select** of `go`, `rust`, `java`,
 `maven`, `deno`. **Neither Python nor Node is a stack option**: the latest
-**Python 3**, **uv**, **Graphify**, and **Node.js** are baked into every OS base
-by default (§12: Base tooling), so there is nothing to select. (The no-op
+**Python 3**, **uv**, and **Node.js** are baked into every OS base by default
+(§12: Base tooling), so there is nothing to select. (Graphify is no longer baked —
+it is a selectable AI tool; see CLI §3.1 step 9 / `--tools`.) (The no-op
 `python`/`node` stack snippets have been removed entirely.)
 The set is **extensible**: each stack is
 a small install snippet the platform ships under

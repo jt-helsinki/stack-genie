@@ -68,7 +68,7 @@ type AgentConfig struct {
 	// tool firewall + secret masking apply) or "oauth" (the CLI's OWN subscription/OAuth
 	// login, talking DIRECTLY to the provider, bypassing the gateway and its guardrails).
 	// Keyed by CLI name; a CLI absent from the map defaults to "api-key" (see AuthMode).
-	// opencode/pi/omp have no subscription and are never recorded here — they are always
+	// opencode/omp have no subscription and are never recorded here — they are always
 	// gateway/api-key. The FORCED-oauth CLIs (ForcedOAuthCLIs, e.g. copilot) are recorded
 	// as "oauth" and can be nothing else — see AuthMode.
 	AuthModes map[string]string `yaml:"auth_modes,omitempty" json:"auth_modes,omitempty"`
@@ -141,6 +141,14 @@ type ContextConfig struct {
 	// (nil), explicit true, explicit false. It is OPT-IN — unset (nil) defaults to
 	// DISABLED (unlike Caveman) — see CodebaseMemoryEnabledOrDefault.
 	CodebaseMemoryEnabled *bool `yaml:"codebase_memory_enabled,omitempty" json:"codebase_memory_enabled,omitempty"`
+	// GraphifyEnabled records whether the Graphify knowledge-graph toolkit (PyPI
+	// `graphifyy`) is installed into the workspace image and registered with each
+	// installed agent CLI at start (chosen at `ai create` from the unified AI-tools
+	// list). A pointer so three states are distinct: unset (nil), explicit true,
+	// explicit false. Unset defaults to ENABLED for backward compatibility with
+	// projects created before Graphify was selectable (it was always baked in then) —
+	// see GraphifyEnabledOrDefault.
+	GraphifyEnabled *bool `yaml:"graphify_enabled,omitempty" json:"graphify_enabled,omitempty"`
 }
 
 // CavemanEnabledOrDefault reports whether Caveman should be installed at workspace
@@ -162,6 +170,14 @@ func (settings ContextConfig) CodeReviewGraphEnabledOrDefault() bool {
 // so it is only ever installed when explicitly chosen at `ai create`.
 func (settings ContextConfig) CodebaseMemoryEnabledOrDefault() bool {
 	return settings.CodebaseMemoryEnabled != nil && *settings.CodebaseMemoryEnabled
+}
+
+// GraphifyEnabledOrDefault reports whether Graphify should be baked into the image and
+// registered at workspace start. An unset (nil) value defaults to true so pre-toggle
+// projects (where Graphify was always baked in) keep today's behavior; an explicit false
+// disables it.
+func (settings ContextConfig) GraphifyEnabledOrDefault() bool {
+	return settings.GraphifyEnabled == nil || *settings.GraphifyEnabled
 }
 
 // WorkspaceConfig holds the microVM resource limits applied at workspace start
@@ -373,7 +389,7 @@ type PortMapping struct {
 // `os` — there is no default OS (it is always chosen per project, arch §25).
 func Default() *Config {
 	return &Config{
-		Agent:     AgentConfig{Tools: []string{"opencode", "pi"}, DefaultTool: "opencode"},
+		Agent:     AgentConfig{Tools: []string{"opencode"}, DefaultTool: "opencode"},
 		Context:   ContextConfig{Strategy: "balanced", CavemanLevel: "full"},
 		Workspace: WorkspaceConfig{CPULimit: 4, MemoryLimit: "8", Shell: "bash"},
 		Microsandbox: MicrosandboxConfig{

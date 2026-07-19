@@ -103,14 +103,15 @@ func formatAgentCLIs(agents []string) string {
 // S5 (debian-trixie in S1; debian-bookworm, ubuntu, alma added in S5). The user
 // always picks the OS — none is applied silently (arch §25).
 // The selectable create options are defined once in internal/create (shared with the
-// in-TUI wizard, which cannot import cli). Python + Node + uv + Graphify are baked into
-// every base by default, so they are NOT stacks.
+// in-TUI wizard, which cannot import cli). Python + Node + uv are baked into
+// every base by default (Graphify is now a selectable AI tool), so they are NOT stacks.
 var (
 	supportedOSes      = create.SupportedOSes()
 	supportedStacks    = create.SupportedStacks()
 	supportedAgentCLIs = create.SupportedAgentCLIs()
 	supportedApps      = create.SupportedApps()
 	supportedShells    = create.SupportedShells()
+	supportedAITools   = create.SupportedAITools()
 )
 
 const (
@@ -137,23 +138,22 @@ func mapProjectErr(err error) error {
 // fully specifiable in one invocation for --json / external callers). defaultName is
 // the fallback workspace name (the [name] arg or the cwd basename).
 type createFlags struct {
-	name            string
-	osKey           string
-	agents          []string
-	stacks          []string
-	apps            []string
-	idleTimeout     string
-	cpus            int
-	memory          string
-	ports           []string
-	location        string
-	graphifyModel   string
-	shell           string
-	authMode        string
-	caveman         bool
-	codeReviewGraph bool
-	codebaseMemory  bool
-	defaultName     string
+	name          string
+	osKey         string
+	agents        []string
+	stacks        []string
+	apps          []string
+	idleTimeout   string
+	cpus          int
+	memory        string
+	ports         []string
+	location      string
+	graphifyModel string
+	shell         string
+	authMode      string
+	tools         []string
+	toolsSet      bool
+	defaultName   string
 }
 
 // readCreateFlags reads every create flag (and the optional [name] positional).
@@ -171,17 +171,14 @@ func readCreateFlags(cmd *cobra.Command, args []string) createFlags {
 	graphifyModel, _ := cmd.Flags().GetString("graphify-model")
 	shell, _ := cmd.Flags().GetString("shell")
 	authMode, _ := cmd.Flags().GetString("auth-mode")
-	caveman, _ := cmd.Flags().GetBool("caveman")
-	codeReviewGraph, _ := cmd.Flags().GetBool("code-review-graph")
-	codebaseMemory, _ := cmd.Flags().GetBool("codebase-memory")
+	tools, _ := cmd.Flags().GetStringSlice("tools")
 	return createFlags{
 		name: name, osKey: osKey, agents: agents, stacks: stacks, apps: appsList,
 		idleTimeout: idleTimeout, cpus: cpus, memory: memory, ports: ports,
 		location: location, graphifyModel: graphifyModel, shell: shell, authMode: authMode,
-		caveman:         caveman,
-		codeReviewGraph: codeReviewGraph,
-		codebaseMemory:  codebaseMemory,
-		defaultName:     defaultProjectName(args),
+		tools:       tools,
+		toolsSet:    cmd.Flags().Changed("tools"),
+		defaultName: defaultProjectName(args),
 	}
 }
 
@@ -395,7 +392,7 @@ func newCreateCmd(emitter *output.Emitter, exit *int, use string) *cobra.Command
 	// positional remains a convenience equivalent to --name.
 	cmd.Flags().String("name", "", "workspace name (default: the [name] argument or the current directory)")
 	cmd.Flags().String("os", "", "base OS: "+strings.Join(supportedOSes, "|"))
-	cmd.Flags().StringSlice("agents", nil, "agent CLIs to install (default: opencode,pi): "+strings.Join(supportedAgentCLIs, ","))
+	cmd.Flags().StringSlice("agents", nil, "agent CLIs to install (default: opencode): "+strings.Join(supportedAgentCLIs, ","))
 	cmd.Flags().StringSlice("stacks", nil, "extra software stacks ("+strings.Join(supportedStacks, ",")+"); Python 3.x, uv, Node 24.x and Graphify are installed by default")
 	cmd.Flags().StringSlice("apps", nil, "in-VM AI apps to install (default: none): "+strings.Join(supportedApps, ","))
 	cmd.Flags().String("idle-timeout", "", "Microsandbox idle timeout (default: "+config.DefaultMicrosandboxIdleTimeout+", e.g. 30m, 24h)")
@@ -406,14 +403,13 @@ func newCreateCmd(emitter *output.Emitter, exit *int, use string) *cobra.Command
 	cmd.Flags().String("graphify-model", "", "Ollama model Graphify uses (e.g. qwen2.5-coder:7b); chosen in the wizard from the Ollama library and pulled if absent")
 	cmd.Flags().String("shell", "bash", "default interactive shell for workspace sessions: "+strings.Join(supportedShells, "|"))
 	cmd.Flags().String("auth-mode", "", "per-agent auth mode for claude-code/codex/gemini as cli=mode (api-key|oauth), comma-separated (e.g. claude-code=oauth,codex=api-key); default api-key")
-	cmd.Flags().Bool("caveman", true, "install the Caveman output-compression toolkit into the workspace at start (--caveman=false to skip)")
-	cmd.Flags().Bool("code-review-graph", false, "install code-review-graph (code-review-graph.com) and register it as an MCP server with each installed agent CLI at workspace start (opt-in)")
-	cmd.Flags().Bool("codebase-memory", false, "install codebase-memory-mcp (github.com/DeusData/codebase-memory-mcp) and register it as an MCP server with each installed agent CLI at workspace start (opt-in)")
+	cmd.Flags().StringSlice("tools", nil, "AI tools to install (default: "+strings.Join(create.DefaultAITools(), ",")+"): "+strings.Join(create.SupportedAITools(), ",")+" — pass --tools=\"\" for none")
 	_ = cmd.RegisterFlagCompletionFunc("os", fixedValues(supportedOSes...))
 	_ = cmd.RegisterFlagCompletionFunc("shell", fixedValues(supportedShells...))
 	_ = cmd.RegisterFlagCompletionFunc("agents", fixedValues(supportedAgentCLIs...))
 	_ = cmd.RegisterFlagCompletionFunc("stacks", fixedValues(supportedStacks...))
 	_ = cmd.RegisterFlagCompletionFunc("apps", fixedValues(supportedApps...))
+	_ = cmd.RegisterFlagCompletionFunc("tools", fixedValues(supportedAITools...))
 	_ = cmd.MarkFlagDirname("location")
 	return cmd
 }
@@ -577,9 +573,9 @@ func runCreateWizard(seed project.Spec) (project.Spec, bool, error) {
 	// picker is a model select + a tag select; blank/"(none)" leaves Graphify without
 	// a configured model. The library is cache-first — if it can't be loaded (offline,
 	// no cache) the group is omitted and only a --graphify-model flag can set it.
-	caveman := seed.CavemanEnabled
-	codeReviewGraph := seed.CodeReviewGraphEnabled
-	codebaseMemory := seed.CodebaseMemoryEnabled
+	// AI tools are ONE multi-select (like the agent CLIs), seeded from the spec's per-tool
+	// bools. The graphify-model step is shown only when graphify is among the selection.
+	toolsSelection := aiToolsFromSpec(seed)
 	graphifyName, graphifyTag := splitModelRef(seed.GraphifyModel)
 	// Cache-only: the wizard must never stall on a cold-cache network scrape. If no
 	// cache exists yet (no prior `ai setup` / `ai models`), the group is omitted and
@@ -641,6 +637,13 @@ func runCreateWizard(seed project.Spec) (project.Spec, bool, error) {
 				Validate(func(value string) error { return config.ValidateIdleTimeout(value) }),
 		),
 	}
+	// AI tools — ONE multi-select (mirrors the agent-CLI list), instead of a screen each.
+	groups = append(groups, huh.NewGroup(
+		huh.NewMultiSelect[string]().Title("AI tools (space to toggle)").
+			Description("Per-project code/context tooling installed at workspace start; caveman, graphify and code-review-graph are the defaults.").
+			Options(aiToolOptions()...).Value(&toolsSelection),
+	))
+	// Graphify model — shown ONLY when graphify is selected above and a library is cached.
 	if len(graphifyLibrary) > 0 {
 		groups = append(groups, huh.NewGroup(
 			huh.NewSelect[string]().Title("Graphify model (Ollama; optional)").
@@ -649,22 +652,8 @@ func runCreateWizard(seed project.Spec) (project.Spec, bool, error) {
 			huh.NewSelect[string]().Title("Graphify model tag").
 				OptionsFunc(func() []huh.Option[string] { return graphifyTagOptions(graphifyLibrary, graphifyName) }, &graphifyName).
 				Value(&graphifyTag),
-		))
+		).WithHideFunc(func() bool { return !slices.Contains(toolsSelection, create.AIToolGraphify) }))
 	}
-
-	// Caveman is the LAST step: it is installed at workspace start after the agent
-	// CLIs are set up, so it reads naturally as the final choice here too.
-	groups = append(groups, huh.NewGroup(
-		huh.NewConfirm().Title("Install the Caveman output-compression toolkit?").
-			Description("Runs Caveman's installer in the workspace at start (after the agent CLIs) to add its skills, agents, commands and CLI-native plugins/hooks.").
-			Value(&caveman),
-		huh.NewConfirm().Title("Install code-review-graph?").
-			Description("Builds a code-review knowledge graph (code-review-graph.com) and registers it as an MCP server with each installed agent CLI at start; also writes a D3 graph visualization. Local, no API key.").
-			Value(&codeReviewGraph),
-		huh.NewConfirm().Title("Install codebase-memory-mcp?").
-			Description("Installs codebase-memory-mcp (github.com/DeusData/codebase-memory-mcp) and registers it as an MCP server with each installed agent CLI at start; ships an optional on-demand 3D graph UI. Local, no API key.").
-			Value(&codebaseMemory),
-	))
 
 	form := huh.NewForm(groups...).WithTheme(ui.HuhTheme()).WithWidth(formWidth())
 
@@ -687,6 +676,12 @@ func runCreateWizard(seed project.Spec) (project.Spec, bool, error) {
 		"claude-code": authClaude, "codex": authCodex, "gemini": authGemini,
 	})
 
+	caveman, graphify, codeReviewGraph, codebaseMemory := create.SplitAITools(toolsSelection)
+	// Only carry a graphify model when graphify is actually selected.
+	graphifyModel := ""
+	if graphify {
+		graphifyModel = joinModelRef(graphifyName, graphifyTag)
+	}
 	return project.Spec{
 		Name:                   name,
 		OS:                     osKey,
@@ -701,11 +696,42 @@ func runCreateWizard(seed project.Spec) (project.Spec, bool, error) {
 		Memory:                 strings.TrimSpace(memory),
 		PublishPorts:           ports,
 		Root:                   location,
-		GraphifyModel:          joinModelRef(graphifyName, graphifyTag),
+		GraphifyModel:          graphifyModel,
 		CavemanEnabled:         caveman,
+		GraphifyEnabled:        graphify,
 		CodeReviewGraphEnabled: codeReviewGraph,
 		CodebaseMemoryEnabled:  codebaseMemory,
 	}, false, nil
+}
+
+// aiToolsFromSpec builds the wizard's initial AI-tools selection from a seeded spec's
+// per-tool bool flags, in SupportedAITools display order.
+func aiToolsFromSpec(seed project.Spec) []string {
+	var selection []string
+	if seed.CavemanEnabled {
+		selection = append(selection, create.AIToolCaveman)
+	}
+	if seed.GraphifyEnabled {
+		selection = append(selection, create.AIToolGraphify)
+	}
+	if seed.CodeReviewGraphEnabled {
+		selection = append(selection, create.AIToolCodeReviewGraph)
+	}
+	if seed.CodebaseMemoryEnabled {
+		selection = append(selection, create.AIToolCodebaseMemory)
+	}
+	return selection
+}
+
+// aiToolOptions is the labeled option list for the AI-tools multi-select. Values are the
+// raw tool keys (create.SupportedAITools) so the selection splits cleanly.
+func aiToolOptions() []huh.Option[string] {
+	return []huh.Option[string]{
+		huh.NewOption("caveman — output-compression toolkit (skills/agents/commands + CLI-native plugins/hooks)", create.AIToolCaveman),
+		huh.NewOption("graphify — knowledge-graph skill, baked into the image + registered with each agent CLI", create.AIToolGraphify),
+		huh.NewOption("code-review-graph — code-review knowledge graph + MCP server (local, no API key)", create.AIToolCodeReviewGraph),
+		huh.NewOption("codebase-memory-mcp — codebase-memory MCP server + optional 3D graph UI (local, no API key)", create.AIToolCodebaseMemory),
+	}
 }
 
 // seededAuthMode returns the pre-seeded auth mode for a CLI, defaulting to "api-key".
@@ -932,6 +958,12 @@ func validateProvidedCreateFlags(flags createFlags) error {
 				"unknown --apps value %q (one of: %s)", app, strings.Join(supportedApps, ", "))
 		}
 	}
+	for _, tool := range flags.tools {
+		if !slices.Contains(supportedAITools, tool) {
+			return output.Errorf(output.ExitInvalidInput,
+				"unknown --tools value %q (one of: %s)", tool, strings.Join(supportedAITools, ", "))
+		}
+	}
 	if err := config.ValidateIdleTimeout(flags.idleTimeout); err != nil {
 		return output.Errorf(output.ExitInvalidInput, "%s", err)
 	}
@@ -950,12 +982,22 @@ func validateProvidedCreateFlags(flags createFlags) error {
 	return nil
 }
 
-// effectiveAgents resolves the create flags' agent CLIs, applying the opencode+pi default
+// effectiveAITools resolves the create flags' AI tools, applying the default set
+// (create.DefaultAITools) when --tools was not provided. An explicit --tools="" (provided
+// but empty) selects NO tools.
+func effectiveAITools(flags createFlags) []string {
+	if !flags.toolsSet {
+		return create.DefaultAITools()
+	}
+	return flags.tools
+}
+
+// effectiveAgents resolves the create flags' agent CLIs, applying the opencode default
 // when --agents is unset (matching seedSpec/specFromFlags). Used to validate --auth-mode
 // keys against the actually-selected agents.
 func effectiveAgents(flags createFlags) []string {
 	if len(flags.agents) == 0 {
-		return []string{"opencode", "pi"}
+		return []string{"opencode"}
 	}
 	return flags.agents
 }
@@ -1019,7 +1061,7 @@ func parseAuthModes(raw string, agents []string) (map[string]string, error) {
 // seedSpec applies defaults to the (already-validated) create flags to produce the
 // wizard's pre-seeded starting point on a terminal: flags fill the defaults, the
 // wizard supplies the rest (name → cwd basename, OS → debian-trixie, agents →
-// opencode+pi). The user can still change anything in the wizard.
+// opencode). The user can still change anything in the wizard.
 func seedSpec(flags createFlags) project.Spec {
 	name := flags.name
 	if name == "" {
@@ -1031,7 +1073,7 @@ func seedSpec(flags createFlags) project.Spec {
 	}
 	agents := flags.agents
 	if len(agents) == 0 {
-		agents = []string{"opencode", "pi"}
+		agents = []string{"opencode"}
 	}
 	idleTimeout := flags.idleTimeout
 	if idleTimeout == "" {
@@ -1042,6 +1084,7 @@ func seedSpec(flags createFlags) project.Spec {
 	// a parse error here is impossible — ignore it and seed the wizard's per-agent selects.
 	authModes, _ := parseAuthModes(flags.authMode, agents)
 	// Apps are opt-in: an unset --apps seeds the wizard with NOTHING selected.
+	caveman, graphify, codeReviewGraph, codebaseMemory := create.SplitAITools(effectiveAITools(flags))
 	return project.Spec{
 		Name:                   name,
 		OS:                     osKey,
@@ -1056,15 +1099,16 @@ func seedSpec(flags createFlags) project.Spec {
 		Memory:                 flags.memory,
 		PublishPorts:           ports,
 		GraphifyModel:          flags.graphifyModel,
-		CavemanEnabled:         flags.caveman,
-		CodeReviewGraphEnabled: flags.codeReviewGraph,
-		CodebaseMemoryEnabled:  flags.codebaseMemory,
+		CavemanEnabled:         caveman,
+		GraphifyEnabled:        graphify,
+		CodeReviewGraphEnabled: codeReviewGraph,
+		CodebaseMemoryEnabled:  codebaseMemory,
 	}
 }
 
 // specFromFlags builds and validates a project.Spec from the non-interactive
 // create flags (the path external programs use with --json). --os is required;
-// agents default to opencode+pi; stacks are optional. The default agent CLI is
+// agents default to opencode; stacks are optional. The default agent CLI is
 // the first one listed. Unknown / out-of-range values map to exit 2.
 func specFromFlags(flags createFlags) (project.Spec, error) {
 	name := flags.name
@@ -1083,7 +1127,7 @@ func specFromFlags(flags createFlags) (project.Spec, error) {
 	}
 	agents := flags.agents
 	if len(agents) == 0 {
-		agents = []string{"opencode", "pi"}
+		agents = []string{"opencode"}
 	}
 	idleTimeout := flags.idleTimeout
 	if idleTimeout == "" {
@@ -1094,6 +1138,7 @@ func specFromFlags(flags createFlags) (project.Spec, error) {
 	if err != nil {
 		return project.Spec{}, err
 	}
+	caveman, graphify, codeReviewGraph, codebaseMemory := create.SplitAITools(effectiveAITools(flags))
 	return project.Spec{
 		Name:                   name,
 		OS:                     flags.osKey,
@@ -1108,9 +1153,10 @@ func specFromFlags(flags createFlags) (project.Spec, error) {
 		Memory:                 flags.memory,
 		PublishPorts:           ports,
 		GraphifyModel:          flags.graphifyModel,
-		CavemanEnabled:         flags.caveman,
-		CodeReviewGraphEnabled: flags.codeReviewGraph,
-		CodebaseMemoryEnabled:  flags.codebaseMemory,
+		CavemanEnabled:         caveman,
+		GraphifyEnabled:        graphify,
+		CodeReviewGraphEnabled: codeReviewGraph,
+		CodebaseMemoryEnabled:  codebaseMemory,
 	}, nil
 }
 
@@ -1207,7 +1253,7 @@ func newDeleteCmd(emitter *output.Emitter, exit *int, use string) *cobra.Command
 				// --keep-agent-config.
 				if !purge {
 					removeAgentDirs, promptErr = promptConfirmDefault(
-						"Also delete the agent config folders (.opencode, .claude, .codex, .pi, .gemini, .openclaw, .hermes, .venv-msb)?",
+						"Also delete the agent config folders (.opencode, .claude, .codex, .gemini, .openclaw, .hermes, .venv-msb)?",
 						"If kept, their symlinked skills/agents/prompts are converted to real files first (the platform's shared copy is being removed).",
 						removeAgentDirs)
 					if promptErr != nil {
@@ -1243,7 +1289,7 @@ func newDeleteCmd(emitter *output.Emitter, exit *int, use string) *cobra.Command
 		},
 	}
 	cmd.Flags().BoolVar(&purge, "purge", false, "also delete the whole project directory (all your files, not just platform state)")
-	cmd.Flags().Bool("keep-agent-config", false, "keep the per-CLI agent config folders (.opencode/.claude/.codex/.pi/.gemini/.openclaw/.hermes/.venv-msb); their symlinked content is materialized")
+	cmd.Flags().Bool("keep-agent-config", false, "keep the per-CLI agent config folders (.opencode/.claude/.codex/.gemini/.openclaw/.hermes/.venv-msb); their symlinked content is materialized")
 	return cmd
 }
 
@@ -1259,7 +1305,7 @@ func deletePlan(name, root string, purge bool) []string {
 		removal,
 	}
 	if !purge {
-		plan = append(plan, "remove the agent config folders (.opencode/.claude/.codex/.pi/.gemini/.openclaw/.hermes/.venv-msb) unless kept with --keep-agent-config")
+		plan = append(plan, "remove the agent config folders (.opencode/.claude/.codex/.gemini/.openclaw/.hermes/.venv-msb) unless kept with --keep-agent-config")
 	}
 	return plan
 }

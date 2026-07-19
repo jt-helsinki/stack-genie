@@ -14,7 +14,7 @@ import (
 var (
 	osKeys    = []string{"alma", "debian-bookworm", "debian-trixie", "ubuntu"}
 	stacks    = []string{"deno", "go", "java", "maven", "rust"}
-	agentCLIs = []string{"claude-code", "codex", "copilot", "gemini", "omp", "opencode", "pi"}
+	agentCLIs = []string{"claude-code", "codex", "copilot", "gemini", "omp", "opencode"}
 )
 
 // redirectHome points HOME (and USERPROFILE for portability) at a temp dir so
@@ -135,10 +135,12 @@ func TestBaseDockerfileShipsContainerRuntime(t *testing.T) {
 				"NODE_MAJOR=24",
 				"nodesource.com",
 				"python3",
-				// Graphify installs via uv (Astral) with the bundled extras.
+				// uv (Astral) is baked in — used by headroom + the opt-in graphify /
+				// code-review-graph tool snippets. Graphify itself is NO LONGER baked
+				// (it is a conditional tools/ snippet — see
+				// TestOptInToolsAreConditionalSnippetsNotBaked).
 				"astral.sh/uv/install.sh",
 				"uv tool install",
-				"graphifyy[",
 				// rtk ("Rust Token Killer") installed via its official install.sh so
 				// Claude Code's rtk PreToolUse hook finds the binary on PATH.
 				"rtk-ai/rtk/master/install.sh",
@@ -176,8 +178,19 @@ func TestOptInToolsAreConditionalSnippetsNotBaked(t *testing.T) {
 				t.Errorf("%s: opt-in tool %q must NOT be baked into the base Dockerfile", osKey, absent)
 			}
 		}
+		// Graphify is now an opt-in snippet too — its `graphifyy` install must not be baked.
+		if strings.Contains(got, "graphifyy[") {
+			t.Errorf("%s: graphify must NOT be baked into the base Dockerfile (it is a conditional tools/ snippet)", osKey)
+		}
 	}
 	// The snippets must exist and carry the install command.
+	graphify, err := templates.ToolSnippet("graphify")
+	if err != nil {
+		t.Fatalf("ToolSnippet(graphify): %v", err)
+	}
+	if !strings.Contains(graphify, "uv tool install --no-cache \"graphifyy[") {
+		t.Errorf("graphify snippet missing its install command:\n%s", graphify)
+	}
 	crg, err := templates.ToolSnippet("code-review-graph")
 	if err != nil {
 		t.Fatalf("ToolSnippet(code-review-graph): %v", err)

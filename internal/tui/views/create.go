@@ -42,9 +42,7 @@ const (
 	stepMemory
 	stepPorts
 	stepIdle
-	stepCaveman
-	stepCodeReviewGraph
-	stepCodebaseMemory
+	stepTools // unified AI-tools multi-select (caveman/graphify/code-review-graph/codebase-memory)
 	stepModel
 	stepAuth // dynamic: one auth-mode select per OAuth-capable selected agent
 	stepCount
@@ -55,29 +53,20 @@ const authModeDesc = "How this agent authenticates. api-key routes through the g
 
 // stepTitles labels each step for the header.
 var stepTitles = map[int]string{
-	stepLocation:        "Location",
-	stepName:            "Name",
-	stepOS:              "Operating system",
-	stepShell:           "Shell",
-	stepAgents:          "Agent CLIs & AI apps",
-	stepDefault:         "Default agent",
-	stepStacks:          "Software stacks",
-	stepCPUs:            "vCPUs",
-	stepMemory:          "Memory",
-	stepPorts:           "Ports",
-	stepIdle:            "Idle timeout",
-	stepCaveman:         "Caveman",
-	stepCodeReviewGraph: "code-review-graph",
-	stepCodebaseMemory:  "codebase-memory-mcp",
-	stepModel:           "Graphify model",
+	stepLocation: "Location",
+	stepName:     "Name",
+	stepOS:       "Operating system",
+	stepShell:    "Shell",
+	stepAgents:   "Agent CLIs & AI apps",
+	stepDefault:  "Default agent",
+	stepStacks:   "Software stacks",
+	stepCPUs:     "vCPUs",
+	stepMemory:   "Memory",
+	stepPorts:    "Ports",
+	stepIdle:     "Idle timeout",
+	stepTools:    "AI tools",
+	stepModel:    "Graphify model",
 }
-
-// cavemanInstall/cavemanSkip are the two Caveman-step choices (a bool rendered as a
-// two-option select, matching the CLI --caveman flag).
-const (
-	cavemanInstall = "install"
-	cavemanSkip    = "skip"
-)
 
 // Create is the in-TUI new-workspace wizard: a multi-step form built from the same
 // bubbles widgets as the other views (textinput, the reusable listWindow), replacing
@@ -90,11 +79,9 @@ type Create struct {
 	name     *textStep
 	osList   *selectList
 	shell    *selectList
-	caveman  *selectList
-	// codeReviewGraph / codebaseMemory are the two opt-in code-graph / code-memory MCP
-	// tools, rendered as install/skip selects on their own steps right after Caveman.
-	codeReviewGraph *selectList
-	codebaseMemory  *selectList
+	// tools is the unified AI-tools multi-select (caveman/graphify/code-review-graph/
+	// codebase-memory-mcp), mirroring the agent-CLI list instead of a screen each.
+	tools *multiSelectList
 	// agentApps is the combined agent-CLIs + in-VM-apps multi-select (agents listed
 	// first, then apps); split into AgentCLIs vs Apps via selectedAgentsAndApps.
 	agentApps   *multiSelectList
@@ -130,20 +117,18 @@ func NewCreate(startDir string, library []ollama.LibraryModel, hostGB, usableGB 
 		config.Default().Workspace.MemoryLimit, usableGB, hostGB)
 
 	wizard := &Create{
-		location:        newLocationStep(startDir),
-		name:            newTextStep("name", "The workspace name (lowercase letters, digits, hyphens).", "my-workspace", "", validateNameField),
-		osList:          newSelectList("Base operating system.", create.SupportedOSes(), "debian-trixie"),
-		shell:           newSelectList("Default interactive shell for workspace sessions.", create.SupportedShells(), "bash"),
-		caveman:         newSelectList("Install the Caveman output-compression toolkit at workspace start (after the agent CLIs).", []string{cavemanInstall, cavemanSkip}, cavemanInstall),
-		codeReviewGraph: newSelectList("Install code-review-graph (code-review-graph.com) and register it as an MCP server with each installed agent CLI at start? Local, no API key; writes a D3 graph visualization.", []string{cavemanInstall, cavemanSkip}, cavemanSkip),
-		codebaseMemory:  newSelectList("Install codebase-memory-mcp (github.com/DeusData/codebase-memory-mcp) and register it as an MCP server with each installed agent CLI at start? Local, no API key; optional on-demand 3D graph UI.", []string{cavemanInstall, cavemanSkip}, cavemanSkip),
-		agentApps:       newMultiSelectList("Agent CLIs (opencode + pi are the defaults) and opt-in in-VM AI apps — space to toggle. Apps are the last rows.", combinedAgentAppOptions(), []string{"opencode", "pi"}),
-		defaultTool:     newSelectList("The agent CLI launched by default.", []string{"opencode"}, "opencode"),
-		stacks:          newMultiSelectList("Extra software stacks (Python, Node, uv + Graphify are installed by default).", create.SupportedStacks(), nil),
-		cpus:            newTextStep("vCPUs", cpuHint, "", "", validateCPUsField),
-		memory:          newTextStep("memory (GB)", memHint, "", "", validateMemoryField),
-		ports:           newTextStep("ports", "Ports to open: PORT or HOST:GUEST, comma-separated (e.g. 8080,9000:3000).", "", "", validatePortsField),
-		idle:            newTextStep("idle timeout", "How long msb may leave the workspace idle before stopping it (e.g. 30m, 24h).", "", "", validateIdleField),
+		location:    newLocationStep(startDir),
+		name:        newTextStep("name", "The workspace name (lowercase letters, digits, hyphens).", "my-workspace", "", validateNameField),
+		osList:      newSelectList("Base operating system.", create.SupportedOSes(), "debian-trixie"),
+		shell:       newSelectList("Default interactive shell for workspace sessions.", create.SupportedShells(), "bash"),
+		tools:       newMultiSelectList("AI tools installed at workspace start — space to toggle. caveman, graphify + code-review-graph are the defaults.", create.SupportedAITools(), create.DefaultAITools()),
+		agentApps:   newMultiSelectList("Agent CLIs (opencode is the default) and opt-in in-VM AI apps — space to toggle. Apps are the last rows.", combinedAgentAppOptions(), []string{"opencode"}),
+		defaultTool: newSelectList("The agent CLI launched by default.", []string{"opencode"}, "opencode"),
+		stacks:      newMultiSelectList("Extra software stacks (Python, Node, uv + Graphify are installed by default).", create.SupportedStacks(), nil),
+		cpus:        newTextStep("vCPUs", cpuHint, "", "", validateCPUsField),
+		memory:      newTextStep("memory (GB)", memHint, "", "", validateMemoryField),
+		ports:       newTextStep("ports", "Ports to open: PORT or HOST:GUEST, comma-separated (e.g. 8080,9000:3000).", "", "", validatePortsField),
+		idle:        newTextStep("idle timeout", "How long msb may leave the workspace idle before stopping it (e.g. 30m, 24h).", "", "", validateIdleField),
 	}
 	if len(library) > 0 {
 		wizard.model = newModelPicker(library, "")
@@ -159,9 +144,9 @@ func (view *Create) Hints() string {
 	switch view.step {
 	case stepLocation:
 		return "type to filter · ↓/↑ pick folder · tab open folder · enter next" + nav
-	case stepAgents, stepStacks:
+	case stepAgents, stepStacks, stepTools:
 		return "↑/↓ move · space toggle · enter next" + nav
-	case stepOS, stepShell, stepCaveman, stepCodeReviewGraph, stepCodebaseMemory, stepDefault, stepModel, stepAuth:
+	case stepOS, stepShell, stepDefault, stepModel, stepAuth:
 		return "↑/↓ move · enter select/next" + nav
 	default:
 		return "type · enter next" + nav
@@ -184,9 +169,7 @@ func (view *Create) SetSize(width, height int) {
 	view.name.SetSize(stepWidth, stepHeight)
 	view.osList.SetSize(stepWidth, stepHeight)
 	view.shell.SetSize(stepWidth, stepHeight)
-	view.caveman.SetSize(stepWidth, stepHeight)
-	view.codeReviewGraph.SetSize(stepWidth, stepHeight)
-	view.codebaseMemory.SetSize(stepWidth, stepHeight)
+	view.tools.SetSize(stepWidth, stepHeight)
 	view.agentApps.SetSize(stepWidth, stepHeight)
 	view.defaultTool.SetSize(stepWidth, stepHeight)
 	view.stacks.SetSize(stepWidth, stepHeight)
@@ -224,12 +207,13 @@ func (view *Create) Update(msg tea.Msg) tea.Cmd {
 		return cmd
 	case stepName, stepCPUs, stepMemory, stepPorts, stepIdle:
 		return view.updateTextStep(view.textStepFor(view.step), msg)
-	case stepOS, stepShell, stepCaveman, stepCodeReviewGraph, stepCodebaseMemory, stepDefault:
+	case stepOS, stepShell, stepDefault:
 		return view.updateSelectStep(view.selectStepFor(view.step), msg)
-	case stepAgents, stepStacks:
+	case stepAgents, stepStacks, stepTools:
 		return view.updateMultiStep(view.multiStepFor(view.step), msg)
 	case stepModel:
-		if view.model == nil {
+		// Graphify model is relevant only when graphify is selected; skip otherwise.
+		if view.model == nil || !view.graphifySelected() {
 			return view.next()
 		}
 		if done := view.model.Update(msg); done {
@@ -317,15 +301,15 @@ func (view *Create) selectStepFor(step int) *selectList {
 		return view.osList
 	case stepShell:
 		return view.shell
-	case stepCaveman:
-		return view.caveman
-	case stepCodeReviewGraph:
-		return view.codeReviewGraph
-	case stepCodebaseMemory:
-		return view.codebaseMemory
 	default:
 		return view.defaultTool
 	}
+}
+
+// graphifySelected reports whether graphify is among the chosen AI tools (drives whether
+// the Graphify-model step is shown).
+func (view *Create) graphifySelected() bool {
+	return slices.Contains(view.tools.Values(), create.AIToolGraphify)
 }
 
 // combinedAgentAppOptions is the option list for the combined Agent-CLIs-&-apps
@@ -347,6 +331,8 @@ func (view *Create) multiStepFor(step int) *multiSelectList {
 	switch step {
 	case stepAgents:
 		return view.agentApps
+	case stepTools:
+		return view.tools
 	default:
 		return view.stacks
 	}
@@ -359,13 +345,7 @@ func (view *Create) multiStepFor(step int) *multiSelectList {
 func (view *Create) next() tea.Cmd {
 	switch view.step {
 	case stepModel:
-		view.buildAuthSteps()
-		if len(view.authAgents) == 0 {
-			return view.finish()
-		}
-		view.step = stepAuth
-		view.authIndex = 0
-		return nil
+		return view.leaveModelStep()
 	case stepAuth:
 		if view.authIndex+1 < len(view.authAgents) {
 			view.authIndex++
@@ -380,6 +360,24 @@ func (view *Create) next() tea.Cmd {
 		agentCLIs, _ := view.selectedAgentsAndApps()
 		view.defaultTool.SetOptions(agentCLIs)
 	}
+	// The Graphify-model step is shown only when graphify is selected AND a library is
+	// cached; otherwise skip straight into the auth phase.
+	if view.step == stepModel && (view.model == nil || !view.graphifySelected()) {
+		return view.leaveModelStep()
+	}
+	return nil
+}
+
+// leaveModelStep is the transition out of the (possibly-skipped) Graphify-model step: it
+// builds the per-agent auth phase and either enters it or finishes when no OAuth-capable
+// agent is selected.
+func (view *Create) leaveModelStep() tea.Cmd {
+	view.buildAuthSteps()
+	if len(view.authAgents) == 0 {
+		return view.finish()
+	}
+	view.step = stepAuth
+	view.authIndex = 0
 	return nil
 }
 
@@ -392,7 +390,12 @@ func (view *Create) prev() {
 			view.authIndex--
 			return
 		}
-		view.step = stepModel
+		// Back into the model step only when it is shown; otherwise skip to the tools step.
+		if view.model != nil && view.graphifySelected() {
+			view.step = stepModel
+			return
+		}
+		view.step = stepTools
 	case view.step > stepLocation:
 		view.step--
 	}
@@ -423,8 +426,9 @@ func (view *Create) finish() tea.Cmd {
 		cpus, _ = strconv.Atoi(raw)
 	}
 	ports, _ := parsePortsForSpec(view.ports.Value())
+	caveman, graphify, codeReviewGraph, codebaseMemory := create.SplitAITools(view.tools.Values())
 	graphifyModel := ""
-	if view.model != nil {
+	if graphify && view.model != nil {
 		graphifyModel = view.model.Value()
 	}
 	var authModes map[string]string
@@ -449,9 +453,10 @@ func (view *Create) finish() tea.Cmd {
 		PublishPorts:           ports,
 		IdleTimeout:            view.idle.Value(),
 		GraphifyModel:          graphifyModel,
-		CavemanEnabled:         view.caveman.Value() == cavemanInstall,
-		CodeReviewGraphEnabled: view.codeReviewGraph.Value() == cavemanInstall,
-		CodebaseMemoryEnabled:  view.codebaseMemory.Value() == cavemanInstall,
+		CavemanEnabled:         caveman,
+		GraphifyEnabled:        graphify,
+		CodeReviewGraphEnabled: codeReviewGraph,
+		CodebaseMemoryEnabled:  codebaseMemory,
 		Root:                   view.location.dir,
 	}
 	return func() tea.Msg { return CreateConfirmedMsg{Spec: spec} }
@@ -497,13 +502,12 @@ func (view *Create) stepBody() string {
 		return view.ports.View()
 	case stepIdle:
 		return view.idle.View()
-	case stepCaveman:
-		return view.caveman.View()
-	case stepCodeReviewGraph:
-		return view.codeReviewGraph.View()
-	case stepCodebaseMemory:
-		return view.codebaseMemory.View()
+	case stepTools:
+		return view.tools.View()
 	case stepModel:
+		if !view.graphifySelected() {
+			return ui.Muted.Render("Graphify is not selected — the Graphify model step is skipped.")
+		}
 		if view.model == nil {
 			return ui.Muted.Render("No Ollama library cached — the Graphify model is left unset (run `ai models` to populate it).")
 		}

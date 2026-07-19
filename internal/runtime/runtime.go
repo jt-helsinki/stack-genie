@@ -161,7 +161,7 @@ func (info *Info) HostAddress() string {
 //   - "host:port"      → host : port (port must be a positive integer)
 //
 // An unparseable ":port" falls back to DefaultGatewayPort on the given host.
-// url is always "http://<host>:<port>/v1" (the /v1 suffix opencode and pi need).
+// url is always "http://<host>:<port>/v1" (the /v1 suffix opencode needs).
 func ResolveGateway(aiPlatformHost string) (host string, port int, url string) {
 	host = DefaultGatewayHost
 	port = DefaultGatewayPort

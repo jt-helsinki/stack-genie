@@ -42,7 +42,7 @@ func TestSessionCommandsGatedUnderJSON(test *testing.T) {
 // must include the defaults `ai project create` installs.
 func TestAgentCLINamesIncludesDefaults(test *testing.T) {
 	names := workspace.AgentCLINames()
-	want := map[string]bool{"opencode": false, "pi": false, "claude-code": false, "codex": false, "gemini": false}
+	want := map[string]bool{"opencode": false, "omp": false, "claude-code": false, "codex": false, "gemini": false}
 	for _, name := range names {
 		want[name] = true
 	}
