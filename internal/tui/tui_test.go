@@ -92,6 +92,52 @@ func TestMouseClickSwitchesTopTab(test *testing.T) {
 	}
 }
 
+// initTrackingView records Init() calls so a test can assert a tab's data load fires when
+// the tab is activated.
+type initTrackingView struct {
+	fakeView
+	inits int
+}
+
+func (view *initTrackingView) Init() tea.Cmd { view.inits++; return nil }
+
+// REGRESSION GUARD: switching to a top-level tab — by MOUSE CLICK or KEYBOARD — must fire
+// the now-active view's Init() so its async data loads. Previously the mouse tab-click
+// switched without loading, so Workspaces / Local Models / Cloud Models / API Keys sat on
+// "loading…" forever (their startup Init result was routed to the startup-active tab and
+// dropped, and clicking never re-loaded them).
+func TestTabActivationFiresViewInit(test *testing.T) {
+	build := func() (*app, *initTrackingView) {
+		tracked := &initTrackingView{fakeView: fakeView{title: "Workspaces"}}
+		return &app{views: []View{&fakeView{title: "Services"}, tracked, &fakeView{title: "Settings"}}}, tracked
+	}
+
+	// Mouse click on the second tab's cell.
+	application, tracked := build()
+	tabRow := lipgloss.Height(application.header()) + headerGapRows
+	application.Update(leftClick(lipgloss.Width("Services")+2+1, tabRow))
+	if application.current != 1 {
+		test.Fatalf("mouse click: current = %d, want 1", application.current)
+	}
+	if tracked.inits == 0 {
+		test.Error("mouse click on a tab must fire the activated view's Init() (data load)")
+	}
+
+	// Keyboard number key.
+	application, tracked = build()
+	application.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("2")})
+	if application.current != 1 || tracked.inits == 0 {
+		test.Errorf("number-key nav must activate + Init: current=%d inits=%d", application.current, tracked.inits)
+	}
+
+	// Keyboard tab key.
+	application, tracked = build()
+	application.Update(tea.KeyMsg{Type: tea.KeyTab})
+	if application.current != 1 || tracked.inits == 0 {
+		test.Errorf("tab-key nav must activate + Init: current=%d inits=%d", application.current, tracked.inits)
+	}
+}
+
 // newTestHubApp builds an app whose Projects tab (index 1) is a real ProjectsHub
 // over the given sub-tab titles, with Services/Models as the flanking top tabs.
 func newTestHubApp(test *testing.T, subTitles ...string) (*app, *views.ProjectsHub) {

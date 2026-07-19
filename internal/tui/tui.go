@@ -1049,22 +1049,19 @@ func (application *app) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if captures {
 				return application, application.views[application.current].Update(msg)
 			}
-			application.switchTab(application.current + 1)
-			return application, application.views[application.current].Init()
+			return application, application.activateTab(application.current + 1)
 		case "shift+tab", "left":
 			if captures {
 				return application, application.views[application.current].Update(msg)
 			}
-			application.switchTab(application.current - 1)
-			return application, application.views[application.current].Init()
+			return application, application.activateTab(application.current - 1)
 		}
 		// Number keys 1-9 jump straight to that tab (1-based).
 		if message.Type == tea.KeyRunes && len(message.Runes) == 1 {
 			if digit := message.Runes[0]; digit >= '1' && digit <= '9' {
 				target := int(digit - '1')
 				if target < len(application.views) {
-					application.switchTab(target)
-					return application, application.views[application.current].Init()
+					return application, application.activateTab(target)
 				}
 			}
 		}
@@ -1459,7 +1456,9 @@ func (application *app) handleMouse(msg tea.MouseMsg) tea.Cmd {
 			width := lipgloss.Width(view.Title()) + 2
 			if msg.X >= offset && msg.X < offset+width {
 				if index != application.current {
-					application.switchTab(index)
+					// Load the clicked tab (mirrors keyboard nav) — without this the tab
+					// switches but its data never loads, leaving it on "loading…".
+					return application.activateTab(index)
 				}
 				return nil
 			}
@@ -1530,6 +1529,17 @@ func (application *app) switchTab(index int) {
 	if incoming, ok := application.views[application.current].(tabActivatable); ok {
 		incoming.SetActive(true)
 	}
+}
+
+// activateTab switches to a top-level tab AND returns the now-active view's Init() load
+// command. Every user tab-navigation path (keyboard tab/arrows/number keys AND mouse
+// clicks) MUST go through this: a view's startup Init() result is routed to whatever tab
+// was active at startup, so an inactive tab never receives it and would sit on "loading…"
+// forever unless its load is re-fired when it becomes active. (This is the fix for the
+// mouse-click path, which previously switched without re-loading.)
+func (application *app) activateTab(index int) tea.Cmd {
+	application.switchTab(index)
+	return application.views[application.current].Init()
 }
 
 // scrollsBody reports whether the active top-level tab gets the body-level scroll:
