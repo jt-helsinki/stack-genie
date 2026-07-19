@@ -479,10 +479,18 @@ func listAPIKeyProviders() ([]views.APIKeyProvider, error) {
 	if err != nil {
 		return nil, err
 	}
-	creds, err := litellm.NewKeyManager(runtime.RealProber()).ListCredentials()
-	if err != nil {
-		return nil, err
-	}
+	// The gateway may be unreachable (services down / mid-restart). That must NOT blank
+	// the API Keys tab — the routable providers are known from the catalog. Degrade: on a
+	// ListCredentials error, treat every provider as unkeyed rather than failing the whole
+	// view (mirrors Cloud Models, which renders catalog rows regardless of the gateway).
+	creds, _ := litellm.NewKeyManager(runtime.RealProber()).ListCredentials()
+	return apiKeyProviderRows(cat, creds), nil
+}
+
+// apiKeyProviderRows joins the catalog's LiteLLM-routable providers with the keyed
+// credentials into the API Keys rows. creds may be nil/empty (gateway unreachable) → every
+// provider renders unkeyed. Pure (no I/O) so the join + degrade behavior is unit-tested.
+func apiKeyProviderRows(cat *catalog.Catalog, creds []litellm.Credential) []views.APIKeyProvider {
 	keyedPrefix := make(map[string]bool, len(creds))
 	for _, cred := range creds {
 		keyedPrefix[cred.Provider] = true
@@ -498,7 +506,7 @@ func listAPIKeyProviders() ([]views.APIKeyProvider, error) {
 			Models:   len(provider.Models),
 		})
 	}
-	return rows, nil
+	return rows
 }
 
 // loadCloudCatalog loads the models.dev catalog for the Cloud Models view. It is
