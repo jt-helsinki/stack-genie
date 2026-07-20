@@ -10,6 +10,7 @@ import (
 
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/jt-helsinki/stack-genie/internal/apps"
 	"github.com/jt-helsinki/stack-genie/internal/config"
 	"github.com/jt-helsinki/stack-genie/internal/create"
 	"github.com/jt-helsinki/stack-genie/internal/ollama"
@@ -44,7 +45,8 @@ const (
 	stepIdle
 	stepTools // unified AI-tools multi-select (caveman/graphify/code-review-graph/codebase-memory)
 	stepModel
-	stepAuth // dynamic: one auth-mode select per OAuth-capable selected agent
+	stepAppPorts // dynamic: one host-port input per selected in-VM app
+	stepAuth     // dynamic: one auth-mode select per OAuth-capable selected agent
 	stepCount
 )
 
@@ -66,6 +68,7 @@ var stepTitles = map[int]string{
 	stepIdle:     "Idle timeout",
 	stepTools:    "AI tools",
 	stepModel:    "Graphify model",
+	stepAppPorts: "App port",
 }
 
 // Create is the in-TUI new-workspace wizard: a multi-step form built from the same
@@ -98,6 +101,15 @@ type Create struct {
 	authAgents []string
 	authLists  []*selectList
 	authIndex  int
+
+	// Per-app host-port phase (stepAppPorts): one text input per SELECTED in-VM app,
+	// built when leaving the model step. appPortIndex walks them one at a time.
+	// reservedAppPorts is the machine-wide set of ports already taken by other
+	// workspaces' apps (for seeding a free suggested default).
+	appPortKeys      []string
+	appPortInputs    []*textStep
+	appPortIndex     int
+	reservedAppPorts map[int]bool
 
 	width  int
 	height int
@@ -133,6 +145,9 @@ func NewCreate(startDir string, library []ollama.LibraryModel, hostGB, usableGB 
 	if len(library) > 0 {
 		wizard.model = newModelPicker(library, "")
 	}
+	// Ports already taken by other workspaces' apps, so a suggested app port defaults to a
+	// free one (best-effort; a read error just yields an empty reserved set).
+	wizard.reservedAppPorts, _ = apps.ReservedPortsAcrossWorkspaces()
 	return wizard
 }
 
@@ -164,6 +179,9 @@ func (view *Create) SetSize(width, height int) {
 	view.stepW, view.stepH = stepWidth, stepHeight
 	for _, list := range view.authLists {
 		list.SetSize(stepWidth, stepHeight)
+	}
+	for _, input := range view.appPortInputs {
+		input.SetSize(stepWidth, stepHeight)
 	}
 	view.location.SetSize(stepWidth, stepHeight)
 	view.name.SetSize(stepWidth, stepHeight)
@@ -220,6 +238,11 @@ func (view *Create) Update(msg tea.Msg) tea.Cmd {
 			return view.next()
 		}
 		return nil
+	case stepAppPorts:
+		if len(view.appPortInputs) == 0 {
+			return view.next()
+		}
+		return view.updateTextStep(view.appPortInputs[view.appPortIndex], msg)
 	case stepAuth:
 		if len(view.authLists) == 0 {
 			return view.next()
@@ -346,6 +369,12 @@ func (view *Create) next() tea.Cmd {
 	switch view.step {
 	case stepModel:
 		return view.leaveModelStep()
+	case stepAppPorts:
+		if view.appPortIndex+1 < len(view.appPortKeys) {
+			view.appPortIndex++
+			return nil
+		}
+		return view.enterAuthOrFinish()
 	case stepAuth:
 		if view.authIndex+1 < len(view.authAgents) {
 			view.authIndex++
@@ -361,7 +390,7 @@ func (view *Create) next() tea.Cmd {
 		view.defaultTool.SetOptions(agentCLIs)
 	}
 	// The Graphify-model step is shown only when graphify is selected AND a library is
-	// cached; otherwise skip straight into the auth phase.
+	// cached; otherwise skip straight into the app-port / auth phases.
 	if view.step == stepModel && (view.model == nil || !view.graphifySelected()) {
 		return view.leaveModelStep()
 	}
@@ -369,9 +398,21 @@ func (view *Create) next() tea.Cmd {
 }
 
 // leaveModelStep is the transition out of the (possibly-skipped) Graphify-model step: it
-// builds the per-agent auth phase and either enters it or finishes when no OAuth-capable
-// agent is selected.
+// builds the per-app host-port phase and enters it, or continues to the auth phase when no
+// in-VM app is selected.
 func (view *Create) leaveModelStep() tea.Cmd {
+	view.buildAppPortSteps()
+	if len(view.appPortKeys) > 0 {
+		view.step = stepAppPorts
+		view.appPortIndex = 0
+		return nil
+	}
+	return view.enterAuthOrFinish()
+}
+
+// enterAuthOrFinish builds the per-agent auth phase and either enters it or finishes when
+// no OAuth-capable agent is selected.
+func (view *Create) enterAuthOrFinish() tea.Cmd {
 	view.buildAuthSteps()
 	if len(view.authAgents) == 0 {
 		return view.finish()
@@ -381,8 +422,19 @@ func (view *Create) leaveModelStep() tea.Cmd {
 	return nil
 }
 
-// prev goes back a step (no-op at the first step). Within the auth phase it walks back
-// through the per-agent selects, then to the model step.
+// backToModelOrTools returns from a dynamic phase to the model step when it is shown, else
+// the tools step.
+func (view *Create) backToModelOrTools() {
+	if view.model != nil && view.graphifySelected() {
+		view.step = stepModel
+		return
+	}
+	view.step = stepTools
+}
+
+// prev goes back a step (no-op at the first step). Within the dynamic phases it walks back
+// through the per-agent auth selects, then the per-app port inputs, then to the model/tools
+// step.
 func (view *Create) prev() {
 	switch {
 	case view.step == stepAuth:
@@ -390,14 +442,42 @@ func (view *Create) prev() {
 			view.authIndex--
 			return
 		}
-		// Back into the model step only when it is shown; otherwise skip to the tools step.
-		if view.model != nil && view.graphifySelected() {
-			view.step = stepModel
+		if len(view.appPortKeys) > 0 {
+			view.step = stepAppPorts
+			view.appPortIndex = len(view.appPortKeys) - 1
 			return
 		}
-		view.step = stepTools
+		view.backToModelOrTools()
+	case view.step == stepAppPorts:
+		if view.appPortIndex > 0 {
+			view.appPortIndex--
+			return
+		}
+		view.backToModelOrTools()
 	case view.step > stepLocation:
 		view.step--
+	}
+}
+
+// buildAppPortSteps computes the per-app host-port phase from the current app selection:
+// one text input per selected in-VM app, seeded with a suggested free port (the app's
+// familiar container port when free, else auto-allocated). Rebuilt each time the model step
+// is left, so toggling apps earlier is reflected. Blank input → auto-assign at create.
+func (view *Create) buildAppPortSteps() {
+	view.appPortKeys = nil
+	view.appPortInputs = nil
+	_, appKeys := view.selectedAgentsAndApps()
+	for _, key := range appKeys {
+		label := key
+		if manifest, ok := apps.Lookup(key); ok {
+			label = manifest.Name
+		}
+		seed := strconv.Itoa(apps.SuggestedHostPort(key, view.reservedAppPorts, nil))
+		input := newTextStep(label+" host port",
+			"Host port to expose "+label+"'s web UI on (blank = auto-assign).", seed, seed, validateAppPortField)
+		input.SetSize(view.stepW, view.stepH)
+		view.appPortKeys = append(view.appPortKeys, key)
+		view.appPortInputs = append(view.appPortInputs, input)
 	}
 }
 
@@ -439,6 +519,16 @@ func (view *Create) finish() tea.Cmd {
 		}
 	}
 	agentCLIs, appKeys := view.selectedAgentsAndApps()
+	// Per-app chosen host ports (blank/auto entries omitted → auto-allocated at create).
+	var appPorts map[string]int
+	for index, key := range view.appPortKeys {
+		if port, err := strconv.Atoi(strings.TrimSpace(view.appPortInputs[index].Value())); err == nil && port > 0 {
+			if appPorts == nil {
+				appPorts = make(map[string]int, len(view.appPortKeys))
+			}
+			appPorts[key] = port
+		}
+	}
 	spec := project.Spec{
 		Name:                   view.name.Value(),
 		OS:                     view.osList.Value(),
@@ -448,6 +538,7 @@ func (view *Create) finish() tea.Cmd {
 		AuthModes:              authModes,
 		Stacks:                 view.stacks.Values(),
 		Apps:                   appKeys,
+		AppPorts:               appPorts,
 		CPUs:                   cpus,
 		Memory:                 view.memory.Value(),
 		PublishPorts:           ports,
@@ -466,12 +557,19 @@ func (view *Create) finish() tea.Cmd {
 // phase is dynamic, so the total step count grows once the (per-agent) auth steps are known.
 func (view *Create) View() string {
 	baseSteps := stepModel + 1 // location..model inclusive
-	total := baseSteps + len(view.authAgents)
+	total := baseSteps + len(view.appPortKeys) + len(view.authAgents)
 	title := stepTitles[view.step]
 	current := view.step + 1
+	if view.step == stepAppPorts && view.appPortIndex < len(view.appPortKeys) {
+		key := view.appPortKeys[view.appPortIndex]
+		if manifest, ok := apps.Lookup(key); ok {
+			title = manifest.Name + " host port"
+		}
+		current = baseSteps + view.appPortIndex + 1
+	}
 	if view.step == stepAuth {
 		title = view.authAgents[view.authIndex] + " authentication"
-		current = baseSteps + view.authIndex + 1
+		current = baseSteps + len(view.appPortKeys) + view.authIndex + 1
 	}
 	header := ui.Heading.Render(title) +
 		ui.Muted.Render(fmt.Sprintf("   (step %d of %d)", current, total)) + "\n\n"
@@ -512,6 +610,11 @@ func (view *Create) stepBody() string {
 			return ui.Muted.Render("No Ollama library cached — the Graphify model is left unset (run `ai models` to populate it).")
 		}
 		return view.model.View()
+	case stepAppPorts:
+		if len(view.appPortInputs) == 0 {
+			return ""
+		}
+		return view.appPortInputs[view.appPortIndex].View()
 	case stepAuth:
 		if len(view.authLists) == 0 {
 			return ""
@@ -546,6 +649,19 @@ func validateMemoryField(value string) error {
 		return nil
 	}
 	return create.ValidateResourcesWithinHost(1, value)
+}
+
+// validateAppPortField accepts a blank value (auto-assign) or a valid 1-65535 host port.
+func validateAppPortField(value string) error {
+	trimmed := strings.TrimSpace(value)
+	if trimmed == "" {
+		return nil
+	}
+	port, err := strconv.Atoi(trimmed)
+	if err != nil || port < 1 || port > 65535 {
+		return fmt.Errorf("port must be a number 1-65535 (or blank to auto-assign)")
+	}
+	return nil
 }
 
 func validatePortsField(value string) error {

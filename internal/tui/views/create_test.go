@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/jt-helsinki/stack-genie/internal/create"
 	"github.com/jt-helsinki/stack-genie/internal/ollama"
 	"github.com/jt-helsinki/stack-genie/internal/state"
 )
@@ -383,5 +384,66 @@ func TestCreateWizardAuthModeStep(test *testing.T) {
 	}
 	if confirmed.Spec.AuthModes["claude-code"] != "oauth" {
 		test.Errorf("Spec.AuthModes = %v, want claude-code=oauth", confirmed.Spec.AuthModes)
+	}
+}
+
+// TestCreateWizardPromptsAppPort verifies the wizard shows a host-port step for each
+// selected in-VM app and carries the chosen port into the spec.
+func TestCreateWizardPromptsAppPort(test *testing.T) {
+	test.Setenv("HOME", test.TempDir())
+	base := test.TempDir()
+	target := filepath.Join(base, "app-ws")
+
+	wizard := NewCreate(base, nil, 24, 18) // nil library → the Graphify-model step is skipped
+	wizard.SetSize(80, 24)
+	enter := func() tea.Cmd { return wizard.Update(tea.KeyMsg{Type: tea.KeyEnter}) }
+	press := func(k tea.KeyType) { wizard.Update(tea.KeyMsg{Type: k}) }
+	space := func() { wizard.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(" ")}) }
+
+	wizard.location.input.SetValue(target)
+	enter()
+	wizard.name.input.SetValue("app-ws")
+	enter()
+	enter() // OS
+	enter() // shell
+	// agents+apps: move to the openwebui row (last option) and toggle it on (opencode stays).
+	openWebUIIndex := len(create.SupportedAgentCLIs())
+	for index, key := range create.SupportedApps() {
+		if key == "openwebui" {
+			openWebUIIndex += index
+		}
+	}
+	for step := 0; step < openWebUIIndex; step++ {
+		press(tea.KeyDown)
+	}
+	space()
+	enter() // leave agents+apps
+	enter() // default agent
+	enter() // stacks
+	enter() // cpus
+	enter() // memory
+	enter() // ports
+	enter() // idle → AI tools
+	if wizard.step != stepTools {
+		test.Fatalf("after idle, step = %d, want stepTools", wizard.step)
+	}
+	enter() // tools → (model skipped) → app-port phase
+	if wizard.step != stepAppPorts {
+		test.Fatalf("after AI tools, step = %d, want stepAppPorts", wizard.step)
+	}
+	if len(wizard.appPortKeys) != 1 || wizard.appPortKeys[0] != "openwebui" {
+		test.Fatalf("app-port phase keys = %v, want [openwebui]", wizard.appPortKeys)
+	}
+	wizard.appPortInputs[0].input.SetValue("9999")
+	cmd := enter() // leave app-port → no OAuth agent → finish
+	if cmd == nil {
+		test.Fatal("leaving the app-port step should finish and emit a command")
+	}
+	confirmed, ok := cmd().(CreateConfirmedMsg)
+	if !ok {
+		test.Fatalf("want CreateConfirmedMsg, got %#v", cmd())
+	}
+	if confirmed.Spec.AppPorts["openwebui"] != 9999 {
+		test.Errorf("spec.AppPorts[openwebui] = %d, want 9999", confirmed.Spec.AppPorts["openwebui"])
 	}
 }
