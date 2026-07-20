@@ -429,7 +429,7 @@ Idempotent: safe to re-run after a partial or completed uninstall.
 
 ```bash id="c4"
 ai create [<name>] [--name <name>] [--os <os>] [--shell <bash|zsh>] [--agents <list>]
-          [--auth-mode <cli=mode>] [--stacks <list>] [--apps <list>] [--graphify-model <ref>]
+          [--auth-mode <cli=mode>] [--stacks <list>] [--apps <list>] [--app-port <app=port>] [--graphify-model <ref>]
           [--cpus <n>] [--memory <size>] [--ports <list>] [--location <dir>]
           [--idle-timeout <dur>] [--tools <list>]
 ```
@@ -482,8 +482,15 @@ one command:
 * `--apps <list>` — comma-separated in-VM AI apps to install
   (`openwebui,anythingllm`); **opt-in, default none**. Like `--stacks` it
   pre-seeds the wizard's apps multi-select on a terminal and drives the selection
-  directly under `--json`/no-TTY. Each selected app is allocated a unique host port
-  at create time (see §4.5c)
+  directly under `--json`/no-TTY. Each selected app is exposed on a host port
+  at create time (see §4.5c and `--app-port`)
+* `--app-port <app>=<port>` — the HOST port to expose a selected app's web UI on
+  (repeatable, e.g. `--app-port openwebui=8080 --app-port anythingllm=3001`). On a
+  terminal the wizard **prompts** for each selected app's port (seeded with the app's
+  familiar container port — Open WebUI 8080, AnythingLLM 3001 — when free, else an
+  auto-allocated one); this flag pre-seeds that prompt and sets it non-interactively.
+  A blank/omitted port is **auto-assigned**. The port is validated unique + host-free
+  at create; an unknown app or out-of-range port exits `2`, an unavailable port exits `2`.
 * `--cpus <n>` — workspace vCPUs, written to `workspace.cpu_limit`. Defaults to the
   global default (4) and is **capped at the host's logical CPU count** — a larger
   request exits `2`.
@@ -607,10 +614,13 @@ Steps, in order:
    generated `.ai-platform/Dockerfile` and recorded in `profile.yaml`.
 6. **AI apps** — **multi-select checkboxes**; choose the opt-in in-VM AI
    applications to install into the workspace (`Open WebUI`, `AnythingLLM`).
-   **None pre-checked** (apps are opt-in). Pre-seeded from `--apps`. Each selected
-   app is recorded in `config.yaml`'s `apps:` block and allocated a unique host
-   port; the containers run inside the microVM and are managed later via
-   `ai apps` (§4.5c).
+   **None pre-checked** (apps are opt-in). Pre-seeded from `--apps`. For EACH
+   selected app the wizard then **prompts for the HOST port** to expose its web UI
+   on (a text input per app, seeded with a suggested free port — the app's familiar
+   container port when free, else auto-allocated; `--app-port <app>=<port>`
+   pre-seeds it, blank auto-assigns). Each selected app is recorded in
+   `config.yaml`'s `apps:` block with its port; the containers run inside the
+   microVM and are managed later via `ai apps` (§4.5c).
 7. **Resources & ports** — text inputs for **vCPUs** (`--cpus`, default 4,
    host-capped), **memory in GB** (`--memory`, a plain number, default 8,
    host-capped), and **ports to open** (`--ports`, comma-separated `PORT` or

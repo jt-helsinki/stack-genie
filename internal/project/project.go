@@ -53,6 +53,10 @@ type Spec struct {
 	// Apps are the opt-in in-VM AI applications to install (subset of apps.Keys()).
 	// Empty by default — apps are opt-in.
 	Apps []string
+	// AppPorts is the user-chosen HOST port to expose each selected app's web UI on,
+	// keyed by app key (from the create prompt / --app-port flag). A key with no entry
+	// (or 0) is auto-allocated. Validated + honored by apps.AllocateEntries at Scaffold.
+	AppPorts map[string]int
 	// IdleTimeout is written to config.yaml microsandbox.idle_timeout and passed to
 	// `msb create --idle-timeout` at every workspace start/restart. Empty defaults to
 	// config.DefaultMicrosandboxIdleTimeout.
@@ -262,7 +266,7 @@ func Scaffold(spec Spec, createdAt string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	appEntries, err := apps.AllocateEntries(spec.Apps, reserved, nil)
+	appEntries, err := apps.AllocateEntries(spec.Apps, spec.AppPorts, reserved, nil)
 	if err != nil {
 		return "", err
 	}

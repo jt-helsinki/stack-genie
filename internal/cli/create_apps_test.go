@@ -143,3 +143,39 @@ func TestNormalizeDefaultAgentCLI(test *testing.T) {
 		test.Fatalf("empty agents default = %q, want empty", got)
 	}
 }
+
+// --app-port <app>=<port> flows into project.Spec.AppPorts and is validated.
+func TestSpecFromFlagsCarriesAppPorts(test *testing.T) {
+	spec, err := specFromFlags(createFlags{
+		name: "demo", osKey: "ubuntu", defaultName: "demo",
+		apps: []string{"openwebui"}, appPorts: map[string]int{"openwebui": 8080},
+	})
+	if err != nil {
+		test.Fatalf("specFromFlags: %v", err)
+	}
+	if spec.AppPorts["openwebui"] != 8080 {
+		test.Errorf("spec.AppPorts[openwebui] = %d, want 8080", spec.AppPorts["openwebui"])
+	}
+}
+
+func TestParseAppPortFlags(test *testing.T) {
+	ports := parseAppPortFlags([]string{"openwebui=8080", "anythingllm=3001", "bad-no-eq", "x=notnum"})
+	if ports["openwebui"] != 8080 || ports["anythingllm"] != 3001 {
+		test.Errorf("parsed = %v, want openwebui=8080 anythingllm=3001", ports)
+	}
+	if len(ports) != 2 {
+		test.Errorf("malformed entries must be skipped, got %v", ports)
+	}
+}
+
+func TestValidateRejectsUnknownAppPort(test *testing.T) {
+	if err := validateProvidedCreateFlags(createFlags{appPorts: map[string]int{"nope": 8080}}); err == nil {
+		test.Error("an --app-port for an unknown app must be rejected")
+	}
+}
+
+func TestValidateRejectsOutOfRangeAppPort(test *testing.T) {
+	if err := validateProvidedCreateFlags(createFlags{appPorts: map[string]int{"openwebui": 70000}}); err == nil {
+		test.Error("an out-of-range --app-port must be rejected")
+	}
+}

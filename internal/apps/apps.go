@@ -1,6 +1,7 @@
 package apps
 
 import (
+	"errors"
 	"fmt"
 	"sort"
 	"strings"
@@ -134,12 +135,45 @@ func PublishedPorts(projectConfig *config.Config) []config.PortMapping {
 	return mappings
 }
 
-// AllocateEntries allocates a unique host port for each requested app key,
-// avoiding the reserved set (and the ports allocated to earlier keys in the same
-// call), returning the AppEntry records to persist into a workspace config. It is
-// used at create time to seed the wizard-selected apps. Unknown keys are skipped.
-// isFree defaults to a real loopback probe when nil.
-func AllocateEntries(keys []string, reserved map[int]bool, isFree portChecker) ([]config.AppEntry, error) {
+// ErrPortUnavailable is returned when a user-requested app host port is out of range,
+// already reserved by another app/workspace, or in use on the host (→ exit 2).
+var ErrPortUnavailable = errors.New("requested app host port is unavailable")
+
+// SuggestedHostPort proposes a default host port to expose an app on, for seeding the
+// create prompt: the app's familiar container port (8080 Open WebUI, 3001 AnythingLLM)
+// when it is free and unreserved, otherwise the next auto-allocated free port. Returns 0
+// for an unknown key. isFree defaults to a real loopback probe when nil.
+func SuggestedHostPort(key string, reserved map[int]bool, isFree portChecker) int {
+	manifest, ok := Lookup(key)
+	if !ok {
+		return 0
+	}
+	if isFree == nil {
+		isFree = realPortFree
+	}
+	if reserved == nil {
+		reserved = map[int]bool{}
+	}
+	if !reserved[manifest.ContainerPort] && isFree(manifest.ContainerPort) {
+		return manifest.ContainerPort
+	}
+	if port, err := allocatePort(reserved, isFree); err == nil {
+		return port
+	}
+	return manifest.ContainerPort
+}
+
+// AllocateEntries assigns each requested app key a host port, returning the AppEntry
+// records to persist into a workspace config. It is used at create time to seed the
+// wizard-selected apps. Unknown keys are skipped.
+//
+// requested carries a user-chosen host port per app key (from the create prompt/flag); a
+// key with a requested port > 0 is validated (valid range, host-free, not already reserved
+// by another app or workspace, no collision within this call) and used as-is — an
+// unavailable port is an error (ErrPortUnavailable). A key with no request (0/absent) is
+// auto-allocated from the platform's port window, as before. isFree defaults to a real
+// loopback probe when nil.
+func AllocateEntries(keys []string, requested map[string]int, reserved map[int]bool, isFree portChecker) ([]config.AppEntry, error) {
 	if isFree == nil {
 		isFree = realPortFree
 	}
@@ -156,9 +190,23 @@ func AllocateEntries(keys []string, reserved map[int]bool, isFree portChecker) (
 		if _, ok := Lookup(key); !ok {
 			continue
 		}
-		port, err := allocatePort(taken, isFree)
-		if err != nil {
-			return nil, err
+		port := requested[key]
+		if port > 0 {
+			if port > 65535 {
+				return nil, fmt.Errorf("%w: %q port %d is out of range (1-65535)", ErrPortUnavailable, key, port)
+			}
+			if taken[port] {
+				return nil, fmt.Errorf("%w: port %d is already in use by another app or workspace", ErrPortUnavailable, port)
+			}
+			if !isFree(port) {
+				return nil, fmt.Errorf("%w: port %d is in use on the host", ErrPortUnavailable, port)
+			}
+		} else {
+			allocated, err := allocatePort(taken, isFree)
+			if err != nil {
+				return nil, err
+			}
+			port = allocated
 		}
 		taken[port] = true
 		entries = append(entries, config.AppEntry{Key: key, Port: port})

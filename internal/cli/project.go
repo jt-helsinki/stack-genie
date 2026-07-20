@@ -143,6 +143,7 @@ type createFlags struct {
 	agents        []string
 	stacks        []string
 	apps          []string
+	appPorts      map[string]int
 	idleTimeout   string
 	cpus          int
 	memory        string
@@ -163,6 +164,7 @@ func readCreateFlags(cmd *cobra.Command, args []string) createFlags {
 	agents, _ := cmd.Flags().GetStringSlice("agents")
 	stacks, _ := cmd.Flags().GetStringSlice("stacks")
 	appsList, _ := cmd.Flags().GetStringSlice("apps")
+	appPortEntries, _ := cmd.Flags().GetStringSlice("app-port")
 	idleTimeout, _ := cmd.Flags().GetString("idle-timeout")
 	cpus, _ := cmd.Flags().GetInt("cpus")
 	memory, _ := cmd.Flags().GetString("memory")
@@ -174,12 +176,58 @@ func readCreateFlags(cmd *cobra.Command, args []string) createFlags {
 	tools, _ := cmd.Flags().GetStringSlice("tools")
 	return createFlags{
 		name: name, osKey: osKey, agents: agents, stacks: stacks, apps: appsList,
+		appPorts:    parseAppPortFlags(appPortEntries),
 		idleTimeout: idleTimeout, cpus: cpus, memory: memory, ports: ports,
 		location: location, graphifyModel: graphifyModel, shell: shell, authMode: authMode,
 		tools:       tools,
 		toolsSet:    cmd.Flags().Changed("tools"),
 		defaultName: defaultProjectName(args),
 	}
+}
+
+// parseAppPortFlags parses repeated --app-port <app>=<port> entries into a key→port map.
+// Malformed entries are skipped here; validateProvidedCreateFlags reports them as errors.
+func parseAppPortFlags(entries []string) map[string]int {
+	ports := make(map[string]int, len(entries))
+	for _, entry := range entries {
+		key, value, ok := strings.Cut(entry, "=")
+		if !ok {
+			continue
+		}
+		if port, err := strconv.Atoi(strings.TrimSpace(value)); err == nil {
+			ports[strings.TrimSpace(key)] = port
+		}
+	}
+	return ports
+}
+
+// wizardAppPortValidator accepts a blank value (auto-assign) or a valid 1-65535 port.
+func wizardAppPortValidator(value string) error {
+	trimmed := strings.TrimSpace(value)
+	if trimmed == "" {
+		return nil
+	}
+	port, err := strconv.Atoi(trimmed)
+	if err != nil || port < 1 || port > 65535 {
+		return fmt.Errorf("port must be a number 1-65535 (or blank to auto-assign)")
+	}
+	return nil
+}
+
+// selectedAppPorts collects the wizard's per-app port inputs for the SELECTED apps into a
+// key→port map (skipping blank/auto entries), for project.Spec.AppPorts.
+func selectedAppPorts(selectedApps []string, values map[string]*string) map[string]int {
+	ports := make(map[string]int, len(selectedApps))
+	for _, appKey := range selectedApps {
+		value := values[appKey]
+		if value == nil {
+			continue
+		}
+		if port, err := strconv.Atoi(strings.TrimSpace(*value)); err == nil && port > 0 {
+			ports[appKey] = port
+		}
+	}
+	return ports
 }
 
 // resolveLocation turns a location flag into an absolute path (expanding a leading
@@ -395,6 +443,7 @@ func newCreateCmd(emitter *output.Emitter, exit *int, use string) *cobra.Command
 	cmd.Flags().StringSlice("agents", nil, "agent CLIs to install (default: opencode): "+strings.Join(supportedAgentCLIs, ","))
 	cmd.Flags().StringSlice("stacks", nil, "extra software stacks ("+strings.Join(supportedStacks, ",")+"); Python 3.x, uv, Node 24.x and Graphify are installed by default")
 	cmd.Flags().StringSlice("apps", nil, "in-VM AI apps to install (default: none): "+strings.Join(supportedApps, ","))
+	cmd.Flags().StringSlice("app-port", nil, "host port to expose a selected app's web UI on: <app>=<port> (repeatable; default auto-assigned)")
 	cmd.Flags().String("idle-timeout", "", "Microsandbox idle timeout (default: "+config.DefaultMicrosandboxIdleTimeout+", e.g. 30m, 24h)")
 	cmd.Flags().Int("cpus", 0, fmt.Sprintf("workspace vCPUs (default: %d; max: host's %d)", config.Default().Workspace.CPULimit, sysinfo.CPUs()))
 	cmd.Flags().String("memory", "", "workspace memory in GB, a plain number (default: "+config.Default().Workspace.MemoryLimit+"; capped below host RAM, reserving headroom for the host + service tier)")
@@ -655,6 +704,31 @@ func runCreateWizard(seed project.Spec) (project.Spec, bool, error) {
 		).WithHideFunc(func() bool { return !slices.Contains(toolsSelection, create.AIToolGraphify) }))
 	}
 
+	// Per-app host-port prompts: one input per supported in-VM app, shown only when that
+	// app is selected above. Seeded with a suggested free port (the app's familiar
+	// container port, else an auto-allocated one), or the --app-port value when given.
+	// Blank → auto-assign at create.
+	reservedAppPorts, _ := apps.ReservedPortsAcrossWorkspaces()
+	appPortValues := make(map[string]*string, len(supportedApps))
+	for _, appKey := range supportedApps {
+		seedPort := seed.AppPorts[appKey]
+		if seedPort == 0 {
+			seedPort = apps.SuggestedHostPort(appKey, reservedAppPorts, nil)
+		}
+		value := strconv.Itoa(seedPort)
+		appPortValues[appKey] = &value
+		key := appKey
+		label := appKey
+		if manifest, ok := apps.Lookup(appKey); ok {
+			label = manifest.Name
+		}
+		groups = append(groups, huh.NewGroup(
+			huh.NewInput().Title(label+" host port").
+				Description("Host port to expose "+label+"'s web UI on (blank = auto-assign)").
+				Value(appPortValues[key]).Validate(wizardAppPortValidator),
+		).WithHideFunc(func() bool { return !slices.Contains(agentAppSelection, key) }))
+	}
+
 	form := huh.NewForm(groups...).WithTheme(ui.HuhTheme()).WithWidth(formWidth())
 
 	if err := form.Run(); err != nil {
@@ -665,6 +739,7 @@ func runCreateWizard(seed project.Spec) (project.Spec, bool, error) {
 	}
 
 	agentCLIs, selectedApps := create.SplitAgentsAndApps(agentAppSelection)
+	appPorts := selectedAppPorts(selectedApps, appPortValues)
 	defaultTool = normalizeDefaultAgentCLI(defaultTool, agentCLIs)
 	cpus := 0
 	if trimmed := strings.TrimSpace(cpusText); trimmed != "" {
@@ -691,6 +766,7 @@ func runCreateWizard(seed project.Spec) (project.Spec, bool, error) {
 		DefaultTool:            defaultTool,
 		AuthModes:              authModes,
 		Apps:                   selectedApps,
+		AppPorts:               appPorts,
 		IdleTimeout:            idleTimeout,
 		CPUs:                   cpus,
 		Memory:                 strings.TrimSpace(memory),
@@ -958,6 +1034,16 @@ func validateProvidedCreateFlags(flags createFlags) error {
 				"unknown --apps value %q (one of: %s)", app, strings.Join(supportedApps, ", "))
 		}
 	}
+	for app, port := range flags.appPorts {
+		if !slices.Contains(supportedApps, app) {
+			return output.Errorf(output.ExitInvalidInput,
+				"unknown --app-port app %q (one of: %s)", app, strings.Join(supportedApps, ", "))
+		}
+		if port < 1 || port > 65535 {
+			return output.Errorf(output.ExitInvalidInput,
+				"invalid --app-port %s=%d (port must be 1-65535)", app, port)
+		}
+	}
 	for _, tool := range flags.tools {
 		if !slices.Contains(supportedAITools, tool) {
 			return output.Errorf(output.ExitInvalidInput,
@@ -1094,6 +1180,7 @@ func seedSpec(flags createFlags) project.Spec {
 		DefaultTool:            normalizeDefaultAgentCLI(agents[0], agents),
 		AuthModes:              authModes,
 		Apps:                   flags.apps,
+		AppPorts:               flags.appPorts,
 		IdleTimeout:            idleTimeout,
 		CPUs:                   flags.cpus,
 		Memory:                 flags.memory,
@@ -1148,6 +1235,7 @@ func specFromFlags(flags createFlags) (project.Spec, error) {
 		DefaultTool:            normalizeDefaultAgentCLI(agents[0], agents),
 		AuthModes:              authModes,
 		Apps:                   flags.apps,
+		AppPorts:               flags.appPorts,
 		IdleTimeout:            idleTimeout,
 		CPUs:                   flags.cpus,
 		Memory:                 flags.memory,
