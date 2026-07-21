@@ -179,3 +179,26 @@ func TestValidateRejectsOutOfRangeAppPort(test *testing.T) {
 		test.Error("an out-of-range --app-port must be rejected")
 	}
 }
+
+// --app-port accepts a dashboard-capable agent CLI (hermes), not just in-VM apps.
+func TestValidateAcceptsHermesDashboardPort(test *testing.T) {
+	if err := validateProvidedCreateFlags(createFlags{appPorts: map[string]int{"hermes": 9119}}); err != nil {
+		test.Errorf("--app-port hermes=9119 must be accepted (hermes ships a dashboard): %v", err)
+	}
+	if err := validateProvidedCreateFlags(createFlags{appPorts: map[string]int{"hermes": 70000}}); err == nil {
+		test.Error("an out-of-range hermes dashboard port must be rejected")
+	}
+}
+
+func TestSpecFromFlagsCarriesHermesDashboardPort(test *testing.T) {
+	spec, err := specFromFlags(createFlags{
+		name: "demo", osKey: "ubuntu", defaultName: "demo",
+		agents: []string{"opencode", "hermes"}, appPorts: map[string]int{"hermes": 9119},
+	})
+	if err != nil {
+		test.Fatalf("specFromFlags: %v", err)
+	}
+	if spec.AppPorts["hermes"] != 9119 {
+		test.Errorf("spec.AppPorts[hermes] = %d, want 9119", spec.AppPorts["hermes"])
+	}
+}

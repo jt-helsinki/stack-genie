@@ -270,6 +270,21 @@ func Scaffold(spec Spec, createdAt string) (string, error) {
 	if err != nil {
 		return "", err
 	}
+	// Agent-CLI web dashboards (e.g. hermes) get a host port too, published from the microVM
+	// the same way as apps. Reserve the app entries just allocated so a dashboard can't
+	// collide with them (or with another workspace). spec.AppPorts carries the user's
+	// requested dashboard ports too (keyed by the agent CLI).
+	dashboardReserved := make(map[int]bool, len(reserved)+len(appEntries))
+	for port := range reserved {
+		dashboardReserved[port] = true
+	}
+	for _, entry := range appEntries {
+		dashboardReserved[entry.Port] = true
+	}
+	dashboardEntries, err := apps.AllocateDashboardEntries(apps.SelectedDashboardAgents(spec.AgentCLIs), spec.AppPorts, dashboardReserved, nil)
+	if err != nil {
+		return "", err
+	}
 	idleTimeout := spec.IdleTimeout
 	if idleTimeout == "" {
 		idleTimeout = config.DefaultMicrosandboxIdleTimeout
@@ -333,13 +348,14 @@ func Scaffold(spec Spec, createdAt string) (string, error) {
 	codeReviewGraphEnabled := spec.CodeReviewGraphEnabled
 	codebaseMemoryEnabled := spec.CodebaseMemoryEnabled
 	projectConfig := &config.Config{
-		OS:           spec.OS,
-		Agent:        config.AgentConfig{Tools: spec.AgentCLIs, DefaultTool: spec.DefaultTool, GraphifyModel: spec.GraphifyModel, AuthModes: authModes},
-		Workspace:    config.WorkspaceConfig{CPULimit: cpus, MemoryLimit: memory, Shell: shell},
-		Context:      config.ContextConfig{CavemanEnabled: &cavemanEnabled, GraphifyEnabled: &graphifyEnabled, CodeReviewGraphEnabled: &codeReviewGraphEnabled, CodebaseMemoryEnabled: &codebaseMemoryEnabled},
-		Microsandbox: config.MicrosandboxConfig{IdleTimeout: idleTimeout},
-		Network:      config.NetworkConfig{PublishPorts: spec.PublishPorts, AllowHostServices: oauthAllow},
-		Apps:         appEntries,
+		OS:              spec.OS,
+		Agent:           config.AgentConfig{Tools: spec.AgentCLIs, DefaultTool: spec.DefaultTool, GraphifyModel: spec.GraphifyModel, AuthModes: authModes},
+		Workspace:       config.WorkspaceConfig{CPULimit: cpus, MemoryLimit: memory, Shell: shell},
+		Context:         config.ContextConfig{CavemanEnabled: &cavemanEnabled, GraphifyEnabled: &graphifyEnabled, CodeReviewGraphEnabled: &codeReviewGraphEnabled, CodebaseMemoryEnabled: &codebaseMemoryEnabled},
+		Microsandbox:    config.MicrosandboxConfig{IdleTimeout: idleTimeout},
+		Network:         config.NetworkConfig{PublishPorts: spec.PublishPorts, AllowHostServices: oauthAllow},
+		Apps:            appEntries,
+		AgentDashboards: dashboardEntries,
 	}
 	if err := config.WriteProject(root, projectConfig); err != nil {
 		return "", err
@@ -456,7 +472,7 @@ func workspaceHandle(name, root string) (id, status, created, lastStarted string
 // agentArtifactDirs are the per-CLI agent config dirs and the Python venv the platform
 // writes into the PROJECT folder (outside .ai-platform) at workspace start. A plain
 // `ai delete` removes them too, best-effort — a missing one is ignored.
-var agentArtifactDirs = []string{".opencode", ".claude", ".codex", ".omp", ".gemini", ".copilot", ".openclaw", ".hermes", ".venv-msb"}
+var agentArtifactDirs = []string{".opencode", ".claude", ".codex", ".omp", ".gemini", ".copilot", ".hermes", ".venv-msb"}
 
 // Delete removes a project from the index and removes its persistent overlay. A plain
 // delete removes the whole .ai-platform tree (config + run state) and — when

@@ -605,7 +605,7 @@ func (manager Manager) registerAgentProviders(name, project, root string, projec
 	// codex/gemini/claude carry no list (they name any served model per request).
 	//
 	// Enabled AI-tool MCP servers, injected into the configs the platform manages WHOLE
-	// (codex/openclaw/hermes/omp) so they survive each start's rewrite (the CLIs whose
+	// (codex/hermes/omp) so they survive each start's rewrite (the CLIs whose
 	// configs the platform does NOT own get these tools via their native install instead).
 	// graphify runs from the project venv (.venv-msb, where graphifyy[mcp] is installed).
 	mcpServers := agentcfg.EnabledMCPServers(
@@ -614,7 +614,7 @@ func (manager Manager) registerAgentProviders(name, project, root string, projec
 		projectConfig.Context.GraphifyEnabledOrDefault(),
 		workspaceWorkdir+"/.venv-msb/bin/python",
 	)
-	if err := manager.writeModelListConfigs(name, root, gatewayURL, defaultModel, models, keepTurns, outputBufferTokens, mcpServers); err != nil {
+	if err := manager.writeModelListConfigs(name, root, gatewayURL, defaultModel, models, keepTurns, outputBufferTokens); err != nil {
 		return err
 	}
 
@@ -895,9 +895,8 @@ func (manager Manager) linkAgentStateDirs(name string, oauthAgents map[string]bo
 	links := []stateLink{
 		{"~/.local/share/opencode", "opencode"},
 		{"~/.omp", "omp"},
-		// openclaw + hermes keep their global config + state (last-used model, memory,
-		// skills) in ~/.openclaw and ~/.hermes; persist them so a restart remembers.
-		{"~/.openclaw", "openclaw"},
+		// hermes keeps its global config + state (last-used model, memory, skills) in
+		// ~/.hermes; persist it so a restart remembers.
 		{"~/.hermes", "hermes"},
 	}
 	// oauthCredDirs maps each OAuth-eligible CLI to its native-login credential dir. An
@@ -953,44 +952,22 @@ func oauthAgentList(projectConfig *config.Config) []string {
 	return list
 }
 
-// writeModelListConfigs writes the agent CLIs that carry a SERVED-MODEL LIST — opencode
-// (host project config: the list is REPLACED wholesale while all other user keys merge/
-// survive). openclaw's global config (its served-model list,
-// written whole). codex/gemini/claude carry NO list (they name any served model per
-// request), so they are not touched here. A defaultModel of "" pins no model and drops
-// any previously-seeded one (so a CLI's persisted last-used selection wins). When the
-// served list is EMPTY (gateway unreachable), the existing lists are LEFT UNTOUCHED —
-// opencode's merge preserves them — so a transient
-// outage never wipes a good list. This is the shared refresh used at start AND on attach.
-func (manager Manager) writeModelListConfigs(name, root, gatewayURL, defaultModel string, models []string, keepTurns, outputBufferTokens int, mcpServers []agentcfg.MCPServer) error {
+// writeModelListConfigs writes the agent CLIs that carry a SERVED-MODEL LIST — currently
+// only opencode (host project config: the list is REPLACED wholesale while all other user
+// keys merge/survive). codex/gemini/claude carry NO list (they name any served model per
+// request), so they are not touched here. A defaultModel of "" pins no model and drops any
+// previously-seeded one (so a CLI's persisted last-used selection wins). When the served
+// list is EMPTY (gateway unreachable), the existing list is LEFT UNTOUCHED — opencode's
+// merge preserves it — so a transient outage never wipes a good list. Shared refresh used
+// at start AND on attach.
+func (manager Manager) writeModelListConfigs(name, root, gatewayURL, defaultModel string, models []string, keepTurns, outputBufferTokens int) error {
 	openCodeConfig, err := agentcfg.MergeOpenCodeConfig(
 		readHostFileOrNil(projectConfigPath(root, ".opencode", "opencode.json")),
 		gatewayURL, agentcfg.OpenCodeAPIKeyRef, defaultModel, models, keepTurns, outputBufferTokens)
 	if err != nil {
 		return err
 	}
-	if err := writeHostFile(projectConfigPath(root, ".opencode", "opencode.json"), openCodeConfig); err != nil {
-		return err
-	}
-	// openclaw: whole-file managed GLOBAL config enumerating the served models.
-	// Skip on an empty list so a transient gateway-down never wipes the in-VM list.
-	if len(models) == 0 {
-		return nil
-	}
-	// openclaw: aip-gateway provider with the served models enumerated (keyless).
-	// Rewritten at start and on attach so `ai models`/`ai keys` changes appear without a
-	// full restart.
-	openClawConfig, err := agentcfg.OpenClawConfig(gatewayURL, agentcfg.OpenClawAPIKeyRef, defaultModel, models)
-	if err != nil {
-		return err
-	}
-	// The enabled tools' MCP servers ride in the SAME openclaw.json (mcp.servers) the
-	// platform rewrites, so this refresh (start + attach) keeps them registered.
-	openClawConfig, err = agentcfg.InjectOpenClawMCP(openClawConfig, mcpServers)
-	if err != nil {
-		return err
-	}
-	return manager.Sandbox.WriteFile(name, agentcfg.OpenClawConfigGuest, openClawConfig)
+	return writeHostFile(projectConfigPath(root, ".opencode", "opencode.json"), openCodeConfig)
 }
 
 // refreshAgentModels re-writes the opencode served-model LIST against the LIVE
@@ -1030,13 +1007,7 @@ func (manager Manager) refreshAgentModels(project string) {
 
 	keepTurns, outputBufferTokens := contextopt.HeadroomParams(projectConfig.Context.Strategy)
 	models := manager.pickerModels()
-	mcpServers := agentcfg.EnabledMCPServers(
-		projectConfig.Context.CodeReviewGraphEnabledOrDefault(),
-		projectConfig.Context.CodebaseMemoryEnabledOrDefault(),
-		projectConfig.Context.GraphifyEnabledOrDefault(),
-		workspaceWorkdir+"/.venv-msb/bin/python",
-	)
-	if err := manager.writeModelListConfigs(name, root, gatewayURL, "", models, keepTurns, outputBufferTokens, mcpServers); err != nil {
+	if err := manager.writeModelListConfigs(name, root, gatewayURL, "", models, keepTurns, outputBufferTokens); err != nil {
 		_, _ = fmt.Fprintf(os.Stderr, "warning: could not refresh agent model lists in workspace %q (continuing): %v\n", name, err)
 	}
 }
@@ -1157,7 +1128,7 @@ func (manager Manager) registerGraphify(name string, projectConfig *config.Confi
 	_, _ = manager.Sandbox.ExecContext(ctx, name, []string{"sh", "-lc", script})
 
 	// When Graphify is enabled, also set up its stdio MCP server (registered into the
-	// managed configs for codex/omp/openclaw/hermes): install graphifyy[mcp] INTO the
+	// managed configs for codex/omp/hermes): install graphifyy[mcp] INTO the
 	// project venv (.venv-msb — the uv-tool install is isolated and not importable via
 	// `python -m`) and build the graph offline so the server has data on first use. This
 	// is a multi-minute network op, so — like the Caveman install — it is DETACHED.
@@ -1202,7 +1173,6 @@ var cavemanOnlyAgent = map[string]string{
 	"opencode":    "opencode",
 	"codex":       "codex",
 	"copilot":     "copilot",
-	"openclaw":    "openclaw",
 	"hermes":      "hermes",
 }
 
@@ -1359,7 +1329,7 @@ func (manager Manager) registerCaveman(name string, projectConfig *config.Config
 // NOT rewrite (so code-review-graph's native install is not clobbered). codex is
 // deliberately ABSENT: its config.toml is platform-managed (rewritten each start), so a
 // native install there would be wiped — codex instead gets code-review-graph's MCP server
-// injected into config.toml by registerAgentProviders (AppendCodexMCP). omp/openclaw/hermes
+// injected into config.toml by registerAgentProviders (AppendCodexMCP). omp/hermes
 // are not code-review-graph platforms either and likewise get the MCP server via injection
 // into their managed configs.
 var codeReviewGraphPlatformFlag = map[string]string{
@@ -1820,13 +1790,10 @@ var sharedResourceLinks = []sharedResourceLink{
 		"opencode":    ".opencode/skills",
 		"claude-code": ".claude/skills",
 		"omp":         ".omp/skills",
-		// openclaw + hermes are gateway agents like omp. Hermes reads skills from
-		// its config's external_dirs (HermesConfig points one at .hermes/skills);
-		// openclaw's skills dir is not documented upstream, so .openclaw/skills is a
-		// best-effort mirror alongside Caveman's own --only install. hardware bring-up:
-		// confirm both dirs resolve in-VM.
-		"openclaw": ".openclaw/skills",
-		"hermes":   ".hermes/skills",
+		// hermes is a gateway agent like omp; it reads skills from its config's
+		// external_dirs (HermesConfig points one at .hermes/skills). hardware bring-up:
+		// confirm the dir resolves in-VM.
+		"hermes": ".hermes/skills",
 	}},
 	{pool: "agents", perCLI: map[string]string{
 		"opencode":    ".opencode/agents",
@@ -1841,9 +1808,8 @@ var sharedResourceLinks = []sharedResourceLink{
 		"claude-code": ".claude/commands",
 		"gemini":      ".gemini/commands",
 		"omp":         ".omp/commands",
-		// openclaw exposes slash-commands; hermes derives them from skills (no separate
-		// dir) so it gets NO prompts link — a CLI a kind lacks is skipped, like codex/gemini.
-		"openclaw": ".openclaw/commands",
+		// hermes derives commands from skills (no separate dir) so it gets NO prompts link
+		// — a CLI a kind lacks is skipped, like codex/gemini.
 	}},
 }
 
@@ -2422,7 +2388,6 @@ var agentValidCLIs = map[string][]string{
 	"claude-code": {"claude"},
 	"codex":       {"codex"},
 	"gemini":      {"gemini"},
-	"openclaw":    {"openclaw"},
 	"hermes":      {"hermes"},
 }
 

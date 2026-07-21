@@ -56,7 +56,6 @@ func TestInstallCopiesTreeToDisk(t *testing.T) {
 		filepath.Join("stacks", "rust", "Dockerfile.snippet"),
 		filepath.Join("agentclis", "opencode", "Dockerfile.snippet"),
 		filepath.Join("agentclis", "claude-code", "Dockerfile.snippet"),
-		filepath.Join("agentclis", "openclaw", "Dockerfile.snippet"),
 		filepath.Join("agentclis", "hermes", "Dockerfile.snippet"),
 	}
 	for _, relative := range representative {

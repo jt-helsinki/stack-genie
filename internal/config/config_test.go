@@ -308,7 +308,7 @@ func TestForcedOAuthCLIs(test *testing.T) {
 			test.Errorf("%s must be OAuth-eligible", cli)
 		}
 	}
-	for _, cli := range []string{"opencode", "omp", "openclaw", "hermes"} {
+	for _, cli := range []string{"opencode", "omp", "hermes"} {
 		if IsOAuthEligible(cli) {
 			test.Errorf("%s is a gateway-only agent and must not be OAuth-eligible", cli)
 		}

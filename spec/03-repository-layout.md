@@ -224,7 +224,7 @@ Rules:
   `.git` gitlink file first) `registerGraphify` runs `git init` so every workspace is
   git-backed; when Graphify is selected it then runs `graphify hook install`
   on EVERY start for a valid repo (the hook is idempotent, so there is deliberately no
-  marker, and it runs even for an omp/openclaw/hermes-only project). Graphify's headless LLM
+  marker, and it runs even for an omp/hermes-only project). Graphify's headless LLM
   backend is an Ollama model chosen at `ai create` (`agent.graphify_model`, §12.4),
   routed through the gateway as `ollama/<model>`. **Neither Python nor Node is
   a `--stacks` option** — both are baked into the base (the no-op `python`/`node`
@@ -243,7 +243,7 @@ Rules:
 
 There is no platform MCP registry. Most MCP servers are configured and run by the
 in-workspace agent (architecture §12). The one exception: for the agent configs the
-platform rewrites whole on every start (codex/openclaw/hermes/omp), it INJECTS the
+platform rewrites whole on every start (codex/hermes/omp), it INJECTS the
 enabled AI tools' MCP servers (code-review-graph/codebase-memory-mcp/graphify) directly
 into that render so the rewrite doesn't clobber them (architecture §12); the CLIs whose
 configs the platform does not own get those same servers via the tools' own native install.
@@ -395,7 +395,6 @@ the agent into this source tree — the platform does not manage them.
 .codex/config.toml              # codex provider block (key via env_key)
 .omp/config.yml                 # omp provider order + default model (models.yml is GLOBAL in-VM ~/.omp/agent/models.yml)
 .omp/mcp.json                   # omp MCP servers — injected AI-tool MCP servers, rewritten whole at start
-.openclaw/…                     # openclaw: config is the GLOBAL in-VM ~/.openclaw/openclaw.json (keyless)
 .hermes/…                       # hermes: config is the GLOBAL in-VM ~/.hermes/config.yaml (keyless)
 # (gemini is ENV-only — no on-disk provider file; copilot manages its own ~/.copilot)
 ```
@@ -426,9 +425,9 @@ existing file is deep-merged so the managed block wins while the user's other ke
 * **copilot** (GitHub Copilot CLI) → NO platform-written config (forced-OAuth /
   gateway-incapable; it manages its own `~/.copilot`).
 
-**Injected MCP servers.** The four configs the platform rewrites whole on every start —
-codex's `.codex/config.toml`, openclaw's global `~/.openclaw/openclaw.json`, hermes's
-global `~/.hermes/config.yaml`, and omp's `.omp/mcp.json` — carry the enabled AI tools'
+**Injected MCP servers.** The three configs the platform rewrites whole on every start —
+codex's `.codex/config.toml`, hermes's global `~/.hermes/config.yaml`, and omp's
+`.omp/mcp.json` — carry the enabled AI tools'
 (code-review-graph/codebase-memory-mcp/graphify) MCP servers, injected into the render so
 the start-time rewrite can't clobber them (architecture §12). CLIs whose configs the
 platform does not own (claude-code/opencode/gemini/copilot) get those servers via the
@@ -696,7 +695,7 @@ config blocks.
 ```yaml id="sc6"
 os: alma                   # alma | debian-trixie | debian-bookworm | ubuntu
 agent:
-  tools: [opencode]        # installed agent CLIs (any subset of: opencode, omp, claude-code, codex, gemini, copilot, openclaw, hermes); opencode by default
+  tools: [opencode]        # installed agent CLIs (any subset of: opencode, omp, claude-code, codex, gemini, copilot, hermes); opencode by default
   default_tool: opencode   # default agent CLI; must be one of agent.tools
   graphify_model: qwen2.5-coder:7b  # optional: Ollama model Graphify uses (chosen at `ai create`, routed through the gateway as ollama/<model>); omitted = none
 context:

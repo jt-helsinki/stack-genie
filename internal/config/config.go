@@ -39,6 +39,10 @@ type Config struct {
 	// in-VM nerdctl containers (arch §7). Each carries the unique host port it is
 	// published on so concurrently-running workspaces never collide.
 	Apps []AppEntry `yaml:"apps,omitempty" json:"apps,omitempty"`
+	// AgentDashboards records the host port for each installed agent CLI that ships a
+	// web dashboard (e.g. hermes → `hermes dashboard`), published from the microVM the
+	// same way as Apps. Reuses AppEntry (Key = the agent CLI, Port = the host port).
+	AgentDashboards []AppEntry `yaml:"agent_dashboards,omitempty" json:"agent_dashboards,omitempty"`
 }
 
 // AppEntry records one installed in-VM app and the unique host port allocated

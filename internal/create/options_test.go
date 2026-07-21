@@ -103,7 +103,7 @@ func TestOAuthCapableCLIs(test *testing.T) {
 			test.Errorf("OAuthCapableCLIs() = %v, missing %q", got, cli)
 		}
 	}
-	for _, notCapable := range []string{"opencode", "pi", "omp", "copilot", "openclaw", "hermes"} {
+	for _, notCapable := range []string{"opencode", "omp", "copilot", "hermes"} {
 		if slices.Contains(got, notCapable) {
 			test.Errorf("OAuthCapableCLIs() must not contain %q; got %v", notCapable, got)
 		}

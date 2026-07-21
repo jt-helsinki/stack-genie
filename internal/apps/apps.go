@@ -122,9 +122,17 @@ var ErrAlreadyInstalled = fmt.Errorf("app is already installed in this workspace
 // The port chain: host:<port> --(msb -p <port>:<port>)--> VM:<port>
 // --(nerdctl -p <port>:<containerPort>)--> container:<containerPort>.
 func PublishedPorts(projectConfig *config.Config) []config.PortMapping {
-	mappings := make([]config.PortMapping, 0, len(projectConfig.Apps))
+	mappings := make([]config.PortMapping, 0, len(projectConfig.Apps)+len(projectConfig.AgentDashboards))
 	for _, entry := range projectConfig.Apps {
 		if _, ok := Lookup(entry.Key); !ok {
+			continue
+		}
+		mappings = append(mappings, config.PortMapping{Guest: entry.Port, Host: entry.Port})
+	}
+	// Agent-CLI web dashboards (e.g. hermes) publish the SAME way — host==guest, forwarded
+	// by msb into the VM where the agent launches its dashboard server on that port.
+	for _, entry := range projectConfig.AgentDashboards {
+		if !IsDashboardAgent(entry.Key) {
 			continue
 		}
 		mappings = append(mappings, config.PortMapping{Guest: entry.Port, Host: entry.Port})
@@ -174,6 +182,17 @@ func SuggestedHostPort(key string, reserved map[int]bool, isFree portChecker) in
 // auto-allocated from the platform's port window, as before. isFree defaults to a real
 // loopback probe when nil.
 func AllocateEntries(keys []string, requested map[string]int, reserved map[int]bool, isFree portChecker) ([]config.AppEntry, error) {
+	return allocatePortsForKeys(keys, requested, reserved, isFree, func(key string) bool {
+		_, ok := Lookup(key)
+		return ok
+	})
+}
+
+// allocatePortsForKeys is the shared allocator behind AllocateEntries (in-VM apps) and
+// AllocateDashboardEntries (agent-CLI web dashboards): for each KNOWN key it honors a
+// requested port (validating range + host-free + no collision within this call or the
+// reserved set) or auto-allocates a free window port. Unknown keys are skipped.
+func allocatePortsForKeys(keys []string, requested map[string]int, reserved map[int]bool, isFree portChecker, known func(string) bool) ([]config.AppEntry, error) {
 	if isFree == nil {
 		isFree = realPortFree
 	}
@@ -187,7 +206,7 @@ func AllocateEntries(keys []string, requested map[string]int, reserved map[int]b
 	}
 	entries := make([]config.AppEntry, 0, len(keys))
 	for _, key := range keys {
-		if _, ok := Lookup(key); !ok {
+		if !known(key) {
 			continue
 		}
 		port := requested[key]

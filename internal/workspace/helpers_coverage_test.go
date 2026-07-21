@@ -138,7 +138,7 @@ func TestAgentCLINames(test *testing.T) {
 		present[name] = true
 	}
 
-	for _, want := range []string{"opencode", "omp", "claude-code", "codex", "gemini", "openclaw", "hermes"} {
+	for _, want := range []string{"opencode", "omp", "claude-code", "codex", "gemini", "hermes"} {
 		if !present[want] {
 			test.Fatalf("AgentCLINames() missing %q: %v", want, names)
 		}

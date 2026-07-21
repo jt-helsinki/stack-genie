@@ -450,20 +450,22 @@ func TestSupportedAgentCLIsIncludesCopilot(test *testing.T) {
 	}
 }
 
-// TestSupportedAgentCLIsIncludesOpenClawAndHermes pins the two gateway-agent additions,
-// and confirms SplitAgentsAndApps classes them as AGENTS (not apps).
-func TestSupportedAgentCLIsIncludesOpenClawAndHermes(test *testing.T) {
-	for _, cli := range []string{"openclaw", "hermes"} {
-		if !slices.Contains(SupportedAgentCLIs(), cli) {
-			test.Errorf("SupportedAgentCLIs() must include %q: %v", cli, SupportedAgentCLIs())
-		}
+// TestSupportedAgentCLIsIncludesHermes pins the hermes gateway agent, confirms
+// SplitAgentsAndApps classes it as an AGENT (not an app), and that the removed openclaw is
+// absent.
+func TestSupportedAgentCLIsIncludesHermes(test *testing.T) {
+	if !slices.Contains(SupportedAgentCLIs(), "hermes") {
+		test.Errorf("SupportedAgentCLIs() must include hermes: %v", SupportedAgentCLIs())
 	}
-	agentCLIs, appKeys := SplitAgentsAndApps([]string{"openclaw", "hermes", "openwebui"})
-	if !slices.Contains(agentCLIs, "openclaw") || !slices.Contains(agentCLIs, "hermes") {
-		test.Errorf("openclaw/hermes must split as agents, got agents=%v apps=%v", agentCLIs, appKeys)
+	if slices.Contains(SupportedAgentCLIs(), "openclaw") {
+		test.Errorf("openclaw was removed and must not be a supported agent CLI: %v", SupportedAgentCLIs())
 	}
-	if slices.Contains(appKeys, "openclaw") || slices.Contains(appKeys, "hermes") {
-		test.Errorf("openclaw/hermes must NOT be classed as apps: %v", appKeys)
+	agentCLIs, appKeys := SplitAgentsAndApps([]string{"hermes", "openwebui"})
+	if !slices.Contains(agentCLIs, "hermes") {
+		test.Errorf("hermes must split as an agent, got agents=%v apps=%v", agentCLIs, appKeys)
+	}
+	if slices.Contains(appKeys, "hermes") {
+		test.Errorf("hermes must NOT be classed as an app: %v", appKeys)
 	}
 }
 

@@ -232,18 +232,12 @@ func OmpConfig(defaultModel string) ([]byte, error) {
 	return marshalYAML(document)
 }
 
-// openclaw + hermes are gateway/api-key agents like opencode/pi/omp: they reach models
-// ONLY through the gateway, keyless. Their config is GLOBAL (one file per tool), written
-// whole via Sandbox.WriteFile (off host disk) — mirroring omp's global config.
-// nginx :18787 fronts LiteLLM :4000; Headroom input-compression is a LiteLLM pre_call
-// guardrail on that path, so both get compression automatically with no client-side wrap.
+// hermes is a gateway/api-key agent like opencode/omp: it reaches models ONLY through the
+// gateway, keyless. Its config is GLOBAL (one file), written whole via Sandbox.WriteFile
+// (off host disk) — mirroring omp's global config. nginx :18787 fronts LiteLLM :4000;
+// Headroom input-compression is a LiteLLM pre_call guardrail on that path, so it gets
+// compression automatically with no client-side wrap.
 const (
-	// OpenClawAPIKeyRef is written as openclaw's provider apiKey: an ${VAR} substitution
-	// naming AIP_GATEWAY_KEY (openclaw resolves uppercase ${ENV} at load), keeping the
-	// on-disk config keyless. The real scoped key lives only in the in-VM agent env file.
-	OpenClawAPIKeyRef = "${" + codexKeyVar + "}"
-	// OpenClawConfigGuest is openclaw's global config (the path it reads).
-	OpenClawConfigGuest = "/home/workspace/.openclaw/openclaw.json"
 	// HermesKeyEnv is written as hermes' provider key_env: the NAME of the env var hermes
 	// resolves at runtime (NOT the key), keeping the on-disk config keyless.
 	HermesKeyEnv = codexKeyVar
@@ -255,42 +249,6 @@ const (
 	// only resource dir hermes needs.
 	HermesSkillsExternalDir = projectDirGuest + "/.hermes/skills"
 )
-
-// OpenClawConfig renders ~/.openclaw/openclaw.json: an aip-gateway OpenAI-completions
-// provider (keyless — apiKey is the ${AIP_GATEWAY_KEY} substitution) with the served
-// models enumerated, merged over openclaw's defaults (models.mode:"merge"). A non-empty
-// defaultModel seeds agents.defaults.model.primary; an empty one omits it so openclaw's
-// persisted last-used selection wins (seed-then-remember, matching the other CLIs).
-// gatewayURL carries the /v1 suffix. The served list is rewritten each start + on attach
-// (see workspace.writeModelListConfigs), so a model added via `ai models`/`ai keys` shows
-// up without a full restart — the opencode list-refresh contract.
-func OpenClawConfig(gatewayURL, apiKey, defaultModel string, models []string) ([]byte, error) {
-	providerModels := make([]map[string]any, 0, len(models))
-	for _, model := range models {
-		providerModels = append(providerModels, map[string]any{"id": model, "name": model})
-	}
-	document := map[string]any{
-		"models": map[string]any{
-			"mode": "merge",
-			"providers": map[string]any{
-				ProviderID: map[string]any{
-					"baseUrl": gatewayURL,
-					"apiKey":  apiKey,
-					"api":     "openai-completions",
-					"models":  providerModels,
-				},
-			},
-		},
-	}
-	if defaultModel != "" {
-		document["agents"] = map[string]any{
-			"defaults": map[string]any{
-				"model": map[string]any{"primary": ProviderID + "/" + defaultModel},
-			},
-		}
-	}
-	return marshalStable(document)
-}
 
 // HermesConfig renders ~/.hermes/config.yaml: an aip-gateway provider (keyless — key_env
 // NAMES the AIP_GATEWAY_KEY env var) selected as the model provider, plus external_dirs
@@ -317,7 +275,7 @@ func HermesConfig(gatewayURL, defaultModel string) ([]byte, error) {
 }
 
 // MCPServer is a stdio MCP server the platform registers into the agent configs it
-// MANAGES WHOLE (codex/openclaw/hermes/omp — the CLIs whose single config file the
+// MANAGES WHOLE (codex/hermes/omp — the CLIs whose single config file the
 // platform rewrites each start). Their MCP entries must be part of that render, or the
 // rewrite would clobber whatever the tool's own installer wrote. The CLIs whose configs
 // the platform does NOT own (claude/opencode/gemini/copilot) instead get these tools via
@@ -358,7 +316,7 @@ func EnabledMCPServers(codeReviewGraph, codebaseMemory, graphify bool, venvPytho
 }
 
 // mcpServerMap renders the MCP servers as the {name: {command, args}} object shape shared
-// by openclaw (mcp.servers), omp (mcpServers), and (as a nested map) hermes (mcp_servers).
+// by omp (mcpServers) and (as a nested map) hermes (mcp_servers).
 func mcpServerMap(servers []MCPServer) map[string]any {
 	out := make(map[string]any, len(servers))
 	for _, server := range servers {
@@ -376,22 +334,6 @@ func mcpServerMap(servers []MCPServer) map[string]any {
 // this is a STANDALONE file — it does not collide with the platform-managed .omp/config.yml.
 func OmpMcpConfig(servers []MCPServer) ([]byte, error) {
 	return marshalStable(map[string]any{"mcpServers": mcpServerMap(servers)})
-}
-
-// InjectOpenClawMCP adds the MCP servers to openclaw's rendered config under mcp.servers
-// (the shape `openclaw mcp add` writes). It parses OpenClawConfig's JSON and re-marshals so
-// the servers ride in the SAME openclaw.json the platform rewrites each start. No servers →
-// the config is returned unchanged.
-func InjectOpenClawMCP(config []byte, servers []MCPServer) ([]byte, error) {
-	if len(servers) == 0 {
-		return config, nil
-	}
-	var document map[string]any
-	if err := json.Unmarshal(config, &document); err != nil {
-		return nil, fmt.Errorf("parse openclaw config for MCP injection: %w", err)
-	}
-	document["mcp"] = map[string]any{"servers": mcpServerMap(servers)}
-	return marshalStable(document)
 }
 
 // InjectHermesMCP adds the MCP servers to hermes' rendered config under mcp_servers (the
@@ -680,7 +622,7 @@ func BashProfile() []byte {
 // HeadroomWrapName maps a platform agent CLI to the token Headroom's `wrap` subcommand
 // accepts, and reports whether Headroom can wrap it. Headroom `wrap` supports only a
 // FIXED set of agent tokens (claude, codex, copilot, cursor, aider, opencode, cline,
-// continue, goose, openhands, openclaw, vibe); of this platform's CLIs claude-code,
+// continue, goose, openhands, vibe); of this platform's CLIs claude-code,
 // codex, opencode, and copilot are wrappable. omp and gemini are NOT — aliasing them
 // would break at runtime — so they return ok=false and get no alias. This mirrors the
 // graphifyPlatformFlag guard: an unsupported CLI is simply skipped.

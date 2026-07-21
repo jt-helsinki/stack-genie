@@ -502,9 +502,8 @@ func TestRegisterCavemanCopilotWithInit(test *testing.T) {
 }
 
 // TestStartInjectsToolMCPServers verifies that when an AI tool is enabled, its MCP server
-// is injected into the configs the platform manages WHOLE (codex config.toml, openclaw
-// openclaw.json, hermes config.yaml, omp .omp/mcp.json) — so the start-time rewrite does
-// not clobber it.
+// is injected into the configs the platform manages WHOLE (codex config.toml, hermes
+// config.yaml, omp .omp/mcp.json) — so the start-time rewrite does not clobber it.
 func TestStartInjectsToolMCPServers(test *testing.T) {
 	root := seedProject(test, "app")
 	crg := true
@@ -512,7 +511,7 @@ func TestStartInjectsToolMCPServers(test *testing.T) {
 	// Persist a project config selecting the managed-config CLIs + code-review-graph on,
 	// graphify off (so the assertion is deterministic and venv-independent).
 	projectConfig := config.Default()
-	projectConfig.Agent.Tools = []string{"opencode", "codex", "openclaw", "omp", "hermes"}
+	projectConfig.Agent.Tools = []string{"opencode", "codex", "omp", "hermes"}
 	projectConfig.Context.CodeReviewGraphEnabled = &crg
 	projectConfig.Context.GraphifyEnabled = &graphifyOff
 	if err := config.WriteProject(root, projectConfig); err != nil {
@@ -535,11 +534,7 @@ func TestStartInjectsToolMCPServers(test *testing.T) {
 	if !strings.Contains(ompMCP, "code-review-graph") {
 		test.Errorf("omp mcp.json missing injected MCP server:\n%s", ompMCP)
 	}
-	// openclaw + hermes are written IN-VM (global configs).
-	openClaw := string(readGuestFile(test, sandbox, agentcfg.OpenClawConfigGuest))
-	if !strings.Contains(openClaw, "code-review-graph") {
-		test.Errorf("openclaw config missing injected MCP server:\n%s", openClaw)
-	}
+	// hermes is written IN-VM (global config).
 	hermes := string(readGuestFile(test, sandbox, agentcfg.HermesConfigGuest))
 	if !strings.Contains(hermes, "code-review-graph") {
 		test.Errorf("hermes config missing injected MCP server:\n%s", hermes)
@@ -1064,15 +1059,15 @@ func TestStartOAuthAgentBypassesGateway(test *testing.T) {
 
 // TestStartAPIKeyAgentRoutesThroughGateway verifies an api-key claude-code keeps its
 // gateway env and gets NO wrap alias (it already routes through the gateway).
-// TestStartRoutesOpenClawAndHermes verifies the two new gateway/api-key agent CLIs: each
-// gets its GLOBAL config written IN-VM (off host disk) pointing at the gateway and KEYLESS
-// (openclaw via ${AIP_GATEWAY_KEY}, hermes via key_env), and neither gets a Headroom wrap
-// alias (they route through the gateway where the Headroom guardrail already applies).
-func TestStartRoutesOpenClawAndHermes(test *testing.T) {
+// TestStartRoutesHermes verifies the gateway/api-key agent CLI hermes: it gets its GLOBAL
+// config written IN-VM (off host disk) pointing at the gateway and KEYLESS (via key_env),
+// and gets NO Headroom wrap alias (it routes through the gateway where the Headroom
+// guardrail already applies).
+func TestStartRoutesHermes(test *testing.T) {
 	root := seedProject(test, "app")
 	if err := config.WriteProject(root, &config.Config{
 		OS:    "debian-trixie",
-		Agent: config.AgentConfig{Tools: []string{"openclaw", "hermes"}, DefaultTool: "openclaw"},
+		Agent: config.AgentConfig{Tools: []string{"opencode", "hermes"}, DefaultTool: "opencode"},
 	}); err != nil {
 		test.Fatal(err)
 	}
@@ -1083,27 +1078,18 @@ func TestStartRoutesOpenClawAndHermes(test *testing.T) {
 		test.Fatal(err)
 	}
 
-	openClaw := readGuestFile(test, sandbox, agentcfg.OpenClawConfigGuest)
-	if !strings.Contains(openClaw, agentcfg.OpenClawAPIKeyRef) || !strings.Contains(openClaw, "host.microsandbox.internal:18787/v1") {
-		test.Errorf("openclaw config missing key-ref/baseURL:\n%s", openClaw)
-	}
-	if !strings.Contains(openClaw, "ollama/llama3.2:latest") {
-		test.Errorf("openclaw config must enumerate the served model:\n%s", openClaw)
-	}
 	hermes := readGuestFile(test, sandbox, agentcfg.HermesConfigGuest)
 	if !strings.Contains(hermes, agentcfg.HermesKeyEnv) || !strings.Contains(hermes, "host.microsandbox.internal:18787/v1") {
 		test.Errorf("hermes config missing key_env/base_url:\n%s", hermes)
 	}
-	// Both configs are keyless (the scoped key lives only in the agent env file).
-	for name, content := range map[string]string{"openclaw": openClaw, "hermes": hermes} {
-		if strings.Contains(content, "sk-fake-workspace-key") {
-			test.Errorf("%s config must be keyless (no scoped key on disk):\n%s", name, content)
-		}
+	// Keyless (the scoped key lives only in the agent env file).
+	if strings.Contains(hermes, "sk-fake-workspace-key") {
+		test.Errorf("hermes config must be keyless (no scoped key on disk):\n%s", hermes)
 	}
 	// api-key agents get NO wrap alias.
 	aliases := readGuestFile(test, sandbox, shellAliasesGuestPath)
-	if strings.Contains(aliases, "openclaw") || strings.Contains(aliases, "hermes") {
-		test.Errorf("openclaw/hermes route through the gateway and must NOT be wrap-aliased:\n%s", aliases)
+	if strings.Contains(aliases, "hermes") {
+		test.Errorf("hermes routes through the gateway and must NOT be wrap-aliased:\n%s", aliases)
 	}
 }
 

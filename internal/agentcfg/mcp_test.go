@@ -63,39 +63,6 @@ func TestOmpMcpConfig(test *testing.T) {
 	}
 }
 
-func TestInjectOpenClawMCP(test *testing.T) {
-	base, err := OpenClawConfig("http://gw/v1", OpenClawAPIKeyRef, "", []string{"m1"})
-	if err != nil {
-		test.Fatalf("OpenClawConfig: %v", err)
-	}
-	// No servers → unchanged.
-	if same, _ := InjectOpenClawMCP(base, nil); string(same) != string(base) {
-		test.Error("empty servers must return the config unchanged")
-	}
-	out, err := InjectOpenClawMCP(base, EnabledMCPServers(false, true, false, ""))
-	if err != nil {
-		test.Fatalf("InjectOpenClawMCP: %v", err)
-	}
-	var document struct {
-		MCP struct {
-			Servers map[string]struct {
-				Command string `json:"command"`
-			} `json:"servers"`
-		} `json:"mcp"`
-		Models map[string]any `json:"models"`
-	}
-	if err := json.Unmarshal(out, &document); err != nil {
-		test.Fatalf("unmarshal openclaw config: %v\n%s", err, out)
-	}
-	if document.MCP.Servers["codebase-memory-mcp"].Command != "codebase-memory-mcp" {
-		test.Errorf("openclaw mcp.servers = %+v", document.MCP.Servers)
-	}
-	// The original models/provider block must survive the injection.
-	if len(document.Models) == 0 {
-		test.Error("openclaw models block was lost during MCP injection")
-	}
-}
-
 func TestInjectHermesMCP(test *testing.T) {
 	base, err := HermesConfig("http://gw/v1", "")
 	if err != nil {

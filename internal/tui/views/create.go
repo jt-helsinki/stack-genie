@@ -459,26 +459,38 @@ func (view *Create) prev() {
 	}
 }
 
-// buildAppPortSteps computes the per-app host-port phase from the current app selection:
-// one text input per selected in-VM app, seeded with a suggested free port (the app's
-// familiar container port when free, else auto-allocated). Rebuilt each time the model step
-// is left, so toggling apps earlier is reflected. Blank input → auto-assign at create.
+// buildAppPortSteps computes the per-item host-port phase from the current selection: one
+// text input per selected in-VM app AND per selected dashboard-capable agent CLI (e.g.
+// hermes), seeded with a suggested free port (the item's familiar port when free, else
+// auto-allocated). Rebuilt each time the model step is left, so toggling apps/agents earlier
+// is reflected. Blank input → auto-assign at create.
 func (view *Create) buildAppPortSteps() {
 	view.appPortKeys = nil
 	view.appPortInputs = nil
-	_, appKeys := view.selectedAgentsAndApps()
+	agentCLIs, appKeys := view.selectedAgentsAndApps()
 	for _, key := range appKeys {
 		label := key
 		if manifest, ok := apps.Lookup(key); ok {
 			label = manifest.Name
 		}
 		seed := strconv.Itoa(apps.SuggestedHostPort(key, view.reservedAppPorts, nil))
-		input := newTextStep(label+" host port",
-			"Host port to expose "+label+"'s web UI on (blank = auto-assign).", seed, seed, validateAppPortField)
-		input.SetSize(view.stepW, view.stepH)
-		view.appPortKeys = append(view.appPortKeys, key)
-		view.appPortInputs = append(view.appPortInputs, input)
+		view.addAppPortStep(key, label+" host port",
+			"Host port to expose "+label+"'s web UI on (blank = auto-assign).", seed)
 	}
+	// Dashboard-capable agent CLIs (hermes) get the SAME prompt when selected.
+	for _, cli := range apps.SelectedDashboardAgents(agentCLIs) {
+		seed := strconv.Itoa(apps.SuggestedDashboardPort(cli, view.reservedAppPorts, nil))
+		view.addAppPortStep(cli, cli+" dashboard host port",
+			"Host port to expose the "+cli+" web dashboard on (blank = auto-assign).", seed)
+	}
+}
+
+// addAppPortStep appends one host-port text input to the app-port phase.
+func (view *Create) addAppPortStep(key, title, description, seed string) {
+	input := newTextStep(title, description, seed, seed, validateAppPortField)
+	input.SetSize(view.stepW, view.stepH)
+	view.appPortKeys = append(view.appPortKeys, key)
+	view.appPortInputs = append(view.appPortInputs, input)
 }
 
 // buildAuthSteps computes the auth-mode phase from the current agent selection: one

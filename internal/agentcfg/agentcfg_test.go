@@ -87,60 +87,6 @@ func TestOpenCodeConfigStructure(test *testing.T) {
 	}
 }
 
-func TestOpenClawConfigStructure(test *testing.T) {
-	raw, err := OpenClawConfig(testGateway, OpenClawAPIKeyRef, "gemma4", testModels)
-	if err != nil {
-		test.Fatal(err)
-	}
-	var document map[string]any
-	if err := json.Unmarshal(raw, &document); err != nil {
-		test.Fatalf("output is not valid JSON: %v", err)
-	}
-
-	models := nested(test, document, "models", "providers")
-	provider, ok := models[ProviderID].(map[string]any)
-	if !ok {
-		test.Fatalf("provider %q missing: %v", ProviderID, models)
-	}
-	if provider["baseUrl"] != testGateway {
-		test.Errorf("baseUrl = %v, want %v", provider["baseUrl"], testGateway)
-	}
-	if provider["api"] != "openai-completions" {
-		test.Errorf("api = %v, want openai-completions", provider["api"])
-	}
-	// KEYLESS: apiKey is the ${AIP_GATEWAY_KEY} substitution, never a real key.
-	if provider["apiKey"] != OpenClawAPIKeyRef {
-		test.Errorf("apiKey = %v, want %v", provider["apiKey"], OpenClawAPIKeyRef)
-	}
-	if rawModels, ok := provider["models"].([]any); !ok || len(rawModels) != len(testModels) {
-		test.Fatalf("models = %v, want %d entries", provider["models"], len(testModels))
-	}
-	// The seed default is namespaced under the provider.
-	primary := nested(test, document, "agents", "defaults")
-	model, _ := primary["model"].(map[string]any)
-	if model == nil || model["primary"] != ProviderID+"/gemma4" {
-		test.Errorf("agents.defaults.model.primary = %v, want %s/gemma4", model, ProviderID)
-	}
-	// No literal scoped key may appear on disk.
-	if strings.Contains(string(raw), testKey) || strings.Contains(string(raw), "sk-") {
-		test.Errorf("openclaw config must be keyless:\n%s", raw)
-	}
-}
-
-func TestOpenClawConfigOmitsDefaultWhenBlank(test *testing.T) {
-	raw, err := OpenClawConfig(testGateway, OpenClawAPIKeyRef, "", testModels)
-	if err != nil {
-		test.Fatal(err)
-	}
-	var document map[string]any
-	if err := json.Unmarshal(raw, &document); err != nil {
-		test.Fatal(err)
-	}
-	if _, present := document["agents"]; present {
-		test.Errorf("a blank default must omit agents.defaults.model.primary (seed-then-remember): %s", raw)
-	}
-}
-
 func TestHermesConfigStructure(test *testing.T) {
 	raw, err := HermesConfig(testGateway, "gemma4")
 	if err != nil {

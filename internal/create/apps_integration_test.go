@@ -79,6 +79,43 @@ func TestAppPortEndToEnd(test *testing.T) {
 	}
 }
 
+// TestHermesDashboardPortEndToEnd is the integration guard for exposing the hermes web
+// dashboard on a host port, mirroring the in-VM app chain: a chosen port flows
+// create.Execute → project.Scaffold → apps.AllocateDashboardEntries → persisted
+// config.yaml (agent_dashboards) → apps.PublishedPorts → egress.MsbNetworkArgs (-p flag).
+// Only fires when hermes is a selected agent CLI.
+func TestHermesDashboardPortEndToEnd(test *testing.T) {
+	test.Setenv("HOME", test.TempDir())
+	root := filepath.Join(test.TempDir(), "hermes-ws")
+
+	spec := project.Spec{
+		Name:        "hermes-ws",
+		OS:          SupportedOSes()[0],
+		AgentCLIs:   []string{"opencode", "hermes"},
+		DefaultTool: "opencode",
+		Root:        root,
+		AppPorts:    map[string]int{"hermes": 9119},
+	}
+	if _, _, err := Execute(spec, "2026-07-21T00:00:00Z", nil); err != nil {
+		test.Fatalf("Execute: %v", err)
+	}
+
+	projectConfig, err := config.LoadProjectConfig(root)
+	if err != nil {
+		test.Fatalf("LoadProjectConfig: %v", err)
+	}
+	if len(projectConfig.AgentDashboards) != 1 ||
+		projectConfig.AgentDashboards[0].Key != "hermes" || projectConfig.AgentDashboards[0].Port != 9119 {
+		test.Fatalf("agent_dashboards = %+v, want [hermes:9119]", projectConfig.AgentDashboards)
+	}
+
+	network := config.NetworkConfig{PublishPorts: apps.PublishedPorts(projectConfig)}
+	joined := strings.Join(egress.MsbNetworkArgs(network, "host.microsandbox.internal", 18787), " ")
+	if !strings.Contains(joined, "-p 9119:9119") {
+		test.Errorf("msb args must publish the hermes dashboard port (-p 9119:9119), got: %s", joined)
+	}
+}
+
 // TestAppPortRejectedUnavailableFailsCreate guards that an unavailable requested port fails
 // the create (rather than silently ignoring the user's choice).
 func TestAppPortRejectedUnavailableFailsCreate(test *testing.T) {

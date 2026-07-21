@@ -25,6 +25,9 @@ func ReservedPortsAcrossWorkspaces() (map[int]bool, error) {
 		for _, app := range projectConfig.Apps {
 			reserved[app.Port] = true
 		}
+		for _, dashboard := range projectConfig.AgentDashboards {
+			reserved[dashboard.Port] = true
+		}
 	}
 	return reserved, nil
 }

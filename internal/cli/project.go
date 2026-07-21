@@ -214,11 +214,12 @@ func wizardAppPortValidator(value string) error {
 	return nil
 }
 
-// selectedAppPorts collects the wizard's per-app port inputs for the SELECTED apps into a
-// key→port map (skipping blank/auto entries), for project.Spec.AppPorts.
-func selectedAppPorts(selectedApps []string, values map[string]*string) map[string]int {
-	ports := make(map[string]int, len(selectedApps))
-	for _, appKey := range selectedApps {
+// selectedAppPorts collects the wizard's per-item port inputs for the SELECTED keys (in-VM
+// apps + dashboard-capable agent CLIs like hermes) into a key→port map (skipping blank/auto
+// entries), for project.Spec.AppPorts.
+func selectedAppPorts(selectedKeys []string, values map[string]*string) map[string]int {
+	ports := make(map[string]int, len(selectedKeys))
+	for _, appKey := range selectedKeys {
 		value := values[appKey]
 		if value == nil {
 			continue
@@ -728,6 +729,22 @@ func runCreateWizard(seed project.Spec) (project.Spec, bool, error) {
 				Value(appPortValues[key]).Validate(wizardAppPortValidator),
 		).WithHideFunc(func() bool { return !slices.Contains(agentAppSelection, key) }))
 	}
+	// Agent CLIs that ship a web dashboard (e.g. hermes) get the SAME port prompt, shown
+	// only when that CLI is selected. Same request map (keyed by the CLI).
+	for _, dashCLI := range apps.DashboardAgents() {
+		seedPort := seed.AppPorts[dashCLI]
+		if seedPort == 0 {
+			seedPort = apps.SuggestedDashboardPort(dashCLI, reservedAppPorts, nil)
+		}
+		value := strconv.Itoa(seedPort)
+		appPortValues[dashCLI] = &value
+		key := dashCLI
+		groups = append(groups, huh.NewGroup(
+			huh.NewInput().Title(key+" dashboard host port").
+				Description("Host port to expose the "+key+" web dashboard on (blank = auto-assign)").
+				Value(appPortValues[key]).Validate(wizardAppPortValidator),
+		).WithHideFunc(func() bool { return !slices.Contains(agentAppSelection, key) }))
+	}
 
 	form := huh.NewForm(groups...).WithTheme(ui.HuhTheme()).WithWidth(formWidth())
 
@@ -739,7 +756,8 @@ func runCreateWizard(seed project.Spec) (project.Spec, bool, error) {
 	}
 
 	agentCLIs, selectedApps := create.SplitAgentsAndApps(agentAppSelection)
-	appPorts := selectedAppPorts(selectedApps, appPortValues)
+	portKeys := append(append([]string{}, selectedApps...), apps.SelectedDashboardAgents(agentCLIs)...)
+	appPorts := selectedAppPorts(portKeys, appPortValues)
 	defaultTool = normalizeDefaultAgentCLI(defaultTool, agentCLIs)
 	cpus := 0
 	if trimmed := strings.TrimSpace(cpusText); trimmed != "" {
@@ -1035,9 +1053,10 @@ func validateProvidedCreateFlags(flags createFlags) error {
 		}
 	}
 	for app, port := range flags.appPorts {
-		if !slices.Contains(supportedApps, app) {
+		if !slices.Contains(supportedApps, app) && !apps.IsDashboardAgent(app) {
 			return output.Errorf(output.ExitInvalidInput,
-				"unknown --app-port app %q (one of: %s)", app, strings.Join(supportedApps, ", "))
+				"unknown --app-port target %q (one of: %s, or a dashboard agent: %s)",
+				app, strings.Join(supportedApps, ", "), strings.Join(apps.DashboardAgents(), ", "))
 		}
 		if port < 1 || port > 65535 {
 			return output.Errorf(output.ExitInvalidInput,
@@ -1341,7 +1360,7 @@ func newDeleteCmd(emitter *output.Emitter, exit *int, use string) *cobra.Command
 				// --keep-agent-config.
 				if !purge {
 					removeAgentDirs, promptErr = promptConfirmDefault(
-						"Also delete the agent config folders (.opencode, .claude, .codex, .gemini, .openclaw, .hermes, .venv-msb)?",
+						"Also delete the agent config folders (.opencode, .claude, .codex, .gemini, .hermes, .venv-msb)?",
 						"If kept, their symlinked skills/agents/prompts are converted to real files first (the platform's shared copy is being removed).",
 						removeAgentDirs)
 					if promptErr != nil {
@@ -1377,7 +1396,7 @@ func newDeleteCmd(emitter *output.Emitter, exit *int, use string) *cobra.Command
 		},
 	}
 	cmd.Flags().BoolVar(&purge, "purge", false, "also delete the whole project directory (all your files, not just platform state)")
-	cmd.Flags().Bool("keep-agent-config", false, "keep the per-CLI agent config folders (.opencode/.claude/.codex/.gemini/.openclaw/.hermes/.venv-msb); their symlinked content is materialized")
+	cmd.Flags().Bool("keep-agent-config", false, "keep the per-CLI agent config folders (.opencode/.claude/.codex/.gemini/.hermes/.venv-msb); their symlinked content is materialized")
 	return cmd
 }
 
@@ -1393,7 +1412,7 @@ func deletePlan(name, root string, purge bool) []string {
 		removal,
 	}
 	if !purge {
-		plan = append(plan, "remove the agent config folders (.opencode/.claude/.codex/.gemini/.openclaw/.hermes/.venv-msb) unless kept with --keep-agent-config")
+		plan = append(plan, "remove the agent config folders (.opencode/.claude/.codex/.gemini/.hermes/.venv-msb) unless kept with --keep-agent-config")
 	}
 	return plan
 }
