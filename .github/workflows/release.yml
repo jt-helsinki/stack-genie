@@ -1,15 +1,21 @@
 name: release
 
-# Continuous delivery. Every merge/push to the default branch builds + verifies
-# the code, deploys the binaries to a GitHub Release, and — only if that
-# succeeds — creates the version tag at the merged commit. The assets are named
+# Continuous delivery. Every merge/push to the default branch verifies the code,
+# builds the per-arch binaries, deploys them to a GitHub Release, and — only if all
+# that succeeds — creates the version tag at the merged commit. The assets are named
 # ai-<os>-<arch>, exactly what installers/install.sh downloads from
 # releases/latest/download, so `curl … | sh` always pulls the newest build.
 #
+# The binary links the Microsandbox Go SDK, a cgo binding, so CGO_ENABLED=1 and the
+# build is NOT freely cross-compilable: darwin/arm64 is built NATIVELY on a macOS
+# (Apple Silicon) runner, linux/amd64 natively on ubuntu, and linux/arm64 by
+# cross-compiling on ubuntu with the aarch64 GNU C toolchain. `make release` names the
+# output from `go env GOOS/GOARCH` (which honor the GOOS/GOARCH env vars), so the
+# per-target env below is all it needs.
+#
 # Versioning: no hand-cut tags per merge, so each run uses v0.0.<run_number>
-# (monotonic + unique). The publish step creates that tag at the merged commit
-# and marks the release "latest". Push a real semver tag yourself for a named
-# release whenever you want.
+# (monotonic + unique). The publish step creates that tag at the merged commit and
+# marks the release "latest". Push a real semver tag yourself for a named release.
 on:
   push:
     branches: [main]
@@ -24,46 +30,87 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  release:
+  # Full pre-commit gate: fmt-check + vet + lint + test + build (native linux/amd64).
+  # A failure here fails the whole workflow, so no build/deploy/tag happens.
+  verify:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0 # full history so the release notes diff against the prior tag
-
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod # track the module's Go version, no drift
-
-      # Install golangci-lint (v2, matching the local gate) onto PATH so the
-      # `make check` lint step below actually runs — the Makefile's `lint` target
-      # silently skips when the binary is absent, which would let lint failures
-      # slip into a release. install-only places the binary on PATH without
-      # running it here; `make check` invokes `golangci-lint run` itself.
+      # Install golangci-lint (v2, matching the local gate) onto PATH so `make check`'s
+      # lint step actually runs — the Makefile's lint target silently skips when the
+      # binary is absent, which would let lint failures slip into a release.
       - name: Install golangci-lint
         uses: golangci/golangci-lint-action@v9
         with:
           version: v2.12.2
           install-only: true
-
-      # Full pre-commit gate: fmt-check + vet + lint + test + build. A failure in
-      # ANY of these fails the job, so no deploy and no tag is created — the
-      # deploy is gated on the same suite developers run locally.
       - name: Verify
         run: make check
 
-      - name: Build release binaries
+  # Build one native/cross binary per supported host arch. Each uploads dist/ai-<os>-<arch>
+  # as an artifact for the release job to collect.
+  build:
+    needs: verify
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - runner: macos-latest # Apple Silicon → native darwin/arm64
+            goos: darwin
+            goarch: arm64
+            cross: false
+          - runner: ubuntu-latest # native linux/amd64
+            goos: linux
+            goarch: amd64
+            cross: false
+          - runner: ubuntu-latest # cross-compiled linux/arm64 (cgo via aarch64 gcc)
+            goos: linux
+            goarch: arm64
+            cross: true
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      # cgo cross-compile to linux/arm64 needs the aarch64 GNU C toolchain.
+      - name: Install aarch64 cross toolchain
+        if: ${{ matrix.cross }}
+        run: sudo apt-get update && sudo apt-get install -y gcc-aarch64-linux-gnu
+      - name: Build ${{ matrix.goos }}/${{ matrix.goarch }}
         env:
           VERSION: v0.0.${{ github.run_number }} # injected into the binary via -ldflags
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          # A cross build must name the arm64 C compiler; native builds use the default.
+          CC: ${{ matrix.cross && 'aarch64-linux-gnu-gcc' || '' }}
         run: make release VERSION="$VERSION"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ai-${{ matrix.goos }}-${{ matrix.goarch }}
+          path: dist/ai-${{ matrix.goos }}-${{ matrix.goarch }}
+          if-no-files-found: error
 
+  # Collect the three binaries, checksum them, and publish the release + tag.
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # full history so the release notes diff against the prior tag
+      - name: Download built binaries
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true # flatten every artifact into ./dist
       - name: Checksums
         run: cd dist && sha256sum ai-darwin-arm64 ai-linux-amd64 ai-linux-arm64 > SHA256SUMS
-
-      # Deploy + tag (single atomic step): uploads the binaries to a new Release
-      # and creates the tag v0.0.<run_number> at the merged commit (github.sha,
-      # on main). Runs only after Verify + Build succeed, so the tag is created
-      # only on success.
+      # Deploy + tag (single atomic step): uploads the binaries to a new Release and
+      # creates the tag v0.0.<run_number> at the merged commit (github.sha, on main).
       - name: Deploy release and tag the merged commit
         uses: softprops/action-gh-release@v2
         with:
