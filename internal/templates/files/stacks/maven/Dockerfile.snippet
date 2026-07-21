@@ -1,0 +1,5 @@
+# stack: maven (pulls in a JDK as a dependency)
+USER root
+RUN apt-get update && apt-get install -y --no-install-recommends maven \
+ && rm -rf /var/lib/apt/lists/*
+USER workspace

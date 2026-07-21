@@ -1,0 +1,12 @@
+# agent CLI: hermes — Hermes Agent (https://github.com/NousResearch/hermes-agent) — a
+# gateway/api-key agent like opencode/pi/omp. It reaches models ONLY through the platform
+# gateway: an `aip-gateway` provider (base_url → the host nginx gateway :18787, which
+# forwards to LiteLLM) is written KEYLESS to the GLOBAL ~/.hermes/config.yaml at workspace
+# start (the provider's key_env NAMES the AIP_GATEWAY_KEY env var, resolved at runtime —
+# never a real provider secret; LiteLLM holds the real credentials, arch §17). Headroom
+# input-compression applies automatically at the gateway (LiteLLM pre_call guardrail).
+# The installer bundles its own uv/Python/Node; the OS base already ships python/uv/node.
+# Installed as the workspace user (its home ~/.hermes), matching the omp curl-installer pattern.
+# hardware bring-up: verify the installer lands `hermes` on PATH + the config schema live.
+USER workspace
+RUN curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash

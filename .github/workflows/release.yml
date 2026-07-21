@@ -1,0 +1,80 @@
+name: release
+
+# Continuous delivery. Every merge/push to the default branch builds + verifies
+# the code, deploys the binaries to a GitHub Release, and — only if that
+# succeeds — creates the version tag at the merged commit. The assets are named
+# ai-<os>-<arch>, exactly what installers/install.sh downloads from
+# releases/latest/download, so `curl … | sh` always pulls the newest build.
+#
+# Versioning: no hand-cut tags per merge, so each run uses v0.0.<run_number>
+# (monotonic + unique). The publish step creates that tag at the merged commit
+# and marks the release "latest". Push a real semver tag yourself for a named
+# release whenever you want.
+on:
+  push:
+    branches: [main]
+  workflow_dispatch: {} # allow a manual release from the Actions tab
+
+permissions:
+  contents: write # create the release + tag and upload assets
+
+# Serialize releases so concurrent merges don't race the tag / "latest" pointer.
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # full history so the release notes diff against the prior tag
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod # track the module's Go version, no drift
+
+      # Install golangci-lint (v2, matching the local gate) onto PATH so the
+      # `make check` lint step below actually runs — the Makefile's `lint` target
+      # silently skips when the binary is absent, which would let lint failures
+      # slip into a release. install-only places the binary on PATH without
+      # running it here; `make check` invokes `golangci-lint run` itself.
+      - name: Install golangci-lint
+        uses: golangci/golangci-lint-action@v9
+        with:
+          version: v2.12.2
+          install-only: true
+
+      # Full pre-commit gate: fmt-check + vet + lint + test + build. A failure in
+      # ANY of these fails the job, so no deploy and no tag is created — the
+      # deploy is gated on the same suite developers run locally.
+      - name: Verify
+        run: make check
+
+      - name: Build release binaries
+        env:
+          VERSION: v0.0.${{ github.run_number }} # injected into the binary via -ldflags
+        run: make release VERSION="$VERSION"
+
+      - name: Checksums
+        run: cd dist && sha256sum ai-darwin-arm64 ai-linux-amd64 ai-linux-arm64 > SHA256SUMS
+
+      # Deploy + tag (single atomic step): uploads the binaries to a new Release
+      # and creates the tag v0.0.<run_number> at the merged commit (github.sha,
+      # on main). Runs only after Verify + Build succeed, so the tag is created
+      # only on success.
+      - name: Deploy release and tag the merged commit
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v0.0.${{ github.run_number }}
+          target_commitish: ${{ github.sha }}
+          name: v0.0.${{ github.run_number }}
+          make_latest: "true" # releases/latest/download (used by install.sh) points here
+          files: |
+            dist/ai-darwin-arm64
+            dist/ai-linux-amd64
+            dist/ai-linux-arm64
+            dist/SHA256SUMS
+            installers/install.sh
+          generate_release_notes: true

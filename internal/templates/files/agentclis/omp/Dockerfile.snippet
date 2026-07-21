@@ -1,0 +1,14 @@
+# agent CLI: omp — "Oh My Pi" (https://omp.sh), a fork of Pi (badlogic/pi-mono).
+# A rich terminal coding agent (subagents, LSP/DAP, plan mode). Like pi/opencode it
+# reaches models ONLY through the platform gateway: an aip-gateway provider (baseUrl →
+# host Headroom :18787 → LiteLLM; api: openai-completions) with `openai-models-list`
+# DISCOVERY is written to the GLOBAL ~/.omp/agent/models.yml at workspace start (omp
+# lists exactly the models the gateway serves — no static list), and the per-project
+# default + provider order live in <project>/.omp/config.yml — both KEYLESS (the
+# provider apiKey NAMES the AIP_GATEWAY_KEY env var, resolved at runtime, never on disk).
+# Installed as the workspace user to ~/.local/bin (on PATH); `--binary` forces the
+# prebuilt binary (no bun needed). Network at build, like the npm-based CLIs.
+# hardware bring-up: verify the install lands `omp` on PATH + the config schema live.
+USER workspace
+RUN mkdir -p /home/workspace/.local/bin \
+    && curl -fsSL https://omp.sh/install | PI_INSTALL_DIR=/home/workspace/.local/bin sh -s -- --binary

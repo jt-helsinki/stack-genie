@@ -1,0 +1,37 @@
+# E4 config: LiteLLM's PROVIDER-NATIVE Anthropic passthrough (built-in /anthropic/*),
+# NOT a generic pass_through_endpoints entry. The native route is format-aware, so we
+# test whether tool_permission's post_call hook actually inspects the tool_use.
+#
+# The native route is enabled implicitly by ANTHROPIC_API_KEY being set (see run-e4.sh
+# env). We redirect its upstream to the local mock via ANTHROPIC_API_BASE +
+# LITELLM_ANTHROPIC_DISABLE_URL_SUFFIX (verified against
+# https://docs.litellm.ai/docs/pass_through/anthropic_completion).
+#
+# The firewall is attached with default_on: true so it applies to the native route
+# (the native /anthropic route has no per-endpoint `guardrails:` block like the
+# generic pass_through_endpoints does).
+
+model_list: []
+
+general_settings:
+  master_key: "sk-spike-litellm-master"
+  store_model_in_db: false
+
+guardrails:
+  - guardrail_name: "tool-firewall"
+    litellm_params:
+      guardrail: tool_permission
+      mode: "post_call"
+      default_on: true
+      rules:
+        - id: "allow_safe_bash"
+          tool_name: "Bash"
+          decision: "allow"
+          allowed_param_patterns:
+            "command": '^(?!.*(rm\s+-rf|git\s+push\s+--force|terraform\s+destroy|kubectl\s+delete)).*$'
+      default_action: "deny"
+      on_disallowed_action: "block"
+      violation_message_template: "SPIKE-FIREWALL-BLOCKED tool '{tool_name}' by rule '{rule_id}': {default_message}"
+
+litellm_settings:
+  set_verbose: true
