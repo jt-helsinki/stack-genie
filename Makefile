@@ -61,6 +61,8 @@ test-acceptance: ## Run the acceptance suite (set AIP_HARDWARE_TESTS=1 to includ
 test-integration: ## Run the LIVE integration suite against a running Docker + Microsandbox stack (self-skips if the stack is absent). See test/integration/README.md.
 	go test -tags integration ./test/integration/... -v -timeout 30m
 
+test-all: test test-acceptance test-integration ## Run all test suites
+
 tidy: ## Sync go.mod/go.sum
 	go mod tidy
 
