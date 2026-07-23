@@ -215,10 +215,17 @@ func runExec(test *testing.T, dir string, timeout time.Duration, name string, ar
 	return env, code, stderr
 }
 
-// decode parses a §19 envelope from stdout.
+// decode parses a §19 envelope from stdout. Lifecycle verbs (notably `ai start`) stream
+// ▸-prefixed step-progress lines to stdout BEFORE the final JSON envelope, so strip any
+// leading non-JSON to the first '{' and decode the first JSON value there (a json.Decoder
+// reads one value and ignores any trailing output).
 func decode(stdout string) (Envelope, error) {
 	var env Envelope
-	err := json.Unmarshal([]byte(stdout), &env)
+	trimmed := stdout
+	if idx := strings.IndexByte(trimmed, '{'); idx > 0 {
+		trimmed = trimmed[idx:]
+	}
+	err := json.NewDecoder(strings.NewReader(trimmed)).Decode(&env)
 	return env, err
 }
 
@@ -291,4 +298,14 @@ func truncate(value string, max int) string {
 		return value[:max] + "…"
 	}
 	return value
+}
+
+// isMsbVersionMismatch reports whether output describes the msb (Microsandbox) binary
+// being older than the DB schema it wrote — a host tooling gap (upgrade/reinit msb), not
+// a product defect, so the caller skips rather than fails.
+func isMsbVersionMismatch(output string) bool {
+	lowered := strings.ToLower(output)
+	return strings.Contains(lowered, "schema is newer than this msb binary") ||
+		strings.Contains(lowered, "is not in this binary's migration prefix") ||
+		(strings.Contains(lowered, "database schema") && strings.Contains(lowered, "newer"))
 }

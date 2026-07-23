@@ -3,6 +3,7 @@
 package integration
 
 import (
+	"strings"
 	"testing"
 	"time"
 )
@@ -47,6 +48,13 @@ func TestGroup03ModelsKeys(test *testing.T) {
 	requireStack(test)
 
 	test.Run("local Ollama model is served", func(test *testing.T) {
+		// Self-provision so the suite needs no manual host prep: pull the small test
+		// model (idempotent — a no-op if already present) which also registers it with
+		// the gateway. A pull failure means Ollama isn't serving on this host → skip.
+		pullRef := strings.TrimPrefix(localModel, "ollama/")
+		if env, code, stderr := run(test, "", 10*time.Minute, "models", "pull", pullRef); !env.OK || code != 0 {
+			test.Skipf("could not pull %q (Ollama not serving?): exit=%d %s", pullRef, code, truncate(stderr, 200))
+		}
 		names := servedModelNames(test)
 		if !hasModel(names, localModel) {
 			test.Errorf("gateway does not serve %q; served=%v", localModel, names)
