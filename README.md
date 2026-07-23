@@ -38,12 +38,6 @@ install can't change your *current* shell's PATH — open a new shell, then run
 `ai setup`. Overrides: `AIP_INSTALL_DIR`, `AIP_VERSION`, `AIP_RELEASE_BASE_URL`,
 `AIP_NO_MODIFY_PATH=1`, `AIP_NO_VERIFY=1`.
 
-From a clone, build and install from source (PATH applies in this shell):
-
-```bash
-source ./installers/install.sh
-```
-
 ## Prerequisites
 
 `ai` orchestrates external tools rather than bundling them — install these
@@ -110,30 +104,45 @@ Project-scoped commands default to the project of your current directory (walkin
 up to a `.ai-platform/` root); pass a name or `--project` to target another. With
 no name and outside a project, the command exits `2`.
 
-**Create a project** (interactive wizard — OS, agent CLIs, software stacks, in-VM apps):
+**Create a project** (interactive wizard — OS, agent CLIs, software stacks, AI tools, in-VM apps):
 
 ```bash
 ai create my-app --os debian-trixie   # --dry-run to preview; --apps openwebui to seed an in-VM app
+ai create my-app --os ubuntu --tools caveman,graphify  # pick the AI tools non-interactively
 ai list
 ai delete --yes              # the current project, plus its overlay
 ```
 
+Each selected in-VM app (and the hermes `hermes dashboard`, if hermes is chosen) is
+published on a per-(workspace,app) host port picked at create — the wizard prompts
+for one, or set it non-interactively with `--app-port <app>=<port>` (e.g.
+`--app-port openwebui=8080`, `--app-port hermes=9119`). Ports are persisted in the
+project `config.yaml`.
+
 Every OS base bakes in a common tooling layer — Git, the GitHub CLI, **Node.js**
 (pinned 24 LTS), the latest **Python 3**, **uv** (Astral's Python package/tool
-manager), **Graphify** (PyPI `graphifyy`, CLI `graphify`; a knowledge-graph skill
-for AI coding assistants, installed via `uv tool install` with all extras except
-the region/DB/niche-specific `chinese,azure,bedrock,falkordb,neo4j,leiden,dm,pascal`), and
-**rtk** (Rust Token Killer). Each selected agent CLI registers Graphify with
-itself (`graphify install [--platform <cli>]`). Two OPT-IN per-workspace code-graph
-tools are appended to the project image **only when chosen** at `ai create`
-(`--code-review-graph` / `--codebase-memory`, or the wizard's tooling step) — as
-conditional Dockerfile snippets, not baked into every base — and registered as an MCP
-server with every installed agent CLI at workspace start: **code-review-graph**
-(`code-review-graph.com`; also writes a D3 graph visualization) and
-**codebase-memory-mcp** (`github.com/DeusData/codebase-memory-mcp`; ships an optional
-on-demand 3D graph UI at `:9749`). Both are local and need no API key. Node.js and Python are baked in,
-so neither is a `--stacks` option — the selectable stacks are
-`go,rust,java,maven,deno`.
+manager), and **rtk** (Rust Token Killer). Node.js and Python are baked in, so
+neither is a `--stacks` option — the selectable stacks are `go,rust,java,maven,deno`.
+
+Four opt-in per-project **AI tools** are chosen from one multi-select — the
+`--tools` flag or the wizard's AI-tools step (default: `caveman,graphify,code-review-graph`
+on, `codebase-memory-mcp` off):
+
+- **caveman** — an output-compression toolkit, installed at workspace start.
+- **graphify** (PyPI `graphifyy`, CLI `graphify`) — a knowledge-graph skill for AI
+  coding assistants, added as a conditional Dockerfile snippet (`uv tool install`
+  with all extras except the region/DB/niche-specific
+  `chinese,azure,bedrock,falkordb,neo4j,leiden,dm,pascal`) only when selected; each
+  selected agent CLI then registers it with itself (`graphify install [--platform <cli>]`).
+- **code-review-graph** (`code-review-graph.com`) — a conditional snippet, registered
+  as an MCP server with every installed agent CLI at workspace start; also writes a
+  D3 graph visualization.
+- **codebase-memory-mcp** (`github.com/DeusData/codebase-memory-mcp`) — a conditional
+  snippet, registered as an MCP server; ships an optional on-demand 3D graph UI at `:9749`.
+
+The three code-graph tools are appended to the project image **only when chosen** —
+conditional Dockerfile snippets, not baked into every base. All are local and need
+no API key.
 
 **Work in the workspace** (one microVM per project; installed programs and agent
 state persist across restarts via the overlay):
@@ -247,12 +256,15 @@ make lint                     # golangci-lint (also run standalone)
 
 ## Releasing
 
-Continuous delivery: every push/merge to `main` builds, verifies (`make vet
-test`), and — only on success — publishes a GitHub Release with the
-`ai-<os>-<arch>` binaries, `SHA256SUMS`, and `install.sh`, then tags the merged
-commit `v0.0.<run_number>` and marks it the latest release (so `install.sh`'s
-`releases/latest` resolves to it). See `.github/workflows/release.yml`.
-`make release` cross-compiles the same artifacts locally for testing.
+Continuous delivery: every push/merge to `main` runs the full gate (`make check`)
+and, only on success, computes the next **semver** from the Conventional Commits
+since the last tag (`feat` → minor, `fix`/other → patch, `BREAKING CHANGE`/`!` →
+major; default patch), builds the `ai-<os>-<arch>` binaries (darwin/arm64,
+linux/amd64, linux/arm64), and publishes a GitHub Release — the binaries,
+`SHA256SUMS`, and `installers/install.sh` — creating the tag `vX.Y.Z` at the merged
+commit and marking it the latest release (so `install.sh`'s `releases/latest`
+resolves to it). See `.github/workflows/release.yml`. `make release` builds the
+host-arch binary locally for testing.
 
 ## Status
 
