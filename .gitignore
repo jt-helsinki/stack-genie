@@ -19,3 +19,5 @@ ai
 .tokensave
 skills-lock.json
 graphify-out/
+
+/temp
