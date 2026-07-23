@@ -215,6 +215,15 @@ func serviceCheck(service Service) Check {
 			Suggestion: "run `ai services enable " + service.Name + "` to turn it on",
 		}
 	}
+	// A non-optional service reporting "disabled" is guardrail-gated off (e.g. presidio
+	// when secret-masking isn't selected at `ai setup`) — an intentional configuration,
+	// never a failure. Report it OK so a default install is healthy.
+	if service.State == "disabled" {
+		return Check{
+			Name: service.Name, Status: StatusOK,
+			Detail: "disabled (guardrail not selected)",
+		}
+	}
 	if service.Healthy {
 		detail := "running"
 		if service.State == "ready" {

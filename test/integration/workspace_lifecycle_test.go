@@ -184,7 +184,7 @@ func TestWorkspaceCreateTeardown(test *testing.T) {
 		loc := test.TempDir()
 		cleanupWorkspace(test, name)
 		env, code, stderr := createWorkspace(test, name, loc,
-			"--agents", "opencode,codex", "--code-review-graph", "--codebase-memory")
+			"--agents", "opencode,codex", "--tools", "caveman,graphify,code-review-graph,codebase-memory-mcp")
 		if !assertOK(test, env, code, "project.create") {
 			test.Fatalf("create failed: %s", stderr)
 		}

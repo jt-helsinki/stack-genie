@@ -32,9 +32,11 @@ func TestGroup02Services(test *testing.T) {
 			test.Fatalf("services status returned no services")
 		}
 		for _, service := range result.Services {
-			// Optional services that are disabled are allowed to be non-running;
-			// core services must be healthy.
-			if service.Optional && service.State == "disabled" {
+			// A disabled service is allowed to be non-running: either an optional
+			// service turned off, or a guardrail-gated one (e.g. presidio when the
+			// secret-masking guardrail isn't selected at setup). Core services must
+			// be healthy.
+			if service.State == "disabled" {
 				continue
 			}
 			if !service.Healthy {
@@ -44,6 +46,18 @@ func TestGroup02Services(test *testing.T) {
 	})
 
 	test.Run("restart presidio returns to running", func(test *testing.T) {
+		// presidio only runs when the secret-masking guardrail is selected at setup; it
+		// reports state "disabled" otherwise. Skip the bounce when it's not enabled.
+		statusEnv, statusCode, _ := run(test, "", 30*time.Second, "services", "status")
+		if statusCode == 0 {
+			var status servicesResult
+			statusEnv.dataInto(test, &status)
+			for _, service := range status.Services {
+				if service.Name == "presidio" && service.State == "disabled" {
+					test.Skip("presidio disabled (secret-masking guardrail not selected)")
+				}
+			}
+		}
 		// presidio is a safe service to bounce — it has no dependents that need a
 		// coordinated restart, and it is quick to come back.
 		env, code, stderr := run(test, "", 4*time.Minute, "services", "restart", "presidio")

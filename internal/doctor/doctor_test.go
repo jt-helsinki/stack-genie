@@ -81,6 +81,31 @@ func TestRequiredServiceDownIsError(test *testing.T) {
 	}
 }
 
+// A guardrail-gated service reporting "disabled" (e.g. presidio when secret-masking
+// isn't selected at setup) is intentional — it must be OK, not an error, so a default
+// standalone install reports doctor as healthy.
+func TestDisabledServiceIsOKNotError(test *testing.T) {
+	deps := Deps{
+		GOOS: "darwin", GOARCH: "arm64",
+		Prober: fakeProber{bins: map[string]bool{"docker": true, "msb": true}},
+		Services: []Service{
+			{Name: "ollama", State: "running", Healthy: true},
+			{Name: "presidio", State: "disabled", Healthy: false},
+			{Name: "litellm", State: "running", Healthy: true},
+			{Name: "headroom", State: "running", Healthy: true},
+			{Name: "proxy", State: "running", Healthy: true},
+			{Name: "dns", State: "running", Healthy: true},
+		},
+	}
+	report := Run(deps)
+	if got := checkByName(report, "presidio").Status; got != StatusOK {
+		test.Errorf("disabled presidio → status = %q, want ok", got)
+	}
+	if !report.OK {
+		test.Error("a disabled guardrail-gated service must not fail the report")
+	}
+}
+
 func TestRunAllHealthy(test *testing.T) {
 	deps := Deps{
 		GOOS: "darwin", GOARCH: "arm64",
