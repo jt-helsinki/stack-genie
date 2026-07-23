@@ -1,37 +1,37 @@
 name: release
 
-# Continuous delivery. Every merge/push to the default branch verifies the code,
-# builds the per-arch binaries, deploys them to a GitHub Release, and — only if all
-# that succeeds — creates the version tag at the merged commit. The assets are named
-# ai-<os>-<arch>, exactly what installers/install.sh downloads from
-# releases/latest/download, so `curl … | sh` always pulls the newest build.
+# Semver releases, cut from tags. Pushing a semver tag (vX.Y.Z) verifies the code,
+# builds the per-arch binaries, and publishes a GitHub Release AT THAT TAG marked
+# "latest". The assets are named ai-<os>-<arch>, exactly what installers/install.sh
+# downloads from releases/latest/download, so `curl … | sh` always pulls the newest
+# TAGGED release. Merges to main do NOT release — the CI workflow (ci.yml) verifies
+# them; you cut a release by pushing a tag:
+#
+#   git tag v1.2.3 && git push origin v1.2.3
 #
 # The binary links the Microsandbox Go SDK, a cgo binding, so CGO_ENABLED=1 and the
 # build is NOT freely cross-compilable: darwin/arm64 is built NATIVELY on a macOS
 # (Apple Silicon) runner, linux/amd64 natively on ubuntu, and linux/arm64 by
 # cross-compiling on ubuntu with the aarch64 GNU C toolchain. `make release` names the
 # output from `go env GOOS/GOARCH` (which honor the GOOS/GOARCH env vars), so the
-# per-target env below is all it needs.
-#
-# Versioning: no hand-cut tags per merge, so each run uses v0.0.<run_number>
-# (monotonic + unique). The publish step creates that tag at the merged commit and
-# marks the release "latest". Push a real semver tag yourself for a named release.
+# per-target env below is all it needs. The tag name is the version (injected via
+# -ldflags and used as the release tag/name).
 on:
   push:
-    branches: [main]
-  workflow_dispatch: {} # allow a manual release from the Actions tab
+    tags: ["v*.*.*"] # semver tags only
+  workflow_dispatch: {} # manual re-run — select a tag ref in the Actions UI
 
 permissions:
-  contents: write # create the release + tag and upload assets
+  contents: write # create the release and upload assets
 
-# Serialize releases so concurrent merges don't race the tag / "latest" pointer.
+# Serialize releases so two tags pushed close together don't race the "latest" pointer.
 concurrency:
   group: release
   cancel-in-progress: false
 
 jobs:
-  # Full pre-commit gate: fmt-check + vet + lint + test + build (native linux/amd64).
-  # A failure here fails the whole workflow, so no build/deploy/tag happens.
+  # Full gate: fmt-check + vet + lint + test + build (native linux/amd64) at the tagged
+  # commit. A failure fails the whole workflow, so no build/deploy happens.
   verify:
     runs-on: ubuntu-latest
     steps:
@@ -82,7 +82,7 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y gcc-aarch64-linux-gnu
       - name: Build ${{ matrix.goos }}/${{ matrix.goarch }}
         env:
-          VERSION: v0.0.${{ github.run_number }} # injected into the binary via -ldflags
+          VERSION: ${{ github.ref_name }} # the semver tag, injected into the binary via -ldflags
           GOOS: ${{ matrix.goos }}
           GOARCH: ${{ matrix.goarch }}
           # A cross build must name the arm64 C compiler; native builds use the default.
@@ -94,7 +94,7 @@ jobs:
           path: dist/ai-${{ matrix.goos }}-${{ matrix.goarch }}
           if-no-files-found: error
 
-  # Collect the three binaries, checksum them, and publish the release + tag.
+  # Collect the three binaries, checksum them, and publish the Release at the tag.
   release:
     needs: build
     runs-on: ubuntu-latest
@@ -109,14 +109,13 @@ jobs:
           merge-multiple: true # flatten every artifact into ./dist
       - name: Checksums
         run: cd dist && sha256sum ai-darwin-arm64 ai-linux-amd64 ai-linux-arm64 > SHA256SUMS
-      # Deploy + tag (single atomic step): uploads the binaries to a new Release and
-      # creates the tag v0.0.<run_number> at the merged commit (github.sha, on main).
-      - name: Deploy release and tag the merged commit
+      # Publish the Release AT the pushed tag, flagged "latest" so
+      # releases/latest/download (used by install.sh) serves this version.
+      - name: Publish release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v0.0.${{ github.run_number }}
-          target_commitish: ${{ github.sha }}
-          name: v0.0.${{ github.run_number }}
+          tag_name: ${{ github.ref_name }}
+          name: ${{ github.ref_name }}
           make_latest: "true" # releases/latest/download (used by install.sh) points here
           files: |
             dist/ai-darwin-arm64
