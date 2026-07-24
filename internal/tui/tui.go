@@ -583,7 +583,31 @@ func syncLocalModelsToGateway() ([]string, error) {
 	if len(installed) == 0 {
 		return nil, nil
 	}
-	return litellm.NewKeyManager(runtime.RealProber()).RegisterOllamaModels(installed)
+	return litellm.NewKeyManager(runtime.RealProber()).RegisterOllamaModels(installed, installedOllamaToolSupport(installed))
+}
+
+// installedOllamaToolSupport probes each installed Ollama model for tool/function-calling
+// support (its /api/show capabilities), so RegisterOllamaModels can mark each model's
+// tool_call accurately. A probe error omits that model from the map (unknown → the gateway
+// treats it as tool-capable), so a hiccup never wrongly disables tools.
+func installedOllamaToolSupport(names []string) map[string]bool {
+	client := ollama.RealClient()
+	support := make(map[string]bool, len(names))
+	for _, name := range names {
+		info, err := client.Show(name)
+		if err != nil {
+			continue
+		}
+		tools := false
+		for _, capability := range info.Capabilities {
+			if capability == "tools" {
+				tools = true
+				break
+			}
+		}
+		support[name] = tools
+	}
+	return support
 }
 
 // installedOllamaModels lists the installed Ollama model names so a resync
@@ -912,7 +936,11 @@ func (application *app) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Follow the microVM log live in the user's REAL terminal (msb logs -f on the
 		// host), so it renders natively — selectable, and in place when the captured
 		// stream carries the control codes. Returns to the TUI on exit (Ctrl-C).
-		command := exec.Command("msb", "logs", workspace.Name(message.Project), "-f")
+		msbBin, _ := workspace.MsbBinary() // best-effort; falls back to PATH "msb" below
+		if msbBin == "" {
+			msbBin = "msb"
+		}
+		command := exec.Command(msbBin, "logs", workspace.Name(message.Project), "-f")
 		return application, tea.ExecProcess(command, func(execErr error) tea.Msg {
 			return sessionFinishedMsg{err: execErr}
 		})

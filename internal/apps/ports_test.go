@@ -16,6 +16,37 @@ func TestAllocatePortSkipsReserved(test *testing.T) {
 	}
 }
 
+// TestSuggestedHostPortDistinctWhenDefaultsBusy mirrors the create wizard's seed loop: it
+// calls SuggestedHostPort for several apps while RESERVING each result before the next, with
+// every app's familiar container port busy on the host. Each app must get a DISTINCT free
+// port — the bug being that, without reserving between calls, they all fell back to the same
+// auto-allocated port.
+func TestSuggestedHostPortDistinctWhenDefaultsBusy(test *testing.T) {
+	// Every known app's familiar container port is busy; window ports are free.
+	busy := map[int]bool{}
+	for _, manifest := range All() {
+		busy[manifest.ContainerPort] = true
+	}
+	isFree := func(port int) bool { return !busy[port] }
+
+	reserved := map[int]bool{}
+	seen := map[int]bool{}
+	for _, manifest := range All() {
+		port := SuggestedHostPort(manifest.Key, reserved, isFree)
+		if port == 0 {
+			test.Fatalf("no port suggested for %q", manifest.Key)
+		}
+		if !isFree(port) {
+			test.Errorf("%q suggested busy host port %d", manifest.Key, port)
+		}
+		if seen[port] {
+			test.Errorf("%q reused already-seeded port %d (ports must be distinct)", manifest.Key, port)
+		}
+		seen[port] = true
+		reserved[port] = true // mirror the wizard reserving each seed
+	}
+}
+
 func TestAllocatePortSkipsBusy(test *testing.T) {
 	// portRangeStart is "busy" (not free); the next one is free.
 	isFree := func(port int) bool { return port != portRangeStart }

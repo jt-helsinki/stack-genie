@@ -306,7 +306,7 @@ type KeyMinter interface {
 // or a ServedModels that errors (gateway down at start), degrades gracefully — the
 // workspace still starts, with an empty picker, never failing over a model lookup.
 type ServedModels interface {
-	ServedModels() ([]string, error)
+	ServedModels() ([]agentcfg.Model, error)
 }
 
 // Manager coordinates the lifecycle over a Builder + Sandbox, stamping state with
@@ -960,7 +960,7 @@ func oauthAgentList(projectConfig *config.Config) []string {
 // list is EMPTY (gateway unreachable), the existing list is LEFT UNTOUCHED — opencode's
 // merge preserves it — so a transient outage never wipes a good list. Shared refresh used
 // at start AND on attach.
-func (manager Manager) writeModelListConfigs(name, root, gatewayURL, defaultModel string, models []string, keepTurns, outputBufferTokens int) error {
+func (manager Manager) writeModelListConfigs(name, root, gatewayURL, defaultModel string, models []agentcfg.Model, keepTurns, outputBufferTokens int) error {
 	openCodeConfig, err := agentcfg.MergeOpenCodeConfig(
 		readHostFileOrNil(projectConfigPath(root, ".opencode", "opencode.json")),
 		gatewayURL, agentcfg.OpenCodeAPIKeyRef, defaultModel, models, keepTurns, outputBufferTokens)
@@ -1874,28 +1874,28 @@ func ensureRelSymlink(linkPath, target string) error {
 // picker — the workspace still starts, never failing over a model lookup. The user
 // adds provider keys (`ai keys`) / pulls Ollama models and the served set grows; the
 // in-VM `refresh-models` command re-pulls it without a restart.
-func (manager Manager) pickerModels() []string {
+func (manager Manager) pickerModels() []agentcfg.Model {
 	if manager.Served == nil {
-		return []string{}
+		return []agentcfg.Model{}
 	}
 	served, err := manager.Served.ServedModels()
 	if err != nil {
 		_, _ = fmt.Fprintf(os.Stderr, "warning: could not list the gateway's served models for the agent picker (continuing with an empty list): %v\n", err)
-		return []string{}
+		return []agentcfg.Model{}
 	}
 	seen := make(map[string]struct{}, len(served))
-	models := make([]string, 0, len(served))
+	models := make([]agentcfg.Model, 0, len(served))
 	for _, model := range served {
-		if model == "" {
+		if model.Name == "" {
 			continue
 		}
-		if _, ok := seen[model]; ok {
+		if _, ok := seen[model.Name]; ok {
 			continue
 		}
-		seen[model] = struct{}{}
+		seen[model.Name] = struct{}{}
 		models = append(models, model)
 	}
-	sort.Strings(models)
+	sort.Slice(models, func(i, j int) bool { return models[i].Name < models[j].Name })
 	return models
 }
 

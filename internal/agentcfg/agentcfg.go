@@ -37,6 +37,24 @@ import (
 // ProviderID is the provider handle both agent CLIs use for the host gateway.
 const ProviderID = "aip-gateway"
 
+// Model is one served model plus whether it can do tool/function calling. Tools drives
+// opencode's per-model `tool_call` flag: a completion-only model (e.g. Ollama smollm:135m)
+// gets tool_call:false so opencode does not present it as agentic and never sends it a tool
+// schema (which Ollama would reject). Cloud/unknown models default to Tools:true.
+type Model struct {
+	Name  string
+	Tools bool
+}
+
+// ModelNames returns just the names of a model list, preserving order.
+func ModelNames(models []Model) []string {
+	names := make([]string, len(models))
+	for index, model := range models {
+		names[index] = model.Name
+	}
+	return names
+}
+
 // OpenCodeConfig renders opencode's provider config (`~/.config/opencode/opencode.json`).
 //
 // opencode talks to the gateway as an OpenAI-compatible provider
@@ -51,21 +69,20 @@ const ProviderID = "aip-gateway"
 // provider key or pulls an Ollama model. defaultModel is therefore optional: when
 // empty no top-level `model` is written and opencode falls back to its own
 // default-model selection.
-func OpenCodeConfig(gatewayURL, apiKey, defaultModel string, models []string, keepTurns, outputBufferTokens int) ([]byte, error) {
+func OpenCodeConfig(gatewayURL, apiKey, defaultModel string, models []Model, keepTurns, outputBufferTokens int) ([]byte, error) {
 	modelEntries := make(map[string]any, len(models))
 	for _, model := range models {
-		modelEntries[model] = map[string]any{
-			"name": model,
-			// tool_call MUST be declared for opencode to drive the model agentically
-			// (send the tool schema + apply the returned tool calls). These gateway
-			// models are not in opencode's models.dev catalog, so without this flag
-			// opencode defaults them to NON-tool-capable and the agent "does nothing" —
-			// it only chats, never edits files. The gateway passes tools through to the
-			// model (LiteLLM ollama_chat → Ollama /api/chat), so declaring it here lets
-			// any tool-capable served model do real work. (A model that lacks tool
-			// support — e.g. Ollama phi4 — still won't act, but that is the model's
-			// limitation, not the config's.)
-			"tool_call": true,
+		modelEntries[model.Name] = map[string]any{
+			"name": model.Name,
+			// tool_call declares whether opencode drives the model agentically (send the
+			// tool schema + apply the returned tool calls). These gateway models are not in
+			// opencode's models.dev catalog, so opencode would otherwise default them to
+			// NON-tool-capable and the agent "does nothing" (only chats). We set it PER
+			// MODEL from its advertised capability: a tool-capable model gets true (real
+			// work); a completion-only model (e.g. Ollama smollm:135m) gets false so
+			// opencode never sends it a tool schema — which Ollama rejects with a hard
+			// "does not support tools" error.
+			"tool_call": model.Tools,
 			"options": map[string]any{
 				"headroom_keep_turns":           keepTurns,
 				"headroom_output_buffer_tokens": outputBufferTokens,
@@ -104,8 +121,12 @@ func OpenCodeConfig(gatewayURL, apiKey, defaultModel string, models []string, ke
 // session model is "tmux-transparent": persistent, reattachable per-CLI tmux
 // sessions back `ai agent`/`ai attach`/`ai sessions`, but the user never types a
 // tmux command. To keep tmux invisible to a casual user it hides the status bar;
-// it enables the mouse so the wheel scrolls naturally through scrollback, sets
-// vi-style copy-mode keys, and keeps a generous scrollback history.
+// it enables the mouse so the wheel/trackpad scrolls the scrollback (wheel-up enters
+// copy-mode, since tmux's alternate screen leaves the host terminal's own scrollback
+// empty), sets vi-style copy-mode keys, and keeps a generous scrollback history.
+// Because mouse-on hands click-drag to tmux, native host text-selection then needs a
+// modifier (Shift; Option on macOS) and copy-mode selections are pushed to the host
+// clipboard via OSC 52 (set-clipboard on).
 //
 // Terminal capabilities for modern TUI agent CLIs (OpenCode, …): the microVM is
 // HEADLESS — there is no terminal emulator inside it. Each agent runs inside tmux
@@ -131,13 +152,19 @@ func OpenCodeConfig(gatewayURL, apiKey, defaultModel string, models []string, ke
 func TmuxConfig() []byte {
 	return []byte(`# Managed by the AI Development Platform — tmux-transparent workspace sessions.
 # Do not edit by hand; this file is rewritten on every workspace start.
-# mouse OFF so the HOST terminal handles the mouse natively: click-drag text selection
-# (copy to the host clipboard) and wheel scrollback both work as they do outside tmux.
-# With mouse ON, tmux intercepts the drag into its own copy-mode and clears the
-# selection on release — the reported "select then it deselects". Keyboard scroll still
-# works (the agent TUIs handle PgUp/arrows); losing tmux mouse-scroll is the accepted
-# trade for reliable native selection.
-set -g mouse off
+# mouse ON so the wheel/trackpad scrolls tmux's scrollback. tmux runs on the terminal's
+# ALTERNATE screen, so the HOST terminal's own scrollback is empty and wheel-up there does
+# nothing — only tmux copy-mode can page back through the 50k-line history, and that needs
+# the mouse. Wheel-up enters copy-mode (-e auto-exits at the bottom); a full-screen app that
+# has requested the mouse (or a pane already in a mode) still gets the wheel forwarded.
+set -g mouse on
+bind -n WheelUpPane if-shell -F -t = "#{mouse_any_flag}" "send-keys -M" "if-shell -F -t = '#{pane_in_mode}' 'send-keys -M' 'copy-mode -e'"
+bind -n WheelDownPane if-shell -F -t = "#{mouse_any_flag}" "send-keys -M" "if-shell -F -t = '#{pane_in_mode}' 'send-keys -M' 'send-keys Down'"
+# Trade-off of mouse ON: tmux owns click-drag, so NATIVE host text-selection now needs a
+# modifier (hold Shift; Option on macOS terminals). To keep copy working without it, push
+# copy-mode selections straight to the HOST clipboard via OSC 52.
+set -g set-clipboard on
+set -as terminal-features ",*:clipboard"
 set -g status off
 setw -g mode-keys vi
 set -g history-limit 50000
@@ -381,7 +408,7 @@ func AppendCodexMCP(config []byte, servers []MCPServer) []byte {
 // nil/empty/invalid input falls back to the freshly-generated config, so a brand-new
 // project (no file) or a corrupt edit still yields a working config. When called with
 // the keyless key ref (OpenCodeAPIKeyRef) the result is keyless — safe on host disk.
-func MergeOpenCodeConfig(template []byte, gatewayURL, apiKey, defaultModel string, models []string, keepTurns, outputBufferTokens int) ([]byte, error) {
+func MergeOpenCodeConfig(template []byte, gatewayURL, apiKey, defaultModel string, models []Model, keepTurns, outputBufferTokens int) ([]byte, error) {
 	generated, err := OpenCodeConfig(gatewayURL, apiKey, defaultModel, models, keepTurns, outputBufferTokens)
 	if err != nil {
 		return nil, err
@@ -905,11 +932,21 @@ func RefreshScript(gatewayBaseURL, apiKey, defaultModel string, keepTurns, outpu
 	// rendered fragments inherit MarshalIndent's exact indentation, guaranteeing
 	// byte parity with OpenCodeConfig for the same merged list. The bodies
 	// use the KEYLESS key-refs (not apiKey), matching the configs written at start.
-	openCode, err := splitSkeleton(func(models []string) ([]byte, error) {
+	renderConfig := func(models []Model) ([]byte, error) {
 		return OpenCodeConfig(gatewayBaseURL, OpenCodeAPIKeyRef, defaultModel, models, keepTurns, outputBufferTokens)
-	})
+	}
+	// One skeleton with a tool-capable item template (tool_call: true); the no-tool item
+	// is the same template with the tool_call literal flipped to false. prefix/separator/
+	// suffix are shared by both (they contain no tool_call — the item is brace-anchored so
+	// the flag stays inside the item), so the shell picks the item per model from the
+	// gateway's advertised tool support and reproduces OpenCodeConfig byte-for-byte.
+	openCode, err := splitSkeleton(true, renderConfig)
 	if err != nil {
 		return nil, fmt.Errorf("render opencode skeleton: %w", err)
+	}
+	openCode.itemNoTool = bytes.Replace(openCode.item, []byte(`"tool_call": true`), []byte(`"tool_call": false`), 1)
+	if bytes.Equal(openCode.itemNoTool, openCode.item) {
+		return nil, fmt.Errorf("could not locate tool_call in the opencode item template")
 	}
 
 	var script bytes.Buffer
@@ -926,17 +963,20 @@ set -u
 
 `)
 	// The baked-in values. The gateway URL keeps its /v1 suffix (it is written into
-	// the configs verbatim); the served-models list endpoint is <base>/models.
+	// the configs verbatim); the model-info endpoint (<root>/llm/model/info) carries
+	// per-model tool support (supports_function_calling) that a plain /v1/models omits.
 	script.WriteString("GATEWAY_URL=" + shellQuote(gatewayBaseURL) + "\n")
-	script.WriteString("MODELS_URL=" + shellQuote(modelsURL(gatewayBaseURL)) + "\n")
+	script.WriteString("INFO_URL=" + shellQuote(modelInfoURL(gatewayBaseURL)) + "\n")
 	script.WriteString("API_KEY=" + shellQuote(apiKey) + "\n")
 	script.WriteString("OPENCODE_PATH=" + shellQuote(openCodeGuestPath) + "\n\n")
 
-	// The four JSON fragments per config, base64-encoded so arbitrary bytes
-	// (newlines, quotes, indentation, the inter-entry separator) survive embedding
-	// in the script unchanged.
+	// The JSON fragments per config, base64-encoded so arbitrary bytes (newlines,
+	// quotes, indentation, the inter-entry separator) survive embedding in the script
+	// unchanged. Two per-model item variants — ITEM (tool_call:true) and ITEM_NOTOOL
+	// (tool_call:false) — so the shell picks per model from its advertised capability.
 	script.WriteString("OPENCODE_PREFIX=" + b64Literal(openCode.prefix) + "\n")
 	script.WriteString("OPENCODE_ITEM=" + b64Literal(openCode.item) + "\n")
+	script.WriteString("OPENCODE_ITEM_NOTOOL=" + b64Literal(openCode.itemNoTool) + "\n")
 	script.WriteString("OPENCODE_SEP=" + b64Literal(openCode.separator) + "\n")
 	script.WriteString("OPENCODE_SUFFIX=" + b64Literal(openCode.suffix) + "\n\n")
 
@@ -962,34 +1002,52 @@ decode() { printf '%s' "$1" | base64 -d 2>/dev/null || printf '%s' "$1" | base64
 # JSON-escape a single line for embedding as a bare value (backslash, quote).
 json_escape() { printf '%s' "$1" | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g'; }
 
-# Fetch the models the gateway currently SERVES from its OpenAI-compatible
-# /v1/models endpoint (authenticated with the scoped virtual key). Extract each
-# "id":"…" PORTABLY (no jq/python): one served model id per line. If the fetch
-# fails we leave the existing configs UNTOUCHED rather than wiping them.
-if ! served_body="$(curl -fsS --max-time 10 -H "Authorization: Bearer $API_KEY" "$MODELS_URL" 2>/dev/null)"; then
-  echo "refresh-models: could not reach the gateway model list ($MODELS_URL) — leaving the current configs unchanged" >&2
+# Fetch the models the gateway currently SERVES, WITH per-model tool support, from its
+# /model/info endpoint (authenticated with the scoped virtual key). Emit one
+# "<model-id><TAB><tools>" line per model — tools=1 unless model_info marks it non-tool
+# (supports_function_calling:false). Parsed with awk (portable across the Linux workspace
+# and the macOS test host — no jq/python, no GNU-only sed \n); the whole body is slurped
+# into one buffer first so it works whether the JSON is compact or pretty-printed. If the
+# fetch fails we leave the existing configs UNTOUCHED rather than wiping them.
+if ! info_body="$(curl -fsS --max-time 10 -H "Authorization: Bearer $API_KEY" "$INFO_URL" 2>/dev/null)"; then
+  echo "refresh-models: could not reach the gateway model info ($INFO_URL) — leaving the current configs unchanged" >&2
   exit 1
 fi
-served="$(printf '%s' "$served_body" \
-  | grep -o '"id"[[:space:]]*:[[:space:]]*"[^"]*"' \
-  | sed -e 's/.*:[[:space:]]*"//' -e 's/"$//')"
+pairs="$(printf '%s' "$info_body" | awk '{ buf = buf $0 } END {
+  n = split(buf, parts, /"model_name"[[:space:]]*:[[:space:]]*"/)
+  for (i = 2; i <= n; i++) {
+    seg = parts[i]
+    q = index(seg, "\"")
+    if (q == 0) continue
+    name = substr(seg, 1, q - 1)
+    rest = substr(seg, q + 1)
+    tools = 1
+    if (index(rest, "\"supports_function_calling\":false") > 0) tools = 0
+    if (index(rest, "\"supports_function_calling\": false") > 0) tools = 0
+    printf "%s\t%s\n", name, tools
+  }
+}')"
 
-# Dedup + sort EXACTLY as pickerModels does (LC_ALL=C lexical sort, unique).
-# Result: one served model id per line.
-merged="$(printf '%s\n' "$served" | sed '/^$/d' | LC_ALL=C sort -u)"
-merged_count="$(printf '%s\n' "$merged" | sed '/^$/d' | wc -l | tr -d ' ')"
+# Dedup + sort EXACTLY as pickerModels does (LC_ALL=C lexical sort, unique). Model names
+# are unique, so sorting the "<name><TAB><tools>" lines orders them by name.
+merged="$(printf '%s\n' "$pairs" | sed '/^[[:space:]]*$/d' | LC_ALL=C sort -u)"
+merged_count="$(printf '%s\n' "$merged" | sed '/^[[:space:]]*$/d' | wc -l | tr -d ' ')"
 
-# render <prefix-b64> <item-b64> <sep-b64> <suffix-b64> -> full JSON on stdout,
-# splicing one decoded item per model (sentinel -> escaped model id) joined by the
-# decoded inter-entry separator, exactly reproducing MarshalIndent's layout.
+TAB="$(printf '\t')"
+
+# render <prefix-b64> <item-b64> <item-notool-b64> <sep-b64> <suffix-b64> -> full JSON on
+# stdout, splicing one decoded item per model (sentinel -> escaped model id) joined by the
+# decoded inter-entry separator, exactly reproducing MarshalIndent's layout. The tool or
+# no-tool item template is chosen from each model's tools flag.
 render() {
-  prefix="$(decode "$1")"; item_tmpl="$(decode "$2")"; sep="$(decode "$3")"; suffix="$(decode "$4")"
+  prefix="$(decode "$1")"; item_tmpl="$(decode "$2")"; item_notool_tmpl="$(decode "$3")"; sep="$(decode "$4")"; suffix="$(decode "$5")"
   printf '%s' "$prefix"
   first=1
-  while IFS= read -r model; do
+  while IFS="$TAB" read -r model tools; do
     [ -z "$model" ] && continue
     esc="$(json_escape "$model")"
-    item="${item_tmpl//$SENTINEL/$esc}"
+    if [ "$tools" = "0" ]; then tmpl="$item_notool_tmpl"; else tmpl="$item_tmpl"; fi
+    item="${tmpl//$SENTINEL/$esc}"
     if [ "$first" -eq 1 ]; then first=0; else printf '%s' "$sep"; fi
     printf '%s' "$item"
   done <<EOF
@@ -1006,7 +1064,7 @@ write_config() {
   mv "$tmp" "$path"
 }
 
-opencode_json="$(render "$OPENCODE_PREFIX" "$OPENCODE_ITEM" "$OPENCODE_SEP" "$OPENCODE_SUFFIX")"
+opencode_json="$(render "$OPENCODE_PREFIX" "$OPENCODE_ITEM" "$OPENCODE_ITEM_NOTOOL" "$OPENCODE_SEP" "$OPENCODE_SUFFIX")"
 
 write_config "$OPENCODE_PATH" "$opencode_json" || { echo "refresh-models: failed to write $OPENCODE_PATH" >&2; exit 1; }
 
@@ -1019,10 +1077,15 @@ echo "refreshed: $merged_count served models — restart your agent CLI to pick 
 // suffix. The script emits prefix + item·sep·item·… + suffix, reproducing
 // MarshalIndent's exact byte layout.
 type skeleton struct {
-	prefix    []byte
-	item      []byte
-	separator []byte
-	suffix    []byte
+	prefix []byte
+	// item is the per-model template for a TOOL-CAPABLE model (tool_call: true);
+	// itemNoTool is the same template for a completion-only model (tool_call: false).
+	// The shell picks per model from its advertised capability. prefix/separator/suffix
+	// are identical between the two (only the tool_call literal inside the item differs).
+	item       []byte
+	itemNoTool []byte
+	separator  []byte
+	suffix     []byte
 }
 
 // splitSkeleton derives the decomposition by rendering the config with two distinct
@@ -1032,25 +1095,35 @@ type skeleton struct {
 // item ends — so the separator is whatever MarshalIndent places BETWEEN entries
 // (for a map: "},\n        " style; for an array: "},\n    " style — captured
 // verbatim rather than assumed).
-func splitSkeleton(render func(models []string) ([]byte, error)) (skeleton, error) {
-	one, err := render([]string{modelSentinel})
+// tools is fixed true here: the tool-capable item is the template, and the no-tool
+// variant is derived by the caller via a single tool_call byte-replace (so both variants
+// share one prefix/separator/suffix). The item is anchored by BRACE-MATCHING its object —
+// NOT by a common suffix — because tool_call is the item's LAST field, so a common-suffix
+// split would absorb the tool_call literal into the suffix and make it vary per model.
+func splitSkeleton(tools bool, render func(models []Model) ([]byte, error)) (skeleton, error) {
+	one, err := render([]Model{{Name: modelSentinel, Tools: tools}})
 	if err != nil {
 		return skeleton{}, err
 	}
 	// sentinelA sorts before sentinelB, matching the script's sorted model order, so
 	// the two-model render places A's entry first.
-	two, err := render([]string{sentinelA, sentinelB})
+	two, err := render([]Model{{Name: sentinelA, Tools: tools}, {Name: sentinelB, Tools: tools}})
 	if err != nil {
 		return skeleton{}, err
 	}
 
-	// The prefix is the longest common prefix of the one- and two-model renders; the
-	// suffix is the longest common suffix. Both are constant across model count.
+	// The prefix is the longest common prefix of the one- and two-model renders — it ends
+	// just before the first model entry's map key (where the sentinels first diverge).
 	prefix := commonPrefix(one, two)
-	suffix := commonSuffix(one[len(prefix):], two[len(prefix):])
 
-	// The single-model item is exactly the middle of the one-model render.
-	item := one[len(prefix) : len(one)-len(suffix)]
+	// The item is the first model's whole "<key>": { ... } object: from the prefix end
+	// through the matching close brace of that object. Everything after is the suffix.
+	itemEnd, err := itemObjectEnd(one, len(prefix))
+	if err != nil {
+		return skeleton{}, fmt.Errorf("locate opencode item object: %w", err)
+	}
+	item := one[len(prefix):itemEnd]
+	suffix := one[itemEnd:]
 	if bytes.Count(item, []byte(modelSentinel)) < 1 {
 		return skeleton{}, fmt.Errorf("single-model item does not contain the model sentinel")
 	}
@@ -1069,6 +1142,46 @@ func splitSkeleton(render func(models []string) ([]byte, error)) (skeleton, erro
 	return skeleton{prefix: clone(prefix), item: clone(item), separator: clone(separator), suffix: clone(suffix)}, nil
 }
 
+// itemObjectEnd returns the index just past the closing brace of the first JSON object
+// ('{' … '}') at or after start, matching braces while skipping any inside string
+// literals. Used to bound a model's item object precisely (its tool_call is the last
+// field, so a common-suffix bound would slice through it).
+func itemObjectEnd(data []byte, start int) (int, error) {
+	open := bytes.IndexByte(data[start:], '{')
+	if open < 0 {
+		return 0, fmt.Errorf("no object open brace after offset %d", start)
+	}
+	depth := 0
+	inString := false
+	escaped := false
+	for index := start + open; index < len(data); index++ {
+		char := data[index]
+		if inString {
+			switch {
+			case escaped:
+				escaped = false
+			case char == '\\':
+				escaped = true
+			case char == '"':
+				inString = false
+			}
+			continue
+		}
+		switch char {
+		case '"':
+			inString = true
+		case '{':
+			depth++
+		case '}':
+			depth--
+			if depth == 0 {
+				return index + 1, nil
+			}
+		}
+	}
+	return 0, fmt.Errorf("unbalanced braces")
+}
+
 func clone(in []byte) []byte { return append([]byte{}, in...) }
 
 // commonPrefix returns the longest common leading byte slice of a and b.
@@ -1084,25 +1197,15 @@ func commonPrefix(a, b []byte) []byte {
 	return a[:index]
 }
 
-// commonSuffix returns the longest common trailing byte slice of a and b.
-func commonSuffix(a, b []byte) []byte {
-	limit := len(a)
-	if len(b) < limit {
-		limit = len(b)
-	}
-	index := 0
-	for index < limit && a[len(a)-1-index] == b[len(b)-1-index] {
-		index++
-	}
-	return a[len(a)-index:]
-}
-
-// modelsURL derives the OpenAI-compatible served-models list endpoint from the
-// gateway base URL the agent configs use. The configs carry the /v1 suffix, so the
-// list endpoint is <base>/models (e.g. ".../v1" → ".../v1/models"). A trailing
-// slash on the base is tolerated.
-func modelsURL(gatewayBaseURL string) string {
-	return strings.TrimRight(gatewayBaseURL, "/") + "/models"
+// modelInfoURL derives the LiteLLM model-info endpoint (which carries per-model
+// supports_function_calling) from the gateway base URL the agent configs use. The
+// configs carry the /v1 suffix; model-info lives off the nginx /llm route at
+// <root>/llm/model/info (e.g. ".../v1" → ".../llm/model/info"). A trailing slash and
+// the /v1 suffix are trimmed off the base first. The scoped virtual key can read it.
+func modelInfoURL(gatewayBaseURL string) string {
+	root := strings.TrimRight(gatewayBaseURL, "/")
+	root = strings.TrimSuffix(root, "/v1")
+	return strings.TrimRight(root, "/") + "/llm/model/info"
 }
 
 // shellQuote single-quotes a value for safe embedding in the script, escaping any

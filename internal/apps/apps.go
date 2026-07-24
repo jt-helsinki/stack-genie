@@ -41,7 +41,16 @@ type Status struct {
 	Port int `json:"port,omitempty"`
 	// URL is the host URL the app is reachable at (empty when uninstalled).
 	URL string `json:"url,omitempty"`
+	// Kind distinguishes a managed in-VM container app ("app", the default/empty)
+	// from an agent-CLI web dashboard ("dashboard") the user launches in-VM (e.g.
+	// `hermes dashboard`) — the platform only publishes its host port, it does not
+	// run a container for it, so it is not startable via `ai apps start`.
+	Kind string `json:"kind,omitempty"`
 }
+
+// KindDashboard marks a Status as an agent-CLI web dashboard rather than a
+// managed in-VM container app.
+const KindDashboard = "dashboard"
 
 // ExecRunner runs a command inside the workspace microVM as root (the surface
 // Manager needs from workspace.Sandbox.ExecRoot). Injected so the host-side
@@ -428,7 +437,55 @@ func (manager *Manager) List() ([]Status, error) {
 		}
 		statuses = append(statuses, status)
 	}
+	// Agent-CLI web dashboards (e.g. hermes) are not container apps — the platform only
+	// publishes their host port; the user launches the server in-VM (`hermes dashboard`).
+	// Surface them in the same list so their reserved port + URL are discoverable, with a
+	// best-effort running probe (the launched `<cli> dashboard` process).
+	for _, entry := range projectConfig.AgentDashboards {
+		if !IsDashboardAgent(entry.Key) {
+			continue
+		}
+		status := Status{
+			Key:       entry.Key,
+			Name:      dashboardDisplayName(entry.Key),
+			Kind:      KindDashboard,
+			Installed: true,
+			Port:      entry.Port,
+			URL:       fmt.Sprintf("http://localhost:%d", entry.Port),
+		}
+		if manager.deps.Exec != nil {
+			status.Running = manager.dashboardRunning(entry.Key)
+		}
+		statuses = append(statuses, status)
+	}
 	return statuses, nil
+}
+
+// dashboardDisplayName renders an agent CLI's dashboard label for listings, e.g.
+// "hermes" -> "Hermes Dashboard".
+func dashboardDisplayName(cli string) string {
+	if cli == "" {
+		return "Dashboard"
+	}
+	return strings.ToUpper(cli[:1]) + cli[1:] + " Dashboard"
+}
+
+// dashboardRunning best-effort reports whether an agent CLI's in-VM dashboard server
+// (`<cli> dashboard`) is currently running. A probe failure reports false (not fatal —
+// the dashboard is a user-launched process, absence just means "not running yet").
+func (manager *Manager) dashboardRunning(cli string) bool {
+	probe := manager.deps.ProbeExec
+	if probe == nil {
+		probe = manager.deps.Exec
+	}
+	if probe == nil {
+		return false
+	}
+	result, err := probe([]string{"sh", "-c", fmt.Sprintf("pgrep -f '%s dashboard' >/dev/null 2>&1 && echo up", cli)})
+	if err != nil {
+		return false
+	}
+	return strings.TrimSpace(result.Stdout) == "up"
 }
 
 // StartInstalled (re)runs every installed app's container, used at workspace

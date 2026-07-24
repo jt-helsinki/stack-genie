@@ -1801,7 +1801,7 @@ func TestStartWritesTmuxConf(test *testing.T) {
 	if !wrote {
 		test.Fatal("Start must write the managed tmux.conf into the microVM")
 	}
-	if !strings.Contains(string(conf), "status off") || !strings.Contains(string(conf), "mouse off") {
+	if !strings.Contains(string(conf), "status off") || !strings.Contains(string(conf), "mouse on") {
 		test.Errorf("tmux.conf missing transparent settings:\n%s", conf)
 	}
 }
@@ -1848,10 +1848,10 @@ func TestStartInstallsRefreshScript(test *testing.T) {
 		test.Fatalf("staged refresh-models script does not match RefreshScript for the resolved wiring")
 	}
 
-	// The script fetches the served models live from /v1/models — it must NOT bake in
-	// any model list (no served model is embedded).
-	if !strings.Contains(script, "MODELS_URL=") {
-		test.Error("refresh-models script missing the served-models endpoint")
+	// The script fetches the served models (with per-model tool support) live from
+	// /model/info — it must NOT bake in any model list (no served model is embedded).
+	if !strings.Contains(script, "INFO_URL=") {
+		test.Error("refresh-models script missing the model-info endpoint")
 	}
 	if strings.Contains(script, "ollama/llama3.2:latest") {
 		test.Error("refresh-models must not bake in any models (it fetches the served list)")
@@ -2109,8 +2109,15 @@ type fakeServedModels struct {
 	err    error
 }
 
-func (source fakeServedModels) ServedModels() ([]string, error) {
-	return source.models, source.err
+func (source fakeServedModels) ServedModels() ([]agentcfg.Model, error) {
+	if source.err != nil {
+		return nil, source.err
+	}
+	served := make([]agentcfg.Model, len(source.models))
+	for index, name := range source.models {
+		served[index] = agentcfg.Model{Name: name, Tools: true}
+	}
+	return served, nil
 }
 
 // TestStartPickerIsServedModels verifies the in-VM agent model picker is EXACTLY

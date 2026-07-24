@@ -233,7 +233,7 @@ var ollamaClient = ollama.RealClient
 // modelRegistrar registers a freshly-pulled Ollama model in the gateway so it gains a
 // stable id and shows in the live catalogue.
 type modelRegistrar interface {
-	RegisterOllamaModel(name string) error
+	RegisterOllamaModel(name string, supportsTools bool) error
 }
 
 // newRegistrar builds the gateway registrar. A package var so tests inject a fake;
@@ -261,8 +261,24 @@ func pullGraphifyModelIfAbsent(ref string, report func(Progress)) []string {
 		return []string{fmt.Sprintf("could not pull Graphify model %q: %s — pull it later with `ai models pull %s`", ref, err, ref)}
 	}
 	report(Progress{Step: "registering Graphify model " + ref + " with the gateway"})
-	_ = newRegistrar().RegisterOllamaModel(ref)
+	_ = newRegistrar().RegisterOllamaModel(ref, ollamaSupportsTools(client, ref))
 	return nil
+}
+
+// ollamaSupportsTools best-effort reports whether an installed Ollama model advertises
+// tool/function-calling support. On any probe error it returns true (unknown → assume
+// capable), matching the gateway's default so a probe hiccup never wrongly disables tools.
+func ollamaSupportsTools(client ollama.Client, ref string) bool {
+	info, err := client.Show(ref)
+	if err != nil {
+		return true
+	}
+	for _, capability := range info.Capabilities {
+		if capability == "tools" {
+			return true
+		}
+	}
+	return false
 }
 
 // modelInstalled reports whether ref matches an installed Ollama model, treating a bare

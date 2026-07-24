@@ -412,7 +412,7 @@ type fakeModelRegistrar struct {
 	registered []string
 }
 
-func (fake *fakeModelRegistrar) RegisterOllamaModel(name string) error {
+func (fake *fakeModelRegistrar) RegisterOllamaModel(name string, _ bool) error {
 	fake.registered = append(fake.registered, name)
 	return nil
 }

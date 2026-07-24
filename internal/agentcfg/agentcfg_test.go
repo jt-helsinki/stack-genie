@@ -11,7 +11,23 @@ const (
 	testKey     = "sk-workspace-scoped-1234"
 )
 
-var testModels = []string{"gemma4", "gpt-5.5", "claude-opus", "gemini-pro"}
+// testModels mixes tool-capable and completion-only models so tests exercise both
+// tool_call:true and tool_call:false. gemini-pro is the completion-only one.
+var testModels = []Model{
+	{Name: "gemma4", Tools: true},
+	{Name: "gpt-5.5", Tools: true},
+	{Name: "claude-opus", Tools: true},
+	{Name: "gemini-pro", Tools: false},
+}
+
+// toolModels wraps names as tool-capable Models for the merge/existence tests.
+func toolModels(names ...string) []Model {
+	out := make([]Model, len(names))
+	for index, name := range names {
+		out[index] = Model{Name: name, Tools: true}
+	}
+	return out
+}
 
 func TestOpenCodeConfigStructure(test *testing.T) {
 	raw, err := OpenCodeConfig(testGateway, testKey, "gemma4", testModels, 5, 8000)
@@ -63,26 +79,27 @@ func TestOpenCodeConfigStructure(test *testing.T) {
 		test.Fatalf("models count = %d, want %d", len(modelsNode), len(testModels))
 	}
 	for _, model := range testModels {
-		entry, ok := modelsNode[model].(map[string]any)
+		entry, ok := modelsNode[model.Name].(map[string]any)
 		if !ok {
-			test.Fatalf("model %q missing: %v", model, modelsNode[model])
+			test.Fatalf("model %q missing: %v", model.Name, modelsNode[model.Name])
 		}
-		// tool_call MUST be declared so opencode drives the model agentically (sends
-		// tools + applies edits); without it a custom ollama/* model "does nothing".
-		if entry["tool_call"] != true {
-			test.Errorf("model %q must declare tool_call:true (else opencode never uses tools): %v", model, entry["tool_call"])
+		// tool_call must MATCH the model's advertised capability: a tool-capable model
+		// gets true (opencode drives it agentically); a completion-only model gets false
+		// (opencode never sends it a tool schema, which Ollama would reject).
+		if entry["tool_call"] != model.Tools {
+			test.Errorf("model %q tool_call = %v, want %v", model.Name, entry["tool_call"], model.Tools)
 		}
 		modelOptions, ok := entry["options"].(map[string]any)
 		if !ok {
-			test.Fatalf("model %q options missing: %v", model, entry["options"])
+			test.Fatalf("model %q options missing: %v", model.Name, entry["options"])
 		}
 		// opencode CAN inject per-request body fields: the Headroom knobs ride on
 		// every model's options.
 		if modelOptions["headroom_keep_turns"] != float64(5) {
-			test.Errorf("model %q headroom_keep_turns = %v, want 5", model, modelOptions["headroom_keep_turns"])
+			test.Errorf("model %q headroom_keep_turns = %v, want 5", model.Name, modelOptions["headroom_keep_turns"])
 		}
 		if modelOptions["headroom_output_buffer_tokens"] != float64(8000) {
-			test.Errorf("model %q headroom_output_buffer_tokens = %v, want 8000", model, modelOptions["headroom_output_buffer_tokens"])
+			test.Errorf("model %q headroom_output_buffer_tokens = %v, want 8000", model.Name, modelOptions["headroom_output_buffer_tokens"])
 		}
 	}
 }
@@ -172,7 +189,7 @@ func TestProjectConfigsAreKeyless(test *testing.T) {
 // (baseURL, apiKey, models) on top.
 func TestMergeOpenCodeConfigInjectsDynamic(test *testing.T) {
 	template := []byte(`{"theme":"dracula","provider":{}}`)
-	merged, err := MergeOpenCodeConfig(template, testGateway, testKey, "", []string{"gemma4"}, 5, 8000)
+	merged, err := MergeOpenCodeConfig(template, testGateway, testKey, "", toolModels("gemma4"), 5, 8000)
 	if err != nil {
 		test.Fatal(err)
 	}
@@ -201,7 +218,7 @@ func TestMergeOpenCodeConfigReplacesModelList(test *testing.T) {
 	// Existing config: an OLD model under the gateway provider + a user's custom top-level key.
 	template := []byte(`{"theme":"dracula","provider":{"aip-gateway":{"models":{"ollama/old:latest":{"name":"ollama/old:latest"}}}}}`)
 
-	merged, err := MergeOpenCodeConfig(template, testGateway, testKey, "", []string{"ollama/new:latest"}, 5, 8000)
+	merged, err := MergeOpenCodeConfig(template, testGateway, testKey, "", toolModels("ollama/new:latest"), 5, 8000)
 	if err != nil {
 		test.Fatal(err)
 	}
@@ -228,11 +245,11 @@ func TestMergeOpenCodeConfigReplacesModelList(test *testing.T) {
 // TestMergeNilTemplateFallsBack verifies a nil/empty/corrupt template degrades to
 // the freshly-generated config (older projects, or a broken edit, still work).
 func TestMergeNilTemplateFallsBack(test *testing.T) {
-	merged, err := MergeOpenCodeConfig(nil, testGateway, testKey, "", []string{"gemma4"}, 5, 8000)
+	merged, err := MergeOpenCodeConfig(nil, testGateway, testKey, "", toolModels("gemma4"), 5, 8000)
 	if err != nil {
 		test.Fatal(err)
 	}
-	generated, err := OpenCodeConfig(testGateway, testKey, "", []string{"gemma4"}, 5, 8000)
+	generated, err := OpenCodeConfig(testGateway, testKey, "", toolModels("gemma4"), 5, 8000)
 	if err != nil {
 		test.Fatal(err)
 	}
@@ -240,7 +257,7 @@ func TestMergeNilTemplateFallsBack(test *testing.T) {
 		test.Errorf("nil template must yield the generated config verbatim")
 	}
 	// A corrupt template also falls back rather than erroring.
-	corrupt, err := MergeOpenCodeConfig([]byte("{not json"), testGateway, testKey, "", []string{"gemma4"}, 5, 8000)
+	corrupt, err := MergeOpenCodeConfig([]byte("{not json"), testGateway, testKey, "", toolModels("gemma4"), 5, 8000)
 	if err != nil {
 		test.Fatalf("corrupt template must not error: %v", err)
 	}
@@ -423,16 +440,21 @@ func nested(test *testing.T, document map[string]any, key1, key2 string) map[str
 	return level2
 }
 
-// TmuxConfig renders the managed transparent tmux config: mouse OFF (so the host
-// terminal handles native selection + scrollback), status off (invisible), vi copy-mode
-// keys, and a history limit, PLUS the terminal-capability directives modern TUI agent
-// CLIs need to render correctly through tmux (truecolor + extended keys + a modern
-// terminfo entry).
+// TmuxConfig renders the managed transparent tmux config: mouse ON with a wheel-up→
+// copy-mode binding (so the wheel scrolls tmux's scrollback past the alternate screen)
+// plus OSC 52 clipboard so copy still reaches the host, status off (invisible), vi
+// copy-mode keys, and a history limit, PLUS the terminal-capability directives modern
+// TUI agent CLIs need to render correctly through tmux (truecolor + extended keys + a
+// modern terminfo entry).
 func TestTmuxConfig(test *testing.T) {
 	conf := string(TmuxConfig())
 	for _, want := range []string{
-		// Existing transparency settings.
-		"set -g mouse off",
+		// Mouse-scroll: wheel-up must reach tmux's scrollback via copy-mode, and copy
+		// must still land on the host clipboard now that tmux owns click-drag.
+		"set -g mouse on",
+		"WheelUpPane",
+		"copy-mode -e",
+		"set -g set-clipboard on",
 		"set -g status off",
 		"setw -g mode-keys vi",
 		"history-limit",

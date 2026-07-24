@@ -45,9 +45,15 @@ yourself:
 
 | Tool | Role | Install |
 |------|------|---------|
-| [Microsandbox](https://microsandbox.dev) (`msb`) | microVM workspaces | `curl -fsSL https://install.microsandbox.dev \| sh` |
 | Docker or Podman (rootless) | service tier | `brew install --cask docker` (or `brew install podman`) |
 | [Ghostty](https://ghostty.org) | terminal emulator (recommended) | `brew install --cask ghostty` |
+
+You do **not** install Microsandbox (`msb`) yourself: the platform pins the `msb`
+CLI to the exact build of the embedded Microsandbox SDK and downloads it
+(sha256-verified) into `~/.ai-platform/bin/msb` on first workspace build. This keeps
+the CLI and the SDK's in-process runtime in lockstep — installing `msb` separately
+(e.g. from a different source) can desync their shared `~/.microsandbox` DB schema
+and break workspace loads.
 
 Supported host: **macOS on Apple Silicon** (Microsandbox needs the Apple
 Hypervisor) or **Linux with KVM**.

@@ -468,20 +468,30 @@ func (view *Create) buildAppPortSteps() {
 	view.appPortKeys = nil
 	view.appPortInputs = nil
 	agentCLIs, appKeys := view.selectedAgentsAndApps()
+	// Local copy of the machine-wide reserved set, grown as each item is seeded so every
+	// item gets a DISTINCT free port (otherwise, when the familiar container ports are
+	// taken, every app would fall back to the same auto-allocated port). Not persisted back
+	// to view.reservedAppPorts — this phase is rebuilt whenever the selection changes.
+	seedReserved := make(map[int]bool, len(view.reservedAppPorts))
+	for port := range view.reservedAppPorts {
+		seedReserved[port] = true
+	}
 	for _, key := range appKeys {
 		label := key
 		if manifest, ok := apps.Lookup(key); ok {
 			label = manifest.Name
 		}
-		seed := strconv.Itoa(apps.SuggestedHostPort(key, view.reservedAppPorts, nil))
+		port := apps.SuggestedHostPort(key, seedReserved, nil)
+		seedReserved[port] = true
 		view.addAppPortStep(key, label+" host port",
-			"Host port to expose "+label+"'s web UI on (blank = auto-assign).", seed)
+			"Host port to expose "+label+"'s web UI on (blank = auto-assign).", strconv.Itoa(port))
 	}
 	// Dashboard-capable agent CLIs (hermes) get the SAME prompt when selected.
 	for _, cli := range apps.SelectedDashboardAgents(agentCLIs) {
-		seed := strconv.Itoa(apps.SuggestedDashboardPort(cli, view.reservedAppPorts, nil))
+		port := apps.SuggestedDashboardPort(cli, seedReserved, nil)
+		seedReserved[port] = true
 		view.addAppPortStep(cli, cli+" dashboard host port",
-			"Host port to expose the "+cli+" web dashboard on (blank = auto-assign).", seed)
+			"Host port to expose the "+cli+" web dashboard on (blank = auto-assign).", strconv.Itoa(port))
 	}
 }
 

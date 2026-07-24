@@ -32,7 +32,7 @@ func TestRegisterOllamaModelsAddsOnlyMissing(test *testing.T) {
 	test.Setenv("LITELLM_BASE_URL", server.URL)
 
 	manager := NewKeyManager(okProber())
-	got, err := manager.RegisterOllamaModels([]string{"gemma4", "qwen3-coder:30b"})
+	got, err := manager.RegisterOllamaModels([]string{"gemma4", "qwen3-coder:30b"}, nil)
 	if err != nil {
 		test.Fatalf("RegisterOllamaModels: %v", err)
 	}
@@ -291,7 +291,7 @@ func TestRegisterOllamaModelRequestShape(test *testing.T) {
 	test.Setenv("LITELLM_BASE_URL", server.URL)
 
 	manager := NewKeyManager(okProber())
-	if err := manager.RegisterOllamaModel("llama3.2:3b"); err != nil {
+	if err := manager.RegisterOllamaModel("llama3.2:3b", false); err != nil {
 		test.Fatalf("RegisterOllamaModel: %v", err)
 	}
 	if !sawList {
@@ -311,6 +311,15 @@ func TestRegisterOllamaModelRequestShape(test *testing.T) {
 	}
 	if _, present := params["litellm_credential_name"]; present {
 		test.Errorf("an Ollama model must not reference a credential, got %v", params["litellm_credential_name"])
+	}
+	// drop_params guards a completion-only model from a tools-related 500 (tools dropped).
+	if params["drop_params"] != true {
+		test.Errorf("litellm_params.drop_params = %v, want true", params["drop_params"])
+	}
+	// Registered with supportsTools=false, so model_info records it as non-tool-capable.
+	info, _ := addBody["model_info"].(map[string]any)
+	if info["supports_function_calling"] != false {
+		test.Errorf("model_info.supports_function_calling = %v, want false", info["supports_function_calling"])
 	}
 }
 
@@ -335,7 +344,7 @@ func TestRegisterOllamaModelSkipsWhenPresent(test *testing.T) {
 	test.Setenv("LITELLM_BASE_URL", server.URL)
 
 	manager := NewKeyManager(okProber())
-	if err := manager.RegisterOllamaModel("gemma4"); err != nil {
+	if err := manager.RegisterOllamaModel("gemma4", true); err != nil {
 		test.Fatalf("RegisterOllamaModel: %v", err)
 	}
 	if sawAdd {

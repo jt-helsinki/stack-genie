@@ -107,6 +107,14 @@ type ModelParams struct {
 	CredentialName string `json:"litellm_credential_name,omitempty"`
 	APIBase        string `json:"api_base,omitempty"`
 	APIKey         string `json:"api_key,omitempty"`
+	// DropParams, when true, tells LiteLLM to drop request params the backend does not
+	// support instead of erroring. Set for Ollama models as defense-in-depth for param
+	// mismatches. NOTE it does NOT by itself stop the Ollama "does not support tools" 500:
+	// LiteLLM treats the ollama_chat provider as tool-capable and forwards `tools`, so a
+	// completion-only model still rejects them. The actual guard against that 500 is
+	// CLIENT-side — opencode's per-model tool_call is set false for non-tool models
+	// (from supports_function_calling) so no tool schema is sent. Pointer: omitted unless set.
+	DropParams *bool `json:"drop_params,omitempty"`
 }
 
 // ModelInfo is the catalog metadata surfaced through model_info so the enriched
@@ -121,6 +129,13 @@ type ModelInfo struct {
 	OutputLen   int      `json:"max_output_tokens,omitempty"`
 	InputModes  []string `json:"input_modalities,omitempty"`
 	OutputModes []string `json:"output_modalities,omitempty"`
+	// SupportsFunctionCalling records whether the model can do tool/function calling.
+	// Set at Ollama registration from the model's advertised capabilities so the live
+	// model list (ListModels) and the in-VM agent configs (opencode's per-model
+	// `tool_call`) reflect reality — a completion-only model is marked false so opencode
+	// does not present it as agentic. Pointer/tri-state: nil means "unknown" (treated as
+	// tool-capable, preserving prior behavior for cloud models that do not set it).
+	SupportsFunctionCalling *bool `json:"supports_function_calling,omitempty"`
 }
 
 // AddModel registers a DB-backed model (POST /model/new). model_name is the
@@ -180,11 +195,14 @@ func OllamaRoutedModel(name string) string {
 // (OllamaAPIBase = http://aip-ollama:11434), and no credential is referenced (Ollama needs none).
 //
 // Idempotent-ish: if a model with this model_name already exists (ListModels), the add
-// is skipped so re-pulling does not create a duplicate.
+// is skipped so re-pulling does not create a duplicate — UNLESS the recorded tool support
+// disagrees with supportsTools, in which case it is re-registered (delete + add) so
+// supports_function_calling + drop_params reflect the model's real capability (this lets a
+// re-pull backfill capability onto a model registered before tool support was tracked).
 //
 // hardware bring-up: the LIVE POST /model/new round-trip is exercised only against a
 // running aip-litellm — verify on a provisioned host.
-func (manager *KeyManager) RegisterOllamaModel(name string) error {
+func (manager *KeyManager) RegisterOllamaModel(name string, supportsTools bool) error {
 	modelName := OllamaModelName(name)
 	existing, err := manager.ListModels()
 	if err != nil {
@@ -192,28 +210,54 @@ func (manager *KeyManager) RegisterOllamaModel(name string) error {
 	}
 	for _, model := range existing {
 		if model.Name == modelName {
-			return nil // already registered — don't duplicate
+			if model.SupportsTools == supportsTools {
+				return nil // already registered with the right capability
+			}
+			if err := manager.DeleteModel(model.ID); err != nil {
+				return err
+			}
+			break // re-add below with corrected capability
 		}
 	}
-	return manager.AddModel(modelName,
-		ModelParams{Model: OllamaRoutedModel(name), APIBase: OllamaAPIBase}, ModelInfo{})
+	params, info := ollamaModelParamsInfo(name, &supportsTools)
+	return manager.AddModel(modelName, params, info)
+}
+
+// ollamaModelParamsInfo builds the LiteLLM params + info for an Ollama model. It always
+// sets drop_params (defense-in-depth for unsupported params) and records tool-calling
+// support in model_info when known (supportsTools nil = unknown) — the recorded support is
+// what drives opencode's per-model tool_call so a completion-only model is never sent tools.
+func ollamaModelParamsInfo(name string, supportsTools *bool) (ModelParams, ModelInfo) {
+	dropParams := true
+	return ModelParams{Model: OllamaRoutedModel(name), APIBase: OllamaAPIBase, DropParams: &dropParams},
+		ModelInfo{SupportsFunctionCalling: supportsTools}
 }
 
 // RegisterOllamaModels registers every given local Ollama model in LiteLLM that is not
 // ALREADY served (idempotent), returning the model_names it newly added. It lists the
 // current set ONCE (unlike calling RegisterOllamaModel per name, which lists each call), so
 // a bulk reconcile of the installed store is one list + one AddModel per missing model.
-// It only ADDS — it never deletes — so it safely re-registers models the gateway lost
-// (e.g. a model still installed in Ollama but missing from LiteLLM) without touching the
-// rest. Stops at the first AddModel error, returning what was added so far.
-func (manager *KeyManager) RegisterOllamaModels(names []string) ([]string, error) {
+// It never removes a model the caller did not list, so it safely re-registers models the
+// gateway lost (e.g. a model still installed in Ollama but missing from LiteLLM) without
+// touching the rest. Stops at the first error, returning what was newly added so far.
+// supportsTools maps a bare Ollama model name to whether it can do tool/function calling
+// (from the model's advertised capabilities). A name absent from the map is registered with
+// UNKNOWN tool support (model_info.supports_function_calling omitted) — drop_params still
+// protects it from a tools-related 500. Pass nil to register the whole set as unknown.
+//
+// BACKFILL: for a model that is ALREADY served but whose KNOWN capability disagrees with
+// what is registered (e.g. a model registered before tool support was recorded, so it
+// defaults to tool-capable but is really completion-only), it re-registers it (delete +
+// add) so supports_function_calling + drop_params reflect reality. This is what lets an
+// existing workspace's smollm-style model stop 500'ing opencode without a fresh pull.
+func (manager *KeyManager) RegisterOllamaModels(names []string, supportsTools map[string]bool) ([]string, error) {
 	current, err := manager.ListModels()
 	if err != nil {
 		return nil, err
 	}
-	served := make(map[string]bool, len(current))
+	servedByName := make(map[string]LiveModel, len(current))
 	for _, model := range current {
-		served[model.Name] = true
+		servedByName[model.Name] = model
 	}
 	var added []string
 	for _, name := range names {
@@ -221,13 +265,30 @@ func (manager *KeyManager) RegisterOllamaModels(names []string) ([]string, error
 			continue
 		}
 		modelName := OllamaModelName(name)
-		if served[modelName] {
+		tools, known := supportsTools[name]
+		if existing, isServed := servedByName[modelName]; isServed {
+			// Already served — reconcile capability only when we KNOW it and it changed.
+			if known && existing.SupportsTools != tools {
+				if err := manager.DeleteModel(existing.ID); err != nil {
+					return added, err
+				}
+				params, info := ollamaModelParamsInfo(name, &tools)
+				if err := manager.AddModel(modelName, params, info); err != nil {
+					return added, err
+				}
+				servedByName[modelName] = LiveModel{Name: modelName, SupportsTools: tools}
+			}
 			continue
 		}
-		if err := manager.AddModel(modelName, ModelParams{Model: OllamaRoutedModel(name), APIBase: OllamaAPIBase}, ModelInfo{}); err != nil {
+		var toolsPtr *bool
+		if known {
+			toolsPtr = &tools
+		}
+		params, info := ollamaModelParamsInfo(name, toolsPtr)
+		if err := manager.AddModel(modelName, params, info); err != nil {
 			return added, err
 		}
-		served[modelName] = true
+		servedByName[modelName] = LiveModel{Name: modelName, SupportsTools: tools}
 		added = append(added, modelName)
 	}
 	return added, nil
@@ -262,6 +323,12 @@ type LiveModel struct {
 	Name     string
 	RoutedTo string
 	Provider string
+	// SupportsTools reports whether the model can do tool/function calling. It reflects
+	// model_info.supports_function_calling from the gateway, defaulting to TRUE when the
+	// field is absent (unknown) so cloud models — which don't set it — keep their prior
+	// tool-capable treatment; only a model explicitly registered false (a completion-only
+	// Ollama model) reports false.
+	SupportsTools bool
 }
 
 // ListModels returns the live model set from GET /model/info (model_name +
@@ -275,7 +342,8 @@ func (manager *KeyManager) ListModels() ([]LiveModel, error) {
 				Model string `json:"model"`
 			} `json:"litellm_params"`
 			ModelInfo struct {
-				ID string `json:"id"`
+				ID                      string `json:"id"`
+				SupportsFunctionCalling *bool  `json:"supports_function_calling"`
 			} `json:"model_info"`
 		} `json:"data"`
 	}
@@ -298,11 +366,15 @@ func (manager *KeyManager) ListModels() ([]LiveModel, error) {
 		if provider == "" {
 			provider = providerPrefix(name)
 		}
+		// Absent supports_function_calling = unknown = tool-capable (preserves cloud
+		// models' prior treatment); only an explicit false marks a model non-tool.
+		supportsTools := entry.ModelInfo.SupportsFunctionCalling == nil || *entry.ModelInfo.SupportsFunctionCalling
 		models = append(models, LiveModel{
-			ID:       entry.ModelInfo.ID,
-			Name:     name,
-			RoutedTo: routed,
-			Provider: provider,
+			ID:            entry.ModelInfo.ID,
+			Name:          name,
+			RoutedTo:      routed,
+			Provider:      provider,
+			SupportsTools: supportsTools,
 		})
 	}
 	return models, nil

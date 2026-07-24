@@ -35,6 +35,15 @@ func (result appsResult) Human() string {
 
 // appStatusLabel renders one app's lifecycle state for the table.
 func appStatusLabel(status apps.Status) string {
+	// Agent-CLI dashboards are user-launched in-VM (not container apps), so they are
+	// not startable via `ai apps start` — label them so the state does not read like a
+	// stopped app the user can start.
+	if status.Kind == apps.KindDashboard {
+		if status.Running {
+			return ui.Success.Render("dashboard (running)")
+		}
+		return ui.Warn.Render("dashboard (launch in workspace)")
+	}
 	switch {
 	case !status.Installed:
 		return ui.Failure.Render("not installed")

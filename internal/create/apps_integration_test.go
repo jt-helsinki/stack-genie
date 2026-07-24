@@ -94,7 +94,10 @@ func TestHermesDashboardPortEndToEnd(test *testing.T) {
 		AgentCLIs:   []string{"opencode", "hermes"},
 		DefaultTool: "opencode",
 		Root:        root,
-		AppPorts:    map[string]int{"hermes": 9119},
+		// A high, unusual port (NOT hermes's default 9119) so the real free-port check in
+		// AllocateDashboardEntries passes even when a live workspace has the hermes
+		// dashboard bound to its default 9119 on this host.
+		AppPorts: map[string]int{"hermes": 29119},
 	}
 	if _, _, err := Execute(spec, "2026-07-21T00:00:00Z", nil); err != nil {
 		test.Fatalf("Execute: %v", err)
@@ -105,14 +108,14 @@ func TestHermesDashboardPortEndToEnd(test *testing.T) {
 		test.Fatalf("LoadProjectConfig: %v", err)
 	}
 	if len(projectConfig.AgentDashboards) != 1 ||
-		projectConfig.AgentDashboards[0].Key != "hermes" || projectConfig.AgentDashboards[0].Port != 9119 {
-		test.Fatalf("agent_dashboards = %+v, want [hermes:9119]", projectConfig.AgentDashboards)
+		projectConfig.AgentDashboards[0].Key != "hermes" || projectConfig.AgentDashboards[0].Port != 29119 {
+		test.Fatalf("agent_dashboards = %+v, want [hermes:29119]", projectConfig.AgentDashboards)
 	}
 
 	network := config.NetworkConfig{PublishPorts: apps.PublishedPorts(projectConfig)}
 	joined := strings.Join(egress.MsbNetworkArgs(network, "host.microsandbox.internal", 18787), " ")
-	if !strings.Contains(joined, "-p 9119:9119") {
-		test.Errorf("msb args must publish the hermes dashboard port (-p 9119:9119), got: %s", joined)
+	if !strings.Contains(joined, "-p 29119:29119") {
+		test.Errorf("msb args must publish the hermes dashboard port (-p 29119:29119), got: %s", joined)
 	}
 }
 

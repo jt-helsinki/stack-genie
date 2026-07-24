@@ -710,12 +710,19 @@ func runCreateWizard(seed project.Spec) (project.Spec, bool, error) {
 	// container port, else an auto-allocated one), or the --app-port value when given.
 	// Blank → auto-assign at create.
 	reservedAppPorts, _ := apps.ReservedPortsAcrossWorkspaces()
+	if reservedAppPorts == nil {
+		reservedAppPorts = map[int]bool{}
+	}
 	appPortValues := make(map[string]*string, len(supportedApps))
 	for _, appKey := range supportedApps {
 		seedPort := seed.AppPorts[appKey]
 		if seedPort == 0 {
 			seedPort = apps.SuggestedHostPort(appKey, reservedAppPorts, nil)
 		}
+		// Reserve this seed so the NEXT app/dashboard suggestion is a DIFFERENT free port
+		// (otherwise, when the familiar container ports are taken, every app would fall back
+		// to the same auto-allocated port and the create-time allocation would then collide).
+		reservedAppPorts[seedPort] = true
 		value := strconv.Itoa(seedPort)
 		appPortValues[appKey] = &value
 		key := appKey
@@ -736,6 +743,7 @@ func runCreateWizard(seed project.Spec) (project.Spec, bool, error) {
 		if seedPort == 0 {
 			seedPort = apps.SuggestedDashboardPort(dashCLI, reservedAppPorts, nil)
 		}
+		reservedAppPorts[seedPort] = true
 		value := strconv.Itoa(seedPort)
 		appPortValues[dashCLI] = &value
 		key := dashCLI

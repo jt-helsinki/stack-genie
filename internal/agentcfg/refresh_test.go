@@ -4,27 +4,9 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"sort"
 	"strings"
 	"testing"
 )
-
-func dedupSorted(in []string) []string {
-	seen := map[string]struct{}{}
-	out := make([]string, 0, len(in))
-	for _, value := range in {
-		if value == "" {
-			continue
-		}
-		if _, ok := seen[value]; ok {
-			continue
-		}
-		seen[value] = struct{}{}
-		out = append(out, value)
-	}
-	sort.Strings(out)
-	return out
-}
 
 // requireBash skips the test when bash is unavailable, so CI on any host is safe
 // (the host-side generation is still covered by the parity-of-skeleton tests).
@@ -38,11 +20,11 @@ func requireBash(test *testing.T) string {
 }
 
 // writeFakeCurl writes a fake `curl` onto a dir that the script will see first on
-// PATH. The fake echoes the canned /v1/models JSON (the gateway's served-model
-// list) when reachable and fails (exit 7, like real curl's "couldn't connect")
-// otherwise — so a test can simulate both the reachable and unreachable gateway.
-// The script invokes curl with `-fsS --max-time 10 -H 'Authorization: Bearer …'
-// <MODELS_URL>`, so the fake ignores its args and just emits the body.
+// PATH. The fake echoes the canned /model/info JSON (the gateway's served-model set
+// with per-model tool support) when reachable and fails (exit 7, like real curl's
+// "couldn't connect") otherwise — so a test can simulate both the reachable and
+// unreachable gateway. The script invokes curl with `-fsS --max-time 10 -H
+// 'Authorization: Bearer …' <INFO_URL>`, so the fake ignores its args and emits the body.
 func writeFakeCurl(test *testing.T, dir, modelsJSON string, reachable bool) {
 	test.Helper()
 	var body string
@@ -105,9 +87,18 @@ func runRefresh(test *testing.T, binDir string) (openCode []byte, ranOK bool) {
 // so an in-VM refresh matches a fresh workspace start.
 func TestRefreshScriptParityWithGenerators(test *testing.T) {
 	binDir := test.TempDir()
-	// The /v1/models shape: {"data":[{"id":"…"}, …]}. Deliberately unsorted + with a
-	// duplicate so the script's dedup+sort is exercised.
-	models := `{"data":[{"id":"ollama/qwen2.5:7b"},{"id":"anthropic/claude-opus-4-8"},{"id":"ollama/llama3.2:latest"},{"id":"anthropic/claude-opus-4-8"}]}`
+	// The /model/info shape: {"data":[{"model_name":"…","model_info":{...}}, …]}.
+	// Deliberately unsorted + with a duplicate so the script's dedup+sort is exercised,
+	// and with MIXED tool support: an Ollama model marked non-tool
+	// (supports_function_calling:false), a tool-capable Ollama model (true), and a cloud
+	// model that OMITS the field (unknown → treated as tool-capable) — so both the
+	// tool_call:true and tool_call:false item variants are exercised.
+	models := `{"data":[` +
+		`{"model_name":"ollama/qwen2.5:7b","model_info":{"id":"a","supports_function_calling":false}},` +
+		`{"model_name":"anthropic/claude-opus-4-8","model_info":{"id":"b"}},` +
+		`{"model_name":"ollama/llama3.2:latest","model_info":{"id":"c","supports_function_calling":true}},` +
+		`{"model_name":"anthropic/claude-opus-4-8","model_info":{"id":"b"}}` +
+		`]}`
 	writeFakeCurl(test, binDir, models, true)
 
 	gotOpenCode, ranOK := runRefresh(test, binDir)
@@ -115,11 +106,13 @@ func TestRefreshScriptParityWithGenerators(test *testing.T) {
 		test.Fatal("refresh-models must succeed when the gateway is reachable")
 	}
 
-	// The expected list: the served ids, deduped + sorted exactly as pickerModels.
-	merged := dedupSorted([]string{
-		"ollama/qwen2.5:7b", "anthropic/claude-opus-4-8",
-		"ollama/llama3.2:latest", "anthropic/claude-opus-4-8",
-	})
+	// The expected set: deduped + sorted by name exactly as pickerModels, with tool
+	// support from supports_function_calling (absent = tool-capable).
+	merged := []Model{
+		{Name: "anthropic/claude-opus-4-8", Tools: true},
+		{Name: "ollama/llama3.2:latest", Tools: true},
+		{Name: "ollama/qwen2.5:7b", Tools: false},
+	}
 
 	// refresh-models rewrites a KEYLESS config (the {env:}/$VAR refs), never the literal
 	// scoped key — so parity is against the generator called with the key ref.
@@ -190,17 +183,17 @@ func TestRefreshScriptErrorsWhenCurlMissing(test *testing.T) {
 	}
 }
 
-// TestRefreshScriptModelsURL: the served-models list endpoint is the gateway base
-// (carrying /v1) with the /models path appended.
-func TestRefreshScriptModelsURL(test *testing.T) {
+// TestRefreshScriptModelInfoURL: the model-info endpoint is the gateway ROOT (with the
+// /v1 suffix and any trailing slash trimmed) plus /llm/model/info.
+func TestRefreshScriptModelInfoURL(test *testing.T) {
 	cases := map[string]string{
-		"http://host.microsandbox.internal:18787/v1": "http://host.microsandbox.internal:18787/v1/models",
-		"http://srv:9999/v1/":                        "http://srv:9999/v1/models",
-		"http://srv:9999":                            "http://srv:9999/models",
+		"http://host.microsandbox.internal:18787/v1": "http://host.microsandbox.internal:18787/llm/model/info",
+		"http://srv:9999/v1/":                        "http://srv:9999/llm/model/info",
+		"http://srv:9999":                            "http://srv:9999/llm/model/info",
 	}
 	for input, want := range cases {
-		if got := modelsURL(input); got != want {
-			test.Errorf("modelsURL(%q) = %q, want %q", input, got, want)
+		if got := modelInfoURL(input); got != want {
+			test.Errorf("modelInfoURL(%q) = %q, want %q", input, got, want)
 		}
 	}
 }
