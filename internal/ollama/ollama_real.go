@@ -239,7 +239,9 @@ func contextLengthFromModelInfo(modelInfo map[string]any) int {
 // SetNumCtx bakes a num_ctx parameter into an existing model. POST /api/create
 // with {"model":name,"from":name,"parameters":{"num_ctx":numCtx}} rebuilds the
 // model from itself (reusing blobs) with the added parameter. Ollama streams
-// status frames; a non-2xx response is surfaced as a clean error.
+// newline-delimited status frames; a non-2xx response OR an {"error":...} frame
+// (which can arrive under HTTP 200) is surfaced as a clean error — otherwise a
+// failed bake would be silently reported as success.
 func (client realClient) SetNumCtx(name string, numCtx int) error {
 	payload, _ := json.Marshal(map[string]any{
 		"model":      name,
@@ -258,6 +260,28 @@ func (client realClient) SetNumCtx(name string, numCtx int) error {
 	defer func() { _ = response.Body.Close() }()
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
 		return statusError(response)
+	}
+	// Scan the NDJSON status frames; an {"error":...} frame (possible under HTTP 200)
+	// means the create failed even though the status code was ok.
+	scanner := bufio.NewScanner(response.Body)
+	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
+	for scanner.Scan() {
+		line := bytes.TrimSpace(scanner.Bytes())
+		if len(line) == 0 {
+			continue
+		}
+		var frame struct {
+			Error string `json:"error"`
+		}
+		if err := json.Unmarshal(line, &frame); err != nil {
+			return fmt.Errorf("ollama: decoding create response: %w", err)
+		}
+		if frame.Error != "" {
+			return fmt.Errorf("ollama: %s", frame.Error)
+		}
+	}
+	if err := scanner.Err(); err != nil {
+		return fmt.Errorf("ollama: reading create stream: %w", err)
 	}
 	return nil
 }

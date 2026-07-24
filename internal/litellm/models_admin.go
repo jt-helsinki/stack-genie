@@ -310,7 +310,9 @@ func (manager *KeyManager) RegisterOllamaModels(names []string, supportsTools ma
 		if err := manager.AddModel(modelName, params, info); err != nil {
 			return added, err
 		}
-		servedByName[modelName] = LiveModel{Name: modelName, SupportsTools: tools}
+		// Cache the full shape (routing + resolved capability) so a duplicate name later in
+		// `names` sees it as correctly-registered instead of re-deleting with an empty ID.
+		servedByName[modelName] = LiveModel{Name: modelName, RoutedTo: OllamaRoutedModel(name), SupportsTools: boolOrDefault(toolsPtr, true)}
 		added = append(added, modelName)
 	}
 	return added, nil

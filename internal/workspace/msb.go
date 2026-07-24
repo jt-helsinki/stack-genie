@@ -51,9 +51,8 @@ var msbAssets = map[string]msbAsset{
 }
 
 var (
-	msbOnce sync.Once
-	msbPath string
-	msbErr  error
+	msbMu   sync.Mutex
+	msbPath string // cached ONLY on success — a transient download error is never memoized
 )
 
 // msbBinaryFn resolves the msb CLI path for the lifecycle call sites. It defaults to the
@@ -64,11 +63,25 @@ var msbBinaryFn = MsbBinary
 // MsbBinary returns the path to the platform-managed `msb` CLI, installing it into
 // ~/.ai-platform/bin/msb (pinned version, sha256-verified) on first use if it is absent
 // or the wrong build. The result is cached for the process and is used for every `msb`
-// invocation so the CLI always matches the embedded SDK FFI (no version skew). A download
-// failure is returned so the caller can surface it.
+// invocation so the CLI always matches the embedded SDK FFI (no version skew). The
+// download failure is returned so the caller can surface it.
+//
+// Success is cached; a FAILURE is NOT — a transient error (GitHub/DNS/proxy blip on the
+// first workspace build) would otherwise poison every later `msb` op for the whole
+// process (worst in the long-lived `ai ui`). ensureMsb is idempotent (it no-ops once the
+// verified binary is present), so re-attempting on a prior failure is safe.
 func MsbBinary() (string, error) {
-	msbOnce.Do(func() { msbPath, msbErr = ensureMsb() })
-	return msbPath, msbErr
+	msbMu.Lock()
+	defer msbMu.Unlock()
+	if msbPath != "" {
+		return msbPath, nil
+	}
+	path, err := ensureMsb()
+	if err != nil {
+		return "", err
+	}
+	msbPath = path
+	return msbPath, nil
 }
 
 // msbBinOrDefault returns the managed msb path, falling back to bare "msb" (PATH) when the

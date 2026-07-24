@@ -234,6 +234,24 @@ func TestSetNumCtxSurfacesNon2xx(test *testing.T) {
 	}
 }
 
+// TestSetNumCtxSurfacesErrorFrame verifies an {"error":...} NDJSON frame returned UNDER
+// HTTP 200 is surfaced as an error (a failed bake must not look like success).
+func TestSetNumCtxSurfacesErrorFrame(test *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+		writer.WriteHeader(http.StatusOK)
+		_, _ = writer.Write([]byte(`{"status":"creating"}` + "\n" + `{"error":"boom baking num_ctx"}` + "\n"))
+	}))
+	defer server.Close()
+
+	err := newTestClient(server).SetNumCtx("qwen3", 32768)
+	if err == nil {
+		test.Fatal("expected error from an error frame under HTTP 200, got nil")
+	}
+	if !strings.Contains(err.Error(), "boom baking num_ctx") {
+		test.Errorf("error should carry the frame message, got %v", err)
+	}
+}
+
 func TestRecommendedNumCtx(test *testing.T) {
 	cases := []struct {
 		name          string
