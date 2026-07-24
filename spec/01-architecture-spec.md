@@ -1395,6 +1395,20 @@ needs its provider key present in the gateway (§17). The catalog id is the publ
 `model_name` verbatim; the catalog-id→LiteLLM-prefix map (e.g. `google` → `gemini`)
 supplies the routing prefix. There is no default model.
 
+Ollama models are registered with `litellm_params.model` = `ollama_chat/<name>`
+(`OllamaRoutedModel`) — Ollama's `/api/chat` endpoint (native chat messages, tools,
+streaming) — NOT `ollama/<name>` (`/api/generate`, which yields empty output for
+chat/tool traffic); the public `model_name` stays `ollama/<name>`. Registration is
+**capability-aware** (reads the model's `/api/show` capabilities → `model_info.
+supports_function_calling` + `litellm_params.drop_params`) and **heals stale
+registrations** (re-registers when the routing prefix is the old `ollama/*` form or
+the tool capability changed). Because LiteLLM does not forward `num_ctx` for
+`ollama_chat`, the platform bakes the context window instead: a default
+`OLLAMA_CONTEXT_LENGTH` (16384) on the `aip-ollama` container (skipped when the user
+forwards their own) plus a per-model `num_ctx` baked into each pulled model
+(`SetNumCtx`, sized `min(trained context, 32768)`) at `ai models pull` and on the TUI
+Local Models refresh.
+
 ### In-VM agent provider config — keyless per-CLI project configs, key in-VM only
 
 The **eight** gateway-capable agent CLIs (all except forced-OAuth Copilot) route through

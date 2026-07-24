@@ -796,11 +796,16 @@ agent_dashboards:          # agent-CLI web dashboards (currently only hermes —
   `nginx:stable-alpine3.23-slim`, `valkey` → `valkey/valkey:9.1.0-alpine`) — **not by
   digest** (digests are platform/arch specific, so a digest pin breaks
   cross-platform pulls).
-* The **native microsandbox runtime is NOT pinned here**: it is a user-installed
-  prerequisite that `ai setup`/`ai doctor` DETECT on PATH, not an image the platform
-  pulls — so it is deliberately excluded from this image pin set (it keeps a
-  registry slot only for its log scope). Native pins (`version` + `sha256`) are
-  reserved for any future genuinely-pinned native component.
+* The **native microsandbox runtime is NOT pinned here**: it is not an image the
+  platform pulls, so it is deliberately excluded from this image pin set (it keeps a
+  registry slot only for its log scope). It is instead **platform-managed and pinned
+  in code** — `internal/workspace/msb.go` pins the `msb` CLI to `microsandboxVersion`
+  (matched to the go.mod Microsandbox SDK pin) and `MsbBinary` downloads the matching
+  fork binary (sha256-verified against `msbAssets`) into `~/.ai-platform/bin/msb`
+  (`paths.BinDir`) on first use, so it is NOT a user-installed PATH prerequisite and
+  `sandbox.Detect` counts the platform-managed binary as installed. Native pins
+  (`version` + `sha256`) in this file are reserved for any future genuinely-pinned
+  native component managed through `versions.yaml`.
 * `ai setup` **resolves every service-tier image from this file** (via
   `internal/setup`'s `containerImage`, falling back to the built-in
   `versions.Default()` pins when the file is absent or an entry is incomplete);
