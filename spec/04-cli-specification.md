@@ -1243,10 +1243,16 @@ gateway errors are exit `4`.
 
 `ai models status` / `ai models test` describe and probe **LiteLLM routing**. The
 commands below instead manage the **local Ollama store** directly over its HTTP API
-— the local-model backend LiteLLM's `ollama/*` wildcard routes to. Pulling a tag
-here makes it usable immediately through that wildcard: registering a model in the
-gateway is **not** the same as installing it; `pull` is what installs it. These
-commands only affect Ollama's local store (they never touch LiteLLM config).
+— the local-model backend LiteLLM routes `ollama/<name>` models to. (The rendered
+LiteLLM config carries **no** `model_list` and **no** per-provider wildcards — the
+served model set is **DB-backed**, §14.) Installing a model is a two-part act:
+`ai models pull` downloads it into the Ollama store **and** registers it as a
+DB-backed model in the gateway (public `model_name` `ollama/<name>`, via
+`litellm.RegisterOllamaModel`), so it becomes routable immediately; `ai models rm`
+removes it from the store **and** unregisters it (`UnregisterOllamaModel`). Merely
+registering a model in the gateway is **not** the same as having it installed
+locally — `pull` is what downloads the weights. The pure store commands (`list` /
+`popular` / `show`) do not touch the gateway registration.
 
 If Ollama is unreachable, these exit **3** (missing dependency) with a hint to run
 `ai services start ollama` (or `ai setup`); bad input exits **2**; other failures

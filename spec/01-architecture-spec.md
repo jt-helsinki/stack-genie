@@ -586,9 +586,19 @@ empty and the app's user picks a served model) — via
 
 Apps are **opt-in** (chosen at `ai create`, default OFF) and have a full
 lifecycle via **`ai apps <list|add|remove|update|start|stop|restart> [app] [name]`**
-and a per-workspace **Apps** view in `ai ui`. Each installed app is allocated a
-**unique host port** (recorded in the project `config.yaml`'s `apps:` block) so two
-running microVMs never collide. The port chain is:
+and a per-workspace **Apps** view in `ai ui`. The web-UI **host port for each
+selected app is CHOSEN at create** — the wizard prompts for one per selected app and
+the `--app-port <app>=<port>` flag sets it non-interactively (seeded with the app's
+familiar container port — Open WebUI 8080, AnythingLLM 3001 — when free, else an
+auto-allocated free port; validated unique + host-free and reserved machine-wide
+across all workspaces) — and it is persisted in the project `config.yaml`'s `apps:`
+block. **Agent-CLI web dashboards get the same treatment**: an agent CLI that ships a
+dashboard (currently only **hermes** — `hermes dashboard`, default port 9119) is
+prompted for a host port at create when selected (the same `--app-port <cli>=<port>`
+flag / wizard step) and persisted in `config.yaml`'s `agent_dashboards:` block. Apps
+are **NOT auto-started at `ai start`** (a heavy image pull would block the whole
+start) — `Start` only publishes their ports and brings containerd up; apps start
+**on demand** via `ai apps`. The port chain is:
 
 ```text
 host:<port>  --(msb published port: -p <port>:<port>)-->  VM:<port>  --(nerdctl -p <port>:<containerPort>)-->  container:<containerPort>
@@ -960,10 +970,16 @@ templates (§25); it is identical across all OSes:
   builds the graph offline (`graphify update .`, AST-only) at start (`workspace.setupGraphifyMCP`),
   so `python -m graphify.serve graphify-out/graph.json` has data; the git hook keeps it fresh
   (gated on `context.graphify_enabled`).
-* **code-review-graph** and **codebase-memory-mcp** — two OPT-IN (default off)
-  per-workspace code-graph tools baked into every OS base and, when chosen at
-  `ai create` (`--code-review-graph` / `--codebase-memory`, or the wizard's tooling
-  step), registered as an **MCP server** with each installed agent CLI **at workspace
+* **code-review-graph** and **codebase-memory-mcp** — two per-workspace code-graph
+  tools chosen from the single AI-tools multi-select at `ai create` (the `--tools`
+  flag / the wizard's one AI-tools step, alongside caveman + graphify;
+  `create.SupportedAITools`, with defaults `create.DefaultAITools` = caveman +
+  graphify + code-review-graph ON, codebase-memory-mcp OFF). Each maps to a
+  `context.*_enabled` bool in `config.yaml` (`code_review_graph_enabled` /
+  `codebase_memory_enabled`) and, when selected, is appended to the project Dockerfile
+  as a CONDITIONAL install snippet (`tools/code-review-graph/`,
+  `tools/codebase-memory-mcp/`) — NOT baked into every OS base — then
+  registered as an **MCP server** with each installed agent CLI **at workspace
   start** (`Manager.registerCodeReviewGraph` / `registerCodebaseMemory`, mirroring
   `registerGraphify`/`registerCaveman`: once-guarded by a marker under
   `~/project/.ai-platform`, best-effort, never failing the start). **code-review-graph**
@@ -1805,7 +1821,7 @@ seed a new project's `.ai-platform/Dockerfile`:
   recommended default (`debian-trixie`). The chosen key selects which template
   seeds `.ai-platform/Dockerfile`.
 * each template installs the **base** tooling layer (§12: Git, GitHub CLI, Node.js,
-  Python 3, uv, Graphify, Headroom, rtk, and the in-VM container runtime) on its
+  Python 3, uv, Headroom, rtk, and the in-VM container runtime) on its
   base image — identical across all OSes; the **agent CLIs** and **software stacks**
   selected at creation (§12; see Software Stacks below) are then added to the
   project's generated `.ai-platform/Dockerfile` (acceptance tests §6)

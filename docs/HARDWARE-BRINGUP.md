@@ -144,7 +144,7 @@ verification work:
       `destructiveCommandRegex` is `.*( … ).*`-wrapped; `default_action: allow` +
       `decision: deny` rules block on match). `shellToolNameRegex` and the command
       param paths (`command`, `command[]`, `cmd`) were verified against each agent's
-      tool schema (opencode/pi `bash`→`command`, claude-code `Bash`→`command`, codex
+      tool schema (opencode/omp `bash`→`command`, claude-code `Bash`→`command`, codex
       `shell`→`command[]` array / `exec_command`→`cmd` / `shell_command`→`command`,
       gemini `run_shell_command`→`command`). Remaining LIVE checks:
   - confirm on a real host that `git push --force` is **blocked** (HTTP error) while
@@ -275,7 +275,7 @@ verification work:
       by `ensureLiteLLMDB` as part of litellm) surfaces its OWN **display-only**
       `postgres` line in `ai services` / the TUI, immediately AFTER the litellm line:
       State "running" when the container is up else "stopped"; Mode "container"; no
-      host endpoint (internal-only loopback :5442). Managed WITH litellm — there is
+      host endpoint (internal-only, `aip-litellm-db:5432`). Managed WITH litellm — there is
       NO separate start/stop/restart verb (`ai services <action> litellm-db` →
       "unknown service"). Verify the line appears and tracks the container state.
 

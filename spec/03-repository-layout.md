@@ -702,8 +702,10 @@ context:
   strategy: balanced       # Headroom input compression: conservative | balanced | aggressive
                            # (mapped to Headroom per-request knobs keep_turns/output_buffer_tokens)
   caveman_level: full      # Caveman output compression: lite | full | ultra | wenyan
-  caveman_enabled: true    # install Caveman at workspace start (chosen at create; default true)
-  code_review_graph_enabled: false  # OPT-IN: install code-review-graph (code-review-graph.com) + register it
+  caveman_enabled: true    # AI tools — ONE `--tools` multi-select at create (§1.5); the create-default
+                           # selection is caveman + graphify + code-review-graph ON, codebase-memory OFF
+  graphify_enabled: true   # install Graphify (conditional Dockerfile snippet, §1.5) + register it per CLI at start
+  code_review_graph_enabled: true    # install code-review-graph (code-review-graph.com) + register it
                                      # as an MCP server with each installed agent CLI at start
   codebase_memory_enabled: false     # OPT-IN: install codebase-memory-mcp (DeusData/codebase-memory-mcp) +
                                      # register it as an MCP server with each installed agent CLI at start
@@ -721,11 +723,16 @@ network:                   # workspace networking (arch §29.6); all fields mana
     - { host: gateway, port: 5432 }
   publish_ports:           # host → workspace port maps
     - { guest: 3000, host: 3000 }
-apps:                      # opt-in in-VM AI apps (arch §7), chosen via `ai create --apps` / `ai apps add`
+apps:                      # opt-in in-VM AI apps (arch §7), chosen via `ai create --apps`/`--app-port` / `ai apps add`
                            # each runs as a rootful nerdctl container in the workspace microVM, gateway-routed,
-                           # published on its allocated unique host port (stable across restarts;
-                           # allocated from the 21000–21999 window — internal/apps/ports.go)
-  - { key: openwebui, port: 21000 }   # key one of: openwebui, anythingllm
+                           # published on a unique host port (stable across restarts; seeded to the app's
+                           # familiar container port — Open WebUI 8080, AnythingLLM 3001 — when free, else
+                           # auto-allocated from the 21000–21999 window — internal/apps/ports.go)
+  - { key: openwebui, port: 8080 }    # key one of: openwebui, anythingllm
+agent_dashboards:          # agent-CLI web dashboards (currently only hermes — `hermes dashboard`, default 9119);
+                           # prompted for a host port at create when the CLI is selected (--app-port <cli>=<port>),
+                           # published from the microVM the same way as apps (host==guest); reuses the AppEntry shape
+  - { key: hermes, port: 9119 }
 ```
 
 ## 12.5 `config/runtime.yaml` (platform-global, non-project)

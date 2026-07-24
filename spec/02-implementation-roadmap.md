@@ -528,7 +528,7 @@ System is complete when:
 
 ```bash id="g1"
 ai setup
-ai create --name my-project   # interactive wizard: pick OS + agent CLIs (defaults: debian-trixie, OpenCode + Pi)
+ai create --name my-project   # interactive wizard: pick OS + agent CLIs (defaults: debian-trixie, OpenCode)
 ```
 
 produces (for the OS the user selected):
