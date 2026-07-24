@@ -1745,3 +1745,27 @@ func TestOllamaEnvArgsForwardsPrefixed(test *testing.T) {
 		test.Errorf("non-OLLAMA_ vars must not be forwarded: %q", joined)
 	}
 }
+
+// TestOllamaContextLengthDefault verifies the platform sets a generous default context
+// window (so agent CLIs' prompt + tools don't starve generation), and that a user-forwarded
+// OLLAMA_CONTEXT_LENGTH overrides it without a duplicate flag.
+func TestOllamaContextLengthDefault(test *testing.T) {
+	// Default applied when unset.
+	joined := strings.Join(ollamaEnvArgs(), " ")
+	if !strings.Contains(joined, "-e OLLAMA_CONTEXT_LENGTH="+defaultOllamaContextLength) {
+		test.Errorf("ollama env args missing default context length: %q", joined)
+	}
+
+	// User override wins and is not duplicated.
+	test.Setenv("OLLAMA_CONTEXT_LENGTH", "65536")
+	joined = strings.Join(ollamaEnvArgs(), " ")
+	if !strings.Contains(joined, "-e OLLAMA_CONTEXT_LENGTH=65536") {
+		test.Errorf("user OLLAMA_CONTEXT_LENGTH must win: %q", joined)
+	}
+	if strings.Contains(joined, "OLLAMA_CONTEXT_LENGTH="+defaultOllamaContextLength) {
+		test.Errorf("default must be dropped when the user sets OLLAMA_CONTEXT_LENGTH: %q", joined)
+	}
+	if count := strings.Count(joined, "OLLAMA_CONTEXT_LENGTH="); count != 1 {
+		test.Errorf("OLLAMA_CONTEXT_LENGTH must appear once, got %d: %q", count, joined)
+	}
+}

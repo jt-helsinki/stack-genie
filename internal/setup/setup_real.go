@@ -209,6 +209,11 @@ const (
 	ollamaContainer    = "aip-ollama"
 	ollamaModelsVolume = "models"  // subdir under VolumesDir: ~/.ai-platform/volumes/models
 	ollamaModelsGuest  = "/models" // where the host models volume is mounted in the container
+	// defaultOllamaContextLength is the model context window the platform sets on the Ollama
+	// container (OLLAMA_CONTEXT_LENGTH) when the user has not forwarded their own. Ollama's
+	// built-in default (4096) is too small for agent CLIs (their prompt + tool schemas fill
+	// most of it, starving generation); 16384 leaves real headroom while staying memory-sane.
+	defaultOllamaContextLength = "16384"
 
 	// litellmDBVolume is the per-name subdir under VolumesDir for the LiteLLM
 	// Postgres data dir: ~/.ai-platform/volumes/litellm-db, HOST-BIND-MOUNTED into
@@ -658,6 +663,15 @@ func ollamaEnvPairs() []string {
 	slices.Sort(keys)
 
 	pairs := []string{"OLLAMA_MODELS=" + ollamaModelsGuest}
+	// Default the model context window. Ollama's built-in default is 4096, which is too
+	// small for agent CLIs: their system prompt + tool schemas alone run ~2k tokens, leaving
+	// almost no room to generate — a thinking model then exhausts the window on reasoning and
+	// returns EMPTY content with finish_reason "length". A larger default gives real
+	// generation headroom. Skipped when the user forwards their own OLLAMA_CONTEXT_LENGTH
+	// (e.g. to trade memory for a bigger window).
+	if _, set := forwarded["OLLAMA_CONTEXT_LENGTH"]; !set {
+		pairs = append(pairs, "OLLAMA_CONTEXT_LENGTH="+defaultOllamaContextLength)
+	}
 	for _, key := range keys {
 		pairs = append(pairs, key+"="+forwarded[key])
 	}
