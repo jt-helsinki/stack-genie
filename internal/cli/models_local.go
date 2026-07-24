@@ -364,6 +364,14 @@ func newModelsPullCmd(emitter *output.Emitter, exit *int) *cobra.Command {
 				} else {
 					outcome.Registered = true
 				}
+				// Best-effort: bake a memory-safe num_ctx into the model so it uses its
+				// trained context window (LiteLLM does not forward num_ctx for the
+				// ollama_chat provider). A Show/SetNumCtx failure must NOT fail the pull.
+				if info, showErr := client.Show(name); showErr == nil {
+					if numCtx := ollama.RecommendedNumCtx(info.ContextLength); numCtx > 0 {
+						_ = client.SetNumCtx(name, numCtx)
+					}
+				}
 				outcomes = append(outcomes, outcome)
 			}
 

@@ -18,6 +18,15 @@ type Fake struct {
 	ShowInfo    ModelInfo
 	ShowErr     error
 	ShownName   string // captures the last name passed to Show
+
+	SetNumCtxErr   error
+	SetNumCtxCalls []SetNumCtxCall // captures every (name, numCtx) passed to SetNumCtx, in order
+}
+
+// SetNumCtxCall records one SetNumCtx invocation so a test can assert baking.
+type SetNumCtxCall struct {
+	Name   string
+	NumCtx int
 }
 
 func (fake *Fake) List() ([]Model, error) { return fake.ListModels, fake.ListErr }
@@ -46,4 +55,9 @@ func (fake *Fake) Remove(name string) error {
 func (fake *Fake) Show(name string) (ModelInfo, error) {
 	fake.ShownName = name
 	return fake.ShowInfo, fake.ShowErr
+}
+
+func (fake *Fake) SetNumCtx(name string, numCtx int) error {
+	fake.SetNumCtxCalls = append(fake.SetNumCtxCalls, SetNumCtxCall{Name: name, NumCtx: numCtx})
+	return fake.SetNumCtxErr
 }

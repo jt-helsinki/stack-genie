@@ -312,6 +312,17 @@ func TestCreateConfirmedClosesOverlayAndRunsCreate(test *testing.T) {
 	if cmd == nil {
 		test.Fatal("CreateConfirmedMsg must return the in-process create command")
 	}
+	// The handler runs create.Execute in a goroutine that scaffolds into Spec.Root.
+	// Drain the returned batch (the done-reader blocks until create.Execute finishes) so
+	// that background write completes BEFORE t.Cleanup removes the temp Root — otherwise
+	// the two race and cleanup fails with "directory not empty".
+	if batch, ok := cmd().(tea.BatchMsg); ok {
+		for _, sub := range batch {
+			if sub != nil {
+				_ = sub()
+			}
+		}
+	}
 }
 
 // ExecRequestedMsg runs the interactive shell in the user's REAL terminal via

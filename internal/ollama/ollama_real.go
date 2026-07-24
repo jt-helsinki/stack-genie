@@ -206,7 +206,60 @@ func (client realClient) Show(name string) (ModelInfo, error) {
 		License:           parsed.License,
 		Capabilities:      parsed.Capabilities,
 		ModelInfo:         parsed.ModelInfo,
+		ContextLength:     contextLengthFromModelInfo(parsed.ModelInfo),
 	}, nil
+}
+
+// contextLengthFromModelInfo scans the free-form model_info map for the single
+// architecture-prefixed key ending in ".context_length" (e.g.
+// "qwen3.context_length") and coerces its JSON-number value to int. It returns 0
+// when the key is absent or the value is not numeric (best-effort).
+func contextLengthFromModelInfo(modelInfo map[string]any) int {
+	for key, value := range modelInfo {
+		if !strings.HasSuffix(key, ".context_length") {
+			continue
+		}
+		switch typed := value.(type) {
+		case float64:
+			return int(typed)
+		case json.Number:
+			if parsed, err := typed.Int64(); err == nil {
+				return int(parsed)
+			}
+		case int:
+			return typed
+		case int64:
+			return int(typed)
+		}
+		return 0
+	}
+	return 0
+}
+
+// SetNumCtx bakes a num_ctx parameter into an existing model. POST /api/create
+// with {"model":name,"from":name,"parameters":{"num_ctx":numCtx}} rebuilds the
+// model from itself (reusing blobs) with the added parameter. Ollama streams
+// status frames; a non-2xx response is surfaced as a clean error.
+func (client realClient) SetNumCtx(name string, numCtx int) error {
+	payload, _ := json.Marshal(map[string]any{
+		"model":      name,
+		"from":       name,
+		"parameters": map[string]any{"num_ctx": numCtx},
+	})
+	request, err := http.NewRequest(http.MethodPost, client.baseURL+"/api/create", bytes.NewReader(payload))
+	if err != nil {
+		return err
+	}
+	request.Header.Set("Content-Type", "application/json")
+	response, err := client.httpClient.Do(request)
+	if err != nil {
+		return unreachable(err)
+	}
+	defer func() { _ = response.Body.Close() }()
+	if response.StatusCode < 200 || response.StatusCode >= 300 {
+		return statusError(response)
+	}
+	return nil
 }
 
 // NotFoundError reports a model the local store does not have (HTTP 404). The CLI

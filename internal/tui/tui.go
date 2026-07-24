@@ -598,6 +598,12 @@ func installedOllamaToolSupport(names []string) map[string]bool {
 		if err != nil {
 			continue
 		}
+		// Best-effort: size already-installed models to their trained context window
+		// on every refresh (LiteLLM does not forward num_ctx for ollama_chat). A
+		// baking failure must never break the refresh.
+		if numCtx := ollama.RecommendedNumCtx(info.ContextLength); numCtx > 0 {
+			_ = client.SetNumCtx(name, numCtx)
+		}
 		tools := false
 		for _, capability := range info.Capabilities {
 			if capability == "tools" {
