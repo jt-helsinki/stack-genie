@@ -74,6 +74,11 @@ func TestGroup04WorkspaceLifecycle(test *testing.T) {
 		if code != 0 && isMsbVersionMismatch(haystack) {
 			test.Skip("msb binary is older than its DB schema — upgrade the local msb (host tooling gap)")
 		}
+		// A flaky/unreachable container registry (Docker Hub EOF, DNS/TLS/timeout) fails the
+		// image build for reasons outside the platform — skip rather than fail the suite.
+		if code != 0 && isImageBuildInfraError(haystack) {
+			test.Skip("workspace image build failed to reach the container registry (network/registry gap)")
+		}
 		if !assertOK(test, env, code, "workspace.start") {
 			test.Fatalf("start failed (exit %d):\nstderr:\n%s\ndata:\n%s", code, stderr, env.Data)
 		}

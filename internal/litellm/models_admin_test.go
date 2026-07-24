@@ -16,8 +16,8 @@ func TestRegisterOllamaModelsAddsOnlyMissing(test *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		switch request.URL.Path {
 		case "/model/info":
-			// gemma4 already served; qwen3-coder is not.
-			_, _ = writer.Write([]byte(`{"data":[{"model_name":"ollama/gemma4","litellm_params":{"model":"ollama/gemma4"},"model_info":{"id":"g"}}]}`))
+			// gemma4 already served + CORRECTLY routed (ollama_chat); qwen3-coder is not.
+			_, _ = writer.Write([]byte(`{"data":[{"model_name":"ollama/gemma4","litellm_params":{"model":"ollama_chat/gemma4"},"model_info":{"id":"g"}}]}`))
 		case "/model/new":
 			payload, _ := io.ReadAll(request.Body)
 			var body map[string]any
@@ -41,6 +41,51 @@ func TestRegisterOllamaModelsAddsOnlyMissing(test *testing.T) {
 	}
 	if len(added) != 1 || added[0] != "ollama/qwen3-coder:30b" {
 		test.Errorf("gateway saw adds %v, want [ollama/qwen3-coder:30b] (gemma4 already served)", added)
+	}
+}
+
+// TestRegisterOllamaModelsHealsStaleRouting verifies the reconcile RE-REGISTERS an
+// already-served model whose routing is stale — one stored as "ollama/<name>" (Ollama's
+// /api/generate, which ignores chat messages + tools → empty agent output) is deleted and
+// re-added as "ollama_chat/<name>" (/api/chat). This is the fix for a model registered by
+// older code.
+func TestRegisterOllamaModelsHealsStaleRouting(test *testing.T) {
+	var deleted []string
+	var addedRouted []string
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		switch request.URL.Path {
+		case "/model/info":
+			// smollm served but STALE-routed on ollama/ (legacy /api/generate).
+			_, _ = writer.Write([]byte(`{"data":[{"model_name":"ollama/smollm:135m","litellm_params":{"model":"ollama/smollm:135m"},"model_info":{"id":"s"}}]}`))
+		case "/model/delete":
+			payload, _ := io.ReadAll(request.Body)
+			var body map[string]any
+			_ = json.Unmarshal(payload, &body)
+			deleted = append(deleted, body["id"].(string))
+			_, _ = writer.Write([]byte(`{}`))
+		case "/model/new":
+			payload, _ := io.ReadAll(request.Body)
+			var body map[string]any
+			_ = json.Unmarshal(payload, &body)
+			params, _ := body["litellm_params"].(map[string]any)
+			addedRouted = append(addedRouted, params["model"].(string))
+			_, _ = writer.Write([]byte(`{}`))
+		default:
+			test.Errorf("unexpected %s %s", request.Method, request.URL.Path)
+		}
+	}))
+	defer server.Close()
+	test.Setenv("LITELLM_BASE_URL", server.URL)
+
+	manager := NewKeyManager(okProber())
+	if _, err := manager.RegisterOllamaModels([]string{"smollm:135m"}, nil); err != nil {
+		test.Fatalf("RegisterOllamaModels: %v", err)
+	}
+	if len(deleted) != 1 || deleted[0] != "s" {
+		test.Errorf("stale model must be deleted, got %v", deleted)
+	}
+	if len(addedRouted) != 1 || addedRouted[0] != "ollama_chat/smollm:135m" {
+		test.Errorf("re-added routing = %v, want [ollama_chat/smollm:135m]", addedRouted)
 	}
 }
 
@@ -330,8 +375,10 @@ func TestRegisterOllamaModelSkipsWhenPresent(test *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		switch {
 		case request.Method == http.MethodGet && request.URL.Path == "/model/info":
+			// Already registered CORRECTLY: routed on ollama_chat + matching capability, so
+			// RegisterOllamaModel must skip (no delete, no /model/new).
 			_, _ = writer.Write([]byte(`{"data":[
-				{"model_name":"ollama/gemma4","litellm_params":{"model":"ollama/gemma4"},"model_info":{"id":"id-1"}}
+				{"model_name":"ollama/gemma4","litellm_params":{"model":"ollama_chat/gemma4"},"model_info":{"id":"id-1","supports_function_calling":true}}
 			]}`))
 		case request.URL.Path == "/model/new":
 			sawAdd = true

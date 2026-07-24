@@ -54,6 +54,34 @@ func leftClick(x, y int) tea.MouseMsg {
 	return tea.MouseMsg{X: x, Y: y, Action: tea.MouseActionPress, Button: tea.MouseButtonLeft}
 }
 
+// TestMouseClickSwitchesWrappedTopTab verifies that when the tab bar is wider than the
+// window and wraps to multiple rows, a click on a tab on a WRAPPED row still switches to
+// it (the regression: only the first row was clickable).
+func TestMouseClickSwitchesWrappedTopTab(test *testing.T) {
+	application := newTestApp("Services", "Workspaces", "Settings")
+	// Narrow enough that each tab lands on its own row: Services(10) | Workspaces(12) |
+	// Settings(10) — 10+12 > 20 and 12+10 > 20, so three rows.
+	application.width = 20
+	application.height = 40
+	tabRow := lipgloss.Height(application.header()) + headerGapRows
+
+	if rows := application.tabBarRows(); rows != 3 {
+		test.Fatalf("expected the tab bar to wrap to 3 rows at width 20, got %d", rows)
+	}
+
+	// Click "Workspaces" on the SECOND wrapped row.
+	application.Update(leftClick(2, tabRow+1))
+	if application.current != 1 {
+		test.Fatalf("click on wrapped row 2 (Workspaces): current = %d, want 1", application.current)
+	}
+
+	// Click "Settings" on the THIRD wrapped row.
+	application.Update(leftClick(2, tabRow+2))
+	if application.current != 2 {
+		test.Fatalf("click on wrapped row 3 (Settings): current = %d, want 2", application.current)
+	}
+}
+
 func TestMouseClickSwitchesTopTab(test *testing.T) {
 	application := newTestApp("Services", "Workspaces", "Settings")
 	tabRow := lipgloss.Height(application.header()) + headerGapRows

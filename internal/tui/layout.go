@@ -20,7 +20,6 @@ import (
 // inner padding per side.
 const (
 	headerGapRows = 1 // blank line between the header and the tab bar
-	tabRows       = 1
 	footerRows    = 1
 	borderRows    = 2
 	borderCols    = 2
@@ -61,7 +60,7 @@ func capturesNav(view View) bool {
 // padding. Both dimensions clamp to ≥1 so a tiny window never panics.
 func (application *app) bodyContentSize() (width, height int) {
 	width = application.width - borderCols - 2*bodyPadX
-	chrome := lipgloss.Height(application.header()) + headerGapRows + tabRows + footerRows + borderRows
+	chrome := lipgloss.Height(application.header()) + headerGapRows + application.tabBarRows() + footerRows + borderRows
 	height = application.height - chrome - 2*bodyPadY
 	if width < 1 {
 		width = 1
@@ -180,16 +179,71 @@ func (application *app) tabBar() string {
 	inactiveStyle := lipgloss.NewStyle().
 		Foreground(ui.Accent()).Background(ui.Secondary()).Padding(0, 1)
 
-	cells := make([]string, 0, len(application.views))
+	// WRAP the tabs into rows that fit the window width IN THE MODEL, so a bar wider than
+	// the terminal does not get soft-wrapped by the terminal (which would desync mouse Y
+	// coordinates and leave overflow tabs unclickable). Each row is ≤ maxWidth, so the
+	// terminal renders it verbatim and lipgloss.Height reflects the true row count — which
+	// handleMouse + bodyContentSize rely on. Wrapping is driven by tabRowBreaks so the
+	// click hit-test (topTabAt) shares EXACTLY this layout.
+	maxWidth := application.tabBarMaxWidth()
+	var rows []string
+	var current []string
+	rowWidth := 0
 	for index, view := range application.views {
 		title := view.Title()
+		cellWidth := lipgloss.Width(title) + 2 // Padding(0,1)
+		style := inactiveStyle
 		if application.createView == nil && index == application.current {
-			cells = append(cells, activeStyle.Render(title))
-		} else {
-			cells = append(cells, inactiveStyle.Render(title))
+			style = activeStyle
 		}
+		if rowWidth > 0 && rowWidth+cellWidth > maxWidth {
+			rows = append(rows, lipgloss.JoinHorizontal(lipgloss.Top, current...))
+			current = nil
+			rowWidth = 0
+		}
+		current = append(current, style.Render(title))
+		rowWidth += cellWidth
 	}
-	return lipgloss.JoinHorizontal(lipgloss.Top, cells...)
+	if len(current) > 0 {
+		rows = append(rows, lipgloss.JoinHorizontal(lipgloss.Top, current...))
+	}
+	return lipgloss.JoinVertical(lipgloss.Left, rows...)
+}
+
+// tabBarMaxWidth is the column budget for one tab-bar row. The bar spans the full window
+// width (it is not inside the body border). When the width is not yet known (before the
+// first WindowSizeMsg, e.g. in tests) it returns a large value so the bar stays on one row
+// — i.e. no wrapping until a real width is set.
+func (application *app) tabBarMaxWidth() int {
+	if application.width < 1 {
+		return 1 << 30
+	}
+	return application.width
+}
+
+// tabBarRows is the number of rows the (possibly wrapped) top-level tab bar occupies.
+func (application *app) tabBarRows() int {
+	return lipgloss.Height(application.tabBar())
+}
+
+// topTabAt returns the view index at a tab-bar click (x column, rowOffset from the first
+// tab-bar row), or -1 for a gap/miss. It MIRRORS tabBar()'s wrapping so a click lands on
+// the correct tab even when the bar wraps to multiple rows.
+func (application *app) topTabAt(x, rowOffset int) int {
+	maxWidth := application.tabBarMaxWidth()
+	row, col := 0, 0
+	for index, view := range application.views {
+		cellWidth := lipgloss.Width(view.Title()) + 2
+		if col > 0 && col+cellWidth > maxWidth {
+			row++
+			col = 0
+		}
+		if row == rowOffset && x >= col && x < col+cellWidth {
+			return index
+		}
+		col += cellWidth
+	}
+	return -1
 }
 
 // body wraps the inner content in a rounded border coloured with the accent, sized

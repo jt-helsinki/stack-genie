@@ -83,6 +83,19 @@ func OpenCodeConfig(gatewayURL, apiKey, defaultModel string, models []Model, kee
 			// opencode never sends it a tool schema — which Ollama rejects with a hard
 			// "does not support tools" error.
 			"tool_call": model.Tools,
+			// reasoning + interleaved make opencode SURFACE a thinking model's
+			// chain-of-thought. LiteLLM streams Ollama's thinking as `reasoning_content`
+			// deltas (separate from `content`); without this opencode ignores them, so a
+			// thinking model like qwen3.6 shows a long blank (hidden reasoning) then a tiny
+			// answer — read as "no output". `reasoning: true` marks the model as reasoning
+			// and `interleaved.field: reasoning_content` tells opencode which delta field
+			// carries it. Set on every gateway model: harmless for non-reasoning models
+			// (no reasoning_content arrives, so nothing extra shows), and it can't be
+			// per-model catalog-driven here since these models aren't in models.dev.
+			"reasoning": true,
+			"interleaved": map[string]any{
+				"field": "reasoning_content",
+			},
 			"options": map[string]any{
 				"headroom_keep_turns":           keepTurns,
 				"headroom_output_buffer_tokens": outputBufferTokens,

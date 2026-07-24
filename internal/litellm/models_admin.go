@@ -202,6 +202,14 @@ func OllamaRoutedModel(name string) string {
 //
 // hardware bring-up: the LIVE POST /model/new round-trip is exercised only against a
 // running aip-litellm — verify on a provisioned host.
+// boolOrDefault dereferences a *bool, returning fallback when it is nil.
+func boolOrDefault(value *bool, fallback bool) bool {
+	if value == nil {
+		return fallback
+	}
+	return *value
+}
+
 func (manager *KeyManager) RegisterOllamaModel(name string, supportsTools bool) error {
 	modelName := OllamaModelName(name)
 	existing, err := manager.ListModels()
@@ -210,8 +218,13 @@ func (manager *KeyManager) RegisterOllamaModel(name string, supportsTools bool) 
 	}
 	for _, model := range existing {
 		if model.Name == modelName {
-			if model.SupportsTools == supportsTools {
-				return nil // already registered with the right capability
+			// Re-register when EITHER the recorded capability OR the routing is stale.
+			// Routing matters most: a model registered by older code routes on
+			// "ollama/<name>" (Ollama's legacy /api/generate, which ignores chat
+			// messages + tools) and must be corrected to "ollama_chat/<name>"
+			// (/api/chat) or a coding agent gets empty output.
+			if model.SupportsTools == supportsTools && model.RoutedTo == OllamaRoutedModel(name) {
+				return nil // already registered correctly
 			}
 			if err := manager.DeleteModel(model.ID); err != nil {
 				return err
@@ -267,16 +280,25 @@ func (manager *KeyManager) RegisterOllamaModels(names []string, supportsTools ma
 		modelName := OllamaModelName(name)
 		tools, known := supportsTools[name]
 		if existing, isServed := servedByName[modelName]; isServed {
-			// Already served — reconcile capability only when we KNOW it and it changed.
-			if known && existing.SupportsTools != tools {
+			// Already served — re-register when the routing is stale (a model registered by
+			// older code routes on "ollama/<name>" = /api/generate, which ignores chat
+			// messages + tools and yields empty output; it must be "ollama_chat/<name>" =
+			// /api/chat) OR when we KNOW the capability and it changed.
+			routingStale := existing.RoutedTo != OllamaRoutedModel(name)
+			capabilityStale := known && existing.SupportsTools != tools
+			if routingStale || capabilityStale {
 				if err := manager.DeleteModel(existing.ID); err != nil {
 					return added, err
 				}
-				params, info := ollamaModelParamsInfo(name, &tools)
+				var toolsPtr *bool
+				if known {
+					toolsPtr = &tools
+				}
+				params, info := ollamaModelParamsInfo(name, toolsPtr)
 				if err := manager.AddModel(modelName, params, info); err != nil {
 					return added, err
 				}
-				servedByName[modelName] = LiveModel{Name: modelName, SupportsTools: tools}
+				servedByName[modelName] = LiveModel{Name: modelName, RoutedTo: OllamaRoutedModel(name), SupportsTools: boolOrDefault(toolsPtr, true)}
 			}
 			continue
 		}

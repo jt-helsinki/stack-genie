@@ -1476,25 +1476,22 @@ func (application *app) handleMouse(msg tea.MouseMsg) tea.Cmd {
 		return nil
 	}
 	tabRow := lipgloss.Height(application.header()) + headerGapRows
-	switch msg.Y {
-	case tabRow:
-		// Top-level tabs: each cell is its title plus Padding(0,1) — see tabBar().
-		offset := 0
-		for index, view := range application.views {
-			width := lipgloss.Width(view.Title()) + 2
-			if msg.X >= offset && msg.X < offset+width {
-				if index != application.current {
-					// Load the clicked tab (mirrors keyboard nav) — without this the tab
-					// switches but its data never loads, leaving it on "loading…".
-					return application.activateTab(index)
-				}
-				return nil
-			}
-			offset += width
+	// The tab bar may WRAP to several rows when it is wider than the window (see tabBar);
+	// every row of it is clickable, and the body (hence the sub-tab bar) sits below the
+	// whole wrapped bar.
+	tabBarRows := application.tabBarRows()
+	switch {
+	case msg.Y >= tabRow && msg.Y < tabRow+tabBarRows:
+		// Top-level tabs, wrap-aware: topTabAt mirrors tabBar()'s layout across rows.
+		if index := application.topTabAt(msg.X, msg.Y-tabRow); index >= 0 && index != application.current {
+			// Load the clicked tab (mirrors keyboard nav) — without this the tab switches
+			// but its data never loads, leaving it on "loading…".
+			return application.activateTab(index)
 		}
-	case tabRow + 1 + 1 + bodyPadY:
-		// First body-content row (tab bar → border line → padding row): the active
-		// view's sub-tab bar when it has one. Translate to the bar's own column.
+		return nil
+	case msg.Y == tabRow+tabBarRows+1+bodyPadY:
+		// First body-content row (below the wrapped tab bar → border line → padding row):
+		// the active view's sub-tab bar when it has one. Translate to the bar's own column.
 		clickX := msg.X - 1 - bodyPadX
 		if clickX < 0 {
 			return nil

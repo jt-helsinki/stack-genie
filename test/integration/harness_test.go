@@ -309,3 +309,24 @@ func isMsbVersionMismatch(output string) bool {
 		strings.Contains(lowered, "is not in this binary's migration prefix") ||
 		(strings.Contains(lowered, "database schema") && strings.Contains(lowered, "newer"))
 }
+
+// isImageBuildInfraError reports whether output describes the workspace IMAGE BUILD failing
+// for an ENVIRONMENTAL reason — the container registry being unreachable / flaky (Docker Hub
+// EOF, DNS/TLS/timeout, "failed to resolve source metadata") — rather than a defect in the
+// project's Dockerfile. Those are host/network gaps, so the caller skips rather than fails.
+func isImageBuildInfraError(output string) bool {
+	lowered := strings.ToLower(output)
+	// Must be an image-build failure (not some other runtime error) AND look network-ish.
+	buildish := strings.Contains(lowered, "could not build the workspace image") ||
+		strings.Contains(lowered, "failed to resolve source metadata") ||
+		strings.Contains(lowered, "failed to solve")
+	networkish := strings.Contains(lowered, "registry-1.docker.io") ||
+		strings.Contains(lowered, "failed to do request") ||
+		strings.Contains(lowered, ": eof") ||
+		strings.Contains(lowered, "i/o timeout") ||
+		strings.Contains(lowered, "tls handshake") ||
+		strings.Contains(lowered, "connection refused") ||
+		strings.Contains(lowered, "no such host") ||
+		strings.Contains(lowered, "temporary failure in name resolution")
+	return buildish && networkish
+}

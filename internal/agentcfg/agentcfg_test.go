@@ -89,6 +89,15 @@ func TestOpenCodeConfigStructure(test *testing.T) {
 		if entry["tool_call"] != model.Tools {
 			test.Errorf("model %q tool_call = %v, want %v", model.Name, entry["tool_call"], model.Tools)
 		}
+		// Every model marks reasoning + points opencode at the reasoning_content delta so
+		// a thinking model's chain-of-thought is surfaced instead of hidden.
+		if entry["reasoning"] != true {
+			test.Errorf("model %q must set reasoning:true, got %v", model.Name, entry["reasoning"])
+		}
+		interleaved, ok := entry["interleaved"].(map[string]any)
+		if !ok || interleaved["field"] != "reasoning_content" {
+			test.Errorf("model %q interleaved must be {field: reasoning_content}, got %v", model.Name, entry["interleaved"])
+		}
 		modelOptions, ok := entry["options"].(map[string]any)
 		if !ok {
 			test.Fatalf("model %q options missing: %v", model.Name, entry["options"])
