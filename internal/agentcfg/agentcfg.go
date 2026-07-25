@@ -652,6 +652,14 @@ func BashProfile() []byte {
 	var buffer bytes.Buffer
 	buffer.WriteString("# Managed by the AI Development Platform — sources the agent gateway env for\n")
 	buffer.WriteString("# interactive login shells. Do not edit by hand; rewritten on every start.\n")
+	// Put the uv-tool bin dir on PATH FIRST, before anything else: `uv tool install`
+	// places headroom/graphify (and the curl-installed hermes wrapper) in ~/.local/bin.
+	// A `bash -lc` login shell reads THIS file but Debian's ~/.bashrc returns early for
+	// non-interactive shells (before its managed PATH line), so without this every
+	// programmatic launch (`hermes dashboard`, agent CLIs, detached tool installs) runs
+	// with ~/.local/bin absent and fails "command not found". Idempotent guard so nested
+	// shells don't stack duplicates.
+	buffer.WriteString(`case ":$PATH:" in *":$HOME/.local/bin:"*) ;; *) export PATH="$HOME/.local/bin:$PATH" ;; esac` + "\n")
 	buffer.WriteString("[ -f \"$HOME/.bashrc\" ] && . \"$HOME/.bashrc\"\n")
 	buffer.WriteString("[ -f " + shellQuote(AgentEnvFileGuestPath) + " ] && . " + shellQuote(AgentEnvFileGuestPath) + "\n")
 	buffer.WriteString("[ -f " + shellQuote(ShellAliasesFileGuestPath) + " ] && . " + shellQuote(ShellAliasesFileGuestPath) + "\n")

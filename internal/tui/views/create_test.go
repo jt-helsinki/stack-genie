@@ -218,6 +218,7 @@ func TestCreateWizardAssemblesSpec(test *testing.T) {
 	enter() // stacks (none)
 	enter() // cpus (blank)
 	enter() // memory (blank)
+	enter() // disk (blank)
 	enter() // ports (blank)
 	enter() // idle (blank) → advances to the AI-tools step
 	if wizard.step != stepTools {
@@ -358,6 +359,7 @@ func TestCreateWizardAuthModeStep(test *testing.T) {
 	enter() // stacks
 	enter() // cpus
 	enter() // memory
+	enter() // disk
 	enter() // ports
 	enter() // idle → AI tools
 	if wizard.step != stepTools {
@@ -422,6 +424,7 @@ func TestCreateWizardPromptsAppPort(test *testing.T) {
 	enter() // stacks
 	enter() // cpus
 	enter() // memory
+	enter() // disk
 	enter() // ports
 	enter() // idle → AI tools
 	if wizard.step != stepTools {

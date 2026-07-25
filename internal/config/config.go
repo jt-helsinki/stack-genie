@@ -189,6 +189,12 @@ func (settings ContextConfig) GraphifyEnabledOrDefault() bool {
 type WorkspaceConfig struct {
 	CPULimit    int    `yaml:"cpu_limit,omitempty" json:"cpu_limit,omitempty"`
 	MemoryLimit string `yaml:"memory_limit,omitempty" json:"memory_limit,omitempty"`
+	// DiskLimit is the writable rootfs (OCI overlay upper) size in GiB, e.g. "20". It
+	// sizes the in-VM disk that holds containerd's image store, so in-VM apps (Open
+	// WebUI, AnythingLLM) whose images are multi-GB have room to extract. Applied at
+	// workspace create via the SDK's WithOCIUpperSize. Empty falls back to the
+	// workspace-package default (see microVMDisk). Same "<GiB>" form as MemoryLimit.
+	DiskLimit string `yaml:"disk_limit,omitempty" json:"disk_limit,omitempty"`
 	// Shell is the workspace's default interactive shell: "bash" (the platform
 	// default, today's behavior) or "zsh". It is chosen at `ai create` and applied at
 	// workspace start (the interactive-shell rc block, and — for zsh — chsh of the
@@ -395,7 +401,7 @@ func Default() *Config {
 	return &Config{
 		Agent:     AgentConfig{Tools: []string{"opencode"}, DefaultTool: "opencode"},
 		Context:   ContextConfig{Strategy: "balanced", CavemanLevel: "full"},
-		Workspace: WorkspaceConfig{CPULimit: 4, MemoryLimit: "8", Shell: "bash"},
+		Workspace: WorkspaceConfig{CPULimit: 4, MemoryLimit: "8", DiskLimit: "8", Shell: "bash"},
 		Microsandbox: MicrosandboxConfig{
 			IdleTimeout: DefaultMicrosandboxIdleTimeout,
 		},

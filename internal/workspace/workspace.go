@@ -217,6 +217,10 @@ type VMResources struct {
 	CPUs        int
 	Memory      string
 	IdleTimeout string
+	// Disk is the writable rootfs (OCI overlay upper) size as "<GiB>" (e.g. "20"); it
+	// backs containerd's in-VM image store so multi-GB app images have room. Empty falls
+	// back to the platform default (microVMDisk).
+	Disk string
 }
 
 // read-only image, the host project source, and the persistent overlay (arch
@@ -413,6 +417,7 @@ func (manager Manager) Start(project string) (*state.Workspace, error) {
 		CPUs:        projectConfig.Workspace.CPULimit,
 		Memory:      projectConfig.Workspace.MemoryLimit,
 		IdleTimeout: projectConfig.Microsandbox.ResolvedIdleTimeout(),
+		Disk:        projectConfig.Workspace.DiskLimit,
 	}
 	logStep("creating microVM")
 	if err := manager.Sandbox.Create(name, imageRef, root, overlayPath, resources, netArgs); err != nil {
@@ -910,13 +915,18 @@ func (manager Manager) linkAgentStateDirs(name string, oauthAgents map[string]bo
 	// stateLink pairs an in-VM home path with its /persist/agents/<key> target. The
 	// always-present agent STATE dirs come first; oauth agents ALSO get their native-login
 	// credential dir persisted so a subscription login survives a microVM restart.
-	type stateLink struct{ home, key string }
+	// seedMarker (optional): a subpath under the baked home that indicates a whole-install
+	// living there (not just state). When set, the install is restored into /persist if the
+	// marker is absent there (see the seed step below). hermes bakes its venv + binary under
+	// ~/.hermes at image build, so it needs this; opencode/omp keep only state.
+	type stateLink struct{ home, key, seedMarker string }
 	links := []stateLink{
-		{"~/.local/share/opencode", "opencode"},
-		{"~/.omp", "omp"},
-		// hermes keeps its global config + state (last-used model, memory, skills) in
-		// ~/.hermes; persist it so a restart remembers.
-		{"~/.hermes", "hermes"},
+		{"~/.local/share/opencode", "opencode", ""},
+		{"~/.omp", "omp", ""},
+		// hermes keeps its global config + state (last-used model, memory, skills) AND its
+		// entire install (venv + binary, baked at image build) in ~/.hermes; persist it so a
+		// restart remembers, and seed the baked install so the symlink never shadows it away.
+		{"~/.hermes", "hermes", "hermes-agent"},
 	}
 	// oauthCredDirs maps each OAuth-eligible CLI to its native-login credential dir. An
 	// oauth agent's dir is persisted so the subscription login survives a microVM restart.
@@ -929,7 +939,7 @@ func (manager Manager) linkAgentStateDirs(name string, oauthAgents map[string]bo
 	}
 	for _, entry := range oauthCredDirs {
 		if oauthAgents[entry.cli] {
-			links = append(links, stateLink{entry.home, entry.key})
+			links = append(links, stateLink{entry.home, entry.key, ""})
 		}
 	}
 
@@ -947,9 +957,25 @@ func (manager Manager) linkAgentStateDirs(name string, oauthAgents map[string]bo
 	// /persist target, so accumulated state is preserved across restarts. omp keeps its
 	// last-used model + hindsight memory in ~/.omp (agent.db); an oauth agent's ~/.claude/
 	// ~/.codex/~/.gemini holds its OAuth credentials.
+	//
+	// SEED FIRST (marker entries only): some CLIs bake their ENTIRE install under the home
+	// path we persist — hermes's venv + binary live in ~/.hermes, written at image build.
+	// A blind `rm -rf ~/.hermes` before the symlink deletes that install and points the
+	// link at an overlay that lacks it, breaking `hermes dashboard`. Because msb rebuilds
+	// the rootfs from the image on every start (--replace), the baked install is present
+	// under the home path each start, so: if the baked home carries the install marker but
+	// the persist target lacks it, no-clobber (`cp -an`) copy the baked tree into persist —
+	// restoring the install while KEEPING any already-persisted state (config, last-used
+	// model). Once seeded, later starts find the marker present and skip. Entries with no
+	// marker (opencode/omp/oauth creds) keep only state and are never seeded.
 	link := "set -e; mkdir -p ~/.local/share"
 	for _, entry := range links {
-		link += "; rm -rf " + entry.home + "; ln -sfn /persist/agents/" + entry.key + " " + entry.home
+		target := "/persist/agents/" + entry.key
+		link += "; mkdir -p " + target
+		if entry.seedMarker != "" {
+			link += "; if [ -e " + entry.home + "/" + entry.seedMarker + " ] && [ ! -e " + target + "/" + entry.seedMarker + " ]; then cp -an " + entry.home + "/. " + target + "/ 2>/dev/null || true; fi"
+		}
+		link += "; rm -rf " + entry.home + "; ln -sfn " + target + " " + entry.home
 	}
 	if _, err := manager.Sandbox.Exec(name, []string{"bash", "-lc", link}); err != nil {
 		_, _ = fmt.Fprintf(os.Stderr, "warning: could not link persistent agent state in workspace %q (continuing): %v\n", name, err)
@@ -1645,7 +1671,11 @@ func dashboardAutostartCommand(projectConfig *config.Config, logPath string) str
 	if len(launches) == 0 {
 		return ""
 	}
-	header := "set -a; [ -f " + shellQuoteGuest(agentEnvGuestPath) + " ] && . " + shellQuoteGuest(agentEnvGuestPath) + "; set +a; " +
+	// Ensure the uv-tool bin dir is on PATH: the dashboard binary (e.g. hermes) is a
+	// wrapper in ~/.local/bin, and this command may run under a shell that hasn't
+	// picked it up. Explicit + idempotent so the launch never fails "command not found".
+	header := `case ":$PATH:" in *":$HOME/.local/bin:"*) ;; *) export PATH="$HOME/.local/bin:$PATH" ;; esac; ` +
+		"set -a; [ -f " + shellQuoteGuest(agentEnvGuestPath) + " ] && . " + shellQuoteGuest(agentEnvGuestPath) + "; set +a; " +
 		"mkdir -p " + shellQuoteGuest(workspaceWorkdir+"/.ai-platform/run") + "; "
 	return header + strings.Join(launches, " ") + " exit 0"
 }

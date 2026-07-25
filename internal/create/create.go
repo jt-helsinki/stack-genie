@@ -64,6 +64,9 @@ func Execute(spec project.Spec, now string, report func(Progress)) (Result, []st
 	if err := ValidateResourcesWithinHost(spec.CPUs, spec.Memory); err != nil {
 		return Result{}, nil, err
 	}
+	if err := ValidateDisk(spec.Disk); err != nil {
+		return Result{}, nil, err
+	}
 	spec.CPUs, spec.Memory = CappedDefaultResources(spec.CPUs, spec.Memory)
 
 	if err := project.EnsureCreatable(spec.Name, spec.Root); err != nil {
@@ -174,6 +177,20 @@ func ValidateResourcesWithinHost(cpus int, memory string) error {
 				}
 			}
 		}
+	}
+	return nil
+}
+
+// ValidateDisk validates the workspace disk size ("<GB>", e.g. "20"). Blank is allowed
+// (the platform default applies). The upper is sparse, so it is not host-capped like
+// memory; only a malformed/non-positive value is rejected (exit 2).
+func ValidateDisk(disk string) error {
+	if strings.TrimSpace(disk) == "" {
+		return nil
+	}
+	mib, err := config.ParseMemoryMiB(disk)
+	if err != nil || mib <= 0 {
+		return output.Errorf(output.ExitInvalidInput, "invalid disk size %q — use a plain number of GB (e.g. 20)", disk)
 	}
 	return nil
 }

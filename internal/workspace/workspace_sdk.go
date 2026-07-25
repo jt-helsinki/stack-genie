@@ -501,6 +501,10 @@ func (sandbox *sdkSandbox) Create(name, imageRef, projectMount, overlayPath stri
 		microsandbox.WithReplace(),
 		microsandbox.WithDetached(),
 		microsandbox.WithMemory(parseMemoryMiB(resources.Memory)),
+		// Size the writable rootfs (OCI overlay upper) so the in-VM containerd image
+		// store can hold multi-GB app images; msb's ~4 GiB default overflows with two
+		// apps. Valid because WithImage resolves to a (locally-loaded) OCI reference.
+		microsandbox.WithOCIUpperSize(parseDiskMiB(resources.Disk)),
 		microsandbox.WithIdleTimeout(parseIdleTimeout(resources.IdleTimeout)),
 		microsandbox.WithWorkdir(workspaceWorkdir),
 		// Keep-alive workload: msb boots the microVM running the image's entrypoint/
@@ -781,6 +785,16 @@ func parseMemoryMiB(value string) uint32 {
 		mib, _ = config.ParseMemoryMiB(microVMMemory)
 	}
 	return uint32(clampWorkspaceMemoryMiB(mib))
+}
+
+// parseDiskMiB parses the workspace disk limit ("<GiB>", e.g. "20") into MiB for the
+// SDK's WithOCIUpperSize, falling back to microVMDisk when unset/unparsable/zero.
+func parseDiskMiB(value string) uint32 {
+	mib, err := config.ParseMemoryMiB(value)
+	if err != nil || mib <= 0 {
+		return microVMDisk
+	}
+	return uint32(mib)
 }
 
 // parseIdleTimeout parses a Go-style duration ("24h", "30m"), falling back to the

@@ -340,6 +340,26 @@ func TestValidateResourcesWithinHostRejectsOverCommit(test *testing.T) {
 	}
 }
 
+func TestValidateDisk(test *testing.T) {
+	// Blank is allowed (the platform default applies).
+	if err := ValidateDisk(""); err != nil {
+		test.Errorf("blank disk should be valid: %v", err)
+	}
+	if err := ValidateDisk("  "); err != nil {
+		test.Errorf("whitespace disk should be valid: %v", err)
+	}
+	// A plain positive GB number is valid.
+	if err := ValidateDisk("20"); err != nil {
+		test.Errorf("20 GB should be valid: %v", err)
+	}
+	// Zero / non-numeric / negative are rejected.
+	for _, bad := range []string{"0", "abc", "-5", "10x"} {
+		if err := ValidateDisk(bad); err == nil {
+			test.Errorf("disk %q must be rejected", bad)
+		}
+	}
+}
+
 func TestModelInstalled(test *testing.T) {
 	installed := []ollama.Model{{Name: "llama3.2:latest"}, {Name: "qwen2.5-coder:7b"}}
 	if !modelInstalled(installed, "qwen2.5-coder:7b") {

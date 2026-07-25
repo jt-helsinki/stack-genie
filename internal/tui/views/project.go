@@ -41,6 +41,15 @@ type WorkspaceActionRequestedMsg struct {
 	Project string
 }
 
+// WorkspaceResizeRequestedMsg is emitted when the user sets a new disk size via the
+// inline "z" prompt on the Workspace tab. The parent persists workspace.disk_limit and
+// restarts the workspace so the microVM's writable rootfs is resized (the SDK applies
+// WithOCIUpperSize on the --replace rebuild at start).
+type WorkspaceResizeRequestedMsg struct {
+	Project string
+	Disk    string // GiB, plain number
+}
+
 type projectRefreshedMsg struct {
 	entry     project.Entry
 	found     bool
@@ -73,6 +82,10 @@ type Project struct {
 	// tab is focused.
 	pending      string
 	pendingFrame int
+	// resizing + diskInput drive the inline "resize disk" prompt (z): while resizing,
+	// keystrokes edit the GiB value and enter persists it + restarts the workspace.
+	resizing  bool
+	diskInput string
 	// viewport makes the summary + Sandbox Configuration block scrollable when it
 	// overflows the pane (e.g. a config with many fields). rendered caches the last
 	// body so SetContent (and thus a scroll-position reset risk) only fires on change.
@@ -110,7 +123,49 @@ func (view *Project) Hints() string {
 	if view.name == "" {
 		return "open a workspace from the Workspaces view"
 	}
-	return "s start · x stop · r restart · d delete · e shell · ↑/↓ scroll"
+	if view.resizing {
+		return "type a disk size in GB · enter apply (restarts) · esc cancel"
+	}
+	return "s start · x stop · r restart · d delete · e shell · z disk · ↑/↓ scroll"
+}
+
+// CapturingInput reports whether the inline disk-resize prompt is open, so the parent
+// routes keystrokes here (editing the value) instead of treating them as navigation.
+func (view *Project) CapturingInput() bool { return view.resizing }
+
+// handleResizeKey edits the inline disk-size value: digits append, backspace deletes,
+// enter emits a resize request (persist + restart) when the value is a positive number,
+// and esc cancels. Non-digits are ignored (disk size is a plain GB integer).
+func (view *Project) handleResizeKey(key tea.KeyMsg) tea.Cmd {
+	switch key.Type {
+	case tea.KeyEsc:
+		view.resizing = false
+		view.diskInput = ""
+		return nil
+	case tea.KeyBackspace:
+		if len(view.diskInput) > 0 {
+			view.diskInput = view.diskInput[:len(view.diskInput)-1]
+		}
+		return nil
+	case tea.KeyEnter:
+		value := strings.TrimSpace(view.diskInput)
+		name := view.name
+		view.resizing = false
+		view.diskInput = ""
+		if value == "" || name == "" {
+			return nil
+		}
+		view.flash = ui.Muted.Render("resizing disk to " + value + " GB — restarting…")
+		return func() tea.Msg { return WorkspaceResizeRequestedMsg{Project: name, Disk: value} }
+	case tea.KeyRunes:
+		for _, glyph := range key.Runes {
+			if glyph >= '0' && glyph <= '9' {
+				view.diskInput += string(glyph)
+			}
+		}
+		return nil
+	}
+	return nil
 }
 
 func (view *Project) SetSize(width, height int) {
@@ -163,9 +218,20 @@ func (view *Project) Update(msg tea.Msg) tea.Cmd {
 		return nil
 	case tea.KeyMsg:
 		name := view.name
+		// The inline "resize disk" prompt owns the keyboard while open.
+		if view.resizing {
+			return view.handleResizeKey(message)
+		}
 		// Lifecycle keys act on the workspace (unless one is already in flight or no
 		// workspace is selected).
 		if name != "" && view.pending == "" {
+			if message.String() == "z" {
+				// Begin the inline disk-resize prompt; next keystrokes edit the GiB value.
+				view.resizing = true
+				view.diskInput = ""
+				view.flash = ""
+				return nil
+			}
 			if message.String() == "e" {
 				if view.entry.Status != "started" {
 					view.flash = ui.Muted.Render("workspace not running — press s to start it first")
@@ -224,6 +290,9 @@ func (view *Project) renderBody() string {
 		body.WriteString(field("workspace", workspaceStatusLabel(view.entry.Status)))
 	}
 	body.WriteString(field("path", view.entry.Path))
+	if view.resizing {
+		body.WriteString(ui.Heading.Render("New disk size (GB): ") + ui.Value.Render(view.diskInput+"▏") + "\n")
+	}
 	if view.flash != "" {
 		body.WriteString(view.flash + "\n")
 	}

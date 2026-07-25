@@ -879,6 +879,32 @@ func (application *app) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// navigable — no log pane, just a spinner + status that we poll for.
 		return application, application.startLifecycle(message.Action, message.Project)
 
+	case views.WorkspaceResizeRequestedMsg:
+		// Persist the new disk size to the workspace config, then restart so the microVM's
+		// writable rootfs is rebuilt at the new size (the SDK applies WithOCIUpperSize on
+		// the --replace create at start). Validation + persistence are quick + in-process;
+		// the restart itself runs DETACHED with a spinner like any lifecycle action.
+		if err := create.ValidateDisk(message.Disk); err != nil {
+			application.projectDetail.SetFlash(ui.Warn.Render(ui.IconDot + " " + err.Error()))
+			return application, nil
+		}
+		root, ok := resolveProjectRoot(message.Project)
+		if !ok {
+			application.projectDetail.SetFlash(ui.Warn.Render(ui.IconDot + " could not resolve workspace path"))
+			return application, nil
+		}
+		projectConfig, err := config.LoadProjectConfig(root)
+		if err != nil {
+			application.projectDetail.SetFlash(ui.Warn.Render(ui.IconDot + " read config: " + err.Error()))
+			return application, nil
+		}
+		projectConfig.Workspace.DiskLimit = strings.TrimSpace(message.Disk)
+		if err := config.WriteProject(root, projectConfig); err != nil {
+			application.projectDetail.SetFlash(ui.Warn.Render(ui.IconDot + " write config: " + err.Error()))
+			return application, nil
+		}
+		return application, application.startLifecycle("restart", message.Project)
+
 	case lifecyclePollMsg:
 		op := application.lifecycle
 		if op == nil {
@@ -1279,6 +1305,7 @@ func workspaceConfigFields(projectConfig *config.Config) []views.ConfigField {
 		{Label: "os", Value: dashIfEmpty(projectConfig.OS)},
 		{Label: "vcpus", Value: cpuLimitValue(projectConfig.Workspace.CPULimit)},
 		{Label: "memory", Value: valueOr(projectConfig.Workspace.MemoryLimit, config.Default().Workspace.MemoryLimit)},
+		{Label: "disk", Value: valueOr(projectConfig.Workspace.DiskLimit, config.Default().Workspace.DiskLimit)},
 		{Label: "idle timeout", Value: projectConfig.Microsandbox.ResolvedIdleTimeout()},
 		{Label: "egress", Value: projectConfig.Network.ResolvedEgress()},
 		{Label: "published ports", Value: publishPortsValue(projectConfig.Network.PublishPorts)},

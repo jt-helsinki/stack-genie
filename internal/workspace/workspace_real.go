@@ -93,6 +93,14 @@ func (builder realBuilder) Build(projectRoot, imageRef string) error {
 // created project's config sets memory_limit to 8 (GB); this only applies when it's empty.)
 const microVMMemory = "4G"
 
+// microVMDisk is the DEFAULT writable rootfs (OCI overlay upper) size in MiB when the
+// project config does not set `workspace.disk_limit`. msb's own default (~4 GiB) holds
+// containerd's image store, which is too small for the multi-GB in-VM app images (Open
+// WebUI is opencv/torch-heavy) — two apps overflow it with "no space left on device".
+// 8 GiB (the default) gives them room; the upper is sparse, so this is a ceiling, not
+// upfront usage, and it is user-configurable (workspace.disk_limit / `ai resize`).
+const microVMDisk = 8 * 1024
+
 // msbMemory renders a memory value for msb's `--memory` flag, which wants a unit
 // (e.g. 8G). The platform's memory config is a plain number of GB, so a unit-less
 // value gets a "G" suffix; a value that already carries a unit (or the empty

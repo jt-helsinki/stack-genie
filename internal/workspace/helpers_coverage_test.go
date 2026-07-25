@@ -10,6 +10,19 @@ import (
 	"github.com/jt-helsinki/stack-genie/internal/sysinfo"
 )
 
+// TestParseDiskMiB covers the disk-size parse: a plain GB number becomes MiB, and
+// blank/unparsable/zero falls back to the platform default (microVMDisk).
+func TestParseDiskMiB(test *testing.T) {
+	if got := parseDiskMiB("20"); got != 20*1024 {
+		test.Errorf("parseDiskMiB(20) = %d, want %d", got, 20*1024)
+	}
+	for _, blankish := range []string{"", "  ", "abc", "0"} {
+		if got := parseDiskMiB(blankish); got != microVMDisk {
+			test.Errorf("parseDiskMiB(%q) = %d, want default %d", blankish, got, microVMDisk)
+		}
+	}
+}
+
 // TestClampWorkspaceMemoryMiB covers the OOM-safety clamp: an over-host request is
 // capped at the usable ceiling (reserving host+service-tier+hypervisor headroom),
 // while a request at/under that ceiling passes through unchanged.
