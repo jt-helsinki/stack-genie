@@ -1166,7 +1166,13 @@ func (manager Manager) setupGraphifyMCP(name string) {
 	pool := workspaceWorkdir + "/.ai-platform"
 	logPath := pool + "/run/graphify-mcp-setup.log"
 	venvPython := venvPath + "/bin/python"
-	script := "cd " + workspaceWorkdir + " 2>/dev/null || exit 0\n" +
+	// This script is launched via `setsid sh <file>` (a NON-login shell), so the
+	// login-shell PATH additions are absent — `uv` and `graphify` live in the
+	// workspace user's ~/.local/bin and would otherwise be "not found" (leaving
+	// graphify-out/graph.json unbuilt, which keeps opencode's graphify plugin dark).
+	// Put ~/.local/bin (and the venv bin) on PATH explicitly.
+	script := "export PATH=\"$HOME/.local/bin:" + venvPath + "/bin:$PATH\"\n" +
+		"cd " + workspaceWorkdir + " 2>/dev/null || exit 0\n" +
 		"[ -x " + venvPython + " ] || exit 0\n" +
 		"uv pip install --python " + venvPython + " --quiet \"graphifyy[mcp]\"\n" +
 		"command -v graphify >/dev/null 2>&1 && graphify update . || true\n"
