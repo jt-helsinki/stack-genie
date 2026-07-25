@@ -580,6 +580,32 @@ func containerRunning(prober runtime.Prober, containerRuntime, name string) bool
 	return err == nil && strings.TrimSpace(string(out)) == name
 }
 
+// containerOnCurrentImage reports whether the container `name` is running AND its
+// image ID matches the LOCAL image ID of imageRef. It is the recreate guard for
+// the ensure* reconcilers: when true the running container is already on the
+// (freshly-pulled) image, so it can be skipped; when false — not running, running
+// a STALE image, or either inspect errors — the caller recreates it so a moved tag
+// like `latest` is actually applied. Any inspect error is treated as NOT current
+// (recreate), so a missing/unresolvable ref can never wrongly skip a recreate.
+func containerOnCurrentImage(prober runtime.Prober, containerRuntime, name, imageRef string) bool {
+	if !containerRunning(prober, containerRuntime, name) {
+		return false
+	}
+	// The container's current image id (the id it was created against).
+	containerImageOut, err := prober.Run(containerRuntime, "inspect", "-f", "{{.Image}}", name)
+	if err != nil {
+		return false
+	}
+	// The local id of the ref we WOULD run — after a force-pull this is the latest.
+	refImageOut, err := prober.Run(containerRuntime, "image", "inspect", "-f", "{{.Id}}", imageRef)
+	if err != nil {
+		return false
+	}
+	containerImageID := strings.TrimSpace(string(containerImageOut))
+	refImageID := strings.TrimSpace(string(refImageOut))
+	return containerImageID != "" && containerImageID == refImageID
+}
+
 // containerPublishesHostPort reports whether a container has any host port
 // binding. Used to detect a container left over from a previous topology — e.g. a
 // Headroom that still host-publishes :18787 from before nginx (aip-proxy) took
@@ -606,7 +632,7 @@ func containerPublishesHostPort(prober runtime.Prober, containerRuntime, name st
 // acceptable for this dev platform.
 func ensureOllama(prober runtime.Prober, containerRuntime, bindHost string) error {
 	_ = bindHost // internal-only: Ollama no longer publishes to the host
-	if containerRunning(prober, containerRuntime, ollamaContainer) {
+	if containerOnCurrentImage(prober, containerRuntime, ollamaContainer, containerImage("ollama")) {
 		return nil
 	}
 	modelsDir, err := systemVolumeDir(ollamaModelsVolume, 0o755)
@@ -688,7 +714,7 @@ func ensurePresidio(prober runtime.Prober, containerRuntime string) error {
 		{presidioAnonymizerContainer, containerImage("presidio-anonymizer")},
 	}
 	for _, presidio := range presidioServices {
-		if containerRunning(prober, containerRuntime, presidio.name) {
+		if containerOnCurrentImage(prober, containerRuntime, presidio.name, presidio.image) {
 			continue
 		}
 		_, _ = prober.Run(containerRuntime, "rm", "-f", presidio.name)
@@ -712,7 +738,7 @@ func ensurePresidio(prober runtime.Prober, containerRuntime string) error {
 // redis client, which is why it must NOT run in cluster mode: a cluster node rejects the
 // cache's cross-slot multi-key ops (MGET/pipelines) with CROSSSLOT. Idempotent.
 func ensureValkey(prober runtime.Prober, containerRuntime string) error {
-	if containerRunning(prober, containerRuntime, valkeyContainer) {
+	if containerOnCurrentImage(prober, containerRuntime, valkeyContainer, containerImage("valkey")) {
 		return nil
 	}
 	_, _ = prober.Run(containerRuntime, "rm", "-f", valkeyContainer)
@@ -734,7 +760,7 @@ func ensureValkey(prober runtime.Prober, containerRuntime string) error {
 // network); RI_ACCEPT_TERMS_AND_CONDITIONS skips the EULA. Unlike valkey-admin it supports
 // a standalone (non-cluster) target. Idempotent.
 func ensureRedisInsight(prober runtime.Prober, containerRuntime string) error {
-	if containerRunning(prober, containerRuntime, redisInsightContainer) {
+	if containerOnCurrentImage(prober, containerRuntime, redisInsightContainer, containerImage("redisinsight")) {
 		return nil
 	}
 	_, _ = prober.Run(containerRuntime, "rm", "-f", redisInsightContainer)
@@ -761,11 +787,12 @@ func ensureRedisInsight(prober runtime.Prober, containerRuntime string) error {
 // on :8787 with telemetry off, INTERNAL-ONLY on aip-net (no host publish) — nginx is
 // the host gateway entry on :18787. Pulled image (no build). Idempotent.
 func ensureHeadroom(prober runtime.Prober, containerRuntime string) error {
-	// Skip only if it is running AND already internal-only. A Headroom left over
-	// from the pre-nginx topology still host-publishes :18787, which collides with
-	// the aip-proxy gateway — recreate it internal-only in that case (self-heal, so
-	// a plain `ai setup` migrates it instead of failing when the proxy can't bind).
-	if containerRunning(prober, containerRuntime, headroomContainer) &&
+	// Skip only if it is running on the CURRENT image AND already internal-only. A
+	// Headroom left over from the pre-nginx topology still host-publishes :18787,
+	// which collides with the aip-proxy gateway — recreate it internal-only in that
+	// case (self-heal, so a plain `ai setup` migrates it instead of failing when the
+	// proxy can't bind); a stale image likewise forces a recreate.
+	if containerOnCurrentImage(prober, containerRuntime, headroomContainer, containerImage("headroom")) &&
 		!containerPublishesHostPort(prober, containerRuntime, headroomContainer) {
 		return nil
 	}
@@ -791,7 +818,7 @@ func ensureHeadroom(prober runtime.Prober, containerRuntime string) error {
 // `log` plugin (the audit source), a `forward` to the host's resolver, and a short
 // cache. Idempotent: skips if already running, removes any stale container first.
 func ensureDNS(prober runtime.Prober, containerRuntime string) error {
-	if containerRunning(prober, containerRuntime, dnsContainer) {
+	if containerOnCurrentImage(prober, containerRuntime, dnsContainer, containerImage("dns")) {
 		return nil
 	}
 	configDir, err := paths.ConfigDir()

@@ -235,7 +235,7 @@ func TestRunFullTeardown(test *testing.T) {
 		test.Fatalf("uninstall log not written: %v", logErr)
 	}
 	logText := string(logBytes)
-	for _, want := range []string{"=== ai uninstall", "Removed platform containers", "Purged ~/.ai-platform", "=== uninstall finished ==="} {
+	for _, want := range []string{"=== ai uninstall", "Removed platform containers", "container images via docker", "Purged ~/.ai-platform", "=== uninstall finished ==="} {
 		if !strings.Contains(logText, want) {
 			test.Errorf("uninstall log missing %q:\n%s", want, logText)
 		}
@@ -277,6 +277,102 @@ func TestPlan(test *testing.T) {
 		if !strings.Contains(steps, "leave your project directories untouched") {
 			test.Errorf("every plan must promise project dirs are untouched:\n%s", steps)
 		}
+		// Both plans (plain AND purge) must announce image removal — images are gone
+		// on every uninstall, not only under --purge.
+		if !strings.Contains(steps, "remove all platform container images") {
+			test.Errorf("every plan must announce container-image removal:\n%s", steps)
+		}
+	}
+}
+
+// TestRemoveImages: uninstall removes BOTH the pinned service-tier images (one
+// `rmi -f <ref>` per versions.Default() entry) and every aip-* workspace image
+// (one `rmi -f <ids…>` from the reference filter), counting them and recording a
+// human line — run on a PLAIN uninstall (no --purge needed).
+func TestRemoveImages(test *testing.T) {
+	prober := &fakeProber{
+		present: map[string]bool{"docker": true},
+		output:  map[string][]byte{"docker images --filter reference=aip-* -q": []byte("img1\nimg2\n")},
+	}
+	var lines []string
+	removed := removeImages(prober, func(line string) { lines = append(lines, line) })
+
+	// (b) the aip-* workspace images were removed in one `rmi -f`.
+	if !containsLine(prober.ran, "docker rmi -f img1 img2") {
+		test.Errorf("expected `docker rmi -f img1 img2`, ran: %v", prober.ran)
+	}
+	// (a) each pinned service-tier ref got its own `rmi -f <ref>`. Assert the litellm
+	// pin specifically — the service the user reported not updating.
+	refs := serviceImageRefs()
+	if len(refs) == 0 {
+		test.Fatal("versions.Default() must pin at least one service image")
+	}
+	litellmRef := ""
+	for _, ref := range refs {
+		if strings.Contains(ref, "litellm") && !strings.Contains(ref, "litellm-db") {
+			litellmRef = ref
+		}
+	}
+	if litellmRef == "" {
+		test.Fatal("versions.Default() must pin a litellm image")
+	}
+	if !containsLine(prober.ran, "docker rmi -f "+litellmRef) {
+		test.Errorf("expected `docker rmi -f %s`, ran: %v", litellmRef, prober.ran)
+	}
+	// Count = every pinned service ref (the fake `rmi` always succeeds) + the 2
+	// aip-* image ids.
+	if want := len(refs) + 2; removed != want {
+		test.Errorf("removed = %d, want %d", removed, want)
+	}
+	if strings.Join(lines, "\n") == "" || !strings.Contains(strings.Join(lines, "\n"), "container images via docker") {
+		test.Errorf("expected a 'container images via docker' record line, got: %v", lines)
+	}
+
+	// No container runtime installed → nothing removed, no line.
+	none := &fakeProber{present: map[string]bool{}}
+	if got := removeImages(none, func(string) {}); got != 0 {
+		test.Errorf("with no runtime, removeImages must remove nothing, got %d", got)
+	}
+}
+
+// TestStopWorkspaces: uninstall stops running workspace microVMs (aip-* sandboxes
+// from `msb list`) via `msb stop -f <name>`, skips non-platform VMs, preserves DATA
+// (it only stops — never `msb delete`, never a filesystem removal), and records a
+// "data preserved" line.
+func TestStopWorkspaces(test *testing.T) {
+	test.Setenv("HOME", test.TempDir()) // no pinned ~/.ai-platform/bin/msb → resolves bare "msb"
+	listing := "NAME        STATE\naip-demo    running\nother-vm    running\n"
+	prober := &fakeProber{
+		present: map[string]bool{"msb": true},
+		output:  map[string][]byte{"msb list": []byte(listing)},
+	}
+	var lines []string
+	stopped := stopWorkspaces(prober, func(line string) { lines = append(lines, line) })
+
+	if stopped != 1 {
+		test.Errorf("stopped = %d, want 1 (only the aip-* sandbox)", stopped)
+	}
+	if !containsLine(prober.ran, "msb stop -f aip-demo") {
+		test.Errorf("expected `msb stop -f aip-demo`, ran: %v", prober.ran)
+	}
+	// The non-platform VM must NOT be stopped.
+	if containsLine(prober.ran, "msb stop -f other-vm") {
+		test.Errorf("must not stop non-platform VMs, ran: %v", prober.ran)
+	}
+	// DATA-preserving: only `msb list` + `msb stop` were run — no delete/rm of any kind.
+	for _, cmd := range prober.ran {
+		if strings.Contains(cmd, "delete") || strings.Contains(cmd, "rm ") || strings.Contains(cmd, "remove") {
+			test.Errorf("stopWorkspaces must not remove data, but ran: %q", cmd)
+		}
+	}
+	if !strings.Contains(strings.Join(lines, "\n"), "data preserved") {
+		test.Errorf("expected a 'data preserved' record line, got: %v", lines)
+	}
+
+	// No msb on PATH → nothing to stop, no line.
+	none := &fakeProber{present: map[string]bool{}}
+	if got := stopWorkspaces(none, func(string) {}); got != 0 {
+		test.Errorf("with no msb, stopWorkspaces must stop nothing, got %d", got)
 	}
 }
 

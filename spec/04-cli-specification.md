@@ -377,10 +377,15 @@ entirely offline, with no network call and no external script (§1.5).
 
 Behavior:
 
-* **streams uninstall status/progress** live as each step runs — stopping the
-  platform containers (`aip-*`), removing the `ai` binary, removing the
-  completion scripts, and stripping the managed PATH/completion lines from the
-  shell rc files (leaving the user's own lines intact)
+* **streams uninstall status/progress** live as each step runs — stopping any
+  running workspace microVMs (`msb stop -f` each `aip-*` sandbox, **preserving all
+  workspace DATA** — project source and `/persist` overlays are host bind mounts,
+  never deleted; the VM instance is only halted, never `msb delete`'d), stopping and
+  removing the platform containers (`aip-*`), **removing all platform container
+  images** (the pinned service-tier images plus every `aip-*` image, so nothing is
+  left on the host — done on EVERY uninstall, not only `--purge`), removing the `ai`
+  binary, removing the completion scripts, and stripping the managed PATH/completion
+  lines from the shell rc files (leaving the user's own lines intact)
 * **removes the platform state under `~/.ai-platform` but KEEPS the downloaded
   model store (`volumes/models`)** — the one expensive-to-refetch piece a user
   usually wants to keep across a reinstall; `--purge` removes `~/.ai-platform`

@@ -9,12 +9,14 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
 	"github.com/jt-helsinki/stack-genie/internal/paths"
 	"github.com/jt-helsinki/stack-genie/internal/runtime"
 	"github.com/jt-helsinki/stack-genie/internal/uihosts"
+	"github.com/jt-helsinki/stack-genie/internal/versions"
 )
 
 // LogName is the uninstall transcript written to the home directory. It lives at
@@ -48,7 +50,9 @@ type Options struct {
 
 // Report describes what was removed.
 type Report struct {
+	StoppedWorkspaces int      `json:"stopped_workspaces"`
 	RemovedContainers int      `json:"removed_containers"`
+	RemovedImages     int      `json:"removed_images"`
 	CleanedRC         []string `json:"cleaned_rc"`
 	RemovedBinary     string   `json:"removed_binary,omitempty"`
 	RemovedDeps       []string `json:"removed_deps,omitempty"`
@@ -179,7 +183,15 @@ func Run(options Options, prober runtime.Prober, progress Progress) (Report, err
 		emit(progress, line)
 	}
 
+	// Stop any running workspace microVMs FIRST — before removeContainers/removeImages
+	// and before a possible --remove-deps msb uninstall (so msb is still present to run
+	// `stop`). This only halts the VM runtime instances; workspace DATA (project source
+	// + /persist overlays are host bind mounts) is deliberately left untouched.
+	report.StoppedWorkspaces = stopWorkspaces(prober, record)
 	report.RemovedContainers = removeContainers(prober, record)
+	// Remove the platform's container IMAGES too, so a plain uninstall leaves
+	// nothing on the host (the service-tier pins + every aip-* workspace image).
+	report.RemovedImages = removeImages(prober, record)
 
 	// Standalone hosts: remove the platform's managed /etc/hosts block (best-effort
 	// via sudo). server/client never edited /etc/hosts, so there is nothing to undo.
@@ -271,7 +283,9 @@ func writeLog(logFile *os.File, line string) {
 // Plan returns the side-effect-free list of steps for --dry-run.
 func Plan(purge bool) []string {
 	steps := []string{
+		"stop running workspace microVMs (data preserved)",
 		"stop and remove platform containers (aip-*)",
+		"remove all platform container images (service-tier pins + aip-*)",
 		"remove the platform UI-subdomain block from /etc/hosts (standalone; needs sudo)",
 		"remove the ai binary",
 		"remove the shell completion scripts",
@@ -293,6 +307,73 @@ func emit(progress Progress, line string) {
 	}
 }
 
+// msbBinary resolves the Microsandbox CLI WITHOUT importing internal/workspace
+// (which would risk an import cycle): the platform-managed pinned binary under
+// ~/.ai-platform/bin/msb if it exists, else bare "msb" on PATH.
+func msbBinary() string {
+	if binDir, err := paths.BinDir(); err == nil {
+		candidate := filepath.Join(binDir, "msb")
+		if _, err := os.Stat(candidate); err == nil {
+			return candidate
+		}
+	}
+	return "msb"
+}
+
+// parseMsbWorkspaceNames extracts the aip-* sandbox names from `msb list` output:
+// the first whitespace-delimited field of each line, skipping a "NAME" header row
+// and any non-aip- entry (workspace VMs are named aip-<project>).
+func parseMsbWorkspaceNames(listOutput string) []string {
+	var names []string
+	for _, line := range strings.Split(listOutput, "\n") {
+		fields := strings.Fields(line)
+		if len(fields) == 0 {
+			continue
+		}
+		name := fields[0]
+		if name == "NAME" {
+			continue // header row
+		}
+		if strings.HasPrefix(name, "aip-") {
+			names = append(names, name)
+		}
+	}
+	return names
+}
+
+// stopWorkspaces stops (but never DELETES) any running workspace microVMs so an
+// uninstall leaves no VM instances running, while PRESERVING all workspace DATA:
+// project source and the /persist overlays are host bind mounts, untouched here —
+// this only halts the runtime instance via `msb stop`, never `msb delete` and never
+// a RemoveAll of any overlay/project dir. Workspace VMs are named aip-<project>; it
+// parses `msb list`'s NAME column for aip-* entries and `msb stop -f <name>`s each.
+// Best-effort: a missing msb, an unreadable list, or a stop error is not fatal. It
+// must run EARLY in Run (before msb might be --remove-deps uninstalled). Returns how
+// many it stopped.
+func stopWorkspaces(prober runtime.Prober, record func(string)) int {
+	msb := msbBinary()
+	if msb == "msb" {
+		// Only a bare name resolved — if it is not on PATH there is nothing to do.
+		if _, err := prober.LookPath("msb"); err != nil {
+			return 0
+		}
+	}
+	out, err := prober.Run(msb, "list")
+	if err != nil {
+		return 0
+	}
+	stopped := 0
+	for _, name := range parseMsbWorkspaceNames(string(out)) {
+		if _, err := prober.Run(msb, "stop", "-f", name); err == nil {
+			stopped++
+		}
+	}
+	if stopped > 0 {
+		record(fmt.Sprintf("Stopped %d workspace microVM(s) (data preserved)", stopped))
+	}
+	return stopped
+}
+
 // removeContainers stops + removes the platform's aip-* containers via every
 // installed runtime (docker and/or podman), returning how many were removed.
 func removeContainers(prober runtime.Prober, record func(string)) int {
@@ -312,6 +393,59 @@ func removeContainers(prober runtime.Prober, record func(string)) int {
 		_, _ = prober.Run(containerRuntime, append([]string{"rm", "-f"}, ids...)...)
 		record("Removed platform containers (aip-*) via " + containerRuntime)
 		total += len(ids)
+	}
+	return total
+}
+
+// serviceImageRefs returns the pinned service-tier image refs (image:tag) from
+// the built-in defaults (versions.Default), skipping entries with no image (the
+// native microsandbox runtime). Sorted for a deterministic removal order/output.
+func serviceImageRefs() []string {
+	refs := make([]string, 0, len(versions.Default().Services))
+	for _, svc := range versions.Default().Services {
+		if svc.Image == "" || svc.Tag == "" {
+			continue // native-tier (no container image) or an incomplete pin
+		}
+		refs = append(refs, svc.Image+":"+svc.Tag)
+	}
+	sort.Strings(refs)
+	return refs
+}
+
+// removeImages removes the platform's container IMAGES via every installed runtime
+// (docker and/or podman), returning how many were removed. It removes two sets so
+// nothing is left on the host: (a) the pinned service-tier images (versions.Default)
+// and (b) every workspace/platform image by the aip-* reference filter. Best-effort:
+// a ref that is absent or still in use just doesn't count. Run on EVERY uninstall
+// (not only --purge) — the user wants the images gone.
+func removeImages(prober runtime.Prober, record func(string)) int {
+	serviceRefs := serviceImageRefs()
+	total := 0
+	for _, containerRuntime := range containerRuntimes {
+		if _, err := prober.LookPath(containerRuntime); err != nil {
+			continue
+		}
+		removedHere := 0
+		// (a) the pinned service-tier images.
+		for _, ref := range serviceRefs {
+			if _, err := prober.Run(containerRuntime, "rmi", "-f", ref); err == nil {
+				removedHere++
+			}
+		}
+		// (b) all workspace/platform images by reference filter (aip-*).
+		out, err := prober.Run(containerRuntime, "images", "--filter", "reference=aip-*", "-q")
+		if err == nil {
+			ids := strings.Fields(string(out))
+			if len(ids) > 0 {
+				if _, err := prober.Run(containerRuntime, append([]string{"rmi", "-f"}, ids...)...); err == nil {
+					removedHere += len(ids)
+				}
+			}
+		}
+		if removedHere > 0 {
+			record(fmt.Sprintf("Removed %d container images via %s", removedHere, containerRuntime))
+			total += removedHere
+		}
 	}
 	return total
 }

@@ -118,20 +118,24 @@ func newSetupCmd(em *output.Emitter, exit *int) *cobra.Command {
 			if proceed := preflightPrerequisites(em, exit, opts, deps, interactive); !proceed {
 				return nil
 			}
-			// Pre-pull the service-tier images with STREAMED native progress before
-			// the reconcile, on a human (non-JSON) run that actually runs the service
-			// tier (standalone/server, not client). Each ensure* launches a container
-			// with `docker run -d`, whose implicit pull output the prober CAPTURES
-			// (invisible) — so a multi-GB first-run pull (e.g. ollama) looks hung.
-			// Pre-pulling renders docker's native progress bars to the terminal; the
-			// later `docker run -d` then finds the image present and returns instantly.
-			// This MUST be sequential with (and before) the bubbletea RunSteps below —
-			// native docker progress and a bubbletea program cannot both own the
-			// terminal at once. Under --json we skip it (keep stdout a clean envelope;
-			// the reconcile's implicit pull stays as-is). On error we warn and
+			// Force-pull the LATEST service-tier images with STREAMED native progress
+			// before the reconcile, on a human (non-JSON) run that actually runs the
+			// service tier (standalone/server, not client). This is a FORCE pull
+			// (UpdateImages, not PullImages): it does NOT skip images already present,
+			// so a moved tag like `latest` (e.g. the litellm image tracks `latest`) is
+			// refreshed on every `ai setup` — the reconcile below then recreates any
+			// service container found running a now-stale image. Each ensure* launches a
+			// container with `docker run -d`, whose implicit pull output the prober
+			// CAPTURES (invisible) — so a multi-GB first-run pull (e.g. ollama) looks
+			// hung; pulling here renders docker's native progress bars to the terminal,
+			// and the later `docker run -d` finds the freshly-pulled image present and
+			// returns instantly. This MUST be sequential with (and before) the bubbletea
+			// RunSteps below — native docker progress and a bubbletea program cannot both
+			// own the terminal at once. Under --json we skip it (keep stdout a clean
+			// envelope; the reconcile's implicit pull stays as-is). On error we warn and
 			// continue — the reconcile re-pulls anything still missing.
 			if !em.JSON && mode != runtime.RoleClient {
-				_, _ = fmt.Fprintln(em.Err, ui.Heading.Render("Pulling container images")+ui.Muted.Render(" (first run may take a few minutes)…"))
+				_, _ = fmt.Fprintln(em.Err, ui.Heading.Render("Pulling the latest container images")+ui.Muted.Render(" (first run may take a few minutes)…"))
 				// Resolve the effective enabled optional-service set so the pre-pull
 				// includes a disabled optional service's (large) images ONLY when it
 				// is enabled (same precedence as the reconcile: explicit choice >
@@ -142,8 +146,8 @@ func newSetupCmd(em *output.Emitter, exit *int) *cobra.Command {
 				// setup.Run) so a changed selection is honoured — an ON→OFF secret-masking
 				// change must not pull the Presidio images.
 				enabledGuardrails := setup.ResolveGuardrails(opts, persisted)
-				if err := deps.Services.PullImages(enabledOptional, enabledGuardrails, em.Err, func(line string) { _, _ = fmt.Fprintln(em.Err, line) }); err != nil {
-					_, _ = fmt.Fprintf(em.Err, "warning: image pre-pull incomplete (%s) — continuing; the reconcile will retry\n", err)
+				if err := deps.Services.UpdateImages(enabledOptional, enabledGuardrails, em.Err, func(line string) { _, _ = fmt.Fprintln(em.Err, line) }); err != nil {
+					_, _ = fmt.Fprintf(em.Err, "warning: image pull incomplete (%s) — continuing; the reconcile will retry\n", err)
 				}
 			}
 			var report *setup.Report
