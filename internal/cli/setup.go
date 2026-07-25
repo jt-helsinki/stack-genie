@@ -720,8 +720,17 @@ func secureLiteLLMUI(em *output.Emitter, interactive bool, password, domain stri
 		}
 		masterKey = generated
 	}
-	if err := setup.RelaunchLiteLLMWithAuth(password, masterKey); err != nil {
-		_, _ = fmt.Fprintf(em.Err, "warning: could not secure the LiteLLM UI: %s\n", err)
+	// Relaunching LiteLLM (recreate the container against the new auth) takes a few
+	// seconds; show a spinner on a TTY so the user knows it is working and not hung.
+	relaunch := func() error { return setup.RelaunchLiteLLMWithAuth(password, masterKey) }
+	var relaunchErr error
+	if interactive {
+		relaunchErr = ui.RunWithSpinner(em.Err, "securing the LiteLLM admin UI", relaunch)
+	} else {
+		relaunchErr = relaunch()
+	}
+	if relaunchErr != nil {
+		_, _ = fmt.Fprintf(em.Err, "warning: could not secure the LiteLLM UI: %s\n", relaunchErr)
 		return
 	}
 	_, _ = fmt.Fprintf(em.Err,
