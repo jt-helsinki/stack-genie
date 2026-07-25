@@ -330,3 +330,13 @@ func isImageBuildInfraError(output string) bool {
 		strings.Contains(lowered, "temporary failure in name resolution")
 	return buildish && networkish
 }
+
+// isLiteLLMKeyNotConfigured reports whether output describes the gateway lacking an
+// admin/master key so the workspace cannot mint its scoped virtual key — a stack-setup
+// gap on this host (secure LiteLLM / run `ai setup`), not a product defect, so the caller
+// skips rather than fails.
+func isLiteLLMKeyNotConfigured(output string) bool {
+	lowered := strings.ToLower(output)
+	return strings.Contains(lowered, "litellm admin key is not configured") ||
+		(strings.Contains(lowered, "admin key") && strings.Contains(lowered, "not configured"))
+}
