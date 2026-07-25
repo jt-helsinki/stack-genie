@@ -113,6 +113,41 @@ var ErrWorkspaceUnresponsive = errors.New("workspace microVM is running, but msb
 // VM, so the message points at `ai restart`. Mapped to exit 4 (runtime failure).
 var ErrWorkspaceStale = errors.New("workspace is marked started but its microVM isn't running (stale state) — run `ai restart`")
 
+// relayRetryDelay is the brief pause before retrying a launcher exec on a transiently
+// wedged relay, giving the freshly-reset connection a moment to re-establish.
+const relayRetryDelay = 750 * time.Millisecond
+
+// launchDetachedRetry runs a SHORT detached-launcher exec (the tiny `setsid … &` that
+// backgrounds a best-effort start step: app autostart, Caveman, code-review-graph,
+// codebase-memory, graphify-MCP, dashboards) with ONE retry on a transiently wedged
+// relay. The busy workspace-start exec sequence — containerd readiness polling plus
+// back-to-back detached launchers — can momentarily saturate the single reused msb
+// relay, so the next exec returns ErrWorkspaceUnresponsive even though the VM is fine.
+// On that error it RESETS the relay (ReleaseConnection, so the next exec dials a fresh
+// handle), waits briefly, and retries once. asRoot selects ExecRootContext (nerdctl app
+// containers need root) vs ExecContext (workspace user). Best-effort: returns the final
+// error for the caller to warn on; a non-unresponsive error is returned without retry.
+func (manager Manager) launchDetachedRetry(name string, argv []string, asRoot bool, timeout time.Duration) error {
+	run := func() error {
+		ctx, cancel := context.WithTimeout(context.Background(), timeout)
+		defer cancel()
+		var err error
+		if asRoot {
+			_, err = manager.Sandbox.ExecRootContext(ctx, name, argv)
+		} else {
+			_, err = manager.Sandbox.ExecContext(ctx, name, argv)
+		}
+		return err
+	}
+	err := run()
+	if errors.Is(err, ErrWorkspaceUnresponsive) {
+		manager.ReleaseConnection(name)
+		time.Sleep(relayRetryDelay)
+		err = run()
+	}
+	return err
+}
+
 // inVMProbeTimeout bounds the short buffered in-VM probes (tmux presence, session
 // listing, apps `nerdctl ps`) so the CLI/TUI fail fast instead of hanging when the
 // workspace is busy. After such a probe times out OR fails, the manager runs the
@@ -472,6 +507,11 @@ func (manager Manager) Start(project string) (*state.Workspace, error) {
 	// inside the workspace. BEST-EFFORT + bounded — a failure here must NOT fail the
 	// workspace start.
 	manager.ensureContainerd(name)
+	// ensureContainerd polls `nerdctl info` in a tight loop until the daemon serves, which
+	// can transiently saturate the single reused msb relay. Reset it here so the very first
+	// app-autostart launcher below dials a FRESH handle instead of inheriting a wedged one
+	// (launchDetachedRetry still retries if it wedges again mid-sequence).
+	manager.ReleaseConnection(name)
 	// Auto-start every installed in-VM app + agent-CLI dashboard so they are reachable
 	// from the host browser by default (their host ports were already published above).
 	// This is DETACHED + best-effort: a heavy first-start `nerdctl pull` is a long in-VM
@@ -1207,9 +1247,7 @@ func (manager Manager) setupGraphifyMCP(name string) {
 	}
 	launch := fmt.Sprintf("mkdir -p %s && setsid sh %s </dev/null >%s 2>&1 & exit 0",
 		shellQuoteGuest(pool+"/run"), shellQuoteGuest(graphifyMCPScriptGuest), shellQuoteGuest(logPath))
-	ctx, cancel := context.WithTimeout(context.Background(), cavemanLaunchTimeout)
-	defer cancel()
-	_, _ = manager.Sandbox.ExecContext(ctx, name, []string{"bash", "-lc", launch})
+	_ = manager.launchDetachedRetry(name, []string{"bash", "-lc", launch}, false, cavemanLaunchTimeout)
 }
 
 // cavemanOnlyAgent maps a selected agent CLI to Caveman's `install.sh --only <agent>`
@@ -1367,9 +1405,7 @@ func (manager Manager) registerCaveman(name string, projectConfig *config.Config
 	logStep("installing Caveman in the background (detached) → %s", logPath)
 	launch := fmt.Sprintf("mkdir -p %s && setsid bash %s </dev/null >%s 2>&1 & exit 0",
 		shellQuoteGuest(pool+"/run"), shellQuoteGuest(cavemanScriptGuest), shellQuoteGuest(logPath))
-	ctx, cancel := context.WithTimeout(context.Background(), cavemanLaunchTimeout)
-	defer cancel()
-	if _, err := manager.Sandbox.ExecContext(ctx, name, []string{"bash", "-lc", launch}); err != nil && explicit {
+	if err := manager.launchDetachedRetry(name, []string{"bash", "-lc", launch}, false, cavemanLaunchTimeout); err != nil && explicit {
 		_, _ = fmt.Fprintln(os.Stderr, ui.Warn.Render("Caveman install could not be launched "+
 			"(it will retry on the next workspace start): "+err.Error()))
 	}
@@ -1458,9 +1494,7 @@ func (manager Manager) registerCodeReviewGraph(name string, projectConfig *confi
 	logStep("installing code-review-graph in the background (detached) → %s", logPath)
 	launch := fmt.Sprintf("mkdir -p %s && setsid bash %s </dev/null >%s 2>&1 & exit 0",
 		shellQuoteGuest(pool+"/run"), shellQuoteGuest(codeReviewGraphScriptGuest), shellQuoteGuest(logPath))
-	ctx, cancel := context.WithTimeout(context.Background(), codeReviewGraphLaunchTimeout)
-	defer cancel()
-	if _, err := manager.Sandbox.ExecContext(ctx, name, []string{"bash", "-lc", launch}); err != nil {
+	if err := manager.launchDetachedRetry(name, []string{"bash", "-lc", launch}, false, codeReviewGraphLaunchTimeout); err != nil {
 		_, _ = fmt.Fprintln(os.Stderr, ui.Warn.Render("code-review-graph install could not be launched "+
 			"(it will retry on the next workspace start): "+err.Error()))
 	}
@@ -1504,9 +1538,7 @@ func (manager Manager) registerCodebaseMemory(name string, projectConfig *config
 		"[ -f " + installMarker + " ] && exit 0; " +
 		"command -v codebase-memory-mcp >/dev/null 2>&1 || exit 0; " +
 		"timeout --kill-after=15s 45s codebase-memory-mcp install && touch " + installMarker
-	ctx, cancel := context.WithTimeout(context.Background(), codebaseMemoryInstallTimeout)
-	defer cancel()
-	if _, err := manager.Sandbox.ExecContext(ctx, name, []string{"sh", "-lc", script}); err != nil {
+	if err := manager.launchDetachedRetry(name, []string{"sh", "-lc", script}, false, codebaseMemoryInstallTimeout); err != nil {
 		_, _ = fmt.Fprintln(os.Stderr, ui.Warn.Render("codebase-memory-mcp registration could not "+
 			"complete (it will retry on the next workspace start): "+err.Error()))
 	}
@@ -1634,10 +1666,7 @@ func (manager Manager) autostartApps(name string, projectConfig *config.Config, 
 			logStep("auto-starting installed in-VM apps in the background (detached) → %s", logPath)
 			launch := fmt.Sprintf("mkdir -p %s && setsid bash %s </dev/null >%s 2>&1 & exit 0",
 				shellQuoteGuest(workspaceWorkdir+"/.ai-platform/run"), shellQuoteGuest(appsAutostartScriptGuest), shellQuoteGuest(logPath))
-			ctx, cancel := context.WithTimeout(context.Background(), appsAutostartLaunchTimeout)
-			_, err := manager.Sandbox.ExecRootContext(ctx, name, []string{"bash", "-lc", launch})
-			cancel()
-			if err != nil {
+			if err := manager.launchDetachedRetry(name, []string{"bash", "-lc", launch}, true, appsAutostartLaunchTimeout); err != nil {
 				_, _ = fmt.Fprintf(os.Stderr, "warning: could not launch in-VM app autostart in workspace %q: %v\n", name, err)
 			}
 		}
@@ -1645,10 +1674,7 @@ func (manager Manager) autostartApps(name string, projectConfig *config.Config, 
 	// Agent-CLI dashboards (workspace user).
 	if command := dashboardAutostartCommand(projectConfig, logPath); command != "" {
 		logStep("auto-starting installed agent dashboards in the background (detached)")
-		ctx, cancel := context.WithTimeout(context.Background(), appsAutostartLaunchTimeout)
-		_, err := manager.Sandbox.ExecContext(ctx, name, []string{"bash", "-lc", command})
-		cancel()
-		if err != nil {
+		if err := manager.launchDetachedRetry(name, []string{"bash", "-lc", command}, false, appsAutostartLaunchTimeout); err != nil {
 			_, _ = fmt.Fprintf(os.Stderr, "warning: could not launch in-VM agent dashboards in workspace %q: %v\n", name, err)
 		}
 	}
