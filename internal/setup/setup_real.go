@@ -18,6 +18,7 @@ import (
 
 	"github.com/jt-helsinki/stack-genie/internal/catalog"
 	"github.com/jt-helsinki/stack-genie/internal/console"
+	"github.com/jt-helsinki/stack-genie/internal/envfile"
 	"github.com/jt-helsinki/stack-genie/internal/litellm"
 	"github.com/jt-helsinki/stack-genie/internal/ollama"
 	"github.com/jt-helsinki/stack-genie/internal/output"
@@ -1047,6 +1048,13 @@ func litellmHasDatabaseURL(prober runtime.Prober, containerRuntime string) bool 
 	return litellmEnvSet(prober, containerRuntime, "DATABASE_URL")
 }
 
+// litellmHasMasterKey reports whether the running LiteLLM container already has a
+// LITELLM_MASTER_KEY set (so a healthy-but-keyless container is relaunched once to
+// pick up a minted+persisted key — without it, workspaces cannot mint scoped keys).
+func litellmHasMasterKey(prober runtime.Prober, containerRuntime string) bool {
+	return litellmEnvSet(prober, containerRuntime, "LITELLM_MASTER_KEY")
+}
+
 // CurrentLiteLLMMasterKey returns the LITELLM_MASTER_KEY of the running LiteLLM
 // container, or "" if unset / no container / no runtime. It is the SAME source
 // RelaunchLiteLLMWithAuth and LiteLLMUISecured read, so `ai litellm password` can
@@ -1096,6 +1104,41 @@ func generateSaltKey() string {
 		return "sk-aip-salt-fallback"
 	}
 	return "sk-" + hex.EncodeToString(buffer)
+}
+
+// generateMasterKey returns a random LiteLLM master key (`sk-` + 48 hex chars).
+// It lives here (alongside generateSaltKey) so the reconcile can mint one during
+// ensureLiteLLM without importing the cli package; the cli package has an identical
+// generator for the `ai litellm password` path.
+func generateMasterKey() string {
+	buffer := make([]byte, 24)
+	if _, err := rand.Read(buffer); err != nil {
+		return "sk-aip-master-fallback"
+	}
+	return "sk-" + hex.EncodeToString(buffer)
+}
+
+// persistLiteLLMInfraKeys best-effort writes the current process-env
+// LITELLM_MASTER_KEY + LITELLM_SALT_KEY to the 0600 ~/.ai-platform/.ai-platform.env
+// so they survive a full container-down + fresh-process relaunch (see the call site
+// in ensureLiteLLM). Salt-key stability is a correctness requirement — a changed
+// salt orphans stored provider credentials — and a stable master key keeps workspace
+// scoped-key minting working across recreates. The UI password is intentionally
+// excluded: it stays a user opt-in (offerPersistLiteLLMSecrets). envfile.Write MERGES
+// (other keys/lines are preserved), so this only ever updates these two entries.
+// Never returns an error — a persistence failure must not fail the reconcile.
+func persistLiteLLMInfraKeys() {
+	secrets := map[string]string{}
+	if value := os.Getenv("LITELLM_MASTER_KEY"); value != "" {
+		secrets["LITELLM_MASTER_KEY"] = value
+	}
+	if value := os.Getenv("LITELLM_SALT_KEY"); value != "" {
+		secrets["LITELLM_SALT_KEY"] = value
+	}
+	if len(secrets) == 0 {
+		return
+	}
+	_ = envfile.Write(secrets)
 }
 
 // LiteLLMRunning reports whether the LiteLLM gateway container is up — used by
@@ -1441,9 +1484,13 @@ func (services realServices) ensureLiteLLM(configPath, bindHost, providerConfig 
 	if err := ensureLiteLLMDB(services.prober, containerRuntime.Name); err != nil {
 		return err
 	}
-	// Skip the relaunch only if LiteLLM is healthy AND already wired to the DB —
-	// so a pre-existing container without DATABASE_URL is relaunched once.
-	if services.serviceHealthy("litellm") && litellmHasDatabaseURL(services.prober, containerRuntime.Name) {
+	// Skip the relaunch only if LiteLLM is healthy AND already wired to the DB AND
+	// already carries a master key — so a pre-existing container missing DATABASE_URL
+	// OR the master key is relaunched once (self-healing: an older keyless container,
+	// e.g. from before master keys were minted for standalone, picks one up here).
+	if services.serviceHealthy("litellm") &&
+		litellmHasDatabaseURL(services.prober, containerRuntime.Name) &&
+		litellmHasMasterKey(services.prober, containerRuntime.Name) {
 		return nil
 	}
 	// Render the config we are about to mount — here (not only in Reconcile) so
@@ -1458,13 +1505,31 @@ func (services realServices) ensureLiteLLM(configPath, bindHost, providerConfig 
 	// restart/re-setup does not silently unsecure the admin UI or rotate the key
 	// (env passthrough would otherwise copy empty values from this process).
 	preserveLiteLLMSecretsInEnv(services.prober, containerRuntime.Name)
-	// Guarantee a stable salt key in the process env before the env-passthrough
-	// launch: preserve copied any existing one; on the FIRST launch there is none,
-	// so mint one (and keep it) — store_model_in_db credentials are encrypted with
-	// it at rest. Never overwrite an existing value (rotating it orphans creds).
+	// Guarantee a stable master key AND salt key in the process env before the
+	// env-passthrough launch: preserve copied any existing values off the running/old
+	// container; on the FIRST (or a keyless) launch there is none, so mint them.
+	//
+	// The master key matters even in STANDALONE — which runs the admin UI OPEN (no UI
+	// password, so the password path never sets a master key) — because workspaces
+	// authenticate to the gateway's admin API with it to mint their scoped virtual
+	// keys. Without one, `ai start` fails ("LiteLLM admin key is not configured").
+	// The salt key encrypts store_model_in_db credentials at rest. Never overwrite an
+	// existing value: rotating the salt orphans stored creds, and rotating the master
+	// key needlessly invalidates issued keys.
+	if os.Getenv("LITELLM_MASTER_KEY") == "" {
+		_ = os.Setenv("LITELLM_MASTER_KEY", generateMasterKey())
+	}
 	if os.Getenv("LITELLM_SALT_KEY") == "" {
 		_ = os.Setenv("LITELLM_SALT_KEY", generateSaltKey())
 	}
+	// Persist the master + salt key to the 0600 env file so they survive a full
+	// container-down + fresh-process relaunch — preserveLiteLLMSecretsInEnv can only
+	// recover them while the OLD container is still inspectable, so without this a
+	// stopped-then-restarted gateway would re-mint both, breaking scoped-key minting
+	// (new master key) and, worse, silently orphaning stored provider credentials
+	// (new salt key). The UI password is deliberately NOT auto-persisted — it stays a
+	// user opt-in (offerPersistLiteLLMSecrets). Best-effort: never fails the launch.
+	persistLiteLLMInfraKeys()
 	_, _ = services.prober.Run(containerRuntime.Name, "rm", "-f", litellmContainer) // best-effort cleanup
 	if _, err := services.prober.Run(containerRuntime.Name, litellmRunArgs(configPath, bindHost, containerImage("litellm"))...); err != nil {
 		return serviceStartError("LiteLLM gateway")

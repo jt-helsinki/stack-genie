@@ -12,6 +12,7 @@ import (
 	"testing"
 
 	"github.com/jt-helsinki/stack-genie/internal/conffile"
+	"github.com/jt-helsinki/stack-genie/internal/envfile"
 	"github.com/jt-helsinki/stack-genie/internal/litellm"
 	"github.com/jt-helsinki/stack-genie/internal/output"
 	"github.com/jt-helsinki/stack-genie/internal/paths"
@@ -515,6 +516,58 @@ func TestResolveLiteLLMSaltKeyPrefersEnv(test *testing.T) {
 	test.Setenv("LITELLM_SALT_KEY", "sk-from-env")
 	if got := resolveLiteLLMSaltKey(); got != "sk-from-env" {
 		test.Errorf("resolveLiteLLMSaltKey() = %q, want the explicit env value", got)
+	}
+}
+
+// TestGenerateMasterKey verifies a fresh master key has the sk- shape, is
+// non-empty, and is unique across calls.
+func TestGenerateMasterKey(test *testing.T) {
+	first := generateMasterKey()
+	second := generateMasterKey()
+	if !strings.HasPrefix(first, "sk-") || len(first) <= len("sk-") {
+		test.Errorf("generateMasterKey() = %q, want sk-<hex>", first)
+	}
+	if first == second {
+		test.Errorf("generateMasterKey() produced identical keys %q", first)
+	}
+}
+
+// TestPersistLiteLLMInfraKeysWritesMasterAndSalt verifies the master + salt keys in
+// the process env are written to the 0600 env file (so they survive a container-down
+// relaunch) while the UI password is deliberately NOT persisted.
+func TestPersistLiteLLMInfraKeysWritesMasterAndSalt(test *testing.T) {
+	test.Setenv("HOME", test.TempDir())
+	test.Setenv("LITELLM_MASTER_KEY", "sk-master-abc")
+	test.Setenv("LITELLM_SALT_KEY", "sk-salt-xyz")
+	test.Setenv("UI_PASSWORD", "hunter2")
+
+	persistLiteLLMInfraKeys()
+
+	path, err := envfile.Path()
+	if err != nil {
+		test.Fatalf("envfile.Path() error: %s", err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		test.Fatalf("read env file: %s", err)
+	}
+	content := string(data)
+	if !strings.Contains(content, "sk-master-abc") {
+		test.Errorf("env file missing master key; got:\n%s", content)
+	}
+	if !strings.Contains(content, "sk-salt-xyz") {
+		test.Errorf("env file missing salt key; got:\n%s", content)
+	}
+	if strings.Contains(content, "hunter2") || strings.Contains(content, "UI_PASSWORD") {
+		test.Errorf("UI password must NOT be auto-persisted; got:\n%s", content)
+	}
+	// The file must be 0600 (it holds secrets).
+	info, err := os.Stat(path)
+	if err != nil {
+		test.Fatalf("stat env file: %s", err)
+	}
+	if perm := info.Mode().Perm(); perm != 0o600 {
+		test.Errorf("env file perm = %o, want 600", perm)
 	}
 }
 
