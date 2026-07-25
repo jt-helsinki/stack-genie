@@ -641,12 +641,12 @@ func TestWorkspaceDeleteOpensOverlay(test *testing.T) {
 func TestWorkspaceLogReadableDuringPendingStart(test *testing.T) {
 	application := &app{
 		currentProject: "app",
-		lifecycle:      &lifecycleOp{project: "app", action: "start"},
+		lifecycles:     map[string]*lifecycleOp{"app": {project: "app", action: "start"}},
 	}
 	if !application.workspaceLogReadable() {
 		test.Fatal("workspace log should poll while start is pending so startup diagnostics stream")
 	}
-	application.lifecycle.action = "restart"
+	application.lifecycles["app"].action = "restart"
 	if !application.workspaceLogReadable() {
 		test.Fatal("workspace log should poll while restart is pending so boot diagnostics stream")
 	}

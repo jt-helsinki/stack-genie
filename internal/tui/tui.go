@@ -158,7 +158,7 @@ func Run(cwd string) error {
 			// it over the microVM stream, which during a RESTART shows the OLD VM shutting
 			// down ("reboot: Power down") and then stalls before the new VM's log appears.
 			// (startLifecycle disables streaming for the duration so this poll path runs.)
-			if application.lifecycle != nil && application.lifecycle.project == application.currentProject {
+			if application.lifecycles[application.currentProject] != nil {
 				if buildLog, ok := readLatestLifecycleLog(application.currentProject); ok {
 					return buildLog, nil
 				}
@@ -723,9 +723,11 @@ type app struct {
 	// its own paging otherwise.
 	bodyViewport viewport.Model
 
-	// lifecycle tracks an in-flight detached start/stop/restart (nil when idle), so
-	// the poll knows what it is waiting for.
-	lifecycle *lifecycleOp
+	// lifecycles tracks in-flight detached start/stop/restart actions KEYED BY WORKSPACE,
+	// so several workspaces can be starting/stopping concurrently and each is polled to
+	// completion independently — workspace management is isolated per workspace. The
+	// spinner + build-log only surface for the currently-viewed one (reconcilePending).
+	lifecycles map[string]*lifecycleOp
 }
 
 // textInputCapturer is implemented by a view (or the hub on behalf of its active
@@ -786,7 +788,9 @@ func (application *app) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		application.currentProject = message.Name
 		application.switchTab(application.projectsIndex)
-		return application, application.projectsHub.OpenProject(message.Name)
+		cmd := application.projectsHub.OpenProject(message.Name)
+		application.reconcilePending() // align the spinner with THIS workspace's own op (if any)
+		return application, cmd
 
 	case views.NewProjectRequestedMsg:
 		// Open the multi-step create WIZARD in-TUI (no subprocess). Seed it with the
@@ -863,7 +867,13 @@ func (application *app) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			application.workspaceManager.ReleaseConnection(application.currentProject)
 		}
 		application.currentProject = message.name
-		return application, tea.Sequence(application.projectsHub.Reset(), application.projectsHub.OpenProject(message.name))
+		cmd := tea.Sequence(application.projectsHub.Reset(), application.projectsHub.OpenProject(message.name))
+		// A freshly-created workspace is NOT starting — clear any spinner left over from a
+		// different workspace that is still starting in the background (reconcilePending
+		// sees no lifecycle op for this new one). This is the "new workspace shows starting
+		// with no logs" fix.
+		application.reconcilePending()
+		return application, cmd
 
 	case views.WorkspaceActionRequestedMsg:
 		if message.Action == "delete" {
@@ -906,44 +916,60 @@ func (application *app) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return application, application.startLifecycle("restart", message.Project)
 
 	case lifecyclePollMsg:
-		op := application.lifecycle
-		if op == nil {
+		if len(application.lifecycles) == 0 {
 			return application, nil
 		}
-		application.projectDetail.TickSpinner()
-		entry, found, _ := projectInfo(op.project)
-		done := false
-		switch op.action {
-		case "start", "restart":
-			done = found && entry.Status == string(state.StatusStarted)
-		case "stop":
-			done = !found || entry.Status != string(state.StatusStarted)
+		// Advance the spinner only for the currently-viewed workspace's op (others run in
+		// the background, tracked but not spinning on this pane).
+		if viewed, ok := application.lifecycles[application.currentProject]; ok && viewed != nil {
+			application.projectDetail.TickSpinner()
 		}
-		if done || time.Since(op.started) > lifecycleTimeout {
+		var cmds []tea.Cmd
+		refreshHub := false
+		for project, op := range application.lifecycles {
+			entry, found, _ := projectInfo(op.project)
+			done := false
+			switch op.action {
+			case "start", "restart":
+				done = found && entry.Status == string(state.StatusStarted)
+			case "stop":
+				done = !found || entry.Status != string(state.StatusStarted)
+			}
+			if !done && time.Since(op.started) <= lifecycleTimeout {
+				continue
+			}
 			timedOut := !done
-			application.lifecycle = nil
-			application.projectDetail.ClearPending()
-			if timedOut {
-				// The action never took effect within the window — point the user at the
-				// detached process's tee'd log so the hang/error is inspectable.
-				hint := op.action + " did not complete in time"
-				if logPath, ok := lifecycleLogPath(op.project, op.action); ok {
-					hint += " — see " + logPath
+			delete(application.lifecycles, project) // safe to delete during range in Go
+			refreshHub = true
+			// The spinner/build-log/flash surface only for the workspace being VIEWED; a
+			// background workspace's completion just updates the hub status list.
+			if project == application.currentProject {
+				application.projectDetail.ClearPending()
+				if timedOut {
+					// The action never took effect within the window — point the user at the
+					// detached process's tee'd log so the hang/error is inspectable.
+					hint := op.action + " did not complete in time"
+					if logPath, ok := lifecycleLogPath(op.project, op.action); ok {
+						hint += " — see " + logPath
+					}
+					application.projectDetail.SetFlash(ui.Warn.Render(ui.IconDot + " " + hint))
 				}
-				application.projectDetail.SetFlash(ui.Warn.Render(ui.IconDot + " " + hint))
+				// Re-enable live streaming (disabled during the op) and clear the build-log
+				// content so the next activation opens a fresh microVM stream.
+				if application.workspaceLogView != nil {
+					application.workspaceLogView.SetStreamingEnabled(true)
+					application.workspaceLogView.Reset()
+				}
+				cmds = append(cmds, application.projectDetail.Init())
 			}
-			// Re-enable live streaming (disabled during the op) and clear the build-log
-			// content so the next activation opens a fresh microVM stream. RefreshActive
-			// re-inits whatever sub-tab is visible: the Logs tab reopens the live stream,
-			// the Workspace tab refreshes its status (spinner cleared). projectDetail.Init
-			// also runs so the summary refreshes even when another sub-tab is showing.
-			if application.workspaceLogView != nil {
-				application.workspaceLogView.SetStreamingEnabled(true)
-				application.workspaceLogView.Reset()
-			}
-			return application, tea.Batch(application.projectDetail.Init(), application.projectsHub.RefreshActive())
 		}
-		return application, application.lifecyclePollCmd()
+		if refreshHub {
+			cmds = append(cmds, application.projectsHub.RefreshActive())
+		}
+		if len(application.lifecycles) > 0 {
+			cmds = append(cmds, application.lifecyclePollCmd())
+		}
+		return application, tea.Batch(cmds...)
 
 	case views.ExecRequestedMsg:
 		// An interactive shell runs in the user's REAL terminal: suspend the TUI and
@@ -1148,6 +1174,28 @@ type lifecycleOp struct {
 	started time.Time
 }
 
+// reconcilePending aligns the Workspace pane's spinner + log streaming with whether the
+// CURRENTLY-VIEWED workspace has its OWN in-flight lifecycle op. Called on every workspace
+// switch (select, or open-after-create) so a workspace that is starting in the background
+// never bleeds its "starting…" spinner onto a different (idle or freshly-created) workspace
+// — workspace management is isolated per workspace.
+func (application *app) reconcilePending() {
+	if application.projectDetail == nil {
+		return
+	}
+	if op := application.lifecycles[application.currentProject]; op != nil {
+		application.projectDetail.StartPending(op.action)
+		if application.workspaceLogView != nil {
+			application.workspaceLogView.SetStreamingEnabled(false)
+		}
+		return
+	}
+	application.projectDetail.ClearPending()
+	if application.workspaceLogView != nil {
+		application.workspaceLogView.SetStreamingEnabled(true)
+	}
+}
+
 // lifecyclePollMsg fires on a timer while a detached lifecycle action runs.
 type lifecyclePollMsg struct{}
 
@@ -1182,7 +1230,13 @@ func (application *app) startLifecycle(action, project string) tea.Cmd {
 	// Detach from the started process: we poll the state handle for completion, not
 	// the process exit, so it can outlive `ai ui`.
 	_ = command.Process.Release()
-	application.lifecycle = &lifecycleOp{project: project, action: action, started: time.Now()}
+	if application.lifecycles == nil {
+		application.lifecycles = map[string]*lifecycleOp{}
+	}
+	application.lifecycles[project] = &lifecycleOp{project: project, action: action, started: time.Now()}
+	// The action is always started from the currently-viewed workspace, so the spinner +
+	// build-log tail apply to it here. (A different workspace's op stays tracked in the map
+	// and surfaces via reconcilePending when the user switches back to it.)
 	application.projectDetail.StartPending(action)
 	// Clear the Sandbox Logs tab so the previous session's output does not linger
 	// while the microVM is (re)created. DISABLE streaming for the duration so the Logs
@@ -1287,8 +1341,8 @@ func (application *app) workspaceLogReadable() bool {
 	if application.currentProject == "" {
 		return false
 	}
-	if application.lifecycle != nil && application.lifecycle.project == application.currentProject {
-		switch application.lifecycle.action {
+	if op := application.lifecycles[application.currentProject]; op != nil {
+		switch op.action {
 		case "start", "restart":
 			return true
 		}
