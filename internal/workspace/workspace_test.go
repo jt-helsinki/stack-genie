@@ -2766,3 +2766,77 @@ func TestStartWiresOmpWhenSelected(test *testing.T) {
 		}
 	}
 }
+
+// appsAutostartLaunched reports whether the detached app-container autostart launcher
+// (root exec: `setsid bash <staged script>`) was issued.
+func appsAutostartLaunched(argv [][]string) bool {
+	for _, args := range argv {
+		if len(args) == 3 && args[0] == "bash" && args[1] == "-lc" &&
+			strings.Contains(args[2], "setsid bash") && strings.Contains(args[2], appsAutostartScriptGuest) {
+			return true
+		}
+	}
+	return false
+}
+
+// dashboardLaunched reports whether a workspace-user exec was issued that pgrep-guards
+// and setsid-launches `<cli> dashboard --host 0.0.0.0 --port <port>`.
+func dashboardLaunched(argv [][]string, cli string, port string) bool {
+	for _, args := range argv {
+		if len(args) == 3 && args[0] == "bash" && args[1] == "-lc" &&
+			strings.Contains(args[2], "setsid "+cli+" dashboard --host 0.0.0.0 --port "+port) &&
+			strings.Contains(args[2], "pgrep -f '"+cli+" dashboard'") {
+			return true
+		}
+	}
+	return false
+}
+
+// TestAutostartApps: with an installed app + dashboard, autostartApps stages the app
+// script off host disk (a guest-only path), launches it DETACHED as root, and launches
+// the dashboard as the workspace user; with none installed it is a no-op.
+func TestAutostartApps(test *testing.T) {
+	test.Run("apps and dashboards installed", func(test *testing.T) {
+		sandbox := &fakeSandbox{}
+		manager := newManager(&fakeBuilder{}, sandbox)
+		projectConfig := &config.Config{
+			Apps:            []config.AppEntry{{Key: "openwebui", Port: 8080}},
+			AgentDashboards: []config.AppEntry{{Key: "hermes", Port: 9119}},
+		}
+		manager.autostartApps("aip-app", projectConfig, "http://host.microsandbox.internal:18787/v1")
+
+		// App script staged to the GUEST-ONLY path (never under the bind-mounted run/ dir).
+		script := string(sandbox.written[appsAutostartScriptGuest])
+		if !strings.Contains(script, "nerdctl run -d") || !strings.Contains(script, "aip-app-openwebui") {
+			test.Fatalf("app autostart script not staged to %s: %v", appsAutostartScriptGuest, sandbox.written)
+		}
+		for guestPath := range sandbox.written {
+			if strings.Contains(guestPath, "/.ai-platform/run/") {
+				test.Errorf("app script must NOT be staged under the host-bind-mounted run/ dir, got %q", guestPath)
+			}
+		}
+		// The app-container launch is a ROOT exec (nerdctl needs root) → execRootArgv.
+		if !appsAutostartLaunched(sandbox.execRootArgv) {
+			test.Errorf("app autostart must be launched detached as root: %v", sandbox.execRootArgv)
+		}
+		// The dashboard launch is a WORKSPACE-USER exec (ExecContext) → allExecArgv.
+		if !dashboardLaunched(sandbox.allExecArgv, "hermes", "9119") {
+			test.Errorf("hermes dashboard must be launched detached as the workspace user: %v", sandbox.allExecArgv)
+		}
+	})
+
+	test.Run("nothing installed is a no-op", func(test *testing.T) {
+		sandbox := &fakeSandbox{}
+		manager := newManager(&fakeBuilder{}, sandbox)
+		manager.autostartApps("aip-app", &config.Config{}, "http://host.microsandbox.internal:18787/v1")
+		if _, ok := sandbox.written[appsAutostartScriptGuest]; ok {
+			test.Errorf("no apps → no staged app script, got: %v", sandbox.written)
+		}
+		if appsAutostartLaunched(sandbox.execRootArgv) {
+			test.Errorf("no apps → no app launch exec: %v", sandbox.execRootArgv)
+		}
+		if dashboardLaunched(sandbox.allExecArgv, "hermes", "9119") {
+			test.Errorf("no dashboards → no dashboard launch exec: %v", sandbox.allExecArgv)
+		}
+	})
+}

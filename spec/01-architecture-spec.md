@@ -351,7 +351,7 @@ ai logs --service <svc>      one log surface
 |---|---|---|
 | nginx proxy | container (via Runtime) `aip-proxy` (`nginx:stable-alpine3.23-slim`) | the SOLE host ENTRY to the service tier: publishes ONLY :18787 — the default server (`/`+`/v1`→LiteLLM directly, `/llm`→LiteLLM, `/ollama`→Ollama) plus the two Host-based UI vhosts on the same port (`litellm.<domain>` → LiteLLM admin UI, `valkey.<domain>` → RedisInsight); HTTPS termination point later (§10) |
 | Headroom | container (via Runtime) `aip-headroom` (`ghcr.io/chopratejas/headroom:latest`) | LiteLLM's `pre_call` input-compression guardrail backend, called at `aip-headroom:8787/v1/compress`; INTERNAL-ONLY on :8787 on aip-net (no host publish, nginx never routes to it); carries only `HEADROOM_TELEMETRY=off`; HTTP only (§10) |
-| LiteLLM | container (via Runtime) `aip-litellm` (image pinned `v1.92.0-rc.1`) (+ `aip-litellm-db` Postgres, surfaced as its own `postgres` status line) | INTERNAL-ONLY: no host publish, reached by name (`aip-litellm:4000`) by nginx's model path + `/llm` route; it calls Headroom in-process; HTTP only; no host privileges |
+| LiteLLM | container (via Runtime) `aip-litellm` (image tag `latest`) (+ `aip-litellm-db` Postgres, surfaced as its own `postgres` status line) | INTERNAL-ONLY: no host publish, reached by name (`aip-litellm:4000`) by nginx's model path + `/llm` route; it calls Headroom in-process; HTTP only; no host privileges |
 | Presidio | two containers (via Runtime) `aip-presidio-analyzer` + `aip-presidio-anonymizer` | back LiteLLM's secret-masking guardrail; started ONLY when `secret-masking` is selected (§15); internal-only, not published |
 | Ollama (required) | container (via Runtime) `aip-ollama` on all platforms | local model backend LiteLLM routes to; INTERNAL-ONLY (no host publish — reached by name, and from the host via nginx's `/ollama` route); CPU-only on macOS (Docker has no GPU passthrough) |
 | DNS audit resolver | container (via Runtime) `aip-dns` (CoreDNS) | egress-audit resolver: microVMs forward DNS here so attempted names are logged for `ai network log`; published to host loopback only; audit, not enforcement (§29.7) |
@@ -595,10 +595,19 @@ across all workspaces) — and it is persisted in the project `config.yaml`'s `a
 block. **Agent-CLI web dashboards get the same treatment**: an agent CLI that ships a
 dashboard (currently only **hermes** — `hermes dashboard`, default port 9119) is
 prompted for a host port at create when selected (the same `--app-port <cli>=<port>`
-flag / wizard step) and persisted in `config.yaml`'s `agent_dashboards:` block. Apps
-are **NOT auto-started at `ai start`** (a heavy image pull would block the whole
-start) — `Start` only publishes their ports and brings containerd up; apps start
-**on demand** via `ai apps`. The port chain is:
+flag / wizard step) and persisted in `config.yaml`'s `agent_dashboards:` block.
+Installed apps **and** agent-CLI dashboards **AUTO-START at `ai start`** (their host
+ports were already published at start) so they are reachable from the host browser by
+default — but **DETACHED + best-effort**, never blocking or failing the start: a heavy
+first-start image pull is a long in-VM exec that, run inline, would block the whole
+start AND every other in-VM exec for the pull's duration, so the app-container launch
+is staged to a GUEST-ONLY script and `setsid`'d into the background as ROOT (idempotent
+`nerdctl rm -f` then `run`, so it runs every start; only the FIRST pulls, later starts
+reuse the cached image), and agent dashboards (hermes) launch as the workspace user,
+pgrep-guarded and bound to `0.0.0.0:<port>`. The scoped virtual key is NEVER staged:
+the app env is passed by shell-variable reference sourced from the in-VM agent env
+file. Apps can still be (re)started/stopped **on demand** via `ai apps`. The port
+chain is:
 
 ```text
 host:<port>  --(msb published port: -p <port>:<port>)-->  VM:<port>  --(nerdctl -p <port>:<containerPort>)-->  container:<containerPort>
@@ -791,8 +800,8 @@ backend for **LiteLLM's `pre_call` input-compression guardrail**: LiteLLM's
 `headroom` guardrail (guardrail_name `headroom-compression`, mode `pre_call`,
 `api_base: http://aip-headroom:8787`) POSTs the request messages to
 `http://aip-headroom:8787/v1/compress` and swaps in the compressed result before
-dispatch (requires LiteLLM v1.92.x+; the litellm image is TEMPORARILY pinned to
-`v1.92.0-rc.1`, reverting to `latest` once the guardrail ships stable). Headroom is
+dispatch (requires LiteLLM v1.92.x+; the litellm image now tracks `latest`, which
+satisfies that). Headroom is
 **no longer an nginx proxy in front of LiteLLM** — nginx routes to it for nothing.
 It carries **only `HEADROOM_TELEMETRY=off`** (the old `OPENAI_TARGET_API_URL` is
 dropped, which also prevents a litellm→headroom→litellm loop). Headroom is
@@ -1176,9 +1185,9 @@ Purpose:
 
 It does not make model-selection decisions on the agent's behalf.
 
-LiteLLM runs as container `aip-litellm` (image `ghcr.io/berriai/litellm`, TEMPORARILY
-pinned to tag `v1.92.0-rc.1` for the `headroom` guardrail — revert to `latest` once
-it ships stable — `:4000`) on the `aip-net` network — **INTERNAL-ONLY** (no host
+LiteLLM runs as container `aip-litellm` (image `ghcr.io/berriai/litellm`, tag
+`latest`, which satisfies the `headroom` guardrail's LiteLLM v1.92.x+ requirement
+— `:4000`) on the `aip-net` network — **INTERNAL-ONLY** (no host
 publish; reached by name `aip-litellm:4000` by nginx's model path + `/llm` route +
 `litellm.<domain>` vhost; it in turn calls Headroom at `aip-headroom:8787/v1/compress`).
 Its DB-backed admin UI / virtual keys require

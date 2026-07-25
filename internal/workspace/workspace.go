@@ -465,12 +465,15 @@ func (manager Manager) Start(project string) (*state.Workspace, error) {
 	logStep("starting in-VM container runtime (containerd)")
 	// Bring up the rootful in-VM container runtime (containerd) so nerdctl works
 	// inside the workspace. BEST-EFFORT + bounded — a failure here must NOT fail the
-	// workspace start. The installed in-VM apps are NOT auto-started here: pulling a
-	// heavy app image (Open WebUI etc.) is slow and, because in-VM execs contend,
-	// would block the workspace start AND every other exec (shell, session list) for
-	// the whole pull, leaving the workspace unresponsive. Apps are started ON DEMAND
-	// via `ai apps start` (which brings containerd up if needed and shows progress).
+	// workspace start.
 	manager.ensureContainerd(name)
+	// Auto-start every installed in-VM app + agent-CLI dashboard so they are reachable
+	// from the host browser by default (their host ports were already published above).
+	// This is DETACHED + best-effort: a heavy first-start `nerdctl pull` is a long in-VM
+	// exec that, run inline, would block the workspace start AND every other exec (shell,
+	// session list) for the whole pull — so the app containers are launched in a setsid'd
+	// background script that returns in milliseconds. Never fails or blocks the start.
+	manager.autostartApps(name, projectConfig, gatewayURL)
 	logStep("creating project virtualenv (.venv-msb)")
 	// Create the per-project Python virtualenv (.venv-msb) using the guest's baked-in
 	// Python. Best-effort — never fails the workspace start.
@@ -858,6 +861,22 @@ const (
 	cavemanLaunchTimeout = 30 * time.Second
 	// cavemanScriptGuest is where the once-guarded install script is staged in-VM.
 	cavemanScriptGuest = "/tmp/caveman-install.sh"
+)
+
+// The installed in-VM apps + agent dashboards are auto-started DETACHED at workspace
+// start (see autostartApps): a heavy first-start `nerdctl pull` must never block the
+// start or wedge the single msb relay, so the app-container launch is setsid'd into a
+// background script exactly like the Caveman install.
+const (
+	// appsAutostartLaunchTimeout bounds only the tiny launcher exec that setsid-backgrounds
+	// the app-autostart script and returns; the script itself runs on past it.
+	appsAutostartLaunchTimeout = 30 * time.Second
+	// appsAutostartScriptGuest is where the detached app-autostart script is staged in-VM.
+	// It is a GUEST-ONLY path — deliberately NOT under <project>/.ai-platform/run (which is
+	// bind-mounted to the HOST) — so the staged script never lands on host disk. (The script
+	// only REFERENCES the scoped key via a shell variable, but keeping it off host disk
+	// upholds the hard "key never on host disk" invariant with zero exposure.)
+	appsAutostartScriptGuest = "/tmp/apps-autostart.sh"
 )
 
 // The code-review-graph registration runs its per-CLI `install` + a full-codebase
@@ -1552,6 +1571,77 @@ func (manager Manager) ensureContainerd(name string) bool {
 		return false
 	}
 	return true
+}
+
+// autostartApps starts every INSTALLED in-VM app container AND every installed agent-CLI
+// dashboard at workspace start so they are reachable from the host browser by default
+// (their host ports were already published by the microVM create). It is DETACHED +
+// best-effort: it never fails or blocks the workspace start.
+//
+//   - App CONTAINERS run as ROOT (nerdctl needs root). Because a first-start image pull is
+//     a long in-VM exec that would block the start AND every other exec (the single msb
+//     relay), the container launch is staged to a guest-only script and setsid'd into the
+//     background — exactly like registerCaveman — so the launcher exec returns in ms. The
+//     script is idempotent (`nerdctl rm -f` then `run`), so it runs every start (only the
+//     FIRST pulls; later starts reuse the cached image). Output goes to the bind-mounted
+//     run/apps-autostart.log so it is readable on the host.
+//   - DASHBOARDS (e.g. hermes) run as the WORKSPACE USER and are a process, not a container.
+//     Each is pgrep-guarded so a second start does not double-launch, then setsid'd with the
+//     server bound to 0.0.0.0 so the published host port reaches it.
+func (manager Manager) autostartApps(name string, projectConfig *config.Config, gatewayURL string) {
+	if projectConfig == nil {
+		return
+	}
+	logPath := workspaceWorkdir + "/.ai-platform/run/apps-autostart.log"
+	// App containers (root). The gateway URL is baked (non-secret); the scoped key stays a
+	// shell reference resolved in-VM, so no key value is staged.
+	if script := apps.AppsAutostartScript(projectConfig, gatewayURL); script != "" {
+		if err := manager.Sandbox.WriteFile(name, appsAutostartScriptGuest, []byte(script)); err != nil {
+			_, _ = fmt.Fprintf(os.Stderr, "warning: could not stage in-VM app autostart in workspace %q: %v\n", name, err)
+		} else {
+			logStep("auto-starting installed in-VM apps in the background (detached) → %s", logPath)
+			launch := fmt.Sprintf("mkdir -p %s && setsid bash %s </dev/null >%s 2>&1 & exit 0",
+				shellQuoteGuest(workspaceWorkdir+"/.ai-platform/run"), shellQuoteGuest(appsAutostartScriptGuest), shellQuoteGuest(logPath))
+			ctx, cancel := context.WithTimeout(context.Background(), appsAutostartLaunchTimeout)
+			_, err := manager.Sandbox.ExecRootContext(ctx, name, []string{"bash", "-lc", launch})
+			cancel()
+			if err != nil {
+				_, _ = fmt.Fprintf(os.Stderr, "warning: could not launch in-VM app autostart in workspace %q: %v\n", name, err)
+			}
+		}
+	}
+	// Agent-CLI dashboards (workspace user).
+	if command := dashboardAutostartCommand(projectConfig, logPath); command != "" {
+		logStep("auto-starting installed agent dashboards in the background (detached)")
+		ctx, cancel := context.WithTimeout(context.Background(), appsAutostartLaunchTimeout)
+		_, err := manager.Sandbox.ExecContext(ctx, name, []string{"bash", "-lc", command})
+		cancel()
+		if err != nil {
+			_, _ = fmt.Fprintf(os.Stderr, "warning: could not launch in-VM agent dashboards in workspace %q: %v\n", name, err)
+		}
+	}
+}
+
+// dashboardAutostartCommand builds the (workspace-user) shell command that pgrep-guards
+// and setsid-launches every installed agent-CLI dashboard, or "" when none are installed.
+// It sources the agent env first (dashboards like hermes read AIP_GATEWAY_KEY from it) and
+// binds each server to 0.0.0.0:<port> so the published host port reaches it.
+func dashboardAutostartCommand(projectConfig *config.Config, logPath string) string {
+	var launches []string
+	for _, entry := range projectConfig.AgentDashboards {
+		if !apps.IsDashboardAgent(entry.Key) {
+			continue
+		}
+		launches = append(launches, fmt.Sprintf(
+			"pgrep -f %s >/dev/null 2>&1 || setsid %s dashboard --host 0.0.0.0 --port %d </dev/null >>%s 2>&1 &",
+			shellQuoteGuest(entry.Key+" dashboard"), entry.Key, entry.Port, shellQuoteGuest(logPath)))
+	}
+	if len(launches) == 0 {
+		return ""
+	}
+	header := "set -a; [ -f " + shellQuoteGuest(agentEnvGuestPath) + " ] && . " + shellQuoteGuest(agentEnvGuestPath) + "; set +a; " +
+		"mkdir -p " + shellQuoteGuest(workspaceWorkdir+"/.ai-platform/run") + "; "
+	return header + strings.Join(launches, " ") + " exit 0"
 }
 
 // mergePublishPorts overlays the app-derived publish mappings onto the project's
