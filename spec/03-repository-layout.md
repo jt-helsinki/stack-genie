@@ -772,7 +772,7 @@ agent_dashboards:          # agent-CLI web dashboards (currently only hermes —
 {
   "schema_version": 1,
   "services": {
-    "litellm":      { "mode": "container", "image": "ghcr.io/berriai/litellm", "tag": "v1.92.0-rc.1" },
+    "litellm":      { "mode": "container", "image": "ghcr.io/berriai/litellm", "tag": "latest" },
     "litellm-db":   { "mode": "container", "image": "postgres", "tag": "18.4-alpine3.23" },
     "headroom":     { "mode": "container", "image": "ghcr.io/chopratejas/headroom", "tag": "latest" },
     "ollama":       { "mode": "container", "image": "ollama/ollama", "tag": "latest" },
@@ -788,11 +788,11 @@ agent_dashboards:          # agent-CLI web dashboards (currently only hermes —
 
 * `mode`: `container` | `native`
 * This file is the **source of truth** for the service-tier image references:
-  container services are pinned by **image + tag** — most use the `latest` tag, but
-  some are intentionally pinned to a specific tag (e.g. `litellm` →
-  `ghcr.io/berriai/litellm:v1.92.0-rc.1`, TEMPORARILY pinned for the in-process
-  `headroom` compression guardrail [LiteLLM v1.92.x+; revert to `latest` once it
-  ships stable]; `litellm-db` → `postgres:18.4-alpine3.23`, `proxy` →
+  container services are pinned by **image + tag** — most use the `latest` tag
+  (e.g. `litellm` → `ghcr.io/berriai/litellm:latest`, which satisfies the in-process
+  `headroom` compression guardrail's LiteLLM v1.92.x+ requirement), while
+  some are intentionally pinned to a specific tag
+  (`litellm-db` → `postgres:18.4-alpine3.23`, `proxy` →
   `nginx:stable-alpine3.23-slim`, `valkey` → `valkey/valkey:9.1.0-alpine`) — **not by
   digest** (digests are platform/arch specific, so a digest pin breaks
   cross-platform pulls).

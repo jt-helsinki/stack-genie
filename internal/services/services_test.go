@@ -63,7 +63,7 @@ func TestVersionPinsMatchCurrentDefault(test *testing.T) {
 	// The native microsandbox runtime is intentionally absent — it is a detected
 	// prerequisite, not a pulled/pinned image (see VersionPins doc).
 	want := map[string]Pin{
-		"litellm":             {Mode: ModeContainer, Image: "ghcr.io/berriai/litellm", Tag: "v1.92.0-rc.1"},
+		"litellm":             {Mode: ModeContainer, Image: "ghcr.io/berriai/litellm", Tag: "latest"},
 		"litellm-db":          {Mode: ModeContainer, Image: "postgres", Tag: "18.4-alpine3.23"},
 		"headroom":            {Mode: ModeContainer, Image: "ghcr.io/chopratejas/headroom", Tag: "latest"},
 		"presidio-analyzer":   {Mode: ModeContainer, Image: "mcr.microsoft.com/presidio-analyzer", Tag: "latest"},

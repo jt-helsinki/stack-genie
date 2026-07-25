@@ -440,7 +440,7 @@ are grep-able (`hardware bring-up`) and tracked in `docs/HARDWARE-BRINGUP.md`.
    CALLS as a `pre_call` guardrail — NOT an nginx proxy: LiteLLM's `headroom`
    guardrail POSTs the request to `http://aip-headroom:8787/v1/compress` and swaps
    in the compressed result before dispatch (requires LiteLLM v1.92.x+; image
-   pinned to `v1.92.0-rc.1`). It is ALSO installed inside each workspace image
+   tracks `latest`, which satisfies that). It is ALSO installed inside each workspace image
    (`uv tool install "headroom-ai[proxy]"`) for a future in-VM `headroom wrap`.
    The per-project strategy (`ai context strategy`) maps to Headroom per-request
    knobs (`keep_turns`/`output_buffer_tokens` via `contextopt.HeadroomParams`) fed
