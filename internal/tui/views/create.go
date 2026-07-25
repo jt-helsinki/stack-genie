@@ -142,7 +142,7 @@ func NewCreate(startDir string, library []ollama.LibraryModel, hostGB, usableGB 
 		stacks:      newMultiSelectList("Extra software stacks (Python, Node, uv + Graphify are installed by default).", create.SupportedStacks(), nil),
 		cpus:        newTextStep("vCPUs", cpuHint, "", "", validateCPUsField),
 		memory:      newTextStep("memory (GB)", memHint, "", "", validateMemoryField),
-		disk:        newTextStep("disk (GB)", fmt.Sprintf("Writable rootfs / in-VM container image store; a plain number in GB; blank uses the default (%s). Change later with `ai resize`.", config.Default().Workspace.DiskLimit), "", "", validateDiskField),
+		disk:        newTextStep("disk (GB)", fmt.Sprintf("Writable rootfs / in-VM container image size; a plain number in GB; blank uses the default (%s). Change later with `ai resize`.", config.Default().Workspace.DiskLimit), "", "", validateDiskField),
 		ports:       newTextStep("ports", "Ports to open: PORT or HOST:GUEST, comma-separated (e.g. 8080,9000:3000).", "", "", validatePortsField),
 		idle:        newTextStep("idle timeout", "How long msb may leave the workspace idle before stopping it (e.g. 30m, 24h).", "", "", validateIdleField),
 	}
