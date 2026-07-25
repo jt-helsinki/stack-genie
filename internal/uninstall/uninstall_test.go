@@ -110,17 +110,6 @@ func TestStripManagedRemovesOnlyOurLines(test *testing.T) {
 	}
 }
 
-func TestStripManagedPowerShellBlock(test *testing.T) {
-	input := completionMarker + "\n. \"/home/me/.config/powershell/ai.completion.ps1\"\nWrite-Host hi\n"
-	got := stripManaged(input)
-	if strings.Contains(got, "ai.completion.ps1") || strings.Contains(got, completionMarker) {
-		test.Errorf("powershell completion block not removed:\n%s", got)
-	}
-	if !strings.Contains(got, "Write-Host hi") {
-		test.Errorf("user line after the block was dropped:\n%s", got)
-	}
-}
-
 func TestStripManagedNoMarkersUnchanged(test *testing.T) {
 	input := "export EDITOR=vim\nalias gs=\"git status\"\n"
 	if got := stripManaged(input); got != input {

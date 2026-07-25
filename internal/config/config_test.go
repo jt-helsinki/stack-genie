@@ -94,7 +94,7 @@ func TestValidateShell(test *testing.T) {
 			test.Errorf("ValidateShell(%q) should be valid: %v", value, err)
 		}
 	}
-	for _, value := range []string{"fish", "sh", "BASH", "zsh ", "powershell"} {
+	for _, value := range []string{"tcsh", "sh", "BASH", "zsh ", "ksh"} {
 		if err := ValidateShell(value); err == nil {
 			test.Errorf("ValidateShell(%q) should be rejected", value)
 		}

@@ -12,7 +12,7 @@ import (
 	"github.com/spf13/cobra"
 )
 
-var completionShells = []string{"bash", "zsh", "fish", "powershell"}
+var completionShells = []string{"bash", "zsh"}
 
 // completionMarker tags managed lines this command appends to a shell rc/profile.
 const completionMarker = "# added by ai completion (AI Development Platform)"
@@ -24,7 +24,7 @@ const completionMarker = "# added by ai completion (AI Development Platform)"
 func newCompletionCmd(emitter *output.Emitter, exit *int) *cobra.Command {
 	var printOnly bool
 	cmd := &cobra.Command{
-		Use:   "completion [bash|zsh|fish|powershell]",
+		Use:   "completion [bash|zsh]",
 		Short: "Install shell completion for ai (or --print the script)",
 		Long: "Install shell completion for ai (or --print the script). On a terminal you\n" +
 			"are prompted to pick a shell (pre-selected from any shell you pass); under\n" +
@@ -105,30 +105,19 @@ func generateCompletion(root *cobra.Command, shell string) ([]byte, error) {
 		err = root.GenBashCompletionV2(&buffer, true)
 	case "zsh":
 		err = root.GenZshCompletion(&buffer)
-	case "fish":
-		err = root.GenFishCompletion(&buffer, true)
-	case "powershell":
-		err = root.GenPowerShellCompletionWithDesc(&buffer)
 	}
 	return buffer.Bytes(), err
 }
 
 // installCompletion writes the script to the shell's standard completion location
-// (creating dirs and, for zsh/powershell, wiring it into the rc/profile) and
-// returns the installed path plus a one-line activation hint.
+// (creating dirs and, for zsh, wiring it into the rc) and returns the installed
+// path plus a one-line activation hint.
 func installCompletion(shell string, script []byte) (installedPath, hint string, err error) {
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return "", "", err
 	}
 	switch shell {
-	case "fish":
-		path := filepath.Join(configHome(home), "fish", "completions", "ai.fish")
-		if err := writeCompletionFile(path, script); err != nil {
-			return "", "", err
-		}
-		return path, "Restart fish (or open a new shell).", nil
-
 	case "bash":
 		path := filepath.Join(dataHome(home), "bash-completion", "completions", "ai")
 		if err := writeCompletionFile(path, script); err != nil {
@@ -147,18 +136,6 @@ func installCompletion(shell string, script []byte) (installedPath, hint string,
 			return "", "", err
 		}
 		return path, "Restart zsh (or run: exec zsh).", nil
-
-	case "powershell":
-		scriptPath := filepath.Join(configHome(home), "powershell", "ai.completion.ps1")
-		if err := writeCompletionFile(scriptPath, script); err != nil {
-			return "", "", err
-		}
-		profile := filepath.Join(configHome(home), "powershell", "Microsoft.PowerShell_profile.ps1")
-		block := fmt.Sprintf("%s\n. %q\n", completionMarker, scriptPath)
-		if err := appendManaged(profile, block); err != nil {
-			return "", "", err
-		}
-		return scriptPath, "Restart PowerShell.", nil
 	}
 	return "", "", fmt.Errorf("unsupported shell %q", shell)
 }

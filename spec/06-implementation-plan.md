@@ -31,8 +31,7 @@ external-tool integration approach, the Slice 1 build sequence, and CI/testing.
   Go, shipped as a **single self-contained binary** per host (cgo: it links the
   Microsandbox Go SDK, which embeds + dlopens an FFI library — `CGO_ENABLED=1`).
 * **Thin launchers only** (bash/zsh) bootstrap the binary; no platform logic in
-  shell. Supported hosts are macOS (Apple Silicon) and Linux — there is no
-  Windows/PowerShell path.
+  shell. Supported hosts are macOS (Apple Silicon) and Linux.
 * **Declarative config/templates** in YAML/JSON; never executable logic.
 * External components are invoked as subprocesses or over HTTP, never
   reimplemented: Microsandbox (the `msb` CLI), LiteLLM (host service over HTTP),

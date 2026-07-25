@@ -582,7 +582,6 @@ func rcFiles() []string {
 		filepath.Join(zdot, ".zshrc"),
 		filepath.Join(home, ".bashrc"),
 		filepath.Join(home, ".bash_profile"),
-		filepath.Join(configHome(home), "fish", "config.fish"),
 	}
 }
 
@@ -593,17 +592,8 @@ func completionFiles() []string {
 	}
 	return []string{
 		filepath.Join(home, ".zsh", "completions", "_ai"),
-		filepath.Join(configHome(home), "fish", "completions", "ai.fish"),
 		filepath.Join(dataHome(home), "bash-completion", "completions", "ai"),
-		filepath.Join(configHome(home), "powershell", "ai.completion.ps1"),
 	}
-}
-
-func configHome(home string) string {
-	if dir := os.Getenv("XDG_CONFIG_HOME"); dir != "" {
-		return dir
-	}
-	return filepath.Join(home, ".config")
 }
 
 func dataHome(home string) string {

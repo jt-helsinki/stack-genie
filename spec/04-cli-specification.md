@@ -96,7 +96,7 @@ CLI must behave identically on:
   (It links the Microsandbox **Go SDK**, a cgo binding that `go:embed`s an FFI
   library extracted at first run — so `CGO_ENABLED=1` is required; it is one binary
   but no longer a pure-static `CGO_ENABLED=0` build. See docs/MSB-SDK-MIGRATION.md.)
-* Host bootstrap uses **thin launchers only** (bash / zsh / PowerShell) whose
+* Host bootstrap uses **thin launchers only** (bash / zsh) whose
   sole job is to download/locate and exec the compiled Go binary. No platform
   logic lives in shell scripts.
 * The standard install is **`curl … | bash`** of `installers/install.sh` (a thin
@@ -140,16 +140,13 @@ Rules:
 
 ## 1.7 Shell Completion
 
-`ai completion <bash|zsh|fish|powershell>` **installs** the completion script into
+`ai completion <bash|zsh>` **installs** the completion script into
 the shell's standard location and wires it up:
 
 * **bash** → `$XDG_DATA_HOME/bash-completion/completions/ai` (auto-loaded by
   bash-completion)
 * **zsh** → `~/.zsh/completions/_ai`, and a managed block is appended to
   `~/.zshrc` (idempotent) to put that dir on `fpath` and run `compinit`
-* **fish** → `$XDG_CONFIG_HOME/fish/completions/ai.fish` (auto-loaded)
-* **powershell** → a script under the PowerShell config dir, dot-sourced from the
-  profile (managed block)
 
 Restart the shell (or `exec zsh`) to activate. `--print` writes the raw script to
 stdout instead of installing (for piping / manual setup).
