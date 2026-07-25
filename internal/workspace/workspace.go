@@ -867,6 +867,10 @@ func (manager Manager) appendManagedBlock(name, rcPath string, block []byte) err
 // when ensureContainerd boots it, so the daemon's output is inspectable.
 const containerdLog = "/var/log/containerd.log"
 
+// fuseOverlayfsLog is the in-VM path the containerd-fuse-overlayfs-grpc snapshotter
+// proxy's output is redirected to when ensureContainerd starts it.
+const fuseOverlayfsLog = "/var/log/containerd-fuse-overlayfs.log"
+
 // venvPath is the per-project Python virtualenv created inside the workspace. It lives
 // in the bind-mounted project dir (workspaceWorkdir), so it is ONE directory visible
 // on both the host and the guest — but it is a LINUX venv, usable only INSIDE the
@@ -1619,11 +1623,29 @@ func (manager Manager) ensureContainerd(name string) bool {
 	// poll doubles as keeping this exec alive until the setsid'd daemon establishes.
 	// Bounded to ~30s (150 × 0.2s) so a genuinely broken runtime never hangs forever;
 	// exit 0 = ready, exit 1 = gave up.
+	// Do NOT use containerd's native overlayfs snapshotter: the VM root (`/`) is ITSELF
+	// an overlay (the msb OCI upper), and the kernel refuses to stack a second overlay on
+	// it — a container's rootfs mount fails with "invalid argument", so images pull but
+	// containers never START ("installed (stopped)"). Prefer the **fuse-overlayfs**
+	// snapshotter (userspace overlay via /dev/fuse — works on top of the overlay root and
+	// keeps layer sharing); it needs the bundled `containerd-fuse-overlayfs-grpc` proxy
+	// (registered as a containerd proxy_plugin) AND the `fuse3` package's `mount.fuse3`
+	// helper (baked into the base image). Start the grpc proxy and WAIT for its socket; if
+	// it comes up, default nerdctl to fuse-overlayfs, else FALL BACK to the **native**
+	// snapshotter (a full-copy snapshotter that needs no mount and always works on an
+	// overlay root — costs disk, but reliable). containerd loads both, so nerdctl's
+	// default (nerdctl.toml) selects which is used by every pull/run.
 	bootCmd := fmt.Sprintf(
-		"setsid sh -c 'containerd >%s 2>&1 &'; "+
+		"mkdir -p /etc/containerd /etc/nerdctl /var/lib/containerd-fuse-overlayfs; "+
+			"printf 'version = 2\\n[proxy_plugins]\\n  [proxy_plugins.\"fuse-overlayfs\"]\\n    type = \"snapshot\"\\n    address = \"/run/containerd-fuse-overlayfs.sock\"\\n' > /etc/containerd/config.toml; "+
+			"setsid sh -c 'containerd-fuse-overlayfs-grpc /run/containerd-fuse-overlayfs.sock /var/lib/containerd-fuse-overlayfs >%s 2>&1 &'; "+
+			"s=0; while [ $s -lt 20 ] && [ ! -S /run/containerd-fuse-overlayfs.sock ]; do s=$((s+1)); sleep 0.5; done; "+
+			"if [ -S /run/containerd-fuse-overlayfs.sock ]; then snap=fuse-overlayfs; else snap=native; fi; "+
+			"printf 'snapshotter = \"%%s\"\\n' \"$snap\" > /etc/nerdctl/nerdctl.toml; "+
+			"setsid sh -c 'containerd >%s 2>&1 &'; "+
 			"iters=0; while [ $iters -lt 150 ]; do timeout 5 nerdctl info >/dev/null 2>&1 && exit 0; "+
 			"iters=$((iters+1)); sleep 0.2; done; exit 1",
-		shellQuoteGuest(containerdLog))
+		shellQuoteGuest(fuseOverlayfsLog), shellQuoteGuest(containerdLog))
 	result, err := manager.Sandbox.ExecRoot(name, []string{"sh", "-c", bootCmd})
 	if err != nil {
 		_, _ = fmt.Fprintf(os.Stderr, "warning: could not start the in-VM container runtime in workspace %q: %v\n", name, err)

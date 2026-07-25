@@ -23,6 +23,8 @@ RUN dnf install -y --setopt=install_weak_deps=False \
     ncurses-term \
     iptables \
     iproute2 \
+    procps-ng \
+    fuse3 \
     python3 \
     python3-pip \
  && dnf clean all
