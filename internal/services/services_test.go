@@ -41,7 +41,7 @@ func TestLogScopesIsFreshCopy(test *testing.T) {
 // proxy publishes a direct host port.
 func TestEndpointsMatchCurrentConsoleRegistry(test *testing.T) {
 	want := map[string]Endpoint{
-		"litellm":      {ConsolePath: "/ui", HasConsole: true, UISubdomain: "litellm"},
+		"litellm":      {ConsolePath: "/ui/login", HasConsole: true, UISubdomain: "litellm"},
 		"valkey":       {},
 		"redisinsight": {HasConsole: true, UISubdomain: "valkey"},
 		"ollama":       {GatewayPath: "/ollama"},

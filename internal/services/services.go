@@ -210,10 +210,10 @@ var registry = []Service{
 	{
 		Name: "litellm",
 		// The :14000 host port is GONE — LiteLLM is internal-only on aip-net now. Its
-		// admin UI is reached through the nginx gateway at litellm.<domain>:GatewayPort/ui.
-		Endpoint:    Endpoint{ConsolePath: "/ui", HasConsole: true, UISubdomain: "litellm"},
+		// admin UI is reached through the nginx gateway at litellm.<domain>:GatewayPort/ui/login.
+		Endpoint:    Endpoint{ConsolePath: "/ui/login", HasConsole: true, UISubdomain: "litellm"},
 		LogScope:    "litellm",
-		UISubdomain: "litellm", // litellm.<domain> → the LiteLLM admin UI (/ui)
+		UISubdomain: "litellm", // litellm.<domain> → the LiteLLM admin UI (/ui/login)
 		Components: []Component{
 			{
 				ImageKey:  "litellm",

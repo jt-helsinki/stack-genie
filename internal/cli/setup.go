@@ -668,7 +668,7 @@ func printLiteLLMOpenInstructions(em *output.Emitter, server bool, domain string
 	}
 	_, _ = fmt.Fprintf(em.Err, "  Secure it anytime with %s. UI: %s\n",
 		ui.Primary.Render("`ai litellm password`"),
-		ui.Value.Render(fmt.Sprintf("http://litellm.%s:18787/ui", domain)))
+		ui.Value.Render(fmt.Sprintf("http://litellm.%s:18787/ui/login", domain)))
 }
 
 // liteLLMPasswordRequiredAtSetup is the pure role decision for whether `ai setup`
@@ -742,7 +742,7 @@ func secureLiteLLMUI(em *output.Emitter, interactive bool, password, domain stri
 			"  (reachable once the /etc/hosts or DNS step maps %s to this host)\n"+
 			"  %s %s\n",
 		ui.Value.Render(`"admin"`),
-		ui.Value.Render(fmt.Sprintf("http://litellm.%s:18787/ui", domain)),
+		ui.Value.Render(fmt.Sprintf("http://litellm.%s:18787/ui/login", domain)),
 		ui.Value.Render(fmt.Sprintf("litellm.%s", domain)),
 		ui.Label.Render("master key (also the API key):"),
 		ui.Value.Render(masterKey))

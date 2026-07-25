@@ -197,7 +197,7 @@ func TestHumanShowsServiceEndpoints(test *testing.T) {
 	// A healthy litellm shows its nginx subdomain address and admin-UI URL on the
 	// check line (the gateway port, NOT the internal-only :14000).
 	if !strings.Contains(rendered, "litellm") ||
-		!strings.Contains(rendered, "http://litellm.localhost:18787 (UI http://litellm.localhost:18787/ui)") {
+		!strings.Contains(rendered, "http://litellm.localhost:18787 (UI http://litellm.localhost:18787/ui/login)") {
 		test.Errorf("litellm endpoint missing from doctor output:\n%s", rendered)
 	}
 	// Ollama shows its host-CLI gateway path (no UI), NOT the internal-only :11434.

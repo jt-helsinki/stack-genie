@@ -65,7 +65,7 @@ type endpointSpec struct {
 // service topology), so it cannot drift from the log scopes / version pins / setup
 // reconcile. nginx (aip-proxy) is the SOLE host entry on the gateway port now; the
 // per-service direct ports are internal-only. The endpoints render through nginx:
-//   - litellm  admin UI at litellm.<domain>:18787/ui (nginx vhost; :4000 internal)
+//   - litellm  admin UI at litellm.<domain>:18787/ui/login (nginx vhost; :4000 internal)
 //   - ollama   http://<domain>:18787/ollama (host-CLI gateway path; :11434 internal)
 //   - proxy    http://<domain>:18787 (aip-proxy nginx gateway entry; no separate UI)
 //   - dns      127.0.0.1:15353/udp (aip-dns CoreDNS egress-audit resolver, loopback)

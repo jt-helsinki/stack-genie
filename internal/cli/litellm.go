@@ -140,7 +140,7 @@ func newLiteLLMPasswordCmd(emitter *output.Emitter, exit *int) *cobra.Command {
 			*exit = emitter.Success("litellm.password", litellmPasswordResult{
 				Secured: true,
 				LoginAs: "admin",
-				URL:     "http://litellm." + domain + ":18787/ui",
+				URL:     "http://litellm." + domain + ":18787/ui/login",
 			})
 			return nil
 		},

@@ -858,7 +858,7 @@ func TestReportHumanShowsAddressAndConsole(test *testing.T) {
 		PlatformDir: "/home/u/.ai-platform",
 		Services: []ServiceStatus{
 			{Name: "litellm", Mode: "container", State: "running", Healthy: true,
-				Address: "http://litellm.aip.local:18787", Console: "http://litellm.aip.local:18787/ui"},
+				Address: "http://litellm.aip.local:18787", Console: "http://litellm.aip.local:18787/ui/login"},
 			{Name: "ollama", Mode: "container", State: "running", Healthy: true,
 				Address: "http://aip.local:18787/ollama"},
 			{Name: "presidio", Mode: "container", State: "running", Healthy: true},
@@ -866,7 +866,7 @@ func TestReportHumanShowsAddressAndConsole(test *testing.T) {
 	}
 	rendered := report.Human()
 	// litellm shows both its address and the admin UI URL.
-	if !strings.Contains(rendered, "http://litellm.aip.local:18787 · UI http://litellm.aip.local:18787/ui") {
+	if !strings.Contains(rendered, "http://litellm.aip.local:18787 · UI http://litellm.aip.local:18787/ui/login") {
 		test.Errorf("litellm address+UI missing:\n%s", rendered)
 	}
 	// ollama shows its address only (no UI).
@@ -1125,9 +1125,9 @@ func TestProxyNginxConfThreadsDomain(test *testing.T) {
 	if !strings.Contains(rendered, "server_name litellm.dev.example.com;") {
 		test.Errorf("litellm vhost must use the threaded domain:\n%s", rendered)
 	}
-	// LiteLLM admin UI: / → /ui redirect.
-	if !strings.Contains(rendered, "return 302 /ui;") {
-		test.Errorf("litellm vhost should redirect / → /ui:\n%s", rendered)
+	// LiteLLM admin UI: / → /ui/login redirect.
+	if !strings.Contains(rendered, "return 302 /ui/login;") {
+		test.Errorf("litellm vhost should redirect / → /ui/login:\n%s", rendered)
 	}
 	// The litellm UI vhost proxies to :4000 directly (Headroom is not an upstream).
 	litellmBlock := rendered[strings.Index(rendered, "server_name litellm.dev.example.com;"):]
@@ -1395,8 +1395,8 @@ func TestStatusForDisplayDomain(test *testing.T) {
 	if err != nil {
 		test.Fatal(err)
 	}
-	if got := consoleOf(standalone, "litellm"); got != "http://litellm.aip.local:18787/ui" {
-		test.Errorf("standalone litellm console = %q, want http://litellm.aip.local:18787/ui", got)
+	if got := consoleOf(standalone, "litellm"); got != "http://litellm.aip.local:18787/ui/login" {
+		test.Errorf("standalone litellm console = %q, want http://litellm.aip.local:18787/ui/login", got)
 	}
 	if got := addressOf(standalone, "ollama"); got != "http://aip.local:18787/ollama" {
 		test.Errorf("standalone ollama address = %q, want http://aip.local:18787/ollama", got)
@@ -1426,8 +1426,8 @@ func TestStatusForDisplayDomain(test *testing.T) {
 	if err != nil {
 		test.Fatal(err)
 	}
-	if got := consoleOf(server, "litellm"); got != "http://litellm.build-host.lan:18787/ui" {
-		test.Errorf("server litellm console = %q, want http://litellm.build-host.lan:18787/ui", got)
+	if got := consoleOf(server, "litellm"); got != "http://litellm.build-host.lan:18787/ui/login" {
+		test.Errorf("server litellm console = %q, want http://litellm.build-host.lan:18787/ui/login", got)
 	}
 	if got := addressOf(server, "dns"); got != "127.0.0.1:15353/udp" {
 		test.Errorf("server dns address = %q, want loopback unchanged", got)

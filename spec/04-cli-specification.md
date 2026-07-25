@@ -1511,7 +1511,7 @@ Behavior:
   console; with a name it **opens** that console in the browser, or — with
   `--print` (and always under `--json`) — prints the URL instead. Host consoles are
   **nginx subdomain UIs** served on the single gateway port `:18787`:
-  `litellm.<domain>:18787/ui` (the LiteLLM admin UI) and `valkey.<domain>:18787`
+  `litellm.<domain>:18787/ui/login` (the LiteLLM admin UI) and `valkey.<domain>:18787`
   (RedisInsight, the Valkey cache GUI) — where `<domain>` is the platform base domain
   (`ai domain`, default `aip.local`). These are **not** direct container ports. (Open
   WebUI is now a per-workspace in-VM app; Odysseus was removed.)

@@ -8,7 +8,7 @@ import (
 func TestURLAndKnown(test *testing.T) {
 	// The LiteLLM admin UI is the nginx subdomain vhost on the gateway port, NOT
 	// the old internal-only :14000.
-	if url, ok := URL("litellm"); !ok || url != "http://litellm.localhost:18787/ui" {
+	if url, ok := URL("litellm"); !ok || url != "http://litellm.localhost:18787/ui/login" {
 		test.Errorf("litellm console = (%q,%v)", url, ok)
 	}
 	// Known service with no web console.
@@ -31,7 +31,7 @@ func TestWithConsolesSortedAndFiltered(test *testing.T) {
 		test.Fatalf("WithConsoles = %+v, want [litellm redisinsight]", named)
 	}
 	want := map[string]string{
-		"litellm":      "http://litellm.localhost:18787/ui",
+		"litellm":      "http://litellm.localhost:18787/ui/login",
 		"redisinsight": "http://valkey.localhost:18787",
 	}
 	for _, namedURL := range named {
@@ -50,7 +50,7 @@ func TestEndpointAndAddress(test *testing.T) {
 	// litellm: admin UI subdomain vhost on the gateway port; the address is the
 	// same base, the console adds /ui.
 	endpoint, ok := EndpointFor("litellm")
-	if !ok || endpoint.Address != "http://litellm.localhost:18787" || endpoint.Console != "http://litellm.localhost:18787/ui" {
+	if !ok || endpoint.Address != "http://litellm.localhost:18787" || endpoint.Console != "http://litellm.localhost:18787/ui/login" {
 		test.Errorf("litellm endpoint = (%+v,%v)", endpoint, ok)
 	}
 	if address, ok := Address("litellm"); !ok || address != "http://litellm.localhost:18787" {
@@ -104,13 +104,13 @@ func TestEndpointForHostRendersGivenDomain(test *testing.T) {
 	// The host argument is the platform base DOMAIN: UI subdomains hang off it and
 	// the gateway-path addresses resolve under it — always on the single gateway port.
 	endpoint, ok := EndpointForHost("litellm", DefaultHost)
-	if !ok || endpoint.Address != "http://litellm.localhost:18787" || endpoint.Console != "http://litellm.localhost:18787/ui" {
+	if !ok || endpoint.Address != "http://litellm.localhost:18787" || endpoint.Console != "http://litellm.localhost:18787/ui/login" {
 		test.Errorf("litellm@localhost endpoint = (%+v,%v)", endpoint, ok)
 	}
 
 	// A custom domain is woven into the subdomain URL.
 	endpoint, ok = EndpointForHost("litellm", "build-host.lan")
-	if !ok || endpoint.Address != "http://litellm.build-host.lan:18787" || endpoint.Console != "http://litellm.build-host.lan:18787/ui" {
+	if !ok || endpoint.Address != "http://litellm.build-host.lan:18787" || endpoint.Console != "http://litellm.build-host.lan:18787/ui/login" {
 		test.Errorf("litellm@build-host.lan endpoint = (%+v,%v)", endpoint, ok)
 	}
 
