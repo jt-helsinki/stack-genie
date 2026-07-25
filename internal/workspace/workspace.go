@@ -662,42 +662,52 @@ func (manager Manager) registerAgentProviders(name, project, root string, projec
 		projectConfig.Context.GraphifyEnabledOrDefault(),
 		workspaceWorkdir+"/.venv-msb/bin/python",
 	)
-	if err := manager.writeModelListConfigs(name, root, gatewayURL, defaultModel, models, keepTurns, outputBufferTokens); err != nil {
-		return err
+	// opencode: written when selected — or when NO tools are configured at all, since
+	// opencode is the platform default tool (a degenerate/legacy empty Tools list still
+	// gets the default). It carries the refreshable served-model list.
+	if len(projectConfig.Agent.Tools) == 0 || slices.Contains(projectConfig.Agent.Tools, "opencode") {
+		if err := manager.writeModelListConfigs(name, root, gatewayURL, defaultModel, models, keepTurns, outputBufferTokens); err != nil {
+			return err
+		}
 	}
 
-	// claude-code: api-key mode gets the gateway base-URL env block; oauth mode gets an
-	// EMPTY env block (no base URL) so its own subscription login reaches Anthropic direct.
-	claudeExisting := readHostFileOrNil(projectConfigPath(root, ".claude", "settings.json"))
-	var claudeConfig []byte
-	if oauthSet["claude-code"] {
-		claudeConfig, err = agentcfg.MergeClaudeSettingsOAuth(claudeExisting)
-	} else {
-		claudeConfig, err = agentcfg.MergeClaudeSettings(claudeExisting, gatewayURL)
-	}
-	if err != nil {
-		return err
-	}
-	if err := writeHostFile(projectConfigPath(root, ".claude", "settings.json"), claudeConfig); err != nil {
-		return err
+	// claude-code: written only when selected. api-key mode gets the gateway base-URL env
+	// block; oauth mode gets an EMPTY env block (no base URL) so its own subscription login
+	// reaches Anthropic direct.
+	if slices.Contains(projectConfig.Agent.Tools, "claude-code") {
+		claudeExisting := readHostFileOrNil(projectConfigPath(root, ".claude", "settings.json"))
+		var claudeConfig []byte
+		if oauthSet["claude-code"] {
+			claudeConfig, err = agentcfg.MergeClaudeSettingsOAuth(claudeExisting)
+		} else {
+			claudeConfig, err = agentcfg.MergeClaudeSettings(claudeExisting, gatewayURL)
+		}
+		if err != nil {
+			return err
+		}
+		if err := writeHostFile(projectConfigPath(root, ".claude", "settings.json"), claudeConfig); err != nil {
+			return err
+		}
 	}
 
-	// codex: api-key mode gets the KEYLESS gateway provider block (fully platform-managed,
-	// overwritten each start; the key is env-supplied via env_key). oauth mode gets the
-	// ChatGPT-subscription config (no gateway provider — direct to OpenAI). Either way a
-	// global in-VM trust entry (off host disk) is written so codex loads the project config.
-	// The enabled tools' MCP servers are appended as [mcp_servers.*] tables (local tools —
-	// they work regardless of auth mode).
-	codexConfig := agentcfg.CodexConfig(gatewayURL, defaultModel)
-	if oauthSet["codex"] {
-		codexConfig = agentcfg.CodexConfigOAuth()
-	}
-	codexConfig = agentcfg.AppendCodexMCP(codexConfig, mcpServers)
-	if err := writeHostFile(projectConfigPath(root, ".codex", "config.toml"), codexConfig); err != nil {
-		return err
-	}
-	if err := manager.Sandbox.WriteFile(name, agentcfg.CodexConfigGuestPath, agentcfg.CodexTrustConfig()); err != nil {
-		return err
+	// codex: written only when selected. api-key mode gets the KEYLESS gateway provider
+	// block (fully platform-managed, overwritten each start; the key is env-supplied via
+	// env_key). oauth mode gets the ChatGPT-subscription config (no gateway provider —
+	// direct to OpenAI). Either way a global in-VM trust entry (off host disk) is written so
+	// codex loads the project config. The enabled tools' MCP servers are appended as
+	// [mcp_servers.*] tables (local tools — they work regardless of auth mode).
+	if slices.Contains(projectConfig.Agent.Tools, "codex") {
+		codexConfig := agentcfg.CodexConfig(gatewayURL, defaultModel)
+		if oauthSet["codex"] {
+			codexConfig = agentcfg.CodexConfigOAuth()
+		}
+		codexConfig = agentcfg.AppendCodexMCP(codexConfig, mcpServers)
+		if err := writeHostFile(projectConfigPath(root, ".codex", "config.toml"), codexConfig); err != nil {
+			return err
+		}
+		if err := manager.Sandbox.WriteFile(name, agentcfg.CodexConfigGuestPath, agentcfg.CodexTrustConfig()); err != nil {
+			return err
+		}
 	}
 
 	// omp (Oh My Pi) — written only when selected. Its provider/models config is KEYLESS
@@ -1094,6 +1104,12 @@ func (manager Manager) refreshAgentModels(project string) {
 		}
 	}
 
+	// The refreshable served-model list lives only in opencode's config; skip when
+	// opencode isn't installed (nothing else carries a refreshable list). An empty Tools
+	// list defaults to opencode, matching registerAgentProviders.
+	if len(projectConfig.Agent.Tools) != 0 && !slices.Contains(projectConfig.Agent.Tools, "opencode") {
+		return
+	}
 	keepTurns, outputBufferTokens := contextopt.HeadroomParams(projectConfig.Context.Strategy)
 	models := manager.pickerModels()
 	if err := manager.writeModelListConfigs(name, root, gatewayURL, "", models, keepTurns, outputBufferTokens); err != nil {

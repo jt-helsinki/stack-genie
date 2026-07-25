@@ -858,6 +858,11 @@ func TestStartRejectsInvalidMicrosandboxIdleTimeout(test *testing.T) {
 // host-side templates — the scoped key must never touch host disk.
 func TestStartRoutesAllFiveAgentCLIs(test *testing.T) {
 	root := seedProject(test, "app")
+	if err := config.WriteProject(root, &config.Config{
+		Agent: config.AgentConfig{Tools: []string{"opencode", "claude-code", "codex", "gemini", "copilot"}},
+	}); err != nil {
+		test.Fatal(err)
+	}
 	sandbox := &fakeSandbox{}
 	served := fakeServedModels{models: []string{"ollama/llama3.2:latest"}}
 	manager := Manager{Builder: &fakeBuilder{}, Sandbox: sandbox, Keys: &fakeKeyMinter{}, Served: served, Now: func() string { return "t" }}
@@ -1220,6 +1225,9 @@ func assertProjectConfigsKeyless(test *testing.T, root, key string) {
 		{".claude", "settings.json"}, {".codex", "config.toml"},
 	} {
 		content, err := os.ReadFile(filepath.Join(append([]string{root}, parts...)...))
+		if os.IsNotExist(err) {
+			continue // that CLI isn't installed, so its config is (correctly) not written
+		}
 		if err != nil {
 			test.Fatalf("project config %v not written: %v", parts, err)
 		}
@@ -2171,7 +2179,7 @@ func TestStartPickerIsServedModels(test *testing.T) {
 // model line.
 func TestStartDefaultsToSetupModel(test *testing.T) {
 	root := seedProject(test, "app")
-	if err := config.WriteProject(root, &config.Config{Agent: config.AgentConfig{GraphifyModel: "qwen2.5-coder:7b"}}); err != nil {
+	if err := config.WriteProject(root, &config.Config{Agent: config.AgentConfig{Tools: []string{"opencode", "codex"}, GraphifyModel: "qwen2.5-coder:7b"}}); err != nil {
 		test.Fatal(err)
 	}
 	sandbox := &fakeSandbox{}
