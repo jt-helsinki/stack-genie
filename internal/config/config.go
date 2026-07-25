@@ -401,7 +401,7 @@ func Default() *Config {
 	return &Config{
 		Agent:     AgentConfig{Tools: []string{"opencode"}, DefaultTool: "opencode"},
 		Context:   ContextConfig{Strategy: "balanced", CavemanLevel: "full"},
-		Workspace: WorkspaceConfig{CPULimit: 4, MemoryLimit: "8", DiskLimit: "8", Shell: "bash"},
+		Workspace: WorkspaceConfig{CPULimit: 4, MemoryLimit: "8", DiskLimit: "16", Shell: "bash"},
 		Microsandbox: MicrosandboxConfig{
 			IdleTimeout: DefaultMicrosandboxIdleTimeout,
 		},

@@ -97,9 +97,10 @@ const microVMMemory = "4G"
 // project config does not set `workspace.disk_limit`. msb's own default (~4 GiB) holds
 // containerd's image store, which is too small for the multi-GB in-VM app images (Open
 // WebUI is opencv/torch-heavy) — two apps overflow it with "no space left on device".
-// 8 GiB (the default) gives them room; the upper is sparse, so this is a ceiling, not
-// upfront usage, and it is user-configurable (workspace.disk_limit / `ai resize`).
-const microVMDisk = 8 * 1024
+// 16 GiB (the default) fits two heavy in-VM apps; the upper is sparse, so this is a
+// ceiling, not upfront usage, and it is user-configurable (workspace.disk_limit /
+// `ai resize`).
+const microVMDisk = 16 * 1024
 
 // msbMemory renders a memory value for msb's `--memory` flag, which wants a unit
 // (e.g. 8G). The platform's memory config is a plain number of GB, so a unit-less
