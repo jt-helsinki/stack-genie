@@ -35,6 +35,21 @@ func (result appsResult) Human() string {
 
 // appStatusLabel renders one app's lifecycle state for the table.
 func appStatusLabel(status apps.Status) string {
+	// Agent-CLI dashboards are user-launched in-VM (not container apps), so they are
+	// not startable via `ai apps start` — label them so the state does not read like a
+	// stopped app the user can start.
+	if status.Kind == apps.KindDashboard {
+		label := ui.Warn.Render("dashboard (launch in workspace)")
+		if status.Running {
+			label = ui.Success.Render("dashboard (running)")
+		}
+		// Auto-configured basic-auth dashboards (hermes) surface their login so the
+		// user can reach the published port — a low-sensitivity LOCAL credential.
+		if status.Login != "" {
+			label += "\n" + ui.Muted.Render("login: "+status.Login)
+		}
+		return label
+	}
 	switch {
 	case !status.Installed:
 		return ui.Failure.Render("not installed")
@@ -90,7 +105,7 @@ func mapAppsErr(err error) error {
 func newAppsCmd(emitter *output.Emitter, exit *int) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "apps <list|add|remove|update|start|stop|restart> [app] [name]",
-		Short: "Manage the AI applications running inside the workspace (Open WebUI, AnythingLLM)",
+		Short: "Manage the AI applications running inside the workspace (Open WebUI)",
 		Args:  cobra.MinimumNArgs(1),
 		ValidArgsFunction: func(_ *cobra.Command, args []string, _ string) ([]string, cobra.ShellCompDirective) {
 			if len(args) == 0 {

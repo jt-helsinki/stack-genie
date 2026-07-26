@@ -157,7 +157,9 @@ func newUninstallCmd(em *output.Emitter, exit *int) *cobra.Command {
 			*exit = em.Success("uninstall", uninstallResult{
 				Purged:            report.Purged,
 				RemovedState:      report.RemovedState,
+				StoppedWorkspaces: report.StoppedWorkspaces,
 				RemovedContainers: report.RemovedContainers,
+				RemovedImages:     report.RemovedImages,
 				CleanedRC:         report.CleanedRC,
 				RemovedBinary:     report.RemovedBinary,
 				RemovedDeps:       report.RemovedDeps,
@@ -217,7 +219,9 @@ func presentDepNames(prober runtime.Prober) []string {
 type uninstallResult struct {
 	Purged            bool     `json:"purged"`
 	RemovedState      bool     `json:"removed_state,omitempty"`
+	StoppedWorkspaces int      `json:"stopped_workspaces,omitempty"`
 	RemovedContainers int      `json:"removed_containers,omitempty"`
+	RemovedImages     int      `json:"removed_images,omitempty"`
 	CleanedRC         []string `json:"cleaned_rc,omitempty"`
 	RemovedBinary     string   `json:"removed_binary,omitempty"`
 	RemovedDeps       []string `json:"removed_deps,omitempty"`
@@ -249,6 +253,12 @@ func (result uninstallResult) Human() string {
 		tail = "Removed all platform state (" + ui.Value.Render("~/.ai-platform") + "), including downloaded models."
 	}
 	summary := ui.Success.Render(ui.IconOK+" Uninstall complete.") + " " + tail
+	if result.StoppedWorkspaces > 0 {
+		summary += fmt.Sprintf(" Stopped %d workspace microVM(s) (data preserved).", result.StoppedWorkspaces)
+	}
+	if result.RemovedImages > 0 {
+		summary += fmt.Sprintf(" Removed %d container image(s).", result.RemovedImages)
+	}
 	if len(result.RemovedDeps) > 0 {
 		summary += " Also uninstalled: " + ui.Value.Render(strings.Join(result.RemovedDeps, ", ")) + "."
 	}

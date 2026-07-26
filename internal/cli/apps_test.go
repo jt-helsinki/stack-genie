@@ -99,10 +99,10 @@ func TestAppsStartNeedsRunningWorkspace(test *testing.T) {
 func TestAppsResultHuman(test *testing.T) {
 	result := appsResult{Project: "demo", Apps: []apps.Status{
 		{Key: "openwebui", Name: "Open WebUI", Installed: true, Running: true, Port: 21000, URL: "http://localhost:21000"},
-		{Key: "anythingllm", Name: "AnythingLLM"},
+		{Key: "webui-alt", Name: "WebUI Alt"},
 	}}
 	human := result.Human()
-	for _, want := range []string{"Open WebUI", "running", "http://localhost:21000", "AnythingLLM", "not installed"} {
+	for _, want := range []string{"Open WebUI", "running", "http://localhost:21000", "WebUI Alt", "not installed"} {
 		if !strings.Contains(human, want) {
 			test.Fatalf("Human() missing %q:\n%s", want, human)
 		}

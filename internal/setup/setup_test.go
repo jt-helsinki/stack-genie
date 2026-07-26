@@ -12,6 +12,7 @@ import (
 	"testing"
 
 	"github.com/jt-helsinki/stack-genie/internal/conffile"
+	"github.com/jt-helsinki/stack-genie/internal/envfile"
 	"github.com/jt-helsinki/stack-genie/internal/litellm"
 	"github.com/jt-helsinki/stack-genie/internal/output"
 	"github.com/jt-helsinki/stack-genie/internal/paths"
@@ -518,6 +519,58 @@ func TestResolveLiteLLMSaltKeyPrefersEnv(test *testing.T) {
 	}
 }
 
+// TestGenerateMasterKey verifies a fresh master key has the sk- shape, is
+// non-empty, and is unique across calls.
+func TestGenerateMasterKey(test *testing.T) {
+	first := generateMasterKey()
+	second := generateMasterKey()
+	if !strings.HasPrefix(first, "sk-") || len(first) <= len("sk-") {
+		test.Errorf("generateMasterKey() = %q, want sk-<hex>", first)
+	}
+	if first == second {
+		test.Errorf("generateMasterKey() produced identical keys %q", first)
+	}
+}
+
+// TestPersistLiteLLMInfraKeysWritesMasterAndSalt verifies the master + salt keys in
+// the process env are written to the 0600 env file (so they survive a container-down
+// relaunch) while the UI password is deliberately NOT persisted.
+func TestPersistLiteLLMInfraKeysWritesMasterAndSalt(test *testing.T) {
+	test.Setenv("HOME", test.TempDir())
+	test.Setenv("LITELLM_MASTER_KEY", "sk-master-abc")
+	test.Setenv("LITELLM_SALT_KEY", "sk-salt-xyz")
+	test.Setenv("UI_PASSWORD", "hunter2")
+
+	persistLiteLLMInfraKeys()
+
+	path, err := envfile.Path()
+	if err != nil {
+		test.Fatalf("envfile.Path() error: %s", err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		test.Fatalf("read env file: %s", err)
+	}
+	content := string(data)
+	if !strings.Contains(content, "sk-master-abc") {
+		test.Errorf("env file missing master key; got:\n%s", content)
+	}
+	if !strings.Contains(content, "sk-salt-xyz") {
+		test.Errorf("env file missing salt key; got:\n%s", content)
+	}
+	if strings.Contains(content, "hunter2") || strings.Contains(content, "UI_PASSWORD") {
+		test.Errorf("UI password must NOT be auto-persisted; got:\n%s", content)
+	}
+	// The file must be 0600 (it holds secrets).
+	info, err := os.Stat(path)
+	if err != nil {
+		test.Fatalf("stat env file: %s", err)
+	}
+	if perm := info.Mode().Perm(); perm != 0o600 {
+		test.Errorf("env file perm = %o, want 600", perm)
+	}
+}
+
 func TestPreserveLiteLLMSecretsDoesNotOverrideCaller(test *testing.T) {
 	test.Setenv("UI_PASSWORD", "caller-set")
 	prober := fakeProber{dockerOut: "UI_PASSWORD=from-container\n"}
@@ -858,7 +911,7 @@ func TestReportHumanShowsAddressAndConsole(test *testing.T) {
 		PlatformDir: "/home/u/.ai-platform",
 		Services: []ServiceStatus{
 			{Name: "litellm", Mode: "container", State: "running", Healthy: true,
-				Address: "http://litellm.aip.local:18787", Console: "http://litellm.aip.local:18787/ui"},
+				Address: "http://litellm.aip.local:18787", Console: "http://litellm.aip.local:18787/ui/login"},
 			{Name: "ollama", Mode: "container", State: "running", Healthy: true,
 				Address: "http://aip.local:18787/ollama"},
 			{Name: "presidio", Mode: "container", State: "running", Healthy: true},
@@ -866,7 +919,7 @@ func TestReportHumanShowsAddressAndConsole(test *testing.T) {
 	}
 	rendered := report.Human()
 	// litellm shows both its address and the admin UI URL.
-	if !strings.Contains(rendered, "http://litellm.aip.local:18787 · UI http://litellm.aip.local:18787/ui") {
+	if !strings.Contains(rendered, "http://litellm.aip.local:18787 · UI http://litellm.aip.local:18787/ui/login") {
 		test.Errorf("litellm address+UI missing:\n%s", rendered)
 	}
 	// ollama shows its address only (no UI).
@@ -1125,9 +1178,9 @@ func TestProxyNginxConfThreadsDomain(test *testing.T) {
 	if !strings.Contains(rendered, "server_name litellm.dev.example.com;") {
 		test.Errorf("litellm vhost must use the threaded domain:\n%s", rendered)
 	}
-	// LiteLLM admin UI: / → /ui redirect.
-	if !strings.Contains(rendered, "return 302 /ui;") {
-		test.Errorf("litellm vhost should redirect / → /ui:\n%s", rendered)
+	// LiteLLM admin UI: / → /ui/login redirect.
+	if !strings.Contains(rendered, "return 302 /ui/login;") {
+		test.Errorf("litellm vhost should redirect / → /ui/login:\n%s", rendered)
 	}
 	// The litellm UI vhost proxies to :4000 directly (Headroom is not an upstream).
 	litellmBlock := rendered[strings.Index(rendered, "server_name litellm.dev.example.com;"):]
@@ -1395,8 +1448,8 @@ func TestStatusForDisplayDomain(test *testing.T) {
 	if err != nil {
 		test.Fatal(err)
 	}
-	if got := consoleOf(standalone, "litellm"); got != "http://litellm.aip.local:18787/ui" {
-		test.Errorf("standalone litellm console = %q, want http://litellm.aip.local:18787/ui", got)
+	if got := consoleOf(standalone, "litellm"); got != "http://litellm.aip.local:18787/ui/login" {
+		test.Errorf("standalone litellm console = %q, want http://litellm.aip.local:18787/ui/login", got)
 	}
 	if got := addressOf(standalone, "ollama"); got != "http://aip.local:18787/ollama" {
 		test.Errorf("standalone ollama address = %q, want http://aip.local:18787/ollama", got)
@@ -1426,8 +1479,8 @@ func TestStatusForDisplayDomain(test *testing.T) {
 	if err != nil {
 		test.Fatal(err)
 	}
-	if got := consoleOf(server, "litellm"); got != "http://litellm.build-host.lan:18787/ui" {
-		test.Errorf("server litellm console = %q, want http://litellm.build-host.lan:18787/ui", got)
+	if got := consoleOf(server, "litellm"); got != "http://litellm.build-host.lan:18787/ui/login" {
+		test.Errorf("server litellm console = %q, want http://litellm.build-host.lan:18787/ui/login", got)
 	}
 	if got := addressOf(server, "dns"); got != "127.0.0.1:15353/udp" {
 		test.Errorf("server dns address = %q, want loopback unchanged", got)
@@ -1743,5 +1796,29 @@ func TestOllamaEnvArgsForwardsPrefixed(test *testing.T) {
 	}
 	if strings.Contains(joined, "NOT_OLLAMA") {
 		test.Errorf("non-OLLAMA_ vars must not be forwarded: %q", joined)
+	}
+}
+
+// TestOllamaContextLengthDefault verifies the platform sets a generous default context
+// window (so agent CLIs' prompt + tools don't starve generation), and that a user-forwarded
+// OLLAMA_CONTEXT_LENGTH overrides it without a duplicate flag.
+func TestOllamaContextLengthDefault(test *testing.T) {
+	// Default applied when unset.
+	joined := strings.Join(ollamaEnvArgs(), " ")
+	if !strings.Contains(joined, "-e OLLAMA_CONTEXT_LENGTH="+defaultOllamaContextLength) {
+		test.Errorf("ollama env args missing default context length: %q", joined)
+	}
+
+	// User override wins and is not duplicated.
+	test.Setenv("OLLAMA_CONTEXT_LENGTH", "65536")
+	joined = strings.Join(ollamaEnvArgs(), " ")
+	if !strings.Contains(joined, "-e OLLAMA_CONTEXT_LENGTH=65536") {
+		test.Errorf("user OLLAMA_CONTEXT_LENGTH must win: %q", joined)
+	}
+	if strings.Contains(joined, "OLLAMA_CONTEXT_LENGTH="+defaultOllamaContextLength) {
+		test.Errorf("default must be dropped when the user sets OLLAMA_CONTEXT_LENGTH: %q", joined)
+	}
+	if count := strings.Count(joined, "OLLAMA_CONTEXT_LENGTH="); count != 1 {
+		test.Errorf("OLLAMA_CONTEXT_LENGTH must appear once, got %d: %q", count, joined)
 	}
 }

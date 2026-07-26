@@ -64,7 +64,7 @@ func TestOmpMcpConfig(test *testing.T) {
 }
 
 func TestInjectHermesMCP(test *testing.T) {
-	base, err := HermesConfig("http://gw/v1", "")
+	base, err := HermesConfig("http://gw/v1", "", "")
 	if err != nil {
 		test.Fatalf("HermesConfig: %v", err)
 	}

@@ -62,8 +62,8 @@ func TestSelectedAppPorts(test *testing.T) {
 	valid := "8080"
 	blank := "  "
 	auto := "0"
-	values := map[string]*string{"openwebui": &valid, "anythingllm": &blank, "hermes": &auto}
-	got := selectedAppPorts([]string{"openwebui", "anythingllm", "hermes", "missing"}, values)
+	values := map[string]*string{"openwebui": &valid, "webui-alt": &blank, "hermes": &auto}
+	got := selectedAppPorts([]string{"openwebui", "webui-alt", "hermes", "missing"}, values)
 	if got["openwebui"] != 8080 {
 		test.Fatalf("openwebui port = %d, want 8080", got["openwebui"])
 	}

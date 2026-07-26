@@ -22,6 +22,8 @@ RUN apt-get update \
     ncurses-term \
     iptables \
     iproute2 \
+    procps \
+    fuse3 \
     python3 \
     python3-venv \
     python3-pip \

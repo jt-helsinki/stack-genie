@@ -67,6 +67,10 @@ type Spec struct {
 	// Memory is the workspace memory limit (e.g. "8G") written to
 	// config.yaml workspace.memory_limit. Empty uses the platform default.
 	Memory string
+	// Disk is the workspace writable-rootfs size in GiB (e.g. "20") written to
+	// config.yaml workspace.disk_limit, sizing the in-VM containerd image store so
+	// multi-GB app images fit. Empty uses the platform default.
+	Disk string
 	// Shell is the workspace's default interactive shell ("bash" or "zsh"), written to
 	// config.yaml workspace.shell. Empty defaults to "bash" (today's behavior).
 	Shell string
@@ -299,6 +303,10 @@ func Scaffold(spec Spec, createdAt string) (string, error) {
 	if memory == "" {
 		memory = config.Default().Workspace.MemoryLimit
 	}
+	disk := spec.Disk
+	if disk == "" {
+		disk = config.Default().Workspace.DiskLimit
+	}
 	// Default interactive shell: bash unless the create wizard/flag chose zsh.
 	shell := spec.Shell
 	if shell == "" {
@@ -350,7 +358,7 @@ func Scaffold(spec Spec, createdAt string) (string, error) {
 	projectConfig := &config.Config{
 		OS:              spec.OS,
 		Agent:           config.AgentConfig{Tools: spec.AgentCLIs, DefaultTool: spec.DefaultTool, GraphifyModel: spec.GraphifyModel, AuthModes: authModes},
-		Workspace:       config.WorkspaceConfig{CPULimit: cpus, MemoryLimit: memory, Shell: shell},
+		Workspace:       config.WorkspaceConfig{CPULimit: cpus, MemoryLimit: memory, DiskLimit: disk, Shell: shell},
 		Context:         config.ContextConfig{CavemanEnabled: &cavemanEnabled, GraphifyEnabled: &graphifyEnabled, CodeReviewGraphEnabled: &codeReviewGraphEnabled, CodebaseMemoryEnabled: &codebaseMemoryEnabled},
 		Microsandbox:    config.MicrosandboxConfig{IdleTimeout: idleTimeout},
 		Network:         config.NetworkConfig{PublishPorts: spec.PublishPorts, AllowHostServices: oauthAllow},

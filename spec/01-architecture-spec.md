@@ -119,7 +119,7 @@ Host Layer
  ├─ Microsandbox microVM runtime (libkrun)         ← workspaces
  │   └─ Sandbox Layer (workspace microVM)
  │       ├─ AI Tooling Layer (OpenCode by default; Claude Code / Codex / Gemini / omp / Copilot / Hermes optional — selected per env)
- │       ├─ In-VM OCI runtime (rootful containerd + nerdctl) → opt-in apps: Open WebUI · AnythingLLM (§7)
+ │       ├─ In-VM OCI runtime (rootful containerd + nerdctl) → opt-in apps: Open WebUI (§7)
  │       └─ Context Optimization (Caveman skill — per project, §8–10; Headroom is a host-side LiteLLM guardrail, §10)
  │
  └─ Container Runtime (Docker / Podman)            ← service tier (network aip-net)
@@ -351,7 +351,7 @@ ai logs --service <svc>      one log surface
 |---|---|---|
 | nginx proxy | container (via Runtime) `aip-proxy` (`nginx:stable-alpine3.23-slim`) | the SOLE host ENTRY to the service tier: publishes ONLY :18787 — the default server (`/`+`/v1`→LiteLLM directly, `/llm`→LiteLLM, `/ollama`→Ollama) plus the two Host-based UI vhosts on the same port (`litellm.<domain>` → LiteLLM admin UI, `valkey.<domain>` → RedisInsight); HTTPS termination point later (§10) |
 | Headroom | container (via Runtime) `aip-headroom` (`ghcr.io/chopratejas/headroom:latest`) | LiteLLM's `pre_call` input-compression guardrail backend, called at `aip-headroom:8787/v1/compress`; INTERNAL-ONLY on :8787 on aip-net (no host publish, nginx never routes to it); carries only `HEADROOM_TELEMETRY=off`; HTTP only (§10) |
-| LiteLLM | container (via Runtime) `aip-litellm` (image pinned `v1.92.0-rc.1`) (+ `aip-litellm-db` Postgres, surfaced as its own `postgres` status line) | INTERNAL-ONLY: no host publish, reached by name (`aip-litellm:4000`) by nginx's model path + `/llm` route; it calls Headroom in-process; HTTP only; no host privileges |
+| LiteLLM | container (via Runtime) `aip-litellm` (image tag `latest`) (+ `aip-litellm-db` Postgres, surfaced as its own `postgres` status line) | INTERNAL-ONLY: no host publish, reached by name (`aip-litellm:4000`) by nginx's model path + `/llm` route; it calls Headroom in-process; HTTP only; no host privileges |
 | Presidio | two containers (via Runtime) `aip-presidio-analyzer` + `aip-presidio-anonymizer` | back LiteLLM's secret-masking guardrail; started ONLY when `secret-masking` is selected (§15); internal-only, not published |
 | Ollama (required) | container (via Runtime) `aip-ollama` on all platforms | local model backend LiteLLM routes to; INTERNAL-ONLY (no host publish — reached by name, and from the host via nginx's `/ollama` route); CPU-only on macOS (Docker has no GPU passthrough) |
 | DNS audit resolver | container (via Runtime) `aip-dns` (CoreDNS) | egress-audit resolver: microVMs forward DNS here so attempted names are logged for `ai network log`; published to host loopback only; audit, not enforcement (§29.7) |
@@ -552,8 +552,16 @@ Every workspace image also ships a **rootful in-VM OCI container runtime** —
 containerd + nerdctl + runc + CNI plugins + buildkit, installed from the pinned
 `nerdctl-full` release tarball (one static, distro-agnostic artifact, arch-aware
 amd64/arm64) into `/usr/local` in every OS base Dockerfile, alongside the CNI
-runtime deps (`ca-certificates`, `iptables`, `iproute`). The runtime is **started
-at workspace start** (not baked running into the image): `ensureContainerd`
+runtime deps (`ca-certificates`, `iptables`, `iproute`) and `fuse3` + `procps`.
+Because the microVM root (`/`) is ITSELF an overlay (the msb OCI upper) and the
+kernel refuses to stack a second overlay on it, containerd cannot use its
+**native `overlayfs` snapshotter** — a container rootfs mount would fail and
+images would pull but never start. So at start `ensureContainerd` launches the
+userspace **`fuse-overlayfs` snapshotter** (via `/dev/fuse` — the bundled
+`containerd-fuse-overlayfs-grpc` proxy plugin plus `fuse3`'s `mount.fuse3`
+helper) and points `nerdctl` at it, falling back to the copy-based `native`
+snapshotter only if the fuse proxy socket never comes up. The runtime is
+**started at workspace start** (not baked running into the image): `ensureContainerd`
 (`internal/workspace`) probes `nerdctl info` as root and, if needed, boots
 `containerd` detached (`setsid`, as root) so it runs for the VM's life, then **polls
 `nerdctl info`** (true readiness — the daemon serving requests, NOT merely the
@@ -570,9 +578,8 @@ containerd socket" fatal).
 
 On this runtime the platform runs **opt-in AI applications** as `nerdctl`
 containers **inside** the workspace microVM — currently **Open WebUI**
-(`ghcr.io/open-webui/open-webui:latest`, web port 8080, data `/app/backend/data`)
-and **AnythingLLM** (`mintplexlabs/anythingllm:latest`, web port 3001, storage
-`/app/server/storage`). Each app is described by a declarative manifest
+(`ghcr.io/open-webui/open-webui:latest`, web port 8080, data `/app/backend/data`).
+Each app is described by a declarative manifest
 (`internal/apps`): image (pinned image+tag, no digest — same convention as the
 service tier), container port, persisted data dir, an optional `/workspace` mount,
 a memory limit, and a gateway-pointing env builder. Each app is routed through the
@@ -581,14 +588,32 @@ a memory limit, and a gateway-pointing env builder. Each app is routed through t
 catalog-driven system has **no default model**, so the model handle passed is
 empty and the app's user picks a served model) — via
 `OPENAI_API_BASE_URL`/`OPENAI_API_KEY` (Open WebUI, plus
-`ENABLE_OLLAMA_API=false`/`WEBUI_AUTH=false` for a single-user in-VM instance) and
-`LLM_PROVIDER=generic-openai` + `GENERIC_OPEN_AI_*` (AnythingLLM).
+`ENABLE_OLLAMA_API=false`/`WEBUI_AUTH=false` for a single-user in-VM instance).
 
 Apps are **opt-in** (chosen at `ai create`, default OFF) and have a full
 lifecycle via **`ai apps <list|add|remove|update|start|stop|restart> [app] [name]`**
-and a per-workspace **Apps** view in `ai ui`. Each installed app is allocated a
-**unique host port** (recorded in the project `config.yaml`'s `apps:` block) so two
-running microVMs never collide. The port chain is:
+and a per-workspace **Apps** view in `ai ui`. The web-UI **host port for each
+selected app is CHOSEN at create** — the wizard prompts for one per selected app and
+the `--app-port <app>=<port>` flag sets it non-interactively (seeded with the app's
+familiar container port — Open WebUI 8080 — when free, else an
+auto-allocated free port; validated unique + host-free and reserved machine-wide
+across all workspaces) — and it is persisted in the project `config.yaml`'s `apps:`
+block. **Agent-CLI web dashboards get the same treatment**: an agent CLI that ships a
+dashboard (currently only **hermes** — `hermes dashboard`, default port 9119) is
+prompted for a host port at create when selected (the same `--app-port <cli>=<port>`
+flag / wizard step) and persisted in `config.yaml`'s `agent_dashboards:` block.
+Installed apps **and** agent-CLI dashboards **AUTO-START at `ai start`** (their host
+ports were already published at start) so they are reachable from the host browser by
+default — but **DETACHED + best-effort**, never blocking or failing the start: a heavy
+first-start image pull is a long in-VM exec that, run inline, would block the whole
+start AND every other in-VM exec for the pull's duration, so the app-container launch
+is staged to a GUEST-ONLY script and `setsid`'d into the background as ROOT (idempotent
+`nerdctl rm -f` then `run`, so it runs every start; only the FIRST pulls, later starts
+reuse the cached image), and agent dashboards (hermes) launch as the workspace user,
+pgrep-guarded and bound to `0.0.0.0:<port>`. The scoped virtual key is NEVER staged:
+the app env is passed by shell-variable reference sourced from the in-VM agent env
+file. Apps can still be (re)started/stopped **on demand** via `ai apps`. The port
+chain is:
 
 ```text
 host:<port>  --(msb published port: -p <port>:<port>)-->  VM:<port>  --(nerdctl -p <port>:<containerPort>)-->  container:<containerPort>
@@ -781,8 +806,8 @@ backend for **LiteLLM's `pre_call` input-compression guardrail**: LiteLLM's
 `headroom` guardrail (guardrail_name `headroom-compression`, mode `pre_call`,
 `api_base: http://aip-headroom:8787`) POSTs the request messages to
 `http://aip-headroom:8787/v1/compress` and swaps in the compressed result before
-dispatch (requires LiteLLM v1.92.x+; the litellm image is TEMPORARILY pinned to
-`v1.92.0-rc.1`, reverting to `latest` once the guardrail ships stable). Headroom is
+dispatch (requires LiteLLM v1.92.x+; the litellm image now tracks `latest`, which
+satisfies that). Headroom is
 **no longer an nginx proxy in front of LiteLLM** — nginx routes to it for nothing.
 It carries **only `HEADROOM_TELEMETRY=off`** (the old `OPENAI_TARGET_API_URL` is
 dropped, which also prevents a litellm→headroom→litellm loop). Headroom is
@@ -960,10 +985,16 @@ templates (§25); it is identical across all OSes:
   builds the graph offline (`graphify update .`, AST-only) at start (`workspace.setupGraphifyMCP`),
   so `python -m graphify.serve graphify-out/graph.json` has data; the git hook keeps it fresh
   (gated on `context.graphify_enabled`).
-* **code-review-graph** and **codebase-memory-mcp** — two OPT-IN (default off)
-  per-workspace code-graph tools baked into every OS base and, when chosen at
-  `ai create` (`--code-review-graph` / `--codebase-memory`, or the wizard's tooling
-  step), registered as an **MCP server** with each installed agent CLI **at workspace
+* **code-review-graph** and **codebase-memory-mcp** — two per-workspace code-graph
+  tools chosen from the single AI-tools multi-select at `ai create` (the `--tools`
+  flag / the wizard's one AI-tools step, alongside caveman + graphify;
+  `create.SupportedAITools`, with defaults `create.DefaultAITools` = caveman +
+  graphify + code-review-graph ON, codebase-memory-mcp OFF). Each maps to a
+  `context.*_enabled` bool in `config.yaml` (`code_review_graph_enabled` /
+  `codebase_memory_enabled`) and, when selected, is appended to the project Dockerfile
+  as a CONDITIONAL install snippet (`tools/code-review-graph/`,
+  `tools/codebase-memory-mcp/`) — NOT baked into every OS base — then
+  registered as an **MCP server** with each installed agent CLI **at workspace
   start** (`Manager.registerCodeReviewGraph` / `registerCodebaseMemory`, mirroring
   `registerGraphify`/`registerCaveman`: once-guarded by a marker under
   `~/project/.ai-platform`, best-effort, never failing the start). **code-review-graph**
@@ -1160,9 +1191,9 @@ Purpose:
 
 It does not make model-selection decisions on the agent's behalf.
 
-LiteLLM runs as container `aip-litellm` (image `ghcr.io/berriai/litellm`, TEMPORARILY
-pinned to tag `v1.92.0-rc.1` for the `headroom` guardrail — revert to `latest` once
-it ships stable — `:4000`) on the `aip-net` network — **INTERNAL-ONLY** (no host
+LiteLLM runs as container `aip-litellm` (image `ghcr.io/berriai/litellm`, tag
+`latest`, which satisfies the `headroom` guardrail's LiteLLM v1.92.x+ requirement
+— `:4000`) on the `aip-net` network — **INTERNAL-ONLY** (no host
 publish; reached by name `aip-litellm:4000` by nginx's model path + `/llm` route +
 `litellm.<domain>` vhost; it in turn calls Headroom at `aip-headroom:8787/v1/compress`).
 Its DB-backed admin UI / virtual keys require
@@ -1217,14 +1248,25 @@ locked down on a host that binds to `0.0.0.0`:
   generates a strong random one non-interactively rather than leave the gateway
   open).
 
-**Persisting the secrets.** `ai setup` (server) and `ai litellm password` OFFER
-(on a TTY) to save `UI_PASSWORD` + `LITELLM_MASTER_KEY` to **`~/.ai-platform/.ai-platform.env`**
-— an opt-in, **0600** file of `export KEY='VALUE'` lines that the `ai` CLI
-**auto-loads at startup** (into its own process env, where the container
-env-passthrough launches pick them up) — so they persist across restarts WITHOUT
-the user editing their shell rc. Precedence is "existing env wins": the file only
-fills gaps, so a value already exported in the shell is never clobbered. On
-decline / non-TTY the manual `export …` block is printed instead. The container
+**Persisting the secrets.** Two paths write **`~/.ai-platform/.ai-platform.env`**
+— an **0600** file of `export KEY='VALUE'` lines that the `ai` CLI **auto-loads at
+startup** (into its own process env, where the container env-passthrough launches
+pick them up) — so secrets persist across restarts WITHOUT the user editing their
+shell rc. Precedence is "existing env wins": the file only fills gaps, so a value
+already exported in the shell is never clobbered.
+
+* **Unconditional (infra keys):** every `ensureLiteLLM` reconcile persists the
+  `LITELLM_MASTER_KEY` + `LITELLM_SALT_KEY` pair (`persistLiteLLMInfraKeys`), so
+  they survive a full container-down + fresh-process relaunch (preserving them off
+  the running container only works while it is still inspectable). This is a
+  correctness requirement — a rotated **salt key** orphans every stored provider
+  credential, and a stable **master key** keeps workspace scoped-key minting
+  working across recreates — so it is NOT opt-in.
+* **Opt-in (UI password):** `ai setup` (server) and `ai litellm password` OFFER
+  (on a TTY) to additionally save `UI_PASSWORD`; on decline / non-TTY the manual
+  `export …` block is printed instead.
+
+The container
 also
 carries `DATABASE_URL` (inline; it carries no secret) and the Presidio endpoints
 `PRESIDIO_ANALYZER_API_BASE=http://aip-presidio-analyzer:3000` /
@@ -1378,6 +1420,20 @@ install it: an Ollama model must still be `ollama pull`ed, and a cloud model sti
 needs its provider key present in the gateway (§17). The catalog id is the public
 `model_name` verbatim; the catalog-id→LiteLLM-prefix map (e.g. `google` → `gemini`)
 supplies the routing prefix. There is no default model.
+
+Ollama models are registered with `litellm_params.model` = `ollama_chat/<name>`
+(`OllamaRoutedModel`) — Ollama's `/api/chat` endpoint (native chat messages, tools,
+streaming) — NOT `ollama/<name>` (`/api/generate`, which yields empty output for
+chat/tool traffic); the public `model_name` stays `ollama/<name>`. Registration is
+**capability-aware** (reads the model's `/api/show` capabilities → `model_info.
+supports_function_calling` + `litellm_params.drop_params`) and **heals stale
+registrations** (re-registers when the routing prefix is the old `ollama/*` form or
+the tool capability changed). Because LiteLLM does not forward `num_ctx` for
+`ollama_chat`, the platform bakes the context window instead: a default
+`OLLAMA_CONTEXT_LENGTH` (16384) on the `aip-ollama` container (skipped when the user
+forwards their own) plus a per-model `num_ctx` baked into each pulled model
+(`SetNumCtx`, sized `min(trained context, 32768)`) at `ai models pull` and on the TUI
+Local Models refresh.
 
 ### In-VM agent provider config — keyless per-CLI project configs, key in-VM only
 
@@ -1805,7 +1861,7 @@ seed a new project's `.ai-platform/Dockerfile`:
   recommended default (`debian-trixie`). The chosen key selects which template
   seeds `.ai-platform/Dockerfile`.
 * each template installs the **base** tooling layer (§12: Git, GitHub CLI, Node.js,
-  Python 3, uv, Graphify, Headroom, rtk, and the in-VM container runtime) on its
+  Python 3, uv, Headroom, rtk, and the in-VM container runtime) on its
   base image — identical across all OSes; the **agent CLIs** and **software stacks**
   selected at creation (§12; see Software Stacks below) are then added to the
   project's generated `.ai-platform/Dockerfile` (acceptance tests §6)

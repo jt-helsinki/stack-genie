@@ -4,6 +4,7 @@ import (
 	"errors"
 	"os/exec"
 	"testing"
+	"time"
 )
 
 type fakeProber struct {
@@ -404,5 +405,64 @@ func TestRequireUIAuth(test *testing.T) {
 		if got := RequireUIAuth(testCase.role); got != testCase.want {
 			test.Errorf("RequireUIAuth(%q) = %v, want %v", testCase.role, got, testCase.want)
 		}
+	}
+}
+
+// TestRealProberRunTimeoutAndBreaker locks the wedged-daemon fix: a prober shell-out
+// is bounded (a hung binary fails after proberRunTimeout instead of hanging forever),
+// the circuit breaker then fast-fails subsequent calls for the same binary within the
+// TTL (so `ai services status`, which fans out ~20 docker probes, fails fast after the
+// FIRST timeout instead of paying the timeout per call), and the breaker self-heals
+// after the TTL so a recovered daemon is probed again.
+func TestRealProberRunTimeoutAndBreaker(t *testing.T) {
+	origTimeout, origTTL := proberRunTimeout, proberBreakerTTL
+	proberRunTimeout = 150 * time.Millisecond
+	proberBreakerTTL = 600 * time.Millisecond
+	resetBreaker := func() {
+		proberBreakerMu.Lock()
+		delete(proberBreakerLast, "sleep")
+		proberBreakerMu.Unlock()
+	}
+	t.Cleanup(func() {
+		proberRunTimeout, proberBreakerTTL = origTimeout, origTTL
+		resetBreaker()
+	})
+	resetBreaker()
+
+	prober := realProber{}
+
+	// First call to a hung binary times out near proberRunTimeout (not indefinitely).
+	start := time.Now()
+	if _, err := prober.Run("sleep", "5"); err == nil {
+		t.Fatal("expected timeout error, got nil")
+	}
+	if elapsed := time.Since(start); elapsed > time.Second {
+		t.Fatalf("first call should time out near %s, took %s (unbounded?)", proberRunTimeout, elapsed)
+	}
+
+	// Breaker is now tripped: the next call for the same binary fast-fails without
+	// re-running (well under the timeout).
+	start = time.Now()
+	if _, err := prober.Run("sleep", "5"); err == nil {
+		t.Fatal("expected fast-fail while breaker tripped, got nil")
+	}
+	if elapsed := time.Since(start); elapsed > 50*time.Millisecond {
+		t.Fatalf("breaker should fast-fail, took %s", elapsed)
+	}
+
+	// A DIFFERENT binary is unaffected by the breaker (it succeeds immediately).
+	if _, err := prober.Run("true"); err != nil {
+		t.Fatalf("unrelated binary should not be tripped, got %v", err)
+	}
+
+	// After the TTL the breaker resets: the call re-execs and hits the full timeout
+	// again (~proberRunTimeout), proving it is no longer short-circuiting.
+	time.Sleep(proberBreakerTTL + 50*time.Millisecond)
+	start = time.Now()
+	if _, err := prober.Run("sleep", "5"); err == nil {
+		t.Fatal("expected timeout after breaker reset, got nil")
+	}
+	if elapsed := time.Since(start); elapsed < proberRunTimeout {
+		t.Fatalf("after reset the call should re-exec to the full timeout (%s), took %s (still short-circuiting)", proberRunTimeout, elapsed)
 	}
 }

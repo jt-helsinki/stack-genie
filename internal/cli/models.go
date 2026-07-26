@@ -40,7 +40,7 @@ var ollamaLibrary = func() ([]ollama.LibraryModel, ollama.Source, error) { retur
 // fake (no network); registration is BEST-EFFORT — a gateway that is down or has no
 // master key must never fail a pull/rm.
 type modelRegistrar interface {
-	RegisterOllamaModel(name string) error
+	RegisterOllamaModel(name string, supportsTools bool) error
 	UnregisterOllamaModel(name string) error
 }
 

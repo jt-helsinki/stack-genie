@@ -38,7 +38,7 @@ type appsRefreshMsg struct{ generation int }
 // It only ticks while the tab is active (the hub pauses it on leave).
 const appsRefreshInterval = 3 * time.Second
 
-// Apps is the per-workspace view of the in-VM AI apps (Open WebUI, AnythingLLM):
+// Apps is the per-workspace view of the in-VM AI apps (Open WebUI):
 // a Services-style table APP / STATUS / URL with keys to add/remove/update and
 // start/stop/restart the selected app. It honours the active theme.
 type Apps struct {

@@ -12,7 +12,7 @@ import (
 func sampleStatuses() []apps.Status {
 	return []apps.Status{
 		{Key: "openwebui", Name: "Open WebUI", Installed: true, Running: true, Port: 21000, URL: "http://localhost:21000"},
-		{Key: "anythingllm", Name: "AnythingLLM"},
+		{Key: "webui-alt", Name: "WebUI Alt"},
 	}
 }
 
@@ -29,7 +29,7 @@ func TestAppsPopulatesTableOnRefresh(test *testing.T) {
 		test.Fatalf("table rows = %d, want 2", got)
 	}
 	rendered := view.View()
-	for _, want := range []string{"Open WebUI", "running", "http://localhost:21000", "AnythingLLM", "not installed"} {
+	for _, want := range []string{"Open WebUI", "running", "http://localhost:21000", "WebUI Alt", "not installed"} {
 		if !strings.Contains(rendered, want) {
 			test.Errorf("rendered view missing %q:\n%s", want, rendered)
 		}

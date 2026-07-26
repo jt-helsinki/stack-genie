@@ -6,6 +6,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/jt-helsinki/stack-genie/internal/agentcfg"
 	"github.com/jt-helsinki/stack-genie/internal/config"
 )
 
@@ -41,7 +42,21 @@ type Status struct {
 	Port int `json:"port,omitempty"`
 	// URL is the host URL the app is reachable at (empty when uninstalled).
 	URL string `json:"url,omitempty"`
+	// Kind distinguishes a managed in-VM container app ("app", the default/empty)
+	// from an agent-CLI web dashboard ("dashboard") the user launches in-VM (e.g.
+	// `hermes dashboard`) — the platform only publishes its host port, it does not
+	// run a container for it, so it is not startable via `ai apps start`.
+	Kind string `json:"kind,omitempty"`
+	// Login is the "username / password" basic-auth credential for a dashboard that
+	// the platform auto-configures (currently hermes). Empty for container apps and for
+	// dashboards without configured auth. It is a low-sensitivity LOCAL dashboard
+	// credential surfaced so the user can log in — not a provider/gateway secret.
+	Login string `json:"login,omitempty"`
 }
+
+// KindDashboard marks a Status as an agent-CLI web dashboard rather than a
+// managed in-VM container app.
+const KindDashboard = "dashboard"
 
 // ExecRunner runs a command inside the workspace microVM as root (the surface
 // Manager needs from workspace.Sandbox.ExecRoot). Injected so the host-side
@@ -148,7 +163,7 @@ func PublishedPorts(projectConfig *config.Config) []config.PortMapping {
 var ErrPortUnavailable = errors.New("requested app host port is unavailable")
 
 // SuggestedHostPort proposes a default host port to expose an app on, for seeding the
-// create prompt: the app's familiar container port (8080 Open WebUI, 3001 AnythingLLM)
+// create prompt: the app's familiar container port (e.g. 8080 Open WebUI)
 // when it is free and unreserved, otherwise the next auto-allocated free port. Returns 0
 // for an unknown key. isFree defaults to a real loopback probe when nil.
 func SuggestedHostPort(key string, reserved map[int]bool, isFree portChecker) int {
@@ -428,7 +443,61 @@ func (manager *Manager) List() ([]Status, error) {
 		}
 		statuses = append(statuses, status)
 	}
+	// Agent-CLI web dashboards (e.g. hermes) are not container apps — the platform only
+	// publishes their host port; the user launches the server in-VM (`hermes dashboard`).
+	// Surface them in the same list so their reserved port + URL are discoverable, with a
+	// best-effort running probe (the launched `<cli> dashboard` process).
+	for _, entry := range projectConfig.AgentDashboards {
+		if !IsDashboardAgent(entry.Key) {
+			continue
+		}
+		status := Status{
+			Key:       entry.Key,
+			Name:      dashboardDisplayName(entry.Key),
+			Kind:      KindDashboard,
+			Installed: true,
+			Port:      entry.Port,
+			URL:       fmt.Sprintf("http://localhost:%d", entry.Port),
+		}
+		// hermes' dashboard is basic-auth protected by an auto-configured credential
+		// (the platform must register an auth provider or hermes refuses to bind
+		// 0.0.0.0). Surface the login so the user can reach it.
+		if entry.Key == "hermes" && projectConfig.Agent.HermesDashboardPassword != "" {
+			status.Login = agentcfg.HermesDashboardUsername + " / " + projectConfig.Agent.HermesDashboardPassword
+		}
+		if manager.deps.Exec != nil {
+			status.Running = manager.dashboardRunning(entry.Key)
+		}
+		statuses = append(statuses, status)
+	}
 	return statuses, nil
+}
+
+// dashboardDisplayName renders an agent CLI's dashboard label for listings, e.g.
+// "hermes" -> "Hermes Dashboard".
+func dashboardDisplayName(cli string) string {
+	if cli == "" {
+		return "Dashboard"
+	}
+	return strings.ToUpper(cli[:1]) + cli[1:] + " Dashboard"
+}
+
+// dashboardRunning best-effort reports whether an agent CLI's in-VM dashboard server
+// (`<cli> dashboard`) is currently running. A probe failure reports false (not fatal —
+// the dashboard is a user-launched process, absence just means "not running yet").
+func (manager *Manager) dashboardRunning(cli string) bool {
+	probe := manager.deps.ProbeExec
+	if probe == nil {
+		probe = manager.deps.Exec
+	}
+	if probe == nil {
+		return false
+	}
+	result, err := probe([]string{"sh", "-c", fmt.Sprintf("pgrep -f '%s dashboard' >/dev/null 2>&1 && echo up", cli)})
+	if err != nil {
+		return false
+	}
+	return strings.TrimSpace(result.Stdout) == "up"
 }
 
 // StartInstalled (re)runs every installed app's container, used at workspace
@@ -491,6 +560,11 @@ func (manager *Manager) runContainer(manifest Manifest, port int) error {
 			return err
 		}
 	}
+	// The persistent data dir is a host bind source that nerdctl auto-creates ROOT-owned
+	// 0755; an app whose container runs as a NON-root user then cannot
+	// write it and crashes on startup. Create it world-writable first (see AppsAutostartScript).
+	dataDir := fmt.Sprintf("%s/%s", guestAppDataRoot, manifest.Key)
+	_, _ = manager.deps.Exec([]string{"sh", "-c", "mkdir -p " + dataDir + " && chmod 0777 " + dataDir})
 	argv := runArgs(manifest, port, gatewayURL, apiKey, defaultModel)
 	run := func() (ExecResult, error) {
 		// Idempotent recreate: drop any existing container first (ignore its result —

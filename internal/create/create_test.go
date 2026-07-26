@@ -340,6 +340,26 @@ func TestValidateResourcesWithinHostRejectsOverCommit(test *testing.T) {
 	}
 }
 
+func TestValidateDisk(test *testing.T) {
+	// Blank is allowed (the platform default applies).
+	if err := ValidateDisk(""); err != nil {
+		test.Errorf("blank disk should be valid: %v", err)
+	}
+	if err := ValidateDisk("  "); err != nil {
+		test.Errorf("whitespace disk should be valid: %v", err)
+	}
+	// A plain positive GB number is valid.
+	if err := ValidateDisk("20"); err != nil {
+		test.Errorf("20 GB should be valid: %v", err)
+	}
+	// Zero / non-numeric / negative are rejected.
+	for _, bad := range []string{"0", "abc", "-5", "10x"} {
+		if err := ValidateDisk(bad); err == nil {
+			test.Errorf("disk %q must be rejected", bad)
+		}
+	}
+}
+
 func TestModelInstalled(test *testing.T) {
 	installed := []ollama.Model{{Name: "llama3.2:latest"}, {Name: "qwen2.5-coder:7b"}}
 	if !modelInstalled(installed, "qwen2.5-coder:7b") {
@@ -412,7 +432,7 @@ type fakeModelRegistrar struct {
 	registered []string
 }
 
-func (fake *fakeModelRegistrar) RegisterOllamaModel(name string) error {
+func (fake *fakeModelRegistrar) RegisterOllamaModel(name string, _ bool) error {
 	fake.registered = append(fake.registered, name)
 	return nil
 }
@@ -472,12 +492,12 @@ func TestSupportedAgentCLIsIncludesHermes(test *testing.T) {
 // TestSplitAgentsAndApps verifies the combined agents+apps wizard selection splits into
 // the two known sets regardless of selection order, dropping unknown values.
 func TestSplitAgentsAndApps(test *testing.T) {
-	agentCLIs, appKeys := SplitAgentsAndApps([]string{"anythingllm", "opencode", "openwebui", "omp", "bogus"})
+	agentCLIs, appKeys := SplitAgentsAndApps([]string{"opencode", "openwebui", "omp", "bogus"})
 	if strings.Join(agentCLIs, ",") != "opencode,omp" {
 		test.Errorf("agent CLIs = %v, want [opencode omp]", agentCLIs)
 	}
-	if strings.Join(appKeys, ",") != "anythingllm,openwebui" {
-		test.Errorf("app keys = %v, want [anythingllm openwebui]", appKeys)
+	if strings.Join(appKeys, ",") != "openwebui" {
+		test.Errorf("app keys = %v, want [openwebui]", appKeys)
 	}
 	agentCLIs, appKeys = SplitAgentsAndApps(nil)
 	if len(agentCLIs) != 0 || len(appKeys) != 0 {

@@ -129,6 +129,24 @@ func networkResolve(cmd *cobra.Command, args []string, index int) (string, error
 // currently running (there is nothing to re-apply against). It is best-effort: it
 // runs AFTER the command has already reported success, so a restart decline or
 // failure never changes the command's exit code.
+// applyWorkspaceRestart restarts a running workspace UNCONDITIONALLY (no prompt) so a
+// change that only takes effect at microVM (re)create — e.g. a disk resize — is applied
+// immediately. A stopped workspace is left stopped (the change applies on its next
+// start). Best-effort: a restart error is reported but never fails the caller.
+func applyWorkspaceRestart(emitter *output.Emitter, root string) {
+	manager := workspace.RealManager(goruntime.GOOS, nowRFC3339)
+	if !manager.IsRunning(root) {
+		_, _ = fmt.Fprintln(emitter.Err, ui.Muted.Render("Workspace not running — the new size applies on the next `ai start`."))
+		return
+	}
+	_, _ = fmt.Fprintln(emitter.Err, ui.Heading.Render("Restarting workspace")+ui.Muted.Render(" to apply the new size…"))
+	if _, err := manager.Restart(root); err != nil {
+		_, _ = fmt.Fprintf(emitter.Err, "%s\n", ui.Failure.Render(ui.IconFail+" restart failed: "+err.Error()))
+		return
+	}
+	_, _ = fmt.Fprintln(emitter.Err, ui.Success.Render(ui.IconOK+" workspace restarted"))
+}
+
 func offerWorkspaceRestart(emitter *output.Emitter, root string) {
 	if !interactive(emitter) {
 		return

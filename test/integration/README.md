@@ -22,6 +22,14 @@ make test-integration
 If any precondition is missing, **every test self-skips** with a clear reason —
 so the suite is a clean no-op on a machine without the stack.
 
+The workspace-start coverage (group 4) additionally self-skips on **environmental**
+failures that are not the code under test: an `msb` (Microsandbox) binary
+version/DB-schema mismatch (`isMsbVersionMismatch`) and a workspace **image
+build** that fails because the container registry is unreachable/flaky
+(`isImageBuildInfraError` — e.g. `registry-1.docker.io` network errors). Those are
+skipped rather than failed so a bad network or a stale host `msb` does not report
+as a product bug.
+
 The tests run against the **real `~/.ai-platform` state** (not an ephemeral
 HOME) — they must, since the point is to talk to the live services. They clean
 up everything they create (the suite workspace + any dummy keys) via

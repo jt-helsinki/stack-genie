@@ -64,6 +64,9 @@ func Execute(spec project.Spec, now string, report func(Progress)) (Result, []st
 	if err := ValidateResourcesWithinHost(spec.CPUs, spec.Memory); err != nil {
 		return Result{}, nil, err
 	}
+	if err := ValidateDisk(spec.Disk); err != nil {
+		return Result{}, nil, err
+	}
 	spec.CPUs, spec.Memory = CappedDefaultResources(spec.CPUs, spec.Memory)
 
 	if err := project.EnsureCreatable(spec.Name, spec.Root); err != nil {
@@ -178,6 +181,20 @@ func ValidateResourcesWithinHost(cpus int, memory string) error {
 	return nil
 }
 
+// ValidateDisk validates the workspace disk size ("<GB>", e.g. "20"). Blank is allowed
+// (the platform default applies). The upper is sparse, so it is not host-capped like
+// memory; only a malformed/non-positive value is rejected (exit 2).
+func ValidateDisk(disk string) error {
+	if strings.TrimSpace(disk) == "" {
+		return nil
+	}
+	mib, err := config.ParseMemoryMiB(disk)
+	if err != nil || mib <= 0 {
+		return output.Errorf(output.ExitInvalidInput, "invalid disk size %q — use a plain number of GB (e.g. 20)", disk)
+	}
+	return nil
+}
+
 // CappedDefaultResources resolves an UNSET cpu/memory to the platform default and caps
 // it at the host — so a host smaller than the default never yields an over-host config.
 // Explicit over-host values are rejected earlier by ValidateResourcesWithinHost.
@@ -233,7 +250,7 @@ var ollamaClient = ollama.RealClient
 // modelRegistrar registers a freshly-pulled Ollama model in the gateway so it gains a
 // stable id and shows in the live catalogue.
 type modelRegistrar interface {
-	RegisterOllamaModel(name string) error
+	RegisterOllamaModel(name string, supportsTools bool) error
 }
 
 // newRegistrar builds the gateway registrar. A package var so tests inject a fake;
@@ -261,8 +278,24 @@ func pullGraphifyModelIfAbsent(ref string, report func(Progress)) []string {
 		return []string{fmt.Sprintf("could not pull Graphify model %q: %s — pull it later with `ai models pull %s`", ref, err, ref)}
 	}
 	report(Progress{Step: "registering Graphify model " + ref + " with the gateway"})
-	_ = newRegistrar().RegisterOllamaModel(ref)
+	_ = newRegistrar().RegisterOllamaModel(ref, ollamaSupportsTools(client, ref))
 	return nil
+}
+
+// ollamaSupportsTools best-effort reports whether an installed Ollama model advertises
+// tool/function-calling support. On any probe error it returns true (unknown → assume
+// capable), matching the gateway's default so a probe hiccup never wrongly disables tools.
+func ollamaSupportsTools(client ollama.Client, ref string) bool {
+	info, err := client.Show(ref)
+	if err != nil {
+		return true
+	}
+	for _, capability := range info.Capabilities {
+		if capability == "tools" {
+			return true
+		}
+	}
+	return false
 }
 
 // modelInstalled reports whether ref matches an installed Ollama model, treating a bare

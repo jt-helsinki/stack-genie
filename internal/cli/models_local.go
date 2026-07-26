@@ -359,10 +359,18 @@ func newModelsPullCmd(emitter *output.Emitter, exit *int) *cobra.Command {
 				// gains a stable id and shows in the live catalogue. A gateway that is
 				// down or has no master key must NOT fail the pull — warn and continue.
 				outcome := modelPullOutcome{Model: name, OK: true}
-				if regErr := registrar.RegisterOllamaModel(name); regErr != nil {
+				if regErr := registrar.RegisterOllamaModel(name, ollamaModelSupportsTools(client, name)); regErr != nil {
 					outcome.RegisterError = regErr.Error()
 				} else {
 					outcome.Registered = true
+				}
+				// Best-effort: bake a memory-safe num_ctx into the model so it uses its
+				// trained context window (LiteLLM does not forward num_ctx for the
+				// ollama_chat provider). A Show/SetNumCtx failure must NOT fail the pull.
+				if info, showErr := client.Show(name); showErr == nil {
+					if numCtx := ollama.RecommendedNumCtx(info.ContextLength); numCtx > 0 {
+						_ = client.SetNumCtx(name, numCtx)
+					}
 				}
 				outcomes = append(outcomes, outcome)
 			}
@@ -581,6 +589,23 @@ func newModelsRmCmd(emitter *output.Emitter, exit *int) *cobra.Command {
 			return nil
 		},
 	}
+}
+
+// ollamaModelSupportsTools best-effort reports whether a freshly-pulled Ollama model
+// advertises tool/function-calling support (its /api/show capabilities include "tools").
+// On any probe error it returns true (unknown → assume capable), matching the gateway's
+// default so a probe hiccup never wrongly disables tools for a model.
+func ollamaModelSupportsTools(client ollama.Client, name string) bool {
+	info, err := client.Show(name)
+	if err != nil {
+		return true
+	}
+	for _, capability := range info.Capabilities {
+		if capability == "tools" {
+			return true
+		}
+	}
+	return false
 }
 
 // promptInstalledModel asks the user to pick one of the currently-installed models.

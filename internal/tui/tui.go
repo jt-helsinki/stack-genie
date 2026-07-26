@@ -158,7 +158,7 @@ func Run(cwd string) error {
 			// it over the microVM stream, which during a RESTART shows the OLD VM shutting
 			// down ("reboot: Power down") and then stalls before the new VM's log appears.
 			// (startLifecycle disables streaming for the duration so this poll path runs.)
-			if application.lifecycle != nil && application.lifecycle.project == application.currentProject {
+			if application.lifecycles[application.currentProject] != nil {
 				if buildLog, ok := readLatestLifecycleLog(application.currentProject); ok {
 					return buildLog, nil
 				}
@@ -197,6 +197,25 @@ func Run(cwd string) error {
 		return workspaceConfigFields(projectConfig), nil
 	}
 	projectDetail := views.NewProject(projectInfo, configFetcher)
+	// Gateway Endpoints block: the host nginx entry to LiteLLM external apps use to reach
+	// the served models. Workspace-independent; resolved from runtime.yaml (domain +
+	// DefaultGatewayPort), mirroring the addresses `ai services` shows.
+	projectDetail.SetEndpoints(func() []views.ConfigField {
+		info, err := runtime.Load()
+		if err != nil || info == nil {
+			return nil
+		}
+		domain := info.ResolveDomain()
+		base := fmt.Sprintf("http://%s:%d", domain, runtime.DefaultGatewayPort)
+		return []views.ConfigField{
+			{Label: "models (OpenAI /v1)", Value: base + "/v1"},
+			{Label: "Ollama API", Value: base + "/ollama"},
+			{Label: "LiteLLM admin API", Value: base + "/llm"},
+			{Label: "LiteLLM console", Value: fmt.Sprintf("http://litellm.%s:%d", domain, runtime.DefaultGatewayPort)},
+			{Label: "cache console", Value: fmt.Sprintf("http://valkey.%s:%d", domain, runtime.DefaultGatewayPort)},
+			{Label: "auth", Value: "external apps send a LiteLLM key — create one with: ai keys"},
+		}
+	})
 
 	// The Metrics sub-tab streams live sandbox metrics (sb.MetricsStream) into a table
 	// when the backend supports it; otherwise it reports metrics unavailable.
@@ -583,7 +602,37 @@ func syncLocalModelsToGateway() ([]string, error) {
 	if len(installed) == 0 {
 		return nil, nil
 	}
-	return litellm.NewKeyManager(runtime.RealProber()).RegisterOllamaModels(installed)
+	return litellm.NewKeyManager(runtime.RealProber()).RegisterOllamaModels(installed, installedOllamaToolSupport(installed))
+}
+
+// installedOllamaToolSupport probes each installed Ollama model for tool/function-calling
+// support (its /api/show capabilities), so RegisterOllamaModels can mark each model's
+// tool_call accurately. A probe error omits that model from the map (unknown → the gateway
+// treats it as tool-capable), so a hiccup never wrongly disables tools.
+func installedOllamaToolSupport(names []string) map[string]bool {
+	client := ollama.RealClient()
+	support := make(map[string]bool, len(names))
+	for _, name := range names {
+		info, err := client.Show(name)
+		if err != nil {
+			continue
+		}
+		// Best-effort: size already-installed models to their trained context window
+		// on every refresh (LiteLLM does not forward num_ctx for ollama_chat). A
+		// baking failure must never break the refresh.
+		if numCtx := ollama.RecommendedNumCtx(info.ContextLength); numCtx > 0 {
+			_ = client.SetNumCtx(name, numCtx)
+		}
+		tools := false
+		for _, capability := range info.Capabilities {
+			if capability == "tools" {
+				tools = true
+				break
+			}
+		}
+		support[name] = tools
+	}
+	return support
 }
 
 // installedOllamaModels lists the installed Ollama model names so a resync
@@ -693,9 +742,11 @@ type app struct {
 	// its own paging otherwise.
 	bodyViewport viewport.Model
 
-	// lifecycle tracks an in-flight detached start/stop/restart (nil when idle), so
-	// the poll knows what it is waiting for.
-	lifecycle *lifecycleOp
+	// lifecycles tracks in-flight detached start/stop/restart actions KEYED BY WORKSPACE,
+	// so several workspaces can be starting/stopping concurrently and each is polled to
+	// completion independently — workspace management is isolated per workspace. The
+	// spinner + build-log only surface for the currently-viewed one (reconcilePending).
+	lifecycles map[string]*lifecycleOp
 }
 
 // textInputCapturer is implemented by a view (or the hub on behalf of its active
@@ -756,7 +807,9 @@ func (application *app) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		application.currentProject = message.Name
 		application.switchTab(application.projectsIndex)
-		return application, application.projectsHub.OpenProject(message.Name)
+		cmd := application.projectsHub.OpenProject(message.Name)
+		application.reconcilePending() // align the spinner with THIS workspace's own op (if any)
+		return application, cmd
 
 	case views.NewProjectRequestedMsg:
 		// Open the multi-step create WIZARD in-TUI (no subprocess). Seed it with the
@@ -833,7 +886,13 @@ func (application *app) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			application.workspaceManager.ReleaseConnection(application.currentProject)
 		}
 		application.currentProject = message.name
-		return application, tea.Sequence(application.projectsHub.Reset(), application.projectsHub.OpenProject(message.name))
+		cmd := tea.Sequence(application.projectsHub.Reset(), application.projectsHub.OpenProject(message.name))
+		// A freshly-created workspace is NOT starting — clear any spinner left over from a
+		// different workspace that is still starting in the background (reconcilePending
+		// sees no lifecycle op for this new one). This is the "new workspace shows starting
+		// with no logs" fix.
+		application.reconcilePending()
+		return application, cmd
 
 	case views.WorkspaceActionRequestedMsg:
 		if message.Action == "delete" {
@@ -849,45 +908,87 @@ func (application *app) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// navigable — no log pane, just a spinner + status that we poll for.
 		return application, application.startLifecycle(message.Action, message.Project)
 
-	case lifecyclePollMsg:
-		op := application.lifecycle
-		if op == nil {
+	case views.WorkspaceResizeRequestedMsg:
+		// Persist the new disk size to the workspace config, then restart so the microVM's
+		// writable rootfs is rebuilt at the new size (the SDK applies WithOCIUpperSize on
+		// the --replace create at start). Validation + persistence are quick + in-process;
+		// the restart itself runs DETACHED with a spinner like any lifecycle action.
+		if err := create.ValidateDisk(message.Disk); err != nil {
+			application.projectDetail.SetFlash(ui.Warn.Render(ui.IconDot + " " + err.Error()))
 			return application, nil
 		}
-		application.projectDetail.TickSpinner()
-		entry, found, _ := projectInfo(op.project)
-		done := false
-		switch op.action {
-		case "start", "restart":
-			done = found && entry.Status == string(state.StatusStarted)
-		case "stop":
-			done = !found || entry.Status != string(state.StatusStarted)
+		root, ok := resolveProjectRoot(message.Project)
+		if !ok {
+			application.projectDetail.SetFlash(ui.Warn.Render(ui.IconDot + " could not resolve workspace path"))
+			return application, nil
 		}
-		if done || time.Since(op.started) > lifecycleTimeout {
+		projectConfig, err := config.LoadProjectConfig(root)
+		if err != nil {
+			application.projectDetail.SetFlash(ui.Warn.Render(ui.IconDot + " read config: " + err.Error()))
+			return application, nil
+		}
+		projectConfig.Workspace.DiskLimit = strings.TrimSpace(message.Disk)
+		if err := config.WriteProject(root, projectConfig); err != nil {
+			application.projectDetail.SetFlash(ui.Warn.Render(ui.IconDot + " write config: " + err.Error()))
+			return application, nil
+		}
+		return application, application.startLifecycle("restart", message.Project)
+
+	case lifecyclePollMsg:
+		if len(application.lifecycles) == 0 {
+			return application, nil
+		}
+		// Advance the spinner only for the currently-viewed workspace's op (others run in
+		// the background, tracked but not spinning on this pane).
+		if viewed, ok := application.lifecycles[application.currentProject]; ok && viewed != nil {
+			application.projectDetail.TickSpinner()
+		}
+		var cmds []tea.Cmd
+		refreshHub := false
+		for project, op := range application.lifecycles {
+			entry, found, _ := projectInfo(op.project)
+			done := false
+			switch op.action {
+			case "start", "restart":
+				done = found && entry.Status == string(state.StatusStarted)
+			case "stop":
+				done = !found || entry.Status != string(state.StatusStarted)
+			}
+			if !done && time.Since(op.started) <= lifecycleTimeout {
+				continue
+			}
 			timedOut := !done
-			application.lifecycle = nil
-			application.projectDetail.ClearPending()
-			if timedOut {
-				// The action never took effect within the window — point the user at the
-				// detached process's tee'd log so the hang/error is inspectable.
-				hint := op.action + " did not complete in time"
-				if logPath, ok := lifecycleLogPath(op.project, op.action); ok {
-					hint += " — see " + logPath
+			delete(application.lifecycles, project) // safe to delete during range in Go
+			refreshHub = true
+			// The spinner/build-log/flash surface only for the workspace being VIEWED; a
+			// background workspace's completion just updates the hub status list.
+			if project == application.currentProject {
+				application.projectDetail.ClearPending()
+				if timedOut {
+					// The action never took effect within the window — point the user at the
+					// detached process's tee'd log so the hang/error is inspectable.
+					hint := op.action + " did not complete in time"
+					if logPath, ok := lifecycleLogPath(op.project, op.action); ok {
+						hint += " — see " + logPath
+					}
+					application.projectDetail.SetFlash(ui.Warn.Render(ui.IconDot + " " + hint))
 				}
-				application.projectDetail.SetFlash(ui.Warn.Render(ui.IconDot + " " + hint))
+				// Re-enable live streaming (disabled during the op) and clear the build-log
+				// content so the next activation opens a fresh microVM stream.
+				if application.workspaceLogView != nil {
+					application.workspaceLogView.SetStreamingEnabled(true)
+					application.workspaceLogView.Reset()
+				}
+				cmds = append(cmds, application.projectDetail.Init())
 			}
-			// Re-enable live streaming (disabled during the op) and clear the build-log
-			// content so the next activation opens a fresh microVM stream. RefreshActive
-			// re-inits whatever sub-tab is visible: the Logs tab reopens the live stream,
-			// the Workspace tab refreshes its status (spinner cleared). projectDetail.Init
-			// also runs so the summary refreshes even when another sub-tab is showing.
-			if application.workspaceLogView != nil {
-				application.workspaceLogView.SetStreamingEnabled(true)
-				application.workspaceLogView.Reset()
-			}
-			return application, tea.Batch(application.projectDetail.Init(), application.projectsHub.RefreshActive())
 		}
-		return application, application.lifecyclePollCmd()
+		if refreshHub {
+			cmds = append(cmds, application.projectsHub.RefreshActive())
+		}
+		if len(application.lifecycles) > 0 {
+			cmds = append(cmds, application.lifecyclePollCmd())
+		}
+		return application, tea.Batch(cmds...)
 
 	case views.ExecRequestedMsg:
 		// An interactive shell runs in the user's REAL terminal: suspend the TUI and
@@ -912,7 +1013,11 @@ func (application *app) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Follow the microVM log live in the user's REAL terminal (msb logs -f on the
 		// host), so it renders natively — selectable, and in place when the captured
 		// stream carries the control codes. Returns to the TUI on exit (Ctrl-C).
-		command := exec.Command("msb", "logs", workspace.Name(message.Project), "-f")
+		msbBin, _ := workspace.MsbBinary() // best-effort; falls back to PATH "msb" below
+		if msbBin == "" {
+			msbBin = "msb"
+		}
+		command := exec.Command(msbBin, "logs", workspace.Name(message.Project), "-f")
 		return application, tea.ExecProcess(command, func(execErr error) tea.Msg {
 			return sessionFinishedMsg{err: execErr}
 		})
@@ -1088,6 +1193,28 @@ type lifecycleOp struct {
 	started time.Time
 }
 
+// reconcilePending aligns the Workspace pane's spinner + log streaming with whether the
+// CURRENTLY-VIEWED workspace has its OWN in-flight lifecycle op. Called on every workspace
+// switch (select, or open-after-create) so a workspace that is starting in the background
+// never bleeds its "starting…" spinner onto a different (idle or freshly-created) workspace
+// — workspace management is isolated per workspace.
+func (application *app) reconcilePending() {
+	if application.projectDetail == nil {
+		return
+	}
+	if op := application.lifecycles[application.currentProject]; op != nil {
+		application.projectDetail.StartPending(op.action)
+		if application.workspaceLogView != nil {
+			application.workspaceLogView.SetStreamingEnabled(false)
+		}
+		return
+	}
+	application.projectDetail.ClearPending()
+	if application.workspaceLogView != nil {
+		application.workspaceLogView.SetStreamingEnabled(true)
+	}
+}
+
 // lifecyclePollMsg fires on a timer while a detached lifecycle action runs.
 type lifecyclePollMsg struct{}
 
@@ -1122,7 +1249,13 @@ func (application *app) startLifecycle(action, project string) tea.Cmd {
 	// Detach from the started process: we poll the state handle for completion, not
 	// the process exit, so it can outlive `ai ui`.
 	_ = command.Process.Release()
-	application.lifecycle = &lifecycleOp{project: project, action: action, started: time.Now()}
+	if application.lifecycles == nil {
+		application.lifecycles = map[string]*lifecycleOp{}
+	}
+	application.lifecycles[project] = &lifecycleOp{project: project, action: action, started: time.Now()}
+	// The action is always started from the currently-viewed workspace, so the spinner +
+	// build-log tail apply to it here. (A different workspace's op stays tracked in the map
+	// and surfaces via reconcilePending when the user switches back to it.)
 	application.projectDetail.StartPending(action)
 	// Clear the Sandbox Logs tab so the previous session's output does not linger
 	// while the microVM is (re)created. DISABLE streaming for the duration so the Logs
@@ -1227,8 +1360,8 @@ func (application *app) workspaceLogReadable() bool {
 	if application.currentProject == "" {
 		return false
 	}
-	if application.lifecycle != nil && application.lifecycle.project == application.currentProject {
-		switch application.lifecycle.action {
+	if op := application.lifecycles[application.currentProject]; op != nil {
+		switch op.action {
 		case "start", "restart":
 			return true
 		}
@@ -1245,6 +1378,7 @@ func workspaceConfigFields(projectConfig *config.Config) []views.ConfigField {
 		{Label: "os", Value: dashIfEmpty(projectConfig.OS)},
 		{Label: "vcpus", Value: cpuLimitValue(projectConfig.Workspace.CPULimit)},
 		{Label: "memory", Value: valueOr(projectConfig.Workspace.MemoryLimit, config.Default().Workspace.MemoryLimit)},
+		{Label: "disk", Value: valueOr(projectConfig.Workspace.DiskLimit, config.Default().Workspace.DiskLimit)},
 		{Label: "idle timeout", Value: projectConfig.Microsandbox.ResolvedIdleTimeout()},
 		{Label: "egress", Value: projectConfig.Network.ResolvedEgress()},
 		{Label: "published ports", Value: publishPortsValue(projectConfig.Network.PublishPorts)},
@@ -1448,25 +1582,22 @@ func (application *app) handleMouse(msg tea.MouseMsg) tea.Cmd {
 		return nil
 	}
 	tabRow := lipgloss.Height(application.header()) + headerGapRows
-	switch msg.Y {
-	case tabRow:
-		// Top-level tabs: each cell is its title plus Padding(0,1) — see tabBar().
-		offset := 0
-		for index, view := range application.views {
-			width := lipgloss.Width(view.Title()) + 2
-			if msg.X >= offset && msg.X < offset+width {
-				if index != application.current {
-					// Load the clicked tab (mirrors keyboard nav) — without this the tab
-					// switches but its data never loads, leaving it on "loading…".
-					return application.activateTab(index)
-				}
-				return nil
-			}
-			offset += width
+	// The tab bar may WRAP to several rows when it is wider than the window (see tabBar);
+	// every row of it is clickable, and the body (hence the sub-tab bar) sits below the
+	// whole wrapped bar.
+	tabBarRows := application.tabBarRows()
+	switch {
+	case msg.Y >= tabRow && msg.Y < tabRow+tabBarRows:
+		// Top-level tabs, wrap-aware: topTabAt mirrors tabBar()'s layout across rows.
+		if index := application.topTabAt(msg.X, msg.Y-tabRow); index >= 0 && index != application.current {
+			// Load the clicked tab (mirrors keyboard nav) — without this the tab switches
+			// but its data never loads, leaving it on "loading…".
+			return application.activateTab(index)
 		}
-	case tabRow + 1 + 1 + bodyPadY:
-		// First body-content row (tab bar → border line → padding row): the active
-		// view's sub-tab bar when it has one. Translate to the bar's own column.
+		return nil
+	case msg.Y == tabRow+tabBarRows+1+bodyPadY:
+		// First body-content row (below the wrapped tab bar → border line → padding row):
+		// the active view's sub-tab bar when it has one. Translate to the bar's own column.
 		clickX := msg.X - 1 - bodyPadX
 		if clickX < 0 {
 			return nil

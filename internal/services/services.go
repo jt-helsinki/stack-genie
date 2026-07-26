@@ -210,19 +210,19 @@ var registry = []Service{
 	{
 		Name: "litellm",
 		// The :14000 host port is GONE — LiteLLM is internal-only on aip-net now. Its
-		// admin UI is reached through the nginx gateway at litellm.<domain>:GatewayPort/ui.
-		Endpoint:    Endpoint{ConsolePath: "/ui", HasConsole: true, UISubdomain: "litellm"},
+		// admin UI is reached through the nginx gateway at litellm.<domain>:GatewayPort/ui/login.
+		Endpoint:    Endpoint{ConsolePath: "/ui/login", HasConsole: true, UISubdomain: "litellm"},
 		LogScope:    "litellm",
-		UISubdomain: "litellm", // litellm.<domain> → the LiteLLM admin UI (/ui)
+		UISubdomain: "litellm", // litellm.<domain> → the LiteLLM admin UI (/ui/login)
 		Components: []Component{
 			{
 				ImageKey:  "litellm",
 				Container: "aip-litellm",
 				LogScope:  "litellm",
-				// TEMPORARY pin: v1.92.0-rc.1 is the first release carrying the
-				// `headroom` compression guardrail (see litellm.buildGuardrails).
-				// Revert to "latest" once that guardrail ships in a stable release.
-				Pin: Pin{Mode: ModeContainer, Image: "ghcr.io/berriai/litellm", Tag: "v1.92.0-rc.1"},
+				// Tracks `latest`. LiteLLM v1.92.x+ carries the `headroom`
+				// compression guardrail (see litellm.buildGuardrails), which
+				// `latest` now satisfies.
+				Pin: Pin{Mode: ModeContainer, Image: "ghcr.io/berriai/litellm", Tag: "latest"},
 			},
 			{
 				// The Postgres backing LiteLLM's admin UI / virtual keys. A separate

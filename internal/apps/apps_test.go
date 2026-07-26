@@ -103,7 +103,7 @@ func TestInstallNothingPublishedWhenVMDown(test *testing.T) {
 	deps, stored := newTestDeps(nil, nil)
 	deps.Exec = nil
 	manager := NewManager(deps)
-	port, _, err := manager.Install("anythingllm")
+	port, _, err := manager.Install("openwebui")
 	if err != nil {
 		test.Fatal(err)
 	}
@@ -186,16 +186,13 @@ func TestListReportsInstalledAndRunning(test *testing.T) {
 	if err != nil {
 		test.Fatal(err)
 	}
-	if len(statuses) != 2 {
-		test.Fatalf("List returned %d, want 2 (all catalogue apps)", len(statuses))
+	if len(statuses) != 1 {
+		test.Fatalf("List returned %d, want 1 (all catalogue apps)", len(statuses))
 	}
-	var openwebui, anythingllm Status
+	var openwebui Status
 	for _, status := range statuses {
-		switch status.Key {
-		case "openwebui":
+		if status.Key == "openwebui" {
 			openwebui = status
-		case "anythingllm":
-			anythingllm = status
 		}
 	}
 	if !openwebui.Installed || !openwebui.Running {
@@ -203,9 +200,6 @@ func TestListReportsInstalledAndRunning(test *testing.T) {
 	}
 	if openwebui.URL != "http://localhost:21000" {
 		test.Fatalf("openwebui URL = %q", openwebui.URL)
-	}
-	if anythingllm.Installed {
-		test.Fatalf("anythingllm should not be installed: %+v", anythingllm)
 	}
 }
 
@@ -252,39 +246,36 @@ func TestListUsesProbeExecWhenSet(test *testing.T) {
 }
 
 func TestStartInstalledBestEffort(test *testing.T) {
-	// The second app's run fails; the first must still be attempted and no error
-	// returned (best-effort), with a warning collected.
-	exec := &failOnExec{failContainer: "aip-app-anythingllm"}
+	// An installed app whose container run fails must not abort the start and no
+	// error is returned (best-effort), with a warning collected instead.
+	exec := &failOnExec{failContainer: "aip-app-openwebui"}
 	deps, _ := newTestDeps(&config.Config{Apps: []config.AppEntry{
 		{Key: "openwebui", Port: 21000},
-		{Key: "anythingllm", Port: 21001},
 	}}, exec.run)
 	manager := NewManager(deps)
 	warnings, err := manager.StartInstalled()
 	if err != nil {
 		test.Fatalf("StartInstalled returned error %v, want best-effort nil", err)
 	}
-	if len(warnings) != 1 || !strings.Contains(warnings[0], "anythingllm") {
-		test.Fatalf("warnings = %v, want one mentioning anythingllm", warnings)
+	if len(warnings) != 1 || !strings.Contains(warnings[0], "openwebui") {
+		test.Fatalf("warnings = %v, want one mentioning openwebui", warnings)
 	}
 	if !ranContainer(&fakeExec{calls: exec.calls}, "aip-app-openwebui") {
-		test.Fatal("openwebui should still have been started")
+		test.Fatal("openwebui should still have been attempted")
 	}
 }
 
 func TestPublishedPortsOnlyInstalled(test *testing.T) {
 	cfg := &config.Config{Apps: []config.AppEntry{
-		{Key: "anythingllm", Port: 21005},
 		{Key: "openwebui", Port: 21002},
 		{Key: "ghost", Port: 21099}, // unknown key — not published
 	}}
 	mappings := PublishedPorts(cfg)
-	if len(mappings) != 2 {
-		test.Fatalf("PublishedPorts = %v, want 2 (unknown key skipped)", mappings)
+	if len(mappings) != 1 {
+		test.Fatalf("PublishedPorts = %v, want 1 (unknown key skipped)", mappings)
 	}
-	// Sorted by host port.
-	if mappings[0].Host != 21002 || mappings[1].Host != 21005 {
-		test.Fatalf("mappings not sorted by host port: %v", mappings)
+	if mappings[0].Host != 21002 {
+		test.Fatalf("unexpected host port: %v", mappings)
 	}
 	// Host == guest (same number both sides of the msb publish).
 	for _, mapping := range mappings {

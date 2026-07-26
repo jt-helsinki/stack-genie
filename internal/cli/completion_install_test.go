@@ -57,13 +57,12 @@ func TestGenerateCompletionAllShells(test *testing.T) {
 	}
 }
 
-func TestInstallCompletionFishAndBash(test *testing.T) {
+func TestInstallCompletionBash(test *testing.T) {
 	home := isolateCompletionHome(test)
 	for _, testCase := range []struct {
 		shell string
 		want  string
 	}{
-		{"fish", filepath.Join(home, ".config", "fish", "completions", "ai.fish")},
 		{"bash", filepath.Join(home, ".local", "share", "bash-completion", "completions", "ai")},
 	} {
 		path, hint, err := installCompletion(testCase.shell, []byte("# script"))
@@ -97,25 +96,6 @@ func TestInstallCompletionZshWiresRc(test *testing.T) {
 	}
 	if !bytes.Contains(rc, []byte(completionMarker)) {
 		test.Fatalf(".zshrc missing the managed completion block:\n%s", rc)
-	}
-}
-
-func TestInstallCompletionPowershellWiresProfile(test *testing.T) {
-	home := isolateCompletionHome(test)
-	path, _, err := installCompletion("powershell", []byte("# script"))
-	if err != nil {
-		test.Fatalf("installCompletion(powershell) error: %v", err)
-	}
-	if _, statErr := os.Stat(path); statErr != nil {
-		test.Fatalf("powershell script not written: %v", statErr)
-	}
-	profile := filepath.Join(home, ".config", "powershell", "Microsoft.PowerShell_profile.ps1")
-	data, err := os.ReadFile(profile)
-	if err != nil {
-		test.Fatalf("reading powershell profile: %v", err)
-	}
-	if !bytes.Contains(data, []byte(completionMarker)) {
-		test.Fatalf("powershell profile missing managed block:\n%s", data)
 	}
 }
 

@@ -96,7 +96,7 @@ CLI must behave identically on:
   (It links the Microsandbox **Go SDK**, a cgo binding that `go:embed`s an FFI
   library extracted at first run — so `CGO_ENABLED=1` is required; it is one binary
   but no longer a pure-static `CGO_ENABLED=0` build. See docs/MSB-SDK-MIGRATION.md.)
-* Host bootstrap uses **thin launchers only** (bash / zsh / PowerShell) whose
+* Host bootstrap uses **thin launchers only** (bash / zsh) whose
   sole job is to download/locate and exec the compiled Go binary. No platform
   logic lives in shell scripts.
 * The standard install is **`curl … | bash`** of `installers/install.sh` (a thin
@@ -140,16 +140,13 @@ Rules:
 
 ## 1.7 Shell Completion
 
-`ai completion <bash|zsh|fish|powershell>` **installs** the completion script into
+`ai completion <bash|zsh>` **installs** the completion script into
 the shell's standard location and wires it up:
 
 * **bash** → `$XDG_DATA_HOME/bash-completion/completions/ai` (auto-loaded by
   bash-completion)
 * **zsh** → `~/.zsh/completions/_ai`, and a managed block is appended to
   `~/.zshrc` (idempotent) to put that dir on `fpath` and run `compinit`
-* **fish** → `$XDG_CONFIG_HOME/fish/completions/ai.fish` (auto-loaded)
-* **powershell** → a script under the PowerShell config dir, dot-sourced from the
-  profile (managed block)
 
 Restart the shell (or `exec zsh`) to activate. `--print` writes the raw script to
 stdout instead of installing (for piping / manual setup).
@@ -162,7 +159,7 @@ completion:
 * `ai context strategy` → `conservative|balanced|aggressive`
 * `ai context caveman` → `lite|full|ultra|wenyan`
 * `ai services console` → services that have an admin console
-* `ai apps <verb>` → the verb set, then the app keys (`openwebui|anythingllm`)
+* `ai apps <verb>` → the verb set, then the app keys (`openwebui`)
 * `ai logs --service` → the host services; `ai logs --workspace` → project names
 * `ai theme` → the available theme names
 
@@ -377,10 +374,15 @@ entirely offline, with no network call and no external script (§1.5).
 
 Behavior:
 
-* **streams uninstall status/progress** live as each step runs — stopping the
-  platform containers (`aip-*`), removing the `ai` binary, removing the
-  completion scripts, and stripping the managed PATH/completion lines from the
-  shell rc files (leaving the user's own lines intact)
+* **streams uninstall status/progress** live as each step runs — stopping any
+  running workspace microVMs (`msb stop -f` each `aip-*` sandbox, **preserving all
+  workspace DATA** — project source and `/persist` overlays are host bind mounts,
+  never deleted; the VM instance is only halted, never `msb delete`'d), stopping and
+  removing the platform containers (`aip-*`), **removing all platform container
+  images** (the pinned service-tier images plus every `aip-*` image, so nothing is
+  left on the host — done on EVERY uninstall, not only `--purge`), removing the `ai`
+  binary, removing the completion scripts, and stripping the managed PATH/completion
+  lines from the shell rc files (leaving the user's own lines intact)
 * **removes the platform state under `~/.ai-platform` but KEEPS the downloaded
   model store (`volumes/models`)** — the one expensive-to-refetch piece a user
   usually wants to keep across a reinstall; `--purge` removes `~/.ai-platform`
@@ -430,7 +432,7 @@ Idempotent: safe to re-run after a partial or completed uninstall.
 ```bash id="c4"
 ai create [<name>] [--name <name>] [--os <os>] [--shell <bash|zsh>] [--agents <list>]
           [--auth-mode <cli=mode>] [--stacks <list>] [--apps <list>] [--app-port <app=port>] [--graphify-model <ref>]
-          [--cpus <n>] [--memory <size>] [--ports <list>] [--location <dir>]
+          [--cpus <n>] [--memory <size>] [--disk <GB>] [--ports <list>] [--location <dir>]
           [--idle-timeout <dur>] [--tools <list>]
 ```
 
@@ -480,14 +482,14 @@ one command:
   warning, not a failure), and routed through the gateway as `ollama/<model>` at
   workspace start (architecture §17)
 * `--apps <list>` — comma-separated in-VM AI apps to install
-  (`openwebui,anythingllm`); **opt-in, default none**. Like `--stacks` it
+  (`openwebui`); **opt-in, default none**. Like `--stacks` it
   pre-seeds the wizard's apps multi-select on a terminal and drives the selection
   directly under `--json`/no-TTY. Each selected app is exposed on a host port
   at create time (see §4.5c and `--app-port`)
 * `--app-port <app>=<port>` — the HOST port to expose a selected app's web UI on
-  (repeatable, e.g. `--app-port openwebui=8080 --app-port anythingllm=3001`). On a
+  (repeatable, e.g. `--app-port openwebui=8080`). On a
   terminal the wizard **prompts** for each selected app's port (seeded with the app's
-  familiar container port — Open WebUI 8080, AnythingLLM 3001 — when free, else an
+  familiar container port — Open WebUI 8080 — when free, else an
   auto-allocated one); this flag pre-seeds that prompt and sets it non-interactively.
   A blank/omitted port is **auto-assigned**. The port is validated unique + host-free
   at create; an unknown app or out-of-range port exits `2`, an unavailable port exits `2`.
@@ -506,6 +508,12 @@ one command:
   2 GiB or 25% of host RAM), because a microVM given all host RAM cannot boot. A
   request above the usable ceiling exits `2`; an unset value resolves to the default
   clamped at that ceiling.
+* `--disk <GB>` — the workspace's writable rootfs (OCI overlay upper) in **GB, a
+  plain number** (default **16**), written to `workspace.disk_limit`. It sizes the
+  in-VM containerd image store so multi-GB in-VM app images fit (msb's ~4 GB default
+  overflows with two apps). The upper is sparse — a ceiling, not upfront usage — so it
+  is only loosely validated (a non-positive/malformed value exits `2`). Changeable
+  after creation with `ai resize` (§4.3b).
 * `--ports <list>` — comma-separated host↔guest ports to open into the workspace,
   each `PORT` (host == guest) or `HOST:GUEST` (Docker-style host-first), written to
   `network.publish_ports`. Malformed/out-of-range ports exit `2`.
@@ -617,7 +625,7 @@ Steps, in order:
    may need nothing beyond the base image). Selected stacks are installed into the
    generated `.ai-platform/Dockerfile` and recorded in `profile.yaml`.
 6. **AI apps** — **multi-select checkboxes**; choose the opt-in in-VM AI
-   applications to install into the workspace (`Open WebUI`, `AnythingLLM`).
+   applications to install into the workspace (`Open WebUI`).
    **None pre-checked** (apps are opt-in). Pre-seeded from `--apps`. For EACH
    selected app the wizard then **prompts for the HOST port** to expose its web UI
    on (a text input per app, seeded with a suggested free port — the app's familiar
@@ -627,9 +635,10 @@ Steps, in order:
    microVM and are managed later via `ai apps` (§4.5c).
 7. **Resources & ports** — text inputs for **vCPUs** (`--cpus`, default 4,
    host-capped), **memory in GB** (`--memory`, a plain number, default 8,
-   host-capped), and **ports to open** (`--ports`, comma-separated `PORT` or
-   `HOST:GUEST`). Blank accepts the default; over-host or malformed values are
-   rejected in place.
+   host-capped), **disk in GB** (`--disk`, a plain number, default 16 — the
+   writable rootfs / in-VM image store), and **ports to open** (`--ports`,
+   comma-separated `PORT` or `HOST:GUEST`). Blank accepts the default; over-host or
+   malformed values are rejected in place.
 8. **Idle timeout** — text input for the Microsandbox idle timeout (`--idle-timeout`,
    default 24h).
 9. **AI tools** — **multi-select checkboxes** (like the agent-CLI list, not a screen
@@ -718,11 +727,11 @@ gateway, §16.1).
 
 ---
 
-# 4. Workspace microVM Commands (start / stop / restart / delete / exec / …)
+# 4. Workspace microVM Commands (start / stop / restart / resize / delete / exec / …)
 
 > **Flat surface.** The commands are the **top-level verbs** below
-> (`ai start` / `ai stop` / `ai restart` / `ai delete` / `ai exec` / `ai shell`
-> / `ai agent` / `ai attach` / `ai sessions` / `ai doctor`). Each takes an
+> (`ai start` / `ai stop` / `ai restart` / `ai resize` / `ai delete` / `ai exec`
+> / `ai shell` / `ai agent` / `ai attach` / `ai sessions` / `ai doctor`). Each takes an
 > **optional `[name]`** positional that defaults to the workspace owning the
 > current directory (then `--project`). There are **no** `ai workspace …` command
 > groups or aliases. The envelope `command` keys are unchanged (`workspace.*`).
@@ -799,6 +808,34 @@ Behavior:
   `last_started`
 * requires a workspace that was previously started; if none exists it fails with
   `ErrNotStarted` (exit `2`) and directs the user to `ai start` first
+
+---
+
+## 4.3b Resize Workspace
+
+```bash id="c10b"
+ai resize [<name>] --disk <GB> [--memory <GB>] [--cpus <n>]
+```
+
+Changes a workspace's **disk** (writable rootfs / in-VM container image store),
+**memory**, and/or **vCPUs** after creation. `[<name>]` defaults to the current
+directory's workspace. **At least one** of `--disk` / `--memory` / `--cpus` must be
+passed; with none it exits `2` ("nothing to change"). Each value is a plain number
+of GB (`--disk`/`--memory`) or a CPU count (`--cpus`).
+
+Behavior:
+
+* validates first (`--cpus`/`--memory` are host-capped exactly like `ai create`;
+  `--disk` is sanity-checked) — an over-host or malformed value exits `2` before
+  anything is written
+* writes the changed limits to the project `config.yaml`
+  (`workspace.cpu_limit` / `workspace.memory_limit` / `workspace.disk_limit`)
+* then **restarts** the workspace so the `--replace` rebuild applies the new sizes
+  (msb re-derives the rootfs from the image at every create/start)
+
+The envelope command is `workspace.resize`. Human-readable by default; `--json`
+emits the standard §19 envelope carrying the applied `cpus` / `memory` / `disk`.
+The same operation is reachable from the TUI Workspace tab's `z` key (§14.4).
 
 ---
 
@@ -1021,10 +1058,10 @@ ai apps <add|remove|update|start|stop|restart> <app> [<name>]
 ```
 
 `ai apps` manages the opt-in AI applications that run as `nerdctl` containers
-**inside** the workspace microVM (Open WebUI, AnythingLLM). The optional trailing
+**inside** the workspace microVM (Open WebUI). The optional trailing
 `[<name>]` resolves the workspace exactly like the other verbs (explicit name →
 `--project` → cwd); `<app>` is validated against the manifest set
-(`openwebui|anythingllm`).
+(`openwebui`).
 
 * **`list`** — table (APP / STATUS / URL) by default, JSON envelope under `--json`.
   STATUS is `not installed` / `installed (stopped)` / `running`; URL is the app's
@@ -1243,10 +1280,16 @@ gateway errors are exit `4`.
 
 `ai models status` / `ai models test` describe and probe **LiteLLM routing**. The
 commands below instead manage the **local Ollama store** directly over its HTTP API
-— the local-model backend LiteLLM's `ollama/*` wildcard routes to. Pulling a tag
-here makes it usable immediately through that wildcard: registering a model in the
-gateway is **not** the same as installing it; `pull` is what installs it. These
-commands only affect Ollama's local store (they never touch LiteLLM config).
+— the local-model backend LiteLLM routes `ollama/<name>` models to. (The rendered
+LiteLLM config carries **no** `model_list` and **no** per-provider wildcards — the
+served model set is **DB-backed**, §14.) Installing a model is a two-part act:
+`ai models pull` downloads it into the Ollama store **and** registers it as a
+DB-backed model in the gateway (public `model_name` `ollama/<name>`, via
+`litellm.RegisterOllamaModel`), so it becomes routable immediately; `ai models rm`
+removes it from the store **and** unregisters it (`UnregisterOllamaModel`). Merely
+registering a model in the gateway is **not** the same as having it installed
+locally — `pull` is what downloads the weights. The pure store commands (`list` /
+`popular` / `show`) do not touch the gateway registration.
 
 If Ollama is unreachable, these exit **3** (missing dependency) with a hint to run
 `ai services start ollama` (or `ai setup`); bad input exits **2**; other failures
@@ -1468,7 +1511,12 @@ Behavior:
   `container`, no host endpoint (INTERNAL-ONLY, no host port). It has **no** independent
   lifecycle verb (`ai services <action> litellm-db` → "unknown service"); it is
   managed with `litellm`. When the `secret-masking` guardrail is off, `presidio`
-  is still listed but reads **`disabled`** (surfaced, not probed).
+  is still listed but reads **`disabled`** (surfaced, not probed). Health probing
+  shells out to the container runtime, so a **wedged/hung docker daemon fails fast**
+  rather than hanging: each probe is bounded by a 15s timeout and a short-lived
+  circuit breaker trips the remaining probes after the first timeout (self-healing
+  after a few seconds), so `ai services status` returns instead of blocking on a
+  dead daemon.
 * lifecycle verbs (`start`/`stop`/`restart`) act on the **platform-owned container
   set** via the runtime abstraction (§6). With no service, or `all`, they act on
   every **enabled** container in **dependency order** (a disabled optional service
@@ -1500,7 +1548,7 @@ Behavior:
   console; with a name it **opens** that console in the browser, or — with
   `--print` (and always under `--json`) — prints the URL instead. Host consoles are
   **nginx subdomain UIs** served on the single gateway port `:18787`:
-  `litellm.<domain>:18787/ui` (the LiteLLM admin UI) and `valkey.<domain>:18787`
+  `litellm.<domain>:18787/ui/login` (the LiteLLM admin UI) and `valkey.<domain>:18787`
   (RedisInsight, the Valkey cache GUI) — where `<domain>` is the platform base domain
   (`ai domain`, default `aip.local`). These are **not** direct container ports. (Open
   WebUI is now a per-workspace in-VM app; Odysseus was removed.)
@@ -1865,7 +1913,12 @@ number keys `1`-`9`. There is **no `:` command palette** — `q`/`ctrl+c` quits 
   * **Workspace** — a fixed summary block (name / OS / agents / workspace status /
     path) and a live **Sandbox Configuration** diagnostics block (the SDK
     `SandboxConfig`: image, memory, vcpus, workdir, user, idle timeout, detached,
-    published ports, egress default + rule count, dns — `Manager.WorkspaceConfig`).
+    published ports, egress default + rule count, dns — `Manager.WorkspaceConfig`),
+    plus a **Gateway Endpoints** block: the host nginx entry to LiteLLM that external
+    apps use to reach the served models — `models (OpenAI /v1)`, the Ollama API, the
+    LiteLLM admin API + consoles, and an auth hint (external apps send a LiteLLM key).
+    It is workspace-independent (one gateway per host), resolved from `runtime.yaml`
+    (the base domain + `:18787`), so it shows regardless of workspace state.
     The pane is **scrollable** (`↑/↓`/`PgUp`/`PgDn`) so the summary + configuration
     stay reachable when they overflow. Workspace lifecycle is `s`/`x`/`r`/`d`
     (start/stop/restart/delete) and `e` (an interactive shell). `s`/`x`/`r` run
@@ -2093,9 +2146,9 @@ Global flags (accepted by every command and subcommand):
 ### Project resolution
 
 Project-scoped commands (the workspace lifecycle verbs `start`/`stop`/`restart`/
-`exec`/`shell`/`agent`/`attach`/`sessions`/`delete` (`destroy` alias), `context *`,
-`network *`, `doctor`, `logs --workspace`) resolve their target project with this
-precedence:
+`resize`/`exec`/`shell`/`agent`/`attach`/`sessions`/`delete` (`destroy` alias),
+`context *`, `network *`, `doctor`, `logs --workspace`) resolve their target project
+with this precedence:
 
 1. an explicit project name given as a positional argument;
 2. the `--project <name>` flag;

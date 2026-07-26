@@ -25,8 +25,9 @@ embedded in [`architecture-overview.md`](architecture-overview.md).
    allow-listed host services then reachable).
 3. The request hits **aip-proxy** (nginx, host `:18787` — the TLS-termination point
    and the **sole** host entry; every other service container is internal-only on
-   `aip-net`, the only loopback exceptions being Postgres `:5442` and `aip-dns`
-   `:15353`). The default `/` and `/v1` routes forward **directly to aip-litellm**;
+   `aip-net`, the only loopback exception being `aip-dns` `:15353` — Postgres
+   `aip-litellm-db` is also internal-only, no host port, reached at
+   `aip-litellm-db:5432`). The default `/` and `/v1` routes forward **directly to aip-litellm**;
    `/llm` and `/ollama` (and the `litellm.<domain>` + `valkey.<domain>` vhosts) front
    the LiteLLM admin + Ollama + RedisInsight surfaces. nginx no longer routes to Headroom at all. The host CLI
    reaches the gateway on loopback `127.0.0.1:18787`.
@@ -54,37 +55,50 @@ embedded in [`architecture-overview.md`](architecture-overview.md).
 
 Each workspace microVM ships a **rootful in-VM container runtime** (containerd +
 nerdctl + runc + CNI), on which the platform runs **opt-in AI apps** (`internal/apps`)
-as `nerdctl` containers *inside* the VM — **Open WebUI** and **AnythingLLM**,
-selected with `ai create --apps` or managed with `ai apps`. Each app gets the
-workspace project dir (`~/project`) mounted at `/workspace` in its container,
-published on a unique per-`(workspace, app)` host port, and points at
-the *same* gateway path (`http://host.microsandbox.internal:18787/v1` with the
-workspace's scoped virtual key) — never LiteLLM directly. There are no optional
-**host** services: the former host Open WebUI is now this in-VM app, and Odysseus
-was removed entirely.
+as `nerdctl` containers *inside* the VM — **Open WebUI** (`openwebui`, guest port
+8080), selected with
+`ai create --apps` or managed with `ai apps`. Each app gets the workspace project dir
+(`~/project`) mounted at `/workspace` in its container, published on a unique
+per-`(workspace, app)` host port (chosen at create via `--app-port <app>=<port>`,
+persisted in the project `config.yaml` `apps:` block), and points at the *same*
+gateway path (`http://host.microsandbox.internal:18787/v1` with the workspace's scoped
+virtual key) — never LiteLLM directly. Agent-CLI web dashboards get the same treatment:
+currently only **hermes** (`hermes dashboard`, default port 9119, `--app-port
+hermes=<port>`, persisted in `config.yaml` `agent_dashboards:`). There are no optional
+**host** services: the former host Open WebUI is now this in-VM app, and Odysseus was
+removed entirely.
 
 Every OS base image also bakes in a common dev-tooling layer: Git, the GitHub CLI,
-the latest **Python 3** (system-wide, backing the per-project `~/project/.venv-msb`
-virtualenv created at start), **uv** (Astral's Python package/tool manager, installed
-for the workspace user onto `~/.local/bin`), **Graphify** (the knowledge-graph
-skill for AI coding assistants — PyPI `graphifyy`, CLI `graphify`), installed via
-`uv tool install "graphifyy[…extras]"` with all optional extras except the
-region/DB/niche-specific `chinese,azure,bedrock,falkordb,neo4j,leiden,dm,pascal`, **rtk**
-(`rtk-ai/rtk`, a dev-command output compressor, via its `install.sh`), and the
-**Headroom** CLI (`headroom-ai[proxy]`, for in-VM `headroom wrap <cli>`). Each selected
-agent CLI registers Graphify with itself **at workspace start**, once per project
+**Node.js** (pinned Node 24 LTS), the latest **Python 3** (system-wide, backing the
+per-project `~/project/.venv-msb` virtualenv created at start), **uv** (Astral's
+Python package/tool manager, installed for the workspace user onto `~/.local/bin`),
+**rtk** (`rtk-ai/rtk`, a dev-command output compressor, via its `install.sh`), and the
+**Headroom** CLI (`headroom-ai[proxy]`, for in-VM `headroom wrap <cli>`). Because
+Node.js and Python 3 are baked in, neither is a `--stacks` option; the selectable
+software stacks are `go`, `rust`, `java`, `maven`, `deno`.
+
+The per-project **AI tools** are a separate, selectable set (one `--tools`
+multi-select at `ai create`, or the wizard's AI-tools step): **caveman**, **graphify**,
+**code-review-graph**, and **codebase-memory-mcp** (defaults: the first three ON,
+codebase-memory-mcp OFF). Each maps to a `context.*_enabled` bool in `config.yaml`.
+**Graphify** (the knowledge-graph skill for AI coding assistants — PyPI `graphifyy`,
+CLI `graphify`) is NO LONGER baked into every OS base: when selected it is installed
+for the workspace user by a CONDITIONAL Dockerfile snippet
+(`internal/templates/files/tools/graphify/`) via `uv tool install "graphifyy[…extras]"`
+(all optional extras except the region/DB/niche-specific
+`chinese,azure,bedrock,falkordb,neo4j,leiden,dm,pascal`), and each selected agent CLI
+registers Graphify with itself **at workspace start**, once per project
 (`graphify install` for claude-code, `graphify install --platform <cli>` for
-codex/gemini/opencode/pi/copilot) — not in the Dockerfile, since `--project` writes into the
-bind-mounted project dir. Graphify's headless LLM backend is an Ollama model chosen
+codex/gemini/opencode/copilot) — not in the Dockerfile, since `--project` writes into
+the bind-mounted project dir. Graphify's headless LLM backend is an Ollama model chosen
 at `ai create` (`--graphify-model`), routed through the gateway as `ollama/<model>`.
-Two further OPT-IN per-workspace code-graph tools are baked in and, when chosen at
-`ai create` (`--code-review-graph` / `--codebase-memory`), registered as an MCP server
-with each installed agent CLI **at workspace start** (`workspace.registerCodeReviewGraph`
-/ `registerCodebaseMemory`, once-guarded + best-effort): **code-review-graph**
-(`code-review-graph.com`; per-CLI `install --platform`, then `build` + a D3 graph
-visualization) and **codebase-memory-mcp** (`DeusData/codebase-memory-mcp`; auto-detecting
-`install`, optional on-demand 3D graph UI on `:9749`). Both are local and keyless.
-Node.js is likewise baked into every base, so neither Python nor Node is a
-`--stacks` option; the selectable software stacks are
-`go`, `rust`, `java`, `maven`, `deno`. See `spec/01-architecture-spec.md`
+**code-review-graph** (`code-review-graph.com`; per-CLI `install --platform`, then
+`build` + a D3 graph visualization) and **codebase-memory-mcp**
+(`DeusData/codebase-memory-mcp`; auto-detecting `install`, optional on-demand 3D graph
+UI on `:9749`) are likewise appended to the project Dockerfile as CONDITIONAL snippets
+ONLY when chosen (not baked into every base) and, when selected, registered as an MCP
+server with each installed agent CLI at workspace start
+(`workspace.registerCodeReviewGraph` / `registerCodebaseMemory`, once-guarded +
+best-effort). Both are local and keyless. **caveman** is installed at workspace start
+by its own upstream installer (`registerCaveman`). See `spec/01-architecture-spec.md`
 for the full design and `AGENTS.md` for the container/wiring summary.

@@ -69,6 +69,18 @@ func CacheDir() (string, error) {
 	return filepath.Join(p, "cache"), nil
 }
 
+// BinDir is ~/.ai-platform/bin — platform-managed host executables the platform
+// pins to an exact version (notably the Microsandbox `msb` CLI, kept in lockstep
+// with the embedded SDK FFI). Created on use via MkdirAll; removed by
+// `ai uninstall --purge`.
+func BinDir() (string, error) {
+	p, err := PlatformDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(p, "bin"), nil
+}
+
 // OverlaysDir is ~/.ai-platform/overlays — per-workspace persistent overlays
 // (arch §26). Host-local persistence, not git material and not a backup.
 func OverlaysDir() (string, error) {

@@ -41,6 +41,7 @@ const (
 	stepStacks
 	stepCPUs
 	stepMemory
+	stepDisk
 	stepPorts
 	stepIdle
 	stepTools // unified AI-tools multi-select (caveman/graphify/code-review-graph/codebase-memory)
@@ -64,6 +65,7 @@ var stepTitles = map[int]string{
 	stepStacks:   "Software stacks",
 	stepCPUs:     "vCPUs",
 	stepMemory:   "Memory",
+	stepDisk:     "Disk",
 	stepPorts:    "Ports",
 	stepIdle:     "Idle timeout",
 	stepTools:    "AI tools",
@@ -92,6 +94,7 @@ type Create struct {
 	stacks      *multiSelectList
 	cpus        *textStep
 	memory      *textStep
+	disk        *textStep
 	ports       *textStep
 	idle        *textStep
 	model       *modelPicker // nil when no Ollama library is cached (step skipped)
@@ -139,6 +142,7 @@ func NewCreate(startDir string, library []ollama.LibraryModel, hostGB, usableGB 
 		stacks:      newMultiSelectList("Extra software stacks (Python, Node, uv + Graphify are installed by default).", create.SupportedStacks(), nil),
 		cpus:        newTextStep("vCPUs", cpuHint, "", "", validateCPUsField),
 		memory:      newTextStep("memory (GB)", memHint, "", "", validateMemoryField),
+		disk:        newTextStep("disk (GB)", fmt.Sprintf("Writable rootfs / in-VM container image size; a plain number in GB; blank uses the default (%s). Change later with `ai resize`.", config.Default().Workspace.DiskLimit), "", "", validateDiskField),
 		ports:       newTextStep("ports", "Ports to open: PORT or HOST:GUEST, comma-separated (e.g. 8080,9000:3000).", "", "", validatePortsField),
 		idle:        newTextStep("idle timeout", "How long msb may leave the workspace idle before stopping it (e.g. 30m, 24h).", "", "", validateIdleField),
 	}
@@ -193,6 +197,7 @@ func (view *Create) SetSize(width, height int) {
 	view.stacks.SetSize(stepWidth, stepHeight)
 	view.cpus.SetSize(stepWidth, stepHeight)
 	view.memory.SetSize(stepWidth, stepHeight)
+	view.disk.SetSize(stepWidth, stepHeight)
 	view.ports.SetSize(stepWidth, stepHeight)
 	view.idle.SetSize(stepWidth, stepHeight)
 	if view.model != nil {
@@ -223,7 +228,7 @@ func (view *Create) Update(msg tea.Msg) tea.Cmd {
 			return view.next()
 		}
 		return cmd
-	case stepName, stepCPUs, stepMemory, stepPorts, stepIdle:
+	case stepName, stepCPUs, stepMemory, stepDisk, stepPorts, stepIdle:
 		return view.updateTextStep(view.textStepFor(view.step), msg)
 	case stepOS, stepShell, stepDefault:
 		return view.updateSelectStep(view.selectStepFor(view.step), msg)
@@ -311,6 +316,8 @@ func (view *Create) textStepFor(step int) *textStep {
 		return view.cpus
 	case stepMemory:
 		return view.memory
+	case stepDisk:
+		return view.disk
 	case stepPorts:
 		return view.ports
 	default:
@@ -468,20 +475,30 @@ func (view *Create) buildAppPortSteps() {
 	view.appPortKeys = nil
 	view.appPortInputs = nil
 	agentCLIs, appKeys := view.selectedAgentsAndApps()
+	// Local copy of the machine-wide reserved set, grown as each item is seeded so every
+	// item gets a DISTINCT free port (otherwise, when the familiar container ports are
+	// taken, every app would fall back to the same auto-allocated port). Not persisted back
+	// to view.reservedAppPorts — this phase is rebuilt whenever the selection changes.
+	seedReserved := make(map[int]bool, len(view.reservedAppPorts))
+	for port := range view.reservedAppPorts {
+		seedReserved[port] = true
+	}
 	for _, key := range appKeys {
 		label := key
 		if manifest, ok := apps.Lookup(key); ok {
 			label = manifest.Name
 		}
-		seed := strconv.Itoa(apps.SuggestedHostPort(key, view.reservedAppPorts, nil))
+		port := apps.SuggestedHostPort(key, seedReserved, nil)
+		seedReserved[port] = true
 		view.addAppPortStep(key, label+" host port",
-			"Host port to expose "+label+"'s web UI on (blank = auto-assign).", seed)
+			"Host port to expose "+label+"'s web UI on (blank = auto-assign).", strconv.Itoa(port))
 	}
 	// Dashboard-capable agent CLIs (hermes) get the SAME prompt when selected.
 	for _, cli := range apps.SelectedDashboardAgents(agentCLIs) {
-		seed := strconv.Itoa(apps.SuggestedDashboardPort(cli, view.reservedAppPorts, nil))
+		port := apps.SuggestedDashboardPort(cli, seedReserved, nil)
+		seedReserved[port] = true
 		view.addAppPortStep(cli, cli+" dashboard host port",
-			"Host port to expose the "+cli+" web dashboard on (blank = auto-assign).", seed)
+			"Host port to expose the "+cli+" web dashboard on (blank = auto-assign).", strconv.Itoa(port))
 	}
 }
 
@@ -553,6 +570,7 @@ func (view *Create) finish() tea.Cmd {
 		AppPorts:               appPorts,
 		CPUs:                   cpus,
 		Memory:                 view.memory.Value(),
+		Disk:                   view.disk.Value(),
 		PublishPorts:           ports,
 		IdleTimeout:            view.idle.Value(),
 		GraphifyModel:          graphifyModel,
@@ -608,6 +626,8 @@ func (view *Create) stepBody() string {
 		return view.cpus.View()
 	case stepMemory:
 		return view.memory.View()
+	case stepDisk:
+		return view.disk.View()
 	case stepPorts:
 		return view.ports.View()
 	case stepIdle:
@@ -661,6 +681,10 @@ func validateMemoryField(value string) error {
 		return nil
 	}
 	return create.ValidateResourcesWithinHost(1, value)
+}
+
+func validateDiskField(value string) error {
+	return create.ValidateDisk(value)
 }
 
 // validateAppPortField accepts a blank value (auto-assign) or a valid 1-65535 host port.

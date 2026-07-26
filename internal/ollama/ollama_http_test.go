@@ -162,6 +162,117 @@ func TestShowParsesDetails(test *testing.T) {
 	}
 }
 
+func TestShowParsesContextLength(test *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+		// model_info carries the context length under an architecture-prefixed key.
+		_, _ = writer.Write([]byte(`{"details":{"family":"qwen3"},
+			"model_info":{"general.architecture":"qwen3","qwen3.context_length":32768,"qwen3.block_count":36}}`))
+	}))
+	defer server.Close()
+
+	info, err := newTestClient(server).Show("qwen3")
+	if err != nil {
+		test.Fatalf("Show: %v", err)
+	}
+	if info.ContextLength != 32768 {
+		test.Fatalf("ContextLength = %d, want 32768", info.ContextLength)
+	}
+}
+
+func TestShowContextLengthAbsentIsZero(test *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+		_, _ = writer.Write([]byte(`{"details":{"family":"gemma"},"model_info":{"general.architecture":"gemma"}}`))
+	}))
+	defer server.Close()
+
+	info, err := newTestClient(server).Show("gemma")
+	if err != nil {
+		test.Fatalf("Show: %v", err)
+	}
+	if info.ContextLength != 0 {
+		test.Fatalf("ContextLength = %d, want 0 when absent", info.ContextLength)
+	}
+}
+
+func TestSetNumCtxPostsCreateBody(test *testing.T) {
+	var gotPath, gotMethod string
+	var gotBody map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		gotPath = request.URL.Path
+		gotMethod = request.Method
+		_ = json.NewDecoder(request.Body).Decode(&gotBody)
+		writer.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+
+	if err := newTestClient(server).SetNumCtx("qwen3", 32768); err != nil {
+		test.Fatalf("SetNumCtx: %v", err)
+	}
+	if gotPath != "/api/create" || gotMethod != http.MethodPost {
+		test.Fatalf("request = %s %s, want POST /api/create", gotMethod, gotPath)
+	}
+	if gotBody["model"] != "qwen3" || gotBody["from"] != "qwen3" {
+		test.Fatalf("body = %+v, want model+from = qwen3", gotBody)
+	}
+	parameters, ok := gotBody["parameters"].(map[string]any)
+	if !ok {
+		test.Fatalf("body.parameters = %+v, want an object", gotBody["parameters"])
+	}
+	if numCtx, _ := parameters["num_ctx"].(float64); int(numCtx) != 32768 {
+		test.Fatalf("parameters.num_ctx = %v, want 32768", parameters["num_ctx"])
+	}
+}
+
+func TestSetNumCtxSurfacesNon2xx(test *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+		http.Error(writer, "boom", http.StatusInternalServerError)
+	}))
+	defer server.Close()
+
+	if err := newTestClient(server).SetNumCtx("qwen3", 32768); err == nil {
+		test.Fatal("expected error on non-2xx, got nil")
+	}
+}
+
+// TestSetNumCtxSurfacesErrorFrame verifies an {"error":...} NDJSON frame returned UNDER
+// HTTP 200 is surfaced as an error (a failed bake must not look like success).
+func TestSetNumCtxSurfacesErrorFrame(test *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+		writer.WriteHeader(http.StatusOK)
+		_, _ = writer.Write([]byte(`{"status":"creating"}` + "\n" + `{"error":"boom baking num_ctx"}` + "\n"))
+	}))
+	defer server.Close()
+
+	err := newTestClient(server).SetNumCtx("qwen3", 32768)
+	if err == nil {
+		test.Fatal("expected error from an error frame under HTTP 200, got nil")
+	}
+	if !strings.Contains(err.Error(), "boom baking num_ctx") {
+		test.Errorf("error should carry the frame message, got %v", err)
+	}
+}
+
+func TestRecommendedNumCtx(test *testing.T) {
+	cases := []struct {
+		name          string
+		contextLength int
+		want          int
+	}{
+		{"unknown is zero", 0, 0},
+		{"negative is zero", -1, 0},
+		{"below ceiling passes through", 2048, 2048},
+		{"at ceiling", MaxNumCtx, MaxNumCtx},
+		{"above ceiling is capped", 131072, MaxNumCtx},
+	}
+	for _, testCase := range cases {
+		test.Run(testCase.name, func(test *testing.T) {
+			if got := RecommendedNumCtx(testCase.contextLength); got != testCase.want {
+				test.Fatalf("RecommendedNumCtx(%d) = %d, want %d", testCase.contextLength, got, testCase.want)
+			}
+		})
+	}
+}
+
 func TestUnreachableIsClassified(test *testing.T) {
 	client := realClient{baseURL: "http://127.0.0.1:1", httpClient: &http.Client{Timeout: time.Second}}
 	_, err := client.List()

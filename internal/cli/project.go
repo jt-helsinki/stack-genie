@@ -147,6 +147,7 @@ type createFlags struct {
 	idleTimeout   string
 	cpus          int
 	memory        string
+	disk          string
 	ports         []string
 	location      string
 	graphifyModel string
@@ -168,6 +169,7 @@ func readCreateFlags(cmd *cobra.Command, args []string) createFlags {
 	idleTimeout, _ := cmd.Flags().GetString("idle-timeout")
 	cpus, _ := cmd.Flags().GetInt("cpus")
 	memory, _ := cmd.Flags().GetString("memory")
+	disk, _ := cmd.Flags().GetString("disk")
 	ports, _ := cmd.Flags().GetStringSlice("ports")
 	location, _ := cmd.Flags().GetString("location")
 	graphifyModel, _ := cmd.Flags().GetString("graphify-model")
@@ -177,7 +179,7 @@ func readCreateFlags(cmd *cobra.Command, args []string) createFlags {
 	return createFlags{
 		name: name, osKey: osKey, agents: agents, stacks: stacks, apps: appsList,
 		appPorts:    parseAppPortFlags(appPortEntries),
-		idleTimeout: idleTimeout, cpus: cpus, memory: memory, ports: ports,
+		idleTimeout: idleTimeout, cpus: cpus, memory: memory, disk: disk, ports: ports,
 		location: location, graphifyModel: graphifyModel, shell: shell, authMode: authMode,
 		tools:       tools,
 		toolsSet:    cmd.Flags().Changed("tools"),
@@ -448,6 +450,7 @@ func newCreateCmd(emitter *output.Emitter, exit *int, use string) *cobra.Command
 	cmd.Flags().String("idle-timeout", "", "Microsandbox idle timeout (default: "+config.DefaultMicrosandboxIdleTimeout+", e.g. 30m, 24h)")
 	cmd.Flags().Int("cpus", 0, fmt.Sprintf("workspace vCPUs (default: %d; max: host's %d)", config.Default().Workspace.CPULimit, sysinfo.CPUs()))
 	cmd.Flags().String("memory", "", "workspace memory in GB, a plain number (default: "+config.Default().Workspace.MemoryLimit+"; capped below host RAM, reserving headroom for the host + service tier)")
+	cmd.Flags().String("disk", "", "workspace disk (writable rootfs) in GB, a plain number (default: "+config.Default().Workspace.DiskLimit+"; sizes the in-VM container image store so AI apps fit). Change later with `ai resize`.")
 	cmd.Flags().StringSlice("ports", nil, "ports to open into the workspace: PORT or HOST:GUEST (e.g. 8080,9000:3000)")
 	cmd.Flags().String("location", "", "workspace directory (default: current directory; created if missing)")
 	cmd.Flags().String("graphify-model", "", "Ollama model Graphify uses (e.g. qwen2.5-coder:7b); chosen in the wizard from the Ollama library and pulled if absent")
@@ -616,6 +619,7 @@ func runCreateWizard(seed project.Spec) (project.Spec, bool, error) {
 		cpusText = strconv.Itoa(seed.CPUs)
 	}
 	memory := seed.Memory
+	disk := seed.Disk
 	portsText := formatPublishPorts(seed.PublishPorts)
 
 	// Graphify's LLM backend is an Ollama model chosen from the installable library
@@ -676,6 +680,9 @@ func runCreateWizard(seed project.Spec) (project.Spec, bool, error) {
 			huh.NewInput().Title("Workspace memory (GB)").
 				Description(fmt.Sprintf("A plain number in GB; blank uses the default (%s); usable max %d GB (host %d GB, minus headroom for the host + service tier)", config.Default().Workspace.MemoryLimit, create.UsableHostMemoryGB(), create.HostMemoryGB())).
 				Value(&memory).Validate(wizardMemoryValidator),
+			huh.NewInput().Title("Workspace disk (GB)").
+				Description(fmt.Sprintf("Writable rootfs / in-VM container image store; a plain number in GB; blank uses the default (%s). Change later with `ai resize`.", config.Default().Workspace.DiskLimit)).
+				Value(&disk).Validate(wizardDiskValidator),
 			huh.NewInput().Title("Ports to open (comma-separated)").
 				Description("PORT or HOST:GUEST, e.g. 8080,9000:3000").
 				Value(&portsText).Validate(wizardPortsValidator),
@@ -710,12 +717,19 @@ func runCreateWizard(seed project.Spec) (project.Spec, bool, error) {
 	// container port, else an auto-allocated one), or the --app-port value when given.
 	// Blank → auto-assign at create.
 	reservedAppPorts, _ := apps.ReservedPortsAcrossWorkspaces()
+	if reservedAppPorts == nil {
+		reservedAppPorts = map[int]bool{}
+	}
 	appPortValues := make(map[string]*string, len(supportedApps))
 	for _, appKey := range supportedApps {
 		seedPort := seed.AppPorts[appKey]
 		if seedPort == 0 {
 			seedPort = apps.SuggestedHostPort(appKey, reservedAppPorts, nil)
 		}
+		// Reserve this seed so the NEXT app/dashboard suggestion is a DIFFERENT free port
+		// (otherwise, when the familiar container ports are taken, every app would fall back
+		// to the same auto-allocated port and the create-time allocation would then collide).
+		reservedAppPorts[seedPort] = true
 		value := strconv.Itoa(seedPort)
 		appPortValues[appKey] = &value
 		key := appKey
@@ -736,6 +750,7 @@ func runCreateWizard(seed project.Spec) (project.Spec, bool, error) {
 		if seedPort == 0 {
 			seedPort = apps.SuggestedDashboardPort(dashCLI, reservedAppPorts, nil)
 		}
+		reservedAppPorts[seedPort] = true
 		value := strconv.Itoa(seedPort)
 		appPortValues[dashCLI] = &value
 		key := dashCLI
@@ -788,6 +803,7 @@ func runCreateWizard(seed project.Spec) (project.Spec, bool, error) {
 		IdleTimeout:            idleTimeout,
 		CPUs:                   cpus,
 		Memory:                 strings.TrimSpace(memory),
+		Disk:                   strings.TrimSpace(disk),
 		PublishPorts:           ports,
 		Root:                   location,
 		GraphifyModel:          graphifyModel,
@@ -981,6 +997,11 @@ func wizardMemoryValidator(value string) error {
 	return create.ValidateResourcesWithinHost(0, strings.TrimSpace(value))
 }
 
+// wizardDiskValidator validates the disk field (blank = default; a plain positive GB number).
+func wizardDiskValidator(value string) error {
+	return create.ValidateDisk(strings.TrimSpace(value))
+}
+
 // wizardPortsValidator validates the comma-separated ports field.
 func wizardPortsValidator(value string) error {
 	_, err := parsePublishPorts(splitCommaList(value))
@@ -1076,6 +1097,9 @@ func validateProvidedCreateFlags(flags createFlags) error {
 		return output.Errorf(output.ExitInvalidInput, "%s", err)
 	}
 	if err := create.ValidateResourcesWithinHost(flags.cpus, flags.memory); err != nil {
+		return err
+	}
+	if err := create.ValidateDisk(flags.disk); err != nil {
 		return err
 	}
 	if _, err := parsePublishPorts(flags.ports); err != nil {
@@ -1203,6 +1227,7 @@ func seedSpec(flags createFlags) project.Spec {
 		IdleTimeout:            idleTimeout,
 		CPUs:                   flags.cpus,
 		Memory:                 flags.memory,
+		Disk:                   flags.disk,
 		PublishPorts:           ports,
 		GraphifyModel:          flags.graphifyModel,
 		CavemanEnabled:         caveman,
@@ -1258,6 +1283,7 @@ func specFromFlags(flags createFlags) (project.Spec, error) {
 		IdleTimeout:            idleTimeout,
 		CPUs:                   flags.cpus,
 		Memory:                 flags.memory,
+		Disk:                   flags.disk,
 		PublishPorts:           ports,
 		GraphifyModel:          flags.graphifyModel,
 		CavemanEnabled:         caveman,

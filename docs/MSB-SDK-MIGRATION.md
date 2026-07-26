@@ -1,5 +1,12 @@
 # Microsandbox Go SDK migration — Phase 0 findings
 
+> **Current state (as of this audit):** the migration has LANDED. The SDK backend
+> (`internal/workspace/workspace_sdk.go`, `sdkSandbox`) is the DEFAULT; the legacy
+> msb-CLI backend (`internal/workspace/workspace_real.go`, `realSandbox`) is retained
+> as an escape hatch selected with `AIP_WORKSPACE_BACKEND=cli`. The build exports
+> `CGO_ENABLED=1`. The SDK dep and the pinned `msb` CLI are both at `v0.6.6`. The rest
+> of this file is the original Phase-0 spike findings, kept for the rationale.
+
 Status: **Phase 0 (de-risking spike) complete.** Static gating risks settled + full
 docs/source/examples read (three subagents over the upstream clone).
 Date: 2026-06-30. SDK source read at `main` (pins msb `0.6.1`); build/API verified
@@ -185,7 +192,9 @@ program reported `SDKVersion: 0.6.1`, `EnsureInstalled: OK`, and crucially
 `RuntimeVersion: 0.6.1` — the embedded FFI **dlopen'd successfully** (not the 0-byte
 sentinel) and the native runtime is reachable. The biggest unknown (does the FFI
 load) is resolved positively; full microVM lifecycle is still the remaining live
-check. msb runtime is now 0.6.1 (has the 128-client relay ceiling).
+check. At spike time the msb runtime was 0.6.1 (has the 128-client relay ceiling);
+the platform has SINCE pinned both the SDK dep (go.mod) and the downloaded `msb` CLI
+(`internal/workspace/msb.go` `microsandboxVersion`) to `v0.6.6`.
 
 **Phase 2 DONE:**
 - The TUI's poll closures used to build a fresh `RealManager` per tick — on the SDK

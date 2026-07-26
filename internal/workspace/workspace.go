@@ -8,6 +8,8 @@ package workspace
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"os"
@@ -42,6 +44,18 @@ func resolveGateway() (host string, port int, url string) {
 		return runtime.ResolveGateway("")
 	}
 	return runtime.ResolveGateway(info.HostAddress())
+}
+
+// generateDashboardPassword returns a strong random URL-safe password (~22 chars) for an
+// agent-CLI web dashboard's basic auth (currently hermes). 16 random bytes rendered as
+// base64 URL-safe-no-padding gives a high-entropy, shell-safe string. A rand.Read failure
+// is effectively impossible on a supported host; a short fallback keeps the start working.
+func generateDashboardPassword() string {
+	buffer := make([]byte, 16)
+	if _, err := rand.Read(buffer); err != nil {
+		return "aip-dashboard-fallback"
+	}
+	return base64.RawURLEncoding.EncodeToString(buffer)
 }
 
 // In-VM (KEYED) files written under the `workspace` user's home. The per-CLI provider
@@ -112,6 +126,41 @@ var ErrWorkspaceUnresponsive = errors.New("workspace microVM is running, but msb
 // ErrWorkspaceUnresponsive (VM present but slow): here the fix is to recreate the
 // VM, so the message points at `ai restart`. Mapped to exit 4 (runtime failure).
 var ErrWorkspaceStale = errors.New("workspace is marked started but its microVM isn't running (stale state) — run `ai restart`")
+
+// relayRetryDelay is the brief pause before retrying a launcher exec on a transiently
+// wedged relay, giving the freshly-reset connection a moment to re-establish.
+const relayRetryDelay = 750 * time.Millisecond
+
+// launchDetachedRetry runs a SHORT detached-launcher exec (the tiny `setsid … &` that
+// backgrounds a best-effort start step: app autostart, Caveman, code-review-graph,
+// codebase-memory, graphify-MCP, dashboards) with ONE retry on a transiently wedged
+// relay. The busy workspace-start exec sequence — containerd readiness polling plus
+// back-to-back detached launchers — can momentarily saturate the single reused msb
+// relay, so the next exec returns ErrWorkspaceUnresponsive even though the VM is fine.
+// On that error it RESETS the relay (ReleaseConnection, so the next exec dials a fresh
+// handle), waits briefly, and retries once. asRoot selects ExecRootContext (nerdctl app
+// containers need root) vs ExecContext (workspace user). Best-effort: returns the final
+// error for the caller to warn on; a non-unresponsive error is returned without retry.
+func (manager Manager) launchDetachedRetry(name string, argv []string, asRoot bool, timeout time.Duration) error {
+	run := func() error {
+		ctx, cancel := context.WithTimeout(context.Background(), timeout)
+		defer cancel()
+		var err error
+		if asRoot {
+			_, err = manager.Sandbox.ExecRootContext(ctx, name, argv)
+		} else {
+			_, err = manager.Sandbox.ExecContext(ctx, name, argv)
+		}
+		return err
+	}
+	err := run()
+	if errors.Is(err, ErrWorkspaceUnresponsive) {
+		manager.ReleaseConnection(name)
+		time.Sleep(relayRetryDelay)
+		err = run()
+	}
+	return err
+}
 
 // inVMProbeTimeout bounds the short buffered in-VM probes (tmux presence, session
 // listing, apps `nerdctl ps`) so the CLI/TUI fail fast instead of hanging when the
@@ -217,6 +266,10 @@ type VMResources struct {
 	CPUs        int
 	Memory      string
 	IdleTimeout string
+	// Disk is the writable rootfs (OCI overlay upper) size as "<GiB>" (e.g. "20"); it
+	// backs containerd's in-VM image store so multi-GB app images have room. Empty falls
+	// back to the platform default (microVMDisk).
+	Disk string
 }
 
 // read-only image, the host project source, and the persistent overlay (arch
@@ -306,7 +359,7 @@ type KeyMinter interface {
 // or a ServedModels that errors (gateway down at start), degrades gracefully — the
 // workspace still starts, with an empty picker, never failing over a model lookup.
 type ServedModels interface {
-	ServedModels() ([]string, error)
+	ServedModels() ([]agentcfg.Model, error)
 }
 
 // Manager coordinates the lifecycle over a Builder + Sandbox, stamping state with
@@ -413,6 +466,7 @@ func (manager Manager) Start(project string) (*state.Workspace, error) {
 		CPUs:        projectConfig.Workspace.CPULimit,
 		Memory:      projectConfig.Workspace.MemoryLimit,
 		IdleTimeout: projectConfig.Microsandbox.ResolvedIdleTimeout(),
+		Disk:        projectConfig.Workspace.DiskLimit,
 	}
 	logStep("creating microVM")
 	if err := manager.Sandbox.Create(name, imageRef, root, overlayPath, resources, netArgs); err != nil {
@@ -465,12 +519,20 @@ func (manager Manager) Start(project string) (*state.Workspace, error) {
 	logStep("starting in-VM container runtime (containerd)")
 	// Bring up the rootful in-VM container runtime (containerd) so nerdctl works
 	// inside the workspace. BEST-EFFORT + bounded — a failure here must NOT fail the
-	// workspace start. The installed in-VM apps are NOT auto-started here: pulling a
-	// heavy app image (Open WebUI etc.) is slow and, because in-VM execs contend,
-	// would block the workspace start AND every other exec (shell, session list) for
-	// the whole pull, leaving the workspace unresponsive. Apps are started ON DEMAND
-	// via `ai apps start` (which brings containerd up if needed and shows progress).
+	// workspace start.
 	manager.ensureContainerd(name)
+	// ensureContainerd polls `nerdctl info` in a tight loop until the daemon serves, which
+	// can transiently saturate the single reused msb relay. Reset it here so the very first
+	// app-autostart launcher below dials a FRESH handle instead of inheriting a wedged one
+	// (launchDetachedRetry still retries if it wedges again mid-sequence).
+	manager.ReleaseConnection(name)
+	// Auto-start every installed in-VM app + agent-CLI dashboard so they are reachable
+	// from the host browser by default (their host ports were already published above).
+	// This is DETACHED + best-effort: a heavy first-start `nerdctl pull` is a long in-VM
+	// exec that, run inline, would block the workspace start AND every other exec (shell,
+	// session list) for the whole pull — so the app containers are launched in a setsid'd
+	// background script that returns in milliseconds. Never fails or blocks the start.
+	manager.autostartApps(name, projectConfig, gatewayURL)
 	logStep("creating project virtualenv (.venv-msb)")
 	// Create the per-project Python virtualenv (.venv-msb) using the guest's baked-in
 	// Python. Best-effort — never fails the workspace start.
@@ -499,6 +561,10 @@ func (manager Manager) Start(project string) (*state.Workspace, error) {
 	// once-guarded + best-effort — never fail the start, retry next start on failure.
 	manager.registerCodeReviewGraph(name, projectConfig)
 	manager.registerCodebaseMemory(name, projectConfig)
+	// Install Hermes at runtime (detached) when selected — its uv venv must be built at the
+	// final ~/.hermes (=/persist) path, not baked at image build then symlink-migrated
+	// (which broke the venv). Once-guarded, best-effort — never fails the start.
+	manager.registerHermes(name, projectConfig)
 	logStep("workspace %q started", project)
 	now := manager.Now()
 	handle := &state.Workspace{
@@ -614,42 +680,52 @@ func (manager Manager) registerAgentProviders(name, project, root string, projec
 		projectConfig.Context.GraphifyEnabledOrDefault(),
 		workspaceWorkdir+"/.venv-msb/bin/python",
 	)
-	if err := manager.writeModelListConfigs(name, root, gatewayURL, defaultModel, models, keepTurns, outputBufferTokens); err != nil {
-		return err
+	// opencode: written when selected — or when NO tools are configured at all, since
+	// opencode is the platform default tool (a degenerate/legacy empty Tools list still
+	// gets the default). It carries the refreshable served-model list.
+	if len(projectConfig.Agent.Tools) == 0 || slices.Contains(projectConfig.Agent.Tools, "opencode") {
+		if err := manager.writeModelListConfigs(name, root, gatewayURL, defaultModel, models, keepTurns, outputBufferTokens); err != nil {
+			return err
+		}
 	}
 
-	// claude-code: api-key mode gets the gateway base-URL env block; oauth mode gets an
-	// EMPTY env block (no base URL) so its own subscription login reaches Anthropic direct.
-	claudeExisting := readHostFileOrNil(projectConfigPath(root, ".claude", "settings.json"))
-	var claudeConfig []byte
-	if oauthSet["claude-code"] {
-		claudeConfig, err = agentcfg.MergeClaudeSettingsOAuth(claudeExisting)
-	} else {
-		claudeConfig, err = agentcfg.MergeClaudeSettings(claudeExisting, gatewayURL)
-	}
-	if err != nil {
-		return err
-	}
-	if err := writeHostFile(projectConfigPath(root, ".claude", "settings.json"), claudeConfig); err != nil {
-		return err
+	// claude-code: written only when selected. api-key mode gets the gateway base-URL env
+	// block; oauth mode gets an EMPTY env block (no base URL) so its own subscription login
+	// reaches Anthropic direct.
+	if slices.Contains(projectConfig.Agent.Tools, "claude-code") {
+		claudeExisting := readHostFileOrNil(projectConfigPath(root, ".claude", "settings.json"))
+		var claudeConfig []byte
+		if oauthSet["claude-code"] {
+			claudeConfig, err = agentcfg.MergeClaudeSettingsOAuth(claudeExisting)
+		} else {
+			claudeConfig, err = agentcfg.MergeClaudeSettings(claudeExisting, gatewayURL)
+		}
+		if err != nil {
+			return err
+		}
+		if err := writeHostFile(projectConfigPath(root, ".claude", "settings.json"), claudeConfig); err != nil {
+			return err
+		}
 	}
 
-	// codex: api-key mode gets the KEYLESS gateway provider block (fully platform-managed,
-	// overwritten each start; the key is env-supplied via env_key). oauth mode gets the
-	// ChatGPT-subscription config (no gateway provider — direct to OpenAI). Either way a
-	// global in-VM trust entry (off host disk) is written so codex loads the project config.
-	// The enabled tools' MCP servers are appended as [mcp_servers.*] tables (local tools —
-	// they work regardless of auth mode).
-	codexConfig := agentcfg.CodexConfig(gatewayURL, defaultModel)
-	if oauthSet["codex"] {
-		codexConfig = agentcfg.CodexConfigOAuth()
-	}
-	codexConfig = agentcfg.AppendCodexMCP(codexConfig, mcpServers)
-	if err := writeHostFile(projectConfigPath(root, ".codex", "config.toml"), codexConfig); err != nil {
-		return err
-	}
-	if err := manager.Sandbox.WriteFile(name, agentcfg.CodexConfigGuestPath, agentcfg.CodexTrustConfig()); err != nil {
-		return err
+	// codex: written only when selected. api-key mode gets the KEYLESS gateway provider
+	// block (fully platform-managed, overwritten each start; the key is env-supplied via
+	// env_key). oauth mode gets the ChatGPT-subscription config (no gateway provider —
+	// direct to OpenAI). Either way a global in-VM trust entry (off host disk) is written so
+	// codex loads the project config. The enabled tools' MCP servers are appended as
+	// [mcp_servers.*] tables (local tools — they work regardless of auth mode).
+	if slices.Contains(projectConfig.Agent.Tools, "codex") {
+		codexConfig := agentcfg.CodexConfig(gatewayURL, defaultModel)
+		if oauthSet["codex"] {
+			codexConfig = agentcfg.CodexConfigOAuth()
+		}
+		codexConfig = agentcfg.AppendCodexMCP(codexConfig, mcpServers)
+		if err := writeHostFile(projectConfigPath(root, ".codex", "config.toml"), codexConfig); err != nil {
+			return err
+		}
+		if err := manager.Sandbox.WriteFile(name, agentcfg.CodexConfigGuestPath, agentcfg.CodexTrustConfig()); err != nil {
+			return err
+		}
 	}
 
 	// omp (Oh My Pi) — written only when selected. Its provider/models config is KEYLESS
@@ -694,10 +770,25 @@ func (manager Manager) registerAgentProviders(name, project, root string, projec
 	// (nothing in writeModelListConfigs). ~/.hermes is symlinked to /persist so its last-used
 	// selection + skills survive restarts.
 	if slices.Contains(projectConfig.Agent.Tools, "hermes") {
-		hermesConfig, err := agentcfg.HermesConfig(gatewayURL, defaultModel)
+		// Ensure a stable dashboard basic-auth password exists so hermes will bind its
+		// dashboard to 0.0.0.0 (it refuses without a registered auth provider). Generate
+		// once and PERSIST the plaintext to the project config.yaml (a low-sensitivity
+		// LOCAL dashboard credential — NOT the scoped gateway key, which never touches
+		// disk). Best-effort: a persist failure must not fail the start — the in-memory
+		// password is still applied to this start's config; it would just regenerate next
+		// start.
+		if projectConfig.Agent.HermesDashboardPassword == "" {
+			projectConfig.Agent.HermesDashboardPassword = generateDashboardPassword()
+			if err := config.WriteProject(root, projectConfig); err != nil {
+				_, _ = fmt.Fprintf(os.Stderr, "warning: could not persist the hermes dashboard password in workspace %q (continuing): %v\n", name, err)
+			}
+		}
+		dashboardPassword := projectConfig.Agent.HermesDashboardPassword
+		hermesConfig, err := agentcfg.HermesConfig(gatewayURL, defaultModel, dashboardPassword)
 		if err != nil {
 			return err
 		}
+		logStep("hermes dashboard login: %s / %s (host port from `ai apps`)", agentcfg.HermesDashboardUsername, dashboardPassword)
 		// The enabled tools' MCP servers ride in the SAME config.yaml (mcp_servers) the
 		// platform rewrites each start.
 		hermesConfig, err = agentcfg.InjectHermesMCP(hermesConfig, mcpServers)
@@ -819,6 +910,10 @@ func (manager Manager) appendManagedBlock(name, rcPath string, block []byte) err
 // when ensureContainerd boots it, so the daemon's output is inspectable.
 const containerdLog = "/var/log/containerd.log"
 
+// fuseOverlayfsLog is the in-VM path the containerd-fuse-overlayfs-grpc snapshotter
+// proxy's output is redirected to when ensureContainerd starts it.
+const fuseOverlayfsLog = "/var/log/containerd-fuse-overlayfs.log"
+
 // venvPath is the per-project Python virtualenv created inside the workspace. It lives
 // in the bind-mounted project dir (workspaceWorkdir), so it is ONE directory visible
 // on both the host and the guest — but it is a LINUX venv, usable only INSIDE the
@@ -860,6 +955,32 @@ const (
 	cavemanScriptGuest = "/tmp/caveman-install.sh"
 )
 
+// Hermes is installed at workspace START (detached), NOT at image build — see
+// registerHermes for why the build-time bake was fragile.
+const (
+	// hermesInstallLaunchTimeout bounds only the tiny launcher exec that setsid-backgrounds
+	// the hermes install and returns; the install (git clone + uv venv + deps) runs on past it.
+	hermesInstallLaunchTimeout = 30 * time.Second
+	// hermesInstallScriptGuest is where the once-guarded hermes install script is staged in-VM.
+	hermesInstallScriptGuest = "/tmp/hermes-install.sh"
+)
+
+// The installed in-VM apps + agent dashboards are auto-started DETACHED at workspace
+// start (see autostartApps): a heavy first-start `nerdctl pull` must never block the
+// start or wedge the single msb relay, so the app-container launch is setsid'd into a
+// background script exactly like the Caveman install.
+const (
+	// appsAutostartLaunchTimeout bounds only the tiny launcher exec that setsid-backgrounds
+	// the app-autostart script and returns; the script itself runs on past it.
+	appsAutostartLaunchTimeout = 30 * time.Second
+	// appsAutostartScriptGuest is where the detached app-autostart script is staged in-VM.
+	// It is a GUEST-ONLY path — deliberately NOT under <project>/.ai-platform/run (which is
+	// bind-mounted to the HOST) — so the staged script never lands on host disk. (The script
+	// only REFERENCES the scoped key via a shell variable, but keeping it off host disk
+	// upholds the hard "key never on host disk" invariant with zero exposure.)
+	appsAutostartScriptGuest = "/tmp/apps-autostart.sh"
+)
+
 // The code-review-graph registration runs its per-CLI `install` + a full-codebase
 // `build` + a `visualize`, so — like the Caveman install — it is DETACHED (setsid) rather
 // than a blocking exec: the `build` can be long on a large repo and must never block the
@@ -891,13 +1012,18 @@ func (manager Manager) linkAgentStateDirs(name string, oauthAgents map[string]bo
 	// stateLink pairs an in-VM home path with its /persist/agents/<key> target. The
 	// always-present agent STATE dirs come first; oauth agents ALSO get their native-login
 	// credential dir persisted so a subscription login survives a microVM restart.
-	type stateLink struct{ home, key string }
+	// seedMarker (optional): a subpath under the baked home that indicates a whole-install
+	// living there (not just state). When set, the install is restored into /persist if the
+	// marker is absent there (see the seed step below). hermes bakes its venv + binary under
+	// ~/.hermes at image build, so it needs this; opencode/omp keep only state.
+	type stateLink struct{ home, key, seedMarker string }
 	links := []stateLink{
-		{"~/.local/share/opencode", "opencode"},
-		{"~/.omp", "omp"},
-		// hermes keeps its global config + state (last-used model, memory, skills) in
-		// ~/.hermes; persist it so a restart remembers.
-		{"~/.hermes", "hermes"},
+		{"~/.local/share/opencode", "opencode", ""},
+		{"~/.omp", "omp", ""},
+		// hermes keeps its global config + state (last-used model, memory, skills) AND its
+		// entire install (venv + binary, baked at image build) in ~/.hermes; persist it so a
+		// restart remembers, and seed the baked install so the symlink never shadows it away.
+		{"~/.hermes", "hermes", "hermes-agent"},
 	}
 	// oauthCredDirs maps each OAuth-eligible CLI to its native-login credential dir. An
 	// oauth agent's dir is persisted so the subscription login survives a microVM restart.
@@ -910,7 +1036,7 @@ func (manager Manager) linkAgentStateDirs(name string, oauthAgents map[string]bo
 	}
 	for _, entry := range oauthCredDirs {
 		if oauthAgents[entry.cli] {
-			links = append(links, stateLink{entry.home, entry.key})
+			links = append(links, stateLink{entry.home, entry.key, ""})
 		}
 	}
 
@@ -928,9 +1054,25 @@ func (manager Manager) linkAgentStateDirs(name string, oauthAgents map[string]bo
 	// /persist target, so accumulated state is preserved across restarts. omp keeps its
 	// last-used model + hindsight memory in ~/.omp (agent.db); an oauth agent's ~/.claude/
 	// ~/.codex/~/.gemini holds its OAuth credentials.
+	//
+	// SEED FIRST (marker entries only): some CLIs bake their ENTIRE install under the home
+	// path we persist — hermes's venv + binary live in ~/.hermes, written at image build.
+	// A blind `rm -rf ~/.hermes` before the symlink deletes that install and points the
+	// link at an overlay that lacks it, breaking `hermes dashboard`. Because msb rebuilds
+	// the rootfs from the image on every start (--replace), the baked install is present
+	// under the home path each start, so: if the baked home carries the install marker but
+	// the persist target lacks it, no-clobber (`cp -an`) copy the baked tree into persist —
+	// restoring the install while KEEPING any already-persisted state (config, last-used
+	// model). Once seeded, later starts find the marker present and skip. Entries with no
+	// marker (opencode/omp/oauth creds) keep only state and are never seeded.
 	link := "set -e; mkdir -p ~/.local/share"
 	for _, entry := range links {
-		link += "; rm -rf " + entry.home + "; ln -sfn /persist/agents/" + entry.key + " " + entry.home
+		target := "/persist/agents/" + entry.key
+		link += "; mkdir -p " + target
+		if entry.seedMarker != "" {
+			link += "; if [ -e " + entry.home + "/" + entry.seedMarker + " ] && [ ! -e " + target + "/" + entry.seedMarker + " ]; then cp -an " + entry.home + "/. " + target + "/ 2>/dev/null || true; fi"
+		}
+		link += "; rm -rf " + entry.home + "; ln -sfn " + target + " " + entry.home
 	}
 	if _, err := manager.Sandbox.Exec(name, []string{"bash", "-lc", link}); err != nil {
 		_, _ = fmt.Fprintf(os.Stderr, "warning: could not link persistent agent state in workspace %q (continuing): %v\n", name, err)
@@ -960,7 +1102,7 @@ func oauthAgentList(projectConfig *config.Config) []string {
 // list is EMPTY (gateway unreachable), the existing list is LEFT UNTOUCHED — opencode's
 // merge preserves it — so a transient outage never wipes a good list. Shared refresh used
 // at start AND on attach.
-func (manager Manager) writeModelListConfigs(name, root, gatewayURL, defaultModel string, models []string, keepTurns, outputBufferTokens int) error {
+func (manager Manager) writeModelListConfigs(name, root, gatewayURL, defaultModel string, models []agentcfg.Model, keepTurns, outputBufferTokens int) error {
 	openCodeConfig, err := agentcfg.MergeOpenCodeConfig(
 		readHostFileOrNil(projectConfigPath(root, ".opencode", "opencode.json")),
 		gatewayURL, agentcfg.OpenCodeAPIKeyRef, defaultModel, models, keepTurns, outputBufferTokens)
@@ -1005,6 +1147,12 @@ func (manager Manager) refreshAgentModels(project string) {
 		}
 	}
 
+	// The refreshable served-model list lives only in opencode's config; skip when
+	// opencode isn't installed (nothing else carries a refreshable list). An empty Tools
+	// list defaults to opencode, matching registerAgentProviders.
+	if len(projectConfig.Agent.Tools) != 0 && !slices.Contains(projectConfig.Agent.Tools, "opencode") {
+		return
+	}
 	keepTurns, outputBufferTokens := contextopt.HeadroomParams(projectConfig.Context.Strategy)
 	models := manager.pickerModels()
 	if err := manager.writeModelListConfigs(name, root, gatewayURL, "", models, keepTurns, outputBufferTokens); err != nil {
@@ -1147,7 +1295,13 @@ func (manager Manager) setupGraphifyMCP(name string) {
 	pool := workspaceWorkdir + "/.ai-platform"
 	logPath := pool + "/run/graphify-mcp-setup.log"
 	venvPython := venvPath + "/bin/python"
-	script := "cd " + workspaceWorkdir + " 2>/dev/null || exit 0\n" +
+	// This script is launched via `setsid sh <file>` (a NON-login shell), so the
+	// login-shell PATH additions are absent — `uv` and `graphify` live in the
+	// workspace user's ~/.local/bin and would otherwise be "not found" (leaving
+	// graphify-out/graph.json unbuilt, which keeps opencode's graphify plugin dark).
+	// Put ~/.local/bin (and the venv bin) on PATH explicitly.
+	script := "export PATH=\"$HOME/.local/bin:" + venvPath + "/bin:$PATH\"\n" +
+		"cd " + workspaceWorkdir + " 2>/dev/null || exit 0\n" +
 		"[ -x " + venvPython + " ] || exit 0\n" +
 		"uv pip install --python " + venvPython + " --quiet \"graphifyy[mcp]\"\n" +
 		"command -v graphify >/dev/null 2>&1 && graphify update . || true\n"
@@ -1156,9 +1310,7 @@ func (manager Manager) setupGraphifyMCP(name string) {
 	}
 	launch := fmt.Sprintf("mkdir -p %s && setsid sh %s </dev/null >%s 2>&1 & exit 0",
 		shellQuoteGuest(pool+"/run"), shellQuoteGuest(graphifyMCPScriptGuest), shellQuoteGuest(logPath))
-	ctx, cancel := context.WithTimeout(context.Background(), cavemanLaunchTimeout)
-	defer cancel()
-	_, _ = manager.Sandbox.ExecContext(ctx, name, []string{"bash", "-lc", launch})
+	_ = manager.launchDetachedRetry(name, []string{"bash", "-lc", launch}, false, cavemanLaunchTimeout)
 }
 
 // cavemanOnlyAgent maps a selected agent CLI to Caveman's `install.sh --only <agent>`
@@ -1316,10 +1468,67 @@ func (manager Manager) registerCaveman(name string, projectConfig *config.Config
 	logStep("installing Caveman in the background (detached) → %s", logPath)
 	launch := fmt.Sprintf("mkdir -p %s && setsid bash %s </dev/null >%s 2>&1 & exit 0",
 		shellQuoteGuest(pool+"/run"), shellQuoteGuest(cavemanScriptGuest), shellQuoteGuest(logPath))
-	ctx, cancel := context.WithTimeout(context.Background(), cavemanLaunchTimeout)
-	defer cancel()
-	if _, err := manager.Sandbox.ExecContext(ctx, name, []string{"bash", "-lc", launch}); err != nil && explicit {
+	if err := manager.launchDetachedRetry(name, []string{"bash", "-lc", launch}, false, cavemanLaunchTimeout); err != nil && explicit {
 		_, _ = fmt.Fprintln(os.Stderr, ui.Warn.Render("Caveman install could not be launched "+
+			"(it will retry on the next workspace start): "+err.Error()))
+	}
+}
+
+// registerHermes installs the Hermes agent CLI at workspace START rather than at image
+// build. Hermes is a git-clone + uv-venv install rooted at ~/.hermes, which is symlinked to
+// the /persist overlay (linkAgentStateDirs) so the install survives restarts. Baking it at
+// image build was fragile: uv creates the venv at the BUILD path, then the ~/.hermes →
+// /persist symlink migration left the venv WITHOUT its pyvenv.cfg (so its site-packages fell
+// off sys.path and `import hermes_cli` failed) AND without its runtime deps (yaml, …) — the
+// `hermes` binary died with ModuleNotFoundError, so `ai apps` / `hermes dashboard` never
+// ran. Installing HERE, after the symlink already points at /persist, builds one complete
+// venv at its final path (verified live: a clean reinstall there fixes the import).
+//
+// DETACHED (setsid), exactly like registerCaveman: the install is a multi-minute network +
+// uv operation; run as a BLOCKING exec it stalls the start and saturates the single msb
+// agent-relay ("msb exec is not responding" — verified live). The launcher exec returns in
+// milliseconds; the staged script is once-guarded by a marker under the persistent
+// .ai-platform dir, touched ONLY after `hermes --help` actually runs, so a killed/incomplete
+// install retries on the next start instead of being wrongly recorded as done. `--skip-setup`
+// keeps the installer from writing its own ~/.hermes/config.yaml — the platform owns that
+// file (registerAgentProviders writes the keyless aip-gateway provider each start).
+// Best-effort — it never fails the workspace start.
+func (manager Manager) registerHermes(name string, projectConfig *config.Config) {
+	if projectConfig == nil || !slices.Contains(projectConfig.Agent.Tools, "hermes") {
+		return
+	}
+	pool := workspaceWorkdir + "/.ai-platform"
+	installMarker := pool + "/.hermes-installed"
+	// Drop any prior (partial/build-baked) checkout so uv rebuilds a clean, complete venv at
+	// the final ~/.hermes (=/persist) path, then require `hermes --help` to actually run
+	// before recording success so an incomplete install retries.
+	script := "#!/usr/bin/env bash\n" +
+		"cd \"$HOME\"; " +
+		"mkdir -p " + pool + "; " +
+		"[ -f " + installMarker + " ] && exit 0; " +
+		"rm -rf \"$HOME/.hermes/hermes-agent\"; " +
+		"timeout --kill-after=30s 900s bash -c 'curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash -s -- --skip-setup'; " +
+		// Enable the bundled `basic` dashboard-auth plugin: hermes REFUSES to bind the
+		// dashboard to 0.0.0.0 (required so the published host port reaches it) unless an
+		// auth PROVIDER is registered — and the dashboard.basic_auth config the platform
+		// writes (registerAgentProviders) is only READ when this plugin is enabled. Without
+		// it hermes reports "no auth providers are registered" and never listens. Persisted
+		// under ~/.hermes (=/persist), so it survives restarts. Verified live: with the
+		// plugin enabled + basic_auth config, the dashboard binds and serves (HTTP 302 to
+		// its login page). Idempotent + best-effort.
+		"\"$HOME/.hermes/hermes-agent/venv/bin/hermes\" plugins enable basic >/dev/null 2>&1 || true; " +
+		"\"$HOME/.hermes/hermes-agent/venv/bin/hermes\" --help >/dev/null 2>&1 && touch " + installMarker + "\n"
+	if err := manager.Sandbox.WriteFile(name, hermesInstallScriptGuest, []byte(script)); err != nil {
+		_, _ = fmt.Fprintln(os.Stderr, ui.Warn.Render("Hermes install could not be staged "+
+			"(it will retry on the next workspace start): "+err.Error()))
+		return
+	}
+	logPath := pool + "/run/hermes-install.log"
+	logStep("installing Hermes in the background (detached) → %s", logPath)
+	launch := fmt.Sprintf("mkdir -p %s && setsid bash %s </dev/null >%s 2>&1 & exit 0",
+		shellQuoteGuest(pool+"/run"), shellQuoteGuest(hermesInstallScriptGuest), shellQuoteGuest(logPath))
+	if err := manager.launchDetachedRetry(name, []string{"bash", "-lc", launch}, false, hermesInstallLaunchTimeout); err != nil {
+		_, _ = fmt.Fprintln(os.Stderr, ui.Warn.Render("Hermes install could not be launched "+
 			"(it will retry on the next workspace start): "+err.Error()))
 	}
 }
@@ -1407,9 +1616,7 @@ func (manager Manager) registerCodeReviewGraph(name string, projectConfig *confi
 	logStep("installing code-review-graph in the background (detached) → %s", logPath)
 	launch := fmt.Sprintf("mkdir -p %s && setsid bash %s </dev/null >%s 2>&1 & exit 0",
 		shellQuoteGuest(pool+"/run"), shellQuoteGuest(codeReviewGraphScriptGuest), shellQuoteGuest(logPath))
-	ctx, cancel := context.WithTimeout(context.Background(), codeReviewGraphLaunchTimeout)
-	defer cancel()
-	if _, err := manager.Sandbox.ExecContext(ctx, name, []string{"bash", "-lc", launch}); err != nil {
+	if err := manager.launchDetachedRetry(name, []string{"bash", "-lc", launch}, false, codeReviewGraphLaunchTimeout); err != nil {
 		_, _ = fmt.Fprintln(os.Stderr, ui.Warn.Render("code-review-graph install could not be launched "+
 			"(it will retry on the next workspace start): "+err.Error()))
 	}
@@ -1453,9 +1660,7 @@ func (manager Manager) registerCodebaseMemory(name string, projectConfig *config
 		"[ -f " + installMarker + " ] && exit 0; " +
 		"command -v codebase-memory-mcp >/dev/null 2>&1 || exit 0; " +
 		"timeout --kill-after=15s 45s codebase-memory-mcp install && touch " + installMarker
-	ctx, cancel := context.WithTimeout(context.Background(), codebaseMemoryInstallTimeout)
-	defer cancel()
-	if _, err := manager.Sandbox.ExecContext(ctx, name, []string{"sh", "-lc", script}); err != nil {
+	if err := manager.launchDetachedRetry(name, []string{"sh", "-lc", script}, false, codebaseMemoryInstallTimeout); err != nil {
 		_, _ = fmt.Fprintln(os.Stderr, ui.Warn.Render("codebase-memory-mcp registration could not "+
 			"complete (it will retry on the next workspace start): "+err.Error()))
 	}
@@ -1536,11 +1741,46 @@ func (manager Manager) ensureContainerd(name string) bool {
 	// poll doubles as keeping this exec alive until the setsid'd daemon establishes.
 	// Bounded to ~30s (150 × 0.2s) so a genuinely broken runtime never hangs forever;
 	// exit 0 = ready, exit 1 = gave up.
+	// Do NOT use containerd's native overlayfs snapshotter: the VM root (`/`) is ITSELF
+	// an overlay (the msb OCI upper), and the kernel refuses to stack a second overlay on
+	// it — a container's rootfs mount fails with "invalid argument", so images pull but
+	// containers never START ("installed (stopped)"). Prefer the **fuse-overlayfs**
+	// snapshotter (userspace overlay via /dev/fuse — works on top of the overlay root and
+	// keeps layer sharing); it needs the bundled `containerd-fuse-overlayfs-grpc` proxy
+	// (registered as a containerd proxy_plugin) AND the `fuse3` package's `mount.fuse3`
+	// helper (baked into the base image). Start the grpc proxy and WAIT for its socket; if
+	// it comes up, default nerdctl to fuse-overlayfs, else FALL BACK to the **native**
+	// snapshotter (a full-copy snapshotter that needs no mount and always works on an
+	// overlay root — costs disk, but reliable). containerd loads both, so nerdctl's
+	// default (nerdctl.toml) selects which is used by every pull/run.
+	//
+	// CRITICAL (containerd 2.x): the config MUST be `version = 3` AND declare a transfer
+	// `unpack_config` entry for the chosen (platform, snapshotter) pair. containerd 2.x
+	// pulls through the transfer service, whose unpacker refuses to extract into a
+	// snapshotter it has no unpack_config for — the image pulls but extraction dies with
+	// `unable to initialize unpacker: no unpack platforms defined: invalid argument`, so
+	// the app "installs" but never runs. The default overlayfs snapshotter is implicitly
+	// unpackable, but our fuse-overlayfs/native snapshotters are NOT, so we list the one
+	// we actually use. The platform is derived from `uname -m` (linux/arm64 on Apple
+	// Silicon, linux/amd64 on x86). Verified live: with this entry, image pulls extract.
+	//
+	// The fuse-overlayfs grpc socket is `rm -f`'d before (re)starting the daemon: a stale
+	// socket FILE left by a prior boot whose daemon is gone would satisfy the `-S` wait
+	// yet refuse connections at unpack time (`connection refused`), so we always recreate
+	// it fresh.
 	bootCmd := fmt.Sprintf(
-		"setsid sh -c 'containerd >%s 2>&1 &'; "+
+		"mkdir -p /etc/containerd /etc/nerdctl /var/lib/containerd-fuse-overlayfs; "+
+			"rm -f /run/containerd-fuse-overlayfs.sock; "+
+			"setsid sh -c 'containerd-fuse-overlayfs-grpc /run/containerd-fuse-overlayfs.sock /var/lib/containerd-fuse-overlayfs >%s 2>&1 &'; "+
+			"s=0; while [ $s -lt 20 ] && [ ! -S /run/containerd-fuse-overlayfs.sock ]; do s=$((s+1)); sleep 0.5; done; "+
+			"if [ -S /run/containerd-fuse-overlayfs.sock ]; then snap=fuse-overlayfs; else snap=native; fi; "+
+			"arch=$(uname -m); case \"$arch\" in aarch64|arm64) plat=linux/arm64;; x86_64|amd64) plat=linux/amd64;; *) plat=linux/$arch;; esac; "+
+			"printf 'version = 3\\n[proxy_plugins]\\n  [proxy_plugins.\"fuse-overlayfs\"]\\n    type = \"snapshot\"\\n    address = \"/run/containerd-fuse-overlayfs.sock\"\\n[plugins.\"io.containerd.transfer.v1.local\"]\\n  [[plugins.\"io.containerd.transfer.v1.local\".unpack_config]]\\n    platform = \"%%s\"\\n    snapshotter = \"%%s\"\\n' \"$plat\" \"$snap\" > /etc/containerd/config.toml; "+
+			"printf 'snapshotter = \"%%s\"\\n' \"$snap\" > /etc/nerdctl/nerdctl.toml; "+
+			"setsid sh -c 'containerd >%s 2>&1 &'; "+
 			"iters=0; while [ $iters -lt 150 ]; do timeout 5 nerdctl info >/dev/null 2>&1 && exit 0; "+
 			"iters=$((iters+1)); sleep 0.2; done; exit 1",
-		shellQuoteGuest(containerdLog))
+		shellQuoteGuest(fuseOverlayfsLog), shellQuoteGuest(containerdLog))
 	result, err := manager.Sandbox.ExecRoot(name, []string{"sh", "-c", bootCmd})
 	if err != nil {
 		_, _ = fmt.Fprintf(os.Stderr, "warning: could not start the in-VM container runtime in workspace %q: %v\n", name, err)
@@ -1552,6 +1792,75 @@ func (manager Manager) ensureContainerd(name string) bool {
 		return false
 	}
 	return true
+}
+
+// autostartApps starts every INSTALLED in-VM app container AND every installed agent-CLI
+// dashboard at workspace start so they are reachable from the host browser by default
+// (their host ports were already published by the microVM create). It is DETACHED +
+// best-effort: it never fails or blocks the workspace start.
+//
+//   - App CONTAINERS run as ROOT (nerdctl needs root). Because a first-start image pull is
+//     a long in-VM exec that would block the start AND every other exec (the single msb
+//     relay), the container launch is staged to a guest-only script and setsid'd into the
+//     background — exactly like registerCaveman — so the launcher exec returns in ms. The
+//     script is idempotent (`nerdctl rm -f` then `run`), so it runs every start (only the
+//     FIRST pulls; later starts reuse the cached image). Output goes to the bind-mounted
+//     run/apps-autostart.log so it is readable on the host.
+//   - DASHBOARDS (e.g. hermes) run as the WORKSPACE USER and are a process, not a container.
+//     Each is pgrep-guarded so a second start does not double-launch, then setsid'd with the
+//     server bound to 0.0.0.0 so the published host port reaches it.
+func (manager Manager) autostartApps(name string, projectConfig *config.Config, gatewayURL string) {
+	if projectConfig == nil {
+		return
+	}
+	logPath := workspaceWorkdir + "/.ai-platform/run/apps-autostart.log"
+	// App containers (root). The gateway URL is baked (non-secret); the scoped key stays a
+	// shell reference resolved in-VM, so no key value is staged.
+	if script := apps.AppsAutostartScript(projectConfig, gatewayURL); script != "" {
+		if err := manager.Sandbox.WriteFile(name, appsAutostartScriptGuest, []byte(script)); err != nil {
+			_, _ = fmt.Fprintf(os.Stderr, "warning: could not stage in-VM app autostart in workspace %q: %v\n", name, err)
+		} else {
+			logStep("auto-starting installed in-VM apps in the background (detached) → %s", logPath)
+			launch := fmt.Sprintf("mkdir -p %s && setsid bash %s </dev/null >%s 2>&1 & exit 0",
+				shellQuoteGuest(workspaceWorkdir+"/.ai-platform/run"), shellQuoteGuest(appsAutostartScriptGuest), shellQuoteGuest(logPath))
+			if err := manager.launchDetachedRetry(name, []string{"bash", "-lc", launch}, true, appsAutostartLaunchTimeout); err != nil {
+				_, _ = fmt.Fprintf(os.Stderr, "warning: could not launch in-VM app autostart in workspace %q: %v\n", name, err)
+			}
+		}
+	}
+	// Agent-CLI dashboards (workspace user).
+	if command := dashboardAutostartCommand(projectConfig, logPath); command != "" {
+		logStep("auto-starting installed agent dashboards in the background (detached)")
+		if err := manager.launchDetachedRetry(name, []string{"bash", "-lc", command}, false, appsAutostartLaunchTimeout); err != nil {
+			_, _ = fmt.Fprintf(os.Stderr, "warning: could not launch in-VM agent dashboards in workspace %q: %v\n", name, err)
+		}
+	}
+}
+
+// dashboardAutostartCommand builds the (workspace-user) shell command that pgrep-guards
+// and setsid-launches every installed agent-CLI dashboard, or "" when none are installed.
+// It sources the agent env first (dashboards like hermes read AIP_GATEWAY_KEY from it) and
+// binds each server to 0.0.0.0:<port> so the published host port reaches it.
+func dashboardAutostartCommand(projectConfig *config.Config, logPath string) string {
+	var launches []string
+	for _, entry := range projectConfig.AgentDashboards {
+		if !apps.IsDashboardAgent(entry.Key) {
+			continue
+		}
+		launches = append(launches, fmt.Sprintf(
+			"pgrep -f %s >/dev/null 2>&1 || setsid %s dashboard --host 0.0.0.0 --port %d </dev/null >>%s 2>&1 &",
+			shellQuoteGuest(entry.Key+" dashboard"), entry.Key, entry.Port, shellQuoteGuest(logPath)))
+	}
+	if len(launches) == 0 {
+		return ""
+	}
+	// Ensure the uv-tool bin dir is on PATH: the dashboard binary (e.g. hermes) is a
+	// wrapper in ~/.local/bin, and this command may run under a shell that hasn't
+	// picked it up. Explicit + idempotent so the launch never fails "command not found".
+	header := `case ":$PATH:" in *":$HOME/.local/bin:"*) ;; *) export PATH="$HOME/.local/bin:$PATH" ;; esac; ` +
+		"set -a; [ -f " + shellQuoteGuest(agentEnvGuestPath) + " ] && . " + shellQuoteGuest(agentEnvGuestPath) + "; set +a; " +
+		"mkdir -p " + shellQuoteGuest(workspaceWorkdir+"/.ai-platform/run") + "; "
+	return header + strings.Join(launches, " ") + " exit 0"
 }
 
 // mergePublishPorts overlays the app-derived publish mappings onto the project's
@@ -1874,28 +2183,28 @@ func ensureRelSymlink(linkPath, target string) error {
 // picker — the workspace still starts, never failing over a model lookup. The user
 // adds provider keys (`ai keys`) / pulls Ollama models and the served set grows; the
 // in-VM `refresh-models` command re-pulls it without a restart.
-func (manager Manager) pickerModels() []string {
+func (manager Manager) pickerModels() []agentcfg.Model {
 	if manager.Served == nil {
-		return []string{}
+		return []agentcfg.Model{}
 	}
 	served, err := manager.Served.ServedModels()
 	if err != nil {
 		_, _ = fmt.Fprintf(os.Stderr, "warning: could not list the gateway's served models for the agent picker (continuing with an empty list): %v\n", err)
-		return []string{}
+		return []agentcfg.Model{}
 	}
 	seen := make(map[string]struct{}, len(served))
-	models := make([]string, 0, len(served))
+	models := make([]agentcfg.Model, 0, len(served))
 	for _, model := range served {
-		if model == "" {
+		if model.Name == "" {
 			continue
 		}
-		if _, ok := seen[model]; ok {
+		if _, ok := seen[model.Name]; ok {
 			continue
 		}
-		seen[model] = struct{}{}
+		seen[model.Name] = struct{}{}
 		models = append(models, model)
 	}
-	sort.Strings(models)
+	sort.Slice(models, func(i, j int) bool { return models[i].Name < models[j].Name })
 	return models
 }
 

@@ -118,20 +118,24 @@ func newSetupCmd(em *output.Emitter, exit *int) *cobra.Command {
 			if proceed := preflightPrerequisites(em, exit, opts, deps, interactive); !proceed {
 				return nil
 			}
-			// Pre-pull the service-tier images with STREAMED native progress before
-			// the reconcile, on a human (non-JSON) run that actually runs the service
-			// tier (standalone/server, not client). Each ensure* launches a container
-			// with `docker run -d`, whose implicit pull output the prober CAPTURES
-			// (invisible) — so a multi-GB first-run pull (e.g. ollama) looks hung.
-			// Pre-pulling renders docker's native progress bars to the terminal; the
-			// later `docker run -d` then finds the image present and returns instantly.
-			// This MUST be sequential with (and before) the bubbletea RunSteps below —
-			// native docker progress and a bubbletea program cannot both own the
-			// terminal at once. Under --json we skip it (keep stdout a clean envelope;
-			// the reconcile's implicit pull stays as-is). On error we warn and
+			// Force-pull the LATEST service-tier images with STREAMED native progress
+			// before the reconcile, on a human (non-JSON) run that actually runs the
+			// service tier (standalone/server, not client). This is a FORCE pull
+			// (UpdateImages, not PullImages): it does NOT skip images already present,
+			// so a moved tag like `latest` (e.g. the litellm image tracks `latest`) is
+			// refreshed on every `ai setup` — the reconcile below then recreates any
+			// service container found running a now-stale image. Each ensure* launches a
+			// container with `docker run -d`, whose implicit pull output the prober
+			// CAPTURES (invisible) — so a multi-GB first-run pull (e.g. ollama) looks
+			// hung; pulling here renders docker's native progress bars to the terminal,
+			// and the later `docker run -d` finds the freshly-pulled image present and
+			// returns instantly. This MUST be sequential with (and before) the bubbletea
+			// RunSteps below — native docker progress and a bubbletea program cannot both
+			// own the terminal at once. Under --json we skip it (keep stdout a clean
+			// envelope; the reconcile's implicit pull stays as-is). On error we warn and
 			// continue — the reconcile re-pulls anything still missing.
 			if !em.JSON && mode != runtime.RoleClient {
-				_, _ = fmt.Fprintln(em.Err, ui.Heading.Render("Pulling container images")+ui.Muted.Render(" (first run may take a few minutes)…"))
+				_, _ = fmt.Fprintln(em.Err, ui.Heading.Render("Pulling the latest container images")+ui.Muted.Render(" (first run may take a few minutes)…"))
 				// Resolve the effective enabled optional-service set so the pre-pull
 				// includes a disabled optional service's (large) images ONLY when it
 				// is enabled (same precedence as the reconcile: explicit choice >
@@ -142,8 +146,8 @@ func newSetupCmd(em *output.Emitter, exit *int) *cobra.Command {
 				// setup.Run) so a changed selection is honoured — an ON→OFF secret-masking
 				// change must not pull the Presidio images.
 				enabledGuardrails := setup.ResolveGuardrails(opts, persisted)
-				if err := deps.Services.PullImages(enabledOptional, enabledGuardrails, em.Err, func(line string) { _, _ = fmt.Fprintln(em.Err, line) }); err != nil {
-					_, _ = fmt.Fprintf(em.Err, "warning: image pre-pull incomplete (%s) — continuing; the reconcile will retry\n", err)
+				if err := deps.Services.UpdateImages(enabledOptional, enabledGuardrails, em.Err, func(line string) { _, _ = fmt.Fprintln(em.Err, line) }); err != nil {
+					_, _ = fmt.Fprintf(em.Err, "warning: image pull incomplete (%s) — continuing; the reconcile will retry\n", err)
 				}
 			}
 			var report *setup.Report
@@ -664,7 +668,7 @@ func printLiteLLMOpenInstructions(em *output.Emitter, server bool, domain string
 	}
 	_, _ = fmt.Fprintf(em.Err, "  Secure it anytime with %s. UI: %s\n",
 		ui.Primary.Render("`ai litellm password`"),
-		ui.Value.Render(fmt.Sprintf("http://litellm.%s:18787/ui", domain)))
+		ui.Value.Render(fmt.Sprintf("http://litellm.%s:18787/ui/login", domain)))
 }
 
 // liteLLMPasswordRequiredAtSetup is the pure role decision for whether `ai setup`
@@ -720,8 +724,17 @@ func secureLiteLLMUI(em *output.Emitter, interactive bool, password, domain stri
 		}
 		masterKey = generated
 	}
-	if err := setup.RelaunchLiteLLMWithAuth(password, masterKey); err != nil {
-		_, _ = fmt.Fprintf(em.Err, "warning: could not secure the LiteLLM UI: %s\n", err)
+	// Relaunching LiteLLM (recreate the container against the new auth) takes a few
+	// seconds; show a spinner on a TTY so the user knows it is working and not hung.
+	relaunch := func() error { return setup.RelaunchLiteLLMWithAuth(password, masterKey) }
+	var relaunchErr error
+	if interactive {
+		relaunchErr = ui.RunWithSpinner(em.Err, "securing the LiteLLM admin UI", relaunch)
+	} else {
+		relaunchErr = relaunch()
+	}
+	if relaunchErr != nil {
+		_, _ = fmt.Fprintf(em.Err, "warning: could not secure the LiteLLM UI: %s\n", relaunchErr)
 		return
 	}
 	_, _ = fmt.Fprintf(em.Err,
@@ -729,7 +742,7 @@ func secureLiteLLMUI(em *output.Emitter, interactive bool, password, domain stri
 			"  (reachable once the /etc/hosts or DNS step maps %s to this host)\n"+
 			"  %s %s\n",
 		ui.Value.Render(`"admin"`),
-		ui.Value.Render(fmt.Sprintf("http://litellm.%s:18787/ui", domain)),
+		ui.Value.Render(fmt.Sprintf("http://litellm.%s:18787/ui/login", domain)),
 		ui.Value.Render(fmt.Sprintf("litellm.%s", domain)),
 		ui.Label.Render("master key (also the API key):"),
 		ui.Value.Render(masterKey))

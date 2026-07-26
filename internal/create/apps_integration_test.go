@@ -29,14 +29,14 @@ func TestAppPortEndToEnd(test *testing.T) {
 		AgentCLIs:   []string{"opencode"},
 		DefaultTool: "opencode",
 		Root:        root,
-		Apps:        []string{"openwebui", "anythingllm"},
+		Apps:        []string{"openwebui"},
 		AppPorts:    map[string]int{"openwebui": 21500},
 	}
 	if _, _, err := Execute(spec, "2026-07-20T00:00:00Z", nil); err != nil {
 		test.Fatalf("Execute: %v", err)
 	}
 
-	// 1) The chosen port is honored + persisted; the un-chosen app is auto-allocated.
+	// 1) The chosen port is honored + persisted.
 	projectConfig, err := config.LoadProjectConfig(root)
 	if err != nil {
 		test.Fatalf("LoadProjectConfig: %v", err)
@@ -48,14 +48,11 @@ func TestAppPortEndToEnd(test *testing.T) {
 	if ports["openwebui"] != 21500 {
 		test.Errorf("openwebui port = %d, want the chosen 21500", ports["openwebui"])
 	}
-	if ports["anythingllm"] == 0 || ports["anythingllm"] == 21500 {
-		test.Errorf("anythingllm port = %d, want an auto-allocated port distinct from 21500", ports["anythingllm"])
-	}
 
 	// 2) PublishedPorts exposes each installed app on host==guest.
 	published := apps.PublishedPorts(projectConfig)
-	if len(published) != 2 {
-		test.Fatalf("PublishedPorts = %v, want 2 mappings", published)
+	if len(published) != 1 {
+		test.Fatalf("PublishedPorts = %v, want 1 mapping", published)
 	}
 	foundOpenWebUI := false
 	for _, mapping := range published {
@@ -94,7 +91,10 @@ func TestHermesDashboardPortEndToEnd(test *testing.T) {
 		AgentCLIs:   []string{"opencode", "hermes"},
 		DefaultTool: "opencode",
 		Root:        root,
-		AppPorts:    map[string]int{"hermes": 9119},
+		// A high, unusual port (NOT hermes's default 9119) so the real free-port check in
+		// AllocateDashboardEntries passes even when a live workspace has the hermes
+		// dashboard bound to its default 9119 on this host.
+		AppPorts: map[string]int{"hermes": 29119},
 	}
 	if _, _, err := Execute(spec, "2026-07-21T00:00:00Z", nil); err != nil {
 		test.Fatalf("Execute: %v", err)
@@ -105,14 +105,14 @@ func TestHermesDashboardPortEndToEnd(test *testing.T) {
 		test.Fatalf("LoadProjectConfig: %v", err)
 	}
 	if len(projectConfig.AgentDashboards) != 1 ||
-		projectConfig.AgentDashboards[0].Key != "hermes" || projectConfig.AgentDashboards[0].Port != 9119 {
-		test.Fatalf("agent_dashboards = %+v, want [hermes:9119]", projectConfig.AgentDashboards)
+		projectConfig.AgentDashboards[0].Key != "hermes" || projectConfig.AgentDashboards[0].Port != 29119 {
+		test.Fatalf("agent_dashboards = %+v, want [hermes:29119]", projectConfig.AgentDashboards)
 	}
 
 	network := config.NetworkConfig{PublishPorts: apps.PublishedPorts(projectConfig)}
 	joined := strings.Join(egress.MsbNetworkArgs(network, "host.microsandbox.internal", 18787), " ")
-	if !strings.Contains(joined, "-p 9119:9119") {
-		test.Errorf("msb args must publish the hermes dashboard port (-p 9119:9119), got: %s", joined)
+	if !strings.Contains(joined, "-p 29119:29119") {
+		test.Errorf("msb args must publish the hermes dashboard port (-p 29119:29119), got: %s", joined)
 	}
 }
 

@@ -47,7 +47,7 @@ func TestLiteLLMPasswordClientRole(test *testing.T) {
 
 // TestLiteLLMPasswordResultHuman renders the secured-UI confirmation.
 func TestLiteLLMPasswordResultHuman(test *testing.T) {
-	result := litellmPasswordResult{Secured: true, LoginAs: "admin", URL: "http://litellm.aip.local:18787/ui"}
+	result := litellmPasswordResult{Secured: true, LoginAs: "admin", URL: "http://litellm.aip.local:18787/ui/login"}
 	human := result.Human()
 	if !strings.Contains(human, "admin") || !strings.Contains(human, result.URL) {
 		test.Errorf("Human() missing fields: %q", human)

@@ -858,6 +858,11 @@ func TestStartRejectsInvalidMicrosandboxIdleTimeout(test *testing.T) {
 // host-side templates — the scoped key must never touch host disk.
 func TestStartRoutesAllFiveAgentCLIs(test *testing.T) {
 	root := seedProject(test, "app")
+	if err := config.WriteProject(root, &config.Config{
+		Agent: config.AgentConfig{Tools: []string{"opencode", "claude-code", "codex", "gemini", "copilot"}},
+	}); err != nil {
+		test.Fatal(err)
+	}
 	sandbox := &fakeSandbox{}
 	served := fakeServedModels{models: []string{"ollama/llama3.2:latest"}}
 	manager := Manager{Builder: &fakeBuilder{}, Sandbox: sandbox, Keys: &fakeKeyMinter{}, Served: served, Now: func() string { return "t" }}
@@ -1220,6 +1225,9 @@ func assertProjectConfigsKeyless(test *testing.T, root, key string) {
 		{".claude", "settings.json"}, {".codex", "config.toml"},
 	} {
 		content, err := os.ReadFile(filepath.Join(append([]string{root}, parts...)...))
+		if os.IsNotExist(err) {
+			continue // that CLI isn't installed, so its config is (correctly) not written
+		}
 		if err != nil {
 			test.Fatalf("project config %v not written: %v", parts, err)
 		}
@@ -1801,7 +1809,7 @@ func TestStartWritesTmuxConf(test *testing.T) {
 	if !wrote {
 		test.Fatal("Start must write the managed tmux.conf into the microVM")
 	}
-	if !strings.Contains(string(conf), "status off") || !strings.Contains(string(conf), "mouse off") {
+	if !strings.Contains(string(conf), "status off") || !strings.Contains(string(conf), "mouse on") {
 		test.Errorf("tmux.conf missing transparent settings:\n%s", conf)
 	}
 }
@@ -1848,10 +1856,10 @@ func TestStartInstallsRefreshScript(test *testing.T) {
 		test.Fatalf("staged refresh-models script does not match RefreshScript for the resolved wiring")
 	}
 
-	// The script fetches the served models live from /v1/models — it must NOT bake in
-	// any model list (no served model is embedded).
-	if !strings.Contains(script, "MODELS_URL=") {
-		test.Error("refresh-models script missing the served-models endpoint")
+	// The script fetches the served models (with per-model tool support) live from
+	// /model/info — it must NOT bake in any model list (no served model is embedded).
+	if !strings.Contains(script, "INFO_URL=") {
+		test.Error("refresh-models script missing the model-info endpoint")
 	}
 	if strings.Contains(script, "ollama/llama3.2:latest") {
 		test.Error("refresh-models must not bake in any models (it fetches the served list)")
@@ -2109,8 +2117,15 @@ type fakeServedModels struct {
 	err    error
 }
 
-func (source fakeServedModels) ServedModels() ([]string, error) {
-	return source.models, source.err
+func (source fakeServedModels) ServedModels() ([]agentcfg.Model, error) {
+	if source.err != nil {
+		return nil, source.err
+	}
+	served := make([]agentcfg.Model, len(source.models))
+	for index, name := range source.models {
+		served[index] = agentcfg.Model{Name: name, Tools: true}
+	}
+	return served, nil
 }
 
 // TestStartPickerIsServedModels verifies the in-VM agent model picker is EXACTLY
@@ -2164,7 +2179,7 @@ func TestStartPickerIsServedModels(test *testing.T) {
 // model line.
 func TestStartDefaultsToSetupModel(test *testing.T) {
 	root := seedProject(test, "app")
-	if err := config.WriteProject(root, &config.Config{Agent: config.AgentConfig{GraphifyModel: "qwen2.5-coder:7b"}}); err != nil {
+	if err := config.WriteProject(root, &config.Config{Agent: config.AgentConfig{Tools: []string{"opencode", "codex"}, GraphifyModel: "qwen2.5-coder:7b"}}); err != nil {
 		test.Fatal(err)
 	}
 	sandbox := &fakeSandbox{}
@@ -2758,4 +2773,78 @@ func TestStartWiresOmpWhenSelected(test *testing.T) {
 			test.Errorf("%s -> %s, want %s", rel, got, want)
 		}
 	}
+}
+
+// appsAutostartLaunched reports whether the detached app-container autostart launcher
+// (root exec: `setsid bash <staged script>`) was issued.
+func appsAutostartLaunched(argv [][]string) bool {
+	for _, args := range argv {
+		if len(args) == 3 && args[0] == "bash" && args[1] == "-lc" &&
+			strings.Contains(args[2], "setsid bash") && strings.Contains(args[2], appsAutostartScriptGuest) {
+			return true
+		}
+	}
+	return false
+}
+
+// dashboardLaunched reports whether a workspace-user exec was issued that pgrep-guards
+// and setsid-launches `<cli> dashboard --host 0.0.0.0 --port <port>`.
+func dashboardLaunched(argv [][]string, cli string, port string) bool {
+	for _, args := range argv {
+		if len(args) == 3 && args[0] == "bash" && args[1] == "-lc" &&
+			strings.Contains(args[2], "setsid "+cli+" dashboard --host 0.0.0.0 --port "+port) &&
+			strings.Contains(args[2], "pgrep -f '"+cli+" dashboard'") {
+			return true
+		}
+	}
+	return false
+}
+
+// TestAutostartApps: with an installed app + dashboard, autostartApps stages the app
+// script off host disk (a guest-only path), launches it DETACHED as root, and launches
+// the dashboard as the workspace user; with none installed it is a no-op.
+func TestAutostartApps(test *testing.T) {
+	test.Run("apps and dashboards installed", func(test *testing.T) {
+		sandbox := &fakeSandbox{}
+		manager := newManager(&fakeBuilder{}, sandbox)
+		projectConfig := &config.Config{
+			Apps:            []config.AppEntry{{Key: "openwebui", Port: 8080}},
+			AgentDashboards: []config.AppEntry{{Key: "hermes", Port: 9119}},
+		}
+		manager.autostartApps("aip-app", projectConfig, "http://host.microsandbox.internal:18787/v1")
+
+		// App script staged to the GUEST-ONLY path (never under the bind-mounted run/ dir).
+		script := string(sandbox.written[appsAutostartScriptGuest])
+		if !strings.Contains(script, "nerdctl run -d") || !strings.Contains(script, "aip-app-openwebui") {
+			test.Fatalf("app autostart script not staged to %s: %v", appsAutostartScriptGuest, sandbox.written)
+		}
+		for guestPath := range sandbox.written {
+			if strings.Contains(guestPath, "/.ai-platform/run/") {
+				test.Errorf("app script must NOT be staged under the host-bind-mounted run/ dir, got %q", guestPath)
+			}
+		}
+		// The app-container launch is a ROOT exec (nerdctl needs root) → execRootArgv.
+		if !appsAutostartLaunched(sandbox.execRootArgv) {
+			test.Errorf("app autostart must be launched detached as root: %v", sandbox.execRootArgv)
+		}
+		// The dashboard launch is a WORKSPACE-USER exec (ExecContext) → allExecArgv.
+		if !dashboardLaunched(sandbox.allExecArgv, "hermes", "9119") {
+			test.Errorf("hermes dashboard must be launched detached as the workspace user: %v", sandbox.allExecArgv)
+		}
+	})
+
+	test.Run("nothing installed is a no-op", func(test *testing.T) {
+		sandbox := &fakeSandbox{}
+		manager := newManager(&fakeBuilder{}, sandbox)
+		manager.autostartApps("aip-app", &config.Config{}, "http://host.microsandbox.internal:18787/v1")
+		if _, ok := sandbox.written[appsAutostartScriptGuest]; ok {
+			test.Errorf("no apps → no staged app script, got: %v", sandbox.written)
+		}
+		if appsAutostartLaunched(sandbox.execRootArgv) {
+			test.Errorf("no apps → no app launch exec: %v", sandbox.execRootArgv)
+		}
+		if dashboardLaunched(sandbox.allExecArgv, "hermes", "9119") {
+			test.Errorf("no dashboards → no dashboard launch exec: %v", sandbox.allExecArgv)
+		}
+	})
 }

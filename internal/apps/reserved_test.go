@@ -17,7 +17,7 @@ func TestReservedPortsAcrossWorkspaces(test *testing.T) {
 	if err := config.WriteProject(rootA, &config.Config{Apps: []config.AppEntry{{Key: "openwebui", Port: 21000}}}); err != nil {
 		test.Fatal(err)
 	}
-	if err := config.WriteProject(rootB, &config.Config{Apps: []config.AppEntry{{Key: "anythingllm", Port: 21001}}}); err != nil {
+	if err := config.WriteProject(rootB, &config.Config{Apps: []config.AppEntry{{Key: "openwebui", Port: 21001}}}); err != nil {
 		test.Fatal(err)
 	}
 	index := state.NewProjectsIndex()

@@ -19,11 +19,21 @@ func (prober fakeRuntimeProber) LookPath(file string) (string, error) {
 func (fakeRuntimeProber) Run(string, ...string) ([]byte, error) { return nil, exec.ErrNotFound }
 func (fakeRuntimeProber) Exists(string) bool                    { return false }
 
+// stubMsbBinary overrides the msb resolver for a test (so unit tests never download the
+// real binary) and restores it afterward.
+func stubMsbBinary(test *testing.T, path string, err error) {
+	test.Helper()
+	previous := msbBinaryFn
+	msbBinaryFn = func() (string, error) { return path, err }
+	test.Cleanup(func() { msbBinaryFn = previous })
+}
+
 func TestRealBuilderAcceptsPodmanOnlyHost(test *testing.T) {
 	// A host with only Podman (no Docker) must get PAST runtime detection — not
-	// be rejected as "no runtime" (Slice 6 — never hardcode docker). With msb
-	// absent in this fake host, Build then fails on the missing microVM tool, so
-	// reaching ErrMsbMissing proves the Podman runtime was accepted.
+	// be rejected as "no runtime" (Slice 6 — never hardcode docker). With the msb
+	// resolver reporting the tool unavailable, Build then fails on the missing microVM
+	// tool, so reaching ErrMsbMissing proves the Podman runtime was accepted.
+	stubMsbBinary(test, "", errors.New("no pinned msb binary"))
 	builder := realBuilder{prober: fakeRuntimeProber{bins: map[string]bool{"podman": true}}}
 	err := builder.Build("/projects/app", "aip-app:latest")
 	if !errors.Is(err, ErrMsbMissing) {

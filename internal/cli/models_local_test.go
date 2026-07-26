@@ -28,7 +28,7 @@ type fakeRegistrar struct {
 	unregErr     error
 }
 
-func (fake *fakeRegistrar) RegisterOllamaModel(name string) error {
+func (fake *fakeRegistrar) RegisterOllamaModel(name string, _ bool) error {
 	fake.registered = append(fake.registered, name)
 	return fake.registerErr
 }

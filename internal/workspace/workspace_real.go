@@ -15,6 +15,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/jt-helsinki/stack-genie/internal/agentcfg"
 	"github.com/jt-helsinki/stack-genie/internal/config"
 	"github.com/jt-helsinki/stack-genie/internal/litellm"
 	"github.com/jt-helsinki/stack-genie/internal/runtime"
@@ -42,8 +43,12 @@ func (builder realBuilder) Build(projectRoot, imageRef string) error {
 	if err != nil {
 		return ErrContainerRuntimeMissing
 	}
-	if _, err := builder.prober.LookPath("msb"); err != nil {
-		return ErrMsbMissing
+	// Resolve the PLATFORM-MANAGED msb (pinned to the SDK FFI's version, downloaded +
+	// sha256-verified into ~/.ai-platform/bin) rather than the user's PATH `msb`, which may
+	// be a different build/source and would then reject the FFI-migrated DB on `msb load`.
+	msbBin, err := msbBinaryFn()
+	if err != nil {
+		return fmt.Errorf("%w: %v", ErrMsbMissing, err)
 	}
 
 	// 1. Build the image from <projectRoot>/.ai-platform/Dockerfile.
@@ -74,7 +79,7 @@ func (builder realBuilder) Build(projectRoot, imageRef string) error {
 	//    would keep booting a STALE earlier image — e.g. one built before a Dockerfile
 	//    change such as adding tmux. `--tag` makes each start boot exactly what was
 	//    just built. (Verified against msb 0.5.10: `load -t <REF>`.)
-	if err := runStreaming("msb", "load", "--tag", imageRef, "--input", tarPath); err != nil {
+	if err := runStreaming(msbBin, "load", "--tag", imageRef, "--input", tarPath); err != nil {
 		return fmt.Errorf("could not load the workspace image into Microsandbox")
 	}
 	return nil
@@ -82,11 +87,20 @@ func (builder realBuilder) Build(projectRoot, imageRef string) error {
 
 // microVMMemory is the DEFAULT memory allocated to a workspace microVM when the
 // project config does not set `workspace.memory_limit`. It must hold the guest OS +
-// the rootful in-VM containerd + any in-VM app containers (Open WebUI / AnythingLLM
-// are heavy); 1G was too small — pulling/running an app could OOM-kill containerd
+// the rootful in-VM containerd + any in-VM app containers (Open WebUI is
+// heavy); 1G was too small — pulling/running an app could OOM-kill containerd
 // mid-pull ("connection refused" on its socket), so the fallback is 4G. (A freshly
 // created project's config sets memory_limit to 8 (GB); this only applies when it's empty.)
 const microVMMemory = "4G"
+
+// microVMDisk is the DEFAULT writable rootfs (OCI overlay upper) size in MiB when the
+// project config does not set `workspace.disk_limit`. msb's own default (~4 GiB) holds
+// containerd's image store, which is too small for the multi-GB in-VM app images (Open
+// WebUI is opencv/torch-heavy) — two apps overflow it with "no space left on device".
+// 16 GiB (the default) fits two heavy in-VM apps; the upper is sparse, so this is a
+// ceiling, not upfront usage, and it is user-configurable (workspace.disk_limit /
+// `ai resize`).
+const microVMDisk = 16 * 1024
 
 // msbMemory renders a memory value for msb's `--memory` flag, which wants a unit
 // (e.g. 8G). The platform's memory config is a plain number of GB, so a unit-less
@@ -119,8 +133,10 @@ const dnsNameserver = "127.0.0.1:15353"
 type realSandbox struct{ prober runtime.Prober }
 
 func (sandbox realSandbox) ensureInstalled() error {
-	if _, err := sandbox.prober.LookPath("msb"); err != nil {
-		return ErrMsbMissing
+	// Ensure the PLATFORM-MANAGED msb (pinned to the SDK FFI's version) is installed rather
+	// than merely probing PATH — the PATH `msb` may be a divergent build/source.
+	if _, err := msbBinaryFn(); err != nil {
+		return fmt.Errorf("%w: %v", ErrMsbMissing, err)
 	}
 	return nil
 }
@@ -135,7 +151,7 @@ func (sandbox realSandbox) Create(name, imageRef, projectMount, overlayPath stri
 		return err
 	}
 	args := sandboxCreateArgs(name, imageRef, projectMount, overlayPath, resources, netArgs)
-	if err := runStreaming("msb", args...); err != nil {
+	if err := runStreaming(msbBinOrDefault(), args...); err != nil {
 		return fmt.Errorf("could not create workspace %q — run `ai doctor` to check Microsandbox and disk space", name)
 	}
 	return nil
@@ -184,7 +200,7 @@ func (sandbox realSandbox) Start(name string) error {
 	// Create) already boots it, so a follow-up start reports "already running" —
 	// that is success here, not a failure. Capture the output to tell that case
 	// apart from a real error (and to keep msb's noise out of the caller's screen).
-	if combined, err := runCaptured("msb", "start", name); err != nil {
+	if combined, err := runCaptured(msbBinOrDefault(), "start", name); err != nil {
 		if strings.Contains(combined, "already running") {
 			return nil
 		}
@@ -197,7 +213,7 @@ func (sandbox realSandbox) Stop(name string) error {
 	if err := sandbox.ensureInstalled(); err != nil {
 		return err
 	}
-	if err := runStreaming("msb", "stop", "-f", name); err != nil {
+	if err := runStreaming(msbBinOrDefault(), "stop", "-f", name); err != nil {
 		return fmt.Errorf("could not stop workspace %q", name)
 	}
 	return nil
@@ -208,7 +224,7 @@ func (sandbox realSandbox) Destroy(name string) error {
 		return err
 	}
 	// `-f` stops the microVM first if running, then removes it.
-	if err := runStreaming("msb", "remove", "-f", name); err != nil {
+	if err := runStreaming(msbBinOrDefault(), "remove", "-f", name); err != nil {
 		return fmt.Errorf("could not remove workspace %q", name)
 	}
 	return nil
@@ -273,7 +289,7 @@ func (sandbox realSandbox) execAs(ctx context.Context, name, user string, argv [
 	}
 	args = append(args, name, "--")
 	args = append(args, argv...)
-	command := exec.CommandContext(ctx, "msb", args...)
+	command := exec.CommandContext(ctx, msbBinOrDefault(), args...)
 	var stdout, stderr bytes.Buffer
 	command.Stdout = &stdout
 	command.Stderr = &stderr
@@ -315,7 +331,7 @@ func (sandbox realSandbox) ExecInteractive(name string, argv []string) error {
 	// Exec/WriteFile) so interactive shells, agent CLIs, and tmux sessions all
 	// share that user's home + the agent provider configs under /home/workspace.
 	args := append([]string{"exec", "-t", "-u", "workspace", name, "--"}, argv...)
-	command := exec.Command("msb", args...)
+	command := exec.Command(msbBinOrDefault(), args...)
 	command.Stdin = os.Stdin
 	command.Stdout = os.Stdout
 	command.Stderr = os.Stderr
@@ -342,7 +358,7 @@ func (sandbox realSandbox) WriteFile(name, guestPath string, content []byte) err
 	// Single shell so the mkdir and the redirected cat share one exec; content
 	// arrives on stdin (kept out of argv).
 	shellScript := fmt.Sprintf("mkdir -p %s && cat > %s", shellQuote(guestDir), shellQuote(guestPath))
-	command := exec.Command("msb", "exec", name, "-u", "workspace", "--", "sh", "-c", shellScript)
+	command := exec.Command(msbBinOrDefault(), "exec", name, "-u", "workspace", "--", "sh", "-c", shellScript)
 	command.Stdin = bytes.NewReader(content)
 	command.Stdout = os.Stdout
 	command.Stderr = os.Stderr
@@ -369,7 +385,7 @@ func (sandbox realSandbox) LogTailContext(ctx context.Context, name string, line
 	if lines > 0 {
 		args = append(args, "--tail", strconv.Itoa(lines))
 	}
-	command := exec.CommandContext(ctx, "msb", args...)
+	command := exec.CommandContext(ctx, msbBinOrDefault(), args...)
 	var stdout, stderr bytes.Buffer
 	command.Stdout = &stdout
 	command.Stderr = &stderr
@@ -394,7 +410,7 @@ func (sandbox realSandbox) InspectNetwork(name string) (NetworkPolicy, error) {
 	if err := sandbox.ensureInstalled(); err != nil {
 		return NetworkPolicy{}, err
 	}
-	command := exec.Command("msb", "inspect", name, "--format", "json")
+	command := exec.Command(msbBinOrDefault(), "inspect", name, "--format", "json")
 	var stdout, stderr bytes.Buffer
 	command.Stdout = &stdout
 	command.Stderr = &stderr
@@ -426,7 +442,7 @@ func (sandbox realSandbox) IsRunning(ctx context.Context, name string) (bool, er
 	if err := sandbox.ensureInstalled(); err != nil {
 		return false, err
 	}
-	command := exec.CommandContext(ctx, "msb", "inspect", name, "--format", "json")
+	command := exec.CommandContext(ctx, msbBinOrDefault(), "inspect", name, "--format", "json")
 	var stdout, stderr bytes.Buffer
 	command.Stdout = &stdout
 	command.Stderr = &stderr
@@ -591,18 +607,18 @@ func runCaptured(name string, args ...string) (string, error) {
 // degrade to an empty picker (it never fails the workspace start).
 type servedModelsClient struct{ manager *litellm.KeyManager }
 
-func (client servedModelsClient) ServedModels() ([]string, error) {
+func (client servedModelsClient) ServedModels() ([]agentcfg.Model, error) {
 	models, err := client.manager.ListModels()
 	if err != nil {
 		return nil, err
 	}
-	names := make([]string, 0, len(models))
+	served := make([]agentcfg.Model, 0, len(models))
 	for _, model := range models {
 		if model.Name != "" {
-			names = append(names, model.Name)
+			served = append(served, agentcfg.Model{Name: model.Name, Tools: model.SupportsTools})
 		}
 	}
-	return names, nil
+	return served, nil
 }
 
 // RealManager builds a Manager wired to the actual host (used by the CLI).

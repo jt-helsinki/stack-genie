@@ -11,18 +11,19 @@ flowchart LR
 
   subgraph WS["Workspace · Microsandbox microVM (one per project)"]
     direction TB
-    AGENT["Agent CLI<br/>opencode · pi · claude · codex · gemini<br/><b>holds only a scoped LiteLLM virtual key</b>"]:::vm
+    AGENT["Agent CLI<br/>opencode · omp · claude · codex · gemini · copilot · hermes<br/><b>holds only a scoped LiteLLM virtual key</b>"]:::vm
     RT["In-VM container runtime<br/>rootful containerd · nerdctl · runc · CNI"]:::core
-    TOOLS["Baked-in dev tooling<br/>Node.js · Python 3 · uv · <b>Graphify</b> (graphifyy, uv tool install)<br/>registered with each agent CLI at start · per-project ~/project/.venv-msb"]:::core
+    TOOLS["Baked-in dev tooling<br/>Node.js · Python 3 · uv · rtk · Headroom CLI<br/>per-project ~/project/.venv-msb"]:::core
+    AITOOLS["Opt-in AI tools (--tools)<br/><b>caveman · graphify · code-review-graph · codebase-memory-mcp</b><br/>conditional Dockerfile snippets · registered with each agent CLI at start"]:::opt
     APPS["Opt-in in-VM apps (nerdctl)<br/>Open WebUI · AnythingLLM<br/>per-(workspace,app) host port · /workspace mount"]:::opt
   end
 
-  subgraph TIER["Host · Docker service tier (aip-net) — internal-only but nginx (loopback: DB, DNS)"]
+  subgraph TIER["Host · Docker service tier (aip-net) — internal-only but nginx (loopback: DNS only)"]
     direction TB
     PROXY["nginx gateway · aip-proxy<br/>host :18787 — <b>SOLE host entry</b>, TLS-ready<br/>/ &amp; /v1 → LiteLLM · /llm → LiteLLM · /ollama → Ollama<br/>vhosts: litellm.&lt;domain&gt; · valkey.&lt;domain&gt;"]:::gw
     HEAD["Headroom · aip-headroom :8787<br/>input-compression guardrail service<br/>LiteLLM calls in-process (internal-only)"]:::gw
     LLM["LiteLLM · aip-litellm :4000<br/><b>router + user-selectable guardrails</b><br/>(Headroom on by default; secret-masking/<br/>hide-secrets/tool-firewall opt-in)<br/>admin UI via /llm + litellm.&lt;domain&gt; (internal-only)"]:::core
-    PG[("Postgres · aip-litellm-db<br/>(loopback :5442)<br/>virtual keys · spend · provider creds")]:::store
+    PG[("Postgres · aip-litellm-db :5432<br/>(internal-only · no host port)<br/>virtual keys · spend · provider creds")]:::store
     PRES["Presidio · aip-presidio-{analyzer,anonymizer}<br/>secret masking (pre/post-call)"]:::core
     OLL["Ollama · aip-ollama :11434<br/>local models (no default · DB-backed · internal-only)"]:::core
     VALKEY[("Valkey · aip-valkey :6379<br/>LiteLLM response cache (standalone · internal-only)")]:::store
@@ -37,7 +38,7 @@ flowchart LR
   APPS == "same gateway path (model calls)" ==> PROXY
   CLI -- "/v1 model path · /llm + /ollama admin" --> PROXY
   AGENT -. "every DNS name audited" .-> DNS
-  AGENT -. "consults <b>Graphify</b> knowledge graph" .-> TOOLS
+  AGENT -. "consults <b>Graphify</b> knowledge graph" .-> AITOOLS
   PROXY -- "/ + /v1" --> LLM
   PROXY -. "/llm · litellm.&lt;domain&gt;" .-> LLM
   PROXY -. "/ollama" .-> OLL

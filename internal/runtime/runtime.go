@@ -10,6 +10,7 @@ package runtime
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"fmt"
 	"os"
@@ -17,6 +18,8 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
+	"time"
 
 	"github.com/jt-helsinki/stack-genie/internal/conffile"
 	"github.com/jt-helsinki/stack-genie/internal/paths"
@@ -82,8 +85,57 @@ type Prober interface {
 type realProber struct{}
 
 func (realProber) LookPath(file string) (string, error) { return exec.LookPath(file) }
+
+// proberRunTimeout bounds every prober shell-out. These are quick detection/probe
+// commands (docker/podman ps|version, msb list, …) that finish in well under a
+// second normally, but a WEDGED container daemon (Docker Desktop hung or
+// restarting) accepts the fork yet never returns — an unbounded exec then hangs the
+// whole CLI. Generous enough that a slow-but-alive daemon (cold `docker ps` on
+// macOS) is never falsely tripped.
+var proberRunTimeout = 15 * time.Second
+
+// proberBreakerTTL is how long a timed-out binary is treated as unresponsive before
+// it is probed again. A single `ai services status` fans out ~20 `docker ps` calls;
+// without a breaker a wedged daemon would cost proberRunTimeout PER call (minutes).
+// The breaker makes the whole pass fail fast after the FIRST timeout, then self-heals
+// after the TTL so a recovered daemon reconnects (e.g. `ai ui` polls status every 2s).
+var proberBreakerTTL = 3 * time.Second
+
+var (
+	proberBreakerMu   sync.Mutex
+	proberBreakerLast = map[string]time.Time{}
+)
+
+// proberBreakerTripped returns a fast-fail error when binary last timed out within
+// the TTL, so callers skip the exec entirely instead of each waiting the full timeout.
+func proberBreakerTripped(name string) error {
+	proberBreakerMu.Lock()
+	defer proberBreakerMu.Unlock()
+	last, ok := proberBreakerLast[name]
+	if ok && time.Since(last) < proberBreakerTTL {
+		return fmt.Errorf("%s: skipped, daemon unresponsive (last timeout %s ago)", name, time.Since(last).Round(time.Millisecond))
+	}
+	return nil
+}
+
+func proberBreakerTrip(name string) {
+	proberBreakerMu.Lock()
+	defer proberBreakerMu.Unlock()
+	proberBreakerLast[name] = time.Now()
+}
+
 func (realProber) Run(name string, args ...string) ([]byte, error) {
-	return exec.Command(name, args...).Output()
+	if err := proberBreakerTripped(name); err != nil {
+		return nil, err
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), proberRunTimeout)
+	defer cancel()
+	output, err := exec.CommandContext(ctx, name, args...).Output()
+	if ctx.Err() == context.DeadlineExceeded {
+		proberBreakerTrip(name)
+		return output, fmt.Errorf("%s %s: timed out after %s (daemon unresponsive?)", name, strings.Join(args, " "), proberRunTimeout)
+	}
+	return output, err
 }
 func (realProber) Exists(path string) bool { _, err := os.Stat(path); return err == nil }
 

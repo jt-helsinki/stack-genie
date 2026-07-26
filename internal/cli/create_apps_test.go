@@ -159,9 +159,9 @@ func TestSpecFromFlagsCarriesAppPorts(test *testing.T) {
 }
 
 func TestParseAppPortFlags(test *testing.T) {
-	ports := parseAppPortFlags([]string{"openwebui=8080", "anythingllm=3001", "bad-no-eq", "x=notnum"})
-	if ports["openwebui"] != 8080 || ports["anythingllm"] != 3001 {
-		test.Errorf("parsed = %v, want openwebui=8080 anythingllm=3001", ports)
+	ports := parseAppPortFlags([]string{"openwebui=8080", "hermes=3001", "bad-no-eq", "x=notnum"})
+	if ports["openwebui"] != 8080 || ports["hermes"] != 3001 {
+		test.Errorf("parsed = %v, want openwebui=8080 hermes=3001", ports)
 	}
 	if len(ports) != 2 {
 		test.Errorf("malformed entries must be skipped, got %v", ports)

@@ -20,9 +20,9 @@ func TestAppsEnvCarriesNoBakedDefaultModel(test *testing.T) {
 	}
 	for _, manifest := range All() {
 		env := manifest.Env("http://gateway/v1", "sk-scoped-key", productionModel)
-		// AnythingLLM is the only app that takes a model preference; it must carry the
-		// empty production handle, not a baked default. (Open WebUI ignores the model
-		// handle entirely — the user picks per-request.)
+		// If any app takes a model preference it must carry the empty production
+		// handle, not a baked default. (Open WebUI ignores the model handle
+		// entirely — the user picks per-request.)
 		if pref, ok := env["GENERIC_OPEN_AI_MODEL_PREF"]; ok && pref != "" {
 			test.Fatalf("%s env GENERIC_OPEN_AI_MODEL_PREF = %q, want empty (no baked default model)", manifest.Key, pref)
 		}
@@ -31,16 +31,15 @@ func TestAppsEnvCarriesNoBakedDefaultModel(test *testing.T) {
 
 func TestAllAndKeys(test *testing.T) {
 	all := All()
-	if len(all) != 2 {
-		test.Fatalf("All() = %d apps, want 2", len(all))
+	if len(all) != 1 {
+		test.Fatalf("All() = %d apps, want 1", len(all))
 	}
 	keys := Keys()
-	if len(keys) != 2 {
-		test.Fatalf("Keys() = %v, want 2 keys", keys)
+	if len(keys) != 1 {
+		test.Fatalf("Keys() = %v, want 1 key", keys)
 	}
-	// Keys is sorted.
-	if keys[0] != "anythingllm" || keys[1] != "openwebui" {
-		test.Fatalf("Keys() = %v, want sorted [anythingllm openwebui]", keys)
+	if keys[0] != "openwebui" {
+		test.Fatalf("Keys() = %v, want [openwebui]", keys)
 	}
 }
 
@@ -81,26 +80,6 @@ func TestOpenWebUIEnvPointsAtGateway(test *testing.T) {
 	}
 }
 
-func TestAnythingLLMEnvPointsAtGateway(test *testing.T) {
-	manifest, _ := Lookup("anythingllm")
-	env := manifest.Env("http://host.microsandbox.internal:18787/v1", "sk-key", "gemma4")
-	if env["LLM_PROVIDER"] != "generic-openai" {
-		test.Fatalf("LLM_PROVIDER = %q, want generic-openai", env["LLM_PROVIDER"])
-	}
-	if env["GENERIC_OPEN_AI_BASE_PATH"] != "http://host.microsandbox.internal:18787/v1" {
-		test.Fatalf("GENERIC_OPEN_AI_BASE_PATH = %q (must be the gateway)", env["GENERIC_OPEN_AI_BASE_PATH"])
-	}
-	if env["GENERIC_OPEN_AI_API_KEY"] != "sk-key" {
-		test.Fatalf("GENERIC_OPEN_AI_API_KEY = %q", env["GENERIC_OPEN_AI_API_KEY"])
-	}
-	if env["GENERIC_OPEN_AI_MODEL_PREF"] != "gemma4" {
-		test.Fatalf("GENERIC_OPEN_AI_MODEL_PREF = %q, want gemma4", env["GENERIC_OPEN_AI_MODEL_PREF"])
-	}
-	if env["STORAGE_DIR"] != "/app/server/storage" {
-		test.Fatalf("STORAGE_DIR = %q, want /app/server/storage", env["STORAGE_DIR"])
-	}
-}
-
 func TestContainerName(test *testing.T) {
 	manifest, _ := Lookup("openwebui")
 	if got := manifest.ContainerName(); got != "aip-app-openwebui" {
@@ -109,7 +88,7 @@ func TestContainerName(test *testing.T) {
 }
 
 func TestEnvKeysSorted(test *testing.T) {
-	manifest, _ := Lookup("anythingllm")
+	manifest, _ := Lookup("openwebui")
 	keys := manifest.EnvKeys()
 	for index := 1; index < len(keys); index++ {
 		if keys[index-1] > keys[index] {

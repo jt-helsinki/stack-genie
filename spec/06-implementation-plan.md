@@ -26,13 +26,12 @@ external-tool integration approach, the Slice 1 build sequence, and CI/testing.
 
 # 1. Tech Stack
 
-* **Language: Go.** The `ai` CLI, installers, state management, Microsandbox
+* **Language: Go (1.26), module `github.com/jt-helsinki/stack-genie`.** The `ai` CLI, installers, state management, Microsandbox
   orchestration, runtime abstraction, and diagnostics are all
   Go, shipped as a **single self-contained binary** per host (cgo: it links the
   Microsandbox Go SDK, which embeds + dlopens an FFI library — `CGO_ENABLED=1`).
 * **Thin launchers only** (bash/zsh) bootstrap the binary; no platform logic in
-  shell. Supported hosts are macOS (Apple Silicon) and Linux — there is no
-  Windows/PowerShell path.
+  shell. Supported hosts are macOS (Apple Silicon) and Linux.
 * **Declarative config/templates** in YAML/JSON; never executable logic.
 * External components are invoked as subprocesses or over HTTP, never
   reimplemented: Microsandbox (the `msb` CLI), LiteLLM (host service over HTTP),
@@ -79,10 +78,9 @@ keep the precedence rules in arch §27 explicit), `slog` (structured logs), stdl
 │   ├── envimage/                # compose .ai-platform/Dockerfile (OS template + stack snippets + agent CLIs) + build OCI image
 │   ├── create/                  # shared `ai create` logic (validate/cap resources, scaffold, seed) — used by CLI + TUI wizard
 │   ├── workspace/               # workspace lifecycle + tmux-transparent sessions (Builder/Sandbox/Manager)
-│   ├── apps/                     # opt-in in-VM AI apps (Open WebUI / AnythingLLM) — declarative manifests + per-(workspace,app) lifecycle over nerdctl; unique host-port allocation
+│   ├── apps/                     # opt-in in-VM AI apps (Open WebUI) — declarative manifests + per-(workspace,app) lifecycle over nerdctl; unique host-port allocation
 │   ├── egress/                  # per-project egress policy → msb net-rules (MsbNetworkArgs)
 │   ├── overlay/                 # per-workspace persistent overlay
-│   ├── audit/                   # append-only audit log (no secrets)
 │   ├── logs/                    # file-backed log reader (backs `ai logs`)
 │   ├── ui/ + tui/               # theme registry + the K9s-style `ai ui` management TUI
 │   ├── templates/               # embedded source templates + installer into ~/.ai-platform/templates
@@ -101,7 +99,9 @@ keep the precedence rules in arch §27 explicit), `slog` (structured logs), stdl
 │                                #   `make test-integration`) against a real stack
 ├── go.mod
 ├── Makefile
-└── .github/workflows/ci.yml
+└── .github/workflows/
+    ├── ci.yml                    # hosted: fmt-check/vet/lint/test/build; self-hosted Apple Silicon: [S1] acceptance
+    └── release.yml               # autobump semver on merge to main (Conventional Commits) → cross-compiled release
 ```
 
 Principle: `cli/` stays thin (parse flags → call a package → render via
@@ -263,10 +263,15 @@ refer to the CLI spec and architecture spec respectively.
   harness workspace-start threshold, AT §16.2, AT §16.3.
 * **M6 — `ai create` wizard + delete.** In-process `charmbracelet/huh` wizard
   (CLI §3.1) with steps for
-  name/OS/agent-CLIs/default-agent/**software-stacks**/**in-VM apps**, each with a
-  presented default, checkbox multi-select for CLIs + stacks + apps,
-  arrow/space navigation, Back + Abort. Every input also has a flag
-  (`--name`/`--os`/`--agents`/`--stacks`/`--apps`) that **pre-seeds** the wizard
+  name/OS/agent-CLIs/default-agent/**software-stacks**/**AI tools**/**in-VM apps**
+  (plus a dynamic per-selected-app host-port phase), each with a
+  presented default, checkbox multi-select for CLIs + stacks + AI tools + apps,
+  arrow/space navigation, Back + Abort. The **AI tools** are ONE `--tools`
+  multi-select (caveman, graphify, code-review-graph, codebase-memory-mcp →
+  `context.*_enabled` bools; create-default caveman+graphify+code-review-graph ON,
+  codebase-memory OFF). Every input also has a flag
+  (`--name`/`--os`/`--agents`/`--auth-mode`/`--stacks`/`--tools`/`--apps`/`--app-port`/`--cpus`/`--memory`/`--disk`/`--ports`/`--location`/`--idle-timeout`/`--graphify-model`/`--shell`)
+  that **pre-seeds** the wizard
   on a TTY
   (the wizard always shows); under `--json`/no-TTY the spec is built straight from
   the flags with no prompt and `--os` is **required** (missing `--os` → exit 2).
@@ -318,13 +323,20 @@ Slice 1 is complete only when every `[S1]` test passes with no manual config.
 Each slice must not break prior slices (roadmap §1).
 
 **In-VM AI apps (post-S1, cross-cutting).** `apps/`: the opt-in in-VM
-applications (Open WebUI, AnythingLLM) that run as **rootful nerdctl containers
+applications (Open WebUI) that run as **rootful nerdctl containers
 inside the workspace microVM**, pointed at the same model gateway as the agent
 CLIs, with data persisted on the workspace overlay and reachable from the host on
 a per-(workspace, app) unique published port. Surfaced by `ai apps
 <list|add|remove|update|start|stop|restart>` and pre-seeded at create via
-`ai create --apps`; installed apps are recorded in `config.yaml` (`apps:`,
-repo-layout §12.4). The host **versions.yaml** no longer pins Open WebUI — the
+`ai create --apps`, with each app's host port chosen at create (`--app-port
+<app>=<port>` / the wizard's port phase; seeded to the app's familiar container
+port when free); installed apps are recorded in `config.yaml` (`apps:`,
+repo-layout §12.4). **Agent-CLI web dashboards get the same treatment** — an
+agent CLI that ships one (currently only **hermes**, `hermes dashboard`, default
+port 9119) is prompted for a host port at create when selected (same
+`--app-port <cli>=<port>` flag), published from the microVM the same way, and
+recorded in `config.yaml` (`agent_dashboards:`, reusing the `AppEntry` shape).
+The host **versions.yaml** no longer pins Open WebUI — the
 in-VM apps pin their own images in `internal/apps`. (Live `nerdctl`/containerd
 operation inside a booted microVM is a `hardware bring-up` seam.)
 
@@ -360,8 +372,15 @@ are grep-able (`hardware bring-up`) and tracked in `docs/HARDWARE-BRINGUP.md`.
     `[S1]`-tagged acceptance suite.
   * Slice tags gate which acceptance tests run per environment; later slices add
     a Linux (KVM) self-hosted runner for `[S6]`.
-* **Cross-compile** matrix (darwin/arm64, linux/amd64, linux/arm64). (darwin/amd64
-  is dropped — Intel Macs are unsupported, §6.2.)
+* **Release** (`release.yml`): on merge to `main` it autobumps the semver tag
+  from Conventional Commits (`mathieudutour/github-tag-action`; feat → minor,
+  fix → patch), then cross-compiles a **matrix** (darwin/arm64, linux/amd64,
+  linux/arm64 — linux/arm64 built with the aarch64 GNU C cross toolchain for the
+  cgo build; darwin/amd64 is dropped, Intel Macs are unsupported, §6.2) and
+  publishes a GitHub Release with the per-target binaries, `SHA256SUMS`, and the
+  `installers/install.sh` launcher. Locally, `make release` builds the release
+  binary for the host platform into `dist/ai-<os>-<arch>`; `make check`
+  (= `fmt-check vet lint test build`) is the pre-commit gate.
 
 ---
 
@@ -420,7 +439,7 @@ are grep-able (`hardware bring-up`) and tracked in `docs/HARDWARE-BRINGUP.md`.
    CALLS as a `pre_call` guardrail — NOT an nginx proxy: LiteLLM's `headroom`
    guardrail POSTs the request to `http://aip-headroom:8787/v1/compress` and swaps
    in the compressed result before dispatch (requires LiteLLM v1.92.x+; image
-   pinned to `v1.92.0-rc.1`). It is ALSO installed inside each workspace image
+   tracks `latest`, which satisfies that). It is ALSO installed inside each workspace image
    (`uv tool install "headroom-ai[proxy]"`) for a future in-VM `headroom wrap`.
    The per-project strategy (`ai context strategy`) maps to Headroom per-request
    knobs (`keep_turns`/`output_buffer_tokens` via `contextopt.HeadroomParams`) fed

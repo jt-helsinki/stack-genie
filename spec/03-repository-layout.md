@@ -56,11 +56,16 @@ All platform-wide data is stored under:
 Global only — **no per-project state here**. Per-project state lives in
 `<project>/.ai-platform/` (see §2).
 
-`~/.ai-platform/.ai-platform.env` is an **opt-in, mode-0600** plain-text file of
+`~/.ai-platform/.ai-platform.env` is a **mode-0600** plain-text file of
 `export KEY='VALUE'` lines (NOT YAML) that the `ai` CLI loads at startup so
-platform secrets (`UI_PASSWORD`, `LITELLM_MASTER_KEY`) persist across restarts
-without the user editing a shell rc; it lives **beside** `~/.ai-platform/`, not
-inside it. Precedence is "existing env wins" — load only fills gaps. It is the
+platform secrets persist across restarts without the user editing a shell rc; it
+lives **beside** `~/.ai-platform/`, not inside it. The `LITELLM_MASTER_KEY` +
+`LITELLM_SALT_KEY` pair is written **automatically** on every LiteLLM reconcile
+(`persistLiteLLMInfraKeys`) — a correctness requirement, since a rotated salt key
+orphans stored provider credentials and a stable master key keeps workspace
+scoped-key minting working across container recreates; the `UI_PASSWORD` is an
+**opt-in** addition (`ai setup` server / `ai litellm password`). Precedence is
+"existing env wins" — load only fills gaps. It is the
 ONE on-disk place secrets may live for the host's own service tier (still never
 in a workspace or project); real provider keys remain in the LiteLLM gateway.
 
@@ -702,14 +707,20 @@ context:
   strategy: balanced       # Headroom input compression: conservative | balanced | aggressive
                            # (mapped to Headroom per-request knobs keep_turns/output_buffer_tokens)
   caveman_level: full      # Caveman output compression: lite | full | ultra | wenyan
-  caveman_enabled: true    # install Caveman at workspace start (chosen at create; default true)
-  code_review_graph_enabled: false  # OPT-IN: install code-review-graph (code-review-graph.com) + register it
+  caveman_enabled: true    # AI tools — ONE `--tools` multi-select at create (§1.5); the create-default
+                           # selection is caveman + graphify + code-review-graph ON, codebase-memory OFF
+  graphify_enabled: true   # install Graphify (conditional Dockerfile snippet, §1.5) + register it per CLI at start
+  code_review_graph_enabled: true    # install code-review-graph (code-review-graph.com) + register it
                                      # as an MCP server with each installed agent CLI at start
   codebase_memory_enabled: false     # OPT-IN: install codebase-memory-mcp (DeusData/codebase-memory-mcp) +
                                      # register it as an MCP server with each installed agent CLI at start
 workspace:
   cpu_limit: 4             # microVM resource limits wired into `msb create --cpus/--memory`
   memory_limit: 8          # memory in GB (a plain number; a 512M/4G suffix still works); empty falls back to the microVM default (4G)
+  disk_limit: 16           # writable rootfs (OCI overlay upper) size in GiB — sizes the in-VM
+                           # disk holding containerd's image store (so multi-GB in-VM app images
+                           # fit); applied at create via the SDK's WithOCIUpperSize, changeable
+                           # later with `ai resize`; empty falls back to the workspace default
   shell: bash              # default interactive shell (bash | zsh), chosen at `ai create --shell`; applied at every start
 microsandbox:
   idle_timeout: 24h        # `msb create --idle-timeout`; default set by `ai create`, editable later
@@ -721,11 +732,16 @@ network:                   # workspace networking (arch §29.6); all fields mana
     - { host: gateway, port: 5432 }
   publish_ports:           # host → workspace port maps
     - { guest: 3000, host: 3000 }
-apps:                      # opt-in in-VM AI apps (arch §7), chosen via `ai create --apps` / `ai apps add`
+apps:                      # opt-in in-VM AI apps (arch §7), chosen via `ai create --apps`/`--app-port` / `ai apps add`
                            # each runs as a rootful nerdctl container in the workspace microVM, gateway-routed,
-                           # published on its allocated unique host port (stable across restarts;
-                           # allocated from the 21000–21999 window — internal/apps/ports.go)
-  - { key: openwebui, port: 21000 }   # key one of: openwebui, anythingllm
+                           # published on a unique host port (stable across restarts; seeded to the app's
+                           # familiar container port — Open WebUI 8080 — when free, else
+                           # auto-allocated from the 21000–21999 window — internal/apps/ports.go)
+  - { key: openwebui, port: 8080 }    # key one of: openwebui
+agent_dashboards:          # agent-CLI web dashboards (currently only hermes — `hermes dashboard`, default 9119);
+                           # prompted for a host port at create when the CLI is selected (--app-port <cli>=<port>),
+                           # published from the microVM the same way as apps (host==guest); reuses the AppEntry shape
+  - { key: hermes, port: 9119 }
 ```
 
 ## 12.5 `config/runtime.yaml` (platform-global, non-project)
@@ -765,7 +781,7 @@ apps:                      # opt-in in-VM AI apps (arch §7), chosen via `ai cre
 {
   "schema_version": 1,
   "services": {
-    "litellm":      { "mode": "container", "image": "ghcr.io/berriai/litellm", "tag": "v1.92.0-rc.1" },
+    "litellm":      { "mode": "container", "image": "ghcr.io/berriai/litellm", "tag": "latest" },
     "litellm-db":   { "mode": "container", "image": "postgres", "tag": "18.4-alpine3.23" },
     "headroom":     { "mode": "container", "image": "ghcr.io/chopratejas/headroom", "tag": "latest" },
     "ollama":       { "mode": "container", "image": "ollama/ollama", "tag": "latest" },
@@ -781,19 +797,24 @@ apps:                      # opt-in in-VM AI apps (arch §7), chosen via `ai cre
 
 * `mode`: `container` | `native`
 * This file is the **source of truth** for the service-tier image references:
-  container services are pinned by **image + tag** — most use the `latest` tag, but
-  some are intentionally pinned to a specific tag (e.g. `litellm` →
-  `ghcr.io/berriai/litellm:v1.92.0-rc.1`, TEMPORARILY pinned for the in-process
-  `headroom` compression guardrail [LiteLLM v1.92.x+; revert to `latest` once it
-  ships stable]; `litellm-db` → `postgres:18.4-alpine3.23`, `proxy` →
+  container services are pinned by **image + tag** — most use the `latest` tag
+  (e.g. `litellm` → `ghcr.io/berriai/litellm:latest`, which satisfies the in-process
+  `headroom` compression guardrail's LiteLLM v1.92.x+ requirement), while
+  some are intentionally pinned to a specific tag
+  (`litellm-db` → `postgres:18.4-alpine3.23`, `proxy` →
   `nginx:stable-alpine3.23-slim`, `valkey` → `valkey/valkey:9.1.0-alpine`) — **not by
   digest** (digests are platform/arch specific, so a digest pin breaks
   cross-platform pulls).
-* The **native microsandbox runtime is NOT pinned here**: it is a user-installed
-  prerequisite that `ai setup`/`ai doctor` DETECT on PATH, not an image the platform
-  pulls — so it is deliberately excluded from this image pin set (it keeps a
-  registry slot only for its log scope). Native pins (`version` + `sha256`) are
-  reserved for any future genuinely-pinned native component.
+* The **native microsandbox runtime is NOT pinned here**: it is not an image the
+  platform pulls, so it is deliberately excluded from this image pin set (it keeps a
+  registry slot only for its log scope). It is instead **platform-managed and pinned
+  in code** — `internal/workspace/msb.go` pins the `msb` CLI to `microsandboxVersion`
+  (matched to the go.mod Microsandbox SDK pin) and `MsbBinary` downloads the matching
+  fork binary (sha256-verified against `msbAssets`) into `~/.ai-platform/bin/msb`
+  (`paths.BinDir`) on first use, so it is NOT a user-installed PATH prerequisite and
+  `sandbox.Detect` counts the platform-managed binary as installed. Native pins
+  (`version` + `sha256`) in this file are reserved for any future genuinely-pinned
+  native component managed through `versions.yaml`.
 * `ai setup` **resolves every service-tier image from this file** (via
   `internal/setup`'s `containerImage`, falling back to the built-in
   `versions.Default()` pins when the file is absent or an entry is incomplete);

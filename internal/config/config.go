@@ -76,6 +76,16 @@ type AgentConfig struct {
 	// gateway/api-key. The FORCED-oauth CLIs (ForcedOAuthCLIs, e.g. copilot) are recorded
 	// as "oauth" and can be nothing else — see AuthMode.
 	AuthModes map[string]string `yaml:"auth_modes,omitempty" json:"auth_modes,omitempty"`
+	// HermesDashboardPassword is the plaintext basic-auth password for the hermes web
+	// dashboard. Hermes REFUSES to bind its dashboard to 0.0.0.0 (required so the
+	// published host port reaches it) unless an auth provider is configured, so the
+	// platform auto-configures basic auth: it generates this password on first start,
+	// stores the SCRYPT hash in hermes' ~/.hermes/config.yaml, and shows the login in
+	// `ai apps`. This is a LOW-sensitivity LOCAL dashboard credential — NOT a provider
+	// key or the scoped LiteLLM virtual key — so persisting the plaintext in the project
+	// config.yaml is acceptable; do NOT confuse it with the gateway/provider secrets that
+	// must never touch host disk.
+	HermesDashboardPassword string `yaml:"hermes_dashboard_password,omitempty" json:"hermes_dashboard_password,omitempty"`
 }
 
 // OAuthCapableCLIs are the agent CLIs with a first-party subscription/OAuth login that
@@ -189,6 +199,12 @@ func (settings ContextConfig) GraphifyEnabledOrDefault() bool {
 type WorkspaceConfig struct {
 	CPULimit    int    `yaml:"cpu_limit,omitempty" json:"cpu_limit,omitempty"`
 	MemoryLimit string `yaml:"memory_limit,omitempty" json:"memory_limit,omitempty"`
+	// DiskLimit is the writable rootfs (OCI overlay upper) size in GiB, e.g. "20". It
+	// sizes the in-VM disk that holds containerd's image store, so in-VM apps (Open
+	// WebUI) whose images are multi-GB have room to extract. Applied at
+	// workspace create via the SDK's WithOCIUpperSize. Empty falls back to the
+	// workspace-package default (see microVMDisk). Same "<GiB>" form as MemoryLimit.
+	DiskLimit string `yaml:"disk_limit,omitempty" json:"disk_limit,omitempty"`
 	// Shell is the workspace's default interactive shell: "bash" (the platform
 	// default, today's behavior) or "zsh". It is chosen at `ai create` and applied at
 	// workspace start (the interactive-shell rc block, and — for zsh — chsh of the
@@ -395,7 +411,7 @@ func Default() *Config {
 	return &Config{
 		Agent:     AgentConfig{Tools: []string{"opencode"}, DefaultTool: "opencode"},
 		Context:   ContextConfig{Strategy: "balanced", CavemanLevel: "full"},
-		Workspace: WorkspaceConfig{CPULimit: 4, MemoryLimit: "8", Shell: "bash"},
+		Workspace: WorkspaceConfig{CPULimit: 4, MemoryLimit: "8", DiskLimit: "16", Shell: "bash"},
 		Microsandbox: MicrosandboxConfig{
 			IdleTimeout: DefaultMicrosandboxIdleTimeout,
 		},

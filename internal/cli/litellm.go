@@ -120,9 +120,14 @@ func newLiteLLMPasswordCmd(emitter *output.Emitter, exit *int) *cobra.Command {
 				}
 				masterKey = generated
 			}
-			if err := relaunchLiteLLM(password, masterKey); err != nil {
+			// The relaunch (recreate the container against the new auth) takes a few
+			// seconds; show a spinner so the user knows it is working and not hung. This
+			// path is always interactive (guarded above), so a TTY spinner is safe.
+			relaunchErr := ui.RunWithSpinner(emitter.Err, "securing the LiteLLM admin UI",
+				func() error { return relaunchLiteLLM(password, masterKey) })
+			if relaunchErr != nil {
 				*exit = emitter.Failure("litellm.password", output.Errorf(output.ExitRuntimeFailure,
-					"could not secure the LiteLLM UI: %s", err))
+					"could not secure the LiteLLM UI: %s", relaunchErr))
 				return nil
 			}
 
@@ -135,7 +140,7 @@ func newLiteLLMPasswordCmd(emitter *output.Emitter, exit *int) *cobra.Command {
 			*exit = emitter.Success("litellm.password", litellmPasswordResult{
 				Secured: true,
 				LoginAs: "admin",
-				URL:     "http://litellm." + domain + ":18787/ui",
+				URL:     "http://litellm." + domain + ":18787/ui/login",
 			})
 			return nil
 		},

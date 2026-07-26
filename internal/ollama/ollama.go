@@ -67,6 +67,29 @@ type ModelInfo struct {
 	License           string         `json:"license,omitempty"`
 	Capabilities      []string       `json:"capabilities,omitempty"`
 	ModelInfo         map[string]any `json:"model_info,omitempty"`
+	// ContextLength is the model's trained maximum context window, read from the
+	// model_info map's architecture-prefixed ".context_length" key (e.g.
+	// "qwen3.context_length"). 0 when unknown/absent.
+	ContextLength int `json:"context_length,omitempty"`
+}
+
+// MaxNumCtx is a memory-safe ceiling on the num_ctx baked into an Ollama model.
+// A larger trained context window is clamped to this so a huge model's default
+// does not blow up the container's memory.
+const MaxNumCtx = 32768
+
+// RecommendedNumCtx returns the num_ctx to bake into a model given its trained
+// maximum context length. It returns 0 when contextLength is unknown (<= 0),
+// signalling "don't bake — leave the model's/container default"; otherwise it
+// returns min(contextLength, MaxNumCtx).
+func RecommendedNumCtx(contextLength int) int {
+	if contextLength <= 0 {
+		return 0
+	}
+	if contextLength > MaxNumCtx {
+		return MaxNumCtx
+	}
+	return contextLength
 }
 
 // Client manages the local Ollama model store. The real impl makes HTTP calls;
@@ -78,6 +101,12 @@ type Client interface {
 	Pull(name string, progress func(PullProgress)) error
 	Remove(name string) error
 	Show(name string) (ModelInfo, error)
+	// SetNumCtx bakes a num_ctx parameter into an existing model via POST
+	// /api/create (from the model itself), so the model respects that context
+	// window without LiteLLM having to forward num_ctx (which it does not for the
+	// ollama_chat provider). It reuses the model's blobs and preserves its other
+	// parameters/stop tokens.
+	SetNumCtx(name string, numCtx int) error
 }
 
 // DefaultBaseURL is the host CLI's route to Ollama through the nginx gateway

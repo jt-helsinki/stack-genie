@@ -207,7 +207,7 @@ Introduce Headroom + Caveman.
   `aip-net`**, no host publish) is called BY LiteLLM: LiteLLM's `headroom`
   guardrail POSTs the request messages to `http://aip-headroom:8787/v1/compress`
   and swaps in the compressed result before dispatch (requires LiteLLM v1.92.x+;
-  the litellm image is temporarily pinned to `v1.92.0-rc.1`). It is also installed
+  the litellm image now tracks `latest`, which satisfies that). It is also installed
   INSIDE each workspace image (`uv tool install "headroom-ai[proxy]"`) for a future
   in-VM `headroom wrap <cli>`. Per-project strategy maps to Headroom per-request
   knobs fed to the guardrail's compress call.
@@ -528,7 +528,7 @@ System is complete when:
 
 ```bash id="g1"
 ai setup
-ai create --name my-project   # interactive wizard: pick OS + agent CLIs (defaults: debian-trixie, OpenCode + Pi)
+ai create --name my-project   # interactive wizard: pick OS + agent CLIs (defaults: debian-trixie, OpenCode)
 ```
 
 produces (for the OS the user selected):

@@ -18,6 +18,7 @@ import (
 
 	"github.com/jt-helsinki/stack-genie/internal/catalog"
 	"github.com/jt-helsinki/stack-genie/internal/console"
+	"github.com/jt-helsinki/stack-genie/internal/envfile"
 	"github.com/jt-helsinki/stack-genie/internal/litellm"
 	"github.com/jt-helsinki/stack-genie/internal/ollama"
 	"github.com/jt-helsinki/stack-genie/internal/output"
@@ -209,6 +210,11 @@ const (
 	ollamaContainer    = "aip-ollama"
 	ollamaModelsVolume = "models"  // subdir under VolumesDir: ~/.ai-platform/volumes/models
 	ollamaModelsGuest  = "/models" // where the host models volume is mounted in the container
+	// defaultOllamaContextLength is the model context window the platform sets on the Ollama
+	// container (OLLAMA_CONTEXT_LENGTH) when the user has not forwarded their own. Ollama's
+	// built-in default (4096) is too small for agent CLIs (their prompt + tool schemas fill
+	// most of it, starving generation); 16384 leaves real headroom while staying memory-sane.
+	defaultOllamaContextLength = "16384"
 
 	// litellmDBVolume is the per-name subdir under VolumesDir for the LiteLLM
 	// Postgres data dir: ~/.ai-platform/volumes/litellm-db, HOST-BIND-MOUNTED into
@@ -575,6 +581,32 @@ func containerRunning(prober runtime.Prober, containerRuntime, name string) bool
 	return err == nil && strings.TrimSpace(string(out)) == name
 }
 
+// containerOnCurrentImage reports whether the container `name` is running AND its
+// image ID matches the LOCAL image ID of imageRef. It is the recreate guard for
+// the ensure* reconcilers: when true the running container is already on the
+// (freshly-pulled) image, so it can be skipped; when false — not running, running
+// a STALE image, or either inspect errors — the caller recreates it so a moved tag
+// like `latest` is actually applied. Any inspect error is treated as NOT current
+// (recreate), so a missing/unresolvable ref can never wrongly skip a recreate.
+func containerOnCurrentImage(prober runtime.Prober, containerRuntime, name, imageRef string) bool {
+	if !containerRunning(prober, containerRuntime, name) {
+		return false
+	}
+	// The container's current image id (the id it was created against).
+	containerImageOut, err := prober.Run(containerRuntime, "inspect", "-f", "{{.Image}}", name)
+	if err != nil {
+		return false
+	}
+	// The local id of the ref we WOULD run — after a force-pull this is the latest.
+	refImageOut, err := prober.Run(containerRuntime, "image", "inspect", "-f", "{{.Id}}", imageRef)
+	if err != nil {
+		return false
+	}
+	containerImageID := strings.TrimSpace(string(containerImageOut))
+	refImageID := strings.TrimSpace(string(refImageOut))
+	return containerImageID != "" && containerImageID == refImageID
+}
+
 // containerPublishesHostPort reports whether a container has any host port
 // binding. Used to detect a container left over from a previous topology — e.g. a
 // Headroom that still host-publishes :18787 from before nginx (aip-proxy) took
@@ -601,7 +633,7 @@ func containerPublishesHostPort(prober runtime.Prober, containerRuntime, name st
 // acceptable for this dev platform.
 func ensureOllama(prober runtime.Prober, containerRuntime, bindHost string) error {
 	_ = bindHost // internal-only: Ollama no longer publishes to the host
-	if containerRunning(prober, containerRuntime, ollamaContainer) {
+	if containerOnCurrentImage(prober, containerRuntime, ollamaContainer, containerImage("ollama")) {
 		return nil
 	}
 	modelsDir, err := systemVolumeDir(ollamaModelsVolume, 0o755)
@@ -658,6 +690,15 @@ func ollamaEnvPairs() []string {
 	slices.Sort(keys)
 
 	pairs := []string{"OLLAMA_MODELS=" + ollamaModelsGuest}
+	// Default the model context window. Ollama's built-in default is 4096, which is too
+	// small for agent CLIs: their system prompt + tool schemas alone run ~2k tokens, leaving
+	// almost no room to generate — a thinking model then exhausts the window on reasoning and
+	// returns EMPTY content with finish_reason "length". A larger default gives real
+	// generation headroom. Skipped when the user forwards their own OLLAMA_CONTEXT_LENGTH
+	// (e.g. to trade memory for a bigger window).
+	if _, set := forwarded["OLLAMA_CONTEXT_LENGTH"]; !set {
+		pairs = append(pairs, "OLLAMA_CONTEXT_LENGTH="+defaultOllamaContextLength)
+	}
 	for _, key := range keys {
 		pairs = append(pairs, key+"="+forwarded[key])
 	}
@@ -674,7 +715,7 @@ func ensurePresidio(prober runtime.Prober, containerRuntime string) error {
 		{presidioAnonymizerContainer, containerImage("presidio-anonymizer")},
 	}
 	for _, presidio := range presidioServices {
-		if containerRunning(prober, containerRuntime, presidio.name) {
+		if containerOnCurrentImage(prober, containerRuntime, presidio.name, presidio.image) {
 			continue
 		}
 		_, _ = prober.Run(containerRuntime, "rm", "-f", presidio.name)
@@ -698,7 +739,7 @@ func ensurePresidio(prober runtime.Prober, containerRuntime string) error {
 // redis client, which is why it must NOT run in cluster mode: a cluster node rejects the
 // cache's cross-slot multi-key ops (MGET/pipelines) with CROSSSLOT. Idempotent.
 func ensureValkey(prober runtime.Prober, containerRuntime string) error {
-	if containerRunning(prober, containerRuntime, valkeyContainer) {
+	if containerOnCurrentImage(prober, containerRuntime, valkeyContainer, containerImage("valkey")) {
 		return nil
 	}
 	_, _ = prober.Run(containerRuntime, "rm", "-f", valkeyContainer)
@@ -720,7 +761,7 @@ func ensureValkey(prober runtime.Prober, containerRuntime string) error {
 // network); RI_ACCEPT_TERMS_AND_CONDITIONS skips the EULA. Unlike valkey-admin it supports
 // a standalone (non-cluster) target. Idempotent.
 func ensureRedisInsight(prober runtime.Prober, containerRuntime string) error {
-	if containerRunning(prober, containerRuntime, redisInsightContainer) {
+	if containerOnCurrentImage(prober, containerRuntime, redisInsightContainer, containerImage("redisinsight")) {
 		return nil
 	}
 	_, _ = prober.Run(containerRuntime, "rm", "-f", redisInsightContainer)
@@ -747,11 +788,12 @@ func ensureRedisInsight(prober runtime.Prober, containerRuntime string) error {
 // on :8787 with telemetry off, INTERNAL-ONLY on aip-net (no host publish) — nginx is
 // the host gateway entry on :18787. Pulled image (no build). Idempotent.
 func ensureHeadroom(prober runtime.Prober, containerRuntime string) error {
-	// Skip only if it is running AND already internal-only. A Headroom left over
-	// from the pre-nginx topology still host-publishes :18787, which collides with
-	// the aip-proxy gateway — recreate it internal-only in that case (self-heal, so
-	// a plain `ai setup` migrates it instead of failing when the proxy can't bind).
-	if containerRunning(prober, containerRuntime, headroomContainer) &&
+	// Skip only if it is running on the CURRENT image AND already internal-only. A
+	// Headroom left over from the pre-nginx topology still host-publishes :18787,
+	// which collides with the aip-proxy gateway — recreate it internal-only in that
+	// case (self-heal, so a plain `ai setup` migrates it instead of failing when the
+	// proxy can't bind); a stale image likewise forces a recreate.
+	if containerOnCurrentImage(prober, containerRuntime, headroomContainer, containerImage("headroom")) &&
 		!containerPublishesHostPort(prober, containerRuntime, headroomContainer) {
 		return nil
 	}
@@ -777,7 +819,7 @@ func ensureHeadroom(prober runtime.Prober, containerRuntime string) error {
 // `log` plugin (the audit source), a `forward` to the host's resolver, and a short
 // cache. Idempotent: skips if already running, removes any stale container first.
 func ensureDNS(prober runtime.Prober, containerRuntime string) error {
-	if containerRunning(prober, containerRuntime, dnsContainer) {
+	if containerOnCurrentImage(prober, containerRuntime, dnsContainer, containerImage("dns")) {
 		return nil
 	}
 	configDir, err := paths.ConfigDir()
@@ -1006,6 +1048,13 @@ func litellmHasDatabaseURL(prober runtime.Prober, containerRuntime string) bool 
 	return litellmEnvSet(prober, containerRuntime, "DATABASE_URL")
 }
 
+// litellmHasMasterKey reports whether the running LiteLLM container already has a
+// LITELLM_MASTER_KEY set (so a healthy-but-keyless container is relaunched once to
+// pick up a minted+persisted key — without it, workspaces cannot mint scoped keys).
+func litellmHasMasterKey(prober runtime.Prober, containerRuntime string) bool {
+	return litellmEnvSet(prober, containerRuntime, "LITELLM_MASTER_KEY")
+}
+
 // CurrentLiteLLMMasterKey returns the LITELLM_MASTER_KEY of the running LiteLLM
 // container, or "" if unset / no container / no runtime. It is the SAME source
 // RelaunchLiteLLMWithAuth and LiteLLMUISecured read, so `ai litellm password` can
@@ -1055,6 +1104,41 @@ func generateSaltKey() string {
 		return "sk-aip-salt-fallback"
 	}
 	return "sk-" + hex.EncodeToString(buffer)
+}
+
+// generateMasterKey returns a random LiteLLM master key (`sk-` + 48 hex chars).
+// It lives here (alongside generateSaltKey) so the reconcile can mint one during
+// ensureLiteLLM without importing the cli package; the cli package has an identical
+// generator for the `ai litellm password` path.
+func generateMasterKey() string {
+	buffer := make([]byte, 24)
+	if _, err := rand.Read(buffer); err != nil {
+		return "sk-aip-master-fallback"
+	}
+	return "sk-" + hex.EncodeToString(buffer)
+}
+
+// persistLiteLLMInfraKeys best-effort writes the current process-env
+// LITELLM_MASTER_KEY + LITELLM_SALT_KEY to the 0600 ~/.ai-platform/.ai-platform.env
+// so they survive a full container-down + fresh-process relaunch (see the call site
+// in ensureLiteLLM). Salt-key stability is a correctness requirement — a changed
+// salt orphans stored provider credentials — and a stable master key keeps workspace
+// scoped-key minting working across recreates. The UI password is intentionally
+// excluded: it stays a user opt-in (offerPersistLiteLLMSecrets). envfile.Write MERGES
+// (other keys/lines are preserved), so this only ever updates these two entries.
+// Never returns an error — a persistence failure must not fail the reconcile.
+func persistLiteLLMInfraKeys() {
+	secrets := map[string]string{}
+	if value := os.Getenv("LITELLM_MASTER_KEY"); value != "" {
+		secrets["LITELLM_MASTER_KEY"] = value
+	}
+	if value := os.Getenv("LITELLM_SALT_KEY"); value != "" {
+		secrets["LITELLM_SALT_KEY"] = value
+	}
+	if len(secrets) == 0 {
+		return
+	}
+	_ = envfile.Write(secrets)
 }
 
 // LiteLLMRunning reports whether the LiteLLM gateway container is up — used by
@@ -1400,9 +1484,13 @@ func (services realServices) ensureLiteLLM(configPath, bindHost, providerConfig 
 	if err := ensureLiteLLMDB(services.prober, containerRuntime.Name); err != nil {
 		return err
 	}
-	// Skip the relaunch only if LiteLLM is healthy AND already wired to the DB —
-	// so a pre-existing container without DATABASE_URL is relaunched once.
-	if services.serviceHealthy("litellm") && litellmHasDatabaseURL(services.prober, containerRuntime.Name) {
+	// Skip the relaunch only if LiteLLM is healthy AND already wired to the DB AND
+	// already carries a master key — so a pre-existing container missing DATABASE_URL
+	// OR the master key is relaunched once (self-healing: an older keyless container,
+	// e.g. from before master keys were minted for standalone, picks one up here).
+	if services.serviceHealthy("litellm") &&
+		litellmHasDatabaseURL(services.prober, containerRuntime.Name) &&
+		litellmHasMasterKey(services.prober, containerRuntime.Name) {
 		return nil
 	}
 	// Render the config we are about to mount — here (not only in Reconcile) so
@@ -1417,13 +1505,31 @@ func (services realServices) ensureLiteLLM(configPath, bindHost, providerConfig 
 	// restart/re-setup does not silently unsecure the admin UI or rotate the key
 	// (env passthrough would otherwise copy empty values from this process).
 	preserveLiteLLMSecretsInEnv(services.prober, containerRuntime.Name)
-	// Guarantee a stable salt key in the process env before the env-passthrough
-	// launch: preserve copied any existing one; on the FIRST launch there is none,
-	// so mint one (and keep it) — store_model_in_db credentials are encrypted with
-	// it at rest. Never overwrite an existing value (rotating it orphans creds).
+	// Guarantee a stable master key AND salt key in the process env before the
+	// env-passthrough launch: preserve copied any existing values off the running/old
+	// container; on the FIRST (or a keyless) launch there is none, so mint them.
+	//
+	// The master key matters even in STANDALONE — which runs the admin UI OPEN (no UI
+	// password, so the password path never sets a master key) — because workspaces
+	// authenticate to the gateway's admin API with it to mint their scoped virtual
+	// keys. Without one, `ai start` fails ("LiteLLM admin key is not configured").
+	// The salt key encrypts store_model_in_db credentials at rest. Never overwrite an
+	// existing value: rotating the salt orphans stored creds, and rotating the master
+	// key needlessly invalidates issued keys.
+	if os.Getenv("LITELLM_MASTER_KEY") == "" {
+		_ = os.Setenv("LITELLM_MASTER_KEY", generateMasterKey())
+	}
 	if os.Getenv("LITELLM_SALT_KEY") == "" {
 		_ = os.Setenv("LITELLM_SALT_KEY", generateSaltKey())
 	}
+	// Persist the master + salt key to the 0600 env file so they survive a full
+	// container-down + fresh-process relaunch — preserveLiteLLMSecretsInEnv can only
+	// recover them while the OLD container is still inspectable, so without this a
+	// stopped-then-restarted gateway would re-mint both, breaking scoped-key minting
+	// (new master key) and, worse, silently orphaning stored provider credentials
+	// (new salt key). The UI password is deliberately NOT auto-persisted — it stays a
+	// user opt-in (offerPersistLiteLLMSecrets). Best-effort: never fails the launch.
+	persistLiteLLMInfraKeys()
 	_, _ = services.prober.Run(containerRuntime.Name, "rm", "-f", litellmContainer) // best-effort cleanup
 	if _, err := services.prober.Run(containerRuntime.Name, litellmRunArgs(configPath, bindHost, containerImage("litellm"))...); err != nil {
 		return serviceStartError("LiteLLM gateway")
