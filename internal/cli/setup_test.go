@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"bytes"
 	"errors"
 	"slices"
 	"strings"
@@ -8,6 +9,7 @@ import (
 
 	"github.com/jt-helsinki/stack-genie/internal/output"
 	"github.com/jt-helsinki/stack-genie/internal/runtime"
+	"github.com/jt-helsinki/stack-genie/internal/setup"
 	"github.com/jt-helsinki/stack-genie/internal/uihosts"
 )
 
@@ -109,6 +111,89 @@ func TestNonInteractiveServerDomain(test *testing.T) {
 	}
 	if got := nonInteractiveServerDomain(runtime.RoleServer); got != "kept.example.com" {
 		test.Errorf("server, persisted domain: got %q, want kept.example.com", got)
+	}
+}
+
+// When both host-native Ollama and Docker Model Runner are healthy there is no
+// local-inference guidance to print.
+func TestLocalInferenceGuidanceBothHealthy(test *testing.T) {
+	statuses := []setup.ServiceStatus{
+		{Name: "ollama", Mode: "host", Healthy: true},
+		{Name: "docker-model-runner", Mode: "host", Healthy: true},
+	}
+	if lines := localInferenceGuidanceLines("darwin", statuses, "/models"); len(lines) != 0 {
+		test.Fatalf("both healthy: want no guidance, got %v", lines)
+	}
+}
+
+// A down host-native Ollama surfaces the per-OS install/start block plus the
+// required OLLAMA_CONTEXT_LENGTH + OLLAMA_MODELS environment and a re-run hint.
+func TestLocalInferenceGuidanceOllamaDown(test *testing.T) {
+	statuses := []setup.ServiceStatus{
+		{Name: "ollama", Mode: "host", Healthy: false, State: "stopped"},
+		{Name: "docker-model-runner", Mode: "host", Healthy: true},
+	}
+	joined := strings.Join(localInferenceGuidanceLines("darwin", statuses, "/vol/models/ollama"), "\n")
+	for _, want := range []string{
+		"host-native Ollama is not reachable",
+		"brew install ollama",
+		"OLLAMA_CONTEXT_LENGTH=16384",
+		"OLLAMA_MODELS=/vol/models/ollama",
+		"ai setup",
+	} {
+		if !strings.Contains(joined, want) {
+			test.Fatalf("Ollama-down guidance missing %q:\n%s", want, joined)
+		}
+	}
+	// DMR is healthy here, so no DMR nudge.
+	if strings.Contains(joined, "Docker Model Runner") {
+		test.Fatalf("DMR healthy: should not nudge DMR:\n%s", joined)
+	}
+	// Linux variant emits the install.sh guidance.
+	linux := strings.Join(localInferenceGuidanceLines("linux", statuses, "/x"), "\n")
+	if !strings.Contains(linux, "install.sh") {
+		test.Fatalf("linux Ollama-down guidance missing install.sh:\n%s", linux)
+	}
+}
+
+// A down DMR (with Ollama up) yields ONLY the optional enable nudge — never the
+// required Ollama block — so DMR being down does not read as a hard setup problem.
+func TestLocalInferenceGuidanceDMRDownOnly(test *testing.T) {
+	statuses := []setup.ServiceStatus{
+		{Name: "ollama", Mode: "host", Healthy: true},
+		{Name: "docker-model-runner", Mode: "host", Healthy: false, State: "stopped"},
+	}
+	joined := strings.Join(localInferenceGuidanceLines("darwin", statuses, "/models"), "\n")
+	if !strings.Contains(joined, "Docker Model Runner (optional) is not enabled") {
+		test.Fatalf("DMR-down guidance missing the enable nudge:\n%s", joined)
+	}
+	if !strings.Contains(joined, "docker desktop enable model-runner") {
+		test.Fatalf("DMR-down guidance missing the enable command:\n%s", joined)
+	}
+	if strings.Contains(joined, "host-native Ollama is not reachable") {
+		test.Fatalf("Ollama healthy: should not print the required Ollama block:\n%s", joined)
+	}
+}
+
+// printLocalInferenceGuidance stays silent under --json (clean envelope on stdout)
+// and prints via the injectable status seam otherwise.
+func TestPrintLocalInferenceGuidanceJSONSilent(test *testing.T) {
+	restore := localInferenceStatusFn
+	defer func() { localInferenceStatusFn = restore }()
+	localInferenceStatusFn = func() ([]setup.ServiceStatus, error) {
+		return []setup.ServiceStatus{{Name: "ollama", Mode: "host", Healthy: false, State: "stopped"}}, nil
+	}
+
+	var jsonErr bytes.Buffer
+	printLocalInferenceGuidance(&output.Emitter{Out: &bytes.Buffer{}, Err: &jsonErr, JSON: true})
+	if jsonErr.Len() != 0 {
+		test.Fatalf("--json: guidance must be silent, got:\n%s", jsonErr.String())
+	}
+
+	var humanErr bytes.Buffer
+	printLocalInferenceGuidance(&output.Emitter{Out: &bytes.Buffer{}, Err: &humanErr})
+	if !strings.Contains(humanErr.String(), "host-native Ollama is not reachable") {
+		test.Fatalf("human run: expected the Ollama guidance, got:\n%s", humanErr.String())
 	}
 }
 

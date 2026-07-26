@@ -3,9 +3,11 @@ package cli
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 
 	"github.com/jt-helsinki/stack-genie/internal/doctor"
+	"github.com/jt-helsinki/stack-genie/internal/setup"
 	"github.com/jt-helsinki/stack-genie/internal/workspace"
 )
 
@@ -63,6 +65,66 @@ func cliCheckByName(checks []doctor.Check, name string) doctor.Check {
 		}
 	}
 	return doctor.Check{}
+}
+
+func doctorServiceByName(services []doctor.Service, name string) doctor.Service {
+	for _, service := range services {
+		if service.Name == name {
+			return service
+		}
+	}
+	return doctor.Service{}
+}
+
+// mapDoctorServices lists BOTH host-native inference backends (Ollama +
+// docker-model-runner), skips the microVM runtime line, folds an actionable hint
+// into a down Ollama's detail, and marks DMR optional (so a down DMR warns, not
+// errors).
+func TestMapDoctorServicesHostInference(test *testing.T) {
+	statuses := []setup.ServiceStatus{
+		{Name: "ollama", Mode: "host", Healthy: false, State: "stopped"},
+		{Name: "docker-model-runner", Mode: "host", Healthy: false, State: "stopped"},
+		{Name: "litellm", Mode: "container", Healthy: true, State: "running"},
+		{Name: "microsandbox", Mode: "runtime", Healthy: true},
+	}
+	services := mapDoctorServices(statuses, "darwin")
+
+	if doctorServiceByName(services, "microsandbox").Name != "" {
+		test.Fatal("the microVM runtime (Mode runtime) must not be listed as a service")
+	}
+	ollama := doctorServiceByName(services, "ollama")
+	if ollama.Name == "" {
+		test.Fatal("host-native Ollama must be listed")
+	}
+	if !strings.Contains(ollama.State, "brew install ollama") {
+		test.Fatalf("down Ollama should carry an install hint, got State=%q", ollama.State)
+	}
+	dmr := doctorServiceByName(services, "docker-model-runner")
+	if dmr.Name == "" {
+		test.Fatal("Docker Model Runner must be listed")
+	}
+	if !dmr.Optional {
+		test.Fatal("Docker Model Runner must be marked optional so a down DMR warns, not errors")
+	}
+	if !strings.Contains(dmr.State, "docker desktop enable model-runner") {
+		test.Fatalf("down DMR should carry an enable hint, got State=%q", dmr.State)
+	}
+}
+
+// A healthy host inference backend passes through without a synthetic hint (the
+// detail stays as the real status detail).
+func TestMapDoctorServicesHealthyPassthrough(test *testing.T) {
+	statuses := []setup.ServiceStatus{
+		{Name: "ollama", Mode: "host", Healthy: true, State: "running"},
+		{Name: "docker-model-runner", Mode: "host", Healthy: true, State: "running"},
+	}
+	services := mapDoctorServices(statuses, "linux")
+	if state := doctorServiceByName(services, "ollama").State; state != "running" {
+		test.Fatalf("healthy Ollama State should be untouched, got %q", state)
+	}
+	if !doctorServiceByName(services, "docker-model-runner").Optional {
+		test.Fatal("Docker Model Runner should be optional even when healthy")
+	}
 }
 
 func TestDoctorWorkspaceLiveChecksHealthy(test *testing.T) {

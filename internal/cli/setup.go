@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"os"
+	"path/filepath"
 	goruntime "runtime"
 	"slices"
 	"time"
@@ -16,12 +17,19 @@ import (
 	"github.com/jt-helsinki/stack-genie/internal/envfile"
 	"github.com/jt-helsinki/stack-genie/internal/litellm"
 	"github.com/jt-helsinki/stack-genie/internal/output"
+	"github.com/jt-helsinki/stack-genie/internal/paths"
 	"github.com/jt-helsinki/stack-genie/internal/runtime"
 	"github.com/jt-helsinki/stack-genie/internal/setup"
 	"github.com/jt-helsinki/stack-genie/internal/ui"
 	"github.com/jt-helsinki/stack-genie/internal/uihosts"
 	"github.com/spf13/cobra"
 )
+
+// dmrServiceName mirrors setup's docker-model-runner service identifier (kept in
+// sync with config.RuntimeDockerModelRunner) so the CLI can pick its status line
+// out of setup.ServicesStatus without importing an unexported const. Shared by the
+// `ai setup` local-inference guidance and the `ai doctor` service enrichment.
+const dmrServiceName = "docker-model-runner"
 
 func nowRFC3339() string { return time.Now().UTC().Format(time.RFC3339) }
 
@@ -167,6 +175,14 @@ func newSetupCmd(em *output.Emitter, exit *int) *cobra.Command {
 				report, err = setup.Run(opts, deps)
 			}
 			if err != nil {
+				// Surface actionable local-inference guidance even on failure: the
+				// reconcile fails HARD when the REQUIRED host-native Ollama is down, and a
+				// per-OS install/start block is far more discoverable than the bare error.
+				// Guidance only (no host mutation); never for the client role (no local
+				// inference there). Skipped under --json inside printLocalInferenceGuidance.
+				if mode != runtime.RoleClient {
+					printLocalInferenceGuidance(em)
+				}
 				*exit = em.Failure("setup", err) // err is *output.Error (carries the exit code)
 				return nil
 			}
@@ -187,6 +203,14 @@ func newSetupCmd(em *output.Emitter, exit *int) *cobra.Command {
 			// DNS/cert operator contract (no /etc/hosts editing). Best-effort — neither
 			// fails setup.
 			syncUISubdomains(em, interactive, report.Runtime)
+			// Local inference backends: host-native Ollama (REQUIRED for local models)
+			// and Docker Model Runner (an always-available OPTIONAL backend). On a
+			// successful reconcile Ollama is already up, so this typically only nudges
+			// the user to enable DMR — but it prints the full Ollama block too if the
+			// backend went down between reconcile and here. Non-client only.
+			if report.Runtime != nil && report.Runtime.Role != runtime.RoleClient {
+				printLocalInferenceGuidance(em)
+			}
 			*exit = em.Success("setup", report, report.Warnings...)
 			return nil
 		},
@@ -892,6 +916,126 @@ func syncInitialModels(em *output.Emitter, interactive bool) {
 	if _, err := syncKeyedModels(gateway, cat); err != nil {
 		_, _ = fmt.Fprintf(em.Err, "%s\n", ui.Muted.Render("Initial model sync skipped ("+err.Error()+") — run `ai keys add <provider>` once the gateway is up."))
 	}
+}
+
+// localInferenceStatusFn fetches the managed-service statuses used to build the
+// host-native-Ollama + Docker Model Runner guidance block at the end of `ai setup`.
+// It is a package-level seam so tests can inject a fake status set without a live
+// service tier.
+var localInferenceStatusFn = func() ([]setup.ServiceStatus, error) {
+	return setup.ServicesStatus(setup.RealDeps(goruntime.GOOS, goruntime.GOARCH, nowRFC3339))
+}
+
+// printLocalInferenceGuidance prints an actionable block about this host's local
+// inference backends after `ai setup` reconciles: host-native Ollama (REQUIRED for
+// local models) and Docker Model Runner (an always-available OPTIONAL backend). It
+// probes their live state via the localInferenceStatusFn seam and prints per-OS
+// install/start (Ollama) / enable (DMR) guidance only for a backend that is not
+// reachable. It NEVER mutates the host (guidance only) and never fails setup; it is
+// skipped under --json so automation keeps a clean envelope on stdout.
+func printLocalInferenceGuidance(em *output.Emitter) {
+	if em.JSON {
+		return
+	}
+	statuses, err := localInferenceStatusFn()
+	if err != nil {
+		return
+	}
+	lines := localInferenceGuidanceLines(goruntime.GOOS, statuses, defaultOllamaModelsDir())
+	if len(lines) == 0 {
+		return
+	}
+	_, _ = fmt.Fprintln(em.Err)
+	_, _ = fmt.Fprintln(em.Err, ui.Heading.Render("Local inference backends"))
+	for _, line := range lines {
+		_, _ = fmt.Fprintln(em.Err, line)
+	}
+}
+
+// localInferenceGuidanceLines builds the actionable host-native-Ollama + Docker
+// Model Runner guidance shown at the end of `ai setup`. Ollama is REQUIRED for local
+// models; DMR is an always-available OPTIONAL backend. It returns the lines to print
+// (empty when both reachable backends are healthy), given the current service
+// statuses, this host's OS, and the host Ollama model store path. Pure (no I/O) so it
+// is unit-testable.
+func localInferenceGuidanceLines(goos string, statuses []setup.ServiceStatus, ollamaModelsDir string) []string {
+	var ollamaPresent, ollamaHealthy, dmrPresent, dmrHealthy bool
+	for _, status := range statuses {
+		switch status.Name {
+		case "ollama":
+			ollamaPresent, ollamaHealthy = true, status.Healthy
+		case dmrServiceName:
+			dmrPresent, dmrHealthy = true, status.Healthy
+		}
+	}
+
+	var lines []string
+	if ollamaPresent && !ollamaHealthy {
+		lines = append(lines,
+			ui.Warn.Render(ui.IconArrow+" host-native Ollama is not reachable at 127.0.0.1:11434 — it is REQUIRED for local models."))
+		lines = append(lines, "  install and start it:")
+		for _, step := range hostOllamaInstallSteps(goos) {
+			lines = append(lines, "    "+step)
+		}
+		lines = append(lines, "  then set the environment for the Ollama process:")
+		lines = append(lines, "    "+ui.Value.Render("OLLAMA_CONTEXT_LENGTH=16384"))
+		if ollamaModelsDir != "" {
+			lines = append(lines, "    "+ui.Value.Render("OLLAMA_MODELS="+ollamaModelsDir))
+		}
+		lines = append(lines, "  then re-run "+ui.Primary.Render("`ai setup`")+".")
+	}
+	if dmrPresent && !dmrHealthy {
+		lines = append(lines,
+			ui.Muted.Render(ui.IconArrow+" Docker Model Runner (optional) is not enabled — enable it to route docker-model-runner/* models:"))
+		for _, step := range dmrEnableSteps(goos) {
+			lines = append(lines, "    "+ui.Muted.Render(step))
+		}
+		lines = append(lines, "    "+ui.Muted.Render("(the vLLM engine is Linux + NVIDIA-only; macOS uses the llama.cpp/Metal engine.)"))
+	}
+	return lines
+}
+
+// hostOllamaInstallSteps is the per-OS install/start guidance for a host-native
+// Ollama (guidance only — the platform never mutates the host).
+func hostOllamaInstallSteps(goos string) []string {
+	switch goos {
+	case "darwin":
+		return []string{"macOS: install Ollama.app, or `brew install ollama`, then run `ollama serve`"}
+	case "linux":
+		return []string{"Linux: `curl -fsSL https://ollama.com/install.sh | sh`, then `systemctl enable --now ollama`"}
+	default:
+		return []string{
+			"macOS: install Ollama.app or `brew install ollama`, then `ollama serve`",
+			"Linux: `curl -fsSL https://ollama.com/install.sh | sh`, then `systemctl enable --now ollama`",
+		}
+	}
+}
+
+// dmrEnableSteps is the per-OS enable guidance for Docker Model Runner (guidance
+// only). DMR is optional, so this is a nudge, not a requirement.
+func dmrEnableSteps(goos string) []string {
+	switch goos {
+	case "darwin":
+		return []string{"Docker Desktop: `docker desktop enable model-runner` (or Settings ▸ AI ▸ Enable Docker Model Runner)"}
+	case "linux":
+		return []string{"Linux: install the `docker model` CLI plugin + runtime (Docker Engine Model Runner)"}
+	default:
+		return []string{
+			"Docker Desktop: `docker desktop enable model-runner` (or Settings ▸ AI ▸ Enable Docker Model Runner)",
+			"Linux: install the `docker model` CLI plugin + runtime",
+		}
+	}
+}
+
+// defaultOllamaModelsDir resolves the host-native Ollama model store the user must
+// point OLLAMA_MODELS at (~/.ai-platform/volumes/models/ollama). It falls back to the
+// documented literal path when HOME is unresolvable.
+func defaultOllamaModelsDir() string {
+	volumesDir, err := paths.VolumesDir()
+	if err != nil {
+		return "~/.ai-platform/volumes/models/ollama"
+	}
+	return filepath.Join(volumesDir, "models", "ollama")
 }
 
 // generateMasterKey returns a random LiteLLM master key (`sk-` + 48 hex chars).

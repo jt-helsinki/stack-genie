@@ -66,6 +66,14 @@ func doctorServices() []doctor.Service {
 	if err != nil {
 		return nil
 	}
+	return mapDoctorServices(statuses, goruntime.GOOS)
+}
+
+// mapDoctorServices maps the setup service statuses into the doctor layer's Service
+// view, dropping the microVM runtime line and enriching the host-native inference
+// backends (Ollama, Docker Model Runner) with actionable hints. Pure so it is
+// unit-testable without a live service tier.
+func mapDoctorServices(statuses []setup.ServiceStatus, goos string) []doctor.Service {
 	services := make([]doctor.Service, 0, len(statuses))
 	for _, status := range statuses {
 		// The microVM runtime (Mode "runtime") is covered by the platform
@@ -74,15 +82,57 @@ func doctorServices() []doctor.Service {
 		if status.Mode == "runtime" {
 			continue
 		}
-		services = append(services, doctor.Service{
+		services = append(services, enrichLocalInferenceService(doctor.Service{
 			Name:     status.Name,
 			State:    status.State,
 			Healthy:  status.Healthy,
 			Optional: status.Optional,
 			Detail:   status.Detail,
-		})
+		}, goos))
 	}
 	return services
+}
+
+// enrichLocalInferenceService adds an actionable recovery hint (and, for DMR, the
+// optional flag) to the host-native inference backends so `ai doctor` surfaces a
+// clear path when they are down. Both run on the HOST (not as aip-* containers), so
+// the generic "ai services start" suggestion does not apply — the hint is folded
+// into the down-case detail (which doctor renders from State for an unreachable
+// service). Non-inference services pass through unchanged.
+func enrichLocalInferenceService(service doctor.Service, goos string) doctor.Service {
+	switch service.Name {
+	case "ollama":
+		if !service.Healthy && service.State != "disabled" {
+			service.State = "not reachable — install & start host-native Ollama (" +
+				hostOllamaShortHint(goos) + "); required for local models"
+		}
+	case dmrServiceName:
+		// DMR is an always-available OPTIONAL backend — mark it optional so a down DMR
+		// is a warning, not a doctor error.
+		service.Optional = true
+		if !service.Healthy && service.State != "disabled" {
+			service.State = "not enabled — " + dmrShortHint(goos)
+		}
+	}
+	return service
+}
+
+// hostOllamaShortHint is the compact per-OS install/start hint folded into the
+// `ai doctor` Ollama detail line.
+func hostOllamaShortHint(goos string) string {
+	if goos == "linux" {
+		return "Linux: curl -fsSL https://ollama.com/install.sh | sh, then systemctl enable --now ollama"
+	}
+	return "macOS: brew install ollama, then ollama serve"
+}
+
+// dmrShortHint is the compact per-OS enable hint folded into the `ai doctor` Docker
+// Model Runner detail line.
+func dmrShortHint(goos string) string {
+	if goos == "linux" {
+		return "install the `docker model` CLI plugin + runtime"
+	}
+	return "Docker Desktop: docker desktop enable model-runner"
 }
 
 // doctorDomain builds the DOMAIN section for `ai doctor`: the resolved platform
