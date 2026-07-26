@@ -197,6 +197,25 @@ func Run(cwd string) error {
 		return workspaceConfigFields(projectConfig), nil
 	}
 	projectDetail := views.NewProject(projectInfo, configFetcher)
+	// Gateway Endpoints block: the host nginx entry to LiteLLM external apps use to reach
+	// the served models. Workspace-independent; resolved from runtime.yaml (domain +
+	// DefaultGatewayPort), mirroring the addresses `ai services` shows.
+	projectDetail.SetEndpoints(func() []views.ConfigField {
+		info, err := runtime.Load()
+		if err != nil || info == nil {
+			return nil
+		}
+		domain := info.ResolveDomain()
+		base := fmt.Sprintf("http://%s:%d", domain, runtime.DefaultGatewayPort)
+		return []views.ConfigField{
+			{Label: "models (OpenAI /v1)", Value: base + "/v1"},
+			{Label: "Ollama API", Value: base + "/ollama"},
+			{Label: "LiteLLM admin API", Value: base + "/llm"},
+			{Label: "LiteLLM console", Value: fmt.Sprintf("http://litellm.%s:%d", domain, runtime.DefaultGatewayPort)},
+			{Label: "cache console", Value: fmt.Sprintf("http://valkey.%s:%d", domain, runtime.DefaultGatewayPort)},
+			{Label: "auth", Value: "external apps send a LiteLLM key — create one with: ai keys"},
+		}
+	})
 
 	// The Metrics sub-tab streams live sandbox metrics (sb.MetricsStream) into a table
 	// when the backend supports it; otherwise it reports metrics unavailable.

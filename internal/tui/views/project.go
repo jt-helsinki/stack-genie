@@ -24,6 +24,12 @@ type ConfigField struct{ Label, Value string }
 // ConfigFetcher returns the live sandbox configuration fields for a workspace.
 type ConfigFetcher func(name string) ([]ConfigField, error)
 
+// EndpointsFetcher returns the host gateway endpoints (the nginx entry to LiteLLM)
+// that external apps use to reach the served models, as label/URL fields. It is
+// workspace-independent (one gateway per host) and resolved from runtime.yaml.
+// Injected; a nil fetcher (or empty result) omits the "Gateway Endpoints" block.
+type EndpointsFetcher func() []ConfigField
+
 // ExecRequestedMsg is emitted when the user asks to open an interactive shell in
 // the current project's workspace (the "e" key). The parent app suspends the TUI
 // and tea.ExecProcess an interactive shell via `ai shell`.
@@ -91,7 +97,18 @@ type Project struct {
 	// body so SetContent (and thus a scroll-position reset risk) only fires on change.
 	viewport viewport.Model
 	rendered string
+	// endpoints resolves the host gateway endpoints (nginx entry to LiteLLM) shown in the
+	// "Gateway Endpoints" block so external apps know how to reach the served models. It
+	// is workspace-independent; endpointFields caches the one-time resolution.
+	endpoints       EndpointsFetcher
+	endpointFields  []ConfigField
+	endpointsLoaded bool
 }
+
+// SetEndpoints injects the host gateway-endpoints fetcher (nginx → LiteLLM). Called
+// once at wiring; the result is cached and rendered in the "Gateway Endpoints" block.
+// A nil fetcher omits that block.
+func (view *Project) SetEndpoints(fetcher EndpointsFetcher) { view.endpoints = fetcher }
 
 // NewProject builds the project-detail (summary) view over the injected info fetcher
 // and a live sandbox-configuration fetcher (for the "Sandbox Configuration" block;
@@ -308,6 +325,22 @@ func (view *Project) renderBody() string {
 		body.WriteString("  " + ui.Muted.Render("unavailable — "+view.configErr.Error()) + "\n")
 	default:
 		body.WriteString("  " + ui.Muted.Render("not running — start the workspace to see its live configuration") + "\n")
+	}
+	// Gateway Endpoints: the host nginx entry to LiteLLM external apps use to reach the
+	// served models. Workspace-independent (one gateway per host), so it shows regardless
+	// of workspace state. Resolved once and cached.
+	if view.endpoints != nil {
+		if !view.endpointsLoaded {
+			view.endpointFields = view.endpoints()
+			view.endpointsLoaded = true
+		}
+		if len(view.endpointFields) > 0 {
+			body.WriteString("\n")
+			body.WriteString(ui.Heading.Render("Gateway Endpoints") + "\n")
+			for _, endpointField := range view.endpointFields {
+				body.WriteString(field(endpointField.Label, endpointField.Value))
+			}
+		}
 	}
 	return body.String()
 }
