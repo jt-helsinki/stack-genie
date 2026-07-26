@@ -46,9 +46,10 @@ All platform-wide data is stored under:
 ├── skills/
 ├── templates/     # OS Dockerfile templates + shared templates
 ├── tools/
-└── volumes/       # ALL host-persisted SYSTEM data volumes (bind-mounted into aip-* containers)
-    ├── litellm-db/  # LiteLLM Postgres data dir (→ aip-litellm-db:/var/lib/postgresql)
-    └── models/      # Ollama persistent model store (→ aip-ollama)
+└── volumes/       # ALL host-persisted SYSTEM data volumes
+    ├── litellm-db/  # LiteLLM Postgres data dir (bind-mounted → aip-litellm-db:/var/lib/postgresql)
+    └── models/      # local-model stores
+        └── ollama/  # host-native Ollama model store (OLLAMA_MODELS)
 
 ~/.ai-platform/.ai-platform.env   # OPT-IN, 0600 sibling file (NOT under ~/.ai-platform/)
 ```
@@ -81,9 +82,12 @@ Today there are two:
 - `~/.ai-platform/volumes/litellm-db/` — the LiteLLM **Postgres data dir**,
   **HOST-BIND-MOUNTED** into `aip-litellm-db` at `/var/lib/postgresql` (NOT a
   Docker named volume). This is the one stateful service-tier piece.
-- `~/.ai-platform/volumes/models/` — the **persistent Ollama model store**,
-  bind-mounted into `aip-ollama` so pulled local models survive container
-  recreation (distinct from the disposable `cache/models/` in §1.3).
+- `~/.ai-platform/volumes/models/` — the **persistent local-model store**. Ollama
+  is now **host-native** (there is no `aip-ollama` container): the host Ollama
+  process is pointed at the subdir `~/.ai-platform/volumes/models/ollama/` via
+  `OLLAMA_MODELS`, so pulled local models persist under the standardized
+  system-volume home and are removed by `ai uninstall --purge` (distinct from the
+  disposable `cache/models/` in §1.3).
 
 **Migration caveat (acceptable for this dev platform):** existing data in the old
 `aip-litellm-db-data` named volume and the old `~/.ai-platform/models/` does NOT
@@ -284,19 +288,23 @@ config.yaml              # global platform config (§12.4)
 runtime.yaml             # detected runtime, platform-global (§12.5)
 versions.yaml            # pinned image+tag of host services (§12.6)
 projects.yaml            # index: project name → path (§12.7)
+model-runtimes.yaml      # per-model SERVING-RUNTIME selection record (alias → ollama|docker-model-runner)
+ui.yaml                  # TUI theme + mouse-capture preference
 litellm/                 # rendered LiteLLM config.yaml (placeholders only; real keys live in the gateway)
 proxy/                   # rendered nginx.conf for the aip-proxy gateway (the litellm.<domain> UI vhost + gateway paths)
 dns/                     # rendered CoreDNS config for the aip-dns egress-audit resolver
-ollama/                  # rendered Ollama config (required local model backend)
+ollama/                  # LEGACY rendered Ollama container config — UNUSED in the live reconcile (Ollama is now host-native, no aip-ollama container)
 <service>/               # one rendered-config dir per service-tier service (created at reconcile)
 ```
 
 Rules:
 
 * a config dir is created **per service-tier service** at reconcile (e.g.
-  `litellm/`, `proxy/`, `dns/`, `ollama/`, `presidio-analyzer/`, …); the ones
+  `litellm/`, `proxy/`, `dns/`, `presidio-analyzer/`, …); the ones
   that have a rendered file today are LiteLLM (`config.yaml`), the nginx gateway
-  (`proxy/nginx.conf`), and the CoreDNS resolver (`dns/`)
+  (`proxy/nginx.conf`), and the CoreDNS resolver (`dns/`). The `ollama/` dir is
+  **legacy/unused** — Ollama is now host-native (no `aip-ollama` container), so
+  its rendered container-config is not consumed by the live reconcile
 * every `<service>/` config is **rendered** by the CLI from the platform
   config; not hand-edited (architecture §5, Host Services Control Plane)
 * contains **no secrets** — only placeholders; real provider credentials live in
@@ -819,6 +827,33 @@ agent_dashboards:          # agent-CLI web dashboards (currently only hermes —
   `internal/setup`'s `containerImage`, falling back to the built-in
   `versions.Default()` pins when the file is absent or an entry is incomplete);
   `--upgrade` re-writes it to this binary's defaults and re-reconciles
+
+## 12.6a `config/model-runtimes.yaml` (per-model serving-runtime selection)
+
+```yaml id="sc9a"
+schema_version: 1
+choices:
+  ollama/qwen2.5-coder:
+    alias: ollama/qwen2.5-coder
+    model: qwen2.5-coder
+    runtime: ollama              # ollama | docker-model-runner
+    endpoint: http://localhost:11434
+    status: served
+```
+
+* a machine-wide **selection record** for **how** each served model is served —
+  the runtime (host-native **Ollama** vs the host-side **Docker Model Runner**),
+  keyed by the model's gateway **alias**
+* it is a **thin selection record, NOT a parallel model registry** — LiteLLM's DB
+  remains the source of truth for **what** is served; this file only records the
+  serving-runtime choice per alias
+* follows the same global-store pattern as `versions.yaml` — `Path` under
+  `paths.ConfigDir`, atomic writes via `internal/conffile`, unknown-field-rejecting
+  reads — backed by `internal/config/modelruntime.go`
+* the **Docker Model Runner (DMR)** backend is a host-side service (no `aip-*`
+  container, no new volume), backed by `internal/setup/dmr.go` (probe + bring-up
+  seam)
+* lives under `~/.ai-platform/`, so `ai uninstall --purge` removes it wholesale
 
 ## 12.7 `config/projects.yaml` (global projects index)
 

@@ -272,19 +272,25 @@ Purpose:
 * initializes state directory
 * configures runtime
 * installs, configures, and starts the host services as the single control
-  plane — see architecture §5, "Host Services Control Plane". The host service
-  set is the `aip-dns` CoreDNS egress-audit resolver + Ollama (required) +
+  plane — see architecture §5, "Host Services Control Plane". The container service
+  set is the `aip-dns` CoreDNS egress-audit resolver +
   Presidio (analyzer + anonymizer, reconciled only when the `secret-masking`
   guardrail is selected) + Valkey (+ RedisInsight) + Headroom + LiteLLM
   (+ Postgres) + the `aip-proxy` nginx gateway (the SOLE host entry, reconciled
   LAST) — all containers on the `aip-net` network, reconciled in order network →
-  DNS → Ollama → Presidio → Valkey(+RedisInsight) → Headroom → LiteLLM(+DB) →
+  DNS → Presidio → Valkey(+RedisInsight) → Headroom → LiteLLM(+DB) →
   proxy (Headroom PRECEDES LiteLLM because LiteLLM's `headroom` compression
-  guardrail calls it in-process) — plus verification of the Microsandbox
-  workspace runtime.
+  guardrail calls it in-process). The **local-model inference tier is HOST-NATIVE,
+  not containers**: **Ollama** (the required local-model backend, probed at
+  `http://127.0.0.1:11434/api/version`) and **Docker Model Runner (DMR)** (probed at
+  `127.0.0.1:12434/engines/v1`, always available as a serving option); there is
+  **no** `aip-ollama` container. Setup also verifies the Microsandbox workspace
+  runtime. *(hardware bring-up: installing / starting the host Ollama process and
+  enabling DMR are not yet wired live.)*
 * renders each service config from the platform config and verifies the
-  Microsandbox runtime + host virtualization (no docker compose; the whole
-  service tier runs as containers, so there is no native OS service to register)
+  Microsandbox runtime + host virtualization (no docker compose; the container
+  service tier runs as containers while the local-model tier is host-native, so
+  there is no native OS service to register)
 * provisions a small **Postgres** (`aip-litellm-db`, `postgres:18.4-alpine3.23`)
   that backs LiteLLM's DB-only features (admin UI login, virtual keys, spend
   tracking — PostgreSQL is the only engine LiteLLM supports for these). It runs
@@ -380,12 +386,18 @@ Behavior:
   never deleted; the VM instance is only halted, never `msb delete`'d), stopping and
   removing the platform containers (`aip-*`), **removing all platform container
   images** (the pinned service-tier images plus every `aip-*` image, so nothing is
-  left on the host — done on EVERY uninstall, not only `--purge`), removing the `ai`
-  binary, removing the completion scripts, and stripping the managed PATH/completion
-  lines from the shell rc files (leaving the user's own lines intact)
+  left on the host — done on EVERY uninstall, not only `--purge`), **stopping the
+  HOST-NATIVE Ollama process best-effort** (`pkill -f "ollama serve"`, reported as
+  `StoppedHostOllama`; the precise per-OS stop mechanism, `launchctl unload` /
+  `systemctl stop`, is a `hardware bring-up` seam), removing the `ai` binary,
+  removing the completion scripts, and stripping the managed PATH/completion lines
+  from the shell rc files (leaving the user's own lines intact). It **never**
+  uninstalls the user's Ollama binary, and **Docker Model Runner (DMR) — being
+  Docker/host-managed — is deliberately LEFT INTACT** (never stopped or removed)
 * **removes the platform state under `~/.ai-platform` but KEEPS the downloaded
   model store (`volumes/models`)** — the one expensive-to-refetch piece a user
-  usually wants to keep across a reinstall; `--purge` removes `~/.ai-platform`
+  usually wants to keep across a reinstall; the host-native Ollama store is
+  preserved on a non-purge uninstall, while `--purge` removes `~/.ai-platform`
   in full, including the downloaded models
 * **asks, per external dependency, whether to also uninstall it** — for `msb`
   (Microsandbox) that is detected on the host, it prompts (on a terminal) before
@@ -1284,12 +1296,17 @@ commands below instead manage the **local Ollama store** directly over its HTTP 
 LiteLLM config carries **no** `model_list` and **no** per-provider wildcards — the
 served model set is **DB-backed**, §14.) Installing a model is a two-part act:
 `ai models pull` downloads it into the Ollama store **and** registers it as a
-DB-backed model in the gateway (public `model_name` `ollama/<name>`, via
-`litellm.RegisterOllamaModel`), so it becomes routable immediately; `ai models rm`
-removes it from the store **and** unregisters it (`UnregisterOllamaModel`). Merely
-registering a model in the gateway is **not** the same as having it installed
-locally — `pull` is what downloads the weights. The pure store commands (`list` /
-`popular` / `show`) do not touch the gateway registration.
+DB-backed model in the gateway, so it becomes routable immediately; `ai models rm`
+removes it from the store **and** unregisters it. The **serving runtime** chosen at
+pull time (`--runtime`, §8.3.3) decides which backend is registered and later
+unregistered: an Ollama-served model registers as `ollama/<name>` (via
+`litellm.RegisterOllamaModel`) and is removed with `UnregisterOllamaModel`, while a
+Docker Model Runner (DMR)-served model registers as `docker-model-runner/<alias>`
+and is removed with `UnregisterDockerModelRunnerModel` (Ollama still **downloads**
+the weights for both). Merely registering a model in the gateway is **not** the
+same as having it installed locally — `pull` is what downloads the weights. The
+pure store commands (`list` / `popular` / `show`) do not touch the gateway
+registration.
 
 If Ollama is unreachable, these exit **3** (missing dependency) with a hint to run
 `ai services start ollama` (or `ai setup`); bad input exits **2**; other failures
@@ -1341,10 +1358,31 @@ never blocks pulling anything.
 ### 8.3.3 Pull (install / update)
 
 ```bash id="c23b"
-ai models pull [name...]
+ai models pull [name...] [--runtime <ollama|docker-model-runner>] [--alias <alias>]
 ```
 
 `pull` is **variadic** — it installs **one or more** models in a single run.
+
+**Serving runtime (`--runtime`, `--alias`).** `pull` chooses the **serving
+backend** for the model being added:
+
+* `--runtime <ollama|docker-model-runner>` (default **`ollama`**) — which local
+  inference tier serves the model. **Ollama remains the authoritative
+  DOWNLOADER for BOTH runtimes** — the weights are always pulled via Ollama;
+  `docker-model-runner` (DMR) merely **serves** them. Default behaviour without
+  `--runtime` is **unchanged** (Ollama). An invalid `--runtime` value exits **2**
+  (invalid input). An explicit `--runtime docker-model-runner` when DMR is **not
+  available / reachable** is **rejected with exit 3** (missing dependency) — it
+  **never silently falls back** to Ollama. On a terminal (interactive) OR whenever
+  `docker-model-runner` is chosen, a **"Serving runtime" picker** is shown.
+* `--alias <alias>` — the gateway alias / handle for the model.
+
+**Gateway registration handles.** An Ollama-served model registers under the
+public handle `ollama/<name>`; a DMR-served model registers under
+`docker-model-runner/<alias>` (routed internally to `openai/<model>`). Both are
+DB-backed models in LiteLLM (§14). The chosen runtime is recorded per model in
+the machine-wide **`~/.ai-platform/config/model-runtimes.yaml`** store, so
+`ai models rm` (§8.3.4) can later de-register the correct backend.
 
 * With one or more `name` arguments, or under `--json` / no TTY: each given
   reference is pulled in turn (the **custom-reference** path — e.g.
@@ -1377,6 +1415,12 @@ a terminal with no argument the user picks from the **installed** models; with a
 argument (or under `--json`) that name is removed. On a terminal the user is asked
 to **confirm** before deleting. A model not in the store → a clear not-found error
 (exit 2).
+
+`rm` is **runtime-aware**: it looks up the model's recorded serving runtime in
+`~/.ai-platform/config/model-runtimes.yaml` (§8.3.3) and de-registers the **correct
+backend** from the gateway — `UnregisterDockerModelRunnerModel(alias)` for a DMR
+model, else `UnregisterOllamaModel(name)` — then deletes that model's
+`model-runtimes.yaml` entry.
 
 ### 8.3.5 Show
 
@@ -1448,12 +1492,20 @@ ai doctor [<name>]
 
 * **Platform dependencies** — Microsandbox runtime + host virtualization (Apple
   Silicon / KVM), Docker/Podman
-* **All service-tier services** — Ollama, Presidio (analyzer + anonymizer back
-  LiteLLM's opt-in `secret-masking` guardrail; reconciled only when it is enabled;
-  architecture §15), LiteLLM (health + that the configured provider keys are
-  present in the gateway — a missing key is warned, not fatal; architecture §17),
-  Headroom (the input-compression service LiteLLM calls as a `pre_call` guardrail),
-  the nginx proxy, and DNS (there are no optional host services)
+* **The local-model inference tier** — reported as two **HOST-NATIVE** services
+  (Mode `host`, no container): **Ollama** (state from an HTTP probe of
+  `http://127.0.0.1:11434/api/version` — `running`/`stopped`; there is **no**
+  `aip-ollama` container) and **Docker Model Runner (DMR)** (state from its host
+  probe at `127.0.0.1:12434/engines/v1`; always **available** as a serving option,
+  though it may read `stopped` when not enabled).
+* **The remaining service-tier services** (containers) — Presidio (analyzer +
+  anonymizer back LiteLLM's opt-in `secret-masking` guardrail; reconciled only when
+  it is enabled; architecture §15), LiteLLM (health + that the configured provider
+  keys are present in the gateway — a missing key is warned, not fatal; architecture
+  §17), Headroom (the input-compression service LiteLLM calls as a `pre_call`
+  guardrail), the nginx proxy, and DNS (there are no optional host services).
+  *(hardware bring-up: installing / starting the host Ollama process and enabling
+  DMR are not yet wired live.)*
 
 **Additionally**, it reports the **workspace-runtime** section (per-workspace
 runtime / virtualization check, §12.1) **only** when run inside a workspace
@@ -1476,12 +1528,16 @@ fail) conveys health, rather than the process exit code.
 ## 10.2 Service Management
 
 The `ai` CLI is the single control plane for all host services — the platform
-containers `dns`, `ollama`, `presidio`, `valkey`, `redisinsight`, `litellm`,
-`headroom`, and `proxy` (there are no optional host services). The user never
-invokes `docker compose`, `launchctl`, or `systemctl` directly. The whole service
-tier runs as containers (see architecture §5, "Host Services Control Plane").
-(The Microsandbox workspace runtime is not a long-running service — it is driven
-by the top-level workspace verbs, not `ai services`.)
+containers `dns`, `presidio`, `valkey`, `redisinsight`, `litellm`, `headroom`, and
+`proxy`, plus the **HOST-NATIVE** local-model inference tier: `ollama` and Docker
+Model Runner (`docker-model-runner`, DMR) (there are no optional host services).
+The user never invokes `docker compose`, `launchctl`, or `systemctl` directly. The
+container tier runs as containers on `aip-net`; **Ollama is now a host-native
+service, NOT a container** (there is no `aip-ollama` container), and DMR is
+Docker/host-managed — both are reported with Mode `host` (see architecture §5,
+"Host Services Control Plane"). (The Microsandbox workspace runtime is not a
+long-running service — it is driven by the top-level workspace verbs, not
+`ai services`.)
 
 ```bash id="c27a"
 ai services status                 # health + version of every service
@@ -1496,8 +1552,9 @@ ai services compose                # write a DEBUG-ONLY ~/.ai-platform/docker-co
 ```
 
 `<service>`: `ollama` | `presidio` | `litellm` | `headroom` | `proxy` | `dns` |
-`valkey` | `redisinsight` | `all` (no arg = all). All eight are **core** (always on).
-The optional host-service set is currently **empty**, so `enable`/`disable` have
+`valkey` | `redisinsight` | `all` (no arg = all). All eight are **core** (always on);
+`ollama` is now the **host-native** local-model service rather than a container. The
+optional host-service set is currently **empty**, so `enable`/`disable` have
 nothing to act on (retained for forward compatibility). (`presidio` reports
 "disabled" unless the `secret-masking` guardrail is selected at `ai setup`.)
 
@@ -1517,6 +1574,14 @@ Behavior:
   circuit breaker trips the remaining probes after the first timeout (self-healing
   after a few seconds), so `ai services status` returns instead of blocking on a
   dead daemon.
+* the **local-model inference tier** is reported as **host-native** (Mode `host`,
+  no container): the `ollama` line's state comes from an HTTP probe of
+  `http://127.0.0.1:11434/api/version` (`running`/`stopped`), and a **new
+  `docker-model-runner` (DMR)** line's state comes from its host probe at
+  `127.0.0.1:12434/engines/v1`. DMR is **always available** as a serving option and
+  may read `stopped` when not enabled. *(hardware bring-up: installing / starting
+  the host Ollama process, enabling DMR, and the live end-to-end DMR serving path
+  are not yet wired.)*
 * lifecycle verbs (`start`/`stop`/`restart`) act on the **platform-owned container
   set** via the runtime abstraction (§6). With no service, or `all`, they act on
   every **enabled** container in **dependency order** (a disabled optional service

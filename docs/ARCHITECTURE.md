@@ -3,8 +3,11 @@
 Top-level containers and the model data path in words. The **canonical diagram** is
 [`docs/architecture.mmd`](architecture.mmd) (Mermaid source, complete and
 authoritative — includes every service: proxy, headroom, litellm + DB, presidio,
-ollama, valkey, redisinsight, dns); its rendered export `docs/architecture.png` is
-embedded in [`architecture-overview.md`](architecture-overview.md).
+valkey, redisinsight, dns); its rendered export `docs/architecture.png` is
+embedded in [`architecture-overview.md`](architecture-overview.md). The local-model
+inference backends — **host-native Ollama** and **Docker Model Runner (DMR)** — are
+host-side, not `aip-net` containers; the LiteLLM/nginx containers reach them via
+`host.docker.internal` (regenerate `architecture.mmd` accordingly).
 
 > **Note:** after any architecture change, edit `docs/architecture.mmd` and
 > regenerate the PNG from it (e.g. `mmdc -i docs/architecture.mmd -o
@@ -29,7 +32,8 @@ embedded in [`architecture-overview.md`](architecture-overview.md).
    `aip-litellm-db` is also internal-only, no host port, reached at
    `aip-litellm-db:5432`). The default `/` and `/v1` routes forward **directly to aip-litellm**;
    `/llm` and `/ollama` (and the `litellm.<domain>` + `valkey.<domain>` vhosts) front
-   the LiteLLM admin + Ollama + RedisInsight surfaces. nginx no longer routes to Headroom at all. The host CLI
+   the LiteLLM admin + Ollama + RedisInsight surfaces — `/ollama` targets the **host-native**
+   Ollama at `host.docker.internal:11434` (Ollama is no longer a container). nginx no longer routes to Headroom at all. The host CLI
    reaches the gateway on loopback `127.0.0.1:18787`.
 4. **aip-litellm** is the router. **Guardrails are user-selectable** (chosen at
    `ai setup` via a picker / `--guardrails`, persisted in `runtime.yaml`); only the
@@ -48,10 +52,16 @@ embedded in [`architecture-overview.md`](architecture-overview.md).
    in-process prompt-injection detector and the unmaintained LLM Guard were both
    removed — they false-positived on ordinary coding/Ollama traffic.) Its admin UI /
    virtual keys / spend live in **aip-litellm-db**.
-5. LiteLLM routes to **aip-ollama** (a registered local Ollama model) or to a
-   **cloud provider** using the real key it holds. The model set is DB-backed and
-   catalog-driven with **no built-in default model**. The response streams back along
-   the same path (SSE-friendly through nginx) to the agent.
+5. LiteLLM routes to a **local-inference backend** — **host-native Ollama** or
+   **Docker Model Runner (DMR)**, both host-side services reached through the
+   `host.docker.internal` gateway (Ollama at `:11434`, DMR's OpenAI-compatible endpoint at
+   `:12434/engines/v1`; LiteLLM/nginx get `--add-host=host.docker.internal:host-gateway`) —
+   or to a **cloud provider** using the real key it holds. Local models are registered
+   DB-backed (`ollama/<name>` and `docker-model-runner/<alias>`); the serving backend is
+   chosen **per model** at `ai models pull --runtime …` (there is no machine-wide inference
+   mode). The model set is DB-backed and catalog-driven with **no built-in default model**.
+   The response streams back along the same path (SSE-friendly through nginx) to the agent.
+   Installing/starting the host Ollama and enabling DMR are `hardware bring-up` seams.
 
 Each workspace microVM ships a **rootful in-VM container runtime** (containerd +
 nerdctl + runc + CNI), on which the platform runs **opt-in AI apps** (`internal/apps`)
