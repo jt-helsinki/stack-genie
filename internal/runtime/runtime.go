@@ -200,6 +200,13 @@ type Info struct {
 	// resolves to container (ResolveOllamaMode), so a legacy install keeps the
 	// working container stack. Chosen at `ai setup` and persisted machine-wide.
 	OllamaMode string `json:"ollama_mode,omitempty" yaml:"ollama_mode,omitempty"`
+	// DockerModelRunnerEnabled turns on Docker Model Runner (DMR) as an ADDITIONAL
+	// host-side inference backend (arch §14). It mirrors OllamaMode but is a simple
+	// opt-in bool: DMR only participates when a served model's runtime is
+	// docker-model-runner, and the whole feature defaults OFF (the zero value) so the
+	// existing container stack is unchanged until DMR is validated on a provisioned
+	// host. Chosen at `ai setup` and persisted machine-wide.
+	DockerModelRunnerEnabled bool `json:"docker_model_runner_enabled,omitempty" yaml:"docker_model_runner_enabled,omitempty"`
 	// Guardrails is the set of LiteLLM guardrail keys enabled on the gateway
 	// (litellm.GuardrailHeadroom, …). Chosen at `ai setup` and persisted machine-wide.
 	// nil (a legacy install, or never set) means "use the default" (Headroom only,
@@ -219,6 +226,14 @@ func (info *Info) ResolveDomain() string {
 // OllamaModeContainer when unset/unrecognised.
 func (info *Info) ResolveOllamaMode() string {
 	return ResolveOllamaMode(info.OllamaMode)
+}
+
+// DMREnabled reports whether Docker Model Runner is enabled as an additional
+// host-side inference backend on this host. It is the single resolution point for
+// the DMR opt-in (mirroring ResolveOllamaMode); the zero value is the safe
+// disabled default.
+func (info *Info) DMREnabled() bool {
+	return info.DockerModelRunnerEnabled
 }
 
 // ResolveDomain returns raw when non-empty, otherwise DefaultDomain. It is the

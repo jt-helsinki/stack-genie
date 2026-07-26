@@ -49,23 +49,38 @@ func TestOllamaProxyTargetByMode(test *testing.T) {
 }
 
 func TestHostGatewayRunArgsByMode(test *testing.T) {
-	if args := hostGatewayRunArgs(runtime.OllamaModeContainer); len(args) != 0 {
+	if args := hostGatewayRunArgs(runtime.OllamaModeContainer, false); len(args) != 0 {
 		test.Errorf("container mode must add no host-gateway args, got %v", args)
 	}
-	args := hostGatewayRunArgs(runtime.OllamaModeHost)
+	args := hostGatewayRunArgs(runtime.OllamaModeHost, false)
 	if len(args) != 1 || args[0] != hostGatewayAddArg {
 		test.Errorf("host mode args = %v, want [%s]", args, hostGatewayAddArg)
+	}
+	// DMR enabled adds the host-gateway arg even in container Ollama mode…
+	dmr := hostGatewayRunArgs(runtime.OllamaModeContainer, true)
+	if len(dmr) != 1 || dmr[0] != hostGatewayAddArg {
+		test.Errorf("DMR-enabled container mode args = %v, want [%s]", dmr, hostGatewayAddArg)
+	}
+	// …and host Ollama + DMR together still add it exactly ONCE (never double).
+	both := hostGatewayRunArgs(runtime.OllamaModeHost, true)
+	if len(both) != 1 || both[0] != hostGatewayAddArg {
+		test.Errorf("host+DMR args = %v, want a single %s (no double-add)", both, hostGatewayAddArg)
 	}
 }
 
 func TestLitellmRunArgsHostGateway(test *testing.T) {
-	container := strings.Join(litellmRunArgs("/cfg.yaml", "127.0.0.1", "img", runtime.OllamaModeContainer), " ")
+	container := strings.Join(litellmRunArgs("/cfg.yaml", "127.0.0.1", "img", runtime.OllamaModeContainer, false), " ")
 	if strings.Contains(container, hostGatewayAddArg) {
 		test.Errorf("container mode must NOT add %s: %s", hostGatewayAddArg, container)
 	}
-	host := strings.Join(litellmRunArgs("/cfg.yaml", "127.0.0.1", "img", runtime.OllamaModeHost), " ")
+	host := strings.Join(litellmRunArgs("/cfg.yaml", "127.0.0.1", "img", runtime.OllamaModeHost, false), " ")
 	if !strings.Contains(host, hostGatewayAddArg) {
 		test.Errorf("host mode must add %s: %s", hostGatewayAddArg, host)
+	}
+	// DMR enabled adds the host-gateway wiring even in container Ollama mode.
+	dmr := strings.Join(litellmRunArgs("/cfg.yaml", "127.0.0.1", "img", runtime.OllamaModeContainer, true), " ")
+	if !strings.Contains(dmr, hostGatewayAddArg) {
+		test.Errorf("DMR-enabled container mode must add %s: %s", hostGatewayAddArg, dmr)
 	}
 }
 

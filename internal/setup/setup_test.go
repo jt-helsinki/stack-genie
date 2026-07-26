@@ -750,7 +750,7 @@ func TestPreflightReportsMsbWithInstructionsNotInstalling(test *testing.T) {
 }
 
 func TestLiteLLMRunArgs(test *testing.T) {
-	args := litellmRunArgs("/cfg/litellm/config.yaml", "127.0.0.1", containerImage("litellm"), runtime.OllamaModeContainer)
+	args := litellmRunArgs("/cfg/litellm/config.yaml", "127.0.0.1", containerImage("litellm"), runtime.OllamaModeContainer, false)
 	want := []string{
 		"run", "-d", "--name", "aip-litellm",
 		"--network", "aip-net",
@@ -789,7 +789,7 @@ func TestLiteLLMRunArgs(test *testing.T) {
 // (nginx is the sole host entry) — regardless of the role's bindHost.
 func TestLiteLLMRunArgsInternalOnly(test *testing.T) {
 	for _, bindHost := range []string{"127.0.0.1", "0.0.0.0"} {
-		launch := strings.Join(litellmRunArgs("/cfg/config.yaml", bindHost, containerImage("litellm"), runtime.OllamaModeContainer), " ")
+		launch := strings.Join(litellmRunArgs("/cfg/config.yaml", bindHost, containerImage("litellm"), runtime.OllamaModeContainer, false), " ")
 		if strings.Contains(launch, "-p ") || strings.Contains(launch, "14000") {
 			test.Errorf("litellm must be internal-only (no host publish) for bindHost %s: %s", bindHost, launch)
 		}
@@ -1101,7 +1101,7 @@ func TestEnsureProxyRendersGatewayConfig(test *testing.T) {
 	home := test.TempDir()
 	test.Setenv("HOME", home)
 	prober := &recordingProber{}
-	if err := ensureProxy(prober, "docker", "127.0.0.1", "aip.local", runtime.OllamaModeContainer); err != nil {
+	if err := ensureProxy(prober, "docker", "127.0.0.1", "aip.local", runtime.OllamaModeContainer, false); err != nil {
 		test.Fatal(err)
 	}
 	confPath := filepath.Join(home, ".ai-platform", "config", "proxy", "nginx.conf")
