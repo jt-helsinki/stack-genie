@@ -99,7 +99,7 @@ func mapAppsErr(err error) error {
 func newAppsCmd(emitter *output.Emitter, exit *int) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "apps <list|add|remove|update|start|stop|restart> [app] [name]",
-		Short: "Manage the AI applications running inside the workspace (Open WebUI, AnythingLLM)",
+		Short: "Manage the AI applications running inside the workspace (Open WebUI)",
 		Args:  cobra.MinimumNArgs(1),
 		ValidArgsFunction: func(_ *cobra.Command, args []string, _ string) ([]string, cobra.ShellCompDirective) {
 			if len(args) == 0 {

@@ -492,12 +492,12 @@ func TestSupportedAgentCLIsIncludesHermes(test *testing.T) {
 // TestSplitAgentsAndApps verifies the combined agents+apps wizard selection splits into
 // the two known sets regardless of selection order, dropping unknown values.
 func TestSplitAgentsAndApps(test *testing.T) {
-	agentCLIs, appKeys := SplitAgentsAndApps([]string{"anythingllm", "opencode", "openwebui", "omp", "bogus"})
+	agentCLIs, appKeys := SplitAgentsAndApps([]string{"opencode", "openwebui", "omp", "bogus"})
 	if strings.Join(agentCLIs, ",") != "opencode,omp" {
 		test.Errorf("agent CLIs = %v, want [opencode omp]", agentCLIs)
 	}
-	if strings.Join(appKeys, ",") != "anythingllm,openwebui" {
-		test.Errorf("app keys = %v, want [anythingllm openwebui]", appKeys)
+	if strings.Join(appKeys, ",") != "openwebui" {
+		test.Errorf("app keys = %v, want [openwebui]", appKeys)
 	}
 	agentCLIs, appKeys = SplitAgentsAndApps(nil)
 	if len(agentCLIs) != 0 || len(appKeys) != 0 {

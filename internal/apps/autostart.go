@@ -49,6 +49,14 @@ func AppsAutostartScript(projectConfig *config.Config, gatewayURL string) string
 		if !ok {
 			continue
 		}
+		// The persistent data dir is a host bind source (/persist/apps/<key>) that nerdctl
+		// auto-creates ROOT-owned 0755. Apps whose container runs as a NON-root user (e.g.
+		// a non-root user) then cannot write it — the app can crash on startup (e.g. a
+		// SQLite "unable to open database file" error). Create it
+		// world-writable up front so any container uid can persist state (the /persist
+		// overlay is a single-user per-workspace volume, so 0777 is acceptable).
+		dataDir := guestAppDataRoot + "/" + manifest.Key
+		body = append(body, "mkdir -p "+dataDir+" && chmod 0777 "+dataDir)
 		// Idempotent recreate: drop any prior container of the same name, then run fresh.
 		body = append(body, "nerdctl rm -f "+manifest.ContainerName()+" 2>/dev/null || true")
 		// Reuse runArgs so the container knowledge (name, port, volume, /workspace mount,

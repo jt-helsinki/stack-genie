@@ -24,11 +24,9 @@ import (
 // the manifest because the apps run inside the workspace, not in the service
 // tier, so they are not part of the host versions.yaml.
 const (
-	openWebUIImage       = "ghcr.io/open-webui/open-webui:latest"
-	anythingLLMImage     = "mintplexlabs/anythingllm:latest"
-	defaultAppMemory     = "2g"
-	openWebUIPortGuest   = 8080
-	anythingLLMPortGuest = 3001
+	openWebUIImage     = "ghcr.io/open-webui/open-webui:latest"
+	defaultAppMemory   = "2g"
+	openWebUIPortGuest = 8080
 )
 
 // Manifest is the declarative description of one in-VM app. Env is built per
@@ -106,28 +104,6 @@ var catalogue = []Manifest{
 				"OPENAI_API_KEY":      apiKey,
 				"ENABLE_OLLAMA_API":   "false",
 				"WEBUI_AUTH":          "false",
-			}
-		},
-	},
-	{
-		Key:            "anythingllm",
-		Name:           "AnythingLLM",
-		Image:          anythingLLMImage,
-		ContainerPort:  anythingLLMPortGuest,
-		DataDir:        "/app/server/storage",
-		MountWorkspace: true,
-		Memory:         defaultAppMemory,
-		// AnythingLLM's GENERIC OpenAI provider (LLM_PROVIDER=generic-openai) points
-		// at a base path + key + model with GENERIC_OPEN_AI_* — verified against the
-		// project's docker/.env.example. STORAGE_DIR matches the persisted DataDir.
-		envFor: func(gatewayURL, apiKey, defaultModel string) map[string]string {
-			return map[string]string{
-				"STORAGE_DIR":                       "/app/server/storage",
-				"LLM_PROVIDER":                      "generic-openai",
-				"GENERIC_OPEN_AI_BASE_PATH":         gatewayURL,
-				"GENERIC_OPEN_AI_API_KEY":           apiKey,
-				"GENERIC_OPEN_AI_MODEL_PREF":        defaultModel,
-				"GENERIC_OPEN_AI_MODEL_TOKEN_LIMIT": "4096",
 			}
 		},
 	},

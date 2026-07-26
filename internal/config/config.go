@@ -191,7 +191,7 @@ type WorkspaceConfig struct {
 	MemoryLimit string `yaml:"memory_limit,omitempty" json:"memory_limit,omitempty"`
 	// DiskLimit is the writable rootfs (OCI overlay upper) size in GiB, e.g. "20". It
 	// sizes the in-VM disk that holds containerd's image store, so in-VM apps (Open
-	// WebUI, AnythingLLM) whose images are multi-GB have room to extract. Applied at
+	// WebUI) whose images are multi-GB have room to extract. Applied at
 	// workspace create via the SDK's WithOCIUpperSize. Empty falls back to the
 	// workspace-package default (see microVMDisk). Same "<GiB>" form as MemoryLimit.
 	DiskLimit string `yaml:"disk_limit,omitempty" json:"disk_limit,omitempty"`

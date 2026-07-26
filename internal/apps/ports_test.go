@@ -67,7 +67,8 @@ func TestAllocatePortExhausted(test *testing.T) {
 }
 
 func TestAllocateEntriesUnique(test *testing.T) {
-	entries, err := AllocateEntries([]string{"openwebui", "anythingllm"}, nil, nil, func(int) bool { return true })
+	// Two selections of the same known app must still get DISTINCT auto-allocated ports.
+	entries, err := AllocateEntries([]string{"openwebui", "openwebui"}, nil, nil, func(int) bool { return true })
 	if err != nil {
 		test.Fatal(err)
 	}
@@ -77,7 +78,7 @@ func TestAllocateEntriesUnique(test *testing.T) {
 	if entries[0].Port == entries[1].Port {
 		test.Fatalf("entries collided on port %d", entries[0].Port)
 	}
-	if entries[0].Key != "openwebui" || entries[1].Key != "anythingllm" {
+	if entries[0].Key != "openwebui" || entries[1].Key != "openwebui" {
 		test.Fatalf("keys = %q,%q", entries[0].Key, entries[1].Key)
 	}
 }
@@ -105,17 +106,13 @@ func TestAllocateEntriesSkipsUnknown(test *testing.T) {
 
 // A user-requested port is honored verbatim (create prompt / --app-port).
 func TestAllocateEntriesHonorsRequestedPort(test *testing.T) {
-	entries, err := AllocateEntries([]string{"openwebui", "anythingllm"},
+	entries, err := AllocateEntries([]string{"openwebui"},
 		map[string]int{"openwebui": 8080}, nil, func(int) bool { return true })
 	if err != nil {
 		test.Fatal(err)
 	}
-	if entries[0].Key != "openwebui" || entries[0].Port != 8080 {
-		test.Fatalf("openwebui port = %d, want the requested 8080", entries[0].Port)
-	}
-	// The un-requested app is still auto-allocated (and must not collide with 8080).
-	if entries[1].Port == 8080 {
-		test.Fatalf("auto-allocated port collided with the requested 8080")
+	if len(entries) != 1 || entries[0].Key != "openwebui" || entries[0].Port != 8080 {
+		test.Fatalf("openwebui entry = %+v, want the requested port 8080", entries)
 	}
 }
 
@@ -139,8 +136,8 @@ func TestAllocateEntriesRejectsBusyRequestedPort(test *testing.T) {
 
 // Two selected apps requesting the SAME port collide.
 func TestAllocateEntriesRejectsRequestedCollision(test *testing.T) {
-	_, err := AllocateEntries([]string{"openwebui", "anythingllm"},
-		map[string]int{"openwebui": 8080, "anythingllm": 8080}, nil, func(int) bool { return true })
+	_, err := AllocateEntries([]string{"openwebui", "openwebui"},
+		map[string]int{"openwebui": 8080}, nil, func(int) bool { return true })
 	if !errors.Is(err, ErrPortUnavailable) {
 		test.Fatalf("err = %v, want ErrPortUnavailable for two apps on the same port", err)
 	}

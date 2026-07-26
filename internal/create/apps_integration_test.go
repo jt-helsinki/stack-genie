@@ -29,14 +29,14 @@ func TestAppPortEndToEnd(test *testing.T) {
 		AgentCLIs:   []string{"opencode"},
 		DefaultTool: "opencode",
 		Root:        root,
-		Apps:        []string{"openwebui", "anythingllm"},
+		Apps:        []string{"openwebui"},
 		AppPorts:    map[string]int{"openwebui": 21500},
 	}
 	if _, _, err := Execute(spec, "2026-07-20T00:00:00Z", nil); err != nil {
 		test.Fatalf("Execute: %v", err)
 	}
 
-	// 1) The chosen port is honored + persisted; the un-chosen app is auto-allocated.
+	// 1) The chosen port is honored + persisted.
 	projectConfig, err := config.LoadProjectConfig(root)
 	if err != nil {
 		test.Fatalf("LoadProjectConfig: %v", err)
@@ -48,14 +48,11 @@ func TestAppPortEndToEnd(test *testing.T) {
 	if ports["openwebui"] != 21500 {
 		test.Errorf("openwebui port = %d, want the chosen 21500", ports["openwebui"])
 	}
-	if ports["anythingllm"] == 0 || ports["anythingllm"] == 21500 {
-		test.Errorf("anythingllm port = %d, want an auto-allocated port distinct from 21500", ports["anythingllm"])
-	}
 
 	// 2) PublishedPorts exposes each installed app on host==guest.
 	published := apps.PublishedPorts(projectConfig)
-	if len(published) != 2 {
-		test.Fatalf("PublishedPorts = %v, want 2 mappings", published)
+	if len(published) != 1 {
+		test.Fatalf("PublishedPorts = %v, want 1 mapping", published)
 	}
 	foundOpenWebUI := false
 	for _, mapping := range published {

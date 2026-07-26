@@ -87,8 +87,8 @@ func (builder realBuilder) Build(projectRoot, imageRef string) error {
 
 // microVMMemory is the DEFAULT memory allocated to a workspace microVM when the
 // project config does not set `workspace.memory_limit`. It must hold the guest OS +
-// the rootful in-VM containerd + any in-VM app containers (Open WebUI / AnythingLLM
-// are heavy); 1G was too small — pulling/running an app could OOM-kill containerd
+// the rootful in-VM containerd + any in-VM app containers (Open WebUI is
+// heavy); 1G was too small — pulling/running an app could OOM-kill containerd
 // mid-pull ("connection refused" on its socket), so the fallback is 4G. (A freshly
 // created project's config sets memory_limit to 8 (GB); this only applies when it's empty.)
 const microVMMemory = "4G"

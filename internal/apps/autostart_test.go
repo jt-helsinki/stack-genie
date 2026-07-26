@@ -33,7 +33,6 @@ func TestAppsAutostartScript(test *testing.T) {
 	projectConfig := &config.Config{
 		Apps: []config.AppEntry{
 			{Key: "openwebui", Port: 8080},
-			{Key: "anythingllm", Port: 3001},
 			{Key: "bogus", Port: 9999}, // unknown → skipped
 		},
 	}
@@ -76,22 +75,10 @@ func TestAppsAutostartScript(test *testing.T) {
 		}
 	}
 
-	// AnythingLLM: its GENERIC_OPEN_AI_* env by reference + the static ones.
-	for _, want := range []string{
-		"nerdctl rm -f aip-app-anythingllm 2>/dev/null || true",
-		"--name aip-app-anythingllm",
-		"-p 3001:3001",
-		`-e "GENERIC_OPEN_AI_API_KEY=${OPENAI_API_KEY}"`,
-		`-e GENERIC_OPEN_AI_BASE_PATH=` + testAppsGateway,
-		`-e "GENERIC_OPEN_AI_MODEL_PREF=${OPENAI_MODEL}"`,
-		"-e GENERIC_OPEN_AI_MODEL_TOKEN_LIMIT=4096",
-		"-e LLM_PROVIDER=generic-openai",
-		"-e STORAGE_DIR=/app/server/storage",
-		anythingLLMImage,
-	} {
-		if !strings.Contains(script, want) {
-			test.Errorf("anythingllm line missing %q:\n%s", want, script)
-		}
+	// The persistent data dir is created world-writable before the container runs so a
+	// non-root app user can persist state.
+	if !strings.Contains(script, "mkdir -p /persist/apps/openwebui && chmod 0777 /persist/apps/openwebui") {
+		test.Errorf("openwebui data dir must be created world-writable:\n%s", script)
 	}
 
 	// The unknown app key is skipped entirely.

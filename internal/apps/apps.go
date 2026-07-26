@@ -157,7 +157,7 @@ func PublishedPorts(projectConfig *config.Config) []config.PortMapping {
 var ErrPortUnavailable = errors.New("requested app host port is unavailable")
 
 // SuggestedHostPort proposes a default host port to expose an app on, for seeding the
-// create prompt: the app's familiar container port (8080 Open WebUI, 3001 AnythingLLM)
+// create prompt: the app's familiar container port (e.g. 8080 Open WebUI)
 // when it is free and unreserved, otherwise the next auto-allocated free port. Returns 0
 // for an unknown key. isFree defaults to a real loopback probe when nil.
 func SuggestedHostPort(key string, reserved map[int]bool, isFree portChecker) int {
@@ -548,6 +548,11 @@ func (manager *Manager) runContainer(manifest Manifest, port int) error {
 			return err
 		}
 	}
+	// The persistent data dir is a host bind source that nerdctl auto-creates ROOT-owned
+	// 0755; an app whose container runs as a NON-root user then cannot
+	// write it and crashes on startup. Create it world-writable first (see AppsAutostartScript).
+	dataDir := fmt.Sprintf("%s/%s", guestAppDataRoot, manifest.Key)
+	_, _ = manager.deps.Exec([]string{"sh", "-c", "mkdir -p " + dataDir + " && chmod 0777 " + dataDir})
 	argv := runArgs(manifest, port, gatewayURL, apiKey, defaultModel)
 	run := func() (ExecResult, error) {
 		// Idempotent recreate: drop any existing container first (ignore its result —

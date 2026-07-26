@@ -1651,12 +1651,29 @@ func (manager Manager) ensureContainerd(name string) bool {
 	// snapshotter (a full-copy snapshotter that needs no mount and always works on an
 	// overlay root — costs disk, but reliable). containerd loads both, so nerdctl's
 	// default (nerdctl.toml) selects which is used by every pull/run.
+	//
+	// CRITICAL (containerd 2.x): the config MUST be `version = 3` AND declare a transfer
+	// `unpack_config` entry for the chosen (platform, snapshotter) pair. containerd 2.x
+	// pulls through the transfer service, whose unpacker refuses to extract into a
+	// snapshotter it has no unpack_config for — the image pulls but extraction dies with
+	// `unable to initialize unpacker: no unpack platforms defined: invalid argument`, so
+	// the app "installs" but never runs. The default overlayfs snapshotter is implicitly
+	// unpackable, but our fuse-overlayfs/native snapshotters are NOT, so we list the one
+	// we actually use. The platform is derived from `uname -m` (linux/arm64 on Apple
+	// Silicon, linux/amd64 on x86). Verified live: with this entry, image pulls extract.
+	//
+	// The fuse-overlayfs grpc socket is `rm -f`'d before (re)starting the daemon: a stale
+	// socket FILE left by a prior boot whose daemon is gone would satisfy the `-S` wait
+	// yet refuse connections at unpack time (`connection refused`), so we always recreate
+	// it fresh.
 	bootCmd := fmt.Sprintf(
 		"mkdir -p /etc/containerd /etc/nerdctl /var/lib/containerd-fuse-overlayfs; "+
-			"printf 'version = 2\\n[proxy_plugins]\\n  [proxy_plugins.\"fuse-overlayfs\"]\\n    type = \"snapshot\"\\n    address = \"/run/containerd-fuse-overlayfs.sock\"\\n' > /etc/containerd/config.toml; "+
+			"rm -f /run/containerd-fuse-overlayfs.sock; "+
 			"setsid sh -c 'containerd-fuse-overlayfs-grpc /run/containerd-fuse-overlayfs.sock /var/lib/containerd-fuse-overlayfs >%s 2>&1 &'; "+
 			"s=0; while [ $s -lt 20 ] && [ ! -S /run/containerd-fuse-overlayfs.sock ]; do s=$((s+1)); sleep 0.5; done; "+
 			"if [ -S /run/containerd-fuse-overlayfs.sock ]; then snap=fuse-overlayfs; else snap=native; fi; "+
+			"arch=$(uname -m); case \"$arch\" in aarch64|arm64) plat=linux/arm64;; x86_64|amd64) plat=linux/amd64;; *) plat=linux/$arch;; esac; "+
+			"printf 'version = 3\\n[proxy_plugins]\\n  [proxy_plugins.\"fuse-overlayfs\"]\\n    type = \"snapshot\"\\n    address = \"/run/containerd-fuse-overlayfs.sock\"\\n[plugins.\"io.containerd.transfer.v1.local\"]\\n  [[plugins.\"io.containerd.transfer.v1.local\".unpack_config]]\\n    platform = \"%%s\"\\n    snapshotter = \"%%s\"\\n' \"$plat\" \"$snap\" > /etc/containerd/config.toml; "+
 			"printf 'snapshotter = \"%%s\"\\n' \"$snap\" > /etc/nerdctl/nerdctl.toml; "+
 			"setsid sh -c 'containerd >%s 2>&1 &'; "+
 			"iters=0; while [ $iters -lt 150 ]; do timeout 5 nerdctl info >/dev/null 2>&1 && exit 0; "+

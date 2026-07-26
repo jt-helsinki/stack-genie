@@ -335,7 +335,7 @@ func TestDeleteUnknown(test *testing.T) {
 func TestScaffoldAllocatesAppPorts(test *testing.T) {
 	withTemplates(test)
 	spec := sampleSpec()
-	spec.Apps = []string{"openwebui", "anythingllm"}
+	spec.Apps = []string{"openwebui"}
 	root, err := Scaffold(spec, "t")
 	if err != nil {
 		test.Fatal(err)
@@ -344,11 +344,11 @@ func TestScaffoldAllocatesAppPorts(test *testing.T) {
 	if err != nil {
 		test.Fatal(err)
 	}
-	if len(cfg.Apps) != 2 {
-		test.Fatalf("config has %d apps, want 2: %+v", len(cfg.Apps), cfg.Apps)
+	if len(cfg.Apps) != 1 {
+		test.Fatalf("config has %d apps, want 1: %+v", len(cfg.Apps), cfg.Apps)
 	}
-	if cfg.Apps[0].Port == 0 || cfg.Apps[0].Port == cfg.Apps[1].Port {
-		test.Fatalf("app ports not allocated uniquely: %+v", cfg.Apps)
+	if cfg.Apps[0].Key != "openwebui" || cfg.Apps[0].Port == 0 {
+		test.Fatalf("app port not allocated: %+v", cfg.Apps)
 	}
 }
 

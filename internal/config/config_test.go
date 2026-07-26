@@ -164,7 +164,7 @@ func TestAppsRoundTrip(test *testing.T) {
 	root := test.TempDir()
 	original := &Config{
 		OS:   "debian-trixie",
-		Apps: []AppEntry{{Key: "openwebui", Port: 21000}, {Key: "anythingllm", Port: 21001}},
+		Apps: []AppEntry{{Key: "openwebui", Port: 21000}, {Key: "extra-app", Port: 21001}},
 	}
 	if err := WriteProject(root, original); err != nil {
 		test.Fatal(err)
@@ -179,7 +179,7 @@ func TestAppsRoundTrip(test *testing.T) {
 	if loaded.Apps[0].Key != "openwebui" || loaded.Apps[0].Port != 21000 {
 		test.Fatalf("app[0] = %+v", loaded.Apps[0])
 	}
-	if loaded.Apps[1].Key != "anythingllm" || loaded.Apps[1].Port != 21001 {
+	if loaded.Apps[1].Key != "extra-app" || loaded.Apps[1].Port != 21001 {
 		test.Fatalf("app[1] = %+v", loaded.Apps[1])
 	}
 }
