@@ -130,10 +130,20 @@ func TestLocalModelsDrillSelectsAndPulls(test *testing.T) {
 	_ = view.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(" ")})
 	_ = view.Update(tea.KeyMsg{Type: tea.KeyDown})
 	_ = view.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(" ")})
-	// enter pulls.
+	// enter opens the install-engine picker (it no longer pulls directly).
+	if cmd := view.Update(tea.KeyMsg{Type: tea.KeyEnter}); cmd != nil {
+		test.Fatalf("enter with selected tags must open the runtime picker (no cmd), got %T", cmd())
+	}
+	if view.runtime == nil {
+		test.Fatal("enter with selected tags must open the runtime picker")
+	}
+	if view.drill != nil {
+		test.Error("drill-down should close when the runtime picker opens")
+	}
+	// enter on the picker (default Ollama, cursor 0) emits the pull with the runtime.
 	cmd := view.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	if cmd == nil {
-		test.Fatal("enter with selected tags must emit a pull command")
+		test.Fatal("enter on the runtime picker must emit a pull command")
 	}
 	msg, ok := cmd().(ModelsPullRequestedMsg)
 	if !ok {
@@ -143,8 +153,61 @@ func TestLocalModelsDrillSelectsAndPulls(test *testing.T) {
 	if strings.Join(msg.Refs, ",") != strings.Join(want, ",") {
 		test.Fatalf("pull refs = %v, want %v", msg.Refs, want)
 	}
-	if view.drill != nil {
-		test.Error("drill-down should close after a pull")
+	if msg.Runtime != string(config.RuntimeOllama) {
+		test.Fatalf("default runtime = %q, want %q", msg.Runtime, config.RuntimeOllama)
+	}
+	if view.runtime != nil {
+		test.Error("runtime picker should close after a pull")
+	}
+}
+
+// selecting Docker Model Runner in the picker threads that runtime onto the pull.
+func TestLocalModelsRuntimePickerSelectsDMR(test *testing.T) {
+	view := buildLocal(test,
+		nil,
+		[]ollama.LibraryModel{{Name: "qwen2.5", Tags: libTags("7b"), RepoURL: "x"}},
+		noShow,
+	)
+	_ = view.Update(tea.KeyMsg{Type: tea.KeyEnter})                     // open drill (cursor on 7b)
+	_ = view.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(" ")}) // tick 7b
+	_ = view.Update(tea.KeyMsg{Type: tea.KeyEnter})                     // open runtime picker
+	if view.runtime == nil {
+		test.Fatal("runtime picker should be open")
+	}
+	// move down to Docker Model Runner (the second option), then enter.
+	_ = view.Update(tea.KeyMsg{Type: tea.KeyDown})
+	cmd := view.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if cmd == nil {
+		test.Fatal("enter on the runtime picker must emit a pull command")
+	}
+	msg, ok := cmd().(ModelsPullRequestedMsg)
+	if !ok {
+		test.Fatalf("expected ModelsPullRequestedMsg, got %T", cmd())
+	}
+	if msg.Runtime != string(config.RuntimeDockerModelRunner) {
+		test.Fatalf("runtime = %q, want %q", msg.Runtime, config.RuntimeDockerModelRunner)
+	}
+}
+
+// esc on the runtime picker restores the tag drill-down with the tick selection intact.
+func TestLocalModelsRuntimePickerEscRestoresDrill(test *testing.T) {
+	view := buildLocal(test,
+		nil,
+		[]ollama.LibraryModel{{Name: "qwen2.5", Tags: libTags("7b"), RepoURL: "x"}},
+		noShow,
+	)
+	_ = view.Update(tea.KeyMsg{Type: tea.KeyEnter})                     // open drill
+	_ = view.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(" ")}) // tick 7b
+	_ = view.Update(tea.KeyMsg{Type: tea.KeyEnter})                     // open runtime picker
+	_ = view.Update(tea.KeyMsg{Type: tea.KeyEsc})                       // back out
+	if view.runtime != nil {
+		test.Fatal("esc should close the runtime picker")
+	}
+	if view.drill == nil {
+		test.Fatal("esc should restore the tag drill-down")
+	}
+	if !view.drill.selected["7b"] {
+		test.Error("the tick selection should survive the picker round-trip")
 	}
 }
 

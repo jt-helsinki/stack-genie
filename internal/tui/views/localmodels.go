@@ -74,6 +74,25 @@ type localModelsSyncedMsg struct {
 	err   error
 }
 
+// runtimePicker is the lightweight in-view sub-state shown AFTER the user has ticked
+// tags to pull: a single-choice list of install ENGINES (Ollama default, Docker Model
+// Runner), mirroring the CLI `ai models pull --runtime`. enter emits the pull with the
+// chosen runtime; esc reopens the tag drill-down so the tick selection isn't lost.
+type runtimePicker struct {
+	drill   *tagPicker // the drill to restore on esc (keeps the tick selection)
+	refs    []string   // the name:tag refs to pull
+	options []config.ModelRuntime
+	cursor  int // index into options (0 = Ollama, the default)
+}
+
+// currentRuntime returns the runtime under the picker cursor.
+func (picker *runtimePicker) currentRuntime() config.ModelRuntime {
+	if picker.cursor < 0 || picker.cursor >= len(picker.options) {
+		return config.RuntimeOllama
+	}
+	return picker.options[picker.cursor]
+}
+
 // tagPicker is the in-view drill-down sub-state: the selected model's tags, each
 // installed or not, with a moving cursor and a multi-select of NOT-installed tags to
 // pull. esc backs out to the list.
@@ -112,6 +131,7 @@ type LocalModels struct {
 
 	describe describePane
 	drill    *tagPicker
+	runtime  *runtimePicker // the post-selection install-engine choice (nil when inactive)
 
 	models         []localModel // every model row (installed-first then installable)
 	installedCount int          // how many of models are in the Installed section
@@ -285,6 +305,9 @@ func (view *LocalModels) Update(msg tea.Msg) tea.Cmd {
 // handleKey routes a key: the drill-down first (when open), then the describe pane,
 // then the list actions / navigation.
 func (view *LocalModels) handleKey(key tea.KeyMsg) tea.Cmd {
+	if view.runtime != nil {
+		return view.handleRuntimeKey(key)
+	}
 	if view.drill != nil {
 		return view.handleDrillKey(key)
 	}
@@ -412,8 +435,10 @@ func (view *LocalModels) handleDrillKey(key tea.KeyMsg) tea.Cmd {
 			view.flash = ui.Muted.Render("select 1+ tags (space) to pull")
 			return nil
 		}
-		view.drill = nil
-		return func() tea.Msg { return ModelsPullRequestedMsg{Refs: refs} }
+		// Tags are ticked: choose the install ENGINE (Ollama default / Docker Model
+		// Runner) before emitting the pull, mirroring the CLI `--runtime`.
+		view.openRuntimePicker(drill, refs)
+		return nil
 	case "d":
 		tag := drill.currentTag()
 		if tag == "" || !drill.model.installed[tag] {
@@ -434,6 +459,83 @@ func (view *LocalModels) handleDrillKey(key tea.KeyMsg) tea.Cmd {
 		return view.testCmd(ref)
 	}
 	return nil
+}
+
+// --- runtime picker ---------------------------------------------------------
+
+// openRuntimePicker leaves the drill-down and opens the install-engine choice for the
+// ticked refs (Ollama seated as the default). The drill is stashed so esc restores it
+// with the tick selection intact.
+func (view *LocalModels) openRuntimePicker(drill *tagPicker, refs []string) {
+	view.drill = nil
+	view.runtime = &runtimePicker{
+		drill:   drill,
+		refs:    refs,
+		options: config.ModelRuntimes(),
+		cursor:  0,
+	}
+}
+
+// handleRuntimeKey routes keys while the install-engine picker is open: up/down move,
+// enter emits the pull with the chosen runtime, esc reopens the tag drill-down.
+func (view *LocalModels) handleRuntimeKey(key tea.KeyMsg) tea.Cmd {
+	picker := view.runtime
+	switch key.String() {
+	case "esc":
+		view.runtime = nil
+		view.drill = picker.drill // restore the drill (tick selection preserved)
+		return nil
+	case "up", "k":
+		if picker.cursor > 0 {
+			picker.cursor--
+		}
+		return nil
+	case "down", "j":
+		if picker.cursor < len(picker.options)-1 {
+			picker.cursor++
+		}
+		return nil
+	case "enter", "p":
+		refs := picker.refs
+		runtime := string(picker.currentRuntime())
+		view.runtime = nil
+		return func() tea.Msg { return ModelsPullRequestedMsg{Refs: refs, Runtime: runtime} }
+	}
+	return nil
+}
+
+// runtimePickerLabel is the human label for an install-engine option.
+func runtimePickerLabel(runtime config.ModelRuntime) string {
+	switch runtime {
+	case config.RuntimeDockerModelRunner:
+		return "Docker Model Runner"
+	case config.RuntimeOllama:
+		return "Ollama"
+	default:
+		return string(runtime)
+	}
+}
+
+// runtimeView renders the install-engine picker: one row per runtime, the cursor row
+// marked with the same "› " caret idiom as the tag drill-down.
+func (view *LocalModels) runtimeView() string {
+	picker := view.runtime
+	var body strings.Builder
+	body.WriteString(ui.Heading.Render("Install engine for "+strings.Join(picker.refs, ", ")) + "\n")
+	body.WriteString(ui.Muted.Render("↑/↓ select · enter pull · esc back") + "\n\n")
+	for index, runtime := range picker.options {
+		line := runtimePickerLabel(runtime)
+		if index == picker.cursor {
+			line = ui.Primary.Bold(true).Render("› ") + line
+		} else {
+			line = "  " + line
+		}
+		body.WriteString(line + "\n")
+	}
+	if view.flash != "" {
+		body.WriteString("\n" + view.flash)
+	}
+	return body.String()
 }
 
 // currentTag returns the tag under the picker cursor ("" when empty).
@@ -704,6 +806,9 @@ func (view *LocalModels) descriptionWidth() int {
 
 // View renders the drill-down, the describe pane, or the two-section list.
 func (view *LocalModels) View() string {
+	if view.runtime != nil {
+		return view.runtimeView()
+	}
 	if view.drill != nil {
 		return view.drillView()
 	}

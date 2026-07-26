@@ -1066,11 +1066,18 @@ func (application *app) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case views.ModelsPullRequestedMsg:
 		// Pull one or more selected tag references (streaming progress): run the real
-		// `ai models pull <refs...>` live in the terminal overlay, then refresh the
-		// Local Models list when the overlay closes.
+		// `ai models pull <refs...> --runtime <r>` live in the terminal overlay, then
+		// refresh the Local Models list when the overlay closes. An empty runtime means
+		// Ollama (back-compat with callers/tests that build the message without one).
+		runtime := message.Runtime
+		if runtime == "" {
+			runtime = string(config.RuntimeOllama)
+		}
+		args := append([]string{"models", "pull"}, message.Refs...)
+		args = append(args, "--runtime", runtime)
 		return application, application.openTerminal(
-			"models pull "+strings.Join(message.Refs, " "),
-			append([]string{"models", "pull"}, message.Refs...), false)
+			"models pull "+strings.Join(message.Refs, " ")+" --runtime "+runtime,
+			args, false)
 
 	case views.ModelRemoveRequestedMsg:
 		// Remove confirms before deleting: run `ai models rm <name>` live in the
