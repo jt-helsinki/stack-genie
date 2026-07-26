@@ -7,6 +7,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/jt-helsinki/stack-genie/internal/config"
 	"github.com/jt-helsinki/stack-genie/internal/ollama"
 	"github.com/jt-helsinki/stack-genie/internal/ui"
 	"github.com/mattn/go-runewidth"
@@ -790,6 +791,13 @@ func (view *LocalModels) drillView() string {
 		if detail := tagDetail(drill.model, tag); detail != "" {
 			line += ui.Muted.Render("  " + detail)
 		}
+		// Surface the recorded serving runtime for an installed tag (Ollama by
+		// default, or Docker Model Runner when it was pulled with that runtime).
+		if drill.model.installed[tag] {
+			if badge := runtimeBadgeLabel(modelRuntimeLookup(drill.model.name + ":" + tag)); badge != "" {
+				line += ui.Muted.Render("  · " + badge)
+			}
+		}
 		if index == drill.cursor {
 			line = ui.Primary.Bold(true).Render("› ") + line
 		} else {
@@ -804,6 +812,36 @@ func (view *LocalModels) drillView() string {
 		body.WriteString("\n" + view.flash)
 	}
 	return body.String()
+}
+
+// modelRuntimeLookup returns the recorded serving runtime for a model reference (its
+// pull ref, e.g. "qwen2.5:7b"), or "" when none is recorded (the default Ollama path
+// leaves no explicit record for a legacy install). It is a package var so tests inject
+// a deterministic result without touching the on-disk store.
+var modelRuntimeLookup = func(ref string) config.ModelRuntime {
+	choices, err := config.LoadModelRuntimes()
+	if err != nil {
+		return ""
+	}
+	for _, choice := range choices {
+		if choice.Model == ref {
+			return choice.Runtime
+		}
+	}
+	return ""
+}
+
+// runtimeBadgeLabel is the compact drill-down badge for a recorded serving runtime
+// ("" hides it — a model with no recorded choice shows no badge).
+func runtimeBadgeLabel(runtime config.ModelRuntime) string {
+	switch runtime {
+	case config.RuntimeDockerModelRunner:
+		return "dmr"
+	case config.RuntimeOllama:
+		return "ollama"
+	default:
+		return ""
+	}
 }
 
 // tagDetail renders a compact "size · context ctx · input" summary for a tag from

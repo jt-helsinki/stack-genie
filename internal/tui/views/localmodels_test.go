@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/jt-helsinki/stack-genie/internal/config"
 	"github.com/jt-helsinki/stack-genie/internal/litellm"
 	"github.com/jt-helsinki/stack-genie/internal/ollama"
 	"github.com/mattn/go-runewidth"
@@ -555,5 +556,30 @@ func TestLocalModelsDrillDownScrolls(test *testing.T) {
 	}
 	if strings.Contains(out, "] tag00") {
 		test.Errorf("early tags should have scrolled off the top:\n%s", out)
+	}
+}
+
+// The drill-down surfaces an installed tag's recorded serving runtime as a badge.
+func TestLocalModelsDrillShowsRuntimeBadge(test *testing.T) {
+	prev := modelRuntimeLookup
+	modelRuntimeLookup = func(ref string) config.ModelRuntime {
+		if ref == "qwen2.5:7b" {
+			return config.RuntimeDockerModelRunner
+		}
+		return ""
+	}
+	test.Cleanup(func() { modelRuntimeLookup = prev })
+
+	view := buildLocal(test,
+		[]ollama.Model{{Name: "qwen2.5:7b", Size: 4700000000, ParameterSize: "7.6B"}},
+		[]ollama.LibraryModel{{Name: "qwen2.5", Tags: libTags("7b", "72b"), RepoURL: "x"}},
+		noShow,
+	)
+	_ = view.Update(tea.KeyMsg{Type: tea.KeyEnter}) // open drill on qwen2.5
+	if view.drill == nil {
+		test.Fatal("enter should open the tag drill-down")
+	}
+	if !strings.Contains(view.View(), "dmr") {
+		test.Fatalf("drill-down should badge the installed 7b tag's DMR runtime:\n%s", view.View())
 	}
 }

@@ -3,9 +3,13 @@ package cli
 import (
 	"errors"
 	"fmt"
+	"net/http"
 	"strings"
+	"time"
 
 	"github.com/charmbracelet/huh"
+	"github.com/jt-helsinki/stack-genie/internal/config"
+	"github.com/jt-helsinki/stack-genie/internal/litellm"
 	"github.com/jt-helsinki/stack-genie/internal/ollama"
 	"github.com/jt-helsinki/stack-genie/internal/output"
 	"github.com/jt-helsinki/stack-genie/internal/ui"
@@ -22,6 +26,135 @@ import (
 //
 // The custom-model-entry sentinel value used by the pull select.
 const customModelOption = "\x00custom"
+
+// dmrAvailable reports whether Docker Model Runner (DMR) is reachable from this
+// host, gating the `--runtime docker-model-runner` install path. It is a package
+// var so tests inject a deterministic result (no network); production probes the
+// local DMR endpoint. Ollama remains the authoritative DOWNLOADER for both runtimes,
+// so this only decides whether the DMR SERVING backend may be selected — never a
+// silent fallback: an explicit DMR request against an unavailable runtime is an
+// error, not a downgrade to Ollama.
+//
+// Phase 3 (`ai setup`) owns first-class DMR detection (a runtime.yaml flag). Until
+// that lands, and to stay resilient if it is not merged yet, this probes the DMR
+// endpoint directly rather than referencing a runtime field that may not exist.
+//
+// hardware bring-up: the LIVE probe only succeeds against a running DMR engine —
+// verify on a provisioned host.
+var dmrAvailable = probeDockerModelRunner
+
+// probeDockerModelRunner does a short GET against the host-local DMR OpenAI-compatible
+// endpoint (:12434). DockerModelRunnerAPIBase is the CONTAINER-facing address
+// (host.docker.internal); from the host CLI the same engine is reachable on localhost,
+// so we probe there. Any HTTP response (even an error status) means the engine is up.
+func probeDockerModelRunner() bool {
+	client := &http.Client{Timeout: 1500 * time.Millisecond}
+	resp, err := client.Get("http://localhost:12434/engines/v1/models")
+	if err != nil {
+		return false
+	}
+	_ = resp.Body.Close()
+	return true
+}
+
+// resolveModelRuntime decides the serving runtime for an install. flagValue is the
+// (possibly empty) --runtime value; empty resolves to the default (Ollama), so the
+// behaviour is UNCHANGED without --runtime. The flag value is validated (invalid →
+// exit 2). On a terminal, when DMR is a real option, the user is PROMPTED (pre-seeded
+// with flagValue) per the repo's TTY-prompt convention; under --json / no TTY the
+// flag value is used directly. An explicit (or picked) DMR choice against an
+// unavailable runtime is REJECTED (exit 3) — never a silent fallback to Ollama.
+func resolveModelRuntime(emitter *output.Emitter, flagValue string) (config.ModelRuntime, error) {
+	value := strings.TrimSpace(flagValue)
+	if value == "" {
+		value = string(config.RuntimeOllama)
+	}
+	if !config.ValidModelRuntime(value) {
+		return "", output.Errorf(output.ExitInvalidInput,
+			"invalid --runtime %q (expected one of: ollama, docker-model-runner)", flagValue)
+	}
+	chosen := config.ModelRuntime(value)
+	// Probe DMR availability only when it matters: to offer the choice on a terminal,
+	// or to gate an explicit DMR request. The default non-interactive Ollama path never
+	// probes (no network, no behaviour change).
+	dmrOK := false
+	if interactive(emitter) || chosen == config.RuntimeDockerModelRunner {
+		dmrOK = dmrAvailable()
+	}
+	// Only prompt when DMR is a genuine alternative; when it is unavailable the
+	// single Ollama option is used silently (no needless prompt).
+	if interactive(emitter) && dmrOK {
+		options := make([]huh.Option[string], 0, len(config.ModelRuntimes()))
+		for _, runtime := range config.ModelRuntimes() {
+			options = append(options, huh.NewOption(modelRuntimeLabel(runtime), string(runtime)))
+		}
+		picked, err := promptChoice("Serving runtime",
+			"how the model is served through the gateway (Ollama downloads it either way)",
+			options, string(chosen))
+		if err != nil {
+			return "", err
+		}
+		chosen = config.ModelRuntime(picked)
+	}
+	if chosen == config.RuntimeDockerModelRunner && !dmrOK {
+		return "", output.Errorf(output.ExitMissingDep,
+			"Docker Model Runner is not available on this host — enable it (Docker Desktop → Model Runner, or `docker desktop enable model-runner`) and re-run, or use `--runtime ollama`")
+	}
+	return chosen, nil
+}
+
+// modelRuntimeLabel is the human label for a runtime option in the picker.
+func modelRuntimeLabel(runtime config.ModelRuntime) string {
+	switch runtime {
+	case config.RuntimeDockerModelRunner:
+		return "Docker Model Runner"
+	default:
+		return "Ollama (default)"
+	}
+}
+
+// dmrDefaultAlias derives the gateway alias for a DMR model from its pull reference:
+// the last path segment (so "hf.co/user/model:tag" → "model:tag", "qwen2.5:7b" →
+// "qwen2.5:7b"). Callers may override it with an explicit --alias.
+func dmrDefaultAlias(ref string) string {
+	if index := strings.LastIndex(ref, "/"); index >= 0 && index+1 < len(ref) {
+		return ref[index+1:]
+	}
+	return ref
+}
+
+// recordModelRuntimeChoice persists the serving-runtime selection for a pulled model
+// (best-effort — a store-write failure must never fail the pull). The store is keyed
+// by the gateway alias (Alias): for Ollama that is the pull ref, for DMR the derived
+// or explicit alias; Model always carries the underlying pull ref so a later `rm`
+// can find the record by model name.
+func recordModelRuntimeChoice(alias, model string, runtime config.ModelRuntime, endpoint string) {
+	_ = config.SetModelRuntime(config.ModelRuntimeChoice{
+		Alias:    alias,
+		Model:    model,
+		Runtime:  runtime,
+		Endpoint: endpoint,
+		Status:   "registered",
+	})
+}
+
+// runtimeChoicesForModel returns the recorded runtime choices whose underlying Model
+// matches ref (best-effort — an unreadable store yields none). It is keyed on Model
+// (not the store's Alias key) so `rm <ref>` finds a DMR choice stored under a derived
+// or custom alias as well as an Ollama choice stored under the ref itself.
+func runtimeChoicesForModel(ref string) []config.ModelRuntimeChoice {
+	choices, err := config.LoadModelRuntimes()
+	if err != nil {
+		return nil
+	}
+	matched := make([]config.ModelRuntimeChoice, 0, 1)
+	for _, choice := range choices {
+		if choice.Model == ref {
+			matched = append(matched, choice)
+		}
+	}
+	return matched
+}
 
 // ollamaErr maps an ollama.Client error to the platform exit codes: an unreachable
 // server is exit 3 (a missing service dependency — point at how to start it); a
@@ -296,7 +429,9 @@ func (result modelsPullResult) Human() string {
 }
 
 func newModelsPullCmd(emitter *output.Emitter, exit *int) *cobra.Command {
-	return &cobra.Command{
+	var runtimeFlag string
+	var aliasFlag string
+	cmd := &cobra.Command{
 		Use:   "pull [name...]",
 		Short: "Download one or more models into the local (Ollama) store",
 		Long: "Download one or more models into the local Ollama store. With name arguments\n" +
@@ -306,7 +441,12 @@ func newModelsPullCmd(emitter *output.Emitter, exit *int) *cobra.Command {
 			"bundled snapshot), and may also tick \"enter custom model(s)…\" to type extra\n" +
 			"references. Every selected model is pulled; the run continues past a failure\n" +
 			"and reports a per-model summary. Re-pulling an installed model updates it\n" +
-			"(there is no separate update command).",
+			"(there is no separate update command).\n\n" +
+			"--runtime selects how the model is SERVED through the gateway: `ollama`\n" +
+			"(default — unchanged behaviour) or `docker-model-runner`. Ollama downloads the\n" +
+			"model either way; Docker Model Runner is offered only when it is available on\n" +
+			"this host (never a silent fallback). --alias sets the DMR gateway alias for a\n" +
+			"single model (default: the model's base name).",
 		Args: cobra.ArbitraryArgs,
 		RunE: func(_ *cobra.Command, args []string) error {
 			names := dedupeModelNames(args)
@@ -326,6 +466,21 @@ func newModelsPullCmd(emitter *output.Emitter, exit *int) *cobra.Command {
 			if len(names) == 0 {
 				// Interactive: nothing checked / entered → a clean cancellation.
 				*exit = emitter.Failure("models.pull", output.Errorf(output.ExitInvalidInput, "cancelled"))
+				return nil
+			}
+
+			// Resolve the SERVING runtime once for the whole pull (default Ollama, so
+			// no behaviour change without --runtime). An explicit DMR request against an
+			// unavailable runtime is rejected here (exit 3) — never a silent fallback.
+			chosenRuntime, runtimeErr := resolveModelRuntime(emitter, runtimeFlag)
+			if runtimeErr != nil {
+				*exit = emitter.Failure("models.pull", runtimeErr)
+				return nil
+			}
+			// A DMR --alias identifies a single model; reject it for a multi-model pull.
+			if strings.TrimSpace(aliasFlag) != "" && len(names) > 1 {
+				*exit = emitter.Failure("models.pull", output.Errorf(output.ExitInvalidInput,
+					"--alias applies to a single model, but %d were requested", len(names)))
 				return nil
 			}
 
@@ -358,8 +513,27 @@ func newModelsPullCmd(emitter *output.Emitter, exit *int) *cobra.Command {
 				// Best-effort: register the freshly-pulled model in the gateway so it
 				// gains a stable id and shows in the live catalogue. A gateway that is
 				// down or has no master key must NOT fail the pull — warn and continue.
+				// The registration backend follows the chosen serving runtime; the choice
+				// is recorded (best-effort) so a later `rm` de-registers the right backend.
 				outcome := modelPullOutcome{Model: name, OK: true}
-				if regErr := registrar.RegisterOllamaModel(name, ollamaModelSupportsTools(client, name)); regErr != nil {
+				supportsTools := ollamaModelSupportsTools(client, name)
+				var regErr error
+				if chosenRuntime == config.RuntimeDockerModelRunner {
+					alias := strings.TrimSpace(aliasFlag)
+					if alias == "" {
+						alias = dmrDefaultAlias(name)
+					}
+					regErr = registrar.RegisterDockerModelRunnerModel(alias, name, supportsTools)
+					if regErr == nil {
+						recordModelRuntimeChoice(alias, name, config.RuntimeDockerModelRunner, litellm.DockerModelRunnerAPIBase)
+					}
+				} else {
+					regErr = registrar.RegisterOllamaModel(name, supportsTools)
+					if regErr == nil {
+						recordModelRuntimeChoice(name, name, config.RuntimeOllama, "")
+					}
+				}
+				if regErr != nil {
 					outcome.RegisterError = regErr.Error()
 				} else {
 					outcome.Registered = true
@@ -397,6 +571,11 @@ func newModelsPullCmd(emitter *output.Emitter, exit *int) *cobra.Command {
 			return nil
 		},
 	}
+	cmd.Flags().StringVar(&runtimeFlag, "runtime", string(config.RuntimeOllama),
+		"serving runtime: ollama (default) or docker-model-runner")
+	cmd.Flags().StringVar(&aliasFlag, "alias", "",
+		"gateway alias for a docker-model-runner model (single model; default: the model's base name)")
+	return cmd
 }
 
 // dedupeModelNames trims, drops empties, and removes duplicate references while
@@ -579,11 +758,30 @@ func newModelsRmCmd(emitter *output.Emitter, exit *int) *cobra.Command {
 				return nil
 			}
 			// Best-effort: drop the gateway's DB-backed registration for the removed
-			// model. A gateway that is down or has no master key must NOT fail the
-			// removal — surface the warning in the result.
+			// model, de-registering the backend that WAS recorded at install (DMR vs
+			// Ollama) and clearing the runtime choice. A gateway that is down or has no
+			// master key must NOT fail the removal — surface the warning in the result.
 			result := modelsRmResult{Model: name}
-			if regErr := modelRegistrarFactory().UnregisterOllamaModel(name); regErr != nil {
-				result.UnregisterError = regErr.Error()
+			registrar := modelRegistrarFactory()
+			choices := runtimeChoicesForModel(name)
+			if len(choices) == 0 {
+				// No recorded choice → the default (Ollama) backend, as before.
+				if regErr := registrar.UnregisterOllamaModel(name); regErr != nil {
+					result.UnregisterError = regErr.Error()
+				}
+			} else {
+				for _, choice := range choices {
+					var regErr error
+					if choice.Runtime == config.RuntimeDockerModelRunner {
+						regErr = registrar.UnregisterDockerModelRunnerModel(choice.Alias)
+					} else {
+						regErr = registrar.UnregisterOllamaModel(name)
+					}
+					if regErr != nil && result.UnregisterError == "" {
+						result.UnregisterError = regErr.Error()
+					}
+					_ = config.DeleteModelRuntime(choice.Alias)
+				}
 			}
 			*exit = emitter.Success("models.rm", result)
 			return nil
