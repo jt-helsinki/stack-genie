@@ -339,6 +339,95 @@ func (manager *KeyManager) UnregisterOllamaModel(name string) error {
 	return nil // not registered — nothing to do
 }
 
+// DockerModelRunnerModelName is the PUBLIC model handle for a Docker Model Runner
+// (DMR) model: "docker-model-runner/<alias>". This is what the in-workspace agent
+// names and what surfaces in the live model list — mirroring OllamaModelName's
+// public-handle-vs-routed-value split: the public handle carries a descriptive
+// backend prefix that is NOT a real LiteLLM provider prefix, while the routed value
+// (DockerModelRunnerRoutedModel) uses a provider prefix LiteLLM understands.
+func DockerModelRunnerModelName(alias string) string {
+	return "docker-model-runner/" + alias
+}
+
+// DockerModelRunnerRoutedModel is the value LiteLLM ROUTES on (litellm_params.model)
+// for a DMR model: "openai/<model>". DMR exposes an OpenAI-compatible API, so it is
+// routed through LiteLLM's `openai` provider (paired with api_base =
+// DockerModelRunnerAPIBase). "docker-model-runner/" is NOT a real LiteLLM provider
+// prefix, so — exactly as Ollama's public "ollama/<name>" handle routes internally on
+// "ollama_chat/<name>" — the public DMR handle stays "docker-model-runner/<alias>"
+// while the routed target switches to the OpenAI-compatible "openai/<model>".
+func DockerModelRunnerRoutedModel(model string) string {
+	return "openai/" + model
+}
+
+// dmrModelParamsInfo builds the LiteLLM params + info for a Docker Model Runner model.
+// It routes on "openai/<model>" against DockerModelRunnerAPIBase (no credential — the
+// local DMR endpoint needs none), always sets drop_params (defense-in-depth for
+// unsupported params, matching ollamaModelParamsInfo), and records tool-calling support
+// in model_info when known (supportsTools nil = unknown).
+func dmrModelParamsInfo(model string, supportsTools *bool) (ModelParams, ModelInfo) {
+	dropParams := true
+	return ModelParams{Model: DockerModelRunnerRoutedModel(model), APIBase: DockerModelRunnerAPIBase, DropParams: &dropParams},
+		ModelInfo{SupportsFunctionCalling: supportsTools}
+}
+
+// RegisterDockerModelRunnerModel registers a Docker Model Runner model as a DB-backed
+// model in the gateway, mirroring RegisterOllamaModel. The public model_name is
+// "docker-model-runner/<alias>" (DockerModelRunnerModelName, the agent-facing handle)
+// while the routed litellm_params.model is "openai/<model>" (DockerModelRunnerRoutedModel)
+// against api_base = DockerModelRunnerAPIBase; no credential is referenced (local DMR
+// needs none).
+//
+// Idempotent-ish + HEALS stale registrations exactly like RegisterOllamaModel: if a model
+// with this model_name already exists, the add is skipped UNLESS the routing is stale
+// (existing.RoutedTo != DockerModelRunnerRoutedModel(model)) OR the recorded tool support
+// disagrees with supportsTools, in which case it is re-registered (delete + add).
+//
+// hardware bring-up: the LIVE POST /model/new round-trip runs only against a running
+// aip-litellm — verify on a provisioned host.
+func (manager *KeyManager) RegisterDockerModelRunnerModel(alias, model string, supportsTools bool) error {
+	modelName := DockerModelRunnerModelName(alias)
+	existing, err := manager.ListModels()
+	if err != nil {
+		return err
+	}
+	for _, served := range existing {
+		if served.Name == modelName {
+			// Re-register when EITHER the recorded capability OR the routing is stale.
+			if served.SupportsTools == supportsTools && served.RoutedTo == DockerModelRunnerRoutedModel(model) {
+				return nil // already registered correctly
+			}
+			if err := manager.DeleteModel(served.ID); err != nil {
+				return err
+			}
+			break // re-add below with corrected routing/capability
+		}
+	}
+	params, info := dmrModelParamsInfo(model, &supportsTools)
+	return manager.AddModel(modelName, params, info)
+}
+
+// UnregisterDockerModelRunnerModel removes the DB-backed model registered for a Docker
+// Model Runner model. It looks up the entry whose model_name ==
+// "docker-model-runner/<alias>" (DockerModelRunnerModelName) and deletes it by its
+// LiteLLM-assigned id. A no-op (no error) when no such model is registered.
+//
+// hardware bring-up: the LIVE POST /model/delete round-trip runs only against a running
+// aip-litellm — verify on a provisioned host.
+func (manager *KeyManager) UnregisterDockerModelRunnerModel(alias string) error {
+	modelName := DockerModelRunnerModelName(alias)
+	existing, err := manager.ListModels()
+	if err != nil {
+		return err
+	}
+	for _, served := range existing {
+		if served.Name == modelName {
+			return manager.DeleteModel(served.ID)
+		}
+	}
+	return nil // not registered — nothing to do
+}
+
 // LiveModel is a model currently served by the gateway, parsed from GET
 // /model/info: the public model_name, the routed litellm_params.model (whose
 // prefix is the Provider), and the LiteLLM-assigned model_info.id used to delete it.

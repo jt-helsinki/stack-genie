@@ -510,6 +510,176 @@ func TestOllamaModelName(test *testing.T) {
 	}
 }
 
+// TestDockerModelRunnerModelName pins the public-handle convention for DMR.
+func TestDockerModelRunnerModelName(test *testing.T) {
+	if got := DockerModelRunnerModelName("ai/smollm2"); got != "docker-model-runner/ai/smollm2" {
+		test.Errorf("DockerModelRunnerModelName = %q, want docker-model-runner/ai/smollm2", got)
+	}
+}
+
+// TestDockerModelRunnerRoutedModel pins the routed value: DMR is OpenAI-compatible, so
+// it routes on "openai/<model>", NOT the public "docker-model-runner/" prefix.
+func TestDockerModelRunnerRoutedModel(test *testing.T) {
+	if got := DockerModelRunnerRoutedModel("ai/smollm2"); got != "openai/ai/smollm2" {
+		test.Errorf("DockerModelRunnerRoutedModel = %q, want openai/ai/smollm2", got)
+	}
+}
+
+// TestRegisterDockerModelRunnerModelRequestShape verifies a DMR registration: it lists
+// models, then — when absent — POSTs /model/new with model_name =
+// "docker-model-runner/<alias>", litellm_params.model = "openai/<model>", and
+// api_base = DockerModelRunnerAPIBase. No credential is referenced.
+func TestRegisterDockerModelRunnerModelRequestShape(test *testing.T) {
+	var addBody map[string]any
+	var sawList bool
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		switch {
+		case request.Method == http.MethodGet && request.URL.Path == "/model/info":
+			sawList = true
+			_, _ = writer.Write([]byte(`{"data":[]}`)) // nothing registered yet
+		case request.Method == http.MethodPost && request.URL.Path == "/model/new":
+			payload, _ := io.ReadAll(request.Body)
+			_ = json.Unmarshal(payload, &addBody)
+			_, _ = writer.Write([]byte(`{}`))
+		default:
+			test.Errorf("unexpected %s %s", request.Method, request.URL.Path)
+		}
+	}))
+	defer server.Close()
+	test.Setenv("LITELLM_BASE_URL", server.URL)
+
+	manager := NewKeyManager(okProber())
+	if err := manager.RegisterDockerModelRunnerModel("ai/smollm2", "ai/smollm2", true); err != nil {
+		test.Fatalf("RegisterDockerModelRunnerModel: %v", err)
+	}
+	if !sawList {
+		test.Error("RegisterDockerModelRunnerModel should list existing models before adding")
+	}
+	if addBody["model_name"] != "docker-model-runner/ai/smollm2" {
+		test.Errorf("model_name = %v, want docker-model-runner/ai/smollm2", addBody["model_name"])
+	}
+	params, _ := addBody["litellm_params"].(map[string]any)
+	if params["model"] != "openai/ai/smollm2" {
+		test.Errorf("litellm_params.model = %v, want openai/ai/smollm2", params["model"])
+	}
+	if params["api_base"] != DockerModelRunnerAPIBase {
+		test.Errorf("api_base = %v, want %s", params["api_base"], DockerModelRunnerAPIBase)
+	}
+	if _, present := params["litellm_credential_name"]; present {
+		test.Errorf("a DMR model must not reference a credential, got %v", params["litellm_credential_name"])
+	}
+	if params["drop_params"] != true {
+		test.Errorf("litellm_params.drop_params = %v, want true", params["drop_params"])
+	}
+	info, _ := addBody["model_info"].(map[string]any)
+	if info["supports_function_calling"] != true {
+		test.Errorf("model_info.supports_function_calling = %v, want true", info["supports_function_calling"])
+	}
+}
+
+// TestRegisterDockerModelRunnerModelSkipsWhenPresent verifies registration is a no-op
+// (no /model/new) when a model with the same model_name is already registered CORRECTLY.
+func TestRegisterDockerModelRunnerModelSkipsWhenPresent(test *testing.T) {
+	var sawAdd bool
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		switch {
+		case request.Method == http.MethodGet && request.URL.Path == "/model/info":
+			_, _ = writer.Write([]byte(`{"data":[
+				{"model_name":"docker-model-runner/ai/smollm2","litellm_params":{"model":"openai/ai/smollm2"},"model_info":{"id":"id-1","supports_function_calling":true}}
+			]}`))
+		case request.URL.Path == "/model/new":
+			sawAdd = true
+			_, _ = writer.Write([]byte(`{}`))
+		default:
+			test.Errorf("unexpected %s %s", request.Method, request.URL.Path)
+		}
+	}))
+	defer server.Close()
+	test.Setenv("LITELLM_BASE_URL", server.URL)
+
+	manager := NewKeyManager(okProber())
+	if err := manager.RegisterDockerModelRunnerModel("ai/smollm2", "ai/smollm2", true); err != nil {
+		test.Fatalf("RegisterDockerModelRunnerModel: %v", err)
+	}
+	if sawAdd {
+		test.Error("RegisterDockerModelRunnerModel should skip /model/new when already registered")
+	}
+}
+
+// TestRegisterDockerModelRunnerModelHealsStaleRouting verifies the register RE-REGISTERS
+// (delete + add) a DMR model whose recorded routing is stale — e.g. registered without the
+// "openai/" prefix — so it is corrected to DockerModelRunnerRoutedModel.
+func TestRegisterDockerModelRunnerModelHealsStaleRouting(test *testing.T) {
+	var deletedID string
+	var addBody map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		switch {
+		case request.Method == http.MethodGet && request.URL.Path == "/model/info":
+			// Stale: routed on the bare model, not "openai/<model>".
+			_, _ = writer.Write([]byte(`{"data":[
+				{"model_name":"docker-model-runner/ai/smollm2","litellm_params":{"model":"ai/smollm2"},"model_info":{"id":"id-stale","supports_function_calling":true}}
+			]}`))
+		case request.Method == http.MethodPost && request.URL.Path == "/model/delete":
+			payload, _ := io.ReadAll(request.Body)
+			var body map[string]any
+			_ = json.Unmarshal(payload, &body)
+			deletedID, _ = body["id"].(string)
+			_, _ = writer.Write([]byte(`{}`))
+		case request.Method == http.MethodPost && request.URL.Path == "/model/new":
+			payload, _ := io.ReadAll(request.Body)
+			_ = json.Unmarshal(payload, &addBody)
+			_, _ = writer.Write([]byte(`{}`))
+		default:
+			test.Errorf("unexpected %s %s", request.Method, request.URL.Path)
+		}
+	}))
+	defer server.Close()
+	test.Setenv("LITELLM_BASE_URL", server.URL)
+
+	manager := NewKeyManager(okProber())
+	if err := manager.RegisterDockerModelRunnerModel("ai/smollm2", "ai/smollm2", true); err != nil {
+		test.Fatalf("RegisterDockerModelRunnerModel: %v", err)
+	}
+	if deletedID != "id-stale" {
+		test.Errorf("delete id = %q, want id-stale (the stale-routed entry)", deletedID)
+	}
+	params, _ := addBody["litellm_params"].(map[string]any)
+	if params["model"] != "openai/ai/smollm2" {
+		test.Errorf("re-added litellm_params.model = %v, want openai/ai/smollm2", params["model"])
+	}
+}
+
+// TestUnregisterDockerModelRunnerModelDeletesByID verifies it finds the entry whose
+// model_name == "docker-model-runner/<alias>" and POSTs /model/delete with that id.
+func TestUnregisterDockerModelRunnerModelDeletesByID(test *testing.T) {
+	var deleteBody map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		switch {
+		case request.Method == http.MethodGet && request.URL.Path == "/model/info":
+			_, _ = writer.Write([]byte(`{"data":[
+				{"model_name":"docker-model-runner/ai/smollm2","litellm_params":{"model":"openai/ai/smollm2"},"model_info":{"id":"id-dmr"}},
+				{"model_name":"openai/gpt-5.5","litellm_params":{"model":"openai/gpt-5.5"},"model_info":{"id":"id-gpt"}}
+			]}`))
+		case request.Method == http.MethodPost && request.URL.Path == "/model/delete":
+			payload, _ := io.ReadAll(request.Body)
+			_ = json.Unmarshal(payload, &deleteBody)
+			_, _ = writer.Write([]byte(`{}`))
+		default:
+			test.Errorf("unexpected %s %s", request.Method, request.URL.Path)
+		}
+	}))
+	defer server.Close()
+	test.Setenv("LITELLM_BASE_URL", server.URL)
+
+	manager := NewKeyManager(okProber())
+	if err := manager.UnregisterDockerModelRunnerModel("ai/smollm2"); err != nil {
+		test.Fatalf("UnregisterDockerModelRunnerModel: %v", err)
+	}
+	if deleteBody["id"] != "id-dmr" {
+		test.Errorf("delete id = %v, want id-dmr (the matching docker-model-runner/<alias> entry)", deleteBody["id"])
+	}
+}
+
 // TestCredentialName pins the credential naming convention.
 func TestCredentialName(test *testing.T) {
 	if got := CredentialName("openai"); got != "openai-key" {

@@ -164,27 +164,45 @@ func (manager *KeyManager) SyncModels(cat *catalog.Catalog, keyedProviders []str
 		return SyncResult{}, err
 	}
 	plan := Reconcile(desired, current)
-	// A cloud-key/catalog resync must NEVER delete local Ollama models: those are owned
-	// exclusively by `ai models pull`/`rm` (Register/UnregisterOllamaModel). Without this
-	// guard, a transient Ollama-list failure at the CALLER (which drops ollama/* from the
-	// desired set — installedOllamaModels() returns nil when the daemon is unreachable)
-	// would wipe every registered ollama model from LiteLLM even though it is still
-	// installed in Ollama. Keep only the non-ollama deletes; ollama adds still apply.
-	plan.Delete = nonOllamaModels(plan.Delete)
+	// A cloud-key/catalog resync must NEVER delete LOCAL models: both Ollama
+	// ("ollama/<name>") and Docker Model Runner ("docker-model-runner/<alias>") models
+	// are owned exclusively by their own register/unregister paths (Register/Unregister
+	// OllamaModel, Register/UnregisterDockerModelRunnerModel), never by the catalog
+	// resync. Without this guard, a transient local-list failure at the CALLER (which
+	// drops those from the desired set — e.g. installedOllamaModels() returns nil when the
+	// daemon is unreachable) would wipe every registered local model from LiteLLM even
+	// though it is still installed. Keep only the non-local deletes; local adds still apply.
+	plan.Delete = nonLocalModels(plan.Delete)
 	return manager.ApplyPlan(plan)
 }
 
-// nonOllamaModels returns the models whose public name is NOT an "ollama/<name>" route,
-// shielding local Ollama registrations from the cloud-key resync's delete pass.
-func nonOllamaModels(models []LiveModel) []LiveModel {
+// localModelPrefixes are the public model_name prefixes owned by the local-inference
+// register/unregister paths, NOT by the catalog resync — so SyncModels must never delete
+// them (see nonLocalModels).
+var localModelPrefixes = []string{"ollama/", "docker-model-runner/"}
+
+// nonLocalModels returns the models whose public name is NOT a local-backend route
+// (ollama/* or docker-model-runner/*), shielding local registrations from the cloud-key
+// resync's delete pass.
+func nonLocalModels(models []LiveModel) []LiveModel {
 	kept := make([]LiveModel, 0, len(models))
 	for _, model := range models {
-		if strings.HasPrefix(model.Name, "ollama/") {
+		if isLocalModel(model.Name) {
 			continue
 		}
 		kept = append(kept, model)
 	}
 	return kept
+}
+
+// isLocalModel reports whether a public model_name belongs to a local-inference backend.
+func isLocalModel(name string) bool {
+	for _, prefix := range localModelPrefixes {
+		if strings.HasPrefix(name, prefix) {
+			return true
+		}
+	}
+	return false
 }
 
 // ApplyPlan applies a reconcile Plan: adds each desired model then deletes each

@@ -22,6 +22,16 @@ import (
 // shared docker network (aip-net), used as the api_base for ollama/* models.
 const OllamaAPIBase = "http://aip-ollama:11434"
 
+// DockerModelRunnerAPIBase is where LiteLLM reaches Docker Model Runner (DMR),
+// the second local-inference backend. DMR exposes an OpenAI-compatible endpoint on
+// the host at :12434 (its default port) under /engines/v1. On Docker Desktop the
+// LiteLLM container reaches the host via host.docker.internal, so this default is
+// the Desktop-reachable address; on Linux the host gateway must be wired
+// explicitly (--add-host host.docker.internal:host-gateway) — a hardware bring-up
+// item handled in internal/setup/setup_real.go, not here. This const defines only
+// the default api_base used for docker-model-runner/* models.
+const DockerModelRunnerAPIBase = "http://host.docker.internal:12434/engines/v1"
+
 // HeadroomAPIBase is where LiteLLM reaches the Headroom input-compression service
 // on the shared docker network (aip-net). Headroom is no longer an nginx proxy in
 // FRONT of LiteLLM — it is a LiteLLM pre_call GUARDRAIL: LiteLLM POSTs the request
