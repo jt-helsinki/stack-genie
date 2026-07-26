@@ -69,10 +69,10 @@ func TestVersionPinsMatchCurrentDefault(test *testing.T) {
 		"presidio-analyzer":   {Mode: ModeContainer, Image: "mcr.microsoft.com/presidio-analyzer", Tag: "latest"},
 		"presidio-anonymizer": {Mode: ModeContainer, Image: "mcr.microsoft.com/presidio-anonymizer", Tag: "latest"},
 		"proxy":               {Mode: ModeContainer, Image: "nginx", Tag: "stable-alpine3.23-slim"},
-		"ollama":              {Mode: ModeContainer, Image: "ollama/ollama", Tag: "latest"},
-		"dns":                 {Mode: ModeContainer, Image: "coredns/coredns", Tag: "latest"},
-		"valkey":              {Mode: ModeContainer, Image: "valkey/valkey", Tag: "9.1.0-alpine"},
-		"redisinsight":        {Mode: ModeContainer, Image: "redis/redisinsight", Tag: "latest"},
+		// Ollama is host-native — no image pin (it is not a pulled container).
+		"dns":          {Mode: ModeContainer, Image: "coredns/coredns", Tag: "latest"},
+		"valkey":       {Mode: ModeContainer, Image: "valkey/valkey", Tag: "9.1.0-alpine"},
+		"redisinsight": {Mode: ModeContainer, Image: "redis/redisinsight", Tag: "latest"},
 	}
 	got := VersionPins()
 	if !reflect.DeepEqual(got, want) {
@@ -96,7 +96,7 @@ func TestCoreAndOptionalServiceNames(test *testing.T) {
 // setup migration must reproduce (serviceImageKeys). litellm-db rides on litellm.
 func TestImageKeysMatchServiceImageKeys(test *testing.T) {
 	cases := map[string][]string{
-		"ollama":   {"ollama"},
+		"ollama":   {}, // host-native — no image keys
 		"presidio": {"presidio-analyzer", "presidio-anonymizer"},
 		"litellm":  {"litellm", "litellm-db"},
 		"headroom": {"headroom"},
@@ -116,7 +116,7 @@ func TestImageKeysMatchServiceImageKeys(test *testing.T) {
 // TestContainerNames pins the service → container-names map (aip-*).
 func TestContainerNames(test *testing.T) {
 	cases := map[string][]string{
-		"ollama":   {"aip-ollama"},
+		"ollama":   {}, // host-native — no container
 		"presidio": {"aip-presidio-analyzer", "aip-presidio-anonymizer"},
 		"litellm":  {"aip-litellm", "aip-litellm-db"},
 		"headroom": {"aip-headroom"},

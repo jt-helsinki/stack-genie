@@ -82,7 +82,7 @@ func TestSetupContainerConstsMatchRegistry(test *testing.T) {
 		// "aip-ollama" name is retained on both sides as the log-capture mapping
 		// target (serviceContainers) and versions.yaml pin — so the setup const and
 		// the registry must still agree on it.
-		"ollama":       {ollamaContainer},
+		"ollama":       {}, // host-native — no container
 		"presidio":     {presidioAnalyzerContainer, presidioAnonymizerContainer},
 		"litellm":      {litellmContainer, litellmDBContainer},
 		"valkey":       {valkeyContainer},

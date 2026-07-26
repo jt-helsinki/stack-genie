@@ -716,7 +716,7 @@ func TestRunUpgradeRepinsVersions(test *testing.T) {
 	if file.Services["litellm"].Image == "stale" {
 		test.Fatal("--upgrade should have re-pinned versions.yaml to defaults")
 	}
-	if _, ok := file.Services["ollama"]; !ok {
+	if _, ok := file.Services["dns"]; !ok {
 		test.Fatalf("upgraded versions.yaml missing default services: %+v", file.Services)
 	}
 }
@@ -1747,16 +1747,17 @@ func TestEnsureLiteLLMDBBindMountUnderVolumesDir(test *testing.T) {
 // compose debug artifact + documented for the host process) carries every OLLAMA_*
 // var from the process env (i.e. from ~/.ai-platform/.ai-platform.env) EXCEPT
 // OLLAMA_MODELS, which stays the platform-managed store path (not user-overridable).
-func TestOllamaEnvPairsForwardsPrefixed(test *testing.T) {
+func TestHostOllamaEnvPairsForwardsPrefixed(test *testing.T) {
+	test.Setenv("HOME", test.TempDir())
 	test.Setenv("OLLAMA_FLASH_ATTENTION", "1")
 	test.Setenv("OLLAMA_KV_CACHE_TYPE", "q8_0")
 	test.Setenv("OLLAMA_MODELS", "/should/not/win") // platform-managed; must be ignored
 	test.Setenv("NOT_OLLAMA", "nope")
 
-	joined := strings.Join(ollamaEnvPairs(), " ")
-	for _, want := range []string{"OLLAMA_FLASH_ATTENTION=1", "OLLAMA_KV_CACHE_TYPE=q8_0", "OLLAMA_MODELS=" + ollamaModelsGuest} {
+	joined := strings.Join(hostOllamaEnvPairs(), " ")
+	for _, want := range []string{"OLLAMA_FLASH_ATTENTION=1", "OLLAMA_KV_CACHE_TYPE=q8_0", "OLLAMA_MODELS=" + hostOllamaModelsDir()} {
 		if !strings.Contains(joined, want) {
-			test.Errorf("ollama env pairs missing %q: %q", want, joined)
+			test.Errorf("host ollama env pairs missing %q: %q", want, joined)
 		}
 	}
 	if strings.Contains(joined, "/should/not/win") {
@@ -1771,15 +1772,16 @@ func TestOllamaEnvPairsForwardsPrefixed(test *testing.T) {
 // window (so agent CLIs' prompt + tools don't starve generation), and that a user-forwarded
 // OLLAMA_CONTEXT_LENGTH overrides it without a duplicate entry.
 func TestOllamaContextLengthDefault(test *testing.T) {
+	test.Setenv("HOME", test.TempDir())
 	// Default applied when unset.
-	joined := strings.Join(ollamaEnvPairs(), " ")
+	joined := strings.Join(hostOllamaEnvPairs(), " ")
 	if !strings.Contains(joined, "OLLAMA_CONTEXT_LENGTH="+defaultOllamaContextLength) {
 		test.Errorf("ollama env pairs missing default context length: %q", joined)
 	}
 
 	// User override wins and is not duplicated.
 	test.Setenv("OLLAMA_CONTEXT_LENGTH", "65536")
-	joined = strings.Join(ollamaEnvPairs(), " ")
+	joined = strings.Join(hostOllamaEnvPairs(), " ")
 	if !strings.Contains(joined, "OLLAMA_CONTEXT_LENGTH=65536") {
 		test.Errorf("user OLLAMA_CONTEXT_LENGTH must win: %q", joined)
 	}

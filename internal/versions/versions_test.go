@@ -20,10 +20,10 @@ var expectedServices = map[string]string{
 	"presidio-analyzer":   "container",
 	"presidio-anonymizer": "container",
 	"proxy":               "container",
-	"ollama":              "container",
-	"dns":                 "container",
-	"valkey":              "container",
-	"redisinsight":        "container",
+	// Ollama is host-native — not a pulled/pinned container image.
+	"dns":          "container",
+	"valkey":       "container",
+	"redisinsight": "container",
 }
 
 func TestDefaultSchemaVersion(t *testing.T) {
@@ -97,10 +97,10 @@ func TestDefaultServiceFieldsAreSane(t *testing.T) {
 
 func TestDefaultReturnsIndependentInstances(t *testing.T) {
 	first := versions.Default()
-	first.Services["ollama"] = versions.Service{Mode: "mutated"}
+	first.Services["litellm"] = versions.Service{Mode: "mutated"}
 	second := versions.Default()
-	if second.Services["ollama"].Mode != "container" {
-		t.Errorf("Default() shares mutable state across calls: ollama mode = %q", second.Services["ollama"].Mode)
+	if second.Services["litellm"].Mode != "container" {
+		t.Errorf("Default() shares mutable state across calls: litellm mode = %q", second.Services["litellm"].Mode)
 	}
 }
 
@@ -229,7 +229,7 @@ func TestWriteDefaultOverwritesExisting(t *testing.T) {
 	if _, ok := loaded.Services["stale"]; ok {
 		t.Error("WriteDefault did not overwrite stale entry")
 	}
-	if _, ok := loaded.Services["ollama"]; !ok {
+	if _, ok := loaded.Services["litellm"]; !ok {
 		t.Error("WriteDefault did not write the default registry")
 	}
 }

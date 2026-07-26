@@ -44,15 +44,15 @@ func (prober *statsProber) Run(name string, args ...string) ([]byte, error) {
 func TestServiceStatsSingleContainer(test *testing.T) {
 	prober := &statsProber{
 		inspect: map[string]string{
-			"aip-ollama": "abcdef0123456789\trunning\t2026-07-03T10:00:00Z\t{\"11434/tcp\":null}",
+			"aip-headroom": "abcdef0123456789\trunning\t2026-07-03T10:00:00Z\t{\"11434/tcp\":null}",
 		},
 		stats: map[string]string{
-			"aip-ollama": `{"CPUPerc":"3.20%","MemUsage":"180MiB / 512MiB","MemPerc":"35.20%","NetIO":"1.2kB / 0B","BlockIO":"10MB / 4MB","PIDs":"12"}`,
+			"aip-headroom": `{"CPUPerc":"3.20%","MemUsage":"180MiB / 512MiB","MemPerc":"35.20%","NetIO":"1.2kB / 0B","BlockIO":"10MB / 4MB","PIDs":"12"}`,
 		},
 	}
 	deps := Deps{Prober: prober, Now: func() string { return "2026-07-03T11:30:00Z" }}
 
-	stats, err := ServiceStats(deps, "ollama")
+	stats, err := ServiceStats(deps, "headroom")
 	if err != nil {
 		test.Fatalf("unexpected error: %v", err)
 	}
@@ -117,7 +117,7 @@ func TestServiceStatsUnknownService(test *testing.T) {
 
 // TestServiceStatsNoRuntime: no container runtime → a missing-dependency error.
 func TestServiceStatsNoRuntime(test *testing.T) {
-	if _, err := ServiceStats(Deps{Prober: &statsProber{noRuntime: true}}, "ollama"); err == nil {
+	if _, err := ServiceStats(Deps{Prober: &statsProber{noRuntime: true}}, "headroom"); err == nil {
 		test.Fatal("no container runtime must error")
 	}
 }
@@ -125,10 +125,10 @@ func TestServiceStatsNoRuntime(test *testing.T) {
 // TestServiceStatsArgv pins the inspect + stats argv.
 func TestServiceStatsArgv(test *testing.T) {
 	prober := &statsProber{
-		inspect: map[string]string{"aip-ollama": "id\trunning\t\t{}"},
-		stats:   map[string]string{"aip-ollama": "{}"},
+		inspect: map[string]string{"aip-headroom": "id\trunning\t\t{}"},
+		stats:   map[string]string{"aip-headroom": "{}"},
 	}
-	if _, err := ServiceStats(Deps{Prober: prober}, "ollama"); err != nil {
+	if _, err := ServiceStats(Deps{Prober: prober}, "headroom"); err != nil {
 		test.Fatal(err)
 	}
 	var inspectArgv, statsArgv string
@@ -141,10 +141,10 @@ func TestServiceStatsArgv(test *testing.T) {
 			statsArgv = joined
 		}
 	}
-	if !strings.Contains(inspectArgv, "inspect --format") || !strings.HasSuffix(inspectArgv, "aip-ollama") {
+	if !strings.Contains(inspectArgv, "inspect --format") || !strings.HasSuffix(inspectArgv, "aip-headroom") {
 		test.Errorf("inspect argv = %q", inspectArgv)
 	}
-	if !strings.Contains(statsArgv, "stats --no-stream --format {{json .}} aip-ollama") {
+	if !strings.Contains(statsArgv, "stats --no-stream --format {{json .}} aip-headroom") {
 		test.Errorf("stats argv = %q", statsArgv)
 	}
 }

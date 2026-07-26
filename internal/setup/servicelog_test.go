@@ -40,29 +40,29 @@ func (prober *logTailProber) Run(name string, args ...string) ([]byte, error) {
 // single-container service: `<runtime> logs --tail <n> <container>`, with the raw
 // output returned (no heading).
 func TestServiceLogTailSingleContainerArgv(test *testing.T) {
-	prober := &logTailProber{perCont: map[string]string{"aip-ollama": "ollama line 1\nollama line 2\n"}}
+	prober := &logTailProber{perCont: map[string]string{"aip-headroom": "headroom line 1\nheadroom line 2\n"}}
 	deps := Deps{Prober: prober}
 
-	out, err := ServiceLogTail(deps, "ollama", 50)
+	out, err := ServiceLogTail(deps, "headroom", 50)
 	if err != nil {
 		test.Fatalf("unexpected error: %v", err)
 	}
-	if out != "ollama line 1\nollama line 2\n" {
+	if out != "headroom line 1\nheadroom line 2\n" {
 		test.Errorf("single-container output should be the raw logs, got:\n%s", out)
 	}
 	if len(prober.calls) != 1 {
 		test.Fatalf("expected one logs call, got %d: %v", len(prober.calls), prober.calls)
 	}
 	got := strings.Join(prober.calls[0], " ")
-	if got != "docker logs --tail 50 aip-ollama" {
-		test.Errorf("argv = %q, want \"docker logs --tail 50 aip-ollama\"", got)
+	if got != "docker logs --tail 50 aip-headroom" {
+		test.Errorf("argv = %q, want \"docker logs --tail 50 aip-headroom\"", got)
 	}
 }
 
 // TestServiceLogTailDefaultTail uses ServiceLogTailLines when tail <= 0.
 func TestServiceLogTailDefaultTail(test *testing.T) {
-	prober := &logTailProber{perCont: map[string]string{"aip-ollama": "x"}}
-	if _, err := ServiceLogTail(Deps{Prober: prober}, "ollama", 0); err != nil {
+	prober := &logTailProber{perCont: map[string]string{"aip-headroom": "x"}}
+	if _, err := ServiceLogTail(Deps{Prober: prober}, "headroom", 0); err != nil {
 		test.Fatalf("unexpected error: %v", err)
 	}
 	got := strings.Join(prober.calls[0], " ")
@@ -100,10 +100,10 @@ func TestServiceLogTailMultiContainerSections(test *testing.T) {
 // under its heading (multi).
 func TestServiceLogTailStoppedContainerTolerated(test *testing.T) {
 	prober := &logTailProber{
-		perCont:  map[string]string{"aip-ollama": ""},
-		failCont: map[string]bool{"aip-ollama": true},
+		perCont:  map[string]string{"aip-headroom": ""},
+		failCont: map[string]bool{"aip-headroom": true},
 	}
-	out, err := ServiceLogTail(Deps{Prober: prober}, "ollama", 10)
+	out, err := ServiceLogTail(Deps{Prober: prober}, "headroom", 10)
 	if err != nil {
 		test.Fatalf("a stopped container must not be an error, got: %v", err)
 	}
@@ -123,7 +123,7 @@ func TestServiceLogTailUnknownService(test *testing.T) {
 // TestServiceLogTailNoRuntime: no container runtime → a missing-dependency error.
 func TestServiceLogTailNoRuntime(test *testing.T) {
 	prober := &logTailProber{noRuntime: true}
-	if _, err := ServiceLogTail(Deps{Prober: prober}, "ollama", 10); err == nil {
+	if _, err := ServiceLogTail(Deps{Prober: prober}, "headroom", 10); err == nil {
 		test.Fatal("no container runtime must error")
 	}
 }

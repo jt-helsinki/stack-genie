@@ -110,10 +110,10 @@ type Client interface {
 }
 
 // DefaultBaseURL is the host CLI's route to Ollama through the nginx gateway
-// (aip-proxy). The Ollama container is internal-only on aip-net now (it no longer
-// publishes :11434 to the host); nginx fronts it via `location /ollama/` which
-// strips the prefix and forwards to aip-ollama:11434. So the /api/* calls become
-// /ollama/api/* through nginx. The host MUST use 127.0.0.1 (IPv4), not "localhost"
+// (aip-proxy). Ollama is host-native now; nginx fronts it via `location /ollama/`
+// which strips the prefix and forwards to host.docker.internal:11434 (the host, not
+// a container). So the /api/* calls become /ollama/api/* through nginx. The host
+// MUST use 127.0.0.1 (IPv4), not "localhost"
 // (which resolves to IPv6 ::1 and fails — nginx publishes on the IPv4 bindHost in
 // standalone). Overridable via OLLAMA_BASE_URL (a remote Ollama).
 const DefaultBaseURL = "http://127.0.0.1:18787/ollama"

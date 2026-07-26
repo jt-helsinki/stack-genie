@@ -200,23 +200,18 @@ const (
 	// INTERNAL-ONLY: Postgres is never host-published. LiteLLM reaches it over the
 	// private network at aip-litellm-db:5432; no host port is exposed.
 
-	// Ollama runs as a container on aip-net (so LiteLLM reaches it by name at
-	// aip-ollama:11434). It is INTERNAL-ONLY — no host publish; the host CLI reaches
-	// the Ollama HTTP API through the nginx gateway's /ollama route. Models persist
-	// on the host under ~/.ai-platform/volumes/models (the standardized system-volume
-	// home; bind-mounted to ollamaModelsGuest, with OLLAMA_MODELS pointing there) so
-	// they are visible on disk and removed with the rest of platform state on
-	// `ai uninstall --purge` (which RemoveAll's ~/.ai-platform). Migration caveat:
-	// models previously stored under ~/.ai-platform/models do NOT auto-migrate — the
-	// next `ai setup` starts with a fresh dir and re-pulls; acceptable for this dev
-	// platform.
-	ollamaContainer    = "aip-ollama"
-	ollamaModelsVolume = "models"  // subdir under VolumesDir: ~/.ai-platform/volumes/models
-	ollamaModelsGuest  = "/models" // where the host models volume is mounted in the container
-	// defaultOllamaContextLength is the model context window the platform sets on the Ollama
-	// container (OLLAMA_CONTEXT_LENGTH) when the user has not forwarded their own. Ollama's
-	// built-in default (4096) is too small for agent CLIs (their prompt + tool schemas fill
-	// most of it, starving generation); 16384 leaves real headroom while staying memory-sane.
+	// Ollama is HOST-NATIVE: the platform runs no aip-ollama container. The host CLI
+	// and the microVMs reach the Ollama HTTP API through the nginx gateway's /ollama
+	// route (forwarded to host.docker.internal:11434). The host process points
+	// OLLAMA_MODELS at ~/.ai-platform/volumes/<ollamaModelsVolume>/<ollamaHostModelsSubdir>
+	// (hostOllamaModelsDir) so the store is visible on disk and removed with the rest of
+	// platform state on `ai uninstall --purge` (which RemoveAll's ~/.ai-platform).
+	ollamaModelsVolume = "models" // subdir under VolumesDir: ~/.ai-platform/volumes/models
+	// defaultOllamaContextLength is the model context window the platform documents for the
+	// host-native Ollama (OLLAMA_CONTEXT_LENGTH) when the user has not forwarded their own.
+	// Ollama's built-in default (4096) is too small for agent CLIs (their prompt + tool
+	// schemas fill most of it, starving generation); 16384 leaves real headroom while
+	// staying memory-sane.
 	defaultOllamaContextLength = "16384"
 
 	// litellmDBVolume is the per-name subdir under VolumesDir for the LiteLLM
@@ -312,7 +307,8 @@ const (
 //     CHAT path; what every workspace agent's base_url=…/v1 hits) — PRESERVED.
 //   - location /llm/ → aip-litellm:4000 (prefix stripped): the LiteLLM ADMIN/
 //     management surface.
-//   - location /ollama/ → aip-ollama:11434 (prefix stripped): the Ollama HTTP API.
+//   - location /ollama/ → host.docker.internal:11434 (prefix stripped): the
+//     host-native Ollama HTTP API (forwarded to the host, not a container).
 //   - server_name litellm.<domain>; → aip-litellm:4000 at ROOT (the LiteLLM admin
 //     UI is served at /ui; / redirects there).
 //
@@ -770,20 +766,13 @@ func startHostOllama() error {
 		"host-native Ollama start is not yet wired (hardware bring-up) — start it manually")
 }
 
-// ollamaEnvPairs returns the Ollama env as KEY=VALUE pairs — the tuning environment
-// the docker-compose debug artifact renders for a stand-in Ollama container.
-// OLLAMA_MODELS is platform-managed; every other OLLAMA_* comes from the process env.
-func ollamaEnvPairs() []string {
-	return ollamaEnvPairsWithModels(ollamaModelsGuest)
-}
-
-// hostOllamaEnvPairs returns the OLLAMA_* KEY=VALUE pairs a HOST-NATIVE Ollama
-// process must run with (host mode): identical tuning + context-length policy to the
-// container, but OLLAMA_MODELS points at the host store (hostOllamaModelsDir,
-// ~/.ai-platform/volumes/models/ollama) instead of the in-container path. It is the
-// source of truth for the launchd/systemd environment the hardware bring-up wiring
-// applies (see installHostOllama). No container is run in host mode, so these are not
-// `-e` flags — they document the exact values the host process needs.
+// hostOllamaEnvPairs returns the OLLAMA_* KEY=VALUE pairs the HOST-NATIVE Ollama
+// process must run with: OLLAMA_MODELS points at the host store (hostOllamaModelsDir,
+// ~/.ai-platform/volumes/models/ollama) plus the default context length and any
+// forwarded OLLAMA_* tuning. It is the source of truth for the launchd/systemd
+// environment the hardware bring-up wiring applies (see installHostOllama). No
+// container is run, so these are not `-e` flags — they document the exact values the
+// host process needs.
 func hostOllamaEnvPairs() []string {
 	return ollamaEnvPairsWithModels(hostOllamaModelsDir())
 }
@@ -791,9 +780,8 @@ func hostOllamaEnvPairs() []string {
 // ollamaEnvPairsWithModels builds the Ollama env pairs pointing OLLAMA_MODELS at
 // modelsPath. OLLAMA_MODELS is platform-managed (never taken from the environment);
 // every other OLLAMA_* comes from the process env, and OLLAMA_CONTEXT_LENGTH is
-// defaulted unless the user forwarded their own. Shared by container mode
-// (ollamaEnvPairs, ollamaModelsGuest) and host mode (hostOllamaEnvPairs, the host
-// store). Sorted for a deterministic, testable result.
+// defaulted unless the user forwarded their own. Backs hostOllamaEnvPairs (the
+// host-native store). Sorted for a deterministic, testable result.
 func ollamaEnvPairsWithModels(modelsPath string) []string {
 	forwarded := map[string]string{}
 	for _, entry := range os.Environ() {
@@ -1068,8 +1056,7 @@ const logCaptureTailLines = 200
 // analyzer + anonymizer pair. Pure, so the mapping is unit-testable.
 func serviceContainers(service string) []string {
 	switch service {
-	case "ollama":
-		return []string{ollamaContainer}
+	// Ollama is host-native — no container to snapshot logs from.
 	case "presidio":
 		return []string{presidioAnalyzerContainer, presidioAnonymizerContainer}
 	case "litellm":
@@ -1087,6 +1074,18 @@ func serviceContainers(service string) []string {
 	default:
 		return nil
 	}
+}
+
+// isDesiredService reports whether name is a known logical service (core or
+// optional). It distinguishes a container-less known service (e.g. host-native
+// ollama, which has no container to tail/stat) from a genuinely unknown name.
+func isDesiredService(name string) bool {
+	for _, spec := range desiredServices() {
+		if spec.Name == name {
+			return true
+		}
+	}
+	return false
 }
 
 // logFileNameFor maps a container name to its on-disk log file base name under

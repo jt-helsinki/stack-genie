@@ -38,17 +38,6 @@ func TestProxyNginxConfOllamaRouteHost(test *testing.T) {
 	}
 }
 
-func TestOllamaEnvPairsContextLength(test *testing.T) {
-	pairs := ollamaEnvPairs()
-	joined := strings.Join(pairs, " ")
-	if !strings.Contains(joined, "OLLAMA_CONTEXT_LENGTH="+defaultOllamaContextLength) {
-		test.Errorf("env pairs missing default context length: %v", pairs)
-	}
-	if !strings.Contains(joined, "OLLAMA_MODELS="+ollamaModelsGuest) {
-		test.Errorf("env pairs must point OLLAMA_MODELS at the store path: %v", pairs)
-	}
-}
-
 func TestHostOllamaEnvPairs(test *testing.T) {
 	test.Setenv("HOME", test.TempDir())
 	pairs := hostOllamaEnvPairs()

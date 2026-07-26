@@ -851,6 +851,11 @@ const ServiceLogTailLines = 200
 func ServiceLogTail(deps Deps, service string, tail int) (string, error) {
 	containers := serviceContainers(service)
 	if len(containers) == 0 {
+		if isDesiredService(service) {
+			// A known host-native service (e.g. ollama) has no container to tail — it
+			// is not an error, there is simply nothing to show.
+			return "", nil
+		}
 		return "", output.Errorf(output.ExitInvalidInput, "unknown service %q", service)
 	}
 	containerRuntime, err := runtime.ContainerRuntimeName(deps.Prober)
@@ -933,6 +938,11 @@ type dockerStatsLine struct {
 func ServiceStats(deps Deps, service string) ([]ContainerStats, error) {
 	containers := serviceContainers(service)
 	if len(containers) == 0 {
+		if isDesiredService(service) {
+			// A known host-native service (e.g. ollama) runs no container — no stats to
+			// report, but not an error.
+			return nil, nil
+		}
 		return nil, output.Errorf(output.ExitInvalidInput, "unknown service %q", service)
 	}
 	containerRuntime, err := runtime.ContainerRuntimeName(deps.Prober)
