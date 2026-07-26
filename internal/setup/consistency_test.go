@@ -78,6 +78,10 @@ func TestNoOrphanLogScopes(test *testing.T) {
 // the other.
 func TestSetupContainerConstsMatchRegistry(test *testing.T) {
 	expected := map[string][]string{
+		// ollama is HOST-NATIVE (no aip-ollama container is reconciled), but the
+		// "aip-ollama" name is retained on both sides as the log-capture mapping
+		// target (serviceContainers) and versions.yaml pin — so the setup const and
+		// the registry must still agree on it.
 		"ollama":       {ollamaContainer},
 		"presidio":     {presidioAnalyzerContainer, presidioAnonymizerContainer},
 		"litellm":      {litellmContainer, litellmDBContainer},

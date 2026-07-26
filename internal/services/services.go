@@ -130,10 +130,19 @@ var nativeRuntime = Native{
 // the production code.
 var registry = []Service{
 	{
-		Name: "ollama",
-		// HTTP API only, no console UI. The :11434 container port is INTERNAL-ONLY
-		// now (not host-published); the host CLI reaches it through the nginx gateway
-		// at GatewayPort via the /ollama prefix (nginx strips it → aip-ollama:11434).
+		// Ollama is HOST-NATIVE: the platform no longer reconciles an aip-ollama
+		// container — `ensureOllama` is a host HTTP probe and the reconcile pulls no
+		// ollama image (requiredImages skips it). It still appears in `ai services` /
+		// status and logs as a host-native service, hence the registry slot: Name
+		// (status line + CoreServiceNames), LogScope (`ai logs --service ollama`), and
+		// Endpoint keep it visible. HTTP API only, no console UI — the host CLI and the
+		// microVMs reach it through the nginx gateway at GatewayPort via the /ollama
+		// prefix, which nginx forwards to the HOST (host.docker.internal:11434), NOT to
+		// a container. The component below is retained but is NOT a reconciled container:
+		// the image Pin backs the versions.yaml entry (+ uninstall's image cleanup of any
+		// legacy aip-ollama) and the "aip-ollama" name is only the log-capture mapping
+		// target (a no-op when no such container is running) — nothing here starts one.
+		Name:     "ollama",
 		Endpoint: Endpoint{GatewayPath: "/ollama"},
 		LogScope: "ollama",
 		Components: []Component{

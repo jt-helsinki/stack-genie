@@ -13,7 +13,6 @@ import (
 // PASSTHROUGH (bare names, no values) so they never land in the file.
 func TestServicesComposeYAML(test *testing.T) {
 	test.Setenv("HOME", test.TempDir())
-	test.Setenv("OLLAMA_FLASH_ATTENTION", "1") // forwarded env should appear on ollama
 
 	raw, err := ServicesComposeYAML("127.0.0.1")
 	if err != nil {
@@ -23,15 +22,22 @@ func TestServicesComposeYAML(test *testing.T) {
 
 	// Every service-tier container is present, with the shared network.
 	for _, want := range []string{
-		"aip-dns:", "aip-ollama:", "aip-presidio-analyzer:", "aip-presidio-anonymizer:",
+		"aip-dns:", "aip-presidio-analyzer:", "aip-presidio-anonymizer:",
 		"aip-litellm-db:", "aip-litellm:", "aip-headroom:", "aip-proxy:",
 		"name: aip-net", "container_name: aip-litellm",
-		"127.0.0.1:18787:80",       // proxy publish
-		"OLLAMA_MODELS=/models",    // platform-managed ollama env
-		"OLLAMA_FLASH_ATTENTION=1", // forwarded ollama env
+		"127.0.0.1:18787:80", // proxy publish
 	} {
 		if !strings.Contains(out, want) {
 			test.Errorf("compose missing %q:\n%s", want, out)
+		}
+	}
+
+	// Ollama is HOST-NATIVE — the reconcile runs no aip-ollama container, so the
+	// debug compose artifact must NOT declare one (a containerized ollama here
+	// would not match the running topology).
+	for _, absent := range []string{"aip-ollama", "OLLAMA_MODELS", "ollama/ollama"} {
+		if strings.Contains(out, absent) {
+			test.Errorf("compose must not reference host-native Ollama (%q):\n%s", absent, out)
 		}
 	}
 
