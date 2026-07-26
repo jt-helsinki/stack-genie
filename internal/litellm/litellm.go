@@ -18,9 +18,41 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-// OllamaAPIBase is where LiteLLM reaches the platform's Ollama container on the
-// shared docker network (aip-net), used as the api_base for ollama/* models.
-const OllamaAPIBase = "http://aip-ollama:11434"
+// OllamaContainerAPIBase is where LiteLLM reaches the platform's Ollama CONTAINER
+// on the shared docker network (aip-net) — the default (container-mode) api_base
+// for ollama/* models.
+const OllamaContainerAPIBase = "http://aip-ollama:11434"
+
+// OllamaHostAPIBase is where the LiteLLM container reaches a HOST-NATIVE Ollama
+// process: through the host gateway (host.docker.internal). On Docker Desktop this
+// name is provided natively; on Linux the LiteLLM container needs
+// `--add-host=host.docker.internal:host-gateway` (wired in internal/setup, gated on
+// the host Ollama mode). It is the host-mode api_base for ollama/* models.
+const OllamaHostAPIBase = "http://host.docker.internal:11434"
+
+// OllamaAPIBase is the api_base LiteLLM uses to reach Ollama, baked into each
+// ollama/* model's registration (see RegisterOllamaModel / reconcile). It is a
+// package VAR (not a const) with a setter so the setup layer — which knows the
+// machine-wide Ollama runtime mode from runtime.yaml — can repoint it at the host
+// gateway in host mode WITHOUT this package importing internal/runtime (which would
+// create an import cycle and pull the runtime dependency into the litellm client).
+// A var+setter is the least-invasive choice: every existing reference (reconcile.go,
+// models_admin.go, tests) keeps compiling unchanged, and it defaults to the
+// container backend so behaviour is identical until the setup layer opts into host
+// mode. See SetOllamaAPIBase.
+var OllamaAPIBase = OllamaContainerAPIBase
+
+// SetOllamaAPIBase repoints the api_base LiteLLM uses to reach Ollama. The setup
+// layer calls it at reconcile/startup with the address for the active Ollama mode
+// (OllamaContainerAPIBase or OllamaHostAPIBase). An empty url is ignored so a
+// caller can never blank out the base. Not safe for concurrent use with model
+// registration; it is set once early in the setup path.
+func SetOllamaAPIBase(url string) {
+	if strings.TrimSpace(url) == "" {
+		return
+	}
+	OllamaAPIBase = url
+}
 
 // DockerModelRunnerAPIBase is where LiteLLM reaches Docker Model Runner (DMR),
 // the second local-inference backend. DMR exposes an OpenAI-compatible endpoint on

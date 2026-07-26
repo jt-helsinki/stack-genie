@@ -750,7 +750,7 @@ func TestPreflightReportsMsbWithInstructionsNotInstalling(test *testing.T) {
 }
 
 func TestLiteLLMRunArgs(test *testing.T) {
-	args := litellmRunArgs("/cfg/litellm/config.yaml", "127.0.0.1", containerImage("litellm"))
+	args := litellmRunArgs("/cfg/litellm/config.yaml", "127.0.0.1", containerImage("litellm"), runtime.OllamaModeContainer)
 	want := []string{
 		"run", "-d", "--name", "aip-litellm",
 		"--network", "aip-net",
@@ -789,7 +789,7 @@ func TestLiteLLMRunArgs(test *testing.T) {
 // (nginx is the sole host entry) — regardless of the role's bindHost.
 func TestLiteLLMRunArgsInternalOnly(test *testing.T) {
 	for _, bindHost := range []string{"127.0.0.1", "0.0.0.0"} {
-		launch := strings.Join(litellmRunArgs("/cfg/config.yaml", bindHost, containerImage("litellm")), " ")
+		launch := strings.Join(litellmRunArgs("/cfg/config.yaml", bindHost, containerImage("litellm"), runtime.OllamaModeContainer), " ")
 		if strings.Contains(launch, "-p ") || strings.Contains(launch, "14000") {
 			test.Errorf("litellm must be internal-only (no host publish) for bindHost %s: %s", bindHost, launch)
 		}
@@ -983,7 +983,7 @@ func TestDesiredServicesOrder(test *testing.T) {
 // optional host services, so this is the full set. Every guardrail is enabled
 // (GuardrailKeys) so the Presidio images are included.
 func TestRequiredImagesCoversEveryService(test *testing.T) {
-	images := requiredImages(optionalServiceNames(), litellm.GuardrailKeys()) // all optional (none) + all guardrails
+	images := requiredImages(optionalServiceNames(), litellm.GuardrailKeys(), runtime.OllamaModeContainer) // all optional (none) + all guardrails
 	have := make(map[string]bool, len(images))
 	for _, ref := range images {
 		if !strings.Contains(ref, ":") {
@@ -1010,7 +1010,7 @@ func TestRequiredImagesCoversEveryService(test *testing.T) {
 // NOT selected (the default), the Presidio images are NOT pulled — no point consuming
 // the bandwidth/disk for a guardrail that isn't rendered. The core images still pull.
 func TestRequiredImagesSkipsPresidioWhenGuardrailOff(test *testing.T) {
-	images := requiredImages(optionalServiceNames(), litellm.DefaultGuardrails()) // Headroom only
+	images := requiredImages(optionalServiceNames(), litellm.DefaultGuardrails(), runtime.OllamaModeContainer) // Headroom only
 	presidio := containerImage("presidio-analyzer")
 	for _, ref := range images {
 		if ref == presidio {
@@ -1022,7 +1022,7 @@ func TestRequiredImagesSkipsPresidioWhenGuardrailOff(test *testing.T) {
 		test.Errorf("core litellm image must still be pulled: %v", images)
 	}
 	// And WITH secret-masking enabled, Presidio IS pulled.
-	withMasking := requiredImages(optionalServiceNames(), []string{litellm.GuardrailSecretMasking})
+	withMasking := requiredImages(optionalServiceNames(), []string{litellm.GuardrailSecretMasking}, runtime.OllamaModeContainer)
 	if !slices.Contains(withMasking, presidio) {
 		test.Errorf("Presidio image must be pulled when secret-masking is on: %v", withMasking)
 	}
@@ -1101,7 +1101,7 @@ func TestEnsureProxyRendersGatewayConfig(test *testing.T) {
 	home := test.TempDir()
 	test.Setenv("HOME", home)
 	prober := &recordingProber{}
-	if err := ensureProxy(prober, "docker", "127.0.0.1", "aip.local"); err != nil {
+	if err := ensureProxy(prober, "docker", "127.0.0.1", "aip.local", runtime.OllamaModeContainer); err != nil {
 		test.Fatal(err)
 	}
 	confPath := filepath.Join(home, ".ai-platform", "config", "proxy", "nginx.conf")
@@ -1171,7 +1171,7 @@ func TestEnsureProxyRendersGatewayConfig(test *testing.T) {
 // domain, the LiteLLM admin UI vhost redirects / → /ui and bypasses Headroom, and
 // litellm is the ONLY host UI vhost (no chat./odysseus.).
 func TestProxyNginxConfThreadsDomain(test *testing.T) {
-	rendered := proxyNginxConf("dev.example.com")
+	rendered := proxyNginxConf("dev.example.com", runtime.OllamaModeContainer)
 	if !strings.Contains(rendered, "server_name dev.example.com localhost _;") {
 		test.Errorf("default server must use the threaded domain:\n%s", rendered)
 	}
@@ -1746,7 +1746,7 @@ func TestEnsureOllamaModelsUnderVolumesDir(test *testing.T) {
 	test.Setenv("HOME", home)
 
 	prober := &capturingProber{}
-	if err := ensureOllama(prober, "docker", "127.0.0.1"); err != nil {
+	if err := ensureOllama(prober, "docker", "127.0.0.1", runtime.OllamaModeContainer); err != nil {
 		test.Fatalf("ensureOllama: %v", err)
 	}
 

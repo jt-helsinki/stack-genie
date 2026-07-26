@@ -718,3 +718,28 @@ func TestTestUsesGatewayChatPath(test *testing.T) {
 		test.Errorf("chat probe queried %q, want /v1/chat/completions (the gateway path)", gotPath)
 	}
 }
+
+// TestSetOllamaAPIBase verifies the mutable api_base var defaults to the container
+// backend, is repointed by the setter, and ignores an empty url. It restores the
+// var so it never leaks into other tests (which compare against OllamaAPIBase).
+func TestSetOllamaAPIBase(test *testing.T) {
+	original := OllamaAPIBase
+	defer func() { OllamaAPIBase = original }()
+
+	if OllamaAPIBase != OllamaContainerAPIBase {
+		test.Errorf("default OllamaAPIBase = %q, want the container backend %q", OllamaAPIBase, OllamaContainerAPIBase)
+	}
+	SetOllamaAPIBase(OllamaHostAPIBase)
+	if OllamaAPIBase != OllamaHostAPIBase {
+		test.Errorf("after SetOllamaAPIBase(host): %q, want %q", OllamaAPIBase, OllamaHostAPIBase)
+	}
+	// An empty url is ignored so a caller can never blank out the base.
+	SetOllamaAPIBase("")
+	if OllamaAPIBase != OllamaHostAPIBase {
+		test.Errorf("empty SetOllamaAPIBase must be a no-op, got %q", OllamaAPIBase)
+	}
+	SetOllamaAPIBase(OllamaContainerAPIBase)
+	if OllamaAPIBase != OllamaContainerAPIBase {
+		test.Errorf("after SetOllamaAPIBase(container): %q, want %q", OllamaAPIBase, OllamaContainerAPIBase)
+	}
+}
