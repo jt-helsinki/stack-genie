@@ -6,6 +6,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/jt-helsinki/stack-genie/internal/agentcfg"
 	"github.com/jt-helsinki/stack-genie/internal/config"
 )
 
@@ -46,6 +47,11 @@ type Status struct {
 	// `hermes dashboard`) — the platform only publishes its host port, it does not
 	// run a container for it, so it is not startable via `ai apps start`.
 	Kind string `json:"kind,omitempty"`
+	// Login is the "username / password" basic-auth credential for a dashboard that
+	// the platform auto-configures (currently hermes). Empty for container apps and for
+	// dashboards without configured auth. It is a low-sensitivity LOCAL dashboard
+	// credential surfaced so the user can log in — not a provider/gateway secret.
+	Login string `json:"login,omitempty"`
 }
 
 // KindDashboard marks a Status as an agent-CLI web dashboard rather than a
@@ -452,6 +458,12 @@ func (manager *Manager) List() ([]Status, error) {
 			Installed: true,
 			Port:      entry.Port,
 			URL:       fmt.Sprintf("http://localhost:%d", entry.Port),
+		}
+		// hermes' dashboard is basic-auth protected by an auto-configured credential
+		// (the platform must register an auth provider or hermes refuses to bind
+		// 0.0.0.0). Surface the login so the user can reach it.
+		if entry.Key == "hermes" && projectConfig.Agent.HermesDashboardPassword != "" {
+			status.Login = agentcfg.HermesDashboardUsername + " / " + projectConfig.Agent.HermesDashboardPassword
 		}
 		if manager.deps.Exec != nil {
 			status.Running = manager.dashboardRunning(entry.Key)

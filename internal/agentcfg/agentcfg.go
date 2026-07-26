@@ -26,13 +26,53 @@ package agentcfg
 
 import (
 	"bytes"
+	"crypto/rand"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"strings"
 
+	"golang.org/x/crypto/scrypt"
 	"gopkg.in/yaml.v3"
 )
+
+// HermesDashboardUsername is the fixed basic-auth username the platform configures for
+// the hermes web dashboard. Hermes refuses to bind the dashboard to 0.0.0.0 (required so
+// the published host port reaches it) unless a dashboard auth provider is registered, so
+// the platform auto-configures basic auth under this username with a generated password.
+const HermesDashboardUsername = "aip"
+
+// scrypt parameters hermes' dashboard basic-auth expects (from its stdlib hashlib.scrypt):
+// N=16384, r=8, p=1, derived-key length 32 bytes, over a random 16-byte salt. The stored
+// hash string is `scrypt$<N>$<r>$<p>$<base64(salt)>$<base64(dk)>`.
+const (
+	hermesScryptN       = 16384
+	hermesScryptR       = 8
+	hermesScryptP       = 1
+	hermesScryptSaltLen = 16
+	hermesScryptKeyLen  = 32
+)
+
+// HermesDashboardPasswordHash hashes a plaintext dashboard password into the
+// `scrypt$16384$8$1$<salt_b64>$<dk_b64>` format hermes stores in dashboard.basic_auth
+// (matching its hashlib.scrypt(N=16384, r=8, p=1, dklen=32) over a random 16-byte salt).
+// Both the salt and derived key are base64.StdEncoding. A fresh random salt makes two
+// hashes of the same password differ.
+func HermesDashboardPasswordHash(password string) (string, error) {
+	salt := make([]byte, hermesScryptSaltLen)
+	if _, err := rand.Read(salt); err != nil {
+		return "", fmt.Errorf("generate hermes dashboard salt: %w", err)
+	}
+	derivedKey, err := scrypt.Key([]byte(password), salt, hermesScryptN, hermesScryptR, hermesScryptP, hermesScryptKeyLen)
+	if err != nil {
+		return "", fmt.Errorf("scrypt hermes dashboard password: %w", err)
+	}
+	return fmt.Sprintf("scrypt$%d$%d$%d$%s$%s",
+		hermesScryptN, hermesScryptR, hermesScryptP,
+		base64.StdEncoding.EncodeToString(salt),
+		base64.StdEncoding.EncodeToString(derivedKey),
+	), nil
+}
 
 // ProviderID is the provider handle both agent CLIs use for the host gateway.
 const ProviderID = "aip-gateway"
@@ -296,7 +336,12 @@ const (
 // Hermes lists models by endpoint discovery (no static array), so there is no served-list
 // to refresh — like omp. A non-empty defaultModel seeds model.default; empty omits it so
 // hermes' persisted selection wins. gatewayURL carries the /v1 suffix.
-func HermesConfig(gatewayURL, defaultModel string) ([]byte, error) {
+//
+// A non-empty dashboardPassword appends the dashboard.basic_auth block (username "aip" +
+// the scrypt hash of the password) so hermes will bind its dashboard to 0.0.0.0 — it
+// refuses to without a registered dashboard auth provider. An empty dashboardPassword
+// omits the block (unchanged behavior).
+func HermesConfig(gatewayURL, defaultModel, dashboardPassword string) ([]byte, error) {
 	model := map[string]any{"provider": ProviderID}
 	if defaultModel != "" {
 		model["default"] = defaultModel
@@ -310,6 +355,18 @@ func HermesConfig(gatewayURL, defaultModel string) ([]byte, error) {
 		},
 		"model":         model,
 		"external_dirs": []string{HermesSkillsExternalDir},
+	}
+	if dashboardPassword != "" {
+		hash, err := HermesDashboardPasswordHash(dashboardPassword)
+		if err != nil {
+			return nil, err
+		}
+		document["dashboard"] = map[string]any{
+			"basic_auth": map[string]any{
+				"username":      HermesDashboardUsername,
+				"password_hash": hash,
+			},
+		}
 	}
 	return marshalYAML(document)
 }

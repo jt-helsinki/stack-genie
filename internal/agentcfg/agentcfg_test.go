@@ -1,6 +1,7 @@
 package agentcfg
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"strings"
 	"testing"
@@ -114,7 +115,7 @@ func TestOpenCodeConfigStructure(test *testing.T) {
 }
 
 func TestHermesConfigStructure(test *testing.T) {
-	raw, err := HermesConfig(testGateway, "gemma4")
+	raw, err := HermesConfig(testGateway, "gemma4", "")
 	if err != nil {
 		test.Fatal(err)
 	}
@@ -136,12 +137,61 @@ func TestHermesConfigStructure(test *testing.T) {
 		test.Errorf("hermes config must be keyless:\n%s", text)
 	}
 	// A blank default omits the default line (seed-then-remember).
-	blank, err := HermesConfig(testGateway, "")
+	blank, err := HermesConfig(testGateway, "", "")
 	if err != nil {
 		test.Fatal(err)
 	}
 	if strings.Contains(string(blank), "default:") {
 		test.Errorf("a blank default must omit model.default:\n%s", blank)
+	}
+	// A blank dashboard password omits the dashboard.basic_auth block.
+	if strings.Contains(string(blank), "basic_auth") {
+		test.Errorf("a blank dashboard password must omit the dashboard block:\n%s", blank)
+	}
+	// A non-empty dashboard password appends dashboard.basic_auth with the fixed
+	// username + a scrypt hash — keyless still holds.
+	withDash, err := HermesConfig(testGateway, "gemma4", "s3cret-pw")
+	if err != nil {
+		test.Fatal(err)
+	}
+	dashText := string(withDash)
+	for _, want := range []string{"dashboard", "basic_auth", "username: " + HermesDashboardUsername, "password_hash", "scrypt$16384$8$1$"} {
+		if !strings.Contains(dashText, want) {
+			test.Errorf("hermes dashboard config missing %q:\n%s", want, dashText)
+		}
+	}
+	if strings.Contains(dashText, "s3cret-pw") {
+		test.Errorf("the plaintext dashboard password must not appear in the config:\n%s", dashText)
+	}
+}
+
+func TestHermesDashboardPasswordHash(test *testing.T) {
+	hash, err := HermesDashboardPasswordHash("hunter2")
+	if err != nil {
+		test.Fatal(err)
+	}
+	if !strings.HasPrefix(hash, "scrypt$16384$8$1$") {
+		test.Errorf("hash missing scrypt prefix: %q", hash)
+	}
+	fields := strings.Split(hash, "$")
+	if len(fields) != 6 {
+		test.Fatalf("hash must have 6 $-separated fields, got %d: %q", len(fields), hash)
+	}
+	salt, err := base64.StdEncoding.DecodeString(fields[4])
+	if err != nil || len(salt) != 16 {
+		test.Errorf("salt field must be valid base64 of 16 bytes: len=%d err=%v", len(salt), err)
+	}
+	derivedKey, err := base64.StdEncoding.DecodeString(fields[5])
+	if err != nil || len(derivedKey) != 32 {
+		test.Errorf("dk field must be valid base64 of 32 bytes: len=%d err=%v", len(derivedKey), err)
+	}
+	// A fresh random salt makes two hashes of the same password differ.
+	other, err := HermesDashboardPasswordHash("hunter2")
+	if err != nil {
+		test.Fatal(err)
+	}
+	if other == hash {
+		test.Error("two hashes of the same password must differ (random salt)")
 	}
 }
 

@@ -8,6 +8,8 @@ package workspace
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"os"
@@ -42,6 +44,18 @@ func resolveGateway() (host string, port int, url string) {
 		return runtime.ResolveGateway("")
 	}
 	return runtime.ResolveGateway(info.HostAddress())
+}
+
+// generateDashboardPassword returns a strong random URL-safe password (~22 chars) for an
+// agent-CLI web dashboard's basic auth (currently hermes). 16 random bytes rendered as
+// base64 URL-safe-no-padding gives a high-entropy, shell-safe string. A rand.Read failure
+// is effectively impossible on a supported host; a short fallback keeps the start working.
+func generateDashboardPassword() string {
+	buffer := make([]byte, 16)
+	if _, err := rand.Read(buffer); err != nil {
+		return "aip-dashboard-fallback"
+	}
+	return base64.RawURLEncoding.EncodeToString(buffer)
 }
 
 // In-VM (KEYED) files written under the `workspace` user's home. The per-CLI provider
@@ -756,10 +770,25 @@ func (manager Manager) registerAgentProviders(name, project, root string, projec
 	// (nothing in writeModelListConfigs). ~/.hermes is symlinked to /persist so its last-used
 	// selection + skills survive restarts.
 	if slices.Contains(projectConfig.Agent.Tools, "hermes") {
-		hermesConfig, err := agentcfg.HermesConfig(gatewayURL, defaultModel)
+		// Ensure a stable dashboard basic-auth password exists so hermes will bind its
+		// dashboard to 0.0.0.0 (it refuses without a registered auth provider). Generate
+		// once and PERSIST the plaintext to the project config.yaml (a low-sensitivity
+		// LOCAL dashboard credential — NOT the scoped gateway key, which never touches
+		// disk). Best-effort: a persist failure must not fail the start — the in-memory
+		// password is still applied to this start's config; it would just regenerate next
+		// start.
+		if projectConfig.Agent.HermesDashboardPassword == "" {
+			projectConfig.Agent.HermesDashboardPassword = generateDashboardPassword()
+			if err := config.WriteProject(root, projectConfig); err != nil {
+				_, _ = fmt.Fprintf(os.Stderr, "warning: could not persist the hermes dashboard password in workspace %q (continuing): %v\n", name, err)
+			}
+		}
+		dashboardPassword := projectConfig.Agent.HermesDashboardPassword
+		hermesConfig, err := agentcfg.HermesConfig(gatewayURL, defaultModel, dashboardPassword)
 		if err != nil {
 			return err
 		}
+		logStep("hermes dashboard login: %s / %s (host port from `ai apps`)", agentcfg.HermesDashboardUsername, dashboardPassword)
 		// The enabled tools' MCP servers ride in the SAME config.yaml (mcp_servers) the
 		// platform rewrites each start.
 		hermesConfig, err = agentcfg.InjectHermesMCP(hermesConfig, mcpServers)

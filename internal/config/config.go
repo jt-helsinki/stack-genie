@@ -76,6 +76,16 @@ type AgentConfig struct {
 	// gateway/api-key. The FORCED-oauth CLIs (ForcedOAuthCLIs, e.g. copilot) are recorded
 	// as "oauth" and can be nothing else — see AuthMode.
 	AuthModes map[string]string `yaml:"auth_modes,omitempty" json:"auth_modes,omitempty"`
+	// HermesDashboardPassword is the plaintext basic-auth password for the hermes web
+	// dashboard. Hermes REFUSES to bind its dashboard to 0.0.0.0 (required so the
+	// published host port reaches it) unless an auth provider is configured, so the
+	// platform auto-configures basic auth: it generates this password on first start,
+	// stores the SCRYPT hash in hermes' ~/.hermes/config.yaml, and shows the login in
+	// `ai apps`. This is a LOW-sensitivity LOCAL dashboard credential — NOT a provider
+	// key or the scoped LiteLLM virtual key — so persisting the plaintext in the project
+	// config.yaml is acceptable; do NOT confuse it with the gateway/provider secrets that
+	// must never touch host disk.
+	HermesDashboardPassword string `yaml:"hermes_dashboard_password,omitempty" json:"hermes_dashboard_password,omitempty"`
 }
 
 // OAuthCapableCLIs are the agent CLIs with a first-party subscription/OAuth login that

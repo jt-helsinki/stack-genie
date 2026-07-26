@@ -39,10 +39,16 @@ func appStatusLabel(status apps.Status) string {
 	// not startable via `ai apps start` — label them so the state does not read like a
 	// stopped app the user can start.
 	if status.Kind == apps.KindDashboard {
+		label := ui.Warn.Render("dashboard (launch in workspace)")
 		if status.Running {
-			return ui.Success.Render("dashboard (running)")
+			label = ui.Success.Render("dashboard (running)")
 		}
-		return ui.Warn.Render("dashboard (launch in workspace)")
+		// Auto-configured basic-auth dashboards (hermes) surface their login so the
+		// user can reach the published port — a low-sensitivity LOCAL credential.
+		if status.Login != "" {
+			label += "\n" + ui.Muted.Render("login: "+status.Login)
+		}
+		return label
 	}
 	switch {
 	case !status.Installed:
