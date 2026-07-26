@@ -547,6 +547,10 @@ func (manager Manager) Start(project string) (*state.Workspace, error) {
 	// once-guarded + best-effort — never fail the start, retry next start on failure.
 	manager.registerCodeReviewGraph(name, projectConfig)
 	manager.registerCodebaseMemory(name, projectConfig)
+	// Install Hermes at runtime (detached) when selected — its uv venv must be built at the
+	// final ~/.hermes (=/persist) path, not baked at image build then symlink-migrated
+	// (which broke the venv). Once-guarded, best-effort — never fails the start.
+	manager.registerHermes(name, projectConfig)
 	logStep("workspace %q started", project)
 	now := manager.Now()
 	handle := &state.Workspace{
@@ -920,6 +924,16 @@ const (
 	cavemanLaunchTimeout = 30 * time.Second
 	// cavemanScriptGuest is where the once-guarded install script is staged in-VM.
 	cavemanScriptGuest = "/tmp/caveman-install.sh"
+)
+
+// Hermes is installed at workspace START (detached), NOT at image build — see
+// registerHermes for why the build-time bake was fragile.
+const (
+	// hermesInstallLaunchTimeout bounds only the tiny launcher exec that setsid-backgrounds
+	// the hermes install and returns; the install (git clone + uv venv + deps) runs on past it.
+	hermesInstallLaunchTimeout = 30 * time.Second
+	// hermesInstallScriptGuest is where the once-guarded hermes install script is staged in-VM.
+	hermesInstallScriptGuest = "/tmp/hermes-install.sh"
 )
 
 // The installed in-VM apps + agent dashboards are auto-started DETACHED at workspace
@@ -1427,6 +1441,56 @@ func (manager Manager) registerCaveman(name string, projectConfig *config.Config
 		shellQuoteGuest(pool+"/run"), shellQuoteGuest(cavemanScriptGuest), shellQuoteGuest(logPath))
 	if err := manager.launchDetachedRetry(name, []string{"bash", "-lc", launch}, false, cavemanLaunchTimeout); err != nil && explicit {
 		_, _ = fmt.Fprintln(os.Stderr, ui.Warn.Render("Caveman install could not be launched "+
+			"(it will retry on the next workspace start): "+err.Error()))
+	}
+}
+
+// registerHermes installs the Hermes agent CLI at workspace START rather than at image
+// build. Hermes is a git-clone + uv-venv install rooted at ~/.hermes, which is symlinked to
+// the /persist overlay (linkAgentStateDirs) so the install survives restarts. Baking it at
+// image build was fragile: uv creates the venv at the BUILD path, then the ~/.hermes →
+// /persist symlink migration left the venv WITHOUT its pyvenv.cfg (so its site-packages fell
+// off sys.path and `import hermes_cli` failed) AND without its runtime deps (yaml, …) — the
+// `hermes` binary died with ModuleNotFoundError, so `ai apps` / `hermes dashboard` never
+// ran. Installing HERE, after the symlink already points at /persist, builds one complete
+// venv at its final path (verified live: a clean reinstall there fixes the import).
+//
+// DETACHED (setsid), exactly like registerCaveman: the install is a multi-minute network +
+// uv operation; run as a BLOCKING exec it stalls the start and saturates the single msb
+// agent-relay ("msb exec is not responding" — verified live). The launcher exec returns in
+// milliseconds; the staged script is once-guarded by a marker under the persistent
+// .ai-platform dir, touched ONLY after `hermes --help` actually runs, so a killed/incomplete
+// install retries on the next start instead of being wrongly recorded as done. `--skip-setup`
+// keeps the installer from writing its own ~/.hermes/config.yaml — the platform owns that
+// file (registerAgentProviders writes the keyless aip-gateway provider each start).
+// Best-effort — it never fails the workspace start.
+func (manager Manager) registerHermes(name string, projectConfig *config.Config) {
+	if projectConfig == nil || !slices.Contains(projectConfig.Agent.Tools, "hermes") {
+		return
+	}
+	pool := workspaceWorkdir + "/.ai-platform"
+	installMarker := pool + "/.hermes-installed"
+	// Drop any prior (partial/build-baked) checkout so uv rebuilds a clean, complete venv at
+	// the final ~/.hermes (=/persist) path, then require `hermes --help` to actually run
+	// before recording success so an incomplete install retries.
+	script := "#!/usr/bin/env bash\n" +
+		"cd \"$HOME\"; " +
+		"mkdir -p " + pool + "; " +
+		"[ -f " + installMarker + " ] && exit 0; " +
+		"rm -rf \"$HOME/.hermes/hermes-agent\"; " +
+		"timeout --kill-after=30s 900s bash -c 'curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash -s -- --skip-setup'; " +
+		"\"$HOME/.hermes/hermes-agent/venv/bin/hermes\" --help >/dev/null 2>&1 && touch " + installMarker + "\n"
+	if err := manager.Sandbox.WriteFile(name, hermesInstallScriptGuest, []byte(script)); err != nil {
+		_, _ = fmt.Fprintln(os.Stderr, ui.Warn.Render("Hermes install could not be staged "+
+			"(it will retry on the next workspace start): "+err.Error()))
+		return
+	}
+	logPath := pool + "/run/hermes-install.log"
+	logStep("installing Hermes in the background (detached) → %s", logPath)
+	launch := fmt.Sprintf("mkdir -p %s && setsid bash %s </dev/null >%s 2>&1 & exit 0",
+		shellQuoteGuest(pool+"/run"), shellQuoteGuest(hermesInstallScriptGuest), shellQuoteGuest(logPath))
+	if err := manager.launchDetachedRetry(name, []string{"bash", "-lc", launch}, false, hermesInstallLaunchTimeout); err != nil {
+		_, _ = fmt.Fprintln(os.Stderr, ui.Warn.Render("Hermes install could not be launched "+
 			"(it will retry on the next workspace start): "+err.Error()))
 	}
 }

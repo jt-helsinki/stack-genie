@@ -6,7 +6,10 @@
 # never a real provider secret; LiteLLM holds the real credentials, arch §17). Headroom
 # input-compression applies automatically at the gateway (LiteLLM pre_call guardrail).
 # The installer bundles its own uv/Python/Node; the OS base already ships python/uv/node.
-# Installed as the workspace user (its home ~/.hermes), matching the omp curl-installer pattern.
-# hardware bring-up: verify the installer lands `hermes` on PATH + the config schema live.
+# NOTE: hermes is NOT installed at image build. Its uv venv is path-sensitive, and ~/.hermes
+# is symlink-migrated to the /persist overlay at workspace start; a build-baked venv lost its
+# pyvenv.cfg + deps across that migration and `hermes` failed with ModuleNotFoundError. It is
+# instead installed at workspace START by workspace.Manager.registerHermes (detached,
+# once-guarded, best-effort), which builds a complete venv at the final ~/.hermes path.
+# This snippet is intentionally a no-op marker so the build stays cache-stable for hermes.
 USER workspace
-RUN curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash
