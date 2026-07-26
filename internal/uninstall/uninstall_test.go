@@ -471,3 +471,84 @@ func containsLine(lines []string, want string) bool {
 	}
 	return false
 }
+
+// TestStopHostOllamaContainerModeNoop: in container mode (and with no runtime.yaml
+// at all) uninstall attempts NO host-native Ollama teardown — the container-mode
+// path is unchanged.
+func TestStopHostOllamaContainerModeNoop(test *testing.T) {
+	// (a) No runtime.yaml at all → defaults to container → no-op.
+	test.Setenv("HOME", test.TempDir())
+	prober := &fakeProber{present: map[string]bool{}}
+	if stopHostOllama(prober, func(string) {}) {
+		test.Error("no runtime.yaml should resolve to container mode (no host teardown)")
+	}
+	if containsLine(prober.ran, "pkill -f ollama serve") {
+		test.Errorf("container mode must not run pkill, ran: %v", prober.ran)
+	}
+
+	// (b) Explicit container mode persisted → still a no-op.
+	test.Setenv("HOME", test.TempDir())
+	if err := runtime.Persist(&runtime.Info{SchemaVersion: runtime.SchemaVersion, OllamaMode: runtime.OllamaModeContainer}); err != nil {
+		test.Fatalf("persist runtime: %v", err)
+	}
+	prober = &fakeProber{present: map[string]bool{}}
+	if stopHostOllama(prober, func(string) {}) {
+		test.Error("container mode should not attempt host Ollama teardown")
+	}
+	if len(prober.ran) != 0 {
+		test.Errorf("container mode must run no commands, ran: %v", prober.ran)
+	}
+}
+
+// TestStopHostOllamaHostMode: in host mode uninstall attempts the best-effort
+// host-native `ollama serve` stop (the hardware bring-up pkill stub) and records it.
+func TestStopHostOllamaHostMode(test *testing.T) {
+	test.Setenv("HOME", test.TempDir())
+	if err := runtime.Persist(&runtime.Info{SchemaVersion: runtime.SchemaVersion, OllamaMode: runtime.OllamaModeHost}); err != nil {
+		test.Fatalf("persist runtime: %v", err)
+	}
+	prober := &fakeProber{present: map[string]bool{}}
+	var lines []string
+	if !stopHostOllama(prober, func(line string) { lines = append(lines, line) }) {
+		test.Fatal("host mode should attempt host-native Ollama teardown")
+	}
+	if !containsLine(prober.ran, "pkill -f ollama serve") {
+		test.Errorf("expected `pkill -f ollama serve`, ran: %v", prober.ran)
+	}
+	if len(lines) == 0 || !strings.Contains(strings.Join(lines, "\n"), "host-native Ollama") {
+		test.Errorf("expected a recorded host-Ollama teardown line, got: %v", lines)
+	}
+}
+
+// TestRunHostOllamaStopsAndKeepsModels: a full plain uninstall in host mode stops
+// the host-native Ollama process (reflected in Report.StoppedHostOllama) and NEVER
+// removes the host model store (volumes/models is expensive to refetch — only
+// --purge removes it).
+func TestRunHostOllamaStopsAndKeepsModels(test *testing.T) {
+	home := test.TempDir()
+	test.Setenv("HOME", home)
+	test.Setenv("ZDOTDIR", "")
+	if err := runtime.Persist(&runtime.Info{SchemaVersion: runtime.SchemaVersion, OllamaMode: runtime.OllamaModeHost}); err != nil {
+		test.Fatalf("persist runtime: %v", err)
+	}
+	modelBlob := filepath.Join(home, ".ai-platform", "volumes", "models", "blobs", "sha256-abc")
+	mustWrite(test, modelBlob, "x")
+
+	prober := &fakeProber{present: map[string]bool{}}
+	withHostsSeams(test, filepath.Join(home, "etc-hosts"), func(string, []byte) error { return nil })
+
+	report, err := Run(Options{}, prober, nil) // plain uninstall, no purge
+	if err != nil {
+		test.Fatalf("Run: %v", err)
+	}
+	if !report.StoppedHostOllama {
+		test.Error("StoppedHostOllama = false, want true in host mode")
+	}
+	if !containsLine(prober.ran, "pkill -f ollama serve") {
+		test.Errorf("expected host-Ollama stop attempt, ran: %v", prober.ran)
+	}
+	// The downloaded host model store must survive a plain (non-purge) uninstall.
+	if _, statErr := os.Stat(modelBlob); os.IsNotExist(statErr) {
+		test.Error("host model store (volumes/models) must be kept on a plain uninstall")
+	}
+}

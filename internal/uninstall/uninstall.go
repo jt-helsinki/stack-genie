@@ -51,6 +51,7 @@ type Options struct {
 // Report describes what was removed.
 type Report struct {
 	StoppedWorkspaces int      `json:"stopped_workspaces"`
+	StoppedHostOllama bool     `json:"stopped_host_ollama,omitempty"` // host-native `ollama serve` stopped (host ollama_mode)
 	RemovedContainers int      `json:"removed_containers"`
 	RemovedImages     int      `json:"removed_images"`
 	CleanedRC         []string `json:"cleaned_rc"`
@@ -188,6 +189,12 @@ func Run(options Options, prober runtime.Prober, progress Progress) (Report, err
 	// `stop`). This only halts the VM runtime instances; workspace DATA (project source
 	// + /persist overlays are host bind mounts) is deliberately left untouched.
 	report.StoppedWorkspaces = stopWorkspaces(prober, record)
+	// Host Ollama mode: there is no aip-ollama CONTAINER for removeContainers to
+	// stop, so stop the host-native `ollama serve` the platform started (best-effort;
+	// never fails uninstall). Container mode is a no-op, so that path is unchanged.
+	if stopHostOllama(prober, record) {
+		report.StoppedHostOllama = true
+	}
 	report.RemovedContainers = removeContainers(prober, record)
 	// Remove the platform's container IMAGES too, so a plain uninstall leaves
 	// nothing on the host (the service-tier pins + every aip-* workspace image).
@@ -372,6 +379,37 @@ func stopWorkspaces(prober runtime.Prober, record func(string)) int {
 		record(fmt.Sprintf("Stopped %d workspace microVM(s) (data preserved)", stopped))
 	}
 	return stopped
+}
+
+// stopHostOllama stops the HOST-NATIVE Ollama process the platform started when
+// this host runs in host Ollama mode (runtime.yaml `ollama_mode: host` — see
+// runtime.ResolveOllamaMode). In host mode there is no aip-ollama CONTAINER for
+// removeContainers to stop, but a host `ollama serve` the platform launched may
+// still be running; leaving it would orphan a process. It NEVER uninstalls the
+// user's Ollama BINARY (they installed it — the platform only stops what it
+// started) and NEVER deletes the host model store (~/.ai-platform/volumes/models)
+// — only --purge removes that, via the RemoveAll of ~/.ai-platform. Container mode
+// is a no-op (returns false), so that path is byte-for-byte unchanged.
+//
+// Docker Model Runner (DMR) is Docker-Desktop/host-managed: the platform does NOT
+// own its lifecycle, so uninstall deliberately leaves DMR intact — no host
+// mutation, no disable/remove.
+//
+// hardware bring-up: the real per-OS stop is platform-specific — macOS
+// `launchctl` unload of a LaunchAgent, Linux `systemctl --user stop ollama`, or a
+// plain `pkill`. This is a documented best-effort STUB that attempts a safe
+// `pkill -f "ollama serve"` and never fails the uninstall (any error — no matching
+// process, pkill absent — is ignored); the precise per-OS mechanism is wired at
+// hardware bring-up. Returns whether host mode was detected and the teardown
+// attempted (the surfaced outcome recorded in the Report).
+func stopHostOllama(prober runtime.Prober, record func(string)) bool {
+	info, err := runtime.Load()
+	if err != nil || info == nil || info.ResolveOllamaMode() != runtime.OllamaModeHost {
+		return false // container mode (or no runtime.yaml): nothing host-native to stop
+	}
+	_, _ = prober.Run("pkill", "-f", "ollama serve")
+	record("Stopped the host-native Ollama process (ollama_mode: host); kept the Ollama binary and the host model store (DMR, if any, is host-managed and left intact)")
+	return true
 }
 
 // removeContainers stops + removes the platform's aip-* containers via every
