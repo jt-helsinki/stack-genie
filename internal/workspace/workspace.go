@@ -1508,6 +1508,15 @@ func (manager Manager) registerHermes(name string, projectConfig *config.Config)
 		"[ -f " + installMarker + " ] && exit 0; " +
 		"rm -rf \"$HOME/.hermes/hermes-agent\"; " +
 		"timeout --kill-after=30s 900s bash -c 'curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash -s -- --skip-setup'; " +
+		// Enable the bundled `basic` dashboard-auth plugin: hermes REFUSES to bind the
+		// dashboard to 0.0.0.0 (required so the published host port reaches it) unless an
+		// auth PROVIDER is registered — and the dashboard.basic_auth config the platform
+		// writes (registerAgentProviders) is only READ when this plugin is enabled. Without
+		// it hermes reports "no auth providers are registered" and never listens. Persisted
+		// under ~/.hermes (=/persist), so it survives restarts. Verified live: with the
+		// plugin enabled + basic_auth config, the dashboard binds and serves (HTTP 302 to
+		// its login page). Idempotent + best-effort.
+		"\"$HOME/.hermes/hermes-agent/venv/bin/hermes\" plugins enable basic >/dev/null 2>&1 || true; " +
 		"\"$HOME/.hermes/hermes-agent/venv/bin/hermes\" --help >/dev/null 2>&1 && touch " + installMarker + "\n"
 	if err := manager.Sandbox.WriteFile(name, hermesInstallScriptGuest, []byte(script)); err != nil {
 		_, _ = fmt.Fprintln(os.Stderr, ui.Warn.Render("Hermes install could not be staged "+
