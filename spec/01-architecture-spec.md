@@ -119,7 +119,7 @@ Host Layer
  ├─ Microsandbox microVM runtime (libkrun)         ← workspaces
  │   └─ Sandbox Layer (workspace microVM)
  │       ├─ AI Tooling Layer (OpenCode by default; Claude Code / Codex / Gemini / omp / Copilot / Hermes optional — selected per env)
- │       ├─ In-VM OCI runtime (rootful containerd + nerdctl) → opt-in apps: Open WebUI · AnythingLLM (§7)
+ │       ├─ In-VM OCI runtime (rootful containerd + nerdctl) → opt-in apps: Open WebUI (§7)
  │       └─ Context Optimization (Caveman skill — per project, §8–10; Headroom is a host-side LiteLLM guardrail, §10)
  │
  └─ Container Runtime (Docker / Podman)            ← service tier (network aip-net)
@@ -552,8 +552,16 @@ Every workspace image also ships a **rootful in-VM OCI container runtime** —
 containerd + nerdctl + runc + CNI plugins + buildkit, installed from the pinned
 `nerdctl-full` release tarball (one static, distro-agnostic artifact, arch-aware
 amd64/arm64) into `/usr/local` in every OS base Dockerfile, alongside the CNI
-runtime deps (`ca-certificates`, `iptables`, `iproute`). The runtime is **started
-at workspace start** (not baked running into the image): `ensureContainerd`
+runtime deps (`ca-certificates`, `iptables`, `iproute`) and `fuse3` + `procps`.
+Because the microVM root (`/`) is ITSELF an overlay (the msb OCI upper) and the
+kernel refuses to stack a second overlay on it, containerd cannot use its
+**native `overlayfs` snapshotter** — a container rootfs mount would fail and
+images would pull but never start. So at start `ensureContainerd` launches the
+userspace **`fuse-overlayfs` snapshotter** (via `/dev/fuse` — the bundled
+`containerd-fuse-overlayfs-grpc` proxy plugin plus `fuse3`'s `mount.fuse3`
+helper) and points `nerdctl` at it, falling back to the copy-based `native`
+snapshotter only if the fuse proxy socket never comes up. The runtime is
+**started at workspace start** (not baked running into the image): `ensureContainerd`
 (`internal/workspace`) probes `nerdctl info` as root and, if needed, boots
 `containerd` detached (`setsid`, as root) so it runs for the VM's life, then **polls
 `nerdctl info`** (true readiness — the daemon serving requests, NOT merely the
@@ -570,9 +578,8 @@ containerd socket" fatal).
 
 On this runtime the platform runs **opt-in AI applications** as `nerdctl`
 containers **inside** the workspace microVM — currently **Open WebUI**
-(`ghcr.io/open-webui/open-webui:latest`, web port 8080, data `/app/backend/data`)
-and **AnythingLLM** (`mintplexlabs/anythingllm:latest`, web port 3001, storage
-`/app/server/storage`). Each app is described by a declarative manifest
+(`ghcr.io/open-webui/open-webui:latest`, web port 8080, data `/app/backend/data`).
+Each app is described by a declarative manifest
 (`internal/apps`): image (pinned image+tag, no digest — same convention as the
 service tier), container port, persisted data dir, an optional `/workspace` mount,
 a memory limit, and a gateway-pointing env builder. Each app is routed through the
@@ -581,15 +588,14 @@ a memory limit, and a gateway-pointing env builder. Each app is routed through t
 catalog-driven system has **no default model**, so the model handle passed is
 empty and the app's user picks a served model) — via
 `OPENAI_API_BASE_URL`/`OPENAI_API_KEY` (Open WebUI, plus
-`ENABLE_OLLAMA_API=false`/`WEBUI_AUTH=false` for a single-user in-VM instance) and
-`LLM_PROVIDER=generic-openai` + `GENERIC_OPEN_AI_*` (AnythingLLM).
+`ENABLE_OLLAMA_API=false`/`WEBUI_AUTH=false` for a single-user in-VM instance).
 
 Apps are **opt-in** (chosen at `ai create`, default OFF) and have a full
 lifecycle via **`ai apps <list|add|remove|update|start|stop|restart> [app] [name]`**
 and a per-workspace **Apps** view in `ai ui`. The web-UI **host port for each
 selected app is CHOSEN at create** — the wizard prompts for one per selected app and
 the `--app-port <app>=<port>` flag sets it non-interactively (seeded with the app's
-familiar container port — Open WebUI 8080, AnythingLLM 3001 — when free, else an
+familiar container port — Open WebUI 8080 — when free, else an
 auto-allocated free port; validated unique + host-free and reserved machine-wide
 across all workspaces) — and it is persisted in the project `config.yaml`'s `apps:`
 block. **Agent-CLI web dashboards get the same treatment**: an agent CLI that ships a
@@ -1242,14 +1248,25 @@ locked down on a host that binds to `0.0.0.0`:
   generates a strong random one non-interactively rather than leave the gateway
   open).
 
-**Persisting the secrets.** `ai setup` (server) and `ai litellm password` OFFER
-(on a TTY) to save `UI_PASSWORD` + `LITELLM_MASTER_KEY` to **`~/.ai-platform/.ai-platform.env`**
-— an opt-in, **0600** file of `export KEY='VALUE'` lines that the `ai` CLI
-**auto-loads at startup** (into its own process env, where the container
-env-passthrough launches pick them up) — so they persist across restarts WITHOUT
-the user editing their shell rc. Precedence is "existing env wins": the file only
-fills gaps, so a value already exported in the shell is never clobbered. On
-decline / non-TTY the manual `export …` block is printed instead. The container
+**Persisting the secrets.** Two paths write **`~/.ai-platform/.ai-platform.env`**
+— an **0600** file of `export KEY='VALUE'` lines that the `ai` CLI **auto-loads at
+startup** (into its own process env, where the container env-passthrough launches
+pick them up) — so secrets persist across restarts WITHOUT the user editing their
+shell rc. Precedence is "existing env wins": the file only fills gaps, so a value
+already exported in the shell is never clobbered.
+
+* **Unconditional (infra keys):** every `ensureLiteLLM` reconcile persists the
+  `LITELLM_MASTER_KEY` + `LITELLM_SALT_KEY` pair (`persistLiteLLMInfraKeys`), so
+  they survive a full container-down + fresh-process relaunch (preserving them off
+  the running container only works while it is still inspectable). This is a
+  correctness requirement — a rotated **salt key** orphans every stored provider
+  credential, and a stable **master key** keeps workspace scoped-key minting
+  working across recreates — so it is NOT opt-in.
+* **Opt-in (UI password):** `ai setup` (server) and `ai litellm password` OFFER
+  (on a TTY) to additionally save `UI_PASSWORD`; on decline / non-TTY the manual
+  `export …` block is printed instead.
+
+The container
 also
 carries `DATABASE_URL` (inline; it carries no secret) and the Presidio endpoints
 `PRESIDIO_ANALYZER_API_BASE=http://aip-presidio-analyzer:3000` /

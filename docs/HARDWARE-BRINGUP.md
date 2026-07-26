@@ -75,8 +75,14 @@ code.
 - [ ] Go 1.26+.
 - [ ] **Docker**, rootless. `ai doctor` → `container runtime: ok (docker)`;
       `ai setup` must verify rootless (`runtime.Verify`, exit 4 if not).
-- [ ] **Microsandbox** (`msb`) on `PATH`, code-signed with the
-      `com.apple.security.hypervisor` entitlement under Developer ID + notarization.
+- [ ] **Microsandbox** (`msb`) — the platform now MANAGES this itself: it is pinned
+      to `microsandboxVersion` (`v0.6.6`, matched to the go.mod
+      `superradcompany/microsandbox/sdk/go` pin) and downloaded (sha256-verified)
+      into `~/.ai-platform/bin/msb` on first use (`internal/workspace/msb.go`), so it
+      need NOT be on your `PATH` (`sandbox.Detect` counts the platform-managed binary
+      as installed). The downloaded binary must still be code-signed with the
+      `com.apple.security.hypervisor` entitlement under Developer ID + notarization to
+      use the Apple Hypervisor.
 - [ ] `git`, `gh` — workspace agent tooling and the acceptance suite's
       `requireGit` gate. `ai create` does **not** use git; the only git the platform
       runs is an internal in-VM `git init` at workspace start (to seat the Graphify
@@ -357,7 +363,7 @@ uv/graphify/headroom per-user installs.
 ### 2.7 In-VM apps (Phase 1 — arch §7, CLI §4.5c)
 
 On the Phase-0 runtime the platform runs opt-in AI apps as `nerdctl` containers
-**inside** the workspace microVM — Open WebUI and AnythingLLM (`internal/apps`).
+**inside** the workspace microVM — Open WebUI (`internal/apps`).
 Each app is a declarative manifest (image+tag pin, container port, persisted data
 dir, optional `/workspace` mount, gateway env). The host-side orchestration is
 fully unit-tested with fakes:
@@ -404,7 +410,8 @@ The default workspace backend is now the in-process **Microsandbox Go SDK**
 msb-CLI backend). A bounded lifecycle smoke (create/boot, exec incl. root, FS
 write/read, `LogStream` history+follow, Detach→reconnect, stop/remove, and an
 `msb load`-ed local image booting via `WithImage` + `PullPolicy=Never`) **passed**
-on Apple Silicon (msb 0.6.1). The seams that still need validation **by real use**
+on Apple Silicon (the runtime is now pinned to msb `v0.6.6`,
+`internal/workspace/msb.go`). The seams that still need validation **by real use**
 (a TTY and/or the full service tier — not reproducible headless):
 
 - [ ] **Interactive Attach (P3)** — `ai shell` / `ai attach` / `ai agent` route

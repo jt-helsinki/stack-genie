@@ -78,7 +78,7 @@ keep the precedence rules in arch §27 explicit), `slog` (structured logs), stdl
 │   ├── envimage/                # compose .ai-platform/Dockerfile (OS template + stack snippets + agent CLIs) + build OCI image
 │   ├── create/                  # shared `ai create` logic (validate/cap resources, scaffold, seed) — used by CLI + TUI wizard
 │   ├── workspace/               # workspace lifecycle + tmux-transparent sessions (Builder/Sandbox/Manager)
-│   ├── apps/                     # opt-in in-VM AI apps (Open WebUI / AnythingLLM) — declarative manifests + per-(workspace,app) lifecycle over nerdctl; unique host-port allocation
+│   ├── apps/                     # opt-in in-VM AI apps (Open WebUI) — declarative manifests + per-(workspace,app) lifecycle over nerdctl; unique host-port allocation
 │   ├── egress/                  # per-project egress policy → msb net-rules (MsbNetworkArgs)
 │   ├── overlay/                 # per-workspace persistent overlay
 │   ├── logs/                    # file-backed log reader (backs `ai logs`)
@@ -270,7 +270,7 @@ refer to the CLI spec and architecture spec respectively.
   multi-select (caveman, graphify, code-review-graph, codebase-memory-mcp →
   `context.*_enabled` bools; create-default caveman+graphify+code-review-graph ON,
   codebase-memory OFF). Every input also has a flag
-  (`--name`/`--os`/`--agents`/`--stacks`/`--tools`/`--apps`/`--app-port`/`--cpus`/`--memory`/`--ports`/`--location`/`--idle-timeout`/`--graphify-model`/`--shell`)
+  (`--name`/`--os`/`--agents`/`--auth-mode`/`--stacks`/`--tools`/`--apps`/`--app-port`/`--cpus`/`--memory`/`--disk`/`--ports`/`--location`/`--idle-timeout`/`--graphify-model`/`--shell`)
   that **pre-seeds** the wizard
   on a TTY
   (the wizard always shows); under `--json`/no-TTY the spec is built straight from
@@ -323,7 +323,7 @@ Slice 1 is complete only when every `[S1]` test passes with no manual config.
 Each slice must not break prior slices (roadmap §1).
 
 **In-VM AI apps (post-S1, cross-cutting).** `apps/`: the opt-in in-VM
-applications (Open WebUI, AnythingLLM) that run as **rootful nerdctl containers
+applications (Open WebUI) that run as **rootful nerdctl containers
 inside the workspace microVM**, pointed at the same model gateway as the agent
 CLIs, with data persisted on the workspace overlay and reachable from the host on
 a per-(workspace, app) unique published port. Surfaced by `ai apps

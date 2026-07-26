@@ -56,11 +56,16 @@ All platform-wide data is stored under:
 Global only — **no per-project state here**. Per-project state lives in
 `<project>/.ai-platform/` (see §2).
 
-`~/.ai-platform/.ai-platform.env` is an **opt-in, mode-0600** plain-text file of
+`~/.ai-platform/.ai-platform.env` is a **mode-0600** plain-text file of
 `export KEY='VALUE'` lines (NOT YAML) that the `ai` CLI loads at startup so
-platform secrets (`UI_PASSWORD`, `LITELLM_MASTER_KEY`) persist across restarts
-without the user editing a shell rc; it lives **beside** `~/.ai-platform/`, not
-inside it. Precedence is "existing env wins" — load only fills gaps. It is the
+platform secrets persist across restarts without the user editing a shell rc; it
+lives **beside** `~/.ai-platform/`, not inside it. The `LITELLM_MASTER_KEY` +
+`LITELLM_SALT_KEY` pair is written **automatically** on every LiteLLM reconcile
+(`persistLiteLLMInfraKeys`) — a correctness requirement, since a rotated salt key
+orphans stored provider credentials and a stable master key keeps workspace
+scoped-key minting working across container recreates; the `UI_PASSWORD` is an
+**opt-in** addition (`ai setup` server / `ai litellm password`). Precedence is
+"existing env wins" — load only fills gaps. It is the
 ONE on-disk place secrets may live for the host's own service tier (still never
 in a workspace or project); real provider keys remain in the LiteLLM gateway.
 
@@ -712,6 +717,10 @@ context:
 workspace:
   cpu_limit: 4             # microVM resource limits wired into `msb create --cpus/--memory`
   memory_limit: 8          # memory in GB (a plain number; a 512M/4G suffix still works); empty falls back to the microVM default (4G)
+  disk_limit: 16           # writable rootfs (OCI overlay upper) size in GiB — sizes the in-VM
+                           # disk holding containerd's image store (so multi-GB in-VM app images
+                           # fit); applied at create via the SDK's WithOCIUpperSize, changeable
+                           # later with `ai resize`; empty falls back to the workspace default
   shell: bash              # default interactive shell (bash | zsh), chosen at `ai create --shell`; applied at every start
 microsandbox:
   idle_timeout: 24h        # `msb create --idle-timeout`; default set by `ai create`, editable later
@@ -726,9 +735,9 @@ network:                   # workspace networking (arch §29.6); all fields mana
 apps:                      # opt-in in-VM AI apps (arch §7), chosen via `ai create --apps`/`--app-port` / `ai apps add`
                            # each runs as a rootful nerdctl container in the workspace microVM, gateway-routed,
                            # published on a unique host port (stable across restarts; seeded to the app's
-                           # familiar container port — Open WebUI 8080, AnythingLLM 3001 — when free, else
+                           # familiar container port — Open WebUI 8080 — when free, else
                            # auto-allocated from the 21000–21999 window — internal/apps/ports.go)
-  - { key: openwebui, port: 8080 }    # key one of: openwebui, anythingllm
+  - { key: openwebui, port: 8080 }    # key one of: openwebui
 agent_dashboards:          # agent-CLI web dashboards (currently only hermes — `hermes dashboard`, default 9119);
                            # prompted for a host port at create when the CLI is selected (--app-port <cli>=<port>),
                            # published from the microVM the same way as apps (host==guest); reuses the AppEntry shape

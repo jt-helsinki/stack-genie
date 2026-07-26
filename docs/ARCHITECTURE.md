@@ -56,7 +56,7 @@ embedded in [`architecture-overview.md`](architecture-overview.md).
 Each workspace microVM ships a **rootful in-VM container runtime** (containerd +
 nerdctl + runc + CNI), on which the platform runs **opt-in AI apps** (`internal/apps`)
 as `nerdctl` containers *inside* the VM — **Open WebUI** (`openwebui`, guest port
-8080) and **AnythingLLM** (`anythingllm`, guest port 3001), selected with
+8080), selected with
 `ai create --apps` or managed with `ai apps`. Each app gets the workspace project dir
 (`~/project`) mounted at `/workspace` in its container, published on a unique
 per-`(workspace, app)` host port (chosen at create via `--app-port <app>=<port>`,

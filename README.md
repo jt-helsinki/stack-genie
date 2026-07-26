@@ -156,6 +156,7 @@ state persist across restarts via the overlay):
 ```bash
 cd my-app
 ai start                     # the cwd's project; also: ai stop, ai restart
+ai resize --disk 32 --memory 12  # change disk/memory/vCPUs (any of --disk/--memory/--cpus), then restart to apply
 ai shell                     # pick a session to attach, or create a new one (tmux)
 ai agent opencode            # launch an agent CLI in its own session
 ai exec -- bash              # run a one-off command inside
@@ -167,14 +168,14 @@ ai sessions kill build       # kill a named tmux session
 microVM, drops the project's `.ai-platform/` dir + overlay, and de-registers it,
 keeping your other files; `ai delete --purge` removes the whole directory.
 
-**Run an in-VM app** (Open WebUI / AnythingLLM run as nerdctl containers inside the
+**Run an in-VM app** (Open WebUI runs as a nerdctl container inside the
 microVM, on the rootful in-VM container runtime, routed through the same gateway and
 published on a unique host port):
 
 ```bash
 ai apps list                 # the app catalogue + per-workspace status
 ai apps add openwebui        # install; published on restart at a per-(workspace,app) port
-ai apps update anythingllm   # re-pull the latest image and recreate
+ai apps update openwebui     # re-pull the latest image and recreate
 ai apps remove openwebui     # also: ai apps start | stop | restart <app>
 ```
 
@@ -254,10 +255,19 @@ It streams progress, asks per external dependency (`msb`), and logs to
 
 ## Develop
 
+Requires **Go 1.26+** and `CGO_ENABLED=1` (the Makefile exports it): the binary
+links the Microsandbox Go SDK, so the old pure-static build is gone. Build hosts
+are macOS (Apple Silicon) and Linux.
+
 ```bash
-make build                    # -> bin/ai
-make check                     # the pre-commit gate: fmt-check vet lint test build
-make lint                     # golangci-lint (also run standalone)
+make build             # -> bin/ai (injects the version via -ldflags)
+make check             # the pre-commit gate: fmt-check vet lint test build
+make fmt               # gofmt -w .
+make lint              # golangci-lint (also run standalone)
+make test              # unit tests (go test ./...)
+make test-acceptance   # acceptance suite (AIP_HARDWARE_TESTS=1 adds the full-stack [S1] tests)
+make test-integration  # LIVE suite vs a running Docker + Microsandbox stack (self-skips if absent)
+make test-all          # all suites (unit + acceptance + integration)
 ```
 
 ## Releasing

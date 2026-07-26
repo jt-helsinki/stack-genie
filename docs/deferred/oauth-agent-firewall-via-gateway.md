@@ -64,8 +64,11 @@ put NO LiteLLM key on `Authorization` (it would leak upstream under `forward_hea
 
 Until this is unblocked the platform goes the OTHER way: OAuth/plan agents talk to the
 provider DIRECTLY (bypassing the gateway, and therefore the firewall + masking
-guardrails), wrapped with `headroom wrap` for input compression. This is an explicit
-per-agent opt-in with the guardrail loss documented. It is implemented separately;
+guardrails). Input compression is preserved where `headroom wrap` supports the CLI —
+the oauth-wrappable set is **claude-code** and **codex** (each gets an
+`alias <cli>='headroom wrap <cli>'`); **gemini** is NOT wrappable, so an oauth gemini
+goes direct with no wrap. This is an explicit per-agent opt-in with the guardrail loss
+documented (`ai create` WARNS for each oauth agent). It is implemented separately;
 this doc only references it as the interim route.
 
 ## Fallback if LiteLLM never fixes Bug #1
