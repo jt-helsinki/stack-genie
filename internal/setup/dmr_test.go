@@ -5,8 +5,6 @@ import (
 	"net/http"
 	"strings"
 	"testing"
-
-	"github.com/jt-helsinki/stack-genie/internal/runtime"
 )
 
 // fakeDMRHTTP swaps dmrHTTPGet for one that returns the given status (or a transport
@@ -54,69 +52,11 @@ func TestEnsureDMRReachability(test *testing.T) {
 	}
 }
 
-func TestReconcileDMREnabledDefaultFalse(test *testing.T) {
+// TestStatusForDMRAlwaysVisible: DMR is always available as an option, so statusFor
+// always surfaces a host-mode docker-model-runner line whose state comes from the
+// HTTP probe (not a container) — running when reachable, stopped when not.
+func TestStatusForDMRAlwaysVisible(test *testing.T) {
 	test.Setenv("HOME", test.TempDir())
-	// No runtime.yaml at all → disabled default.
-	if reconcileDMREnabled() {
-		test.Error("with no runtime.yaml, DMR must default to disabled")
-	}
-	// Persisted-but-unset → still disabled (the zero value).
-	if err := runtime.Persist(&runtime.Info{SchemaVersion: runtime.SchemaVersion, Role: runtime.RoleStandalone}); err != nil {
-		test.Fatal(err)
-	}
-	if reconcileDMREnabled() {
-		test.Error("an unset DockerModelRunnerEnabled must resolve to disabled")
-	}
-}
-
-func TestReconcileDMREnabledRoundtrip(test *testing.T) {
-	test.Setenv("HOME", test.TempDir())
-	if err := runtime.Persist(&runtime.Info{
-		SchemaVersion:            runtime.SchemaVersion,
-		Role:                     runtime.RoleStandalone,
-		DockerModelRunnerEnabled: true,
-	}); err != nil {
-		test.Fatal(err)
-	}
-	loaded, err := runtime.Load()
-	if err != nil || loaded == nil {
-		test.Fatalf("load runtime.yaml: %v", err)
-	}
-	if !loaded.DMREnabled() {
-		test.Error("persisted DockerModelRunnerEnabled=true should round-trip as enabled")
-	}
-	if !reconcileDMREnabled() {
-		test.Error("reconcileDMREnabled should reflect the persisted enabled flag")
-	}
-}
-
-// TestStatusForDMRDisabledOmitted: with DMR disabled (the default), statusFor lists
-// no docker-model-runner line at all — it is irrelevant unless a model routes to it.
-func TestStatusForDMRDisabledOmitted(test *testing.T) {
-	test.Setenv("HOME", test.TempDir())
-	services := realServices{prober: fakeProber{}}
-	statuses, err := services.statusFor(nil)
-	if err != nil {
-		test.Fatal(err)
-	}
-	for _, status := range statuses {
-		if status.Name == dmrServiceName {
-			test.Errorf("DMR must be omitted when disabled, got %+v", status)
-		}
-	}
-}
-
-// TestStatusForDMREnabledVisible: with DMR enabled, statusFor surfaces a host-mode
-// docker-model-runner line whose state comes from the HTTP probe (not a container).
-func TestStatusForDMREnabledVisible(test *testing.T) {
-	test.Setenv("HOME", test.TempDir())
-	if err := runtime.Persist(&runtime.Info{
-		SchemaVersion:            runtime.SchemaVersion,
-		Role:                     runtime.RoleStandalone,
-		DockerModelRunnerEnabled: true,
-	}); err != nil {
-		test.Fatal(err)
-	}
 	fakeDMRHTTP(test, http.StatusOK)
 	services := realServices{prober: fakeProber{}}
 	statuses, err := services.statusFor(nil)
@@ -131,9 +71,9 @@ func TestStatusForDMREnabledVisible(test *testing.T) {
 		}
 	}
 	if found == nil {
-		test.Fatal("DMR must be listed when enabled")
+		test.Fatal("DMR must always be listed")
 	}
-	if found.Mode != runtime.OllamaModeHost {
+	if found.Mode != "host" {
 		test.Errorf("DMR Mode = %q, want host", found.Mode)
 	}
 	if found.State != "running" || !found.Healthy {
@@ -143,7 +83,7 @@ func TestStatusForDMREnabledVisible(test *testing.T) {
 		test.Error("DMR should surface a host-reachable address")
 	}
 
-	// Unreachable → listed but stopped/unhealthy.
+	// Unreachable → still listed but stopped/unhealthy.
 	fakeDMRHTTP(test, 0)
 	statuses, err = services.statusFor(nil)
 	if err != nil {

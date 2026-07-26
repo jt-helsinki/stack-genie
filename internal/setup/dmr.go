@@ -5,18 +5,16 @@ import (
 	"time"
 
 	"github.com/jt-helsinki/stack-genie/internal/output"
-	"github.com/jt-helsinki/stack-genie/internal/runtime"
 )
 
-// Docker Model Runner (DMR) is an OPTIONAL host-side inference backend (arch §14),
-// a peer to the local Ollama backend. It is opt-in (runtime.yaml
-// DockerModelRunnerEnabled, default false) and only participates when a served
-// model's runtime is docker-model-runner — nothing about the existing service tier
-// changes while it is disabled. Like host-native Ollama, DMR runs on the HOST (not
-// as an aip-* container): the platform process probes it directly on the host
-// loopback, while the LiteLLM/nginx CONTAINERS reach it through the host gateway
-// (host.docker.internal — see hostGatewayRunArgs). The actual install/enable is a
-// hardware bring-up seam (bringUpDMR); the platform never mutates the host.
+// Docker Model Runner (DMR) is a HOST-side inference backend (arch §14), a peer to
+// the host-native Ollama backend. It is ALWAYS available as an OPTION: a served
+// model whose runtime is docker-model-runner routes to it. Like host-native Ollama,
+// DMR runs on the HOST (not as an aip-* container): the platform process probes it
+// directly on the host loopback, while the LiteLLM/nginx CONTAINERS reach it through
+// the host gateway (host.docker.internal — see hostGatewayAddArg). The actual
+// install/enable is a hardware bring-up seam (bringUpDMR); the platform never mutates
+// the host.
 
 // dmrServiceName is the status/services vocabulary for the DMR backend. It matches
 // config.RuntimeDockerModelRunner so the model-runtime store and the service line
@@ -55,23 +53,11 @@ func dmrReachable() bool {
 	return response.StatusCode == http.StatusOK
 }
 
-// reconcileDMREnabled resolves the machine-wide DMR opt-in from the persisted
-// runtime.yaml (Info.DMREnabled), falling back to disabled when runtime.yaml is
-// absent/unreadable. It is the DMR-enable source for the Reconcile/Control/Status
-// paths (which do not receive it from their callers), mirroring reconcileOllamaMode.
-func reconcileDMREnabled() bool {
-	info, err := runtime.Load()
-	if err != nil || info == nil {
-		return false
-	}
-	return info.DMREnabled()
-}
-
-// ensureDMR verifies Docker Model Runner is enabled and serving before the platform
-// routes docker-model-runner/* traffic to it. When it is unreachable it returns an
-// actionable error rather than silently degrading; the actual enable/install is a
-// hardware bring-up seam (bringUpDMR). It is only meaningful when DMR is enabled —
-// callers gate it on reconcileDMREnabled(). Mirrors ensureHostOllama.
+// ensureDMR verifies Docker Model Runner is serving before the platform routes
+// docker-model-runner/* traffic to it. When it is unreachable it returns an
+// actionable error; DMR is always AVAILABLE as an option but may not be running, so
+// callers (Reconcile) treat that error as a non-fatal hint rather than failing setup.
+// The actual enable/install is a hardware bring-up seam (bringUpDMR).
 func ensureDMR() error {
 	if dmrReachable() {
 		return nil
@@ -84,11 +70,10 @@ func ensureDMR() error {
 		return nil
 	}
 	return output.Errorf(output.ExitMissingDep,
-		"Docker Model Runner (DMR) not reachable at 127.0.0.1:12434 — enable it "+
-			"(Docker Desktop: `docker desktop enable model-runner` or Settings ▸ AI ▸ "+
-			"Enable Docker Model Runner; Linux: install the `docker model` CLI plugin and "+
-			"`docker model` runtime), then re-run `ai setup` (or clear "+
-			"DockerModelRunnerEnabled in runtime.yaml)")
+		"Docker Model Runner (DMR) not reachable at 127.0.0.1:12434 — enable it to use "+
+			"docker-model-runner models (Docker Desktop: `docker desktop enable model-runner` "+
+			"or Settings ▸ AI ▸ Enable Docker Model Runner; Linux: install the `docker model` "+
+			"CLI plugin and runtime)")
 }
 
 // bringUpDMR enables (and, if needed, installs) Docker Model Runner on the host.

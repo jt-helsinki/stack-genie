@@ -750,10 +750,12 @@ func TestPreflightReportsMsbWithInstructionsNotInstalling(test *testing.T) {
 }
 
 func TestLiteLLMRunArgs(test *testing.T) {
-	args := litellmRunArgs("/cfg/litellm/config.yaml", "127.0.0.1", containerImage("litellm"), runtime.OllamaModeContainer, false)
+	args := litellmRunArgs("/cfg/litellm/config.yaml", "127.0.0.1", containerImage("litellm"))
 	want := []string{
 		"run", "-d", "--name", "aip-litellm",
 		"--network", "aip-net",
+		// Always present: reach the host-native Ollama (+ DMR) through the host gateway.
+		"--add-host=host.docker.internal:host-gateway",
 		// INTERNAL-ONLY: no host publish — reached by name on aip-net; nginx fronts it.
 		"-v", "/cfg/litellm/config.yaml:/app/config.yaml",
 		"-e", "UI_USERNAME=admin",
@@ -789,7 +791,7 @@ func TestLiteLLMRunArgs(test *testing.T) {
 // (nginx is the sole host entry) — regardless of the role's bindHost.
 func TestLiteLLMRunArgsInternalOnly(test *testing.T) {
 	for _, bindHost := range []string{"127.0.0.1", "0.0.0.0"} {
-		launch := strings.Join(litellmRunArgs("/cfg/config.yaml", bindHost, containerImage("litellm"), runtime.OllamaModeContainer, false), " ")
+		launch := strings.Join(litellmRunArgs("/cfg/config.yaml", bindHost, containerImage("litellm")), " ")
 		if strings.Contains(launch, "-p ") || strings.Contains(launch, "14000") {
 			test.Errorf("litellm must be internal-only (no host publish) for bindHost %s: %s", bindHost, launch)
 		}
@@ -983,7 +985,7 @@ func TestDesiredServicesOrder(test *testing.T) {
 // optional host services, so this is the full set. Every guardrail is enabled
 // (GuardrailKeys) so the Presidio images are included.
 func TestRequiredImagesCoversEveryService(test *testing.T) {
-	images := requiredImages(optionalServiceNames(), litellm.GuardrailKeys(), runtime.OllamaModeContainer) // all optional (none) + all guardrails
+	images := requiredImages(optionalServiceNames(), litellm.GuardrailKeys()) // all optional (none) + all guardrails
 	have := make(map[string]bool, len(images))
 	for _, ref := range images {
 		if !strings.Contains(ref, ":") {
@@ -991,8 +993,10 @@ func TestRequiredImagesCoversEveryService(test *testing.T) {
 		}
 		have[ref] = true
 	}
+	// Ollama is host-native (no aip-ollama container), so its image is deliberately
+	// NOT in this set.
 	for _, service := range []string{
-		"ollama", "presidio-analyzer", "presidio-anonymizer",
+		"presidio-analyzer", "presidio-anonymizer",
 		"litellm", "litellm-db",
 		"headroom", "proxy", "dns",
 	} {
@@ -1010,7 +1014,7 @@ func TestRequiredImagesCoversEveryService(test *testing.T) {
 // NOT selected (the default), the Presidio images are NOT pulled — no point consuming
 // the bandwidth/disk for a guardrail that isn't rendered. The core images still pull.
 func TestRequiredImagesSkipsPresidioWhenGuardrailOff(test *testing.T) {
-	images := requiredImages(optionalServiceNames(), litellm.DefaultGuardrails(), runtime.OllamaModeContainer) // Headroom only
+	images := requiredImages(optionalServiceNames(), litellm.DefaultGuardrails()) // Headroom only
 	presidio := containerImage("presidio-analyzer")
 	for _, ref := range images {
 		if ref == presidio {
@@ -1022,7 +1026,7 @@ func TestRequiredImagesSkipsPresidioWhenGuardrailOff(test *testing.T) {
 		test.Errorf("core litellm image must still be pulled: %v", images)
 	}
 	// And WITH secret-masking enabled, Presidio IS pulled.
-	withMasking := requiredImages(optionalServiceNames(), []string{litellm.GuardrailSecretMasking}, runtime.OllamaModeContainer)
+	withMasking := requiredImages(optionalServiceNames(), []string{litellm.GuardrailSecretMasking})
 	if !slices.Contains(withMasking, presidio) {
 		test.Errorf("Presidio image must be pulled when secret-masking is on: %v", withMasking)
 	}
@@ -1101,7 +1105,7 @@ func TestEnsureProxyRendersGatewayConfig(test *testing.T) {
 	home := test.TempDir()
 	test.Setenv("HOME", home)
 	prober := &recordingProber{}
-	if err := ensureProxy(prober, "docker", "127.0.0.1", "aip.local", runtime.OllamaModeContainer, false); err != nil {
+	if err := ensureProxy(prober, "docker", "127.0.0.1", "aip.local"); err != nil {
 		test.Fatal(err)
 	}
 	confPath := filepath.Join(home, ".ai-platform", "config", "proxy", "nginx.conf")
@@ -1130,9 +1134,10 @@ func TestEnsureProxyRendersGatewayConfig(test *testing.T) {
 	if !strings.Contains(rendered, "location /llm/ {") || !strings.Contains(rendered, "proxy_pass http://aip-litellm:4000/;") {
 		test.Errorf("nginx.conf must front the LiteLLM admin surface on /llm:\n%s", rendered)
 	}
-	// The Ollama HTTP API is fronted on /ollama (prefix stripped → :11434).
-	if !strings.Contains(rendered, "location /ollama/ {") || !strings.Contains(rendered, "proxy_pass http://aip-ollama:11434/;") {
-		test.Errorf("nginx.conf must front the Ollama API on /ollama:\n%s", rendered)
+	// The Ollama HTTP API is fronted on /ollama (prefix stripped → :11434). Ollama is
+	// host-native, so the upstream is the host gateway (host.docker.internal).
+	if !strings.Contains(rendered, "location /ollama/ {") || !strings.Contains(rendered, "proxy_pass http://host.docker.internal:11434/;") {
+		test.Errorf("nginx.conf must front the host-native Ollama API on /ollama:\n%s", rendered)
 	}
 	// /llm and /ollama must be matched BEFORE the catch-all `location /`.
 	llmIdx := strings.Index(rendered, "location /llm/ {")
@@ -1171,7 +1176,7 @@ func TestEnsureProxyRendersGatewayConfig(test *testing.T) {
 // domain, the LiteLLM admin UI vhost redirects / → /ui and bypasses Headroom, and
 // litellm is the ONLY host UI vhost (no chat./odysseus.).
 func TestProxyNginxConfThreadsDomain(test *testing.T) {
-	rendered := proxyNginxConf("dev.example.com", runtime.OllamaModeContainer)
+	rendered := proxyNginxConf("dev.example.com")
 	if !strings.Contains(rendered, "server_name dev.example.com localhost _;") {
 		test.Errorf("default server must use the threaded domain:\n%s", rendered)
 	}
@@ -1738,57 +1743,20 @@ func TestEnsureLiteLLMDBBindMountUnderVolumesDir(test *testing.T) {
 	}
 }
 
-// TestEnsureOllamaModelsUnderVolumesDir asserts the Ollama models bind mount moved
-// to ~/.ai-platform/volumes/models (with the guest path unchanged) and the dir is
-// created.
-func TestEnsureOllamaModelsUnderVolumesDir(test *testing.T) {
-	home := test.TempDir()
-	test.Setenv("HOME", home)
-
-	prober := &capturingProber{}
-	if err := ensureOllama(prober, "docker", "127.0.0.1", runtime.OllamaModeContainer); err != nil {
-		test.Fatalf("ensureOllama: %v", err)
-	}
-
-	volumesDir, err := paths.VolumesDir()
-	if err != nil {
-		test.Fatalf("VolumesDir: %v", err)
-	}
-	wantSrc := filepath.Join(volumesDir, "models")
-	spec, ok := runContainsVolume(prober.runs, wantSrc)
-	if !ok {
-		test.Fatalf("no -v models bind mount with host source %q in runs: %v", wantSrc, prober.runs)
-	}
-	if spec != wantSrc+":"+ollamaModelsGuest {
-		test.Errorf("models mount = %q, want %q", spec, wantSrc+":"+ollamaModelsGuest)
-	}
-	// Must NOT use the old ~/.ai-platform/models (directly under the platform dir).
-	platformDir, err := paths.PlatformDir()
-	if err != nil {
-		test.Fatalf("PlatformDir: %v", err)
-	}
-	oldModels := filepath.Join(platformDir, "models")
-	if _, found := runContainsVolume(prober.runs, oldModels); found {
-		test.Errorf("must not bind the legacy %q models path", oldModels)
-	}
-	if info, err := os.Stat(wantSrc); err != nil || !info.IsDir() {
-		test.Errorf("expected the models dir %q to be created: %v", wantSrc, err)
-	}
-}
-
-// TestOllamaEnvArgsForwardsPrefixed verifies the Ollama container gets every OLLAMA_*
+// TestOllamaEnvPairsForwardsPrefixed verifies the Ollama env (rendered for the
+// compose debug artifact + documented for the host process) carries every OLLAMA_*
 // var from the process env (i.e. from ~/.ai-platform/.ai-platform.env) EXCEPT
 // OLLAMA_MODELS, which stays the platform-managed store path (not user-overridable).
-func TestOllamaEnvArgsForwardsPrefixed(test *testing.T) {
+func TestOllamaEnvPairsForwardsPrefixed(test *testing.T) {
 	test.Setenv("OLLAMA_FLASH_ATTENTION", "1")
 	test.Setenv("OLLAMA_KV_CACHE_TYPE", "q8_0")
 	test.Setenv("OLLAMA_MODELS", "/should/not/win") // platform-managed; must be ignored
 	test.Setenv("NOT_OLLAMA", "nope")
 
-	joined := strings.Join(ollamaEnvArgs(), " ")
-	for _, want := range []string{"-e OLLAMA_FLASH_ATTENTION=1", "-e OLLAMA_KV_CACHE_TYPE=q8_0", "-e OLLAMA_MODELS=" + ollamaModelsGuest} {
+	joined := strings.Join(ollamaEnvPairs(), " ")
+	for _, want := range []string{"OLLAMA_FLASH_ATTENTION=1", "OLLAMA_KV_CACHE_TYPE=q8_0", "OLLAMA_MODELS=" + ollamaModelsGuest} {
 		if !strings.Contains(joined, want) {
-			test.Errorf("ollama env args missing %q: %q", want, joined)
+			test.Errorf("ollama env pairs missing %q: %q", want, joined)
 		}
 	}
 	if strings.Contains(joined, "/should/not/win") {
@@ -1801,18 +1769,18 @@ func TestOllamaEnvArgsForwardsPrefixed(test *testing.T) {
 
 // TestOllamaContextLengthDefault verifies the platform sets a generous default context
 // window (so agent CLIs' prompt + tools don't starve generation), and that a user-forwarded
-// OLLAMA_CONTEXT_LENGTH overrides it without a duplicate flag.
+// OLLAMA_CONTEXT_LENGTH overrides it without a duplicate entry.
 func TestOllamaContextLengthDefault(test *testing.T) {
 	// Default applied when unset.
-	joined := strings.Join(ollamaEnvArgs(), " ")
-	if !strings.Contains(joined, "-e OLLAMA_CONTEXT_LENGTH="+defaultOllamaContextLength) {
-		test.Errorf("ollama env args missing default context length: %q", joined)
+	joined := strings.Join(ollamaEnvPairs(), " ")
+	if !strings.Contains(joined, "OLLAMA_CONTEXT_LENGTH="+defaultOllamaContextLength) {
+		test.Errorf("ollama env pairs missing default context length: %q", joined)
 	}
 
 	// User override wins and is not duplicated.
 	test.Setenv("OLLAMA_CONTEXT_LENGTH", "65536")
-	joined = strings.Join(ollamaEnvArgs(), " ")
-	if !strings.Contains(joined, "-e OLLAMA_CONTEXT_LENGTH=65536") {
+	joined = strings.Join(ollamaEnvPairs(), " ")
+	if !strings.Contains(joined, "OLLAMA_CONTEXT_LENGTH=65536") {
 		test.Errorf("user OLLAMA_CONTEXT_LENGTH must win: %q", joined)
 	}
 	if strings.Contains(joined, "OLLAMA_CONTEXT_LENGTH="+defaultOllamaContextLength) {

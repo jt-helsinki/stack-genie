@@ -319,41 +319,6 @@ func TestDomainRoundTrip(test *testing.T) {
 	}
 }
 
-func TestOllamaModeRoundTrip(test *testing.T) {
-	test.Setenv("HOME", test.TempDir())
-	saved := &Info{SchemaVersion: SchemaVersion, Detected: "docker", OllamaMode: OllamaModeHost}
-	if err := Persist(saved); err != nil {
-		test.Fatal(err)
-	}
-	loaded, err := Load()
-	if err != nil || loaded == nil {
-		test.Fatalf("load: %v", err)
-	}
-	if loaded.OllamaMode != OllamaModeHost {
-		test.Errorf("OllamaMode did not round-trip: %q", loaded.OllamaMode)
-	}
-	if loaded.ResolveOllamaMode() != OllamaModeHost {
-		test.Errorf("ResolveOllamaMode() = %q, want %q", loaded.ResolveOllamaMode(), OllamaModeHost)
-	}
-}
-
-func TestResolveOllamaModeDefaultsToContainer(test *testing.T) {
-	// Absent / unrecognised / whitespace all resolve to the safe container default;
-	// only the explicit "host" opts into the host-native backend.
-	for _, raw := range []string{"", "  ", "bogus", "CONTAINER", "Host"} {
-		if got := ResolveOllamaMode(raw); got != OllamaModeContainer {
-			test.Errorf("ResolveOllamaMode(%q) = %q, want %q", raw, got, OllamaModeContainer)
-		}
-	}
-	if got := ResolveOllamaMode(OllamaModeHost); got != OllamaModeHost {
-		test.Errorf("ResolveOllamaMode(host) = %q, want %q", got, OllamaModeHost)
-	}
-	// A zero Info (a legacy install with no ollama_mode key) is container.
-	if got := (&Info{}).ResolveOllamaMode(); got != OllamaModeContainer {
-		test.Errorf("(*Info).ResolveOllamaMode() unset = %q, want %q", got, OllamaModeContainer)
-	}
-}
-
 func TestResolveDomainFallsBackToDefault(test *testing.T) {
 	if got := ResolveDomain(""); got != DefaultDomain {
 		test.Errorf("ResolveDomain(\"\") = %q, want %q", got, DefaultDomain)

@@ -381,15 +381,13 @@ func stopWorkspaces(prober runtime.Prober, record func(string)) int {
 	return stopped
 }
 
-// stopHostOllama stops the HOST-NATIVE Ollama process the platform started when
-// this host runs in host Ollama mode (runtime.yaml `ollama_mode: host` — see
-// runtime.ResolveOllamaMode). In host mode there is no aip-ollama CONTAINER for
-// removeContainers to stop, but a host `ollama serve` the platform launched may
-// still be running; leaving it would orphan a process. It NEVER uninstalls the
-// user's Ollama BINARY (they installed it — the platform only stops what it
-// started) and NEVER deletes the host model store (~/.ai-platform/volumes/models)
-// — only --purge removes that, via the RemoveAll of ~/.ai-platform. Container mode
-// is a no-op (returns false), so that path is byte-for-byte unchanged.
+// stopHostOllama stops the HOST-NATIVE Ollama process the platform started. Ollama
+// is always host-native (there is no aip-ollama CONTAINER for removeContainers to
+// stop), but a host `ollama serve` the platform launched may still be running;
+// leaving it would orphan a process. It NEVER uninstalls the user's Ollama BINARY
+// (they installed it — the platform only stops what it started) and NEVER deletes
+// the host model store (~/.ai-platform/volumes/models) — only --purge removes that,
+// via the RemoveAll of ~/.ai-platform.
 //
 // Docker Model Runner (DMR) is Docker-Desktop/host-managed: the platform does NOT
 // own its lifecycle, so uninstall deliberately leaves DMR intact — no host
@@ -400,15 +398,11 @@ func stopWorkspaces(prober runtime.Prober, record func(string)) int {
 // plain `pkill`. This is a documented best-effort STUB that attempts a safe
 // `pkill -f "ollama serve"` and never fails the uninstall (any error — no matching
 // process, pkill absent — is ignored); the precise per-OS mechanism is wired at
-// hardware bring-up. Returns whether host mode was detected and the teardown
-// attempted (the surfaced outcome recorded in the Report).
+// hardware bring-up. Always returns true (the teardown is always attempted), the
+// surfaced outcome recorded in the Report.
 func stopHostOllama(prober runtime.Prober, record func(string)) bool {
-	info, err := runtime.Load()
-	if err != nil || info == nil || info.ResolveOllamaMode() != runtime.OllamaModeHost {
-		return false // container mode (or no runtime.yaml): nothing host-native to stop
-	}
 	_, _ = prober.Run("pkill", "-f", "ollama serve")
-	record("Stopped the host-native Ollama process (ollama_mode: host); kept the Ollama binary and the host model store (DMR, if any, is host-managed and left intact)")
+	record("Stopped the host-native Ollama process; kept the Ollama binary and the host model store (DMR, if any, is host-managed and left intact)")
 	return true
 }
 

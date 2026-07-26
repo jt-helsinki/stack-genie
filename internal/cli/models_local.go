@@ -35,9 +35,9 @@ const customModelOption = "\x00custom"
 // silent fallback: an explicit DMR request against an unavailable runtime is an
 // error, not a downgrade to Ollama.
 //
-// Phase 3 (`ai setup`) owns first-class DMR detection (a runtime.yaml flag). Until
-// that lands, and to stay resilient if it is not merged yet, this probes the DMR
-// endpoint directly rather than referencing a runtime field that may not exist.
+// DMR is ALWAYS available as an option (there is no enable flag), so selecting it
+// is gated only by this live reachability probe — never a config flag: an explicit
+// DMR request against an unreachable engine is an error (exit 3), not a downgrade.
 //
 // hardware bring-up: the LIVE probe only succeeds against a running DMR engine —
 // verify on a provisioned host.

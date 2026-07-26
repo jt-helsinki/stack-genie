@@ -20,7 +20,6 @@ import (
 	"github.com/jt-helsinki/stack-genie/internal/console"
 	"github.com/jt-helsinki/stack-genie/internal/envfile"
 	"github.com/jt-helsinki/stack-genie/internal/litellm"
-	"github.com/jt-helsinki/stack-genie/internal/ollama"
 	"github.com/jt-helsinki/stack-genie/internal/output"
 	"github.com/jt-helsinki/stack-genie/internal/paths"
 	"github.com/jt-helsinki/stack-genie/internal/runtime"
@@ -152,9 +151,8 @@ func presidioSelected(guardrails []string) bool {
 // lists the services but NOT litellm-db (no health line / Status entry), so it is added
 // explicitly. A few services expand to several images (serviceImageKeys). Pure and
 // testable; duplicate refs are de-duplicated so a shared image is only pulled once.
-// In host Ollama mode the aip-ollama image is NOT pulled (no container is run).
-func requiredImages(optional []string, guardrails []string, ollamaMode string) []string {
-	hostOllama := runtime.ResolveOllamaMode(ollamaMode) == runtime.OllamaModeHost
+// Ollama is host-native (no aip-ollama container), so its image is never pulled.
+func requiredImages(optional []string, guardrails []string) []string {
 	serviceKeys := []string{"litellm-db"}
 	for _, service := range desiredServices() {
 		if isOptionalService(service.Name) && !slices.Contains(optional, service.Name) {
@@ -163,7 +161,7 @@ func requiredImages(optional []string, guardrails []string, ollamaMode string) [
 		if service.Name == "presidio" && !presidioSelected(guardrails) {
 			continue // secret-masking guardrail off: don't pull the Presidio images
 		}
-		if service.Name == "ollama" && hostOllama {
+		if service.Name == "ollama" {
 			continue // host-native Ollama: no container image to pull
 		}
 		serviceKeys = append(serviceKeys, serviceImageKeys(service.Name)...)
@@ -332,7 +330,7 @@ const (
 //
 // domain is the resolved platform base domain (runtime Info.ResolveDomain(),
 // default aip.local) the UI subdomains hang off.
-func proxyNginxConf(domain, ollamaMode string) string {
+func proxyNginxConf(domain string) string {
 	var builder strings.Builder
 	builder.WriteString("events {}\n")
 	builder.WriteString("http {\n")
@@ -353,12 +351,11 @@ func proxyNginxConf(domain, ollamaMode string) string {
 	builder.WriteString("    server_name " + domain + " localhost _;\n")
 	// LiteLLM admin/management surface (prefix stripped by the trailing slash).
 	builder.WriteString(proxyLocation("/llm/", "http://"+litellmContainer+":4000/"))
-	// Ollama HTTP API (prefix stripped). In container mode this targets the
-	// aip-ollama container by name on aip-net; in host mode it targets a host-native
-	// Ollama through the host gateway (host.docker.internal — the LiteLLM/nginx run
-	// args add `--add-host=host.docker.internal:host-gateway` so Linux can reach it,
-	// harmless on Docker Desktop which provides the name natively).
-	builder.WriteString(proxyLocation("/ollama/", ollamaProxyTarget(ollamaMode)))
+	// Ollama HTTP API (prefix stripped). Ollama is host-native, so this targets it
+	// through the host gateway (host.docker.internal — the LiteLLM/nginx run args add
+	// `--add-host=host.docker.internal:host-gateway` so Linux can reach it, harmless
+	// on Docker Desktop which provides the name natively).
+	builder.WriteString(proxyLocation("/ollama/", "http://"+hostGatewayName+":11434/"))
 	// The agent CHAT path → LiteLLM directly (PRESERVED). LiteLLM runs the headroom
 	// compression guardrail in-process. No trailing slash: /v1/... is forwarded
 	// verbatim.
@@ -386,38 +383,14 @@ func proxyNginxConf(domain, ollamaMode string) string {
 // reach the HOST machine. Docker Desktop (macOS/Windows) provides it natively; on
 // Linux the container must be run with `--add-host=host.docker.internal:host-gateway`
 // (hostGatewayAddArg), which resolves it to the docker0 bridge gateway. It is how the
-// service tier reaches a host-native Ollama in host mode.
+// service tier reaches the host-native Ollama and Docker Model Runner backends.
 const hostGatewayName = "host.docker.internal"
 
 // hostGatewayAddArg is the `--add-host` flag that maps hostGatewayName to the host
-// gateway inside a container on Linux. It is added to the LiteLLM + nginx run args in
-// host mode so both can reach the host-native Ollama; it is harmless on Docker
-// Desktop (which already provides the name).
+// gateway inside a container on Linux. It is ALWAYS added to the LiteLLM + nginx run
+// args so both can reach the host-native Ollama (and Docker Model Runner); it is
+// harmless on Docker Desktop (which already provides the name).
 const hostGatewayAddArg = "--add-host=" + hostGatewayName + ":host-gateway"
-
-// ollamaProxyTarget is the nginx `/ollama/` upstream for the given Ollama mode:
-// the aip-ollama container by name (container mode) or a host-native Ollama through
-// the host gateway (host mode). The trailing slash strips the `/ollama` prefix.
-func ollamaProxyTarget(mode string) string {
-	if runtime.ResolveOllamaMode(mode) == runtime.OllamaModeHost {
-		return "http://" + hostGatewayName + ":11434/"
-	}
-	return "http://" + ollamaContainer + ":11434/"
-}
-
-// hostGatewayRunArgs returns the extra `<runtime> run` args a container needs to
-// reach a HOST-side inference backend: `--add-host=host.docker.internal:host-gateway`
-// when host-native Ollama mode is active OR Docker Model Runner (DMR) is enabled,
-// nothing otherwise. The two triggers are OR'd and the mapping is emitted at most
-// ONCE (a single --add-host), so a container-mode Ollama with DMR enabled — or both
-// at once — still gets exactly one host-gateway arg (never double-added). Shared by
-// litellmRunArgs and ensureProxy.
-func hostGatewayRunArgs(mode string, dmrEnabled bool) []string {
-	if runtime.ResolveOllamaMode(mode) == runtime.OllamaModeHost || dmrEnabled {
-		return []string{hostGatewayAddArg}
-	}
-	return nil
-}
 
 // proxyLocation renders one `location <prefix> { proxy_pass <target>; ... }` block
 // tuned for LLM/SSE streaming (HTTP/1.1, buffering off, long timeouts).
@@ -495,18 +468,17 @@ func proxyUIVhost(serverName, target, rootRedirect string) string {
 // sole host entry). The parameter is retained so the relaunch/reconcile callers
 // keep a stable signature; the role-driven bindHost governs the nginx publish
 // (ensureProxy), not LiteLLM.
-// ollamaMode + dmrEnabled gate the host-gateway wiring: when host-native Ollama mode
-// is active OR Docker Model Runner is enabled, the container gets
-// `--add-host=host.docker.internal:host-gateway` so it can reach the host-side
-// backend (harmless on Docker Desktop); otherwise nothing is added.
-func litellmRunArgs(configPath, bindHost, image, ollamaMode string, dmrEnabled bool) []string {
+// The container ALWAYS gets `--add-host=host.docker.internal:host-gateway` so it can
+// reach the host-side inference backends (host-native Ollama + Docker Model Runner);
+// it is harmless on Docker Desktop, which provides the name natively.
+func litellmRunArgs(configPath, bindHost, image string) []string {
 	_ = bindHost // internal-only: LiteLLM no longer publishes to the host
 	args := []string{
 		"run", "-d", "--name", litellmContainer,
 		"--network", platformNetwork,
+		// Host-side backends (host-native Ollama + DMR): reach them via the host gateway.
+		hostGatewayAddArg,
 	}
-	// Host-side backend (host-native Ollama and/or DMR): reach it through the host gateway.
-	args = append(args, hostGatewayRunArgs(ollamaMode, dmrEnabled)...)
 	return append(args,
 		// INTERNAL-ONLY: no host publish. LiteLLM is reached by name on aip-net
 		// (aip-litellm:4000) — by the nginx gateway's model path (/ + /v1) and its
@@ -685,35 +657,29 @@ func containerPublishesHostPort(prober runtime.Prober, containerRuntime, name st
 // Migration caveat: models previously under ~/.ai-platform/models do NOT
 // auto-migrate to volumes/models — the next `ai setup` starts fresh and re-pulls;
 // acceptable for this dev platform.
-func ensureOllama(prober runtime.Prober, containerRuntime, bindHost, mode string) error {
-	_ = bindHost // internal-only: Ollama no longer publishes to the host
-	// Host-native mode: the platform does NOT run the aip-ollama container — a
-	// host-native Ollama process serves the model backend and LiteLLM/nginx reach it
-	// through the host gateway (host.docker.internal). We only VERIFY it is up here;
-	// the actual per-OS install/start is a hardware bring-up seam (ensureHostOllama).
-	if runtime.ResolveOllamaMode(mode) == runtime.OllamaModeHost {
-		return ensureHostOllama()
-	}
-	if containerOnCurrentImage(prober, containerRuntime, ollamaContainer, containerImage("ollama")) {
+// Ollama is HOST-NATIVE: the platform does NOT run an aip-ollama container — a
+// host-native Ollama process serves the model backend, and LiteLLM/nginx reach it
+// through the host gateway (host.docker.internal). ensureOllama only VERIFIES it is
+// up; the actual per-OS install/start is a hardware bring-up seam (bringUpHostOllama).
+// When it is unreachable it returns an actionable error rather than silently
+// degrading.
+func ensureOllama() error {
+	if hostOllamaReachable() {
 		return nil
 	}
-	modelsDir, err := systemVolumeDir(ollamaModelsVolume, 0o755)
-	if err != nil {
-		return err
+	// hardware bring-up: on a provisioned host, attempt to bring the host-native
+	// Ollama up automatically (install if missing, then start) before failing.
+	// bringUpHostOllama is the unwired seam today — it returns a not-yet-wired error,
+	// so this falls through to the actionable manual-install error below.
+	if err := bringUpHostOllama(); err == nil && hostOllamaReachable() {
+		return nil
 	}
-	_, _ = prober.Run(containerRuntime, "rm", "-f", ollamaContainer)
-	args := []string{
-		"run", "-d", "--name", ollamaContainer,
-		"--network", platformNetwork,
-		"-v", modelsDir + ":" + ollamaModelsGuest,
-	}
-	args = append(args, ollamaEnvArgs()...)
-	args = append(args, containerImage("ollama"))
-	if _, err := prober.Run(containerRuntime, args...); err != nil {
-		return output.Errorf(output.ExitRuntimeFailure,
-			"could not start Ollama — stop any local Ollama using port 11434, then re-run `ai setup`")
-	}
-	return nil
+	return output.Errorf(output.ExitMissingDep,
+		"host-native Ollama not reachable at 127.0.0.1:11434 — install and start it "+
+			"(macOS: Ollama.app or `brew install ollama` then `ollama serve`; "+
+			"Linux: `curl -fsSL https://ollama.com/install.sh | sh` then `systemctl enable --now ollama`), "+
+			"set OLLAMA_MODELS=%s, then re-run `ai setup`",
+		hostOllamaModelsDir())
 }
 
 // hostOllamaVersionURL is the host-native Ollama liveness endpoint the platform
@@ -748,10 +714,9 @@ var hostOllamaHTTPGet = func(url string) (*http.Response, error) {
 	return client.Get(url)
 }
 
-// hostOllamaReachable reports whether a host-native Ollama answers GET /api/version
-// with 200 on the host loopback. It is the host-mode analogue of
-// ollama.RealProbe().Reachable() (which routes through the nginx gateway) and backs
-// both ensureHostOllama's precondition and serviceHealthy("ollama") in host mode.
+// hostOllamaReachable reports whether the host-native Ollama answers GET /api/version
+// with 200 on the host loopback. It backs both ensureOllama's precondition and
+// serviceHealthy("ollama").
 func hostOllamaReachable() bool {
 	response, err := hostOllamaHTTPGet(hostOllamaVersionURL)
 	if err != nil {
@@ -761,32 +726,9 @@ func hostOllamaReachable() bool {
 	return response.StatusCode == http.StatusOK
 }
 
-// ensureHostOllama verifies a host-native Ollama is installed and serving before the
-// platform routes model traffic to it. When it is unreachable it returns an
-// actionable error rather than silently degrading; the actual install/start is a
-// hardware bring-up seam (installHostOllama / startHostOllama).
-func ensureHostOllama() error {
-	if hostOllamaReachable() {
-		return nil
-	}
-	// hardware bring-up: on a provisioned host, attempt to bring the host-native
-	// Ollama up automatically (install if missing, then start) before failing.
-	// bringUpHostOllama is the unwired seam today — it returns a not-yet-wired error,
-	// so this falls through to the actionable manual-install error below.
-	if err := bringUpHostOllama(); err == nil && hostOllamaReachable() {
-		return nil
-	}
-	return output.Errorf(output.ExitMissingDep,
-		"host-native Ollama not reachable at 127.0.0.1:11434 — install and start it "+
-			"(macOS: Ollama.app or `brew install ollama` then `ollama serve`; "+
-			"Linux: `curl -fsSL https://ollama.com/install.sh | sh` then `systemctl enable --now ollama`), "+
-			"set OLLAMA_MODELS=%s, then re-run `ai setup` (or switch back with OllamaMode=container in runtime.yaml)",
-		hostOllamaModelsDir())
-}
-
 // bringUpHostOllama installs (if missing) and starts a host-native Ollama.
 //
-// hardware bring-up: this is the seam ensureHostOllama calls when the host Ollama is
+// hardware bring-up: this is the seam ensureOllama calls when the host Ollama is
 // unreachable. It is NOT wired — installHostOllama/startHostOllama return a
 // not-yet-wired error, so this returns that error and the caller surfaces the
 // actionable manual-install guidance. When wired on a provisioned host, this becomes
@@ -828,24 +770,8 @@ func startHostOllama() error {
 		"host-native Ollama start is not yet wired (hardware bring-up) — start it manually")
 }
 
-// ollamaEnvArgs builds the `-e OLLAMA_*` flags for the Ollama container. OLLAMA_MODELS is
-// ALWAYS the platform's in-container store path (it backs the host bind mount) and is
-// never taken from the environment. Every OTHER OLLAMA_-prefixed variable present in this
-// process's environment — notably the ones loaded from ~/.ai-platform/.ai-platform.env at
-// startup — is forwarded verbatim, so a user can tune the Ollama server
-// (OLLAMA_KV_CACHE_TYPE, OLLAMA_FLASH_ATTENTION, OLLAMA_NUM_PARALLEL, …) without a code
-// change; the tuned values apply on the next `ai services restart ollama` / `ai setup`
-// (which recreates the container). Sorted for a deterministic, testable argv.
-func ollamaEnvArgs() []string {
-	args := make([]string, 0, len(ollamaEnvPairs())*2)
-	for _, pair := range ollamaEnvPairs() {
-		args = append(args, "-e", pair)
-	}
-	return args
-}
-
-// ollamaEnvPairs returns the Ollama container's env as KEY=VALUE pairs (the single
-// source of truth for both ollamaEnvArgs' `-e` flags and the docker-compose renderer).
+// ollamaEnvPairs returns the Ollama env as KEY=VALUE pairs — the tuning environment
+// the docker-compose debug artifact renders for a stand-in Ollama container.
 // OLLAMA_MODELS is platform-managed; every other OLLAMA_* comes from the process env.
 func ollamaEnvPairs() []string {
 	return ollamaEnvPairsWithModels(ollamaModelsGuest)
@@ -1067,7 +993,7 @@ func ensureDNS(prober runtime.Prober, containerRuntime string) error {
 // hardware bring-up: the live end-to-end routing through these nginx routes
 // (/llm, /ollama, and the litellm.<domain> UI vhost) is verified on a
 // provisioned host.
-func ensureProxy(prober runtime.Prober, containerRuntime, bindHost, domain, ollamaMode string, dmrEnabled bool) error {
+func ensureProxy(prober runtime.Prober, containerRuntime, bindHost, domain string) error {
 	configDir, err := paths.ConfigDir()
 	if err != nil {
 		return err
@@ -1077,18 +1003,17 @@ func ensureProxy(prober runtime.Prober, containerRuntime, bindHost, domain, olla
 		return output.Errorf(output.ExitRuntimeFailure, "create proxy config dir %s: %s", proxyDir, err)
 	}
 	confPath := filepath.Join(proxyDir, "nginx.conf")
-	if err := os.WriteFile(confPath, []byte(proxyNginxConf(domain, ollamaMode)), 0o644); err != nil {
+	if err := os.WriteFile(confPath, []byte(proxyNginxConf(domain)), 0o644); err != nil {
 		return output.Errorf(output.ExitRuntimeFailure, "write nginx.conf %s: %s", confPath, err)
 	}
 	_, _ = prober.Run(containerRuntime, "rm", "-f", proxyContainer) // recreate to apply config
 	args := []string{
 		"run", "-d", "--name", proxyContainer,
 		"--network", platformNetwork,
+		// nginx proxies /ollama to the host-native Ollama (and DMR is host-side too),
+		// so it always needs the host.docker.internal mapping on Linux.
+		hostGatewayAddArg,
 	}
-	// Host-side backend: nginx proxies /ollama to a host-native Ollama through the
-	// host gateway (host mode), and DMR (when enabled) is likewise host-side, so nginx
-	// needs the host.docker.internal mapping on Linux in either case.
-	args = append(args, hostGatewayRunArgs(ollamaMode, dmrEnabled)...)
 	args = append(args,
 		// nginx is the only publisher and publishes ONLY the gateway port: the LiteLLM
 		// admin UI is a Host-based vhost (subdomain) on this SAME port, not a separate
@@ -1434,43 +1359,6 @@ func reconcileDomain() string {
 	return info.ResolveDomain()
 }
 
-// reconcileOllamaMode resolves the machine-wide Ollama runtime mode (container |
-// host) from the persisted runtime.yaml (Info.ResolveOllamaMode), falling back to
-// the container default when runtime.yaml is absent/unreadable. It is the mode
-// source for the Reconcile/Control/Status paths (which do not receive a mode from
-// their callers), mirroring reconcileDomain.
-func reconcileOllamaMode() string {
-	info, err := runtime.Load()
-	if err != nil || info == nil {
-		return runtime.OllamaModeContainer
-	}
-	return info.ResolveOllamaMode()
-}
-
-// applyOllamaMode points the litellm client's baked Ollama api_base at the backend
-// for mode (SetOllamaAPIBase), so any ollama/* model registration in this process
-// targets the right address: the aip-ollama container name in container mode, or the
-// host gateway (host.docker.internal) in host mode. Called early in the setup path
-// (Reconcile / RelaunchLiteLLMWithAuth) because litellm must not import runtime.
-func applyOllamaMode(mode string) {
-	if runtime.ResolveOllamaMode(mode) == runtime.OllamaModeHost {
-		litellm.SetOllamaAPIBase(litellm.OllamaHostAPIBase)
-		return
-	}
-	litellm.SetOllamaAPIBase(litellm.OllamaContainerAPIBase)
-}
-
-// serviceDisplayMode returns the Mode shown in `ai services status` for a service:
-// its spec Mode ("container") normally, or "host" for Ollama when it runs
-// host-native (there is no aip-ollama container in that mode, so it is a host-native
-// service, not a container one).
-func serviceDisplayMode(service serviceSpec, ollamaMode string) string {
-	if service.Name == "ollama" && runtime.ResolveOllamaMode(ollamaMode) == runtime.OllamaModeHost {
-		return runtime.OllamaModeHost
-	}
-	return service.Mode
-}
-
 // reconcileGuardrails resolves the enabled LiteLLM guardrail set the litellm render +
 // the Presidio-container gate should use, from the persisted runtime.yaml
 // (Info.Guardrails), falling back to litellm.DefaultGuardrails (Headroom only) when the
@@ -1503,16 +1391,11 @@ func RelaunchLiteLLMWithAuth(password, masterKey string) error {
 	if err := litellm.Render(litellm.DefaultRouting(), "", reconcileGuardrails()); err != nil {
 		return err
 	}
-	// Point the baked Ollama api_base + LiteLLM host-gateway wiring at the active mode.
-	ollamaMode := reconcileOllamaMode()
-	applyOllamaMode(ollamaMode)
-	// DMR (when enabled) is host-side too, so the container needs the host gateway.
-	dmrEnabled := reconcileDMREnabled()
 	// Best-effort removal of the running (likely unsecured) container.
 	_ = exec.Command(containerRuntime.Name, "rm", "-f", litellmContainer).Run() // #nosec G204 — fixed args
 
 	// #nosec G204 — fixed argv; secrets ride in the environment, not the command line.
-	command := exec.Command(containerRuntime.Name, litellmRunArgs(configPath, currentBindHost(), containerImage("litellm"), ollamaMode, dmrEnabled)...)
+	command := exec.Command(containerRuntime.Name, litellmRunArgs(configPath, currentBindHost(), containerImage("litellm"))...)
 	command.Env = append(os.Environ(),
 		"UI_PASSWORD="+password,
 		"LITELLM_MASTER_KEY="+masterKey,
@@ -1531,7 +1414,7 @@ func RelaunchLiteLLMWithAuth(password, masterKey string) error {
 	// bringing nginx up LAST; the password relaunch is the one path that recreates
 	// an upstream AFTER nginx, so it must re-reconcile the proxy here to re-resolve
 	// the upstream. Best-effort — a proxy hiccup must not fail the secure step.
-	_ = ensureProxy(runtime.RealProber(), containerRuntime.Name, currentBindHost(), reconcileDomain(), ollamaMode, dmrEnabled)
+	_ = ensureProxy(runtime.RealProber(), containerRuntime.Name, currentBindHost(), reconcileDomain())
 	// Poll for the gateway to come back healthy THROUGH the freshly-recreated proxy
 	// so callers (e.g. the initial model sync) don't hit it before LiteLLM is
 	// serving — mirrors ensureLiteLLM's post-launch readiness wait.
@@ -1587,7 +1470,7 @@ func (services realServices) pullImages(optional []string, guardrails []string, 
 		return err
 	}
 	var firstErr error
-	for _, ref := range requiredImages(optional, guardrails, reconcileOllamaMode()) {
+	for _, ref := range requiredImages(optional, guardrails) {
 		if !force {
 			// Present locally? Skip — `image inspect` returning an error means absent.
 			if _, err := services.prober.Run(containerRuntime.Name, "image", "inspect", ref); err == nil {
@@ -1656,37 +1539,27 @@ func (services realServices) Reconcile(providerConfig, bindHost string, optional
 		return nil, err
 	}
 	presidioOn := presidioSelected(reconcileGuardrails())
-	// Resolve the Ollama runtime mode once and point the litellm client's baked
-	// api_base at the matching backend before any model registration in this process.
-	ollamaMode := reconcileOllamaMode()
-	applyOllamaMode(ollamaMode)
-	// Docker Model Runner is an opt-in host-side backend (default off). When enabled it
-	// (like host-native Ollama) needs the host-gateway wiring on the LiteLLM/nginx
-	// containers; it participates only when a served model's runtime is DMR.
-	dmrEnabled := reconcileDMREnabled()
 	ensurePlatformNetwork(services.prober, containerRuntime.Name)
 	// aip-dns first: microVMs need the resolver up before they boot (arch §29).
 	progress("  • DNS resolver (aip-dns)…")
 	if err := ensureDNS(services.prober, containerRuntime.Name); err != nil {
 		return nil, err
 	}
-	if ollamaMode == runtime.OllamaModeHost {
-		progress("  • Ollama (host-native — verifying it is reachable)…")
-	} else {
-		progress("  • Ollama (aip-ollama, local models)…")
-	}
-	if err := ensureOllama(services.prober, containerRuntime.Name, bindHost, ollamaMode); err != nil {
+	// Ollama is host-native: verify a host-native Ollama is reachable (no aip-ollama
+	// container is run). An unreachable host Ollama is a hard setup error (the local
+	// model backend is required) with an actionable install/start hint.
+	progress("  • Ollama (host-native — verifying it is reachable)…")
+	if err := ensureOllama(); err != nil {
 		return nil, err
 	}
-	// Docker Model Runner is host-side; when opted in, verify it is reachable so the
-	// user gets an actionable error at setup rather than a runtime failure when a
-	// docker-model-runner/* model is first hit. The enable/install itself is a hardware
-	// bring-up seam (ensureDMR → bringUpDMR); no host mutation happens here.
-	if dmrEnabled {
-		progress("  • Docker Model Runner (host-native — verifying it is reachable)…")
-		if err := ensureDMR(); err != nil {
-			return nil, err
-		}
+	// Docker Model Runner is a HOST-side backend that is always available as an OPTION
+	// but may not be running. Probe it best-effort so a docker-model-runner/* model
+	// gets an actionable hint, but NEVER fail setup on it (it is optional — Status
+	// reports it "stopped" when unreachable). The enable/install is a hardware bring-up
+	// seam (ensureDMR → bringUpDMR); no host mutation happens here.
+	progress("  • Docker Model Runner (host-native — verifying it is reachable)…")
+	if err := ensureDMR(); err != nil {
+		progress("    " + err.Error())
 	}
 	if presidioOn {
 		progress("  • Presidio (secret-masking guardrail backend)…")
@@ -1726,7 +1599,7 @@ func (services realServices) Reconcile(providerConfig, bindHost string, optional
 	// UI as a Host-based vhost on the same port. The UI vhost hangs off the resolved
 	// platform base domain (runtime.yaml domain, default aip.local).
 	progress("  • nginx reverse proxy (sole host entry → service tier)…")
-	if err := ensureProxy(services.prober, containerRuntime.Name, bindHost, domain, ollamaMode, dmrEnabled); err != nil {
+	if err := ensureProxy(services.prober, containerRuntime.Name, bindHost, domain); err != nil {
 		return nil, err
 	}
 	// Snapshot each running container's recent output so `ai logs` reflects this
@@ -1795,7 +1668,7 @@ func (services realServices) ensureLiteLLM(configPath, bindHost, providerConfig 
 	// user opt-in (offerPersistLiteLLMSecrets). Best-effort: never fails the launch.
 	persistLiteLLMInfraKeys()
 	_, _ = services.prober.Run(containerRuntime.Name, "rm", "-f", litellmContainer) // best-effort cleanup
-	if _, err := services.prober.Run(containerRuntime.Name, litellmRunArgs(configPath, bindHost, containerImage("litellm"), reconcileOllamaMode(), reconcileDMREnabled())...); err != nil {
+	if _, err := services.prober.Run(containerRuntime.Name, litellmRunArgs(configPath, bindHost, containerImage("litellm"))...); err != nil {
 		return serviceStartError("LiteLLM gateway")
 	}
 	for attempt := 0; attempt < 15; attempt++ {
@@ -1834,15 +1707,17 @@ func (services realServices) statusFor(enabled []string) ([]ServiceStatus, error
 	// guardrail is enabled; when it is off, report it "disabled" (listed, not probed)
 	// rather than "stopped"/unhealthy — it is intentionally not running.
 	presidioOff := !presidioSelected(reconcileGuardrails())
-	// In host Ollama mode there is no aip-ollama container, so render Ollama as a
-	// host-native service (Mode "host") — its state comes from the HTTP health probe
-	// (serviceHealthy), not `docker inspect`.
-	ollamaMode := reconcileOllamaMode()
 	statuses := make([]ServiceStatus, 0, len(specs))
 	for _, service := range specs {
 		endpoint, _ := console.EndpointForHost(service.Name, displayDomain)
 		optional := isOptionalService(service.Name)
-		mode := serviceDisplayMode(service, ollamaMode)
+		// Ollama is host-native (no aip-ollama container), so render it as a host
+		// service (Mode "host") — its state comes from the HTTP health probe
+		// (serviceHealthy), not `docker inspect`.
+		mode := service.Mode
+		if service.Name == "ollama" {
+			mode = "host"
+		}
 		if (optional && !slices.Contains(enabled, service.Name)) || (service.Name == "presidio" && presidioOff) {
 			// Not enabled (an opt-in tool, or Presidio with secret-masking off):
 			// surfaced so it is discoverable, but not probed.
@@ -1886,22 +1761,19 @@ func (services realServices) statusFor(enabled []string) ([]ServiceStatus, error
 			})
 		}
 	}
-	// Docker Model Runner is an opt-in HOST-side backend (no aip-* container). It is
-	// listed ONLY when enabled (mirroring how Presidio is hidden when its guardrail is
-	// off); its state comes from the host-loopback HTTP probe (dmrReachable), not
-	// `docker inspect`, so Mode is "host". When disabled it is omitted entirely — it is
-	// irrelevant unless a served model routes to it.
-	if reconcileDMREnabled() {
-		dmrState := "stopped"
-		dmrHealthy := dmrReachable()
-		if dmrHealthy {
-			dmrState = "running"
-		}
-		statuses = append(statuses, ServiceStatus{
-			Name: dmrServiceName, Mode: runtime.OllamaModeHost, State: dmrState,
-			Healthy: dmrHealthy, Address: dmrDisplayAddress,
-		})
+	// Docker Model Runner is a HOST-side backend (no aip-* container) that is ALWAYS
+	// available as an option; its state comes from the host-loopback HTTP probe
+	// (dmrReachable), not `docker inspect`, so Mode is "host" — running when reachable,
+	// else stopped.
+	dmrState := "stopped"
+	dmrHealthy := dmrReachable()
+	if dmrHealthy {
+		dmrState = "running"
 	}
+	statuses = append(statuses, ServiceStatus{
+		Name: dmrServiceName, Mode: "host", State: dmrState,
+		Healthy: dmrHealthy, Address: dmrDisplayAddress,
+	})
 	return statuses, nil
 }
 
@@ -1947,13 +1819,9 @@ func (services realServices) serviceHealthy(name string) bool {
 		info, err := litellm.RealClient().Status()
 		return err == nil && info.Healthy
 	case "ollama":
-		// Host mode: probe the host-native Ollama directly on the host loopback (the
-		// platform runs on the host). Container mode: probe through the nginx gateway
-		// (the container is internal-only and reached via /ollama).
-		if reconcileOllamaMode() == runtime.OllamaModeHost {
-			return hostOllamaReachable()
-		}
-		return ollama.RealProbe().Reachable() == nil
+		// Ollama is host-native: probe it directly on the host loopback (the platform
+		// process runs on the host).
+		return hostOllamaReachable()
 	case "presidio":
 		containerRuntime, err := runtime.ContainerRuntimeName(services.prober)
 		if err != nil {
@@ -2051,13 +1919,6 @@ func (services realServices) Control(action, service string) ([]ServiceStatus, e
 	// Publish on the interface this host's persisted role dictates (server →
 	// 0.0.0.0, else loopback), so `ai services start|restart` matches `ai setup`.
 	bindHost := currentBindHost()
-	// Resolve the Ollama runtime mode once and point the baked api_base at it, so a
-	// `ai services restart ollama|litellm|proxy` matches the reconcile.
-	ollamaMode := reconcileOllamaMode()
-	applyOllamaMode(ollamaMode)
-	// DMR (when enabled) is host-side, so a proxy start/restart must add the
-	// host-gateway wiring just as the reconcile does.
-	dmrEnabled := reconcileDMREnabled()
 
 	stopContainer := func(name string) error {
 		// A disabled/never-started service (e.g. Presidio when secret-masking is off)
@@ -2090,8 +1951,11 @@ func (services realServices) Control(action, service string) ([]ServiceStatus, e
 	}
 	managed := []managedService{
 		{"ollama",
-			func() error { return ensureOllama(services.prober, containerRuntime.Name, bindHost, ollamaMode) },
-			func() error { return stopContainer(ollamaContainer) }},
+			// Host-native: verify reachability (no aip-ollama container to start), and
+			// "stop" is a no-op — the platform never runs the Ollama process (managing
+			// the host service is a hardware bring-up seam).
+			ensureOllama,
+			func() error { return nil }},
 		{"presidio",
 			func() error { return ensurePresidio(services.prober, containerRuntime.Name) },
 			func() error {
@@ -2116,7 +1980,7 @@ func (services realServices) Control(action, service string) ([]ServiceStatus, e
 			func() error { return stopContainer(litellmContainer) }},
 		{"proxy",
 			func() error {
-				return ensureProxy(services.prober, containerRuntime.Name, bindHost, reconcileDomain(), ollamaMode, dmrEnabled)
+				return ensureProxy(services.prober, containerRuntime.Name, bindHost, reconcileDomain())
 			},
 			func() error { return stopContainer(proxyContainer) }},
 		{"dns",

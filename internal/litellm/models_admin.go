@@ -191,8 +191,9 @@ func OllamaRoutedModel(name string) string {
 // id. The public model_name is "ollama/<name>" (OllamaModelName, the agent-facing handle)
 // while the routed litellm_params.model is "ollama_chat/<name>" (OllamaRoutedModel) so
 // LiteLLM uses Ollama's /api/chat (messages + tools + streaming) instead of the legacy
-// /api/generate; api_base is the in-network Ollama the gateway reaches on aip-net
-// (OllamaAPIBase = http://aip-ollama:11434), and no credential is referenced (Ollama needs none).
+// /api/generate; api_base is the host-native Ollama the gateway reaches through the host
+// gateway (OllamaAPIBase = http://host.docker.internal:11434), and no credential is
+// referenced (Ollama needs none).
 //
 // Idempotent-ish: if a model with this model_name already exists (ListModels), the add
 // is skipped so re-pulling does not create a duplicate — UNLESS the recorded tool support
