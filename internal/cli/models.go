@@ -42,11 +42,6 @@ var ollamaLibrary = func() ([]ollama.LibraryModel, ollama.Source, error) { retur
 type modelRegistrar interface {
 	RegisterOllamaModel(name string, supportsTools bool) error
 	UnregisterOllamaModel(name string) error
-	// RegisterDockerModelRunnerModel registers a model served through Docker Model
-	// Runner (public handle "docker-model-runner/<alias>"). UnregisterDockerModelRunnerModel
-	// removes it by alias. These back the `--runtime docker-model-runner` install path.
-	RegisterDockerModelRunnerModel(alias, model string, supportsTools bool) error
-	UnregisterDockerModelRunnerModel(alias string) error
 }
 
 // modelRegistrarFactory builds the registrar. A package var so tests inject a fake;

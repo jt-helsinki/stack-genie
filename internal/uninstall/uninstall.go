@@ -389,10 +389,6 @@ func stopWorkspaces(prober runtime.Prober, record func(string)) int {
 // the host model store (~/.ai-platform/volumes/models) — only --purge removes that,
 // via the RemoveAll of ~/.ai-platform.
 //
-// Docker Model Runner (DMR) is Docker-Desktop/host-managed: the platform does NOT
-// own its lifecycle, so uninstall deliberately leaves DMR intact — no host
-// mutation, no disable/remove.
-//
 // hardware bring-up: the real per-OS stop is platform-specific — macOS
 // `launchctl` unload of a LaunchAgent, Linux `systemctl --user stop ollama`, or a
 // plain `pkill`. This is a documented best-effort STUB that attempts a safe
@@ -402,7 +398,7 @@ func stopWorkspaces(prober runtime.Prober, record func(string)) int {
 // surfaced outcome recorded in the Report.
 func stopHostOllama(prober runtime.Prober, record func(string)) bool {
 	_, _ = prober.Run("pkill", "-f", "ollama serve")
-	record("Stopped the host-native Ollama process; kept the Ollama binary and the host model store (DMR, if any, is host-managed and left intact)")
+	record("Stopped the host-native Ollama process; kept the Ollama binary and the host model store")
 	return true
 }
 

@@ -855,12 +855,12 @@ func TestCreatingSwallowsNavKeys(test *testing.T) {
 // `ai models pull <refs> --runtime <r>` overlay argv with the chosen runtime.
 func TestModelsPullThreadsRuntime(test *testing.T) {
 	application := newTestApp("Local Models")
-	application.Update(views.ModelsPullRequestedMsg{Refs: []string{"qwen2.5:7b"}, Runtime: "docker-model-runner"})
+	application.Update(views.ModelsPullRequestedMsg{Refs: []string{"qwen2.5:7b"}, Runtime: "ollama"})
 	if application.terminal == nil {
 		test.Fatal("a pull request must open the terminal overlay")
 	}
-	if label := application.terminal.Label(); !strings.Contains(label, "--runtime docker-model-runner") {
-		test.Errorf("overlay label = %q, want it to carry --runtime docker-model-runner", label)
+	if label := application.terminal.Label(); !strings.Contains(label, "--runtime ollama") {
+		test.Errorf("overlay label = %q, want it to carry --runtime ollama", label)
 	}
 }
 

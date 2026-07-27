@@ -1,7 +1,7 @@
 package config
 
-// modelruntime.go records the user's chosen SERVING RUNTIME per model (Ollama vs
-// Docker Model Runner) in a small MACHINE-WIDE store at
+// modelruntime.go records the user's chosen SERVING RUNTIME per model (host-native
+// Ollama) in a small MACHINE-WIDE store at
 // ~/.ai-platform/config/model-runtimes.yaml.
 //
 // This is a THIN SELECTION RECORD, NOT a parallel model registry: it remembers
@@ -29,10 +29,8 @@ import (
 type ModelRuntime string
 
 const (
-	// RuntimeOllama serves the model through the platform's Ollama container.
+	// RuntimeOllama serves the model through host-native Ollama.
 	RuntimeOllama ModelRuntime = "ollama"
-	// RuntimeDockerModelRunner serves the model through Docker Model Runner.
-	RuntimeDockerModelRunner ModelRuntime = "docker-model-runner"
 )
 
 // ModelRuntimeSchemaVersion is stamped on config/model-runtimes.yaml.
@@ -41,13 +39,13 @@ const ModelRuntimeSchemaVersion = 1
 // ModelRuntimes returns the selectable serving runtimes, in a stable order
 // suitable for a UI picker.
 func ModelRuntimes() []ModelRuntime {
-	return []ModelRuntime{RuntimeOllama, RuntimeDockerModelRunner}
+	return []ModelRuntime{RuntimeOllama}
 }
 
 // ValidModelRuntime reports whether value is a recognised serving runtime.
 func ValidModelRuntime(value string) bool {
 	switch ModelRuntime(value) {
-	case RuntimeOllama, RuntimeDockerModelRunner:
+	case RuntimeOllama:
 		return true
 	default:
 		return false

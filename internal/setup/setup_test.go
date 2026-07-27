@@ -754,7 +754,7 @@ func TestLiteLLMRunArgs(test *testing.T) {
 	want := []string{
 		"run", "-d", "--name", "aip-litellm",
 		"--network", "aip-net",
-		// Always present: reach the host-native Ollama (+ DMR) through the host gateway.
+		// Always present: reach the host-native Ollama through the host gateway.
 		"--add-host=host.docker.internal:host-gateway",
 		// INTERNAL-ONLY: no host publish — reached by name on aip-net; nginx fronts it.
 		"-v", "/cfg/litellm/config.yaml:/app/config.yaml",

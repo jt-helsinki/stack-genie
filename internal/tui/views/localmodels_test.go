@@ -161,34 +161,6 @@ func TestLocalModelsDrillSelectsAndPulls(test *testing.T) {
 	}
 }
 
-// selecting Docker Model Runner in the picker threads that runtime onto the pull.
-func TestLocalModelsRuntimePickerSelectsDMR(test *testing.T) {
-	view := buildLocal(test,
-		nil,
-		[]ollama.LibraryModel{{Name: "qwen2.5", Tags: libTags("7b"), RepoURL: "x"}},
-		noShow,
-	)
-	_ = view.Update(tea.KeyMsg{Type: tea.KeyEnter})                     // open drill (cursor on 7b)
-	_ = view.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(" ")}) // tick 7b
-	_ = view.Update(tea.KeyMsg{Type: tea.KeyEnter})                     // open runtime picker
-	if view.runtime == nil {
-		test.Fatal("runtime picker should be open")
-	}
-	// move down to Docker Model Runner (the second option), then enter.
-	_ = view.Update(tea.KeyMsg{Type: tea.KeyDown})
-	cmd := view.Update(tea.KeyMsg{Type: tea.KeyEnter})
-	if cmd == nil {
-		test.Fatal("enter on the runtime picker must emit a pull command")
-	}
-	msg, ok := cmd().(ModelsPullRequestedMsg)
-	if !ok {
-		test.Fatalf("expected ModelsPullRequestedMsg, got %T", cmd())
-	}
-	if msg.Runtime != string(config.RuntimeDockerModelRunner) {
-		test.Fatalf("runtime = %q, want %q", msg.Runtime, config.RuntimeDockerModelRunner)
-	}
-}
-
 // esc on the runtime picker restores the tag drill-down with the tick selection intact.
 func TestLocalModelsRuntimePickerEscRestoresDrill(test *testing.T) {
 	view := buildLocal(test,
@@ -627,7 +599,7 @@ func TestLocalModelsDrillShowsRuntimeBadge(test *testing.T) {
 	prev := modelRuntimeLookup
 	modelRuntimeLookup = func(ref string) config.ModelRuntime {
 		if ref == "qwen2.5:7b" {
-			return config.RuntimeDockerModelRunner
+			return config.RuntimeOllama
 		}
 		return ""
 	}
@@ -642,7 +614,7 @@ func TestLocalModelsDrillShowsRuntimeBadge(test *testing.T) {
 	if view.drill == nil {
 		test.Fatal("enter should open the tag drill-down")
 	}
-	if !strings.Contains(view.View(), "dmr") {
-		test.Fatalf("drill-down should badge the installed 7b tag's DMR runtime:\n%s", view.View())
+	if !strings.Contains(view.View(), "ollama") {
+		test.Fatalf("drill-down should badge the installed 7b tag's Ollama runtime:\n%s", view.View())
 	}
 }

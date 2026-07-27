@@ -114,15 +114,13 @@ func TestNonInteractiveServerDomain(test *testing.T) {
 	}
 }
 
-// When both host-native Ollama and Docker Model Runner are healthy there is no
-// local-inference guidance to print.
+// When host-native Ollama is healthy there is no local-inference guidance to print.
 func TestLocalInferenceGuidanceBothHealthy(test *testing.T) {
 	statuses := []setup.ServiceStatus{
 		{Name: "ollama", Mode: "host", Healthy: true},
-		{Name: "docker-model-runner", Mode: "host", Healthy: true},
 	}
 	if lines := localInferenceGuidanceLines("darwin", statuses, "/models"); len(lines) != 0 {
-		test.Fatalf("both healthy: want no guidance, got %v", lines)
+		test.Fatalf("healthy: want no guidance, got %v", lines)
 	}
 }
 
@@ -131,7 +129,6 @@ func TestLocalInferenceGuidanceBothHealthy(test *testing.T) {
 func TestLocalInferenceGuidanceOllamaDown(test *testing.T) {
 	statuses := []setup.ServiceStatus{
 		{Name: "ollama", Mode: "host", Healthy: false, State: "stopped"},
-		{Name: "docker-model-runner", Mode: "host", Healthy: true},
 	}
 	joined := strings.Join(localInferenceGuidanceLines("darwin", statuses, "/vol/models/ollama"), "\n")
 	for _, want := range []string{
@@ -145,33 +142,10 @@ func TestLocalInferenceGuidanceOllamaDown(test *testing.T) {
 			test.Fatalf("Ollama-down guidance missing %q:\n%s", want, joined)
 		}
 	}
-	// DMR is healthy here, so no DMR nudge.
-	if strings.Contains(joined, "Docker Model Runner") {
-		test.Fatalf("DMR healthy: should not nudge DMR:\n%s", joined)
-	}
 	// Linux variant emits the install.sh guidance.
 	linux := strings.Join(localInferenceGuidanceLines("linux", statuses, "/x"), "\n")
 	if !strings.Contains(linux, "install.sh") {
 		test.Fatalf("linux Ollama-down guidance missing install.sh:\n%s", linux)
-	}
-}
-
-// A down DMR (with Ollama up) yields ONLY the optional enable nudge — never the
-// required Ollama block — so DMR being down does not read as a hard setup problem.
-func TestLocalInferenceGuidanceDMRDownOnly(test *testing.T) {
-	statuses := []setup.ServiceStatus{
-		{Name: "ollama", Mode: "host", Healthy: true},
-		{Name: "docker-model-runner", Mode: "host", Healthy: false, State: "stopped"},
-	}
-	joined := strings.Join(localInferenceGuidanceLines("darwin", statuses, "/models"), "\n")
-	if !strings.Contains(joined, "Docker Model Runner (optional) is not enabled") {
-		test.Fatalf("DMR-down guidance missing the enable nudge:\n%s", joined)
-	}
-	if !strings.Contains(joined, "docker desktop enable model-runner") {
-		test.Fatalf("DMR-down guidance missing the enable command:\n%s", joined)
-	}
-	if strings.Contains(joined, "host-native Ollama is not reachable") {
-		test.Fatalf("Ollama healthy: should not print the required Ollama block:\n%s", joined)
 	}
 }
 

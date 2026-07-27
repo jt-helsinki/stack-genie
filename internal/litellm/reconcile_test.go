@@ -209,16 +209,16 @@ func TestSyncModelsPreservesOllamaWhenListEmpty(test *testing.T) {
 	}
 }
 
-// TestSyncModelsPreservesDockerModelRunner verifies the local-model protection extends to
-// Docker Model Runner: a cloud-key resync must NOT delete "docker-model-runner/*" models,
-// which are owned by Register/UnregisterDockerModelRunnerModel — only stale CLOUD models delete.
-func TestSyncModelsPreservesDockerModelRunner(test *testing.T) {
+// TestSyncModelsPreservesOllama verifies the local-model protection: a cloud-key resync
+// must NOT delete "ollama/*" models (owned by Register/UnregisterOllamaModel) — only stale
+// CLOUD models delete.
+func TestSyncModelsPreservesOllama(test *testing.T) {
 	var deleted []string
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		switch request.URL.Path {
 		case "/model/info":
 			_, _ = writer.Write([]byte(`{"data":[
-				{"model_name":"docker-model-runner/ai/smollm2","litellm_params":{"model":"openai/ai/smollm2"},"model_info":{"id":"dmr-keep"}},
+				{"model_name":"ollama/smollm:135m","litellm_params":{"model":"ollama_chat/smollm:135m"},"model_info":{"id":"ollama-keep"}},
 				{"model_name":"openai/old","litellm_params":{"model":"openai/old"},"model_info":{"id":"cloud-stale"}}
 			]}`))
 		case "/model/delete":
@@ -242,11 +242,11 @@ func TestSyncModelsPreservesDockerModelRunner(test *testing.T) {
 		test.Fatalf("SyncModels: %v", err)
 	}
 	if strings.Join(deleted, ",") != "cloud-stale" {
-		test.Errorf("gateway saw deletes %v, want only [cloud-stale] — DMR models must be preserved", deleted)
+		test.Errorf("gateway saw deletes %v, want only [cloud-stale] — ollama models must be preserved", deleted)
 	}
 	for _, name := range result.Deleted {
-		if strings.HasPrefix(name, "docker-model-runner/") {
-			test.Errorf("a resync must not delete DMR model %q", name)
+		if strings.HasPrefix(name, "ollama/") {
+			test.Errorf("a resync must not delete ollama model %q", name)
 		}
 	}
 }

@@ -25,12 +25,6 @@ import (
 	"github.com/spf13/cobra"
 )
 
-// dmrServiceName mirrors setup's docker-model-runner service identifier (kept in
-// sync with config.RuntimeDockerModelRunner) so the CLI can pick its status line
-// out of setup.ServicesStatus without importing an unexported const. Shared by the
-// `ai setup` local-inference guidance and the `ai doctor` service enrichment.
-const dmrServiceName = "docker-model-runner"
-
 func nowRFC3339() string { return time.Now().UTC().Format(time.RFC3339) }
 
 // newSetupCmd builds `ai setup` (CLI §2.1).
@@ -203,11 +197,10 @@ func newSetupCmd(em *output.Emitter, exit *int) *cobra.Command {
 			// DNS/cert operator contract (no /etc/hosts editing). Best-effort — neither
 			// fails setup.
 			syncUISubdomains(em, interactive, report.Runtime)
-			// Local inference backends: host-native Ollama (REQUIRED for local models)
-			// and Docker Model Runner (an always-available OPTIONAL backend). On a
-			// successful reconcile Ollama is already up, so this typically only nudges
-			// the user to enable DMR — but it prints the full Ollama block too if the
-			// backend went down between reconcile and here. Non-client only.
+			// Local inference backend: host-native Ollama (REQUIRED for local models).
+			// On a successful reconcile Ollama is already up, so this typically prints
+			// nothing — but it prints the full Ollama block if the backend went down
+			// between reconcile and here. Non-client only.
 			if report.Runtime != nil && report.Runtime.Role != runtime.RoleClient {
 				printLocalInferenceGuidance(em)
 			}
@@ -927,12 +920,11 @@ var localInferenceStatusFn = func() ([]setup.ServiceStatus, error) {
 }
 
 // printLocalInferenceGuidance prints an actionable block about this host's local
-// inference backends after `ai setup` reconciles: host-native Ollama (REQUIRED for
-// local models) and Docker Model Runner (an always-available OPTIONAL backend). It
-// probes their live state via the localInferenceStatusFn seam and prints per-OS
-// install/start (Ollama) / enable (DMR) guidance only for a backend that is not
-// reachable. It NEVER mutates the host (guidance only) and never fails setup; it is
-// skipped under --json so automation keeps a clean envelope on stdout.
+// inference backend after `ai setup` reconciles: host-native Ollama (REQUIRED for
+// local models). It probes its live state via the localInferenceStatusFn seam and
+// prints per-OS install/start guidance only when Ollama is not reachable. It NEVER
+// mutates the host (guidance only) and never fails setup; it is skipped under --json
+// so automation keeps a clean envelope on stdout.
 func printLocalInferenceGuidance(em *output.Emitter) {
 	if em.JSON {
 		return
@@ -952,20 +944,16 @@ func printLocalInferenceGuidance(em *output.Emitter) {
 	}
 }
 
-// localInferenceGuidanceLines builds the actionable host-native-Ollama + Docker
-// Model Runner guidance shown at the end of `ai setup`. Ollama is REQUIRED for local
-// models; DMR is an always-available OPTIONAL backend. It returns the lines to print
-// (empty when both reachable backends are healthy), given the current service
-// statuses, this host's OS, and the host Ollama model store path. Pure (no I/O) so it
-// is unit-testable.
+// localInferenceGuidanceLines builds the actionable host-native-Ollama guidance shown
+// at the end of `ai setup`. Ollama is REQUIRED for local models. It returns the lines
+// to print (empty when Ollama is healthy), given the current service statuses, this
+// host's OS, and the host Ollama model store path. Pure (no I/O) so it is
+// unit-testable.
 func localInferenceGuidanceLines(goos string, statuses []setup.ServiceStatus, ollamaModelsDir string) []string {
-	var ollamaPresent, ollamaHealthy, dmrPresent, dmrHealthy bool
+	var ollamaPresent, ollamaHealthy bool
 	for _, status := range statuses {
-		switch status.Name {
-		case "ollama":
+		if status.Name == "ollama" {
 			ollamaPresent, ollamaHealthy = true, status.Healthy
-		case dmrServiceName:
-			dmrPresent, dmrHealthy = true, status.Healthy
 		}
 	}
 
@@ -984,14 +972,6 @@ func localInferenceGuidanceLines(goos string, statuses []setup.ServiceStatus, ol
 		}
 		lines = append(lines, "  then re-run "+ui.Primary.Render("`ai setup`")+".")
 	}
-	if dmrPresent && !dmrHealthy {
-		lines = append(lines,
-			ui.Muted.Render(ui.IconArrow+" Docker Model Runner (optional) is not enabled — enable it to route docker-model-runner/* models:"))
-		for _, step := range dmrEnableSteps(goos) {
-			lines = append(lines, "    "+ui.Muted.Render(step))
-		}
-		lines = append(lines, "    "+ui.Muted.Render("(the vLLM engine is Linux + NVIDIA-only; macOS uses the llama.cpp/Metal engine.)"))
-	}
 	return lines
 }
 
@@ -1007,22 +987,6 @@ func hostOllamaInstallSteps(goos string) []string {
 		return []string{
 			"macOS: install Ollama.app or `brew install ollama`, then `ollama serve`",
 			"Linux: `curl -fsSL https://ollama.com/install.sh | sh`, then `systemctl enable --now ollama`",
-		}
-	}
-}
-
-// dmrEnableSteps is the per-OS enable guidance for Docker Model Runner (guidance
-// only). DMR is optional, so this is a nudge, not a requirement.
-func dmrEnableSteps(goos string) []string {
-	switch goos {
-	case "darwin":
-		return []string{"Docker Desktop: `docker desktop enable model-runner` (or Settings ▸ AI ▸ Enable Docker Model Runner)"}
-	case "linux":
-		return []string{"Linux: install the `docker model` CLI plugin + runtime (Docker Engine Model Runner)"}
-	default:
-		return []string{
-			"Docker Desktop: `docker desktop enable model-runner` (or Settings ▸ AI ▸ Enable Docker Model Runner)",
-			"Linux: install the `docker model` CLI plugin + runtime",
 		}
 	}
 }

@@ -472,7 +472,7 @@ func litellmRunArgs(configPath, bindHost, image string) []string {
 	args := []string{
 		"run", "-d", "--name", litellmContainer,
 		"--network", platformNetwork,
-		// Host-side backends (host-native Ollama + DMR): reach them via the host gateway.
+		// Host-side backend (host-native Ollama): reached via the host gateway.
 		hostGatewayAddArg,
 	}
 	return append(args,
@@ -998,7 +998,7 @@ func ensureProxy(prober runtime.Prober, containerRuntime, bindHost, domain strin
 	args := []string{
 		"run", "-d", "--name", proxyContainer,
 		"--network", platformNetwork,
-		// nginx proxies /ollama to the host-native Ollama (and DMR is host-side too),
+		// nginx proxies /ollama to the host-native Ollama,
 		// so it always needs the host.docker.internal mapping on Linux.
 		hostGatewayAddArg,
 	}
@@ -1551,15 +1551,6 @@ func (services realServices) Reconcile(providerConfig, bindHost string, optional
 	if err := ensureOllama(); err != nil {
 		return nil, err
 	}
-	// Docker Model Runner is a HOST-side backend that is always available as an OPTION
-	// but may not be running. Probe it best-effort so a docker-model-runner/* model
-	// gets an actionable hint, but NEVER fail setup on it (it is optional — Status
-	// reports it "stopped" when unreachable). The enable/install is a hardware bring-up
-	// seam (ensureDMR → bringUpDMR); no host mutation happens here.
-	progress("  • Docker Model Runner (host-native — verifying it is reachable)…")
-	if err := ensureDMR(); err != nil {
-		progress("    " + err.Error())
-	}
 	if presidioOn {
 		progress("  • Presidio (secret-masking guardrail backend)…")
 		if err := ensurePresidio(services.prober, containerRuntime.Name); err != nil {
@@ -1760,19 +1751,6 @@ func (services realServices) statusFor(enabled []string) ([]ServiceStatus, error
 			})
 		}
 	}
-	// Docker Model Runner is a HOST-side backend (no aip-* container) that is ALWAYS
-	// available as an option; its state comes from the host-loopback HTTP probe
-	// (dmrReachable), not `docker inspect`, so Mode is "host" — running when reachable,
-	// else stopped.
-	dmrState := "stopped"
-	dmrHealthy := dmrReachable()
-	if dmrHealthy {
-		dmrState = "running"
-	}
-	statuses = append(statuses, ServiceStatus{
-		Name: dmrServiceName, Mode: "host", State: dmrState,
-		Healthy: dmrHealthy, Address: dmrDisplayAddress,
-	})
 	return statuses, nil
 }
 

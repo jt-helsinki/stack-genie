@@ -76,14 +76,11 @@ func doctorServiceByName(services []doctor.Service, name string) doctor.Service 
 	return doctor.Service{}
 }
 
-// mapDoctorServices lists BOTH host-native inference backends (Ollama +
-// docker-model-runner), skips the microVM runtime line, folds an actionable hint
-// into a down Ollama's detail, and marks DMR optional (so a down DMR warns, not
-// errors).
+// mapDoctorServices lists the host-native Ollama backend, skips the microVM runtime
+// line, and folds an actionable hint into a down Ollama's detail.
 func TestMapDoctorServicesHostInference(test *testing.T) {
 	statuses := []setup.ServiceStatus{
 		{Name: "ollama", Mode: "host", Healthy: false, State: "stopped"},
-		{Name: "docker-model-runner", Mode: "host", Healthy: false, State: "stopped"},
 		{Name: "litellm", Mode: "container", Healthy: true, State: "running"},
 		{Name: "microsandbox", Mode: "runtime", Healthy: true},
 	}
@@ -99,16 +96,6 @@ func TestMapDoctorServicesHostInference(test *testing.T) {
 	if !strings.Contains(ollama.State, "brew install ollama") {
 		test.Fatalf("down Ollama should carry an install hint, got State=%q", ollama.State)
 	}
-	dmr := doctorServiceByName(services, "docker-model-runner")
-	if dmr.Name == "" {
-		test.Fatal("Docker Model Runner must be listed")
-	}
-	if !dmr.Optional {
-		test.Fatal("Docker Model Runner must be marked optional so a down DMR warns, not errors")
-	}
-	if !strings.Contains(dmr.State, "docker desktop enable model-runner") {
-		test.Fatalf("down DMR should carry an enable hint, got State=%q", dmr.State)
-	}
 }
 
 // A healthy host inference backend passes through without a synthetic hint (the
@@ -116,14 +103,10 @@ func TestMapDoctorServicesHostInference(test *testing.T) {
 func TestMapDoctorServicesHealthyPassthrough(test *testing.T) {
 	statuses := []setup.ServiceStatus{
 		{Name: "ollama", Mode: "host", Healthy: true, State: "running"},
-		{Name: "docker-model-runner", Mode: "host", Healthy: true, State: "running"},
 	}
 	services := mapDoctorServices(statuses, "linux")
 	if state := doctorServiceByName(services, "ollama").State; state != "running" {
 		test.Fatalf("healthy Ollama State should be untouched, got %q", state)
-	}
-	if !doctorServiceByName(services, "docker-model-runner").Optional {
-		test.Fatal("Docker Model Runner should be optional even when healthy")
 	}
 }
 

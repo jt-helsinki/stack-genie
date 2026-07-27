@@ -93,25 +93,17 @@ func mapDoctorServices(statuses []setup.ServiceStatus, goos string) []doctor.Ser
 	return services
 }
 
-// enrichLocalInferenceService adds an actionable recovery hint (and, for DMR, the
-// optional flag) to the host-native inference backends so `ai doctor` surfaces a
-// clear path when they are down. Both run on the HOST (not as aip-* containers), so
-// the generic "ai services start" suggestion does not apply — the hint is folded
-// into the down-case detail (which doctor renders from State for an unreachable
-// service). Non-inference services pass through unchanged.
+// enrichLocalInferenceService adds an actionable recovery hint to the host-native
+// Ollama backend so `ai doctor` surfaces a clear path when it is down. Ollama runs on
+// the HOST (not as an aip-* container), so the generic "ai services start" suggestion
+// does not apply — the hint is folded into the down-case detail (which doctor renders
+// from State for an unreachable service). Non-inference services pass through
+// unchanged.
 func enrichLocalInferenceService(service doctor.Service, goos string) doctor.Service {
-	switch service.Name {
-	case "ollama":
+	if service.Name == "ollama" {
 		if !service.Healthy && service.State != "disabled" {
 			service.State = "not reachable — install & start host-native Ollama (" +
 				hostOllamaShortHint(goos) + "); required for local models"
-		}
-	case dmrServiceName:
-		// DMR is an always-available OPTIONAL backend — mark it optional so a down DMR
-		// is a warning, not a doctor error.
-		service.Optional = true
-		if !service.Healthy && service.State != "disabled" {
-			service.State = "not enabled — " + dmrShortHint(goos)
 		}
 	}
 	return service
@@ -124,15 +116,6 @@ func hostOllamaShortHint(goos string) string {
 		return "Linux: curl -fsSL https://ollama.com/install.sh | sh, then systemctl enable --now ollama"
 	}
 	return "macOS: brew install ollama, then ollama serve"
-}
-
-// dmrShortHint is the compact per-OS enable hint folded into the `ai doctor` Docker
-// Model Runner detail line.
-func dmrShortHint(goos string) string {
-	if goos == "linux" {
-		return "install the `docker model` CLI plugin + runtime"
-	}
-	return "Docker Desktop: docker desktop enable model-runner"
 }
 
 // doctorDomain builds the DOMAIN section for `ai doctor`: the resolved platform

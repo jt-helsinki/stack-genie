@@ -164,10 +164,9 @@ func (manager *KeyManager) SyncModels(cat *catalog.Catalog, keyedProviders []str
 		return SyncResult{}, err
 	}
 	plan := Reconcile(desired, current)
-	// A cloud-key/catalog resync must NEVER delete LOCAL models: both Ollama
-	// ("ollama/<name>") and Docker Model Runner ("docker-model-runner/<alias>") models
-	// are owned exclusively by their own register/unregister paths (Register/Unregister
-	// OllamaModel, Register/UnregisterDockerModelRunnerModel), never by the catalog
+	// A cloud-key/catalog resync must NEVER delete LOCAL models: Ollama
+	// ("ollama/<name>") models are owned exclusively by their own register/unregister
+	// path (Register/UnregisterOllamaModel), never by the catalog
 	// resync. Without this guard, a transient local-list failure at the CALLER (which
 	// drops those from the desired set — e.g. installedOllamaModels() returns nil when the
 	// daemon is unreachable) would wipe every registered local model from LiteLLM even
@@ -179,11 +178,10 @@ func (manager *KeyManager) SyncModels(cat *catalog.Catalog, keyedProviders []str
 // localModelPrefixes are the public model_name prefixes owned by the local-inference
 // register/unregister paths, NOT by the catalog resync — so SyncModels must never delete
 // them (see nonLocalModels).
-var localModelPrefixes = []string{"ollama/", "docker-model-runner/"}
+var localModelPrefixes = []string{"ollama/"}
 
 // nonLocalModels returns the models whose public name is NOT a local-backend route
-// (ollama/* or docker-model-runner/*), shielding local registrations from the cloud-key
-// resync's delete pass.
+// (ollama/*), shielding local registrations from the cloud-key resync's delete pass.
 func nonLocalModels(models []LiveModel) []LiveModel {
 	kept := make([]LiveModel, 0, len(models))
 	for _, model := range models {

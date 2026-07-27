@@ -37,7 +37,7 @@ const (
 // ModelsPullRequestedMsg asks the parent to run `ai models pull <Refs...>` live in
 // the terminal overlay (streaming progress) for one or more exact references (e.g.
 // ["qwen2.5:7b", "qwen2.5:72b"]). Emitted by the Local Models tag drill-down.
-// Runtime is the chosen install ENGINE ("ollama" / "docker-model-runner"), mirroring
+// Runtime is the chosen install ENGINE ("ollama"), mirroring
 // the CLI `--runtime`; an EMPTY value means Ollama (back-compat — a caller that builds
 // the message without a runtime keeps the default Ollama path).
 type ModelsPullRequestedMsg struct {

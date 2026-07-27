@@ -22,7 +22,7 @@ func fakeOllamaHTTP(test *testing.T, status int) {
 }
 
 // Ollama is host-native, so the LiteLLM container ALWAYS gets the host-gateway
-// mapping (host.docker.internal) — it reaches Ollama (and DMR) on the host.
+// mapping (host.docker.internal) — it reaches Ollama on the host.
 func TestLitellmRunArgsAlwaysHostGateway(test *testing.T) {
 	joined := strings.Join(litellmRunArgs("/cfg.yaml", "127.0.0.1", "img"), " ")
 	if !strings.Contains(joined, hostGatewayAddArg) {

@@ -75,9 +75,9 @@ type localModelsSyncedMsg struct {
 }
 
 // runtimePicker is the lightweight in-view sub-state shown AFTER the user has ticked
-// tags to pull: a single-choice list of install ENGINES (Ollama default, Docker Model
-// Runner), mirroring the CLI `ai models pull --runtime`. enter emits the pull with the
-// chosen runtime; esc reopens the tag drill-down so the tick selection isn't lost.
+// tags to pull: a single-choice list of install ENGINES (Ollama), mirroring the CLI
+// `ai models pull --runtime`. enter emits the pull with the chosen runtime; esc
+// reopens the tag drill-down so the tick selection isn't lost.
 type runtimePicker struct {
 	drill   *tagPicker // the drill to restore on esc (keeps the tick selection)
 	refs    []string   // the name:tag refs to pull
@@ -435,8 +435,8 @@ func (view *LocalModels) handleDrillKey(key tea.KeyMsg) tea.Cmd {
 			view.flash = ui.Muted.Render("select 1+ tags (space) to pull")
 			return nil
 		}
-		// Tags are ticked: choose the install ENGINE (Ollama default / Docker Model
-		// Runner) before emitting the pull, mirroring the CLI `--runtime`.
+		// Tags are ticked: choose the install ENGINE (Ollama) before emitting the
+		// pull, mirroring the CLI `--runtime`.
 		view.openRuntimePicker(drill, refs)
 		return nil
 	case "d":
@@ -507,8 +507,6 @@ func (view *LocalModels) handleRuntimeKey(key tea.KeyMsg) tea.Cmd {
 // runtimePickerLabel is the human label for an install-engine option.
 func runtimePickerLabel(runtime config.ModelRuntime) string {
 	switch runtime {
-	case config.RuntimeDockerModelRunner:
-		return "Docker Model Runner"
 	case config.RuntimeOllama:
 		return "Ollama"
 	default:
@@ -940,8 +938,6 @@ var modelRuntimeLookup = func(ref string) config.ModelRuntime {
 // ("" hides it — a model with no recorded choice shows no badge).
 func runtimeBadgeLabel(runtime config.ModelRuntime) string {
 	switch runtime {
-	case config.RuntimeDockerModelRunner:
-		return "dmr"
 	case config.RuntimeOllama:
 		return "ollama"
 	default:

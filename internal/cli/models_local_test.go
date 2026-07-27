@@ -22,13 +22,10 @@ func withFakeOllama(test *testing.T, fake *ollama.Fake) {
 // fakeRegistrar records the model names register/unregister were called with and can
 // be configured to fail (to prove pull/rm tolerate a gateway error).
 type fakeRegistrar struct {
-	registered      []string
-	unregistered    []string
-	dmrRegistered   []string // "<alias>=<model>" per RegisterDockerModelRunnerModel
-	dmrUnregistered []string // alias per UnregisterDockerModelRunnerModel
-	registerErr     error
-	unregErr        error
-	dmrRegisterErr  error
+	registered   []string
+	unregistered []string
+	registerErr  error
+	unregErr     error
 }
 
 func (fake *fakeRegistrar) RegisterOllamaModel(name string, _ bool) error {
@@ -38,16 +35,6 @@ func (fake *fakeRegistrar) RegisterOllamaModel(name string, _ bool) error {
 
 func (fake *fakeRegistrar) UnregisterOllamaModel(name string) error {
 	fake.unregistered = append(fake.unregistered, name)
-	return fake.unregErr
-}
-
-func (fake *fakeRegistrar) RegisterDockerModelRunnerModel(alias, model string, _ bool) error {
-	fake.dmrRegistered = append(fake.dmrRegistered, alias+"="+model)
-	return fake.dmrRegisterErr
-}
-
-func (fake *fakeRegistrar) UnregisterDockerModelRunnerModel(alias string) error {
-	fake.dmrUnregistered = append(fake.dmrUnregistered, alias)
 	return fake.unregErr
 }
 
@@ -61,15 +48,6 @@ func withFakeRegistrar(test *testing.T, fake *fakeRegistrar) {
 	prev := modelRegistrarFactory
 	modelRegistrarFactory = func() modelRegistrar { return fake }
 	test.Cleanup(func() { modelRegistrarFactory = prev })
-}
-
-// withDMRAvailable forces the DMR availability probe to a fixed result (no network),
-// restoring it after the test.
-func withDMRAvailable(test *testing.T, available bool) {
-	test.Helper()
-	prev := dmrAvailable
-	dmrAvailable = func() bool { return available }
-	test.Cleanup(func() { dmrAvailable = prev })
 }
 
 func runLocalModelsCmd(test *testing.T, cmd interface {
@@ -495,7 +473,7 @@ func TestModelsRmFailureSkipsUnregister(test *testing.T) {
 	}
 }
 
-// --- runtime selection (Ollama vs Docker Model Runner) ----------------------
+// --- runtime selection -------------------------------------------------------
 
 // The default (no --runtime) registers via Ollama — unchanged behaviour.
 func TestModelsPullDefaultRuntimeOllama(test *testing.T) {
@@ -512,9 +490,6 @@ func TestModelsPullDefaultRuntimeOllama(test *testing.T) {
 	}
 	if len(registrar.registered) != 1 || registrar.registered[0] != "llama3.2:3b" {
 		test.Fatalf("Ollama registered = %v, want [llama3.2:3b]", registrar.registered)
-	}
-	if len(registrar.dmrRegistered) != 0 {
-		test.Fatalf("DMR registration should not run for the default runtime, got %v", registrar.dmrRegistered)
 	}
 }
 
@@ -533,147 +508,5 @@ func TestModelsPullInvalidRuntimeExits2(test *testing.T) {
 	}
 	if fake.PulledName != "" {
 		test.Fatalf("no model should be pulled on an invalid runtime, pulled %q", fake.PulledName)
-	}
-}
-
-// --runtime docker-model-runner is rejected (exit 3) when DMR is unavailable —
-// never a silent fallback to Ollama.
-func TestModelsPullDMRUnavailableExits3(test *testing.T) {
-	fake := &ollama.Fake{}
-	withFakeOllama(test, fake)
-	registrar := &fakeRegistrar{}
-	withFakeRegistrar(test, registrar)
-	withDMRAvailable(test, false)
-	exit := output.ExitOK
-	cmd := newModelsPullCmd(jsonEmitter(), &exit)
-	cmd.SetOut(io.Discard)
-	cmd.SetErr(io.Discard)
-	runLocalModelsCmd(test, cmd, "--runtime", "docker-model-runner", "llama3.2:3b")
-	if exit != output.ExitMissingDep {
-		test.Fatalf("DMR unavailable: exit = %d, want %d", exit, output.ExitMissingDep)
-	}
-	if fake.PulledName != "" {
-		test.Fatalf("no model should be pulled when DMR is rejected, pulled %q", fake.PulledName)
-	}
-	if len(registrar.registered) != 0 || len(registrar.dmrRegistered) != 0 {
-		test.Fatalf("no registration should run when DMR is rejected (no fallback)")
-	}
-}
-
-// A DMR pull downloads via Ollama then registers via the DMR backend, with the
-// default alias derived from the ref's base name.
-func TestModelsPullDMRRegistersViaDMR(test *testing.T) {
-	fake := &ollama.Fake{}
-	withFakeOllama(test, fake)
-	registrar := &fakeRegistrar{}
-	withFakeRegistrar(test, registrar)
-	withDMRAvailable(test, true)
-	exit := output.ExitOK
-	cmd := newModelsPullCmd(jsonEmitter(), &exit)
-	cmd.SetOut(io.Discard)
-	cmd.SetErr(io.Discard)
-	runLocalModelsCmd(test, cmd, "--runtime", "docker-model-runner", "hf.co/acme/qwen:7b")
-	if exit != output.ExitOK {
-		test.Fatalf("DMR pull exit = %d, want 0", exit)
-	}
-	if fake.PulledName != "hf.co/acme/qwen:7b" {
-		test.Fatalf("Ollama should still download the model, pulled %q", fake.PulledName)
-	}
-	if len(registrar.registered) != 0 {
-		test.Fatalf("Ollama registration should not run for a DMR pull, got %v", registrar.registered)
-	}
-	// Default alias is the ref's base name (last path segment).
-	want := "qwen:7b=hf.co/acme/qwen:7b"
-	if len(registrar.dmrRegistered) != 1 || registrar.dmrRegistered[0] != want {
-		test.Fatalf("DMR registered = %v, want [%s]", registrar.dmrRegistered, want)
-	}
-}
-
-// --alias overrides the default DMR gateway alias.
-func TestModelsPullDMRCustomAlias(test *testing.T) {
-	withFakeOllama(test, &ollama.Fake{})
-	registrar := &fakeRegistrar{}
-	withFakeRegistrar(test, registrar)
-	withDMRAvailable(test, true)
-	exit := output.ExitOK
-	cmd := newModelsPullCmd(jsonEmitter(), &exit)
-	cmd.SetOut(io.Discard)
-	cmd.SetErr(io.Discard)
-	runLocalModelsCmd(test, cmd, "--runtime", "docker-model-runner", "--alias", "myqwen", "qwen2.5:7b")
-	if exit != output.ExitOK {
-		test.Fatalf("DMR pull exit = %d, want 0", exit)
-	}
-	want := "myqwen=qwen2.5:7b"
-	if len(registrar.dmrRegistered) != 1 || registrar.dmrRegistered[0] != want {
-		test.Fatalf("DMR registered = %v, want [%s]", registrar.dmrRegistered, want)
-	}
-}
-
-// --alias with more than one model is rejected (exit 2).
-func TestModelsPullAliasMultiExits2(test *testing.T) {
-	withFakeOllama(test, &ollama.Fake{})
-	withFakeRegistrar(test, &fakeRegistrar{})
-	withDMRAvailable(test, true)
-	exit := output.ExitOK
-	cmd := newModelsPullCmd(jsonEmitter(), &exit)
-	cmd.SetOut(io.Discard)
-	cmd.SetErr(io.Discard)
-	runLocalModelsCmd(test, cmd, "--runtime", "docker-model-runner", "--alias", "x", "a:1", "b:2")
-	if exit != output.ExitInvalidInput {
-		test.Fatalf("--alias with multiple models: exit = %d, want %d", exit, output.ExitInvalidInput)
-	}
-}
-
-// A model pulled via DMR is de-registered via the DMR backend on rm, and its
-// recorded runtime choice is cleared.
-func TestModelsRmDeregistersDMR(test *testing.T) {
-	withFakeOllama(test, &ollama.Fake{})
-	registrar := &fakeRegistrar{}
-	withFakeRegistrar(test, registrar) // sets an isolated HOME for the choice store
-	withDMRAvailable(test, true)
-
-	// Pull it via DMR (records the choice under the derived alias).
-	exit := output.ExitOK
-	pull := newModelsPullCmd(jsonEmitter(), &exit)
-	pull.SetOut(io.Discard)
-	pull.SetErr(io.Discard)
-	runLocalModelsCmd(test, pull, "--runtime", "docker-model-runner", "qwen2.5:7b")
-	if exit != output.ExitOK {
-		test.Fatalf("DMR pull exit = %d, want 0", exit)
-	}
-
-	// Now remove it — the DMR backend must be de-registered by its alias.
-	exit = output.ExitOK
-	rm := newModelsRmCmd(jsonEmitter(), &exit)
-	rm.SetOut(io.Discard)
-	rm.SetErr(io.Discard)
-	runLocalModelsCmd(test, rm, "qwen2.5:7b")
-	if exit != output.ExitOK {
-		test.Fatalf("rm exit = %d, want 0", exit)
-	}
-	if len(registrar.dmrUnregistered) != 1 || registrar.dmrUnregistered[0] != "qwen2.5:7b" {
-		test.Fatalf("DMR unregistered = %v, want [qwen2.5:7b]", registrar.dmrUnregistered)
-	}
-	if len(registrar.unregistered) != 0 {
-		test.Fatalf("Ollama unregister should not run for a DMR model, got %v", registrar.unregistered)
-	}
-	// The choice must be cleared.
-	if choices := runtimeChoicesForModel("qwen2.5:7b"); len(choices) != 0 {
-		test.Fatalf("runtime choice should be cleared after rm, got %v", choices)
-	}
-}
-
-// dmrDefaultAlias derives the base name (last path segment) as the DMR alias.
-func TestDMRDefaultAlias(test *testing.T) {
-	cases := map[string]string{
-		"qwen2.5:7b":         "qwen2.5:7b",
-		"hf.co/acme/qwen:7b": "qwen:7b",
-		"registry/ns/model":  "model",
-		"":                   "",
-	}
-	for ref, want := range cases {
-		if got := dmrDefaultAlias(ref); got != want {
-			test.Fatalf("dmrDefaultAlias(%q) = %q, want %q", ref, got, want)
-		}
 	}
 }

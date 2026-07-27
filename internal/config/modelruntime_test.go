@@ -12,16 +12,13 @@ func TestValidModelRuntime(t *testing.T) {
 	if !config.ValidModelRuntime(string(config.RuntimeOllama)) {
 		t.Errorf("RuntimeOllama should be valid")
 	}
-	if !config.ValidModelRuntime(string(config.RuntimeDockerModelRunner)) {
-		t.Errorf("RuntimeDockerModelRunner should be valid")
-	}
 	if config.ValidModelRuntime("bogus") {
 		t.Errorf("bogus runtime should be invalid")
 	}
 	if config.ValidModelRuntime("") {
 		t.Errorf("empty runtime should be invalid")
 	}
-	if want := 2; len(config.ModelRuntimes()) != want {
+	if want := 1; len(config.ModelRuntimes()) != want {
 		t.Errorf("ModelRuntimes() = %d, want %d", len(config.ModelRuntimes()), want)
 	}
 }
@@ -65,15 +62,14 @@ func TestModelRuntimeRoundTrip(t *testing.T) {
 		t.Errorf("ModelRuntimeFor() = %+v, want %+v", got, choice)
 	}
 
-	// Overwrite with a different runtime.
-	choice.Runtime = config.RuntimeDockerModelRunner
-	choice.Endpoint = "http://model-runner:12434"
+	// Overwrite with a different endpoint.
+	choice.Endpoint = "http://127.0.0.1:11500"
 	if err := config.SetModelRuntime(choice); err != nil {
 		t.Fatalf("SetModelRuntime() overwrite error = %v", err)
 	}
 	got, _ = config.ModelRuntimeFor("ollama/llama3")
-	if got.Runtime != config.RuntimeDockerModelRunner {
-		t.Errorf("after overwrite Runtime = %q, want %q", got.Runtime, config.RuntimeDockerModelRunner)
+	if got.Endpoint != "http://127.0.0.1:11500" {
+		t.Errorf("after overwrite Endpoint = %q, want %q", got.Endpoint, "http://127.0.0.1:11500")
 	}
 
 	// Delete.
