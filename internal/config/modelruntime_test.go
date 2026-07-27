@@ -12,14 +12,24 @@ func TestValidModelRuntime(t *testing.T) {
 	if !config.ValidModelRuntime(string(config.RuntimeOllama)) {
 		t.Errorf("RuntimeOllama should be valid")
 	}
+	if !config.ValidModelRuntime(string(config.RuntimeVLLM)) {
+		t.Errorf("RuntimeVLLM should be valid")
+	}
 	if config.ValidModelRuntime("bogus") {
 		t.Errorf("bogus runtime should be invalid")
 	}
 	if config.ValidModelRuntime("") {
 		t.Errorf("empty runtime should be invalid")
 	}
-	if want := 1; len(config.ModelRuntimes()) != want {
-		t.Errorf("ModelRuntimes() = %d, want %d", len(config.ModelRuntimes()), want)
+	runtimes := config.ModelRuntimes()
+	if want := 2; len(runtimes) != want {
+		t.Errorf("ModelRuntimes() = %d, want %d", len(runtimes), want)
+	}
+	if runtimes[0] != config.RuntimeOllama {
+		t.Errorf("ModelRuntimes()[0] = %q, want %q (ollama first)", runtimes[0], config.RuntimeOllama)
+	}
+	if runtimes[1] != config.RuntimeVLLM {
+		t.Errorf("ModelRuntimes()[1] = %q, want %q", runtimes[1], config.RuntimeVLLM)
 	}
 }
 
@@ -82,6 +92,32 @@ func TestModelRuntimeRoundTrip(t *testing.T) {
 	// Deleting an absent alias is a no-op, not an error.
 	if err := config.DeleteModelRuntime("ollama/llama3"); err != nil {
 		t.Errorf("DeleteModelRuntime() on absent alias error = %v", err)
+	}
+}
+
+func TestModelRuntimeVLLMRoundTrip(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+
+	choice := config.ModelRuntimeChoice{
+		Alias:    "vllm/qwen",
+		Model:    "Qwen/Qwen2.5-7B-Instruct",
+		Runtime:  config.RuntimeVLLM,
+		Endpoint: "http://127.0.0.1:8000/v1",
+		Status:   "running",
+	}
+	if err := config.SetModelRuntime(choice); err != nil {
+		t.Fatalf("SetModelRuntime() error = %v", err)
+	}
+
+	got, ok := config.ModelRuntimeFor("vllm/qwen")
+	if !ok {
+		t.Fatal("ModelRuntimeFor() = not found after set")
+	}
+	if got != choice {
+		t.Errorf("ModelRuntimeFor() = %+v, want %+v", got, choice)
+	}
+	if got.Runtime != config.RuntimeVLLM {
+		t.Errorf("Runtime = %q, want %q", got.Runtime, config.RuntimeVLLM)
 	}
 }
 

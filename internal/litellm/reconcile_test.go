@@ -209,6 +209,51 @@ func TestSyncModelsPreservesOllamaWhenListEmpty(test *testing.T) {
 	}
 }
 
+// TestSyncModelsPreservesVLLM verifies the local-model protection extends to vLLM: a
+// cloud-key resync must NOT delete "vllm/*" models (owned by Register/UnregisterVLLMModel),
+// exactly as it shields "ollama/*". Only stale CLOUD models delete.
+func TestSyncModelsPreservesVLLM(test *testing.T) {
+	var deleted []string
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		switch request.URL.Path {
+		case "/model/info":
+			_, _ = writer.Write([]byte(`{"data":[
+				{"model_name":"vllm/my-qwen","litellm_params":{"model":"openai/Qwen/Qwen3-8B"},"model_info":{"id":"vllm-keep"}},
+				{"model_name":"ollama/gemma4","litellm_params":{"model":"ollama_chat/gemma4"},"model_info":{"id":"ollama-keep"}},
+				{"model_name":"openai/old","litellm_params":{"model":"openai/old"},"model_info":{"id":"cloud-stale"}}
+			]}`))
+		case "/model/delete":
+			payload, _ := io.ReadAll(request.Body)
+			var body map[string]any
+			_ = json.Unmarshal(payload, &body)
+			deleted = append(deleted, body["id"].(string))
+			_, _ = writer.Write([]byte(`{}`))
+		case "/model/new":
+			_, _ = writer.Write([]byte(`{}`))
+		default:
+			test.Errorf("unexpected %s %s", request.Method, request.URL.Path)
+		}
+	}))
+	defer server.Close()
+	test.Setenv("LITELLM_BASE_URL", server.URL)
+
+	manager := NewKeyManager(okProber())
+	// No keyed providers and no local models listed — the resync must still preserve both
+	// the vllm/* and ollama/* registrations and delete only the stale cloud model.
+	result, err := manager.SyncModels(testCatalog(test), nil, nil)
+	if err != nil {
+		test.Fatalf("SyncModels: %v", err)
+	}
+	if strings.Join(deleted, ",") != "cloud-stale" {
+		test.Errorf("gateway saw deletes %v, want only [cloud-stale] — local models must be preserved", deleted)
+	}
+	for _, name := range result.Deleted {
+		if strings.HasPrefix(name, "vllm/") {
+			test.Errorf("a resync must not delete vLLM model %q", name)
+		}
+	}
+}
+
 // TestSyncModelsPreservesOllama verifies the local-model protection: a cloud-key resync
 // must NOT delete "ollama/*" models (owned by Register/UnregisterOllamaModel) — only stale
 // CLOUD models delete.

@@ -340,6 +340,97 @@ func (manager *KeyManager) UnregisterOllamaModel(name string) error {
 	return nil // not registered — nothing to do
 }
 
+// VLLMModelName is the PUBLIC model handle for a vLLM-served model: "vllm/<alias>".
+// This is the agent-facing id, mirroring OllamaModelName's "ollama/<name>". The
+// public-handle-vs-routed-value split matters because "vllm/" is NOT a real LiteLLM
+// provider prefix — LiteLLM would not know how to route it — so the routed value
+// (VLLMRoutedModel) rewrites to a provider LiteLLM understands while this stable public
+// handle is what the in-workspace agent names and what surfaces in the live model list.
+func VLLMModelName(alias string) string {
+	return "vllm/" + alias
+}
+
+// VLLMRoutedModel is the value LiteLLM ROUTES on (litellm_params.model) for a vLLM model:
+// "openai/<model>". vLLM exposes an OpenAI-compatible HTTP server, so it is routed via
+// LiteLLM's `openai` provider paired with a per-model api_base (the model's dedicated
+// `vllm serve` endpoint). This is the same public-handle-vs-routed-value split Ollama uses
+// (OllamaModelName "ollama/<name>" vs OllamaRoutedModel "ollama_chat/<name>"): the PUBLIC
+// handle stays "vllm/<alias>" (VLLMModelName) so the agent-facing id is unchanged; only the
+// internal routing switches to the OpenAI-compatible provider.
+func VLLMRoutedModel(model string) string {
+	return "openai/" + model
+}
+
+// vllmModelParamsInfo builds the LiteLLM params + info for a vLLM model. It always sets
+// drop_params (defense-in-depth for unsupported params) and records tool-calling support in
+// model_info when known (supportsTools nil = unknown). Unlike Ollama's fixed OllamaAPIBase,
+// each vLLM model runs its OWN `vllm serve` endpoint, so apiBase is a PARAMETER (e.g.
+// http://host.docker.internal:8101/v1); no credential is referenced (a local vLLM needs none).
+func vllmModelParamsInfo(model, apiBase string, supportsTools *bool) (ModelParams, ModelInfo) {
+	dropParams := true
+	return ModelParams{Model: VLLMRoutedModel(model), APIBase: apiBase, DropParams: &dropParams},
+		ModelInfo{SupportsFunctionCalling: supportsTools}
+}
+
+// RegisterVLLMModel registers a vLLM-served model as a DB-backed model in the gateway. The
+// public model_name is "vllm/<alias>" (VLLMModelName, the agent-facing handle) while the
+// routed litellm_params.model is "openai/<model>" (VLLMRoutedModel) with api_base pointing
+// at the model's dedicated `vllm serve` endpoint; no credential is referenced.
+//
+// Idempotent-ish, HEALING like RegisterOllamaModel: if a model with this model_name already
+// exists (ListModels) it is re-registered (delete + add) when the routed target is stale
+// (existing.RoutedTo != VLLMRoutedModel(model)) OR the recorded tool capability disagrees
+// with supportsTools; otherwise the add is skipped so a re-register does not create a
+// duplicate. NOTE: LiveModel/ListModels does not expose the registered api_base, so a
+// changed endpoint alone cannot be detected here — healing on routing + capability is
+// sufficient (a moved endpoint is corrected by an explicit re-register with a new alias, or
+// by an UnregisterVLLMModel + RegisterVLLMModel).
+//
+// hardware bring-up: the LIVE POST /model/new round-trip is exercised only against a
+// running aip-litellm — verify on a provisioned host.
+func (manager *KeyManager) RegisterVLLMModel(alias, model, apiBase string, supportsTools bool) error {
+	modelName := VLLMModelName(alias)
+	existing, err := manager.ListModels()
+	if err != nil {
+		return err
+	}
+	for _, served := range existing {
+		if served.Name == modelName {
+			// Re-register when EITHER the routing OR the recorded capability is stale.
+			if served.SupportsTools == supportsTools && served.RoutedTo == VLLMRoutedModel(model) {
+				return nil // already registered correctly
+			}
+			if err := manager.DeleteModel(served.ID); err != nil {
+				return err
+			}
+			break // re-add below with corrected routing/capability
+		}
+	}
+	params, info := vllmModelParamsInfo(model, apiBase, &supportsTools)
+	return manager.AddModel(modelName, params, info)
+}
+
+// UnregisterVLLMModel removes the DB-backed model registered for a vLLM model. It looks up
+// the entry whose model_name == "vllm/<alias>" (VLLMModelName) and deletes it by its
+// LiteLLM-assigned id. A no-op (no error) when no such model is registered. Mirrors
+// UnregisterOllamaModel.
+//
+// hardware bring-up: the LIVE POST /model/delete round-trip is exercised only against a
+// running aip-litellm — verify on a provisioned host.
+func (manager *KeyManager) UnregisterVLLMModel(alias string) error {
+	modelName := VLLMModelName(alias)
+	existing, err := manager.ListModels()
+	if err != nil {
+		return err
+	}
+	for _, served := range existing {
+		if served.Name == modelName {
+			return manager.DeleteModel(served.ID)
+		}
+	}
+	return nil // not registered — nothing to do
+}
+
 // LiveModel is a model currently served by the gateway, parsed from GET
 // /model/info: the public model_name, the routed litellm_params.model (whose
 // prefix is the Provider), and the LiteLLM-assigned model_info.id used to delete it.

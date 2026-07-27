@@ -178,7 +178,7 @@ func (manager *KeyManager) SyncModels(cat *catalog.Catalog, keyedProviders []str
 // localModelPrefixes are the public model_name prefixes owned by the local-inference
 // register/unregister paths, NOT by the catalog resync — so SyncModels must never delete
 // them (see nonLocalModels).
-var localModelPrefixes = []string{"ollama/"}
+var localModelPrefixes = []string{"ollama/", "vllm/"}
 
 // nonLocalModels returns the models whose public name is NOT a local-backend route
 // (ollama/*), shielding local registrations from the cloud-key resync's delete pass.

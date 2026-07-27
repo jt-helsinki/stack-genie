@@ -31,6 +31,9 @@ type ModelRuntime string
 const (
 	// RuntimeOllama serves the model through host-native Ollama.
 	RuntimeOllama ModelRuntime = "ollama"
+	// RuntimeVLLM serves the model through host-native vLLM (a per-model
+	// `vllm serve` OpenAI endpoint).
+	RuntimeVLLM ModelRuntime = "vllm"
 )
 
 // ModelRuntimeSchemaVersion is stamped on config/model-runtimes.yaml.
@@ -39,13 +42,13 @@ const ModelRuntimeSchemaVersion = 1
 // ModelRuntimes returns the selectable serving runtimes, in a stable order
 // suitable for a UI picker.
 func ModelRuntimes() []ModelRuntime {
-	return []ModelRuntime{RuntimeOllama}
+	return []ModelRuntime{RuntimeOllama, RuntimeVLLM}
 }
 
 // ValidModelRuntime reports whether value is a recognised serving runtime.
 func ValidModelRuntime(value string) bool {
 	switch ModelRuntime(value) {
-	case RuntimeOllama:
+	case RuntimeOllama, RuntimeVLLM:
 		return true
 	default:
 		return false

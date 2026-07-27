@@ -516,3 +516,209 @@ func TestCredentialName(test *testing.T) {
 		test.Errorf("CredentialName(openai) = %q, want openai-key", got)
 	}
 }
+
+// TestVLLMModelName pins the public-handle convention: "vllm/<alias>".
+func TestVLLMModelName(test *testing.T) {
+	if got := VLLMModelName("my-qwen"); got != "vllm/my-qwen" {
+		test.Errorf("VLLMModelName = %q, want vllm/my-qwen", got)
+	}
+}
+
+// TestVLLMRoutedModel pins the routed value: vLLM is OpenAI-compatible, so it routes via
+// "openai/<model>" (not the non-provider "vllm/" prefix).
+func TestVLLMRoutedModel(test *testing.T) {
+	if got := VLLMRoutedModel("Qwen/Qwen3-8B"); got != "openai/Qwen/Qwen3-8B" {
+		test.Errorf("VLLMRoutedModel = %q, want openai/Qwen/Qwen3-8B", got)
+	}
+}
+
+// TestRegisterVLLMModelRequestShape verifies a vLLM registration: it first lists models,
+// then — when not already present — POSTs /model/new with model_name = "vllm/<alias>", the
+// routed litellm_params.model = "openai/<model>", the passed-in api_base, drop_params, the
+// tool-support flag, and NO credential (a local vLLM needs none).
+func TestRegisterVLLMModelRequestShape(test *testing.T) {
+	var addBody map[string]any
+	var sawList bool
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		switch {
+		case request.Method == http.MethodGet && request.URL.Path == "/model/info":
+			sawList = true
+			_, _ = writer.Write([]byte(`{"data":[]}`)) // nothing registered yet
+		case request.Method == http.MethodPost && request.URL.Path == "/model/new":
+			payload, _ := io.ReadAll(request.Body)
+			_ = json.Unmarshal(payload, &addBody)
+			_, _ = writer.Write([]byte(`{}`))
+		default:
+			test.Errorf("unexpected %s %s", request.Method, request.URL.Path)
+		}
+	}))
+	defer server.Close()
+	test.Setenv("LITELLM_BASE_URL", server.URL)
+
+	const apiBase = "http://host.docker.internal:8101/v1"
+	manager := NewKeyManager(okProber())
+	if err := manager.RegisterVLLMModel("my-qwen", "Qwen/Qwen3-8B", apiBase, true); err != nil {
+		test.Fatalf("RegisterVLLMModel: %v", err)
+	}
+	if !sawList {
+		test.Error("RegisterVLLMModel should list existing models before adding")
+	}
+	if addBody["model_name"] != "vllm/my-qwen" {
+		test.Errorf("model_name = %v, want vllm/my-qwen", addBody["model_name"])
+	}
+	params, _ := addBody["litellm_params"].(map[string]any)
+	if params["model"] != "openai/Qwen/Qwen3-8B" {
+		test.Errorf("litellm_params.model = %v, want openai/Qwen/Qwen3-8B", params["model"])
+	}
+	if params["api_base"] != apiBase {
+		test.Errorf("api_base = %v, want %s (the model's own vllm serve endpoint)", params["api_base"], apiBase)
+	}
+	if _, present := params["litellm_credential_name"]; present {
+		test.Errorf("a vLLM model must not reference a credential, got %v", params["litellm_credential_name"])
+	}
+	if params["drop_params"] != true {
+		test.Errorf("litellm_params.drop_params = %v, want true", params["drop_params"])
+	}
+	info, _ := addBody["model_info"].(map[string]any)
+	if info["supports_function_calling"] != true {
+		test.Errorf("model_info.supports_function_calling = %v, want true", info["supports_function_calling"])
+	}
+}
+
+// TestRegisterVLLMModelSkipsWhenPresent verifies registration is a no-op (no /model/new,
+// no delete) when a model with the same model_name is already correctly registered.
+func TestRegisterVLLMModelSkipsWhenPresent(test *testing.T) {
+	var sawAdd, sawDelete bool
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		switch {
+		case request.Method == http.MethodGet && request.URL.Path == "/model/info":
+			// Already registered correctly: routed on openai/<model> + matching capability.
+			_, _ = writer.Write([]byte(`{"data":[
+				{"model_name":"vllm/my-qwen","litellm_params":{"model":"openai/Qwen/Qwen3-8B"},"model_info":{"id":"id-1","supports_function_calling":true}}
+			]}`))
+		case request.URL.Path == "/model/new":
+			sawAdd = true
+			_, _ = writer.Write([]byte(`{}`))
+		case request.URL.Path == "/model/delete":
+			sawDelete = true
+			_, _ = writer.Write([]byte(`{}`))
+		default:
+			test.Errorf("unexpected %s %s", request.Method, request.URL.Path)
+		}
+	}))
+	defer server.Close()
+	test.Setenv("LITELLM_BASE_URL", server.URL)
+
+	manager := NewKeyManager(okProber())
+	if err := manager.RegisterVLLMModel("my-qwen", "Qwen/Qwen3-8B", "http://host.docker.internal:8101/v1", true); err != nil {
+		test.Fatalf("RegisterVLLMModel: %v", err)
+	}
+	if sawAdd || sawDelete {
+		test.Error("RegisterVLLMModel should skip when the model is already correctly registered")
+	}
+}
+
+// TestRegisterVLLMModelHealsStaleRouting verifies the reconcile RE-REGISTERS an
+// already-served vLLM model whose routed target is stale (e.g. registered against a
+// different model id): it is deleted and re-added with the corrected openai/<model> routing.
+func TestRegisterVLLMModelHealsStaleRouting(test *testing.T) {
+	var deleted []string
+	var addedRouted []string
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		switch request.URL.Path {
+		case "/model/info":
+			// Served but routed on a STALE model id.
+			_, _ = writer.Write([]byte(`{"data":[
+				{"model_name":"vllm/my-qwen","litellm_params":{"model":"openai/Qwen/Qwen3-OLD"},"model_info":{"id":"v"}}
+			]}`))
+		case "/model/delete":
+			payload, _ := io.ReadAll(request.Body)
+			var body map[string]any
+			_ = json.Unmarshal(payload, &body)
+			deleted = append(deleted, body["id"].(string))
+			_, _ = writer.Write([]byte(`{}`))
+		case "/model/new":
+			payload, _ := io.ReadAll(request.Body)
+			var body map[string]any
+			_ = json.Unmarshal(payload, &body)
+			params, _ := body["litellm_params"].(map[string]any)
+			addedRouted = append(addedRouted, params["model"].(string))
+			_, _ = writer.Write([]byte(`{}`))
+		default:
+			test.Errorf("unexpected %s %s", request.Method, request.URL.Path)
+		}
+	}))
+	defer server.Close()
+	test.Setenv("LITELLM_BASE_URL", server.URL)
+
+	manager := NewKeyManager(okProber())
+	if err := manager.RegisterVLLMModel("my-qwen", "Qwen/Qwen3-8B", "http://host.docker.internal:8101/v1", true); err != nil {
+		test.Fatalf("RegisterVLLMModel: %v", err)
+	}
+	if len(deleted) != 1 || deleted[0] != "v" {
+		test.Errorf("stale model must be deleted, got %v", deleted)
+	}
+	if len(addedRouted) != 1 || addedRouted[0] != "openai/Qwen/Qwen3-8B" {
+		test.Errorf("re-added routing = %v, want [openai/Qwen/Qwen3-8B]", addedRouted)
+	}
+}
+
+// TestUnregisterVLLMModelDeletesByID verifies it finds the entry whose model_name ==
+// "vllm/<alias>" and POSTs /model/delete with that entry's id.
+func TestUnregisterVLLMModelDeletesByID(test *testing.T) {
+	var deleteBody map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		switch {
+		case request.Method == http.MethodGet && request.URL.Path == "/model/info":
+			_, _ = writer.Write([]byte(`{"data":[
+				{"model_name":"vllm/my-qwen","litellm_params":{"model":"openai/Qwen/Qwen3-8B"},"model_info":{"id":"id-vllm"}},
+				{"model_name":"openai/gpt-5.5","litellm_params":{"model":"openai/gpt-5.5"},"model_info":{"id":"id-gpt"}}
+			]}`))
+		case request.Method == http.MethodPost && request.URL.Path == "/model/delete":
+			payload, _ := io.ReadAll(request.Body)
+			_ = json.Unmarshal(payload, &deleteBody)
+			_, _ = writer.Write([]byte(`{}`))
+		default:
+			test.Errorf("unexpected %s %s", request.Method, request.URL.Path)
+		}
+	}))
+	defer server.Close()
+	test.Setenv("LITELLM_BASE_URL", server.URL)
+
+	manager := NewKeyManager(okProber())
+	if err := manager.UnregisterVLLMModel("my-qwen"); err != nil {
+		test.Fatalf("UnregisterVLLMModel: %v", err)
+	}
+	if deleteBody["id"] != "id-vllm" {
+		test.Errorf("delete id = %v, want id-vllm (the matching vllm/<alias> entry)", deleteBody["id"])
+	}
+}
+
+// TestUnregisterVLLMModelNoOpWhenAbsent verifies it is a no-op (no /model/delete, no error)
+// when no model with that model_name is registered.
+func TestUnregisterVLLMModelNoOpWhenAbsent(test *testing.T) {
+	var sawDelete bool
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		switch {
+		case request.Method == http.MethodGet && request.URL.Path == "/model/info":
+			_, _ = writer.Write([]byte(`{"data":[
+				{"model_name":"openai/gpt-5.5","litellm_params":{"model":"openai/gpt-5.5"},"model_info":{"id":"id-gpt"}}
+			]}`))
+		case request.URL.Path == "/model/delete":
+			sawDelete = true
+			_, _ = writer.Write([]byte(`{}`))
+		default:
+			test.Errorf("unexpected %s %s", request.Method, request.URL.Path)
+		}
+	}))
+	defer server.Close()
+	test.Setenv("LITELLM_BASE_URL", server.URL)
+
+	manager := NewKeyManager(okProber())
+	if err := manager.UnregisterVLLMModel("ghost"); err != nil {
+		test.Fatalf("UnregisterVLLMModel(absent) should be a no-op, got %v", err)
+	}
+	if sawDelete {
+		test.Error("UnregisterVLLMModel should not call /model/delete when the model is absent")
+	}
+}
