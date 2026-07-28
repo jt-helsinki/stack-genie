@@ -6,8 +6,10 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/jt-helsinki/stack-genie/internal/config"
 	"github.com/jt-helsinki/stack-genie/internal/ollama"
 	"github.com/jt-helsinki/stack-genie/internal/output"
+	"github.com/jt-helsinki/stack-genie/internal/vllm"
 )
 
 // withFakeOllama swaps the package-level ollamaClient constructor for one that
@@ -26,6 +28,14 @@ type fakeRegistrar struct {
 	unregistered []string
 	registerErr  error
 	unregErr     error
+
+	// vLLM registration recording (mirrors the Ollama fields). vllmRegistered captures
+	// the "alias|model|apiBase" of each RegisterVLLMModel call so tests can assert the
+	// endpoint threaded through; vllmUnregistered captures the aliases removed.
+	vllmRegistered   []string
+	vllmUnregistered []string
+	vllmRegisterErr  error
+	vllmUnregErr     error
 }
 
 func (fake *fakeRegistrar) RegisterOllamaModel(name string, _ bool) error {
@@ -36,6 +46,16 @@ func (fake *fakeRegistrar) RegisterOllamaModel(name string, _ bool) error {
 func (fake *fakeRegistrar) UnregisterOllamaModel(name string) error {
 	fake.unregistered = append(fake.unregistered, name)
 	return fake.unregErr
+}
+
+func (fake *fakeRegistrar) RegisterVLLMModel(alias, model, apiBase string, _ bool) error {
+	fake.vllmRegistered = append(fake.vllmRegistered, alias+"|"+model+"|"+apiBase)
+	return fake.vllmRegisterErr
+}
+
+func (fake *fakeRegistrar) UnregisterVLLMModel(alias string) error {
+	fake.vllmUnregistered = append(fake.vllmUnregistered, alias)
+	return fake.vllmUnregErr
 }
 
 // withFakeRegistrar swaps the package-level modelRegistrarFactory for one returning
@@ -508,5 +528,188 @@ func TestModelsPullInvalidRuntimeExits2(test *testing.T) {
 	}
 	if fake.PulledName != "" {
 		test.Fatalf("no model should be pulled on an invalid runtime, pulled %q", fake.PulledName)
+	}
+}
+
+// --- vLLM runtime ------------------------------------------------------------
+
+// fakeVLLMServer is an in-test vllmServer: EnsureServed returns a fixed endpoint and
+// records the (alias, model) it was asked to serve; Stop records the aliases stopped.
+type fakeVLLMServer struct {
+	endpoint string
+	serveErr error
+	served   []string // "alias|model"
+	stopped  []string
+}
+
+func (fake *fakeVLLMServer) EnsureServed(alias, model string) (string, error) {
+	fake.served = append(fake.served, alias+"|"+model)
+	if fake.serveErr != nil {
+		return "", fake.serveErr
+	}
+	return fake.endpoint, nil
+}
+
+func (fake *fakeVLLMServer) Stop(alias string) error {
+	fake.stopped = append(fake.stopped, alias)
+	return nil
+}
+
+// withFakeVLLM swaps the host-side vLLM seams for the duration of a test: detection,
+// the (best-effort) Pull, and the server-manager factory.
+func withFakeVLLM(test *testing.T, installed bool, pullErr error, server vllmServer) {
+	test.Helper()
+	prevDetect, prevPull, prevFactory := vllmDetectFn, vllmPullFn, vllmManagerFactory
+	vllmDetectFn = func() (bool, string) { return installed, "mlx" }
+	vllmPullFn = func(string) error { return pullErr }
+	vllmManagerFactory = func() vllmServer { return server }
+	test.Cleanup(func() {
+		vllmDetectFn, vllmPullFn, vllmManagerFactory = prevDetect, prevPull, prevFactory
+	})
+}
+
+// --runtime vllm with vLLM absent exits 3 with install guidance — NEVER a silent
+// downgrade to Ollama.
+func TestModelsPullVLLMNotInstalledExits3(test *testing.T) {
+	fake := &ollama.Fake{}
+	withFakeOllama(test, fake)
+	registrar := &fakeRegistrar{}
+	withFakeRegistrar(test, registrar)
+	withFakeVLLM(test, false, nil, &fakeVLLMServer{})
+	exit := output.ExitOK
+	cmd := newModelsPullCmd(jsonEmitter(), &exit)
+	cmd.SetOut(io.Discard)
+	cmd.SetErr(io.Discard)
+	runLocalModelsCmd(test, cmd, "--runtime", "vllm", "mlx-community/Qwen2.5-7B-Instruct-4bit")
+	if exit != output.ExitMissingDep {
+		test.Fatalf("vLLM absent: exit = %d, want %d", exit, output.ExitMissingDep)
+	}
+	if fake.PulledName != "" {
+		test.Fatalf("no fallback to Ollama: pulled %q", fake.PulledName)
+	}
+	if len(registrar.registered) != 0 || len(registrar.vllmRegistered) != 0 {
+		test.Fatalf("nothing should be registered when vLLM is absent: ollama=%v vllm=%v",
+			registrar.registered, registrar.vllmRegistered)
+	}
+}
+
+// --runtime vllm registers the model with RegisterVLLMModel carrying the served
+// endpoint and records the runtime choice (alias + endpoint) in the store.
+func TestModelsPullVLLMRegistersWithEndpoint(test *testing.T) {
+	withFakeOllama(test, &ollama.Fake{})
+	registrar := &fakeRegistrar{}
+	withFakeRegistrar(test, registrar)
+	server := &fakeVLLMServer{endpoint: "http://127.0.0.1:8101/v1"}
+	withFakeVLLM(test, true, nil, server)
+	exit := output.ExitOK
+	cmd := newModelsPullCmd(jsonEmitter(), &exit)
+	cmd.SetOut(io.Discard)
+	cmd.SetErr(io.Discard)
+	runLocalModelsCmd(test, cmd, "--runtime", "vllm", "--alias", "my-qwen", "mlx-community/Qwen2.5-7B-Instruct-4bit")
+	if exit != output.ExitOK {
+		test.Fatalf("vLLM pull exit = %d, want 0", exit)
+	}
+	wantReg := "my-qwen|mlx-community/Qwen2.5-7B-Instruct-4bit|http://127.0.0.1:8101/v1"
+	if len(registrar.vllmRegistered) != 1 || registrar.vllmRegistered[0] != wantReg {
+		test.Fatalf("vLLM registered = %v, want [%s]", registrar.vllmRegistered, wantReg)
+	}
+	if len(server.served) != 1 || server.served[0] != "my-qwen|mlx-community/Qwen2.5-7B-Instruct-4bit" {
+		test.Fatalf("EnsureServed calls = %v", server.served)
+	}
+	choice, ok := config.ModelRuntimeFor("my-qwen")
+	if !ok || choice.Runtime != config.RuntimeVLLM || choice.Endpoint != "http://127.0.0.1:8101/v1" {
+		test.Fatalf("recorded choice = %+v (ok=%v), want vllm @ endpoint", choice, ok)
+	}
+}
+
+// --alias with more than one model is a usage error (exit 2).
+func TestModelsPullVLLMAliasMultiModelExits2(test *testing.T) {
+	withFakeOllama(test, &ollama.Fake{})
+	withFakeRegistrar(test, &fakeRegistrar{})
+	withFakeVLLM(test, true, nil, &fakeVLLMServer{endpoint: "http://127.0.0.1:8101/v1"})
+	exit := output.ExitOK
+	cmd := newModelsPullCmd(jsonEmitter(), &exit)
+	cmd.SetOut(io.Discard)
+	cmd.SetErr(io.Discard)
+	runLocalModelsCmd(test, cmd, "--runtime", "vllm", "--alias", "x", "a", "b")
+	if exit != output.ExitInvalidInput {
+		test.Fatalf("--alias with 2 models: exit = %d, want %d", exit, output.ExitInvalidInput)
+	}
+}
+
+// Without --alias the gateway alias defaults to the model id's base name.
+func TestModelsPullVLLMDefaultAlias(test *testing.T) {
+	withFakeOllama(test, &ollama.Fake{})
+	registrar := &fakeRegistrar{}
+	withFakeRegistrar(test, registrar)
+	withFakeVLLM(test, true, nil, &fakeVLLMServer{endpoint: "http://127.0.0.1:8101/v1"})
+	exit := output.ExitOK
+	cmd := newModelsPullCmd(jsonEmitter(), &exit)
+	cmd.SetOut(io.Discard)
+	cmd.SetErr(io.Discard)
+	runLocalModelsCmd(test, cmd, "--runtime", "vllm", "mlx-community/Foo-Bar")
+	if exit != output.ExitOK {
+		test.Fatalf("vLLM pull exit = %d, want 0", exit)
+	}
+	if len(registrar.vllmRegistered) != 1 || !strings.HasPrefix(registrar.vllmRegistered[0], "Foo-Bar|") {
+		test.Fatalf("default alias not Foo-Bar: %v", registrar.vllmRegistered)
+	}
+}
+
+// A vLLM pull whose serve step is not wired (ErrNotWired) surfaces an actionable
+// runtime failure rather than crashing.
+func TestModelsPullVLLMServeNotWired(test *testing.T) {
+	withFakeOllama(test, &ollama.Fake{})
+	withFakeRegistrar(test, &fakeRegistrar{})
+	withFakeVLLM(test, true, nil, &fakeVLLMServer{serveErr: vllm.ErrNotWired})
+	exit := output.ExitOK
+	cmd := newModelsPullCmd(jsonEmitter(), &exit)
+	cmd.SetOut(io.Discard)
+	cmd.SetErr(io.Discard)
+	runLocalModelsCmd(test, cmd, "--runtime", "vllm", "mlx-community/Foo")
+	if exit != output.ExitRuntimeFailure {
+		test.Fatalf("not-wired serve: exit = %d, want %d", exit, output.ExitRuntimeFailure)
+	}
+}
+
+// rm of a vLLM-recorded model de-registers via UnregisterVLLMModel, stops the server,
+// clears the recorded choice, and does NOT touch the Ollama store.
+func TestModelsRmVLLMDeregistersAndStops(test *testing.T) {
+	fake := &ollama.Fake{}
+	withFakeOllama(test, fake)
+	registrar := &fakeRegistrar{}
+	withFakeRegistrar(test, registrar)
+	server := &fakeVLLMServer{}
+	withFakeVLLM(test, true, nil, server)
+	if err := config.SetModelRuntime(config.ModelRuntimeChoice{
+		Alias:    "my-qwen",
+		Model:    "mlx-community/Qwen2.5-7B-Instruct-4bit",
+		Runtime:  config.RuntimeVLLM,
+		Endpoint: "http://127.0.0.1:8101/v1",
+	}); err != nil {
+		test.Fatalf("seed runtime choice: %v", err)
+	}
+	exit := output.ExitOK
+	cmd := newModelsRmCmd(jsonEmitter(), &exit)
+	cmd.SetOut(io.Discard)
+	cmd.SetErr(io.Discard)
+	runLocalModelsCmd(test, cmd, "my-qwen")
+	if exit != output.ExitOK {
+		test.Fatalf("vLLM rm exit = %d, want 0", exit)
+	}
+	if len(registrar.vllmUnregistered) != 1 || registrar.vllmUnregistered[0] != "my-qwen" {
+		test.Fatalf("vLLM unregistered = %v, want [my-qwen]", registrar.vllmUnregistered)
+	}
+	if len(server.stopped) != 1 || server.stopped[0] != "my-qwen" {
+		test.Fatalf("server stopped = %v, want [my-qwen]", server.stopped)
+	}
+	if len(registrar.unregistered) != 0 {
+		test.Fatalf("Ollama unregister must not be called for a vLLM model: %v", registrar.unregistered)
+	}
+	if fake.RemovedName != "" {
+		test.Fatalf("Ollama store must not be touched for a vLLM model, removed %q", fake.RemovedName)
+	}
+	if _, ok := config.ModelRuntimeFor("my-qwen"); ok {
+		test.Fatal("runtime choice should be cleared after rm")
 	}
 }

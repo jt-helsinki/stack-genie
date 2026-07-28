@@ -42,6 +42,13 @@ var ollamaLibrary = func() ([]ollama.LibraryModel, ollama.Source, error) { retur
 type modelRegistrar interface {
 	RegisterOllamaModel(name string, supportsTools bool) error
 	UnregisterOllamaModel(name string) error
+	// RegisterVLLMModel / UnregisterVLLMModel keep the gateway's DB-backed model list in
+	// step with the host-native vLLM backend (`ai models pull|rm --runtime vllm`): a
+	// served vLLM model is registered under its gateway alias pointing at the per-model
+	// `vllm serve` endpoint, and removed on rm. Mirrors the Ollama pair; production binds
+	// litellm.KeyManager, tests a fake.
+	RegisterVLLMModel(alias, model, apiBase string, supportsTools bool) error
+	UnregisterVLLMModel(alias string) error
 }
 
 // modelRegistrarFactory builds the registrar. A package var so tests inject a fake;

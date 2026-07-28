@@ -114,13 +114,31 @@ func TestNonInteractiveServerDomain(test *testing.T) {
 	}
 }
 
-// When host-native Ollama is healthy there is no local-inference guidance to print.
+// When host-native Ollama is healthy AND vLLM is installed there is no local-inference
+// guidance to print.
 func TestLocalInferenceGuidanceBothHealthy(test *testing.T) {
 	statuses := []setup.ServiceStatus{
 		{Name: "ollama", Mode: "host", Healthy: true},
 	}
-	if lines := localInferenceGuidanceLines("darwin", statuses, "/models"); len(lines) != 0 {
+	if lines := localInferenceGuidanceLines("darwin", statuses, "/models", true); len(lines) != 0 {
 		test.Fatalf("healthy: want no guidance, got %v", lines)
+	}
+}
+
+// vLLM being absent adds an OPTIONAL, actionable install note (never a setup failure),
+// even when the required Ollama backend is healthy.
+func TestLocalInferenceGuidanceVLLMOptionalNote(test *testing.T) {
+	statuses := []setup.ServiceStatus{{Name: "ollama", Mode: "host", Healthy: true}}
+	joined := strings.Join(localInferenceGuidanceLines("darwin", statuses, "/models", false), "\n")
+	for _, want := range []string{"vLLM is an OPTIONAL local runtime", "Metal plugin"} {
+		if !strings.Contains(joined, want) {
+			test.Fatalf("vLLM-absent guidance missing %q:\n%s", want, joined)
+		}
+	}
+	// Linux emits the CUDA/pip guidance instead.
+	linux := strings.Join(localInferenceGuidanceLines("linux", statuses, "/x", false), "\n")
+	if !strings.Contains(linux, "NVIDIA GPU") {
+		test.Fatalf("linux vLLM-absent guidance missing CUDA note:\n%s", linux)
 	}
 }
 
@@ -130,7 +148,7 @@ func TestLocalInferenceGuidanceOllamaDown(test *testing.T) {
 	statuses := []setup.ServiceStatus{
 		{Name: "ollama", Mode: "host", Healthy: false, State: "stopped"},
 	}
-	joined := strings.Join(localInferenceGuidanceLines("darwin", statuses, "/vol/models/ollama"), "\n")
+	joined := strings.Join(localInferenceGuidanceLines("darwin", statuses, "/vol/models/ollama", true), "\n")
 	for _, want := range []string{
 		"host-native Ollama is not reachable",
 		"brew install ollama",
@@ -143,7 +161,7 @@ func TestLocalInferenceGuidanceOllamaDown(test *testing.T) {
 		}
 	}
 	// Linux variant emits the install.sh guidance.
-	linux := strings.Join(localInferenceGuidanceLines("linux", statuses, "/x"), "\n")
+	linux := strings.Join(localInferenceGuidanceLines("linux", statuses, "/x", true), "\n")
 	if !strings.Contains(linux, "install.sh") {
 		test.Fatalf("linux Ollama-down guidance missing install.sh:\n%s", linux)
 	}

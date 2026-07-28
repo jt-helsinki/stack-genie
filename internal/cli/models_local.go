@@ -3,6 +3,7 @@ package cli
 import (
 	"errors"
 	"fmt"
+	goruntime "runtime"
 	"strings"
 
 	"github.com/charmbracelet/huh"
@@ -10,6 +11,7 @@ import (
 	"github.com/jt-helsinki/stack-genie/internal/ollama"
 	"github.com/jt-helsinki/stack-genie/internal/output"
 	"github.com/jt-helsinki/stack-genie/internal/ui"
+	"github.com/jt-helsinki/stack-genie/internal/vllm"
 	"github.com/spf13/cobra"
 )
 
@@ -26,9 +28,9 @@ const customModelOption = "\x00custom"
 
 // resolveModelRuntime decides the serving runtime for an install. flagValue is the
 // (possibly empty) --runtime value; empty resolves to the default (Ollama). The value
-// is validated (invalid → exit 2). Only Ollama is currently supported (a second
-// host-native runtime, vLLM, is reintroduced in follow-up work); an unrecognised value
-// is rejected rather than silently downgraded.
+// is validated (invalid → exit 2). Both host-native runtimes are accepted — `ollama`
+// (default) and `vllm` — but an unrecognised value is rejected rather than silently
+// downgraded to Ollama.
 func resolveModelRuntime(emitter *output.Emitter, flagValue string) (config.ModelRuntime, error) {
 	value := strings.TrimSpace(flagValue)
 	if value == "" {
@@ -36,9 +38,116 @@ func resolveModelRuntime(emitter *output.Emitter, flagValue string) (config.Mode
 	}
 	if !config.ValidModelRuntime(value) {
 		return "", output.Errorf(output.ExitInvalidInput,
-			"invalid --runtime %q (expected: ollama)", flagValue)
+			"invalid --runtime %q (expected: ollama or vllm)", flagValue)
 	}
 	return config.ModelRuntime(value), nil
+}
+
+// vLLM host-side seams — package vars so tests inject fakes without touching the host.
+// The real Detect/InstallGuidance/Pull live in internal/vllm; the manager (server
+// lifecycle) is built lazily so a plain Ollama pull never constructs one.
+var (
+	vllmDetectFn          = vllm.Detect
+	vllmInstallGuidanceFn = vllm.InstallGuidance
+	vllmPullFn            = vllm.Pull
+	vllmManagerFactory    = func() vllmServer {
+		return vllm.NewManager(vllm.Config{Runner: vllm.RealRunner{}, Probe: vllm.RealHealthProbe()})
+	}
+)
+
+// vllmServer is the host-side vLLM server manager slice used by `ai models pull|rm
+// --runtime vllm`: it starts/locates a per-model `vllm serve` endpoint and stops it on
+// removal. Production binds *vllm.Manager; tests a fake.
+type vllmServer interface {
+	EnsureServed(alias, model string) (endpoint string, err error)
+	Stop(alias string) error
+}
+
+// vllmDefaultAlias derives the gateway alias for a vLLM model id when --alias is
+// omitted: the id's last path segment (e.g. "mlx-community/Qwen2.5-7B-Instruct-4bit" →
+// "Qwen2.5-7B-Instruct-4bit").
+func vllmDefaultAlias(model string) string {
+	if slash := strings.LastIndexByte(model, '/'); slash >= 0 && slash < len(model)-1 {
+		return model[slash+1:]
+	}
+	return model
+}
+
+// vllmNotInstalledError is the exit-3 error shown when --runtime vllm is chosen but no
+// vLLM install is present. It NEVER falls back to Ollama — it carries the per-OS
+// install guidance so the user can act.
+func vllmNotInstalledError() error {
+	guidance := vllmInstallGuidanceFn(goruntime.GOOS)
+	return output.Errorf(output.ExitMissingDep,
+		"vLLM is not installed — required for `--runtime vllm`. To install it:\n  %s",
+		strings.Join(guidance, "\n  "))
+}
+
+// vllmActionable wraps a `hardware bring-up` seam error (ErrNotWired) so the user sees
+// why a real vLLM run/download failed rather than a bare internal error. Any other
+// error passes through.
+func vllmActionable(err error) error {
+	if errors.Is(err, vllm.ErrNotWired) {
+		return fmt.Errorf("vLLM serving is not yet available on this host (hardware bring-up): %w", err)
+	}
+	return err
+}
+
+// pullVLLM installs one or more models through the host-native vLLM backend: it gates on
+// a real vLLM install (exit 3 with guidance when missing — NEVER a silent Ollama
+// fallback), downloads each model's weights (vllm.Pull), starts/locates its per-model
+// endpoint (EnsureServed), registers it in the gateway under its alias, and records the
+// runtime choice with the observed endpoint so a later run / `rm` finds it. The live
+// download + serve are `hardware bring-up` (ErrNotWired on a dev host) — surfaced as an
+// actionable per-model error, never a crash. Returns the process exit code.
+func pullVLLM(emitter *output.Emitter, names []string, alias string) int {
+	if installed, _ := vllmDetectFn(); !installed {
+		return emitter.Failure("models.pull", vllmNotInstalledError())
+	}
+	if alias != "" && len(names) > 1 {
+		return emitter.Failure("models.pull", output.Errorf(output.ExitInvalidInput,
+			"--alias applies to a single model (got %d)", len(names)))
+	}
+	manager := vllmManagerFactory()
+	registrar := modelRegistrarFactory()
+
+	result := modelsPullResult{Pulled: make([]modelPullOutcome, 0, len(names))}
+	failures := 0
+	for _, model := range names {
+		modelAlias := alias
+		if modelAlias == "" {
+			modelAlias = vllmDefaultAlias(model)
+		}
+		outcome := modelPullOutcome{Model: model}
+		if err := vllmPullFn(model); err != nil {
+			outcome.Error = vllmActionable(err).Error()
+			failures++
+			result.Pulled = append(result.Pulled, outcome)
+			continue
+		}
+		endpoint, err := manager.EnsureServed(modelAlias, model)
+		if err != nil {
+			outcome.Error = vllmActionable(err).Error()
+			failures++
+			result.Pulled = append(result.Pulled, outcome)
+			continue
+		}
+		outcome.OK = true
+		// vLLM tool support is model-dependent and not probed here; unknown defaults to
+		// capable, matching the gateway's default treatment.
+		if regErr := registrar.RegisterVLLMModel(modelAlias, model, endpoint, true); regErr != nil {
+			outcome.RegisterError = regErr.Error()
+		} else {
+			outcome.Registered = true
+			recordModelRuntimeChoice(modelAlias, model, config.RuntimeVLLM, endpoint)
+		}
+		result.Pulled = append(result.Pulled, outcome)
+	}
+	if failures > 0 {
+		return emitter.Failure("models.pull", output.Errorf(output.ExitRuntimeFailure,
+			"%d of %d vLLM model(s) failed to install", failures, len(names)).WithDetails(result))
+	}
+	return emitter.Success("models.pull", result)
 }
 
 // recordModelRuntimeChoice persists the serving-runtime selection for a pulled model
@@ -71,6 +180,37 @@ func runtimeChoicesForModel(ref string) []config.ModelRuntimeChoice {
 		}
 	}
 	return matched
+}
+
+// vllmChoiceForRef finds a recorded vLLM runtime choice for ref, matching either the
+// store's Alias key (a user removing by gateway alias) or the underlying Model (removing
+// by the vLLM model id). Returns false when ref is not a recorded vLLM model — in which
+// case `rm` falls through to the Ollama path.
+func vllmChoiceForRef(ref string) (config.ModelRuntimeChoice, bool) {
+	if choice, ok := config.ModelRuntimeFor(ref); ok && choice.Runtime == config.RuntimeVLLM {
+		return choice, true
+	}
+	for _, choice := range runtimeChoicesForModel(ref) {
+		if choice.Runtime == config.RuntimeVLLM {
+			return choice, true
+		}
+	}
+	return config.ModelRuntimeChoice{}, false
+}
+
+// removeVLLM de-registers a vLLM-served model: it un-registers it from the gateway,
+// stops its per-model `vllm serve` process, and clears the recorded runtime choice. All
+// steps are best-effort (a gateway/host hiccup must not fail the removal); the gateway
+// un-register error is surfaced in the result. Returns the process exit code.
+func removeVLLM(emitter *output.Emitter, ref string, choice config.ModelRuntimeChoice) int {
+	result := modelsRmResult{Model: ref}
+	registrar := modelRegistrarFactory()
+	if regErr := registrar.UnregisterVLLMModel(choice.Alias); regErr != nil {
+		result.UnregisterError = regErr.Error()
+	}
+	_ = vllmManagerFactory().Stop(choice.Alias)
+	_ = config.DeleteModelRuntime(choice.Alias)
+	return emitter.Success("models.rm", result)
 }
 
 // ollamaErr maps an ollama.Client error to the platform exit codes: an unreachable
@@ -347,10 +487,11 @@ func (result modelsPullResult) Human() string {
 
 func newModelsPullCmd(emitter *output.Emitter, exit *int) *cobra.Command {
 	var runtimeFlag string
+	var aliasFlag string
 	cmd := &cobra.Command{
 		Use:   "pull [name...]",
-		Short: "Download one or more models into the local (Ollama) store",
-		Long: "Download one or more models into the local Ollama store. With name arguments\n" +
+		Short: "Download one or more models into the local store (Ollama or vLLM)",
+		Long: "Download one or more models into the local store. With name arguments\n" +
 			"(or under --json / no TTY) each given reference is pulled in turn — this is\n" +
 			"the custom-reference path (e.g. `llama3.2:3b qwen2.5:7b`, or `hf.co/user/model`).\n" +
 			"On a terminal with no arguments you check off any number of popular models (a\n" +
@@ -358,8 +499,10 @@ func newModelsPullCmd(emitter *output.Emitter, exit *int) *cobra.Command {
 			"references. Every selected model is pulled; the run continues past a failure\n" +
 			"and reports a per-model summary. Re-pulling an installed model updates it\n" +
 			"(there is no separate update command).\n\n" +
-			"--runtime selects how the model is SERVED through the gateway (currently only\n" +
-			"`ollama`, the default).",
+			"--runtime selects how the model is SERVED through the gateway: `ollama` (default,\n" +
+			"GGUF via host-native Ollama) or `vllm` (host-native vLLM — mlx-community ids on\n" +
+			"macOS, Hugging Face safetensors ids on Linux). With --runtime vllm, --alias sets\n" +
+			"the gateway alias (default: the model id's base name).",
 		Args: cobra.ArbitraryArgs,
 		RunE: func(_ *cobra.Command, args []string) error {
 			names := dedupeModelNames(args)
@@ -387,6 +530,23 @@ func newModelsPullCmd(emitter *output.Emitter, exit *int) *cobra.Command {
 			chosenRuntime, runtimeErr := resolveModelRuntime(emitter, runtimeFlag)
 			if runtimeErr != nil {
 				*exit = emitter.Failure("models.pull", runtimeErr)
+				return nil
+			}
+			// On a TTY, offer the runtime as a pre-seeded choice — but only when vLLM is
+			// actually installed (otherwise Ollama is the sole real option and prompting
+			// adds nothing). Under --json / no TTY the flag value stands.
+			if interactive(emitter) {
+				if installed, _ := vllmDetectFn(); installed {
+					picked, promptErr := promptModelRuntime(chosenRuntime)
+					if promptErr != nil {
+						*exit = emitter.Failure("models.pull", promptErr)
+						return nil
+					}
+					chosenRuntime = picked
+				}
+			}
+			if chosenRuntime == config.RuntimeVLLM {
+				*exit = pullVLLM(emitter, names, strings.TrimSpace(aliasFlag))
 				return nil
 			}
 			client := ollamaClient()
@@ -419,8 +579,7 @@ func newModelsPullCmd(emitter *output.Emitter, exit *int) *cobra.Command {
 				// gains a stable id and shows in the live catalogue. A gateway that is
 				// down or has no master key must NOT fail the pull — warn and continue.
 				// The choice is recorded (best-effort) so a later `rm` de-registers the
-				// right backend. Only Ollama is currently supported.
-				_ = chosenRuntime
+				// right backend (this is the Ollama path; vLLM returns earlier).
 				outcome := modelPullOutcome{Model: name, OK: true}
 				supportsTools := ollamaModelSupportsTools(client, name)
 				regErr := registrar.RegisterOllamaModel(name, supportsTools)
@@ -466,8 +625,38 @@ func newModelsPullCmd(emitter *output.Emitter, exit *int) *cobra.Command {
 		},
 	}
 	cmd.Flags().StringVar(&runtimeFlag, "runtime", string(config.RuntimeOllama),
-		"serving runtime (currently only: ollama)")
+		"serving runtime: ollama (default) or vllm")
+	cmd.Flags().StringVar(&aliasFlag, "alias", "",
+		"gateway alias for the served model (--runtime vllm only; default: the model id's base name)")
 	return cmd
+}
+
+// promptModelRuntime shows the serving-runtime picker on a TTY, pre-seeded with seed
+// (the --runtime value / default). It is only invoked when vLLM is actually installed,
+// so both options are meaningful. Returns the chosen runtime.
+func promptModelRuntime(seed config.ModelRuntime) (config.ModelRuntime, error) {
+	options := make([]huh.Option[string], 0, len(config.ModelRuntimes()))
+	for _, runtime := range config.ModelRuntimes() {
+		options = append(options, huh.NewOption(modelRuntimeLabel(runtime), string(runtime)))
+	}
+	chosen, err := promptChoice("Serving runtime",
+		"How the model is served through the gateway.", options, string(seed))
+	if err != nil {
+		return "", err
+	}
+	return config.ModelRuntime(chosen), nil
+}
+
+// modelRuntimeLabel is the human label for a serving runtime in the CLI picker.
+func modelRuntimeLabel(runtime config.ModelRuntime) string {
+	switch runtime {
+	case config.RuntimeOllama:
+		return "Ollama (GGUF, host-native)"
+	case config.RuntimeVLLM:
+		return "vLLM (MLX / safetensors, host-native)"
+	default:
+		return string(runtime)
+	}
 }
 
 // dedupeModelNames trims, drops empties, and removes duplicate references while
@@ -627,9 +816,15 @@ func newModelsRmCmd(emitter *output.Emitter, exit *int) *cobra.Command {
 				}
 				name = picked
 			}
+			// Resolve the recorded serving runtime up front so the confirm wording and
+			// the de-registration target match the backend the model was installed on.
+			vllmChoice, isVLLM := vllmChoiceForRef(name)
 			if interactive(emitter) {
-				confirmed, err := promptConfirm("Remove "+name+"?",
-					"this deletes the model from the local Ollama store")
+				detail := "this deletes the model from the local Ollama store"
+				if isVLLM {
+					detail = "this stops the vLLM server and de-registers the model from the gateway"
+				}
+				confirmed, err := promptConfirm("Remove "+name+"?", detail)
 				if err != nil {
 					*exit = emitter.Failure("models.rm", err)
 					return nil
@@ -638,6 +833,12 @@ func newModelsRmCmd(emitter *output.Emitter, exit *int) *cobra.Command {
 					*exit = emitter.Failure("models.rm", output.Errorf(output.ExitInvalidInput, "cancelled"))
 					return nil
 				}
+			}
+			// vLLM backend: there is no Ollama store entry to delete — stop the per-model
+			// server, de-register it, and clear the recorded choice (all best-effort).
+			if isVLLM {
+				*exit = removeVLLM(emitter, name, vllmChoice)
+				return nil
 			}
 			var err error
 			if ui.Enabled(emitter) {

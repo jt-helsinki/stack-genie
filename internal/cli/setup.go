@@ -933,7 +933,8 @@ func printLocalInferenceGuidance(em *output.Emitter) {
 	if err != nil {
 		return
 	}
-	lines := localInferenceGuidanceLines(goruntime.GOOS, statuses, defaultOllamaModelsDir())
+	vllmInstalled, _ := vllmDetectFn()
+	lines := localInferenceGuidanceLines(goruntime.GOOS, statuses, defaultOllamaModelsDir(), vllmInstalled)
 	if len(lines) == 0 {
 		return
 	}
@@ -944,12 +945,13 @@ func printLocalInferenceGuidance(em *output.Emitter) {
 	}
 }
 
-// localInferenceGuidanceLines builds the actionable host-native-Ollama guidance shown
-// at the end of `ai setup`. Ollama is REQUIRED for local models. It returns the lines
-// to print (empty when Ollama is healthy), given the current service statuses, this
-// host's OS, and the host Ollama model store path. Pure (no I/O) so it is
-// unit-testable.
-func localInferenceGuidanceLines(goos string, statuses []setup.ServiceStatus, ollamaModelsDir string) []string {
+// localInferenceGuidanceLines builds the actionable local-inference guidance shown at
+// the end of `ai setup`: host-native Ollama (REQUIRED for local models) plus an
+// OPTIONAL host-native vLLM note. It returns the lines to print (empty when Ollama is
+// healthy and vLLM is installed), given the current service statuses, this host's OS,
+// the host Ollama model store path, and whether a vLLM install was detected. Pure (no
+// I/O) so it is unit-testable.
+func localInferenceGuidanceLines(goos string, statuses []setup.ServiceStatus, ollamaModelsDir string, vllmInstalled bool) []string {
 	var ollamaPresent, ollamaHealthy bool
 	for _, status := range statuses {
 		if status.Name == "ollama" {
@@ -971,6 +973,16 @@ func localInferenceGuidanceLines(goos string, statuses []setup.ServiceStatus, ol
 			lines = append(lines, "    "+ui.Value.Render("OLLAMA_MODELS="+ollamaModelsDir))
 		}
 		lines = append(lines, "  then re-run "+ui.Primary.Render("`ai setup`")+".")
+	}
+	// vLLM is an OPTIONAL second local runtime (`ai models pull --runtime vllm`). Never a
+	// setup failure — when it is absent we print a short, actionable install note so a
+	// user who wants it knows how to get there.
+	if !vllmInstalled {
+		lines = append(lines,
+			ui.Muted.Render(ui.IconDot+" vLLM is an OPTIONAL local runtime (`ai models pull --runtime vllm`). It is not installed. To enable it:"))
+		for _, step := range vllmInstallGuidanceFn(goos) {
+			lines = append(lines, "    "+step)
+		}
 	}
 	return lines
 }

@@ -38,6 +38,10 @@ type localModel struct {
 	installed   map[string]bool              // which of tags are installed locally
 	sizes       map[string]int64             // on-disk byte size of installed tags
 	tagInfo     map[string]ollama.LibraryTag // library size/context/input by short tag
+	// runtime marks a row's serving backend. Empty = the default Ollama row (a library
+	// model with tags); RuntimeVLLM marks a curated vLLM starter row (a single model id,
+	// no ollama-style tags) that pulls directly via `enter` rather than drilling.
+	runtime config.ModelRuntime
 }
 
 // anyInstalled reports whether at least one of the model's tags is installed.
@@ -133,10 +137,17 @@ type LocalModels struct {
 	drill    *tagPicker
 	runtime  *runtimePicker // the post-selection install-engine choice (nil when inactive)
 
-	models         []localModel // every model row (installed-first then installable)
+	models         []localModel // every model row (installed, then Ollama installable, then vLLM)
 	installedCount int          // how many of models are in the Installed section
+	vllmStart      int          // index in models where the vLLM installable section begins
 	window         listWindow   // the reusable windowed-list layout + anchor scroll
 	installed      map[string]bool
+
+	// vllmGoos, when non-empty, turns on the curated "Installable (vLLM)" section for
+	// that host platform (MLX ids on darwin, HF safetensors ids on linux). Off by default
+	// so views built without a platform — unit tests focused on the Ollama sections — show
+	// no vLLM rows; production wires it via EnableVLLMSection.
+	vllmGoos string
 
 	source     ollama.Source
 	libraryErr error
@@ -159,6 +170,12 @@ type LocalModels struct {
 func NewLocalModels(list LocalModelLister, library, refresh LibraryLister, show ModelShowFetcher, test ModelTester, syncGway LocalModelSyncer) *LocalModels {
 	return &LocalModels{list: list, library: library, refresh: refresh, show: show, test: test, syncGway: syncGway, describe: newDescribePane()}
 }
+
+// EnableVLLMSection turns on the curated "Installable (vLLM)" section for the given host
+// platform (goos): mlx-community ids on darwin, Hugging Face safetensors ids on linux.
+// Called once by the production wiring; unit tests that focus on the Ollama sections
+// leave it off so their row counts are unaffected. Takes effect on the next build.
+func (view *LocalModels) EnableVLLMSection(goos string) { view.vllmGoos = goos }
 
 func (view *LocalModels) Title() string { return "Local Models" }
 
@@ -201,7 +218,8 @@ func (view *LocalModels) windowLines() []ListLine {
 		}
 	}
 	appendSection("Installed", 0, view.installedCount)
-	appendSection("Installable", view.installedCount, len(view.models))
+	appendSection("Installable", view.installedCount, view.vllmStart)
+	appendSection("Installable (vLLM)", view.vllmStart, len(view.models))
 	return lines
 }
 
@@ -320,6 +338,14 @@ func (view *LocalModels) handleKey(key tea.KeyMsg) tea.Cmd {
 		if !ok {
 			view.flash = ui.Muted.Render("no model selected")
 			return nil
+		}
+		// A curated vLLM row has no ollama-style tags to drill into — enter pulls it
+		// directly under the vLLM runtime (`ai models pull --runtime vllm <id>`).
+		if model.runtime == config.RuntimeVLLM {
+			ref := model.name
+			return func() tea.Msg {
+				return ModelsPullRequestedMsg{Refs: []string{ref}, Runtime: string(config.RuntimeVLLM)}
+			}
 		}
 		view.openDrill(model)
 		return nil
@@ -509,6 +535,8 @@ func runtimePickerLabel(runtime config.ModelRuntime) string {
 	switch runtime {
 	case config.RuntimeOllama:
 		return "Ollama"
+	case config.RuntimeVLLM:
+		return "vLLM"
 	default:
 		return string(runtime)
 	}
@@ -633,7 +661,55 @@ func (view *LocalModels) buildModels(installed []ollama.Model, library []ollama.
 
 	view.models = append(installedRows, installableRows...)
 	view.installedCount = len(installedRows)
+	// The curated vLLM starter rows form their own trailing section (only on a platform
+	// with a curated set). They carry no ollama-style tags — `enter` pulls them directly
+	// under the vLLM runtime.
+	view.vllmStart = len(view.models)
+	for _, id := range vllmStarterRows(view.vllmGoos) {
+		view.models = append(view.models, localModel{
+			name:        id,
+			description: "vLLM starter model",
+			runtime:     config.RuntimeVLLM,
+		})
+	}
 	view.window.Reset() // reseat the cursor on the first model + scroll to the top
+}
+
+// vllmStarterModelsFn is the seam that yields the curated per-platform vLLM starter
+// list; a package var so tests can pin a platform without touching runtime.GOOS.
+var vllmStarterModelsFn = vllmStarterModels
+
+// vllmStarterRows returns the curated vLLM starter ids for goos (empty when goos is
+// unset or unsupported).
+func vllmStarterRows(goos string) []string {
+	if goos == "" {
+		return nil
+	}
+	return vllmStarterModelsFn(goos)
+}
+
+// vllmStarterModels is a SMALL CURATED per-platform starter set of vLLM-servable model
+// ids: mlx-community/* ids on darwin (served via the vLLM-Metal plugin) and Hugging Face
+// safetensors ids on linux (CUDA). It is a deliberate STARTER SET — a follow-up
+// (`hardware bring-up`) will replace it with a LIVE Hugging Face hub scrape filtered by
+// the platform weight format. Returns nil on an unsupported GOOS.
+func vllmStarterModels(goos string) []string {
+	switch goos {
+	case "darwin":
+		return []string{
+			"mlx-community/Qwen2.5-7B-Instruct-4bit",
+			"mlx-community/Llama-3.2-3B-Instruct-4bit",
+			"mlx-community/Mistral-7B-Instruct-v0.3-4bit",
+		}
+	case "linux":
+		return []string{
+			"Qwen/Qwen2.5-7B-Instruct",
+			"meta-llama/Llama-3.2-3B-Instruct",
+			"mistralai/Mistral-7B-Instruct-v0.3",
+		}
+	default:
+		return nil
+	}
 }
 
 // moveCursor steps the cursor by step (±1) over MODEL rows only (the listWindow never
@@ -671,6 +747,11 @@ func (view *LocalModels) libraryFlash() {
 // the signal that a cached copy is in use after a failed live fetch.
 func (view *LocalModels) hasLibraryRows() bool {
 	for _, model := range view.models {
+		if model.runtime == config.RuntimeVLLM {
+			// Curated vLLM rows are not sourced from the ollama.com library, so they
+			// must not stand in for a live library fetch having succeeded.
+			continue
+		}
 		if model.description != "" || !model.anyInstalled() {
 			return true
 		}
@@ -940,6 +1021,8 @@ func runtimeBadgeLabel(runtime config.ModelRuntime) string {
 	switch runtime {
 	case config.RuntimeOllama:
 		return "ollama"
+	case config.RuntimeVLLM:
+		return "vllm"
 	default:
 		return ""
 	}

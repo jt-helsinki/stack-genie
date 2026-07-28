@@ -308,6 +308,9 @@ func Run(cwd string) error {
 		litellmClient.Test,
 		syncLocalModelsToGateway, // `r` also registers the installed models with the gateway
 	)
+	// Surface the curated vLLM starter set as an "Installable (vLLM)" section for this
+	// host's weight format (MLX on darwin, HF safetensors on linux).
+	localModelsView.EnableVLLMSection(goruntime.GOOS)
 	// Cloud Models: the models.dev catalog (with its data source for availability
 	// messaging), the gateway's live (registered) set, the `r`-refresh (re-fetch the
 	// catalog + resync the gateway), and the gateway tester. All over the existing

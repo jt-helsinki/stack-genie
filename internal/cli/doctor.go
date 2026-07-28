@@ -62,11 +62,33 @@ func newDoctorCmd(emitter *output.Emitter, exit *int) *cobra.Command {
 // import cycle). A status-load failure yields an empty list: doctor still
 // reports the platform-dependency checks rather than failing.
 func doctorServices() []doctor.Service {
-	statuses, err := setup.ServicesStatus(setup.RealDeps(goruntime.GOOS, goruntime.GOARCH, nowRFC3339))
-	if err != nil {
-		return nil
+	var services []doctor.Service
+	if statuses, err := setup.ServicesStatus(setup.RealDeps(goruntime.GOOS, goruntime.GOARCH, nowRFC3339)); err == nil {
+		services = mapDoctorServices(statuses, goruntime.GOOS)
 	}
-	return mapDoctorServices(statuses, goruntime.GOOS)
+	// vLLM is a host-native OPTIONAL local runtime (not an aip-* container), so it is
+	// surfaced independently of the service-tier status load. It is Optional, so a
+	// not-installed vLLM never turns `ai doctor` unhealthy.
+	installed, _ := vllmDetectFn()
+	services = append(services, vllmDoctorService(goruntime.GOOS, installed))
+	return services
+}
+
+// vllmDoctorService builds the OPTIONAL host-native vLLM line for `ai doctor`. When
+// installed it reports the platform weight format; when absent it folds the per-OS
+// install guidance into the state so the note is actionable. It is pure so it is
+// unit-testable without probing the host.
+func vllmDoctorService(goos string, installed bool) doctor.Service {
+	service := doctor.Service{Name: "vllm", Optional: true}
+	if installed {
+		service.Healthy = true
+		service.State = "installed"
+		service.Detail = "optional host-native runtime (`ai models pull --runtime vllm`)"
+		return service
+	}
+	service.State = "not installed — optional: " + strings.Join(vllmInstallGuidanceFn(goos), "; ")
+	service.Detail = "optional; only needed for `ai models pull --runtime vllm`"
+	return service
 }
 
 // mapDoctorServices maps the setup service statuses into the doctor layer's Service
