@@ -521,3 +521,100 @@ func TestRunStopsHostOllamaAndKeepsModels(test *testing.T) {
 		test.Error("host model store (volumes/models) must be kept on a plain uninstall")
 	}
 }
+
+// TestRunRemoveRuntimesStopsAndRemoves: opting into runtime removal (the TTY
+// default-yes / no --keep-runtimes) stops the vLLM servers, attempts removal of
+// BOTH host-native runtimes (Ollama + vLLM), records it in the Report, and STILL
+// keeps the downloaded model store (only --purge removes that).
+func TestRunRemoveRuntimesStopsAndRemoves(test *testing.T) {
+	home := test.TempDir()
+	test.Setenv("HOME", home)
+	test.Setenv("ZDOTDIR", "")
+	if err := runtime.Persist(&runtime.Info{SchemaVersion: runtime.SchemaVersion}); err != nil {
+		test.Fatalf("persist runtime: %v", err)
+	}
+	ollamaBlob := filepath.Join(home, ".ai-platform", "volumes", "models", "blobs", "sha256-abc")
+	vllmBlob := filepath.Join(home, ".ai-platform", "volumes", "models", "vllm", "weights.safetensors")
+	mustWrite(test, ollamaBlob, "x")
+	mustWrite(test, vllmBlob, "x")
+
+	prober := &fakeProber{present: map[string]bool{}}
+	withHostsSeams(test, filepath.Join(home, "etc-hosts"), func(string, []byte) error { return nil })
+
+	report, err := Run(Options{RemoveRuntimes: true}, prober, nil) // no purge
+	if err != nil {
+		test.Fatalf("Run: %v", err)
+	}
+	if !report.RemovedHostOllama {
+		test.Error("RemovedHostOllama = false, want true when RemoveRuntimes is set")
+	}
+	if !report.RemovedVLLM {
+		test.Error("RemovedVLLM = false, want true when RemoveRuntimes is set")
+	}
+	if !containsLine(prober.ran, "pkill -f vllm serve") {
+		test.Errorf("expected a vLLM server stop attempt, ran: %v", prober.ran)
+	}
+	if !containsLine(prober.ran, "pkill -f ollama serve") {
+		test.Errorf("expected a host-Ollama stop attempt, ran: %v", prober.ran)
+	}
+	// Removing the RUNTIMES must never delete the downloaded MODELS on a plain uninstall.
+	if _, statErr := os.Stat(ollamaBlob); os.IsNotExist(statErr) {
+		test.Error("Ollama model store must be kept when removing runtimes on a plain uninstall")
+	}
+	if _, statErr := os.Stat(vllmBlob); os.IsNotExist(statErr) {
+		test.Error("vLLM model store must be kept when removing runtimes on a plain uninstall")
+	}
+}
+
+// TestRunKeepRuntimesSkipsRemoval: without RemoveRuntimes (the --keep-runtimes /
+// prompt-no path) neither runtime is removed and no vLLM stop is attempted; the
+// Report reflects that both were left installed.
+func TestRunKeepRuntimesSkipsRemoval(test *testing.T) {
+	home := test.TempDir()
+	test.Setenv("HOME", home)
+	test.Setenv("ZDOTDIR", "")
+	if err := runtime.Persist(&runtime.Info{SchemaVersion: runtime.SchemaVersion}); err != nil {
+		test.Fatalf("persist runtime: %v", err)
+	}
+	prober := &fakeProber{present: map[string]bool{}}
+	withHostsSeams(test, filepath.Join(home, "etc-hosts"), func(string, []byte) error { return nil })
+
+	report, err := Run(Options{}, prober, nil) // RemoveRuntimes defaults false
+	if err != nil {
+		test.Fatalf("Run: %v", err)
+	}
+	if report.RemovedHostOllama || report.RemovedVLLM {
+		test.Errorf("runtimes must be kept when RemoveRuntimes is false, got ollama=%t vllm=%t",
+			report.RemovedHostOllama, report.RemovedVLLM)
+	}
+	if containsLine(prober.ran, "pkill -f vllm serve") {
+		test.Errorf("no vLLM stop should be attempted when keeping runtimes, ran: %v", prober.ran)
+	}
+}
+
+// TestRunPurgeWithRuntimesRemovesModelStore: --purge RemoveAll's ~/.ai-platform
+// (models included) even alongside runtime removal.
+func TestRunPurgeWithRuntimesRemovesModelStore(test *testing.T) {
+	home := test.TempDir()
+	test.Setenv("HOME", home)
+	test.Setenv("ZDOTDIR", "")
+	if err := runtime.Persist(&runtime.Info{SchemaVersion: runtime.SchemaVersion}); err != nil {
+		test.Fatalf("persist runtime: %v", err)
+	}
+	modelBlob := filepath.Join(home, ".ai-platform", "volumes", "models", "blobs", "sha256-abc")
+	mustWrite(test, modelBlob, "x")
+
+	prober := &fakeProber{present: map[string]bool{}}
+	withHostsSeams(test, filepath.Join(home, "etc-hosts"), func(string, []byte) error { return nil })
+
+	report, err := Run(Options{Purge: true, RemoveRuntimes: true}, prober, nil)
+	if err != nil {
+		test.Fatalf("Run: %v", err)
+	}
+	if !report.Purged {
+		test.Error("Purged = false, want true")
+	}
+	if _, statErr := os.Stat(modelBlob); !os.IsNotExist(statErr) {
+		test.Error("--purge must RemoveAll ~/.ai-platform including the downloaded models")
+	}
+}

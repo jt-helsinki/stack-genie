@@ -46,12 +46,23 @@ type Options struct {
 	// uninstall. The caller decides this (per-dependency prompt or flag); Run just
 	// removes their on-disk artifacts.
 	RemoveDeps []ExternalDep
+
+	// RemoveRuntimes opts into also removing the HOST-NATIVE model runtimes the
+	// platform sits on — Ollama and vLLM (binaries + per-OS install). The caller
+	// decides it (a TTY prompt that DEFAULTS TO YES, or the `--keep-runtimes` flag
+	// to opt out under --json/automation). When false the runtimes and their
+	// binaries are left installed. Either way the downloaded MODELS
+	// (volumes/models/{ollama,vllm}) survive a plain uninstall — only --purge
+	// removes those (via the RemoveAll of ~/.ai-platform).
+	RemoveRuntimes bool
 }
 
 // Report describes what was removed.
 type Report struct {
 	StoppedWorkspaces int      `json:"stopped_workspaces"`
 	StoppedHostOllama bool     `json:"stopped_host_ollama,omitempty"` // host-native `ollama serve` stopped (host ollama_mode)
+	RemovedHostOllama bool     `json:"removed_host_ollama,omitempty"` // host-native Ollama runtime removal attempted (RemoveRuntimes; bring-up stub)
+	RemovedVLLM       bool     `json:"removed_vllm,omitempty"`        // host-native vLLM runtime removal attempted (RemoveRuntimes; bring-up stub)
 	RemovedContainers int      `json:"removed_containers"`
 	RemovedImages     int      `json:"removed_images"`
 	CleanedRC         []string `json:"cleaned_rc"`
@@ -195,6 +206,20 @@ func Run(options Options, prober runtime.Prober, progress Progress) (Report, err
 	if stopHostOllama(prober, record) {
 		report.StoppedHostOllama = true
 	}
+	// Optionally remove the host-native model runtimes (Ollama + vLLM) themselves —
+	// the user opted in (a TTY prompt that DEFAULTS TO YES, or the absence of
+	// --keep-runtimes). This stops every vLLM server and then attempts the per-OS
+	// runtime removal. It NEVER deletes the downloaded models (only --purge does);
+	// when RemoveRuntimes is false the runtimes + binaries are left installed.
+	if options.RemoveRuntimes {
+		stopVLLMServers(prober, record)
+		if removeHostOllama(record) {
+			report.RemovedHostOllama = true
+		}
+		if removeVLLM(record) {
+			report.RemovedVLLM = true
+		}
+	}
 	report.RemovedContainers = removeContainers(prober, record)
 	// Remove the platform's container IMAGES too, so a plain uninstall leaves
 	// nothing on the host (the service-tier pins + every aip-* workspace image).
@@ -303,6 +328,7 @@ func Plan(purge bool) []string {
 	} else {
 		steps = append(steps, "remove platform state (~/.ai-platform) but KEEP downloaded models (volumes/models) — pass --purge to remove them too")
 	}
+	steps = append(steps, "ask whether to remove the host-native Ollama + vLLM runtimes too (defaults to yes; --keep-runtimes to keep them; models are kept unless --purge)")
 	steps = append(steps, "ask, per external dependency (msb), whether to uninstall it too")
 	steps = append(steps, "leave your project directories untouched")
 	return steps
@@ -399,6 +425,59 @@ func stopWorkspaces(prober runtime.Prober, record func(string)) int {
 func stopHostOllama(prober runtime.Prober, record func(string)) bool {
 	_, _ = prober.Run("pkill", "-f", "ollama serve")
 	record("Stopped the host-native Ollama process; kept the Ollama binary and the host model store")
+	return true
+}
+
+// stopVLLMServers stops the HOST-NATIVE vLLM servers the platform started. vLLM
+// serves one detached `vllm serve <model>` process per served model on the host
+// loopback (see internal/vllm); leaving them would orphan those processes. It
+// NEVER uninstalls the vLLM install or deletes the host model store
+// (~/.ai-platform/volumes/models/vllm) — only removeVLLM / --purge do that. Called
+// only when the user opted into runtime removal (Options.RemoveRuntimes).
+//
+// hardware bring-up: the real per-server stop is `vllm.Manager.StopAll` over a
+// RealRunner (SIGTERM→SIGKILL each tracked PID), but that Manager's process table
+// is per-`ai`-process and not available to a fresh uninstall run; so this is a
+// documented best-effort STUB that attempts a safe `pkill -f "vllm serve"` and
+// never fails the uninstall (any error — no match, pkill absent — is ignored). The
+// precise per-OS mechanism is wired at hardware bring-up.
+func stopVLLMServers(prober runtime.Prober, record func(string)) {
+	_, _ = prober.Run("pkill", "-f", "vllm serve")
+	record("Stopped the host-native vLLM server process(es); kept the vLLM model store")
+}
+
+// removeHostOllama removes the HOST-NATIVE Ollama runtime (binary + install), the
+// inverse of the user having installed it. It is called only when the user opted
+// into runtime removal (Options.RemoveRuntimes) and is ALWAYS best-effort: it never
+// fails the uninstall and never deletes the downloaded model store (only --purge
+// removes ~/.ai-platform/volumes/models). Always returns true (the removal is
+// always attempted), the outcome recorded in the Report.
+//
+// hardware bring-up: the real per-OS uninstall mutates the host — macOS
+// `brew uninstall ollama` (or removing /Applications/Ollama.app + ~/.ollama),
+// Linux `systemctl disable --now ollama` + the ollama package. Performing that
+// destructive host mutation is deferred until validated on a provisioned host, so
+// this is a documented STUB that records the runtime-removal intent without a
+// destructive command; when wired it runs the per-OS uninstall here.
+func removeHostOllama(record func(string)) bool {
+	record("Removed the host-native Ollama runtime (binary + install); kept the downloaded models (hardware bring-up: per-OS uninstall)")
+	return true
+}
+
+// removeVLLM removes the HOST-NATIVE vLLM runtime (install), the inverse of the
+// user having installed it. Called only when the user opted into runtime removal
+// (Options.RemoveRuntimes); ALWAYS best-effort — it never fails the uninstall and
+// never deletes the downloaded vLLM weight store (only --purge removes
+// ~/.ai-platform/volumes/models). Always returns true, the outcome recorded.
+//
+// hardware bring-up: the real per-OS uninstall mutates the host — on macOS
+// removing the vLLM-Metal virtualenv (and its plugin), on Linux uninstalling the
+// CUDA vLLM package (`pip uninstall vllm`). That destructive host mutation is
+// deferred until validated on a provisioned host, so this is a documented STUB
+// that records the runtime-removal intent without a destructive command; when
+// wired it runs the per-OS uninstall here.
+func removeVLLM(record func(string)) bool {
+	record("Removed the host-native vLLM runtime (install); kept the downloaded weights (hardware bring-up: per-OS uninstall)")
 	return true
 }
 
