@@ -5,7 +5,7 @@ Top-level containers and the model data path in words. The **canonical diagram**
 authoritative — includes every service: proxy, headroom, litellm + DB, presidio,
 valkey, redisinsight, dns); its rendered export `docs/architecture.png` is
 embedded in [`architecture-overview.md`](architecture-overview.md). The local-model
-inference backends — **host-native Ollama** and **Docker Model Runner (DMR)** — are
+inference backends — **host-native Ollama** and **vLLM** — are
 host-side, not `aip-net` containers; the LiteLLM/nginx containers reach them via
 `host.docker.internal` (regenerate `architecture.mmd` accordingly).
 
@@ -53,15 +53,15 @@ host-side, not `aip-net` containers; the LiteLLM/nginx containers reach them via
    removed — they false-positived on ordinary coding/Ollama traffic.) Its admin UI /
    virtual keys / spend live in **aip-litellm-db**.
 5. LiteLLM routes to a **local-inference backend** — **host-native Ollama** or
-   **Docker Model Runner (DMR)**, both host-side services reached through the
-   `host.docker.internal` gateway (Ollama at `:11434`, DMR's OpenAI-compatible endpoint at
-   `:12434/engines/v1`; LiteLLM/nginx get `--add-host=host.docker.internal:host-gateway`) —
+   **vLLM**, both host-side services reached through the
+   `host.docker.internal` gateway (Ollama at `:11434`, vLLM's OpenAI-compatible endpoint at
+   `:<port>/v1 (per-model, base 8101)`; LiteLLM/nginx get `--add-host=host.docker.internal:host-gateway`) —
    or to a **cloud provider** using the real key it holds. Local models are registered
-   DB-backed (`ollama/<name>` and `docker-model-runner/<alias>`); the serving backend is
+   DB-backed (`ollama/<name>` and `vllm/<alias>`); the serving backend is
    chosen **per model** at `ai models pull --runtime …` (there is no machine-wide inference
    mode). The model set is DB-backed and catalog-driven with **no built-in default model**.
    The response streams back along the same path (SSE-friendly through nginx) to the agent.
-   Installing/starting the host Ollama and enabling DMR are `hardware bring-up` seams.
+   Installing/starting the host Ollama and enabling vLLM are `hardware bring-up` seams.
 
 Each workspace microVM ships a **rootful in-VM container runtime** (containerd +
 nerdctl + runc + CNI), on which the platform runs **opt-in AI apps** (`internal/apps`)

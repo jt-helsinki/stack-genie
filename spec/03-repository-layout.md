@@ -288,7 +288,7 @@ config.yaml              # global platform config (§12.4)
 runtime.yaml             # detected runtime, platform-global (§12.5)
 versions.yaml            # pinned image+tag of host services (§12.6)
 projects.yaml            # index: project name → path (§12.7)
-model-runtimes.yaml      # per-model SERVING-RUNTIME selection record (alias → ollama|docker-model-runner)
+model-runtimes.yaml      # per-model SERVING-RUNTIME selection record (alias → ollama|vllm)
 ui.yaml                  # TUI theme + mouse-capture preference
 litellm/                 # rendered LiteLLM config.yaml (placeholders only; real keys live in the gateway)
 proxy/                   # rendered nginx.conf for the aip-proxy gateway (the litellm.<domain> UI vhost + gateway paths)
@@ -836,13 +836,13 @@ choices:
   ollama/qwen2.5-coder:
     alias: ollama/qwen2.5-coder
     model: qwen2.5-coder
-    runtime: ollama              # ollama | docker-model-runner
+    runtime: ollama              # ollama | vllm
     endpoint: http://localhost:11434
     status: served
 ```
 
 * a machine-wide **selection record** for **how** each served model is served —
-  the runtime (host-native **Ollama** vs the host-side **Docker Model Runner**),
+  the runtime (host-native **Ollama** vs the host-side **vLLM**),
   keyed by the model's gateway **alias**
 * it is a **thin selection record, NOT a parallel model registry** — LiteLLM's DB
   remains the source of truth for **what** is served; this file only records the
@@ -850,8 +850,8 @@ choices:
 * follows the same global-store pattern as `versions.yaml` — `Path` under
   `paths.ConfigDir`, atomic writes via `internal/conffile`, unknown-field-rejecting
   reads — backed by `internal/config/modelruntime.go`
-* the **Docker Model Runner (DMR)** backend is a host-side service (no `aip-*`
-  container, no new volume), backed by `internal/setup/dmr.go` (probe + bring-up
+* the **vLLM** backend is a host-side service (no `aip-*`
+  container, no new volume), backed by `internal/setup/vllm_host.go` (probe + bring-up
   seam)
 * lives under `~/.ai-platform/`, so `ai uninstall --purge` removes it wholesale
 

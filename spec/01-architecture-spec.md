@@ -129,7 +129,7 @@ Host Layer
  │
  └─ Local inference backends (host-side, reached by the service tier via host.docker.internal)
      ├─ Ollama (host-native process; platform probes 127.0.0.1:11434)
-     └─ Docker Model Runner (single host-side OpenAI-compatible endpoint; platform probes 127.0.0.1:12434)
+     └─ vLLM (host-side; one `vllm serve` OpenAI endpoint PER model on :8101+; platform probes each)
 ```
 
 Workspaces are **microVMs** (hardware isolation), not containers. The
@@ -141,7 +141,7 @@ Host services (run on the host, not inside a workspace):
 ```text
 nginx proxy (aip-proxy)                                 — the SOLE host entry, publishes :18787 (default server + UI vhosts)
 Headroom · LiteLLM (Model Layer) · Presidio             — container tier (Docker/Podman, network aip-net), INTERNAL-ONLY behind nginx
-Ollama · Docker Model Runner (local inference)          — host-side backends; the service tier reaches them via host.docker.internal
+Ollama · vLLM (local inference)          — host-side backends; the service tier reaches them via host.docker.internal
 Microsandbox                                            — microVM runtime, driven by the `ai` CLI via the Go SDK / `msb` (no daemon)
 ```
 
@@ -149,7 +149,7 @@ The host service tier is containers on `aip-net`: nginx (`aip-proxy`),
 Presidio (analyzer + anonymizer), LiteLLM (+ Postgres), Headroom, Valkey
 (`aip-valkey`, the LiteLLM response cache) and its RedisInsight GUI
 (`aip-redisinsight`), and the CoreDNS egress-audit resolver. The local-inference
-backends are **not** containers — host-native Ollama and Docker Model Runner run
+backends are **not** containers — host-native Ollama and vLLM run
 host-side and the service tier reaches them via `host.docker.internal` (§16).
 There are no optional host services. There is no
 native host service. **`aip-proxy` (nginx) is the SOLE host entry point** — every
@@ -164,7 +164,7 @@ is also installed inside each workspace image for a future in-VM `headroom wrap
 <cli>` (§10).
 
 (The model-request path below involves the Headroom/LiteLLM/Presidio subset;
-Ollama and Docker Model Runner are host-side local-inference backends the service
+Ollama and vLLM are host-side local-inference backends the service
 tier reaches via `host.docker.internal` — see §5/§16. Microsandbox is not a
 long-running service: it is invoked directly to create and drive workspace
 microVMs.)
@@ -183,7 +183,7 @@ nginx (aip-proxy, host :18787, location /v1 → LiteLLM directly)  (SOLE host en
 LiteLLM (Model Layer, aip-litellm:4000, internal-only)
  ↓  pre_call headroom guardrail: POST messages to aip-headroom:8787/v1/compress, swap in compressed input
  ↓  enabled guardrails (§15): secret-masking (Presidio), hide-secrets, tool firewall — when selected
- ↓  route to provider (local — Ollama / Docker Model Runner via host.docker.internal — or cloud); real provider key from LiteLLM's store (cloud only)
+ ↓  route to provider (local — Ollama / vLLM via host.docker.internal — or cloud); real provider key from LiteLLM's store (cloud only)
 Provider · Caveman steers output                         (Context Optimization)
 ```
 
@@ -215,7 +215,7 @@ Responsibilities:
 * Headroom deployment (shared container; LiteLLM's `pre_call` input-compression guardrail backend)
 * LiteLLM deployment
 * Presidio deployment (analyzer + anonymizer, backing LiteLLM's secret-masking guardrail when enabled)
-* Local-inference backends — host-native Ollama (probed, not containerized) and Docker Model Runner; the service tier reaches both via `host.docker.internal` (§16)
+* Local-inference backends — host-native Ollama (probed, not containerized) and vLLM; the service tier reaches both via `host.docker.internal` (§16)
 * OS Dockerfile templates
 * Platform state
 
@@ -301,7 +301,7 @@ project.
 The platform's host services — Headroom, LiteLLM (+ its Postgres), Presidio
 (analyzer + anonymizer), and the CoreDNS egress-audit resolver (there are no
 optional host services) — plus the local-inference backends (host-native Ollama +
-Docker Model Runner, §16) and the Microsandbox microVM runtime are installed,
+vLLM, §16) and the Microsandbox microVM runtime are installed,
 configured, and supervised by the `ai` CLI. The CLI is the **single control
 plane**: the user never invokes `docker compose`, `msb`, `launchctl`, or
 `systemctl` directly. The service-tier containers share a private docker network
@@ -365,7 +365,7 @@ ai logs --service <svc>      one log surface
 | LiteLLM | container (via Runtime) `aip-litellm` (image tag `latest`) (+ `aip-litellm-db` Postgres, surfaced as its own `postgres` status line) | INTERNAL-ONLY: no host publish, reached by name (`aip-litellm:4000`) by nginx's model path + `/llm` route; it calls Headroom in-process; HTTP only; no host privileges |
 | Presidio | two containers (via Runtime) `aip-presidio-analyzer` + `aip-presidio-anonymizer` | back LiteLLM's secret-masking guardrail; started ONLY when `secret-masking` is selected (§15); internal-only, not published |
 | Ollama (required) | **host-native process** (NOT a container) | the platform's local model backend; the `ai` CLI probes it at `http://127.0.0.1:11434/api/version` and, if unreachable, returns an actionable install/start error (macOS: Ollama.app or `brew install ollama` then `ollama serve`; Linux: the official install script then `systemctl enable --now ollama`); the LiteLLM/nginx containers reach it via `host.docker.internal:11434` (both launched with `--add-host=host.docker.internal:host-gateway`, harmless on Docker Desktop, required on Linux), the host CLI via nginx's `/ollama` route; models persist under `~/.ai-platform/volumes/models/ollama` (host process pointed there via `OLLAMA_MODELS`, with `OLLAMA_CONTEXT_LENGTH=16384`); its automatic install/start (`bringUpHostOllama`) is a NOT-YET-WIRED hardware-bring-up seam — the platform never mutates the host today |
-| Docker Model Runner (DMR) | **host-side service** (single OpenAI-compatible endpoint, NOT per-model containers) | an always-available second local-inference backend, peer to host-native Ollama; probed at `http://127.0.0.1:12434/engines/v1/models`, reached by the LiteLLM/nginx containers at `host.docker.internal:12434/engines/v1`; host-side (non-container) on macOS via the llama.cpp/Metal engine (the vLLM engine is Linux+NVIDIA-only); ensured NON-fatally in reconcile — an unreachable DMR is a hint, not a setup failure; enabling/installing it (`enableDMR`/`bringUpDMR`, e.g. `docker desktop enable model-runner` or the Linux `docker model` CLI plugin) is a NOT-YET-WIRED hardware-bring-up seam |
+| vLLM | **host-side service** (single OpenAI-compatible endpoint, NOT per-model containers) | an always-available second local-inference backend, peer to host-native Ollama; probed at `http://127.0.0.1:<port>/v1 (per-model, base 8101)/models`, reached by the LiteLLM/nginx containers at `host.docker.internal:<port>/v1`; host-side (non-container) on macOS via the llama.cpp/Metal engine (the vLLM engine is Linux+NVIDIA-only); ensured NON-fatally in reconcile — an unreachable vLLM is a hint, not a setup failure; enabling/installing it (`RealRunner`/`InstallGuidance`, e.g. `docker desktop enable model-runner` or the Linux `docker model` CLI plugin) is a NOT-YET-WIRED hardware-bring-up seam |
 | DNS audit resolver | container (via Runtime) `aip-dns` (CoreDNS) | egress-audit resolver: microVMs forward DNS here so attempted names are logged for `ai network log`; published to host loopback only; audit, not enforcement (§29.7) |
 | Microsandbox | microVM runtime, invoked on demand | drives workspace microVMs via the Go SDK / `msb`; no daemon to supervise (§7) |
 
@@ -429,7 +429,7 @@ Used for the container-tier services — the nginx proxy (`aip-proxy`, the sole
 host entry), Headroom, LiteLLM (+ its Postgres), Presidio (analyzer +
 anonymizer), and the CoreDNS egress-audit resolver — which
 share a private docker network (`aip-net`). There are no optional host services.
-The local-inference backends (Ollama, Docker Model Runner) are **not** in this
+The local-inference backends (Ollama, vLLM) are **not** in this
 tier — they run host-side and the container tier reaches them via
 `host.docker.internal` (§16).
 
@@ -1166,7 +1166,7 @@ Provider
 * Groq
 * OpenRouter
 * Ollama (host-native local backend, §16)
-* Docker Model Runner (host-side local backend, §16)
+* vLLM (host-side local backend, §16)
 
 ---
 
@@ -1198,19 +1198,19 @@ at add time** — there are no machine-wide mode flags:
 
 * **Ollama** (host-native) → public handle `ollama/<name>`, routed to
   `ollama_chat/<name>`.
-* **Docker Model Runner** (host-side) → public handle
-  `docker-model-runner/<alias>`, routed to `openai/<model>` with `api_base` set to
-  the DMR endpoint (no credential).
+* **vLLM** (host-side) → public handle
+  `vllm/<alias>`, routed to `openai/<model>` with `api_base` set to
+  the vLLM endpoint (no credential).
 
-`ai models pull --runtime ollama|docker-model-runner [--alias <alias>]` (default
+`ai models pull --runtime ollama|vllm [--alias <alias>]` (default
 `ollama`) records the choice in a machine-wide store
 (`~/.ai-platform/config/model-runtimes.yaml`). A cloud-key catalog resync
-(`litellm.SyncModels`) shields **both** `ollama/*` and `docker-model-runner/*`
+(`litellm.SyncModels`) shields **both** `ollama/*` and `vllm/*`
 handles from its delete pass — the local models are owned only by `ai models
 pull`/`rm`.
 
 There is no default model: an unqualified request is the agent's responsibility.
-A local backend (host-native Ollama or Docker Model Runner, neither needing a
+A local backend (host-native Ollama or vLLM, neither needing a
 credential) is available once a model is pulled to it.
 
 ---
@@ -1599,16 +1599,16 @@ Rules:
   the **host** Ollama process (via launchd/systemd env), not set on a container.
 * remote deployment supported
 
-## Docker Model Runner (DMR)
+## vLLM
 
-**Docker Model Runner** is a second, **always-available** local-inference backend,
+**vLLM** is a second, **always-available** local-inference backend,
 peer to host-native Ollama. It is a **single host-side service** — ONE
 OpenAI-compatible endpoint, **not** per-model containers: the platform probes it at
-`http://127.0.0.1:12434/engines/v1/models`, and the LiteLLM/nginx containers reach
-it at `http://host.docker.internal:12434/engines/v1`. On macOS it runs host-side
+`http://127.0.0.1:<port>/v1 (per-model, base 8101)/models`, and the LiteLLM/nginx containers reach
+it at `http://host.docker.internal:<port>/v1`. On macOS it runs host-side
 (non-container) on the llama.cpp/Metal engine; the vLLM engine is Linux+NVIDIA-only.
-In `Reconcile`, DMR is ensured **non-fatally** — an unreachable DMR is a hint, not a
-setup failure. Enabling/installing it (`enableDMR`/`bringUpDMR`, e.g.
+In `Reconcile`, vLLM is ensured **non-fatally** — an unreachable vLLM is a hint, not a
+setup failure. Enabling/installing it (`RealRunner`/`InstallGuidance`, e.g.
 `docker desktop enable model-runner`, or the Linux `docker model` CLI plugin) is a
 **NOT-YET-WIRED hardware-bring-up seam**.
 
@@ -1618,20 +1618,19 @@ Both backends register models in LiteLLM's DB-backed store (§14, unchanged
 mechanism):
 
 * **Ollama** → public handle `ollama/<name>`, routed to `ollama_chat/<name>`.
-* **DMR** → public handle `docker-model-runner/<alias>`, routed to `openai/<model>`
-  with `api_base` = the DMR endpoint (no credential).
+* **vLLM** → public handle `vllm/<alias>`, routed to `openai/<model>`
+  with `api_base` = the vLLM endpoint (no credential).
 
 The engine is chosen **per model at add time** — `ai models pull --runtime
-ollama|docker-model-runner [--alias <alias>]` (default `ollama`), recorded in a
+ollama|vllm [--alias <alias>]` (default `ollama`), recorded in a
 machine-wide store `~/.ai-platform/config/model-runtimes.yaml`. There are **no
-machine-wide mode flags** (the old `OllamaMode`/`DockerModelRunnerEnabled` were
-removed): Ollama is always host-native, DMR is always available, and the only engine
+machine-wide mode flags**: Ollama is always host-native, vLLM is chosen per model, and the only engine
 decision is per-model. A cloud-key catalog resync (`litellm.SyncModels`) shields
-**both** `ollama/*` and `docker-model-runner/*` handles from its delete pass (they
+**both** `ollama/*` and `vllm/*` handles from its delete pass (they
 are owned only by `ai models pull`/`rm`).
 
 `ai services` / `ai doctor` show Ollama with Mode **"host"** (state from the HTTP
-probe: running/stopped, no container) plus a DMR line with Mode **"host"** (state
+probe: running/stopped, no container) plus a vLLM line with Mode **"host"** (state
 from its own host probe).
 
 All access occurs through LiteLLM; LiteLLM routes local model calls to the chosen
