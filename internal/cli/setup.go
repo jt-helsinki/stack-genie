@@ -912,7 +912,7 @@ func syncInitialModels(em *output.Emitter, interactive bool) {
 }
 
 // localInferenceStatusFn fetches the managed-service statuses used to build the
-// host-native-Ollama + Docker Model Runner guidance block at the end of `ai setup`.
+// host-native-Ollama + vLLM guidance block at the end of `ai setup`.
 // It is a package-level seam so tests can inject a fake status set without a live
 // service tier.
 var localInferenceStatusFn = func() ([]setup.ServiceStatus, error) {

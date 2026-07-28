@@ -379,12 +379,12 @@ func proxyNginxConf(domain string) string {
 // reach the HOST machine. Docker Desktop (macOS/Windows) provides it natively; on
 // Linux the container must be run with `--add-host=host.docker.internal:host-gateway`
 // (hostGatewayAddArg), which resolves it to the docker0 bridge gateway. It is how the
-// service tier reaches the host-native Ollama and Docker Model Runner backends.
+// service tier reaches the host-native Ollama and vLLM backends.
 const hostGatewayName = "host.docker.internal"
 
 // hostGatewayAddArg is the `--add-host` flag that maps hostGatewayName to the host
 // gateway inside a container on Linux. It is ALWAYS added to the LiteLLM + nginx run
-// args so both can reach the host-native Ollama (and Docker Model Runner); it is
+// args so both can reach the host-native Ollama; it is
 // harmless on Docker Desktop (which already provides the name).
 const hostGatewayAddArg = "--add-host=" + hostGatewayName + ":host-gateway"
 
@@ -465,7 +465,7 @@ func proxyUIVhost(serverName, target, rootRedirect string) string {
 // keep a stable signature; the role-driven bindHost governs the nginx publish
 // (ensureProxy), not LiteLLM.
 // The container ALWAYS gets `--add-host=host.docker.internal:host-gateway` so it can
-// reach the host-side inference backends (host-native Ollama + Docker Model Runner);
+// reach the host-side inference backends (host-native Ollama + vLLM);
 // it is harmless on Docker Desktop, which provides the name natively.
 func litellmRunArgs(configPath, bindHost, image string) []string {
 	_ = bindHost // internal-only: LiteLLM no longer publishes to the host

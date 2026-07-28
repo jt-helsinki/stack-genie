@@ -93,7 +93,7 @@ func vllmDoctorService(goos string, installed bool) doctor.Service {
 
 // mapDoctorServices maps the setup service statuses into the doctor layer's Service
 // view, dropping the microVM runtime line and enriching the host-native inference
-// backends (Ollama, Docker Model Runner) with actionable hints. Pure so it is
+// backends (Ollama, vLLM) with actionable hints. Pure so it is
 // unit-testable without a live service tier.
 func mapDoctorServices(statuses []setup.ServiceStatus, goos string) []doctor.Service {
 	services := make([]doctor.Service, 0, len(statuses))

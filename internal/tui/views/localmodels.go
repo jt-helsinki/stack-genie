@@ -976,7 +976,7 @@ func (view *LocalModels) drillView() string {
 			line += ui.Muted.Render("  " + detail)
 		}
 		// Surface the recorded serving runtime for an installed tag (Ollama by
-		// default, or Docker Model Runner when it was pulled with that runtime).
+		// default, or vLLM when it was pulled with that runtime).
 		if drill.model.installed[tag] {
 			if badge := runtimeBadgeLabel(modelRuntimeLookup(drill.model.name + ":" + tag)); badge != "" {
 				line += ui.Muted.Render("  · " + badge)
