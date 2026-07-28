@@ -1349,7 +1349,10 @@ func TestRunOptionalNoneDisables(test *testing.T) {
 }
 
 // TestStatusForHasNoOptional: with no optional services, statusFor lists only the
-// core services and none is marked Optional.
+// core services and none of the CONTAINER-TIER services is marked Optional (the
+// enable/disable optional-service set is empty). The host-native `vllm` summary line
+// is legitimately opt-in — it carries Optional purely so `ai doctor` WARNS (not
+// errors) when it is down — so it is excluded from this container-tier invariant.
 func TestStatusForHasNoOptional(test *testing.T) {
 	test.Setenv("HOME", test.TempDir())
 	services := realServices{prober: fakeProber{}}
@@ -1358,6 +1361,9 @@ func TestStatusForHasNoOptional(test *testing.T) {
 		test.Fatal(err)
 	}
 	for _, status := range statuses {
+		if status.Name == "vllm" {
+			continue // host-native opt-in backend; Optional is a doctor-severity marker
+		}
 		if status.Optional {
 			test.Errorf("no service should be Optional, got %q", status.Name)
 		}

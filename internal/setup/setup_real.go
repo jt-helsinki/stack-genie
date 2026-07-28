@@ -1584,6 +1584,13 @@ func (services realServices) Reconcile(providerConfig, bindHost string, optional
 	// a per-workspace in-VM app and Odysseus was removed). The optional mechanism is
 	// retained (optional is still threaded through for status reporting), so a future
 	// host optional service would be brought up here, BEFORE the nginx proxy.
+	// Host-native vLLM: best-effort bring up a `vllm serve` process for every recorded
+	// runtime=vllm model that isn't already answering. OPTIONAL — it NEVER fails the
+	// reconcile (the RealRunner launch is a `hardware bring-up` stub today; failures
+	// are logged with install guidance and skipped). Like host-Ollama it reaches the
+	// service tier through the host gateway, which LiteLLM/nginx already have via
+	// hostGatewayAddArg (that --add-host also covers vLLM's per-model ports).
+	services.ensureVLLMServers(progress)
 	// nginx LAST: it is the SOLE host entry, fronting the gateway (/ + /v1 → LiteLLM
 	// directly), the LiteLLM /llm + Ollama /ollama admin routes, and the LiteLLM admin
 	// UI as a Host-based vhost on the same port. The UI vhost hangs off the resolved
@@ -1751,6 +1758,13 @@ func (services realServices) statusFor(enabled []string) ([]ServiceStatus, error
 			})
 		}
 	}
+	// Host-native vLLM: a single summary line (Mode "host"), discovered from the
+	// persisted runtime=vllm choices by HTTP-probing each recorded endpoint (there
+	// is no daemon holding Manager state between CLI runs). Appended after the
+	// container services + the Ollama host line so both host inference backends read
+	// together. Omitted entirely when no vLLM models are recorded? No — it is always
+	// surfaced (like Ollama) so it stays discoverable, "stopped" when idle.
+	statuses = append(statuses, services.vllmStatus())
 	return statuses, nil
 }
 
@@ -1799,6 +1813,12 @@ func (services realServices) serviceHealthy(name string) bool {
 		// Ollama is host-native: probe it directly on the host loopback (the platform
 		// process runs on the host).
 		return hostOllamaReachable()
+	case "vllm":
+		// vLLM is host-native (per-model `vllm serve` processes, no container). There
+		// is no daemon holding Manager state between CLI runs, so readiness is
+		// discovered by HTTP-probing each recorded runtime=vllm endpoint: healthy iff
+		// AT LEAST ONE answers.
+		return vllmServersHealthy()
 	case "presidio":
 		containerRuntime, err := runtime.ContainerRuntimeName(services.prober)
 		if err != nil {
