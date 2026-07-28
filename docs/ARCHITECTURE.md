@@ -53,9 +53,9 @@ host-side, not `aip-net` containers; the LiteLLM/nginx containers reach them via
    removed — they false-positived on ordinary coding/Ollama traffic.) Its admin UI /
    virtual keys / spend live in **aip-litellm-db**.
 5. LiteLLM routes to a **local-inference backend** — **host-native Ollama** or
-   **vLLM**, both host-side services reached through the
-   `host.docker.internal` gateway (Ollama at `:11434`, vLLM's OpenAI-compatible endpoint at
-   `:<port>/v1 (per-model, base 8101)`; LiteLLM/nginx get `--add-host=host.docker.internal:host-gateway`) —
+   **vLLM**, both host-side backends reached through the
+   `host.docker.internal` gateway (Ollama at `:11434`, vLLM as per-model `vllm serve`
+   processes each on their own OpenAI-compatible loopback port, base 8101; LiteLLM/nginx get `--add-host=host.docker.internal:host-gateway`) —
    or to a **cloud provider** using the real key it holds. Local models are registered
    DB-backed (`ollama/<name>` and `vllm/<alias>`); the serving backend is
    chosen **per model** at `ai models pull --runtime …` (there is no machine-wide inference

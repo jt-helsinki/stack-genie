@@ -140,7 +140,14 @@ Deliver a working minimal platform.
   rendered `config.yaml` carries **no `model_list`, no named aliases, no
   per-provider wildcards, and no default model**. Served models are managed via
   `ai keys add <provider>` (registers that provider's models.dev catalog models)
-  and `ai models pull` (registers `ollama/<name>` local models):
+  and `ai models pull` (registers a local model). Local inference is **host-native**
+  (no `aip-ollama` container): the serving engine is chosen **per model** at pull
+  time with `ai models pull --runtime ollama|vllm` (default `ollama`; invalid value
+  → exit 2). `--runtime ollama` registers `ollama/<name>`; `--runtime vllm`
+  registers `vllm/<alias>` (alias from `--alias`, else the model id's base name) and
+  fails (exit 3, no silent Ollama fallback) when vLLM is not installed. The chosen
+  engine is recorded machine-wide in `~/.ai-platform/config/model-runtimes.yaml`.
+  The served set itself stays DB-backed:
 
 ```yaml id="m1l0"
 general_settings:
@@ -365,9 +372,10 @@ These are implemented progressively across slices.
 * unified routing; **no default model** — served models are DB-backed
   (`store_model_in_db: true`), catalog-driven, and registered on demand
 * provider abstraction via **DB-backed served models** synced from the models.dev
-  catalog when a provider key is added (`ai keys add`) and from Ollama when a
-  local model is pulled (`ai models pull` → `ollama/<name>`); the rendered config
-  has no `model_list`, no wildcards, and no named aliases
+  catalog when a provider key is added (`ai keys add`) and from a host-native local
+  backend when a model is pulled (`ai models pull --runtime ollama|vllm` →
+  `ollama/<name>` or `vllm/<alias>`); the rendered config has no `model_list`, no
+  wildcards, and no named aliases
 * **user-selectable guardrails** rendered into the generated LiteLLM config.
   `ai setup` presents a guardrail multi-select (+ `--guardrails` flag,
   comma-separated subset or `none`); the choice is persisted machine-wide in
@@ -465,11 +473,14 @@ one Microsandbox microVM per workspace (hardware isolation, libkrun)
 ```
 
 The container runtime (Docker/Podman) is used only for the service tier
-(the `aip-dns` CoreDNS egress-audit resolver, the containerized Ollama
-`aip-ollama`, the Presidio secret-masking pair, LiteLLM + its Postgres, the
-Headroom input-compression guardrail service, the `aip-valkey` cache
-(+ its `aip-redisinsight` GUI), and the `aip-proxy` nginx gateway), never to run
-a workspace. The host tier has no optional services (Open WebUI is now a
+(the `aip-dns` CoreDNS egress-audit resolver, the Presidio secret-masking pair,
+LiteLLM + its Postgres, the Headroom input-compression guardrail service, the
+`aip-valkey` cache (+ its `aip-redisinsight` GUI), and the `aip-proxy` nginx
+gateway), never to run a workspace. The **inference tier is host-native** — Ollama
+and vLLM both run as host processes (there is **no `aip-ollama` container**);
+`ai setup` only HTTP-probes host Ollama (`ensureOllama`, `127.0.0.1:11434`) and
+reconciles vLLM host servers, and nginx forwards `/ollama` to
+`host.docker.internal:11434`. The host tier has no optional services (Open WebUI is now a
 per-workspace **in-VM** app and Odysseus was removed). All service-tier containers
 share the private `aip-net` network, and **only the `aip-proxy` nginx gateway is
 host-published** (the host port `18787`); every other service is internal-only on
@@ -499,7 +510,8 @@ host-published** (the host port `18787`); every other service is internal-only o
   `http://<host>:<port>/v1` agent base URL (bare host or `host:port`, default
   port `18787`; empty → `host.microsandbox.internal:18787` for standalone/local)
 * cross-platform resolution
-* Ollama reached only via LiteLLM, never directly by the workspace
+* the host-native inference backends (Ollama, vLLM) are reached only via LiteLLM,
+  never directly by the workspace
 * egress is a per-project **Microsandbox NetworkPolicy** built on msb's deny
   fallthrough plus explicit allow rules. The **default mode is `public`**
   (allow-outbound to the open internet; private ranges still blocked by the deny

@@ -43,8 +43,9 @@ up everything they create (the suite workspace + any dummy keys) via
 | 2 | `TestGroup02Services` | `ai services status` all running; restart `presidio` → back to running; `ai logs --service litellm` returns output |
 | 3 | `TestGroup03ModelsKeys` | local `ollama/smollm:135m` served; **dummy** key add → models registered + `keys list` keyed; key remove → models drop |
 | 4 | `TestGroup04WorkspaceLifecycle` | `create` → `start` → `exec echo` → in-VM `nerdctl` (containerd) → `refresh-models` → `apps add openwebui` reachable on its host port → egress `deny` blocks / `public` allows (restart between) → `stop` + `delete --purge` |
-| 5 | `TestGroup05GatewayInference` | `ai models test ollama/smollm:135m` → real local chat completion through nginx → Headroom → LiteLLM → Ollama |
+| 5 | `TestGroup05GatewayInference` | `ai models test ollama/smollm:135m` → real local chat completion through nginx → LiteLLM (Headroom compression guardrail in-process) → host-native Ollama |
 | 6 | `TestGroup06Uninstall` | `ai uninstall --dry-run` plan (always); destructive `--purge --yes` only when gated (see below) |
+| 7 | `TestGroup07InferenceRuntime` | per-model inference runtime — `ai services status`/`ai doctor` list host-native Ollama and vLLM as `host`-mode services; `ai models pull --runtime bogus` → exit 2; `--runtime vllm` with vLLM unavailable fails non-zero (never silently falls back to Ollama); when vLLM is up, `--runtime vllm --alias` pulls + serves under the `vllm/<alias>` handle (self-skips when vLLM is down) |
 | — | `TestWorkspaceCreateTeardown` | fast, scenario-rich `ai create`/`delete`/`destroy` coverage — scaffold + registration, delete keeps user files, `--purge` removes the dir, missing/unknown `--os` → exit 2, flags persist to `config.yaml`, nested/duplicate locations rejected, `--dry-run` no side effects, unknown-delete error, `destroy` alias. Needs only installed templates (`requireSetup`), **not** a running stack, so it runs in seconds without building a microVM |
 
 Each step in group 4 asserts independently and logs the exact `ai` output on

@@ -5,8 +5,8 @@ hardware-isolated [Microsandbox](https://microsandbox.dev) microVM; the model
 path and guardrails run as a shared host container tier. One Go binary, `ai`, is
 the entire control plane.
 
-**Model path:** agent → nginx gateway → LiteLLM → containerized Ollama or a cloud
-provider. LiteLLM applies a **user-selectable guardrail set** chosen at `ai setup`:
+**Model path:** agent → nginx gateway → LiteLLM → a host-native local runtime
+(Ollama or vLLM) or a cloud provider. LiteLLM applies a **user-selectable guardrail set** chosen at `ai setup`:
 the **Headroom** input-compression guardrail (LiteLLM POSTs the request to
 `aip-headroom:8787/v1/compress` in-process) is on by default, while Presidio
 secret-masking, detect-secrets, and a destructive-command tool-firewall are
@@ -18,7 +18,8 @@ encrypted in its DB and added with `ai keys` — never on platform disk, in
 `config.yaml`, or in the workspace; the agent holds a scoped virtual key. Models
 are DB-backed and catalog-driven: adding a provider key registers that provider's
 [models.dev](https://models.dev) catalog models into the gateway (removing it
-unregisters them), and `ai models pull` registers local Ollama models — there is
+unregisters them), and `ai models pull` registers a local model — served through
+host-native Ollama by default or host-native vLLM with `--runtime vllm` — there is
 no built-in default model.
 Workspace egress is a Microsandbox NetworkPolicy you configure with `ai network`;
 it defaults to **public** (DNS-audited outbound, private ranges blocked) so the
@@ -46,6 +47,8 @@ yourself:
 | Tool | Role | Install |
 |------|------|---------|
 | Docker or Podman (rootless) | service tier | `brew install --cask docker` (or `brew install podman`) |
+| [Ollama](https://ollama.com) | host-native local-model runtime (required) | `brew install ollama` then `ollama serve` (macOS); `curl -fsSL https://ollama.com/install.sh \| sh` then `systemctl enable --now ollama` (Linux) |
+| [vLLM](https://docs.vllm.ai) | host-native local-model runtime (optional, `--runtime vllm`) | macOS: vLLM-Metal plugin; Linux: `pip install vllm` (CUDA) — `ai doctor` prints per-OS steps |
 | [Ghostty](https://ghostty.org) | terminal emulator (recommended) | `brew install --cask ghostty` |
 
 You do **not** install Microsandbox (`msb`) yourself: the platform pins the `msb`
@@ -67,11 +70,14 @@ Hypervisor) or **Linux with KVM**.
 
 `ai setup` **never installs software** — it detects what's missing and prints how
 to install it (command + web address); `ai doctor` reports the same anytime. The
-service tier (the nginx gateway, Ollama, Presidio, LiteLLM + Postgres, Headroom,
+service tier (the nginx gateway, Presidio, LiteLLM + Postgres, Headroom,
 Valkey + its RedisInsight GUI, and the DNS egress-audit resolver) is launched by
 `ai setup` as host containers on the `aip-net` network — you don't install those.
 Only the nginx gateway (`aip-proxy`) publishes a host port (`:18787`); every other
-service is internal-only and reached through it. The host UIs are served as
+service is internal-only and reached through it. The local model runtimes are
+**host-native**, not containers: Ollama (always) and vLLM (opt-in, per-model) run as
+host processes that LiteLLM reaches through the host gateway. You install them
+yourself (`ai doctor` prints how); `ai setup` only verifies Ollama is reachable. The host UIs are served as
 Host-based subdomains off a platform base domain (default `aip.local`, set with
 `ai domain`), both on `:18787`: `litellm.<domain>` (the LiteLLM admin UI) and
 `valkey.<domain>` (the RedisInsight GUI for the LiteLLM response cache). (Open WebUI
@@ -202,11 +208,12 @@ ai keys add openai                   # store a provider API key (encrypted in th
 ai keys list                         # providers + whether a key is set (never the key value)
 ai keys remove openai                # remove the key and unregister that provider's models
 
-ai models status                     # gateway's live served models (added keys + pulled Ollama)
+ai models status                     # gateway's live served models (added keys + pulled local)
 ai models test  llama3.2             # round-trip one of the served models
 ai models list                       # installed local (Ollama) models
 ai models popular                    # the live ollama.com installable model library
-ai models pull  llama3.2 qwen2.5:7b  # pull Ollama models, registering them as served (rm too)
+ai models pull  llama3.2 qwen2.5:7b  # pull models via host-native Ollama, registering them as served (rm too)
+ai models pull mlx-community/Qwen2.5-7B-Instruct-4bit --runtime vllm --alias qwen-vllm  # serve via host-native vLLM
 
 ai services status                   # host service tier
 ai services console litellm          # open the LiteLLM admin UI
@@ -246,12 +253,15 @@ first and **never touches `~/projects`** (your source):
 ```bash
 ai uninstall                 # binary, PATH/completion entries, aip-* containers, ~/.ai-platform state (KEEPS downloaded models)
 ai uninstall --purge         # also the downloaded model store — removes ~/.ai-platform in full
+ai uninstall --keep-runtimes # keep the host-native Ollama + vLLM runtimes (they are removed by default)
 ai uninstall --remove-deps   # also uninstall msb
 ai uninstall --yes           # skip the prompt (automation); --dry-run to preview
 ```
 
-It streams progress, asks per external dependency (`msb`), and logs to
-`~/ai-uninstall.log`.
+By default `ai uninstall` also stops and removes the host-native Ollama and vLLM
+runtimes (it prompts, defaulting to yes; `--keep-runtimes` keeps them). The
+downloaded models are kept unless `--purge`. It streams progress, asks per external
+dependency (`msb`), and logs to `~/ai-uninstall.log`.
 
 ## Develop
 

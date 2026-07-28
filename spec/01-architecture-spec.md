@@ -365,7 +365,7 @@ ai logs --service <svc>      one log surface
 | LiteLLM | container (via Runtime) `aip-litellm` (image tag `latest`) (+ `aip-litellm-db` Postgres, surfaced as its own `postgres` status line) | INTERNAL-ONLY: no host publish, reached by name (`aip-litellm:4000`) by nginx's model path + `/llm` route; it calls Headroom in-process; HTTP only; no host privileges |
 | Presidio | two containers (via Runtime) `aip-presidio-analyzer` + `aip-presidio-anonymizer` | back LiteLLM's secret-masking guardrail; started ONLY when `secret-masking` is selected (§15); internal-only, not published |
 | Ollama (required) | **host-native process** (NOT a container) | the platform's local model backend; the `ai` CLI probes it at `http://127.0.0.1:11434/api/version` and, if unreachable, returns an actionable install/start error (macOS: Ollama.app or `brew install ollama` then `ollama serve`; Linux: the official install script then `systemctl enable --now ollama`); the LiteLLM/nginx containers reach it via `host.docker.internal:11434` (both launched with `--add-host=host.docker.internal:host-gateway`, harmless on Docker Desktop, required on Linux), the host CLI via nginx's `/ollama` route; models persist under `~/.ai-platform/volumes/models/ollama` (host process pointed there via `OLLAMA_MODELS`, with `OLLAMA_CONTEXT_LENGTH=16384`); its automatic install/start (`bringUpHostOllama`) is a NOT-YET-WIRED hardware-bring-up seam — the platform never mutates the host today |
-| vLLM | **host-side service** (single OpenAI-compatible endpoint, NOT per-model containers) | an always-available second local-inference backend, peer to host-native Ollama; probed at `http://127.0.0.1:<port>/v1 (per-model, base 8101)/models`, reached by the LiteLLM/nginx containers at `host.docker.internal:<port>/v1`; host-side (non-container) on macOS via the llama.cpp/Metal engine (the vLLM engine is Linux+NVIDIA-only); ensured NON-fatally in reconcile — an unreachable vLLM is a hint, not a setup failure; enabling/installing it (`RealRunner`/`InstallGuidance`, e.g. `docker desktop enable model-runner` or the Linux `docker model` CLI plugin) is a NOT-YET-WIRED hardware-bring-up seam |
+| vLLM | **host-side, per-model processes** (one `vllm serve` per served model — NOT a single endpoint, NOT containers) | an always-available second local-inference backend, peer to host-native Ollama; each served model runs its own `vllm serve` on a host loopback port (base 8101, allocated upward), lazy-started with a max-concurrent cap + LRU eviction; probed at `http://127.0.0.1:<port>/v1/models`, reached by the LiteLLM/nginx containers at `host.docker.internal:<port>/v1`; on macOS it serves MLX weights (`mlx-community/*`) via the vLLM-Metal plugin, on Linux Hugging Face safetensors on CUDA/NVIDIA; ensured NON-fatally in reconcile — an unreachable vLLM is a hint, not a setup failure; installing it (`RealRunner`/`InstallGuidance`, e.g. the vLLM-Metal plugin on macOS or `pip install vllm` on Linux) is a NOT-YET-WIRED hardware-bring-up seam |
 | DNS audit resolver | container (via Runtime) `aip-dns` (CoreDNS) | egress-audit resolver: microVMs forward DNS here so attempted names are logged for `ai network log`; published to host loopback only; audit, not enforcement (§29.7) |
 | Microsandbox | microVM runtime, invoked on demand | drives workspace microVMs via the Go SDK / `msb`; no daemon to supervise (§7) |
 
@@ -398,8 +398,8 @@ service configs live under `config/<service>/`.
   (keys-in-LiteLLM, §17) — never on platform disk;
   Microsandbox driven non-interactively per workspace (image, mounts/volumes,
   resource limits) via the Go SDK / `msb`; local models registered as DB-backed
-  LiteLLM models by `ai models pull`/`rm` — Ollama (host-native) and Docker Model
-  Runner are both available local backends, chosen per model at add time (§14, §16)
+  LiteLLM models by `ai models pull`/`rm` — Ollama (host-native) and vLLM
+  (host-native, per-model `vllm serve`) are both available local backends, chosen per model at add time (§14, §16)
 * **startup ordering**: container runtime + Microsandbox runtime verified →
   container tier reconciled in order
   `aip-net` network → DNS (CoreDNS) → Ollama (a host-native loopback probe, not a
@@ -1602,14 +1602,17 @@ Rules:
 ## vLLM
 
 **vLLM** is a second, **always-available** local-inference backend,
-peer to host-native Ollama. It is a **single host-side service** — ONE
-OpenAI-compatible endpoint, **not** per-model containers: the platform probes it at
-`http://127.0.0.1:<port>/v1 (per-model, base 8101)/models`, and the LiteLLM/nginx containers reach
-it at `http://host.docker.internal:<port>/v1`. On macOS it runs host-side
-(non-container) on the llama.cpp/Metal engine; the vLLM engine is Linux+NVIDIA-only.
+peer to host-native Ollama. It runs **per-model host-side processes** — ONE
+`vllm serve` per served model (each an OpenAI-compatible endpoint on its own host
+loopback port, base 8101 allocated upward), **not** a single endpoint and **not**
+containers; the Manager lazy-starts them with a max-concurrent cap + LRU eviction.
+The platform probes each at `http://127.0.0.1:<port>/v1/models`, and the LiteLLM/nginx
+containers reach it at `http://host.docker.internal:<port>/v1`. On macOS it serves
+MLX weights (`mlx-community/*`) via the vLLM-Metal plugin; on Linux it serves Hugging
+Face safetensors on CUDA/NVIDIA.
 In `Reconcile`, vLLM is ensured **non-fatally** — an unreachable vLLM is a hint, not a
-setup failure. Enabling/installing it (`RealRunner`/`InstallGuidance`, e.g.
-`docker desktop enable model-runner`, or the Linux `docker model` CLI plugin) is a
+setup failure. Installing it (`RealRunner`/`InstallGuidance`, e.g. the vLLM-Metal
+plugin on macOS, or `pip install vllm` on Linux) is a
 **NOT-YET-WIRED hardware-bring-up seam**.
 
 ## Registration and per-model runtime choice

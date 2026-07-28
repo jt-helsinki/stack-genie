@@ -82,10 +82,13 @@ Today there are two:
 - `~/.ai-platform/volumes/litellm-db/` — the LiteLLM **Postgres data dir**,
   **HOST-BIND-MOUNTED** into `aip-litellm-db` at `/var/lib/postgresql` (NOT a
   Docker named volume). This is the one stateful service-tier piece.
-- `~/.ai-platform/volumes/models/` — the **persistent local-model store**. Ollama
+- `~/.ai-platform/volumes/models/` — the **persistent local-model store**, split
+  per backend into the `ollama/` and `vllm/` subdirs. Ollama
   is now **host-native** (there is no `aip-ollama` container): the host Ollama
   process is pointed at the subdir `~/.ai-platform/volumes/models/ollama/` via
-  `OLLAMA_MODELS`, so pulled local models persist under the standardized
+  `OLLAMA_MODELS`; the host-side **vLLM** weights (MLX on macOS, HF safetensors on
+  Linux) persist under `~/.ai-platform/volumes/models/vllm/` (`vllm.StoreDir`). Both
+  persist under the standardized
   system-volume home and are removed by `ai uninstall --purge` (distinct from the
   disposable `cache/models/` in §1.3).
 
@@ -850,9 +853,10 @@ choices:
 * follows the same global-store pattern as `versions.yaml` — `Path` under
   `paths.ConfigDir`, atomic writes via `internal/conffile`, unknown-field-rejecting
   reads — backed by `internal/config/modelruntime.go`
-* the **vLLM** backend is a host-side service (no `aip-*`
-  container, no new volume), backed by `internal/setup/vllm_host.go` (probe + bring-up
-  seam)
+* the **vLLM** backend is a host-side, per-model `vllm serve` service (no `aip-*`
+  container), backed by `internal/vllm` (the server Manager — lazy start, max-concurrent
+  cap + LRU eviction, weight store `vllm.StoreDir` at `volumes/models/vllm/`) and wired
+  into setup by `internal/setup/vllm_host.go` (probe + bring-up seam)
 * lives under `~/.ai-platform/`, so `ai uninstall --purge` removes it wholesale
 
 ## 12.7 `config/projects.yaml` (global projects index)

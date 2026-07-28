@@ -59,7 +59,7 @@ keep the precedence rules in arch §27 explicit), `slog` (structured logs), stdl
 │   ├── conffile/                # atomic YAML read/write (temp file + rename; rejects unknown fields)
 │   ├── state/                   # project-local state (<project>/.ai-platform/run) + projects index; atomic writes
 │   ├── project/                 # project entry/spec types + projects-index resolution
-│   ├── config/                  # config load/merge (project > global)
+│   ├── config/                  # config load/merge (project > global) + machine-wide per-model serving-runtime store (RuntimeOllama/RuntimeVLLM → config/model-runtimes.yaml, modelruntime.go)
 │   ├── catalog/                 # models.dev model catalog (fetch as JSON, persist as YAML cache)
 │   ├── sysinfo/                 # host CPU/RAM inspection (resource caps for `ai create`)
 │   ├── versions/                # service-tier image refs (image+tag, no digest) — source of truth for setup
@@ -67,12 +67,13 @@ keep the precedence rules in arch §27 explicit), `slog` (structured logs), stdl
 │   ├── runtime/                 # docker/podman detect + rootless verify + role/domain/gateway resolution (service tier)
 │   ├── sandbox/                 # Microsandbox SDK wrapper: naming, mounts/volumes, microVM lifecycle
 │   ├── services/               # service-tier topology registry (names, ports, UI subdomains, gateway paths)
-│   ├── setup/                  # service-tier reconcile orchestrator (network→DNS→Ollama→Presidio→Valkey→RedisInsight→Headroom→LiteLLM+DB→nginx) + `ai setup`/uninstall service control
+│   ├── setup/                  # service-tier reconcile orchestrator (network→DNS→Ollama→Presidio→Valkey→RedisInsight→Headroom→LiteLLM+DB→nginx) + host-native inference reconcile (Ollama host HTTP probe in setup_real.go; vLLM host servers in vllm_host.go) + `ai setup`/uninstall service control
 │   ├── hostsfile/              # managed /etc/hosts block writer (delimited, idempotent)
 │   ├── uihosts/                # UI-vhost logic: the litellm.<domain> host vhost + its /etc/hosts entry (composes services + hostsfile)
 │   ├── console/                # host-display endpoint registry (UI subdomains + gateway paths off the nginx port)
 │   ├── litellm/                 # host lifecycle, config gen, health, routing, guardrails, virtual-key + credential KeyManager (keys-in-LiteLLM; fronted by `ai keys` in cli/keys.go)
-│   ├── ollama/                  # required local-model service + live ollama.com installable library (library.go)
+│   ├── ollama/                  # host-native Ollama local-model backend (HTTP probe, no aip-ollama container) + live ollama.com installable library (library.go)
+│   ├── vllm/                     # host-native vLLM backend: per-model `vllm serve` Manager (one OpenAI endpoint per model on :8101+, lazy-start + max-concurrent cap + LRU evict, health); StoreDir volumes/models/vllm; MLX on macOS / safetensors on Linux (live launch/download are `hardware bring-up` stubs)
 │   ├── agentcfg/                # in-VM agent provider config (base_url→nginx gateway, virtual key, picker models, refresh-models)
 │   ├── contextopt/              # per-project Headroom strategy (→ per-request knobs fed to LiteLLM's headroom compress-guardrail call) + in-workspace Caveman skill
 │   ├── envimage/                # compose .ai-platform/Dockerfile (OS template + stack snippets + agent CLIs) + build OCI image
@@ -89,7 +90,7 @@ keep the precedence rules in arch §27 explicit), `slog` (structured logs), stdl
 │   │       ├── stacks/<stack>/Dockerfile.snippet  # one install snippet per stack (go, rust, java, maven, deno — Node/Python are baked into the base, not stacks)
 │   │       ├── agentclis/                          # per-agent-CLI install snippets
 │   │       └── tools/<tool>/Dockerfile.snippet    # opt-in AI tools (graphify, code-review-graph, codebase-memory-mcp) — appended only when selected (--tools)
-│   ├── uninstall/               # native `ai uninstall` teardown
+│   ├── uninstall/               # native `ai uninstall` teardown (also offers to remove the host-native Ollama + vLLM runtimes — default yes; `--keep-runtimes` opts out)
 │   └── doctor/                  # consolidated health checks → repair suggestions
 ├── installers/                  # install.sh (+ install-local.sh) thin launchers (macOS/Linux)
 ├── test/acceptance/             # Go acceptance harness (AT §1.6); in-process mock
@@ -168,7 +169,7 @@ behind uniform `ai services` verbs — **no docker compose**:
 
 * **container tier**, reconciled in order network → DNS → Ollama → Presidio →
   Valkey(+RedisInsight) → Headroom → LiteLLM(+DB) → nginx proxy: the `aip-dns`
-  CoreDNS egress-audit resolver, the containerized Ollama `aip-ollama`, the
+  CoreDNS egress-audit resolver, the
   Presidio secret-masking pair `aip-presidio-analyzer`/`aip-presidio-anonymizer`,
   the Headroom compression service `aip-headroom` (which LiteLLM CALLS as a
   `pre_call` guardrail, so it PRECEDES LiteLLM), LiteLLM `aip-litellm` + its
@@ -181,6 +182,13 @@ behind uniform `ai services` verbs — **no docker compose**:
   recreates affected containers. (Open WebUI is now an opt-in **in-VM** app and
   Odysseus was removed, so the host tier has no optional services; the optional
   mechanism is retained for future host services.)
+* **host-native inference tier** (NOT containerized): Ollama and vLLM both run as
+  host processes — there is **no `aip-ollama` container**. `ai setup` reconciles
+  them by HTTP-probing host Ollama (`ensureOllama`, `127.0.0.1:11434`) and the
+  per-model vLLM servers (`internal/setup/vllm_host.go` over `internal/vllm`); the
+  containers reach them through the nginx `/ollama` route (forwarded to
+  `host.docker.internal:11434`) and the per-model vLLM OpenAI endpoints. The
+  serving engine is chosen **per model** at `ai models pull --runtime ollama|vllm`.
 
 The Microsandbox runtime is **not** a managed service: its `msb` binary is
 pinned into `tools/` and invoked on demand via `sandbox/` to create and drive
@@ -231,7 +239,9 @@ refer to the CLI spec and architecture spec respectively.
   Tests: AT §11.1.
 * **M3 — `ai setup` + services.** Preflight (exit 3 on missing deps),
   init `~/.ai-platform/`, install/configure/start the container service tier
-  (DNS resolver, Ollama, Presidio pair, Valkey (+ RedisInsight), LiteLLM + its DB, Headroom, nginx gateway)
+  (DNS resolver, Presidio pair, Valkey (+ RedisInsight), LiteLLM + its DB, Headroom, nginx gateway)
+  plus the host-native inference tier (HTTP-probe host Ollama, reconcile host vLLM
+  servers — no `aip-ollama` container)
   with the role-driven bind host (server 0.0.0.0,
   standalone/client loopback) + verify the Microsandbox runtime; provider keys
   live in the LiteLLM gateway (keys-in-LiteLLM, §8.2); render the per-project
@@ -250,7 +260,11 @@ refer to the CLI spec and architecture spec respectively.
   LLM Guard, and the false-positive-prone `detect_prompt_injection` callback were
   removed);
   `ai keys add/remove`; `ai models status`, `ai models test` against the mock
-  provider. Tests: AT §7.1, §7.2.
+  provider. `ai models pull` chooses the serving engine **per model** via
+  `--runtime ollama|vllm` (default `ollama`; invalid → exit 2) with `--alias` for
+  the `vllm/<alias>` gateway name; `--runtime vllm` with no vLLM install exits 3
+  (never a silent Ollama fallback) and the choice is recorded in
+  `config/model-runtimes.yaml`. Tests: AT §7.1, §7.2, §7.3.
 * **M5 — debian-trixie image + Microsandbox.** Seed `.ai-platform/Dockerfile` from the
   `debian-trixie` template, build the workspace OCI image from it; create/start
   the microVM (virtio-net + gvproxy, the per-project network policy **applied as
@@ -360,7 +374,11 @@ are grep-able (`hardware bring-up`) and tracked in `docs/HARDWARE-BRINGUP.md`.
   scraped text.
 * **Integration suite** (`test/integration/`, `//go:build integration`, `make
   test-integration`) — a live black-box suite that drives the real service stack
-  (setup/services/keys/workspace/apps/egress/inference/uninstall). Runs only where a
+  (setup/services/keys/workspace/apps/egress/inference/per-model-runtime/uninstall).
+  Group 7 (`vllm_runtime_test.go`, `TestGroup07InferenceRuntime`) asserts
+  `services`/`doctor` surface the host-native Ollama + vLLM backends, `--runtime
+  bogus` → exit 2, `--runtime vllm` unavailable → non-zero with no fallback, and the
+  positive `vllm/<alias>` routing self-skips when vLLM is not up. Runs only where a
   full stack is available (Apple Silicon), separate from the hosted unit lane.
 * **CI** (`ci.yml`), split by hardware needs:
   * **hosted runners** (every push): build the binary, `go vet`/`golangci-lint`,
@@ -406,10 +424,10 @@ are grep-able (`hardware bring-up`) and tracked in `docs/HARDWARE-BRINGUP.md`.
 # 8. Open Decisions / Risks
 
 1. **Service provisioning — RESOLVED.** `ai setup` installs and manages
-   all host services itself (LiteLLM + its Postgres, the containerized Ollama,
-   the Presidio secret-masking pair, and Headroom the input-compression guardrail
-   service) as the single control
-   plane, and verifies the Microsandbox workspace runtime;
+   all host services itself (LiteLLM + its Postgres, the Presidio secret-masking
+   pair, and Headroom the input-compression guardrail service) as the single
+   control plane, reconciles the host-native inference backends (Ollama + vLLM,
+   not containerized), and verifies the Microsandbox workspace runtime;
    the user pre-installs only the container runtime. No docker compose:
    container-tier services run via the runtime abstraction, and
    workspace microVMs via Microsandbox (no daemon). See architecture §5.

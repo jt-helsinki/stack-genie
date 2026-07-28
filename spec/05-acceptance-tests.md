@@ -218,12 +218,16 @@ ai setup --json
 * **Microsandbox runtime + host virtualization verified** (Apple Silicon on macOS)
 * the service tier started as containers, reconciled in order (network → DNS →
   Ollama → Presidio → Valkey(+RedisInsight) → Headroom → LiteLLM(+DB) → nginx
-  proxy): `aip-dns`, `aip-ollama`, the
+  proxy): `aip-dns`, the
   `aip-presidio-analyzer`/`aip-presidio-anonymizer` pair, `aip-valkey`
   (+ `aip-redisinsight`), `aip-headroom`,
   `aip-litellm` (+ `aip-litellm-db` Postgres), and `aip-proxy` (the nginx gateway)
   — all on `aip-net` (Headroom PRECEDES LiteLLM because LiteLLM calls it in-process
   as a `pre_call` compression guardrail)
+* the **inference tier is host-native**, not containerized: Ollama and vLLM both
+  run as host processes (there is **no `aip-ollama` container**). `ai setup`
+  HTTP-probes host Ollama at `127.0.0.1:11434` (`ensureOllama`) and reconciles the
+  host vLLM servers; nginx forwards `/ollama` to `host.docker.internal:11434`
 * in **standalone** (default) the shared services bind **127.0.0.1**; the nginx
   gateway (`aip-proxy`) is the SOLE host entry on `:18787`, with `aip-headroom`
   now INTERNAL-ONLY (reached only by LiteLLM by name, no host publish); the host
@@ -524,6 +528,38 @@ ai models test gpt-5 --json
 
 ---
 
+## 7.3 Per-Model Inference Runtime (live integration)
+
+Covered by the **live integration suite**, not the `[Sx]` acceptance harness:
+`test/integration/vllm_runtime_test.go` (`//go:build integration`,
+`TestGroup07InferenceRuntime`, group 7 of `make test-integration`; self-skips
+without a running stack). The `[Sx]` tags in this document apply to the
+`test/acceptance` harness; the integration groups are separate.
+
+### Test
+
+```bash
+ai services status --json                              # lists host-native ollama + vllm
+ai doctor --json                                       # same two host-native backends
+ai models pull <model> --runtime bogus --json          # invalid runtime
+ai models pull <model> --runtime vllm --json           # when vLLM is not installed
+ai models test vllm/<alias> --json                     # positive routing path
+```
+
+### Expected Result
+
+* `ai services status` and `ai doctor` both surface the host-native `ollama` and
+  `vllm` backends as services (no `aip-ollama` container)
+* `--runtime bogus` exits `2` (invalid input — accepted values are `ollama` and
+  `vllm`)
+* `--runtime vllm` with no vLLM install exits **non-zero** (exit `3`) with install
+  guidance and **never** silently falls back to Ollama
+* the positive `vllm/<alias>` routing round-trip **self-skips** when vLLM is not
+  running on the host (matching the suite's `hardware bring-up` self-skip
+  convention)
+
+---
+
 # 8. Context Optimization Tests
 
 ## 8.1 Caveman Output Compression `[S2]`
@@ -792,8 +828,9 @@ It always exits `0`; per-check status conveys health.
   `data.checks`
 * the platform-dependency checks are always present: `container runtime`,
   `microsandbox runtime`, `host virtualization`
-* the SERVICES section lists every managed service — `ollama`, `presidio`,
-  `valkey`, `redisinsight`, `litellm`, `headroom`, `proxy`, `dns` (the names appear even when stopped
+* the SERVICES section lists every managed service — the host-native inference
+  backends `ollama` and `vllm`, plus `presidio`, `valkey`, `redisinsight`,
+  `litellm`, `headroom`, `proxy`, `dns` (the names appear even when stopped
   off-hardware). `presidio` reads **`disabled`** when the `secret-masking`
   guardrail is off (listed but not probed). The host tier has no optional services
   (Open WebUI is now a per-workspace in-VM app and Odysseus was removed).
