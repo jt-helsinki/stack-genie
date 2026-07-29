@@ -1605,7 +1605,7 @@ func (services realServices) Reconcile(providerConfig, bindHost string, optional
 	// are logged with install guidance and skipped). Like host-Ollama it reaches the
 	// service tier through the host gateway, which LiteLLM/nginx already have via
 	// hostGatewayAddArg (that --add-host also covers vLLM's per-model ports).
-	services.ensureVLLMServers(progress)
+	ensureVLLMServers(progress)
 	// nginx LAST: it is the SOLE host entry, fronting the gateway (/ + /v1 → LiteLLM
 	// directly), the LiteLLM /llm + Ollama /ollama admin routes, and the LiteLLM admin
 	// UI as a Host-based vhost on the same port. The UI vhost hangs off the resolved
@@ -1961,13 +1961,12 @@ func (services realServices) Control(action, service string) ([]ServiceStatus, e
 		ensure func() error
 		stop   func() error
 	}
+	// NB: Ollama and vLLM are HOST-NATIVE runtimes (host processes, not aip-*
+	// containers), so they are NOT in this container-controllable set — their
+	// start/stop/restart is handled by ControlService's host-native path
+	// (controlHostNativeService → ollama_host.go / vllm_host.go), never `docker
+	// start/stop`.
 	managed := []managedService{
-		{"ollama",
-			// Host-native: verify reachability (no aip-ollama container to start), and
-			// "stop" is a no-op — the platform never runs the Ollama process (managing
-			// the host service is a hardware bring-up seam).
-			ensureOllama,
-			func() error { return nil }},
 		{"presidio",
 			func() error { return ensurePresidio(services.prober, containerRuntime.Name) },
 			func() error {
@@ -2032,7 +2031,7 @@ func (services realServices) Control(action, service string) ([]ServiceStatus, e
 			// (and emits the companion-container hint) before delegating here — but
 			// kept as a defensive guard for direct callers.
 			return nil, output.Errorf(output.ExitInvalidInput,
-				"unknown service %q (expected one of: ollama, presidio, litellm, headroom, proxy, dns)", service)
+				"unknown container service %q (expected one of: presidio, valkey, redisinsight, headroom, litellm, proxy, dns — ollama/vllm are host-native)", service)
 		}
 	}
 

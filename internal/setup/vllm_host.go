@@ -23,13 +23,65 @@ package setup
 
 import (
 	"net/http"
+	"os/exec"
 	goruntime "runtime"
 	"strings"
 	"time"
 
 	"github.com/jt-helsinki/stack-genie/internal/config"
+	"github.com/jt-helsinki/stack-genie/internal/output"
 	"github.com/jt-helsinki/stack-genie/internal/vllm"
 )
+
+// vllmStopByPort / vllmPkill are the injectable seams for the host-native vLLM STOP
+// path so unit tests never signal a real process. vllmStopByPort stops the server
+// bound to a recorded loopback port; vllmPkill is the fallback (no ports recorded)
+// that mirrors internal/uninstall's stopVLLMServers.
+var (
+	vllmStopByPort = vllm.StopByPort
+	vllmPkill      = func() error { return exec.Command("pkill", "-f", "vllm serve").Run() }
+)
+
+// startVLLMServersHost brings up the host-native vLLM servers for `ai services start
+// vllm`. vLLM is per-model, so it starts a `vllm serve` for every recorded runtime=vllm
+// model (reusing each model's reserved loopback port). It is GATED on vLLM being
+// installed: with no `vllm` binary it returns an actionable missing-dependency error
+// (exit 3) carrying the install guidance. With vLLM installed but NO models recorded it
+// SUCCEEDS with nothing to do (the caller notes "pull one with `ai models pull --runtime
+// vllm`"). The launch itself is best-effort via ensureVLLMServers (never fails once vLLM
+// is present). hardware bring-up: the real `vllm serve` fork runs only on a provisioned host.
+func startVLLMServersHost() error {
+	installed, _ := vllmDetect()
+	if !installed {
+		return output.Errorf(output.ExitMissingDep,
+			"vLLM is not installed — %s; then run `ai services start vllm`",
+			strings.Join(vllm.InstallGuidance(goruntime.GOOS), "; "))
+	}
+	// Installed but idle (no runtime=vllm models): nothing to serve — success.
+	if len(vllmRuntimeChoices()) == 0 {
+		return nil
+	}
+	ensureVLLMServers(func(string) {})
+	return nil
+}
+
+// stopVLLMServersHost stops every host-native vLLM server for `ai services stop vllm`,
+// best-effort (a not-running server is not an error): it stops the server on each
+// recorded runtime=vllm loopback port, falling back to a `pkill -f "vllm serve"` when no
+// ports are recorded. It never returns an error (vLLM is optional).
+func stopVLLMServersHost() error {
+	stoppedAny := false
+	for _, choice := range vllmRuntimeChoices() {
+		if port, ok := vllm.PortOf(choice.Endpoint); ok {
+			_ = vllmStopByPort(port)
+			stoppedAny = true
+		}
+	}
+	if !stoppedAny {
+		_ = vllmPkill()
+	}
+	return nil
+}
 
 // vllmProbeTimeout bounds the per-endpoint reachability probe so a dead server
 // can't stall a status read.
@@ -146,7 +198,7 @@ func vllmServeModel(choice config.ModelRuntimeChoice) string {
 // failure (today vllm.RealRunner is an ErrNotWired `hardware bring-up` stub) is
 // logged with the install guidance and skipped. Servers are launched DETACHED (by
 // the Runner) so they outlive this short-lived CLI.
-func (services realServices) ensureVLLMServers(progress func(string)) {
+func ensureVLLMServers(progress func(string)) {
 	choices := vllmRuntimeChoices()
 	if len(choices) == 0 {
 		return // nothing to serve

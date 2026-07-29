@@ -154,13 +154,12 @@ func fakeVLLMDetect(test *testing.T, installed bool) {
 func TestEnsureVLLMServersNeverFails(test *testing.T) {
 	test.Setenv("HOME", test.TempDir())
 	fakeVLLMDetect(test, false) // no vLLM on PATH → never spawn, just log guidance
-	services := realServices{}
 
 	var lines []string
 	collect := func(line string) { lines = append(lines, line) }
 
 	// No models recorded: a silent no-op (no progress lines).
-	services.ensureVLLMServers(collect)
+	ensureVLLMServers(collect)
 	if len(lines) != 0 {
 		test.Errorf("no vllm models: want no-op, got progress %v", lines)
 	}
@@ -169,7 +168,7 @@ func TestEnsureVLLMServersNeverFails(test *testing.T) {
 	// moves on — never failing, never forking.
 	recordVLLMChoice(test, "my-vllm", "mlx-community/foo", "http://127.0.0.1:8101/v1")
 	fakeVLLMHTTP(test, map[string]int{"8101": 0}) // endpoint down → attempt handling
-	services.ensureVLLMServers(collect)
+	ensureVLLMServers(collect)
 
 	joined := strings.Join(lines, "\n")
 	if !strings.Contains(joined, "my-vllm") {

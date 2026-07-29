@@ -205,15 +205,39 @@ func DefaultOptionalServices() []string {
 // controlActions are the valid `ai services <action>` verbs.
 var controlActions = map[string]bool{"start": true, "stop": true, "restart": true}
 
-// ServiceNames returns the names of the desired host services (for validation
-// and shell completion).
+// ServiceNames returns the names of the addressable host services (for validation
+// and shell completion): the container-reconcile set (desiredServices) PLUS the
+// host-native runtimes (hostNativeServiceNames — ollama, vllm) that are NOT in the
+// container registry but are still controllable via `ai services start|stop|restart`.
+// Ollama is in BOTH (the registry lists it for status), so it is de-duplicated to
+// appear once; vLLM is not in the registry, so it is added here.
 func ServiceNames() []string {
 	specs := desiredServices()
-	names := make([]string, 0, len(specs))
+	names := make([]string, 0, len(specs)+len(hostNativeServiceNames()))
 	for _, spec := range specs {
 		names = append(names, spec.Name)
 	}
+	for _, name := range hostNativeServiceNames() {
+		if !slices.Contains(names, name) {
+			names = append(names, name)
+		}
+	}
 	return names
+}
+
+// hostNativeServiceNames are the HOST-NATIVE inference runtimes: they run as host
+// PROCESSES (not aip-* containers), so their start/stop/restart is a host-exec path
+// (controlHostNativeService), NOT the container `Control` (`docker start/stop`).
+// Ollama (a host `ollama serve` on :11434) and vLLM (per-model detached `vllm serve`
+// loopback processes) both live here. Order is display order.
+func hostNativeServiceNames() []string {
+	return []string{"ollama", "vllm"}
+}
+
+// isHostNativeService reports whether name is a host-native runtime (ollama/vllm),
+// which is controlled via the host-exec path rather than the container runtime.
+func isHostNativeService(name string) bool {
+	return slices.Contains(hostNativeServiceNames(), name)
 }
 
 // ControlService backs `ai services start|stop|restart|enable|disable [service]`.
@@ -224,6 +248,15 @@ func ServiceNames() []string {
 // setOptionalService). Invalid action/service → exit 2.
 func ControlService(deps Deps, action, service string) ([]ServiceStatus, error) {
 	if action == "enable" || action == "disable" {
+		// enable/disable is an optional-CONTAINER-service concept (membership in the
+		// persisted set). The host-native runtimes have no such notion — they are always
+		// present, controlled only by start/stop/restart — so reject it clearly (exit 2)
+		// rather than fall into the "core service" message.
+		if isHostNativeService(service) {
+			return nil, output.Errorf(output.ExitInvalidInput,
+				"%q is a host-native runtime — it has no enable/disable (use `ai services start|stop|restart %s`)",
+				service, service)
+		}
 		return setOptionalService(deps, action == "enable", service)
 	}
 	if !controlActions[action] {
@@ -232,6 +265,13 @@ func ControlService(deps Deps, action, service string) ([]ServiceStatus, error) 
 	// "all" is the explicit spelling of "no service = all services".
 	if service == "all" {
 		service = ""
+	}
+	// A named host-native runtime (ollama/vllm) is a host PROCESS, not an aip-*
+	// container: dispatch its lifecycle to the host-exec path instead of the
+	// container `Control` (which would reject vllm as unknown and mishandle the
+	// host-native ollama).
+	if service != "" && isHostNativeService(service) {
+		return controlHostNativeService(deps, action, service)
 	}
 	if service != "" && !slices.Contains(ServiceNames(), service) {
 		// A companion container managed as part of its owning logical service
@@ -252,7 +292,68 @@ func ControlService(deps Deps, action, service string) ([]ServiceStatus, error) 
 		return nil, output.Errorf(output.ExitInvalidInput,
 			"%q is disabled — run `ai services enable %s` first", service, service)
 	}
+	if service == "" {
+		// "all": the container tier first, then the host-native runtimes best-effort.
+		// A host runtime being ABSENT (no ollama/vllm binary, no vLLM models recorded)
+		// must NEVER fail `ai services <action> all` — its error is swallowed here.
+		if _, err := deps.Services.Control(action, ""); err != nil {
+			return nil, err
+		}
+		for _, name := range hostNativeServiceNames() {
+			_ = applyHostNativeAction(action, name)
+		}
+		return deps.Services.Status()
+	}
 	return deps.Services.Control(action, service)
+}
+
+// hostNative*  are the injectable seams for the host-native runtime lifecycle so
+// unit tests exercise ControlService's ROUTING without forking a real process.
+// They default to the real (hardware bring-up) implementations in ollama_host.go /
+// vllm_host.go. Tests override them (and a package TestMain neutralizes them so no
+// container-path test accidentally spawns a host process).
+var (
+	hostNativeStartOllama = startHostOllamaService
+	hostNativeStopOllama  = stopHostOllamaService
+	hostNativeStartVLLM   = startVLLMServersHost
+	hostNativeStopVLLM    = stopVLLMServersHost
+)
+
+// controlHostNativeService applies a lifecycle action to a host-native runtime
+// (ollama/vllm) via the host-exec path, then re-reads the service status (mirroring
+// the container Control path, which also returns the post-action statuses). An
+// unknown host-native name (defensive — ControlService validates first) is exit 2.
+func controlHostNativeService(deps Deps, action, service string) ([]ServiceStatus, error) {
+	if err := applyHostNativeAction(action, service); err != nil {
+		return nil, err
+	}
+	return deps.Services.Status()
+}
+
+// applyHostNativeAction runs start/stop/restart on ONE host-native runtime through
+// the injectable seams. restart is a stop (best-effort — a not-running server is not
+// an error) followed by a start.
+func applyHostNativeAction(action, service string) error {
+	var start, stop func() error
+	switch service {
+	case "ollama":
+		start, stop = hostNativeStartOllama, hostNativeStopOllama
+	case "vllm":
+		start, stop = hostNativeStartVLLM, hostNativeStopVLLM
+	default:
+		return output.Errorf(output.ExitInvalidInput, "unknown host-native service %q", service)
+	}
+	switch action {
+	case "start":
+		return start()
+	case "stop":
+		return stop()
+	case "restart":
+		_ = stop()
+		return start()
+	default:
+		return output.Errorf(output.ExitInvalidInput, "unknown action %q (start|stop|restart)", action)
+	}
 }
 
 // UpdateService backs `ai services update [service]` (and the TUI `p` key): it
