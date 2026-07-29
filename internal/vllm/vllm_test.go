@@ -2,6 +2,7 @@ package vllm
 
 import (
 	"errors"
+	"os"
 	"path/filepath"
 	"runtime"
 	"testing"
@@ -79,7 +80,7 @@ func TestEnsureServedLazyStart(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	manager, runner, _ := newTestManager(Config{BasePort: 8101})
 
-	endpoint, err := manager.EnsureServed("llama", "mlx-community/Llama")
+	_, endpoint, err := manager.EnsureServed("llama", "mlx-community/Llama")
 	if err != nil {
 		t.Fatalf("EnsureServed: %v", err)
 	}
@@ -102,12 +103,12 @@ func TestEnsureServedReusesAndTouchesLRU(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	manager, runner, _ := newTestManager(Config{BasePort: 8101})
 
-	if _, err := manager.EnsureServed("a", "m-a"); err != nil {
+	if _, _, err := manager.EnsureServed("a", "m-a"); err != nil {
 		t.Fatalf("first: %v", err)
 	}
 	firstLastUsed := manager.servers["a"].lastUsed
 
-	endpoint, err := manager.EnsureServed("a", "m-a")
+	_, endpoint, err := manager.EnsureServed("a", "m-a")
 	if err != nil {
 		t.Fatalf("second: %v", err)
 	}
@@ -127,7 +128,7 @@ func TestPortAllocationUnique(t *testing.T) {
 	manager, _, _ := newTestManager(Config{BasePort: 8101, MaxServers: 5})
 
 	for _, alias := range []string{"a", "b", "c"} {
-		if _, err := manager.EnsureServed(alias, "m-"+alias); err != nil {
+		if _, _, err := manager.EnsureServed(alias, "m-"+alias); err != nil {
 			t.Fatalf("EnsureServed %s: %v", alias, err)
 		}
 	}
@@ -160,15 +161,15 @@ func TestCapEvictsLRU(t *testing.T) {
 
 	// Fill to the cap, then use "a" so "b" becomes LRU.
 	for _, alias := range []string{"a", "b"} {
-		if _, err := manager.EnsureServed(alias, "m-"+alias); err != nil {
+		if _, _, err := manager.EnsureServed(alias, "m-"+alias); err != nil {
 			t.Fatalf("EnsureServed %s: %v", alias, err)
 		}
 	}
-	if _, err := manager.EnsureServed("a", "m-a"); err != nil { // touch a → b is LRU
+	if _, _, err := manager.EnsureServed("a", "m-a"); err != nil { // touch a → b is LRU
 		t.Fatalf("touch a: %v", err)
 	}
 
-	if _, err := manager.EnsureServed("c", "m-c"); err != nil {
+	if _, _, err := manager.EnsureServed("c", "m-c"); err != nil {
 		t.Fatalf("EnsureServed c: %v", err)
 	}
 
@@ -202,12 +203,12 @@ func TestFailedStartAtCapKeepsHealthyServers(t *testing.T) {
 	manager, _, _ := newTestManagerWithRunner(Config{BasePort: 8101, MaxServers: 2}, runner)
 
 	for _, alias := range []string{"a", "b"} {
-		if _, err := manager.EnsureServed(alias, "m-"+alias); err != nil {
+		if _, _, err := manager.EnsureServed(alias, "m-"+alias); err != nil {
 			t.Fatalf("EnsureServed %s: %v", alias, err)
 		}
 	}
 	// c's start fails: it must error, and NEITHER a nor b may be evicted.
-	if _, err := manager.EnsureServed("c", "m-c"); err == nil {
+	if _, _, err := manager.EnsureServed("c", "m-c"); err == nil {
 		t.Fatalf("EnsureServed c: expected a start error, got nil")
 	}
 	if _, ok := manager.servers["a"]; !ok {
@@ -246,7 +247,7 @@ func TestDeadServerRestarts(t *testing.T) {
 	manager.servers["a"] = &server{alias: "a", model: "m-a", port: 8101, handle: ServerHandle{PID: 99}, lastUsed: clock.now()}
 	manager.usedPorts[8101] = true
 
-	endpoint, err := manager.EnsureServed("a", "m-a")
+	_, endpoint, err := manager.EnsureServed("a", "m-a")
 	if err != nil {
 		t.Fatalf("EnsureServed: %v", err)
 	}
@@ -267,7 +268,7 @@ func TestEnsureServedStartError(t *testing.T) {
 	clock := &stepClock{}
 	manager := NewManager(Config{Runner: runner, Probe: alwaysHealthy, Now: clock.now, Sleep: clock.sleep})
 
-	if _, err := manager.EnsureServed("a", "m-a"); err == nil {
+	if _, _, err := manager.EnsureServed("a", "m-a"); err == nil {
 		t.Fatalf("expected start error")
 	}
 	if len(manager.servers) != 0 {
@@ -292,7 +293,7 @@ func TestEnsureServedHealthTimeout(t *testing.T) {
 		PollInterval: time.Second,
 	})
 
-	if _, err := manager.EnsureServed("a", "m-a"); err == nil {
+	if _, _, err := manager.EnsureServed("a", "m-a"); err == nil {
 		t.Fatalf("expected health timeout error")
 	}
 	if runner.StopCount() != 1 {
@@ -308,7 +309,7 @@ func TestStopAndStopAll(t *testing.T) {
 	manager, runner, _ := newTestManager(Config{BasePort: 8101, MaxServers: 5})
 
 	for _, alias := range []string{"a", "b"} {
-		if _, err := manager.EnsureServed(alias, "m-"+alias); err != nil {
+		if _, _, err := manager.EnsureServed(alias, "m-"+alias); err != nil {
 			t.Fatalf("EnsureServed %s: %v", alias, err)
 		}
 	}
@@ -344,7 +345,7 @@ func TestHealth(t *testing.T) {
 	if manager.Health("a") {
 		t.Fatalf("unknown alias reported healthy")
 	}
-	if _, err := manager.EnsureServed("a", "m-a"); err != nil {
+	if _, _, err := manager.EnsureServed("a", "m-a"); err != nil {
 		t.Fatalf("EnsureServed: %v", err)
 	}
 	if !manager.Health("a") {
@@ -356,7 +357,7 @@ func TestRunningSnapshot(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	manager, _, _ := newTestManager(Config{BasePort: 8101, MaxServers: 5})
 	for _, alias := range []string{"c", "a", "b"} {
-		if _, err := manager.EnsureServed(alias, "m-"+alias); err != nil {
+		if _, _, err := manager.EnsureServed(alias, "m-"+alias); err != nil {
 			t.Fatalf("EnsureServed %s: %v", alias, err)
 		}
 	}
@@ -425,15 +426,109 @@ func TestDetect(t *testing.T) {
 	}
 }
 
-func TestBringUpSeamsNotWired(t *testing.T) {
-	if _, err := (RealRunner{}).Start("a", "m", 8101, "/store"); !errors.Is(err, ErrNotWired) {
-		t.Fatalf("RealRunner.Start should be ErrNotWired, got %v", err)
+// TestVLLMServeArgs pins the `vllm serve` argv contract: it serves the model under the
+// ALIAS (--served-model-name), binds the loopback port, and points the download dir at the
+// platform store. Routing on the alias is what makes the OpenAI endpoint answer to
+// model=<alias>. The real exec (RealRunner.Start forking the process) is a `hardware
+// bring-up` path and is NOT exercised here.
+func TestVLLMServeArgs(t *testing.T) {
+	args := vllmServeArgs("my-qwen", "mlx-community/Qwen3-8B", 8101, "/store/vllm")
+	want := []string{
+		"serve", "mlx-community/Qwen3-8B",
+		"--host", "127.0.0.1",
+		"--port", "8101",
+		"--served-model-name", "my-qwen",
+		"--download-dir", "/store/vllm",
 	}
-	if err := (RealRunner{}).Stop(ServerHandle{PID: 1}); !errors.Is(err, ErrNotWired) {
-		t.Fatalf("RealRunner.Stop should be ErrNotWired, got %v", err)
+	if len(args) != len(want) {
+		t.Fatalf("vllmServeArgs = %v, want %v", args, want)
 	}
-	if err := Pull("mlx-community/x"); !errors.Is(err, ErrNotWired) {
-		t.Fatalf("Pull should be ErrNotWired, got %v", err)
+	for index := range want {
+		if args[index] != want[index] {
+			t.Fatalf("vllmServeArgs[%d] = %q, want %q (full %v)", index, args[index], want[index], args)
+		}
+	}
+}
+
+// TestPullEnsuresStore proves Pull is wired (no ErrNotWired): it creates the store dir and
+// returns nil — weights are fetched lazily by `vllm serve` on first launch, not here.
+func TestPullEnsuresStore(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	if err := Pull("mlx-community/x"); err != nil {
+		t.Fatalf("Pull should be wired (nil), got %v", err)
+	}
+	store := filepath.Join(home, ".ai-platform", "volumes", "models", "vllm")
+	if info, err := os.Stat(store); err != nil || !info.IsDir() {
+		t.Fatalf("Pull should create the store dir %s (err=%v)", store, err)
+	}
+}
+
+// TestReservedPortReusedForKnownAlias proves a Reserved-seeded alias REUSES its recorded
+// port across invocations (a fresh Manager has no memory otherwise), so a model's port is
+// stable.
+func TestReservedPortReusedForKnownAlias(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	manager, _, _ := newTestManager(Config{BasePort: 8101, Reserved: map[string]int{"known": 8109}})
+	port, endpoint, err := manager.EnsureServed("known", "m-known")
+	if err != nil {
+		t.Fatalf("EnsureServed: %v", err)
+	}
+	if port != 8109 || endpoint != "http://127.0.0.1:8109/v1" {
+		t.Fatalf("reserved alias got port %d / %q, want 8109", port, endpoint)
+	}
+}
+
+// TestAllocateSkipsReservedPort proves allocatePort never hands a NEW alias a port that is
+// reserved for a DIFFERENT (not-yet-started) alias.
+func TestAllocateSkipsReservedPort(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	// base port 8101 is reserved for "other"; a fresh alias must skip it.
+	manager, _, _ := newTestManager(Config{BasePort: 8101, Reserved: map[string]int{"other": 8101}})
+	port, _, err := manager.EnsureServed("fresh", "m-fresh")
+	if err != nil {
+		t.Fatalf("EnsureServed: %v", err)
+	}
+	if port == 8101 {
+		t.Fatalf("fresh alias got the reserved port 8101; must skip it")
+	}
+	if port != 8102 {
+		t.Fatalf("fresh alias port = %d, want 8102 (lowest free skipping the reserved 8101)", port)
+	}
+}
+
+// TestSeedReservedMerges proves SeedReserved feeds the same alias→port seed post-construction.
+func TestSeedReservedMerges(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	manager, _, _ := newTestManager(Config{BasePort: 8101})
+	manager.SeedReserved(map[string]int{"seeded": 8120})
+	port, _, err := manager.EnsureServed("seeded", "m-seeded")
+	if err != nil {
+		t.Fatalf("EnsureServed: %v", err)
+	}
+	if port != 8120 {
+		t.Fatalf("seeded alias port = %d, want 8120", port)
+	}
+}
+
+// TestPortOf parses the port from both endpoint forms and rejects portless/garbage input.
+func TestPortOf(t *testing.T) {
+	cases := []struct {
+		endpoint string
+		want     int
+		ok       bool
+	}{
+		{"http://127.0.0.1:8101/v1", 8101, true},
+		{"http://host.docker.internal:8102/v1", 8102, true},
+		{"http://127.0.0.1/v1", 0, false},
+		{"", 0, false},
+		{"::::", 0, false},
+	}
+	for _, testCase := range cases {
+		port, ok := PortOf(testCase.endpoint)
+		if ok != testCase.ok || port != testCase.want {
+			t.Errorf("PortOf(%q) = (%d, %v), want (%d, %v)", testCase.endpoint, port, ok, testCase.want, testCase.ok)
+		}
 	}
 }
 

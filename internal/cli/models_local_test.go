@@ -533,39 +533,47 @@ func TestModelsPullInvalidRuntimeExits2(test *testing.T) {
 
 // --- vLLM runtime ------------------------------------------------------------
 
-// fakeVLLMServer is an in-test vllmServer: EnsureServed returns a fixed endpoint and
-// records the (alias, model) it was asked to serve; Stop records the aliases stopped.
+// fakeVLLMServer is an in-test vllmServer: EnsureServed returns a fixed loopback port +
+// endpoint and records the (alias, model) it was asked to serve. It also captures the
+// reserved alias→port seed the factory was built with, so a test can assert cross-invocation
+// port seeding.
 type fakeVLLMServer struct {
+	port     int
 	endpoint string
 	serveErr error
-	served   []string // "alias|model"
-	stopped  []string
+	served   []string       // "alias|model"
+	reserved map[string]int // the seed the factory received
 }
 
-func (fake *fakeVLLMServer) EnsureServed(alias, model string) (string, error) {
+func (fake *fakeVLLMServer) EnsureServed(alias, model string) (int, string, error) {
 	fake.served = append(fake.served, alias+"|"+model)
 	if fake.serveErr != nil {
-		return "", fake.serveErr
+		return 0, "", fake.serveErr
 	}
-	return fake.endpoint, nil
-}
-
-func (fake *fakeVLLMServer) Stop(alias string) error {
-	fake.stopped = append(fake.stopped, alias)
-	return nil
+	return fake.port, fake.endpoint, nil
 }
 
 // withFakeVLLM swaps the host-side vLLM seams for the duration of a test: detection,
-// the (best-effort) Pull, and the server-manager factory.
-func withFakeVLLM(test *testing.T, installed bool, pullErr error, server vllmServer) {
+// the (best-effort) Pull, the server-manager factory (which records its reserved seed),
+// and the by-port stop seam (which records the ports it was asked to stop).
+func withFakeVLLM(test *testing.T, installed bool, pullErr error, server *fakeVLLMServer) *[]int {
 	test.Helper()
-	prevDetect, prevPull, prevFactory := vllmDetectFn, vllmPullFn, vllmManagerFactory
+	prevDetect, prevPull, prevFactory, prevStop := vllmDetectFn, vllmPullFn, vllmManagerFactory, vllmStopByPortFn
 	vllmDetectFn = func() (bool, string) { return installed, "mlx" }
 	vllmPullFn = func(string) error { return pullErr }
-	vllmManagerFactory = func() vllmServer { return server }
+	vllmManagerFactory = func(reserved map[string]int) vllmServer {
+		server.reserved = reserved
+		return server
+	}
+	stoppedPorts := &[]int{}
+	vllmStopByPortFn = func(port int) error {
+		*stoppedPorts = append(*stoppedPorts, port)
+		return nil
+	}
 	test.Cleanup(func() {
-		vllmDetectFn, vllmPullFn, vllmManagerFactory = prevDetect, prevPull, prevFactory
+		vllmDetectFn, vllmPullFn, vllmManagerFactory, vllmStopByPortFn = prevDetect, prevPull, prevFactory, prevStop
 	})
+	return stoppedPorts
 }
 
 // --runtime vllm with vLLM absent exits 3 with install guidance — NEVER a silent
@@ -593,13 +601,14 @@ func TestModelsPullVLLMNotInstalledExits3(test *testing.T) {
 	}
 }
 
-// --runtime vllm registers the model with RegisterVLLMModel carrying the served
-// endpoint and records the runtime choice (alias + endpoint) in the store.
+// --runtime vllm registers the model with the CONTAINER api_base (host.docker.internal —
+// what LiteLLM in a container must dial), NOT the loopback, and records the LOOPBACK
+// endpoint (host-side truth) as the runtime choice.
 func TestModelsPullVLLMRegistersWithEndpoint(test *testing.T) {
 	withFakeOllama(test, &ollama.Fake{})
 	registrar := &fakeRegistrar{}
 	withFakeRegistrar(test, registrar)
-	server := &fakeVLLMServer{endpoint: "http://127.0.0.1:8101/v1"}
+	server := &fakeVLLMServer{port: 8101, endpoint: "http://127.0.0.1:8101/v1"}
 	withFakeVLLM(test, true, nil, server)
 	exit := output.ExitOK
 	cmd := newModelsPullCmd(jsonEmitter(), &exit)
@@ -609,16 +618,66 @@ func TestModelsPullVLLMRegistersWithEndpoint(test *testing.T) {
 	if exit != output.ExitOK {
 		test.Fatalf("vLLM pull exit = %d, want 0", exit)
 	}
-	wantReg := "my-qwen|mlx-community/Qwen2.5-7B-Instruct-4bit|http://127.0.0.1:8101/v1"
+	// The gateway api_base is the CONTAINER endpoint (host.docker.internal), not loopback.
+	wantReg := "my-qwen|mlx-community/Qwen2.5-7B-Instruct-4bit|http://host.docker.internal:8101/v1"
 	if len(registrar.vllmRegistered) != 1 || registrar.vllmRegistered[0] != wantReg {
 		test.Fatalf("vLLM registered = %v, want [%s]", registrar.vllmRegistered, wantReg)
 	}
 	if len(server.served) != 1 || server.served[0] != "my-qwen|mlx-community/Qwen2.5-7B-Instruct-4bit" {
 		test.Fatalf("EnsureServed calls = %v", server.served)
 	}
+	// The recorded runtime choice carries the LOOPBACK endpoint (host-side truth for probes
+	// + stop-by-port), not the container form.
 	choice, ok := config.ModelRuntimeFor("my-qwen")
 	if !ok || choice.Runtime != config.RuntimeVLLM || choice.Endpoint != "http://127.0.0.1:8101/v1" {
-		test.Fatalf("recorded choice = %+v (ok=%v), want vllm @ endpoint", choice, ok)
+		test.Fatalf("recorded choice = %+v (ok=%v), want vllm @ loopback endpoint", choice, ok)
+	}
+}
+
+// A vLLM pull whose gateway registration FAILS still RECORDS the runtime choice (on start,
+// fix #5) so a later `rm` can find and stop the running server; the outcome carries the
+// register error but the pull as a whole is not a hard failure (the server IS up).
+func TestModelsPullVLLMRecordsEvenWhenRegisterFails(test *testing.T) {
+	withFakeOllama(test, &ollama.Fake{})
+	registrar := &fakeRegistrar{vllmRegisterErr: errors.New("gateway down")}
+	withFakeRegistrar(test, registrar)
+	server := &fakeVLLMServer{port: 8101, endpoint: "http://127.0.0.1:8101/v1"}
+	withFakeVLLM(test, true, nil, server)
+	exit := output.ExitOK
+	cmd := newModelsPullCmd(jsonEmitter(), &exit)
+	cmd.SetOut(io.Discard)
+	cmd.SetErr(io.Discard)
+	runLocalModelsCmd(test, cmd, "--runtime", "vllm", "--alias", "my-qwen", "mlx-community/Qwen3-8B")
+	// Register failed but the server started → the choice is recorded regardless.
+	choice, ok := config.ModelRuntimeFor("my-qwen")
+	if !ok || choice.Endpoint != "http://127.0.0.1:8101/v1" {
+		test.Fatalf("choice must be recorded on start even when register fails: %+v (ok=%v)", choice, ok)
+	}
+}
+
+// The Manager factory is seeded with the recorded alias→port map so a KNOWN alias reuses
+// its port and a new one never steals a recorded port (cross-invocation port truth).
+func TestModelsPullVLLMSeedsReservedPorts(test *testing.T) {
+	withFakeOllama(test, &ollama.Fake{})
+	withFakeRegistrar(test, &fakeRegistrar{})
+	// Pre-seed the store with an existing vLLM model on port 8101.
+	if err := config.SetModelRuntime(config.ModelRuntimeChoice{
+		Alias:    "existing",
+		Model:    "mlx-community/Existing",
+		Runtime:  config.RuntimeVLLM,
+		Endpoint: "http://127.0.0.1:8101/v1",
+	}); err != nil {
+		test.Fatalf("seed store: %v", err)
+	}
+	server := &fakeVLLMServer{port: 8102, endpoint: "http://127.0.0.1:8102/v1"}
+	withFakeVLLM(test, true, nil, server)
+	exit := output.ExitOK
+	cmd := newModelsPullCmd(jsonEmitter(), &exit)
+	cmd.SetOut(io.Discard)
+	cmd.SetErr(io.Discard)
+	runLocalModelsCmd(test, cmd, "--runtime", "vllm", "--alias", "fresh", "mlx-community/Fresh")
+	if server.reserved["existing"] != 8101 {
+		test.Fatalf("factory reserved seed = %v, want existing→8101 parsed from the recorded endpoint", server.reserved)
 	}
 }
 
@@ -626,7 +685,7 @@ func TestModelsPullVLLMRegistersWithEndpoint(test *testing.T) {
 func TestModelsPullVLLMAliasMultiModelExits2(test *testing.T) {
 	withFakeOllama(test, &ollama.Fake{})
 	withFakeRegistrar(test, &fakeRegistrar{})
-	withFakeVLLM(test, true, nil, &fakeVLLMServer{endpoint: "http://127.0.0.1:8101/v1"})
+	withFakeVLLM(test, true, nil, &fakeVLLMServer{port: 8101, endpoint: "http://127.0.0.1:8101/v1"})
 	exit := output.ExitOK
 	cmd := newModelsPullCmd(jsonEmitter(), &exit)
 	cmd.SetOut(io.Discard)
@@ -642,7 +701,7 @@ func TestModelsPullVLLMDefaultAlias(test *testing.T) {
 	withFakeOllama(test, &ollama.Fake{})
 	registrar := &fakeRegistrar{}
 	withFakeRegistrar(test, registrar)
-	withFakeVLLM(test, true, nil, &fakeVLLMServer{endpoint: "http://127.0.0.1:8101/v1"})
+	withFakeVLLM(test, true, nil, &fakeVLLMServer{port: 8101, endpoint: "http://127.0.0.1:8101/v1"})
 	exit := output.ExitOK
 	cmd := newModelsPullCmd(jsonEmitter(), &exit)
 	cmd.SetOut(io.Discard)
@@ -672,15 +731,16 @@ func TestModelsPullVLLMServeNotWired(test *testing.T) {
 	}
 }
 
-// rm of a vLLM-recorded model de-registers via UnregisterVLLMModel, stops the server,
-// clears the recorded choice, and does NOT touch the Ollama store.
+// rm of a vLLM-recorded model de-registers via UnregisterVLLMModel, stops the detached
+// server by its RECORDED PORT (a fresh Manager holds no handle), clears the recorded
+// choice, and does NOT touch the Ollama store.
 func TestModelsRmVLLMDeregistersAndStops(test *testing.T) {
 	fake := &ollama.Fake{}
 	withFakeOllama(test, fake)
 	registrar := &fakeRegistrar{}
 	withFakeRegistrar(test, registrar)
 	server := &fakeVLLMServer{}
-	withFakeVLLM(test, true, nil, server)
+	stoppedPorts := withFakeVLLM(test, true, nil, server)
 	if err := config.SetModelRuntime(config.ModelRuntimeChoice{
 		Alias:    "my-qwen",
 		Model:    "mlx-community/Qwen2.5-7B-Instruct-4bit",
@@ -700,8 +760,8 @@ func TestModelsRmVLLMDeregistersAndStops(test *testing.T) {
 	if len(registrar.vllmUnregistered) != 1 || registrar.vllmUnregistered[0] != "my-qwen" {
 		test.Fatalf("vLLM unregistered = %v, want [my-qwen]", registrar.vllmUnregistered)
 	}
-	if len(server.stopped) != 1 || server.stopped[0] != "my-qwen" {
-		test.Fatalf("server stopped = %v, want [my-qwen]", server.stopped)
+	if len(*stoppedPorts) != 1 || (*stoppedPorts)[0] != 8101 {
+		test.Fatalf("StopByPort ports = %v, want [8101] (parsed from the recorded endpoint)", *stoppedPorts)
 	}
 	if len(registrar.unregistered) != 0 {
 		test.Fatalf("Ollama unregister must not be called for a vLLM model: %v", registrar.unregistered)

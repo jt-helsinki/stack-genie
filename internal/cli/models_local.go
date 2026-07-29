@@ -50,17 +50,51 @@ var (
 	vllmDetectFn          = vllm.Detect
 	vllmInstallGuidanceFn = vllm.InstallGuidance
 	vllmPullFn            = vllm.Pull
-	vllmManagerFactory    = func() vllmServer {
-		return vllm.NewManager(vllm.Config{Runner: vllm.RealRunner{}, Probe: vllm.RealHealthProbe()})
+	// vllmManagerFactory builds the per-model vLLM server manager. It takes the recorded
+	// alias→port seed (from config/model-runtimes.yaml) so a known model REUSES its port
+	// and a new model never steals a recorded one — cross-invocation port truth for a
+	// daemonless CLI.
+	vllmManagerFactory = func(reserved map[string]int) vllmServer {
+		return vllm.NewManager(vllm.Config{
+			Runner:   vllm.RealRunner{},
+			Probe:    vllm.RealHealthProbe(),
+			Reserved: reserved,
+		})
 	}
+	// vllmStopByPortFn stops a detached `vllm serve` by its recorded port — the
+	// cross-invocation stop path used on `ai models rm`, since a fresh Manager holds no
+	// handle. A package var so tests observe it without pkill-ing a real process.
+	vllmStopByPortFn = vllm.StopByPort
 )
 
-// vllmServer is the host-side vLLM server manager slice used by `ai models pull|rm
-// --runtime vllm`: it starts/locates a per-model `vllm serve` endpoint and stops it on
-// removal. Production binds *vllm.Manager; tests a fake.
+// vllmServer is the host-side vLLM server manager slice used by `ai models pull
+// --runtime vllm`: it starts/locates a per-model `vllm serve` endpoint, returning the
+// loopback port + endpoint. Production binds *vllm.Manager; tests a fake. (Removal stops
+// the detached server by recorded port via vllmStopByPortFn, not through this handle-less
+// fresh manager.)
 type vllmServer interface {
-	EnsureServed(alias, model string) (endpoint string, err error)
-	Stop(alias string) error
+	EnsureServed(alias, model string) (port int, endpoint string, err error)
+}
+
+// recordedVLLMPorts builds the alias→port seed for the vLLM Manager from the persisted
+// model-runtimes store: for each recorded runtime=vllm choice it parses the loopback port
+// out of the stored Endpoint. An unreadable store or a portless endpoint contributes
+// nothing (best-effort — this only optimizes port stability, never correctness).
+func recordedVLLMPorts() map[string]int {
+	reserved := map[string]int{}
+	choices, err := config.LoadModelRuntimes()
+	if err != nil {
+		return reserved
+	}
+	for _, choice := range choices {
+		if choice.Runtime != config.RuntimeVLLM {
+			continue
+		}
+		if port, ok := vllm.PortOf(choice.Endpoint); ok {
+			reserved[choice.Alias] = port
+		}
+	}
+	return reserved
 }
 
 // vllmDefaultAlias derives the gateway alias for a vLLM model id when --alias is
@@ -108,7 +142,7 @@ func pullVLLM(emitter *output.Emitter, names []string, alias string) int {
 		return emitter.Failure("models.pull", output.Errorf(output.ExitInvalidInput,
 			"--alias applies to a single model (got %d)", len(names)))
 	}
-	manager := vllmManagerFactory()
+	manager := vllmManagerFactory(recordedVLLMPorts())
 	registrar := modelRegistrarFactory()
 
 	result := modelsPullResult{Pulled: make([]modelPullOutcome, 0, len(names))}
@@ -125,7 +159,7 @@ func pullVLLM(emitter *output.Emitter, names []string, alias string) int {
 			result.Pulled = append(result.Pulled, outcome)
 			continue
 		}
-		endpoint, err := manager.EnsureServed(modelAlias, model)
+		port, endpoint, err := manager.EnsureServed(modelAlias, model)
 		if err != nil {
 			outcome.Error = vllmActionable(err).Error()
 			failures++
@@ -133,13 +167,19 @@ func pullVLLM(emitter *output.Emitter, names []string, alias string) int {
 			continue
 		}
 		outcome.OK = true
+		// Record the runtime choice AS SOON AS the server is up (fix #5) — the LOOPBACK
+		// endpoint, host-side truth — INDEPENDENT of whether gateway registration then
+		// succeeds, so a later `rm` can always find and stop the running server. The
+		// LiteLLM CONTAINER, however, must reach the server via host.docker.internal, so
+		// the api_base REGISTERED in the gateway is the CONTAINER endpoint (fix #1), not
+		// the loopback.
+		recordModelRuntimeChoice(modelAlias, model, config.RuntimeVLLM, endpoint)
 		// vLLM tool support is model-dependent and not probed here; unknown defaults to
 		// capable, matching the gateway's default treatment.
-		if regErr := registrar.RegisterVLLMModel(modelAlias, model, endpoint, true); regErr != nil {
+		if regErr := registrar.RegisterVLLMModel(modelAlias, model, vllm.ContainerEndpoint(port), true); regErr != nil {
 			outcome.RegisterError = regErr.Error()
 		} else {
 			outcome.Registered = true
-			recordModelRuntimeChoice(modelAlias, model, config.RuntimeVLLM, endpoint)
 		}
 		result.Pulled = append(result.Pulled, outcome)
 	}
@@ -208,7 +248,12 @@ func removeVLLM(emitter *output.Emitter, ref string, choice config.ModelRuntimeC
 	if regErr := registrar.UnregisterVLLMModel(choice.Alias); regErr != nil {
 		result.UnregisterError = regErr.Error()
 	}
-	_ = vllmManagerFactory().Stop(choice.Alias)
+	// The detached `vllm serve` process outlives every CLI invocation, so a fresh Manager
+	// holds no handle to it — stop it by the recorded loopback port instead (parsed from
+	// the stored Endpoint). Best-effort: nothing to stop is not an error.
+	if port, ok := vllm.PortOf(choice.Endpoint); ok {
+		_ = vllmStopByPortFn(port)
+	}
 	_ = config.DeleteModelRuntime(choice.Alias)
 	return emitter.Success("models.rm", result)
 }

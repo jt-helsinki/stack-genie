@@ -16,10 +16,10 @@ package setup
 // summary line (Mode "host") — running when ≥1 recorded endpoint answers, else
 // stopped — matching serviceHealthy("vllm") and keeping the status shape flat.
 //
-// hardware bring-up: actually LAUNCHING a vLLM server is host mutation deferred
-// until validated on a provisioned host — vllm.RealRunner is an ErrNotWired stub.
-// Reconcile ATTEMPTS the launch best-effort and logs the install guidance on
-// failure; it NEVER fails setup (vLLM is optional).
+// vllm.RealRunner now actually spawns a DETACHED `vllm serve`; ensureVLLMServers
+// ATTEMPTS the launch best-effort (only when vLLM is installed — gated on vllmDetect)
+// and logs the install guidance on failure. It NEVER fails setup (vLLM is optional).
+// hardware bring-up: the real launch is exercised only on a provisioned host with vLLM.
 
 import (
 	"net/http"
@@ -42,6 +42,11 @@ var vllmHTTPGet = func(url string) (*http.Response, error) {
 	client := &http.Client{Timeout: vllmProbeTimeout}
 	return client.Get(url)
 }
+
+// vllmDetect is the injectable seam for the vLLM install probe (vllm.Detect). It gates
+// ensureVLLMServers so a host WITHOUT vLLM logs the install guidance instead of spawning
+// a real `vllm serve` — and so unit tests never fork a process regardless of the host.
+var vllmDetect = vllm.Detect
 
 // vllmRuntimeChoices returns the recorded runtime=vllm model-runtime choices from
 // the machine-wide store (config/model-runtimes.yaml). An absent/unreadable store
@@ -146,20 +151,42 @@ func (services realServices) ensureVLLMServers(progress func(string)) {
 	if len(choices) == 0 {
 		return // nothing to serve
 	}
-	manager := vllm.NewManager(vllm.Config{
-		Runner: vllm.RealRunner{},
-		Probe:  vllm.RealHealthProbe(),
-		Log:    func(line string) { progress("      " + line) },
-	})
+	installed, _ := vllmDetect()
+	// Seed the Manager with the recorded alias→port map so each model REUSES its recorded
+	// loopback port and a fresh launch never steals another recorded model's port.
+	reserved := map[string]int{}
+	for _, choice := range choices {
+		if port, ok := vllm.PortOf(choice.Endpoint); ok {
+			reserved[choice.Alias] = port
+		}
+	}
+	var manager *vllm.Manager
+	if installed {
+		manager = vllm.NewManager(vllm.Config{
+			Runner:   vllm.RealRunner{},
+			Probe:    vllm.RealHealthProbe(),
+			Reserved: reserved,
+			Log:      func(line string) { progress("      " + line) },
+		})
+	}
 	for _, choice := range choices {
 		// Already up (a detached launch from a previous CLI run)? Leave it alone.
 		if vllmEndpointHealthy(choice.Endpoint) {
 			continue
 		}
 		progress("  • vLLM server for " + choice.Alias + " (host-native, best-effort)…")
-		if _, err := manager.EnsureServed(choice.Alias, vllmServeModel(choice)); err != nil {
-			// Best-effort: vLLM is optional and RealRunner is a bring-up stub. Surface
-			// the reason + install guidance and continue — NEVER fail the reconcile.
+		if !installed {
+			// No vLLM on PATH — never attempt a launch (nothing to exec). Surface the
+			// install guidance and continue; vLLM is OPTIONAL, so this never fails setup.
+			progress("      vLLM not installed for " + choice.Alias)
+			for _, line := range vllm.InstallGuidance(goruntime.GOOS) {
+				progress("      - " + line)
+			}
+			continue
+		}
+		if _, _, err := manager.EnsureServed(choice.Alias, vllmServeModel(choice)); err != nil {
+			// Best-effort: vLLM is optional. Surface the reason + install guidance and
+			// continue — NEVER fail the reconcile.
 			progress("      vLLM not started for " + choice.Alias + ": " + err.Error())
 			for _, line := range vllm.InstallGuidance(goruntime.GOOS) {
 				progress("      - " + line)

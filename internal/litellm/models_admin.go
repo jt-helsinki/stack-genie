@@ -351,31 +351,36 @@ func VLLMModelName(alias string) string {
 }
 
 // VLLMRoutedModel is the value LiteLLM ROUTES on (litellm_params.model) for a vLLM model:
-// "openai/<model>". vLLM exposes an OpenAI-compatible HTTP server, so it is routed via
-// LiteLLM's `openai` provider paired with a per-model api_base (the model's dedicated
-// `vllm serve` endpoint). This is the same public-handle-vs-routed-value split Ollama uses
-// (OllamaModelName "ollama/<name>" vs OllamaRoutedModel "ollama_chat/<name>"): the PUBLIC
-// handle stays "vllm/<alias>" (VLLMModelName) so the agent-facing id is unchanged; only the
-// internal routing switches to the OpenAI-compatible provider.
-func VLLMRoutedModel(model string) string {
-	return "openai/" + model
+// "openai/<alias>". vLLM exposes an OpenAI-compatible HTTP server started with
+// `--served-model-name <alias>`, so the endpoint answers to model=<alias> (NOT the Hugging
+// Face model id) — the routed value MUST therefore be built from the ALIAS, paired with the
+// model's dedicated api_base. This is the same public-handle-vs-routed-value split Ollama
+// uses (OllamaModelName "ollama/<name>" vs OllamaRoutedModel "ollama_chat/<name>"): the
+// PUBLIC handle stays "vllm/<alias>" (VLLMModelName) so the agent-facing id is unchanged;
+// only the internal routing switches to the OpenAI-compatible provider.
+func VLLMRoutedModel(alias string) string {
+	return "openai/" + alias
 }
 
-// vllmModelParamsInfo builds the LiteLLM params + info for a vLLM model. It always sets
+// vllmModelParamsInfo builds the LiteLLM params + info for a vLLM model. It routes on the
+// served-model-name ALIAS (VLLMRoutedModel(alias) = "openai/<alias>") because that is what
+// the `vllm serve --served-model-name <alias>` endpoint answers to; it always sets
 // drop_params (defense-in-depth for unsupported params) and records tool-calling support in
 // model_info when known (supportsTools nil = unknown). Unlike Ollama's fixed OllamaAPIBase,
 // each vLLM model runs its OWN `vllm serve` endpoint, so apiBase is a PARAMETER (e.g.
 // http://host.docker.internal:8101/v1); no credential is referenced (a local vLLM needs none).
-func vllmModelParamsInfo(model, apiBase string, supportsTools *bool) (ModelParams, ModelInfo) {
+func vllmModelParamsInfo(alias, apiBase string, supportsTools *bool) (ModelParams, ModelInfo) {
 	dropParams := true
-	return ModelParams{Model: VLLMRoutedModel(model), APIBase: apiBase, DropParams: &dropParams},
+	return ModelParams{Model: VLLMRoutedModel(alias), APIBase: apiBase, DropParams: &dropParams},
 		ModelInfo{SupportsFunctionCalling: supportsTools}
 }
 
 // RegisterVLLMModel registers a vLLM-served model as a DB-backed model in the gateway. The
 // public model_name is "vllm/<alias>" (VLLMModelName, the agent-facing handle) while the
-// routed litellm_params.model is "openai/<model>" (VLLMRoutedModel) with api_base pointing
-// at the model's dedicated `vllm serve` endpoint; no credential is referenced.
+// routed litellm_params.model is "openai/<alias>" (VLLMRoutedModel — the SERVED-MODEL-NAME
+// the endpoint answers to, NOT the HF model id) with api_base pointing at the model's
+// dedicated `vllm serve` endpoint; no credential is referenced. model is retained in the
+// signature (interface parity, records/logging) even though routing keys on the alias.
 //
 // Idempotent-ish, HEALING like RegisterOllamaModel: if a model with this model_name already
 // exists (ListModels) it is re-registered (delete + add) when the routed target is stale
@@ -396,8 +401,9 @@ func (manager *KeyManager) RegisterVLLMModel(alias, model, apiBase string, suppo
 	}
 	for _, served := range existing {
 		if served.Name == modelName {
-			// Re-register when EITHER the routing OR the recorded capability is stale.
-			if served.SupportsTools == supportsTools && served.RoutedTo == VLLMRoutedModel(model) {
+			// Re-register when EITHER the routing OR the recorded capability is stale. Routing
+			// is on the served-model-name ALIAS (openai/<alias>), not the HF model id.
+			if served.SupportsTools == supportsTools && served.RoutedTo == VLLMRoutedModel(alias) {
 				return nil // already registered correctly
 			}
 			if err := manager.DeleteModel(served.ID); err != nil {
@@ -406,7 +412,7 @@ func (manager *KeyManager) RegisterVLLMModel(alias, model, apiBase string, suppo
 			break // re-add below with corrected routing/capability
 		}
 	}
-	params, info := vllmModelParamsInfo(model, apiBase, &supportsTools)
+	params, info := vllmModelParamsInfo(alias, apiBase, &supportsTools)
 	return manager.AddModel(modelName, params, info)
 }
 

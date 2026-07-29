@@ -524,18 +524,19 @@ func TestVLLMModelName(test *testing.T) {
 	}
 }
 
-// TestVLLMRoutedModel pins the routed value: vLLM is OpenAI-compatible, so it routes via
-// "openai/<model>" (not the non-provider "vllm/" prefix).
+// TestVLLMRoutedModel pins the routed value: vLLM is OpenAI-compatible and served with
+// --served-model-name <alias>, so it routes via "openai/<alias>" (the served-model-name the
+// endpoint answers to, NOT the HF model id, and not the non-provider "vllm/" prefix).
 func TestVLLMRoutedModel(test *testing.T) {
-	if got := VLLMRoutedModel("Qwen/Qwen3-8B"); got != "openai/Qwen/Qwen3-8B" {
-		test.Errorf("VLLMRoutedModel = %q, want openai/Qwen/Qwen3-8B", got)
+	if got := VLLMRoutedModel("my-qwen"); got != "openai/my-qwen" {
+		test.Errorf("VLLMRoutedModel = %q, want openai/my-qwen", got)
 	}
 }
 
 // TestRegisterVLLMModelRequestShape verifies a vLLM registration: it first lists models,
 // then — when not already present — POSTs /model/new with model_name = "vllm/<alias>", the
-// routed litellm_params.model = "openai/<model>", the passed-in api_base, drop_params, the
-// tool-support flag, and NO credential (a local vLLM needs none).
+// routed litellm_params.model = "openai/<alias>" (the served-model-name), the passed-in
+// api_base, drop_params, the tool-support flag, and NO credential (a local vLLM needs none).
 func TestRegisterVLLMModelRequestShape(test *testing.T) {
 	var addBody map[string]any
 	var sawList bool
@@ -567,8 +568,8 @@ func TestRegisterVLLMModelRequestShape(test *testing.T) {
 		test.Errorf("model_name = %v, want vllm/my-qwen", addBody["model_name"])
 	}
 	params, _ := addBody["litellm_params"].(map[string]any)
-	if params["model"] != "openai/Qwen/Qwen3-8B" {
-		test.Errorf("litellm_params.model = %v, want openai/Qwen/Qwen3-8B", params["model"])
+	if params["model"] != "openai/my-qwen" {
+		test.Errorf("litellm_params.model = %v, want openai/my-qwen (routed on the served-model-name alias)", params["model"])
 	}
 	if params["api_base"] != apiBase {
 		test.Errorf("api_base = %v, want %s (the model's own vllm serve endpoint)", params["api_base"], apiBase)
@@ -592,9 +593,9 @@ func TestRegisterVLLMModelSkipsWhenPresent(test *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		switch {
 		case request.Method == http.MethodGet && request.URL.Path == "/model/info":
-			// Already registered correctly: routed on openai/<model> + matching capability.
+			// Already registered correctly: routed on openai/<alias> + matching capability.
 			_, _ = writer.Write([]byte(`{"data":[
-				{"model_name":"vllm/my-qwen","litellm_params":{"model":"openai/Qwen/Qwen3-8B"},"model_info":{"id":"id-1","supports_function_calling":true}}
+				{"model_name":"vllm/my-qwen","litellm_params":{"model":"openai/my-qwen"},"model_info":{"id":"id-1","supports_function_calling":true}}
 			]}`))
 		case request.URL.Path == "/model/new":
 			sawAdd = true
@@ -627,7 +628,7 @@ func TestRegisterVLLMModelHealsStaleRouting(test *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		switch request.URL.Path {
 		case "/model/info":
-			// Served but routed on a STALE model id.
+			// Served but routed on a STALE value (e.g. the old openai/<model-id> routing).
 			_, _ = writer.Write([]byte(`{"data":[
 				{"model_name":"vllm/my-qwen","litellm_params":{"model":"openai/Qwen/Qwen3-OLD"},"model_info":{"id":"v"}}
 			]}`))
@@ -658,8 +659,8 @@ func TestRegisterVLLMModelHealsStaleRouting(test *testing.T) {
 	if len(deleted) != 1 || deleted[0] != "v" {
 		test.Errorf("stale model must be deleted, got %v", deleted)
 	}
-	if len(addedRouted) != 1 || addedRouted[0] != "openai/Qwen/Qwen3-8B" {
-		test.Errorf("re-added routing = %v, want [openai/Qwen/Qwen3-8B]", addedRouted)
+	if len(addedRouted) != 1 || addedRouted[0] != "openai/my-qwen" {
+		test.Errorf("re-added routing = %v, want [openai/my-qwen] (routed on the alias)", addedRouted)
 	}
 }
 

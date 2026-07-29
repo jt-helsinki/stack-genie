@@ -138,12 +138,22 @@ func TestStatusForIncludesVLLM(test *testing.T) {
 	}
 }
 
+// fakeVLLMDetect overrides the vLLM install probe so ensureVLLMServers never forks a real
+// `vllm serve` in a unit test regardless of the host, restoring the original on cleanup.
+func fakeVLLMDetect(test *testing.T, installed bool) {
+	test.Helper()
+	original := vllmDetect
+	test.Cleanup(func() { vllmDetect = original })
+	vllmDetect = func() (bool, string) { return installed, "mlx" }
+}
+
 // ensureVLLMServers is the ONLY vLLM-touching step of Reconcile, and it has no
 // error return — so vLLM can never fail setup. This asserts it: a no-model host is
-// a silent no-op, and a recorded-but-unreachable model logs guidance (RealRunner is
-// an ErrNotWired bring-up stub) without panicking or signalling failure.
+// a silent no-op, and a recorded-but-unreachable model on a host WITHOUT vLLM logs the
+// install guidance (never attempting an exec) without panicking or signalling failure.
 func TestEnsureVLLMServersNeverFails(test *testing.T) {
 	test.Setenv("HOME", test.TempDir())
+	fakeVLLMDetect(test, false) // no vLLM on PATH → never spawn, just log guidance
 	services := realServices{}
 
 	var lines []string
@@ -155,18 +165,18 @@ func TestEnsureVLLMServersNeverFails(test *testing.T) {
 		test.Errorf("no vllm models: want no-op, got progress %v", lines)
 	}
 
-	// Recorded but unreachable: attempts a launch, RealRunner returns ErrNotWired, so
-	// it logs the reason + install guidance and moves on — never failing.
+	// Recorded but unreachable, vLLM not installed: logs the reason + install guidance and
+	// moves on — never failing, never forking.
 	recordVLLMChoice(test, "my-vllm", "mlx-community/foo", "http://127.0.0.1:8101/v1")
-	fakeVLLMHTTP(test, map[string]int{"8101": 0}) // endpoint down → attempt launch
+	fakeVLLMHTTP(test, map[string]int{"8101": 0}) // endpoint down → attempt handling
 	services.ensureVLLMServers(collect)
 
 	joined := strings.Join(lines, "\n")
 	if !strings.Contains(joined, "my-vllm") {
 		test.Errorf("want an attempt logged for my-vllm, got %v", lines)
 	}
-	if !strings.Contains(joined, "not started") && !strings.Contains(strings.ToLower(joined), "vllm") {
-		test.Errorf("want guidance logged on the not-wired launch, got %v", lines)
+	if !strings.Contains(strings.ToLower(joined), "vllm") {
+		test.Errorf("want guidance logged for the recorded model, got %v", lines)
 	}
 }
 

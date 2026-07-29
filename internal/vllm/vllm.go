@@ -24,9 +24,12 @@ package vllm
 
 import (
 	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -131,6 +134,13 @@ type Config struct {
 	// never silently dropped. Optional; nil discards them.
 	Log func(string)
 
+	// Reserved seeds cross-invocation port truth (alias→loopback port) from the persisted
+	// model-runtimes store: `ai` is a daemonless CLI, so a fresh Manager has no memory of
+	// the ports earlier invocations recorded. A KNOWN alias REUSES its reserved port on
+	// EnsureServed, and allocatePort SKIPS every reserved port so a NEW server never steals
+	// a recorded model's port. Optional; nil means no seed. See also SeedReserved.
+	Reserved map[string]int
+
 	BasePort     int
 	MaxServers   int
 	StartTimeout time.Duration
@@ -152,6 +162,9 @@ type Manager struct {
 	pollInterval time.Duration
 	servers      map[string]*server // keyed by alias
 	usedPorts    map[int]bool
+	// reserved is the cross-invocation alias→port seed (see Config.Reserved / SeedReserved):
+	// a known alias reuses reserved[alias]; allocatePort skips every reserved port.
+	reserved map[string]int
 	// pending marks aliases whose server is mid-start (the lock is released during the
 	// process launch + health wait), so a concurrent EnsureServed for the SAME alias
 	// is rejected rather than starting a duplicate process.
@@ -180,7 +193,13 @@ func NewManager(cfg Config) *Manager {
 		pollInterval: cfg.PollInterval,
 		servers:      make(map[string]*server),
 		usedPorts:    make(map[int]bool),
+		reserved:     make(map[string]int),
 		pending:      make(map[string]bool),
+	}
+	for alias, port := range cfg.Reserved {
+		if port > 0 {
+			manager.reserved[alias] = port
+		}
 	}
 	if manager.now == nil {
 		manager.now = time.Now
@@ -214,27 +233,65 @@ func ContainerEndpoint(port int) string {
 	return fmt.Sprintf("http://host.docker.internal:%d/v1", port)
 }
 
+// PortOf extracts the TCP port from a recorded vLLM endpoint URL (either Endpoint's
+// loopback form or ContainerEndpoint's host-gateway form). It is how a fresh,
+// daemonless CLI invocation recovers a server's port from the persisted
+// model-runtimes store — to seed Reserved (port reuse) or to StopByPort on removal.
+// Returns false when endpoint is empty, unparseable, or carries no explicit port.
+func PortOf(endpoint string) (int, bool) {
+	parsed, err := url.Parse(strings.TrimSpace(endpoint))
+	if err != nil {
+		return 0, false
+	}
+	portText := parsed.Port()
+	if portText == "" {
+		return 0, false
+	}
+	port, err := strconv.Atoi(portText)
+	if err != nil || port <= 0 {
+		return 0, false
+	}
+	return port, true
+}
+
+// SeedReserved merges an alias→port map into the Manager's cross-invocation port
+// seed (see Config.Reserved). Non-positive ports are ignored. Safe for concurrent
+// use; callers typically seed once from config.LoadModelRuntimes before EnsureServed.
+func (manager *Manager) SeedReserved(reserved map[string]int) {
+	manager.mu.Lock()
+	defer manager.mu.Unlock()
+	for alias, port := range reserved {
+		if port > 0 {
+			manager.reserved[alias] = port
+		}
+	}
+}
+
 // EnsureServed guarantees a healthy vLLM server for alias and returns its host
-// endpoint. If one is already running and healthy it touches the LRU and returns;
-// if it is registered but dead it is stopped and lazily re-started (auto-restart on
-// next use — see the package/Health docs). Otherwise it allocates a port, starts
-// the process, and waits until healthy (up to StartTimeout).
+// loopback port and endpoint. If one is already running and healthy it touches the
+// LRU and returns; if it is registered but dead it is stopped and lazily re-started
+// (auto-restart on next use — see the package/Health docs). Otherwise it allocates a
+// port (REUSING the alias's Reserved port when seeded, so it stays stable across
+// invocations), starts the process, and waits until healthy (up to StartTimeout).
+//
+// The returned port is the loopback port; callers derive both endpoint forms from it
+// (Endpoint for host-side probes/records, ContainerEndpoint for the LiteLLM api_base).
 //
 // If starting would exceed MaxServers the least-recently-used server is EVICTED
 // (stopped) first; the eviction is reported via the Log hook, never silently
 // dropped. Returns an error if the process fails to start or never becomes healthy;
 // in that case the just-started process is stopped and its port freed.
-func (manager *Manager) EnsureServed(alias, model string) (string, error) {
+func (manager *Manager) EnsureServed(alias, model string) (int, string, error) {
 	if alias == "" {
-		return "", fmt.Errorf("vllm: EnsureServed requires a non-empty alias")
+		return 0, "", fmt.Errorf("vllm: EnsureServed requires a non-empty alias")
 	}
 	if model == "" {
-		return "", fmt.Errorf("vllm: EnsureServed requires a non-empty model")
+		return 0, "", fmt.Errorf("vllm: EnsureServed requires a non-empty model")
 	}
 
 	storeDir, err := StoreDir()
 	if err != nil {
-		return "", err
+		return 0, "", err
 	}
 
 	manager.mu.Lock()
@@ -244,7 +301,7 @@ func (manager *Manager) EnsureServed(alias, model string) (string, error) {
 			existing.lastUsed = manager.now()
 			port := existing.port
 			manager.mu.Unlock()
-			return Endpoint(port), nil
+			return port, Endpoint(port), nil
 		}
 		// Registered but unhealthy: reap it, then fall through to a fresh start
 		// (lazy auto-restart on next use).
@@ -257,9 +314,9 @@ func (manager *Manager) EnsureServed(alias, model string) (string, error) {
 	// (the lock is released below during the launch + health wait).
 	if manager.pending[alias] {
 		manager.mu.Unlock()
-		return "", fmt.Errorf("vllm: server %q is already starting", alias)
+		return 0, "", fmt.Errorf("vllm: server %q is already starting", alias)
 	}
-	port := manager.allocatePort()
+	port := manager.portFor(alias)
 	manager.pending[alias] = true
 	manager.mu.Unlock()
 
@@ -278,12 +335,12 @@ func (manager *Manager) EnsureServed(alias, model string) (string, error) {
 	delete(manager.pending, alias)
 	if startErr != nil {
 		delete(manager.usedPorts, port)
-		return "", fmt.Errorf("vllm: start %q (%s) on port %d: %w", alias, model, port, startErr)
+		return 0, "", fmt.Errorf("vllm: start %q (%s) on port %d: %w", alias, model, port, startErr)
 	}
 	if healthErr != nil {
 		_ = manager.runner.Stop(handle)
 		delete(manager.usedPorts, port)
-		return "", healthErr
+		return 0, "", healthErr
 	}
 
 	manager.servers[alias] = &server{
@@ -296,7 +353,7 @@ func (manager *Manager) EnsureServed(alias, model string) (string, error) {
 	// Bring the running set back within the cap now that the new server is healthy. The
 	// new server is the most-recently-used, so it is never the eviction victim.
 	manager.evictBeyondCap()
-	return Endpoint(port), nil
+	return port, Endpoint(port), nil
 }
 
 // Stop stops the server for alias (if any) and frees its port. Stopping an unknown
@@ -395,15 +452,38 @@ func (manager *Manager) leastRecentlyUsed() *server {
 	return oldest
 }
 
-// allocatePort returns the lowest free port at/above basePort and marks it used.
-// Caller MUST hold manager.mu.
+// portFor picks the port for a (re)starting alias: its Reserved port when seeded (so a
+// known model keeps a stable port across invocations), else a freshly allocated one. The
+// chosen port is marked used either way. Caller MUST hold manager.mu.
+func (manager *Manager) portFor(alias string) int {
+	if reservedPort := manager.reserved[alias]; reservedPort > 0 {
+		manager.usedPorts[reservedPort] = true
+		return reservedPort
+	}
+	return manager.allocatePort()
+}
+
+// allocatePort returns the lowest free port at/above basePort and marks it used. It
+// SKIPS ports reserved for OTHER aliases (Config.Reserved / SeedReserved) so a new
+// server never steals a recorded model's port. Caller MUST hold manager.mu.
 func (manager *Manager) allocatePort() int {
 	port := manager.basePort
-	for manager.usedPorts[port] {
+	for manager.usedPorts[port] || manager.portReserved(port) {
 		port++
 	}
 	manager.usedPorts[port] = true
 	return port
+}
+
+// portReserved reports whether any alias has reserved the given port. Caller MUST hold
+// manager.mu.
+func (manager *Manager) portReserved(port int) bool {
+	for _, reservedPort := range manager.reserved {
+		if reservedPort == port {
+			return true
+		}
+	}
+	return false
 }
 
 // remove drops a server from the table and frees its port. Caller MUST hold
