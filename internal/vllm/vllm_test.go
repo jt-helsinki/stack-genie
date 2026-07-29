@@ -40,6 +40,19 @@ func newTestManager(cfg Config) (*Manager, *FakeRunner, *stepClock) {
 	return NewManager(cfg), runner, clock
 }
 
+// newTestManagerWithRunner is newTestManager with a caller-supplied FakeRunner (so a
+// test can pre-seed per-alias Start errors).
+func newTestManagerWithRunner(cfg Config, runner *FakeRunner) (*Manager, *FakeRunner, *stepClock) {
+	clock := &stepClock{}
+	cfg.Runner = runner
+	if cfg.Probe == nil {
+		cfg.Probe = alwaysHealthy
+	}
+	cfg.Now = clock.now
+	cfg.Sleep = clock.sleep
+	return NewManager(cfg), runner, clock
+}
+
 func TestStoreDir(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
@@ -176,6 +189,41 @@ func TestCapEvictsLRU(t *testing.T) {
 	}
 	if len(logs) == 0 {
 		t.Fatalf("eviction was not logged")
+	}
+}
+
+// TestFailedStartAtCapKeepsHealthyServers is the regression for the evict-before-start
+// bug: when the running set is at MaxServers and a NEW server fails to start, the
+// eviction must NOT have happened — a start that never becomes healthy must never cost
+// a working model. Eviction now runs only AFTER the new server is confirmed healthy.
+func TestFailedStartAtCapKeepsHealthyServers(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	runner := &FakeRunner{StartErrs: map[string]error{"c": errors.New("boom")}}
+	manager, _, _ := newTestManagerWithRunner(Config{BasePort: 8101, MaxServers: 2}, runner)
+
+	for _, alias := range []string{"a", "b"} {
+		if _, err := manager.EnsureServed(alias, "m-"+alias); err != nil {
+			t.Fatalf("EnsureServed %s: %v", alias, err)
+		}
+	}
+	// c's start fails: it must error, and NEITHER a nor b may be evicted.
+	if _, err := manager.EnsureServed("c", "m-c"); err == nil {
+		t.Fatalf("EnsureServed c: expected a start error, got nil")
+	}
+	if _, ok := manager.servers["a"]; !ok {
+		t.Errorf("a was evicted by a failed start of c — must survive")
+	}
+	if _, ok := manager.servers["b"]; !ok {
+		t.Errorf("b was evicted by a failed start of c — must survive")
+	}
+	if _, ok := manager.servers["c"]; ok {
+		t.Errorf("c failed to start but was registered")
+	}
+	if len(manager.servers) != 2 {
+		t.Errorf("running = %d, want 2 (both healthy servers intact)", len(manager.servers))
+	}
+	if runner.StopCount() != 0 {
+		t.Errorf("StopCount = %d, want 0 (a failed start must evict nothing)", runner.StopCount())
 	}
 }
 

@@ -1545,10 +1545,9 @@ func (prober *logCaptureProber) Run(name string, args ...string) ([]byte, error)
 	}
 	switch args[0] {
 	case "ps":
-		// `ps --filter name=^/<name>$ ... --format {{.Names}}` → the name if running.
+		// `ps --filter name=<name> ... --format {{.Names}}` → the name if running.
 		for _, arg := range args {
-			if filterName, found := strings.CutPrefix(arg, "name=^/"); found {
-				container := strings.TrimSuffix(filterName, "$")
+			if container, found := strings.CutPrefix(arg, "name="); found {
 				if prober.running[container] {
 					return []byte(container + "\n"), nil
 				}

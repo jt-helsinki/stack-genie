@@ -152,6 +152,10 @@ type Manager struct {
 	pollInterval time.Duration
 	servers      map[string]*server // keyed by alias
 	usedPorts    map[int]bool
+	// pending marks aliases whose server is mid-start (the lock is released during the
+	// process launch + health wait), so a concurrent EnsureServed for the SAME alias
+	// is rejected rather than starting a duplicate process.
+	pending map[string]bool
 }
 
 // NewManager builds a Manager from cfg. It panics if Runner or Probe is nil — those
@@ -176,6 +180,7 @@ func NewManager(cfg Config) *Manager {
 		pollInterval: cfg.PollInterval,
 		servers:      make(map[string]*server),
 		usedPorts:    make(map[int]bool),
+		pending:      make(map[string]bool),
 	}
 	if manager.now == nil {
 		manager.now = time.Now
@@ -233,12 +238,13 @@ func (manager *Manager) EnsureServed(alias, model string) (string, error) {
 	}
 
 	manager.mu.Lock()
-	defer manager.mu.Unlock()
 
 	if existing := manager.servers[alias]; existing != nil {
 		if manager.probe(existing.port) {
 			existing.lastUsed = manager.now()
-			return Endpoint(existing.port), nil
+			port := existing.port
+			manager.mu.Unlock()
+			return Endpoint(port), nil
 		}
 		// Registered but unhealthy: reap it, then fall through to a fresh start
 		// (lazy auto-restart on next use).
@@ -247,19 +253,37 @@ func (manager *Manager) EnsureServed(alias, model string) (string, error) {
 		manager.remove(existing)
 	}
 
-	manager.evictToFit()
-
+	// A concurrent EnsureServed for the SAME alias must not start a duplicate process
+	// (the lock is released below during the launch + health wait).
+	if manager.pending[alias] {
+		manager.mu.Unlock()
+		return "", fmt.Errorf("vllm: server %q is already starting", alias)
+	}
 	port := manager.allocatePort()
-	handle, err := manager.runner.Start(alias, model, port, storeDir)
-	if err != nil {
-		delete(manager.usedPorts, port)
-		return "", fmt.Errorf("vllm: start %q (%s) on port %d: %w", alias, model, port, err)
+	manager.pending[alias] = true
+	manager.mu.Unlock()
+
+	// Start + health-check WITHOUT holding the lock, so concurrent Running()/Health()/
+	// Stop()/other-alias EnsureServed() are not blocked for up to StartTimeout. A healthy
+	// LRU server is evicted ONLY AFTER the new one is confirmed healthy (below), so a
+	// start that fails or never becomes healthy never costs a working model.
+	handle, startErr := manager.runner.Start(alias, model, port, storeDir)
+	var healthErr error
+	if startErr == nil {
+		healthErr = manager.waitHealthy(port)
 	}
 
-	if err := manager.waitHealthy(port); err != nil {
+	manager.mu.Lock()
+	defer manager.mu.Unlock()
+	delete(manager.pending, alias)
+	if startErr != nil {
+		delete(manager.usedPorts, port)
+		return "", fmt.Errorf("vllm: start %q (%s) on port %d: %w", alias, model, port, startErr)
+	}
+	if healthErr != nil {
 		_ = manager.runner.Stop(handle)
 		delete(manager.usedPorts, port)
-		return "", err
+		return "", healthErr
 	}
 
 	manager.servers[alias] = &server{
@@ -269,6 +293,9 @@ func (manager *Manager) EnsureServed(alias, model string) (string, error) {
 		handle:   handle,
 		lastUsed: manager.now(),
 	}
+	// Bring the running set back within the cap now that the new server is healthy. The
+	// new server is the most-recently-used, so it is never the eviction victim.
+	manager.evictBeyondCap()
 	return Endpoint(port), nil
 }
 
@@ -339,10 +366,12 @@ func (manager *Manager) Health(alias string) bool {
 	return manager.probe(target.port)
 }
 
-// evictToFit stops least-recently-used servers until there is room for one more
-// under MaxServers. Caller MUST hold manager.mu.
-func (manager *Manager) evictToFit() {
-	for len(manager.servers) >= manager.maxServers {
+// evictBeyondCap stops least-recently-used servers until the running set is within
+// MaxServers. It runs AFTER a freshly-started server is registered (the new server is
+// the most-recently-used, so it is never the victim) — so a start that fails never
+// evicts a healthy server. Caller MUST hold manager.mu.
+func (manager *Manager) evictBeyondCap() {
+	for len(manager.servers) > manager.maxServers {
 		victim := manager.leastRecentlyUsed()
 		if victim == nil {
 			return

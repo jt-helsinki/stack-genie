@@ -74,7 +74,7 @@ tidy: ## Sync go.mod/go.sum
 diagram:
 	mmdc -i docs/architecture.mmd -o docs/architecture.png -s 3 -w 2400 -H 1600 -b white
 
-make install:
+install:
 	make build && ./installers/install-local.sh
 
 clean:

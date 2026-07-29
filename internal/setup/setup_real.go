@@ -596,11 +596,26 @@ func ensureLiteLLMDB(prober runtime.Prober, containerRuntime string) error {
 	return nil // launched; LiteLLM will retry its connection as the DB finishes coming up
 }
 
-// containerRunning reports whether a container with the exact name is up.
+// containerRunning reports whether a container with the exact name is up. The
+// `name=` filter is a SUBSTRING match (so it can return sibling names, e.g.
+// "aip-litellm" also matches "aip-litellm-db"), so we exact-match the returned lines
+// rather than the whole output. We deliberately do NOT anchor with the Docker-only
+// `^/name$` form: Docker stores container names with a leading slash (so `^/` anchors)
+// but Podman does not, so the anchored filter silently matches nothing on Podman —
+// making every reconcile treat a running service as absent and recreate it. A plain
+// substring filter matches on both runtimes; the exact line comparison keeps it precise.
 func containerRunning(prober runtime.Prober, containerRuntime, name string) bool {
-	out, err := prober.Run(containerRuntime, "ps", "--filter", "name=^/"+name+"$",
+	out, err := prober.Run(containerRuntime, "ps", "--filter", "name="+name,
 		"--filter", "status=running", "--format", "{{.Names}}")
-	return err == nil && strings.TrimSpace(string(out)) == name
+	if err != nil {
+		return false
+	}
+	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+		if strings.TrimSpace(line) == name {
+			return true
+		}
+	}
+	return false
 }
 
 // containerOnCurrentImage reports whether the container `name` is running AND its

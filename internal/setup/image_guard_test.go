@@ -29,8 +29,7 @@ func (prober imageGuardProber) Run(_ string, args ...string) ([]byte, error) {
 	switch args[0] {
 	case "ps":
 		for _, arg := range args {
-			if filterName, ok := strings.CutPrefix(arg, "name=^/"); ok {
-				container := strings.TrimSuffix(filterName, "$")
+			if container, ok := strings.CutPrefix(arg, "name="); ok {
 				if prober.running[container] {
 					return []byte(container + "\n"), nil
 				}
