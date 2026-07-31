@@ -39,6 +39,12 @@ func TestGroup02Services(test *testing.T) {
 			if service.State == "disabled" {
 				continue
 			}
+			// An OPTIONAL service is allowed to be idle/stopped: e.g. the host-native
+			// vLLM backend reports "stopped" when no models are set to the vllm runtime
+			// (it is only needed for those). Core services (Optional=false) must be healthy.
+			if service.Optional {
+				continue
+			}
 			if !service.Healthy {
 				test.Errorf("service %q not healthy: state=%q detail=%q", service.Name, service.State, service.Detail)
 			}
