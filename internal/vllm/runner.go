@@ -58,7 +58,7 @@ func (RealRunner) Start(alias, model string, port int, storeDir string) (ServerH
 	}
 	defer func() { _ = logFile.Close() }()
 
-	command := exec.Command("vllm", vllmServeArgs(alias, model, port, storeDir)...)
+	command := exec.Command(BinaryPath(), vllmServeArgs(alias, model, port, storeDir)...)
 	command.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	command.Env = append(os.Environ(), "HF_HOME="+storeDir)
 	command.Stdout = logFile

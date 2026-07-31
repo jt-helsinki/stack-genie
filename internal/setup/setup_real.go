@@ -1599,6 +1599,11 @@ func (services realServices) Reconcile(providerConfig, bindHost string, optional
 	// a per-workspace in-VM app and Odysseus was removed). The optional mechanism is
 	// retained (optional is still threaded through for status reporting), so a future
 	// host optional service would be brought up here, BEFORE the nginx proxy.
+	// Platform-managed host Python venv (~/.ai-platform/venv): the single home for
+	// platform-wide host Python tooling (notably the vLLM local-inference backend).
+	// Created best-effort here so it exists before vLLM is (manually) installed into it;
+	// it NEVER fails the reconcile — a host lacking uv/python3 just gets a warning.
+	ensurePlatformVenv(progress)
 	// Host-native vLLM: best-effort bring up a `vllm serve` process for every recorded
 	// runtime=vllm model that isn't already answering. OPTIONAL — it NEVER fails the
 	// reconcile (the RealRunner launch is a `hardware bring-up` stub today; failures
