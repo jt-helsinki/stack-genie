@@ -71,6 +71,7 @@ func newModelsCmd(em *output.Emitter, exit *int) *cobra.Command {
 		newModelsListCmd(em, exit),
 		newModelsPopularCmd(em, exit),
 		newModelsPullCmd(em, exit),
+		newModelsInstallVLLMCmd(em, exit),
 		newModelsRmCmd(em, exit),
 		newModelsShowCmd(em, exit),
 	)

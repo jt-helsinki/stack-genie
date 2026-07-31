@@ -65,6 +65,10 @@ var (
 	// cross-invocation stop path used on `ai models rm`, since a fresh Manager holds no
 	// handle. A package var so tests observe it without pkill-ing a real process.
 	vllmStopByPortFn = vllm.StopByPort
+	// vllmInstallFn is the one-shot vLLM installer (`ai models install-vllm`): it ensures
+	// the platform venv and pip-installs vLLM into it. A package var so tests exercise the
+	// command without a real (large) network install.
+	vllmInstallFn = vllm.Install
 )
 
 // vllmServer is the host-side vLLM server manager slice used by `ai models pull
@@ -673,6 +677,58 @@ func newModelsPullCmd(emitter *output.Emitter, exit *int) *cobra.Command {
 		"serving runtime: ollama (default) or vllm")
 	cmd.Flags().StringVar(&aliasFlag, "alias", "",
 		"gateway alias for the served model (--runtime vllm only; default: the model id's base name)")
+	return cmd
+}
+
+// modelsInstallVLLMResult is the envelope payload for `ai models install-vllm`.
+type modelsInstallVLLMResult struct {
+	Specs     []string `json:"specs"`
+	Installed bool     `json:"installed"`
+	Format    string   `json:"format,omitempty"`
+}
+
+// newModelsInstallVLLMCmd builds `ai models install-vllm` — the one-shot installer that
+// provisions the platform-managed host venv (~/.ai-platform/venv) and pip-installs vLLM
+// into it, so `--runtime vllm` works with no user-managed venv. With no --spec it uses
+// the per-OS default (vllm-metal on Apple Silicon, plain vllm on Linux); --spec (repeatable)
+// overrides that entirely. The install is a large network download, so it runs behind a
+// spinner and is never triggered by `ai setup`.
+func newModelsInstallVLLMCmd(emitter *output.Emitter, exit *int) *cobra.Command {
+	var specFlags []string
+	cmd := &cobra.Command{
+		Use:   "install-vllm",
+		Short: "Install the vLLM backend into the platform-managed host venv",
+		Long: "Install vLLM into the platform-managed host Python venv (~/.ai-platform/venv)\n" +
+			"so `ai models pull --runtime vllm` works without a hand-rolled venv. With no\n" +
+			"--spec the per-OS default is used (the vLLM-Metal plugin on Apple Silicon, the\n" +
+			"plain `vllm` package on Linux); pass --spec (repeatable) to override the pip\n" +
+			"requirement(s) exactly. This is a large network download and is never run by\n" +
+			"`ai setup`.",
+		Args: cobra.NoArgs,
+		RunE: func(_ *cobra.Command, _ []string) error {
+			specs := specFlags
+			if len(specs) == 0 {
+				specs = vllm.InstallSpecs(goruntime.GOOS)
+			}
+			install := func() error { return vllmInstallFn(specs...) }
+			var err error
+			if ui.Enabled(emitter) {
+				err = ui.RunWithSpinner(emitter.Err, "installing vLLM into the platform venv (this can take a while)", install)
+			} else {
+				err = install()
+			}
+			if err != nil {
+				*exit = emitter.Failure("models.install-vllm", output.Errorf(output.ExitRuntimeFailure, "%s", err))
+				return nil
+			}
+			installed, kind := vllmDetectFn()
+			result := modelsInstallVLLMResult{Specs: specs, Installed: installed, Format: kind}
+			*exit = emitter.Success("models.install-vllm", result)
+			return nil
+		},
+	}
+	cmd.Flags().StringArrayVar(&specFlags, "spec", nil,
+		"pip requirement to install instead of the per-OS default (repeatable)")
 	return cmd
 }
 

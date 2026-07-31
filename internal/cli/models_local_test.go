@@ -3,6 +3,8 @@ package cli
 import (
 	"errors"
 	"io"
+	goruntime "runtime"
+	"slices"
 	"strings"
 	"testing"
 
@@ -574,6 +576,72 @@ func withFakeVLLM(test *testing.T, installed bool, pullErr error, server *fakeVL
 		vllmDetectFn, vllmPullFn, vllmManagerFactory, vllmStopByPortFn = prevDetect, prevPull, prevFactory, prevStop
 	})
 	return stoppedPorts
+}
+
+// withFakeVLLMInstaller swaps the one-shot vLLM installer seam, recording the specs it
+// was handed and returning installErr. The recorded slice lets a test assert the per-OS
+// default (empty --spec) vs an explicit --spec override reaches the installer.
+func withFakeVLLMInstaller(test *testing.T, installErr error) *[][]string {
+	test.Helper()
+	prev := vllmInstallFn
+	calls := &[][]string{}
+	vllmInstallFn = func(specs ...string) error {
+		*calls = append(*calls, append([]string(nil), specs...))
+		return installErr
+	}
+	test.Cleanup(func() { vllmInstallFn = prev })
+	return calls
+}
+
+// `ai models install-vllm` with no --spec installs the per-OS default and reports success.
+func TestModelsInstallVLLMDefaultSpec(test *testing.T) {
+	calls := withFakeVLLMInstaller(test, nil)
+	withFakeVLLM(test, true, nil, &fakeVLLMServer{}) // Detect after install → installed
+	exit := output.ExitOK
+	cmd := newModelsInstallVLLMCmd(jsonEmitter(), &exit)
+	cmd.SetOut(io.Discard)
+	cmd.SetErr(io.Discard)
+	runLocalModelsCmd(test, cmd)
+	if exit != output.ExitOK {
+		test.Fatalf("install-vllm: exit = %d, want %d", exit, output.ExitOK)
+	}
+	if len(*calls) != 1 {
+		test.Fatalf("installer calls = %d, want 1", len(*calls))
+	}
+	if want := vllm.InstallSpecs(goruntime.GOOS); !slices.Equal((*calls)[0], want) {
+		test.Fatalf("default specs = %v, want per-OS default %v", (*calls)[0], want)
+	}
+}
+
+// An explicit --spec (repeatable) overrides the per-OS default entirely.
+func TestModelsInstallVLLMCustomSpecOverride(test *testing.T) {
+	calls := withFakeVLLMInstaller(test, nil)
+	withFakeVLLM(test, true, nil, &fakeVLLMServer{})
+	exit := output.ExitOK
+	cmd := newModelsInstallVLLMCmd(jsonEmitter(), &exit)
+	cmd.SetOut(io.Discard)
+	cmd.SetErr(io.Discard)
+	runLocalModelsCmd(test, cmd, "--spec", "vllm==0.6.0", "--spec", "--upgrade")
+	if exit != output.ExitOK {
+		test.Fatalf("install-vllm custom spec: exit = %d, want %d", exit, output.ExitOK)
+	}
+	want := []string{"vllm==0.6.0", "--upgrade"}
+	if len(*calls) != 1 || !slices.Equal((*calls)[0], want) {
+		test.Fatalf("custom specs = %v, want %v", *calls, want)
+	}
+}
+
+// A failed install surfaces exit 4 (runtime failure).
+func TestModelsInstallVLLMFailureExits4(test *testing.T) {
+	withFakeVLLMInstaller(test, errors.New("no space left on device"))
+	exit := output.ExitOK
+	cmd := newModelsInstallVLLMCmd(jsonEmitter(), &exit)
+	cmd.SetOut(io.Discard)
+	cmd.SetErr(io.Discard)
+	runLocalModelsCmd(test, cmd)
+	if exit != output.ExitRuntimeFailure {
+		test.Fatalf("failed install: exit = %d, want %d", exit, output.ExitRuntimeFailure)
+	}
 }
 
 // --runtime vllm with vLLM absent exits 3 with install guidance — NEVER a silent
