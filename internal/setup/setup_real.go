@@ -1604,6 +1604,10 @@ func (services realServices) Reconcile(providerConfig, bindHost string, optional
 	// Created best-effort here so it exists before vLLM is (manually) installed into it;
 	// it NEVER fails the reconcile — a host lacking uv/python3 just gets a warning.
 	ensurePlatformVenv(progress)
+	// vLLM itself: best-effort install into that venv when it isn't already present, so
+	// `ai models pull --runtime vllm` works after a plain `ai setup` with no separate
+	// `ai models install-vllm` step. Detect-gated (installs once), never fails setup.
+	ensureVLLMInstalled(progress)
 	// Host-native vLLM: best-effort bring up a `vllm serve` process for every recorded
 	// runtime=vllm model that isn't already answering. OPTIONAL — it NEVER fails the
 	// reconcile (the RealRunner launch is a `hardware bring-up` stub today; failures

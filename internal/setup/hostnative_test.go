@@ -24,6 +24,9 @@ func TestMain(m *testing.M) {
 	hostNativeStopOllama = func() error { return nil }
 	hostNativeStartVLLM = func() error { return nil }
 	hostNativeStopVLLM = func() error { return nil }
+	// A reconcile-path test must never trigger the real (large) vLLM pip install just
+	// because the host lacks vLLM; ensureVLLMInstalled routes through this seam.
+	installVLLMFn = func(...string) error { return nil }
 	os.Exit(m.Run())
 }
 

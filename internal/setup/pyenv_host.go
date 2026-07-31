@@ -10,7 +10,10 @@ package setup
 // mutation (a `uv venv` / `python3 -m venv` under ~/.ai-platform) is self-contained
 // and removed by `ai uninstall --purge`.
 
-import "github.com/jt-helsinki/stack-genie/internal/pyenv"
+import (
+	"github.com/jt-helsinki/stack-genie/internal/pyenv"
+	"github.com/jt-helsinki/stack-genie/internal/vllm"
+)
 
 // ensurePlatformVenvFn is the injectable seam for creating the platform venv, so unit
 // tests exercise the reconcile without a real Python toolchain. It defaults to
@@ -32,4 +35,34 @@ func ensurePlatformVenv(progress func(string)) {
 		return
 	}
 	progress("  • platform Python env present at ~/.ai-platform/venv")
+}
+
+// installVLLMFn is the injectable seam for the one-shot vLLM install into the platform
+// venv (vllm.Install). A package var so tests exercise ensureVLLMInstalled without a
+// real (large) network install.
+var installVLLMFn = vllm.Install
+
+// ensureVLLMInstalled installs vLLM into the platform-managed host venv when it is not
+// already present, so `ai models pull --runtime vllm` works after a plain `ai setup`.
+// It is Detect-gated (a present install is left untouched — installs once) and STRICTLY
+// best-effort: the real pip download is large and OS-specific, so any failure is
+// reported via progress and swallowed — it NEVER fails `ai setup`. The per-OS spec
+// (vllm.InstallSpecs) is used: the vLLM-Metal plugin on Apple Silicon, plain `vllm`
+// on Linux. A manual `ai models install-vllm --spec …` still overrides the spec.
+func ensureVLLMInstalled(progress func(string)) {
+	if installed, _ := vllmDetect(); installed {
+		progress("  • vLLM present in the platform venv")
+		return
+	}
+	progress("  • installing vLLM into the platform venv (this can take a while)…")
+	if err := installVLLMFn(); err != nil {
+		progress("  • vLLM install skipped (" + err.Error() + ") — install later with `ai models install-vllm`")
+		return
+	}
+	if installed, kind := vllmDetect(); installed {
+		progress("  • vLLM installed in the platform venv (" + kind + " weights)")
+		return
+	}
+	progress("  • vLLM install ran but the binary was not detected — check `" +
+		vllm.ManagedVenvDir + "/bin/vllm --version`")
 }
