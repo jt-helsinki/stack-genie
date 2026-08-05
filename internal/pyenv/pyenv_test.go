@@ -66,7 +66,7 @@ func TestExists(test *testing.T) {
 	}
 }
 
-// Ensure prefers uv and requests the pinned interpreter.
+// Ensure prefers uv and requests the NEWEST interpreter (`--python 3`), not a pin.
 func TestEnsurePrefersUV(test *testing.T) {
 	test.Setenv("HOME", test.TempDir())
 	swapExec(test)
@@ -93,9 +93,9 @@ func TestEnsurePrefersUV(test *testing.T) {
 	if len(ran) != 1 || ran[0][0] != "uv" {
 		test.Fatalf("expected a single `uv` invocation, got %v", ran)
 	}
-	joined := strings.Join(ran[0], " ")
-	if !strings.Contains(joined, "venv") || !strings.Contains(joined, preferredPython) {
-		test.Errorf("uv invocation must create a venv with the pinned python: %q", joined)
+	// `uv venv --python 3 <dir>` — the newest-3.x selector, deliberately NOT a fixed minor.
+	if len(ran[0]) < 4 || ran[0][1] != "venv" || ran[0][2] != "--python" || ran[0][3] != newestPythonRequest {
+		test.Errorf("uv invocation must be `uv venv --python %s <dir>`: %v", newestPythonRequest, ran[0])
 	}
 }
 
@@ -144,7 +144,8 @@ func TestEnsureNoToolchain(test *testing.T) {
 	}
 }
 
-// Ensure is idempotent — a second call with the venv already present is a no-op.
+// Ensure is idempotent and version-AGNOSTIC — a present venv is a no-op regardless of
+// its Python version: it runs NO command (not even a version probe) and never recreates.
 func TestEnsureIdempotent(test *testing.T) {
 	test.Setenv("HOME", test.TempDir())
 	swapExec(test)
@@ -155,8 +156,8 @@ func TestEnsureIdempotent(test *testing.T) {
 	if err := os.WriteFile(python, []byte("#!/bin/sh\n"), 0o755); err != nil {
 		test.Fatal(err)
 	}
-	runCommand = func(string, ...string) ([]byte, error) {
-		test.Fatal("Ensure must not run any command when the venv already exists")
+	runCommand = func(_ string, args ...string) ([]byte, error) {
+		test.Fatalf("Ensure must run no command when the venv already exists: %v", args)
 		return nil, nil
 	}
 	lookPath = func(string) (string, error) { return "", errors.New("unused") }
@@ -167,6 +168,108 @@ func TestEnsureIdempotent(test *testing.T) {
 	}
 	if created {
 		test.Error("Ensure must report created=false when the venv already exists")
+	}
+}
+
+// EnsureVersion creates the venv at the EXACT requested version when absent.
+func TestEnsureVersionCreatesWhenAbsent(test *testing.T) {
+	test.Setenv("HOME", test.TempDir())
+	swapExec(test)
+
+	var ran [][]string
+	lookPath = func(name string) (string, error) {
+		if name == "uv" {
+			return "/usr/bin/uv", nil
+		}
+		return "", errors.New("not found")
+	}
+	runCommand = func(name string, args ...string) ([]byte, error) {
+		ran = append(ran, append([]string{name}, args...))
+		return nil, nil
+	}
+
+	created, err := EnsureVersion("3.12")
+	if err != nil {
+		test.Fatalf("EnsureVersion: %v", err)
+	}
+	if !created {
+		test.Error("EnsureVersion must report created=true on first creation")
+	}
+	if len(ran) != 1 || len(ran[0]) < 4 || ran[0][2] != "--python" || ran[0][3] != "3.12" {
+		test.Errorf("EnsureVersion must request the exact version: %v", ran)
+	}
+	if _, err := EnsureVersion(""); err == nil {
+		test.Error("EnsureVersion(\"\") must error")
+	}
+}
+
+// EnsureVersion is a no-op when the venv already runs the requested version.
+func TestEnsureVersionSameVersionNoop(test *testing.T) {
+	test.Setenv("HOME", test.TempDir())
+	swapExec(test)
+	python, _ := PythonPath()
+	if err := os.MkdirAll(filepath.Dir(python), 0o755); err != nil {
+		test.Fatal(err)
+	}
+	if err := os.WriteFile(python, []byte("#!/bin/sh\n"), 0o755); err != nil {
+		test.Fatal(err)
+	}
+	runCommand = func(_ string, args ...string) ([]byte, error) {
+		if len(args) >= 1 && args[0] == "-c" {
+			return []byte("3.12\n"), nil // the version probe
+		}
+		test.Fatalf("EnsureVersion must not recreate a matching-version venv: %v", args)
+		return nil, nil
+	}
+	lookPath = func(string) (string, error) { return "", errors.New("unused") }
+
+	created, err := EnsureVersion("3.12")
+	if err != nil {
+		test.Fatalf("EnsureVersion (same): %v", err)
+	}
+	if created {
+		test.Error("EnsureVersion must report created=false when already on the requested version")
+	}
+}
+
+// EnsureVersion tears down and recreates a venv on a DIFFERENT version.
+func TestEnsureVersionRecreatesDifferentVersion(test *testing.T) {
+	test.Setenv("HOME", test.TempDir())
+	swapExec(test)
+	python, _ := PythonPath()
+	if err := os.MkdirAll(filepath.Dir(python), 0o755); err != nil {
+		test.Fatal(err)
+	}
+	if err := os.WriteFile(python, []byte("#!/bin/sh\n"), 0o755); err != nil {
+		test.Fatal(err)
+	}
+	recreated := false
+	runCommand = func(_ string, args ...string) ([]byte, error) {
+		if len(args) >= 1 && args[0] == "-c" {
+			return []byte("3.13\n"), nil // different from the requested 3.12
+		}
+		if len(args) >= 1 && args[0] == "venv" {
+			recreated = true // `uv venv --python 3.12 …`
+			return nil, nil
+		}
+		return nil, nil
+	}
+	lookPath = func(name string) (string, error) {
+		if name == "uv" {
+			return "/usr/bin/uv", nil
+		}
+		return "", errors.New("unused")
+	}
+
+	created, err := EnsureVersion("3.12")
+	if err != nil {
+		test.Fatalf("EnsureVersion (different): %v", err)
+	}
+	if !created || !recreated {
+		test.Errorf("a different-version venv must be recreated: created=%v recreated=%v", created, recreated)
+	}
+	if _, statErr := os.Stat(python); statErr == nil {
+		test.Error("the mismatched venv directory must have been removed before recreation")
 	}
 }
 

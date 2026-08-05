@@ -20,10 +20,15 @@ import (
 // pyenv.Ensure (created?, error).
 var ensurePlatformVenvFn = pyenv.Ensure
 
-// ensurePlatformVenv creates the platform-managed host Python venv if absent,
-// streaming a short progress line. It is best-effort: any failure (no uv/python3,
-// offline uv, etc.) is reported via progress and swallowed — it NEVER fails the
-// reconcile, since the venv only matters to opt-in host Python backends (vLLM).
+// ensurePlatformVenv creates the platform-managed host Python venv if absent, at the
+// NEWEST available Python (pyenv.Ensure is version-agnostic), streaming a short
+// progress line. On darwin the subsequent vLLM install (ensureVLLMInstalled →
+// vllm.Install) re-pins the venv to the EXACT Python version the resolved vllm-metal
+// wheel requires via pyenv.EnsureVersion (recreating this venv if the versions differ),
+// so this create-then-maybe-recreate sequence is intentional and coherent. It is
+// best-effort: any failure (no uv/python3, offline uv, etc.) is reported via progress
+// and swallowed — it NEVER fails the reconcile, since the venv only matters to opt-in
+// host Python backends (vLLM).
 func ensurePlatformVenv(progress func(string)) {
 	created, err := ensurePlatformVenvFn()
 	if err != nil {

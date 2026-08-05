@@ -4,10 +4,12 @@
 // backend — as opposed to a workspace's in-VM `.venv-msb`.
 //
 // The venv is created at `ai setup` (best-effort, never fatal) via `uv venv` when uv
-// is on PATH (uv can fetch a suitable CPython), else `python3 -m venv`. Once it
-// exists, the platform resolves its Python tools from it (e.g. vllm resolves
-// <venv>/bin/vllm before falling back to PATH), so the platform "uses that
-// environment to run its Python code".
+// is on PATH (uv can fetch a suitable CPython), else `python3 -m venv`. Ensure creates
+// it at the NEWEST available Python (version-agnostic); EnsureVersion pins it to an
+// EXACT version (recreating a mismatched one) for the macOS MLX/Metal vLLM wheels,
+// whose cp tag dictates the interpreter version. Once it exists, the platform resolves
+// its Python tools from it (e.g. vllm resolves <venv>/bin/vllm before falling back to
+// PATH), so the platform "uses that environment to run its Python code".
 //
 // All host mutation (venv creation, pip installs) is a documented, self-contained
 // action under ~/.ai-platform — removed by `ai uninstall --purge`. The exec seams
@@ -20,15 +22,18 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 
 	"github.com/jt-helsinki/stack-genie/internal/paths"
 )
 
-// preferredPython is the interpreter version requested from uv when it creates the
-// venv. vLLM on Apple Silicon requires Python 3.11+; uv fetches a matching CPython
-// when the host lacks one. The `python3 -m venv` fallback uses whatever `python3`
-// resolves to (which must itself be 3.11+ for a subsequent vLLM install).
-const preferredPython = "3.11"
+// newestPythonRequest is the interpreter selector passed to `uv venv --python <sel>`
+// for the general (version-agnostic) Ensure path: "3" tells uv to provision the NEWEST
+// available CPython 3.x. This is the venv used by general/Linux host tooling and is
+// deliberately NOT pinned to a fixed minor version. The macOS MLX/Metal vLLM path
+// instead pins an EXACT version via EnsureVersion, because the vllm-metal wheel is
+// cp-tag-specific (cp312 today, auto-following to cp313) and the venv MUST match it.
+const newestPythonRequest = "3"
 
 // lookPath locates a host binary (uv / python3). Injectable seam for tests.
 var lookPath = exec.LookPath
@@ -84,12 +89,14 @@ func Exists() (bool, error) {
 	return true, nil
 }
 
-// Ensure creates the platform venv if it does not already exist, returning whether it
-// was created this call (false = already present). It is idempotent. Creation prefers
-// `uv venv --python <ver> <dir>` (uv fetches a suitable CPython) and falls back to
-// `python3 -m venv <dir>`. If neither uv nor python3 is available it returns an error
-// — the caller (`ai setup`) treats that as a non-fatal warning, since the venv is only
-// needed by opt-in Python backends.
+// Ensure creates the platform venv at the NEWEST available Python if it does not
+// already exist, returning whether it was created this call (false = already present).
+// It is idempotent and version-AGNOSTIC: an existing venv is left as-is regardless of
+// its Python version — only EnsureVersion enforces a specific version. This is the
+// general host-tooling / Linux path. Creation prefers `uv venv --python 3 <dir>` (uv
+// picks the newest 3.x) and falls back to `python3 -m venv <dir>`. If neither uv nor
+// python3 is available it returns an error — the caller (`ai setup`) treats that as a
+// non-fatal warning, since the venv is only needed by opt-in Python backends.
 func Ensure() (created bool, err error) {
 	exists, err := Exists()
 	if err != nil {
@@ -98,6 +105,48 @@ func Ensure() (created bool, err error) {
 	if exists {
 		return false, nil
 	}
+	return createVenv(newestPythonRequest)
+}
+
+// EnsureVersion creates the platform venv at the EXACT given "major.minor" Python
+// version (e.g. "3.12"), returning whether it was created this call. Unlike Ensure it
+// is version-STRICT: an existing venv whose interpreter is NOT that version (or whose
+// version can't be read) is torn down (os.RemoveAll) and recreated, because a
+// cp-tag-specific wheel (the macOS vllm-metal/core wheels) will only install into a
+// matching-version venv. An existing venv already on the requested version is a no-op.
+// Creation prefers `uv venv --python <version> <dir>` (uv fetches that exact CPython)
+// and falls back to `python3 -m venv <dir>` (best-effort — the fallback cannot pin the
+// version). Same missing-toolchain error as Ensure.
+func EnsureVersion(version string) (created bool, err error) {
+	if version == "" {
+		return false, fmt.Errorf("pyenv: EnsureVersion requires a non-empty version")
+	}
+	exists, err := Exists()
+	if err != nil {
+		return false, err
+	}
+	dir, err := Dir()
+	if err != nil {
+		return false, err
+	}
+	if exists {
+		current, ok := venvPythonVersion()
+		if ok && current == version {
+			return false, nil
+		}
+		if rmErr := os.RemoveAll(dir); rmErr != nil {
+			return false, fmt.Errorf("pyenv: recreate venv at %s for Python %s: %w", dir, version, rmErr)
+		}
+	}
+	return createVenv(version)
+}
+
+// createVenv (re)creates the platform venv, requesting the given python selector from
+// uv (an exact "3.12" or the newest-3.x "3"). It prefers uv (fast, and it can provision
+// the exact CPython even when the host lacks it); if uv fails (e.g. offline, cannot
+// fetch the interpreter) it falls through to the stdlib `python3 -m venv` rather than
+// failing outright. Returns created=true on success.
+func createVenv(pythonSelector string) (created bool, err error) {
 	dir, err := Dir()
 	if err != nil {
 		return false, err
@@ -106,11 +155,8 @@ func Ensure() (created bool, err error) {
 		return false, fmt.Errorf("pyenv: prepare parent of %s: %w", dir, err)
 	}
 
-	// Prefer uv (fast, and it can provision Python 3.11+ even when the host lacks it).
-	// If uv fails (e.g. offline, cannot fetch the interpreter) fall through to the
-	// stdlib venv rather than failing outright.
 	if _, uvErr := lookPath("uv"); uvErr == nil {
-		if _, runErr := runCommand("uv", "venv", "--python", preferredPython, dir); runErr == nil {
+		if _, runErr := runCommand("uv", "venv", "--python", pythonSelector, dir); runErr == nil {
 			return true, nil
 		}
 	}
@@ -119,12 +165,31 @@ func Ensure() (created bool, err error) {
 	if pyErr != nil {
 		return false, fmt.Errorf(
 			"pyenv: cannot create the platform venv at %s — neither `uv` nor `python3` is on PATH "+
-				"(install uv from https://astral.sh/uv, or a Python 3.11+ from python.org)", dir)
+				"(install uv from https://astral.sh/uv, or a Python 3 from python.org)", dir)
 	}
 	if out, runErr := runCommand(pythonBin, "-m", "venv", dir); runErr != nil {
 		return false, fmt.Errorf("pyenv: `%s -m venv %s` failed: %w: %s", pythonBin, dir, runErr, string(out))
 	}
 	return true, nil
+}
+
+// venvPythonVersion returns the existing venv interpreter's "major.minor" (e.g. "3.12")
+// and whether it could be read. It shells the venv python itself so the answer reflects
+// what the venv actually runs, not what was requested at creation.
+func venvPythonVersion() (string, bool) {
+	pythonPath, err := PythonPath()
+	if err != nil {
+		return "", false
+	}
+	out, runErr := runCommand(pythonPath, "-c", "import sys;print(f'{sys.version_info.major}.{sys.version_info.minor}')")
+	if runErr != nil {
+		return "", false
+	}
+	version := strings.TrimSpace(string(out))
+	if version == "" {
+		return "", false
+	}
+	return version, true
 }
 
 // PipInstall installs (or upgrades) one or more pip requirement specs into the

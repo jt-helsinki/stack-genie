@@ -82,10 +82,10 @@ func InstallGuidance(goos string) []string {
 	switch goos {
 	case "darwin":
 		return []string{
-			"vLLM on Apple Silicon requires macOS Sonoma (14) or newer, with Python 3.11+.",
-			"`ai setup` already created the platform Python env at " + ManagedVenvDir + " — install vLLM INTO it (no separate venv to make or activate).",
-			"Install the vLLM Metal plugin into it: `" + ManagedVenvDir + "/bin/pip install <vllm-metal>` (from github.com/vllm-project/vllm-metal), a Metal-backed vLLM build.",
-			"Use MLX weights only — `ai models pull --runtime vllm mlx-community/<model>` (the `mlx-community` org on Hugging Face).",
+			"vLLM on Apple Silicon uses the Metal/MLX backend (the community vllm-metal plugin) and requires macOS Sonoma (14) or newer on native arm64 Python (PyPI ships no macOS wheel, so `pip install vllm` alone will NOT work).",
+			"`ai setup` AUTO-installs it into the platform Python env at " + ManagedVenvDir + ": it resolves the LATEST vllm-metal release wheel (plus the matching vLLM core wheel) from GitHub and pip-installs both — the venv's Python version is DERIVED from the wheel's cp tag (3.12 today, auto-following to cp313).",
+			"Install/repair manually with `ai models install-vllm` (or override the wheel with `ai models install-vllm --spec <wheel-url>`).",
+			"It serves `mlx-community/<model>` weights on the Metal GPU — no `--dtype` needed (this is the MLX backend, not a CPU build).",
 			"Verify with `" + ManagedVenvDir + "/bin/vllm --version`; the platform then discovers + serves models from that venv automatically.",
 		}
 	default:

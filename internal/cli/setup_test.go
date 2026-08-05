@@ -130,7 +130,7 @@ func TestLocalInferenceGuidanceBothHealthy(test *testing.T) {
 func TestLocalInferenceGuidanceVLLMOptionalNote(test *testing.T) {
 	statuses := []setup.ServiceStatus{{Name: "ollama", Mode: "host", Healthy: true}}
 	joined := strings.Join(localInferenceGuidanceLines("darwin", statuses, "/models", false), "\n")
-	for _, want := range []string{"vLLM is an OPTIONAL local runtime", "Metal plugin"} {
+	for _, want := range []string{"vLLM is an OPTIONAL local runtime", "Metal/MLX"} {
 		if !strings.Contains(joined, want) {
 			test.Fatalf("vLLM-absent guidance missing %q:\n%s", want, joined)
 		}
