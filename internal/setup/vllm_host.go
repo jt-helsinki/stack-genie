@@ -159,7 +159,11 @@ func (services realServices) vllmStatus() ServiceStatus {
 	status := ServiceStatus{Name: "vllm", Mode: "host", State: "stopped", Optional: true}
 	choices := vllmRuntimeChoices()
 	if len(choices) == 0 {
-		return status // no vLLM models recorded — idle, not an error
+		// No vLLM models recorded — idle, not an error. vLLM is per-model and
+		// lazy-started, so a fresh `ai setup` has nothing to serve; spell that out
+		// (and whether vLLM is even installed) so a bare "stopped" doesn't read as broken.
+		status.Detail = vllmIdleDetail()
+		return status
 	}
 	if services.serviceHealthy("vllm") {
 		status.State = "running"
@@ -181,6 +185,17 @@ func vllmDownDetail(goos string) string {
 		detail += " (" + guidance[0] + ")"
 	}
 	return detail + "; optional (only for models set to the vllm runtime)"
+}
+
+// vllmIdleDetail is the one-line hint shown when NO models are set to the vllm runtime
+// (the fresh-`ai setup` state). vLLM is per-model and lazy-started, so "stopped" here is
+// idle, not broken — say so, and distinguish installed-but-idle from not-installed so the
+// user knows the next step.
+func vllmIdleDetail() string {
+	if installed, _ := vllmDetect(); installed {
+		return "idle — no models set to the vllm runtime; add one with `ai models pull --runtime vllm <model>`"
+	}
+	return "not installed — run `ai models install-vllm`, then `ai models pull --runtime vllm <model>`"
 }
 
 // vllmServeModel is the underlying model name a recorded choice should serve: the

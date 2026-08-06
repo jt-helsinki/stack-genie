@@ -45,7 +45,8 @@ func recordVLLMChoice(test *testing.T, alias, model, endpoint string) {
 }
 
 // With no recorded vLLM models the summary line is host-mode and stopped, never an
-// error and with no install hint (idle, discoverable).
+// error, and carries a self-explaining IDLE hint (vLLM is per-model + lazy-started, so
+// a bare "stopped" must not read as broken) pointing at `ai models pull --runtime vllm`.
 func TestVLLMStatusNoModels(test *testing.T) {
 	test.Setenv("HOME", test.TempDir())
 	status := realServices{}.vllmStatus()
@@ -58,8 +59,8 @@ func TestVLLMStatusNoModels(test *testing.T) {
 	if status.State != "stopped" || status.Healthy {
 		test.Errorf("no models: want stopped/unhealthy, got %+v", status)
 	}
-	if status.Detail != "" {
-		test.Errorf("no models: want no install hint, got %q", status.Detail)
+	if !strings.Contains(status.Detail, "--runtime vllm") {
+		test.Errorf("no models: want an idle hint pointing at `--runtime vllm`, got %q", status.Detail)
 	}
 }
 
