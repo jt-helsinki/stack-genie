@@ -382,7 +382,7 @@ func TestAgentEnvScriptGraphify(test *testing.T) {
 	for _, want := range []string{
 		`export OPENAI_BASE_URL='` + testGateway + `'`, // keeps /v1 (OpenAI SDK appends /chat/completions)
 		`export OPENAI_API_KEY='` + testKey + `'`,
-		`export OPENAI_MODEL='ollama/llama3.1:8b'`,
+		`export OPENAI_MODEL='vllm/llama3.1:8b'`,
 	} {
 		if !strings.Contains(env, want) {
 			test.Errorf("graphify env missing %q:\n%s", want, env)

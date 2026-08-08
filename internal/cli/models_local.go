@@ -2,50 +2,33 @@ package cli
 
 import (
 	"errors"
-	"fmt"
 	goruntime "runtime"
 	"strings"
 
 	"github.com/charmbracelet/huh"
 	"github.com/jt-helsinki/stack-genie/internal/config"
-	"github.com/jt-helsinki/stack-genie/internal/ollama"
+	"github.com/jt-helsinki/stack-genie/internal/hf"
 	"github.com/jt-helsinki/stack-genie/internal/output"
 	"github.com/jt-helsinki/stack-genie/internal/ui"
 	"github.com/jt-helsinki/stack-genie/internal/vllm"
 	"github.com/spf13/cobra"
 )
 
-// This file adds the LOCAL Ollama store management subcommands to `ai models`:
-// list / pull / rm / show. Unlike `ai models status`/`test` (which describe and
-// probe LiteLLM ROUTING), these act directly on the host Ollama service's local
-// model store via its HTTP API (ollama.Client). Pulling a tag here makes it
-// available immediately through LiteLLM's `ollama/*` wildcard route — registering
-// a model in the gateway is NOT the same as installing it; that is what `pull`
-// does. There is no separate "update" verb: re-pulling a name updates it.
-//
+// This file adds the LOCAL model-store management subcommands to `ai models`:
+// list / pull / rm / show. vLLM is the SOLE local-inference runtime (Ollama was
+// removed); model weights live in the shared vLLM store (~/.ai-platform/volumes/models/
+// vllm) and are managed through the Hugging Face CLI (`hf`, internal/hf). Unlike
+// `ai models status`/`test` (which describe/probe LiteLLM ROUTING), these act on the
+// local weight store: `pull` downloads a HF repo and serves+registers it, `rm` stops
+// its server + deletes the weights + unregisters it. Registering a model in the gateway
+// is NOT the same as installing it; that is what `pull` does.
+
 // The custom-model-entry sentinel value used by the pull select.
 const customModelOption = "\x00custom"
 
-// resolveModelRuntime decides the serving runtime for an install. flagValue is the
-// (possibly empty) --runtime value; empty resolves to the default (Ollama). The value
-// is validated (invalid → exit 2). Both host-native runtimes are accepted — `ollama`
-// (default) and `vllm` — but an unrecognised value is rejected rather than silently
-// downgraded to Ollama.
-func resolveModelRuntime(emitter *output.Emitter, flagValue string) (config.ModelRuntime, error) {
-	value := strings.TrimSpace(flagValue)
-	if value == "" {
-		value = string(config.RuntimeOllama)
-	}
-	if !config.ValidModelRuntime(value) {
-		return "", output.Errorf(output.ExitInvalidInput,
-			"invalid --runtime %q (expected: ollama or vllm)", flagValue)
-	}
-	return config.ModelRuntime(value), nil
-}
-
 // vLLM host-side seams — package vars so tests inject fakes without touching the host.
 // The real Detect/InstallGuidance/Pull live in internal/vllm; the manager (server
-// lifecycle) is built lazily so a plain Ollama pull never constructs one.
+// lifecycle) is built lazily.
 var (
 	vllmDetectFn          = vllm.Detect
 	vllmInstallGuidanceFn = vllm.InstallGuidance
@@ -71,11 +54,11 @@ var (
 	vllmInstallFn = vllm.Install
 )
 
-// vllmServer is the host-side vLLM server manager slice used by `ai models pull
-// --runtime vllm`: it starts/locates a per-model `vllm serve` endpoint, returning the
-// loopback port + endpoint. Production binds *vllm.Manager; tests a fake. (Removal stops
-// the detached server by recorded port via vllmStopByPortFn, not through this handle-less
-// fresh manager.)
+// vllmServer is the host-side vLLM server manager slice used by `ai models pull`: it
+// starts/locates a per-model `vllm serve` endpoint, returning the loopback port +
+// endpoint. Production binds *vllm.Manager; tests a fake. (Removal stops the detached
+// server by recorded port via vllmStopByPortFn, not through this handle-less fresh
+// manager.)
 type vllmServer interface {
 	EnsureServed(alias, model string) (port int, endpoint string, err error)
 }
@@ -111,13 +94,12 @@ func vllmDefaultAlias(model string) string {
 	return model
 }
 
-// vllmNotInstalledError is the exit-3 error shown when --runtime vllm is chosen but no
-// vLLM install is present. It NEVER falls back to Ollama — it carries the per-OS
-// install guidance so the user can act.
+// vllmNotInstalledError is the exit-3 error shown when no vLLM install is present. It
+// carries the per-OS install guidance so the user can act.
 func vllmNotInstalledError() error {
 	guidance := vllmInstallGuidanceFn(goruntime.GOOS)
 	return output.Errorf(output.ExitMissingDep,
-		"vLLM is not installed — required for `--runtime vllm`. To install it:\n  %s",
+		"vLLM is not installed — required to serve local models. To install it:\n  %s",
 		strings.Join(guidance, "\n  "))
 }
 
@@ -126,18 +108,17 @@ func vllmNotInstalledError() error {
 // error passes through.
 func vllmActionable(err error) error {
 	if errors.Is(err, vllm.ErrNotWired) {
-		return fmt.Errorf("vLLM serving is not yet available on this host (hardware bring-up): %w", err)
+		return errors.New("vLLM serving is not yet available on this host (hardware bring-up): " + err.Error())
 	}
 	return err
 }
 
-// pullVLLM installs one or more models through the host-native vLLM backend: it gates on
-// a real vLLM install (exit 3 with guidance when missing — NEVER a silent Ollama
-// fallback), downloads each model's weights (vllm.Pull), starts/locates its per-model
-// endpoint (EnsureServed), registers it in the gateway under its alias, and records the
-// runtime choice with the observed endpoint so a later run / `rm` finds it. The live
-// download + serve are `hardware bring-up` (ErrNotWired on a dev host) — surfaced as an
-// actionable per-model error, never a crash. Returns the process exit code.
+// pullVLLM downloads one or more Hugging Face repos into the vLLM store (via the `hf`
+// CLI), starts/locates each model's per-model `vllm serve` endpoint, registers it in the
+// gateway as vllm/<alias>, and records the runtime choice with the observed endpoint so a
+// later run / `rm` finds it. It gates on a real vLLM install (exit 3 with guidance when
+// missing). The live download + serve are `hardware bring-up`. Returns the process exit
+// code.
 func pullVLLM(emitter *output.Emitter, names []string, alias string) int {
 	if installed, _ := vllmDetectFn(); !installed {
 		return emitter.Failure("models.pull", vllmNotInstalledError())
@@ -148,6 +129,7 @@ func pullVLLM(emitter *output.Emitter, names []string, alias string) int {
 	}
 	manager := vllmManagerFactory(recordedVLLMPorts())
 	registrar := modelRegistrarFactory()
+	store := hfClient()
 
 	result := modelsPullResult{Pulled: make([]modelPullOutcome, 0, len(names))}
 	failures := 0
@@ -157,8 +139,22 @@ func pullVLLM(emitter *output.Emitter, names []string, alias string) int {
 			modelAlias = vllmDefaultAlias(model)
 		}
 		outcome := modelPullOutcome{Model: model}
+		// Ensure the vLLM store exists (best-effort) then download the weights via `hf`.
 		if err := vllmPullFn(model); err != nil {
 			outcome.Error = vllmActionable(err).Error()
+			failures++
+			result.Pulled = append(result.Pulled, outcome)
+			continue
+		}
+		downloadFn := func() error { return store.Download(model, func(string) {}) }
+		var downloadErr error
+		if ui.Enabled(emitter) {
+			downloadErr = ui.RunWithSpinner(emitter.Err, "downloading "+model+" (this can take a while)", downloadFn)
+		} else {
+			downloadErr = downloadFn()
+		}
+		if downloadErr != nil {
+			outcome.Error = downloadErr.Error()
 			failures++
 			result.Pulled = append(result.Pulled, outcome)
 			continue
@@ -171,12 +167,10 @@ func pullVLLM(emitter *output.Emitter, names []string, alias string) int {
 			continue
 		}
 		outcome.OK = true
-		// Record the runtime choice AS SOON AS the server is up (fix #5) — the LOOPBACK
-		// endpoint, host-side truth — INDEPENDENT of whether gateway registration then
-		// succeeds, so a later `rm` can always find and stop the running server. The
-		// LiteLLM CONTAINER, however, must reach the server via host.docker.internal, so
-		// the api_base REGISTERED in the gateway is the CONTAINER endpoint (fix #1), not
-		// the loopback.
+		// Record the runtime choice with the LOOPBACK endpoint (host-side truth) so a
+		// later `rm` can find and stop the running server. The LiteLLM CONTAINER reaches
+		// the server via host.docker.internal, so the api_base REGISTERED in the gateway
+		// is the CONTAINER endpoint, not the loopback.
 		recordModelRuntimeChoice(modelAlias, model, config.RuntimeVLLM, endpoint)
 		// vLLM tool support is model-dependent and not probed here; unknown defaults to
 		// capable, matching the gateway's default treatment.
@@ -189,15 +183,15 @@ func pullVLLM(emitter *output.Emitter, names []string, alias string) int {
 	}
 	if failures > 0 {
 		return emitter.Failure("models.pull", output.Errorf(output.ExitRuntimeFailure,
-			"%d of %d vLLM model(s) failed to install", failures, len(names)).WithDetails(result))
+			"%d of %d model(s) failed to install", failures, len(names)).WithDetails(result))
 	}
 	return emitter.Success("models.pull", result)
 }
 
 // recordModelRuntimeChoice persists the serving-runtime selection for a pulled model
-// (best-effort — a store-write failure must never fail the pull). The store is keyed
-// by the gateway alias (Alias) — for Ollama that is the pull ref; Model always
-// carries the underlying pull ref so a later `rm` can find the record by model name.
+// (best-effort — a store-write failure must never fail the pull). The store is keyed by
+// the gateway alias (Alias); Model carries the underlying HF repo id so a later `rm` can
+// find the record by model name.
 func recordModelRuntimeChoice(alias, model string, runtime config.ModelRuntime, endpoint string) {
 	_ = config.SetModelRuntime(config.ModelRuntimeChoice{
 		Alias:    alias,
@@ -210,8 +204,7 @@ func recordModelRuntimeChoice(alias, model string, runtime config.ModelRuntime, 
 
 // runtimeChoicesForModel returns the recorded runtime choices whose underlying Model
 // matches ref (best-effort — an unreadable store yields none). It is keyed on Model
-// (not the store's Alias key) so `rm <ref>` finds an Ollama choice stored under the
-// ref itself.
+// (not the store's Alias key) so `rm <ref>` finds a choice stored under the repo id.
 func runtimeChoicesForModel(ref string) []config.ModelRuntimeChoice {
 	choices, err := config.LoadModelRuntimes()
 	if err != nil {
@@ -228,8 +221,7 @@ func runtimeChoicesForModel(ref string) []config.ModelRuntimeChoice {
 
 // vllmChoiceForRef finds a recorded vLLM runtime choice for ref, matching either the
 // store's Alias key (a user removing by gateway alias) or the underlying Model (removing
-// by the vLLM model id). Returns false when ref is not a recorded vLLM model — in which
-// case `rm` falls through to the Ollama path.
+// by the HF repo id). Returns false when ref is not a recorded vLLM model.
 func vllmChoiceForRef(ref string) (config.ModelRuntimeChoice, bool) {
 	if choice, ok := config.ModelRuntimeFor(ref); ok && choice.Runtime == config.RuntimeVLLM {
 		return choice, true
@@ -242,10 +234,10 @@ func vllmChoiceForRef(ref string) (config.ModelRuntimeChoice, bool) {
 	return config.ModelRuntimeChoice{}, false
 }
 
-// removeVLLM de-registers a vLLM-served model: it un-registers it from the gateway,
-// stops its per-model `vllm serve` process, and clears the recorded runtime choice. All
-// steps are best-effort (a gateway/host hiccup must not fail the removal); the gateway
-// un-register error is surfaced in the result. Returns the process exit code.
+// removeVLLM de-registers a vLLM-served model: it un-registers it from the gateway, stops
+// its per-model `vllm serve` process, deletes the downloaded weights (`hf cache rm`), and
+// clears the recorded runtime choice. All steps are best-effort; the gateway un-register
+// error is surfaced in the result. Returns the process exit code.
 func removeVLLM(emitter *output.Emitter, ref string, choice config.ModelRuntimeChoice) int {
 	result := modelsRmResult{Model: ref}
 	registrar := modelRegistrarFactory()
@@ -253,47 +245,41 @@ func removeVLLM(emitter *output.Emitter, ref string, choice config.ModelRuntimeC
 		result.UnregisterError = regErr.Error()
 	}
 	// The detached `vllm serve` process outlives every CLI invocation, so a fresh Manager
-	// holds no handle to it — stop it by the recorded loopback port instead (parsed from
-	// the stored Endpoint). Best-effort: nothing to stop is not an error.
+	// holds no handle to it — stop it by the recorded loopback port instead.
 	if port, ok := vllm.PortOf(choice.Endpoint); ok {
 		_ = vllmStopByPortFn(port)
 	}
+	// Delete the downloaded weights from the HF cache (best-effort — the repo id is the
+	// choice's Model, or the ref itself when removing by repo id).
+	repo := choice.Model
+	if repo == "" {
+		repo = ref
+	}
+	_ = hfClient().CacheRemove(repo)
 	_ = config.DeleteModelRuntime(choice.Alias)
 	return emitter.Success("models.rm", result)
 }
 
-// ollamaErr maps an ollama.Client error to the platform exit codes: an unreachable
-// server is exit 3 (a missing service dependency — point at how to start it); a
-// not-found model is exit 2 (bad input); anything else is exit 4 (runtime).
-func ollamaErr(command string, err error) error {
-	if ollama.IsUnreachable(err) {
-		return output.Errorf(output.ExitMissingDep,
-			"could not reach Ollama: %s — start it with `ai services start ollama` (or run `ai setup`)", err)
-	}
-	var notFound *ollama.NotFoundError
-	if errors.As(err, &notFound) {
-		return output.Errorf(output.ExitInvalidInput, "%s", err)
-	}
+// hfErr maps an hf.Client error to a runtime failure (exit 4) with the underlying
+// message (the `hf` CLI surfaces its own detail).
+func hfErr(err error) error {
 	return output.Errorf(output.ExitRuntimeFailure, "%s", err)
 }
 
-// localModelEntry is one row of `ai models list`: a model in the local Ollama
-// store. The list is INSTALLED-only now (live from GET /api/tags) — the hardcoded
-// catalog was dropped; installable suggestions live behind `ai models popular`.
+// localModelEntry is one row of `ai models list`: a repo downloaded into the local vLLM
+// store (from `hf cache ls`).
 type localModelEntry struct {
 	Name      string `json:"name"`
 	Installed bool   `json:"installed"`
-	Size      int64  `json:"size,omitempty"`
-	Params    string `json:"params,omitempty"`
+	Size      string `json:"size,omitempty"`
 }
 
-// modelsListResult is the `ai models list` payload: the INSTALLED models in the
-// LOCAL Ollama store.
+// modelsListResult is the `ai models list` payload: the locally-downloaded repos.
 type modelsListResult struct {
 	Models []localModelEntry `json:"models"`
 }
 
-// Human renders the installed list as a NAME / SIZE / PARAMS table.
+// Human renders the installed list as a NAME / SIZE table.
 func (result modelsListResult) Human() string {
 	if len(result.Models) == 0 {
 		return ui.Muted.Render("no models in the local store — pull one with ") +
@@ -302,39 +288,32 @@ func (result modelsListResult) Human() string {
 			ui.Muted.Render(" lists installable models)")
 	}
 	var builder strings.Builder
-	_, _ = fmt.Fprintf(&builder, "%s  %s  %s\n",
-		ui.Label.Render(fmt.Sprintf("%-28s", "NAME")),
-		ui.Label.Render(fmt.Sprintf("%-9s", "SIZE")),
-		ui.Label.Render("PARAMS"))
+	builder.WriteString(ui.Label.Render(padRight("NAME", 44)) + "  " + ui.Label.Render("SIZE") + "\n")
 	for _, entry := range result.Models {
-		size := "-"
-		if entry.Size > 0 {
-			size = ollama.HumanByteSize(entry.Size)
+		size := entry.Size
+		if size == "" {
+			size = "-"
 		}
-		params := entry.Params
-		if params == "" {
-			params = "-"
-		}
-		_, _ = fmt.Fprintf(&builder, "%s  %s  %s\n",
-			ui.Value.Render(fmt.Sprintf("%-28s", entry.Name)),
-			ui.Value.Render(fmt.Sprintf("%-9s", size)),
-			ui.Value.Render(params))
+		builder.WriteString(ui.Value.Render(padRight(entry.Name, 44)) + "  " + ui.Value.Render(size) + "\n")
 	}
-	builder.WriteString("\n" + ui.Muted.Render("installed = in the local Ollama store · ") +
+	builder.WriteString("\n" + ui.Muted.Render("installed = downloaded in the local vLLM store · ") +
 		ui.Primary.Render("ai models popular") + ui.Muted.Render(" lists installable models"))
 	return strings.TrimRight(builder.String(), "\n")
 }
 
-// installedEntries maps the installed local-store models to list rows.
-func installedEntries(installed []ollama.Model) []localModelEntry {
-	entries := make([]localModelEntry, 0, len(installed))
-	for _, model := range installed {
-		entries = append(entries, localModelEntry{
-			Name:      model.Name,
-			Installed: true,
-			Size:      model.Size,
-			Params:    model.ParameterSize,
-		})
+// padRight pads value with spaces to at least width runes (fixed-width table columns).
+func padRight(value string, width int) string {
+	if len([]rune(value)) >= width {
+		return value
+	}
+	return value + strings.Repeat(" ", width-len([]rune(value)))
+}
+
+// installedEntries maps the locally-cached repos to list rows.
+func installedEntries(cached []hf.CachedModel) []localModelEntry {
+	entries := make([]localModelEntry, 0, len(cached))
+	for _, model := range cached {
+		entries = append(entries, localModelEntry{Name: model.Repo, Installed: true, Size: model.Size})
 	}
 	return entries
 }
@@ -342,60 +321,43 @@ func installedEntries(installed []ollama.Model) []localModelEntry {
 func newModelsListCmd(emitter *output.Emitter, exit *int) *cobra.Command {
 	return &cobra.Command{
 		Use:   "list",
-		Short: "List installed local (Ollama) models",
-		Long: "List the models in the local Ollama store (GET /api/tags). The human output\n" +
-			"is a NAME / SIZE / PARAMS table; --json returns the list. This manages the\n" +
-			"LOCAL model store; `ai models popular` lists installable models (live from\n" +
-			"ollama.com) and `ai models status` describes LiteLLM routing.",
+		Short: "List locally-downloaded models (vLLM store, via `hf cache ls`)",
+		Long: "List the model repos downloaded into the local vLLM store (`hf cache ls`).\n" +
+			"The human output is a NAME / SIZE table; --json returns the list. This manages\n" +
+			"the LOCAL weight store; `ai models popular` lists installable models and\n" +
+			"`ai models status` describes LiteLLM routing.",
 		Args: cobra.NoArgs,
 		RunE: func(_ *cobra.Command, _ []string) error {
-			client := ollamaClient()
-			var installed []ollama.Model
+			store := hfClient()
+			var cached []hf.CachedModel
 			var err error
 			if ui.Enabled(emitter) {
 				err = ui.RunWithSpinner(emitter.Err, "listing local models", func() error {
 					var workErr error
-					installed, workErr = client.List()
+					cached, workErr = store.CacheList()
 					return workErr
 				})
 			} else {
-				installed, err = client.List()
+				cached, err = store.CacheList()
 			}
 			if err != nil {
-				*exit = emitter.Failure("models.list", ollamaErr("models.list", err))
+				*exit = emitter.Failure("models.list", hfErr(err))
 				return nil
 			}
-			result := modelsListResult{Models: installedEntries(installed)}
+			result := modelsListResult{Models: installedEntries(cached)}
 			*exit = emitter.Success("models.list", result)
 			return nil
 		},
 	}
 }
 
-// popularModelEntry is one row of `ai models popular`: one installable model from
-// the live ollama.com library. Name is the base model name (e.g. qwen2.5); Tags are
-// its pullable size tags (e.g. 7b, 72b) — pull a specific variant with
-// `ai models pull <name>:<tag>`. The library carries no per-tag download size, so
-// SIZE is shown as "—". RepoURL is the model's ollama.com/library page.
+// popularModelEntry is one row of `ai models popular`: one curated, vLLM-servable
+// Hugging Face repo.
 type popularModelEntry struct {
-	Name        string              `json:"name"`
-	Description string              `json:"description,omitempty"`
-	Tags        []ollama.LibraryTag `json:"tags,omitempty"`
-	RepoURL     string              `json:"repo_url"`
-}
-
-// representativeTag returns the tag whose size/context/input best represents the
-// model in a one-row overview: the "latest" tag when present, else the first.
-func (entry popularModelEntry) representativeTag() (ollama.LibraryTag, bool) {
-	for _, tag := range entry.Tags {
-		if tag.Name == "latest" {
-			return tag, true
-		}
-	}
-	if len(entry.Tags) > 0 {
-		return entry.Tags[0], true
-	}
-	return ollama.LibraryTag{}, false
+	Name        string `json:"name"`
+	Repo        string `json:"repo"`
+	Description string `json:"description,omitempty"`
+	Size        string `json:"size,omitempty"`
 }
 
 // modelsPopularResult is the `ai models popular` payload.
@@ -403,69 +365,37 @@ type modelsPopularResult struct {
 	Models []popularModelEntry `json:"models"`
 }
 
-// Human renders the library list as a NAME / SIZE / CONTEXT / INPUT / REPO table.
-// SIZE/CONTEXT/INPUT are the "latest" (or first) tag's values scraped from the
-// model's ollama.com /tags table; a dash marks a column the table omits.
+// Human renders the curated list as a REPO / SIZE / DESCRIPTION table.
 func (result modelsPopularResult) Human() string {
 	if len(result.Models) == 0 {
-		return ui.Muted.Render("no popular models returned")
+		return ui.Muted.Render("no curated models available")
 	}
 	var builder strings.Builder
-	_, _ = fmt.Fprintf(&builder, "%s  %s  %s  %s  %s\n",
-		ui.Label.Render(fmt.Sprintf("%-24s", "NAME")),
-		ui.Label.Render(fmt.Sprintf("%-9s", "SIZE")),
-		ui.Label.Render(fmt.Sprintf("%-8s", "CONTEXT")),
-		ui.Label.Render(fmt.Sprintf("%-13s", "INPUT")),
-		ui.Label.Render("REPO"))
+	builder.WriteString(ui.Label.Render(padRight("REPO", 46)) + "  " +
+		ui.Label.Render(padRight("SIZE", 9)) + "  " + ui.Label.Render("DESCRIPTION") + "\n")
 	for _, entry := range result.Models {
-		size, context, input := "—", "—", "—"
-		if tag, ok := entry.representativeTag(); ok {
-			size = valueOrDash(tag.Size)
-			context = valueOrDash(tag.Context)
-			input = valueOrDash(tag.Input)
+		size := entry.Size
+		if size == "" {
+			size = "—"
 		}
-		_, _ = fmt.Fprintf(&builder, "%s  %s  %s  %s  %s\n",
-			ui.Value.Render(fmt.Sprintf("%-24s", entry.Name)),
-			ui.Value.Render(fmt.Sprintf("%-9s", size)),
-			ui.Value.Render(fmt.Sprintf("%-8s", context)),
-			ui.Value.Render(fmt.Sprintf("%-13s", truncateCell(input, 13))),
-			ui.Value.Render(entry.RepoURL))
+		builder.WriteString(ui.Value.Render(padRight(entry.Repo, 46)) + "  " +
+			ui.Value.Render(padRight(size, 9)) + "  " + ui.Value.Render(entry.Description) + "\n")
 	}
 	builder.WriteString("\n" + ui.Muted.Render("pull any of these with ") +
-		ui.Primary.Render("ai models pull <name>:<tag>") +
-		ui.Muted.Render(" (size/context/input = the model's default tag · live from ollama.com)"))
+		ui.Primary.Render("ai models pull <repo>") +
+		ui.Muted.Render(" (a curated set of vLLM-servable Hugging Face repos)"))
 	return strings.TrimRight(builder.String(), "\n")
 }
 
-// valueOrDash returns value, or "—" when it is empty.
-func valueOrDash(value string) string {
-	if value == "" {
-		return "—"
-	}
-	return value
-}
-
-// truncateCell clips a cell value to width runes with a trailing ellipsis so the
-// fixed-width column lines stay aligned.
-func truncateCell(value string, width int) string {
-	runes := []rune(value)
-	if len(runes) <= width {
-		return value
-	}
-	if width <= 1 {
-		return string(runes[:width])
-	}
-	return string(runes[:width-1]) + "…"
-}
-
-func toPopularEntries(models []ollama.LibraryModel) []popularModelEntry {
+// curatedEntries maps the curated hf list to popular rows.
+func curatedEntries(models []hf.CuratedModel) []popularModelEntry {
 	entries := make([]popularModelEntry, 0, len(models))
 	for _, model := range models {
 		entries = append(entries, popularModelEntry{
 			Name:        model.Name,
+			Repo:        model.Repo,
 			Description: model.Description,
-			Tags:        model.Tags,
-			RepoURL:     model.RepoURL,
+			Size:        model.Size,
 		})
 	}
 	return entries
@@ -474,32 +404,21 @@ func toPopularEntries(models []ollama.LibraryModel) []popularModelEntry {
 func newModelsPopularCmd(emitter *output.Emitter, exit *int) *cobra.Command {
 	return &cobra.Command{
 		Use:   "popular",
-		Short: "List popular installable models (live Ollama library)",
-		Long: "List installable models from the live ollama.com library, with their pullable\n" +
-			"size tags and ollama.com/library link. The list is fetched from the Ollama\n" +
-			"library endpoint and cached locally; when the endpoint is unreachable the\n" +
-			"cached copy is used. The library reports no per-tag download size, so SIZE\n" +
-			"shows \"—\". Pull a specific variant — or any other reference — with\n" +
-			"`ai models pull <name>:<tag>`.",
+		Short: "List curated installable models (vLLM-servable HF repos)",
+		Long: "List the curated set of vLLM-servable models — mlx-community/* repos on Apple\n" +
+			"Silicon, plain Hugging Face safetensors repos on Linux — with their repo id,\n" +
+			"approximate size, and a one-line description. Pull one with\n" +
+			"`ai models pull <repo>` (any other Hugging Face repo id also works).",
 		Args: cobra.NoArgs,
 		RunE: func(_ *cobra.Command, _ []string) error {
-			models, _, err := ollamaLibrary()
-			if err != nil && len(models) == 0 {
-				*exit = emitter.Failure("models.popular", output.Errorf(output.ExitRuntimeFailure,
-					"could not reach the Ollama library and no cached copy: %s", err))
-				return nil
-			}
-			*exit = emitter.Success("models.popular", modelsPopularResult{Models: toPopularEntries(models)})
+			models := curatedEntries(hf.CuratedModels(goruntime.GOOS))
+			*exit = emitter.Success("models.popular", modelsPopularResult{Models: models})
 			return nil
 		},
 	}
 }
 
-// modelPullOutcome is the per-model result of a (multi-)pull: the exact reference
-// and either success or the error message. Registered records whether the model was
-// also registered in the LiteLLM gateway (best-effort, post-pull); RegisterError
-// carries the registration failure message when registration was attempted and failed
-// (it never fails the pull itself).
+// modelPullOutcome is the per-model result of a (multi-)pull.
 type modelPullOutcome struct {
 	Model         string `json:"model"`
 	OK            bool   `json:"ok"`
@@ -535,30 +454,26 @@ func (result modelsPullResult) Human() string {
 }
 
 func newModelsPullCmd(emitter *output.Emitter, exit *int) *cobra.Command {
-	var runtimeFlag string
 	var aliasFlag string
 	cmd := &cobra.Command{
-		Use:   "pull [name...]",
-		Short: "Download one or more models into the local store (Ollama or vLLM)",
-		Long: "Download one or more models into the local store. With name arguments\n" +
-			"(or under --json / no TTY) each given reference is pulled in turn — this is\n" +
-			"the custom-reference path (e.g. `llama3.2:3b qwen2.5:7b`, or `hf.co/user/model`).\n" +
-			"On a terminal with no arguments you check off any number of popular models (a\n" +
-			"bundled snapshot), and may also tick \"enter custom model(s)…\" to type extra\n" +
-			"references. Every selected model is pulled; the run continues past a failure\n" +
-			"and reports a per-model summary. Re-pulling an installed model updates it\n" +
-			"(there is no separate update command).\n\n" +
-			"--runtime selects how the model is SERVED through the gateway: `ollama` (default,\n" +
-			"GGUF via host-native Ollama) or `vllm` (host-native vLLM — mlx-community ids on\n" +
-			"macOS, Hugging Face safetensors ids on Linux). With --runtime vllm, --alias sets\n" +
-			"the gateway alias (default: the model id's base name).",
+		Use:   "pull [repo...]",
+		Short: "Download one or more models into the local vLLM store",
+		Long: "Download one or more Hugging Face model repos into the local vLLM store (via the\n" +
+			"`hf` CLI), then start and register each model's per-model vLLM server so it is\n" +
+			"served through the gateway as vllm/<alias>. With repo arguments (or under\n" +
+			"--json / no TTY) each given repo is pulled in turn (e.g.\n" +
+			"`ai models pull mlx-community/Qwen2.5-7B-Instruct-4bit`). On a terminal with no\n" +
+			"arguments you check off any number of curated models (a bundled snapshot), and\n" +
+			"may also tick \"enter custom repo(s)…\" to type extra Hugging Face repo ids.\n" +
+			"vLLM is the sole local runtime; --alias sets the gateway alias for a single\n" +
+			"model (default: the repo id's base name).",
 		Args: cobra.ArbitraryArgs,
 		RunE: func(_ *cobra.Command, args []string) error {
 			names := dedupeModelNames(args)
 			if len(names) == 0 {
 				if !interactive(emitter) {
 					*exit = emitter.Failure("models.pull", output.Errorf(output.ExitInvalidInput,
-						"specify one or more models to pull (e.g. `ai models pull llama3.2 qwen2.5:7b`)"))
+						"specify one or more models to pull (e.g. `ai models pull mlx-community/Qwen2.5-7B-Instruct-4bit`)"))
 					return nil
 				}
 				picked, err := promptModelsToPull()
@@ -569,114 +484,15 @@ func newModelsPullCmd(emitter *output.Emitter, exit *int) *cobra.Command {
 				names = picked
 			}
 			if len(names) == 0 {
-				// Interactive: nothing checked / entered → a clean cancellation.
 				*exit = emitter.Failure("models.pull", output.Errorf(output.ExitInvalidInput, "cancelled"))
 				return nil
 			}
-
-			// Resolve the SERVING runtime once for the whole pull (default Ollama, so
-			// no behaviour change without --runtime).
-			chosenRuntime, runtimeErr := resolveModelRuntime(emitter, runtimeFlag)
-			if runtimeErr != nil {
-				*exit = emitter.Failure("models.pull", runtimeErr)
-				return nil
-			}
-			// On a TTY, offer the runtime as a pre-seeded choice — but only when vLLM is
-			// actually installed (otherwise Ollama is the sole real option and prompting
-			// adds nothing). Under --json / no TTY the flag value stands.
-			if interactive(emitter) {
-				if installed, _ := vllmDetectFn(); installed {
-					picked, promptErr := promptModelRuntime(chosenRuntime)
-					if promptErr != nil {
-						*exit = emitter.Failure("models.pull", promptErr)
-						return nil
-					}
-					chosenRuntime = picked
-				}
-			}
-			if chosenRuntime == config.RuntimeVLLM {
-				*exit = pullVLLM(emitter, names, strings.TrimSpace(aliasFlag))
-				return nil
-			}
-			client := ollamaClient()
-			registrar := modelRegistrarFactory()
-			outcomes := make([]modelPullOutcome, 0, len(names))
-			anyFailed := false
-			var lastErr error
-			for index, name := range names {
-				label := fmt.Sprintf("pulling %s (%d/%d)", name, index+1, len(names))
-				var err error
-				if ui.Enabled(emitter) {
-					// Render a live download progress bar from Ollama's streamed
-					// total/completed frames (the meter overwrites in place, and also
-					// renders in the ai ui embedded terminal via the \r LogView normalize).
-					bar := ui.NewProgressBar(emitter.Err, label)
-					err = client.Pull(name, func(progress ollama.PullProgress) {
-						bar.Update(progress.Completed, progress.Total, progress.Status)
-					})
-					bar.Finish(err)
-				} else {
-					err = client.Pull(name, func(ollama.PullProgress) {})
-				}
-				if err != nil {
-					anyFailed = true
-					lastErr = err
-					outcomes = append(outcomes, modelPullOutcome{Model: name, OK: false, Error: err.Error()})
-					continue
-				}
-				// Best-effort: register the freshly-pulled model in the gateway so it
-				// gains a stable id and shows in the live catalogue. A gateway that is
-				// down or has no master key must NOT fail the pull — warn and continue.
-				// The choice is recorded (best-effort) so a later `rm` de-registers the
-				// right backend (this is the Ollama path; vLLM returns earlier).
-				outcome := modelPullOutcome{Model: name, OK: true}
-				supportsTools := ollamaModelSupportsTools(client, name)
-				regErr := registrar.RegisterOllamaModel(name, supportsTools)
-				if regErr == nil {
-					recordModelRuntimeChoice(name, name, config.RuntimeOllama, "")
-				}
-				if regErr != nil {
-					outcome.RegisterError = regErr.Error()
-				} else {
-					outcome.Registered = true
-				}
-				// Best-effort: bake a memory-safe num_ctx into the model so it uses its
-				// trained context window (LiteLLM does not forward num_ctx for the
-				// ollama_chat provider). A Show/SetNumCtx failure must NOT fail the pull.
-				if info, showErr := client.Show(name); showErr == nil {
-					if numCtx := ollama.RecommendedNumCtx(info.ContextLength); numCtx > 0 {
-						_ = client.SetNumCtx(name, numCtx)
-					}
-				}
-				outcomes = append(outcomes, outcome)
-			}
-
-			result := modelsPullResult{Pulled: outcomes}
-			if anyFailed {
-				// Report the per-model summary but exit non-zero. The exit code is
-				// mapped from the last failure (e.g. unreachable Ollama → exit 3);
-				// the per-model outcomes ride along in error.details (JSON) and the
-				// human message lists each failure.
-				failed := make([]string, 0, len(outcomes))
-				for _, outcome := range outcomes {
-					if !outcome.OK {
-						failed = append(failed, outcome.Model+": "+outcome.Error)
-					}
-				}
-				mapped := ollamaErr("models.pull", lastErr).(*output.Error)
-				summary := output.Errorf(mapped.Code, "%d of %d models failed to pull:\n  %s",
-					len(failed), len(outcomes), strings.Join(failed, "\n  ")).WithDetails(result)
-				*exit = emitter.Failure("models.pull", summary)
-				return nil
-			}
-			*exit = emitter.Success("models.pull", result)
+			*exit = pullVLLM(emitter, names, strings.TrimSpace(aliasFlag))
 			return nil
 		},
 	}
-	cmd.Flags().StringVar(&runtimeFlag, "runtime", string(config.RuntimeOllama),
-		"serving runtime: ollama (default) or vllm")
 	cmd.Flags().StringVar(&aliasFlag, "alias", "",
-		"gateway alias for the served model (--runtime vllm only; default: the model id's base name)")
+		"gateway alias for the served model (single model only; default: the repo id's base name)")
 	return cmd
 }
 
@@ -689,21 +505,20 @@ type modelsInstallVLLMResult struct {
 
 // newModelsInstallVLLMCmd builds `ai models install-vllm` — the one-shot installer that
 // provisions the platform-managed host venv (~/.ai-platform/venv) and pip-installs vLLM
-// into it, so `--runtime vllm` works with no user-managed venv. With no --spec it uses
-// the per-OS default (vllm-metal on Apple Silicon, plain vllm on Linux); --spec (repeatable)
-// overrides that entirely. The install is a large network download, so it runs behind a
-// spinner and is never triggered by `ai setup`.
+// into it. With no --spec it uses the per-OS default (vllm-metal on Apple Silicon, plain
+// vllm on Linux); --spec (repeatable) overrides that entirely. The install is a large
+// network download, so it runs behind a spinner and is never triggered by `ai setup`
+// (setup's best-effort auto-install is separate).
 func newModelsInstallVLLMCmd(emitter *output.Emitter, exit *int) *cobra.Command {
 	var specFlags []string
 	cmd := &cobra.Command{
 		Use:   "install-vllm",
 		Short: "Install the vLLM backend into the platform-managed host venv",
 		Long: "Install vLLM into the platform-managed host Python venv (~/.ai-platform/venv)\n" +
-			"so `ai models pull --runtime vllm` works without a hand-rolled venv. With no\n" +
-			"--spec the per-OS default is used (the vLLM-Metal plugin on Apple Silicon, the\n" +
-			"plain `vllm` package on Linux); pass --spec (repeatable) to override the pip\n" +
-			"requirement(s) exactly. This is a large network download and is never run by\n" +
-			"`ai setup`.",
+			"so `ai models pull` can serve local models. With no --spec the per-OS default\n" +
+			"is used (the vLLM-Metal plugin on Apple Silicon, the plain `vllm` package on\n" +
+			"Linux); pass --spec (repeatable) to override the pip requirement(s) exactly.\n" +
+			"This is a large network download.",
 		Args: cobra.NoArgs,
 		RunE: func(_ *cobra.Command, _ []string) error {
 			specs := specFlags
@@ -732,34 +547,6 @@ func newModelsInstallVLLMCmd(emitter *output.Emitter, exit *int) *cobra.Command 
 	return cmd
 }
 
-// promptModelRuntime shows the serving-runtime picker on a TTY, pre-seeded with seed
-// (the --runtime value / default). It is only invoked when vLLM is actually installed,
-// so both options are meaningful. Returns the chosen runtime.
-func promptModelRuntime(seed config.ModelRuntime) (config.ModelRuntime, error) {
-	options := make([]huh.Option[string], 0, len(config.ModelRuntimes()))
-	for _, runtime := range config.ModelRuntimes() {
-		options = append(options, huh.NewOption(modelRuntimeLabel(runtime), string(runtime)))
-	}
-	chosen, err := promptChoice("Serving runtime",
-		"How the model is served through the gateway.", options, string(seed))
-	if err != nil {
-		return "", err
-	}
-	return config.ModelRuntime(chosen), nil
-}
-
-// modelRuntimeLabel is the human label for a serving runtime in the CLI picker.
-func modelRuntimeLabel(runtime config.ModelRuntime) string {
-	switch runtime {
-	case config.RuntimeOllama:
-		return "Ollama (GGUF, host-native)"
-	case config.RuntimeVLLM:
-		return "vLLM (MLX / safetensors, host-native)"
-	default:
-		return string(runtime)
-	}
-}
-
 // dedupeModelNames trims, drops empties, and removes duplicate references while
 // preserving first-seen order.
 func dedupeModelNames(names []string) []string {
@@ -779,32 +566,27 @@ func dedupeModelNames(names []string) []string {
 	return out
 }
 
-// promptModelsToPull presents the installable library models — one checkbox per
-// model:tag reference (built from each library model's Name + its size Tags) — plus a
-// final "enter custom model(s)…" checkbox; ticking the latter prompts for free-text
-// references (space- or comma-separated) which are added to the selection. If the
-// library is unavailable it falls back to the free-text custom-entry prompt (still
-// multiple). Returns the de-duplicated set of references (possibly empty → cancelled).
-// Only call on an interactive terminal.
+// promptModelsToPull presents the curated model list — one checkbox per repo — plus a
+// final "enter custom repo(s)…" checkbox; ticking the latter prompts for free-text repo
+// ids which are added to the selection. Returns the de-duplicated set of repo ids
+// (possibly empty → cancelled). Only call on an interactive terminal.
 func promptModelsToPull() ([]string, error) {
-	library, _, libraryErr := ollamaLibrary()
-	if libraryErr != nil && len(library) == 0 {
-		// The library is unavailable; don't block pulling — go straight to the
-		// free-text custom-entry prompt (still allows multiple, space/comma separated).
+	curated := hf.CuratedModels(goruntime.GOOS)
+	if len(curated) == 0 {
 		return promptCustomModels()
 	}
-	refs := libraryPullRefs(library)
-	if len(refs) == 0 {
-		return promptCustomModels()
+	options := make([]huh.Option[string], 0, len(curated)+1)
+	for _, model := range curated {
+		label := model.Repo
+		if model.Size != "" {
+			label += "  (" + model.Size + ")"
+		}
+		options = append(options, huh.NewOption(label, model.Repo))
 	}
-	options := make([]huh.Option[string], 0, len(refs)+1)
-	for _, ref := range refs {
-		options = append(options, huh.NewOption(ref, ref))
-	}
-	options = append(options, huh.NewOption("✎ enter custom model(s)…", customModelOption))
+	options = append(options, huh.NewOption("✎ enter custom repo(s)…", customModelOption))
 
 	selected, err := promptMultiChoice("Models to pull",
-		"check any number; tick ✎ to also type custom references (e.g. llama3.2:3b, hf.co/user/model)",
+		"check any number; tick ✎ to also type custom Hugging Face repo ids",
 		options)
 	if err != nil {
 		return nil, err
@@ -829,32 +611,14 @@ func promptModelsToPull() ([]string, error) {
 	return dedupeModelNames(names), nil
 }
 
-// libraryPullRefs expands the library models into pullable references: one
-// "name:tag" per tag, or the bare name for a model with no tags. Order follows the
-// library (already sorted by name), tags in their listed order.
-func libraryPullRefs(library []ollama.LibraryModel) []string {
-	refs := make([]string, 0, len(library))
-	for _, model := range library {
-		if len(model.Tags) == 0 {
-			refs = append(refs, model.Name)
-			continue
-		}
-		for _, tag := range model.Tags {
-			refs = append(refs, model.Name+":"+tag.Name)
-		}
-	}
-	return refs
-}
-
-// promptCustomModels asks for one or more free-text model references (the custom-
-// entry path), space- or comma-separated (e.g. "llama3.2:1b qwen2.5:7b"). Returns
-// the parsed, de-duplicated references.
+// promptCustomModels asks for one or more free-text Hugging Face repo ids (the custom-
+// entry path), space- or comma-separated. Returns the parsed, de-duplicated repo ids.
 func promptCustomModels() ([]string, error) {
-	custom, err := promptText("Custom model reference(s)",
-		"space- or comma-separated Ollama models to pull (e.g. llama3.2:3b qwen2.5:7b, hf.co/user/model)", "",
+	custom, err := promptText("Custom model repo(s)",
+		"space- or comma-separated Hugging Face repo ids to pull (e.g. mlx-community/Qwen2.5-7B-Instruct-4bit)", "",
 		func(value string) error {
 			if len(parseModelRefs(value)) == 0 {
-				return errors.New("enter at least one model reference")
+				return errors.New("enter at least one repo id")
 			}
 			return nil
 		})
@@ -864,8 +628,7 @@ func promptCustomModels() ([]string, error) {
 	return parseModelRefs(custom), nil
 }
 
-// parseModelRefs splits a free-text entry into model references on whitespace and
-// commas, dropping empties and duplicates.
+// parseModelRefs splits a free-text entry into repo ids on whitespace and commas.
 func parseModelRefs(value string) []string {
 	fields := strings.FieldsFunc(value, func(runeValue rune) bool {
 		return runeValue == ',' || runeValue == ' ' || runeValue == '\t' || runeValue == '\n'
@@ -891,41 +654,37 @@ func (result modelsRmResult) Human() string {
 
 func newModelsRmCmd(emitter *output.Emitter, exit *int) *cobra.Command {
 	return &cobra.Command{
-		Use:     "rm [name]",
+		Use:     "rm [repo]",
 		Aliases: []string{"remove", "delete"},
-		Short:   "Remove a model from the local (Ollama) store",
-		Long: "Remove a model from the local Ollama store. On a terminal with no argument you\n" +
-			"pick from the installed models; with a name argument (or under --json) that\n" +
-			"model is removed. On a terminal you are asked to confirm before deleting.",
+		Short:   "Remove a model from the local vLLM store",
+		Long: "Remove a model from the local vLLM store: stop its per-model vLLM server,\n" +
+			"de-register it from the gateway, and delete its downloaded weights\n" +
+			"(`hf cache rm`). On a terminal with no argument you pick from the recorded\n" +
+			"models; with a repo argument (or under --json) that model is removed. On a\n" +
+			"terminal you are asked to confirm before deleting.",
 		Args: cobra.MaximumNArgs(1),
 		RunE: func(_ *cobra.Command, args []string) error {
 			name := ""
 			if len(args) == 1 {
 				name = strings.TrimSpace(args[0])
 			}
-			client := ollamaClient()
 			if name == "" {
 				if !interactive(emitter) {
 					*exit = emitter.Failure("models.rm", output.Errorf(output.ExitInvalidInput,
-						"specify a model to remove (e.g. `ai models rm llama3.2`)"))
+						"specify a model to remove (e.g. `ai models rm Qwen2.5-7B-Instruct-4bit`)"))
 					return nil
 				}
-				picked, err := promptInstalledModel(client)
+				picked, err := promptRecordedModel()
 				if err != nil {
 					*exit = emitter.Failure("models.rm", err)
 					return nil
 				}
 				name = picked
 			}
-			// Resolve the recorded serving runtime up front so the confirm wording and
-			// the de-registration target match the backend the model was installed on.
-			vllmChoice, isVLLM := vllmChoiceForRef(name)
+			choice, isVLLM := vllmChoiceForRef(name)
 			if interactive(emitter) {
-				detail := "this deletes the model from the local Ollama store"
-				if isVLLM {
-					detail = "this stops the vLLM server and de-registers the model from the gateway"
-				}
-				confirmed, err := promptConfirm("Remove "+name+"?", detail)
+				confirmed, err := promptConfirm("Remove "+name+"?",
+					"this stops the vLLM server, de-registers the model from the gateway, and deletes its weights")
 				if err != nil {
 					*exit = emitter.Failure("models.rm", err)
 					return nil
@@ -935,41 +694,26 @@ func newModelsRmCmd(emitter *output.Emitter, exit *int) *cobra.Command {
 					return nil
 				}
 			}
-			// vLLM backend: there is no Ollama store entry to delete — stop the per-model
-			// server, de-register it, and clear the recorded choice (all best-effort).
 			if isVLLM {
-				*exit = removeVLLM(emitter, name, vllmChoice)
+				*exit = removeVLLM(emitter, name, choice)
 				return nil
+			}
+			// Not a recorded vLLM model: best-effort remove the HF cache entry + unregister
+			// by alias/base name so a stray download/registration is still cleanable.
+			result := modelsRmResult{Model: name}
+			registrar := modelRegistrarFactory()
+			if regErr := registrar.UnregisterVLLMModel(vllmDefaultAlias(name)); regErr != nil {
+				result.UnregisterError = regErr.Error()
 			}
 			var err error
 			if ui.Enabled(emitter) {
-				err = ui.RunWithSpinner(emitter.Err, "removing "+name, func() error { return client.Remove(name) })
+				err = ui.RunWithSpinner(emitter.Err, "removing "+name, func() error { return hfClient().CacheRemove(name) })
 			} else {
-				err = client.Remove(name)
+				err = hfClient().CacheRemove(name)
 			}
 			if err != nil {
-				*exit = emitter.Failure("models.rm", ollamaErr("models.rm", err))
+				*exit = emitter.Failure("models.rm", hfErr(err))
 				return nil
-			}
-			// Best-effort: drop the gateway's DB-backed registration for the removed
-			// model, de-registering the Ollama backend that WAS recorded at install and
-			// clearing the runtime choice. A gateway that is down or has no
-			// master key must NOT fail the removal — surface the warning in the result.
-			result := modelsRmResult{Model: name}
-			registrar := modelRegistrarFactory()
-			choices := runtimeChoicesForModel(name)
-			if len(choices) == 0 {
-				// No recorded choice → the default (Ollama) backend, as before.
-				if regErr := registrar.UnregisterOllamaModel(name); regErr != nil {
-					result.UnregisterError = regErr.Error()
-				}
-			} else {
-				for _, choice := range choices {
-					if regErr := registrar.UnregisterOllamaModel(name); regErr != nil && result.UnregisterError == "" {
-						result.UnregisterError = regErr.Error()
-					}
-					_ = config.DeleteModelRuntime(choice.Alias)
-				}
 			}
 			*exit = emitter.Success("models.rm", result)
 			return nil
@@ -977,105 +721,123 @@ func newModelsRmCmd(emitter *output.Emitter, exit *int) *cobra.Command {
 	}
 }
 
-// ollamaModelSupportsTools best-effort reports whether a freshly-pulled Ollama model
-// advertises tool/function-calling support (its /api/show capabilities include "tools").
-// On any probe error it returns true (unknown → assume capable), matching the gateway's
-// default so a probe hiccup never wrongly disables tools for a model.
-func ollamaModelSupportsTools(client ollama.Client, name string) bool {
-	info, err := client.Show(name)
-	if err != nil {
-		return true
-	}
-	for _, capability := range info.Capabilities {
-		if capability == "tools" {
-			return true
-		}
-	}
-	return false
-}
-
-// promptInstalledModel asks the user to pick one of the currently-installed models.
-// Only call on an interactive terminal.
-func promptInstalledModel(client ollama.Client) (string, error) {
-	installed, err := client.List()
-	if err != nil {
-		return "", ollamaErr("models.rm", err)
-	}
-	if len(installed) == 0 {
+// promptRecordedModel asks the user to pick one of the recorded local models (by gateway
+// alias). Only call on an interactive terminal.
+func promptRecordedModel() (string, error) {
+	choices, err := config.LoadModelRuntimes()
+	if err != nil || len(choices) == 0 {
 		return "", output.Errorf(output.ExitInvalidInput,
 			"no models in the local store — pull one with `ai models pull`")
 	}
-	options := make([]huh.Option[string], 0, len(installed))
-	for _, model := range installed {
-		options = append(options, huh.NewOption(model.Name, model.Name))
+	options := make([]huh.Option[string], 0, len(choices))
+	initial := ""
+	for _, choice := range choices {
+		if initial == "" {
+			initial = choice.Alias
+		}
+		label := choice.Alias
+		if choice.Model != "" && choice.Model != choice.Alias {
+			label += "  (" + choice.Model + ")"
+		}
+		options = append(options, huh.NewOption(label, choice.Alias))
 	}
-	return promptChoice("Model to remove", "delete this model from the local Ollama store",
-		options, installed[0].Name)
+	return promptChoice("Model to remove", "remove this model from the local vLLM store", options, initial)
 }
 
-// modelsShowResult is the `ai models show` payload.
+// modelsShowResult is the `ai models show` payload: the recorded runtime choice + any
+// curated metadata for the model.
 type modelsShowResult struct {
-	Info ollama.ModelInfo `json:"info"`
+	Alias       string `json:"alias,omitempty"`
+	Repo        string `json:"repo,omitempty"`
+	Runtime     string `json:"runtime,omitempty"`
+	Endpoint    string `json:"endpoint,omitempty"`
+	Status      string `json:"status,omitempty"`
+	Description string `json:"description,omitempty"`
+	Size        string `json:"size,omitempty"`
+	Found       bool   `json:"found"`
 }
 
 func (result modelsShowResult) Human() string {
-	info := result.Info
-	lines := []string{ui.Heading.Render(info.Name)}
+	if !result.Found {
+		return ui.Muted.Render("no local record for that model — pull one with ") + ui.Primary.Render("ai models pull")
+	}
+	name := result.Alias
+	if name == "" {
+		name = result.Repo
+	}
+	lines := []string{ui.Heading.Render(name)}
 	add := func(label, value string) {
 		if value != "" {
-			lines = append(lines, "  "+ui.Label.Render(fmt.Sprintf("%-12s", label))+" "+ui.Value.Render(value))
+			lines = append(lines, "  "+ui.Label.Render(padRight(label, 12))+" "+ui.Value.Render(value))
 		}
 	}
-	add("params", info.ParameterSize)
-	add("quant", info.QuantizationLevel)
-	add("family", info.Family)
-	add("format", info.Format)
-	if len(info.Capabilities) > 0 {
-		add("caps", strings.Join(info.Capabilities, ", "))
-	}
+	add("repo", result.Repo)
+	add("runtime", result.Runtime)
+	add("endpoint", result.Endpoint)
+	add("status", result.Status)
+	add("size", result.Size)
+	add("about", result.Description)
 	return strings.Join(lines, "\n")
+}
+
+// curatedByRepo returns the curated metadata for a repo id (or short name), if any.
+func curatedByRepo(repo string) (hf.CuratedModel, bool) {
+	for _, model := range hf.CuratedModels(goruntime.GOOS) {
+		if model.Repo == repo || model.Name == repo {
+			return model, true
+		}
+	}
+	return hf.CuratedModel{}, false
 }
 
 func newModelsShowCmd(emitter *output.Emitter, exit *int) *cobra.Command {
 	return &cobra.Command{
 		Use:   "show <name>",
-		Short: "Show metadata for a local (Ollama) model",
-		Args:  cobra.MaximumNArgs(1),
+		Short: "Show metadata for a local model",
+		Long: "Show what the platform knows about a local model: its recorded runtime choice\n" +
+			"(gateway alias, repo id, serving endpoint, status) plus any curated description\n" +
+			"and size. Accepts the gateway alias or the Hugging Face repo id.",
+		Args: cobra.MaximumNArgs(1),
 		RunE: func(_ *cobra.Command, args []string) error {
 			name := ""
 			if len(args) == 1 {
 				name = strings.TrimSpace(args[0])
 			}
-			client := ollamaClient()
 			if name == "" {
 				if !interactive(emitter) {
 					*exit = emitter.Failure("models.show", output.Errorf(output.ExitInvalidInput,
-						"specify a model to show (e.g. `ai models show llama3.2`)"))
+						"specify a model to show (e.g. `ai models show Qwen2.5-7B-Instruct-4bit`)"))
 					return nil
 				}
-				picked, err := promptInstalledModel(client)
+				picked, err := promptRecordedModel()
 				if err != nil {
 					*exit = emitter.Failure("models.show", err)
 					return nil
 				}
 				name = picked
 			}
-			var info ollama.ModelInfo
-			var err error
-			if ui.Enabled(emitter) {
-				err = ui.RunWithSpinner(emitter.Err, "fetching "+name, func() error {
-					var workErr error
-					info, workErr = client.Show(name)
-					return workErr
-				})
-			} else {
-				info, err = client.Show(name)
+			result := modelsShowResult{}
+			if choice, ok := vllmChoiceForRef(name); ok {
+				result.Found = true
+				result.Alias = choice.Alias
+				result.Repo = choice.Model
+				result.Runtime = string(choice.Runtime)
+				result.Endpoint = choice.Endpoint
+				result.Status = choice.Status
 			}
-			if err != nil {
-				*exit = emitter.Failure("models.show", ollamaErr("models.show", err))
-				return nil
+			lookupRepo := result.Repo
+			if lookupRepo == "" {
+				lookupRepo = name
 			}
-			*exit = emitter.Success("models.show", modelsShowResult{Info: info})
+			if curated, ok := curatedByRepo(lookupRepo); ok {
+				result.Found = true
+				if result.Repo == "" {
+					result.Repo = curated.Repo
+				}
+				result.Description = curated.Description
+				result.Size = curated.Size
+			}
+			*exit = emitter.Success("models.show", result)
 			return nil
 		},
 	}

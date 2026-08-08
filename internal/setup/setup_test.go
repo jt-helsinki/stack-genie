@@ -754,7 +754,7 @@ func TestLiteLLMRunArgs(test *testing.T) {
 	want := []string{
 		"run", "-d", "--name", "aip-litellm",
 		"--network", "aip-net",
-		// Always present: reach the host-native Ollama through the host gateway.
+		// Always present: reach the host-native vLLM backends through the host gateway.
 		"--add-host=host.docker.internal:host-gateway",
 		// INTERNAL-ONLY: no host publish — reached by name on aip-net; nginx fronts it.
 		"-v", "/cfg/litellm/config.yaml:/app/config.yaml",
@@ -914,8 +914,8 @@ func TestReportHumanShowsAddressAndConsole(test *testing.T) {
 		Services: []ServiceStatus{
 			{Name: "litellm", Mode: "container", State: "running", Healthy: true,
 				Address: "http://litellm.aip.local:18787", Console: "http://litellm.aip.local:18787/ui/login"},
-			{Name: "ollama", Mode: "container", State: "running", Healthy: true,
-				Address: "http://aip.local:18787/ollama"},
+			{Name: "vllm", Mode: "host", State: "running", Healthy: true,
+				Address: "http://127.0.0.1:8101/v1"},
 			{Name: "presidio", Mode: "container", State: "running", Healthy: true},
 		},
 	}
@@ -924,9 +924,9 @@ func TestReportHumanShowsAddressAndConsole(test *testing.T) {
 	if !strings.Contains(rendered, "http://litellm.aip.local:18787 · UI http://litellm.aip.local:18787/ui/login") {
 		test.Errorf("litellm address+UI missing:\n%s", rendered)
 	}
-	// ollama shows its address only (no UI).
-	if !strings.Contains(rendered, "http://aip.local:18787/ollama") {
-		test.Errorf("ollama address missing:\n%s", rendered)
+	// vllm shows its address only (no UI).
+	if !strings.Contains(rendered, "http://127.0.0.1:8101/v1") {
+		test.Errorf("vllm address missing:\n%s", rendered)
 	}
 	// presidio (no host endpoint) shows neither an address nor a UI hint.
 	for _, presidioLine := range strings.Split(rendered, "\n") {
@@ -937,9 +937,9 @@ func TestReportHumanShowsAddressAndConsole(test *testing.T) {
 }
 
 func TestDesiredServicesAreRequired(test *testing.T) {
-	// Ollama, Presidio, LiteLLM, and Headroom are all required host services
-	// (Ollama is the local model backend LiteLLM routes to, arch §14/§16).
-	for _, name := range []string{"ollama", "presidio", "litellm", "headroom", "proxy", "dns"} {
+	// vLLM (the local model backend), Presidio, LiteLLM, and Headroom are all required
+	// host services (arch §14/§16).
+	for _, name := range []string{"vllm", "presidio", "litellm", "headroom", "proxy", "dns"} {
 		if !hasService(desiredServices(), name) {
 			test.Errorf("required service %q missing from desiredServices: %+v", name, desiredServices())
 		}
@@ -993,8 +993,7 @@ func TestRequiredImagesCoversEveryService(test *testing.T) {
 		}
 		have[ref] = true
 	}
-	// Ollama is host-native (no aip-ollama container), so its image is deliberately
-	// NOT in this set.
+	// vLLM is host-native (no aip-vllm container), so it has no image in this set.
 	for _, service := range []string{
 		"presidio-analyzer", "presidio-anonymizer",
 		"litellm", "litellm-db",
@@ -1134,17 +1133,15 @@ func TestEnsureProxyRendersGatewayConfig(test *testing.T) {
 	if !strings.Contains(rendered, "location /llm/ {") || !strings.Contains(rendered, "proxy_pass http://aip-litellm:4000/;") {
 		test.Errorf("nginx.conf must front the LiteLLM admin surface on /llm:\n%s", rendered)
 	}
-	// The Ollama HTTP API is fronted on /ollama (prefix stripped → :11434). Ollama is
-	// host-native, so the upstream is the host gateway (host.docker.internal).
-	if !strings.Contains(rendered, "location /ollama/ {") || !strings.Contains(rendered, "proxy_pass http://host.docker.internal:11434/;") {
-		test.Errorf("nginx.conf must front the host-native Ollama API on /ollama:\n%s", rendered)
+	// Ollama was removed — there must be no /ollama route.
+	if strings.Contains(rendered, "location /ollama/ {") {
+		test.Errorf("nginx.conf must NOT front an /ollama route (Ollama removed):\n%s", rendered)
 	}
-	// /llm and /ollama must be matched BEFORE the catch-all `location /`.
+	// /llm must be matched BEFORE the catch-all `location /`.
 	llmIdx := strings.Index(rendered, "location /llm/ {")
-	ollamaIdx := strings.Index(rendered, "location /ollama/ {")
 	catchAllIdx := strings.Index(rendered, "location / {")
-	if llmIdx < 0 || ollamaIdx < 0 || catchAllIdx < 0 || llmIdx > catchAllIdx || ollamaIdx > catchAllIdx {
-		test.Errorf("specific /llm and /ollama prefixes must precede the catch-all:\n%s", rendered)
+	if llmIdx < 0 || catchAllIdx < 0 || llmIdx > catchAllIdx {
+		test.Errorf("the specific /llm prefix must precede the catch-all:\n%s", rendered)
 	}
 	if !strings.Contains(rendered, "proxy_buffering off;") {
 		test.Errorf("nginx.conf must disable buffering for SSE streaming:\n%s", rendered)
@@ -1210,7 +1207,7 @@ func TestNoOptionalServices(test *testing.T) {
 	if got := optionalServiceNames(); len(got) != 0 {
 		test.Errorf("optionalServiceNames = %v, want empty (no optional host services)", got)
 	}
-	for _, core := range []string{"ollama", "presidio", "litellm", "headroom", "proxy", "dns"} {
+	for _, core := range []string{"vllm", "presidio", "litellm", "headroom", "proxy", "dns"} {
 		if isOptionalService(core) {
 			test.Errorf("%q must be a core service, not optional", core)
 		}
@@ -1462,14 +1459,11 @@ func TestStatusForDisplayDomain(test *testing.T) {
 	if got := consoleOf(standalone, "litellm"); got != "http://litellm.aip.local:18787/ui/login" {
 		test.Errorf("standalone litellm console = %q, want http://litellm.aip.local:18787/ui/login", got)
 	}
-	if got := addressOf(standalone, "ollama"); got != "http://aip.local:18787/ollama" {
-		test.Errorf("standalone ollama address = %q, want http://aip.local:18787/ollama", got)
-	}
 	if got := addressOf(standalone, "proxy"); got != "http://aip.local:18787" {
 		test.Errorf("standalone proxy address = %q, want http://aip.local:18787", got)
 	}
 	// No host-side use of the old direct ports anywhere.
-	for _, name := range []string{"litellm", "ollama", "proxy"} {
+	for _, name := range []string{"litellm", "proxy"} {
 		got := addressOf(standalone, name)
 		for _, deadPort := range []string{":14000", ":11434", ":18090", ":7000"} {
 			if strings.Contains(got, deadPort) {
@@ -1745,55 +1739,5 @@ func TestEnsureLiteLLMDBBindMountUnderVolumesDir(test *testing.T) {
 	}
 	if info, err := os.Stat(wantSrc); err != nil || !info.IsDir() {
 		test.Errorf("expected the db bind dir %q to be created: %v", wantSrc, err)
-	}
-}
-
-// TestOllamaEnvPairsForwardsPrefixed verifies the Ollama env (rendered for the
-// compose debug artifact + documented for the host process) carries every OLLAMA_*
-// var from the process env (i.e. from ~/.ai-platform/.ai-platform.env) EXCEPT
-// OLLAMA_MODELS, which stays the platform-managed store path (not user-overridable).
-func TestHostOllamaEnvPairsForwardsPrefixed(test *testing.T) {
-	test.Setenv("HOME", test.TempDir())
-	test.Setenv("OLLAMA_FLASH_ATTENTION", "1")
-	test.Setenv("OLLAMA_KV_CACHE_TYPE", "q8_0")
-	test.Setenv("OLLAMA_MODELS", "/should/not/win") // platform-managed; must be ignored
-	test.Setenv("NOT_OLLAMA", "nope")
-
-	joined := strings.Join(hostOllamaEnvPairs(), " ")
-	for _, want := range []string{"OLLAMA_FLASH_ATTENTION=1", "OLLAMA_KV_CACHE_TYPE=q8_0", "OLLAMA_MODELS=" + hostOllamaModelsDir()} {
-		if !strings.Contains(joined, want) {
-			test.Errorf("host ollama env pairs missing %q: %q", want, joined)
-		}
-	}
-	if strings.Contains(joined, "/should/not/win") {
-		test.Errorf("OLLAMA_MODELS must NOT be overridable from the environment: %q", joined)
-	}
-	if strings.Contains(joined, "NOT_OLLAMA") {
-		test.Errorf("non-OLLAMA_ vars must not be forwarded: %q", joined)
-	}
-}
-
-// TestOllamaContextLengthDefault verifies the platform sets a generous default context
-// window (so agent CLIs' prompt + tools don't starve generation), and that a user-forwarded
-// OLLAMA_CONTEXT_LENGTH overrides it without a duplicate entry.
-func TestOllamaContextLengthDefault(test *testing.T) {
-	test.Setenv("HOME", test.TempDir())
-	// Default applied when unset.
-	joined := strings.Join(hostOllamaEnvPairs(), " ")
-	if !strings.Contains(joined, "OLLAMA_CONTEXT_LENGTH="+defaultOllamaContextLength) {
-		test.Errorf("ollama env pairs missing default context length: %q", joined)
-	}
-
-	// User override wins and is not duplicated.
-	test.Setenv("OLLAMA_CONTEXT_LENGTH", "65536")
-	joined = strings.Join(hostOllamaEnvPairs(), " ")
-	if !strings.Contains(joined, "OLLAMA_CONTEXT_LENGTH=65536") {
-		test.Errorf("user OLLAMA_CONTEXT_LENGTH must win: %q", joined)
-	}
-	if strings.Contains(joined, "OLLAMA_CONTEXT_LENGTH="+defaultOllamaContextLength) {
-		test.Errorf("default must be dropped when the user sets OLLAMA_CONTEXT_LENGTH: %q", joined)
-	}
-	if count := strings.Count(joined, "OLLAMA_CONTEXT_LENGTH="); count != 1 {
-		test.Errorf("OLLAMA_CONTEXT_LENGTH must appear once, got %d: %q", count, joined)
 	}
 }

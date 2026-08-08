@@ -851,29 +851,21 @@ func TestCreatingSwallowsNavKeys(test *testing.T) {
 	}
 }
 
-// TestModelsPullThreadsRuntime verifies the ModelsPullRequestedMsg handler builds the
-// `ai models pull <refs> --runtime <r>` overlay argv with the chosen runtime.
-func TestModelsPullThreadsRuntime(test *testing.T) {
+// TestModelsPullOpensOverlay verifies the ModelsPullRequestedMsg handler opens the
+// `ai models pull <refs>` overlay with the repo id (vLLM is the sole local runtime, so
+// no --runtime is threaded).
+func TestModelsPullOpensOverlay(test *testing.T) {
 	application := newTestApp("Local Models")
-	application.Update(views.ModelsPullRequestedMsg{Refs: []string{"qwen2.5:7b"}, Runtime: "ollama"})
+	application.Update(views.ModelsPullRequestedMsg{Refs: []string{"mlx-community/Qwen2.5-7B-Instruct-4bit"}})
 	if application.terminal == nil {
 		test.Fatal("a pull request must open the terminal overlay")
 	}
-	if label := application.terminal.Label(); !strings.Contains(label, "--runtime ollama") {
-		test.Errorf("overlay label = %q, want it to carry --runtime ollama", label)
+	label := application.terminal.Label()
+	if !strings.Contains(label, "models pull mlx-community/Qwen2.5-7B-Instruct-4bit") {
+		test.Errorf("overlay label = %q, want the models pull command with the repo", label)
 	}
-}
-
-// TestModelsPullDefaultsRuntimeToOllama verifies a message built WITHOUT a runtime
-// (back-compat) defaults to the Ollama engine in the argv.
-func TestModelsPullDefaultsRuntimeToOllama(test *testing.T) {
-	application := newTestApp("Local Models")
-	application.Update(views.ModelsPullRequestedMsg{Refs: []string{"qwen2.5:7b"}})
-	if application.terminal == nil {
-		test.Fatal("a pull request must open the terminal overlay")
-	}
-	if label := application.terminal.Label(); !strings.Contains(label, "--runtime ollama") {
-		test.Errorf("overlay label = %q, want the default --runtime ollama", label)
+	if strings.Contains(label, "--runtime") {
+		test.Errorf("overlay label must not carry --runtime (vLLM is the only runtime): %q", label)
 	}
 }
 

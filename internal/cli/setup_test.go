@@ -9,7 +9,6 @@ import (
 
 	"github.com/jt-helsinki/stack-genie/internal/output"
 	"github.com/jt-helsinki/stack-genie/internal/runtime"
-	"github.com/jt-helsinki/stack-genie/internal/setup"
 	"github.com/jt-helsinki/stack-genie/internal/uihosts"
 )
 
@@ -114,67 +113,45 @@ func TestNonInteractiveServerDomain(test *testing.T) {
 	}
 }
 
-// When host-native Ollama is healthy AND vLLM is installed there is no local-inference
-// guidance to print.
-func TestLocalInferenceGuidanceBothHealthy(test *testing.T) {
-	statuses := []setup.ServiceStatus{
-		{Name: "ollama", Mode: "host", Healthy: true},
-	}
-	if lines := localInferenceGuidanceLines("darwin", statuses, "/models", true); len(lines) != 0 {
-		test.Fatalf("healthy: want no guidance, got %v", lines)
+// When vLLM AND the `hf` CLI are both installed there is no local-inference guidance.
+func TestLocalInferenceGuidanceBothInstalled(test *testing.T) {
+	if lines := localInferenceGuidanceLines("darwin", true, true); len(lines) != 0 {
+		test.Fatalf("both installed: want no guidance, got %v", lines)
 	}
 }
 
-// vLLM being absent adds an OPTIONAL, actionable install note (never a setup failure),
-// even when the required Ollama backend is healthy.
-func TestLocalInferenceGuidanceVLLMOptionalNote(test *testing.T) {
-	statuses := []setup.ServiceStatus{{Name: "ollama", Mode: "host", Healthy: true}}
-	joined := strings.Join(localInferenceGuidanceLines("darwin", statuses, "/models", false), "\n")
-	for _, want := range []string{"vLLM is an OPTIONAL local runtime", "Metal/MLX"} {
+// vLLM being absent surfaces the per-OS install block (the local model runtime).
+func TestLocalInferenceGuidanceVLLMAbsent(test *testing.T) {
+	joined := strings.Join(localInferenceGuidanceLines("darwin", false, true), "\n")
+	for _, want := range []string{"vLLM is not installed", "Metal/MLX", "ai models install-vllm"} {
 		if !strings.Contains(joined, want) {
 			test.Fatalf("vLLM-absent guidance missing %q:\n%s", want, joined)
 		}
 	}
-	// Linux emits the CUDA/pip guidance instead.
-	linux := strings.Join(localInferenceGuidanceLines("linux", statuses, "/x", false), "\n")
+	// Linux emits the CUDA guidance instead.
+	linux := strings.Join(localInferenceGuidanceLines("linux", false, true), "\n")
 	if !strings.Contains(linux, "NVIDIA GPU") {
 		test.Fatalf("linux vLLM-absent guidance missing CUDA note:\n%s", linux)
 	}
 }
 
-// A down host-native Ollama surfaces the per-OS install/start block plus the
-// required OLLAMA_CONTEXT_LENGTH + OLLAMA_MODELS environment and a re-run hint.
-func TestLocalInferenceGuidanceOllamaDown(test *testing.T) {
-	statuses := []setup.ServiceStatus{
-		{Name: "ollama", Mode: "host", Healthy: false, State: "stopped"},
-	}
-	joined := strings.Join(localInferenceGuidanceLines("darwin", statuses, "/vol/models/ollama", true), "\n")
-	for _, want := range []string{
-		"host-native Ollama is not reachable",
-		"brew install ollama",
-		"OLLAMA_CONTEXT_LENGTH=16384",
-		"OLLAMA_MODELS=/vol/models/ollama",
-		"ai setup",
-	} {
+// The `hf` CLI being absent surfaces an install note (model management needs it).
+func TestLocalInferenceGuidanceHFAbsent(test *testing.T) {
+	joined := strings.Join(localInferenceGuidanceLines("darwin", true, false), "\n")
+	for _, want := range []string{"Hugging Face CLI", "huggingface_hub[cli]"} {
 		if !strings.Contains(joined, want) {
-			test.Fatalf("Ollama-down guidance missing %q:\n%s", want, joined)
+			test.Fatalf("hf-absent guidance missing %q:\n%s", want, joined)
 		}
-	}
-	// Linux variant emits the install.sh guidance.
-	linux := strings.Join(localInferenceGuidanceLines("linux", statuses, "/x", true), "\n")
-	if !strings.Contains(linux, "install.sh") {
-		test.Fatalf("linux Ollama-down guidance missing install.sh:\n%s", linux)
 	}
 }
 
 // printLocalInferenceGuidance stays silent under --json (clean envelope on stdout)
-// and prints via the injectable status seam otherwise.
+// and prints via the injectable detect seams otherwise.
 func TestPrintLocalInferenceGuidanceJSONSilent(test *testing.T) {
-	restore := localInferenceStatusFn
-	defer func() { localInferenceStatusFn = restore }()
-	localInferenceStatusFn = func() ([]setup.ServiceStatus, error) {
-		return []setup.ServiceStatus{{Name: "ollama", Mode: "host", Healthy: false, State: "stopped"}}, nil
-	}
+	restoreVLLM, restoreHF := vllmDetectFn, hfDetectFn
+	defer func() { vllmDetectFn, hfDetectFn = restoreVLLM, restoreHF }()
+	vllmDetectFn = func() (bool, string) { return false, "" }
+	hfDetectFn = func() bool { return false }
 
 	var jsonErr bytes.Buffer
 	printLocalInferenceGuidance(&output.Emitter{Out: &bytes.Buffer{}, Err: &jsonErr, JSON: true})
@@ -184,8 +161,8 @@ func TestPrintLocalInferenceGuidanceJSONSilent(test *testing.T) {
 
 	var humanErr bytes.Buffer
 	printLocalInferenceGuidance(&output.Emitter{Out: &bytes.Buffer{}, Err: &humanErr})
-	if !strings.Contains(humanErr.String(), "host-native Ollama is not reachable") {
-		test.Fatalf("human run: expected the Ollama guidance, got:\n%s", humanErr.String())
+	if !strings.Contains(humanErr.String(), "vLLM is not installed") {
+		test.Fatalf("human run: expected the vLLM guidance, got:\n%s", humanErr.String())
 	}
 }
 

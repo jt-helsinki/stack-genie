@@ -27,8 +27,8 @@ import (
 	"github.com/jt-helsinki/stack-genie/internal/contextopt"
 	"github.com/jt-helsinki/stack-genie/internal/create"
 	"github.com/jt-helsinki/stack-genie/internal/egress"
+	"github.com/jt-helsinki/stack-genie/internal/hf"
 	"github.com/jt-helsinki/stack-genie/internal/litellm"
-	"github.com/jt-helsinki/stack-genie/internal/ollama"
 	"github.com/jt-helsinki/stack-genie/internal/project"
 	"github.com/jt-helsinki/stack-genie/internal/runtime"
 	"github.com/jt-helsinki/stack-genie/internal/setup"
@@ -209,7 +209,6 @@ func Run(cwd string) error {
 		base := fmt.Sprintf("http://%s:%d", domain, runtime.DefaultGatewayPort)
 		return []views.ConfigField{
 			{Label: "models (OpenAI /v1)", Value: base + "/v1"},
-			{Label: "Ollama API", Value: base + "/ollama"},
 			{Label: "LiteLLM admin API", Value: base + "/llm"},
 			{Label: "LiteLLM console", Value: fmt.Sprintf("http://litellm.%s:%d", domain, runtime.DefaultGatewayPort)},
 			{Label: "cache console", Value: fmt.Sprintf("http://valkey.%s:%d", domain, runtime.DefaultGatewayPort)},
@@ -298,19 +297,14 @@ func Run(cwd string) error {
 		},
 	)
 	contextView := views.NewContext(currentRoot, contextopt.GetStatus, contextopt.SetStrategy, contextopt.SetCavemanLevel)
-	// Local Models: the installed Ollama store + the installable ollama.com library
-	// (live, cache-backed), with a per-model tag drill-down and the gateway tester.
+	// Local Models: the locally-downloaded vLLM weight store (via `hf cache ls`) + the
+	// curated set of installable, vLLM-servable Hugging Face repos, with the gateway
+	// tester. vLLM is the sole local runtime (Ollama removed).
 	localModelsView := views.NewLocalModels(
-		ollama.RealClient().List,
-		ollama.Library,        // CACHE-FIRST: opening the tab uses the cached library
-		ollama.RefreshLibrary, // the `r` key force-re-scrapes ollama.com + re-caches
-		ollama.RealClient().Show,
+		hf.RealClient().CacheList,
+		func() []hf.CuratedModel { return hf.CuratedModels(goruntime.GOOS) },
 		litellmClient.Test,
-		syncLocalModelsToGateway, // `r` also registers the installed models with the gateway
 	)
-	// Surface the curated vLLM starter set as an "Installable (vLLM)" section for this
-	// host's weight format (MLX on darwin, HF safetensors on linux).
-	localModelsView.EnableVLLMSection(goruntime.GOOS)
 	// Cloud Models: the models.dev catalog (with its data source for availability
 	// messaging), the gateway's live (registered) set, the `r`-refresh (re-fetch the
 	// catalog + resync the gateway), and the gateway tester. All over the existing
@@ -544,9 +538,10 @@ func loadCloudCatalog() (*catalog.Catalog, catalog.Source, error) {
 
 // refreshModelCatalog is the Models view's `r`-refresh network work: it re-fetches
 // the models.dev catalog (and persists it) then resyncs the gateway's model set to
-// the keyed providers' catalog models + the installed Ollama models. The keyed set
-// is read back from the live credential store so the desired set always reflects
-// what is actually keyed. Best-effort — the caller surfaces any error as a flash and
+// the keyed providers' catalog models. The keyed set is read back from the live
+// credential store so the desired set always reflects what is actually keyed. Local
+// vLLM models are managed separately by `ai models pull|rm` and shielded from this
+// resync's delete pass. Best-effort — the caller surfaces any error as a flash and
 // reloads the displayed data regardless.
 //
 // hardware bring-up: the live models.dev fetch + the /model/* resync round-trips run
@@ -570,7 +565,7 @@ func refreshModelCatalog() error {
 		return err
 	}
 	keyed := catalogIDsForCredentials(cat, creds)
-	_, err = manager.SyncModels(cat, keyed, installedOllamaModels())
+	_, err = manager.SyncModels(cat, keyed)
 	return err
 }
 
@@ -592,67 +587,6 @@ func catalogIDsForCredentials(cat *catalog.Catalog, creds []litellm.Credential) 
 		}
 	}
 	return ids
-}
-
-// syncLocalModelsToGateway registers the installed Ollama models with the LiteLLM
-// gateway (idempotent, ADD-only), returning the model_names it newly registered. It
-// backs the Local Models `r` refresh so refreshing local models makes them available in
-// the gateway — the recovery path when a model is still installed in Ollama but missing
-// from LiteLLM (e.g. after a resync dropped it). A down/empty Ollama yields no models to
-// register (nil), never an error that would derail the refresh.
-func syncLocalModelsToGateway() ([]string, error) {
-	installed := installedOllamaModels()
-	if len(installed) == 0 {
-		return nil, nil
-	}
-	return litellm.NewKeyManager(runtime.RealProber()).RegisterOllamaModels(installed, installedOllamaToolSupport(installed))
-}
-
-// installedOllamaToolSupport probes each installed Ollama model for tool/function-calling
-// support (its /api/show capabilities), so RegisterOllamaModels can mark each model's
-// tool_call accurately. A probe error omits that model from the map (unknown → the gateway
-// treats it as tool-capable), so a hiccup never wrongly disables tools.
-func installedOllamaToolSupport(names []string) map[string]bool {
-	client := ollama.RealClient()
-	support := make(map[string]bool, len(names))
-	for _, name := range names {
-		info, err := client.Show(name)
-		if err != nil {
-			continue
-		}
-		// Best-effort: size already-installed models to their trained context window
-		// on every refresh (LiteLLM does not forward num_ctx for ollama_chat). A
-		// baking failure must never break the refresh.
-		if numCtx := ollama.RecommendedNumCtx(info.ContextLength); numCtx > 0 {
-			_ = client.SetNumCtx(name, numCtx)
-		}
-		tools := false
-		for _, capability := range info.Capabilities {
-			if capability == "tools" {
-				tools = true
-				break
-			}
-		}
-		support[name] = tools
-	}
-	return support
-}
-
-// installedOllamaModels lists the installed Ollama model names so a resync
-// re-registers the local models alongside the keyed cloud providers. A down/empty
-// Ollama is tolerated (returns nil) — it must never fail the resync. Returning nil is
-// SAFE: SyncModels never DELETES registered ollama/* models (it shields them from the
-// delete pass), so a transient Ollama outage here cannot wipe them from LiteLLM.
-func installedOllamaModels() []string {
-	installed, err := ollama.RealClient().List()
-	if err != nil {
-		return nil
-	}
-	names := make([]string, 0, len(installed))
-	for _, model := range installed {
-		names = append(names, model.Name)
-	}
-	return names
 }
 
 // app is the root tea.Model: it owns the views, the header/footer chrome, and the
@@ -816,10 +750,10 @@ func (application *app) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case views.NewProjectRequestedMsg:
 		// Open the multi-step create WIZARD in-TUI (no subprocess). Seed it with the
-		// current directory, the cached Ollama library (for the Graphify-model step;
-		// cache-only so it never blocks), and the host resource caps for the hints.
-		library, _ := ollama.LoadLibrary()
-		wizard := views.NewCreate(application.cwd, library, create.HostMemoryGB(), create.UsableHostMemoryGB())
+		// current directory, the curated vLLM model list (for the Graphify-model step),
+		// and the host resource caps for the hints.
+		curated := hf.CuratedModels(goruntime.GOOS)
+		wizard := views.NewCreate(application.cwd, curated, create.HostMemoryGB(), create.UsableHostMemoryGB())
 		bodyWidth, bodyHeight := application.bodyContentSize()
 		wizard.SetSize(bodyWidth, bodyHeight)
 		application.createView = wizard
@@ -1068,18 +1002,12 @@ func (application *app) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return application, cmd
 
 	case views.ModelsPullRequestedMsg:
-		// Pull one or more selected tag references (streaming progress): run the real
-		// `ai models pull <refs...> --runtime <r>` live in the terminal overlay, then
-		// refresh the Local Models list when the overlay closes. An empty runtime means
-		// Ollama (back-compat with callers/tests that build the message without one).
-		runtime := message.Runtime
-		if runtime == "" {
-			runtime = string(config.RuntimeOllama)
-		}
+		// Pull one or more selected Hugging Face repos (streaming progress): run the real
+		// `ai models pull <refs...>` live in the terminal overlay, then refresh the Local
+		// Models list when the overlay closes. vLLM is the sole local runtime.
 		args := append([]string{"models", "pull"}, message.Refs...)
-		args = append(args, "--runtime", runtime)
 		return application, application.openTerminal(
-			"models pull "+strings.Join(message.Refs, " ")+" --runtime "+runtime,
+			"models pull "+strings.Join(message.Refs, " "),
 			args, false)
 
 	case views.ModelRemoveRequestedMsg:

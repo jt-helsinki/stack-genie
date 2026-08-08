@@ -10,7 +10,7 @@ import (
 
 	"github.com/jt-helsinki/stack-genie/internal/config"
 	"github.com/jt-helsinki/stack-genie/internal/contextopt"
-	"github.com/jt-helsinki/stack-genie/internal/ollama"
+	"github.com/jt-helsinki/stack-genie/internal/hf"
 	"github.com/jt-helsinki/stack-genie/internal/output"
 	"github.com/jt-helsinki/stack-genie/internal/project"
 )
@@ -360,80 +360,87 @@ func TestValidateDisk(test *testing.T) {
 	}
 }
 
-func TestModelInstalled(test *testing.T) {
-	installed := []ollama.Model{{Name: "llama3.2:latest"}, {Name: "qwen2.5-coder:7b"}}
-	if !modelInstalled(installed, "qwen2.5-coder:7b") {
-		test.Error("exact ref should be installed")
+func TestGraphifyAlias(test *testing.T) {
+	if got := graphifyAlias("mlx-community/Qwen2.5-7B-Instruct-4bit"); got != "Qwen2.5-7B-Instruct-4bit" {
+		test.Errorf("graphifyAlias = %q, want the base name", got)
 	}
-	if !modelInstalled(installed, "llama3.2") {
-		test.Error("bare name should match name:latest")
-	}
-	if modelInstalled(installed, "mistral") {
-		test.Error("absent model should not be installed")
-	}
-}
-
-// pullGraphifyModelIfAbsent skips the pull entirely when the model is already
-// installed (no Pull call, no warning).
-func TestPullGraphifyModelSkipsWhenInstalled(test *testing.T) {
-	fake := &ollama.Fake{ListModels: []ollama.Model{{Name: "llama3.2:latest"}}}
-	restore := ollamaClient
-	ollamaClient = func() ollama.Client { return fake }
-	defer func() { ollamaClient = restore }()
-
-	if warnings := pullGraphifyModelIfAbsent("llama3.2", func(Progress) {}); len(warnings) != 0 {
-		test.Fatalf("warnings = %v, want none (already installed)", warnings)
-	}
-	if fake.PulledNames != nil {
-		test.Fatalf("Pull should not run for an installed model; pulled %v", fake.PulledNames)
+	if got := graphifyAlias("bareName"); got != "bareName" {
+		test.Errorf("graphifyAlias(bare) = %q, want bareName", got)
 	}
 }
 
 // A blank model ref is a no-op (Graphify has no configured model).
 func TestPullGraphifyModelBlankNoOp(test *testing.T) {
-	fake := &ollama.Fake{}
-	restore := ollamaClient
-	ollamaClient = func() ollama.Client { return fake }
-	defer func() { ollamaClient = restore }()
-
 	if warnings := pullGraphifyModelIfAbsent("  ", func(Progress) {}); warnings != nil {
 		test.Fatalf("blank ref should be a no-op, got %v", warnings)
 	}
-	if fake.PulledNames != nil {
-		test.Fatalf("blank ref must not pull; pulled %v", fake.PulledNames)
+}
+
+// When vLLM is not installed the pull is skipped with an actionable warning.
+func TestPullGraphifyModelWarnsWhenVLLMMissing(test *testing.T) {
+	restore := vllmDetectFn
+	vllmDetectFn = func() (bool, string) { return false, "" }
+	defer func() { vllmDetectFn = restore }()
+
+	warnings := pullGraphifyModelIfAbsent("mlx-community/Qwen2.5-7B-Instruct-4bit", func(Progress) {})
+	if len(warnings) != 1 {
+		test.Fatalf("warnings = %v, want one vLLM-not-installed warning", warnings)
 	}
 }
 
-// An absent model is pulled and then registered in the gateway.
+// An absent model is downloaded, served, and registered in the gateway as vllm/<alias>.
 func TestPullGraphifyModelPullsAndRegisters(test *testing.T) {
-	fake := &ollama.Fake{}
-	restoreClient := ollamaClient
-	ollamaClient = func() ollama.Client { return fake }
-	defer func() { ollamaClient = restoreClient }()
+	test.Setenv("HOME", test.TempDir())
+
+	restoreDetect := vllmDetectFn
+	vllmDetectFn = func() (bool, string) { return true, "mlx" }
+	defer func() { vllmDetectFn = restoreDetect }()
+
+	pulled := ""
+	restorePull := vllmPullFn
+	vllmPullFn = func(model string) error { pulled = model; return nil }
+	defer func() { vllmPullFn = restorePull }()
+
+	downloaded := &hf.Fake{}
+	restoreHF := hfClient
+	hfClient = func() hf.Client { return downloaded }
+	defer func() { hfClient = restoreHF }()
+
+	restoreMgr := vllmManagerFactory
+	vllmManagerFactory = func() graphifyVLLMServer { return &fakeVLLMServer{port: 8101} }
+	defer func() { vllmManagerFactory = restoreMgr }()
 
 	registrar := &fakeModelRegistrar{}
 	restoreReg := newRegistrar
 	newRegistrar = func() modelRegistrar { return registrar }
 	defer func() { newRegistrar = restoreReg }()
 
-	if warnings := pullGraphifyModelIfAbsent("qwen2.5-coder:7b", func(Progress) {}); len(warnings) != 0 {
+	repo := "mlx-community/Qwen2.5-7B-Instruct-4bit"
+	if warnings := pullGraphifyModelIfAbsent(repo, func(Progress) {}); len(warnings) != 0 {
 		test.Fatalf("warnings = %v, want none", warnings)
 	}
-	if len(fake.PulledNames) != 1 || fake.PulledNames[0] != "qwen2.5-coder:7b" {
-		test.Fatalf("Pulled = %v, want [qwen2.5-coder:7b]", fake.PulledNames)
+	if pulled != repo || downloaded.DownloadedRepo != repo {
+		test.Fatalf("pull/download = %q/%q, want %q", pulled, downloaded.DownloadedRepo, repo)
 	}
-	if len(registrar.registered) != 1 || registrar.registered[0] != "qwen2.5-coder:7b" {
-		test.Fatalf("registered = %v, want [qwen2.5-coder:7b]", registrar.registered)
+	if len(registrar.registered) != 1 || registrar.registered[0] != "Qwen2.5-7B-Instruct-4bit" {
+		test.Fatalf("registered = %v, want [Qwen2.5-7B-Instruct-4bit]", registrar.registered)
 	}
 }
 
-// fakeModelRegistrar records gateway registrations for the pull test.
+// fakeVLLMServer is a stub graphifyVLLMServer returning a fixed port.
+type fakeVLLMServer struct{ port int }
+
+func (fake *fakeVLLMServer) EnsureServed(_, _ string) (int, string, error) {
+	return fake.port, "http://127.0.0.1:8101/v1", nil
+}
+
+// fakeModelRegistrar records gateway registrations (by alias) for the pull test.
 type fakeModelRegistrar struct {
 	registered []string
 }
 
-func (fake *fakeModelRegistrar) RegisterOllamaModel(name string, _ bool) error {
-	fake.registered = append(fake.registered, name)
+func (fake *fakeModelRegistrar) RegisterVLLMModel(alias, _, _ string, _ bool) error {
+	fake.registered = append(fake.registered, alias)
 	return nil
 }
 

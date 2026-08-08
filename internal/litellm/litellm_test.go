@@ -337,9 +337,9 @@ func TestRenderProviderConfigPassthrough(test *testing.T) {
 func TestStatusInfoHumanUnreachable(test *testing.T) {
 	info := StatusInfo{
 		Healthy:   false,
-		Providers: []string{"anthropic", "ollama", "openai"},
+		Providers: []string{"anthropic", "vllm", "openai"},
 		Default:   "gemma4",
-		Ollama:    true,
+		Local:     true,
 		BaseURL:   "http://127.0.0.1:14000",
 	}
 	rendered := info.Human()
@@ -348,8 +348,8 @@ func TestStatusInfoHumanUnreachable(test *testing.T) {
 		"http://127.0.0.1:14000",   // where
 		"ai services start",        // how to fix
 		"Default model     gemma4", // labeled, not a raw dump
-		"Ollama",                   // local models split out
-		"anthropic, openai",        // cloud providers, ollama removed from the list
+		"vLLM",                     // local models split out
+		"anthropic, openai",        // cloud providers, vllm removed from the list
 		"ai keys add",              // cloud needs a key
 		"ai models test gemma4",    // next step
 	} {
@@ -357,14 +357,14 @@ func TestStatusInfoHumanUnreachable(test *testing.T) {
 			test.Errorf("status Human() missing %q:\n%s", fragment, rendered)
 		}
 	}
-	// ollama must NOT appear in the cloud-providers line.
-	if strings.Contains(rendered, "anthropic, ollama") {
-		test.Errorf("ollama should be shown as a local model, not in the cloud list:\n%s", rendered)
+	// vllm must NOT appear in the cloud-providers line.
+	if strings.Contains(rendered, "anthropic, vllm") {
+		test.Errorf("vllm should be shown as a local model, not in the cloud list:\n%s", rendered)
 	}
 }
 
 func TestStatusInfoHumanReachable(test *testing.T) {
-	info := StatusInfo{Healthy: true, Providers: []string{"openai"}, Default: "gemma4", Ollama: true, BaseURL: "http://127.0.0.1:14000"}
+	info := StatusInfo{Healthy: true, Providers: []string{"openai"}, Default: "gemma4", Local: true, BaseURL: "http://127.0.0.1:14000"}
 	rendered := info.Human()
 	if !strings.Contains(rendered, "✓ reachable") {
 		test.Errorf("expected a reachable marker:\n%s", rendered)
@@ -381,16 +381,16 @@ func TestStatusInfoHumanServedModels(test *testing.T) {
 	withModels := StatusInfo{
 		Healthy:   true,
 		Default:   "gemma4",
-		Providers: []string{"anthropic", "ollama"},
-		Ollama:    true,
+		Providers: []string{"anthropic", "vllm"},
+		Local:     true,
 		BaseURL:   "http://127.0.0.1:14000",
 		Models: []Model{
-			{Name: "gemma4", Provider: "ollama", Mode: "chat"},
+			{Name: "gemma4", Provider: "vllm", Mode: "chat"},
 			{Name: "openai/*", Provider: "openai"},
 		},
 	}
 	rendered := withModels.Human()
-	for _, fragment := range []string{"Served models", "gemma4", "ollama, chat", "openai/*", "(openai)"} {
+	for _, fragment := range []string{"Served models", "gemma4", "vllm, chat", "openai/*", "(openai)"} {
 		if !strings.Contains(rendered, fragment) {
 			test.Errorf("served-models render missing %q:\n%s", fragment, rendered)
 		}
@@ -413,7 +413,7 @@ func TestDisplayModelsCollapsesWildcards(test *testing.T) {
 		{Name: "claude-opus", Provider: "anthropic"}, // covered by anthropic/* → dropped
 		{Name: "openai/*", Provider: "openai"},
 		{Name: "gpt-5.5", Provider: "openai"}, // covered by openai/* → dropped
-		{Name: "gemma4", Provider: "ollama"},  // no ollama/* wildcard → kept
+		{Name: "gemma4", Provider: "vllm"},    // no vllm/* wildcard → kept
 	}
 	display := DisplayModels(models)
 	got := make([]string, 0, len(display))
@@ -500,8 +500,8 @@ func TestModelsParsesModelInfo(test *testing.T) {
 		gotAuth = request.Header.Get("Authorization")
 		gotPath = request.URL.Path
 		_, _ = writer.Write([]byte(`{"data":[
-			{"model_name":"gemma4","litellm_params":{"model":"ollama/gemma4:31b"},"model_info":{"mode":"chat"}},
-			{"model_name":"gpt-5.5","litellm_params":{"model":"openai/gpt-5.5"},"model_info":{"mode":"chat"}},
+			{"model_name":"vllm/gemma4","litellm_params":{"model":"openai/gemma4"},"model_info":{"mode":"chat"}},
+			{"model_name":"gpt-5.5","litellm_params":{"model":"anthropic/claude"},"model_info":{"mode":"chat"}},
 			{"model_name":"openai/*","litellm_params":{"model":"openai/*"},"model_info":{}},
 			{"model_name":"text-embed","litellm_params":{"model":"openai/text-embedding-3"},"model_info":{"mode":"embedding"}}
 		]}`))
@@ -519,16 +519,17 @@ func TestModelsParsesModelInfo(test *testing.T) {
 	if gotAuth != "Bearer sk-test-key" {
 		test.Errorf("Authorization = %q, want the Bearer master key", gotAuth)
 	}
-	// Sorted by name: gemma4, gpt-5.5, openai/*, text-embed.
+	// Sorted by name: gpt-5.5, openai/*, text-embed, vllm/gemma4.
 	byName := map[string]Model{}
 	for _, model := range models {
 		byName[model.Name] = model
 	}
-	if got := byName["gemma4"]; got.Provider != "ollama" || got.Mode != "chat" {
-		test.Errorf("gemma4 = %+v, want provider ollama mode chat", got)
+	// A vLLM model's routed target is openai/<alias>, so its derived Provider is openai.
+	if got := byName["vllm/gemma4"]; got.Provider != "openai" || got.Mode != "chat" {
+		test.Errorf("vllm/gemma4 = %+v, want provider openai mode chat", got)
 	}
-	if got := byName["gpt-5.5"]; got.Provider != "openai" {
-		test.Errorf("gpt-5.5 provider = %q, want openai", got.Provider)
+	if got := byName["gpt-5.5"]; got.Provider != "anthropic" {
+		test.Errorf("gpt-5.5 provider = %q, want anthropic", got.Provider)
 	}
 	// Wildcard id handled gracefully: provider derived from the prefix.
 	if got := byName["openai/*"]; got.Provider != "openai" {
@@ -540,11 +541,11 @@ func TestModelsParsesModelInfo(test *testing.T) {
 
 	// Providers derived from the LIVE list (not hardcoded routing).
 	providers := providersFromModels(models)
-	if strings.Join(providers, ",") != "ollama,openai" {
-		test.Errorf("providers = %v, want [ollama openai]", providers)
+	if strings.Join(providers, ",") != "anthropic,openai" {
+		test.Errorf("providers = %v, want [anthropic openai]", providers)
 	}
-	if !hasOllamaModel(models) {
-		test.Error("expected an ollama-backed served model")
+	if !hasLocalModel(models) {
+		test.Error("expected a local vLLM served model")
 	}
 }
 
@@ -583,7 +584,7 @@ func TestStatusFetchesLiveModels(test *testing.T) {
 			writer.WriteHeader(http.StatusOK)
 		case "/model/info":
 			_, _ = writer.Write([]byte(`{"data":[
-				{"model_name":"gemma4","litellm_params":{"model":"ollama/gemma4:31b"},"model_info":{"mode":"chat"}},
+				{"model_name":"vllm/gemma4","litellm_params":{"model":"openai/gemma4"},"model_info":{"mode":"chat"}},
 				{"model_name":"claude-opus","litellm_params":{"model":"anthropic/claude-opus-4-8"},"model_info":{"mode":"chat"}}
 			]}`))
 		default:
@@ -606,11 +607,11 @@ func TestStatusFetchesLiveModels(test *testing.T) {
 	if len(info.Models) != 2 {
 		test.Fatalf("served models = %d, want 2", len(info.Models))
 	}
-	if strings.Join(info.Providers, ",") != "anthropic,ollama" {
-		test.Errorf("providers = %v, want [anthropic ollama] derived from the live list", info.Providers)
+	if strings.Join(info.Providers, ",") != "anthropic,openai" {
+		test.Errorf("providers = %v, want [anthropic openai] derived from the live list", info.Providers)
 	}
-	if !info.Ollama {
-		test.Error("Ollama should be true (an ollama-backed model is served)")
+	if !info.Local {
+		test.Error("Local should be true (a vLLM-backed model is served)")
 	}
 }
 

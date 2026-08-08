@@ -11,7 +11,7 @@ import (
 func TestLogScopesMatchesCurrent(test *testing.T) {
 	want := []string{
 		"microsandbox",
-		"ollama",
+		"vllm",
 		"presidio",
 		"valkey",
 		"redisinsight",
@@ -37,14 +37,14 @@ func TestLogScopesIsFreshCopy(test *testing.T) {
 
 // TestEndpointsMatchCurrentConsoleRegistry asserts the derived endpoint specs.
 // The UI services are nginx subdomain vhosts on the single GatewayPort now (their
-// direct ports are internal-only), ollama is a host-CLI gateway path, and only the
+// direct ports are internal-only), vllm is host-native + internal-only, and only the
 // proxy publishes a direct host port.
 func TestEndpointsMatchCurrentConsoleRegistry(test *testing.T) {
 	want := map[string]Endpoint{
 		"litellm":      {ConsolePath: "/ui/login", HasConsole: true, UISubdomain: "litellm"},
 		"valkey":       {},
 		"redisinsight": {HasConsole: true, UISubdomain: "valkey"},
-		"ollama":       {GatewayPath: "/ollama"},
+		"vllm":         {},
 		"proxy":        {Port: 18787},
 		"dns":          {LoopbackAddress: "127.0.0.1:15353/udp"},
 		"headroom":     {},
@@ -69,7 +69,7 @@ func TestVersionPinsMatchCurrentDefault(test *testing.T) {
 		"presidio-analyzer":   {Mode: ModeContainer, Image: "mcr.microsoft.com/presidio-analyzer", Tag: "latest"},
 		"presidio-anonymizer": {Mode: ModeContainer, Image: "mcr.microsoft.com/presidio-anonymizer", Tag: "latest"},
 		"proxy":               {Mode: ModeContainer, Image: "nginx", Tag: "stable-alpine3.23-slim"},
-		// Ollama is host-native — no image pin (it is not a pulled container).
+		// vLLM is host-native — no image pin (it is not a pulled container).
 		"dns":          {Mode: ModeContainer, Image: "coredns/coredns", Tag: "latest"},
 		"valkey":       {Mode: ModeContainer, Image: "valkey/valkey", Tag: "9.1.0-alpine"},
 		"redisinsight": {Mode: ModeContainer, Image: "redis/redisinsight", Tag: "latest"},
@@ -83,7 +83,7 @@ func TestVersionPinsMatchCurrentDefault(test *testing.T) {
 // TestCoreAndOptionalServiceNames pins the logical core/optional partition (the
 // frozen API the internal/setup migration consumes).
 func TestCoreAndOptionalServiceNames(test *testing.T) {
-	wantCore := []string{"ollama", "presidio", "valkey", "redisinsight", "headroom", "litellm", "proxy", "dns"}
+	wantCore := []string{"vllm", "presidio", "valkey", "redisinsight", "headroom", "litellm", "proxy", "dns"}
 	if got := CoreServiceNames(); !reflect.DeepEqual(got, wantCore) {
 		test.Errorf("CoreServiceNames() = %v, want %v", got, wantCore)
 	}
@@ -96,7 +96,7 @@ func TestCoreAndOptionalServiceNames(test *testing.T) {
 // setup migration must reproduce (serviceImageKeys). litellm-db rides on litellm.
 func TestImageKeysMatchServiceImageKeys(test *testing.T) {
 	cases := map[string][]string{
-		"ollama":   {}, // host-native — no image keys
+		"vllm":     {}, // host-native — no image keys
 		"presidio": {"presidio-analyzer", "presidio-anonymizer"},
 		"litellm":  {"litellm", "litellm-db"},
 		"headroom": {"headroom"},
@@ -116,7 +116,7 @@ func TestImageKeysMatchServiceImageKeys(test *testing.T) {
 // TestContainerNames pins the service → container-names map (aip-*).
 func TestContainerNames(test *testing.T) {
 	cases := map[string][]string{
-		"ollama":   {}, // host-native — no container
+		"vllm":     {}, // host-native — no container
 		"presidio": {"aip-presidio-analyzer", "aip-presidio-anonymizer"},
 		"litellm":  {"aip-litellm", "aip-litellm-db"},
 		"headroom": {"aip-headroom"},
@@ -139,7 +139,7 @@ func TestOwningService(test *testing.T) {
 		"litellm-db": "litellm",
 		// A logical service is not "owned".
 		"litellm": "",
-		"ollama":  "",
+		"vllm":    "",
 		// Unknown.
 		"nope": "",
 	}

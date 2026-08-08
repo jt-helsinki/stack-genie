@@ -2179,22 +2179,22 @@ func TestStartPickerIsServedModels(test *testing.T) {
 // model line.
 func TestStartDefaultsToSetupModel(test *testing.T) {
 	root := seedProject(test, "app")
-	if err := config.WriteProject(root, &config.Config{Agent: config.AgentConfig{Tools: []string{"opencode", "codex"}, GraphifyModel: "qwen2.5-coder:7b"}}); err != nil {
+	if err := config.WriteProject(root, &config.Config{Agent: config.AgentConfig{Tools: []string{"opencode", "codex"}, GraphifyModel: "mlx-community/qwen2.5-coder-7b"}}); err != nil {
 		test.Fatal(err)
 	}
 	sandbox := &fakeSandbox{}
-	served := fakeServedModels{models: []string{"ollama/qwen2.5-coder:7b"}}
+	served := fakeServedModels{models: []string{"vllm/qwen2.5-coder-7b"}}
 	manager := Manager{Builder: &fakeBuilder{}, Sandbox: sandbox, Keys: &fakeKeyMinter{}, Served: served, Now: func() string { return "t" }}
 	if _, err := manager.Start("app"); err != nil {
 		test.Fatal(err)
 	}
 
 	openCode := readProjectConfig(test, root, ".opencode", "opencode.json")
-	if !strings.Contains(openCode, `"aip-gateway/ollama/qwen2.5-coder:7b"`) {
+	if !strings.Contains(openCode, `"aip-gateway/vllm/qwen2.5-coder-7b"`) {
 		test.Errorf("opencode config missing the setup default model:\n%s", openCode)
 	}
 	codex := readProjectConfig(test, root, ".codex", "config.toml")
-	if !strings.Contains(codex, `ollama/qwen2.5-coder:7b`) {
+	if !strings.Contains(codex, `vllm/qwen2.5-coder-7b`) {
 		test.Errorf("codex config missing the setup default model:\n%s", codex)
 	}
 }
@@ -2205,17 +2205,17 @@ func TestStartDefaultsToSetupModel(test *testing.T) {
 // persisted /model choice). The seed marker under .ai-platform gates this.
 func TestStartDropsSeededDefaultOnSecondStart(test *testing.T) {
 	root := seedProject(test, "app")
-	if err := config.WriteProject(root, &config.Config{Agent: config.AgentConfig{GraphifyModel: "qwen2.5-coder:7b"}}); err != nil {
+	if err := config.WriteProject(root, &config.Config{Agent: config.AgentConfig{GraphifyModel: "mlx-community/qwen2.5-coder-7b"}}); err != nil {
 		test.Fatal(err)
 	}
 	sandbox := &fakeSandbox{}
-	served := fakeServedModels{models: []string{"ollama/qwen2.5-coder:7b"}}
+	served := fakeServedModels{models: []string{"vllm/qwen2.5-coder-7b"}}
 	manager := Manager{Builder: &fakeBuilder{}, Sandbox: sandbox, Keys: &fakeKeyMinter{}, Served: served, Now: func() string { return "t" }}
 
 	if _, err := manager.Start("app"); err != nil {
 		test.Fatal(err)
 	}
-	if first := readProjectConfig(test, root, ".opencode", "opencode.json"); !strings.Contains(first, `"aip-gateway/ollama/qwen2.5-coder:7b"`) {
+	if first := readProjectConfig(test, root, ".opencode", "opencode.json"); !strings.Contains(first, `"aip-gateway/vllm/qwen2.5-coder-7b"`) {
 		test.Fatalf("first start should seed the default model:\n%s", first)
 	}
 

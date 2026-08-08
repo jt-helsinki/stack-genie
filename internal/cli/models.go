@@ -9,44 +9,31 @@ import (
 	"strings"
 
 	"github.com/charmbracelet/huh"
+	"github.com/jt-helsinki/stack-genie/internal/hf"
 	"github.com/jt-helsinki/stack-genie/internal/litellm"
-	"github.com/jt-helsinki/stack-genie/internal/ollama"
 	"github.com/jt-helsinki/stack-genie/internal/output"
 	"github.com/jt-helsinki/stack-genie/internal/runtime"
 	"github.com/jt-helsinki/stack-genie/internal/ui"
 	"github.com/spf13/cobra"
 )
 
-// ollamaClient is the constructor for the local-store client used by
-// `ai models list|pull|rm|show`. It is a package var so tests can inject a fake;
-// production wires ollama.RealClient.
-var ollamaClient = ollama.RealClient
+// hfClient is the constructor for the Hugging Face model-store client used by
+// `ai models list|pull|rm` (locally-downloaded weights in the vLLM store). It is a
+// package var so tests can inject a fake; production wires hf.RealClient.
+var hfClient = hf.RealClient
 
 // litellmClient is the constructor for the gateway client used by
 // `ai models status|test`. It is a package var so tests can inject a fake (no
 // network); production wires litellm.RealClient.
 var litellmClient = litellm.RealClient
 
-// ollamaLibrary loads the installable Ollama library (live from ollama.com, cached
-// locally) used by `ai models popular` and the `ai models pull` picker. It is a
-// package var so tests can inject a fixture; production wires ollama.Library (a live
-// fetch with an on-disk cache fallback).
-var ollamaLibrary = func() ([]ollama.LibraryModel, ollama.Source, error) { return ollama.Library() }
-
 // modelRegistrar is the slice of litellm.KeyManager that `ai models pull|rm` use to
-// keep the gateway's DB-backed model list in step with the local Ollama store: a
-// freshly-pulled model is registered (so it gains a stable id + shows in the live
-// catalogue), a removed model is unregistered. It is an interface so tests inject a
-// fake (no network); registration is BEST-EFFORT — a gateway that is down or has no
-// master key must never fail a pull/rm.
+// keep the gateway's DB-backed model list in step with the local vLLM store (the sole
+// local runtime now that Ollama is removed): a freshly-pulled model is registered under
+// its gateway alias pointing at the per-model `vllm serve` endpoint, and removed on rm.
+// It is an interface so tests inject a fake (no network); registration is BEST-EFFORT —
+// a gateway that is down or has no master key must never fail a pull/rm.
 type modelRegistrar interface {
-	RegisterOllamaModel(name string, supportsTools bool) error
-	UnregisterOllamaModel(name string) error
-	// RegisterVLLMModel / UnregisterVLLMModel keep the gateway's DB-backed model list in
-	// step with the host-native vLLM backend (`ai models pull|rm --runtime vllm`): a
-	// served vLLM model is registered under its gateway alias pointing at the per-model
-	// `vllm serve` endpoint, and removed on rm. Mirrors the Ollama pair; production binds
-	// litellm.KeyManager, tests a fake.
 	RegisterVLLMModel(alias, model, apiBase string, supportsTools bool) error
 	UnregisterVLLMModel(alias string) error
 }
@@ -81,7 +68,7 @@ func newModelsCmd(em *output.Emitter, exit *int) *cobra.Command {
 func newModelsStatusCmd(em *output.Emitter, exit *int) *cobra.Command {
 	return &cobra.Command{
 		Use:   "status",
-		Short: "LiteLLM health, providers, routing, Ollama connectivity",
+		Short: "LiteLLM health, providers, routing, local (vLLM) connectivity",
 		Args:  cobra.NoArgs,
 		RunE: func(_ *cobra.Command, _ []string) error {
 			var info litellm.StatusInfo
@@ -228,8 +215,8 @@ func modelTestError(res litellm.TestResult) error {
 	case res.Status == 404 || strings.Contains(lower, "not found") ||
 		strings.Contains(lower, "does not exist") || strings.Contains(lower, "no such model") ||
 		strings.Contains(lower, "not a valid model"):
-		if strings.HasPrefix(res.Model, "ollama/") {
-			hint = " — pull it first: `ollama pull " + strings.TrimPrefix(res.Model, "ollama/") + "`"
+		if strings.HasPrefix(res.Model, "vllm/") {
+			hint = " — pull it first: `ai models pull " + strings.TrimPrefix(res.Model, "vllm/") + "`"
 		} else {
 			hint = " — check the model name (the gateway exposes <provider>/<model>, e.g. openai/gpt-5.5)"
 		}

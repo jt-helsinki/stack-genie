@@ -681,15 +681,28 @@ func AgentEnvScript(gatewayURL, apiKey, graphifyModel string, oauthAgents map[st
 	// (keyless; the key resolves from AIP_GATEWAY_KEY via {env:} interpolation).
 	buffer.WriteString("export " + openCodeConfigVar + "=" + shellQuote(OpenCodeProjectConfigGuest) + "\n")
 	// Graphify's headless LLM backend, when a model is configured: route through the
-	// gateway's OpenAI-compatible endpoint (nginx → Headroom → LiteLLM → Ollama).
+	// gateway's OpenAI-compatible endpoint (nginx → LiteLLM → the served vLLM model).
 	// Invoke as `graphify --backend openai`. No real provider key — the scoped
-	// virtual key; nothing else in the platform reads OPENAI_*.
+	// virtual key; nothing else in the platform reads OPENAI_*. The configured model is
+	// a Hugging Face repo id; the gateway serves it as vllm/<alias> (alias = base name).
 	if graphifyModel != "" {
 		buffer.WriteString("export OPENAI_BASE_URL=" + shellQuote(gatewayURL) + "\n") // .../v1
 		buffer.WriteString("export OPENAI_API_KEY=" + shellQuote(apiKey) + "\n")
-		buffer.WriteString("export OPENAI_MODEL=" + shellQuote("ollama/"+graphifyModel) + "\n")
+		buffer.WriteString("export OPENAI_MODEL=" + shellQuote(VLLMModelHandle(graphifyModel)) + "\n")
 	}
 	return buffer.Bytes()
+}
+
+// VLLMModelHandle is the gateway model handle for a Graphify vLLM model configured as a
+// Hugging Face repo id: "vllm/<alias>" where alias is the repo's last path segment
+// (e.g. "mlx-community/Qwen2.5-7B-Instruct-4bit" → "vllm/Qwen2.5-7B-Instruct-4bit").
+// This matches how `ai models pull` / create register the model (alias = base name).
+func VLLMModelHandle(repo string) string {
+	alias := repo
+	if slash := strings.LastIndexByte(repo, '/'); slash >= 0 && slash < len(repo)-1 {
+		alias = repo[slash+1:]
+	}
+	return "vllm/" + alias
 }
 
 // terminfoFallbackLine falls back to xterm-256color when $TERM has no in-VM terminfo

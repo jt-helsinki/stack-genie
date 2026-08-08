@@ -12,7 +12,6 @@ import (
 
 	"github.com/jt-helsinki/stack-genie/internal/catalog"
 	"github.com/jt-helsinki/stack-genie/internal/litellm"
-	"github.com/jt-helsinki/stack-genie/internal/ollama"
 	"github.com/jt-helsinki/stack-genie/internal/output"
 	"github.com/jt-helsinki/stack-genie/internal/runtime"
 	"github.com/jt-helsinki/stack-genie/internal/ui"
@@ -26,7 +25,7 @@ type keysGateway interface {
 	SetCredential(provider, apiKey string) error
 	DeleteCredential(name string) error
 	ListCredentials() ([]litellm.Credential, error)
-	SyncModels(cat *catalog.Catalog, keyedProviders []string, ollamaModels []string) (litellm.SyncResult, error)
+	SyncModels(cat *catalog.Catalog, keyedProviders []string) (litellm.SyncResult, error)
 }
 
 // keysGatewayFactory builds the gateway client. A package var so tests inject a
@@ -41,23 +40,6 @@ var keysCatalogLoader = func() (*catalog.Catalog, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 	return catalog.LoadOrFetch(ctx, nil, "")
-}
-
-// keysOllamaModels lists the installed Ollama model names so a sync re-registers
-// the local models alongside the keyed cloud providers. A package var so tests
-// inject a fake; production wires ollama.RealClient().List. A nil/failed Ollama is
-// tolerated (returns nil) — it must never fail a key add (mirrors workspace start).
-var keysOllamaModels = func() []string {
-	client := ollama.RealClient()
-	installed, err := client.List()
-	if err != nil {
-		return nil
-	}
-	names := make([]string, 0, len(installed))
-	for _, model := range installed {
-		names = append(names, model.Name)
-	}
-	return names
 }
 
 // keysProviderRow is one row of `ai keys list`: a LiteLLM-routable catalog provider
@@ -341,16 +323,17 @@ func resolveKeyValue(cmd *cobra.Command, emitter *output.Emitter, value string, 
 }
 
 // syncKeyedModels reconciles the gateway's model set from the LIVE keyed-provider
-// set (read back from ListCredentials) + the installed Ollama models. The keyed set
-// is expressed as CATALOG provider ids (DesiredModels matches on those), mapped back
-// from each credential's LiteLLM prefix.
+// set (read back from ListCredentials). The keyed set is expressed as CATALOG provider
+// ids (DesiredModels matches on those), mapped back from each credential's LiteLLM
+// prefix. Local vLLM models are managed separately by `ai models pull|rm` and shielded
+// from this resync's delete pass.
 func syncKeyedModels(gateway keysGateway, cat *catalog.Catalog) (litellm.SyncResult, error) {
 	creds, err := gateway.ListCredentials()
 	if err != nil {
 		return litellm.SyncResult{}, err
 	}
 	keyedCatalogIDs := catalogIDsForCredentials(cat, creds)
-	return gateway.SyncModels(cat, keyedCatalogIDs, keysOllamaModels())
+	return gateway.SyncModels(cat, keyedCatalogIDs)
 }
 
 // catalogIDsForCredentials maps the stored credentials' LiteLLM provider prefixes

@@ -49,7 +49,6 @@ type fakeKeysGateway struct {
 
 	syncCalls      int
 	lastKeyed      []string // catalog provider ids passed to the last SyncModels
-	lastOllama     []string
 	syncResult     litellm.SyncResult
 	listErr        error
 	setErr         error
@@ -94,26 +93,24 @@ func (gateway *fakeKeysGateway) ListCredentials() ([]litellm.Credential, error) 
 	return out, nil
 }
 
-func (gateway *fakeKeysGateway) SyncModels(_ *catalog.Catalog, keyedProviders []string, ollamaModels []string) (litellm.SyncResult, error) {
+func (gateway *fakeKeysGateway) SyncModels(_ *catalog.Catalog, keyedProviders []string) (litellm.SyncResult, error) {
 	gateway.syncCalls++
 	gateway.lastKeyed = append([]string(nil), keyedProviders...)
-	gateway.lastOllama = append([]string(nil), ollamaModels...)
 	if gateway.syncErr != nil {
 		return litellm.SyncResult{}, gateway.syncErr
 	}
 	return gateway.syncResult, nil
 }
 
-// withKeysFakes installs the catalog loader, gateway factory, and ollama lister
-// package vars for the duration of a test, restoring them after.
-func withKeysFakes(test *testing.T, cat *catalog.Catalog, catErr error, gateway keysGateway, ollama []string) {
+// withKeysFakes installs the catalog loader + gateway factory package vars for the
+// duration of a test, restoring them after.
+func withKeysFakes(test *testing.T, cat *catalog.Catalog, catErr error, gateway keysGateway) {
 	test.Helper()
-	origCat, origGateway, origOllama := keysCatalogLoader, keysGatewayFactory, keysOllamaModels
+	origCat, origGateway := keysCatalogLoader, keysGatewayFactory
 	keysCatalogLoader = func() (*catalog.Catalog, error) { return cat, catErr }
 	keysGatewayFactory = func() keysGateway { return gateway }
-	keysOllamaModels = func() []string { return ollama }
 	test.Cleanup(func() {
-		keysCatalogLoader, keysGatewayFactory, keysOllamaModels = origCat, origGateway, origOllama
+		keysCatalogLoader, keysGatewayFactory = origCat, origGateway
 	})
 }
 
@@ -149,7 +146,7 @@ func TestKeysListJoinsCatalogAndCredentials(test *testing.T) {
 	gateway := newFakeKeysGateway()
 	// openai is keyed (credential prefix "openai"); google is not.
 	_ = gateway.SetCredential("openai", "sk-openai")
-	withKeysFakes(test, keysTestCatalog(test), nil, gateway, nil)
+	withKeysFakes(test, keysTestCatalog(test), nil, gateway)
 
 	exit, output := runKeys(test, true, newKeysListCmd, nil, "")
 	if exit != 0 {
@@ -186,7 +183,7 @@ func TestKeysListJoinsCatalogAndCredentials(test *testing.T) {
 func TestKeysAddStoresAndSyncs(test *testing.T) {
 	gateway := newFakeKeysGateway()
 	gateway.syncResult = litellm.SyncResult{Added: []string{"openai/gpt-5.5", "openai/gpt-5.5-mini"}}
-	withKeysFakes(test, keysTestCatalog(test), nil, gateway, []string{"gemma4"})
+	withKeysFakes(test, keysTestCatalog(test), nil, gateway)
 
 	exit, output := runKeys(test, true, newKeysAddCmd, []string{"openai", "--value", "sk-secret-openai"}, "")
 	if exit != 0 {
@@ -201,9 +198,6 @@ func TestKeysAddStoresAndSyncs(test *testing.T) {
 	}
 	if len(gateway.lastKeyed) != 1 || gateway.lastKeyed[0] != "openai" {
 		test.Errorf("sync keyed set = %v, want [openai] (catalog id)", gateway.lastKeyed)
-	}
-	if len(gateway.lastOllama) != 1 || gateway.lastOllama[0] != "gemma4" {
-		test.Errorf("sync ollama set = %v, want [gemma4]", gateway.lastOllama)
 	}
 	// The report counts the synced models and never leaks the key value.
 	if strings.Contains(output, "sk-secret-openai") {
@@ -224,7 +218,7 @@ func TestKeysAddStoresAndSyncs(test *testing.T) {
 // credential under the LiteLLM "gemini" prefix (the documented mismatch).
 func TestKeysAddGoogleUsesGeminiPrefix(test *testing.T) {
 	gateway := newFakeKeysGateway()
-	withKeysFakes(test, keysTestCatalog(test), nil, gateway, nil)
+	withKeysFakes(test, keysTestCatalog(test), nil, gateway)
 
 	exit, _ := runKeys(test, true, newKeysAddCmd, []string{"google", "--value", "sk-gemini"}, "")
 	if exit != 0 {
@@ -242,7 +236,7 @@ func TestKeysAddGoogleUsesGeminiPrefix(test *testing.T) {
 // TestKeysAddViaStdin verifies --stdin feeds the key without it touching argv.
 func TestKeysAddViaStdin(test *testing.T) {
 	gateway := newFakeKeysGateway()
-	withKeysFakes(test, keysTestCatalog(test), nil, gateway, nil)
+	withKeysFakes(test, keysTestCatalog(test), nil, gateway)
 
 	exit, _ := runKeys(test, true, newKeysAddCmd, []string{"openai", "--stdin"}, "sk-from-stdin")
 	if exit != 0 {
@@ -258,7 +252,7 @@ func TestKeysAddViaStdin(test *testing.T) {
 func TestKeysAddInvalidProvider(test *testing.T) {
 	for _, provider := range []string{"nope", "megarouter"} {
 		gateway := newFakeKeysGateway()
-		withKeysFakes(test, keysTestCatalog(test), nil, gateway, nil)
+		withKeysFakes(test, keysTestCatalog(test), nil, gateway)
 		exit, output := runKeys(test, true, newKeysAddCmd, []string{provider, "--value", "x"}, "")
 		if exit != 2 {
 			test.Fatalf("add %q exit = %d, want 2", provider, exit)
@@ -276,7 +270,7 @@ func TestKeysAddInvalidProvider(test *testing.T) {
 // --json (no TTY) — the old `ai secrets set` discipline.
 func TestKeysAddMissingValueNonInteractive(test *testing.T) {
 	gateway := newFakeKeysGateway()
-	withKeysFakes(test, keysTestCatalog(test), nil, gateway, nil)
+	withKeysFakes(test, keysTestCatalog(test), nil, gateway)
 	exit, _ := runKeys(test, true, newKeysAddCmd, []string{"openai"}, "")
 	if exit != 2 {
 		test.Fatalf("exit = %d, want 2 (missing --value/--stdin)", exit)
@@ -292,7 +286,7 @@ func TestKeysRemoveDeletesAndResyncs(test *testing.T) {
 	gateway := newFakeKeysGateway()
 	_ = gateway.SetCredential("openai", "sk-openai")
 	gateway.syncResult = litellm.SyncResult{Deleted: []string{"openai/gpt-5.5", "openai/gpt-5.5-mini"}}
-	withKeysFakes(test, keysTestCatalog(test), nil, gateway, nil)
+	withKeysFakes(test, keysTestCatalog(test), nil, gateway)
 
 	exit, output := runKeys(test, true, newKeysRemoveCmd, []string{"openai"}, "")
 	if exit != 0 {
@@ -324,7 +318,7 @@ func TestKeysRemoveDeletesAndResyncs(test *testing.T) {
 func TestKeysGatewayMissingExit3(test *testing.T) {
 	gateway := newFakeKeysGateway()
 	gateway.listErr = output.Errorf(output.ExitMissingDep, "LiteLLM gateway is not reachable — run `ai services start`")
-	withKeysFakes(test, keysTestCatalog(test), nil, gateway, nil)
+	withKeysFakes(test, keysTestCatalog(test), nil, gateway)
 
 	exit, _ := runKeys(test, true, newKeysListCmd, nil, "")
 	if exit != output.ExitMissingDep {

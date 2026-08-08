@@ -17,7 +17,7 @@ func TestReconcileDiff(test *testing.T) {
 	desired := []DesiredModel{
 		{Name: "openai/gpt-5.5"},        // already current → no-op
 		{Name: "google/gemini-3.1-pro"}, // new → add
-		{Name: "ollama/gemma4"},         // new → add
+		{Name: "vllm/gemma4"},           // new → add
 	}
 	current := []LiveModel{
 		{ID: "id-keep", Name: "openai/gpt-5.5"},
@@ -31,7 +31,7 @@ func TestReconcileDiff(test *testing.T) {
 		addNames = append(addNames, model.Name)
 	}
 	// Sorted.
-	if strings.Join(addNames, ",") != "google/gemini-3.1-pro,ollama/gemma4" {
+	if strings.Join(addNames, ",") != "google/gemini-3.1-pro,vllm/gemma4" {
 		test.Errorf("add = %v, want the two new models sorted", addNames)
 	}
 	if len(plan.Delete) != 1 || plan.Delete[0].ID != "id-stale" {
@@ -42,10 +42,10 @@ func TestReconcileDiff(test *testing.T) {
 // TestReconcileIdempotent verifies an equal desired/current set yields an empty
 // plan (no-op on a re-run).
 func TestReconcileIdempotent(test *testing.T) {
-	desired := []DesiredModel{{Name: "openai/gpt-5.5"}, {Name: "ollama/gemma4"}}
+	desired := []DesiredModel{{Name: "openai/gpt-5.5"}, {Name: "vllm/gemma4"}}
 	current := []LiveModel{
 		{ID: "a", Name: "openai/gpt-5.5"},
-		{ID: "b", Name: "ollama/gemma4"},
+		{ID: "b", Name: "vllm/gemma4"},
 	}
 	plan := Reconcile(desired, current)
 	if !plan.Empty() {
@@ -65,13 +65,13 @@ func TestReconcileDedupsDesired(test *testing.T) {
 
 // TestDesiredModelsExpandsKeyedProviders verifies DesiredModels expands every
 // catalog model of a KEYED, LiteLLM-routable provider (with the credential ref and
-// the rewritten litellm_params.model) plus the Ollama models, and that an unkeyed
-// or unroutable provider is excluded.
+// the rewritten litellm_params.model), and that an unkeyed or unroutable provider is
+// excluded. Local vLLM models are NOT part of the desired set (managed individually).
 func TestDesiredModelsExpandsKeyedProviders(test *testing.T) {
 	cat := testCatalog(test) // providers: openai, google (routable); megarouter (not)
 
 	// Key google (→ gemini) only; openai stays unkeyed so its model is excluded.
-	desired := DesiredModels(cat, []string{"google", "megarouter"}, []string{"gemma4"})
+	desired := DesiredModels(cat, []string{"google", "megarouter"})
 
 	byName := map[string]DesiredModel{}
 	names := make([]string, 0, len(desired))
@@ -80,10 +80,10 @@ func TestDesiredModelsExpandsKeyedProviders(test *testing.T) {
 		names = append(names, model.Name)
 	}
 	sort.Strings(names)
-	// google/gemini-3.1-pro (keyed) + ollama/gemma4; openai excluded (unkeyed),
-	// megarouter excluded (unroutable — even though "keyed").
-	if strings.Join(names, ",") != "google/gemini-3.1-pro,ollama/gemma4" {
-		test.Fatalf("desired names = %v, want the keyed-routable + ollama models", names)
+	// google/gemini-3.1-pro (keyed) only; openai excluded (unkeyed), megarouter
+	// excluded (unroutable — even though "keyed").
+	if strings.Join(names, ",") != "google/gemini-3.1-pro" {
+		test.Fatalf("desired names = %v, want the keyed-routable model", names)
 	}
 
 	cloud := byName["google/gemini-3.1-pro"]
@@ -96,14 +96,6 @@ func TestDesiredModelsExpandsKeyedProviders(test *testing.T) {
 	if cloud.Info.ContextLen != 1000000 {
 		test.Errorf("cloud model_info.context = %d, want the catalog limit", cloud.Info.ContextLen)
 	}
-
-	local := byName["ollama/gemma4"]
-	if local.Params.Model != "ollama/gemma4" || local.Params.APIBase != OllamaAPIBase {
-		test.Errorf("ollama params = %+v, want routed ollama/gemma4 with the in-network api_base", local.Params)
-	}
-	if local.Params.CredentialName != "" {
-		test.Errorf("ollama model must not reference a credential, got %q", local.Params.CredentialName)
-	}
 }
 
 // TestSyncModelsAppliesDiff drives SyncModels against a fake gateway: it lists the
@@ -115,9 +107,9 @@ func TestSyncModelsAppliesDiff(test *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		switch request.URL.Path {
 		case "/model/info":
-			// Current set: one keep, one stale.
+			// Current set: one local keep (shielded), one stale cloud.
 			_, _ = writer.Write([]byte(`{"data":[
-				{"model_name":"ollama/gemma4","litellm_params":{"model":"ollama/gemma4"},"model_info":{"id":"keep"}},
+				{"model_name":"vllm/my-qwen","litellm_params":{"model":"openai/my-qwen"},"model_info":{"id":"keep"}},
 				{"model_name":"openai/old","litellm_params":{"model":"openai/old"},"model_info":{"id":"stale"}}
 			]}`))
 		case "/model/new":
@@ -141,12 +133,13 @@ func TestSyncModelsAppliesDiff(test *testing.T) {
 
 	cat := testCatalog(test)
 	manager := NewKeyManager(okProber())
-	// Desired: google keyed (→ google/gemini-3.1-pro) + ollama/gemma4 (already current).
-	result, err := manager.SyncModels(cat, []string{"google"}, []string{"gemma4"})
+	// Desired: google keyed (→ google/gemini-3.1-pro). The vllm/my-qwen local model is
+	// current but shielded from the resync's delete pass.
+	result, err := manager.SyncModels(cat, []string{"google"})
 	if err != nil {
 		test.Fatalf("SyncModels: %v", err)
 	}
-	// Added the new cloud model; ollama/gemma4 unchanged (already current).
+	// Added the new cloud model; vllm/my-qwen unchanged (shielded).
 	if strings.Join(result.Added, ",") != "google/gemini-3.1-pro" {
 		test.Errorf("added = %v, want [google/gemini-3.1-pro]", result.Added)
 	}
@@ -162,56 +155,9 @@ func TestSyncModelsAppliesDiff(test *testing.T) {
 	}
 }
 
-// TestSyncModelsPreservesOllamaWhenListEmpty is the regression for the data-loss bug:
-// a cloud-key resync called with NO ollama models (e.g. installedOllamaModels() returned
-// nil because the Ollama daemon was momentarily unreachable) must NOT delete the
-// ollama/* models already registered in LiteLLM — they are still installed in Ollama and
-// are owned by `ai models pull`/`rm`, not by this resync. Only stale CLOUD models delete.
-func TestSyncModelsPreservesOllamaWhenListEmpty(test *testing.T) {
-	var deleted []string
-	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
-		switch request.URL.Path {
-		case "/model/info":
-			_, _ = writer.Write([]byte(`{"data":[
-				{"model_name":"ollama/gemma4","litellm_params":{"model":"ollama/gemma4"},"model_info":{"id":"ollama-keep"}},
-				{"model_name":"ollama/qwen3","litellm_params":{"model":"ollama/qwen3"},"model_info":{"id":"ollama-keep-2"}},
-				{"model_name":"openai/old","litellm_params":{"model":"openai/old"},"model_info":{"id":"cloud-stale"}}
-			]}`))
-		case "/model/delete":
-			payload, _ := io.ReadAll(request.Body)
-			var body map[string]any
-			_ = json.Unmarshal(payload, &body)
-			deleted = append(deleted, body["id"].(string))
-			_, _ = writer.Write([]byte(`{}`))
-		case "/model/new":
-			_, _ = writer.Write([]byte(`{}`))
-		default:
-			test.Errorf("unexpected %s %s", request.Method, request.URL.Path)
-		}
-	}))
-	defer server.Close()
-	test.Setenv("LITELLM_BASE_URL", server.URL)
-
-	manager := NewKeyManager(okProber())
-	// No keyed providers and — crucially — NO ollama models (the daemon-down case).
-	result, err := manager.SyncModels(testCatalog(test), nil, nil)
-	if err != nil {
-		test.Fatalf("SyncModels: %v", err)
-	}
-	// Only the stale CLOUD model is deleted; both ollama/* registrations survive.
-	if strings.Join(deleted, ",") != "cloud-stale" {
-		test.Errorf("gateway saw deletes %v, want only [cloud-stale] — ollama models must be preserved", deleted)
-	}
-	for _, name := range result.Deleted {
-		if strings.HasPrefix(name, "ollama/") {
-			test.Errorf("a resync must not delete ollama model %q", name)
-		}
-	}
-}
-
-// TestSyncModelsPreservesVLLM verifies the local-model protection extends to vLLM: a
-// cloud-key resync must NOT delete "vllm/*" models (owned by Register/UnregisterVLLMModel),
-// exactly as it shields "ollama/*". Only stale CLOUD models delete.
+// TestSyncModelsPreservesVLLM verifies the local-model protection: a cloud-key resync
+// must NOT delete "vllm/*" models (owned by Register/UnregisterVLLMModel — the sole
+// local backend). Only stale CLOUD models delete.
 func TestSyncModelsPreservesVLLM(test *testing.T) {
 	var deleted []string
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
@@ -219,7 +165,6 @@ func TestSyncModelsPreservesVLLM(test *testing.T) {
 		case "/model/info":
 			_, _ = writer.Write([]byte(`{"data":[
 				{"model_name":"vllm/my-qwen","litellm_params":{"model":"openai/Qwen/Qwen3-8B"},"model_info":{"id":"vllm-keep"}},
-				{"model_name":"ollama/gemma4","litellm_params":{"model":"ollama_chat/gemma4"},"model_info":{"id":"ollama-keep"}},
 				{"model_name":"openai/old","litellm_params":{"model":"openai/old"},"model_info":{"id":"cloud-stale"}}
 			]}`))
 		case "/model/delete":
@@ -238,9 +183,9 @@ func TestSyncModelsPreservesVLLM(test *testing.T) {
 	test.Setenv("LITELLM_BASE_URL", server.URL)
 
 	manager := NewKeyManager(okProber())
-	// No keyed providers and no local models listed — the resync must still preserve both
-	// the vllm/* and ollama/* registrations and delete only the stale cloud model.
-	result, err := manager.SyncModels(testCatalog(test), nil, nil)
+	// No keyed providers — the resync must still preserve the vllm/* registration and
+	// delete only the stale cloud model.
+	result, err := manager.SyncModels(testCatalog(test), nil)
 	if err != nil {
 		test.Fatalf("SyncModels: %v", err)
 	}
@@ -250,48 +195,6 @@ func TestSyncModelsPreservesVLLM(test *testing.T) {
 	for _, name := range result.Deleted {
 		if strings.HasPrefix(name, "vllm/") {
 			test.Errorf("a resync must not delete vLLM model %q", name)
-		}
-	}
-}
-
-// TestSyncModelsPreservesOllama verifies the local-model protection: a cloud-key resync
-// must NOT delete "ollama/*" models (owned by Register/UnregisterOllamaModel) — only stale
-// CLOUD models delete.
-func TestSyncModelsPreservesOllama(test *testing.T) {
-	var deleted []string
-	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
-		switch request.URL.Path {
-		case "/model/info":
-			_, _ = writer.Write([]byte(`{"data":[
-				{"model_name":"ollama/smollm:135m","litellm_params":{"model":"ollama_chat/smollm:135m"},"model_info":{"id":"ollama-keep"}},
-				{"model_name":"openai/old","litellm_params":{"model":"openai/old"},"model_info":{"id":"cloud-stale"}}
-			]}`))
-		case "/model/delete":
-			payload, _ := io.ReadAll(request.Body)
-			var body map[string]any
-			_ = json.Unmarshal(payload, &body)
-			deleted = append(deleted, body["id"].(string))
-			_, _ = writer.Write([]byte(`{}`))
-		case "/model/new":
-			_, _ = writer.Write([]byte(`{}`))
-		default:
-			test.Errorf("unexpected %s %s", request.Method, request.URL.Path)
-		}
-	}))
-	defer server.Close()
-	test.Setenv("LITELLM_BASE_URL", server.URL)
-
-	manager := NewKeyManager(okProber())
-	result, err := manager.SyncModels(testCatalog(test), nil, nil)
-	if err != nil {
-		test.Fatalf("SyncModels: %v", err)
-	}
-	if strings.Join(deleted, ",") != "cloud-stale" {
-		test.Errorf("gateway saw deletes %v, want only [cloud-stale] — ollama models must be preserved", deleted)
-	}
-	for _, name := range result.Deleted {
-		if strings.HasPrefix(name, "ollama/") {
-			test.Errorf("a resync must not delete ollama model %q", name)
 		}
 	}
 }

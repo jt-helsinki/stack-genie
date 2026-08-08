@@ -1,11 +1,14 @@
 package litellm
 
 // Sync / reconcile engine (Phase B). The DESIRED model set is derived from the
-// catalog (every model of each LiteLLM-routable provider the user has keyed) plus
-// the installed Ollama models; the CURRENT set is the live gateway list
-// (ListModels). Reconcile is a PURE diff (add/delete by model_name) and is
-// unit-tested without a client; SyncModels wires the catalog → desired build, the
-// live list, the diff, and the apply behind the injectable KeyManager.
+// catalog (every model of each LiteLLM-routable provider the user has keyed); the
+// CURRENT set is the live gateway list (ListModels). Local vLLM models
+// (vllm/<alias>) are NOT part of the desired set here — they are registered/removed
+// individually by `ai models pull|rm` (Register/UnregisterVLLMModel) and SHIELDED
+// from this cloud-key resync's delete pass (see localModelPrefixes/nonLocalModels).
+// Reconcile is a PURE diff (add/delete by model_name) and is unit-tested without a
+// client; SyncModels wires the catalog → desired build, the live list, the diff, and
+// the apply behind the injectable KeyManager.
 
 import (
 	"sort"
@@ -72,19 +75,18 @@ func Reconcile(desired []DesiredModel, current []LiveModel) Plan {
 	return Plan{Add: add, Delete: del}
 }
 
-// DesiredModels builds the desired model set from the catalog and the inputs:
-//   - For each keyed provider that is BOTH LiteLLM-routable AND in keyedProviders
-//     (matched by the catalog provider id), every catalog model of that provider is
-//     desired — model_name = the catalog id verbatim, litellm_params.model =
-//     LiteLLMModelParam(id), litellm_credential_name = CredentialName(<litellm prefix>),
-//     model_info = the catalog metadata.
-//   - Each installed Ollama model is desired — model_name = "ollama/<name>",
-//     litellm_params.model = "ollama/<name>", api_base = OllamaAPIBase (no key).
+// DesiredModels builds the desired model set from the catalog: for each keyed
+// provider that is BOTH LiteLLM-routable AND in keyedProviders (matched by the catalog
+// provider id), every catalog model of that provider is desired — model_name = the
+// catalog id verbatim, litellm_params.model = LiteLLMModelParam(id),
+// litellm_credential_name = CredentialName(<litellm prefix>), model_info = the catalog
+// metadata. Local vLLM models are NOT part of this set (they are managed individually
+// by `ai models pull|rm`).
 //
 // keyedProviders are CATALOG provider ids (e.g. "openai", "google") the user has a
 // credential for; a keyed provider that is not LiteLLM-routable is skipped. The
 // result is sorted by model_name.
-func DesiredModels(cat *catalog.Catalog, keyedProviders []string, ollamaModels []string) []DesiredModel {
+func DesiredModels(cat *catalog.Catalog, keyedProviders []string) []DesiredModel {
 	keyed := make(map[string]bool, len(keyedProviders))
 	for _, provider := range keyedProviders {
 		keyed[provider] = true
@@ -111,20 +113,6 @@ func DesiredModels(cat *catalog.Catalog, keyedProviders []string, ollamaModels [
 		}
 	}
 
-	for _, name := range ollamaModels {
-		if name == "" {
-			continue
-		}
-		routed := "ollama/" + name
-		desired = append(desired, DesiredModel{
-			Name: routed,
-			Params: ModelParams{
-				Model:   routed,
-				APIBase: OllamaAPIBase,
-			},
-		})
-	}
-
 	sort.Slice(desired, func(left, right int) bool { return desired[left].Name < desired[right].Name })
 	return desired
 }
@@ -148,29 +136,26 @@ type SyncResult struct {
 	Deleted []string // model_names deleted
 }
 
-// SyncModels reconciles the gateway's live model set to the desired set derived
-// from the catalog + keyed providers + installed Ollama models, applying the diff
-// via the injectable KeyManager (AddModel / DeleteModel). It is the high-level
-// trigger Phase C/D/E call after a key is added or an Ollama model is pulled. The
-// pure diff (Reconcile) is tested separately; SyncModels is tested against an
-// httptest-backed KeyManager.
+// SyncModels reconciles the gateway's live model set to the desired set derived from
+// the catalog + keyed providers, applying the diff via the injectable KeyManager
+// (AddModel / DeleteModel). It is the high-level trigger called after a provider key is
+// added or removed. The pure diff (Reconcile) is tested separately; SyncModels is
+// tested against an httptest-backed KeyManager.
 //
 // hardware bring-up: the live /model/new + /model/delete round-trips run only
 // against a running aip-litellm.
-func (manager *KeyManager) SyncModels(cat *catalog.Catalog, keyedProviders []string, ollamaModels []string) (SyncResult, error) {
-	desired := DesiredModels(cat, keyedProviders, ollamaModels)
+func (manager *KeyManager) SyncModels(cat *catalog.Catalog, keyedProviders []string) (SyncResult, error) {
+	desired := DesiredModels(cat, keyedProviders)
 	current, err := manager.ListModels()
 	if err != nil {
 		return SyncResult{}, err
 	}
 	plan := Reconcile(desired, current)
-	// A cloud-key/catalog resync must NEVER delete LOCAL models: Ollama
-	// ("ollama/<name>") models are owned exclusively by their own register/unregister
-	// path (Register/UnregisterOllamaModel), never by the catalog
-	// resync. Without this guard, a transient local-list failure at the CALLER (which
-	// drops those from the desired set — e.g. installedOllamaModels() returns nil when the
-	// daemon is unreachable) would wipe every registered local model from LiteLLM even
-	// though it is still installed. Keep only the non-local deletes; local adds still apply.
+	// A cloud-key/catalog resync must NEVER delete LOCAL models: vLLM
+	// ("vllm/<alias>") models are owned exclusively by their own register/unregister
+	// path (Register/UnregisterVLLMModel — `ai models pull|rm`), never by the catalog
+	// resync. Without this guard, a cloud-key resync would wipe every registered local
+	// model from LiteLLM. Keep only the non-local deletes; cloud adds still apply.
 	plan.Delete = nonLocalModels(plan.Delete)
 	return manager.ApplyPlan(plan)
 }
@@ -178,10 +163,10 @@ func (manager *KeyManager) SyncModels(cat *catalog.Catalog, keyedProviders []str
 // localModelPrefixes are the public model_name prefixes owned by the local-inference
 // register/unregister paths, NOT by the catalog resync — so SyncModels must never delete
 // them (see nonLocalModels).
-var localModelPrefixes = []string{"ollama/", "vllm/"}
+var localModelPrefixes = []string{"vllm/"}
 
 // nonLocalModels returns the models whose public name is NOT a local-backend route
-// (ollama/*), shielding local registrations from the cloud-key resync's delete pass.
+// (vllm/*), shielding local registrations from the cloud-key resync's delete pass.
 func nonLocalModels(models []LiveModel) []LiveModel {
 	kept := make([]LiveModel, 0, len(models))
 	for _, model := range models {

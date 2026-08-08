@@ -37,7 +37,7 @@ func checkByName(report Report, name string) Check {
 // SERVICES section is covered. There are no optional services any longer.
 func healthyServices() []Service {
 	return []Service{
-		{Name: "ollama", State: "running", Healthy: true},
+		{Name: "vllm", State: "running", Healthy: true},
 		{Name: "presidio", State: "running", Healthy: true},
 		{Name: "litellm", State: "running", Healthy: true},
 		{Name: "headroom", State: "running", Healthy: true},
@@ -54,7 +54,7 @@ func TestServicesSectionListsEveryService(test *testing.T) {
 	}
 	report := Run(deps)
 	// Every service supplied appears as a check.
-	for _, name := range []string{"ollama", "presidio", "litellm", "headroom", "proxy", "dns"} {
+	for _, name := range []string{"vllm", "presidio", "litellm", "headroom", "proxy", "dns"} {
 		if checkByName(report, name).Name == "" {
 			test.Errorf("doctor SERVICES section is missing %q", name)
 		}
@@ -69,12 +69,12 @@ func TestRequiredServiceDownIsError(test *testing.T) {
 		GOOS: "darwin", GOARCH: "arm64",
 		Prober: fakeProber{bins: map[string]bool{"docker": true, "msb": true}},
 		Services: []Service{
-			{Name: "ollama", State: "stopped", Healthy: false},
+			{Name: "vllm", State: "stopped", Healthy: false},
 		},
 	}
 	report := Run(deps)
-	if got := checkByName(report, "ollama").Status; got != StatusError {
-		test.Errorf("down required ollama → status = %q, want error", got)
+	if got := checkByName(report, "vllm").Status; got != StatusError {
+		test.Errorf("down required vllm → status = %q, want error", got)
 	}
 	if report.OK {
 		test.Error("a down required service must fail the report")
@@ -89,7 +89,7 @@ func TestDisabledServiceIsOKNotError(test *testing.T) {
 		GOOS: "darwin", GOARCH: "arm64",
 		Prober: fakeProber{bins: map[string]bool{"docker": true, "msb": true}},
 		Services: []Service{
-			{Name: "ollama", State: "running", Healthy: true},
+			{Name: "vllm", State: "running", Healthy: true},
 			{Name: "presidio", State: "disabled", Healthy: false},
 			{Name: "litellm", State: "running", Healthy: true},
 			{Name: "headroom", State: "running", Healthy: true},
@@ -116,8 +116,8 @@ func TestRunAllHealthy(test *testing.T) {
 	if !report.OK {
 		test.Fatalf("expected healthy, got %+v", report)
 	}
-	if checkByName(report, "ollama").Status != StatusOK {
-		test.Errorf("ollama: %+v", checkByName(report, "ollama"))
+	if checkByName(report, "vllm").Status != StatusOK {
+		test.Errorf("ollama: %+v", checkByName(report, "vllm"))
 	}
 	if got := checkByName(report, "container runtime").Detail; got != "docker" {
 		test.Errorf("container detail = %q", got)
@@ -199,10 +199,6 @@ func TestHumanShowsServiceEndpoints(test *testing.T) {
 	if !strings.Contains(rendered, "litellm") ||
 		!strings.Contains(rendered, "http://litellm.localhost:18787 (UI http://litellm.localhost:18787/ui/login)") {
 		test.Errorf("litellm endpoint missing from doctor output:\n%s", rendered)
-	}
-	// Ollama shows its host-CLI gateway path (no UI), NOT the internal-only :11434.
-	if !strings.Contains(rendered, "ollama") || !strings.Contains(rendered, "http://localhost:18787/ollama") {
-		test.Errorf("ollama address missing from doctor output:\n%s", rendered)
 	}
 }
 

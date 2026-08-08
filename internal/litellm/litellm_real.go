@@ -119,7 +119,7 @@ func (client realClient) Status() (StatusInfo, error) {
 	}
 	info.Models = models
 	info.Providers = providersFromModels(models)
-	info.Ollama = hasOllamaModel(models)
+	info.Local = hasLocalModel(models)
 	return info, nil
 }
 
@@ -233,11 +233,13 @@ func providersFromModels(models []Model) []string {
 	return providers
 }
 
-// hasOllamaModel reports whether any served model routes through Ollama (so the
-// status can show the local-models, no-key framing).
-func hasOllamaModel(models []Model) bool {
+// hasLocalModel reports whether any served model is a local vLLM model (so the
+// status can show the local-models, no-key framing). vLLM's routed target is
+// "openai/<alias>" (the derived Provider is thus "openai"), so local detection keys
+// on the PUBLIC model NAME prefix "vllm/" (VLLMModelName), not the provider.
+func hasLocalModel(models []Model) bool {
 	for _, model := range models {
-		if model.Provider == "ollama" {
+		if strings.HasPrefix(model.Name, "vllm/") {
 			return true
 		}
 	}

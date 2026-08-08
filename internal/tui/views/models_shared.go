@@ -1,9 +1,7 @@
 package views
 
 import (
-	"fmt"
 	"strconv"
-	"strings"
 
 	"github.com/jt-helsinki/stack-genie/internal/litellm"
 	"github.com/jt-helsinki/stack-genie/internal/ui"
@@ -35,14 +33,11 @@ const (
 )
 
 // ModelsPullRequestedMsg asks the parent to run `ai models pull <Refs...>` live in
-// the terminal overlay (streaming progress) for one or more exact references (e.g.
-// ["qwen2.5:7b", "qwen2.5:72b"]). Emitted by the Local Models tag drill-down.
-// Runtime is the chosen install ENGINE ("ollama"), mirroring
-// the CLI `--runtime`; an EMPTY value means Ollama (back-compat — a caller that builds
-// the message without a runtime keeps the default Ollama path).
+// the terminal overlay (streaming progress) for one or more Hugging Face repo ids
+// (e.g. ["mlx-community/Qwen2.5-7B-Instruct-4bit"]). Emitted by the Local Models view.
+// vLLM is the sole local runtime, so there is no engine choice to carry.
 type ModelsPullRequestedMsg struct {
-	Refs    []string
-	Runtime string
+	Refs []string
 }
 
 // ModelRemoveRequestedMsg asks the parent to run `ai models rm <Name>` live in the
@@ -73,33 +68,6 @@ func modelTestFlash(msg modelTestDoneMsg) string {
 	return ui.Success.Render(ui.IconOK + " " + msg.result.Model + " reachable (" + strconv.Itoa(msg.result.LatencyMS) + "ms)")
 }
 
-// paramMagnitude converts a parameter-size label (e.g. "270m", "1.5b", "70b") into a
-// comparable magnitude so a within-model tag order is ascending. An
-// unparseable/empty label yields 0 (sorts first).
-func paramMagnitude(label string) float64 {
-	label = strings.TrimSpace(strings.ToLower(label))
-	if label == "" {
-		return 0
-	}
-	suffix := byte(0)
-	if last := label[len(label)-1]; last == 'm' || last == 'b' {
-		suffix = last
-		label = label[:len(label)-1]
-	}
-	value, err := strconv.ParseFloat(strings.TrimSpace(label), 64)
-	if err != nil {
-		return 0
-	}
-	switch suffix {
-	case 'm':
-		return value * 1e6
-	case 'b':
-		return value * 1e9
-	default:
-		return value
-	}
-}
-
 // humanTokenCount formats a token limit compactly (e.g. 200000 → "200K", 1000000 →
 // "1M"); small counts print verbatim. Used for the context/output limit columns.
 func humanTokenCount(tokens int) string {
@@ -111,31 +79,6 @@ func humanTokenCount(tokens int) string {
 	default:
 		return strconv.Itoa(tokens)
 	}
-}
-
-// valueString renders a model_info value as a readable single line. Scalars print
-// cleanly; the rare non-scalar value (slice/map) falls back to %v.
-func valueString(value any) string {
-	switch typed := value.(type) {
-	case string:
-		return typed
-	case float64:
-		return strconv.FormatFloat(typed, 'g', -1, 64)
-	case bool:
-		return strconv.FormatBool(typed)
-	default:
-		return fmt.Sprintf("%v", value)
-	}
-}
-
-// truncate clips an overlong string (e.g. a multi-KB license) to limit runes with a
-// trailing ellipsis note so the describe pane stays scrollable rather than enormous.
-func truncate(value string, limit int) string {
-	runes := []rune(value)
-	if len(runes) <= limit {
-		return value
-	}
-	return string(runes[:limit]) + "\n… (truncated)"
 }
 
 // truncateRunes clips a CELL value to width DISPLAY CELLS (terminal columns, not

@@ -13,7 +13,7 @@ import (
 	"github.com/jt-helsinki/stack-genie/internal/apps"
 	"github.com/jt-helsinki/stack-genie/internal/config"
 	"github.com/jt-helsinki/stack-genie/internal/create"
-	"github.com/jt-helsinki/stack-genie/internal/ollama"
+	"github.com/jt-helsinki/stack-genie/internal/hf"
 	"github.com/jt-helsinki/stack-genie/internal/project"
 	"github.com/jt-helsinki/stack-genie/internal/tui/scope"
 	"github.com/jt-helsinki/stack-genie/internal/ui"
@@ -97,7 +97,7 @@ type Create struct {
 	disk        *textStep
 	ports       *textStep
 	idle        *textStep
-	model       *modelPicker // nil when no Ollama library is cached (step skipped)
+	model       *modelPicker // nil when no curated vLLM list is available (step skipped)
 
 	// Per-agent auth-mode phase (stepAuth): one selectList per OAuth-capable selected
 	// agent, built when leaving the model step. authIndex walks them one at a time.
@@ -122,10 +122,10 @@ type Create struct {
 	stepH int
 }
 
-// NewCreate builds the wizard. startDir seeds the location field; library is the cached
-// Ollama library for the Graphify-model step (empty → that step is skipped); hostGB /
-// usableGB annotate the memory hint.
-func NewCreate(startDir string, library []ollama.LibraryModel, hostGB, usableGB int) *Create {
+// NewCreate builds the wizard. startDir seeds the location field; curated is the
+// curated vLLM model list for the Graphify-model step (empty → that step is skipped);
+// hostGB / usableGB annotate the memory hint.
+func NewCreate(startDir string, curated []hf.CuratedModel, hostGB, usableGB int) *Create {
 	defaultCPUs := config.Default().Workspace.CPULimit
 	cpuHint := fmt.Sprintf("Blank uses the default (%d); host has %d logical CPUs", defaultCPUs, sysinfoCPUs())
 	memHint := fmt.Sprintf("A plain number in GB; blank uses the default (%s); usable max %d GB (host %d GB)",
@@ -146,8 +146,8 @@ func NewCreate(startDir string, library []ollama.LibraryModel, hostGB, usableGB 
 		ports:       newTextStep("ports", "Ports to open: PORT or HOST:GUEST, comma-separated (e.g. 8080,9000:3000).", "", "", validatePortsField),
 		idle:        newTextStep("idle timeout", "How long msb may leave the workspace idle before stopping it (e.g. 30m, 24h).", "", "", validateIdleField),
 	}
-	if len(library) > 0 {
-		wizard.model = newModelPicker(library, "")
+	if len(curated) > 0 {
+		wizard.model = newModelPicker(curated, "")
 	}
 	// Ports already taken by other workspaces' apps, so a suggested app port defaults to a
 	// free one (best-effort; a read error just yields an empty reserved set).
@@ -639,7 +639,7 @@ func (view *Create) stepBody() string {
 			return ui.Muted.Render("Graphify is not selected — the Graphify model step is skipped.")
 		}
 		if view.model == nil {
-			return ui.Muted.Render("No Ollama library cached — the Graphify model is left unset (run `ai models` to populate it).")
+			return ui.Muted.Render("No curated vLLM models for this platform — the Graphify model is left unset.")
 		}
 		return view.model.View()
 	case stepAppPorts:

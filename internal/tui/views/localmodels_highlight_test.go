@@ -6,7 +6,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
-	"github.com/jt-helsinki/stack-genie/internal/ollama"
+	"github.com/jt-helsinki/stack-genie/internal/hf"
 	"github.com/muesli/termenv"
 )
 
@@ -33,13 +33,11 @@ const secondaryForegroundANSI = "38;2;51;255;255"
 func TestLocalModelsSelectedRowHighlighted(test *testing.T) {
 	forceTrueColor(test)
 	view := buildLocal(test,
-		[]ollama.Model{{Name: "qwen2.5:7b", Size: 4700000000, ParameterSize: "7.6B"}},
-		[]ollama.LibraryModel{
-			{Name: "qwen2.5", Description: "Qwen 2.5", Tags: libTags("7b", "72b")},
-			{Name: "gemma3", Description: "Gemma 3", Tags: libTags("1b", "4b")},
-			{Name: "llama3.2", Description: "Llama 3.2", Tags: libTags("1b", "3b")},
+		[]hf.CachedModel{{Repo: "mlx-community/Qwen2.5-7B-Instruct-4bit", Size: "4.7 GB"}},
+		[]hf.CuratedModel{
+			{Name: "gemma-2-9b-it-4bit", Repo: "mlx-community/gemma-2-9b-it-4bit", Description: "Gemma"},
+			{Name: "Llama-3.2-3B-Instruct-4bit", Repo: "mlx-community/Llama-3.2-3B-Instruct-4bit", Description: "Llama"},
 		},
-		noShow,
 	)
 
 	// (a) After load the cursor is on a model row.
@@ -68,17 +66,15 @@ func TestLocalModelsSelectedRowHighlighted(test *testing.T) {
 func TestLocalModelsSectionHeadersStyled(test *testing.T) {
 	forceTrueColor(test)
 	view := buildLocal(test,
-		[]ollama.Model{{Name: "qwen2.5:7b", Size: 4700000000, ParameterSize: "7.6B"}},
-		[]ollama.LibraryModel{
-			{Name: "qwen2.5", Description: "Qwen 2.5", Tags: libTags("7b", "72b")},
-			{Name: "llama3.2", Description: "Llama 3.2", Tags: libTags("1b", "3b")},
+		[]hf.CachedModel{{Repo: "mlx-community/Qwen2.5-7B-Instruct-4bit", Size: "4.7 GB"}},
+		[]hf.CuratedModel{
+			{Name: "Llama-3.2-3B-Instruct-4bit", Repo: "mlx-community/Llama-3.2-3B-Instruct-4bit", Description: "Llama"},
 		},
-		noShow,
 	)
 	rendered := view.View()
 	lines := strings.Split(rendered, "\n")
 
-	for _, label := range []string{"Installed", "Installable"} {
+	for _, label := range []string{"Installed", "Available"} {
 		headerIndex := -1
 		for index, line := range lines {
 			// The header line carries the label, the secondary FOREGROUND, and the bold
@@ -146,7 +142,7 @@ func assertHighlightOnCursorLine(test *testing.T, view *LocalModels, when string
 	// must span the full row — the closing reset is the LAST escape on the line (no
 	// unstyled trailing pad spaces after it), so the background bar reaches the right
 	// edge rather than stopping short and looking ragged.
-	wantName := view.models[view.window.Cursor()].name
+	wantName := view.models[view.window.Cursor()].repo
 	for _, line := range lines {
 		if !strings.Contains(line, selectedBackgroundANSI) {
 			continue

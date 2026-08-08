@@ -8,7 +8,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/jt-helsinki/stack-genie/internal/create"
-	"github.com/jt-helsinki/stack-genie/internal/ollama"
+	"github.com/jt-helsinki/stack-genie/internal/hf"
 	"github.com/jt-helsinki/stack-genie/internal/state"
 )
 
@@ -186,9 +186,9 @@ func TestCreateWizardAssemblesSpec(test *testing.T) {
 	test.Setenv("HOME", test.TempDir())
 	base := test.TempDir()
 	target := filepath.Join(base, "demo-ws")
-	library := []ollama.LibraryModel{{Name: "llama3.2", Tags: []ollama.LibraryTag{{Name: "3b"}, {Name: "latest"}}}}
+	curated := []hf.CuratedModel{{Name: "Llama-3.2-3B-Instruct-4bit", Repo: "mlx-community/Llama-3.2-3B-Instruct-4bit"}}
 
-	wizard := NewCreate(base, library, 24, 18)
+	wizard := NewCreate(base, curated, 24, 18)
 	wizard.SetSize(80, 24)
 
 	enter := func() tea.Cmd { return wizard.Update(tea.KeyMsg{Type: tea.KeyEnter}) }
@@ -277,21 +277,21 @@ func TestCreateWizardAssemblesSpec(test *testing.T) {
 	}
 }
 
-// TestCreateWizardModelDrillDown selects a specific model tag and checks the ref.
-func TestCreateWizardModelDrillDown(test *testing.T) {
-	library := []ollama.LibraryModel{{Name: "qwen2.5-coder", Tags: []ollama.LibraryTag{{Name: "7b"}, {Name: "3b"}}}}
-	picker := newModelPicker(library, "")
+// TestCreateWizardModelPick selects a curated repo and checks the value (a repo id;
+// vLLM is the sole local runtime, so there are no tags to drill).
+func TestCreateWizardModelPick(test *testing.T) {
+	curated := []hf.CuratedModel{{Name: "Qwen2.5-Coder-7B-Instruct-4bit", Repo: "mlx-community/Qwen2.5-Coder-7B-Instruct-4bit"}}
+	picker := newModelPicker(curated, "")
 	picker.SetSize(80, 20)
 
-	// Move off "(none)" to the model, drill in, pick the first tag.
-	picker.Update(tea.KeyMsg{Type: tea.KeyDown})          // (none) -> qwen2.5-coder
-	picker.Update(tea.KeyMsg{Type: tea.KeyEnter})         // drill into tags
-	done := picker.Update(tea.KeyMsg{Type: tea.KeyEnter}) // select first tag
+	// Move off "(none)" to the curated repo, then select it.
+	picker.Update(tea.KeyMsg{Type: tea.KeyDown})          // (none) -> the repo
+	done := picker.Update(tea.KeyMsg{Type: tea.KeyEnter}) // select it
 	if !done {
-		test.Fatal("selecting a tag should finish the model step")
+		test.Fatal("selecting a model should finish the model step")
 	}
-	if picker.Value() != "qwen2.5-coder:7b" {
-		test.Errorf("picker.Value() = %q, want qwen2.5-coder:7b", picker.Value())
+	if picker.Value() != "mlx-community/Qwen2.5-Coder-7B-Instruct-4bit" {
+		test.Errorf("picker.Value() = %q, want the repo id", picker.Value())
 	}
 }
 

@@ -107,7 +107,7 @@ CLI must behave identically on:
 * Project templates and agent configuration are **declarative data**
   (YAML / JSON). They are never executable application logic.
 * External components (Microsandbox via the `msb` CLI, LiteLLM, Headroom,
-  Presidio, Ollama, docker / podman) are invoked as subprocesses or over their
+  Presidio, vLLM, the Hugging Face CLI `hf`, docker / podman) are invoked as subprocesses or over their
   HTTP APIs — never reimplemented. Version control is largely out of scope: the CLI
   exposes no git commands and never runs `gh`; the only git it runs is an internal
   `git init` at workspace start (to seat the Graphify hook — §6), never clone/remote.
@@ -281,12 +281,12 @@ Purpose:
   DNS → Presidio → Valkey(+RedisInsight) → Headroom → LiteLLM(+DB) →
   proxy (Headroom PRECEDES LiteLLM because LiteLLM's `headroom` compression
   guardrail calls it in-process). The **local-model inference tier is HOST-NATIVE,
-  not containers**: **Ollama** (the required local-model backend, probed at
-  `http://127.0.0.1:11434/api/version`) and **vLLM** (probed at
-  `127.0.0.1:<port>/v1 (per-model, base 8101)`, always available as a serving option); there is
-  **no** `aip-ollama` container. Setup also verifies the Microsandbox workspace
-  runtime. *(hardware bring-up: installing / starting the host Ollama process and
-  enabling vLLM are not yet wired live.)*
+  not containers**: **vLLM** is the sole local-inference runtime (per-model host
+  processes, probed at `127.0.0.1:<port>/v1 (per-model, base 8101)`); there is
+  **no** `aip-ollama` container. Setup also best-effort installs both **vLLM**
+  (`ensureVLLMInstalled`) and the **Hugging Face CLI `hf`** (`ensureHFInstalled`)
+  into the platform venv, and verifies the Microsandbox workspace
+  runtime. *(hardware bring-up: installing / starting vLLM are not yet wired live.)*
 * renders each service config from the platform config and verifies the
   Microsandbox runtime + host virtualization (no docker compose; the container
   service tier runs as containers while the local-model tier is host-native, so
@@ -338,7 +338,7 @@ resolution best-effort:
 Missing **provider credentials are not a setup hard-fail**: `setup` does **not**
 prompt for cloud-provider API keys — add those anytime from `ai ui` (the API Keys
 tab) or `ai keys add <provider>`. Setup only runs the initial catalog → gateway
-model sync (reflecting any already-keyed providers + installed Ollama models);
+model sync (reflecting any already-keyed providers + installed local vLLM models);
 `ai doctor` flags any absent credential, and a model call fails (exit `5`) only
 when that credential is actually needed (architecture §17, plan §7). Missing
 **dependencies** fail fast: a missing container or Microsandbox runtime exits `3`,
@@ -386,19 +386,15 @@ Behavior:
   never deleted; the VM instance is only halted, never `msb delete`'d), stopping and
   removing the platform containers (`aip-*`), **removing all platform container
   images** (the pinned service-tier images plus every `aip-*` image, so nothing is
-  left on the host — done on EVERY uninstall, not only `--purge`), **stopping the
-  HOST-NATIVE Ollama process best-effort** (`pkill -f "ollama serve"`, reported as
-  `StoppedHostOllama`; the precise per-OS stop mechanism, `launchctl unload` /
-  `systemctl stop`, is a `hardware bring-up` seam), removing the `ai` binary,
+  left on the host — done on EVERY uninstall, not only `--purge`), removing the `ai` binary,
   removing the completion scripts, and stripping the managed PATH/completion lines
-  from the shell rc files (leaving the user's own lines intact). It **never**
-  uninstalls the user's Ollama binary, and **vLLM — being
+  from the shell rc files (leaving the user's own lines intact). **vLLM — being
   Docker/host-managed — is deliberately LEFT INTACT** (never stopped or removed)
 * **removes the platform state under `~/.ai-platform` but KEEPS the downloaded
   model store (`volumes/models`)** — the one expensive-to-refetch piece a user
-  usually wants to keep across a reinstall; the host-native Ollama store is
-  preserved on a non-purge uninstall, while `--purge` removes `~/.ai-platform`
-  in full, including the downloaded models
+  usually wants to keep across a reinstall; the local vLLM model store
+  (`volumes/models/vllm`) is preserved on a non-purge uninstall, while `--purge`
+  removes `~/.ai-platform` in full, including the downloaded models
 * **asks, per external dependency, whether to also uninstall it** — for `msb`
   (Microsandbox) that is detected on the host, it prompts (on a terminal) before
   removing that tool's install artifacts. Microsandbox ships no uninstaller, so
@@ -486,12 +482,12 @@ one command:
   (`graphify install --project [--platform <cli>]` in `~/project` — not at image build,
   since it writes project-scoped files). Each workspace gets a per-project **`.venv-msb`**
   virtualenv created at start regardless (see §7/§25)
-* `--graphify-model <ref>` — the **Ollama model Graphify uses** for its headless LLM
-  backend, e.g. `qwen2.5-coder:7b`; optional (blank = none). On a terminal the wizard
-  offers an optional model+tag select from the cached Ollama library; the chosen model
-  is stored as `agent.graphify_model`, pulled into the local Ollama store and
+* `--graphify-model <ref>` — the **curated vLLM HF repo id Graphify uses** for its headless LLM
+  backend, e.g. `mlx-community/Qwen2.5-Coder-7B-Instruct-4bit`; optional (blank = none). On a terminal the wizard
+  offers an optional single-select from the curated model list; the chosen model
+  is stored as `agent.graphify_model`, pulled via `hf download` into the local vLLM store and
   registered in the gateway if absent (best-effort — a pull failure is a create
-  warning, not a failure), and routed through the gateway as `ollama/<model>` at
+  warning, not a failure), and routed through the gateway as `vllm/<alias>` at
   workspace start (architecture §17)
 * `--apps <list>` — comma-separated in-VM AI apps to install
   (`openwebui`); **opt-in, default none**. Like `--stacks` it
@@ -657,11 +653,11 @@ Steps, in order:
    each): `caveman`, `graphify`, `code-review-graph`, `codebase-memory-mcp`. Pre-checked
    with the default set (`caveman,graphify,code-review-graph`); pre-seeded from `--tools`.
    Each is recorded as a `context.<tool>_enabled` bool.
-10. **Graphify model** *(shown only when `graphify` is selected in step 9 AND the Ollama
-   library cache is available)* — an **optional** single-select of an Ollama model + a tag
-   select (blank = none), mirroring the Models page. The choice is stored as
-   `agent.graphify_model`, pulled into the local Ollama store + registered in the gateway if
-   absent, and routed through the gateway as `ollama/<model>`. Also settable
+10. **Graphify model** *(shown only when `graphify` is selected in step 9)* — an
+   **optional** single-select of a curated vLLM HF repo id
+   (blank = none), mirroring the Models page. The choice is stored as
+   `agent.graphify_model`, pulled via `hf download` into the local vLLM store + registered in the gateway if
+   absent, and routed through the gateway as `vllm/<alias>`. Also settable
    non-interactively via `--graphify-model`.
 
 There is no separate confirm step — completing the last group (Enter) creates
@@ -1145,7 +1141,7 @@ At workspace start the platform installs a self-contained **`refresh-models`**
 command on `PATH` inside the microVM (`/usr/local/bin/refresh-models`, generated
 per-workspace by `agentcfg.RefreshScript` and installed via `sudo install -m 0755`).
 Run it **inside the workspace** after changing the served models on the host (add a
-provider key with `ai keys add …`, or pull/remove an Ollama model with
+provider key with `ai keys add …`, or pull/remove a local vLLM model with
 `ai models pull`/`rm`) to re-pull the in-VM agent model picker **without restarting
 the microVM**:
 
@@ -1254,11 +1250,11 @@ Returns a labeled, actionable summary (not a raw field dump):
 * the **LIVE** list of models the gateway currently serves, sourced from LiteLLM's
   own endpoints (`/model/info`, falling back to `/v1/models`) — **not** a hardcoded
   list. The list is the gateway's **DB-backed** served models: a keyed provider's
-  registered models.dev catalog models plus the registered Ollama models
-  (`ollama/<name>`), each shown with its provider and (when `/model/info` exposes it)
+  registered models.dev catalog models plus the registered vLLM models
+  (`vllm/<alias>`), each shown with its provider and (when `/model/info` exposes it)
   its mode. The **providers** line is DERIVED from this live list (the distinct
   provider prefixes), not from any hardcoded routing.
-* the local-model (Ollama — no key needed) vs cloud-provider (each needs a key
+* the local-model (vLLM — no key needed) vs cloud-provider (each needs a key
   via `ai keys add <provider>`) split
 * a `ai models test <model>` next-step hint
 
@@ -1268,7 +1264,7 @@ model-list call fails (e.g. unauthorized), the command still reports health and
 shows a note rather than erroring out.
 
 The `--json` envelope carries the underlying fields (`healthy`, `providers`
-[live-derived], `default`, `ollama`, `models` [the live served list of
+[live-derived], `default`, `vllm`, `models` [the live served list of
 `{name, provider, mode}`], `models_note` [why the list is empty when otherwise
 reachable], `base_url`).
 
@@ -1288,29 +1284,27 @@ gateway errors are exit `4`.
 
 ---
 
-## 8.3 Local Model Store (Ollama)
+## 8.3 Local Model Store (vLLM, Hugging Face CLI)
 
 `ai models status` / `ai models test` describe and probe **LiteLLM routing**. The
-commands below instead manage the **local Ollama store** directly over its HTTP API
-— the local-model backend LiteLLM routes `ollama/<name>` models to. (The rendered
+commands below instead manage the **local vLLM model store** directly via the
+**Hugging Face CLI (`hf`)** — **vLLM is the sole local-inference runtime**, and
+`hf` downloads its weights into `~/.ai-platform/volumes/models/vllm`. (The rendered
 LiteLLM config carries **no** `model_list` and **no** per-provider wildcards — the
 served model set is **DB-backed**, §14.) Installing a model is a two-part act:
-`ai models pull` downloads it into the Ollama store **and** registers it as a
-DB-backed model in the gateway, so it becomes routable immediately; `ai models rm`
-removes it from the store **and** unregisters it. The **serving runtime** chosen at
-pull time (`--runtime`, §8.3.3) decides which backend is registered and later
-unregistered: an Ollama-served model registers as `ollama/<name>` (via
-`litellm.RegisterOllamaModel`) and is removed with `UnregisterOllamaModel`, while a
-vLLM-served model registers as `vllm/<alias>`
-and is removed with `UnregisterVLLMModel` (Ollama still **downloads**
-the weights for both). Merely registering a model in the gateway is **not** the
-same as having it installed locally — `pull` is what downloads the weights. The
-pure store commands (`list` / `popular` / `show`) do not touch the gateway
-registration.
+`ai models pull` runs `hf download <repo>` into the vLLM store **and** starts +
+registers the per-model vLLM server as a DB-backed model in the gateway, so it
+becomes routable immediately; `ai models rm` stops the vLLM server, `hf cache rm`s
+the weights **and** unregisters it. A model registers under the public handle
+`vllm/<alias>` (routed internally to `openai/<alias>`, via
+`litellm.RegisterVLLMModel`) and is removed with `UnregisterVLLMModel`. Merely
+registering a model in the gateway is **not** the same as having it installed
+locally — `pull` is what downloads the weights. The pure store commands
+(`list` / `popular` / `show`) do not touch the gateway registration.
 
-If Ollama is unreachable, these exit **3** (missing dependency) with a hint to run
-`ai services start ollama` (or `ai setup`); bad input exits **2**; other failures
-exit **4**.
+If vLLM is unreachable / not installed, these exit **3** (missing dependency) with a
+hint to run `ai models install-vllm` (or `ai setup`); bad input exits **2**; other
+failures exit **4**.
 
 ### 8.3.1 List
 
@@ -1318,87 +1312,62 @@ exit **4**.
 ai models list
 ```
 
-Lists the **installed** models in the local Ollama store (`GET /api/tags`). There
+Lists the **downloaded** local repos in the vLLM store (`hf cache ls`). There
 is **no hardcoded catalog** — installable suggestions live behind `ai models
 popular` (§8.3.2). The human output is a NAME / SIZE / PARAMS table; `--json`
 returns the installed list (each entry carries `installed: true`).
 
-### 8.3.2 Popular (installable, live library)
+### 8.3.2 Popular (installable, curated list)
 
 ```bash id="c23p"
 ai models popular
 ```
 
-Lists **installable** models **scraped from the live ollama.com library**
-(`internal/ollama/library.go`, `ollama.Library()`): a GET of the
-`https://ollama.com/library` index enumerates every model (name + description),
-then each model's `https://ollama.com/library/<model>/tags` table is fetched
-(bounded concurrency) for the per-variant **size / context / input**. The result is
-**cached as YAML** at `~/.ai-platform/cache/ollama-models.yaml`; when ollama.com is
-unreachable the **cached copy is used**, and with no cache the command errors only
-when nothing is available. There is **no bundled `models.yaml` and no offline
-fallback set**. (The old third-party `ollama-models.zwz.workers.dev` JSON endpoint
-was stale and has been removed.)
+Lists **installable** models from the **curated available-models list**
+(`hf.CuratedModels(goos)`): on **darwin** it is `mlx-community/*` MLX repos, on
+**Linux** plain Hugging Face safetensors repos. This is a **static curated set**,
+not a live search — there is **no live HF search, no ollama.com scrape, and no
+`cache/ollama-models.yaml`**. For each entry it reports:
 
-Each library model carries its pullable **tags** (variants, e.g. `7b`, `72b`), each
-with a scraped `size` / `context` / `input` — pull a specific variant with
-`ai models pull <name>:<tag>`. For each entry it reports:
-
-* **name** — the base model name (e.g. `qwen2.5`)
-* **size / context / input** — the default (`latest`, else first) tag's values from
-  the model's ollama.com /tags table; a `—` marks a column the table omits
-* the **repo link** — **derived** as `https://ollama.com/library/<name>` (the index
-  carries no `repo_url`)
+* **name** — the HF repo id (e.g. `mlx-community/Qwen2.5-Coder-7B-Instruct-4bit`)
+* **size / context / input** — the curated metadata for the repo; a `—` marks a
+  column the curated entry omits
+* the **repo link** — the model's Hugging Face page
 
 The human output is a NAME / SIZE / CONTEXT / INPUT / REPO table; `--json` returns
-the structured list (each tag carries `{name,size,context,input}`). `ai models pull`
-always also accepts a free-text reference, so an out-of-date or unreachable library
-never blocks pulling anything.
+the structured list. `ai models pull` always also accepts a free-text repo id, so
+the curated list never blocks pulling anything.
 
 ### 8.3.3 Pull (install / update)
 
 ```bash id="c23b"
-ai models pull [name...] [--runtime <ollama|vllm>] [--alias <alias>]
+ai models pull [repo...] [--alias <alias>]
 ```
 
-`pull` is **variadic** — it installs **one or more** models in a single run.
+`pull` is **variadic** — it installs **one or more** models in a single run. Each
+`repo` is downloaded via `hf download <repo>` into the vLLM store, then the
+per-model vLLM server is started and registered in the gateway. **vLLM is the only
+local runtime — there is no `--runtime` flag.**
 
-**Serving runtime (`--runtime`, `--alias`).** `pull` chooses the **serving
-backend** for the model being added:
+* `--alias <alias>` — the gateway alias / handle for a single model.
 
-* `--runtime <ollama|vllm>` (default **`ollama`**) — which local
-  inference tier serves the model. **Ollama remains the authoritative
-  DOWNLOADER for BOTH runtimes** — the weights are always pulled via Ollama;
-  `vllm` (vLLM) merely **serves** them. Default behaviour without
-  `--runtime` is **unchanged** (Ollama). An invalid `--runtime` value exits **2**
-  (invalid input). An explicit `--runtime vllm` when vLLM is **not
-  available / reachable** is **rejected with exit 3** (missing dependency) — it
-  **never silently falls back** to Ollama. On a terminal (interactive) OR whenever
-  `vllm` is chosen, a **"Serving runtime" picker** is shown.
-* `--alias <alias>` — the gateway alias / handle for the model.
+**Gateway registration handles.** A vLLM-served model registers under the public
+handle `vllm/<alias>` (routed internally to `openai/<alias>`) as a DB-backed model
+in LiteLLM (§14). The recorded model is stored in the machine-wide
+**`~/.ai-platform/config/model-runtimes.yaml`** store, so `ai models rm` (§8.3.4)
+can later de-register it.
 
-**Gateway registration handles.** An Ollama-served model registers under the
-public handle `ollama/<name>`; a vLLM-served model registers under
-`vllm/<alias>` (routed internally to `openai/<model>`). Both are
-DB-backed models in LiteLLM (§14). The chosen runtime is recorded per model in
-the machine-wide **`~/.ai-platform/config/model-runtimes.yaml`** store, so
-`ai models rm` (§8.3.4) can later de-register the correct backend.
-
-* With one or more `name` arguments, or under `--json` / no TTY: each given
-  reference is pulled in turn (the **custom-reference** path — e.g.
-  `llama3.2:3b qwen2.5:7b`, or a custom ref like `hf.co/user/model`). Under
-  `--json` at least one name is **required** (none → exit 2). Pull stays
-  **free-form** — any model reference can be pulled, listed or not. Names are
-  de-duplicated; the run **continues past a failure** and reports a per-model
-  summary, exiting non-zero (mapped from the last failure) if any failed.
+* With one or more `repo` arguments, or under `--json` / no TTY: each given repo id
+  is pulled in turn. Under `--json` at least one repo is **required** (none →
+  exit 2). Pull stays **free-form** — any HF repo id can be pulled, curated or not.
+  Names are de-duplicated; the run **continues past a failure** and reports a
+  per-model summary, exiting non-zero (mapped from the last failure) if any failed.
 * On a terminal with **no** arguments: the user gets a **checkbox multi-select** of
-  the live library's pullable `name:tag` references (§8.3.2 — one option per tag,
-  e.g. `qwen2.5:7b`), plus a final **"✎ enter custom model(s)…"** checkbox that, when
-  ticked, prompts for free-text references (space- or comma-separated). If the
-  library is unavailable (and uncached) it falls back to just the custom-entry
-  prompt — the picker never blocks pulling.
+  the curated list's repo ids (§8.3.2), plus a final **"✎ enter custom model(s)…"**
+  checkbox that, when ticked, prompts for free-text repo ids (space- or
+  comma-separated). The picker never blocks pulling.
 
-The pull **streams** Ollama's NDJSON progress while a spinner shows ongoing work.
+The pull **streams** `hf download` progress while a spinner shows ongoing work.
 There is **no separate update verb** — re-pulling an installed model updates it.
 
 The `--json` envelope carries `data.pulled`, one `{model, ok, error}` outcome per
@@ -1407,20 +1376,16 @@ requested model.
 ### 8.3.4 Remove
 
 ```bash id="c23c"
-ai models rm [name]
+ai models rm [repo]
 ```
 
-Removes a model from the local store (`DELETE /api/delete`, body `{"model":…}`). On
-a terminal with no argument the user picks from the **installed** models; with an
-argument (or under `--json`) that name is removed. On a terminal the user is asked
-to **confirm** before deleting. A model not in the store → a clear not-found error
-(exit 2).
-
-`rm` is **runtime-aware**: it looks up the model's recorded serving runtime in
-`~/.ai-platform/config/model-runtimes.yaml` (§8.3.3) and de-registers the **correct
-backend** from the gateway — `UnregisterVLLMModel(alias)` for a vLLM
-model, else `UnregisterOllamaModel(name)` — then deletes that model's
-`model-runtimes.yaml` entry.
+Removes a model from the local store: it stops the model's vLLM server
+(`StopByPort`), `hf cache rm`s the weights, unregisters it from the gateway
+(`UnregisterVLLMModel(alias)`), and deletes that model's `model-runtimes.yaml`
+entry (§8.3.3). On a terminal with no argument the user picks from the
+**installed** models; with an argument (or under `--json`) that repo is removed. On
+a terminal the user is asked to **confirm** before deleting. A model not in the
+store → a clear not-found error (exit 2).
 
 ### 8.3.5 Show
 
@@ -1428,8 +1393,8 @@ model, else `UnregisterOllamaModel(name)` — then deletes that model's
 ai models show <name>
 ```
 
-Shows metadata for a local model (`POST /api/show`): parameter size, quantization,
-family, format, and capabilities.
+Shows metadata for a local model: the recorded serving runtime choice plus its
+curated metadata (size, context, input, family).
 
 ---
 
@@ -1492,20 +1457,17 @@ ai doctor [<name>]
 
 * **Platform dependencies** — Microsandbox runtime + host virtualization (Apple
   Silicon / KVM), Docker/Podman
-* **The local-model inference tier** — reported as two **HOST-NATIVE** services
-  (Mode `host`, no container): **Ollama** (state from an HTTP probe of
-  `http://127.0.0.1:11434/api/version` — `running`/`stopped`; there is **no**
-  `aip-ollama` container) and **vLLM** (state from its host
-  probe at `127.0.0.1:<port>/v1 (per-model, base 8101)`; always **available** as a serving option,
-  though it may read `stopped` when not enabled).
+* **The local-model inference tier** — reported as one **HOST-NATIVE** service
+  (Mode `host`, no container): **vLLM** — the sole local-inference runtime — with
+  state from its host probe at `127.0.0.1:<port>/v1 (per-model, base 8101)`; always
+  **available** as a serving option, though it may read `stopped` when not enabled.
 * **The remaining service-tier services** (containers) — Presidio (analyzer +
   anonymizer back LiteLLM's opt-in `secret-masking` guardrail; reconciled only when
   it is enabled; architecture §15), LiteLLM (health + that the configured provider
   keys are present in the gateway — a missing key is warned, not fatal; architecture
   §17), Headroom (the input-compression service LiteLLM calls as a `pre_call`
   guardrail), the nginx proxy, and DNS (there are no optional host services).
-  *(hardware bring-up: installing / starting the host Ollama process and enabling
-  vLLM are not yet wired live.)*
+  *(hardware bring-up: installing / starting vLLM is not yet wired live.)*
 
 **Additionally**, it reports the **workspace-runtime** section (per-workspace
 runtime / virtualization check, §12.1) **only** when run inside a workspace
@@ -1529,15 +1491,14 @@ fail) conveys health, rather than the process exit code.
 
 The `ai` CLI is the single control plane for all host services — the platform
 containers `dns`, `presidio`, `valkey`, `redisinsight`, `litellm`, `headroom`, and
-`proxy`, plus the **HOST-NATIVE** local-model inference tier: `ollama` and Docker
-Model Runner (`vllm`, vLLM) (there are no optional host services).
+`proxy`, plus the **HOST-NATIVE** local-model inference tier: `vllm` (vLLM, the sole
+local-inference runtime) (there are no optional host services).
 The user never invokes `docker compose`, `launchctl`, or `systemctl` directly. The
-container tier runs as containers on `aip-net`; **Ollama is now a host-native
-service, NOT a container** (there is no `aip-ollama` container), and vLLM is
-Docker/host-managed — both are reported with Mode `host` (see architecture §5,
-"Host Services Control Plane"). (The Microsandbox workspace runtime is not a
-long-running service — it is driven by the top-level workspace verbs, not
-`ai services`.)
+container tier runs as containers on `aip-net`; **vLLM is host-native, NOT a
+container** (there is no `aip-ollama` container) — reported with Mode `host` (see
+architecture §5, "Host Services Control Plane"). (The Microsandbox workspace
+runtime is not a long-running service — it is driven by the top-level workspace
+verbs, not `ai services`.)
 
 ```bash id="c27a"
 ai services status                 # health + version of every service
@@ -1551,9 +1512,9 @@ ai services console [<service>]    # list/open a service's admin console (--prin
 ai services compose                # write a DEBUG-ONLY ~/.ai-platform/docker-compose.yaml mirroring the service-tier topology (NOT the launcher)
 ```
 
-`<service>`: `ollama` | `presidio` | `litellm` | `headroom` | `proxy` | `dns` |
+`<service>`: `vllm` | `presidio` | `litellm` | `headroom` | `proxy` | `dns` |
 `valkey` | `redisinsight` | `all` (no arg = all). All eight are **core** (always on);
-`ollama` is now the **host-native** local-model service rather than a container. The
+`vllm` is the **host-native** local-model service rather than a container. The
 optional host-service set is currently **empty**, so `enable`/`disable` have
 nothing to act on (retained for forward compatibility). (`presidio` reports
 "disabled" unless the `secret-masking` guardrail is selected at `ai setup`.)
@@ -1575,13 +1536,11 @@ Behavior:
   after a few seconds), so `ai services status` returns instead of blocking on a
   dead daemon.
 * the **local-model inference tier** is reported as **host-native** (Mode `host`,
-  no container): the `ollama` line's state comes from an HTTP probe of
-  `http://127.0.0.1:11434/api/version` (`running`/`stopped`), and a **new
-  `vllm` (vLLM)** line's state comes from its host probe at
+  no container): the **`vllm` (vLLM)** line — the sole local-inference runtime —
+  has state from its host probe at
   `127.0.0.1:<port>/v1 (per-model, base 8101)`. vLLM is **always available** as a serving option and
   may read `stopped` when not enabled. *(hardware bring-up: installing / starting
-  the host Ollama process, enabling vLLM, and the live end-to-end vLLM serving path
-  are not yet wired.)*
+  vLLM and the live end-to-end vLLM serving path are not yet wired.)*
 * lifecycle verbs (`start`/`stop`/`restart`) act on the **platform-owned container
   set** via the runtime abstraction (§6). With no service, or `all`, they act on
   every **enabled** container in **dependency order** (a disabled optional service
@@ -1840,7 +1799,7 @@ Options:
 
 ```bash id="c32"
 --workspace <project>
---service <microsandbox|ollama|presidio|valkey|redisinsight|litellm|headroom|proxy|dns>
+--service <microsandbox|vllm|presidio|valkey|redisinsight|litellm|headroom|proxy|dns>
 --tail
 --follow
 ```
@@ -1980,7 +1939,7 @@ number keys `1`-`9`. There is **no `:` command palette** — `q`/`ctrl+c` quits 
     `SandboxConfig`: image, memory, vcpus, workdir, user, idle timeout, detached,
     published ports, egress default + rule count, dns — `Manager.WorkspaceConfig`),
     plus a **Gateway Endpoints** block: the host nginx entry to LiteLLM that external
-    apps use to reach the served models — `models (OpenAI /v1)`, the Ollama API, the
+    apps use to reach the served models — `models (OpenAI /v1)`, the
     LiteLLM admin API + consoles, and an auth hint (external apps send a LiteLLM key).
     It is workspace-independent (one gateway per host), resolved from `runtime.yaml`
     (the base domain + `:18787`), so it shows regardless of workspace state.
@@ -2050,23 +2009,19 @@ number keys `1`-`9`. There is **no `:` command palette** — `q`/`ctrl+c` quits 
   selection needs no modifier. When mouse capture is ON the wheel scrolls the
   focused list/table/viewport (one row per notch); keyboard scroll (PgUp/PgDn/
   arrows) works either way.
-* **Local Models** — the local Ollama store ⨯ the **live ollama.com installable
-  library**, in one **NAME · DESCRIPTION** list (there is **no TAGS column** — tags
-  appear only in the per-model drill-down) split into an **Installed** section
-  (library models with ≥1 pulled tag, plus installed customs) and an **Installable**
-  section (the rest of the library). It is rendered as a **custom viewport-windowed
-  list (NOT a bubbles table)** so each section header can be bold + accent-coloured
-  with blank-line padding. `enter` opens a per-model **tag drill-down**: `space`
-  ticks 1+ NOT-installed tags, `enter`/`p` pulls the ticked tags, `d` removes the
-  installed tag under the cursor, `t` tests it (and `enter` on an installed tag opens
-  its `/api/show` detail); `esc` backs out to the list. List keys: `enter` manage
-  tags · `t` test (first installed tag) · `d` remove (first installed tag) · `r`
-  refresh. When the library endpoint is unreachable the cached copy is used and a
-  source-availability message is flashed; with no cache the Installable section is
-  empty with that message.
+* **Local Models** — the local vLLM store ⨯ the **curated installable list**
+  (`hf.CuratedModels`), in one **NAME · DESCRIPTION** list split into an
+  **Installed** section (downloaded repos plus installed customs) and an
+  **Installable** section (the rest of the curated list). It is rendered as a
+  **custom viewport-windowed list (NOT a bubbles table)** so each section header can
+  be bold + accent-coloured with blank-line padding. `enter` opens a per-model
+  detail; `space` ticks 1+ NOT-installed repos, `enter`/`p` pulls the ticked repos,
+  `d` removes the installed repo under the cursor, `t` tests it; `esc` backs out to
+  the list. List keys: `enter` detail · `t` test (first installed) · `d` remove
+  (first installed) · `r` refresh.
 * **Cloud Models** — the **models.dev catalog** ⨯ the gateway's live registered set,
   in a MODEL · PROVIDER · STATUS · CONTEXT table (registered-first). It shows ONLY
-  cloud providers — local `ollama/<name>` models are EXCLUDED (they live on the Local
+  cloud providers — local `vllm/<alias>` models are EXCLUDED (they live on the Local
   Models tab). `enter` opens the catalog metadata in a describe pane; `t` tests a
   **registered** model
   (round-trips it through the gateway; the catalog-driven system has no default
@@ -2183,7 +2138,7 @@ Behavior:
   argv, logs, or any `--json` envelope
 * `add` stores the key via the LiteLLM credential API (encrypted at rest) then
   registers that provider's catalog models (alongside every currently-keyed
-  provider + the installed Ollama models); `remove` deletes the key then re-syncs
+  provider + the installed local vLLM models); `remove` deletes the key then re-syncs
   (its models drop out)
 * the gateway/master key must be reachable (`ai setup`); when it is not, the
   command exits `3`. The workspace agent receives only a scoped LiteLLM **virtual

@@ -38,7 +38,6 @@ var litellmProviderPrefix = map[string]string{
 	"deepseek":    "deepseek",
 	"cohere":      "cohere",
 	"openrouter":  "openrouter",
-	"ollama":      "ollama",
 	"xai":         "xai",
 	"perplexity":  "perplexity",
 	"fireworks":   "fireworks_ai",

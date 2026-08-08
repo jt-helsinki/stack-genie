@@ -227,14 +227,15 @@ func ServiceNames() []string {
 
 // hostNativeServiceNames are the HOST-NATIVE inference runtimes: they run as host
 // PROCESSES (not aip-* containers), so their start/stop/restart is a host-exec path
-// (controlHostNativeService), NOT the container `Control` (`docker start/stop`).
-// Ollama (a host `ollama serve` on :11434) and vLLM (per-model detached `vllm serve`
-// loopback processes) both live here. Order is display order.
+// (controlHostNativeService), NOT the container `Control` (`docker start/stop`). vLLM
+// (per-model detached `vllm serve` loopback processes) is the sole one — Ollama was
+// removed. It is also listed in the registry (for status/logs), so ServiceNames
+// de-duplicates it.
 func hostNativeServiceNames() []string {
-	return []string{"ollama", "vllm"}
+	return []string{"vllm"}
 }
 
-// isHostNativeService reports whether name is a host-native runtime (ollama/vllm),
+// isHostNativeService reports whether name is a host-native runtime (vllm),
 // which is controlled via the host-exec path rather than the container runtime.
 func isHostNativeService(name string) bool {
 	return slices.Contains(hostNativeServiceNames(), name)
@@ -309,18 +310,16 @@ func ControlService(deps Deps, action, service string) ([]ServiceStatus, error) 
 
 // hostNative*  are the injectable seams for the host-native runtime lifecycle so
 // unit tests exercise ControlService's ROUTING without forking a real process.
-// They default to the real (hardware bring-up) implementations in ollama_host.go /
-// vllm_host.go. Tests override them (and a package TestMain neutralizes them so no
-// container-path test accidentally spawns a host process).
+// They default to the real (hardware bring-up) implementations in vllm_host.go. Tests
+// override them (and a package TestMain neutralizes them so no container-path test
+// accidentally spawns a host process).
 var (
-	hostNativeStartOllama = startHostOllamaService
-	hostNativeStopOllama  = stopHostOllamaService
-	hostNativeStartVLLM   = startVLLMServersHost
-	hostNativeStopVLLM    = stopVLLMServersHost
+	hostNativeStartVLLM = startVLLMServersHost
+	hostNativeStopVLLM  = stopVLLMServersHost
 )
 
 // controlHostNativeService applies a lifecycle action to a host-native runtime
-// (ollama/vllm) via the host-exec path, then re-reads the service status (mirroring
+// (vllm) via the host-exec path, then re-reads the service status (mirroring
 // the container Control path, which also returns the post-action statuses). An
 // unknown host-native name (defensive — ControlService validates first) is exit 2.
 func controlHostNativeService(deps Deps, action, service string) ([]ServiceStatus, error) {
@@ -336,8 +335,6 @@ func controlHostNativeService(deps Deps, action, service string) ([]ServiceStatu
 func applyHostNativeAction(action, service string) error {
 	var start, stop func() error
 	switch service {
-	case "ollama":
-		start, stop = hostNativeStartOllama, hostNativeStopOllama
 	case "vllm":
 		start, stop = hostNativeStartVLLM, hostNativeStopVLLM
 	default:

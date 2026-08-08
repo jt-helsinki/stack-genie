@@ -8,131 +8,6 @@ import (
 	"testing"
 )
 
-// TestRegisterOllamaModelsAddsOnlyMissing verifies the bulk local-model reconcile
-// registers installed Ollama models that are NOT already served and skips ones that
-// are — the recovery path behind the Local Models `r` refresh.
-func TestRegisterOllamaModelsAddsOnlyMissing(test *testing.T) {
-	var added []string
-	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
-		switch request.URL.Path {
-		case "/model/info":
-			// gemma4 already served + CORRECTLY routed (ollama_chat); qwen3-coder is not.
-			_, _ = writer.Write([]byte(`{"data":[{"model_name":"ollama/gemma4","litellm_params":{"model":"ollama_chat/gemma4"},"model_info":{"id":"g"}}]}`))
-		case "/model/new":
-			payload, _ := io.ReadAll(request.Body)
-			var body map[string]any
-			_ = json.Unmarshal(payload, &body)
-			added = append(added, body["model_name"].(string))
-			_, _ = writer.Write([]byte(`{}`))
-		default:
-			test.Errorf("unexpected %s %s", request.Method, request.URL.Path)
-		}
-	}))
-	defer server.Close()
-	test.Setenv("LITELLM_BASE_URL", server.URL)
-
-	manager := NewKeyManager(okProber())
-	got, err := manager.RegisterOllamaModels([]string{"gemma4", "qwen3-coder:30b"}, nil)
-	if err != nil {
-		test.Fatalf("RegisterOllamaModels: %v", err)
-	}
-	if len(got) != 1 || got[0] != "ollama/qwen3-coder:30b" {
-		test.Errorf("registered = %v, want [ollama/qwen3-coder:30b]", got)
-	}
-	if len(added) != 1 || added[0] != "ollama/qwen3-coder:30b" {
-		test.Errorf("gateway saw adds %v, want [ollama/qwen3-coder:30b] (gemma4 already served)", added)
-	}
-}
-
-// TestRegisterOllamaModelsHealsStaleRouting verifies the reconcile RE-REGISTERS an
-// already-served model whose routing is stale — one stored as "ollama/<name>" (Ollama's
-// /api/generate, which ignores chat messages + tools → empty agent output) is deleted and
-// re-added as "ollama_chat/<name>" (/api/chat). This is the fix for a model registered by
-// older code.
-func TestRegisterOllamaModelsHealsStaleRouting(test *testing.T) {
-	var deleted []string
-	var addedRouted []string
-	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
-		switch request.URL.Path {
-		case "/model/info":
-			// smollm served but STALE-routed on ollama/ (legacy /api/generate).
-			_, _ = writer.Write([]byte(`{"data":[{"model_name":"ollama/smollm:135m","litellm_params":{"model":"ollama/smollm:135m"},"model_info":{"id":"s"}}]}`))
-		case "/model/delete":
-			payload, _ := io.ReadAll(request.Body)
-			var body map[string]any
-			_ = json.Unmarshal(payload, &body)
-			deleted = append(deleted, body["id"].(string))
-			_, _ = writer.Write([]byte(`{}`))
-		case "/model/new":
-			payload, _ := io.ReadAll(request.Body)
-			var body map[string]any
-			_ = json.Unmarshal(payload, &body)
-			params, _ := body["litellm_params"].(map[string]any)
-			addedRouted = append(addedRouted, params["model"].(string))
-			_, _ = writer.Write([]byte(`{}`))
-		default:
-			test.Errorf("unexpected %s %s", request.Method, request.URL.Path)
-		}
-	}))
-	defer server.Close()
-	test.Setenv("LITELLM_BASE_URL", server.URL)
-
-	manager := NewKeyManager(okProber())
-	if _, err := manager.RegisterOllamaModels([]string{"smollm:135m"}, nil); err != nil {
-		test.Fatalf("RegisterOllamaModels: %v", err)
-	}
-	if len(deleted) != 1 || deleted[0] != "s" {
-		test.Errorf("stale model must be deleted, got %v", deleted)
-	}
-	if len(addedRouted) != 1 || addedRouted[0] != "ollama_chat/smollm:135m" {
-		test.Errorf("re-added routing = %v, want [ollama_chat/smollm:135m]", addedRouted)
-	}
-}
-
-// TestRegisterOllamaModelsDuplicateNameNoEmptyDelete verifies a duplicate name in the
-// input does NOT re-delete the just-added model with an empty id (which would abort the
-// reconcile): the freshly-added cache entry carries its RoutedTo so the second pass sees
-// it as correctly registered and skips it.
-func TestRegisterOllamaModelsDuplicateNameNoEmptyDelete(test *testing.T) {
-	var deleted []string
-	var added int
-	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
-		switch request.URL.Path {
-		case "/model/info":
-			// Nothing served yet — the first pass adds it, the second must skip it.
-			_, _ = writer.Write([]byte(`{"data":[]}`))
-		case "/model/new":
-			added++
-			_, _ = writer.Write([]byte(`{}`))
-		case "/model/delete":
-			payload, _ := io.ReadAll(request.Body)
-			var body map[string]any
-			_ = json.Unmarshal(payload, &body)
-			deleted = append(deleted, body["id"].(string))
-			_, _ = writer.Write([]byte(`{}`))
-		default:
-			test.Errorf("unexpected %s %s", request.Method, request.URL.Path)
-		}
-	}))
-	defer server.Close()
-	test.Setenv("LITELLM_BASE_URL", server.URL)
-
-	manager := NewKeyManager(okProber())
-	got, err := manager.RegisterOllamaModels([]string{"smollm:135m", "smollm:135m"}, nil)
-	if err != nil {
-		test.Fatalf("RegisterOllamaModels with a duplicate name errored: %v", err)
-	}
-	if added != 1 {
-		test.Errorf("duplicate name must be added once, got %d /model/new calls", added)
-	}
-	if len(deleted) != 0 {
-		test.Errorf("no model should be deleted, got %v", deleted)
-	}
-	if len(got) != 1 {
-		test.Errorf("added list = %v, want one entry", got)
-	}
-}
-
 // TestSetCredentialRequestShape verifies SetCredential deletes any prior credential
 // of the same name then POSTs /credentials with the documented body
 // (credential_name, credential_info.custom_llm_provider, credential_values.api_key)
@@ -263,32 +138,6 @@ func TestAddModelRequestShape(test *testing.T) {
 	}
 }
 
-// TestAddModelOllamaShape verifies an Ollama model add: api_base points at the
-// in-network Ollama and no credential is referenced.
-func TestAddModelOllamaShape(test *testing.T) {
-	var body map[string]any
-	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
-		payload, _ := io.ReadAll(request.Body)
-		_ = json.Unmarshal(payload, &body)
-		_, _ = writer.Write([]byte(`{}`))
-	}))
-	defer server.Close()
-	test.Setenv("LITELLM_BASE_URL", server.URL)
-
-	manager := NewKeyManager(okProber())
-	if err := manager.AddModel("ollama/gemma4",
-		ModelParams{Model: "ollama/gemma4", APIBase: OllamaAPIBase}, ModelInfo{}); err != nil {
-		test.Fatalf("AddModel: %v", err)
-	}
-	params, _ := body["litellm_params"].(map[string]any)
-	if params["api_base"] != OllamaAPIBase {
-		test.Errorf("api_base = %v, want %s", params["api_base"], OllamaAPIBase)
-	}
-	if _, present := params["litellm_credential_name"]; present {
-		test.Errorf("an Ollama model must not reference a credential, got %v", params["litellm_credential_name"])
-	}
-}
-
 // TestDeleteModelRequestShape verifies DeleteModel POSTs /model/delete with the id.
 func TestDeleteModelRequestShape(test *testing.T) {
 	var body map[string]any
@@ -321,7 +170,7 @@ func TestListModelsParses(test *testing.T) {
 		}
 		_, _ = writer.Write([]byte(`{"data":[
 			{"model_name":"openai/gpt-5.5","litellm_params":{"model":"openai/gpt-5.5"},"model_info":{"id":"id-1"}},
-			{"model_name":"ollama/gemma4","litellm_params":{"model":"ollama/gemma4"},"model_info":{"id":"id-2"}},
+			{"model_name":"vllm/my-qwen","litellm_params":{"model":"openai/my-qwen"},"model_info":{"id":"id-2"}},
 			{"model_name":"openai/gpt-5.5","litellm_params":{"model":"openai/gpt-5.5"},"model_info":{"id":"dup"}}
 		]}`))
 	}))
@@ -343,8 +192,8 @@ func TestListModelsParses(test *testing.T) {
 	if got := byName["openai/gpt-5.5"]; got.ID != "id-1" || got.Provider != "openai" {
 		test.Errorf("openai model = %+v, want id-1 / openai", got)
 	}
-	if got := byName["ollama/gemma4"]; got.ID != "id-2" || got.Provider != "ollama" {
-		test.Errorf("ollama model = %+v, want id-2 / ollama", got)
+	if got := byName["vllm/my-qwen"]; got.ID != "id-2" || got.Provider != "openai" {
+		test.Errorf("vllm model = %+v, want id-2 / openai", got)
 	}
 }
 
@@ -353,160 +202,6 @@ func TestAddModelEmptyName(test *testing.T) {
 	manager := NewKeyManager(okProber())
 	if err := manager.AddModel("", ModelParams{Model: "x"}, ModelInfo{}); err == nil {
 		test.Error("AddModel with empty name should error")
-	}
-}
-
-// TestRegisterOllamaModelRequestShape verifies an Ollama registration: it first
-// lists models (GET /model/info), and — when not already present — POSTs /model/new
-// with model_name = "ollama/<name>" verbatim, litellm_params.model = the same, and
-// api_base = the in-network Ollama (OllamaAPIBase). No credential is referenced.
-func TestRegisterOllamaModelRequestShape(test *testing.T) {
-	var addBody map[string]any
-	var sawList bool
-	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
-		switch {
-		case request.Method == http.MethodGet && request.URL.Path == "/model/info":
-			sawList = true
-			_, _ = writer.Write([]byte(`{"data":[]}`)) // nothing registered yet
-		case request.Method == http.MethodPost && request.URL.Path == "/model/new":
-			payload, _ := io.ReadAll(request.Body)
-			_ = json.Unmarshal(payload, &addBody)
-			_, _ = writer.Write([]byte(`{}`))
-		default:
-			test.Errorf("unexpected %s %s", request.Method, request.URL.Path)
-		}
-	}))
-	defer server.Close()
-	test.Setenv("LITELLM_BASE_URL", server.URL)
-
-	manager := NewKeyManager(okProber())
-	if err := manager.RegisterOllamaModel("llama3.2:3b", false); err != nil {
-		test.Fatalf("RegisterOllamaModel: %v", err)
-	}
-	if !sawList {
-		test.Error("RegisterOllamaModel should list existing models before adding")
-	}
-	if addBody["model_name"] != "ollama/llama3.2:3b" {
-		test.Errorf("model_name = %v, want ollama/llama3.2:3b", addBody["model_name"])
-	}
-	params, _ := addBody["litellm_params"].(map[string]any)
-	// PUBLIC handle stays ollama/<name>, but LiteLLM ROUTES on ollama_chat/<name> so it
-	// uses Ollama's /api/chat (messages + tools + streaming), not the legacy /api/generate.
-	if params["model"] != "ollama_chat/llama3.2:3b" {
-		test.Errorf("litellm_params.model = %v, want ollama_chat/llama3.2:3b", params["model"])
-	}
-	if params["api_base"] != OllamaAPIBase {
-		test.Errorf("api_base = %v, want %s", params["api_base"], OllamaAPIBase)
-	}
-	if _, present := params["litellm_credential_name"]; present {
-		test.Errorf("an Ollama model must not reference a credential, got %v", params["litellm_credential_name"])
-	}
-	// drop_params guards a completion-only model from a tools-related 500 (tools dropped).
-	if params["drop_params"] != true {
-		test.Errorf("litellm_params.drop_params = %v, want true", params["drop_params"])
-	}
-	// Registered with supportsTools=false, so model_info records it as non-tool-capable.
-	info, _ := addBody["model_info"].(map[string]any)
-	if info["supports_function_calling"] != false {
-		test.Errorf("model_info.supports_function_calling = %v, want false", info["supports_function_calling"])
-	}
-}
-
-// TestRegisterOllamaModelSkipsWhenPresent verifies registration is a no-op (no
-// /model/new) when a model with the same model_name already exists.
-func TestRegisterOllamaModelSkipsWhenPresent(test *testing.T) {
-	var sawAdd bool
-	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
-		switch {
-		case request.Method == http.MethodGet && request.URL.Path == "/model/info":
-			// Already registered CORRECTLY: routed on ollama_chat + matching capability, so
-			// RegisterOllamaModel must skip (no delete, no /model/new).
-			_, _ = writer.Write([]byte(`{"data":[
-				{"model_name":"ollama/gemma4","litellm_params":{"model":"ollama_chat/gemma4"},"model_info":{"id":"id-1","supports_function_calling":true}}
-			]}`))
-		case request.URL.Path == "/model/new":
-			sawAdd = true
-			_, _ = writer.Write([]byte(`{}`))
-		default:
-			test.Errorf("unexpected %s %s", request.Method, request.URL.Path)
-		}
-	}))
-	defer server.Close()
-	test.Setenv("LITELLM_BASE_URL", server.URL)
-
-	manager := NewKeyManager(okProber())
-	if err := manager.RegisterOllamaModel("gemma4", true); err != nil {
-		test.Fatalf("RegisterOllamaModel: %v", err)
-	}
-	if sawAdd {
-		test.Error("RegisterOllamaModel should skip /model/new when the model is already registered")
-	}
-}
-
-// TestUnregisterOllamaModelDeletesByID verifies it finds the entry whose model_name
-// == "ollama/<name>" and POSTs /model/delete with that entry's id.
-func TestUnregisterOllamaModelDeletesByID(test *testing.T) {
-	var deleteBody map[string]any
-	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
-		switch {
-		case request.Method == http.MethodGet && request.URL.Path == "/model/info":
-			_, _ = writer.Write([]byte(`{"data":[
-				{"model_name":"ollama/llama3.2:3b","litellm_params":{"model":"ollama/llama3.2:3b"},"model_info":{"id":"id-llama"}},
-				{"model_name":"openai/gpt-5.5","litellm_params":{"model":"openai/gpt-5.5"},"model_info":{"id":"id-gpt"}}
-			]}`))
-		case request.Method == http.MethodPost && request.URL.Path == "/model/delete":
-			payload, _ := io.ReadAll(request.Body)
-			_ = json.Unmarshal(payload, &deleteBody)
-			_, _ = writer.Write([]byte(`{}`))
-		default:
-			test.Errorf("unexpected %s %s", request.Method, request.URL.Path)
-		}
-	}))
-	defer server.Close()
-	test.Setenv("LITELLM_BASE_URL", server.URL)
-
-	manager := NewKeyManager(okProber())
-	if err := manager.UnregisterOllamaModel("llama3.2:3b"); err != nil {
-		test.Fatalf("UnregisterOllamaModel: %v", err)
-	}
-	if deleteBody["id"] != "id-llama" {
-		test.Errorf("delete id = %v, want id-llama (the matching ollama/<name> entry)", deleteBody["id"])
-	}
-}
-
-// TestUnregisterOllamaModelNoOpWhenAbsent verifies it is a no-op (no /model/delete,
-// no error) when no model with that model_name is registered.
-func TestUnregisterOllamaModelNoOpWhenAbsent(test *testing.T) {
-	var sawDelete bool
-	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
-		switch {
-		case request.Method == http.MethodGet && request.URL.Path == "/model/info":
-			_, _ = writer.Write([]byte(`{"data":[
-				{"model_name":"openai/gpt-5.5","litellm_params":{"model":"openai/gpt-5.5"},"model_info":{"id":"id-gpt"}}
-			]}`))
-		case request.URL.Path == "/model/delete":
-			sawDelete = true
-			_, _ = writer.Write([]byte(`{}`))
-		default:
-			test.Errorf("unexpected %s %s", request.Method, request.URL.Path)
-		}
-	}))
-	defer server.Close()
-	test.Setenv("LITELLM_BASE_URL", server.URL)
-
-	manager := NewKeyManager(okProber())
-	if err := manager.UnregisterOllamaModel("ghost"); err != nil {
-		test.Fatalf("UnregisterOllamaModel(absent) should be a no-op, got %v", err)
-	}
-	if sawDelete {
-		test.Error("UnregisterOllamaModel should not call /model/delete when the model is absent")
-	}
-}
-
-// TestOllamaModelName pins the public-handle convention.
-func TestOllamaModelName(test *testing.T) {
-	if got := OllamaModelName("llama3.2:3b"); got != "ollama/llama3.2:3b" {
-		test.Errorf("OllamaModelName = %q, want ollama/llama3.2:3b", got)
 	}
 }
 

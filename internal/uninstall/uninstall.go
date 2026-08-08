@@ -47,22 +47,19 @@ type Options struct {
 	// removes their on-disk artifacts.
 	RemoveDeps []ExternalDep
 
-	// RemoveRuntimes opts into also removing the HOST-NATIVE model runtimes the
-	// platform sits on — Ollama and vLLM (binaries + per-OS install). The caller
+	// RemoveRuntimes opts into also removing the HOST-NATIVE model runtime the
+	// platform sits on — vLLM (binary + per-OS install; Ollama was removed). The caller
 	// decides it (a TTY prompt that DEFAULTS TO YES, or the `--keep-runtimes` flag
-	// to opt out under --json/automation). When false the runtimes and their
-	// binaries are left installed. Either way the downloaded MODELS
-	// (volumes/models/{ollama,vllm}) survive a plain uninstall — only --purge
-	// removes those (via the RemoveAll of ~/.ai-platform).
+	// to opt out under --json/automation). When false the runtime and its binary are
+	// left installed. Either way the downloaded MODELS (volumes/models/vllm) survive a
+	// plain uninstall — only --purge removes those (via the RemoveAll of ~/.ai-platform).
 	RemoveRuntimes bool
 }
 
 // Report describes what was removed.
 type Report struct {
 	StoppedWorkspaces int      `json:"stopped_workspaces"`
-	StoppedHostOllama bool     `json:"stopped_host_ollama,omitempty"` // host-native `ollama serve` stopped (host ollama_mode)
-	RemovedHostOllama bool     `json:"removed_host_ollama,omitempty"` // host-native Ollama runtime removal attempted (RemoveRuntimes; bring-up stub)
-	RemovedVLLM       bool     `json:"removed_vllm,omitempty"`        // host-native vLLM runtime removal attempted (RemoveRuntimes; bring-up stub)
+	RemovedVLLM       bool     `json:"removed_vllm,omitempty"` // host-native vLLM runtime removal attempted (RemoveRuntimes; bring-up stub)
 	RemovedContainers int      `json:"removed_containers"`
 	RemovedImages     int      `json:"removed_images"`
 	CleanedRC         []string `json:"cleaned_rc"`
@@ -200,22 +197,15 @@ func Run(options Options, prober runtime.Prober, progress Progress) (Report, err
 	// `stop`). This only halts the VM runtime instances; workspace DATA (project source
 	// + /persist overlays are host bind mounts) is deliberately left untouched.
 	report.StoppedWorkspaces = stopWorkspaces(prober, record)
-	// Host Ollama mode: there is no aip-ollama CONTAINER for removeContainers to
-	// stop, so stop the host-native `ollama serve` the platform started (best-effort;
-	// never fails uninstall). Container mode is a no-op, so that path is unchanged.
-	if stopHostOllama(prober, record) {
-		report.StoppedHostOllama = true
-	}
-	// Optionally remove the host-native model runtimes (Ollama + vLLM) themselves —
-	// the user opted in (a TTY prompt that DEFAULTS TO YES, or the absence of
-	// --keep-runtimes). This stops every vLLM server and then attempts the per-OS
-	// runtime removal. It NEVER deletes the downloaded models (only --purge does);
-	// when RemoveRuntimes is false the runtimes + binaries are left installed.
+	// vLLM is the sole host-native model runtime (Ollama was removed): stop every
+	// running `vllm serve` the platform started (best-effort; never fails uninstall).
+	// There is no aip-* container for it, so removeContainers won't catch it.
+	stopVLLMServers(prober, record)
+	// Optionally remove the host-native vLLM runtime itself — the user opted in (a TTY
+	// prompt that DEFAULTS TO YES, or the absence of --keep-runtimes). It NEVER deletes
+	// the downloaded models (only --purge does); when RemoveRuntimes is false the
+	// runtime + binary are left installed.
 	if options.RemoveRuntimes {
-		stopVLLMServers(prober, record)
-		if removeHostOllama(record) {
-			report.RemovedHostOllama = true
-		}
 		if removeVLLM(record) {
 			report.RemovedVLLM = true
 		}
@@ -328,7 +318,7 @@ func Plan(purge bool) []string {
 	} else {
 		steps = append(steps, "remove platform state (~/.ai-platform) but KEEP downloaded models (volumes/models) — pass --purge to remove them too")
 	}
-	steps = append(steps, "ask whether to remove the host-native Ollama + vLLM runtimes too (defaults to yes; --keep-runtimes to keep them; models are kept unless --purge)")
+	steps = append(steps, "ask whether to remove the host-native vLLM runtime too (defaults to yes; --keep-runtimes to keep them; models are kept unless --purge)")
 	steps = append(steps, "ask, per external dependency (msb), whether to uninstall it too")
 	steps = append(steps, "leave your project directories untouched")
 	return steps
@@ -407,27 +397,6 @@ func stopWorkspaces(prober runtime.Prober, record func(string)) int {
 	return stopped
 }
 
-// stopHostOllama stops the HOST-NATIVE Ollama process the platform started. Ollama
-// is always host-native (there is no aip-ollama CONTAINER for removeContainers to
-// stop), but a host `ollama serve` the platform launched may still be running;
-// leaving it would orphan a process. It NEVER uninstalls the user's Ollama BINARY
-// (they installed it — the platform only stops what it started) and NEVER deletes
-// the host model store (~/.ai-platform/volumes/models) — only --purge removes that,
-// via the RemoveAll of ~/.ai-platform.
-//
-// hardware bring-up: the real per-OS stop is platform-specific — macOS
-// `launchctl` unload of a LaunchAgent, Linux `systemctl --user stop ollama`, or a
-// plain `pkill`. This is a documented best-effort STUB that attempts a safe
-// `pkill -f "ollama serve"` and never fails the uninstall (any error — no matching
-// process, pkill absent — is ignored); the precise per-OS mechanism is wired at
-// hardware bring-up. Always returns true (the teardown is always attempted), the
-// surfaced outcome recorded in the Report.
-func stopHostOllama(prober runtime.Prober, record func(string)) bool {
-	_, _ = prober.Run("pkill", "-f", "ollama serve")
-	record("Stopped the host-native Ollama process; kept the Ollama binary and the host model store")
-	return true
-}
-
 // stopVLLMServers stops the HOST-NATIVE vLLM servers the platform started. vLLM
 // serves one detached `vllm serve <model>` process per served model on the host
 // loopback (see internal/vllm); leaving them would orphan those processes. It
@@ -444,24 +413,6 @@ func stopHostOllama(prober runtime.Prober, record func(string)) bool {
 func stopVLLMServers(prober runtime.Prober, record func(string)) {
 	_, _ = prober.Run("pkill", "-f", "vllm serve")
 	record("Stopped the host-native vLLM server process(es); kept the vLLM model store")
-}
-
-// removeHostOllama removes the HOST-NATIVE Ollama runtime (binary + install), the
-// inverse of the user having installed it. It is called only when the user opted
-// into runtime removal (Options.RemoveRuntimes) and is ALWAYS best-effort: it never
-// fails the uninstall and never deletes the downloaded model store (only --purge
-// removes ~/.ai-platform/volumes/models). Always returns true (the removal is
-// always attempted), the outcome recorded in the Report.
-//
-// hardware bring-up: the real per-OS uninstall mutates the host — macOS
-// `brew uninstall ollama` (or removing /Applications/Ollama.app + ~/.ollama),
-// Linux `systemctl disable --now ollama` + the ollama package. Performing that
-// destructive host mutation is deferred until validated on a provisioned host, so
-// this is a documented STUB that records the runtime-removal intent without a
-// destructive command; when wired it runs the per-OS uninstall here.
-func removeHostOllama(record func(string)) bool {
-	record("Removed the host-native Ollama runtime (binary + install); kept the downloaded models (hardware bring-up: per-OS uninstall)")
-	return true
 }
 
 // removeVLLM removes the HOST-NATIVE vLLM runtime (install), the inverse of the
@@ -584,9 +535,9 @@ func removeVolumes(prober runtime.Prober) int {
 }
 
 // modelsVolumeSubdir is the downloaded-model store under VolumesDir
-// (~/.ai-platform/volumes/models). Kept verbatim in sync with
-// setup.ollamaModelsVolume; a plain (non-purge) uninstall preserves it so a
-// reinstall need not re-download tens of GB of models.
+// (~/.ai-platform/volumes/models — the vLLM weights live in its `vllm` subdir). A
+// plain (non-purge) uninstall preserves it so a reinstall need not re-download tens
+// of GB of models.
 const modelsVolumeSubdir = "models"
 
 // removePlatformStateKeepModels removes every entry under ~/.ai-platform EXCEPT

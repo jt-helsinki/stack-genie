@@ -11,6 +11,7 @@ package setup
 // and removed by `ai uninstall --purge`.
 
 import (
+	"github.com/jt-helsinki/stack-genie/internal/hf"
 	"github.com/jt-helsinki/stack-genie/internal/pyenv"
 	"github.com/jt-helsinki/stack-genie/internal/vllm"
 )
@@ -70,4 +71,34 @@ func ensureVLLMInstalled(progress func(string)) {
 	}
 	progress("  • vLLM install ran but the binary was not detected — check `" +
 		vllm.ManagedVenvDir + "/bin/vllm --version`")
+}
+
+// hfDetectFn / installHFFn are the injectable seams for the Hugging Face CLI detect +
+// install so tests exercise ensureHFInstalled without a real toolchain or network.
+var (
+	hfDetectFn  = hf.Detect
+	installHFFn = hf.Install
+)
+
+// ensureHFInstalled installs the Hugging Face CLI (`hf`) into the platform-managed host
+// venv when it is not already present, so model management (`ai models list|pull|rm`,
+// which shells out to `hf`) works after a plain `ai setup`. Detect-gated (installs once)
+// and STRICTLY best-effort — any failure is reported via progress and swallowed; it
+// NEVER fails `ai setup`. hardware bring-up: the real pip download runs only on a
+// provisioned host.
+func ensureHFInstalled(progress func(string)) {
+	if hfDetectFn() {
+		progress("  • Hugging Face CLI (hf) present in the platform venv")
+		return
+	}
+	progress("  • installing the Hugging Face CLI (hf) into the platform venv…")
+	if err := installHFFn(); err != nil {
+		progress("  • hf install skipped (" + err.Error() + ") — model management needs it; install later with `ai setup`")
+		return
+	}
+	if hfDetectFn() {
+		progress("  • Hugging Face CLI (hf) installed in the platform venv")
+		return
+	}
+	progress("  • hf install ran but the binary was not detected")
 }

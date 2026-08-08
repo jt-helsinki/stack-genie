@@ -16,14 +16,6 @@ import (
 	"github.com/jt-helsinki/stack-genie/internal/workspace"
 )
 
-// unreachableOllama points the Ollama client at a closed loopback port so
-// installedOllamaModels/syncLocalModelsToGateway degrade deterministically to
-// "nothing installed" (connection refused) without any real network dependency.
-func unreachableOllama(test *testing.T) {
-	test.Helper()
-	test.Setenv("OLLAMA_BASE_URL", "http://127.0.0.1:1/ollama")
-}
-
 // seedProjectIndex writes a global projects index with one entry so the
 // state-backed loaders (projectInfo/resolveProjectRoot/lifecycleLogPath) resolve.
 func seedProjectIndex(test *testing.T, name, root string) {
@@ -64,7 +56,7 @@ func TestCatalogIDsForCredentials(test *testing.T) {
 func TestServiceStatusByName(test *testing.T) {
 	statuses := []setup.ServiceStatus{
 		{Name: "litellm", State: "running"},
-		{Name: "ollama", State: "stopped"},
+		{Name: "vllm", State: "stopped"},
 	}
 	fetch := func() ([]setup.ServiceStatus, error) { return statuses, nil }
 
@@ -166,25 +158,6 @@ func TestLifecycleLogPathAndOpen(test *testing.T) {
 	}
 	if !strings.Contains(string(content), "=== ai start app @") {
 		test.Errorf("lifecycle log missing its self-describing header: %q", content)
-	}
-}
-
-// TestSyncLocalModelsToGatewayDegradesWhenOllamaDown: with Ollama unreachable
-// there are no installed models, so the sync short-circuits to (nil, nil) and never
-// touches the gateway — a transient Ollama outage must not derail the refresh.
-func TestSyncLocalModelsToGatewayDegradesWhenOllamaDown(test *testing.T) {
-	test.Setenv("HOME", test.TempDir())
-	unreachableOllama(test)
-
-	if got := installedOllamaModels(); got != nil {
-		test.Errorf("installedOllamaModels with Ollama down must be nil, got %v", got)
-	}
-	names, err := syncLocalModelsToGateway()
-	if err != nil {
-		test.Errorf("sync with no installed models must not error, got %v", err)
-	}
-	if names != nil {
-		test.Errorf("sync with no installed models must register nothing, got %v", names)
 	}
 }
 

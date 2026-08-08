@@ -76,11 +76,11 @@ func doctorServiceByName(services []doctor.Service, name string) doctor.Service 
 	return doctor.Service{}
 }
 
-// mapDoctorServices lists the host-native Ollama backend, skips the microVM runtime
-// line, and folds an actionable hint into a down Ollama's detail.
+// mapDoctorServices lists the host-native vLLM backend (carrying its own Detail from
+// setup.vllmStatus) and skips the microVM runtime line.
 func TestMapDoctorServicesHostInference(test *testing.T) {
 	statuses := []setup.ServiceStatus{
-		{Name: "ollama", Mode: "host", Healthy: false, State: "stopped"},
+		{Name: "vllm", Mode: "host", Healthy: false, State: "stopped", Detail: "not installed — run `ai models install-vllm`"},
 		{Name: "litellm", Mode: "container", Healthy: true, State: "running"},
 		{Name: "microsandbox", Mode: "runtime", Healthy: true},
 	}
@@ -89,24 +89,23 @@ func TestMapDoctorServicesHostInference(test *testing.T) {
 	if doctorServiceByName(services, "microsandbox").Name != "" {
 		test.Fatal("the microVM runtime (Mode runtime) must not be listed as a service")
 	}
-	ollama := doctorServiceByName(services, "ollama")
-	if ollama.Name == "" {
-		test.Fatal("host-native Ollama must be listed")
+	vllm := doctorServiceByName(services, "vllm")
+	if vllm.Name == "" {
+		test.Fatal("host-native vLLM must be listed")
 	}
-	if !strings.Contains(ollama.State, "brew install ollama") {
-		test.Fatalf("down Ollama should carry an install hint, got State=%q", ollama.State)
+	if !strings.Contains(vllm.Detail, "install-vllm") {
+		test.Fatalf("down vLLM should carry its install detail, got Detail=%q", vllm.Detail)
 	}
 }
 
-// A healthy host inference backend passes through without a synthetic hint (the
-// detail stays as the real status detail).
+// A healthy host inference backend passes through unchanged.
 func TestMapDoctorServicesHealthyPassthrough(test *testing.T) {
 	statuses := []setup.ServiceStatus{
-		{Name: "ollama", Mode: "host", Healthy: true, State: "running"},
+		{Name: "vllm", Mode: "host", Healthy: true, State: "running"},
 	}
 	services := mapDoctorServices(statuses, "linux")
-	if state := doctorServiceByName(services, "ollama").State; state != "running" {
-		test.Fatalf("healthy Ollama State should be untouched, got %q", state)
+	if state := doctorServiceByName(services, "vllm").State; state != "running" {
+		test.Fatalf("healthy vLLM State should be untouched, got %q", state)
 	}
 }
 

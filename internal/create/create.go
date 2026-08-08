@@ -16,12 +16,13 @@ import (
 
 	"github.com/jt-helsinki/stack-genie/internal/config"
 	"github.com/jt-helsinki/stack-genie/internal/contextopt"
+	"github.com/jt-helsinki/stack-genie/internal/hf"
 	"github.com/jt-helsinki/stack-genie/internal/litellm"
-	"github.com/jt-helsinki/stack-genie/internal/ollama"
 	"github.com/jt-helsinki/stack-genie/internal/output"
 	"github.com/jt-helsinki/stack-genie/internal/project"
 	"github.com/jt-helsinki/stack-genie/internal/runtime"
 	"github.com/jt-helsinki/stack-genie/internal/sysinfo"
+	"github.com/jt-helsinki/stack-genie/internal/vllm"
 )
 
 // Result is what a successful create produces, for the caller to render (the CLI's
@@ -243,72 +244,77 @@ func UsableHostMemoryGB() int {
 	return 0
 }
 
-// ollamaClient constructs the local-store client used to pull the Graphify model. A
-// package var so tests inject a fake; production wires ollama.RealClient.
-var ollamaClient = ollama.RealClient
+// hfClient constructs the Hugging Face model-store client used to download the Graphify
+// model. A package var so tests inject a fake; production wires hf.RealClient.
+var hfClient = hf.RealClient
 
-// modelRegistrar registers a freshly-pulled Ollama model in the gateway so it gains a
+// modelRegistrar registers a freshly-pulled vLLM model in the gateway so it gains a
 // stable id and shows in the live catalogue.
 type modelRegistrar interface {
-	RegisterOllamaModel(name string, supportsTools bool) error
+	RegisterVLLMModel(alias, model, apiBase string, supportsTools bool) error
 }
 
 // newRegistrar builds the gateway registrar. A package var so tests inject a fake;
 // production binds a LiteLLM KeyManager over the real container prober.
 var newRegistrar = func() modelRegistrar { return litellm.NewKeyManager(runtime.RealProber()) }
 
-// pullGraphifyModelIfAbsent pulls the configured Graphify Ollama model into the local
-// store (and registers it in the gateway) unless already installed. BEST-EFFORT: any
-// failure is returned as a warning, never an error — the model can be pulled later with
-// `ai models pull`.
-func pullGraphifyModelIfAbsent(ref string, report func(Progress)) []string {
-	ref = strings.TrimSpace(ref)
-	if ref == "" {
+// graphifyVLLMServer is the host-side vLLM server manager slice used to serve the
+// Graphify model: it starts/locates a per-model `vllm serve` endpoint. Production binds
+// *vllm.Manager; tests a fake.
+type graphifyVLLMServer interface {
+	EnsureServed(alias, model string) (port int, endpoint string, err error)
+}
+
+// vLLM seams — package vars so tests inject fakes without touching the host.
+var (
+	vllmDetectFn       = vllm.Detect
+	vllmPullFn         = vllm.Pull
+	vllmManagerFactory = func() graphifyVLLMServer {
+		return vllm.NewManager(vllm.Config{Runner: vllm.RealRunner{}, Probe: vllm.RealHealthProbe()})
+	}
+)
+
+// graphifyAlias derives the gateway alias for a Graphify vLLM repo id: the id's last
+// path segment (e.g. "mlx-community/Qwen2.5-7B-Instruct-4bit" → "Qwen2.5-7B-Instruct-4bit").
+func graphifyAlias(repo string) string {
+	if slash := strings.LastIndexByte(repo, '/'); slash >= 0 && slash < len(repo)-1 {
+		return repo[slash+1:]
+	}
+	return repo
+}
+
+// pullGraphifyModelIfAbsent downloads the configured Graphify vLLM model (a curated
+// Hugging Face repo id) into the vLLM store, starts its per-model server, and registers
+// it in the gateway as vllm/<alias>. BEST-EFFORT: any failure is returned as a warning,
+// never an error — the model can be pulled later with `ai models pull`. When vLLM is not
+// installed it returns a warning pointing at `ai models install-vllm`.
+func pullGraphifyModelIfAbsent(repo string, report func(Progress)) []string {
+	repo = strings.TrimSpace(repo)
+	if repo == "" {
 		return nil
 	}
-	client := ollamaClient()
-	if installed, err := client.List(); err == nil && modelInstalled(installed, ref) {
-		return nil
+	if installed, _ := vllmDetectFn(); !installed {
+		return []string{fmt.Sprintf("vLLM is not installed — the Graphify model %q was not pulled; install it with `ai models install-vllm`, then `ai models pull %s`", repo, repo)}
 	}
-	step := "pulling Graphify model " + ref
+	alias := graphifyAlias(repo)
+	step := "pulling Graphify model " + repo
 	report(Progress{Step: step})
-	if err := client.Pull(ref, func(progress ollama.PullProgress) {
-		report(Progress{Step: step, Completed: progress.Completed, Total: progress.Total})
-	}); err != nil {
-		return []string{fmt.Sprintf("could not pull Graphify model %q: %s — pull it later with `ai models pull %s`", ref, err, ref)}
+	if err := vllmPullFn(repo); err != nil {
+		return []string{fmt.Sprintf("could not prepare Graphify model %q: %s — pull it later with `ai models pull %s`", repo, err, repo)}
 	}
-	report(Progress{Step: "registering Graphify model " + ref + " with the gateway"})
-	_ = newRegistrar().RegisterOllamaModel(ref, ollamaSupportsTools(client, ref))
-	return nil
-}
-
-// ollamaSupportsTools best-effort reports whether an installed Ollama model advertises
-// tool/function-calling support. On any probe error it returns true (unknown → assume
-// capable), matching the gateway's default so a probe hiccup never wrongly disables tools.
-func ollamaSupportsTools(client ollama.Client, ref string) bool {
-	info, err := client.Show(ref)
+	if err := hfClient().Download(repo, func(string) {}); err != nil {
+		return []string{fmt.Sprintf("could not download Graphify model %q: %s — pull it later with `ai models pull %s`", repo, err, repo)}
+	}
+	port, _, err := vllmManagerFactory().EnsureServed(alias, repo)
 	if err != nil {
-		return true
+		return []string{fmt.Sprintf("could not serve Graphify model %q: %s — pull it later with `ai models pull %s`", repo, err, repo)}
 	}
-	for _, capability := range info.Capabilities {
-		if capability == "tools" {
-			return true
-		}
-	}
-	return false
-}
-
-// modelInstalled reports whether ref matches an installed Ollama model, treating a bare
-// name as name:latest (Ollama's default tag).
-func modelInstalled(installed []ollama.Model, ref string) bool {
-	want := ref
-	if !strings.Contains(want, ":") {
-		want += ":latest"
-	}
-	for _, model := range installed {
-		if model.Name == ref || model.Name == want {
-			return true
-		}
-	}
-	return false
+	report(Progress{Step: "registering Graphify model " + repo + " with the gateway"})
+	_ = config.SetModelRuntime(config.ModelRuntimeChoice{
+		Alias: alias, Model: repo, Runtime: config.RuntimeVLLM,
+		Endpoint: vllm.Endpoint(port), Status: "registered",
+	})
+	// vLLM tool support is model-dependent and not probed here; unknown defaults to capable.
+	_ = newRegistrar().RegisterVLLMModel(alias, repo, vllm.ContainerEndpoint(port), true)
+	return nil
 }

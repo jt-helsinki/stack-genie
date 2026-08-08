@@ -36,7 +36,7 @@ const (
 // (<UISubdomain>.<domain>:GatewayPort) — its direct Port is internal-only now, so
 // its host-reachable address + console are the nginx subdomain forms, NOT
 // http://host:Port. GatewayPath, when set, is the prefix the host CLI reaches a
-// non-UI service through the gateway at (e.g. ollama → "/ollama").
+// non-UI service through the gateway at (e.g. litellm → "/llm").
 type Endpoint struct {
 	Port            int
 	ConsolePath     string
@@ -48,7 +48,7 @@ type Endpoint struct {
 
 // GatewayPort is the single host port the nginx gateway (aip-proxy) publishes —
 // the SOLE host entry to the service tier. Every UI subdomain and every host-CLI
-// gateway path (/ollama, /llm, /v1) is reached on this port. It mirrors the
+// gateway path (/llm, /v1) is reached on this port. It mirrors the
 // internal/setup proxyHostPort const (kept here so the leaf services package — and
 // its projections — owns the value without importing setup).
 const GatewayPort = 18787
@@ -130,16 +130,15 @@ var nativeRuntime = Native{
 // the production code.
 var registry = []Service{
 	{
-		// Ollama is HOST-NATIVE: the platform runs NO aip-ollama container and pulls no
-		// ollama image (requiredImages skips it, `ensureOllama` is a host HTTP probe).
-		// It stays a logical service — Name (status line + CoreServiceNames), LogScope
-		// (`ai logs --service ollama`), and Endpoint keep it visible — reached through
-		// the nginx gateway's /ollama prefix, which nginx forwards to the HOST
-		// (host.docker.internal:11434). It has NO container Component: no container name,
-		// no image key, and no version pin (nothing here declares or starts a container).
-		Name:     "ollama",
-		Endpoint: Endpoint{GatewayPath: "/ollama"},
-		LogScope: "ollama",
+		// vLLM is HOST-NATIVE and the SOLE local-inference backend (Ollama was removed):
+		// the platform runs NO aip-* container and pulls no image for it — it is per-model
+		// `vllm serve` host processes probed over HTTP. It stays a logical service so the
+		// status line + `ai logs --service vllm` keep it visible; its served models are
+		// reached through LiteLLM's `/v1` model path (there is no dedicated nginx /vllm
+		// route), so Endpoint carries no gateway path. It has NO container Component.
+		Name:     "vllm",
+		Endpoint: Endpoint{},
+		LogScope: "vllm",
 	},
 	{
 		Name:     "presidio",

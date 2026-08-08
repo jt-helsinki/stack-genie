@@ -140,13 +140,12 @@ Deliver a working minimal platform.
   rendered `config.yaml` carries **no `model_list`, no named aliases, no
   per-provider wildcards, and no default model**. Served models are managed via
   `ai keys add <provider>` (registers that provider's models.dev catalog models)
-  and `ai models pull` (registers a local model). Local inference is **host-native**
-  (no `aip-ollama` container): the serving engine is chosen **per model** at pull
-  time with `ai models pull --runtime ollama|vllm` (default `ollama`; invalid value
-  → exit 2). `--runtime ollama` registers `ollama/<name>`; `--runtime vllm`
-  registers `vllm/<alias>` (alias from `--alias`, else the model id's base name) and
-  fails (exit 3, no silent Ollama fallback) when vLLM is not installed. The chosen
-  engine is recorded machine-wide in `~/.ai-platform/config/model-runtimes.yaml`.
+  and `ai models pull` (registers a local model). Local inference is **host-native
+  vLLM** (the sole local-inference backend; no inference container runs on `aip-net`).
+  `ai models pull <repo>` downloads the weights with the Hugging Face CLI
+  (`hf download`), starts a per-model `vllm serve`, and registers `vllm/<alias>`
+  (alias from `--alias`, else the model id's base name). The chosen model's serving
+  entry is recorded machine-wide in `~/.ai-platform/config/model-runtimes.yaml`.
   The served set itself stays DB-backed:
 
 ```yaml id="m1l0"
@@ -372,10 +371,9 @@ These are implemented progressively across slices.
 * unified routing; **no default model** — served models are DB-backed
   (`store_model_in_db: true`), catalog-driven, and registered on demand
 * provider abstraction via **DB-backed served models** synced from the models.dev
-  catalog when a provider key is added (`ai keys add`) and from a host-native local
-  backend when a model is pulled (`ai models pull --runtime ollama|vllm` →
-  `ollama/<name>` or `vllm/<alias>`); the rendered config has no `model_list`, no
-  wildcards, and no named aliases
+  catalog when a provider key is added (`ai keys add`) and from the host-native vLLM
+  backend when a model is pulled (`ai models pull <repo>` → `vllm/<alias>`); the
+  rendered config has no `model_list`, no wildcards, and no named aliases
 * **user-selectable guardrails** rendered into the generated LiteLLM config.
   `ai setup` presents a guardrail multi-select (+ `--guardrails` flag,
   comma-separated subset or `none`); the choice is persisted machine-wide in
@@ -396,7 +394,7 @@ These are implemented progressively across slices.
     (which are pulled + started ONLY when this guardrail is selected)
   * `hide-secrets` (LiteLLM's in-process detect-secrets) for API keys/tokens
   * (the in-process `detect_prompt_injection` callback was REMOVED — it
-    false-positived on ordinary coding/Ollama traffic)
+    false-positived on ordinary coding/local-inference traffic)
   * a `tool-firewall` (`tool_permission`, post_call) that DENIES destructive
     command tool-calls (`git push --force`, `rm -rf`, `terraform destroy`,
     `kubectl delete`, …) — for coding agents the bigger risk is destructive tool
@@ -438,11 +436,11 @@ These are implemented progressively across slices.
   gateway currently serves** (its live DB-backed model set), read at workspace
   start via the injected `workspace.ServedModels` source
   (`litellm.KeyManager.ListModels`) and built by `workspace.Manager.pickerModels`.
-  It is **not** a union of aliases + Ollama + a cloud seed — there are no aliases
+  It is **not** a union of aliases + local models + a cloud seed — there are no aliases
   and no `cloud_models.yaml`. When the gateway is unreachable the picker degrades to
   **empty** and leaves the existing served-model lists untouched. The workspace
   **default** model is separate: it follows **seed-then-remember** — the `ai create`
-  model (`agent.graphify_model` → `ollama/<model>`) is seeded as every CLI's default on
+  model (`agent.graphify_model` → `vllm/<model>`) is seeded as every CLI's default on
   the FIRST start only (`.ai-platform/.agent-default-seeded` marker), independent of the
   picker; later starts pass an empty default so each CLI's persisted last-used selection
   wins (agent state dirs symlinked to the `/persist` overlay so it survives restarts).
@@ -476,11 +474,11 @@ The container runtime (Docker/Podman) is used only for the service tier
 (the `aip-dns` CoreDNS egress-audit resolver, the Presidio secret-masking pair,
 LiteLLM + its Postgres, the Headroom input-compression guardrail service, the
 `aip-valkey` cache (+ its `aip-redisinsight` GUI), and the `aip-proxy` nginx
-gateway), never to run a workspace. The **inference tier is host-native** — Ollama
-and vLLM both run as host processes (there is **no `aip-ollama` container**);
-`ai setup` only HTTP-probes host Ollama (`ensureOllama`, `127.0.0.1:11434`) and
-reconciles vLLM host servers, and nginx forwards `/ollama` to
-`host.docker.internal:11434`. The host tier has no optional services (Open WebUI is now a
+gateway), never to run a workspace. The **inference tier is host-native vLLM** —
+per-model `vllm serve` host processes (there is **no `aip-*` inference container**);
+`ai setup` best-effort installs vLLM + the Hugging Face CLI (`hf`) into the platform
+venv and reconciles the vLLM host servers (the LiteLLM container reaches each at
+`host.docker.internal:<port>`). The host tier has no optional services (Open WebUI is now a
 per-workspace **in-VM** app and Odysseus was removed). All service-tier containers
 share the private `aip-net` network, and **only the `aip-proxy` nginx gateway is
 host-published** (the host port `18787`); every other service is internal-only on
@@ -497,7 +495,7 @@ host-published** (the host port `18787`); every other service is internal-only o
   (`aip-headroom:8787/v1/compress`) in-process as a `pre_call` guardrail (nginx no
   longer routes to Headroom at all), and serves the Host-based UI subdomains
   (`litellm.<domain>` → LiteLLM admin UI, `valkey.<domain>` → RedisInsight) plus host-CLI gateway paths
-  (`/v1` model path, `/ollama`, `/llm`). The platform base domain is set by
+  (`/v1` model path, `/llm`). The platform base domain is set by
   `ai domain` (default `aip.local`; host-CLI URLs render under `localhost:18787`).
   TLS/HTTPS termination at nginx is still deferred.
 * **role-based UI auth**: the server role secures the exposed UI (LiteLLM admin
@@ -510,7 +508,7 @@ host-published** (the host port `18787`); every other service is internal-only o
   `http://<host>:<port>/v1` agent base URL (bare host or `host:port`, default
   port `18787`; empty → `host.microsandbox.internal:18787` for standalone/local)
 * cross-platform resolution
-* the host-native inference backends (Ollama, vLLM) are reached only via LiteLLM,
+* the host-native vLLM inference backend is reached only via LiteLLM,
   never directly by the workspace
 * egress is a per-project **Microsandbox NetworkPolicy** built on msb's deny
   fallthrough plus explicit allow rules. The **default mode is `public`**

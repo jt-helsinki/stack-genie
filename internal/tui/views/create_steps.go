@@ -5,7 +5,7 @@ import (
 
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
-	"github.com/jt-helsinki/stack-genie/internal/ollama"
+	"github.com/jt-helsinki/stack-genie/internal/hf"
 	"github.com/jt-helsinki/stack-genie/internal/ui"
 )
 
@@ -216,116 +216,68 @@ func (list *multiSelectList) View() string {
 	return body + list.window.View(selectedStyle())
 }
 
-// modelPicker is the Graphify-model step: a two-level picker mirroring the Local Models
-// pane — a model list (a leading "(none)" + the cached Ollama library names), and, on
-// enter into a model, a tag list. Selecting a tag (or "(none)") yields the ref.
+// modelPicker is the Graphify-model step: a single-level picker of curated,
+// vLLM-servable Hugging Face repos — a leading "(none)" followed by each curated repo
+// id. Selecting a repo (or "(none)") yields the value; vLLM is the sole local runtime,
+// so there are no ollama-style tags to drill into.
 type modelPicker struct {
-	library []ollama.LibraryModel
-	models  *selectList // "(none)" + library names
-	tags    *selectList // the drilled model's tags (nil until drilled)
-	drill   string      // the model name being drilled (empty = model list)
-	value   string      // final ref (name:tag) or "" for none
-	done    bool        // a selection was confirmed
-	width   int
-	height  int
+	models *selectList // "(none)" + curated repo ids
+	value  string      // final repo id or "" for none
+	done   bool        // a selection was confirmed
+	width  int
+	height int
 }
 
 const modelPickerNone = "(none)"
 
-func newModelPicker(library []ollama.LibraryModel, initial string) *modelPicker {
-	names := make([]string, 0, len(library)+1)
-	names = append(names, modelPickerNone)
-	initialName := ""
-	if index := strings.LastIndex(initial, ":"); index >= 0 {
-		initialName = initial[:index]
-	} else {
-		initialName = initial
+func newModelPicker(curated []hf.CuratedModel, initial string) *modelPicker {
+	repos := make([]string, 0, len(curated)+1)
+	repos = append(repos, modelPickerNone)
+	for _, model := range curated {
+		repos = append(repos, model.Repo)
 	}
-	for _, model := range library {
-		names = append(names, model.Name)
+	initialRepo := initial
+	if initialRepo == "" {
+		initialRepo = modelPickerNone
 	}
-	picker := &modelPicker{
-		library: library,
-		models:  newSelectList("Graphify model (Ollama; routed through the gateway, pulled if absent). enter selects — space/none for no model.", names, initialName),
+	return &modelPicker{
+		models: newSelectList("Graphify model (vLLM; a curated Hugging Face repo, routed through the gateway, pulled if absent). enter selects — (none) for no model.", repos, initialRepo),
 	}
-	return picker
 }
 
 func (picker *modelPicker) SetSize(width, height int) {
 	picker.width, picker.height = width, height
 	picker.models.SetSize(width, height)
-	if picker.tags != nil {
-		picker.tags.SetSize(width, height)
-	}
 }
 
-// Update handles the picker's own keys and reports whether the step is DONE (a ref was
-// chosen) so the wizard can advance. esc inside the tag list backs out to the model
-// list (it does NOT cancel the wizard).
+// Update handles the picker's own keys and reports whether the step is DONE (a repo was
+// chosen) so the wizard can advance.
 func (picker *modelPicker) Update(msg tea.Msg) (done bool) {
 	key, ok := msg.(tea.KeyMsg)
 	if !ok {
 		return false
 	}
-	if picker.drill != "" { // tag list
-		switch key.String() {
-		case "up", "k":
-			picker.tags.Move(-1)
-		case "down", "j":
-			picker.tags.Move(1)
-		case "esc":
-			picker.drill = ""
-			picker.tags = nil
-		case "enter", "tab":
-			picker.value = picker.drill + ":" + picker.tags.Value()
-			picker.done = true
-			return true
-		}
-		return false
-	}
-	switch key.String() { // model list
+	switch key.String() {
 	case "up", "k":
 		picker.models.Move(-1)
 	case "down", "j":
 		picker.models.Move(1)
 	case "enter", "tab":
-		name := picker.models.Value()
-		if name == modelPickerNone || name == "" {
+		repo := picker.models.Value()
+		if repo == modelPickerNone || repo == "" {
 			picker.value = ""
-			picker.done = true
-			return true
+		} else {
+			picker.value = repo
 		}
-		picker.enterModel(name)
+		picker.done = true
+		return true
 	}
 	return false
 }
 
-// enterModel drills into a model's tags. A model with no scraped tags resolves to
-// "<name>:latest" immediately (no tag list to show).
-func (picker *modelPicker) enterModel(name string) {
-	var tags []string
-	for _, model := range picker.library {
-		if model.Name == name {
-			tags = model.TagNames()
-			break
-		}
-	}
-	if len(tags) == 0 {
-		picker.value = name + ":latest"
-		picker.done = true
-		return
-	}
-	picker.drill = name
-	picker.tags = newSelectList("Tag for "+name+" — enter selects · esc back", tags, tags[0])
-	picker.tags.SetSize(picker.width, picker.height)
-}
-
-// Value is the chosen ref ("name:tag") or "" for none. Valid once Update returned done.
+// Value is the chosen repo id or "" for none. Valid once Update returned done.
 func (picker *modelPicker) Value() string { return picker.value }
 
 func (picker *modelPicker) View() string {
-	if picker.drill != "" && picker.tags != nil {
-		return picker.tags.View()
-	}
 	return picker.models.View()
 }

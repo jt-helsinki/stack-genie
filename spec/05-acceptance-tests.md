@@ -217,17 +217,18 @@ ai setup --json
 * **Docker detected, rootless** (Podman is `[S6]`; Slice 1 service tier is Docker-only)
 * **Microsandbox runtime + host virtualization verified** (Apple Silicon on macOS)
 * the service tier started as containers, reconciled in order (network → DNS →
-  Ollama → Presidio → Valkey(+RedisInsight) → Headroom → LiteLLM(+DB) → nginx
+  Presidio → Valkey(+RedisInsight) → Headroom → LiteLLM(+DB) → nginx
   proxy): `aip-dns`, the
   `aip-presidio-analyzer`/`aip-presidio-anonymizer` pair, `aip-valkey`
   (+ `aip-redisinsight`), `aip-headroom`,
   `aip-litellm` (+ `aip-litellm-db` Postgres), and `aip-proxy` (the nginx gateway)
   — all on `aip-net` (Headroom PRECEDES LiteLLM because LiteLLM calls it in-process
   as a `pre_call` compression guardrail)
-* the **inference tier is host-native**, not containerized: Ollama and vLLM both
-  run as host processes (there is **no `aip-ollama` container**). `ai setup`
-  HTTP-probes host Ollama at `127.0.0.1:11434` (`ensureOllama`) and reconciles the
-  host vLLM servers; nginx forwards `/ollama` to `host.docker.internal:11434`
+* the **inference tier is host-native vLLM**, not containerized: per-model
+  `vllm serve` host processes (there is **no `aip-*` inference container**).
+  `ai setup` best-effort installs vLLM + the Hugging Face CLI (`hf`) into the
+  platform venv and reconciles the host vLLM servers (the LiteLLM container reaches
+  each at `host.docker.internal:<port>`)
 * in **standalone** (default) the shared services bind **127.0.0.1**; the nginx
   gateway (`aip-proxy`) is the SOLE host entry on `:18787`, with `aip-headroom`
   now INTERNAL-ONLY (reached only by LiteLLM by name, no host publish); the host
@@ -539,21 +540,18 @@ without a running stack). The `[Sx]` tags in this document apply to the
 ### Test
 
 ```bash
-ai services status --json                              # lists host-native ollama + vllm
-ai doctor --json                                       # same two host-native backends
-ai models pull <model> --runtime bogus --json          # invalid runtime
-ai models pull <model> --runtime vllm --json           # when vLLM is not installed
+ai services status --json                              # lists the host-native vllm backend
+ai doctor --json                                       # same host-native vLLM backend
+ai models pull <repo> --json                           # HF download + vLLM serve; exits 3 when vLLM is not installed
 ai models test vllm/<alias> --json                     # positive routing path
 ```
 
 ### Expected Result
 
-* `ai services status` and `ai doctor` both surface the host-native `ollama` and
-  `vllm` backends as services (no `aip-ollama` container)
-* `--runtime bogus` exits `2` (invalid input — accepted values are `ollama` and
-  `vllm`)
-* `--runtime vllm` with no vLLM install exits **non-zero** (exit `3`) with install
-  guidance and **never** silently falls back to Ollama
+* `ai services status` and `ai doctor` both surface the host-native `vllm`
+  backend as a service (no `aip-*` inference container)
+* `ai models pull <repo>` with no vLLM install exits **non-zero** (exit `3`) with
+  install guidance and **never** silently registers an unserved model
 * the positive `vllm/<alias>` routing round-trip **self-skips** when vLLM is not
   running on the host (matching the suite's `hardware bring-up` self-skip
   convention)
@@ -829,7 +827,7 @@ It always exits `0`; per-check status conveys health.
 * the platform-dependency checks are always present: `container runtime`,
   `microsandbox runtime`, `host virtualization`
 * the SERVICES section lists every managed service — the host-native inference
-  backends `ollama` and `vllm`, plus `presidio`, `valkey`, `redisinsight`,
+  backend `vllm`, plus `presidio`, `valkey`, `redisinsight`,
   `litellm`, `headroom`, `proxy`, `dns` (the names appear even when stopped
   off-hardware). `presidio` reads **`disabled`** when the `secret-masking`
   guardrail is off (listed but not probed). The host tier has no optional services

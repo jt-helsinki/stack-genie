@@ -92,10 +92,10 @@ func vllmDoctorService(goos string, installed bool) doctor.Service {
 }
 
 // mapDoctorServices maps the setup service statuses into the doctor layer's Service
-// view, dropping the microVM runtime line and enriching the host-native inference
-// backends (Ollama, vLLM) with actionable hints. Pure so it is
+// view, dropping the microVM runtime line. The host-native vLLM backend already
+// carries its own actionable Detail (from setup.vllmStatus). Pure so it is
 // unit-testable without a live service tier.
-func mapDoctorServices(statuses []setup.ServiceStatus, goos string) []doctor.Service {
+func mapDoctorServices(statuses []setup.ServiceStatus, _ string) []doctor.Service {
 	services := make([]doctor.Service, 0, len(statuses))
 	for _, status := range statuses {
 		// The microVM runtime (Mode "runtime") is covered by the platform
@@ -104,40 +104,15 @@ func mapDoctorServices(statuses []setup.ServiceStatus, goos string) []doctor.Ser
 		if status.Mode == "runtime" {
 			continue
 		}
-		services = append(services, enrichLocalInferenceService(doctor.Service{
+		services = append(services, doctor.Service{
 			Name:     status.Name,
 			State:    status.State,
 			Healthy:  status.Healthy,
 			Optional: status.Optional,
 			Detail:   status.Detail,
-		}, goos))
+		})
 	}
 	return services
-}
-
-// enrichLocalInferenceService adds an actionable recovery hint to the host-native
-// Ollama backend so `ai doctor` surfaces a clear path when it is down. Ollama runs on
-// the HOST (not as an aip-* container), so the generic "ai services start" suggestion
-// does not apply — the hint is folded into the down-case detail (which doctor renders
-// from State for an unreachable service). Non-inference services pass through
-// unchanged.
-func enrichLocalInferenceService(service doctor.Service, goos string) doctor.Service {
-	if service.Name == "ollama" {
-		if !service.Healthy && service.State != "disabled" {
-			service.State = "not reachable — install & start host-native Ollama (" +
-				hostOllamaShortHint(goos) + "); required for local models"
-		}
-	}
-	return service
-}
-
-// hostOllamaShortHint is the compact per-OS install/start hint folded into the
-// `ai doctor` Ollama detail line.
-func hostOllamaShortHint(goos string) string {
-	if goos == "linux" {
-		return "Linux: curl -fsSL https://ollama.com/install.sh | sh, then systemctl enable --now ollama"
-	}
-	return "macOS: brew install ollama, then ollama serve"
 }
 
 // doctorDomain builds the DOMAIN section for `ai doctor`: the resolved platform

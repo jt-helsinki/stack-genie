@@ -54,8 +54,8 @@ func (prober imageGuardProber) Run(_ string, args ...string) ([]byte, error) {
 // container is running on the SAME local image id as the ref it would run; a stale
 // image id, a stopped container, or either inspect erroring all force a recreate.
 func TestContainerOnCurrentImage(test *testing.T) {
-	const name = "aip-ollama"
-	const ref = "ollama/ollama:latest"
+	const name = "aip-litellm"
+	const ref = "ghcr.io/berriai/litellm:latest"
 
 	// Running on the SAME image id → current (skip the recreate).
 	current := imageGuardProber{

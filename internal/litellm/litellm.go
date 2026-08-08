@@ -18,14 +18,6 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-// OllamaAPIBase is where LiteLLM reaches the HOST-NATIVE Ollama process, baked into
-// each ollama/* model's registration (see RegisterOllamaModel / reconcile). Ollama
-// runs on the host (not as a container), so the LiteLLM container reaches it through
-// the host gateway (host.docker.internal). On Docker Desktop this name is provided
-// natively; on Linux the LiteLLM container needs
-// `--add-host=host.docker.internal:host-gateway` (wired in internal/setup).
-const OllamaAPIBase = "http://host.docker.internal:11434"
-
 // HeadroomAPIBase is where LiteLLM reaches the Headroom input-compression service
 // on the shared docker network (aip-net). Headroom is no longer an nginx proxy in
 // FRONT of LiteLLM — it is a LiteLLM pre_call GUARDRAIL: LiteLLM POSTs the request
@@ -451,7 +443,9 @@ type StatusInfo struct {
 	// model-list endpoints do NOT mark a default, so this legitimately stays from
 	// platform config (DefaultRouting().Default), not from the live list.
 	Default string `json:"default"`
-	Ollama  bool   `json:"ollama"`
+	// Local reports whether the gateway serves at least one LOCAL model (a vLLM
+	// vllm/<alias> route), so status can note the no-API-key local backend.
+	Local bool `json:"local"`
 	// Models is the LIVE list of models the gateway serves, sourced from LiteLLM's
 	// /model/info//v1/models endpoints. Empty when the gateway is unreachable or the
 	// model-list call failed (see ModelsNote).
@@ -482,8 +476,8 @@ func (info StatusInfo) Human() string {
 	if info.Default != "" {
 		builder.WriteString(ui.Label.Render("Default model") + "     " + ui.Value.Render(info.Default) + ui.Muted.Render("  (used unless an agent names another)") + "\n")
 	}
-	if info.Ollama {
-		builder.WriteString(ui.Label.Render("Local models") + "      " + ui.Value.Render("Ollama") + ui.Muted.Render(" — no API key needed (install models with `") + ui.Primary.Render("ollama pull <name>") + ui.Muted.Render("`)") + "\n")
+	if info.Local {
+		builder.WriteString(ui.Label.Render("Local models") + "      " + ui.Value.Render("vLLM") + ui.Muted.Render(" — no API key needed (install models with `") + ui.Primary.Render("ai models pull <repo>") + ui.Muted.Render("`)") + "\n")
 	}
 	builder.WriteString(info.humanCloudProviders())
 	builder.WriteString(info.humanServedModels())
@@ -511,7 +505,7 @@ func (info StatusInfo) humanGatewayLine() string {
 func (info StatusInfo) humanCloudProviders() string {
 	cloud := make([]string, 0, len(info.Providers))
 	for _, provider := range info.Providers {
-		if provider != "ollama" && provider != "" {
+		if provider != "vllm" && provider != "" {
 			cloud = append(cloud, provider)
 		}
 	}

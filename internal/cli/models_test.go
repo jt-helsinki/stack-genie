@@ -55,11 +55,11 @@ func TestModelsStatusRendersLiveModels(test *testing.T) {
 	status := litellm.StatusInfo{
 		Healthy:   true,
 		Default:   "gemma4",
-		Providers: []string{"anthropic", "ollama"},
-		Ollama:    true,
+		Providers: []string{"anthropic", "vllm"},
+		Local:     true,
 		BaseURL:   "http://127.0.0.1:14000",
 		Models: []litellm.Model{
-			{Name: "gemma4", Provider: "ollama", Mode: "chat"},
+			{Name: "vllm/gemma4", Provider: "openai", Mode: "chat"},
 			{Name: "claude-opus", Provider: "anthropic", Mode: "chat"},
 		},
 	}
@@ -70,7 +70,7 @@ func TestModelsStatusRendersLiveModels(test *testing.T) {
 	if len(data.Models) != 2 {
 		test.Fatalf("envelope served models = %d, want 2", len(data.Models))
 	}
-	if strings.Join(data.Providers, ",") != "anthropic,ollama" {
+	if strings.Join(data.Providers, ",") != "anthropic,vllm" {
 		test.Errorf("providers = %v, want the live-derived set", data.Providers)
 	}
 	// Human render shows the served list too.
@@ -142,12 +142,12 @@ func TestServedModelNamesExcludeWildcards(test *testing.T) {
 	litellmClient = func() litellm.Client {
 		return modelsListClient{models: []litellm.Model{
 			{Name: "openai/gpt-5.5", Provider: "openai"},
-			{Name: "ollama/gemma4", Provider: "ollama"},
+			{Name: "vllm/gemma4", Provider: "openai"},
 			{Name: "openai/*", Provider: "openai"}, // wildcard → excluded
 		}}
 	}
 	got := servedModelNames()
-	want := []string{"ollama/gemma4", "openai/gpt-5.5"} // sorted, wildcard dropped
+	want := []string{"openai/gpt-5.5", "vllm/gemma4"} // sorted, wildcard dropped
 	if strings.Join(got, ",") != strings.Join(want, ",") {
 		test.Errorf("servedModelNames() = %v, want %v", got, want)
 	}

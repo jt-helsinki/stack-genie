@@ -23,13 +23,13 @@ func TestModelTestError(test *testing.T) {
 		test.Fatalf("auth error should hint at `ai keys add`: %v", authErr)
 	}
 
-	// 404 for an ollama model → runtime (exit 4) with a pull hint.
-	notFound := modelTestError(litellm.TestResult{Model: "ollama/llama3", Status: 404, Error: "not found"})
+	// 404 for a local vLLM model → runtime (exit 4) with a pull hint.
+	notFound := modelTestError(litellm.TestResult{Model: "vllm/llama3", Status: 404, Error: "not found"})
 	if !errors.As(notFound, &platformErr) || platformErr.Code != output.ExitRuntimeFailure {
 		test.Fatalf("404 should map to runtime failure (exit 4): %v", notFound)
 	}
-	if !strings.Contains(notFound.Error(), "ollama pull llama3") {
-		test.Fatalf("ollama 404 should hint at pulling: %v", notFound)
+	if !strings.Contains(notFound.Error(), "ai models pull llama3") {
+		test.Fatalf("vllm 404 should hint at pulling: %v", notFound)
 	}
 
 	// A generic failure with no message still reports the HTTP status at exit 4.

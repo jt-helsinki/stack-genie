@@ -15,7 +15,7 @@ import (
 	"github.com/jt-helsinki/stack-genie/internal/apps"
 	"github.com/jt-helsinki/stack-genie/internal/config"
 	"github.com/jt-helsinki/stack-genie/internal/create"
-	"github.com/jt-helsinki/stack-genie/internal/ollama"
+	"github.com/jt-helsinki/stack-genie/internal/hf"
 	"github.com/jt-helsinki/stack-genie/internal/output"
 	"github.com/jt-helsinki/stack-genie/internal/project"
 	"github.com/jt-helsinki/stack-genie/internal/sysinfo"
@@ -453,7 +453,7 @@ func newCreateCmd(emitter *output.Emitter, exit *int, use string) *cobra.Command
 	cmd.Flags().String("disk", "", "workspace disk (writable rootfs) in GB, a plain number (default: "+config.Default().Workspace.DiskLimit+"; sizes the in-VM container image store so AI apps fit). Change later with `ai resize`.")
 	cmd.Flags().StringSlice("ports", nil, "ports to open into the workspace: PORT or HOST:GUEST (e.g. 8080,9000:3000)")
 	cmd.Flags().String("location", "", "workspace directory (default: current directory; created if missing)")
-	cmd.Flags().String("graphify-model", "", "Ollama model Graphify uses (e.g. qwen2.5-coder:7b); chosen in the wizard from the Ollama library and pulled if absent")
+	cmd.Flags().String("graphify-model", "", "vLLM model Graphify uses (a Hugging Face repo id, e.g. mlx-community/Qwen2.5-7B-Instruct-4bit); chosen in the wizard from the curated list and pulled if absent")
 	cmd.Flags().String("shell", "bash", "default interactive shell for workspace sessions: "+strings.Join(supportedShells, "|"))
 	cmd.Flags().String("auth-mode", "", "per-agent auth mode for claude-code/codex/gemini as cli=mode (api-key|oauth), comma-separated (e.g. claude-code=oauth,codex=api-key); default api-key")
 	cmd.Flags().StringSlice("tools", nil, "AI tools to install (default: "+strings.Join(create.DefaultAITools(), ",")+"): "+strings.Join(create.SupportedAITools(), ",")+" — pass --tools=\"\" for none")
@@ -622,19 +622,15 @@ func runCreateWizard(seed project.Spec) (project.Spec, bool, error) {
 	disk := seed.Disk
 	portsText := formatPublishPorts(seed.PublishPorts)
 
-	// Graphify's LLM backend is an Ollama model chosen from the installable library
-	// (like the Models page), pulled if absent (see pullGraphifyModelIfAbsent). The
-	// picker is a model select + a tag select; blank/"(none)" leaves Graphify without
-	// a configured model. The library is cache-first — if it can't be loaded (offline,
-	// no cache) the group is omitted and only a --graphify-model flag can set it.
-	// AI tools are ONE multi-select (like the agent CLIs), seeded from the spec's per-tool
-	// bools. The graphify-model step is shown only when graphify is among the selection.
+	// Graphify's LLM backend is a vLLM-servable model chosen from the curated list
+	// (a Hugging Face repo id), pulled if absent (see pullGraphifyModelIfAbsent) and
+	// routed through the gateway as vllm/<alias>. The picker is a single model select;
+	// blank/"(none)" leaves Graphify without a configured model. AI tools are ONE
+	// multi-select (like the agent CLIs), seeded from the spec's per-tool bools. The
+	// graphify-model step is shown only when graphify is among the selection.
 	toolsSelection := aiToolsFromSpec(seed)
-	graphifyName, graphifyTag := splitModelRef(seed.GraphifyModel)
-	// Cache-only: the wizard must never stall on a cold-cache network scrape. If no
-	// cache exists yet (no prior `ai setup` / `ai models`), the group is omitted and
-	// --graphify-model is the only way to set it (it is still pulled if absent).
-	graphifyLibrary, _ := ollama.LoadLibrary()
+	graphifyModelSelection := seed.GraphifyModel
+	curatedGraphify := hf.CuratedModels(goruntime.GOOS)
 
 	groups := []*huh.Group{
 		huh.NewGroup(
@@ -700,15 +696,12 @@ func runCreateWizard(seed project.Spec) (project.Spec, bool, error) {
 			Description("Per-project code/context tooling installed at workspace start; caveman, graphify and code-review-graph are the defaults.").
 			Options(aiToolOptions()...).Value(&toolsSelection),
 	))
-	// Graphify model — shown ONLY when graphify is selected above and a library is cached.
-	if len(graphifyLibrary) > 0 {
+	// Graphify model — shown ONLY when graphify is selected above.
+	if len(curatedGraphify) > 0 {
 		groups = append(groups, huh.NewGroup(
-			huh.NewSelect[string]().Title("Graphify model (Ollama; optional)").
-				Description("Routed through the gateway; pulled if not installed. Type to filter.").
-				Options(graphifyModelOptions(graphifyLibrary)...).Value(&graphifyName),
-			huh.NewSelect[string]().Title("Graphify model tag").
-				OptionsFunc(func() []huh.Option[string] { return graphifyTagOptions(graphifyLibrary, graphifyName) }, &graphifyName).
-				Value(&graphifyTag),
+			huh.NewSelect[string]().Title("Graphify model (vLLM; optional)").
+				Description("A curated vLLM-servable model, routed through the gateway; pulled if not installed. Type to filter.").
+				Options(graphifyModelOptions(curatedGraphify)...).Value(&graphifyModelSelection),
 		).WithHideFunc(func() bool { return !slices.Contains(toolsSelection, create.AIToolGraphify) }))
 	}
 
@@ -788,7 +781,7 @@ func runCreateWizard(seed project.Spec) (project.Spec, bool, error) {
 	// Only carry a graphify model when graphify is actually selected.
 	graphifyModel := ""
 	if graphify {
-		graphifyModel = joinModelRef(graphifyName, graphifyTag)
+		graphifyModel = graphifyModelSelection
 	}
 	return project.Spec{
 		Name:                   name,
@@ -892,67 +885,20 @@ func collectAuthModes(agentCLIs []string, chosen map[string]string) map[string]s
 }
 
 // splitModelRef splits an Ollama reference "name:tag" into its name and tag at the
-// LAST colon; a bare name yields an empty tag. A blank ref yields two empties.
-func splitModelRef(ref string) (name, tag string) {
-	ref = strings.TrimSpace(ref)
-	if ref == "" {
-		return "", ""
-	}
-	if index := strings.LastIndex(ref, ":"); index >= 0 {
-		return ref[:index], ref[index+1:]
-	}
-	return ref, ""
-}
-
-// joinModelRef reassembles a "name:tag" reference from the wizard's two selects. A
-// blank name (the "(none)" option) yields "" — Graphify gets no model. A blank tag
-// yields the bare name (Ollama resolves it to :latest).
-func joinModelRef(name, tag string) string {
-	name = strings.TrimSpace(name)
-	tag = strings.TrimSpace(tag)
-	if name == "" {
-		return ""
-	}
-	if tag == "" {
-		return name
-	}
-	return name + ":" + tag
-}
-
 // graphifyModelOptions builds the Graphify model select: a leading "(none)" (empty
-// value) followed by every library model name, so the choice is optional.
-func graphifyModelOptions(library []ollama.LibraryModel) []huh.Option[string] {
-	options := make([]huh.Option[string], 0, len(library)+1)
+// value) followed by every curated vLLM model (labelled by repo id + size, valued by
+// the Hugging Face repo id), so the choice is optional.
+func graphifyModelOptions(curated []hf.CuratedModel) []huh.Option[string] {
+	options := make([]huh.Option[string], 0, len(curated)+1)
 	options = append(options, huh.NewOption("(none)", ""))
-	for _, model := range library {
-		options = append(options, huh.NewOption(model.Name, model.Name))
+	for _, model := range curated {
+		label := model.Repo
+		if model.Size != "" {
+			label += "  (" + model.Size + ")"
+		}
+		options = append(options, huh.NewOption(label, model.Repo))
 	}
 	return options
-}
-
-// graphifyTagOptions builds the tag select for the currently-selected Graphify
-// model. With no model selected it offers only "(none)"; otherwise it lists the
-// model's scraped tags (falling back to "latest" when the tag table is empty).
-func graphifyTagOptions(library []ollama.LibraryModel, modelName string) []huh.Option[string] {
-	modelName = strings.TrimSpace(modelName)
-	if modelName == "" {
-		return []huh.Option[string]{huh.NewOption("(none)", "")}
-	}
-	for _, model := range library {
-		if model.Name != modelName {
-			continue
-		}
-		tags := model.TagNames()
-		if len(tags) == 0 {
-			return []huh.Option[string]{huh.NewOption("latest", "latest")}
-		}
-		options := make([]huh.Option[string], 0, len(tags))
-		for _, tag := range tags {
-			options = append(options, huh.NewOption(tag, tag))
-		}
-		return options
-	}
-	return []huh.Option[string]{huh.NewOption("latest", "latest")}
 }
 
 // splitCommaList splits a comma-separated input into trimmed, non-empty items.

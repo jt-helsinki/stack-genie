@@ -5,7 +5,6 @@ import (
 	"encoding/hex"
 	"fmt"
 	"os"
-	"path/filepath"
 	goruntime "runtime"
 	"slices"
 	"time"
@@ -15,9 +14,9 @@ import (
 	"github.com/charmbracelet/huh"
 	"github.com/charmbracelet/x/term"
 	"github.com/jt-helsinki/stack-genie/internal/envfile"
+	"github.com/jt-helsinki/stack-genie/internal/hf"
 	"github.com/jt-helsinki/stack-genie/internal/litellm"
 	"github.com/jt-helsinki/stack-genie/internal/output"
-	"github.com/jt-helsinki/stack-genie/internal/paths"
 	"github.com/jt-helsinki/stack-genie/internal/runtime"
 	"github.com/jt-helsinki/stack-genie/internal/setup"
 	"github.com/jt-helsinki/stack-genie/internal/ui"
@@ -911,107 +910,54 @@ func syncInitialModels(em *output.Emitter, interactive bool) {
 	}
 }
 
-// localInferenceStatusFn fetches the managed-service statuses used to build the
-// host-native-Ollama + vLLM guidance block at the end of `ai setup`.
-// It is a package-level seam so tests can inject a fake status set without a live
-// service tier.
-var localInferenceStatusFn = func() ([]setup.ServiceStatus, error) {
-	return setup.ServicesStatus(setup.RealDeps(goruntime.GOOS, goruntime.GOARCH, nowRFC3339))
-}
-
 // printLocalInferenceGuidance prints an actionable block about this host's local
-// inference backend after `ai setup` reconciles: host-native Ollama (REQUIRED for
-// local models). It probes its live state via the localInferenceStatusFn seam and
-// prints per-OS install/start guidance only when Ollama is not reachable. It NEVER
-// mutates the host (guidance only) and never fails setup; it is skipped under --json
-// so automation keeps a clean envelope on stdout.
+// inference backend after `ai setup` reconciles: host-native vLLM (the sole local
+// runtime) plus the Hugging Face CLI (`hf`) used for model management. It probes their
+// install state via vllmDetectFn / hfDetectFn and prints per-OS install guidance only
+// when one is missing. It NEVER mutates the host (guidance only) and never fails setup;
+// it is skipped under --json so automation keeps a clean envelope on stdout.
 func printLocalInferenceGuidance(em *output.Emitter) {
 	if em.JSON {
 		return
 	}
-	statuses, err := localInferenceStatusFn()
-	if err != nil {
-		return
-	}
 	vllmInstalled, _ := vllmDetectFn()
-	lines := localInferenceGuidanceLines(goruntime.GOOS, statuses, defaultOllamaModelsDir(), vllmInstalled)
+	lines := localInferenceGuidanceLines(goruntime.GOOS, vllmInstalled, hfDetectFn())
 	if len(lines) == 0 {
 		return
 	}
 	_, _ = fmt.Fprintln(em.Err)
-	_, _ = fmt.Fprintln(em.Err, ui.Heading.Render("Local inference backends"))
+	_, _ = fmt.Fprintln(em.Err, ui.Heading.Render("Local inference backend"))
 	for _, line := range lines {
 		_, _ = fmt.Fprintln(em.Err, line)
 	}
 }
 
-// localInferenceGuidanceLines builds the actionable local-inference guidance shown at
-// the end of `ai setup`: host-native Ollama (REQUIRED for local models) plus an
-// OPTIONAL host-native vLLM note. It returns the lines to print (empty when Ollama is
-// healthy and vLLM is installed), given the current service statuses, this host's OS,
-// the host Ollama model store path, and whether a vLLM install was detected. Pure (no
-// I/O) so it is unit-testable.
-func localInferenceGuidanceLines(goos string, statuses []setup.ServiceStatus, ollamaModelsDir string, vllmInstalled bool) []string {
-	var ollamaPresent, ollamaHealthy bool
-	for _, status := range statuses {
-		if status.Name == "ollama" {
-			ollamaPresent, ollamaHealthy = true, status.Healthy
-		}
-	}
+// hfDetectFn is the injectable seam for the Hugging Face CLI install probe (hf.Detect),
+// so the guidance block is unit-testable without a real `hf` binary.
+var hfDetectFn = hf.Detect
 
+// localInferenceGuidanceLines builds the actionable local-inference guidance shown at
+// the end of `ai setup`: host-native vLLM (the local model runtime) plus the `hf` CLI
+// (model management). It returns the lines to print (empty when both are installed),
+// given this host's OS and whether vLLM / `hf` were detected. Pure (no I/O) so it is
+// unit-testable. `ai setup` auto-installs both best-effort, so these lines appear only
+// when that auto-install did not succeed.
+func localInferenceGuidanceLines(goos string, vllmInstalled, hfInstalled bool) []string {
 	var lines []string
-	if ollamaPresent && !ollamaHealthy {
-		lines = append(lines,
-			ui.Warn.Render(ui.IconArrow+" host-native Ollama is not reachable at 127.0.0.1:11434 — it is REQUIRED for local models."))
-		lines = append(lines, "  install and start it:")
-		for _, step := range hostOllamaInstallSteps(goos) {
-			lines = append(lines, "    "+step)
-		}
-		lines = append(lines, "  then set the environment for the Ollama process:")
-		lines = append(lines, "    "+ui.Value.Render("OLLAMA_CONTEXT_LENGTH=16384"))
-		if ollamaModelsDir != "" {
-			lines = append(lines, "    "+ui.Value.Render("OLLAMA_MODELS="+ollamaModelsDir))
-		}
-		lines = append(lines, "  then re-run "+ui.Primary.Render("`ai setup`")+".")
-	}
-	// vLLM is an OPTIONAL second local runtime (`ai models pull --runtime vllm`). Never a
-	// setup failure — when it is absent we print a short, actionable install note so a
-	// user who wants it knows how to get there.
 	if !vllmInstalled {
 		lines = append(lines,
-			ui.Muted.Render(ui.IconDot+" vLLM is an OPTIONAL local runtime (`ai models pull --runtime vllm`). It is not installed. To enable it:"))
+			ui.Warn.Render(ui.IconArrow+" vLLM is not installed — it is the local model runtime. `ai setup` tries to install it automatically; to install it manually:"))
 		for _, step := range vllmInstallGuidanceFn(goos) {
 			lines = append(lines, "    "+step)
 		}
+		lines = append(lines, "  or run "+ui.Primary.Render("`ai models install-vllm`")+".")
+	}
+	if !hfInstalled {
+		lines = append(lines,
+			ui.Muted.Render(ui.IconDot+" the Hugging Face CLI (`hf`) is not installed — it manages local model weights (`ai models pull|list|rm`). Install it into the platform venv with:"))
+		lines = append(lines, "    "+ui.Value.Render("~/.ai-platform/venv/bin/pip install -U \"huggingface_hub[cli]\""))
 	}
 	return lines
-}
-
-// hostOllamaInstallSteps is the per-OS install/start guidance for a host-native
-// Ollama (guidance only — the platform never mutates the host).
-func hostOllamaInstallSteps(goos string) []string {
-	switch goos {
-	case "darwin":
-		return []string{"macOS: install Ollama.app, or `brew install ollama`, then run `ollama serve`"}
-	case "linux":
-		return []string{"Linux: `curl -fsSL https://ollama.com/install.sh | sh`, then `systemctl enable --now ollama`"}
-	default:
-		return []string{
-			"macOS: install Ollama.app or `brew install ollama`, then `ollama serve`",
-			"Linux: `curl -fsSL https://ollama.com/install.sh | sh`, then `systemctl enable --now ollama`",
-		}
-	}
-}
-
-// defaultOllamaModelsDir resolves the host-native Ollama model store the user must
-// point OLLAMA_MODELS at (~/.ai-platform/volumes/models/ollama). It falls back to the
-// documented literal path when HOME is unresolvable.
-func defaultOllamaModelsDir() string {
-	volumesDir, err := paths.VolumesDir()
-	if err != nil {
-		return "~/.ai-platform/volumes/models/ollama"
-	}
-	return filepath.Join(volumesDir, "models", "ollama")
 }
 
 // generateMasterKey returns a random LiteLLM master key (`sk-` + 48 hex chars).

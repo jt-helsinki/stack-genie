@@ -12,11 +12,11 @@ func TestURLAndKnown(test *testing.T) {
 		test.Errorf("litellm console = (%q,%v)", url, ok)
 	}
 	// Known service with no web console.
-	if _, ok := URL("ollama"); ok {
-		test.Error("ollama should report no console")
+	if _, ok := URL("vllm"); ok {
+		test.Error("vllm should report no console")
 	}
-	if !Known("ollama") {
-		test.Error("ollama should be a known service")
+	if !Known("vllm") {
+		test.Error("vllm should be a known service")
 	}
 	if Known("nope") {
 		test.Error("unknown service must not be Known")
@@ -57,17 +57,14 @@ func TestEndpointAndAddress(test *testing.T) {
 		test.Errorf("litellm address = (%q,%v)", address, ok)
 	}
 
-	// ollama: host-CLI gateway PATH (no console). The /api/* calls land on
-	// /ollama/api/* through nginx.
-	endpoint, ok = EndpointFor("ollama")
-	if !ok || endpoint.Address != "http://localhost:18787/ollama" || endpoint.Console != "" {
-		test.Errorf("ollama endpoint = (%+v,%v)", endpoint, ok)
+	// vllm: host-native, internal-only (its served models are reached via LiteLLM's
+	// /v1 path). It is a known service but exposes NO host endpoint of its own.
+	endpoint, ok = EndpointFor("vllm")
+	if !ok || endpoint.Address != "" || endpoint.Console != "" {
+		test.Errorf("vllm endpoint = (%+v,%v), want known with no address/console", endpoint, ok)
 	}
-	if address, ok := Address("ollama"); !ok || address != "http://localhost:18787/ollama" {
-		test.Errorf("ollama address = (%q,%v)", address, ok)
-	}
-	if _, ok := URL("ollama"); ok {
-		test.Error("ollama should report no console")
+	if _, ok := URL("vllm"); ok {
+		test.Error("vllm should report no console")
 	}
 
 	// proxy is the nginx gateway entry on :18787 (no separate admin console).
@@ -114,10 +111,10 @@ func TestEndpointForHostRendersGivenDomain(test *testing.T) {
 		test.Errorf("litellm@build-host.lan endpoint = (%+v,%v)", endpoint, ok)
 	}
 
-	// ollama is a gateway-path service: <domain>:18787/ollama, no subdomain.
-	endpoint, ok = EndpointForHost("ollama", "build-host.lan")
-	if !ok || endpoint.Address != "http://build-host.lan:18787/ollama" || endpoint.Console != "" {
-		test.Errorf("ollama@build-host.lan endpoint = (%+v,%v)", endpoint, ok)
+	// vllm is host-native + internal-only: known, but no host endpoint of its own.
+	endpoint, ok = EndpointForHost("vllm", "build-host.lan")
+	if !ok || endpoint.Address != "" || endpoint.Console != "" {
+		test.Errorf("vllm@build-host.lan endpoint = (%+v,%v), want known with no address", endpoint, ok)
 	}
 
 	// dns is loopback-only and must NOT be rewritten to the custom domain.

@@ -38,7 +38,7 @@ All platform-wide data is stored under:
 ~/.ai-platform/
 ├── agents/
 ├── audit/
-├── cache/         # re-fetchable caches: catalog.yaml (models.dev), ollama-models.yaml (ollama.com)
+├── cache/         # re-fetchable caches: catalog.yaml (models.dev)
 ├── config/        # global settings + projects index (no per-project state)
 ├── logs/
 ├── overlays/
@@ -48,8 +48,8 @@ All platform-wide data is stored under:
 ├── tools/
 └── volumes/       # ALL host-persisted SYSTEM data volumes
     ├── litellm-db/  # LiteLLM Postgres data dir (bind-mounted → aip-litellm-db:/var/lib/postgresql)
-    └── models/      # local-model stores
-        └── ollama/  # host-native Ollama model store (OLLAMA_MODELS)
+    └── models/      # local-model store
+        └── vllm/    # host-native vLLM weights (HF cache: MLX on macOS, safetensors on Linux)
 
 ~/.ai-platform/.ai-platform.env   # OPT-IN, 0600 sibling file (NOT under ~/.ai-platform/)
 ```
@@ -82,14 +82,11 @@ Today there are two:
 - `~/.ai-platform/volumes/litellm-db/` — the LiteLLM **Postgres data dir**,
   **HOST-BIND-MOUNTED** into `aip-litellm-db` at `/var/lib/postgresql` (NOT a
   Docker named volume). This is the one stateful service-tier piece.
-- `~/.ai-platform/volumes/models/` — the **persistent local-model store**, split
-  per backend into the `ollama/` and `vllm/` subdirs. Ollama
-  is now **host-native** (there is no `aip-ollama` container): the host Ollama
-  process is pointed at the subdir `~/.ai-platform/volumes/models/ollama/` via
-  `OLLAMA_MODELS`; the host-side **vLLM** weights (MLX on macOS, HF safetensors on
-  Linux) persist under `~/.ai-platform/volumes/models/vllm/` (`vllm.StoreDir`). Both
-  persist under the standardized
-  system-volume home and are removed by `ai uninstall --purge` (distinct from the
+- `~/.ai-platform/volumes/models/` — the **persistent local-model store** for the
+  host-side **vLLM** backend. Weights are downloaded by the Hugging Face CLI (`hf`)
+  and persist under `~/.ai-platform/volumes/models/vllm/` (`vllm.StoreDir`; MLX on
+  macOS, HF safetensors on Linux). It persists under the standardized
+  system-volume home and is removed by `ai uninstall --purge` (distinct from the
   disposable `cache/models/` in §1.3).
 
 **Migration caveat (acceptable for this dev platform):** existing data in the old
@@ -136,7 +133,6 @@ Rules:
 
 ```text id="h6"
 catalog.yaml          # models.dev catalog (fetched as JSON, persisted as YAML; legacy catalog.json one-shot converted)
-ollama-models.yaml    # ollama.com installable-library list, scraped (name/size/context/input), YAML
 models/
 downloads/
 temp/
@@ -145,7 +141,7 @@ temp/
 Rules:
 
 * fully disposable — all entries are **re-fetchable** copies, not SYSTEM data
-* may be rebuilt at any time (`catalog.yaml` / `ollama-models.yaml` are re-downloaded
+* may be rebuilt at any time (`catalog.yaml` is re-downloaded
   on next use, falling back to the cached copy only while the source is unreachable)
 * `catalog.yaml` is the models.dev catalog fetched as JSON and **persisted as YAML**;
   a legacy `catalog.json` (or the older `volumes/catalog.json`) is **one-shot
@@ -237,8 +233,8 @@ Rules:
   git-backed; when Graphify is selected it then runs `graphify hook install`
   on EVERY start for a valid repo (the hook is idempotent, so there is deliberately no
   marker, and it runs even for an omp/hermes-only project). Graphify's headless LLM
-  backend is an Ollama model chosen at `ai create` (`agent.graphify_model`, §12.4),
-  routed through the gateway as `ollama/<model>`. **Neither Python nor Node is
+  backend is a local model chosen at `ai create` (`agent.graphify_model`, §12.4),
+  routed through the gateway as `vllm/<model>`. **Neither Python nor Node is
   a `--stacks` option** — both are baked into the base (the no-op `python`/`node`
   stack snippets were removed entirely), so the selectable stacks are `go`, `rust`,
   `java`, `maven`, `deno`, and the agent-CLI snippets now only `npm install` their
@@ -291,12 +287,11 @@ config.yaml              # global platform config (§12.4)
 runtime.yaml             # detected runtime, platform-global (§12.5)
 versions.yaml            # pinned image+tag of host services (§12.6)
 projects.yaml            # index: project name → path (§12.7)
-model-runtimes.yaml      # per-model SERVING-RUNTIME selection record (alias → ollama|vllm)
+model-runtimes.yaml      # per-model vLLM serving record (alias → repo + host port)
 ui.yaml                  # TUI theme + mouse-capture preference
 litellm/                 # rendered LiteLLM config.yaml (placeholders only; real keys live in the gateway)
 proxy/                   # rendered nginx.conf for the aip-proxy gateway (the litellm.<domain> UI vhost + gateway paths)
 dns/                     # rendered CoreDNS config for the aip-dns egress-audit resolver
-ollama/                  # LEGACY rendered Ollama container config — UNUSED in the live reconcile (Ollama is now host-native, no aip-ollama container)
 <service>/               # one rendered-config dir per service-tier service (created at reconcile)
 ```
 
@@ -305,9 +300,9 @@ Rules:
 * a config dir is created **per service-tier service** at reconcile (e.g.
   `litellm/`, `proxy/`, `dns/`, `presidio-analyzer/`, …); the ones
   that have a rendered file today are LiteLLM (`config.yaml`), the nginx gateway
-  (`proxy/nginx.conf`), and the CoreDNS resolver (`dns/`). The `ollama/` dir is
-  **legacy/unused** — Ollama is now host-native (no `aip-ollama` container), so
-  its rendered container-config is not consumed by the live reconcile
+  (`proxy/nginx.conf`), and the CoreDNS resolver (`dns/`). vLLM is host-native
+  (per-model `vllm serve` processes, no `aip-*` inference container) and has no
+  rendered service-config dir here
 * every `<service>/` config is **rendered** by the CLI from the platform
   config; not hand-edited (architecture §5, Host Services Control Plane)
 * contains **no secrets** — only placeholders; real provider credentials live in
@@ -330,9 +325,9 @@ gateway's vhost resolves locally. Only the platform's delimited block is touched
 ```
 
 Pinned, checksum-verified host binaries (e.g. the Microsandbox
-`msb` runtime). Versions are tracked in `config/versions.yaml`. (Ollama is no
-longer a native binary — it runs as a container-tier service; see architecture
-§16 and `config/versions.yaml` §12.6.)
+`msb` runtime). Versions are tracked in `config/versions.yaml`. (vLLM and the
+Hugging Face CLI run from the platform Python venv `~/.ai-platform/venv`, not from
+here; see architecture §16 and `config/versions.yaml` §12.6.)
 
 ## 1.10 Overlays (Persistence)
 
@@ -713,7 +708,7 @@ os: alma                   # alma | debian-trixie | debian-bookworm | ubuntu
 agent:
   tools: [opencode]        # installed agent CLIs (any subset of: opencode, omp, claude-code, codex, gemini, copilot, hermes); opencode by default
   default_tool: opencode   # default agent CLI; must be one of agent.tools
-  graphify_model: qwen2.5-coder:7b  # optional: Ollama model Graphify uses (chosen at `ai create`, routed through the gateway as ollama/<model>); omitted = none
+  graphify_model: Qwen/Qwen2.5-Coder-7B-Instruct  # optional: local HF model Graphify uses (chosen at `ai create`, routed through the gateway as vllm/<model>); omitted = none
 context:
   strategy: balanced       # Headroom input compression: conservative | balanced | aggressive
                            # (mapped to Headroom per-request knobs keep_turns/output_buffer_tokens)
@@ -795,7 +790,6 @@ agent_dashboards:          # agent-CLI web dashboards (currently only hermes —
     "litellm":      { "mode": "container", "image": "ghcr.io/berriai/litellm", "tag": "latest" },
     "litellm-db":   { "mode": "container", "image": "postgres", "tag": "18.4-alpine3.23" },
     "headroom":     { "mode": "container", "image": "ghcr.io/chopratejas/headroom", "tag": "latest" },
-    "ollama":       { "mode": "container", "image": "ollama/ollama", "tag": "latest" },
     "presidio-analyzer":   { "mode": "container", "image": "mcr.microsoft.com/presidio-analyzer",   "tag": "latest" },
     "presidio-anonymizer": { "mode": "container", "image": "mcr.microsoft.com/presidio-anonymizer", "tag": "latest" },
     "valkey":       { "mode": "container", "image": "valkey/valkey", "tag": "9.1.0-alpine" },
@@ -831,25 +825,25 @@ agent_dashboards:          # agent-CLI web dashboards (currently only hermes —
   `versions.Default()` pins when the file is absent or an entry is incomplete);
   `--upgrade` re-writes it to this binary's defaults and re-reconciles
 
-## 12.6a `config/model-runtimes.yaml` (per-model serving-runtime selection)
+## 12.6a `config/model-runtimes.yaml` (per-model vLLM serving record)
 
 ```yaml id="sc9a"
 schema_version: 1
 choices:
-  ollama/qwen2.5-coder:
-    alias: ollama/qwen2.5-coder
-    model: qwen2.5-coder
-    runtime: ollama              # ollama | vllm
-    endpoint: http://localhost:11434
+  vllm/qwen2.5-coder:
+    alias: vllm/qwen2.5-coder
+    model: Qwen/Qwen2.5-Coder-7B-Instruct
+    runtime: vllm
+    endpoint: http://localhost:8101
     status: served
 ```
 
-* a machine-wide **selection record** for **how** each served model is served —
-  the runtime (host-native **Ollama** vs the host-side **vLLM**),
-  keyed by the model's gateway **alias**
-* it is a **thin selection record, NOT a parallel model registry** — LiteLLM's DB
+* a machine-wide **serving record** for each host-side vLLM model — its HF repo,
+  the host loopback endpoint of its `vllm serve` process, keyed by the model's
+  gateway **alias**
+* it is a **thin serving record, NOT a parallel model registry** — LiteLLM's DB
   remains the source of truth for **what** is served; this file only records the
-  serving-runtime choice per alias
+  per-alias vLLM serving details
 * follows the same global-store pattern as `versions.yaml` — `Path` under
   `paths.ConfigDir`, atomic writes via `internal/conffile`, unknown-field-rejecting
   reads — backed by `internal/config/modelruntime.go`

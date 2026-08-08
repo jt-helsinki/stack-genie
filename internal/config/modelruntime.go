@@ -1,7 +1,7 @@
 package config
 
 // modelruntime.go records the user's chosen SERVING RUNTIME per model (host-native
-// Ollama) in a small MACHINE-WIDE store at
+// vLLM — the sole local-inference backend) in a small MACHINE-WIDE store at
 // ~/.ai-platform/config/model-runtimes.yaml.
 //
 // This is a THIN SELECTION RECORD, NOT a parallel model registry: it remembers
@@ -29,10 +29,10 @@ import (
 type ModelRuntime string
 
 const (
-	// RuntimeOllama serves the model through host-native Ollama.
-	RuntimeOllama ModelRuntime = "ollama"
 	// RuntimeVLLM serves the model through host-native vLLM (a per-model
-	// `vllm serve` OpenAI endpoint).
+	// `vllm serve` OpenAI endpoint). It is the ONLY local-inference runtime — Ollama
+	// was removed. A legacy "ollama" entry recorded by an older build is ignored on
+	// load (LoadModelRuntimes drops it) rather than crashing.
 	RuntimeVLLM ModelRuntime = "vllm"
 )
 
@@ -40,19 +40,14 @@ const (
 const ModelRuntimeSchemaVersion = 1
 
 // ModelRuntimes returns the selectable serving runtimes, in a stable order
-// suitable for a UI picker.
+// suitable for a UI picker. vLLM is the only local-inference runtime.
 func ModelRuntimes() []ModelRuntime {
-	return []ModelRuntime{RuntimeOllama, RuntimeVLLM}
+	return []ModelRuntime{RuntimeVLLM}
 }
 
 // ValidModelRuntime reports whether value is a recognised serving runtime.
 func ValidModelRuntime(value string) bool {
-	switch ModelRuntime(value) {
-	case RuntimeOllama, RuntimeVLLM:
-		return true
-	default:
-		return false
-	}
+	return ModelRuntime(value) == RuntimeVLLM
 }
 
 // ModelRuntimeChoice is a single selection record: how one served model (keyed by
@@ -104,6 +99,14 @@ func LoadModelRuntimes() (map[string]ModelRuntimeChoice, error) {
 	}
 	if file.Choices == nil {
 		return map[string]ModelRuntimeChoice{}, nil
+	}
+	// Drop any legacy non-vLLM (e.g. "ollama") entry recorded by an older build:
+	// vLLM is now the sole local runtime, so such a record is stale — ignore it
+	// rather than surface an unusable runtime to callers.
+	for alias, choice := range file.Choices {
+		if !ValidModelRuntime(string(choice.Runtime)) {
+			delete(file.Choices, alias)
+		}
 	}
 	return file.Choices, nil
 }

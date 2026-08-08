@@ -108,20 +108,19 @@ func newUninstallCmd(em *output.Emitter, exit *int) *cobra.Command {
 				purge = purgeAnswer
 			}
 
-			// Decide whether to also remove the host-native model runtimes (Ollama +
-			// vLLM) themselves. It DEFAULTS TO YES everywhere — the user asked to
-			// "remove ollama and vllm"; --keep-runtimes opts out (for --json/automation
-			// that wants to preserve them). On a terminal the prompt still shows,
-			// seeded from the flag (§1.8 flags-seed-the-prompt), so the user can confirm
-			// or decline. The downloaded models survive either way (only --purge removes
-			// them).
+			// Decide whether to also remove the host-native vLLM runtime itself (Ollama
+			// was removed; vLLM is the sole local runtime). It DEFAULTS TO YES
+			// everywhere; --keep-runtimes opts out (for --json/automation that wants to
+			// preserve it). On a terminal the prompt still shows, seeded from the flag
+			// (§1.8 flags-seed-the-prompt). The downloaded models survive either way
+			// (only --purge removes them).
 			removeRuntimes := !keepRuntimes
 			if interactive {
 				runtimesAnswer, runtimesErr := promptConfirmDefault(
-					"Remove the host-native Ollama and vLLM runtimes?",
-					"Stops any running Ollama and vLLM servers and uninstalls both runtimes "+
-						"(binaries + install). Say no to keep them installed. The downloaded "+
-						"models are kept either way — pass --purge to delete those too.",
+					"Remove the host-native vLLM runtime?",
+					"Stops any running vLLM servers and uninstalls the runtime (binary + "+
+						"install). Say no to keep it installed. The downloaded models are kept "+
+						"either way — pass --purge to delete those too.",
 					removeRuntimes,
 				)
 				if runtimesErr != nil {
@@ -181,7 +180,6 @@ func newUninstallCmd(em *output.Emitter, exit *int) *cobra.Command {
 				Purged:            report.Purged,
 				RemovedState:      report.RemovedState,
 				StoppedWorkspaces: report.StoppedWorkspaces,
-				RemovedHostOllama: report.RemovedHostOllama,
 				RemovedVLLM:       report.RemovedVLLM,
 				RemovedContainers: report.RemovedContainers,
 				RemovedImages:     report.RemovedImages,
@@ -199,7 +197,7 @@ func newUninstallCmd(em *output.Emitter, exit *int) *cobra.Command {
 	cmd.Flags().BoolVar(&removeDeps, "remove-deps", false,
 		"also uninstall the external dependencies (msb) without prompting")
 	cmd.Flags().BoolVar(&keepRuntimes, "keep-runtimes", false,
-		"keep the host-native Ollama + vLLM runtimes installed (they are removed by default; the downloaded models are kept unless --purge)")
+		"keep the host-native vLLM runtime installed (it is removed by default; the downloaded models are kept unless --purge)")
 	return cmd
 }
 
@@ -247,7 +245,6 @@ type uninstallResult struct {
 	Purged            bool     `json:"purged"`
 	RemovedState      bool     `json:"removed_state,omitempty"`
 	StoppedWorkspaces int      `json:"stopped_workspaces,omitempty"`
-	RemovedHostOllama bool     `json:"removed_host_ollama,omitempty"`
 	RemovedVLLM       bool     `json:"removed_vllm,omitempty"`
 	RemovedContainers int      `json:"removed_containers,omitempty"`
 	RemovedImages     int      `json:"removed_images,omitempty"`
@@ -288,8 +285,8 @@ func (result uninstallResult) Human() string {
 	if result.RemovedImages > 0 {
 		summary += fmt.Sprintf(" Removed %d container image(s).", result.RemovedImages)
 	}
-	if result.RemovedHostOllama || result.RemovedVLLM {
-		summary += " Removed the host-native Ollama + vLLM runtimes (downloaded models kept)."
+	if result.RemovedVLLM {
+		summary += " Removed the host-native vLLM runtime (downloaded models kept)."
 	}
 	if len(result.RemovedDeps) > 0 {
 		summary += " Also uninstalled: " + ui.Value.Render(strings.Join(result.RemovedDeps, ", ")) + "."

@@ -151,7 +151,7 @@ func presidioSelected(guardrails []string) bool {
 // lists the services but NOT litellm-db (no health line / Status entry), so it is added
 // explicitly. A few services expand to several images (serviceImageKeys). Pure and
 // testable; duplicate refs are de-duplicated so a shared image is only pulled once.
-// Ollama is host-native (no aip-ollama container), so its image is never pulled.
+// vLLM is host-native (no aip-vllm container), so it has no image to pull.
 func requiredImages(optional []string, guardrails []string) []string {
 	serviceKeys := []string{"litellm-db"}
 	for _, service := range desiredServices() {
@@ -161,8 +161,8 @@ func requiredImages(optional []string, guardrails []string) []string {
 		if service.Name == "presidio" && !presidioSelected(guardrails) {
 			continue // secret-masking guardrail off: don't pull the Presidio images
 		}
-		if service.Name == "ollama" {
-			continue // host-native Ollama: no container image to pull
+		if service.Name == "vllm" {
+			continue // host-native vLLM: no container image to pull
 		}
 		serviceKeys = append(serviceKeys, serviceImageKeys(service.Name)...)
 	}
@@ -199,20 +199,6 @@ const (
 	litellmDatabaseURL = "postgresql://" + litellmDBUser + "@" + litellmDBContainer + ":5432/" + litellmDBName
 	// INTERNAL-ONLY: Postgres is never host-published. LiteLLM reaches it over the
 	// private network at aip-litellm-db:5432; no host port is exposed.
-
-	// Ollama is HOST-NATIVE: the platform runs no aip-ollama container. The host CLI
-	// and the microVMs reach the Ollama HTTP API through the nginx gateway's /ollama
-	// route (forwarded to host.docker.internal:11434). The host process points
-	// OLLAMA_MODELS at ~/.ai-platform/volumes/<ollamaModelsVolume>/<ollamaHostModelsSubdir>
-	// (hostOllamaModelsDir) so the store is visible on disk and removed with the rest of
-	// platform state on `ai uninstall --purge` (which RemoveAll's ~/.ai-platform).
-	ollamaModelsVolume = "models" // subdir under VolumesDir: ~/.ai-platform/volumes/models
-	// defaultOllamaContextLength is the model context window the platform documents for the
-	// host-native Ollama (OLLAMA_CONTEXT_LENGTH) when the user has not forwarded their own.
-	// Ollama's built-in default (4096) is too small for agent CLIs (their prompt + tool
-	// schemas fill most of it, starving generation); 16384 leaves real headroom while
-	// staying memory-sane.
-	defaultOllamaContextLength = "16384"
 
 	// litellmDBVolume is the per-name subdir under VolumesDir for the LiteLLM
 	// Postgres data dir: ~/.ai-platform/volumes/litellm-db, HOST-BIND-MOUNTED into
@@ -340,18 +326,13 @@ func proxyNginxConf(domain string) string {
 	// emit that redirect now — there is no https listener yet, so a 301 would break
 	// every plain-http caller (the host CLI, the microVM gateway, the UIs).
 	// The DEFAULT server: the model path (/ + /v1 → LiteLLM directly) plus the LiteLLM
-	// admin (/llm) and Ollama (/ollama) management surfaces. default_server so it
-	// answers localhost, host.microsandbox.internal, and any unmatched Host.
+	// admin (/llm) management surface. default_server so it answers localhost,
+	// host.microsandbox.internal, and any unmatched Host.
 	builder.WriteString("  server {\n")
 	builder.WriteString("    listen 80 default_server;\n")
 	builder.WriteString("    server_name " + domain + " localhost _;\n")
 	// LiteLLM admin/management surface (prefix stripped by the trailing slash).
 	builder.WriteString(proxyLocation("/llm/", "http://"+litellmContainer+":4000/"))
-	// Ollama HTTP API (prefix stripped). Ollama is host-native, so this targets it
-	// through the host gateway (host.docker.internal — the LiteLLM/nginx run args add
-	// `--add-host=host.docker.internal:host-gateway` so Linux can reach it, harmless
-	// on Docker Desktop which provides the name natively).
-	builder.WriteString(proxyLocation("/ollama/", "http://"+hostGatewayName+":11434/"))
 	// The agent CHAT path → LiteLLM directly (PRESERVED). LiteLLM runs the headroom
 	// compression guardrail in-process. No trailing slash: /v1/... is forwarded
 	// verbatim.
@@ -379,12 +360,12 @@ func proxyNginxConf(domain string) string {
 // reach the HOST machine. Docker Desktop (macOS/Windows) provides it natively; on
 // Linux the container must be run with `--add-host=host.docker.internal:host-gateway`
 // (hostGatewayAddArg), which resolves it to the docker0 bridge gateway. It is how the
-// service tier reaches the host-native Ollama and vLLM backends.
+// service tier reaches the host-native vLLM per-model backends.
 const hostGatewayName = "host.docker.internal"
 
 // hostGatewayAddArg is the `--add-host` flag that maps hostGatewayName to the host
 // gateway inside a container on Linux. It is ALWAYS added to the LiteLLM + nginx run
-// args so both can reach the host-native Ollama; it is
+// args so both can reach the host-native vLLM per-model server ports; it is
 // harmless on Docker Desktop (which already provides the name).
 const hostGatewayAddArg = "--add-host=" + hostGatewayName + ":host-gateway"
 
@@ -659,175 +640,6 @@ func containerPublishesHostPort(prober runtime.Prober, containerRuntime, name st
 	return bindings != "" && bindings != "{}" && bindings != "null"
 }
 
-// ensureOllama runs the Ollama container on the shared network, INTERNAL-ONLY (no
-// host publish — reached by name on aip-net and, from the host, through the nginx
-// /ollama route), persisting models under ~/.ai-platform/volumes/models on the host
-// (bind-mounted). Idempotent. bindHost is unused now (no publish) but kept for a
-// stable ensure* signature.
-//
-// Migration caveat: models previously under ~/.ai-platform/models do NOT
-// auto-migrate to volumes/models — the next `ai setup` starts fresh and re-pulls;
-// acceptable for this dev platform.
-// Ollama is HOST-NATIVE: the platform does NOT run an aip-ollama container — a
-// host-native Ollama process serves the model backend, and LiteLLM/nginx reach it
-// through the host gateway (host.docker.internal). ensureOllama only VERIFIES it is
-// up; the actual per-OS install/start is a hardware bring-up seam (bringUpHostOllama).
-// When it is unreachable it returns an actionable error rather than silently
-// degrading.
-func ensureOllama() error {
-	if hostOllamaReachable() {
-		return nil
-	}
-	// hardware bring-up: on a provisioned host, attempt to bring the host-native
-	// Ollama up automatically (install if missing, then start) before failing.
-	// bringUpHostOllama is the unwired seam today — it returns a not-yet-wired error,
-	// so this falls through to the actionable manual-install error below.
-	if err := bringUpHostOllama(); err == nil && hostOllamaReachable() {
-		return nil
-	}
-	return output.Errorf(output.ExitMissingDep,
-		"host-native Ollama not reachable at 127.0.0.1:11434 — install and start it "+
-			"(macOS: Ollama.app or `brew install ollama` then `ollama serve`; "+
-			"Linux: `curl -fsSL https://ollama.com/install.sh | sh` then `systemctl enable --now ollama`), "+
-			"set OLLAMA_MODELS=%s, then re-run `ai setup`",
-		hostOllamaModelsDir())
-}
-
-// hostOllamaVersionURL is the host-native Ollama liveness endpoint the platform
-// probes from its OWN (on-host) perspective. The platform process runs on the host,
-// so it reaches a host-native Ollama at the loopback default port — NOT through the
-// host.docker.internal gateway (that name is for the LiteLLM/nginx CONTAINERS).
-const hostOllamaVersionURL = "http://127.0.0.1:11434/api/version"
-
-// ollamaHostModelsSubdir is the OLLAMA_MODELS host path (a subdir under the models
-// system volume) for host-native mode, keeping the host store SEPARATE from the
-// container store. Container mode keeps the existing ollamaModelsVolume path for
-// backward-compat. Resolved under VolumesDir by hostOllamaModelsDir.
-const ollamaHostModelsSubdir = "ollama" // → ~/.ai-platform/volumes/models/ollama
-
-// hostOllamaModelsDir resolves the host-native Ollama model store
-// (~/.ai-platform/volumes/models/ollama). It is the OLLAMA_MODELS the host process
-// must be pointed at (via launchd env / systemd drop-in) so `ai uninstall --purge`
-// still removes the store. Best-effort: an unresolvable HOME yields "".
-func hostOllamaModelsDir() string {
-	volumesDir, err := paths.VolumesDir()
-	if err != nil {
-		return ""
-	}
-	return filepath.Join(volumesDir, ollamaModelsVolume, ollamaHostModelsSubdir)
-}
-
-// hostOllamaHTTPGet is the indirection the host-native Ollama reachability probe
-// uses, so unit tests can substitute a fake without a live server (mirrors
-// proxyHTTPGet). It defaults to a short-timeout client GET.
-var hostOllamaHTTPGet = func(url string) (*http.Response, error) {
-	client := &http.Client{Timeout: 3 * time.Second}
-	return client.Get(url)
-}
-
-// hostOllamaReachable reports whether the host-native Ollama answers GET /api/version
-// with 200 on the host loopback. It backs both ensureOllama's precondition and
-// serviceHealthy("ollama").
-func hostOllamaReachable() bool {
-	response, err := hostOllamaHTTPGet(hostOllamaVersionURL)
-	if err != nil {
-		return false
-	}
-	defer func() { _ = response.Body.Close() }()
-	return response.StatusCode == http.StatusOK
-}
-
-// bringUpHostOllama installs (if missing) and starts a host-native Ollama.
-//
-// hardware bring-up: this is the seam ensureOllama calls when the host Ollama is
-// unreachable. It is NOT wired — installHostOllama/startHostOllama return a
-// not-yet-wired error, so this returns that error and the caller surfaces the
-// actionable manual-install guidance. When wired on a provisioned host, this becomes
-// the automatic bring-up path.
-func bringUpHostOllama() error {
-	if err := installHostOllama(); err != nil {
-		return err
-	}
-	return startHostOllama()
-}
-
-// installHostOllama installs a host-native Ollama.
-//
-// hardware bring-up: this is NOT wired — it must mutate the host, which the platform
-// does not do until validated on a provisioned host. When wired, the per-OS commands
-// are:
-//   - macOS: install Ollama.app (or `brew install ollama`); the app registers a
-//     launchd LaunchAgent that runs `ollama serve` on login.
-//   - Linux: `curl -fsSL https://ollama.com/install.sh | sh`, which installs the
-//     binary and a systemd unit (`ollama.service`).
-//
-// The host process must be given OLLAMA_CONTEXT_LENGTH=16384 (+ any forwarded
-// OLLAMA_* tuning) and OLLAMA_MODELS=<hostOllamaModelsDir> via the launchd
-// environment (`launchctl setenv` / a LaunchAgent EnvironmentVariables block) or a
-// systemd drop-in (`Environment=` in ollama.service.d/override.conf) — the exact
-// KEY=VALUE pairs are hostOllamaEnvPairs().
-func installHostOllama() error {
-	return output.Errorf(output.ExitRuntimeFailure,
-		"host-native Ollama install is not yet wired (hardware bring-up) — install it manually")
-}
-
-// startHostOllama starts an already-installed host-native Ollama.
-//
-// hardware bring-up: NOT wired (see installHostOllama). When wired: macOS
-// `launchctl kickstart -k gui/$(id -u)/…ollama` (or launch Ollama.app); Linux
-// `systemctl start ollama` — after applying the hostOllamaEnvPairs() environment.
-func startHostOllama() error {
-	return output.Errorf(output.ExitRuntimeFailure,
-		"host-native Ollama start is not yet wired (hardware bring-up) — start it manually")
-}
-
-// hostOllamaEnvPairs returns the OLLAMA_* KEY=VALUE pairs the HOST-NATIVE Ollama
-// process must run with: OLLAMA_MODELS points at the host store (hostOllamaModelsDir,
-// ~/.ai-platform/volumes/models/ollama) plus the default context length and any
-// forwarded OLLAMA_* tuning. It is the source of truth for the launchd/systemd
-// environment the hardware bring-up wiring applies (see installHostOllama). No
-// container is run, so these are not `-e` flags — they document the exact values the
-// host process needs.
-func hostOllamaEnvPairs() []string {
-	return ollamaEnvPairsWithModels(hostOllamaModelsDir())
-}
-
-// ollamaEnvPairsWithModels builds the Ollama env pairs pointing OLLAMA_MODELS at
-// modelsPath. OLLAMA_MODELS is platform-managed (never taken from the environment);
-// every other OLLAMA_* comes from the process env, and OLLAMA_CONTEXT_LENGTH is
-// defaulted unless the user forwarded their own. Backs hostOllamaEnvPairs (the
-// host-native store). Sorted for a deterministic, testable result.
-func ollamaEnvPairsWithModels(modelsPath string) []string {
-	forwarded := map[string]string{}
-	for _, entry := range os.Environ() {
-		key, value, found := strings.Cut(entry, "=")
-		if !found || !strings.HasPrefix(key, "OLLAMA_") || key == "OLLAMA_MODELS" {
-			continue
-		}
-		forwarded[key] = value
-	}
-	keys := make([]string, 0, len(forwarded))
-	for key := range forwarded {
-		keys = append(keys, key)
-	}
-	slices.Sort(keys)
-
-	pairs := []string{"OLLAMA_MODELS=" + modelsPath}
-	// Default the model context window. Ollama's built-in default is 4096, which is too
-	// small for agent CLIs: their system prompt + tool schemas alone run ~2k tokens, leaving
-	// almost no room to generate — a thinking model then exhausts the window on reasoning and
-	// returns EMPTY content with finish_reason "length". A larger default gives real
-	// generation headroom. Skipped when the user forwards their own OLLAMA_CONTEXT_LENGTH
-	// (e.g. to trade memory for a bigger window).
-	if _, set := forwarded["OLLAMA_CONTEXT_LENGTH"]; !set {
-		pairs = append(pairs, "OLLAMA_CONTEXT_LENGTH="+defaultOllamaContextLength)
-	}
-	for _, key := range keys {
-		pairs = append(pairs, key+"="+forwarded[key])
-	}
-	return pairs
-}
-
 // ensurePresidio runs the Presidio analyzer + anonymizer containers that back
 // LiteLLM's always-on PII guardrail. Both join the shared network and are
 // reachable by name on port 3000 (the image default); neither is published to
@@ -981,7 +793,7 @@ func ensureDNS(prober runtime.Prober, containerRuntime string) error {
 // ensureProxy runs the nginx reverse proxy that is the SOLE host entry to the
 // service tier: microVM/host → nginx (bindHost:18787) → LiteLLM (:4000) DIRECTLY
 // (LiteLLM in turn calls Headroom as an in-process compression guardrail),
-// plus the LiteLLM /llm + Ollama /ollama admin routes and the single LiteLLM admin
+// plus the LiteLLM /llm + LiteLLM /llm admin route and the single LiteLLM admin
 // UI Host-based vhost (litellm.<domain>) — ALL on the single :18787. It renders
 // the nginx config (proxyNginxConf, threading the resolved domain) to
 // ~/.ai-platform/config/proxy/nginx.conf, bind-mounts it at /etc/nginx/nginx.conf,
@@ -1559,13 +1371,6 @@ func (services realServices) Reconcile(providerConfig, bindHost string, optional
 	if err := ensureDNS(services.prober, containerRuntime.Name); err != nil {
 		return nil, err
 	}
-	// Ollama is host-native: verify a host-native Ollama is reachable (no aip-ollama
-	// container is run). An unreachable host Ollama is a hard setup error (the local
-	// model backend is required) with an actionable install/start hint.
-	progress("  • Ollama (host-native — verifying it is reachable)…")
-	if err := ensureOllama(); err != nil {
-		return nil, err
-	}
 	if presidioOn {
 		progress("  • Presidio (secret-masking guardrail backend)…")
 		if err := ensurePresidio(services.prober, containerRuntime.Name); err != nil {
@@ -1608,6 +1413,10 @@ func (services realServices) Reconcile(providerConfig, bindHost string, optional
 	// `ai models pull --runtime vllm` works after a plain `ai setup` with no separate
 	// `ai models install-vllm` step. Detect-gated (installs once), never fails setup.
 	ensureVLLMInstalled(progress)
+	// The Hugging Face CLI (`hf`): best-effort install into that venv when absent, so
+	// model management (`ai models list|pull|rm`, which shells out to `hf`) works after
+	// a plain `ai setup`. Detect-gated (installs once), never fails setup.
+	ensureHFInstalled(progress)
 	// Host-native vLLM: best-effort bring up a `vllm serve` process for every recorded
 	// runtime=vllm model that isn't already answering. OPTIONAL — it NEVER fails the
 	// reconcile (the RealRunner launch is a `hardware bring-up` stub today; failures
@@ -1616,7 +1425,7 @@ func (services realServices) Reconcile(providerConfig, bindHost string, optional
 	// hostGatewayAddArg (that --add-host also covers vLLM's per-model ports).
 	ensureVLLMServers(progress)
 	// nginx LAST: it is the SOLE host entry, fronting the gateway (/ + /v1 → LiteLLM
-	// directly), the LiteLLM /llm + Ollama /ollama admin routes, and the LiteLLM admin
+	// directly), the LiteLLM /llm + LiteLLM /llm admin route, and the LiteLLM admin
 	// UI as a Host-based vhost on the same port. The UI vhost hangs off the resolved
 	// platform base domain (runtime.yaml domain, default aip.local).
 	progress("  • nginx reverse proxy (sole host entry → service tier)…")
@@ -1730,15 +1539,14 @@ func (services realServices) statusFor(enabled []string) ([]ServiceStatus, error
 	presidioOff := !presidioSelected(reconcileGuardrails())
 	statuses := make([]ServiceStatus, 0, len(specs))
 	for _, service := range specs {
+		// vLLM is host-native and appended below with a richer summary line
+		// (services.vllmStatus): skip its registry pass so it is not listed twice.
+		if service.Name == "vllm" {
+			continue
+		}
 		endpoint, _ := console.EndpointForHost(service.Name, displayDomain)
 		optional := isOptionalService(service.Name)
-		// Ollama is host-native (no aip-ollama container), so render it as a host
-		// service (Mode "host") — its state comes from the HTTP health probe
-		// (serviceHealthy), not `docker inspect`.
 		mode := service.Mode
-		if service.Name == "ollama" {
-			mode = "host"
-		}
 		if (optional && !slices.Contains(enabled, service.Name)) || (service.Name == "presidio" && presidioOff) {
 			// Not enabled (an opt-in tool, or Presidio with secret-masking off):
 			// surfaced so it is discoverable, but not probed.
@@ -1785,9 +1593,8 @@ func (services realServices) statusFor(enabled []string) ([]ServiceStatus, error
 	// Host-native vLLM: a single summary line (Mode "host"), discovered from the
 	// persisted runtime=vllm choices by HTTP-probing each recorded endpoint (there
 	// is no daemon holding Manager state between CLI runs). Appended after the
-	// container services + the Ollama host line so both host inference backends read
-	// together. Omitted entirely when no vLLM models are recorded? No — it is always
-	// surfaced (like Ollama) so it stays discoverable, "stopped" when idle.
+	// container services. It is ALWAYS surfaced so it stays discoverable, "stopped"
+	// when idle.
 	statuses = append(statuses, services.vllmStatus())
 	return statuses, nil
 }
@@ -1826,17 +1633,13 @@ func (services realServices) serviceContainersUp(name string) bool {
 }
 
 // serviceHealthy is the live readiness probe for one host service (the same
-// checks `ai doctor` uses): LiteLLM /health, Ollama /api/version, and the
+// checks `ai doctor` uses): LiteLLM /health, vLLM per-model endpoints, and the
 // Presidio/Headroom containers running.
 func (services realServices) serviceHealthy(name string) bool {
 	switch name {
 	case "litellm":
 		info, err := litellm.RealClient().Status()
 		return err == nil && info.Healthy
-	case "ollama":
-		// Ollama is host-native: probe it directly on the host loopback (the platform
-		// process runs on the host).
-		return hostOllamaReachable()
 	case "vllm":
 		// vLLM is host-native (per-model `vllm serve` processes, no container). There
 		// is no daemon holding Manager state between CLI runs, so readiness is

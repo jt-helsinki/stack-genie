@@ -6,8 +6,8 @@ import (
 	"testing"
 
 	"github.com/jt-helsinki/stack-genie/internal/catalog"
+	"github.com/jt-helsinki/stack-genie/internal/hf"
 	"github.com/jt-helsinki/stack-genie/internal/litellm"
-	"github.com/jt-helsinki/stack-genie/internal/ollama"
 )
 
 // REGRESSION GUARD: Cloud Models must still render the registered (keyed) models when the
@@ -30,19 +30,21 @@ func TestCloudModelsRendersRegisteredWithCachedCatalog(test *testing.T) {
 	}
 }
 
-// REGRESSION GUARD: Local Models must render the installable library even when the
-// installed-store lister (Ollama) errors — the two sides degrade independently, so an
-// Ollama outage never blanks the whole tab.
-func TestLocalModelsRendersLibraryWhenStoreErrors(test *testing.T) {
+// REGRESSION GUARD: Local Models must render the curated Available section even when
+// the installed-store lister (`hf cache ls`) errors — the two sides degrade
+// independently, so a listing outage never blanks the whole tab.
+func TestLocalModelsRendersCuratedWhenStoreErrors(test *testing.T) {
 	view := NewLocalModels(
-		func() ([]ollama.Model, error) { return nil, errors.New("ollama down") },
-		freshLibrary([]ollama.LibraryModel{{Name: "llama3.2", Description: "Meta Llama"}}),
-		nil, nil, noTest, nil,
+		func() ([]hf.CachedModel, error) { return nil, errors.New("hf down") },
+		func() []hf.CuratedModel {
+			return []hf.CuratedModel{{Name: "Llama-3.2-3B-Instruct-4bit", Repo: "mlx-community/Llama-3.2-3B-Instruct-4bit", Description: "Meta Llama"}}
+		},
+		noTest,
 	)
 	view.SetSize(120, 40)
 	drive(view, view.Init())
 	out := view.View()
-	if !strings.Contains(out, "llama3.2") {
-		test.Errorf("installable library must render despite an installed-store error:\n%s", out)
+	if !strings.Contains(out, "mlx-community/Llama-3.2-3B-Instruct-4bit") {
+		test.Errorf("curated Available section must render despite an installed-store error:\n%s", out)
 	}
 }
