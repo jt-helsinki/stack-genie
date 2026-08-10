@@ -3,13 +3,18 @@
 package integration
 
 import (
-	"strings"
 	"testing"
 	"time"
 )
 
-// The local model the user keeps pulled (do NOT remove it — the user wants it).
-const localModel = "ollama/smollm:135m"
+// The local model self-provisioned for this group: a small curated vLLM repo served
+// under its vllm/<alias> gateway handle. (Retargeted from the removed ollama/smollm ref
+// now that vLLM is the sole local runtime.) Shared with vllm_runtime_test.go.
+const (
+	localModelRepo  = "mlx-community/Llama-3.2-3B-Instruct-4bit"
+	localModelAlias = "aip-it-local"
+	localModel      = "vllm/" + localModelAlias
+)
 
 // dummyKeyProvider is a routable catalog provider used for the dummy-key test.
 // It must NOT already have a real key on this machine. anthropic is chosen
@@ -36,31 +41,31 @@ type keysAddResult struct {
 
 // Group 3: Models & keys.
 //
-//   - the local Ollama model is served by the gateway,
+//   - the local vLLM model is served by the gateway,
 //   - adding a dummy key for a routable provider registers its catalog models
 //     (the served count grows / the provider's models appear),
 //   - `keys list` shows it keyed,
 //   - removing the key drops its models again.
 //
-// All with a DUMMY key — no real cloud inference. smollm is never removed (the
-// user keeps it), so `ai models rm` is not exercised here.
+// All with a DUMMY key — no real cloud inference. The local model is left in place
+// (idempotent re-pull), so `ai models rm` is not exercised here.
 func TestGroup03ModelsKeys(test *testing.T) {
 	requireStack(test)
 
-	test.Run("local Ollama model is served", func(test *testing.T) {
-		// Self-provision so the suite needs no manual host prep: pull the small test
-		// model (idempotent — a no-op if already present) which also registers it with
-		// the gateway. A pull failure means Ollama isn't serving on this host → skip.
-		pullRef := strings.TrimPrefix(localModel, "ollama/")
-		if env, code, stderr := run(test, "", 10*time.Minute, "models", "pull", pullRef); !env.OK || code != 0 {
-			test.Skipf("could not pull %q (Ollama not serving?): exit=%d %s", pullRef, code, truncate(stderr, 200))
+	test.Run("local vLLM model is served", func(test *testing.T) {
+		// Self-provision so the suite needs no manual host prep: pull the small curated
+		// model via the vLLM runtime under a fixed alias (idempotent — a no-op if already
+		// served) which also registers it with the gateway. A pull failure means vLLM
+		// isn't installed/serving on this host → skip.
+		if env, code, stderr := run(test, "", 10*time.Minute, "models", "pull", localModelRepo, "--alias", localModelAlias); !env.OK || code != 0 {
+			test.Skipf("could not pull %q (vLLM not installed/serving?): exit=%d %s", localModelRepo, code, truncate(stderr, 200))
 		}
 		names := servedModelNames(test)
 		// An empty served set means the gateway has no models registered on this host
-		// (Ollama not serving, or the gateway can't enumerate its store) — a stack-state
+		// (vLLM not serving, or the gateway can't enumerate its store) — a stack-state
 		// gap, not a product defect; skip rather than fail.
 		if len(names) == 0 {
-			test.Skip("gateway serves no models on this host — Ollama/registration gap (run `ai setup` / start aip-ollama)")
+			test.Skip("gateway serves no models on this host — vLLM/registration gap (run `ai setup`, install vLLM + pull a model)")
 		}
 		if !hasModel(names, localModel) {
 			test.Errorf("gateway does not serve %q; served=%v", localModel, names)

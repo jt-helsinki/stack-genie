@@ -60,11 +60,11 @@ func versionsImageRef(file *versions.File, service string) string {
 type serviceSpec struct{ Name, Mode string }
 
 // coreServices is the always-on host-service set (arch §5), all containers:
-// Ollama (required local model backend), Presidio (PII guardrail backend),
+// Presidio (PII guardrail backend),
 // Headroom (the input-compression service LiteLLM calls as a pre_call guardrail),
 // LiteLLM (gateway/router), the nginx gateway proxy, and the aip-dns egress-audit
-// resolver. Ollama is required — LiteLLM routes local model traffic to it (arch
-// §14, §16). Headroom is a standalone service on :8787 that LiteLLM POSTs to at
+// resolver. Local inference is host-native vLLM (a host process, NOT a container here) —
+// LiteLLM reaches it via host.docker.internal (arch §14, §16). Headroom is a standalone service on :8787 that LiteLLM POSTs to at
 // /v1/compress (NOT a proxy in front of LiteLLM); the per-project Caveman skill
 // handles output compression inside the workspace (arch §8–10). Headroom precedes
 // LiteLLM because LiteLLM's guardrail calls it. These are reconciled on every
@@ -228,7 +228,7 @@ const (
 	// publishes to the host. It fronts the model path (host :18787 /v1 → LiteLLM
 	// DIRECTLY, what resolveGateway returns — transparent to workspaces; LiteLLM in
 	// turn calls Headroom as an in-process compression guardrail), the LiteLLM admin
-	// (/llm) and Ollama (/ollama) surfaces on the same :18787, and the LiteLLM admin
+	// (/llm) surface on the same :18787, and the LiteLLM admin
 	// UI as a Host-based vhost on that SAME :18787 (litellm.<domain> — no separate host
 	// ports). Headroom is NO LONGER an nginx upstream. nginx terminates TLS later (the
 	// future HTTPS endpoint, per-vhost :443 + http→https redirect). Pinned minor tag.
@@ -283,7 +283,7 @@ const (
 // server_name, NOT separate host ports:
 //
 //   - the DEFAULT server (server_name <domain> localhost _; default_server) — the
-//     model path + LiteLLM/Ollama management surfaces:
+//     model path + LiteLLM management surface:
 //   - location /     → LiteLLM (aip-litellm:4000) DIRECTLY: the DEFAULT route.
 //     The host CLI (localhost:18787) and the microVM gateway
 //     (host.microsandbox.internal:18787) hit this; agents + the UIs' MODEL calls
@@ -293,13 +293,13 @@ const (
 //     CHAT path; what every workspace agent's base_url=…/v1 hits) — PRESERVED.
 //   - location /llm/ → aip-litellm:4000 (prefix stripped): the LiteLLM ADMIN/
 //     management surface.
-//   - location /ollama/ → host.docker.internal:11434 (prefix stripped): the
-//     host-native Ollama HTTP API (forwarded to the host, not a container).
 //   - server_name litellm.<domain>; → aip-litellm:4000 at ROOT (the LiteLLM admin
 //     UI is served at /ui; / redirects there).
 //
-// Headroom is NO LONGER an nginx upstream — it is a LiteLLM guardrail LiteLLM calls
-// by name. Every location forwards to LiteLLM (or Ollama), never to aip-headroom.
+// Local inference is host-native vLLM (reached by LiteLLM directly, not nginx), so there
+// is NO /ollama route and no aip-ollama container. Headroom is NO LONGER an nginx
+// upstream either — it is a LiteLLM guardrail LiteLLM calls by name. Every location
+// forwards to LiteLLM, never to aip-headroom.
 //
 // litellm.<domain> is now the ONLY host UI vhost: Open WebUI moved to a per-workspace
 // in-VM app and Odysseus was removed from the platform.
@@ -446,14 +446,14 @@ func proxyUIVhost(serverName, target, rootRedirect string) string {
 // keep a stable signature; the role-driven bindHost governs the nginx publish
 // (ensureProxy), not LiteLLM.
 // The container ALWAYS gets `--add-host=host.docker.internal:host-gateway` so it can
-// reach the host-side inference backends (host-native Ollama + vLLM);
+// reach the host-side inference backend (host-native vLLM);
 // it is harmless on Docker Desktop, which provides the name natively.
 func litellmRunArgs(configPath, bindHost, image string) []string {
 	_ = bindHost // internal-only: LiteLLM no longer publishes to the host
 	args := []string{
 		"run", "-d", "--name", litellmContainer,
 		"--network", platformNetwork,
-		// Host-side backend (host-native Ollama): reached via the host gateway.
+		// Host-side backend (host-native vLLM): reached via the host gateway.
 		hostGatewayAddArg,
 	}
 	return append(args,
@@ -806,7 +806,7 @@ func ensureDNS(prober runtime.Prober, containerRuntime string) error {
 // is cheap to recreate.
 //
 // hardware bring-up: the live end-to-end routing through these nginx routes
-// (/llm, /ollama, and the litellm.<domain> UI vhost) is verified on a
+// (/llm and the litellm.<domain> UI vhost) is verified on a
 // provisioned host.
 func ensureProxy(prober runtime.Prober, containerRuntime, bindHost, domain string) error {
 	configDir, err := paths.ConfigDir()
@@ -825,8 +825,9 @@ func ensureProxy(prober runtime.Prober, containerRuntime, bindHost, domain strin
 	args := []string{
 		"run", "-d", "--name", proxyContainer,
 		"--network", platformNetwork,
-		// nginx proxies /ollama to the host-native Ollama,
-		// so it always needs the host.docker.internal mapping on Linux.
+		// Retain the host.docker.internal mapping on Linux so nginx can reach host-side
+		// services if a route needs it; local inference is host-native vLLM (reached by
+		// LiteLLM, not nginx) so there is no /ollama route to the host any more.
 		hostGatewayAddArg,
 	}
 	args = append(args,
@@ -853,7 +854,7 @@ const proxyReadinessURL = "http://127.0.0.1:" + proxyHostPort + "/health/livelin
 
 // proxyHTTPGet is the indirection the proxy readiness probe uses to make its HTTP
 // request, so unit tests can substitute a fake without a live server. It defaults
-// to a short-timeout client GET (mirroring litellm/ollama's probe style).
+// to a short-timeout client GET (mirroring litellm's probe style).
 var proxyHTTPGet = func(url string) (*http.Response, error) {
 	client := &http.Client{Timeout: 3 * time.Second}
 	return client.Get(url)

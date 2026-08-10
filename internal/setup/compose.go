@@ -18,10 +18,10 @@ import (
 // docker-compose.yaml up -d`, then `logs -f <svc>` / `ps` / `restart <svc>` — for easier
 // debugging. It is generated from the SAME consts/helpers the reconcile uses (container
 // names, `containerImage`, `platformNetwork`, the volume/config paths), so it stays in
-// sync. Ollama is deliberately ABSENT — it is HOST-NATIVE now (the reconcile no longer
-// runs an aip-ollama container; `ensureOllama` is a host HTTP probe and nginx's /ollama
-// route targets host.docker.internal), so a containerized aip-ollama here would NOT match
-// the running topology. Secrets stay OFF disk: UI_PASSWORD / LITELLM_MASTER_KEY /
+// sync. Local inference is deliberately ABSENT — it is HOST-NATIVE vLLM now (the reconcile
+// runs no local-inference container and there is no nginx /ollama route; LiteLLM reaches
+// each per-model `vllm serve` endpoint via host.docker.internal), so a containerized
+// local backend here would NOT match the running topology. Secrets stay OFF disk: UI_PASSWORD / LITELLM_MASTER_KEY /
 // LITELLM_SALT_KEY are emitted in compose's PASSTHROUGH form (bare NAME, no value), so
 // `docker compose up` reads them from the environment (e.g. ~/.ai-platform/.ai-platform.env)
 // exactly as the reconcile's `-e NAME` passthrough does.
@@ -109,9 +109,9 @@ func ServicesComposeYAML(bindHost string) ([]byte, error) {
 				Volumes: []string{corefile + ":/Corefile"},
 				Command: []string{"-conf", "/Corefile"},
 			},
-			// Ollama is HOST-NATIVE — no aip-ollama container is rendered here (see the
-			// file header). The host CLI and the microVMs reach it through the gateway's
-			// /ollama route, which nginx forwards to the host, not to a compose service.
+			// Local inference is HOST-NATIVE vLLM — no local-inference container is rendered
+			// here (see the file header). LiteLLM reaches each per-model `vllm serve`
+			// endpoint via host.docker.internal, not a compose service.
 			presidioAnalyzerContainer: {
 				Image: containerImage("presidio-analyzer"), ContainerName: presidioAnalyzerContainer, Networks: []string{net}, Restart: "unless-stopped",
 			},

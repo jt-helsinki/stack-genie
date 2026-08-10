@@ -55,7 +55,7 @@ func TestGroup01SetupHealth(test *testing.T) {
 			}
 		}
 		// Sanity: the core service-tier checks must be present.
-		want := map[string]bool{"litellm": false, "ollama": false, "presidio": false, "proxy": false, "dns": false, "headroom": false}
+		want := map[string]bool{"litellm": false, "vllm": false, "presidio": false, "proxy": false, "dns": false, "headroom": false}
 		for _, check := range report.Checks {
 			if _, ok := want[check.Name]; ok {
 				want[check.Name] = true
@@ -89,11 +89,12 @@ func TestGroup01SetupHealth(test *testing.T) {
 		if !status.Healthy {
 			test.Errorf("models status: gateway not healthy: %+v", status)
 		}
-		// Ollama connectivity is an environmental dependency (the aip-ollama container
-		// must be up + serving). When it's down, skip rather than fail — the suite is
-		// meant to self-skip absent stack pieces, not error on an un-provisioned host.
-		if !status.Ollama {
-			test.Skip("models status: Ollama connectivity down — skipping (start the aip-ollama service to exercise this)")
+		// Local-model connectivity is an environmental dependency (host-native vLLM must
+		// be installed + serving at least one model — there is no aip-ollama container).
+		// When it's down, skip rather than fail — the suite self-skips absent stack pieces,
+		// not error on an un-provisioned host.
+		if !status.Local {
+			test.Skip("models status: no local (vLLM) model served — skipping (install vLLM + pull a model to exercise this)")
 		}
 	})
 }

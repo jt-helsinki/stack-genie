@@ -13,7 +13,7 @@ import (
 // Group 5: Gateway inference.
 //
 // `ai models test` against the tiny local model drives a real chat completion
-// through nginx → Headroom → LiteLLM → Ollama and asserts a non-error response.
+// through nginx → Headroom → LiteLLM → vLLM and asserts a non-error response.
 // This is the only group that performs actual (local) inference; cloud inference
 // is opt-in and gated by AIP_INTEGRATION_<PROVIDER>_KEY (registration-only by
 // default).
