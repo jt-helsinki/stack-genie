@@ -20,32 +20,31 @@ flowchart LR
 
   subgraph TIER["Host · Docker service tier (aip-net) — internal-only but nginx (loopback: DNS only)"]
     direction TB
-    PROXY["nginx gateway · aip-proxy<br/>host :18787 — <b>SOLE host entry</b>, TLS-ready<br/>/ &amp; /v1 → LiteLLM · /llm → LiteLLM · /ollama → Ollama<br/>vhosts: litellm.&lt;domain&gt; · valkey.&lt;domain&gt;"]:::gw
+    PROXY["nginx gateway · aip-proxy<br/>host :18787 — <b>SOLE host entry</b>, TLS-ready<br/>/ &amp; /v1 → LiteLLM · /llm → LiteLLM<br/>vhosts: litellm.&lt;domain&gt; · valkey.&lt;domain&gt;"]:::gw
     HEAD["Headroom · aip-headroom :8787<br/>input-compression guardrail service<br/>LiteLLM calls in-process (internal-only)"]:::gw
     LLM["LiteLLM · aip-litellm :4000<br/><b>router + user-selectable guardrails</b><br/>(Headroom on by default; secret-masking/<br/>hide-secrets/tool-firewall opt-in)<br/>admin UI via /llm + litellm.&lt;domain&gt; (internal-only)"]:::core
     PG[("Postgres · aip-litellm-db :5432<br/>(internal-only · no host port)<br/>virtual keys · spend · provider creds")]:::store
     PRES["Presidio · aip-presidio-{analyzer,anonymizer}<br/>secret masking (pre/post-call)"]:::core
-    OLL["Ollama · aip-ollama :11434<br/>local models (no default · DB-backed · internal-only)"]:::core
     VALKEY[("Valkey · aip-valkey :6379<br/>LiteLLM response cache (standalone · internal-only)")]:::store
     RI["RedisInsight · aip-redisinsight :5540<br/>Valkey GUI · vhost valkey.&lt;domain&gt; (internal-only)"]:::gw
     DNS["CoreDNS · aip-dns (loopback :15353)<br/>egress audit log"]:::core
   end
 
   CLI["Host CLI / UI<br/>loopback 127.0.0.1:18787"]:::vm
+  VLLM["vLLM (host-native · sole local backend)<br/>per-model <b>vllm serve</b> on loopback :8101+<br/>reached via host.docker.internal · models via hf CLI<br/>public handle vllm/&lt;alias&gt; (DB-backed · no default)"]:::core
   CLOUD["Cloud providers<br/>OpenAI · Anthropic · Gemini · Groq<br/><b>real provider keys live in LiteLLM</b>"]:::cloud
 
   AGENT == "OpenAI API · base_url http://host.microsandbox.internal:18787/v1<br/>egress default PUBLIC (DNS-audited) — re-lockable to deny" ==> PROXY
   APPS == "same gateway path (model calls)" ==> PROXY
-  CLI -- "/v1 model path · /llm + /ollama admin" --> PROXY
+  CLI -- "/v1 model path · /llm admin" --> PROXY
   AGENT -. "every DNS name audited" .-> DNS
   AGENT -. "consults <b>Graphify</b> knowledge graph" .-> AITOOLS
   PROXY -- "/ + /v1" --> LLM
   PROXY -. "/llm · litellm.&lt;domain&gt;" .-> LLM
-  PROXY -. "/ollama" .-> OLL
   LLM -- "pre_call compress" --> HEAD
   LLM <-. "guardrails (when enabled)" .-> PRES
   LLM --- PG
-  LLM -- "local route" --> OLL
+  LLM == "local route · host.docker.internal:&lt;port&gt;/v1" ==> VLLM
   LLM -. "response cache" .-> VALKEY
   RI -. "monitors" .-> VALKEY
   PROXY -. "valkey.&lt;domain&gt;" .-> RI

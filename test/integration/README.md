@@ -11,6 +11,13 @@ make test-integration
 # = go test -tags integration ./test/integration/... -v -timeout 30m
 ```
 
+> **NOTE: the `integration`-tagged suite currently does not compile after the
+> Ollama→vLLM refactor** (e.g. `health_test.go` uses the removed `status.Ollama`
+> field, and `vllm_runtime_test.go` uses the removed `--runtime` flag). These Go
+> test files need updating before `make test-integration` will build. The
+> descriptions below reflect the intended vLLM-only behavior the suite should
+> exercise once the test files are brought in line with the code.
+
 ## Self-skip
 
 `TestMain` builds `./cmd/ai` once and probes the stack:
@@ -41,11 +48,11 @@ up everything they create (the suite workspace + any dummy keys) via
 |-------|------|-----------|
 | 1 | `TestGroup01SetupHealth` | `ai setup --mode standalone` (idempotent, non-interactive); `ai doctor` every check ok; catalog file on disk; gateway healthy |
 | 2 | `TestGroup02Services` | `ai services status` all running; restart `presidio` → back to running; `ai logs --service litellm` returns output |
-| 3 | `TestGroup03ModelsKeys` | local `ollama/smollm:135m` served; **dummy** key add → models registered + `keys list` keyed; key remove → models drop |
+| 3 | `TestGroup03ModelsKeys` | a local vLLM model served (`hf download` + `vllm serve`, registered `vllm/<alias>`); **dummy** key add → models registered + `keys list` keyed; key remove → models drop |
 | 4 | `TestGroup04WorkspaceLifecycle` | `create` → `start` → `exec echo` → in-VM `nerdctl` (containerd) → `refresh-models` → `apps add openwebui` reachable on its host port → egress `deny` blocks / `public` allows (restart between) → `stop` + `delete --purge` |
-| 5 | `TestGroup05GatewayInference` | `ai models test ollama/smollm:135m` → real local chat completion through nginx → LiteLLM (Headroom compression guardrail in-process) → host-native Ollama |
+| 5 | `TestGroup05GatewayInference` | `ai models test <vllm model>` → real local chat completion through nginx → LiteLLM (Headroom compression guardrail in-process) → host-native vLLM |
 | 6 | `TestGroup06Uninstall` | `ai uninstall --dry-run` plan (always); destructive `--purge --yes` only when gated (see below) |
-| 7 | `TestGroup07InferenceRuntime` | per-model inference runtime — `ai services status`/`ai doctor` list host-native Ollama and vLLM as `host`-mode services; `ai models pull --runtime bogus` → exit 2; `--runtime vllm` with vLLM unavailable fails non-zero (never silently falls back to Ollama); when vLLM is up, `--runtime vllm --alias` pulls + serves under the `vllm/<alias>` handle (self-skips when vLLM is down) |
+| 7 | `TestGroup07InferenceRuntime` | host-native local inference — `ai services status`/`ai doctor` list **vLLM** as a `host`-mode service (the sole local backend; Ollama was removed); `ai models pull <repo>` downloads via the `hf` CLI then starts + registers the per-model vLLM server under the `vllm/<alias>` handle (`--alias` sets the gateway alias; there is no `--runtime` flag — vLLM is the only local runtime), self-skipping when vLLM is down |
 | — | `TestWorkspaceCreateTeardown` | fast, scenario-rich `ai create`/`delete`/`destroy` coverage — scaffold + registration, delete keeps user files, `--purge` removes the dir, missing/unknown `--os` → exit 2, flags persist to `config.yaml`, nested/duplicate locations rejected, `--dry-run` no side effects, unknown-delete error, `destroy` alias. Needs only installed templates (`requireSetup`), **not** a running stack, so it runs in seconds without building a microVM |
 
 Each step in group 4 asserts independently and logs the exact `ai` output on
@@ -70,8 +77,8 @@ self-cleaning via `t.Cleanup`.
   `--json` / non-interactive paths.
 - **Real cloud inference** without a provider key — only registration is
   exercised by default; live cloud calls require `AIP_INTEGRATION_<PROVIDER>_KEY`.
-- **`ai models rm`** — `smollm:135m` is the only pulled model and the user keeps
-  it, so removal is not exercised (no throwaway model is pulled).
+- **`ai models rm`** — the one pulled local model is kept, so removal
+  (`hf cache rm` + de-register) is not exercised (no throwaway model is pulled).
 - **`sudo`-requiring host mutations without NOPASSWD** — e.g. the `/etc/hosts`
   UI-subdomain block. `ai doctor` reports it; the suite does not mutate it.
 - **server / client deployment roles** — only `standalone` is exercised (the

@@ -22,13 +22,12 @@ code.
   `--dns-nameserver` at the `aip-dns` audit resolver.
 - **Service-tier launch** — `internal/setup/setup_real.go`: `realServices.Reconcile`
   brings up the container tier on `aip-net` in order **network → DNS →
-  Ollama (host-native — VERIFY reachable, not a container) → Presidio (only when
-  secret-masking is enabled) → Valkey (+ RedisInsight) → Headroom → LiteLLM (+ DB) →
-  vLLM (host-native, best-effort per-model serve) → nginx proxy (LAST)**, via the
-  detected runtime (docker|podman). The local model runtimes (Ollama, vLLM) are
-  HOST-NATIVE processes, not `aip-*` containers: `ensureOllama` HTTP-probes a
-  host-native Ollama and `ensureVLLMServers` best-effort starts a per-model
-  `vllm serve`; both are reached by the containers through the host gateway.
+  Presidio (only when secret-masking is enabled) → Valkey (+ RedisInsight) →
+  Headroom → LiteLLM (+ DB) → vLLM (host-native, best-effort per-model serve) →
+  nginx proxy (LAST)**, via the detected runtime (docker|podman). vLLM is the SOLE
+  local-inference runtime (Ollama was removed) and is a HOST-NATIVE process, not an
+  `aip-*` container: `ensureVLLMServers` best-effort starts a per-model `vllm serve`,
+  reached by the containers through the host gateway.
   Headroom PRECEDES LiteLLM because LiteLLM's `headroom` compression guardrail calls
   it in-process. nginx (`aip-proxy`) is the sole host entry — all other containers
   are internal-only.
@@ -70,13 +69,8 @@ code.
 - **Virtual-key minting + provider-key storage** — `litellm.KeyManager` mints the
   scoped agent virtual key and stores provider keys in LiteLLM's credential store
   (keys-in-LiteLLM, §17), fronted by `ai keys`.
-- **Live Ollama health probe** — `hostOllamaReachable`
-  (`internal/setup/setup_real.go`) does a real `GET http://127.0.0.1:11434/api/version`
-  against the HOST-NATIVE Ollama; wired into `ai doctor` and
-  `realServices.serviceHealthy("ollama")`. `ai services status`/`ai doctor` surface
-  Ollama as a `host`-mode service (never a container).
 - **Live vLLM health probe + status** — `vllmServersHealthy`/`vllmStatus`
-  (`internal/setup/vllm_host.go`) HTTP-probe each recorded `runtime=vllm` endpoint's
+  (`internal/setup/vllm_host.go`) HTTP-probe each recorded vLLM endpoint's
   `/models` path (discovered from the persisted `config/model-runtimes.yaml`, since
   `ai` is short-lived and holds no daemon). `ai services status`/`ai doctor` surface a
   single `vllm` `host`-mode line (running when ≥1 recorded server answers, else
@@ -89,13 +83,13 @@ code.
 - [ ] Go 1.26+.
 - [ ] **Docker**, rootless. `ai doctor` → `container runtime: ok (docker)`;
       `ai setup` must verify rootless (`runtime.Verify`, exit 4 if not).
-- [ ] **Ollama** (host-native, required local-model backend) — install + start it
-      yourself (macOS: Ollama.app or `brew install ollama` then `ollama serve`; Linux:
-      `ollama.com/install.sh` then `systemctl enable --now ollama`), pointed at
-      `OLLAMA_MODELS=~/.ai-platform/volumes/models/ollama`. `ai setup` VERIFIES it is
-      reachable at `127.0.0.1:11434` and errors with guidance if not; the auto-install
-      seam (`bringUpHostOllama`) is unwired (§2.9). **vLLM** is OPTIONAL (per-model
-      `--runtime vllm`) — install only if you want it (§2.9).
+- [ ] **vLLM** (host-native, the SOLE local-model backend) — installed into the
+      platform-managed host venv `~/.ai-platform/venv` by `ai models install-vllm`
+      (MLX / vLLM-Metal on macOS, `pip install vllm` on CUDA Linux); `ai setup` also
+      best-effort installs it (`ensureVLLMInstalled`) and the **Hugging Face CLI** `hf`
+      (`ensureHFInstalled`, `pip install huggingface_hub[cli]`) into the same venv, so
+      `ai models pull <repo>` works after a plain `ai setup`. vLLM weights live at
+      `~/.ai-platform/volumes/models/vllm` (`hf` sets `HF_HOME` there). See §2.9.
 - [ ] **Microsandbox** (`msb`) — the platform now MANAGES this itself: it is pinned
       to `microsandboxVersion` (`v0.6.6`, matched to the go.mod
       `superradcompany/microsandbox/sdk/go` pin) and downloaded (sha256-verified)
@@ -187,7 +181,7 @@ verification work:
   egress remain the hard boundary; the firewall is thin defence-in-depth.
   (There is no prompt-injection callback to verify — the in-process
   `detect_prompt_injection` and the unmaintained LLM Guard were both removed as
-  false-positive sources on ordinary coding/Ollama traffic; see arch §15.)
+  false-positive sources on ordinary coding traffic; see arch §15.)
 - [ ] **nginx → LiteLLM gateway path (LiteLLM calls Headroom in-process)** —
       confirm the `aip-proxy` nginx entry on host :18787 forwards `/v1` **directly**
       to LiteLLM (`aip-litellm:4000`) end-to-end, including **streamed (SSE)**
@@ -199,17 +193,14 @@ verification work:
       §2.3 intro; this item is the live end-to-end confirmation of the forward chain.)
 - [ ] **nginx as the SOLE host entry — the new routes** — every service container
       is now INTERNAL-ONLY on `aip-net` (LiteLLM, Presidio, Headroom no
-      longer host-publish); only nginx publishes (the local model runtimes are
-      host-native, reached via the host gateway). Verify on a live
+      longer host-publish); only nginx publishes (vLLM is host-native,
+      reached via the host gateway). Verify on a live
       host that the new nginx routes work end-to-end:
   - `localhost:18787/llm/*` reaches the LiteLLM admin surface (e.g.
     `GET /llm/model/info`, `/llm/v1/models`, `/llm/health/liveliness`, the
     `/llm/key/*` + `/llm/credentials` paths) — the prefix is stripped to
     `aip-litellm:4000/*`. This is what the host CLI uses (`litellm.AdminBaseURL`,
     `secrets` broker, `litellm.KeyManager`);
-  - `localhost:18787/ollama/api/*` reaches the Ollama HTTP API (`ollama.DefaultBaseURL`
-    → `/ollama/api/tags|pull|delete|show|version`), prefix stripped and forwarded to
-    the HOST-NATIVE Ollama at `host.docker.internal:11434/*` (not a container);
   - the chat test (`ai models test`) on `localhost:18787/v1/chat/completions` still
     goes **directly to LiteLLM** (the real model path — LiteLLM applies the Headroom
     compression guardrail in-process), NOT `/llm`;
@@ -316,8 +307,8 @@ Every host-persisted **system** volume now lives under `~/.ai-platform/volumes/<
 - `~/.ai-platform/volumes/litellm-db` → bind-mounted into `aip-litellm-db` at
   `/var/lib/postgresql` (the LiteLLM Postgres data dir). This replaces the former
   `aip-litellm-db-data` Docker **named volume**.
-- `~/.ai-platform/volumes/models` → the Ollama model store (moved from the old
-  `~/.ai-platform/models`).
+- `~/.ai-platform/volumes/models` → the local-model store; the vLLM weights live in
+  the `volumes/models/vllm` subdir (`hf` sets `HF_HOME` there).
 
 - [ ] **Verify `initdb` succeeds on the bind mount.** Postgres on a host bind mount
       has data-dir **ownership** quirks: the container's `postgres` UID must own (or
@@ -328,7 +319,7 @@ Every host-persisted **system** volume now lives under `~/.ai-platform/volumes/<
 - [ ] **Migration caveat (acceptable for this dev platform):** data in the OLD
       `aip-litellm-db-data` named volume and the OLD `~/.ai-platform/models` does
       **not** auto-migrate — the next `ai setup` re-`initdb`s the Postgres data dir
-      and re-pulls Ollama models into the fresh dirs. `ai uninstall` still
+      and local models must be re-downloaded into the fresh dirs. `ai uninstall` still
       best-effort `docker volume rm aip-*`s the legacy named volume on upgrade.
 
 ### 2.6 In-VM container runtime (Phase 0 — arch §7)
@@ -458,48 +449,52 @@ on Apple Silicon (the runtime is now pinned to msb `v0.6.6`,
       relay client per workspace (no "max clients" growth) and releases it on project
       switch / exit.
 
-### 2.9 Host-native model runtimes — Ollama + vLLM (arch §17)
+### 2.9 Host-native model runtime — vLLM (arch §17)
 
-The local model backends are **host-native**, not `aip-*` containers. Ollama is the
-default; vLLM is an opt-in per-model backend chosen at `ai models pull --runtime vllm`.
-The host-side wiring — status/health probing, the model-runtime store
-(`config/model-runtimes.yaml`), `ai models pull|rm --runtime`, the CLI guards, and the
+vLLM is the **SOLE** local model backend (Ollama was removed), a **host-native**
+process, not an `aip-*` container. Local models are managed with the **Hugging Face
+CLI** (`hf`): there is no per-model runtime choice and no `--runtime` flag. The
+host-side wiring — status/health probing, the model-runtime store
+(`config/model-runtimes.yaml`, vLLM-only; a legacy `ollama` entry is dropped on load),
+`ai models pull <repo>` (`hf download` → start + register the per-model server) /
+`ai models rm <repo>` (stop + `hf cache rm` + de-register), the CLI guards, and the
 Manager (lazy start, `MaxServers=2` cap with LRU eviction, port allocation from
 `:8101`) — is fully unit-tested with fakes. The seams that MUTATE the host are
-`hardware bring-up` (grep `hardware bring-up` in `internal/setup` and `internal/vllm`):
+`hardware bring-up` (grep `hardware bring-up` in `internal/setup`, `internal/vllm`,
+and `internal/hf`):
 
-- [ ] **Host-native Ollama install/start** — `bringUpHostOllama` →
-      `installHostOllama`/`startHostOllama` (`internal/setup/setup_real.go`) are NOT
-      wired (they return a not-yet-wired error, so `ensureOllama` falls through to the
-      actionable manual-install guidance). When wired: macOS installs Ollama.app /
-      `brew install ollama` (a launchd LaunchAgent runs `ollama serve`); Linux runs the
-      `ollama.com/install.sh` + `systemctl enable --now ollama`. The host process must
-      be given the `hostOllamaEnvPairs()` environment (`OLLAMA_MODELS` →
-      `~/.ai-platform/volumes/models/ollama`, `OLLAMA_CONTEXT_LENGTH=16384`, + forwarded
-      `OLLAMA_*` tuning) via `launchctl`/a systemd drop-in.
 - [ ] **vLLM per-model `vllm serve` launch** — `vllm.RealRunner.Start`/`Stop`
-      (`internal/vllm/runner.go`) return `vllm.ErrNotWired`; `ensureVLLMServers` and
-      `ai models pull --runtime vllm` attempt the launch best-effort and surface the
-      error + install guidance (never crash, never fall back to Ollama). When wired,
-      `Start` launches a DETACHED `vllm serve <model> --host 127.0.0.1 --port <p>
-      --served-model-name <alias>` with `HF_HOME=<StoreDir>`; each server is one
-      OpenAI endpoint on a host loopback port, registered in the gateway under
-      `vllm/<alias>`. `vllm.Pull` (the multi-GB HF weight download into
-      `~/.ai-platform/volumes/models/vllm`) is likewise `ErrNotWired`.
-- [ ] **vLLM install + complete detection** — `vllm.Detect`
-      (`internal/vllm/detect.go`) only checks for the `vllm` binary on PATH; a COMPLETE
-      probe must also verify the platform-specific runtime (darwin: the vLLM-Metal
-      plugin is importable; Linux: a CUDA device + driver). The install itself
-      (`vllm.InstallGuidance` prints the per-OS steps — MLX / vLLM-Metal on macOS,
-      `pip install vllm` on CUDA Linux) is host mutation the platform does not perform.
-- [ ] **Uninstall host-runtime removal** — `ai uninstall` stops + removes the
-      host-native Ollama and vLLM runtimes by default (prompt defaults to yes;
-      `--keep-runtimes` opts out; downloaded models kept unless `--purge`). The stop
-      seams (`stopHostOllama`/`stopVLLMServers` — best-effort `pkill`) and the removal
-      seams (`removeHostOllama`/`removeVLLM` — record intent only) in
-      `internal/uninstall/uninstall.go` are documented STUBS; when wired they run the
-      per-OS uninstall (macOS `brew uninstall ollama` / remove the vLLM-Metal venv;
-      Linux `systemctl disable --now ollama` + the package, `pip uninstall vllm`).
+      (`internal/vllm/runner.go`) now spawn/stop the real process (the legacy
+      `vllm.ErrNotWired` sentinel is no longer returned); `ensureVLLMServers` (in the
+      reconcile) and `ai models pull <repo>` start it best-effort and surface the
+      install guidance on failure (never crash). `Start` launches a DETACHED
+      `vllm serve <model> --host 127.0.0.1 --port <p> --served-model-name <alias>`
+      with `HF_HOME=<StoreDir>` (the vLLM store `~/.ai-platform/volumes/models/vllm`);
+      each server is one OpenAI endpoint on a host loopback port, registered in the
+      gateway under `vllm/<alias>`. Verify a real per-model serve + gateway round-trip
+      on a live host.
+- [ ] **`hf` weight download** — `ai models pull <repo>` runs `hf download <repo>`
+      into the vLLM store (`internal/hf`, `HF_HOME` pointed at
+      `~/.ai-platform/volumes/models/vllm`); `hf cache ls`/`hf cache rm` back
+      `ai models list`/`ai models rm`. Verify a real multi-GB HF download + subsequent
+      `vllm serve` load on a live host.
+- [ ] **vLLM + `hf` install** — `ai setup` best-effort installs BOTH vLLM
+      (`ensureVLLMInstalled` → `vllm.Install`) and the Hugging Face CLI
+      (`ensureHFInstalled` → `hf.Install`, `pip install huggingface_hub[cli]`) into the
+      platform-managed host venv `~/.ai-platform/venv` (Detect-gated, never fails
+      setup); `ai models install-vllm` is the explicit one-shot vLLM installer. The
+      real pip/wheel downloads are the host mutation. `vllm.Detect`
+      (`internal/vllm/detect.go`) only checks for the `vllm` binary; a COMPLETE probe
+      must also verify the platform-specific runtime (darwin: the vLLM-Metal plugin is
+      importable; Linux: a CUDA device + driver). `vllm.InstallGuidance` prints the
+      per-OS steps — MLX / vLLM-Metal on macOS, `pip install vllm` on CUDA Linux.
+- [ ] **Uninstall host-runtime removal** — a plain `ai uninstall` ALWAYS stops any
+      running `vllm serve` servers best-effort (`stopVLLMServers` — `pkill -f "vllm
+      serve"`), and by default also removes the vLLM runtime (`removeVLLM`; prompt
+      defaults to yes; `--keep-runtimes` opts out; downloaded weights kept unless
+      `--purge`). Both are documented best-effort STUBS in
+      `internal/uninstall/uninstall.go`; when wired the removal runs the per-OS
+      uninstall (macOS: remove the vLLM-Metal venv; Linux: `pip uninstall vllm`).
 
 ## 3. Turn on the remaining acceptance tests
 
@@ -535,11 +530,10 @@ pass):
 1. `ai doctor` → all checks green.
 2. `ai setup` → exit 0 (choose the guardrails at the picker / `--guardrails`); the
    core service tier (DNS, Valkey (+ RedisInsight), Headroom, LiteLLM + DB,
-   and the nginx proxy LAST) up, and the host-native Ollama VERIFIED reachable
-   (`ai setup` errors with install guidance if it is not) — Presidio starts **only
-   when secret-masking is selected** (`ai services status` shows it "disabled"
-   otherwise); templates installed. There are no optional host services (vLLM is
-   host-native and started per-model on demand).
+   and the nginx proxy LAST) up, and vLLM + the `hf` CLI best-effort installed into
+   the platform venv — Presidio starts **only when secret-masking is selected**
+   (`ai services status` shows it "disabled" otherwise); templates installed. There
+   are no optional host services (vLLM is host-native and started per-model on demand).
 3. `ai create --name demo --os debian-trixie` → **scaffold-only**: writes the
    project's `.ai-platform/` files in the cwd and registers it; it does **not**
    build the image or boot a microVM.

@@ -4,10 +4,10 @@ Top-level containers and the model data path in words. The **canonical diagram**
 [`docs/architecture.mmd`](architecture.mmd) (Mermaid source, complete and
 authoritative — includes every service: proxy, headroom, litellm + DB, presidio,
 valkey, redisinsight, dns); its rendered export `docs/architecture.png` is
-embedded in [`architecture-overview.md`](architecture-overview.md). The local-model
-inference backends — **host-native Ollama** and **vLLM** — are
-host-side, not `aip-net` containers; the LiteLLM/nginx containers reach them via
-`host.docker.internal` (regenerate `architecture.mmd` accordingly).
+embedded in [`architecture-overview.md`](architecture-overview.md). The sole
+local-model inference backend — **vLLM** — is host-side, not an `aip-net`
+container; the LiteLLM/nginx containers reach it via `host.docker.internal`
+(regenerate `architecture.mmd` accordingly).
 
 > **Note:** after any architecture change, edit `docs/architecture.mmd` and
 > regenerate the PNG from it (e.g. `mmdc -i docs/architecture.mmd -o
@@ -31,9 +31,8 @@ host-side, not `aip-net` containers; the LiteLLM/nginx containers reach them via
    `aip-net`, the only loopback exception being `aip-dns` `:15353` — Postgres
    `aip-litellm-db` is also internal-only, no host port, reached at
    `aip-litellm-db:5432`). The default `/` and `/v1` routes forward **directly to aip-litellm**;
-   `/llm` and `/ollama` (and the `litellm.<domain>` + `valkey.<domain>` vhosts) front
-   the LiteLLM admin + Ollama + RedisInsight surfaces — `/ollama` targets the **host-native**
-   Ollama at `host.docker.internal:11434` (Ollama is no longer a container). nginx no longer routes to Headroom at all. The host CLI
+   `/llm` (and the `litellm.<domain>` + `valkey.<domain>` vhosts) fronts
+   the LiteLLM admin + RedisInsight surfaces. nginx no longer routes to Headroom at all. The host CLI
    reaches the gateway on loopback `127.0.0.1:18787`.
 4. **aip-litellm** is the router. **Guardrails are user-selectable** (chosen at
    `ai setup` via a picker / `--guardrails`, persisted in `runtime.yaml`); only the
@@ -50,18 +49,20 @@ host-side, not `aip-net` containers; the LiteLLM/nginx containers reach them via
    An unselected guardrail is omitted entirely (never references a backend that isn't
    running — e.g. Presidio is only launched when secret-masking is selected). (The
    in-process prompt-injection detector and the unmaintained LLM Guard were both
-   removed — they false-positived on ordinary coding/Ollama traffic.) Its admin UI /
+   removed — they false-positived on ordinary coding traffic.) Its admin UI /
    virtual keys / spend live in **aip-litellm-db**.
-5. LiteLLM routes to a **local-inference backend** — **host-native Ollama** or
-   **vLLM**, both host-side backends reached through the
-   `host.docker.internal` gateway (Ollama at `:11434`, vLLM as per-model `vllm serve`
+5. LiteLLM routes to the **local-inference backend** — **vLLM**, a host-side
+   backend reached through the `host.docker.internal` gateway (per-model `vllm serve`
    processes each on their own OpenAI-compatible loopback port, base 8101; LiteLLM/nginx get `--add-host=host.docker.internal:host-gateway`) —
    or to a **cloud provider** using the real key it holds. Local models are registered
-   DB-backed (`ollama/<name>` and `vllm/<alias>`); the serving backend is
-   chosen **per model** at `ai models pull --runtime …` (there is no machine-wide inference
-   mode). The model set is DB-backed and catalog-driven with **no built-in default model**.
+   DB-backed with the public handle `vllm/<alias>` (routed `openai/<alias>` against the
+   per-model server endpoint). vLLM is the **sole** local-inference runtime (there is no
+   per-model engine choice and no machine-wide inference mode); local models are managed
+   with the **Hugging Face CLI** (`hf`) — `ai models pull <repo>` runs `hf download` into
+   the vLLM store then starts + registers the per-model vLLM server. The model set is
+   DB-backed and catalog-driven with **no built-in default model**.
    The response streams back along the same path (SSE-friendly through nginx) to the agent.
-   Installing/starting the host Ollama and enabling vLLM are `hardware bring-up` seams.
+   Enabling/launching vLLM is a `hardware bring-up` seam.
 
 Each workspace microVM ships a **rootful in-VM container runtime** (containerd +
 nerdctl + runc + CNI), on which the platform runs **opt-in AI apps** (`internal/apps`)
@@ -100,8 +101,9 @@ for the workspace user by a CONDITIONAL Dockerfile snippet
 registers Graphify with itself **at workspace start**, once per project
 (`graphify install` for claude-code, `graphify install --platform <cli>` for
 codex/gemini/opencode/copilot) — not in the Dockerfile, since `--project` writes into
-the bind-mounted project dir. Graphify's headless LLM backend is an Ollama model chosen
-at `ai create` (`--graphify-model`), routed through the gateway as `ollama/<model>`.
+the bind-mounted project dir. Graphify's headless LLM backend is a curated vLLM model (a
+Hugging Face repo id) chosen at `ai create` (`--graphify-model`), pulled via HF + vLLM and
+routed through the gateway as `vllm/<alias>`.
 **code-review-graph** (`code-review-graph.com`; per-CLI `install --platform`, then
 `build` + a D3 graph visualization) and **codebase-memory-mcp**
 (`DeusData/codebase-memory-mcp`; auto-detecting `install`, optional on-demand 3D graph
