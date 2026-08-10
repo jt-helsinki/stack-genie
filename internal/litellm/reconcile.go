@@ -18,7 +18,7 @@ import (
 )
 
 // DesiredModel is one model the platform wants the gateway to serve. Name is the
-// public model_name (the catalog id verbatim for cloud, "ollama/<name>" for
+// public model_name (the catalog id verbatim for cloud, "vllm/<alias>" for
 // local); Params + Info are the AddModel payload.
 type DesiredModel struct {
 	Name   string

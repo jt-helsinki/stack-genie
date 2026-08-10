@@ -86,7 +86,7 @@ func TestOpenCodeConfigStructure(test *testing.T) {
 		}
 		// tool_call must MATCH the model's advertised capability: a tool-capable model
 		// gets true (opencode drives it agentically); a completion-only model gets false
-		// (opencode never sends it a tool schema, which Ollama would reject).
+		// (opencode never sends it a tool schema, which such a model would reject).
 		if entry["tool_call"] != model.Tools {
 			test.Errorf("model %q tool_call = %v, want %v", model.Name, entry["tool_call"], model.Tools)
 		}
@@ -275,16 +275,16 @@ func TestMergeOpenCodeConfigInjectsDynamic(test *testing.T) {
 // rather than wiping it.
 func TestMergeOpenCodeConfigReplacesModelList(test *testing.T) {
 	// Existing config: an OLD model under the gateway provider + a user's custom top-level key.
-	template := []byte(`{"theme":"dracula","provider":{"aip-gateway":{"models":{"ollama/old:latest":{"name":"ollama/old:latest"}}}}}`)
+	template := []byte(`{"theme":"dracula","provider":{"aip-gateway":{"models":{"vllm/old:latest":{"name":"vllm/old:latest"}}}}}`)
 
-	merged, err := MergeOpenCodeConfig(template, testGateway, testKey, "", toolModels("ollama/new:latest"), 5, 8000)
+	merged, err := MergeOpenCodeConfig(template, testGateway, testKey, "", toolModels("vllm/new:latest"), 5, 8000)
 	if err != nil {
 		test.Fatal(err)
 	}
-	if !strings.Contains(string(merged), "ollama/new:latest") {
+	if !strings.Contains(string(merged), "vllm/new:latest") {
 		test.Errorf("new served model missing:\n%s", merged)
 	}
-	if strings.Contains(string(merged), "ollama/old:latest") {
+	if strings.Contains(string(merged), "vllm/old:latest") {
 		test.Errorf("removed model must be dropped (list REPLACED, not unioned):\n%s", merged)
 	}
 	if !strings.Contains(string(merged), "dracula") {
@@ -296,7 +296,7 @@ func TestMergeOpenCodeConfigReplacesModelList(test *testing.T) {
 	if err != nil {
 		test.Fatal(err)
 	}
-	if !strings.Contains(string(preserved), "ollama/old:latest") {
+	if !strings.Contains(string(preserved), "vllm/old:latest") {
 		test.Errorf("empty served list must not wipe the existing models:\n%s", preserved)
 	}
 }
@@ -376,7 +376,7 @@ func TestAgentEnvScript(test *testing.T) {
 
 // TestAgentEnvScriptGraphify verifies that when a graphify model IS configured,
 // its OpenAI-compatible backend is routed through the gateway's /v1 endpoint with
-// the scoped virtual key and the ollama/<model> public name.
+// the scoped virtual key and the vllm/<alias> public name.
 func TestAgentEnvScriptGraphify(test *testing.T) {
 	env := string(AgentEnvScript(testGateway, testKey, "llama3.1:8b", nil))
 	for _, want := range []string{
@@ -558,14 +558,14 @@ func TestOmpModelsConfig(test *testing.T) {
 // TestOmpConfigSeedThenRemember verifies the project config.yml carries the provider
 // order always and modelRoles.default ONLY when a default is seeded.
 func TestOmpConfigSeedThenRemember(test *testing.T) {
-	seeded, err := OmpConfig("ollama/qwen3-coder:30b")
+	seeded, err := OmpConfig("vllm/qwen3-coder:30b")
 	if err != nil {
 		test.Fatal(err)
 	}
 	if !strings.Contains(string(seeded), "modelProviderOrder:") || !strings.Contains(string(seeded), ProviderID) {
 		test.Errorf("omp config.yml missing provider order:\n%s", seeded)
 	}
-	if !strings.Contains(string(seeded), "default: "+ProviderID+"/ollama/qwen3-coder:30b") {
+	if !strings.Contains(string(seeded), "default: "+ProviderID+"/vllm/qwen3-coder:30b") {
 		test.Errorf("seeded omp config.yml missing modelRoles.default:\n%s", seeded)
 	}
 	empty, err := OmpConfig("")

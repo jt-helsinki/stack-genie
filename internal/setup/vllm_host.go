@@ -1,9 +1,8 @@
 package setup
 
 // vllm_host.go wires the HOST-NATIVE vLLM backend into the services status /
-// health / reconcile layer, mirroring how host-native Ollama is handled: vLLM is
-// NOT an aip-* container, so its health comes from an HTTP probe (not
-// `docker inspect`) and it is never image-pulled.
+// health / reconcile layer: vLLM is NOT an aip-* container, so its health comes
+// from an HTTP probe (not `docker inspect`) and it is never image-pulled.
 //
 // CROSS-INVOCATION REALITY: `ai` is a short-lived CLI — there is no daemon holding
 // a vllm.Manager between runs. So "which vLLM servers are up" is discovered from the
@@ -87,9 +86,9 @@ func stopVLLMServersHost() error {
 // can't stall a status read.
 const vllmProbeTimeout = 3 * time.Second
 
-// vllmHTTPGet is the injectable seam for the vLLM endpoint reachability probe
-// (the analogue of hostOllamaHTTPGet), so Status/serviceHealthy are unit-testable
-// without a live server. The real probe is a short-timeout HTTP GET.
+// vllmHTTPGet is the injectable seam for the vLLM endpoint reachability probe,
+// so Status/serviceHealthy are unit-testable without a live server. The real
+// probe is a short-timeout HTTP GET.
 var vllmHTTPGet = func(url string) (*http.Response, error) {
 	client := &http.Client{Timeout: vllmProbeTimeout}
 	return client.Get(url)

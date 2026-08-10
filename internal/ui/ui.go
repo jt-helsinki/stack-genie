@@ -77,7 +77,7 @@ func Enabled(emitter *output.Emitter) bool {
 // terminal pane, so a nested `ai` command knows it is running INSIDE the pane. There
 // the pane already renders the child's PTY through its own emulator, so a nested
 // animated bubbletea spinner would fight the child's own streaming progress (msb's
-// layered pull, ollama/docker downloads) for cursor control of the shared PTY —
+// layered pull, model/docker downloads) for cursor control of the shared PTY —
 // producing flicker, cascaded/garbled lines, and an apparent hang. Commands consult
 // EmbeddedTerminal() to run the work directly (progress streams cleanly) instead.
 const EmbeddedTerminalEnv = "AI_UI_TERMINAL"

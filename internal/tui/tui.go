@@ -299,7 +299,7 @@ func Run(cwd string) error {
 	contextView := views.NewContext(currentRoot, contextopt.GetStatus, contextopt.SetStrategy, contextopt.SetCavemanLevel)
 	// Local Models: the locally-downloaded vLLM weight store (via `hf cache ls`) + the
 	// curated set of installable, vLLM-servable Hugging Face repos, with the gateway
-	// tester. vLLM is the sole local runtime (Ollama removed).
+	// tester. vLLM is the sole local runtime.
 	localModelsView := views.NewLocalModels(
 		hf.RealClient().CacheList,
 		func() []hf.CuratedModel { return hf.CuratedModels(goruntime.GOOS) },

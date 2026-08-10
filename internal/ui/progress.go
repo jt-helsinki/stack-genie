@@ -10,7 +10,7 @@ import (
 const progressBarWidth = 24
 
 // ProgressBar renders a single carriage-return-updated progress line — a meter + percent
-// + human byte counts + status — for a streaming download like `ollama pull`. It works
+// + human byte counts + status — for a streaming model download. It works
 // in a plain TTY (the line overwrites in place) AND in the `ai ui` embedded terminal
 // (the LogView's normalizeTerminalOutput interprets the \r + erase-line). Call Update per
 // progress frame and Finish once at the end. Use only when ui.Enabled is true (skip it

@@ -105,7 +105,7 @@ func flashLine(flash string) string {
 }
 
 // sourceFlash builds the source-availability warning for an offline live source
-// (the Ollama library or models.dev). cached reports whether a cached copy was
+// (the curated Hugging Face set or models.dev). cached reports whether a cached copy was
 // shown; source names the live source for the message. Returns "" when there is no
 // warning (the caller only calls this on a fetch error).
 func sourceFlash(source string, cached bool) string {

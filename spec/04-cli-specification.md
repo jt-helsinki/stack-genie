@@ -282,8 +282,8 @@ Purpose:
   proxy (Headroom PRECEDES LiteLLM because LiteLLM's `headroom` compression
   guardrail calls it in-process). The **local-model inference tier is HOST-NATIVE,
   not containers**: **vLLM** is the sole local-inference runtime (per-model host
-  processes, probed at `127.0.0.1:<port>/v1 (per-model, base 8101)`); there is
-  **no** `aip-ollama` container. Setup also best-effort installs both **vLLM**
+  processes, probed at `127.0.0.1:<port>/v1 (per-model, base 8101)`); the local
+  inference tier never runs as an `aip-*` container. Setup also best-effort installs both **vLLM**
   (`ensureVLLMInstalled`) and the **Hugging Face CLI `hf`** (`ensureHFInstalled`)
   into the platform venv, and verifies the Microsandbox workspace
   runtime. *(hardware bring-up: installing / starting vLLM are not yet wired live.)*
@@ -1326,8 +1326,7 @@ ai models popular
 Lists **installable** models from the **curated available-models list**
 (`hf.CuratedModels(goos)`): on **darwin** it is `mlx-community/*` MLX repos, on
 **Linux** plain Hugging Face safetensors repos. This is a **static curated set**,
-not a live search — there is **no live HF search, no ollama.com scrape, and no
-`cache/ollama-models.yaml`**. For each entry it reports:
+not a live search — there is **no live HF search and no scraped-library cache**. For each entry it reports:
 
 * **name** — the HF repo id (e.g. `mlx-community/Qwen2.5-Coder-7B-Instruct-4bit`)
 * **size / context / input** — the curated metadata for the repo; a `—` marks a
@@ -1495,7 +1494,7 @@ containers `dns`, `presidio`, `valkey`, `redisinsight`, `litellm`, `headroom`, a
 local-inference runtime) (there are no optional host services).
 The user never invokes `docker compose`, `launchctl`, or `systemctl` directly. The
 container tier runs as containers on `aip-net`; **vLLM is host-native, NOT a
-container** (there is no `aip-ollama` container) — reported with Mode `host` (see
+container** — reported with Mode `host` (see
 architecture §5, "Host Services Control Plane"). (The Microsandbox workspace
 runtime is not a long-running service — it is driven by the top-level workspace
 verbs, not `ai services`.)

@@ -78,9 +78,9 @@ func HermesDashboardPasswordHash(password string) (string, error) {
 const ProviderID = "aip-gateway"
 
 // Model is one served model plus whether it can do tool/function calling. Tools drives
-// opencode's per-model `tool_call` flag: a completion-only model (e.g. Ollama smollm:135m)
+// opencode's per-model `tool_call` flag: a completion-only model
 // gets tool_call:false so opencode does not present it as agentic and never sends it a tool
-// schema (which Ollama would reject). Cloud/unknown models default to Tools:true.
+// schema (which the model would reject). Cloud/unknown models default to Tools:true.
 type Model struct {
 	Name  string
 	Tools bool
@@ -106,7 +106,7 @@ func ModelNames(models []Model) []string {
 //
 // In the catalog-driven model system there is no built-in default model; the
 // served list (from the live gateway) may even be empty until the user adds a
-// provider key or pulls an Ollama model. defaultModel is therefore optional: when
+// provider key or pulls a local model. defaultModel is therefore optional: when
 // empty no top-level `model` is written and opencode falls back to its own
 // default-model selection.
 func OpenCodeConfig(gatewayURL, apiKey, defaultModel string, models []Model, keepTurns, outputBufferTokens int) ([]byte, error) {
@@ -119,12 +119,12 @@ func OpenCodeConfig(gatewayURL, apiKey, defaultModel string, models []Model, kee
 			// opencode's models.dev catalog, so opencode would otherwise default them to
 			// NON-tool-capable and the agent "does nothing" (only chats). We set it PER
 			// MODEL from its advertised capability: a tool-capable model gets true (real
-			// work); a completion-only model (e.g. Ollama smollm:135m) gets false so
-			// opencode never sends it a tool schema — which Ollama rejects with a hard
+			// work); a completion-only model gets false so
+			// opencode never sends it a tool schema — which such a model rejects with a hard
 			// "does not support tools" error.
 			"tool_call": model.Tools,
 			// reasoning + interleaved make opencode SURFACE a thinking model's
-			// chain-of-thought. LiteLLM streams Ollama's thinking as `reasoning_content`
+			// chain-of-thought. LiteLLM streams the model's thinking as `reasoning_content`
 			// deltas (separate from `content`); without this opencode ignores them, so a
 			// thinking model like qwen3.6 shows a long blank (hidden reasoning) then a tiny
 			// answer — read as "no output". `reasoning: true` marks the model as reasoning
@@ -999,7 +999,7 @@ const (
 //
 // In the catalog-driven model system the in-VM picker is exactly the set of models
 // the LiteLLM gateway currently SERVES (its DB-backed models — a keyed provider's
-// catalog models + the registered Ollama models). The script:
+// catalog models + the registered local models). The script:
 //   - requires curl (clear error + exit if absent);
 //   - GETs <gatewayBaseURL>/models (the OpenAI-compatible list endpoint) with the
 //     scoped virtual key, and extracts the served model ids PORTABLY (grep/sed over
@@ -1044,7 +1044,7 @@ func RefreshScript(gatewayBaseURL, apiKey, defaultModel string, keepTurns, outpu
 	script.WriteString("#!/usr/bin/env bash\n")
 	script.WriteString(`# Managed by the AI Development Platform — refresh the in-workspace agent model
 # picker. Run this INSIDE the workspace after changing the served models on the host
-# (add a provider key with 'ai keys', or pull/remove an Ollama model):
+# (add a provider key with 'ai keys', or pull/remove a local model):
 #   refresh-models
 # It re-fetches the models the gateway currently SERVES (its DB-backed models) from
 # the gateway's /v1/models endpoint and rewrites the agent CLI configs in place.
@@ -1078,7 +1078,7 @@ set -u
 // refreshScriptBody is the fixed logic of the refresh script. It consumes the
 // baked variables RefreshScript prepends. The MODEL_SENTINEL token in the item
 // templates is replaced with each (already JSON-escaped) model id; the model ids
-// here are simple (alias / "ollama/<name>" / "<provider>/<model>") so a literal
+// here are simple (alias / "vllm/<alias>" / "<provider>/<model>") so a literal
 // substitution of the bare value is correct — and the unit test pins parity.
 var refreshScriptBody = strings.NewReplacer("@@SENTINEL@@", modelSentinel).Replace(`SENTINEL='@@SENTINEL@@'
 

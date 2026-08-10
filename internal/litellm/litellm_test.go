@@ -55,7 +55,7 @@ func TestRenderDefaultRouting(test *testing.T) {
 		test.Errorf("default_model = %q, want empty (no default model)", cfg.LitellmSettings.DefaultModel)
 	}
 	// The in-process prompt-injection callback was REMOVED (it false-positived on
-	// ordinary coding/Ollama traffic — "Rejected message. This is a prompt injection
+	// ordinary coding/local-model traffic — "Rejected message. This is a prompt injection
 	// attack."), so no callback is configured.
 	if len(cfg.LitellmSettings.Callbacks) != 0 {
 		test.Fatalf("litellm_settings.callbacks = %v, want none (detect_prompt_injection removed)", cfg.LitellmSettings.Callbacks)
@@ -472,8 +472,8 @@ func TestStatusInfoHumanOmitsServedWhenAllCollapse(test *testing.T) {
 
 func TestParseProviderError(test *testing.T) {
 	cases := map[string]string{
-		`{"error":{"message":"model 'ollama/nope' not found","type":"not_found"}}`: "model 'ollama/nope' not found",
-		`{"error":{"message":"  Invalid API key  "}}`:                              "Invalid API key",
+		`{"error":{"message":"model 'vllm/nope' not found","type":"not_found"}}`: "model 'vllm/nope' not found",
+		`{"error":{"message":"  Invalid API key  "}}`:                            "Invalid API key",
 		`Bad Gateway`: "Bad Gateway",
 		``:            "",
 	}
@@ -652,12 +652,12 @@ func TestStatusHealthyButModelListFails(test *testing.T) {
 func TestTestSurfacesProviderError(test *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
 		writer.WriteHeader(http.StatusNotFound)
-		_, _ = writer.Write([]byte(`{"error":{"message":"model not found: ollama/nope"}}`))
+		_, _ = writer.Write([]byte(`{"error":{"message":"model not found: vllm/nope"}}`))
 	}))
 	defer server.Close()
 
 	client := realClient{adminURL: server.URL, gatewayURL: server.URL, httpClient: server.Client()}
-	result, err := client.Test("ollama/nope")
+	result, err := client.Test("vllm/nope")
 	if err != nil {
 		test.Fatalf("transport error not expected: %v", err)
 	}
@@ -667,7 +667,7 @@ func TestTestSurfacesProviderError(test *testing.T) {
 	if result.Status != http.StatusNotFound {
 		test.Errorf("status = %d, want 404", result.Status)
 	}
-	if result.Error != "model not found: ollama/nope" {
+	if result.Error != "model not found: vllm/nope" {
 		test.Errorf("error = %q, want the provider message", result.Error)
 	}
 }

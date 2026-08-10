@@ -127,7 +127,7 @@ func newSetupCmd(em *output.Emitter, exit *int) *cobra.Command {
 			// refreshed on every `ai setup` — the reconcile below then recreates any
 			// service container found running a now-stale image. Each ensure* launches a
 			// container with `docker run -d`, whose implicit pull output the prober
-			// CAPTURES (invisible) — so a multi-GB first-run pull (e.g. ollama) looks
+			// CAPTURES (invisible) — so a multi-GB first-run pull (e.g. presidio) looks
 			// hung; pulling here renders docker's native progress bars to the terminal,
 			// and the later `docker run -d` finds the freshly-pulled image present and
 			// returns instantly. This MUST be sequential with (and before) the bubbletea
@@ -169,7 +169,7 @@ func newSetupCmd(em *output.Emitter, exit *int) *cobra.Command {
 			}
 			if err != nil {
 				// Surface actionable local-inference guidance even on failure: the
-				// reconcile fails HARD when the REQUIRED host-native Ollama is down, and a
+				// reconcile fails HARD when the REQUIRED host-native vLLM is down, and a
 				// per-OS install/start block is far more discoverable than the bare error.
 				// Guidance only (no host mutation); never for the client role (no local
 				// inference there). Skipped under --json inside printLocalInferenceGuidance.
@@ -186,7 +186,7 @@ func newSetupCmd(em *output.Emitter, exit *int) *cobra.Command {
 			if report.Runtime != nil && report.Runtime.Role != runtime.RoleClient {
 				setupLiteLLMUIPassword(em, interactive, report.Runtime.Role, report.Runtime.ResolveDomain())
 				// Run the initial catalog → gateway model sync so LiteLLM reflects any
-				// already-keyed providers' models + installed Ollama models. Cloud-provider
+				// already-keyed providers' models + installed local models. Cloud-provider
 				// API keys are NOT prompted for here — add them anytime from `ai ui` (the
 				// API Keys tab) or `ai keys add <provider>`. Best-effort — never fails setup.
 				syncInitialModels(em, interactive)
@@ -196,9 +196,9 @@ func newSetupCmd(em *output.Emitter, exit *int) *cobra.Command {
 			// DNS/cert operator contract (no /etc/hosts editing). Best-effort — neither
 			// fails setup.
 			syncUISubdomains(em, interactive, report.Runtime)
-			// Local inference backend: host-native Ollama (REQUIRED for local models).
-			// On a successful reconcile Ollama is already up, so this typically prints
-			// nothing — but it prints the full Ollama block if the backend went down
+			// Local inference backend: host-native vLLM (REQUIRED for local models).
+			// On a successful reconcile vLLM is already up, so this typically prints
+			// nothing — but it prints the full vLLM block if the backend went down
 			// between reconcile and here. Non-client only.
 			if report.Runtime != nil && report.Runtime.Role != runtime.RoleClient {
 				printLocalInferenceGuidance(em)
@@ -882,7 +882,7 @@ func syncUISubdomains(em *output.Emitter, interactive bool, info *runtime.Info) 
 
 // syncInitialModels runs the INITIAL catalog → gateway model sync at the end of
 // `ai setup` for non-client roles, so LiteLLM reflects any already-keyed providers'
-// catalog models plus installed Ollama models. NO cloud-provider keys are prompted
+// catalog models plus installed local models. NO cloud-provider keys are prompted
 // for here — add those anytime from `ai ui` (the API Keys tab) or `ai keys add
 // <provider>`, and pull local models with `ai models pull`. NO default models are
 // added. It is best-effort: a catalog/gateway error is warned to stderr and never
@@ -903,7 +903,7 @@ func syncInitialModels(em *output.Emitter, interactive bool) {
 	gateway := keysGatewayFactory()
 
 	// Reconcile the gateway's model set to the keyed providers' catalog models +
-	// installed Ollama models. Reuses the keys.go sync helper so the keyed set is
+	// installed local models. Reuses the keys.go sync helper so the keyed set is
 	// read back from the live credential store.
 	if _, err := syncKeyedModels(gateway, cat); err != nil {
 		_, _ = fmt.Fprintf(em.Err, "%s\n", ui.Muted.Render("Initial model sync skipped ("+err.Error()+") — run `ai keys add <provider>` once the gateway is up."))

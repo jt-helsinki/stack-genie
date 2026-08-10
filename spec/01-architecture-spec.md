@@ -602,7 +602,7 @@ a memory limit, and a gateway-pointing env builder. Each app is routed through t
 catalog-driven system has **no default model**, so the model handle passed is
 empty and the app's user picks a served model) — via
 `OPENAI_API_BASE_URL`/`OPENAI_API_KEY` (Open WebUI, plus
-`ENABLE_OLLAMA_API=false`/`WEBUI_AUTH=false` for a single-user in-VM instance).
+`WEBUI_AUTH=false` for a single-user in-VM instance).
 
 Apps are **opt-in** (chosen at `ai create`, default OFF) and have a full
 lifecycle via **`ai apps <list|add|remove|update|start|stop|restart> [app] [name]`**
@@ -959,7 +959,7 @@ templates (§25); it is identical across all OSes:
   extras are all of Graphify's extras **except** the region/DB/niche-specific ones
   (`chinese`, `azure`, `bedrock`, `falkordb`, `neo4j`, `leiden`, `dm`, `pascal`) — i.e. the
   included set is
-  `pdf,office,video,postgres,google,svg,sql,terraform,ollama,openai,gemini,anthropic,mcp`.
+  `pdf,office,video,postgres,google,svg,sql,terraform,openai,gemini,anthropic,mcp`.
   When selected, each agent CLI then **registers Graphify with itself at workspace
   start** (NOT at image build; gated on `context.graphify_enabled`):
   `Manager.registerGraphify` runs `graphify install`

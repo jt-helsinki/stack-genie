@@ -90,7 +90,7 @@ func TestGroup01SetupHealth(test *testing.T) {
 			test.Errorf("models status: gateway not healthy: %+v", status)
 		}
 		// Local-model connectivity is an environmental dependency (host-native vLLM must
-		// be installed + serving at least one model — there is no aip-ollama container).
+		// be installed + serving at least one model — the local tier is never a container).
 		// When it's down, skip rather than fail — the suite self-skips absent stack pieces,
 		// not error on an un-provisioned host.
 		if !status.Local {

@@ -179,7 +179,7 @@ func TestKeysListJoinsCatalogAndCredentials(test *testing.T) {
 
 // TestKeysAddStoresAndSyncs verifies `ai keys add openai --value` stores the
 // credential under the LiteLLM prefix and triggers SyncModels with the keyed set
-// (read back from ListCredentials) + the installed Ollama models.
+// (read back from ListCredentials) + the installed local models.
 func TestKeysAddStoresAndSyncs(test *testing.T) {
 	gateway := newFakeKeysGateway()
 	gateway.syncResult = litellm.SyncResult{Added: []string{"openai/gpt-5.5", "openai/gpt-5.5-mini"}}

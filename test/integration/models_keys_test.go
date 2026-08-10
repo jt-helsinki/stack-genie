@@ -8,8 +8,8 @@ import (
 )
 
 // The local model self-provisioned for this group: a small curated vLLM repo served
-// under its vllm/<alias> gateway handle. (Retargeted from the removed ollama/smollm ref
-// now that vLLM is the sole local runtime.) Shared with vllm_runtime_test.go.
+// under its vllm/<alias> gateway handle. vLLM is the sole local runtime. Shared with
+// vllm_runtime_test.go.
 const (
 	localModelRepo  = "mlx-community/Llama-3.2-3B-Instruct-4bit"
 	localModelAlias = "aip-it-local"

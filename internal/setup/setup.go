@@ -70,7 +70,7 @@ func (status ServiceStatus) EndpointSuffix() string {
 }
 
 // Services reconciles, reports, and controls the host services (the LiteLLM,
-// Ollama, Presidio, and Headroom containers). Implementations shell out to the
+// Presidio, and Headroom containers). Implementations shell out to the
 // runtime/OS.
 type Services interface {
 	// Reconcile makes reality match the desired state (idempotent). bindHost is
@@ -207,10 +207,9 @@ var controlActions = map[string]bool{"start": true, "stop": true, "restart": tru
 
 // ServiceNames returns the names of the addressable host services (for validation
 // and shell completion): the container-reconcile set (desiredServices) PLUS the
-// host-native runtimes (hostNativeServiceNames — ollama, vllm) that are NOT in the
+// host-native runtimes (hostNativeServiceNames — vllm) that are NOT in the
 // container registry but are still controllable via `ai services start|stop|restart`.
-// Ollama is in BOTH (the registry lists it for status), so it is de-duplicated to
-// appear once; vLLM is not in the registry, so it is added here.
+// vLLM is not in the registry, so it is added here.
 func ServiceNames() []string {
 	specs := desiredServices()
 	names := make([]string, 0, len(specs)+len(hostNativeServiceNames()))
@@ -228,9 +227,7 @@ func ServiceNames() []string {
 // hostNativeServiceNames are the HOST-NATIVE inference runtimes: they run as host
 // PROCESSES (not aip-* containers), so their start/stop/restart is a host-exec path
 // (controlHostNativeService), NOT the container `Control` (`docker start/stop`). vLLM
-// (per-model detached `vllm serve` loopback processes) is the sole one — Ollama was
-// removed. It is also listed in the registry (for status/logs), so ServiceNames
-// de-duplicates it.
+// (per-model detached `vllm serve` loopback processes) is the sole one.
 func hostNativeServiceNames() []string {
 	return []string{"vllm"}
 }
@@ -267,10 +264,9 @@ func ControlService(deps Deps, action, service string) ([]ServiceStatus, error) 
 	if service == "all" {
 		service = ""
 	}
-	// A named host-native runtime (ollama/vllm) is a host PROCESS, not an aip-*
+	// A named host-native runtime (vllm) is a host PROCESS, not an aip-*
 	// container: dispatch its lifecycle to the host-exec path instead of the
-	// container `Control` (which would reject vllm as unknown and mishandle the
-	// host-native ollama).
+	// container `Control` (which would reject vllm as unknown).
 	if service != "" && isHostNativeService(service) {
 		return controlHostNativeService(deps, action, service)
 	}
@@ -295,7 +291,7 @@ func ControlService(deps Deps, action, service string) ([]ServiceStatus, error) 
 	}
 	if service == "" {
 		// "all": the container tier first, then the host-native runtimes best-effort.
-		// A host runtime being ABSENT (no ollama/vllm binary, no vLLM models recorded)
+		// A host runtime being ABSENT (no vllm binary, no vLLM models recorded)
 		// must NEVER fail `ai services <action> all` — its error is swallowed here.
 		if _, err := deps.Services.Control(action, ""); err != nil {
 			return nil, err
@@ -864,7 +860,7 @@ func Run(options Options, deps Deps) (*Report, error) {
 		bindHost := "127.0.0.1"
 		if effectiveRole == runtime.RoleServer {
 			bindHost = "0.0.0.0"
-			warnings = append(warnings, "server mode exposes LiteLLM/Headroom/Ollama on 0.0.0.0 — put TLS in front and rely on LiteLLM virtual-key auth for untrusted networks")
+			warnings = append(warnings, "server mode exposes LiteLLM/Headroom on 0.0.0.0 — put TLS in front and rely on LiteLLM virtual-key auth for untrusted networks")
 		}
 		progress("Starting host services — pulling images / launching containers (this can take a minute)…")
 		serviceStatuses, err = deps.Services.Reconcile(options.ProviderConfig, bindHost, optional, progress)
@@ -950,7 +946,7 @@ func ServiceLogTail(deps Deps, service string, tail int) (string, error) {
 	containers := serviceContainers(service)
 	if len(containers) == 0 {
 		if isDesiredService(service) {
-			// A known host-native service (e.g. ollama) has no container to tail — it
+			// A known host-native service (e.g. vllm) has no container to tail — it
 			// is not an error, there is simply nothing to show.
 			return "", nil
 		}
@@ -1037,7 +1033,7 @@ func ServiceStats(deps Deps, service string) ([]ContainerStats, error) {
 	containers := serviceContainers(service)
 	if len(containers) == 0 {
 		if isDesiredService(service) {
-			// A known host-native service (e.g. ollama) runs no container — no stats to
+			// A known host-native service (e.g. vllm) runs no container — no stats to
 			// report, but not an error.
 			return nil, nil
 		}

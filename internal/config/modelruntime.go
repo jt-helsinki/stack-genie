@@ -30,8 +30,8 @@ type ModelRuntime string
 
 const (
 	// RuntimeVLLM serves the model through host-native vLLM (a per-model
-	// `vllm serve` OpenAI endpoint). It is the ONLY local-inference runtime — Ollama
-	// was removed. A legacy "ollama" entry recorded by an older build is ignored on
+	// `vllm serve` OpenAI endpoint). It is the ONLY local-inference runtime. A
+	// legacy non-vLLM entry recorded by an older build is ignored on
 	// load (LoadModelRuntimes drops it) rather than crashing.
 	RuntimeVLLM ModelRuntime = "vllm"
 )
@@ -58,7 +58,7 @@ func ValidModelRuntime(value string) bool {
 type ModelRuntimeChoice struct {
 	// Alias is the gateway model alias — the store key.
 	Alias string `json:"alias" yaml:"alias"`
-	// Model is the underlying model name (e.g. an Ollama model tag).
+	// Model is the underlying model name (e.g. a Hugging Face model id).
 	Model string `json:"model,omitempty" yaml:"model,omitempty"`
 	// Runtime is the chosen serving backend.
 	Runtime ModelRuntime `json:"runtime" yaml:"runtime"`
@@ -100,7 +100,7 @@ func LoadModelRuntimes() (map[string]ModelRuntimeChoice, error) {
 	if file.Choices == nil {
 		return map[string]ModelRuntimeChoice{}, nil
 	}
-	// Drop any legacy non-vLLM (e.g. "ollama") entry recorded by an older build:
+	// Drop any legacy non-vLLM entry recorded by an older build:
 	// vLLM is now the sole local runtime, so such a record is stale — ignore it
 	// rather than surface an unusable runtime to callers.
 	for alias, choice := range file.Choices {

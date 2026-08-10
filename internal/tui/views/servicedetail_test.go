@@ -138,15 +138,15 @@ func TestServiceDetailLifecycleStaysPut(test *testing.T) {
 
 // TestServiceDetailUpdateEmitsRequest: `p` on the Service tab emits the update request.
 func TestServiceDetailUpdateEmitsRequest(test *testing.T) {
-	detail := newDetailForTest(setup.ServiceStatus{Name: "ollama", State: "running"}, "", false)
+	detail := newDetailForTest(setup.ServiceStatus{Name: "vllm", State: "running"}, "", false)
 	primeInfo(detail)
 
 	cmd := detail.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("p")})
 	if cmd == nil {
 		test.Fatal("p must return a command")
 	}
-	if request, ok := cmd().(ServiceUpdateRequestedMsg); !ok || request.Service != "ollama" {
-		test.Fatalf("p must emit ServiceUpdateRequestedMsg{ollama}, got %#v", cmd())
+	if request, ok := cmd().(ServiceUpdateRequestedMsg); !ok || request.Service != "vllm" {
+		test.Fatalf("p must emit ServiceUpdateRequestedMsg{vllm}, got %#v", cmd())
 	}
 }
 
@@ -169,7 +169,7 @@ func TestServiceDetailFollowEmitsRequest(test *testing.T) {
 // TestServiceDetailStoppedShowsNotRunning: a stopped service's Logs sub-tab shows the
 // "not running" hint, not stale output.
 func TestServiceDetailStoppedShowsNotRunning(test *testing.T) {
-	detail := newDetailForTest(setup.ServiceStatus{Name: "ollama", State: "stopped"}, "old output\n", false)
+	detail := newDetailForTest(setup.ServiceStatus{Name: "vllm", State: "stopped"}, "old output\n", false)
 	primeInfo(detail)
 	showLogs(detail)
 
@@ -184,7 +184,7 @@ func TestServiceDetailStoppedShowsNotRunning(test *testing.T) {
 
 // TestServiceDetailTabSwitchesSubTabs verifies Tab cycles Service ↔ Logs.
 func TestServiceDetailTabSwitchesSubTabs(test *testing.T) {
-	detail := newDetailForTest(setup.ServiceStatus{Name: "ollama", State: "running"}, "line\n", false)
+	detail := newDetailForTest(setup.ServiceStatus{Name: "vllm", State: "running"}, "line\n", false)
 	primeInfo(detail)
 	if detail.subIndex != serviceTabInfo {
 		test.Fatalf("should open on the Service sub-tab, got %d", detail.subIndex)

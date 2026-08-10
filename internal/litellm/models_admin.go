@@ -98,9 +98,9 @@ func (manager *KeyManager) ListCredentials() ([]Credential, error) {
 }
 
 // ModelParams is the litellm_params payload for AddModel. Model is the value
-// LiteLLM routes (LiteLLMModelParam(catalogID) for cloud, "ollama/<name>" for
+// LiteLLM routes (LiteLLMModelParam(catalogID) for cloud, "vllm/<alias>" for
 // local). Exactly one credential strategy is used: CredentialName references a
-// stored DB credential (cloud), while APIBase is set for Ollama (no key). Empty
+// stored DB credential (cloud), while APIBase is set for a local model (no key). Empty
 // fields are omitted from the request.
 type ModelParams struct {
 	Model          string `json:"model"`
@@ -108,10 +108,9 @@ type ModelParams struct {
 	APIBase        string `json:"api_base,omitempty"`
 	APIKey         string `json:"api_key,omitempty"`
 	// DropParams, when true, tells LiteLLM to drop request params the backend does not
-	// support instead of erroring. Set for Ollama models as defense-in-depth for param
-	// mismatches. NOTE it does NOT by itself stop the Ollama "does not support tools" 500:
-	// LiteLLM treats the ollama_chat provider as tool-capable and forwards `tools`, so a
-	// completion-only model still rejects them. The actual guard against that 500 is
+	// support instead of erroring. Set for local models as defense-in-depth for param
+	// mismatches. NOTE it does NOT by itself stop a "does not support tools" 500 when the
+	// backend is forwarded `tools` for a completion-only model. The actual guard against that 500 is
 	// CLIENT-side — opencode's per-model tool_call is set false for non-tool models
 	// (from supports_function_calling) so no tool schema is sent. Pointer: omitted unless set.
 	DropParams *bool `json:"drop_params,omitempty"`
@@ -130,7 +129,7 @@ type ModelInfo struct {
 	InputModes  []string `json:"input_modalities,omitempty"`
 	OutputModes []string `json:"output_modalities,omitempty"`
 	// SupportsFunctionCalling records whether the model can do tool/function calling.
-	// Set at Ollama registration from the model's advertised capabilities so the live
+	// Set at model registration from the model's advertised capabilities so the live
 	// model list (ListModels) and the in-VM agent configs (opencode's per-model
 	// `tool_call`) reflect reality — a completion-only model is marked false so opencode
 	// does not present it as agentic. Pointer/tri-state: nil means "unknown" (treated as
@@ -139,7 +138,7 @@ type ModelInfo struct {
 }
 
 // AddModel registers a DB-backed model (POST /model/new). model_name is the
-// PUBLIC handle the agent names (the catalog id verbatim for cloud, "ollama/<name>"
+// PUBLIC handle the agent names (the catalog id verbatim for cloud, "vllm/<alias>"
 // for local); litellmParams.Model is what LiteLLM routes; modelInfo carries the
 // surfaced catalog metadata. Persisted iff the gateway config has
 // store_model_in_db: true (which Render now sets).
@@ -165,7 +164,7 @@ func (manager *KeyManager) DeleteModel(id string) error {
 }
 
 // VLLMModelName is the PUBLIC model handle for a vLLM-served model: "vllm/<alias>".
-// This is the agent-facing id, mirroring OllamaModelName's "ollama/<name>". The
+// This is the agent-facing id. The
 // public-handle-vs-routed-value split matters because "vllm/" is NOT a real LiteLLM
 // provider prefix — LiteLLM would not know how to route it — so the routed value
 // (VLLMRoutedModel) rewrites to a provider LiteLLM understands while this stable public
@@ -178,8 +177,7 @@ func VLLMModelName(alias string) string {
 // "openai/<alias>". vLLM exposes an OpenAI-compatible HTTP server started with
 // `--served-model-name <alias>`, so the endpoint answers to model=<alias> (NOT the Hugging
 // Face model id) — the routed value MUST therefore be built from the ALIAS, paired with the
-// model's dedicated api_base. This is the same public-handle-vs-routed-value split Ollama
-// uses (OllamaModelName "ollama/<name>" vs OllamaRoutedModel "ollama_chat/<name>"): the
+// model's dedicated api_base. Via the public-handle-vs-routed-value split, the
 // PUBLIC handle stays "vllm/<alias>" (VLLMModelName) so the agent-facing id is unchanged;
 // only the internal routing switches to the OpenAI-compatible provider.
 func VLLMRoutedModel(alias string) string {
@@ -190,8 +188,8 @@ func VLLMRoutedModel(alias string) string {
 // served-model-name ALIAS (VLLMRoutedModel(alias) = "openai/<alias>") because that is what
 // the `vllm serve --served-model-name <alias>` endpoint answers to; it always sets
 // drop_params (defense-in-depth for unsupported params) and records tool-calling support in
-// model_info when known (supportsTools nil = unknown). Unlike Ollama's fixed OllamaAPIBase,
-// each vLLM model runs its OWN `vllm serve` endpoint, so apiBase is a PARAMETER (e.g.
+// model_info when known (supportsTools nil = unknown). Each vLLM model runs its OWN
+// `vllm serve` endpoint, so apiBase is a PARAMETER (e.g.
 // http://host.docker.internal:8101/v1); no credential is referenced (a local vLLM needs none).
 func vllmModelParamsInfo(alias, apiBase string, supportsTools *bool) (ModelParams, ModelInfo) {
 	dropParams := true
@@ -206,7 +204,7 @@ func vllmModelParamsInfo(alias, apiBase string, supportsTools *bool) (ModelParam
 // dedicated `vllm serve` endpoint; no credential is referenced. model is retained in the
 // signature (interface parity, records/logging) even though routing keys on the alias.
 //
-// Idempotent-ish, HEALING like RegisterOllamaModel: if a model with this model_name already
+// Idempotent-ish and HEALING: if a model with this model_name already
 // exists (ListModels) it is re-registered (delete + add) when the routed target is stale
 // (existing.RoutedTo != VLLMRoutedModel(model)) OR the recorded tool capability disagrees
 // with supportsTools; otherwise the add is skipped so a re-register does not create a
@@ -242,8 +240,7 @@ func (manager *KeyManager) RegisterVLLMModel(alias, model, apiBase string, suppo
 
 // UnregisterVLLMModel removes the DB-backed model registered for a vLLM model. It looks up
 // the entry whose model_name == "vllm/<alias>" (VLLMModelName) and deletes it by its
-// LiteLLM-assigned id. A no-op (no error) when no such model is registered. Mirrors
-// UnregisterOllamaModel.
+// LiteLLM-assigned id. A no-op (no error) when no such model is registered.
 //
 // hardware bring-up: the LIVE POST /model/delete round-trip is exercised only against a
 // running aip-litellm — verify on a provisioned host.
@@ -273,7 +270,7 @@ type LiveModel struct {
 	// model_info.supports_function_calling from the gateway, defaulting to TRUE when the
 	// field is absent (unknown) so cloud models — which don't set it — keep their prior
 	// tool-capable treatment; only a model explicitly registered false (a completion-only
-	// Ollama model) reports false.
+	// local model) reports false.
 	SupportsTools bool
 }
 

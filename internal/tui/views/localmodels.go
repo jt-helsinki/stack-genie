@@ -23,7 +23,7 @@ type CuratedLister func() []hf.CuratedModel
 // localModel is one row of the Local Models view: a Hugging Face repo, either
 // downloaded into the local vLLM store (Installed) or curated-but-not-installed
 // (Available). vLLM is the sole local runtime, so a row is a single repo id — there are
-// no ollama-style tags.
+// no per-variant tags.
 type localModel struct {
 	repo        string // Hugging Face repo id (e.g. "mlx-community/Qwen2.5-7B-Instruct-4bit")
 	description string // curated description ("" for an installed repo not in the curated set)

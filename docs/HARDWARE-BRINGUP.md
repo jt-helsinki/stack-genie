@@ -25,7 +25,7 @@ code.
   Presidio (only when secret-masking is enabled) → Valkey (+ RedisInsight) →
   Headroom → LiteLLM (+ DB) → vLLM (host-native, best-effort per-model serve) →
   nginx proxy (LAST)**, via the detected runtime (docker|podman). vLLM is the SOLE
-  local-inference runtime (Ollama was removed) and is a HOST-NATIVE process, not an
+  local-inference runtime and is a HOST-NATIVE process, not an
   `aip-*` container: `ensureVLLMServers` best-effort starts a per-model `vllm serve`,
   reached by the containers through the host gateway.
   Headroom PRECEDES LiteLLM because LiteLLM's `headroom` compression guardrail calls
@@ -451,11 +451,11 @@ on Apple Silicon (the runtime is now pinned to msb `v0.6.6`,
 
 ### 2.9 Host-native model runtime — vLLM (arch §17)
 
-vLLM is the **SOLE** local model backend (Ollama was removed), a **host-native**
+vLLM is the **SOLE** local model backend, a **host-native**
 process, not an `aip-*` container. Local models are managed with the **Hugging Face
 CLI** (`hf`): there is no per-model runtime choice and no `--runtime` flag. The
 host-side wiring — status/health probing, the model-runtime store
-(`config/model-runtimes.yaml`, vLLM-only; a legacy `ollama` entry is dropped on load),
+(`config/model-runtimes.yaml`, vLLM-only),
 `ai models pull <repo>` (`hf download` → start + register the per-model server) /
 `ai models rm <repo>` (stop + `hf cache rm` + de-register), the CLI guards, and the
 Manager (lazy start, `MaxServers=2` cap with LRU eviction, port allocation from

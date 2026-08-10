@@ -43,7 +43,7 @@ func LogsDir() (string, error) {
 }
 
 // VolumesDir is ~/.ai-platform/volumes — the single home for every host-persisted
-// SYSTEM data volume (the LiteLLM Postgres data dir, the Ollama model store, …).
+// SYSTEM data volume (the LiteLLM Postgres data dir, the local model store, …).
 // Keeping all system volumes here (rather than scattered Docker named volumes or
 // ad-hoc paths under the platform dir) makes them discoverable in one place and
 // means `ai uninstall --purge`, which RemoveAll's ~/.ai-platform, removes them
@@ -58,7 +58,7 @@ func VolumesDir() (string, error) {
 }
 
 // CacheDir is ~/.ai-platform/cache — the home for fetched caches (the models.dev
-// catalog, the Ollama library list, …). Unlike volumes/ (persistent SYSTEM data),
+// catalog, the model library list, …). Unlike volumes/ (persistent SYSTEM data),
 // these are re-fetchable copies; the dir is created on use via MkdirAll by its
 // consumer, mirroring VolumesDir, and is removed by `ai uninstall --purge`.
 func CacheDir() (string, error) {

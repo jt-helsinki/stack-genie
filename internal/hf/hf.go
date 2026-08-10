@@ -1,14 +1,14 @@
 // Package hf is the Hugging Face CLI (`hf`) integration layer — the platform's
-// model-management backend now that vLLM is the SOLE local-inference runtime and
-// Ollama is gone. It resolves the `hf` binary from the platform-managed host venv
+// model-management backend now that vLLM is the SOLE local-inference runtime.
+// It resolves the `hf` binary from the platform-managed host venv
 // (~/.ai-platform/venv, internal/pyenv) exactly like internal/vllm resolves `vllm`,
 // installs it into that venv, downloads model repos into the shared vLLM weight store
 // (~/.ai-platform/volumes/models/vllm, so vLLM's HF_HOME finds them at serve time),
 // and lists/removes locally-cached repos.
 //
 // It also ships the CURATED available-models list — a small in-repo set of
-// vLLM-servable repos (mlx-community/* on darwin, plain HF repos on Linux) — which
-// REPLACES the old scraped Ollama library. There is NO live HF Hub search.
+// vLLM-servable repos (mlx-community/* on darwin, plain HF repos on Linux).
+// There is NO live HF Hub search.
 //
 // The exec seams (BinaryPath / Detect / the RealClient's download+cache calls) are
 // injectable so the package is unit-tested without a real `hf` binary or any network,
@@ -135,7 +135,7 @@ var curatedSafetensors = []CuratedModel{
 // CuratedModels returns the curated available-models list for goos: the MLX set on
 // darwin (Apple Silicon), the safetensors set elsewhere (Linux/CUDA). This is the
 // installable set surfaced by `ai models popular` and the TUI Local Models "Available"
-// section — it replaces the old scraped Ollama library. The returned slice is a copy,
+// section. The returned slice is a copy,
 // safe for the caller to mutate.
 func CuratedModels(goos string) []CuratedModel {
 	source := curatedSafetensors

@@ -67,8 +67,8 @@ func valueOrEmpty(value string) string {
 }
 
 // newServicesCmd builds `ai services` and its subcommands (CLI §10.2).
-// `start`/`stop`/`restart` control the platform-owned containers (Ollama,
-// Presidio, LiteLLM, Headroom).
+// `start`/`stop`/`restart` control the platform-owned containers (Presidio,
+// LiteLLM, Headroom).
 func newServicesCmd(em *output.Emitter, exit *int) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "services",
@@ -205,7 +205,7 @@ func selectOptionalService(action string) (string, error) {
 }
 
 // newServicesControlCmd builds `ai services start|stop|restart [service]`.
-//   - a named logical service (ollama, presidio, litellm, headroom, proxy,
+//   - a named logical service (vllm, presidio, litellm, headroom, proxy,
 //     dns) — or the literal "all" — targets it directly, no prompt; a service may
 //     own several containers (presidio → analyzer + anonymizer), acted on as a unit;
 //   - with no argument on a terminal, it shows a CHECKBOX list of every service

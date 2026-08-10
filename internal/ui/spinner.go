@@ -16,7 +16,7 @@ import (
 func RunWithSpinner(out io.Writer, title string, work func() error) error {
 	if EmbeddedTerminal() {
 		// Inside the `ai ui` terminal pane a nested bubbletea spinner would fight the
-		// child's own streaming progress (msb's layered pull, ollama/docker downloads)
+		// child's own streaming progress (msb's layered pull, model/docker downloads)
 		// for cursor control of the shared PTY — the flicker/garbled/hung output. Run
 		// the work directly so its progress streams cleanly into the pane; print the
 		// title up front (labelling the streaming output) and a final ✓/✗ line.

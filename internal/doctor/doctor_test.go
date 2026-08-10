@@ -117,7 +117,7 @@ func TestRunAllHealthy(test *testing.T) {
 		test.Fatalf("expected healthy, got %+v", report)
 	}
 	if checkByName(report, "vllm").Status != StatusOK {
-		test.Errorf("ollama: %+v", checkByName(report, "vllm"))
+		test.Errorf("vllm: %+v", checkByName(report, "vllm"))
 	}
 	if got := checkByName(report, "container runtime").Detail; got != "docker" {
 		test.Errorf("container detail = %q", got)

@@ -595,7 +595,7 @@ func hasService(specs []serviceSpec, name string) bool {
 // returns "" for every name. The hook is retained for a future multi-container
 // optional service.
 func TestOwningServiceReturnsEmpty(test *testing.T) {
-	for _, name := range []string{"chromadb", "searxng", "ntfy", "litellm", "ollama", "presidio", "litellm-db", "", "bogus"} {
+	for _, name := range []string{"chromadb", "searxng", "ntfy", "litellm", "vllm", "presidio", "litellm-db", "", "bogus"} {
 		if got := owningService(name); got != "" {
 			test.Errorf("owningService(%q) = %q, want empty", name, got)
 		}
@@ -1425,9 +1425,8 @@ func TestStatusForListsPostgres(test *testing.T) {
 
 // TestStatusForDisplayDomain: statusFor renders host-reachable endpoints through
 // the single nginx gateway against the platform base DOMAIN — UI services as
-// <subdomain>.<domain>:18787 vhosts, ollama as the host-CLI gateway path
-// <domain>:18787/ollama, the proxy on <domain>:18787 — never the old direct
-// per-service ports (which are internal-only now). dns stays loopback.
+// <subdomain>.<domain>:18787 vhosts, the proxy on <domain>:18787 — never the old
+// direct per-service ports (which are internal-only now). dns stays loopback.
 func TestStatusForDisplayDomain(test *testing.T) {
 	addressOf := func(statuses []ServiceStatus, name string) string {
 		for _, status := range statuses {

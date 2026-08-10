@@ -884,7 +884,6 @@ func collectAuthModes(agentCLIs []string, chosen map[string]string) map[string]s
 	return modes
 }
 
-// splitModelRef splits an Ollama reference "name:tag" into its name and tag at the
 // graphifyModelOptions builds the Graphify model select: a leading "(none)" (empty
 // value) followed by every curated vLLM model (labelled by repo id + size, valued by
 // the Hugging Face repo id), so the choice is optional.

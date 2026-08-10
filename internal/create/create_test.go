@@ -18,7 +18,7 @@ import (
 // Execute runs the full in-process create against a fresh location: it scaffolds the
 // project, seeds the context-optimization defaults + Caveman skill, and reports the
 // expected progress steps in order. A blank GraphifyModel keeps the path network-free
-// (no Ollama pull), so no fakes are needed for the happy path.
+// (no model pull), so no fakes are needed for the happy path.
 func TestExecuteHappyPath(test *testing.T) {
 	test.Setenv("HOME", test.TempDir())
 

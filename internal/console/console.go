@@ -43,7 +43,7 @@ const gatewayPort = services.GatewayPort
 // all reached through the single nginx gateway port now:
 //   - a UI vhost (uiSubdomain set): served at <uiSubdomain>.<domain>:gatewayPort,
 //     console at that base + consolePath.
-//   - a host-CLI gateway path (gatewayPath set, e.g. ollama "/ollama"): reached at
+//   - a host-CLI gateway path (gatewayPath set): reached at
 //     http://<host>:gatewayPort<gatewayPath> (HTTP API, no console).
 //   - a directly-published host port (port != 0, e.g. the proxy itself on
 //     gatewayPort): http://<host>:port.
@@ -66,7 +66,6 @@ type endpointSpec struct {
 // reconcile. nginx (aip-proxy) is the SOLE host entry on the gateway port now; the
 // per-service direct ports are internal-only. The endpoints render through nginx:
 //   - litellm  admin UI at litellm.<domain>:18787/ui/login (nginx vhost; :4000 internal)
-//   - ollama   http://<domain>:18787/ollama (host-CLI gateway path; :11434 internal)
 //   - proxy    http://<domain>:18787 (aip-proxy nginx gateway entry; no separate UI)
 //   - dns      127.0.0.1:15353/udp (aip-dns CoreDNS egress-audit resolver, loopback)
 //   - headroom is internal-only on :8787 behind nginx (no longer host-published)
@@ -96,7 +95,7 @@ func buildRegistry() map[string]endpointSpec {
 // single nginx gateway port:
 //   - loopback-only specs (e.g. dns) ignore host and use their verbatim address;
 //   - a UI vhost renders http://<uiSubdomain>.<host>:gatewayPort (+ consolePath);
-//   - a gateway-path spec (e.g. ollama) renders http://<host>:gatewayPort<path>
+//   - a gateway-path spec renders http://<host>:gatewayPort<path>
 //     (HTTP API, no console);
 //   - a directly-published port (e.g. the proxy) renders http://<host>:port;
 //   - everything else is internal-only and renders empty.

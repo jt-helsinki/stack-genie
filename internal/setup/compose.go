@@ -19,7 +19,7 @@ import (
 // debugging. It is generated from the SAME consts/helpers the reconcile uses (container
 // names, `containerImage`, `platformNetwork`, the volume/config paths), so it stays in
 // sync. Local inference is deliberately ABSENT — it is HOST-NATIVE vLLM now (the reconcile
-// runs no local-inference container and there is no nginx /ollama route; LiteLLM reaches
+// runs no local-inference container and no local-inference nginx route; LiteLLM reaches
 // each per-model `vllm serve` endpoint via host.docker.internal), so a containerized
 // local backend here would NOT match the running topology. Secrets stay OFF disk: UI_PASSWORD / LITELLM_MASTER_KEY /
 // LITELLM_SALT_KEY are emitted in compose's PASSTHROUGH form (bare NAME, no value), so

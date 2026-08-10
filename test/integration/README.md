@@ -11,13 +11,6 @@ make test-integration
 # = go test -tags integration ./test/integration/... -v -timeout 30m
 ```
 
-> **NOTE: the `integration`-tagged suite currently does not compile after the
-> Ollama→vLLM refactor** (e.g. `health_test.go` uses the removed `status.Ollama`
-> field, and `vllm_runtime_test.go` uses the removed `--runtime` flag). These Go
-> test files need updating before `make test-integration` will build. The
-> descriptions below reflect the intended vLLM-only behavior the suite should
-> exercise once the test files are brought in line with the code.
-
 ## Self-skip
 
 `TestMain` builds `./cmd/ai` once and probes the stack:
@@ -52,7 +45,7 @@ up everything they create (the suite workspace + any dummy keys) via
 | 4 | `TestGroup04WorkspaceLifecycle` | `create` → `start` → `exec echo` → in-VM `nerdctl` (containerd) → `refresh-models` → `apps add openwebui` reachable on its host port → egress `deny` blocks / `public` allows (restart between) → `stop` + `delete --purge` |
 | 5 | `TestGroup05GatewayInference` | `ai models test <vllm model>` → real local chat completion through nginx → LiteLLM (Headroom compression guardrail in-process) → host-native vLLM |
 | 6 | `TestGroup06Uninstall` | `ai uninstall --dry-run` plan (always); destructive `--purge --yes` only when gated (see below) |
-| 7 | `TestGroup07InferenceRuntime` | host-native local inference — `ai services status`/`ai doctor` list **vLLM** as a `host`-mode service (the sole local backend; Ollama was removed); `ai models pull <repo>` downloads via the `hf` CLI then starts + registers the per-model vLLM server under the `vllm/<alias>` handle (`--alias` sets the gateway alias; there is no `--runtime` flag — vLLM is the only local runtime), self-skipping when vLLM is down |
+| 7 | `TestGroup07InferenceRuntime` | host-native local inference — `ai services status`/`ai doctor` list **vLLM** as a `host`-mode service (the sole local backend); `ai models pull <repo>` downloads via the `hf` CLI then starts + registers the per-model vLLM server under the `vllm/<alias>` handle (`--alias` sets the gateway alias; there is no `--runtime` flag — vLLM is the only local runtime), self-skipping when vLLM is down |
 | — | `TestWorkspaceCreateTeardown` | fast, scenario-rich `ai create`/`delete`/`destroy` coverage — scaffold + registration, delete keeps user files, `--purge` removes the dir, missing/unknown `--os` → exit 2, flags persist to `config.yaml`, nested/duplicate locations rejected, `--dry-run` no side effects, unknown-delete error, `destroy` alias. Needs only installed templates (`requireSetup`), **not** a running stack, so it runs in seconds without building a microVM |
 
 Each step in group 4 asserts independently and logs the exact `ai` output on

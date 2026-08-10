@@ -108,8 +108,8 @@ func newUninstallCmd(em *output.Emitter, exit *int) *cobra.Command {
 				purge = purgeAnswer
 			}
 
-			// Decide whether to also remove the host-native vLLM runtime itself (Ollama
-			// was removed; vLLM is the sole local runtime). It DEFAULTS TO YES
+			// Decide whether to also remove the host-native vLLM runtime itself (vLLM
+			// is the sole local runtime). It DEFAULTS TO YES
 			// everywhere; --keep-runtimes opts out (for --json/automation that wants to
 			// preserve it). On a terminal the prompt still shows, seeded from the flag
 			// (§1.8 flags-seed-the-prompt). The downloaded models survive either way

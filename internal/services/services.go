@@ -130,7 +130,7 @@ var nativeRuntime = Native{
 // the production code.
 var registry = []Service{
 	{
-		// vLLM is HOST-NATIVE and the SOLE local-inference backend (Ollama was removed):
+		// vLLM is HOST-NATIVE and the SOLE local-inference backend:
 		// the platform runs NO aip-* container and pulls no image for it — it is per-model
 		// `vllm serve` host processes probed over HTTP. It stays a logical service so the
 		// status line + `ai logs --service vllm` keep it visible; its served models are

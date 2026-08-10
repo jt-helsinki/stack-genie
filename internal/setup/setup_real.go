@@ -297,8 +297,8 @@ const (
 //     UI is served at /ui; / redirects there).
 //
 // Local inference is host-native vLLM (reached by LiteLLM directly, not nginx), so there
-// is NO /ollama route and no aip-ollama container. Headroom is NO LONGER an nginx
-// upstream either — it is a LiteLLM guardrail LiteLLM calls by name. Every location
+// is NO local-inference route and no local-inference container. Headroom is NO LONGER an
+// nginx upstream either — it is a LiteLLM guardrail LiteLLM calls by name. Every location
 // forwards to LiteLLM, never to aip-headroom.
 //
 // litellm.<domain> is now the ONLY host UI vhost: Open WebUI moved to a per-workspace
@@ -827,7 +827,7 @@ func ensureProxy(prober runtime.Prober, containerRuntime, bindHost, domain strin
 		"--network", platformNetwork,
 		// Retain the host.docker.internal mapping on Linux so nginx can reach host-side
 		// services if a route needs it; local inference is host-native vLLM (reached by
-		// LiteLLM, not nginx) so there is no /ollama route to the host any more.
+		// LiteLLM, not nginx) so there is no local-inference route to the host any more.
 		hostGatewayAddArg,
 	}
 	args = append(args,
@@ -884,7 +884,7 @@ const logCaptureTailLines = 200
 // analyzer + anonymizer pair. Pure, so the mapping is unit-testable.
 func serviceContainers(service string) []string {
 	switch service {
-	// Ollama is host-native — no container to snapshot logs from.
+	// vLLM is host-native — no container to snapshot logs from.
 	case "presidio":
 		return []string{presidioAnalyzerContainer, presidioAnonymizerContainer}
 	case "litellm":
@@ -906,7 +906,7 @@ func serviceContainers(service string) []string {
 
 // isDesiredService reports whether name is a known logical service (core or
 // optional). It distinguishes a container-less known service (e.g. host-native
-// ollama, which has no container to tail/stat) from a genuinely unknown name.
+// vllm, which has no container to tail/stat) from a genuinely unknown name.
 func isDesiredService(name string) bool {
 	for _, spec := range desiredServices() {
 		if spec.Name == name {
@@ -1265,7 +1265,7 @@ type realServices struct {
 // locally, streaming the runtime's native pull progress to out. This is done
 // BEFORE the reconcile so the subsequent `docker run -d` (whose implicit pull
 // output the prober captures, invisibly) finds the image present and returns
-// instantly — a multi-GB first-run pull (e.g. ollama) no longer looks hung.
+// instantly — a multi-GB first-run pull (e.g. litellm) no longer looks hung.
 // enabled is the set of opt-in optional services to include: core images are
 // always pulled, but a disabled optional service's (potentially large) images are
 // skipped. Already-present images are skipped (fast re-runs). Best-effort: it
@@ -1352,8 +1352,8 @@ func (services realServices) Reconcile(providerConfig, bindHost string, optional
 	}
 	// (LiteLLM's config is rendered by ensureLiteLLM below — passing providerConfig
 	// through — so the same render happens whether launched here or by Control.)
-	// Bring up the container tier on the shared network: Ollama (local models),
-	// Headroom (the input-compression service), LiteLLM (+ its DB), and the nginx
+	// Bring up the container tier on the shared network: Headroom (the
+	// input-compression service), LiteLLM (+ its DB), and the nginx
 	// gateway. Headroom precedes LiteLLM (its always-on headroom guardrail POSTs to
 	// Headroom at aip-headroom:8787/v1/compress, so the backend must be up first).
 	// Presidio is started ONLY when the secret-masking guardrail is enabled (else its
@@ -1421,7 +1421,7 @@ func (services realServices) Reconcile(providerConfig, bindHost string, optional
 	// Host-native vLLM: best-effort bring up a `vllm serve` process for every recorded
 	// runtime=vllm model that isn't already answering. OPTIONAL — it NEVER fails the
 	// reconcile (the RealRunner launch is a `hardware bring-up` stub today; failures
-	// are logged with install guidance and skipped). Like host-Ollama it reaches the
+	// are logged with install guidance and skipped). It reaches the
 	// service tier through the host gateway, which LiteLLM/nginx already have via
 	// hostGatewayAddArg (that --add-host also covers vLLM's per-model ports).
 	ensureVLLMServers(progress)
@@ -1561,7 +1561,7 @@ func (services realServices) statusFor(enabled []string) ([]ServiceStatus, error
 		// Three states, so a container that is up but not yet ready (e.g. LiteLLM
 		// still creating its DB views right after launch) reads "starting", not the
 		// misleading "stopped": healthy → running; container(s) up but not healthy →
-		// starting; nothing running → stopped. In host Ollama mode there is no
+		// starting; nothing running → stopped. For a host-native service there is no
 		// container, so it is either running (probe passes) or stopped.
 		state := "stopped"
 		switch {
@@ -1714,7 +1714,7 @@ func (services realServices) serviceHealthy(name string) bool {
 }
 
 // Control performs start/stop/restart on the host services. The platform owns
-// the entire container tier (Ollama, Presidio, LiteLLM + its DB, Headroom, the
+// the entire container tier (Presidio, LiteLLM + its DB, Headroom, the
 // nginx gateway), so those are started, stopped, and restarted here. An empty service name (or
 // "all") acts on every platform container in dependency order. Returns the
 // post-action Status.
@@ -1774,10 +1774,10 @@ func (services realServices) Control(action, service string) ([]ServiceStatus, e
 		ensure func() error
 		stop   func() error
 	}
-	// NB: Ollama and vLLM are HOST-NATIVE runtimes (host processes, not aip-*
-	// containers), so they are NOT in this container-controllable set — their
+	// NB: vLLM is a HOST-NATIVE runtime (host processes, not aip-*
+	// containers), so it is NOT in this container-controllable set — its
 	// start/stop/restart is handled by ControlService's host-native path
-	// (controlHostNativeService → ollama_host.go / vllm_host.go), never `docker
+	// (controlHostNativeService → vllm_host.go), never `docker
 	// start/stop`.
 	managed := []managedService{
 		{"presidio",
@@ -1844,7 +1844,7 @@ func (services realServices) Control(action, service string) ([]ServiceStatus, e
 			// (and emits the companion-container hint) before delegating here — but
 			// kept as a defensive guard for direct callers.
 			return nil, output.Errorf(output.ExitInvalidInput,
-				"unknown container service %q (expected one of: presidio, valkey, redisinsight, headroom, litellm, proxy, dns — ollama/vllm are host-native)", service)
+				"unknown container service %q (expected one of: presidio, valkey, redisinsight, headroom, litellm, proxy, dns — vllm is host-native)", service)
 		}
 	}
 

@@ -220,7 +220,7 @@ Rules:
   onto `~/.local/bin`). **Graphify** (PyPI `graphifyy`, CLI `graphify`) is NO LONGER baked
   into the base — it is a selectable AI tool (`--tools graphify`, default on) installed by a
   CONDITIONAL `tools/graphify/Dockerfile.snippet`
-  (`uv tool install "graphifyy[pdf,office,video,postgres,google,svg,sql,terraform,ollama,openai,gemini,anthropic,mcp]"`,
+  (`uv tool install "graphifyy[pdf,office,video,postgres,google,svg,sql,terraform,openai,gemini,anthropic,mcp]"`,
   all optional extras except the region/DB/niche-specific `chinese,azure,bedrock,falkordb,neo4j,leiden,dm,pascal`)
   appended only when selected. When selected, Graphify is then registered with each agent CLI
   at WORKSPACE START (not in the Dockerfile), ONCE per project (guarded by a

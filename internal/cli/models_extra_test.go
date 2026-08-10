@@ -43,11 +43,11 @@ func TestModelTestError(test *testing.T) {
 }
 
 func TestModelsRmResultHuman(test *testing.T) {
-	clean := modelsRmResult{Model: "ollama/llama3"}.Human()
-	if !strings.Contains(clean, "ollama/llama3") || !strings.Contains(clean, "removed") {
+	clean := modelsRmResult{Model: "vllm/llama3"}.Human()
+	if !strings.Contains(clean, "vllm/llama3") || !strings.Contains(clean, "removed") {
 		test.Fatalf("clean rm Human missing fields:\n%s", clean)
 	}
-	withWarn := modelsRmResult{Model: "ollama/llama3", UnregisterError: "gateway down"}.Human()
+	withWarn := modelsRmResult{Model: "vllm/llama3", UnregisterError: "gateway down"}.Human()
 	if !strings.Contains(withWarn, "gateway down") {
 		test.Fatalf("rm Human should surface the unregister warning:\n%s", withWarn)
 	}

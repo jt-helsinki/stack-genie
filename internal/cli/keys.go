@@ -229,7 +229,7 @@ func newKeysAddCmd(emitter *output.Emitter, exit *int) *cobra.Command {
 			}
 
 			// Sync: register this provider's catalog models (plus all currently-keyed
-			// providers + the installed Ollama models). The keyed set is read back from
+			// providers + the installed local models). The keyed set is read back from
 			// the gateway so the desired set always reflects the live credential store.
 			result, err := syncKeyedModels(gateway, cat)
 			if err != nil {

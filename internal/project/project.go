@@ -46,8 +46,8 @@ type Spec struct {
 	// CLIs (claude-code/codex/gemini). Written to config.yaml agent.auth_modes for the
 	// selected + OAuth-capable CLIs only; an absent CLI defaults to "api-key".
 	AuthModes map[string]string
-	// GraphifyModel is the Ollama model Graphify uses, written to config.yaml
-	// agent.graphify_model. Chosen at create from the Ollama library (pulled if
+	// GraphifyModel is the local model Graphify uses, written to config.yaml
+	// agent.graphify_model. Chosen at create from the model library (pulled if
 	// absent). Empty leaves Graphify's backend unconfigured.
 	GraphifyModel string
 	// Apps are the opt-in in-VM AI applications to install (subset of apps.Keys()).

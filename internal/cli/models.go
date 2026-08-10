@@ -29,7 +29,7 @@ var litellmClient = litellm.RealClient
 
 // modelRegistrar is the slice of litellm.KeyManager that `ai models pull|rm` use to
 // keep the gateway's DB-backed model list in step with the local vLLM store (the sole
-// local runtime now that Ollama is removed): a freshly-pulled model is registered under
+// local runtime): a freshly-pulled model is registered under
 // its gateway alias pointing at the per-model `vllm serve` endpoint, and removed on rm.
 // It is an interface so tests inject a fake (no network); registration is BEST-EFFORT —
 // a gateway that is down or has no master key must never fail a pull/rm.

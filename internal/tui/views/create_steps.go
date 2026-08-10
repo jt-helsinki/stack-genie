@@ -219,7 +219,7 @@ func (list *multiSelectList) View() string {
 // modelPicker is the Graphify-model step: a single-level picker of curated,
 // vLLM-servable Hugging Face repos — a leading "(none)" followed by each curated repo
 // id. Selecting a repo (or "(none)") yields the value; vLLM is the sole local runtime,
-// so there are no ollama-style tags to drill into.
+// so a repo id is the whole selection — there are no per-variant tags to drill into.
 type modelPicker struct {
 	models *selectList // "(none)" + curated repo ids
 	value  string      // final repo id or "" for none

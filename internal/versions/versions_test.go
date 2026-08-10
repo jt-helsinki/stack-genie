@@ -20,7 +20,7 @@ var expectedServices = map[string]string{
 	"presidio-analyzer":   "container",
 	"presidio-anonymizer": "container",
 	"proxy":               "container",
-	// Ollama is host-native — not a pulled/pinned container image.
+	// vLLM is host-native — not a pulled/pinned container image.
 	"dns":          "container",
 	"valkey":       "container",
 	"redisinsight": "container",

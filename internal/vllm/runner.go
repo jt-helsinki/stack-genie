@@ -99,7 +99,7 @@ func StopByPort(port int) error {
 
 // RealHealthProbe returns a HealthProbe that GETs http://127.0.0.1:<port>/v1/models
 // with a short timeout and reports 200 as healthy. This is a read-only network
-// probe (no host mutation), the analogue of the host-Ollama reachability check.
+// probe (no host mutation).
 func RealHealthProbe() HealthProbe {
 	client := &http.Client{Timeout: 3 * time.Second}
 	return func(port int) bool {

@@ -1,5 +1,5 @@
 // Package vllm is the host-side manager for per-model vLLM server processes — the
-// native-vLLM model backend that sits alongside Ollama.
+// native-vLLM model backend and sole local-inference runtime.
 //
 // vLLM serves ONE model per process: the platform runs one
 // `vllm serve <model> --port <p>` per served vLLM model, each an OpenAI-compatible
@@ -7,8 +7,7 @@
 // reaches it as http://host.docker.internal:<p>/v1 (the containers already get
 // `--add-host=host.docker.internal:host-gateway`).
 //
-// The served model FORMAT is platform-dependent — vLLM does NOT use GGUF and there
-// is NO shared store with Ollama:
+// The served model FORMAT is platform-dependent — vLLM does NOT use GGUF:
 //   - Apple Silicon (darwin): MLX weights (mlx-community/*), via the vLLM-Metal plugin.
 //   - Linux: Hugging Face safetensors, on CUDA.
 //
@@ -39,7 +38,7 @@ import (
 const (
 	// DefaultBasePort is the first host port the allocator hands out. vLLM servers
 	// occupy DefaultBasePort, DefaultBasePort+1, … (well clear of the platform's
-	// nginx gateway on :18787 and Ollama's :11434).
+	// nginx gateway on :18787).
 	DefaultBasePort = 8101
 
 	// DefaultMaxServers caps how many vLLM processes run at once. vLLM loads a whole
@@ -54,14 +53,13 @@ const (
 	// DefaultPollInterval is the gap between health probes while waiting for start.
 	DefaultPollInterval = time.Second
 
-	// storeSubdir is the vLLM model store, a sibling of the Ollama store under
-	// VolumesDir. The two backends never share weights.
+	// storeSubdir is the vLLM model store under VolumesDir.
 	storeSubdir = "vllm"
 )
 
 // StoreDir is ~/.ai-platform/volumes/models/vllm — the host store for downloaded
 // vLLM model weights (MLX on darwin, safetensors on Linux). It is created-on-use
-// (MkdirAll), mirroring the Ollama model store, so `ai uninstall --purge`
+// (MkdirAll), so `ai uninstall --purge`
 // (RemoveAll ~/.ai-platform) removes it.
 func StoreDir() (string, error) {
 	volumesDir, err := paths.VolumesDir()

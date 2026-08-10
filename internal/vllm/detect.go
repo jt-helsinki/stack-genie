@@ -8,8 +8,7 @@ import (
 	"github.com/jt-helsinki/stack-genie/internal/pyenv"
 )
 
-// Format names the on-disk model weight format vLLM expects on a given host. vLLM
-// does not use GGUF and shares no store with Ollama.
+// Format names the on-disk model weight format vLLM expects on a given host.
 const (
 	// FormatMLX is Apple Silicon (darwin): mlx-community/* weights served through the
 	// vLLM-Metal plugin.
@@ -75,7 +74,7 @@ const ManagedVenvDir = "~/.ai-platform/venv"
 // InstallGuidance returns the ordered, per-OS manual steps to install vLLM INTO the
 // platform-managed venv (~/.ai-platform/venv) that `ai setup` creates. It performs NO
 // host mutation — it is the actionable guidance the CLI prints when Detect reports
-// vLLM missing (mirroring the host-Ollama bring-up guidance). Once vLLM is installed
+// vLLM missing. Once vLLM is installed
 // into that venv, the platform resolves + serves it automatically (see BinaryPath).
 // The actual install is `hardware bring-up`.
 func InstallGuidance(goos string) []string {

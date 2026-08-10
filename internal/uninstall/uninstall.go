@@ -48,7 +48,7 @@ type Options struct {
 	RemoveDeps []ExternalDep
 
 	// RemoveRuntimes opts into also removing the HOST-NATIVE model runtime the
-	// platform sits on — vLLM (binary + per-OS install; Ollama was removed). The caller
+	// platform sits on — vLLM (binary + per-OS install). The caller
 	// decides it (a TTY prompt that DEFAULTS TO YES, or the `--keep-runtimes` flag
 	// to opt out under --json/automation). When false the runtime and its binary are
 	// left installed. Either way the downloaded MODELS (volumes/models/vllm) survive a
@@ -197,7 +197,7 @@ func Run(options Options, prober runtime.Prober, progress Progress) (Report, err
 	// `stop`). This only halts the VM runtime instances; workspace DATA (project source
 	// + /persist overlays are host bind mounts) is deliberately left untouched.
 	report.StoppedWorkspaces = stopWorkspaces(prober, record)
-	// vLLM is the sole host-native model runtime (Ollama was removed): stop every
+	// vLLM is the sole host-native model runtime: stop every
 	// running `vllm serve` the platform started (best-effort; never fails uninstall).
 	// There is no aip-* container for it, so removeContainers won't catch it.
 	stopVLLMServers(prober, record)

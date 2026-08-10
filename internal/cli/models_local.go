@@ -15,8 +15,8 @@ import (
 )
 
 // This file adds the LOCAL model-store management subcommands to `ai models`:
-// list / pull / rm / show. vLLM is the SOLE local-inference runtime (Ollama was
-// removed); model weights live in the shared vLLM store (~/.ai-platform/volumes/models/
+// list / pull / rm / show. vLLM is the SOLE local-inference runtime; model
+// weights live in the shared vLLM store (~/.ai-platform/volumes/models/
 // vllm) and are managed through the Hugging Face CLI (`hf`, internal/hf). Unlike
 // `ai models status`/`test` (which describe/probe LiteLLM ROUTING), these act on the
 // local weight store: `pull` downloads a HF repo and serves+registers it, `rm` stops

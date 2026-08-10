@@ -12,8 +12,8 @@ func TestValidModelRuntime(t *testing.T) {
 	if !config.ValidModelRuntime(string(config.RuntimeVLLM)) {
 		t.Errorf("RuntimeVLLM should be valid")
 	}
-	if config.ValidModelRuntime("ollama") {
-		t.Errorf("ollama is no longer a valid runtime")
+	if config.ValidModelRuntime("legacy") {
+		t.Errorf("legacy runtime should be invalid")
 	}
 	if config.ValidModelRuntime("bogus") {
 		t.Errorf("bogus runtime should be invalid")
@@ -92,10 +92,10 @@ func TestModelRuntimeRoundTrip(t *testing.T) {
 	}
 }
 
-// TestLoadModelRuntimesDropsLegacyOllama proves a legacy "ollama" runtime entry
+// TestLoadModelRuntimesDropsLegacyEntry proves a legacy non-vLLM runtime entry
 // recorded by an older build is IGNORED on load (migrated away) rather than surfaced,
 // while vLLM entries in the same file survive.
-func TestLoadModelRuntimesDropsLegacyOllama(t *testing.T) {
+func TestLoadModelRuntimesDropsLegacyEntry(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	path, err := config.ModelRuntimesPath()
 	if err != nil {
@@ -105,7 +105,7 @@ func TestLoadModelRuntimesDropsLegacyOllama(t *testing.T) {
 		t.Fatalf("MkdirAll error = %v", mkErr)
 	}
 	legacy := "schema_version: 1\nchoices:\n" +
-		"  ollama/llama3:\n    alias: ollama/llama3\n    runtime: ollama\n" +
+		"  legacy/llama3:\n    alias: legacy/llama3\n    runtime: legacy\n" +
 		"  vllm/qwen:\n    alias: vllm/qwen\n    runtime: vllm\n"
 	if writeErr := os.WriteFile(path, []byte(legacy), 0o644); writeErr != nil {
 		t.Fatalf("WriteFile error = %v", writeErr)
@@ -114,8 +114,8 @@ func TestLoadModelRuntimesDropsLegacyOllama(t *testing.T) {
 	if loadErr != nil {
 		t.Fatalf("LoadModelRuntimes() error = %v", loadErr)
 	}
-	if _, ok := choices["ollama/llama3"]; ok {
-		t.Error("legacy ollama entry should be dropped on load")
+	if _, ok := choices["legacy/llama3"]; ok {
+		t.Error("legacy entry should be dropped on load")
 	}
 	if _, ok := choices["vllm/qwen"]; !ok {
 		t.Error("vllm entry should survive load")

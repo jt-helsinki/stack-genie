@@ -89,14 +89,14 @@ func TestRefreshScriptParityWithGenerators(test *testing.T) {
 	binDir := test.TempDir()
 	// The /model/info shape: {"data":[{"model_name":"…","model_info":{...}}, …]}.
 	// Deliberately unsorted + with a duplicate so the script's dedup+sort is exercised,
-	// and with MIXED tool support: an Ollama model marked non-tool
-	// (supports_function_calling:false), a tool-capable Ollama model (true), and a cloud
+	// and with MIXED tool support: a local model marked non-tool
+	// (supports_function_calling:false), a tool-capable local model (true), and a cloud
 	// model that OMITS the field (unknown → treated as tool-capable) — so both the
 	// tool_call:true and tool_call:false item variants are exercised.
 	models := `{"data":[` +
-		`{"model_name":"ollama/qwen2.5:7b","model_info":{"id":"a","supports_function_calling":false}},` +
+		`{"model_name":"vllm/qwen2.5:7b","model_info":{"id":"a","supports_function_calling":false}},` +
 		`{"model_name":"anthropic/claude-opus-4-8","model_info":{"id":"b"}},` +
-		`{"model_name":"ollama/llama3.2:latest","model_info":{"id":"c","supports_function_calling":true}},` +
+		`{"model_name":"vllm/llama3.2:latest","model_info":{"id":"c","supports_function_calling":true}},` +
 		`{"model_name":"anthropic/claude-opus-4-8","model_info":{"id":"b"}}` +
 		`]}`
 	writeFakeCurl(test, binDir, models, true)
@@ -110,8 +110,8 @@ func TestRefreshScriptParityWithGenerators(test *testing.T) {
 	// support from supports_function_calling (absent = tool-capable).
 	merged := []Model{
 		{Name: "anthropic/claude-opus-4-8", Tools: true},
-		{Name: "ollama/llama3.2:latest", Tools: true},
-		{Name: "ollama/qwen2.5:7b", Tools: false},
+		{Name: "vllm/llama3.2:latest", Tools: true},
+		{Name: "vllm/qwen2.5:7b", Tools: false},
 	}
 
 	// refresh-models rewrites a KEYLESS config (the {env:}/$VAR refs), never the literal

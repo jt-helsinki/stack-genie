@@ -2,7 +2,7 @@
 // client for `ai models status|test`. LiteLLM is a thin shared gateway in the
 // catalog-driven model system: the rendered config carries NO model_list — models
 // are DB-backed (store_model_in_db), added/removed over the admin API as the user
-// adds provider keys (`ai keys`) or pulls/removes Ollama models. Provider API keys
+// adds provider keys (`ai keys`) or pulls/removes local models. Provider API keys
 // are stored encrypted in the LiteLLM DB (LITELLM_SALT_KEY), never written to
 // platform disk or this config. There is no built-in default model.
 package litellm
@@ -29,7 +29,7 @@ const HeadroomAPIBase = "http://aip-headroom:8787"
 // wildcards were intentionally REMOVED in the catalog-driven model system
 // (Phase B): models are now DB-backed (added via /model/new, see models_admin.go
 // + reconcile.go) and there is NO built-in default model — the user adds provider
-// keys / pulls Ollama models and the sync engine registers them. The struct is
+// keys / pulls local models and the sync engine registers them. The struct is
 // retained (zero-valued) so the few callers that still take a Routing keep a
 // stable signature; both fields are empty.
 type Routing struct {
@@ -100,7 +100,7 @@ func Render(routing Routing, providerConfigPath string, guardrails []string) err
 // system: there is NO model_list — models are added via /model/new and persisted
 // in the DB (general_settings.store_model_in_db: true). The guardrails + the
 // in-process prompt-injection callback are unchanged (always-on). With no static
-// model_list there is also no default_model (the user adds keys / pulls Ollama and
+// model_list there is also no default_model (the user adds keys / pulls local models and
 // the sync engine registers models).
 func build(guardrails []string) map[string]any {
 	return map[string]any{
@@ -126,7 +126,7 @@ func build(guardrails []string) map[string]any {
 		},
 		// NOTE: the in-process prompt-injection detector (detect_prompt_injection) was
 		// REMOVED. It is a crude local heuristic (similarity to known attack strings)
-		// that false-positives on ordinary coding traffic — including normal Ollama
+		// that false-positives on ordinary coding traffic — including normal local-model
 		// requests, which it rejected with "400: Rejected message. This is a prompt
 		// injection attack." Like the removed PII masking and LLM Guard, it corrupted
 		// legitimate use, so it is gone. For a CODING agent the real risk is destructive
@@ -396,7 +396,7 @@ func toolFirewallRules() []map[string]any {
 // Model is one model the LiteLLM gateway currently serves, as reported by the
 // gateway itself (/model/info or /v1/models) — NOT the hardcoded DefaultRouting.
 // Name is the served model_name/id (which may be a provider wildcard like
-// `openai/*`); Provider is the prefix before the first `/` (e.g. "ollama",
+// `openai/*`); Provider is the prefix before the first `/` (e.g. "vllm",
 // "openai"), empty for a bare alias with no prefix; Mode is the served model's
 // mode (e.g. "chat", "embedding") when /model/info exposes it, else empty.
 type Model struct {
@@ -466,7 +466,7 @@ const statusIndent = "                  "
 
 // Human renders `ai models status` as a labeled, actionable summary rather than a
 // raw field dump: gateway reachability (with a fix hint when it is down), the
-// default model, the local-model (Ollama, no key) vs cloud-provider (needs a key)
+// default model, the local-model (vLLM, no key) vs cloud-provider (needs a key)
 // split, and how to probe a model. The per-section rendering is delegated to small
 // helpers so this stays a simple sequence of appends.
 func (info StatusInfo) Human() string {

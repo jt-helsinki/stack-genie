@@ -352,7 +352,7 @@ type KeyMinter interface {
 }
 
 // ServedModels lists the models the LiteLLM gateway currently SERVES — its
-// DB-backed models (a keyed provider's catalog models + the registered Ollama
+// DB-backed models (a keyed provider's catalog models + the registered local
 // models). It is the live source of the in-VM agent model picker in the
 // catalog-driven model system, defined locally so tests can supply a fake without a
 // live gateway (the real impl wraps litellm.KeyManager.ListModels). A nil source,
@@ -834,8 +834,8 @@ func (manager Manager) registerAgentProviders(name, project, root string, projec
 	manager.applyShellChoice(name, projectConfig.Workspace.Shell)
 
 	// Install the in-VM `refresh-models` command so the user can re-pull the model
-	// picker (after adding a provider key with `ai keys` or pulling/removing an
-	// Ollama model on the host) WITHOUT restarting the workspace. It bakes the SAME
+	// picker (after adding a provider key with `ai keys` or pulling/removing a
+	// local model) WITHOUT restarting the workspace. It bakes the SAME
 	// gateway URL, scoped key, default, and Headroom knobs as the configs above; at
 	// run time it re-fetches the served models from the gateway's /v1/models endpoint
 	// and rewrites the configs, reproducing pickerModels' result. The minted key
@@ -2175,13 +2175,13 @@ func ensureRelSymlink(linkPath, target string) error {
 
 // pickerModels builds the concrete model list the in-VM agent CLIs offer in their
 // picker: exactly the models the LiteLLM gateway currently SERVES (its DB-backed
-// models — a keyed provider's catalog models + the registered Ollama models),
+// models — a keyed provider's catalog models + the registered local models),
 // deduped and sorted for a deterministic config.
 //
 // The served-models lookup DEGRADES GRACEFULLY: a nil source or a ServedModels error
 // (gateway down at workspace start, or no models registered yet) yields an EMPTY
 // picker — the workspace still starts, never failing over a model lookup. The user
-// adds provider keys (`ai keys`) / pulls Ollama models and the served set grows; the
+// adds provider keys (`ai keys`) / pulls local models and the served set grows; the
 // in-VM `refresh-models` command re-pulls it without a restart.
 func (manager Manager) pickerModels() []agentcfg.Model {
 	if manager.Served == nil {

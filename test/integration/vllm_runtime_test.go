@@ -15,11 +15,12 @@ const vllmAlias = "aip-it-vllm"
 
 // Group 7: local inference runtime (host-native vLLM).
 //
-// vLLM is the SOLE local-inference backend now that Ollama is removed — there is no
-// aip-ollama container and no per-model `--runtime` choice (the flag is gone). These
-// live checks exercise the parts that do NOT require a running vLLM (the services/doctor
-// surfacing and the vLLM-unavailable guard), and self-skip the positive routing path
-// when vLLM is not up — matching the suite's `hardware bring-up` self-skip convention.
+// vLLM is the SOLE local-inference backend — there is no per-model `--runtime`
+// choice (the flag is gone) and the local inference tier never runs as an
+// `aip-*` container. These live checks exercise the parts that do NOT require a
+// running vLLM (the services/doctor surfacing and the vLLM-unavailable guard),
+// and self-skip the positive routing path when vLLM is not up — matching the
+// suite's `hardware bring-up` self-skip convention.
 func TestGroup07InferenceRuntime(test *testing.T) {
 	requireStack(test)
 
@@ -43,7 +44,7 @@ func TestGroup07InferenceRuntime(test *testing.T) {
 		return false, false
 	}
 
-	test.Run("services status lists host-native vLLM (not ollama)", func(test *testing.T) {
+	test.Run("services status lists host-native vLLM (no removed local runtime)", func(test *testing.T) {
 		env, code, _ := run(test, "", 60*time.Second, "services", "status")
 		if !assertOK(test, env, code, "services.status") {
 			return
@@ -59,8 +60,8 @@ func TestGroup07InferenceRuntime(test *testing.T) {
 			case "vllm":
 				vllm = &result.Services[index]
 			case "ollama":
-				// Ollama is gone — it must not be surfaced any more.
-				test.Errorf("services status still lists a removed ollama service")
+				// The removed local runtime must not be surfaced any more.
+				test.Errorf("services status still lists a removed local-runtime service")
 			}
 		}
 		if vllm == nil {
@@ -70,7 +71,7 @@ func TestGroup07InferenceRuntime(test *testing.T) {
 		}
 	})
 
-	test.Run("doctor lists host-native vLLM (not ollama)", func(test *testing.T) {
+	test.Run("doctor lists host-native vLLM (no removed local runtime)", func(test *testing.T) {
 		env, code, _ := run(test, "", 60*time.Second, "doctor")
 		// doctor always exits 0 with a report; assert the envelope is ok and mentions vllm.
 		if !assertOK(test, env, code, "doctor") {
@@ -90,7 +91,7 @@ func TestGroup07InferenceRuntime(test *testing.T) {
 			test.Errorf("doctor did not report a vllm check; got %v", names)
 		}
 		if names["ollama"] {
-			test.Errorf("doctor still reports a removed ollama check; got %v", names)
+			test.Errorf("doctor still reports a removed local-runtime check; got %v", names)
 		}
 	})
 

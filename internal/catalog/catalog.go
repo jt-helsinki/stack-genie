@@ -26,7 +26,7 @@
 // provider Name falls back to the id).
 //
 // Notable: there is NO parameter-count / model-size field in the catalog — that
-// is an Ollama-local concept and is intentionally absent here.
+// is a local-model concept and is intentionally absent here.
 package catalog
 
 import (
