@@ -215,3 +215,60 @@ func TestLocalModelsContentLine(test *testing.T) {
 		test.Fatalf("content line missing repo id: %q", line)
 	}
 }
+
+// n opens the inline "pull by name" prompt (focusing the input); typing an arbitrary
+// Hugging Face repo id then enter emits a ModelsPullRequestedMsg for exactly that repo.
+func TestLocalModelsPullByNamePrompt(test *testing.T) {
+	view := buildLocal(test, nil, nil)
+	if view.CapturingInput() {
+		test.Fatal("the pull-by-name prompt must start closed")
+	}
+	_ = view.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("n")})
+	if !view.CapturingInput() {
+		test.Fatal("n must open the pull-by-name prompt (CapturingInput)")
+	}
+	if !view.pullInput.Focused() {
+		test.Fatal("opening the prompt must focus the input")
+	}
+	repo := "some-org/My-Model.v2-4bit"
+	_ = view.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(repo)})
+	cmd := view.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if cmd == nil {
+		test.Fatal("enter must emit a pull command for the typed repo")
+	}
+	msg, ok := cmd().(ModelsPullRequestedMsg)
+	if !ok {
+		test.Fatalf("want ModelsPullRequestedMsg, got %#v", cmd())
+	}
+	if len(msg.Refs) != 1 || msg.Refs[0] != repo {
+		test.Fatalf("pull refs = %v, want [%q]", msg.Refs, repo)
+	}
+	if view.CapturingInput() {
+		test.Fatal("the prompt must close after submit")
+	}
+}
+
+// esc cancels the pull-by-name prompt: it closes with no pull command emitted.
+func TestLocalModelsPullByNameCancel(test *testing.T) {
+	view := buildLocal(test, nil, nil)
+	_ = view.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("n")})
+	_ = view.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("foo/bar")})
+	if cmd := view.Update(tea.KeyMsg{Type: tea.KeyEsc}); cmd != nil {
+		test.Fatalf("esc must emit no command, got %#v", cmd())
+	}
+	if view.CapturingInput() {
+		test.Fatal("esc must close the prompt")
+	}
+}
+
+// An empty submit closes the prompt without emitting a pull.
+func TestLocalModelsPullByNameEmpty(test *testing.T) {
+	view := buildLocal(test, nil, nil)
+	_ = view.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("n")})
+	if cmd := view.Update(tea.KeyMsg{Type: tea.KeyEnter}); cmd != nil {
+		test.Fatalf("empty submit must emit nothing, got %#v", cmd())
+	}
+	if view.CapturingInput() {
+		test.Fatal("empty submit must close the prompt")
+	}
+}

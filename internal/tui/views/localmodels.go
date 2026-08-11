@@ -4,6 +4,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/jt-helsinki/stack-genie/internal/hf"
@@ -75,6 +76,13 @@ type LocalModels struct {
 	loggedIn   bool
 	whoamiUser string
 
+	// pulling + pullInput drive the inline "pull by name" prompt (n): while pulling,
+	// keystrokes edit an arbitrary Hugging Face repo id and enter submits it as a
+	// ModelsPullRequestedMsg (esc cancels). This lets a user pull ANY repo, not just a
+	// curated Available row.
+	pulling   bool
+	pullInput textinput.Model
+
 	width  int
 	height int
 	flash  string
@@ -85,19 +93,29 @@ type LocalModels struct {
 // (hf cache ls), the curated-list provider, the gateway tester, and the Hugging Face
 // whoami probe (login-state line + gated-repo login/logout).
 func NewLocalModels(list LocalModelLister, curated CuratedLister, test ModelTester, whoami HFWhoamiFn) *LocalModels {
-	return &LocalModels{list: list, curated: curated, test: test, whoami: whoami}
+	input := textinput.New()
+	input.Prompt = "pull repo: "
+	input.Placeholder = "e.g. mlx-community/Qwen2.5-7B-Instruct-4bit"
+	return &LocalModels{list: list, curated: curated, test: test, whoami: whoami, pullInput: input}
 }
 
 func (view *LocalModels) Title() string { return "Local Models" }
 
 func (view *LocalModels) Hints() string {
-	return "↑/↓ select · enter/p pull · t test · d remove · l login · o logout · r refresh"
+	return "↑/↓ select · enter/p pull · t test · d remove · l login · o logout · n pull by name · r refresh"
 }
+
+// CapturingInput reports whether the inline "pull by name" prompt is open, so the app
+// routes all keys here (not the global shortcuts / list nav) while the user types a repo.
+func (view *LocalModels) CapturingInput() bool { return view.pulling }
 
 // SetSize records the pane dimensions.
 func (view *LocalModels) SetSize(width, height int) {
 	view.width = width
 	view.height = height
+	if width > len(view.pullInput.Prompt)+8 {
+		view.pullInput.Width = width - len(view.pullInput.Prompt) - 4
+	}
 	view.syncWindow()
 }
 
@@ -195,9 +213,38 @@ func (view *LocalModels) Update(msg tea.Msg) tea.Cmd {
 		view.flash = modelTestFlash(message)
 		return nil
 	case tea.KeyMsg:
+		// The inline "pull by name" prompt owns the keyboard while open.
+		if view.pulling {
+			return view.handlePullKey(message)
+		}
 		return view.handleKey(message)
 	}
 	return nil
+}
+
+// handlePullKey edits the inline "pull by name" repo prompt: enter submits the typed
+// Hugging Face repo id as a ModelsPullRequestedMsg (empty input just closes the prompt),
+// esc cancels, and every other key is fed to the text input.
+func (view *LocalModels) handlePullKey(key tea.KeyMsg) tea.Cmd {
+	switch key.Type {
+	case tea.KeyEsc:
+		view.pulling = false
+		view.pullInput.Blur()
+		view.pullInput.SetValue("")
+		return nil
+	case tea.KeyEnter:
+		repo := strings.TrimSpace(view.pullInput.Value())
+		view.pulling = false
+		view.pullInput.Blur()
+		view.pullInput.SetValue("")
+		if repo == "" {
+			return nil
+		}
+		return func() tea.Msg { return ModelsPullRequestedMsg{Refs: []string{repo}} }
+	}
+	var cmd tea.Cmd
+	view.pullInput, cmd = view.pullInput.Update(key)
+	return cmd
 }
 
 // handleKey routes a key: the list actions / navigation.
@@ -247,6 +294,14 @@ func (view *LocalModels) handleKey(key tea.KeyMsg) tea.Cmd {
 	case "o":
 		// Clear the `hf` credentials — runs `ai models logout` in the real terminal.
 		return func() tea.Msg { return ModelsLogoutRequestedMsg{} }
+	case "n":
+		// Open the inline "pull by name" prompt: type an arbitrary Hugging Face repo id
+		// (not just a curated Available row) and enter pulls it.
+		view.pulling = true
+		view.pullInput.SetValue("")
+		view.pullInput.Focus()
+		view.flash = ""
+		return textinput.Blink
 	case "r":
 		view.flash = ui.Muted.Render("refreshing local models…")
 		return tea.Batch(view.listCmd(), view.whoamiCmd())
@@ -409,7 +464,12 @@ func (view *LocalModels) View() string {
 	if len(view.models) > 0 {
 		body.WriteString(view.listView())
 	}
-	body.WriteString("\n" + flashLine(view.flash))
+	// The inline "pull by name" prompt replaces the flash slot while open.
+	if view.pulling {
+		body.WriteString("\n" + view.pullInput.View() + ui.Muted.Render("  (enter pull · esc cancel)"))
+	} else {
+		body.WriteString("\n" + flashLine(view.flash))
+	}
 	return body.String()
 }
 
