@@ -170,4 +170,14 @@ type Client interface {
 	CacheList() ([]CachedModel, error)
 	// CacheRemove deletes a repo from the local cache (`hf cache rm <repo>`).
 	CacheRemove(repo string) error
+	// Login authenticates `hf` with the given token (`hf auth login --token <token>`),
+	// enabling gated-repo downloads (meta-llama/*, google/gemma-*, mistralai/*). The
+	// token is stored by `hf` itself (HF_HOME/~/.cache/huggingface), never by the
+	// platform.
+	Login(token string) error
+	// Whoami returns the logged-in Hugging Face user (`hf auth whoami`, trimmed). It
+	// returns an error when not logged in or `hf` is unavailable.
+	Whoami() (string, error)
+	// Logout clears the stored Hugging Face credentials (`hf auth logout`).
+	Logout() error
 }

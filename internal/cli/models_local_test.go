@@ -68,6 +68,114 @@ func jsonEmitter() *output.Emitter {
 	return &output.Emitter{Out: io.Discard, Err: io.Discard, JSON: true}
 }
 
+// withFakeHFDetect forces the `hf`-installed probe to the given value, restoring it
+// after the test (so the login/logout dep gate is exercised without a real `hf`).
+func withFakeHFDetect(test *testing.T, installed bool) {
+	test.Helper()
+	prev := hfDetectFn
+	hfDetectFn = func() bool { return installed }
+	test.Cleanup(func() { hfDetectFn = prev })
+}
+
+func TestModelsLoginSuccess(test *testing.T) {
+	withFakeHFDetect(test, true)
+	fake := &hf.Fake{WhoamiUser: "alice"}
+	withFakeHF(test, fake)
+	exit := output.ExitOK
+	cmd := newModelsLoginCmd(jsonEmitter(), &exit)
+	cmd.SetOut(io.Discard)
+	cmd.SetErr(io.Discard)
+	runLocalModelsCmd(test, cmd, "--token", "hf_tok_x")
+	if exit != output.ExitOK {
+		test.Fatalf("login exit = %d, want 0", exit)
+	}
+	if fake.LoginToken != "hf_tok_x" {
+		test.Fatalf("login token = %q, want hf_tok_x", fake.LoginToken)
+	}
+}
+
+func TestModelsLoginNotInstalled(test *testing.T) {
+	withFakeHFDetect(test, false)
+	withFakeHF(test, &hf.Fake{})
+	exit := output.ExitOK
+	cmd := newModelsLoginCmd(jsonEmitter(), &exit)
+	cmd.SetOut(io.Discard)
+	cmd.SetErr(io.Discard)
+	runLocalModelsCmd(test, cmd, "--token", "x")
+	if exit != output.ExitMissingDep {
+		test.Fatalf("login (no hf) exit = %d, want %d", exit, output.ExitMissingDep)
+	}
+}
+
+func TestModelsLoginEmptyTokenNonInteractive(test *testing.T) {
+	withFakeHFDetect(test, true)
+	withFakeHF(test, &hf.Fake{})
+	exit := output.ExitOK
+	cmd := newModelsLoginCmd(jsonEmitter(), &exit)
+	cmd.SetOut(io.Discard)
+	cmd.SetErr(io.Discard)
+	runLocalModelsCmd(test, cmd) // no --token, --json/no-TTY → can't prompt
+	if exit != output.ExitInvalidInput {
+		test.Fatalf("login (empty token) exit = %d, want %d", exit, output.ExitInvalidInput)
+	}
+}
+
+func TestModelsLoginError(test *testing.T) {
+	withFakeHFDetect(test, true)
+	withFakeHF(test, &hf.Fake{LoginErr: errors.New("invalid token")})
+	exit := output.ExitOK
+	cmd := newModelsLoginCmd(jsonEmitter(), &exit)
+	cmd.SetOut(io.Discard)
+	cmd.SetErr(io.Discard)
+	runLocalModelsCmd(test, cmd, "--token", "x")
+	if exit != output.ExitRuntimeFailure {
+		test.Fatalf("login error exit = %d, want %d", exit, output.ExitRuntimeFailure)
+	}
+}
+
+func TestModelsLogoutSuccess(test *testing.T) {
+	withFakeHFDetect(test, true)
+	fake := &hf.Fake{}
+	withFakeHF(test, fake)
+	exit := output.ExitOK
+	cmd := newModelsLogoutCmd(jsonEmitter(), &exit)
+	cmd.SetOut(io.Discard)
+	cmd.SetErr(io.Discard)
+	runLocalModelsCmd(test, cmd)
+	if exit != output.ExitOK {
+		test.Fatalf("logout exit = %d, want 0", exit)
+	}
+	if fake.LogoutCalls != 1 {
+		test.Fatalf("LogoutCalls = %d, want 1", fake.LogoutCalls)
+	}
+}
+
+func TestModelsLogoutNotInstalled(test *testing.T) {
+	withFakeHFDetect(test, false)
+	withFakeHF(test, &hf.Fake{})
+	exit := output.ExitOK
+	cmd := newModelsLogoutCmd(jsonEmitter(), &exit)
+	cmd.SetOut(io.Discard)
+	cmd.SetErr(io.Discard)
+	runLocalModelsCmd(test, cmd)
+	if exit != output.ExitMissingDep {
+		test.Fatalf("logout (no hf) exit = %d, want %d", exit, output.ExitMissingDep)
+	}
+}
+
+func TestModelsLogoutError(test *testing.T) {
+	withFakeHFDetect(test, true)
+	withFakeHF(test, &hf.Fake{LogoutErr: errors.New("logout failed")})
+	exit := output.ExitOK
+	cmd := newModelsLogoutCmd(jsonEmitter(), &exit)
+	cmd.SetOut(io.Discard)
+	cmd.SetErr(io.Discard)
+	runLocalModelsCmd(test, cmd)
+	if exit != output.ExitRuntimeFailure {
+		test.Fatalf("logout error exit = %d, want %d", exit, output.ExitRuntimeFailure)
+	}
+}
+
 func TestInstalledEntriesListsCachedRepos(test *testing.T) {
 	entries := installedEntries([]hf.CachedModel{
 		{Repo: "mlx-community/Qwen2.5-7B-Instruct-4bit", Size: "4.3 GB"},

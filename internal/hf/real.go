@@ -88,6 +88,52 @@ func (realClient) CacheList() ([]CachedModel, error) {
 	return models, nil
 }
 
+// Login runs `hf auth login --token <token>` so subsequent downloads can reach gated
+// repos. The token is passed only to `hf`, which owns its own credential store
+// (HF_HOME/~/.cache/huggingface) — the platform never persists it. `--add-to-git-credential`
+// is deliberately omitted.
+func (realClient) Login(token string) error {
+	token = strings.TrimSpace(token)
+	if token == "" {
+		return fmt.Errorf("hf: login requires a non-empty token")
+	}
+	command, err := hfCommand("auth", "login", "--token", token)
+	if err != nil {
+		return err
+	}
+	if out, runErr := command.CombinedOutput(); runErr != nil {
+		return fmt.Errorf("hf: auth login: %w: %s", runErr, strings.TrimSpace(string(out)))
+	}
+	return nil
+}
+
+// Whoami runs `hf auth whoami` and returns the trimmed user id. A non-zero exit (e.g.
+// "Not logged in") surfaces as an error.
+func (realClient) Whoami() (string, error) {
+	command, err := hfCommand("auth", "whoami")
+	if err != nil {
+		return "", err
+	}
+	out, runErr := command.CombinedOutput()
+	trimmed := strings.TrimSpace(string(out))
+	if runErr != nil {
+		return "", fmt.Errorf("hf: auth whoami: %w: %s", runErr, trimmed)
+	}
+	return trimmed, nil
+}
+
+// Logout runs `hf auth logout` to clear the stored Hugging Face credentials.
+func (realClient) Logout() error {
+	command, err := hfCommand("auth", "logout")
+	if err != nil {
+		return err
+	}
+	if out, runErr := command.CombinedOutput(); runErr != nil {
+		return fmt.Errorf("hf: auth logout: %w: %s", runErr, strings.TrimSpace(string(out)))
+	}
+	return nil
+}
+
 // CacheRemove runs `hf cache rm <repo>` to delete a repo from the local cache.
 func (realClient) CacheRemove(repo string) error {
 	repo = strings.TrimSpace(repo)

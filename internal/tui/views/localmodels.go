@@ -20,6 +20,11 @@ type LocalModelLister func() ([]hf.CachedModel, error)
 // wires hf.CuratedModels(goos).
 type CuratedLister func() []hf.CuratedModel
 
+// HFWhoamiFn returns the logged-in Hugging Face user (`hf auth whoami`). Injected; the
+// parent wires hf.RealClient().Whoami. An error (not logged in / `hf` absent) reads as
+// "not logged in" — it never breaks the view.
+type HFWhoamiFn func() (string, error)
+
 // localModel is one row of the Local Models view: a Hugging Face repo, either
 // downloaded into the local vLLM store (Installed) or curated-but-not-installed
 // (Available). vLLM is the sole local runtime, so a row is a single repo id — there are
@@ -37,6 +42,13 @@ type localModelsRefreshedMsg struct {
 	listErr   error
 }
 
+// hfWhoamiMsg carries the Hugging Face login-state probe result (`hf auth whoami`).
+// An error (not logged in / `hf` absent) leaves user empty and loggedIn false.
+type hfWhoamiMsg struct {
+	user     string
+	loggedIn bool
+}
+
 // localNameWidth is the fixed NAME (repo) column width; DESCRIPTION takes the rest.
 const localNameWidth = 46
 
@@ -50,12 +62,18 @@ type LocalModels struct {
 	test    ModelTester
 	list    LocalModelLister
 	curated CuratedLister
+	whoami  HFWhoamiFn
 
 	models         []localModel // Installed rows first, then Available rows
 	installedCount int          // how many of models are in the Installed section
 	window         listWindow
 
 	listErr error
+
+	// Hugging Face auth state (best-effort, via `hf auth whoami`): whoamiUser is the
+	// logged-in user when loggedIn is true; a whoami error just leaves loggedIn false.
+	loggedIn   bool
+	whoamiUser string
 
 	width  int
 	height int
@@ -64,15 +82,16 @@ type LocalModels struct {
 }
 
 // NewLocalModels builds the Local Models view over the injected installed-store lister
-// (hf cache ls), the curated-list provider, and the gateway tester.
-func NewLocalModels(list LocalModelLister, curated CuratedLister, test ModelTester) *LocalModels {
-	return &LocalModels{list: list, curated: curated, test: test}
+// (hf cache ls), the curated-list provider, the gateway tester, and the Hugging Face
+// whoami probe (login-state line + gated-repo login/logout).
+func NewLocalModels(list LocalModelLister, curated CuratedLister, test ModelTester, whoami HFWhoamiFn) *LocalModels {
+	return &LocalModels{list: list, curated: curated, test: test, whoami: whoami}
 }
 
 func (view *LocalModels) Title() string { return "Local Models" }
 
 func (view *LocalModels) Hints() string {
-	return "↑/↓ select · enter/p pull · t test · d remove · r refresh"
+	return "↑/↓ select · enter/p pull · t test · d remove · l login · o logout · r refresh"
 }
 
 // SetSize records the pane dimensions.
@@ -112,8 +131,30 @@ func (view *LocalModels) syncWindow() {
 	view.window.SetContent(view.windowLines(), view.width, view.listHeight())
 }
 
-// Init kicks off the first installed-store list.
-func (view *LocalModels) Init() tea.Cmd { return view.listCmd() }
+// Init kicks off the first installed-store list AND the Hugging Face login-state probe.
+func (view *LocalModels) Init() tea.Cmd {
+	return tea.Batch(view.listCmd(), view.whoamiCmd())
+}
+
+// whoamiCmd probes the Hugging Face login state (`hf auth whoami`) best-effort. A nil
+// whoami func or an error reads as "not logged in" — it never surfaces an error.
+func (view *LocalModels) whoamiCmd() tea.Cmd {
+	whoami := view.whoami
+	return func() tea.Msg {
+		if whoami == nil {
+			return hfWhoamiMsg{}
+		}
+		user, err := whoami()
+		if err != nil {
+			return hfWhoamiMsg{}
+		}
+		user = strings.TrimSpace(user)
+		if user == "" {
+			return hfWhoamiMsg{}
+		}
+		return hfWhoamiMsg{user: user, loggedIn: true}
+	}
+}
 
 // listCmd lists the locally-downloaded repos (`hf cache ls`).
 func (view *LocalModels) listCmd() tea.Cmd {
@@ -145,6 +186,10 @@ func (view *LocalModels) Update(msg tea.Msg) tea.Cmd {
 		view.buildModels(message.installed)
 		view.flash = ""
 		view.syncWindow()
+		return nil
+	case hfWhoamiMsg:
+		view.loggedIn = message.loggedIn
+		view.whoamiUser = message.user
 		return nil
 	case modelTestDoneMsg:
 		view.flash = modelTestFlash(message)
@@ -195,9 +240,16 @@ func (view *LocalModels) handleKey(key tea.KeyMsg) tea.Cmd {
 		}
 		repo := model.repo
 		return func() tea.Msg { return ModelRemoveRequestedMsg{Name: repo} }
+	case "l":
+		// Authenticate `hf` for gated repos — runs `ai models login` in the REAL
+		// terminal (the hidden token prompt needs a TTY).
+		return func() tea.Msg { return ModelsLoginRequestedMsg{} }
+	case "o":
+		// Clear the `hf` credentials — runs `ai models logout` in the real terminal.
+		return func() tea.Msg { return ModelsLogoutRequestedMsg{} }
 	case "r":
 		view.flash = ui.Muted.Render("refreshing local models…")
-		return view.listCmd()
+		return tea.Batch(view.listCmd(), view.whoamiCmd())
 	case "up", "k":
 		view.moveCursor(-1)
 		return nil
@@ -279,10 +331,21 @@ func (view *LocalModels) selectedModel() (localModel, bool) {
 
 func (view *LocalModels) headerLines() int { return strings.Count(view.header(), "\n") }
 
+// hfStatusLine renders the Hugging Face login state (`hf auth whoami`): the logged-in
+// user when known, else a not-logged-in hint pointing at the `l` login key (needed for
+// gated repos: meta-llama/*, google/gemma-*, mistralai/*).
+func (view *LocalModels) hfStatusLine() string {
+	if view.loggedIn && view.whoamiUser != "" {
+		return ui.Muted.Render("Hugging Face: ") + ui.Success.Render("logged in as "+view.whoamiUser)
+	}
+	return ui.Muted.Render("Hugging Face: not logged in — press l to log in for gated repos")
+}
+
 // header renders everything above the two-section list.
 func (view *LocalModels) header() string {
 	var body strings.Builder
 	body.WriteString(ui.Heading.Render("Local models — vLLM store + curated available") + "\n")
+	body.WriteString(view.hfStatusLine() + "\n")
 	if view.listErr != nil {
 		body.WriteString(ui.Failure.Render(ui.IconFail+" could not list the local store: "+view.listErr.Error()) +
 			"\n" + ui.Muted.Render("install the Hugging Face CLI with `ai setup` (needs `hf` in the platform venv)") + "\n")

@@ -44,6 +44,14 @@ type ModelsPullRequestedMsg struct {
 // terminal overlay (with its confirm prompt).
 type ModelRemoveRequestedMsg struct{ Name string }
 
+// ModelsLoginRequestedMsg asks the parent to run `ai models login` live in the REAL
+// terminal (the hidden token prompt needs a TTY). Emitted by the Local Models view.
+type ModelsLoginRequestedMsg struct{}
+
+// ModelsLogoutRequestedMsg asks the parent to run `ai models logout` live in the REAL
+// terminal. Emitted by the Local Models view.
+type ModelsLogoutRequestedMsg struct{}
+
 // modelTestDoneMsg carries the outcome of a model test-probe through the gateway.
 type modelTestDoneMsg struct {
 	result litellm.TestResult

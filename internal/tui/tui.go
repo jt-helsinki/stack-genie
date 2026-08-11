@@ -304,6 +304,7 @@ func Run(cwd string) error {
 		hf.RealClient().CacheList,
 		func() []hf.CuratedModel { return hf.CuratedModels(goruntime.GOOS) },
 		litellmClient.Test,
+		hf.RealClient().Whoami,
 	)
 	// Cloud Models: the models.dev catalog (with its data source for availability
 	// messaging), the gateway's live (registered) set, the `r`-refresh (re-fetch the
@@ -450,6 +451,11 @@ func waitCreateProgress(ch chan create.Progress) tea.Cmd {
 // (run via tea.ExecProcess in the user's real terminal) has exited, so the TUI can
 // refresh the session list + project detail.
 type sessionFinishedMsg struct{ err error }
+
+// modelsAuthFinishedMsg reports that a suspended `ai models login`/`logout` subprocess
+// (run via tea.ExecProcess in the user's real terminal) has exited, so the Local Models
+// view can re-probe the Hugging Face login state.
+type modelsAuthFinishedMsg struct{ err error }
 
 // projectInfo returns the current state of one project by name (over project.List).
 func projectInfo(name string) (project.Entry, bool, error) {
@@ -1015,6 +1021,31 @@ func (application *app) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// overlay (its TTY confirm prompt shows in the pane), then refresh the list.
 		return application, application.openTerminal(
 			"models rm "+message.Name, []string{"models", "rm", message.Name}, false)
+
+	case views.ModelsLoginRequestedMsg:
+		// Authenticate `hf` for gated repos: the hidden token prompt needs a REAL TTY,
+		// so suspend the TUI and run `ai models login` via tea.ExecProcess (NOT the
+		// embedded emulator). Refresh the Local Models view (whoami line) on return.
+		command := exec.Command(executablePath(), "models", "login")
+		return application, tea.ExecProcess(command, func(execErr error) tea.Msg {
+			return modelsAuthFinishedMsg{err: execErr}
+		})
+
+	case views.ModelsLogoutRequestedMsg:
+		// Clear the `hf` credentials in the user's REAL terminal, twin of login above.
+		command := exec.Command(executablePath(), "models", "logout")
+		return application, tea.ExecProcess(command, func(execErr error) tea.Msg {
+			return modelsAuthFinishedMsg{err: execErr}
+		})
+
+	case modelsAuthFinishedMsg:
+		// Back from `ai models login`/`logout` — re-probe the Hugging Face login state
+		// (and re-list the store) so the whoami line + any newly-gated availability
+		// re-read.
+		if application.localModelsView != nil {
+			return application, application.localModelsView.Init()
+		}
+		return application, nil
 
 	case views.APIKeyAddRequestedMsg:
 		// Add runs `ai keys add <provider>` live in the overlay (its hidden key

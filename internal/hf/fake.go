@@ -16,6 +16,13 @@ type Fake struct {
 	RemoveErr      error
 	RemovedRepo    string   // the last repo passed to CacheRemove
 	RemovedAll     []string // every repo passed to CacheRemove, in order
+	// Auth-related fields.
+	LoginErr    error  // returned by Login
+	LoginToken  string // the last token passed to Login
+	WhoamiUser  string // returned by Whoami on success
+	WhoamiErr   error  // returned by Whoami (simulates "not logged in")
+	LogoutErr   error  // returned by Logout
+	LogoutCalls int    // number of times Logout was called
 }
 
 func (fake *Fake) Download(repo string, progress func(line string)) error {
@@ -42,4 +49,18 @@ func (fake *Fake) CacheRemove(repo string) error {
 	fake.RemovedRepo = repo
 	fake.RemovedAll = append(fake.RemovedAll, repo)
 	return fake.RemoveErr
+}
+
+func (fake *Fake) Login(token string) error {
+	fake.LoginToken = token
+	return fake.LoginErr
+}
+
+func (fake *Fake) Whoami() (string, error) {
+	return fake.WhoamiUser, fake.WhoamiErr
+}
+
+func (fake *Fake) Logout() error {
+	fake.LogoutCalls++
+	return fake.LogoutErr
 }

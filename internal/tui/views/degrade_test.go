@@ -40,6 +40,7 @@ func TestLocalModelsRendersCuratedWhenStoreErrors(test *testing.T) {
 			return []hf.CuratedModel{{Name: "Llama-3.2-3B-Instruct-4bit", Repo: "mlx-community/Llama-3.2-3B-Instruct-4bit", Description: "Meta Llama"}}
 		},
 		noTest,
+		func() (string, error) { return "", nil },
 	)
 	view.SetSize(120, 40)
 	drive(view, view.Init())

@@ -1,6 +1,7 @@
 package views
 
 import (
+	"errors"
 	"strings"
 	"testing"
 
@@ -14,10 +15,20 @@ func noTest(model string) (litellm.TestResult, error) {
 	return litellm.TestResult{Model: model, OK: true}, nil
 }
 
-// drive runs a command synchronously through the view's Update.
+// drive runs a command synchronously through the view's Update, unwrapping a
+// tea.Batch (Init now batches the store list + the whoami probe) so each batched
+// command's message is delivered.
 func drive(view *LocalModels, cmd tea.Cmd) {
-	if cmd != nil {
-		_ = view.Update(cmd())
+	if cmd == nil {
+		return
+	}
+	switch msg := cmd().(type) {
+	case tea.BatchMsg:
+		for _, batched := range msg {
+			drive(view, batched)
+		}
+	default:
+		_ = view.Update(msg)
 	}
 }
 
@@ -35,6 +46,7 @@ func buildLocal(test *testing.T, installed []hf.CachedModel, curated []hf.Curate
 		func() ([]hf.CachedModel, error) { return installed, nil },
 		func() []hf.CuratedModel { return curated },
 		noTest,
+		func() (string, error) { return "", nil },
 	)
 	view.SetSize(120, 40)
 	drive(view, view.Init())
@@ -118,6 +130,7 @@ func TestLocalModelsTestHandle(test *testing.T) {
 			tested = model
 			return litellm.TestResult{Model: model, OK: true}, nil
 		},
+		func() (string, error) { return "", nil },
 	)
 	view.SetSize(120, 40)
 	drive(view, view.Init())
@@ -134,6 +147,61 @@ func TestLocalModelsRemoveOnAvailableNoOp(test *testing.T) {
 	)
 	if cmd := view.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("d")}); cmd != nil {
 		test.Fatalf("d on an available row must not emit a command, got %#v", cmd())
+	}
+}
+
+// l emits a login request; o emits a logout request.
+func TestLocalModelsLoginRequest(test *testing.T) {
+	view := buildLocal(test, nil,
+		[]hf.CuratedModel{{Name: "Llama", Repo: "meta-llama/Llama-3.2-3B-Instruct"}},
+	)
+	cmd := view.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("l")})
+	if cmd == nil {
+		test.Fatal("l must emit a login command")
+	}
+	if _, ok := cmd().(ModelsLoginRequestedMsg); !ok {
+		test.Fatalf("want ModelsLoginRequestedMsg, got %#v", cmd())
+	}
+}
+
+func TestLocalModelsLogoutRequest(test *testing.T) {
+	view := buildLocal(test, nil,
+		[]hf.CuratedModel{{Name: "Llama", Repo: "meta-llama/Llama-3.2-3B-Instruct"}},
+	)
+	cmd := view.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("o")})
+	if cmd == nil {
+		test.Fatal("o must emit a logout command")
+	}
+	if _, ok := cmd().(ModelsLogoutRequestedMsg); !ok {
+		test.Fatalf("want ModelsLogoutRequestedMsg, got %#v", cmd())
+	}
+}
+
+// The whoami line shows the logged-in user when whoami succeeds, else a not-logged-in
+// fallback. A whoami error never breaks the view.
+func TestLocalModelsWhoamiLine(test *testing.T) {
+	loggedIn := NewLocalModels(
+		func() ([]hf.CachedModel, error) { return nil, nil },
+		func() []hf.CuratedModel { return nil },
+		noTest,
+		func() (string, error) { return "alice", nil },
+	)
+	loggedIn.SetSize(120, 40)
+	drive(loggedIn, loggedIn.Init())
+	if got := loggedIn.View(); !strings.Contains(got, "logged in as alice") {
+		test.Fatalf("logged-in view missing user, got:\n%s", got)
+	}
+
+	loggedOut := NewLocalModels(
+		func() ([]hf.CachedModel, error) { return nil, nil },
+		func() []hf.CuratedModel { return nil },
+		noTest,
+		func() (string, error) { return "", errors.New("Not logged in") },
+	)
+	loggedOut.SetSize(120, 40)
+	drive(loggedOut, loggedOut.Init())
+	if got := loggedOut.View(); !strings.Contains(got, "not logged in") {
+		test.Fatalf("logged-out view missing fallback, got:\n%s", got)
 	}
 }
 

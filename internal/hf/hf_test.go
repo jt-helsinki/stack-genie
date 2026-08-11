@@ -130,3 +130,40 @@ func TestFakeRecordsCalls(t *testing.T) {
 		t.Fatalf("CacheRemove not recorded: %+v", fake)
 	}
 }
+
+// The Fake records the token passed to Login and surfaces its configured error, and
+// Whoami returns the canned user / not-logged-in error — so the CLI is testable without
+// a real `hf` (mirroring how Download/CacheList are faked).
+func TestFakeAuthRecordsCalls(t *testing.T) {
+	fake := &Fake{WhoamiUser: "alice"}
+	if err := fake.Login("hf_token_123"); err != nil {
+		t.Fatalf("Login: %v", err)
+	}
+	if fake.LoginToken != "hf_token_123" {
+		t.Fatalf("Login token = %q, want the passed token", fake.LoginToken)
+	}
+	user, err := fake.Whoami()
+	if err != nil {
+		t.Fatalf("Whoami: %v", err)
+	}
+	if user != "alice" {
+		t.Fatalf("Whoami user = %q, want alice", user)
+	}
+	if err := fake.Logout(); err != nil {
+		t.Fatalf("Logout: %v", err)
+	}
+	if fake.LogoutCalls != 1 {
+		t.Fatalf("LogoutCalls = %d, want 1", fake.LogoutCalls)
+	}
+
+	// Configured errors are surfaced: a login failure and a not-logged-in whoami.
+	loginErr := errors.New("bad token")
+	notLoggedIn := errors.New("Not logged in")
+	failing := &Fake{LoginErr: loginErr, WhoamiErr: notLoggedIn}
+	if err := failing.Login("x"); !errors.Is(err, loginErr) {
+		t.Fatalf("Login err = %v, want %v", err, loginErr)
+	}
+	if _, err := failing.Whoami(); !errors.Is(err, notLoggedIn) {
+		t.Fatalf("Whoami err = %v, want %v", err, notLoggedIn)
+	}
+}

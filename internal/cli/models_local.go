@@ -2,6 +2,7 @@ package cli
 
 import (
 	"errors"
+	"io"
 	goruntime "runtime"
 	"strings"
 
@@ -545,6 +546,143 @@ func newModelsInstallVLLMCmd(emitter *output.Emitter, exit *int) *cobra.Command 
 	cmd.Flags().StringArrayVar(&specFlags, "spec", nil,
 		"pip requirement to install instead of the per-OS default (repeatable)")
 	return cmd
+}
+
+// hfNotInstalledError reports that the `hf` CLI is unavailable, with guidance: `hf`
+// installs into the platform-managed venv at `ai setup`. Exit 3 (missing dependency).
+func hfNotInstalledError() error {
+	return output.Errorf(output.ExitMissingDep,
+		"the Hugging Face CLI (`hf`) is not installed — it is required to authenticate for\n"+
+			"gated repos. Run `ai setup` to install it into the platform-managed venv\n"+
+			"(~/.ai-platform/venv), or `ai models install-vllm` provisions the same venv.")
+}
+
+// modelsLoginResult is the `ai models login` payload.
+type modelsLoginResult struct {
+	LoggedIn bool   `json:"logged_in"`
+	User     string `json:"user,omitempty"`
+}
+
+func (result modelsLoginResult) Human() string {
+	if result.User != "" {
+		return ui.Success.Render(ui.IconOK) + " logged in to Hugging Face as " + ui.Value.Render(result.User)
+	}
+	return ui.Success.Render(ui.IconOK) + " logged in to Hugging Face"
+}
+
+// newModelsLoginCmd builds `ai models login` — authenticate the `hf` CLI with a Hugging
+// Face token so gated repos (meta-llama/*, google/gemma-*, mistralai/*) can be pulled.
+// The token is a HIDDEN CREDENTIAL: --token/--stdin are used directly (a hidden field
+// can't pre-seed), otherwise it is prompted hidden on a TTY. The token is handed only to
+// `hf`, which owns its own store — the platform never persists it.
+func newModelsLoginCmd(emitter *output.Emitter, exit *int) *cobra.Command {
+	var token string
+	var fromStdin bool
+	cmd := &cobra.Command{
+		Use:   "login",
+		Short: "Authenticate the Hugging Face CLI to download gated repos",
+		Long: "Authenticate the Hugging Face CLI (`hf`) with an access token so gated repos\n" +
+			"(meta-llama/*, google/gemma-*, mistralai/*) can be pulled. On a terminal you are\n" +
+			"prompted for the token (hidden); under --json/no TTY pass it via --token/--stdin.\n" +
+			"The token is stored by `hf` itself (~/.cache/huggingface), never on platform disk.",
+		Args: cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			if !hfDetectFn() {
+				*exit = emitter.Failure("models.login", hfNotInstalledError())
+				return nil
+			}
+			tok, ok := resolveHFToken(cmd, emitter, token, fromStdin, exit)
+			if !ok {
+				return nil
+			}
+			if err := hfClient().Login(tok); err != nil {
+				*exit = emitter.Failure("models.login", output.Errorf(output.ExitRuntimeFailure, "%s", err))
+				return nil
+			}
+			// Best-effort whoami for the confirmation line — a whoami error must not fail
+			// a login that just succeeded.
+			result := modelsLoginResult{LoggedIn: true}
+			if user, err := hfClient().Whoami(); err == nil {
+				result.User = strings.TrimSpace(user)
+			}
+			*exit = emitter.Success("models.login", result)
+			return nil
+		},
+	}
+	cmd.Flags().StringVar(&token, "token", "", "Hugging Face access token (discouraged — leaks to shell history; prefer --stdin)")
+	cmd.Flags().BoolVar(&fromStdin, "stdin", false, "read the Hugging Face token from stdin")
+	return cmd
+}
+
+// resolveHFToken reads the HF token from --token/--stdin, else prompts hidden on a TTY.
+// It returns ok=false and sets *exit (a failure envelope already emitted) when no token
+// can be obtained. The token is trimmed and never echoed.
+func resolveHFToken(cmd *cobra.Command, emitter *output.Emitter, token string, fromStdin bool, exit *int) (string, bool) {
+	switch {
+	case fromStdin:
+		read, err := io.ReadAll(cmd.InOrStdin())
+		if err != nil {
+			*exit = emitter.Failure("models.login", output.Errorf(output.ExitRuntimeFailure, "read stdin: %s", err))
+			return "", false
+		}
+		if trimmed := strings.TrimSpace(string(read)); trimmed != "" {
+			return trimmed, true
+		}
+		*exit = emitter.Failure("models.login", output.Errorf(output.ExitInvalidInput, "the Hugging Face token is empty"))
+		return "", false
+	case strings.TrimSpace(token) != "":
+		return strings.TrimSpace(token), true
+	}
+	if interactive(emitter) {
+		entered, err := promptSecret(
+			"Hugging Face token",
+			"hidden — stored by `hf` (~/.cache/huggingface), never on platform disk",
+			func(candidate string) error {
+				if strings.TrimSpace(candidate) == "" {
+					return errors.New("a Hugging Face token is required")
+				}
+				return nil
+			})
+		if err != nil {
+			*exit = emitter.Failure("models.login", err)
+			return "", false
+		}
+		return strings.TrimSpace(entered), true
+	}
+	*exit = emitter.Failure("models.login", output.Errorf(output.ExitInvalidInput,
+		"provide the Hugging Face token with --token or --stdin"))
+	return "", false
+}
+
+// modelsLogoutResult is the `ai models logout` payload.
+type modelsLogoutResult struct {
+	LoggedOut bool `json:"logged_out"`
+}
+
+func (modelsLogoutResult) Human() string {
+	return ui.Success.Render(ui.IconOK) + " logged out of Hugging Face"
+}
+
+// newModelsLogoutCmd builds `ai models logout` — clear the `hf` CLI's stored Hugging
+// Face credentials.
+func newModelsLogoutCmd(emitter *output.Emitter, exit *int) *cobra.Command {
+	return &cobra.Command{
+		Use:   "logout",
+		Short: "Clear the Hugging Face CLI's stored credentials",
+		Args:  cobra.NoArgs,
+		RunE: func(_ *cobra.Command, _ []string) error {
+			if !hfDetectFn() {
+				*exit = emitter.Failure("models.logout", hfNotInstalledError())
+				return nil
+			}
+			if err := hfClient().Logout(); err != nil {
+				*exit = emitter.Failure("models.logout", output.Errorf(output.ExitRuntimeFailure, "%s", err))
+				return nil
+			}
+			*exit = emitter.Success("models.logout", modelsLogoutResult{LoggedOut: true})
+			return nil
+		},
+	}
 }
 
 // dedupeModelNames trims, drops empties, and removes duplicate references while
