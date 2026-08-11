@@ -14,7 +14,7 @@ VERSION_PKG := $(PKG)/internal/version
 VERSION     ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo 0.0.0-dev)
 LDFLAGS     := -X $(VERSION_PKG).Version=$(VERSION)
 
-.PHONY: all build release fmt fmt-check vet lint test test-acceptance test-integration tidy clean check
+.PHONY: all build release fmt fmt-check vet vet-tagged lint test test-acceptance test-integration tidy clean check
 
 # Release assets are named ai-<os>-<arch> — the exact names installers/install.sh
 # downloads. macOS is Apple Silicon only (arch §6.2). Because cgo cross-compilation
@@ -24,7 +24,7 @@ LDFLAGS     := -X $(VERSION_PKG).Version=$(VERSION)
 
 all: build
 
-check: fmt-check vet lint test build ## Pre-commit gate: everything that must pass before committing
+check: fmt-check vet vet-tagged lint test build ## Pre-commit gate: everything that must pass before committing
 
 build: ## Build the ai binary into ./bin (cgo)
 	@mkdir -p bin
@@ -44,6 +44,9 @@ fmt-check: ## Fail if any file is not gofmt-clean
 
 vet: ## go vet
 	go vet ./...
+
+vet-tagged: ## Type-check build-tag-gated code (e.g. //go:build integration) that plain vet skips
+	go vet -tags integration ./...
 
 lint: ## golangci-lint (skipped with a warning if not installed)
 	@if command -v golangci-lint >/dev/null 2>&1; then \

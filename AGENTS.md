@@ -17,7 +17,7 @@ make fmt              # gofmt -w .
 make fmt-check        # CI gate: fails if not gofmt-clean
 make vet              # go vet
 make lint             # golangci-lint (no-op if not installed; CI installs it)
-make check            # pre-commit gate: fmt-check vet lint test build (must all pass)
+make check            # pre-commit gate: fmt-check vet vet-tagged lint test build (must all pass)
 make test-acceptance  # acceptance suite (set AIP_HARDWARE_TESTS=1 to include the full-stack [S1] tests)
 make test-integration # LIVE integration suite vs a running Docker + Microsandbox stack (self-skips if absent — see test/integration/README.md)
 make test-all         # run all test suites (unit + acceptance + integration)
@@ -28,7 +28,7 @@ go test ./internal/setup/ -run TestRunIdempotent   # a single test
 go run ./cmd/ai --version --json                   # run without building
 ```
 
-CI (`.github/workflows/ci.yml`) is split: hosted runners do build/vet/lint/unit-tests; a self-hosted **Apple Silicon** runner runs `[S1]` acceptance (the only host that can run the full stack). Before committing, run **`make check`** (= `fmt-check vet lint test build`) — it must all pass. `errcheck` + the rest of golangci-lint are strict, so explicitly discard intentional writes (`_, _ = fmt.Fprintln(...)`) and keep `make lint` clean.
+CI (`.github/workflows/ci.yml`) is split: hosted runners do build/vet/lint/unit-tests; a self-hosted **Apple Silicon** runner runs `[S1]` acceptance (the only host that can run the full stack). Before committing, run **`make check`** (= `fmt-check vet vet-tagged lint test build`) — it must all pass. `errcheck` + the rest of golangci-lint are strict, so explicitly discard intentional writes (`_, _ = fmt.Fprintln(...)`) and keep `make lint` clean.
 
 ## Architecture (the parts that span files)
 
