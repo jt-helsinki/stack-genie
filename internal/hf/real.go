@@ -2,6 +2,7 @@ package hf
 
 import (
 	"bufio"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -66,7 +67,10 @@ func (realClient) Download(repo string, progress func(line string)) error {
 // CacheList runs `hf cache ls -q` (repo ids only) and returns one CachedModel per
 // non-empty line. `-q` prints just the repo ids, which is stable to parse; Size is
 // left empty (the quiet form omits it). An `hf` that is missing or errors surfaces the
-// error so the CLI can map it.
+// error so the CLI can map it — EXCEPT a not-yet-populated store: on a fresh install
+// (no model pulled) the HF cache dir does not exist and `hf cache ls` exits non-zero
+// with "Cache directory not found", which is not a real error — an empty store is an
+// empty list, so that case returns (nil, nil) rather than a spurious failure.
 func (realClient) CacheList() ([]CachedModel, error) {
 	command, err := hfCommand("cache", "ls", "-q")
 	if err != nil {
@@ -74,6 +78,15 @@ func (realClient) CacheList() ([]CachedModel, error) {
 	}
 	out, runErr := command.Output()
 	if runErr != nil {
+		var exitErr *exec.ExitError
+		if errors.As(runErr, &exitErr) {
+			if isEmptyCacheStderr(string(exitErr.Stderr)) {
+				return nil, nil // empty/not-yet-populated store — not an error
+			}
+			if trimmed := strings.TrimSpace(string(exitErr.Stderr)); trimmed != "" {
+				return nil, fmt.Errorf("hf: cache ls: %w: %s", runErr, trimmed)
+			}
+		}
 		return nil, fmt.Errorf("hf: cache ls: %w", runErr)
 	}
 	var models []CachedModel
@@ -135,6 +148,15 @@ func (realClient) Logout() error {
 }
 
 // CacheRemove runs `hf cache rm <repo>` to delete a repo from the local cache.
+// isEmptyCacheStderr reports whether `hf cache ls` failed only because the HF cache
+// has not been created yet (a fresh install with no model pulled) — the store is simply
+// empty, not broken. `hf` prints "Cache directory not found: <path>" (or "No cached
+// repos") in that case; either is treated as an empty list, not an error.
+func isEmptyCacheStderr(stderr string) bool {
+	lower := strings.ToLower(stderr)
+	return strings.Contains(lower, "cache directory not found") || strings.Contains(lower, "no cached")
+}
+
 func (realClient) CacheRemove(repo string) error {
 	repo = strings.TrimSpace(repo)
 	if repo == "" {

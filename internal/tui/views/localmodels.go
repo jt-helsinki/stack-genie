@@ -403,7 +403,7 @@ func (view *LocalModels) header() string {
 	body.WriteString(view.hfStatusLine() + "\n")
 	if view.listErr != nil {
 		body.WriteString(ui.Failure.Render(ui.IconFail+" could not list the local store: "+view.listErr.Error()) +
-			"\n" + ui.Muted.Render("install the Hugging Face CLI with `ai setup` (needs `hf` in the platform venv)") + "\n")
+			"\n" + ui.Muted.Render("the Hugging Face CLI (`hf`) is installed by `ai setup` into the platform venv; run it if `hf` is missing") + "\n")
 	}
 	if len(view.models) == 0 {
 		body.WriteString(ui.Muted.Render("no models to show (enter/p on an Available row to pull one)") + "\n")

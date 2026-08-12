@@ -104,6 +104,32 @@ func TestInstallPropagatesEnsureError(t *testing.T) {
 	}
 }
 
+// isEmptyCacheStderr treats a not-yet-created HF cache (fresh install, no model pulled)
+// as an empty list, not an error — so the Local Models tab shows an empty store instead
+// of a spurious "could not list" / "install hf" message.
+func TestIsEmptyCacheStderr(t *testing.T) {
+	empty := []string{
+		"Cache directory not found: /Users/x/.ai-platform/volumes/models/vllm/hub",
+		"Error: Cache directory not found: /root/.cache/huggingface/hub",
+		"No cached repos found",
+	}
+	for _, stderr := range empty {
+		if !isEmptyCacheStderr(stderr) {
+			t.Errorf("isEmptyCacheStderr(%q) = false, want true (empty store, not an error)", stderr)
+		}
+	}
+	real := []string{
+		"error: connection refused",
+		"Traceback (most recent call last): PermissionError",
+		"",
+	}
+	for _, stderr := range real {
+		if isEmptyCacheStderr(stderr) {
+			t.Errorf("isEmptyCacheStderr(%q) = true, want false (a real error must surface)", stderr)
+		}
+	}
+}
+
 func TestFakeRecordsCalls(t *testing.T) {
 	fake := &Fake{
 		Cached:        []CachedModel{{Repo: "mlx-community/Qwen2.5-7B-Instruct-4bit"}},
