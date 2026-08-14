@@ -114,83 +114,82 @@ type CuratedModel struct {
 // Linux only the safetensors list (see CuratedModels). To extend: add the model to BOTH
 // slices at the same index, verify each repo id resolves on https://huggingface.co
 // (both the mlx-community/<x> id and the GPU id — do NOT invent ids), note when the GPU
-// repo is GATED (needs `hf` login / license click-through — meta-llama/*, google/gemma*),
-// and give an approximate on-disk size. All repo ids below were verified against the HF
-// API. The mlx-community/* mirrors are ungated even where the upstream GPU repo is gated.
+// repo is GATED (needs `hf` login / license click-through — meta-llama/*), and give an
+// approximate on-disk size. The set is ordered as a rough size ladder (small → large).
+//
+// Curated afresh from the live Hugging Face API as of 2026-08 (trending +
+// most-downloaded text-generation, cross-referenced with the mlx-community builds).
+// Every repo id below was verified to return HTTP 200 from GET /api/models/<repo>. The
+// mlx-community/* mirrors are ungated even where the upstream GPU repo is gated; today
+// only the two meta-llama/* GPU repos are gated (marked in the Description). Superseded
+// families from the previous curation (Qwen2.5, Llama 3.3, Gemma 2/3, Mistral v0.3 /
+// Mixtral / Nemo, Phi-3.5/4, DeepSeek-R1-Distill) were dropped for their current
+// successors (Qwen3 / Qwen3.5 / Qwen3.6 / Qwen3-Coder, gpt-oss, Gemma 4, Devstral 2 /
+// Ministral / Mistral-Small 3.1, DeepSeek-V4-Flash + R1-0528, Nemotron-3.5, LFM2.5).
 
-// curatedMLX is the Apple-Silicon (darwin) curated set: mlx-community/* 4-bit repos
-// served on the Metal GPU via the vLLM-Metal plugin.
+// curatedMLX is the Apple-Silicon (darwin) curated set: mlx-community/* repos (4-bit
+// unless the family ships a native low-bit format) served on the Metal GPU via the
+// vLLM-Metal plugin.
 var curatedMLX = []CuratedModel{
-	// Qwen2.5 (general)
-	{Name: "Qwen2.5-7B-Instruct-4bit", Repo: "mlx-community/Qwen2.5-7B-Instruct-4bit", Description: "Qwen2.5 7B instruct, 4-bit — strong general/coding model", Size: "~4.3 GB"},
-	{Name: "Qwen2.5-14B-Instruct-4bit", Repo: "mlx-community/Qwen2.5-14B-Instruct-4bit", Description: "Qwen2.5 14B instruct, 4-bit — larger general model", Size: "~8.1 GB"},
-	{Name: "Qwen2.5-32B-Instruct-4bit", Repo: "mlx-community/Qwen2.5-32B-Instruct-4bit", Description: "Qwen2.5 32B instruct, 4-bit", Size: "~18 GB"},
-	{Name: "Qwen2.5-72B-Instruct-4bit", Repo: "mlx-community/Qwen2.5-72B-Instruct-4bit", Description: "Qwen2.5 72B instruct, 4-bit — flagship", Size: "~41 GB"},
-	// Qwen2.5-Coder (code-specialised)
-	{Name: "Qwen2.5-Coder-7B-Instruct-4bit", Repo: "mlx-community/Qwen2.5-Coder-7B-Instruct-4bit", Description: "Qwen2.5-Coder 7B, 4-bit — code-specialised", Size: "~4.3 GB"},
-	{Name: "Qwen2.5-Coder-14B-Instruct-4bit", Repo: "mlx-community/Qwen2.5-Coder-14B-Instruct-4bit", Description: "Qwen2.5-Coder 14B, 4-bit — code-specialised", Size: "~8.1 GB"},
-	{Name: "Qwen2.5-Coder-32B-Instruct-4bit", Repo: "mlx-community/Qwen2.5-Coder-32B-Instruct-4bit", Description: "Qwen2.5-Coder 32B, 4-bit — top open coding model", Size: "~18 GB"},
-	// Qwen3
-	{Name: "Qwen3-8B-4bit", Repo: "mlx-community/Qwen3-8B-4bit", Description: "Qwen3 8B, 4-bit — hybrid reasoning", Size: "~4.6 GB"},
-	{Name: "Qwen3-32B-4bit", Repo: "mlx-community/Qwen3-32B-4bit", Description: "Qwen3 32B, 4-bit — hybrid reasoning", Size: "~18 GB"},
-	{Name: "Qwen3-30B-A3B-4bit", Repo: "mlx-community/Qwen3-30B-A3B-4bit", Description: "Qwen3 30B-A3B, 4-bit — MoE (3B active)", Size: "~17 GB"},
-	// Llama
+	// Tiny / small dense
+	{Name: "Qwen3-0.6B-4bit", Repo: "mlx-community/Qwen3-0.6B-4bit", Description: "Qwen3 0.6B, 4-bit — tiny, fast", Size: "~0.4 GB"},
+	{Name: "Qwen3.5-2B-MLX-4bit", Repo: "mlx-community/Qwen3.5-2B-MLX-4bit", Description: "Qwen3.5 2B, 4-bit — small general", Size: "~1.3 GB"},
+	{Name: "LFM2.5-2.6B-4bit", Repo: "mlx-community/LFM2.5-2.6B-4bit", Description: "Liquid LFM2.5 2.6B, 4-bit — edge/on-device", Size: "~1.5 GB"},
 	{Name: "Llama-3.2-3B-Instruct-4bit", Repo: "mlx-community/Llama-3.2-3B-Instruct-4bit", Description: "Llama 3.2 3B instruct, 4-bit — small & fast", Size: "~1.8 GB"},
+	{Name: "Qwen3.5-4B-MLX-4bit", Repo: "mlx-community/Qwen3.5-4B-MLX-4bit", Description: "Qwen3.5 4B, 4-bit — general", Size: "~2.3 GB"},
+	{Name: "gemma-4-E4B-it-4bit", Repo: "mlx-community/gemma-4-e4b-it-4bit", Description: "Google Gemma 4 E4B instruct, 4-bit — compact multimodal", Size: "~4.5 GB"},
+	// Mid dense (8–14B)
 	{Name: "Meta-Llama-3.1-8B-Instruct-4bit", Repo: "mlx-community/Meta-Llama-3.1-8B-Instruct-4bit", Description: "Llama 3.1 8B instruct, 4-bit", Size: "~4.5 GB"},
-	{Name: "Llama-3.3-70B-Instruct-4bit", Repo: "mlx-community/Llama-3.3-70B-Instruct-4bit", Description: "Llama 3.3 70B instruct, 4-bit — flagship", Size: "~40 GB"},
-	// Mistral / Mixtral
-	{Name: "Mistral-7B-Instruct-v0.3-4bit", Repo: "mlx-community/Mistral-7B-Instruct-v0.3-4bit", Description: "Mistral 7B instruct v0.3, 4-bit", Size: "~4.1 GB"},
-	{Name: "Mistral-Nemo-Instruct-2407-4bit", Repo: "mlx-community/Mistral-Nemo-Instruct-2407-4bit", Description: "Mistral Nemo 12B instruct, 4-bit — 128k context", Size: "~6.9 GB"},
-	{Name: "Mistral-Small-24B-Instruct-2501-4bit", Repo: "mlx-community/Mistral-Small-24B-Instruct-2501-4bit", Description: "Mistral Small 24B instruct, 4-bit", Size: "~13 GB"},
-	{Name: "Mixtral-8x7B-Instruct-v0.1-4bit", Repo: "mlx-community/Mixtral-8x7B-Instruct-v0.1-4bit", Description: "Mixtral 8x7B instruct, 4-bit — MoE (47B total)", Size: "~26 GB"},
-	// Google Gemma
-	{Name: "gemma-2-9b-it-4bit", Repo: "mlx-community/gemma-2-9b-it-4bit", Description: "Google Gemma 2 9B instruct, 4-bit", Size: "~5.2 GB"},
-	{Name: "gemma-2-27b-it-4bit", Repo: "mlx-community/gemma-2-27b-it-4bit", Description: "Google Gemma 2 27B instruct, 4-bit", Size: "~15 GB"},
-	{Name: "gemma-3-27b-it-4bit", Repo: "mlx-community/gemma-3-27b-it-4bit", Description: "Google Gemma 3 27B instruct, 4-bit — multimodal", Size: "~17 GB"},
-	// Microsoft Phi
-	{Name: "Phi-3.5-mini-instruct-4bit", Repo: "mlx-community/Phi-3.5-mini-instruct-4bit", Description: "Microsoft Phi-3.5 mini instruct, 4-bit — compact", Size: "~2.2 GB"},
-	{Name: "phi-4-4bit", Repo: "mlx-community/phi-4-4bit", Description: "Microsoft Phi-4 14B, 4-bit — strong reasoning", Size: "~8.2 GB"},
-	// DeepSeek R1 distills
-	{Name: "DeepSeek-R1-Distill-Qwen-7B-4bit", Repo: "mlx-community/DeepSeek-R1-Distill-Qwen-7B-4bit", Description: "DeepSeek-R1 distill (Qwen 7B), 4-bit — reasoning", Size: "~4.3 GB"},
-	{Name: "DeepSeek-R1-Distill-Qwen-32B-4bit", Repo: "mlx-community/DeepSeek-R1-Distill-Qwen-32B-4bit", Description: "DeepSeek-R1 distill (Qwen 32B), 4-bit — reasoning", Size: "~18 GB"},
+	{Name: "DeepSeek-R1-0528-Qwen3-8B-4bit", Repo: "mlx-community/DeepSeek-R1-0528-Qwen3-8B-4bit", Description: "DeepSeek-R1-0528 distill (Qwen3 8B), 4-bit — reasoning", Size: "~4.6 GB"},
+	{Name: "Qwen3.5-9B-MLX-4bit", Repo: "mlx-community/Qwen3.5-9B-MLX-4bit", Description: "Qwen3.5 9B, 4-bit — general", Size: "~5.0 GB"},
+	{Name: "gemma-4-12B-it-4bit", Repo: "mlx-community/gemma-4-12B-it-qat-4bit", Description: "Google Gemma 4 12B instruct, QAT 4-bit — multimodal", Size: "~6.8 GB"},
+	{Name: "Mellum2-12B-A2.5B-Instruct-4bit", Repo: "mlx-community/Mellum2-12B-A2.5B-Instruct-4bit", Description: "JetBrains Mellum2 12B-A2.5B, 4-bit — MoE code model", Size: "~6.8 GB"},
+	// Large dense + MoE (20–36B)
+	{Name: "gpt-oss-20b-MXFP4-Q8", Repo: "mlx-community/gpt-oss-20b-MXFP4-Q8", Description: "OpenAI gpt-oss 20B, MXFP4 — MoE, reasoning", Size: "~13 GB"},
+	{Name: "Devstral-Small-2-24B-Instruct-2512-4bit", Repo: "mlx-community/Devstral-Small-2-24B-Instruct-2512-4bit", Description: "Mistral Devstral Small 2 24B, 4-bit — agentic coding", Size: "~13 GB"},
+	{Name: "Mistral-Small-3.1-24B-Instruct-2503-4bit", Repo: "mlx-community/Mistral-Small-3.1-24B-Instruct-2503-4bit", Description: "Mistral Small 3.1 24B instruct, 4-bit — multimodal", Size: "~13 GB"},
+	{Name: "Qwen3.6-27B-4bit", Repo: "mlx-community/Qwen3.6-27B-4bit", Description: "Qwen3.6 27B, 4-bit — flagship dense", Size: "~15 GB"},
+	{Name: "Qwen3-Coder-30B-A3B-Instruct-4bit", Repo: "mlx-community/Qwen3-Coder-30B-A3B-Instruct-4bit", Description: "Qwen3-Coder 30B-A3B, 4-bit — MoE, top open coder", Size: "~17 GB"},
+	{Name: "Qwen3-30B-A3B-Instruct-2507-4bit", Repo: "mlx-community/Qwen3-30B-A3B-Instruct-2507-4bit", Description: "Qwen3 30B-A3B (2507), 4-bit — MoE (3B active)", Size: "~17 GB"},
+	{Name: "NVIDIA-Nemotron-3.5-Lightning-30B-A3B-4bit", Repo: "mlx-community/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-4bit", Description: "NVIDIA Nemotron 3.5 Lightning 30B-A3B, 4-bit — MoE reasoning", Size: "~17 GB"},
+	{Name: "gemma-4-31B-it-4bit", Repo: "mlx-community/gemma-4-31b-it-4bit", Description: "Google Gemma 4 31B instruct, 4-bit — multimodal flagship", Size: "~17 GB"},
+	{Name: "Qwen3.6-35B-A3B-4bit", Repo: "mlx-community/Qwen3.6-35B-A3B-4bit", Description: "Qwen3.6 35B-A3B, 4-bit — MoE flagship", Size: "~20 GB"},
+	// Frontier MoE
+	{Name: "gpt-oss-120b-MXFP4-Q8", Repo: "mlx-community/gpt-oss-120b-MXFP4-Q8", Description: "OpenAI gpt-oss 120B, MXFP4 — frontier MoE, reasoning", Size: "~63 GB"},
+	{Name: "DeepSeek-V4-Flash-4bit", Repo: "mlx-community/DeepSeek-V4-Flash-4bit", Description: "DeepSeek-V4-Flash, 4-bit — 291B MoE flagship (very large)", Size: "~145 GB"},
 }
 
 // curatedSafetensors is the Linux/CUDA curated set: plain Hugging Face safetensors repos
 // served on NVIDIA GPUs. Model-for-model aligned with curatedMLX (same index = same
-// model). Sizes are the bf16/fp16 weights. "(gated repo)" marks repos needing `hf` login.
+// model). Sizes are the native weights (bf16/fp16, or MXFP4 for gpt-oss). "(gated repo)"
+// marks repos needing `hf` login / license acceptance.
 var curatedSafetensors = []CuratedModel{
-	// Qwen2.5 (general)
-	{Name: "Qwen2.5-7B-Instruct", Repo: "Qwen/Qwen2.5-7B-Instruct", Description: "Qwen2.5 7B instruct — strong general/coding model", Size: "~15 GB"},
-	{Name: "Qwen2.5-14B-Instruct", Repo: "Qwen/Qwen2.5-14B-Instruct", Description: "Qwen2.5 14B instruct — larger general model", Size: "~30 GB"},
-	{Name: "Qwen2.5-32B-Instruct", Repo: "Qwen/Qwen2.5-32B-Instruct", Description: "Qwen2.5 32B instruct", Size: "~66 GB"},
-	{Name: "Qwen2.5-72B-Instruct", Repo: "Qwen/Qwen2.5-72B-Instruct", Description: "Qwen2.5 72B instruct — flagship", Size: "~145 GB"},
-	// Qwen2.5-Coder (code-specialised)
-	{Name: "Qwen2.5-Coder-7B-Instruct", Repo: "Qwen/Qwen2.5-Coder-7B-Instruct", Description: "Qwen2.5-Coder 7B — code-specialised", Size: "~15 GB"},
-	{Name: "Qwen2.5-Coder-14B-Instruct", Repo: "Qwen/Qwen2.5-Coder-14B-Instruct", Description: "Qwen2.5-Coder 14B — code-specialised", Size: "~30 GB"},
-	{Name: "Qwen2.5-Coder-32B-Instruct", Repo: "Qwen/Qwen2.5-Coder-32B-Instruct", Description: "Qwen2.5-Coder 32B — top open coding model", Size: "~66 GB"},
-	// Qwen3
-	{Name: "Qwen3-8B", Repo: "Qwen/Qwen3-8B", Description: "Qwen3 8B — hybrid reasoning", Size: "~16 GB"},
-	{Name: "Qwen3-32B", Repo: "Qwen/Qwen3-32B", Description: "Qwen3 32B — hybrid reasoning", Size: "~66 GB"},
-	{Name: "Qwen3-30B-A3B", Repo: "Qwen/Qwen3-30B-A3B", Description: "Qwen3 30B-A3B — MoE (3B active)", Size: "~61 GB"},
-	// Llama
-	{Name: "Llama-3.2-3B-Instruct", Repo: "meta-llama/Llama-3.2-3B-Instruct", Description: "Llama 3.2 3B instruct — small & fast (gated repo)", Size: "~6.5 GB"},
-	{Name: "Llama-3.1-8B-Instruct", Repo: "meta-llama/Llama-3.1-8B-Instruct", Description: "Llama 3.1 8B instruct (gated repo)", Size: "~16 GB"},
-	{Name: "Llama-3.3-70B-Instruct", Repo: "meta-llama/Llama-3.3-70B-Instruct", Description: "Llama 3.3 70B instruct — flagship (gated repo)", Size: "~141 GB"},
-	// Mistral / Mixtral
-	{Name: "Mistral-7B-Instruct-v0.3", Repo: "mistralai/Mistral-7B-Instruct-v0.3", Description: "Mistral 7B instruct v0.3", Size: "~15 GB"},
-	{Name: "Mistral-Nemo-Instruct-2407", Repo: "mistralai/Mistral-Nemo-Instruct-2407", Description: "Mistral Nemo 12B instruct — 128k context", Size: "~25 GB"},
-	{Name: "Mistral-Small-24B-Instruct-2501", Repo: "mistralai/Mistral-Small-24B-Instruct-2501", Description: "Mistral Small 24B instruct", Size: "~47 GB"},
-	{Name: "Mixtral-8x7B-Instruct-v0.1", Repo: "mistralai/Mixtral-8x7B-Instruct-v0.1", Description: "Mixtral 8x7B instruct — MoE (47B total)", Size: "~93 GB"},
-	// Google Gemma
-	{Name: "gemma-2-9b-it", Repo: "google/gemma-2-9b-it", Description: "Google Gemma 2 9B instruct (gated repo)", Size: "~18 GB"},
-	{Name: "gemma-2-27b-it", Repo: "google/gemma-2-27b-it", Description: "Google Gemma 2 27B instruct (gated repo)", Size: "~54 GB"},
-	{Name: "gemma-3-27b-it", Repo: "google/gemma-3-27b-it", Description: "Google Gemma 3 27B instruct — multimodal (gated repo)", Size: "~54 GB"},
-	// Microsoft Phi
-	{Name: "Phi-3.5-mini-instruct", Repo: "microsoft/Phi-3.5-mini-instruct", Description: "Microsoft Phi-3.5 mini instruct — compact", Size: "~7.7 GB"},
-	{Name: "phi-4", Repo: "microsoft/phi-4", Description: "Microsoft Phi-4 14B — strong reasoning", Size: "~29 GB"},
-	// DeepSeek R1 distills
-	{Name: "DeepSeek-R1-Distill-Qwen-7B", Repo: "deepseek-ai/DeepSeek-R1-Distill-Qwen-7B", Description: "DeepSeek-R1 distill (Qwen 7B) — reasoning", Size: "~15 GB"},
-	{Name: "DeepSeek-R1-Distill-Qwen-32B", Repo: "deepseek-ai/DeepSeek-R1-Distill-Qwen-32B", Description: "DeepSeek-R1 distill (Qwen 32B) — reasoning", Size: "~66 GB"},
+	// Tiny / small dense
+	{Name: "Qwen3-0.6B", Repo: "Qwen/Qwen3-0.6B", Description: "Qwen3 0.6B — tiny, fast", Size: "~1.5 GB"},
+	{Name: "Qwen3.5-2B", Repo: "Qwen/Qwen3.5-2B", Description: "Qwen3.5 2B — small general", Size: "~4.5 GB"},
+	{Name: "LFM2.5-2.6B", Repo: "LiquidAI/LFM2.5-2.6B", Description: "Liquid LFM2.5 2.6B — edge/on-device", Size: "~5.4 GB"},
+	{Name: "Llama-3.2-3B-Instruct", Repo: "meta-llama/Llama-3.2-3B-Instruct", Description: "Llama 3.2 3B instruct — small & fast — gated, run `ai models login`", Size: "~6.5 GB"},
+	{Name: "Qwen3.5-4B", Repo: "Qwen/Qwen3.5-4B", Description: "Qwen3.5 4B — general", Size: "~8 GB"},
+	{Name: "gemma-4-E4B-it", Repo: "google/gemma-4-E4B-it", Description: "Google Gemma 4 E4B instruct — compact multimodal", Size: "~16 GB"},
+	// Mid dense (8–14B)
+	{Name: "Llama-3.1-8B-Instruct", Repo: "meta-llama/Llama-3.1-8B-Instruct", Description: "Llama 3.1 8B instruct — gated, run `ai models login`", Size: "~16 GB"},
+	{Name: "DeepSeek-R1-0528-Qwen3-8B", Repo: "deepseek-ai/DeepSeek-R1-0528-Qwen3-8B", Description: "DeepSeek-R1-0528 distill (Qwen3 8B) — reasoning", Size: "~16 GB"},
+	{Name: "Qwen3.5-9B", Repo: "Qwen/Qwen3.5-9B", Description: "Qwen3.5 9B — general", Size: "~18 GB"},
+	{Name: "gemma-4-12B-it", Repo: "google/gemma-4-12B-it", Description: "Google Gemma 4 12B instruct — multimodal", Size: "~24 GB"},
+	{Name: "Mellum2-12B-A2.5B-Instruct", Repo: "JetBrains/Mellum2-12B-A2.5B-Instruct", Description: "JetBrains Mellum2 12B-A2.5B — MoE code model", Size: "~24 GB"},
+	// Large dense + MoE (20–36B)
+	{Name: "gpt-oss-20b", Repo: "openai/gpt-oss-20b", Description: "OpenAI gpt-oss 20B — MoE, reasoning (MXFP4)", Size: "~13 GB"},
+	{Name: "Devstral-Small-2-24B-Instruct-2512", Repo: "mistralai/Devstral-Small-2-24B-Instruct-2512", Description: "Mistral Devstral Small 2 24B — agentic coding", Size: "~47 GB"},
+	{Name: "Mistral-Small-3.1-24B-Instruct-2503", Repo: "mistralai/Mistral-Small-3.1-24B-Instruct-2503", Description: "Mistral Small 3.1 24B instruct — multimodal", Size: "~47 GB"},
+	{Name: "Qwen3.6-27B", Repo: "Qwen/Qwen3.6-27B", Description: "Qwen3.6 27B — flagship dense", Size: "~54 GB"},
+	{Name: "Qwen3-Coder-30B-A3B-Instruct", Repo: "Qwen/Qwen3-Coder-30B-A3B-Instruct", Description: "Qwen3-Coder 30B-A3B — MoE, top open coder", Size: "~61 GB"},
+	{Name: "Qwen3-30B-A3B-Instruct-2507", Repo: "Qwen/Qwen3-30B-A3B-Instruct-2507", Description: "Qwen3 30B-A3B (2507) — MoE (3B active)", Size: "~61 GB"},
+	{Name: "NVIDIA-Nemotron-3.5-Lightning-30B-A3B-BF16", Repo: "nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-BF16", Description: "NVIDIA Nemotron 3.5 Lightning 30B-A3B — MoE reasoning", Size: "~63 GB"},
+	{Name: "gemma-4-31B-it", Repo: "google/gemma-4-31B-it", Description: "Google Gemma 4 31B instruct — multimodal flagship", Size: "~62 GB"},
+	{Name: "Qwen3.6-35B-A3B", Repo: "Qwen/Qwen3.6-35B-A3B", Description: "Qwen3.6 35B-A3B — MoE flagship", Size: "~72 GB"},
+	// Frontier MoE
+	{Name: "gpt-oss-120b", Repo: "openai/gpt-oss-120b", Description: "OpenAI gpt-oss 120B — frontier MoE, reasoning (MXFP4)", Size: "~63 GB"},
+	{Name: "DeepSeek-V4-Flash", Repo: "deepseek-ai/DeepSeek-V4-Flash", Description: "DeepSeek-V4-Flash — 291B MoE flagship (very large)", Size: "~582 GB"},
 }
 
 // CuratedModels returns the curated available-models list for goos: the MLX set on
