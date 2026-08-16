@@ -23,6 +23,7 @@ package vllm
 
 import (
 	"fmt"
+	"net"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -47,8 +48,11 @@ const (
 	DefaultMaxServers = 2
 
 	// DefaultStartTimeout bounds how long EnsureServed waits for a freshly-started
-	// server to answer its health probe before giving up.
-	DefaultStartTimeout = 90 * time.Second
+	// server to answer its health probe before giving up. It must be generous: a large
+	// MLX/safetensors model (e.g. a 31B, ~18 GB at 4-bit) can take several MINUTES to
+	// load into (unified) memory and initialize before it serves — 90s wrongly reported
+	// such a model as "failed to install" while it was still warming up.
+	DefaultStartTimeout = 15 * time.Minute
 
 	// DefaultPollInterval is the gap between health probes while waiting for start.
 	DefaultPollInterval = time.Second
@@ -95,6 +99,19 @@ type Runner interface {
 // (GET http://127.0.0.1:<port>/v1/models → 200). The real probe is a short-timeout
 // HTTP GET (see RealHealthProbe); tests inject a fake.
 type HealthProbe func(port int) bool
+
+// portInUse reports whether ANYTHING is listening on the loopback port — used to tell a
+// prior `vllm serve` that is bound but NOT yet health-serving (still loading weights)
+// apart from a free port, so EnsureServed waits on it instead of starting a duplicate
+// that would fail with EADDRINUSE. Injectable seam so tests never touch a real socket.
+var portInUse = func(port int) bool {
+	conn, err := net.DialTimeout("tcp", fmt.Sprintf("127.0.0.1:%d", port), 500*time.Millisecond)
+	if err != nil {
+		return false
+	}
+	_ = conn.Close()
+	return true
+}
 
 // ServerStatus is a read-only snapshot of one running server, returned by Running.
 type ServerStatus struct {
@@ -294,6 +311,7 @@ func (manager *Manager) EnsureServed(alias, model string) (int, string, error) {
 
 	manager.mu.Lock()
 
+	restarting := false
 	if existing := manager.servers[alias]; existing != nil {
 		if manager.probe(existing.port) {
 			existing.lastUsed = manager.now()
@@ -302,10 +320,13 @@ func (manager *Manager) EnsureServed(alias, model string) (int, string, error) {
 			return port, Endpoint(port), nil
 		}
 		// Registered but unhealthy: reap it, then fall through to a fresh start
-		// (lazy auto-restart on next use).
+		// (lazy auto-restart on next use). restarting suppresses the cross-invocation
+		// adopt/wait below — we just killed this process, so its port is (becoming) free
+		// and we must Start a new one, not adopt/wait on the dying one.
 		manager.logf("vllm: server %q on port %d is unhealthy; restarting", alias, existing.port)
 		_ = manager.runner.Stop(existing.handle)
 		manager.remove(existing)
+		restarting = true
 	}
 
 	// A concurrent EnsureServed for the SAME alias must not start a duplicate process
@@ -322,10 +343,31 @@ func (manager *Manager) EnsureServed(alias, model string) (int, string, error) {
 	// Stop()/other-alias EnsureServed() are not blocked for up to StartTimeout. A healthy
 	// LRU server is evicted ONLY AFTER the new one is confirmed healthy (below), so a
 	// start that fails or never becomes healthy never costs a working model.
-	handle, startErr := manager.runner.Start(alias, model, port, storeDir)
-	var healthErr error
-	if startErr == nil {
-		healthErr = manager.waitHealthy(port)
+	//
+	// DAEMONLESS REUSE: `ai` is a short-lived CLI, so this Manager has NO in-memory
+	// handle to a `vllm serve` started by a PRIOR invocation — it only knows the reserved
+	// port (seeded from config/model-runtimes.yaml). If that port is already occupied by
+	// a prior process, do NOT start a second server on it (that crashes with EADDRINUSE
+	// and is misreported as an install failure): ADOPT it when it is already healthy, or
+	// WAIT for it when it is still loading a large model. Only start fresh when the port
+	// is genuinely free (or we just reaped a dead server — restarting).
+	var handle ServerHandle
+	var startErr, healthErr error
+	switch {
+	case !restarting && portInUse(port):
+		if manager.probe(port) {
+			// Already healthy from a prior invocation — adopt it (zero handle:
+			// RealRunner.Stop no-ops on PID<=0, and `ai models rm` stops it by port).
+			manager.logf("vllm: adopting the already-running %q server on port %d", alias, port)
+		} else {
+			manager.logf("vllm: port %d is in use; waiting for the existing %q server to finish loading", port, alias)
+			healthErr = manager.waitHealthy(port)
+		}
+	default:
+		handle, startErr = manager.runner.Start(alias, model, port, storeDir)
+		if startErr == nil {
+			healthErr = manager.waitHealthy(port)
+		}
 	}
 
 	manager.mu.Lock()

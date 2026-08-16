@@ -17,6 +17,17 @@ type stepClock struct{ n int64 }
 func (clock *stepClock) now() time.Time        { clock.n++; return time.Unix(0, clock.n*int64(time.Second)) }
 func (clock *stepClock) sleep(d time.Duration) { clock.n += int64(d / time.Second) }
 
+// TestMain stubs the portInUse seam to false for the whole package so no test dials a
+// real socket (a developer may have a live `vllm serve` on the default port). Tests that
+// exercise the adopt/wait path override portInUse themselves and restore it.
+func TestMain(m *testing.M) {
+	original := portInUse
+	portInUse = func(int) bool { return false }
+	code := m.Run()
+	portInUse = original
+	os.Exit(code)
+}
+
 // alwaysHealthy is a probe that reports every port healthy.
 func alwaysHealthy(int) bool { return true }
 
@@ -260,6 +271,40 @@ func TestDeadServerRestarts(t *testing.T) {
 	if runner.StartCount() != 1 {
 		t.Fatalf("restart not started (StartCount=%d)", runner.StartCount())
 	}
+}
+
+// A prior invocation's server already owns the reserved port: EnsureServed must ADOPT
+// it (no new process) when it is healthy, and WAIT on it (no new process) when it is
+// still loading — never start a duplicate that would hit EADDRINUSE.
+func TestEnsureServedAdoptsPortInUse(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	original := portInUse
+	portInUse = func(int) bool { return true } // a prior process holds the port
+	t.Cleanup(func() { portInUse = original })
+
+	// Healthy prior server → adopt, do not start.
+	adopt, runner, _ := newTestManager(Config{BasePort: 8101})
+	if _, endpoint, err := adopt.EnsureServed("a", "m-a"); err != nil || endpoint != "http://127.0.0.1:8101/v1" {
+		t.Fatalf("adopt EnsureServed = %q, %v", endpoint, err)
+	}
+	if runner.StartCount() != 0 {
+		t.Fatalf("must NOT start a duplicate when the port is in use + healthy (StartCount=%d)", runner.StartCount())
+	}
+
+	// Occupied but not yet healthy (loading), then becomes healthy → wait, do not start.
+	calls := 0
+	clock := &stepClock{}
+	waiting := NewManager(Config{
+		Runner:   &FakeRunner{},
+		Probe:    func(int) bool { calls++; return calls > 2 }, // unhealthy at first, then healthy
+		Now:      clock.now,
+		Sleep:    clock.sleep,
+		BasePort: 8101,
+	})
+	if _, _, err := waiting.EnsureServed("b", "m-b"); err != nil {
+		t.Fatalf("wait EnsureServed: %v", err)
+	}
+	// FakeRunner in `waiting` was never asked to start (it waited on the existing server).
 }
 
 func TestEnsureServedStartError(t *testing.T) {
