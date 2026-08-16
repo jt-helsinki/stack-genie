@@ -112,11 +112,14 @@ type CuratedModel struct {
 // HF Hub search. curatedSafetensors (Linux/CUDA) carries the FULL user-specified roster
 // (every model that resolves to a real HF repo); curatedMLX (darwin) is a SUBSET — only
 // the roster models small enough to run on a Mac that ALSO ship an mlx-community/* build.
-// Big frontier flagships (DeepSeek V4/V3.2/R1, Kimi K3/K2.x, GLM 5.x, Llama 4 Maverick,
-// MiniMax M3/M2.x, Mistral Small 4 / Large 3, Step-3.x-Flash, Nemotron 3 Ultra/Super) are
-// Linux-only — too large for Apple Silicon — so they are OMITTED from curatedMLX even
-// where a low-bit MLX build technically exists. macOS surfaces only the MLX list, Linux
-// only the safetensors list (see CuratedModels). To extend: add the GPU repo to
+// The big frontier flagships are now ALSO carried on the MLX list wherever an
+// mlx-community/* build actually exists — they run on high-RAM Apple Silicon (M-series
+// Ultra/Max, 64–512 GB unified memory), so a low-bit MLX build IS surfaced on macOS even
+// for the trillion-param MoEs; each such entry notes the RAM reality in its Description.
+// The only roster models with NO mlx-community build stay Linux-only: Mistral Large 3 (no
+// MLX repo at all) and Kimi K3 (only a REAP-expert-pruned 2-bit build exists, not a
+// faithful full-model quant). macOS surfaces only the MLX list, Linux only the
+// safetensors list (see CuratedModels). To extend: add the GPU repo to
 // curatedSafetensors and, only if the model is Mac-sized AND has an mlx-community/* build,
 // its MLX repo to curatedMLX; verify each repo id resolves on https://huggingface.co (do
 // NOT invent ids), note GATED repos in the Description ("gated — run `ai models login`"),
@@ -130,22 +133,49 @@ type CuratedModel struct {
 // Every repo id below was verified to return HTTP 200 from GET /api/models/<repo>; the
 // GATED repos (Llama 4 Scout/Maverick, Gemma 3) are marked in the Description.
 
-// curatedMLX is the Apple-Silicon (darwin) curated set: mlx-community/* 4-bit builds of
-// the Mac-sized roster models, served on the Metal GPU via the vLLM-Metal plugin. It is a
-// SUBSET of the roster — the frontier flagships are Linux-only (see curatedSafetensors).
+// curatedMLX is the Apple-Silicon (darwin) curated set: mlx-community/* builds (4-bit
+// preferred; a lower/mixed bit-width where that vendor ships no clean 4-bit) served on the
+// Metal GPU via the vLLM-Metal plugin. It now spans the FULL roster wherever an
+// mlx-community build exists — including the trillion-param flagships, which need high-RAM
+// Apple Silicon (each big entry notes the RAM reality). Only Mistral Large 3 (no MLX repo)
+// and Kimi K3 (only a REAP-pruned 2-bit build) stay Linux-only (see curatedSafetensors).
+// Vendor order mirrors curatedSafetensors.
 var curatedMLX = []CuratedModel{
+	// DeepSeek
+	{Name: "DeepSeek-V4-Pro-4bit", Repo: "mlx-community/DeepSeek-V4-Pro-4bit", Description: "DeepSeek V4 Pro, 4-bit — MoE flagship — extreme size, exceeds a single Mac's unified memory (>512 GB)", Size: "~837 GB"},
+	{Name: "DeepSeek-V3.2-4bit", Repo: "mlx-community/DeepSeek-V3.2-4bit", Description: "DeepSeek V3.2, 4-bit — MoE — very large, needs 512 GB Apple Silicon", Size: "~378 GB"},
+	{Name: "DeepSeek-R1-3bit", Repo: "mlx-community/DeepSeek-R1-3bit", Description: "DeepSeek R1, 3-bit — MoE reasoning (only full-R1 MLX quant) — very large, needs 512 GB Apple Silicon", Size: "~336 GB"},
 	// Meta
 	{Name: "Muse-Glimmer-30B-4bit", Repo: "mlx-community/Muse-Glimmer-30B-4bit", Description: "Meta Muse Glimmer 30B, 4-bit — general", Size: "~17 GB"},
 	{Name: "Llama-4-Scout-17B-16E-Instruct-4bit", Repo: "mlx-community/Llama-4-Scout-17B-16E-Instruct-4bit", Description: "Meta Llama 4 Scout 17Bx16E, 4-bit — MoE multimodal (large)", Size: "~60 GB"},
+	{Name: "Llama-4-Maverick-17B-128E-Instruct-4bit", Repo: "mlx-community/Llama-4-Maverick-17B-128E-Instruct-4bit", Description: "Meta Llama 4 Maverick 17Bx128E, 4-bit — MoE multimodal — very large, needs high-RAM Apple Silicon (256 GB+)", Size: "~226 GB"},
 	// Google
 	{Name: "gemma-4-31B-it-4bit", Repo: "mlx-community/gemma-4-31b-it-4bit", Description: "Google Gemma 4 31B instruct, 4-bit — multimodal flagship", Size: "~17 GB"},
 	{Name: "gemma-3-27b-it-4bit", Repo: "mlx-community/gemma-3-27b-it-4bit", Description: "Google Gemma 3 27B instruct, 4-bit — multimodal", Size: "~15 GB"},
+	// MiniMax
+	{Name: "MiniMax-M3-4bit", Repo: "mlx-community/MiniMax-M3-4bit", Description: "MiniMax M3, 4-bit — MoE flagship — very large, needs high-RAM Apple Silicon (256 GB+)", Size: "~241 GB"},
+	{Name: "MiniMax-M2.7-4bit", Repo: "mlx-community/MiniMax-M2.7-4bit", Description: "MiniMax M2.7, 4-bit — MoE — large, needs high-RAM Apple Silicon (192 GB+)", Size: "~129 GB"},
+	{Name: "MiniMax-M2.5-4bit", Repo: "mlx-community/MiniMax-M2.5-4bit", Description: "MiniMax M2.5, 4-bit — MoE — large, needs high-RAM Apple Silicon (192 GB+)", Size: "~129 GB"},
+	// Mistral AI
+	{Name: "Mistral-Small-4-119B-2603-4bit", Repo: "mlx-community/Mistral-Small-4-119B-2603-4bit", Description: "Mistral Small 4 119B, 4-bit — MoE — large, needs high-RAM Apple Silicon (192 GB+)", Size: "~136 GB"},
+	// MoonshotAI
+	{Name: "Kimi-K2.6-mxfp8", Repo: "mlx-community/Kimi-K2.6-mxfp8", Description: "Moonshot Kimi K2.6, mxfp8 8-bit (no clean 4-bit build) — extreme size, exceeds a single Mac's unified memory (>512 GB)", Size: "~1 TB"},
+	{Name: "Kimi-K2.5-3bit", Repo: "mlx-community/Kimi-K2.5-3bit", Description: "Moonshot Kimi K2.5, 3-bit (smallest clean quant) — very large, needs 512 GB Apple Silicon", Size: "~449 GB"},
 	// NVIDIA
+	{Name: "Nemotron-3-Ultra-550B-A55B-4bit", Repo: "mlx-community/Nemotron-3-Ultra-550B-A55B-4bit", Description: "NVIDIA Nemotron 3 Ultra 550B-A55B, 4-bit — MoE — very large, needs 512 GB Apple Silicon", Size: "~347 GB"},
+	{Name: "NVIDIA-Nemotron-3-Super-120B-A12B-4bit", Repo: "mlx-community/NVIDIA-Nemotron-3-Super-120B-A12B-4bit", Description: "NVIDIA Nemotron 3 Super 120B-A12B, 4-bit — MoE — needs high-RAM Apple Silicon (128 GB+)", Size: "~68 GB"},
 	{Name: "Nemotron-3-Nano-30B-A3B-4bit", Repo: "mlx-community/NVIDIA-Nemotron-3-Nano-30B-A3B-4bit", Description: "NVIDIA Nemotron 3 Nano 30B-A3B, 4-bit — MoE reasoning", Size: "~17 GB"},
 	// Qwen
 	{Name: "Qwen3.8-27B-4bit", Repo: "mlx-community/Qwen3.8-27B-4bit", Description: "Qwen3.8 27B, 4-bit — flagship dense", Size: "~15 GB"},
 	{Name: "Qwen3.6-27B-4bit", Repo: "mlx-community/Qwen3.6-27B-4bit", Description: "Qwen3.6 27B, 4-bit — dense general", Size: "~15 GB"},
 	{Name: "Qwen3.5-27B-4bit", Repo: "mlx-community/Qwen3.5-27B-4bit", Description: "Qwen3.5 27B, 4-bit — dense general", Size: "~15 GB"},
+	// StepFun
+	{Name: "Step-3.7-Flash-4bit", Repo: "mlx-community/Step-3.7-Flash-4bit", Description: "StepFun Step-3.7-Flash, 4-bit — MoE — large, needs high-RAM Apple Silicon (128 GB+)", Size: "~111 GB"},
+	{Name: "Step-3.5-Flash-4bit", Repo: "mlx-community/Step-3.5-Flash-4bit", Description: "StepFun Step-3.5-Flash, 4-bit — MoE — very large, needs high-RAM Apple Silicon (256 GB+)", Size: "~222 GB"},
+	// Z-AI
+	{Name: "GLM-5.2-4bit", Repo: "mlx-community/GLM-5.2-4bit", Description: "Z-AI GLM 5.2, 4-bit — MoE flagship — very large, needs 512 GB Apple Silicon", Size: "~418 GB"},
+	{Name: "GLM-5.1-MXFP4-Q8", Repo: "mlx-community/GLM-5.1-MXFP4-Q8", Description: "Z-AI GLM 5.1, mxfp4/q8 mixed ~4-bit (no clean 4-bit build) — very large, needs 512 GB Apple Silicon", Size: "~406 GB"},
+	{Name: "GLM-5-4bit", Repo: "mlx-community/GLM-5-4bit", Description: "Z-AI GLM 5, 4-bit — MoE — very large, needs 512 GB Apple Silicon", Size: "~419 GB"},
 	// JetBrains
 	{Name: "Mellum2-12B-A2.5B-Instruct-4bit", Repo: "mlx-community/Mellum2-12B-A2.5B-Instruct-4bit", Description: "JetBrains Mellum2 12B-A2.5B, 4-bit — MoE code model", Size: "~7 GB"},
 }
