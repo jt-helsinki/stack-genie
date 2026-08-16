@@ -17,6 +17,7 @@
 package hf
 
 import (
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -228,7 +229,7 @@ type CachedModel struct {
 type Client interface {
 	// Download fetches a repo's weights into the vLLM store (`hf download <repo>` with
 	// HF_HOME set). progress receives raw output lines (best-effort — nil is tolerated).
-	Download(repo string, progress func(line string)) error
+	Download(repo string, progressOut io.Writer) error
 	// CacheList returns the locally-downloaded repos (`hf cache ls`).
 	CacheList() ([]CachedModel, error)
 	// CacheRemove deletes a repo from the local cache (`hf cache rm <repo>`).

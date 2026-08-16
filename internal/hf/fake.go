@@ -1,8 +1,10 @@
 package hf
 
+import "io"
+
 // Fake is an in-memory Client for tests. Set the *Err / result fields to control
-// behaviour; the zero value returns empty/nil. Download replays DownloadLines through
-// the callback before returning DownloadErr.
+// behaviour; the zero value returns empty/nil. Download writes DownloadLines to the
+// progress writer before returning DownloadErr.
 type Fake struct {
 	Cached      []CachedModel
 	CacheErr    error
@@ -25,12 +27,12 @@ type Fake struct {
 	LogoutCalls int    // number of times Logout was called
 }
 
-func (fake *Fake) Download(repo string, progress func(line string)) error {
+func (fake *Fake) Download(repo string, progressOut io.Writer) error {
 	fake.DownloadedRepo = repo
 	fake.DownloadedAll = append(fake.DownloadedAll, repo)
-	if progress != nil {
+	if progressOut != nil {
 		for _, line := range fake.DownloadLines {
-			progress(line)
+			_, _ = io.WriteString(progressOut, line+"\n")
 		}
 	}
 	if fake.DownloadErrs != nil {

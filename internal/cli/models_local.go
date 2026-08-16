@@ -2,6 +2,7 @@ package cli
 
 import (
 	"errors"
+	"fmt"
 	"io"
 	goruntime "runtime"
 	"strings"
@@ -147,13 +148,12 @@ func pullVLLM(emitter *output.Emitter, names []string, alias string) int {
 			result.Pulled = append(result.Pulled, outcome)
 			continue
 		}
-		downloadFn := func() error { return store.Download(model, func(string) {}) }
-		var downloadErr error
-		if ui.Enabled(emitter) {
-			downloadErr = ui.RunWithSpinner(emitter.Err, "downloading "+model+" (this can take a while)", downloadFn)
-		} else {
-			downloadErr = downloadFn()
-		}
+		// Stream `hf download`'s LIVE progress bars to stderr (not a silent spinner and
+		// not discarded) so the user sees download progress; stdout stays clean for the
+		// --json envelope. In the TUI this runs in the embedded terminal overlay (a PTY),
+		// so hf renders its native in-place progress bars there too.
+		_, _ = fmt.Fprintln(emitter.Err, "Downloading "+model+" …")
+		downloadErr := store.Download(model, emitter.Err)
 		if downloadErr != nil {
 			outcome.Error = downloadErr.Error()
 			failures++

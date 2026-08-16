@@ -3,6 +3,7 @@ package hf
 import (
 	"errors"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -130,20 +131,43 @@ func TestIsEmptyCacheStderr(t *testing.T) {
 	}
 }
 
+// `hf cache ls`/`rm` use a repo-TYPE-prefixed entry id ("model/<org>/<name>"), but the
+// rest of the platform uses the bare repo id. CacheList strips the prefix (so installed
+// rows match the curated list + vLLM alias) and CacheRemove re-adds it (so `hf cache rm`
+// gets the entry-id form it requires — the bare form aborts at the confirm prompt).
+func TestCacheRepoTypeRoundTrip(t *testing.T) {
+	cases := map[string]string{
+		"model/mlx-community/gemma-4-31b-it-4bit": "mlx-community/gemma-4-31b-it-4bit",
+		"dataset/foo/bar":                         "foo/bar",
+		"mlx-community/no-prefix":                 "mlx-community/no-prefix",
+	}
+	for entry, wantBare := range cases {
+		if got := stripCacheRepoType(entry); got != wantBare {
+			t.Errorf("stripCacheRepoType(%q) = %q, want %q", entry, got, wantBare)
+		}
+	}
+	if got := cacheEntryID("mlx-community/gemma-4-31b-it-4bit"); got != "model/mlx-community/gemma-4-31b-it-4bit" {
+		t.Errorf("cacheEntryID bare = %q, want the model/ entry form", got)
+	}
+	if got := cacheEntryID("model/foo/bar"); got != "model/foo/bar" {
+		t.Errorf("cacheEntryID already-prefixed = %q, want unchanged", got)
+	}
+}
+
 func TestFakeRecordsCalls(t *testing.T) {
 	fake := &Fake{
 		Cached:        []CachedModel{{Repo: "mlx-community/Qwen2.5-7B-Instruct-4bit"}},
 		DownloadLines: []string{"Fetching 1 files", "done"},
 	}
-	var lines []string
-	if err := fake.Download("a/b", func(line string) { lines = append(lines, line) }); err != nil {
+	var progress strings.Builder
+	if err := fake.Download("a/b", &progress); err != nil {
 		t.Fatalf("Download: %v", err)
 	}
 	if fake.DownloadedRepo != "a/b" || len(fake.DownloadedAll) != 1 {
 		t.Fatalf("Download not recorded: %+v", fake)
 	}
-	if len(lines) != 2 {
-		t.Fatalf("progress lines = %v, want 2", lines)
+	if !strings.Contains(progress.String(), "Fetching 1 files") || !strings.Contains(progress.String(), "done") {
+		t.Fatalf("progress output = %q, want the download lines", progress.String())
 	}
 	cached, err := fake.CacheList()
 	if err != nil || len(cached) != 1 {

@@ -10,6 +10,7 @@ package create
 import (
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"slices"
 	"strings"
@@ -302,7 +303,7 @@ func pullGraphifyModelIfAbsent(repo string, report func(Progress)) []string {
 	if err := vllmPullFn(repo); err != nil {
 		return []string{fmt.Sprintf("could not prepare Graphify model %q: %s — pull it later with `ai models pull %s`", repo, err, repo)}
 	}
-	if err := hfClient().Download(repo, func(string) {}); err != nil {
+	if err := hfClient().Download(repo, io.Discard); err != nil {
 		return []string{fmt.Sprintf("could not download Graphify model %q: %s — pull it later with `ai models pull %s`", repo, err, repo)}
 	}
 	port, _, err := vllmManagerFactory().EnsureServed(alias, repo)

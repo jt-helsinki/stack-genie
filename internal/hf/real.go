@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"strings"
@@ -34,7 +35,14 @@ func hfCommand(args ...string) (*exec.Cmd, error) {
 
 // Download runs `hf download <repo>` into the vLLM store, streaming stdout+stderr
 // lines to progress (best-effort). A non-zero exit is surfaced as an error.
-func (realClient) Download(repo string, progress func(line string)) error {
+// Download runs `hf download <repo>` and streams the CLI's LIVE output (its tqdm
+// progress bars) straight to progressOut so the caller can show download progress. The
+// bars update in place with carriage returns (`\r`), NOT newlines, so we do NOT
+// line-scan them (that would surface nothing until completion) — stdout+stderr are wired
+// directly to progressOut verbatim, and when progressOut is a terminal/PTY hf renders its
+// native progress bars in place. A nil progressOut discards the output. HF_HOME is set by
+// hfCommand so weights land in the vLLM store.
+func (realClient) Download(repo string, progressOut io.Writer) error {
 	repo = strings.TrimSpace(repo)
 	if repo == "" {
 		return fmt.Errorf("hf: download requires a non-empty repo id")
@@ -43,23 +51,13 @@ func (realClient) Download(repo string, progress func(line string)) error {
 	if err != nil {
 		return err
 	}
-	pipe, err := command.StdoutPipe()
-	if err != nil {
-		return err
+	if progressOut == nil {
+		progressOut = io.Discard
 	}
-	command.Stderr = command.Stdout
-	if startErr := command.Start(); startErr != nil {
-		return fmt.Errorf("hf: start download %q: %w", repo, startErr)
-	}
-	scanner := bufio.NewScanner(pipe)
-	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
-	for scanner.Scan() {
-		if progress != nil {
-			progress(scanner.Text())
-		}
-	}
-	if waitErr := command.Wait(); waitErr != nil {
-		return fmt.Errorf("hf: download %q: %w", repo, waitErr)
+	command.Stdout = progressOut
+	command.Stderr = progressOut
+	if runErr := command.Run(); runErr != nil {
+		return fmt.Errorf("hf: download %q: %w", repo, runErr)
 	}
 	return nil
 }
@@ -96,9 +94,38 @@ func (realClient) CacheList() ([]CachedModel, error) {
 		if repo == "" {
 			continue
 		}
-		models = append(models, CachedModel{Repo: repo})
+		// `hf cache ls -q` prints entries with a repo-TYPE prefix (e.g.
+		// "model/mlx-community/Foo"). Strip it so Repo is the canonical bare id
+		// ("mlx-community/Foo") that matches the curated list, the vLLM alias, and pull.
+		models = append(models, CachedModel{Repo: stripCacheRepoType(repo)})
 	}
 	return models, nil
+}
+
+// cacheRepoTypes are the repo-TYPE prefixes `hf cache ls`/`rm` use on an entry id.
+var cacheRepoTypes = []string{"model/", "dataset/", "space/"}
+
+// stripCacheRepoType removes a leading repo-type prefix ("model/"/"dataset/"/"space/")
+// from an `hf cache` entry id, yielding the bare "<org>/<name>" repo id.
+func stripCacheRepoType(entry string) string {
+	for _, prefix := range cacheRepoTypes {
+		if trimmed, ok := strings.CutPrefix(entry, prefix); ok {
+			return trimmed
+		}
+	}
+	return entry
+}
+
+// cacheEntryID renders a bare repo id ("<org>/<name>") back into the `hf cache rm`
+// entry-id form, which REQUIRES a repo-type prefix ("model/<org>/<name>"). A value that
+// already carries a repo-type prefix is passed through unchanged.
+func cacheEntryID(repo string) string {
+	for _, prefix := range cacheRepoTypes {
+		if strings.HasPrefix(repo, prefix) {
+			return repo
+		}
+	}
+	return "model/" + repo
 }
 
 // Login runs `hf auth login --token <token>` so subsequent downloads can reach gated
@@ -162,12 +189,16 @@ func (realClient) CacheRemove(repo string) error {
 	if repo == "" {
 		return fmt.Errorf("hf: cache rm requires a non-empty repo id")
 	}
-	command, err := hfCommand("cache", "rm", repo)
+	// `hf cache rm` requires the repo-TYPE-prefixed entry id ("model/<org>/<name>"), not
+	// the bare repo id — passing the bare form fails, which is why deletes silently did
+	// nothing. Normalize to the entry-id form.
+	entry := cacheEntryID(repo)
+	command, err := hfCommand("cache", "rm", entry, "--yes")
 	if err != nil {
 		return err
 	}
 	if out, runErr := command.CombinedOutput(); runErr != nil {
-		return fmt.Errorf("hf: cache rm %q: %w: %s", repo, runErr, strings.TrimSpace(string(out)))
+		return fmt.Errorf("hf: cache rm %q: %w: %s", entry, runErr, strings.TrimSpace(string(out)))
 	}
 	return nil
 }
