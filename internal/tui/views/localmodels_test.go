@@ -45,6 +45,7 @@ func buildLocal(test *testing.T, installed []hf.CachedModel, curated []hf.Curate
 	view := NewLocalModels(
 		func() ([]hf.CachedModel, error) { return installed, nil },
 		func() []hf.CuratedModel { return curated },
+		func() []hf.CuratedModel { return curated }, // refresh provider: default to the same list
 		noTest,
 		func() (string, error) { return "", nil },
 	)
@@ -126,6 +127,7 @@ func TestLocalModelsTestHandle(test *testing.T) {
 			return []hf.CachedModel{{Repo: "mlx-community/Qwen2.5-7B-Instruct-4bit"}}, nil
 		},
 		func() []hf.CuratedModel { return nil },
+		func() []hf.CuratedModel { return nil },
 		func(model string) (litellm.TestResult, error) {
 			tested = model
 			return litellm.TestResult{Model: model, OK: true}, nil
@@ -183,6 +185,7 @@ func TestLocalModelsWhoamiLine(test *testing.T) {
 	loggedIn := NewLocalModels(
 		func() ([]hf.CachedModel, error) { return nil, nil },
 		func() []hf.CuratedModel { return nil },
+		func() []hf.CuratedModel { return nil },
 		noTest,
 		func() (string, error) { return "alice", nil },
 	)
@@ -195,6 +198,7 @@ func TestLocalModelsWhoamiLine(test *testing.T) {
 	loggedOut := NewLocalModels(
 		func() ([]hf.CachedModel, error) { return nil, nil },
 		func() []hf.CuratedModel { return nil },
+		func() []hf.CuratedModel { return nil },
 		noTest,
 		func() (string, error) { return "", errors.New("Not logged in") },
 	)
@@ -202,6 +206,50 @@ func TestLocalModelsWhoamiLine(test *testing.T) {
 	drive(loggedOut, loggedOut.Init())
 	if got := loggedOut.View(); !strings.Contains(got, "not logged in") {
 		test.Fatalf("logged-out view missing fallback, got:\n%s", got)
+	}
+}
+
+// The r key fetches the live curated list off the UI thread and rebuilds the
+// Available section from it.
+func TestLocalModelsRefreshKeyFetchesLiveCurated(test *testing.T) {
+	view := NewLocalModels(
+		func() ([]hf.CachedModel, error) { return nil, nil },
+		func() []hf.CuratedModel {
+			return []hf.CuratedModel{{Name: "Old", Repo: "mlx-community/Old-4bit", Description: "cached"}}
+		},
+		func() []hf.CuratedModel {
+			return []hf.CuratedModel{{Name: "Fresh", Repo: "mlx-community/Fresh-4bit", Description: "live"}}
+		},
+		noTest,
+		func() (string, error) { return "", nil },
+	)
+	view.SetSize(120, 40)
+	drive(view, view.Init())
+	if got := view.View(); !strings.Contains(got, "mlx-community/Old-4bit") {
+		test.Fatalf("pre-refresh view missing the cached repo:\n%s", got)
+	}
+	drive(view, view.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("r")}))
+	if got := view.View(); !strings.Contains(got, "mlx-community/Fresh-4bit") {
+		test.Fatalf("post-refresh view missing the live repo:\n%s", got)
+	}
+}
+
+// A refresh whose live fetch fails (empty result) keeps the current list.
+func TestLocalModelsRefreshFailureKeepsList(test *testing.T) {
+	view := NewLocalModels(
+		func() ([]hf.CachedModel, error) { return nil, nil },
+		func() []hf.CuratedModel {
+			return []hf.CuratedModel{{Name: "Old", Repo: "mlx-community/Old-4bit", Description: "cached"}}
+		},
+		func() []hf.CuratedModel { return nil }, // live fetch failed
+		noTest,
+		func() (string, error) { return "", nil },
+	)
+	view.SetSize(120, 40)
+	drive(view, view.Init())
+	drive(view, view.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("r")}))
+	if got := view.View(); !strings.Contains(got, "mlx-community/Old-4bit") {
+		test.Fatalf("a failed refresh should keep the current list:\n%s", got)
 	}
 }
 

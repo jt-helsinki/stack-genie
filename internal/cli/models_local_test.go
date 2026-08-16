@@ -1,6 +1,8 @@
 package cli
 
 import (
+	"bytes"
+	"encoding/json"
 	"errors"
 	"io"
 	goruntime "runtime"
@@ -231,6 +233,99 @@ func TestModelsPopularHuman(test *testing.T) {
 		if !strings.Contains(human, want) {
 			test.Fatalf("Human() missing %q:\n%s", want, human)
 		}
+	}
+}
+
+// withCuratedProvider swaps the curated-list seam so `ai models popular` tests run
+// with a fake (no network), restoring it afterward.
+func withCuratedProvider(test *testing.T, fn func(string, bool) ([]hf.CuratedModel, hf.Source, error)) {
+	test.Helper()
+	prev := curatedModelsProvider
+	curatedModelsProvider = fn
+	test.Cleanup(func() { curatedModelsProvider = prev })
+}
+
+// runPopular runs `ai models popular` with the given args over a JSON emitter and
+// decodes the envelope's data payload.
+func runPopular(test *testing.T, args ...string) (int, modelsPopularResult) {
+	test.Helper()
+	var out bytes.Buffer
+	emitter := &output.Emitter{Out: &out, Err: io.Discard, JSON: true}
+	exit := output.ExitOK
+	cmd := newModelsPopularCmd(emitter, &exit)
+	cmd.SetOut(io.Discard)
+	cmd.SetErr(io.Discard)
+	runLocalModelsCmd(test, cmd, args...)
+	var envelope struct {
+		Data modelsPopularResult `json:"data"`
+	}
+	if err := json.Unmarshal(out.Bytes(), &envelope); err != nil {
+		test.Fatalf("decode envelope: %v\n%s", err, out.String())
+	}
+	return exit, envelope.Data
+}
+
+// --refresh with a live fetch reports source=live and the fetched models.
+func TestModelsPopularRefreshLive(test *testing.T) {
+	withCuratedProvider(test, func(_ string, refresh bool) ([]hf.CuratedModel, hf.Source, error) {
+		if !refresh {
+			test.Fatalf("--refresh must request a live fetch")
+		}
+		return []hf.CuratedModel{{Name: "Qwen3-8B-4bit", Repo: "mlx-community/Qwen3-8B-4bit", Description: "hot"}}, hf.SourceFresh, nil
+	})
+	exit, data := runPopular(test, "--refresh")
+	if exit != output.ExitOK {
+		test.Fatalf("exit = %d, want 0", exit)
+	}
+	if data.Source != "live" {
+		test.Fatalf("source = %q, want live", data.Source)
+	}
+	if len(data.Models) != 1 || data.Models[0].Repo != "mlx-community/Qwen3-8B-4bit" {
+		test.Fatalf("models = %+v, want the fetched repo", data.Models)
+	}
+	if !strings.Contains(data.Note, "live") {
+		test.Fatalf("note = %q, want a live-source note", data.Note)
+	}
+}
+
+// --refresh whose live fetch failed (the seam degraded to built-in) still exits 0
+// and notes the fallback.
+func TestModelsPopularRefreshFailureFallsBack(test *testing.T) {
+	withCuratedProvider(test, func(goos string, _ bool) ([]hf.CuratedModel, hf.Source, error) {
+		return hf.CuratedModels(goos), hf.SourceBuiltin, nil
+	})
+	exit, data := runPopular(test, "--refresh")
+	if exit != output.ExitOK {
+		test.Fatalf("exit = %d, want 0", exit)
+	}
+	if data.Source != "built-in" {
+		test.Fatalf("source = %q, want built-in", data.Source)
+	}
+	if len(data.Models) == 0 {
+		test.Fatal("expected the built-in fallback list, got none")
+	}
+	if !strings.Contains(data.Note, "could not reach") {
+		test.Fatalf("note = %q, want a fallback warning", data.Note)
+	}
+}
+
+// Plain `ai models popular` reads cache-or-builtin without requesting a live fetch.
+func TestModelsPopularPlainNoRefresh(test *testing.T) {
+	withCuratedProvider(test, func(goos string, refresh bool) ([]hf.CuratedModel, hf.Source, error) {
+		if refresh {
+			test.Fatalf("plain popular must not request a live refresh")
+		}
+		return hf.CuratedModels(goos), hf.SourceBuiltin, nil
+	})
+	exit, data := runPopular(test)
+	if exit != output.ExitOK {
+		test.Fatalf("exit = %d, want 0", exit)
+	}
+	if data.Source != "built-in" {
+		test.Fatalf("source = %q, want built-in", data.Source)
+	}
+	if len(data.Models) == 0 {
+		test.Fatal("expected a non-empty built-in list")
 	}
 }
 

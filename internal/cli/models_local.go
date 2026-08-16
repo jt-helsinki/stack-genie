@@ -364,6 +364,10 @@ type popularModelEntry struct {
 // modelsPopularResult is the `ai models popular` payload.
 type modelsPopularResult struct {
 	Models []popularModelEntry `json:"models"`
+	// Source is where the list came from: "live", "cached", or "built-in".
+	Source string `json:"source"`
+	// Note is a one-line freshness/fallback message for the Human renderer.
+	Note string `json:"note,omitempty"`
 }
 
 // Human renders the curated list as a REPO / SIZE / DESCRIPTION table.
@@ -372,6 +376,9 @@ func (result modelsPopularResult) Human() string {
 		return ui.Muted.Render("no curated models available")
 	}
 	var builder strings.Builder
+	if result.Note != "" {
+		builder.WriteString(ui.Muted.Render(result.Note) + "\n\n")
+	}
 	builder.WriteString(ui.Label.Render(padRight("REPO", 46)) + "  " +
 		ui.Label.Render(padRight("SIZE", 9)) + "  " + ui.Label.Render("DESCRIPTION") + "\n")
 	for _, entry := range result.Models {
@@ -384,8 +391,35 @@ func (result modelsPopularResult) Human() string {
 	}
 	builder.WriteString("\n" + ui.Muted.Render("pull any of these with ") +
 		ui.Primary.Render("ai models pull <repo>") +
-		ui.Muted.Render(" (a curated set of vLLM-servable Hugging Face repos)"))
+		ui.Muted.Render(" (a live-refreshable set of vLLM-servable Hugging Face repos — pass --refresh to update)"))
 	return strings.TrimRight(builder.String(), "\n")
+}
+
+// curatedModelsProvider is a seam over hf.LoadOrFetchCurated so `ai models
+// popular` tests inject a fake list without touching the network.
+var curatedModelsProvider = hf.LoadOrFetchCurated
+
+// curatedSourceNote builds the one-line freshness/fallback message from the data
+// Source and whether a live refresh was requested.
+func curatedSourceNote(source hf.Source, refreshRequested bool, goos string) string {
+	switch source {
+	case hf.SourceFresh:
+		return "source: live (Hugging Face)"
+	case hf.SourceCached:
+		when := "cached list"
+		if stamp, ok := hf.CachedCuratedInfo(goos); ok {
+			when = "cached list from " + stamp.Format("2006-01-02 15:04")
+		}
+		if refreshRequested {
+			return "could not reach Hugging Face — showing the " + when
+		}
+		return "source: " + when
+	default:
+		if refreshRequested {
+			return "could not reach Hugging Face — showing the built-in list"
+		}
+		return "source: built-in list"
+	}
 }
 
 // curatedEntries maps the curated hf list to popular rows.
@@ -403,20 +437,32 @@ func curatedEntries(models []hf.CuratedModel) []popularModelEntry {
 }
 
 func newModelsPopularCmd(emitter *output.Emitter, exit *int) *cobra.Command {
-	return &cobra.Command{
+	var refresh bool
+	cmd := &cobra.Command{
 		Use:   "popular",
 		Short: "List curated installable models (vLLM-servable HF repos)",
-		Long: "List the curated set of vLLM-servable models — mlx-community/* repos on Apple\n" +
-			"Silicon, plain Hugging Face safetensors repos on Linux — with their repo id,\n" +
-			"approximate size, and a one-line description. Pull one with\n" +
-			"`ai models pull <repo>` (any other Hugging Face repo id also works).",
+		Long: "List the curated set of vLLM-servable models — the most-downloaded mlx-community/*\n" +
+			"repos on Apple Silicon, the current trending text-generation repos on Linux —\n" +
+			"with their repo id, size, and a one-line description. Pull one with\n" +
+			"`ai models pull <repo>` (any other Hugging Face repo id also works).\n\n" +
+			"Without --refresh the list is read from the local cache (or the built-in\n" +
+			"fallback) with no network call; --refresh fetches the latest list live from the\n" +
+			"Hugging Face API and updates the cache.",
 		Args: cobra.NoArgs,
 		RunE: func(_ *cobra.Command, _ []string) error {
-			models := curatedEntries(hf.CuratedModels(goruntime.GOOS))
-			*exit = emitter.Success("models.popular", modelsPopularResult{Models: models})
+			models, source, _ := curatedModelsProvider(goruntime.GOOS, refresh)
+			result := modelsPopularResult{
+				Models: curatedEntries(models),
+				Source: source.String(),
+				Note:   curatedSourceNote(source, refresh, goruntime.GOOS),
+			}
+			*exit = emitter.Success("models.popular", result)
 			return nil
 		},
 	}
+	cmd.Flags().BoolVar(&refresh, "refresh", false,
+		"fetch the latest curated list live from the Hugging Face API and update the cache")
+	return cmd
 }
 
 // modelPullOutcome is the per-model result of a (multi-)pull.
