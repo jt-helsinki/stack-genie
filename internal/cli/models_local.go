@@ -492,6 +492,8 @@ func (result modelsPullResult) Human() string {
 			} else if outcome.RegisterError != "" {
 				builder.WriteString("\n  " + ui.Warn.Render(ui.IconDot) +
 					" gateway registration skipped: " + ui.Muted.Render(outcome.RegisterError))
+				builder.WriteString("\n    " + ui.Muted.Render(
+					"the model is downloaded and served locally; start the gateway with `ai setup`, then re-run this pull to register it"))
 			}
 		} else {
 			builder.WriteString(ui.Failure.Render(ui.IconFail) + " " + ui.Value.Render(outcome.Model) + ": " + outcome.Error)
