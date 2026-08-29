@@ -39,7 +39,6 @@ func TestLocalModelsRendersCuratedWhenStoreErrors(test *testing.T) {
 		func() []hf.CuratedModel {
 			return []hf.CuratedModel{{Name: "Llama-3.2-3B-Instruct-4bit", Repo: "mlx-community/Llama-3.2-3B-Instruct-4bit", Description: "Meta Llama"}}
 		},
-		func() []hf.CuratedModel { return nil },
 		noTest,
 		func() (string, error) { return "", nil },
 	)

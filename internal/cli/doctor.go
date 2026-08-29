@@ -83,11 +83,11 @@ func vllmDoctorService(goos string, installed bool) doctor.Service {
 	if installed {
 		service.Healthy = true
 		service.State = "installed"
-		service.Detail = "optional host-native runtime (`ai models pull --runtime vllm`)"
+		service.Detail = "optional host-native runtime (`ai models install-vllm`)"
 		return service
 	}
 	service.State = "not installed — optional: " + strings.Join(vllmInstallGuidanceFn(goos), "; ")
-	service.Detail = "optional; only needed for `ai models pull --runtime vllm`"
+	service.Detail = "optional; only needed to serve local models via `ai models pull`"
 	return service
 }
 

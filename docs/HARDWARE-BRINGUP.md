@@ -147,6 +147,13 @@ allow-listed host services that use the `gateway` token resolve to it in every m
       <p> --follow` follow without polling. The remaining piece is the CLI-backend
       (`AIP_WORKSPACE_BACKEND=cli`) fallback that shells out to `msb logs -f
       <name>` (needs a running microVM under the CLI backend to verify).
+- [ ] **Service detail metrics round-trip** — the Services detail **Service**
+      sub-tab's live per-container stats (`setup.ServiceStats`, `<runtime> stats
+      --no-stream` + `inspect`, polled ~2s) render a `── <container> ──` block per
+      container for a multi-container service (Presidio, LiteLLM+DB). The argv
+      assembly + JSON parsing are unit-tested against a fake prober; the live
+      round-trip against a running docker/podman engine has not been confirmed on
+      a provisioned host.
 
 ### 2.3 Tool-firewall verification + nginx proxy readiness probe
 
@@ -297,6 +304,13 @@ verification work:
       host endpoint (internal-only, `aip-litellm-db:5432`). Managed WITH litellm — there is
       NO separate start/stop/restart verb (`ai services <action> litellm-db` →
       "unknown service"). Verify the line appears and tracks the container state.
+- [ ] **LiteLLM admin API round-trip shapes.** `litellm.KeyManager`'s DB-backed
+      model/credential management (`POST /model/new`, `POST /model/delete
+      {"id": ...}`, `POST`/`GET`/`DELETE /credentials`) is unit-tested against an
+      httptest fake to the documented shapes only; verify the `/model/delete`
+      id-keyed body and the `/credentials` list/delete shapes against a LIVE
+      `aip-litellm` on a provisioned host
+      (docs.litellm.ai/docs/proxy/model_management, /docs/proxy/credentials).
 
 ### 2.5b LiteLLM Postgres data-dir on a host bind mount
 
@@ -372,6 +386,37 @@ uv/graphify/headroom per-user installs.
       Silicon build that `install.sh` selects and installs the prebuilt aarch64 Linux
       binary to `~/.local/bin`, that `rtk` is on PATH for the workspace user, and that
       a Claude Code `rtk`-based PreToolUse hook can shell out to it.
+
+### 2.6c Shared skills pool — hermes skills directory
+
+hermes is a gateway agent like omp: it reads skills from its own config's
+`external_dirs`, not a per-CLI symlink the other platform CLIs use directly.
+`HermesConfig` points one `external_dirs` entry at `.hermes/skills`, and
+`linkSharedResources` (`internal/workspace`, `sharedResourceLinks`) symlinks that
+path to the shared `.ai-platform/skills` pool at workspace start, same as the
+other CLIs' skill dirs.
+
+- [ ] **Confirm `.hermes/skills` resolves in-VM.** Verify on a live workspace that
+      the symlink resolves and hermes actually lists/loads the shared-pool skills
+      through its `external_dirs` config.
+
+### 2.6d Agent CLI installs — npm package + omp binary verification
+
+Each agent-CLI Dockerfile snippet
+(`internal/templates/files/agentclis/<cli>/Dockerfile.snippet`) installs the CLI at
+image build; the snippet comments flag the exact install target as unverified on
+real hardware:
+
+- [ ] **npm package names** — claude-code (`@anthropic-ai/claude-code`), gemini
+      (`@google/gemini-cli`), copilot (`@github/copilot`), codex (`@openai/codex`),
+      and opencode (`opencode-ai`) are each installed via `npm install -g <package>`
+      on top of the OS base's pinned Node 24 LTS. Verify each package name still
+      resolves on the npm registry and installs cleanly during a real image build.
+- [ ] **omp binary install** — omp's snippet curls `https://omp.sh/install` and
+      forces the prebuilt binary (`PI_INSTALL_DIR=... sh -s -- --binary`) into
+      `~/.local/bin`. Verify on a live build that `omp` lands on PATH for the
+      workspace user and that its config schema (`~/.omp/agent/models.yml`,
+      `<project>/.omp/config.yml`) still matches what `agentcfg` renders.
 
 ### 2.7 In-VM apps (Phase 1 — arch §7, CLI §4.5c)
 

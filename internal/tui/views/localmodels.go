@@ -50,13 +50,6 @@ type hfWhoamiMsg struct {
 	loggedIn bool
 }
 
-// curatedRefreshedMsg carries the result of a LIVE curated-list refresh (the r
-// key). An empty models slice means the live fetch failed; the current list is
-// then kept unchanged.
-type curatedRefreshedMsg struct {
-	models []hf.CuratedModel
-}
-
 // localNameWidth is the fixed NAME (repo) column width; DESCRIPTION takes the rest.
 const localNameWidth = 46
 
@@ -65,21 +58,16 @@ const localNameWidth = 46
 // (Available). Rendered as a custom viewport-windowed list (NOT a bubbles table) so each
 // section header can be bold + accent-coloured. One cursor spans both sections over
 // MODEL ROWS ONLY. enter/p pulls the selected Available repo; d removes an Installed
-// one; t tests it. Keys: enter/p pull · t test · d remove · r refresh.
+// one; t tests it. Keys: enter/p pull · t test · d remove · l login · o logout ·
+// n pull by name · r refresh.
 type LocalModels struct {
 	test    ModelTester
 	list    LocalModelLister
 	curated CuratedLister
-	// curatedRefresh fetches the curated list LIVE (writes the cache); wired to
-	// hf.LoadOrFetchCurated(goos, true). Triggered off the UI thread by the r key;
-	// a fetch failure returns an empty list and the current list is kept.
-	curatedRefresh CuratedLister
-	whoami         HFWhoamiFn
+	whoami  HFWhoamiFn
 
-	models         []localModel      // Installed rows first, then Available rows
-	installedCount int               // how many of models are in the Installed section
-	installedCache []hf.CachedModel  // last installed-store list, so a curated refresh can rebuild
-	curatedResult  []hf.CuratedModel // live-refresh result; when set it overrides curated() in buildModels
+	models         []localModel // Installed rows first, then Available rows
+	installedCount int          // how many of models are in the Installed section
 	window         listWindow
 
 	listErr error
@@ -105,11 +93,11 @@ type LocalModels struct {
 // NewLocalModels builds the Local Models view over the injected installed-store lister
 // (hf cache ls), the curated-list provider, the gateway tester, and the Hugging Face
 // whoami probe (login-state line + gated-repo login/logout).
-func NewLocalModels(list LocalModelLister, curated, curatedRefresh CuratedLister, test ModelTester, whoami HFWhoamiFn) *LocalModels {
+func NewLocalModels(list LocalModelLister, curated CuratedLister, test ModelTester, whoami HFWhoamiFn) *LocalModels {
 	input := textinput.New()
 	input.Prompt = "pull repo: "
 	input.Placeholder = "e.g. mlx-community/Qwen2.5-7B-Instruct-4bit"
-	return &LocalModels{list: list, curated: curated, curatedRefresh: curatedRefresh, test: test, whoami: whoami, pullInput: input}
+	return &LocalModels{list: list, curated: curated, test: test, whoami: whoami, pullInput: input}
 }
 
 func (view *LocalModels) Title() string { return "Local Models" }
@@ -199,19 +187,6 @@ func (view *LocalModels) listCmd() tea.Cmd {
 	}
 }
 
-// curatedRefreshCmd fetches the curated list LIVE off the UI thread (writing the
-// cache) and delivers a curatedRefreshedMsg. A nil provider or failed fetch yields
-// an empty list, which the handler treats as "keep the current list".
-func (view *LocalModels) curatedRefreshCmd() tea.Cmd {
-	refresh := view.curatedRefresh
-	return func() tea.Msg {
-		if refresh == nil {
-			return curatedRefreshedMsg{}
-		}
-		return curatedRefreshedMsg{models: refresh()}
-	}
-}
-
 func (view *LocalModels) testCmd(model string) tea.Cmd {
 	test := view.test
 	return func() tea.Msg {
@@ -234,16 +209,6 @@ func (view *LocalModels) Update(msg tea.Msg) tea.Cmd {
 	case hfWhoamiMsg:
 		view.loggedIn = message.loggedIn
 		view.whoamiUser = message.user
-		return nil
-	case curatedRefreshedMsg:
-		// A live curated refresh landed: adopt the fresh list and rebuild the
-		// Available section. An empty result (fetch failed) keeps the current list.
-		if len(message.models) > 0 {
-			view.curatedResult = message.models
-			view.buildModels(view.installedCache)
-			view.flash = ""
-			view.syncWindow()
-		}
 		return nil
 	case modelTestDoneMsg:
 		view.flash = modelTestFlash(message)
@@ -340,7 +305,7 @@ func (view *LocalModels) handleKey(key tea.KeyMsg) tea.Cmd {
 		return textinput.Blink
 	case "r":
 		view.flash = ui.Muted.Render("refreshing local models…")
-		return tea.Batch(view.listCmd(), view.whoamiCmd(), view.curatedRefreshCmd())
+		return tea.Batch(view.listCmd(), view.whoamiCmd())
 	case "up", "k":
 		view.moveCursor(-1)
 		return nil
@@ -357,11 +322,8 @@ func (view *LocalModels) handleKey(key tea.KeyMsg) tea.Cmd {
 // Available rows and seats the cursor on the first model row. A curated repo that is
 // already installed appears ONLY in the Installed section (with its curated description).
 func (view *LocalModels) buildModels(installed []hf.CachedModel) {
-	view.installedCache = installed
-	// A live refresh result (curatedResult) wins over the cache-or-builtin curated
-	// provider so the Available section updates immediately after the r key.
-	curated := view.curatedResult
-	if curated == nil && view.curated != nil {
+	var curated []hf.CuratedModel
+	if view.curated != nil {
 		curated = view.curated()
 	}
 	curatedByRepo := make(map[string]hf.CuratedModel, len(curated))

@@ -168,18 +168,21 @@ func pullVLLM(emitter *output.Emitter, names []string, alias string) int {
 			continue
 		}
 		outcome.OK = true
-		// Record the runtime choice with the LOOPBACK endpoint (host-side truth) so a
-		// later `rm` can find and stop the running server. The LiteLLM CONTAINER reaches
-		// the server via host.docker.internal, so the api_base REGISTERED in the gateway
-		// is the CONTAINER endpoint, not the loopback.
-		recordModelRuntimeChoice(modelAlias, model, config.RuntimeVLLM, endpoint)
 		// vLLM tool support is model-dependent and not probed here; unknown defaults to
 		// capable, matching the gateway's default treatment.
+		status := "registered"
 		if regErr := registrar.RegisterVLLMModel(modelAlias, model, vllm.ContainerEndpoint(port), true); regErr != nil {
 			outcome.RegisterError = regErr.Error()
+			status = "registration-failed"
 		} else {
 			outcome.Registered = true
 		}
+		// Record the runtime choice with the LOOPBACK endpoint (host-side truth) so a
+		// later `rm` can find and stop the running server. The LiteLLM CONTAINER reaches
+		// the server via host.docker.internal, so the api_base REGISTERED in the gateway
+		// is the CONTAINER endpoint, not the loopback. Status reflects the ACTUAL
+		// registration outcome above, not an assumed success.
+		recordModelRuntimeChoice(modelAlias, model, config.RuntimeVLLM, endpoint, status)
 		result.Pulled = append(result.Pulled, outcome)
 	}
 	if failures > 0 {
@@ -192,14 +195,15 @@ func pullVLLM(emitter *output.Emitter, names []string, alias string) int {
 // recordModelRuntimeChoice persists the serving-runtime selection for a pulled model
 // (best-effort — a store-write failure must never fail the pull). The store is keyed by
 // the gateway alias (Alias); Model carries the underlying HF repo id so a later `rm` can
-// find the record by model name.
-func recordModelRuntimeChoice(alias, model string, runtime config.ModelRuntime, endpoint string) {
+// find the record by model name. status reflects the caller's ACTUAL outcome (e.g.
+// "registered" or "registration-failed") — it must never be assumed successful.
+func recordModelRuntimeChoice(alias, model string, runtime config.ModelRuntime, endpoint, status string) {
 	_ = config.SetModelRuntime(config.ModelRuntimeChoice{
 		Alias:    alias,
 		Model:    model,
 		Runtime:  runtime,
 		Endpoint: endpoint,
-		Status:   "registered",
+		Status:   status,
 	})
 }
 
@@ -242,22 +246,46 @@ func vllmChoiceForRef(ref string) (config.ModelRuntimeChoice, bool) {
 func removeVLLM(emitter *output.Emitter, ref string, choice config.ModelRuntimeChoice) int {
 	result := modelsRmResult{Model: ref}
 	registrar := modelRegistrarFactory()
-	if regErr := registrar.UnregisterVLLMModel(choice.Alias); regErr != nil {
-		result.UnregisterError = regErr.Error()
-	}
-	// The detached `vllm serve` process outlives every CLI invocation, so a fresh Manager
-	// holds no handle to it — stop it by the recorded loopback port instead.
-	if port, ok := vllm.PortOf(choice.Endpoint); ok {
-		_ = vllmStopByPortFn(port)
-	}
-	// Delete the downloaded weights from the HF cache (best-effort — the repo id is the
-	// choice's Model, or the ref itself when removing by repo id).
+
 	repo := choice.Model
 	if repo == "" {
 		repo = ref
 	}
-	_ = hfClient().CacheRemove(repo)
-	_ = config.DeleteModelRuntime(choice.Alias)
+	// A repo can be pulled more than once under different --alias values; every
+	// recorded choice for the same underlying repo shares the same downloaded weights,
+	// so ALL of them must be unregistered/stopped before the weights are deleted —
+	// otherwise another alias's gateway route and vllm serve process outlive the
+	// weights on disk. Fall back to just the resolved choice if none matched (should
+	// not happen — choice itself always has Model == repo).
+	relatedChoices := runtimeChoicesForModel(repo)
+	if len(relatedChoices) == 0 {
+		relatedChoices = []config.ModelRuntimeChoice{choice}
+	}
+	var unregisterErrs []string
+	for _, recorded := range relatedChoices {
+		if regErr := registrar.UnregisterVLLMModel(recorded.Alias); regErr != nil {
+			unregisterErrs = append(unregisterErrs, recorded.Alias+": "+regErr.Error())
+		}
+		// The detached `vllm serve` process outlives every CLI invocation, so a fresh
+		// Manager holds no handle to it — stop it by the recorded loopback port instead.
+		if port, ok := vllm.PortOf(recorded.Endpoint); ok {
+			_ = vllmStopByPortFn(port)
+		}
+	}
+	if len(unregisterErrs) > 0 {
+		result.UnregisterError = strings.Join(unregisterErrs, "; ")
+	}
+
+	// Delete the downloaded weights from the HF cache. Unlike the best-effort steps
+	// above, a failure here must surface as a real error (exit 4) and leave every
+	// runtime record in place — so the removal can be retried and `ai models show`
+	// doesn't report the model as gone while its weights are still on disk.
+	if err := hfClient().CacheRemove(repo); err != nil {
+		return emitter.Failure("models.rm", hfErr(err))
+	}
+	for _, recorded := range relatedChoices {
+		_ = config.DeleteModelRuntime(recorded.Alias)
+	}
 	return emitter.Success("models.rm", result)
 }
 
@@ -364,10 +392,6 @@ type popularModelEntry struct {
 // modelsPopularResult is the `ai models popular` payload.
 type modelsPopularResult struct {
 	Models []popularModelEntry `json:"models"`
-	// Source is where the list came from: "live", "cached", or "built-in".
-	Source string `json:"source"`
-	// Note is a one-line freshness/fallback message for the Human renderer.
-	Note string `json:"note,omitempty"`
 }
 
 // Human renders the curated list as a REPO / SIZE / DESCRIPTION table.
@@ -376,9 +400,6 @@ func (result modelsPopularResult) Human() string {
 		return ui.Muted.Render("no curated models available")
 	}
 	var builder strings.Builder
-	if result.Note != "" {
-		builder.WriteString(ui.Muted.Render(result.Note) + "\n\n")
-	}
 	builder.WriteString(ui.Label.Render(padRight("REPO", 46)) + "  " +
 		ui.Label.Render(padRight("SIZE", 9)) + "  " + ui.Label.Render("DESCRIPTION") + "\n")
 	for _, entry := range result.Models {
@@ -391,36 +412,13 @@ func (result modelsPopularResult) Human() string {
 	}
 	builder.WriteString("\n" + ui.Muted.Render("pull any of these with ") +
 		ui.Primary.Render("ai models pull <repo>") +
-		ui.Muted.Render(" (a live-refreshable set of vLLM-servable Hugging Face repos — pass --refresh to update)"))
+		ui.Muted.Render(" (any other Hugging Face repo id also works)"))
 	return strings.TrimRight(builder.String(), "\n")
 }
 
-// curatedModelsProvider is a seam over hf.LoadOrFetchCurated so `ai models
-// popular` tests inject a fake list without touching the network.
-var curatedModelsProvider = hf.LoadOrFetchCurated
-
-// curatedSourceNote builds the one-line freshness/fallback message from the data
-// Source and whether a live refresh was requested.
-func curatedSourceNote(source hf.Source, refreshRequested bool, goos string) string {
-	switch source {
-	case hf.SourceFresh:
-		return "source: live (Hugging Face)"
-	case hf.SourceCached:
-		when := "cached list"
-		if stamp, ok := hf.CachedCuratedInfo(goos); ok {
-			when = "cached list from " + stamp.Format("2006-01-02 15:04")
-		}
-		if refreshRequested {
-			return "could not reach Hugging Face — showing the " + when
-		}
-		return "source: " + when
-	default:
-		if refreshRequested {
-			return "could not reach Hugging Face — showing the built-in list"
-		}
-		return "source: built-in list"
-	}
-}
+// curatedModelsProvider is a seam over hf.CuratedModels so `ai models popular`
+// tests inject a fake list without touching the network.
+var curatedModelsProvider = hf.CuratedModels
 
 // curatedEntries maps the curated hf list to popular rows.
 func curatedEntries(models []hf.CuratedModel) []popularModelEntry {
@@ -437,31 +435,22 @@ func curatedEntries(models []hf.CuratedModel) []popularModelEntry {
 }
 
 func newModelsPopularCmd(emitter *output.Emitter, exit *int) *cobra.Command {
-	var refresh bool
 	cmd := &cobra.Command{
 		Use:   "popular",
 		Short: "List curated installable models (vLLM-servable HF repos)",
-		Long: "List the curated set of vLLM-servable models — the most-downloaded mlx-community/*\n" +
-			"repos on Apple Silicon, the current trending text-generation repos on Linux —\n" +
-			"with their repo id, size, and a one-line description. Pull one with\n" +
-			"`ai models pull <repo>` (any other Hugging Face repo id also works).\n\n" +
-			"Without --refresh the list is read from the local cache (or the built-in\n" +
-			"fallback) with no network call; --refresh fetches the latest list live from the\n" +
-			"Hugging Face API and updates the cache.",
+		Long: "List the curated set of vLLM-servable models — mlx-community/* repos on\n" +
+			"Apple Silicon, plain Hugging Face safetensors repos on Linux — with their\n" +
+			"repo id, size, and a one-line description. This is a static curated set,\n" +
+			"not a live search. Pull one with `ai models pull <repo>` (any other\n" +
+			"Hugging Face repo id also works).",
 		Args: cobra.NoArgs,
 		RunE: func(_ *cobra.Command, _ []string) error {
-			models, source, _ := curatedModelsProvider(goruntime.GOOS, refresh)
-			result := modelsPopularResult{
-				Models: curatedEntries(models),
-				Source: source.String(),
-				Note:   curatedSourceNote(source, refresh, goruntime.GOOS),
-			}
+			models := curatedModelsProvider(goruntime.GOOS)
+			result := modelsPopularResult{Models: curatedEntries(models)}
 			*exit = emitter.Success("models.popular", result)
 			return nil
 		},
 	}
-	cmd.Flags().BoolVar(&refresh, "refresh", false,
-		"fetch the latest curated list live from the Hugging Face API and update the cache")
 	return cmd
 }
 

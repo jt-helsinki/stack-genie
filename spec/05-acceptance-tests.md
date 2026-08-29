@@ -236,6 +236,15 @@ ai setup --json
   and Odysseus was removed)
 * command exits `0`
 
+**Automated coverage:** `TestSetupBringsServiceTierUpOnHardware`
+(`test/acceptance/s1_remaining_test.go`) drives this §2.1 flow (and the §2.2
+idempotency case below) on a provisioned host, asserting `ai setup` exits `0`
+and at least one service reports `running` in the envelope, then confirming via
+`ai services status`. It does not assert the specific container list, reconcile
+order, or bind address above — those are architectural facts, not per-test
+assertions. `TestSetupSucceedsOnHardware` (`test/acceptance/acceptance_test.go`)
+is a lighter smoke variant of the same flow.
+
 ---
 
 ## 2.2 Idempotency Test `[S1]`
@@ -253,6 +262,9 @@ ai setup
 * no errors
 * system state unchanged
 
+**Automated coverage:** see `TestSetupBringsServiceTierUpOnHardware` above —
+its second `ai setup` run is exactly this idempotency check.
+
 ---
 
 ## 2.3 Upgrade Test `[S1]`
@@ -268,6 +280,10 @@ ai setup --upgrade
 * existing state preserved
 * no project loss
 * projects index intact
+
+**Automated coverage:** `TestSetupUpgradePreservesStateOnHardware`
+(`test/acceptance/s1_remaining_test.go`) creates a project, runs
+`ai setup --upgrade`, and confirms the project still appears in `ai list`.
 
 ---
 
@@ -300,6 +316,11 @@ ai create test-project --os debian-trixie --json   # flag-driven, non-interactiv
   the wizard is disabled and `--os` is required (§1.4/§3.1). The failure is the
   missing required input, not the absence of a TTY.
 
+**Automated coverage:** the negative case is `TestProjectCreateNoTTYExits2`; the
+positive scaffold-only flow is `TestProjectLifecycle` (create/list/delete); the
+default-tools case is `TestAgentCLIDefaultSelection` — all in
+`test/acceptance/acceptance_test.go`/`s1_remaining_test.go`.
+
 ---
 
 ## 3.2 Create In Existing Directory `[S1]`
@@ -320,6 +341,12 @@ cd "$AIP_TEST_HOME/work/app" && ai create app --os debian-trixie --json
 * re-running `ai create` in the same directory **attaches** to the existing
   workspace instead of erroring
 
+**Unverified:** the attach behavior is implemented (`internal/cli/project.go`,
+`attachWorkspace`, gated on the `--location`-omitted + already-a-workspace
+case), but no test in `test/acceptance/` or `test/integration/` re-runs
+`ai create` in an existing workspace directory to exercise it end-to-end — this
+scenario is not covered by an automated test today.
+
 ---
 
 ## 3.3 Workspace Stop/Start Recovery `[S1]`
@@ -338,6 +365,14 @@ ai start test-project --json
 * no `--yes` needed — stop is non-destructive (CLI §20); pausing a workspace is
   `ai stop`, not `ai delete`/`ai destroy` (which are the same destructive removal)
 * `ai start test-project` recovers the workspace (re-mounts the same overlay)
+
+**Unverified:** no test in `test/acceptance/` or `test/integration/` drives a
+plain `ai stop` + `ai start` round trip end-to-end. The closest automated
+coverage is `TestOverlayPersistsAcrossRecreation` (§13.1, `ai destroy` +
+`ai start` — a *stronger* teardown than a mere stop) and the mocked unit test
+`TestRestartStopsThenStartsExistingMicroVM`
+(`internal/workspace/workspace_test.go`), which exercises `Restart` (stop then
+start) against a fake sandbox, not the real CLI round trip.
 
 ---
 
@@ -375,6 +410,18 @@ unknown project with a missing confirmation:
   the directory are **kept**
 * `--purge` (e.g. `ai delete <p> --purge --yes` on a separately created
   disposable project) additionally removes the project directory entirely
+
+**Automated coverage:** cases (a) and (c) are `TestProjectLifecycle`
+(`test/acceptance/acceptance_test.go`). Case (b) — unknown project + `--yes` →
+exit 2 — is not exercised by `test/acceptance/`; it is verified at the CLI-unit
+level by `TestNewDeleteCmdUnknownProject`
+(`internal/cli/project_helpers_test.go`) and black-box by
+`TestWorkspaceCreateTeardown/delete_unknown_errors`
+(`test/integration/workspace_lifecycle_test.go`, needs only installed
+templates, not a running stack). `--purge` removing the whole project
+directory is also covered by
+`TestWorkspaceCreateTeardown/delete_purge_removes_project_dir` and the unit
+test `TestDeletePurgeRemovesSource` (`internal/project/project_test.go`).
 
 ---
 
@@ -423,6 +470,12 @@ ai exec env-test --json -- cat /etc/os-release
 (Caveman is installed at workspace start by its own upstream installer, not seeded at
 create; not asserted here — see §8.)
 
+**Automated coverage:** `TestProjectDockerfileReflectsOS`
+(`test/acceptance/s1_remaining_test.go`) asserts the on-disk `FROM` line for all
+four OS templates — this is the file-inspection half described above. No test
+runs the in-VM `cat /etc/os-release` half (it needs a real microVM build and is
+not present in `test/acceptance/` or `test/integration/`).
+
 ---
 
 ## 6.2 Environment Change Via Dockerfile `[S1]`
@@ -440,6 +493,10 @@ ai exec    env-test --json -- command -v jq
 
 * the rebuilt image contains `jq` (final exec `data.exit_code == 0`)
 * the change came from editing the Dockerfile — no snapshot/upgrade command exists
+
+**Unverified:** no test in `test/acceptance/` or `test/integration/` edits a
+project's Dockerfile and rebuilds — this scenario needs a real image build and
+is not automated today.
 
 ---
 
@@ -465,6 +522,12 @@ ai exec cli-test --json -- sh -c 'command -v gemini'   # NOT selected
   (`data.exit_code != 0`)
 * default selection (`ai create x --os <key>`, no `--agents`) yields
   `data.tools == [opencode]` (§3.1)
+
+**Automated coverage:** `TestAgentCLISelectionReflected` (selection +
+Dockerfile snippet presence/absence) and `TestAgentCLIDefaultSelection`
+(default `[opencode]`), both in `test/acceptance/s1_remaining_test.go` — the
+on-disk half only; the in-VM `command -v` probes are hardware-gated and not
+present as an automated test.
 
 ---
 
@@ -494,6 +557,11 @@ ai exec stack-test --json -- sh -c 'command -v deno'      # NOT selected
 * default selection (`ai create x --os <key>`, no `--stacks`) installs **no**
   stacks beyond the base image (`profile.yaml` `stacks: []`)
 
+**Automated coverage:** `TestSoftwareStackSelectionReflected` and
+`TestSoftwareStackDefaultEmpty`, both in
+`test/acceptance/s1_remaining_test.go` — the on-disk half only; the in-VM
+`command -v` probes are hardware-gated and not present as an automated test.
+
 ---
 
 # 7. Model Layer Tests
@@ -512,6 +580,13 @@ ai models status --json
 * providers listed
 * routing active
 
+**Automated coverage:** `TestModelStatusOnHardware`
+(`test/acceptance/s1_remaining_test.go`), hardware-gated. It asserts gateway
+health and a non-empty provider list; it deliberately does **not** assert a
+non-empty `default` — the model set is catalog-driven/DB-backed and
+`litellm.DefaultRouting()` returns the zero `Routing`, so `data.default` is
+intentionally always empty.
+
 ---
 
 ## 7.2 Model Invocation Test `[S1]`
@@ -526,6 +601,11 @@ ai models test gpt-5 --json
 
 * response received
 * latency within acceptable bounds
+
+**Automated coverage:** `TestModelTestOnHardware`
+(`test/acceptance/s1_remaining_test.go`), hardware-gated — it points the
+gateway at the TLS mock-provider fixture (§1.6) and probes the `gpt-5` alias,
+so it exercises this without a real provider key.
 
 ---
 
@@ -576,6 +656,15 @@ ai context caveman test-project full --json
 * agent output tokens reduced
 * technical accuracy preserved (code, URLs, facts unchanged)
 
+**Automated coverage:** `TestContextOptimizationFlow`
+(`test/acceptance/acceptance_test.go`) covers only the platform-owned plumbing
+— the default level is seeded (`full`), `ai context caveman`/`ai context
+strategy` round-trip through the project config, and the skill is correctly
+reported as not-yet-installed right after `create` (it is installed later, at
+workspace start, by Caveman's own upstream installer). The actual output-token
+reduction and technical-accuracy bullets above are Caveman's own behavior (an
+external, upstream-owned toolkit) and are not measured by any platform test.
+
 ---
 
 ## 8.2 Headroom Compression `[S2]`
@@ -622,6 +711,11 @@ ai models test gpt-5 --project test-project --json
 * no `.env` file exists anywhere under the workspace or project
 * command exits `0`
 
+**Automated coverage:** `TestCredentialedRequestOnHardware`
+(`test/acceptance/s1_hardware_test.go`), hardware-gated — it asserts the mock
+provider's recorded `Authorization` header carries the sentinel and that the
+workspace's own `env` output does not.
+
 ---
 
 ## 9.2 Secret Isolation `[S1]`
@@ -650,6 +744,11 @@ ai exec test-project --json -- grep -rIF "$AIP_TEST_SENTINEL" / 2>/dev/null \
 * the real provider key is never reachable from the workspace — it lives only in
   the LiteLLM gateway (keys-in-LiteLLM, arch §17), and any non-allow-listed egress
   from the workspace is denied by the Microsandbox NetworkPolicy (§16.3)
+
+**Unverified:** the first check (workspace env has no sentinel) is covered by
+`TestCredentialedRequestOnHardware` (§9.1). The second check — a filesystem-wide
+`grep -rIF` for the sentinel across the whole workspace — is not exercised by
+any test in `test/acceptance/` or `test/integration/` today.
 
 ---
 
@@ -687,6 +786,13 @@ the checks, not a non-zero exit.
 * off-hardware those same checks appear in the report but report a non-`ok`
   status — the command still exits `0`
 
+**Automated coverage:** `TestWorkspaceDoctorOnHardware`
+(`test/acceptance/acceptance_test.go`), hardware-gated for the `ok` posture
+assertion. Off-hardware, `TestDoctorRunsAndReports`
+(`test/acceptance/acceptance_test.go`) confirms `ai doctor` still exits `0`
+with a non-empty report (it does not assert the workspace-runtime checks'
+non-`ok` status specifically).
+
 ---
 
 ## 11.2 Runtime Abstraction Test `[S6]`
@@ -700,6 +806,10 @@ the checks, not a non-zero exit.
 
 * identical `--json` `data` for both runtimes (modulo `runtime` field and ids)
 * no workflow changes required
+
+**Unverified:** no test in `test/acceptance/` or `test/integration/` runs this
+Docker-vs-Podman comparison; Podman parity is not exercised by an automated
+test today.
 
 ---
 
@@ -719,6 +829,15 @@ ai setup --json
 * Docker-based rootless service tier works
 * Microsandbox microVM runtime works (Apple Hypervisor)
 
+**Automated coverage:** this is the same flow as §2.1 —
+`TestSetupBringsServiceTierUpOnHardware`/`TestSetupSucceedsOnHardware`.
+`.github/workflows/ci.yml` runs `make test-acceptance` on a
+`workflow_dispatch`-triggered, self-hosted `[macOS, ARM64]` runner (the only
+CI host that can run the full stack); the workflow file itself does not set
+`AIP_HARDWARE_TESTS=1`, so whether the hardware-gated tests actually execute
+there (vs. self-skip) depends on that variable being exported in the runner's
+own environment — unverifiable from the repo alone.
+
 ---
 
 ## 12.2 Linux Test `[S6]`
@@ -732,6 +851,12 @@ ai setup --json
 * Docker or Podman auto-detected (`config/runtime.yaml.detected` set)
 * Microsandbox microVMs run via KVM
 * no manual configuration required
+
+**Unverified:** there is no Linux/KVM self-hosted runner in
+`.github/workflows/ci.yml` yet (it is future work per that file's own comment)
+and no test in `test/acceptance/` or `test/integration/` exercises this on
+Linux — the suite's hardware-gated tests only ever run on the Apple Silicon
+runner.
 
 ---
 
@@ -751,6 +876,11 @@ ai setup --json
   changes which tools are present
 * the smoke command produces equivalent results across all four
 * no OS is treated as a default
+
+**Automated coverage:** `TestOSEquivalenceOnHardware`
+(`test/acceptance/acceptance_test.go`), hardware-gated — it builds a workspace
+for each of the four OS keys and probes `git --version`/`gh --version` in
+each.
 
 ---
 
@@ -786,6 +916,13 @@ ai exec test-project --json -- sh -c '~/.local/bin/overlay-tool'
   kept the overlay and `ai start` re-mounted it (whereas `ai delete`/`ai destroy`
   would have removed it)
 
+**Note on actual coverage:** the real test, `TestOverlayPersistsAcrossRecreation`
+(`test/acceptance/acceptance_test.go`, hardware-gated), exercises the
+*stronger* `ai destroy` + `ai start` cycle (full teardown + rebuild against
+the overlay) rather than the `ai stop` + `ai start` pause/resume shown above —
+both are described as [S4] overlay-persistence guarantees, but a plain
+stop/start round trip itself is not separately automated (see §3.3).
+
 ---
 
 ## 13.2 Agent State Persists Across Restart `[S4]`
@@ -803,6 +940,11 @@ ai exec test-project --json -- sh -c 'cat ~/.local/agent-state'
 
 * the file persists; final exec `data.stdout` is `hi`, `data.exit_code == 0`
 * agent-written state outside the project mount survives via the overlay
+
+**Note on actual coverage:** as with §13.1, `TestOverlayPersistsAcrossRecreation`
+covers this shape of scenario (a marker written outside the project mount
+survives) but does so via `ai destroy` + `ai start`, not `ai stop` + `ai
+start`.
 
 ---
 
@@ -838,6 +980,12 @@ It always exits `0`; per-check status conveys health.
 * `ai doctor ghost` (unknown name) still exits `0` with a report — a shortfall is
   folded into the checks, not a non-zero exit
 
+**Automated coverage:** `TestDoctorRunsAndReports` (basic exit-0-with-checks
+smoke), `TestDoctorAlwaysReportsExit0` (the `ai doctor ghost` case plus the
+platform-dependency checks), and `TestDoctorListsAllServices` (the SERVICES
+section names, including that the removed `open-webui`/`odysseus` services are
+absent) — all in `test/acceptance/acceptance_test.go`.
+
 ---
 
 ## 14.2 State Repair `[S1]`
@@ -852,6 +1000,57 @@ ai state repair --json
 
 * missing state reconstructed
 * inconsistencies resolved
+
+**Automated coverage:** `TestStateRepairThenShow`
+(`test/acceptance/acceptance_test.go`) — it also exercises the companion `ai
+state show`, asserting the envelope's `data` carries `projects`/`config`/
+`runtime` keys (not documented elsewhere in this spec).
+
+---
+
+## 14.3 Log Command
+
+Not previously documented in this spec: `ai logs` streams/tails a service
+container's log (CLI §4 family). Two behaviors are exercised directly:
+
+### Test
+
+```bash
+ai logs --json                        # no service tier running / no filter
+ai logs --service bogus --json        # unknown service name
+```
+
+### Expected Result
+
+* with no service tier reachable, `ai logs` still returns a clean, `ok`
+  envelope (`command: logs`) rather than erroring
+* `--service <unknown>` is invalid input and exits `2`
+
+**Automated coverage:** `TestLogsEmptyReturnsCleanEnvelope` and
+`TestLogsUnknownServiceExits2`, both in `test/acceptance/acceptance_test.go`.
+
+---
+
+## 14.4 CLI Baseline
+
+Not previously documented in this spec: two general CLI-contract checks that
+apply platform-wide, independent of any project or service.
+
+### Test
+
+```bash
+ai --version --json
+ai bogus --json
+```
+
+### Expected Result
+
+* `ai --version` reports `data.name == "ai"` and a non-empty `data.version`,
+  exit `0`
+* an unknown subcommand (`ai bogus`) exits `2`
+
+**Automated coverage:** `TestVersion` and `TestUnknownCommandExits2`, both in
+`test/acceptance/acceptance_test.go`.
 
 ---
 
@@ -891,6 +1090,10 @@ find "$AIP_TEST_HOME" -name '.env' -print                                       
 * the `find` for `.env` returns nothing
 * audit log records secret-access events without values (arch §31)
 
+**Unverified:** no test in `test/acceptance/` or `test/integration/` runs this
+host-state-wide sentinel grep or the `.env` search; `TestCredentialedRequestOnHardware`
+(§9.1) only checks the narrower case of the workspace's own `env` output.
+
 ---
 
 ## 16.2 Workspace Isolation Test `[S1]`
@@ -923,6 +1126,9 @@ ai exec test-project --json -- test -e /var/run/docker.sock \
 * no host Docker socket is present (`data.exit_code != 0`) (arch §30)
 * the `ai` process itself exits `0` for both (the commands ran); isolation is
   asserted via `data.exit_code`, per §4.5
+
+**Automated coverage:** `TestWorkspaceIsolationOnHardware`
+(`test/acceptance/s1_hardware_test.go`), hardware-gated.
 
 ---
 
@@ -977,6 +1183,12 @@ ai exec test-project --json -- \
 
 (Egress confinement is the Microsandbox net-rules rendered at workspace create,
 arch §29.5; this test asserts that applied policy on a provisioned host.)
+
+**Automated coverage:** `TestEgressConfinementOnHardware`
+(`test/acceptance/s1_hardware_test.go`), hardware-gated — it checks the
+trusted host service (LiteLLM) is reachable and that `example.com` is denied;
+it does not additionally probe a second allow-listed mock-provider destination
+the way the spec's three-probe sequence above does.
 
 ---
 

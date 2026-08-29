@@ -73,6 +73,7 @@ keep the precedence rules in arch §27 explicit), `slog` (structured logs), stdl
 │   ├── console/                # host-display endpoint registry (UI subdomains + gateway paths off the nginx port)
 │   ├── litellm/                 # host lifecycle, config gen, health, routing, guardrails, virtual-key + credential KeyManager (keys-in-LiteLLM; fronted by `ai keys` in cli/keys.go)
 │   ├── hf/                      # Hugging Face CLI wrapper: BinaryPath (platform venv) + Detect + Install (pip huggingface_hub[cli]); Client Download/CacheList/CacheRemove; CuratedModels(goos) in-code available list (mlx-community/* on darwin, HF safetensors on Linux)
+│   ├── pyenv/                    # platform-managed HOST Python venv (~/.ai-platform/venv): Ensure (newest Python, general/Linux) / EnsureVersion (exact-pin + recreate, macOS MLX) / PipInstall
 │   ├── vllm/                     # host-native vLLM backend: per-model `vllm serve` Manager (one OpenAI endpoint per model on :8101+, lazy-start + max-concurrent cap + LRU evict, health); StoreDir volumes/models/vllm; MLX on macOS / safetensors on Linux (live launch/download are `hardware bring-up` stubs)
 │   ├── agentcfg/                # in-VM agent provider config (base_url→nginx gateway, virtual key, picker models, refresh-models)
 │   ├── contextopt/              # per-project Headroom strategy (→ per-request knobs fed to LiteLLM's headroom compress-guardrail call) + in-workspace Caveman skill
@@ -334,7 +335,10 @@ Slice 1 is complete only when every `[S1]` test passes with no manual config.
   templates (S1 ships `debian-trixie`); OS-equivalence test. Tests `[S5]`.
 * **S6 Linux + Podman.** Podman `Runtime` impl; Linux launcher; abstraction
   equivalence. Tests `[S6]`.
-* **S7 — Removed.** The `[S7]` tag is retired (no separate slice).
+* **S7 — Removed.** Slice 7 originally added native Windows (later narrowed to
+  WSL2-only) host support; Windows support was subsequently dropped from the
+  platform entirely — the supported hosts are macOS (Apple Silicon) and Linux
+  only (§1). The `[S7]` tag is retired with no replacement slice.
 
 Each slice must not break prior slices (roadmap §1).
 
@@ -358,10 +362,17 @@ operation inside a booted microVM is a `hardware bring-up` seam.)
 
 **Status.** The full surface is implemented — milestones M0–M8 plus slices S1,
 S2, S4–S6 (S3 and S7 retired) — host-side and, on a provisioned Apple Silicon
-host, verified end-to-end against the live external tools. The narrow seams that
-still depend on further bring-up (live service/microVM log capture, verifying the
-tool-firewall regexes against live agent tool schemas, the nginx readiness probe)
-are grep-able (`hardware bring-up`) and tracked in `docs/HARDWARE-BRINGUP.md`.
+host, verified end-to-end against the live external tools. Service log capture
+(`ai logs`/`ai services status`) and the nginx readiness probe are themselves
+live and done; the narrow seams that still depend on further bring-up are the
+real vLLM + Hugging Face CLI install and per-model `vllm serve`/weight-download
+round-trip, the CLI-backend (non-default) microVM log follow, live confirmation
+that the tool-firewall blocks destructive tool-calls end-to-end (including
+codex's array-argument command form) against a running agent, and live
+end-to-end confirmation of the nginx→LiteLLM(→Headroom) forward chain — incl.
+SSE streaming and the internal-only service routes — against the running stack.
+These are grep-able (`hardware bring-up`) and tracked in
+`docs/HARDWARE-BRINGUP.md`, which stays the current, more granular punch list.
 
 ---
 

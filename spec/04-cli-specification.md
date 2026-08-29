@@ -372,7 +372,7 @@ Purpose:
 ### ai uninstall
 
 ```bash id="c3b"
-ai uninstall [--purge] [--remove-deps]
+ai uninstall [--purge] [--remove-deps] [--keep-runtimes]
 ```
 
 The inverse of install + setup, implemented **natively in the binary** — it runs
@@ -388,13 +388,20 @@ Behavior:
   images** (the pinned service-tier images plus every `aip-*` image, so nothing is
   left on the host — done on EVERY uninstall, not only `--purge`), removing the `ai` binary,
   removing the completion scripts, and stripping the managed PATH/completion lines
-  from the shell rc files (leaving the user's own lines intact). **vLLM — being
-  Docker/host-managed — is deliberately LEFT INTACT** (never stopped or removed)
+  from the shell rc files (leaving the user's own lines intact)
+* **also removes the host-native vLLM runtime by default** (best-effort: stops any
+  running `vllm serve` processes and uninstalls the runtime itself) — on a terminal
+  this is a confirm prompt ("Remove the host-native vLLM runtime?", default **yes**,
+  seeded by `--keep-runtimes`); under `--json`/no-TTY it removes the runtime unless
+  `--keep-runtimes` is passed. The **downloaded models are preserved either way** —
+  only `--purge` deletes them (see below)
 * **removes the platform state under `~/.ai-platform` but KEEPS the downloaded
   model store (`volumes/models`)** — the one expensive-to-refetch piece a user
   usually wants to keep across a reinstall; the local vLLM model store
-  (`volumes/models/vllm`) is preserved on a non-purge uninstall, while `--purge`
-  removes `~/.ai-platform` in full, including the downloaded models
+  (`volumes/models/vllm`) is preserved on a non-purge uninstall. On a terminal
+  whether to ALSO remove the downloaded models is its own confirm prompt (seeded by
+  `--purge`); under `--json`/no-TTY, `--purge` removes `~/.ai-platform` in full,
+  including the downloaded models
 * **asks, per external dependency, whether to also uninstall it** — for `msb`
   (Microsandbox) that is detected on the host, it prompts (on a terminal) before
   removing that tool's install artifacts. Microsandbox ships no uninstaller, so
@@ -419,6 +426,9 @@ Guards / flags:
 * `--remove-deps` removes every detected external dependency **without
   prompting** (for non-interactive / `--json` use); without it, and with no
   terminal to prompt on, the dependencies are left in place and reported
+* `--keep-runtimes` keeps the host-native vLLM runtime installed instead of
+  removing it (the default is to remove it); the downloaded models are kept
+  either way unless `--purge` is also given
 * `--dry-run` prints the planned steps (including which external dependencies
   it would ask about) and changes nothing
 * exit `4` if the teardown fails
@@ -1264,7 +1274,8 @@ model-list call fails (e.g. unauthorized), the command still reports health and
 shows a note rather than erroring out.
 
 The `--json` envelope carries the underlying fields (`healthy`, `providers`
-[live-derived], `default`, `vllm`, `models` [the live served list of
+[live-derived], `default`, `local` [true when the gateway serves at least one
+local vLLM `vllm/<alias>` model], `models` [the live served list of
 `{name, provider, mode}`], `models_note` [why the list is empty when otherwise
 reachable], `base_url`).
 
@@ -1325,17 +1336,20 @@ ai models popular
 
 Lists **installable** models from the **curated available-models list**
 (`hf.CuratedModels(goos)`): on **darwin** it is `mlx-community/*` MLX repos, on
-**Linux** plain Hugging Face safetensors repos. This is a **static curated set**,
-not a live search — there is **no live HF search and no scraped-library cache**. For each entry it reports:
+**Linux** plain Hugging Face safetensors repos. This is a **static, hand-curated
+set** — there is **no live HF search, no `--refresh` flag, no scraped-library
+cache, and no cache/live "source" reporting** in either the human or `--json`
+output. For each entry it reports:
 
-* **name** — the HF repo id (e.g. `mlx-community/Qwen2.5-Coder-7B-Instruct-4bit`)
-* **size / context / input** — the curated metadata for the repo; a `—` marks a
-  column the curated entry omits
-* the **repo link** — the model's Hugging Face page
+* **name** — a short display name for the model
+* **repo** — the HF repo id (e.g. `mlx-community/Qwen2.5-Coder-7B-Instruct-4bit`)
+* **description** — a one-line note about the model (may be empty)
+* **size** — the curated size label; a `—` marks an entry that omits it
 
-The human output is a NAME / SIZE / CONTEXT / INPUT / REPO table; `--json` returns
-the structured list. `ai models pull` always also accepts a free-text repo id, so
-the curated list never blocks pulling anything.
+The human output is a REPO / SIZE / DESCRIPTION table; `--json` returns the
+structured list (`{name, repo, description, size}` per entry — no `source` or
+`note` field). `ai models pull` always also accepts a free-text repo id, so the
+curated list never blocks pulling anything.
 
 ### 8.3.3 Pull (install / update)
 
@@ -1423,7 +1437,11 @@ ai context strategy [project] [conservative|balanced|aggressive]
 Both positionals are **optional**: the project resolves like every project-scoped
 command (§17), and on a terminal omitting the value **presents a select menu**
 (pre-seeded with the current/given strategy); under `--json` / no TTY the value
-must be passed. The strategy is kept per project (default `balanced`). Headroom runs
+must be passed. On a terminal, after the change is applied to a **running**
+workspace you are offered (default no) to restart it now so the baked-in
+Headroom knobs pick up the new strategy immediately; declining (or a stopped
+workspace, or `--json`/no-TTY) leaves the change to apply on the next
+`ai start`/`ai restart`. The strategy is kept per project (default `balanced`). Headroom runs
 as a shared **host** container (`aip-headroom`, internal-only on `:8787`) that
 LiteLLM invokes in-process as a `pre_call` compression guardrail (it is no longer
 an nginx proxy); the strategy maps to the per-request compression knobs
@@ -1686,6 +1704,12 @@ value must be passed as an argument.
   present), `log` prints a clear note and exits `0`; a genuine runtime failure
   reading the log exits `4`.
 * invalid mode / port → exit `2`.
+* after `egress`/`allow`/`disallow`/`publish`/`unpublish` apply their change, a
+  terminal run against a **running** workspace is offered (default no) to restart
+  it now so the new policy is re-applied to the microVM immediately (the policy is
+  only rendered into Microsandbox net-rules at create); declining, a stopped
+  workspace, or `--json`/no-TTY leaves it to apply on the next
+  `ai start`/`ai restart`.
 
 Human-readable output by default; `--json` emits the standard §19 envelope.
 
@@ -2161,6 +2185,10 @@ Global flags (accepted by every command and subcommand):
 --project <name>       scope the command to a project (overrides the default)
 --yes                  assume "yes" for destructive confirmation prompts
 ```
+
+`ai` itself (root command only, not a persistent flag) additionally accepts
+`--version`, which prints the CLI version and exits `0` (`{"name":"ai","version":
+…}` under `--json`).
 
 ### Project resolution
 

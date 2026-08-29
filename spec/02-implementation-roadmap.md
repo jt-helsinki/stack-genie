@@ -28,11 +28,15 @@ It translates the full architecture into incremental delivery slices.
 
 Each slice must be independently testable and fully working before proceeding to the next.
 
-> **Status:** the full surface is implemented — slices S1, S2, S4–S6 (S3 and the
-> retired S7 tag are removed) — host-side and, on a provisioned Apple Silicon
-> host, verified end-to-end against the live external tools. The slices below
-> describe the delivery order; the few seams still pending live hardware bring-up
-> are grep-able as `hardware bring-up` and tracked in `docs/HARDWARE-BRINGUP.md`.
+> **Status:** the full surface is implemented — slices S1, S2, S4–S6 (S3 and S7
+> are retired) — host-side and, on a provisioned Apple Silicon host, verified
+> end-to-end against the live external tools. S3 (multi-agent orchestration)
+> was retired because that is the in-workspace agent CLI's concern, not the
+> platform's (§4); S7 (Windows/WSL host support) was retired when Windows
+> support was dropped from the platform entirely — the supported hosts are
+> macOS (Apple Silicon) and Linux only. The slices below describe the delivery
+> order; the few seams that still depend on live hardware bring-up are
+> grep-able as `hardware bring-up` and tracked in `docs/HARDWARE-BRINGUP.md`.
 
 ---
 
@@ -355,6 +359,14 @@ Add Linux host compatibility.
 
 ---
 
+> **Slice 7 — Removed.** Slice 7 originally added native Windows host support
+> (later narrowed to WSL2-only); Windows support was then dropped from the
+> platform entirely, so there is no Slice 7 section here — the supported hosts
+> are macOS (Apple Silicon) and Linux only — and the `[S7]` acceptance tag is
+> retired with no replacement slice.
+
+---
+
 # 8. Cross-Cutting Systems
 
 These are implemented progressively across slices.
@@ -449,7 +461,7 @@ These are implemented progressively across slices.
 
 ---
 
-## 8.7 Host service control commands
+## 8.4 Host service control commands
 
 * `ai domain [name]` — show/set the platform base domain (default `aip.local`)
 * `ai gateway show|set|clear` — machine-wide gateway address selection
@@ -462,7 +474,7 @@ These are implemented progressively across slices.
 
 ---
 
-## 8.4 Sandbox Strategy
+## 8.5 Sandbox Strategy
 
 Default:
 
@@ -486,7 +498,7 @@ host-published** (the host port `18787`); every other service is internal-only o
 
 ---
 
-## 8.5 Networking
+## 8.6 Networking
 
 * the **`aip-proxy` nginx gateway is the SOLE host entry** to the service tier,
   on host port `18787`. It binds **127.0.0.1** in standalone/client roles and
@@ -525,7 +537,7 @@ host-published** (the host port `18787`); every other service is internal-only o
 
 ---
 
-## 8.6 Audit Logging
+## 8.7 Audit Logging
 
 * lifecycle tracking
 * no secret logging

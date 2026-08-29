@@ -112,7 +112,7 @@ auto-loaded by `ai`) so they survive restarts without editing your shell rc.
 Every command supports `--json` (envelope `{ok, command, data, error,
 warnings}`) and stable exit codes: `0` ok · `2` invalid input · `3` missing
 dependency · `4` runtime failure · `5` permission. Global flags: `--verbose`,
-`--dry-run`, `--project`, `--yes`.
+`--dry-run`, `--plain`, `--project`, `--yes`.
 
 Project-scoped commands default to the project of your current directory (walking
 up to a `.ai-platform/` root); pass a name or `--project` to target another. With
@@ -215,6 +215,7 @@ ai models test  vllm/qwen-vllm       # round-trip one of the served models
 ai models list                       # locally-downloaded models (vLLM store, via `hf cache ls`)
 ai models popular                    # the curated, vLLM-servable installable model list
 ai models install-vllm               # install the vLLM backend into the platform venv (one-shot)
+ai models login                      # authenticate the Hugging Face CLI to pull gated repos (logout clears it)
 ai models pull mlx-community/Qwen2.5-7B-Instruct-4bit --alias qwen-vllm  # hf download → serve via vLLM, registered as vllm/qwen-vllm (rm too)
 
 ai services status                   # host service tier
@@ -273,7 +274,7 @@ are macOS (Apple Silicon) and Linux.
 
 ```bash
 make build             # -> bin/ai (injects the version via -ldflags)
-make check             # the pre-commit gate: fmt-check vet lint test build
+make check             # the pre-commit gate: fmt-check vet vet-tagged lint test build
 make fmt               # gofmt -w .
 make lint              # golangci-lint (also run standalone)
 make test              # unit tests (go test ./...)
@@ -308,7 +309,10 @@ not yet wired report their deferred status rather than pretending.
 
 ## Design docs
 
-The full design lives in [`spec/`](spec/) — the source of truth:
+[`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) is the architecture reference —
+container topology, the model data path, and per-workspace tooling, with the
+canonical diagram. The full design lives in [`spec/`](spec/) — the source of
+truth:
 
 | Doc | Contents |
 |-----|----------|

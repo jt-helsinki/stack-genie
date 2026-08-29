@@ -232,6 +232,7 @@ Contains:
 ~/.ai-platform/
 ├── agents/
 ├── audit/
+├── bin/            # platform-managed native binaries (e.g. bin/msb, sha256-verified)
 ├── cache/          # re-fetchable caches: catalog.yaml (models.dev)
 ├── config/         # global settings + projects index (no per-project state)
 ├── logs/
@@ -239,6 +240,7 @@ Contains:
 ├── prompts/
 ├── skills/
 ├── templates/      # OS Dockerfile templates + shared templates
+├── venv/           # platform-managed host Python venv (vLLM + the Hugging Face CLI)
 ├── volumes/        # host data volumes only (litellm-db, models store)
 └── tools/
 ```
@@ -363,7 +365,7 @@ ai logs --service <svc>      one log surface
 | Headroom | container (via Runtime) `aip-headroom` (`ghcr.io/chopratejas/headroom:latest`) | LiteLLM's `pre_call` input-compression guardrail backend, called at `aip-headroom:8787/v1/compress`; INTERNAL-ONLY on :8787 on aip-net (no host publish, nginx never routes to it); carries only `HEADROOM_TELEMETRY=off`; HTTP only (§10) |
 | LiteLLM | container (via Runtime) `aip-litellm` (image tag `latest`) (+ `aip-litellm-db` Postgres, surfaced as its own `postgres` status line) | INTERNAL-ONLY: no host publish, reached by name (`aip-litellm:4000`) by nginx's model path + `/llm` route; it calls Headroom in-process; HTTP only; no host privileges |
 | Presidio | two containers (via Runtime) `aip-presidio-analyzer` + `aip-presidio-anonymizer` | back LiteLLM's secret-masking guardrail; started ONLY when `secret-masking` is selected (§15); internal-only, not published |
-| vLLM (local backend) | **host-side, per-model processes** (one `vllm serve` per served model — NOT a single endpoint, NOT containers) | the platform's sole local-inference backend; each served model runs its own `vllm serve` on a host loopback port (base 8101, allocated upward), lazy-started with a max-concurrent cap + LRU eviction; probed at `http://127.0.0.1:<port>/v1/models`, reached by the LiteLLM/nginx containers at `host.docker.internal:<port>/v1` (both launched with `--add-host=host.docker.internal:host-gateway`, harmless on Docker Desktop, required on Linux); on macOS it serves MLX weights (`mlx-community/*`) via the vLLM-Metal plugin, on Linux Hugging Face safetensors on CUDA/NVIDIA; ensured NON-fatally in reconcile — an unreachable vLLM is a hint, not a setup failure; installing it (`RealRunner`/`InstallGuidance`, e.g. the vLLM-Metal plugin on macOS or `pip install vllm` on Linux) is a NOT-YET-WIRED hardware-bring-up seam |
+| vLLM (local backend) | **host-side, per-model processes** (one `vllm serve` per served model — NOT a single endpoint, NOT containers) | the platform's sole local-inference backend; each served model runs its own `vllm serve` on a host loopback port (base 8101, allocated upward), lazy-started with a max-concurrent cap + LRU eviction; probed at `http://127.0.0.1:<port>/v1/models`, reached by the LiteLLM/nginx containers at `host.docker.internal:<port>/v1` (both launched with `--add-host=host.docker.internal:host-gateway`, harmless on Docker Desktop, required on Linux); on macOS it serves MLX weights (`mlx-community/*`) via the vLLM-Metal plugin, on Linux Hugging Face safetensors on CUDA/NVIDIA; ensured NON-fatally in reconcile — an unreachable vLLM is a hint, not a setup failure; installation is wired — the one-shot `ai models install-vllm` (`vllm.Install`) resolves and installs the vLLM-Metal wheel on macOS or plain `pip install vllm` on Linux into the platform venv, and `ai setup` best-effort auto-installs it (and the Hugging Face CLI) the same way when absent; `RealRunner.Start`/`Stop` spawn/stop the real `vllm serve` process. The live network install/wheel-resolution and a real per-model serve + gateway round-trip on provisioned hardware remain a hardware-bring-up verification item (§16) |
 | DNS audit resolver | container (via Runtime) `aip-dns` (CoreDNS) | egress-audit resolver: microVMs forward DNS here so attempted names are logged for `ai network log`; published to host loopback only; audit, not enforcement (§29.7) |
 | Microsandbox | microVM runtime, invoked on demand | drives workspace microVMs via the Go SDK / `msb`; no daemon to supervise (§7) |
 
@@ -388,8 +390,11 @@ service configs live under `config/<service>/`.
 
 * **install**: container images are pulled by pinned **image + tag** (default
   `latest`; no digests — they are platform/arch specific — `config/versions.yaml`,
-  §27); native binaries are downloaded as pinned, checksum-verified release
-  artifacts into `tools/<name>/<version>/`
+  §27); the Microsandbox `msb` CLI is downloaded as a pinned, sha256-verified
+  release binary into `~/.ai-platform/bin/msb` (flat — not a per-tool/per-version
+  subdirectory); vLLM and the Hugging Face CLI are `pip`-installed into the
+  platform-managed venv `~/.ai-platform/venv` by `ai models install-vllm` /
+  `ai setup` (§16)
 * **configure**: rendered from platform config — the LiteLLM config carries no
   model list (models are DB-backed, §14–15) and no key references; the real
   provider credentials live in the LiteLLM gateway, managed via `ai keys`
@@ -1155,12 +1160,26 @@ Provider
 
 ## Supported Providers
 
+Cloud providers are **not** a fixed, platform-maintained allow-list — they are
+whichever [models.dev](https://models.dev) catalog providers map to a
+LiteLLM-routable prefix (`internal/litellm.LiteLLMPrefix`; the mapping is
+verbatim in most cases, with a small number of known exceptions — e.g. the
+catalog's `google` provider routes under LiteLLM's `gemini` prefix). Commonly
+used examples:
+
 * OpenAI
 * Anthropic
 * Google Gemini
 * Groq
 * OpenRouter
-* vLLM (host-side local backend, §16)
+
+plus the local backend:
+
+* vLLM (host-side, §16)
+
+A provider becomes usable the moment its API key is added via `ai keys add`
+(§17), which syncs that provider's catalog models into LiteLLM's DB
+(`litellm.SyncModels`).
 
 ---
 
@@ -1457,8 +1476,8 @@ credential. They are owned solely by `ai models pull`/`rm`.
 
 ### In-VM agent provider config — keyless per-CLI project configs, key in-VM only
 
-The **eight** gateway-capable agent CLIs (all except forced-OAuth Copilot) route through
-the gateway **by default** — subject to per-agent auth mode: an `oauth`-mode Claude
+The **six** gateway-capable agent CLIs (all except forced-OAuth Copilot, out of the
+seven supported agent CLIs total, §12) route through the gateway **by default** — subject to per-agent auth mode: an `oauth`-mode Claude
 Code/Codex/Gemini goes direct to its provider and gets no gateway config (see auth modes
 above). Each CLI's provider
 config is written at **that CLI's own default per-project location** inside the
@@ -1563,9 +1582,16 @@ on Linux). On macOS it serves
 MLX weights (`mlx-community/*`) via the vLLM-Metal plugin; on Linux it serves Hugging
 Face safetensors on CUDA/NVIDIA.
 In `Reconcile`, vLLM is ensured **non-fatally** — an unreachable vLLM is a hint, not a
-setup failure. Installing it (`RealRunner`/`InstallGuidance`, e.g. the vLLM-Metal
-plugin on macOS, or `pip install vllm` on Linux) is a
-**NOT-YET-WIRED hardware-bring-up seam**.
+setup failure. Installing it is **wired**: the one-shot **`ai models install-vllm`**
+(`vllm.Install`) resolves and pip-installs the vLLM-Metal wheel on macOS or plain
+`pip install vllm` on Linux into the platform-managed venv
+(`~/.ai-platform/venv`), and `ai setup` best-effort auto-installs vLLM (and the
+Hugging Face CLI) the same way when either is absent. `RealRunner.Start`/`Stop`
+(`internal/vllm/runner.go`) spawn/stop the real `vllm serve` process — the legacy
+`vllm.ErrNotWired` stub is no longer returned. What remains is the live
+network install/wheel-resolution and a real per-model serve + gateway round-trip
+on provisioned hardware — a **hardware-bring-up** verification item
+(`docs/HARDWARE-BRINGUP.md` §2.9).
 
 ## Model download (Hugging Face CLI)
 
@@ -1723,13 +1749,13 @@ and confines all other workspace egress with the NetworkPolicy (§29.4).
 
 # 18. Shared Resources
 
-Host-managed shared resources:
+The platform reserves global, host-managed shared-resource directories under:
 
 ```text
 ~/.ai-platform/
 ```
 
-Includes:
+Including:
 
 ```text
 agents/
@@ -1738,7 +1764,14 @@ prompts/
 templates/
 ```
 
-Mounted read-only.
+**Status: deferred.** A read-only mount of these GLOBAL directories into every
+workspace is not yet wired into the `msb` run-args (§7, Mount Rules) — there is
+no platform-wide skill/agent/prompt pool shared across projects today. What IS
+wired and mounted is the **per-project** shared pool,
+`<project>/.ai-platform/{agents,skills,prompts,projects}` (§5, §12, §15), which
+is symlinked into each installed agent CLI's own directories at workspace start.
+Do not confuse the two: this section describes the still-deferred global layer;
+the per-project pool is live.
 
 ---
 

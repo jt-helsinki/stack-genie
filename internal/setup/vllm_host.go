@@ -209,9 +209,9 @@ func vllmServeModel(choice config.ModelRuntimeChoice) string {
 // ensureVLLMServers best-effort brings up a vLLM server for every recorded
 // runtime=vllm model whose endpoint is not already answering. It is host-native
 // and OPTIONAL: it NEVER returns an error and NEVER fails the reconcile — a launch
-// failure (today vllm.RealRunner is an ErrNotWired `hardware bring-up` stub) is
-// logged with the install guidance and skipped. Servers are launched DETACHED (by
-// the Runner) so they outlive this short-lived CLI.
+// failure (e.g. `vllm serve` exiting immediately, or a port conflict) is logged
+// with the install guidance and skipped. Servers are launched DETACHED (by the
+// Runner) so they outlive this short-lived CLI.
 func ensureVLLMServers(progress func(string)) {
 	choices := vllmRuntimeChoices()
 	if len(choices) == 0 {

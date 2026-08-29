@@ -36,23 +36,34 @@ All platform-wide data is stored under:
 
 ```text id="h2"
 ~/.ai-platform/
-├── agents/
-├── audit/
-├── cache/         # re-fetchable caches: catalog.yaml (models.dev)
+├── agents/        # reserved — created eagerly, not written to by any code path today
+├── audit/         # reserved for audit logs (see §1.4) — created eagerly, not written to today
+├── bin/           # platform-managed host executables (today: the `msb` binary; see §1.9) — created on first use
+├── cache/         # re-fetchable caches: catalog.yaml (models.dev); see §1.3
 ├── config/        # global settings + projects index (no per-project state)
-├── logs/
-├── overlays/
-├── prompts/
-├── skills/
+├── logs/          # per-service-container log snapshots (see §6)
+├── overlays/      # per-workspace persistent overlays (see §1.10)
+├── prompts/       # reserved — created eagerly, not written to by any code path today
+├── skills/        # reserved — created eagerly, not written to by any code path today
 ├── templates/     # OS Dockerfile templates + shared templates
-├── tools/
-└── volumes/       # ALL host-persisted SYSTEM data volumes
+├── tools/         # reserved — created eagerly, not written to by any code path today
+├── venv/          # platform-managed host Python venv (vLLM + the Hugging Face CLI; see §1.9/§12.6a) — created on first use
+└── volumes/       # ALL host-persisted SYSTEM data volumes — created on first use
     ├── litellm-db/  # LiteLLM Postgres data dir (bind-mounted → aip-litellm-db:/var/lib/postgresql)
     └── models/      # local-model store
         └── vllm/    # host-native vLLM weights (HF cache: MLX on macOS, safetensors on Linux)
 
 ~/.ai-platform/.ai-platform.env   # OPT-IN, 0600 sibling file (NOT under ~/.ai-platform/)
 ```
+
+`agents/`, `audit/`, `prompts/`, `skills/`, and `tools/` are created eagerly by
+`ai setup` (`internal/layout`), but as of this writing no code path writes into
+them — they are reserved placeholders, not live state. The real per-project
+shared resource pools (agents/skills/prompts) live at
+`<project>/.ai-platform/{agents,skills,prompts}` (§2.2), not here. `bin/`,
+`venv/`, and `volumes/` are, by contrast, real and populated, but created **on
+demand** by their own consumers (the `msb` binary download, `internal/pyenv`,
+and the vLLM/LiteLLM-DB writers respectively) rather than eagerly by `ai setup`.
 
 Global only — **no per-project state here**. Per-project state lives in
 `<project>/.ai-platform/` (see §2).
@@ -132,10 +143,10 @@ Rules:
 ```
 
 ```text id="h6"
-catalog.yaml          # models.dev catalog (fetched as JSON, persisted as YAML; legacy catalog.json one-shot converted)
-models/
-downloads/
-temp/
+catalog.yaml          # models.dev catalog (fetched as JSON, persisted as YAML; legacy catalog.json one-shot converted) — the only entry the current code creates
+models/                # reserved — not created by any code path today
+downloads/             # reserved — not created by any code path today
+temp/                  # reserved — not created by any code path today
 ```
 
 Rules:
@@ -146,6 +157,10 @@ Rules:
 * `catalog.yaml` is the models.dev catalog fetched as JSON and **persisted as YAML**;
   a legacy `catalog.json` (or the older `volumes/catalog.json`) is **one-shot
   converted** to YAML (`catalog.Path`); `volumes/` is now ONLY true host data
+* `models/`, `downloads/`, and `temp/` are reserved for a possible future
+  model-library cache; today there is no live HF search or scraped library —
+  the available-models list is the curated, in-code `hf.CuratedModels(goos)`
+  set, so nothing writes here yet
 * never contains secrets
 * removed by `ai uninstall --purge` (which `RemoveAll`s `~/.ai-platform`)
 
@@ -157,7 +172,7 @@ Rules:
 ~/.ai-platform/audit/
 ```
 
-Contains immutable logs:
+Intended to contain immutable logs (e.g.):
 
 ```text id="h8"
 workspace-create.log
@@ -166,7 +181,13 @@ agent-events.log
 security-events.log
 ```
 
-Rules:
+**Not yet implemented as of this writing:** the directory is created (empty) by
+`ai setup`/`internal/layout`, but no code path writes into it — there is no
+audit-log writer today, so the filenames above describe intent, not observed
+behavior. (Point-in-time service **log capture** is a separate, real mechanism —
+see §6 — and is not audit logging in this sense.)
+
+Rules (once implemented):
 
 * append-only
 * no secret material stored
@@ -320,14 +341,20 @@ gateway's vhost resolves locally. Only the platform's delimited block is touched
 
 ## 1.9 Tools
 
-```text id="h18"
-~/.ai-platform/tools/<name>/<version>/
+```text id="h19a"
+~/.ai-platform/bin/msb
 ```
 
-Pinned, checksum-verified host binaries (e.g. the Microsandbox
-`msb` runtime). Versions are tracked in `config/versions.yaml`. (vLLM and the
-Hugging Face CLI run from the platform Python venv `~/.ai-platform/venv`, not from
-here; see architecture §16 and `config/versions.yaml` §12.6.)
+The one pinned, checksum-verified host binary today: the Microsandbox `msb`
+runtime. It is pinned to an exact version **in code**
+(`internal/workspace/msb.go`, matched to the go.mod Microsandbox Go SDK pin —
+not `config/versions.yaml`, see §12.6) and downloaded (sha256-verified) into
+`~/.ai-platform/bin/` (`paths.BinDir`) on first use, so it is not a
+user-installed `PATH` prerequisite. (vLLM and the Hugging Face CLI run from the
+platform Python venv `~/.ai-platform/venv` instead, not from here — see §1.1
+and §12.6a.) The top-level `~/.ai-platform/tools/` directory named in §1.1 is
+created by `ai setup` but, as of this writing, is not written to by any code
+path (reserved).
 
 ## 1.10 Overlays (Persistence)
 
@@ -354,10 +381,17 @@ Rules:
 
 # 2. Project Layout (Host)
 
-All projects live under:
+A project lives wherever the user chooses. `ai create`'s **location** input
+(`--location`, or the wizard's location field) — **defaulting to the current
+working directory** — creates the project there if it does not already exist;
+a location may not be, or be nested inside, an existing project. There is no
+fixed project root: `~/projects/<name>` (`project.RootPath`,
+`paths.ProjectsDir`) survives in code only as a fallback used when a spec's
+`Root` is left unset, but `ai create` always sets `Root` explicitly to the
+chosen location, so that fallback is not exercised on the real create path.
 
 ```text id="p1"
-~/projects/<project-name>/
+<chosen-location>/<project-name>/     # e.g. ~/projects/my-project/, or any other directory
 ```
 
 ---
@@ -365,7 +399,7 @@ All projects live under:
 ## 2.1 Project Root
 
 ```text id="p2"
-~/projects/my-project/
+my-project/                 # wherever the user chose to create it
 ├── .ai-platform/
 ├── docs/
 ├── scripts/
@@ -508,7 +542,7 @@ Inside the workspace microVM:
 
 ## 3.2 Mounting Rules
 
-Host project:
+Host project (wherever it was created, e.g.):
 
 ```text id="w3"
 ~/projects/my-project
@@ -551,9 +585,10 @@ maintain a bespoke `snapshots/` directory.
 ```
 
 ```text id="c2"
-models/
-downloads/
-temp/
+catalog.yaml           # the only entry the current code creates (see §1.3)
+models/                 # reserved — not created by any code path today
+downloads/              # reserved — not created by any code path today
+temp/                   # reserved — not created by any code path today
 ```
 
 Rules:
@@ -570,12 +605,31 @@ Rules:
 ~/.ai-platform/logs/
 ```
 
+Point-in-time snapshots of each **running** service-tier container's recent
+output, captured by `ai setup` / `ai services status`
+(`setup.realServices.CaptureServiceLogs`, running `<runtime> logs --tail N
+--timestamps <container>`) and read by `ai logs` / the TUI Logs view
+(`internal/logs`, a pure file reader — it does no docker calls of its own).
+One file per container, named by stripping the `aip-` prefix
+(`logFileNameFor`):
+
 ```text id="l2"
-system.log
-microsandbox.log
-agent.log
-llm.log
+litellm.log
+litellm-db.log
+headroom.log
+proxy.log
+dns.log
+presidio-analyzer.log
+presidio-anonymizer.log
+valkey.log
+redisinsight.log
 ```
+
+(There is no `vllm.log` here — vLLM is host-native, not a container; its
+health is checked with a live HTTP probe, not a captured log file.)
+Continuous following (`ai logs --service <name> --follow`) streams the live
+container log directly (`<runtime> logs -f`) rather than reading this
+snapshot.
 
 ---
 

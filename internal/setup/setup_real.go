@@ -1420,9 +1420,8 @@ func (services realServices) Reconcile(providerConfig, bindHost string, optional
 	ensureHFInstalled(progress)
 	// Host-native vLLM: best-effort bring up a `vllm serve` process for every recorded
 	// runtime=vllm model that isn't already answering. OPTIONAL — it NEVER fails the
-	// reconcile (the RealRunner launch is a `hardware bring-up` stub today; failures
-	// are logged with install guidance and skipped). It reaches the
-	// service tier through the host gateway, which LiteLLM/nginx already have via
+	// reconcile (a launch failure is logged with install guidance and skipped). It
+	// reaches the service tier through the host gateway, which LiteLLM/nginx already have via
 	// hostGatewayAddArg (that --add-host also covers vLLM's per-model ports).
 	ensureVLLMServers(progress)
 	// nginx LAST: it is the SOLE host entry, fronting the gateway (/ + /v1 → LiteLLM

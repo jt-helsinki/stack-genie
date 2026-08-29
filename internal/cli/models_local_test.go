@@ -237,8 +237,8 @@ func TestModelsPopularHuman(test *testing.T) {
 }
 
 // withCuratedProvider swaps the curated-list seam so `ai models popular` tests run
-// with a fake (no network), restoring it afterward.
-func withCuratedProvider(test *testing.T, fn func(string, bool) ([]hf.CuratedModel, hf.Source, error)) {
+// with a fake list (no network), restoring it afterward.
+func withCuratedProvider(test *testing.T, fn func(string) []hf.CuratedModel) {
 	test.Helper()
 	prev := curatedModelsProvider
 	curatedModelsProvider = fn
@@ -265,67 +265,18 @@ func runPopular(test *testing.T, args ...string) (int, modelsPopularResult) {
 	return exit, envelope.Data
 }
 
-// --refresh with a live fetch reports source=live and the fetched models.
-func TestModelsPopularRefreshLive(test *testing.T) {
-	withCuratedProvider(test, func(_ string, refresh bool) ([]hf.CuratedModel, hf.Source, error) {
-		if !refresh {
-			test.Fatalf("--refresh must request a live fetch")
-		}
-		return []hf.CuratedModel{{Name: "Qwen3-8B-4bit", Repo: "mlx-community/Qwen3-8B-4bit", Description: "hot"}}, hf.SourceFresh, nil
-	})
-	exit, data := runPopular(test, "--refresh")
-	if exit != output.ExitOK {
-		test.Fatalf("exit = %d, want 0", exit)
-	}
-	if data.Source != "live" {
-		test.Fatalf("source = %q, want live", data.Source)
-	}
-	if len(data.Models) != 1 || data.Models[0].Repo != "mlx-community/Qwen3-8B-4bit" {
-		test.Fatalf("models = %+v, want the fetched repo", data.Models)
-	}
-	if !strings.Contains(data.Note, "live") {
-		test.Fatalf("note = %q, want a live-source note", data.Note)
-	}
-}
-
-// --refresh whose live fetch failed (the seam degraded to built-in) still exits 0
-// and notes the fallback.
-func TestModelsPopularRefreshFailureFallsBack(test *testing.T) {
-	withCuratedProvider(test, func(goos string, _ bool) ([]hf.CuratedModel, hf.Source, error) {
-		return hf.CuratedModels(goos), hf.SourceBuiltin, nil
-	})
-	exit, data := runPopular(test, "--refresh")
-	if exit != output.ExitOK {
-		test.Fatalf("exit = %d, want 0", exit)
-	}
-	if data.Source != "built-in" {
-		test.Fatalf("source = %q, want built-in", data.Source)
-	}
-	if len(data.Models) == 0 {
-		test.Fatal("expected the built-in fallback list, got none")
-	}
-	if !strings.Contains(data.Note, "could not reach") {
-		test.Fatalf("note = %q, want a fallback warning", data.Note)
-	}
-}
-
-// Plain `ai models popular` reads cache-or-builtin without requesting a live fetch.
-func TestModelsPopularPlainNoRefresh(test *testing.T) {
-	withCuratedProvider(test, func(goos string, refresh bool) ([]hf.CuratedModel, hf.Source, error) {
-		if refresh {
-			test.Fatalf("plain popular must not request a live refresh")
-		}
-		return hf.CuratedModels(goos), hf.SourceBuiltin, nil
+// `ai models popular` reads straight from the injected curated-list seam — a static
+// set, no live fetch/cache/refresh involved.
+func TestModelsPopularReadsCuratedSeam(test *testing.T) {
+	withCuratedProvider(test, func(_ string) []hf.CuratedModel {
+		return []hf.CuratedModel{{Name: "Qwen3-8B-4bit", Repo: "mlx-community/Qwen3-8B-4bit", Description: "hot"}}
 	})
 	exit, data := runPopular(test)
 	if exit != output.ExitOK {
 		test.Fatalf("exit = %d, want 0", exit)
 	}
-	if data.Source != "built-in" {
-		test.Fatalf("source = %q, want built-in", data.Source)
-	}
-	if len(data.Models) == 0 {
-		test.Fatal("expected a non-empty built-in list")
+	if len(data.Models) != 1 || data.Models[0].Repo != "mlx-community/Qwen3-8B-4bit" {
+		test.Fatalf("models = %+v, want the seeded repo", data.Models)
 	}
 }
 
@@ -532,6 +483,9 @@ func TestModelsPullVLLMRegistersWithEndpoint(test *testing.T) {
 	if !ok || choice.Runtime != config.RuntimeVLLM || choice.Endpoint != "http://127.0.0.1:8101/v1" {
 		test.Fatalf("recorded choice = %+v (ok=%v), want vllm @ loopback endpoint", choice, ok)
 	}
+	if choice.Status != "registered" {
+		test.Fatalf("choice.Status = %q, want %q on a successful register", choice.Status, "registered")
+	}
 }
 
 func TestModelsPullVLLMRecordsEvenWhenRegisterFails(test *testing.T) {
@@ -548,6 +502,10 @@ func TestModelsPullVLLMRecordsEvenWhenRegisterFails(test *testing.T) {
 	choice, ok := config.ModelRuntimeFor("my-qwen")
 	if !ok || choice.Endpoint != "http://127.0.0.1:8101/v1" {
 		test.Fatalf("choice must be recorded on start even when register fails: %+v (ok=%v)", choice, ok)
+	}
+	if choice.Status != "registration-failed" {
+		test.Fatalf("choice.Status = %q, want %q (must reflect the actual register failure, not an assumed success)",
+			choice.Status, "registration-failed")
 	}
 }
 
@@ -652,6 +610,85 @@ func TestModelsRmVLLMDeregistersAndStops(test *testing.T) {
 	}
 	if _, ok := config.ModelRuntimeFor("my-qwen"); ok {
 		test.Fatal("runtime choice should be cleared after rm")
+	}
+}
+
+// A CacheRemove failure on the recorded-vLLM rm path must surface as exit 4 (matching
+// the non-recorded rm path) and must NOT clear the runtime record — so the removal is
+// retryable and `ai models show` doesn't report the model gone while its weights are
+// still on disk.
+func TestModelsRmVLLMCacheRemoveFailureExits4KeepsRecord(test *testing.T) {
+	fake := &hf.Fake{RemoveErr: errors.New("permission denied")}
+	withFakeHF(test, fake)
+	registrar := &fakeRegistrar{}
+	withFakeRegistrar(test, registrar)
+	withFakeVLLM(test, true, nil, &fakeVLLMServer{})
+	if err := config.SetModelRuntime(config.ModelRuntimeChoice{
+		Alias: "my-qwen", Model: "mlx-community/Qwen2.5-7B-Instruct-4bit",
+		Runtime: config.RuntimeVLLM, Endpoint: "http://127.0.0.1:8101/v1",
+	}); err != nil {
+		test.Fatalf("seed runtime choice: %v", err)
+	}
+	exit := output.ExitOK
+	cmd := newModelsRmCmd(jsonEmitter(), &exit)
+	cmd.SetOut(io.Discard)
+	cmd.SetErr(io.Discard)
+	runLocalModelsCmd(test, cmd, "my-qwen")
+	if exit != output.ExitRuntimeFailure {
+		test.Fatalf("rm exit on CacheRemove failure = %d, want %d", exit, output.ExitRuntimeFailure)
+	}
+	if _, ok := config.ModelRuntimeFor("my-qwen"); !ok {
+		test.Fatal("runtime choice must survive a failed weight deletion")
+	}
+	if len(registrar.vllmUnregistered) != 1 || registrar.vllmUnregistered[0] != "my-qwen" {
+		test.Fatalf("vLLM unregistered = %v, want [my-qwen] (best-effort step still runs)", registrar.vllmUnregistered)
+	}
+}
+
+// rm by REPO ID when the same repo was pulled under two different --alias values must
+// unregister/stop BOTH recorded choices and clear both records — not just the first
+// match — before the shared weights are deleted once.
+func TestModelsRmVLLMDualAliasRemovesBoth(test *testing.T) {
+	fake := &hf.Fake{}
+	withFakeHF(test, fake)
+	registrar := &fakeRegistrar{}
+	withFakeRegistrar(test, registrar)
+	stoppedPorts := withFakeVLLM(test, true, nil, &fakeVLLMServer{})
+	const repo = "mlx-community/Qwen2.5-7B-Instruct-4bit"
+	if err := config.SetModelRuntime(config.ModelRuntimeChoice{
+		Alias: "alias-a", Model: repo, Runtime: config.RuntimeVLLM, Endpoint: "http://127.0.0.1:8101/v1",
+	}); err != nil {
+		test.Fatalf("seed alias-a: %v", err)
+	}
+	if err := config.SetModelRuntime(config.ModelRuntimeChoice{
+		Alias: "alias-b", Model: repo, Runtime: config.RuntimeVLLM, Endpoint: "http://127.0.0.1:8102/v1",
+	}); err != nil {
+		test.Fatalf("seed alias-b: %v", err)
+	}
+	exit := output.ExitOK
+	cmd := newModelsRmCmd(jsonEmitter(), &exit)
+	cmd.SetOut(io.Discard)
+	cmd.SetErr(io.Discard)
+	runLocalModelsCmd(test, cmd, repo)
+	if exit != output.ExitOK {
+		test.Fatalf("dual-alias rm exit = %d, want 0", exit)
+	}
+	slices.Sort(registrar.vllmUnregistered)
+	if !slices.Equal(registrar.vllmUnregistered, []string{"alias-a", "alias-b"}) {
+		test.Fatalf("vLLM unregistered = %v, want both aliases", registrar.vllmUnregistered)
+	}
+	slices.Sort(*stoppedPorts)
+	if !slices.Equal(*stoppedPorts, []int{8101, 8102}) {
+		test.Fatalf("StopByPort ports = %v, want [8101 8102]", *stoppedPorts)
+	}
+	if len(fake.RemovedAll) != 1 || fake.RemovedAll[0] != repo {
+		test.Fatalf("hf cache rm calls = %v, want the shared repo removed exactly once", fake.RemovedAll)
+	}
+	if _, ok := config.ModelRuntimeFor("alias-a"); ok {
+		test.Fatal("alias-a runtime choice should be cleared after rm")
+	}
+	if _, ok := config.ModelRuntimeFor("alias-b"); ok {
+		test.Fatal("alias-b runtime choice should be cleared after rm")
 	}
 }
 

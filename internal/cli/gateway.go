@@ -57,7 +57,7 @@ func newGatewayCmd(emitter *output.Emitter, exit *int) *cobra.Command {
 			"local standalone gateway (host.microsandbox.internal); set it to a remote\n" +
 			"server (client mode) so every microVM reaches that server's LiteLLM.\n\n" +
 			"The address is a bare host or host:port (NOT a URL); the default port is\n" +
-			"18787 (the Headroom port). microVMs reach it at http://<host>:<port>/v1.",
+			"18787 (the nginx gateway port). microVMs reach it at http://<host>:<port>/v1.",
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			return cmd.Help() // `ai gateway` with no subcommand prints help (§17.0)

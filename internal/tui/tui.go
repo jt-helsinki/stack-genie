@@ -302,16 +302,7 @@ func Run(cwd string) error {
 	// tester. vLLM is the sole local runtime.
 	localModelsView := views.NewLocalModels(
 		hf.RealClient().CacheList,
-		// Open reads cache-or-builtin (no network); r triggers a live refresh that
-		// fetches from the Hugging Face API and updates the cache.
-		func() []hf.CuratedModel {
-			models, _, _ := hf.LoadOrFetchCurated(goruntime.GOOS, false)
-			return models
-		},
-		func() []hf.CuratedModel {
-			models, _, _ := hf.LoadOrFetchCurated(goruntime.GOOS, true)
-			return models
-		},
+		func() []hf.CuratedModel { return hf.CuratedModels(goruntime.GOOS) },
 		litellmClient.Test,
 		hf.RealClient().Whoami,
 	)

@@ -19,6 +19,11 @@ func TestCuratedModelsPerOS(t *testing.T) {
 		if got := model.Repo[:len("mlx-community/")]; got != "mlx-community/" {
 			t.Fatalf("darwin curated repo %q is not mlx-community/*", model.Repo)
 		}
+		if want := filepath.Base(model.Repo); model.Name != want {
+			t.Fatalf("darwin curated Name %q != repo basename %q (Repo=%q) — vllmDefaultAlias derives the "+
+				"gateway alias from the repo basename, so a mismatch here makes `ai models show <Name>` look "+
+				"installed-but-broken for a model pulled by its curated Name", model.Name, want, model.Repo)
+		}
 	}
 	linux := CuratedModels("linux")
 	if len(linux) == 0 {
@@ -27,6 +32,9 @@ func TestCuratedModelsPerOS(t *testing.T) {
 	for _, model := range linux {
 		if len(model.Repo) >= len("mlx-community/") && model.Repo[:len("mlx-community/")] == "mlx-community/" {
 			t.Fatalf("linux curated repo %q must not be mlx-community/*", model.Repo)
+		}
+		if want := filepath.Base(model.Repo); model.Name != want {
+			t.Fatalf("linux curated Name %q != repo basename %q (Repo=%q)", model.Name, want, model.Repo)
 		}
 	}
 	// The returned slice is a copy — mutating it must not affect the next call.

@@ -24,11 +24,14 @@ so the suite is a clean no-op on a machine without the stack.
 
 The workspace-start coverage (group 4) additionally self-skips on **environmental**
 failures that are not the code under test: an `msb` (Microsandbox) binary
-version/DB-schema mismatch (`isMsbVersionMismatch`) and a workspace **image
+version/DB-schema mismatch (`isMsbVersionMismatch`), a workspace **image
 build** that fails because the container registry is unreachable/flaky
-(`isImageBuildInfraError` — e.g. `registry-1.docker.io` network errors). Those are
-skipped rather than failed so a bad network or a stale host `msb` does not report
-as a product bug.
+(`isImageBuildInfraError` — e.g. `registry-1.docker.io` network errors), and the
+LiteLLM gateway not having an admin/master key configured on this host so a
+workspace can't mint its scoped virtual key (`isLiteLLMKeyNotConfigured` — run
+`ai setup` / secure LiteLLM). Those are skipped rather than failed so a bad
+network, a stale host `msb`, or an un-secured gateway does not report as a
+product bug.
 
 The tests run against the **real `~/.ai-platform` state** (not an ephemeral
 HOME) — they must, since the point is to talk to the live services. They clean
@@ -39,7 +42,7 @@ up everything they create (the suite workspace + any dummy keys) via
 
 | Group | Test | Exercises |
 |-------|------|-----------|
-| 1 | `TestGroup01SetupHealth` | `ai setup --mode standalone` (idempotent, non-interactive); `ai doctor` every check ok; catalog file on disk; gateway healthy |
+| 1 | `TestGroup01SetupHealth` | `ai setup --mode standalone` (idempotent, non-interactive); `ai doctor` every check ok/warn (no errors); catalog file on disk; gateway healthy |
 | 2 | `TestGroup02Services` | `ai services status` all running; restart `presidio` → back to running; `ai logs --service litellm` returns output |
 | 3 | `TestGroup03ModelsKeys` | a local vLLM model served (`hf download` + `vllm serve`, registered `vllm/<alias>`); **dummy** key add → models registered + `keys list` keyed; key remove → models drop |
 | 4 | `TestGroup04WorkspaceLifecycle` | `create` → `start` → `exec echo` → in-VM `nerdctl` (containerd) → `refresh-models` → `apps add openwebui` reachable on its host port → egress `deny` blocks / `public` allows (restart between) → `stop` + `delete --purge` |
