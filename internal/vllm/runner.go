@@ -33,15 +33,36 @@ type RealRunner struct{}
 // process. `--served-model-name <alias>` is the linchpin of the contract: the OpenAI
 // endpoint then answers to model=<alias> (NOT the Hugging Face model id), which is what
 // LiteLLM routes on. `--download-dir <storeDir>` is a belt-and-braces hint alongside
-// the HF_HOME env Start sets, so weights land in / load from the platform store.
-func vllmServeArgs(alias, model string, port int, storeDir string) []string {
-	return []string{
+// the HF_HOME env Start sets, so weights land in / load from the platform store. When
+// opts.ToolCallParser is non-empty (from the curated model's known-good vLLM parser —
+// see hf.CuratedModel.ToolCallParser), `--enable-auto-tool-choice --tool-call-parser
+// <value>` is appended so tool_choice="auto" requests (every agentic coding CLI sends
+// these) work instead of failing with "auto tool choice requires
+// --enable-auto-tool-choice and --tool-call-parser to be set". Left unset for a model
+// with no confirmed parser — an unset value is a clear pre-existing failure mode, not a
+// silently wrong one (a WRONG parser can corrupt tool calls instead of erroring).
+// opts.GPUMemoryUtilization/MaxModelLen, when > 0, are passed straight through as
+// `--gpu-memory-utilization`/`--max-model-len` — vLLM's own defaults otherwise (a
+// large KV-cache pool sized off total device memory, and the model's own max context
+// length, respectively; see ServeOptions).
+func vllmServeArgs(alias, model string, port int, storeDir string, opts ServeOptions) []string {
+	args := []string{
 		"serve", model,
 		"--host", "127.0.0.1",
 		"--port", strconv.Itoa(port),
 		"--served-model-name", alias,
 		"--download-dir", storeDir,
 	}
+	if opts.ToolCallParser != "" {
+		args = append(args, "--enable-auto-tool-choice", "--tool-call-parser", opts.ToolCallParser)
+	}
+	if opts.GPUMemoryUtilization > 0 {
+		args = append(args, "--gpu-memory-utilization", strconv.FormatFloat(opts.GPUMemoryUtilization, 'f', -1, 64))
+	}
+	if opts.MaxModelLen > 0 {
+		args = append(args, "--max-model-len", strconv.Itoa(opts.MaxModelLen))
+	}
+	return args
 }
 
 // Start launches a DETACHED `vllm serve <model> --host 127.0.0.1 --port <port>
@@ -50,7 +71,7 @@ func vllmServeArgs(alias, model string, port int, storeDir string) []string {
 // at the platform store so weights load from there, and stdout+stderr are redirected to
 // <storeDir>/<alias>.log. Start returns immediately (Release, no Wait) with a
 // ServerHandle wrapping the PID; the Manager's health probe confirms readiness.
-func (RealRunner) Start(alias, model string, port int, storeDir string) (ServerHandle, error) {
+func (RealRunner) Start(alias, model string, port int, storeDir string, opts ServeOptions) (ServerHandle, error) {
 	logPath := filepath.Join(storeDir, alias+".log")
 	logFile, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
 	if err != nil {
@@ -58,7 +79,7 @@ func (RealRunner) Start(alias, model string, port int, storeDir string) (ServerH
 	}
 	defer func() { _ = logFile.Close() }()
 
-	command := exec.Command(BinaryPath(), vllmServeArgs(alias, model, port, storeDir)...)
+	command := exec.Command(BinaryPath(), vllmServeArgs(alias, model, port, storeDir, opts)...)
 	command.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	command.Env = append(os.Environ(), "HF_HOME="+storeDir)
 	command.Stdout = logFile

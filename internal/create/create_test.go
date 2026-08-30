@@ -430,7 +430,7 @@ func TestPullGraphifyModelPullsAndRegisters(test *testing.T) {
 // fakeVLLMServer is a stub graphifyVLLMServer returning a fixed port.
 type fakeVLLMServer struct{ port int }
 
-func (fake *fakeVLLMServer) EnsureServed(_, _ string) (int, string, error) {
+func (fake *fakeVLLMServer) EnsureServedWithToolParser(_, _, _ string) (int, string, error) {
 	return fake.port, "http://127.0.0.1:8101/v1", nil
 }
 

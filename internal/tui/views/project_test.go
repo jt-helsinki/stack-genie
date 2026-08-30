@@ -104,9 +104,22 @@ func TestProjectPendingShowsSpinner(test *testing.T) {
 	if !strings.Contains(out, "starting…") {
 		test.Errorf("pending view should show 'starting…':\n%s", out)
 	}
-	// While pending, lifecycle keys are ignored (no new action emitted).
-	if cmd := view.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("s")}); cmd != nil {
-		test.Error("lifecycle keys must be ignored while an action is pending")
+	// s/x/r FORCE the action even while one is already pending — the app overrides
+	// the in-flight op.
+	cmd := view.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("s")})
+	if cmd == nil {
+		test.Fatal("s must force a new start even while an action is pending")
+	}
+	msg, ok := cmd().(WorkspaceActionRequestedMsg)
+	if !ok || msg.Action != "start" || msg.Project != "app" {
+		test.Errorf("s while pending: got %#v, want WorkspaceActionRequestedMsg{start, app}", cmd())
+	}
+	// z/e/d still require a settled (non-pending) workspace.
+	if cmd := view.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("z")}); cmd != nil {
+		test.Error("z must be ignored while an action is pending")
+	}
+	if cmd := view.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("d")}); cmd != nil {
+		test.Error("d must be ignored while an action is pending")
 	}
 	view.ClearPending()
 	if strings.Contains(view.View(), "starting…") {

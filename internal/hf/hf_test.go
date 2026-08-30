@@ -7,6 +7,31 @@ import (
 	"testing"
 )
 
+// TestToolCallParserFor pins the confirmed vLLM --tool-call-parser mappings against
+// known repos (goos passed explicitly, not runtime.GOOS, so this is OS-independent) —
+// the fix for "auto tool choice requires --enable-auto-tool-choice and
+// --tool-call-parser to be set" on curated models with a known-good parser.
+func TestToolCallParserFor(t *testing.T) {
+	cases := []struct {
+		goos string
+		repo string
+		want string
+	}{
+		{"darwin", "mlx-community/Qwen3.8-27B-4bit", "hermes"},
+		{"darwin", "mlx-community/Qwen3-Coder-30B-A3B-Instruct-4bit", "qwen3_xml"},
+		{"darwin", "mlx-community/Llama-4-Scout-17B-16E-Instruct-4bit", "llama4_pythonic"},
+		{"linux", "Qwen/Qwen3.8-27B", "hermes"},
+		{"linux", "Qwen/Qwen3-Coder-30B-A3B-Instruct", "qwen3_xml"},
+		{"darwin", "mlx-community/DeepSeek-V4-Pro-4bit", ""}, // no confirmed parser — must not guess
+		{"darwin", "mlx-community/not-a-curated-repo", ""},   // uncurated — must not error
+	}
+	for _, testCase := range cases {
+		if got := ToolCallParserFor(testCase.goos, testCase.repo); got != testCase.want {
+			t.Errorf("ToolCallParserFor(%q, %q) = %q, want %q", testCase.goos, testCase.repo, got, testCase.want)
+		}
+	}
+}
+
 func TestCuratedModelsPerOS(t *testing.T) {
 	darwin := CuratedModels("darwin")
 	if len(darwin) == 0 {

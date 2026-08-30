@@ -28,11 +28,12 @@ type FakeStartCall struct {
 	Model    string
 	Port     int
 	StoreDir string
+	Opts     ServeOptions
 	Handle   ServerHandle
 }
 
 // Start records the call, returns a fresh handle, and honours the configured errors.
-func (fake *FakeRunner) Start(alias, model string, port int, storeDir string) (ServerHandle, error) {
+func (fake *FakeRunner) Start(alias, model string, port int, storeDir string, opts ServeOptions) (ServerHandle, error) {
 	fake.mu.Lock()
 	defer fake.mu.Unlock()
 	if fake.StartErrs != nil {
@@ -46,7 +47,7 @@ func (fake *FakeRunner) Start(alias, model string, port int, storeDir string) (S
 	fake.nextPID++
 	handle := ServerHandle{PID: fake.nextPID}
 	fake.StartCalls = append(fake.StartCalls, FakeStartCall{
-		Alias: alias, Model: model, Port: port, StoreDir: storeDir, Handle: handle,
+		Alias: alias, Model: model, Port: port, StoreDir: storeDir, Opts: opts, Handle: handle,
 	})
 	return handle, nil
 }

@@ -916,11 +916,17 @@ func (application *app) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					}
 					application.projectDetail.SetFlash(ui.Warn.Render(ui.IconDot + " " + hint))
 				}
-				// Re-enable live streaming (disabled during the op) and clear the build-log
-				// content so the next activation opens a fresh microVM stream.
+				// Re-enable live streaming (disabled during the op), clear the build-log
+				// content, and — if the Logs sub-tab is the one currently being viewed —
+				// re-Init it NOW so it reopens a stream against the (possibly recreated)
+				// microVM immediately, instead of sitting empty until the user leaves and
+				// re-enters the tab. Init() itself checks the view's paused flag, so this
+				// is a no-op (streaming opens "on next activation" as before) when the Logs
+				// sub-tab isn't the one being looked at.
 				if application.workspaceLogView != nil {
 					application.workspaceLogView.SetStreamingEnabled(true)
 					application.workspaceLogView.Reset()
+					cmds = append(cmds, application.workspaceLogView.Init())
 				}
 				cmds = append(cmds, application.projectDetail.Init())
 			}
@@ -1231,15 +1237,22 @@ func (application *app) startLifecycle(action, project string) tea.Cmd {
 	// tab TAILS the live build log (the detached action's progress + install output)
 	// via the poll path — the microVM stream would otherwise show the old VM shutting
 	// down and stall. Streaming is re-enabled on completion (lifecyclePollMsg).
+	var logViewCmd tea.Cmd
 	if application.workspaceLogView != nil {
 		application.workspaceLogView.SetStreamingEnabled(false)
 		application.workspaceLogView.Reset()
+		// Re-Init NOW (not just on completion): Reset() alone stops any prior
+		// activity but does not arm the poll-mode heartbeat — without this the Logs
+		// pane would sit empty for the whole duration of the op if it is the
+		// sub-tab currently being viewed. A no-op (per Init()'s paused check) when
+		// the Logs sub-tab isn't the one being looked at.
+		logViewCmd = application.workspaceLogView.Init()
 	}
 	// Drop the cached relay handle: start/stop/restart change the microVM out from
 	// under it, so the next poll reconnects ONCE to the fresh VM. This is the self-heal
 	// path that replaces the per-poll evict-on-error (which churned the relay).
 	application.workspaceManager.ReleaseConnection(project)
-	return tea.Batch(application.projectDetail.Init(), application.lifecyclePollCmd())
+	return tea.Batch(application.projectDetail.Init(), application.lifecyclePollCmd(), logViewCmd)
 }
 
 // lifecycleLogPath is the per-workspace file a detached lifecycle action tees its

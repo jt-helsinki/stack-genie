@@ -3,10 +3,13 @@ package setup
 import (
 	"io"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/jt-helsinki/stack-genie/internal/config"
+	"github.com/jt-helsinki/stack-genie/internal/vllm"
 )
 
 // fakeVLLMHTTP swaps vllmHTTPGet for one that returns the given status per URL (or a
@@ -73,6 +76,34 @@ func TestVLLMStatusRunning(test *testing.T) {
 	status := realServices{}.vllmStatus()
 	if status.State != "running" || !status.Healthy {
 		test.Errorf("healthy endpoint: want running/healthy, got %+v", status)
+	}
+}
+
+// TestVLLMStatusModels proves the per-model resolved config (including the pinned
+// GPU-memory-utilization/max-model-len caps) is surfaced on ServiceStatus.Models —
+// the fix for "the vllm config should be displayed in the service pane": the
+// service-detail TUI pane renders this per model, and it had nothing to render
+// before Models existed on ServiceStatus.
+func TestVLLMStatusModels(test *testing.T) {
+	test.Setenv("HOME", test.TempDir())
+	if err := config.SetModelRuntime(config.ModelRuntimeChoice{
+		Alias: "my-qwen", Model: "mlx-community/Qwen3-8B", Runtime: config.RuntimeVLLM,
+		Endpoint: "http://127.0.0.1:8101/v1", GPUMemoryUtilization: 0.5, MaxModelLen: 8192,
+	}); err != nil {
+		test.Fatalf("seed store: %v", err)
+	}
+	fakeVLLMHTTP(test, map[string]int{"8101": http.StatusOK})
+
+	status := realServices{}.vllmStatus()
+	if len(status.Models) != 1 {
+		test.Fatalf("Models = %+v, want exactly 1 entry", status.Models)
+	}
+	model := status.Models[0]
+	if model.Alias != "my-qwen" || model.Model != "mlx-community/Qwen3-8B" || !model.Healthy {
+		test.Errorf("model = %+v, want alias/model/healthy populated", model)
+	}
+	if model.GPUMemoryUtilization != 0.5 || model.MaxModelLen != 8192 {
+		test.Errorf("model resource caps = %+v, want {GPUMemoryUtilization:0.5 MaxModelLen:8192}", model)
 	}
 }
 
@@ -188,5 +219,78 @@ func TestVLLMDownDetail(test *testing.T) {
 		if !strings.Contains(detail, "install") || !strings.Contains(detail, "vLLM") {
 			test.Errorf("goos %q: want actionable install hint, got %q", goos, detail)
 		}
+	}
+}
+
+// writeVLLMLogFile writes content to <StoreDir>/<alias>.log — the file
+// vllm.RealRunner.Start redirects a model's stdout/stderr to.
+func writeVLLMLogFile(test *testing.T, alias, content string) {
+	test.Helper()
+	storeDir, err := vllm.StoreDir()
+	if err != nil {
+		test.Fatalf("StoreDir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(storeDir, alias+".log"), []byte(content), 0o644); err != nil {
+		test.Fatalf("write log file: %v", err)
+	}
+}
+
+// TestServiceLogTailVLLMNoModels: with no recorded vLLM model there is nothing to
+// tail — empty string, no error (mirrors the container-service "stopped/absent"
+// tolerance, not a failure).
+func TestServiceLogTailVLLMNoModels(test *testing.T) {
+	test.Setenv("HOME", test.TempDir())
+	content, err := ServiceLogTail(Deps{}, "vllm", 0)
+	if err != nil || content != "" {
+		test.Fatalf("no recorded models: got (%q, %v), want (\"\", nil)", content, err)
+	}
+}
+
+// TestServiceLogTailVLLMSingleModel proves a single recorded model's log file is
+// tailed WITHOUT a heading — this is the fix for "no vllm logs under the service
+// tab" (ServiceLogTail used to unconditionally return "" for vllm, a host-native
+// service with no container to `docker logs`).
+func TestServiceLogTailVLLMSingleModel(test *testing.T) {
+	test.Setenv("HOME", test.TempDir())
+	recordVLLMChoice(test, "my-qwen", "mlx-community/Qwen3-8B", "http://127.0.0.1:8101/v1")
+	writeVLLMLogFile(test, "my-qwen", "line1\nline2\nline3\n")
+
+	content, err := ServiceLogTail(Deps{}, "vllm", 2)
+	if err != nil {
+		test.Fatalf("ServiceLogTail: %v", err)
+	}
+	if content != "line2\nline3" {
+		test.Fatalf("content = %q, want the last 2 lines with no per-model heading", content)
+	}
+}
+
+// TestServiceLogTailVLLMMultipleModels proves multiple recorded models are
+// concatenated under a `── <alias> ──` heading each, mirroring the multi-container
+// path (e.g. presidio's analyzer + anonymizer).
+func TestServiceLogTailVLLMMultipleModels(test *testing.T) {
+	test.Setenv("HOME", test.TempDir())
+	recordVLLMChoice(test, "my-qwen", "mlx-community/Qwen3-8B", "http://127.0.0.1:8101/v1")
+	recordVLLMChoice(test, "my-llama", "mlx-community/Llama-4", "http://127.0.0.1:8102/v1")
+	writeVLLMLogFile(test, "my-qwen", "qwen output\n")
+	writeVLLMLogFile(test, "my-llama", "llama output\n")
+
+	content, err := ServiceLogTail(Deps{}, "vllm", 10)
+	if err != nil {
+		test.Fatalf("ServiceLogTail: %v", err)
+	}
+	if !strings.Contains(content, "── my-qwen ──\nqwen output") || !strings.Contains(content, "── my-llama ──\nllama output") {
+		test.Fatalf("content = %q, want a heading + tailed content per model", content)
+	}
+}
+
+// TestServiceLogTailVLLMNeverStarted proves a recorded model with no log file yet
+// (never actually started) is skipped, not an error.
+func TestServiceLogTailVLLMNeverStarted(test *testing.T) {
+	test.Setenv("HOME", test.TempDir())
+	recordVLLMChoice(test, "my-qwen", "mlx-community/Qwen3-8B", "http://127.0.0.1:8101/v1")
+
+	content, err := ServiceLogTail(Deps{}, "vllm", 10)
+	if err != nil || content != "" {
+		test.Fatalf("recorded but never started: got (%q, %v), want (\"\", nil)", content, err)
 	}
 }

@@ -184,16 +184,27 @@ func VLLMRoutedModel(alias string) string {
 	return "openai/" + alias
 }
 
+// vllmPlaceholderAPIKey is a non-empty placeholder credential for vLLM-routed models.
+// A local `vllm serve` endpoint validates NO key at all, but LiteLLM's "openai/" provider
+// goes through the actual OpenAI Python client underneath, which hard-requires a non-empty
+// api_key at load time regardless of whether the backend checks it — an empty/absent key
+// fails every request with "AuthenticationError: ... The api_key client option must be set"
+// before the request ever reaches vLLM. "EMPTY" is the same placeholder convention vLLM's
+// own docs and llama.cpp's OpenAI-compatible server use for this exact situation.
+const vllmPlaceholderAPIKey = "EMPTY"
+
 // vllmModelParamsInfo builds the LiteLLM params + info for a vLLM model. It routes on the
 // served-model-name ALIAS (VLLMRoutedModel(alias) = "openai/<alias>") because that is what
 // the `vllm serve --served-model-name <alias>` endpoint answers to; it always sets
 // drop_params (defense-in-depth for unsupported params) and records tool-calling support in
 // model_info when known (supportsTools nil = unknown). Each vLLM model runs its OWN
 // `vllm serve` endpoint, so apiBase is a PARAMETER (e.g.
-// http://host.docker.internal:8101/v1); no credential is referenced (a local vLLM needs none).
+// http://host.docker.internal:8101/v1); APIKey is the non-empty vllmPlaceholderAPIKey (the
+// backend itself checks no credential, but LiteLLM's openai/ provider requires one to be
+// set to construct its client at all).
 func vllmModelParamsInfo(alias, apiBase string, supportsTools *bool) (ModelParams, ModelInfo) {
 	dropParams := true
-	return ModelParams{Model: VLLMRoutedModel(alias), APIBase: apiBase, DropParams: &dropParams},
+	return ModelParams{Model: VLLMRoutedModel(alias), APIBase: apiBase, APIKey: vllmPlaceholderAPIKey, DropParams: &dropParams},
 		ModelInfo{SupportsFunctionCalling: supportsTools}
 }
 
@@ -201,8 +212,10 @@ func vllmModelParamsInfo(alias, apiBase string, supportsTools *bool) (ModelParam
 // public model_name is "vllm/<alias>" (VLLMModelName, the agent-facing handle) while the
 // routed litellm_params.model is "openai/<alias>" (VLLMRoutedModel — the SERVED-MODEL-NAME
 // the endpoint answers to, NOT the HF model id) with api_base pointing at the model's
-// dedicated `vllm serve` endpoint; no credential is referenced. model is retained in the
-// signature (interface parity, records/logging) even though routing keys on the alias.
+// dedicated `vllm serve` endpoint, with the non-empty vllmPlaceholderAPIKey (a real
+// provider credential is never referenced — the backend itself checks no credential).
+// model is retained in the signature (interface parity, records/logging) even though
+// routing keys on the alias.
 //
 // Idempotent-ish and HEALING: if a model with this model_name already
 // exists (ListModels) it is re-registered (delete + add) when the routed target is stale

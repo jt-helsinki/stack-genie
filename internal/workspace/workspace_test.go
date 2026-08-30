@@ -18,17 +18,20 @@ import (
 )
 
 type fakeBuilder struct {
-	built bool
-	err   error
+	built      bool
+	buildCount int
+	err        error
 }
 
 func (builder *fakeBuilder) Build(string, string) error {
 	builder.built = true
+	builder.buildCount++
 	return builder.err
 }
 
 type fakeSandbox struct {
 	created, started, stopped, destroyed bool
+	createCount, startCount              int
 	projectMount                         string
 	overlayMount                         string
 	resources                            VMResources
@@ -63,13 +66,18 @@ type fakeSandbox struct {
 
 func (sandbox *fakeSandbox) Create(_, _, projectMount, overlayPath string, resources VMResources, netArgs []string) error {
 	sandbox.created = true
+	sandbox.createCount++
 	sandbox.projectMount = projectMount
 	sandbox.overlayMount = overlayPath
 	sandbox.resources = resources
 	sandbox.netArgs = netArgs
 	return nil
 }
-func (sandbox *fakeSandbox) Start(string) error   { sandbox.started = true; return nil }
+func (sandbox *fakeSandbox) Start(string) error {
+	sandbox.started = true
+	sandbox.startCount++
+	return nil
+}
 func (sandbox *fakeSandbox) Stop(string) error    { sandbox.stopped = true; return nil }
 func (sandbox *fakeSandbox) Destroy(string) error { sandbox.destroyed = true; return nil }
 func (sandbox *fakeSandbox) Exec(_ string, argv []string) (ExecResult, error) {
@@ -782,6 +790,79 @@ func TestStartBuildsAndRecordsStartedHandle(test *testing.T) {
 	workspaces, err := state.OpenStore(root).ListWorkspaces()
 	if err != nil || len(workspaces) != 1 || workspaces[0].Status != state.StatusStarted {
 		test.Fatalf("persisted workspaces=%+v err=%v", workspaces, err)
+	}
+}
+
+// TestStartSkipsRebuildOnSecondStart: a plain `ai start` of a STOPPED workspace
+// that was already created before must NOT rebuild the image or recreate the
+// microVM again — it just boots the existing one. This is the fix for both the
+// wasted-rebuild-on-every-start complaint and the stale-log-after-restart bug (the
+// `msb create --replace` recreate was evicting the log stream on every start, even
+// when nothing needed to change).
+func TestStartSkipsRebuildOnSecondStart(test *testing.T) {
+	seedProject(test, "app")
+	builder := &fakeBuilder{}
+	sandbox := &fakeSandbox{}
+	manager := Manager{Builder: builder, Sandbox: sandbox, Keys: &fakeKeyMinter{}, Now: func() string { return "t" }}
+	if _, err := manager.Start("app"); err != nil {
+		test.Fatal(err)
+	}
+	if builder.buildCount != 1 || sandbox.createCount != 1 {
+		test.Fatalf("first start should build+create once: build=%d create=%d", builder.buildCount, sandbox.createCount)
+	}
+	// Simulate the workspace being stopped before the second `ai start`.
+	sandbox.isRunningSet = true
+	sandbox.isRunning = false
+	if _, err := manager.Start("app"); err != nil {
+		test.Fatal(err)
+	}
+	if builder.buildCount != 1 || sandbox.createCount != 1 {
+		test.Fatalf("second start of an already-created, stopped workspace must not rebuild/recreate: build=%d create=%d", builder.buildCount, sandbox.createCount)
+	}
+	if sandbox.startCount != 2 {
+		test.Fatalf("second start should still boot the existing microVM, got startCount=%d", sandbox.startCount)
+	}
+}
+
+// TestStartOnRunningWorkspaceRestarts: `ai start` on a workspace that is currently
+// RUNNING is treated as a restart request — it stops, then rebuilds+recreates —
+// rather than silently no-op'ing on the already-running microVM.
+func TestStartOnRunningWorkspaceRestarts(test *testing.T) {
+	seedProject(test, "app")
+	builder := &fakeBuilder{}
+	sandbox := &fakeSandbox{}
+	manager := Manager{Builder: builder, Sandbox: sandbox, Keys: &fakeKeyMinter{}, Now: func() string { return "t" }}
+	if _, err := manager.Start("app"); err != nil {
+		test.Fatal(err)
+	}
+	// The fake defaults IsRunning to true (present) — mirrors a workspace that is
+	// still running when `ai start` is invoked again.
+	if _, err := manager.Start("app"); err != nil {
+		test.Fatal(err)
+	}
+	if builder.buildCount != 2 || sandbox.createCount != 2 {
+		test.Fatalf("start on a running workspace must restart (rebuild+recreate): build=%d create=%d", builder.buildCount, sandbox.createCount)
+	}
+	if !sandbox.stopped {
+		test.Error("start on a running workspace must stop it before recreating")
+	}
+}
+
+// TestRestartAlwaysRebuilds: unlike a plain start, `ai restart` must always go
+// through the full rebuild+recreate so Dockerfile/network/config changes apply.
+func TestRestartAlwaysRebuilds(test *testing.T) {
+	seedProject(test, "app")
+	builder := &fakeBuilder{}
+	sandbox := &fakeSandbox{}
+	manager := Manager{Builder: builder, Sandbox: sandbox, Keys: &fakeKeyMinter{}, Now: func() string { return "t" }}
+	if _, err := manager.Start("app"); err != nil {
+		test.Fatal(err)
+	}
+	if _, err := manager.Restart("app"); err != nil {
+		test.Fatal(err)
+	}
+	if builder.buildCount != 2 || sandbox.createCount != 2 {
+		test.Fatalf("restart must always rebuild+recreate: build=%d create=%d", builder.buildCount, sandbox.createCount)
 	}
 }
 

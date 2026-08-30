@@ -77,6 +77,35 @@ func TestServiceDetailServiceTabShowsSummaryAndMetrics(test *testing.T) {
 	}
 }
 
+// TestServiceDetailShowsVLLMModelConfig: when ServiceStatus.Models is populated (the
+// host-native vllm service, which has no container for the generic Containers block),
+// the Service sub-tab renders each model's resolved config instead — the fix for "the
+// vllm config should be displayed in the service pane".
+func TestServiceDetailShowsVLLMModelConfig(test *testing.T) {
+	detail := newDetailForTest(
+		setup.ServiceStatus{
+			Name: "vllm", Mode: "host", State: "running", Healthy: true,
+			Models: []setup.VLLMModelInfo{{
+				Alias: "my-qwen", Model: "mlx-community/Qwen3-8B", Endpoint: "http://127.0.0.1:8101/v1",
+				Healthy: true, GPUMemoryUtilization: 0.5, MaxModelLen: 8192,
+			}},
+		},
+		"", false)
+	primeInfo(detail)
+
+	rendered := detail.View()
+	for _, want := range []string{"vLLM Models", "my-qwen", "mlx-community/Qwen3-8B", "gpu-memory-utilization", "0.5", "max-model-len", "8192"} {
+		if !strings.Contains(rendered, want) {
+			test.Errorf("Service sub-tab should contain %q, got:\n%s", want, rendered)
+		}
+	}
+	// The generic Containers block is for container services — vllm has none, so it
+	// must not render (avoids a confusing "collecting live metrics…" forever).
+	if strings.Contains(rendered, "Containers") {
+		test.Errorf("vllm's Service sub-tab must not show the generic Containers block, got:\n%s", rendered)
+	}
+}
+
 // TestServiceDetailLogsTabShowsLog: switching to the Logs sub-tab shows the scrollable
 // container log.
 func TestServiceDetailLogsTabShowsLog(test *testing.T) {

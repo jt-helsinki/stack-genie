@@ -66,6 +66,24 @@ type ModelRuntimeChoice struct {
 	Endpoint string `json:"endpoint,omitempty" yaml:"endpoint,omitempty"`
 	// Status is the last-observed status for the choice (advisory).
 	Status string `json:"status,omitempty" yaml:"status,omitempty"`
+	// GPUMemoryUtilization, when > 0, is the `--gpu-memory-utilization` fraction
+	// (0-1) the user pinned for this model's `vllm serve` — recorded so a later
+	// restart (`ai setup` / `ai services restart vllm`) relaunches it with the same
+	// value instead of falling back to vLLM's own default (0.9, sized off TOTAL
+	// device memory rather than the model's weight size). Zero means unset.
+	GPUMemoryUtilization float64 `json:"gpu_memory_utilization,omitempty" yaml:"gpu_memory_utilization,omitempty"`
+	// MaxModelLen, when > 0, is the `--max-model-len` (tokens) the user pinned for
+	// this model, recorded for the same restart-preserving reason. Zero means unset
+	// (the model's own default context length).
+	MaxModelLen int `json:"max_model_len,omitempty" yaml:"max_model_len,omitempty"`
+	// Disabled marks a model that should NOT be auto-started by `ai setup` / `ai
+	// services start vllm` (ensureVLLMServers starts every recorded choice
+	// unconditionally otherwise) — e.g. to keep a second local model pulled and
+	// registered without it fighting another for GPU/unified memory (see
+	// vllmGPUMemoryUtilizationBudgetWarning). The weights and this record are
+	// untouched; `ai models enable` starts it again with no re-download. Set via
+	// `ai models disable`/`enable`, never by `pull`/`configure`.
+	Disabled bool `json:"disabled,omitempty" yaml:"disabled,omitempty"`
 }
 
 // ModelRuntimesFile is config/model-runtimes.yaml.

@@ -108,6 +108,51 @@ func TestEnsureServedLazyStart(t *testing.T) {
 	if call.StoreDir == "" {
 		t.Fatalf("start call missing store dir")
 	}
+	if call.Opts.ToolCallParser != "" {
+		t.Fatalf("ToolCallParser = %q, want empty (EnsureServed passes none)", call.Opts.ToolCallParser)
+	}
+}
+
+// TestEnsureServedWithToolParserPassesThrough proves the tool-call parser reaches the
+// Runner.Start call on a fresh launch (the fix for tool_choice="auto" failing against
+// curated models with a confirmed vLLM --tool-call-parser).
+func TestEnsureServedWithToolParserPassesThrough(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	manager, runner, _ := newTestManager(Config{BasePort: 8101})
+
+	_, _, err := manager.EnsureServedWithToolParser("my-qwen", "mlx-community/Qwen3-8B", "hermes")
+	if err != nil {
+		t.Fatalf("EnsureServedWithToolParser: %v", err)
+	}
+	if runner.StartCount() != 1 {
+		t.Fatalf("StartCount = %d, want 1", runner.StartCount())
+	}
+	if got := runner.StartCalls[0].Opts.ToolCallParser; got != "hermes" {
+		t.Fatalf("ToolCallParser = %q, want hermes", got)
+	}
+}
+
+// TestEnsureServedWithOptionsPassesResourceKnobsThrough proves GPUMemoryUtilization
+// and MaxModelLen reach the Runner.Start call on a fresh launch.
+func TestEnsureServedWithOptionsPassesResourceKnobsThrough(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	manager, runner, _ := newTestManager(Config{BasePort: 8101})
+
+	_, _, err := manager.EnsureServedWithOptions("my-qwen", "mlx-community/Qwen3-8B", ServeOptions{
+		ToolCallParser:       "hermes",
+		GPUMemoryUtilization: 0.5,
+		MaxModelLen:          8192,
+	})
+	if err != nil {
+		t.Fatalf("EnsureServedWithOptions: %v", err)
+	}
+	if runner.StartCount() != 1 {
+		t.Fatalf("StartCount = %d, want 1", runner.StartCount())
+	}
+	got := runner.StartCalls[0].Opts
+	if got.ToolCallParser != "hermes" || got.GPUMemoryUtilization != 0.5 || got.MaxModelLen != 8192 {
+		t.Fatalf("Opts = %+v, want {hermes 0.5 8192}", got)
+	}
 }
 
 func TestEnsureServedReusesAndTouchesLRU(t *testing.T) {
@@ -477,13 +522,67 @@ func TestDetect(t *testing.T) {
 // model=<alias>. The real exec (RealRunner.Start forking the process) is a `hardware
 // bring-up` path and is NOT exercised here.
 func TestVLLMServeArgs(t *testing.T) {
-	args := vllmServeArgs("my-qwen", "mlx-community/Qwen3-8B", 8101, "/store/vllm")
+	args := vllmServeArgs("my-qwen", "mlx-community/Qwen3-8B", 8101, "/store/vllm", ServeOptions{})
 	want := []string{
 		"serve", "mlx-community/Qwen3-8B",
 		"--host", "127.0.0.1",
 		"--port", "8101",
 		"--served-model-name", "my-qwen",
 		"--download-dir", "/store/vllm",
+	}
+	if len(args) != len(want) {
+		t.Fatalf("vllmServeArgs = %v, want %v", args, want)
+	}
+	for index := range want {
+		if args[index] != want[index] {
+			t.Fatalf("vllmServeArgs[%d] = %q, want %q (full %v)", index, args[index], want[index], args)
+		}
+	}
+}
+
+// TestVLLMServeArgsToolCallParser proves a non-empty toolCallParser appends
+// --enable-auto-tool-choice --tool-call-parser <value> — the fix for LiteLLM's
+// "auto tool choice requires --enable-auto-tool-choice and --tool-call-parser to be
+// set" error on every agentic tool_choice="auto" request to a curated model with a
+// confirmed parser (hf.CuratedModel.ToolCallParser).
+func TestVLLMServeArgsToolCallParser(t *testing.T) {
+	args := vllmServeArgs("my-qwen", "mlx-community/Qwen3-8B", 8101, "/store/vllm", ServeOptions{ToolCallParser: "hermes"})
+	want := []string{
+		"serve", "mlx-community/Qwen3-8B",
+		"--host", "127.0.0.1",
+		"--port", "8101",
+		"--served-model-name", "my-qwen",
+		"--download-dir", "/store/vllm",
+		"--enable-auto-tool-choice", "--tool-call-parser", "hermes",
+	}
+	if len(args) != len(want) {
+		t.Fatalf("vllmServeArgs = %v, want %v", args, want)
+	}
+	for index := range want {
+		if args[index] != want[index] {
+			t.Fatalf("vllmServeArgs[%d] = %q, want %q (full %v)", index, args[index], want[index], args)
+		}
+	}
+}
+
+// TestVLLMServeArgsResourceKnobs proves GPUMemoryUtilization/MaxModelLen append
+// --gpu-memory-utilization/--max-model-len — the fix for a small model resident at
+// tens of GB because vLLM's own default (--gpu-memory-utilization 0.9) pre-allocates
+// the KV-cache off TOTAL device memory, not the model's weight size. Zero values
+// (the default ServeOptions) must NOT append either flag — see TestVLLMServeArgs.
+func TestVLLMServeArgsResourceKnobs(t *testing.T) {
+	args := vllmServeArgs("my-qwen", "mlx-community/Qwen3-8B", 8101, "/store/vllm", ServeOptions{
+		GPUMemoryUtilization: 0.5,
+		MaxModelLen:          8192,
+	})
+	want := []string{
+		"serve", "mlx-community/Qwen3-8B",
+		"--host", "127.0.0.1",
+		"--port", "8101",
+		"--served-model-name", "my-qwen",
+		"--download-dir", "/store/vllm",
+		"--gpu-memory-utilization", "0.5",
+		"--max-model-len", "8192",
 	}
 	if len(args) != len(want) {
 		t.Fatalf("vllmServeArgs = %v, want %v", args, want)

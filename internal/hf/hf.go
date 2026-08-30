@@ -103,12 +103,32 @@ func Install() error {
 // (the ACTUAL gateway alias is always derived from Repo's basename at pull time via
 // vllmDefaultAlias, never from Name, unless `--alias` overrides it). Repo is the full
 // HF repo id passed to `hf download` / `vllm serve`, Description is a one-liner, and
-// Size is an approximate on-disk weight size.
+// Size is an approximate on-disk weight size. ToolCallParser is the model's CONFIRMED
+// vLLM `--tool-call-parser` value (per vLLM's tool-calling docs) — when set, `ai models
+// pull` starts the server with `--enable-auto-tool-choice --tool-call-parser
+// <value>` so agentic tool_choice="auto" requests work; when empty, no flags are
+// added (tool_choice="auto" then fails with vLLM's own clear error — better than
+// guessing a WRONG parser, which can corrupt tool calls silently instead of erroring).
+// Only populate this from an authoritative source (vLLM's docs or the model vendor's
+// own deployment guide) — never guess from family resemblance alone.
 type CuratedModel struct {
-	Name        string `json:"name"`
-	Repo        string `json:"repo"`
-	Description string `json:"description,omitempty"`
-	Size        string `json:"size,omitempty"`
+	Name           string `json:"name"`
+	Repo           string `json:"repo"`
+	Description    string `json:"description,omitempty"`
+	Size           string `json:"size,omitempty"`
+	ToolCallParser string `json:"tool_call_parser,omitempty"`
+}
+
+// ToolCallParserFor returns the confirmed vLLM --tool-call-parser value for repo from
+// the curated list for goos (empty when repo is not curated or has no confirmed
+// parser — see CuratedModel.ToolCallParser).
+func ToolCallParserFor(goos, repo string) string {
+	for _, model := range CuratedModels(goos) {
+		if model.Repo == repo {
+			return model.ToolCallParser
+		}
+	}
+	return ""
 }
 
 // The two curated lists below are HAND-CURATED — there is no auto-refresh and no live
@@ -152,8 +172,8 @@ var curatedMLX = []CuratedModel{
 	{Name: "DeepSeek-R1-3bit", Repo: "mlx-community/DeepSeek-R1-3bit", Description: "DeepSeek R1, 3-bit — MoE reasoning (only full-R1 MLX quant) — very large, needs 512 GB Apple Silicon", Size: "~336 GB"},
 	// Meta
 	{Name: "Muse-Glimmer-30B-4bit", Repo: "mlx-community/Muse-Glimmer-30B-4bit", Description: "Meta Muse Glimmer 30B, 4-bit — general", Size: "~17 GB"},
-	{Name: "Llama-4-Scout-17B-16E-Instruct-4bit", Repo: "mlx-community/Llama-4-Scout-17B-16E-Instruct-4bit", Description: "Meta Llama 4 Scout 17Bx16E, 4-bit — MoE multimodal (large)", Size: "~60 GB"},
-	{Name: "Llama-4-Maverick-17B-128E-Instruct-4bit", Repo: "mlx-community/Llama-4-Maverick-17B-128E-Instruct-4bit", Description: "Meta Llama 4 Maverick 17Bx128E, 4-bit — MoE multimodal — very large, needs high-RAM Apple Silicon (256 GB+)", Size: "~226 GB"},
+	{Name: "Llama-4-Scout-17B-16E-Instruct-4bit", Repo: "mlx-community/Llama-4-Scout-17B-16E-Instruct-4bit", Description: "Meta Llama 4 Scout 17Bx16E, 4-bit — MoE multimodal (large)", Size: "~60 GB", ToolCallParser: "llama4_pythonic"},
+	{Name: "Llama-4-Maverick-17B-128E-Instruct-4bit", Repo: "mlx-community/Llama-4-Maverick-17B-128E-Instruct-4bit", Description: "Meta Llama 4 Maverick 17Bx128E, 4-bit — MoE multimodal — very large, needs high-RAM Apple Silicon (256 GB+)", Size: "~226 GB", ToolCallParser: "llama4_pythonic"},
 	// Google
 	{Name: "gemma-4-31b-it-4bit", Repo: "mlx-community/gemma-4-31b-it-4bit", Description: "Google Gemma 4 31B instruct, 4-bit — multimodal flagship", Size: "~17 GB"},
 	{Name: "gemma-4-26b-a4b-it-4bit", Repo: "mlx-community/gemma-4-26b-a4b-it-4bit", Description: "Google Gemma 4 26B-A4B instruct, 4-bit — MoE, low active-param — good coding fit on lower-RAM Macs", Size: "~14 GB"},
@@ -176,12 +196,12 @@ var curatedMLX = []CuratedModel{
 	{Name: "NVIDIA-Nemotron-3-Nano-30B-A3B-4bit", Repo: "mlx-community/NVIDIA-Nemotron-3-Nano-30B-A3B-4bit", Description: "NVIDIA Nemotron 3 Nano 30B-A3B, 4-bit — MoE reasoning", Size: "~17 GB"},
 	// Qwen
 	// (Ornith-1.5-397B has no mlx-community build — see curatedSafetensors)
-	{Name: "Qwen3.8-27B-4bit", Repo: "mlx-community/Qwen3.8-27B-4bit", Description: "Qwen3.8 27B, 4-bit — flagship dense", Size: "~15 GB"},
-	{Name: "Qwen3.6-27B-4bit", Repo: "mlx-community/Qwen3.6-27B-4bit", Description: "Qwen3.6 27B, 4-bit — dense general", Size: "~15 GB"},
-	{Name: "Qwen3.5-27B-4bit", Repo: "mlx-community/Qwen3.5-27B-4bit", Description: "Qwen3.5 27B, 4-bit — dense general", Size: "~15 GB"},
-	{Name: "Qwen3-Coder-Next-4bit", Repo: "mlx-community/Qwen3-Coder-Next-4bit", Description: "Qwen3-Coder-Next 80B-A3B, 4-bit — MoE coding flagship, low active-param — needs high-RAM Apple Silicon (64 GB+)", Size: "~43 GB"},
-	{Name: "Qwen3-Coder-480B-A35B-Instruct-4bit", Repo: "mlx-community/Qwen3-Coder-480B-A35B-Instruct-4bit", Description: "Qwen3-Coder 480B-A35B instruct, 4-bit — MoE coding flagship — very large, needs high-RAM Apple Silicon (256 GB+)", Size: "~270 GB"},
-	{Name: "Qwen3-Coder-30B-A3B-Instruct-4bit", Repo: "mlx-community/Qwen3-Coder-30B-A3B-Instruct-4bit", Description: "Qwen3-Coder 30B-A3B instruct, 4-bit — MoE coding, low active-param — sweet spot for local coding on 32 GB+ Macs", Size: "~17 GB"},
+	{Name: "Qwen3.8-27B-4bit", Repo: "mlx-community/Qwen3.8-27B-4bit", Description: "Qwen3.8 27B, 4-bit — flagship dense", Size: "~15 GB", ToolCallParser: "hermes"},
+	{Name: "Qwen3.6-27B-4bit", Repo: "mlx-community/Qwen3.6-27B-4bit", Description: "Qwen3.6 27B, 4-bit — dense general", Size: "~15 GB", ToolCallParser: "hermes"},
+	{Name: "Qwen3.5-27B-4bit", Repo: "mlx-community/Qwen3.5-27B-4bit", Description: "Qwen3.5 27B, 4-bit — dense general", Size: "~15 GB", ToolCallParser: "hermes"},
+	{Name: "Qwen3-Coder-Next-4bit", Repo: "mlx-community/Qwen3-Coder-Next-4bit", Description: "Qwen3-Coder-Next 80B-A3B, 4-bit — MoE coding flagship, low active-param — needs high-RAM Apple Silicon (64 GB+)", Size: "~43 GB", ToolCallParser: "qwen3_xml"},
+	{Name: "Qwen3-Coder-480B-A35B-Instruct-4bit", Repo: "mlx-community/Qwen3-Coder-480B-A35B-Instruct-4bit", Description: "Qwen3-Coder 480B-A35B instruct, 4-bit — MoE coding flagship — very large, needs high-RAM Apple Silicon (256 GB+)", Size: "~270 GB", ToolCallParser: "qwen3_xml"},
+	{Name: "Qwen3-Coder-30B-A3B-Instruct-4bit", Repo: "mlx-community/Qwen3-Coder-30B-A3B-Instruct-4bit", Description: "Qwen3-Coder 30B-A3B instruct, 4-bit — MoE coding, low active-param — sweet spot for local coding on 32 GB+ Macs", Size: "~17 GB", ToolCallParser: "qwen3_xml"},
 	// StepFun
 	{Name: "Step-3.7-Flash-4bit", Repo: "mlx-community/Step-3.7-Flash-4bit", Description: "StepFun Step-3.7-Flash, 4-bit — MoE — large, needs high-RAM Apple Silicon (128 GB+)", Size: "~111 GB"},
 	{Name: "Step-3.5-Flash-4bit", Repo: "mlx-community/Step-3.5-Flash-4bit", Description: "StepFun Step-3.5-Flash, 4-bit — MoE — very large, needs high-RAM Apple Silicon (256 GB+)", Size: "~222 GB"},
@@ -208,8 +228,8 @@ var curatedSafetensors = []CuratedModel{
 	{Name: "DeepSeek-R1", Repo: "deepseek-ai/DeepSeek-R1", Description: "DeepSeek R1 — 671B MoE reasoning", Size: "~1.3 TB"},
 	// Meta
 	{Name: "Muse-Glimmer-30B", Repo: "meta-models/Muse-Glimmer-30B", Description: "Meta Muse Glimmer 30B — general", Size: "~60 GB"},
-	{Name: "Llama-4-Scout-17B-16E-Instruct", Repo: "meta-llama/Llama-4-Scout-17B-16E-Instruct", Description: "Meta Llama 4 Scout 17Bx16E — MoE multimodal — gated, run `ai models login`", Size: "~217 GB"},
-	{Name: "Llama-4-Maverick-17B-128E-Instruct", Repo: "meta-llama/Llama-4-Maverick-17B-128E-Instruct", Description: "Meta Llama 4 Maverick 17Bx128E — MoE multimodal — gated, run `ai models login`", Size: "~803 GB"},
+	{Name: "Llama-4-Scout-17B-16E-Instruct", Repo: "meta-llama/Llama-4-Scout-17B-16E-Instruct", Description: "Meta Llama 4 Scout 17Bx16E — MoE multimodal — gated, run `ai models login`", Size: "~217 GB", ToolCallParser: "llama4_pythonic"},
+	{Name: "Llama-4-Maverick-17B-128E-Instruct", Repo: "meta-llama/Llama-4-Maverick-17B-128E-Instruct", Description: "Meta Llama 4 Maverick 17Bx128E — MoE multimodal — gated, run `ai models login`", Size: "~803 GB", ToolCallParser: "llama4_pythonic"},
 	// Google
 	{Name: "gemma-4-31B-it", Repo: "google/gemma-4-31B-it", Description: "Google Gemma 4 31B instruct — multimodal flagship", Size: "~63 GB"},
 	{Name: "gemma-4-26b-a4b-it", Repo: "google/gemma-4-26b-a4b-it", Description: "Google Gemma 4 26B-A4B instruct — MoE, low active-param — good coding fit", Size: "~52 GB"},
@@ -238,12 +258,12 @@ var curatedSafetensors = []CuratedModel{
 	{Name: "Laguna-S-2.1", Repo: "poolside/Laguna-S-2.1", Description: "Poolside Laguna S 2.1 — MoE long-horizon coding (FP8/BF16 native)", Size: "~270 GB"},
 	// Qwen
 	{Name: "Qwen3.8-2.4T-A95B", Repo: "Qwen/Qwen3.8-2.4T-A95B", Description: "Qwen3.8 Max, 2.4T-A95B — MoE flagship — no mlx-community build, MLX-unavailable (extreme size)", Size: "~4.89 TB"},
-	{Name: "Qwen3.8-27B", Repo: "Qwen/Qwen3.8-27B", Description: "Qwen3.8 27B — flagship dense", Size: "~56 GB"},
-	{Name: "Qwen3.6-27B", Repo: "Qwen/Qwen3.6-27B", Description: "Qwen3.6 27B — dense general", Size: "~56 GB"},
-	{Name: "Qwen3.5-27B", Repo: "Qwen/Qwen3.5-27B", Description: "Qwen3.5 27B — dense general", Size: "~56 GB"},
-	{Name: "Qwen3-Coder-Next", Repo: "Qwen/Qwen3-Coder-Next", Description: "Qwen3-Coder-Next 80B-A3B — MoE coding flagship", Size: "~160 GB"},
-	{Name: "Qwen3-Coder-480B-A35B-Instruct", Repo: "Qwen/Qwen3-Coder-480B-A35B-Instruct", Description: "Qwen3-Coder 480B-A35B instruct — MoE coding flagship (very large)", Size: "~960 GB"},
-	{Name: "Qwen3-Coder-30B-A3B-Instruct", Repo: "Qwen/Qwen3-Coder-30B-A3B-Instruct", Description: "Qwen3-Coder 30B-A3B instruct — MoE coding, low active-param", Size: "~60 GB"},
+	{Name: "Qwen3.8-27B", Repo: "Qwen/Qwen3.8-27B", Description: "Qwen3.8 27B — flagship dense", Size: "~56 GB", ToolCallParser: "hermes"},
+	{Name: "Qwen3.6-27B", Repo: "Qwen/Qwen3.6-27B", Description: "Qwen3.6 27B — dense general", Size: "~56 GB", ToolCallParser: "hermes"},
+	{Name: "Qwen3.5-27B", Repo: "Qwen/Qwen3.5-27B", Description: "Qwen3.5 27B — dense general", Size: "~56 GB", ToolCallParser: "hermes"},
+	{Name: "Qwen3-Coder-Next", Repo: "Qwen/Qwen3-Coder-Next", Description: "Qwen3-Coder-Next 80B-A3B — MoE coding flagship", Size: "~160 GB", ToolCallParser: "qwen3_xml"},
+	{Name: "Qwen3-Coder-480B-A35B-Instruct", Repo: "Qwen/Qwen3-Coder-480B-A35B-Instruct", Description: "Qwen3-Coder 480B-A35B instruct — MoE coding flagship (very large)", Size: "~960 GB", ToolCallParser: "qwen3_xml"},
+	{Name: "Qwen3-Coder-30B-A3B-Instruct", Repo: "Qwen/Qwen3-Coder-30B-A3B-Instruct", Description: "Qwen3-Coder 30B-A3B instruct — MoE coding, low active-param", Size: "~60 GB", ToolCallParser: "qwen3_xml"},
 	// StepFun
 	{Name: "Step-3.7-Flash", Repo: "stepfun-ai/Step-3.7-Flash", Description: "StepFun Step-3.7-Flash — 201B MoE", Size: "~403 GB"},
 	{Name: "Step-3.5-Flash", Repo: "stepfun-ai/Step-3.5-Flash", Description: "StepFun Step-3.5-Flash — 199B MoE", Size: "~399 GB"},

@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	goruntime "runtime"
 	"slices"
 	"strings"
 
@@ -263,7 +264,7 @@ var newRegistrar = func() modelRegistrar { return litellm.NewKeyManager(runtime.
 // Graphify model: it starts/locates a per-model `vllm serve` endpoint. Production binds
 // *vllm.Manager; tests a fake.
 type graphifyVLLMServer interface {
-	EnsureServed(alias, model string) (port int, endpoint string, err error)
+	EnsureServedWithToolParser(alias, model, toolCallParser string) (port int, endpoint string, err error)
 }
 
 // vLLM seams — package vars so tests inject fakes without touching the host.
@@ -306,7 +307,10 @@ func pullGraphifyModelIfAbsent(repo string, report func(Progress)) []string {
 	if err := hfClient().Download(repo, io.Discard); err != nil {
 		return []string{fmt.Sprintf("could not download Graphify model %q: %s — pull it later with `ai models pull %s`", repo, err, repo)}
 	}
-	port, _, err := vllmManagerFactory().EnsureServed(alias, repo)
+	// Pass the curated tool-call parser (if confirmed for this repo) so opencode's
+	// tool_choice="auto" requests work against the Graphify model — same as `ai
+	// models pull` (see hf.CuratedModel.ToolCallParser).
+	port, _, err := vllmManagerFactory().EnsureServedWithToolParser(alias, repo, hf.ToolCallParserFor(goruntime.GOOS, repo))
 	if err != nil {
 		return []string{fmt.Sprintf("could not serve Graphify model %q: %s — pull it later with `ai models pull %s`", repo, err, repo)}
 	}

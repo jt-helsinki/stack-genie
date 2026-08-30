@@ -337,11 +337,13 @@ type fakeVLLMServer struct {
 	endpoint string
 	serveErr error
 	served   []string
+	opts     []vllm.ServeOptions
 	reserved map[string]int
 }
 
-func (fake *fakeVLLMServer) EnsureServed(alias, model string) (int, string, error) {
-	fake.served = append(fake.served, alias+"|"+model)
+func (fake *fakeVLLMServer) EnsureServedWithOptions(alias, model string, opts vllm.ServeOptions) (int, string, error) {
+	fake.served = append(fake.served, alias+"|"+model+"|"+opts.ToolCallParser)
+	fake.opts = append(fake.opts, opts)
 	if fake.serveErr != nil {
 		return 0, "", fake.serveErr
 	}
@@ -530,6 +532,305 @@ func TestModelsPullVLLMSeedsReservedPorts(test *testing.T) {
 	}
 }
 
+// TestVLLMGPUMemoryUtilizationBudgetWarning proves the sum-across-all-recorded-models
+// check: vLLM reserves each model's --gpu-memory-utilization fraction of TOTAL device
+// memory INDEPENDENTLY at its own startup, so two models each pinned 0.5 (a real
+// misconfiguration reported against this platform) must warn, while a single model or
+// a safe combined total must not.
+func TestVLLMGPUMemoryUtilizationBudgetWarning(test *testing.T) {
+	test.Setenv("HOME", test.TempDir())
+
+	// Only one model, even a high value: nothing to sum against, no warning.
+	if warning := vllmGPUMemoryUtilizationBudgetWarning("solo", 0.9); warning != "" {
+		test.Fatalf("single model: want no warning, got %q", warning)
+	}
+
+	if err := config.SetModelRuntime(config.ModelRuntimeChoice{
+		Alias: "existing", Model: "mlx-community/Existing", Runtime: config.RuntimeVLLM,
+		Endpoint: "http://127.0.0.1:8101/v1", GPUMemoryUtilization: 0.5,
+	}); err != nil {
+		test.Fatalf("seed store: %v", err)
+	}
+
+	// 0.5 (existing) + 0.5 (new) = 1.0 > the 0.9 safe budget: must warn.
+	warning := vllmGPUMemoryUtilizationBudgetWarning("new", 0.5)
+	if warning == "" {
+		test.Fatal("0.5 + 0.5 = 1.0 over the 0.9 safe budget: want a warning, got none")
+	}
+	if !strings.Contains(warning, "ai models configure") {
+		test.Errorf("warning should point at the remediation command, got %q", warning)
+	}
+
+	// 0.5 (existing) + 0.3 (new) = 0.8, under budget: no warning.
+	if warning := vllmGPUMemoryUtilizationBudgetWarning("new", 0.3); warning != "" {
+		test.Fatalf("0.5 + 0.3 = 0.8 under budget: want no warning, got %q", warning)
+	}
+
+	// Re-checking the ALREADY-recorded "existing" alias against itself must exclude
+	// its own current value from the "others" sum, so raising it to 0.6 alone (no
+	// other models) is NOT over budget.
+	if warning := vllmGPUMemoryUtilizationBudgetWarning("existing", 0.6); warning != "" {
+		test.Fatalf("reconfiguring the only recorded model must not sum against itself, got %q", warning)
+	}
+}
+
+// TestModelsPullVLLMWarnsOnOverBudgetGPUMemoryUtilization proves the warning surfaces
+// on the actual `ai models pull` JSON envelope, not just the unit-level helper.
+func TestModelsPullVLLMWarnsOnOverBudgetGPUMemoryUtilization(test *testing.T) {
+	withFakeHF(test, &hf.Fake{})
+	withFakeRegistrar(test, &fakeRegistrar{})
+	if err := config.SetModelRuntime(config.ModelRuntimeChoice{
+		Alias: "existing", Model: "mlx-community/Existing", Runtime: config.RuntimeVLLM,
+		Endpoint: "http://127.0.0.1:8101/v1", GPUMemoryUtilization: 0.5,
+	}); err != nil {
+		test.Fatalf("seed store: %v", err)
+	}
+	withFakeVLLM(test, true, nil, &fakeVLLMServer{port: 8102, endpoint: "http://127.0.0.1:8102/v1"})
+
+	var buffer bytes.Buffer
+	emitter := &output.Emitter{Out: &buffer, Err: io.Discard, JSON: true}
+	exit := output.ExitOK
+	cmd := newModelsPullCmd(emitter, &exit)
+	cmd.SetOut(io.Discard)
+	cmd.SetErr(io.Discard)
+	runLocalModelsCmd(test, cmd, "--alias", "new", "--gpu-memory-utilization", "0.5", "mlx-community/New")
+
+	if exit != output.ExitOK {
+		test.Fatalf("pull exit = %d, want 0 (a warning must not block the pull)", exit)
+	}
+	var envelope struct {
+		Warnings []string `json:"warnings"`
+	}
+	if err := json.Unmarshal(buffer.Bytes(), &envelope); err != nil {
+		test.Fatalf("decode envelope: %v (body: %s)", err, buffer.String())
+	}
+	if len(envelope.Warnings) != 1 || !strings.Contains(envelope.Warnings[0], "gpu-memory-utilization") {
+		test.Fatalf("envelope.warnings = %v, want one gpu-memory-utilization budget warning", envelope.Warnings)
+	}
+}
+
+// TestModelsPullVLLMResourceOptionsFlagsThreadThrough proves --gpu-memory-utilization
+// and --max-model-len reach EnsureServedWithOptions AND are persisted in the recorded
+// runtime choice, so a later restart relaunches the model with the same caps instead of
+// falling back to vLLM's own default (0.9 utilization, sized off total device memory —
+// the fix for a small model resident at tens of GB).
+func TestModelsPullVLLMResourceOptionsFlagsThreadThrough(test *testing.T) {
+	withFakeHF(test, &hf.Fake{})
+	withFakeRegistrar(test, &fakeRegistrar{})
+	server := &fakeVLLMServer{port: 8101, endpoint: "http://127.0.0.1:8101/v1"}
+	withFakeVLLM(test, true, nil, server)
+	exit := output.ExitOK
+	cmd := newModelsPullCmd(jsonEmitter(), &exit)
+	cmd.SetOut(io.Discard)
+	cmd.SetErr(io.Discard)
+	runLocalModelsCmd(test, cmd, "--alias", "my-qwen", "--gpu-memory-utilization", "0.5",
+		"--max-model-len", "8192", "mlx-community/Qwen3-8B")
+	if exit != output.ExitOK {
+		test.Fatalf("vLLM pull exit = %d, want 0", exit)
+	}
+	if len(server.opts) != 1 || server.opts[0].GPUMemoryUtilization != 0.5 || server.opts[0].MaxModelLen != 8192 {
+		test.Fatalf("EnsureServedWithOptions opts = %+v, want {GPUMemoryUtilization:0.5 MaxModelLen:8192}", server.opts)
+	}
+	choice, ok := config.ModelRuntimeFor("my-qwen")
+	if !ok || choice.GPUMemoryUtilization != 0.5 || choice.MaxModelLen != 8192 {
+		test.Fatalf("recorded choice = %+v (ok=%v), want the resource caps persisted for a later restart", choice, ok)
+	}
+}
+
+// TestModelsPullVLLMResourceOptionsRejectsInvalid proves an out-of-range
+// --gpu-memory-utilization is rejected (exit 2) rather than silently passed to vLLM.
+func TestModelsPullVLLMResourceOptionsRejectsInvalid(test *testing.T) {
+	withFakeHF(test, &hf.Fake{})
+	withFakeRegistrar(test, &fakeRegistrar{})
+	withFakeVLLM(test, true, nil, &fakeVLLMServer{})
+	exit := output.ExitOK
+	cmd := newModelsPullCmd(jsonEmitter(), &exit)
+	cmd.SetOut(io.Discard)
+	cmd.SetErr(io.Discard)
+	runLocalModelsCmd(test, cmd, "--gpu-memory-utilization", "1.5", "mlx-community/Qwen3-8B")
+	if exit != output.ExitInvalidInput {
+		test.Fatalf("exit = %d, want ExitInvalidInput for an out-of-range --gpu-memory-utilization", exit)
+	}
+}
+
+// TestModelsConfigureAppliesCapsWithoutDownloading proves `ai models configure`
+// changes the recorded resource caps and restarts the server WITHOUT touching the `hf`
+// download path (the fake's Download call count must stay 0) — the whole point being
+// "set these without re-pulling the model".
+func TestModelsConfigureAppliesCapsWithoutDownloading(test *testing.T) {
+	fakeHF := &hf.Fake{}
+	withFakeHF(test, fakeHF)
+	withFakeRegistrar(test, &fakeRegistrar{})
+	if err := config.SetModelRuntime(config.ModelRuntimeChoice{
+		Alias: "my-qwen", Model: "mlx-community/Qwen3-8B",
+		Runtime: config.RuntimeVLLM, Endpoint: "http://127.0.0.1:8101/v1", Status: "registered",
+	}); err != nil {
+		test.Fatalf("seed store: %v", err)
+	}
+	server := &fakeVLLMServer{port: 8101, endpoint: "http://127.0.0.1:8101/v1"}
+	withFakeVLLM(test, true, nil, server)
+	var stoppedPorts []int
+	restore := vllmStopByPortFn
+	vllmStopByPortFn = func(port int) error { stoppedPorts = append(stoppedPorts, port); return nil }
+	defer func() { vllmStopByPortFn = restore }()
+
+	exit := output.ExitOK
+	cmd := newModelsConfigureCmd(jsonEmitter(), &exit)
+	cmd.SetOut(io.Discard)
+	cmd.SetErr(io.Discard)
+	runLocalModelsCmd(test, cmd, "--gpu-memory-utilization", "0.5", "--max-model-len", "8192", "my-qwen")
+	if exit != output.ExitOK {
+		test.Fatalf("configure exit = %d, want 0", exit)
+	}
+	if len(fakeHF.DownloadedAll) != 0 {
+		test.Fatalf("Download called %d times, want 0 (configure must not re-pull weights)", len(fakeHF.DownloadedAll))
+	}
+	if len(stoppedPorts) != 1 || stoppedPorts[0] != 8101 {
+		test.Fatalf("stopped ports = %v, want [8101] (a running server must be stopped, not adopted, for new caps to apply)", stoppedPorts)
+	}
+	if len(server.opts) != 1 || server.opts[0].GPUMemoryUtilization != 0.5 || server.opts[0].MaxModelLen != 8192 {
+		test.Fatalf("EnsureServedWithOptions opts = %+v, want {GPUMemoryUtilization:0.5 MaxModelLen:8192}", server.opts)
+	}
+	choice, ok := config.ModelRuntimeFor("my-qwen")
+	if !ok || choice.GPUMemoryUtilization != 0.5 || choice.MaxModelLen != 8192 {
+		test.Fatalf("recorded choice = %+v (ok=%v), want the new caps persisted", choice, ok)
+	}
+}
+
+// TestModelsConfigureUnknownModelExits2 proves an unrecorded model is rejected rather
+// than silently starting a fresh server for it (that is `ai models pull`'s job).
+func TestModelsConfigureUnknownModelExits2(test *testing.T) {
+	withFakeHF(test, &hf.Fake{})
+	withFakeRegistrar(test, &fakeRegistrar{})
+	withFakeVLLM(test, true, nil, &fakeVLLMServer{})
+	exit := output.ExitOK
+	cmd := newModelsConfigureCmd(jsonEmitter(), &exit)
+	cmd.SetOut(io.Discard)
+	cmd.SetErr(io.Discard)
+	runLocalModelsCmd(test, cmd, "--gpu-memory-utilization", "0.5", "never-pulled")
+	if exit != output.ExitInvalidInput {
+		test.Fatalf("exit = %d, want ExitInvalidInput for a model with no recorded vLLM runtime choice", exit)
+	}
+}
+
+// TestModelsDisableStopsAndRecordsFlag proves `ai models disable` stops the model's
+// server (best-effort) and persists Disabled=true, preserving its other recorded
+// fields (the resource caps) — this is the mechanism ensureVLLMServers now checks to
+// skip a model in its auto-start pass, so two local models' gpu-memory-utilization
+// no longer have to sum within budget if only one is meant to run at a time.
+func TestModelsDisableStopsAndRecordsFlag(test *testing.T) {
+	withFakeHF(test, &hf.Fake{})
+	withFakeRegistrar(test, &fakeRegistrar{})
+	if err := config.SetModelRuntime(config.ModelRuntimeChoice{
+		Alias: "my-qwen", Model: "mlx-community/Qwen3-8B", Runtime: config.RuntimeVLLM,
+		Endpoint: "http://127.0.0.1:8101/v1", Status: "registered", GPUMemoryUtilization: 0.5,
+	}); err != nil {
+		test.Fatalf("seed store: %v", err)
+	}
+	withFakeVLLM(test, true, nil, &fakeVLLMServer{})
+	var stoppedPorts []int
+	restore := vllmStopByPortFn
+	vllmStopByPortFn = func(port int) error { stoppedPorts = append(stoppedPorts, port); return nil }
+	defer func() { vllmStopByPortFn = restore }()
+
+	exit := output.ExitOK
+	cmd := newModelsDisableCmd(jsonEmitter(), &exit)
+	cmd.SetOut(io.Discard)
+	cmd.SetErr(io.Discard)
+	runLocalModelsCmd(test, cmd, "my-qwen")
+	if exit != output.ExitOK {
+		test.Fatalf("disable exit = %d, want 0", exit)
+	}
+	if len(stoppedPorts) != 1 || stoppedPorts[0] != 8101 {
+		test.Fatalf("stopped ports = %v, want [8101]", stoppedPorts)
+	}
+	choice, ok := config.ModelRuntimeFor("my-qwen")
+	if !ok || !choice.Disabled {
+		test.Fatalf("recorded choice = %+v (ok=%v), want Disabled=true", choice, ok)
+	}
+	if choice.GPUMemoryUtilization != 0.5 {
+		test.Errorf("disable must preserve other fields, got GPUMemoryUtilization=%v", choice.GPUMemoryUtilization)
+	}
+}
+
+// TestModelsEnableStartsAndClearsFlag proves `ai models enable` clears the disabled
+// flag and starts the server with NO re-download.
+func TestModelsEnableStartsAndClearsFlag(test *testing.T) {
+	fakeHF := &hf.Fake{}
+	withFakeHF(test, fakeHF)
+	withFakeRegistrar(test, &fakeRegistrar{})
+	if err := config.SetModelRuntime(config.ModelRuntimeChoice{
+		Alias: "my-qwen", Model: "mlx-community/Qwen3-8B", Runtime: config.RuntimeVLLM,
+		Endpoint: "http://127.0.0.1:8101/v1", Status: "registered", GPUMemoryUtilization: 0.5, Disabled: true,
+	}); err != nil {
+		test.Fatalf("seed store: %v", err)
+	}
+	server := &fakeVLLMServer{port: 8101, endpoint: "http://127.0.0.1:8101/v1"}
+	withFakeVLLM(test, true, nil, server)
+
+	exit := output.ExitOK
+	cmd := newModelsEnableCmd(jsonEmitter(), &exit)
+	cmd.SetOut(io.Discard)
+	cmd.SetErr(io.Discard)
+	runLocalModelsCmd(test, cmd, "my-qwen")
+	if exit != output.ExitOK {
+		test.Fatalf("enable exit = %d, want 0", exit)
+	}
+	if len(fakeHF.DownloadedAll) != 0 {
+		test.Fatalf("Download called %d times, want 0 (enable must not re-pull weights)", len(fakeHF.DownloadedAll))
+	}
+	if len(server.opts) != 1 || server.opts[0].GPUMemoryUtilization != 0.5 {
+		test.Fatalf("EnsureServedWithOptions opts = %+v, want the preserved GPUMemoryUtilization", server.opts)
+	}
+	choice, ok := config.ModelRuntimeFor("my-qwen")
+	if !ok || choice.Disabled {
+		test.Fatalf("recorded choice = %+v (ok=%v), want Disabled=false", choice, ok)
+	}
+}
+
+// TestModelsDisableUnknownModelExits2 proves an unrecorded model is rejected.
+func TestModelsDisableUnknownModelExits2(test *testing.T) {
+	withFakeHF(test, &hf.Fake{})
+	withFakeRegistrar(test, &fakeRegistrar{})
+	withFakeVLLM(test, true, nil, &fakeVLLMServer{})
+	exit := output.ExitOK
+	cmd := newModelsDisableCmd(jsonEmitter(), &exit)
+	cmd.SetOut(io.Discard)
+	cmd.SetErr(io.Discard)
+	runLocalModelsCmd(test, cmd, "never-pulled")
+	if exit != output.ExitInvalidInput {
+		test.Fatalf("exit = %d, want ExitInvalidInput for a model with no recorded vLLM runtime choice", exit)
+	}
+}
+
+// TestModelsConfigurePreservesDisabledFlag proves re-running `ai models configure`
+// on a disabled model does NOT silently re-enable it — recordModelRuntimeChoice must
+// carry over the existing Disabled flag rather than resetting it to false.
+func TestModelsConfigurePreservesDisabledFlag(test *testing.T) {
+	withFakeHF(test, &hf.Fake{})
+	withFakeRegistrar(test, &fakeRegistrar{})
+	if err := config.SetModelRuntime(config.ModelRuntimeChoice{
+		Alias: "my-qwen", Model: "mlx-community/Qwen3-8B", Runtime: config.RuntimeVLLM,
+		Endpoint: "http://127.0.0.1:8101/v1", Status: "registered", Disabled: true,
+	}); err != nil {
+		test.Fatalf("seed store: %v", err)
+	}
+	withFakeVLLM(test, true, nil, &fakeVLLMServer{port: 8101, endpoint: "http://127.0.0.1:8101/v1"})
+
+	exit := output.ExitOK
+	cmd := newModelsConfigureCmd(jsonEmitter(), &exit)
+	cmd.SetOut(io.Discard)
+	cmd.SetErr(io.Discard)
+	runLocalModelsCmd(test, cmd, "--gpu-memory-utilization", "0.3", "my-qwen")
+	if exit != output.ExitOK {
+		test.Fatalf("configure exit = %d, want 0", exit)
+	}
+	choice, ok := config.ModelRuntimeFor("my-qwen")
+	if !ok || !choice.Disabled {
+		test.Fatalf("recorded choice = %+v (ok=%v), want Disabled to stay true", choice, ok)
+	}
+}
+
 func TestModelsPullVLLMAliasMultiModelExits2(test *testing.T) {
 	withFakeHF(test, &hf.Fake{})
 	withFakeRegistrar(test, &fakeRegistrar{})
@@ -559,6 +860,47 @@ func TestModelsPullVLLMDefaultAlias(test *testing.T) {
 	}
 	if len(registrar.vllmRegistered) != 1 || !strings.HasPrefix(registrar.vllmRegistered[0], "Foo-Bar|") {
 		test.Fatalf("default alias not Foo-Bar: %v", registrar.vllmRegistered)
+	}
+}
+
+// TestModelsPullVLLMToolCallParserWired proves `ai models pull` looks up the curated
+// model's confirmed vLLM --tool-call-parser and threads it into EnsureServedWithToolParser
+// — the fix for LiteLLM's "auto tool choice requires --enable-auto-tool-choice and
+// --tool-call-parser to be set" error. It finds any curated repo for this OS that HAS
+// a confirmed parser (so the test is not tied to one specific model or OS) and an
+// uncurated repo, which must get an empty parser rather than a guess.
+func TestModelsPullVLLMToolCallParserWired(test *testing.T) {
+	var curatedRepo, curatedParser string
+	for _, model := range hf.CuratedModels(goruntime.GOOS) {
+		if model.ToolCallParser != "" {
+			curatedRepo, curatedParser = model.Repo, model.ToolCallParser
+			break
+		}
+	}
+	if curatedRepo == "" {
+		test.Skip("no curated model on this OS has a confirmed ToolCallParser")
+	}
+
+	withFakeHF(test, &hf.Fake{})
+	withFakeRegistrar(test, &fakeRegistrar{})
+	server := &fakeVLLMServer{port: 8101, endpoint: "http://127.0.0.1:8101/v1"}
+	withFakeVLLM(test, true, nil, server)
+	exit := output.ExitOK
+	cmd := newModelsPullCmd(jsonEmitter(), &exit)
+	cmd.SetOut(io.Discard)
+	cmd.SetErr(io.Discard)
+	runLocalModelsCmd(test, cmd, curatedRepo, "mlx-community/not-a-curated-repo")
+	if exit != output.ExitOK {
+		test.Fatalf("pull exit = %d, want 0", exit)
+	}
+	if len(server.served) != 2 {
+		test.Fatalf("served = %v, want 2 entries", server.served)
+	}
+	if want := vllmDefaultAlias(curatedRepo) + "|" + curatedRepo + "|" + curatedParser; server.served[0] != want {
+		test.Errorf("served[0] = %q, want %q (curated parser must reach EnsureServedWithToolParser)", server.served[0], want)
+	}
+	if want := "not-a-curated-repo|mlx-community/not-a-curated-repo|"; server.served[1] != want {
+		test.Errorf("served[1] = %q, want %q (an uncurated repo must get an EMPTY parser, never a guess)", server.served[1], want)
 	}
 }
 

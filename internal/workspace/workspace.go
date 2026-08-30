@@ -420,23 +420,25 @@ func logStep(format string, args ...any) {
 }
 
 func (manager Manager) Start(project string) (*state.Workspace, error) {
+	return manager.startInternal(project, false)
+}
+
+// startInternal is Start with an explicit forceRebuild: when false (the plain `ai
+// start` path) an already-created workspace gets a CHEAP start — just boot the
+// existing microVM, no image rebuild, no `msb create --replace` recreate.
+// Recreating on every plain start was wasteful (a full docker-build + export +
+// msb-load on a workspace whose image hadn't changed) and is also what left a log
+// stream stale after resuming a workspace that hadn't shut down cleanly — the
+// replace tears down and reopens the VM (evicting any cached log-stream
+// connection) even when nothing needed to change. forceRebuild=true (used by
+// Restart) skips that short-circuit and always goes through the full
+// build+create, which is how config/Dockerfile changes get picked up.
+func (manager Manager) startInternal(project string, forceRebuild bool) (*state.Workspace, error) {
 	root, err := resolveProjectRoot(project)
 	if err != nil {
 		return nil, err
 	}
 	name := Name(project)
-	imageRef := name + ":latest"
-	logStep("building workspace image %s", imageRef)
-	if err := manager.Builder.Build(root, imageRef); err != nil {
-		return nil, err
-	}
-	// Ensure the persistent overlay before create so installs + agent state
-	// survive restart/recreation (arch §26). Re-ensuring re-uses the same
-	// directory, so a recreated workspace keeps its prior contents.
-	overlayPath, err := overlay.Ensure(name)
-	if err != nil {
-		return nil, err
-	}
 	// Translate the effective egress policy into the msb network argv fragment;
 	// the configured model gateway is always allowed on its Headroom port (arch
 	// §29.2). In standalone/local mode this is host.microsandbox.internal:18787;
@@ -449,6 +451,48 @@ func (manager Manager) Start(project string) (*state.Workspace, error) {
 		return nil, err
 	}
 	gatewayHost, gatewayPort, gatewayURL := resolveGateway()
+
+	if !forceRebuild {
+		if existing, findErr := manager.findHandle(root, name); findErr == nil && existing != nil {
+			livenessCtx, cancel := context.WithTimeout(context.Background(), livenessProbeTimeout)
+			running, probeErr := manager.Sandbox.IsRunning(livenessCtx, name)
+			cancel()
+			switch {
+			case probeErr == nil && running:
+				// `ai start` on an ALREADY-RUNNING workspace means restart it (the
+				// user's expectation of "start" on a live thing), so fall through to
+				// the full rebuild+recreate below — same as forceRebuild.
+				logStep("workspace already running — restarting")
+				if stopErr := manager.Sandbox.Stop(name); stopErr != nil && !errors.Is(stopErr, ErrAlreadyStopped) {
+					return nil, stopErr
+				}
+			default:
+				// Not running (stopped, or the liveness probe failed/timed out — treat
+				// uncertainty as "try the cheap path, self-heal on failure"): just boot
+				// the existing microVM, no rebuild/recreate. Self-heals to the full
+				// build+create path below when the microVM was removed out-of-band
+				// (e.g. `msb rm`) despite a handle still being on record.
+				logStep("starting existing microVM")
+				if startErr := manager.Sandbox.Start(name); startErr == nil {
+					return manager.finishStart(name, project, root, projectConfig, gatewayHost, gatewayPort, gatewayURL)
+				}
+				logStep("existing microVM unavailable — rebuilding")
+			}
+		}
+	}
+
+	imageRef := name + ":latest"
+	logStep("building workspace image %s", imageRef)
+	if err := manager.Builder.Build(root, imageRef); err != nil {
+		return nil, err
+	}
+	// Ensure the persistent overlay before create so installs + agent state
+	// survive restart/recreation (arch §26). Re-ensuring re-uses the same
+	// directory, so a recreated workspace keeps its prior contents.
+	overlayPath, err := overlay.Ensure(name)
+	if err != nil {
+		return nil, err
+	}
 	// Publish the installed in-VM apps' unique host ports so msb forwards
 	// host:<port> → VM:<port> (nerdctl then maps VM:<port> → container). The app
 	// ports are merged into the project's publish set for this start only — they
@@ -476,6 +520,14 @@ func (manager Manager) Start(project string) (*state.Workspace, error) {
 	if err := manager.Sandbox.Start(name); err != nil {
 		return nil, err
 	}
+	return manager.finishStart(name, project, root, projectConfig, gatewayHost, gatewayPort, gatewayURL)
+}
+
+// finishStart runs every post-boot step shared by a fresh build+create start and a
+// cheap resume-existing-microVM start: clock sync, gateway host pinning, agent
+// provider registration, containerd, in-VM apps, the project venv, shared resource
+// symlinks, and the optional AI tools — then saves the started state handle.
+func (manager Manager) finishStart(name, project, root string, projectConfig *config.Config, gatewayHost string, gatewayPort int, gatewayURL string) (*state.Workspace, error) {
 	// Correct the guest clock before anything time-sensitive runs (agent provider
 	// TLS, in-VM image pulls): a fresh boot — or a recreate after the host slept —
 	// can leave the VM's clock skewed by the sleep duration. Best-effort: a failure
@@ -2247,16 +2299,17 @@ func (manager Manager) Restart(project string) (*state.Workspace, error) {
 		return nil, fmt.Errorf("%w: %q", ErrNotStarted, project)
 	}
 	// Stop the existing microVM (an already-stopped one is fine for a restart), then
-	// run the FULL start path again. Start recreates the microVM via Sandbox.Create,
-	// re-deriving the network/published-port set, so a restart picks up config changes
-	// — notably a newly added/removed in-VM app's host port (the apps publish set is
-	// merged into netArgs only at Start). A bare Sandbox.Stop+Start (no Create) would
-	// leave the new port unpublished. Start has no "already running" short-circuit, so
-	// it rebuilds + recreates unconditionally and re-runs provider/containerd/app setup.
+	// run the FULL start path again with forceRebuild — this recreates the microVM
+	// via Sandbox.Create, re-deriving the network/published-port set, so a restart
+	// picks up config changes — notably a newly added/removed in-VM app's host port
+	// (the apps publish set is merged into netArgs only at build+create time). A
+	// bare Sandbox.Stop+Start (no Create) would leave the new port unpublished, and
+	// a plain (non-forced) start would take the cheap already-created short-circuit
+	// instead of rebuilding.
 	if err := manager.Sandbox.Stop(name); err != nil && !errors.Is(err, ErrAlreadyStopped) {
 		return nil, err
 	}
-	return manager.Start(project)
+	return manager.startInternal(project, true)
 }
 
 // findHandle returns the workspace handle for name, or nil if no handle exists

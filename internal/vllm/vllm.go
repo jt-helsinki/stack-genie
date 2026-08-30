@@ -84,13 +84,35 @@ type ServerHandle struct {
 	PID int
 }
 
+// ServeOptions carries the optional `vllm serve` resource/tool-calling knobs a
+// caller can pin for a model. The zero value means "use vLLM's own defaults" for
+// every field — a caller never has to guess a value it isn't confident about.
+type ServeOptions struct {
+	// ToolCallParser, when non-empty, enables auto tool choice with that parser
+	// (see vllmServeArgs) — the model's CONFIRMED vLLM --tool-call-parser value
+	// (hf.CuratedModel.ToolCallParser).
+	ToolCallParser string
+	// GPUMemoryUtilization, when > 0, is passed as `--gpu-memory-utilization
+	// <value>` — the fraction of device memory vLLM may pre-allocate for the
+	// KV-cache (0–1). Zero leaves vLLM's own default (0.9) in effect, which
+	// pre-allocates a large KV-cache pool sized off TOTAL device memory rather
+	// than the model's weight size — the usual reason a small model still shows
+	// tens of GB of resident memory.
+	GPUMemoryUtilization float64
+	// MaxModelLen, when > 0, is passed as `--max-model-len <value>` — caps the
+	// context window (tokens) the KV-cache is sized for. Zero leaves the model's
+	// own (often very large) default context length in effect.
+	MaxModelLen int
+}
+
 // Runner starts and stops detached `vllm serve` processes. The real implementation
 // (runner.go) is a `hardware bring-up` seam; tests use FakeRunner. Start returns a
 // handle the Manager later passes to Stop.
 type Runner interface {
 	// Start launches a detached `vllm serve <model>` bound to 127.0.0.1:<port>,
-	// serving it under <alias> as the OpenAI model name, with weights under storeDir.
-	Start(alias, model string, port int, storeDir string) (ServerHandle, error)
+	// serving it under <alias> as the OpenAI model name, with weights under
+	// storeDir, applying the optional opts (see ServeOptions).
+	Start(alias, model string, port int, storeDir string, opts ServeOptions) (ServerHandle, error)
 	// Stop terminates the process identified by handle.
 	Stop(handle ServerHandle) error
 }
@@ -296,7 +318,28 @@ func (manager *Manager) SeedReserved(reserved map[string]int) {
 // (stopped) first; the eviction is reported via the Log hook, never silently
 // dropped. Returns an error if the process fails to start or never becomes healthy;
 // in that case the just-started process is stopped and its port freed.
+//
+// EnsureServed starts with the zero ServeOptions (equivalent to
+// EnsureServedWithOptions(alias, model, ServeOptions{})) — use that method directly
+// when the caller has a curated tool-call parser or wants to pin the resource knobs
+// (see ServeOptions).
 func (manager *Manager) EnsureServed(alias, model string) (int, string, error) {
+	return manager.EnsureServedWithOptions(alias, model, ServeOptions{})
+}
+
+// EnsureServedWithToolParser is EnsureServed with an explicit vLLM tool-call parser
+// (equivalent to EnsureServedWithOptions(alias, model, ServeOptions{ToolCallParser:
+// toolCallParser})). It has no effect on an ADOPTED already-running server (its
+// flags were fixed at its own launch) — restart it to change them.
+func (manager *Manager) EnsureServedWithToolParser(alias, model, toolCallParser string) (int, string, error) {
+	return manager.EnsureServedWithOptions(alias, model, ServeOptions{ToolCallParser: toolCallParser})
+}
+
+// EnsureServedWithOptions is EnsureServed with the full set of optional `vllm serve`
+// knobs (see ServeOptions) — the tool-call parser AND/OR the GPU-memory-utilization /
+// max-model-len resource caps. They have no effect on an ADOPTED already-running
+// server (its flags were fixed at its own launch) — restart it to change them.
+func (manager *Manager) EnsureServedWithOptions(alias, model string, opts ServeOptions) (int, string, error) {
 	if alias == "" {
 		return 0, "", fmt.Errorf("vllm: EnsureServed requires a non-empty alias")
 	}
@@ -364,7 +407,7 @@ func (manager *Manager) EnsureServed(alias, model string) (int, string, error) {
 			healthErr = manager.waitHealthy(port)
 		}
 	default:
-		handle, startErr = manager.runner.Start(alias, model, port, storeDir)
+		handle, startErr = manager.runner.Start(alias, model, port, storeDir, opts)
 		if startErr == nil {
 			healthErr = manager.waitHealthy(port)
 		}

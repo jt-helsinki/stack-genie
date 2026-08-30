@@ -272,6 +272,11 @@ func TestRegisterVLLMModelRequestShape(test *testing.T) {
 	if _, present := params["litellm_credential_name"]; present {
 		test.Errorf("a vLLM model must not reference a credential, got %v", params["litellm_credential_name"])
 	}
+	if params["api_key"] != vllmPlaceholderAPIKey {
+		test.Errorf("api_key = %v, want the non-empty placeholder %q (LiteLLM's openai/ provider "+
+			"requires a non-empty key to construct its client even though vLLM itself checks none)",
+			params["api_key"], vllmPlaceholderAPIKey)
+	}
 	if params["drop_params"] != true {
 		test.Errorf("litellm_params.drop_params = %v, want true", params["drop_params"])
 	}

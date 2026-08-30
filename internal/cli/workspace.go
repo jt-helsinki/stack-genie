@@ -461,21 +461,23 @@ func mapWorkspaceErr(err error) error {
 	}
 }
 
-// startWorkspace builds the image and boots the project's workspace microVM.
-// Both steps are slow, so on a TTY (not --json/--plain) it animates a spinner on
-// stderr while the work runs; under --json/automation/no-TTY it runs the Manager
-// directly with no spinner (the envelope path is unchanged). Shared by `ai start`,
-// the `ai start` cwd shortcut, and project attach.
+// startWorkspace boots the project's workspace microVM — a cheap resume (no
+// rebuild) when it was already created before, else a full build+create (see
+// workspace.Manager.Start). Either way it can be slow, so on a TTY (not
+// --json/--plain) it prints a one-line header while the work runs; under
+// --json/automation/no-TTY it runs the Manager directly with no header (the
+// envelope path is unchanged). Shared by `ai start`, the `ai start` cwd
+// shortcut, and project attach.
 func startWorkspace(emitter *output.Emitter, name string) (*state.Workspace, error) {
 	manager := workspace.RealManager(goruntime.GOOS, nowRFC3339)
-	// The image BUILD + `msb load` + microVM create stream their OWN native progress
-	// (docker BuildKit layers, msb load/pull bars) to the terminal — a bubbletea
-	// spinner cannot share the screen with them (it garbles INTO the build output, as
-	// observed). So we DON'T spin: print a one-line header (on a TTY) and let the
-	// native progress show, exactly like `ai setup`'s pre-pull. Under --json/no-TTY no
-	// header is printed and the envelope path is unchanged.
+	// A first-time build streams its OWN native progress (docker BuildKit layers,
+	// msb load/pull bars) to the terminal — a bubbletea spinner cannot share the
+	// screen with them (it garbles INTO the build output, as observed). So we DON'T
+	// spin: print a one-line header (on a TTY) and let any native progress show,
+	// exactly like `ai setup`'s pre-pull. Under --json/no-TTY no header is printed
+	// and the envelope path is unchanged.
 	if ui.Enabled(emitter) {
-		_, _ = fmt.Fprintln(emitter.Err, "Starting workspace "+name+" (building image + booting microVM)…")
+		_, _ = fmt.Fprintln(emitter.Err, "Starting workspace "+name+" (booting microVM; building the image first if it's new)…")
 	}
 	return manager.Start(name)
 }

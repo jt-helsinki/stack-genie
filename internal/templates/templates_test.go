@@ -201,8 +201,12 @@ func TestOptInToolsAreConditionalSnippetsNotBaked(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ToolSnippet(codebase-memory-mcp): %v", err)
 	}
-	if !strings.Contains(cmm, "DeusData/codebase-memory-mcp/main/install.sh") || !strings.Contains(cmm, "--ui --skip-config") {
+	if !strings.Contains(cmm, "DeusData/codebase-memory-mcp/main/install.sh") || !strings.Contains(cmm, "--skip-config") {
 		t.Errorf("codebase-memory-mcp snippet missing its install command:\n%s", cmm)
+	}
+	if strings.Contains(cmm, "install.sh | bash -s -- --ui") {
+		t.Errorf("codebase-memory-mcp install.sh has no --ui flag (only --dir/--clients/--skip-config/--help) — "+
+			"passing it fails the image build with \"unknown option '--ui'\":\n%s", cmm)
 	}
 }
 

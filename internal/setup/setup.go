@@ -46,6 +46,28 @@ type ServiceStatus struct {
 	// or disabled (`ai services enable|disable`); core services are always on. A
 	// disabled optional service has State "disabled".
 	Optional bool `json:"optional,omitempty"`
+	// Models is the per-model config for a host-native, per-model-process service
+	// (currently only vllm) — empty for every container service. It surfaces here
+	// (rather than as generic ContainerStats — vLLM has no container to `docker
+	// inspect`/`stats`) so the Services detail pane can show each model's
+	// resolved serving config alongside the summary.
+	Models []VLLMModelInfo `json:"models,omitempty"`
+}
+
+// VLLMModelInfo is one recorded vLLM model's resolved serving config, surfaced on
+// ServiceStatus.Models. GPUMemoryUtilization/MaxModelLen are 0 when unset (vLLM's
+// own defaults are in effect — see vllm.ServeOptions).
+type VLLMModelInfo struct {
+	Alias                string  `json:"alias"`
+	Model                string  `json:"model"`
+	Endpoint             string  `json:"endpoint,omitempty"`
+	Healthy              bool    `json:"healthy"`
+	GPUMemoryUtilization float64 `json:"gpu_memory_utilization,omitempty"`
+	MaxModelLen          int     `json:"max_model_len,omitempty"`
+	// Disabled mirrors config.ModelRuntimeChoice.Disabled — this model is
+	// intentionally excluded from ensureVLLMServers' auto-start pass (`ai models
+	// disable`), so a not-Healthy disabled model is expected, not "down".
+	Disabled bool `json:"disabled,omitempty"`
 }
 
 // Enabled reports whether the service is currently enabled — true for every core
@@ -943,6 +965,15 @@ const ServiceLogTailLines = 200
 // running engine; the argv construction + multi-container layout are unit-tested
 // against a fake prober.
 func ServiceLogTail(deps Deps, service string, tail int) (string, error) {
+	if service == "vllm" {
+		// Host-native: no container, so serviceContainers is empty. vLLM's per-model
+		// output is redirected to <storeDir>/<alias>.log at process start (see
+		// vllm.RealRunner.Start), so tail those files instead of a container log.
+		if tail <= 0 {
+			tail = ServiceLogTailLines
+		}
+		return vllmHostLogTail(tail)
+	}
 	containers := serviceContainers(service)
 	if len(containers) == 0 {
 		if isDesiredService(service) {

@@ -239,8 +239,16 @@ func (view *Project) Update(msg tea.Msg) tea.Cmd {
 		if view.resizing {
 			return view.handleResizeKey(message)
 		}
-		// Lifecycle keys act on the workspace (unless one is already in flight or no
-		// workspace is selected).
+		// s/x/r FORCE start/stop/restart even with another lifecycle op already in
+		// flight (mid-"starting…" spinner, or steady-state running) — the app
+		// overrides the in-flight op and starts tracking the new one. z/e/d still
+		// require a settled (non-pending) workspace — resizing/exec/delete mid-op is
+		// not a "just redirect the outcome" action like start/stop/restart is.
+		if name != "" {
+			if action, ok := map[string]string{"s": "start", "x": "stop", "r": "restart"}[message.String()]; ok {
+				return func() tea.Msg { return WorkspaceActionRequestedMsg{Action: action, Project: name} }
+			}
+		}
 		if name != "" && view.pending == "" {
 			if message.String() == "z" {
 				// Begin the inline disk-resize prompt; next keystrokes edit the GiB value.
@@ -256,10 +264,9 @@ func (view *Project) Update(msg tea.Msg) tea.Cmd {
 				}
 				return func() tea.Msg { return ExecRequestedMsg{Project: name} }
 			}
-			if action, ok := map[string]string{"s": "start", "x": "stop", "r": "restart", "d": "delete"}[message.String()]; ok {
-				// The app handles this: start/stop/restart run DETACHED with a spinner
-				// here (TUI stays navigable); delete confirms in the terminal overlay.
-				return func() tea.Msg { return WorkspaceActionRequestedMsg{Action: action, Project: name} }
+			if message.String() == "d" {
+				// The app handles this: delete confirms in the terminal overlay.
+				return func() tea.Msg { return WorkspaceActionRequestedMsg{Action: "delete", Project: name} }
 			}
 		}
 	}

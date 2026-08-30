@@ -10,8 +10,9 @@ package setup
 // carrying an Endpoint), by HTTP-probing each recorded endpoint — NOT from Manager
 // memory. vLLM servers are launched DETACHED so they outlive the CLI.
 //
-// vLLM serves ONE model per process (each an OpenAI endpoint on a host loopback
-// port), so there can be 0..N of them; the platform surfaces a SINGLE `vllm`
+// vLLM serves ONE model per process (each an OpenAI-API-COMPATIBLE HTTP endpoint on
+// a host loopback port — NOT a call to real OpenAI), so there can be 0..N of them;
+// the platform surfaces a SINGLE `vllm`
 // summary line (Mode "host") — running when ≥1 recorded endpoint answers, else
 // stopped — matching serviceHealthy("vllm") and keeping the status shape flat.
 //
@@ -22,12 +23,15 @@ package setup
 
 import (
 	"net/http"
+	"os"
 	"os/exec"
+	"path/filepath"
 	goruntime "runtime"
 	"strings"
 	"time"
 
 	"github.com/jt-helsinki/stack-genie/internal/config"
+	"github.com/jt-helsinki/stack-genie/internal/hf"
 	"github.com/jt-helsinki/stack-genie/internal/output"
 	"github.com/jt-helsinki/stack-genie/internal/vllm"
 )
@@ -116,6 +120,63 @@ func vllmRuntimeChoices() []config.ModelRuntimeChoice {
 	return vllmChoices
 }
 
+// vllmHostLogTail returns the last `lines` lines of each recorded vLLM model's
+// captured output (`<vllm.StoreDir()>/<alias>.log`, redirected there by
+// vllm.RealRunner.Start), concatenated under a `── <alias> ──` heading per model —
+// the host-native analogue of the multi-container heading path above (e.g.
+// presidio's analyzer + anonymizer). With no recorded models, or none that have ever
+// produced a log file, it returns "" with no error (nothing to show yet is not a
+// failure — the same tolerance a stopped/absent container gets).
+func vllmHostLogTail(lines int) (string, error) {
+	choices := vllmRuntimeChoices()
+	if len(choices) == 0 {
+		return "", nil
+	}
+	storeDir, err := vllm.StoreDir()
+	if err != nil {
+		return "", nil
+	}
+	if len(choices) == 1 {
+		content, ok := tailLogFile(filepath.Join(storeDir, choices[0].Alias+".log"), lines)
+		if !ok {
+			return "", nil
+		}
+		return content, nil
+	}
+	var combined strings.Builder
+	for index, choice := range choices {
+		content, ok := tailLogFile(filepath.Join(storeDir, choice.Alias+".log"), lines)
+		if !ok {
+			continue
+		}
+		if index > 0 && combined.Len() > 0 {
+			combined.WriteString("\n")
+		}
+		combined.WriteString("── " + choice.Alias + " ──\n")
+		combined.WriteString(content)
+	}
+	return combined.String(), nil
+}
+
+// tailLogFile reads path and returns its last `lines` lines. A missing/unreadable
+// file reports ok=false (never an error — a model that has not been started yet, or
+// whose log predates this feature, simply has nothing to show).
+func tailLogFile(path string, lines int) (string, bool) {
+	content, err := os.ReadFile(path)
+	if err != nil {
+		return "", false
+	}
+	text := strings.TrimRight(string(content), "\n")
+	if text == "" {
+		return "", false
+	}
+	split := strings.Split(text, "\n")
+	if len(split) > lines {
+		split = split[len(split)-lines:]
+	}
+	return strings.Join(split, "\n"), true
+}
+
 // vllmEndpointHealthy probes GET <endpoint>/models and reports a 200 OK. The
 // recorded Endpoint is an OpenAI base URL (e.g. http://127.0.0.1:8101/v1); the
 // probe hits its /models sub-path (the same signal vllm.RealHealthProbe uses).
@@ -164,7 +225,17 @@ func (services realServices) vllmStatus() ServiceStatus {
 		status.Detail = vllmIdleDetail()
 		return status
 	}
-	if services.serviceHealthy("vllm") {
+	// Surface each recorded model's resolved config regardless of health — useful
+	// even while down, to see what WOULD be served / what caps are pinned.
+	status.Models = vllmModelInfos(choices)
+	anyHealthy := false
+	for _, model := range status.Models {
+		if model.Healthy {
+			anyHealthy = true
+			break
+		}
+	}
+	if anyHealthy {
 		status.State = "running"
 		status.Healthy = true
 		return status
@@ -173,6 +244,24 @@ func (services realServices) vllmStatus() ServiceStatus {
 	// OPTIONAL, so doctor renders this as a warning (down), not an error.
 	status.Detail = vllmDownDetail(goruntime.GOOS)
 	return status
+}
+
+// vllmModelInfos maps the recorded runtime choices to the ServiceStatus.Models
+// shape, probing each endpoint's live health.
+func vllmModelInfos(choices []config.ModelRuntimeChoice) []VLLMModelInfo {
+	models := make([]VLLMModelInfo, 0, len(choices))
+	for _, choice := range choices {
+		models = append(models, VLLMModelInfo{
+			Alias:                choice.Alias,
+			Model:                choice.Model,
+			Endpoint:             choice.Endpoint,
+			Healthy:              vllmEndpointHealthy(choice.Endpoint),
+			GPUMemoryUtilization: choice.GPUMemoryUtilization,
+			MaxModelLen:          choice.MaxModelLen,
+			Disabled:             choice.Disabled,
+		})
+	}
+	return models
 }
 
 // vllmDownDetail is the actionable one-line hint shown when vLLM models are
@@ -236,6 +325,13 @@ func ensureVLLMServers(progress func(string)) {
 		})
 	}
 	for _, choice := range choices {
+		// Disabled (`ai models disable`): deliberately excluded from the auto-start
+		// pass — e.g. to keep a second local model pulled/registered without it
+		// fighting another for GPU/unified memory. Weights/registration untouched;
+		// `ai models enable` starts it again.
+		if choice.Disabled {
+			continue
+		}
 		// Already up (a detached launch from a previous CLI run)? Leave it alone.
 		if vllmEndpointHealthy(choice.Endpoint) {
 			continue
@@ -250,7 +346,12 @@ func ensureVLLMServers(progress func(string)) {
 			}
 			continue
 		}
-		if _, _, err := manager.EnsureServed(choice.Alias, vllmServeModel(choice)); err != nil {
+		opts := vllm.ServeOptions{
+			ToolCallParser:       hf.ToolCallParserFor(goruntime.GOOS, vllmServeModel(choice)),
+			GPUMemoryUtilization: choice.GPUMemoryUtilization,
+			MaxModelLen:          choice.MaxModelLen,
+		}
+		if _, _, err := manager.EnsureServedWithOptions(choice.Alias, vllmServeModel(choice), opts); err != nil {
 			// Best-effort: vLLM is optional. Surface the reason + install guidance and
 			// continue — NEVER fail the reconcile.
 			progress("      vLLM not started for " + choice.Alias + ": " + err.Error())

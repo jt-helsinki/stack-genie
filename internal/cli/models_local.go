@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	goruntime "runtime"
+	"strconv"
 	"strings"
 
 	"github.com/charmbracelet/huh"
@@ -58,11 +59,13 @@ var (
 
 // vllmServer is the host-side vLLM server manager slice used by `ai models pull`: it
 // starts/locates a per-model `vllm serve` endpoint, returning the loopback port +
-// endpoint. Production binds *vllm.Manager; tests a fake. (Removal stops the detached
-// server by recorded port via vllmStopByPortFn, not through this handle-less fresh
-// manager.)
+// endpoint, applying opts (tool-call parser + the GPU-memory-utilization/max-model-len
+// resource caps — see vllm.ServeOptions) on a freshly-started server — see
+// vllm.Manager.EnsureServedWithOptions. Production binds *vllm.Manager; tests a
+// fake. (Removal stops the detached server by recorded port via vllmStopByPortFn, not
+// through this handle-less fresh manager.)
 type vllmServer interface {
-	EnsureServed(alias, model string) (port int, endpoint string, err error)
+	EnsureServedWithOptions(alias, model string, opts vllm.ServeOptions) (port int, endpoint string, err error)
 }
 
 // recordedVLLMPorts builds the alias→port seed for the vLLM Manager from the persisted
@@ -119,9 +122,11 @@ func vllmActionable(err error) error {
 // CLI), starts/locates each model's per-model `vllm serve` endpoint, registers it in the
 // gateway as vllm/<alias>, and records the runtime choice with the observed endpoint so a
 // later run / `rm` finds it. It gates on a real vLLM install (exit 3 with guidance when
-// missing). The live download + serve are `hardware bring-up`. Returns the process exit
-// code.
-func pullVLLM(emitter *output.Emitter, names []string, alias string) int {
+// missing). resourceOpts caps GPU-memory-utilization/max-model-len (zero fields = vLLM's
+// own defaults); applied to every model in this pull (unlike alias, these are not
+// restricted to a single model). The live download + serve are `hardware bring-up`.
+// Returns the process exit code.
+func pullVLLM(emitter *output.Emitter, names []string, alias string, resourceOpts vllm.ServeOptions) int {
 	if installed, _ := vllmDetectFn(); !installed {
 		return emitter.Failure("models.pull", vllmNotInstalledError())
 	}
@@ -134,6 +139,7 @@ func pullVLLM(emitter *output.Emitter, names []string, alias string) int {
 	store := hfClient()
 
 	result := modelsPullResult{Pulled: make([]modelPullOutcome, 0, len(names))}
+	var warnings []string
 	failures := 0
 	for _, model := range names {
 		modelAlias := alias
@@ -160,7 +166,9 @@ func pullVLLM(emitter *output.Emitter, names []string, alias string) int {
 			result.Pulled = append(result.Pulled, outcome)
 			continue
 		}
-		port, endpoint, err := manager.EnsureServed(modelAlias, model)
+		opts := resourceOpts
+		opts.ToolCallParser = hf.ToolCallParserFor(goruntime.GOOS, model)
+		port, endpoint, err := manager.EnsureServedWithOptions(modelAlias, model, opts)
 		if err != nil {
 			outcome.Error = vllmActionable(err).Error()
 			failures++
@@ -177,33 +185,111 @@ func pullVLLM(emitter *output.Emitter, names []string, alias string) int {
 		} else {
 			outcome.Registered = true
 		}
+		// Warn (never block) BEFORE recording if this model's gpu-memory-utilization
+		// pushes the sum across every recorded vLLM model over the safe budget —
+		// vLLM reserves each model's fraction of TOTAL device memory INDEPENDENTLY
+		// at its own startup, so this is the exact misconfiguration that leaves a
+		// later model unable to allocate memory (see vllmGPUMemoryUtilizationBudgetWarning).
+		if warning := vllmGPUMemoryUtilizationBudgetWarning(modelAlias, opts.GPUMemoryUtilization); warning != "" {
+			warnings = append(warnings, warning)
+		}
 		// Record the runtime choice with the LOOPBACK endpoint (host-side truth) so a
 		// later `rm` can find and stop the running server. The LiteLLM CONTAINER reaches
 		// the server via host.docker.internal, so the api_base REGISTERED in the gateway
 		// is the CONTAINER endpoint, not the loopback. Status reflects the ACTUAL
 		// registration outcome above, not an assumed success.
-		recordModelRuntimeChoice(modelAlias, model, config.RuntimeVLLM, endpoint, status)
+		recordModelRuntimeChoice(modelAlias, model, config.RuntimeVLLM, endpoint, status, resourceOpts)
 		result.Pulled = append(result.Pulled, outcome)
 	}
 	if failures > 0 {
 		return emitter.Failure("models.pull", output.Errorf(output.ExitRuntimeFailure,
-			"%d of %d model(s) failed to install", failures, len(names)).WithDetails(result))
+			"%d of %d model(s) failed to install", failures, len(names)).WithDetails(result), warnings...)
 	}
-	return emitter.Success("models.pull", result)
+	return emitter.Success("models.pull", result, warnings...)
+}
+
+// vllmGPUMemoryUtilizationSafeBudget bounds the SUM of --gpu-memory-utilization
+// across every recorded vLLM model. Each model's own `vllm serve` process reserves
+// its fraction of TOTAL device memory INDEPENDENTLY at its own startup — N
+// concurrently-started models' fractions are NOT divided from one shared pool, they
+// each grab their own share on top of whatever else is already used — so the sum
+// must stay comfortably under 1.0 to leave headroom for the OS. `ai setup` / `ai
+// services start vllm` (ensureVLLMServers) attempts to start EVERY recorded model
+// together, so an over-budget sum reliably leaves at least one model unable to
+// allocate memory at startup.
+const vllmGPUMemoryUtilizationSafeBudget = 0.9
+
+// vllmDefaultGPUMemoryUtilization is vLLM's own --gpu-memory-utilization default
+// (https://docs.vllm.ai/en/latest/cli/bench/startup/) — an OTHER recorded model with
+// no pinned value still reserves roughly this much if it is started, so it counts
+// toward the budget too; only a model with confirmed 0 recorded servers running
+// stays out of the sum (out of scope here — this is a static config check, not a
+// liveness probe).
+const vllmDefaultGPUMemoryUtilization = 0.92
+
+// vllmGPUMemoryUtilizationBudgetWarning reports an actionable warning when setting
+// alias's gpu-memory-utilization to newValue would push the sum across every
+// recorded vLLM model (see vllmGPUMemoryUtilizationSafeBudget) over budget. Returns
+// "" when newValue is unset (0 — this alias cannot be the cause of a NEW overcommit)
+// or the resulting total is safe.
+func vllmGPUMemoryUtilizationBudgetWarning(alias string, newValue float64) string {
+	if newValue <= 0 {
+		return ""
+	}
+	choices, err := config.LoadModelRuntimes()
+	if err != nil {
+		return ""
+	}
+	total := newValue
+	others := 0
+	for otherAlias, choice := range choices {
+		if otherAlias == alias {
+			continue
+		}
+		others++
+		if choice.GPUMemoryUtilization > 0 {
+			total += choice.GPUMemoryUtilization
+		} else {
+			total += vllmDefaultGPUMemoryUtilization
+		}
+	}
+	if others == 0 || total <= vllmGPUMemoryUtilizationSafeBudget {
+		return ""
+	}
+	return fmt.Sprintf(
+		"gpu-memory-utilization across all %d recorded vLLM models now sums to ~%.2f (safe budget %.1f) — "+
+			"each model reserves its fraction of TOTAL device memory independently at startup, so running them "+
+			"together will likely fail to allocate memory for at least one; lower this or the other models' "+
+			"values with `ai models configure <alias> --gpu-memory-utilization <value>`, or only run one at a time",
+		others+1, total, vllmGPUMemoryUtilizationSafeBudget)
 }
 
 // recordModelRuntimeChoice persists the serving-runtime selection for a pulled model
 // (best-effort — a store-write failure must never fail the pull). The store is keyed by
 // the gateway alias (Alias); Model carries the underlying HF repo id so a later `rm` can
 // find the record by model name. status reflects the caller's ACTUAL outcome (e.g.
-// "registered" or "registration-failed") — it must never be assumed successful.
-func recordModelRuntimeChoice(alias, model string, runtime config.ModelRuntime, endpoint, status string) {
+// "registered" or "registration-failed") — it must never be assumed successful. opts'
+// GPUMemoryUtilization/MaxModelLen (ToolCallParser is re-derived from the curated list on
+// every restart, so it is NOT persisted here) are recorded so a later restart (`ai
+// setup` / `ai services restart vllm`) relaunches this model with the same resource caps
+// instead of falling back to vLLM's own defaults.
+func recordModelRuntimeChoice(alias, model string, runtime config.ModelRuntime, endpoint, status string, opts vllm.ServeOptions) {
+	// Carry over the existing Disabled flag (`ai models disable`/`enable` set it
+	// directly, not through this helper) — a `pull`/`configure` re-write must not
+	// silently re-enable a model the user deliberately excluded from auto-start.
+	disabled := false
+	if existing, ok := config.ModelRuntimeFor(alias); ok {
+		disabled = existing.Disabled
+	}
 	_ = config.SetModelRuntime(config.ModelRuntimeChoice{
-		Alias:    alias,
-		Model:    model,
-		Runtime:  runtime,
-		Endpoint: endpoint,
-		Status:   status,
+		Alias:                alias,
+		Model:                model,
+		Runtime:              runtime,
+		Endpoint:             endpoint,
+		Status:               status,
+		GPUMemoryUtilization: opts.GPUMemoryUtilization,
+		MaxModelLen:          opts.MaxModelLen,
+		Disabled:             disabled,
 	})
 }
 
@@ -493,6 +579,8 @@ func (result modelsPullResult) Human() string {
 
 func newModelsPullCmd(emitter *output.Emitter, exit *int) *cobra.Command {
 	var aliasFlag string
+	var gpuMemoryUtilizationFlag string
+	var maxModelLenFlag string
 	cmd := &cobra.Command{
 		Use:   "pull [repo...]",
 		Short: "Download one or more models into the local vLLM store",
@@ -504,7 +592,11 @@ func newModelsPullCmd(emitter *output.Emitter, exit *int) *cobra.Command {
 			"arguments you check off any number of curated models (a bundled snapshot), and\n" +
 			"may also tick \"enter custom repo(s)…\" to type extra Hugging Face repo ids.\n" +
 			"vLLM is the sole local runtime; --alias sets the gateway alias for a single\n" +
-			"model (default: the repo id's base name).",
+			"model (default: the repo id's base name). --gpu-memory-utilization and\n" +
+			"--max-model-len cap the KV-cache vLLM pre-allocates (vLLM's own default,\n" +
+			"0.9 of total device memory sized off the model's max context length, can\n" +
+			"leave a small model resident at tens of GB) — left blank, vLLM's defaults\n" +
+			"apply unchanged.",
 		Args: cobra.ArbitraryArgs,
 		RunE: func(_ *cobra.Command, args []string) error {
 			names := dedupeModelNames(args)
@@ -525,13 +617,104 @@ func newModelsPullCmd(emitter *output.Emitter, exit *int) *cobra.Command {
 				*exit = emitter.Failure("models.pull", output.Errorf(output.ExitInvalidInput, "cancelled"))
 				return nil
 			}
-			*exit = pullVLLM(emitter, names, strings.TrimSpace(aliasFlag))
+			if interactive(emitter) {
+				// Pre-seed with any flag value given (the TTY prompt always shows and lets
+				// the user confirm/edit — see the CLI §1.8 convention) so the resource caps
+				// are visible/editable rather than silently applied.
+				gpu, maxLen, err := promptServeResourceOptions(gpuMemoryUtilizationFlag, maxModelLenFlag)
+				if err != nil {
+					*exit = emitter.Failure("models.pull", err)
+					return nil
+				}
+				gpuMemoryUtilizationFlag, maxModelLenFlag = gpu, maxLen
+			}
+			resourceOpts, err := parseServeResourceOptions(gpuMemoryUtilizationFlag, maxModelLenFlag)
+			if err != nil {
+				*exit = emitter.Failure("models.pull", output.Errorf(output.ExitInvalidInput, "%s", err))
+				return nil
+			}
+			*exit = pullVLLM(emitter, names, strings.TrimSpace(aliasFlag), resourceOpts)
 			return nil
 		},
 	}
 	cmd.Flags().StringVar(&aliasFlag, "alias", "",
 		"gateway alias for the served model (single model only; default: the repo id's base name)")
+	cmd.Flags().StringVar(&gpuMemoryUtilizationFlag, "gpu-memory-utilization", "",
+		"fraction (0-1) of device memory vLLM may pre-allocate for the KV-cache (default: vLLM's own default, ~0.9)")
+	cmd.Flags().StringVar(&maxModelLenFlag, "max-model-len", "",
+		"cap the context window in tokens, shrinking the KV-cache (default: the model's own max)")
 	return cmd
+}
+
+// promptServeResourceOptions asks for the vLLM `--gpu-memory-utilization` and
+// `--max-model-len` resource caps in ONE form, pre-seeded with any given flag value
+// (empty = vLLM's own default; the field descriptions state what that default is, so
+// leaving it blank is an informed choice, not a guess). Returns the (possibly edited)
+// string values for parseServeResourceOptions.
+func promptServeResourceOptions(defaultGPUMemoryUtilization, defaultMaxModelLen string) (string, string, error) {
+	gpuMemoryUtilization := defaultGPUMemoryUtilization
+	maxModelLen := defaultMaxModelLen
+	gpuInput := huh.NewInput().
+		Title("GPU memory utilization").
+		Description("fraction 0-1 of device memory vLLM may pre-allocate for the KV-cache; blank = vLLM's own default (~0.9)").
+		Value(&gpuMemoryUtilization).
+		Validate(validateGPUMemoryUtilization)
+	maxModelLenInput := huh.NewInput().
+		Title("Max model length").
+		Description("cap the context window in tokens to shrink the KV-cache; blank = the model's own default").
+		Value(&maxModelLen).
+		Validate(validateMaxModelLen)
+	if err := runForm(huh.NewGroup(gpuInput, maxModelLenInput)); err != nil {
+		return "", "", err
+	}
+	return strings.TrimSpace(gpuMemoryUtilization), strings.TrimSpace(maxModelLen), nil
+}
+
+// validateGPUMemoryUtilization accepts blank (unset) or a number in (0, 1].
+func validateGPUMemoryUtilization(value string) error {
+	if strings.TrimSpace(value) == "" {
+		return nil
+	}
+	parsed, err := strconv.ParseFloat(strings.TrimSpace(value), 64)
+	if err != nil || parsed <= 0 || parsed > 1 {
+		return errors.New("enter a number greater than 0 and up to 1, or leave blank")
+	}
+	return nil
+}
+
+// validateMaxModelLen accepts blank (unset) or a positive integer.
+func validateMaxModelLen(value string) error {
+	if strings.TrimSpace(value) == "" {
+		return nil
+	}
+	parsed, err := strconv.Atoi(strings.TrimSpace(value))
+	if err != nil || parsed <= 0 {
+		return errors.New("enter a positive whole number of tokens, or leave blank")
+	}
+	return nil
+}
+
+// parseServeResourceOptions parses the (already-validated-on-a-TTY, but re-validated
+// here for the --json/no-TTY flag path) resource-cap flag strings into a
+// vllm.ServeOptions. Blank fields leave the corresponding field zero (vLLM's own
+// default).
+func parseServeResourceOptions(gpuMemoryUtilization, maxModelLen string) (vllm.ServeOptions, error) {
+	var opts vllm.ServeOptions
+	if value := strings.TrimSpace(gpuMemoryUtilization); value != "" {
+		if err := validateGPUMemoryUtilization(value); err != nil {
+			return vllm.ServeOptions{}, fmt.Errorf("--gpu-memory-utilization: %w", err)
+		}
+		parsed, _ := strconv.ParseFloat(value, 64)
+		opts.GPUMemoryUtilization = parsed
+	}
+	if value := strings.TrimSpace(maxModelLen); value != "" {
+		if err := validateMaxModelLen(value); err != nil {
+			return vllm.ServeOptions{}, fmt.Errorf("--max-model-len: %w", err)
+		}
+		parsed, _ := strconv.Atoi(value)
+		opts.MaxModelLen = parsed
+	}
+	return opts, nil
 }
 
 // modelsInstallVLLMResult is the envelope payload for `ai models install-vllm`.
@@ -849,7 +1032,7 @@ func newModelsRmCmd(emitter *output.Emitter, exit *int) *cobra.Command {
 						"specify a model to remove (e.g. `ai models rm Qwen2.5-7B-Instruct-4bit`)"))
 					return nil
 				}
-				picked, err := promptRecordedModel()
+				picked, err := promptRecordedModel("Model to remove", "remove this model from the local vLLM store")
 				if err != nil {
 					*exit = emitter.Failure("models.rm", err)
 					return nil
@@ -898,7 +1081,7 @@ func newModelsRmCmd(emitter *output.Emitter, exit *int) *cobra.Command {
 
 // promptRecordedModel asks the user to pick one of the recorded local models (by gateway
 // alias). Only call on an interactive terminal.
-func promptRecordedModel() (string, error) {
+func promptRecordedModel(title, description string) (string, error) {
 	choices, err := config.LoadModelRuntimes()
 	if err != nil || len(choices) == 0 {
 		return "", output.Errorf(output.ExitInvalidInput,
@@ -914,9 +1097,288 @@ func promptRecordedModel() (string, error) {
 		if choice.Model != "" && choice.Model != choice.Alias {
 			label += "  (" + choice.Model + ")"
 		}
+		if choice.Disabled {
+			label += "  [disabled]"
+		}
 		options = append(options, huh.NewOption(label, choice.Alias))
 	}
-	return promptChoice("Model to remove", "remove this model from the local vLLM store", options, initial)
+	return promptChoice(title, description, options, initial)
+}
+
+// modelsConfigureResult is the `ai models configure` payload.
+type modelsConfigureResult struct {
+	Alias                string  `json:"alias"`
+	Model                string  `json:"model"`
+	Endpoint             string  `json:"endpoint,omitempty"`
+	GPUMemoryUtilization float64 `json:"gpu_memory_utilization,omitempty"`
+	MaxModelLen          int     `json:"max_model_len,omitempty"`
+}
+
+func (result modelsConfigureResult) Human() string {
+	lines := []string{ui.Success.Render(ui.IconOK) + " " + ui.Value.Render(result.Alias) + " restarted with the new resource caps"}
+	if result.GPUMemoryUtilization > 0 {
+		lines = append(lines, "  "+ui.Label.Render(padRight("gpu-memory-utilization", 24))+" "+ui.Value.Render(strconv.FormatFloat(result.GPUMemoryUtilization, 'f', -1, 64)))
+	}
+	if result.MaxModelLen > 0 {
+		lines = append(lines, "  "+ui.Label.Render(padRight("max-model-len", 24))+" "+ui.Value.Render(strconv.Itoa(result.MaxModelLen)))
+	}
+	if result.GPUMemoryUtilization == 0 && result.MaxModelLen == 0 {
+		lines = append(lines, "  "+ui.Muted.Render("both caps cleared — vLLM's own defaults apply"))
+	}
+	return strings.Join(lines, "\n")
+}
+
+// newModelsConfigureCmd builds `ai models configure [name]`: change the
+// --gpu-memory-utilization / --max-model-len caps recorded for an already-pulled local
+// vLLM model and restart its server with them applied — WITHOUT re-downloading the
+// weights (no `hf download` step at all, unlike `ai models pull`). This exists because
+// EnsureServedWithOptions has no effect on an ADOPTED already-running server, so simply
+// re-running `pull` with new flag values does not actually change a running server's
+// flags — the server must be stopped and relaunched, which is exactly what this command
+// does.
+func newModelsConfigureCmd(emitter *output.Emitter, exit *int) *cobra.Command {
+	var gpuMemoryUtilizationFlag string
+	var maxModelLenFlag string
+	cmd := &cobra.Command{
+		Use:   "configure [name]",
+		Short: "Change a local model's vLLM resource caps without re-downloading it",
+		Long: "Update the --gpu-memory-utilization / --max-model-len caps recorded for an\n" +
+			"already-pulled local vLLM model (see `ai models pull`) and restart its server\n" +
+			"with the new values — the weights are already on disk, so nothing is\n" +
+			"re-downloaded. On a terminal with no argument you pick from the recorded\n" +
+			"models; the prompt is pre-seeded with the model's CURRENTLY recorded caps (not\n" +
+			"vLLM's defaults), so leaving a field unchanged keeps what is already set. The\n" +
+			"same values are also written to ~/.ai-platform/config/model-runtimes.yaml, so\n" +
+			"hand-editing that file works too — the change just needs `ai services restart\n" +
+			"vllm` (or this command) to actually apply, since a running server cannot be\n" +
+			"reconfigured in place.",
+		Args: cobra.MaximumNArgs(1),
+		RunE: func(_ *cobra.Command, args []string) error {
+			name := ""
+			if len(args) == 1 {
+				name = strings.TrimSpace(args[0])
+			}
+			if name == "" {
+				if !interactive(emitter) {
+					*exit = emitter.Failure("models.configure", output.Errorf(output.ExitInvalidInput,
+						"specify a model (e.g. `ai models configure my-qwen`)"))
+					return nil
+				}
+				picked, err := promptRecordedModel("Model to configure", "change this model's vLLM resource caps")
+				if err != nil {
+					*exit = emitter.Failure("models.configure", err)
+					return nil
+				}
+				name = picked
+			}
+			choice, ok := vllmChoiceForRef(name)
+			if !ok {
+				*exit = emitter.Failure("models.configure", output.Errorf(output.ExitInvalidInput,
+					"%q is not a recorded local vLLM model — pull it first with `ai models pull`", name))
+				return nil
+			}
+			gpuSeed := gpuMemoryUtilizationFlag
+			if gpuSeed == "" && choice.GPUMemoryUtilization > 0 {
+				gpuSeed = strconv.FormatFloat(choice.GPUMemoryUtilization, 'f', -1, 64)
+			}
+			maxLenSeed := maxModelLenFlag
+			if maxLenSeed == "" && choice.MaxModelLen > 0 {
+				maxLenSeed = strconv.Itoa(choice.MaxModelLen)
+			}
+			if interactive(emitter) {
+				gpu, maxLen, err := promptServeResourceOptions(gpuSeed, maxLenSeed)
+				if err != nil {
+					*exit = emitter.Failure("models.configure", err)
+					return nil
+				}
+				gpuSeed, maxLenSeed = gpu, maxLen
+			}
+			resourceOpts, err := parseServeResourceOptions(gpuSeed, maxLenSeed)
+			if err != nil {
+				*exit = emitter.Failure("models.configure", output.Errorf(output.ExitInvalidInput, "%s", err))
+				return nil
+			}
+			*exit = configureVLLM(emitter, choice, resourceOpts)
+			return nil
+		},
+	}
+	cmd.Flags().StringVar(&gpuMemoryUtilizationFlag, "gpu-memory-utilization", "",
+		"fraction (0-1) of device memory vLLM may pre-allocate for the KV-cache (default: keep the recorded value)")
+	cmd.Flags().StringVar(&maxModelLenFlag, "max-model-len", "",
+		"cap the context window in tokens, shrinking the KV-cache (default: keep the recorded value)")
+	return cmd
+}
+
+// configureVLLM stops choice's currently-running vLLM server (if any is recorded/still
+// up — an ADOPTED server ignores new flags, so it must be stopped rather than adopted
+// for the new caps to actually take effect), relaunches it with resourceOpts, registers
+// the (possibly new) port in the gateway, and persists the caps so a later restart
+// preserves them. No weights are re-downloaded. Returns the process exit code.
+func configureVLLM(emitter *output.Emitter, choice config.ModelRuntimeChoice, resourceOpts vllm.ServeOptions) int {
+	if installed, _ := vllmDetectFn(); !installed {
+		return emitter.Failure("models.configure", vllmNotInstalledError())
+	}
+	if port, ok := vllm.PortOf(choice.Endpoint); ok {
+		_ = vllmStopByPortFn(port)
+	}
+	manager := vllmManagerFactory(recordedVLLMPorts())
+	opts := resourceOpts
+	opts.ToolCallParser = hf.ToolCallParserFor(goruntime.GOOS, choice.Model)
+	port, endpoint, err := manager.EnsureServedWithOptions(choice.Alias, choice.Model, opts)
+	if err != nil {
+		return emitter.Failure("models.configure", vllmActionable(err))
+	}
+	registrar := modelRegistrarFactory()
+	// vLLM tool support is model-dependent and not probed here; unknown defaults to
+	// capable, matching the gateway's default treatment (see pullVLLM).
+	status := "registered"
+	if regErr := registrar.RegisterVLLMModel(choice.Alias, choice.Model, vllm.ContainerEndpoint(port), true); regErr != nil {
+		status = "registration-failed"
+	}
+	recordModelRuntimeChoice(choice.Alias, choice.Model, config.RuntimeVLLM, endpoint, status, resourceOpts)
+	var warnings []string
+	if warning := vllmGPUMemoryUtilizationBudgetWarning(choice.Alias, resourceOpts.GPUMemoryUtilization); warning != "" {
+		warnings = append(warnings, warning)
+	}
+	return emitter.Success("models.configure", modelsConfigureResult{
+		Alias: choice.Alias, Model: choice.Model, Endpoint: endpoint,
+		GPUMemoryUtilization: resourceOpts.GPUMemoryUtilization, MaxModelLen: resourceOpts.MaxModelLen,
+	}, warnings...)
+}
+
+// modelsToggleResult is the `ai models disable`/`enable` payload.
+type modelsToggleResult struct {
+	Alias    string `json:"alias"`
+	Model    string `json:"model"`
+	Disabled bool   `json:"disabled"`
+}
+
+func (result modelsToggleResult) Human() string {
+	verb := "enabled"
+	if result.Disabled {
+		verb = "disabled"
+	}
+	return ui.Success.Render(ui.IconOK) + " " + ui.Value.Render(result.Alias) + " " + verb
+}
+
+func newModelsDisableCmd(emitter *output.Emitter, exit *int) *cobra.Command {
+	return newModelsToggleCmd(emitter, exit, true)
+}
+
+func newModelsEnableCmd(emitter *output.Emitter, exit *int) *cobra.Command {
+	return newModelsToggleCmd(emitter, exit, false)
+}
+
+// newModelsToggleCmd builds `ai models disable`/`enable [name]` (the only
+// difference between the two is the target Disabled value and whether the model's
+// server is stopped or (re)started to make the change effective immediately).
+// Disabling excludes a recorded vLLM model from ensureVLLMServers' auto-start pass
+// (`ai setup` / `ai services start vllm` otherwise starts EVERY recorded model
+// unconditionally) without touching its downloaded weights or gateway registration
+// — the fix for having no way to keep a second local model pulled without it
+// fighting another for GPU/unified memory (see the gpu-memory-utilization budget
+// warning on `ai models pull`/`configure`).
+func newModelsToggleCmd(emitter *output.Emitter, exit *int, disable bool) *cobra.Command {
+	verb, command := "disable", "models.disable"
+	shortDesc := "Stop a local vLLM model and exclude it from auto-start"
+	longDesc := "Stop the model's vLLM server now and mark it disabled so `ai setup` /\n" +
+		"`ai services start vllm` (which otherwise starts EVERY recorded model) skips\n" +
+		"it — useful when two local models' --gpu-memory-utilization values would\n" +
+		"otherwise fight for the same device memory. The downloaded weights and\n" +
+		"gateway registration are left untouched; `ai models enable` starts it again\n" +
+		"with no re-download."
+	if !disable {
+		verb, command = "enable", "models.enable"
+		shortDesc = "Start a disabled local vLLM model and re-allow auto-start"
+		longDesc = "Clear the disabled flag set by `ai models disable` and start the model's\n" +
+			"vLLM server now, using its recorded resource caps — no `hf download` step,\n" +
+			"the weights are already on disk."
+	}
+	cmd := &cobra.Command{
+		Use:   verb + " [name]",
+		Short: shortDesc,
+		Long:  longDesc,
+		Args:  cobra.MaximumNArgs(1),
+		RunE: func(_ *cobra.Command, args []string) error {
+			name := ""
+			if len(args) == 1 {
+				name = strings.TrimSpace(args[0])
+			}
+			if name == "" {
+				if !interactive(emitter) {
+					*exit = emitter.Failure(command, output.Errorf(output.ExitInvalidInput,
+						"specify a model (e.g. `ai models %s my-qwen`)", verb))
+					return nil
+				}
+				picked, err := promptRecordedModel("Model to "+verb, verb+" this model")
+				if err != nil {
+					*exit = emitter.Failure(command, err)
+					return nil
+				}
+				name = picked
+			}
+			choice, ok := vllmChoiceForRef(name)
+			if !ok {
+				*exit = emitter.Failure(command, output.Errorf(output.ExitInvalidInput,
+					"%q is not a recorded local vLLM model — pull it first with `ai models pull`", name))
+				return nil
+			}
+			if disable {
+				*exit = disableVLLM(emitter, choice)
+			} else {
+				*exit = enableVLLM(emitter, choice)
+			}
+			return nil
+		},
+	}
+	return cmd
+}
+
+// disableVLLM stops choice's server (best-effort — it may already be stopped) and
+// records Disabled=true, preserving every other field (endpoint/caps/status) so a
+// later `ai models enable` needs no re-pull.
+func disableVLLM(emitter *output.Emitter, choice config.ModelRuntimeChoice) int {
+	if port, ok := vllm.PortOf(choice.Endpoint); ok {
+		_ = vllmStopByPortFn(port)
+	}
+	choice.Disabled = true
+	if err := config.SetModelRuntime(choice); err != nil {
+		return emitter.Failure("models.disable", output.Errorf(output.ExitRuntimeFailure, "record disabled state: %s", err))
+	}
+	return emitter.Success("models.disable", modelsToggleResult{Alias: choice.Alias, Model: choice.Model, Disabled: true})
+}
+
+// enableVLLM clears choice's disabled flag and starts its server now with the
+// recorded resource caps — no re-download, no change to those caps (use `ai models
+// configure` to change them).
+func enableVLLM(emitter *output.Emitter, choice config.ModelRuntimeChoice) int {
+	if installed, _ := vllmDetectFn(); !installed {
+		return emitter.Failure("models.enable", vllmNotInstalledError())
+	}
+	manager := vllmManagerFactory(recordedVLLMPorts())
+	opts := vllm.ServeOptions{
+		ToolCallParser:       hf.ToolCallParserFor(goruntime.GOOS, choice.Model),
+		GPUMemoryUtilization: choice.GPUMemoryUtilization,
+		MaxModelLen:          choice.MaxModelLen,
+	}
+	port, endpoint, err := manager.EnsureServedWithOptions(choice.Alias, choice.Model, opts)
+	if err != nil {
+		return emitter.Failure("models.enable", vllmActionable(err))
+	}
+	registrar := modelRegistrarFactory()
+	status := "registered"
+	if regErr := registrar.RegisterVLLMModel(choice.Alias, choice.Model, vllm.ContainerEndpoint(port), true); regErr != nil {
+		status = "registration-failed"
+	}
+	choice.Endpoint, choice.Status, choice.Disabled = endpoint, status, false
+	if err := config.SetModelRuntime(choice); err != nil {
+		return emitter.Failure("models.enable", output.Errorf(output.ExitRuntimeFailure, "record enabled state: %s", err))
+	}
+	var warnings []string
+	if warning := vllmGPUMemoryUtilizationBudgetWarning(choice.Alias, choice.GPUMemoryUtilization); warning != "" {
+		warnings = append(warnings, warning)
+	}
+	return emitter.Success("models.enable", modelsToggleResult{Alias: choice.Alias, Model: choice.Model, Disabled: false}, warnings...)
 }
 
 // modelsShowResult is the `ai models show` payload: the recorded runtime choice + any
@@ -984,7 +1446,7 @@ func newModelsShowCmd(emitter *output.Emitter, exit *int) *cobra.Command {
 						"specify a model to show (e.g. `ai models show Qwen2.5-7B-Instruct-4bit`)"))
 					return nil
 				}
-				picked, err := promptRecordedModel()
+				picked, err := promptRecordedModel("Model to show", "show this model's recorded runtime info")
 				if err != nil {
 					*exit = emitter.Failure("models.show", err)
 					return nil
