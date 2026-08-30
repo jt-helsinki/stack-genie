@@ -19,6 +19,20 @@ import (
 // a test reads as a serving-unavailable condition rather than a bare internal error.
 var ErrNotWired = errors.New("vllm: not yet wired (hardware bring-up)")
 
+// defaultProcessAlive is the real Config.ProcessAlive: on unix (macOS/Linux — the
+// only supported hosts) os.FindProcess always succeeds, so existence is checked by
+// sending signal 0, which the kernel validates without actually delivering a signal.
+func defaultProcessAlive(pid int) bool {
+	if pid <= 0 {
+		return false
+	}
+	process, err := os.FindProcess(pid)
+	if err != nil {
+		return false
+	}
+	return process.Signal(syscall.Signal(0)) == nil
+}
+
 // RealRunner is the production Runner: it shells out to a DETACHED `vllm serve`
 // process, one per served model. The Manager takes a Runner interface, so tests inject
 // FakeRunner instead and never touch a real process.

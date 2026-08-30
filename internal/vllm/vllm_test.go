@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"testing"
 	"time"
 )
@@ -391,6 +392,45 @@ func TestEnsureServedHealthTimeout(t *testing.T) {
 	}
 	if len(manager.servers) != 0 {
 		t.Fatalf("timed-out start left a registration")
+	}
+}
+
+// TestEnsureServedFailsFastOnProcessDeath proves waitHealthy does not wait out the
+// full StartTimeout when the launched process has already exited — it fails
+// immediately (StartTimeout set far longer than the test's clock ever advances,
+// proving it did NOT need to reach the deadline) with an actionable message
+// pointing at the model's log, and cleans up the same as a health timeout. This is
+// the fix for a crashed vllm serve reading identically to "still loading" (both are
+// silent otherwise), reported as the command hanging / seeming to quit.
+func TestEnsureServedFailsFastOnProcessDeath(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	runner := &FakeRunner{}
+	clock := &stepClock{}
+	manager := NewManager(Config{
+		Runner:       runner,
+		Probe:        func(int) bool { return false }, // never healthy
+		ProcessAlive: func(int) bool { return false }, // the launched process already exited
+		Now:          clock.now,
+		Sleep:        clock.sleep,
+		StartTimeout: time.Hour, // would hang the test if the fast-fail path did not fire
+		PollInterval: time.Second,
+	})
+
+	_, _, err := manager.EnsureServed("crashy", "mlx-community/Crashy")
+	if err == nil {
+		t.Fatal("want an error when the launched process exits before becoming healthy")
+	}
+	if !strings.Contains(err.Error(), "exited before becoming healthy") {
+		t.Fatalf("err = %q, want it to mention the process exiting", err.Error())
+	}
+	if !strings.Contains(err.Error(), "crashy.log") {
+		t.Fatalf("err = %q, want it to point at the model's log file", err.Error())
+	}
+	if runner.StopCount() != 1 {
+		t.Fatalf("dead-process start not cleaned up (StopCount=%d)", runner.StopCount())
+	}
+	if len(manager.servers) != 0 {
+		t.Fatalf("dead-process start left a registration")
 	}
 }
 

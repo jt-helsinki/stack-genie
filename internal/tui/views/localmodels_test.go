@@ -47,6 +47,7 @@ func buildLocal(test *testing.T, installed []hf.CachedModel, curated []hf.Curate
 		func() []hf.CuratedModel { return curated },
 		noTest,
 		func() (string, error) { return "", nil },
+		nil,
 	)
 	view.SetSize(120, 40)
 	drive(view, view.Init())
@@ -131,6 +132,7 @@ func TestLocalModelsTestHandle(test *testing.T) {
 			return litellm.TestResult{Model: model, OK: true}, nil
 		},
 		func() (string, error) { return "", nil },
+		nil,
 	)
 	view.SetSize(120, 40)
 	drive(view, view.Init())
@@ -147,6 +149,62 @@ func TestLocalModelsRemoveOnAvailableNoOp(test *testing.T) {
 	)
 	if cmd := view.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("d")}); cmd != nil {
 		test.Fatalf("d on an available row must not emit a command, got %#v", cmd())
+	}
+}
+
+// e on an enabled installed row emits a disable request; on a disabled installed row
+// it emits an enable request instead — the toggle mirrors the model's current
+// recorded state (via the injected ModelDisabledFn), and the disabled row also
+// renders a "[disabled]" marker.
+func TestLocalModelsToggleEnableDisable(test *testing.T) {
+	repo := "mlx-community/Qwen2.5-7B-Instruct-4bit"
+	disabled := false
+	view := NewLocalModels(
+		func() ([]hf.CachedModel, error) { return []hf.CachedModel{{Repo: repo}}, nil },
+		func() []hf.CuratedModel { return nil },
+		noTest,
+		func() (string, error) { return "", nil },
+		func(candidate string) bool { return candidate == repo && disabled },
+	)
+	view.SetSize(120, 40)
+	drive(view, view.Init())
+
+	cmd := view.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("e")})
+	if cmd == nil {
+		test.Fatal("e on an enabled installed row must emit a request")
+	}
+	disableMsg, ok := cmd().(ModelDisableRequestedMsg)
+	if !ok || disableMsg.Name != repo {
+		test.Fatalf("got %#v, want ModelDisableRequestedMsg{%q}", cmd(), repo)
+	}
+	if strings.Contains(view.View(), "[disabled]") {
+		test.Errorf("an enabled row must not show [disabled]:\n%s", view.View())
+	}
+
+	// Simulate the model now being disabled (as the parent's list refresh would
+	// reflect after `ai models disable` runs) and re-init to rebuild the rows.
+	disabled = true
+	drive(view, view.Init())
+	if !strings.Contains(view.View(), "[disabled]") {
+		test.Errorf("a disabled row should show [disabled]:\n%s", view.View())
+	}
+	cmd = view.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("e")})
+	if cmd == nil {
+		test.Fatal("e on a disabled installed row must emit a request")
+	}
+	enableMsg, ok := cmd().(ModelEnableRequestedMsg)
+	if !ok || enableMsg.Name != repo {
+		test.Fatalf("got %#v, want ModelEnableRequestedMsg{%q}", cmd(), repo)
+	}
+}
+
+// e on an Available (not-installed) row does not emit a request — it flashes a hint.
+func TestLocalModelsToggleOnAvailableNoOp(test *testing.T) {
+	view := buildLocal(test, nil,
+		[]hf.CuratedModel{{Name: "Llama-3.2-3B-Instruct-4bit", Repo: "mlx-community/Llama-3.2-3B-Instruct-4bit"}},
+	)
+	if cmd := view.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("e")}); cmd != nil {
+		test.Fatalf("e on an available row must not emit a command, got %#v", cmd())
 	}
 }
 
@@ -185,6 +243,7 @@ func TestLocalModelsWhoamiLine(test *testing.T) {
 		func() []hf.CuratedModel { return nil },
 		noTest,
 		func() (string, error) { return "alice", nil },
+		nil,
 	)
 	loggedIn.SetSize(120, 40)
 	drive(loggedIn, loggedIn.Init())
@@ -197,6 +256,7 @@ func TestLocalModelsWhoamiLine(test *testing.T) {
 		func() []hf.CuratedModel { return nil },
 		noTest,
 		func() (string, error) { return "", errors.New("Not logged in") },
+		nil,
 	)
 	loggedOut.SetSize(120, 40)
 	drive(loggedOut, loggedOut.Init())

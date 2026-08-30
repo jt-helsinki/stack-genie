@@ -44,6 +44,17 @@ type ModelsPullRequestedMsg struct {
 // terminal overlay (with its confirm prompt).
 type ModelRemoveRequestedMsg struct{ Name string }
 
+// ModelDisableRequestedMsg asks the parent to run `ai models disable <Name>` live in
+// the terminal overlay — stops the model's vLLM server and excludes it from
+// ensureVLLMServers' auto-start pass, without touching weights or the gateway
+// registration. Emitted by the Local Models view.
+type ModelDisableRequestedMsg struct{ Name string }
+
+// ModelEnableRequestedMsg asks the parent to run `ai models enable <Name>` live in
+// the terminal overlay — starts the model's vLLM server again (no re-download).
+// Emitted by the Local Models view.
+type ModelEnableRequestedMsg struct{ Name string }
+
 // ModelsLoginRequestedMsg asks the parent to run `ai models login` live in the REAL
 // terminal (the hidden token prompt needs a TTY). Emitted by the Local Models view.
 type ModelsLoginRequestedMsg struct{}

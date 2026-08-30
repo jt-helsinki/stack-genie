@@ -4,9 +4,12 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
+	"path/filepath"
 	goruntime "runtime"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/charmbracelet/huh"
 	"github.com/jt-helsinki/stack-genie/internal/config"
@@ -39,12 +42,17 @@ var (
 	// vllmManagerFactory builds the per-model vLLM server manager. It takes the recorded
 	// alias→port seed (from config/model-runtimes.yaml) so a known model REUSES its port
 	// and a new model never steals a recorded one — cross-invocation port truth for a
-	// daemonless CLI.
-	vllmManagerFactory = func(reserved map[string]int) vllmServer {
+	// daemonless CLI. log receives the Manager's internal progress lines (adopting an
+	// already-running server, waiting on a busy port, evicting an LRU server, restarting
+	// an unhealthy one) — WITHOUT it, a caller that starts a genuinely new server gets NO
+	// output for up to vllm.DefaultStartTimeout (15m) while it loads, which reads as a
+	// hang (see the emitStart/models.enable "config not updated" report this fixes).
+	vllmManagerFactory = func(reserved map[string]int, log func(string)) vllmServer {
 		return vllm.NewManager(vllm.Config{
 			Runner:   vllm.RealRunner{},
 			Probe:    vllm.RealHealthProbe(),
 			Reserved: reserved,
+			Log:      log,
 		})
 	}
 	// vllmStopByPortFn stops a detached `vllm serve` by its recorded port — the
@@ -111,6 +119,130 @@ func vllmNotInstalledError() error {
 // vllmActionable wraps a `hardware bring-up` seam error (ErrNotWired) so the user sees
 // why a real vLLM run/download failed rather than a bare internal error. Any other
 // error passes through.
+// vllmProgressLog is the vllm.Manager Log sink for `ai models pull`/`configure`/
+// `enable`: it surfaces the Manager's internal events (adopting an already-running
+// server, waiting on a busy port, evicting an LRU server, restarting an unhealthy
+// one) to stderr — WITHOUT this, those events are silently swallowed and a genuinely
+// fresh launch prints nothing at all while it loads (up to vllm.DefaultStartTimeout,
+// 15m for a large model), which reads as the command hanging.
+func vllmProgressLog(emitter *output.Emitter) func(string) {
+	return func(line string) { _, _ = fmt.Fprintln(emitter.Err, "  "+line) }
+}
+
+// vllmServeSpinnerFrames are the braille spinner glyphs for the live "starting vLLM
+// server" progress line (mirrors internal/tui/views/project.go's workspace spinner).
+var vllmServeSpinnerFrames = []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"}
+
+// vllmServeProgressInterval is how often the live progress line re-renders while
+// waiting for a vLLM server to become healthy.
+const vllmServeProgressInterval = 400 * time.Millisecond
+
+// vllmServeWithProgress runs start (an EnsureServedWithOptions call) in the
+// background while rendering a spinner + the LAST LINE of the server's own captured
+// output (<vllm.StoreDir()>/<alias>.log — vllm.RealRunner.Start redirects it there).
+// Without this, a genuinely fresh launch is completely silent for the whole wait (up
+// to vllm.DefaultStartTimeout, 15m for a large model) — vllmProgressLog only covers
+// the Manager's OWN orchestration events (adopt/evict/etc.), not the model process's
+// actual boot output — which reads as the command hanging. Only animates on a TTY
+// (ui.Enabled) — under --json/--plain/no-TTY this just blocks silently, same as
+// before (the caller's static "Starting…" line already covers that case).
+func vllmServeWithProgress(emitter *output.Emitter, alias string, start func() (int, string, error)) (int, string, error) {
+	type outcome struct {
+		port     int
+		endpoint string
+		err      error
+	}
+	done := make(chan outcome, 1)
+	go func() {
+		port, endpoint, err := start()
+		done <- outcome{port, endpoint, err}
+	}()
+
+	if !ui.Enabled(emitter) {
+		result := <-done
+		return result.port, result.endpoint, result.err
+	}
+
+	logPath := ""
+	if storeDir, storeErr := vllm.StoreDir(); storeErr == nil {
+		logPath = filepath.Join(storeDir, alias+".log")
+	}
+	bar := ui.NewProgressBar(emitter.Err, "  "+alias)
+	ticker := time.NewTicker(vllmServeProgressInterval)
+	defer ticker.Stop()
+	frame := 0
+	for {
+		select {
+		case result := <-done:
+			bar.Finish(result.err)
+			if result.err != nil {
+				// The spinner line only ever showed ONE truncated line — on failure,
+				// dump the real tail so the actual crash reason (e.g. an MLX/CUDA
+				// engine-init RuntimeError) is visible immediately instead of sending
+				// the user off to find the log file themselves.
+				if tail := vllmLastLogLines(logPath, vllmFailureLogLines); tail != "" {
+					_, _ = fmt.Fprintln(emitter.Err, ui.Muted.Render("  "+alias+"'s vLLM log (last "+
+						strconv.Itoa(vllmFailureLogLines)+" lines, "+logPath+"):"))
+					for _, line := range strings.Split(tail, "\n") {
+						_, _ = fmt.Fprintln(emitter.Err, "    "+line)
+					}
+				}
+			}
+			return result.port, result.endpoint, result.err
+		case <-ticker.C:
+			status := vllmServeSpinnerFrames[frame%len(vllmServeSpinnerFrames)] + " " + vllmLastLogLine(logPath)
+			bar.Update(0, 0, status)
+			frame++
+		}
+	}
+}
+
+// vllmFailureLogLines bounds how many trailing log lines are dumped on a failed
+// start — enough to show a stack trace's root cause, not so much it floods a
+// terminal.
+const vllmFailureLogLines = 25
+
+// vllmLastLogLines returns the last n non-empty lines of path, "" if unreadable/empty.
+func vllmLastLogLines(path string, n int) string {
+	content, err := os.ReadFile(path)
+	if err != nil {
+		return ""
+	}
+	text := strings.TrimRight(string(content), "\n")
+	if text == "" {
+		return ""
+	}
+	lines := strings.Split(text, "\n")
+	if len(lines) > n {
+		lines = lines[len(lines)-n:]
+	}
+	return strings.Join(lines, "\n")
+}
+
+// vllmLastLogLine returns the last non-empty line of the model's captured vLLM
+// output, truncated to keep the progress line tidy. "" when the file does not exist
+// yet (process still initializing before its first write) or has no content.
+func vllmLastLogLine(path string) string {
+	if path == "" {
+		return ""
+	}
+	content, err := os.ReadFile(path)
+	if err != nil {
+		return ""
+	}
+	text := strings.TrimRight(string(content), "\n")
+	if text == "" {
+		return ""
+	}
+	lines := strings.Split(text, "\n")
+	line := lines[len(lines)-1]
+	const maxLen = 80
+	if len(line) > maxLen {
+		line = line[:maxLen-1] + "…"
+	}
+	return line
+}
+
 func vllmActionable(err error) error {
 	if errors.Is(err, vllm.ErrNotWired) {
 		return errors.New("vLLM serving is not yet available on this host (hardware bring-up): " + err.Error())
@@ -134,7 +266,7 @@ func pullVLLM(emitter *output.Emitter, names []string, alias string, resourceOpt
 		return emitter.Failure("models.pull", output.Errorf(output.ExitInvalidInput,
 			"--alias applies to a single model (got %d)", len(names)))
 	}
-	manager := vllmManagerFactory(recordedVLLMPorts())
+	manager := vllmManagerFactory(recordedVLLMPorts(), vllmProgressLog(emitter))
 	registrar := modelRegistrarFactory()
 	store := hfClient()
 
@@ -168,7 +300,13 @@ func pullVLLM(emitter *output.Emitter, names []string, alias string, resourceOpt
 		}
 		opts := resourceOpts
 		opts.ToolCallParser = hf.ToolCallParserFor(goruntime.GOOS, model)
-		port, endpoint, err := manager.EnsureServedWithOptions(modelAlias, model, opts)
+		// A genuinely fresh launch prints NOTHING internally while it loads — say so
+		// up front (up to vllm.DefaultStartTimeout = 15m for a large model) so this
+		// does not read as a hang.
+		_, _ = fmt.Fprintln(emitter.Err, "Starting "+modelAlias+"'s vLLM server (can take several minutes for a large model)…")
+		port, endpoint, err := vllmServeWithProgress(emitter, modelAlias, func() (int, string, error) {
+			return manager.EnsureServedWithOptions(modelAlias, model, opts)
+		})
 		if err != nil {
 			outcome.Error = vllmActionable(err).Error()
 			failures++
@@ -1221,10 +1359,16 @@ func configureVLLM(emitter *output.Emitter, choice config.ModelRuntimeChoice, re
 	if port, ok := vllm.PortOf(choice.Endpoint); ok {
 		_ = vllmStopByPortFn(port)
 	}
-	manager := vllmManagerFactory(recordedVLLMPorts())
+	manager := vllmManagerFactory(recordedVLLMPorts(), vllmProgressLog(emitter))
 	opts := resourceOpts
 	opts.ToolCallParser = hf.ToolCallParserFor(goruntime.GOOS, choice.Model)
-	port, endpoint, err := manager.EnsureServedWithOptions(choice.Alias, choice.Model, opts)
+	// A genuinely fresh launch prints NOTHING internally while it loads — say so up
+	// front (up to vllm.DefaultStartTimeout = 15m for a large model) so this does not
+	// read as a hang.
+	_, _ = fmt.Fprintln(emitter.Err, "Starting "+choice.Alias+"'s vLLM server (can take several minutes for a large model)…")
+	port, endpoint, err := vllmServeWithProgress(emitter, choice.Alias, func() (int, string, error) {
+		return manager.EnsureServedWithOptions(choice.Alias, choice.Model, opts)
+	})
 	if err != nil {
 		return emitter.Failure("models.configure", vllmActionable(err))
 	}
@@ -1355,13 +1499,20 @@ func enableVLLM(emitter *output.Emitter, choice config.ModelRuntimeChoice) int {
 	if installed, _ := vllmDetectFn(); !installed {
 		return emitter.Failure("models.enable", vllmNotInstalledError())
 	}
-	manager := vllmManagerFactory(recordedVLLMPorts())
+	manager := vllmManagerFactory(recordedVLLMPorts(), vllmProgressLog(emitter))
 	opts := vllm.ServeOptions{
 		ToolCallParser:       hf.ToolCallParserFor(goruntime.GOOS, choice.Model),
 		GPUMemoryUtilization: choice.GPUMemoryUtilization,
 		MaxModelLen:          choice.MaxModelLen,
 	}
-	port, endpoint, err := manager.EnsureServedWithOptions(choice.Alias, choice.Model, opts)
+	// A genuinely fresh launch prints NOTHING internally while it loads — say so up
+	// front (up to vllm.DefaultStartTimeout = 15m for a large model) so this does not
+	// read as a hang (this was reported as "enable does nothing / appears to hang,
+	// config not updated" — it was working, just silent for the whole wait).
+	_, _ = fmt.Fprintln(emitter.Err, "Starting "+choice.Alias+"'s vLLM server (can take several minutes for a large model)…")
+	port, endpoint, err := vllmServeWithProgress(emitter, choice.Alias, func() (int, string, error) {
+		return manager.EnsureServedWithOptions(choice.Alias, choice.Model, opts)
+	})
 	if err != nil {
 		return emitter.Failure("models.enable", vllmActionable(err))
 	}

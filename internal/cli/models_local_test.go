@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"os"
 	goruntime "runtime"
 	"slices"
 	"strings"
@@ -357,7 +358,7 @@ func withFakeVLLM(test *testing.T, installed bool, pullErr error, server *fakeVL
 	prevDetect, prevPull, prevFactory, prevStop := vllmDetectFn, vllmPullFn, vllmManagerFactory, vllmStopByPortFn
 	vllmDetectFn = func() (bool, string) { return installed, "mlx" }
 	vllmPullFn = func(string) error { return pullErr }
-	vllmManagerFactory = func(reserved map[string]int) vllmServer {
+	vllmManagerFactory = func(reserved map[string]int, _ func(string)) vllmServer {
 		server.reserved = reserved
 		return server
 	}
@@ -537,6 +538,27 @@ func TestModelsPullVLLMSeedsReservedPorts(test *testing.T) {
 // memory INDEPENDENTLY at its own startup, so two models each pinned 0.5 (a real
 // misconfiguration reported against this platform) must warn, while a single model or
 // a safe combined total must not.
+// TestVLLMLastLogLines proves the failure-diagnostics tail helper: bounds to the
+// last N lines, and reads "" for a missing/empty file rather than erroring — the
+// fix for a truncated single-line spinner status hiding the actual crash reason
+// (e.g. an MLX/CUDA engine-init RuntimeError) on a failed vLLM start.
+func TestVLLMLastLogLines(test *testing.T) {
+	dir := test.TempDir()
+	path := dir + "/model.log"
+	if err := os.WriteFile(path, []byte("line1\nline2\nline3\nline4\n"), 0o644); err != nil {
+		test.Fatalf("write log: %v", err)
+	}
+	if got := vllmLastLogLines(path, 2); got != "line3\nline4" {
+		test.Fatalf("vllmLastLogLines(n=2) = %q, want the last 2 lines", got)
+	}
+	if got := vllmLastLogLines(path, 10); got != "line1\nline2\nline3\nline4" {
+		test.Fatalf("vllmLastLogLines(n=10) = %q, want the whole file (fewer lines than n)", got)
+	}
+	if got := vllmLastLogLines(dir+"/missing.log", 5); got != "" {
+		test.Fatalf("missing file: got %q, want \"\"", got)
+	}
+}
+
 func TestVLLMGPUMemoryUtilizationBudgetWarning(test *testing.T) {
 	test.Setenv("HOME", test.TempDir())
 

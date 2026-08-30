@@ -170,6 +170,10 @@ type Config struct {
 	// Log receives human-readable lifecycle notes (notably LRU evictions) so they are
 	// never silently dropped. Optional; nil discards them.
 	Log func(string)
+	// ProcessAlive reports whether pid is still running. Defaults to a real
+	// (unix signal-0) check. Injectable so waitHealthy's fast-fail-on-death path is
+	// deterministic under test without spawning a real process.
+	ProcessAlive func(pid int) bool
 
 	// Reserved seeds cross-invocation port truth (alias→loopback port) from the persisted
 	// model-runtimes store: `ai` is a daemonless CLI, so a fresh Manager has no memory of
@@ -193,6 +197,7 @@ type Manager struct {
 	now          func() time.Time
 	sleep        func(time.Duration)
 	logFn        func(string)
+	processAlive func(pid int) bool
 	basePort     int
 	maxServers   int
 	startTimeout time.Duration
@@ -224,6 +229,7 @@ func NewManager(cfg Config) *Manager {
 		now:          cfg.Now,
 		sleep:        cfg.Sleep,
 		logFn:        cfg.Log,
+		processAlive: cfg.ProcessAlive,
 		basePort:     cfg.BasePort,
 		maxServers:   cfg.MaxServers,
 		startTimeout: cfg.StartTimeout,
@@ -243,6 +249,9 @@ func NewManager(cfg Config) *Manager {
 	}
 	if manager.sleep == nil {
 		manager.sleep = time.Sleep
+	}
+	if manager.processAlive == nil {
+		manager.processAlive = defaultProcessAlive
 	}
 	if manager.basePort <= 0 {
 		manager.basePort = DefaultBasePort
@@ -404,12 +413,15 @@ func (manager *Manager) EnsureServedWithOptions(alias, model string, opts ServeO
 			manager.logf("vllm: adopting the already-running %q server on port %d", alias, port)
 		} else {
 			manager.logf("vllm: port %d is in use; waiting for the existing %q server to finish loading", port, alias)
-			healthErr = manager.waitHealthy(port)
+			// pid=0: this port's process was NOT started by us (a prior CLI
+			// invocation's detached launch, or something else entirely) — we have no
+			// PID to liveness-check, only the port.
+			healthErr = manager.waitHealthy(port, 0, alias, storeDir)
 		}
 	default:
 		handle, startErr = manager.runner.Start(alias, model, port, storeDir, opts)
 		if startErr == nil {
-			healthErr = manager.waitHealthy(port)
+			healthErr = manager.waitHealthy(port, handle.PID, alias, storeDir)
 		}
 	}
 
@@ -576,14 +588,24 @@ func (manager *Manager) remove(target *server) {
 	delete(manager.usedPorts, target.port)
 }
 
-// waitHealthy polls the probe until the port is healthy or StartTimeout elapses.
-// Caller MUST hold manager.mu (starts are serialized). The clock/sleep seams make
-// this deterministic under test.
-func (manager *Manager) waitHealthy(port int) error {
+// waitHealthy polls the probe until the port is healthy, the launched process dies,
+// or StartTimeout elapses. Caller MUST hold manager.mu (starts are serialized). The
+// clock/sleep seams make this deterministic under test. pid is the PID this Manager
+// itself launched (0 when waiting on a port some OTHER process holds — e.g. adopted
+// from a prior CLI invocation — where liveness can't be checked). A dead pid fails
+// FAST with the tail of the model's own log instead of waiting out the full
+// StartTimeout (up to 15m) for a process that already exited — the difference
+// between "still loading" and "crashed" reads identically as silence otherwise,
+// which was reported as the command "hanging" / "seeming to quit".
+func (manager *Manager) waitHealthy(port, pid int, alias, storeDir string) error {
 	deadline := manager.now().Add(manager.startTimeout)
 	for {
 		if manager.probe(port) {
 			return nil
+		}
+		if pid > 0 && !manager.processAlive(pid) {
+			return fmt.Errorf("vllm: server %q (pid %d) exited before becoming healthy — check its log: %s",
+				alias, pid, filepath.Join(storeDir, alias+".log"))
 		}
 		if !manager.now().Before(deadline) {
 			return fmt.Errorf("vllm: server on port %d did not become healthy within %s", port, manager.startTimeout)

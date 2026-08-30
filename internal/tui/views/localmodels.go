@@ -26,6 +26,12 @@ type CuratedLister func() []hf.CuratedModel
 // "not logged in" — it never breaks the view.
 type HFWhoamiFn func() (string, error)
 
+// ModelDisabledFn reports whether an installed repo's recorded vLLM runtime choice is
+// disabled (`ai models disable` — excluded from ensureVLLMServers' auto-start pass
+// without touching its weights or gateway registration). Injected; the parent wires
+// it over config.LoadModelRuntimes(). nil / an unrecorded repo reads as not disabled.
+type ModelDisabledFn func(repo string) bool
+
 // localModel is one row of the Local Models view: a Hugging Face repo, either
 // downloaded into the local vLLM store (Installed) or curated-but-not-installed
 // (Available). vLLM is the sole local runtime, so a row is a single repo id — there are
@@ -35,6 +41,7 @@ type localModel struct {
 	description string // curated description ("" for an installed repo not in the curated set)
 	size        string // approximate/on-disk size when known
 	installed   bool   // whether the repo is in the local vLLM store
+	disabled    bool   // installed AND excluded from vLLM auto-start (`ai models disable`)
 }
 
 // localModelsRefreshedMsg carries the installed cache list result.
@@ -61,10 +68,11 @@ const localNameWidth = 46
 // one; t tests it. Keys: enter/p pull · t test · d remove · l login · o logout ·
 // n pull by name · r refresh.
 type LocalModels struct {
-	test    ModelTester
-	list    LocalModelLister
-	curated CuratedLister
-	whoami  HFWhoamiFn
+	test     ModelTester
+	list     LocalModelLister
+	curated  CuratedLister
+	whoami   HFWhoamiFn
+	disabled ModelDisabledFn
 
 	models         []localModel // Installed rows first, then Available rows
 	installedCount int          // how many of models are in the Installed section
@@ -91,19 +99,20 @@ type LocalModels struct {
 }
 
 // NewLocalModels builds the Local Models view over the injected installed-store lister
-// (hf cache ls), the curated-list provider, the gateway tester, and the Hugging Face
-// whoami probe (login-state line + gated-repo login/logout).
-func NewLocalModels(list LocalModelLister, curated CuratedLister, test ModelTester, whoami HFWhoamiFn) *LocalModels {
+// (hf cache ls), the curated-list provider, the gateway tester, the Hugging Face
+// whoami probe (login-state line + gated-repo login/logout), and the disabled-state
+// lookup (`ai models disable`, over config.LoadModelRuntimes()).
+func NewLocalModels(list LocalModelLister, curated CuratedLister, test ModelTester, whoami HFWhoamiFn, disabled ModelDisabledFn) *LocalModels {
 	input := textinput.New()
 	input.Prompt = "pull repo: "
 	input.Placeholder = "e.g. mlx-community/Qwen2.5-7B-Instruct-4bit"
-	return &LocalModels{list: list, curated: curated, test: test, whoami: whoami, pullInput: input}
+	return &LocalModels{list: list, curated: curated, test: test, whoami: whoami, disabled: disabled, pullInput: input}
 }
 
 func (view *LocalModels) Title() string { return "Local Models" }
 
 func (view *LocalModels) Hints() string {
-	return "↑/↓ select · enter/p pull · t test · d remove · l login · o logout · n pull by name · r refresh"
+	return "↑/↓ select · enter/p pull · t test · e enable/disable · d remove · l login · o logout · n pull by name · r refresh"
 }
 
 // CapturingInput reports whether the inline "pull by name" prompt is open, so the app
@@ -288,6 +297,21 @@ func (view *LocalModels) handleKey(key tea.KeyMsg) tea.Cmd {
 		}
 		repo := model.repo
 		return func() tea.Msg { return ModelRemoveRequestedMsg{Name: repo} }
+	case "e":
+		model, ok := view.selectedModel()
+		if !ok {
+			view.flash = ui.Muted.Render("select a model to enable/disable")
+			return nil
+		}
+		if !model.installed {
+			view.flash = ui.Muted.Render(model.repo + " is not installed (enter/p to pull it)")
+			return nil
+		}
+		repo := model.repo
+		if model.disabled {
+			return func() tea.Msg { return ModelEnableRequestedMsg{Name: repo} }
+		}
+		return func() tea.Msg { return ModelDisableRequestedMsg{Name: repo} }
 	case "l":
 		// Authenticate `hf` for gated repos — runs `ai models login` in the REAL
 		// terminal (the hidden token prompt needs a TTY).
@@ -336,6 +360,9 @@ func (view *LocalModels) buildModels(installed []hf.CachedModel) {
 	for _, model := range installed {
 		installedSet[model.Repo] = true
 		row := localModel{repo: model.Repo, size: model.Size, installed: true}
+		if view.disabled != nil {
+			row.disabled = view.disabled(model.Repo)
+		}
 		if meta, ok := curatedByRepo[model.Repo]; ok {
 			row.description = meta.Description
 			if row.size == "" {
@@ -435,6 +462,13 @@ func (view *LocalModels) contentLine(model localModel) string {
 			desc += "  ·  " + model.size
 		} else {
 			desc = model.size
+		}
+	}
+	if model.disabled {
+		if desc != "" {
+			desc += "  ·  [disabled]"
+		} else {
+			desc = "[disabled]"
 		}
 	}
 	name := padCell(truncateRunes(model.repo, localNameWidth), localNameWidth)

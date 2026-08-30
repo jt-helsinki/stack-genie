@@ -41,6 +41,7 @@ func TestLocalModelsRendersCuratedWhenStoreErrors(test *testing.T) {
 		},
 		noTest,
 		func() (string, error) { return "", nil },
+		nil,
 	)
 	view.SetSize(120, 40)
 	drive(view, view.Init())

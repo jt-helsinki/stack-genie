@@ -305,6 +305,7 @@ func Run(cwd string) error {
 		func() []hf.CuratedModel { return hf.CuratedModels(goruntime.GOOS) },
 		litellmClient.Test,
 		hf.RealClient().Whoami,
+		vllmModelDisabled,
 	)
 	// Cloud Models: the models.dev catalog (with its data source for availability
 	// messaging), the gateway's live (registered) set, the `r`-refresh (re-fetch the
@@ -405,6 +406,23 @@ func resolveProjectRoot(name string) (string, bool) {
 		return entry.Path, true
 	}
 	return "", false
+}
+
+// vllmModelDisabled reports whether repo's recorded vLLM runtime choice is disabled
+// (`ai models disable`) — wired into the Local Models view so an installed row can
+// show its auto-start state and offer the opposite toggle key. A store-read failure
+// or an unrecorded/non-vllm repo reads as "not disabled" (never blocks the view).
+func vllmModelDisabled(repo string) bool {
+	choices, err := config.LoadModelRuntimes()
+	if err != nil {
+		return false
+	}
+	for _, choice := range choices {
+		if choice.Runtime == config.RuntimeVLLM && choice.Model == repo {
+			return choice.Disabled
+		}
+	}
+	return false
 }
 
 // executablePath is this `ai` binary, used to spawn sub-commands (the project
@@ -1027,6 +1045,17 @@ func (application *app) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// overlay (its TTY confirm prompt shows in the pane), then refresh the list.
 		return application, application.openTerminal(
 			"models rm "+message.Name, []string{"models", "rm", message.Name}, false)
+
+	case views.ModelDisableRequestedMsg:
+		// Stops the model's vLLM server and excludes it from ensureVLLMServers'
+		// auto-start pass, WITHOUT touching weights or the gateway registration.
+		return application, application.openTerminal(
+			"models disable "+message.Name, []string{"models", "disable", message.Name}, false)
+
+	case views.ModelEnableRequestedMsg:
+		// Starts the model's vLLM server again — no re-download.
+		return application, application.openTerminal(
+			"models enable "+message.Name, []string{"models", "enable", message.Name}, false)
 
 	case views.ModelsLoginRequestedMsg:
 		// Authenticate `hf` for gated repos: the hidden token prompt needs a REAL TTY,
