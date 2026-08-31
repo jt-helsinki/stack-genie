@@ -208,6 +208,32 @@ func TestLocalModelsToggleOnAvailableNoOp(test *testing.T) {
 	}
 }
 
+// c on an installed row emits a configure request (routes to `ai models configure
+// <repo>`, whose own TTY prompt for gpu-memory-utilization/max-model-len then shows
+// in the terminal overlay) — the way to change those resource caps without
+// re-downloading the model. c on an Available (not-installed) row is a no-op.
+func TestLocalModelsConfigureRequest(test *testing.T) {
+	repo := "mlx-community/Qwen2.5-7B-Instruct-4bit"
+	view := buildLocal(test, []hf.CachedModel{{Repo: repo}}, nil)
+	cmd := view.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("c")})
+	if cmd == nil {
+		test.Fatal("c on an installed row must emit a request")
+	}
+	msg, ok := cmd().(ModelConfigureRequestedMsg)
+	if !ok || msg.Name != repo {
+		test.Fatalf("got %#v, want ModelConfigureRequestedMsg{%q}", cmd(), repo)
+	}
+}
+
+func TestLocalModelsConfigureOnAvailableNoOp(test *testing.T) {
+	view := buildLocal(test, nil,
+		[]hf.CuratedModel{{Name: "Llama-3.2-3B-Instruct-4bit", Repo: "mlx-community/Llama-3.2-3B-Instruct-4bit"}},
+	)
+	if cmd := view.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("c")}); cmd != nil {
+		test.Fatalf("c on an available row must not emit a command, got %#v", cmd())
+	}
+}
+
 // l emits a login request; o emits a logout request.
 func TestLocalModelsLoginRequest(test *testing.T) {
 	view := buildLocal(test, nil,

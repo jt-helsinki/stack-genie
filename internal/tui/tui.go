@@ -1057,6 +1057,13 @@ func (application *app) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return application, application.openTerminal(
 			"models enable "+message.Name, []string{"models", "enable", message.Name}, false)
 
+	case views.ModelConfigureRequestedMsg:
+		// The command's own TTY prompt (pre-seeded with the recorded caps) shows in
+		// the overlay — the interactive path for changing gpu-memory-utilization /
+		// max-model-len without re-downloading the model.
+		return application, application.openTerminal(
+			"models configure "+message.Name, []string{"models", "configure", message.Name}, false)
+
 	case views.ModelsLoginRequestedMsg:
 		// Authenticate `hf` for gated repos: the hidden token prompt needs a REAL TTY,
 		// so suspend the TUI and run `ai models login` via tea.ExecProcess (NOT the

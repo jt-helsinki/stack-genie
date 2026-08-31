@@ -411,6 +411,11 @@ func (view *ServiceDetail) vllmModelBlock(model setup.VLLMModelInfo) string {
 	block.WriteString(field("model", model.Model))
 	block.WriteString(field("endpoint", model.Endpoint))
 	block.WriteString(field("healthy", healthy))
+	autoStart := "yes"
+	if model.Disabled {
+		autoStart = ui.Muted.Render("disabled") + " (excluded from auto-start — `ai models enable`)"
+	}
+	block.WriteString(field("auto-start", autoStart))
 	gpuMemoryUtilization := "vLLM default (~0.9)"
 	if model.GPUMemoryUtilization > 0 {
 		gpuMemoryUtilization = strconv.FormatFloat(model.GPUMemoryUtilization, 'f', -1, 64)

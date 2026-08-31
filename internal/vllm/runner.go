@@ -26,11 +26,28 @@ func defaultProcessAlive(pid int) bool {
 	if pid <= 0 {
 		return false
 	}
-	process, err := os.FindProcess(pid)
-	if err != nil {
-		return false
+	// A NON-BLOCKING (WNOHANG) reap, not a plain existence check: the launched
+	// `vllm serve` is OUR direct child (Process.Release() is pure Go-runtime
+	// bookkeeping — it does NOT change the OS parent/child relationship), so a
+	// crashed child sits as a ZOMBIE in the process table until reaped. kill(pid, 0)
+	// counts a zombie's still-present PID entry as "alive", which silently defeated
+	// the fast-fail-on-death path this seam exists for: a crashed vllm serve read
+	// identically to a running one until the full StartTimeout (15m) elapsed —
+	// reported as the CLI hanging with no way to back out of the TUI overlay until
+	// it finally gave up.
+	var status syscall.WaitStatus
+	waited, err := syscall.Wait4(pid, &status, syscall.WNOHANG, nil)
+	switch {
+	case err != nil:
+		// ECHILD (not our child, or something else already reaped it) — fall back to
+		// a plain existence check rather than risk a false "dead" report.
+		process, findErr := os.FindProcess(pid)
+		return findErr == nil && process.Signal(syscall.Signal(0)) == nil
+	case waited == pid:
+		return false // reaped: the child has exited
+	default:
+		return true // waited == 0: still running, no state change
 	}
-	return process.Signal(syscall.Signal(0)) == nil
 }
 
 // RealRunner is the production Runner: it shells out to a DETACHED `vllm serve`

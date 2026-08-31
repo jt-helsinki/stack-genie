@@ -22,6 +22,7 @@ package setup
 // hardware bring-up: the real launch is exercised only on a provisioned host with vLLM.
 
 import (
+	"fmt"
 	"net/http"
 	"os"
 	"os/exec"
@@ -64,7 +65,12 @@ func startVLLMServersHost() error {
 	if len(vllmRuntimeChoices()) == 0 {
 		return nil
 	}
-	ensureVLLMServers(func(string) {})
+	// A discarded (no-op) progress callback here used to make `ai services start
+	// vllm` completely SILENT while a fresh model loaded (up to
+	// vllm.DefaultStartTimeout, 15m) — reading as a hang with nothing to show for
+	// it. ensureVLLMServers already reports each model attempt plus the Manager's
+	// own internal events (adopt/evict/busy-port); just stop throwing them away.
+	ensureVLLMServers(func(line string) { _, _ = fmt.Fprintln(os.Stderr, line) })
 	return nil
 }
 

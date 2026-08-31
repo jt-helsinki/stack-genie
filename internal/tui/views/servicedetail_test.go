@@ -104,6 +104,30 @@ func TestServiceDetailShowsVLLMModelConfig(test *testing.T) {
 	if strings.Contains(rendered, "Containers") {
 		test.Errorf("vllm's Service sub-tab must not show the generic Containers block, got:\n%s", rendered)
 	}
+	if !strings.Contains(rendered, "auto-start") {
+		test.Errorf("Service sub-tab should show the auto-start (enabled/disabled) state, got:\n%s", rendered)
+	}
+}
+
+// TestServiceDetailShowsVLLMModelDisabled proves a disabled model (`ai models
+// disable`) is called out on its own — drilling into the vllm service should tell
+// you it is excluded from auto-start, not just leave you guessing from "healthy: no".
+func TestServiceDetailShowsVLLMModelDisabled(test *testing.T) {
+	detail := newDetailForTest(
+		setup.ServiceStatus{
+			Name: "vllm", Mode: "host", State: "stopped",
+			Models: []setup.VLLMModelInfo{{
+				Alias: "qwen-coder", Model: "mlx-community/Qwen3-Coder-30B-A3B-Instruct-4bit",
+				Endpoint: "http://127.0.0.1:8102/v1", Healthy: false, Disabled: true,
+			}},
+		},
+		"", false)
+	primeInfo(detail)
+
+	rendered := detail.View()
+	if !strings.Contains(rendered, "disabled") {
+		test.Errorf("a disabled model's block should say so, got:\n%s", rendered)
+	}
 }
 
 // TestServiceDetailLogsTabShowsLog: switching to the Logs sub-tab shows the scrollable

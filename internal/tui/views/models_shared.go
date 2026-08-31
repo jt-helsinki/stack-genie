@@ -55,6 +55,13 @@ type ModelDisableRequestedMsg struct{ Name string }
 // Emitted by the Local Models view.
 type ModelEnableRequestedMsg struct{ Name string }
 
+// ModelConfigureRequestedMsg asks the parent to run `ai models configure <Name>`
+// live in the terminal overlay — its own TTY prompt (pre-seeded with the model's
+// CURRENTLY recorded gpu-memory-utilization/max-model-len) shows in the pane, so
+// this is how the Local Models view lets a user change those resource caps without
+// re-downloading the model. Emitted by the Local Models view.
+type ModelConfigureRequestedMsg struct{ Name string }
+
 // ModelsLoginRequestedMsg asks the parent to run `ai models login` live in the REAL
 // terminal (the hidden token prompt needs a TTY). Emitted by the Local Models view.
 type ModelsLoginRequestedMsg struct{}

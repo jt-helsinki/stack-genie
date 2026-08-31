@@ -112,7 +112,7 @@ func NewLocalModels(list LocalModelLister, curated CuratedLister, test ModelTest
 func (view *LocalModels) Title() string { return "Local Models" }
 
 func (view *LocalModels) Hints() string {
-	return "↑/↓ select · enter/p pull · t test · e enable/disable · d remove · l login · o logout · n pull by name · r refresh"
+	return "↑/↓ select · enter/p pull · c configure · t test · e enable/disable · d remove · l login · o logout · n pull by name · r refresh"
 }
 
 // CapturingInput reports whether the inline "pull by name" prompt is open, so the app
@@ -312,6 +312,18 @@ func (view *LocalModels) handleKey(key tea.KeyMsg) tea.Cmd {
 			return func() tea.Msg { return ModelEnableRequestedMsg{Name: repo} }
 		}
 		return func() tea.Msg { return ModelDisableRequestedMsg{Name: repo} }
+	case "c":
+		model, ok := view.selectedModel()
+		if !ok {
+			view.flash = ui.Muted.Render("select a model to configure")
+			return nil
+		}
+		if !model.installed {
+			view.flash = ui.Muted.Render(model.repo + " is not installed (enter/p to pull it)")
+			return nil
+		}
+		repo := model.repo
+		return func() tea.Msg { return ModelConfigureRequestedMsg{Name: repo} }
 	case "l":
 		// Authenticate `hf` for gated repos — runs `ai models login` in the REAL
 		// terminal (the hidden token prompt needs a TTY).
