@@ -32,6 +32,30 @@ func TestToolCallParserFor(t *testing.T) {
 	}
 }
 
+// TestReasoningParserFor pins confirmed vLLM --reasoning-parser mappings — the fix
+// for a thinking model's <think>...</think> block leaking raw into the visible
+// answer (opencode had no reasoning_content to render separately) instead of vLLM
+// splitting it out via the parser.
+func TestReasoningParserFor(t *testing.T) {
+	cases := []struct {
+		goos string
+		repo string
+		want string
+	}{
+		{"darwin", "mlx-community/Qwen3.8-27B-4bit", "qwen3"},
+		{"linux", "Qwen/Qwen3.8-27B", "qwen3"},
+		// Coder variants have no confirmed reasoning parser — must not guess.
+		{"darwin", "mlx-community/Qwen3-Coder-30B-A3B-Instruct-4bit", ""},
+		{"darwin", "mlx-community/DeepSeek-V4-Pro-4bit", ""},
+		{"darwin", "mlx-community/not-a-curated-repo", ""}, // uncurated — must not error
+	}
+	for _, testCase := range cases {
+		if got := ReasoningParserFor(testCase.goos, testCase.repo); got != testCase.want {
+			t.Errorf("ReasoningParserFor(%q, %q) = %q, want %q", testCase.goos, testCase.repo, got, testCase.want)
+		}
+	}
+}
+
 func TestCuratedModelsPerOS(t *testing.T) {
 	darwin := CuratedModels("darwin")
 	if len(darwin) == 0 {

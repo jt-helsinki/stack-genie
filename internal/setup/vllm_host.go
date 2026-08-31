@@ -354,6 +354,7 @@ func ensureVLLMServers(progress func(string)) {
 		}
 		opts := vllm.ServeOptions{
 			ToolCallParser:       hf.ToolCallParserFor(goruntime.GOOS, vllmServeModel(choice)),
+			ReasoningParser:      hf.ReasoningParserFor(goruntime.GOOS, vllmServeModel(choice)),
 			GPUMemoryUtilization: choice.GPUMemoryUtilization,
 			MaxModelLen:          choice.MaxModelLen,
 		}

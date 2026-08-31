@@ -103,6 +103,16 @@ type ServeOptions struct {
 	// context window (tokens) the KV-cache is sized for. Zero leaves the model's
 	// own (often very large) default context length in effect.
 	MaxModelLen int
+	// ReasoningParser, when non-empty, is passed as `--reasoning-parser <value>` —
+	// the model's CONFIRMED vLLM reasoning-parser name (hf.CuratedModel.
+	// ReasoningParser), e.g. "qwen3" for the Qwen3 family, which ships with
+	// thinking enabled by default. Without it, vLLM has no way to split a
+	// reasoning model's <think>...</think> block out of the response into
+	// reasoning_content — the raw tags land in the visible answer verbatim
+	// instead, which is what a client (opencode) then renders as the whole
+	// "response". Left unset for a model with no confirmed parser, matching
+	// ToolCallParser's philosophy (a WRONG parser can silently corrupt output).
+	ReasoningParser string
 }
 
 // Runner starts and stops detached `vllm serve` processes. The real implementation

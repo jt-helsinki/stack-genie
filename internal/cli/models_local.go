@@ -300,6 +300,7 @@ func pullVLLM(emitter *output.Emitter, names []string, alias string, resourceOpt
 		}
 		opts := resourceOpts
 		opts.ToolCallParser = hf.ToolCallParserFor(goruntime.GOOS, model)
+		opts.ReasoningParser = hf.ReasoningParserFor(goruntime.GOOS, model)
 		// A genuinely fresh launch prints NOTHING internally while it loads — say so
 		// up front (up to vllm.DefaultStartTimeout = 15m for a large model) so this
 		// does not read as a hang.
@@ -1362,6 +1363,7 @@ func configureVLLM(emitter *output.Emitter, choice config.ModelRuntimeChoice, re
 	manager := vllmManagerFactory(recordedVLLMPorts(), vllmProgressLog(emitter))
 	opts := resourceOpts
 	opts.ToolCallParser = hf.ToolCallParserFor(goruntime.GOOS, choice.Model)
+	opts.ReasoningParser = hf.ReasoningParserFor(goruntime.GOOS, choice.Model)
 	// A genuinely fresh launch prints NOTHING internally while it loads — say so up
 	// front (up to vllm.DefaultStartTimeout = 15m for a large model) so this does not
 	// read as a hang.
@@ -1502,6 +1504,7 @@ func enableVLLM(emitter *output.Emitter, choice config.ModelRuntimeChoice) int {
 	manager := vllmManagerFactory(recordedVLLMPorts(), vllmProgressLog(emitter))
 	opts := vllm.ServeOptions{
 		ToolCallParser:       hf.ToolCallParserFor(goruntime.GOOS, choice.Model),
+		ReasoningParser:      hf.ReasoningParserFor(goruntime.GOOS, choice.Model),
 		GPUMemoryUtilization: choice.GPUMemoryUtilization,
 		MaxModelLen:          choice.MaxModelLen,
 	}

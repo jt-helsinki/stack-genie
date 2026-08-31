@@ -141,6 +141,7 @@ func TestEnsureServedWithOptionsPassesResourceKnobsThrough(t *testing.T) {
 
 	_, _, err := manager.EnsureServedWithOptions("my-qwen", "mlx-community/Qwen3-8B", ServeOptions{
 		ToolCallParser:       "hermes",
+		ReasoningParser:      "qwen3",
 		GPUMemoryUtilization: 0.5,
 		MaxModelLen:          8192,
 	})
@@ -151,8 +152,8 @@ func TestEnsureServedWithOptionsPassesResourceKnobsThrough(t *testing.T) {
 		t.Fatalf("StartCount = %d, want 1", runner.StartCount())
 	}
 	got := runner.StartCalls[0].Opts
-	if got.ToolCallParser != "hermes" || got.GPUMemoryUtilization != 0.5 || got.MaxModelLen != 8192 {
-		t.Fatalf("Opts = %+v, want {hermes 0.5 8192}", got)
+	if got.ToolCallParser != "hermes" || got.ReasoningParser != "qwen3" || got.GPUMemoryUtilization != 0.5 || got.MaxModelLen != 8192 {
+		t.Fatalf("Opts = %+v, want {hermes qwen3 0.5 8192}", got)
 	}
 }
 
@@ -623,6 +624,33 @@ func TestVLLMServeArgsResourceKnobs(t *testing.T) {
 		"--download-dir", "/store/vllm",
 		"--gpu-memory-utilization", "0.5",
 		"--max-model-len", "8192",
+	}
+	if len(args) != len(want) {
+		t.Fatalf("vllmServeArgs = %v, want %v", args, want)
+	}
+	for index := range want {
+		if args[index] != want[index] {
+			t.Fatalf("vllmServeArgs[%d] = %q, want %q (full %v)", index, args[index], want[index], args)
+		}
+	}
+}
+
+// TestVLLMServeArgsReasoningParser proves ReasoningParser appends
+// --reasoning-parser — the fix for a thinking model's raw <think>...</think> block
+// landing verbatim in the visible answer instead of vLLM splitting it into
+// reasoning_content. A blank ReasoningParser (the default ServeOptions) must NOT
+// append the flag — see TestVLLMServeArgs.
+func TestVLLMServeArgsReasoningParser(t *testing.T) {
+	args := vllmServeArgs("my-qwen", "mlx-community/Qwen3.8-27B-4bit", 8101, "/store/vllm", ServeOptions{
+		ReasoningParser: "qwen3",
+	})
+	want := []string{
+		"serve", "mlx-community/Qwen3.8-27B-4bit",
+		"--host", "127.0.0.1",
+		"--port", "8101",
+		"--served-model-name", "my-qwen",
+		"--download-dir", "/store/vllm",
+		"--reasoning-parser", "qwen3",
 	}
 	if len(args) != len(want) {
 		t.Fatalf("vllmServeArgs = %v, want %v", args, want)

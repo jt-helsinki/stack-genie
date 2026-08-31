@@ -110,13 +110,22 @@ func Install() error {
 // added (tool_choice="auto" then fails with vLLM's own clear error — better than
 // guessing a WRONG parser, which can corrupt tool calls silently instead of erroring).
 // Only populate this from an authoritative source (vLLM's docs or the model vendor's
-// own deployment guide) — never guess from family resemblance alone.
+// own deployment guide) — never guess from family resemblance alone. ReasoningParser
+// is the model's CONFIRMED vLLM `--reasoning-parser` value (e.g. "qwen3" for the
+// Qwen3/Qwen3.x family, which ships with thinking enabled by default) — when set,
+// `ai models pull` starts the server with `--reasoning-parser <value>` so vLLM splits
+// the model's <think>...</think> block out of the response into reasoning_content
+// (which opencode then renders as a distinct collapsed reasoning trace); when empty,
+// no flag is added and a thinking model's raw <think> tags land verbatim in the
+// visible answer instead — the client has no way to separate them. Same
+// never-guess-a-wrong-value philosophy as ToolCallParser.
 type CuratedModel struct {
-	Name           string `json:"name"`
-	Repo           string `json:"repo"`
-	Description    string `json:"description,omitempty"`
-	Size           string `json:"size,omitempty"`
-	ToolCallParser string `json:"tool_call_parser,omitempty"`
+	Name            string `json:"name"`
+	Repo            string `json:"repo"`
+	Description     string `json:"description,omitempty"`
+	Size            string `json:"size,omitempty"`
+	ToolCallParser  string `json:"tool_call_parser,omitempty"`
+	ReasoningParser string `json:"reasoning_parser,omitempty"`
 }
 
 // ToolCallParserFor returns the confirmed vLLM --tool-call-parser value for repo from
@@ -126,6 +135,18 @@ func ToolCallParserFor(goos, repo string) string {
 	for _, model := range CuratedModels(goos) {
 		if model.Repo == repo {
 			return model.ToolCallParser
+		}
+	}
+	return ""
+}
+
+// ReasoningParserFor returns the confirmed vLLM --reasoning-parser value for repo
+// from the curated list for goos (empty when repo is not curated or has no confirmed
+// parser — see CuratedModel.ReasoningParser).
+func ReasoningParserFor(goos, repo string) string {
+	for _, model := range CuratedModels(goos) {
+		if model.Repo == repo {
+			return model.ReasoningParser
 		}
 	}
 	return ""
@@ -196,9 +217,9 @@ var curatedMLX = []CuratedModel{
 	{Name: "NVIDIA-Nemotron-3-Nano-30B-A3B-4bit", Repo: "mlx-community/NVIDIA-Nemotron-3-Nano-30B-A3B-4bit", Description: "NVIDIA Nemotron 3 Nano 30B-A3B, 4-bit — MoE reasoning", Size: "~17 GB"},
 	// Qwen
 	// (Ornith-1.5-397B has no mlx-community build — see curatedSafetensors)
-	{Name: "Qwen3.8-27B-4bit", Repo: "mlx-community/Qwen3.8-27B-4bit", Description: "Qwen3.8 27B, 4-bit — flagship dense", Size: "~15 GB", ToolCallParser: "hermes"},
-	{Name: "Qwen3.6-27B-4bit", Repo: "mlx-community/Qwen3.6-27B-4bit", Description: "Qwen3.6 27B, 4-bit — dense general", Size: "~15 GB", ToolCallParser: "hermes"},
-	{Name: "Qwen3.5-27B-4bit", Repo: "mlx-community/Qwen3.5-27B-4bit", Description: "Qwen3.5 27B, 4-bit — dense general", Size: "~15 GB", ToolCallParser: "hermes"},
+	{Name: "Qwen3.8-27B-4bit", Repo: "mlx-community/Qwen3.8-27B-4bit", Description: "Qwen3.8 27B, 4-bit — flagship dense", Size: "~15 GB", ToolCallParser: "hermes", ReasoningParser: "qwen3"},
+	{Name: "Qwen3.6-27B-4bit", Repo: "mlx-community/Qwen3.6-27B-4bit", Description: "Qwen3.6 27B, 4-bit — dense general", Size: "~15 GB", ToolCallParser: "hermes", ReasoningParser: "qwen3"},
+	{Name: "Qwen3.5-27B-4bit", Repo: "mlx-community/Qwen3.5-27B-4bit", Description: "Qwen3.5 27B, 4-bit — dense general", Size: "~15 GB", ToolCallParser: "hermes", ReasoningParser: "qwen3"},
 	{Name: "Qwen3-Coder-Next-4bit", Repo: "mlx-community/Qwen3-Coder-Next-4bit", Description: "Qwen3-Coder-Next 80B-A3B, 4-bit — MoE coding flagship, low active-param — needs high-RAM Apple Silicon (64 GB+)", Size: "~43 GB", ToolCallParser: "qwen3_xml"},
 	{Name: "Qwen3-Coder-480B-A35B-Instruct-4bit", Repo: "mlx-community/Qwen3-Coder-480B-A35B-Instruct-4bit", Description: "Qwen3-Coder 480B-A35B instruct, 4-bit — MoE coding flagship — very large, needs high-RAM Apple Silicon (256 GB+)", Size: "~270 GB", ToolCallParser: "qwen3_xml"},
 	{Name: "Qwen3-Coder-30B-A3B-Instruct-4bit", Repo: "mlx-community/Qwen3-Coder-30B-A3B-Instruct-4bit", Description: "Qwen3-Coder 30B-A3B instruct, 4-bit — MoE coding, low active-param — sweet spot for local coding on 32 GB+ Macs", Size: "~17 GB", ToolCallParser: "qwen3_xml"},
@@ -258,9 +279,9 @@ var curatedSafetensors = []CuratedModel{
 	{Name: "Laguna-S-2.1", Repo: "poolside/Laguna-S-2.1", Description: "Poolside Laguna S 2.1 — MoE long-horizon coding (FP8/BF16 native)", Size: "~270 GB"},
 	// Qwen
 	{Name: "Qwen3.8-2.4T-A95B", Repo: "Qwen/Qwen3.8-2.4T-A95B", Description: "Qwen3.8 Max, 2.4T-A95B — MoE flagship — no mlx-community build, MLX-unavailable (extreme size)", Size: "~4.89 TB"},
-	{Name: "Qwen3.8-27B", Repo: "Qwen/Qwen3.8-27B", Description: "Qwen3.8 27B — flagship dense", Size: "~56 GB", ToolCallParser: "hermes"},
-	{Name: "Qwen3.6-27B", Repo: "Qwen/Qwen3.6-27B", Description: "Qwen3.6 27B — dense general", Size: "~56 GB", ToolCallParser: "hermes"},
-	{Name: "Qwen3.5-27B", Repo: "Qwen/Qwen3.5-27B", Description: "Qwen3.5 27B — dense general", Size: "~56 GB", ToolCallParser: "hermes"},
+	{Name: "Qwen3.8-27B", Repo: "Qwen/Qwen3.8-27B", Description: "Qwen3.8 27B — flagship dense", Size: "~56 GB", ToolCallParser: "hermes", ReasoningParser: "qwen3"},
+	{Name: "Qwen3.6-27B", Repo: "Qwen/Qwen3.6-27B", Description: "Qwen3.6 27B — dense general", Size: "~56 GB", ToolCallParser: "hermes", ReasoningParser: "qwen3"},
+	{Name: "Qwen3.5-27B", Repo: "Qwen/Qwen3.5-27B", Description: "Qwen3.5 27B — dense general", Size: "~56 GB", ToolCallParser: "hermes", ReasoningParser: "qwen3"},
 	{Name: "Qwen3-Coder-Next", Repo: "Qwen/Qwen3-Coder-Next", Description: "Qwen3-Coder-Next 80B-A3B — MoE coding flagship", Size: "~160 GB", ToolCallParser: "qwen3_xml"},
 	{Name: "Qwen3-Coder-480B-A35B-Instruct", Repo: "Qwen/Qwen3-Coder-480B-A35B-Instruct", Description: "Qwen3-Coder 480B-A35B instruct — MoE coding flagship (very large)", Size: "~960 GB", ToolCallParser: "qwen3_xml"},
 	{Name: "Qwen3-Coder-30B-A3B-Instruct", Repo: "Qwen/Qwen3-Coder-30B-A3B-Instruct", Description: "Qwen3-Coder 30B-A3B instruct — MoE coding, low active-param", Size: "~60 GB", ToolCallParser: "qwen3_xml"},

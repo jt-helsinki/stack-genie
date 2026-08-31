@@ -93,6 +93,9 @@ func vllmServeArgs(alias, model string, port int, storeDir string, opts ServeOpt
 	if opts.MaxModelLen > 0 {
 		args = append(args, "--max-model-len", strconv.Itoa(opts.MaxModelLen))
 	}
+	if opts.ReasoningParser != "" {
+		args = append(args, "--reasoning-parser", opts.ReasoningParser)
+	}
 	return args
 }
 

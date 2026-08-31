@@ -264,7 +264,7 @@ var newRegistrar = func() modelRegistrar { return litellm.NewKeyManager(runtime.
 // Graphify model: it starts/locates a per-model `vllm serve` endpoint. Production binds
 // *vllm.Manager; tests a fake.
 type graphifyVLLMServer interface {
-	EnsureServedWithToolParser(alias, model, toolCallParser string) (port int, endpoint string, err error)
+	EnsureServedWithOptions(alias, model string, opts vllm.ServeOptions) (port int, endpoint string, err error)
 }
 
 // vLLM seams — package vars so tests inject fakes without touching the host.
@@ -307,10 +307,14 @@ func pullGraphifyModelIfAbsent(repo string, report func(Progress)) []string {
 	if err := hfClient().Download(repo, io.Discard); err != nil {
 		return []string{fmt.Sprintf("could not download Graphify model %q: %s — pull it later with `ai models pull %s`", repo, err, repo)}
 	}
-	// Pass the curated tool-call parser (if confirmed for this repo) so opencode's
-	// tool_choice="auto" requests work against the Graphify model — same as `ai
-	// models pull` (see hf.CuratedModel.ToolCallParser).
-	port, _, err := vllmManagerFactory().EnsureServedWithToolParser(alias, repo, hf.ToolCallParserFor(goruntime.GOOS, repo))
+	// Pass the curated tool-call/reasoning parsers (if confirmed for this repo) so
+	// opencode's tool_choice="auto" requests work AND a thinking model's
+	// <think>...</think> block does not leak raw into Graphify's structured output
+	// — same as `ai models pull` (see hf.CuratedModel.ToolCallParser/ReasoningParser).
+	port, _, err := vllmManagerFactory().EnsureServedWithOptions(alias, repo, vllm.ServeOptions{
+		ToolCallParser:  hf.ToolCallParserFor(goruntime.GOOS, repo),
+		ReasoningParser: hf.ReasoningParserFor(goruntime.GOOS, repo),
+	})
 	if err != nil {
 		return []string{fmt.Sprintf("could not serve Graphify model %q: %s — pull it later with `ai models pull %s`", repo, err, repo)}
 	}
