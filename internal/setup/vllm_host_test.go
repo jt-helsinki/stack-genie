@@ -190,17 +190,22 @@ func TestEnsureVLLMServersNeverFails(test *testing.T) {
 	var lines []string
 	collect := func(line string) { lines = append(lines, line) }
 
-	// No models recorded: a silent no-op (no progress lines).
-	ensureVLLMServers(collect)
+	// No models recorded: a silent no-op (no progress lines, no failures reported).
+	if failed := ensureVLLMServers(collect); len(failed) != 0 {
+		test.Errorf("no vllm models: want no reported failures, got %v", failed)
+	}
 	if len(lines) != 0 {
 		test.Errorf("no vllm models: want no-op, got progress %v", lines)
 	}
 
 	// Recorded but unreachable, vLLM not installed: logs the reason + install guidance and
-	// moves on — never failing, never forking.
+	// moves on — never panicking, never forking — but DOES report it in the returned
+	// failure list, so an explicit single-service caller (startVLLMServersHost) can turn
+	// that into a real error instead of a false success (the general `ai setup` reconcile
+	// still just discards the return value, so it is unaffected).
 	recordVLLMChoice(test, "my-vllm", "mlx-community/foo", "http://127.0.0.1:8101/v1")
 	fakeVLLMHTTP(test, map[string]int{"8101": 0}) // endpoint down → attempt handling
-	ensureVLLMServers(collect)
+	failed := ensureVLLMServers(collect)
 
 	joined := strings.Join(lines, "\n")
 	if !strings.Contains(joined, "my-vllm") {
@@ -208,6 +213,9 @@ func TestEnsureVLLMServersNeverFails(test *testing.T) {
 	}
 	if !strings.Contains(strings.ToLower(joined), "vllm") {
 		test.Errorf("want guidance logged for the recorded model, got %v", lines)
+	}
+	if len(failed) != 1 || !strings.Contains(failed[0], "my-vllm") {
+		test.Errorf("want my-vllm reported in the failure list, got %v", failed)
 	}
 }
 

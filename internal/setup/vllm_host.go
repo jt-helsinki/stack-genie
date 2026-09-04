@@ -46,14 +46,40 @@ var (
 	vllmPkill      = func() error { return exec.Command("pkill", "-f", "vllm serve").Run() }
 )
 
+// hostNativeProgressWriter is where startVLLMServersHost streams its per-model
+// launch progress. Defaults to stderr for plain CLI use (`ai services start
+// vllm`), where it shares a normal terminal with no competing renderer. A
+// bubbletea TUI (`ai ui`) MUST silence it via SetHostNativeProgressWriter: writing
+// straight to stderr while the alt-screen is active corrupts the rendered frame
+// (stray lines bleed through the bordered panes) until a resize forces bubbletea
+// to redraw from scratch — the bug this seam fixes.
+var hostNativeProgressWriter = func(line string) { _, _ = fmt.Fprintln(os.Stderr, line) }
+
+// SetHostNativeProgressWriter overrides the host-native progress sink (see
+// hostNativeProgressWriter). Pass nil to discard progress lines entirely.
+func SetHostNativeProgressWriter(writer func(string)) {
+	if writer == nil {
+		writer = func(string) {}
+	}
+	hostNativeProgressWriter = writer
+}
+
 // startVLLMServersHost brings up the host-native vLLM servers for `ai services start
 // vllm`. vLLM is per-model, so it starts a `vllm serve` for every recorded runtime=vllm
 // model (reusing each model's reserved loopback port). It is GATED on vLLM being
 // installed: with no `vllm` binary it returns an actionable missing-dependency error
 // (exit 3) carrying the install guidance. With vLLM installed but NO models recorded it
 // SUCCEEDS with nothing to do (the caller notes "pull one with `ai models pull --runtime
-// vllm`"). The launch itself is best-effort via ensureVLLMServers (never fails once vLLM
-// is present). hardware bring-up: the real `vllm serve` fork runs only on a provisioned host.
+// vllm`"). The launch itself is best-effort per model via ensureVLLMServers (it never
+// panics or aborts early), but — unlike the general `ai setup` reconcile, which must
+// never fail on an optional local model — this is an EXPLICIT single-service action
+// (`ai services start|restart vllm`, including the TUI's Service-tab s/r keys), so a
+// model that failed to come up (e.g. an OOM'd KV cache) is now reported as a real error
+// instead of a false success: previously this unconditionally returned nil, so the CLI's
+// own exit code/JSON envelope said "ok" and the TUI's restart flash showed a misleading
+// green "restarted vllm" while the server stayed dead — see the `max_model_len` OOM
+// incident this was found from. hardware bring-up: the real `vllm serve` fork runs only
+// on a provisioned host.
 func startVLLMServersHost() error {
 	installed, _ := vllmDetect()
 	if !installed {
@@ -70,8 +96,24 @@ func startVLLMServersHost() error {
 	// vllm.DefaultStartTimeout, 15m) — reading as a hang with nothing to show for
 	// it. ensureVLLMServers already reports each model attempt plus the Manager's
 	// own internal events (adopt/evict/busy-port); just stop throwing them away.
-	ensureVLLMServers(func(line string) { _, _ = fmt.Fprintln(os.Stderr, line) })
+	failed := ensureVLLMServers(hostNativeProgressWriter)
+	if len(failed) > 0 {
+		return output.Errorf(output.ExitRuntimeFailure,
+			"%d of %d vLLM model(s) failed to start: %s — see the per-model log under %s",
+			len(failed), len(vllmRuntimeChoices()), strings.Join(failed, "; "), vllmStoreDirOrDefault())
+	}
 	return nil
+}
+
+// vllmStoreDirOrDefault is vllm.StoreDir() with a fallback description for the rare case
+// the store path itself can't be resolved — only used to compose the actionable message
+// above, never to gate any real behavior.
+func vllmStoreDirOrDefault() string {
+	dir, err := vllm.StoreDir()
+	if err != nil {
+		return "the vLLM model store"
+	}
+	return dir
 }
 
 // stopVLLMServersHost stops every host-native vLLM server for `ai services stop vllm`,
@@ -306,11 +348,16 @@ func vllmServeModel(choice config.ModelRuntimeChoice) string {
 // and OPTIONAL: it NEVER returns an error and NEVER fails the reconcile — a launch
 // failure (e.g. `vllm serve` exiting immediately, or a port conflict) is logged
 // with the install guidance and skipped. Servers are launched DETACHED (by the
-// Runner) so they outlive this short-lived CLI.
-func ensureVLLMServers(progress func(string)) {
+// Runner) so they outlive this short-lived CLI. It also returns a short "alias:
+// reason" line per model that failed to start, so an explicit single-service caller
+// (startVLLMServersHost, backing `ai services start|restart vllm`) can surface a
+// real failure instead of reporting success — the general `ai setup` reconcile
+// (setup_real.go) calls this the same way it always has and simply ignores the
+// return value, so that invariant is unchanged.
+func ensureVLLMServers(progress func(string)) []string {
 	choices := vllmRuntimeChoices()
 	if len(choices) == 0 {
-		return // nothing to serve
+		return nil // nothing to serve
 	}
 	installed, _ := vllmDetect()
 	// Seed the Manager with the recorded alias→port map so each model REUSES its recorded
@@ -330,6 +377,7 @@ func ensureVLLMServers(progress func(string)) {
 			Log:      func(line string) { progress("      " + line) },
 		})
 	}
+	var failed []string
 	for _, choice := range choices {
 		// Disabled (`ai models disable`): deliberately excluded from the auto-start
 		// pass — e.g. to keep a second local model pulled/registered without it
@@ -350,6 +398,7 @@ func ensureVLLMServers(progress func(string)) {
 			for _, line := range vllm.InstallGuidance(goruntime.GOOS) {
 				progress("      - " + line)
 			}
+			failed = append(failed, choice.Alias+": vLLM not installed")
 			continue
 		}
 		opts := vllm.ServeOptions{
@@ -359,12 +408,15 @@ func ensureVLLMServers(progress func(string)) {
 			MaxModelLen:          choice.MaxModelLen,
 		}
 		if _, _, err := manager.EnsureServedWithOptions(choice.Alias, vllmServeModel(choice), opts); err != nil {
-			// Best-effort: vLLM is optional. Surface the reason + install guidance and
-			// continue — NEVER fail the reconcile.
+			// Best-effort: vLLM is optional, so the RECONCILE never fails on this — but
+			// the failure is still collected (see the doc comment above) so an explicit
+			// single-service start/restart can report it rather than claiming success.
 			progress("      vLLM not started for " + choice.Alias + ": " + err.Error())
 			for _, line := range vllm.InstallGuidance(goruntime.GOOS) {
 				progress("      - " + line)
 			}
+			failed = append(failed, choice.Alias+": "+err.Error())
 		}
 	}
+	return failed
 }

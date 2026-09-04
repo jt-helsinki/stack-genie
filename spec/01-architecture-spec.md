@@ -1591,7 +1591,18 @@ Hugging Face CLI) the same way when either is absent. `RealRunner.Start`/`Stop`
 `vllm.ErrNotWired` stub is no longer returned. What remains is the live
 network install/wheel-resolution and a real per-model serve + gateway round-trip
 on provisioned hardware — a **hardware-bring-up** verification item
-(`docs/HARDWARE-BRINGUP.md` §2.9).
+(`docs/HARDWARE-BRINGUP.md` §2.9). Each recorded model's `--gpu-memory-utilization`/
+`--max-model-len` caps (`config.ModelRuntimeChoice`, `~/.ai-platform/config/
+model-runtimes.yaml`) can be changed without re-downloading via `ai models
+configure` (CLI §8.3.4), and a model can be excluded from `Reconcile`'s auto-start
+pass via `ai models disable`/`enable` (CLI §8.3.5) — e.g. so two local models'
+`--gpu-memory-utilization` values do not fight for the same device memory when
+`ensureVLLMServers` starts every non-disabled recorded model together. A fresh
+`vllm serve` launch is given a generous 15-minute health-check window
+(`vllm.DefaultStartTimeout`) but fails fast if the launched process itself dies
+first (a non-blocking `WNOHANG` reap distinguishes a genuinely crashed child from
+one still loading, since a crashed direct child is a zombie that a plain signal-0
+liveness check misreports as still running).
 
 ## Model download (Hugging Face CLI)
 

@@ -290,7 +290,13 @@ func (view *ServiceDetail) switchSub() tea.Cmd {
 	}
 	view.subIndex = serviceTabInfo
 	view.log.SetActive(false)
-	return view.startStatsPoll()
+	// The Logs sub-tab can render a viewport full of very long, unwrapped lines (a
+	// vLLM traceback with a full venv path easily runs past the pane width). Reported:
+	// switching back to Service then shows stale log content bleeding into the summary
+	// — fixed by resizing the terminal, which forces bubbletea to fully repaint rather
+	// than diff against the previous (taller/wider) frame. tea.ClearScreen forces that
+	// same full repaint programmatically instead of requiring a manual resize.
+	return tea.Batch(tea.ClearScreen, view.startStatsPoll())
 }
 
 // ClickSubTab switches to the sub-tab under click column x (the bar's own
@@ -411,7 +417,7 @@ func (view *ServiceDetail) vllmModelBlock(model setup.VLLMModelInfo) string {
 	block.WriteString(field("model", model.Model))
 	block.WriteString(field("endpoint", model.Endpoint))
 	block.WriteString(field("healthy", healthy))
-	autoStart := "yes"
+	autoStart := ui.Success.Render("enabled")
 	if model.Disabled {
 		autoStart = ui.Muted.Render("disabled") + " (excluded from auto-start — `ai models enable`)"
 	}

@@ -65,6 +65,12 @@ func Run(cwd string) error {
 	}
 
 	deps := setup.RealDeps(goruntime.GOOS, goruntime.GOARCH, nowRFC3339)
+	// Host-native service progress (vLLM server launch lines) defaults to stderr for
+	// plain CLI use. Inside this bubbletea alt-screen a direct stderr write corrupts
+	// the rendered frame (stray lines bleed through the bordered panes) until a
+	// resize forces a full repaint — silence it; the list's flash line + Services
+	// detail already report the outcome.
+	setup.SetHostNativeProgressWriter(nil)
 	litellmClient := litellm.RealClient()
 	// One long-lived workspace Manager for the whole TUI session. Constructing it
 	// fresh per poll-closure (as the inline RealManager calls used to) would, on the

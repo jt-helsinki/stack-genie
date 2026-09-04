@@ -1354,7 +1354,7 @@ curated list never blocks pulling anything.
 ### 8.3.3 Pull (install / update)
 
 ```bash id="c23b"
-ai models pull [repo...] [--alias <alias>]
+ai models pull [repo...] [--alias <alias>] [--gpu-memory-utilization <0-1>] [--max-model-len <tokens>]
 ```
 
 `pull` is **variadic** — it installs **one or more** models in a single run. Each
@@ -1362,13 +1362,35 @@ ai models pull [repo...] [--alias <alias>]
 per-model vLLM server is started and registered in the gateway. **vLLM is the only
 local runtime — there is no `--runtime` flag.**
 
-* `--alias <alias>` — the gateway alias / handle for a single model.
+* `--alias <alias>` — the gateway alias / handle for a single model (applying it to
+  more than one repo in the same run is a **2** input error).
+* `--gpu-memory-utilization <0-1>` — the fraction of device memory `vllm serve`
+  pre-allocates for the KV-cache; blank leaves vLLM's own default (~0.9, sized off
+  TOTAL device memory rather than the model's weight size) in effect.
+* `--max-model-len <tokens>` — caps the context window the KV-cache is sized for;
+  blank leaves the model's own (often very large) default context length in effect.
+  Both caps apply to every repo pulled in the run (unlike `--alias`, which is
+  single-model only); on a terminal they are prompted for in one form, pre-seeded
+  from any flag value given.
+
+If pulling this model would push the **sum** of `--gpu-memory-utilization` across
+every recorded vLLM model over a safe budget (0.9 — each `vllm serve` process
+reserves its fraction of TOTAL device memory INDEPENDENTLY at its own startup, an
+unpinned other model assumed at vLLM's own ~0.92 default), the command **warns**
+(never blocks) so a later model is not silently left unable to allocate memory when
+`ai setup`/`ai services start vllm` starts every recorded model together. The
+curated model's CONFIRMED `--tool-call-parser`/`--reasoning-parser` values (when
+known) are applied automatically — these are never user-facing flags, since a wrong
+value can silently corrupt tool calls or leak `<think>` tags instead of erroring.
 
 **Gateway registration handles.** A vLLM-served model registers under the public
 handle `vllm/<alias>` (routed internally to `openai/<alias>`) as a DB-backed model
 in LiteLLM (§14). The recorded model is stored in the machine-wide
-**`~/.ai-platform/config/model-runtimes.yaml`** store, so `ai models rm` (§8.3.4)
-can later de-register it.
+**`~/.ai-platform/config/model-runtimes.yaml`** store — hand-editable (subject to
+the same strict unknown-field-rejecting parse every conffile-backed store uses),
+though a hand edit needs `ai models configure` (§8.3.4) or `ai services restart
+vllm` to actually apply, since a running server cannot be reconfigured in place —
+so `ai models rm` (§8.3.6) can later de-register it.
 
 * With one or more `repo` arguments, or under `--json` / no TTY: each given repo id
   is pulled in turn. Under `--json` at least one repo is **required** (none →
@@ -1386,7 +1408,39 @@ There is **no separate update verb** — re-pulling an installed model updates i
 The `--json` envelope carries `data.pulled`, one `{model, ok, error}` outcome per
 requested model.
 
-### 8.3.4 Remove
+### 8.3.4 Configure (resource caps, no re-download)
+
+```bash id="c23e"
+ai models configure [name] [--gpu-memory-utilization <0-1>] [--max-model-len <tokens>]
+```
+
+Changes an already-pulled model's `--gpu-memory-utilization`/`--max-model-len`
+caps and restarts its vLLM server with the new values — the weights are already on
+disk, so nothing is re-downloaded. On a terminal with no `[name]` you pick from the
+recorded models; the prompt is pre-seeded with the model's **currently recorded**
+caps (not vLLM's defaults), so leaving a field unchanged keeps what is already set.
+An ADOPTED already-running server ignores new flags (they were fixed at its own
+launch), so `configure` always stops it first. `[name]` not a recorded vLLM model
+→ exit **2**. Applies the same over-budget `--gpu-memory-utilization` warning as
+`pull` (§8.3.3).
+
+### 8.3.5 Disable / Enable (auto-start toggle, no re-download)
+
+```bash id="c23f"
+ai models disable [name]
+ai models enable [name]
+```
+
+`disable` stops the model's vLLM server now and marks it excluded from the
+auto-start pass `ai setup`/`ai services start vllm` otherwise runs unconditionally
+over every recorded model — useful when two local models' `--gpu-memory-utilization`
+values would otherwise fight for the same device memory. It touches neither the
+downloaded weights nor the gateway registration. `enable` clears the disabled flag
+and starts the model's server again using its recorded resource caps — no
+`hf download` step. On a terminal with no `[name]` you pick from the recorded
+models; `[name]` not a recorded vLLM model → exit **2**.
+
+### 8.3.6 Remove
 
 ```bash id="c23c"
 ai models rm [repo]
@@ -1400,7 +1454,7 @@ entry (§8.3.3). On a terminal with no argument the user picks from the
 a terminal the user is asked to **confirm** before deleting. A model not in the
 store → a clear not-found error (exit 2).
 
-### 8.3.5 Show
+### 8.3.7 Show
 
 ```bash id="c23d"
 ai models show <name>

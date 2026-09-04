@@ -403,6 +403,24 @@ func vllmGPUMemoryUtilizationBudgetWarning(alias string, newValue float64) strin
 		others+1, total, vllmGPUMemoryUtilizationSafeBudget)
 }
 
+// vllmMaxModelLenBlankWarning reports an actionable warning when newValue leaves
+// max-model-len unset (0) — vLLM then falls back to the MODEL'S OWN native context
+// length (which can be enormous, e.g. 262144 for some Qwen3.5 repos), and on a
+// memory-constrained Metal/MLX host that reliably fails to fit the KV cache within
+// gpuMemoryUtilization's budget, crashing the server on every subsequent start.
+// Returns "" when newValue is set (> 0).
+func vllmMaxModelLenBlankWarning(alias string, newValue int) string {
+	if newValue > 0 {
+		return ""
+	}
+	return fmt.Sprintf(
+		"%s's max-model-len is now unset — vLLM will use the model's own (possibly very large) native "+
+			"context length, which can exceed the KV-cache memory available under its gpu-memory-utilization "+
+			"and crash the server on the next start; set an explicit cap with "+
+			"`ai models configure %s --max-model-len <tokens>` if that happens",
+		alias, alias)
+}
+
 // recordModelRuntimeChoice persists the serving-runtime selection for a pulled model
 // (best-effort — a store-write failure must never fail the pull). The store is keyed by
 // the gateway alias (Alias); Model carries the underlying HF repo id so a later `rm` can
@@ -795,12 +813,12 @@ func promptServeResourceOptions(defaultGPUMemoryUtilization, defaultMaxModelLen 
 	maxModelLen := defaultMaxModelLen
 	gpuInput := huh.NewInput().
 		Title("GPU memory utilization").
-		Description("fraction 0-1 of device memory vLLM may pre-allocate for the KV-cache; blank = vLLM's own default (~0.9)").
+		Description("fraction 0-1 of device memory vLLM may pre-allocate for the KV-cache; blank = keep the recorded value shown above (vLLM's own default, ~0.9, only applies when nothing has ever been recorded)").
 		Value(&gpuMemoryUtilization).
 		Validate(validateGPUMemoryUtilization)
 	maxModelLenInput := huh.NewInput().
 		Title("Max model length").
-		Description("cap the context window in tokens to shrink the KV-cache; blank = the model's own default").
+		Description("cap the context window in tokens to shrink the KV-cache; blank = keep the recorded value shown above (the model's own — potentially huge — native default only applies when nothing has ever been recorded)").
 		Value(&maxModelLen).
 		Validate(validateMaxModelLen)
 	if err := runForm(huh.NewGroup(gpuInput, maxModelLenInput)); err != nil {
@@ -1330,6 +1348,11 @@ func newModelsConfigureCmd(emitter *output.Emitter, exit *int) *cobra.Command {
 					*exit = emitter.Failure("models.configure", err)
 					return nil
 				}
+				// Unconditional: an explicitly blank submission DOES clear the field back
+				// to "unset" — the field is pre-filled with the recorded value so the user
+				// can also intentionally erase it (e.g. to lift a cap and let vLLM use the
+				// model's own default). See the warning surfaced below for the risk that
+				// carries on this host.
 				gpuSeed, maxLenSeed = gpu, maxLen
 			}
 			resourceOpts, err := parseServeResourceOptions(gpuSeed, maxLenSeed)
@@ -1384,6 +1407,9 @@ func configureVLLM(emitter *output.Emitter, choice config.ModelRuntimeChoice, re
 	recordModelRuntimeChoice(choice.Alias, choice.Model, config.RuntimeVLLM, endpoint, status, resourceOpts)
 	var warnings []string
 	if warning := vllmGPUMemoryUtilizationBudgetWarning(choice.Alias, resourceOpts.GPUMemoryUtilization); warning != "" {
+		warnings = append(warnings, warning)
+	}
+	if warning := vllmMaxModelLenBlankWarning(choice.Alias, resourceOpts.MaxModelLen); warning != "" {
 		warnings = append(warnings, warning)
 	}
 	return emitter.Success("models.configure", modelsConfigureResult{

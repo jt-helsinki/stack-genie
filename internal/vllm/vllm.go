@@ -401,7 +401,22 @@ func (manager *Manager) EnsureServedWithOptions(alias, model string, opts ServeO
 	manager.pending[alias] = true
 	manager.mu.Unlock()
 
-	// Start + health-check WITHOUT holding the lock, so concurrent Running()/Health()/
+	// Cross-PROCESS mutual exclusion: `ai` is daemonless, so the in-memory `pending`
+	// map above only protects concurrent goroutines within THIS process — a second
+	// `ai` invocation (e.g. a double-fired restart) builds its own fresh Manager and
+	// sails right past it. Serialize on an OS file lock instead: it queues a second
+	// invocation for the SAME alias behind this one rather than letting both race
+	// portInUse() and both spawn `vllm serve` on the same port (see lock.go).
+	lockFile, lockErr := lockAlias(storeDir, alias)
+	if lockErr != nil {
+		manager.mu.Lock()
+		delete(manager.pending, alias)
+		manager.mu.Unlock()
+		return 0, "", lockErr
+	}
+	defer unlockAlias(lockFile)
+
+	// Start + health-check WITHOUT holding manager.mu, so concurrent Running()/Health()/
 	// Stop()/other-alias EnsureServed() are not blocked for up to StartTimeout. A healthy
 	// LRU server is evicted ONLY AFTER the new one is confirmed healthy (below), so a
 	// start that fails or never becomes healthy never costs a working model.
@@ -412,7 +427,9 @@ func (manager *Manager) EnsureServedWithOptions(alias, model string, opts ServeO
 	// a prior process, do NOT start a second server on it (that crashes with EADDRINUSE
 	// and is misreported as an install failure): ADOPT it when it is already healthy, or
 	// WAIT for it when it is still loading a large model. Only start fresh when the port
-	// is genuinely free (or we just reaped a dead server — restarting).
+	// is genuinely free (or we just reaped a dead server — restarting). The lock above
+	// guarantees that by the time we get here, any PRIOR invocation's start attempt for
+	// this alias has already finished — so this portInUse read is no longer racy.
 	var handle ServerHandle
 	var startErr, healthErr error
 	switch {

@@ -570,6 +570,7 @@ func TestVLLMServeArgs(t *testing.T) {
 		"--port", "8101",
 		"--served-model-name", "my-qwen",
 		"--download-dir", "/store/vllm",
+		"--enable-prefix-caching",
 	}
 	if len(args) != len(want) {
 		t.Fatalf("vllmServeArgs = %v, want %v", args, want)
@@ -594,6 +595,7 @@ func TestVLLMServeArgsToolCallParser(t *testing.T) {
 		"--port", "8101",
 		"--served-model-name", "my-qwen",
 		"--download-dir", "/store/vllm",
+		"--enable-prefix-caching",
 		"--enable-auto-tool-choice", "--tool-call-parser", "hermes",
 	}
 	if len(args) != len(want) {
@@ -622,6 +624,7 @@ func TestVLLMServeArgsResourceKnobs(t *testing.T) {
 		"--port", "8101",
 		"--served-model-name", "my-qwen",
 		"--download-dir", "/store/vllm",
+		"--enable-prefix-caching",
 		"--gpu-memory-utilization", "0.5",
 		"--max-model-len", "8192",
 	}
@@ -650,6 +653,7 @@ func TestVLLMServeArgsReasoningParser(t *testing.T) {
 		"--port", "8101",
 		"--served-model-name", "my-qwen",
 		"--download-dir", "/store/vllm",
+		"--enable-prefix-caching",
 		"--reasoning-parser", "qwen3",
 	}
 	if len(args) != len(want) {

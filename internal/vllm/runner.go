@@ -75,7 +75,14 @@ type RealRunner struct{}
 // opts.GPUMemoryUtilization/MaxModelLen, when > 0, are passed straight through as
 // `--gpu-memory-utilization`/`--max-model-len` — vLLM's own defaults otherwise (a
 // large KV-cache pool sized off total device memory, and the model's own max context
-// length, respectively; see ServeOptions).
+// length, respectively; see ServeOptions). `--enable-prefix-caching` is ALWAYS
+// appended, unconditionally: the Metal/MLX backend defaults it OFF, which forces a
+// full cold reprefill of the entire request on every call — verified live to cost
+// 130-170s on a ~16k-token agentic-CLI-shaped prompt (system prompt + tool schemas +
+// history) with zero speedup on a repeated/growing prefix, vs ~2s on a cache hit once
+// enabled. Since an agent CLI resends the full growing conversation as the prompt on
+// every turn, this is what keeps TTFT high turn after turn, not just on the first
+// request.
 func vllmServeArgs(alias, model string, port int, storeDir string, opts ServeOptions) []string {
 	args := []string{
 		"serve", model,
@@ -83,6 +90,7 @@ func vllmServeArgs(alias, model string, port int, storeDir string, opts ServeOpt
 		"--port", strconv.Itoa(port),
 		"--served-model-name", alias,
 		"--download-dir", storeDir,
+		"--enable-prefix-caching",
 	}
 	if opts.ToolCallParser != "" {
 		args = append(args, "--enable-auto-tool-choice", "--tool-call-parser", opts.ToolCallParser)

@@ -217,6 +217,8 @@ ai models popular                    # the curated, vLLM-servable installable mo
 ai models install-vllm               # install the vLLM backend into the platform venv (one-shot)
 ai models login                      # authenticate the Hugging Face CLI to pull gated repos (logout clears it)
 ai models pull mlx-community/Qwen2.5-7B-Instruct-4bit --alias qwen-vllm  # hf download → serve via vLLM, registered as vllm/qwen-vllm (rm too)
+ai models configure qwen-vllm --gpu-memory-utilization 0.4  # change a pulled model's vLLM resource caps, no re-download
+ai models disable qwen-vllm          # stop it + exclude it from `ai setup`/`ai services start vllm` auto-start (enable re-starts it)
 
 ai services status                   # host service tier
 ai services console litellm          # open the LiteLLM admin UI
