@@ -33,11 +33,16 @@ type ServerHandle struct {
 // if it does not.
 type RealRunner struct{}
 
-// Start launches a DETACHED `omlx serve --model-dir <dir> --port <port>` that
-// OUTLIVES this short-lived CLI: it is put in its own process group (Setpgid) so
-// it is not torn down with the `ai` process, and stdout+stderr are redirected to
-// LogPath() — a SIBLING of the model directory (not inside it, so it can never be
-// mistaken for a model subdirectory by omlx's own discovery scan). Start returns
+// Start launches a DETACHED `omlx serve --model-dir <dir> --port <port>
+// --paged-ssd-cache-dir <dir>` that OUTLIVES this short-lived CLI: it is put in
+// its own process group (Setpgid) so it is not torn down with the `ai` process,
+// and stdout+stderr are redirected to LogPath() — a SIBLING of the model
+// directory (not inside it, so it can never be mistaken for a model
+// subdirectory by omlx's own discovery scan). The process env carries
+// OMLX_BASE_PATH pointing at BasePathDir (~/.ai-platform/omlx), so every file
+// omlx itself writes (settings.json, its own logs, …) lands under the
+// platform's own directory tree instead of the user's home ~/.omlx — model
+// DATA stays separate at modelDir (StoreDir) regardless. Start returns
 // immediately (Release, no Wait) with a ServerHandle wrapping the PID; the
 // Manager's health probe confirms readiness.
 func (RealRunner) Start(modelDir string, port int) (ServerHandle, error) {
@@ -48,7 +53,20 @@ func (RealRunner) Start(modelDir string, port int) (ServerHandle, error) {
 	}
 	defer func() { _ = logFile.Close() }()
 
-	command := exec.Command(BinaryPath(), "serve", "--model-dir", modelDir, "--port", strconv.Itoa(port))
+	basePath, err := BasePathDir()
+	if err != nil {
+		return ServerHandle{}, fmt.Errorf("omlx: resolve base path: %w", err)
+	}
+	pagedSSDCacheDir, err := PagedSSDCacheDir()
+	if err != nil {
+		return ServerHandle{}, fmt.Errorf("omlx: resolve paged SSD cache dir: %w", err)
+	}
+
+	command := exec.Command(BinaryPath(), "serve",
+		"--model-dir", modelDir, "--port", strconv.Itoa(port),
+		"--paged-ssd-cache-dir", pagedSSDCacheDir,
+	)
+	command.Env = append(os.Environ(), "OMLX_BASE_PATH="+basePath)
 	command.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	command.Stdout = logFile
 	command.Stderr = logFile

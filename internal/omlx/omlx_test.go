@@ -177,6 +177,63 @@ func TestAPIKeyReadsSettingsFile(test *testing.T) {
 
 // APIKey returns "" (never an error) when omlx has no key configured — the
 // common, unremarkable case (auth is opt-in on omlx's side).
+// defaultSettingsFile falls back to BasePathDir (the platform's own managed
+// ~/.ai-platform/omlx) when OMLX_BASE_PATH is unset in this process's env —
+// matching where RealRunner.Start always points a platform-started server.
+func TestDefaultSettingsFileUsesBasePathDir(test *testing.T) {
+	test.Setenv("HOME", test.TempDir())
+	test.Setenv("OMLX_BASE_PATH", "")
+	basePath, err := BasePathDir()
+	if err != nil {
+		test.Fatalf("BasePathDir: %v", err)
+	}
+	want := filepath.Join(basePath, "settings.json")
+	if got := defaultSettingsFile(); got != want {
+		test.Errorf("defaultSettingsFile() = %q, want %q", got, want)
+	}
+}
+
+// An explicit OMLX_BASE_PATH in this process's env (matching omlx's own
+// precedence) wins over the platform's managed base path.
+func TestDefaultSettingsFilePrefersExplicitEnv(test *testing.T) {
+	test.Setenv("HOME", test.TempDir())
+	custom := test.TempDir()
+	test.Setenv("OMLX_BASE_PATH", custom)
+	want := filepath.Join(custom, "settings.json")
+	if got := defaultSettingsFile(); got != want {
+		test.Errorf("defaultSettingsFile() = %q, want %q", got, want)
+	}
+}
+
+// BasePathDir and PagedSSDCacheDir resolve under ~/.ai-platform and create
+// themselves on use.
+func TestBasePathDirAndPagedSSDCacheDir(test *testing.T) {
+	home := test.TempDir()
+	test.Setenv("HOME", home)
+
+	basePath, err := BasePathDir()
+	if err != nil {
+		test.Fatalf("BasePathDir: %v", err)
+	}
+	if want := filepath.Join(home, ".ai-platform", "omlx"); basePath != want {
+		test.Errorf("BasePathDir() = %q, want %q", basePath, want)
+	}
+	if info, statErr := os.Stat(basePath); statErr != nil || !info.IsDir() {
+		test.Errorf("BasePathDir() should create the directory: %v", statErr)
+	}
+
+	cacheDir, err := PagedSSDCacheDir()
+	if err != nil {
+		test.Fatalf("PagedSSDCacheDir: %v", err)
+	}
+	if want := filepath.Join(home, ".ai-platform", "cache", "omlx"); cacheDir != want {
+		test.Errorf("PagedSSDCacheDir() = %q, want %q", cacheDir, want)
+	}
+	if info, statErr := os.Stat(cacheDir); statErr != nil || !info.IsDir() {
+		test.Errorf("PagedSSDCacheDir() should create the directory: %v", statErr)
+	}
+}
+
 func TestAPIKeyAbsentWhenUnconfigured(test *testing.T) {
 	test.Setenv("OMLX_API_KEY", "")
 	swapSettingsFile(test, filepath.Join(test.TempDir(), "does-not-exist.json"))

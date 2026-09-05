@@ -84,6 +84,42 @@ func LogPath(modelDir string) string {
 	return filepath.Join(filepath.Dir(modelDir), "omlx-server.log")
 }
 
+// BasePathDir is ~/.ai-platform/omlx — the OMLX_BASE_PATH the platform points a
+// managed server at (see RealRunner.Start), so every file omlx itself writes
+// (its own settings.json, sub-keys, MCP config, …) lands under the platform's
+// own directory tree instead of the user's home ~/.omlx. Model DATA stays
+// separate at StoreDir (~/.ai-platform/volumes/models/omlx) — --model-dir is
+// passed explicitly regardless of base path. Created-on-use (MkdirAll), so `ai
+// uninstall --purge` (RemoveAll ~/.ai-platform) removes it.
+func BasePathDir() (string, error) {
+	platformDir, err := paths.PlatformDir()
+	if err != nil {
+		return "", err
+	}
+	dir := filepath.Join(platformDir, "omlx")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return "", fmt.Errorf("omlx: create base-path dir %s: %w", dir, err)
+	}
+	return dir, nil
+}
+
+// PagedSSDCacheDir is ~/.ai-platform/cache/omlx — the paged-SSD prefix-cache
+// storage directory the platform passes as --paged-ssd-cache-dir at server
+// start (a re-fetchable performance cache, not persistent system data, hence
+// cache/ rather than volumes/ — mirrors paths.CacheDir's convention). Created-
+// on-use (MkdirAll), so `ai uninstall --purge` removes it.
+func PagedSSDCacheDir() (string, error) {
+	cacheDir, err := paths.CacheDir()
+	if err != nil {
+		return "", err
+	}
+	dir := filepath.Join(cacheDir, "omlx")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return "", fmt.Errorf("omlx: create paged SSD cache dir %s: %w", dir, err)
+	}
+	return dir, nil
+}
+
 // BaseURL is the omlx server's OpenAI-compatible base URL on the host loopback —
 // what LiteLLM's model registrations point at (see internal/litellm).
 func BaseURL() string {
@@ -240,22 +276,28 @@ type LiveModel struct {
 var httpClient = &http.Client{Timeout: 5 * time.Second}
 
 // omlxSettingsFile is the injectable seam for APIKey's settings-file path, so
-// tests point it at a fixture instead of a real ~/.omlx/settings.json.
+// tests point it at a fixture instead of a real settings.json.
 var omlxSettingsFile = defaultSettingsFile
 
-// defaultSettingsFile resolves omlx's own settings.json path: OMLX_BASE_PATH (the
-// same env var omlx itself honors) if set, else ~/.omlx — matching omlx's own
-// GlobalSettings.load base-path resolution.
+// defaultSettingsFile resolves omlx's own settings.json path, mirroring omlx's
+// own GlobalSettings.load base-path precedence: an explicit OMLX_BASE_PATH in
+// THIS process's env (the same env var omlx itself honors — set when the user
+// runs omlx manually outside the platform) wins first; otherwise BasePathDir,
+// the platform's own managed base path (which RealRunner.Start always points a
+// platform-started server at via that same env var); falling back to omlx's
+// own default ~/.omlx only if the platform dir cannot be resolved.
 func defaultSettingsFile() string {
-	base := os.Getenv("OMLX_BASE_PATH")
-	if base == "" {
-		home, err := os.UserHomeDir()
-		if err != nil {
-			return ""
-		}
-		base = filepath.Join(home, ".omlx")
+	if base := os.Getenv("OMLX_BASE_PATH"); base != "" {
+		return filepath.Join(base, "settings.json")
 	}
-	return filepath.Join(base, "settings.json")
+	if base, err := BasePathDir(); err == nil {
+		return filepath.Join(base, "settings.json")
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return ""
+	}
+	return filepath.Join(home, ".omlx", "settings.json")
 }
 
 // APIKey best-effort discovers the API key omlx itself is configured to require,
