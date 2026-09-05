@@ -57,15 +57,15 @@ func Names(domain string) []string {
 	return names
 }
 
-// Entries returns the hostsfile entries that point the UI subdomains at 127.0.0.1
-// for the resolved domain — ONE entry carrying ALL the UI names (so the managed
-// block is a single line and stable across enable/disable), or nil when there are
-// no UI services.
+// Entries returns the hostsfile entries that point the UI subdomains AND the bare
+// platform domain itself at 127.0.0.1 — ONE entry carrying all the names (so the
+// managed block is a single line and stable across enable/disable). The bare
+// domain is needed for services with no vhost subdomain that are still rendered
+// against the platform domain for consistency with the vhost UIs (e.g. omlx's
+// admin console at http://<domain>:8100/admin) — without it that direct-port URL
+// would 404 in the browser even though the omlx server itself is healthy.
 func Entries(domain string) []hostsfile.Entry {
-	names := Names(domain)
-	if len(names) == 0 {
-		return nil
-	}
+	names := append(Names(domain), domain)
 	return []hostsfile.Entry{{IP: loopbackIP, Names: names}}
 }
 

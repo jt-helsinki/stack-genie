@@ -38,8 +38,17 @@ func TestEntriesSingleLoopbackEntry(t *testing.T) {
 	if entries[0].IP != "127.0.0.1" {
 		t.Fatalf("UI subdomains must resolve to loopback, got %q", entries[0].IP)
 	}
-	if len(entries[0].Names) != 2 {
-		t.Fatalf("expected 2 names (the UI subdomains), got %v", entries[0].Names)
+	if len(entries[0].Names) != 3 {
+		t.Fatalf("expected 3 names (the UI subdomains + the bare domain), got %v", entries[0].Names)
+	}
+	found := false
+	for _, name := range entries[0].Names {
+		if name == "aip.local" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("expected the bare domain %q among the entry names, got %v", "aip.local", entries[0].Names)
 	}
 }
 
