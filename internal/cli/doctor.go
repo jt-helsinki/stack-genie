@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/jt-helsinki/stack-genie/internal/doctor"
+	"github.com/jt-helsinki/stack-genie/internal/omlx"
 	"github.com/jt-helsinki/stack-genie/internal/output"
 	"github.com/jt-helsinki/stack-genie/internal/runtime"
 	"github.com/jt-helsinki/stack-genie/internal/setup"
@@ -66,34 +67,34 @@ func doctorServices() []doctor.Service {
 	if statuses, err := setup.ServicesStatus(setup.RealDeps(goruntime.GOOS, goruntime.GOARCH, nowRFC3339)); err == nil {
 		services = mapDoctorServices(statuses, goruntime.GOOS)
 	}
-	// vLLM is a host-native OPTIONAL local runtime (not an aip-* container), so it is
-	// surfaced independently of the service-tier status load. It is Optional, so a
-	// not-installed vLLM never turns `ai doctor` unhealthy.
-	installed, _ := vllmDetectFn()
-	services = append(services, vllmDoctorService(goruntime.GOOS, installed))
+	// omlx is the host-native SOLE local-inference runtime (not an aip-* container),
+	// so it is surfaced independently of the service-tier status load. It is still
+	// Optional here (never turns `ai doctor` unhealthy) since `ai setup` installs it
+	// best-effort — a fresh host between setup and its background install completing
+	// should not read as broken.
+	services = append(services, omlxDoctorService(omlxDetectFn()))
 	return services
 }
 
-// vllmDoctorService builds the OPTIONAL host-native vLLM line for `ai doctor`. When
-// installed it reports the platform weight format; when absent it folds the per-OS
-// install guidance into the state so the note is actionable. It is pure so it is
+// omlxDoctorService builds the host-native omlx line for `ai doctor`. When absent it
+// folds the install guidance into the state so the note is actionable. Pure so it is
 // unit-testable without probing the host.
-func vllmDoctorService(goos string, installed bool) doctor.Service {
-	service := doctor.Service{Name: "vllm", Optional: true}
+func omlxDoctorService(installed bool) doctor.Service {
+	service := doctor.Service{Name: "omlx", Optional: true}
 	if installed {
 		service.Healthy = true
 		service.State = "installed"
-		service.Detail = "optional host-native runtime (`ai models install-vllm`)"
+		service.Detail = "local-inference backend (`ai services console omlx` for its admin panel)"
 		return service
 	}
-	service.State = "not installed — optional: " + strings.Join(vllmInstallGuidanceFn(goos), "; ")
-	service.Detail = "optional; only needed to serve local models via `ai models pull`"
+	service.State = "not installed: " + strings.Join(omlx.InstallGuidance(), "; ")
+	service.Detail = "the sole local-inference backend — `ai setup` installs it automatically"
 	return service
 }
 
 // mapDoctorServices maps the setup service statuses into the doctor layer's Service
-// view, dropping the microVM runtime line. The host-native vLLM backend already
-// carries its own actionable Detail (from setup.vllmStatus). Pure so it is
+// view, dropping the microVM runtime line. The host-native omlx backend already
+// carries its own actionable Detail (from setup.omlxStatus). Pure so it is
 // unit-testable without a live service tier.
 func mapDoctorServices(statuses []setup.ServiceStatus, _ string) []doctor.Service {
 	services := make([]doctor.Service, 0, len(statuses))

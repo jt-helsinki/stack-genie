@@ -130,7 +130,7 @@ func TestCreateWizardBackNavigation(test *testing.T) {
 	base := test.TempDir()
 	target := filepath.Join(base, "demo-ws")
 
-	wizard := NewCreate(base, nil, 24, 18)
+	wizard := NewCreate(base, 24, 18)
 	wizard.SetSize(80, 24)
 	enter := func() { wizard.Update(tea.KeyMsg{Type: tea.KeyEnter}) }
 	back := func() { wizard.Update(tea.KeyMsg{Type: tea.KeyShiftTab}) }

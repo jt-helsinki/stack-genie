@@ -5,14 +5,13 @@ import (
 
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
-	"github.com/jt-helsinki/stack-genie/internal/hf"
 	"github.com/jt-helsinki/stack-genie/internal/ui"
 )
 
 // The create wizard's step widgets — all built on the SAME primitives as the other
 // views (bubbles/textinput and the reusable listWindow), so they look and feel like the
-// rest of the TUI. A single-select and multi-select list back the option steps; a
-// two-level model picker (mirroring the Local Models pane) backs the Graphify step.
+// rest of the TUI. A single-select and multi-select list back the option steps; the
+// Graphify step is a plain textStep (a model NAME omlx already serves — no picker).
 
 // textStep is a single labelled text field (name, cpus, memory, ports, idle timeout),
 // with an optional validator run on advance.
@@ -214,70 +213,4 @@ func (list *multiSelectList) Values() []string {
 func (list *multiSelectList) View() string {
 	body := ui.Muted.Render(list.desc) + "\n\n"
 	return body + list.window.View(selectedStyle())
-}
-
-// modelPicker is the Graphify-model step: a single-level picker of curated,
-// vLLM-servable Hugging Face repos — a leading "(none)" followed by each curated repo
-// id. Selecting a repo (or "(none)") yields the value; vLLM is the sole local runtime,
-// so a repo id is the whole selection — there are no per-variant tags to drill into.
-type modelPicker struct {
-	models *selectList // "(none)" + curated repo ids
-	value  string      // final repo id or "" for none
-	done   bool        // a selection was confirmed
-	width  int
-	height int
-}
-
-const modelPickerNone = "(none)"
-
-func newModelPicker(curated []hf.CuratedModel, initial string) *modelPicker {
-	repos := make([]string, 0, len(curated)+1)
-	repos = append(repos, modelPickerNone)
-	for _, model := range curated {
-		repos = append(repos, model.Repo)
-	}
-	initialRepo := initial
-	if initialRepo == "" {
-		initialRepo = modelPickerNone
-	}
-	return &modelPicker{
-		models: newSelectList("Graphify model (vLLM; a curated Hugging Face repo, routed through the gateway, pulled if absent). enter selects — (none) for no model.", repos, initialRepo),
-	}
-}
-
-func (picker *modelPicker) SetSize(width, height int) {
-	picker.width, picker.height = width, height
-	picker.models.SetSize(width, height)
-}
-
-// Update handles the picker's own keys and reports whether the step is DONE (a repo was
-// chosen) so the wizard can advance.
-func (picker *modelPicker) Update(msg tea.Msg) (done bool) {
-	key, ok := msg.(tea.KeyMsg)
-	if !ok {
-		return false
-	}
-	switch key.String() {
-	case "up", "k":
-		picker.models.Move(-1)
-	case "down", "j":
-		picker.models.Move(1)
-	case "enter", "tab":
-		repo := picker.models.Value()
-		if repo == modelPickerNone || repo == "" {
-			picker.value = ""
-		} else {
-			picker.value = repo
-		}
-		picker.done = true
-		return true
-	}
-	return false
-}
-
-// Value is the chosen repo id or "" for none. Valid once Update returned done.
-func (picker *modelPicker) Value() string { return picker.value }
-
-func (picker *modelPicker) View() string {
-	return picker.models.View()
 }

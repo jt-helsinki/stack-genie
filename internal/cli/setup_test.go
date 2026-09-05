@@ -113,45 +113,29 @@ func TestNonInteractiveServerDomain(test *testing.T) {
 	}
 }
 
-// When vLLM AND the `hf` CLI are both installed there is no local-inference guidance.
-func TestLocalInferenceGuidanceBothInstalled(test *testing.T) {
-	if lines := localInferenceGuidanceLines("darwin", true, true); len(lines) != 0 {
-		test.Fatalf("both installed: want no guidance, got %v", lines)
+// When omlx is installed there is no local-inference guidance.
+func TestLocalInferenceGuidanceInstalled(test *testing.T) {
+	if lines := localInferenceGuidanceLines(true); len(lines) != 0 {
+		test.Fatalf("installed: want no guidance, got %v", lines)
 	}
 }
 
-// vLLM being absent surfaces the per-OS install block (the local model runtime).
-func TestLocalInferenceGuidanceVLLMAbsent(test *testing.T) {
-	joined := strings.Join(localInferenceGuidanceLines("darwin", false, true), "\n")
-	for _, want := range []string{"vLLM is not installed", "Metal/MLX", "ai models install-vllm"} {
+// omlx being absent surfaces the install block (the sole local-inference runtime).
+func TestLocalInferenceGuidanceOmlxAbsent(test *testing.T) {
+	joined := strings.Join(localInferenceGuidanceLines(false), "\n")
+	for _, want := range []string{"omlx is not installed", "ai services start omlx"} {
 		if !strings.Contains(joined, want) {
-			test.Fatalf("vLLM-absent guidance missing %q:\n%s", want, joined)
-		}
-	}
-	// Linux emits the CUDA guidance instead.
-	linux := strings.Join(localInferenceGuidanceLines("linux", false, true), "\n")
-	if !strings.Contains(linux, "NVIDIA GPU") {
-		test.Fatalf("linux vLLM-absent guidance missing CUDA note:\n%s", linux)
-	}
-}
-
-// The `hf` CLI being absent surfaces an install note (model management needs it).
-func TestLocalInferenceGuidanceHFAbsent(test *testing.T) {
-	joined := strings.Join(localInferenceGuidanceLines("darwin", true, false), "\n")
-	for _, want := range []string{"Hugging Face CLI", "huggingface_hub[cli]"} {
-		if !strings.Contains(joined, want) {
-			test.Fatalf("hf-absent guidance missing %q:\n%s", want, joined)
+			test.Fatalf("omlx-absent guidance missing %q:\n%s", want, joined)
 		}
 	}
 }
 
 // printLocalInferenceGuidance stays silent under --json (clean envelope on stdout)
-// and prints via the injectable detect seams otherwise.
+// and prints via the injectable detect seam otherwise.
 func TestPrintLocalInferenceGuidanceJSONSilent(test *testing.T) {
-	restoreVLLM, restoreHF := vllmDetectFn, hfDetectFn
-	defer func() { vllmDetectFn, hfDetectFn = restoreVLLM, restoreHF }()
-	vllmDetectFn = func() (bool, string) { return false, "" }
-	hfDetectFn = func() bool { return false }
+	restore := omlxDetectFn
+	defer func() { omlxDetectFn = restore }()
+	omlxDetectFn = func() bool { return false }
 
 	var jsonErr bytes.Buffer
 	printLocalInferenceGuidance(&output.Emitter{Out: &bytes.Buffer{}, Err: &jsonErr, JSON: true})
@@ -161,8 +145,8 @@ func TestPrintLocalInferenceGuidanceJSONSilent(test *testing.T) {
 
 	var humanErr bytes.Buffer
 	printLocalInferenceGuidance(&output.Emitter{Out: &bytes.Buffer{}, Err: &humanErr})
-	if !strings.Contains(humanErr.String(), "vLLM is not installed") {
-		test.Fatalf("human run: expected the vLLM guidance, got:\n%s", humanErr.String())
+	if !strings.Contains(humanErr.String(), "omlx is not installed") {
+		test.Fatalf("human run: expected the omlx guidance, got:\n%s", humanErr.String())
 	}
 }
 

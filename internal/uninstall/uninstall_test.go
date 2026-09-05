@@ -472,17 +472,17 @@ func containsLine(lines []string, want string) bool {
 	return false
 }
 
-// TestRunStopsVLLMAndKeepsModels: a full plain uninstall stops the host-native vLLM
-// servers (vLLM is the sole local runtime now) and NEVER removes the host model store
+// TestRunStopsOmlxAndKeepsModels: a full plain uninstall stops the host-native omlx
+// servers (omlx is the sole local runtime now) and NEVER removes the host model store
 // (volumes/models is expensive to refetch — only --purge removes it).
-func TestRunStopsVLLMAndKeepsModels(test *testing.T) {
+func TestRunStopsOmlxAndKeepsModels(test *testing.T) {
 	home := test.TempDir()
 	test.Setenv("HOME", home)
 	test.Setenv("ZDOTDIR", "")
 	if err := runtime.Persist(&runtime.Info{SchemaVersion: runtime.SchemaVersion}); err != nil {
 		test.Fatalf("persist runtime: %v", err)
 	}
-	modelBlob := filepath.Join(home, ".ai-platform", "volumes", "models", "vllm", "weights.safetensors")
+	modelBlob := filepath.Join(home, ".ai-platform", "volumes", "models", "omlx", "weights.safetensors")
 	mustWrite(test, modelBlob, "x")
 
 	prober := &fakeProber{present: map[string]bool{}}
@@ -492,11 +492,11 @@ func TestRunStopsVLLMAndKeepsModels(test *testing.T) {
 	if err != nil {
 		test.Fatalf("Run: %v", err)
 	}
-	if report.RemovedVLLM {
-		test.Error("RemovedVLLM = true, want false on a plain uninstall (runtime kept)")
+	if report.RemovedOmlx {
+		test.Error("RemovedOmlx = true, want false on a plain uninstall (runtime kept)")
 	}
-	if !containsLine(prober.ran, "pkill -f vllm serve") {
-		test.Errorf("expected a vLLM server stop attempt, ran: %v", prober.ran)
+	if !containsLine(prober.ran, "pkill -f omlx serve") {
+		test.Errorf("expected a omlx server stop attempt, ran: %v", prober.ran)
 	}
 	// The downloaded host model store must survive a plain (non-purge) uninstall.
 	if _, statErr := os.Stat(modelBlob); os.IsNotExist(statErr) {
@@ -505,7 +505,7 @@ func TestRunStopsVLLMAndKeepsModels(test *testing.T) {
 }
 
 // TestRunRemoveRuntimesStopsAndRemoves: opting into runtime removal (the TTY
-// default-yes / no --keep-runtimes) attempts removal of the host-native vLLM runtime,
+// default-yes / no --keep-runtimes) attempts removal of the host-native omlx runtime,
 // records it in the Report, and STILL keeps the downloaded model store (only --purge
 // removes that).
 func TestRunRemoveRuntimesStopsAndRemoves(test *testing.T) {
@@ -515,8 +515,8 @@ func TestRunRemoveRuntimesStopsAndRemoves(test *testing.T) {
 	if err := runtime.Persist(&runtime.Info{SchemaVersion: runtime.SchemaVersion}); err != nil {
 		test.Fatalf("persist runtime: %v", err)
 	}
-	vllmBlob := filepath.Join(home, ".ai-platform", "volumes", "models", "vllm", "weights.safetensors")
-	mustWrite(test, vllmBlob, "x")
+	omlxBlob := filepath.Join(home, ".ai-platform", "volumes", "models", "omlx", "weights.safetensors")
+	mustWrite(test, omlxBlob, "x")
 
 	prober := &fakeProber{present: map[string]bool{}}
 	withHostsSeams(test, filepath.Join(home, "etc-hosts"), func(string, []byte) error { return nil })
@@ -525,20 +525,20 @@ func TestRunRemoveRuntimesStopsAndRemoves(test *testing.T) {
 	if err != nil {
 		test.Fatalf("Run: %v", err)
 	}
-	if !report.RemovedVLLM {
-		test.Error("RemovedVLLM = false, want true when RemoveRuntimes is set")
+	if !report.RemovedOmlx {
+		test.Error("RemovedOmlx = false, want true when RemoveRuntimes is set")
 	}
-	if !containsLine(prober.ran, "pkill -f vllm serve") {
-		test.Errorf("expected a vLLM server stop attempt, ran: %v", prober.ran)
+	if !containsLine(prober.ran, "pkill -f omlx serve") {
+		test.Errorf("expected a omlx server stop attempt, ran: %v", prober.ran)
 	}
 	// Removing the RUNTIME must never delete the downloaded MODELS on a plain uninstall.
-	if _, statErr := os.Stat(vllmBlob); os.IsNotExist(statErr) {
-		test.Error("vLLM model store must be kept when removing the runtime on a plain uninstall")
+	if _, statErr := os.Stat(omlxBlob); os.IsNotExist(statErr) {
+		test.Error("omlx model store must be kept when removing the runtime on a plain uninstall")
 	}
 }
 
 // TestRunKeepRuntimesSkipsRemoval: without RemoveRuntimes (the --keep-runtimes /
-// prompt-no path) the vLLM runtime is not removed, though its running servers are
+// prompt-no path) the omlx runtime is not removed, though its running servers are
 // still stopped (the platform is being torn down).
 func TestRunKeepRuntimesSkipsRemoval(test *testing.T) {
 	home := test.TempDir()
@@ -554,8 +554,8 @@ func TestRunKeepRuntimesSkipsRemoval(test *testing.T) {
 	if err != nil {
 		test.Fatalf("Run: %v", err)
 	}
-	if report.RemovedVLLM {
-		test.Errorf("the vLLM runtime must be kept when RemoveRuntimes is false, got removed=%t", report.RemovedVLLM)
+	if report.RemovedOmlx {
+		test.Errorf("the omlx runtime must be kept when RemoveRuntimes is false, got removed=%t", report.RemovedOmlx)
 	}
 }
 

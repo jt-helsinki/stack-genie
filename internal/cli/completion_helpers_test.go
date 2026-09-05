@@ -63,8 +63,8 @@ func TestCompleteServiceNames(test *testing.T) {
 	if !slices.Contains(names, "all") {
 		test.Fatalf("service names %v missing the 'all' sentinel", names)
 	}
-	if !slices.Contains(names, "vllm") {
-		test.Fatalf("service names %v missing a known service (vllm)", names)
+	if !slices.Contains(names, "omlx") {
+		test.Fatalf("service names %v missing a known service (omlx)", names)
 	}
 }
 

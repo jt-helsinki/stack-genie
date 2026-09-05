@@ -37,7 +37,7 @@ func checkByName(report Report, name string) Check {
 // SERVICES section is covered. There are no optional services any longer.
 func healthyServices() []Service {
 	return []Service{
-		{Name: "vllm", State: "running", Healthy: true},
+		{Name: "omlx", State: "running", Healthy: true},
 		{Name: "presidio", State: "running", Healthy: true},
 		{Name: "litellm", State: "running", Healthy: true},
 		{Name: "headroom", State: "running", Healthy: true},
@@ -54,7 +54,7 @@ func TestServicesSectionListsEveryService(test *testing.T) {
 	}
 	report := Run(deps)
 	// Every service supplied appears as a check.
-	for _, name := range []string{"vllm", "presidio", "litellm", "headroom", "proxy", "dns"} {
+	for _, name := range []string{"omlx", "presidio", "litellm", "headroom", "proxy", "dns"} {
 		if checkByName(report, name).Name == "" {
 			test.Errorf("doctor SERVICES section is missing %q", name)
 		}
@@ -69,12 +69,12 @@ func TestRequiredServiceDownIsError(test *testing.T) {
 		GOOS: "darwin", GOARCH: "arm64",
 		Prober: fakeProber{bins: map[string]bool{"docker": true, "msb": true}},
 		Services: []Service{
-			{Name: "vllm", State: "stopped", Healthy: false},
+			{Name: "omlx", State: "stopped", Healthy: false},
 		},
 	}
 	report := Run(deps)
-	if got := checkByName(report, "vllm").Status; got != StatusError {
-		test.Errorf("down required vllm → status = %q, want error", got)
+	if got := checkByName(report, "omlx").Status; got != StatusError {
+		test.Errorf("down required omlx → status = %q, want error", got)
 	}
 	if report.OK {
 		test.Error("a down required service must fail the report")
@@ -89,7 +89,7 @@ func TestDisabledServiceIsOKNotError(test *testing.T) {
 		GOOS: "darwin", GOARCH: "arm64",
 		Prober: fakeProber{bins: map[string]bool{"docker": true, "msb": true}},
 		Services: []Service{
-			{Name: "vllm", State: "running", Healthy: true},
+			{Name: "omlx", State: "running", Healthy: true},
 			{Name: "presidio", State: "disabled", Healthy: false},
 			{Name: "litellm", State: "running", Healthy: true},
 			{Name: "headroom", State: "running", Healthy: true},
@@ -116,8 +116,8 @@ func TestRunAllHealthy(test *testing.T) {
 	if !report.OK {
 		test.Fatalf("expected healthy, got %+v", report)
 	}
-	if checkByName(report, "vllm").Status != StatusOK {
-		test.Errorf("vllm: %+v", checkByName(report, "vllm"))
+	if checkByName(report, "omlx").Status != StatusOK {
+		test.Errorf("omlx: %+v", checkByName(report, "omlx"))
 	}
 	if got := checkByName(report, "container runtime").Detail; got != "docker" {
 		test.Errorf("container detail = %q", got)

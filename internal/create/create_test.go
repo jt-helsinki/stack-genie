@@ -10,10 +10,8 @@ import (
 
 	"github.com/jt-helsinki/stack-genie/internal/config"
 	"github.com/jt-helsinki/stack-genie/internal/contextopt"
-	"github.com/jt-helsinki/stack-genie/internal/hf"
 	"github.com/jt-helsinki/stack-genie/internal/output"
 	"github.com/jt-helsinki/stack-genie/internal/project"
-	"github.com/jt-helsinki/stack-genie/internal/vllm"
 )
 
 // Execute runs the full in-process create against a fresh location: it scaffolds the
@@ -359,90 +357,6 @@ func TestValidateDisk(test *testing.T) {
 			test.Errorf("disk %q must be rejected", bad)
 		}
 	}
-}
-
-func TestGraphifyAlias(test *testing.T) {
-	if got := graphifyAlias("mlx-community/Qwen2.5-7B-Instruct-4bit"); got != "Qwen2.5-7B-Instruct-4bit" {
-		test.Errorf("graphifyAlias = %q, want the base name", got)
-	}
-	if got := graphifyAlias("bareName"); got != "bareName" {
-		test.Errorf("graphifyAlias(bare) = %q, want bareName", got)
-	}
-}
-
-// A blank model ref is a no-op (Graphify has no configured model).
-func TestPullGraphifyModelBlankNoOp(test *testing.T) {
-	if warnings := pullGraphifyModelIfAbsent("  ", func(Progress) {}); warnings != nil {
-		test.Fatalf("blank ref should be a no-op, got %v", warnings)
-	}
-}
-
-// When vLLM is not installed the pull is skipped with an actionable warning.
-func TestPullGraphifyModelWarnsWhenVLLMMissing(test *testing.T) {
-	restore := vllmDetectFn
-	vllmDetectFn = func() (bool, string) { return false, "" }
-	defer func() { vllmDetectFn = restore }()
-
-	warnings := pullGraphifyModelIfAbsent("mlx-community/Qwen2.5-7B-Instruct-4bit", func(Progress) {})
-	if len(warnings) != 1 {
-		test.Fatalf("warnings = %v, want one vLLM-not-installed warning", warnings)
-	}
-}
-
-// An absent model is downloaded, served, and registered in the gateway as vllm/<alias>.
-func TestPullGraphifyModelPullsAndRegisters(test *testing.T) {
-	test.Setenv("HOME", test.TempDir())
-
-	restoreDetect := vllmDetectFn
-	vllmDetectFn = func() (bool, string) { return true, "mlx" }
-	defer func() { vllmDetectFn = restoreDetect }()
-
-	pulled := ""
-	restorePull := vllmPullFn
-	vllmPullFn = func(model string) error { pulled = model; return nil }
-	defer func() { vllmPullFn = restorePull }()
-
-	downloaded := &hf.Fake{}
-	restoreHF := hfClient
-	hfClient = func() hf.Client { return downloaded }
-	defer func() { hfClient = restoreHF }()
-
-	restoreMgr := vllmManagerFactory
-	vllmManagerFactory = func() graphifyVLLMServer { return &fakeVLLMServer{port: 8101} }
-	defer func() { vllmManagerFactory = restoreMgr }()
-
-	registrar := &fakeModelRegistrar{}
-	restoreReg := newRegistrar
-	newRegistrar = func() modelRegistrar { return registrar }
-	defer func() { newRegistrar = restoreReg }()
-
-	repo := "mlx-community/Qwen2.5-7B-Instruct-4bit"
-	if warnings := pullGraphifyModelIfAbsent(repo, func(Progress) {}); len(warnings) != 0 {
-		test.Fatalf("warnings = %v, want none", warnings)
-	}
-	if pulled != repo || downloaded.DownloadedRepo != repo {
-		test.Fatalf("pull/download = %q/%q, want %q", pulled, downloaded.DownloadedRepo, repo)
-	}
-	if len(registrar.registered) != 1 || registrar.registered[0] != "Qwen2.5-7B-Instruct-4bit" {
-		test.Fatalf("registered = %v, want [Qwen2.5-7B-Instruct-4bit]", registrar.registered)
-	}
-}
-
-// fakeVLLMServer is a stub graphifyVLLMServer returning a fixed port.
-type fakeVLLMServer struct{ port int }
-
-func (fake *fakeVLLMServer) EnsureServedWithOptions(_, _ string, _ vllm.ServeOptions) (int, string, error) {
-	return fake.port, "http://127.0.0.1:8101/v1", nil
-}
-
-// fakeModelRegistrar records gateway registrations (by alias) for the pull test.
-type fakeModelRegistrar struct {
-	registered []string
-}
-
-func (fake *fakeModelRegistrar) RegisterVLLMModel(alias, _, _ string, _ bool) error {
-	fake.registered = append(fake.registered, alias)
-	return nil
 }
 
 // TestExecuteWarnsOnOAuth verifies Execute emits a bypass warning for each oauth agent,

@@ -205,7 +205,7 @@ func selectOptionalService(action string) (string, error) {
 }
 
 // newServicesControlCmd builds `ai services start|stop|restart [service]`.
-//   - a named logical service (vllm, presidio, litellm, headroom, proxy,
+//   - a named logical service (omlx, presidio, litellm, headroom, proxy,
 //     dns) — or the literal "all" — targets it directly, no prompt; a service may
 //     own several containers (presidio → analyzer + anonymizer), acted on as a unit;
 //   - with no argument on a terminal, it shows a CHECKBOX list of every service

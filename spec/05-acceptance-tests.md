@@ -224,11 +224,16 @@ ai setup --json
   `aip-litellm` (+ `aip-litellm-db` Postgres), and `aip-proxy` (the nginx gateway)
   — all on `aip-net` (Headroom PRECEDES LiteLLM because LiteLLM calls it in-process
   as a `pre_call` compression guardrail)
-* the **inference tier is host-native vLLM**, not containerized: per-model
-  `vllm serve` host processes (there is **no `aip-*` inference container**).
-  `ai setup` best-effort installs vLLM + the Hugging Face CLI (`hf`) into the
-  platform venv and reconciles the host vLLM servers (the LiteLLM container reaches
-  each at `host.docker.internal:<port>`)
+* the **inference tier is host-native omlx** (macOS/Apple-Silicon only), not
+  containerized: ONE shared `omlx serve --model-dir <dir> --port 8100` host
+  process serves every locally-served model (there is **no `aip-*` inference
+  container** and no per-model process/port). `ai setup` best-effort installs
+  omlx into the platform venv, starts the shared server, and automatically
+  syncs LiteLLM's `omlx/<id>` registrations against the server's own live
+  `GET /v1/models` (the LiteLLM container reaches the single endpoint at
+  `host.docker.internal:8100`); model download/add/remove/tuning happens
+  entirely in omlx's own admin panel (`ai services console omlx`), not through
+  any `ai models` subcommand
 * in **standalone** (default) the shared services bind **127.0.0.1**; the nginx
   gateway (`aip-proxy`) is the SOLE host entry on `:18787`, with `aip-headroom`
   now INTERNAL-ONLY (reached only by LiteLLM by name, no host publish); the host
@@ -609,32 +614,43 @@ so it exercises this without a real provider key.
 
 ---
 
-## 7.3 Per-Model Inference Runtime (live integration)
+## 7.3 Local Inference Runtime (omlx, live integration)
 
 Covered by the **live integration suite**, not the `[Sx]` acceptance harness:
-`test/integration/vllm_runtime_test.go` (`//go:build integration`,
-`TestGroup07InferenceRuntime`, group 7 of `make test-integration`; self-skips
-without a running stack). The `[Sx]` tags in this document apply to the
-`test/acceptance` harness; the integration groups are separate.
+group 7 of `make test-integration` (`//go:build integration`,
+`TestGroup07InferenceRuntime`; self-skips without a running stack). The `[Sx]`
+tags in this document apply to the `test/acceptance` harness; the integration
+groups are separate.
+
+**Gap:** the group-7 source file on disk is still
+`test/integration/vllm_runtime_test.go` and was not updated for the vLLM→omlx
+refactor — it still names the service `vllm` and still drives the now-removed
+`ai models pull`/`vllm/<alias>` surface, so it does **not** actually exercise
+the omlx behavior described below. This section documents the intended
+criterion; the test itself still needs rewriting.
 
 ### Test
 
 ```bash
-ai services status --json                              # lists the host-native vllm backend
-ai doctor --json                                       # same host-native vLLM backend
-ai models pull <repo> --json                           # HF download + vLLM serve; exits 3 when vLLM is not installed
-ai models test vllm/<alias> --json                     # positive routing path
+ai services status --json                              # lists the host-native omlx backend
+ai doctor --json                                       # same host-native omlx backend
+ai models refresh --json                                # re-sync LiteLLM's omlx/* registrations from omlx's live model list
+ai models test omlx/<id> --json                         # positive routing path, <id> exactly as omlx's admin panel reports it
 ```
 
 ### Expected Result
 
-* `ai services status` and `ai doctor` both surface the host-native `vllm`
-  backend as a service (no `aip-*` inference container)
-* `ai models pull <repo>` with no vLLM install exits **non-zero** (exit `3`) with
-  install guidance and **never** silently registers an unserved model
-* the positive `vllm/<alias>` routing round-trip **self-skips** when vLLM is not
-  running on the host (matching the suite's `hardware bring-up` self-skip
-  convention)
+* `ai services status` and `ai doctor` both surface the host-native `omlx`
+  backend as a single service (no `aip-*` inference container, no per-model
+  entries — omlx runs one shared server for every model it serves)
+* `ai models refresh` re-syncs LiteLLM's `omlx/<id>` registrations against the
+  server's live `GET /v1/models` and never errors when nothing changed
+* the positive `omlx/<id>` routing round-trip **self-skips** when the omlx
+  server is not running on the host (matching the suite's `hardware bring-up`
+  self-skip convention)
+* there is no `ai models pull`/`configure`/`enable`/`disable`/`rm` — local
+  model management (download, remove, tune) happens entirely in omlx's own
+  admin panel (`ai services console omlx`)
 
 ---
 
@@ -969,7 +985,7 @@ It always exits `0`; per-check status conveys health.
 * the platform-dependency checks are always present: `container runtime`,
   `microsandbox runtime`, `host virtualization`
 * the SERVICES section lists every managed service — the host-native inference
-  backend `vllm`, plus `presidio`, `valkey`, `redisinsight`,
+  backend `omlx`, plus `presidio`, `valkey`, `redisinsight`,
   `litellm`, `headroom`, `proxy`, `dns` (the names appear even when stopped
   off-hardware). `presidio` reads **`disabled`** when the `secret-masking`
   guardrail is off (listed but not probed). The host tier has no optional services

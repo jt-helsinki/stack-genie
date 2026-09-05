@@ -1,7 +1,6 @@
 package views
 
 import (
-	"strconv"
 	"strings"
 	"time"
 
@@ -382,57 +381,16 @@ func (view *ServiceDetail) infoBody() string {
 	body.WriteString(field("healthy", health))
 	body.WriteString(field("address", view.status.Address))
 	body.WriteString(field("console", view.status.Console))
-	if len(view.status.Models) > 0 {
-		body.WriteString("\n")
-		body.WriteString(ui.Heading.Render("vLLM Models") + "\n")
-		for _, model := range view.status.Models {
-			body.WriteString(view.vllmModelBlock(model))
-		}
+	body.WriteString("\n")
+	body.WriteString(ui.Heading.Render("Containers") + ui.Muted.Render("  · live, updates every 2s") + "\n")
+	if len(view.containers) == 0 {
+		body.WriteString(ui.Muted.Render("  collecting live metrics…") + "\n")
 	}
-	if len(view.status.Models) == 0 {
-		body.WriteString("\n")
-		body.WriteString(ui.Heading.Render("Containers") + ui.Muted.Render("  · live, updates every 2s") + "\n")
-		if len(view.containers) == 0 {
-			body.WriteString(ui.Muted.Render("  collecting live metrics…") + "\n")
-		}
-		for _, container := range view.containers {
-			body.WriteString(view.containerBlock(container))
-		}
+	for _, container := range view.containers {
+		body.WriteString(view.containerBlock(container))
 	}
 	body.WriteString(view.flash)
 	return body.String()
-}
-
-// vllmModelBlock renders one recorded vLLM model's resolved serving config under a
-// "── <alias> ──" heading (mirroring containerBlock) — this is the per-service-tab
-// config surfacing for the host-native vllm service, which has no container for the
-// generic Containers block above to inspect.
-func (view *ServiceDetail) vllmModelBlock(model setup.VLLMModelInfo) string {
-	var block strings.Builder
-	block.WriteString("\n" + ui.Muted.Render("── ") + ui.Value.Render(model.Alias) + ui.Muted.Render(" ──") + "\n")
-	healthy := "no"
-	if model.Healthy {
-		healthy = "yes"
-	}
-	block.WriteString(field("model", model.Model))
-	block.WriteString(field("endpoint", model.Endpoint))
-	block.WriteString(field("healthy", healthy))
-	autoStart := ui.Success.Render("enabled")
-	if model.Disabled {
-		autoStart = ui.Muted.Render("disabled") + " (excluded from auto-start — `ai models enable`)"
-	}
-	block.WriteString(field("auto-start", autoStart))
-	gpuMemoryUtilization := "vLLM default (~0.9)"
-	if model.GPUMemoryUtilization > 0 {
-		gpuMemoryUtilization = strconv.FormatFloat(model.GPUMemoryUtilization, 'f', -1, 64)
-	}
-	block.WriteString(field("gpu-memory-utilization", gpuMemoryUtilization))
-	maxModelLen := "model default"
-	if model.MaxModelLen > 0 {
-		maxModelLen = strconv.Itoa(model.MaxModelLen)
-	}
-	block.WriteString(field("max-model-len", maxModelLen))
-	return block.String()
 }
 
 // containerBlock renders one container's id/state/ports/uptime + live metrics under a

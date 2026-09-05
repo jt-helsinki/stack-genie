@@ -694,16 +694,17 @@ func (manager Manager) registerAgentProviders(name, project, root string, projec
 	// ~/.codex, ~/.gemini) so the subscription login survives a restart.
 	manager.linkAgentStateDirs(name, oauthSet)
 
-	// SEED-THEN-REMEMBER default (chosen behavior): the model picked at setup (stored as
-	// agent.graphify_model — a Hugging Face repo id, registered in the gateway as
-	// vllm/<alias>) is SEEDED as every CLI's default on the FIRST start only. A host
-	// marker under .ai-platform (same dir on host + in-VM) records that. On LATER starts
-	// we pass an empty default, which makes MergeOpenCodeConfig actively DROP the pinned
-	// model so the user's persisted /model choice wins (opencode ranks config "model"
-	// above last-used, so a stale pin would defeat remembering). No setup model → never seed.
+	// SEED-THEN-REMEMBER default (chosen behavior): the model NAME picked at setup
+	// (stored as agent.graphify_model — a name omlx already serves, registered in
+	// the gateway as omlx/<name>) is SEEDED as every CLI's default on the FIRST
+	// start only. A host marker under .ai-platform (same dir on host + in-VM)
+	// records that. On LATER starts we pass an empty default, which makes
+	// MergeOpenCodeConfig actively DROP the pinned model so the user's persisted
+	// /model choice wins (opencode ranks config "model" above last-used, so a
+	// stale pin would defeat remembering). No setup model → never seed.
 	setupModel := ""
 	if projectConfig.Agent.GraphifyModel != "" {
-		setupModel = agentcfg.VLLMModelHandle(projectConfig.Agent.GraphifyModel)
+		setupModel = agentcfg.OmlxModelHandle(projectConfig.Agent.GraphifyModel)
 	}
 	seedMarker := filepath.Join(root, ".ai-platform", ".agent-default-seeded")
 	defaultModel := ""

@@ -271,11 +271,11 @@ func (view *CloudModels) buildModels(cloud []catalog.Model, registered []litellm
 	index := make(map[string]cloudModel, len(registered))
 	seen := make(map[string]bool, len(registered))
 	for _, live := range registered {
-		// Cloud Models lists only CLOUD-provider models. Local vLLM models are also
-		// registered in the gateway (public model_name "vllm/<alias>", provider
-		// "vllm") via `ai models pull` — they belong to the Local Models tab, so
-		// skip them here.
-		if live.Provider == "vllm" || strings.HasPrefix(live.Name, "vllm/") {
+		// Cloud Models lists only CLOUD-provider models. Local omlx models are also
+		// registered in the gateway (public model_name "omlx/<id>", provider
+		// "omlx") by the automatic sync (internal/litellm.SyncOmlxModels) — they
+		// are managed entirely through omlx's own admin panel, so skip them here.
+		if live.Provider == "omlx" || strings.HasPrefix(live.Name, "omlx/") {
 			continue
 		}
 		if seen[live.Name] {

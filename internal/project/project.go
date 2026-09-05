@@ -46,9 +46,10 @@ type Spec struct {
 	// CLIs (claude-code/codex/gemini). Written to config.yaml agent.auth_modes for the
 	// selected + OAuth-capable CLIs only; an absent CLI defaults to "api-key".
 	AuthModes map[string]string
-	// GraphifyModel is the local model Graphify uses, written to config.yaml
-	// agent.graphify_model. Chosen at create from the model library (pulled if
-	// absent). Empty leaves Graphify's backend unconfigured.
+	// GraphifyModel is the local omlx-served model Graphify uses, written to
+	// config.yaml agent.graphify_model — just the model NAME, no download (model
+	// management lives in omlx's own admin panel). Empty leaves Graphify's backend
+	// unconfigured.
 	GraphifyModel string
 	// Apps are the opt-in in-VM AI applications to install (subset of apps.Keys()).
 	// Empty by default — apps are opt-in.

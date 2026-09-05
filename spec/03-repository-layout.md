@@ -47,11 +47,11 @@ All platform-wide data is stored under:
 ├── skills/        # reserved — created eagerly, not written to by any code path today
 ├── templates/     # OS Dockerfile templates + shared templates
 ├── tools/         # reserved — created eagerly, not written to by any code path today
-├── venv/          # platform-managed host Python venv (vLLM + the Hugging Face CLI; see §1.9/§12.6a) — created on first use
+├── venv/          # platform-managed host Python venv (omlx; see §1.9/§12.6a) — created on first use
 └── volumes/       # ALL host-persisted SYSTEM data volumes — created on first use
     ├── litellm-db/  # LiteLLM Postgres data dir (bind-mounted → aip-litellm-db:/var/lib/postgresql)
     └── models/      # local-model store
-        └── vllm/    # host-native vLLM weights (HF cache: MLX on macOS, safetensors on Linux)
+        └── omlx/    # host-native omlx weights (MLX-format model dirs, macOS + Apple Silicon only)
 
 ~/.ai-platform/.ai-platform.env   # OPT-IN, 0600 sibling file (NOT under ~/.ai-platform/)
 ```
@@ -63,7 +63,7 @@ shared resource pools (agents/skills/prompts) live at
 `<project>/.ai-platform/{agents,skills,prompts}` (§2.2), not here. `bin/`,
 `venv/`, and `volumes/` are, by contrast, real and populated, but created **on
 demand** by their own consumers (the `msb` binary download, `internal/pyenv`,
-and the vLLM/LiteLLM-DB writers respectively) rather than eagerly by `ai setup`.
+and the omlx/LiteLLM-DB writers respectively) rather than eagerly by `ai setup`.
 
 Global only — **no per-project state here**. Per-project state lives in
 `<project>/.ai-platform/` (see §2).
@@ -94,11 +94,13 @@ Today there are two:
   **HOST-BIND-MOUNTED** into `aip-litellm-db` at `/var/lib/postgresql` (NOT a
   Docker named volume). This is the one stateful service-tier piece.
 - `~/.ai-platform/volumes/models/` — the **persistent local-model store** for the
-  host-side **vLLM** backend. Weights are downloaded by the Hugging Face CLI (`hf`)
-  and persist under `~/.ai-platform/volumes/models/vllm/` (`vllm.StoreDir`; MLX on
-  macOS, HF safetensors on Linux). It persists under the standardized
-  system-volume home and is removed by `ai uninstall --purge` (distinct from the
-  disposable `cache/models/` in §1.3).
+  host-side **omlx** backend (macOS + Apple Silicon only, the sole local-inference
+  runtime). Model download/add/remove/tune happens entirely through omlx's OWN
+  admin panel (`http://127.0.0.1:8100/admin`, reached via `ai services console
+  omlx`); models persist under `~/.ai-platform/volumes/models/omlx/`
+  (`omlx.StoreDir`, MLX-format model directories). It persists under the
+  standardized system-volume home and is removed by `ai uninstall --purge`
+  (distinct from the disposable `cache/models/` in §1.3).
 
 **Migration caveat (acceptable for this dev platform):** existing data in the old
 `aip-litellm-db-data` named volume and the old `~/.ai-platform/models/` does NOT
@@ -158,9 +160,9 @@ Rules:
   a legacy `catalog.json` (or the older `volumes/catalog.json`) is **one-shot
   converted** to YAML (`catalog.Path`); `volumes/` is now ONLY true host data
 * `models/`, `downloads/`, and `temp/` are reserved for a possible future
-  model-library cache; today there is no live HF search or scraped library —
-  the available-models list is the curated, in-code `hf.CuratedModels(goos)`
-  set, so nothing writes here yet
+  model-library cache; today local-model management lives entirely in omlx's own
+  admin panel (no curated list, no `ai models pull` equivalent on this platform's
+  side), so nothing writes here yet
 * never contains secrets
 * removed by `ai uninstall --purge` (which `RemoveAll`s `~/.ai-platform`)
 
@@ -254,8 +256,10 @@ Rules:
   git-backed; when Graphify is selected it then runs `graphify hook install`
   on EVERY start for a valid repo (the hook is idempotent, so there is deliberately no
   marker, and it runs even for an omp/hermes-only project). Graphify's headless LLM
-  backend is a local model chosen at `ai create` (`agent.graphify_model`, §12.4),
-  routed through the gateway as `vllm/<model>`. **Neither Python nor Node is
+  backend is a local model chosen at `ai create` (`agent.graphify_model`, §12.4) —
+  a plain model name already served by omlx (macOS + Apple Silicon only; no
+  download step, no curated-model picker), routed through the gateway as
+  `omlx/<model>`. **Neither Python nor Node is
   a `--stacks` option** — both are baked into the base (the no-op `python`/`node`
   stack snippets were removed entirely), so the selectable stacks are `go`, `rust`,
   `java`, `maven`, `deno`, and the agent-CLI snippets now only `npm install` their
@@ -308,7 +312,6 @@ config.yaml              # global platform config (§12.4)
 runtime.yaml             # detected runtime, platform-global (§12.5)
 versions.yaml            # pinned image+tag of host services (§12.6)
 projects.yaml            # index: project name → path (§12.7)
-model-runtimes.yaml      # per-model vLLM serving record (alias → repo + host port)
 ui.yaml                  # TUI theme + mouse-capture preference
 litellm/                 # rendered LiteLLM config.yaml (placeholders only; real keys live in the gateway)
 proxy/                   # rendered nginx.conf for the aip-proxy gateway (the litellm.<domain> UI vhost + gateway paths)

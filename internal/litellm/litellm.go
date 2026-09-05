@@ -396,7 +396,7 @@ func toolFirewallRules() []map[string]any {
 // Model is one model the LiteLLM gateway currently serves, as reported by the
 // gateway itself (/model/info or /v1/models) — NOT the hardcoded DefaultRouting.
 // Name is the served model_name/id (which may be a provider wildcard like
-// `openai/*`); Provider is the prefix before the first `/` (e.g. "vllm",
+// `openai/*`); Provider is the prefix before the first `/` (e.g. "omlx",
 // "openai"), empty for a bare alias with no prefix; Mode is the served model's
 // mode (e.g. "chat", "embedding") when /model/info exposes it, else empty.
 type Model struct {
@@ -443,8 +443,8 @@ type StatusInfo struct {
 	// model-list endpoints do NOT mark a default, so this legitimately stays from
 	// platform config (DefaultRouting().Default), not from the live list.
 	Default string `json:"default"`
-	// Local reports whether the gateway serves at least one LOCAL model (a vLLM
-	// vllm/<alias> route), so status can note the no-API-key local backend.
+	// Local reports whether the gateway serves at least one LOCAL model (an omlx
+	// omlx/<id> route), so status can note the no-API-key local backend.
 	Local bool `json:"local"`
 	// Models is the LIVE list of models the gateway serves, sourced from LiteLLM's
 	// /model/info//v1/models endpoints. Empty when the gateway is unreachable or the
@@ -466,7 +466,7 @@ const statusIndent = "                  "
 
 // Human renders `ai models status` as a labeled, actionable summary rather than a
 // raw field dump: gateway reachability (with a fix hint when it is down), the
-// default model, the local-model (vLLM, no key) vs cloud-provider (needs a key)
+// default model, the local-model (omlx, no key) vs cloud-provider (needs a key)
 // split, and how to probe a model. The per-section rendering is delegated to small
 // helpers so this stays a simple sequence of appends.
 func (info StatusInfo) Human() string {
@@ -477,7 +477,7 @@ func (info StatusInfo) Human() string {
 		builder.WriteString(ui.Label.Render("Default model") + "     " + ui.Value.Render(info.Default) + ui.Muted.Render("  (used unless an agent names another)") + "\n")
 	}
 	if info.Local {
-		builder.WriteString(ui.Label.Render("Local models") + "      " + ui.Value.Render("vLLM") + ui.Muted.Render(" — no API key needed (install models with `") + ui.Primary.Render("ai models pull <repo>") + ui.Muted.Render("`)") + "\n")
+		builder.WriteString(ui.Label.Render("Local models") + "      " + ui.Value.Render("omlx") + ui.Muted.Render(" — no API key needed (manage models from its own admin panel at `") + ui.Primary.Render("ai services console omlx") + ui.Muted.Render("`)") + "\n")
 	}
 	builder.WriteString(info.humanCloudProviders())
 	builder.WriteString(info.humanServedModels())
@@ -505,7 +505,7 @@ func (info StatusInfo) humanGatewayLine() string {
 func (info StatusInfo) humanCloudProviders() string {
 	cloud := make([]string, 0, len(info.Providers))
 	for _, provider := range info.Providers {
-		if provider != "vllm" && provider != "" {
+		if provider != "omlx" && provider != "" {
 			cloud = append(cloud, provider)
 		}
 	}

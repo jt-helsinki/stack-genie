@@ -233,13 +233,13 @@ func providersFromModels(models []Model) []string {
 	return providers
 }
 
-// hasLocalModel reports whether any served model is a local vLLM model (so the
-// status can show the local-models, no-key framing). vLLM's routed target is
-// "openai/<alias>" (the derived Provider is thus "openai"), so local detection keys
-// on the PUBLIC model NAME prefix "vllm/" (VLLMModelName), not the provider.
+// hasLocalModel reports whether any served model is a local omlx model (so the
+// status can show the local-models, no-key framing). omlx's routed target is
+// "openai/<id>" (the derived Provider is thus "openai"), so local detection keys
+// on the PUBLIC model NAME prefix "omlx/" (OmlxModelName), not the provider.
 func hasLocalModel(models []Model) bool {
 	for _, model := range models {
-		if strings.HasPrefix(model.Name, "vllm/") {
+		if strings.HasPrefix(model.Name, "omlx/") {
 			return true
 		}
 	}

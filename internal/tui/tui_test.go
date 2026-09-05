@@ -288,7 +288,7 @@ func TestNewProjectRequestedOpensCreateOverlay(test *testing.T) {
 
 func TestCreateCancelledClosesOverlay(test *testing.T) {
 	application := &app{cwd: test.TempDir(), views: []View{&fakeView{title: "Projects"}}}
-	application.createView = views.NewCreate(application.cwd, nil, 0, 0)
+	application.createView = views.NewCreate(application.cwd, 0, 0)
 
 	application.Update(views.CreateCancelledMsg{})
 	if application.createView != nil {
@@ -298,7 +298,7 @@ func TestCreateCancelledClosesOverlay(test *testing.T) {
 
 func TestCreateConfirmedClosesOverlayAndRunsCreate(test *testing.T) {
 	application := &app{cwd: test.TempDir(), projectsIndex: 0, views: []View{&fakeView{title: "Projects"}}}
-	application.createView = views.NewCreate(application.cwd, nil, 0, 0)
+	application.createView = views.NewCreate(application.cwd, 0, 0)
 
 	// CreateConfirmedMsg closes the overlay, marks the workspace as creating, and
 	// returns the in-process create.Execute command (run off the event loop).
@@ -851,24 +851,6 @@ func TestCreatingSwallowsNavKeys(test *testing.T) {
 	}
 }
 
-// TestModelsPullOpensOverlay verifies the ModelsPullRequestedMsg handler opens the
-// `ai models pull <refs>` overlay with the repo id (vLLM is the sole local runtime, so
-// no --runtime is threaded).
-func TestModelsPullOpensOverlay(test *testing.T) {
-	application := newTestApp("Local Models")
-	application.Update(views.ModelsPullRequestedMsg{Refs: []string{"mlx-community/Qwen2.5-7B-Instruct-4bit"}})
-	if application.terminal == nil {
-		test.Fatal("a pull request must open the terminal overlay")
-	}
-	label := application.terminal.Label()
-	if !strings.Contains(label, "models pull mlx-community/Qwen2.5-7B-Instruct-4bit") {
-		test.Errorf("overlay label = %q, want the models pull command with the repo", label)
-	}
-	if strings.Contains(label, "--runtime") {
-		test.Errorf("overlay label must not carry --runtime (vLLM is the only runtime): %q", label)
-	}
-}
-
 // TestCreateProgressAccumulates verifies streamed create.Progress builds the step log +
 // a live download bar in the creating pane.
 func TestCreateProgressAccumulates(test *testing.T) {
@@ -942,7 +924,7 @@ func TestWheelTargetRouting(test *testing.T) {
 	}
 
 	withCreate := base()
-	withCreate.createView = views.NewCreate(test.TempDir(), nil, 16, 12)
+	withCreate.createView = views.NewCreate(test.TempDir(), 16, 12)
 	if got := withCreate.wheelTarget(); got != wheelCreate {
 		test.Errorf("create wizard open: wheelTarget = %d, want wheelCreate (its lists must scroll)", got)
 	}

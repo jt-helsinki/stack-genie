@@ -1,15 +1,15 @@
 // Package pyenv manages the platform-managed, HOST-SIDE Python virtual environment
 // at ~/.ai-platform/venv (paths.VenvDir). It is the single home for platform-wide
-// Python tooling that runs on the host — most importantly the vLLM local-inference
+// Python tooling that runs on the host — most importantly the omlx local-inference
 // backend — as opposed to a workspace's in-VM `.venv-msb`.
 //
 // The venv is created at `ai setup` (best-effort, never fatal) via `uv venv` when uv
 // is on PATH (uv can fetch a suitable CPython), else `python3 -m venv`. Ensure creates
 // it at the NEWEST available Python (version-agnostic); EnsureVersion pins it to an
-// EXACT version (recreating a mismatched one) for the macOS MLX/Metal vLLM wheels,
-// whose cp tag dictates the interpreter version. Once it exists, the platform resolves
-// its Python tools from it (e.g. vllm resolves <venv>/bin/vllm before falling back to
-// PATH), so the platform "uses that environment to run its Python code".
+// EXACT version (recreating a mismatched one) for the omlx wheel's cp tag, which
+// dictates the interpreter version. Once it exists, the platform resolves its Python
+// tools from it (e.g. omlx resolves <venv>/bin/omlx before falling back to PATH), so
+// the platform "uses that environment to run its Python code".
 //
 // All host mutation (venv creation, pip installs) is a documented, self-contained
 // action under ~/.ai-platform — removed by `ai uninstall --purge`. The exec seams
@@ -30,8 +30,8 @@ import (
 // newestPythonRequest is the interpreter selector passed to `uv venv --python <sel>`
 // for the general (version-agnostic) Ensure path: "3" tells uv to provision the NEWEST
 // available CPython 3.x. This is the venv used by general/Linux host tooling and is
-// deliberately NOT pinned to a fixed minor version. The macOS MLX/Metal vLLM path
-// instead pins an EXACT version via EnsureVersion, because the vllm-metal wheel is
+// deliberately NOT pinned to a fixed minor version. The macOS MLX omlx path
+// instead pins an EXACT version via EnsureVersion, because the omlx wheel is
 // cp-tag-specific (cp312 today, auto-following to cp313) and the venv MUST match it.
 const newestPythonRequest = "3"
 
@@ -112,7 +112,7 @@ func Ensure() (created bool, err error) {
 // version (e.g. "3.12"), returning whether it was created this call. Unlike Ensure it
 // is version-STRICT: an existing venv whose interpreter is NOT that version (or whose
 // version can't be read) is torn down (os.RemoveAll) and recreated, because a
-// cp-tag-specific wheel (the macOS vllm-metal/core wheels) will only install into a
+// cp-tag-specific wheel (the macOS omlx wheel) will only install into a
 // matching-version venv. An existing venv already on the requested version is a no-op.
 // Creation prefers `uv venv --python <version> <dir>` (uv fetches that exact CPython)
 // and falls back to `python3 -m venv <dir>` (best-effort — the fallback cannot pin the
@@ -193,13 +193,13 @@ func venvPythonVersion() (string, bool) {
 }
 
 // PipInstall installs (or upgrades) one or more pip requirement specs into the
-// platform venv, e.g. PipInstall("vllm") or PipInstall("--upgrade", "pip"). It
+// platform venv, e.g. PipInstall("omlx") or PipInstall("--upgrade", "pip"). It
 // requires the venv to already exist (call Ensure first). It prefers
 // `uv pip install --python <venv-python> <args…>` when uv is present (much faster),
 // else the venv's own `<venv>/bin/pip install <args…>`. The combined output is folded
 // into any error so a failed install is actionable.
 //
-// hardware bring-up: a real vLLM install is a large, OS-specific network download
+// hardware bring-up: a real omlx install is a large, OS-specific network download
 // (on Apple Silicon the Metal plugin), so callers invoke this deliberately — the
 // platform does not pip-install heavy runtimes automatically at `ai setup`.
 func PipInstall(specs ...string) error {

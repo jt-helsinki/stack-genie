@@ -15,7 +15,6 @@ import (
 	"github.com/jt-helsinki/stack-genie/internal/apps"
 	"github.com/jt-helsinki/stack-genie/internal/config"
 	"github.com/jt-helsinki/stack-genie/internal/create"
-	"github.com/jt-helsinki/stack-genie/internal/hf"
 	"github.com/jt-helsinki/stack-genie/internal/output"
 	"github.com/jt-helsinki/stack-genie/internal/project"
 	"github.com/jt-helsinki/stack-genie/internal/sysinfo"
@@ -622,15 +621,14 @@ func runCreateWizard(seed project.Spec) (project.Spec, bool, error) {
 	disk := seed.Disk
 	portsText := formatPublishPorts(seed.PublishPorts)
 
-	// Graphify's LLM backend is a vLLM-servable model chosen from the curated list
-	// (a Hugging Face repo id), pulled if absent (see pullGraphifyModelIfAbsent) and
-	// routed through the gateway as vllm/<alias>. The picker is a single model select;
-	// blank/"(none)" leaves Graphify without a configured model. AI tools are ONE
-	// multi-select (like the agent CLIs), seeded from the spec's per-tool bools. The
-	// graphify-model step is shown only when graphify is among the selection.
+	// Graphify's LLM backend names an already-served omlx model (no download — model
+	// management lives entirely in omlx's own admin panel), routed through the
+	// gateway as omlx/<name>. Blank leaves Graphify without a configured model. AI
+	// tools are ONE multi-select (like the agent CLIs), seeded from the spec's
+	// per-tool bools. The graphify-model step is shown only when graphify is among
+	// the selection.
 	toolsSelection := aiToolsFromSpec(seed)
 	graphifyModelSelection := seed.GraphifyModel
-	curatedGraphify := hf.CuratedModels(goruntime.GOOS)
 
 	groups := []*huh.Group{
 		huh.NewGroup(
@@ -697,13 +695,11 @@ func runCreateWizard(seed project.Spec) (project.Spec, bool, error) {
 			Options(aiToolOptions()...).Value(&toolsSelection),
 	))
 	// Graphify model — shown ONLY when graphify is selected above.
-	if len(curatedGraphify) > 0 {
-		groups = append(groups, huh.NewGroup(
-			huh.NewSelect[string]().Title("Graphify model (vLLM; optional)").
-				Description("A curated vLLM-servable model, routed through the gateway; pulled if not installed. Type to filter.").
-				Options(graphifyModelOptions(curatedGraphify)...).Value(&graphifyModelSelection),
-		).WithHideFunc(func() bool { return !slices.Contains(toolsSelection, create.AIToolGraphify) }))
-	}
+	groups = append(groups, huh.NewGroup(
+		huh.NewInput().Title("Graphify model (optional)").
+			Description("Name of a model omlx is ALREADY serving (manage models from its admin panel — `ai services console omlx`), routed through the gateway as omlx/<name>; blank leaves Graphify unconfigured.").
+			Value(&graphifyModelSelection),
+	).WithHideFunc(func() bool { return !slices.Contains(toolsSelection, create.AIToolGraphify) }))
 
 	// Per-app host-port prompts: one input per supported in-VM app, shown only when that
 	// app is selected above. Seeded with a suggested free port (the app's familiar
@@ -882,22 +878,6 @@ func collectAuthModes(agentCLIs []string, chosen map[string]string) map[string]s
 		return nil
 	}
 	return modes
-}
-
-// graphifyModelOptions builds the Graphify model select: a leading "(none)" (empty
-// value) followed by every curated vLLM model (labelled by repo id + size, valued by
-// the Hugging Face repo id), so the choice is optional.
-func graphifyModelOptions(curated []hf.CuratedModel) []huh.Option[string] {
-	options := make([]huh.Option[string], 0, len(curated)+1)
-	options = append(options, huh.NewOption("(none)", ""))
-	for _, model := range curated {
-		label := model.Repo
-		if model.Size != "" {
-			label += "  (" + model.Size + ")"
-		}
-		options = append(options, huh.NewOption(label, model.Repo))
-	}
-	return options
 }
 
 // splitCommaList splits a comma-separated input into trimmed, non-empty items.

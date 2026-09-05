@@ -14,8 +14,8 @@ import (
 	"github.com/charmbracelet/huh"
 	"github.com/charmbracelet/x/term"
 	"github.com/jt-helsinki/stack-genie/internal/envfile"
-	"github.com/jt-helsinki/stack-genie/internal/hf"
 	"github.com/jt-helsinki/stack-genie/internal/litellm"
+	"github.com/jt-helsinki/stack-genie/internal/omlx"
 	"github.com/jt-helsinki/stack-genie/internal/output"
 	"github.com/jt-helsinki/stack-genie/internal/runtime"
 	"github.com/jt-helsinki/stack-genie/internal/setup"
@@ -169,7 +169,7 @@ func newSetupCmd(em *output.Emitter, exit *int) *cobra.Command {
 			}
 			if err != nil {
 				// Surface actionable local-inference guidance even on failure: the
-				// reconcile fails HARD when the REQUIRED host-native vLLM is down, and a
+				// reconcile fails HARD when the REQUIRED host-native omlx is down, and a
 				// per-OS install/start block is far more discoverable than the bare error.
 				// Guidance only (no host mutation); never for the client role (no local
 				// inference there). Skipped under --json inside printLocalInferenceGuidance.
@@ -196,9 +196,9 @@ func newSetupCmd(em *output.Emitter, exit *int) *cobra.Command {
 			// DNS/cert operator contract (no /etc/hosts editing). Best-effort — neither
 			// fails setup.
 			syncUISubdomains(em, interactive, report.Runtime)
-			// Local inference backend: host-native vLLM (REQUIRED for local models).
-			// On a successful reconcile vLLM is already up, so this typically prints
-			// nothing — but it prints the full vLLM block if the backend went down
+			// Local inference backend: host-native omlx (REQUIRED for local models).
+			// On a successful reconcile omlx is already up, so this typically prints
+			// nothing — but it prints the full omlx block if the backend went down
 			// between reconcile and here. Non-client only.
 			if report.Runtime != nil && report.Runtime.Role != runtime.RoleClient {
 				printLocalInferenceGuidance(em)
@@ -911,17 +911,16 @@ func syncInitialModels(em *output.Emitter, interactive bool) {
 }
 
 // printLocalInferenceGuidance prints an actionable block about this host's local
-// inference backend after `ai setup` reconciles: host-native vLLM (the sole local
-// runtime) plus the Hugging Face CLI (`hf`) used for model management. It probes their
-// install state via vllmDetectFn / hfDetectFn and prints per-OS install guidance only
-// when one is missing. It NEVER mutates the host (guidance only) and never fails setup;
-// it is skipped under --json so automation keeps a clean envelope on stdout.
+// inference backend after `ai setup` reconciles: the host-native omlx server, the
+// SOLE local-inference runtime. It probes install state via omlxDetectFn and prints
+// install guidance only when it is missing. It NEVER mutates the host (guidance
+// only) and never fails setup; it is skipped under --json so automation keeps a
+// clean envelope on stdout.
 func printLocalInferenceGuidance(em *output.Emitter) {
 	if em.JSON {
 		return
 	}
-	vllmInstalled, _ := vllmDetectFn()
-	lines := localInferenceGuidanceLines(goruntime.GOOS, vllmInstalled, hfDetectFn())
+	lines := localInferenceGuidanceLines(omlxDetectFn())
 	if len(lines) == 0 {
 		return
 	}
@@ -932,31 +931,27 @@ func printLocalInferenceGuidance(em *output.Emitter) {
 	}
 }
 
-// hfDetectFn is the injectable seam for the Hugging Face CLI install probe (hf.Detect),
-// so the guidance block is unit-testable without a real `hf` binary.
-var hfDetectFn = hf.Detect
+// omlxDetectFn is the injectable seam for the omlx install probe (omlx.Detect), so
+// the guidance block is unit-testable without a real `omlx` binary.
+var omlxDetectFn = omlx.Detect
 
-// localInferenceGuidanceLines builds the actionable local-inference guidance shown at
-// the end of `ai setup`: host-native vLLM (the local model runtime) plus the `hf` CLI
-// (model management). It returns the lines to print (empty when both are installed),
-// given this host's OS and whether vLLM / `hf` were detected. Pure (no I/O) so it is
-// unit-testable. `ai setup` auto-installs both best-effort, so these lines appear only
-// when that auto-install did not succeed.
-func localInferenceGuidanceLines(goos string, vllmInstalled, hfInstalled bool) []string {
-	var lines []string
-	if !vllmInstalled {
-		lines = append(lines,
-			ui.Warn.Render(ui.IconArrow+" vLLM is not installed — it is the local model runtime. `ai setup` tries to install it automatically; to install it manually:"))
-		for _, step := range vllmInstallGuidanceFn(goos) {
-			lines = append(lines, "    "+step)
-		}
-		lines = append(lines, "  or run "+ui.Primary.Render("`ai models install-vllm`")+".")
+// localInferenceGuidanceLines builds the actionable local-inference guidance shown
+// at the end of `ai setup`: the host-native omlx server (the sole local-inference
+// runtime — model management itself lives entirely in omlx's own admin panel, not
+// this CLI). Returns the lines to print (empty when installed), given whether omlx
+// was detected. Pure (no I/O) so it is unit-testable. `ai setup` auto-installs it
+// best-effort, so these lines appear only when that auto-install did not succeed.
+func localInferenceGuidanceLines(omlxInstalled bool) []string {
+	if omlxInstalled {
+		return nil
 	}
-	if !hfInstalled {
-		lines = append(lines,
-			ui.Muted.Render(ui.IconDot+" the Hugging Face CLI (`hf`) is not installed — it manages local model weights (`ai models pull|list|rm`). Install it into the platform venv with:"))
-		lines = append(lines, "    "+ui.Value.Render("~/.ai-platform/venv/bin/pip install -U \"huggingface_hub[cli]\""))
+	lines := []string{
+		ui.Warn.Render(ui.IconArrow + " omlx is not installed — it is the local model runtime. `ai setup` tries to install it automatically; to install it manually:"),
 	}
+	for _, step := range omlx.InstallGuidance() {
+		lines = append(lines, "    "+step)
+	}
+	lines = append(lines, "  or run "+ui.Primary.Render("`ai services start omlx`")+" (retries the same install).")
 	return lines
 }
 

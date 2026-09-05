@@ -9,42 +9,28 @@ import (
 	"strings"
 
 	"github.com/charmbracelet/huh"
-	"github.com/jt-helsinki/stack-genie/internal/hf"
 	"github.com/jt-helsinki/stack-genie/internal/litellm"
 	"github.com/jt-helsinki/stack-genie/internal/output"
-	"github.com/jt-helsinki/stack-genie/internal/runtime"
+	"github.com/jt-helsinki/stack-genie/internal/setup"
 	"github.com/jt-helsinki/stack-genie/internal/ui"
 	"github.com/spf13/cobra"
 )
-
-// hfClient is the constructor for the Hugging Face model-store client used by
-// `ai models list|pull|rm` (locally-downloaded weights in the vLLM store). It is a
-// package var so tests can inject a fake; production wires hf.RealClient.
-var hfClient = hf.RealClient
 
 // litellmClient is the constructor for the gateway client used by
 // `ai models status|test`. It is a package var so tests can inject a fake (no
 // network); production wires litellm.RealClient.
 var litellmClient = litellm.RealClient
 
-// modelRegistrar is the slice of litellm.KeyManager that `ai models pull|rm` use to
-// keep the gateway's DB-backed model list in step with the local vLLM store (the sole
-// local runtime): a freshly-pulled model is registered under
-// its gateway alias pointing at the per-model `vllm serve` endpoint, and removed on rm.
-// It is an interface so tests inject a fake (no network); registration is BEST-EFFORT —
-// a gateway that is down or has no master key must never fail a pull/rm.
-type modelRegistrar interface {
-	RegisterVLLMModel(alias, model, apiBase string, supportsTools bool) error
-	UnregisterVLLMModel(alias string) error
-}
+// syncOmlxModelsFn is the injectable seam for `ai models refresh` (setup.SyncOmlxModels),
+// so tests exercise it without a real omlx server or gateway.
+var syncOmlxModelsFn = setup.SyncOmlxModels
 
-// modelRegistrarFactory builds the registrar. A package var so tests inject a fake;
-// production binds a KeyManager over the real container prober.
-var modelRegistrarFactory = func() modelRegistrar {
-	return litellm.NewKeyManager(runtime.RealProber())
-}
-
-// newModelsCmd builds `ai models` (CLI §8).
+// newModelsCmd builds `ai models` (CLI §8) — read-only gateway inspection. Local
+// model management (pull/configure/enable/disable/rm) is gone: omlx, the sole
+// local-inference backend, manages its own models entirely through its own admin
+// panel (`ai services console omlx`) — this platform only installs/runs the
+// server and keeps its live model list synced into the gateway (see
+// internal/setup/omlx_host.go). Cloud models are managed via `ai keys`.
 func newModelsCmd(em *output.Emitter, exit *int) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "models",
@@ -55,25 +41,69 @@ func newModelsCmd(em *output.Emitter, exit *int) *cobra.Command {
 	cmd.AddCommand(
 		newModelsStatusCmd(em, exit),
 		newModelsTestCmd(em, exit),
-		newModelsListCmd(em, exit),
-		newModelsPopularCmd(em, exit),
-		newModelsPullCmd(em, exit),
-		newModelsInstallVLLMCmd(em, exit),
-		newModelsLoginCmd(em, exit),
-		newModelsLogoutCmd(em, exit),
-		newModelsRmCmd(em, exit),
-		newModelsShowCmd(em, exit),
-		newModelsConfigureCmd(em, exit),
-		newModelsDisableCmd(em, exit),
-		newModelsEnableCmd(em, exit),
+		newModelsRefreshCmd(em, exit),
 	)
 	return cmd
+}
+
+// newModelsRefreshCmd builds `ai models refresh`: re-syncs LiteLLM's omlx/*
+// registrations against the omlx server's live GET /v1/models ON DEMAND — for
+// after adding/removing/renaming a model through omlx's own admin panel
+// (`ai services console omlx`), without needing a full `ai services restart omlx`.
+// This is the SAME sync that already runs automatically at `ai setup` and at
+// `ai services start|restart omlx`; this command just triggers it standalone.
+func newModelsRefreshCmd(em *output.Emitter, exit *int) *cobra.Command {
+	return &cobra.Command{
+		Use:   "refresh",
+		Short: "Re-sync LiteLLM's registered models from omlx's live model list",
+		Long: "Re-sync LiteLLM's omlx/* model registrations against the omlx server's live\n" +
+			"GET /v1/models: a model added/removed/renamed through omlx's own admin panel\n" +
+			"(`ai services console omlx`) shows up in the gateway immediately, without a\n" +
+			"full `ai services restart omlx`.",
+		Args: cobra.NoArgs,
+		RunE: func(_ *cobra.Command, _ []string) error {
+			var result litellm.SyncResult
+			var err error
+			if ui.Enabled(em) {
+				err = ui.RunWithSpinner(em.Err, "syncing omlx models with the gateway", func() error {
+					var workErr error
+					result, workErr = syncOmlxModelsFn()
+					return workErr
+				})
+			} else {
+				result, err = syncOmlxModelsFn()
+			}
+			if err != nil {
+				*exit = em.Failure("models.refresh", output.Errorf(output.ExitRuntimeFailure, "%s", err))
+				return nil
+			}
+			*exit = em.Success("models.refresh", modelsRefreshResult(result))
+			return nil
+		},
+	}
+}
+
+// modelsRefreshResult renders `ai models refresh`'s outcome.
+type modelsRefreshResult litellm.SyncResult
+
+func (result modelsRefreshResult) Human() string {
+	if len(result.Added) == 0 && len(result.Deleted) == 0 {
+		return ui.Success.Render(ui.IconOK) + " omlx models already in sync with the gateway"
+	}
+	lines := []string{ui.Success.Render(ui.IconOK) + " synced omlx models with the gateway"}
+	for _, name := range result.Added {
+		lines = append(lines, "  "+ui.Success.Render("+")+" "+ui.Value.Render(name))
+	}
+	for _, name := range result.Deleted {
+		lines = append(lines, "  "+ui.Failure.Render("-")+" "+ui.Value.Render(name))
+	}
+	return strings.Join(lines, "\n")
 }
 
 func newModelsStatusCmd(em *output.Emitter, exit *int) *cobra.Command {
 	return &cobra.Command{
 		Use:   "status",
-		Short: "LiteLLM health, providers, routing, local (vLLM) connectivity",
+		Short: "LiteLLM health, providers, routing, local (omlx) connectivity",
 		Args:  cobra.NoArgs,
 		RunE: func(_ *cobra.Command, _ []string) error {
 			var info litellm.StatusInfo
@@ -220,8 +250,8 @@ func modelTestError(res litellm.TestResult) error {
 	case res.Status == 404 || strings.Contains(lower, "not found") ||
 		strings.Contains(lower, "does not exist") || strings.Contains(lower, "no such model") ||
 		strings.Contains(lower, "not a valid model"):
-		if strings.HasPrefix(res.Model, "vllm/") {
-			hint = " — pull it first: `ai models pull " + strings.TrimPrefix(res.Model, "vllm/") + "`"
+		if strings.HasPrefix(res.Model, "omlx/") {
+			hint = " — manage it from omlx's own admin panel: `ai services console omlx`"
 		} else {
 			hint = " — check the model name (the gateway exposes <provider>/<model>, e.g. openai/gpt-5.5)"
 		}

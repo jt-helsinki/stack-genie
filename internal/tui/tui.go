@@ -27,7 +27,6 @@ import (
 	"github.com/jt-helsinki/stack-genie/internal/contextopt"
 	"github.com/jt-helsinki/stack-genie/internal/create"
 	"github.com/jt-helsinki/stack-genie/internal/egress"
-	"github.com/jt-helsinki/stack-genie/internal/hf"
 	"github.com/jt-helsinki/stack-genie/internal/litellm"
 	"github.com/jt-helsinki/stack-genie/internal/project"
 	"github.com/jt-helsinki/stack-genie/internal/runtime"
@@ -303,16 +302,6 @@ func Run(cwd string) error {
 		},
 	)
 	contextView := views.NewContext(currentRoot, contextopt.GetStatus, contextopt.SetStrategy, contextopt.SetCavemanLevel)
-	// Local Models: the locally-downloaded vLLM weight store (via `hf cache ls`) + the
-	// curated set of installable, vLLM-servable Hugging Face repos, with the gateway
-	// tester. vLLM is the sole local runtime.
-	localModelsView := views.NewLocalModels(
-		hf.RealClient().CacheList,
-		func() []hf.CuratedModel { return hf.CuratedModels(goruntime.GOOS) },
-		litellmClient.Test,
-		hf.RealClient().Whoami,
-		vllmModelDisabled,
-	)
 	// Cloud Models: the models.dev catalog (with its data source for availability
 	// messaging), the gateway's live (registered) set, the `r`-refresh (re-fetch the
 	// catalog + resync the gateway), and the gateway tester. All over the existing
@@ -356,18 +345,19 @@ func Run(cwd string) error {
 		[]string{"Workspace", "Logs", "Metrics", "Network", "Context", "Shell", "Apps"},
 	)
 
-	// Top-level tab order = menu order: Services · Workspaces · Local Models · Cloud
-	// Models · API Keys · Settings. Workspace / Network / Context / Sessions are
-	// nested under Workspaces (the hub); logs are consolidated into the Services view
-	// (the `l` key).
-	application.views = []View{servicesView, projectsHub, localModelsView, cloudModelsView, apiKeysView, settingsView}
+	// Top-level tab order = menu order: Services · Workspaces · Cloud Models · API
+	// Keys · Settings. Local model management is gone — omlx (the sole
+	// local-inference runtime) manages its own models entirely through its own
+	// admin panel (`ai services console omlx`). Workspace / Network / Context /
+	// Sessions are nested under Workspaces (the hub); logs are consolidated into
+	// the Services view (the `l` key).
+	application.views = []View{servicesView, projectsHub, cloudModelsView, apiKeysView, settingsView}
 	application.projectsIndex = 1
 	application.servicesView = servicesView
 	application.projectsHub = projectsHub
 	application.projectDetail = projectDetail
 	application.sessionsView = sessionsView
 	application.appsView = appsView
-	application.localModelsView = localModelsView
 	application.cloudModelsView = cloudModelsView
 	application.apiKeysView = apiKeysView
 
@@ -414,23 +404,6 @@ func resolveProjectRoot(name string) (string, bool) {
 	return "", false
 }
 
-// vllmModelDisabled reports whether repo's recorded vLLM runtime choice is disabled
-// (`ai models disable`) — wired into the Local Models view so an installed row can
-// show its auto-start state and offer the opposite toggle key. A store-read failure
-// or an unrecorded/non-vllm repo reads as "not disabled" (never blocks the view).
-func vllmModelDisabled(repo string) bool {
-	choices, err := config.LoadModelRuntimes()
-	if err != nil {
-		return false
-	}
-	for _, choice := range choices {
-		if choice.Runtime == config.RuntimeVLLM && choice.Model == repo {
-			return choice.Disabled
-		}
-	}
-	return false
-}
-
 // executablePath is this `ai` binary, used to spawn sub-commands (the project
 // wizard, an in-workspace shell) via tea.ExecProcess.
 func executablePath() string {
@@ -475,11 +448,6 @@ func waitCreateProgress(ch chan create.Progress) tea.Cmd {
 // (run via tea.ExecProcess in the user's real terminal) has exited, so the TUI can
 // refresh the session list + project detail.
 type sessionFinishedMsg struct{ err error }
-
-// modelsAuthFinishedMsg reports that a suspended `ai models login`/`logout` subprocess
-// (run via tea.ExecProcess in the user's real terminal) has exited, so the Local Models
-// view can re-probe the Hugging Face login state.
-type modelsAuthFinishedMsg struct{ err error }
 
 // projectInfo returns the current state of one project by name (over project.List).
 func projectInfo(name string) (project.Entry, bool, error) {
@@ -661,9 +629,8 @@ type app struct {
 	// subprocess returns (the user may have installed/removed/started an app).
 	appsView *views.Apps
 
-	// localModelsView / cloudModelsView let the app refresh the model lists after a
-	// pull/rm/keys subprocess returns from the terminal overlay.
-	localModelsView *views.LocalModels
+	// cloudModelsView lets the app refresh the model list after a keys subprocess
+	// returns from the terminal overlay.
 	cloudModelsView *views.CloudModels
 
 	// apiKeysView lets the app refresh the provider/keyed list after an
@@ -780,10 +747,8 @@ func (application *app) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case views.NewProjectRequestedMsg:
 		// Open the multi-step create WIZARD in-TUI (no subprocess). Seed it with the
-		// current directory, the curated vLLM model list (for the Graphify-model step),
-		// and the host resource caps for the hints.
-		curated := hf.CuratedModels(goruntime.GOOS)
-		wizard := views.NewCreate(application.cwd, curated, create.HostMemoryGB(), create.UsableHostMemoryGB())
+		// current directory and the host resource caps for the hints.
+		wizard := views.NewCreate(application.cwd, create.HostMemoryGB(), create.UsableHostMemoryGB())
 		bodyWidth, bodyHeight := application.bodyContentSize()
 		wizard.SetSize(bodyWidth, bodyHeight)
 		application.createView = wizard
@@ -1036,64 +1001,6 @@ func (application *app) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Not an interactive program — let <esc> cancel/close the pane (like ctrl+q).
 		application.terminalEscCloses = true
 		return application, cmd
-
-	case views.ModelsPullRequestedMsg:
-		// Pull one or more selected Hugging Face repos (streaming progress): run the real
-		// `ai models pull <refs...>` live in the terminal overlay, then refresh the Local
-		// Models list when the overlay closes. vLLM is the sole local runtime.
-		args := append([]string{"models", "pull"}, message.Refs...)
-		return application, application.openTerminal(
-			"models pull "+strings.Join(message.Refs, " "),
-			args, false)
-
-	case views.ModelRemoveRequestedMsg:
-		// Remove confirms before deleting: run `ai models rm <name>` live in the
-		// overlay (its TTY confirm prompt shows in the pane), then refresh the list.
-		return application, application.openTerminal(
-			"models rm "+message.Name, []string{"models", "rm", message.Name}, false)
-
-	case views.ModelDisableRequestedMsg:
-		// Stops the model's vLLM server and excludes it from ensureVLLMServers'
-		// auto-start pass, WITHOUT touching weights or the gateway registration.
-		return application, application.openTerminal(
-			"models disable "+message.Name, []string{"models", "disable", message.Name}, false)
-
-	case views.ModelEnableRequestedMsg:
-		// Starts the model's vLLM server again — no re-download.
-		return application, application.openTerminal(
-			"models enable "+message.Name, []string{"models", "enable", message.Name}, false)
-
-	case views.ModelConfigureRequestedMsg:
-		// The command's own TTY prompt (pre-seeded with the recorded caps) shows in
-		// the overlay — the interactive path for changing gpu-memory-utilization /
-		// max-model-len without re-downloading the model.
-		return application, application.openTerminal(
-			"models configure "+message.Name, []string{"models", "configure", message.Name}, false)
-
-	case views.ModelsLoginRequestedMsg:
-		// Authenticate `hf` for gated repos: the hidden token prompt needs a REAL TTY,
-		// so suspend the TUI and run `ai models login` via tea.ExecProcess (NOT the
-		// embedded emulator). Refresh the Local Models view (whoami line) on return.
-		command := exec.Command(executablePath(), "models", "login")
-		return application, tea.ExecProcess(command, func(execErr error) tea.Msg {
-			return modelsAuthFinishedMsg{err: execErr}
-		})
-
-	case views.ModelsLogoutRequestedMsg:
-		// Clear the `hf` credentials in the user's REAL terminal, twin of login above.
-		command := exec.Command(executablePath(), "models", "logout")
-		return application, tea.ExecProcess(command, func(execErr error) tea.Msg {
-			return modelsAuthFinishedMsg{err: execErr}
-		})
-
-	case modelsAuthFinishedMsg:
-		// Back from `ai models login`/`logout` — re-probe the Hugging Face login state
-		// (and re-list the store) so the whoami line + any newly-gated availability
-		// re-read.
-		if application.localModelsView != nil {
-			return application, application.localModelsView.Init()
-		}
-		return application, nil
 
 	case views.APIKeyAddRequestedMsg:
 		// Add runs `ai keys add <provider>` live in the overlay (its hidden key
@@ -1537,9 +1444,6 @@ func (application *app) updateTerminal(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 			// A `services update` overlay closing must re-fetch the Services list / open
 			// detail so the recreated container's state + log are reflected.
 			commands = append(commands, application.servicesView.RefreshActive())
-		}
-		if application.localModelsView != nil {
-			commands = append(commands, application.localModelsView.Init())
 		}
 		if application.cloudModelsView != nil {
 			// Cloud Models lists ONLY models whose provider has a key, so a

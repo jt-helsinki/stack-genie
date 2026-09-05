@@ -76,11 +76,11 @@ func doctorServiceByName(services []doctor.Service, name string) doctor.Service 
 	return doctor.Service{}
 }
 
-// mapDoctorServices lists the host-native vLLM backend (carrying its own Detail from
-// setup.vllmStatus) and skips the microVM runtime line.
+// mapDoctorServices lists the host-native omlx backend (carrying its own Detail from
+// setup.omlxStatus) and skips the microVM runtime line.
 func TestMapDoctorServicesHostInference(test *testing.T) {
 	statuses := []setup.ServiceStatus{
-		{Name: "vllm", Mode: "host", Healthy: false, State: "stopped", Detail: "not installed — run `ai models install-vllm`"},
+		{Name: "omlx", Mode: "host", Healthy: false, State: "stopped", Detail: "not installed — run `ai models install-omlx`"},
 		{Name: "litellm", Mode: "container", Healthy: true, State: "running"},
 		{Name: "microsandbox", Mode: "runtime", Healthy: true},
 	}
@@ -89,23 +89,23 @@ func TestMapDoctorServicesHostInference(test *testing.T) {
 	if doctorServiceByName(services, "microsandbox").Name != "" {
 		test.Fatal("the microVM runtime (Mode runtime) must not be listed as a service")
 	}
-	vllm := doctorServiceByName(services, "vllm")
-	if vllm.Name == "" {
-		test.Fatal("host-native vLLM must be listed")
+	omlx := doctorServiceByName(services, "omlx")
+	if omlx.Name == "" {
+		test.Fatal("host-native omlx must be listed")
 	}
-	if !strings.Contains(vllm.Detail, "install-vllm") {
-		test.Fatalf("down vLLM should carry its install detail, got Detail=%q", vllm.Detail)
+	if !strings.Contains(omlx.Detail, "install-omlx") {
+		test.Fatalf("down omlx should carry its install detail, got Detail=%q", omlx.Detail)
 	}
 }
 
 // A healthy host inference backend passes through unchanged.
 func TestMapDoctorServicesHealthyPassthrough(test *testing.T) {
 	statuses := []setup.ServiceStatus{
-		{Name: "vllm", Mode: "host", Healthy: true, State: "running"},
+		{Name: "omlx", Mode: "host", Healthy: true, State: "running"},
 	}
 	services := mapDoctorServices(statuses, "linux")
-	if state := doctorServiceByName(services, "vllm").State; state != "running" {
-		test.Fatalf("healthy vLLM State should be untouched, got %q", state)
+	if state := doctorServiceByName(services, "omlx").State; state != "running" {
+		test.Fatalf("healthy omlx State should be untouched, got %q", state)
 	}
 }
 

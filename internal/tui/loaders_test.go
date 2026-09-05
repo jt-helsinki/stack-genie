@@ -56,7 +56,7 @@ func TestCatalogIDsForCredentials(test *testing.T) {
 func TestServiceStatusByName(test *testing.T) {
 	statuses := []setup.ServiceStatus{
 		{Name: "litellm", State: "running"},
-		{Name: "vllm", State: "stopped"},
+		{Name: "omlx", State: "stopped"},
 	}
 	fetch := func() ([]setup.ServiceStatus, error) { return statuses, nil }
 
@@ -302,8 +302,6 @@ func TestOverlayOpeningMessagesOpenTerminal(test *testing.T) {
 	}{
 		{"services update", views.ServiceUpdateRequestedMsg{Service: "litellm"}, true},
 		{"apps action", views.AppActionRequestedMsg{Action: "start", App: "open-webui", Project: "app"}, true},
-		{"models pull", views.ModelsPullRequestedMsg{Refs: []string{"llama3:8b"}}, false},
-		{"models rm", views.ModelRemoveRequestedMsg{Name: "llama3:8b"}, false},
 		{"keys add", views.APIKeyAddRequestedMsg{Provider: "openai"}, true},
 		{"keys remove", views.APIKeyRemoveRequestedMsg{Provider: "openai"}, true},
 	}
@@ -344,9 +342,9 @@ func TestFollowMessagesRunInRealTerminal(test *testing.T) {
 // safe on an unspawned terminal) and the app refreshes the active sub-view.
 func TestTerminalOverlayClosesOnCtrlQ(test *testing.T) {
 	application, _ := newTestHubApp(test, "Workspace", "Network")
-	// Open a streaming overlay (models pull) — routed to the current top-level view is
+	// Open an overlay (apps action) — routed to the current top-level view is
 	// irrelevant; openTerminal only sets application.terminal.
-	application.Update(views.ModelsPullRequestedMsg{Refs: []string{"llama3:8b"}})
+	application.Update(views.AppActionRequestedMsg{Action: "start", App: "open-webui", Project: "app"})
 	if application.terminal == nil {
 		test.Fatal("precondition: the overlay must be open")
 	}

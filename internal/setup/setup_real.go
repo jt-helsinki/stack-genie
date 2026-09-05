@@ -151,7 +151,7 @@ func presidioSelected(guardrails []string) bool {
 // lists the services but NOT litellm-db (no health line / Status entry), so it is added
 // explicitly. A few services expand to several images (serviceImageKeys). Pure and
 // testable; duplicate refs are de-duplicated so a shared image is only pulled once.
-// vLLM is host-native (no aip-vllm container), so it has no image to pull.
+// omlx is host-native (no aip-omlx container), so it has no image to pull.
 func requiredImages(optional []string, guardrails []string) []string {
 	serviceKeys := []string{"litellm-db"}
 	for _, service := range desiredServices() {
@@ -161,8 +161,8 @@ func requiredImages(optional []string, guardrails []string) []string {
 		if service.Name == "presidio" && !presidioSelected(guardrails) {
 			continue // secret-masking guardrail off: don't pull the Presidio images
 		}
-		if service.Name == "vllm" {
-			continue // host-native vLLM: no container image to pull
+		if service.Name == "omlx" {
+			continue // host-native omlx: no container image to pull
 		}
 		serviceKeys = append(serviceKeys, serviceImageKeys(service.Name)...)
 	}
@@ -906,7 +906,7 @@ func serviceContainers(service string) []string {
 
 // isDesiredService reports whether name is a known logical service (core or
 // optional). It distinguishes a container-less known service (e.g. host-native
-// vllm, which has no container to tail/stat) from a genuinely unknown name.
+// omlx, which has no container to tail/stat) from a genuinely unknown name.
 func isDesiredService(name string) bool {
 	for _, spec := range desiredServices() {
 		if spec.Name == name {
@@ -1406,24 +1406,21 @@ func (services realServices) Reconcile(providerConfig, bindHost string, optional
 	// retained (optional is still threaded through for status reporting), so a future
 	// host optional service would be brought up here, BEFORE the nginx proxy.
 	// Platform-managed host Python venv (~/.ai-platform/venv): the single home for
-	// platform-wide host Python tooling (notably the vLLM local-inference backend).
-	// Created best-effort here so it exists before vLLM is (manually) installed into it;
-	// it NEVER fails the reconcile — a host lacking uv/python3 just gets a warning.
+	// platform-wide host Python tooling — the omlx local-inference backend, the SOLE
+	// local-inference runtime on this platform. Created best-effort here so it exists
+	// before omlx is installed into it; it NEVER fails the reconcile — a host lacking
+	// uv/python3 just gets a warning.
 	ensurePlatformVenv(progress)
-	// vLLM itself: best-effort install into that venv when it isn't already present, so
-	// `ai models pull --runtime vllm` works after a plain `ai setup` with no separate
-	// `ai models install-vllm` step. Detect-gated (installs once), never fails setup.
-	ensureVLLMInstalled(progress)
-	// The Hugging Face CLI (`hf`): best-effort install into that venv when absent, so
-	// model management (`ai models list|pull|rm`, which shells out to `hf`) works after
-	// a plain `ai setup`. Detect-gated (installs once), never fails setup.
-	ensureHFInstalled(progress)
-	// Host-native vLLM: best-effort bring up a `vllm serve` process for every recorded
-	// runtime=vllm model that isn't already answering. OPTIONAL — it NEVER fails the
-	// reconcile (a launch failure is logged with install guidance and skipped). It
-	// reaches the service tier through the host gateway, which LiteLLM/nginx already have via
-	// hostGatewayAddArg (that --add-host also covers vLLM's per-model ports).
-	ensureVLLMServers(progress)
+	// omlx itself: best-effort install into that venv when it isn't already present,
+	// then start the one shared server + sync its live models into LiteLLM — see
+	// omlx_host.go. OPTIONAL — it NEVER fails the reconcile (a launch failure is
+	// logged with install guidance and skipped). It reaches the service tier through
+	// the host gateway, which LiteLLM/nginx already have via hostGatewayAddArg.
+	ensureOmlxInstalled(progress)
+	previousProgress := hostNativeProgressWriter
+	SetHostNativeProgressWriter(progress)
+	_ = startOmlxServerHost()
+	SetHostNativeProgressWriter(previousProgress)
 	// nginx LAST: it is the SOLE host entry, fronting the gateway (/ + /v1 → LiteLLM
 	// directly), the LiteLLM /llm + LiteLLM /llm admin route, and the LiteLLM admin
 	// UI as a Host-based vhost on the same port. The UI vhost hangs off the resolved
@@ -1539,9 +1536,9 @@ func (services realServices) statusFor(enabled []string) ([]ServiceStatus, error
 	presidioOff := !presidioSelected(reconcileGuardrails())
 	statuses := make([]ServiceStatus, 0, len(specs))
 	for _, service := range specs {
-		// vLLM is host-native and appended below with a richer summary line
-		// (services.vllmStatus): skip its registry pass so it is not listed twice.
-		if service.Name == "vllm" {
+		// omlx is host-native and appended below with a richer summary line
+		// (services.omlxStatus): skip its registry pass so it is not listed twice.
+		if service.Name == "omlx" {
 			continue
 		}
 		endpoint, _ := console.EndpointForHost(service.Name, displayDomain)
@@ -1590,12 +1587,12 @@ func (services realServices) statusFor(enabled []string) ([]ServiceStatus, error
 			})
 		}
 	}
-	// Host-native vLLM: a single summary line (Mode "host"), discovered from the
-	// persisted runtime=vllm choices by HTTP-probing each recorded endpoint (there
+	// Host-native omlx: a single summary line (Mode "host"), discovered by
+	// HTTP-probing the one server endpoint (there
 	// is no daemon holding Manager state between CLI runs). Appended after the
 	// container services. It is ALWAYS surfaced so it stays discoverable, "stopped"
 	// when idle.
-	statuses = append(statuses, services.vllmStatus())
+	statuses = append(statuses, services.omlxStatus())
 	return statuses, nil
 }
 
@@ -1640,12 +1637,12 @@ func (services realServices) serviceHealthy(name string) bool {
 	case "litellm":
 		info, err := litellm.RealClient().Status()
 		return err == nil && info.Healthy
-	case "vllm":
-		// vLLM is host-native (per-model `vllm serve` processes, no container). There
+	case "omlx":
+		// omlx is host-native (one shared `omlx serve` process, no container). There
 		// is no daemon holding Manager state between CLI runs, so readiness is
-		// discovered by HTTP-probing each recorded runtime=vllm endpoint: healthy iff
-		// AT LEAST ONE answers.
-		return vllmServersHealthy()
+		// discovered by HTTP-probing the one server endpoint.
+
+		return omlxHealthy()
 	case "presidio":
 		containerRuntime, err := runtime.ContainerRuntimeName(services.prober)
 		if err != nil {
@@ -1773,10 +1770,10 @@ func (services realServices) Control(action, service string) ([]ServiceStatus, e
 		ensure func() error
 		stop   func() error
 	}
-	// NB: vLLM is a HOST-NATIVE runtime (host processes, not aip-*
+	// NB: omlx is a HOST-NATIVE runtime (a host process, not an aip-*
 	// containers), so it is NOT in this container-controllable set — its
 	// start/stop/restart is handled by ControlService's host-native path
-	// (controlHostNativeService → vllm_host.go), never `docker
+	// (controlHostNativeService → omlx_host.go), never `docker
 	// start/stop`.
 	managed := []managedService{
 		{"presidio",
@@ -1843,7 +1840,7 @@ func (services realServices) Control(action, service string) ([]ServiceStatus, e
 			// (and emits the companion-container hint) before delegating here — but
 			// kept as a defensive guard for direct callers.
 			return nil, output.Errorf(output.ExitInvalidInput,
-				"unknown container service %q (expected one of: presidio, valkey, redisinsight, headroom, litellm, proxy, dns — vllm is host-native)", service)
+				"unknown container service %q (expected one of: presidio, valkey, redisinsight, headroom, litellm, proxy, dns — omlx is host-native)", service)
 		}
 	}
 

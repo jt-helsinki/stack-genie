@@ -66,7 +66,7 @@ func TestSourcesFiltersPlatformLogs(test *testing.T) {
 	if err := os.MkdirAll(filepath.Join(logsDir, "subdir"), 0o755); err != nil {
 		test.Fatal(err)
 	}
-	for _, name := range []string{"aip-litellm.log", "aip-vllm.log", "notes.txt"} {
+	for _, name := range []string{"aip-litellm.log", "aip-omlx.log", "notes.txt"} {
 		if err := os.WriteFile(filepath.Join(logsDir, name), []byte("x\n"), 0o644); err != nil {
 			test.Fatal(err)
 		}

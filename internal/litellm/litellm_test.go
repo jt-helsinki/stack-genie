@@ -337,7 +337,7 @@ func TestRenderProviderConfigPassthrough(test *testing.T) {
 func TestStatusInfoHumanUnreachable(test *testing.T) {
 	info := StatusInfo{
 		Healthy:   false,
-		Providers: []string{"anthropic", "vllm", "openai"},
+		Providers: []string{"anthropic", "omlx", "openai"},
 		Default:   "gemma4",
 		Local:     true,
 		BaseURL:   "http://127.0.0.1:14000",
@@ -348,8 +348,8 @@ func TestStatusInfoHumanUnreachable(test *testing.T) {
 		"http://127.0.0.1:14000",   // where
 		"ai services start",        // how to fix
 		"Default model     gemma4", // labeled, not a raw dump
-		"vLLM",                     // local models split out
-		"anthropic, openai",        // cloud providers, vllm removed from the list
+		"omlx",                     // local models split out
+		"anthropic, openai",        // cloud providers, omlx removed from the list
 		"ai keys add",              // cloud needs a key
 		"ai models test gemma4",    // next step
 	} {
@@ -357,9 +357,9 @@ func TestStatusInfoHumanUnreachable(test *testing.T) {
 			test.Errorf("status Human() missing %q:\n%s", fragment, rendered)
 		}
 	}
-	// vllm must NOT appear in the cloud-providers line.
-	if strings.Contains(rendered, "anthropic, vllm") {
-		test.Errorf("vllm should be shown as a local model, not in the cloud list:\n%s", rendered)
+	// omlx must NOT appear in the cloud-providers line.
+	if strings.Contains(rendered, "anthropic, omlx") {
+		test.Errorf("omlx should be shown as a local model, not in the cloud list:\n%s", rendered)
 	}
 }
 
@@ -381,16 +381,16 @@ func TestStatusInfoHumanServedModels(test *testing.T) {
 	withModels := StatusInfo{
 		Healthy:   true,
 		Default:   "gemma4",
-		Providers: []string{"anthropic", "vllm"},
+		Providers: []string{"anthropic", "omlx"},
 		Local:     true,
 		BaseURL:   "http://127.0.0.1:14000",
 		Models: []Model{
-			{Name: "gemma4", Provider: "vllm", Mode: "chat"},
+			{Name: "gemma4", Provider: "omlx", Mode: "chat"},
 			{Name: "openai/*", Provider: "openai"},
 		},
 	}
 	rendered := withModels.Human()
-	for _, fragment := range []string{"Served models", "gemma4", "vllm, chat", "openai/*", "(openai)"} {
+	for _, fragment := range []string{"Served models", "gemma4", "omlx, chat", "openai/*", "(openai)"} {
 		if !strings.Contains(rendered, fragment) {
 			test.Errorf("served-models render missing %q:\n%s", fragment, rendered)
 		}
@@ -413,7 +413,7 @@ func TestDisplayModelsCollapsesWildcards(test *testing.T) {
 		{Name: "claude-opus", Provider: "anthropic"}, // covered by anthropic/* → dropped
 		{Name: "openai/*", Provider: "openai"},
 		{Name: "gpt-5.5", Provider: "openai"}, // covered by openai/* → dropped
-		{Name: "gemma4", Provider: "vllm"},    // no vllm/* wildcard → kept
+		{Name: "gemma4", Provider: "omlx"},    // no omlx/* wildcard → kept
 	}
 	display := DisplayModels(models)
 	got := make([]string, 0, len(display))
@@ -472,7 +472,7 @@ func TestStatusInfoHumanOmitsServedWhenAllCollapse(test *testing.T) {
 
 func TestParseProviderError(test *testing.T) {
 	cases := map[string]string{
-		`{"error":{"message":"model 'vllm/nope' not found","type":"not_found"}}`: "model 'vllm/nope' not found",
+		`{"error":{"message":"model 'omlx/nope' not found","type":"not_found"}}`: "model 'omlx/nope' not found",
 		`{"error":{"message":"  Invalid API key  "}}`:                            "Invalid API key",
 		`Bad Gateway`: "Bad Gateway",
 		``:            "",
@@ -500,7 +500,7 @@ func TestModelsParsesModelInfo(test *testing.T) {
 		gotAuth = request.Header.Get("Authorization")
 		gotPath = request.URL.Path
 		_, _ = writer.Write([]byte(`{"data":[
-			{"model_name":"vllm/gemma4","litellm_params":{"model":"openai/gemma4"},"model_info":{"mode":"chat"}},
+			{"model_name":"omlx/gemma4","litellm_params":{"model":"openai/gemma4"},"model_info":{"mode":"chat"}},
 			{"model_name":"gpt-5.5","litellm_params":{"model":"anthropic/claude"},"model_info":{"mode":"chat"}},
 			{"model_name":"openai/*","litellm_params":{"model":"openai/*"},"model_info":{}},
 			{"model_name":"text-embed","litellm_params":{"model":"openai/text-embedding-3"},"model_info":{"mode":"embedding"}}
@@ -519,14 +519,14 @@ func TestModelsParsesModelInfo(test *testing.T) {
 	if gotAuth != "Bearer sk-test-key" {
 		test.Errorf("Authorization = %q, want the Bearer master key", gotAuth)
 	}
-	// Sorted by name: gpt-5.5, openai/*, text-embed, vllm/gemma4.
+	// Sorted by name: gpt-5.5, openai/*, text-embed, omlx/gemma4.
 	byName := map[string]Model{}
 	for _, model := range models {
 		byName[model.Name] = model
 	}
 	// A vLLM model's routed target is openai/<alias>, so its derived Provider is openai.
-	if got := byName["vllm/gemma4"]; got.Provider != "openai" || got.Mode != "chat" {
-		test.Errorf("vllm/gemma4 = %+v, want provider openai mode chat", got)
+	if got := byName["omlx/gemma4"]; got.Provider != "openai" || got.Mode != "chat" {
+		test.Errorf("omlx/gemma4 = %+v, want provider openai mode chat", got)
 	}
 	if got := byName["gpt-5.5"]; got.Provider != "anthropic" {
 		test.Errorf("gpt-5.5 provider = %q, want anthropic", got.Provider)
@@ -584,7 +584,7 @@ func TestStatusFetchesLiveModels(test *testing.T) {
 			writer.WriteHeader(http.StatusOK)
 		case "/model/info":
 			_, _ = writer.Write([]byte(`{"data":[
-				{"model_name":"vllm/gemma4","litellm_params":{"model":"openai/gemma4"},"model_info":{"mode":"chat"}},
+				{"model_name":"omlx/gemma4","litellm_params":{"model":"openai/gemma4"},"model_info":{"mode":"chat"}},
 				{"model_name":"claude-opus","litellm_params":{"model":"anthropic/claude-opus-4-8"},"model_info":{"mode":"chat"}}
 			]}`))
 		default:
@@ -652,12 +652,12 @@ func TestStatusHealthyButModelListFails(test *testing.T) {
 func TestTestSurfacesProviderError(test *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
 		writer.WriteHeader(http.StatusNotFound)
-		_, _ = writer.Write([]byte(`{"error":{"message":"model not found: vllm/nope"}}`))
+		_, _ = writer.Write([]byte(`{"error":{"message":"model not found: omlx/nope"}}`))
 	}))
 	defer server.Close()
 
 	client := realClient{adminURL: server.URL, gatewayURL: server.URL, httpClient: server.Client()}
-	result, err := client.Test("vllm/nope")
+	result, err := client.Test("omlx/nope")
 	if err != nil {
 		test.Fatalf("transport error not expected: %v", err)
 	}
@@ -667,7 +667,7 @@ func TestTestSurfacesProviderError(test *testing.T) {
 	if result.Status != http.StatusNotFound {
 		test.Errorf("status = %d, want 404", result.Status)
 	}
-	if result.Error != "model not found: vllm/nope" {
+	if result.Error != "model not found: omlx/nope" {
 		test.Errorf("error = %q, want the provider message", result.Error)
 	}
 }

@@ -46,28 +46,6 @@ type ServiceStatus struct {
 	// or disabled (`ai services enable|disable`); core services are always on. A
 	// disabled optional service has State "disabled".
 	Optional bool `json:"optional,omitempty"`
-	// Models is the per-model config for a host-native, per-model-process service
-	// (currently only vllm) — empty for every container service. It surfaces here
-	// (rather than as generic ContainerStats — vLLM has no container to `docker
-	// inspect`/`stats`) so the Services detail pane can show each model's
-	// resolved serving config alongside the summary.
-	Models []VLLMModelInfo `json:"models,omitempty"`
-}
-
-// VLLMModelInfo is one recorded vLLM model's resolved serving config, surfaced on
-// ServiceStatus.Models. GPUMemoryUtilization/MaxModelLen are 0 when unset (vLLM's
-// own defaults are in effect — see vllm.ServeOptions).
-type VLLMModelInfo struct {
-	Alias                string  `json:"alias"`
-	Model                string  `json:"model"`
-	Endpoint             string  `json:"endpoint,omitempty"`
-	Healthy              bool    `json:"healthy"`
-	GPUMemoryUtilization float64 `json:"gpu_memory_utilization,omitempty"`
-	MaxModelLen          int     `json:"max_model_len,omitempty"`
-	// Disabled mirrors config.ModelRuntimeChoice.Disabled — this model is
-	// intentionally excluded from ensureVLLMServers' auto-start pass (`ai models
-	// disable`), so a not-Healthy disabled model is expected, not "down".
-	Disabled bool `json:"disabled,omitempty"`
 }
 
 // Enabled reports whether the service is currently enabled — true for every core
@@ -229,7 +207,7 @@ var controlActions = map[string]bool{"start": true, "stop": true, "restart": tru
 
 // ServiceNames returns the names of the addressable host services (for validation
 // and shell completion): the container-reconcile set (desiredServices) PLUS the
-// host-native runtimes (hostNativeServiceNames — vllm) that are NOT in the
+// host-native runtimes (hostNativeServiceNames — omlx) that are NOT in the
 // container registry but are still controllable via `ai services start|stop|restart`.
 // vLLM is not in the registry, so it is added here.
 func ServiceNames() []string {
@@ -248,13 +226,13 @@ func ServiceNames() []string {
 
 // hostNativeServiceNames are the HOST-NATIVE inference runtimes: they run as host
 // PROCESSES (not aip-* containers), so their start/stop/restart is a host-exec path
-// (controlHostNativeService), NOT the container `Control` (`docker start/stop`). vLLM
-// (per-model detached `vllm serve` loopback processes) is the sole one.
+// (controlHostNativeService), NOT the container `Control` (`docker start/stop`). omlx
+// (the one shared `omlx serve` loopback process) is the sole one.
 func hostNativeServiceNames() []string {
-	return []string{"vllm"}
+	return []string{"omlx"}
 }
 
-// isHostNativeService reports whether name is a host-native runtime (vllm),
+// isHostNativeService reports whether name is a host-native runtime (omlx),
 // which is controlled via the host-exec path rather than the container runtime.
 func isHostNativeService(name string) bool {
 	return slices.Contains(hostNativeServiceNames(), name)
@@ -286,9 +264,9 @@ func ControlService(deps Deps, action, service string) ([]ServiceStatus, error) 
 	if service == "all" {
 		service = ""
 	}
-	// A named host-native runtime (vllm) is a host PROCESS, not an aip-*
+	// A named host-native runtime (omlx) is a host PROCESS, not an aip-*
 	// container: dispatch its lifecycle to the host-exec path instead of the
-	// container `Control` (which would reject vllm as unknown).
+	// container `Control` (which would reject omlx as unknown).
 	if service != "" && isHostNativeService(service) {
 		return controlHostNativeService(deps, action, service)
 	}
@@ -313,7 +291,7 @@ func ControlService(deps Deps, action, service string) ([]ServiceStatus, error) 
 	}
 	if service == "" {
 		// "all": the container tier first, then the host-native runtimes best-effort.
-		// A host runtime being ABSENT (no vllm binary, no vLLM models recorded)
+		// A host runtime being ABSENT (no omlx binary)
 		// must NEVER fail `ai services <action> all` — its error is swallowed here.
 		if _, err := deps.Services.Control(action, ""); err != nil {
 			return nil, err
@@ -328,16 +306,16 @@ func ControlService(deps Deps, action, service string) ([]ServiceStatus, error) 
 
 // hostNative*  are the injectable seams for the host-native runtime lifecycle so
 // unit tests exercise ControlService's ROUTING without forking a real process.
-// They default to the real (hardware bring-up) implementations in vllm_host.go. Tests
+// They default to the real (hardware bring-up) implementations in omlx_host.go. Tests
 // override them (and a package TestMain neutralizes them so no container-path test
 // accidentally spawns a host process).
 var (
-	hostNativeStartVLLM = startVLLMServersHost
-	hostNativeStopVLLM  = stopVLLMServersHost
+	hostNativeStartOmlx = startOmlxServerHost
+	hostNativeStopOmlx  = stopOmlxServerHost
 )
 
 // controlHostNativeService applies a lifecycle action to a host-native runtime
-// (vllm) via the host-exec path, then re-reads the service status (mirroring
+// (omlx) via the host-exec path, then re-reads the service status (mirroring
 // the container Control path, which also returns the post-action statuses). An
 // unknown host-native name (defensive — ControlService validates first) is exit 2.
 func controlHostNativeService(deps Deps, action, service string) ([]ServiceStatus, error) {
@@ -353,8 +331,8 @@ func controlHostNativeService(deps Deps, action, service string) ([]ServiceStatu
 func applyHostNativeAction(action, service string) error {
 	var start, stop func() error
 	switch service {
-	case "vllm":
-		start, stop = hostNativeStartVLLM, hostNativeStopVLLM
+	case "omlx":
+		start, stop = hostNativeStartOmlx, hostNativeStopOmlx
 	default:
 		return output.Errorf(output.ExitInvalidInput, "unknown host-native service %q", service)
 	}
@@ -965,19 +943,19 @@ const ServiceLogTailLines = 200
 // running engine; the argv construction + multi-container layout are unit-tested
 // against a fake prober.
 func ServiceLogTail(deps Deps, service string, tail int) (string, error) {
-	if service == "vllm" {
-		// Host-native: no container, so serviceContainers is empty. vLLM's per-model
-		// output is redirected to <storeDir>/<alias>.log at process start (see
-		// vllm.RealRunner.Start), so tail those files instead of a container log.
+	if service == "omlx" {
+		// Host-native: no container, so serviceContainers is empty. omlx's own
+		// output is redirected to omlx.LogPath at process start (see
+		// omlx.RealRunner.Start), so tail that file instead of a container log.
 		if tail <= 0 {
 			tail = ServiceLogTailLines
 		}
-		return vllmHostLogTail(tail)
+		return omlxServerLogTail(tail)
 	}
 	containers := serviceContainers(service)
 	if len(containers) == 0 {
 		if isDesiredService(service) {
-			// A known host-native service (e.g. vllm) has no container to tail — it
+			// A known host-native service (e.g. omlx) has no container to tail — it
 			// is not an error, there is simply nothing to show.
 			return "", nil
 		}
@@ -1064,7 +1042,7 @@ func ServiceStats(deps Deps, service string) ([]ContainerStats, error) {
 	containers := serviceContainers(service)
 	if len(containers) == 0 {
 		if isDesiredService(service) {
-			// A known host-native service (e.g. vllm) runs no container — no stats to
+			// A known host-native service (e.g. omlx) runs no container — no stats to
 			// report, but not an error.
 			return nil, nil
 		}

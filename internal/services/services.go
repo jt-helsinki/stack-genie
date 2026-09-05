@@ -53,6 +53,15 @@ type Endpoint struct {
 // its projections — owns the value without importing setup).
 const GatewayPort = 18787
 
+// OmlxPort is the fixed host loopback port the omlx local-inference server binds
+// (`omlx serve --model-dir <dir> --port <port>`) — one shared server for every
+// locally-served model, so unlike the old per-model vLLM ports there is exactly
+// ONE port to fix. It is reached directly (host-native, not through the nginx
+// gateway) by both LiteLLM (via host.docker.internal) and this CLI's own
+// `ai services console omlx` (the omlx admin panel, the ONLY place models are
+// managed now — see ConsolePath below).
+const OmlxPort = 8100
+
 // Pin is the version pin for one component: a container image+tag, or a native
 // version+sha256. Exactly one shape is populated, per Mode.
 type Pin struct {
@@ -130,15 +139,19 @@ var nativeRuntime = Native{
 // the production code.
 var registry = []Service{
 	{
-		// vLLM is HOST-NATIVE and the SOLE local-inference backend:
-		// the platform runs NO aip-* container and pulls no image for it — it is per-model
-		// `vllm serve` host processes probed over HTTP. It stays a logical service so the
-		// status line + `ai logs --service vllm` keep it visible; its served models are
-		// reached through LiteLLM's `/v1` model path (there is no dedicated nginx /vllm
-		// route), so Endpoint carries no gateway path. It has NO container Component.
-		Name:     "vllm",
-		Endpoint: Endpoint{},
-		LogScope: "vllm",
+		// omlx is HOST-NATIVE and the SOLE local-inference backend: the platform runs
+		// NO aip-* container and pulls no image for it — it is ONE shared `omlx serve`
+		// host process (multi-model, managed by omlx itself: LRU eviction, TTL, model
+		// downloads) reached directly on its fixed loopback port (OmlxPort), probed
+		// over HTTP. Its served models are reached through LiteLLM's `/v1` model path
+		// (there is no dedicated nginx /omlx route), so Endpoint carries no gateway
+		// path — but it DOES have a console: omlx's own admin panel at /admin is the
+		// ONLY place models are managed (this platform has no `ai models pull/rm`
+		// equivalent), so `ai services console omlx` opens it directly. It has NO
+		// container Component.
+		Name:     "omlx",
+		Endpoint: Endpoint{Port: OmlxPort, HasConsole: true, ConsolePath: "/admin"},
+		LogScope: "omlx",
 	},
 	{
 		Name:     "presidio",

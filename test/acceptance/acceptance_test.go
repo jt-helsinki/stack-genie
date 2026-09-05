@@ -130,7 +130,7 @@ func TestDoctorListsAllServices(test *testing.T) {
 	for _, check := range data.Checks {
 		names[check.Name] = true
 	}
-	for _, want := range []string{"vllm", "litellm", "headroom", "proxy", "dns"} {
+	for _, want := range []string{"omlx", "litellm", "headroom", "proxy", "dns"} {
 		if !names[want] {
 			test.Errorf("doctor SERVICES section missing %q (got %v)", want, names)
 		}

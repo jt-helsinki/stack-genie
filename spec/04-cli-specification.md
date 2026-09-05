@@ -107,7 +107,7 @@ CLI must behave identically on:
 * Project templates and agent configuration are **declarative data**
   (YAML / JSON). They are never executable application logic.
 * External components (Microsandbox via the `msb` CLI, LiteLLM, Headroom,
-  Presidio, vLLM, the Hugging Face CLI `hf`, docker / podman) are invoked as subprocesses or over their
+  Presidio, omlx, docker / podman) are invoked as subprocesses or over their
   HTTP APIs — never reimplemented. Version control is largely out of scope: the CLI
   exposes no git commands and never runs `gh`; the only git it runs is an internal
   `git init` at workspace start (to seat the Graphify hook — §6), never clone/remote.
@@ -281,12 +281,21 @@ Purpose:
   DNS → Presidio → Valkey(+RedisInsight) → Headroom → LiteLLM(+DB) →
   proxy (Headroom PRECEDES LiteLLM because LiteLLM's `headroom` compression
   guardrail calls it in-process). The **local-model inference tier is HOST-NATIVE,
-  not containers**: **vLLM** is the sole local-inference runtime (per-model host
-  processes, probed at `127.0.0.1:<port>/v1 (per-model, base 8101)`); the local
-  inference tier never runs as an `aip-*` container. Setup also best-effort installs both **vLLM**
-  (`ensureVLLMInstalled`) and the **Hugging Face CLI `hf`** (`ensureHFInstalled`)
-  into the platform venv, and verifies the Microsandbox workspace
-  runtime. *(hardware bring-up: installing / starting vLLM are not yet wired live.)*
+  not a container**: **omlx** is the sole local-inference runtime — ONE shared
+  `omlx serve --model-dir <dir> --port 8100` process (a fixed loopback port,
+  `services.OmlxPort`) serving every locally-served model it finds by scanning its
+  own model directory (`~/.ai-platform/volumes/models/omlx`), probed at
+  `127.0.0.1:8100/v1`; the local inference tier never runs as an `aip-*` container,
+  and there is no per-model process/port (unlike the retired vLLM design). Setup
+  also best-effort installs **omlx** (`ensureOmlxInstalled`) into the platform
+  venv, starts the server, syncs LiteLLM's `omlx/*` registrations against the
+  server's own live `GET /v1/models` (`SyncOmlxModels` — automatic, no user-facing
+  sync command needed at setup time; see §8.3), and verifies the Microsandbox
+  workspace runtime. *(hardware bring-up: the real `omlx serve` fork and the live
+  LiteLLM sync round-trip are exercised only on a provisioned host.)* Models
+  themselves are downloaded/added/removed/tuned entirely through **omlx's own
+  admin panel** (`ai services console omlx`, §10.2) — this platform has no
+  `ai models pull`/`rm`/`configure` equivalent.
 * renders each service config from the platform config and verifies the
   Microsandbox runtime + host virtualization (no docker compose; the container
   service tier runs as containers while the local-model tier is host-native, so
@@ -338,7 +347,8 @@ resolution best-effort:
 Missing **provider credentials are not a setup hard-fail**: `setup` does **not**
 prompt for cloud-provider API keys — add those anytime from `ai ui` (the API Keys
 tab) or `ai keys add <provider>`. Setup only runs the initial catalog → gateway
-model sync (reflecting any already-keyed providers + installed local vLLM models);
+model sync (reflecting any already-keyed providers + the models omlx is currently
+serving);
 `ai doctor` flags any absent credential, and a model call fails (exit `5`) only
 when that credential is actually needed (architecture §17, plan §7). Missing
 **dependencies** fail fast: a missing container or Microsandbox runtime exits `3`,
@@ -389,16 +399,16 @@ Behavior:
   left on the host — done on EVERY uninstall, not only `--purge`), removing the `ai` binary,
   removing the completion scripts, and stripping the managed PATH/completion lines
   from the shell rc files (leaving the user's own lines intact)
-* **also removes the host-native vLLM runtime by default** (best-effort: stops any
-  running `vllm serve` processes and uninstalls the runtime itself) — on a terminal
-  this is a confirm prompt ("Remove the host-native vLLM runtime?", default **yes**,
-  seeded by `--keep-runtimes`); under `--json`/no-TTY it removes the runtime unless
-  `--keep-runtimes` is passed. The **downloaded models are preserved either way** —
-  only `--purge` deletes them (see below)
+* **also removes the host-native omlx runtime by default** (best-effort: stops the
+  one shared `omlx serve` process and uninstalls the runtime itself) — on a
+  terminal this is a confirm prompt ("Remove the host-native omlx runtime?",
+  default **yes**, seeded by `--keep-runtimes`); under `--json`/no-TTY it removes
+  the runtime unless `--keep-runtimes` is passed. The **downloaded models are
+  preserved either way** — only `--purge` deletes them (see below)
 * **removes the platform state under `~/.ai-platform` but KEEPS the downloaded
   model store (`volumes/models`)** — the one expensive-to-refetch piece a user
-  usually wants to keep across a reinstall; the local vLLM model store
-  (`volumes/models/vllm`) is preserved on a non-purge uninstall. On a terminal
+  usually wants to keep across a reinstall; the local omlx model store
+  (`volumes/models/omlx`) is preserved on a non-purge uninstall. On a terminal
   whether to ALSO remove the downloaded models is its own confirm prompt (seeded by
   `--purge`); under `--json`/no-TTY, `--purge` removes `~/.ai-platform` in full,
   including the downloaded models
@@ -426,7 +436,7 @@ Guards / flags:
 * `--remove-deps` removes every detected external dependency **without
   prompting** (for non-interactive / `--json` use); without it, and with no
   terminal to prompt on, the dependencies are left in place and reported
-* `--keep-runtimes` keeps the host-native vLLM runtime installed instead of
+* `--keep-runtimes` keeps the host-native omlx runtime installed instead of
   removing it (the default is to remove it); the downloaded models are kept
   either way unless `--purge` is also given
 * `--dry-run` prints the planned steps (including which external dependencies
@@ -492,13 +502,17 @@ one command:
   (`graphify install --project [--platform <cli>]` in `~/project` — not at image build,
   since it writes project-scoped files). Each workspace gets a per-project **`.venv-msb`**
   virtualenv created at start regardless (see §7/§25)
-* `--graphify-model <ref>` — the **curated vLLM HF repo id Graphify uses** for its headless LLM
-  backend, e.g. `mlx-community/Qwen2.5-Coder-7B-Instruct-4bit`; optional (blank = none). On a terminal the wizard
-  offers an optional single-select from the curated model list; the chosen model
-  is stored as `agent.graphify_model`, pulled via `hf download` into the local vLLM store and
-  registered in the gateway if absent (best-effort — a pull failure is a create
-  warning, not a failure), and routed through the gateway as `vllm/<alias>` at
-  workspace start (architecture §17)
+* `--graphify-model <ref>` — the **name of a model omlx is already serving**, for
+  Graphify's headless LLM backend; optional (blank = none, the default). This is a
+  **plain model name**, not a Hugging Face repo id — there is no download at create
+  time and no curated-model picker; model management lives entirely in omlx's own
+  admin panel (`ai services console omlx`, §10.2). On a terminal the wizard shows a
+  free-text field (not a select) for the name; the chosen name is stored as
+  `agent.graphify_model` and routed through the gateway as `omlx/<name>` at
+  workspace start (architecture §17). *(The `--graphify-model` flag's own `--help`
+  text in the current build still describes the retired HF-repo-id/curated-list
+  behavior — a known doc/code drift; the behavior described here, driven from the
+  wizard's actual prompt and the seeded flag, is the real one.)*
 * `--apps <list>` — comma-separated in-VM AI apps to install
   (`openwebui`); **opt-in, default none**. Like `--stacks` it
   pre-seeds the wizard's apps multi-select on a terminal and drives the selection
@@ -664,11 +678,12 @@ Steps, in order:
    with the default set (`caveman,graphify,code-review-graph`); pre-seeded from `--tools`.
    Each is recorded as a `context.<tool>_enabled` bool.
 10. **Graphify model** *(shown only when `graphify` is selected in step 9)* — an
-   **optional** single-select of a curated vLLM HF repo id
-   (blank = none), mirroring the Models page. The choice is stored as
-   `agent.graphify_model`, pulled via `hf download` into the local vLLM store + registered in the gateway if
-   absent, and routed through the gateway as `vllm/<alias>`. Also settable
-   non-interactively via `--graphify-model`.
+   **optional** free-text field: the **name of a model omlx is already serving**
+   (blank = none). Models are managed entirely through omlx's own admin panel
+   (`ai services console omlx`) — there is no picker here and nothing is downloaded
+   at create time. The value is stored as `agent.graphify_model` and routed through
+   the gateway as `omlx/<name>`. Also settable non-interactively via
+   `--graphify-model`.
 
 There is no separate confirm step — completing the last group (Enter) creates
 the project; **Abort** at any point cancels.
@@ -1151,9 +1166,9 @@ At workspace start the platform installs a self-contained **`refresh-models`**
 command on `PATH` inside the microVM (`/usr/local/bin/refresh-models`, generated
 per-workspace by `agentcfg.RefreshScript` and installed via `sudo install -m 0755`).
 Run it **inside the workspace** after changing the served models on the host (add a
-provider key with `ai keys add …`, or pull/remove a local vLLM model with
-`ai models pull`/`rm`) to re-pull the in-VM agent model picker **without restarting
-the microVM**:
+provider key with `ai keys add …`, or add/remove a local model through omlx's own
+admin panel — `ai services console omlx` — followed by `ai models refresh`, §8.3)
+to re-pull the in-VM agent model picker **without restarting the microVM**:
 
 ```bash
 refresh-models      # run from any workspace session (ai shell / ai agent)
@@ -1260,11 +1275,12 @@ Returns a labeled, actionable summary (not a raw field dump):
 * the **LIVE** list of models the gateway currently serves, sourced from LiteLLM's
   own endpoints (`/model/info`, falling back to `/v1/models`) — **not** a hardcoded
   list. The list is the gateway's **DB-backed** served models: a keyed provider's
-  registered models.dev catalog models plus the registered vLLM models
-  (`vllm/<alias>`), each shown with its provider and (when `/model/info` exposes it)
-  its mode. The **providers** line is DERIVED from this live list (the distinct
-  provider prefixes), not from any hardcoded routing.
-* the local-model (vLLM — no key needed) vs cloud-provider (each needs a key
+  registered models.dev catalog models plus the registered omlx models
+  (`omlx/<id>`, `id` exactly as omlx's own live model list reports it), each shown
+  with its provider and (when `/model/info` exposes it) its mode. The **providers**
+  line is DERIVED from this live list (the distinct provider prefixes), not from
+  any hardcoded routing.
+* the local-model (omlx — no key needed) vs cloud-provider (each needs a key
   via `ai keys add <provider>`) split
 * a `ai models test <model>` next-step hint
 
@@ -1275,7 +1291,7 @@ shows a note rather than erroring out.
 
 The `--json` envelope carries the underlying fields (`healthy`, `providers`
 [live-derived], `default`, `local` [true when the gateway serves at least one
-local vLLM `vllm/<alias>` model], `models` [the live served list of
+local omlx `omlx/<id>` model], `models` [the live served list of
 `{name, provider, mode}`], `models_note` [why the list is empty when otherwise
 reachable], `base_url`).
 

@@ -5,22 +5,26 @@ hardware-isolated [Microsandbox](https://microsandbox.dev) microVM; the model
 path and guardrails run as a shared host container tier. One Go binary, `ai`, is
 the entire control plane.
 
-**Model path:** agent → nginx gateway → LiteLLM → host-native **vLLM** (the local
-runtime) or a cloud provider. LiteLLM applies a **user-selectable guardrail set** chosen at `ai setup`:
-the **Headroom** input-compression guardrail (LiteLLM POSTs the request to
-`aip-headroom:8787/v1/compress` in-process) is on by default, while Presidio
-secret-masking, detect-secrets, and a destructive-command tool-firewall are
-opt-in — Headroom is a compression service LiteLLM calls, not an nginx hop. A
-single nginx reverse proxy (`aip-proxy`) is the only host entry to
-the service tier — everything else runs internal-only on the `aip-net` network.
-Real provider API keys live only in the LiteLLM gateway (keys-in-LiteLLM),
-encrypted in its DB and added with `ai keys` — never on platform disk, in
-`config.yaml`, or in the workspace; the agent holds a scoped virtual key. Models
-are DB-backed and catalog-driven: adding a provider key registers that provider's
-[models.dev](https://models.dev) catalog models into the gateway (removing it
-unregisters them), and `ai models pull` downloads a local model with the Hugging Face
-CLI (`hf`) and serves it through host-native **vLLM** (registered as `vllm/<alias>`) —
-there is no built-in default model.
+**Model path:** agent → nginx gateway → LiteLLM → host-native **omlx**
+([jundot/omlx](https://github.com/jundot/omlx), the local runtime — macOS on
+Apple Silicon only) or a cloud provider. LiteLLM applies a **user-selectable
+guardrail set** chosen at `ai setup`: the **Headroom** input-compression guardrail
+(LiteLLM POSTs the request to `aip-headroom:8787/v1/compress` in-process) is on
+by default, while Presidio secret-masking, detect-secrets, and a
+destructive-command tool-firewall are opt-in — Headroom is a compression service
+LiteLLM calls, not an nginx hop. A single nginx reverse proxy (`aip-proxy`) is the
+only host entry to the service tier — everything else runs internal-only on the
+`aip-net` network. Real provider API keys live only in the LiteLLM gateway
+(keys-in-LiteLLM), encrypted in its DB and added with `ai keys` — never on
+platform disk, in `config.yaml`, or in the workspace; the agent holds a scoped
+virtual key. Cloud models are DB-backed and catalog-driven: adding a provider key
+registers that provider's [models.dev](https://models.dev) catalog models into
+the gateway (removing it unregisters them). Local models are a different story
+now: omlx is ONE shared server process that scans its own model directory and
+serves every model it finds — this platform has no `ai models pull` equivalent
+anymore. Models are downloaded/added/removed entirely through **omlx's own admin
+panel** (`ai services console omlx`); `ai setup` (and `ai services start|restart
+omlx`) auto-syncs whatever omlx currently reports into LiteLLM as `omlx/<id>`.
 Workspace egress is a Microsandbox NetworkPolicy you configure with `ai network`;
 it defaults to **public** (DNS-audited outbound, private ranges blocked) so the
 in-VM container runtime can pull images and is re-lockable to default-deny per
@@ -47,8 +51,7 @@ yourself:
 | Tool | Role | Install |
 |------|------|---------|
 | Docker or Podman (rootless) | service tier | `brew install --cask docker` (or `brew install podman`) |
-| [vLLM](https://docs.vllm.ai) | host-native local-model runtime (the sole local inference backend) | `ai models install-vllm` (macOS: vLLM-Metal plugin; Linux: `pip install vllm` on CUDA) — installed into the platform venv; `ai setup` best-effort installs it, `ai doctor` prints per-OS steps |
-| [Hugging Face CLI](https://huggingface.co/docs/huggingface_hub) (`hf`) | local model download + cache management | installed into the platform venv (`huggingface_hub[cli]`) — `ai setup` best-effort installs it |
+| [omlx](https://github.com/jundot/omlx) | host-native local-model runtime (the sole local inference backend; macOS/Apple Silicon only) | `ai setup` best-effort installs the latest release wheel into the platform venv; `ai services start omlx` retries it; `ai doctor` prints manual steps |
 | [Ghostty](https://ghostty.org) | terminal emulator (recommended) | `brew install --cask ghostty` |
 
 You do **not** install Microsandbox (`msb`) yourself: the platform pins the `msb`
@@ -59,7 +62,10 @@ the CLI and the SDK's in-process runtime in lockstep — installing `msb` separa
 and break workspace loads.
 
 Supported host: **macOS on Apple Silicon** (Microsandbox needs the Apple
-Hypervisor) or **Linux with KVM**.
+Hypervisor) or **Linux with KVM**. The sole local-inference backend, omlx, is
+macOS/Apple-Silicon-only with no fallback — a Linux host still runs the
+sandboxing + gateway (and cloud models work everywhere), it just has no local
+model runtime.
 
 > **Use [Ghostty](https://ghostty.org).** Workspace microVMs are headless — the
 > agent CLIs (OpenCode, etc.) run inside the VM and their terminal output is
@@ -75,11 +81,14 @@ Valkey + its RedisInsight GUI, and the DNS egress-audit resolver) is launched by
 `ai setup` as host containers on the `aip-net` network — you don't install those.
 Only the nginx gateway (`aip-proxy`) publishes a host port (`:18787`); every other
 service is internal-only and reached through it. The local model runtime is
-**host-native**, not a container: **vLLM** runs as per-model host processes (one
-`vllm serve` per served model) that LiteLLM reaches through the host gateway. `ai setup`
-best-effort installs vLLM and the Hugging Face CLI (`hf`) into the platform venv;
-`ai models install-vllm` installs/repairs vLLM on demand (`ai doctor` prints per-OS
-steps). The host UIs are served as
+**host-native**, not a container: **omlx** runs as ONE shared server process
+(`omlx serve --model-dir <dir> --port 8100`) serving every model it finds in its
+own model directory, reached by LiteLLM through the host gateway. `ai setup`
+best-effort installs it into the platform venv; `ai services start omlx` retries
+the install on demand (`ai doctor` prints manual steps). Models are
+downloaded/managed entirely through **omlx's own admin panel**
+(`ai services console omlx` opens it) — this platform has no `ai models pull`
+equivalent. The host UIs are served as
 Host-based subdomains off a platform base domain (default `aip.local`, set with
 `ai domain`), both on `:18787`: `litellm.<domain>` (the LiteLLM admin UI) and
 `valkey.<domain>` (the RedisInsight GUI for the LiteLLM response cache). (Open WebUI
@@ -210,18 +219,12 @@ ai keys add openai                   # store a provider API key (encrypted in th
 ai keys list                         # providers + whether a key is set (never the key value)
 ai keys remove openai                # remove the key and unregister that provider's models
 
-ai models status                     # gateway's live served models (added keys + pulled local)
-ai models test  vllm/qwen-vllm       # round-trip one of the served models
-ai models list                       # locally-downloaded models (vLLM store, via `hf cache ls`)
-ai models popular                    # the curated, vLLM-servable installable model list
-ai models install-vllm               # install the vLLM backend into the platform venv (one-shot)
-ai models login                      # authenticate the Hugging Face CLI to pull gated repos (logout clears it)
-ai models pull mlx-community/Qwen2.5-7B-Instruct-4bit --alias qwen-vllm  # hf download → serve via vLLM, registered as vllm/qwen-vllm (rm too)
-ai models configure qwen-vllm --gpu-memory-utilization 0.4  # change a pulled model's vLLM resource caps, no re-download
-ai models disable qwen-vllm          # stop it + exclude it from `ai setup`/`ai services start vllm` auto-start (enable re-starts it)
+ai models status                     # gateway health/providers/routing + omlx connectivity
+ai models test  omlx/qwen3-4b        # round-trip one of the served models
 
-ai services status                   # host service tier
+ai services status                   # host service tier (incl. host-native omlx)
 ai services console litellm          # open the LiteLLM admin UI
+ai services console omlx             # open omlx's own admin panel — download/add/remove/tune models here
 ai services update                   # re-pull the latest service images and recreate containers
 ai litellm password                  # set/rotate the LiteLLM admin UI password (secures the gateway)
 ai logs --tail                       # project + platform logs
@@ -233,7 +236,7 @@ ai theme                             # show/select the CLI + TUI colour theme
 
 ```bash
 ai ui                                # K9s-style dashboard: Services · Workspaces ·
-                                     #   Local/Cloud Models · API Keys · Settings
+                                     #   Cloud Models · API Keys · Settings
 ```
 
 `ai ui` navigates with Tab/←→/number keys (quit `q`) and captures the mouse by
@@ -258,13 +261,13 @@ first and **never touches `~/projects`** (your source):
 ```bash
 ai uninstall                 # binary, PATH/completion entries, aip-* containers, ~/.ai-platform state (KEEPS downloaded models)
 ai uninstall --purge         # also the downloaded model store — removes ~/.ai-platform in full
-ai uninstall --keep-runtimes # keep the host-native vLLM runtime (it is removed by default)
+ai uninstall --keep-runtimes # keep the host-native omlx runtime (it is removed by default)
 ai uninstall --remove-deps   # also uninstall msb
 ai uninstall --yes           # skip the prompt (automation); --dry-run to preview
 ```
 
-`ai uninstall` always stops any running `vllm serve` servers, and by default also removes
-the host-native vLLM runtime (it prompts, defaulting to yes; `--keep-runtimes` keeps it).
+`ai uninstall` always stops the running `omlx serve` server, and by default also removes
+the host-native omlx runtime (it prompts, defaulting to yes; `--keep-runtimes` keeps it).
 The downloaded models are kept unless `--purge`. It streams progress, asks per external
 dependency (`msb`), and logs to `~/ai-uninstall.log`.
 

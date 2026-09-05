@@ -85,23 +85,24 @@ func TestCloudModelsBuildsRows(test *testing.T) {
 	}
 }
 
-// Local vLLM models are also registered in the gateway ("vllm/<alias>", provider
-// "vllm") but belong to the Local Models tab, so Cloud Models must exclude them.
-func TestCloudModelsExcludesLocalVLLM(test *testing.T) {
+// Local omlx models are also registered in the gateway ("omlx/<id>", provider
+// "omlx") by the automatic sync, but they're managed entirely through omlx's own
+// admin panel, so Cloud Models must exclude them.
+func TestCloudModelsExcludesLocalOmlx(test *testing.T) {
 	view := buildCloud(test,
 		[]litellm.LiveModel{
 			{Name: "openai/gpt-5.5", Provider: "openai"},
-			{Name: "vllm/smollm-135m", Provider: "vllm"},
+			{Name: "omlx/smollm-135m", Provider: "omlx"},
 		},
 		nil, noTest)
 	if len(view.models) != 1 {
-		test.Fatalf("cloud rows = %d, want 1 (the vllm model excluded)", len(view.models))
+		test.Fatalf("cloud rows = %d, want 1 (the omlx model excluded)", len(view.models))
 	}
 	if view.models[0].name != "openai/gpt-5.5" {
 		test.Errorf("only the cloud model should remain, got %+v", view.models)
 	}
-	if strings.Contains(view.View(), "vllm/") {
-		test.Errorf("a local vllm model must not appear in Cloud Models:\n%s", view.View())
+	if strings.Contains(view.View(), "omlx/") {
+		test.Errorf("a local omlx model must not appear in Cloud Models:\n%s", view.View())
 	}
 }
 

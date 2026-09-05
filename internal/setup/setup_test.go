@@ -595,7 +595,7 @@ func hasService(specs []serviceSpec, name string) bool {
 // returns "" for every name. The hook is retained for a future multi-container
 // optional service.
 func TestOwningServiceReturnsEmpty(test *testing.T) {
-	for _, name := range []string{"chromadb", "searxng", "ntfy", "litellm", "vllm", "presidio", "litellm-db", "", "bogus"} {
+	for _, name := range []string{"chromadb", "searxng", "ntfy", "litellm", "omlx", "presidio", "litellm-db", "", "bogus"} {
 		if got := owningService(name); got != "" {
 			test.Errorf("owningService(%q) = %q, want empty", name, got)
 		}
@@ -914,7 +914,7 @@ func TestReportHumanShowsAddressAndConsole(test *testing.T) {
 		Services: []ServiceStatus{
 			{Name: "litellm", Mode: "container", State: "running", Healthy: true,
 				Address: "http://litellm.aip.local:18787", Console: "http://litellm.aip.local:18787/ui/login"},
-			{Name: "vllm", Mode: "host", State: "running", Healthy: true,
+			{Name: "omlx", Mode: "host", State: "running", Healthy: true,
 				Address: "http://127.0.0.1:8101/v1"},
 			{Name: "presidio", Mode: "container", State: "running", Healthy: true},
 		},
@@ -924,9 +924,9 @@ func TestReportHumanShowsAddressAndConsole(test *testing.T) {
 	if !strings.Contains(rendered, "http://litellm.aip.local:18787 · UI http://litellm.aip.local:18787/ui/login") {
 		test.Errorf("litellm address+UI missing:\n%s", rendered)
 	}
-	// vllm shows its address only (no UI).
+	// omlx shows its address only (no UI).
 	if !strings.Contains(rendered, "http://127.0.0.1:8101/v1") {
-		test.Errorf("vllm address missing:\n%s", rendered)
+		test.Errorf("omlx address missing:\n%s", rendered)
 	}
 	// presidio (no host endpoint) shows neither an address nor a UI hint.
 	for _, presidioLine := range strings.Split(rendered, "\n") {
@@ -939,7 +939,7 @@ func TestReportHumanShowsAddressAndConsole(test *testing.T) {
 func TestDesiredServicesAreRequired(test *testing.T) {
 	// vLLM (the local model backend), Presidio, LiteLLM, and Headroom are all required
 	// host services (arch §14/§16).
-	for _, name := range []string{"vllm", "presidio", "litellm", "headroom", "proxy", "dns"} {
+	for _, name := range []string{"omlx", "presidio", "litellm", "headroom", "proxy", "dns"} {
 		if !hasService(desiredServices(), name) {
 			test.Errorf("required service %q missing from desiredServices: %+v", name, desiredServices())
 		}
@@ -993,7 +993,7 @@ func TestRequiredImagesCoversEveryService(test *testing.T) {
 		}
 		have[ref] = true
 	}
-	// vLLM is host-native (no aip-vllm container), so it has no image in this set.
+	// omlx is host-native (no aip-omlx container), so it has no image in this set.
 	for _, service := range []string{
 		"presidio-analyzer", "presidio-anonymizer",
 		"litellm", "litellm-db",
@@ -1207,7 +1207,7 @@ func TestNoOptionalServices(test *testing.T) {
 	if got := optionalServiceNames(); len(got) != 0 {
 		test.Errorf("optionalServiceNames = %v, want empty (no optional host services)", got)
 	}
-	for _, core := range []string{"vllm", "presidio", "litellm", "headroom", "proxy", "dns"} {
+	for _, core := range []string{"omlx", "presidio", "litellm", "headroom", "proxy", "dns"} {
 		if isOptionalService(core) {
 			test.Errorf("%q must be a core service, not optional", core)
 		}
@@ -1347,7 +1347,7 @@ func TestRunOptionalNoneDisables(test *testing.T) {
 
 // TestStatusForHasNoOptional: with no optional services, statusFor lists only the
 // core services and none of the CONTAINER-TIER services is marked Optional (the
-// enable/disable optional-service set is empty). The host-native `vllm` summary line
+// enable/disable optional-service set is empty). The host-native `omlx` summary line
 // is legitimately opt-in — it carries Optional purely so `ai doctor` WARNS (not
 // errors) when it is down — so it is excluded from this container-tier invariant.
 func TestStatusForHasNoOptional(test *testing.T) {
@@ -1358,7 +1358,7 @@ func TestStatusForHasNoOptional(test *testing.T) {
 		test.Fatal(err)
 	}
 	for _, status := range statuses {
-		if status.Name == "vllm" {
+		if status.Name == "omlx" {
 			continue // host-native opt-in backend; Optional is a doctor-severity marker
 		}
 		if status.Optional {

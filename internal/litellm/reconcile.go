@@ -2,13 +2,15 @@ package litellm
 
 // Sync / reconcile engine (Phase B). The DESIRED model set is derived from the
 // catalog (every model of each LiteLLM-routable provider the user has keyed); the
-// CURRENT set is the live gateway list (ListModels). Local vLLM models
-// (vllm/<alias>) are NOT part of the desired set here — they are registered/removed
-// individually by `ai models pull|rm` (Register/UnregisterVLLMModel) and SHIELDED
-// from this cloud-key resync's delete pass (see localModelPrefixes/nonLocalModels).
-// Reconcile is a PURE diff (add/delete by model_name) and is unit-tested without a
-// client; SyncModels wires the catalog → desired build, the live list, the diff, and
-// the apply behind the injectable KeyManager.
+// CURRENT set is the live gateway list (ListModels). Local omlx models
+// (omlx/<id>) are NOT part of the desired set here — they are synced separately
+// via SyncOmlxModels (driven by omlx's own live GET /v1/models, not the catalog)
+// and SHIELDED from this cloud-key resync's delete pass (see
+// localModelPrefixes/nonLocalModels). Reconcile is a PURE diff (add/delete by
+// model_name) and is unit-tested without a client; SyncModels wires the catalog →
+// desired build, the live list, the diff, and the apply behind the injectable
+// KeyManager — SyncOmlxModels (below) reuses the exact same Reconcile/ApplyPlan
+// machinery for the omlx side.
 
 import (
 	"sort"
@@ -18,7 +20,7 @@ import (
 )
 
 // DesiredModel is one model the platform wants the gateway to serve. Name is the
-// public model_name (the catalog id verbatim for cloud, "vllm/<alias>" for
+// public model_name (the catalog id verbatim for cloud, "omlx/<id>" for
 // local); Params + Info are the AddModel payload.
 type DesiredModel struct {
 	Name   string
@@ -80,8 +82,8 @@ func Reconcile(desired []DesiredModel, current []LiveModel) Plan {
 // provider id), every catalog model of that provider is desired — model_name = the
 // catalog id verbatim, litellm_params.model = LiteLLMModelParam(id),
 // litellm_credential_name = CredentialName(<litellm prefix>), model_info = the catalog
-// metadata. Local vLLM models are NOT part of this set (they are managed individually
-// by `ai models pull|rm`).
+// metadata. Local omlx models are NOT part of this set (they are synced separately
+// by SyncOmlxModels).
 //
 // keyedProviders are CATALOG provider ids (e.g. "openai", "google") the user has a
 // credential for; a keyed provider that is not LiteLLM-routable is skipped. The
@@ -151,22 +153,76 @@ func (manager *KeyManager) SyncModels(cat *catalog.Catalog, keyedProviders []str
 		return SyncResult{}, err
 	}
 	plan := Reconcile(desired, current)
-	// A cloud-key/catalog resync must NEVER delete LOCAL models: vLLM
-	// ("vllm/<alias>") models are owned exclusively by their own register/unregister
-	// path (Register/UnregisterVLLMModel — `ai models pull|rm`), never by the catalog
+	// A cloud-key/catalog resync must NEVER delete LOCAL models: omlx ("omlx/<id>")
+	// models are owned exclusively by SyncOmlxModels (below), never by the catalog
 	// resync. Without this guard, a cloud-key resync would wipe every registered local
 	// model from LiteLLM. Keep only the non-local deletes; cloud adds still apply.
 	plan.Delete = nonLocalModels(plan.Delete)
 	return manager.ApplyPlan(plan)
 }
 
+// DesiredOmlxModels builds the desired model set from omlx's own live model ids
+// (as returned by omlx's GET /v1/models — see internal/omlx.ListModels; the
+// CALLER converts that to plain ids so this package stays backend-agnostic, never
+// importing internal/omlx directly). Every id is desired as "omlx/<id>", routed to
+// "openai/<id>" against the single shared apiBase (the one omlx server — unlike
+// the old per-model vLLM design, every id shares the SAME endpoint). Result is
+// sorted by model_name.
+func DesiredOmlxModels(liveModelIDs []string, apiBase string) []DesiredModel {
+	desired := make([]DesiredModel, 0, len(liveModelIDs))
+	for _, id := range liveModelIDs {
+		if id == "" {
+			continue
+		}
+		params, info := omlxModelParamsInfo(id, apiBase)
+		desired = append(desired, DesiredModel{Name: OmlxModelName(id), Params: params, Info: info})
+	}
+	sort.Slice(desired, func(left, right int) bool { return desired[left].Name < desired[right].Name })
+	return desired
+}
+
+// SyncOmlxModels reconciles the gateway's live omlx/* registrations against
+// omlx's own live model list (liveModelIDs — see DesiredOmlxModels), adding newly
+// appeared models and removing ones that disappeared. It is scoped to ONLY
+// omlx/*-prefixed live entries (onlyLocalModels) so it never touches cloud
+// registrations — the mirror image of SyncModels' nonLocalModels guard. Called
+// automatically at `ai setup` and at omlx service start/restart; there is no
+// user-facing command for this (model management lives in omlx's own admin
+// panel — this sync just mirrors whatever it reports into the gateway).
+//
+// hardware bring-up: the live /model/new + /model/delete round-trips run only
+// against a running aip-litellm.
+func (manager *KeyManager) SyncOmlxModels(liveModelIDs []string, apiBase string) (SyncResult, error) {
+	desired := DesiredOmlxModels(liveModelIDs, apiBase)
+	current, err := manager.ListModels()
+	if err != nil {
+		return SyncResult{}, err
+	}
+	plan := Reconcile(desired, onlyLocalModels(current))
+	return manager.ApplyPlan(plan)
+}
+
 // localModelPrefixes are the public model_name prefixes owned by the local-inference
-// register/unregister paths, NOT by the catalog resync — so SyncModels must never delete
-// them (see nonLocalModels).
-var localModelPrefixes = []string{"vllm/"}
+// (omlx) sync, NOT by the catalog resync — so SyncModels must never delete them
+// (see nonLocalModels), and SyncOmlxModels must never consider anything else (see
+// onlyLocalModels).
+var localModelPrefixes = []string{"omlx/"}
+
+// onlyLocalModels returns the models whose public name IS a local-backend route
+// (omlx/*) — the inverse of nonLocalModels, scoping SyncOmlxModels's reconcile to
+// exactly the entries it owns so it never proposes deleting a cloud model.
+func onlyLocalModels(models []LiveModel) []LiveModel {
+	kept := make([]LiveModel, 0, len(models))
+	for _, model := range models {
+		if isLocalModel(model.Name) {
+			kept = append(kept, model)
+		}
+	}
+	return kept
+}
 
 // nonLocalModels returns the models whose public name is NOT a local-backend route
-// (vllm/*), shielding local registrations from the cloud-key resync's delete pass.
+// (omlx/*), shielding local registrations from the cloud-key resync's delete pass.
 func nonLocalModels(models []LiveModel) []LiveModel {
 	kept := make([]LiveModel, 0, len(models))
 	for _, model := range models {

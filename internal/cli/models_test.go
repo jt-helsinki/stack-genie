@@ -3,6 +3,7 @@ package cli
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"io"
 	"strings"
 	"testing"
@@ -55,11 +56,11 @@ func TestModelsStatusRendersLiveModels(test *testing.T) {
 	status := litellm.StatusInfo{
 		Healthy:   true,
 		Default:   "gemma4",
-		Providers: []string{"anthropic", "vllm"},
+		Providers: []string{"anthropic", "omlx"},
 		Local:     true,
 		BaseURL:   "http://127.0.0.1:14000",
 		Models: []litellm.Model{
-			{Name: "vllm/gemma4", Provider: "openai", Mode: "chat"},
+			{Name: "omlx/gemma4", Provider: "openai", Mode: "chat"},
 			{Name: "claude-opus", Provider: "anthropic", Mode: "chat"},
 		},
 	}
@@ -70,7 +71,7 @@ func TestModelsStatusRendersLiveModels(test *testing.T) {
 	if len(data.Models) != 2 {
 		test.Fatalf("envelope served models = %d, want 2", len(data.Models))
 	}
-	if strings.Join(data.Providers, ",") != "anthropic,vllm" {
+	if strings.Join(data.Providers, ",") != "anthropic,omlx" {
 		test.Errorf("providers = %v, want the live-derived set", data.Providers)
 	}
 	// Human render shows the served list too.
@@ -142,12 +143,12 @@ func TestServedModelNamesExcludeWildcards(test *testing.T) {
 	litellmClient = func() litellm.Client {
 		return modelsListClient{models: []litellm.Model{
 			{Name: "openai/gpt-5.5", Provider: "openai"},
-			{Name: "vllm/gemma4", Provider: "openai"},
+			{Name: "omlx/gemma4", Provider: "openai"},
 			{Name: "openai/*", Provider: "openai"}, // wildcard → excluded
 		}}
 	}
 	got := servedModelNames()
-	want := []string{"openai/gpt-5.5", "vllm/gemma4"} // sorted, wildcard dropped
+	want := []string{"omlx/gemma4", "openai/gpt-5.5"} // sorted, wildcard dropped
 	if strings.Join(got, ",") != strings.Join(want, ",") {
 		test.Errorf("servedModelNames() = %v, want %v", got, want)
 	}
@@ -162,5 +163,61 @@ func TestServedModelNamesGatewayDown(test *testing.T) {
 	}
 	if got := servedModelNames(); len(got) != 0 {
 		test.Errorf("servedModelNames() = %v, want empty when the gateway is down", got)
+	}
+}
+
+// `ai models refresh` reports what the sync added/removed.
+func TestModelsRefreshReportsSyncResult(test *testing.T) {
+	original := syncOmlxModelsFn
+	defer func() { syncOmlxModelsFn = original }()
+	syncOmlxModelsFn = func() (litellm.SyncResult, error) {
+		return litellm.SyncResult{Added: []string{"omlx/qwen3-coder"}, Deleted: []string{"omlx/old-model"}}, nil
+	}
+
+	var buf bytes.Buffer
+	emitter := &output.Emitter{Out: &buf, Err: io.Discard, JSON: true}
+	exit := output.ExitOK
+	cmd := newModelsRefreshCmd(emitter, &exit)
+	cmd.SetOut(io.Discard)
+	cmd.SetErr(io.Discard)
+	if err := cmd.Execute(); err != nil {
+		test.Fatalf("models refresh returned error: %v", err)
+	}
+	if exit != output.ExitOK {
+		test.Fatalf("exit = %d, want 0", exit)
+	}
+	var envelope struct {
+		Data litellm.SyncResult `json:"data"`
+	}
+	if err := json.Unmarshal(buf.Bytes(), &envelope); err != nil {
+		test.Fatalf("envelope not valid JSON: %v\n%s", err, buf.String())
+	}
+	if len(envelope.Data.Added) != 1 || envelope.Data.Added[0] != "omlx/qwen3-coder" {
+		test.Errorf("Added = %v, want [omlx/qwen3-coder]", envelope.Data.Added)
+	}
+	if len(envelope.Data.Deleted) != 1 || envelope.Data.Deleted[0] != "omlx/old-model" {
+		test.Errorf("Deleted = %v, want [omlx/old-model]", envelope.Data.Deleted)
+	}
+}
+
+// A sync failure is a real error (exit 4), not silently swallowed — the user asked
+// for a refresh and should know if it didn't happen.
+func TestModelsRefreshSyncFailure(test *testing.T) {
+	original := syncOmlxModelsFn
+	defer func() { syncOmlxModelsFn = original }()
+	syncOmlxModelsFn = func() (litellm.SyncResult, error) {
+		return litellm.SyncResult{}, errors.New("omlx unreachable")
+	}
+
+	emitter := &output.Emitter{Out: io.Discard, Err: io.Discard, JSON: true}
+	exit := output.ExitOK
+	cmd := newModelsRefreshCmd(emitter, &exit)
+	cmd.SetOut(io.Discard)
+	cmd.SetErr(io.Discard)
+	if err := cmd.Execute(); err != nil {
+		test.Fatalf("models refresh returned error: %v", err)
+	}
+	if exit != output.ExitRuntimeFailure {
+		test.Errorf("exit = %d, want ExitRuntimeFailure", exit)
 	}
 }

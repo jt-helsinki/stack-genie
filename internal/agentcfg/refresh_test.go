@@ -94,9 +94,9 @@ func TestRefreshScriptParityWithGenerators(test *testing.T) {
 	// model that OMITS the field (unknown → treated as tool-capable) — so both the
 	// tool_call:true and tool_call:false item variants are exercised.
 	models := `{"data":[` +
-		`{"model_name":"vllm/qwen2.5:7b","model_info":{"id":"a","supports_function_calling":false}},` +
+		`{"model_name":"omlx/qwen2.5:7b","model_info":{"id":"a","supports_function_calling":false}},` +
 		`{"model_name":"anthropic/claude-opus-4-8","model_info":{"id":"b"}},` +
-		`{"model_name":"vllm/llama3.2:latest","model_info":{"id":"c","supports_function_calling":true}},` +
+		`{"model_name":"omlx/llama3.2:latest","model_info":{"id":"c","supports_function_calling":true}},` +
 		`{"model_name":"anthropic/claude-opus-4-8","model_info":{"id":"b"}}` +
 		`]}`
 	writeFakeCurl(test, binDir, models, true)
@@ -110,8 +110,8 @@ func TestRefreshScriptParityWithGenerators(test *testing.T) {
 	// support from supports_function_calling (absent = tool-capable).
 	merged := []Model{
 		{Name: "anthropic/claude-opus-4-8", Tools: true},
-		{Name: "vllm/llama3.2:latest", Tools: true},
-		{Name: "vllm/qwen2.5:7b", Tools: false},
+		{Name: "omlx/llama3.2:latest", Tools: true},
+		{Name: "omlx/qwen2.5:7b", Tools: false},
 	}
 
 	// refresh-models rewrites a KEYLESS config (the {env:}/$VAR refs), never the literal

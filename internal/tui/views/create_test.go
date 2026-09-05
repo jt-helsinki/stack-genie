@@ -8,7 +8,6 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/jt-helsinki/stack-genie/internal/create"
-	"github.com/jt-helsinki/stack-genie/internal/hf"
 	"github.com/jt-helsinki/stack-genie/internal/state"
 )
 
@@ -171,7 +170,7 @@ func TestLocationAutocompletionPrefixMatchesChildDirs(test *testing.T) {
 // TestCreateWizardCancels verifies esc from the first step cancels the whole wizard.
 func TestCreateWizardCancels(test *testing.T) {
 	test.Setenv("HOME", test.TempDir())
-	wizard := NewCreate(test.TempDir(), nil, 24, 18)
+	wizard := NewCreate(test.TempDir(), 24, 18)
 	cmd := wizard.Update(tea.KeyMsg{Type: tea.KeyEsc})
 	if cmd == nil {
 		test.Fatal("esc must emit a cancel command")
@@ -186,9 +185,8 @@ func TestCreateWizardAssemblesSpec(test *testing.T) {
 	test.Setenv("HOME", test.TempDir())
 	base := test.TempDir()
 	target := filepath.Join(base, "demo-ws")
-	curated := []hf.CuratedModel{{Name: "Llama-3.2-3B-Instruct-4bit", Repo: "mlx-community/Llama-3.2-3B-Instruct-4bit"}}
 
-	wizard := NewCreate(base, curated, 24, 18)
+	wizard := NewCreate(base, 24, 18)
 	wizard.SetSize(80, 24)
 
 	enter := func() tea.Cmd { return wizard.Update(tea.KeyMsg{Type: tea.KeyEnter}) }
@@ -224,14 +222,14 @@ func TestCreateWizardAssemblesSpec(test *testing.T) {
 	if wizard.step != stepTools {
 		test.Fatalf("after idle, step = %d, want stepTools", wizard.step)
 	}
-	// AI tools: defaults are caveman + graphify + code-review-graph. Graphify is selected
-	// and this wizard HAS a cached library, so the Graphify-model step is shown next.
+	// AI tools: defaults are caveman + graphify + code-review-graph. Graphify is
+	// selected, so the Graphify-model step is shown next.
 	enter()
 	if wizard.step != stepModel {
 		test.Fatalf("after AI-tools, step = %d, want stepModel", wizard.step)
 	}
-	// Model step: "(none)" is the first row — enter selects it and finishes (no
-	// OAuth-capable agents in the default opencode selection).
+	// Model step: blank (no model typed) — enter finishes (no OAuth-capable agents
+	// in the default opencode selection).
 	cmd := enter()
 	if cmd == nil {
 		test.Fatal("selecting the model (none) should finish and emit a command")
@@ -277,21 +275,19 @@ func TestCreateWizardAssemblesSpec(test *testing.T) {
 	}
 }
 
-// TestCreateWizardModelPick selects a curated repo and checks the value (a repo id;
-// vLLM is the sole local runtime, so there are no tags to drill).
-func TestCreateWizardModelPick(test *testing.T) {
-	curated := []hf.CuratedModel{{Name: "Qwen2.5-Coder-7B-Instruct-4bit", Repo: "mlx-community/Qwen2.5-Coder-7B-Instruct-4bit"}}
-	picker := newModelPicker(curated, "")
-	picker.SetSize(80, 20)
+// TestCreateWizardModelStepIsPlainText verifies the Graphify-model step is a plain
+// text field (the NAME of a model omlx is already serving, no curated list/pull) —
+// typing a name and pressing enter carries it through as-is.
+func TestCreateWizardModelStepIsPlainText(test *testing.T) {
+	wizard := NewCreate(test.TempDir(), 24, 18)
+	wizard.SetSize(80, 24)
+	wizard.step = stepModel
 
-	// Move off "(none)" to the curated repo, then select it.
-	picker.Update(tea.KeyMsg{Type: tea.KeyDown})          // (none) -> the repo
-	done := picker.Update(tea.KeyMsg{Type: tea.KeyEnter}) // select it
-	if !done {
-		test.Fatal("selecting a model should finish the model step")
+	for _, r := range "qwen3-coder" {
+		wizard.model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
 	}
-	if picker.Value() != "mlx-community/Qwen2.5-Coder-7B-Instruct-4bit" {
-		test.Errorf("picker.Value() = %q, want the repo id", picker.Value())
+	if got := wizard.model.Value(); got != "qwen3-coder" {
+		test.Fatalf("model.Value() = %q, want qwen3-coder", got)
 	}
 }
 
@@ -337,7 +333,7 @@ func TestCreateWizardAuthModeStep(test *testing.T) {
 	base := test.TempDir()
 	target := filepath.Join(base, "demo-ws")
 
-	wizard := NewCreate(base, nil, 24, 18) // nil library → the model step auto-advances
+	wizard := NewCreate(base, 24, 18)
 	wizard.SetSize(80, 24)
 	enter := func() tea.Cmd { return wizard.Update(tea.KeyMsg{Type: tea.KeyEnter}) }
 	press := func(k tea.KeyType) { wizard.Update(tea.KeyMsg{Type: k}) }
@@ -365,9 +361,11 @@ func TestCreateWizardAuthModeStep(test *testing.T) {
 	if wizard.step != stepTools {
 		test.Fatalf("expected the AI-tools step, got step %d", wizard.step)
 	}
-	// nil library → the model step auto-advances, so leaving AI tools goes straight to the
-	// auth phase for the selected claude-code.
-	enter() // AI tools → (model skipped) → auth phase
+	enter() // AI tools → model step (graphify is a default-on tool)
+	if wizard.step != stepModel {
+		test.Fatalf("expected the Graphify-model step, got step %d", wizard.step)
+	}
+	enter() // model (blank) → auth phase for the selected claude-code
 	if wizard.step != stepAuth {
 		test.Fatalf("expected the auth step for the selected claude-code, got step %d", wizard.step)
 	}
@@ -396,7 +394,7 @@ func TestCreateWizardPromptsAppPort(test *testing.T) {
 	base := test.TempDir()
 	target := filepath.Join(base, "app-ws")
 
-	wizard := NewCreate(base, nil, 24, 18) // nil library → the Graphify-model step is skipped
+	wizard := NewCreate(base, 24, 18)
 	wizard.SetSize(80, 24)
 	enter := func() tea.Cmd { return wizard.Update(tea.KeyMsg{Type: tea.KeyEnter}) }
 	press := func(k tea.KeyType) { wizard.Update(tea.KeyMsg{Type: k}) }
@@ -430,9 +428,13 @@ func TestCreateWizardPromptsAppPort(test *testing.T) {
 	if wizard.step != stepTools {
 		test.Fatalf("after idle, step = %d, want stepTools", wizard.step)
 	}
-	enter() // tools → (model skipped) → app-port phase
+	enter() // tools → model step (graphify is a default-on tool)
+	if wizard.step != stepModel {
+		test.Fatalf("after AI tools, step = %d, want stepModel", wizard.step)
+	}
+	enter() // model (blank) → app-port phase
 	if wizard.step != stepAppPorts {
-		test.Fatalf("after AI tools, step = %d, want stepAppPorts", wizard.step)
+		test.Fatalf("after model, step = %d, want stepAppPorts", wizard.step)
 	}
 	if len(wizard.appPortKeys) != 1 || wizard.appPortKeys[0] != "openwebui" {
 		test.Fatalf("app-port phase keys = %v, want [openwebui]", wizard.appPortKeys)

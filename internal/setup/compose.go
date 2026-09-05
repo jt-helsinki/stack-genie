@@ -20,7 +20,7 @@ import (
 // names, `containerImage`, `platformNetwork`, the volume/config paths), so it stays in
 // sync. Local inference is deliberately ABSENT — it is HOST-NATIVE vLLM now (the reconcile
 // runs no local-inference container and no local-inference nginx route; LiteLLM reaches
-// each per-model `vllm serve` endpoint via host.docker.internal), so a containerized
+// the single shared `omlx serve` endpoint via host.docker.internal), so a containerized
 // local backend here would NOT match the running topology. Secrets stay OFF disk: UI_PASSWORD / LITELLM_MASTER_KEY /
 // LITELLM_SALT_KEY are emitted in compose's PASSTHROUGH form (bare NAME, no value), so
 // `docker compose up` reads them from the environment (e.g. ~/.ai-platform/.ai-platform.env)
@@ -110,7 +110,7 @@ func ServicesComposeYAML(bindHost string) ([]byte, error) {
 				Command: []string{"-conf", "/Corefile"},
 			},
 			// Local inference is HOST-NATIVE vLLM — no local-inference container is rendered
-			// here (see the file header). LiteLLM reaches each per-model `vllm serve`
+			// here (see the file header). LiteLLM reaches the single shared `omlx serve`
 			// endpoint via host.docker.internal, not a compose service.
 			presidioAnalyzerContainer: {
 				Image: containerImage("presidio-analyzer"), ContainerName: presidioAnalyzerContainer, Networks: []string{net}, Restart: "unless-stopped",

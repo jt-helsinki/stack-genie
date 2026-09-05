@@ -170,7 +170,7 @@ func TestListModelsParses(test *testing.T) {
 		}
 		_, _ = writer.Write([]byte(`{"data":[
 			{"model_name":"openai/gpt-5.5","litellm_params":{"model":"openai/gpt-5.5"},"model_info":{"id":"id-1"}},
-			{"model_name":"vllm/my-qwen","litellm_params":{"model":"openai/my-qwen"},"model_info":{"id":"id-2"}},
+			{"model_name":"omlx/my-qwen","litellm_params":{"model":"openai/my-qwen"},"model_info":{"id":"id-2"}},
 			{"model_name":"openai/gpt-5.5","litellm_params":{"model":"openai/gpt-5.5"},"model_info":{"id":"dup"}}
 		]}`))
 	}))
@@ -192,8 +192,8 @@ func TestListModelsParses(test *testing.T) {
 	if got := byName["openai/gpt-5.5"]; got.ID != "id-1" || got.Provider != "openai" {
 		test.Errorf("openai model = %+v, want id-1 / openai", got)
 	}
-	if got := byName["vllm/my-qwen"]; got.ID != "id-2" || got.Provider != "openai" {
-		test.Errorf("vllm model = %+v, want id-2 / openai", got)
+	if got := byName["omlx/my-qwen"]; got.ID != "id-2" || got.Provider != "openai" {
+		test.Errorf("omlx model = %+v, want id-2 / openai", got)
 	}
 }
 
@@ -212,27 +212,28 @@ func TestCredentialName(test *testing.T) {
 	}
 }
 
-// TestVLLMModelName pins the public-handle convention: "vllm/<alias>".
-func TestVLLMModelName(test *testing.T) {
-	if got := VLLMModelName("my-qwen"); got != "vllm/my-qwen" {
-		test.Errorf("VLLMModelName = %q, want vllm/my-qwen", got)
+// TestOmlxModelName pins the public-handle convention: "omlx/<id>".
+func TestOmlxModelName(test *testing.T) {
+	if got := OmlxModelName("my-qwen"); got != "omlx/my-qwen" {
+		test.Errorf("OmlxModelName = %q, want omlx/my-qwen", got)
 	}
 }
 
-// TestVLLMRoutedModel pins the routed value: vLLM is OpenAI-compatible and served with
-// --served-model-name <alias>, so it routes via "openai/<alias>" (the served-model-name the
-// endpoint answers to, NOT the HF model id, and not the non-provider "vllm/" prefix).
-func TestVLLMRoutedModel(test *testing.T) {
-	if got := VLLMRoutedModel("my-qwen"); got != "openai/my-qwen" {
-		test.Errorf("VLLMRoutedModel = %q, want openai/my-qwen", got)
+// TestOmlxRoutedModel pins the routed value: omlx is OpenAI-compatible and its
+// live model id IS the routed value, so it routes via "openai/<id>" (NOT the
+// non-provider "omlx/" prefix).
+func TestOmlxRoutedModel(test *testing.T) {
+	if got := OmlxRoutedModel("my-qwen"); got != "openai/my-qwen" {
+		test.Errorf("OmlxRoutedModel = %q, want openai/my-qwen", got)
 	}
 }
 
-// TestRegisterVLLMModelRequestShape verifies a vLLM registration: it first lists models,
-// then — when not already present — POSTs /model/new with model_name = "vllm/<alias>", the
-// routed litellm_params.model = "openai/<alias>" (the served-model-name), the passed-in
-// api_base, drop_params, the tool-support flag, and NO credential (a local vLLM needs none).
-func TestRegisterVLLMModelRequestShape(test *testing.T) {
+// TestRegisterOmlxModelRequestShape verifies an omlx registration: it first lists
+// models, then — when not already present — POSTs /model/new with model_name =
+// "omlx/<id>", the routed litellm_params.model = "openai/<id>", the passed-in
+// apiBase (the ONE shared omlx endpoint), drop_params, and NO credential (a local
+// omlx needs none).
+func TestRegisterOmlxModelRequestShape(test *testing.T) {
 	var addBody map[string]any
 	var sawList bool
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
@@ -251,51 +252,48 @@ func TestRegisterVLLMModelRequestShape(test *testing.T) {
 	defer server.Close()
 	test.Setenv("LITELLM_BASE_URL", server.URL)
 
-	const apiBase = "http://host.docker.internal:8101/v1"
+	const apiBase = "http://host.docker.internal:8100/v1"
 	manager := NewKeyManager(okProber())
-	if err := manager.RegisterVLLMModel("my-qwen", "Qwen/Qwen3-8B", apiBase, true); err != nil {
-		test.Fatalf("RegisterVLLMModel: %v", err)
+	if err := manager.RegisterOmlxModel("my-qwen", apiBase); err != nil {
+		test.Fatalf("RegisterOmlxModel: %v", err)
 	}
 	if !sawList {
-		test.Error("RegisterVLLMModel should list existing models before adding")
+		test.Error("RegisterOmlxModel should list existing models before adding")
 	}
-	if addBody["model_name"] != "vllm/my-qwen" {
-		test.Errorf("model_name = %v, want vllm/my-qwen", addBody["model_name"])
+	if addBody["model_name"] != "omlx/my-qwen" {
+		test.Errorf("model_name = %v, want omlx/my-qwen", addBody["model_name"])
 	}
 	params, _ := addBody["litellm_params"].(map[string]any)
 	if params["model"] != "openai/my-qwen" {
-		test.Errorf("litellm_params.model = %v, want openai/my-qwen (routed on the served-model-name alias)", params["model"])
+		test.Errorf("litellm_params.model = %v, want openai/my-qwen (routed on the id)", params["model"])
 	}
 	if params["api_base"] != apiBase {
-		test.Errorf("api_base = %v, want %s (the model's own vllm serve endpoint)", params["api_base"], apiBase)
+		test.Errorf("api_base = %v, want %s (the single shared omlx endpoint)", params["api_base"], apiBase)
 	}
 	if _, present := params["litellm_credential_name"]; present {
-		test.Errorf("a vLLM model must not reference a credential, got %v", params["litellm_credential_name"])
+		test.Errorf("an omlx model must not reference a credential, got %v", params["litellm_credential_name"])
 	}
-	if params["api_key"] != vllmPlaceholderAPIKey {
+	if params["api_key"] != omlxPlaceholderAPIKey {
 		test.Errorf("api_key = %v, want the non-empty placeholder %q (LiteLLM's openai/ provider "+
-			"requires a non-empty key to construct its client even though vLLM itself checks none)",
-			params["api_key"], vllmPlaceholderAPIKey)
+			"requires a non-empty key to construct its client even though omlx itself checks none)",
+			params["api_key"], omlxPlaceholderAPIKey)
 	}
 	if params["drop_params"] != true {
 		test.Errorf("litellm_params.drop_params = %v, want true", params["drop_params"])
 	}
-	info, _ := addBody["model_info"].(map[string]any)
-	if info["supports_function_calling"] != true {
-		test.Errorf("model_info.supports_function_calling = %v, want true", info["supports_function_calling"])
-	}
 }
 
-// TestRegisterVLLMModelSkipsWhenPresent verifies registration is a no-op (no /model/new,
-// no delete) when a model with the same model_name is already correctly registered.
-func TestRegisterVLLMModelSkipsWhenPresent(test *testing.T) {
+// TestRegisterOmlxModelSkipsWhenPresent verifies registration is a no-op (no
+// /model/new, no delete) when a model with the same model_name is already
+// correctly registered.
+func TestRegisterOmlxModelSkipsWhenPresent(test *testing.T) {
 	var sawAdd, sawDelete bool
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		switch {
 		case request.Method == http.MethodGet && request.URL.Path == "/model/info":
-			// Already registered correctly: routed on openai/<alias> + matching capability.
+			// Already registered correctly: routed on openai/<id>.
 			_, _ = writer.Write([]byte(`{"data":[
-				{"model_name":"vllm/my-qwen","litellm_params":{"model":"openai/my-qwen"},"model_info":{"id":"id-1","supports_function_calling":true}}
+				{"model_name":"omlx/my-qwen","litellm_params":{"model":"openai/my-qwen"},"model_info":{"id":"id-1"}}
 			]}`))
 		case request.URL.Path == "/model/new":
 			sawAdd = true
@@ -311,26 +309,26 @@ func TestRegisterVLLMModelSkipsWhenPresent(test *testing.T) {
 	test.Setenv("LITELLM_BASE_URL", server.URL)
 
 	manager := NewKeyManager(okProber())
-	if err := manager.RegisterVLLMModel("my-qwen", "Qwen/Qwen3-8B", "http://host.docker.internal:8101/v1", true); err != nil {
-		test.Fatalf("RegisterVLLMModel: %v", err)
+	if err := manager.RegisterOmlxModel("my-qwen", "http://host.docker.internal:8100/v1"); err != nil {
+		test.Fatalf("RegisterOmlxModel: %v", err)
 	}
 	if sawAdd || sawDelete {
-		test.Error("RegisterVLLMModel should skip when the model is already correctly registered")
+		test.Error("RegisterOmlxModel should skip when the model is already correctly registered")
 	}
 }
 
-// TestRegisterVLLMModelHealsStaleRouting verifies the reconcile RE-REGISTERS an
-// already-served vLLM model whose routed target is stale (e.g. registered against a
-// different model id): it is deleted and re-added with the corrected openai/<model> routing.
-func TestRegisterVLLMModelHealsStaleRouting(test *testing.T) {
+// TestRegisterOmlxModelHealsStaleRouting verifies the reconcile RE-REGISTERS an
+// already-served omlx model whose routed target is stale (e.g. registered against a
+// different model id): it is deleted and re-added with the corrected openai/<id> routing.
+func TestRegisterOmlxModelHealsStaleRouting(test *testing.T) {
 	var deleted []string
 	var addedRouted []string
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		switch request.URL.Path {
 		case "/model/info":
-			// Served but routed on a STALE value (e.g. the old openai/<model-id> routing).
+			// Served but routed on a STALE value.
 			_, _ = writer.Write([]byte(`{"data":[
-				{"model_name":"vllm/my-qwen","litellm_params":{"model":"openai/Qwen/Qwen3-OLD"},"model_info":{"id":"v"}}
+				{"model_name":"omlx/my-qwen","litellm_params":{"model":"openai/OLD-id"},"model_info":{"id":"v"}}
 			]}`))
 		case "/model/delete":
 			payload, _ := io.ReadAll(request.Body)
@@ -353,26 +351,26 @@ func TestRegisterVLLMModelHealsStaleRouting(test *testing.T) {
 	test.Setenv("LITELLM_BASE_URL", server.URL)
 
 	manager := NewKeyManager(okProber())
-	if err := manager.RegisterVLLMModel("my-qwen", "Qwen/Qwen3-8B", "http://host.docker.internal:8101/v1", true); err != nil {
-		test.Fatalf("RegisterVLLMModel: %v", err)
+	if err := manager.RegisterOmlxModel("my-qwen", "http://host.docker.internal:8100/v1"); err != nil {
+		test.Fatalf("RegisterOmlxModel: %v", err)
 	}
 	if len(deleted) != 1 || deleted[0] != "v" {
 		test.Errorf("stale model must be deleted, got %v", deleted)
 	}
 	if len(addedRouted) != 1 || addedRouted[0] != "openai/my-qwen" {
-		test.Errorf("re-added routing = %v, want [openai/my-qwen] (routed on the alias)", addedRouted)
+		test.Errorf("re-added routing = %v, want [openai/my-qwen] (routed on the id)", addedRouted)
 	}
 }
 
-// TestUnregisterVLLMModelDeletesByID verifies it finds the entry whose model_name ==
-// "vllm/<alias>" and POSTs /model/delete with that entry's id.
-func TestUnregisterVLLMModelDeletesByID(test *testing.T) {
+// TestUnregisterOmlxModelDeletesByID verifies it finds the entry whose model_name ==
+// "omlx/<id>" and POSTs /model/delete with that entry's id.
+func TestUnregisterOmlxModelDeletesByID(test *testing.T) {
 	var deleteBody map[string]any
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		switch {
 		case request.Method == http.MethodGet && request.URL.Path == "/model/info":
 			_, _ = writer.Write([]byte(`{"data":[
-				{"model_name":"vllm/my-qwen","litellm_params":{"model":"openai/Qwen/Qwen3-8B"},"model_info":{"id":"id-vllm"}},
+				{"model_name":"omlx/my-qwen","litellm_params":{"model":"openai/Qwen/Qwen3-8B"},"model_info":{"id":"id-omlx"}},
 				{"model_name":"openai/gpt-5.5","litellm_params":{"model":"openai/gpt-5.5"},"model_info":{"id":"id-gpt"}}
 			]}`))
 		case request.Method == http.MethodPost && request.URL.Path == "/model/delete":
@@ -387,17 +385,17 @@ func TestUnregisterVLLMModelDeletesByID(test *testing.T) {
 	test.Setenv("LITELLM_BASE_URL", server.URL)
 
 	manager := NewKeyManager(okProber())
-	if err := manager.UnregisterVLLMModel("my-qwen"); err != nil {
-		test.Fatalf("UnregisterVLLMModel: %v", err)
+	if err := manager.UnregisterOmlxModel("my-qwen"); err != nil {
+		test.Fatalf("UnregisterOmlxModel: %v", err)
 	}
-	if deleteBody["id"] != "id-vllm" {
-		test.Errorf("delete id = %v, want id-vllm (the matching vllm/<alias> entry)", deleteBody["id"])
+	if deleteBody["id"] != "id-omlx" {
+		test.Errorf("delete id = %v, want id-omlx (the matching omlx/<id> entry)", deleteBody["id"])
 	}
 }
 
-// TestUnregisterVLLMModelNoOpWhenAbsent verifies it is a no-op (no /model/delete, no error)
+// TestUnregisterOmlxModelNoOpWhenAbsent verifies it is a no-op (no /model/delete, no error)
 // when no model with that model_name is registered.
-func TestUnregisterVLLMModelNoOpWhenAbsent(test *testing.T) {
+func TestUnregisterOmlxModelNoOpWhenAbsent(test *testing.T) {
 	var sawDelete bool
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		switch {
@@ -416,10 +414,10 @@ func TestUnregisterVLLMModelNoOpWhenAbsent(test *testing.T) {
 	test.Setenv("LITELLM_BASE_URL", server.URL)
 
 	manager := NewKeyManager(okProber())
-	if err := manager.UnregisterVLLMModel("ghost"); err != nil {
-		test.Fatalf("UnregisterVLLMModel(absent) should be a no-op, got %v", err)
+	if err := manager.UnregisterOmlxModel("ghost"); err != nil {
+		test.Fatalf("UnregisterOmlxModel(absent) should be a no-op, got %v", err)
 	}
 	if sawDelete {
-		test.Error("UnregisterVLLMModel should not call /model/delete when the model is absent")
+		test.Error("UnregisterOmlxModel should not call /model/delete when the model is absent")
 	}
 }

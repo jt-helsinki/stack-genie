@@ -98,7 +98,7 @@ func (manager *KeyManager) ListCredentials() ([]Credential, error) {
 }
 
 // ModelParams is the litellm_params payload for AddModel. Model is the value
-// LiteLLM routes (LiteLLMModelParam(catalogID) for cloud, "vllm/<alias>" for
+// LiteLLM routes (LiteLLMModelParam(catalogID) for cloud, "omlx/<id>" for
 // local). Exactly one credential strategy is used: CredentialName references a
 // stored DB credential (cloud), while APIBase is set for a local model (no key). Empty
 // fields are omitted from the request.
@@ -138,7 +138,7 @@ type ModelInfo struct {
 }
 
 // AddModel registers a DB-backed model (POST /model/new). model_name is the
-// PUBLIC handle the agent names (the catalog id verbatim for cloud, "vllm/<alias>"
+// PUBLIC handle the agent names (the catalog id verbatim for cloud, "omlx/<id>"
 // for local); litellmParams.Model is what LiteLLM routes; modelInfo carries the
 // surfaced catalog metadata. Persisted iff the gateway config has
 // store_model_in_db: true (which Render now sets).
@@ -163,102 +163,97 @@ func (manager *KeyManager) DeleteModel(id string) error {
 	return manager.doJSON(http.MethodPost, "/model/delete", map[string]any{"id": id}, nil)
 }
 
-// VLLMModelName is the PUBLIC model handle for a vLLM-served model: "vllm/<alias>".
-// This is the agent-facing id. The
-// public-handle-vs-routed-value split matters because "vllm/" is NOT a real LiteLLM
-// provider prefix — LiteLLM would not know how to route it — so the routed value
-// (VLLMRoutedModel) rewrites to a provider LiteLLM understands while this stable public
-// handle is what the in-workspace agent names and what surfaces in the live model list.
-func VLLMModelName(alias string) string {
-	return "vllm/" + alias
+// OmlxModelName is the PUBLIC model handle for an omlx-served model: "omlx/<id>",
+// where id is the model id EXACTLY as omlx's own live GET /v1/models reports it (no
+// alias — omlx names its own models; this platform never renames them). This is the
+// agent-facing id. The public-handle-vs-routed-value split matters because "omlx/"
+// is NOT a real LiteLLM provider prefix — LiteLLM would not know how to route it —
+// so the routed value (OmlxRoutedModel) rewrites to a provider LiteLLM understands
+// while this stable public handle is what the in-workspace agent names and what
+// surfaces in the live model list.
+func OmlxModelName(id string) string {
+	return "omlx/" + id
 }
 
-// VLLMRoutedModel is the value LiteLLM ROUTES on (litellm_params.model) for a vLLM model:
-// "openai/<alias>". vLLM exposes an OpenAI-compatible HTTP server started with
-// `--served-model-name <alias>`, so the endpoint answers to model=<alias> (NOT the Hugging
-// Face model id) — the routed value MUST therefore be built from the ALIAS, paired with the
-// model's dedicated api_base. Via the public-handle-vs-routed-value split, the
-// PUBLIC handle stays "vllm/<alias>" (VLLMModelName) so the agent-facing id is unchanged;
-// only the internal routing switches to the OpenAI-compatible provider.
-func VLLMRoutedModel(alias string) string {
-	return "openai/" + alias
+// OmlxRoutedModel is the value LiteLLM ROUTES on (litellm_params.model) for an
+// omlx-served model: "openai/<id>". omlx exposes ONE shared OpenAI-compatible HTTP
+// server (unlike the old per-model vLLM design), and its /v1/models id IS what its
+// /v1/chat/completions expects in the `model` field, so the routed value is built
+// directly from the reported id. Via the public-handle-vs-routed-value split, the
+// PUBLIC handle stays "omlx/<id>" (OmlxModelName) so the agent-facing id is
+// unchanged; only the internal routing switches to the OpenAI-compatible provider.
+func OmlxRoutedModel(id string) string {
+	return "openai/" + id
 }
 
-// vllmPlaceholderAPIKey is a non-empty placeholder credential for vLLM-routed models.
-// A local `vllm serve` endpoint validates NO key at all, but LiteLLM's "openai/" provider
-// goes through the actual OpenAI Python client underneath, which hard-requires a non-empty
-// api_key at load time regardless of whether the backend checks it — an empty/absent key
-// fails every request with "AuthenticationError: ... The api_key client option must be set"
-// before the request ever reaches vLLM. "EMPTY" is the same placeholder convention vLLM's
-// own docs and llama.cpp's OpenAI-compatible server use for this exact situation.
-const vllmPlaceholderAPIKey = "EMPTY"
+// omlxPlaceholderAPIKey is a non-empty placeholder credential for omlx-routed
+// models. The omlx server validates NO key by default, but LiteLLM's "openai/"
+// provider goes through the actual OpenAI Python client underneath, which
+// hard-requires a non-empty api_key at load time regardless of whether the backend
+// checks it — an empty/absent key fails every request with "AuthenticationError:
+// ... The api_key client option must be set" before the request ever reaches omlx.
+// "EMPTY" is the same placeholder convention vLLM's own docs and llama.cpp's
+// OpenAI-compatible server use for this exact situation.
+const omlxPlaceholderAPIKey = "EMPTY"
 
-// vllmModelParamsInfo builds the LiteLLM params + info for a vLLM model. It routes on the
-// served-model-name ALIAS (VLLMRoutedModel(alias) = "openai/<alias>") because that is what
-// the `vllm serve --served-model-name <alias>` endpoint answers to; it always sets
-// drop_params (defense-in-depth for unsupported params) and records tool-calling support in
-// model_info when known (supportsTools nil = unknown). Each vLLM model runs its OWN
-// `vllm serve` endpoint, so apiBase is a PARAMETER (e.g.
-// http://host.docker.internal:8101/v1); APIKey is the non-empty vllmPlaceholderAPIKey (the
-// backend itself checks no credential, but LiteLLM's openai/ provider requires one to be
-// set to construct its client at all).
-func vllmModelParamsInfo(alias, apiBase string, supportsTools *bool) (ModelParams, ModelInfo) {
+// omlxModelParamsInfo builds the LiteLLM params + info for an omlx-served model. It
+// routes on the id VERBATIM (OmlxRoutedModel(id) = "openai/<id>") because that is
+// what omlx's shared endpoint answers to; it always sets drop_params
+// (defense-in-depth for unsupported params). model_info.supports_function_calling
+// is left nil (unknown): omlx's /v1/models response carries no per-model
+// capability metadata, and nil is treated as tool-capable (the same default
+// already used for cloud models whose catalog entry doesn't set it) — every omlx
+// model shares ONE endpoint (apiBase, the single omlx.BaseURL()), unlike the old
+// per-model vLLM api_base parameter.
+func omlxModelParamsInfo(id, apiBase string) (ModelParams, ModelInfo) {
 	dropParams := true
-	return ModelParams{Model: VLLMRoutedModel(alias), APIBase: apiBase, APIKey: vllmPlaceholderAPIKey, DropParams: &dropParams},
-		ModelInfo{SupportsFunctionCalling: supportsTools}
+	return ModelParams{Model: OmlxRoutedModel(id), APIBase: apiBase, APIKey: omlxPlaceholderAPIKey, DropParams: &dropParams},
+		ModelInfo{}
 }
 
-// RegisterVLLMModel registers a vLLM-served model as a DB-backed model in the gateway. The
-// public model_name is "vllm/<alias>" (VLLMModelName, the agent-facing handle) while the
-// routed litellm_params.model is "openai/<alias>" (VLLMRoutedModel — the SERVED-MODEL-NAME
-// the endpoint answers to, NOT the HF model id) with api_base pointing at the model's
-// dedicated `vllm serve` endpoint, with the non-empty vllmPlaceholderAPIKey (a real
-// provider credential is never referenced — the backend itself checks no credential).
-// model is retained in the signature (interface parity, records/logging) even though
-// routing keys on the alias.
+// RegisterOmlxModel registers an omlx-served model as a DB-backed model in the
+// gateway. The public model_name is "omlx/<id>" (OmlxModelName, the agent-facing
+// handle) while the routed litellm_params.model is "openai/<id>" (OmlxRoutedModel)
+// with api_base pointing at the single shared omlx endpoint, with the non-empty
+// omlxPlaceholderAPIKey (a real provider credential is never referenced).
 //
-// Idempotent-ish and HEALING: if a model with this model_name already
-// exists (ListModels) it is re-registered (delete + add) when the routed target is stale
-// (existing.RoutedTo != VLLMRoutedModel(model)) OR the recorded tool capability disagrees
-// with supportsTools; otherwise the add is skipped so a re-register does not create a
-// duplicate. NOTE: LiveModel/ListModels does not expose the registered api_base, so a
-// changed endpoint alone cannot be detected here — healing on routing + capability is
-// sufficient (a moved endpoint is corrected by an explicit re-register with a new alias, or
-// by an UnregisterVLLMModel + RegisterVLLMModel).
+// Idempotent-ish and HEALING: if a model with this model_name already exists
+// (ListModels) it is re-registered (delete + add) only when the routed target is
+// stale (existing.RoutedTo != OmlxRoutedModel(id)); otherwise the add is skipped so
+// a re-register does not create a duplicate. This is normally called in bulk via
+// SyncOmlxModels (see reconcile.go), not one model at a time.
 //
 // hardware bring-up: the LIVE POST /model/new round-trip is exercised only against a
 // running aip-litellm — verify on a provisioned host.
-func (manager *KeyManager) RegisterVLLMModel(alias, model, apiBase string, supportsTools bool) error {
-	modelName := VLLMModelName(alias)
+func (manager *KeyManager) RegisterOmlxModel(id, apiBase string) error {
+	modelName := OmlxModelName(id)
 	existing, err := manager.ListModels()
 	if err != nil {
 		return err
 	}
 	for _, served := range existing {
 		if served.Name == modelName {
-			// Re-register when EITHER the routing OR the recorded capability is stale. Routing
-			// is on the served-model-name ALIAS (openai/<alias>), not the HF model id.
-			if served.SupportsTools == supportsTools && served.RoutedTo == VLLMRoutedModel(alias) {
+			if served.RoutedTo == OmlxRoutedModel(id) {
 				return nil // already registered correctly
 			}
 			if err := manager.DeleteModel(served.ID); err != nil {
 				return err
 			}
-			break // re-add below with corrected routing/capability
+			break // re-add below with corrected routing
 		}
 	}
-	params, info := vllmModelParamsInfo(alias, apiBase, &supportsTools)
+	params, info := omlxModelParamsInfo(id, apiBase)
 	return manager.AddModel(modelName, params, info)
 }
 
-// UnregisterVLLMModel removes the DB-backed model registered for a vLLM model. It looks up
-// the entry whose model_name == "vllm/<alias>" (VLLMModelName) and deletes it by its
-// LiteLLM-assigned id. A no-op (no error) when no such model is registered.
+// UnregisterOmlxModel removes the DB-backed model registered for an omlx model. It
+// looks up the entry whose model_name == "omlx/<id>" (OmlxModelName) and deletes it
+// by its LiteLLM-assigned id. A no-op (no error) when no such model is registered.
 //
 // hardware bring-up: the LIVE POST /model/delete round-trip is exercised only against a
 // running aip-litellm — verify on a provisioned host.
-func (manager *KeyManager) UnregisterVLLMModel(alias string) error {
-	modelName := VLLMModelName(alias)
+func (manager *KeyManager) UnregisterOmlxModel(id string) error {
+	modelName := OmlxModelName(id)
 	existing, err := manager.ListModels()
 	if err != nil {
 		return err

@@ -1,30 +1,24 @@
 // Package create performs the deterministic, in-process work of creating a workspace
 // from an already-built project.Spec: validate + cap resources against the host,
-// scaffold the tracked .ai-platform/ files, seed context-optimization defaults, and
-// pull the chosen Graphify model (best-effort). It is shared by `ai create` (the CLI)
-// and the `ai ui` in-TUI create wizard so both paths behave identically without a
-// subprocess. It deliberately does NOT import internal/cli — internal/cli imports
-// internal/tui which imports this package, so importing cli here would cycle.
+// scaffold the tracked .ai-platform/ files, and seed context-optimization defaults.
+// It is shared by `ai create` (the CLI) and the `ai ui` in-TUI create wizard so both
+// paths behave identically without a subprocess. It deliberately does NOT import
+// internal/cli — internal/cli imports internal/tui which imports this package, so
+// importing cli here would cycle.
 package create
 
 import (
 	"errors"
 	"fmt"
-	"io"
 	"os"
-	goruntime "runtime"
 	"slices"
 	"strings"
 
 	"github.com/jt-helsinki/stack-genie/internal/config"
 	"github.com/jt-helsinki/stack-genie/internal/contextopt"
-	"github.com/jt-helsinki/stack-genie/internal/hf"
-	"github.com/jt-helsinki/stack-genie/internal/litellm"
 	"github.com/jt-helsinki/stack-genie/internal/output"
 	"github.com/jt-helsinki/stack-genie/internal/project"
-	"github.com/jt-helsinki/stack-genie/internal/runtime"
 	"github.com/jt-helsinki/stack-genie/internal/sysinfo"
-	"github.com/jt-helsinki/stack-genie/internal/vllm"
 )
 
 // Result is what a successful create produces, for the caller to render (the CLI's
@@ -98,8 +92,7 @@ func Execute(spec project.Spec, now string, report func(Progress)) (Result, []st
 	if err != nil {
 		return Result{}, nil, output.Errorf(output.ExitRuntimeFailure, "read config.yaml: %s", err)
 	}
-	warnings := pullGraphifyModelIfAbsent(spec.GraphifyModel, report)
-	warnings = append(warnings, oauthWarnings(spec)...)
+	warnings := oauthWarnings(spec)
 	report(Progress{Step: "workspace scaffolded — start it to build the image + boot the microVM"})
 	return Result{
 		Name:       spec.Name,
@@ -244,86 +237,4 @@ func UsableHostMemoryGB() int {
 		return int(config.UsableHostMemoryMiB(mib) / 1024)
 	}
 	return 0
-}
-
-// hfClient constructs the Hugging Face model-store client used to download the Graphify
-// model. A package var so tests inject a fake; production wires hf.RealClient.
-var hfClient = hf.RealClient
-
-// modelRegistrar registers a freshly-pulled vLLM model in the gateway so it gains a
-// stable id and shows in the live catalogue.
-type modelRegistrar interface {
-	RegisterVLLMModel(alias, model, apiBase string, supportsTools bool) error
-}
-
-// newRegistrar builds the gateway registrar. A package var so tests inject a fake;
-// production binds a LiteLLM KeyManager over the real container prober.
-var newRegistrar = func() modelRegistrar { return litellm.NewKeyManager(runtime.RealProber()) }
-
-// graphifyVLLMServer is the host-side vLLM server manager slice used to serve the
-// Graphify model: it starts/locates a per-model `vllm serve` endpoint. Production binds
-// *vllm.Manager; tests a fake.
-type graphifyVLLMServer interface {
-	EnsureServedWithOptions(alias, model string, opts vllm.ServeOptions) (port int, endpoint string, err error)
-}
-
-// vLLM seams — package vars so tests inject fakes without touching the host.
-var (
-	vllmDetectFn       = vllm.Detect
-	vllmPullFn         = vllm.Pull
-	vllmManagerFactory = func() graphifyVLLMServer {
-		return vllm.NewManager(vllm.Config{Runner: vllm.RealRunner{}, Probe: vllm.RealHealthProbe()})
-	}
-)
-
-// graphifyAlias derives the gateway alias for a Graphify vLLM repo id: the id's last
-// path segment (e.g. "mlx-community/Qwen2.5-7B-Instruct-4bit" → "Qwen2.5-7B-Instruct-4bit").
-func graphifyAlias(repo string) string {
-	if slash := strings.LastIndexByte(repo, '/'); slash >= 0 && slash < len(repo)-1 {
-		return repo[slash+1:]
-	}
-	return repo
-}
-
-// pullGraphifyModelIfAbsent downloads the configured Graphify vLLM model (a curated
-// Hugging Face repo id) into the vLLM store, starts its per-model server, and registers
-// it in the gateway as vllm/<alias>. BEST-EFFORT: any failure is returned as a warning,
-// never an error — the model can be pulled later with `ai models pull`. When vLLM is not
-// installed it returns a warning pointing at `ai models install-vllm`.
-func pullGraphifyModelIfAbsent(repo string, report func(Progress)) []string {
-	repo = strings.TrimSpace(repo)
-	if repo == "" {
-		return nil
-	}
-	if installed, _ := vllmDetectFn(); !installed {
-		return []string{fmt.Sprintf("vLLM is not installed — the Graphify model %q was not pulled; install it with `ai models install-vllm`, then `ai models pull %s`", repo, repo)}
-	}
-	alias := graphifyAlias(repo)
-	step := "pulling Graphify model " + repo
-	report(Progress{Step: step})
-	if err := vllmPullFn(repo); err != nil {
-		return []string{fmt.Sprintf("could not prepare Graphify model %q: %s — pull it later with `ai models pull %s`", repo, err, repo)}
-	}
-	if err := hfClient().Download(repo, io.Discard); err != nil {
-		return []string{fmt.Sprintf("could not download Graphify model %q: %s — pull it later with `ai models pull %s`", repo, err, repo)}
-	}
-	// Pass the curated tool-call/reasoning parsers (if confirmed for this repo) so
-	// opencode's tool_choice="auto" requests work AND a thinking model's
-	// <think>...</think> block does not leak raw into Graphify's structured output
-	// — same as `ai models pull` (see hf.CuratedModel.ToolCallParser/ReasoningParser).
-	port, _, err := vllmManagerFactory().EnsureServedWithOptions(alias, repo, vllm.ServeOptions{
-		ToolCallParser:  hf.ToolCallParserFor(goruntime.GOOS, repo),
-		ReasoningParser: hf.ReasoningParserFor(goruntime.GOOS, repo),
-	})
-	if err != nil {
-		return []string{fmt.Sprintf("could not serve Graphify model %q: %s — pull it later with `ai models pull %s`", repo, err, repo)}
-	}
-	report(Progress{Step: "registering Graphify model " + repo + " with the gateway"})
-	_ = config.SetModelRuntime(config.ModelRuntimeChoice{
-		Alias: alias, Model: repo, Runtime: config.RuntimeVLLM,
-		Endpoint: vllm.Endpoint(port), Status: "registered",
-	})
-	// vLLM tool support is model-dependent and not probed here; unknown defaults to capable.
-	_ = newRegistrar().RegisterVLLMModel(alias, repo, vllm.ContainerEndpoint(port), true)
-	return nil
 }

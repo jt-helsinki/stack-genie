@@ -23,13 +23,13 @@ func TestModelTestError(test *testing.T) {
 		test.Fatalf("auth error should hint at `ai keys add`: %v", authErr)
 	}
 
-	// 404 for a local vLLM model → runtime (exit 4) with a pull hint.
-	notFound := modelTestError(litellm.TestResult{Model: "vllm/llama3", Status: 404, Error: "not found"})
+	// 404 for a local omlx model → runtime (exit 4) with a hint at omlx's admin panel.
+	notFound := modelTestError(litellm.TestResult{Model: "omlx/llama3", Status: 404, Error: "not found"})
 	if !errors.As(notFound, &platformErr) || platformErr.Code != output.ExitRuntimeFailure {
 		test.Fatalf("404 should map to runtime failure (exit 4): %v", notFound)
 	}
-	if !strings.Contains(notFound.Error(), "ai models pull llama3") {
-		test.Fatalf("vllm 404 should hint at pulling: %v", notFound)
+	if !strings.Contains(notFound.Error(), "ai services console omlx") {
+		test.Fatalf("omlx 404 should hint at the admin panel: %v", notFound)
 	}
 
 	// A generic failure with no message still reports the HTTP status at exit 4.
@@ -39,16 +39,5 @@ func TestModelTestError(test *testing.T) {
 	}
 	if !strings.Contains(generic.Error(), "HTTP 500") {
 		test.Fatalf("empty error should surface the HTTP status: %v", generic)
-	}
-}
-
-func TestModelsRmResultHuman(test *testing.T) {
-	clean := modelsRmResult{Model: "vllm/llama3"}.Human()
-	if !strings.Contains(clean, "vllm/llama3") || !strings.Contains(clean, "removed") {
-		test.Fatalf("clean rm Human missing fields:\n%s", clean)
-	}
-	withWarn := modelsRmResult{Model: "vllm/llama3", UnregisterError: "gateway down"}.Human()
-	if !strings.Contains(withWarn, "gateway down") {
-		test.Fatalf("rm Human should surface the unregister warning:\n%s", withWarn)
 	}
 }

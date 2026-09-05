@@ -77,59 +77,6 @@ func TestServiceDetailServiceTabShowsSummaryAndMetrics(test *testing.T) {
 	}
 }
 
-// TestServiceDetailShowsVLLMModelConfig: when ServiceStatus.Models is populated (the
-// host-native vllm service, which has no container for the generic Containers block),
-// the Service sub-tab renders each model's resolved config instead — the fix for "the
-// vllm config should be displayed in the service pane".
-func TestServiceDetailShowsVLLMModelConfig(test *testing.T) {
-	detail := newDetailForTest(
-		setup.ServiceStatus{
-			Name: "vllm", Mode: "host", State: "running", Healthy: true,
-			Models: []setup.VLLMModelInfo{{
-				Alias: "my-qwen", Model: "mlx-community/Qwen3-8B", Endpoint: "http://127.0.0.1:8101/v1",
-				Healthy: true, GPUMemoryUtilization: 0.5, MaxModelLen: 8192,
-			}},
-		},
-		"", false)
-	primeInfo(detail)
-
-	rendered := detail.View()
-	for _, want := range []string{"vLLM Models", "my-qwen", "mlx-community/Qwen3-8B", "gpu-memory-utilization", "0.5", "max-model-len", "8192"} {
-		if !strings.Contains(rendered, want) {
-			test.Errorf("Service sub-tab should contain %q, got:\n%s", want, rendered)
-		}
-	}
-	// The generic Containers block is for container services — vllm has none, so it
-	// must not render (avoids a confusing "collecting live metrics…" forever).
-	if strings.Contains(rendered, "Containers") {
-		test.Errorf("vllm's Service sub-tab must not show the generic Containers block, got:\n%s", rendered)
-	}
-	if !strings.Contains(rendered, "auto-start") {
-		test.Errorf("Service sub-tab should show the auto-start (enabled/disabled) state, got:\n%s", rendered)
-	}
-}
-
-// TestServiceDetailShowsVLLMModelDisabled proves a disabled model (`ai models
-// disable`) is called out on its own — drilling into the vllm service should tell
-// you it is excluded from auto-start, not just leave you guessing from "healthy: no".
-func TestServiceDetailShowsVLLMModelDisabled(test *testing.T) {
-	detail := newDetailForTest(
-		setup.ServiceStatus{
-			Name: "vllm", Mode: "host", State: "stopped",
-			Models: []setup.VLLMModelInfo{{
-				Alias: "qwen-coder", Model: "mlx-community/Qwen3-Coder-30B-A3B-Instruct-4bit",
-				Endpoint: "http://127.0.0.1:8102/v1", Healthy: false, Disabled: true,
-			}},
-		},
-		"", false)
-	primeInfo(detail)
-
-	rendered := detail.View()
-	if !strings.Contains(rendered, "disabled") {
-		test.Errorf("a disabled model's block should say so, got:\n%s", rendered)
-	}
-}
-
 // TestServiceDetailLogsTabShowsLog: switching to the Logs sub-tab shows the scrollable
 // container log.
 func TestServiceDetailLogsTabShowsLog(test *testing.T) {
@@ -191,15 +138,15 @@ func TestServiceDetailLifecycleStaysPut(test *testing.T) {
 
 // TestServiceDetailUpdateEmitsRequest: `p` on the Service tab emits the update request.
 func TestServiceDetailUpdateEmitsRequest(test *testing.T) {
-	detail := newDetailForTest(setup.ServiceStatus{Name: "vllm", State: "running"}, "", false)
+	detail := newDetailForTest(setup.ServiceStatus{Name: "omlx", State: "running"}, "", false)
 	primeInfo(detail)
 
 	cmd := detail.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("p")})
 	if cmd == nil {
 		test.Fatal("p must return a command")
 	}
-	if request, ok := cmd().(ServiceUpdateRequestedMsg); !ok || request.Service != "vllm" {
-		test.Fatalf("p must emit ServiceUpdateRequestedMsg{vllm}, got %#v", cmd())
+	if request, ok := cmd().(ServiceUpdateRequestedMsg); !ok || request.Service != "omlx" {
+		test.Fatalf("p must emit ServiceUpdateRequestedMsg{omlx}, got %#v", cmd())
 	}
 }
 
@@ -222,7 +169,7 @@ func TestServiceDetailFollowEmitsRequest(test *testing.T) {
 // TestServiceDetailStoppedShowsNotRunning: a stopped service's Logs sub-tab shows the
 // "not running" hint, not stale output.
 func TestServiceDetailStoppedShowsNotRunning(test *testing.T) {
-	detail := newDetailForTest(setup.ServiceStatus{Name: "vllm", State: "stopped"}, "old output\n", false)
+	detail := newDetailForTest(setup.ServiceStatus{Name: "omlx", State: "stopped"}, "old output\n", false)
 	primeInfo(detail)
 	showLogs(detail)
 
@@ -237,7 +184,7 @@ func TestServiceDetailStoppedShowsNotRunning(test *testing.T) {
 
 // TestServiceDetailTabSwitchesSubTabs verifies Tab cycles Service ↔ Logs.
 func TestServiceDetailTabSwitchesSubTabs(test *testing.T) {
-	detail := newDetailForTest(setup.ServiceStatus{Name: "vllm", State: "running"}, "line\n", false)
+	detail := newDetailForTest(setup.ServiceStatus{Name: "omlx", State: "running"}, "line\n", false)
 	primeInfo(detail)
 	if detail.subIndex != serviceTabInfo {
 		test.Fatalf("should open on the Service sub-tab, got %d", detail.subIndex)

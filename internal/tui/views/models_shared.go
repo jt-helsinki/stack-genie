@@ -3,15 +3,18 @@ package views
 import (
 	"strconv"
 
+	"github.com/charmbracelet/lipgloss"
 	"github.com/jt-helsinki/stack-genie/internal/litellm"
 	"github.com/jt-helsinki/stack-genie/internal/ui"
 	"github.com/mattn/go-runewidth"
 )
 
-// This file holds the bits shared by the two model views (Local Models and Cloud
-// Models): the injected-func types, the request-message types, the status constants,
-// and the small render helpers (test flash, token formatting, truncation). Each view
-// (localmodels.go / cloudmodels.go) owns its own table, data build, and key handling.
+// This file holds bits shared across views: the model-gateway injected-func types,
+// status constants, small render helpers (test flash, token formatting, truncation,
+// the selected-row style, fixed-width padding), used by Cloud Models plus the
+// listWindow-based pickers (the create wizard's select steps, the generic list
+// table). Local model management is gone — omlx (the sole local-inference
+// backend) manages its own models entirely through its own admin panel.
 
 // ModelStatusFetcher returns the LiteLLM gateway status (health, default model,
 // providers, base URL). Injected; the parent wires litellm.RealClient().Status.
@@ -31,44 +34,6 @@ const (
 	// (registered in its DB — i.e. the provider is keyed).
 	statusRegistered modelStatus = "registered"
 )
-
-// ModelsPullRequestedMsg asks the parent to run `ai models pull <Refs...>` live in
-// the terminal overlay (streaming progress) for one or more Hugging Face repo ids
-// (e.g. ["mlx-community/Qwen2.5-7B-Instruct-4bit"]). Emitted by the Local Models view.
-// vLLM is the sole local runtime, so there is no engine choice to carry.
-type ModelsPullRequestedMsg struct {
-	Refs []string
-}
-
-// ModelRemoveRequestedMsg asks the parent to run `ai models rm <Name>` live in the
-// terminal overlay (with its confirm prompt).
-type ModelRemoveRequestedMsg struct{ Name string }
-
-// ModelDisableRequestedMsg asks the parent to run `ai models disable <Name>` live in
-// the terminal overlay — stops the model's vLLM server and excludes it from
-// ensureVLLMServers' auto-start pass, without touching weights or the gateway
-// registration. Emitted by the Local Models view.
-type ModelDisableRequestedMsg struct{ Name string }
-
-// ModelEnableRequestedMsg asks the parent to run `ai models enable <Name>` live in
-// the terminal overlay — starts the model's vLLM server again (no re-download).
-// Emitted by the Local Models view.
-type ModelEnableRequestedMsg struct{ Name string }
-
-// ModelConfigureRequestedMsg asks the parent to run `ai models configure <Name>`
-// live in the terminal overlay — its own TTY prompt (pre-seeded with the model's
-// CURRENTLY recorded gpu-memory-utilization/max-model-len) shows in the pane, so
-// this is how the Local Models view lets a user change those resource caps without
-// re-downloading the model. Emitted by the Local Models view.
-type ModelConfigureRequestedMsg struct{ Name string }
-
-// ModelsLoginRequestedMsg asks the parent to run `ai models login` live in the REAL
-// terminal (the hidden token prompt needs a TTY). Emitted by the Local Models view.
-type ModelsLoginRequestedMsg struct{}
-
-// ModelsLogoutRequestedMsg asks the parent to run `ai models logout` live in the REAL
-// terminal. Emitted by the Local Models view.
-type ModelsLogoutRequestedMsg struct{}
 
 // modelTestDoneMsg carries the outcome of a model test-probe through the gateway.
 type modelTestDoneMsg struct {
@@ -107,18 +72,6 @@ func humanTokenCount(tokens int) string {
 	}
 }
 
-// truncateRunes clips a CELL value to width DISPLAY CELLS (terminal columns, not
-// rune count) with a trailing ellipsis when clipped. Measuring by display width is
-// what keeps columns aligned when a value contains wide runes (emoji like 🌋/🎩 or
-// CJK occupy two cells each). Cell VALUES are kept plain (no inline colour) and
-// clipped here; the row highlight comes from the Selected style.
-func truncateRunes(value string, width int) string {
-	if width <= 0 {
-		return ""
-	}
-	return runewidth.Truncate(value, width, "…")
-}
-
 // flashLine renders a view's flash message as EXACTLY one line: the message when
 // set, an empty (blank) line otherwise. Views reserve one row for it in SetSize and
 // always emit it so the table/list above fills a FIXED content height — the bottom
@@ -131,9 +84,9 @@ func flashLine(flash string) string {
 }
 
 // sourceFlash builds the source-availability warning for an offline live source
-// (the curated Hugging Face set or models.dev). cached reports whether a cached copy was
-// shown; source names the live source for the message. Returns "" when there is no
-// warning (the caller only calls this on a fetch error).
+// (models.dev). cached reports whether a cached copy was shown; source names the
+// live source for the message. Returns "" when there is no warning (the caller
+// only calls this on a fetch error).
 func sourceFlash(source string, cached bool) string {
 	if cached {
 		return ui.Warn.Render(ui.IconArrow + " couldn't reach the " + source +
@@ -141,4 +94,22 @@ func sourceFlash(source string, cached bool) string {
 	}
 	return ui.Warn.Render(ui.IconArrow + " couldn't reach the " + source +
 		" and no cached copy — connect and press r")
+}
+
+// selectedStyle highlights the selected row/option in a listWindow-based view (the
+// create wizard's select steps, any other viewport-windowed list).
+func selectedStyle() lipgloss.Style {
+	return lipgloss.NewStyle().Bold(true).
+		Foreground(ui.Secondary()).
+		Background(ui.Accent())
+}
+
+// padToWidth right-pads line to width DISPLAY CELLS (not byte/rune count), so a
+// selected-row background highlight fills the pane instead of stopping at the
+// text's own width.
+func padToWidth(line string, width int) string {
+	if width <= 0 {
+		return line
+	}
+	return runewidth.FillRight(line, width)
 }

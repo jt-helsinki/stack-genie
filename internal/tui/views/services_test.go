@@ -46,7 +46,7 @@ func newServicesForTest(fetch ServiceFetcher, control ServiceController) *Servic
 func TestServicesPopulatesTableOnRefresh(test *testing.T) {
 	statuses := []setup.ServiceStatus{
 		{Name: "litellm", Mode: "container", State: "running", Healthy: true, Address: "127.0.0.1:14000"},
-		{Name: "vllm", Mode: "container", State: "stopped", Healthy: false},
+		{Name: "omlx", Mode: "container", State: "stopped", Healthy: false},
 	}
 	view := newServicesForTest(func() ([]setup.ServiceStatus, error) { return statuses, nil }, noControl)
 
@@ -69,7 +69,7 @@ func TestServicesPopulatesTableOnRefresh(test *testing.T) {
 func TestServicesTableFillsConstantHeight(test *testing.T) {
 	statuses := []setup.ServiceStatus{
 		{Name: "litellm", State: "running", Healthy: true},
-		{Name: "vllm", State: "running", Healthy: true},
+		{Name: "omlx", State: "running", Healthy: true},
 	}
 	view := newServicesForTest(func() ([]setup.ServiceStatus, error) { return statuses, nil }, noControl)
 	_ = view.Update(view.Init()())
@@ -262,7 +262,7 @@ func TestServicesListRestartKeys(test *testing.T) {
 	var calls []string
 	view := newServicesForTest(
 		func() ([]setup.ServiceStatus, error) {
-			return []setup.ServiceStatus{{Name: "litellm", State: "running"}, {Name: "vllm", State: "running"}}, nil
+			return []setup.ServiceStatus{{Name: "litellm", State: "running"}, {Name: "omlx", State: "running"}}, nil
 		},
 		func(action, service string) error { calls = append(calls, action+":"+service); return nil },
 	)

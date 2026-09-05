@@ -120,7 +120,7 @@ func TestServiceHealthyProxyBranch(test *testing.T) {
 	}
 }
 
-// (The litellm/vllm serviceHealthy branches probe a real gateway/vLLM endpoint,
+// (The litellm/omlx serviceHealthy branches probe a real gateway/omlx endpoint,
 // so their result is host-dependent — deliberately not asserted here.)
 
 // TestServiceContainersUp: all mapped containers running → true; one missing → false;
@@ -147,7 +147,7 @@ func TestServiceContainersUp(test *testing.T) {
 // service with nothing running to "stopped". Uses dns (container-only readiness →
 // running), valkey (container up but no PONG → starting), and headroom (nothing
 // running → stopped). It also surfaces the postgres line from the litellm-db
-// container. The litellm/vllm states probe a real gateway/vLLM, so they are
+// container. The litellm/omlx states probe a real gateway/omlx, so they are
 // deliberately not asserted (host-dependent).
 func TestStatusForStartingAndRunningStates(test *testing.T) {
 	test.Setenv("HOME", test.TempDir())

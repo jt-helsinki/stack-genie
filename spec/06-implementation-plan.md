@@ -59,7 +59,7 @@ keep the precedence rules in arch §27 explicit), `slog` (structured logs), stdl
 │   ├── conffile/                # atomic YAML read/write (temp file + rename; rejects unknown fields)
 │   ├── state/                   # project-local state (<project>/.ai-platform/run) + projects index; atomic writes
 │   ├── project/                 # project entry/spec types + projects-index resolution
-│   ├── config/                  # config load/merge (project > global) + machine-wide per-model vLLM serving store (config/model-runtimes.yaml, modelruntime.go)
+│   ├── config/                  # config load/merge (project > global)
 │   ├── catalog/                 # models.dev model catalog (fetch as JSON, persist as YAML cache)
 │   ├── sysinfo/                 # host CPU/RAM inspection (resource caps for `ai create`)
 │   ├── versions/                # service-tier image refs (image+tag, no digest) — source of truth for setup
@@ -67,14 +67,13 @@ keep the precedence rules in arch §27 explicit), `slog` (structured logs), stdl
 │   ├── runtime/                 # docker/podman detect + rootless verify + role/domain/gateway resolution (service tier)
 │   ├── sandbox/                 # Microsandbox SDK wrapper: naming, mounts/volumes, microVM lifecycle
 │   ├── services/               # service-tier topology registry (names, ports, UI subdomains, gateway paths)
-│   ├── setup/                  # service-tier reconcile orchestrator (network→DNS→Presidio→Valkey→RedisInsight→Headroom→LiteLLM+DB→nginx) + host-native vLLM inference reconcile (host vLLM servers in vllm_host.go; best-effort vLLM + hf install into the platform venv) + `ai setup`/uninstall service control
+│   ├── setup/                  # service-tier reconcile orchestrator (network→DNS→Presidio→Valkey→RedisInsight→Headroom→LiteLLM+DB→nginx) + host-native omlx inference reconcile (the one shared omlx server in omlx_host.go; best-effort omlx install into the platform venv, live-model sync into LiteLLM) + `ai setup`/uninstall service control
 │   ├── hostsfile/              # managed /etc/hosts block writer (delimited, idempotent)
 │   ├── uihosts/                # UI-vhost logic: the litellm.<domain> host vhost + its /etc/hosts entry (composes services + hostsfile)
 │   ├── console/                # host-display endpoint registry (UI subdomains + gateway paths off the nginx port)
 │   ├── litellm/                 # host lifecycle, config gen, health, routing, guardrails, virtual-key + credential KeyManager (keys-in-LiteLLM; fronted by `ai keys` in cli/keys.go)
-│   ├── hf/                      # Hugging Face CLI wrapper: BinaryPath (platform venv) + Detect + Install (pip huggingface_hub[cli]); Client Download/CacheList/CacheRemove; CuratedModels(goos) in-code available list (mlx-community/* on darwin, HF safetensors on Linux)
-│   ├── pyenv/                    # platform-managed HOST Python venv (~/.ai-platform/venv): Ensure (newest Python, general/Linux) / EnsureVersion (exact-pin + recreate, macOS MLX) / PipInstall
-│   ├── vllm/                     # host-native vLLM backend: per-model `vllm serve` Manager (one OpenAI endpoint per model on :8101+, lazy-start + max-concurrent cap + LRU evict, health); StoreDir volumes/models/vllm; MLX on macOS / safetensors on Linux (live launch/download are `hardware bring-up` stubs)
+│   ├── pyenv/                    # platform-managed HOST Python venv (~/.ai-platform/venv): Ensure (newest Python, general/Linux) / EnsureVersion (exact-pin + recreate) / PipInstall
+│   ├── omlx/                     # host-native omlx backend (macOS/Apple-Silicon only): ONE shared `omlx serve --model-dir <dir> --port 8100` Manager (single OpenAI endpoint serving every model omlx finds, health-polled); StoreDir volumes/models/omlx; model add/remove/tune lives entirely in omlx's own admin panel (`ai services console omlx`), not this package (live server fork + admin-panel round-trip are `hardware bring-up` stubs)
 │   ├── agentcfg/                # in-VM agent provider config (base_url→nginx gateway, virtual key, picker models, refresh-models)
 │   ├── contextopt/              # per-project Headroom strategy (→ per-request knobs fed to LiteLLM's headroom compress-guardrail call) + in-workspace Caveman skill
 │   ├── envimage/                # compose .ai-platform/Dockerfile (OS template + stack snippets + agent CLIs) + build OCI image
@@ -91,7 +90,7 @@ keep the precedence rules in arch §27 explicit), `slog` (structured logs), stdl
 │   │       ├── stacks/<stack>/Dockerfile.snippet  # one install snippet per stack (go, rust, java, maven, deno — Node/Python are baked into the base, not stacks)
 │   │       ├── agentclis/                          # per-agent-CLI install snippets
 │   │       └── tools/<tool>/Dockerfile.snippet    # opt-in AI tools (graphify, code-review-graph, codebase-memory-mcp) — appended only when selected (--tools)
-│   ├── uninstall/               # native `ai uninstall` teardown (stops running `vllm serve` processes; the vLLM weight store is kept unless `--purge`)
+│   ├── uninstall/               # native `ai uninstall` teardown (stops the running `omlx serve` process; the omlx model store is kept unless `--purge`)
 │   └── doctor/                  # consolidated health checks → repair suggestions
 ├── installers/                  # install.sh (+ install-local.sh) thin launchers (macOS/Linux)
 ├── test/acceptance/             # Go acceptance harness (AT §1.6); in-process mock
@@ -183,14 +182,19 @@ behind uniform `ai services` verbs — **no docker compose**:
   recreates affected containers. (Open WebUI is now an opt-in **in-VM** app and
   Odysseus was removed, so the host tier has no optional services; the optional
   mechanism is retained for future host services.)
-* **host-native inference tier** (NOT containerized): vLLM is the sole
-  local-inference backend, running per-model `vllm serve` host processes — there is
-  **no `aip-*` inference container**. `ai setup` best-effort installs vLLM + the
-  Hugging Face CLI (`hf`) into the platform venv and reconciles the per-model vLLM
-  servers (`internal/setup/vllm_host.go` over `internal/vllm`); the LiteLLM
-  container reaches each per-model vLLM OpenAI endpoint at
-  `host.docker.internal:<port>`. Local models are added with `ai models pull <repo>`
-  (`hf download` + `vllm serve`).
+* **host-native inference tier** (NOT containerized, macOS/Apple-Silicon only):
+  omlx is the sole local-inference backend, running as ONE shared
+  `omlx serve --model-dir <dir> --port 8100` host process that serves every
+  model it finds — there is **no `aip-*` inference container** and no
+  per-model process/port. `ai setup` best-effort installs omlx into the
+  platform venv, starts the shared server (`internal/setup/omlx_host.go` over
+  `internal/omlx`), and then automatically syncs LiteLLM's `omlx/<id>`
+  registrations against the server's own live `GET /v1/models`; the LiteLLM
+  container reaches the single endpoint at `host.docker.internal:8100`. Local
+  model download/add/remove/tuning is not a platform command — it lives
+  entirely in omlx's own admin panel (`http://127.0.0.1:8100/admin`, reached
+  via `ai services console omlx`); `ai models refresh` re-triggers the LiteLLM
+  sync on demand.
 
 The Microsandbox runtime is **not** a managed service: its `msb` binary is
 pinned into `tools/` and invoked on demand via `sandbox/` to create and drive
@@ -221,7 +225,7 @@ keys-in-LiteLLM credentials (agent holds a scoped virtual key), zero manual conf
 Commands (exactly the `[S1]`-tested surface): `ai setup`,
 `ai create` (interactive wizard), `ai delete` (alias `ai destroy`),
 `ai start|stop|restart|exec`, `ai services status`,
-`ai keys add|list|remove`, `ai models status|test`, `ai state show|repair`,
+`ai keys add|list|remove`, `ai models status|test|refresh`, `ai state show|repair`,
 `ai doctor`, `ai logs`.
 (No snapshot/upgrade/rollback commands — the environment is the project's
 `.ai-platform/Dockerfile`, arch §25; overlay persistence is `[S4]`.)
@@ -242,9 +246,9 @@ refer to the CLI spec and architecture spec respectively.
 * **M3 — `ai setup` + services.** Preflight (exit 3 on missing deps),
   init `~/.ai-platform/`, install/configure/start the container service tier
   (DNS resolver, Presidio pair, Valkey (+ RedisInsight), LiteLLM + its DB, Headroom, nginx gateway)
-  plus the host-native vLLM inference tier (best-effort install vLLM + the Hugging
-  Face CLI `hf` into the platform venv, reconcile host vLLM servers — no `aip-*`
-  inference container)
+  plus the host-native omlx inference tier (best-effort install omlx into the
+  platform venv, start the one shared omlx server, sync its live model list into
+  LiteLLM — no `aip-*` inference container)
   with the role-driven bind host (server 0.0.0.0,
   standalone/client loopback) + verify the Microsandbox runtime; provider keys
   live in the LiteLLM gateway (keys-in-LiteLLM, §8.2); render the per-project

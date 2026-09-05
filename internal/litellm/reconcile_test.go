@@ -17,7 +17,7 @@ func TestReconcileDiff(test *testing.T) {
 	desired := []DesiredModel{
 		{Name: "openai/gpt-5.5"},        // already current → no-op
 		{Name: "google/gemini-3.1-pro"}, // new → add
-		{Name: "vllm/gemma4"},           // new → add
+		{Name: "omlx/gemma4"},           // new → add
 	}
 	current := []LiveModel{
 		{ID: "id-keep", Name: "openai/gpt-5.5"},
@@ -31,7 +31,7 @@ func TestReconcileDiff(test *testing.T) {
 		addNames = append(addNames, model.Name)
 	}
 	// Sorted.
-	if strings.Join(addNames, ",") != "google/gemini-3.1-pro,vllm/gemma4" {
+	if strings.Join(addNames, ",") != "google/gemini-3.1-pro,omlx/gemma4" {
 		test.Errorf("add = %v, want the two new models sorted", addNames)
 	}
 	if len(plan.Delete) != 1 || plan.Delete[0].ID != "id-stale" {
@@ -42,10 +42,10 @@ func TestReconcileDiff(test *testing.T) {
 // TestReconcileIdempotent verifies an equal desired/current set yields an empty
 // plan (no-op on a re-run).
 func TestReconcileIdempotent(test *testing.T) {
-	desired := []DesiredModel{{Name: "openai/gpt-5.5"}, {Name: "vllm/gemma4"}}
+	desired := []DesiredModel{{Name: "openai/gpt-5.5"}, {Name: "omlx/gemma4"}}
 	current := []LiveModel{
 		{ID: "a", Name: "openai/gpt-5.5"},
-		{ID: "b", Name: "vllm/gemma4"},
+		{ID: "b", Name: "omlx/gemma4"},
 	}
 	plan := Reconcile(desired, current)
 	if !plan.Empty() {
@@ -109,7 +109,7 @@ func TestSyncModelsAppliesDiff(test *testing.T) {
 		case "/model/info":
 			// Current set: one local keep (shielded), one stale cloud.
 			_, _ = writer.Write([]byte(`{"data":[
-				{"model_name":"vllm/my-qwen","litellm_params":{"model":"openai/my-qwen"},"model_info":{"id":"keep"}},
+				{"model_name":"omlx/my-qwen","litellm_params":{"model":"openai/my-qwen"},"model_info":{"id":"keep"}},
 				{"model_name":"openai/old","litellm_params":{"model":"openai/old"},"model_info":{"id":"stale"}}
 			]}`))
 		case "/model/new":
@@ -133,13 +133,13 @@ func TestSyncModelsAppliesDiff(test *testing.T) {
 
 	cat := testCatalog(test)
 	manager := NewKeyManager(okProber())
-	// Desired: google keyed (→ google/gemini-3.1-pro). The vllm/my-qwen local model is
+	// Desired: google keyed (→ google/gemini-3.1-pro). The omlx/my-qwen local model is
 	// current but shielded from the resync's delete pass.
 	result, err := manager.SyncModels(cat, []string{"google"})
 	if err != nil {
 		test.Fatalf("SyncModels: %v", err)
 	}
-	// Added the new cloud model; vllm/my-qwen unchanged (shielded).
+	// Added the new cloud model; omlx/my-qwen unchanged (shielded).
 	if strings.Join(result.Added, ",") != "google/gemini-3.1-pro" {
 		test.Errorf("added = %v, want [google/gemini-3.1-pro]", result.Added)
 	}
@@ -155,16 +155,16 @@ func TestSyncModelsAppliesDiff(test *testing.T) {
 	}
 }
 
-// TestSyncModelsPreservesVLLM verifies the local-model protection: a cloud-key resync
-// must NOT delete "vllm/*" models (owned by Register/UnregisterVLLMModel — the sole
+// TestSyncModelsPreservesOmlx verifies the local-model protection: a cloud-key resync
+// must NOT delete "omlx/*" models (owned by SyncOmlxModels — the sole
 // local backend). Only stale CLOUD models delete.
-func TestSyncModelsPreservesVLLM(test *testing.T) {
+func TestSyncModelsPreservesOmlx(test *testing.T) {
 	var deleted []string
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		switch request.URL.Path {
 		case "/model/info":
 			_, _ = writer.Write([]byte(`{"data":[
-				{"model_name":"vllm/my-qwen","litellm_params":{"model":"openai/Qwen/Qwen3-8B"},"model_info":{"id":"vllm-keep"}},
+				{"model_name":"omlx/my-qwen","litellm_params":{"model":"openai/Qwen/Qwen3-8B"},"model_info":{"id":"omlx-keep"}},
 				{"model_name":"openai/old","litellm_params":{"model":"openai/old"},"model_info":{"id":"cloud-stale"}}
 			]}`))
 		case "/model/delete":
@@ -183,7 +183,7 @@ func TestSyncModelsPreservesVLLM(test *testing.T) {
 	test.Setenv("LITELLM_BASE_URL", server.URL)
 
 	manager := NewKeyManager(okProber())
-	// No keyed providers — the resync must still preserve the vllm/* registration and
+	// No keyed providers — the resync must still preserve the omlx/* registration and
 	// delete only the stale cloud model.
 	result, err := manager.SyncModels(testCatalog(test), nil)
 	if err != nil {
@@ -193,7 +193,7 @@ func TestSyncModelsPreservesVLLM(test *testing.T) {
 		test.Errorf("gateway saw deletes %v, want only [cloud-stale] — local models must be preserved", deleted)
 	}
 	for _, name := range result.Deleted {
-		if strings.HasPrefix(name, "vllm/") {
+		if strings.HasPrefix(name, "omlx/") {
 			test.Errorf("a resync must not delete vLLM model %q", name)
 		}
 	}

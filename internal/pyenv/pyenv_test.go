@@ -277,7 +277,7 @@ func TestEnsureVersionRecreatesDifferentVersion(test *testing.T) {
 func TestPipInstallRequiresVenv(test *testing.T) {
 	test.Setenv("HOME", test.TempDir())
 	swapExec(test)
-	if err := PipInstall("vllm"); err == nil {
+	if err := PipInstall("omlx"); err == nil {
 		test.Error("PipInstall must error before the venv is created")
 	}
 	if err := PipInstall(); err == nil {
@@ -308,14 +308,14 @@ func TestPipInstallPrefersUV(test *testing.T) {
 		ran = append(ran, append([]string{name}, args...))
 		return nil, nil
 	}
-	if err := PipInstall("vllm"); err != nil {
+	if err := PipInstall("omlx"); err != nil {
 		test.Fatalf("PipInstall: %v", err)
 	}
 	if len(ran) != 1 {
 		test.Fatalf("expected one install invocation, got %v", ran)
 	}
 	joined := strings.Join(ran[0], " ")
-	if !strings.HasPrefix(joined, "uv pip install --python ") || !strings.Contains(joined, python) || !strings.HasSuffix(joined, "vllm") {
+	if !strings.HasPrefix(joined, "uv pip install --python ") || !strings.Contains(joined, python) || !strings.HasSuffix(joined, "omlx") {
 		test.Errorf("uv pip install must target the venv python: %q", joined)
 	}
 }
@@ -338,7 +338,7 @@ func TestPipInstallFallsBackToVenvPip(test *testing.T) {
 		ran = append(ran, append([]string{name}, args...))
 		return nil, nil
 	}
-	if err := PipInstall("vllm"); err != nil {
+	if err := PipInstall("omlx"); err != nil {
 		test.Fatalf("PipInstall: %v", err)
 	}
 	pip, _ := BinPath("pip")

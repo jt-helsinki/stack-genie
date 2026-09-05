@@ -167,7 +167,7 @@ func TestRefreshAgentModelsSelfHealsOrphanedKey(test *testing.T) {
 	minter := &fakeKeyMinter{keyInfoErr: errors.New("key not found")}
 	manager := Manager{
 		Builder: &fakeBuilder{}, Sandbox: sandbox, Keys: minter,
-		Served: fakeServedModels{models: []string{"vllm/heal:1"}},
+		Served: fakeServedModels{models: []string{"omlx/heal:1"}},
 		Now:    func() string { return "t" },
 	}
 
@@ -182,7 +182,7 @@ func TestRefreshAgentModelsSelfHealsOrphanedKey(test *testing.T) {
 	}
 	// registerAgentProviders rewrote the opencode config with the served model.
 	openCode := readProjectConfig(test, root, ".opencode", "opencode.json")
-	if !strings.Contains(openCode, "vllm/heal:1") {
+	if !strings.Contains(openCode, "omlx/heal:1") {
 		test.Errorf("self-heal did not rewrite the opencode model list:\n%s", openCode)
 	}
 }
@@ -197,7 +197,7 @@ func TestRefreshAgentModelsSelfHealFailureFallsThrough(test *testing.T) {
 	minter := &fakeKeyMinter{keyInfoErr: errors.New("key not found"), lastErr: errors.New("mint gateway down")}
 	manager := Manager{
 		Builder: &fakeBuilder{}, Sandbox: sandbox, Keys: minter,
-		Served: fakeServedModels{models: []string{"vllm/fallthrough:1"}},
+		Served: fakeServedModels{models: []string{"omlx/fallthrough:1"}},
 		Now:    func() string { return "t" },
 	}
 
@@ -205,7 +205,7 @@ func TestRefreshAgentModelsSelfHealFailureFallsThrough(test *testing.T) {
 
 	// The fall-through list-only refresh still writes the served list.
 	openCode := readProjectConfig(test, root, ".opencode", "opencode.json")
-	if !strings.Contains(openCode, "vllm/fallthrough:1") {
+	if !strings.Contains(openCode, "omlx/fallthrough:1") {
 		test.Errorf("fall-through refresh did not write the served list:\n%s", openCode)
 	}
 }
@@ -220,13 +220,13 @@ func TestRefreshAgentModelsEmptyServedLeavesUntouched(test *testing.T) {
 	// Prime a good opencode list via a full start with a served model.
 	primed := Manager{
 		Builder: &fakeBuilder{}, Sandbox: &fakeSandbox{}, Keys: &fakeKeyMinter{},
-		Served: fakeServedModels{models: []string{"vllm/keep:1"}},
+		Served: fakeServedModels{models: []string{"omlx/keep:1"}},
 		Now:    func() string { return "t" },
 	}
 	if _, err := primed.Start("app"); err != nil {
 		test.Fatalf("prime Start: %v", err)
 	}
-	if openCode := readProjectConfig(test, root, ".opencode", "opencode.json"); !strings.Contains(openCode, "vllm/keep:1") {
+	if openCode := readProjectConfig(test, root, ".opencode", "opencode.json"); !strings.Contains(openCode, "omlx/keep:1") {
 		test.Fatalf("prime did not seed the model list:\n%s", openCode)
 	}
 
@@ -240,7 +240,7 @@ func TestRefreshAgentModelsEmptyServedLeavesUntouched(test *testing.T) {
 	refresher.refreshAgentModels("app")
 
 	openCode := readProjectConfig(test, root, ".opencode", "opencode.json")
-	if !strings.Contains(openCode, "vllm/keep:1") {
+	if !strings.Contains(openCode, "omlx/keep:1") {
 		test.Errorf("empty-served refresh must leave the existing list untouched:\n%s", openCode)
 	}
 }

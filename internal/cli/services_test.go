@@ -14,7 +14,7 @@ func TestServicesResultHumanShowsAddressAndConsole(test *testing.T) {
 	result := servicesResult{Services: []setup.ServiceStatus{
 		{Name: "litellm", Mode: "container", State: "running", Healthy: true,
 			Address: "http://localhost:14000", Console: "http://localhost:14000/ui"},
-		{Name: "vllm", Mode: "container", State: "running", Healthy: true,
+		{Name: "omlx", Mode: "container", State: "running", Healthy: true,
 			Address: "http://localhost:11434"},
 		{Name: "presidio", Mode: "container", State: "running", Healthy: true},
 		{Name: "microsandbox", Mode: "runtime", State: "ready", Healthy: true},
@@ -30,7 +30,7 @@ func TestServicesResultHumanShowsAddressAndConsole(test *testing.T) {
 		test.Errorf("litellm console URL missing from services status output:\n%s", rendered)
 	}
 	if !strings.Contains(rendered, "http://localhost:11434") {
-		test.Errorf("vllm address missing from services status output:\n%s", rendered)
+		test.Errorf("omlx address missing from services status output:\n%s", rendered)
 	}
 	if !strings.Contains(rendered, "presidio") || !strings.Contains(rendered, "microsandbox") {
 		test.Errorf("all services should appear in the table:\n%s", rendered)
@@ -42,7 +42,7 @@ func TestServicesResultHumanShowsAddressAndConsole(test *testing.T) {
 // every container service.
 func TestControllableServicesExcludesRuntime(test *testing.T) {
 	statuses := []setup.ServiceStatus{
-		{Name: "vllm", Mode: "container"},
+		{Name: "omlx", Mode: "container"},
 		{Name: "presidio", Mode: "container"},
 		{Name: "litellm", Mode: "container"},
 		{Name: "headroom", Mode: "container"},
@@ -67,7 +67,7 @@ func TestControllableServicesExcludesRuntime(test *testing.T) {
 	for _, service := range controllable {
 		kept[service.Name] = true
 	}
-	for _, name := range []string{"vllm", "presidio", "litellm", "headroom", "proxy", "dns"} {
+	for _, name := range []string{"omlx", "presidio", "litellm", "headroom", "proxy", "dns"} {
 		if !kept[name] {
 			test.Errorf("container service %q should be kept", name)
 		}
@@ -77,7 +77,7 @@ func TestControllableServicesExcludesRuntime(test *testing.T) {
 // controllableServices is a no-op when there is no runtime entry.
 func TestControllableServicesKeepsAllContainers(test *testing.T) {
 	statuses := []setup.ServiceStatus{
-		{Name: "vllm", Mode: "container"},
+		{Name: "omlx", Mode: "container"},
 		{Name: "litellm", Mode: "container"},
 	}
 	if got := len(controllableServices(statuses)); got != len(statuses) {
@@ -95,8 +95,8 @@ func TestExpandServiceSelection(test *testing.T) {
 		want     []string
 	}{
 		{"all sentinel alone", []string{"all"}, []string{"all"}},
-		{"all sentinel mixed", []string{"vllm", "all", "litellm"}, []string{"all"}},
-		{"plain names unchanged", []string{"vllm", "litellm"}, []string{"vllm", "litellm"}},
+		{"all sentinel mixed", []string{"omlx", "all", "litellm"}, []string{"all"}},
+		{"plain names unchanged", []string{"omlx", "litellm"}, []string{"omlx", "litellm"}},
 		{"empty stays empty", []string{}, []string{}},
 	}
 	for _, testCase := range cases {

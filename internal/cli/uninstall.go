@@ -108,7 +108,7 @@ func newUninstallCmd(em *output.Emitter, exit *int) *cobra.Command {
 				purge = purgeAnswer
 			}
 
-			// Decide whether to also remove the host-native vLLM runtime itself (vLLM
+			// Decide whether to also remove the host-native omlx runtime itself (omlx
 			// is the sole local runtime). It DEFAULTS TO YES
 			// everywhere; --keep-runtimes opts out (for --json/automation that wants to
 			// preserve it). On a terminal the prompt still shows, seeded from the flag
@@ -117,8 +117,8 @@ func newUninstallCmd(em *output.Emitter, exit *int) *cobra.Command {
 			removeRuntimes := !keepRuntimes
 			if interactive {
 				runtimesAnswer, runtimesErr := promptConfirmDefault(
-					"Remove the host-native vLLM runtime?",
-					"Stops any running vLLM servers and uninstalls the runtime (binary + "+
+					"Remove the host-native omlx runtime?",
+					"Stops any running omlx servers and uninstalls the runtime (binary + "+
 						"install). Say no to keep it installed. The downloaded models are kept "+
 						"either way — pass --purge to delete those too.",
 					removeRuntimes,
@@ -180,7 +180,7 @@ func newUninstallCmd(em *output.Emitter, exit *int) *cobra.Command {
 				Purged:            report.Purged,
 				RemovedState:      report.RemovedState,
 				StoppedWorkspaces: report.StoppedWorkspaces,
-				RemovedVLLM:       report.RemovedVLLM,
+				RemovedOmlx:       report.RemovedOmlx,
 				RemovedContainers: report.RemovedContainers,
 				RemovedImages:     report.RemovedImages,
 				CleanedRC:         report.CleanedRC,
@@ -197,7 +197,7 @@ func newUninstallCmd(em *output.Emitter, exit *int) *cobra.Command {
 	cmd.Flags().BoolVar(&removeDeps, "remove-deps", false,
 		"also uninstall the external dependencies (msb) without prompting")
 	cmd.Flags().BoolVar(&keepRuntimes, "keep-runtimes", false,
-		"keep the host-native vLLM runtime installed (it is removed by default; the downloaded models are kept unless --purge)")
+		"keep the host-native omlx runtime installed (it is removed by default; the downloaded models are kept unless --purge)")
 	return cmd
 }
 
@@ -245,7 +245,7 @@ type uninstallResult struct {
 	Purged            bool     `json:"purged"`
 	RemovedState      bool     `json:"removed_state,omitempty"`
 	StoppedWorkspaces int      `json:"stopped_workspaces,omitempty"`
-	RemovedVLLM       bool     `json:"removed_vllm,omitempty"`
+	RemovedOmlx       bool     `json:"removed_omlx,omitempty"`
 	RemovedContainers int      `json:"removed_containers,omitempty"`
 	RemovedImages     int      `json:"removed_images,omitempty"`
 	CleanedRC         []string `json:"cleaned_rc,omitempty"`
@@ -285,8 +285,8 @@ func (result uninstallResult) Human() string {
 	if result.RemovedImages > 0 {
 		summary += fmt.Sprintf(" Removed %d container image(s).", result.RemovedImages)
 	}
-	if result.RemovedVLLM {
-		summary += " Removed the host-native vLLM runtime (downloaded models kept)."
+	if result.RemovedOmlx {
+		summary += " Removed the host-native omlx runtime (downloaded models kept)."
 	}
 	if len(result.RemovedDeps) > 0 {
 		summary += " Also uninstalled: " + ui.Value.Render(strings.Join(result.RemovedDeps, ", ")) + "."

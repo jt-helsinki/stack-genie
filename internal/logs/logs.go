@@ -28,7 +28,7 @@ const TailLines = 200
 
 // Services returns the host services accepted by `ai logs --service` (CLI §13.1):
 // the microVM runtime (microsandbox) plus every container in the service tier —
-// vllm, presidio, litellm, headroom, proxy, dns. Log scopes are per logical
+// omlx, presidio, litellm, headroom, proxy, dns. Log scopes are per logical
 // service (some services aggregate multiple containers — e.g. presidio covers the
 // analyzer + anonymizer pair, and litellm-db has no scope of its own). A service
 // value selects a log source by substring match on the

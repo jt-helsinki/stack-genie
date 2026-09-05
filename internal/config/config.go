@@ -60,12 +60,12 @@ type AgentConfig struct {
 	Tools []string `yaml:"tools,omitempty" json:"tools,omitempty"`
 	// DefaultTool is the default agent CLI; must be one of Tools.
 	DefaultTool string `yaml:"default_tool,omitempty" json:"default_tool,omitempty"`
-	// GraphifyModel is the local vLLM model Graphify uses for its (headless) LLM
-	// backend — a Hugging Face repo id, reached THROUGH the gateway as
-	// `vllm/<alias>` (nginx → LiteLLM → the served vLLM model; alias = the repo's base
-	// name). It is chosen at `ai create` from the curated vLLM list and pulled if not
-	// already installed. Empty leaves Graphify's backend unconfigured (the in-session
-	// /graphify skill still uses the agent session's own model).
+	// GraphifyModel is the local omlx-served model Graphify uses for its (headless)
+	// LLM backend — the model NAME as omlx currently serves it (no download; model
+	// management lives entirely in omlx's own admin panel), reached THROUGH the
+	// gateway as `omlx/<name>` (nginx → LiteLLM → the shared omlx server). Empty
+	// leaves Graphify's backend unconfigured (the in-session /graphify skill still
+	// uses the agent session's own model).
 	GraphifyModel string `yaml:"graphify_model,omitempty" json:"graphify_model,omitempty"`
 	// AuthModes records the per-CLI authentication mode for the CLIs that have a
 	// first-party subscription login (claude-code, codex, gemini): "api-key" (the

@@ -78,10 +78,10 @@ func TestNoOrphanLogScopes(test *testing.T) {
 // the other.
 func TestSetupContainerConstsMatchRegistry(test *testing.T) {
 	expected := map[string][]string{
-		// vllm is HOST-NATIVE (no aip-vllm container is reconciled) — it is the sole
+		// omlx is HOST-NATIVE (no aip-omlx container is reconciled) — it is the sole
 		// local-inference backend. It has no container, so the setup const and the
 		// registry must agree on an empty component set.
-		"vllm":         {}, // host-native — no container
+		"omlx":         {}, // host-native — no container
 		"presidio":     {presidioAnalyzerContainer, presidioAnonymizerContainer},
 		"litellm":      {litellmContainer, litellmDBContainer},
 		"valkey":       {valkeyContainer},

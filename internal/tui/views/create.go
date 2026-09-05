@@ -13,7 +13,6 @@ import (
 	"github.com/jt-helsinki/stack-genie/internal/apps"
 	"github.com/jt-helsinki/stack-genie/internal/config"
 	"github.com/jt-helsinki/stack-genie/internal/create"
-	"github.com/jt-helsinki/stack-genie/internal/hf"
 	"github.com/jt-helsinki/stack-genie/internal/project"
 	"github.com/jt-helsinki/stack-genie/internal/tui/scope"
 	"github.com/jt-helsinki/stack-genie/internal/ui"
@@ -97,7 +96,7 @@ type Create struct {
 	disk        *textStep
 	ports       *textStep
 	idle        *textStep
-	model       *modelPicker // nil when no curated vLLM list is available (step skipped)
+	model       *textStep // the Graphify model name step
 
 	// Per-agent auth-mode phase (stepAuth): one selectList per OAuth-capable selected
 	// agent, built when leaving the model step. authIndex walks them one at a time.
@@ -122,10 +121,9 @@ type Create struct {
 	stepH int
 }
 
-// NewCreate builds the wizard. startDir seeds the location field; curated is the
-// curated vLLM model list for the Graphify-model step (empty → that step is skipped);
-// hostGB / usableGB annotate the memory hint.
-func NewCreate(startDir string, curated []hf.CuratedModel, hostGB, usableGB int) *Create {
+// NewCreate builds the wizard. startDir seeds the location field; hostGB / usableGB
+// annotate the memory hint.
+func NewCreate(startDir string, hostGB, usableGB int) *Create {
 	defaultCPUs := config.Default().Workspace.CPULimit
 	cpuHint := fmt.Sprintf("Blank uses the default (%d); host has %d logical CPUs", defaultCPUs, sysinfoCPUs())
 	memHint := fmt.Sprintf("A plain number in GB; blank uses the default (%s); usable max %d GB (host %d GB)",
@@ -146,9 +144,7 @@ func NewCreate(startDir string, curated []hf.CuratedModel, hostGB, usableGB int)
 		ports:       newTextStep("ports", "Ports to open: PORT or HOST:GUEST, comma-separated (e.g. 8080,9000:3000).", "", "", validatePortsField),
 		idle:        newTextStep("idle timeout", "How long msb may leave the workspace idle before stopping it (e.g. 30m, 24h).", "", "", validateIdleField),
 	}
-	if len(curated) > 0 {
-		wizard.model = newModelPicker(curated, "")
-	}
+	wizard.model = newTextStep("Graphify model", "Name of a model omlx is ALREADY serving (manage models from its own admin panel — `ai services console omlx`); blank leaves Graphify unconfigured.", "", "", nil)
 	// Ports already taken by other workspaces' apps, so a suggested app port defaults to a
 	// free one (best-effort; a read error just yields an empty reserved set).
 	wizard.reservedAppPorts, _ = apps.ReservedPortsAcrossWorkspaces()
@@ -165,7 +161,7 @@ func (view *Create) Hints() string {
 		return "type to filter · ↓/↑ pick folder · tab open folder · enter next" + nav
 	case stepAgents, stepStacks, stepTools:
 		return "↑/↓ move · space toggle · enter next" + nav
-	case stepOS, stepShell, stepDefault, stepModel, stepAuth:
+	case stepOS, stepShell, stepDefault, stepAuth:
 		return "↑/↓ move · enter select/next" + nav
 	default:
 		return "type · enter next" + nav
@@ -200,9 +196,7 @@ func (view *Create) SetSize(width, height int) {
 	view.disk.SetSize(stepWidth, stepHeight)
 	view.ports.SetSize(stepWidth, stepHeight)
 	view.idle.SetSize(stepWidth, stepHeight)
-	if view.model != nil {
-		view.model.SetSize(stepWidth, stepHeight)
-	}
+	view.model.SetSize(stepWidth, stepHeight)
 }
 
 func (view *Create) Init() tea.Cmd { return textinput.Blink }
@@ -236,13 +230,10 @@ func (view *Create) Update(msg tea.Msg) tea.Cmd {
 		return view.updateMultiStep(view.multiStepFor(view.step), msg)
 	case stepModel:
 		// Graphify model is relevant only when graphify is selected; skip otherwise.
-		if view.model == nil || !view.graphifySelected() {
+		if !view.graphifySelected() {
 			return view.next()
 		}
-		if done := view.model.Update(msg); done {
-			return view.next()
-		}
-		return nil
+		return view.updateTextStep(view.model, msg)
 	case stepAppPorts:
 		if len(view.appPortInputs) == 0 {
 			return view.next()
@@ -398,7 +389,7 @@ func (view *Create) next() tea.Cmd {
 	}
 	// The Graphify-model step is shown only when graphify is selected AND a library is
 	// cached; otherwise skip straight into the app-port / auth phases.
-	if view.step == stepModel && (view.model == nil || !view.graphifySelected()) {
+	if view.step == stepModel && !view.graphifySelected() {
 		return view.leaveModelStep()
 	}
 	return nil
@@ -432,7 +423,7 @@ func (view *Create) enterAuthOrFinish() tea.Cmd {
 // backToModelOrTools returns from a dynamic phase to the model step when it is shown, else
 // the tools step.
 func (view *Create) backToModelOrTools() {
-	if view.model != nil && view.graphifySelected() {
+	if view.graphifySelected() {
 		view.step = stepModel
 		return
 	}
@@ -537,7 +528,7 @@ func (view *Create) finish() tea.Cmd {
 	ports, _ := parsePortsForSpec(view.ports.Value())
 	caveman, graphify, codeReviewGraph, codebaseMemory := create.SplitAITools(view.tools.Values())
 	graphifyModel := ""
-	if graphify && view.model != nil {
+	if graphify {
 		graphifyModel = view.model.Value()
 	}
 	var authModes map[string]string
@@ -637,9 +628,6 @@ func (view *Create) stepBody() string {
 	case stepModel:
 		if !view.graphifySelected() {
 			return ui.Muted.Render("Graphify is not selected — the Graphify model step is skipped.")
-		}
-		if view.model == nil {
-			return ui.Muted.Render("No curated vLLM models for this platform — the Graphify model is left unset.")
 		}
 		return view.model.View()
 	case stepAppPorts:

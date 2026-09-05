@@ -20,7 +20,7 @@ var expectedServices = map[string]string{
 	"presidio-analyzer":   "container",
 	"presidio-anonymizer": "container",
 	"proxy":               "container",
-	// vLLM is host-native — not a pulled/pinned container image.
+	// omlx is host-native — not a pulled/pinned container image.
 	"dns":          "container",
 	"valkey":       "container",
 	"redisinsight": "container",

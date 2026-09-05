@@ -83,7 +83,7 @@ func BinDir() (string, error) {
 
 // VenvDir is ~/.ai-platform/venv — the platform-managed, host-side Python virtual
 // environment. It is the single home for platform-wide Python tooling that runs on
-// the HOST (as opposed to a workspace's in-VM `.venv-msb`): notably the vLLM
+// the HOST (as opposed to a workspace's in-VM `.venv-msb`): notably the omlx
 // local-inference backend. Created on use (by internal/pyenv at `ai setup`) and
 // removed by `ai uninstall --purge` (RemoveAll ~/.ai-platform).
 func VenvDir() (string, error) {

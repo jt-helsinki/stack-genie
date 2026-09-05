@@ -128,7 +128,7 @@ Host Layer
  │          Headroom · LiteLLM (+ Postgres) · Presidio (analyzer + anonymizer) · Valkey · RedisInsight · DNS audit (CoreDNS)
  │
  └─ Local inference backend (host-side, reached by the service tier via host.docker.internal)
-     └─ vLLM (host-side; one `vllm serve` OpenAI endpoint PER model on :8101+; platform probes each)
+     └─ omlx (host-side; ONE shared `omlx serve` OpenAI endpoint on :8100 serving every local model; platform probes it)
 ```
 
 Workspaces are **microVMs** (hardware isolation), not containers. The
@@ -140,7 +140,7 @@ Host services (run on the host, not inside a workspace):
 ```text
 nginx proxy (aip-proxy)                                 — the SOLE host entry, publishes :18787 (default server + UI vhosts)
 Headroom · LiteLLM (Model Layer) · Presidio             — container tier (Docker/Podman, network aip-net), INTERNAL-ONLY behind nginx
-vLLM (local inference)                                  — host-side backend; the service tier reaches it via host.docker.internal
+omlx (local inference)                                  — host-side backend; the service tier reaches it via host.docker.internal
 Microsandbox                                            — microVM runtime, driven by the `ai` CLI via the Go SDK / `msb` (no daemon)
 ```
 
@@ -148,7 +148,7 @@ The host service tier is containers on `aip-net`: nginx (`aip-proxy`),
 Presidio (analyzer + anonymizer), LiteLLM (+ Postgres), Headroom, Valkey
 (`aip-valkey`, the LiteLLM response cache) and its RedisInsight GUI
 (`aip-redisinsight`), and the CoreDNS egress-audit resolver. The local-inference
-backend is **not** a container — host-side vLLM runs
+backend is **not** a container — host-side omlx runs
 host-side and the service tier reaches it via `host.docker.internal` (§16).
 There are no optional host services. There is no
 native host service. **`aip-proxy` (nginx) is the SOLE host entry point** — every
@@ -163,7 +163,7 @@ is also installed inside each workspace image for a future in-VM `headroom wrap
 <cli>` (§10).
 
 (The model-request path below involves the Headroom/LiteLLM/Presidio subset;
-vLLM is a host-side local-inference backend the service
+omlx is a host-side local-inference backend the service
 tier reaches via `host.docker.internal` — see §5/§16. Microsandbox is not a
 long-running service: it is invoked directly to create and drive workspace
 microVMs.)
@@ -182,7 +182,7 @@ nginx (aip-proxy, host :18787, location /v1 → LiteLLM directly)  (SOLE host en
 LiteLLM (Model Layer, aip-litellm:4000, internal-only)
  ↓  pre_call headroom guardrail: POST messages to aip-headroom:8787/v1/compress, swap in compressed input
  ↓  enabled guardrails (§15): secret-masking (Presidio), hide-secrets, tool firewall — when selected
- ↓  route to provider (local — vLLM via host.docker.internal — or cloud); real provider key from LiteLLM's store (cloud only)
+ ↓  route to provider (local — omlx via host.docker.internal — or cloud); real provider key from LiteLLM's store (cloud only)
 Provider · Caveman steers output                         (Context Optimization)
 ```
 
@@ -214,7 +214,7 @@ Responsibilities:
 * Headroom deployment (shared container; LiteLLM's `pre_call` input-compression guardrail backend)
 * LiteLLM deployment
 * Presidio deployment (analyzer + anonymizer, backing LiteLLM's secret-masking guardrail when enabled)
-* Local-inference backend — host-side vLLM (probed, not containerized); the service tier reaches it via `host.docker.internal` (§16)
+* Local-inference backend — host-side omlx (probed, not containerized); the service tier reaches it via `host.docker.internal` (§16)
 * OS Dockerfile templates
 * Platform state
 
@@ -240,7 +240,7 @@ Contains:
 ├── prompts/
 ├── skills/
 ├── templates/      # OS Dockerfile templates + shared templates
-├── venv/           # platform-managed host Python venv (vLLM + the Hugging Face CLI)
+├── venv/           # platform-managed host Python venv (omlx)
 ├── volumes/        # host data volumes only (litellm-db, models store)
 └── tools/
 ```
@@ -301,15 +301,15 @@ project.
 
 The platform's host services — Headroom, LiteLLM (+ its Postgres), Presidio
 (analyzer + anonymizer), and the CoreDNS egress-audit resolver (there are no
-optional host services) — plus the local-inference backend (host-side vLLM,
+optional host services) — plus the local-inference backend (host-side omlx,
 §16) and the Microsandbox microVM runtime are installed,
 configured, and supervised by the `ai` CLI. The CLI is the **single control
 plane**: the user never invokes `docker compose`, `msb`, `launchctl`, or
 `systemctl` directly. The service-tier containers share a private docker network
 (`aip-net`) and are reconciled in order: network → DNS → Presidio →
 Valkey (+ RedisInsight) → Headroom → LiteLLM (+ DB) → nginx proxy (last).
-**vLLM** is a host-side backend, not a container in this order — the platform
-probes it **non-fatally** during reconcile (an unreachable vLLM is a hint, not a
+**omlx** is a host-side backend, not a container in this order — the platform
+probes it **non-fatally** during reconcile (an unreachable omlx is a hint, not a
 setup failure — §16); Headroom now **precedes** LiteLLM because LiteLLM's
 `headroom` compression guardrail calls it.
 (The destructive-tool-call firewall and the `hide-secrets` detector are in-process
@@ -365,7 +365,7 @@ ai logs --service <svc>      one log surface
 | Headroom | container (via Runtime) `aip-headroom` (`ghcr.io/chopratejas/headroom:latest`) | LiteLLM's `pre_call` input-compression guardrail backend, called at `aip-headroom:8787/v1/compress`; INTERNAL-ONLY on :8787 on aip-net (no host publish, nginx never routes to it); carries only `HEADROOM_TELEMETRY=off`; HTTP only (§10) |
 | LiteLLM | container (via Runtime) `aip-litellm` (image tag `latest`) (+ `aip-litellm-db` Postgres, surfaced as its own `postgres` status line) | INTERNAL-ONLY: no host publish, reached by name (`aip-litellm:4000`) by nginx's model path + `/llm` route; it calls Headroom in-process; HTTP only; no host privileges |
 | Presidio | two containers (via Runtime) `aip-presidio-analyzer` + `aip-presidio-anonymizer` | back LiteLLM's secret-masking guardrail; started ONLY when `secret-masking` is selected (§15); internal-only, not published |
-| vLLM (local backend) | **host-side, per-model processes** (one `vllm serve` per served model — NOT a single endpoint, NOT containers) | the platform's sole local-inference backend; each served model runs its own `vllm serve` on a host loopback port (base 8101, allocated upward), lazy-started with a max-concurrent cap + LRU eviction; probed at `http://127.0.0.1:<port>/v1/models`, reached by the LiteLLM/nginx containers at `host.docker.internal:<port>/v1` (both launched with `--add-host=host.docker.internal:host-gateway`, harmless on Docker Desktop, required on Linux); on macOS it serves MLX weights (`mlx-community/*`) via the vLLM-Metal plugin, on Linux Hugging Face safetensors on CUDA/NVIDIA; ensured NON-fatally in reconcile — an unreachable vLLM is a hint, not a setup failure; installation is wired — the one-shot `ai models install-vllm` (`vllm.Install`) resolves and installs the vLLM-Metal wheel on macOS or plain `pip install vllm` on Linux into the platform venv, and `ai setup` best-effort auto-installs it (and the Hugging Face CLI) the same way when absent; `RealRunner.Start`/`Stop` spawn/stop the real `vllm serve` process. The live network install/wheel-resolution and a real per-model serve + gateway round-trip on provisioned hardware remain a hardware-bring-up verification item (§16) |
+| omlx (local backend) | **host-side, ONE shared process** (a single `omlx serve` answering for every locally-served model — NOT per-model processes, NOT containers) | the platform's sole local-inference backend, macOS + Apple Silicon only; one `omlx serve --model-dir <dir> --port 8100` process (fixed port, `services.OmlxPort`) scans its own model directory and serves whatever it finds — no per-model port allocation, no LRU eviction, no per-model resource-cap recording (that all lived in the retired per-model vLLM design); probed at `http://127.0.0.1:8100/v1/models`, reached by the LiteLLM/nginx containers at `host.docker.internal:8100/v1` (`--add-host=host.docker.internal:host-gateway`); ensured NON-fatally in reconcile — an unreachable omlx is a hint, not a setup failure; installation is wired — `ai setup` resolves the latest `github.com/jundot/omlx` release's prebuilt wheel matching the platform venv's Python version and pip-installs it (`omlx.Install`), best-effort, into the platform venv; a cross-process flock (`internal/omlx/lock.go`) serializes server starts across separate `ai` invocations. Models are downloaded/added/removed/tuned entirely through omlx's own admin panel (`ai services console omlx`) — the platform has no `ai models pull` equivalent. The live network install/wheel-resolution and a real serve + gateway round-trip on provisioned hardware remain a hardware-bring-up verification item (§16) |
 | DNS audit resolver | container (via Runtime) `aip-dns` (CoreDNS) | egress-audit resolver: microVMs forward DNS here so attempted names are logged for `ai network log`; published to host loopback only; audit, not enforcement (§29.7) |
 | Microsandbox | microVM runtime, invoked on demand | drives workspace microVMs via the Go SDK / `msb`; no daemon to supervise (§7) |
 
@@ -392,17 +392,19 @@ service configs live under `config/<service>/`.
   `latest`; no digests — they are platform/arch specific — `config/versions.yaml`,
   §27); the Microsandbox `msb` CLI is downloaded as a pinned, sha256-verified
   release binary into `~/.ai-platform/bin/msb` (flat — not a per-tool/per-version
-  subdirectory); vLLM and the Hugging Face CLI are `pip`-installed into the
-  platform-managed venv `~/.ai-platform/venv` by `ai models install-vllm` /
-  `ai setup` (§16)
+  subdirectory); omlx is `pip`-installed into the
+  platform-managed venv `~/.ai-platform/venv` by `ai setup` (or a manual
+  `ai services start omlx`, which retries the same install) (§16)
 * **configure**: rendered from platform config — the LiteLLM config carries no
   model list (models are DB-backed, §14–15) and no key references; the real
   provider credentials live in the LiteLLM gateway, managed via `ai keys`
   (keys-in-LiteLLM, §17) — never on platform disk;
   Microsandbox driven non-interactively per workspace (image, mounts/volumes,
-  resource limits) via the Go SDK / `msb`; local models registered as DB-backed
-  LiteLLM models by `ai models pull`/`rm` — vLLM
-  (host-side, per-model `vllm serve`) is the sole local backend (§14, §16)
+  resource limits) via the Go SDK / `msb`; local models are registered as
+  DB-backed LiteLLM models automatically, reconciled against omlx's own live
+  model list (`litellm.SyncOmlxModels`, also triggerable on demand via
+  `ai models refresh`) — omlx
+  (host-side, one shared `omlx serve` process) is the sole local backend (§14, §16)
 * **startup ordering**: container runtime + Microsandbox runtime verified →
   container tier reconciled in order
   `aip-net` network → DNS (CoreDNS) → Presidio (analyzer + anonymizer,
@@ -431,7 +433,7 @@ Used for the container-tier services — the nginx proxy (`aip-proxy`, the sole
 host entry), Headroom, LiteLLM (+ its Postgres), Presidio (analyzer +
 anonymizer), and the CoreDNS egress-audit resolver — which
 share a private docker network (`aip-net`). There are no optional host services.
-The local-inference backend (vLLM) is **not** in this
+The local-inference backend (omlx) is **not** in this
 tier — it runs host-side and the container tier reaches it via
 `host.docker.internal` (§16).
 
@@ -856,7 +858,7 @@ this server) + TLS (cert terminated at nginx) operator contract. Because nginx i
 the only publisher, **every other service container is
 INTERNAL-ONLY on `aip-net`** (LiteLLM, Presidio, Headroom do not
 publish to the host); only `aip-litellm-db` and `aip-dns` stay
-loopback-published. (The local-inference backend — host-side vLLM — is
+loopback-published. (The local-inference backend — host-side omlx — is
 not on `aip-net` at all: it runs host-side and the container
 tier reaches it via `host.docker.internal`, §16.) This is transparent to workspaces (the gateway URL stays
 `host:18787`) and lets nginx terminate TLS later, per-vhost (in server mode it binds
@@ -989,13 +991,13 @@ templates (§25); it is identical across all OSes:
   install` is idempotent (it rewrites the managed hook), so there is deliberately no
   marker, and the hook step is decoupled from the per-CLI install list (it runs even for
   an omp/hermes-only project).
-  Graphify's headless LLM backend is a **local (vLLM) model chosen at `ai create`** (the
-  wizard's optional model+tag select, or `--graphify-model`), stored as
-  `agent.graphify_model` in the project `config.yaml`. The chosen model is downloaded
-  into the local vLLM store (via the Hugging Face CLI, §16) and registered in LiteLLM
-  if absent (best-effort — a
-  download failure is a create warning, not a failure), and at workspace start Graphify
-  is routed through the gateway as `vllm/<model>` via `OPENAI_*` env vars (see
+  Graphify's headless LLM backend is a **local (omlx) model chosen at `ai create`** — a
+  plain model name (the wizard's optional text input, or `--graphify-model`) naming a
+  model omlx is **already serving** (models are downloaded/managed entirely through
+  omlx's own admin panel, §16 — there is no Hugging-Face-repo-id picker and no
+  download/pull at create time), stored as
+  `agent.graphify_model` in the project `config.yaml`. At workspace start Graphify
+  is routed through the gateway as `omlx/<model>` via `OPENAI_*` env vars (see
   §17) — never directly to the backend.
   Graphify stays usable by every CLI as a **skill** (native `graphify install --platform`
   for the platform CLIs opencode/claude-code/codex/gemini/copilot; the shared skill pool for
@@ -1175,7 +1177,7 @@ used examples:
 
 plus the local backend:
 
-* vLLM (host-side, §16)
+* omlx (host-side, §16)
 
 A provider becomes usable the moment its API key is added via `ai keys add`
 (§17), which syncs that provider's catalog models into LiteLLM's DB

@@ -11,12 +11,13 @@ func TestURLAndKnown(test *testing.T) {
 	if url, ok := URL("litellm"); !ok || url != "http://litellm.localhost:18787/ui/login" {
 		test.Errorf("litellm console = (%q,%v)", url, ok)
 	}
-	// Known service with no web console.
-	if _, ok := URL("vllm"); ok {
-		test.Error("vllm should report no console")
+	// omlx has a REAL console now: its own admin panel, the only place models are
+	// managed (this platform has no `ai models pull/rm` equivalent).
+	if url, ok := URL("omlx"); !ok || url != "http://localhost:8100/admin" {
+		test.Errorf("omlx console = (%q,%v), want the admin panel", url, ok)
 	}
-	if !Known("vllm") {
-		test.Error("vllm should be a known service")
+	if !Known("omlx") {
+		test.Error("omlx should be a known service")
 	}
 	if Known("nope") {
 		test.Error("unknown service must not be Known")
@@ -25,13 +26,15 @@ func TestURLAndKnown(test *testing.T) {
 
 func TestWithConsolesSortedAndFiltered(test *testing.T) {
 	named := WithConsoles()
-	// litellm + redisinsight expose consoles, each as an nginx subdomain vhost on the
-	// gateway port (never a direct, now internal-only, per-service port). Sorted by name.
-	if len(named) != 2 || named[0].Name != "litellm" || named[1].Name != "redisinsight" {
-		test.Fatalf("WithConsoles = %+v, want [litellm redisinsight]", named)
+	// litellm + omlx + redisinsight expose consoles — litellm/redisinsight as nginx
+	// subdomain vhosts on the gateway port, omlx as its own direct loopback port
+	// (its admin panel). Sorted by name.
+	if len(named) != 3 || named[0].Name != "litellm" || named[1].Name != "omlx" || named[2].Name != "redisinsight" {
+		test.Fatalf("WithConsoles = %+v, want [litellm omlx redisinsight]", named)
 	}
 	want := map[string]string{
 		"litellm":      "http://litellm.localhost:18787/ui/login",
+		"omlx":         "http://localhost:8100/admin",
 		"redisinsight": "http://valkey.localhost:18787",
 	}
 	for _, namedURL := range named {
@@ -57,14 +60,14 @@ func TestEndpointAndAddress(test *testing.T) {
 		test.Errorf("litellm address = (%q,%v)", address, ok)
 	}
 
-	// vllm: host-native, internal-only (its served models are reached via LiteLLM's
-	// /v1 path). It is a known service but exposes NO host endpoint of its own.
-	endpoint, ok = EndpointFor("vllm")
-	if !ok || endpoint.Address != "" || endpoint.Console != "" {
-		test.Errorf("vllm endpoint = (%+v,%v), want known with no address/console", endpoint, ok)
+	// omlx: host-native, but DOES have its own address+console (the admin panel) —
+	// unlike the old per-model vLLM servers, there's exactly one omlx endpoint.
+	endpoint, ok = EndpointFor("omlx")
+	if !ok || endpoint.Address != "http://localhost:8100" || endpoint.Console != "http://localhost:8100/admin" {
+		test.Errorf("omlx endpoint = (%+v,%v), want the admin panel", endpoint, ok)
 	}
-	if _, ok := URL("vllm"); ok {
-		test.Error("vllm should report no console")
+	if url, ok := URL("omlx"); !ok || url != "http://localhost:8100/admin" {
+		test.Errorf("omlx console = (%q,%v), want the admin panel", url, ok)
 	}
 
 	// proxy is the nginx gateway entry on :18787 (no separate admin console).
@@ -111,10 +114,11 @@ func TestEndpointForHostRendersGivenDomain(test *testing.T) {
 		test.Errorf("litellm@build-host.lan endpoint = (%+v,%v)", endpoint, ok)
 	}
 
-	// vllm is host-native + internal-only: known, but no host endpoint of its own.
-	endpoint, ok = EndpointForHost("vllm", "build-host.lan")
-	if !ok || endpoint.Address != "" || endpoint.Console != "" {
-		test.Errorf("vllm@build-host.lan endpoint = (%+v,%v), want known with no address", endpoint, ok)
+	// omlx is host-native but has its own address+console (rendered against
+	// whatever display host is given, like the direct-port "proxy" entry above).
+	endpoint, ok = EndpointForHost("omlx", "build-host.lan")
+	if !ok || endpoint.Address != "http://build-host.lan:8100" || endpoint.Console != "http://build-host.lan:8100/admin" {
+		test.Errorf("omlx@build-host.lan endpoint = (%+v,%v)", endpoint, ok)
 	}
 
 	// dns is loopback-only and must NOT be rewritten to the custom domain.

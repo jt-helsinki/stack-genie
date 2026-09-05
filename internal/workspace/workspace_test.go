@@ -526,7 +526,7 @@ func TestStartInjectsToolMCPServers(test *testing.T) {
 		test.Fatal(err)
 	}
 	sandbox := &fakeSandbox{}
-	served := fakeServedModels{models: []string{"vllm/llama3.2:latest"}}
+	served := fakeServedModels{models: []string{"omlx/llama3.2:latest"}}
 	manager := Manager{Builder: &fakeBuilder{}, Sandbox: sandbox, Keys: &fakeKeyMinter{}, Served: served, Now: func() string { return "t" }}
 	if _, err := manager.Start("app"); err != nil {
 		test.Fatal(err)
@@ -716,7 +716,7 @@ func TestStartBuildsAndRecordsStartedHandle(test *testing.T) {
 	builder := &fakeBuilder{}
 	sandbox := &fakeSandbox{}
 	minter := &fakeKeyMinter{}
-	served := fakeServedModels{models: []string{"vllm/gemma4:latest"}}
+	served := fakeServedModels{models: []string{"omlx/gemma4:latest"}}
 	manager := Manager{Builder: builder, Sandbox: sandbox, Keys: minter, Served: served, Now: func() string { return "2026-06-18T00:00:00Z" }}
 
 	handle, err := manager.Start("app")
@@ -945,7 +945,7 @@ func TestStartRoutesAllFiveAgentCLIs(test *testing.T) {
 		test.Fatal(err)
 	}
 	sandbox := &fakeSandbox{}
-	served := fakeServedModels{models: []string{"vllm/llama3.2:latest"}}
+	served := fakeServedModels{models: []string{"omlx/llama3.2:latest"}}
 	manager := Manager{Builder: &fakeBuilder{}, Sandbox: sandbox, Keys: &fakeKeyMinter{}, Served: served, Now: func() string { return "t" }}
 	if _, err := manager.Start("app"); err != nil {
 		test.Fatal(err)
@@ -1095,7 +1095,7 @@ func TestStartOAuthAgentBypassesGateway(test *testing.T) {
 		test.Fatal(err)
 	}
 	sandbox := &fakeSandbox{}
-	served := fakeServedModels{models: []string{"vllm/llama3.2:latest"}}
+	served := fakeServedModels{models: []string{"omlx/llama3.2:latest"}}
 	manager := Manager{Builder: &fakeBuilder{}, Sandbox: sandbox, Keys: &fakeKeyMinter{}, Served: served, Now: func() string { return "t" }}
 	if _, err := manager.Start("app"); err != nil {
 		test.Fatal(err)
@@ -1158,7 +1158,7 @@ func TestStartRoutesHermes(test *testing.T) {
 		test.Fatal(err)
 	}
 	sandbox := &fakeSandbox{}
-	served := fakeServedModels{models: []string{"vllm/llama3.2:latest"}}
+	served := fakeServedModels{models: []string{"omlx/llama3.2:latest"}}
 	manager := Manager{Builder: &fakeBuilder{}, Sandbox: sandbox, Keys: &fakeKeyMinter{}, Served: served, Now: func() string { return "t" }}
 	if _, err := manager.Start("app"); err != nil {
 		test.Fatal(err)
@@ -1903,7 +1903,7 @@ func TestStartWritesTmuxConf(test *testing.T) {
 func TestStartInstallsRefreshScript(test *testing.T) {
 	_ = seedProject(test, "app")
 	sandbox := &fakeSandbox{}
-	served := fakeServedModels{models: []string{"vllm/llama3.2:latest"}}
+	served := fakeServedModels{models: []string{"omlx/llama3.2:latest"}}
 	manager := Manager{
 		Builder: &fakeBuilder{}, Sandbox: sandbox, Keys: &fakeKeyMinter{},
 		Served: served, Now: func() string { return "t" },
@@ -1942,7 +1942,7 @@ func TestStartInstallsRefreshScript(test *testing.T) {
 	if !strings.Contains(script, "INFO_URL=") {
 		test.Error("refresh-models script missing the model-info endpoint")
 	}
-	if strings.Contains(script, "vllm/llama3.2:latest") {
+	if strings.Contains(script, "omlx/llama3.2:latest") {
 		test.Error("refresh-models must not bake in any models (it fetches the served list)")
 	}
 
@@ -2216,9 +2216,9 @@ func TestStartPickerIsServedModels(test *testing.T) {
 	root := seedProject(test, "app")
 	sandbox := &fakeSandbox{}
 	served := fakeServedModels{models: []string{
-		"vllm/qwen2.5:7b",
+		"omlx/qwen2.5:7b",
 		"anthropic/claude-opus-4-8",
-		"vllm/llama3.2:latest",
+		"omlx/llama3.2:latest",
 		"anthropic/claude-opus-4-8", // duplicate — must be collapsed
 	}}
 	manager := Manager{
@@ -2235,7 +2235,7 @@ func TestStartPickerIsServedModels(test *testing.T) {
 	}
 	for name, config := range configs {
 		// Every served model is present.
-		for _, want := range []string{"vllm/llama3.2:latest", "vllm/qwen2.5:7b", "anthropic/claude-opus-4-8"} {
+		for _, want := range []string{"omlx/llama3.2:latest", "omlx/qwen2.5:7b", "anthropic/claude-opus-4-8"} {
 			if !strings.Contains(config, want) {
 				test.Errorf("%s config missing served model %q", name, want)
 			}
@@ -2256,26 +2256,26 @@ func TestStartPickerIsServedModels(test *testing.T) {
 
 // TestStartDefaultsToSetupModel verifies the model chosen at workspace setup (stored as
 // agent.graphify_model) becomes the DEFAULT model for every agent CLI — registered as
-// vllm/<model> in the gateway. opencode gets a top-level model, and codex gets a
+// omlx/<model> in the gateway. opencode gets a top-level model, and codex gets a
 // model line.
 func TestStartDefaultsToSetupModel(test *testing.T) {
 	root := seedProject(test, "app")
-	if err := config.WriteProject(root, &config.Config{Agent: config.AgentConfig{Tools: []string{"opencode", "codex"}, GraphifyModel: "mlx-community/qwen2.5-coder-7b"}}); err != nil {
+	if err := config.WriteProject(root, &config.Config{Agent: config.AgentConfig{Tools: []string{"opencode", "codex"}, GraphifyModel: "qwen2.5-coder-7b"}}); err != nil {
 		test.Fatal(err)
 	}
 	sandbox := &fakeSandbox{}
-	served := fakeServedModels{models: []string{"vllm/qwen2.5-coder-7b"}}
+	served := fakeServedModels{models: []string{"omlx/qwen2.5-coder-7b"}}
 	manager := Manager{Builder: &fakeBuilder{}, Sandbox: sandbox, Keys: &fakeKeyMinter{}, Served: served, Now: func() string { return "t" }}
 	if _, err := manager.Start("app"); err != nil {
 		test.Fatal(err)
 	}
 
 	openCode := readProjectConfig(test, root, ".opencode", "opencode.json")
-	if !strings.Contains(openCode, `"aip-gateway/vllm/qwen2.5-coder-7b"`) {
+	if !strings.Contains(openCode, `"aip-gateway/omlx/qwen2.5-coder-7b"`) {
 		test.Errorf("opencode config missing the setup default model:\n%s", openCode)
 	}
 	codex := readProjectConfig(test, root, ".codex", "config.toml")
-	if !strings.Contains(codex, `vllm/qwen2.5-coder-7b`) {
+	if !strings.Contains(codex, `omlx/qwen2.5-coder-7b`) {
 		test.Errorf("codex config missing the setup default model:\n%s", codex)
 	}
 }
@@ -2286,17 +2286,17 @@ func TestStartDefaultsToSetupModel(test *testing.T) {
 // persisted /model choice). The seed marker under .ai-platform gates this.
 func TestStartDropsSeededDefaultOnSecondStart(test *testing.T) {
 	root := seedProject(test, "app")
-	if err := config.WriteProject(root, &config.Config{Agent: config.AgentConfig{GraphifyModel: "mlx-community/qwen2.5-coder-7b"}}); err != nil {
+	if err := config.WriteProject(root, &config.Config{Agent: config.AgentConfig{GraphifyModel: "qwen2.5-coder-7b"}}); err != nil {
 		test.Fatal(err)
 	}
 	sandbox := &fakeSandbox{}
-	served := fakeServedModels{models: []string{"vllm/qwen2.5-coder-7b"}}
+	served := fakeServedModels{models: []string{"omlx/qwen2.5-coder-7b"}}
 	manager := Manager{Builder: &fakeBuilder{}, Sandbox: sandbox, Keys: &fakeKeyMinter{}, Served: served, Now: func() string { return "t" }}
 
 	if _, err := manager.Start("app"); err != nil {
 		test.Fatal(err)
 	}
-	if first := readProjectConfig(test, root, ".opencode", "opencode.json"); !strings.Contains(first, `"aip-gateway/vllm/qwen2.5-coder-7b"`) {
+	if first := readProjectConfig(test, root, ".opencode", "opencode.json"); !strings.Contains(first, `"aip-gateway/omlx/qwen2.5-coder-7b"`) {
 		test.Fatalf("first start should seed the default model:\n%s", first)
 	}
 
@@ -2314,13 +2314,13 @@ func TestStartDropsSeededDefaultOnSecondStart(test *testing.T) {
 func TestAttachRefreshesModelList(test *testing.T) {
 	root := seedStartedWorkspace(test, "app")
 	sandbox := &fakeSandbox{}
-	served := fakeServedModels{models: []string{"vllm/fresh:latest"}}
+	served := fakeServedModels{models: []string{"omlx/fresh:latest"}}
 	manager := Manager{Builder: &fakeBuilder{}, Sandbox: sandbox, Keys: &fakeKeyMinter{}, Served: served, Now: func() string { return "t" }}
 
 	if err := manager.Shell("app"); err != nil {
 		test.Fatalf("Shell: %v", err)
 	}
-	if openCode := readProjectConfig(test, root, ".opencode", "opencode.json"); !strings.Contains(openCode, "vllm/fresh:latest") {
+	if openCode := readProjectConfig(test, root, ".opencode", "opencode.json"); !strings.Contains(openCode, "omlx/fresh:latest") {
 		test.Errorf("attach did not refresh the opencode model list:\n%s", openCode)
 	}
 	// The attach refresh must NOT rotate the scoped key (that would invalidate a running
@@ -2338,25 +2338,25 @@ func TestRestartDropsRemovedModel(test *testing.T) {
 	sandbox := &fakeSandbox{}
 	minter := &fakeKeyMinter{}
 	first := Manager{Builder: &fakeBuilder{}, Sandbox: sandbox, Keys: minter, Now: func() string { return "t" },
-		Served: fakeServedModels{models: []string{"vllm/a:latest", "vllm/b:latest"}}}
+		Served: fakeServedModels{models: []string{"omlx/a:latest", "omlx/b:latest"}}}
 	if _, err := first.Start("app"); err != nil {
 		test.Fatal(err)
 	}
-	if got := readProjectConfig(test, root, ".opencode", "opencode.json"); !strings.Contains(got, "vllm/b:latest") {
+	if got := readProjectConfig(test, root, ".opencode", "opencode.json"); !strings.Contains(got, "omlx/b:latest") {
 		test.Fatalf("first start should list b:\n%s", got)
 	}
 
 	// b removed upstream; the next start must drop it (not keep a stale union entry).
 	second := Manager{Builder: &fakeBuilder{}, Sandbox: sandbox, Keys: minter, Now: func() string { return "t" },
-		Served: fakeServedModels{models: []string{"vllm/a:latest"}}}
+		Served: fakeServedModels{models: []string{"omlx/a:latest"}}}
 	if _, err := second.Start("app"); err != nil {
 		test.Fatal(err)
 	}
 	got := readProjectConfig(test, root, ".opencode", "opencode.json")
-	if strings.Contains(got, "vllm/b:latest") {
+	if strings.Contains(got, "omlx/b:latest") {
 		test.Errorf("restart must drop the removed model b (list REPLACED, not unioned):\n%s", got)
 	}
-	if !strings.Contains(got, "vllm/a:latest") {
+	if !strings.Contains(got, "omlx/a:latest") {
 		test.Errorf("restart must keep the still-served model a:\n%s", got)
 	}
 }
@@ -2378,7 +2378,7 @@ func TestStartPickerDegradesWhenGatewayDown(test *testing.T) {
 
 	config := readProjectConfig(test, root, ".opencode", "opencode.json")
 	// The picker is empty — no model ids at all.
-	if strings.Contains(config, "vllm/") || strings.Contains(config, "anthropic/") {
+	if strings.Contains(config, "omlx/") || strings.Contains(config, "anthropic/") {
 		test.Errorf("degraded config must have an empty picker:\n%s", config)
 	}
 }
@@ -2396,7 +2396,7 @@ func TestStartPickerNilSourceIsEmpty(test *testing.T) {
 		test.Fatalf("Start must not fail with a nil ServedModels source: %v", err)
 	}
 	config := readProjectConfig(test, root, ".opencode", "opencode.json")
-	if strings.Contains(config, "vllm/") || strings.Contains(config, "anthropic/") {
+	if strings.Contains(config, "omlx/") || strings.Contains(config, "anthropic/") {
 		test.Errorf("config must have an empty picker with a nil source:\n%s", config)
 	}
 }
@@ -2821,7 +2821,7 @@ func TestStartWiresOmpWhenSelected(test *testing.T) {
 		test.Fatal(err)
 	}
 	sandbox := &fakeSandbox{}
-	served := fakeServedModels{models: []string{"vllm/qwen3:latest"}}
+	served := fakeServedModels{models: []string{"omlx/qwen3:latest"}}
 	manager := Manager{Builder: &fakeBuilder{}, Sandbox: sandbox, Keys: &fakeKeyMinter{}, Served: served, Now: func() string { return "t" }}
 	if _, err := manager.Start("app"); err != nil {
 		test.Fatal(err)
