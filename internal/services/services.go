@@ -38,9 +38,16 @@ const (
 // http://host:Port. GatewayPath, when set, is the prefix the host CLI reaches a
 // non-UI service through the gateway at (e.g. litellm → "/llm").
 type Endpoint struct {
-	Port            int
-	ConsolePath     string
-	HasConsole      bool
+	Port        int
+	ConsolePath string
+	HasConsole  bool
+	// Loopback marks a port-based endpoint that is reached ONLY on this host (a raw
+	// host-native loopback bind — no nginx vhost, no /etc/hosts entry for the bare
+	// platform domain, no route from a remote client even in server mode): its
+	// rendered URL always uses the loopback display host regardless of the domain
+	// otherwise threaded through (contrast the nginx-fronted UISubdomain/GatewayPath
+	// endpoints, which the platform domain genuinely reaches). Set for omlx.
+	Loopback        bool
 	LoopbackAddress string
 	UISubdomain     string
 	GatewayPath     string
@@ -148,9 +155,12 @@ var registry = []Service{
 		// path — but it DOES have a console: omlx's own admin panel at /admin is the
 		// ONLY place models are managed (this platform has no `ai models pull/rm`
 		// equivalent), so `ai services console omlx` opens it directly. It has NO
-		// container Component.
+		// container Component. Loopback: true because the server binds host loopback
+		// ONLY — rendering its URL against the platform base domain (as every other
+		// direct-port/vhost endpoint does) 404s in the browser, since only the UI
+		// SUBDOMAINS get an /etc/hosts entry, never the bare domain itself.
 		Name:     "omlx",
-		Endpoint: Endpoint{Port: OmlxPort, HasConsole: true, ConsolePath: "/admin"},
+		Endpoint: Endpoint{Port: OmlxPort, HasConsole: true, ConsolePath: "/admin", Loopback: true},
 		LogScope: "omlx",
 	},
 	{

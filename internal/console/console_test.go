@@ -114,11 +114,13 @@ func TestEndpointForHostRendersGivenDomain(test *testing.T) {
 		test.Errorf("litellm@build-host.lan endpoint = (%+v,%v)", endpoint, ok)
 	}
 
-	// omlx is host-native but has its own address+console (rendered against
-	// whatever display host is given, like the direct-port "proxy" entry above).
+	// omlx is host-native but has its own address+console — ALWAYS rendered
+	// against localhost regardless of the display host given: it is a raw
+	// loopback bind with no nginx vhost and no /etc/hosts entry for the bare
+	// platform domain, so a remote/custom domain would 404 in the browser.
 	endpoint, ok = EndpointForHost("omlx", "build-host.lan")
-	if !ok || endpoint.Address != "http://build-host.lan:8100" || endpoint.Console != "http://build-host.lan:8100/admin" {
-		test.Errorf("omlx@build-host.lan endpoint = (%+v,%v)", endpoint, ok)
+	if !ok || endpoint.Address != "http://localhost:8100" || endpoint.Console != "http://localhost:8100/admin" {
+		test.Errorf("omlx@build-host.lan endpoint = (%+v,%v), want loopback unchanged", endpoint, ok)
 	}
 
 	// dns is loopback-only and must NOT be rewritten to the custom domain.
