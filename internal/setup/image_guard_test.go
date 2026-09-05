@@ -110,11 +110,35 @@ func TestContainerOnCurrentImage(test *testing.T) {
 // TestPullImagesSkipsPresentImages pins the non-force PRE-pull behavior that let a
 // moved `latest` tag go stale: every required image reports present (`image inspect`
 // returns no error), so PullImages SKIPS them all and never execs a real `docker
-// pull`. `ai setup` now calls UpdateImages (force=true) instead, which does NOT skip
-// — the live force-pull argv itself is a hardware bring-up seam (real runtime exec).
+// pull`. `ai setup` calls UpdateImages instead, which force-pulls only the
+// `:latest`-tagged images (see TestForcePull) — the live force-pull argv itself is
+// a hardware bring-up seam (real runtime exec).
 func TestPullImagesSkipsPresentImages(test *testing.T) {
 	services := realServices{prober: imageGuardProber{}} // any `image inspect` → present (no error)
 	if err := services.PullImages(nil, nil, io.Discard, nil); err != nil {
 		test.Fatalf("PullImages must skip present images without attempting a real pull: %v", err)
+	}
+}
+
+// TestForcePull pins the routing decision UpdateImages relies on: only a
+// `:latest`-tagged ref is force-pulled; a pinned-version ref never is (that tag is
+// immutable, so re-pulling it can never fetch "a newer version"), and a plain
+// (non-update) pull never forces anything regardless of tag.
+func TestForcePull(test *testing.T) {
+	cases := []struct {
+		ref    string
+		update bool
+		want   bool
+	}{
+		{"ghcr.io/berriai/litellm:latest", true, true},
+		{"postgres:18.4-alpine3.23", true, false},
+		{"valkey/valkey:9.1.0-alpine", true, false},
+		{"ghcr.io/berriai/litellm:latest", false, false},
+		{"postgres:18.4-alpine3.23", false, false},
+	}
+	for _, testCase := range cases {
+		if got := forcePull(testCase.ref, testCase.update); got != testCase.want {
+			test.Errorf("forcePull(%q, update=%v) = %v, want %v", testCase.ref, testCase.update, got, testCase.want)
+		}
 	}
 }

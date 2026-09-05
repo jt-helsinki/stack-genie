@@ -93,13 +93,17 @@ type Services interface {
 	// returned but is non-fatal — the subsequent `docker run` re-pulls anything still
 	// missing.
 	PullImages(optional []string, guardrails []string, out io.Writer, progress func(string)) error
-	// UpdateImages force-pulls the latest service-tier images (UNLIKE PullImages it
-	// does NOT skip already-present images — it re-pulls so a moved tag like
-	// `latest` is updated), streaming native progress to out. optional + guardrails
-	// gate the image set exactly like PullImages (an unselected Presidio guardrail
-	// skips its images). It backs `ai services update`: after it pulls, the caller
-	// restarts the affected services to recreate their containers against the
-	// freshly-pulled images. Best-effort: returns the first pull error (non-fatal).
+	// UpdateImages force-pulls every `:latest`-tagged service-tier image (UNLIKE
+	// PullImages it does NOT skip an already-present `:latest` image — it re-pulls
+	// so a moved tag is caught), streaming native progress to out. A PINNED-version
+	// image (e.g. postgres:18.4-alpine3.23) is NEVER force-pulled — an immutable tag
+	// can never have "a newer version" to fetch, so it is only pulled when
+	// altogether absent, same as PullImages. optional + guardrails gate the image
+	// set exactly like PullImages (an unselected Presidio guardrail skips its
+	// images). It backs `ai services update` and `ai setup`'s pre-reconcile pull:
+	// after it pulls, the caller restarts the affected services to recreate their
+	// containers against any freshly-pulled image. Best-effort: returns the first
+	// pull error (non-fatal).
 	UpdateImages(optional []string, guardrails []string, out io.Writer, progress func(string)) error
 	// Status reports current health without mutating anything.
 	Status() ([]ServiceStatus, error)

@@ -119,13 +119,15 @@ func newSetupCmd(em *output.Emitter, exit *int) *cobra.Command {
 			if proceed := preflightPrerequisites(em, exit, opts, deps, interactive); !proceed {
 				return nil
 			}
-			// Force-pull the LATEST service-tier images with STREAMED native progress
-			// before the reconcile, on a human (non-JSON) run that actually runs the
-			// service tier (standalone/server, not client). This is a FORCE pull
-			// (UpdateImages, not PullImages): it does NOT skip images already present,
-			// so a moved tag like `latest` (e.g. the litellm image tracks `latest`) is
-			// refreshed on every `ai setup` — the reconcile below then recreates any
-			// service container found running a now-stale image. Each ensure* launches a
+			// Pre-pull the service-tier images with STREAMED native progress before the
+			// reconcile, on a human (non-JSON) run that actually runs the service tier
+			// (standalone/server, not client). This calls UpdateImages, not PullImages:
+			// a `:latest`-tagged image (e.g. litellm) is FORCE-pulled every `ai setup`
+			// run — it does not skip one already present — so a moved tag is caught and
+			// the reconcile below recreates any service container found running a now-
+			// stale image; a PINNED-version image (e.g. postgres) is never force-pulled
+			// (an immutable tag can never have "a newer version"), so it is only pulled
+			// when altogether absent, same as PullImages. Each ensure* launches a
 			// container with `docker run -d`, whose implicit pull output the prober
 			// CAPTURES (invisible) — so a multi-GB first-run pull (e.g. presidio) looks
 			// hung; pulling here renders docker's native progress bars to the terminal,

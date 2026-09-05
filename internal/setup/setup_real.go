@@ -1275,20 +1275,35 @@ func (services realServices) PullImages(optional []string, guardrails []string, 
 	return services.pullImages(optional, guardrails, out, progress, false)
 }
 
-// UpdateImages force-pulls every required image — UNLIKE PullImages it does NOT
-// skip already-present ones, so a moved tag like `latest` is refreshed. It backs
-// `ai services update`; the caller restarts the affected services afterwards to
-// recreate their containers against the freshly-pulled images.
+// UpdateImages force-pulls every required image tagged `:latest` — UNLIKE
+// PullImages it does NOT skip an already-present `:latest` image, so a moved tag
+// is refreshed. A PINNED version tag (e.g. postgres:18.4-alpine3.23) is never
+// force-pulled here regardless: pulling it again can never produce "a newer
+// version" (that tag is immutable — a real version bump is a versions.yaml edit,
+// not a runtime pull), so it is only pulled when altogether absent, same as
+// PullImages. It backs `ai services update` and `ai setup`'s pre-reconcile pull;
+// the caller restarts the affected services afterwards to recreate their
+// containers against any freshly-pulled image.
 func (services realServices) UpdateImages(optional []string, guardrails []string, out io.Writer, progress func(string)) error {
 	return services.pullImages(optional, guardrails, out, progress, true)
 }
 
+// forcePull reports whether ref should be force-pulled regardless of local
+// presence: only true when update is requested AND ref carries the mutable
+// `:latest` tag. A pinned-version ref is never forced — that tag is immutable,
+// so re-pulling it can never fetch "a newer version".
+func forcePull(ref string, update bool) bool {
+	return update && strings.HasSuffix(ref, ":latest")
+}
+
 // pullImages pulls the required service-tier images, streaming native progress to
-// out. When force is false it SKIPS images already present locally (the first-run
-// pre-pull, fast re-runs); when force is true it pulls every one (the update path).
-// Best-effort: it returns the first pull error but the caller treats it as
-// non-fatal.
-func (services realServices) pullImages(optional []string, guardrails []string, out io.Writer, progress func(string), force bool) error {
+// out. When update is false every image is SKIPPED if already present locally
+// (the first-run pre-pull, fast re-runs). When update is true, a `:latest`-tagged
+// image is force-pulled (so a moved tag is caught), but a PINNED-version image is
+// still only pulled when absent — it can never have "a newer version" under an
+// immutable tag, so force-pulling it would be pure waste. Best-effort: it returns
+// the first pull error but the caller treats it as non-fatal.
+func (services realServices) pullImages(optional []string, guardrails []string, out io.Writer, progress func(string), update bool) error {
 	if progress == nil {
 		progress = func(string) {}
 	}
@@ -1298,7 +1313,7 @@ func (services realServices) pullImages(optional []string, guardrails []string, 
 	}
 	var firstErr error
 	for _, ref := range requiredImages(optional, guardrails) {
-		if !force {
+		if !forcePull(ref, update) {
 			// Present locally? Skip — `image inspect` returning an error means absent.
 			if _, err := services.prober.Run(containerRuntime.Name, "image", "inspect", ref); err == nil {
 				continue
