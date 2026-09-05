@@ -1737,16 +1737,21 @@ func (services realServices) serviceHealthy(name string) bool {
 // post-action Status.
 // owningService maps a companion container that `ai services` does not manage
 // independently to the logical service that owns it. It lets the unknown-service
-// error point the user at the right name. There are currently NO such surfaced
-// companions: the registry maps litellm-db → litellm, but that mapping is
-// intentionally NOT exposed here, preserving the long-standing behavior that
-// `ai services <action> litellm-db` reports a plain "unknown service" (litellm-db
-// is an internal LiteLLM implementation detail with no independent service
-// vocabulary). It thus returns "" for every name today; the hook is retained so a
-// future multi-container optional service can surface a companion hint here.
+// error point the user at the right name instead of a bare "unknown service" —
+// "postgres" (the display name of LiteLLM's Postgres, surfaced as its own status
+// line by statusFor) and "litellm-db" (its internal container/registry key) both
+// map to "litellm": Postgres has no independent start/stop/restart verb since
+// LiteLLM cannot run without it (stopping it out from under a running LiteLLM
+// would just break LiteLLM), but `ai services stop|restart litellm` DOES stop/
+// restart the Postgres container too (see Control's litellm entry) — so pointing
+// the user at "litellm" is a real, working answer, not a dead end.
 func owningService(name string) string {
-	_ = name
-	return ""
+	switch name {
+	case "postgres", "litellm-db":
+		return "litellm"
+	default:
+		return ""
+	}
 }
 
 func (services realServices) Control(action, service string) ([]ServiceStatus, error) {
@@ -1818,7 +1823,16 @@ func (services realServices) Control(action, service string) ([]ServiceStatus, e
 			func() error { return stopContainer(headroomContainer) }},
 		{"litellm",
 			func() error { return services.ensureLiteLLM(configPath, bindHost, "") },
-			func() error { return stopContainer(litellmContainer) }},
+			func() error {
+				// Postgres is LiteLLM's own DB backend, surfaced as its own "postgres"
+				// status line but with no independent start/stop verb (see owningService)
+				// — stopping litellm without also stopping its DB would just leave an
+				// orphaned Postgres container running for nothing.
+				if err := stopContainer(litellmContainer); err != nil {
+					return err
+				}
+				return stopContainer(litellmDBContainer)
+			}},
 		{"proxy",
 			func() error {
 				return ensureProxy(services.prober, containerRuntime.Name, bindHost, reconcileDomain())

@@ -59,6 +59,7 @@ type Options struct {
 // Report describes what was removed.
 type Report struct {
 	StoppedWorkspaces int      `json:"stopped_workspaces"`
+	StoppedContainers int      `json:"stopped_containers"`     // aip-* service-tier containers gracefully stopped before removal
 	RemovedOmlx       bool     `json:"removed_omlx,omitempty"` // host-native omlx runtime removal attempted (RemoveRuntimes; bring-up stub)
 	RemovedContainers int      `json:"removed_containers"`
 	RemovedImages     int      `json:"removed_images"`
@@ -210,6 +211,9 @@ func Run(options Options, prober runtime.Prober, progress Progress) (Report, err
 			report.RemovedOmlx = true
 		}
 	}
+	// Gracefully stop every running aip-* service-tier container FIRST (letting
+	// e.g. postgres checkpoint cleanly) before the force-remove below.
+	report.StoppedContainers = stopContainers(prober, record)
 	report.RemovedContainers = removeContainers(prober, record)
 	// Remove the platform's container IMAGES too, so a plain uninstall leaves
 	// nothing on the host (the service-tier pins + every aip-* workspace image).
@@ -306,7 +310,7 @@ func writeLog(logFile *os.File, line string) {
 func Plan(purge bool) []string {
 	steps := []string{
 		"stop running workspace microVMs (data preserved)",
-		"stop and remove platform containers (aip-*)",
+		"gracefully stop, then remove, all platform containers (aip-*)",
 		"remove all platform container images (service-tier pins + aip-*)",
 		"remove the platform UI-subdomain block from /etc/hosts (standalone; needs sudo)",
 		"remove the ai binary",
@@ -431,6 +435,34 @@ func stopOmlxServer(prober runtime.Prober, record func(string)) {
 func removeOmlx(record func(string)) bool {
 	record("Removed the host-native omlx runtime (install); kept the downloaded weights (hardware bring-up: per-OS uninstall)")
 	return true
+}
+
+// stopContainers gracefully stops the platform's running aip-* containers (a
+// plain `stop`, giving each one its own stop-grace-period to shut down cleanly —
+// e.g. postgres flushing/checkpointing — rather than jumping straight to the
+// force-remove below) via every installed runtime, returning how many were
+// signalled. Best-effort: an already-stopped container is simply a no-op for
+// `stop`, and removeContainers' force-remove right after covers anything that
+// doesn't shut down in time regardless.
+func stopContainers(prober runtime.Prober, record func(string)) int {
+	total := 0
+	for _, containerRuntime := range containerRuntimes {
+		if _, err := prober.LookPath(containerRuntime); err != nil {
+			continue
+		}
+		out, err := prober.Run(containerRuntime, "ps", "-aq", "--filter", "name=aip-")
+		if err != nil {
+			continue
+		}
+		ids := strings.Fields(string(out))
+		if len(ids) == 0 {
+			continue
+		}
+		_, _ = prober.Run(containerRuntime, append([]string{"stop"}, ids...)...)
+		record("Stopped platform containers (aip-*) via " + containerRuntime)
+		total += len(ids)
+	}
+	return total
 }
 
 // removeContainers stops + removes the platform's aip-* containers via every

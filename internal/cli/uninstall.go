@@ -180,6 +180,7 @@ func newUninstallCmd(em *output.Emitter, exit *int) *cobra.Command {
 				Purged:            report.Purged,
 				RemovedState:      report.RemovedState,
 				StoppedWorkspaces: report.StoppedWorkspaces,
+				StoppedContainers: report.StoppedContainers,
 				RemovedOmlx:       report.RemovedOmlx,
 				RemovedContainers: report.RemovedContainers,
 				RemovedImages:     report.RemovedImages,
@@ -245,6 +246,7 @@ type uninstallResult struct {
 	Purged            bool     `json:"purged"`
 	RemovedState      bool     `json:"removed_state,omitempty"`
 	StoppedWorkspaces int      `json:"stopped_workspaces,omitempty"`
+	StoppedContainers int      `json:"stopped_containers,omitempty"`
 	RemovedOmlx       bool     `json:"removed_omlx,omitempty"`
 	RemovedContainers int      `json:"removed_containers,omitempty"`
 	RemovedImages     int      `json:"removed_images,omitempty"`
@@ -281,6 +283,9 @@ func (result uninstallResult) Human() string {
 	summary := ui.Success.Render(ui.IconOK+" Uninstall complete.") + " " + tail
 	if result.StoppedWorkspaces > 0 {
 		summary += fmt.Sprintf(" Stopped %d workspace microVM(s) (data preserved).", result.StoppedWorkspaces)
+	}
+	if result.StoppedContainers > 0 {
+		summary += fmt.Sprintf(" Stopped %d service container(s).", result.StoppedContainers)
 	}
 	if result.RemovedImages > 0 {
 		summary += fmt.Sprintf(" Removed %d container image(s).", result.RemovedImages)

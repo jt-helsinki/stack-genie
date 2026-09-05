@@ -182,6 +182,9 @@ func TestRunFullTeardown(test *testing.T) {
 		test.Fatalf("Run: %v", err)
 	}
 
+	if report.StoppedContainers != 2 {
+		test.Errorf("StoppedContainers = %d, want 2", report.StoppedContainers)
+	}
 	if report.RemovedContainers != 2 {
 		test.Errorf("RemovedContainers = %d, want 2", report.RemovedContainers)
 	}
@@ -191,9 +194,18 @@ func TestRunFullTeardown(test *testing.T) {
 	if !report.Purged {
 		test.Error("Purged = false, want true")
 	}
-	// docker rm -f was issued with both ids.
-	if !containsLine(prober.ran, "docker rm -f abc123 def456") {
+	// docker stop ran BEFORE docker rm -f, both with both ids — a graceful stop
+	// (letting e.g. postgres checkpoint cleanly) precedes the force-remove.
+	stopIndex := indexOfLine(prober.ran, "docker stop abc123 def456")
+	rmIndex := indexOfLine(prober.ran, "docker rm -f abc123 def456")
+	if stopIndex < 0 {
+		test.Errorf("expected `docker stop abc123 def456`, ran: %v", prober.ran)
+	}
+	if rmIndex < 0 {
 		test.Errorf("expected `docker rm -f abc123 def456`, ran: %v", prober.ran)
+	}
+	if stopIndex >= 0 && rmIndex >= 0 && stopIndex > rmIndex {
+		test.Errorf("stop must run BEFORE rm -f, ran: %v", prober.ran)
 	}
 	// Binary, completion file, and platform state are gone; project survives.
 	for _, gone := range []string{binaryPath, completionFile, filepath.Join(home, ".ai-platform")} {
@@ -470,6 +482,17 @@ func containsLine(lines []string, want string) bool {
 		}
 	}
 	return false
+}
+
+// indexOfLine returns the position of want in lines, or -1 if absent — used to
+// assert relative ordering between two recorded commands.
+func indexOfLine(lines []string, want string) int {
+	for index, line := range lines {
+		if line == want {
+			return index
+		}
+	}
+	return -1
 }
 
 // TestRunStopsOmlxAndKeepsModels: a full plain uninstall stops the host-native omlx

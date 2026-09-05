@@ -275,11 +275,9 @@ func ControlService(deps Deps, action, service string) ([]ServiceStatus, error) 
 		return controlHostNativeService(deps, action, service)
 	}
 	if service != "" && !slices.Contains(ServiceNames(), service) {
-		// A companion container managed as part of its owning logical service
-		// (not on its own) would be pointed at its owner here. There are currently
-		// no such surfaced companions (owningService returns "" for all names), so
-		// this branch is dormant. (`ai logs --service <name>` can still tail a
-		// companion container.)
+		// A companion container managed as part of its owning logical service (not on
+		// its own) is pointed at its owner here — e.g. "postgres"/"litellm-db" → "litellm"
+		// (`ai logs --service <name>` can still tail a companion container directly).
 		if owner := owningService(service); owner != "" {
 			return nil, output.Errorf(output.ExitInvalidInput,
 				"%q is managed as part of the %q service — run `ai services %s %s` (`ai logs --service %s` tails just that container)",

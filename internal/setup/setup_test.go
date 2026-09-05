@@ -594,10 +594,25 @@ func hasService(specs []serviceSpec, name string) bool {
 // app and Odysseus — which owned chromadb/searxng/ntfy — was removed), so it
 // returns "" for every name. The hook is retained for a future multi-container
 // optional service.
+// TestOwningServiceReturnsEmpty pins the no-companion default: most names have no
+// owner, since they are either standalone unknown services or (litellm, omlx,
+// presidio) fully independent logical services in their own right.
 func TestOwningServiceReturnsEmpty(test *testing.T) {
-	for _, name := range []string{"chromadb", "searxng", "ntfy", "litellm", "omlx", "presidio", "litellm-db", "", "bogus"} {
+	for _, name := range []string{"chromadb", "searxng", "ntfy", "litellm", "omlx", "presidio", "", "bogus"} {
 		if got := owningService(name); got != "" {
 			test.Errorf("owningService(%q) = %q, want empty", name, got)
+		}
+	}
+}
+
+// TestOwningServicePostgres pins the one surfaced companion: Postgres backs
+// LiteLLM and has no independent start/stop/restart verb, so both its display
+// name ("postgres") and its internal registry key ("litellm-db") point at
+// "litellm" — a real, working redirect (see TestControlStopsPostgresWithLitellm).
+func TestOwningServicePostgres(test *testing.T) {
+	for _, name := range []string{"postgres", "litellm-db"} {
+		if got := owningService(name); got != "litellm" {
+			test.Errorf("owningService(%q) = %q, want litellm", name, got)
 		}
 	}
 }
