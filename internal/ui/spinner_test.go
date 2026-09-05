@@ -5,6 +5,8 @@ import (
 	"errors"
 	"strings"
 	"testing"
+
+	tea "github.com/charmbracelet/bubbletea"
 )
 
 // TestRunWithSpinnerEmbeddedRunsDirectly verifies that inside the `ai ui` terminal
@@ -53,5 +55,31 @@ func TestRunWithSpinnerEmbeddedReportsFailure(test *testing.T) {
 	}
 	if !strings.Contains(out.String(), "starting workspace temp") {
 		test.Errorf("title missing from failure output:\n%s", out.String())
+	}
+}
+
+// TestSpinnerModelQuitsOnCtrlC verifies ctrl+c quits the bubbletea program with
+// ErrInterrupted — without this, the raw-mode terminal swallows the keystroke as a
+// meaningless key event and the spinner never stops.
+func TestSpinnerModelQuitsOnCtrlC(test *testing.T) {
+	model := spinnerModel{spinner: newSpinner(), title: "t", work: func() error { return nil }}
+	updated, cmd := model.Update(tea.KeyMsg{Type: tea.KeyCtrlC})
+	if cmd == nil {
+		test.Fatal("ctrl+c must return a command (tea.Quit)")
+	}
+	result := updated.(spinnerModel)
+	if !result.done || !errors.Is(result.err, ErrInterrupted) {
+		test.Errorf("ctrl+c must mark done with ErrInterrupted, got done=%v err=%v", result.done, result.err)
+	}
+}
+
+// A non-ctrl+c key must NOT quit or set an error — it just falls through to the
+// spinner's own tick handling, harmlessly ignored.
+func TestSpinnerModelIgnoresOtherKeys(test *testing.T) {
+	model := spinnerModel{spinner: newSpinner(), title: "t", work: func() error { return nil }}
+	updated, _ := model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("x")})
+	result := updated.(spinnerModel)
+	if result.done || result.err != nil {
+		test.Errorf("a plain key must not quit or set an error, got done=%v err=%v", result.done, result.err)
 	}
 }

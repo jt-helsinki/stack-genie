@@ -71,6 +71,15 @@ func (model stepsModel) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		model.done = true
 		model.err = typed.err
 		return model, tea.Quit
+	case tea.KeyMsg:
+		// See spinnerModel.Update: raw mode disables ctrl+c's normal SIGINT delivery,
+		// so it must be handled here or the keystroke does nothing at all.
+		if typed.Type == tea.KeyCtrlC {
+			model.done = true
+			model.err = ErrInterrupted
+			return model, tea.Quit
+		}
+		return model, nil
 	default:
 		var cmd tea.Cmd
 		model.spinner, cmd = model.spinner.Update(message)

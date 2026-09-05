@@ -6,7 +6,14 @@ import (
 
 	"github.com/charmbracelet/bubbles/spinner"
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/jt-helsinki/stack-genie/internal/output"
 )
+
+// ErrInterrupted is returned by RunWithSpinner/RunSteps when the user cancels
+// with ctrl+c. The underlying work may still be running in the background when
+// this is returned (there is no cancellation plumbing into it), but the CLI
+// process exits right after the caller reports this error, which kills it.
+var ErrInterrupted = output.Errorf(output.ExitRuntimeFailure, "interrupted (ctrl+c)")
 
 // RunWithSpinner runs work while showing an animated spinner with title on out
 // (callers pass the emitter's stderr), then prints a final ✓/✗ line and returns
@@ -79,6 +86,19 @@ func (model spinnerModel) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		model.done = true
 		model.err = typed.err
 		return model, tea.Quit
+	case tea.KeyMsg:
+		// The raw-mode terminal bubbletea owns while this runs disables the kernel's
+		// normal ctrl+c → SIGINT delivery, so without this the keystroke is just
+		// silently swallowed as an ordinary (meaningless) key event and the program
+		// never quits. work keeps running in the background (no cancellation
+		// plumbing into it), but the CLI process exits right after RunWithSpinner's
+		// caller reports ErrInterrupted, which kills it.
+		if typed.Type == tea.KeyCtrlC {
+			model.done = true
+			model.err = ErrInterrupted
+			return model, tea.Quit
+		}
+		return model, nil
 	default:
 		var cmd tea.Cmd
 		model.spinner, cmd = model.spinner.Update(message)
