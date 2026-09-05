@@ -55,7 +55,6 @@ type endpointSpec struct {
 	port            int
 	consolePath     string // "" → no console; "/" or "" semantics: see endpointForHost
 	hasConsole      bool   // distinguishes "console at the root URL" from "no console"
-	loopback        bool   // port-based endpoint always rendered against DefaultHost (see services.Endpoint.Loopback)
 	loopbackAddress string // verbatim address, host-independent (loopback-only services)
 	uiSubdomain     string // nginx UI vhost label (<uiSubdomain>.<domain>:gatewayPort)
 	gatewayPath     string // host-CLI gateway prefix (http://<host>:gatewayPort<path>)
@@ -83,7 +82,6 @@ func buildRegistry() map[string]endpointSpec {
 			port:            endpoint.Port,
 			consolePath:     endpoint.ConsolePath,
 			hasConsole:      endpoint.HasConsole,
-			loopback:        endpoint.Loopback,
 			loopbackAddress: endpoint.LoopbackAddress,
 			uiSubdomain:     endpoint.UISubdomain,
 			gatewayPath:     endpoint.GatewayPath,
@@ -100,9 +98,6 @@ func buildRegistry() map[string]endpointSpec {
 //   - a gateway-path spec renders http://<host>:gatewayPort<path>
 //     (HTTP API, no console);
 //   - a directly-published port (e.g. the proxy) renders http://<host>:port;
-//   - a loopback direct-port spec (e.g. omlx) renders http://localhost:port
-//     regardless of host — it has no nginx vhost or /etc/hosts entry, so the
-//     platform domain itself never reaches it;
 //   - everything else is internal-only and renders empty.
 func (spec endpointSpec) endpointForHost(host string) Endpoint {
 	if spec.loopbackAddress != "" {
@@ -121,9 +116,6 @@ func (spec endpointSpec) endpointForHost(host string) Endpoint {
 	}
 	if spec.port == 0 {
 		return Endpoint{}
-	}
-	if spec.loopback {
-		host = DefaultHost
 	}
 	base := fmt.Sprintf("http://%s:%d", host, spec.port)
 	endpoint := Endpoint{Address: base}

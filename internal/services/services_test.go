@@ -45,7 +45,7 @@ func TestEndpointsMatchCurrentConsoleRegistry(test *testing.T) {
 		"litellm":      {ConsolePath: "/ui/login", HasConsole: true, UISubdomain: "litellm"},
 		"valkey":       {},
 		"redisinsight": {HasConsole: true, UISubdomain: "valkey"},
-		"omlx":         {Port: OmlxPort, ConsolePath: "/admin", HasConsole: true, Loopback: true},
+		"omlx":         {Port: OmlxPort, ConsolePath: "/admin", HasConsole: true},
 		"proxy":        {Port: 18787},
 		"dns":          {LoopbackAddress: "127.0.0.1:15353/udp"},
 		"headroom":     {},
