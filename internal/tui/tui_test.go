@@ -288,7 +288,7 @@ func TestNewProjectRequestedOpensCreateOverlay(test *testing.T) {
 
 func TestCreateCancelledClosesOverlay(test *testing.T) {
 	application := &app{cwd: test.TempDir(), views: []View{&fakeView{title: "Projects"}}}
-	application.createView = views.NewCreate(application.cwd, 0, 0)
+	application.createView = views.NewCreate(application.cwd, 0, 0, nil)
 
 	application.Update(views.CreateCancelledMsg{})
 	if application.createView != nil {
@@ -298,7 +298,7 @@ func TestCreateCancelledClosesOverlay(test *testing.T) {
 
 func TestCreateConfirmedClosesOverlayAndRunsCreate(test *testing.T) {
 	application := &app{cwd: test.TempDir(), projectsIndex: 0, views: []View{&fakeView{title: "Projects"}}}
-	application.createView = views.NewCreate(application.cwd, 0, 0)
+	application.createView = views.NewCreate(application.cwd, 0, 0, nil)
 
 	// CreateConfirmedMsg closes the overlay, marks the workspace as creating, and
 	// returns the in-process create.Execute command (run off the event loop).
@@ -924,7 +924,7 @@ func TestWheelTargetRouting(test *testing.T) {
 	}
 
 	withCreate := base()
-	withCreate.createView = views.NewCreate(test.TempDir(), 16, 12)
+	withCreate.createView = views.NewCreate(test.TempDir(), 16, 12, nil)
 	if got := withCreate.wheelTarget(); got != wheelCreate {
 		test.Errorf("create wizard open: wheelTarget = %d, want wheelCreate (its lists must scroll)", got)
 	}

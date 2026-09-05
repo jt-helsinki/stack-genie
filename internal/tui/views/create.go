@@ -96,7 +96,7 @@ type Create struct {
 	disk        *textStep
 	ports       *textStep
 	idle        *textStep
-	model       *textStep // the Graphify model name step
+	model       *selectList // the Graphify model picker, populated from omlx's live model list
 
 	// Per-agent auth-mode phase (stepAuth): one selectList per OAuth-capable selected
 	// agent, built when leaving the model step. authIndex walks them one at a time.
@@ -123,7 +123,7 @@ type Create struct {
 
 // NewCreate builds the wizard. startDir seeds the location field; hostGB / usableGB
 // annotate the memory hint.
-func NewCreate(startDir string, hostGB, usableGB int) *Create {
+func NewCreate(startDir string, hostGB, usableGB int, omlxModels func() []string) *Create {
 	defaultCPUs := config.Default().Workspace.CPULimit
 	cpuHint := fmt.Sprintf("Blank uses the default (%d); host has %d logical CPUs", defaultCPUs, sysinfoCPUs())
 	memHint := fmt.Sprintf("A plain number in GB; blank uses the default (%s); usable max %d GB (host %d GB)",
@@ -144,7 +144,10 @@ func NewCreate(startDir string, hostGB, usableGB int) *Create {
 		ports:       newTextStep("ports", "Ports to open: PORT or HOST:GUEST, comma-separated (e.g. 8080,9000:3000).", "", "", validatePortsField),
 		idle:        newTextStep("idle timeout", "How long msb may leave the workspace idle before stopping it (e.g. 30m, 24h).", "", "", validateIdleField),
 	}
-	wizard.model = newTextStep("Graphify model", "Name of a model omlx is ALREADY serving (manage models from its own admin panel — `ai services console omlx`); blank leaves Graphify unconfigured.", "", "", nil)
+	wizard.model = newSelectList(
+		"A model omlx is ALREADY serving (manage the list itself from its own admin panel — `ai services console omlx`); no download happens here.",
+		graphifyModelOptions(omlxModels), graphifyModelNone,
+	)
 	// Ports already taken by other workspaces' apps, so a suggested app port defaults to a
 	// free one (best-effort; a read error just yields an empty reserved set).
 	wizard.reservedAppPorts, _ = apps.ReservedPortsAcrossWorkspaces()
@@ -161,7 +164,7 @@ func (view *Create) Hints() string {
 		return "type to filter · ↓/↑ pick folder · tab open folder · enter next" + nav
 	case stepAgents, stepStacks, stepTools:
 		return "↑/↓ move · space toggle · enter next" + nav
-	case stepOS, stepShell, stepDefault, stepAuth:
+	case stepOS, stepShell, stepDefault, stepAuth, stepModel:
 		return "↑/↓ move · enter select/next" + nav
 	default:
 		return "type · enter next" + nav
@@ -233,7 +236,7 @@ func (view *Create) Update(msg tea.Msg) tea.Cmd {
 		if !view.graphifySelected() {
 			return view.next()
 		}
-		return view.updateTextStep(view.model, msg)
+		return view.updateSelectStep(view.model, msg)
 	case stepAppPorts:
 		if len(view.appPortInputs) == 0 {
 			return view.next()
@@ -331,6 +334,24 @@ func (view *Create) selectStepFor(step int) *selectList {
 // the Graphify-model step is shown).
 func (view *Create) graphifySelected() bool {
 	return slices.Contains(view.tools.Values(), create.AIToolGraphify)
+}
+
+// graphifyModelNone is the model-picker's "leave Graphify unconfigured" option —
+// always first, and the default cursor position. It is mapped back to "" (blank)
+// when the wizard assembles the final spec.
+const graphifyModelNone = "(none — leave Graphify unconfigured)"
+
+// graphifyModelOptions builds the model-picker's option list from omlxModels (the
+// injected live lister — nil-safe, and tolerated returning an empty list when omlx
+// isn't installed or is currently serving nothing): graphifyModelNone always
+// first, so a host with no models yet still shows a valid, selectable list rather
+// than an empty one.
+func graphifyModelOptions(omlxModels func() []string) []string {
+	var models []string
+	if omlxModels != nil {
+		models = omlxModels()
+	}
+	return append([]string{graphifyModelNone}, models...)
 }
 
 // combinedAgentAppOptions is the option list for the combined Agent-CLIs-&-apps
@@ -529,7 +550,9 @@ func (view *Create) finish() tea.Cmd {
 	caveman, graphify, codeReviewGraph, codebaseMemory := create.SplitAITools(view.tools.Values())
 	graphifyModel := ""
 	if graphify {
-		graphifyModel = view.model.Value()
+		if value := view.model.Value(); value != graphifyModelNone {
+			graphifyModel = value
+		}
 	}
 	var authModes map[string]string
 	if len(view.authAgents) > 0 {

@@ -170,7 +170,7 @@ func TestLocationAutocompletionPrefixMatchesChildDirs(test *testing.T) {
 // TestCreateWizardCancels verifies esc from the first step cancels the whole wizard.
 func TestCreateWizardCancels(test *testing.T) {
 	test.Setenv("HOME", test.TempDir())
-	wizard := NewCreate(test.TempDir(), 24, 18)
+	wizard := NewCreate(test.TempDir(), 24, 18, nil)
 	cmd := wizard.Update(tea.KeyMsg{Type: tea.KeyEsc})
 	if cmd == nil {
 		test.Fatal("esc must emit a cancel command")
@@ -186,7 +186,7 @@ func TestCreateWizardAssemblesSpec(test *testing.T) {
 	base := test.TempDir()
 	target := filepath.Join(base, "demo-ws")
 
-	wizard := NewCreate(base, 24, 18)
+	wizard := NewCreate(base, 24, 18, nil)
 	wizard.SetSize(80, 24)
 
 	enter := func() tea.Cmd { return wizard.Update(tea.KeyMsg{Type: tea.KeyEnter}) }
@@ -275,19 +275,34 @@ func TestCreateWizardAssemblesSpec(test *testing.T) {
 	}
 }
 
-// TestCreateWizardModelStepIsPlainText verifies the Graphify-model step is a plain
-// text field (the NAME of a model omlx is already serving, no curated list/pull) —
-// typing a name and pressing enter carries it through as-is.
-func TestCreateWizardModelStepIsPlainText(test *testing.T) {
-	wizard := NewCreate(test.TempDir(), 24, 18)
+// TestCreateWizardModelStepIsAPicker verifies the Graphify-model step is a picker
+// over omlx's live model list (no free-text entry, no download): it defaults to
+// "none", and moving down selects an actual model name from the injected lister.
+func TestCreateWizardModelStepIsAPicker(test *testing.T) {
+	wizard := NewCreate(test.TempDir(), 24, 18, func() []string { return []string{"bge-m3", "qwen3-coder"} })
 	wizard.SetSize(80, 24)
 	wizard.step = stepModel
 
-	for _, r := range "qwen3-coder" {
-		wizard.model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+	if got := wizard.model.Value(); got != graphifyModelNone {
+		test.Fatalf("model.Value() before any move = %q, want the default %q", got, graphifyModelNone)
 	}
+	// Options are ["(none)", "bge-m3", "qwen3-coder"] — move down twice to land on
+	// the second listed model.
+	wizard.Update(tea.KeyMsg{Type: tea.KeyDown})
+	wizard.Update(tea.KeyMsg{Type: tea.KeyDown})
 	if got := wizard.model.Value(); got != "qwen3-coder" {
-		test.Fatalf("model.Value() = %q, want qwen3-coder", got)
+		test.Fatalf("model.Value() after two moves = %q, want qwen3-coder", got)
+	}
+}
+
+// TestCreateWizardModelStepDegradesWithNoModels verifies a nil/empty lister still
+// yields a valid, selectable "none" option rather than an empty list.
+func TestCreateWizardModelStepDegradesWithNoModels(test *testing.T) {
+	wizard := NewCreate(test.TempDir(), 24, 18, nil)
+	wizard.SetSize(80, 24)
+	wizard.step = stepModel
+	if got := wizard.model.Value(); got != graphifyModelNone {
+		test.Fatalf("model.Value() with no models = %q, want the default %q", got, graphifyModelNone)
 	}
 }
 
@@ -333,7 +348,7 @@ func TestCreateWizardAuthModeStep(test *testing.T) {
 	base := test.TempDir()
 	target := filepath.Join(base, "demo-ws")
 
-	wizard := NewCreate(base, 24, 18)
+	wizard := NewCreate(base, 24, 18, nil)
 	wizard.SetSize(80, 24)
 	enter := func() tea.Cmd { return wizard.Update(tea.KeyMsg{Type: tea.KeyEnter}) }
 	press := func(k tea.KeyType) { wizard.Update(tea.KeyMsg{Type: k}) }
@@ -394,7 +409,7 @@ func TestCreateWizardPromptsAppPort(test *testing.T) {
 	base := test.TempDir()
 	target := filepath.Join(base, "app-ws")
 
-	wizard := NewCreate(base, 24, 18)
+	wizard := NewCreate(base, 24, 18, nil)
 	wizard.SetSize(80, 24)
 	enter := func() tea.Cmd { return wizard.Update(tea.KeyMsg{Type: tea.KeyEnter}) }
 	press := func(k tea.KeyType) { wizard.Update(tea.KeyMsg{Type: k}) }

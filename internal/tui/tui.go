@@ -14,6 +14,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	goruntime "runtime"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -28,6 +29,7 @@ import (
 	"github.com/jt-helsinki/stack-genie/internal/create"
 	"github.com/jt-helsinki/stack-genie/internal/egress"
 	"github.com/jt-helsinki/stack-genie/internal/litellm"
+	"github.com/jt-helsinki/stack-genie/internal/omlx"
 	"github.com/jt-helsinki/stack-genie/internal/project"
 	"github.com/jt-helsinki/stack-genie/internal/runtime"
 	"github.com/jt-helsinki/stack-genie/internal/setup"
@@ -482,6 +484,25 @@ func serviceStatusByName(fetch func() ([]setup.ServiceStatus, error), name strin
 	return setup.ServiceStatus{}, false
 }
 
+// omlxLiveModelNames feeds the create wizard's Graphify-model picker: it queries
+// omlx's live GET /v1/models directly (the wizard runs on the SAME host as omlx,
+// so no gateway round trip is needed) and returns the sorted model ids it
+// currently reports. Degrades gracefully to an empty list — never an error —
+// when omlx isn't installed/running or is currently serving nothing; the picker
+// still shows its "leave Graphify unconfigured" option in that case.
+func omlxLiveModelNames() []string {
+	models, err := omlx.ListModels()
+	if err != nil {
+		return nil
+	}
+	names := make([]string, 0, len(models))
+	for _, model := range models {
+		names = append(names, model.ID)
+	}
+	sort.Strings(names)
+	return names
+}
+
 // listAPIKeyProviders joins the model catalog's LiteLLM-routable providers with the
 // gateway's stored credentials so the API Keys view can render PROVIDER · NAME ·
 // KEY? · MODELS. It never returns a key value (ListCredentials reports names +
@@ -750,7 +771,7 @@ func (application *app) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case views.NewProjectRequestedMsg:
 		// Open the multi-step create WIZARD in-TUI (no subprocess). Seed it with the
 		// current directory and the host resource caps for the hints.
-		wizard := views.NewCreate(application.cwd, create.HostMemoryGB(), create.UsableHostMemoryGB())
+		wizard := views.NewCreate(application.cwd, create.HostMemoryGB(), create.UsableHostMemoryGB(), omlxLiveModelNames)
 		bodyWidth, bodyHeight := application.bodyContentSize()
 		wizard.SetSize(bodyWidth, bodyHeight)
 		application.createView = wizard

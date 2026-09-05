@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	goruntime "runtime"
 	"slices"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -15,6 +16,7 @@ import (
 	"github.com/jt-helsinki/stack-genie/internal/apps"
 	"github.com/jt-helsinki/stack-genie/internal/config"
 	"github.com/jt-helsinki/stack-genie/internal/create"
+	"github.com/jt-helsinki/stack-genie/internal/omlx"
 	"github.com/jt-helsinki/stack-genie/internal/output"
 	"github.com/jt-helsinki/stack-genie/internal/project"
 	"github.com/jt-helsinki/stack-genie/internal/sysinfo"
@@ -592,6 +594,41 @@ func sanitizeName(raw string) string {
 
 // runCreateWizard collects a workspace project.Spec interactively (CLI §3.1). It
 // returns cancelled=true if the user aborts, or an error if no terminal is available.
+// graphifyModelNone is the picker's "leave Graphify unconfigured" option.
+const graphifyModelNone = "(none — leave Graphify unconfigured)"
+
+// omlxLiveModelNamesFn is the injectable seam for the Graphify-model picker's
+// options (queries omlx's live GET /v1/models directly — the CLI runs on the
+// SAME host as omlx, so no gateway round trip is needed). Degrades gracefully to
+// an empty slice, never an error, when omlx isn't installed/running or is
+// currently serving nothing.
+var omlxLiveModelNamesFn = func() []string {
+	models, err := omlx.ListModels()
+	if err != nil {
+		return nil
+	}
+	names := make([]string, 0, len(models))
+	for _, model := range models {
+		names = append(names, model.ID)
+	}
+	sort.Strings(names)
+	return names
+}
+
+// graphifyModelOptions builds the Graphify-model picker's option list: the "none"
+// sentinel always first, then every model omlx currently reports. A pre-seeded
+// value (e.g. from --graphify-model) that omlx does not currently report is
+// APPENDED rather than dropped, so the wizard still shows and lets the user
+// confirm/edit whatever was passed in (the TTY-prompt pre-seed contract), even
+// though it won't resolve until omlx actually serves it.
+func graphifyModelOptions(seeded string) []string {
+	options := append([]string{graphifyModelNone}, omlxLiveModelNamesFn()...)
+	if seeded != "" && !slices.Contains(options, seeded) {
+		options = append(options, seeded)
+	}
+	return options
+}
+
 func runCreateWizard(seed project.Spec) (project.Spec, bool, error) {
 	// Pre-seed every field from the caller (flags become the wizard's defaults).
 	name := seed.Name
@@ -629,6 +666,9 @@ func runCreateWizard(seed project.Spec) (project.Spec, bool, error) {
 	// the selection.
 	toolsSelection := aiToolsFromSpec(seed)
 	graphifyModelSelection := seed.GraphifyModel
+	if graphifyModelSelection == "" {
+		graphifyModelSelection = graphifyModelNone
+	}
 
 	groups := []*huh.Group{
 		huh.NewGroup(
@@ -694,11 +734,12 @@ func runCreateWizard(seed project.Spec) (project.Spec, bool, error) {
 			Description("Per-project code/context tooling installed at workspace start; caveman, graphify and code-review-graph are the defaults.").
 			Options(aiToolOptions()...).Value(&toolsSelection),
 	))
-	// Graphify model — shown ONLY when graphify is selected above.
+	// Graphify model — a PICKER over omlx's live model list (no free-text entry, no
+	// download), shown ONLY when graphify is selected above.
 	groups = append(groups, huh.NewGroup(
-		huh.NewInput().Title("Graphify model (optional)").
-			Description("Name of a model omlx is ALREADY serving (manage models from its admin panel — `ai services console omlx`), routed through the gateway as omlx/<name>; blank leaves Graphify unconfigured.").
-			Value(&graphifyModelSelection),
+		huh.NewSelect[string]().Title("Graphify model").
+			Description("A model omlx is ALREADY serving (manage the list itself from its own admin panel — `ai services console omlx`); routed through the gateway as omlx/<name>. No download happens here.").
+			Options(huh.NewOptions(graphifyModelOptions(seed.GraphifyModel)...)...).Value(&graphifyModelSelection),
 	).WithHideFunc(func() bool { return !slices.Contains(toolsSelection, create.AIToolGraphify) }))
 
 	// Per-app host-port prompts: one input per supported in-VM app, shown only when that
@@ -776,7 +817,7 @@ func runCreateWizard(seed project.Spec) (project.Spec, bool, error) {
 	caveman, graphify, codeReviewGraph, codebaseMemory := create.SplitAITools(toolsSelection)
 	// Only carry a graphify model when graphify is actually selected.
 	graphifyModel := ""
-	if graphify {
+	if graphify && graphifyModelSelection != graphifyModelNone {
 		graphifyModel = graphifyModelSelection
 	}
 	return project.Spec{

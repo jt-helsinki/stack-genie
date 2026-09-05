@@ -11,7 +11,9 @@ import (
 // The create wizard's step widgets — all built on the SAME primitives as the other
 // views (bubbles/textinput and the reusable listWindow), so they look and feel like the
 // rest of the TUI. A single-select and multi-select list back the option steps; the
-// Graphify step is a plain textStep (a model NAME omlx already serves — no picker).
+// Graphify step is ALSO a single-select list, populated from omlx's live model list
+// (graphifyModelOptions in create.go) — no free-text entry and no download, just a
+// pick from what omlx is already serving.
 
 // textStep is a single labelled text field (name, cpus, memory, ports, idle timeout),
 // with an optional validator run on advance.
