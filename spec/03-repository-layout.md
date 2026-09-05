@@ -444,7 +444,7 @@ the agent into this source tree — the platform does not manage them.
 .omp/config.yml                 # omp provider order + default model (models.yml is GLOBAL in-VM ~/.omp/agent/models.yml)
 .omp/mcp.json                   # omp MCP servers — injected AI-tool MCP servers, rewritten whole at start
 .hermes/…                       # hermes: config is the GLOBAL in-VM ~/.hermes/config.yaml (keyless)
-# (gemini is ENV-only — no on-disk provider file; copilot manages its own ~/.copilot)
+# (gemini is ENV-only — no on-disk provider file)
 ```
 
 ### 12.1c Per-CLI project configs + shared resource pool
@@ -470,15 +470,13 @@ existing file is deep-merged so the managed block wins while the user's other ke
   + `.omp/config.yml` (provider order + seed-then-remember `modelRoles.default`). These
   use the `.yml` extension because omp documents those paths that way (the one external-tool
   exception to the platform's `.yaml` rule).
-* **copilot** (GitHub Copilot CLI) → NO platform-written config (forced-OAuth /
-  gateway-incapable; it manages its own `~/.copilot`).
 
 **Injected MCP servers.** The three configs the platform rewrites whole on every start —
 codex's `.codex/config.toml`, hermes's global `~/.hermes/config.yaml`, and omp's
 `.omp/mcp.json` — carry the enabled AI tools'
 (code-review-graph/codebase-memory-mcp/graphify) MCP servers, injected into the render so
 the start-time rewrite can't clobber them (architecture §12). CLIs whose configs the
-platform does not own (claude-code/opencode/gemini/copilot) get those servers via the
+platform does not own (claude-code/opencode/gemini) get those servers via the
 tools' own native `install --platform`/auto-detect.
 
 The scoped virtual key lives **only** in the in-VM agent env file
@@ -763,7 +761,7 @@ config blocks.
 ```yaml id="sc6"
 os: alma                   # alma | debian-trixie | debian-bookworm | ubuntu
 agent:
-  tools: [opencode]        # installed agent CLIs (any subset of: opencode, omp, claude-code, codex, gemini, copilot, hermes); opencode by default
+  tools: [opencode]        # installed agent CLIs (any subset of: opencode, omp, claude-code, codex, gemini, hermes); opencode by default
   default_tool: opencode   # default agent CLI; must be one of agent.tools
   graphify_model: qwen2.5-coder  # optional: local model NAME already served by omlx that Graphify uses
                            # (chosen at `ai create`, no download step; routed through the gateway as omlx/<model>); omitted = none

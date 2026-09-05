@@ -478,17 +478,16 @@ one command:
   (default `bash`), written to `workspace.shell` and applied at every start by
   `applyShellChoice`
 * `--agents <list>` — comma-separated agent CLIs
-  (`opencode,omp,claude-code,codex,gemini,copilot,hermes`); defaults to
+  (`opencode,omp,claude-code,codex,gemini,hermes`); defaults to
   `opencode`, and the first listed becomes the default agent CLI. `opencode`/
   `omp`/`hermes` are always gateway/api-key; `claude-code`/`codex`/`gemini`
-  are gateway by default but OAuth-selectable (see `--auth-mode`); `copilot` is
-  forced-OAuth / gateway-incapable
+  are gateway by default but OAuth-selectable (see `--auth-mode`)
 * `--auth-mode <cli=mode>` — per-agent auth mode, repeatable/comma-separated, for
   the OAuth-capable CLIs `claude-code`/`codex`/`gemini` (`api-key`|`oauth`;
   default `api-key`). `api-key` routes through the gateway with the scoped virtual
   key (firewall + masking apply); `oauth` uses the CLI's own subscription login,
-  bypassing the gateway. `copilot=api-key` is rejected (exit 2 — copilot is
-  forced-OAuth); opencode/omp/hermes are always gateway/api-key and never accept it
+  bypassing the gateway. opencode/omp/hermes are always gateway/api-key and never
+  accept it
 * `--stacks <list>` — comma-separated EXTRA software stacks
   (`go,rust,java,maven,deno`); optional. **Neither Python nor Node is a stack
   option** — Node.js and the latest **Python 3** + **uv** (Astral's Python
@@ -571,7 +570,7 @@ one command:
   * `code-review-graph` — install code-review-graph (`code-review-graph.com`, PyPI
     `code-review-graph`) via a conditional snippet and register it as an MCP server. For the
     CLIs whose config the platform does not own it uses the tool's native
-    `code-review-graph install --platform <cli>` (opencode/claude-code/gemini/copilot —
+    `code-review-graph install --platform <cli>` (opencode/claude-code/gemini —
     `codeReviewGraphPlatformFlag`; codex was removed because its config is
     platform-rewritten); codex/omp/hermes instead get its MCP server
     (`code-review-graph serve`) injected into their platform-managed configs. Then `build`
@@ -579,7 +578,7 @@ one command:
   * `codebase-memory-mcp` — install codebase-memory-mcp
     (`github.com/DeusData/codebase-memory-mcp`) via a conditional snippet and register it
     as an MCP server: the tool's own `codebase-memory-mcp install` auto-detects
-    claude-code/opencode/codex/gemini/copilot/hermes (not omp), but because
+    claude-code/opencode/codex/gemini/hermes (not omp), but because
     codex/hermes configs are platform-rewritten and omp isn't detected, those three
     get its MCP server injected into their managed configs instead. Ships an optional
     on-demand 3D graph UI (`codebase-memory-mcp --ui=true --port=9749`).
@@ -646,9 +645,8 @@ Steps, in order:
    the workspace user's login shell to zsh.
 3. **Agent CLIs** — **multi-select checkboxes**; `OpenCode` pre-checked
    (installed by default); choose any subset of `OpenCode`, `Omp`,
-   `Claude Code`, `Codex`, `Gemini`, `Copilot`, `Hermes` (at least one).
-   All connect to models through LiteLLM **except** `Copilot` (GitHub Copilot CLI),
-   which is forced-OAuth / gateway-incapable and talks directly to GitHub.
+   `Claude Code`, `Codex`, `Gemini`, `Hermes` (at least one). All connect to
+   models through LiteLLM.
 4. **Default agent CLI** — single-select from the CLIs chosen in step 3; default
    `OpenCode` (recorded as `agent.default_tool`).
 5. **Software stacks** — **multi-select checkboxes**; choose the language/tool
@@ -1019,7 +1017,7 @@ the tmux session.
   the daemonized server makes it persist after a detach + listed).
 * **`ai agent <cli>`** starts (or reattaches to) a **per-CLI** session named after
   the CLI — `opencode`, `omp`, `claude-code` (runs `claude`), `codex`, `gemini`,
-  `copilot`, `hermes` —
+  `hermes` —
   so each agent has one durable session and several can run side by side. An
   **unknown `<cli>`** is exit `2` with the valid set listed.
 * **`ai attach [session]`** attaches to an **existing** session (it never creates —
@@ -1131,7 +1129,7 @@ view (§14) drives the same path via `ai apps`.
 
 ### In-workspace agent CLI provider config — keyless per-CLI project configs, key in-VM only
 
-All **eight** gateway-capable agent CLIs (every CLI except forced-OAuth Copilot) route through the LiteLLM gateway **by default**. At every
+All **six** supported agent CLIs route through the LiteLLM gateway **by default**. At every
 workspace start/restart `workspace.registerAgentProviders` (over `internal/agentcfg`)
 writes each CLI's provider config at **that CLI's own default per-project location**
 inside the bind-mounted project dir (`<project>/…` on host = `/home/workspace/project/…`

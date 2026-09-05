@@ -118,7 +118,7 @@ purposes:
 Host Layer
  ├─ Microsandbox microVM runtime (libkrun)         ← workspaces
  │   └─ Sandbox Layer (workspace microVM)
- │       ├─ AI Tooling Layer (OpenCode by default; Claude Code / Codex / Gemini / omp / Copilot / Hermes optional — selected per env)
+ │       ├─ AI Tooling Layer (OpenCode by default; Claude Code / Codex / Gemini / omp / Hermes optional — selected per env)
  │       ├─ In-VM OCI runtime (rootful containerd + nerdctl) → opt-in apps: Open WebUI (§7)
  │       └─ Context Optimization (Caveman skill — per project, §8–10; Headroom is a host-side LiteLLM guardrail, §10)
  │
@@ -781,9 +781,8 @@ Caveman integrates as an agent skill, but it is **NOT** platform-seeded at creat
 is **NOT git-tracked**. It is installed at **workspace start** by Caveman's own
 upstream installer (`workspace.registerCaveman`, once-guarded, network-bound,
 best-effort — not baked into the image, not written by `Scaffold`). The install gives
-each caveman-detectable CLI (claude-code/opencode/gemini/codex/copilot/hermes;
-copilot is a "soft probe", so `registerCaveman` appends `--with-init` when copilot is
-selected) its native skills/agents/commands; `registerCaveman` then
+each caveman-detectable CLI (claude-code/opencode/gemini/codex/hermes) its
+native skills/agents/commands; `registerCaveman` then
 mirrors opencode's global caveman dirs into the shared `.ai-platform/{skills,agents,
 prompts}` pool so the symlinks distribute it to the pool-only CLIs (omp). It is the
 output-side complement to Headroom (the input-compression guardrail, §10). `ai context
@@ -971,7 +970,7 @@ templates (§25); it is identical across all OSes:
   start** (NOT at image build; gated on `context.graphify_enabled`):
   `Manager.registerGraphify` runs `graphify install`
   for Claude Code (the default `graphify` platform) and `graphify install --platform
-  <cli>` for Codex, the Gemini CLI, OpenCode, and Copilot, all in `~/project`
+  <cli>` for Codex, the Gemini CLI, and OpenCode, all in `~/project`
   (omp/hermes are not Graphify platforms — they inherit the skill via the
   shared pool). It must run
   at start because `--project` writes project-scoped skill/plugin/hook files into the
@@ -1004,7 +1003,7 @@ templates (§25); it is identical across all OSes:
   is routed through the gateway as `omlx/<model>` via `OPENAI_*` env vars (see
   §17) — never directly to the backend.
   Graphify stays usable by every CLI as a **skill** (native `graphify install --platform`
-  for the platform CLIs opencode/claude-code/codex/gemini/copilot; the shared skill pool for
+  for the platform CLIs opencode/claude-code/codex/gemini; the shared skill pool for
   omp/hermes) — unchanged; ADDITIONALLY its stdio **MCP server** is registered into
   the platform-managed configs (codex/hermes/omp) via the injection described below.
   The platform installs `graphifyy[mcp]` into the project venv `.venv-msb` (detached
@@ -1026,7 +1025,7 @@ templates (§25); it is identical across all OSes:
   `registerGraphify`/`registerCaveman`: once-guarded by a marker under
   `~/project/.ai-platform`, best-effort, never failing the start). **code-review-graph**
   (code-review-graph.com, PyPI `code-review-graph`) runs `code-review-graph install
-  --platform <cli>` for each supported CLI (opencode/claude-code/gemini/copilot —
+  --platform <cli>` for each supported CLI (opencode/claude-code/gemini —
   `codeReviewGraphPlatformFlag`; **codex was removed** because its `config.toml` is
   platform-rewritten and a native install would be clobbered — codex/omp/hermes
   get its MCP server via injection, below), then `build`s the graph
@@ -1034,7 +1033,7 @@ templates (§25); it is identical across all OSes:
   `.code-review-graph/graph.html`; it is DETACHED (the `build` can be long, like the
   Caveman install). **codebase-memory-mcp** (github.com/DeusData/codebase-memory-mcp) runs
   the auto-detecting `codebase-memory-mcp install` (bounded blocking, config-only; it
-  auto-detects claude-code/opencode/codex/gemini/copilot/hermes, not omp) and
+  auto-detects claude-code/opencode/codex/gemini/hermes, not omp) and
   ships an optional on-demand **3D graph UI** (`codebase-memory-mcp --ui=true --port=9749`,
   not auto-started). Both default to LOCAL operation and need no API key, so neither
   touches the gateway or a provider key.
@@ -1051,8 +1050,8 @@ templates (§25); it is identical across all OSes:
   `codebase-memory-mcp` binary, graphify = `<project>/.venv-msb/bin/python -m
   graphify.serve graphify-out/graph.json`. So codex/hermes/omp reach
   code-review-graph + codebase-memory + graphify via injection; the CLIs whose configs the
-  platform does not own (claude-code `~/.claude.json`, opencode, gemini `settings.json`,
-  copilot `mcp-config.json`) keep getting them via the tools' own native install/auto-detect.
+  platform does not own (claude-code `~/.claude.json`, opencode, gemini `settings.json`)
+  keep getting them via the tools' own native install/auto-detect.
 * **rtk** — "Rust Token Killer" (github.com/rtk-ai/rtk), a CLI proxy that compresses
   common dev-command output to cut agent token use. Installed for the **workspace
   user** via its official `install.sh` (a prebuilt aarch64 Linux binary → `~/.local/bin`,
@@ -1071,7 +1070,6 @@ environment setup (`ai create`, CLI §3.1) from the supported list:
 * **Claude Code**
 * **Codex**
 * **Gemini CLI**
-* **Copilot** (GitHub Copilot CLI) — forced-OAuth / gateway-incapable (see auth modes)
 * **Hermes** — selectable; wired to LiteLLM (gateway/api-key) like OpenCode
 
 Selection is **multi-select**: install any subset (at least one), with **OpenCode**
@@ -1087,9 +1085,10 @@ key, so the tool firewall + secret masking apply) or, for the three CLIs with a 
 subscription login (**Claude Code, Codex, Gemini** — `config.OAuthCapableCLIs()`), `oauth`
 (the CLI's own subscription login, talking DIRECTLY to the provider, **bypassing the gateway
 and all guardrails**). OpenCode/omp/Hermes have no subscription and are ALWAYS
-gateway/api-key. **Copilot** is forced-OAuth (`config.ForcedOAuthCLIs()`): gateway-incapable,
-authenticates natively to GitHub, never offered an auth-mode choice. `ai create` WARNS that
-an oauth agent's traffic bypasses the firewall/masking/egress audit.
+gateway/api-key. `config.ForcedOAuthCLIs()` is a generic mechanism for a forced-OAuth CLI
+(gateway-incapable, authenticates natively to its own provider, never offered an auth-mode
+choice) — it currently returns an empty set (no supported CLI needs it). `ai create` WARNS
+that an oauth agent's traffic bypasses the firewall/masking/egress audit.
 
 Context optimization (§8–10):
 
@@ -1116,7 +1115,6 @@ Supported providers (selected per environment, §12):
 * Claude Code
 * Codex
 * Gemini CLI
-* Copilot (GitHub Copilot CLI — forced-OAuth / gateway-incapable, talks directly to GitHub)
 * Hermes
 
 Future providers:
@@ -1494,8 +1492,8 @@ currently reports is re-added fresh, even one whose name is unchanged.
 
 ### In-VM agent provider config — keyless per-CLI project configs, key in-VM only
 
-The **six** gateway-capable agent CLIs (all except forced-OAuth Copilot, out of the
-seven supported agent CLIs total, §12) route through the gateway **by default** — subject to per-agent auth mode: an `oauth`-mode Claude
+All **six** supported agent CLIs (§12) route through the gateway **by default** — subject
+to per-agent auth mode: an `oauth`-mode Claude
 Code/Codex/Gemini goes direct to its provider and gets no gateway config (see auth modes
 above). Each CLI's provider
 config is written at **that CLI's own default per-project location** inside the
