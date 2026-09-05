@@ -1,11 +1,13 @@
 package views
 
 import (
+	"strconv"
 	"strings"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/jt-helsinki/stack-genie/internal/litellm"
 	"github.com/jt-helsinki/stack-genie/internal/setup"
 	"github.com/jt-helsinki/stack-genie/internal/ui"
 )
@@ -25,6 +27,11 @@ type ServiceStatsFetcher func(service string) ([]setup.ContainerStats, error)
 // through the overlay shows the image-pull progress for free, and the Services
 // list/detail refresh when the overlay closes.
 type ServiceUpdateRequestedMsg struct{ Service string }
+
+// OmlxModelsRefresher re-syncs LiteLLM's omlx/* model registrations against
+// omlx's live model list on demand — the TUI twin of `ai models refresh`.
+// Injected; nil is tolerated (the key is simply not offered for omlx).
+type OmlxModelsRefresher func() (litellm.SyncResult, error)
 
 // ServiceLogFollowRequestedMsg asks the parent to follow a service's container log
 // live in the user's REAL terminal (via tea.ExecProcess) — the service-tier twin of
@@ -56,6 +63,13 @@ type serviceLifecycleDoneMsg struct {
 // serviceSpinnerTickMsg advances the in-flight lifecycle spinner one frame.
 type serviceSpinnerTickMsg struct{}
 
+// omlxModelsRefreshedMsg reports the result of an on-demand `m` models-refresh
+// (omlx only).
+type omlxModelsRefreshedMsg struct {
+	result litellm.SyncResult
+	err    error
+}
+
 // serviceSpinnerInterval is how often the in-place lifecycle spinner animates.
 const serviceSpinnerInterval = 120 * time.Millisecond
 
@@ -83,11 +97,12 @@ var serviceSubTabTitles = []string{"Service", "Logs"}
 // then a refresh — it does NOT pop back to the list), `p` (update) routes through the
 // parent's terminal overlay, and `o` opens the console.
 type ServiceDetail struct {
-	info    ServiceStatusFetcher
-	stats   ServiceStatsFetcher
-	control ServiceController
-	open    URLOpener
-	log     *LogView
+	info          ServiceStatusFetcher
+	stats         ServiceStatsFetcher
+	control       ServiceController
+	open          URLOpener
+	log           *LogView
+	refreshModels OmlxModelsRefresher
 
 	name       string
 	status     setup.ServiceStatus
@@ -112,13 +127,17 @@ type ServiceDetail struct {
 	// animated spinner on the state line; empty when idle.
 	pending      string
 	pendingFrame int
+
+	// refreshingModels guards against a second `m` while one models-refresh (omlx
+	// only) is already in flight.
+	refreshingModels bool
 }
 
 // NewServiceDetail builds the service-detail view over the injected per-service status
 // fetcher, the per-container stats fetcher, the lifecycle controller, the console
 // opener, and the container log component shown on the Logs sub-tab.
-func NewServiceDetail(info ServiceStatusFetcher, stats ServiceStatsFetcher, control ServiceController, open URLOpener, log *LogView) *ServiceDetail {
-	return &ServiceDetail{info: info, stats: stats, control: control, open: open, log: log}
+func NewServiceDetail(info ServiceStatusFetcher, stats ServiceStatsFetcher, control ServiceController, open URLOpener, log *LogView, refreshModels OmlxModelsRefresher) *ServiceDetail {
+	return &ServiceDetail{info: info, stats: stats, control: control, open: open, log: log, refreshModels: refreshModels}
 }
 
 func (view *ServiceDetail) Title() string { return "Service" }
@@ -129,7 +148,11 @@ func (view *ServiceDetail) Hints() string {
 	if view.subIndex == serviceTabLogs {
 		return view.log.Hints()
 	}
-	return "s start · x stop · r restart · p update · o console"
+	hints := "s start · x stop · r restart · p update · o console"
+	if view.name == "omlx" && view.refreshModels != nil {
+		hints += " · m refresh models"
+	}
+	return hints
 }
 
 // Service is the name of the open service (or "" before SetService).
@@ -251,6 +274,10 @@ func (view *ServiceDetail) Update(msg tea.Msg) tea.Cmd {
 		}
 		view.pendingFrame++
 		return view.spinnerTick()
+	case omlxModelsRefreshedMsg:
+		view.refreshingModels = false
+		view.flash = omlxModelsRefreshFlash(message.result, message.err)
+		return nil
 	case tea.KeyMsg:
 		switch message.String() {
 		case "tab", "right", "shift+tab", "left":
@@ -270,6 +297,8 @@ func (view *ServiceDetail) Update(msg tea.Msg) tea.Cmd {
 				return func() tea.Msg { return ServiceUpdateRequestedMsg{Service: name} }
 			case "o":
 				return view.openConsole()
+			case "m":
+				return view.refreshOmlxModels()
 			}
 		}
 		return nil
@@ -347,6 +376,34 @@ func (view *ServiceDetail) openConsole() tea.Cmd {
 		}
 		return serviceLifecycleDoneMsg{action: "open", service: name}
 	}
+}
+
+// refreshOmlxModels re-syncs LiteLLM's omlx/* registrations against omlx's live
+// model list (the TUI twin of `ai models refresh`) — only offered for the omlx
+// service, and only when a refresher was injected and none is already in flight.
+func (view *ServiceDetail) refreshOmlxModels() tea.Cmd {
+	if view.name != "omlx" || view.refreshModels == nil || view.refreshingModels {
+		return nil
+	}
+	view.refreshingModels = true
+	view.flash = ui.Muted.Render("refreshing omlx models…")
+	refresh := view.refreshModels
+	return func() tea.Msg {
+		result, err := refresh()
+		return omlxModelsRefreshedMsg{result: result, err: err}
+	}
+}
+
+// omlxModelsRefreshFlash renders the outcome of an `m` models-refresh.
+func omlxModelsRefreshFlash(result litellm.SyncResult, err error) string {
+	if err != nil {
+		return ui.Failure.Render(ui.IconFail + " models refresh: " + err.Error())
+	}
+	if len(result.Added) == 0 && len(result.Deleted) == 0 {
+		return ui.Success.Render(ui.IconOK + " models refresh: already in sync")
+	}
+	return ui.Success.Render(ui.IconOK + " models refresh: " +
+		strconv.Itoa(len(result.Added)) + " added, " + strconv.Itoa(len(result.Deleted)) + " removed")
 }
 
 func (view *ServiceDetail) View() string {

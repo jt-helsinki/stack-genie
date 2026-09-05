@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/jt-helsinki/stack-genie/internal/litellm"
 	"github.com/jt-helsinki/stack-genie/internal/setup"
 )
 
@@ -35,7 +36,7 @@ func newDetailForTest(status setup.ServiceStatus, logLine string, follow bool) *
 	}
 	detail := NewServiceDetail(
 		func(string) (setup.ServiceStatus, bool) { return status, true },
-		statsFn, noControl, noOpen, log,
+		statsFn, noControl, noOpen, log, nil,
 	)
 	detail.SetService(status.Name)
 	detail.SetActive(true)
@@ -102,7 +103,7 @@ func TestServiceDetailLifecycleStaysPut(test *testing.T) {
 		},
 		func(string) ([]setup.ContainerStats, error) { return nil, nil },
 		func(action, service string) error { controlled = action + ":" + service; return nil },
-		noOpen, log,
+		noOpen, log, nil,
 	)
 	detail.SetService("litellm")
 	detail.SetActive(true)
@@ -147,6 +148,60 @@ func TestServiceDetailUpdateEmitsRequest(test *testing.T) {
 	}
 	if request, ok := cmd().(ServiceUpdateRequestedMsg); !ok || request.Service != "omlx" {
 		test.Fatalf("p must emit ServiceUpdateRequestedMsg{omlx}, got %#v", cmd())
+	}
+}
+
+// TestServiceDetailModelsRefreshOnlyForOmlx: `m` is not offered for a non-omlx
+// service (no refresher call, hints stay unchanged), but on omlx it runs the
+// injected refresher and flashes the result.
+func TestServiceDetailModelsRefreshOnlyForOmlx(test *testing.T) {
+	detail := newDetailForTest(setup.ServiceStatus{Name: "litellm", State: "running"}, "", false)
+	primeInfo(detail)
+	if strings.Contains(detail.Hints(), "refresh models") {
+		test.Errorf("a non-omlx service must not offer the refresh-models hint, got %q", detail.Hints())
+	}
+	if cmd := detail.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("m")}); cmd != nil {
+		test.Fatalf("m on a non-omlx service must be a no-op, got a command")
+	}
+
+	var called bool
+	log := NewLogView(func() (string, error) { return "", nil }, func() bool { return true },
+		func() string { return "omlx" }, LogViewLabels{Loading: "…"}, nil)
+	omlxDetail := NewServiceDetail(
+		func(string) (setup.ServiceStatus, bool) {
+			return setup.ServiceStatus{Name: "omlx", State: "running"}, true
+		},
+		func(string) ([]setup.ContainerStats, error) { return nil, nil },
+		noControl, noOpen, log,
+		func() (litellm.SyncResult, error) {
+			called = true
+			return litellm.SyncResult{Added: []string{"omlx/gemma"}}, nil
+		},
+	)
+	omlxDetail.SetService("omlx")
+	omlxDetail.SetActive(true)
+	omlxDetail.SetSize(80, 20)
+	primeInfo(omlxDetail)
+
+	if !strings.Contains(omlxDetail.Hints(), "refresh models") {
+		test.Errorf("omlx should offer the refresh-models hint, got %q", omlxDetail.Hints())
+	}
+	cmd := omlxDetail.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("m")})
+	if cmd == nil {
+		test.Fatal("m on omlx must return a command")
+	}
+	if !omlxDetail.refreshingModels {
+		test.Error("refreshingModels should be set while the refresh is in flight")
+	}
+	_ = omlxDetail.Update(cmd())
+	if !called {
+		test.Error("the injected refresher should have been called")
+	}
+	if omlxDetail.refreshingModels {
+		test.Error("refreshingModels should clear once the result lands")
+	}
+	if !strings.Contains(omlxDetail.flash, "1 added") {
+		test.Errorf("flash should report the sync result, got %q", omlxDetail.flash)
 	}
 }
 

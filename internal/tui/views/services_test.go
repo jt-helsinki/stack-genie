@@ -39,7 +39,7 @@ func newServicesForTest(fetch ServiceFetcher, control ServiceController) *Servic
 	)
 	detail := NewServiceDetail(statusByName,
 		func(string) ([]setup.ContainerStats, error) { return nil, nil },
-		control, noOpen, log)
+		control, noOpen, log, nil)
 	return NewServices(fetch, control, detail)
 }
 

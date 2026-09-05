@@ -129,6 +129,7 @@ func Run(cwd string) error {
 		servicesControl,
 		openURL,
 		serviceLogView,
+		setup.SyncOmlxModels,
 	)
 	servicesView := views.NewServices(servicesStatus, servicesControl, serviceDetail)
 	projectsView := views.NewProjects(project.List)
