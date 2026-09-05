@@ -221,6 +221,7 @@ ai keys remove openai                # remove the key and unregister that provid
 
 ai models status                     # gateway health/providers/routing + omlx connectivity
 ai models test  omlx/qwen3-4b        # round-trip one of the served models
+ai models refresh                    # re-sync LiteLLM's omlx/* registrations from omlx's live model list on demand
 
 ai services status                   # host service tier (incl. host-native omlx)
 ai services console litellm          # open the LiteLLM admin UI

@@ -209,7 +209,7 @@ var controlActions = map[string]bool{"start": true, "stop": true, "restart": tru
 // and shell completion): the container-reconcile set (desiredServices) PLUS the
 // host-native runtimes (hostNativeServiceNames — omlx) that are NOT in the
 // container registry but are still controllable via `ai services start|stop|restart`.
-// vLLM is not in the registry, so it is added here.
+// omlx is not in the registry, so it is added here.
 func ServiceNames() []string {
 	specs := desiredServices()
 	names := make([]string, 0, len(specs)+len(hostNativeServiceNames()))

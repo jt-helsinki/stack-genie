@@ -1208,21 +1208,24 @@ model is usable when it is (a) registered in the DB and (b) actually available: 
 local model must be **pulled**; a cloud model needs its provider key present in the
 gateway (§17).
 
-**The local-inference backend** (vLLM, §16) feeds the DB-backed store:
+**The local-inference backend** (omlx, §16) feeds the DB-backed store:
 
-* **vLLM** (host-side) → public handle
-  `vllm/<alias>`, routed to `openai/<alias>` with `api_base` set to
-  the per-model vLLM endpoint (no credential).
+* **omlx** (host-side, single shared server) → public handle
+  `omlx/<id>` (`<id>` exactly as omlx's own live `GET /v1/models` reports it — no
+  alias derivation), routed to `openai/<id>` with `api_base` set to
+  the one shared omlx endpoint (no credential).
 
-Local model weights are downloaded via the **Hugging Face CLI** (`hf`,
-`internal/hf`) into the vLLM weight store `~/.ai-platform/volumes/models/vllm`;
-local models are owned only by `ai models pull`/`rm`. A cloud-key catalog resync
-(`litellm.SyncModels`) shields `vllm/*` handles from its delete pass
-(`localModelPrefixes` = `["vllm/"]`).
+omlx models are managed entirely through **omlx's own admin panel**
+(`ai services console omlx`) — there is no host-side `ai models pull`/`rm`
+equivalent. The platform's only job is to keep LiteLLM's `omlx/*` registrations
+in sync with omlx's live model list (`litellm.SyncOmlxModels`, run automatically
+at `ai setup` / `ai services start|restart omlx`, and on demand via
+`ai models refresh`). A cloud-key catalog resync (`litellm.SyncModels`) shields
+`omlx/*` handles from its delete pass (`localModelPrefixes` = `["omlx/"]`).
 
 There is no default model: an unqualified request is the agent's responsibility.
-The local backend (vLLM, needing no credential) is available once a model is
-downloaded and served.
+The local backend (omlx, needing no credential) is available for whichever
+models omlx itself is currently serving.
 
 ---
 
@@ -1232,7 +1235,7 @@ Runs on the host as a **thin shared gateway**.
 
 Purpose:
 
-* unified provider endpoint for all tools (and vLLM)
+* unified provider endpoint for all tools (and omlx)
 * single point that holds the real provider keys (keys-in-LiteLLM, §17)
 * the DB-backed served-model catalogue (synced from models.dev by `ai keys`, §14)
 * failover
@@ -1260,8 +1263,8 @@ start/stop/restart verb (`ai services <action> litellm-db` = "unknown service").
 **All host-persisted SYSTEM data volumes live under `~/.ai-platform/volumes/<name>`**
 — a single discoverable home, so `ai uninstall --purge` (which `RemoveAll`s
 `~/.ai-platform`) removes them all (no scattered Docker named volumes). Today:
-`volumes/litellm-db` (the Postgres data dir above) and `volumes/models` (the vLLM
-model store, under `volumes/models/vllm`) — `volumes/` is ONLY true host data.
+`volumes/litellm-db` (the Postgres data dir above) and `volumes/models` (the omlx
+model store, under `volumes/models/omlx`) — `volumes/` is ONLY true host data.
 **Re-fetchable caches live under
 `~/.ai-platform/cache/<name>` instead** (`paths.CacheDir`): `cache/catalog.yaml` (the
 models.dev catalog, fetched as JSON but persisted as YAML; a legacy `catalog.json` or
@@ -1463,18 +1466,21 @@ carries no `model_list` (§14). Models are reconciled into the gateway DB from t
 `volumes/catalog.json` is one-shot converted — refreshed at `ai setup` and on the Cloud Models
 tab's `r` key) keyed by which providers the user has supplied a key for: adding a
 provider key (`ai keys add`, §17) registers that provider's catalog models via
-`litellm.SyncModels`; removing it unregisters them; an `ai models pull`/`rm`
-registers/unregisters the matching `vllm/<alias>`. Registering a model does **not**
-install it: a local model's weights must still be downloaded (via the Hugging Face
-CLI, §16), and a cloud model still
-needs its provider key present in the gateway (§17). The catalog id is the public
+`litellm.SyncModels`; removing it unregisters them; the platform's automatic
+omlx sync (§16) registers/unregisters the matching `omlx/<id>`. Registering a
+cloud model does **not** install it — a cloud model still
+needs its provider key present in the gateway (§17); an omlx model is already
+"installed" the moment omlx itself is serving it (model download/management
+lives entirely in omlx's own admin panel, §16). The catalog id is the public
 `model_name` verbatim; the catalog-id→LiteLLM-prefix map (e.g. `google` → `gemini`)
 supplies the routing prefix. There is no default model.
 
-Local (vLLM) models are registered with the public `model_name` `vllm/<alias>` and
-`litellm_params.model` = `openai/<alias>` (`VLLMRoutedModel`), with `api_base` set to
-the per-model `vllm serve` endpoint (`http://host.docker.internal:<port>/v1`) and no
-credential. They are owned solely by `ai models pull`/`rm`.
+Local (omlx) models are registered with the public `model_name` `omlx/<id>` and
+`litellm_params.model` = `openai/<id>` (`OmlxRoutedModel`), with `api_base` set to
+the single shared `omlx serve` endpoint (`http://host.docker.internal:8100/v1`) and no
+credential (a non-empty placeholder `"EMPTY"` satisfies LiteLLM's `openai/`-provider
+client construction). They are owned by omlx's own admin panel and kept in sync by
+the platform's automatic `litellm.SyncOmlxModels` reconcile.
 
 ### In-VM agent provider config — keyless per-CLI project configs, key in-VM only
 
@@ -1510,8 +1516,8 @@ sourced by every shell + agent session), which exports `AIP_GATEWAY_KEY` (openco
 `ANTHROPIC_AUTH_TOKEN` (claude-code), `GEMINI_API_KEY`/`GOOGLE_GEMINI_BASE_URL` (gemini),
 `OPENCODE_CONFIG`, and — when the project has a configured Graphify model
 (`agent.graphify_model`) — `OPENAI_BASE_URL` (the gateway `/v1`), `OPENAI_API_KEY` (the
-scoped virtual key), and `OPENAI_MODEL=vllm/<model>`, so `graphify --backend openai`
-routes through the gateway (nginx → LiteLLM → vLLM, LiteLLM compressing input via
+scoped virtual key), and `OPENAI_MODEL=omlx/<model>`, so `graphify --backend openai`
+routes through the gateway (nginx → LiteLLM → omlx, LiteLLM compressing input via
 its `headroom` guardrail) rather than directly to the backend.
 
 **hardware bring-up** (not yet verified live): opencode honouring `.opencode/opencode.json`
@@ -1546,7 +1552,7 @@ list** (never fatal — it must never fail a workspace start), and an empty pick
 LEAVES the existing served-model lists untouched (a transient outage never wipes them).
 The workspace **default model** is separate from the picker and follows a
 **seed-then-remember** policy: the model chosen at `ai create` (`agent.graphify_model`
-→ `vllm/<model>`) is SEEDED as every CLI's default on the **FIRST start only**
+→ `omlx/<model>`) is SEEDED as every CLI's default on the **FIRST start only**
 (guarded by a `<project>/.ai-platform/.agent-default-seeded` marker), independent of
 picker/gateway reachability; LATER starts pass an EMPTY default so each CLI's persisted
 last-used selection wins — the agent state dirs (`~/.local/share/opencode`) are
@@ -1557,79 +1563,103 @@ survives microVM restarts. The platform also installs an in-VM
 `/v1/models` endpoint (authenticated with the scoped virtual key) and rewrites the
 opencode PROJECT config (`/home/workspace/project/.opencode/opencode.json`) — KEYLESS — to match a fresh start, so models registered after
 start can be picked up without recreating the workspace; on failure it leaves the configs
-untouched. (The installable-model list backing the *host-side* `ai models`
-browse + the TUI Local Models tab is a **curated in-code list** — `hf.CuratedModels(goos)`
-(`internal/hf`): `mlx-community/*` repos on darwin, plain Hugging Face safetensors repos
-on Linux. It is NOT scraped or cached (no live search) — and is a separate concern
-from the in-VM picker.)
+untouched. (There is no host-side "browse available local models" surface anymore —
+no curated in-code list, no TUI Local Models tab. Adding/removing/tuning a local
+model is done entirely through **omlx's own admin panel** [`ai services console
+omlx`, §16]; the platform only keeps the gateway's `omlx/*` registrations synced to
+whatever omlx is currently serving, which is what feeds this in-VM picker.)
 
 ---
 
-# 16. Local Inference (vLLM)
+# 16. Local Inference (omlx)
 
-**vLLM** is the platform's **sole** local-inference backend. It runs **host-side**
-(host processes, **NOT** Docker containers): there is no local-inference container in
-the reconcile. LiteLLM routes local model traffic to it across the host boundary.
+**omlx** (https://github.com/jundot/omlx) is the platform's **sole** local-inference
+backend. It runs **host-side** (a host process, **NOT** a Docker container): there is
+no local-inference container in the reconcile. LiteLLM routes local model traffic to
+it across the host boundary. omlx ships prebuilt wheels for **macOS + Apple Silicon
+only** — unlike the per-model vLLM design it replaced (which also served Linux/CUDA),
+there is no Linux build — so local inference is a macOS-only feature of an otherwise
+host-agnostic platform (§3, §6.2 still apply to sandboxing + the service tier).
 
 ## Serving model
 
-vLLM runs **per-model host-side processes** — ONE
-`vllm serve` per served model (each an OpenAI-compatible endpoint on its own host
-loopback port, base 8101 allocated upward), **not** a single endpoint and **not**
-containers; the Manager lazy-starts them with a max-concurrent cap + LRU eviction.
-The platform probes each at `http://127.0.0.1:<port>/v1/models`, and the LiteLLM/nginx
-containers reach it at `http://host.docker.internal:<port>/v1` — both launched with
-`--add-host=host.docker.internal:host-gateway` (harmless on Docker Desktop, required
-on Linux). On macOS it serves
-MLX weights (`mlx-community/*`) via the vLLM-Metal plugin; on Linux it serves Hugging
-Face safetensors on CUDA/NVIDIA.
-In `Reconcile`, vLLM is ensured **non-fatally** — an unreachable vLLM is a hint, not a
-setup failure. Installing it is **wired**: the one-shot **`ai models install-vllm`**
-(`vllm.Install`) resolves and pip-installs the vLLM-Metal wheel on macOS or plain
-`pip install vllm` on Linux into the platform-managed venv
-(`~/.ai-platform/venv`), and `ai setup` best-effort auto-installs vLLM (and the
-Hugging Face CLI) the same way when either is absent. `RealRunner.Start`/`Stop`
-(`internal/vllm/runner.go`) spawn/stop the real `vllm serve` process — the legacy
-`vllm.ErrNotWired` stub is no longer returned. What remains is the live
-network install/wheel-resolution and a real per-model serve + gateway round-trip
-on provisioned hardware — a **hardware-bring-up** verification item
-(`docs/HARDWARE-BRINGUP.md` §2.9). Each recorded model's `--gpu-memory-utilization`/
-`--max-model-len` caps (`config.ModelRuntimeChoice`, `~/.ai-platform/config/
-model-runtimes.yaml`) can be changed without re-downloading via `ai models
-configure` (CLI §8.3.4), and a model can be excluded from `Reconcile`'s auto-start
-pass via `ai models disable`/`enable` (CLI §8.3.5) — e.g. so two local models'
-`--gpu-memory-utilization` values do not fight for the same device memory when
-`ensureVLLMServers` starts every non-disabled recorded model together. A fresh
-`vllm serve` launch is given a generous 15-minute health-check window
-(`vllm.DefaultStartTimeout`) but fails fast if the launched process itself dies
-first (a non-blocking `WNOHANG` reap distinguishes a genuinely crashed child from
-one still loading, since a crashed direct child is a zombie that a plain signal-0
-liveness check misreports as still running).
+omlx runs **ONE shared host-side process** for every locally-served model —
+`omlx serve --model-dir <dir> --port 8100` (port fixed at `services.OmlxPort`, no
+per-model port allocation) — a single OpenAI-compatible endpoint on the host loopback
+that scans its own model directory (`~/.ai-platform/volumes/models/omlx`) and serves
+whatever it finds there. This replaces the old vLLM design's one-process-per-model
+approach: there is no per-model port, no max-concurrent cap, no LRU eviction, and no
+per-model resource-cap (`--gpu-memory-utilization`/`--max-model-len`) recording on the
+platform side anymore — model tuning is now entirely omlx's own concern. The platform
+probes it at `http://127.0.0.1:8100/v1/models`, and the LiteLLM/nginx containers reach
+it at `http://host.docker.internal:8100/v1` (launched with
+`--add-host=host.docker.internal:host-gateway`, harmless on Docker Desktop, required
+on Linux).
 
-## Model download (Hugging Face CLI)
+In `Reconcile`, omlx is ensured **non-fatally** — an unreachable omlx is a hint, not a
+setup failure. Installing it is **wired**: `omlx.Install` resolves the **latest**
+`github.com/jundot/omlx` GitHub release, picks the **newest-Python-version** prebuilt
+`.whl` asset among the release (one universal2 wheel per Python version — no
+core+plugin pairing dance, unlike the old vLLM-Metal install), pins the platform venv
+to that exact Python version (`pyenv.EnsureVersion`, recreating a mismatched venv), and
+pip-installs it; `ai setup` best-effort auto-installs omlx into the platform-managed
+venv (`~/.ai-platform/venv`) the same way when absent, and a manual
+`ai services start omlx` retries the same install. `RealRunner.Start`/`Stop`
+(`internal/omlx/runner.go`) spawn/stop the real, detached `omlx serve` process (its own
+process group, log redirected to a sibling log file); `Stop` is an unqualified
+`pkill -f "omlx serve"` since there is exactly one such process. A **cross-process
+flock** (`internal/omlx/lock.go`, on a lock file sibling to the model store) serializes
+`EnsureServed` across separate `ai` invocations — `ai` is daemonless, so without it two
+racing invocations could each see the port free (the server's own FastAPI/MLX startup
+takes real time before it actually binds the socket) and both spawn `omlx serve`,
+crashing the second with "address already in use" (the same daemonless race the old
+vLLM per-model design also had to guard against). What remains is the live
+network install/wheel-resolution and a real serve + gateway round-trip on provisioned
+hardware — a **hardware-bring-up** verification item (`docs/HARDWARE-BRINGUP.md` §2.9).
 
-Local model weights are downloaded with the **Hugging Face CLI** (`hf`, `internal/hf`),
-resolved from the platform venv (`hf.BinaryPath`) — `hf.Detect` checks it, `hf.Install`
-pip-installs `huggingface_hub[cli]` into `~/.ai-platform/venv`. `hf.CuratedModels(goos)`
-supplies the curated available list (mlx-community/* repos on darwin, plain Hugging
-Face safetensors repos on Linux — no live search). `hf.Client` wraps
-`hf download <repo>` (into the vLLM store with `HF_HOME` set), `hf cache ls`, and
-`hf cache rm`. Weights persist in a **host directory**,
-`~/.ai-platform/volumes/models/vllm` (a subdir under the models system volume).
+## Model management (omlx's own admin panel)
+
+Downloading, adding, removing, and tuning models is **not a platform concern**: it
+lives **entirely inside omlx's own admin panel**, reached via **`ai services console
+omlx`** (opens `http://127.0.0.1:8100/admin`). There is no `ai models
+pull`/`rm`/`configure`/`enable`/`disable`/`list`/`popular`/`install-vllm` equivalent —
+that whole CLI surface, the per-model `~/.ai-platform/config/model-runtimes.yaml`
+runtime-choice store, and the curated Hugging-Face-repo picker were all retired along
+with the per-model vLLM design. `ai models` now has three, read-only,
+gateway-inspection subcommands: `status` (LiteLLM health/providers/routing plus omlx
+connectivity), `test [model]` (probe a served model through the gateway), and
+`refresh` (re-sync LiteLLM's `omlx/*` registrations against omlx's live model list on
+demand — e.g. right after adding/removing a model through the admin panel, without a
+full `ai services restart omlx`).
 
 ## Registration
 
-vLLM models register in LiteLLM's DB-backed store (§14): public handle `vllm/<alias>`,
-routed to `openai/<alias>` with `api_base` = the per-model vLLM endpoint (no
-credential). A cloud-key catalog resync (`litellm.SyncModels`) shields `vllm/*`
-handles from its delete pass (`localModelPrefixes` = `["vllm/"]`); local models are
-owned only by `ai models pull`/`rm`.
+omlx models register automatically in LiteLLM's DB-backed store (§14): the platform
+reconciles LiteLLM's `omlx/*` registrations against omlx's own live `GET /v1/models`
+response (`litellm.SyncOmlxModels`/`DesiredOmlxModels`, reusing the same
+reconcile/apply-plan machinery as the cloud-key sync) — this sync runs automatically at
+`ai setup` and at `ai services start|restart omlx`, and on demand via
+`ai models refresh`; there is no other user-facing sync command. The public handle is
+`omlx/<id>` (`litellm.OmlxModelName`) where `<id>` is **exactly** what omlx's own
+`/v1/models` reports — no alias derivation, unlike the old vLLM design's
+Hugging-Face-repo-id-derived alias — routed to `openai/<id>` (`OmlxRoutedModel`) with
+`api_base` pointing at the **single shared** omlx endpoint and the non-empty
+placeholder credential `"EMPTY"` (LiteLLM's `openai/` provider requires a non-empty key
+to construct its client even though omlx itself checks none). **Every omlx model
+shares the same `api_base`** — a structural simplification versus the old per-model
+vLLM `api_base`. A cloud-key catalog resync (`litellm.SyncModels`) shields `omlx/*`
+handles from its delete pass (`localModelPrefixes` = `["omlx/"]`); local models are
+owned only by omlx's own admin panel plus the automatic sync above.
 
-`ai services` / `ai doctor` show vLLM with Mode **"host"** (state from its own host
-probe: running/stopped, no container); it is start/stop/restart-controllable as a host
-process (`vllm serve` / `StopByPort`).
+`ai services` / `ai doctor` show omlx with Mode **"host"** (state from an HTTP health
+probe against `GET /v1/models`, no container to `inspect`/`stats`) and
+`Optional: true` (a down omlx is a warning, not a hard failure). It is
+start/stop/restart-controllable as a host process. There is no per-model list in
+`ai services status`/the TUI Services detail pane anymore — just one running/stopped
+summary line — and its Logs sub-tab reads omlx's own captured log file directly (one
+process, so no per-model concatenation is needed).
 
-All access occurs through LiteLLM; LiteLLM routes local model calls to vLLM via
+All access occurs through LiteLLM; LiteLLM routes local model calls to omlx via
 `host.docker.internal` (no credential needed for local) and applies
 whichever guardrails are enabled (§15) on these requests as on any other. Live
 end-to-end routing to the host backend is a hardware-bring-up verification item.
@@ -1678,7 +1708,7 @@ Agent in workspace microVM  (holds only the LiteLLM virtual key)
  ↓  AI_PLATFORM_HOST → nginx (:18787, /v1) → LiteLLM (:4000, calls Headroom :8787/v1/compress)
 LiteLLM  (authenticates the virtual key; attaches the real provider key)
  ↓
-Provider (cloud) / vLLM (local, no key)
+Provider (cloud) / omlx (local, no key)
 ```
 
 Because the real key lives only in the gateway, a compromise of the workspace
@@ -2184,7 +2214,7 @@ to — the configured remote server's gateway.
         (sole host entry,             (routing +   │   (real key from
          /v1 → LiteLLM directly)       enabled     │    LiteLLM's store)
                                        guardrails;  ▼
-                                       keys-in-   vLLM (local)
+                                       keys-in-   omlx (local)
                                        LiteLLM)
                                           │ pre_call headroom guardrail
                                           ▼
@@ -2196,11 +2226,11 @@ to — the configured remote server's gateway.
   entry), which routes `/v1` **directly to LiteLLM** (routing + enabled guardrails,
   §15). LiteLLM compresses the input via its `pre_call` `headroom` guardrail (calling
   the shared Headroom container at `aip-headroom:8787/v1/compress`, internal-only),
-  then reaches **both** the local vLLM backend **and** cloud
+  then reaches **both** the local omlx backend **and** cloud
   providers, attaching the real provider key from **its own store** on cloud calls
   (keys-in-LiteLLM, §17). These hops are host-side; the workspace holds only the
   scoped LiteLLM virtual key.
-* **vLLM** — the local model backend (§16); never reached directly by
+* **omlx** — the local model backend (§16); never reached directly by
   the workspace. **LiteLLM** routes local model calls to it (no credential needed)
   and applies whichever guardrails are enabled (§15) as on any other request.
 * **All other workspace egress** (git push, MCP servers, arbitrary web) is
@@ -2488,7 +2518,7 @@ Monitoring is required for:
   the gateway, §10)
 * LiteLLM
 * Presidio
-* vLLM
+* omlx
 * DNS audit resolver (`aip-dns`, §29.7)
 * Docker
 * Podman
@@ -2496,7 +2526,7 @@ Monitoring is required for:
 * Headroom
 * Valkey (+ RedisInsight)
 
-(`ai doctor` reports every service-tier service — dns, vllm, presidio, valkey,
+(`ai doctor` reports every service-tier service — dns, omlx, presidio, valkey,
 redisinsight, litellm, headroom, proxy — §5.)
 
 ---

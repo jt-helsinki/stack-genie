@@ -143,13 +143,16 @@ Deliver a working minimal platform.
 * models are **DB-backed** (`general_settings.store_model_in_db: true`): the
   rendered `config.yaml` carries **no `model_list`, no named aliases, no
   per-provider wildcards, and no default model**. Served models are managed via
-  `ai keys add <provider>` (registers that provider's models.dev catalog models)
-  and `ai models pull` (registers a local model). Local inference is **host-native
-  vLLM** (the sole local-inference backend; no inference container runs on `aip-net`).
-  `ai models pull <repo>` downloads the weights with the Hugging Face CLI
-  (`hf download`), starts a per-model `vllm serve`, and registers `vllm/<alias>`
-  (alias from `--alias`, else the model id's base name). The chosen model's serving
-  entry is recorded machine-wide in `~/.ai-platform/config/model-runtimes.yaml`.
+  `ai keys add <provider>` (registers that provider's models.dev catalog models).
+  Local inference is **host-native omlx** (macOS + Apple Silicon only — the sole
+  local-inference backend; no inference container runs on `aip-net`): ONE shared
+  `omlx serve --model-dir <dir> --port 8100` process serves every model omlx finds.
+  Model download/add/remove/tune happens entirely in omlx's OWN admin panel
+  (`http://127.0.0.1:8100/admin`, reached via `ai services console omlx`) — there
+  is no `ai models pull` equivalent and no per-model resource-cap tracking on this
+  platform's side. omlx's live `GET /v1/models` list is synced into LiteLLM
+  automatically (public name `omlx/<id>`, routed `openai/<id>`) at `ai setup` and
+  `ai services start|restart omlx`, and on demand via `ai models refresh`.
   The served set itself stays DB-backed:
 
 ```yaml id="m1l0"
@@ -177,7 +180,7 @@ ai delete            # `ai destroy` is an alias of this
 ai start|stop|restart|exec
 ai services status
 ai keys add|list|remove
-ai models status|test
+ai models status|test|refresh
 ai state show|repair
 ai doctor
 ai logs
@@ -383,8 +386,9 @@ These are implemented progressively across slices.
 * unified routing; **no default model** — served models are DB-backed
   (`store_model_in_db: true`), catalog-driven, and registered on demand
 * provider abstraction via **DB-backed served models** synced from the models.dev
-  catalog when a provider key is added (`ai keys add`) and from the host-native vLLM
-  backend when a model is pulled (`ai models pull <repo>` → `vllm/<alias>`); the
+  catalog when a provider key is added (`ai keys add`), and from the host-native
+  omlx backend (macOS + Apple Silicon only) whenever its live model list changes
+  (synced automatically as `omlx/<id>`, or on demand via `ai models refresh`); the
   rendered config has no `model_list`, no wildcards, and no named aliases
 * **user-selectable guardrails** rendered into the generated LiteLLM config.
   `ai setup` presents a guardrail multi-select (+ `--guardrails` flag,
@@ -452,7 +456,8 @@ These are implemented progressively across slices.
   and no `cloud_models.yaml`. When the gateway is unreachable the picker degrades to
   **empty** and leaves the existing served-model lists untouched. The workspace
   **default** model is separate: it follows **seed-then-remember** — the `ai create`
-  model (`agent.graphify_model` → `vllm/<model>`) is seeded as every CLI's default on
+  model (`agent.graphify_model` → `omlx/<model>`, a plain model name already served
+  by omlx — no download step) is seeded as every CLI's default on
   the FIRST start only (`.ai-platform/.agent-default-seeded` marker), independent of the
   picker; later starts pass an empty default so each CLI's persisted last-used selection
   wins (agent state dirs symlinked to the `/persist` overlay so it survives restarts).
@@ -486,11 +491,12 @@ The container runtime (Docker/Podman) is used only for the service tier
 (the `aip-dns` CoreDNS egress-audit resolver, the Presidio secret-masking pair,
 LiteLLM + its Postgres, the Headroom input-compression guardrail service, the
 `aip-valkey` cache (+ its `aip-redisinsight` GUI), and the `aip-proxy` nginx
-gateway), never to run a workspace. The **inference tier is host-native vLLM** —
-per-model `vllm serve` host processes (there is **no `aip-*` inference container**);
-`ai setup` best-effort installs vLLM + the Hugging Face CLI (`hf`) into the platform
-venv and reconciles the vLLM host servers (the LiteLLM container reaches each at
-`host.docker.internal:<port>`). The host tier has no optional services (Open WebUI is now a
+gateway), never to run a workspace. The **inference tier is host-native omlx**
+(macOS + Apple Silicon only) — ONE shared `omlx serve` host process serving every
+locally-served model (there is **no `aip-*` inference container**); `ai setup`
+best-effort installs omlx into the platform venv and reconciles the omlx host
+server (the LiteLLM container reaches it at `host.docker.internal:8100`). The
+host tier has no optional services (Open WebUI is now a
 per-workspace **in-VM** app and Odysseus was removed). All service-tier containers
 share the private `aip-net` network, and **only the `aip-proxy` nginx gateway is
 host-published** (the host port `18787`); every other service is internal-only on
@@ -520,8 +526,8 @@ host-published** (the host port `18787`); every other service is internal-only o
   `http://<host>:<port>/v1` agent base URL (bare host or `host:port`, default
   port `18787`; empty → `host.microsandbox.internal:18787` for standalone/local)
 * cross-platform resolution
-* the host-native vLLM inference backend is reached only via LiteLLM,
-  never directly by the workspace
+* the host-native omlx inference backend (macOS + Apple Silicon only) is reached
+  only via LiteLLM, never directly by the workspace
 * egress is a per-project **Microsandbox NetworkPolicy** built on msb's deny
   fallthrough plus explicit allow rules. The **default mode is `public`**
   (allow-outbound to the open internet; private ranges still blocked by the deny

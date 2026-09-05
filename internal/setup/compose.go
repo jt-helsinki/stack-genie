@@ -18,7 +18,7 @@ import (
 // docker-compose.yaml up -d`, then `logs -f <svc>` / `ps` / `restart <svc>` — for easier
 // debugging. It is generated from the SAME consts/helpers the reconcile uses (container
 // names, `containerImage`, `platformNetwork`, the volume/config paths), so it stays in
-// sync. Local inference is deliberately ABSENT — it is HOST-NATIVE vLLM now (the reconcile
+// sync. Local inference is deliberately ABSENT — it is HOST-NATIVE omlx now (the reconcile
 // runs no local-inference container and no local-inference nginx route; LiteLLM reaches
 // the single shared `omlx serve` endpoint via host.docker.internal), so a containerized
 // local backend here would NOT match the running topology. Secrets stay OFF disk: UI_PASSWORD / LITELLM_MASTER_KEY /
@@ -109,7 +109,7 @@ func ServicesComposeYAML(bindHost string) ([]byte, error) {
 				Volumes: []string{corefile + ":/Corefile"},
 				Command: []string{"-conf", "/Corefile"},
 			},
-			// Local inference is HOST-NATIVE vLLM — no local-inference container is rendered
+			// Local inference is HOST-NATIVE omlx — no local-inference container is rendered
 			// here (see the file header). LiteLLM reaches the single shared `omlx serve`
 			// endpoint via host.docker.internal, not a compose service.
 			presidioAnalyzerContainer: {

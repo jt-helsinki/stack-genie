@@ -40,8 +40,9 @@ func TestGroup02Services(test *testing.T) {
 				continue
 			}
 			// An OPTIONAL service is allowed to be idle/stopped: e.g. the host-native
-			// vLLM backend reports "stopped" when no models are set to the vllm runtime
-			// (it is only needed for those). Core services (Optional=false) must be healthy.
+			// omlx backend reports "stopped" until it's installed/started (it is
+			// auto-installed best-effort at `ai setup`, never a hard requirement).
+			// Core services (Optional=false) must be healthy.
 			if service.Optional {
 				continue
 			}

@@ -4,6 +4,7 @@ package integration
 
 import (
 	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -12,17 +13,29 @@ import (
 
 // Group 5: Gateway inference.
 //
-// `ai models test` against the tiny local model drives a real chat completion
-// through nginx → Headroom → LiteLLM → vLLM and asserts a non-error response.
-// This is the only group that performs actual (local) inference; cloud inference
-// is opt-in and gated by AIP_INTEGRATION_<PROVIDER>_KEY (registration-only by
-// default).
+// `ai models test` against a locally-served omlx model drives a real chat
+// completion through nginx → Headroom → LiteLLM → omlx and asserts a non-error
+// response. This is the only group that performs actual (local) inference; cloud
+// inference is opt-in and gated by AIP_INTEGRATION_<PROVIDER>_KEY
+// (registration-only by default).
 func TestGroup05GatewayInference(test *testing.T) {
 	requireStack(test)
 
-	test.Run("local smollm chat completion through the gateway", func(test *testing.T) {
-		if !waitForServedModel(test, localModel, 30*time.Second) {
-			test.Skipf("%s not served by the gateway", localModel)
+	test.Run("local omlx chat completion through the gateway", func(test *testing.T) {
+		// There is no self-provisioned fixed model any more — model management lives
+		// entirely in omlx's own admin panel — so pick WHATEVER omlx is currently
+		// serving (best-effort `ai models refresh` first, so a model added since the
+		// gateway last synced shows up), skipping if it has none loaded.
+		run(test, "", 60*time.Second, "models", "refresh")
+		var localModel string
+		for _, name := range servedModelNames(test) {
+			if strings.HasPrefix(name, "omlx/") {
+				localModel = name
+				break
+			}
+		}
+		if localModel == "" {
+			test.Skip("omlx currently serves no models on this host — add one via its own admin panel (`ai services console omlx`)")
 		}
 		// A small local model is still slow on a cold start through the full proxy
 		// chain — give it a generous timeout. A non-error result is the signal.

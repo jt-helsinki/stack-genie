@@ -1311,173 +1311,43 @@ gateway errors are exit `4`.
 
 ---
 
-## 8.3 Local Model Store (vLLM, Hugging Face CLI)
+## 8.3 Local Model Sync (`ai models refresh`)
 
-`ai models status` / `ai models test` describe and probe **LiteLLM routing**. The
-commands below instead manage the **local vLLM model store** directly via the
-**Hugging Face CLI (`hf`)** — **vLLM is the sole local-inference runtime**, and
-`hf` downloads its weights into `~/.ai-platform/volumes/models/vllm`. (The rendered
-LiteLLM config carries **no** `model_list` and **no** per-provider wildcards — the
-served model set is **DB-backed**, §14.) Installing a model is a two-part act:
-`ai models pull` runs `hf download <repo>` into the vLLM store **and** starts +
-registers the per-model vLLM server as a DB-backed model in the gateway, so it
-becomes routable immediately; `ai models rm` stops the vLLM server, `hf cache rm`s
-the weights **and** unregisters it. A model registers under the public handle
-`vllm/<alias>` (routed internally to `openai/<alias>`, via
-`litellm.RegisterVLLMModel`) and is removed with `UnregisterVLLMModel`. Merely
-registering a model in the gateway is **not** the same as having it installed
-locally — `pull` is what downloads the weights. The pure store commands
-(`list` / `popular` / `show`) do not touch the gateway registration.
+`ai models status` / `ai models test` describe and probe **LiteLLM routing**.
+There is **no local-model store CLI surface anymore** — the entire former
+`ai models pull|configure|enable|disable|rm|list|popular|install-vllm|show`
+surface (the vLLM + Hugging Face CLI design) has been **removed**. **omlx** is
+now the sole local-inference runtime: it is ONE shared host process
+(`omlx serve --model-dir <dir> --port 8100`) that downloads, serves, evicts, and
+tunes every locally-served model **entirely through its own admin panel**, opened
+with:
 
-If vLLM is unreachable / not installed, these exit **3** (missing dependency) with a
-hint to run `ai models install-vllm` (or `ai setup`); bad input exits **2**; other
-failures exit **4**.
-
-### 8.3.1 List
-
-```bash id="c23a"
-ai models list
+```bash
+ai services console omlx     # opens http://127.0.0.1:8100/admin
 ```
 
-Lists the **downloaded** local repos in the vLLM store (`hf cache ls`). There
-is **no hardcoded catalog** — installable suggestions live behind `ai models
-popular` (§8.3.2). The human output is a NAME / SIZE / PARAMS table; `--json`
-returns the installed list (each entry carries `installed: true`).
+There is no `ai models pull`/`rm`/`configure`/`enable`/`disable`/`list`/`popular`/
+`show`/`install-vllm` equivalent — model download/add/remove/tune is omlx's job,
+not this CLI's. A model omlx is serving registers in the gateway under the public
+handle `omlx/<id>` (`id` exactly as omlx's own `GET /v1/models` reports it — no
+alias derivation), routed internally to `openai/<id>`, with every omlx model
+sharing the **same** `api_base` (omlx runs one shared endpoint, unlike the old
+per-model vLLM design where each model had its own port).
 
-### 8.3.2 Popular (installable, curated list)
-
-```bash id="c23p"
-ai models popular
+```bash id="c23r"
+ai models refresh
 ```
 
-Lists **installable** models from the **curated available-models list**
-(`hf.CuratedModels(goos)`): on **darwin** it is `mlx-community/*` MLX repos, on
-**Linux** plain Hugging Face safetensors repos. This is a **static, hand-curated
-set** — there is **no live HF search, no `--refresh` flag, no scraped-library
-cache, and no cache/live "source" reporting** in either the human or `--json`
-output. For each entry it reports:
-
-* **name** — a short display name for the model
-* **repo** — the HF repo id (e.g. `mlx-community/Qwen2.5-Coder-7B-Instruct-4bit`)
-* **description** — a one-line note about the model (may be empty)
-* **size** — the curated size label; a `—` marks an entry that omits it
-
-The human output is a REPO / SIZE / DESCRIPTION table; `--json` returns the
-structured list (`{name, repo, description, size}` per entry — no `source` or
-`note` field). `ai models pull` always also accepts a free-text repo id, so the
-curated list never blocks pulling anything.
-
-### 8.3.3 Pull (install / update)
-
-```bash id="c23b"
-ai models pull [repo...] [--alias <alias>] [--gpu-memory-utilization <0-1>] [--max-model-len <tokens>]
-```
-
-`pull` is **variadic** — it installs **one or more** models in a single run. Each
-`repo` is downloaded via `hf download <repo>` into the vLLM store, then the
-per-model vLLM server is started and registered in the gateway. **vLLM is the only
-local runtime — there is no `--runtime` flag.**
-
-* `--alias <alias>` — the gateway alias / handle for a single model (applying it to
-  more than one repo in the same run is a **2** input error).
-* `--gpu-memory-utilization <0-1>` — the fraction of device memory `vllm serve`
-  pre-allocates for the KV-cache; blank leaves vLLM's own default (~0.9, sized off
-  TOTAL device memory rather than the model's weight size) in effect.
-* `--max-model-len <tokens>` — caps the context window the KV-cache is sized for;
-  blank leaves the model's own (often very large) default context length in effect.
-  Both caps apply to every repo pulled in the run (unlike `--alias`, which is
-  single-model only); on a terminal they are prompted for in one form, pre-seeded
-  from any flag value given.
-
-If pulling this model would push the **sum** of `--gpu-memory-utilization` across
-every recorded vLLM model over a safe budget (0.9 — each `vllm serve` process
-reserves its fraction of TOTAL device memory INDEPENDENTLY at its own startup, an
-unpinned other model assumed at vLLM's own ~0.92 default), the command **warns**
-(never blocks) so a later model is not silently left unable to allocate memory when
-`ai setup`/`ai services start vllm` starts every recorded model together. The
-curated model's CONFIRMED `--tool-call-parser`/`--reasoning-parser` values (when
-known) are applied automatically — these are never user-facing flags, since a wrong
-value can silently corrupt tool calls or leak `<think>` tags instead of erroring.
-
-**Gateway registration handles.** A vLLM-served model registers under the public
-handle `vllm/<alias>` (routed internally to `openai/<alias>`) as a DB-backed model
-in LiteLLM (§14). The recorded model is stored in the machine-wide
-**`~/.ai-platform/config/model-runtimes.yaml`** store — hand-editable (subject to
-the same strict unknown-field-rejecting parse every conffile-backed store uses),
-though a hand edit needs `ai models configure` (§8.3.4) or `ai services restart
-vllm` to actually apply, since a running server cannot be reconfigured in place —
-so `ai models rm` (§8.3.6) can later de-register it.
-
-* With one or more `repo` arguments, or under `--json` / no TTY: each given repo id
-  is pulled in turn. Under `--json` at least one repo is **required** (none →
-  exit 2). Pull stays **free-form** — any HF repo id can be pulled, curated or not.
-  Names are de-duplicated; the run **continues past a failure** and reports a
-  per-model summary, exiting non-zero (mapped from the last failure) if any failed.
-* On a terminal with **no** arguments: the user gets a **checkbox multi-select** of
-  the curated list's repo ids (§8.3.2), plus a final **"✎ enter custom model(s)…"**
-  checkbox that, when ticked, prompts for free-text repo ids (space- or
-  comma-separated). The picker never blocks pulling.
-
-The pull **streams** `hf download` progress while a spinner shows ongoing work.
-There is **no separate update verb** — re-pulling an installed model updates it.
-
-The `--json` envelope carries `data.pulled`, one `{model, ok, error}` outcome per
-requested model.
-
-### 8.3.4 Configure (resource caps, no re-download)
-
-```bash id="c23e"
-ai models configure [name] [--gpu-memory-utilization <0-1>] [--max-model-len <tokens>]
-```
-
-Changes an already-pulled model's `--gpu-memory-utilization`/`--max-model-len`
-caps and restarts its vLLM server with the new values — the weights are already on
-disk, so nothing is re-downloaded. On a terminal with no `[name]` you pick from the
-recorded models; the prompt is pre-seeded with the model's **currently recorded**
-caps (not vLLM's defaults), so leaving a field unchanged keeps what is already set.
-An ADOPTED already-running server ignores new flags (they were fixed at its own
-launch), so `configure` always stops it first. `[name]` not a recorded vLLM model
-→ exit **2**. Applies the same over-budget `--gpu-memory-utilization` warning as
-`pull` (§8.3.3).
-
-### 8.3.5 Disable / Enable (auto-start toggle, no re-download)
-
-```bash id="c23f"
-ai models disable [name]
-ai models enable [name]
-```
-
-`disable` stops the model's vLLM server now and marks it excluded from the
-auto-start pass `ai setup`/`ai services start vllm` otherwise runs unconditionally
-over every recorded model — useful when two local models' `--gpu-memory-utilization`
-values would otherwise fight for the same device memory. It touches neither the
-downloaded weights nor the gateway registration. `enable` clears the disabled flag
-and starts the model's server again using its recorded resource caps — no
-`hf download` step. On a terminal with no `[name]` you pick from the recorded
-models; `[name]` not a recorded vLLM model → exit **2**.
-
-### 8.3.6 Remove
-
-```bash id="c23c"
-ai models rm [repo]
-```
-
-Removes a model from the local store: it stops the model's vLLM server
-(`StopByPort`), `hf cache rm`s the weights, unregisters it from the gateway
-(`UnregisterVLLMModel(alias)`), and deletes that model's `model-runtimes.yaml`
-entry (§8.3.3). On a terminal with no argument the user picks from the
-**installed** models; with an argument (or under `--json`) that repo is removed. On
-a terminal the user is asked to **confirm** before deleting. A model not in the
-store → a clear not-found error (exit 2).
-
-### 8.3.7 Show
-
-```bash id="c23d"
-ai models show <name>
-```
-
-Shows metadata for a local model: the recorded serving runtime choice plus its
-curated metadata (size, context, input, family).
+`ai models refresh` re-syncs LiteLLM's `omlx/*` registrations against omlx's own
+live `GET /v1/models` **on demand** — for after adding/removing/renaming a model
+through omlx's admin panel, without needing a full `ai services restart omlx`.
+This is the **same** sync that already runs automatically at `ai setup` and at
+`ai services start|restart omlx` (§10.2); this command just triggers it
+standalone, so there is no separate step needed after a full setup/restart. It
+takes no arguments. The `--json` envelope carries `data.added` / `data.deleted`
+(the model names newly registered / newly removed by this sync); when nothing
+changed the human output reports "already in sync". A gateway/omlx failure exits
+`4`.
 
 ---
 
@@ -1545,16 +1415,20 @@ ai doctor [<name>]
 * **Platform dependencies** — Microsandbox runtime + host virtualization (Apple
   Silicon / KVM), Docker/Podman
 * **The local-model inference tier** — reported as one **HOST-NATIVE** service
-  (Mode `host`, no container): **vLLM** — the sole local-inference runtime — with
-  state from its host probe at `127.0.0.1:<port>/v1 (per-model, base 8101)`; always
-  **available** as a serving option, though it may read `stopped` when not enabled.
+  (Mode `host`, no container): **omlx** — the sole local-inference runtime, ONE
+  shared server process for every locally-served model — with state from its own
+  health probe at `127.0.0.1:8100/v1`; always **available** as a serving option,
+  though it may read `stopped` when the server is down. Model management is not a
+  `doctor` concern — it lives entirely in omlx's own admin panel
+  (`ai services console omlx`).
 * **The remaining service-tier services** (containers) — Presidio (analyzer +
   anonymizer back LiteLLM's opt-in `secret-masking` guardrail; reconciled only when
   it is enabled; architecture §15), LiteLLM (health + that the configured provider
   keys are present in the gateway — a missing key is warned, not fatal; architecture
   §17), Headroom (the input-compression service LiteLLM calls as a `pre_call`
   guardrail), the nginx proxy, and DNS (there are no optional host services).
-  *(hardware bring-up: installing / starting vLLM is not yet wired live.)*
+  *(hardware bring-up: the real `omlx serve` fork and the live LiteLLM sync
+  round-trip are exercised only on a provisioned host.)*
 
 **Additionally**, it reports the **workspace-runtime** section (per-workspace
 runtime / virtualization check, §12.1) **only** when run inside a workspace
@@ -1578,10 +1452,10 @@ fail) conveys health, rather than the process exit code.
 
 The `ai` CLI is the single control plane for all host services — the platform
 containers `dns`, `presidio`, `valkey`, `redisinsight`, `litellm`, `headroom`, and
-`proxy`, plus the **HOST-NATIVE** local-model inference tier: `vllm` (vLLM, the sole
+`proxy`, plus the **HOST-NATIVE** local-model inference tier: `omlx` (the sole
 local-inference runtime) (there are no optional host services).
 The user never invokes `docker compose`, `launchctl`, or `systemctl` directly. The
-container tier runs as containers on `aip-net`; **vLLM is host-native, NOT a
+container tier runs as containers on `aip-net`; **omlx is host-native, NOT a
 container** — reported with Mode `host` (see
 architecture §5, "Host Services Control Plane"). (The Microsandbox workspace
 runtime is not a long-running service — it is driven by the top-level workspace
@@ -1599,9 +1473,9 @@ ai services console [<service>]    # list/open a service's admin console (--prin
 ai services compose                # write a DEBUG-ONLY ~/.ai-platform/docker-compose.yaml mirroring the service-tier topology (NOT the launcher)
 ```
 
-`<service>`: `vllm` | `presidio` | `litellm` | `headroom` | `proxy` | `dns` |
+`<service>`: `omlx` | `presidio` | `litellm` | `headroom` | `proxy` | `dns` |
 `valkey` | `redisinsight` | `all` (no arg = all). All eight are **core** (always on);
-`vllm` is the **host-native** local-model service rather than a container. The
+`omlx` is the **host-native** local-model service rather than a container. The
 optional host-service set is currently **empty**, so `enable`/`disable` have
 nothing to act on (retained for forward compatibility). (`presidio` reports
 "disabled" unless the `secret-masking` guardrail is selected at `ai setup`.)
@@ -1623,11 +1497,12 @@ Behavior:
   after a few seconds), so `ai services status` returns instead of blocking on a
   dead daemon.
 * the **local-model inference tier** is reported as **host-native** (Mode `host`,
-  no container): the **`vllm` (vLLM)** line — the sole local-inference runtime —
-  has state from its host probe at
-  `127.0.0.1:<port>/v1 (per-model, base 8101)`. vLLM is **always available** as a serving option and
-  may read `stopped` when not enabled. *(hardware bring-up: installing / starting
-  vLLM and the live end-to-end vLLM serving path are not yet wired.)*
+  no container): the **`omlx`** line — the sole local-inference runtime, ONE shared
+  server process for every locally-served model — has state from its own health
+  probe at `127.0.0.1:8100/v1`. omlx is **always available** as a serving option and
+  may read `stopped` when its server is down. *(hardware bring-up: the real
+  `omlx serve` fork and the live end-to-end omlx serving path are not yet wired
+  live.)*
 * lifecycle verbs (`start`/`stop`/`restart`) act on the **platform-owned container
   set** via the runtime abstraction (§6). With no service, or `all`, they act on
   every **enabled** container in **dependency order** (a disabled optional service
@@ -1657,11 +1532,15 @@ Behavior:
 * an unknown service exits `2`. `ai services console [<service>]` lists/opens a
   service's admin dashboard: with no argument it lists the services that have a
   console; with a name it **opens** that console in the browser, or — with
-  `--print` (and always under `--json`) — prints the URL instead. Host consoles are
-  **nginx subdomain UIs** served on the single gateway port `:18787`:
+  `--print` (and always under `--json`) — prints the URL instead. Most host consoles
+  are **nginx subdomain UIs** served on the single gateway port `:18787`:
   `litellm.<domain>:18787/ui/login` (the LiteLLM admin UI) and `valkey.<domain>:18787`
   (RedisInsight, the Valkey cache GUI) — where `<domain>` is the platform base domain
-  (`ai domain`, default `aip.local`). These are **not** direct container ports. (Open
+  (`ai domain`, default `aip.local`). `ai services console omlx` is the ONE
+  exception: it opens the omlx server's **own** admin panel **directly on its
+  host-native loopback port** — `http://127.0.0.1:8100/admin` — not an nginx
+  subdomain (omlx has no UI vhost); this is the **only** place models are
+  downloaded/added/removed/tuned — there is no CLI equivalent. (Open
   WebUI is now a per-workspace in-VM app; Odysseus was removed.)
 
 ## 10.3 LiteLLM gateway (`ai litellm`)
@@ -1892,7 +1771,7 @@ Options:
 
 ```bash id="c32"
 --workspace <project>
---service <microsandbox|vllm|presidio|valkey|redisinsight|litellm|headroom|proxy|dns>
+--service <microsandbox|omlx|presidio|valkey|redisinsight|litellm|headroom|proxy|dns>
 --tail
 --follow
 ```
@@ -1977,7 +1856,7 @@ across restarts (the cwd is still kept for the create wizard's default location)
 The switcher reaches any project in the index, and a new project may be created from
 it (see below).
 
-**Top-level tabs** (Services · Projects (Workspaces) · Local Models · Cloud Models ·
+**Top-level tabs** (Services · Projects (Workspaces) · Cloud Models ·
 API Keys · Settings; cycled by `tab`/`⇧tab`/`←→` or jumped to directly with the
 number keys `1`-`9`. There is **no `:` command palette** — `q`/`ctrl+c` quits and
 `?` toggles the key-binding help):
@@ -2021,7 +1900,8 @@ number keys `1`-`9`. There is **no `:` command palette** — `q`/`ctrl+c` quits 
   workspace is rejected — and a non-existent path is created with intermediate
   folders), then **text inputs** (name / cpus / memory / ports / idle timeout),
   **`listWindow` single/multi-selects** (OS / agent CLIs / default agent CLI /
-  stacks / apps), and a **Graphify model picker** mirroring the Local Models pane.
+  stacks / apps), and a free-text **Graphify model** field naming an
+  already-served omlx model (mirroring the CLI wizard's step 10, §3.1).
   On confirm it runs `create.Execute` off the event loop and refreshes the hub.
   Opening a project drops
   INTO it, revealing a **sub-tab bar** for that project (the project name + the
@@ -2102,20 +1982,13 @@ number keys `1`-`9`. There is **no `:` command palette** — `q`/`ctrl+c` quits 
   selection needs no modifier. When mouse capture is ON the wheel scrolls the
   focused list/table/viewport (one row per notch); keyboard scroll (PgUp/PgDn/
   arrows) works either way.
-* **Local Models** — the local vLLM store ⨯ the **curated installable list**
-  (`hf.CuratedModels`), in one **NAME · DESCRIPTION** list split into an
-  **Installed** section (downloaded repos plus installed customs) and an
-  **Installable** section (the rest of the curated list). It is rendered as a
-  **custom viewport-windowed list (NOT a bubbles table)** so each section header can
-  be bold + accent-coloured with blank-line padding. `enter` opens a per-model
-  detail; `space` ticks 1+ NOT-installed repos, `enter`/`p` pulls the ticked repos,
-  `d` removes the installed repo under the cursor, `t` tests it; `esc` backs out to
-  the list. List keys: `enter` detail · `t` test (first installed) · `d` remove
-  (first installed) · `r` refresh.
 * **Cloud Models** — the **models.dev catalog** ⨯ the gateway's live registered set,
   in a MODEL · PROVIDER · STATUS · CONTEXT table (registered-first). It shows ONLY
-  cloud providers — local `vllm/<alias>` models are EXCLUDED (they live on the Local
-  Models tab). `enter` opens the catalog metadata in a describe pane; `t` tests a
+  cloud providers — local `omlx/<id>` models are EXCLUDED. There is no local-model
+  tab: local-model management is gone from this CLI/TUI entirely — omlx (the sole
+  local-inference runtime) manages its own models through its own admin panel
+  (`ai services console omlx`, §10.2), and `ai models refresh` (§8.3) re-syncs the
+  gateway on demand. `enter` opens the catalog metadata in a describe pane; `t` tests a
   **registered** model
   (round-trips it through the gateway; the catalog-driven system has no default
   model); `r` re-fetches the catalog + resyncs the gateway. Provider keys are added
@@ -2231,8 +2104,8 @@ Behavior:
   argv, logs, or any `--json` envelope
 * `add` stores the key via the LiteLLM credential API (encrypted at rest) then
   registers that provider's catalog models (alongside every currently-keyed
-  provider + the installed local vLLM models); `remove` deletes the key then re-syncs
-  (its models drop out)
+  provider + the models omlx is currently serving); `remove` deletes the key then
+  re-syncs (its models drop out)
 * the gateway/master key must be reachable (`ai setup`); when it is not, the
   command exits `3`. The workspace agent receives only a scoped LiteLLM **virtual
   key**, never a provider secret; that key is aliased to the project and `ai start`

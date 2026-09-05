@@ -63,7 +63,7 @@ type serviceSpec struct{ Name, Mode string }
 // Presidio (PII guardrail backend),
 // Headroom (the input-compression service LiteLLM calls as a pre_call guardrail),
 // LiteLLM (gateway/router), the nginx gateway proxy, and the aip-dns egress-audit
-// resolver. Local inference is host-native vLLM (a host process, NOT a container here) —
+// resolver. Local inference is host-native omlx (a host process, NOT a container here) —
 // LiteLLM reaches it via host.docker.internal (arch §14, §16). Headroom is a standalone service on :8787 that LiteLLM POSTs to at
 // /v1/compress (NOT a proxy in front of LiteLLM); the per-project Caveman skill
 // handles output compression inside the workspace (arch §8–10). Headroom precedes
@@ -296,7 +296,7 @@ const (
 //   - server_name litellm.<domain>; → aip-litellm:4000 at ROOT (the LiteLLM admin
 //     UI is served at /ui; / redirects there).
 //
-// Local inference is host-native vLLM (reached by LiteLLM directly, not nginx), so there
+// Local inference is host-native omlx (reached by LiteLLM directly, not nginx), so there
 // is NO local-inference route and no local-inference container. Headroom is NO LONGER an
 // nginx upstream either — it is a LiteLLM guardrail LiteLLM calls by name. Every location
 // forwards to LiteLLM, never to aip-headroom.
@@ -360,12 +360,12 @@ func proxyNginxConf(domain string) string {
 // reach the HOST machine. Docker Desktop (macOS/Windows) provides it natively; on
 // Linux the container must be run with `--add-host=host.docker.internal:host-gateway`
 // (hostGatewayAddArg), which resolves it to the docker0 bridge gateway. It is how the
-// service tier reaches the host-native vLLM per-model backends.
+// service tier reaches the single shared host-native omlx server.
 const hostGatewayName = "host.docker.internal"
 
 // hostGatewayAddArg is the `--add-host` flag that maps hostGatewayName to the host
 // gateway inside a container on Linux. It is ALWAYS added to the LiteLLM + nginx run
-// args so both can reach the host-native vLLM per-model server ports; it is
+// args so both can reach the single shared host-native omlx server port; it is
 // harmless on Docker Desktop (which already provides the name).
 const hostGatewayAddArg = "--add-host=" + hostGatewayName + ":host-gateway"
 
@@ -446,14 +446,14 @@ func proxyUIVhost(serverName, target, rootRedirect string) string {
 // keep a stable signature; the role-driven bindHost governs the nginx publish
 // (ensureProxy), not LiteLLM.
 // The container ALWAYS gets `--add-host=host.docker.internal:host-gateway` so it can
-// reach the host-side inference backend (host-native vLLM);
+// reach the host-side inference backend (host-native omlx);
 // it is harmless on Docker Desktop, which provides the name natively.
 func litellmRunArgs(configPath, bindHost, image string) []string {
 	_ = bindHost // internal-only: LiteLLM no longer publishes to the host
 	args := []string{
 		"run", "-d", "--name", litellmContainer,
 		"--network", platformNetwork,
-		// Host-side backend (host-native vLLM): reached via the host gateway.
+		// Host-side backend (host-native omlx): reached via the host gateway.
 		hostGatewayAddArg,
 	}
 	return append(args,
@@ -826,7 +826,7 @@ func ensureProxy(prober runtime.Prober, containerRuntime, bindHost, domain strin
 		"run", "-d", "--name", proxyContainer,
 		"--network", platformNetwork,
 		// Retain the host.docker.internal mapping on Linux so nginx can reach host-side
-		// services if a route needs it; local inference is host-native vLLM (reached by
+		// services if a route needs it; local inference is host-native omlx (reached by
 		// LiteLLM, not nginx) so there is no local-inference route to the host any more.
 		hostGatewayAddArg,
 	}
@@ -884,7 +884,7 @@ const logCaptureTailLines = 200
 // analyzer + anonymizer pair. Pure, so the mapping is unit-testable.
 func serviceContainers(service string) []string {
 	switch service {
-	// vLLM is host-native — no container to snapshot logs from.
+	// omlx is host-native — no container to snapshot logs from.
 	case "presidio":
 		return []string{presidioAnalyzerContainer, presidioAnonymizerContainer}
 	case "litellm":
@@ -1630,7 +1630,7 @@ func (services realServices) serviceContainersUp(name string) bool {
 }
 
 // serviceHealthy is the live readiness probe for one host service (the same
-// checks `ai doctor` uses): LiteLLM /health, vLLM per-model endpoints, and the
+// checks `ai doctor` uses): LiteLLM /health, the omlx endpoint, and the
 // Presidio/Headroom containers running.
 func (services realServices) serviceHealthy(name string) bool {
 	switch name {

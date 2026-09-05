@@ -324,9 +324,9 @@ Rules:
 * a config dir is created **per service-tier service** at reconcile (e.g.
   `litellm/`, `proxy/`, `dns/`, `presidio-analyzer/`, …); the ones
   that have a rendered file today are LiteLLM (`config.yaml`), the nginx gateway
-  (`proxy/nginx.conf`), and the CoreDNS resolver (`dns/`). vLLM is host-native
-  (per-model `vllm serve` processes, no `aip-*` inference container) and has no
-  rendered service-config dir here
+  (`proxy/nginx.conf`), and the CoreDNS resolver (`dns/`). omlx is host-native
+  (one shared `omlx serve` process, macOS + Apple Silicon only, no `aip-*`
+  inference container) and has no rendered service-config dir here
 * every `<service>/` config is **rendered** by the CLI from the platform
   config; not hand-edited (architecture §5, Host Services Control Plane)
 * contains **no secrets** — only placeholders; real provider credentials live in
@@ -353,9 +353,9 @@ runtime. It is pinned to an exact version **in code**
 (`internal/workspace/msb.go`, matched to the go.mod Microsandbox Go SDK pin —
 not `config/versions.yaml`, see §12.6) and downloaded (sha256-verified) into
 `~/.ai-platform/bin/` (`paths.BinDir`) on first use, so it is not a
-user-installed `PATH` prerequisite. (vLLM and the Hugging Face CLI run from the
-platform Python venv `~/.ai-platform/venv` instead, not from here — see §1.1
-and §12.6a.) The top-level `~/.ai-platform/tools/` directory named in §1.1 is
+user-installed `PATH` prerequisite. (omlx runs from the platform Python venv
+`~/.ai-platform/venv` instead, not from here — see §1.1 and §12.6a.) The
+top-level `~/.ai-platform/tools/` directory named in §1.1 is
 created by `ai setup` but, as of this writing, is not written to by any code
 path (reserved).
 
@@ -628,7 +628,7 @@ valkey.log
 redisinsight.log
 ```
 
-(There is no `vllm.log` here — vLLM is host-native, not a container; its
+(There is no `omlx.log` here — omlx is host-native, not a container; its
 health is checked with a live HTTP probe, not a captured log file.)
 Continuous following (`ai logs --service <name> --follow`) streams the live
 container log directly (`<runtime> logs -f`) rather than reading this
@@ -765,7 +765,8 @@ os: alma                   # alma | debian-trixie | debian-bookworm | ubuntu
 agent:
   tools: [opencode]        # installed agent CLIs (any subset of: opencode, omp, claude-code, codex, gemini, copilot, hermes); opencode by default
   default_tool: opencode   # default agent CLI; must be one of agent.tools
-  graphify_model: Qwen/Qwen2.5-Coder-7B-Instruct  # optional: local HF model Graphify uses (chosen at `ai create`, routed through the gateway as vllm/<model>); omitted = none
+  graphify_model: qwen2.5-coder  # optional: local model NAME already served by omlx that Graphify uses
+                           # (chosen at `ai create`, no download step; routed through the gateway as omlx/<model>); omitted = none
 context:
   strategy: balanced       # Headroom input compression: conservative | balanced | aggressive
                            # (mapped to Headroom per-request knobs keep_turns/output_buffer_tokens)
@@ -882,33 +883,24 @@ agent_dashboards:          # agent-CLI web dashboards (currently only hermes —
   `versions.Default()` pins when the file is absent or an entry is incomplete);
   `--upgrade` re-writes it to this binary's defaults and re-reconciles
 
-## 12.6a `config/model-runtimes.yaml` (per-model vLLM serving record)
+## 12.6a `config/model-runtimes.yaml` — Removed
 
-```yaml id="sc9a"
-schema_version: 1
-choices:
-  vllm/qwen2.5-coder:
-    alias: vllm/qwen2.5-coder
-    model: Qwen/Qwen2.5-Coder-7B-Instruct
-    runtime: vllm
-    endpoint: http://localhost:8101
-    status: served
-```
-
-* a machine-wide **serving record** for each host-side vLLM model — its HF repo,
-  the host loopback endpoint of its `vllm serve` process, keyed by the model's
-  gateway **alias**
-* it is a **thin serving record, NOT a parallel model registry** — LiteLLM's DB
-  remains the source of truth for **what** is served; this file only records the
-  per-alias vLLM serving details
-* follows the same global-store pattern as `versions.yaml` — `Path` under
-  `paths.ConfigDir`, atomic writes via `internal/conffile`, unknown-field-rejecting
-  reads — backed by `internal/config/modelruntime.go`
-* the **vLLM** backend is a host-side, per-model `vllm serve` service (no `aip-*`
-  container), backed by `internal/vllm` (the server Manager — lazy start, max-concurrent
-  cap + LRU eviction, weight store `vllm.StoreDir` at `volumes/models/vllm/`) and wired
-  into setup by `internal/setup/vllm_host.go` (probe + bring-up seam)
-* lives under `~/.ai-platform/`, so `ai uninstall --purge` removes it wholesale
+The old per-model vLLM serving record (`internal/config/modelruntime.go`) is gone,
+along with `internal/vllm` and `internal/hf` entirely. omlx (macOS + Apple Silicon
+only, the sole local-inference backend) needs no parallel model registry: it is
+ONE shared `omlx serve --model-dir <dir> --port 8100` process (fixed port,
+`services.OmlxPort`) that serves every model it finds under its model directory
+(`~/.ai-platform/volumes/models/omlx/`, `omlx.StoreDir`) — model download, add,
+remove, and tuning are handled entirely by omlx's OWN admin panel
+(`http://127.0.0.1:8100/admin`, `ai services console omlx`), so there is no
+per-alias/per-repo bookkeeping on this platform's side and no `ai models pull`
+equivalent. LiteLLM's DB stays the sole source of truth for **what** is served:
+its `omlx/*` registrations (public name `omlx/<id>`, routed `openai/<id>`) are
+kept in sync with omlx's live `GET /v1/models` by `internal/litellm`'s
+`SyncOmlxModels`/`DesiredOmlxModels`, driven by `internal/setup/omlx_host.go`
+(the host-native probe/reconcile seam that replaced `internal/setup/vllm_host.go`)
+— run automatically at `ai setup` and `ai services start|restart omlx`, and on
+demand via `ai models refresh`.
 
 ## 12.7 `config/projects.yaml` (global projects index)
 

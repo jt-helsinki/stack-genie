@@ -325,8 +325,8 @@ func resolveKeyValue(cmd *cobra.Command, emitter *output.Emitter, value string, 
 // syncKeyedModels reconciles the gateway's model set from the LIVE keyed-provider
 // set (read back from ListCredentials). The keyed set is expressed as CATALOG provider
 // ids (DesiredModels matches on those), mapped back from each credential's LiteLLM
-// prefix. Local vLLM models are managed separately by `ai models pull|rm` and shielded
-// from this resync's delete pass.
+// prefix. Local omlx models are synced separately (SyncOmlxModels, driven by omlx's
+// own live model list, not the catalog) and shielded from this resync's delete pass.
 func syncKeyedModels(gateway keysGateway, cat *catalog.Catalog) (litellm.SyncResult, error) {
 	creds, err := gateway.ListCredentials()
 	if err != nil {

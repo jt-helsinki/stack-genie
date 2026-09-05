@@ -55,7 +55,7 @@ func TestGroup01SetupHealth(test *testing.T) {
 			}
 		}
 		// Sanity: the core service-tier checks must be present.
-		want := map[string]bool{"litellm": false, "vllm": false, "presidio": false, "proxy": false, "dns": false, "headroom": false}
+		want := map[string]bool{"litellm": false, "omlx": false, "presidio": false, "proxy": false, "dns": false, "headroom": false}
 		for _, check := range report.Checks {
 			if _, ok := want[check.Name]; ok {
 				want[check.Name] = true

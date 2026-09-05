@@ -64,7 +64,7 @@ func Run(cwd string) error {
 	}
 
 	deps := setup.RealDeps(goruntime.GOOS, goruntime.GOARCH, nowRFC3339)
-	// Host-native service progress (vLLM server launch lines) defaults to stderr for
+	// Host-native service progress (the omlx server launch line) defaults to stderr for
 	// plain CLI use. Inside this bubbletea alt-screen a direct stderr write corrupts
 	// the rendered frame (stray lines bleed through the bordered panes) until a
 	// resize forces a full repaint — silence it; the list's flash line + Services
@@ -538,9 +538,10 @@ func loadCloudCatalog() (*catalog.Catalog, catalog.Source, error) {
 // the models.dev catalog (and persists it) then resyncs the gateway's model set to
 // the keyed providers' catalog models. The keyed set is read back from the live
 // credential store so the desired set always reflects what is actually keyed. Local
-// vLLM models are managed separately by `ai models pull|rm` and shielded from this
-// resync's delete pass. Best-effort — the caller surfaces any error as a flash and
-// reloads the displayed data regardless.
+// omlx models are synced separately (SyncOmlxModels, driven by omlx's own live
+// model list, not the catalog) and shielded from this resync's delete pass.
+// Best-effort — the caller surfaces any error as a flash and reloads the displayed
+// data regardless.
 //
 // hardware bring-up: the live models.dev fetch + the /model/* resync round-trips run
 // only against the network / a running aip-litellm.

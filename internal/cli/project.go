@@ -452,7 +452,7 @@ func newCreateCmd(emitter *output.Emitter, exit *int, use string) *cobra.Command
 	cmd.Flags().String("disk", "", "workspace disk (writable rootfs) in GB, a plain number (default: "+config.Default().Workspace.DiskLimit+"; sizes the in-VM container image store so AI apps fit). Change later with `ai resize`.")
 	cmd.Flags().StringSlice("ports", nil, "ports to open into the workspace: PORT or HOST:GUEST (e.g. 8080,9000:3000)")
 	cmd.Flags().String("location", "", "workspace directory (default: current directory; created if missing)")
-	cmd.Flags().String("graphify-model", "", "vLLM model Graphify uses (a Hugging Face repo id, e.g. mlx-community/Qwen2.5-7B-Instruct-4bit); chosen in the wizard from the curated list and pulled if absent")
+	cmd.Flags().String("graphify-model", "", "name of a model omlx is ALREADY serving (manage models from its own admin panel — `ai services console omlx`); routed through the gateway as omlx/<name>, no download")
 	cmd.Flags().String("shell", "bash", "default interactive shell for workspace sessions: "+strings.Join(supportedShells, "|"))
 	cmd.Flags().String("auth-mode", "", "per-agent auth mode for claude-code/codex/gemini as cli=mode (api-key|oauth), comma-separated (e.g. claude-code=oauth,codex=api-key); default api-key")
 	cmd.Flags().StringSlice("tools", nil, "AI tools to install (default: "+strings.Join(create.DefaultAITools(), ",")+"): "+strings.Join(create.SupportedAITools(), ",")+" — pass --tools=\"\" for none")

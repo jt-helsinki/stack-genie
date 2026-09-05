@@ -267,11 +267,13 @@ refer to the CLI spec and architecture spec respectively.
   LLM Guard, and the false-positive-prone `detect_prompt_injection` callback were
   removed);
   `ai keys add/remove`; `ai models status`, `ai models test` against the mock
-  provider. `ai models pull <repo>` downloads the weights with the Hugging Face CLI
-  (`hf download`), starts a per-model `vllm serve`, and registers `vllm/<alias>`
-  (with `--alias` for the gateway name); `ai models pull` with no vLLM install
-  exits 3 (never a silent unserved registration) and the serving details are
-  recorded in `config/model-runtimes.yaml`. Tests: AT §7.1, §7.2, §7.3.
+  provider. Local-model management is **not** a platform command: omlx (the
+  sole local-inference backend, macOS/Apple-Silicon only) manages its models
+  entirely through its own admin panel (`ai services console omlx`); the
+  platform's job is limited to installing/running the one shared omlx server
+  and keeping LiteLLM's `omlx/<id>` registrations synced with its live
+  `GET /v1/models` — automatically at `ai setup`/`ai services start|restart
+  omlx`, or on demand via `ai models refresh`. Tests: AT §7.1, §7.2, §7.3.
 * **M5 — debian-trixie image + Microsandbox.** Seed `.ai-platform/Dockerfile` from the
   `debian-trixie` template, build the workspace OCI image from it; create/start
   the microVM (virtio-net + gvproxy, the per-project network policy **applied as
@@ -369,7 +371,7 @@ S2, S4–S6 (S3 and S7 retired) — host-side and, on a provisioned Apple Silico
 host, verified end-to-end against the live external tools. Service log capture
 (`ai logs`/`ai services status`) and the nginx readiness probe are themselves
 live and done; the narrow seams that still depend on further bring-up are the
-real vLLM + Hugging Face CLI install and per-model `vllm serve`/weight-download
+real omlx install and shared `omlx serve` bring-up + LiteLLM live-model-sync
 round-trip, the CLI-backend (non-default) microVM log follow, live confirmation
 that the tool-firewall blocks destructive tool-calls end-to-end (including
 codex's array-argument command form) against a running agent, and live
@@ -392,11 +394,15 @@ These are grep-able (`hardware bring-up`) and tracked in
 * **Integration suite** (`test/integration/`, `//go:build integration`, `make
   test-integration`) — a live black-box suite that drives the real service stack
   (setup/services/keys/workspace/apps/egress/inference/per-model-runtime/uninstall).
-  Group 7 (`vllm_runtime_test.go`, `TestGroup07InferenceRuntime`) asserts
-  `services`/`doctor` surface the host-native vLLM backend, `ai models pull <repo>`
-  with vLLM unavailable → exit 3 with no unserved registration, and the positive
-  `vllm/<alias>` routing self-skips when vLLM is not up. Runs only where a
-  full stack is available (Apple Silicon), separate from the hosted unit lane.
+  Group 7 (`TestGroup07InferenceRuntime`) asserts `services`/`doctor` surface
+  the host-native `omlx` backend and the positive `omlx/<id>` routing
+  round-trip self-skips when the omlx server is not up. **Gap:** the group-7
+  source file on disk is still `test/integration/vllm_runtime_test.go` and was
+  not updated for this refactor — it still names the service `vllm` and still
+  exercises the retired `ai models pull` path, so this group does not
+  currently assert the omlx behavior described here; it needs a rewrite (see
+  AT §7.3). Runs only where a full stack is available (Apple Silicon),
+  separate from the hosted unit lane.
 * **CI** (`ci.yml`), split by hardware needs:
   * **hosted runners** (every push): build the binary, `go vet`/`golangci-lint`,
     and the full unit-test suite. No virtualization required.
@@ -443,8 +449,9 @@ These are grep-able (`hardware bring-up`) and tracked in
 1. **Service provisioning — RESOLVED.** `ai setup` installs and manages
    all host services itself (LiteLLM + its Postgres, the Presidio secret-masking
    pair, and Headroom the input-compression guardrail service) as the single
-   control plane, reconciles the host-native vLLM inference backend
-   (not containerized), and verifies the Microsandbox workspace runtime;
+   control plane, reconciles the host-native omlx inference backend
+   (not containerized, macOS/Apple-Silicon only), and verifies the Microsandbox
+   workspace runtime;
    the user pre-installs only the container runtime. No docker compose:
    container-tier services run via the runtime abstraction, and
    workspace microVMs via Microsandbox (no daemon). See architecture §5.
