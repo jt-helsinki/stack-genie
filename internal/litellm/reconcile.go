@@ -166,15 +166,18 @@ func (manager *KeyManager) SyncModels(cat *catalog.Catalog, keyedProviders []str
 // CALLER converts that to plain ids so this package stays backend-agnostic, never
 // importing internal/omlx directly). Every id is desired as "omlx/<id>", routed to
 // "openai/<id>" against the single shared apiBase (the one omlx server — unlike
-// the old per-model vLLM design, every id shares the SAME endpoint). Result is
-// sorted by model_name.
-func DesiredOmlxModels(liveModelIDs []string, apiBase string) []DesiredModel {
+// the old per-model vLLM design, every id shares the SAME endpoint), authenticated
+// with apiKey — the REAL key when the caller found one configured on omlx's side
+// (see internal/omlx.APIKey), else omlxModelParamsInfo falls back to the
+// non-empty placeholder LiteLLM's client requires regardless. Result is sorted by
+// model_name.
+func DesiredOmlxModels(liveModelIDs []string, apiBase, apiKey string) []DesiredModel {
 	desired := make([]DesiredModel, 0, len(liveModelIDs))
 	for _, id := range liveModelIDs {
 		if id == "" {
 			continue
 		}
-		params, info := omlxModelParamsInfo(id, apiBase)
+		params, info := omlxModelParamsInfo(id, apiBase, apiKey)
 		desired = append(desired, DesiredModel{Name: OmlxModelName(id), Params: params, Info: info})
 	}
 	sort.Slice(desired, func(left, right int) bool { return desired[left].Name < desired[right].Name })
@@ -196,8 +199,8 @@ func DesiredOmlxModels(liveModelIDs []string, apiBase string) []DesiredModel {
 //
 // hardware bring-up: the live /model/new + /model/delete round-trips run only
 // against a running aip-litellm.
-func (manager *KeyManager) SyncOmlxModels(liveModelIDs []string, apiBase string) (SyncResult, error) {
-	desired := DesiredOmlxModels(liveModelIDs, apiBase)
+func (manager *KeyManager) SyncOmlxModels(liveModelIDs []string, apiBase, apiKey string) (SyncResult, error) {
+	desired := DesiredOmlxModels(liveModelIDs, apiBase, apiKey)
 	current, err := manager.ListModels()
 	if err != nil {
 		return SyncResult{}, err

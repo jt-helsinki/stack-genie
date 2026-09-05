@@ -187,13 +187,15 @@ func OmlxRoutedModel(id string) string {
 }
 
 // omlxPlaceholderAPIKey is a non-empty placeholder credential for omlx-routed
-// models. The omlx server validates NO key by default, but LiteLLM's "openai/"
-// provider goes through the actual OpenAI Python client underneath, which
-// hard-requires a non-empty api_key at load time regardless of whether the backend
-// checks it — an empty/absent key fails every request with "AuthenticationError:
-// ... The api_key client option must be set" before the request ever reaches omlx.
-// "EMPTY" is the same placeholder convention vLLM's own docs and llama.cpp's
-// OpenAI-compatible server use for this exact situation.
+// models, used ONLY when omlx has no API key of its own configured. omlx does not
+// require a key unless the user set one (via its own admin panel / --api-key
+// flag / OMLX_API_KEY env var — see internal/omlx.APIKey), but LiteLLM's
+// "openai/" provider goes through the actual OpenAI Python client underneath,
+// which hard-requires a non-empty api_key at load time regardless of whether the
+// backend checks it — an empty/absent key fails every request with
+// "AuthenticationError: ... The api_key client option must be set" before the
+// request ever reaches omlx. "EMPTY" is the same placeholder convention vLLM's
+// own docs and llama.cpp's OpenAI-compatible server use for this exact situation.
 const omlxPlaceholderAPIKey = "EMPTY"
 
 // omlxModelParamsInfo builds the LiteLLM params + info for an omlx-served model. It
@@ -204,18 +206,25 @@ const omlxPlaceholderAPIKey = "EMPTY"
 // capability metadata, and nil is treated as tool-capable (the same default
 // already used for cloud models whose catalog entry doesn't set it) — every omlx
 // model shares ONE endpoint (apiBase, the single omlx.BaseURL()), unlike the old
-// per-model vLLM api_base parameter.
-func omlxModelParamsInfo(id, apiBase string) (ModelParams, ModelInfo) {
+// per-model vLLM api_base parameter. apiKey is the REAL key when the user has
+// configured one on omlx's side (see internal/omlx.APIKey) — required so LiteLLM's
+// requests to a key-protected omlx server authenticate, not just this platform's
+// own health/list probes; an empty apiKey falls back to omlxPlaceholderAPIKey
+// (an unprotected omlx server ignores it).
+func omlxModelParamsInfo(id, apiBase, apiKey string) (ModelParams, ModelInfo) {
 	dropParams := true
-	return ModelParams{Model: OmlxRoutedModel(id), APIBase: apiBase, APIKey: omlxPlaceholderAPIKey, DropParams: &dropParams},
+	if apiKey == "" {
+		apiKey = omlxPlaceholderAPIKey
+	}
+	return ModelParams{Model: OmlxRoutedModel(id), APIBase: apiBase, APIKey: apiKey, DropParams: &dropParams},
 		ModelInfo{}
 }
 
 // RegisterOmlxModel registers an omlx-served model as a DB-backed model in the
 // gateway. The public model_name is "omlx/<id>" (OmlxModelName, the agent-facing
 // handle) while the routed litellm_params.model is "openai/<id>" (OmlxRoutedModel)
-// with api_base pointing at the single shared omlx endpoint, with the non-empty
-// omlxPlaceholderAPIKey (a real provider credential is never referenced).
+// with api_base pointing at the single shared omlx endpoint, with apiKey (the real
+// key when omlx has one configured, else the non-empty omlxPlaceholderAPIKey).
 //
 // Idempotent-ish and HEALING: if a model with this model_name already exists
 // (ListModels) it is re-registered (delete + add) only when the routed target is
@@ -225,7 +234,7 @@ func omlxModelParamsInfo(id, apiBase string) (ModelParams, ModelInfo) {
 //
 // hardware bring-up: the LIVE POST /model/new round-trip is exercised only against a
 // running aip-litellm — verify on a provisioned host.
-func (manager *KeyManager) RegisterOmlxModel(id, apiBase string) error {
+func (manager *KeyManager) RegisterOmlxModel(id, apiBase, apiKey string) error {
 	modelName := OmlxModelName(id)
 	existing, err := manager.ListModels()
 	if err != nil {
@@ -242,7 +251,7 @@ func (manager *KeyManager) RegisterOmlxModel(id, apiBase string) error {
 			break // re-add below with corrected routing
 		}
 	}
-	params, info := omlxModelParamsInfo(id, apiBase)
+	params, info := omlxModelParamsInfo(id, apiBase, apiKey)
 	return manager.AddModel(modelName, params, info)
 }
 

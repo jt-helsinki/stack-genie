@@ -254,7 +254,7 @@ func TestRegisterOmlxModelRequestShape(test *testing.T) {
 
 	const apiBase = "http://host.docker.internal:8100/v1"
 	manager := NewKeyManager(okProber())
-	if err := manager.RegisterOmlxModel("my-qwen", apiBase); err != nil {
+	if err := manager.RegisterOmlxModel("my-qwen", apiBase, ""); err != nil {
 		test.Fatalf("RegisterOmlxModel: %v", err)
 	}
 	if !sawList {
@@ -309,7 +309,7 @@ func TestRegisterOmlxModelSkipsWhenPresent(test *testing.T) {
 	test.Setenv("LITELLM_BASE_URL", server.URL)
 
 	manager := NewKeyManager(okProber())
-	if err := manager.RegisterOmlxModel("my-qwen", "http://host.docker.internal:8100/v1"); err != nil {
+	if err := manager.RegisterOmlxModel("my-qwen", "http://host.docker.internal:8100/v1", ""); err != nil {
 		test.Fatalf("RegisterOmlxModel: %v", err)
 	}
 	if sawAdd || sawDelete {
@@ -351,7 +351,7 @@ func TestRegisterOmlxModelHealsStaleRouting(test *testing.T) {
 	test.Setenv("LITELLM_BASE_URL", server.URL)
 
 	manager := NewKeyManager(okProber())
-	if err := manager.RegisterOmlxModel("my-qwen", "http://host.docker.internal:8100/v1"); err != nil {
+	if err := manager.RegisterOmlxModel("my-qwen", "http://host.docker.internal:8100/v1", ""); err != nil {
 		test.Fatalf("RegisterOmlxModel: %v", err)
 	}
 	if len(deleted) != 1 || deleted[0] != "v" {

@@ -82,7 +82,7 @@ func SyncOmlxModels() (litellm.SyncResult, error) {
 	for _, model := range liveModels {
 		ids = append(ids, model.ID)
 	}
-	return litellm.NewKeyManager(runtime.RealProber()).SyncOmlxModels(ids, omlx.BaseURL())
+	return litellm.NewKeyManager(runtime.RealProber()).SyncOmlxModels(ids, omlx.BaseURL(), omlx.APIKey())
 }
 
 // startOmlxServerHost brings up the host-native omlx server for `ai services start
@@ -135,7 +135,14 @@ const omlxProbeTimeout = 3 * time.Second
 // a short-timeout HTTP GET.
 var omlxHTTPGet = func(url string) (*http.Response, error) {
 	client := &http.Client{Timeout: omlxProbeTimeout}
-	return client.Get(url)
+	request, err := http.NewRequest(http.MethodGet, url, nil)
+	if err != nil {
+		return nil, err
+	}
+	if key := omlx.APIKey(); key != "" {
+		request.Header.Set("Authorization", "Bearer "+key)
+	}
+	return client.Do(request)
 }
 
 // omlxHealthy reports whether the single omlx server answers GET /v1/models. It

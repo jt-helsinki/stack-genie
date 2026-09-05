@@ -4,6 +4,8 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -99,12 +101,16 @@ func TestInstallResolverError(test *testing.T) {
 // fakeTransport returns a canned response regardless of the request URL, so
 // ListModels can be tested without binding a real port.
 type fakeTransport struct {
-	status int
-	body   string
-	err    error
+	status  int
+	body    string
+	err     error
+	capture *http.Request // set to receive the request that was sent, for header assertions
 }
 
-func (transport fakeTransport) RoundTrip(*http.Request) (*http.Response, error) {
+func (transport fakeTransport) RoundTrip(request *http.Request) (*http.Response, error) {
+	if transport.capture != nil {
+		*transport.capture = *request
+	}
 	if transport.err != nil {
 		return nil, transport.err
 	}
@@ -130,6 +136,83 @@ func TestListModels(test *testing.T) {
 	}
 	if len(models) != 2 || models[0].ID != "Qwen3-Coder-Next-8bit" || models[1].ID != "bge-m3" {
 		test.Errorf("ListModels = %+v, want [Qwen3-Coder-Next-8bit bge-m3] (blank id dropped)", models)
+	}
+}
+
+// swapSettingsFile points omlxSettingsFile at a fixture path for the duration of
+// the test.
+func swapSettingsFile(test *testing.T, path string) {
+	test.Helper()
+	original := omlxSettingsFile
+	omlxSettingsFile = func() string { return path }
+	test.Cleanup(func() { omlxSettingsFile = original })
+}
+
+// APIKey prefers OMLX_API_KEY over the settings file, matching omlx's own
+// GlobalSettings.load precedence.
+func TestAPIKeyPrefersEnvOverSettingsFile(test *testing.T) {
+	test.Setenv("OMLX_API_KEY", "env-key")
+	path := filepath.Join(test.TempDir(), "settings.json")
+	if err := os.WriteFile(path, []byte(`{"auth":{"api_key":"file-key"}}`), 0o600); err != nil {
+		test.Fatal(err)
+	}
+	swapSettingsFile(test, path)
+	if key := APIKey(); key != "env-key" {
+		test.Errorf("APIKey() = %q, want the env var to win", key)
+	}
+}
+
+// APIKey falls back to the persisted auth.api_key in omlx's own settings.json.
+func TestAPIKeyReadsSettingsFile(test *testing.T) {
+	test.Setenv("OMLX_API_KEY", "")
+	path := filepath.Join(test.TempDir(), "settings.json")
+	if err := os.WriteFile(path, []byte(`{"auth":{"api_key":"file-key","skip_api_key_verification":false}}`), 0o600); err != nil {
+		test.Fatal(err)
+	}
+	swapSettingsFile(test, path)
+	if key := APIKey(); key != "file-key" {
+		test.Errorf("APIKey() = %q, want file-key", key)
+	}
+}
+
+// APIKey returns "" (never an error) when omlx has no key configured — the
+// common, unremarkable case (auth is opt-in on omlx's side).
+func TestAPIKeyAbsentWhenUnconfigured(test *testing.T) {
+	test.Setenv("OMLX_API_KEY", "")
+	swapSettingsFile(test, filepath.Join(test.TempDir(), "does-not-exist.json"))
+	if key := APIKey(); key != "" {
+		test.Errorf("APIKey() = %q, want empty when unconfigured", key)
+	}
+}
+
+// ListModels and DefaultProbe attach a Bearer Authorization header when omlx has
+// an API key configured, so a key-protected server authenticates instead of 401ing.
+func TestListModelsAndProbeSendAuthorizationHeader(test *testing.T) {
+	test.Setenv("OMLX_API_KEY", "sekret")
+	test.Cleanup(func() { test.Setenv("OMLX_API_KEY", "") })
+
+	var captured http.Request
+	originalClient := httpClient
+	httpClient = &http.Client{Transport: fakeTransport{
+		status: http.StatusOK, body: `{"data":[]}`, capture: &captured,
+	}}
+	test.Cleanup(func() { httpClient = originalClient })
+	if _, err := ListModels(); err != nil {
+		test.Fatalf("ListModels: %v", err)
+	}
+	if got := captured.Header.Get("Authorization"); got != "Bearer sekret" {
+		test.Errorf("ListModels Authorization header = %q, want %q", got, "Bearer sekret")
+	}
+
+	originalDefault := http.DefaultTransport
+	http.DefaultTransport = fakeTransport{status: http.StatusOK, body: `{"data":[]}`, capture: &captured}
+	test.Cleanup(func() { http.DefaultTransport = originalDefault })
+	captured = http.Request{}
+	if !DefaultProbe() {
+		test.Fatal("DefaultProbe should report healthy")
+	}
+	if got := captured.Header.Get("Authorization"); got != "Bearer sekret" {
+		test.Errorf("DefaultProbe Authorization header = %q, want %q", got, "Bearer sekret")
 	}
 }
 

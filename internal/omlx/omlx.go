@@ -239,13 +239,84 @@ type LiveModel struct {
 // local-loopback call.
 var httpClient = &http.Client{Timeout: 5 * time.Second}
 
+// omlxSettingsFile is the injectable seam for APIKey's settings-file path, so
+// tests point it at a fixture instead of a real ~/.omlx/settings.json.
+var omlxSettingsFile = defaultSettingsFile
+
+// defaultSettingsFile resolves omlx's own settings.json path: OMLX_BASE_PATH (the
+// same env var omlx itself honors) if set, else ~/.omlx — matching omlx's own
+// GlobalSettings.load base-path resolution.
+func defaultSettingsFile() string {
+	base := os.Getenv("OMLX_BASE_PATH")
+	if base == "" {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return ""
+		}
+		base = filepath.Join(home, ".omlx")
+	}
+	return filepath.Join(base, "settings.json")
+}
+
+// APIKey best-effort discovers the API key omlx itself is configured to require,
+// if any. omlx has NO auth by default — a key is opt-in, set by the user through
+// omlx's own admin panel, its `--api-key` CLI flag, or the OMLX_API_KEY env var it
+// reads at load (never by this platform, which never writes to omlx's config).
+// Read order mirrors omlx's own precedence: OMLX_API_KEY first, else the
+// persisted auth.api_key field in its settings.json. Returns "" (never an error)
+// when no key is configured or the settings file is absent/unreadable/malformed —
+// auth is opt-in on omlx's side, so "no key" is the common, unremarkable case.
+func APIKey() string {
+	if key := os.Getenv("OMLX_API_KEY"); key != "" {
+		return key
+	}
+	path := omlxSettingsFile()
+	if path == "" {
+		return ""
+	}
+	content, err := os.ReadFile(path)
+	if err != nil {
+		return ""
+	}
+	var settings struct {
+		Auth struct {
+			APIKey string `json:"api_key"`
+		} `json:"auth"`
+	}
+	if err := json.Unmarshal(content, &settings); err != nil {
+		return ""
+	}
+	return settings.Auth.APIKey
+}
+
+// authorizedRequest builds a GET request against url, attaching a Bearer
+// Authorization header when omlx has an API key configured (see APIKey) — omlx
+// accepts either a Bearer token or an x-api-key header; Bearer matches how
+// LiteLLM's own "openai/" provider (and every other OpenAI-compatible client)
+// authenticates, so using it here keeps the platform's own probes/list calls
+// consistent with how the gateway itself will reach a key-protected server.
+func authorizedRequest(url string) (*http.Request, error) {
+	request, err := http.NewRequest(http.MethodGet, url, nil)
+	if err != nil {
+		return nil, err
+	}
+	if key := APIKey(); key != "" {
+		request.Header.Set("Authorization", "Bearer "+key)
+	}
+	return request, nil
+}
+
 // ListModels queries the running omlx server's live GET /v1/models and returns the
 // model ids it currently reports (whatever is loaded/discovered from StoreDir —
 // entirely managed through omlx's own admin panel). Returns an error if the server
 // is unreachable or the response is malformed; callers treat that as "nothing to
 // sync right now", never a fatal condition.
 func ListModels() ([]LiveModel, error) {
-	response, err := httpClient.Get(BaseURL() + "/models")
+	request, err := authorizedRequest(BaseURL() + "/models")
+	if err != nil {
+		return nil, fmt.Errorf("omlx: GET /v1/models: %w", err)
+	}
+	response, err := httpClient.Do(request)
 	if err != nil {
 		return nil, fmt.Errorf("omlx: GET /v1/models: %w", err)
 	}
@@ -276,10 +347,15 @@ func ListModels() ([]LiveModel, error) {
 type HealthProbe func() bool
 
 // DefaultProbe is the real HealthProbe: a short-timeout GET against the fixed
-// omlx port's /v1/models endpoint.
+// omlx port's /v1/models endpoint (authenticated when omlx has a key configured —
+// see APIKey — so a key-protected server still reports healthy rather than 401).
 var DefaultProbe HealthProbe = func() bool {
 	client := http.Client{Timeout: 2 * time.Second}
-	resp, err := client.Get(BaseURL() + "/models")
+	request, err := authorizedRequest(BaseURL() + "/models")
+	if err != nil {
+		return false
+	}
+	resp, err := client.Do(request)
 	if err != nil {
 		return false
 	}

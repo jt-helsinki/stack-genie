@@ -195,7 +195,7 @@ func TestSyncOmlxModelsDeletesAndRecreatesAll(test *testing.T) {
 
 	manager := NewKeyManager(okProber())
 	// omlx now only reports "gemma4" (unchanged) — "removed" has disappeared.
-	result, err := manager.SyncOmlxModels([]string{"gemma4"}, "http://127.0.0.1:8100/v1")
+	result, err := manager.SyncOmlxModels([]string{"gemma4"}, "http://127.0.0.1:8100/v1", "")
 	if err != nil {
 		test.Fatalf("SyncOmlxModels: %v", err)
 	}
