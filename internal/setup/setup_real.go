@@ -1591,8 +1591,14 @@ func (services realServices) statusFor(enabled []string) ([]ServiceStatus, error
 	// HTTP-probing the one server endpoint (there
 	// is no daemon holding Manager state between CLI runs). Appended after the
 	// container services. It is ALWAYS surfaced so it stays discoverable, "stopped"
-	// when idle.
-	statuses = append(statuses, services.omlxStatus())
+	// when idle. Enriched with its own admin-console URL (its own address+console —
+	// unlike the old per-model vLLM servers, there's exactly one omlx endpoint),
+	// same as every other service, so `ai services console omlx` / the TUI's
+	// service-detail "console" field / `o` key all work.
+	omlxStatus := services.omlxStatus()
+	omlxEndpoint, _ := console.EndpointForHost("omlx", displayDomain)
+	omlxStatus.Address, omlxStatus.Console = omlxEndpoint.Address, omlxEndpoint.Console
+	statuses = append(statuses, omlxStatus)
 	return statuses, nil
 }
 
