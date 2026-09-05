@@ -484,31 +484,6 @@ func TestRegisterCavemanScript(test *testing.T) {
 	}
 }
 
-// TestRegisterCavemanCopilotWithInit verifies copilot is caveman-installable: it gets an
-// `--only copilot` token AND the `--with-init` flag (copilot is a soft probe Caveman won't
-// auto-detect without it).
-func TestRegisterCavemanCopilotWithInit(test *testing.T) {
-	sandbox := &fakeSandbox{}
-	manager := newManager(&fakeBuilder{}, sandbox)
-	enabled := true
-	projectConfig := &config.Config{
-		Agent:   config.AgentConfig{Tools: []string{"opencode", "copilot"}},
-		Context: config.ContextConfig{CavemanEnabled: &enabled},
-	}
-	manager.registerCaveman("aip-app", projectConfig)
-
-	script := findCavemanScript(sandbox)
-	if script == "" {
-		test.Fatalf("no caveman install script staged in-VM: %v", sandbox.written)
-	}
-	if !strings.Contains(script, "--only copilot") {
-		test.Errorf("copilot must get an --only token: %q", script)
-	}
-	if !strings.Contains(script, "--with-init") {
-		test.Errorf("copilot (soft probe) needs --with-init: %q", script)
-	}
-}
-
 // TestStartInjectsToolMCPServers verifies that when an AI tool is enabled, its MCP server
 // is injected into the configs the platform manages WHOLE (codex config.toml, hermes
 // config.yaml, omp .omp/mcp.json) — so the start-time rewrite does not clobber it.
@@ -934,13 +909,13 @@ func TestStartRejectsInvalidMicrosandboxIdleTimeout(test *testing.T) {
 	}
 }
 
-// TestStartRoutesAllFiveAgentCLIs verifies Start wires every agent CLI through the
-// gateway with the scoped key written ONLY into the microVM, and scaffolds KEYLESS
-// host-side templates — the scoped key must never touch host disk.
-func TestStartRoutesAllFiveAgentCLIs(test *testing.T) {
+// TestStartRoutesAllFourAgentCLIs verifies Start wires every gateway-capable agent CLI
+// through the gateway with the scoped key written ONLY into the microVM, and scaffolds
+// KEYLESS host-side templates — the scoped key must never touch host disk.
+func TestStartRoutesAllFourAgentCLIs(test *testing.T) {
 	root := seedProject(test, "app")
 	if err := config.WriteProject(root, &config.Config{
-		Agent: config.AgentConfig{Tools: []string{"opencode", "claude-code", "codex", "gemini", "copilot"}},
+		Agent: config.AgentConfig{Tools: []string{"opencode", "claude-code", "codex", "gemini"}},
 	}); err != nil {
 		test.Fatal(err)
 	}
@@ -1204,61 +1179,6 @@ func TestStartAPIKeyAgentRoutesThroughGateway(test *testing.T) {
 	claude := readProjectConfig(test, root, ".claude", "settings.json")
 	if !strings.Contains(claude, "ANTHROPIC_BASE_URL") {
 		test.Errorf("api-key claude settings must carry the gateway base URL:\n%s", claude)
-	}
-}
-
-// TestStartCopilotForcedOAuth verifies a workspace with copilot (forced-oauth, gateway-
-// incapable): it gets the `headroom wrap copilot` alias, its cred dir ~/.copilot is
-// symlinked to /persist, Graphify is registered with --platform copilot, and NO gateway
-// env or on-disk gateway config is written for it (it authenticates natively to GitHub).
-func TestStartCopilotForcedOAuth(test *testing.T) {
-	root := seedProject(test, "app")
-	// No AuthModes recorded — copilot must be treated as oauth regardless.
-	if err := config.WriteProject(root, &config.Config{
-		OS:    "debian-trixie",
-		Agent: config.AgentConfig{Tools: []string{"opencode", "copilot"}, DefaultTool: "opencode"},
-	}); err != nil {
-		test.Fatal(err)
-	}
-	sandbox := &fakeSandbox{}
-	manager := Manager{Builder: &fakeBuilder{}, Sandbox: sandbox, Keys: &fakeKeyMinter{}, Now: func() string { return "t" }}
-	if _, err := manager.Start("app"); err != nil {
-		test.Fatal(err)
-	}
-
-	// (1) Headroom-wrap alias for copilot.
-	aliases := readGuestFile(test, sandbox, shellAliasesGuestPath)
-	if !strings.Contains(aliases, "alias copilot='headroom wrap copilot'") {
-		test.Errorf("copilot must be Headroom-wrap aliased:\n%s", aliases)
-	}
-
-	// (2) ~/.copilot symlinked to /persist so the native GitHub login survives restarts.
-	linkedCopilot := false
-	sawGraphifyCopilot := false
-	for _, argv := range sandbox.allExecArgv {
-		joined := strings.Join(argv, " ")
-		if strings.Contains(joined, "ln -sfn /persist/agents/copilot ~/.copilot") {
-			linkedCopilot = true
-		}
-		if strings.Contains(joined, "cd /home/workspace/project") && strings.Contains(joined, "graphify install --project --platform copilot") {
-			sawGraphifyCopilot = true
-		}
-	}
-	if !linkedCopilot {
-		test.Errorf("copilot must symlink ~/.copilot to /persist:\n%v", sandbox.allExecArgv)
-	}
-	// (3) Graphify registered with --platform copilot at start.
-	if !sawGraphifyCopilot {
-		test.Errorf("Start must register Graphify with --platform copilot:\n%v", sandbox.allExecArgv)
-	}
-
-	// (4) No gateway env or gateway config is written for copilot (it can't route through
-	// the gateway). The agent env script never mentions copilot/github.
-	envText := readGuestFile(test, sandbox, agentEnvGuestPath)
-	for _, absent := range []string{"copilot", "githubcopilot", "GH_TOKEN"} {
-		if strings.Contains(envText, absent) {
-			test.Errorf("copilot must have no gateway env (found %q):\n%s", absent, envText)
-		}
 	}
 }
 

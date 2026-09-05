@@ -217,7 +217,7 @@ func TestDeleteRemovesPlatformDirKeepsOtherFiles(test *testing.T) {
 	}
 	// The per-CLI agent config dirs + venv the platform writes into the project folder
 	// at workspace start (here only some exist — a missing one must be ignored).
-	for _, dir := range []string{".opencode", ".claude", ".omp", ".copilot", ".venv-msb"} {
+	for _, dir := range []string{".opencode", ".claude", ".omp", ".venv-msb"} {
 		if err := os.MkdirAll(filepath.Join(root, dir), 0o755); err != nil {
 			test.Fatal(err)
 		}
@@ -230,7 +230,7 @@ func TestDeleteRemovesPlatformDirKeepsOtherFiles(test *testing.T) {
 		test.Errorf(".ai-platform should be removed on a plain delete, got %v", err)
 	}
 	// Every per-CLI agent dir + venv is removed too (existing or not).
-	for _, dir := range []string{".opencode", ".claude", ".codex", ".omp", ".gemini", ".copilot", ".venv-msb"} {
+	for _, dir := range []string{".opencode", ".claude", ".codex", ".omp", ".gemini", ".venv-msb"} {
 		if _, err := os.Stat(filepath.Join(root, dir)); !os.IsNotExist(err) {
 			test.Errorf("%s should be removed on a plain delete, got %v", dir, err)
 		}
@@ -399,33 +399,6 @@ func TestScaffoldWritesAuthModesAndOAuthEgress(test *testing.T) {
 	}
 	if hasAllowedHost(projectConfig.Network.AllowHostServices, "generativelanguage.googleapis.com") {
 		test.Errorf("api-key gemini must NOT allow-list its provider domains: %+v", projectConfig.Network.AllowHostServices)
-	}
-}
-
-// TestScaffoldForcesCopilotOAuth verifies selecting copilot (forced-oauth) persists
-// auth_modes["copilot"]="oauth" automatically and allow-lists its provider egress domains,
-// with no auth-mode choice required.
-func TestScaffoldForcesCopilotOAuth(test *testing.T) {
-	withTemplates(test)
-	spec := sampleSpec()
-	spec.AgentCLIs = []string{"opencode", "copilot"}
-	// No AuthModes provided — copilot must still become oauth.
-	root, err := Scaffold(spec, "t")
-	if err != nil {
-		test.Fatal(err)
-	}
-	projectConfig, err := config.LoadProjectConfig(root)
-	if err != nil {
-		test.Fatal(err)
-	}
-	if got := projectConfig.Agent.AuthModes["copilot"]; got != "oauth" {
-		test.Errorf("auth_modes[copilot] = %q, want oauth (forced)", got)
-	}
-	if got := projectConfig.Agent.AuthMode("copilot"); got != "oauth" {
-		test.Errorf("copilot AuthMode = %q, want oauth", got)
-	}
-	if !hasAllowedHost(projectConfig.Network.AllowHostServices, "api.githubcopilot.com") {
-		test.Errorf("copilot must allow-list api.githubcopilot.com: %+v", projectConfig.Network.AllowHostServices)
 	}
 }
 

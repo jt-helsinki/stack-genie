@@ -315,7 +315,7 @@ func Scaffold(spec Spec, createdAt string) (string, error) {
 	}
 	// Per-agent auth modes: record ONLY the CLIs that are both selected AND OAuth-eligible.
 	// The OAuth-CAPABLE CLIs (claude-code/codex/gemini) take the user's chosen mode
-	// (default api-key); the FORCED-oauth CLIs (copilot) are always "oauth" — they have no
+	// (default api-key); a FORCED-oauth CLI (currently none) is always "oauth" — it has no
 	// api-key mode. Everything else is always gateway/api-key and is omitted. For each
 	// agent in oauth, allow-list its provider egress domains so its native login can reach
 	// the provider even under `deny` (explicit under `public`).
@@ -481,7 +481,7 @@ func workspaceHandle(name, root string) (id, status, created, lastStarted string
 // agentArtifactDirs are the per-CLI agent config dirs and the Python venv the platform
 // writes into the PROJECT folder (outside .ai-platform) at workspace start. A plain
 // `ai delete` removes them too, best-effort — a missing one is ignored.
-var agentArtifactDirs = []string{".opencode", ".claude", ".codex", ".omp", ".gemini", ".copilot", ".hermes", ".venv-msb"}
+var agentArtifactDirs = []string{".opencode", ".claude", ".codex", ".omp", ".gemini", ".hermes", ".venv-msb"}
 
 // Delete removes a project from the index and removes its persistent overlay. A plain
 // delete removes the whole .ai-platform tree (config + run state) and — when

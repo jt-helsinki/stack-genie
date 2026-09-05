@@ -415,13 +415,13 @@ func TestAgentEnvScriptOAuth(test *testing.T) {
 		test.Errorf("oauth gemini must NOT export GEMINI_API_KEY:\n%s", apiKey)
 	}
 
-	// copilot (forced-oauth, gateway-incapable) is never referenced by the env script — it
-	// authenticates natively to GitHub. Passing it in the oauth set adds no gateway env for
-	// it and no copilot/github references at all.
-	withCopilot := string(AgentEnvScript(testGateway, testKey, "", map[string]bool{"copilot": true}))
-	for _, absent := range []string{"copilot", "COPILOT", "githubcopilot", "GH_TOKEN", "GITHUB_TOKEN"} {
-		if strings.Contains(withCopilot, absent) {
-			test.Errorf("copilot must have no gateway env in the agent env script (found %q):\n%s", absent, withCopilot)
+	// A gateway-incapable forced-oauth CLI (a hypothetical one, since none is currently
+	// supported) is never referenced by the env script — an unrecognized oauth-set key is
+	// simply ignored, adding no env for it.
+	withUnknown := string(AgentEnvScript(testGateway, testKey, "", map[string]bool{"some-native-cli": true}))
+	for _, absent := range []string{"some-native-cli", "SOME_NATIVE_CLI"} {
+		if strings.Contains(withUnknown, absent) {
+			test.Errorf("an unrecognized oauth-set CLI must have no gateway env in the agent env script (found %q):\n%s", absent, withUnknown)
 		}
 	}
 }
@@ -463,7 +463,6 @@ func TestOAuthProviderDomains(test *testing.T) {
 		"claude-code": "api.anthropic.com",
 		"codex":       "chatgpt.com",
 		"gemini":      "generativelanguage.googleapis.com",
-		"copilot":     "api.githubcopilot.com",
 	}
 	for cli, want := range cases {
 		domains := OAuthProviderDomains(cli)
@@ -585,7 +584,6 @@ func TestHeadroomWrapName(test *testing.T) {
 		"claude-code": "claude",
 		"codex":       "codex",
 		"opencode":    "opencode",
-		"copilot":     "copilot",
 	}
 	for cli, want := range wrappable {
 		got, ok := HeadroomWrapName(cli)

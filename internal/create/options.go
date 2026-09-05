@@ -24,11 +24,10 @@ func SupportedStacks() []string {
 }
 
 // SupportedAgentCLIs are the agent CLIs installable into a workspace (opencode is the
-// default). copilot (GitHub Copilot CLI) is OAuth-only / gateway-incapable — see
-// config.ForcedOAuthCLIs. hermes is a gateway/api-key agent like opencode/omp
-// (always routes through the gateway, never OAuth).
+// default). hermes is a gateway/api-key agent like opencode/omp (always routes
+// through the gateway, never OAuth).
 func SupportedAgentCLIs() []string {
-	return []string{"opencode", "omp", "claude-code", "codex", "gemini", "copilot", "hermes"}
+	return []string{"opencode", "omp", "claude-code", "codex", "gemini", "hermes"}
 }
 
 // SupportedApps are the opt-in in-VM AI applications (default none).

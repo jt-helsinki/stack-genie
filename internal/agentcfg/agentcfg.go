@@ -11,11 +11,6 @@
 //     block in ~/.codex/config.toml that references an env-supplied key — see
 //     AgentEnvScript / CodexConfig. The env vars are written into the in-VM agent
 //     env file (key in-VM only) and sourced by every shell + agent session.
-//   - copilot (GitHub Copilot CLI) is the exception: it is OAuth-only / gateway-
-//     INCAPABLE (it authenticates natively to GitHub and talks DIRECTLY to GitHub's
-//     Copilot backend), so it gets NO gateway env and NO platform-written config —
-//     it manages its own ~/.copilot. It is still Headroom-wrappable (HeadroomWrapName)
-//     and a Graphify platform.
 //
 // These are pure generators: they marshal stable, indented JSON/TOML/shell and
 // never touch disk or any external tool, so they are exhaustively unit-tested.
@@ -375,7 +370,7 @@ func HermesConfig(gatewayURL, defaultModel, dashboardPassword string) ([]byte, e
 // MANAGES WHOLE (codex/hermes/omp — the CLIs whose single config file the
 // platform rewrites each start). Their MCP entries must be part of that render, or the
 // rewrite would clobber whatever the tool's own installer wrote. The CLIs whose configs
-// the platform does NOT own (claude/opencode/gemini/copilot) instead get these tools via
+// the platform does NOT own (claude/opencode/gemini) instead get these tools via
 // the tools' native `install --platform` / auto-detect, which is not clobbered.
 type MCPServer struct {
 	Name    string
@@ -737,9 +732,9 @@ func BashProfile() []byte {
 // HeadroomWrapName maps a platform agent CLI to the token Headroom's `wrap` subcommand
 // accepts, and reports whether Headroom can wrap it. Headroom `wrap` supports only a
 // FIXED set of agent tokens (claude, codex, copilot, cursor, aider, opencode, cline,
-// continue, goose, openhands, vibe); of this platform's CLIs claude-code,
-// codex, opencode, and copilot are wrappable. omp and gemini are NOT — aliasing them
-// would break at runtime — so they return ok=false and get no alias. This mirrors the
+// continue, goose, openhands, vibe); of this platform's CLIs claude-code, codex, and
+// opencode are wrappable. omp and gemini are NOT — aliasing them would break at
+// runtime — so they return ok=false and get no alias. This mirrors the
 // graphifyPlatformFlag guard: an unsupported CLI is simply skipped.
 func HeadroomWrapName(cli string) (string, bool) {
 	switch cli {
@@ -749,8 +744,6 @@ func HeadroomWrapName(cli string) (string, bool) {
 		return "codex", true
 	case "opencode":
 		return "opencode", true
-	case "copilot":
-		return "copilot", true
 	default:
 		return "", false
 	}
@@ -765,10 +758,6 @@ var oauthProviderDomains = map[string][]string{
 	"claude-code": {"api.anthropic.com"},
 	"codex":       {"api.openai.com", "chatgpt.com", "auth.openai.com"},
 	"gemini":      {"generativelanguage.googleapis.com", "oauth2.googleapis.com", "accounts.google.com", "cloudcode-pa.googleapis.com"},
-	// copilot is FORCED-oauth: it authenticates natively to GitHub and talks DIRECTLY to
-	// GitHub's Copilot backend (it cannot route through the gateway), so it always needs
-	// these egress domains even under `deny`.
-	"copilot": {"api.githubcopilot.com", "api.github.com", "github.com"},
 }
 
 // OAuthProviderDomains returns the egress domains an oauth-mode CLI reaches directly

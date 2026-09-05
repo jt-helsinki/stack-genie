@@ -74,8 +74,8 @@ type AgentConfig struct {
 	// login, talking DIRECTLY to the provider, bypassing the gateway and its guardrails).
 	// Keyed by CLI name; a CLI absent from the map defaults to "api-key" (see AuthMode).
 	// opencode/omp have no subscription and are never recorded here — they are always
-	// gateway/api-key. The FORCED-oauth CLIs (ForcedOAuthCLIs, e.g. copilot) are recorded
-	// as "oauth" and can be nothing else — see AuthMode.
+	// gateway/api-key. A FORCED-oauth CLI (ForcedOAuthCLIs) is recorded as "oauth" and
+	// can be nothing else — see AuthMode.
 	AuthModes map[string]string `yaml:"auth_modes,omitempty" json:"auth_modes,omitempty"`
 	// HermesDashboardPassword is the plaintext basic-auth password for the hermes web
 	// dashboard. Hermes REFUSES to bind its dashboard to 0.0.0.0 (required so the
@@ -101,12 +101,12 @@ func OAuthCapableCLIs() []string {
 
 // ForcedOAuthCLIs are agent CLIs that can ONLY authenticate via their own native (OAuth/
 // subscription) login — they have NO api-key/gateway mode at all, so they are ALWAYS
-// "oauth" and are never offered an auth-mode choice. GitHub Copilot CLI (`copilot`) is
-// OAuth-only: it authenticates natively to GitHub (device-flow login, or a GH_TOKEN/
-// GITHUB_TOKEN PAT) and talks DIRECTLY to GitHub's Copilot backend — it cannot accept an
-// API key and cannot be pointed at the platform gateway, so it can never be "api-key".
+// "oauth" and are never offered an auth-mode choice. Currently none of the supported
+// CLIs are forced-oauth (the mechanism is retained for a future CLI that, like GitHub
+// Copilot CLI before it was removed, cannot accept an API key or be pointed at the
+// platform gateway).
 func ForcedOAuthCLIs() []string {
-	return []string{"copilot"}
+	return nil
 }
 
 // IsOAuthEligible reports whether a CLI can run in oauth mode — either it may CHOOSE oauth

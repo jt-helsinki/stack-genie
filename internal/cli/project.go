@@ -1100,8 +1100,8 @@ func effectiveAgents(flags createFlags) []string {
 // parseAuthModes parses the --auth-mode flag — a comma list of cli=mode (e.g.
 // "claude-code=oauth,codex=api-key") — into a map. Each key must be an OAuth-eligible CLI
 // that is ALSO among the selected agents; each value must be api-key|oauth. A FORCED-oauth
-// CLI (copilot) accepts only "oauth" — it has no api-key/gateway mode, so "copilot=api-key"
-// is rejected (Scaffold records it as "oauth" automatically regardless). An empty flag
+// CLI accepts only "oauth" — it has no api-key/gateway mode, so e.g. "<cli>=api-key" would
+// be rejected (Scaffold records it as "oauth" automatically regardless). An empty flag
 // yields a nil map. All errors are exit 2 (invalid input).
 func parseAuthModes(raw string, agents []string) (map[string]string, error) {
 	raw = strings.TrimSpace(raw)

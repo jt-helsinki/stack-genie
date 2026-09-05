@@ -3,7 +3,6 @@ package config
 import (
 	"os"
 	"path/filepath"
-	"slices"
 	"testing"
 )
 
@@ -277,31 +276,20 @@ func TestAuthModeDefault(test *testing.T) {
 	if got := (AgentConfig{}).AuthMode("claude-code"); got != "api-key" {
 		test.Errorf("AuthMode on nil map = %q, want api-key", got)
 	}
-	// A forced-oauth CLI (copilot) is ALWAYS oauth, even absent from the map or if a bad
-	// edit set it to api-key — it has no api-key mode.
-	if got := (AgentConfig{}).AuthMode("copilot"); got != "oauth" {
-		test.Errorf("AuthMode(copilot) on nil map = %q, want oauth (forced)", got)
-	}
-	forced := AgentConfig{AuthModes: map[string]string{"copilot": "api-key"}}
-	if got := forced.AuthMode("copilot"); got != "oauth" {
-		test.Errorf("AuthMode(copilot) = %q, want oauth (forced regardless of map)", got)
+	// A forced-oauth CLI (ForcedOAuthCLIs) is ALWAYS oauth, even absent from the map or
+	// if a bad edit set it to api-key — it has no api-key mode. Currently no supported
+	// CLI is forced-oauth, so an unknown/hypothetical one must fall through to the
+	// ordinary default instead.
+	if got := (AgentConfig{}).AuthMode("some-native-cli"); got != "api-key" {
+		test.Errorf("AuthMode(unknown) on nil map = %q, want api-key (not forced)", got)
 	}
 }
 
-// TestForcedOAuthCLIs pins the forced-oauth set and its eligibility helper.
+// TestForcedOAuthCLIs pins the forced-oauth set: currently empty (no supported CLI is
+// forced-oauth).
 func TestForcedOAuthCLIs(test *testing.T) {
-	got := ForcedOAuthCLIs()
-	want := []string{"copilot"}
-	if len(got) != len(want) || got[0] != want[0] {
-		test.Fatalf("ForcedOAuthCLIs() = %v, want %v", got, want)
-	}
-	// copilot must be OAuth-eligible but must NOT be in the CHOICE set (OAuthCapableCLIs),
-	// so the create wizard never offers it an api-key/oauth prompt.
-	if !IsOAuthEligible("copilot") {
-		test.Error("copilot must be OAuth-eligible")
-	}
-	if slices.Contains(OAuthCapableCLIs(), "copilot") {
-		test.Error("copilot must NOT be in OAuthCapableCLIs (it gets no auth-mode choice)")
+	if got := ForcedOAuthCLIs(); len(got) != 0 {
+		test.Fatalf("ForcedOAuthCLIs() = %v, want empty", got)
 	}
 	for _, cli := range []string{"claude-code", "codex", "gemini"} {
 		if !IsOAuthEligible(cli) {

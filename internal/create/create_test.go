@@ -385,13 +385,6 @@ func TestExecuteWarnsOnOAuth(test *testing.T) {
 	}
 }
 
-// TestSupportedAgentCLIsIncludesCopilot pins copilot as a selectable agent CLI.
-func TestSupportedAgentCLIsIncludesCopilot(test *testing.T) {
-	if !slices.Contains(SupportedAgentCLIs(), "copilot") {
-		test.Errorf("SupportedAgentCLIs() must include copilot: %v", SupportedAgentCLIs())
-	}
-}
-
 // TestSupportedAgentCLIsIncludesHermes pins the hermes gateway agent, confirms
 // SplitAgentsAndApps classes it as an AGENT (not an app), and that the removed openclaw is
 // absent.
@@ -424,26 +417,5 @@ func TestSplitAgentsAndApps(test *testing.T) {
 	agentCLIs, appKeys = SplitAgentsAndApps(nil)
 	if len(agentCLIs) != 0 || len(appKeys) != 0 {
 		test.Errorf("empty selection must split to empty sides, got %v / %v", agentCLIs, appKeys)
-	}
-}
-
-// TestExecuteWarnsOnCopilot verifies copilot (forced-oauth, gateway-incapable) triggers a
-// direct-to-provider security warning like any oauth agent.
-func TestExecuteWarnsOnCopilot(test *testing.T) {
-	test.Setenv("HOME", test.TempDir())
-	root := filepath.Join(test.TempDir(), "location")
-	spec := project.Spec{
-		Name:        "copilot-app",
-		OS:          SupportedOSes()[0],
-		AgentCLIs:   []string{"opencode", "copilot"},
-		DefaultTool: "opencode",
-		Root:        root,
-	}
-	_, warnings, err := Execute(spec, "2026-07-05T00:00:00Z", nil)
-	if err != nil {
-		test.Fatalf("Execute returned error: %v", err)
-	}
-	if !strings.Contains(strings.Join(warnings, "\n"), "copilot") {
-		test.Errorf("expected a direct-to-provider warning for copilot, got: %v", warnings)
 	}
 }

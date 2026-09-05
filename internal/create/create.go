@@ -108,9 +108,9 @@ func Execute(spec project.Spec, now string, report func(Progress)) (Result, []st
 // oauthWarnings returns a security warning for each agent that runs in OAuth/plan mode:
 // that mode routes the agent DIRECTLY to its provider, bypassing the gateway — so the tool
 // firewall, secret masking, and content-level egress audit do NOT apply to it. Covers the
-// OAuth-capable CLIs set to oauth AND the forced-oauth CLIs (copilot — always oauth, since
-// it cannot route through the gateway at all). Selected agents only (Scaffold filters the
-// persisted set the same way).
+// OAuth-capable CLIs set to oauth AND any forced-oauth CLI (always oauth, since it cannot
+// route through the gateway at all). Selected agents only (Scaffold filters the persisted
+// set the same way).
 func oauthWarnings(spec project.Spec) []string {
 	var warnings []string
 	for _, cli := range config.OAuthCapableCLIs() {

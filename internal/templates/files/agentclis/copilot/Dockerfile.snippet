@@ -1,6 +1,0 @@
-# agent CLI: copilot (GitHub Copilot CLI)
-# Node is installed in the OS base image (pinned Node 24 LTS), so this only adds
-# the CLI. Verify the exact npm package on hardware bring-up before relying on this.
-USER root
-RUN npm install -g @github/copilot
-USER workspace

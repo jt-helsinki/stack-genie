@@ -640,7 +640,7 @@ func (manager Manager) finishStart(name, project, root string, projectConfig *co
 
 // registerAgentProviders mints a scoped LiteLLM virtual key for the workspace and
 // routes the gateway-capable agent CLIs through the host Headroom proxy with that key
-// (copilot is gateway-incapable — forced-oauth, native GitHub auth — so it is skipped). It
+// (a forced-oauth CLI, if any is selected, is gateway-incapable and skipped). It
 // reads each CLI's KEYLESS host-side template from <project>/.ai-platform/agents/
 // (scaffolding the default templates back if absent — without the key), merges in
 // the dynamic values (the freshly-minted key, the served-model picker, the Headroom
@@ -1085,7 +1085,6 @@ func (manager Manager) linkAgentStateDirs(name string, oauthAgents map[string]bo
 		{"claude-code", "~/.claude", "claude"},
 		{"codex", "~/.codex", "codex"},
 		{"gemini", "~/.gemini", "gemini"},
-		{"copilot", "~/.copilot", "copilot"},
 	}
 	for _, entry := range oauthCredDirs {
 		if oauthAgents[entry.cli] {
@@ -1134,9 +1133,9 @@ func (manager Manager) linkAgentStateDirs(name string, oauthAgents map[string]bo
 
 // oauthAgentList returns the installed CLIs configured for OAUTH (subscription) auth, in
 // the project's tool order. This is every OAuth-ELIGIBLE CLI whose resolved auth mode is
-// oauth: the OAuth-capable CLIs (claude-code/codex/gemini) set to oauth, plus the
-// forced-oauth CLIs (copilot — always oauth). Everything else is always gateway/api-key
-// and never appears here.
+// oauth: the OAuth-capable CLIs (claude-code/codex/gemini) set to oauth, plus any
+// forced-oauth CLI (always oauth). Everything else is always gateway/api-key and never
+// appears here.
 func oauthAgentList(projectConfig *config.Config) []string {
 	var list []string
 	for _, cli := range projectConfig.Agent.Tools {
@@ -1254,7 +1253,6 @@ var graphifyPlatformFlag = map[string]string{
 	"codex":       "codex",
 	"gemini":      "gemini",
 	"opencode":    "opencode",
-	"copilot":     "copilot",
 }
 
 // registerGraphify registers Graphify (baked into the image via `uv tool install`)
@@ -1369,15 +1367,13 @@ func (manager Manager) setupGraphifyMCP(name string) {
 // cavemanOnlyAgent maps a selected agent CLI to Caveman's `install.sh --only <agent>`
 // token. Caveman installs its native skills/agents/commands for these CLIs PLUS the
 // CLI-native extras the shared pool cannot carry: the opencode plugin, claude hooks +
-// statusline, and the gemini extension. copilot is a "soft probe" — Caveman won't
-// auto-detect it, so it additionally needs `--with-init` (handled in registerCaveman).
+// statusline, and the gemini extension.
 // omp is absent — Caveman has no omp token, so it receives the skill via the shared pool.
 var cavemanOnlyAgent = map[string]string{
 	"claude-code": "claude",
 	"gemini":      "gemini",
 	"opencode":    "opencode",
 	"codex":       "codex",
-	"copilot":     "copilot",
 	"hermes":      "hermes",
 }
 
@@ -1465,14 +1461,8 @@ func (manager Manager) registerCaveman(name string, projectConfig *config.Config
 	// instead of hanging forever and exhausting the msb agent-relay (see the gemini
 	// skip above). On timeout the installer exits non-zero, the marker is not touched,
 	// and the next start retries. `--kill-after` SIGKILLs a child that ignores SIGTERM.
-	// copilot is a Caveman "soft probe": it is not auto-detected even with `--only copilot`,
-	// so it additionally needs `--with-init` to write its integration.
-	withInit := ""
-	if slices.Contains(projectConfig.Agent.Tools, "copilot") {
-		withInit = " --with-init"
-	}
 	installCmd := "cd /tmp/caveman-src && timeout --kill-after=30s 600s node bin/install.js --non-interactive --with-hooks" +
-		withInit + " " + strings.Join(only, " ")
+		" " + strings.Join(only, " ")
 	mirror := `og="${XDG_CONFIG_HOME:-$HOME/.config}/opencode"; ` +
 		`for pair in "skills:skills" "agents:agents" "commands:prompts"; do ` +
 		`src="$og/${pair%%:*}"; dst="` + pool + `/${pair##*:}"; ` +
@@ -1598,7 +1588,6 @@ var codeReviewGraphPlatformFlag = map[string]string{
 	"claude-code": "claude-code",
 	"gemini":      "gemini-cli",
 	"opencode":    "opencode",
-	"copilot":     "copilot-cli",
 }
 
 // registerCodeReviewGraph installs code-review-graph (https://code-review-graph.com,
@@ -1635,7 +1624,7 @@ func (manager Manager) registerCodeReviewGraph(name string, projectConfig *confi
 	}
 	if len(installs) == 0 {
 		_, _ = fmt.Fprintln(os.Stderr, ui.Warn.Render("code-review-graph is enabled but no supported CLI "+
-			"(opencode, claude-code, codex, gemini, or copilot) is selected — skipping install."))
+			"(opencode, claude-code, codex, or gemini) is selected — skipping install."))
 		return
 	}
 	pool := workspaceWorkdir + "/.ai-platform"
