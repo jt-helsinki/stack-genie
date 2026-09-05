@@ -200,7 +200,7 @@ func TestServiceDetailModelsRefreshOnlyForOmlx(test *testing.T) {
 	if omlxDetail.refreshingModels {
 		test.Error("refreshingModels should clear once the result lands")
 	}
-	if !strings.Contains(omlxDetail.flash, "1 added") {
+	if !strings.Contains(omlxDetail.flash, "rebuilt 1 model") {
 		test.Errorf("flash should report the sync result, got %q", omlxDetail.flash)
 	}
 }

@@ -46,26 +46,30 @@ func newModelsCmd(em *output.Emitter, exit *int) *cobra.Command {
 	return cmd
 }
 
-// newModelsRefreshCmd builds `ai models refresh`: re-syncs LiteLLM's omlx/*
-// registrations against the omlx server's live GET /v1/models ON DEMAND — for
-// after adding/removing/renaming a model through omlx's own admin panel
-// (`ai services console omlx`), without needing a full `ai services restart omlx`.
-// This is the SAME sync that already runs automatically at `ai setup` and at
-// `ai services start|restart omlx`; this command just triggers it standalone.
+// newModelsRefreshCmd builds `ai models refresh`: rebuilds LiteLLM's omlx/*
+// registrations from the omlx server's live GET /v1/models ON DEMAND — every
+// CURRENTLY-registered omlx model is deleted and every model omlx currently
+// reports is re-added fresh (even one whose name is unchanged), so a stale
+// registration can never survive a refresh. Use it after adding/removing/renaming
+// a model through omlx's own admin panel (`ai services console omlx`), without
+// needing a full `ai services restart omlx`. This is the SAME rebuild that
+// already runs automatically at `ai setup` and at `ai services start|restart
+// omlx`; this command just triggers it standalone.
 func newModelsRefreshCmd(em *output.Emitter, exit *int) *cobra.Command {
 	return &cobra.Command{
 		Use:   "refresh",
-		Short: "Re-sync LiteLLM's registered models from omlx's live model list",
-		Long: "Re-sync LiteLLM's omlx/* model registrations against the omlx server's live\n" +
-			"GET /v1/models: a model added/removed/renamed through omlx's own admin panel\n" +
-			"(`ai services console omlx`) shows up in the gateway immediately, without a\n" +
-			"full `ai services restart omlx`.",
+		Short: "Rebuild LiteLLM's registered models from omlx's live model list",
+		Long: "Rebuild LiteLLM's omlx/* model registrations from the omlx server's live\n" +
+			"GET /v1/models: every currently-registered omlx model is deleted and every\n" +
+			"model omlx currently reports is re-added fresh, so a model added/removed/\n" +
+			"renamed through omlx's own admin panel (`ai services console omlx`) shows up\n" +
+			"in the gateway immediately, without a full `ai services restart omlx`.",
 		Args: cobra.NoArgs,
 		RunE: func(_ *cobra.Command, _ []string) error {
 			var result litellm.SyncResult
 			var err error
 			if ui.Enabled(em) {
-				err = ui.RunWithSpinner(em.Err, "syncing omlx models with the gateway", func() error {
+				err = ui.RunWithSpinner(em.Err, "rebuilding omlx model registrations", func() error {
 					var workErr error
 					result, workErr = syncOmlxModelsFn()
 					return workErr
@@ -88,9 +92,9 @@ type modelsRefreshResult litellm.SyncResult
 
 func (result modelsRefreshResult) Human() string {
 	if len(result.Added) == 0 && len(result.Deleted) == 0 {
-		return ui.Success.Render(ui.IconOK) + " omlx models already in sync with the gateway"
+		return ui.Success.Render(ui.IconOK) + " omlx currently serves no models — nothing to rebuild"
 	}
-	lines := []string{ui.Success.Render(ui.IconOK) + " synced omlx models with the gateway"}
+	lines := []string{ui.Success.Render(ui.IconOK) + " rebuilt omlx model registrations"}
 	for _, name := range result.Added {
 		lines = append(lines, "  "+ui.Success.Render("+")+" "+ui.Value.Render(name))
 	}

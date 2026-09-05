@@ -158,6 +158,68 @@ func TestSyncModelsAppliesDiff(test *testing.T) {
 // TestSyncModelsPreservesOmlx verifies the local-model protection: a cloud-key resync
 // must NOT delete "omlx/*" models (owned by SyncOmlxModels — the sole
 // local backend). Only stale CLOUD models delete.
+// TestSyncOmlxModelsDeletesAndRecreatesAll verifies SyncOmlxModels's refresh
+// semantics: unlike SyncModels' pure diff, EVERY currently-registered omlx/*
+// model is deleted and re-added fresh on every run — even one whose name is
+// unchanged — so a stale registration can never survive a refresh. A model that
+// disappeared from omlx's live list is deleted with nothing re-added in its
+// place; a cloud registration is untouched throughout.
+func TestSyncOmlxModelsDeletesAndRecreatesAll(test *testing.T) {
+	var deleted, added []string
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		switch request.URL.Path {
+		case "/model/info":
+			_, _ = writer.Write([]byte(`{"data":[
+				{"model_name":"omlx/gemma4","litellm_params":{"model":"openai/gemma4"},"model_info":{"id":"omlx-gemma4"}},
+				{"model_name":"omlx/removed","litellm_params":{"model":"openai/removed"},"model_info":{"id":"omlx-removed"}},
+				{"model_name":"openai/gpt-5.5","litellm_params":{"model":"openai/gpt-5.5"},"model_info":{"id":"cloud-keep"}}
+			]}`))
+		case "/model/delete":
+			payload, _ := io.ReadAll(request.Body)
+			var body map[string]any
+			_ = json.Unmarshal(payload, &body)
+			deleted = append(deleted, body["id"].(string))
+			_, _ = writer.Write([]byte(`{}`))
+		case "/model/new":
+			payload, _ := io.ReadAll(request.Body)
+			var body map[string]any
+			_ = json.Unmarshal(payload, &body)
+			added = append(added, body["model_name"].(string))
+			_, _ = writer.Write([]byte(`{}`))
+		default:
+			test.Errorf("unexpected %s %s", request.Method, request.URL.Path)
+		}
+	}))
+	defer server.Close()
+	test.Setenv("LITELLM_BASE_URL", server.URL)
+
+	manager := NewKeyManager(okProber())
+	// omlx now only reports "gemma4" (unchanged) — "removed" has disappeared.
+	result, err := manager.SyncOmlxModels([]string{"gemma4"}, "http://127.0.0.1:8100/v1")
+	if err != nil {
+		test.Fatalf("SyncOmlxModels: %v", err)
+	}
+
+	sort.Strings(deleted)
+	if strings.Join(deleted, ",") != "omlx-gemma4,omlx-removed" {
+		test.Errorf("deleted = %v, want both prior omlx registrations (unchanged + stale)", deleted)
+	}
+	if strings.Join(added, ",") != "omlx/gemma4" {
+		test.Errorf("added = %v, want only the still-served model re-added", added)
+	}
+	for _, id := range deleted {
+		if id == "cloud-keep" {
+			test.Error("a cloud registration must never be deleted by SyncOmlxModels")
+		}
+	}
+	if strings.Join(result.Deleted, ",") != "omlx/gemma4,omlx/removed" {
+		test.Errorf("result.Deleted = %v, want both prior omlx model names", result.Deleted)
+	}
+	if strings.Join(result.Added, ",") != "omlx/gemma4" {
+		test.Errorf("result.Added = %v, want the re-added model", result.Added)
+	}
+}
+
 func TestSyncModelsPreservesOmlx(test *testing.T) {
 	var deleted []string
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {

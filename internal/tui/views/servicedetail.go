@@ -28,7 +28,7 @@ type ServiceStatsFetcher func(service string) ([]setup.ContainerStats, error)
 // list/detail refresh when the overlay closes.
 type ServiceUpdateRequestedMsg struct{ Service string }
 
-// OmlxModelsRefresher re-syncs LiteLLM's omlx/* model registrations against
+// OmlxModelsRefresher rebuilds LiteLLM's omlx/* model registrations from
 // omlx's live model list on demand — the TUI twin of `ai models refresh`.
 // Injected; nil is tolerated (the key is simply not offered for omlx).
 type OmlxModelsRefresher func() (litellm.SyncResult, error)
@@ -378,15 +378,18 @@ func (view *ServiceDetail) openConsole() tea.Cmd {
 	}
 }
 
-// refreshOmlxModels re-syncs LiteLLM's omlx/* registrations against omlx's live
-// model list (the TUI twin of `ai models refresh`) — only offered for the omlx
-// service, and only when a refresher was injected and none is already in flight.
+// refreshOmlxModels rebuilds LiteLLM's omlx/* registrations from omlx's live
+// model list (the TUI twin of `ai models refresh`) — every currently-registered
+// omlx model is deleted and every model omlx currently reports is re-added
+// fresh, even one whose name is unchanged, so a stale registration can never
+// survive a refresh. Only offered for the omlx service, and only when a
+// refresher was injected and none is already in flight.
 func (view *ServiceDetail) refreshOmlxModels() tea.Cmd {
 	if view.name != "omlx" || view.refreshModels == nil || view.refreshingModels {
 		return nil
 	}
 	view.refreshingModels = true
-	view.flash = ui.Muted.Render("refreshing omlx models…")
+	view.flash = ui.Muted.Render("rebuilding omlx model registrations…")
 	refresh := view.refreshModels
 	return func() tea.Msg {
 		result, err := refresh()
@@ -400,10 +403,10 @@ func omlxModelsRefreshFlash(result litellm.SyncResult, err error) string {
 		return ui.Failure.Render(ui.IconFail + " models refresh: " + err.Error())
 	}
 	if len(result.Added) == 0 && len(result.Deleted) == 0 {
-		return ui.Success.Render(ui.IconOK + " models refresh: already in sync")
+		return ui.Success.Render(ui.IconOK + " models refresh: omlx currently serves no models")
 	}
-	return ui.Success.Render(ui.IconOK + " models refresh: " +
-		strconv.Itoa(len(result.Added)) + " added, " + strconv.Itoa(len(result.Deleted)) + " removed")
+	return ui.Success.Render(ui.IconOK + " models refresh: rebuilt " +
+		strconv.Itoa(len(result.Added)) + " model(s) (" + strconv.Itoa(len(result.Deleted)) + " deleted)")
 }
 
 func (view *ServiceDetail) View() string {
