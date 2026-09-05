@@ -171,6 +171,23 @@ func TestStartOmlxHostSyncFailureIsSwallowed(test *testing.T) {
 	}
 }
 
+// TestOmlxContainerAPIBaseUsesHostGateway pins the fix for a real bug: LiteLLM's
+// omlx/* registration must use hostGatewayName (the LiteLLM CONTAINER's route back
+// to the host), never omlx.BaseURL()'s 127.0.0.1 — that address means the
+// CONTAINER's own loopback from inside LiteLLM, which has nothing listening on it,
+// so every chat completion failed with "Connection error" regardless of what omlx
+// itself bound to.
+func TestOmlxContainerAPIBaseUsesHostGateway(test *testing.T) {
+	got := omlxContainerAPIBase()
+	want := "http://host.docker.internal:8100/v1"
+	if got != want {
+		test.Errorf("omlxContainerAPIBase() = %q, want %q", got, want)
+	}
+	if strings.Contains(got, "127.0.0.1") {
+		test.Errorf("omlxContainerAPIBase() must never be a loopback address (unreachable from the LiteLLM container): %q", got)
+	}
+}
+
 // swapHostNativeSeams captures the host-native lifecycle seams and restores them on
 // cleanup (the caller then overrides whichever ones it needs).
 func swapHostNativeSeams(test *testing.T) {

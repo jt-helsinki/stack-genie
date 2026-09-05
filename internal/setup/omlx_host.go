@@ -66,6 +66,19 @@ var omlxManagerFn = func() *omlx.Manager {
 // startOmlxServerHost without a real gateway.
 var omlxSyncModelsFn = SyncOmlxModels
 
+// omlxContainerAPIBase is the base URL registered with LiteLLM as the omlx model's
+// api_base — DELIBERATELY NOT omlx.BaseURL() (http://127.0.0.1:<port>/v1). That URL
+// is correct for THIS CLI's own host-side probes (ai runs on the host, so loopback
+// reaches omlx directly), but LiteLLM runs in a CONTAINER: "127.0.0.1" there means
+// the container's OWN loopback, which has nothing listening on it — every chat
+// completion would fail with "Connection error" regardless of what omlx itself
+// binds to. The container reaches the host-native omlx server at
+// hostGatewayName:<port> instead (see hostGatewayName's doc for the Linux
+// --add-host requirement this relies on).
+func omlxContainerAPIBase() string {
+	return fmt.Sprintf("http://%s:%d/v1", hostGatewayName, omlx.Port)
+}
+
 // SyncOmlxModels reconciles LiteLLM's omlx/* registrations against the server's
 // live GET /v1/models (internal/omlx.ListModels → internal/litellm.SyncOmlxModels):
 // newly-appeared models are registered, ones that disappeared are removed. This is
@@ -82,7 +95,7 @@ func SyncOmlxModels() (litellm.SyncResult, error) {
 	for _, model := range liveModels {
 		ids = append(ids, model.ID)
 	}
-	return litellm.NewKeyManager(runtime.RealProber()).SyncOmlxModels(ids, omlx.BaseURL(), omlx.APIKey())
+	return litellm.NewKeyManager(runtime.RealProber()).SyncOmlxModels(ids, omlxContainerAPIBase(), omlx.APIKey())
 }
 
 // startOmlxServerHost brings up the host-native omlx server for `ai services start

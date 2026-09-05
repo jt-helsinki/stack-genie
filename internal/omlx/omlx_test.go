@@ -188,8 +188,32 @@ func TestDefaultSettingsFileUsesBasePathDir(test *testing.T) {
 		test.Fatalf("BasePathDir: %v", err)
 	}
 	want := filepath.Join(basePath, "settings.json")
+	// BasePathDir is only preferred once it actually HAS a settings.json — write
+	// one so this test exercises the "server already migrated" case.
+	if err := os.WriteFile(want, []byte(`{}`), 0o600); err != nil {
+		test.Fatal(err)
+	}
 	if got := defaultSettingsFile(); got != want {
 		test.Errorf("defaultSettingsFile() = %q, want %q", got, want)
+	}
+}
+
+// defaultSettingsFile falls back to the legacy ~/.omlx when the platform's own
+// managed base path has no settings.json yet — a server started BEFORE
+// RealRunner.Start began setting OMLX_BASE_PATH (or one started manually, outside
+// the platform) still reads/writes omlx's own default ~/.omlx, and a key
+// configured there must still be found rather than silently reading empty.
+func TestDefaultSettingsFileFallsBackToLegacyHome(test *testing.T) {
+	home := test.TempDir()
+	test.Setenv("HOME", home)
+	test.Setenv("OMLX_BASE_PATH", "")
+	// BasePathDir exists (created on use) but has NO settings.json.
+	if _, err := BasePathDir(); err != nil {
+		test.Fatalf("BasePathDir: %v", err)
+	}
+	want := filepath.Join(home, ".omlx", "settings.json")
+	if got := defaultSettingsFile(); got != want {
+		test.Errorf("defaultSettingsFile() = %q, want the legacy path %q", got, want)
 	}
 }
 

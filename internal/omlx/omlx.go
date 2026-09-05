@@ -290,14 +290,29 @@ func defaultSettingsFile() string {
 	if base := os.Getenv("OMLX_BASE_PATH"); base != "" {
 		return filepath.Join(base, "settings.json")
 	}
+	// Prefer the platform's own managed base path, but ONLY if it actually has a
+	// settings.json — a server started by an EARLIER version of this platform (or
+	// manually, outside it) before RealRunner.Start began setting OMLX_BASE_PATH
+	// still reads/writes omlx's own default ~/.omlx, so a key configured there
+	// must still be found rather than silently looking empty (which would send no
+	// Authorization header to a server that actually requires one, reading as a
+	// false "stopped"/401 rather than healthy).
 	if base, err := BasePathDir(); err == nil {
-		return filepath.Join(base, "settings.json")
+		if candidate := filepath.Join(base, "settings.json"); fileExists(candidate) {
+			return candidate
+		}
 	}
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return ""
 	}
 	return filepath.Join(home, ".omlx", "settings.json")
+}
+
+// fileExists reports whether path exists and is a regular file (not a directory).
+func fileExists(path string) bool {
+	info, err := os.Stat(path)
+	return err == nil && !info.IsDir()
 }
 
 // APIKey best-effort discovers the API key omlx itself is configured to require,

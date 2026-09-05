@@ -196,7 +196,7 @@ var registry = []Service{
 			{
 				ImageKey:  "redisinsight",
 				Container: "aip-redisinsight",
-				Pin:       Pin{Mode: ModeContainer, Image: "redis/redisinsight", Tag: "latest"},
+				Pin:       Pin{Mode: ModeContainer, Image: "redis/redisinsight", Tag: "3.8"},
 			},
 		},
 	},

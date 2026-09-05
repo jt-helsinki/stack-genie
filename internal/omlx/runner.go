@@ -7,6 +7,7 @@ import (
 	"strconv"
 	"sync"
 	"syscall"
+	"time"
 )
 
 // Runner starts/stops the single omlx server process. RealRunner is the production
@@ -33,15 +34,22 @@ type ServerHandle struct {
 // if it does not.
 type RealRunner struct{}
 
-// Start launches a DETACHED `omlx serve --model-dir <dir> --port <port>
-// --paged-ssd-cache-dir <dir>` that OUTLIVES this short-lived CLI: it is put in
-// its own process group (Setpgid) so it is not torn down with the `ai` process,
-// and stdout+stderr are redirected to LogPath() — a SIBLING of the model
-// directory (not inside it, so it can never be mistaken for a model
-// subdirectory by omlx's own discovery scan). The process env carries
-// OMLX_BASE_PATH pointing at BasePathDir (~/.ai-platform/omlx), so every file
-// omlx itself writes (settings.json, its own logs, …) lands under the
-// platform's own directory tree instead of the user's home ~/.omlx — model
+// Start launches a DETACHED `omlx serve --host 0.0.0.0 --model-dir <dir> --port
+// <port> --paged-ssd-cache-dir <dir>` that OUTLIVES this short-lived CLI: it is
+// put in its own process group (Setpgid) so it is not torn down with the `ai`
+// process, and stdout+stderr are redirected to LogPath() — a SIBLING of the
+// model directory (not inside it, so it can never be mistaken for a model
+// subdirectory by omlx's own discovery scan). --host 0.0.0.0 overrides omlx's
+// own default bind (127.0.0.1 loopback-only): the LiteLLM CONTAINER reaches
+// omlx at host.docker.internal:<port>, and on Docker Desktop for Mac that
+// route does NOT arrive as literal loopback traffic — a server bound only to
+// 127.0.0.1 refuses it outright ("Connection error" from LiteLLM), even though
+// the SAME server answers fine to a request from the host's own loopback (e.g.
+// omlx's own admin console). Binding all interfaces is still host-only exposure
+// (no port is published to a network beyond this host). The process env
+// carries OMLX_BASE_PATH pointing at BasePathDir (~/.ai-platform/omlx), so
+// every file omlx itself writes (settings.json, its own logs, …) lands under
+// the platform's own directory tree instead of the user's home ~/.omlx — model
 // DATA stays separate at modelDir (StoreDir) regardless. Start returns
 // immediately (Release, no Wait) with a ServerHandle wrapping the PID; the
 // Manager's health probe confirms readiness.
@@ -63,7 +71,7 @@ func (RealRunner) Start(modelDir string, port int) (ServerHandle, error) {
 	}
 
 	command := exec.Command(BinaryPath(), "serve",
-		"--model-dir", modelDir, "--port", strconv.Itoa(port),
+		"--host", "0.0.0.0", "--model-dir", modelDir, "--port", strconv.Itoa(port),
 		"--paged-ssd-cache-dir", pagedSSDCacheDir,
 	)
 	command.Env = append(os.Environ(), "OMLX_BASE_PATH="+basePath)
@@ -80,13 +88,41 @@ func (RealRunner) Start(modelDir string, port int) (ServerHandle, error) {
 	return ServerHandle{PID: pid}, nil
 }
 
+// stopGracePeriod bounds how long Stop waits for the process to actually exit
+// after a graceful pkill before escalating to SIGKILL.
+const stopGracePeriod = 3 * time.Second
+
 // Stop stops the running omlx server, discovered by matching its command line
 // (there is exactly ONE such process, so an unqualified pkill is unambiguous —
 // unlike the old per-model vLLM design, which needed a port-specific pattern to
-// avoid killing sibling servers). Best-effort: pkill exits non-zero when nothing
-// matched, which is not an error here.
+// avoid killing sibling servers). omlx renames its own process title to
+// "omlx-server" at startup (its `serve` subcommand calls process_title.
+// set_process_title, backed by the `setproctitle` package it always depends on)
+// — after that rename the original "<path>/omlx serve ..." command line no
+// longer appears in `ps`/`pgrep`, so the renamed title is matched too (tried
+// first, since it is the steady-state case; the original pattern still covers
+// the narrow pre-rename startup window). Best-effort: pkill exits non-zero when
+// nothing matched, which is not an error here.
+//
+// After signalling, Stop WAITS (polling the port, up to stopGracePeriod) for the
+// process to actually exit before returning — pkill only SENDS the signal, it
+// does not wait for the target to die, and applyHostNativeAction's restart calls
+// Start() immediately after Stop() returns: without this wait, a still-shutting-
+// down old process can still answer the health probe just long enough to be
+// wrongly "adopted" again instead of replaced. A process that ignores the
+// graceful term is escalated to SIGKILL after the grace period.
 func (RealRunner) Stop() error {
+	_ = exec.Command("pkill", "-f", "omlx-server").Run()
 	_ = exec.Command("pkill", "-f", "omlx serve").Run()
+	deadline := time.Now().Add(stopGracePeriod)
+	for portInUse() {
+		if time.Now().After(deadline) {
+			_ = exec.Command("pkill", "-9", "-f", "omlx-server").Run()
+			_ = exec.Command("pkill", "-9", "-f", "omlx serve").Run()
+			break
+		}
+		time.Sleep(150 * time.Millisecond)
+	}
 	return nil
 }
 

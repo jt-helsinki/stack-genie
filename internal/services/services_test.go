@@ -73,7 +73,7 @@ func TestVersionPinsMatchCurrentDefault(test *testing.T) {
 		// vLLM is host-native — no image pin (it is not a pulled container).
 		"dns":          {Mode: ModeContainer, Image: "coredns/coredns", Tag: "latest"},
 		"valkey":       {Mode: ModeContainer, Image: "valkey/valkey", Tag: "9.1.0-alpine"},
-		"redisinsight": {Mode: ModeContainer, Image: "redis/redisinsight", Tag: "latest"},
+		"redisinsight": {Mode: ModeContainer, Image: "redis/redisinsight", Tag: "3.8"},
 	}
 	got := VersionPins()
 	if !reflect.DeepEqual(got, want) {
