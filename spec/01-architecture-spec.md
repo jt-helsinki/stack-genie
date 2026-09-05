@@ -991,11 +991,15 @@ templates (§25); it is identical across all OSes:
   install` is idempotent (it rewrites the managed hook), so there is deliberately no
   marker, and the hook step is decoupled from the per-CLI install list (it runs even for
   an omp/hermes-only project).
-  Graphify's headless LLM backend is a **local (omlx) model chosen at `ai create`** — a
-  plain model name (the wizard's optional text input, or `--graphify-model`) naming a
-  model omlx is **already serving** (models are downloaded/managed entirely through
-  omlx's own admin panel, §16 — there is no Hugging-Face-repo-id picker and no
-  download/pull at create time), stored as
+  Graphify's headless LLM backend is a **local (omlx) model picked at `ai create`** — both
+  the CLI wizard and the TUI create wizard now render a SELECT built from omlx's live
+  `GET /v1/models` (not a free-text field), a `"(none — leave Graphify unconfigured)"`
+  option always first (shown alone when omlx has nothing loaded/isn't running — never
+  blocks the wizard), or `--graphify-model` (a pre-seeded value omlx doesn't currently
+  report is appended to the picker rather than dropped, preserving the pre-seed
+  contract) naming a model omlx is **already serving** (models are downloaded/managed
+  entirely through omlx's own admin panel, §16 — there is no Hugging-Face-repo-id
+  picker and no download/pull at create time), stored as
   `agent.graphify_model` in the project `config.yaml`. At workspace start Graphify
   is routed through the gateway as `omlx/<model>` via `OPENAI_*` env vars (see
   §17) — never directly to the backend.
@@ -1477,10 +1481,16 @@ supplies the routing prefix. There is no default model.
 
 Local (omlx) models are registered with the public `model_name` `omlx/<id>` and
 `litellm_params.model` = `openai/<id>` (`OmlxRoutedModel`), with `api_base` set to
-the single shared `omlx serve` endpoint (`http://host.docker.internal:8100/v1`) and no
-credential (a non-empty placeholder `"EMPTY"` satisfies LiteLLM's `openai/`-provider
-client construction). They are owned by omlx's own admin panel and kept in sync by
-the platform's automatic `litellm.SyncOmlxModels` reconcile.
+the single shared `omlx serve` endpoint (`http://host.docker.internal:8100/v1`),
+authenticated with the REAL key when the user has configured one on omlx's OWN side
+(`internal/omlx.APIKey` — env `OMLX_API_KEY` else omlx's own `~/.omlx/settings.json`
+`auth.api_key`; omlx validates no key by default) else a non-empty placeholder
+`"EMPTY"` (satisfies LiteLLM's `openai/`-provider client construction, which
+hard-requires a non-empty key regardless of whether omlx itself checks one). They are
+owned by omlx's own admin panel and kept in sync by the platform's automatic
+`litellm.SyncOmlxModels` — a FULL REBUILD (`applyOmlxRefresh`), not an add/delete
+diff: every currently-registered `omlx/*` model is deleted, then every model omlx
+currently reports is re-added fresh, even one whose name is unchanged.
 
 ### In-VM agent provider config — keyless per-CLI project configs, key in-VM only
 
@@ -1628,24 +1638,35 @@ runtime-choice store, and the curated Hugging-Face-repo picker were all retired 
 with the per-model vLLM design. `ai models` now has three, read-only,
 gateway-inspection subcommands: `status` (LiteLLM health/providers/routing plus omlx
 connectivity), `test [model]` (probe a served model through the gateway), and
-`refresh` (re-sync LiteLLM's `omlx/*` registrations against omlx's live model list on
-demand — e.g. right after adding/removing a model through the admin panel, without a
-full `ai services restart omlx`).
+`refresh` (**rebuild** — not a diff — LiteLLM's `omlx/*` registrations against omlx's
+live model list on demand — e.g. right after adding/removing a model through the
+admin panel, without a full `ai services restart omlx`; TUI mirror: the `m` key in the
+omlx Service Detail pane, only shown/offered for that service).
 
 ## Registration
 
 omlx models register automatically in LiteLLM's DB-backed store (§14): the platform
-reconciles LiteLLM's `omlx/*` registrations against omlx's own live `GET /v1/models`
-response (`litellm.SyncOmlxModels`/`DesiredOmlxModels`, reusing the same
-reconcile/apply-plan machinery as the cloud-key sync) — this sync runs automatically at
+REBUILDS LiteLLM's `omlx/*` registrations against omlx's own live `GET /v1/models`
+response (`litellm.SyncOmlxModels`/`DesiredOmlxModels`/`applyOmlxRefresh`) — UNLIKE the
+cloud-key sync's pure add/delete `Reconcile`/`ApplyPlan` diff, every
+currently-registered `omlx/*` model is DELETED, then every model omlx currently
+reports is RE-ADDED fresh, even one whose name is unchanged, so a stale registration
+can never survive a refresh — this sync runs automatically at
 `ai setup` and at `ai services start|restart omlx`, and on demand via
-`ai models refresh`; there is no other user-facing sync command. The public handle is
+`ai models refresh` (or the TUI's `m` key); there is no other user-facing sync
+command. The public handle is
 `omlx/<id>` (`litellm.OmlxModelName`) where `<id>` is **exactly** what omlx's own
 `/v1/models` reports — no alias derivation, unlike the old vLLM design's
 Hugging-Face-repo-id-derived alias — routed to `openai/<id>` (`OmlxRoutedModel`) with
-`api_base` pointing at the **single shared** omlx endpoint and the non-empty
+`api_base` pointing at the **single shared** omlx endpoint, authenticated with the REAL
+key when the user has configured one on omlx's OWN side (`internal/omlx.APIKey` — env
+`OMLX_API_KEY` else omlx's own `~/.omlx/settings.json` `auth.api_key`; omlx validates
+no key by default, so an empty result is the common case) else the non-empty
 placeholder credential `"EMPTY"` (LiteLLM's `openai/` provider requires a non-empty key
-to construct its client even though omlx itself checks none). **Every omlx model
+to construct its client regardless). The same `internal/omlx.APIKey` also
+authenticates the platform's own probes (`ListModels`/`DefaultProbe`/`omlxHTTPGet`) as
+a Bearer `Authorization` header, so a key-protected server still reports healthy.
+**Every omlx model
 shares the same `api_base`** — a structural simplification versus the old per-model
 vLLM `api_base`. A cloud-key catalog resync (`litellm.SyncModels`) shields `omlx/*`
 handles from its delete pass (`localModelPrefixes` = `["omlx/"]`); local models are

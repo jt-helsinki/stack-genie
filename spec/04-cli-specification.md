@@ -503,16 +503,19 @@ one command:
   since it writes project-scoped files). Each workspace gets a per-project **`.venv-msb`**
   virtualenv created at start regardless (see §7/§25)
 * `--graphify-model <ref>` — the **name of a model omlx is already serving**, for
-  Graphify's headless LLM backend; optional (blank = none, the default). This is a
-  **plain model name**, not a Hugging Face repo id — there is no download at create
-  time and no curated-model picker; model management lives entirely in omlx's own
-  admin panel (`ai services console omlx`, §10.2). On a terminal the wizard shows a
-  free-text field (not a select) for the name; the chosen name is stored as
+  Graphify's headless LLM backend; optional (blank/`"(none — leave Graphify
+  unconfigured)"` = none, the default). There is no download at create
+  time and no curated Hugging-Face-repo-id list (retired with the old vLLM design);
+  model management lives entirely in omlx's own admin panel (`ai services console
+  omlx`, §10.2). On a terminal the wizard shows a **SELECT** (not a free-text field)
+  built from omlx's live `GET /v1/models` — a "none" option always first, shown alone
+  when omlx has nothing loaded/isn't running (never blocks the wizard) — and a
+  pre-seeded `--graphify-model` value omlx doesn't currently report is appended to the
+  picker's options rather than dropped; the chosen name is stored as
   `agent.graphify_model` and routed through the gateway as `omlx/<name>` at
-  workspace start (architecture §17). *(The `--graphify-model` flag's own `--help`
-  text in the current build still describes the retired HF-repo-id/curated-list
-  behavior — a known doc/code drift; the behavior described here, driven from the
-  wizard's actual prompt and the seeded flag, is the real one.)*
+  workspace start (architecture §17). The `--graphify-model` flag's own `--help`
+  text matches this picker behavior (the earlier drift describing the retired
+  HF-repo-id/curated-list behavior has been fixed).
 * `--apps <list>` — comma-separated in-VM AI apps to install
   (`openwebui`); **opt-in, default none**. Like `--stacks` it
   pre-seeds the wizard's apps multi-select on a terminal and drives the selection
@@ -678,10 +681,14 @@ Steps, in order:
    with the default set (`caveman,graphify,code-review-graph`); pre-seeded from `--tools`.
    Each is recorded as a `context.<tool>_enabled` bool.
 10. **Graphify model** *(shown only when `graphify` is selected in step 9)* — an
-   **optional** free-text field: the **name of a model omlx is already serving**
-   (blank = none). Models are managed entirely through omlx's own admin panel
-   (`ai services console omlx`) — there is no picker here and nothing is downloaded
-   at create time. The value is stored as `agent.graphify_model` and routed through
+   **optional SELECT** built from omlx's live `GET /v1/models`: a
+   `"(none — leave Graphify unconfigured)"` option always first (shown alone when
+   omlx has nothing loaded/isn't running — never blocks the wizard), then every
+   model id omlx currently reports; a pre-seeded `--graphify-model` value omlx
+   doesn't currently report is appended rather than dropped. Models are managed
+   entirely through omlx's own admin panel
+   (`ai services console omlx`) — nothing is downloaded
+   at create time regardless of what is picked. The value is stored as `agent.graphify_model` and routed through
    the gateway as `omlx/<name>`. Also settable non-interactively via
    `--graphify-model`.
 
@@ -1338,15 +1345,23 @@ per-model vLLM design where each model had its own port).
 ai models refresh
 ```
 
-`ai models refresh` re-syncs LiteLLM's `omlx/*` registrations against omlx's own
-live `GET /v1/models` **on demand** — for after adding/removing/renaming a model
+`ai models refresh` **rebuilds** LiteLLM's `omlx/*` registrations against omlx's own
+live `GET /v1/models` **on demand** — it is NOT an add/delete diff: every
+currently-registered `omlx/*` model is DELETED, then every model omlx currently
+reports is RE-ADDED fresh, even one whose name is unchanged, so a stale registration
+(e.g. omlx now reports different capabilities under the same id) can never survive a
+refresh. Use it after adding/removing/renaming a model
 through omlx's admin panel, without needing a full `ai services restart omlx`.
-This is the **same** sync that already runs automatically at `ai setup` and at
+This is the **same** rebuild that already runs automatically at `ai setup` and at
 `ai services start|restart omlx` (§10.2); this command just triggers it
-standalone, so there is no separate step needed after a full setup/restart. It
+standalone, so there is no separate step needed after a full setup/restart. The TUI
+mirror is the `m` key in the omlx Service Detail pane (shown/offered only for that
+service). It
 takes no arguments. The `--json` envelope carries `data.added` / `data.deleted`
-(the model names newly registered / newly removed by this sync); when nothing
-changed the human output reports "already in sync". A gateway/omlx failure exits
+(the model names re-registered / deleted by this rebuild — every currently-served
+model appears in BOTH lists unless it disappeared or is newly appeared); when omlx
+currently serves no models the human output reports "omlx currently serves no
+models — nothing to rebuild" rather than an empty diff. A gateway/omlx failure exits
 `4`.
 
 ---
@@ -1900,8 +1915,8 @@ number keys `1`-`9`. There is **no `:` command palette** — `q`/`ctrl+c` quits 
   workspace is rejected — and a non-existent path is created with intermediate
   folders), then **text inputs** (name / cpus / memory / ports / idle timeout),
   **`listWindow` single/multi-selects** (OS / agent CLIs / default agent CLI /
-  stacks / apps), and a free-text **Graphify model** field naming an
-  already-served omlx model (mirroring the CLI wizard's step 10, §3.1).
+  stacks / apps), and a **Graphify model** SELECT populated from omlx's live model
+  list (mirroring the CLI wizard's step 10, §3.1) — a "none" option always first.
   On confirm it runs `create.Execute` off the event loop and refreshes the hub.
   Opening a project drops
   INTO it, revealing a **sub-tab bar** for that project (the project name + the
@@ -1987,8 +2002,8 @@ number keys `1`-`9`. There is **no `:` command palette** — `q`/`ctrl+c` quits 
   cloud providers — local `omlx/<id>` models are EXCLUDED. There is no local-model
   tab: local-model management is gone from this CLI/TUI entirely — omlx (the sole
   local-inference runtime) manages its own models through its own admin panel
-  (`ai services console omlx`, §10.2), and `ai models refresh` (§8.3) re-syncs the
-  gateway on demand. `enter` opens the catalog metadata in a describe pane; `t` tests a
+  (`ai services console omlx`, §10.2), and `ai models refresh` (§8.3) rebuilds the
+  gateway's `omlx/*` registrations on demand (a full delete+re-add, not a diff). `enter` opens the catalog metadata in a describe pane; `t` tests a
   **registered** model
   (round-trips it through the gateway; the catalog-driven system has no default
   model); `r` re-fetches the catalog + resyncs the gateway. Provider keys are added
