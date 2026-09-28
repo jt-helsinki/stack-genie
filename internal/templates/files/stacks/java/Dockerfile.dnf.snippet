@@ -1,0 +1,6 @@
+# stack: java — dnf-based OS (e.g. alma). No "default-jdk" meta-package on dnf, so pin
+# the same major version apt's default-jdk resolves to on debian-trixie/ubuntu (OpenJDK 21).
+USER root
+RUN dnf install -y --setopt=install_weak_deps=False java-21-openjdk-devel \
+ && dnf clean all
+USER workspace

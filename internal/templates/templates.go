@@ -68,8 +68,22 @@ func BaseDockerfile(osKey string) (string, error) {
 	return readInstalled(filepath.Join(dockerfilesDir, osKey, "Dockerfile"))
 }
 
-// StackSnippet returns the installed Dockerfile snippet for a software stack.
-func StackSnippet(stack string) (string, error) {
+// dnfOSKeys are the OS keys whose base image uses dnf (AlmaLinux/EL) rather than apt
+// (Debian/Ubuntu) — see StackSnippet's dnf-variant selection.
+var dnfOSKeys = map[string]bool{"alma": true}
+
+// StackSnippet returns the installed Dockerfile snippet for a software stack, for the
+// given OS key. A stack whose install step depends on the OS's package manager (e.g.
+// go/deno/maven/java, which `apt-get`/`dnf install` a distro package) ships a
+// "Dockerfile.dnf.snippet" sibling for dnf-based OSes (see dnfOSKeys); that variant is
+// used when present, else the plain "Dockerfile.snippet" (apt, or package-manager-free
+// like rust's rustup installer) covers every OS.
+func StackSnippet(stack, osKey string) (string, error) {
+	if dnfOSKeys[osKey] {
+		if content, err := readInstalled(filepath.Join(stacksDir, stack, "Dockerfile.dnf.snippet")); err == nil {
+			return content, nil
+		}
+	}
 	return readInstalled(filepath.Join(stacksDir, stack, "Dockerfile.snippet"))
 }
 

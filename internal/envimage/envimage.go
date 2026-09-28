@@ -35,7 +35,7 @@ func Compose(osKey string, stacks, agentCLIs, tools []string) (string, error) {
 	// per request (internal/contextopt.HeadroomParams). The workspace image only
 	// needs the OS base, the selected stacks, and the agent CLIs.
 	for _, stack := range stacks {
-		snippet, err := templates.StackSnippet(stack)
+		snippet, err := templates.StackSnippet(stack, osKey)
 		if err != nil {
 			return "", fmt.Errorf("stack %q: %w", stack, err)
 		}

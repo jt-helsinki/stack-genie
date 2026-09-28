@@ -288,7 +288,7 @@ func TestStackSnippetKnownStacks(t *testing.T) {
 	}
 	for _, stack := range stacks {
 		t.Run(stack, func(t *testing.T) {
-			got, err := templates.StackSnippet(stack)
+			got, err := templates.StackSnippet(stack, "debian-trixie")
 			if err != nil {
 				t.Fatalf("StackSnippet(%q): %v", stack, err)
 			}
@@ -304,8 +304,46 @@ func TestStackSnippetUnknown(t *testing.T) {
 	if err := templates.Install(); err != nil {
 		t.Fatalf("Install: %v", err)
 	}
-	if _, err := templates.StackSnippet("cobol"); err == nil {
+	if _, err := templates.StackSnippet("cobol", "debian-trixie"); err == nil {
 		t.Fatal("StackSnippet(unknown) = nil error, want error")
+	}
+}
+
+// TestStackSnippetUsesDnfOnAlma verifies that a stack whose install step depends on
+// the package manager (go/deno/maven/java — apt on debian/ubuntu, dnf on alma) picks
+// the dnf variant for "alma" and never emits an apt-get command there, while a
+// package-manager-free stack (rust, via rustup) is unaffected by the OS key.
+func TestStackSnippetUsesDnfOnAlma(t *testing.T) {
+	redirectHome(t)
+	if err := templates.Install(); err != nil {
+		t.Fatalf("Install: %v", err)
+	}
+	dnfStacks := []string{"go", "deno", "maven", "java"}
+	for _, stack := range dnfStacks {
+		t.Run(stack, func(t *testing.T) {
+			got, err := templates.StackSnippet(stack, "alma")
+			if err != nil {
+				t.Fatalf("StackSnippet(%q, alma): %v", stack, err)
+			}
+			if !strings.Contains(got, "dnf") {
+				t.Errorf("StackSnippet(%q, alma) has no dnf install:\n%s", stack, got)
+			}
+			if strings.Contains(got, "apt-get") {
+				t.Errorf("StackSnippet(%q, alma) still runs apt-get:\n%s", stack, got)
+			}
+		})
+	}
+	// rust has no OS-package install step (rustup only) — same content regardless of OS.
+	aptContent, err := templates.StackSnippet("rust", "debian-trixie")
+	if err != nil {
+		t.Fatalf("StackSnippet(rust, debian-trixie): %v", err)
+	}
+	almaContent, err := templates.StackSnippet("rust", "alma")
+	if err != nil {
+		t.Fatalf("StackSnippet(rust, alma): %v", err)
+	}
+	if aptContent != almaContent {
+		t.Errorf("rust snippet should be identical across OSes, got:\ndebian: %s\nalma: %s", aptContent, almaContent)
 	}
 }
 
@@ -350,7 +388,7 @@ func TestReadBeforeInstallErrors(t *testing.T) {
 	if _, err := templates.BaseDockerfile("ubuntu"); err == nil {
 		t.Error("BaseDockerfile before Install = nil error, want error")
 	}
-	if _, err := templates.StackSnippet("go"); err == nil {
+	if _, err := templates.StackSnippet("go", "debian-trixie"); err == nil {
 		t.Error("StackSnippet before Install = nil error, want error")
 	}
 	if _, err := templates.AgentCLISnippet("opencode"); err == nil {

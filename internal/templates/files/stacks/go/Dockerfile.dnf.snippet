@@ -1,0 +1,5 @@
+# stack: go (dnf-based OS, e.g. alma)
+USER root
+RUN dnf install -y --setopt=install_weak_deps=False golang \
+ && dnf clean all
+USER workspace

@@ -1,0 +1,10 @@
+# stack: deno (official installer, for the workspace user) — dnf-based OS (e.g. alma)
+# The installer unpacks a .zip, so it needs `unzip` present — the base image does not
+# ship it, so install it as root first (matching the go/java stack pattern).
+USER root
+RUN dnf install -y --setopt=install_weak_deps=False unzip \
+ && dnf clean all
+USER workspace
+RUN curl -fsSL https://deno.land/install.sh | sh
+ENV DENO_INSTALL="/home/workspace/.deno"
+ENV PATH="${DENO_INSTALL}/bin:${PATH}"
