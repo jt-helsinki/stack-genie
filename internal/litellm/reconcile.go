@@ -185,17 +185,18 @@ func DesiredOmlxModels(liveModelIDs []string, apiBase, apiKey string) []DesiredM
 }
 
 // SyncOmlxModels reconciles the gateway's live omlx/* registrations against
-// omlx's own live model list (liveModelIDs — see DesiredOmlxModels): unlike
-// SyncModels' pure add/delete diff (Reconcile), every CURRENTLY-registered
-// omlx/* model is deleted and every DESIRED one re-added fresh, even when its
-// name is unchanged — so a stale registration (e.g. omlx reports different
-// capabilities for the same model id under the hood) can never survive a
-// refresh. It is scoped to ONLY omlx/*-prefixed live entries (onlyLocalModels)
-// so it never touches cloud registrations — the mirror image of SyncModels'
-// nonLocalModels guard. Called automatically at `ai setup` and at omlx service
-// start/restart, and on demand via `ai models refresh` / the TUI's Service
-// Detail `m` key (model management itself lives in omlx's own admin panel —
-// this sync just mirrors whatever it reports into the gateway).
+// omlx's own live model list (liveModelIDs — see DesiredOmlxModels), using the
+// SAME pure add/delete diff as SyncModels (Reconcile/ApplyPlan): a model
+// already registered under an unchanged name is left ALONE, so any settings a
+// user hand-edited on it in LiteLLM's admin UI (rate limits, tags, custom
+// pricing, ...) survive a refresh untouched. Only a model omlx newly reports
+// gets added, and only one that disappeared from omlx's list gets deleted. It
+// is scoped to ONLY omlx/*-prefixed live entries (onlyLocalModels) so it never
+// touches cloud registrations — the mirror image of SyncModels' nonLocalModels
+// guard. Called automatically at `ai setup` and at omlx service start/restart,
+// and on demand via `ai models refresh` / the TUI's Service Detail `m` key
+// (model management itself lives in omlx's own admin panel — this sync just
+// mirrors whatever it reports into the gateway).
 //
 // hardware bring-up: the live /model/new + /model/delete round-trips run only
 // against a running aip-litellm.
@@ -205,30 +206,8 @@ func (manager *KeyManager) SyncOmlxModels(liveModelIDs []string, apiBase, apiKey
 	if err != nil {
 		return SyncResult{}, err
 	}
-	return manager.applyOmlxRefresh(desired, onlyLocalModels(current))
-}
-
-// applyOmlxRefresh deletes every existing registration THEN adds every desired
-// one — the reverse of ApplyPlan's add-then-delete order. ApplyPlan's order is
-// safe only when add/delete are disjoint by name (SyncModels' diff); here the
-// add and delete sets deliberately overlap by name (a full teardown+rebuild), so
-// deleting first avoids briefly registering a duplicate model_name. It stops at
-// the first error, returning what was applied so far.
-func (manager *KeyManager) applyOmlxRefresh(desired []DesiredModel, existing []LiveModel) (SyncResult, error) {
-	var result SyncResult
-	for _, model := range existing {
-		if err := manager.DeleteModel(model.ID); err != nil {
-			return result, err
-		}
-		result.Deleted = append(result.Deleted, model.Name)
-	}
-	for _, model := range desired {
-		if err := manager.AddModel(model.Name, model.Params, model.Info); err != nil {
-			return result, err
-		}
-		result.Added = append(result.Added, model.Name)
-	}
-	return result, nil
+	plan := Reconcile(desired, onlyLocalModels(current))
+	return manager.ApplyPlan(plan)
 }
 
 // localModelPrefixes are the public model_name prefixes owned by the local-inference

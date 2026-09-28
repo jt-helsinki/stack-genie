@@ -492,6 +492,9 @@ func (sandbox *sdkSandbox) Create(name, imageRef, projectMount, overlayPath stri
 	if err := sandbox.ensure(); err != nil {
 		return err
 	}
+	if err := ensureIsolatedVolumes(name, resources.IsolatedDirs); err != nil {
+		return err
+	}
 	options := []microsandbox.SandboxOption{
 		microsandbox.WithImage(imageRef),
 		// Workspace images are always built locally and loaded into the shared msb
@@ -517,10 +520,7 @@ func (sandbox *sdkSandbox) Create(name, imageRef, projectMount, overlayPath stri
 		// wrapper ignores any image CMD msb may append as positional args (so it can
 		// never turn into an invalid `sleep infinity <cmd>`).
 		microsandbox.WithEntrypoint("sh", "-c", "exec sleep infinity"),
-		microsandbox.WithMounts(map[string]microsandbox.MountConfig{
-			workspaceWorkdir: microsandbox.Mount.Bind(projectMount, microsandbox.MountOptions{}),
-			"/persist":       microsandbox.Mount.Bind(overlayPath, microsandbox.MountOptions{}),
-		}),
+		microsandbox.WithMounts(extraMounts(name, projectMount, overlayPath, resources.IsolatedDirs, resources.SharedMounts)),
 		microsandbox.WithNetwork(buildNetworkConfig(netArgs)),
 	}
 	if resources.CPUs > 0 {
@@ -528,11 +528,64 @@ func (sandbox *sdkSandbox) Create(name, imageRef, projectMount, overlayPath stri
 	}
 	live, err := microsandbox.CreateSandbox(context.Background(), name, options...)
 	if err != nil {
-		return fmt.Errorf("could not create workspace %q — run `ai doctor` to check Microsandbox and disk space", name)
+		return fmt.Errorf("could not create workspace %q: %w (run `ai doctor` to check Microsandbox and disk space)", name, err)
 	}
 	// Detach the owning handle: keep the VM running after this process exits.
 	_ = live.Detach(context.Background())
 	return nil
+}
+
+// extraMounts builds the microVM's mount set: the host project source bind-mounted at
+// workspaceWorkdir, the persistent overlay bind-mounted at /persist, and two kinds of
+// extra mount beyond those —
+//
+//   - for each of isolatedDirs: a private, workspace-scoped NAMED volume mounted at
+//     that guest subpath of workspaceWorkdir. A named volume (unlike a bind mount) is
+//     backed by msb's own storage, not a host directory, so it shadows whatever the
+//     host bind mount would otherwise expose there: the host's copy of that
+//     subdirectory is never touched, and the guest's copy is never visible on the
+//     host. The volume name is scoped by workspace name so it persists across restarts
+//     of THIS workspace without colliding with another workspace's isolated dir of the
+//     same relative path.
+//   - for each of sharedMounts: an ordinary bind mount of an arbitrary HOST directory
+//     at an arbitrary GUEST path, visible and writable on both sides (unlike an
+//     isolated dir, nothing is hidden from the host).
+func extraMounts(workspaceName, projectMount, overlayPath string, isolatedDirs []string, sharedMounts []config.SharedMount) map[string]microsandbox.MountConfig {
+	mounts := map[string]microsandbox.MountConfig{
+		workspaceWorkdir: microsandbox.Mount.Bind(projectMount, microsandbox.MountOptions{}),
+		"/persist":       microsandbox.Mount.Bind(overlayPath, microsandbox.MountOptions{}),
+	}
+	for _, isolatedDir := range isolatedDirs {
+		guestPath := path.Join(workspaceWorkdir, isolatedDir)
+		mounts[guestPath] = microsandbox.Mount.Named(isolatedVolumeName(workspaceName, isolatedDir), microsandbox.MountOptions{})
+	}
+	for _, sharedMount := range sharedMounts {
+		mounts[sharedMount.GuestPath] = microsandbox.Mount.Bind(sharedMount.HostPath, microsandbox.MountOptions{})
+	}
+	return mounts
+}
+
+// ensureIsolatedVolumes creates the named volume backing each isolated dir if it
+// doesn't already exist — required because, unlike a bind mount, mounting a NAMED
+// volume that hasn't been created first fails Create outright ("volume not found").
+// Idempotent: an existing volume (from a prior create/restart) is left alone.
+func ensureIsolatedVolumes(workspaceName string, isolatedDirs []string) error {
+	for _, isolatedDir := range isolatedDirs {
+		volumeName := isolatedVolumeName(workspaceName, isolatedDir)
+		_, err := microsandbox.CreateVolume(context.Background(), volumeName)
+		if err != nil && !microsandbox.IsKind(err, microsandbox.ErrVolumeAlreadyExists) {
+			return fmt.Errorf("could not create volume %q for isolated dir %q: %w", volumeName, isolatedDir, err)
+		}
+	}
+	return nil
+}
+
+// isolatedVolumeName derives a stable, workspace-scoped named-volume identifier for an
+// isolated dir's guest mount, e.g. workspace "demo" + dir "apps/web/node_modules" →
+// "aip-demo-isolate-apps-web-node_modules".
+func isolatedVolumeName(workspaceName, isolatedDir string) string {
+	slug := strings.ReplaceAll(path.Clean(isolatedDir), "/", "-")
+	return "aip-" + workspaceName + "-isolate-" + slug
 }
 
 // Start ensures the microVM is booted (detached). An already-running VM is success,

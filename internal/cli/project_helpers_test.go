@@ -165,15 +165,20 @@ func TestSanitizeName(test *testing.T) {
 }
 
 func TestDefaultProjectName(test *testing.T) {
-	if got := defaultProjectName([]string{"explicit"}); got != "explicit" {
+	if got := defaultProjectName([]string{"explicit"}, "/some/location"); got != "explicit" {
 		test.Fatalf("explicit arg should win: %q", got)
+	}
+	// An explicit --location's basename wins over the cwd, so the name defaults to
+	// the WORKSPACE's own directory rather than wherever `ai create` happens to run.
+	if got := defaultProjectName(nil, "/tmp/My Location"); got != "my-location" {
+		test.Fatalf("location-derived name = %q, want my-location", got)
 	}
 	child := filepath.Join(test.TempDir(), "My Repo")
 	if err := os.MkdirAll(child, 0o755); err != nil {
 		test.Fatal(err)
 	}
 	test.Chdir(child)
-	if got := defaultProjectName(nil); got != "my-repo" {
+	if got := defaultProjectName(nil, ""); got != "my-repo" {
 		test.Fatalf("cwd-derived name = %q, want my-repo", got)
 	}
 }

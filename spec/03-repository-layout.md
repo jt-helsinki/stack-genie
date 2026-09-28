@@ -212,7 +212,6 @@ stack, per agent CLI, and per opt-in dev tool (architecture §25):
 ```text id="h10"
 dockerfiles/alma/Dockerfile
 dockerfiles/debian-trixie/Dockerfile
-dockerfiles/debian-bookworm/Dockerfile
 dockerfiles/ubuntu/Dockerfile
 
 stacks/go/Dockerfile.snippet
@@ -759,7 +758,7 @@ in-workspace agent CLI's concern (arch §20–22), so there are no `git`/`agents
 config blocks.
 
 ```yaml id="sc6"
-os: alma                   # alma | debian-trixie | debian-bookworm | ubuntu
+os: alma                   # alma | debian-trixie | ubuntu
 agent:
   tools: [opencode]        # installed agent CLIs (any subset of: opencode, omp, claude-code, codex, gemini, hermes); opencode by default
   default_tool: opencode   # default agent CLI; must be one of agent.tools

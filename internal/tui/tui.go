@@ -14,6 +14,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	goruntime "runtime"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -305,6 +306,73 @@ func Run(cwd string) error {
 		},
 	)
 	contextView := views.NewContext(currentRoot, contextopt.GetStatus, contextopt.SetStrategy, contextopt.SetCavemanLevel)
+	// Mounts: every extra mount beyond the base project bind mount — ISOLATED dirs
+	// (config.yaml workspace.isolated_dirs, guest-private named volumes) and SHARED
+	// mounts (config.yaml workspace.shared_mounts, extra host↔guest bind mounts). The
+	// view holds no config I/O — these closures are its only wiring, mirroring
+	// networkView's egress.* wiring above. Mutators mirror `ai mounts`' CLI logic
+	// (internal/cli/mounts.go) so the two surfaces stay in lockstep.
+	mountsView := views.NewMounts(currentRoot,
+		func(root string) ([]string, []config.SharedMount, error) {
+			projectConfig, err := config.LoadProjectConfig(root)
+			if err != nil {
+				return nil, nil, err
+			}
+			return projectConfig.Workspace.IsolatedDirs, projectConfig.Workspace.SharedMounts, nil
+		},
+		func(root, dir string) error {
+			if err := create.ValidateIsolatedDirs([]string{dir}); err != nil {
+				return err
+			}
+			projectConfig, err := config.LoadProjectConfig(root)
+			if err != nil {
+				return err
+			}
+			if slices.Contains(projectConfig.Workspace.IsolatedDirs, dir) {
+				return fmt.Errorf("isolated dir %q already present", dir)
+			}
+			projectConfig.Workspace.IsolatedDirs = append(projectConfig.Workspace.IsolatedDirs, dir)
+			return config.WriteProject(root, projectConfig)
+		},
+		func(root, guestPath, hostPath string) error {
+			projectConfig, err := config.LoadProjectConfig(root)
+			if err != nil {
+				return err
+			}
+			mounts := projectConfig.Workspace.SharedMounts
+			if slices.ContainsFunc(mounts, func(mount config.SharedMount) bool { return mount.GuestPath == guestPath }) {
+				return fmt.Errorf("shared mount %q already present", guestPath)
+			}
+			candidate := append(slices.Clone(mounts), config.SharedMount{GuestPath: guestPath, HostPath: hostPath})
+			if err := create.ValidateSharedMounts(candidate); err != nil {
+				return err
+			}
+			projectConfig.Workspace.SharedMounts = candidate
+			return config.WriteProject(root, projectConfig)
+		},
+		func(root, guestPath string) error {
+			projectConfig, err := config.LoadProjectConfig(root)
+			if err != nil {
+				return err
+			}
+			if strings.HasPrefix(guestPath, "/") {
+				mounts := projectConfig.Workspace.SharedMounts
+				index := slices.IndexFunc(mounts, func(mount config.SharedMount) bool { return mount.GuestPath == guestPath })
+				if index < 0 {
+					return fmt.Errorf("shared mount %q not present", guestPath)
+				}
+				projectConfig.Workspace.SharedMounts = slices.Delete(slices.Clone(mounts), index, index+1)
+				return config.WriteProject(root, projectConfig)
+			}
+			dirs := projectConfig.Workspace.IsolatedDirs
+			index := slices.Index(dirs, guestPath)
+			if index < 0 {
+				return fmt.Errorf("isolated dir %q not present", guestPath)
+			}
+			projectConfig.Workspace.IsolatedDirs = slices.Delete(slices.Clone(dirs), index, index+1)
+			return config.WriteProject(root, projectConfig)
+		},
+	)
 	// Cloud Models: the models.dev catalog (with its data source for availability
 	// messaging), the gateway's live (registered) set, the `r`-refresh (re-fetch the
 	// catalog + resync the gateway), and the gateway tester. All over the existing
@@ -338,14 +406,14 @@ func Run(cwd string) error {
 
 	// The Workspaces tab is a two-level hub: it opens on the switcher (the
 	// workspace list) and, once a workspace is selected, reveals per-workspace
-	// sub-tabs — Workspace · Network · Context · Shell · Apps — for it. The Workspace
+	// sub-tabs — Workspace · Network · Context · Mounts · Shell · Apps — for it. The Workspace
 	// tab embeds the workspace log beneath the summary (no separate log tab). The
 	// "Shell" tab is the session manager (sessionsView): list/attach/new/kill, with
 	// the interactive shell run in the real terminal via ExecProcess.
 	projectsHub := views.NewProjectsHub(
 		projectsView,
-		[]views.Screen{projectDetail, workspaceLogView, metricsView, networkView, contextView, sessionsView, appsView},
-		[]string{"Workspace", "Logs", "Metrics", "Network", "Context", "Shell", "Apps"},
+		[]views.Screen{projectDetail, workspaceLogView, metricsView, networkView, contextView, mountsView, sessionsView, appsView},
+		[]string{"Workspace", "Logs", "Metrics", "Network", "Context", "Mounts", "Shell", "Apps"},
 	)
 
 	// Top-level tab order = menu order: Services · Workspaces · Cloud Models · API

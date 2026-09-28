@@ -351,7 +351,7 @@ func TestOSEquivalenceOnHardware(test *testing.T) {
 	harness := New(test)
 	harness.installTemplates(test)
 
-	for _, osKey := range []string{"debian-trixie", "debian-bookworm", "ubuntu", "alma"} {
+	for _, osKey := range []string{"debian-trixie", "ubuntu", "alma"} {
 		created, code := harness.CreateProjectWithOS(test, "os-"+osKey, osKey)
 		AssertOK(test, created, code, "project.create")
 

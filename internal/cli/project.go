@@ -100,9 +100,9 @@ func formatAgentCLIs(agents []string) string {
 	return strings.Join(agents, ", ")
 }
 
-// Selectable options for the create wizard. All four OS templates ship as of
-// S5 (debian-trixie in S1; debian-bookworm, ubuntu, alma added in S5). The user
-// always picks the OS — none is applied silently (arch §25).
+// Selectable options for the create wizard. All three OS templates ship
+// (debian-trixie in S1; ubuntu, alma added in S5). The user always picks the
+// OS — none is applied silently (arch §25).
 // The selectable create options are defined once in internal/create (shared with the
 // in-TUI wizard, which cannot import cli). Python + Node + uv are baked into
 // every base by default (Graphify is now a selectable AI tool), so they are NOT stacks.
@@ -149,6 +149,7 @@ type createFlags struct {
 	cpus          int
 	memory        string
 	disk          string
+	isolatedDirs  []string
 	ports         []string
 	location      string
 	graphifyModel string
@@ -171,6 +172,7 @@ func readCreateFlags(cmd *cobra.Command, args []string) createFlags {
 	cpus, _ := cmd.Flags().GetInt("cpus")
 	memory, _ := cmd.Flags().GetString("memory")
 	disk, _ := cmd.Flags().GetString("disk")
+	isolatedDirs, _ := cmd.Flags().GetStringSlice("isolate-dirs")
 	ports, _ := cmd.Flags().GetStringSlice("ports")
 	location, _ := cmd.Flags().GetString("location")
 	graphifyModel, _ := cmd.Flags().GetString("graphify-model")
@@ -181,10 +183,11 @@ func readCreateFlags(cmd *cobra.Command, args []string) createFlags {
 		name: name, osKey: osKey, agents: agents, stacks: stacks, apps: appsList,
 		appPorts:    parseAppPortFlags(appPortEntries),
 		idleTimeout: idleTimeout, cpus: cpus, memory: memory, disk: disk, ports: ports,
-		location: location, graphifyModel: graphifyModel, shell: shell, authMode: authMode,
+		isolatedDirs: isolatedDirs,
+		location:     location, graphifyModel: graphifyModel, shell: shell, authMode: authMode,
 		tools:       tools,
 		toolsSet:    cmd.Flags().Changed("tools"),
-		defaultName: defaultProjectName(args),
+		defaultName: defaultProjectName(args, location),
 	}
 }
 
@@ -452,6 +455,7 @@ func newCreateCmd(emitter *output.Emitter, exit *int, use string) *cobra.Command
 	cmd.Flags().Int("cpus", 0, fmt.Sprintf("workspace vCPUs (default: %d; max: host's %d)", config.Default().Workspace.CPULimit, sysinfo.CPUs()))
 	cmd.Flags().String("memory", "", "workspace memory in GB, a plain number (default: "+config.Default().Workspace.MemoryLimit+"; capped below host RAM, reserving headroom for the host + service tier)")
 	cmd.Flags().String("disk", "", "workspace disk (writable rootfs) in GB, a plain number (default: "+config.Default().Workspace.DiskLimit+"; sizes the in-VM container image store so AI apps fit). Change later with `ai resize`.")
+	cmd.Flags().StringSlice("isolate-dirs", nil, "guest-relative subdirs to exclude from the host project mount (e.g. node_modules,target); each gets its own private per-workspace volume instead of the host directory, so host- and sandbox-built binaries never collide")
 	cmd.Flags().StringSlice("ports", nil, "ports to open into the workspace: PORT or HOST:GUEST (e.g. 8080,9000:3000)")
 	cmd.Flags().String("location", "", "workspace directory (default: current directory; created if missing)")
 	cmd.Flags().String("graphify-model", "", "name of a model omlx is ALREADY serving (manage models from its own admin panel — `ai services console omlx`); routed through the gateway as omlx/<name>, no download")
@@ -565,14 +569,18 @@ func orDefaultStr(value string) string {
 	return value
 }
 
-func defaultProjectName(args []string) string {
+// defaultProjectName defaults the workspace name to the WORKSPACE's own directory: an
+// explicit --location's basename when given, else the current directory's base (the
+// project is created here when --location is unset).
+func defaultProjectName(args []string, location string) string {
 	if len(args) == 1 {
 		return args[0]
 	}
-	// No name given: default to the current directory's base (the project is
-	// created here).
+	if name := create.DefaultDirName(location); name != "" {
+		return name
+	}
 	if cwd, err := os.Getwd(); err == nil {
-		return sanitizeName(filepath.Base(cwd))
+		return create.DefaultDirName(cwd)
 	}
 	return ""
 }
@@ -580,16 +588,7 @@ func defaultProjectName(args []string) string {
 // sanitizeName lowercases and replaces disallowed characters so the wizard's
 // default name is usually valid; the user can still edit it.
 func sanitizeName(raw string) string {
-	lowered := strings.ToLower(raw)
-	var builder strings.Builder
-	for _, char := range lowered {
-		if (char >= 'a' && char <= 'z') || (char >= '0' && char <= '9') || char == '-' {
-			builder.WriteRune(char)
-		} else {
-			builder.WriteRune('-')
-		}
-	}
-	return strings.Trim(builder.String(), "-")
+	return create.SanitizeName(raw)
 }
 
 // runCreateWizard collects a workspace project.Spec interactively (CLI §3.1). It
@@ -632,6 +631,10 @@ func graphifyModelOptions(seeded string) []string {
 func runCreateWizard(seed project.Spec) (project.Spec, bool, error) {
 	// Pre-seed every field from the caller (flags become the wizard's defaults).
 	name := seed.Name
+	// If the user leaves the name untouched but changes the location, the name should
+	// still default to the (new) location's directory — see the re-derivation after
+	// form.Run() below.
+	originalName, originalLocation := seed.Name, seed.Root
 	osKey := seed.OS
 	shell := seed.Shell
 	if shell == "" {
@@ -657,6 +660,7 @@ func runCreateWizard(seed project.Spec) (project.Spec, bool, error) {
 	memory := seed.Memory
 	disk := seed.Disk
 	portsText := formatPublishPorts(seed.PublishPorts)
+	isolatedDirsText := strings.Join(seed.IsolatedDirs, ",")
 
 	// Graphify's LLM backend names an already-served omlx model (no download — model
 	// management lives entirely in omlx's own admin panel), routed through the
@@ -681,7 +685,7 @@ func runCreateWizard(seed project.Spec) (project.Spec, bool, error) {
 		),
 		huh.NewGroup(
 			huh.NewSelect[string]().Title("Operating system").
-				Options(huh.NewOptions(supportedOSes...)...).Value(&osKey),
+				Options(osSelectOptions()...).Value(&osKey),
 			huh.NewSelect[string]().Title("Default interactive shell").
 				Options(huh.NewOptions(supportedShells...)...).Value(&shell),
 		),
@@ -720,6 +724,9 @@ func runCreateWizard(seed project.Spec) (project.Spec, bool, error) {
 			huh.NewInput().Title("Ports to open (comma-separated)").
 				Description("PORT or HOST:GUEST, e.g. 8080,9000:3000").
 				Value(&portsText).Validate(wizardPortsValidator),
+			huh.NewInput().Title("Isolated dirs (comma-separated, optional)").
+				Description("Guest-relative subdirs excluded from the host mount, e.g. node_modules,target — each gets a private sandbox-only volume").
+				Value(&isolatedDirsText).Validate(wizardIsolatedDirsValidator),
 		),
 		huh.NewGroup(
 			huh.NewInput().Title("Microsandbox idle timeout").
@@ -799,6 +806,13 @@ func runCreateWizard(seed project.Spec) (project.Spec, bool, error) {
 		}
 		return project.Spec{}, false, err
 	}
+	// The name field is typed before location in this form, so it can't react live to
+	// a location the user picks afterward — re-derive it here instead: if the user
+	// left name at its pre-seeded default while changing location, follow location's
+	// new directory rather than the stale seed.
+	if name == originalName && location != originalLocation {
+		name = defaultProjectName(nil, location)
+	}
 
 	agentCLIs, selectedApps := create.SplitAgentsAndApps(agentAppSelection)
 	portKeys := append(append([]string{}, selectedApps...), apps.SelectedDashboardAgents(agentCLIs)...)
@@ -809,6 +823,7 @@ func runCreateWizard(seed project.Spec) (project.Spec, bool, error) {
 		cpus, _ = strconv.Atoi(trimmed)
 	}
 	ports, _ := parsePublishPorts(splitCommaList(portsText))
+	isolatedDirs := splitCommaList(isolatedDirsText)
 
 	authModes := collectAuthModes(agentCLIs, map[string]string{
 		"claude-code": authClaude, "codex": authCodex, "gemini": authGemini,
@@ -834,6 +849,7 @@ func runCreateWizard(seed project.Spec) (project.Spec, bool, error) {
 		CPUs:                   cpus,
 		Memory:                 strings.TrimSpace(memory),
 		Disk:                   strings.TrimSpace(disk),
+		IsolatedDirs:           isolatedDirs,
 		PublishPorts:           ports,
 		Root:                   location,
 		GraphifyModel:          graphifyModel,
@@ -974,6 +990,20 @@ func wizardPortsValidator(value string) error {
 	return err
 }
 
+func wizardIsolatedDirsValidator(value string) error {
+	return create.ValidateIsolatedDirs(splitCommaList(value))
+}
+
+// osSelectOptions renders the OS picker with a human-readable "name + version" label
+// (create.OSDisplayName) while keeping the underlying SupportedOSes() key as the value.
+func osSelectOptions() []huh.Option[string] {
+	options := make([]huh.Option[string], 0, len(supportedOSes))
+	for _, key := range supportedOSes {
+		options = append(options, huh.NewOption(create.OSDisplayName(key), key))
+	}
+	return options
+}
+
 // agentAndAppOptions renders the combined "Agent CLIs & AI apps" multi-select: the
 // agent CLIs first (label == value), then the opt-in in-VM apps labeled
 // "<Name> (app)" with the stable app key as the value (so the wizard returns keys,
@@ -1066,6 +1096,9 @@ func validateProvidedCreateFlags(flags createFlags) error {
 		return err
 	}
 	if err := create.ValidateDisk(flags.disk); err != nil {
+		return err
+	}
+	if err := create.ValidateIsolatedDirs(flags.isolatedDirs); err != nil {
 		return err
 	}
 	if _, err := parsePublishPorts(flags.ports); err != nil {
@@ -1194,6 +1227,7 @@ func seedSpec(flags createFlags) project.Spec {
 		CPUs:                   flags.cpus,
 		Memory:                 flags.memory,
 		Disk:                   flags.disk,
+		IsolatedDirs:           flags.isolatedDirs,
 		PublishPorts:           ports,
 		GraphifyModel:          flags.graphifyModel,
 		CavemanEnabled:         caveman,
@@ -1250,6 +1284,7 @@ func specFromFlags(flags createFlags) (project.Spec, error) {
 		CPUs:                   flags.cpus,
 		Memory:                 flags.memory,
 		Disk:                   flags.disk,
+		IsolatedDirs:           flags.isolatedDirs,
 		PublishPorts:           ports,
 		GraphifyModel:          flags.graphifyModel,
 		CavemanEnabled:         caveman,

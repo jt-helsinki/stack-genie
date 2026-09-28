@@ -11,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path"
 	"slices"
 	"strings"
 
@@ -187,6 +188,72 @@ func ValidateDisk(disk string) error {
 	mib, err := config.ParseMemoryMiB(disk)
 	if err != nil || mib <= 0 {
 		return output.Errorf(output.ExitInvalidInput, "invalid disk size %q — use a plain number of GB (e.g. 20)", disk)
+	}
+	return nil
+}
+
+// ValidateIsolatedDirs validates the --isolate-dirs list: each entry must be a
+// non-empty, relative, project-internal path (no leading "/", no ".." segment, no
+// "."-only/empty segment) — it names a subdirectory of the project workdir that gets
+// its own private per-workspace volume instead of the host bind mount. Duplicate
+// entries (after path cleaning) are rejected so the same guest mount is never
+// declared twice.
+func ValidateIsolatedDirs(dirs []string) error {
+	seen := make(map[string]bool, len(dirs))
+	for _, dir := range dirs {
+		trimmed := strings.TrimSpace(dir)
+		if trimmed == "" {
+			return output.Errorf(output.ExitInvalidInput, "isolated dir must not be empty")
+		}
+		if path.IsAbs(trimmed) {
+			return output.Errorf(output.ExitInvalidInput, "isolated dir %q must be relative to the project root, not absolute", trimmed)
+		}
+		clean := path.Clean(trimmed)
+		if clean == "." || strings.HasPrefix(clean, "../") || clean == ".." {
+			return output.Errorf(output.ExitInvalidInput, "isolated dir %q must stay inside the project root", trimmed)
+		}
+		if seen[clean] {
+			return output.Errorf(output.ExitInvalidInput, "isolated dir %q listed more than once", trimmed)
+		}
+		seen[clean] = true
+	}
+	return nil
+}
+
+// reservedGuestMountPaths are the guest paths the platform itself mounts (the project
+// bind mount and the persistent overlay — see workspace.workspaceWorkdir/"/persist";
+// duplicated here as literals to avoid an internal/create → internal/workspace import).
+// A --map-dir/--isolate-dirs guest path may not collide with either.
+var reservedGuestMountPaths = map[string]bool{
+	"/home/workspace/project": true,
+	"/persist":                true,
+}
+
+// ValidateSharedMounts validates the --map-dir list: each entry needs a non-empty,
+// absolute guest path (not colliding with the platform's own project/overlay mounts)
+// and a non-empty host path (created if missing — see workspace.Manager.Start). Guest
+// paths must be unique across entries.
+func ValidateSharedMounts(mounts []config.SharedMount) error {
+	seen := make(map[string]bool, len(mounts))
+	for _, mount := range mounts {
+		guestPath := path.Clean(strings.TrimSpace(mount.GuestPath))
+		hostPath := strings.TrimSpace(mount.HostPath)
+		if guestPath == "" || guestPath == "." {
+			return output.Errorf(output.ExitInvalidInput, "shared mount guest path must not be empty")
+		}
+		if !path.IsAbs(guestPath) {
+			return output.Errorf(output.ExitInvalidInput, "shared mount guest path %q must be absolute", mount.GuestPath)
+		}
+		if reservedGuestMountPaths[guestPath] {
+			return output.Errorf(output.ExitInvalidInput, "shared mount guest path %q is reserved by the platform", guestPath)
+		}
+		if hostPath == "" {
+			return output.Errorf(output.ExitInvalidInput, "shared mount %q needs a host path", guestPath)
+		}
+		if seen[guestPath] {
+			return output.Errorf(output.ExitInvalidInput, "shared mount guest path %q listed more than once", guestPath)
+		}
+		seen[guestPath] = true
 	}
 	return nil
 }

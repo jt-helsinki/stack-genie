@@ -211,6 +211,32 @@ type WorkspaceConfig struct {
 	// workspace start (the interactive-shell rc block, and — for zsh — chsh of the
 	// workspace user's login shell). Empty is treated as bash by callers.
 	Shell string `yaml:"shell,omitempty" json:"shell,omitempty"`
+	// IsolatedDirs are guest-relative paths under the project workdir (e.g.
+	// "node_modules", "target") that are EXCLUDED from the host project bind mount and
+	// instead backed by a private, workspace-scoped persistent volume: writes made
+	// in-VM (installed deps, build artifacts) never touch the host directory tree, and
+	// whatever the host has at that path stays untouched and invisible to the guest.
+	// This lets host-built and sandbox-built binaries coexist without collision (e.g. a
+	// host node_modules with host-native binaries vs. a guest node_modules with
+	// Linux-native ones). Applied at workspace create as an additional SDK mount over
+	// the subpath. Empty by default (today's behavior: the whole project dir is one
+	// bind mount, nothing excluded).
+	IsolatedDirs []string `yaml:"isolated_dirs,omitempty" json:"isolated_dirs,omitempty"`
+	// SharedMounts are additional host directories bind-mounted into the guest at an
+	// arbitrary guest path (beyond the base project mount at workspaceWorkdir), VISIBLE
+	// on both sides — unlike IsolatedDirs, writes on either side are seen by the other.
+	// Applied at workspace create as an additional SDK bind mount. Empty by default (no
+	// extra host↔guest mappings beyond the project dir).
+	SharedMounts []SharedMount `yaml:"shared_mounts,omitempty" json:"shared_mounts,omitempty"`
+}
+
+// SharedMount is one extra host↔guest bind mount (config.yaml
+// workspace.shared_mounts entry): HostPath (an absolute host directory, created if
+// missing) is mounted into the guest at GuestPath (an absolute guest path), visible
+// and writable from both sides.
+type SharedMount struct {
+	GuestPath string `yaml:"guest_path" json:"guest_path"`
+	HostPath  string `yaml:"host_path" json:"host_path"`
 }
 
 // MicrosandboxConfig holds options passed to `msb create` at workspace start.

@@ -103,6 +103,13 @@ type Spec struct {
 	// ~/projects/<name> (RootPath); `ai create` sets it explicitly to the chosen
 	// location.
 	Root string
+	// IsolatedDirs are guest-relative paths excluded from the host project bind mount
+	// and backed by a private per-workspace volume instead, written to config.yaml
+	// workspace.isolated_dirs. Empty by default (nothing excluded).
+	IsolatedDirs []string
+	// SharedMounts are extra host↔guest bind mounts beyond the project dir, written to
+	// config.yaml workspace.shared_mounts. Empty by default (no extra mappings).
+	SharedMounts []config.SharedMount
 }
 
 // ValidateName reports whether a name is well-formed (arch §19).
@@ -359,7 +366,7 @@ func Scaffold(spec Spec, createdAt string) (string, error) {
 	projectConfig := &config.Config{
 		OS:              spec.OS,
 		Agent:           config.AgentConfig{Tools: spec.AgentCLIs, DefaultTool: spec.DefaultTool, GraphifyModel: spec.GraphifyModel, AuthModes: authModes},
-		Workspace:       config.WorkspaceConfig{CPULimit: cpus, MemoryLimit: memory, DiskLimit: disk, Shell: shell},
+		Workspace:       config.WorkspaceConfig{CPULimit: cpus, MemoryLimit: memory, DiskLimit: disk, Shell: shell, IsolatedDirs: spec.IsolatedDirs, SharedMounts: spec.SharedMounts},
 		Context:         config.ContextConfig{CavemanEnabled: &cavemanEnabled, GraphifyEnabled: &graphifyEnabled, CodeReviewGraphEnabled: &codeReviewGraphEnabled, CodebaseMemoryEnabled: &codebaseMemoryEnabled},
 		Microsandbox:    config.MicrosandboxConfig{IdleTimeout: idleTimeout},
 		Network:         config.NetworkConfig{PublishPorts: spec.PublishPorts, AllowHostServices: oauthAllow},

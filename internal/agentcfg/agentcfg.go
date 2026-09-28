@@ -138,7 +138,7 @@ func OpenCodeConfig(gatewayURL, apiKey, defaultModel string, models []Model, kee
 		}
 	}
 	document := map[string]any{
-		"$schema": "https://opencode.ai/config.json",
+		"$schema":    "https://opencode.ai/config.json",
 		"permission": "allow",
 		// Restrict opencode to ONLY the platform gateway provider, so the model
 		// picker is exactly the models LiteLLM serves — opencode never falls back to
@@ -194,8 +194,8 @@ func OpenCodeConfig(gatewayURL, apiKey, defaultModel string, models []Model, kee
 //     in a TUI rather than lagging behind tmux's key-sequence wait.
 //
 // These directives require tmux >= 3.2 (terminal-features, extended-keys); the
-// shipped bases all satisfy this (debian trixie ~3.4, debian bookworm 3.3a,
-// ubuntu 24.04 3.4, almalinux 10 ~3.4). Note (a known limitation): tmux does NOT
+// shipped bases all satisfy this (debian trixie ~3.4, ubuntu 24.04 3.4,
+// almalinux 10 ~3.4). Note (a known limitation): tmux does NOT
 // proxy GPU/graphics protocols (kitty graphics, sixel), so a TUI's image-rendering
 // features will not work inside the tmux session.
 func TmuxConfig() []byte {

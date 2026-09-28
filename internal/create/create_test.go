@@ -419,3 +419,53 @@ func TestSplitAgentsAndApps(test *testing.T) {
 		test.Errorf("empty selection must split to empty sides, got %v / %v", agentCLIs, appKeys)
 	}
 }
+
+// TestValidateIsolatedDirs verifies the accept/reject rules for --isolate-dirs: blank
+// entries, absolute paths, "..", and duplicates are all rejected; a plain relative dir
+// is accepted.
+func TestValidateIsolatedDirs(test *testing.T) {
+	valid := []string{"node_modules", "apps/web/target"}
+	if err := ValidateIsolatedDirs(valid); err != nil {
+		test.Errorf("ValidateIsolatedDirs(%v) = %v, want nil", valid, err)
+	}
+	invalid := [][]string{
+		{""},
+		{"  "},
+		{"/etc"},
+		{"../escape"},
+		{"."},
+		{"node_modules", "node_modules"},
+	}
+	for _, dirs := range invalid {
+		if err := ValidateIsolatedDirs(dirs); err == nil {
+			test.Errorf("ValidateIsolatedDirs(%v) = nil, want an error", dirs)
+		}
+	}
+}
+
+// TestValidateSharedMounts verifies the accept/reject rules for --map-dir: a relative
+// or empty guest path, an empty host path, a reserved guest path (the platform's own
+// project/persist mounts), and a duplicate guest path are all rejected; a well-formed
+// entry is accepted.
+func TestValidateSharedMounts(test *testing.T) {
+	valid := []config.SharedMount{{GuestPath: "/home/workspace/shared", HostPath: "/host/downloads"}}
+	if err := ValidateSharedMounts(valid); err != nil {
+		test.Errorf("ValidateSharedMounts(%v) = %v, want nil", valid, err)
+	}
+	invalid := [][]config.SharedMount{
+		{{GuestPath: "", HostPath: "/host/downloads"}},
+		{{GuestPath: "relative/path", HostPath: "/host/downloads"}},
+		{{GuestPath: "/home/workspace/shared", HostPath: ""}},
+		{{GuestPath: "/home/workspace/project", HostPath: "/host/downloads"}},
+		{{GuestPath: "/persist", HostPath: "/host/downloads"}},
+		{
+			{GuestPath: "/home/workspace/shared", HostPath: "/host/a"},
+			{GuestPath: "/home/workspace/shared", HostPath: "/host/b"},
+		},
+	}
+	for _, mounts := range invalid {
+		if err := ValidateSharedMounts(mounts); err == nil {
+			test.Errorf("ValidateSharedMounts(%v) = nil, want an error", mounts)
+		}
+	}
+}

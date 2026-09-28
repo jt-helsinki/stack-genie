@@ -42,6 +42,7 @@ const (
 	stepMemory
 	stepDisk
 	stepPorts
+	stepIsolatedDirs
 	stepIdle
 	stepTools // unified AI-tools multi-select (caveman/graphify/code-review-graph/codebase-memory)
 	stepModel
@@ -55,21 +56,22 @@ const authModeDesc = "How this agent authenticates. api-key routes through the g
 
 // stepTitles labels each step for the header.
 var stepTitles = map[int]string{
-	stepLocation: "Location",
-	stepName:     "Name",
-	stepOS:       "Operating system",
-	stepShell:    "Shell",
-	stepAgents:   "Agent CLIs & AI apps",
-	stepDefault:  "Default agent",
-	stepStacks:   "Software stacks",
-	stepCPUs:     "vCPUs",
-	stepMemory:   "Memory",
-	stepDisk:     "Disk",
-	stepPorts:    "Ports",
-	stepIdle:     "Idle timeout",
-	stepTools:    "AI tools",
-	stepModel:    "Graphify model",
-	stepAppPorts: "App port",
+	stepLocation:     "Location",
+	stepName:         "Name",
+	stepOS:           "Operating system",
+	stepShell:        "Shell",
+	stepAgents:       "Agent CLIs & AI apps",
+	stepDefault:      "Default agent",
+	stepStacks:       "Software stacks",
+	stepCPUs:         "vCPUs",
+	stepMemory:       "Memory",
+	stepDisk:         "Disk",
+	stepPorts:        "Ports",
+	stepIsolatedDirs: "Isolated dirs",
+	stepIdle:         "Idle timeout",
+	stepTools:        "AI tools",
+	stepModel:        "Graphify model",
+	stepAppPorts:     "App port",
 }
 
 // Create is the in-TUI new-workspace wizard: a multi-step form built from the same
@@ -81,22 +83,28 @@ type Create struct {
 
 	location *locationStep
 	name     *textStep
-	osList   *selectList
-	shell    *selectList
+	// lastAutoName is the name value this wizard last auto-filled from the location
+	// step (see followLocationDefaultName) — distinguishes "still following the
+	// location default" from "the user typed their own name", so a later location
+	// change doesn't clobber a deliberate edit.
+	lastAutoName string
+	osList       *selectList
+	shell        *selectList
 	// tools is the unified AI-tools multi-select (caveman/graphify/code-review-graph/
 	// codebase-memory-mcp), mirroring the agent-CLI list instead of a screen each.
 	tools *multiSelectList
 	// agentApps is the combined agent-CLIs + in-VM-apps multi-select (agents listed
 	// first, then apps); split into AgentCLIs vs Apps via selectedAgentsAndApps.
-	agentApps   *multiSelectList
-	defaultTool *selectList
-	stacks      *multiSelectList
-	cpus        *textStep
-	memory      *textStep
-	disk        *textStep
-	ports       *textStep
-	idle        *textStep
-	model       *selectList // the Graphify model picker, populated from omlx's live model list
+	agentApps    *multiSelectList
+	defaultTool  *selectList
+	stacks       *multiSelectList
+	cpus         *textStep
+	memory       *textStep
+	disk         *textStep
+	ports        *textStep
+	isolatedDirs *textStep
+	idle         *textStep
+	model        *selectList // the Graphify model picker, populated from omlx's live model list
 
 	// Per-agent auth-mode phase (stepAuth): one selectList per OAuth-capable selected
 	// agent, built when leaving the model step. authIndex walks them one at a time.
@@ -129,20 +137,25 @@ func NewCreate(startDir string, hostGB, usableGB int, omlxModels func() []string
 	memHint := fmt.Sprintf("A plain number in GB; blank uses the default (%s); usable max %d GB (host %d GB)",
 		config.Default().Workspace.MemoryLimit, usableGB, hostGB)
 
+	// The name defaults to the workspace's own (starting) directory — same default the
+	// user sees pre-filled in the location field just above it.
+	defaultName := create.DefaultDirName(createStartDir(startDir))
 	wizard := &Create{
-		location:    newLocationStep(startDir),
-		name:        newTextStep("name", "The workspace name (lowercase letters, digits, hyphens).", "my-workspace", "", validateNameField),
-		osList:      newSelectList("Base operating system.", create.SupportedOSes(), "debian-trixie"),
-		shell:       newSelectList("Default interactive shell for workspace sessions.", create.SupportedShells(), "bash"),
-		tools:       newMultiSelectList("AI tools installed at workspace start — space to toggle. caveman, graphify + code-review-graph are the defaults.", create.SupportedAITools(), create.DefaultAITools()),
-		agentApps:   newMultiSelectList("Agent CLIs (opencode is the default) and opt-in in-VM AI apps — space to toggle. Apps are the last rows.", combinedAgentAppOptions(), []string{"opencode"}),
-		defaultTool: newSelectList("The agent CLI launched by default.", []string{"opencode"}, "opencode"),
-		stacks:      newMultiSelectList("Extra software stacks (Python, Node, uv + Graphify are installed by default).", create.SupportedStacks(), nil),
-		cpus:        newTextStep("vCPUs", cpuHint, "", "", validateCPUsField),
-		memory:      newTextStep("memory (GB)", memHint, "", "", validateMemoryField),
-		disk:        newTextStep("disk (GB)", fmt.Sprintf("Writable rootfs / in-VM container image size; a plain number in GB; blank uses the default (%s). Change later with `ai resize`.", config.Default().Workspace.DiskLimit), "", "", validateDiskField),
-		ports:       newTextStep("ports", "Ports to open: PORT or HOST:GUEST, comma-separated (e.g. 8080,9000:3000).", "", "", validatePortsField),
-		idle:        newTextStep("idle timeout", "How long msb may leave the workspace idle before stopping it (e.g. 30m, 24h).", "", "", validateIdleField),
+		location:     newLocationStep(startDir),
+		name:         newTextStep("name", "The workspace name (lowercase letters, digits, hyphens).", "my-workspace", defaultName, validateNameField),
+		lastAutoName: defaultName,
+		osList:       newSelectListWithLabels("Base operating system.", create.SupportedOSes(), osDisplayLabels(), "debian-trixie"),
+		shell:        newSelectList("Default interactive shell for workspace sessions.", create.SupportedShells(), "bash"),
+		tools:        newMultiSelectList("AI tools installed at workspace start — space to toggle. caveman, graphify + code-review-graph are the defaults.", create.SupportedAITools(), create.DefaultAITools()),
+		agentApps:    newMultiSelectList("Agent CLIs (opencode is the default) and opt-in in-VM AI apps — space to toggle. Apps are the last rows.", combinedAgentAppOptions(), []string{"opencode"}),
+		defaultTool:  newSelectList("The agent CLI launched by default.", []string{"opencode"}, "opencode"),
+		stacks:       newMultiSelectList("Extra software stacks (Python, Node, uv + Graphify are installed by default).", create.SupportedStacks(), nil),
+		cpus:         newTextStep("vCPUs", cpuHint, "", "", validateCPUsField),
+		memory:       newTextStep("memory (GB)", memHint, "", "", validateMemoryField),
+		disk:         newTextStep("disk (GB)", fmt.Sprintf("Writable rootfs / in-VM container image size; a plain number in GB; blank uses the default (%s). Change later with `ai resize`.", config.Default().Workspace.DiskLimit), "", "", validateDiskField),
+		ports:        newTextStep("ports", "Ports to open: PORT or HOST:GUEST, comma-separated (e.g. 8080,9000:3000).", "", "", validatePortsField),
+		isolatedDirs: newTextStep("isolated dirs", "Guest-relative subdirs excluded from the host mount, comma-separated (e.g. node_modules,target) — each gets a private sandbox-only volume.", "", "", validateIsolatedDirsField),
+		idle:         newTextStep("idle timeout", "How long msb may leave the workspace idle before stopping it (e.g. 30m, 24h).", "", "", validateIdleField),
 	}
 	wizard.model = newSelectList(
 		"A model omlx is ALREADY serving (manage the list itself from its own admin panel — `ai services console omlx`); no download happens here.",
@@ -152,6 +165,19 @@ func NewCreate(startDir string, hostGB, usableGB int, omlxModels func() []string
 	// free one (best-effort; a read error just yields an empty reserved set).
 	wizard.reservedAppPorts, _ = apps.ReservedPortsAcrossWorkspaces()
 	return wizard
+}
+
+// followLocationDefaultName re-derives the name field from the just-confirmed
+// location when the user left name at whatever this wizard last auto-filled — so
+// changing location keeps the name in sync — without clobbering a name the user
+// deliberately typed themselves.
+func (view *Create) followLocationDefaultName() {
+	if view.name.Value() != view.lastAutoName {
+		return // the user edited it — leave their choice alone
+	}
+	next := create.DefaultDirName(view.location.dir)
+	view.name.SetValue(next)
+	view.lastAutoName = next
 }
 
 func (view *Create) Title() string { return "New Workspace" }
@@ -198,6 +224,7 @@ func (view *Create) SetSize(width, height int) {
 	view.memory.SetSize(stepWidth, stepHeight)
 	view.disk.SetSize(stepWidth, stepHeight)
 	view.ports.SetSize(stepWidth, stepHeight)
+	view.isolatedDirs.SetSize(stepWidth, stepHeight)
 	view.idle.SetSize(stepWidth, stepHeight)
 	view.model.SetSize(stepWidth, stepHeight)
 }
@@ -222,10 +249,11 @@ func (view *Create) Update(msg tea.Msg) tea.Cmd {
 	case stepLocation:
 		advance, cmd := view.location.Update(msg)
 		if advance {
+			view.followLocationDefaultName()
 			return view.next()
 		}
 		return cmd
-	case stepName, stepCPUs, stepMemory, stepDisk, stepPorts, stepIdle:
+	case stepName, stepCPUs, stepMemory, stepDisk, stepPorts, stepIsolatedDirs, stepIdle:
 		return view.updateTextStep(view.textStepFor(view.step), msg)
 	case stepOS, stepShell, stepDefault:
 		return view.updateSelectStep(view.selectStepFor(view.step), msg)
@@ -314,6 +342,8 @@ func (view *Create) textStepFor(step int) *textStep {
 		return view.disk
 	case stepPorts:
 		return view.ports
+	case stepIsolatedDirs:
+		return view.isolatedDirs
 	default:
 		return view.idle
 	}
@@ -346,6 +376,17 @@ const graphifyModelNone = "(none — leave Graphify unconfigured)"
 // isn't installed or is currently serving nothing): graphifyModelNone always
 // first, so a host with no models yet still shows a valid, selectable list rather
 // than an empty one.
+// osDisplayLabels renders create.SupportedOSes() into human-readable "name + version"
+// labels (create.OSDisplayName), same order, for the OS picker's display-only labels.
+func osDisplayLabels() []string {
+	keys := create.SupportedOSes()
+	labels := make([]string, len(keys))
+	for index, key := range keys {
+		labels[index] = create.OSDisplayName(key)
+	}
+	return labels
+}
+
 func graphifyModelOptions(omlxModels func() []string) []string {
 	var models []string
 	if omlxModels != nil {
@@ -547,6 +588,7 @@ func (view *Create) finish() tea.Cmd {
 		cpus, _ = strconv.Atoi(raw)
 	}
 	ports, _ := parsePortsForSpec(view.ports.Value())
+	isolatedDirs := splitTrimmedComma(view.isolatedDirs.Value())
 	caveman, graphify, codeReviewGraph, codebaseMemory := create.SplitAITools(view.tools.Values())
 	graphifyModel := ""
 	if graphify {
@@ -585,6 +627,7 @@ func (view *Create) finish() tea.Cmd {
 		CPUs:                   cpus,
 		Memory:                 view.memory.Value(),
 		Disk:                   view.disk.Value(),
+		IsolatedDirs:           isolatedDirs,
 		PublishPorts:           ports,
 		IdleTimeout:            view.idle.Value(),
 		GraphifyModel:          graphifyModel,
@@ -644,6 +687,8 @@ func (view *Create) stepBody() string {
 		return view.disk.View()
 	case stepPorts:
 		return view.ports.View()
+	case stepIsolatedDirs:
+		return view.isolatedDirs.View()
 	case stepIdle:
 		return view.idle.View()
 	case stepTools:
@@ -696,6 +741,23 @@ func validateMemoryField(value string) error {
 
 func validateDiskField(value string) error {
 	return create.ValidateDisk(value)
+}
+
+func validateIsolatedDirsField(value string) error {
+	return create.ValidateIsolatedDirs(splitTrimmedComma(value))
+}
+
+// splitTrimmedComma splits a comma-separated field into trimmed, non-empty entries
+// (mirrors the CLI wizard's splitCommaList).
+func splitTrimmedComma(value string) []string {
+	var entries []string
+	for _, part := range strings.Split(value, ",") {
+		trimmed := strings.TrimSpace(part)
+		if trimmed != "" {
+			entries = append(entries, trimmed)
+		}
+	}
+	return entries
 }
 
 // validateAppPortField accepts a blank value (auto-assign) or a valid 1-65535 host port.

@@ -12,7 +12,7 @@ import (
 // osKeys, stacks, and agentCLIs mirror the directories embedded under
 // internal/templates/files. Keep these in sync with that tree.
 var (
-	osKeys    = []string{"alma", "debian-bookworm", "debian-trixie", "ubuntu"}
+	osKeys    = []string{"alma", "debian-trixie", "ubuntu"}
 	stacks    = []string{"deno", "go", "java", "maven", "rust"}
 	agentCLIs = []string{"claude-code", "codex", "gemini", "omp", "opencode"}
 )

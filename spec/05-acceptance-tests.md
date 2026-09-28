@@ -881,7 +881,7 @@ runner.
 ### Test
 
 * `ai create os-<key> --os <key> --json` for each OS key
-  (`alma`, `debian-trixie`, `debian-bookworm`, `ubuntu`), then `ai start
+  (`alma`, `debian-trixie`, `ubuntu`), then `ai start
   --project os-<key>`, each with the same agent-CLI selection, and run the same
   tooling-smoke command (`ai exec os-<key> -- <tool> --version`) in each
 

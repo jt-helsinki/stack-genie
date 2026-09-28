@@ -137,10 +137,9 @@ func TestAllOSTemplatesExposeIdenticalBaseSurface(test *testing.T) {
 
 	// FROM line per OS — proves the user's OS choice is the one applied.
 	osBaseImage := map[string]string{
-		"debian-trixie":   "FROM debian:trixie-slim",
-		"debian-bookworm": "FROM debian:bookworm-slim",
-		"ubuntu":          "FROM ubuntu:24.04",
-		"alma":            "FROM almalinux:10",
+		"debian-trixie": "FROM debian:trixie-slim",
+		"ubuntu":        "FROM ubuntu:24.04",
+		"alma":          "FROM almalinux:10",
 	}
 	// Identical base tooling surface across every OS (arch §12, §25).
 	baseSurface := []string{

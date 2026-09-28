@@ -218,6 +218,7 @@ func TestCreateWizardAssemblesSpec(test *testing.T) {
 	enter() // memory (blank)
 	enter() // disk (blank)
 	enter() // ports (blank)
+	enter() // isolated dirs (blank)
 	enter() // idle (blank) → advances to the AI-tools step
 	if wizard.step != stepTools {
 		test.Fatalf("after idle, step = %d, want stepTools", wizard.step)
@@ -372,6 +373,7 @@ func TestCreateWizardAuthModeStep(test *testing.T) {
 	enter() // memory
 	enter() // disk
 	enter() // ports
+	enter() // isolated dirs
 	enter() // idle → AI tools
 	if wizard.step != stepTools {
 		test.Fatalf("expected the AI-tools step, got step %d", wizard.step)
@@ -439,6 +441,7 @@ func TestCreateWizardPromptsAppPort(test *testing.T) {
 	enter() // memory
 	enter() // disk
 	enter() // ports
+	enter() // isolated dirs
 	enter() // idle → AI tools
 	if wizard.step != stepTools {
 		test.Fatalf("after idle, step = %d, want stepTools", wizard.step)

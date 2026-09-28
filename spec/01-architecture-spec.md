@@ -1991,7 +1991,6 @@ seed a new project's `.ai-platform/Dockerfile`:
 |---|---|---|
 | `alma` | Alma 10 (`almalinux:10.2-minimal`) | `templates/dockerfiles/alma/Dockerfile` |
 | `debian-trixie` | `debian:trixie-slim` | `templates/dockerfiles/debian-trixie/Dockerfile` |
-| `debian-bookworm` | `debian:bookworm-slim` | `templates/dockerfiles/debian-bookworm/Dockerfile` |
 | `ubuntu` | Ubuntu (`ubuntu:24.04`) | `templates/dockerfiles/ubuntu/Dockerfile` |
 
 * **The OS is always chosen by the user** at creation, from the supported list,

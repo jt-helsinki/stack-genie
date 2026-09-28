@@ -51,10 +51,9 @@ func createRoot(test *testing.T, envelope Envelope) string {
 // of the four supported OS templates.
 func TestProjectDockerfileReflectsOS(test *testing.T) {
 	cases := map[string]string{
-		"debian-trixie":   "FROM debian:trixie-slim",
-		"debian-bookworm": "FROM debian:bookworm-slim",
-		"ubuntu":          "FROM ubuntu:24.04",
-		"alma":            "FROM almalinux:10",
+		"debian-trixie": "FROM debian:trixie-slim",
+		"ubuntu":        "FROM ubuntu:24.04",
+		"alma":          "FROM almalinux:10",
 	}
 	for osKey, wantFROM := range cases {
 		test.Run(osKey, func(test *testing.T) {

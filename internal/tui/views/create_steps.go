@@ -59,6 +59,11 @@ func (step *textStep) Validate() error {
 
 func (step *textStep) Value() string { return strings.TrimSpace(step.input.Value()) }
 
+// SetValue programmatically replaces the field's current text (e.g. re-deriving the
+// name field's default from a just-changed location — see
+// Create.followLocationDefaultName).
+func (step *textStep) SetValue(value string) { step.input.SetValue(value) }
+
 func (step *textStep) View() string {
 	var body strings.Builder
 	if step.desc != "" {
@@ -75,6 +80,10 @@ func (step *textStep) View() string {
 // listWindow so it matches the Local/Cloud Models highlight.
 type selectList struct {
 	options []string
+	// labels renders in place of options when non-nil (same length/order as options) —
+	// e.g. the OS picker shows "Debian 13 (Trixie)" while Value() still returns the
+	// underlying key "debian-trixie". nil means render options directly.
+	labels  []string
 	desc    string
 	window  listWindow
 	pending int // desired cursor until SetSize builds the window
@@ -83,7 +92,17 @@ type selectList struct {
 }
 
 func newSelectList(desc string, options []string, initial string) *selectList {
-	list := &selectList{desc: desc, options: options}
+	return newSelectListWithLabels(desc, options, nil, initial)
+}
+
+// newSelectListWithLabels is newSelectList with a separate display label per option
+// (labels[i] shown for options[i]); a nil/mismatched-length labels falls back to
+// rendering options directly.
+func newSelectListWithLabels(desc string, options, labels []string, initial string) *selectList {
+	if len(labels) != len(options) {
+		labels = nil
+	}
+	list := &selectList{desc: desc, options: options, labels: labels}
 	for index, option := range options {
 		if option == initial {
 			list.pending = index
@@ -97,6 +116,7 @@ func newSelectList(desc string, options []string, initial string) *selectList {
 func (list *selectList) SetOptions(options []string) {
 	current := list.Value()
 	list.options = options
+	list.labels = nil // a dynamic option set has no separate display labels
 	list.pending = 0
 	for index, option := range options {
 		if option == current {
@@ -114,7 +134,11 @@ func (list *selectList) SetSize(width, height int) {
 func (list *selectList) rebuild() {
 	lines := make([]ListLine, len(list.options))
 	for index, option := range list.options {
-		lines[index] = ListLine{Text: padToWidth("  "+option, list.width), Selectable: true}
+		label := option
+		if list.labels != nil {
+			label = list.labels[index]
+		}
+		lines[index] = ListLine{Text: padToWidth("  "+label, list.width), Selectable: true}
 	}
 	list.window.SetContent(lines, list.width, list.listHeight())
 	if list.pending > 0 {

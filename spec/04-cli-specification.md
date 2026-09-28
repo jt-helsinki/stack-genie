@@ -472,7 +472,7 @@ one command:
 
 * `--name <name>` (or the `[<name>]` positional) — defaults to the location
   directory's basename
-* `--os <os>` — one of `debian-trixie|debian-bookworm|ubuntu|alma`; **required**
+* `--os <os>` — one of `debian-trixie|ubuntu|alma`; **required**
   when running non-interactively
 * `--shell <shell>` — the workspace's default interactive shell, `bash|zsh`
   (default `bash`), written to `workspace.shell` and applied at every start by
@@ -636,7 +636,7 @@ Steps, in order:
    pre-filled with a sensible default (the current directory's basename,
    sanitized to the naming rules in §10) that the user accepts or edits.
 2. **OS** — single-select from the supported keys; default `debian-trixie`
-   (Slice 1 ships only `debian-trixie`; Slice 5 adds `alma`, `debian-bookworm`,
+   (Slice 1 ships only `debian-trixie`; Slice 5 adds `alma`,
    `ubuntu`). Selects the template that seeds `.ai-platform/Dockerfile`. The same
    group also carries a **Default interactive shell** single-select (`--shell`,
    `bash`|`zsh`, default `bash`, recorded as `workspace.shell`) — applied at
@@ -1343,13 +1343,13 @@ per-model vLLM design where each model had its own port).
 ai models refresh
 ```
 
-`ai models refresh` **rebuilds** LiteLLM's `omlx/*` registrations against omlx's own
-live `GET /v1/models` **on demand** — it is NOT an add/delete diff: every
-currently-registered `omlx/*` model is DELETED, then every model omlx currently
-reports is RE-ADDED fresh, even one whose name is unchanged, so a stale registration
-(e.g. omlx now reports different capabilities under the same id) can never survive a
-refresh. Use it after adding/removing/renaming a model
-through omlx's admin panel, without needing a full `ai services restart omlx`.
+`ai models refresh` reconciles LiteLLM's `omlx/*` registrations against omlx's own
+live `GET /v1/models` **on demand**, using the **same pure add/delete diff** as the
+cloud-key sync: a model already registered under an unchanged name is left ALONE
+(so hand-edited settings on it in LiteLLM's admin UI survive), only a newly-reported
+model is added, and only one that disappeared from omlx's list is deleted. Use it
+after adding/removing/renaming a model through omlx's admin panel, without needing
+a full `ai services restart omlx`.
 This is the **same** rebuild that already runs automatically at `ai setup` and at
 `ai services start|restart omlx` (§10.2); this command just triggers it
 standalone, so there is no separate step needed after a full setup/restart. The TUI

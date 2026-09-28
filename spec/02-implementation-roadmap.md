@@ -324,7 +324,7 @@ Add the remaining OS Dockerfile templates (Slice 1 ships the debian-trixie templ
 ## Scope
 
 * `alma` template (Alma 10)
-* `debian-bookworm` template (`debian:bookworm-slim`)
+* `debian-trixie` template (`debian:trixie-slim`)
 * `ubuntu` template (`ubuntu:24.04`)
 
 ---

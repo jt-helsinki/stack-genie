@@ -158,13 +158,13 @@ func TestSyncModelsAppliesDiff(test *testing.T) {
 // TestSyncModelsPreservesOmlx verifies the local-model protection: a cloud-key resync
 // must NOT delete "omlx/*" models (owned by SyncOmlxModels — the sole
 // local backend). Only stale CLOUD models delete.
-// TestSyncOmlxModelsDeletesAndRecreatesAll verifies SyncOmlxModels's refresh
-// semantics: unlike SyncModels' pure diff, EVERY currently-registered omlx/*
-// model is deleted and re-added fresh on every run — even one whose name is
-// unchanged — so a stale registration can never survive a refresh. A model that
-// disappeared from omlx's live list is deleted with nothing re-added in its
-// place; a cloud registration is untouched throughout.
-func TestSyncOmlxModelsDeletesAndRecreatesAll(test *testing.T) {
+// TestSyncOmlxModelsPreservesUnchanged verifies SyncOmlxModels' refresh
+// semantics: like SyncModels, it is a pure add/delete diff — a model whose
+// name is unchanged (e.g. "omlx/gemma4") is left registered AS-IS, so any
+// hand-edited settings on it survive; only omlx's newly-reported model gets
+// added and only the one that disappeared gets deleted. A cloud registration
+// is untouched throughout.
+func TestSyncOmlxModelsPreservesUnchanged(test *testing.T) {
 	var deleted, added []string
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		switch request.URL.Path {
@@ -200,23 +200,25 @@ func TestSyncOmlxModelsDeletesAndRecreatesAll(test *testing.T) {
 		test.Fatalf("SyncOmlxModels: %v", err)
 	}
 
-	sort.Strings(deleted)
-	if strings.Join(deleted, ",") != "omlx-gemma4,omlx-removed" {
-		test.Errorf("deleted = %v, want both prior omlx registrations (unchanged + stale)", deleted)
+	// Only the disappeared model is deleted — the unchanged "gemma4" registration
+	// (and whatever hand-edited settings it carries) is left alone, and nothing
+	// is re-added for it.
+	if strings.Join(deleted, ",") != "omlx-removed" {
+		test.Errorf("deleted = %v, want only the stale registration", deleted)
 	}
-	if strings.Join(added, ",") != "omlx/gemma4" {
-		test.Errorf("added = %v, want only the still-served model re-added", added)
+	if len(added) != 0 {
+		test.Errorf("added = %v, want none — unchanged model is left untouched", added)
 	}
 	for _, id := range deleted {
 		if id == "cloud-keep" {
 			test.Error("a cloud registration must never be deleted by SyncOmlxModels")
 		}
 	}
-	if strings.Join(result.Deleted, ",") != "omlx/gemma4,omlx/removed" {
-		test.Errorf("result.Deleted = %v, want both prior omlx model names", result.Deleted)
+	if strings.Join(result.Deleted, ",") != "omlx/removed" {
+		test.Errorf("result.Deleted = %v, want the disappeared model", result.Deleted)
 	}
-	if strings.Join(result.Added, ",") != "omlx/gemma4" {
-		test.Errorf("result.Added = %v, want the re-added model", result.Added)
+	if len(result.Added) != 0 {
+		test.Errorf("result.Added = %v, want none", result.Added)
 	}
 }
 

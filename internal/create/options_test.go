@@ -128,3 +128,34 @@ func TestHostResourceWrappers(test *testing.T) {
 		test.Errorf("UsableHostMemoryGB() = %d must be <= HostMemoryGB() = %d", usableGB, hostGB)
 	}
 }
+
+// TestSanitizeName verifies the auto-derived-name character rules: lowercased,
+// non-[a-z0-9-] runs collapse to a single "-", and leading/trailing "-" are trimmed.
+func TestSanitizeName(test *testing.T) {
+	cases := map[string]string{
+		"My Repo":     "my-repo",
+		"foo_bar.baz": "foo-bar-baz",
+		"--edge--":    "edge",
+		"already-ok":  "already-ok",
+	}
+	for input, want := range cases {
+		if got := SanitizeName(input); got != want {
+			test.Errorf("SanitizeName(%q) = %q, want %q", input, got, want)
+		}
+	}
+}
+
+// TestDefaultDirName verifies the workspace-name default derives from a directory
+// path's basename (sanitized), a trailing slash is tolerated, and an empty path
+// yields "" (the caller falls back to cwd).
+func TestDefaultDirName(test *testing.T) {
+	if got := DefaultDirName("/Users/jordan/Documents/My Project/"); got != "my-project" {
+		test.Errorf("DefaultDirName(with trailing slash) = %q, want my-project", got)
+	}
+	if got := DefaultDirName("/tmp/demo"); got != "demo" {
+		test.Errorf("DefaultDirName(/tmp/demo) = %q, want demo", got)
+	}
+	if got := DefaultDirName(""); got != "" {
+		test.Errorf("DefaultDirName(\"\") = %q, want empty", got)
+	}
+}

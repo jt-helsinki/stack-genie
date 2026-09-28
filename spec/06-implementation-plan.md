@@ -86,7 +86,7 @@ keep the precedence rules in arch §27 explicit), `slog` (structured logs), stdl
 │   ├── ui/ + tui/               # theme registry + the K9s-style `ai ui` management TUI
 │   ├── templates/               # embedded source templates + installer into ~/.ai-platform/templates
 │   │   └── files/
-│   │       ├── dockerfiles/<os>/Dockerfile        # one base Dockerfile per OS key (alma, debian-trixie, debian-bookworm, ubuntu)
+│   │       ├── dockerfiles/<os>/Dockerfile        # one base Dockerfile per OS key (alma, debian-trixie, ubuntu)
 │   │       ├── stacks/<stack>/Dockerfile.snippet  # one install snippet per stack (go, rust, java, maven, deno — Node/Python are baked into the base, not stacks)
 │   │       ├── agentclis/                          # per-agent-CLI install snippets
 │   │       └── tools/<tool>/Dockerfile.snippet    # opt-in AI tools (graphify, code-review-graph, codebase-memory-mcp) — appended only when selected (--tools)
@@ -337,7 +337,7 @@ Slice 1 is complete only when every `[S1]` test passes with no manual config.
 * **S4 Overlay persistence.** `overlay/`: per-workspace persistent overlay so
   installs + agent state survive restart/recreation (arch §26). No snapshot
   versioning/upgrade/rollback and no backup (arch §25, §32). Tests `[S4]`.
-* **S5 Extended OS.** Add `alma`, `debian-bookworm`, `ubuntu` Dockerfile
+* **S5 Extended OS.** Add `alma`, `ubuntu` Dockerfile
   templates (S1 ships `debian-trixie`); OS-equivalence test. Tests `[S5]`.
 * **S6 Linux + Podman.** Podman `Runtime` impl; Linux launcher; abstraction
   equivalence. Tests `[S6]`.

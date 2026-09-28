@@ -107,6 +107,24 @@ const shellSessionName = "shell"
 // stay OFF the host — a bind at ~ would write them to host disk).
 const workspaceWorkdir = "/home/workspace/project"
 
+// expandHomeDir expands a leading "~" or "~/..." in a HOST path to the current user's
+// home directory (os.UserHomeDir()); any other path (absolute or relative-to-cwd) is
+// returned unchanged. Used for config.SharedMount.HostPath, which a user may type as
+// "~/Downloads" in the CLI/TUI.
+func expandHomeDir(hostPath string) string {
+	if hostPath != "~" && !strings.HasPrefix(hostPath, "~/") {
+		return hostPath
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return hostPath
+	}
+	if hostPath == "~" {
+		return home
+	}
+	return filepath.Join(home, hostPath[2:])
+}
+
 // ErrUnknownProject is returned when a project name is not in the global index
 // (→ exit 2).
 var ErrUnknownProject = errors.New("unknown project")
@@ -270,6 +288,14 @@ type VMResources struct {
 	// backs containerd's in-VM image store so multi-GB app images have room. Empty falls
 	// back to the platform default (microVMDisk).
 	Disk string
+	// IsolatedDirs are guest-relative paths under the project workdir excluded from
+	// the host project bind mount and instead backed by a private, workspace-scoped
+	// persistent volume (see config.WorkspaceConfig.IsolatedDirs). Empty means the
+	// whole project dir is one bind mount, nothing excluded.
+	IsolatedDirs []string
+	// SharedMounts are extra host↔guest bind mounts beyond the project dir (see
+	// config.WorkspaceConfig.SharedMounts). Empty means no extra mappings.
+	SharedMounts []config.SharedMount
 }
 
 // read-only image, the host project source, and the persistent overlay (arch
@@ -507,10 +533,32 @@ func (manager Manager) startInternal(project string, forceRebuild bool) (*state.
 	// `workspace.cpu_limit`/`memory_limit`) to `msb create`. Empty/zero values fall
 	// back to msb's default vCPU count and the platform default memory.
 	resources := VMResources{
-		CPUs:        projectConfig.Workspace.CPULimit,
-		Memory:      projectConfig.Workspace.MemoryLimit,
-		IdleTimeout: projectConfig.Microsandbox.ResolvedIdleTimeout(),
-		Disk:        projectConfig.Workspace.DiskLimit,
+		CPUs:         projectConfig.Workspace.CPULimit,
+		Memory:       projectConfig.Workspace.MemoryLimit,
+		IdleTimeout:  projectConfig.Microsandbox.ResolvedIdleTimeout(),
+		Disk:         projectConfig.Workspace.DiskLimit,
+		IsolatedDirs: projectConfig.Workspace.IsolatedDirs,
+		SharedMounts: projectConfig.Workspace.SharedMounts,
+	}
+	// Each isolated dir is later shadowed in-VM by a private volume (it never sees the
+	// host directory), but its guest mountpoint is still a subpath of the host
+	// bind-mounted project dir, so a mount there needs an existing directory to attach
+	// to. Create it on the host if missing — the host side stays empty/untouched
+	// (nothing is ever written there once the guest volume shadows it).
+	for _, isolatedDir := range resources.IsolatedDirs {
+		if err := os.MkdirAll(filepath.Join(root, isolatedDir), 0o755); err != nil {
+			return nil, fmt.Errorf("could not create isolated dir %q: %w", isolatedDir, err)
+		}
+	}
+	// A shared mount's HOST side is the whole point (existing or new host content the
+	// guest should see), so ensure it exists too — a bind mount needs an existing
+	// directory on both ends.
+	for index, sharedMount := range resources.SharedMounts {
+		hostPath := expandHomeDir(sharedMount.HostPath)
+		resources.SharedMounts[index].HostPath = hostPath
+		if err := os.MkdirAll(hostPath, 0o755); err != nil {
+			return nil, fmt.Errorf("could not create shared mount host dir %q: %w", sharedMount.HostPath, err)
+		}
 	}
 	logStep("creating microVM")
 	if err := manager.Sandbox.Create(name, imageRef, root, overlayPath, resources, netArgs); err != nil {

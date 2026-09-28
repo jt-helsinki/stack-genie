@@ -374,7 +374,7 @@ unit-tested. What remains:
 ### 2.6b Base-image per-user dev tooling — rtk (arch §7)
 
 rtk ("Rust Token Killer", `github.com/rtk-ai/rtk`) is baked into ALL FOUR OS base
-images (debian-trixie, debian-bookworm, ubuntu, alma) for the workspace user via its
+images (debian-trixie, ubuntu, alma) for the workspace user via its
 official `install.sh` (prebuilt **aarch64** Linux binary → `~/.local/bin`, on PATH,
 no root). It is a CLI proxy that compresses common dev-command output to cut agent
 token use; Claude Code's rtk PreToolUse hook (added by the user's `rtk init`) shells

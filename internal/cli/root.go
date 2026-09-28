@@ -105,6 +105,7 @@ func Execute() int {
 		newStopCmd(emitter, &exitCode),
 		newRestartCmd(emitter, &exitCode),
 		newResizeCmd(emitter, &exitCode),
+		newMountsCmd(emitter, &exitCode),
 		newExecCmd(emitter, &exitCode),
 		newShellCmd(emitter, &exitCode),
 		newAgentCmd(emitter, &exitCode),
