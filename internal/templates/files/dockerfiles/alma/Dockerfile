@@ -3,7 +3,7 @@
 # base surface as every other OS template, via dnf rather than apt. Selected
 # software stacks and agent CLIs are appended below this base by
 # `ai project create`.
-FROM almalinux:10.2-minimal
+FROM almalinux:10.2
 
 
 # Base tooling + Python 3 in ONE layer. Python is a distro package (no external
@@ -22,7 +22,7 @@ RUN dnf install -y --setopt=install_weak_deps=False \
     zsh \
     ncurses-term \
     iptables \
-    iproute2 \
+    iproute \
     procps-ng \
     fuse3 \
     python3 \

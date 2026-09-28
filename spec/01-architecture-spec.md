@@ -1989,7 +1989,7 @@ seed a new project's `.ai-platform/Dockerfile`:
 
 | OS key (wizard choice) | base image | template |
 |---|---|---|
-| `alma` | Alma 10 (`almalinux:10.2-minimal`) | `templates/dockerfiles/alma/Dockerfile` |
+| `alma` | Alma 10 (`almalinux:10.2`) | `templates/dockerfiles/alma/Dockerfile` |
 | `debian-trixie` | `debian:trixie-slim` | `templates/dockerfiles/debian-trixie/Dockerfile` |
 | `ubuntu` | Ubuntu (`ubuntu:24.04`) | `templates/dockerfiles/ubuntu/Dockerfile` |
 
