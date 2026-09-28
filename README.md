@@ -209,6 +209,11 @@ ai network disallow api.github.com   # remove an allow-listed host/domain
 ai network publish 8080:8080         # publish a guest port to the host (unpublish removes it)
 ai network log                       # attempted-egress audit (domains the workspace resolved)
 
+ai mounts list                       # isolated dirs (guest-private volumes) + shared mounts
+ai mounts add node_modules            # isolated dir: guest-relative, backed by a private volume
+ai mounts add /shared --host ~/Downloads  # shared mount: absolute guest path <-> host dir
+ai mounts remove node_modules          # remove either kind by its dir (add/remove offer a restart)
+
 ai gateway show                      # the model gateway every workspace on this machine routes through
 ai gateway set my-server:18787       # client mode: route all workspaces through a remote gateway
 ai gateway clear                     # back to the local standalone gateway
@@ -245,7 +250,7 @@ default — the tab bars are clickable and the wheel scrolls the focused list.
 Toggle capture off in the **Settings** tab (`m`) to restore modifier-free native
 text selection (with capture on, selection needs the terminal's modifier —
 Shift, or Option on macOS). The per-workspace view has Workspace ·
-**Logs** · **Metrics** · Network · Context · **Shell** (session manager —
+**Logs** · **Metrics** · Network · Context · Mounts · **Shell** (session manager —
 attach/new/kill) · Apps sub-tabs; the **Workspace** tab shows the summary plus a
 scrollable live **Sandbox Configuration** block, the **Logs** tab is the live,
 read-only workspace log (streamed on the SDK backend; `f`/`enter` follows it live

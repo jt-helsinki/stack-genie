@@ -11,11 +11,11 @@ flowchart LR
 
   subgraph WS["Workspace · Microsandbox microVM (one per project)"]
     direction TB
-    AGENT["Agent CLI<br/>opencode · omp · claude · codex · gemini · copilot · hermes<br/><b>holds only a scoped LiteLLM virtual key</b>"]:::vm
+    AGENT["Agent CLI<br/>opencode · omp · claude · codex · gemini · hermes<br/><b>holds only a scoped LiteLLM virtual key</b>"]:::vm
     RT["In-VM container runtime<br/>rootful containerd · nerdctl · runc · CNI"]:::core
     TOOLS["Baked-in dev tooling<br/>Node.js · Python 3 · uv · rtk · Headroom CLI<br/>per-project ~/project/.venv-msb"]:::core
     AITOOLS["Opt-in AI tools (--tools)<br/><b>caveman · graphify · code-review-graph · codebase-memory-mcp</b><br/>conditional Dockerfile snippets · registered with each agent CLI at start"]:::opt
-    APPS["Opt-in in-VM apps (nerdctl)<br/>Open WebUI · AnythingLLM<br/>per-(workspace,app) host port · /workspace mount"]:::opt
+    APPS["Opt-in in-VM apps (nerdctl)<br/>Open WebUI<br/>per-(workspace,app) host port · /workspace mount"]:::opt
   end
 
   subgraph TIER["Host · Docker service tier (aip-net) — internal-only but nginx (loopback: DNS only)"]
@@ -31,7 +31,7 @@ flowchart LR
   end
 
   CLI["Host CLI / UI<br/>loopback 127.0.0.1:18787"]:::vm
-  VLLM["vLLM (host-native · sole local backend)<br/>per-model <b>vllm serve</b> on loopback :8101+<br/>reached via host.docker.internal · models via hf CLI<br/>public handle vllm/&lt;alias&gt; (DB-backed · no default)"]:::core
+  OMLX["omlx (host-native · sole local backend · macOS/Apple Silicon)<br/>ONE shared <b>omlx serve --model-dir &lt;dir&gt; --port 8100</b><br/>reached via host.docker.internal · models managed in omlx's OWN admin panel<br/>public handle omlx/&lt;id&gt; (DB-backed · no default)"]:::core
   CLOUD["Cloud providers<br/>OpenAI · Anthropic · Gemini · Groq<br/><b>real provider keys live in LiteLLM</b>"]:::cloud
 
   AGENT == "OpenAI API · base_url http://host.microsandbox.internal:18787/v1<br/>egress default PUBLIC (DNS-audited) — re-lockable to deny" ==> PROXY
@@ -44,7 +44,7 @@ flowchart LR
   LLM -- "pre_call compress" --> HEAD
   LLM <-. "guardrails (when enabled)" .-> PRES
   LLM --- PG
-  LLM == "local route · host.docker.internal:&lt;port&gt;/v1" ==> VLLM
+  LLM == "local route · host.docker.internal:8100/v1" ==> OMLX
   LLM -. "response cache" .-> VALKEY
   RI -. "monitors" .-> VALKEY
   PROXY -. "valkey.&lt;domain&gt;" .-> RI

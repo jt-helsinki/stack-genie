@@ -113,8 +113,11 @@ Verified against real source + examples. Two gaps I flagged earlier are now CLOS
   `PolicyRule.Destination` accepts **domains, `.suffix` wildcards, CIDRs, IPs, and
   groups (`host`/`private`/`public`/`metadata`)**; plus `DenyDomains`/
   `DenyDomainSuffixes`; first-match-wins; `DefaultEgress` deny / `DefaultIngress`
-  allow. **DNS**: `DNSConfig.Nameservers []string` (e.g. `"1.1.1.1:53"`) → maps our
-  `aip-dns --dns-nameserver`. Ports: `WithPorts(map[uint16]uint16)` **host→guest**
+  allow. **DNS**: `DNSConfig.Nameservers []string` → maps our `aip-dns
+  --dns-nameserver`; our real value is the loopback audit resolver
+  `"127.0.0.1:15353"` (`dnsNameserver` in `workspace_real.go`, shared by the SDK
+  backend's `DNSConfig{Nameservers: []string{dnsNameserver}}`) — never a public
+  resolver. Ports: `WithPorts(map[uint16]uint16)` **host→guest**
   (note: our CLI used host==guest), `WithPortBindings` for non-loopback binds.
   Replaces the net-rule string DSL in `egress.MsbNetworkArgs` (an upgrade). Under
   default-deny you must allow DNS explicitly (`Rule.allowDns()`), as today.
@@ -182,8 +185,10 @@ Verified against real source + examples. Two gaps I flagged earlier are now CLOS
 - **P2**: TUI holds one handle; Sessions/Apps polls + in-VM container logs via the
   handle/streams (the bug payoff). Logs via the relay-free path.
 - **P3**: interactive sessions → SSH `Attach` (real terminal).
-- **P4**: cleanup; reconcile AGENTS.md (`workspace.go:201` "Go SDK / msb" finally
-  true) + `spec/`; CGO build/CI changes; fakes/tests; `make check`.
+- **P4**: cleanup; reconcile AGENTS.md ("Go SDK / msb" finally true) + `spec/`;
+  CGO build/CI changes; fakes/tests; `make check`. (Done — see the "AGENTS.md +
+  spec reconcile" line in the Status section below; `selectSandbox` itself
+  ended up in `workspace_sdk.go`, not `workspace.go`.)
 
 ## Update — live validation + Phase 2 (2026-06-30, msb upgraded to 0.6.1)
 

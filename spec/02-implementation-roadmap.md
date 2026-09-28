@@ -176,6 +176,7 @@ general_settings:
 ```bash id="c1"
 ai setup
 ai create
+ai list
 ai delete            # `ai destroy` is an alias of this
 ai start|stop|restart|exec
 ai services status
@@ -221,9 +222,11 @@ Introduce Headroom + Caveman.
   guardrail POSTs the request messages to `http://aip-headroom:8787/v1/compress`
   and swaps in the compressed result before dispatch (requires LiteLLM v1.92.x+;
   the litellm image now tracks `latest`, which satisfies that). It is also installed
-  INSIDE each workspace image (`uv tool install "headroom-ai[proxy]"`) for a future
-  in-VM `headroom wrap <cli>`. Per-project strategy maps to Headroom per-request
-  knobs fed to the guardrail's compress call.
+  INSIDE each workspace image (`uv tool install "headroom-ai[proxy]"`), so each
+  agent CLI can be wrapped in-VM via `headroom wrap <cli>`; this is already wired
+  live as a shell alias (`agentcfg.ShellAliases`) for OAuth-mode claude-code/codex
+  agents, whose traffic bypasses the gateway guardrail. Per-project strategy maps
+  to Headroom per-request knobs fed to the guardrail's compress call.
 * Caveman output compression — in-agent skill
 
 (No platform memory system — agent memory is the agent's concern, architecture
@@ -331,7 +334,7 @@ Add the remaining OS Dockerfile templates (Slice 1 ships the debian-trixie templ
 
 ## Acceptance Criteria
 
-* all four OS templates selectable in the `ai create` wizard (or via `--os`)
+* all three OS templates selectable in the `ai create` wizard (or via `--os`)
 * the user always selects the OS — no OS is applied silently
 * all OS images expose an identical **base** tooling surface (agent CLIs are whatever the user selected)
 
@@ -475,6 +478,10 @@ These are implemented progressively across slices.
 * `ai services start|stop|restart|update [service|all]` — manage the platform
   container set; `update` re-pulls moved tags (e.g. `latest`) and recreates
   affected containers
+* `ai services enable|disable <service>` — toggle an optional service
+* `ai services console <service>` — open a service's admin console/dashboard
+* `ai services compose` — write a debug-only `docker-compose.yaml` mirroring
+  the service-tier topology (not the launcher)
 * `ai network ... log` — per-domain DNS egress audit via the `aip-dns` resolver
 
 ---
@@ -509,9 +516,9 @@ host-published** (the host port `18787`); every other service is internal-only o
 * the **`aip-proxy` nginx gateway is the SOLE host entry** to the service tier,
   on host port `18787`. It binds **127.0.0.1** in standalone/client roles and
   **0.0.0.0** in server role (`internal/setup` `currentBindHost()`). It forwards
-  the model path DIRECTLY to LiteLLM (`aip-litellm:4000`), which calls Headroom
-  (`aip-headroom:8787/v1/compress`) in-process as a `pre_call` guardrail (nginx no
-  longer routes to Headroom at all), and serves the Host-based UI subdomains
+  the model path DIRECTLY to LiteLLM (`aip-litellm:4000`), which runs its
+  guardrail chain (Headroom, §3/§8.1) in-process — nginx no longer routes to
+  Headroom at all — and serves the Host-based UI subdomains
   (`litellm.<domain>` → LiteLLM admin UI, `valkey.<domain>` → RedisInsight) plus host-CLI gateway paths
   (`/v1` model path, `/llm`). The platform base domain is set by
   `ai domain` (default `aip.local`; host-CLI URLs render under `localhost:18787`).

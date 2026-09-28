@@ -14,10 +14,7 @@ redisinsight, dns). Its rendered export is embedded below.
 > **Note:** after any architecture change, edit `docs/architecture.mmd` and
 > regenerate the PNG from it (`make diagram`, which runs `mmdc -i
 > docs/architecture.mmd -o docs/architecture.png`). Do not hand-maintain a separate
-> diagram elsewhere — the single source avoids drift. (As of this writing the `APPS`
-> node in `architecture.mmd` still lists a second in-VM app, "AnythingLLM", that does
-> not exist in the code or in `internal/apps` — Open WebUI is the only shipped in-VM
-> app. The diagram needs a regeneration pass; see the note in the project's report.)
+> diagram elsewhere — the single source avoids drift.
 
 ## End-to-end flow
 
@@ -56,25 +53,30 @@ stay blocked); every DNS name the VM resolves is logged for audit
    (The in-process prompt-injection detector and the unmaintained LLM Guard were
    both removed — they false-positived on ordinary coding traffic.) Its admin UI /
    virtual keys / spend live in **aip-litellm-db**.
-3. LiteLLM routes to the **local-inference backend** — **vLLM**, a host-side
-   backend reached through the `host.docker.internal` gateway (per-model
-   `vllm serve` processes, each on its own OpenAI-compatible loopback port, base
-   8101; LiteLLM/nginx get `--add-host=host.docker.internal:host-gateway`) — or to a
+3. LiteLLM routes to the **local-inference backend** — **omlx**
+   ([jundot/omlx](https://github.com/jundot/omlx)), a host-side, macOS/Apple-
+   Silicon-only backend reached through the `host.docker.internal` gateway: ONE
+   shared `omlx serve --model-dir <dir> --port 8100` process (not a container),
+   scanning its own model directory and serving every model it finds — or to a
    **cloud provider** using the real key it holds. Local models are registered
-   DB-backed with the public handle `vllm/<alias>` (routed `openai/<alias>` against
-   the per-model server endpoint). vLLM is the **sole** local-inference runtime
-   (there is no per-model engine choice and no machine-wide inference mode); local
-   models are managed with the **Hugging Face CLI** (`hf`) — `ai models pull <repo>`
-   runs `hf download` into the vLLM store then starts + registers the per-model
-   vLLM server. The model set is DB-backed and catalog-driven with **no built-in
-   default model**. The response streams back along the same path (SSE-friendly
-   through nginx) to the agent. Enabling/launching vLLM is a `hardware bring-up`
-   seam (see `internal/setup/vllm_host.go`).
+   DB-backed with the public handle `omlx/<id>` (used verbatim, routed
+   `openai/<id>` against the one shared `api_base`). omlx is the **sole**
+   local-inference runtime, with no fallback (there is no per-model engine
+   choice, no per-model port, and no LRU eviction); model download/add/remove/
+   tune all happen entirely inside **omlx's own admin panel**
+   (`ai services console omlx`), never through this CLI — the platform only
+   keeps LiteLLM's `omlx/*` registrations synced with omlx's live
+   `GET /v1/models` (`ai models refresh`, or automatically at `ai setup`/
+   `ai services start|restart omlx`). The model set is DB-backed and
+   catalog-driven with **no built-in default model**. The response streams back
+   along the same path (SSE-friendly through nginx) to the agent. Installing/
+   starting omlx is a `hardware bring-up` seam (see
+   `internal/setup/omlx_host.go`).
 
 ## The pieces
 
 - **Workspace microVM / agent CLI** — hardware-isolated per-project sandbox
-  (opencode · omp · claude-code · codex · gemini · copilot · hermes; opencode is
+  (opencode · omp · claude-code · codex · gemini · hermes; opencode is
   the default). Holds only a scoped LiteLLM virtual key.
 - **In-VM container runtime + apps** — every workspace microVM ships a rootful OCI
   runtime (containerd + nerdctl + runc + CNI), on which the platform runs opt-in AI
@@ -92,11 +94,11 @@ stay blocked); every DNS name the VM resolves is logged for audit
   admin surface, and serves two Host-vhost subdomains — `litellm.<domain>` (the
   LiteLLM admin UI) and `valkey.<domain>` (the RedisInsight GUI). Launched with
   `--add-host=host.docker.internal:host-gateway` so it (and LiteLLM) can reach the
-  host-side vLLM inference backend.
+  host-side omlx inference backend.
 - **Headroom (`aip-headroom`, internal-only)** — the input-compression service
-  LiteLLM calls in-process as a `pre_call` guardrail; it is **not** an nginx proxy
-  in front of LiteLLM. Applies the per-project context knobs (`ai context
-  strategy`). On by default; the reconcile brings it up before LiteLLM.
+  called in-process as LiteLLM's `pre_call` guardrail (mechanism above, flow
+  step 2). Applies the per-project context knobs (`ai context strategy`). On by
+  default; the reconcile brings it up before LiteLLM.
 - **LiteLLM (`aip-litellm`, internal-only)** — the model router and the
   enforcement point for the user-selectable guardrails. Holds the real provider
   keys; its admin UI is reached only through nginx, never published directly.
@@ -107,16 +109,18 @@ stay blocked); every DNS name the VM resolves is logged for audit
 - **Postgres (`aip-litellm-db`, internal-only, no host port, reached at
   `aip-litellm-db:5432`)** — backs LiteLLM's admin UI, virtual keys, spend, and the
   encrypted provider-credential store (the one stateful service).
-- **vLLM (host-side, the sole local-inference backend)** — per-model host
-  processes, one `vllm serve` per served model, each an OpenAI-compatible endpoint
-  on its own host loopback port (base 8101, reached by containers at
-  `http://host.docker.internal:<port>/v1`), lazy-started with a max-concurrent cap
-  + LRU eviction — serving MLX weights (`mlx-community/*`) via the vLLM-Metal
-  plugin on macOS and Hugging Face safetensors on CUDA/NVIDIA on Linux. Managed
-  with the Hugging Face CLI (`hf`, resolved from `~/.ai-platform/venv`):
-  `ai models pull <repo>` runs `hf download` into the vLLM store
-  (`~/.ai-platform/volumes/models/vllm`) then starts + registers the per-model
-  server; `ai models rm <repo>` stops the server and runs `hf cache rm`.
+- **omlx (host-side, the sole local-inference backend, macOS/Apple Silicon
+  only, no fallback)** — ONE shared `omlx serve --model-dir <dir> --port 8100`
+  process (not an `aip-*` container), reached by containers at
+  `http://host.docker.internal:8100/v1`. It scans its own model directory
+  (`~/.ai-platform/volumes/models/omlx`) and serves every model it finds — there
+  is no per-model port, no LRU eviction, and no per-model resource-cap. Model
+  download/add/remove/tune all happen entirely inside **omlx's own admin panel**
+  (`http://127.0.0.1:8100/admin`, reached with `ai services console omlx`) —
+  never through this CLI. The platform auto-installs it into
+  `~/.ai-platform/venv` when absent and keeps LiteLLM's `omlx/*` registrations
+  synced with omlx's live model list (`ai models refresh`, or automatically at
+  `ai setup`/`ai services start|restart omlx`).
 - **Valkey + RedisInsight (`aip-valkey` / `aip-redisinsight`, internal-only)** — a
   single standalone Valkey instance backs LiteLLM's response cache; RedisInsight is
   its GUI, surfaced through nginx at the `valkey.<domain>` vhost. Both are
@@ -156,11 +160,12 @@ in `config.yaml`.
   region/DB/niche-specific `chinese,azure,bedrock,falkordb,neo4j,leiden,dm,pascal`),
   and each selected agent CLI registers Graphify with itself **at workspace
   start**, once per project (`graphify install` for claude-code,
-  `graphify install --platform <cli>` for codex/gemini/opencode/copilot — not in
+  `graphify install --platform <cli>` for codex/gemini/opencode — not in
   the Dockerfile, since `--project` writes into the bind-mounted project dir).
-  Graphify's headless LLM backend is a curated vLLM model (a Hugging Face repo id)
-  chosen at `ai create` (`--graphify-model`), pulled via HF + vLLM and routed
-  through the gateway as `vllm/<alias>`.
+  Graphify's headless LLM backend is a model picked from omlx's live model list
+  at `ai create` (`--graphify-model` / the wizard's picker) — no download
+  happens at create time, since model management stays entirely in omlx's own
+  admin panel — and it is routed through the gateway as `omlx/<name>`.
 - **code-review-graph** (`code-review-graph.com`; per-CLI `install --platform`,
   then `build` + a D3 graph visualization) and **codebase-memory-mcp**
   (`DeusData/codebase-memory-mcp`; auto-detecting `install`, optional on-demand 3D

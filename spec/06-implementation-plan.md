@@ -394,15 +394,12 @@ These are grep-able (`hardware bring-up`) and tracked in
 * **Integration suite** (`test/integration/`, `//go:build integration`, `make
   test-integration`) — a live black-box suite that drives the real service stack
   (setup/services/keys/workspace/apps/egress/inference/per-model-runtime/uninstall).
-  Group 7 (`TestGroup07InferenceRuntime`) asserts `services`/`doctor` surface
-  the host-native `omlx` backend and the positive `omlx/<id>` routing
-  round-trip self-skips when the omlx server is not up. **Gap:** the group-7
-  source file on disk is still `test/integration/vllm_runtime_test.go` and was
-  not updated for this refactor — it still names the service `vllm` and still
-  exercises the retired `ai models pull` path, so this group does not
-  currently assert the omlx behavior described here; it needs a rewrite (see
-  AT §7.3). Runs only where a full stack is available (Apple Silicon),
-  separate from the hosted unit lane.
+  Group 7 (`TestGroup07InferenceRuntime`, in `test/integration/omlx_runtime_test.go`)
+  asserts `services`/`doctor` surface the host-native `omlx` backend (and
+  explicitly fail if a stale `vllm`/`ollama` entry is still reported), exercises
+  `ai models refresh`, and self-skips the positive `omlx/<id>` routing round-trip
+  when the omlx server is not up. Runs only where a full stack is available
+  (Apple Silicon), separate from the hosted unit lane.
 * **CI** (`ci.yml`), split by hardware needs:
   * **hosted runners** (every push): build the binary, `go vet`/`golangci-lint`,
     and the full unit-test suite. No virtualization required.
@@ -421,7 +418,7 @@ These are grep-able (`hardware bring-up`) and tracked in
   publishes a GitHub Release with the per-target binaries, `SHA256SUMS`, and the
   `installers/install.sh` launcher. Locally, `make release` builds the release
   binary for the host platform into `dist/ai-<os>-<arch>`; `make check`
-  (= `fmt-check vet lint test build`) is the pre-commit gate.
+  (= `fmt-check vet vet-tagged lint test build`) is the pre-commit gate.
 
 ---
 
@@ -475,18 +472,12 @@ These are grep-able (`hardware bring-up`) and tracked in
      notarization for a downloaded binary, and (b) the `msb` net-rules apply the
      deny-fallthrough + allow-rule model with no `utun`/NetworkExtension/admin
      prompt/kext.
-3. **Headroom placement (decided).** Headroom runs as a **host service-tier
-   container** (`aip-headroom`, pulled image `ghcr.io/chopratejas/headroom:latest`,
-   internal :8787, **internal-only on `aip-net`**, no host publish) that LiteLLM
-   CALLS as a `pre_call` guardrail — NOT an nginx proxy: LiteLLM's `headroom`
-   guardrail POSTs the request to `http://aip-headroom:8787/v1/compress` and swaps
-   in the compressed result before dispatch (requires LiteLLM v1.92.x+; image
-   tracks `latest`, which satisfies that). It is ALSO installed inside each workspace image
+3. **Headroom placement (decided).** Headroom is a host service-tier container
+   (image ref + full mechanism: architecture §10) called BY LiteLLM as an
+   in-process `pre_call` guardrail, NOT an nginx proxy in front of it (§3.5, §5
+   S2). It is ALSO installed inside each workspace image
    (`uv tool install "headroom-ai[proxy]"`) for a future in-VM `headroom wrap`.
-   The per-project strategy (`ai context strategy`) maps to Headroom per-request
-   knobs (`keep_turns`/`output_buffer_tokens` via `contextopt.HeadroomParams`) fed
-   to that compress call. Caveman remains the symmetric in-workspace
-   output-compression skill.
+   Caveman remains the symmetric in-workspace output-compression skill.
 4. **Image build.** The workspace OCI image is built from `.ai-platform/Dockerfile`
    with the detected container runtime and booted as a Microsandbox microVM;
    confirm rootless build works for all OS templates and that each image boots

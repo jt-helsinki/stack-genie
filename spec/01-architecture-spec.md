@@ -365,7 +365,7 @@ ai logs --service <svc>      one log surface
 | Headroom | container (via Runtime) `aip-headroom` (`ghcr.io/chopratejas/headroom:latest`) | LiteLLM's `pre_call` input-compression guardrail backend, called at `aip-headroom:8787/v1/compress`; INTERNAL-ONLY on :8787 on aip-net (no host publish, nginx never routes to it); carries only `HEADROOM_TELEMETRY=off`; HTTP only (§10) |
 | LiteLLM | container (via Runtime) `aip-litellm` (image tag `latest`) (+ `aip-litellm-db` Postgres, surfaced as its own `postgres` status line) | INTERNAL-ONLY: no host publish, reached by name (`aip-litellm:4000`) by nginx's model path + `/llm` route; it calls Headroom in-process; HTTP only; no host privileges |
 | Presidio | two containers (via Runtime) `aip-presidio-analyzer` + `aip-presidio-anonymizer` | back LiteLLM's secret-masking guardrail; started ONLY when `secret-masking` is selected (§15); internal-only, not published |
-| omlx (local backend) | **host-side, ONE shared process** (a single `omlx serve` answering for every locally-served model — NOT per-model processes, NOT containers) | the platform's sole local-inference backend, macOS + Apple Silicon only; one `omlx serve --model-dir <dir> --port 8100` process (fixed port, `services.OmlxPort`) scans its own model directory and serves whatever it finds — no per-model port allocation, no LRU eviction, no per-model resource-cap recording (that all lived in the retired per-model vLLM design); probed at `http://127.0.0.1:8100/v1/models`, reached by the LiteLLM/nginx containers at `host.docker.internal:8100/v1` (`--add-host=host.docker.internal:host-gateway`); ensured NON-fatally in reconcile — an unreachable omlx is a hint, not a setup failure; installation is wired — `ai setup` resolves the latest `github.com/jundot/omlx` release's prebuilt wheel matching the platform venv's Python version and pip-installs it (`omlx.Install`), best-effort, into the platform venv; a cross-process flock (`internal/omlx/lock.go`) serializes server starts across separate `ai` invocations. Models are downloaded/added/removed/tuned entirely through omlx's own admin panel (`ai services console omlx`) — the platform has no `ai models pull` equivalent. The live network install/wheel-resolution and a real serve + gateway round-trip on provisioned hardware remain a hardware-bring-up verification item (§16) |
+| omlx (local backend) | **host-side, ONE shared process** (a single `omlx serve` answering for every locally-served model — NOT per-model processes, NOT containers) | the platform's sole local-inference backend, macOS + Apple Silicon only; probed at `http://127.0.0.1:8100/v1/models`, reached by the LiteLLM/nginx containers at `host.docker.internal:8100/v1`; ensured NON-fatally in reconcile — an unreachable omlx is a hint, not a setup failure. Install/serve mechanics, model management (entirely via omlx's own admin panel), and the hardware-bring-up caveats are §16 |
 | DNS audit resolver | container (via Runtime) `aip-dns` (CoreDNS) | egress-audit resolver: microVMs forward DNS here so attempted names are logged for `ai network log`; published to host loopback only; audit, not enforcement (§29.7) |
 | Microsandbox | microVM runtime, invoked on demand | drives workspace microVMs via the Go SDK / `msb`; no daemon to supervise (§7) |
 
@@ -1200,15 +1200,15 @@ per-provider wildcards, and no default model** in the generated `config.yaml`
 from the **models.dev catalog** (`internal/catalog`, fetched as JSON and cached as
 YAML at `~/.ai-platform/cache/catalog.yaml`) keyed by which providers the user has
 supplied an API key for: adding a provider key (`ai keys add`, §17) registers
-that provider's catalog models into the DB via `litellm.SyncModels`, and
-`ai models pull`/`rm` registers/unregisters the corresponding local model. The
-catalog id is the public `model_name` verbatim; the catalog-id→LiteLLM-prefix map
+that provider's catalog models into the DB via `litellm.SyncModels`; the matching
+local (omlx) registration/unregistration is a separate, automatic sync (below,
+§16) — not a user-invoked pull/rm. The catalog id is the public `model_name` verbatim; the catalog-id→LiteLLM-prefix map
 (e.g. `google` → `gemini`) supplies each model's routing prefix. In an agentic
 workflow the agent names a model on each request and LiteLLM routes it to the
 provider (attaching its own stored key for cloud, none for a local backend). A
 model is usable when it is (a) registered in the DB and (b) actually available: a
-local model must be **pulled**; a cloud model needs its provider key present in the
-gateway (§17).
+local model must already be **served by omlx**; a cloud model needs its provider
+key present in the gateway (§17).
 
 **The local-inference backend** (omlx, §16) feeds the DB-backed store:
 
@@ -1220,10 +1220,10 @@ gateway (§17).
 omlx models are managed entirely through **omlx's own admin panel**
 (`ai services console omlx`) — there is no host-side `ai models pull`/`rm`
 equivalent. The platform's only job is to keep LiteLLM's `omlx/*` registrations
-in sync with omlx's live model list (`litellm.SyncOmlxModels`, run automatically
-at `ai setup` / `ai services start|restart omlx`, and on demand via
-`ai models refresh`). A cloud-key catalog resync (`litellm.SyncModels`) shields
-`omlx/*` handles from its delete pass (`localModelPrefixes` = `["omlx/"]`).
+in sync with omlx's live model list (`litellm.SyncOmlxModels`; when this runs and
+how it reconciles is §16, Registration). A cloud-key catalog resync
+(`litellm.SyncModels`) shields `omlx/*` handles from its delete pass
+(`localModelPrefixes` = `["omlx/"]`).
 
 There is no default model: an unqualified request is the agent's responsibility.
 The local backend (omlx, needing no credential) is available for whichever
@@ -1408,8 +1408,10 @@ guardrails:
       rules:
         - { id: deny-destructive-command, tool_name: "<shell-tool regex>", decision: deny,
             allowed_param_patterns: { command: "<destructive-command regex>" } }
-        - { id: deny-destructive-arguments-command, tool_name: "<shell-tool regex>", decision: deny,
-            allowed_param_patterns: { arguments.command: "<destructive-command regex>" } }
+        - { id: deny-destructive-command-array, tool_name: "<shell-tool regex>", decision: deny,
+            allowed_param_patterns: { command[]: "<destructive-command regex>" } }
+        - { id: deny-destructive-cmd, tool_name: "<shell-tool regex>", decision: deny,
+            allowed_param_patterns: { cmd: "<destructive-command regex>" } }
 ```
 
 ### Presidio containers gated on `secret-masking`
@@ -1432,9 +1434,12 @@ prompt content — `git push --force`, `git reset --hard`, `terraform destroy`,
 `tool-firewall` guardrail (`guardrail: tool_permission`, `mode: post_call`,
 in-process — no external service) inspects the model's **tool-calls** at the gateway
 and **denies** ones whose shell command matches a destructive pattern
-(`destructiveCommandPatterns` in `internal/litellm`): default-allow, with deny rules
-matching a shell-tool-name regex against the `command` / `arguments.command` arg;
-`on_disallowed_action: block` rejects the response. Because every agent
+(`destructiveCommandPatterns` in `internal/litellm`): default-allow, with one deny
+rule per tool-call argument path that can carry a shell command — `command`,
+`command[]`, `cmd` (`commandParamPaths`) — each matching a shell-tool-name regex
+against that path; `arguments.command` is deliberately NOT used, since LiteLLM's
+guardrail evaluates the parsed arguments object and a nested `arguments.` prefix
+matches nothing. `on_disallowed_action: block` rejects the response. Because every agent
 (opencode/claude-code) routes model calls through LiteLLM, this is tool-agnostic.
 
 It is **defence-in-depth**, not the only control: it catches the model's tool-calls
@@ -1478,17 +1483,11 @@ lives entirely in omlx's own admin panel, §16). The catalog id is the public
 supplies the routing prefix. There is no default model.
 
 Local (omlx) models are registered with the public `model_name` `omlx/<id>` and
-`litellm_params.model` = `openai/<id>` (`OmlxRoutedModel`), with `api_base` set to
-the single shared `omlx serve` endpoint (`http://host.docker.internal:8100/v1`),
-authenticated with the REAL key when the user has configured one on omlx's OWN side
-(`internal/omlx.APIKey` — env `OMLX_API_KEY` else omlx's own `~/.omlx/settings.json`
-`auth.api_key`; omlx validates no key by default) else a non-empty placeholder
-`"EMPTY"` (satisfies LiteLLM's `openai/`-provider client construction, which
-hard-requires a non-empty key regardless of whether omlx itself checks one). They are
-owned by omlx's own admin panel and kept in sync by the platform's automatic
-`litellm.SyncOmlxModels` — a FULL REBUILD (`applyOmlxRefresh`), not an add/delete
-diff: every currently-registered `omlx/*` model is deleted, then every model omlx
-currently reports is re-added fresh, even one whose name is unchanged.
+`litellm_params.model` = `openai/<id>` (`OmlxRoutedModel`), against the single
+shared `omlx serve` endpoint. They are owned by omlx's own admin panel; the
+authentication (real key vs. placeholder) and the sync mechanics (the same
+pure add/delete diff as the cloud-key sync, not a full rebuild) are covered in
+§16 (Registration).
 
 ### In-VM agent provider config — keyless per-CLI project configs, key in-VM only
 
@@ -1636,20 +1635,22 @@ runtime-choice store, and the curated Hugging-Face-repo picker were all retired 
 with the per-model vLLM design. `ai models` now has three, read-only,
 gateway-inspection subcommands: `status` (LiteLLM health/providers/routing plus omlx
 connectivity), `test [model]` (probe a served model through the gateway), and
-`refresh` (**rebuild** — not a diff — LiteLLM's `omlx/*` registrations against omlx's
-live model list on demand — e.g. right after adding/removing a model through the
+`refresh` (re-sync — the same pure add/delete diff as the automatic sync — LiteLLM's
+`omlx/*` registrations against omlx's live model list on demand — e.g. right after
+adding/removing a model through the
 admin panel, without a full `ai services restart omlx`; TUI mirror: the `m` key in the
 omlx Service Detail pane, only shown/offered for that service).
 
 ## Registration
 
 omlx models register automatically in LiteLLM's DB-backed store (§14): the platform
-REBUILDS LiteLLM's `omlx/*` registrations against omlx's own live `GET /v1/models`
-response (`litellm.SyncOmlxModels`/`DesiredOmlxModels`/`applyOmlxRefresh`) — UNLIKE the
-cloud-key sync's pure add/delete `Reconcile`/`ApplyPlan` diff, every
-currently-registered `omlx/*` model is DELETED, then every model omlx currently
-reports is RE-ADDED fresh, even one whose name is unchanged, so a stale registration
-can never survive a refresh — this sync runs automatically at
+syncs LiteLLM's `omlx/*` registrations against omlx's own live `GET /v1/models`
+response (`litellm.SyncOmlxModels`/`DesiredOmlxModels`) using the SAME pure
+add/delete `Reconcile`/`ApplyPlan` diff as the cloud-key sync — a model already
+registered under an unchanged name is left ALONE, so any settings a user
+hand-edited on it in LiteLLM's admin UI (rate limits, tags, custom pricing, ...)
+survive a refresh untouched; only a model omlx newly reports gets added, and only
+one that disappeared from omlx's list gets deleted — this sync runs automatically at
 `ai setup` and at `ai services start|restart omlx`, and on demand via
 `ai models refresh` (or the TUI's `m` key); there is no other user-facing sync
 command. The public handle is
@@ -1787,12 +1788,12 @@ their own mechanisms:
   allow-listed host services, and published ports (§29.4, §29.6). The policy is
   rendered into `msb` net-rules (`egress.MsbNetworkArgs`) and applied at workspace
   create.
-* **secret masking and audit** are LiteLLM's enabled guardrails (§15): because each
+* **secret masking** is LiteLLM's enabled guardrails (§15): because each
   rendered guardrail is `default_on: true` and **every** route — cloud included —
   traverses the LiteLLM proxy, nothing bypasses an ENABLED guardrail (secret masking
-  is opt-in, so it applies only when `secret-masking` is selected). The platform
-  audit log (§31) records that a model-configuration or secret-access event
-  occurred, never the value.
+  is opt-in, so it applies only when `secret-masking` is selected). A platform
+  audit log that would record model-configuration/secret-access events (§31) is
+  deferred — not yet implemented.
 
 ---
 
@@ -2484,13 +2485,22 @@ rather than run workspaces without microVM isolation (§6.2).
 
 # 31. Audit Logging
 
-Location:
+**Status: deferred.** No event log of this kind is implemented today — there is no
+`internal/audit` package and no code writes workspace-creation/deletion,
+secret-access, or model-configuration events anywhere. The only thing that exists
+on disk is the empty `~/.ai-platform/audit/` directory that `ai setup` pre-creates
+(`internal/layout`) — reserved for this future layer, currently unused. What IS
+live today is the unrelated DNS-name egress audit (`aip-dns` / `ai network log`,
+§29.7), which is a different mechanism entirely (attempted-egress hostnames, not
+platform lifecycle/secret events) — do not confuse the two.
+
+Location (once implemented):
 
 ```text
 ~/.ai-platform/audit/
 ```
 
-Events:
+Events (once implemented):
 
 * workspace creation
 * workspace deletion
@@ -2499,8 +2509,8 @@ Events:
 
 Secret values must never be logged. LiteLLM owns the authoritative model-request
 log (spend, virtual-key usage, guardrail actions) in its Postgres-backed store;
-the platform audit log records only that a secret-access or model-configuration
-event occurred, with no secret material.
+the platform audit log would record only that a secret-access or
+model-configuration event occurred, with no secret material.
 
 ---
 

@@ -23,14 +23,17 @@ code.
 - **Service-tier launch** — `internal/setup/setup_real.go`: `realServices.Reconcile`
   brings up the container tier on `aip-net` in order **network → DNS →
   Presidio (only when secret-masking is enabled) → Valkey (+ RedisInsight) →
-  Headroom → LiteLLM (+ DB) → vLLM (host-native, best-effort per-model serve) →
-  nginx proxy (LAST)**, via the detected runtime (docker|podman). vLLM is the SOLE
-  local-inference runtime and is a HOST-NATIVE process, not an
-  `aip-*` container: `ensureVLLMServers` best-effort starts a per-model `vllm serve`,
-  reached by the containers through the host gateway.
-  Headroom PRECEDES LiteLLM because LiteLLM's `headroom` compression guardrail calls
-  it in-process. nginx (`aip-proxy`) is the sole host entry — all other containers
-  are internal-only.
+  Headroom → LiteLLM (+ DB) → nginx proxy (LAST)**, via the detected runtime
+  (docker|podman). Headroom PRECEDES LiteLLM because LiteLLM's `headroom`
+  compression guardrail calls it in-process. nginx (`aip-proxy`) is the sole host
+  entry — all other containers are internal-only. **Separately** (not part of the
+  container reconcile loop), `Reconcile` also brings up **omlx** — the SOLE
+  local-inference runtime, a HOST-NATIVE process, not an `aip-*` container — between
+  `ensureLiteLLM` and `ensureProxy`: `ensurePlatformVenv` + `ensureOmlxInstalled` then
+  `startOmlxServerHost` best-effort starts the ONE shared `omlx serve` process (it
+  scans its own model directory and serves every model it finds — there is no
+  per-model launch or port allocation), reached by the containers through the host
+  gateway.
 - **Egress net-rules** — the project `network` block is rendered by
   `egress.MsbNetworkArgs` and applied at `realSandbox.Create` (default-deny +
   allow-listed host services + published ports).
@@ -69,12 +72,12 @@ code.
 - **Virtual-key minting + provider-key storage** — `litellm.KeyManager` mints the
   scoped agent virtual key and stores provider keys in LiteLLM's credential store
   (keys-in-LiteLLM, §17), fronted by `ai keys`.
-- **Live vLLM health probe + status** — `vllmServersHealthy`/`vllmStatus`
-  (`internal/setup/vllm_host.go`) HTTP-probe each recorded vLLM endpoint's
-  `/models` path (discovered from the persisted `config/model-runtimes.yaml`, since
-  `ai` is short-lived and holds no daemon). `ai services status`/`ai doctor` surface a
-  single `vllm` `host`-mode line (running when ≥1 recorded server answers, else
-  stopped/optional).
+- **Live omlx health probe + status** — `omlxHealthy`/`omlxStatus`
+  (`internal/setup/omlx_host.go`) HTTP-probe the ONE shared omlx server's
+  `GET /v1/models` endpoint (there is no persisted model-runtime store — omlx is
+  daemonless-safe via its own OS-level flock, `internal/omlx/lock.go`). `ai services
+  status`/`ai doctor` surface a single `omlx` `host`-mode line (running when the
+  server answers, else stopped).
 
 ## 1. Provision the host (prerequisites)
 
@@ -83,13 +86,17 @@ code.
 - [ ] Go 1.26+.
 - [ ] **Docker**, rootless. `ai doctor` → `container runtime: ok (docker)`;
       `ai setup` must verify rootless (`runtime.Verify`, exit 4 if not).
-- [ ] **vLLM** (host-native, the SOLE local-model backend) — installed into the
-      platform-managed host venv `~/.ai-platform/venv` by `ai models install-vllm`
-      (MLX / vLLM-Metal on macOS, `pip install vllm` on CUDA Linux); `ai setup` also
-      best-effort installs it (`ensureVLLMInstalled`) and the **Hugging Face CLI** `hf`
-      (`ensureHFInstalled`, `pip install huggingface_hub[cli]`) into the same venv, so
-      `ai models pull <repo>` works after a plain `ai setup`. vLLM weights live at
-      `~/.ai-platform/volumes/models/vllm` (`hf` sets `HF_HOME` there). See §2.9.
+- [ ] **omlx** (host-native, the SOLE local-model backend, **macOS/Apple-Silicon
+      only**) — installed into the platform-managed host venv `~/.ai-platform/venv`
+      by `ai setup`'s best-effort auto-install (`ensureOmlxInstalled` → `omlx.Install`,
+      Detect-gated, never failing setup); a manual `ai services start omlx` retries the
+      same install on demand. `omlx.Install` resolves the LATEST
+      `github.com/jundot/omlx` GitHub release, picks the newest-Python-version
+      prebuilt wheel, and pins the venv to that Python version via
+      `pyenv.EnsureVersion`. Model download/add/remove/tune all live in omlx's OWN
+      admin panel (`ai services console omlx`) — there is no `ai models pull`
+      equivalent and no separate Hugging Face CLI install. omlx weights live at
+      `~/.ai-platform/volumes/models/omlx`. See §2.9.
 - [ ] **Microsandbox** (`msb`) — the platform now MANAGES this itself: it is pinned
       to `microsandboxVersion` (`v0.6.6`, matched to the go.mod
       `superradcompany/microsandbox/sdk/go` pin) and downloaded (sha256-verified)
@@ -200,7 +207,7 @@ verification work:
       §2.3 intro; this item is the live end-to-end confirmation of the forward chain.)
 - [ ] **nginx as the SOLE host entry — the new routes** — every service container
       is now INTERNAL-ONLY on `aip-net` (LiteLLM, Presidio, Headroom no
-      longer host-publish); only nginx publishes (vLLM is host-native,
+      longer host-publish); only nginx publishes (omlx is host-native,
       reached via the host gateway). Verify on a live
       host that the new nginx routes work end-to-end:
   - `localhost:18787/llm/*` reaches the LiteLLM admin surface (e.g.
@@ -214,11 +221,14 @@ verification work:
   - the agent microVM `/v1` path (`host.microsandbox.internal:18787/v1` → LiteLLM)
     is unchanged — confirm a workspace agent still routes correctly.
 
-- [ ] **UI Host-based vhost on the single :18787 (the new topology)** — the single
-      host UI is now a subdomain (NOT a separate host port): nginx matches it by
-      `server_name` on the same :18787. Verify on a live host:
+- [ ] **UI Host-based vhosts on the single :18787 (the new topology)** — the host
+      UIs are now subdomains (NOT separate host ports): nginx matches each by
+      `server_name` on the same :18787, data-driven from `services.UIVhosts()`. Verify
+      on a live host, for BOTH always-on vhosts:
   - `http://litellm.<domain>:18787/` serves the LiteLLM admin UI (redirects `/` →
     `/ui`; proxies to `aip-litellm:4000`);
+  - `http://valkey.<domain>:18787/` serves the RedisInsight UI (proxies to
+    `aip-redisinsight:5540`), preconfigured with the standalone `aip-valkey` connection;
   - `<domain>` is the resolved platform base domain (default `aip.local`; `ai domain`).
   - (Open WebUI is now a per-workspace in-VM app, not a host vhost; Odysseus was removed.)
 - [ ] **Standalone `/etc/hosts` write (the sudo seam)** — `ai setup` in standalone
@@ -321,8 +331,8 @@ Every host-persisted **system** volume now lives under `~/.ai-platform/volumes/<
 - `~/.ai-platform/volumes/litellm-db` → bind-mounted into `aip-litellm-db` at
   `/var/lib/postgresql` (the LiteLLM Postgres data dir). This replaces the former
   `aip-litellm-db-data` Docker **named volume**.
-- `~/.ai-platform/volumes/models` → the local-model store; the vLLM weights live in
-  the `volumes/models/vllm` subdir (`hf` sets `HF_HOME` there).
+- `~/.ai-platform/volumes/models` → the local-model store; the omlx weights live in
+  the `volumes/models/omlx` subdir, entirely managed by omlx's own admin panel.
 
 - [ ] **Verify `initdb` succeeds on the bind mount.** Postgres on a host bind mount
       has data-dir **ownership** quirks: the container's `postgres` UID must own (or
@@ -373,7 +383,7 @@ unit-tested. What remains:
 
 ### 2.6b Base-image per-user dev tooling — rtk (arch §7)
 
-rtk ("Rust Token Killer", `github.com/rtk-ai/rtk`) is baked into ALL FOUR OS base
+rtk ("Rust Token Killer", `github.com/rtk-ai/rtk`) is baked into ALL THREE OS base
 images (debian-trixie, ubuntu, alma) for the workspace user via its
 official `install.sh` (prebuilt **aarch64** Linux binary → `~/.local/bin`, on PATH,
 no root). It is a CLI proxy that compresses common dev-command output to cut agent
@@ -494,52 +504,50 @@ on Apple Silicon (the runtime is now pinned to msb `v0.6.6`,
       relay client per workspace (no "max clients" growth) and releases it on project
       switch / exit.
 
-### 2.9 Host-native model runtime — vLLM (arch §17)
+### 2.9 Host-native model runtime — omlx (arch §17)
 
-vLLM is the **SOLE** local model backend, a **host-native**
-process, not an `aip-*` container. Local models are managed with the **Hugging Face
-CLI** (`hf`): there is no per-model runtime choice and no `--runtime` flag. The
-host-side wiring — status/health probing, the model-runtime store
-(`config/model-runtimes.yaml`, vLLM-only),
-`ai models pull <repo>` (`hf download` → start + register the per-model server) /
-`ai models rm <repo>` (stop + `hf cache rm` + de-register), the CLI guards, and the
-Manager (lazy start, `MaxServers=2` cap with LRU eviction, port allocation from
-`:8101`) — is fully unit-tested with fakes. The seams that MUTATE the host are
-`hardware bring-up` (grep `hardware bring-up` in `internal/setup`, `internal/vllm`,
-and `internal/hf`):
+omlx ([jundot/omlx](https://github.com/jundot/omlx)) is the **SOLE** local model
+backend, a **host-native** process (macOS/Apple-Silicon only), not an `aip-*`
+container: ONE shared `omlx serve --model-dir <dir> --port 8100` process that scans
+its own model directory and serves every model it finds. There is no per-model
+runtime choice, no per-model port allocation, and no LRU eviction (unlike the vLLM
+design this replaced) — model download/add/remove/tune all live entirely in omlx's
+OWN admin panel (`ai services console omlx`), never this CLI; `ai models` is
+read-only gateway inspection (`status`/`test`/`refresh`). The host-side wiring —
+status/health probing, `omlx.Manager.EnsureServed` (adopt/wait/start, OS-level
+flock-serialized across `ai` invocations), and the automatic LiteLLM `omlx/*`
+registration sync (`litellm.SyncOmlxModels`) against omlx's live model list — is
+fully unit-tested with fakes. The seams that MUTATE the host are `hardware
+bring-up` (grep `hardware bring-up` in `internal/setup` and `internal/omlx`):
 
-- [ ] **vLLM per-model `vllm serve` launch** — `vllm.RealRunner.Start`/`Stop`
-      (`internal/vllm/runner.go`) now spawn/stop the real process (the legacy
-      `vllm.ErrNotWired` sentinel is no longer returned); `ensureVLLMServers` (in the
-      reconcile) and `ai models pull <repo>` start it best-effort and surface the
-      install guidance on failure (never crash). `Start` launches a DETACHED
-      `vllm serve <model> --host 127.0.0.1 --port <p> --served-model-name <alias>`
-      with `HF_HOME=<StoreDir>` (the vLLM store `~/.ai-platform/volumes/models/vllm`);
-      each server is one OpenAI endpoint on a host loopback port, registered in the
-      gateway under `vllm/<alias>`. Verify a real per-model serve + gateway round-trip
-      on a live host.
-- [ ] **`hf` weight download** — `ai models pull <repo>` runs `hf download <repo>`
-      into the vLLM store (`internal/hf`, `HF_HOME` pointed at
-      `~/.ai-platform/volumes/models/vllm`); `hf cache ls`/`hf cache rm` back
-      `ai models list`/`ai models rm`. Verify a real multi-GB HF download + subsequent
-      `vllm serve` load on a live host.
-- [ ] **vLLM + `hf` install** — `ai setup` best-effort installs BOTH vLLM
-      (`ensureVLLMInstalled` → `vllm.Install`) and the Hugging Face CLI
-      (`ensureHFInstalled` → `hf.Install`, `pip install huggingface_hub[cli]`) into the
-      platform-managed host venv `~/.ai-platform/venv` (Detect-gated, never fails
-      setup); `ai models install-vllm` is the explicit one-shot vLLM installer. The
-      real pip/wheel downloads are the host mutation. `vllm.Detect`
-      (`internal/vllm/detect.go`) only checks for the `vllm` binary; a COMPLETE probe
-      must also verify the platform-specific runtime (darwin: the vLLM-Metal plugin is
-      importable; Linux: a CUDA device + driver). `vllm.InstallGuidance` prints the
-      per-OS steps — MLX / vLLM-Metal on macOS, `pip install vllm` on CUDA Linux.
-- [ ] **Uninstall host-runtime removal** — a plain `ai uninstall` ALWAYS stops any
-      running `vllm serve` servers best-effort (`stopVLLMServers` — `pkill -f "vllm
-      serve"`), and by default also removes the vLLM runtime (`removeVLLM`; prompt
-      defaults to yes; `--keep-runtimes` opts out; downloaded weights kept unless
-      `--purge`). Both are documented best-effort STUBS in
-      `internal/uninstall/uninstall.go`; when wired the removal runs the per-OS
-      uninstall (macOS: remove the vLLM-Metal venv; Linux: `pip uninstall vllm`).
+- [ ] **omlx GitHub-release resolution + install** — `omlx.Install`
+      (`internal/omlx/omlx.go`) resolves the LATEST `github.com/jundot/omlx` GitHub
+      release, picks the newest-Python-version prebuilt
+      `omlx-X.Y.Z-cpNNN-...-macosx_15_0_universal2.whl` asset, pins the platform venv
+      (`~/.ai-platform/venv`) to that exact Python version via `pyenv.EnsureVersion`
+      (recreating a mismatched venv), and `pyenv.PipInstall`s the wheel. `ai setup`
+      best-effort auto-installs it when absent (`ensureOmlxInstalled`, Detect-gated,
+      never failing setup); `ai services start omlx` retries the same install+start on
+      demand. Verify the real GitHub API resolution + wheel pip-install on a live host
+      (behind the injectable `releaseGet`/`pyenv` seams).
+- [ ] **omlx shared server launch** — `startOmlxServerHost`
+      (`internal/setup/omlx_host.go`) → `omlx.Manager.EnsureServed` launches the real
+      DETACHED `omlx serve --model-dir <dir> --port 8100` process (stdout+stderr to
+      `omlx.LogPath`, a sibling of the model directory), then `SyncOmlxModels`
+      registers its live model list into LiteLLM as `omlx/<id>` routed to
+      `openai/<id>` against the shared `api_base`. Verify a real server launch + a
+      served model's gateway round-trip (`ai models test omlx/<name>`) on a live host.
+- [ ] **Uninstall host-runtime removal** — a plain `ai uninstall` ALWAYS stops the
+      running `omlx serve` server best-effort (`stopOmlxServer` — an unqualified
+      `pkill -f "omlx serve"`), and by default also attempts to remove the host-native
+      omlx runtime (`Options.RemoveRuntimes` defaults to true; prompt defaults to yes;
+      `--keep-runtimes` opts out; the downloaded model store
+      `volumes/models/omlx` survives unless `--purge`). `removeOmlx`
+      (`internal/uninstall/uninstall.go`) is currently a **documented STUB**: it
+      reports `Report.RemovedOmlx=true` and logs a message but does not actually run a
+      per-OS uninstall of the omlx install — only stopping the running server is
+      actually wired. Wire the real per-OS removal (e.g. `pip uninstall omlx` from the
+      platform venv) and verify.
 
 ## 3. Turn on the remaining acceptance tests
 
@@ -575,10 +583,11 @@ pass):
 1. `ai doctor` → all checks green.
 2. `ai setup` → exit 0 (choose the guardrails at the picker / `--guardrails`); the
    core service tier (DNS, Valkey (+ RedisInsight), Headroom, LiteLLM + DB,
-   and the nginx proxy LAST) up, and vLLM + the `hf` CLI best-effort installed into
-   the platform venv — Presidio starts **only when secret-masking is selected**
-   (`ai services status` shows it "disabled" otherwise); templates installed. There
-   are no optional host services (vLLM is host-native and started per-model on demand).
+   and the nginx proxy LAST) up, and omlx best-effort installed + started (the one
+   shared server) into the platform venv — Presidio starts **only when
+   secret-masking is selected** (`ai services status` shows it "disabled"
+   otherwise); templates installed. There are no optional host services (omlx is
+   host-native and serves every model it finds from ONE shared process).
 3. `ai create --name demo --os debian-trixie` → **scaffold-only**: writes the
    project's `.ai-platform/` files in the cwd and registers it; it does **not**
    build the image or boot a microVM.

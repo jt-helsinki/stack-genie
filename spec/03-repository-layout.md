@@ -378,6 +378,8 @@ Rules:
 * local persistence, not a backup — removed only when its workspace is
   permanently removed
 * never contains secrets
+* the `overlay.json` record described in §12.8 is aspirational — no code path
+  writes it today; `internal/overlay` only manages the directory itself
 
 ---
 
@@ -428,10 +430,13 @@ the agent into this source tree — the platform does not manage them.
   config.yaml          # tracked — project config (§12.4)
   profile.yaml         # tracked — project profile (language/toolchain)
   project.yaml         # tracked — { name, os, created } (§12.1)
-  agents/  skills/  prompts/  projects/   # shared resource pool (§12.1c) — dirs
-                       #   scaffolded empty; populated at workspace start (Caveman
-                       #   install + Graphify + symlinks into each CLI's dir).
-                       #   Caveman is NOT platform-seeded/git-tracked (architecture §9)
+  agents/  skills/  prompts/  projects/   # shared resource pool (§12.1c) — NOT created
+                       #   by `ai create`/Scaffold; created + populated at workspace
+                       #   START (Manager.Start's linkSharedResources MkdirAll's each,
+                       #   then Caveman install + Graphify + symlinks into each CLI's
+                       #   dir). A freshly-created, never-started project has none of
+                       #   these dirs yet. Caveman is NOT platform-seeded/git-tracked
+                       #   (architecture §9)
   .gitignore           # ignores run/
   run/                 # gitignored — host-local runtime state
     workspaces/<workspace-id>.json   # (§12.2)
@@ -764,6 +769,8 @@ agent:
   default_tool: opencode   # default agent CLI; must be one of agent.tools
   graphify_model: qwen2.5-coder  # optional: local model NAME already served by omlx that Graphify uses
                            # (chosen at `ai create`, no download step; routed through the gateway as omlx/<model>); omitted = none
+  hermes_dashboard_password: ""  # plaintext basic-auth password for the hermes web dashboard (hermes dashboard);
+                           # auto-generated + written by the platform on first start when hermes is selected
 context:
   strategy: balanced       # Headroom input compression: conservative | balanced | aggressive
                            # (mapped to Headroom per-request knobs keep_turns/output_buffer_tokens)
@@ -783,6 +790,15 @@ workspace:
                            # fit); applied at create via the SDK's WithOCIUpperSize, changeable
                            # later with `ai resize`; empty falls back to the workspace default
   shell: bash              # default interactive shell (bash | zsh), chosen at `ai create --shell`; applied at every start
+  isolated_dirs:           # guest-relative paths under the project workdir (e.g. node_modules, target) EXCLUDED
+                           # from the host project bind mount and backed by a private, workspace-scoped volume
+                           # instead — in-VM writes never touch the host tree; applied at create as an extra
+                           # SDK mount over the subpath. Empty by default (`ai mounts isolate-dir`, `--isolate-dirs`)
+    - node_modules
+  shared_mounts:           # additional host directories bind-mounted into the guest at an arbitrary guest path,
+                           # visible/writable on BOTH sides (unlike isolated_dirs); applied at create as an extra
+                           # SDK bind mount. Empty by default (`ai mounts map-dir`, `--map-dir`)
+    - { guest_path: /home/workspace/shared, host_path: /Users/me/shared }
 microsandbox:
   idle_timeout: 24h        # `msb create --idle-timeout`; default set by `ai create`, editable later
 network:                   # workspace networking (arch §29.6); all fields managed via `ai network`
@@ -814,6 +830,7 @@ agent_dashboards:          # agent-CLI web dashboards (currently only hermes —
   "detected": "docker",
   "rootless": true,
   "microsandbox": { "available": true, "virtualization": "hvf" },
+  "guardrails": ["headroom"],
   "ai_platform_host": "host.local",
   "host_gateway": "host.microsandbox.internal",
   "domain": "aip.local",
@@ -828,6 +845,12 @@ agent_dashboards:          # agent-CLI web dashboards (currently only hermes —
   mechanism is retained but there are currently **no** optional host services
   (Open WebUI moved to a per-workspace in-VM app and Odysseus was removed), so
   this field is normally omitted.
+* `guardrails`: the set of LiteLLM guardrail keys enabled on the gateway,
+  chosen from the picker at `ai setup` and persisted machine-wide — only
+  `headroom` (input-compression) is on by default; `presidio` (secret
+  masking), `detect-secrets`, and the destructive-command tool firewall are
+  opt-in. A non-nil value (including an explicit empty list) means the user
+  has made a choice; absent falls back to the built-in default set.
 * `ai_platform_host`: the machine-wide gateway address every workspace microVM
   routes through (`ai gateway set` / `ai setup --mode client --server`).
 * `host_gateway`: the guest-visible host address (arch §29.2), default
@@ -848,7 +871,7 @@ agent_dashboards:          # agent-CLI web dashboards (currently only hermes —
     "presidio-analyzer":   { "mode": "container", "image": "mcr.microsoft.com/presidio-analyzer",   "tag": "latest" },
     "presidio-anonymizer": { "mode": "container", "image": "mcr.microsoft.com/presidio-anonymizer", "tag": "latest" },
     "valkey":       { "mode": "container", "image": "valkey/valkey", "tag": "9.1.0-alpine" },
-    "redisinsight": { "mode": "container", "image": "redis/redisinsight", "tag": "latest" },
+    "redisinsight": { "mode": "container", "image": "redis/redisinsight", "tag": "3.8" },
     "proxy":        { "mode": "container", "image": "nginx", "tag": "stable-alpine3.23-slim" },
     "dns":          { "mode": "container", "image": "coredns/coredns", "tag": "latest" }
   }
@@ -915,7 +938,7 @@ demand via `ai models refresh`.
   `ai delete` (low-write)
 * lets the CLI find a project's `.ai-platform/` without scanning
 
-## 12.8 `overlays/<workspace-id>/overlay.json` (global overlay record)
+## 12.8 `overlays/<workspace-id>/overlay.json` (global overlay record) — not implemented
 
 A tiny record beside the persistent layer (the layer contents are not described
 by a manifest — the whole writable layer persists).
@@ -927,3 +950,9 @@ by a manifest — the whole writable layer persists).
   "updated": "2026-06-18T11:00:00Z"
 }
 ```
+
+**Aspirational, not built.** `internal/overlay` only implements `Path`/`Ensure`/
+`Exists`/`Remove` over the overlay *directory* itself (`~/.ai-platform/overlays/
+<workspace-id>/`) — no code path writes an `overlay.json` file, and there is no
+Go type for this schema. Treat the JSON above as a proposed future record, not
+current behavior; §1.10 lists this dir with the same caveat.

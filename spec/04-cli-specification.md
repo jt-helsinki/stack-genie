@@ -118,9 +118,8 @@ CLI must behave identically on:
 
 There is **one binary**, `ai`, installed on `PATH`. There are **no hyphenated
 command names and no symlinks**, and essentially no command aliases — the only
-ones are the documented `destroy` alias of `ai delete` (§4.4) and the
-`remove`/`delete` aliases of `ai models rm`. Every command follows a
-single, consistent pattern:
+one is the documented `destroy` alias of `ai delete` (§4.4). Every command
+follows a single, consistent pattern:
 
 ```text
 ai <noun> [<verb>] [args] [flags]
@@ -460,7 +459,7 @@ Idempotent: safe to re-run after a partial or completed uninstall.
 ```bash id="c4"
 ai create [<name>] [--name <name>] [--os <os>] [--shell <bash|zsh>] [--agents <list>]
           [--auth-mode <cli=mode>] [--stacks <list>] [--apps <list>] [--app-port <app=port>] [--graphify-model <ref>]
-          [--cpus <n>] [--memory <size>] [--disk <GB>] [--ports <list>] [--location <dir>]
+          [--cpus <n>] [--memory <size>] [--disk <GB>] [--ports <list>] [--isolate-dirs <list>] [--location <dir>]
           [--idle-timeout <dur>] [--tools <list>]
 ```
 
@@ -551,6 +550,14 @@ one command:
 * `--ports <list>` — comma-separated host↔guest ports to open into the workspace,
   each `PORT` (host == guest) or `HOST:GUEST` (Docker-style host-first), written to
   `network.publish_ports`. Malformed/out-of-range ports exit `2`.
+* `--isolate-dirs <list>` — comma-separated guest-relative subdirs (e.g.
+  `node_modules,target`) to exclude from the host project bind mount; each gets its
+  own private, workspace-scoped volume instead of the host directory, so host- and
+  sandbox-built binaries never collide. Written to `workspace.isolated_dirs`.
+  Changeable after creation with `ai mounts` (§4.5d). Shared host↔guest mounts (an
+  extra host directory bind-mounted at an arbitrary absolute guest path,
+  `workspace.shared_mounts`) are **not** a create-time input — they are added/removed
+  only via `ai mounts` (§4.5d).
 * `--location <dir>` — the workspace directory (default: cwd). **Created if it does
   not exist.** It must **not** be — or be nested inside — an existing workspace
   (a directory with a `.ai-platform/project.yaml` at it or any ancestor); otherwise
@@ -669,9 +676,11 @@ Steps, in order:
 7. **Resources & ports** — text inputs for **vCPUs** (`--cpus`, default 4,
    host-capped), **memory in GB** (`--memory`, a plain number, default 8,
    host-capped), **disk in GB** (`--disk`, a plain number, default 16 — the
-   writable rootfs / in-VM image store), and **ports to open** (`--ports`,
-   comma-separated `PORT` or `HOST:GUEST`). Blank accepts the default; over-host or
-   malformed values are rejected in place.
+   writable rootfs / in-VM image store), **ports to open** (`--ports`,
+   comma-separated `PORT` or `HOST:GUEST`), and **isolated dirs** (`--isolate-dirs`,
+   comma-separated, optional — guest-relative subdirs excluded from the host mount,
+   e.g. `node_modules,target`, each backed by a private sandbox-only volume). Blank
+   accepts the default; over-host or malformed values are rejected in place.
 8. **Idle timeout** — text input for the Microsandbox idle timeout (`--idle-timeout`,
    default 24h).
 9. **AI tools** — **multi-select checkboxes** (like the agent-CLI list, not a screen
@@ -1195,6 +1204,53 @@ non-zero with a warning; a missing `curl` (image without it) errors clearly. The
 host-side generation and the script's own logic are unit-tested (the generated
 script is executed against a fake `curl`); **live in-VM execution is a
 `hardware bring-up` verification item.**
+
+---
+
+## 4.5d Mounts (`ai mounts`)
+
+```bash
+ai mounts list [<name>]
+ai mounts <add|remove> <dir> [--host <host-path>] [<name>]
+```
+
+`ai mounts` manages two kinds of extra mount beyond the base project bind mount
+(the workspace directory itself, always mounted at `~/project`). The optional
+trailing `[<name>]` resolves the workspace exactly like the other verbs (explicit
+name → `--project` → cwd). Which kind a `<dir>` is is disambiguated by whether it
+is absolute:
+
+* **isolated dir** (`ai mounts add node_modules`) — a **guest-relative**
+  subdirectory (e.g. `node_modules`, `target`) excluded from the host project bind
+  mount and backed by a private, workspace-scoped named volume instead: writes made
+  in the sandbox never touch the host directory, and whatever the host has there
+  stays untouched and invisible to the guest. Lets host-built and sandbox-built
+  binaries coexist without collision. Stored in `config.yaml`
+  `workspace.isolated_dirs`; also settable at create time with `--isolate-dirs`
+  (§3.1).
+* **shared mount** (`ai mounts add /home/workspace/shared --host ~/Downloads`) — an
+  **absolute** guest path bind-mounted from an arbitrary **host** directory
+  (`--host`, created if missing), visible and writable on **both** sides — unlike
+  an isolated dir, writes on either side are seen by the other. Stored in
+  `config.yaml` `workspace.shared_mounts`. There is no create-time flag for this
+  kind; it is added only via `ai mounts`.
+
+`--host` is required on `add` for an absolute (shared) `<dir>` and rejected for a
+relative (isolated) one.
+
+* **`list`** — two tables: ISOLATED DIR (guest-private volume, not on host) and
+  GUEST PATH / HOST PATH (shared both ways).
+* **`add`** / **`remove`** — mutate the matching config.yaml list; a duplicate
+  `add` or a missing `remove` target exits `2`.
+
+The mount set is applied at microVM create/recreate (`msb`, like the published
+port set), so `add`/`remove` **require a restart to take effect** — the command
+succeeds immediately and prints the `ai restart <name>` hint rather than
+restarting automatically. The TUI **Mounts** sub-tab (§14.4) drives the same
+config edits inline.
+
+Exit codes (§18): unknown action / bad `--host` usage / validation failure → `2`;
+config read/write failures → `4`.
 
 ---
 
@@ -1834,10 +1890,12 @@ ai theme [name]
 Selects the CLI colour theme applied to the interactive prompts, forms, the
 setup stepper, and headings. The choice is persisted **per host** in
 `~/.ai-platform/config/ui.yaml` (`theme:`) and applied at startup, so every
-command matches. Available themes wrap huh's built-ins (`default` (charm),
-`dracula`, `catppuccin`, `base16`, `monochrome`) plus custom palettes (`orange`,
-`orange-blue`, `synthwave`, `cyberpunk`, `tokyo-night`, `vaporwave`, `tron`,
-`nord`, `gruvbox`, `onedark`) — run `ai theme` to list them all.
+command matches. `default` is the platform's own bright-pink-and-blue palette
+(`blue-pink` selects the same palette by its explicit name), not huh's built-in
+charm theme. The other selectable themes wrap huh's remaining built-ins
+(`dracula`, `catppuccin`, `base16`, `monochrome`) plus custom palettes (`orange`,
+`synthwave`, `cyberpunk`, `tokyo-night`, `vaporwave`, `tron`, `nord`, `gruvbox`,
+`onedark`) — run `ai theme` to list them all.
 
 Behavior (follows §1.8):
 
@@ -1963,6 +2021,10 @@ number keys `1`-`9`. There is **no `:` command palette** — `q`/`ctrl+c` quits 
     unpublish a port (the value is typed at an inline prompt). CLI mirror:
     `ai network egress`/`allow`/`disallow`/`publish`/`unpublish`.
   * **Context** — Headroom strategy + Caveman level; `s`/`c` cycle them.
+  * **Mounts** — every extra mount beyond the base project bind mount: isolated
+    dirs (guest-private volumes) and shared mounts (extra host↔guest bind mounts),
+    managed inline against the same `config.yaml` lists that `ai mounts` (§4.5d)
+    edits. Adding/removing a mount here likewise requires a restart to take effect.
   * **Shell** — the per-workspace **session manager** over the tmux sessions
     (NAME / ATTACHED / IDLE): `enter`/`a` attach the selected session, `n` opens an
     inline prompt to create a new named session, `d`/`k` kill the selected one, `r`

@@ -129,19 +129,23 @@ for the rare TTY-only human-wizard cases and is not used here.)
   recorded request, and must appear **nowhere** in the workspace env, the
   workspace filesystem, `~/.ai-platform`, or `~/projects`. The workspace agent
   holds only a scoped LiteLLM **virtual key**, never the provider secret.
-* **egress policy**: the per-project egress
-  default is now `public` (allow-outbound), so to assert *confinement* the harness
-  configures the egress controls explicitly — it sets **`deny` mode** via
-  `ai network` so tests run against a *known* locked-down policy rather than ambient
-  host behavior. In `deny` mode the **Microsandbox NetworkPolicy** (applied
-  per-workspace as Microsandbox net-rules at workspace create via the `msb` CLI,
-  plan §3.4) permits the workspace to reach only the **host gateway** (the
+* **egress policy**: the per-project egress default is now `public`
+  (allow-outbound — only private ranges are blocked). `TestEgressConfinementOnHardware`
+  (§16.3) does **not** call `ai network` at all today — it creates and starts
+  the workspace with that default `public` policy left as-is: there is no
+  `deny`-mode fixture and no `ai network allow`/mock-provider allow-list wired
+  into this test, so it exercises the ambient default posture rather than a
+  known locked-down policy. Confinement itself is still enforced by the
+  **Microsandbox NetworkPolicy** (applied per-workspace as Microsandbox
+  net-rules at workspace create via the `msb` CLI, plan §3.4), which under
+  `public` mode permits the workspace to reach the **host gateway** (the
   always-on allow rule: nginx `aip-proxy` → LiteLLM (which calls Headroom
   in-process as a `pre_call` guardrail), default
   `host.microsandbox.internal:18787` — workspaces never reach LiteLLM directly)
-  plus the allow-listed `$MOCK_PROVIDER_URL` (§ Setup), configured inline via
-  `ai network allow` (parameterized by `$MOCK_PROVIDER_URL`). There is **no egress
-  proxy** — confinement is the net-rules applied at workspace create (arch §29.4–29.5).
+  plus the open internet (private ranges still blocked). There is **no egress
+  proxy** — confinement is the net-rules applied at workspace create (arch
+  §29.4–29.5). See §16.3 for exactly what the on-hardware test probes, and a
+  note on the resulting gap against this default-`public` behavior.
 
 ### Setup / Teardown
 
@@ -477,7 +481,7 @@ create; not asserted here — see §8.)
 
 **Automated coverage:** `TestProjectDockerfileReflectsOS`
 (`test/acceptance/s1_remaining_test.go`) asserts the on-disk `FROM` line for all
-four OS templates — this is the file-inspection half described above. No test
+three OS templates — this is the file-inspection half described above. No test
 runs the in-VM `cat /etc/os-release` half (it needs a real microVM build and is
 not present in `test/acceptance/` or `test/integration/`).
 
@@ -622,12 +626,12 @@ group 7 of `make test-integration` (`//go:build integration`,
 tags in this document apply to the `test/acceptance` harness; the integration
 groups are separate.
 
-**Gap:** the group-7 source file on disk is still
-`test/integration/vllm_runtime_test.go` and was not updated for the vLLM→omlx
-refactor — it still names the service `vllm` and still drives the now-removed
-`ai models pull`/`vllm/<alias>` surface, so it does **not** actually exercise
-the omlx behavior described below. This section documents the intended
-criterion; the test itself still needs rewriting.
+The group-7 source file is `test/integration/omlx_runtime_test.go`
+(`TestGroup07InferenceRuntime`), rewritten for the vLLM→omlx refactor: it
+asserts `ai services status`/`ai doctor` list the host-native `omlx` service
+(and fail if a removed `vllm`/`ollama` name is still surfaced), and exercises
+`ai models refresh` on both the omlx-unavailable negative path (must fail)
+and the omlx-running positive sync path.
 
 ### Test
 
@@ -887,15 +891,15 @@ runner.
 
 ### Expected Result
 
-* all four workspaces expose an identical **base** tooling surface (§12: Git,
+* all three workspaces expose an identical **base** tooling surface (§12: Git,
   GitHub CLI) and the **same selected agent CLI(s)** — the OS choice never
   changes which tools are present
-* the smoke command produces equivalent results across all four
+* the smoke command produces equivalent results across all three
 * no OS is treated as a default
 
 **Automated coverage:** `TestOSEquivalenceOnHardware`
 (`test/acceptance/acceptance_test.go`), hardware-gated — it builds a workspace
-for each of the four OS keys and probes `git --version`/`gh --version` in
+for each of the three OS keys and probes `git --version`/`gh --version` in
 each.
 
 ---
@@ -1152,59 +1156,58 @@ ai exec test-project --json -- test -e /var/run/docker.sock \
 
 ### Test
 
-The per-project egress default is now `public` (allow-outbound), so to assert
-*confinement* the harness sets **`deny` mode** via the egress policy fixture
-(§1.6). Under `deny` the **Microsandbox NetworkPolicy** allows the workspace to
-reach only the **host gateway** (the always-on allow rule the platform injects —
-`nginx aip-proxy → LiteLLM` (which calls Headroom in-process as a `pre_call`
-guardrail), the SOLE model path; default
-`host.microsandbox.internal:18787`) plus the allow-listed `$MOCK_PROVIDER_URL`
-(arch §29.4). Workspaces never reach LiteLLM directly. The policy comes from the
-**egress policy fixture** (§1.6) — so this test asserts against a defined policy,
-not ambient behavior. `example.com` is denied **because it is not on the
-`deny`-mode fixture's allow-list**. There is no egress proxy.
-
-`$GATEWAY_URL` is the resolved gateway address (`runtime.ResolveGateway`, default
-`http://host.microsandbox.internal:18787`); `$MOCK_PROVIDER_URL` is the
-harness-exported endpoint from §1.6 Setup (the single extra allow-listed
-destination). Both are harness-side values, double-quoted so they expand **on the
-host** before the command is passed verbatim into the workspace (CLI §4.5).
+The per-project egress default is now `public` (allow-outbound — only private
+ranges blocked). `TestEgressConfinementOnHardware`
+(`test/acceptance/s1_hardware_test.go`) does **not** configure egress via `ai
+network` at all — it creates and starts the workspace with that default
+`public` policy left as-is (there is no `deny`-mode fixture and no `ai network
+allow`/mock-provider allow-list wired into this test), then probes two
+destinations from inside the workspace: the trusted host gateway (LiteLLM,
+reached via the in-VM `$AI_PLATFORM_HOST`/`$LITELLM_PORT` env vars the
+platform injects) and `https://example.com`. The host gateway is reachable via
+the always-on allow rule the platform injects — `nginx aip-proxy → LiteLLM`
+(which calls Headroom in-process as a `pre_call` guardrail), the SOLE model
+path; workspaces never reach LiteLLM directly. There is no egress proxy.
 
 ```bash
 # the host gateway (the always-on allow rule, the model path) is reachable
-ai exec test-project --json -- \
-  sh -c "curl -fsS --max-time 5 '$GATEWAY_URL/health' >/dev/null"
+ai exec egress-test --json -- \
+  sh -c 'curl -fsS "http://$AI_PLATFORM_HOST:$LITELLM_PORT/health" >/dev/null'
 
-# allow-listed destination (the mock provider) IS reachable under the NetworkPolicy
-# (host-expanded URL, single-quoted inside so the guest receives the literal URL)
-ai exec test-project --json -- \
-  sh -c "curl -fsS --max-time 5 '$MOCK_PROVIDER_URL/health' >/dev/null"
-
-# NON-allow-listed destination is denied by the Microsandbox NetworkPolicy
-ai exec test-project --json -- \
-  sh -c 'curl -fsS --max-time 5 https://example.com >/dev/null'   # not on the allow-list → denied
+# a non-allow-listed public destination
+ai exec egress-test --json -- \
+  sh -c 'curl -fsS --max-time 5 https://example.com >/dev/null'
 ```
 
 ### Expected Result
 
-* the gateway health probe succeeds (`data.exit_code == 0`) — the always-on
-  allow rule (the model path) is reachable
-* the allow-listed mock-provider probe succeeds (`data.exit_code == 0`) — proving
-  the NetworkPolicy permits exactly what the fixture allows, so the deny below is
-  about policy, not broken connectivity
-* the `example.com` probe **fails** (`data.exit_code != 0`) because the
-  `deny`-mode Microsandbox NetworkPolicy allow-list (fixture, §1.6) excludes it
-* the `ai` process itself exits `0` for all (the commands ran); confinement is
+* the host-gateway health probe succeeds (`data.exit_code == 0`) — the
+  always-on allow rule (the model path) is reachable
+* the `example.com` probe **succeeds** (`data.exit_code == 0`) — under the
+  platform's own documented `public` default (arch §29.4, allow-outbound with
+  only private ranges blocked), a plain public host like `example.com` is
+  reachable, not denied
+* the `ai` process itself exits `0` for both (the commands ran); confinement is
   asserted via `data.exit_code`, per §4.5
 
 (Egress confinement is the Microsandbox net-rules rendered at workspace create,
 arch §29.5; this test asserts that applied policy on a provisioned host.)
 
 **Automated coverage:** `TestEgressConfinementOnHardware`
-(`test/acceptance/s1_hardware_test.go`), hardware-gated — it checks the
-trusted host service (LiteLLM) is reachable and that `example.com` is denied;
-it does not additionally probe a second allow-listed mock-provider destination
-the way the spec's three-probe sequence above does.
+(`test/acceptance/s1_hardware_test.go`), hardware-gated — it configures no
+egress via `ai network` and runs against the workspace's default `public`
+policy (§1.6): it checks the trusted host service (LiteLLM) is reachable, but
+it still asserts `example.com` is **denied**. That assertion is a **bug** —
+it predates the switch to `public`-by-default egress and still encodes the
+old default-deny behavior, so it contradicts the Expected Result above. As
+written, the test does not merely assert the wrong thing silently — run on a
+live host against the current `public` default, the `example.com` curl now
+succeeds (`exit_code == 0`), which trips the `test.Fatal` and makes the test
+**actively fail**. It must be fixed (flip it to expect success, or replace
+the probe with a private-range/link-local address that `public` mode still
+blocks) before this test can be trusted as acceptance evidence. It also
+neither configures a `deny`-mode policy nor probes an allow-listed
+mock-provider destination.
 
 ---
 
