@@ -96,6 +96,11 @@ type Spec struct {
 	// installed agent CLI, written to config.yaml context.codebase_memory_enabled.
 	// Chosen at `ai create` (OPT-IN, default false).
 	CodebaseMemoryEnabled bool
+	// OpenVikingEnabled records whether OpenViking (https://docs.openviking.ai) is
+	// installed into the workspace at start and registered with each supported
+	// installed agent CLI, written to config.yaml context.openviking_enabled. Chosen
+	// at `ai create` (OPT-IN, default false).
+	OpenVikingEnabled bool
 	// PublishPorts are the host↔guest ports to open into the sandbox, written to
 	// config.yaml network.publish_ports.
 	PublishPorts []config.PortMapping
@@ -265,6 +270,9 @@ func Scaffold(spec Spec, createdAt string) (string, error) {
 	}
 	if spec.CodebaseMemoryEnabled {
 		tools = append(tools, "codebase-memory-mcp")
+	}
+	if spec.OpenVikingEnabled {
+		tools = append(tools, "openviking")
 	}
 	if err := envimage.Write(root, spec.OS, spec.Stacks, spec.AgentCLIs, tools); err != nil {
 		return "", err

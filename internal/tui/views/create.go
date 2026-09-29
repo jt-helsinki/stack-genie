@@ -589,7 +589,7 @@ func (view *Create) finish() tea.Cmd {
 	}
 	ports, _ := parsePortsForSpec(view.ports.Value())
 	isolatedDirs := splitTrimmedComma(view.isolatedDirs.Value())
-	caveman, graphify, codeReviewGraph, codebaseMemory := create.SplitAITools(view.tools.Values())
+	caveman, graphify, codeReviewGraph, codebaseMemory, openViking := create.SplitAITools(view.tools.Values())
 	graphifyModel := ""
 	if graphify {
 		if value := view.model.Value(); value != graphifyModelNone {
@@ -635,6 +635,7 @@ func (view *Create) finish() tea.Cmd {
 		GraphifyEnabled:        graphify,
 		CodeReviewGraphEnabled: codeReviewGraph,
 		CodebaseMemoryEnabled:  codebaseMemory,
+		OpenVikingEnabled:      openViking,
 		Root:                   view.location.dir,
 	}
 	return func() tea.Msg { return CreateConfirmedMsg{Spec: spec} }

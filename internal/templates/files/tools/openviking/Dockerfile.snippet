@@ -1,0 +1,21 @@
+# tool: openviking (https://docs.openviking.ai — "the context database for AI agents")
+# — OPT-IN, appended to the project Dockerfile ONLY when selected at `ai create`
+# (context.openviking_enabled). Installs the OpenViking server (`openviking-server`,
+# PyPI `openviking`, via uv onto the workspace user's ~/.local/bin) and its CLI client
+# (`ov`, npm `@openviking/cli`) plus the OpenCode plugin package (npm
+# `@openviking/opencode-plugin`) — npm global installs need root, so those two are
+# installed as root before switching back to the workspace user. No credentials are
+# baked in: the server is started and pointed at by each installed agent CLI at
+# workspace start (workspace.registerOpenViking), running LOCALLY on loopback :1933 in
+# OpenViking's no-auth "dev mode" (no API key needed for a local, non-root-key server).
+#
+# Deliberately NOT `openviking[local-embed]`: that extra needs llama-cpp-python, which
+# builds llama.cpp FROM SOURCE via CMake — none of the three base images ship a C/C++
+# toolchain, and adding one just for this is out of scope here (verified empirically:
+# the plain install builds and runs fine; `openviking-server doctor` reports embedding
+# as unconfigured, which only affects semantic-search quality, not server/MCP startup).
+USER workspace
+RUN uv tool install --no-cache openviking
+USER root
+RUN npm install -g @openviking/cli @openviking/opencode-plugin
+USER workspace

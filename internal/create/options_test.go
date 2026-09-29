@@ -9,22 +9,24 @@ import (
 // mis-provisions every workspace's per-project tooling.
 func TestSplitAITools(test *testing.T) {
 	cases := []struct {
-		name                                            string
-		tools                                           []string
-		caveman, graphify, codeReviewGraph, codebaseMem bool
+		name                                                        string
+		tools                                                       []string
+		caveman, graphify, codeReviewGraph, codebaseMem, openViking bool
 	}{
 		{name: "empty is all false"},
 		{name: "caveman only", tools: []string{AIToolCaveman}, caveman: true},
 		{name: "graphify only", tools: []string{AIToolGraphify}, graphify: true},
 		{name: "code-review-graph only", tools: []string{AIToolCodeReviewGraph}, codeReviewGraph: true},
 		{name: "codebase-memory only", tools: []string{AIToolCodebaseMemory}, codebaseMem: true},
+		{name: "openviking only", tools: []string{AIToolOpenViking}, openViking: true},
 		{
-			name:            "all four",
-			tools:           []string{AIToolCaveman, AIToolGraphify, AIToolCodeReviewGraph, AIToolCodebaseMemory},
+			name:            "all five",
+			tools:           []string{AIToolCaveman, AIToolGraphify, AIToolCodeReviewGraph, AIToolCodebaseMemory, AIToolOpenViking},
 			caveman:         true,
 			graphify:        true,
 			codeReviewGraph: true,
 			codebaseMem:     true,
+			openViking:      true,
 		},
 		{name: "unknown key ignored", tools: []string{"bogus-tool"}},
 		{
@@ -35,7 +37,7 @@ func TestSplitAITools(test *testing.T) {
 	}
 	for _, testCase := range cases {
 		test.Run(testCase.name, func(test *testing.T) {
-			caveman, graphify, codeReviewGraph, codebaseMem := SplitAITools(testCase.tools)
+			caveman, graphify, codeReviewGraph, codebaseMem, openViking := SplitAITools(testCase.tools)
 			if caveman != testCase.caveman {
 				test.Errorf("caveman = %v, want %v", caveman, testCase.caveman)
 			}
@@ -47,6 +49,9 @@ func TestSplitAITools(test *testing.T) {
 			}
 			if codebaseMem != testCase.codebaseMem {
 				test.Errorf("codebaseMemory = %v, want %v", codebaseMem, testCase.codebaseMem)
+			}
+			if openViking != testCase.openViking {
+				test.Errorf("openViking = %v, want %v", openViking, testCase.openViking)
 			}
 		})
 	}
@@ -68,13 +73,13 @@ func TestDefaultAITools(test *testing.T) {
 // TestSupportedAITools asserts all four tool keys are offered.
 func TestSupportedAITools(test *testing.T) {
 	got := SupportedAITools()
-	for _, key := range []string{AIToolCaveman, AIToolGraphify, AIToolCodeReviewGraph, AIToolCodebaseMemory} {
+	for _, key := range []string{AIToolCaveman, AIToolGraphify, AIToolCodeReviewGraph, AIToolCodebaseMemory, AIToolOpenViking} {
 		if !slices.Contains(got, key) {
 			test.Errorf("SupportedAITools() = %v, missing %q", got, key)
 		}
 	}
-	if len(got) != 4 {
-		test.Errorf("SupportedAITools() should offer exactly 4 keys, got %d: %v", len(got), got)
+	if len(got) != 5 {
+		test.Errorf("SupportedAITools() should offer exactly 5 keys, got %d: %v", len(got), got)
 	}
 }
 

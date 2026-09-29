@@ -109,29 +109,31 @@ const (
 	AIToolGraphify        = "graphify"
 	AIToolCodeReviewGraph = "code-review-graph"
 	AIToolCodebaseMemory  = "codebase-memory-mcp"
+	AIToolOpenViking      = "openviking"
 )
 
 // SupportedAITools are the per-project AI tools the user picks from one multi-select
 // (mirroring the agent-CLI list) at `ai create`, instead of a screen/flag each. Order is
 // the display order.
 func SupportedAITools() []string {
-	return []string{AIToolCaveman, AIToolGraphify, AIToolCodeReviewGraph, AIToolCodebaseMemory}
+	return []string{AIToolCaveman, AIToolGraphify, AIToolCodeReviewGraph, AIToolCodebaseMemory, AIToolOpenViking}
 }
 
 // DefaultAITools are the tools pre-selected when the user gives no --tools flag (and the
-// wizard's initial checkboxes): caveman + graphify + code-review-graph on, codebase-memory
-// off.
+// wizard's initial checkboxes): caveman + graphify + code-review-graph on,
+// codebase-memory + openviking off.
 func DefaultAITools() []string {
 	return []string{AIToolCaveman, AIToolGraphify, AIToolCodeReviewGraph}
 }
 
 // SplitAITools reports, from a selected AI-tools list, whether each tool is enabled. Used
 // by both create wizards to set the project.Spec bool flags from one selection.
-func SplitAITools(tools []string) (caveman, graphify, codeReviewGraph, codebaseMemory bool) {
+func SplitAITools(tools []string) (caveman, graphify, codeReviewGraph, codebaseMemory, openViking bool) {
 	return slices.Contains(tools, AIToolCaveman),
 		slices.Contains(tools, AIToolGraphify),
 		slices.Contains(tools, AIToolCodeReviewGraph),
-		slices.Contains(tools, AIToolCodebaseMemory)
+		slices.Contains(tools, AIToolCodebaseMemory),
+		slices.Contains(tools, AIToolOpenViking)
 }
 
 // SupportedShells are the interactive shells a workspace can default to. bash is the

@@ -202,8 +202,8 @@ func TestAiToolsFromSpecAndOptions(test *testing.T) {
 	if slices.Contains(tools, create.AIToolGraphify) {
 		test.Fatalf("graphify should not appear when disabled: %v", tools)
 	}
-	if got := len(aiToolOptions()); got != 4 {
-		test.Fatalf("aiToolOptions len = %d, want 4", got)
+	if got := len(aiToolOptions()); got != 5 {
+		test.Fatalf("aiToolOptions len = %d, want 5", got)
 	}
 }
 

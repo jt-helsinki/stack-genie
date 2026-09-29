@@ -829,7 +829,7 @@ func runCreateWizard(seed project.Spec) (project.Spec, bool, error) {
 		"claude-code": authClaude, "codex": authCodex, "gemini": authGemini,
 	})
 
-	caveman, graphify, codeReviewGraph, codebaseMemory := create.SplitAITools(toolsSelection)
+	caveman, graphify, codeReviewGraph, codebaseMemory, openViking := create.SplitAITools(toolsSelection)
 	// Only carry a graphify model when graphify is actually selected.
 	graphifyModel := ""
 	if graphify && graphifyModelSelection != graphifyModelNone {
@@ -857,6 +857,7 @@ func runCreateWizard(seed project.Spec) (project.Spec, bool, error) {
 		GraphifyEnabled:        graphify,
 		CodeReviewGraphEnabled: codeReviewGraph,
 		CodebaseMemoryEnabled:  codebaseMemory,
+		OpenVikingEnabled:      openViking,
 	}, false, nil
 }
 
@@ -887,6 +888,7 @@ func aiToolOptions() []huh.Option[string] {
 		huh.NewOption("graphify — knowledge-graph skill, baked into the image + registered with each agent CLI", create.AIToolGraphify),
 		huh.NewOption("code-review-graph — code-review knowledge graph + MCP server (local, no API key)", create.AIToolCodeReviewGraph),
 		huh.NewOption("codebase-memory-mcp — codebase-memory MCP server + optional 3D graph UI (local, no API key)", create.AIToolCodebaseMemory),
+		huh.NewOption("openviking — context database (docs.openviking.ai), local server + registered with opencode/claude-code/codex/omp", create.AIToolOpenViking),
 	}
 }
 
@@ -1212,7 +1214,7 @@ func seedSpec(flags createFlags) project.Spec {
 	// a parse error here is impossible — ignore it and seed the wizard's per-agent selects.
 	authModes, _ := parseAuthModes(flags.authMode, agents)
 	// Apps are opt-in: an unset --apps seeds the wizard with NOTHING selected.
-	caveman, graphify, codeReviewGraph, codebaseMemory := create.SplitAITools(effectiveAITools(flags))
+	caveman, graphify, codeReviewGraph, codebaseMemory, openViking := create.SplitAITools(effectiveAITools(flags))
 	return project.Spec{
 		Name:                   name,
 		OS:                     osKey,
@@ -1234,6 +1236,7 @@ func seedSpec(flags createFlags) project.Spec {
 		GraphifyEnabled:        graphify,
 		CodeReviewGraphEnabled: codeReviewGraph,
 		CodebaseMemoryEnabled:  codebaseMemory,
+		OpenVikingEnabled:      openViking,
 	}
 }
 
@@ -1269,7 +1272,7 @@ func specFromFlags(flags createFlags) (project.Spec, error) {
 	if err != nil {
 		return project.Spec{}, err
 	}
-	caveman, graphify, codeReviewGraph, codebaseMemory := create.SplitAITools(effectiveAITools(flags))
+	caveman, graphify, codeReviewGraph, codebaseMemory, openViking := create.SplitAITools(effectiveAITools(flags))
 	return project.Spec{
 		Name:                   name,
 		OS:                     flags.osKey,
@@ -1291,6 +1294,7 @@ func specFromFlags(flags createFlags) (project.Spec, error) {
 		GraphifyEnabled:        graphify,
 		CodeReviewGraphEnabled: codeReviewGraph,
 		CodebaseMemoryEnabled:  codebaseMemory,
+		OpenVikingEnabled:      openViking,
 	}, nil
 }
 

@@ -164,6 +164,13 @@ type ContextConfig struct {
 	// projects created before Graphify was selectable (it was always baked in then) —
 	// see GraphifyEnabledOrDefault.
 	GraphifyEnabled *bool `yaml:"graphify_enabled,omitempty" json:"graphify_enabled,omitempty"`
+	// OpenVikingEnabled records whether OpenViking (https://docs.openviking.ai — "the
+	// context database for AI agents") is installed into the workspace at start and
+	// registered with each supported installed agent CLI (chosen at `ai create`). A
+	// pointer so three states are distinct: unset (nil), explicit true, explicit false.
+	// It is OPT-IN — unset (nil) defaults to DISABLED (unlike Caveman) — see
+	// OpenVikingEnabledOrDefault.
+	OpenVikingEnabled *bool `yaml:"openviking_enabled,omitempty" json:"openviking_enabled,omitempty"`
 }
 
 // CavemanEnabledOrDefault reports whether Caveman should be installed at workspace
@@ -193,6 +200,13 @@ func (settings ContextConfig) CodebaseMemoryEnabledOrDefault() bool {
 // disables it.
 func (settings ContextConfig) GraphifyEnabledOrDefault() bool {
 	return settings.GraphifyEnabled == nil || *settings.GraphifyEnabled
+}
+
+// OpenVikingEnabledOrDefault reports whether OpenViking should be installed at
+// workspace start. It is OPT-IN: an unset (nil) value defaults to FALSE, so it is only
+// ever installed when explicitly chosen at `ai create`.
+func (settings ContextConfig) OpenVikingEnabledOrDefault() bool {
+	return settings.OpenVikingEnabled != nil && *settings.OpenVikingEnabled
 }
 
 // WorkspaceConfig holds the microVM resource limits applied at workspace start

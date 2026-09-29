@@ -661,6 +661,7 @@ func (manager Manager) finishStart(name, project, root string, projectConfig *co
 	// once-guarded + best-effort — never fail the start, retry next start on failure.
 	manager.registerCodeReviewGraph(name, projectConfig)
 	manager.registerCodebaseMemory(name, projectConfig)
+	manager.registerOpenViking(name, projectConfig)
 	// Install Hermes at runtime (detached) when selected — its uv venv must be built at the
 	// final ~/.hermes (=/persist) path, not baked at image build then symlink-migrated
 	// (which broke the venv). Once-guarded, best-effort — never fails the start.
@@ -821,6 +822,13 @@ func (manager Manager) registerAgentProviders(name, project, root string, projec
 			codexConfig = agentcfg.CodexConfigOAuth()
 		}
 		codexConfig = agentcfg.AppendCodexMCP(codexConfig, mcpServers)
+		// OpenViking's codex plugin needs the plugin_hooks feature flag (codex itself has
+		// no config-merge — this file is rewritten whole every start, so the flag has to be
+		// re-added here every time, not just at the one-shot `codex plugin add` registration
+		// in registerOpenViking).
+		if projectConfig.Context.OpenVikingEnabledOrDefault() {
+			codexConfig = append(codexConfig, []byte("\n[features]\nplugin_hooks = true\n")...)
+		}
 		if err := writeHostFile(projectConfigPath(root, ".codex", "config.toml"), codexConfig); err != nil {
 			return err
 		}
@@ -1102,6 +1110,148 @@ const (
 // installed agent CLIs and writes their MCP config), so — like `graphify install` — it
 // runs as a bounded BLOCKING exec, with an in-script `timeout` guard as defense-in-depth.
 const codebaseMemoryInstallTimeout = 60 * time.Second
+
+const (
+	// openVikingLaunchTimeout bounds only the tiny launcher exec that setsid-backgrounds
+	// the server start + per-agent registration and returns; the work runs on past it.
+	openVikingLaunchTimeout = 30 * time.Second
+	// openVikingScriptGuest is where the once-guarded registration script is staged in-VM.
+	openVikingScriptGuest = "/tmp/openviking-install.sh"
+	// openVikingConfigGuest is the OpenViking SERVER's own config (distinct from ovcli's
+	// connection config) — lives under /persist so it (and the index data it points at)
+	// survive a full workspace recreate, not just a restart.
+	openVikingConfigGuest = "/persist/openviking/ov.conf"
+)
+
+// openVikingPluginFlag maps an agent CLI to the OpenViking shared memory-plugin
+// installer's `--harness` value (https://docs.openviking.ai/en/agent-integrations/) —
+// verified against the docs for each entry. claude-code and codex are deliberately
+// NOT here: they use their own native plugin-marketplace commands instead (see
+// registerOpenViking) since that is what OpenViking's own docs recommend for them.
+// hermes is absent because its only documented registration path
+// (`hermes memory setup openviking`) is an interactive wizard with no non-interactive
+// flags in the docs — wiring it would mean inventing a flag, which this platform does
+// not do; it is left unregistered (a genuine gap, not an oversight). gemini has no
+// OpenViking integration in the docs at all.
+var openVikingPluginFlag = map[string]string{
+	"opencode": "opencode",
+	"omp":      "pi", // omp is a fork of "pi" (Oh My Pi), which is OpenViking's own harness name for it.
+}
+
+// registerOpenViking installs OpenViking (https://docs.openviking.ai — "the context
+// database for AI agents") and registers it with each installed, supported agent CLI, at
+// workspace start. Like Graphify/code-review-graph, this MUST run here rather than at
+// image-build time: it needs a running server plus per-CLI state (`~/.claude`,
+// `~/.codex`, `~/.config/opencode`, `~/.pi`) that only exists once the workspace is
+// live, and OpenViking needs no credential to do so — the server runs LOCALLY on
+// loopback :1933 with data persisted at /persist/openviking (symlinked from
+// ~/.openviking so it survives restarts), and every agent connects to it as an
+// unauthenticated "dev mode" local server (OpenViking's own docs: "No authentication is
+// needed when connecting to a local server without root_api_key configured").
+//
+// It is DETACHED (setsid), exactly like registerCodeReviewGraph: starting the server and
+// registering plugins for several CLIs can take a while and must never block the
+// workspace start or wedge the single msb agent-relay. Once-guarded by a marker under
+// the persistent .ai-platform dir, touched ONLY on success, so a failed/killed run
+// simply retries on the next start. Best-effort — never fails the start.
+func (manager Manager) registerOpenViking(name string, projectConfig *config.Config) {
+	if projectConfig == nil {
+		return
+	}
+	// Honor the create-time choice (config.yaml context.openviking_enabled). It is
+	// OPT-IN: unset (nil) defaults to disabled, so it is a no-op unless explicitly chosen.
+	if !projectConfig.Context.OpenVikingEnabledOrDefault() {
+		return
+	}
+	var registrations []string
+	for _, cli := range projectConfig.Agent.Tools {
+		switch cli {
+		case "claude-code":
+			// Native plugin marketplace, per docs.openviking.ai/en/agent-integrations/02-claude-code.
+			registrations = append(registrations,
+				"claude plugin marketplace add https://raw.githubusercontent.com/volcengine/OpenViking/main/.claude-plugin/marketplace.json",
+				"claude plugin install openviking-memory@openviking")
+		case "codex":
+			// Native plugin marketplace, per docs.openviking.ai/en/agent-integrations/04-codex.
+			// The [features] plugin_hooks flag codex also needs lives in the platform-rendered
+			// config.toml (rewritten every start), not here — see agentcfg.CodexConfig's caller
+			// in registerAgentProviders, which appends it when OpenViking is enabled.
+			registrations = append(registrations,
+				"codex plugin marketplace add volcengine/OpenViking",
+				"codex plugin add openviking-memory@openviking")
+		default:
+			if harness, ok := openVikingPluginFlag[cli]; ok {
+				registrations = append(registrations,
+					"bash <(curl -fsSL https://raw.githubusercontent.com/volcengine/OpenViking/main/examples/memory-plugin-shared/install.sh) --harness "+harness)
+			}
+		}
+	}
+	if len(registrations) == 0 {
+		_, _ = fmt.Fprintln(os.Stderr, ui.Warn.Render("OpenViking is enabled but no supported CLI "+
+			"(opencode, claude-code, codex, or omp) is selected — skipping install."))
+		return
+	}
+	// The server's OWN config (distinct from ovcli's connection config below) must exist
+	// before it will start at all (`openviking-server doctor` fails "Config: FAIL
+	// Configuration file not found" otherwise, verified empirically). Omitting the
+	// `embedding` section lets it fall back to its built-in local dense model — no
+	// provider/API key needed to START the server (verified empirically: health check
+	// passes; `doctor` separately reports embedding as unconfigured since the
+	// llama-cpp-python dependency isn't installed — see the Dockerfile snippet — which
+	// only affects semantic-search quality, not server/MCP startup). storage.workspace
+	// points at the persistent overlay so the index survives restarts.
+	ovConf := []byte(`{
+  "storage": {"workspace": "/persist/openviking/data"},
+  "server": {"host": "127.0.0.1", "port": 1933}
+}
+`)
+	if err := manager.Sandbox.WriteFile(name, openVikingConfigGuest, ovConf); err != nil {
+		_, _ = fmt.Fprintln(os.Stderr, ui.Warn.Render("OpenViking config could not be staged "+
+			"(it will retry on the next workspace start): "+err.Error()))
+		return
+	}
+	pool := workspaceWorkdir + "/.ai-platform"
+	installMarker := pool + "/.openviking-installed"
+	steps := []string{
+		"mkdir -p /persist/openviking/data",
+		// Persist ovcli's connection config (~/.openviking/ovcli.conf, written by the `ov
+		// config add` step below) across a full workspace RECREATE, not just a restart —
+		// the rest of the rootfs is baked into the image and resets on recreate, but
+		// /persist survives it. Idempotent: a no-op once the symlink already exists.
+		"[ -L ~/.openviking ] || { rm -rf ~/.openviking; ln -s /persist/openviking ~/.openviking; }",
+		// Start the server if it is not already running (pgrep-guarded, like the hermes
+		// dashboard launch, so a restart never double-launches it).
+		"pgrep -f openviking-server >/dev/null 2>&1 || " +
+			"(setsid openviking-server --config " + openVikingConfigGuest + " >/persist/openviking/server.log 2>&1 & sleep 3)",
+		// ovcli refuses every other command until a display language is set once.
+		"ov language en",
+		// Point ovcli at the local server, no API key (dev mode) — shared by every agent's
+		// plugin, since they all read the same ~/.openviking/ovcli.conf.
+		"ov config add custom --name workspace --url http://127.0.0.1:1933 --activate -o json",
+	}
+	steps = append(steps, registrations...)
+	inner := strings.Join(steps, " && ")
+	script := "#!/usr/bin/env bash\n" +
+		"cd " + workspaceWorkdir + " 2>/dev/null || exit 0; " +
+		"mkdir -p " + pool + "; " +
+		"[ -f " + installMarker + " ] && exit 0; " +
+		"command -v openviking-server >/dev/null 2>&1 || exit 0; " +
+		"timeout --kill-after=30s 300s bash -c '" + inner + "'; installed=$?; " +
+		"[ \"$installed\" -eq 0 ] && touch " + installMarker + "\n"
+	if err := manager.Sandbox.WriteFile(name, openVikingScriptGuest, []byte(script)); err != nil {
+		_, _ = fmt.Fprintln(os.Stderr, ui.Warn.Render("OpenViking install could not be staged "+
+			"(it will retry on the next workspace start): "+err.Error()))
+		return
+	}
+	logPath := pool + "/run/openviking-install.log"
+	logStep("installing OpenViking in the background (detached) → %s", logPath)
+	launch := fmt.Sprintf("mkdir -p %s && setsid bash %s </dev/null >%s 2>&1 & exit 0",
+		shellQuoteGuest(pool+"/run"), shellQuoteGuest(openVikingScriptGuest), shellQuoteGuest(logPath))
+	if err := manager.launchDetachedRetry(name, []string{"bash", "-lc", launch}, false, openVikingLaunchTimeout); err != nil {
+		_, _ = fmt.Fprintln(os.Stderr, ui.Warn.Render("OpenViking install could not be launched "+
+			"(it will retry on the next workspace start): "+err.Error()))
+	}
+}
 
 // linkAgentStateDirs points the agent CLIs' mutable STATE directories at the persistent
 // overlay (/persist) so a CLI's per-project memory survives microVM restarts — the VM
