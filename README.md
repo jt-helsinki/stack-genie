@@ -76,9 +76,11 @@ model runtime.
 
 `ai setup` **never installs software** — it detects what's missing and prints how
 to install it (command + web address); `ai doctor` reports the same anytime. The
-service tier (the nginx gateway, Presidio, LiteLLM + Postgres, Headroom,
+service tier (the nginx gateway, LiteLLM + Postgres, Headroom,
 Valkey + its RedisInsight GUI, and the DNS egress-audit resolver) is launched by
 `ai setup` as host containers on the `aip-net` network — you don't install those.
+Presidio (secret-masking) is opt-in: its containers only start when that
+guardrail is selected at `ai setup` (only Headroom is on by default).
 Only the nginx gateway (`aip-proxy`) publishes a host port (`:18787`); every other
 service is internal-only and reached through it. The local model runtime is
 **host-native**, not a container: **omlx** runs as ONE shared server process
@@ -147,9 +149,9 @@ Every OS base bakes in a common tooling layer — Git, the GitHub CLI, **Node.js
 manager), and **rtk** (Rust Token Killer). Node.js and Python are baked in, so
 neither is a `--stacks` option — the selectable stacks are `go,rust,java,maven,deno`.
 
-Four opt-in per-project **AI tools** are chosen from one multi-select — the
+Five opt-in per-project **AI tools** are chosen from one multi-select — the
 `--tools` flag or the wizard's AI-tools step (default: `caveman,graphify,code-review-graph`
-on, `codebase-memory-mcp` off):
+on, `codebase-memory-mcp` and `openviking` off):
 
 - **caveman** — an output-compression toolkit, installed at workspace start.
 - **graphify** (PyPI `graphifyy`, CLI `graphify`) — a knowledge-graph skill for AI
@@ -162,10 +164,15 @@ on, `codebase-memory-mcp` off):
   D3 graph visualization.
 - **codebase-memory-mcp** (`github.com/DeusData/codebase-memory-mcp`) — a conditional
   snippet, registered as an MCP server; ships an optional on-demand 3D graph UI at `:9749`.
+- **openviking** (`docs.openviking.ai`, "the context database for AI agents") — a
+  conditional snippet installing the `openviking-server`, the `ov` CLI, and an
+  OpenCode plugin; at workspace start the server is launched locally on loopback
+  `:1933` (unauthenticated dev mode, data persisted under `/persist/openviking`)
+  and registered as shared memory with each installed agent CLI.
 
-The three code-graph tools are appended to the project image **only when chosen** —
-conditional Dockerfile snippets, not baked into every base. All are local and need
-no API key.
+The four code-graph/memory tools are appended to the project image **only when
+chosen** — conditional Dockerfile snippets, not baked into every base. All are
+local and need no API key.
 
 **Work in the workspace** (one microVM per project; installed programs and agent
 state persist across restarts via the overlay):
@@ -267,14 +274,16 @@ first and **never touches `~/projects`** (your source):
 ```bash
 ai uninstall                 # binary, PATH/completion entries, aip-* containers, ~/.ai-platform state (KEEPS downloaded models)
 ai uninstall --purge         # also the downloaded model store — removes ~/.ai-platform in full
-ai uninstall --keep-runtimes # keep the host-native omlx runtime (it is removed by default)
+ai uninstall --keep-runtimes # opt out of the (currently no-op) host-native omlx runtime removal
 ai uninstall --remove-deps   # also uninstall msb
 ai uninstall --yes           # skip the prompt (automation); --dry-run to preview
 ```
 
-`ai uninstall` always stops the running `omlx serve` server, and by default also removes
-the host-native omlx runtime (it prompts, defaulting to yes; `--keep-runtimes` keeps it).
-The downloaded models are kept unless `--purge`. It streams progress, asks per external
+`ai uninstall` always stops the running `omlx serve` server. By default it also asks to
+remove the host-native omlx runtime (prompts, defaulting to yes; `--keep-runtimes` opts
+out) — today that step is a `hardware bring-up` placeholder: it records the intent but
+does not yet run the destructive per-OS uninstall, so the omlx install itself is left in
+place either way. The downloaded models are kept unless `--purge`. It streams progress, asks per external
 dependency (`msb`), and logs to `~/ai-uninstall.log`.
 
 ## Develop

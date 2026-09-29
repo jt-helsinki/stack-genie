@@ -418,23 +418,51 @@ image build; the snippet comments flag the exact install target as unverified on
 real hardware:
 
 - [ ] **npm package names** — claude-code (`@anthropic-ai/claude-code`), gemini
-      (`@google/gemini-cli`), copilot (`@github/copilot`), codex (`@openai/codex`),
-      and opencode (`opencode-ai`) are each installed via `npm install -g <package>`
-      on top of the OS base's pinned Node 24 LTS. Verify each package name still
+      (`@google/gemini-cli`), codex (`@openai/codex`), and opencode (`opencode-ai`)
+      are each installed via `npm install -g <package>` on top of the OS base's
+      pinned Node 24 LTS. (GitHub Copilot CLI was removed from the platform
+      entirely — there is no copilot snippet.) Verify each package name still
       resolves on the npm registry and installs cleanly during a real image build.
 - [ ] **omp binary install** — omp's snippet curls `https://omp.sh/install` and
       forces the prebuilt binary (`PI_INSTALL_DIR=... sh -s -- --binary`) into
       `~/.local/bin`. Verify on a live build that `omp` lands on PATH for the
       workspace user and that its config schema (`~/.omp/agent/models.yml`,
       `<project>/.omp/config.yml`) still matches what `agentcfg` renders.
+- [ ] **hermes install (workspace start, not image build)** — unlike the other five
+      CLIs, hermes is NOT installed at image build. `Manager.registerHermes`
+      (`internal/workspace/workspace.go`) installs it at workspace START instead:
+      detached, once-guarded (`.ai-platform/.hermes-installed`), network-bound
+      (`curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash`), and
+      best-effort — it builds a complete venv at the final `~/.hermes` (= `/persist`)
+      path and requires `hermes --help` to actually run before recording success, so
+      an incomplete install retries on the next start. Verify on a live workspace
+      that the install completes, `hermes` lands on PATH, and the bundled `basic`
+      dashboard-auth plugin is enabled (required for `hermes dashboard` to bind
+      `0.0.0.0`, since hermes refuses to listen without a registered auth provider).
+
+### 2.6e Software stack installs — OS-aware apt/dnf variants (arch §7)
+
+`templates.StackSnippet(stack, osKey)` picks between an apt-based
+`Dockerfile.snippet` and a dnf-based `Dockerfile.dnf.snippet` sibling (`dnfOSKeys`
+= `{"alma"}`) for the `go`, `java`, `maven`, and `deno` stacks (`rust` installs via
+rustup and has no dnf variant — one snippet serves every OS); the alma base image
+is plain `almalinux:10.2` (not `-minimal`). The dnf variants
+(`internal/templates/files/stacks/{go,deno,maven,java}/Dockerfile.dnf.snippet`)
+are new and have not been built on real hardware.
+
+- [ ] **dnf stack installs resolve on AlmaLinux** — confirm on a live build with
+      `--os alma` that each selected stack's `dnf install …` resolves and installs
+      cleanly (Go, Java, Maven, Deno), matching the apt variants' toolchain
+      versions.
 
 ### 2.7 In-VM apps (Phase 1 — arch §7, CLI §4.5c)
 
 On the Phase-0 runtime the platform runs opt-in AI apps as `nerdctl` containers
-**inside** the workspace microVM — Open WebUI (`internal/apps`).
-Each app is a declarative manifest (image+tag pin, container port, persisted data
-dir, optional `/workspace` mount, gateway env). The host-side orchestration is
-fully unit-tested with fakes:
+**inside** the workspace microVM — Open WebUI (`internal/apps`) — plus agent-CLI
+web **dashboards** (currently only hermes — `hermes dashboard`) launched as a
+workspace-user process rather than a container. Each in-VM app is a declarative
+manifest (image+tag pin, container port, persisted data dir, optional `/workspace`
+mount, gateway env). The host-side orchestration is fully unit-tested with fakes:
 
 - the manifest env (each app points at the resolved gateway
   `http://host.microsandbox.internal:18787/v1` with the workspace's scoped virtual
@@ -442,34 +470,50 @@ fully unit-tested with fakes:
   empty);
 - **port allocation** — a unique host port per `(workspace, app)`, reserved
   machine-wide across all workspaces' configs and persisted in the project
-  `config.yaml`'s `apps:` block, published ONLY while installed via the existing
-  `egress.MsbNetworkArgs` `-p <port>:<port>` plumbing (`apps.PublishedPorts` merged
-  into the network publish set at `Manager.Start`);
+  `config.yaml`'s `apps:` block (`agent_dashboards:` for dashboards, via
+  `apps.AllocateDashboardEntries`/`DashboardAgents`/`SuggestedDashboardPort`),
+  published ONLY while installed via the existing `egress.MsbNetworkArgs`
+  `-p <port>:<port>` plumbing (`apps.PublishedPorts` merged into the network
+  publish set at `Manager.Start`);
 - the lifecycle Manager (install/remove/update/start/stop/restart/list) and the
   `nerdctl run -d` argv (`-p <port>:<containerPort>`, `-v
   /persist/apps/<key>:<DataDir>`, optional `-v /workspace:/workspace`, the gateway
   `-e` env, `--restart always`);
-- **on-demand** start: apps are NOT auto-started at `ai start` (a heavy image pull
-  is a long in-VM exec that would block the workspace start and every other exec for
-  its duration). `Manager.Start` only publishes their ports and brings containerd up;
-  each app starts when requested via `ai apps start`/`add`/`restart` (`runContainer`
-  calls `EnsureRuntime` to bring containerd up first, retrying once if the runtime is
-  unreachable). The microVM is created with the project's `workspace.memory_limit`
-  (create default 8 GB, capped below host RAM) so a heavy app pull does not OOM-kill
-  the in-VM containerd; an unset/unparsable value falls back to 4G.
+- **auto-start at `ai start`**: installed apps + dashboards are now started
+  automatically on every workspace start, DETACHED + best-effort so a heavy
+  first-start image pull never blocks the start (`Manager.autostartApps`, run right
+  after `ensureContainerd`). App containers are staged to a guest-only script
+  (`apps.AppsAutostartScript`) and `setsid`'d into the background as ROOT (nerdctl
+  needs root); the script is idempotent (`nerdctl rm -f` then `run`), so only the
+  FIRST start actually pulls. Dashboards (hermes) launch as the WORKSPACE USER,
+  pgrep-guarded so a restart never double-launches, bound to `0.0.0.0:<port>` so the
+  published host port reaches them. Output goes to the bind-mounted
+  `run/apps-autostart.log`. Apps can still be (re)started/stopped on demand via
+  `ai apps` (`runContainer` calls `EnsureRuntime` to bring containerd up first,
+  retrying once if the runtime is unreachable). The microVM is created with the
+  project's `workspace.memory_limit` (create default 8 GB, capped below host RAM) so
+  a heavy app pull does not OOM-kill the in-VM containerd; an unset/unparsable value
+  falls back to 4G.
 
-The LIVE `nerdctl` behaviour is the bring-up item (grep `hardware bring-up` in
-`internal/apps` and `internal/workspace`):
+The LIVE `nerdctl`/dashboard behaviour is the bring-up item (grep `hardware
+bring-up` in `internal/apps` and `internal/workspace`):
 
-- [ ] **app containers run in the microVM** — on a provisioned host, `ai apps add
-      openwebui` then `ai restart` should publish the host port and run
-      `aip-app-openwebui`; confirm `nerdctl ps` in the VM shows it and the app is
-      reachable on `http://localhost:<port>` from the host, routed through the
-      gateway (`ai apps list` STATUS → `running`).
+- [ ] **app containers auto-start in the microVM** — on a provisioned host, `ai apps
+      add openwebui` then `ai restart` should publish the host port and
+      auto-launch `aip-app-openwebui` on THIS and every later `ai start`; confirm
+      `nerdctl ps` in the VM shows it and the app is reachable on
+      `http://localhost:<port>` from the host, routed through the gateway (`ai apps
+      list` STATUS → `running`) without a manual `ai apps start`.
 - [ ] **`nerdctl pull` on update** — `ai apps update <app>` pulls the latest image
       and recreates the container.
 - [ ] **persisted data survives restart** — data written under
       `/persist/apps/<key>` (the overlay) is retained across `ai restart`.
+- [ ] **agent-CLI dashboard auto-start (hermes)** — with hermes selected + a
+      dashboard port allocated at `ai create`, confirm `ai start` launches `hermes
+      dashboard --host 0.0.0.0 --port <port>` in-VM (as the workspace user) and it
+      is reachable from the host browser on the published port, including after a
+      restart (pgrep guard must not double-launch or fail on an already-running
+      dashboard).
 
 ### 2.8 SDK workspace backend — live validation (arch §7; docs/MSB-SDK-MIGRATION.md)
 
@@ -549,6 +593,41 @@ bring-up` (grep `hardware bring-up` in `internal/setup` and `internal/omlx`):
       actually wired. Wire the real per-OS removal (e.g. `pip uninstall omlx` from the
       platform venv) and verify.
 
+### 2.10 Per-project host↔guest mounts (`ai mounts`)
+
+`ai mounts <list|add|remove> [dir] [name]` (`internal/cli/mounts.go`) manages two
+kinds of extra mount beyond the base project bind mount, both new SDK-level
+mechanisms applied at microVM create/recreate (`workspace_sdk.go extraMounts`,
+`WorkspaceConfig.IsolatedDirs`/`SharedMounts` in `internal/config/config.go`):
+
+- **isolated dir** (`ai mounts add node_modules`) — a guest-relative subpath
+  EXCLUDED from the host project bind mount and backed by a private,
+  workspace-scoped named volume instead, so writes in the sandbox (installed
+  deps, build artifacts) never touch the host directory and whatever the host has
+  there stays invisible to the guest — lets host-built and sandbox-built binaries
+  coexist without collision;
+- **shared mount** (`ai mounts add /home/workspace/shared --host ~/Downloads`) —
+  an absolute guest path bind-mounted from an arbitrary host directory (created if
+  missing), visible and writable on BOTH sides.
+
+A relative `<dir>` is an isolated dir; an absolute `<dir>` with `--host` is a
+shared mount. Both add/remove require (and the CLI offers) a workspace restart to
+take effect, since the mount set is only applied at create. Host-side
+validation/persistence is unit-tested; the live SDK mount behavior is unverified:
+
+- [ ] **isolated dir excludes the host subpath** — on a provisioned host, `ai
+      mounts add node_modules` + `ai restart`: confirm writes under
+      `~/project/node_modules` in-VM do NOT appear on the host project directory,
+      and a pre-existing host `node_modules` (if any) is not visible in-VM.
+      Confirm the private volume persists across `ai restart`/`ai stop`+`ai start`.
+- [ ] **shared mount is visible both ways** — `ai mounts add
+      /home/workspace/shared --host ~/Downloads` + `ai restart`: confirm a file
+      written on either side (host `~/Downloads` or in-VM
+      `/home/workspace/shared`) appears on the other.
+- [ ] **`ai mounts remove` tears down cleanly** — confirm removing an isolated dir
+      or shared mount + restart reverts to the base single project bind mount with
+      no stale SDK mount entry.
+
 ## 3. Turn on the remaining acceptance tests
 
 In `test/acceptance/` (harness, PTY driver, and the runnable `[S1]` subset already
@@ -603,8 +682,9 @@ pass):
    live microVM verify: `ai agent opencode` starts/attaches a per-CLI session;
    `ai sessions` lists it (NAME/ATTACHED/IDLE; a no-server workspace lists zero,
    not an error); detaching (`Ctrl-b d`) leaves it running and `ai attach opencode`
-   reattaches; `ai shell` ↔ a second agent run concurrently; the TUI **Sessions**
-   view attaches/kills via `ai attach`. (Needs `tmux` in the image — now
+   reattaches; `ai shell` ↔ a second agent run concurrently; the TUI **Shell**
+   sub-tab (`views.Sessions`, Title() "Shell") attaches/kills via `ai attach`.
+   (Needs `tmux` in the image — now
    in every OS Dockerfile — and a booted microVM, so it is verified during
    bring-up alongside the shell.)
 6. `ai keys add openai --stdin` (registers that provider's catalog models in the

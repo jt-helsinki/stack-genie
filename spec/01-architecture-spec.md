@@ -666,12 +666,41 @@ host  ~/.ai-platform/overlays/<workspace-id>  →  workspace  /persist    (overl
   in-VM agent env file under `~/.config/aip/` (which must stay off the host). The
   per-CLI provider configs ARE keyless and live in this project dir (§15).
 * the per-workspace overlay (§26) is mounted at `/persist`
-* no persistent data is written outside the mounted paths
+* no persistent data is written outside the mounted paths, the overlay, and the
+  optional per-workspace mount customizations below
 * (a shared read-only mount of the GLOBAL `~/.ai-platform/agents,skills,prompts,templates`
   into the workspace is **deferred** — not currently wired into the `msb`
   run-args. This is distinct from the PER-PROJECT
   `<project>/.ai-platform/{agents,skills,prompts,projects}` shared pool, which IS
   wired — symlinked into each CLI's dirs at start, §15.)
+
+**Per-workspace mount customization** (`config.WorkspaceConfig.IsolatedDirs` /
+`.SharedMounts`, yaml `workspace.isolated_dirs` / `workspace.shared_mounts`) lets a
+project override the two fixed mounts above:
+
+* **isolated dirs** — guest-relative paths under the project workdir (e.g.
+  `node_modules`, `target`) are EXCLUDED from the host project bind mount and
+  instead backed by a private, workspace-scoped persistent volume applied as an
+  additional SDK mount over that subpath at workspace create: writes made in-VM
+  (installed deps, build artifacts) never touch the host directory tree, and
+  whatever the host has at that path stays untouched and invisible to the guest.
+  This lets host-built and sandbox-built binaries coexist without collision (a
+  host `node_modules` with host-native binaries vs. a guest `node_modules` with
+  Linux-native ones).
+* **shared mounts** — additional host directories bind-mounted into the guest at
+  an arbitrary guest path (beyond the base project mount at `~/project`), VISIBLE
+  and writable from BOTH sides — unlike isolated dirs, writes on either side are
+  seen by the other. Applied at workspace create as an additional SDK bind mount.
+  Each entry is a host path (created if missing) plus a guest path.
+
+Both are empty by default (today's behavior: the whole project dir is one bind
+mount, nothing excluded, no extra host↔guest mappings). They are configured via
+**`ai mounts`** (list / add / remove for both isolated dirs and shared mounts),
+plus the `--isolate-dirs` `ai create` flag and wizard step for isolated dirs
+(shared mounts have no create-time flag/wizard step — they are added post-create
+only, via `ai mounts add <absolute-dir> --host <host-path>`), and surfaced in the
+TUI's mounts view. Changing them requires an `ai restart` (mounts apply only at
+workspace create).
 
 ### Lifecycle Mapping
 
@@ -1052,6 +1081,47 @@ templates (§25); it is identical across all OSes:
   code-review-graph + codebase-memory + graphify via injection; the CLIs whose configs the
   platform does not own (claude-code `~/.claude.json`, opencode, gemini `settings.json`)
   keep getting them via the tools' own native install/auto-detect.
+* **OpenViking** — a per-workspace context/memory database
+  (docs.openviking.ai — "the context database for AI agents"), the fifth member of
+  the same AI-tools multi-select (`AIToolOpenViking`; **OPT-IN, off by default** —
+  unlike code-review-graph it is not in `create.DefaultAITools`), mapped to
+  `context.openviking_enabled` (`OpenVikingEnabledOrDefault`, unset defaults FALSE).
+  When selected, its Dockerfile snippet (`tools/openviking/`) installs the
+  `openviking-server` (PyPI `openviking`, via `uv tool install` onto the workspace
+  user's `~/.local/bin`) and its `ov` CLI client (npm `@openviking/cli`) plus the
+  OpenCode plugin package (npm `@openviking/opencode-plugin`) — the two npm globals
+  need root, so those two steps run as root before switching back to the workspace
+  user. Registration happens at **workspace start** (`Manager.registerOpenViking`,
+  mirroring code-review-graph/graphify: once-guarded by a marker under
+  `~/project/.ai-platform`, DETACHED via setsid, best-effort, never failing the
+  start) because it needs a running server plus per-CLI state directories that only
+  exist once the workspace is live. The server's own config
+  (`/persist/openviking/ov.conf`, distinct from `ov`'s connection config) is written
+  first (`openviking-server doctor` fails without it), omits the `embedding` section
+  (no `llama-cpp-python`/C++ toolchain is baked in, so it falls back to the built-in
+  local dense model — only semantic-search quality is affected, not server/MCP
+  startup), and points `storage.workspace` at the persistent overlay so the index
+  survives restarts; `~/.openviking` is symlinked to `/persist/openviking` for the
+  same reason. The server runs LOCALLY on loopback `:1933` with **no
+  authentication** (OpenViking's own "dev mode": no API key needed for a local
+  server with no `root_api_key` configured), so it never touches the gateway or a
+  provider key. Per-CLI registration is architecturally split in two:
+  **Claude Code** and **Codex** use OpenViking's own native plugin-marketplace
+  commands (`claude plugin marketplace add` / `claude plugin install` resp. `codex
+  plugin marketplace add` / `codex plugin add`, per OpenViking's docs) — Codex
+  additionally needs a `[features]\nplugin_hooks = true` block, which is
+  re-appended to its platform-rendered `config.toml` on EVERY start (that file is
+  rewritten whole, not merged, so the one-shot plugin registration alone would not
+  stick) by `registerAgentProviders`. **OpenCode** and **omp** instead use
+  OpenViking's shared memory-plugin harness installer script (`bash <(curl …
+  examples/memory-plugin-shared/install.sh) --harness <name>`,
+  `openVikingPluginFlag`: `opencode`→`opencode`, `omp`→`pi` — omp is a fork of
+  "pi", OpenViking's own harness name for it). Hermes and Gemini are NOT
+  registered: Hermes' only documented path (`hermes memory setup openviking`) is
+  an interactive wizard with no non-interactive flags in its docs, and Gemini has
+  no OpenViking integration documented at all — a genuine gap, not an oversight.
+  If OpenViking is enabled but none of the four supported CLIs is installed,
+  registration is skipped with a warning.
 * **rtk** — "Rust Token Killer" (github.com/rtk-ai/rtk), a CLI proxy that compresses
   common dev-command output to cut agent token use. Installed for the **workspace
   user** via its official `install.sh` (a prebuilt aarch64 Linux binary → `~/.local/bin`,
@@ -2026,7 +2096,15 @@ a small install snippet the platform ships under
 `~/.ai-platform/templates/stacks/<stack>` (repo-layout §1.5), and the
 `ai create` Dockerfile generator composes the selected snippets into the
 project's `.ai-platform/Dockerfile` (after the base tooling, alongside the agent
-CLIs). The selected set is recorded in the project's tracked `profile.yaml`
+CLIs). Snippet selection is **OS-aware**: `templates.StackSnippet(stack, osKey)`
+picks the package manager appropriate to the chosen base image — for the
+`alma` (dnf-based) OS key it first looks for a
+`stacks/<stack>/Dockerfile.dnf.snippet` sibling and falls back to the
+generic `Dockerfile.snippet` when no dnf variant exists; every other OS key
+always uses the generic (apt) snippet. `go`, `deno`, `maven`, and `java` each
+ship both variants today; a stack that installs generically (e.g. via a
+language's own installer script rather than a system package) needs only the
+one generic snippet. The selected set is recorded in the project's tracked `profile.yaml`
 (`stacks: [...]`, repo-layout §12) so it is reproducible from git, and — like the
 rest of the Dockerfile — the user owns and may edit it afterward. Adding a stack
 later is just editing `.ai-platform/Dockerfile` (or `profile.yaml` + re-seed) and
@@ -2127,6 +2205,7 @@ Example:
 workspace:
   cpu_limit: 4
   memory_limit: 8G
+  disk_limit: "16"
 ```
 
 Purpose:
@@ -2141,6 +2220,19 @@ OS, service tier, and hypervisor (`config.UsableHostMemoryMiB` reserves the larg
 explicit over-ceiling `--cpus`/`--memory` is rejected at create (exit 2, CLI §3.1); an
 unset value resolves to the default clamped at the ceiling, and the value is clamped
 again at microVM creation (`workspace_sdk.go`/`workspace_real.go`) as a backstop.
+
+**Disk.** `disk_limit` (GiB, default **16**) sizes the microVM's writable rootfs —
+the OCI overlay upper — via the SDK's `WithOCIUpperSize`; this is where the in-VM
+containerd image store lives, so a heavy in-VM app image (Open WebUI) has room to
+extract. It is validated only loosely (rejects a non-positive/malformed value) —
+unlike CPU/memory it is not clamped against host disk space. The upper is sparse,
+so the limit is a ceiling, not upfront usage.
+
+**Resizing after creation.** CPU, memory, and disk are all changeable post-create
+with `ai resize [workspace] --disk <GB> [--memory <GB>] [--cpus <n>]` (at least one
+of the three flags is required) and from the TUI Workspace tab's `z` key. A resize
+persists the new value(s) to `config.yaml` then restarts the running workspace so
+the `--replace` rebuild applies the new size.
 
 ---
 
@@ -2209,7 +2301,7 @@ allow-listed zone (§29.6).
 endpoint every workspace on a host routes through is derived from
 `Info.HostAddress()` (`internal/runtime`): the `ai_platform_host` field if set
 (machine-wide, configured by `ai setup --mode client --server` or `ai gateway
-set` — §CLI 10.4), else the resolved `host_gateway`. The field holds a **bare host
+set` — §CLI 10.5), else the resolved `host_gateway`. The field holds a **bare host
 or `host:port`** (NOT a URL); `runtime.ResolveGateway` applies: empty →
 `host.microsandbox.internal:18787` (standalone/local); `host` → that host on the
 default nginx-gateway port `18787`; `host:port` → that host and port. The result drives
@@ -2361,7 +2453,7 @@ package-registry domain family. Microsandbox enforces these targets natively
 (domain, suffix-wildcard, IP/CIDR, and `public`/`private` groups). The port is
 optional in `ai network allow` and defaults to **443 (HTTPS)** for bare hosts.
 
-All of this is configured entirely via the **`ai network`** commands (CLI §10a) —
+All of this is configured entirely via the **`ai network`** commands (CLI §10.4) —
 no manual file editing is required, though the project `network` block
 (repo-layout §12.4) can still be edited by hand. `ai network` manages three
 declarations in the project `config.yaml`: the default outbound mode
@@ -2406,7 +2498,7 @@ The service tier (§5) includes **`aip-dns`**, a CoreDNS resolver that exists fo
 `--dns-nameserver` pointing at it (a fixed platform setting on the host loopback,
 `127.0.0.1:15353`), so Microsandbox's netstack forwards the guest's DNS to it.
 CoreDNS's `log` plugin records each query; `forward` resolves it upstream and a
-short `cache` smooths repeats. `ai network log` (CLI §10a) reads that log and
+short `cache` smooths repeats. `ai network log` (CLI §10.4) reads that log and
 prints the attempted-egress-**by-name** audit.
 
 This cleanly splits **audit** from **enforcement**:

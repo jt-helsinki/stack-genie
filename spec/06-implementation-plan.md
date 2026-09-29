@@ -59,13 +59,13 @@ keep the precedence rules in arch §27 explicit), `slog` (structured logs), stdl
 │   ├── conffile/                # atomic YAML read/write (temp file + rename; rejects unknown fields)
 │   ├── state/                   # project-local state (<project>/.ai-platform/run) + projects index; atomic writes
 │   ├── project/                 # project entry/spec types + projects-index resolution
-│   ├── config/                  # config load/merge (project > global)
+│   ├── config/                  # config load/merge (project > global); holds isolated_dirs/shared_mounts (`ai mounts`)
 │   ├── catalog/                 # models.dev model catalog (fetch as JSON, persist as YAML cache)
 │   ├── sysinfo/                 # host CPU/RAM inspection (resource caps for `ai create`)
 │   ├── versions/                # service-tier image refs (image+tag, no digest) — source of truth for setup
 │   ├── envfile/                 # ~/.ai-platform/.ai-platform.env (opt-in 0600 secrets passthrough: UI password, master key)
 │   ├── runtime/                 # docker/podman detect + rootless verify + role/domain/gateway resolution (service tier)
-│   ├── sandbox/                 # Microsandbox SDK wrapper: naming, mounts/volumes, microVM lifecycle
+│   ├── sandbox/                 # Microsandbox + virtualization DETECTION only (msb-on-PATH/pinned-copy + hvf/kvm probe); microVM naming/creation/egress net-rules live in workspace/ + egress/
 │   ├── services/               # service-tier topology registry (names, ports, UI subdomains, gateway paths)
 │   ├── setup/                  # service-tier reconcile orchestrator (network→DNS→Presidio→Valkey→RedisInsight→Headroom→LiteLLM+DB→nginx) + host-native omlx inference reconcile (the one shared omlx server in omlx_host.go; best-effort omlx install into the platform venv, live-model sync into LiteLLM) + `ai setup`/uninstall service control
 │   ├── hostsfile/              # managed /etc/hosts block writer (delimited, idempotent)
@@ -78,7 +78,7 @@ keep the precedence rules in arch §27 explicit), `slog` (structured logs), stdl
 │   ├── contextopt/              # per-project Headroom strategy (→ per-request knobs fed to LiteLLM's headroom compress-guardrail call) + in-workspace Caveman skill
 │   ├── envimage/                # compose .ai-platform/Dockerfile (OS template + stack snippets + agent CLIs) + build OCI image
 │   ├── create/                  # shared `ai create` logic (validate/cap resources, scaffold, seed) — used by CLI + TUI wizard
-│   ├── workspace/               # workspace lifecycle + tmux-transparent sessions (Builder/Sandbox/Manager)
+│   ├── workspace/               # workspace lifecycle + tmux-transparent sessions (Builder/Sandbox/Manager): names `aip-<project>`, creates/drives the microVM (SDK-backed by default, msb-CLI-backed as a fallback), applies egress net-rules at create
 │   ├── apps/                     # opt-in in-VM AI apps (Open WebUI) — declarative manifests + per-(workspace,app) lifecycle over nerdctl; unique host-port allocation
 │   ├── egress/                  # per-project egress policy → msb net-rules (MsbNetworkArgs)
 │   ├── overlay/                 # per-workspace persistent overlay
@@ -89,7 +89,7 @@ keep the precedence rules in arch §27 explicit), `slog` (structured logs), stdl
 │   │       ├── dockerfiles/<os>/Dockerfile        # one base Dockerfile per OS key (alma, debian-trixie, ubuntu)
 │   │       ├── stacks/<stack>/Dockerfile.snippet  # one install snippet per stack (go, rust, java, maven, deno — Node/Python are baked into the base, not stacks)
 │   │       ├── agentclis/                          # per-agent-CLI install snippets
-│   │       └── tools/<tool>/Dockerfile.snippet    # opt-in AI tools (graphify, code-review-graph, codebase-memory-mcp) — appended only when selected (--tools)
+│   │       └── tools/<tool>/Dockerfile.snippet    # opt-in AI tools (graphify, code-review-graph, codebase-memory-mcp, openviking) — appended only when selected (--tools)
 │   ├── uninstall/               # native `ai uninstall` teardown (stops the running `omlx serve` process; the omlx model store is kept unless `--purge`)
 │   └── doctor/                  # consolidated health checks → repair suggestions
 ├── installers/                  # install.sh (+ install-local.sh) thin launchers (macOS/Linux)
@@ -101,7 +101,7 @@ keep the precedence rules in arch §27 explicit), `slog` (structured logs), stdl
 ├── go.mod
 ├── Makefile
 └── .github/workflows/
-    ├── ci.yml                    # hosted: fmt-check/vet/lint/test/build; self-hosted Apple Silicon: [S1] acceptance
+    ├── ci.yml                    # hosted (every push): fmt-check/vet/lint/test/build; self-hosted Apple Silicon (manual workflow_dispatch only): [S1] acceptance
     └── release.yml               # autobump semver on merge to main (Conventional Commits) → cross-compiled release
 ```
 
@@ -139,17 +139,26 @@ These underpin every slice and are built first.
 
 * load + merge two layers with precedence `project > global`
 * one `Config` struct matching repo-layout §12.4; missing layers skipped
+* `workspace.isolated_dirs` (guest-private named volumes) and
+  `workspace.shared_mounts` (extra host↔guest bind mounts beyond the base
+  project mount) are managed post-create only, via the flat **`ai mounts
+  list|add|remove`** command (`internal/cli/mounts.go`) and its TUI
+  counterpart — not a create-time input
 
 ## 3.4 Runtime Abstraction (`runtime/`, `sandbox/`)
 
 * `runtime/` (service tier): detect docker/podman; verify rootless; write
   `config/runtime.yaml`; `Runtime` interface so docker/podman are interchangeable
   (Podman impl in S6)
-* `sandbox/` (workspaces): drive Microsandbox via the **`msb` CLI**; verify the
-  microVM runtime + host virtualization (Apple Silicon / KVM); no daemon to
-  supervise. The adapter creates each workspace microVM **and applies its egress
-  network policy as `msb` net-rules at create**. The enforcement primitive is
-  msb's deny fallthrough (`--net-default-egress deny`) plus explicit allow rules;
+* `sandbox/` (workspaces): DETECTION only — verify the `msb` CLI is installed
+  (on PATH, or the platform-managed pinned copy) and the host supports
+  virtualization (Apple Silicon HVF / Linux KVM); no daemon to supervise, no
+  microVM lifecycle of its own. Creating/naming/driving each workspace
+  microVM is `workspace/`'s job (its `Sandbox` interface — SDK-backed by
+  default, `msb`-CLI-backed as a fallback), **which applies the workspace's
+  egress network policy as `msb` net-rules at create**. The enforcement
+  primitive is msb's deny fallthrough (`--net-default-egress deny`) plus
+  explicit allow rules;
   the **per-project default mode is now `public`**, which keeps that deny
   fallthrough but adds a broad `allow:egress@public` rule (open internet; private
   ranges still blocked) so a fresh workspace can pull in-VM container images and
@@ -159,7 +168,8 @@ These underpin every slice and are built first.
   gateway is always reachable in every mode. The per-project egress policy itself
   (mode `deny`/`public`/`unrestricted`, allowed host services, published ports —
   repo-layout §12.4) is configured by the `ai network` command and rendered into
-  the `msb create` net-rule fragment by `egress.MsbNetworkArgs`.
+  the `msb create` net-rule fragment by `workspace/`'s consumer,
+  `egress.MsbNetworkArgs`.
 
 ## 3.5 External Adapters & Service Control Plane
 
@@ -197,9 +207,10 @@ behind uniform `ai services` verbs — **no docker compose**:
   sync on demand.
 
 The Microsandbox runtime is **not** a managed service: its `msb` binary is
-pinned into `tools/` and invoked on demand via `sandbox/` to create and drive
-workspace microVMs; `ai setup` only verifies it is installed and the host
-supports virtualization.
+pinned into `tools/` and invoked on demand by `workspace/` (directly, or via
+the Microsandbox Go SDK) to create and drive workspace microVMs; `sandbox/`
+itself only detects that `msb` is installed and the host supports
+virtualization, which `ai setup` uses to verify prerequisites.
 
 Each service's config is **rendered** from the platform config into
 `config/<service>/` (including the nginx vhost map for the `litellm.<domain>` and
@@ -211,7 +222,7 @@ images in `internal/apps`, not in the host `versions.yaml`.)
 
 | Adapter | Integration | Run mode | First slice |
 |---|---|---|---|
-| `sandbox/` | Microsandbox Go SDK / `msb`; names `aip-<project>[-<agent>]`; microVM lifecycle map (arch §7) | microVM runtime (no daemon) | S1 |
+| `workspace/` (detect: `sandbox/`) | Microsandbox Go SDK / `msb`; names `aip-<project>[-<agent>]`; microVM lifecycle map (arch §7); `sandbox/` itself only detects `msb` + host virtualization | microVM runtime (no daemon) | S1 |
 | `litellm/` | container via `runtime/`; config rendered from routing; `/health` poll; `KeyManager` mints scoped virtual keys + stores provider credentials (keys-in-LiteLLM, fronted by `ai keys`) | container | S1 |
 | `contextopt/` | per-project Headroom strategy (drives per-request knobs on LiteLLM's headroom compress-guardrail call to `aip-headroom`) + Caveman skill installed in the workspace | container (Headroom) / workspace (Caveman) | S2 |
 
@@ -245,7 +256,7 @@ refer to the CLI spec and architecture spec respectively.
   Tests: AT §11.1.
 * **M3 — `ai setup` + services.** Preflight (exit 3 on missing deps),
   init `~/.ai-platform/`, install/configure/start the container service tier
-  (DNS resolver, Presidio pair, Valkey (+ RedisInsight), LiteLLM + its DB, Headroom, nginx gateway)
+  (DNS resolver, Presidio pair, Valkey (+ RedisInsight), Headroom, LiteLLM + its DB, nginx gateway)
   plus the host-native omlx inference tier (best-effort install omlx into the
   platform venv, start the one shared omlx server, sync its live model list into
   LiteLLM — no `aip-*` inference container)
@@ -290,9 +301,10 @@ refer to the CLI spec and architecture spec respectively.
   (plus a dynamic per-selected-app host-port phase), each with a
   presented default, checkbox multi-select for CLIs + stacks + AI tools + apps,
   arrow/space navigation, Back + Abort. The **AI tools** are ONE `--tools`
-  multi-select (caveman, graphify, code-review-graph, codebase-memory-mcp →
-  `context.*_enabled` bools; create-default caveman+graphify+code-review-graph ON,
-  codebase-memory OFF). Every input also has a flag
+  multi-select (caveman, graphify, code-review-graph, codebase-memory-mcp,
+  openviking → `context.*_enabled` bools; create-default
+  caveman+graphify+code-review-graph ON, codebase-memory+openviking OFF).
+  Every input also has a flag
   (`--name`/`--os`/`--agents`/`--auth-mode`/`--stacks`/`--tools`/`--apps`/`--app-port`/`--cpus`/`--memory`/`--disk`/`--ports`/`--location`/`--idle-timeout`/`--graphify-model`/`--shell`)
   that **pre-seeds** the wizard
   on a TTY
@@ -407,7 +419,9 @@ These are grep-able (`hardware bring-up`) and tracked in
     place that can run the full stack — Microsandbox needs the Apple Hypervisor
     (Apple Silicon) for workspace microVMs *and* Docker for the rootless service
     tier, which hosted macOS runners can't reliably provide. Runs the
-    `[S1]`-tagged acceptance suite.
+    `[S1]`-tagged acceptance suite, but **only on manual `workflow_dispatch`**
+    (not on every push/PR like the hosted lane) until a dedicated always-on
+    runner is provisioned.
   * Slice tags gate which acceptance tests run per environment; later slices add
     a Linux (KVM) self-hosted runner for `[S6]`.
 * **Release** (`release.yml`): on merge to `main` it autobumps the semver tag

@@ -12,9 +12,10 @@ flowchart LR
   subgraph WS["Workspace · Microsandbox microVM (one per project)"]
     direction TB
     AGENT["Agent CLI<br/>opencode · omp · claude · codex · gemini · hermes<br/><b>holds only a scoped LiteLLM virtual key</b>"]:::vm
+    MOUNTS["ai mounts add|remove|list<br/>isolated dirs (private volume) ·<br/>shared mounts (host↔guest bind)<br/>applied at microVM create/recreate"]:::opt
     RT["In-VM container runtime<br/>rootful containerd · nerdctl · runc · CNI"]:::core
     TOOLS["Baked-in dev tooling<br/>Node.js · Python 3 · uv · rtk · Headroom CLI<br/>per-project ~/project/.venv-msb"]:::core
-    AITOOLS["Opt-in AI tools (--tools)<br/><b>caveman · graphify · code-review-graph · codebase-memory-mcp</b><br/>conditional Dockerfile snippets · registered with each agent CLI at start"]:::opt
+    AITOOLS["Opt-in AI tools (--tools)<br/><b>caveman · graphify · code-review-graph · codebase-memory-mcp · openviking</b><br/>conditional Dockerfile snippets · registered with each agent CLI at start"]:::opt
     APPS["Opt-in in-VM apps (nerdctl)<br/>Open WebUI<br/>per-(workspace,app) host port · /workspace mount"]:::opt
   end
 

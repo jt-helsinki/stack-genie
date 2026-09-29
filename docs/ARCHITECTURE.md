@@ -77,7 +77,15 @@ stay blocked); every DNS name the VM resolves is logged for audit
 
 - **Workspace microVM / agent CLI** — hardware-isolated per-project sandbox
   (opencode · omp · claude-code · codex · gemini · hermes; opencode is
-  the default). Holds only a scoped LiteLLM virtual key.
+  the default). Holds only a scoped LiteLLM virtual key. Beyond the base
+  project bind mount, `ai mounts add|remove|list` manages two extra mount
+  kinds applied at microVM create/recreate (`config.yaml`
+  `workspace.isolated_dirs` / `workspace.shared_mounts`): an **isolated dir**
+  (a guest-relative subpath, e.g. `node_modules`, excluded from the host bind
+  mount and backed by a private, workspace-scoped volume instead, so
+  sandbox-built artifacts never touch the host tree) and a **shared mount**
+  (an absolute guest path bind-mounted from an arbitrary host directory,
+  visible and writable both ways). Also surfaced in the `ai ui` TUI.
 - **In-VM container runtime + apps** — every workspace microVM ships a rootful OCI
   runtime (containerd + nerdctl + runc + CNI), on which the platform runs opt-in AI
   apps as `nerdctl` containers *inside* the VM — currently **Open WebUI** (guest
@@ -148,9 +156,9 @@ selectable software stacks are `go`, `rust`, `java`, `maven`, `deno`.
 
 The per-project **AI tools** are a separate, selectable set (one `--tools`
 multi-select at `ai create`, or the wizard's AI-tools step): **caveman**,
-**graphify**, **code-review-graph**, and **codebase-memory-mcp** (defaults: the
-first three ON, codebase-memory-mcp OFF). Each maps to a `context.*_enabled` bool
-in `config.yaml`.
+**graphify**, **code-review-graph**, **codebase-memory-mcp**, and **openviking**
+(defaults: the first three ON, codebase-memory-mcp and openviking OFF). Each maps
+to a `context.*_enabled` bool in `config.yaml`.
 
 - **graphify** (the knowledge-graph skill for AI coding assistants — PyPI
   `graphifyy`, CLI `graphify`) is not baked into every OS base: when selected it is
@@ -159,9 +167,10 @@ in `config.yaml`.
   `uv tool install "graphifyy[…extras]"` (all optional extras except the
   region/DB/niche-specific `chinese,azure,bedrock,falkordb,neo4j,leiden,dm,pascal`),
   and each selected agent CLI registers Graphify with itself **at workspace
-  start**, once per project (`graphify install` for claude-code,
-  `graphify install --platform <cli>` for codex/gemini/opencode — not in
-  the Dockerfile, since `--project` writes into the bind-mounted project dir).
+  start**, once per project — `graphify install --project` for claude-code,
+  `graphify install --project --platform <cli>` for codex/gemini/opencode —
+  not in the Dockerfile, since `--project` writes into the bind-mounted
+  project dir.
   Graphify's headless LLM backend is a model picked from omlx's live model list
   at `ai create` (`--graphify-model` / the wizard's picker) — no download
   happens at create time, since model management stays entirely in omlx's own
@@ -175,6 +184,19 @@ in `config.yaml`.
   workspace start (`workspace.registerCodeReviewGraph` /
   `registerCodebaseMemory`, once-guarded + best-effort). Both are local and
   keyless.
+- **openviking** (`docs.openviking.ai` — "the context database for AI agents") is
+  opt-in and off by default: when selected it is appended to the project
+  Dockerfile as a conditional snippet (`internal/templates/files/tools/openviking/`)
+  installing the `openviking-server` (PyPI `openviking`), the `ov` CLI client (npm
+  `@openviking/cli`), and the OpenCode plugin (npm `@openviking/opencode-plugin`).
+  At workspace start (`workspace.registerOpenViking`, once-guarded + best-effort,
+  detached) it launches the server locally on loopback `:1933` in OpenViking's
+  unauthenticated "dev mode" (data persisted under `/persist/openviking`) and
+  registers it with each installed, supported agent CLI: claude-code and codex via
+  their own native plugin-marketplace commands, opencode and omp via OpenViking's
+  shared memory-plugin installer. gemini has no OpenViking integration in the
+  docs, and hermes's only documented registration path is an interactive wizard
+  with no non-interactive flags, so both are left unregistered.
 - **caveman** is installed at workspace start by its own upstream installer
   (`registerCaveman`).
 

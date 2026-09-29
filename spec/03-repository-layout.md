@@ -215,15 +215,20 @@ dockerfiles/debian-trixie/Dockerfile
 dockerfiles/ubuntu/Dockerfile
 
 stacks/go/Dockerfile.snippet
-stacks/rust/Dockerfile.snippet
+stacks/go/Dockerfile.dnf.snippet      # AlmaLinux (dnf) variant — see below
+stacks/rust/Dockerfile.snippet        # rustup install is package-manager-agnostic, no dnf variant
 stacks/java/Dockerfile.snippet
+stacks/java/Dockerfile.dnf.snippet
 stacks/maven/Dockerfile.snippet
+stacks/maven/Dockerfile.dnf.snippet
 stacks/deno/Dockerfile.snippet
+stacks/deno/Dockerfile.dnf.snippet
 
 # opt-in AI tools — appended to the project Dockerfile only when selected at create (--tools)
 tools/graphify/Dockerfile.snippet
 tools/code-review-graph/Dockerfile.snippet
 tools/codebase-memory-mcp/Dockerfile.snippet
+tools/openviking/Dockerfile.snippet
 ```
 
 Rules:
@@ -263,7 +268,17 @@ Rules:
   stack snippets were removed entirely), so the selectable stacks are `go`, `rust`,
   `java`, `maven`, `deno`, and the agent-CLI snippets now only `npm install` their
   CLI (Node itself is in the base).
+* stack composition is **OS-aware**: `templates.StackSnippet(stack, osKey)` picks
+  the snippet variant for the target OS's package manager — for a dnf-based OS
+  (currently only `alma`; tracked by a `dnfOSKeys` set) it prefers a
+  `Dockerfile.dnf.snippet` sibling when one exists, falling back to the plain
+  `Dockerfile.snippet` otherwise (apt-based OSes always use the plain snippet).
+  `go`, `java`, `maven`, and `deno` ship both variants since their install step
+  invokes the OS package manager directly (`apt-get`/`dnf install`); `rust`
+  ships only the plain snippet, since its rustup installer is package-manager-
+  agnostic
 * the stack list is **extensible** — adding `stacks/<name>/Dockerfile.snippet`
+  (plus an optional `Dockerfile.dnf.snippet` sibling for dnf-based OSes)
   makes `<name>` selectable
 * after creation the project owns its Dockerfile; templates/snippets are no
   longer consulted
@@ -776,12 +791,15 @@ context:
                            # (mapped to Headroom per-request knobs keep_turns/output_buffer_tokens)
   caveman_level: full      # Caveman output compression: lite | full | ultra | wenyan
   caveman_enabled: true    # AI tools — ONE `--tools` multi-select at create (§1.5); the create-default
-                           # selection is caveman + graphify + code-review-graph ON, codebase-memory OFF
+                           # selection is caveman + graphify + code-review-graph ON, codebase-memory + openviking OFF
   graphify_enabled: true   # install Graphify (conditional Dockerfile snippet, §1.5) + register it per CLI at start
   code_review_graph_enabled: true    # install code-review-graph (code-review-graph.com) + register it
                                      # as an MCP server with each installed agent CLI at start
   codebase_memory_enabled: false     # OPT-IN: install codebase-memory-mcp (DeusData/codebase-memory-mcp) +
                                      # register it as an MCP server with each installed agent CLI at start
+  openviking_enabled: false          # OPT-IN: install OpenViking (docs.openviking.ai, the context database
+                                     # for AI agents; conditional Dockerfile snippet, §1.5) + register it with
+                                     # each supported installed agent CLI at start
 workspace:
   cpu_limit: 4             # microVM resource limits wired into `msb create --cpus/--memory`
   memory_limit: 8          # memory in GB (a plain number; a 512M/4G suffix still works); empty falls back to the microVM default (4G)
@@ -793,11 +811,13 @@ workspace:
   isolated_dirs:           # guest-relative paths under the project workdir (e.g. node_modules, target) EXCLUDED
                            # from the host project bind mount and backed by a private, workspace-scoped volume
                            # instead — in-VM writes never touch the host tree; applied at create as an extra
-                           # SDK mount over the subpath. Empty by default (`ai mounts isolate-dir`, `--isolate-dirs`)
+                           # SDK mount over the subpath. Empty by default (`ai create --isolate-dirs`, or post-create
+                           # via `ai mounts add <relative-dir>`)
     - node_modules
   shared_mounts:           # additional host directories bind-mounted into the guest at an arbitrary guest path,
                            # visible/writable on BOTH sides (unlike isolated_dirs); applied at create as an extra
-                           # SDK bind mount. Empty by default (`ai mounts map-dir`, `--map-dir`)
+                           # SDK bind mount. Empty by default — no `ai create` flag; added post-create via
+                           # `ai mounts add <absolute-guest-dir> --host <host-path>`
     - { guest_path: /home/workspace/shared, host_path: /Users/me/shared }
 microsandbox:
   idle_timeout: 24h        # `msb create --idle-timeout`; default set by `ai create`, editable later

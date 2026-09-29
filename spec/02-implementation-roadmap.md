@@ -563,16 +563,23 @@ System is complete when:
 
 ```bash id="g1"
 ai setup
-ai create --name my-project   # interactive wizard: pick OS + agent CLIs (defaults: debian-trixie, OpenCode)
+ai create --name my-project   # interactive wizard: OS; agent CLIs (opencode default,
+                               # omp/claude-code/codex/gemini/hermes also selectable);
+                               # software stacks (go/rust/java/maven/deno); AI tools
+                               # (caveman/graphify/code-review-graph/codebase-memory-mcp);
+                               # optional in-VM apps
 ```
 
-produces (for the OS the user selected):
+produces (for the OS + options the user selected):
 
 * selected-OS workspace (e.g. Debian trixie)
 * working LiteLLM
 * keys-in-LiteLLM secrets (agent uses a scoped virtual key)
 * Headroom input compression
 * Caveman output compression
+* selected software stacks installed alongside the default Python/uv/Node tooling
+* selected AI tools (caveman/graphify/code-review-graph/codebase-memory-mcp) installed/registered
+* selected in-VM apps + agent-CLI dashboards reachable via `ai apps`
 * Dockerfile-defined environment + overlay persistence
 * reproducible environments
 * zero manual configuration

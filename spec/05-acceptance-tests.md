@@ -124,7 +124,8 @@ for the rare TTY-only human-wizard cases and is not used here.)
   upstream call, so the injection tests (§9.1) assert the key is present in the request
   the mock records — end-to-end over HTTPS.
 * **credential sentinel**: the test credential stored in the LiteLLM gateway has
-  a known, unique value `AIP_TEST_SENTINEL_<uuid>` (env: `AIP_TEST_SENTINEL`).
+  a known, fixed literal value (`sk-aip-test-sentinel-DO-NOT-LEAK` in
+  `s1_hardware_test.go`; referred to here as `$AIP_TEST_SENTINEL`).
   Secret assertions are exact: the sentinel must appear in the mock provider's
   recorded request, and must appear **nowhere** in the workspace env, the
   workspace filesystem, `~/.ai-platform`, or `~/projects`. The workspace agent
@@ -159,10 +160,10 @@ warned by `ai doctor` and only fails the actual model call.)
 setup:
   export AIP_TEST_HOME=$(mktemp -d)
   export HOME="$AIP_TEST_HOME"                 # ~/.ai-platform, ~/projects resolve here
-  export AIP_TEST_SENTINEL="AIP_TEST_SENTINEL_$(uuidgen)"
+  export AIP_TEST_SENTINEL="sk-aip-test-sentinel-DO-NOT-LEAK"   # fixed literal, matches s1_hardware_test.go's `sentinel` const
   export MOCK_PROVIDER_URL=$(start in-process httptest mock)   # in-process HTTPS OpenAI-compatible endpoint (mockprovider_test.go); its https:// base URL is reachable from the workspace and is the one allow-listed destination. The harness trusts its test cert.
   ai setup --json --provider-config <inline temp file>   # config written inline by the harness, not a checked-in fixture
-  printf '%s' "$AIP_TEST_SENTINEL" | ai keys add openai --stdin --json   # stored encrypted in the LiteLLM DB (keys-in-LiteLLM)
+  ai keys add openai --value "$AIP_TEST_SENTINEL" --json   # stored encrypted in the LiteLLM DB (keys-in-LiteLLM)
 
 teardown:
   ai delete <each> --purge --yes                # best effort
@@ -701,6 +702,43 @@ external, upstream-owned toolkit) and are not measured by any platform test.
   knobs (there is no `context.max_tokens` field; arch §10)
 * `ai context status --json` reports the active strategy + reduction
 * command exits `0`
+
+---
+
+## 8.3 OpenViking Memory/Context Database `[S2]`
+
+### Test
+
+```bash
+ai create ov-test --os debian-trixie --tools caveman,graphify,code-review-graph,openviking --json
+```
+
+### Expected Result
+
+* OpenViking (https://docs.openviking.ai — "the context database for AI
+  agents") is one of the five `--tools`/AI-tools-wizard selections; unlike
+  Caveman/Graphify it is OPT-IN — `DefaultAITools()` leaves it (and
+  codebase-memory-mcp) **off**, so it is installed only when explicitly named
+* `<project>/.ai-platform/config.yaml` records `context.openviking_enabled:
+  true`, and the project Dockerfile carries the conditional `tools/openviking`
+  snippet (installs `openviking-server`, the `ov` CLI, and the OpenCode plugin)
+* at workspace start, `registerOpenViking` starts the OpenViking server
+  locally on loopback `:1933` in OpenViking's unauthenticated "dev mode" (no
+  API key), persists its index under `/persist/openviking` (symlinked from
+  `~/.openviking` so it survives restarts), and registers it with each
+  supported installed CLI — claude-code/codex via OpenViking's native plugin
+  marketplace, opencode/omp via the shared memory-plugin installer
+  (`--harness`); hermes has no documented non-interactive setup and is skipped
+* the install is DETACHED and once-guarded
+  (`<project>/.ai-platform/.openviking-installed`) — best-effort, so a
+  failed/killed run simply retries on the next workspace start rather than
+  failing it
+
+**Automated coverage:** `TestSplitAITools`/`TestDefaultAITools`
+(`internal/create/options_test.go`) cover the `--tools` selection plumbing
+(OpenViking off by default). No platform acceptance test exercises the in-VM
+server start / plugin-registration behavior — like Caveman (§8.1), it is an
+external, upstream-owned toolkit whose runtime behavior is not measured here.
 
 ---
 

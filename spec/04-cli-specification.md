@@ -328,7 +328,7 @@ Purpose:
 **Platform base domain & name resolution.** The host UIs are served on nginx
 subdomains of the platform base domain (`litellm.<domain>` → LiteLLM admin UI and
 `valkey.<domain>` → RedisInsight, both on the single gateway port `:18787`;
-`ai domain`, §10.5). In
+`ai domain`, §10.6). In
 **server** mode the form additionally prompts for the **server hostname / domain**
 (the name clients and browsers reach this host at, default **`localhost`**),
 persisted as the `domain`. Once the domain is known, `setup` wires name
@@ -567,7 +567,7 @@ one command:
   `microsandbox.idle_timeout`.
 * `--tools <list>` — the per-project **AI tools** to install, a comma-separated
   multi-select (like `--agents`) chosen from `caveman`, `graphify`, `code-review-graph`,
-  `codebase-memory-mcp`. Default (flag omitted): `caveman,graphify,code-review-graph`;
+  `codebase-memory-mcp`, `openviking`. Default (flag omitted): `caveman,graphify,code-review-graph`;
   `--tools=""` selects none. An unknown value exits `2`. Each maps to a
   `context.<tool>_enabled` bool. The tools:
   * `caveman` — the Caveman output-compression toolkit, installed at workspace start.
@@ -589,6 +589,17 @@ one command:
     codex/hermes configs are platform-rewritten and omp isn't detected, those three
     get its MCP server injected into their managed configs instead. Ships an optional
     on-demand 3D graph UI (`codebase-memory-mcp --ui=true --port=9749`).
+  * `openviking` — install OpenViking (`docs.openviking.ai`, "the context database for
+    AI agents") via a conditional snippet and register it, at workspace start, with each
+    installed agent CLI it supports: claude-code and codex use their own native
+    plugin-marketplace commands (`claude plugin install openviking-memory@openviking` /
+    `codex plugin add openviking-memory@openviking`); opencode and omp use OpenViking's
+    shared memory-plugin installer with `--harness opencode`/`pi`; gemini has no
+    OpenViking integration and hermes has no non-interactive registration path, so both
+    are skipped. The server runs locally on loopback `:1933` as an unauthenticated
+    "dev mode" instance, with its index persisted under `/persist/openviking`. Unlike
+    the other three tools, `openviking` is **opt-in** — it is not part of the default
+    set and must be named explicitly in `--tools`/the wizard.
 
 On a terminal (with `--json` off) the wizard **always** runs, **pre-seeded** with
 any flags you passed — flags set the defaults rather than bypassing the UI. Under
@@ -684,9 +695,9 @@ Steps, in order:
 8. **Idle timeout** — text input for the Microsandbox idle timeout (`--idle-timeout`,
    default 24h).
 9. **AI tools** — **multi-select checkboxes** (like the agent-CLI list, not a screen
-   each): `caveman`, `graphify`, `code-review-graph`, `codebase-memory-mcp`. Pre-checked
-   with the default set (`caveman,graphify,code-review-graph`); pre-seeded from `--tools`.
-   Each is recorded as a `context.<tool>_enabled` bool.
+   each): `caveman`, `graphify`, `code-review-graph`, `codebase-memory-mcp`, `openviking`.
+   Pre-checked with the default set (`caveman,graphify,code-review-graph`); pre-seeded
+   from `--tools`. Each is recorded as a `context.<tool>_enabled` bool.
 10. **Graphify model** *(shown only when `graphify` is selected in step 9)* — an
    **optional SELECT** built from omlx's live `GET /v1/models`: a
    `"(none — leave Graphify unconfigured)"` option always first (shown alone when
@@ -1244,10 +1255,13 @@ relative (isolated) one.
   `add` or a missing `remove` target exits `2`.
 
 The mount set is applied at microVM create/recreate (`msb`, like the published
-port set), so `add`/`remove` **require a restart to take effect** — the command
-succeeds immediately and prints the `ai restart <name>` hint rather than
-restarting automatically. The TUI **Mounts** sub-tab (§14.4) drives the same
-config edits inline.
+port set), so `add`/`remove` **require a restart to take effect** — after
+persisting the config change, the command restarts a currently-running workspace
+**unconditionally, with no confirmation prompt** (`applyWorkspaceRestart`, shared
+with `ai resize` §4.3b); a stopped workspace is left stopped and the change simply
+applies on its next `ai start`. The TUI **Mounts** sub-tab (§14.4) behaves
+differently — it only flashes a hint to restart (`ai restart`) and does not
+restart automatically; it drives the same config edits inline.
 
 Exit codes (§18): unknown action / bad `--host` usage / validation failure → `2`;
 config read/write failures → `4`.
@@ -1640,7 +1654,7 @@ Behavior:
 
 ---
 
-# 10a. Network (workspace egress policy)
+# 10.4 Network (workspace egress policy)
 
 ```bash id="c27b"
 ai network show      [project]                              # show the egress policy
@@ -1733,7 +1747,7 @@ Human-readable output by default; `--json` emits the standard §19 envelope.
 
 ---
 
-# 10.4 Model Gateway (`ai gateway`)
+# 10.5 Model Gateway (`ai gateway`)
 
 Configure, machine-wide, which model gateway every workspace microVM on this host
 routes through. The address is persisted in `config/runtime.yaml` as
@@ -1770,7 +1784,7 @@ Human-readable output by default; `--json` emits the standard §19 envelope.
 
 ---
 
-# 10.5 Platform Base Domain (`ai domain`)
+# 10.6 Platform Base Domain (`ai domain`)
 
 Configure, machine-wide, the platform **base domain** the nginx UI subdomains hang
 off: `litellm.<domain>` (LiteLLM admin UI) and `valkey.<domain>` (RedisInsight). The value is
@@ -1989,7 +2003,8 @@ number keys `1`-`9`. There is **no `:` command palette** — `q`/`ctrl+c` quits 
     (the base domain + `:18787`), so it shows regardless of workspace state.
     The pane is **scrollable** (`↑/↓`/`PgUp`/`PgDn`) so the summary + configuration
     stay reachable when they overflow. Workspace lifecycle is `s`/`x`/`r`/`d`
-    (start/stop/restart/delete) and `e` (an interactive shell). `s`/`x`/`r` run
+    (start/stop/restart/delete), `e` (an interactive shell), and `z` (an inline
+    disk-resize prompt — see §4.3b). `s`/`x`/`r` run
     **DETACHED** from the TUI: the app spawns
     `ai <action> <name>` in its own session (`setsid` + `Process.Release`) with its
     stdout+stderr **tee'd to `<project>/.ai-platform/run/<action>.log`** (the build
