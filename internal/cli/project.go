@@ -461,7 +461,7 @@ func newCreateCmd(emitter *output.Emitter, exit *int, use string) *cobra.Command
 	cmd.Flags().String("graphify-model", "", "name of a model omlx is ALREADY serving (manage models from its own admin panel — `ai services console omlx`); routed through the gateway as omlx/<name>, no download")
 	cmd.Flags().String("shell", "bash", "default interactive shell for workspace sessions: "+strings.Join(supportedShells, "|"))
 	cmd.Flags().String("auth-mode", "", "per-agent auth mode for claude-code/codex/gemini as cli=mode (api-key|oauth), comma-separated (e.g. claude-code=oauth,codex=api-key); default api-key")
-	cmd.Flags().StringSlice("tools", nil, "AI tools to install (default: "+strings.Join(create.DefaultAITools(), ",")+"): "+strings.Join(create.SupportedAITools(), ",")+" — pass --tools=\"\" for none")
+	cmd.Flags().StringSlice("tools", nil, "AI tools to install (default: none): "+strings.Join(create.SupportedAITools(), ","))
 	_ = cmd.RegisterFlagCompletionFunc("os", fixedValues(supportedOSes...))
 	_ = cmd.RegisterFlagCompletionFunc("shell", fixedValues(supportedShells...))
 	_ = cmd.RegisterFlagCompletionFunc("agents", fixedValues(supportedAgentCLIs...))
@@ -829,7 +829,7 @@ func runCreateWizard(seed project.Spec) (project.Spec, bool, error) {
 		"claude-code": authClaude, "codex": authCodex, "gemini": authGemini,
 	})
 
-	caveman, graphify, codeReviewGraph, codebaseMemory, openViking := create.SplitAITools(toolsSelection)
+	caveman, graphify, codeReviewGraph, codebaseMemory, openViking, tokenSave, agentMemory, ponytail, agentSkills := create.SplitAITools(toolsSelection)
 	// Only carry a graphify model when graphify is actually selected.
 	graphifyModel := ""
 	if graphify && graphifyModelSelection != graphifyModelNone {
@@ -858,6 +858,10 @@ func runCreateWizard(seed project.Spec) (project.Spec, bool, error) {
 		CodeReviewGraphEnabled: codeReviewGraph,
 		CodebaseMemoryEnabled:  codebaseMemory,
 		OpenVikingEnabled:      openViking,
+		TokenSaveEnabled:       tokenSave,
+		AgentMemoryEnabled:     agentMemory,
+		PonytailEnabled:        ponytail,
+		AgentSkillsEnabled:     agentSkills,
 	}, false, nil
 }
 
@@ -877,19 +881,34 @@ func aiToolsFromSpec(seed project.Spec) []string {
 	if seed.CodebaseMemoryEnabled {
 		selection = append(selection, create.AIToolCodebaseMemory)
 	}
+	if seed.OpenVikingEnabled {
+		selection = append(selection, create.AIToolOpenViking)
+	}
+	if seed.TokenSaveEnabled {
+		selection = append(selection, create.AIToolTokenSave)
+	}
+	if seed.AgentMemoryEnabled {
+		selection = append(selection, create.AIToolAgentMemory)
+	}
+	if seed.PonytailEnabled {
+		selection = append(selection, create.AIToolPonytail)
+	}
+	if seed.AgentSkillsEnabled {
+		selection = append(selection, create.AIToolAgentSkills)
+	}
 	return selection
 }
 
 // aiToolOptions is the labeled option list for the AI-tools multi-select. Values are the
-// raw tool keys (create.SupportedAITools) so the selection splits cleanly.
+// raw tool keys (create.SupportedAITools) so the selection splits cleanly. Each label is
+// "<tool> — <description>" (create.AIToolDescription), so the picker doubles as
+// documentation — the same convention `ai tools list` reuses.
 func aiToolOptions() []huh.Option[string] {
-	return []huh.Option[string]{
-		huh.NewOption("caveman — output-compression toolkit (skills/agents/commands + CLI-native plugins/hooks)", create.AIToolCaveman),
-		huh.NewOption("graphify — knowledge-graph skill, baked into the image + registered with each agent CLI", create.AIToolGraphify),
-		huh.NewOption("code-review-graph — code-review knowledge graph + MCP server (local, no API key)", create.AIToolCodeReviewGraph),
-		huh.NewOption("codebase-memory-mcp — codebase-memory MCP server + optional 3D graph UI (local, no API key)", create.AIToolCodebaseMemory),
-		huh.NewOption("openviking — context database (docs.openviking.ai), local server + registered with opencode/claude-code/codex/omp", create.AIToolOpenViking),
+	options := make([]huh.Option[string], 0, len(create.SupportedAITools()))
+	for _, tool := range create.SupportedAITools() {
+		options = append(options, huh.NewOption(tool+" — "+create.AIToolDescription(tool), tool))
 	}
+	return options
 }
 
 // seededAuthMode returns the pre-seeded auth mode for a CLI, defaulting to "api-key".
@@ -1214,7 +1233,7 @@ func seedSpec(flags createFlags) project.Spec {
 	// a parse error here is impossible — ignore it and seed the wizard's per-agent selects.
 	authModes, _ := parseAuthModes(flags.authMode, agents)
 	// Apps are opt-in: an unset --apps seeds the wizard with NOTHING selected.
-	caveman, graphify, codeReviewGraph, codebaseMemory, openViking := create.SplitAITools(effectiveAITools(flags))
+	caveman, graphify, codeReviewGraph, codebaseMemory, openViking, tokenSave, agentMemory, ponytail, agentSkills := create.SplitAITools(effectiveAITools(flags))
 	return project.Spec{
 		Name:                   name,
 		OS:                     osKey,
@@ -1237,6 +1256,10 @@ func seedSpec(flags createFlags) project.Spec {
 		CodeReviewGraphEnabled: codeReviewGraph,
 		CodebaseMemoryEnabled:  codebaseMemory,
 		OpenVikingEnabled:      openViking,
+		TokenSaveEnabled:       tokenSave,
+		AgentMemoryEnabled:     agentMemory,
+		PonytailEnabled:        ponytail,
+		AgentSkillsEnabled:     agentSkills,
 	}
 }
 
@@ -1272,7 +1295,7 @@ func specFromFlags(flags createFlags) (project.Spec, error) {
 	if err != nil {
 		return project.Spec{}, err
 	}
-	caveman, graphify, codeReviewGraph, codebaseMemory, openViking := create.SplitAITools(effectiveAITools(flags))
+	caveman, graphify, codeReviewGraph, codebaseMemory, openViking, tokenSave, agentMemory, ponytail, agentSkills := create.SplitAITools(effectiveAITools(flags))
 	return project.Spec{
 		Name:                   name,
 		OS:                     flags.osKey,
@@ -1295,6 +1318,10 @@ func specFromFlags(flags createFlags) (project.Spec, error) {
 		CodeReviewGraphEnabled: codeReviewGraph,
 		CodebaseMemoryEnabled:  codebaseMemory,
 		OpenVikingEnabled:      openViking,
+		TokenSaveEnabled:       tokenSave,
+		AgentMemoryEnabled:     agentMemory,
+		PonytailEnabled:        ponytail,
+		AgentSkillsEnabled:     agentSkills,
 	}, nil
 }
 

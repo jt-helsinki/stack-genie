@@ -1,0 +1,11 @@
+# tool: agentmemory (github.com/rohitg00/agentmemory) — OPT-IN, appended to the project
+# Dockerfile ONLY when selected at `ai create` (context.agentmemory_enabled). Persistent
+# cross-session memory for agents, also exposed as an MCP server. A TypeScript/Node npm
+# package — Node is already baked into every OS base, so no extra toolchain is needed.
+# npm global installs need root; back to the workspace user after. Per-agent
+# registration (claude-code `agentmemory connect`, gemini `gemini mcp add`, codex/
+# hermes via MCP injection) happens at workspace start (workspace.registerAgentMemory),
+# not here — no project is mounted at build time.
+USER root
+RUN npm install -g @agentmemory/agentmemory@latest
+USER workspace

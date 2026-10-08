@@ -171,6 +171,31 @@ type ContextConfig struct {
 	// It is OPT-IN — unset (nil) defaults to DISABLED (unlike Caveman) — see
 	// OpenVikingEnabledOrDefault.
 	OpenVikingEnabled *bool `yaml:"openviking_enabled,omitempty" json:"openviking_enabled,omitempty"`
+	// TokenSaveEnabled records whether tokensave (https://github.com/aovestdipaperino/tokensave
+	// — a code-graph MCP server for 34 languages) is installed into the workspace at
+	// start and registered with each installed agent CLI (chosen at `ai create`). A
+	// pointer so three states are distinct: unset (nil), explicit true, explicit false.
+	// It is OPT-IN — unset (nil) defaults to DISABLED — see TokenSaveEnabledOrDefault.
+	TokenSaveEnabled *bool `yaml:"tokensave_enabled,omitempty" json:"tokensave_enabled,omitempty"`
+	// AgentMemoryEnabled records whether agentmemory (https://github.com/rohitg00/agentmemory
+	// — persistent cross-session memory for agents) is installed into the workspace at
+	// start and registered with each installed agent CLI (chosen at `ai create`). A
+	// pointer so three states are distinct: unset (nil), explicit true, explicit false.
+	// It is OPT-IN — unset (nil) defaults to DISABLED — see AgentMemoryEnabledOrDefault.
+	AgentMemoryEnabled *bool `yaml:"agentmemory_enabled,omitempty" json:"agentmemory_enabled,omitempty"`
+	// PonytailEnabled records whether the Ponytail skill (https://github.com/DietrichGebert/ponytail
+	// — nags the agent to check YAGNI/stdlib/existing code before writing anything new)
+	// is installed into the workspace at start (chosen at `ai create`). A pointer so
+	// three states are distinct: unset (nil), explicit true, explicit false. It is
+	// OPT-IN — unset (nil) defaults to DISABLED — see PonytailEnabledOrDefault.
+	PonytailEnabled *bool `yaml:"ponytail_enabled,omitempty" json:"ponytail_enabled,omitempty"`
+	// AgentSkillsEnabled records whether addyosmani/agent-skills (a curated library of
+	// senior-engineer skills — spec-writing, TDD, review, security, shipping) is mirrored
+	// into the shared skill pool and, for gemini, additionally installed natively (chosen
+	// at `ai create`). A pointer so three states are distinct: unset (nil), explicit true,
+	// explicit false. It is OPT-IN — unset (nil) defaults to DISABLED — see
+	// AgentSkillsEnabledOrDefault.
+	AgentSkillsEnabled *bool `yaml:"agent_skills_enabled,omitempty" json:"agent_skills_enabled,omitempty"`
 }
 
 // CavemanEnabledOrDefault reports whether Caveman should be installed at workspace
@@ -207,6 +232,64 @@ func (settings ContextConfig) GraphifyEnabledOrDefault() bool {
 // ever installed when explicitly chosen at `ai create`.
 func (settings ContextConfig) OpenVikingEnabledOrDefault() bool {
 	return settings.OpenVikingEnabled != nil && *settings.OpenVikingEnabled
+}
+
+// TokenSaveEnabledOrDefault reports whether tokensave should be installed at
+// workspace start. It is OPT-IN: an unset (nil) value defaults FALSE, so it is
+// only ever installed when explicitly chosen at `ai create`.
+func (settings ContextConfig) TokenSaveEnabledOrDefault() bool {
+	return settings.TokenSaveEnabled != nil && *settings.TokenSaveEnabled
+}
+
+// AgentMemoryEnabledOrDefault reports whether agentmemory should be installed at
+// workspace start. It is OPT-IN: an unset (nil) value defaults FALSE, so it is
+// only ever installed when explicitly chosen at `ai create`.
+func (settings ContextConfig) AgentMemoryEnabledOrDefault() bool {
+	return settings.AgentMemoryEnabled != nil && *settings.AgentMemoryEnabled
+}
+
+// PonytailEnabledOrDefault reports whether the Ponytail skill should be installed
+// at workspace start. It is OPT-IN: an unset (nil) value defaults FALSE, so it is
+// only ever installed when explicitly chosen at `ai create`.
+func (settings ContextConfig) PonytailEnabledOrDefault() bool {
+	return settings.PonytailEnabled != nil && *settings.PonytailEnabled
+}
+
+// AgentSkillsEnabledOrDefault reports whether addyosmani/agent-skills should be mirrored
+// into the shared skill pool at workspace start. It is OPT-IN: an unset (nil) value
+// defaults FALSE, so it is only ever installed when explicitly chosen at `ai create`.
+func (settings ContextConfig) AgentSkillsEnabledOrDefault() bool {
+	return settings.AgentSkillsEnabled != nil && *settings.AgentSkillsEnabled
+}
+
+// ToolEnabled reports whether the given AI-tool key (one of create.SupportedAITools —
+// not imported here to avoid a dependency cycle, so the keys are matched as plain
+// strings) is enabled, via the matching *EnabledOrDefault method. An unknown key
+// reports false. Shared by `ai tools list` and the TUI Apps tab so both render the
+// exact same enabled state from one definition.
+func (settings ContextConfig) ToolEnabled(tool string) bool {
+	switch tool {
+	case "caveman":
+		return settings.CavemanEnabledOrDefault()
+	case "graphify":
+		return settings.GraphifyEnabledOrDefault()
+	case "code-review-graph":
+		return settings.CodeReviewGraphEnabledOrDefault()
+	case "codebase-memory-mcp":
+		return settings.CodebaseMemoryEnabledOrDefault()
+	case "openviking":
+		return settings.OpenVikingEnabledOrDefault()
+	case "tokensave":
+		return settings.TokenSaveEnabledOrDefault()
+	case "agentmemory":
+		return settings.AgentMemoryEnabledOrDefault()
+	case "ponytail":
+		return settings.PonytailEnabledOrDefault()
+	case "agent-skills":
+		return settings.AgentSkillsEnabledOrDefault()
+	default:
+		return false
+	}
 }
 
 // WorkspaceConfig holds the microVM resource limits applied at workspace start

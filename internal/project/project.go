@@ -23,6 +23,7 @@ import (
 	"github.com/jt-helsinki/stack-genie/internal/state"
 	"github.com/jt-helsinki/stack-genie/internal/templates"
 	"github.com/jt-helsinki/stack-genie/internal/workspace"
+	"gopkg.in/yaml.v3"
 )
 
 // namePattern validates project names (arch §19): lowercase alphanumeric and
@@ -101,6 +102,23 @@ type Spec struct {
 	// installed agent CLI, written to config.yaml context.openviking_enabled. Chosen
 	// at `ai create` (OPT-IN, default false).
 	OpenVikingEnabled bool
+	// TokenSaveEnabled records whether tokensave is installed into the workspace at
+	// start and registered with each installed agent CLI, written to config.yaml
+	// context.tokensave_enabled. Chosen at `ai create` (OPT-IN, default false).
+	TokenSaveEnabled bool
+	// AgentMemoryEnabled records whether agentmemory is installed into the workspace
+	// at start and registered with each installed agent CLI, written to config.yaml
+	// context.agentmemory_enabled. Chosen at `ai create` (OPT-IN, default false).
+	AgentMemoryEnabled bool
+	// PonytailEnabled records whether the Ponytail skill is installed into the shared
+	// skill pool at start, written to config.yaml context.ponytail_enabled. Chosen at
+	// `ai create` (OPT-IN, default false).
+	PonytailEnabled bool
+	// AgentSkillsEnabled records whether addyosmani/agent-skills is mirrored into the
+	// shared skill pool (and, for gemini, additionally natively installed) at start,
+	// written to config.yaml context.agent_skills_enabled. Chosen at `ai create`
+	// (OPT-IN, default false).
+	AgentSkillsEnabled bool
 	// PublishPorts are the host↔guest ports to open into the sandbox, written to
 	// config.yaml network.publish_ports.
 	PublishPorts []config.PortMapping
@@ -229,6 +247,35 @@ func Path(name string) (string, bool, error) {
 	return entry.Path, ok, nil
 }
 
+// DockerfileTools returns the opt-in tool keys to bake into the project
+// Dockerfile for the given enabled flags (§25, §12) — shared by Scaffold and the
+// `ai tools enable|disable` command so a later rebuild stays in sync with
+// config.yaml. caveman and ponytail are deliberately excluded: both are
+// runtime-only (no Dockerfile snippet), installed by their own registration step
+// at workspace start, not baked into the image.
+func DockerfileTools(graphify, codeReviewGraph, codebaseMemory, openViking, tokenSave, agentMemory bool) []string {
+	var tools []string
+	if graphify {
+		tools = append(tools, "graphify")
+	}
+	if codeReviewGraph {
+		tools = append(tools, "code-review-graph")
+	}
+	if codebaseMemory {
+		tools = append(tools, "codebase-memory-mcp")
+	}
+	if openViking {
+		tools = append(tools, "openviking")
+	}
+	if tokenSave {
+		tools = append(tools, "tokensave")
+	}
+	if agentMemory {
+		tools = append(tools, "agentmemory")
+	}
+	return tools
+}
+
 // Scaffold creates a project's tracked .ai-platform/ files and registers it in
 // the global index. It tolerates a directory that already has other content
 // (the files are left untouched) but refuses to overwrite an existing project.
@@ -261,19 +308,8 @@ func Scaffold(spec Spec, createdAt string) (string, error) {
 	// Dockerfile = OS base + selected stacks + selected agent CLIs + selected opt-in
 	// tools (§25, §12). The opt-in tools are baked ONLY when selected, so an
 	// unselected tool's installer never runs at build.
-	var tools []string
-	if spec.GraphifyEnabled {
-		tools = append(tools, "graphify")
-	}
-	if spec.CodeReviewGraphEnabled {
-		tools = append(tools, "code-review-graph")
-	}
-	if spec.CodebaseMemoryEnabled {
-		tools = append(tools, "codebase-memory-mcp")
-	}
-	if spec.OpenVikingEnabled {
-		tools = append(tools, "openviking")
-	}
+	tools := DockerfileTools(spec.GraphifyEnabled, spec.CodeReviewGraphEnabled,
+		spec.CodebaseMemoryEnabled, spec.OpenVikingEnabled, spec.TokenSaveEnabled, spec.AgentMemoryEnabled)
 	if err := envimage.Write(root, spec.OS, spec.Stacks, spec.AgentCLIs, tools); err != nil {
 		return "", err
 	}
@@ -371,11 +407,22 @@ func Scaffold(spec Spec, createdAt string) (string, error) {
 	graphifyEnabled := spec.GraphifyEnabled
 	codeReviewGraphEnabled := spec.CodeReviewGraphEnabled
 	codebaseMemoryEnabled := spec.CodebaseMemoryEnabled
+	openVikingEnabled := spec.OpenVikingEnabled
+	tokenSaveEnabled := spec.TokenSaveEnabled
+	agentMemoryEnabled := spec.AgentMemoryEnabled
+	ponytailEnabled := spec.PonytailEnabled
+	agentSkillsEnabled := spec.AgentSkillsEnabled
 	projectConfig := &config.Config{
-		OS:              spec.OS,
-		Agent:           config.AgentConfig{Tools: spec.AgentCLIs, DefaultTool: spec.DefaultTool, GraphifyModel: spec.GraphifyModel, AuthModes: authModes},
-		Workspace:       config.WorkspaceConfig{CPULimit: cpus, MemoryLimit: memory, DiskLimit: disk, Shell: shell, IsolatedDirs: spec.IsolatedDirs, SharedMounts: spec.SharedMounts},
-		Context:         config.ContextConfig{CavemanEnabled: &cavemanEnabled, GraphifyEnabled: &graphifyEnabled, CodeReviewGraphEnabled: &codeReviewGraphEnabled, CodebaseMemoryEnabled: &codebaseMemoryEnabled},
+		OS:        spec.OS,
+		Agent:     config.AgentConfig{Tools: spec.AgentCLIs, DefaultTool: spec.DefaultTool, GraphifyModel: spec.GraphifyModel, AuthModes: authModes},
+		Workspace: config.WorkspaceConfig{CPULimit: cpus, MemoryLimit: memory, DiskLimit: disk, Shell: shell, IsolatedDirs: spec.IsolatedDirs, SharedMounts: spec.SharedMounts},
+		Context: config.ContextConfig{
+			CavemanEnabled: &cavemanEnabled, GraphifyEnabled: &graphifyEnabled,
+			CodeReviewGraphEnabled: &codeReviewGraphEnabled, CodebaseMemoryEnabled: &codebaseMemoryEnabled,
+			OpenVikingEnabled: &openVikingEnabled, TokenSaveEnabled: &tokenSaveEnabled,
+			AgentMemoryEnabled: &agentMemoryEnabled, PonytailEnabled: &ponytailEnabled,
+			AgentSkillsEnabled: &agentSkillsEnabled,
+		},
 		Microsandbox:    config.MicrosandboxConfig{IdleTimeout: idleTimeout},
 		Network:         config.NetworkConfig{PublishPorts: spec.PublishPorts, AllowHostServices: oauthAllow},
 		Apps:            appEntries,
@@ -432,6 +479,26 @@ func writeProfile(root string, stacks []string) error {
 	}
 	return conffile.WriteAtomic(filepath.Join(root, ".ai-platform", "profile.yaml"),
 		profileFile{SchemaVersion: 1, Stacks: stacks})
+}
+
+// ReadStacks returns the software stacks a project was created with (profile.yaml —
+// repo-layout §12.1a), the one record of them outside the Dockerfile itself. Used by
+// `ai tools enable|disable` to regenerate the Dockerfile without silently dropping the
+// project's stacks. A missing profile.yaml (pre-dates it, or was deleted) returns an
+// empty list rather than an error.
+func ReadStacks(root string) ([]string, error) {
+	raw, err := os.ReadFile(filepath.Join(root, ".ai-platform", "profile.yaml"))
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	var profile profileFile
+	if err := yaml.Unmarshal(raw, &profile); err != nil {
+		return nil, fmt.Errorf("profile.yaml: %w", err)
+	}
+	return profile.Stacks, nil
 }
 
 // Entry is one row of `ai list` (CLI §3.3): name, os, the active agent CLIs, the

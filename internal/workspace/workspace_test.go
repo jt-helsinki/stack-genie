@@ -360,12 +360,15 @@ func TestAgentKeyIsOrphaned(test *testing.T) {
 }
 
 func TestRegisterCavemanRespectsToggle(test *testing.T) {
-	execedCaveman := func(argv [][]string) bool {
-		for _, args := range argv {
-			for _, token := range args {
-				if strings.Contains(token, "caveman") {
-					return true
-				}
+	// The install path STAGES the install script via Sandbox.WriteFile (then a tiny
+	// launcher exec backgrounds it); disabling now ALSO triggers a teardown exec
+	// (best-effort cleanup of the shared-pool skill files), but teardown runs inline
+	// with no staged file — so "was a script staged" distinguishes an actual install
+	// attempt from a (possibly no-op) teardown.
+	execedCaveman := func(sandbox *fakeSandbox) bool {
+		for path := range sandbox.written {
+			if strings.Contains(path, "caveman") {
+				return true
 			}
 		}
 		return false
@@ -390,7 +393,7 @@ func TestRegisterCavemanRespectsToggle(test *testing.T) {
 				Context: config.ContextConfig{CavemanEnabled: tc.cavemanCfg},
 			}
 			manager.registerCaveman("aip-app", projectConfig)
-			if got := execedCaveman(sandbox.allExecArgv); got != tc.wantInstall {
+			if got := execedCaveman(sandbox); got != tc.wantInstall {
 				test.Errorf("caveman install exec = %v, want %v (execs: %v)", got, tc.wantInstall, sandbox.allExecArgv)
 			}
 		})

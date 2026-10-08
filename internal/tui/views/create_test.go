@@ -223,8 +223,13 @@ func TestCreateWizardAssemblesSpec(test *testing.T) {
 	if wizard.step != stepTools {
 		test.Fatalf("after idle, step = %d, want stepTools", wizard.step)
 	}
-	// AI tools: defaults are caveman + graphify + code-review-graph. Graphify is
-	// selected, so the Graphify-model step is shown next.
+	// AI tools: none selected by default. Toggle caveman + graphify + code-review-graph
+	// on (indices 0, 1, 2) so the Graphify-model step is shown next.
+	wizard.tools.Toggle()
+	wizard.tools.Move(1)
+	wizard.tools.Toggle()
+	wizard.tools.Move(1)
+	wizard.tools.Toggle()
 	enter()
 	if wizard.step != stepModel {
 		test.Fatalf("after AI-tools, step = %d, want stepModel", wizard.step)
@@ -261,18 +266,18 @@ func TestCreateWizardAssemblesSpec(test *testing.T) {
 	if spec.GraphifyModel != "" {
 		test.Errorf("spec.GraphifyModel = %q, want empty (none selected)", spec.GraphifyModel)
 	}
-	// AI-tools defaults: caveman + graphify + code-review-graph on, codebase-memory off.
+	// AI tools toggled on above: caveman + graphify + code-review-graph; codebase-memory left off.
 	if !spec.CavemanEnabled {
-		test.Error("spec.CavemanEnabled = false, want true (default)")
+		test.Error("spec.CavemanEnabled = false, want true (toggled on)")
 	}
 	if !spec.GraphifyEnabled {
-		test.Error("spec.GraphifyEnabled = false, want true (default)")
+		test.Error("spec.GraphifyEnabled = false, want true (toggled on)")
 	}
 	if !spec.CodeReviewGraphEnabled {
-		test.Error("spec.CodeReviewGraphEnabled = false, want true (default)")
+		test.Error("spec.CodeReviewGraphEnabled = false, want true (toggled on)")
 	}
 	if spec.CodebaseMemoryEnabled {
-		test.Error("spec.CodebaseMemoryEnabled = true, want false (default off)")
+		test.Error("spec.CodebaseMemoryEnabled = true, want false (not toggled)")
 	}
 }
 
@@ -282,6 +287,8 @@ func TestCreateWizardAssemblesSpec(test *testing.T) {
 func TestCreateWizardModelStepIsAPicker(test *testing.T) {
 	wizard := NewCreate(test.TempDir(), 24, 18, func() []string { return []string{"bge-m3", "qwen3-coder"} })
 	wizard.SetSize(80, 24)
+	wizard.tools.Move(1) // graphify
+	wizard.tools.Toggle()
 	wizard.step = stepModel
 
 	if got := wizard.model.Value(); got != graphifyModelNone {
@@ -378,7 +385,9 @@ func TestCreateWizardAuthModeStep(test *testing.T) {
 	if wizard.step != stepTools {
 		test.Fatalf("expected the AI-tools step, got step %d", wizard.step)
 	}
-	enter() // AI tools → model step (graphify is a default-on tool)
+	wizard.tools.Move(1) // graphify
+	wizard.tools.Toggle()
+	enter() // AI tools → model step (graphify toggled on)
 	if wizard.step != stepModel {
 		test.Fatalf("expected the Graphify-model step, got step %d", wizard.step)
 	}
@@ -446,7 +455,9 @@ func TestCreateWizardPromptsAppPort(test *testing.T) {
 	if wizard.step != stepTools {
 		test.Fatalf("after idle, step = %d, want stepTools", wizard.step)
 	}
-	enter() // tools → model step (graphify is a default-on tool)
+	wizard.tools.Move(1) // graphify
+	wizard.tools.Toggle()
+	enter() // tools → model step (graphify toggled on)
 	if wizard.step != stepModel {
 		test.Fatalf("after AI tools, step = %d, want stepModel", wizard.step)
 	}

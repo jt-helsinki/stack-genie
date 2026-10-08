@@ -140,6 +140,10 @@ func OpenCodeConfig(gatewayURL, apiKey, defaultModel string, models []Model, kee
 	document := map[string]any{
 		"$schema":    "https://opencode.ai/config.json",
 		"permission": "allow",
+		// lsp enables opencode's built-in language-server integration (diagnostics,
+		// go-to-definition, etc. surfaced to the agent). Without it opencode logs "all
+		// LSPs are disabled" and the agent loses that context.
+		"lsp": true,
 		// Restrict opencode to ONLY the platform gateway provider, so the model
 		// picker is exactly the models LiteLLM serves — opencode never falls back to
 		// an auto-loaded built-in provider or the public models.dev catalog for model
@@ -391,10 +395,12 @@ const OmpMcpConfigGuest = projectDirGuest + "/.omp/mcp.json"
 var GraphifyMCPArgs = []string{"-m", "graphify.serve", "graphify-out/graph.json"}
 
 // EnabledMCPServers returns the MCP servers for the enabled AI tools, in a stable order.
-// codeReviewGraph/codebaseMemory run their own installed binaries; graphify runs from the
-// project venv (venvPython = <project>/.venv-msb/bin/python) where graphifyy[mcp] lives.
-// A blank venvPython omits graphify (venv path unknown).
-func EnabledMCPServers(codeReviewGraph, codebaseMemory, graphify bool, venvPython string) []MCPServer {
+// codeReviewGraph/codebaseMemory/tokensave run their own installed binaries; agentMemory
+// runs via npx (the agentmemory npm package is globally installed, but its MCP entrypoint
+// is published as the separate @agentmemory/mcp package, fetched on demand); graphify runs
+// from the project venv (venvPython = <project>/.venv-msb/bin/python) where graphifyy[mcp]
+// lives. A blank venvPython omits graphify (venv path unknown).
+func EnabledMCPServers(codeReviewGraph, codebaseMemory, graphify, tokensave, agentMemory bool, venvPython string) []MCPServer {
 	var servers []MCPServer
 	if codeReviewGraph {
 		servers = append(servers, MCPServer{Name: "code-review-graph", Command: "code-review-graph", Args: []string{"serve"}})
@@ -404,6 +410,12 @@ func EnabledMCPServers(codeReviewGraph, codebaseMemory, graphify bool, venvPytho
 	}
 	if graphify && venvPython != "" {
 		servers = append(servers, MCPServer{Name: "graphify", Command: venvPython, Args: append([]string{}, GraphifyMCPArgs...)})
+	}
+	if tokensave {
+		servers = append(servers, MCPServer{Name: "tokensave", Command: "tokensave", Args: []string{"serve"}})
+	}
+	if agentMemory {
+		servers = append(servers, MCPServer{Name: "agentmemory", Command: "npx", Args: []string{"-y", "@agentmemory/mcp"}})
 	}
 	return servers
 }

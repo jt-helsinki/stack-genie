@@ -1,0 +1,25 @@
+# tool: tokensave (github.com/aovestdipaperino/tokensave) — OPT-IN, appended to the
+# project Dockerfile ONLY when selected at `ai create` (context.tokensave_enabled). A
+# Rust code-graph MCP server (34 languages) — semantic queries instead of grepping/
+# reading files, cutting agent token use. No install.sh is published, so this snippet
+# resolves the latest GitHub release itself (arch-aware: x86_64/aarch64 linux tarball,
+# a flat archive containing just the `tokensave` binary) and drops it into the
+# workspace user's ~/.local/bin (already on PATH; no root). `tokensave init`/`install
+# --agent` run at workspace start (workspace.registerTokenSave), not here — no project
+# is mounted at build time.
+USER workspace
+RUN set -eu; \
+    case "$(uname -m)" in \
+      x86_64) asset_arch=x86_64 ;; \
+      aarch64|arm64) asset_arch=aarch64 ;; \
+      *) echo "tokensave: unsupported arch $(uname -m)" >&2; exit 1 ;; \
+    esac; \
+    url="$(curl -fsSL https://api.github.com/repos/aovestdipaperino/tokensave/releases/latest \
+      | grep -o "\"browser_download_url\": *\"[^\"]*-${asset_arch}-linux\.tar\.gz\"" \
+      | sed -E 's/.*"(https:[^"]+)"/\1/' | head -n1)"; \
+    [ -n "$url" ] || { echo "tokensave: could not resolve latest release asset for ${asset_arch}" >&2; exit 1; }; \
+    mkdir -p "$HOME/.local/bin" /tmp/tokensave-install; \
+    curl -fsSL "$url" -o /tmp/tokensave-install/tokensave.tar.gz; \
+    tar -xzf /tmp/tokensave-install/tokensave.tar.gz -C /tmp/tokensave-install; \
+    install -m 0755 /tmp/tokensave-install/tokensave "$HOME/.local/bin/tokensave"; \
+    rm -rf /tmp/tokensave-install

@@ -174,6 +174,10 @@ func (list *selectList) View() string {
 // multiSelectList is a space-toggle checkbox list over string options.
 type multiSelectList struct {
 	options []string
+	// labels renders in place of options when non-nil (same length/order as options) —
+	// e.g. the AI-tools step shows "graphify — knowledge-graph skill…" while Values()
+	// still returns the underlying key "graphify". nil means render options directly.
+	labels  []string
 	desc    string
 	checked map[string]bool
 	window  listWindow
@@ -182,11 +186,21 @@ type multiSelectList struct {
 }
 
 func newMultiSelectList(desc string, options, initial []string) *multiSelectList {
+	return newMultiSelectListWithLabels(desc, options, nil, initial)
+}
+
+// newMultiSelectListWithLabels is newMultiSelectList with a separate display label per
+// option (labels[i] shown for options[i]); a nil/mismatched-length labels falls back to
+// rendering options directly.
+func newMultiSelectListWithLabels(desc string, options, labels, initial []string) *multiSelectList {
+	if len(labels) != len(options) {
+		labels = nil
+	}
 	checked := make(map[string]bool, len(initial))
 	for _, value := range initial {
 		checked[value] = true
 	}
-	return &multiSelectList{desc: desc, options: options, checked: checked}
+	return &multiSelectList{desc: desc, options: options, labels: labels, checked: checked}
 }
 
 func (list *multiSelectList) SetSize(width, height int) {
@@ -202,7 +216,11 @@ func (list *multiSelectList) rebuild() {
 		if list.checked[option] {
 			box = "[x] "
 		}
-		lines[index] = ListLine{Text: padToWidth("  "+box+option, list.width), Selectable: true}
+		label := option
+		if list.labels != nil {
+			label = list.labels[index]
+		}
+		lines[index] = ListLine{Text: padToWidth("  "+box+label, list.width), Selectable: true}
 	}
 	height := list.height - 2
 	if height < 1 {

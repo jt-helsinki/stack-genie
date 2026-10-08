@@ -499,10 +499,11 @@ func (manager Manager) startInternal(project string, forceRebuild bool) (*state.
 				// build+create path below when the microVM was removed out-of-band
 				// (e.g. `msb rm`) despite a handle still being on record.
 				logStep("starting existing microVM")
-				if startErr := manager.Sandbox.Start(name); startErr == nil {
+				startErr := manager.Sandbox.Start(name)
+				if startErr == nil {
 					return manager.finishStart(name, project, root, projectConfig, gatewayHost, gatewayPort, gatewayURL)
 				}
-				logStep("existing microVM unavailable — rebuilding")
+				logStep("existing microVM unavailable (%s) — rebuilding", startErr)
 			}
 		}
 	}
@@ -662,6 +663,12 @@ func (manager Manager) finishStart(name, project, root string, projectConfig *co
 	manager.registerCodeReviewGraph(name, projectConfig)
 	manager.registerCodebaseMemory(name, projectConfig)
 	manager.registerOpenViking(name, projectConfig)
+	// Install the opt-in tokensave / agentmemory / ponytail tools, same once-guarded,
+	// detached, best-effort posture as the three above.
+	manager.registerTokenSave(name, projectConfig)
+	manager.registerAgentMemory(name, projectConfig)
+	manager.registerPonytail(name, projectConfig)
+	manager.registerAgentSkills(name, projectConfig)
 	// Install Hermes at runtime (detached) when selected — its uv venv must be built at the
 	// final ~/.hermes (=/persist) path, not baked at image build then symlink-migrated
 	// (which broke the venv). Once-guarded, best-effort — never fails the start.
@@ -780,6 +787,8 @@ func (manager Manager) registerAgentProviders(name, project, root string, projec
 		projectConfig.Context.CodeReviewGraphEnabledOrDefault(),
 		projectConfig.Context.CodebaseMemoryEnabledOrDefault(),
 		projectConfig.Context.GraphifyEnabledOrDefault(),
+		projectConfig.Context.TokenSaveEnabledOrDefault(),
+		projectConfig.Context.AgentMemoryEnabledOrDefault(),
 		workspaceWorkdir+"/.venv-msb/bin/python",
 	)
 	// opencode: written when selected — or when NO tools are configured at all, since
@@ -1100,9 +1109,15 @@ const (
 	codeReviewGraphLaunchTimeout = 30 * time.Second
 	// codeReviewGraphScriptGuest is where the once-guarded install script is staged in-VM.
 	codeReviewGraphScriptGuest = "/tmp/code-review-graph-install.sh"
+	// codeReviewGraphTeardownScriptGuest is where the teardown's surgical config-cleanup
+	// script (see teardownCodeReviewGraph) is staged in-VM.
+	codeReviewGraphTeardownScriptGuest = "/tmp/code-review-graph-teardown.py"
 	// graphifyMCPScriptGuest is where the detached graphify-MCP setup script (venv install
 	// of graphifyy[mcp] + offline graph build) is staged in-VM.
 	graphifyMCPScriptGuest = "/tmp/graphify-mcp-setup.sh"
+	// graphifyTeardownScriptGuest is where graphifyTeardownScript (the surgical AGENTS.md
+	// cleanup, binary-independent) is staged in-VM.
+	graphifyTeardownScriptGuest = "/tmp/graphify-teardown.py"
 )
 
 // codebaseMemoryInstallTimeout bounds the codebase-memory-mcp `install` exec. It is
@@ -1154,6 +1169,31 @@ var openVikingPluginFlag = map[string]string{
 // workspace start or wedge the single msb agent-relay. Once-guarded by a marker under
 // the persistent .ai-platform dir, touched ONLY on success, so a failed/killed run
 // simply retries on the next start. Best-effort — never fails the start.
+// teardownOpenViking removes OpenViking's running server + persisted data when the
+// tool is disabled (was previously installed — guarded by the SAME marker
+// registerOpenViking sets, removed here). Stops the server process (unqualified pkill
+// — unambiguous, exactly one such process, same pattern as omlx's stop) and deletes
+// /persist/openviking (the index + ovcli config — host-persisted, a rebuild alone
+// would not remove it). GAP: the claude-code/codex native plugin-marketplace
+// registrations have no confirmed non-interactive uninstall command, so those entries
+// are left in place (best-effort; harmless once the MCP server behind them is gone).
+// Best-effort, bounded blocking exec — never fails the start.
+func (manager Manager) teardownOpenViking(name string) {
+	pool := workspaceWorkdir + "/.ai-platform"
+	installMarker := pool + "/.openviking-installed"
+	// Not gated on the marker: a run that started the server/wrote config but failed a
+	// later step (e.g. the health-check race in registerOpenViking) never touches the
+	// marker, and a marker-gated teardown would then never clean it up. Every step below
+	// is idempotent, so always attempting it is safe.
+	script := "pkill -f openviking-server >/dev/null 2>&1; " +
+		"rm -rf /persist/openviking; " +
+		"rm -f " + installMarker
+	if err := manager.launchDetachedRetry(name, []string{"sh", "-lc", script}, false, openVikingLaunchTimeout); err != nil {
+		_, _ = fmt.Fprintln(os.Stderr, ui.Warn.Render("OpenViking teardown could not complete "+
+			"(it will retry on the next workspace start): "+err.Error()))
+	}
+}
+
 func (manager Manager) registerOpenViking(name string, projectConfig *config.Config) {
 	if projectConfig == nil {
 		return
@@ -1161,6 +1201,7 @@ func (manager Manager) registerOpenViking(name string, projectConfig *config.Con
 	// Honor the create-time choice (config.yaml context.openviking_enabled). It is
 	// OPT-IN: unset (nil) defaults to disabled, so it is a no-op unless explicitly chosen.
 	if !projectConfig.Context.OpenVikingEnabledOrDefault() {
+		manager.teardownOpenViking(name)
 		return
 	}
 	var registrations []string
@@ -1461,6 +1502,27 @@ var graphifyPlatformFlag = map[string]string{
 // runtime. Those files are DISTINCT from the platform's global agent configs under
 // ~/.config, so there is no clobber. Each install is config-only (no network) and
 // best-effort — a failure never fails the workspace start.
+// graphifyTeardownScript surgically strips the "## graphify" section Graphify's own
+// `graphify install --project` appends to the shared project AGENTS.md. `graphify
+// uninstall --project` (run by registerGraphify when the binary is present) is the
+// preferred path, but it requires the `graphify` binary on PATH — which a disable is
+// likely to have already removed by the time teardown runs (the image is rebuilt from
+// the NEW, graphify-less Dockerfile before this step executes on `ai restart`/recreate).
+// This fallback needs no binary: it removes the heading (Graphify's own fixed title,
+// case-sensitive) through the line before the next "## " heading or EOF, leaving any
+// other section (e.g. code-review-graph's, or the user's own) untouched.
+const graphifyTeardownScript = `import os, re
+
+agents_path = os.path.expanduser("~/project/AGENTS.md")
+if os.path.isfile(agents_path):
+    with open(agents_path) as handle:
+        content = handle.read()
+    stripped = re.sub(r"(?m)^## graphify\n.*?(?=\n## |\Z)", "", content, count=1, flags=re.S)
+    if stripped != content:
+        with open(agents_path, "w") as handle:
+            handle.write(stripped)
+`
+
 func (manager Manager) registerGraphify(name string, projectConfig *config.Config) {
 	if projectConfig == nil {
 		return
@@ -1518,11 +1580,49 @@ func (manager Manager) registerGraphify(name string, projectConfig *config.Confi
 				"if "+graphifyPresent+" && [ ! -f "+installMarker+" ]; then "+strings.Join(installs, " && ")+" && touch "+installMarker+"; fi")
 		}
 		clauses = append(clauses, "if "+graphifyPresent+" && "+gitPresent+" && "+isRepo+"; then graphify hook install; fi")
+	} else {
+		// Disabled (and was previously installed, marked by installMarker): run
+		// Graphify's OWN `uninstall` (a real command — it removes the skill file,
+		// AGENTS.md section, and per-CLI plugin/hook entries it wrote) for each
+		// previously-registered CLI, then drop the built graph and the marker so a
+		// later re-enable reinstalls cleanly instead of silently no-op'ing against a
+		// stale marker.
+		var uninstalls []string
+		for _, cli := range projectConfig.Agent.Tools {
+			platform, known := graphifyPlatformFlag[cli]
+			if !known {
+				continue
+			}
+			uninstall := "graphify uninstall --project"
+			if platform != "" {
+				uninstall += " --platform " + platform
+			}
+			uninstalls = append(uninstalls, uninstall)
+		}
+		if len(uninstalls) > 0 {
+			clauses = append(clauses,
+				"if "+graphifyPresent+" && [ -f "+installMarker+" ]; then "+strings.Join(uninstalls, "; ")+"; fi")
+		}
+		// Not gated on the marker: a partial/failed install can leave the AGENTS.md section
+		// written with the marker never touched, and `graphify-out`/the marker are idempotent
+		// no-ops to remove when absent.
+		clauses = append(clauses, "rm -rf "+workspaceWorkdir+"/graphify-out "+installMarker)
 	}
 	script := strings.Join(clauses, "; ")
 	ctx, cancel := context.WithTimeout(context.Background(), graphifyInstallTimeout)
 	defer cancel()
 	_, _ = manager.Sandbox.ExecContext(ctx, name, []string{"sh", "-lc", script})
+
+	// Binary-independent fallback for the AGENTS.md section: `graphify uninstall` above
+	// already handles it when the binary is present, but this runs regardless so a disable
+	// after the binary is already gone from a rebuilt image still cleans it up.
+	if !graphifyOn {
+		if err := manager.Sandbox.WriteFile(name, graphifyTeardownScriptGuest, []byte(graphifyTeardownScript)); err == nil {
+			teardownCtx, teardownCancel := context.WithTimeout(context.Background(), graphifyInstallTimeout)
+			defer teardownCancel()
+			_, _ = manager.Sandbox.ExecContext(teardownCtx, name, []string{"sh", "-lc", "python3 " + graphifyTeardownScriptGuest + " 2>/dev/null"})
+		}
+	}
 
 	// When Graphify is enabled, also set up its stdio MCP server (registered into the
 	// managed configs for codex/omp/hermes): install graphifyy[mcp] INTO the
@@ -1592,6 +1692,26 @@ var cavemanOnlyAgent = map[string]string{
 // succeeds under an egress policy that allows outbound (the `public` default); under
 // `deny` it is a no-op. ONCE-guarded by a marker under the persistent .ai-platform dir so
 // a restart neither re-runs it nor clobbers user edits. Best-effort — never fails start.
+// teardownCaveman removes Caveman's shared-pool skill/agent/command files when the
+// tool is disabled (was previously installed — guarded by the SAME marker
+// registerCaveman sets, removed here). GAP: Caveman ships no confirmed uninstall
+// command, so its CLI-NATIVE artifacts (claude-code hooks + statusline, the opencode
+// plugin file, the gemini extension) are NOT reverted here — only what the platform
+// itself mirrored into the shared pool is removed. Best-effort, bounded blocking exec
+// — never fails the start.
+func (manager Manager) teardownCaveman(name string) {
+	pool := workspaceWorkdir + "/.ai-platform"
+	installMarker := pool + "/.caveman-installed"
+	// Not gated on the marker — see teardownOpenViking for why: a partial/failed install
+	// never touches it, and the rm's below are idempotent no-ops when nothing was installed.
+	script := "rm -rf " + pool + "/skills/caveman " + pool + "/agents/caveman " + pool + "/prompts/caveman; " +
+		"rm -f " + installMarker
+	if err := manager.launchDetachedRetry(name, []string{"sh", "-lc", script}, false, cavemanLaunchTimeout); err != nil {
+		_, _ = fmt.Fprintln(os.Stderr, ui.Warn.Render("Caveman teardown could not complete "+
+			"(it will retry on the next workspace start): "+err.Error()))
+	}
+}
+
 func (manager Manager) registerCaveman(name string, projectConfig *config.Config) {
 	if projectConfig == nil {
 		return
@@ -1599,6 +1719,7 @@ func (manager Manager) registerCaveman(name string, projectConfig *config.Config
 	// Honor the create-time choice (config.yaml context.caveman_enabled). Unset
 	// defaults to enabled for pre-toggle projects; an explicit false skips it.
 	if !projectConfig.Context.CavemanEnabledOrDefault() {
+		manager.teardownCaveman(name)
 		return
 	}
 	// Explicitly-enabled (chosen at create) vs the nil back-compat default. We surface
@@ -1803,6 +1924,94 @@ var codeReviewGraphPlatformFlag = map[string]string{
 // dir, touched ONLY on success) so a failed/killed background run simply retries on the next
 // start. No API key is used: code-review-graph defaults to LOCAL embeddings, so it never
 // touches the gateway or a provider key. Best-effort — never fails the start.
+// codeReviewGraphTeardownScript is a surgical Python cleanup run by teardownCodeReviewGraph.
+// opencode's native `code-review-graph install --platform opencode` writes the MCP server
+// entry into BOTH project-root `opencode.jsonc` and `.opencode/opencode.jsonc` (opencode loads
+// and merges all of its standard config locations); it also appends a delimited section to the
+// shared project `AGENTS.md` (the same file Graphify writes its own "## graphify" section into).
+// Rather than deleting these files outright — opencode.jsonc is a general-purpose opencode
+// config location a user could independently have content in, and AGENTS.md is shared with
+// other installers — this surgically removes only code-review-graph's own key/section:
+//   - each opencode.jsonc: drop `.mcp["code-review-graph"]`; if `mcp` becomes empty drop it
+//     too; if the file is then empty/schema-only, delete it, else rewrite the trimmed JSON.
+//   - AGENTS.md: strip every `<!-- code-review-graph MCP tools -->...<!-- /code-review-graph
+//     MCP tools -->` block (the installer is not idempotent, so duplicates can accumulate).
+const codeReviewGraphTeardownScript = `import json, os, re
+
+project = os.path.expanduser("~/project")
+
+def strip_mcp_entry(path):
+    if not os.path.isfile(path):
+        return
+    try:
+        with open(path) as handle:
+            data = json.load(handle)
+    except (json.JSONDecodeError, OSError):
+        return
+    mcp = data.get("mcp")
+    if not isinstance(mcp, dict) or "code-review-graph" not in mcp:
+        return
+    del mcp["code-review-graph"]
+    if not mcp:
+        data.pop("mcp", None)
+    if not data or set(data.keys()) <= {"$schema"}:
+        os.remove(path)
+        return
+    with open(path, "w") as handle:
+        json.dump(data, handle, indent=2)
+        handle.write("\n")
+
+for relative in (os.path.join(project, "opencode.jsonc"), os.path.join(project, ".opencode", "opencode.jsonc")):
+    strip_mcp_entry(relative)
+
+agents_path = os.path.join(project, "AGENTS.md")
+if os.path.isfile(agents_path):
+    with open(agents_path) as handle:
+        content = handle.read()
+    stripped = content
+    # Fully-delimited blocks (the common case).
+    stripped = re.sub(
+        r"\n?<!-- code-review-graph MCP tools -->.*?<!-- /code-review-graph MCP tools -->\n?",
+        "\n", stripped, flags=re.S)
+    # An orphan block missing its opening comment (observed in the wild — some installer
+    # version/edit dropped it): fall back to heading-through-closing-comment.
+    stripped = re.sub(
+        r"\n?## MCP Tools: code-review-graph.*?<!-- /code-review-graph MCP tools -->\n?",
+        "\n", stripped, flags=re.S)
+    if stripped != content:
+        with open(agents_path, "w") as handle:
+            handle.write(stripped)
+`
+
+// teardownCodeReviewGraph removes code-review-graph's built visualization, the install
+// marker, and — via codeReviewGraphTeardownScript — the MCP entries it wrote into opencode's
+// config and the AGENTS.md section it appended, when the tool is disabled. Deliberately NOT
+// gated on the install marker: `install && build && visualize` can fail partway (leaving
+// `install`'s config writes on disk with the marker never touched), and a marker-gated
+// teardown would then never run — every step here is idempotent, so it is always safe to
+// attempt regardless of whether install fully completed. GAP: code-review-graph ships no
+// confirmed uninstall command, so the per-CLI MCP entries it wrote for claude-code/gemini
+// (`.mcp.json`, `.gemini/settings.json` — files that may also hold OTHER MCP servers or
+// settings) are NOT reverted here, to avoid clobbering unrelated entries; they go stale but
+// harmless once the `code-review-graph` binary is gone from a rebuilt image. Best-effort,
+// bounded blocking exec — never fails the start.
+func (manager Manager) teardownCodeReviewGraph(name string) {
+	pool := workspaceWorkdir + "/.ai-platform"
+	installMarker := pool + "/.code-review-graph-installed"
+	if err := manager.Sandbox.WriteFile(name, codeReviewGraphTeardownScriptGuest, []byte(codeReviewGraphTeardownScript)); err != nil {
+		_, _ = fmt.Fprintln(os.Stderr, ui.Warn.Render("code-review-graph teardown script could not be staged "+
+			"(it will retry on next workspace start): "+err.Error()))
+		return
+	}
+	script := "rm -rf " + workspaceWorkdir + "/.code-review-graph; " +
+		"python3 " + codeReviewGraphTeardownScriptGuest + " 2>/dev/null; " +
+		"rm -f " + installMarker
+	if err := manager.launchDetachedRetry(name, []string{"sh", "-lc", script}, false, codeReviewGraphLaunchTimeout); err != nil {
+		_, _ = fmt.Fprintln(os.Stderr, ui.Warn.Render("code-review-graph teardown could not complete "+
+			"(it will retry on the next workspace start): "+err.Error()))
+	}
+}
+
 func (manager Manager) registerCodeReviewGraph(name string, projectConfig *config.Config) {
 	if projectConfig == nil {
 		return
@@ -1810,6 +2019,7 @@ func (manager Manager) registerCodeReviewGraph(name string, projectConfig *confi
 	// Honor the create-time choice (config.yaml context.code_review_graph_enabled). It is
 	// OPT-IN: unset (nil) defaults to disabled, so it is a no-op unless explicitly chosen.
 	if !projectConfig.Context.CodeReviewGraphEnabledOrDefault() {
+		manager.teardownCodeReviewGraph(name)
 		return
 	}
 	installs := make([]string, 0, len(projectConfig.Agent.Tools))
@@ -1880,6 +2090,22 @@ func (manager Manager) registerCodeReviewGraph(name string, projectConfig *confi
 // launched ON DEMAND with `codebase-memory-mcp --ui=true --port=9749` (not auto-started —
 // nothing publishes :9749). ONCE-guarded by a marker under the persistent .ai-platform dir.
 // Best-effort — never fails the start.
+// teardownCodebaseMemory removes the install marker when the tool is disabled. GAP:
+// codebase-memory-mcp's install.sh has NO uninstall mode (confirmed: only --dir/
+// --clients/--skip-config/--help), so the per-CLI MCP entries it auto-detected and
+// wrote (claude-code/opencode/codex/gemini/hermes) CANNOT be cleanly reverted here —
+// they go stale but harmless once the `codebase-memory-mcp` binary is gone from a
+// rebuilt image. Best-effort, bounded blocking exec — never fails the start.
+func (manager Manager) teardownCodebaseMemory(name string) {
+	pool := workspaceWorkdir + "/.ai-platform"
+	installMarker := pool + "/.codebase-memory-installed"
+	script := "rm -f " + installMarker
+	if err := manager.launchDetachedRetry(name, []string{"sh", "-lc", script}, false, codebaseMemoryInstallTimeout); err != nil {
+		_, _ = fmt.Fprintln(os.Stderr, ui.Warn.Render("codebase-memory-mcp teardown could not complete "+
+			"(it will retry on the next workspace start): "+err.Error()))
+	}
+}
+
 func (manager Manager) registerCodebaseMemory(name string, projectConfig *config.Config) {
 	if projectConfig == nil {
 		return
@@ -1887,6 +2113,7 @@ func (manager Manager) registerCodebaseMemory(name string, projectConfig *config
 	// Honor the create-time choice (config.yaml context.codebase_memory_enabled). It is
 	// OPT-IN: unset (nil) defaults to disabled, so it is a no-op unless explicitly chosen.
 	if !projectConfig.Context.CodebaseMemoryEnabledOrDefault() {
+		manager.teardownCodebaseMemory(name)
 		return
 	}
 	pool := workspaceWorkdir + "/.ai-platform"
@@ -1903,6 +2130,396 @@ func (manager Manager) registerCodebaseMemory(name string, projectConfig *config
 	if err := manager.launchDetachedRetry(name, []string{"sh", "-lc", script}, false, codebaseMemoryInstallTimeout); err != nil {
 		_, _ = fmt.Fprintln(os.Stderr, ui.Warn.Render("codebase-memory-mcp registration could not "+
 			"complete (it will retry on the next workspace start): "+err.Error()))
+	}
+}
+
+const (
+	// tokenSaveLaunchTimeout bounds only the tiny launcher exec that setsid-backgrounds
+	// the real (possibly slow — several agents) install script; the script itself runs
+	// detached and is bounded by its own internal `timeout`.
+	tokenSaveLaunchTimeout = 30 * time.Second
+	// tokenSaveScriptGuest is where the once-guarded registration script is staged in-VM.
+	tokenSaveScriptGuest = "/tmp/tokensave-install.sh"
+)
+
+// tokenSaveAgentFlag maps an installed agent CLI to tokensave's own `install --agent`
+// value (https://github.com/aovestdipaperino/tokensave). codex, hermes, and omp are
+// deliberately NOT here: their configs are platform-rewritten wholesale each start
+// (codex's config.toml, omp's mcp.json), so a native tokensave install would be
+// clobbered on the next start — those three instead get tokensave's MCP server via the
+// managed-config injection (agentcfg.EnabledMCPServers), mirroring code-review-graph's
+// codeReviewGraphPlatformFlag precedent exactly (down to omp being injection-only).
+var tokenSaveAgentFlag = map[string]string{
+	"claude-code": "claude",
+	"opencode":    "opencode",
+	"gemini":      "gemini",
+}
+
+// registerTokenSave installs tokensave (https://github.com/aovestdipaperino/tokensave —
+// a code-graph MCP server for 34 languages: semantic queries instead of grepping/
+// reading files) at workspace start. The binary is baked into the image
+// (internal/templates/files/tools/tokensave/Dockerfile.snippet); this step builds the
+// project's semantic index (`tokensave init --no-git-hook` — `--no-git-hook` avoids
+// colliding with Graphify's own post-commit/post-checkout git hooks, which
+// registerGraphify already owns) and runs `tokensave install --agent <X> --local` for
+// each installed, natively-supported agent CLI (see tokenSaveAgentFlag; codex/hermes/omp
+// get it via MCP injection instead, already wired into agentcfg.EnabledMCPServers).
+// DETACHED (setsid): looping `install` across several CLIs can take a while and must
+// never block the workspace start. ONCE-guarded by a marker under the persistent
+// .ai-platform dir, touched only on success (a failure retries next start). No API key
+// is used — tokensave never touches the gateway or a provider key. Best-effort — never
+// fails the start.
+// teardownTokenSave removes tokensave's per-agent registrations + project-local index
+// when the tool is disabled (was previously installed — guarded by the SAME marker
+// registerTokenSave sets, removed here). Runs the real `tokensave uninstall --agent <X>
+// --local` for each previously-registered CLI (symmetric with the install side), each
+// best-effort (`|| true`) so one CLI's failure doesn't block the others, then always
+// deletes the project-local `.tokensave` index directory (host-persisted — a rebuild
+// alone would not remove it) and the marker. Best-effort, bounded blocking exec —
+// never fails the start.
+func (manager Manager) teardownTokenSave(name string, projectConfig *config.Config) {
+	if projectConfig == nil {
+		return
+	}
+	pool := workspaceWorkdir + "/.ai-platform"
+	installMarker := pool + "/.tokensave-installed"
+	var uninstalls []string
+	for _, cli := range projectConfig.Agent.Tools {
+		if agent, known := tokenSaveAgentFlag[cli]; known {
+			uninstalls = append(uninstalls, "tokensave uninstall --agent "+agent+" --local || true")
+		}
+	}
+	// Not gated on the marker — see teardownOpenViking for why.
+	script := "cd " + workspaceWorkdir + " 2>/dev/null || exit 0; " +
+		"command -v tokensave >/dev/null 2>&1 && { " + strings.Join(uninstalls, "; ") + "; } || true; " +
+		"rm -rf " + workspaceWorkdir + "/.tokensave; " +
+		"rm -f " + installMarker
+	if err := manager.launchDetachedRetry(name, []string{"bash", "-lc", script}, false, tokenSaveLaunchTimeout); err != nil {
+		_, _ = fmt.Fprintln(os.Stderr, ui.Warn.Render("tokensave teardown could not complete "+
+			"(it will retry on the next workspace start): "+err.Error()))
+	}
+}
+
+func (manager Manager) registerTokenSave(name string, projectConfig *config.Config) {
+	if projectConfig == nil {
+		return
+	}
+	if !projectConfig.Context.TokenSaveEnabledOrDefault() {
+		manager.teardownTokenSave(name, projectConfig)
+		return
+	}
+	installs := make([]string, 0, len(projectConfig.Agent.Tools))
+	for _, cli := range projectConfig.Agent.Tools {
+		if agent, known := tokenSaveAgentFlag[cli]; known {
+			installs = append(installs, "tokensave install --agent "+agent+" --local")
+		}
+	}
+	pool := workspaceWorkdir + "/.ai-platform"
+	installMarker := pool + "/.tokensave-installed"
+	inner := strings.Join(append([]string{"tokensave init --no-git-hook"}, installs...), " && ")
+	script := "#!/usr/bin/env bash\n" +
+		"cd " + workspaceWorkdir + " 2>/dev/null || exit 0\n" +
+		"mkdir -p " + pool + "\n" +
+		"[ -f " + installMarker + " ] && exit 0\n" +
+		"command -v tokensave >/dev/null 2>&1 || exit 0\n" +
+		"timeout --kill-after=30s 300s bash -c '" + inner + "' && touch " + installMarker + "\n"
+	if err := manager.Sandbox.WriteFile(name, tokenSaveScriptGuest, []byte(script)); err != nil {
+		_, _ = fmt.Fprintln(os.Stderr, ui.Warn.Render("tokensave install could not be staged "+
+			"(it will retry on the next workspace start): "+err.Error()))
+		return
+	}
+	logPath := pool + "/run/tokensave-install.log"
+	logStep("installing tokensave in the background (detached) → %s", logPath)
+	launch := fmt.Sprintf("mkdir -p %s && setsid bash %s </dev/null >%s 2>&1 & exit 0",
+		shellQuoteGuest(pool+"/run"), shellQuoteGuest(tokenSaveScriptGuest), shellQuoteGuest(logPath))
+	if err := manager.launchDetachedRetry(name, []string{"bash", "-lc", launch}, false, tokenSaveLaunchTimeout); err != nil {
+		_, _ = fmt.Fprintln(os.Stderr, ui.Warn.Render("tokensave install could not be launched "+
+			"(it will retry on the next workspace start): "+err.Error()))
+	}
+}
+
+const (
+	// agentMemoryLaunchTimeout bounds only the tiny launcher exec; the install script
+	// itself runs detached and is bounded by its own internal `timeout`.
+	agentMemoryLaunchTimeout = 30 * time.Second
+	// agentMemoryScriptGuest is where the once-guarded registration script is staged in-VM.
+	agentMemoryScriptGuest = "/tmp/agentmemory-install.sh"
+)
+
+// registerAgentMemory installs agentmemory (https://github.com/rohitg00/agentmemory —
+// persistent cross-session memory for agents) at workspace start. The npm package is
+// baked into the image (internal/templates/files/tools/agentmemory/Dockerfile.snippet);
+// this step runs claude-code's `agentmemory connect claude-code --with-hooks` and
+// gemini's `gemini mcp add agentmemory npx -y @agentmemory/mcp --scope user` for
+// whichever of those two CLIs are installed (both one-shot, idempotent). codex/hermes
+// get agentmemory via MCP injection instead (their configs are platform-rewritten
+// wholesale each start — already wired into agentcfg.EnabledMCPServers). opencode gets
+// NEITHER native nor injected agentmemory in this pass: its native integration needs a
+// nonstandard "mcp" JSON shape plus a copied plugin file that is too fragile to script
+// reliably here — a genuine gap, not an oversight (mirrors this codebase's documented
+// "X is NOT in graphifyPlatformFlag" gaps). DETACHED (setsid): `npx` may fetch
+// @agentmemory/mcp over the network on first run even though the package itself is
+// baked. ONCE-guarded by a marker under the persistent .ai-platform dir, touched only on
+// success. No API key is used for local operation. Best-effort — never fails the start.
+// teardownAgentMemory best-effort reverts claude-code/gemini's registrations when the
+// tool is disabled (was previously installed). `agentmemory disconnect`/`gemini mcp
+// remove` are UNCONFIRMED symmetric counterparts to the `connect`/`mcp add` install
+// commands (agentmemory's docs name connect/stop/mcp but no disconnect verb
+// explicitly) — attempted best-effort since a wrong/missing subcommand just fails
+// silently here. The marker is always removed regardless, so re-enabling reinstalls
+// cleanly. Best-effort, bounded blocking exec — never fails the start.
+func (manager Manager) teardownAgentMemory(name string, projectConfig *config.Config) {
+	if projectConfig == nil {
+		return
+	}
+	pool := workspaceWorkdir + "/.ai-platform"
+	installMarker := pool + "/.agentmemory-installed"
+	var uninstalls []string
+	if slices.Contains(projectConfig.Agent.Tools, "claude-code") {
+		uninstalls = append(uninstalls, "agentmemory disconnect claude-code || true")
+	}
+	if slices.Contains(projectConfig.Agent.Tools, "gemini") {
+		uninstalls = append(uninstalls, "gemini mcp remove agentmemory || true")
+	}
+	// Not gated on the marker — see teardownOpenViking for why.
+	script := "command -v agentmemory >/dev/null 2>&1 && { " + strings.Join(uninstalls, "; ") + "; } || true; " +
+		"rm -f " + installMarker
+	if err := manager.launchDetachedRetry(name, []string{"bash", "-lc", script}, false, agentMemoryLaunchTimeout); err != nil {
+		_, _ = fmt.Fprintln(os.Stderr, ui.Warn.Render("agentmemory teardown could not complete "+
+			"(it will retry on the next workspace start): "+err.Error()))
+	}
+}
+
+func (manager Manager) registerAgentMemory(name string, projectConfig *config.Config) {
+	if projectConfig == nil {
+		return
+	}
+	if !projectConfig.Context.AgentMemoryEnabledOrDefault() {
+		manager.teardownAgentMemory(name, projectConfig)
+		return
+	}
+	var installs []string
+	if slices.Contains(projectConfig.Agent.Tools, "claude-code") {
+		installs = append(installs, "agentmemory connect claude-code --with-hooks")
+	}
+	if slices.Contains(projectConfig.Agent.Tools, "gemini") {
+		installs = append(installs, "gemini mcp add agentmemory npx -y @agentmemory/mcp --scope user")
+	}
+	if len(installs) == 0 {
+		return
+	}
+	pool := workspaceWorkdir + "/.ai-platform"
+	installMarker := pool + "/.agentmemory-installed"
+	inner := strings.Join(installs, " && ")
+	script := "#!/usr/bin/env bash\n" +
+		"cd " + workspaceWorkdir + " 2>/dev/null || exit 0\n" +
+		"mkdir -p " + pool + "\n" +
+		"[ -f " + installMarker + " ] && exit 0\n" +
+		"command -v agentmemory >/dev/null 2>&1 || exit 0\n" +
+		"timeout --kill-after=30s 120s bash -c '" + inner + "' && touch " + installMarker + "\n"
+	if err := manager.Sandbox.WriteFile(name, agentMemoryScriptGuest, []byte(script)); err != nil {
+		_, _ = fmt.Fprintln(os.Stderr, ui.Warn.Render("agentmemory install could not be staged "+
+			"(it will retry on the next workspace start): "+err.Error()))
+		return
+	}
+	logPath := pool + "/run/agentmemory-install.log"
+	logStep("installing agentmemory in the background (detached) → %s", logPath)
+	launch := fmt.Sprintf("mkdir -p %s && setsid bash %s </dev/null >%s 2>&1 & exit 0",
+		shellQuoteGuest(pool+"/run"), shellQuoteGuest(agentMemoryScriptGuest), shellQuoteGuest(logPath))
+	if err := manager.launchDetachedRetry(name, []string{"bash", "-lc", launch}, false, agentMemoryLaunchTimeout); err != nil {
+		_, _ = fmt.Fprintln(os.Stderr, ui.Warn.Render("agentmemory install could not be launched "+
+			"(it will retry on the next workspace start): "+err.Error()))
+	}
+}
+
+const (
+	// ponytailLaunchTimeout bounds only the tiny launcher exec; the install script
+	// itself runs detached and is bounded by its own internal `timeout`.
+	ponytailLaunchTimeout = 30 * time.Second
+	// ponytailScriptGuest is where the once-guarded registration script is staged in-VM.
+	ponytailScriptGuest = "/tmp/ponytail-install.sh"
+)
+
+// registerPonytail installs the Ponytail skill
+// (https://github.com/DietrichGebert/ponytail — nags the agent to check YAGNI/stdlib/
+// existing code before writing anything new) at workspace start. It is NOT a binary or
+// MCP server: it ships as a markdown skill file, dropped into the shared skill pool
+// (<project>/.ai-platform/skills/ponytail/SKILL.md) so it reaches every skill-capable
+// CLI (opencode/claude-code/omp) through the SAME symlinks Graphify/Caveman use — this
+// MUST run after linkSharedResources so the pool directory/symlinks already exist (same
+// ordering requirement as registerGraphify/registerCaveman). Additionally, best-effort
+// runs `gemini extensions install` when gemini is installed — its own native
+// integration path per Ponytail's README, wrapped so a failure there never aborts the
+// marker touch. codex/hermes get no Ponytail integration: it ships no MCP server and no
+// viable non-interactive install path exists for either — a genuine gap, not an
+// oversight. DETACHED (setsid): fetches the skill file (and the gemini extension) over
+// the network. ONCE-guarded by a marker under the persistent .ai-platform dir, touched
+// only once the skill file itself is fetched successfully. Best-effort — never fails
+// the start.
+// teardownPonytail removes the shared-pool skill file when the tool is disabled (was
+// previously installed), so it stops being symlinked into every skill-capable CLI, and
+// best-effort reverts the gemini extension (`gemini extensions uninstall` — an
+// UNCONFIRMED symmetric counterpart to `extensions install`, attempted best-effort).
+// Best-effort, bounded blocking exec — never fails the start.
+func (manager Manager) teardownPonytail(name string, projectConfig *config.Config) {
+	if projectConfig == nil {
+		return
+	}
+	pool := workspaceWorkdir + "/.ai-platform"
+	installMarker := pool + "/.ponytail-installed"
+	inner := "rm -rf " + pool + "/skills/ponytail"
+	if slices.Contains(projectConfig.Agent.Tools, "gemini") {
+		inner += "; command -v gemini >/dev/null 2>&1 && gemini extensions uninstall ponytail || true"
+	}
+	// Not gated on the marker — see teardownOpenViking for why.
+	script := "bash -c '" + inner + "'; " +
+		"rm -f " + installMarker
+	if err := manager.launchDetachedRetry(name, []string{"bash", "-lc", script}, false, ponytailLaunchTimeout); err != nil {
+		_, _ = fmt.Fprintln(os.Stderr, ui.Warn.Render("ponytail teardown could not complete "+
+			"(it will retry on the next workspace start): "+err.Error()))
+	}
+}
+
+func (manager Manager) registerPonytail(name string, projectConfig *config.Config) {
+	if projectConfig == nil {
+		return
+	}
+	if !projectConfig.Context.PonytailEnabledOrDefault() {
+		manager.teardownPonytail(name, projectConfig)
+		return
+	}
+	pool := workspaceWorkdir + "/.ai-platform"
+	installMarker := pool + "/.ponytail-installed"
+	inner := "mkdir -p " + pool + "/skills/ponytail && " +
+		"curl -fsSL https://raw.githubusercontent.com/DietrichGebert/ponytail/main/skills/ponytail/SKILL.md " +
+		"-o " + pool + "/skills/ponytail/SKILL.md"
+	if slices.Contains(projectConfig.Agent.Tools, "gemini") {
+		inner += " && { command -v gemini >/dev/null 2>&1 && " +
+			"gemini extensions install https://github.com/DietrichGebert/ponytail || true; }"
+	}
+	script := "#!/usr/bin/env bash\n" +
+		"cd " + workspaceWorkdir + " 2>/dev/null || exit 0\n" +
+		"mkdir -p " + pool + "\n" +
+		"[ -f " + installMarker + " ] && exit 0\n" +
+		"timeout --kill-after=15s 60s bash -c '" + inner + "' && touch " + installMarker + "\n"
+	if err := manager.Sandbox.WriteFile(name, ponytailScriptGuest, []byte(script)); err != nil {
+		_, _ = fmt.Fprintln(os.Stderr, ui.Warn.Render("ponytail install could not be staged "+
+			"(it will retry on the next workspace start): "+err.Error()))
+		return
+	}
+	logPath := pool + "/run/ponytail-install.log"
+	logStep("installing ponytail in the background (detached) → %s", logPath)
+	launch := fmt.Sprintf("mkdir -p %s && setsid bash %s </dev/null >%s 2>&1 & exit 0",
+		shellQuoteGuest(pool+"/run"), shellQuoteGuest(ponytailScriptGuest), shellQuoteGuest(logPath))
+	if err := manager.launchDetachedRetry(name, []string{"bash", "-lc", launch}, false, ponytailLaunchTimeout); err != nil {
+		_, _ = fmt.Fprintln(os.Stderr, ui.Warn.Render("ponytail install could not be launched "+
+			"(it will retry on the next workspace start): "+err.Error()))
+	}
+}
+
+const (
+	// agentSkillsLaunchTimeout bounds only the tiny launcher exec; the install script
+	// itself runs detached and is bounded by its own internal `timeout`.
+	agentSkillsLaunchTimeout = 30 * time.Second
+	// agentSkillsScriptGuest is where the once-guarded registration script is staged in-VM.
+	agentSkillsScriptGuest = "/tmp/agent-skills-install.sh"
+	// agentSkillsCloneGuest is a scratch clone dir, removed after copying out of it.
+	agentSkillsCloneGuest = "/tmp/agent-skills-src"
+)
+
+// registerAgentSkills installs addyosmani/agent-skills (https://github.com/addyosmani/
+// agent-skills — a curated library of senior-engineer skills: spec-writing, TDD, code
+// review, security, shipping, etc.) at workspace start. Like Ponytail it ships no binary
+// or MCP server — it is plain markdown — so it is mirrored wholesale into the shared
+// resource pool (`git clone --depth 1`, then the repo's `skills/`, `agents/`, and
+// `references/` directories are copied into the pool's `skills/`, `agents/`, and a new
+// `references/` dir; `references/` is not a shared-pool "kind" any CLI symlinks, but
+// skills' own relative links to it — e.g. `../../references/x.md` — resolve correctly
+// because the sibling layout is preserved) so every skill-capable CLI (opencode/
+// claude-code/omp) picks it up through the SAME symlinks Graphify/Caveman/Ponytail use —
+// this MUST run after linkSharedResources, same ordering requirement as those. The exact
+// set of copied names is recorded in two manifest files so teardown can remove precisely
+// what was added without guessing or nuking the whole pool. Additionally, best-effort
+// runs `gemini skills install <repo> --path skills` when gemini is installed — its own
+// native integration path per the project's README, wrapped so a failure there never
+// aborts the marker touch. codex/hermes get no agent-skills integration: codex has no
+// file-based skill mechanism this platform uses elsewhere, and hermes has no native path
+// either — a genuine gap, not an oversight. DETACHED (setsid): clones a ~1-2MB repo over
+// the network. ONCE-guarded by a marker under the persistent .ai-platform dir, touched
+// only once the clone+copy succeeds. Best-effort — never fails the start.
+// teardownAgentSkills removes exactly the shared-pool files recorded in the install's
+// manifests (so it stops being symlinked into every skill-capable CLI) plus the
+// `references/` dir, when the tool is disabled. Also best-effort attempts `gemini skills
+// uninstall` — an UNCONFIRMED symmetric counterpart to `skills install`, attempted
+// best-effort. Best-effort, bounded blocking exec — never fails the start.
+func (manager Manager) teardownAgentSkills(name string, projectConfig *config.Config) {
+	if projectConfig == nil {
+		return
+	}
+	pool := workspaceWorkdir + "/.ai-platform"
+	installMarker := pool + "/.agent-skills-installed"
+	skillsManifest := pool + "/.agent-skills-manifest-skills"
+	agentsManifest := pool + "/.agent-skills-manifest-agents"
+	inner := "if [ -f " + skillsManifest + " ]; then while IFS= read -r entry; do " +
+		"[ -n \"$entry\" ] && rm -rf " + pool + "/skills/\"$entry\"; done < " + skillsManifest + "; fi; " +
+		"if [ -f " + agentsManifest + " ]; then while IFS= read -r entry; do " +
+		"[ -n \"$entry\" ] && rm -f " + pool + "/agents/\"$entry\"; done < " + agentsManifest + "; fi; " +
+		"rm -rf " + pool + "/references"
+	if slices.Contains(projectConfig.Agent.Tools, "gemini") {
+		inner += "; command -v gemini >/dev/null 2>&1 && gemini skills uninstall agent-skills || true"
+	}
+	// Not gated on the marker — see teardownOpenViking for why.
+	script := "bash -c '" + inner + "'; " +
+		"rm -f " + installMarker + " " + skillsManifest + " " + agentsManifest
+	if err := manager.launchDetachedRetry(name, []string{"bash", "-lc", script}, false, agentSkillsLaunchTimeout); err != nil {
+		_, _ = fmt.Fprintln(os.Stderr, ui.Warn.Render("agent-skills teardown could not complete "+
+			"(it will retry on the next workspace start): "+err.Error()))
+	}
+}
+
+func (manager Manager) registerAgentSkills(name string, projectConfig *config.Config) {
+	if projectConfig == nil {
+		return
+	}
+	if !projectConfig.Context.AgentSkillsEnabledOrDefault() {
+		manager.teardownAgentSkills(name, projectConfig)
+		return
+	}
+	pool := workspaceWorkdir + "/.ai-platform"
+	installMarker := pool + "/.agent-skills-installed"
+	skillsManifest := pool + "/.agent-skills-manifest-skills"
+	agentsManifest := pool + "/.agent-skills-manifest-agents"
+	inner := "rm -rf " + agentSkillsCloneGuest + " && " +
+		"git clone --depth 1 https://github.com/addyosmani/agent-skills.git " + agentSkillsCloneGuest + " && " +
+		"mkdir -p " + pool + "/skills " + pool + "/agents " + pool + "/references && " +
+		"cp -a " + agentSkillsCloneGuest + "/skills/. " + pool + "/skills/ && " +
+		"cp -a " + agentSkillsCloneGuest + "/agents/. " + pool + "/agents/ && " +
+		"cp -a " + agentSkillsCloneGuest + "/references/. " + pool + "/references/ && " +
+		"(cd " + agentSkillsCloneGuest + "/skills && ls -1) > " + skillsManifest + " && " +
+		"(cd " + agentSkillsCloneGuest + "/agents && ls -1) > " + agentsManifest + " && " +
+		"rm -rf " + agentSkillsCloneGuest
+	if slices.Contains(projectConfig.Agent.Tools, "gemini") {
+		inner += " && { command -v gemini >/dev/null 2>&1 && " +
+			"gemini skills install https://github.com/addyosmani/agent-skills.git --path skills || true; }"
+	}
+	script := "#!/usr/bin/env bash\n" +
+		"cd " + workspaceWorkdir + " 2>/dev/null || exit 0\n" +
+		"mkdir -p " + pool + "\n" +
+		"[ -f " + installMarker + " ] && exit 0\n" +
+		"command -v git >/dev/null 2>&1 || exit 0\n" +
+		"timeout --kill-after=15s 120s bash -c '" + inner + "' && touch " + installMarker + "\n"
+	if err := manager.Sandbox.WriteFile(name, agentSkillsScriptGuest, []byte(script)); err != nil {
+		_, _ = fmt.Fprintln(os.Stderr, ui.Warn.Render("agent-skills install could not be staged "+
+			"(it will retry on the next workspace start): "+err.Error()))
+		return
+	}
+	logPath := pool + "/run/agent-skills-install.log"
+	logStep("installing agent-skills in the background (detached) → %s", logPath)
+	launch := fmt.Sprintf("mkdir -p %s && setsid bash %s </dev/null >%s 2>&1 & exit 0",
+		shellQuoteGuest(pool+"/run"), shellQuoteGuest(agentSkillsScriptGuest), shellQuoteGuest(logPath))
+	if err := manager.launchDetachedRetry(name, []string{"bash", "-lc", launch}, false, agentSkillsLaunchTimeout); err != nil {
+		_, _ = fmt.Fprintln(os.Stderr, ui.Warn.Render("agent-skills install could not be launched "+
+			"(it will retry on the next workspace start): "+err.Error()))
 	}
 }
 

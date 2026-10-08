@@ -10,18 +10,14 @@ import (
 // --codebase-memory bool flags. These assert the flag → per-tool spec bool mapping.
 
 func TestSpecFromFlagsDefaultsAITools(test *testing.T) {
-	// --tools unset → the default set (caveman + graphify + code-review-graph on,
-	// codebase-memory off).
+	// --tools unset → no AI tools selected.
 	spec, err := specFromFlags(createFlags{name: "demo", osKey: "ubuntu", defaultName: "demo"})
 	if err != nil {
 		test.Fatalf("specFromFlags: %v", err)
 	}
-	if !spec.CavemanEnabled || !spec.GraphifyEnabled || !spec.CodeReviewGraphEnabled {
-		test.Errorf("default tools: caveman/graphify/code-review-graph must be on, got %+v",
-			[]bool{spec.CavemanEnabled, spec.GraphifyEnabled, spec.CodeReviewGraphEnabled})
-	}
-	if spec.CodebaseMemoryEnabled {
-		test.Error("default tools: codebase-memory-mcp must be off")
+	if spec.CavemanEnabled || spec.GraphifyEnabled || spec.CodeReviewGraphEnabled || spec.CodebaseMemoryEnabled {
+		test.Errorf("default tools: none must be on, got %+v",
+			[]bool{spec.CavemanEnabled, spec.GraphifyEnabled, spec.CodeReviewGraphEnabled, spec.CodebaseMemoryEnabled})
 	}
 }
 

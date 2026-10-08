@@ -146,7 +146,7 @@ func NewCreate(startDir string, hostGB, usableGB int, omlxModels func() []string
 		lastAutoName: defaultName,
 		osList:       newSelectListWithLabels("Base operating system.", create.SupportedOSes(), osDisplayLabels(), "debian-trixie"),
 		shell:        newSelectList("Default interactive shell for workspace sessions.", create.SupportedShells(), "bash"),
-		tools:        newMultiSelectList("AI tools installed at workspace start — space to toggle. caveman, graphify + code-review-graph are the defaults.", create.SupportedAITools(), create.DefaultAITools()),
+		tools:        newMultiSelectListWithLabels("AI tools installed at workspace start — space to toggle. None selected by default.", create.SupportedAITools(), aiToolLabels(), create.DefaultAITools()),
 		agentApps:    newMultiSelectList("Agent CLIs (opencode is the default) and opt-in in-VM AI apps — space to toggle. Apps are the last rows.", combinedAgentAppOptions(), []string{"opencode"}),
 		defaultTool:  newSelectList("The agent CLI launched by default.", []string{"opencode"}, "opencode"),
 		stacks:       newMultiSelectList("Extra software stacks (Python, Node, uv + Graphify are installed by default).", create.SupportedStacks(), nil),
@@ -387,6 +387,18 @@ func osDisplayLabels() []string {
 	return labels
 }
 
+// aiToolLabels renders each AI tool as "<tool> — <description>" (create.AIToolDescription)
+// so the picker doubles as documentation — same convention the CLI wizard and
+// `ai tools list` use.
+func aiToolLabels() []string {
+	keys := create.SupportedAITools()
+	labels := make([]string, len(keys))
+	for index, key := range keys {
+		labels[index] = key + " — " + create.AIToolDescription(key)
+	}
+	return labels
+}
+
 func graphifyModelOptions(omlxModels func() []string) []string {
 	var models []string
 	if omlxModels != nil {
@@ -589,7 +601,7 @@ func (view *Create) finish() tea.Cmd {
 	}
 	ports, _ := parsePortsForSpec(view.ports.Value())
 	isolatedDirs := splitTrimmedComma(view.isolatedDirs.Value())
-	caveman, graphify, codeReviewGraph, codebaseMemory, openViking := create.SplitAITools(view.tools.Values())
+	caveman, graphify, codeReviewGraph, codebaseMemory, openViking, tokenSave, agentMemory, ponytail, agentSkills := create.SplitAITools(view.tools.Values())
 	graphifyModel := ""
 	if graphify {
 		if value := view.model.Value(); value != graphifyModelNone {
@@ -636,6 +648,10 @@ func (view *Create) finish() tea.Cmd {
 		CodeReviewGraphEnabled: codeReviewGraph,
 		CodebaseMemoryEnabled:  codebaseMemory,
 		OpenVikingEnabled:      openViking,
+		TokenSaveEnabled:       tokenSave,
+		AgentMemoryEnabled:     agentMemory,
+		PonytailEnabled:        ponytail,
+		AgentSkillsEnabled:     agentSkills,
 		Root:                   view.location.dir,
 	}
 	return func() tea.Msg { return CreateConfirmedMsg{Spec: spec} }
