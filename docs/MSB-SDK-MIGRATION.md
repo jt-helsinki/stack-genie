@@ -262,10 +262,13 @@ the host arch natively; the cross-compile matrix runs `make release` per platfor
 Done and committed (each green on `make check`): Phase 1 (SDK backend), Phase 2
 (single reused relay handle in the TUI), log streaming, **default flipped to SDK**,
 the Sandbox Logs / Metrics tabs + Sandbox Configuration block, the `ai create`
-overhaul (host-capped CPU/memory + ports + location, SDK-created), the **cgo build
-rework** (`make release` native; `CGO_ENABLED=1` exported — P4 done), the AGENTS.md +
-spec reconcile, and review fixes (default resource host-cap, memory-parse overflow
-guard, live config status, the post-close `Recv` re-arm panic).
+resource-handling overhaul (host-capped CPU/memory + ports + location — `ai create`
+itself stays scaffold-only, validating/capping resources and writing `.ai-platform/`
+with no microVM touched; the SDK-based microVM creation happens later, at
+`ai start`/`ai restart` via `Sandbox.Create`), the **cgo build rework** (`make
+release` native; `CGO_ENABLED=1` exported — P4 done), the AGENTS.md + spec reconcile,
+and review fixes (default resource host-cap, memory-parse overflow guard, live
+config status, the post-close `Recv` re-arm panic).
 
 Outstanding (need a live host/TTY or are upstream):
 - **Interactive Attach (P3)** and the **full create→start→apps flow** — validate by

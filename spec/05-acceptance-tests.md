@@ -716,9 +716,11 @@ ai create ov-test --os debian-trixie --tools caveman,graphify,code-review-graph,
 ### Expected Result
 
 * OpenViking (https://docs.openviking.ai — "the context database for AI
-  agents") is one of the five `--tools`/AI-tools-wizard selections; unlike
-  Caveman/Graphify it is OPT-IN — `DefaultAITools()` leaves it (and
-  codebase-memory-mcp) **off**, so it is installed only when explicitly named
+  agents") is one of the eight `--tools`/AI-tools-wizard selections
+  (`SupportedAITools()`: caveman, graphify, code-review-graph,
+  codebase-memory-mcp, openviking, tokensave, agentmemory, ponytail); like
+  every other AI tool it is OPT-IN — `DefaultAITools()` returns an empty set
+  (no tool is pre-selected), so it is installed only when explicitly named
 * `<project>/.ai-platform/config.yaml` records `context.openviking_enabled:
   true`, and the project Dockerfile carries the conditional `tools/openviking`
   snippet (installs `openviking-server`, the `ov` CLI, and the OpenCode plugin)
@@ -735,10 +737,11 @@ ai create ov-test --os debian-trixie --tools caveman,graphify,code-review-graph,
   failing it
 
 **Automated coverage:** `TestSplitAITools`/`TestDefaultAITools`
-(`internal/create/options_test.go`) cover the `--tools` selection plumbing
-(OpenViking off by default). No platform acceptance test exercises the in-VM
-server start / plugin-registration behavior — like Caveman (§8.1), it is an
-external, upstream-owned toolkit whose runtime behavior is not measured here.
+(`internal/create/options_test.go`) cover the `--tools` selection plumbing (no
+AI tool, OpenViking included, is selected by default). No platform acceptance
+test exercises the in-VM server start / plugin-registration behavior — like
+Caveman (§8.1), it is an external, upstream-owned toolkit whose runtime
+behavior is not measured here.
 
 ---
 

@@ -566,8 +566,9 @@ ai setup
 ai create --name my-project   # interactive wizard: OS; agent CLIs (opencode default,
                                # omp/claude-code/codex/gemini/hermes also selectable);
                                # software stacks (go/rust/java/maven/deno); AI tools
-                               # (caveman/graphify/code-review-graph/codebase-memory-mcp);
-                               # optional in-VM apps
+                               # (caveman/graphify/code-review-graph/codebase-memory-mcp/
+                               # openviking/tokensave/agentmemory/ponytail — all opt-in,
+                               # see create.SupportedAITools()); optional in-VM apps
 ```
 
 produces (for the OS + options the user selected):
@@ -578,7 +579,7 @@ produces (for the OS + options the user selected):
 * Headroom input compression
 * Caveman output compression
 * selected software stacks installed alongside the default Python/uv/Node tooling
-* selected AI tools (caveman/graphify/code-review-graph/codebase-memory-mcp) installed/registered
+* selected AI tools (caveman/graphify/code-review-graph/codebase-memory-mcp/openviking/tokensave/agentmemory/ponytail — see `create.SupportedAITools()`) installed/registered
 * selected in-VM apps + agent-CLI dashboards reachable via `ai apps`
 * Dockerfile-defined environment + overlay persistence
 * reproducible environments

@@ -229,12 +229,16 @@ tools/graphify/Dockerfile.snippet
 tools/code-review-graph/Dockerfile.snippet
 tools/codebase-memory-mcp/Dockerfile.snippet
 tools/openviking/Dockerfile.snippet
+tools/tokensave/Dockerfile.snippet
+tools/agentmemory/Dockerfile.snippet
+# caveman + ponytail are deliberately NOT here — both runtime-only (own install/
+# registration step at workspace start; project.DockerfileTools excludes them)
 ```
 
 Rules:
 
 * the OS template **seeds** a new workspace's `.ai-platform/Dockerfile` at
-  `ai create`; the selected **stack snippets** (wizard step 5) are
+  `ai create`; the selected **stack snippets** (wizard step 6) are
   composed into it after the base tooling
 * every OS base template installs, beyond the base tooling, a **rootful in-VM OCI
   container runtime** (containerd + nerdctl + runc + CNI + buildkit, from the
@@ -291,9 +295,12 @@ Rules:
 There is no platform MCP registry. Most MCP servers are configured and run by the
 in-workspace agent (architecture §12). The one exception: for the agent configs the
 platform rewrites whole on every start (codex/hermes/omp), it INJECTS the
-enabled AI tools' MCP servers (code-review-graph/codebase-memory-mcp/graphify) directly
-into that render so the rewrite doesn't clobber them (architecture §12); the CLIs whose
-configs the platform does not own get those same servers via the tools' own native install.
+enabled AI tools' MCP servers (code-review-graph/codebase-memory-mcp/graphify/tokensave/
+agentmemory — `agentcfg.EnabledMCPServers`) directly into that render so the rewrite
+doesn't clobber them (architecture §12); the CLIs whose configs the platform does not own
+get those same servers via the tools' own native install (tokensave additionally
+registers natively with claude-code/opencode/gemini, agentmemory with claude-code/gemini,
+at workspace start — mirroring graphify/code-review-graph's own-install precedent).
 (Any provider credentials those MCP servers need are resolved through the
 keys-in-LiteLLM credential store, not stored on platform disk — architecture
 §17.)
@@ -454,7 +461,7 @@ the agent into this source tree — the platform does not manage them.
                        #   (architecture §9)
   .gitignore           # ignores run/
   run/                 # gitignored — host-local runtime state
-    workspaces/<workspace-id>.json   # (§12.2)
+    workspaces/<workspace-id>.yaml   # (§12.2)
 
 # per-CLI provider configs — KEYLESS, written at workspace start (§12.1c, architecture §15):
 .opencode/opencode.json         # opencode provider config; apiKey "{env:AIP_GATEWAY_KEY}"
@@ -493,10 +500,11 @@ existing file is deep-merged so the managed block wins while the user's other ke
 **Injected MCP servers.** The three configs the platform rewrites whole on every start —
 codex's `.codex/config.toml`, hermes's global `~/.hermes/config.yaml`, and omp's
 `.omp/mcp.json` — carry the enabled AI tools'
-(code-review-graph/codebase-memory-mcp/graphify) MCP servers, injected into the render so
-the start-time rewrite can't clobber them (architecture §12). CLIs whose configs the
-platform does not own (claude-code/opencode/gemini) get those servers via the
-tools' own native `install --platform`/auto-detect.
+(code-review-graph/codebase-memory-mcp/graphify/tokensave/agentmemory) MCP servers,
+injected into the render so the start-time rewrite can't clobber them (architecture §12).
+CLIs whose configs the platform does not own (claude-code/opencode/gemini) get those
+servers via the tools' own native `install --platform`/auto-detect (tokensave on
+claude-code/opencode/gemini, agentmemory on claude-code/gemini).
 
 The scoped virtual key lives **only** in the in-VM agent env file
 `~/.config/aip/agent-env.sh` (off host disk), sourced by every shell + agent session
@@ -506,9 +514,12 @@ are deep-merged, never clobbered).
 **Shared resource pool.** `<project>/.ai-platform/{agents,skills,prompts,projects}` holds
 ONE copy of the project's agents / skills / prompts. At workspace start (BEFORE Graphify
 registration) each pool is symlinked (relative) into each **installed** CLI's real
-per-project dir: `skills` → `.opencode/skills`/`.claude/skills`; `agents` →
-`.opencode/agents`/`.claude/agents`; `prompts` →
-`.opencode/commands`/`.claude/commands`/`.gemini/commands`. Kinds a CLI has
+per-project dir (`sharedResourceLinks` in `internal/workspace/workspace.go`): `skills` →
+`.opencode/skills`/`.claude/skills`/`.omp/skills`/`.hermes/skills`; `agents` →
+`.opencode/agents`/`.claude/agents`/`.omp/agents` (omp reads its own native
+`.omp/agents` and deliberately skips `.claude/agents`, so it needs its own symlink);
+`prompts` → `.opencode/commands`/`.claude/commands`/`.gemini/commands`/`.omp/commands`
+(hermes derives commands from skills instead, so it gets no prompts link). Kinds a CLI has
 no concept for are skipped (codex/gemini have no skills/agents). Caveman
 (`skills/caveman/SKILL.md`) is thereby shared to every skills-capable client. *(hardware
 bring-up: the symlinks resolving in-VM, and each CLI honouring its project config, are not
@@ -660,7 +671,7 @@ are:
 
 * `config/projects.yaml` (global) → `ai create` / `delete` (index)
 * `<project>/.ai-platform/project.yaml` → `ai create`
-* `<project>/.ai-platform/run/workspaces/*.json` → `ai start`/`stop`/…
+* `<project>/.ai-platform/run/workspaces/*.yaml` → `ai start`/`stop`/…
 
 ---
 
@@ -731,7 +742,7 @@ config files. Unknown fields must be rejected. All timestamps are RFC 3339 UTC.
 ## 12.1a `<project>/.ai-platform/profile.yaml` (tracked)
 
 The project's language/tool profile — the **software stacks** installed in the
-environment (architecture §25), chosen in the create wizard (CLI §3.1 step 5):
+environment (architecture §25), chosen in the create wizard (CLI §3.1 step 6):
 
 ```yaml id="sc1a"
 schema_version: 1
@@ -743,18 +754,20 @@ stacks: [go, rust]   # any subset of the available stack snippets (§1.5)
   Dockerfile directly is also fine (the Dockerfile is the source of truth for the
   build, §25)
 
-## 12.2 `<project>/.ai-platform/run/workspaces/<workspace-id>.json` (gitignored)
+## 12.2 `<project>/.ai-platform/run/workspaces/<workspace-id>.yaml` (gitignored)
 
-```json id="sc2"
-{
-  "schema_version": 1,
-  "id": "aip-my-app",
-  "project": "my-app",
-  "microsandbox_id": "msb-9f3c...",
-  "status": "started",
-  "created": "2026-06-18T10:00:05Z",
-  "last_started": "2026-06-18T10:00:05Z"
-}
+Written atomically by `internal/state.Store.SaveWorkspace` (YAML-encoded, like every
+other platform-generated state file — see the Conventions note in AGENTS.md: everything
+the platform writes is `.yaml`, never `.json`):
+
+```yaml id="sc2"
+schema_version: 1
+id: aip-my-app
+project: my-app
+microsandbox_id: msb-9f3c...
+status: started
+created: "2026-06-18T10:00:05Z"
+last_started: "2026-06-18T10:00:05Z"
 ```
 
 * `status`: `created` | `started` | `stopped` | `archived` | `destroyed`
@@ -790,16 +803,32 @@ context:
   strategy: balanced       # Headroom input compression: conservative | balanced | aggressive
                            # (mapped to Headroom per-request knobs keep_turns/output_buffer_tokens)
   caveman_level: full      # Caveman output compression: lite | full | ultra | wenyan
-  caveman_enabled: true    # AI tools — ONE `--tools` multi-select at create (§1.5); the create-default
-                           # selection is caveman + graphify + code-review-graph ON, codebase-memory + openviking OFF
-  graphify_enabled: true   # install Graphify (conditional Dockerfile snippet, §1.5) + register it per CLI at start
-  code_review_graph_enabled: true    # install code-review-graph (code-review-graph.com) + register it
+  caveman_enabled: false   # AI tools — ONE `--tools` multi-select at create (§1.5), 8 keys total; ALL
+                           # opt-in with NO create-default selection (create.DefaultAITools() returns
+                           # nil) — a vanilla `ai create` writes every context.*_enabled key false. A
+                           # nil (never-written) value is the only case that still defaults true, for
+                           # caveman/graphify, to preserve pre-toggle projects' original auto-install
+                           # behavior (CavemanEnabledOrDefault/GraphifyEnabledOrDefault); every other
+                           # key defaults false when unset.
+  graphify_enabled: false  # install Graphify (conditional Dockerfile snippet, §1.5) + register it per CLI at start
+  code_review_graph_enabled: false   # OPT-IN: install code-review-graph (code-review-graph.com) + register it
                                      # as an MCP server with each installed agent CLI at start
   codebase_memory_enabled: false     # OPT-IN: install codebase-memory-mcp (DeusData/codebase-memory-mcp) +
                                      # register it as an MCP server with each installed agent CLI at start
   openviking_enabled: false          # OPT-IN: install OpenViking (docs.openviking.ai, the context database
                                      # for AI agents; conditional Dockerfile snippet, §1.5) + register it with
                                      # each supported installed agent CLI at start
+  tokensave_enabled: false           # OPT-IN: install tokensave (github.com/aovestdipaperino/tokensave, a
+                                     # 34-language code-graph MCP server; conditional Dockerfile snippet,
+                                     # §1.5) + register it natively with claude-code/opencode/gemini and via
+                                     # MCP injection with codex/hermes/omp at start
+  agentmemory_enabled: false         # OPT-IN: install agentmemory (github.com/rohitg00/agentmemory,
+                                     # persistent cross-session memory; conditional Dockerfile snippet,
+                                     # §1.5) + register it natively with claude-code/gemini and via MCP
+                                     # injection with codex/hermes/omp at start
+  ponytail_enabled: false            # OPT-IN: install the Ponytail skill (github.com/DietrichGebert/ponytail,
+                                     # nags the agent to check YAGNI/stdlib/existing code first) at start;
+                                     # runtime-only — no Dockerfile snippet (§1.5)
 workspace:
   cpu_limit: 4             # microVM resource limits wired into `msb create --cpus/--memory`
   memory_limit: 8          # memory in GB (a plain number; a 512M/4G suffix still works); empty falls back to the microVM default (4G)

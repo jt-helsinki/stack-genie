@@ -492,7 +492,8 @@ one command:
   option** — Node.js and the latest **Python 3** + **uv** (Astral's Python
   package/tool manager) are baked into every OS base image by default.
   **Graphify** (`graphifyy`, the knowledge-graph CLI skill) is NO LONGER baked into the
-  base — it is a selectable **AI tool** (`--tools graphify`, default on) installed via a
+  base — it is a selectable **AI tool** (`--tools graphify`, opt-in like every other
+  AI tool — none is selected by default) installed via a
   CONDITIONAL `tools/graphify/` Dockerfile snippet (`uv tool install "graphifyy[…extras]"`
   with all optional extras except the region/DB/niche-specific
   chinese/azure/bedrock/falkordb/neo4j/leiden/dm/pascal) only when selected; when selected,
@@ -567,9 +568,10 @@ one command:
   `microsandbox.idle_timeout`.
 * `--tools <list>` — the per-project **AI tools** to install, a comma-separated
   multi-select (like `--agents`) chosen from `caveman`, `graphify`, `code-review-graph`,
-  `codebase-memory-mcp`, `openviking`. Default (flag omitted): `caveman,graphify,code-review-graph`;
-  `--tools=""` selects none. An unknown value exits `2`. Each maps to a
-  `context.<tool>_enabled` bool. The tools:
+  `codebase-memory-mcp`, `openviking`, `tokensave`, `agentmemory`, `ponytail`.
+  Default (flag omitted): **none** — every AI tool is opt-in and must be named
+  explicitly; `--tools=""` behaves the same as omitting the flag. An unknown value
+  exits `2`. Each maps to a `context.<tool>_enabled` bool. The tools:
   * `caveman` — the Caveman output-compression toolkit, installed at workspace start.
   * `graphify` — the Graphify knowledge-graph toolkit; baked into the image via a
     CONDITIONAL `tools/graphify/` Dockerfile snippet (no longer in the OS base) and
@@ -597,9 +599,31 @@ one command:
     shared memory-plugin installer with `--harness opencode`/`pi`; gemini has no
     OpenViking integration and hermes has no non-interactive registration path, so both
     are skipped. The server runs locally on loopback `:1933` as an unauthenticated
-    "dev mode" instance, with its index persisted under `/persist/openviking`. Unlike
-    the other three tools, `openviking` is **opt-in** — it is not part of the default
-    set and must be named explicitly in `--tools`/the wizard.
+    "dev mode" instance, with its index persisted under `/persist/openviking`.
+  * `tokensave` — install tokensave (`github.com/aovestdipaperino/tokensave`, a
+    code-graph MCP server for 34 languages — semantic queries instead of
+    grepping/reading files); the binary is baked into the image via a conditional
+    snippet, and at workspace start this builds the project's semantic index
+    (`tokensave init --no-git-hook`) and runs `tokensave install --agent <X> --local`
+    for each natively-supported agent CLI; codex/hermes/omp get it via MCP
+    injection instead. No API key is used — it never touches the gateway.
+  * `agentmemory` — install agentmemory (`github.com/rohitg00/agentmemory`,
+    persistent cross-session memory for agents) via a conditional snippet (npm
+    package baked into the image); at workspace start this runs claude-code's
+    `agentmemory connect claude-code --with-hooks` and gemini's
+    `gemini mcp add agentmemory npx -y @agentmemory/mcp --scope user` for whichever
+    of those two CLIs are installed; codex/hermes get it via MCP injection instead.
+  * `ponytail` — install the Ponytail skill (`github.com/DietrichGebert/ponytail` —
+    nags the agent to check YAGNI/stdlib/existing code before writing anything new).
+    It is NOT a binary or MCP server: it ships as a markdown skill file dropped into
+    the shared skill pool, reaching every skill-capable CLI (opencode/claude-code/omp)
+    through the same symlinks Graphify/Caveman use; gemini additionally gets its own
+    native `gemini extensions install`. codex/hermes have no viable integration path
+    and are skipped. Like caveman, it has no Dockerfile snippet — it is installed
+    entirely at workspace start.
+
+  Every AI tool above is **opt-in** — none is part of a default set, and each must
+  be named explicitly in `--tools`/checked in the wizard.
 
 On a terminal (with `--json` off) the wizard **always** runs, **pre-seeded** with
 any flags you passed — flags set the defaults rather than bypassing the UI. Under
@@ -661,13 +685,26 @@ Steps, in order:
    every workspace start (`applyShellChoice`): the managed agent-env/alias block
    is appended to both `~/.bashrc` and `~/.zshrc`, and choosing `zsh` `chsh`es
    the workspace user's login shell to zsh.
-3. **Agent CLIs** — **multi-select checkboxes**; `OpenCode` pre-checked
-   (installed by default); choose any subset of `OpenCode`, `Omp`,
-   `Claude Code`, `Codex`, `Gemini`, `Hermes` (at least one). All connect to
-   models through LiteLLM.
+3. **Agent CLIs & AI apps** — **ONE combined multi-select checkbox screen** (not
+   two separate steps): agent CLIs are listed first, then the opt-in in-VM AI
+   apps, and the selection is split back into the two sets afterward
+   (`create.SplitAgentsAndApps`) — selection order never matters. `OpenCode`
+   pre-checked (installed by default); choose any subset of `OpenCode`, `Omp`,
+   `Claude Code`, `Codex`, `Gemini`, `Hermes` (at least one agent CLI is
+   required) plus any subset of the apps (`Open WebUI`, none pre-checked — apps
+   are opt-in). All agent CLIs connect to models through LiteLLM. Pre-seeded
+   from `--agents`/`--apps`.
 4. **Default agent CLI** — single-select from the CLIs chosen in step 3; default
    `OpenCode` (recorded as `agent.default_tool`).
-5. **Software stacks** — **multi-select checkboxes**; choose the language/tool
+5. **Per-agent auth mode** *(one single-select screen per OAuth-capable CLI
+   selected in step 3 — `claude-code`/`codex`/`gemini` — shown only for the ones
+   actually chosen; skipped entirely if none of the three was selected)* —
+   `api-key` (default — routes through the gateway with the scoped virtual key,
+   so the tool firewall + secret masking apply) or `oauth` (the CLI's own
+   subscription login, bypassing the gateway and its guardrails). Pre-seeded
+   from `--auth-mode`; `OpenCode`/`Omp`/`Hermes` are always gateway/api-key and
+   never shown this step.
+6. **Software stacks** — **multi-select checkboxes**; choose the language/tool
    stacks to install into the environment (`Go`, `Rust`, `Java`, `Maven`,
    `Deno` — the list is extensible, §25). **Neither Python nor Node is a stack** —
    Node.js, Python 3 and uv are baked into every base by default (Graphify is now a
@@ -675,15 +712,6 @@ Steps, in order:
    None pre-checked (a project
    may need nothing beyond the base image). Selected stacks are installed into the
    generated `.ai-platform/Dockerfile` and recorded in `profile.yaml`.
-6. **AI apps** — **multi-select checkboxes**; choose the opt-in in-VM AI
-   applications to install into the workspace (`Open WebUI`).
-   **None pre-checked** (apps are opt-in). Pre-seeded from `--apps`. For EACH
-   selected app the wizard then **prompts for the HOST port** to expose its web UI
-   on (a text input per app, seeded with a suggested free port — the app's familiar
-   container port when free, else auto-allocated; `--app-port <app>=<port>`
-   pre-seeds it, blank auto-assigns). Each selected app is recorded in
-   `config.yaml`'s `apps:` block with its port; the containers run inside the
-   microVM and are managed later via `ai apps` (§4.5c).
 7. **Resources & ports** — text inputs for **vCPUs** (`--cpus`, default 4,
    host-capped), **memory in GB** (`--memory`, a plain number, default 8,
    host-capped), **disk in GB** (`--disk`, a plain number, default 16 — the
@@ -695,8 +723,9 @@ Steps, in order:
 8. **Idle timeout** — text input for the Microsandbox idle timeout (`--idle-timeout`,
    default 24h).
 9. **AI tools** — **multi-select checkboxes** (like the agent-CLI list, not a screen
-   each): `caveman`, `graphify`, `code-review-graph`, `codebase-memory-mcp`, `openviking`.
-   Pre-checked with the default set (`caveman,graphify,code-review-graph`); pre-seeded
+   each): `caveman`, `graphify`, `code-review-graph`, `codebase-memory-mcp`, `openviking`,
+   `tokensave`, `agentmemory`, `ponytail`.
+   **None pre-checked** — every AI tool is opt-in; pre-seeded
    from `--tools`. Each is recorded as a `context.<tool>_enabled` bool.
 10. **Graphify model** *(shown only when `graphify` is selected in step 9)* — an
    **optional SELECT** built from omlx's live `GET /v1/models`: a
@@ -709,6 +738,16 @@ Steps, in order:
    at create time regardless of what is picked. The value is stored as `agent.graphify_model` and routed through
    the gateway as `omlx/<name>`. Also settable non-interactively via
    `--graphify-model`.
+11. **Per-app / per-dashboard host port** *(dynamic — built after step 10: one
+   text input per app selected in step 3, plus one per selected
+   dashboard-capable agent CLI, currently only `hermes`)* — for EACH selected
+   app/dashboard the wizard **prompts for the HOST port** to expose its web UI
+   on, seeded with a suggested free port (the app's familiar container port —
+   Open WebUI 8080 — when free, else auto-allocated; a dashboard CLI's own
+   default, e.g. hermes 9119). `--app-port <app-or-cli>=<port>` pre-seeds it;
+   blank auto-assigns. Each selected app is recorded in `config.yaml`'s `apps:`
+   block with its port (`agent_dashboards:` for a dashboard CLI); the containers
+   run inside the microVM and are managed later via `ai apps` (§4.5c).
 
 There is no separate confirm step — completing the last group (Enter) creates
 the project; **Abort** at any point cancels.
@@ -725,7 +764,7 @@ Behavior (on completion):
 
 * uses the current directory as the project root (no git is run)
 * **writes `<project>/.ai-platform/Dockerfile`** by seeding it from the selected
-  OS template and adding the selected software stacks (step 5) and agent CLIs
+  OS template and adding the selected software stacks (step 6) and agent CLIs
   (step 3) (architecture §25, §12); from then on the project owns that Dockerfile.
   Before composing, create **refreshes the on-disk templates**
   (`~/.ai-platform/templates`) from the running binary's embedded copies — composition
@@ -736,7 +775,7 @@ Behavior (on completion):
   `<project>/.ai-platform/skills/caveman/` (§9); in Slice 1 no context-optimization
   skill is seeded
 * writes `project.yaml`, `config.yaml` (including `agent.tools`,
-  `agent.default_tool`, and an `apps:` block for any in-VM apps chosen in step 6),
+  `agent.default_tool`, and an `apps:` block for any in-VM apps chosen in step 3),
   `profile.yaml`, and a `.gitignore` that ignores `run/`
 * records the project in the global index (`config/projects.yaml`)
 
@@ -942,8 +981,9 @@ ai exec [<name>] -- <command> [args...]
 
 Behavior:
 
-* runs `<command>` inside the workspace via Microsandbox and
-  streams stdout/stderr
+* runs `<command>` inside the workspace via Microsandbox and **captures**
+  stdout/stderr into the result — the output is **not** streamed live to the
+  host terminal; it is returned once the inner command completes
 * everything after `--` is passed verbatim to the workspace (no shell expansion
   on the host)
 * used by acceptance tests to probe the workspace filesystem/environment
@@ -953,15 +993,18 @@ Exit semantics — **platform failure is distinct from inner-command failure**:
 * **platform/exec failure** (workspace not running, Microsandbox error, command not
   found in workspace): the `ai` process exits non-zero per §18 (e.g. `4` for a
   runtime failure) and, with `--json`, `ok=false` with the error.
-* **inner-command ran**: the `ai` process exits `0` and reports the inner
-  command's exit status separately:
+* **inner-command ran**: the `ai` process always exits `0`, **both with and
+  without `--json`** — the inner command's exit status is reported separately,
+  never propagated as the `ai` process's own exit code:
   * with `--json`: `ok=true`, and `data.exit_code` / `data.stdout` /
     `data.stderr` carry the inner result (so a non-zero inner exit does **not**
     make `ai` exit non-zero)
-  * without `--json`: `ai` propagates the inner command's exit code as its own
-    (conventional shell behavior)
+  * without `--json`: there is no dedicated human renderer for this result, so
+    it falls back to a raw structured dump of `{exit_code, stdout, stderr}`
+    rather than printing `stdout`/`stderr` as plain text
 * tests that assert on the inner result MUST read `data.exit_code` (with
-  `--json`), not the `ai` process exit code
+  `--json`), not the `ai` process exit code — the `ai` process exit code never
+  reflects it, regardless of `--json`
 
 ---
 
@@ -1256,15 +1299,59 @@ relative (isolated) one.
 
 The mount set is applied at microVM create/recreate (`msb`, like the published
 port set), so `add`/`remove` **require a restart to take effect** — after
-persisting the config change, the command restarts a currently-running workspace
-**unconditionally, with no confirmation prompt** (`applyWorkspaceRestart`, shared
-with `ai resize` §4.3b); a stopped workspace is left stopped and the change simply
-applies on its next `ai start`. The TUI **Mounts** sub-tab (§14.4) behaves
-differently — it only flashes a hint to restart (`ai restart`) and does not
-restart automatically; it drives the same config edits inline.
+persisting the config change, the command applies this **immediately and
+unconditionally, with no confirmation prompt** (`applyWorkspaceRestart`, shared
+with `ai resize` §4.3b): a currently-**running** workspace is restarted in place;
+a currently-**stopped** workspace is rebuilt right now (a full `Restart`) and then
+re-stopped, rather than being left for "the next `ai start`" — a plain `ai start`
+on a stopped workspace takes the cheap re-Start path (§4.2) and does **not**
+rebuild, so deferring the change to it would silently never apply. The TUI
+**Mounts** sub-tab (§14.4) behaves differently — it only flashes a hint to restart
+(`ai restart`) and does not restart automatically; it drives the same config edits
+inline.
 
 Exit codes (§18): unknown action / bad `--host` usage / validation failure → `2`;
 config read/write failures → `4`.
+
+---
+
+## 4.5e AI Tools (`ai tools`)
+
+```bash
+ai tools list                        [<name>]
+ai tools enable  <tool>              [<name>]
+ai tools disable <tool>              [<name>]
+```
+
+`ai tools` inspects and toggles a project's per-project **AI tools** (§3.1's
+`--tools`) after `ai create` time, without re-running the wizard. `<tool>` is one
+of `caveman`, `graphify`, `code-review-graph`, `codebase-memory-mcp`, `openviking`,
+`tokensave`, `agentmemory`, `ponytail` (`create.SupportedAITools()`); an unknown
+tool exits `2`. The optional trailing `[<name>]` resolves the workspace exactly
+like every other project-scoped verb (explicit name → `--project` → cwd).
+
+* **`list`** — prints a TOOL / ENABLED / DESCRIPTION table: every supported tool,
+  its current `context.<tool>_enabled` state for this project, and its one-line
+  description (the same text shown next to each tool in the create wizard).
+  Envelope command `tools.list`; `--json` carries `{project, tools: [{name,
+  enabled, description}]}`.
+* **`enable <tool>`** / **`disable <tool>`** — flips that tool's
+  `context.<tool>_enabled` bool in `config.yaml` and, for a tool with a
+  build-time Dockerfile snippet (every tool except `caveman`/`ponytail`, which
+  are runtime-only), **regenerates the project's `.ai-platform/Dockerfile`**
+  (`envimage.Compose`/`Write`) so a later rebuild stays in sync with the new
+  setting. Because this can be an **image-level** change, it then **offers a
+  restart** exactly like `ai context strategy`/`ai network` (`offerWorkspaceRestart`,
+  §9.2/§10.4): on a TTY against a **running** workspace it prompts (default no) to
+  restart now; against a **stopped** workspace it rebuilds immediately (then
+  re-stops) rather than deferring to the next `ai start`, which would take the
+  cheap non-rebuilding path and never pick up the change; under `--json`/no-TTY it
+  takes no action beyond writing the config and Dockerfile — the change is picked
+  up only by a subsequent `ai restart`. Envelope commands `tools.enable` /
+  `tools.disable`; `--json` carries `{project, tool, action}`.
+
+Exit codes (§18): unknown action / unknown tool / invalid project → `2`; config or
+Dockerfile read/write failure → `4`.
 
 ---
 
@@ -1420,14 +1507,14 @@ cloud-key sync: a model already registered under an unchanged name is left ALONE
 model is added, and only one that disappeared from omlx's list is deleted. Use it
 after adding/removing/renaming a model through omlx's admin panel, without needing
 a full `ai services restart omlx`.
-This is the **same** rebuild that already runs automatically at `ai setup` and at
+This is the **same** sync that already runs automatically at `ai setup` and at
 `ai services start|restart omlx` (§10.2); this command just triggers it
 standalone, so there is no separate step needed after a full setup/restart. The TUI
 mirror is the `m` key in the omlx Service Detail pane (shown/offered only for that
 service). It
 takes no arguments. The `--json` envelope carries `data.added` / `data.deleted`
-(the model names re-registered / deleted by this rebuild — every currently-served
-model appears in BOTH lists unless it disappeared or is newly appeared); when omlx
+(the model names newly registered / no-longer-reported by this diff — an unchanged
+model appears in **neither** list); when omlx
 currently serves no models the human output reports "omlx currently serves no
 models — nothing to rebuild" rather than an empty diff. A gateway/omlx failure exits
 `4`.
@@ -1460,11 +1547,15 @@ ai context strategy [project] [conservative|balanced|aggressive]
 Both positionals are **optional**: the project resolves like every project-scoped
 command (§17), and on a terminal omitting the value **presents a select menu**
 (pre-seeded with the current/given strategy); under `--json` / no TTY the value
-must be passed. On a terminal, after the change is applied to a **running**
+must be passed. On a terminal, after the change is applied: against a **running**
 workspace you are offered (default no) to restart it now so the baked-in
-Headroom knobs pick up the new strategy immediately; declining (or a stopped
-workspace, or `--json`/no-TTY) leaves the change to apply on the next
-`ai start`/`ai restart`. The strategy is kept per project (default `balanced`). Headroom runs
+Headroom knobs pick up the new strategy immediately — declining leaves the change
+to apply only on a future `ai restart` (**not** a plain `ai start`, which takes
+the cheap non-rebuilding path and never picks it up); against a **stopped**
+workspace there is no prompt — it is rebuilt immediately (then left stopped),
+since deferring would silently never apply the change either. Under
+`--json`/no-TTY the command does nothing beyond writing the config; the change
+is picked up only by a subsequent `ai restart`. The strategy is kept per project (default `balanced`). Headroom runs
 as a shared **host** container (`aip-headroom`, internal-only on `:8787`) that
 LiteLLM invokes in-process as a `pre_call` compression guardrail (it is no longer
 an nginx proxy); the strategy maps to the per-request compression knobs
@@ -1736,12 +1827,17 @@ value must be passed as an argument.
   present), `log` prints a clear note and exits `0`; a genuine runtime failure
   reading the log exits `4`.
 * invalid mode / port → exit `2`.
-* after `egress`/`allow`/`disallow`/`publish`/`unpublish` apply their change, a
-  terminal run against a **running** workspace is offered (default no) to restart
-  it now so the new policy is re-applied to the microVM immediately (the policy is
-  only rendered into Microsandbox net-rules at create); declining, a stopped
-  workspace, or `--json`/no-TTY leaves it to apply on the next
-  `ai start`/`ai restart`.
+* after `egress`/`allow`/`disallow`/`publish`/`unpublish` apply their change
+  (the policy is only rendered into Microsandbox net-rules at create), a terminal
+  run against a **running** workspace is offered (default no) to restart it now
+  so the new policy is re-applied to the microVM immediately — declining leaves
+  the change to apply only on a future `ai restart` (**not** a plain `ai start`,
+  which takes the cheap non-rebuilding path and never picks it up); a terminal
+  run against a **stopped** workspace is NOT deferred — it is rebuilt
+  immediately (then left stopped), with no prompt, because deferring would
+  silently never apply the change. Under `--json`/no-TTY the command does
+  nothing beyond writing the config; the change is picked up only by a
+  subsequent `ai restart`.
 
 Human-readable output by default; `--json` emits the standard §19 envelope.
 
@@ -1948,8 +2044,11 @@ number keys `1`-`9`. There is **no `:` command palette** — `q`/`ctrl+c` quits 
 
 * **Services** — a **two-level drill-down** mirroring the Workspaces hub. It opens
   on the *list* (live service-tier + container status: SERVICE / MODE / STATE /
-  HEALTH / ADDRESS); `e` enables/disables an **optional** service from the list
-  (toggling on its current state; core services are always on), `r` refreshes, and
+  HEALTH / ADDRESS, auto-polled every 2s so STATE stays live — there is no manual
+  refresh key); `e` enables/disables an **optional** service from the list
+  (toggling on its current state; core services are always on), `r` **restarts the
+  highlighted service in place** (the list's own auto-poll picks up the result, so
+  no separate refresh is needed), `a` **restarts ALL services**, and
   `enter`/`d` **drills into a per-service DETAIL** (`esc` backs out to the list).
   The detail shows a fixed **summary** (name / mode / state / health / address /
   console) on top with the **live container log embedded beneath it** — the SAME
@@ -1983,11 +2082,21 @@ number keys `1`-`9`. There is **no `:` command palette** — `q`/`ctrl+c` quits 
   "workspace already exists" note; a leading `~` expands to home; the entered path
   is validated by the create rules — a path that IS or is NESTED INSIDE an existing
   workspace is rejected — and a non-existent path is created with intermediate
-  folders), then **text inputs** (name / cpus / memory / ports / idle timeout),
-  **`listWindow` single/multi-selects** (OS / agent CLIs / default agent CLI /
-  stacks / apps), and a **Graphify model** SELECT populated from omlx's live model
-  list (mirroring the CLI wizard's step 10, §3.1) — a "none" option always first.
-  On confirm it runs `create.Execute` off the event loop and refreshes the hub.
+  folders). From there the wizard walks the **same steps as the CLI wizard**
+  (§3.1) using native `ai ui` widgets instead of `huh` prompts: name, OS,
+  default interactive **shell** (bash/zsh), a **combined agent-CLIs + in-VM-apps**
+  multi-select on ONE screen (not two separate selects), default agent CLI,
+  stacks, vCPUs, memory, **disk** (GB, writable-rootfs size, separate from
+  memory), ports, **isolated dirs** (guest-relative subdirs excluded from the
+  host bind mount), idle timeout, the unified **AI tools** multi-select
+  (caveman/graphify/code-review-graph/codebase-memory-mcp/openviking/tokensave/
+  agentmemory/ponytail — none pre-checked, all opt-in, mirroring §3.1 step 9),
+  a **Graphify model** SELECT populated from omlx's live model list (a "none"
+  option always first), then two **dynamic** phases: one host-port text input
+  per selected in-VM app/dashboard-capable agent CLI, and one auth-mode select
+  per selected OAuth-capable agent CLI (claude-code/codex/gemini). `listWindow`
+  is used for single/multi-selects; plain text inputs cover the rest. On confirm
+  it runs `create.Execute` off the event loop and refreshes the hub.
   Opening a project drops
   INTO it, revealing a **sub-tab bar** for that project (the project name + the
   sub-tabs below). `tab`/`←→` cycle the sub-tabs; the focused sub-view's pane is
@@ -2032,7 +2141,9 @@ number keys `1`-`9`. There is **no `:` command palette** — `q`/`ctrl+c` quits 
     (CPU / memory / disk / net / uptime), updated ~2s, over the single reused relay
     handle.
   * **Network** — egress mode + allow-list + published ports, managed inline:
-    `m` cycles the mode, `a` allow · `d` disallow a destination, `p` publish · `u`
+    `i` is a quick internet on/off toggle (flips egress mode between `public`
+    and `deny` and restarts the workspace to apply it), `m` cycles through all
+    the modes, `a` allow · `d` disallow a destination, `p` publish · `u`
     unpublish a port (the value is typed at an inline prompt). CLI mirror:
     `ai network egress`/`allow`/`disallow`/`publish`/`unpublish`.
   * **Context** — Headroom strategy + Caveman level; `s`/`c` cycle them.
@@ -2048,7 +2159,9 @@ number keys `1`-`9`. There is **no `:` command palette** — `q`/`ctrl+c` quits 
     <name>` / `ai shell <name>`, restoring on exit) — NOT an embedded emulator — so
     keys, native text selection, and in-place output all work. CLI mirror: `ai shell`
     / `ai attach` / `ai agent` / `ai sessions` (+ `ai sessions kill`).
-  * **Apps** — the in-VM AI apps (install/start/stop/restart/remove).
+  * **Apps** — the in-VM AI apps: `a` add/enable · `x` remove/disable (add and
+    remove double as enable/disable for an already-installed app) · `u` update ·
+    `s` start · `t` stop · `R` restart · `r` refresh the list.
 
   The **workspace log** lives in the **Logs** sub-tab (above): a READ-ONLY
   (no command input), scrollable, selectable view of the microVM's captured output,
@@ -2077,8 +2190,9 @@ number keys `1`-`9`. There is **no `:` command palette** — `q`/`ctrl+c` quits 
   cloud providers — local `omlx/<id>` models are EXCLUDED. There is no local-model
   tab: local-model management is gone from this CLI/TUI entirely — omlx (the sole
   local-inference runtime) manages its own models through its own admin panel
-  (`ai services console omlx`, §10.2), and `ai models refresh` (§8.3) rebuilds the
-  gateway's `omlx/*` registrations on demand (a full delete+re-add, not a diff). `enter` opens the catalog metadata in a describe pane; `t` tests a
+  (`ai services console omlx`, §10.2), and `ai models refresh` (§8.3) resyncs the
+  gateway's `omlx/*` registrations on demand (a pure add/delete diff against
+  omlx's live model list — an unchanged model is left alone). `enter` opens the catalog metadata in a describe pane; `t` tests a
   **registered** model
   (round-trips it through the gateway; the catalog-driven system has no default
   model); `r` re-fetches the catalog + resyncs the gateway. Provider keys are added
@@ -2115,7 +2229,8 @@ terminal** via `tea.ExecProcess` (the TUI suspends, then restores on exit) so ke
 native text selection, and in-place output all work. The in-VM behavior of
 `msb exec -t` over the session PTY is verified during hardware bring-up.
 
-Navigation is **keyboard-only**: `tab`/`⇧tab`/`←→` cycle the top-level tabs and
+Keyboard navigation always works, regardless of the mouse-capture setting above:
+`tab`/`⇧tab`/`←→` cycle the top-level tabs and
 the number keys `1`-`9` jump straight to one (there is no `:` command palette).
 On the model/Projects list views `d`/`enter` opens a scrollable describe pane; on
 the **Services** list `enter`/`d` drills into the per-service detail (its embedded

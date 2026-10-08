@@ -337,9 +337,10 @@ so a per-vhost `listen 443 ssl;` can be added later, and once HTTPS is configure
 `:80`/http listener on the single :18787 entry **MUST** `return 301
 https://$host$request_uri;` (no redirect is emitted today because there is no https
 listener yet — a 301 with no :443 would break every plain-http caller). nginx is
-reconciled LAST so its upstreams are up first. (`aip-litellm-db` and `aip-dns` stay
+reconciled LAST so its upstreams are up first. (Only `aip-dns` stays
 loopback-published — DNS must stay `127.0.0.1:15353` for the microVM
-`--dns-nameserver`.) The live end-to-end routing through these nginx routes — the
+`--dns-nameserver`; `aip-litellm-db` has no host port at all, internal-only on
+`aip-net`.) The live end-to-end routing through these nginx routes — the
 litellm UI vhost and the sudo `/etc/hosts` write — is a **hardware bring-up**
 verification item (`docs/HARDWARE-BRINGUP.md`).
 
@@ -727,17 +728,31 @@ via `ai network`. The full per-component path is specified in §29.
 
 ### Logs
 
-Microsandbox workspace logs are streamed to `~/.ai-platform/logs/microsandbox.log`;
-per-workspace detail is retrievable via `ai logs --workspace <project>`.
+There is no persisted global `microsandbox.log` file. On the default SDK
+backend, workspace logs stream **live**: `Manager.OpenWorkspaceLogStream` /
+`sdkSandbox.OpenLogStream` open a relay-free SDK `LogStream{Follow:true}`
+(history first, then new entries pushed as they arrive). On the legacy CLI
+backend (`AIP_WORKSPACE_BACKEND=cli`), `Manager.WorkspaceLogTail` polls
+`msb logs` instead. Non-follow retrieval (`ai logs --workspace <project>`)
+reads the `.log` files under `<project>/.ai-platform/run/` (lifecycle
+start/stop/restart transcripts), not a global per-workspace log file.
 
 ### Cleanup
 
 Cleanup depends on whether the removal is recoverable:
 
 * **`ai stop`** stops the Microsandbox microVM but **keeps everything** —
-  state, overlay, definition. The workspace is fully recoverable with `ai start`
-  (which rebuilds from `.ai-platform/Dockerfile` and re-mounts the same overlay)
-  or `ai restart`. (Non-destructive — this is how you pause a workspace.)
+  state, overlay, definition. The workspace is recoverable with `ai start` or
+  `ai restart` (non-destructive — this is how you pause a workspace), but the
+  two differ in cost: a plain **`ai start`** on an already-created, stopped
+  workspace takes the **cheap path** — it just resumes the existing microVM
+  (`Sandbox.Start`) with **no image rebuild and no recreate**, so a changed
+  `.ai-platform/Dockerfile`/`config.yaml` is **not** picked up this way (it
+  self-heals to a full rebuild only if the cheap `Start` fails, e.g. the
+  microVM was removed out-of-band). **`ai restart`** always rebuilds the OCI
+  image and recreates the microVM (`Sandbox.Create`, re-mounting the same
+  overlay) — it is the only lifecycle verb guaranteed to pick up a
+  Dockerfile/config change.
 * **`ai delete`** (alias `ai destroy`) is permanent: it tears down the microVM
   (idempotent), removes the project's whole `.ai-platform` directory **and its
   overlay**, and de-registers it from `config/projects.yaml`. The user's OTHER
@@ -885,8 +900,9 @@ server mode does NOT edit `/etc/hosts` and instead prints the DNS (`*.<domain>` 
 this server) + TLS (cert terminated at nginx) operator contract. Because nginx is
 the only publisher, **every other service container is
 INTERNAL-ONLY on `aip-net`** (LiteLLM, Presidio, Headroom do not
-publish to the host); only `aip-litellm-db` and `aip-dns` stay
-loopback-published. (The local-inference backend — host-side omlx — is
+publish to the host); only `aip-dns` stays loopback-published
+(`127.0.0.1:15353`) — `aip-litellm-db` has no host port at all, reached only
+by name on `aip-net`. (The local-inference backend — host-side omlx — is
 not on `aip-net` at all: it runs host-side and the container
 tier reaches it via `host.docker.internal`, §16.) This is transparent to workspaces (the gateway URL stays
 `host:18787`) and lets nginx terminate TLS later, per-vhost (in server mode it binds
@@ -988,7 +1004,9 @@ templates (§25); it is identical across all OSes:
   `~/.local/bin`, which is on `PATH`).
 * **Graphify** — the knowledge-graph skill for AI coding assistants
   (github.com/Graphify-Labs/graphify, PyPI package `graphifyy`, CLI `graphify`). It is a
-  selectable **AI tool** (`--tools graphify`, default on), NO LONGER baked into the OS base:
+  selectable **AI tool** (`--tools graphify`; **opt-in, not pre-selected** —
+  `create.DefaultAITools()` returns an empty set, so nothing in the AI-tools
+  multi-select is checked by default), NO LONGER baked into the OS base:
   when selected it is installed for the workspace user by a CONDITIONAL Dockerfile snippet
   (`tools/graphify/`) via `uv tool install "graphifyy[<extras>]"`. The bundled optional
   extras are all of Graphify's extras **except** the region/DB/niche-specific ones
@@ -1043,8 +1061,8 @@ templates (§25); it is identical across all OSes:
 * **code-review-graph** and **codebase-memory-mcp** — two per-workspace code-graph
   tools chosen from the single AI-tools multi-select at `ai create` (the `--tools`
   flag / the wizard's one AI-tools step, alongside caveman + graphify;
-  `create.SupportedAITools`, with defaults `create.DefaultAITools` = caveman +
-  graphify + code-review-graph ON, codebase-memory-mcp OFF). Each maps to a
+  `create.SupportedAITools`; **all eight AI tools are opt-in** —
+  `create.DefaultAITools()` returns an empty set, so none is pre-checked). Each maps to a
   `context.*_enabled` bool in `config.yaml` (`code_review_graph_enabled` /
   `codebase_memory_enabled`) and, when selected, is appended to the project Dockerfile
   as a CONDITIONAL install snippet (`tools/code-review-graph/`,
@@ -1074,17 +1092,20 @@ templates (§25); it is identical across all OSes:
   enabled AI tools' MCP servers directly into that render (`agentcfg.EnabledMCPServers` →
   `AppendCodexMCP` [appends `[mcp_servers.<name>]` TOML tables] /
   `InjectHermesMCP` [adds `mcp_servers`] / `OmpMcpConfig` [the standalone
-  `.omp/mcp.json`], wired in `registerAgentProviders` for codex/hermes/omp). The injected commands:
-  code-review-graph = `code-review-graph serve`, codebase-memory-mcp = the
-  `codebase-memory-mcp` binary, graphify = `<project>/.venv-msb/bin/python -m
-  graphify.serve graphify-out/graph.json`. So codex/hermes/omp reach
-  code-review-graph + codebase-memory + graphify via injection; the CLIs whose configs the
-  platform does not own (claude-code `~/.claude.json`, opencode, gemini `settings.json`)
-  keep getting them via the tools' own native install/auto-detect.
+  `.omp/mcp.json`], wired in `registerAgentProviders` for codex/hermes/omp). The full
+  signature — `EnabledMCPServers(codeReviewGraph, codebaseMemory, graphify, tokensave,
+  agentMemory bool, venvPython string)` — can inject **five** servers, not three. The
+  injected commands: code-review-graph = `code-review-graph serve`, codebase-memory-mcp
+  = the `codebase-memory-mcp` binary, graphify = `<project>/.venv-msb/bin/python -m
+  graphify.serve graphify-out/graph.json`, tokensave = `tokensave serve`, agentmemory =
+  `npx -y @agentmemory/mcp`. So codex/hermes/omp reach all five tools via injection; the
+  CLIs whose configs the platform does not own (claude-code `~/.claude.json`, opencode,
+  gemini `settings.json`) keep getting the applicable ones via the tools' own native
+  install/auto-detect.
 * **OpenViking** — a per-workspace context/memory database
-  (docs.openviking.ai — "the context database for AI agents"), the fifth member of
-  the same AI-tools multi-select (`AIToolOpenViking`; **OPT-IN, off by default** —
-  unlike code-review-graph it is not in `create.DefaultAITools`), mapped to
+  (docs.openviking.ai — "the context database for AI agents"), one of eight members of
+  the same AI-tools multi-select (`AIToolOpenViking`; **opt-in, off by default** —
+  nothing in `create.SupportedAITools()` is pre-checked), mapped to
   `context.openviking_enabled` (`OpenVikingEnabledOrDefault`, unset defaults FALSE).
   When selected, its Dockerfile snippet (`tools/openviking/`) installs the
   `openviking-server` (PyPI `openviking`, via `uv tool install` onto the workspace
@@ -1122,6 +1143,40 @@ templates (§25); it is identical across all OSes:
   no OpenViking integration documented at all — a genuine gap, not an oversight.
   If OpenViking is enabled but none of the four supported CLIs is installed,
   registration is skipped with a warning.
+* **tokensave** (`AIToolTokenSave`) — a code-graph MCP server for 34 languages
+  (github.com/aovestdipaperino/tokensave; semantic queries instead of grepping/
+  reading files, cutting token use). Its
+  Dockerfile snippet (`tools/tokensave/`) installs the `tokensave` binary onto the
+  workspace user. Registered at **workspace start** by `Manager.registerTokenSave`
+  (gated on `context.TokenSaveEnabledOrDefault()`, mirroring code-review-graph/
+  graphify: once-guarded by a marker under `~/project/.ai-platform`, DETACHED,
+  best-effort): for each installed CLI with a native flag (`tokenSaveAgentFlag`:
+  claude-code/opencode/gemini) it runs `tokensave install --agent <agent> --local`,
+  then `tokensave init --no-git-hook` to build the project's code index.
+  codex/hermes/omp instead reach it via the MCP-injection mechanism below
+  (`tokensave serve`).
+* **agentmemory** (`AIToolAgentMemory`) — persistent cross-session memory
+  (github.com/rohitg00/agentmemory) so an agent doesn't keep re-learning the
+  codebase. Its Dockerfile snippet installs the `agentmemory` npm package globally.
+  Registered at **workspace start** by `Manager.registerAgentMemory` (gated on
+  `context.AgentMemoryEnabledOrDefault()`, once-guarded, best-effort): when
+  claude-code is installed it runs `agentmemory connect claude-code --with-hooks`;
+  when gemini is installed it runs
+  `gemini mcp add agentmemory npx -y @agentmemory/mcp --scope user`. codex/hermes/omp
+  do NOT get a native install path — they reach agentmemory only via the
+  MCP-injection mechanism below; **opencode gets neither** the native path nor the
+  injection (it is not one of the three platform-rewritten configs), a genuine gap,
+  not an oversight.
+* **ponytail** (`AIToolPonytail`) — a skill, not an MCP server
+  (github.com/DietrichGebert/ponytail), that nags the agent to check
+  YAGNI/stdlib/existing code before writing anything new. It has NO Dockerfile
+  snippet — registration at **workspace start** (`Manager.registerPonytail`, gated on
+  `context.PonytailEnabledOrDefault()`, once-guarded, DETACHED, best-effort) simply
+  `curl`s its `SKILL.md` into the shared pool
+  (`<project>/.ai-platform/skills/ponytail/SKILL.md`), where it is symlinked into
+  every skill-capable CLI the same way as any other shared-pool skill, plus — when
+  gemini is installed — a best-effort `gemini extensions install` for its Gemini
+  extension.
 * **rtk** — "Rust Token Killer" (github.com/rtk-ai/rtk), a CLI proxy that compresses
   common dev-command output to cut agent token use. Installed for the **workspace
   user** via its official `install.sh` (a prebuilt aarch64 Linux binary → `~/.local/bin`,
@@ -1456,12 +1511,13 @@ when it is not selected those containers are not reconciled (§below).
 
 The example below shows a config in which the user enabled every guardrail; a set
 with fewer selected simply omits the unselected entries (Headroom alone is the
-out-of-the-box default):
+out-of-the-box default). List order below matches the actual render order from
+`litellm.buildGuardrails` — secret-masking pair, then hide-secrets, then
+tool-firewall, then headroom-compression **last** (the order is an append sequence,
+not alphabetical or catalog order):
 
 ```yaml
 guardrails:
-  - guardrail_name: headroom-compression
-    litellm_params: { guardrail: headroom, mode: pre_call, api_base: http://aip-headroom:8787, default_on: true }
   - guardrail_name: presidio-secrets-input
     litellm_params: { guardrail: presidio, mode: pre_call,  presidio_filter_scope: input,  default_on: true }
   - guardrail_name: presidio-secrets-output
@@ -1482,6 +1538,8 @@ guardrails:
             allowed_param_patterns: { command[]: "<destructive-command regex>" } }
         - { id: deny-destructive-cmd, tool_name: "<shell-tool regex>", decision: deny,
             allowed_param_patterns: { cmd: "<destructive-command regex>" } }
+  - guardrail_name: headroom-compression
+    litellm_params: { guardrail: headroom, mode: pre_call, api_base: http://aip-headroom:8787, default_on: true }
 ```
 
 ### Presidio containers gated on `secret-masking`
@@ -2085,7 +2143,7 @@ seed a new project's `.ai-platform/Dockerfile`:
 ## Software Stacks
 
 The user selects the language/tool stacks to install when setting up the
-environment (CLI §3.1, step 5) — a **multi-select** of `go`, `rust`, `java`,
+environment (CLI §3.1, step 6) — a **multi-select** of `go`, `rust`, `java`,
 `maven`, `deno`. **Neither Python nor Node is a stack option**: the latest
 **Python 3**, **uv**, and **Node.js** are baked into every OS base by default
 (§12: Base tooling), so there is nothing to select. (Graphify is no longer baked —

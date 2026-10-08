@@ -156,9 +156,10 @@ selectable software stacks are `go`, `rust`, `java`, `maven`, `deno`.
 
 The per-project **AI tools** are a separate, selectable set (one `--tools`
 multi-select at `ai create`, or the wizard's AI-tools step): **caveman**,
-**graphify**, **code-review-graph**, **codebase-memory-mcp**, and **openviking**
-(defaults: the first three ON, codebase-memory-mcp and openviking OFF). Each maps
-to a `context.*_enabled` bool in `config.yaml`.
+**graphify**, **code-review-graph**, **codebase-memory-mcp**, **openviking**,
+**tokensave**, **agentmemory**, and **ponytail** — all opt-in, nothing
+pre-selected by default (`create.DefaultAITools()` returns an empty list). Each
+maps to a `context.*_enabled` bool in `config.yaml`.
 
 - **graphify** (the knowledge-graph skill for AI coding assistants — PyPI
   `graphifyy`, CLI `graphify`) is not baked into every OS base: when selected it is
@@ -197,6 +198,37 @@ to a `context.*_enabled` bool in `config.yaml`.
   shared memory-plugin installer. gemini has no OpenViking integration in the
   docs, and hermes's only documented registration path is an interactive wizard
   with no non-interactive flags, so both are left unregistered.
+- **tokensave** (`aovestdipaperino/tokensave` — a code-graph MCP server for 34
+  languages, semantic queries instead of grepping/reading files) is opt-in and
+  off by default: when selected the binary is baked into the project Dockerfile
+  as a conditional snippet (`internal/templates/files/tools/tokensave/`). At
+  workspace start (`workspace.registerTokenSave`, once-guarded + best-effort,
+  detached) it builds the project's semantic index (`tokensave init
+  --no-git-hook`) and runs `tokensave install --agent <X> --local` for each
+  natively-supported, installed agent CLI (claude-code, opencode, gemini);
+  codex/hermes/omp get it via MCP injection instead
+  (`agentcfg.EnabledMCPServers`). Local and keyless.
+- **agentmemory** (`rohitg00/agentmemory` — persistent cross-session memory for
+  agents) is opt-in and off by default: when selected the npm package is baked
+  into the project Dockerfile as a conditional snippet
+  (`internal/templates/files/tools/agentmemory/`). At workspace start
+  (`workspace.registerAgentMemory`, once-guarded + best-effort, detached) it
+  runs `agentmemory connect claude-code --with-hooks` and/or `gemini mcp add
+  agentmemory npx -y @agentmemory/mcp --scope user` for whichever of those two
+  CLIs are installed; codex/hermes get it via MCP injection instead. **opencode
+  gets no agentmemory integration** — its native setup needs a nonstandard MCP
+  JSON shape plus a copied plugin file too fragile to script reliably, a
+  documented gap (mirrors the `graphifyPlatformFlag` omp gap).
+- **ponytail** (`DietrichGebert/ponytail` — nags the agent to check
+  YAGNI/stdlib/existing code before writing anything new) is opt-in and off by
+  default, and unlike the others ships no binary or MCP server: it is a single
+  markdown skill file, fetched at workspace start
+  (`workspace.registerPonytail`, once-guarded + best-effort, detached) straight
+  from GitHub into the shared skill pool
+  (`<project>/.ai-platform/skills/ponytail/SKILL.md`), reaching every
+  skill-capable CLI through the same symlinks Graphify/Caveman use. It also
+  best-effort runs `gemini extensions install` for gemini. codex/hermes get no
+  Ponytail integration (no MCP server, no viable non-interactive install path).
 - **caveman** is installed at workspace start by its own upstream installer
   (`registerCaveman`).
 

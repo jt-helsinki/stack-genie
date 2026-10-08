@@ -89,7 +89,7 @@ keep the precedence rules in arch §27 explicit), `slog` (structured logs), stdl
 │   │       ├── dockerfiles/<os>/Dockerfile        # one base Dockerfile per OS key (alma, debian-trixie, ubuntu)
 │   │       ├── stacks/<stack>/Dockerfile.snippet  # one install snippet per stack (go, rust, java, maven, deno — Node/Python are baked into the base, not stacks)
 │   │       ├── agentclis/                          # per-agent-CLI install snippets
-│   │       └── tools/<tool>/Dockerfile.snippet    # opt-in AI tools (graphify, code-review-graph, codebase-memory-mcp, openviking) — appended only when selected (--tools)
+│   │       └── tools/<tool>/Dockerfile.snippet    # opt-in AI tools (graphify, code-review-graph, codebase-memory-mcp, openviking, tokensave, agentmemory) — appended only when selected (--tools); caveman/ponytail are runtime-only (no Dockerfile snippet)
 │   ├── uninstall/               # native `ai uninstall` teardown (stops the running `omlx serve` process; the omlx model store is kept unless `--purge`)
 │   └── doctor/                  # consolidated health checks → repair suggestions
 ├── installers/                  # install.sh (+ install-local.sh) thin launchers (macOS/Linux)
@@ -163,8 +163,10 @@ These underpin every slice and are built first.
   fallthrough but adds a broad `allow:egress@public` rule (open internet; private
   ranges still blocked) so a fresh workspace can pull in-VM container images and
   reach the internet. `deny` mode drops the broad rule and allows only the trusted
-  host service ports + published ports — that locked-down posture is what AT §16.3
-  asserts (it configures `deny` explicitly via the egress fixture). The model
+  host service ports + published ports. `TestEgressConfinementOnHardware` (AT
+  §16.3) configures no `ai network` policy at all and runs against the default
+  `public` mode — its current `example.com`-denied assertion is a known-stale
+  bug predating the switch to `public`-by-default (spec/05 §16.3). The model
   gateway is always reachable in every mode. The per-project egress policy itself
   (mode `deny`/`public`/`unrestricted`, allowed host services, published ports —
   repo-layout §12.4) is configured by the `ai network` command and rendered into
@@ -302,8 +304,9 @@ refer to the CLI spec and architecture spec respectively.
   presented default, checkbox multi-select for CLIs + stacks + AI tools + apps,
   arrow/space navigation, Back + Abort. The **AI tools** are ONE `--tools`
   multi-select (caveman, graphify, code-review-graph, codebase-memory-mcp,
-  openviking → `context.*_enabled` bools; create-default
-  caveman+graphify+code-review-graph ON, codebase-memory+openviking OFF).
+  openviking, tokensave, agentmemory, ponytail → `context.*_enabled` bools);
+  every tool is opt-in — `create.DefaultAITools()` returns no defaults, so
+  none is pre-selected and the user must explicitly choose each.
   Every input also has a flag
   (`--name`/`--os`/`--agents`/`--auth-mode`/`--stacks`/`--tools`/`--apps`/`--app-port`/`--cpus`/`--memory`/`--disk`/`--ports`/`--location`/`--idle-timeout`/`--graphify-model`/`--shell`)
   that **pre-seeds** the wizard
@@ -404,8 +407,11 @@ These are grep-able (`hardware bring-up`) and tracked in
   via `--yes`. Tests assert the CLI §19 JSON envelope and CLI §18 exit codes — never
   scraped text.
 * **Integration suite** (`test/integration/`, `//go:build integration`, `make
-  test-integration`) — a live black-box suite that drives the real service stack
-  (setup/services/keys/workspace/apps/egress/inference/per-model-runtime/uninstall).
+  test-integration`) — a live black-box suite that drives the real service stack,
+  organized as seven `TestGroupNN` functions: 01 setup/health, 02 services, 03
+  models & keys, 04 workspace lifecycle, 05 gateway inference, 06 uninstall, and
+  07 the host-native omlx local-inference runtime — there is no per-model-runtime
+  concept anymore (Group 7 explicitly asserts omlx is the sole backend).
   Group 7 (`TestGroup07InferenceRuntime`, in `test/integration/omlx_runtime_test.go`)
   asserts `services`/`doctor` surface the host-native `omlx` backend (and
   explicitly fail if a stale `vllm`/`ollama` entry is still reported), exercises
@@ -477,8 +483,11 @@ These are grep-able (`hardware bring-up`) and tracked in
      the trusted host service ports + published ports declared via `ai network`;
      the model gateway is always reachable in every mode. All planes are userspace;
      the only elevated facility is the macOS hypervisor entitlement (arch §29.1,
-     §30). Under `deny`, a non-allow-listed destination is denied — tested by
-     AT §16.3 (which configures `deny` via the egress fixture).
+     §30). Under `deny`, a non-allow-listed destination should be denied, but
+     `TestEgressConfinementOnHardware` (AT §16.3) does not actually exercise
+     `deny` mode — it configures no `ai network` policy and runs against the
+     default `public` mode; its `example.com`-denied assertion is a known-stale
+     bug (spec/05 §16.3) that predates the switch to `public`-by-default egress.
    * the per-project `ai network` declarations are rendered into `msb` net-rules
      and applied at workspace create (`egress.MsbNetworkArgs` → `msb create`, §3.4).
      **Gate (spike on hardware):** on a clean Apple Silicon Mac, prove (a) the
