@@ -112,6 +112,7 @@ func Execute() int {
 		newAttachCmd(emitter, &exitCode),
 		newSessionsCmd(emitter, &exitCode),
 		newAppsCmd(emitter, &exitCode),
+		newToolsCmd(emitter, &exitCode),
 		// Other top-level commands.
 		newServicesCmd(emitter, &exitCode),
 		newLiteLLMCmd(emitter, &exitCode),

@@ -270,12 +270,37 @@ func Run(cwd string) error {
 			}
 			return manager.List()
 		},
+		// AI tools (caveman, graphify, tokensave, …) read from the live config.yaml —
+		// resolved lazily over currentRoot so switching workspaces reflects immediately,
+		// same pattern as the apps lister above.
+		func() ([]views.ToolRow, error) {
+			root, ok := currentRoot()
+			if !ok {
+				return nil, nil
+			}
+			projectConfig, err := config.LoadProjectConfig(root)
+			if err != nil {
+				return nil, err
+			}
+			tools := create.SupportedAITools()
+			rows := make([]views.ToolRow, 0, len(tools))
+			for _, tool := range tools {
+				rows = append(rows, views.ToolRow{
+					Key:     tool,
+					Name:    tool,
+					Enabled: projectConfig.Context.ToolEnabled(tool),
+				})
+			}
+			return rows, nil
+		},
 		func() string { return application.currentProject },
 	)
 	// Network management: add/remove allow-list entries + published ports. The view
 	// collects the raw "host[:port]" / "guest:host" string; the wiring parses it via
 	// egress.Split* and applies it, so the view holds no egress parsing.
-	networkView := views.NewNetwork(currentRoot, egress.Get, egress.SetMode,
+	networkView := views.NewNetwork(currentRoot,
+		func() string { return application.currentProject },
+		egress.Get, egress.SetMode,
 		func(root, raw string) error {
 			host, port, err := egress.SplitHostPort(raw)
 			if err != nil {
@@ -957,6 +982,16 @@ func (application *app) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return application, application.startLifecycle("restart", message.Project)
 
+	case views.WorkspaceNetworkToggleRequestedMsg:
+		// The new egress mode is already persisted (the Network view's "i" handler
+		// called egress.SetMode before emitting this). Net-rules are only applied to
+		// the microVM at create/restart, so restart to pick up the change — mirroring
+		// WorkspaceResizeRequestedMsg.
+		if message.Project == "" {
+			return application, nil
+		}
+		return application, application.startLifecycle("restart", message.Project)
+
 	case lifecyclePollMsg:
 		if len(application.lifecycles) == 0 {
 			return application, nil
@@ -1090,6 +1125,17 @@ func (application *app) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			"apps "+message.Action+" "+message.App+" "+message.Project,
 			[]string{"apps", message.Action, message.App, message.Project}, false)
 		// Not an interactive program — let <esc> cancel/close the pane (like ctrl+q).
+		application.terminalEscCloses = true
+		return application, cmd
+
+	case views.ToolActionRequestedMsg:
+		// Run an AI-tool toggle live in the terminal overlay (`ai tools
+		// <enable|disable> <tool> <name>` — it persists config.yaml, regenerates the
+		// Dockerfile, and may itself prompt to restart the workspace now); the Apps
+		// view refreshes when the overlay closes.
+		cmd := application.openTerminal(
+			"tools "+message.Action+" "+message.Tool+" "+message.Project,
+			[]string{"tools", message.Action, message.Tool, message.Project}, false)
 		application.terminalEscCloses = true
 		return application, cmd
 

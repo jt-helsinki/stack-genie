@@ -136,7 +136,21 @@ func networkResolve(cmd *cobra.Command, args []string, index int) (string, error
 func applyWorkspaceRestart(emitter *output.Emitter, root string) {
 	manager := workspace.RealManager(goruntime.GOOS, nowRFC3339)
 	if !manager.IsRunning(root) {
-		_, _ = fmt.Fprintln(emitter.Err, ui.Muted.Render("Workspace not running — the new size applies on the next `ai start`."))
+		// A stopped workspace's next plain `ai start` takes the cheap re-Start path and
+		// does NOT rebuild (only `forceRebuild` does, via Restart/a self-healing
+		// failed-Start) — so deferring to "the next start" would silently never apply
+		// the change. Rebuild now instead, then restore the stopped state so this
+		// doesn't surprise-start a workspace the user left off.
+		_, _ = fmt.Fprintln(emitter.Err, ui.Heading.Render("Rebuilding workspace")+ui.Muted.Render(" to apply the new size (it is currently stopped)…"))
+		if _, err := manager.Restart(root); err != nil {
+			_, _ = fmt.Fprintf(emitter.Err, "%s\n", ui.Failure.Render(ui.IconFail+" rebuild failed: "+err.Error()))
+			return
+		}
+		if err := manager.Stop(root); err != nil {
+			_, _ = fmt.Fprintf(emitter.Err, "%s\n", ui.Failure.Render(ui.IconFail+" rebuilt, but could not re-stop the workspace: "+err.Error()))
+			return
+		}
+		_, _ = fmt.Fprintln(emitter.Err, ui.Success.Render(ui.IconOK+" workspace rebuilt (left stopped)"))
 		return
 	}
 	_, _ = fmt.Fprintln(emitter.Err, ui.Heading.Render("Restarting workspace")+ui.Muted.Render(" to apply the new size…"))
@@ -153,7 +167,21 @@ func offerWorkspaceRestart(emitter *output.Emitter, root string) {
 	}
 	manager := workspace.RealManager(goruntime.GOOS, nowRFC3339)
 	if !manager.IsRunning(root) {
-		return // not running: the change is picked up on the next start
+		// A stopped workspace's next plain `ai start` takes the cheap re-Start path and
+		// does NOT rebuild — so "picked up on the next start" is false. Nothing is
+		// running to disrupt, so just rebuild now (no prompt needed) and restore the
+		// stopped state.
+		_, _ = fmt.Fprintln(emitter.Err, ui.Muted.Render("Workspace not running — rebuilding now so the change is actually applied…"))
+		if _, err := manager.Restart(root); err != nil {
+			_, _ = fmt.Fprintf(emitter.Err, "%s\n", ui.Failure.Render(ui.IconFail+" rebuild failed: "+err.Error()))
+			return
+		}
+		if err := manager.Stop(root); err != nil {
+			_, _ = fmt.Fprintf(emitter.Err, "%s\n", ui.Failure.Render(ui.IconFail+" rebuilt, but could not re-stop the workspace: "+err.Error()))
+			return
+		}
+		_, _ = fmt.Fprintln(emitter.Err, ui.Success.Render(ui.IconOK+" workspace rebuilt (left stopped)"))
+		return
 	}
 	restart, err := promptConfirmDefault(
 		"Restart the workspace now to apply this change?",

@@ -29,6 +29,20 @@ type EgressModeSetter func(root, mode string) error
 // view holds no parsing logic.
 type NetworkMutator func(root, raw string) error
 
+// ProjectNameGetter returns the name of the currently-viewed workspace (empty if
+// none). Injected; the parent wires it over its current-project state — distinct
+// from CurrentRoot, which resolves the project's root path, not its name.
+type ProjectNameGetter func() string
+
+// WorkspaceNetworkToggleRequestedMsg is emitted after the "i" key flips internet
+// access on/off and the new egress mode is persisted. Egress net-rules are only
+// applied to the microVM at create/restart, so the parent restarts the running
+// workspace to pick up the change (mirroring WorkspaceResizeRequestedMsg).
+type WorkspaceNetworkToggleRequestedMsg struct {
+	Project string
+	Mode    string
+}
+
 type networkRefreshedMsg struct {
 	network config.NetworkConfig
 	err     error
@@ -36,6 +50,11 @@ type networkRefreshedMsg struct {
 type networkModeDoneMsg struct {
 	mode string
 	err  error
+}
+type networkToggleDoneMsg struct {
+	project string
+	mode    string
+	err     error
 }
 type networkMutateDoneMsg struct {
 	action string
@@ -46,17 +65,18 @@ type networkMutateDoneMsg struct {
 // mode, the host-service allow-list, and published ports, with a key to cycle
 // the egress mode through config.EgressModes.
 type Network struct {
-	current   CurrentRoot
-	get       NetworkGetter
-	setMode   EgressModeSetter
-	allow     NetworkMutator
-	disallow  NetworkMutator
-	publish   NetworkMutator
-	unpublish NetworkMutator
-	network   config.NetworkConfig
-	flash     string
-	err       error
-	loaded    bool
+	current     CurrentRoot
+	projectName ProjectNameGetter
+	get         NetworkGetter
+	setMode     EgressModeSetter
+	allow       NetworkMutator
+	disallow    NetworkMutator
+	publish     NetworkMutator
+	unpublish   NetworkMutator
+	network     config.NetworkConfig
+	flash       string
+	err         error
+	loaded      bool
 	// inputMode is the active inline prompt ("allow"/"disallow"/"publish"/
 	// "unpublish"), empty when not prompting; input is the value typed so far.
 	inputMode string
@@ -65,10 +85,12 @@ type Network struct {
 
 // NewNetwork builds the network view over the injected current-project resolver,
 // policy getter, mode setter, and the four egress mutators (add/remove allow + port).
-func NewNetwork(current CurrentRoot, get NetworkGetter, setMode EgressModeSetter,
+// projectName resolves the current workspace's name (used only to restart it after
+// an "i" internet-toggle, since egress net-rules need a restart to apply).
+func NewNetwork(current CurrentRoot, projectName ProjectNameGetter, get NetworkGetter, setMode EgressModeSetter,
 	allow, disallow, publish, unpublish NetworkMutator) *Network {
 	return &Network{
-		current: current, get: get, setMode: setMode,
+		current: current, projectName: projectName, get: get, setMode: setMode,
 		allow: allow, disallow: disallow, publish: publish, unpublish: unpublish,
 	}
 }
@@ -80,7 +102,7 @@ func (view *Network) Title() string { return "Network" }
 func (view *Network) CapturingInput() bool { return view.inputMode != "" }
 
 func (view *Network) Hints() string {
-	return "m mode · a allow · d disallow · p publish · u unpublish"
+	return "i internet on/off · m mode · a allow · d disallow · p publish · u unpublish"
 }
 func (view *Network) SetSize(int, int) {}
 
@@ -119,6 +141,20 @@ func (view *Network) Update(msg tea.Msg) tea.Cmd {
 			return nil
 		}
 		return view.refreshCmd(root)
+	case networkToggleDoneMsg:
+		if message.err != nil {
+			view.flash = ui.Failure.Render(ui.IconFail + " internet " + internetLabel(message.mode) + ": " + message.err.Error())
+			return nil
+		}
+		view.flash = ui.Success.Render(ui.IconOK + " internet " + internetLabel(message.mode) + " — restarting to apply…")
+		root, ok := view.current()
+		if !ok {
+			return nil
+		}
+		toggled := func() tea.Msg {
+			return WorkspaceNetworkToggleRequestedMsg{Project: message.project, Mode: message.mode}
+		}
+		return tea.Batch(view.refreshCmd(root), toggled)
 	case networkMutateDoneMsg:
 		if message.err != nil {
 			view.flash = ui.Failure.Render(ui.IconFail + " " + message.action + ": " + message.err.Error())
@@ -146,6 +182,17 @@ func (view *Network) handleActionKey(key tea.KeyMsg) tea.Cmd {
 		return nil
 	}
 	switch key.String() {
+	case "i":
+		next := "public"
+		if view.network.ResolvedEgress() != "deny" {
+			next = "deny"
+		}
+		view.flash = ui.Muted.Render("turning internet " + internetLabel(next) + "…")
+		name := ""
+		if view.projectName != nil {
+			name = view.projectName()
+		}
+		return view.toggleCmd(root, name, next)
 	case "m":
 		next := nextEgressMode(view.network.ResolvedEgress())
 		view.flash = ui.Muted.Render("setting egress " + next + "…")
@@ -223,6 +270,25 @@ func (view *Network) modeCmd(root, mode string) tea.Cmd {
 	}
 }
 
+// toggleCmd persists the new egress mode off the UI thread, then (via
+// networkToggleDoneMsg) surfaces a WorkspaceNetworkToggleRequestedMsg for the parent
+// to restart the running workspace so the mode actually takes effect.
+func (view *Network) toggleCmd(root, project, mode string) tea.Cmd {
+	setMode := view.setMode
+	return func() tea.Msg {
+		return networkToggleDoneMsg{project: project, mode: mode, err: setMode(root, mode)}
+	}
+}
+
+// internetLabel renders an egress mode as a plain on/off switch label: "deny" blocks
+// all outbound traffic (off); any other mode (public/unrestricted) allows it (on).
+func internetLabel(mode string) string {
+	if mode == "deny" {
+		return "off"
+	}
+	return "on"
+}
+
 // nextEgressMode returns the mode after the current one in config.EgressModes,
 // wrapping around (an unknown current mode starts the cycle at the first mode).
 func nextEgressMode(current string) string {
@@ -247,6 +313,7 @@ func (view *Network) View() string {
 	}
 	var body strings.Builder
 	body.WriteString(ui.Heading.Render("Workspace egress") + "\n")
+	body.WriteString(field("internet", internetLabel(view.network.ResolvedEgress())))
 	body.WriteString(field("mode", view.network.ResolvedEgress()))
 	body.WriteString(field("allow-list", egressAllowList(view.network.AllowHostServices)))
 	body.WriteString(field("published ports", egressPublishPorts(view.network.PublishPorts)))
