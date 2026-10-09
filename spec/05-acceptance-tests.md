@@ -19,7 +19,7 @@ These tests validate:
 * installation correctness
 * project lifecycle
 * agent system behavior
-* environment (Dockerfile) + persistence
+* workspace sandboxing (nono) + session lifecycle
 * model routing
 * keys-in-LiteLLM integration
 * context optimization
@@ -57,28 +57,38 @@ Each test must run in a clean environment:
 
 ## 1.4 Project Creation (non-interactive)
 
-`ai create` has a flag for every choice (`--name`/`--os`/`--agents`/`--stacks`).
-On a TTY those flags **pre-seed** an interactive wizard, but under `--json` (or no
-TTY) the wizard is **disabled** and the spec is built straight from the flags (the
+`ai create` has a flag for every choice (`--name`/`--agents`/`--location`/
+`--graphify-model`/`--shell`/`--auth-mode`/`--tools`/`--dry-run`). On a TTY
+those flags **pre-seed** an interactive wizard, but under `--json` (or no TTY)
+the wizard is **disabled** and the spec is built straight from the flags (the
 programmatic contract — every input has a flag, no prompts; CLI §1.3/§3.1). The
 harness always runs with `--json`, so it drives creation with explicit flags
 rather than a pseudo-terminal:
 
 ```text
-harness.CreateProjectWithOS(name, osKey)  →  ai create <name> --os <key> --json
+harness.CreateProject(name)                   →  ai create <name> --json
+harness.CreateProjectWithAgents(name, agents) →  ai create <name> --agents <a,b> --json
 ```
 
-* `ai create` is **scaffold-only** — it writes the project's `.ai-platform/`
-  artifacts and indexes the project; it does **not** build or boot a workspace.
-  `ai start` builds the image and boots the microVM.
-* the default base OS is `debian-trixie` and the default agent CLI is
-  `opencode`
-* `--os` is **required** on this non-interactive path; a missing or unknown value
-  exits `2`
+* `ai create` is **scaffold-only** — it writes the project's tracked
+  `.ai-platform/` state (`config.yaml`, `project.yaml`, `.gitignore`) and
+  registers the project in the global index; it does **not** build or launch
+  anything. There is no OS choice, no Dockerfile, and no image any more — a
+  workspace is just a registered host project directory plus a generated nono
+  profile (written at `ai start`/`ai agent`/`ai shell` time, not here). Those
+  commands launch (or reattach to) a sandboxed nono session directly on the
+  host — there is nothing to boot.
+* the default agent CLI is `opencode` (used when `--agents` is omitted)
+* **no flag is required** on this non-interactive path: the workspace name
+  defaults to the `[name]` positional/`--location`'s directory basename, and
+  `--agents` defaults to `[opencode]`. A value that is not a known option (an
+  unknown `--agents`/`--tools`/`--shell`/`--auth-mode` choice) exits `2`, as
+  does an invalid name/location
 * the result is the `--json` envelope on stdout (envelope `command: project.create`)
 
-A `--json`/no-TTY `create` exits `2` **only** when a required input (`--os`) is
-missing or a value is invalid — not merely because there is no TTY (§3.1).
+A `--json`/no-TTY `create` exits `2` **only** when a provided value is invalid
+(there is no required input to be missing any more) — not merely because there
+is no TTY (§3.1).
 
 ---
 
@@ -121,38 +131,34 @@ for the rare TTY-only human-wizard cases and is not used here.)
   key). It serves TLS with a test cert the harness trusts (arch §17); the provider
   config is written **inline** (`writeProviderConfig`/`writeCertPEM`), not from a file
   fixture. LiteLLM holds the real provider key (keys-in-LiteLLM) and attaches it on the
-  upstream call, so the injection tests (§9.1) assert the key is present in the request
-  the mock records — end-to-end over HTTPS.
-* **credential sentinel**: the test credential stored in the LiteLLM gateway has
-  a known, fixed literal value (`sk-aip-test-sentinel-DO-NOT-LEAK` in
-  `s1_hardware_test.go`; referred to here as `$AIP_TEST_SENTINEL`).
-  Secret assertions are exact: the sentinel must appear in the mock provider's
-  recorded request, and must appear **nowhere** in the workspace env, the
-  workspace filesystem, `~/.ai-platform`, or `~/projects`. The workspace agent
-  holds only a scoped LiteLLM **virtual key**, never the provider secret.
-* **egress policy**: the per-project egress default is now `public`
-  (allow-outbound — only private ranges are blocked). `TestEgressConfinementOnHardware`
-  (§16.3) does **not** call `ai network` at all today — it creates and starts
-  the workspace with that default `public` policy left as-is: there is no
-  `deny`-mode fixture and no `ai network allow`/mock-provider allow-list wired
-  into this test, so it exercises the ambient default posture rather than a
-  known locked-down policy. Confinement itself is still enforced by the
-  **Microsandbox NetworkPolicy** (applied per-workspace as Microsandbox
-  net-rules at workspace create via the `msb` CLI, plan §3.4), which under
-  `public` mode permits the workspace to reach the **host gateway** (the
-  always-on allow rule: nginx `aip-proxy` → LiteLLM (which calls Headroom
-  in-process as a `pre_call` guardrail), default
-  `host.microsandbox.internal:18787` — workspaces never reach LiteLLM directly)
-  plus the open internet (private ranges still blocked). There is **no egress
-  proxy** — confinement is the net-rules applied at workspace create (arch
-  §29.4–29.5). See §16.3 for exactly what the on-hardware test probes, and a
-  note on the resulting gap against this default-`public` behavior.
+  upstream call. Today its only consumer is §7.2's `TestModelTestOnHardware` (a
+  `models test` round-trip through the gateway); the session-level credential-injection
+  test this fixture was originally built for (§9.1) has no automated coverage any more
+  — see §9.1 for why.
+* **egress policy**: a project's egress mode is now one of exactly two values,
+  `deny` or `public` (the old third mode `unrestricted` is gone), defaulting to
+  `public` (allow-outbound — private ranges still blocked), set/read with
+  `ai network egress|show` and compiled straight into the project's generated
+  **nono profile** (`internal/nono.NetworkCapabilities` — `Block`/
+  `AllowDomain`/`DenyDomain`, bare domains, no ports, no "gateway" special
+  case) at the next `ai agent`/`ai shell`/`ai start` — there is no restart step
+  and no Microsandbox NetworkPolicy/`msb` net-rules any more (nono sandboxes a
+  host process directly; enforcement is nono's own Landlock/Seatbelt network
+  filtering, not a VM boundary). There is no `TestEgressConfinementOnHardware`
+  any more (removed along with the rest of `s1_hardware_test.go` in the nono
+  migration, not replaced) — see §16.3.
+* **`$AIP_TEST_SENTINEL`** (used in §9.1/§16.1's test blocks): a documentation
+  placeholder only — no current fixture defines it and no current test
+  instantiates it (the `ai keys add`/OS-keychain flow those sections describe
+  is not automated). It is kept in those sections' example scripts to show
+  what a future PTY-driving-harness test would assert, not as a claim that it
+  exists today.
 
 ### Setup / Teardown
 
 `HOME` is repointed at the throwaway dir so `~/.ai-platform` and `~/projects`
-resolve under it. The mock provider and the sentinel credential are bootstrapped
-before any model-using test runs so credentialed requests succeed. (Provider
+resolve under it. The mock provider is brought up and wired into LiteLLM's
+model list before §7.2's model-test runs so the round-trip succeeds. (Provider
 credentials are **not** a `ai setup` hard-fail — plan §7; a missing credential is
 warned by `ai doctor` and only fails the actual model call.)
 
@@ -160,10 +166,8 @@ warned by `ai doctor` and only fails the actual model call.)
 setup:
   export AIP_TEST_HOME=$(mktemp -d)
   export HOME="$AIP_TEST_HOME"                 # ~/.ai-platform, ~/projects resolve here
-  export AIP_TEST_SENTINEL="sk-aip-test-sentinel-DO-NOT-LEAK"   # fixed literal, matches s1_hardware_test.go's `sentinel` const
-  export MOCK_PROVIDER_URL=$(start in-process httptest mock)   # in-process HTTPS OpenAI-compatible endpoint (mockprovider_test.go); its https:// base URL is reachable from the workspace and is the one allow-listed destination. The harness trusts its test cert.
-  ai setup --json --provider-config <inline temp file>   # config written inline by the harness, not a checked-in fixture
-  ai keys add openai --value "$AIP_TEST_SENTINEL" --json   # stored encrypted in the LiteLLM DB (keys-in-LiteLLM)
+  export MOCK_PROVIDER_URL=$(start in-process httptest mock)   # in-process HTTPS OpenAI-compatible endpoint (mockprovider_test.go), TLS cert written to disk
+  ai setup --json --provider-config <inline model_list pointing gpt-5 at the mock>   # config written inline by the harness (writeProviderConfig), not a checked-in fixture; api_key is a virtual-key placeholder, not a real sentinel
 
 teardown:
   ai delete <each> --purge --yes                # best effort
@@ -171,9 +175,11 @@ teardown:
   rm -rf "$AIP_TEST_HOME"
 ```
 
-The mock provider's `litellm.yaml` points LiteLLM's `gpt-5` alias at the local
-endpoint, so `ai models test gpt-5` exercises injection end-to-end without a
-real provider.
+The mock provider's inline `model_list` points LiteLLM's `gpt-5` alias at the local
+endpoint, so `ai models test gpt-5` exercises the gateway round-trip end-to-end without a
+real provider. There is no sentinel-credential/`ai keys add` step in this flow today —
+see §9.1 for the separate (currently uncovered) credential-injection scenario this
+fixture was originally built to support.
 
 ### Assertions
 
@@ -183,16 +189,18 @@ real provider.
 * exit code is asserted against §18
 * filesystem/state assertions check concrete paths from
   `03-repository-layout.md`
-* secret assertions use the credential sentinel (exact-match `grep`), not fuzzy
-  "looks like a secret" checks
+* where a secret-leak assertion is described (§9, §16), it is an exact-match
+  `grep` against a known sentinel value, not a fuzzy "looks like a secret"
+  check — but note that no test in `test/acceptance/` or `test/integration/`
+  currently performs one (see §9.1/§9.2/§16.1/§16.2)
 
 ### Non-Interactive Confirmation
 
 Destructive commands (`ai delete`, and its alias `ai destroy`) are confirmed
 non-interactively with `--yes` (CLI §20). `ai destroy` is a **cobra alias** of
-`ai delete` — the same destructive command (§4.4), so it gates identically (the
-microVM is paused with `ai stop`, which needs no confirmation). There is no
-AI-approval flow.
+`ai delete` — the same destructive command (§4.4), so it gates identically
+(pausing a workspace's sessions with `ai stop` is non-destructive and needs no
+confirmation). There is no AI-approval flow.
 
 ### Thresholds
 
@@ -201,7 +209,7 @@ AI-approval flow.
 | `ai models test` round-trip (mock provider) | < 2000 ms |
 | Headroom input reduction on large-repo context | ≥ 50% tokens under the project's strategy |
 | Caveman output reduction (full level) | ≥ 40% output tokens |
-| workspace create → started (cached image) | < 30 s |
+| `ai create` scaffold (no image, no boot) | < 1 s |
 
 ---
 
@@ -220,7 +228,10 @@ ai setup --json
 * CLI installed (`ai` on PATH)
 * `~/.ai-platform/config/` created (incl. `projects.yaml` index)
 * **Docker detected, rootless** (Podman is `[S6]`; Slice 1 service tier is Docker-only)
-* **Microsandbox runtime + host virtualization verified** (Apple Silicon on macOS)
+* **nono runtime verified** (the `nono` CLI is installed — no Apple-Silicon-only
+  restriction and no separate "host virtualization" check any more: nono
+  sandboxes a host process directly via Landlock (Linux) or Seatbelt (macOS),
+  not a hypervisor, so it runs on any supported host the binary runs on)
 * the service tier started as containers, reconciled in order (network → DNS →
   Presidio → Valkey(+RedisInsight) → Headroom → LiteLLM(+DB) → nginx
   proxy): `aip-dns`, the
@@ -242,8 +253,9 @@ ai setup --json
 * in **standalone** (default) the shared services bind **127.0.0.1**; the nginx
   gateway (`aip-proxy`) is the SOLE host entry on `:18787`, with `aip-headroom`
   now INTERNAL-ONLY (reached only by LiteLLM by name, no host publish); the host
-  tier has **no optional services** (Open WebUI is now a per-workspace in-VM app
-  and Odysseus was removed)
+  tier has **no optional services** (Open WebUI and Odysseus have both been
+  removed from the platform entirely — there is no in-VM-app mechanism any
+  more, per-workspace or otherwise)
 * command exits `0`
 
 **Automated coverage:** `TestSetupBringsServiceTierUpOnHardware`
@@ -304,32 +316,43 @@ ai setup --upgrade
 ### Test
 
 ```bash id="t5"
-ai create test-project --os debian-trixie --json   # flag-driven, non-interactive (§1.4)
+ai create test-project --json   # flag-driven, non-interactive (§1.4); no OS/stacks to choose any more
 ```
 
 ### Expected Result
 
 `ai create` is scaffold-only — it writes state and indexes the project; it does
-**not** build or boot a workspace (that is `ai start`).
+**not** build or launch anything (launching a session is `ai start`/`ai agent`/
+`ai shell`, and there is nothing to boot).
 
 * the envelope is `command: project.create`, `ok == true`, exit `0`
-* `data.name == test-project`, `data.os == debian-trixie`
-* `data.tools` is `[opencode]` (the default agent CLI)
+* `data.name == test-project`
+* `data.tools` is `[opencode]` (the default agent CLI; `--agents` was omitted)
 * project scaffolded in the current directory; `data.root` points at it, and the
   project is indexed in `config/projects.yaml`
-* state written under `<root>/.ai-platform/` (Dockerfile / config.yaml /
-  profile.yaml / project.yaml)
+* tracked state written under `<root>/.ai-platform/`: `config.yaml`,
+  `project.yaml`, `.gitignore` — there is no `Dockerfile` and no `profile.yaml`
+  any more (no OS, no image). A per-CLI nono profile (e.g.
+  `.ai-platform/nono-profile-opencode.json`) is generated later, at
+  `ai start`/`ai agent`/`ai shell` time — not by `create`
 
 ### Negative case
 
-* `ai create test-project --json` with **no `--os`** exits `2` — under `--json`
-  the wizard is disabled and `--os` is required (§1.4/§3.1). The failure is the
-  missing required input, not the absence of a TTY.
+* `ai create demo --agents not-a-real-cli --json` exits `2` — under `--json`
+  the wizard is disabled, so an unknown `--agents` value is rejected directly
+  rather than falling back to a prompt (§1.4/§3.1). The same holds for an
+  unknown `--tools`/`--shell`/`--auth-mode` value. There is no `--os` flag any
+  more, so there is no "missing required input" case to test — every input is
+  optional and defaults sensibly
 
-**Automated coverage:** the negative case is `TestProjectCreateNoTTYExits2`; the
-positive scaffold-only flow is `TestProjectLifecycle` (create/list/delete); the
-default-tools case is `TestAgentCLIDefaultSelection` — all in
-`test/acceptance/acceptance_test.go`/`s1_remaining_test.go`.
+**Automated coverage:** the negative case is `TestProjectCreateNoTTYExits2`
+(despite its name, it asserts the invalid-value behavior above, not TTY
+absence); the positive scaffold-only flow is `TestProjectLifecycle`
+(create/list/delete) — both in `test/acceptance/acceptance_test.go`. The
+default-tools case (`--agents` omitted → `[opencode]`) is exercised implicitly
+by `TestProjectLifecycle`'s use of the `CreateProject` harness helper
+(`test/acceptance/pty_test.go`); there is no dedicated test asserting it in
+isolation any more (the old `TestAgentCLIDefaultSelection` is gone).
 
 ---
 
@@ -340,7 +363,7 @@ default-tools case is `TestAgentCLIDefaultSelection` — all in
 ```bash id="t6"
 # A directory with pre-existing files (ai create runs no git and leaves them untouched).
 mkdir -p "$AIP_TEST_HOME/work/app" && echo hi > "$AIP_TEST_HOME/work/app/README.md"
-cd "$AIP_TEST_HOME/work/app" && ai create app --os debian-trixie --json
+cd "$AIP_TEST_HOME/work/app" && ai create app --json
 ```
 
 ### Expected Result
@@ -361,28 +384,46 @@ scenario is not covered by an automated test today.
 
 ## 3.3 Workspace Stop/Start Recovery `[S1]`
 
+There is no microVM and no overlay any more: a workspace is a registered host
+project directory, and "stopping"/"starting" it means stopping and relaunching
+its **nono sessions**, not pausing/resuming a VM. `ai start`/`ai restart` are
+also no longer scriptable the way `ai stop` is — see below.
+
 ### Test
 
 ```bash id="t7"
 ai stop test-project --json
-ai start test-project --json
+ai start test-project          # NOTE: cannot be driven with --json (see below)
 ```
 
 ### Expected Result
 
-* `ai stop` stops the Microsandbox workspace microVM but keeps everything — the
-  overlay, host source, and project definition remain intact
-* no `--yes` needed — stop is non-destructive (CLI §20); pausing a workspace is
-  `ai stop`, not `ai delete`/`ai destroy` (which are the same destructive removal)
-* `ai start test-project` recovers the workspace (re-mounts the same overlay)
+* `ai stop test-project --json` stops **every live nono session** for the
+  project, in-process (no subprocess, no VM shutdown) — `Manager.StopAll`. No
+  `--yes` needed — stop is non-destructive (CLI §20); pausing a workspace is
+  `ai stop`, not `ai delete`/`ai destroy` (which are the same destructive
+  removal). The project directory, config, and files are untouched regardless
+  — there is nothing VM-side to "keep" any more
+* `ai start test-project` launches (or reattaches to) the workspace's default
+  agent CLI session — but it is **interactive-only**: under `--json` or any
+  non-TTY invocation it exits `2` ("ai start is interactive and needs a
+  terminal"), because there is no detached VM to boot any more — the command's
+  entire job is to suspend into a real terminal session. The same holds for
+  `ai restart`. This is a **behavior change** from the old microVM model, where
+  both verbs ran fully detached and were `--json`-scriptable
 
-**Unverified:** no test in `test/acceptance/` or `test/integration/` drives a
-plain `ai stop` + `ai start` round trip end-to-end. The closest automated
-coverage is `TestOverlayPersistsAcrossRecreation` (§13.1, `ai destroy` +
-`ai start` — a *stronger* teardown than a mere stop) and the mocked unit test
-`TestRestartStopsThenStartsExistingMicroVM`
-(`internal/workspace/workspace_test.go`), which exercises `Restart` (stop then
-start) against a fake sandbox, not the real CLI round trip.
+**Automated coverage:** `ai stop`'s non-interactive path is covered at the unit
+level by `TestStopAllStopsOnlyRunningSessions` (`internal/workspace/workspace_test.go`,
+against a fake nono runner — stops only the running sessions, skips already-exited
+ones). There is **no** test anywhere (`test/acceptance/`, `test/integration/`) that
+drives a full `ai stop` + `ai start` CLI round trip end-to-end — and, unlike before,
+this is not merely an oversight: `ai start`/`ai restart` cannot be driven through the
+JSON-envelope harness at all now (they require a terminal), so proving this
+end-to-end needs a PTY-driving harness for nono sessions, which this suite does
+not yet have (`test/integration/workspace_test.go`'s own doc comment calls this
+out explicitly as a hardware-bring-up gap). The old `TestOverlayPersistsAcrossRecreation`
+and `TestRestartStopsThenStartsExistingMicroVM` tests this section used to cite are
+both gone (the overlay and the microVM `Restart` they exercised no longer exist).
 
 ---
 
@@ -391,7 +432,7 @@ start) against a fake sandbox, not the real CLI round trip.
 ### Test
 
 ```bash id="t7b"
-ai create del-test --os debian-trixie --json
+ai create del-test --json
 
 # (a) KNOWN project, missing confirmation → exit 2 (isolates the missing-`--yes` cause)
 ai delete del-test --json
@@ -413,11 +454,14 @@ unknown project with a missing confirmation:
   still appears in `config/projects.yaml`
 * **(b)** exits `2` **because the project is unknown** — `--yes` is present, so a
   missing confirmation cannot be the cause; nothing is removed
-* **(c)** default delete: the microVM is torn down, the overlay removed, and the
-  project's **whole `<project>/.ai-platform/` directory** removed (config /
-  profile / project.yaml / Dockerfile / `run/` all gone);
-  `config/projects.yaml` no longer lists `del-test`; the user's **OTHER** files in
-  the directory are **kept**
+* **(c)** default delete: any live nono sessions for the project are
+  best-effort stopped, its scoped gateway credential is best-effort revoked
+  from the OS keychain (`Manager.StopAll`/`Manager.DeleteCredentials`), and the
+  project's **whole `<project>/.ai-platform/` directory** removed
+  (`config.yaml` / `project.yaml` / `.gitignore` / any generated
+  `nono-profile-*.json` / `run/` all gone — there is no Dockerfile or
+  profile.yaml any more); `config/projects.yaml` no longer lists `del-test`;
+  the user's **OTHER** files in the directory are **kept**
 * `--purge` (e.g. `ai delete <p> --purge --yes` on a separately created
   disposable project) additionally removes the project directory entirely
 
@@ -427,9 +471,11 @@ exit 2 — is not exercised by `test/acceptance/`; it is verified at the CLI-uni
 level by `TestNewDeleteCmdUnknownProject`
 (`internal/cli/project_helpers_test.go`) and black-box by
 `TestWorkspaceCreateTeardown/delete_unknown_errors`
-(`test/integration/workspace_lifecycle_test.go`, needs only installed
-templates, not a running stack). `--purge` removing the whole project
-directory is also covered by
+(`test/integration/workspace_lifecycle_test.go` — unlike the old Microsandbox
+model, `ai create`/`ai delete` have NO external dependency at all here, not
+even installed templates (`internal/templates` is gone), so these run
+unconditionally fast and everywhere, not just on a provisioned host).
+`--purge` removing the whole project directory is also covered by
 `TestWorkspaceCreateTeardown/delete_purge_removes_project_dir` and the unit
 test `TestDeletePurgeRemovesSource` (`internal/project/project_test.go`).
 
@@ -455,122 +501,42 @@ the user's and the in-workspace agent's job.
 
 ---
 
-# 6. Environment (Dockerfile) Tests
+# 6. Environment (Dockerfile) Tests — Removed
 
-(There is no snapshot system — no versioning, upgrade, or rollback. A project's
-environment is its `.ai-platform/Dockerfile`, architecture §25.)
+The nono migration deleted the OS-image/Dockerfile concept entirely
+(`internal/envimage` and `internal/templates` are both gone; there is no OS
+choice, no software-stack choice, and no per-project `Dockerfile` or
+`profile.yaml` any more). A workspace now runs directly on whatever OS/toolchain
+the HOST actually has — "the environment" is just the host, not a
+platform-built artifact — so there is no snapshot/versioning/rollback concept
+to test and no environment-reproducibility guarantee for this section to make.
 
-## 6.1 Project Dockerfile Created `[S1]`
+The four tests this section used to define are all **removed, not replaced**:
 
-### Test
+* **6.1 Project Dockerfile Created** — there is no Dockerfile. The former
+  automated coverage, `TestProjectDockerfileReflectsOS`
+  (`test/acceptance/s1_remaining_test.go`), no longer exists.
+* **6.2 Environment Change Via Dockerfile** — there is no Dockerfile to edit
+  and no image to rebuild; `ai start` no longer builds or recreates anything.
+* **6.3 Agent CLI Selection** — the *selection* itself is unchanged and still
+  tested (`config.yaml` records the chosen `--agents`, covered by
+  `TestWorkspaceCreateTeardown/flags_persist_to_config` in
+  `test/integration/workspace_lifecycle_test.go` and by `TestProjectLifecycle`/
+  `TestProjectCreateNoTTYExits2` in `test/acceptance/acceptance_test.go`), but
+  the in-workspace `command -v opencode`/`command -v codex` probe this test
+  specified has no replacement: `ai exec` — the command it used to reach inside
+  the workspace — is **deleted entirely** (CLI §4). The only way to run a
+  command inside a sandboxed session now is `ai agent <cli>`/`ai shell`, which
+  are interactive-only (no envelope) and need a PTY-driving harness this suite
+  does not yet have.
+* **6.4 Software Stack Selection** — the `--stacks` flag and the whole software-
+  stacks concept are gone; whatever toolchains exist on the host are what a
+  session sees. There is nothing left to select or probe.
 
-```bash id="t12"
-ai create env-test --os debian-trixie --json
-ai exec env-test --json -- cat /etc/os-release
-```
-
-### Expected Result
-
-* `<project>/.ai-platform/Dockerfile` exists, seeded from the `debian-trixie`
-  template (asserted on-disk by the file-inspection probe; runnable without a
-  microVM)
-* the workspace image is built from that Dockerfile; `data.stdout` of
-  `os-release` shows Debian trixie (the in-VM half is hardware-gated)
-
-(Caveman is installed at workspace start by its own upstream installer, not seeded at
-create; not asserted here — see §8.)
-
-**Automated coverage:** `TestProjectDockerfileReflectsOS`
-(`test/acceptance/s1_remaining_test.go`) asserts the on-disk `FROM` line for all
-three OS templates — this is the file-inspection half described above. No test
-runs the in-VM `cat /etc/os-release` half (it needs a real microVM build and is
-not present in `test/acceptance/` or `test/integration/`).
-
----
-
-## 6.2 Environment Change Via Dockerfile `[S1]`
-
-### Test
-
-```bash
-# edit the project's Dockerfile to add a package, then rebuild (debian-trixie → apt)
-printf '\nRUN apt-get update && apt-get install -y jq && rm -rf /var/lib/apt/lists/*\n' >> <project>/.ai-platform/Dockerfile
-ai start   env-test --json   # start rebuilds the OCI image (`msb create --replace`)
-ai exec    env-test --json -- command -v jq
-```
-
-### Expected Result
-
-* the rebuilt image contains `jq` (final exec `data.exit_code == 0`)
-* the change came from editing the Dockerfile — no snapshot/upgrade command exists
-
-**Unverified:** no test in `test/acceptance/` or `test/integration/` edits a
-project's Dockerfile and rebuilds — this scenario needs a real image build and
-is not automated today.
-
----
-
-## 6.3 Agent CLI Selection `[S1]`
-
-### Test
-
-```bash
-# select a non-default agent CLI in addition to the default
-ai create cli-test --os debian-trixie --agents opencode,codex --json
-ai exec cli-test --json -- sh -c 'command -v opencode && command -v codex'
-ai exec cli-test --json -- sh -c 'command -v gemini'   # NOT selected
-```
-
-### Expected Result
-
-* the create envelope reports `data.tools == [opencode, codex]`
-* `config.yaml` records the selected agent CLIs, and each appears as an
-  `# agent CLI: <name>` snippet in `.ai-platform/Dockerfile`; an unselected CLI
-  (`gemini`) does **not** appear (asserted on-disk; runnable without a microVM)
-* in the workspace (hardware-gated): the `opencode` + `codex` probe succeeds
-  (`data.exit_code == 0`), and the unselected `gemini` probe fails
-  (`data.exit_code != 0`)
-* default selection (`ai create x --os <key>`, no `--agents`) yields
-  `data.tools == [opencode]` (§3.1)
-
-**Automated coverage:** `TestAgentCLISelectionReflected` (selection +
-Dockerfile snippet presence/absence) and `TestAgentCLIDefaultSelection`
-(default `[opencode]`), both in `test/acceptance/s1_remaining_test.go` — the
-on-disk half only; the in-VM `command -v` probes are hardware-gated and not
-present as an automated test.
-
----
-
-## 6.4 Software Stack Selection `[S1]`
-
-### Test
-
-```bash
-# select software stacks
-ai create stack-test --os debian-trixie --stacks go,rust --json
-ai exec stack-test --json -- sh -c 'command -v go && command -v cargo'
-ai exec stack-test --json -- sh -c 'command -v deno'      # NOT selected
-```
-
-### Expected Result
-
-* the create envelope reports `data.stacks == [go, rust]`
-* `profile.yaml` records `stacks: [go, rust]` and the matching `# stack: <name>`
-  snippets appear in `.ai-platform/Dockerfile`; an unselected stack (`deno`)
-  does **not** (§25, repo-layout §1.5; asserted on-disk, runnable without a
-  microVM)
-* in the workspace (hardware-gated): the `go` + `cargo` probe succeeds
-  (`data.exit_code == 0`), and the unselected `deno` probe fails
-  (`data.exit_code != 0`)
-* Node.js and Python 3 are **baked into every base** (not stacks), so
-  `command -v node` / `command -v python3` succeed regardless of `--stacks`
-* default selection (`ai create x --os <key>`, no `--stacks`) installs **no**
-  stacks beyond the base image (`profile.yaml` `stacks: []`)
-
-**Automated coverage:** `TestSoftwareStackSelectionReflected` and
-`TestSoftwareStackDefaultEmpty`, both in
-`test/acceptance/s1_remaining_test.go` — the on-disk half only; the in-VM
-`command -v` probes are hardware-gated and not present as an automated test.
+Agent-CLI and AI-tool *selection* round-tripping to `config.yaml` remains
+covered — see §3.1 and `test/integration/workspace_lifecycle_test.go`'s
+`flags_persist_to_config` subtest — but probing what a live session can
+actually execute is now out of this suite's reach without a PTY harness.
 
 ---
 
@@ -710,7 +676,7 @@ external, upstream-owned toolkit) and are not measured by any platform test.
 ### Test
 
 ```bash
-ai create ov-test --os debian-trixie --tools caveman,graphify,code-review-graph,openviking --json
+ai create ov-test --tools caveman,graphify,code-review-graph,openviking --json
 ```
 
 ### Expected Result
@@ -722,26 +688,35 @@ ai create ov-test --os debian-trixie --tools caveman,graphify,code-review-graph,
   every other AI tool it is OPT-IN — `DefaultAITools()` returns an empty set
   (no tool is pre-selected), so it is installed only when explicitly named
 * `<project>/.ai-platform/config.yaml` records `context.openviking_enabled:
-  true`, and the project Dockerfile carries the conditional `tools/openviking`
-  snippet (installs `openviking-server`, the `ov` CLI, and the OpenCode plugin)
-* at workspace start, `registerOpenViking` starts the OpenViking server
-  locally on loopback `:1933` in OpenViking's unauthenticated "dev mode" (no
-  API key), persists its index under `/persist/openviking` (symlinked from
-  `~/.openviking` so it survives restarts), and registers it with each
-  supported installed CLI — claude-code/codex via OpenViking's native plugin
-  marketplace, opencode/omp via the shared memory-plugin installer
-  (`--harness`); hermes has no documented non-interactive setup and is skipped
-* the install is DETACHED and once-guarded
-  (`<project>/.ai-platform/.openviking-installed`) — best-effort, so a
-  failed/killed run simply retries on the next workspace start rather than
-  failing it
+  true`. There is no project Dockerfile any more (`internal/templates` and
+  `internal/envimage` were both deleted in the nono migration), so the old
+  "conditional Dockerfile snippet" install mechanism no longer applies — the
+  platform's opt-in AI tools are now meant to install directly on the HOST via
+  plain `os/exec` at the next `ai agent`/`ai shell` (CLI §4), not at any build
+  step
+* **Uncertain:** the exact current registration mechanism (starting the
+  OpenViking server, where its index persists, and its per-CLI plugin
+  registration) could not be confirmed against `internal/workspace` — the
+  `registerOpenViking` function these bullets used to name does not exist
+  there, nor does `registerCaveman`/`registerGraphify`/any other per-tool
+  registration function; only the config-flag plumbing
+  (`internal/create.SplitAITools`) is wired today. The old claim that its
+  index persists under `/persist/openviking` is definitely stale
+  (`internal/overlay`, the VM-disk persistence layer it referenced, is
+  deleted), but what — if anything — replaces it is not visible in the current
+  source, so treat this as **not yet wired up under the nono model** rather
+  than a confirmed behavior
+* the install-detached/once-guarded semantics described for the old model are
+  likewise unconfirmed under the new one
 
 **Automated coverage:** `TestSplitAITools`/`TestDefaultAITools`
 (`internal/create/options_test.go`) cover the `--tools` selection plumbing (no
-AI tool, OpenViking included, is selected by default). No platform acceptance
-test exercises the in-VM server start / plugin-registration behavior — like
-Caveman (§8.1), it is an external, upstream-owned toolkit whose runtime
-behavior is not measured here.
+AI tool, OpenViking included, is selected by default) — this part is
+unaffected by the nono migration. No platform acceptance test exercises any
+server start / plugin-registration behavior — like Caveman (§8.1), it is an
+external, upstream-owned toolkit whose runtime behavior is not measured here,
+and (per the note above) its current wiring under the host-process model is
+itself unconfirmed.
 
 ---
 
@@ -751,65 +726,93 @@ behavior is not measured here.
 
 Validates the keys-in-LiteLLM model (architecture §17): the agent never holds the
 real provider secret, yet the upstream request is delivered with the real key
-that LiteLLM holds in its own store.
+that LiteLLM holds in its own store. **The credential-delivery mechanism changed**
+with the nono migration: there is no in-VM env file any more. A project's scoped
+LiteLLM virtual key is minted per agent-CLI launch, stored in the **OS keychain**
+(macOS Keychain via `security`, Linux via `secret-tool` — `internal/nono`'s
+`CredentialStore`) under a name like `aip-gateway-<project>`, and referenced — not
+copied as plaintext — into the launched nono session via `nono run
+--env-credential-map <keychain-ref> <ENV_VAR>` (e.g. `AIP_GATEWAY_KEY` for
+opencode/omp/hermes/codex, `ANTHROPIC_AUTH_TOKEN` for claude-code, `GEMINI_API_KEY`
+for gemini). The real upstream provider key (the sentinel, in this fixture) still
+lives only in LiteLLM's own credential store and is attached by LiteLLM on the
+upstream call — that part of the architecture (keys-in-LiteLLM) is unchanged.
 
 ### Test
 
 ```bash id="t18"
-ai create test-project --os debian-trixie --json
-# inside the workspace, make a model call through LiteLLM to the mock provider:
-ai models test gpt-5 --project test-project --json
+ai create test-project --json
+ai agent opencode test-project          # NOTE: interactive-only, cannot be driven with --json
+# inside the launched session, an agent request would route through the gateway
+# to the mock provider, which should record the real provider key on the wire.
 ```
 
 ### Expected Result
 
-* the agent's workspace env contains only the scoped LiteLLM **virtual key**,
-  never the sentinel (the real provider key)
+* the scoped LiteLLM virtual key is minted and stored only via the OS keychain
+  (`CredentialStore.StoreCredential`), referenced by name in the nono run's
+  `EnvCredentialMap` — never written as plaintext to the session's environment
+  by platform code, and never written to project/config files on disk
 * the **mock provider's recorded request contains `$AIP_TEST_SENTINEL`**
-  (proves LiteLLM attached the real provider key — held in its own store — on the
-  upstream call). Since the mock provider serves **HTTPS** (§1.6), this asserts
-  the key end-to-end over TLS while the workspace never saw it
-* no `.env` file exists anywhere under the workspace or project
-* command exits `0`
+  (proves LiteLLM attached the real provider key — held in its own store — on
+  the upstream call), over HTTPS (§1.6)
+* no credential file (`.env` or otherwise) exists anywhere under the project
 
-**Automated coverage:** `TestCredentialedRequestOnHardware`
-(`test/acceptance/s1_hardware_test.go`), hardware-gated — it asserts the mock
-provider's recorded `Authorization` header carries the sentinel and that the
-workspace's own `env` output does not.
+**Automated coverage: NONE at the hardware/end-to-end level.** The hardware-gated
+test this scenario used to cite, `TestCredentialedRequestOnHardware`
+(`test/acceptance/s1_hardware_test.go`), was removed during the nono migration and
+**not replaced** — proving a live nono session's outbound request carries the real
+provider key needs a PTY-driving harness for nono sessions that this suite does
+not have yet (`ai agent`/`ai shell` are interactive-only — no JSON envelope — and
+`test/integration/workspace_test.go`'s own doc comment flags exactly this gap as
+`hardware bring-up`). The closest automated coverage is the **mocked unit test**
+`TestAgentAPIKeyModeMintsAndStoresKey` (`internal/workspace/workspace_test.go`),
+which proves the scoped key is minted, stored ONLY via the injected
+`CredentialStore`, and referenced by name (never plaintext) in the nono run's
+`EnvCredentialMap` — but it fakes both nono and LiteLLM, so it does not prove the
+real upstream request carries the real provider key end-to-end.
 
 ---
 
 ## 9.2 Secret Isolation `[S1]`
 
+The old mechanism for this test drove `ai exec <project> -- env`/`grep` inside the
+workspace to prove the sentinel never appeared there. **`ai exec` is deleted
+entirely** (CLI §4) — there is no non-interactive verb left that can run an
+arbitrary probe command inside a sandboxed session at all. `ai agent`/`ai
+shell`/`ai attach` are interactive-only (no envelope, real terminal), so this
+test's shape — capture a command's stdout from inside the workspace via `--json`
+and grep it on the host — **cannot be reproduced** against the current CLI
+surface without a PTY-driving harness (see §9.1).
+
 ### Test
 
-The sentinel is expanded by the **host** shell (double quotes, no `sh -c '…'`),
-then searched verbatim — it is never relied upon inside the workspace, where it
-is unset.
+**Removed** — no non-interactive mechanism exists to reach inside a sandboxed
+session any more. The intent (the real provider secret never enters the
+workspace's process environment or filesystem) still holds by construction — per
+§9.1, the platform-side code path never places the real key anywhere accessible
+to the session; only a keychain *reference* is passed via
+`--env-credential-map`, and nono (not platform code) resolves it into the
+process's actual environment at launch. But this intent is not independently
+verified end-to-end by any test today.
 
-```bash
-# 1) workspace env must not contain the sentinel — capture stdout on the host, grep host-side
-ai exec test-project --json -- env | jq -r .data.stdout > ws-env.txt
-grep -qF "$AIP_TEST_SENTINEL" ws-env.txt        # expect: no match (exit 1)
+### Expected Result (intent, unverified)
 
-# 2) workspace filesystem must not contain the sentinel — inner grep, host-expanded arg
-ai exec test-project --json -- grep -rIF "$AIP_TEST_SENTINEL" / 2>/dev/null \
-  | jq -e '.data.exit_code != 0'                # expect: inner grep found nothing
-```
+* the workspace process's environment should contain only the scoped LiteLLM
+  virtual key (or, for oauth-mode agents, no key at all — §9.1), never the real
+  provider secret
+* the real provider key should never be reachable from the workspace — it lives
+  only in the LiteLLM gateway (keys-in-LiteLLM, arch §17); non-allow-listed
+  egress from a session is a matter of the project's `ai network` egress policy,
+  compiled into its nono profile (§16.3), not a VM boundary
 
-### Expected Result
-
-* the host-side grep of the captured env finds **no** sentinel; the env instead
-  contains only the scoped LiteLLM virtual key
-* the filesystem grep's `data.exit_code` is non-zero (sentinel absent)
-* the real provider key is never reachable from the workspace — it lives only in
-  the LiteLLM gateway (keys-in-LiteLLM, arch §17), and any non-allow-listed egress
-  from the workspace is denied by the Microsandbox NetworkPolicy (§16.3)
-
-**Unverified:** the first check (workspace env has no sentinel) is covered by
-`TestCredentialedRequestOnHardware` (§9.1). The second check — a filesystem-wide
-`grep -rIF` for the sentinel across the whole workspace — is not exercised by
-any test in `test/acceptance/` or `test/integration/` today.
+**Automated coverage:** none at the acceptance/integration level (mechanism
+removed, see above). Related unit-level coverage: `TestAgentAPIKeyModeMintsAndStoresKey`
+(credential stored only via `CredentialStore`, referenced by name in
+`EnvCredentialMap` — never placed in platform-written config/env files) and
+`TestAgentOAuthModeSkipsKeyMinting` (an oauth-mode agent gets no key minted, no
+credential stored, and no `EnvCredentialMap` entry at all), both in
+`internal/workspace/workspace_test.go`.
 
 ---
 
@@ -819,13 +822,15 @@ The platform does not manage MCP, so there are no MCP acceptance tests. MCP
 servers are configured and run by the in-workspace agent (architecture §12), and
 any credentials those servers need are the agent's own concern — the platform
 manages only the model-path provider keys (in the LiteLLM gateway, §9) and
-confines all other workspace egress with the Microsandbox NetworkPolicy (§16.3).
+confines all other workspace egress via the project's `ai network` policy,
+compiled into its generated nono profile (§16.3) — there is no Microsandbox
+NetworkPolicy any more.
 
 ---
 
-# 11. Runtime Tests (Container + microVM)
+# 11. Runtime Tests (Container + Workspace Sandbox)
 
-## 11.1 Rootless Service Tier + microVM Workspace Test `[S1]`
+## 11.1 Rootless Service Tier + Workspace Sandbox Test `[S1]`
 
 ### Test
 
@@ -837,19 +842,26 @@ ai doctor test-project --json
 
 `ai doctor` is consolidated: given a project name it adds a WORKSPACE-runtime
 section to the report. It always runs to completion and exits `0` (per-check
-status conveys health, §14.1) — a runtime/virtualization shortfall is folded into
-the checks, not a non-zero exit.
+status conveys health, §14.1) — a runtime shortfall is folded into the checks,
+not a non-zero exit. Unlike the Microsandbox microVM runtime this replaced,
+there is no container-runtime/rootless/virtualization posture to probe for a
+workspace — nono sandboxes a host process directly (Landlock on Linux, Seatbelt
+on macOS), so the section is just: is `nono` installed, and how many live nono
+sessions does the project have.
 
 * the envelope is `command: doctor`, `ok == true`, exit `0`
 * on a provisioned host the workspace posture checks pass: the `workspace
-  rootless` and `workspace virtualization` checks each report status `ok` (the
-  platform never runs privileged; workspaces are Microsandbox microVMs)
-* off-hardware those same checks appear in the report but report a non-`ok`
+  runtime` check reports status `ok` (nono is installed), and `workspace
+  sessions` reports `ok`/`warn` depending on whether any session is currently
+  running (never an error unless listing sessions itself fails)
+* off-hardware (`nono` not installed) `workspace runtime` reports a non-`ok`
   status — the command still exits `0`
 
 **Automated coverage:** `TestWorkspaceDoctorOnHardware`
-(`test/acceptance/acceptance_test.go`), hardware-gated for the `ok` posture
-assertion. Off-hardware, `TestDoctorRunsAndReports`
+(`test/acceptance/acceptance_test.go`), hardware-gated, asserts `workspace
+runtime == ok`. `TestGroup04WorkspaceLifecycle`'s "doctor reports nono runtime
+ok" subtest (`test/integration/workspace_test.go`) covers the same assertion
+against the live integration stack. Off-hardware, `TestDoctorRunsAndReports`
 (`test/acceptance/acceptance_test.go`) confirms `ai doctor` still exits `0`
 with a non-empty report (it does not assert the workspace-runtime checks'
 non-`ok` status specifically).
@@ -860,8 +872,10 @@ non-`ok` status specifically).
 
 ### Test
 
-* run the identical project-creation + workspace-start flow once under Docker
-  and once under Podman (force via `config/runtime.yaml`)
+* run the identical project-creation + agent-session-launch flow once under
+  Docker and once under Podman (force via `config/runtime.yaml`) — this
+  exercises the service-tier container runtime only; workspace sandboxing
+  (nono) is independent of which container runtime backs the service tier
 
 ### Expected Result
 
@@ -888,7 +902,12 @@ ai setup --json
 
 * full installation succeeds (`ok == true`) on Apple Silicon
 * Docker-based rootless service tier works
-* Microsandbox microVM runtime works (Apple Hypervisor)
+* the `nono` workspace sandbox works (Seatbelt) — unlike the Microsandbox
+  microVM runtime this replaced, nono has **no Apple-Silicon-only
+  restriction**; this test still targets Apple Silicon because the
+  **inference tier** (host-native omlx) is macOS-Apple-Silicon-only, a
+  restriction that is unrelated to the workspace runtime and must not be
+  conflated with it
 
 **Automated coverage:** this is the same flow as §2.1 —
 `TestSetupBringsServiceTierUpOnHardware`/`TestSetupSucceedsOnHardware`.
@@ -897,7 +916,13 @@ ai setup --json
 CI host that can run the full stack); the workflow file itself does not set
 `AIP_HARDWARE_TESTS=1`, so whether the hardware-gated tests actually execute
 there (vs. self-skip) depends on that variable being exported in the runner's
-own environment — unverifiable from the repo alone.
+own environment — unverifiable from the repo alone. **Note:** this Apple-
+Silicon-only CI constraint was originally driven by the Microsandbox
+hypervisor requirement; now that the workspace sandbox (nono) itself has no
+such restriction, the constraint is revisitable for workspace-only test runs
+(a Linux runner could exercise §11/§16's workspace-sandbox checks) — but the
+service tier's omlx inference check would still need Apple Silicon. No new CI
+configuration is proposed here; this is a note for future consideration.
 
 ---
 
@@ -905,15 +930,16 @@ own environment — unverifiable from the repo alone.
 
 ### Test
 
-* run full installation on Linux (KVM available)
+* run full installation on Linux
 
 ### Expected Result
 
 * Docker or Podman auto-detected (`config/runtime.yaml.detected` set)
-* Microsandbox microVMs run via KVM
+* the `nono` workspace sandbox works via Landlock LSM (no KVM/virtualization
+  needed — nono sandboxes a host process directly, not a VM)
 * no manual configuration required
 
-**Unverified:** there is no Linux/KVM self-hosted runner in
+**Unverified:** there is no Linux self-hosted runner in
 `.github/workflows/ci.yml` yet (it is future work per that file's own comment)
 and no test in `test/acceptance/` or `test/integration/` exercises this on
 Linux — the suite's hardware-gated tests only ever run on the Apple Silicon
@@ -921,91 +947,55 @@ runner.
 
 ---
 
-## 12.3 OS Equivalence Test `[S5]`
+## 12.3 OS Equivalence Test — Removed
 
-### Test
-
-* `ai create os-<key> --os <key> --json` for each OS key
-  (`alma`, `debian-trixie`, `ubuntu`), then `ai start
-  --project os-<key>`, each with the same agent-CLI selection, and run the same
-  tooling-smoke command (`ai exec os-<key> -- <tool> --version`) in each
-
-### Expected Result
-
-* all three workspaces expose an identical **base** tooling surface (§12: Git,
-  GitHub CLI) and the **same selected agent CLI(s)** — the OS choice never
-  changes which tools are present
-* the smoke command produces equivalent results across all three
-* no OS is treated as a default
-
-**Automated coverage:** `TestOSEquivalenceOnHardware`
-(`test/acceptance/acceptance_test.go`), hardware-gated — it builds a workspace
-for each of the three OS keys and probes `git --version`/`gh --version` in
-each.
+There is no OS choice any more: `ai create` has no `--os` flag, there is no
+per-project Dockerfile/base-image, and a workspace simply runs on whatever OS
+the host already has (§6). "OS equivalence" is therefore not a meaningful
+acceptance criterion under the nono model — a workspace IS the host, by
+definition identical to itself. The test this section used to define
+(creating a workspace per OS key and diffing tooling across them) and its
+automated coverage, `TestOSEquivalenceOnHardware`
+(`test/acceptance/acceptance_test.go`), are both gone, not replaced.
 
 ---
 
-# 13. Persistence Tests
+# 13. Persistence Tests — Removed (guarantee is now trivial, not platform-specific)
 
-(There is no backup/restore feature — architecture §32. The platform's
-persistence guarantee is the overlay: installed programs and agent state survive
-restart and recreation.)
+(There is no backup/restore feature — architecture §32.) The old persistence
+guarantee was the **overlay**: a Microsandbox microVM's writable disk layer,
+which had to specifically survive a `--replace` recreate for installed
+programs/agent state to still be there. `internal/overlay` is **deleted** —
+there is no VM disk any more. A workspace's project directory **is** a host
+directory; whatever a sandboxed nono session writes there (or, subject to its
+profile's filesystem grants, anywhere else on the host) simply persists the
+way any file on disk persists, because there is no VM boundary to survive in
+the first place. This is no longer a distinct, independently-failable platform
+behavior — it is a property of the host filesystem, not something `ai`
+implements or could break — so it is not a meaningful acceptance criterion on
+its own any more.
 
-## 13.1 Writes Persist Across Stop/Start `[S4]`
+The two tests this section used to define are both **removed, not replaced**:
 
-Deterministic — no package manager, network, or `sudo` (so it doesn't depend on
-distro mirrors or whether the image grants sudo).
+## 13.1 Writes Persist Across Stop/Start `[S4]` — Removed
 
-### Test
+The old test wrote a file via `ai exec` into the VM overlay, cycled `ai stop` +
+`ai start`, and re-read it. `ai exec` is deleted entirely (§9.2/CLI §4), and
+`ai start` is now interactive-only (§3.3), so this exact shape cannot be driven
+through the `--json` harness at all. More fundamentally, there is no overlay
+left to prove survives anything — the file would just be sitting in the
+project directory on host disk the whole time, stop or no stop. The automated
+test this section cited, `TestOverlayPersistsAcrossRecreation`
+(`test/acceptance/acceptance_test.go`), is gone and has no replacement — there
+is nothing overlay-shaped left to test.
 
-```bash id="t21"
-# write an executable into the overlay
-ai exec test-project --json -- sh -c \
-  'mkdir -p ~/.local/bin && printf "#!/bin/sh\necho overlay-ok\n" > ~/.local/bin/overlay-tool && chmod +x ~/.local/bin/overlay-tool'
-# stop (non-destructive) and start the workspace again
-ai stop  test-project --json
-ai start test-project --json
-# the file is still there
-ai exec test-project --json -- sh -c '~/.local/bin/overlay-tool'
-```
+## 13.2 Agent State Persists Across Restart `[S4]` — Removed
 
-### Expected Result
-
-* after restart the tool runs: `data.stdout` is `overlay-ok`,
-  `data.exit_code == 0`
-* it survived because it lives in the per-workspace overlay (§26); `ai stop`
-  kept the overlay and `ai start` re-mounted it (whereas `ai delete`/`ai destroy`
-  would have removed it)
-
-**Note on actual coverage:** the real test, `TestOverlayPersistsAcrossRecreation`
-(`test/acceptance/acceptance_test.go`, hardware-gated), exercises the
-*stronger* `ai destroy` + `ai start` cycle (full teardown + rebuild against
-the overlay) rather than the `ai stop` + `ai start` pause/resume shown above —
-both are described as [S4] overlay-persistence guarantees, but a plain
-stop/start round trip itself is not separately automated (see §3.3).
-
----
-
-## 13.2 Agent State Persists Across Restart `[S4]`
-
-### Test
-
-```bash id="t22"
-ai exec test-project --json -- sh -c 'echo hi > ~/.local/agent-state'
-ai stop  test-project --json
-ai start test-project --json
-ai exec test-project --json -- sh -c 'cat ~/.local/agent-state'
-```
-
-### Expected Result
-
-* the file persists; final exec `data.stdout` is `hi`, `data.exit_code == 0`
-* agent-written state outside the project mount survives via the overlay
-
-**Note on actual coverage:** as with §13.1, `TestOverlayPersistsAcrossRecreation`
-covers this shape of scenario (a marker written outside the project mount
-survives) but does so via `ai destroy` + `ai start`, not `ai stop` + `ai
-start`.
+Same reasoning as §13.1: the "outside the project mount" framing assumed a
+VM-guest/host-mount split that no longer exists (nono is not a VM; there is no
+second filesystem view to mount anything into). Whatever directory an agent
+writes to on the host is just... a directory on the host. No automated test
+covers this (or needs to) any more.
 
 ---
 
@@ -1027,14 +1017,18 @@ It always exits `0`; per-check status conveys health.
 
 * the envelope is `command: doctor`, `ok == true`, exit `0`, with a non-empty
   `data.checks`
-* the platform-dependency checks are always present: `container runtime`,
-  `microsandbox runtime`, `host virtualization`
+* the platform-dependency checks are always present: `container runtime` and
+  `nono runtime` (the old `microsandbox runtime`/`host virtualization` checks
+  are gone — nono has no separate "virtualization available" check; it
+  sandboxes a host process directly, so the only question is whether the
+  `nono` binary is installed)
 * the SERVICES section lists every managed service — the host-native inference
   backend `omlx`, plus `presidio`, `valkey`, `redisinsight`,
   `litellm`, `headroom`, `proxy`, `dns` (the names appear even when stopped
   off-hardware). `presidio` reads **`disabled`** when the `secret-masking`
   guardrail is off (listed but not probed). The host tier has no optional services
-  (Open WebUI is now a per-workspace in-VM app and Odysseus was removed).
+  (Open WebUI and Odysseus have both been removed from the platform entirely —
+  there is no in-VM-app mechanism any more).
   (`ai services status` additionally surfaces a **display-only `postgres` line**
   immediately after `litellm` for the LiteLLM Postgres `aip-litellm-db`, which has
   no independent lifecycle verb.)
@@ -1152,44 +1146,49 @@ find "$AIP_TEST_HOME" -name '.env' -print                                       
 * audit log records secret-access events without values (arch §31)
 
 **Unverified:** no test in `test/acceptance/` or `test/integration/` runs this
-host-state-wide sentinel grep or the `.env` search; `TestCredentialedRequestOnHardware`
-(§9.1) only checks the narrower case of the workspace's own `env` output.
+host-state-wide sentinel grep or the `.env` search. The narrower per-session
+check this note used to point at, `TestCredentialedRequestOnHardware`, no
+longer exists (§9.1) — there is currently no automated secret-leak scan at any
+level beyond the mocked unit tests described in §9.1/§9.2.
 
 ---
 
-## 16.2 Workspace Isolation Test `[S1]`
+## 16.2 Workspace Isolation Test — Removed (claim no longer holds; corrected)
 
-### Test
+**This section's premise is gone and must not be restated as-is.** The old test
+assumed a Microsandbox microVM: a separate guest kernel, so the host filesystem
+and the host's Docker socket were categorically unreachable from inside it —
+a hardware/VM boundary. **nono provides a fundamentally weaker guarantee**:
+same-kernel, kernel-capability sandboxing (Landlock LSM on Linux, Seatbelt on
+macOS). It restricts a sandboxed process's *filesystem paths and network
+access* per its profile; it does **not** hide the host kernel, its process
+table, or any path the profile doesn't explicitly deny. A host-only marker
+file placed outside the project directory is **not** categorically
+unreachable the way it was under a microVM — whether a session can read it
+depends entirely on what the active nono profile's filesystem grants allow,
+not on a kernel boundary. The "no Docker socket inside the workspace" check
+is also meaningless now: there is no separate guest filesystem for a socket
+to be absent from — if `/var/run/docker.sock` exists on the host and the
+profile doesn't block it, it is simply there.
 
-The workspace is a Microsandbox microVM (hardware isolation), so the host
-filesystem and Docker socket must be unreachable from inside it. Uses a
-**host-only sentinel file** placed outside any workspace mount, plus the
-docker-socket probe. The `/proc/1/root` probe is not used (it is unreliable and
-namespace-dependent).
+Compounding this, the platform's own generated nono profile
+(`internal/workspace/profile.go`'s `ensureProfile`) does **not configure any
+filesystem restrictions at all** — it sets only `Network` (block/allow/deny
+domains) and, for gemini, an environment variable. Filesystem confinement, if
+any, comes entirely from whatever base/registry-pack profile is extended
+(`nolabs-ai/opencode`, `nolabs-ai/claude`, `nolabs-ai/codex`, or nono's own
+built-in `default`) — a third party's defaults, not something this platform
+declares or could assert a specific acceptance criterion about today.
 
-```bash
-# place a marker on the host, outside ~/projects and any mounted path
-printf 'HOST_ONLY_%s' "$AIP_TEST_SENTINEL" > "$AIP_TEST_HOME/host-only-marker"
-
-# the workspace must not be able to read the host-only marker by its host path
-ai exec test-project --json -- cat "$AIP_TEST_HOME/host-only-marker" \
-  | jq -e '.data.exit_code != 0'
-
-# no host Docker socket inside the workspace
-ai exec test-project --json -- test -e /var/run/docker.sock \
-  | jq -e '.data.exit_code != 0'
-```
-
-### Expected Result
-
-* the host-only marker is **not** readable from the workspace
-  (`data.exit_code != 0`) — the host filesystem is not reachable
-* no host Docker socket is present (`data.exit_code != 0`) (arch §30)
-* the `ai` process itself exits `0` for both (the commands ran); isolation is
-  asserted via `data.exit_code`, per §4.5
-
-**Automated coverage:** `TestWorkspaceIsolationOnHardware`
-(`test/acceptance/s1_hardware_test.go`), hardware-gated.
+The old automated coverage, `TestWorkspaceIsolationOnHardware`
+(`test/acceptance/s1_hardware_test.go`), is gone and has **no replacement** —
+there is no test anywhere in `test/acceptance/` or `test/integration/` that
+makes any filesystem-isolation claim about a workspace, and per the above, one
+should not be written against this platform's own profile-generation code
+until it actually declares filesystem capabilities itself. Any future
+isolation test must be scoped to "kernel-capability sandboxing restricts
+certain paths/syscalls" (Landlock/Seatbelt semantics), never "the host
+filesystem is unreachable."
 
 ---
 
@@ -1197,58 +1196,51 @@ ai exec test-project --json -- test -e /var/run/docker.sock \
 
 ### Test
 
-The per-project egress default is now `public` (allow-outbound — only private
-ranges blocked). `TestEgressConfinementOnHardware`
-(`test/acceptance/s1_hardware_test.go`) does **not** configure egress via `ai
-network` at all — it creates and starts the workspace with that default
-`public` policy left as-is (there is no `deny`-mode fixture and no `ai network
-allow`/mock-provider allow-list wired into this test), then probes two
-destinations from inside the workspace: the trusted host gateway (LiteLLM,
-reached via the in-VM `$AI_PLATFORM_HOST`/`$LITELLM_PORT` env vars the
-platform injects) and `https://example.com`. The host gateway is reachable via
-the always-on allow rule the platform injects — `nginx aip-proxy → LiteLLM`
-(which calls Headroom in-process as a `pre_call` guardrail), the SOLE model
-path; workspaces never reach LiteLLM directly. There is no egress proxy.
+A project's egress mode is `deny` or `public` (default `public` — allow-
+outbound, only private ranges blocked), compiled into the project's generated
+nono profile's `Network` capabilities (`Block`/`AllowDomain`/`DenyDomain` —
+bare domains, no ports) at the next `ai agent`/`ai shell`/`ai start` — there is
+no Microsandbox NetworkPolicy/`msb` net-rules any more, no
+`host.microsandbox.internal` (the default gateway host is now plain
+`127.0.0.1`), and no in-workspace `$AI_PLATFORM_HOST`/`$LITELLM_PORT` env vars
+(those are host-CLI-process env overrides, not something injected into a
+sandboxed session). Enforcement is nono's own Landlock/Seatbelt network
+filtering per the compiled profile, not a VM boundary or an egress proxy.
+
+**There is no hardware-gated test of this any more.** The old
+`TestEgressConfinementOnHardware` (`test/acceptance/s1_hardware_test.go`) —
+which probed `http://$AI_PLATFORM_HOST:$LITELLM_PORT/health` and
+`https://example.com` from inside a workspace via `ai exec` — is gone,
+**not replaced**: `ai exec` no longer exists, and there is no PTY-driving
+harness to launch an interactive `ai agent`/`ai shell` session and probe its
+actual network reachability. The only remaining coverage is a **config
+round-trip**, not a runtime-enforcement test:
 
 ```bash
-# the host gateway (the always-on allow rule, the model path) is reachable
-ai exec egress-test --json -- \
-  sh -c 'curl -fsS "http://$AI_PLATFORM_HOST:$LITELLM_PORT/health" >/dev/null'
-
-# a non-allow-listed public destination
-ai exec egress-test --json -- \
-  sh -c 'curl -fsS --max-time 5 https://example.com >/dev/null'
+ai network egress deny   <project> --json
+ai network show          <project> --json   # expect: egress == "deny"
+ai network egress public <project> --json
+ai network show          <project> --json   # expect: egress == "public"
 ```
 
 ### Expected Result
 
-* the host-gateway health probe succeeds (`data.exit_code == 0`) — the
-  always-on allow rule (the model path) is reachable
-* the `example.com` probe **succeeds** (`data.exit_code == 0`) — under the
-  platform's own documented `public` default (arch §29.4, allow-outbound with
-  only private ranges blocked), a plain public host like `example.com` is
-  reachable, not denied
-* the `ai` process itself exits `0` for both (the commands ran); confinement is
-  asserted via `data.exit_code`, per §4.5
+* `ai network egress <mode>` persists the mode to `config.yaml`; `ai network
+  show` reports it back exactly (`ResolvedEgress()` — `deny` or `public`,
+  defaulting empty to `public`)
+* no restart step is needed — the change takes effect on the next session
+  launch (the profile is regenerated on every launch)
+* **not asserted by any current test:** that a `deny`-mode session actually
+  cannot reach a non-allow-listed destination, or that a `public`-mode session
+  can reach the open internet but not a private/link-local address — both
+  need a live, probeable nono session, which requires the not-yet-built
+  PTY-driving harness (§9.1)
 
-(Egress confinement is the Microsandbox net-rules rendered at workspace create,
-arch §29.5; this test asserts that applied policy on a provisioned host.)
-
-**Automated coverage:** `TestEgressConfinementOnHardware`
-(`test/acceptance/s1_hardware_test.go`), hardware-gated — it configures no
-egress via `ai network` and runs against the workspace's default `public`
-policy (§1.6): it checks the trusted host service (LiteLLM) is reachable, but
-it still asserts `example.com` is **denied**. That assertion is a **bug** —
-it predates the switch to `public`-by-default egress and still encodes the
-old default-deny behavior, so it contradicts the Expected Result above. As
-written, the test does not merely assert the wrong thing silently — run on a
-live host against the current `public` default, the `example.com` curl now
-succeeds (`exit_code == 0`), which trips the `test.Fatal` and makes the test
-**actively fail**. It must be fixed (flip it to expect success, or replace
-the probe with a private-range/link-local address that `public` mode still
-blocks) before this test can be trusted as acceptance evidence. It also
-neither configures a `deny`-mode policy nor probes an allow-listed
-mock-provider destination.
+**Automated coverage:** `TestGroup04WorkspaceLifecycle`'s "egress deny/public
+round-trips" subtest (`test/integration/workspace_test.go`) exercises exactly
+the config round-trip above against the live integration stack. There is no
+acceptance-level (`test/acceptance/`) coverage, and no test anywhere asserts
+actual network enforcement.
 
 ---
 
@@ -1259,7 +1251,8 @@ The system is considered fully implemented when:
 * all CLI commands pass tests
 * all workflows execute without manual setup
 * agents operate independently
-* environments are reproducible from `.ai-platform/Dockerfile`
+* workspace sessions are sandboxed consistently (nono) across every supported
+  host, with no OS/image to keep reproducible any more (§6)
 * secrets are never exposed
 * cross-platform behavior is identical
 * AI-assisted workflows function reliably

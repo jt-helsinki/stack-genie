@@ -24,7 +24,6 @@ import (
 	"github.com/jt-helsinki/stack-genie/internal/litellm"
 	"github.com/jt-helsinki/stack-genie/internal/output"
 	"github.com/jt-helsinki/stack-genie/internal/runtime"
-	"github.com/jt-helsinki/stack-genie/internal/templates"
 	"github.com/jt-helsinki/stack-genie/internal/ui"
 	"github.com/jt-helsinki/stack-genie/internal/versions"
 )
@@ -473,16 +472,15 @@ func (report *Report) Human() string {
 	fmt.Fprintf(&builder, "%s %s\n", ui.Label.Render("Platform:"), ui.Value.Render(report.PlatformDir))
 	if report.Runtime != nil {
 		runtimeInfo := report.Runtime
-		available := ui.Failure.Render("unavailable")
-		if runtimeInfo.Microsandbox.Available {
-			available = ui.Success.Render("available")
+		nono := ui.Failure.Render("not installed")
+		if runtimeInfo.Nono.Installed {
+			nono = ui.Success.Render("installed")
 		}
-		fmt.Fprintf(&builder, "%s  %s (rootless=%s) · microVM %s (%s)\n",
+		fmt.Fprintf(&builder, "%s  %s (rootless=%s) · nono %s\n",
 			ui.Label.Render("Runtime:"),
 			ui.Value.Render(runtimeInfo.Detected),
 			ui.Value.Render(fmt.Sprintf("%t", runtimeInfo.Rootless)),
-			ui.Value.Render(runtimeInfo.Microsandbox.Virtualization),
-			available)
+			nono)
 	}
 	fmt.Fprintf(&builder, "%s    config.yaml %s · versions.yaml %s\n",
 		ui.Label.Render("State:"),
@@ -549,16 +547,16 @@ type Prerequisite struct {
 // installCommandFor returns the auto-install command for a prerequisite on the
 // given OS, or "" when there is no clean auto-installer. The commands are the
 // platform's own verified per-OS table — do not invent others:
-//   - microsandbox runtime: `curl -sSL https://get.microsandbox.dev | sh` (macOS + Linux).
+//   - nono runtime: `curl -fsSL https://nono.sh/install.sh | sh` (macOS + Linux).
 //   - container runtime: `curl -fsSL https://get.docker.com | sh` (Linux only; needs
 //     sudo). On macOS Docker Desktop is a GUI app → no auto-installer ("").
-//   - everything else (host virtualization, rootless service tier): host
-//     capability/config → never auto-installable ("").
+//   - everything else (rootless service tier): host capability/config → never
+//     auto-installable ("").
 func installCommandFor(name, goos string) string {
 	switch name {
-	case "microsandbox runtime":
+	case "nono runtime":
 		if goos == "darwin" || goos == "linux" {
-			return "curl -sSL https://get.microsandbox.dev | sh"
+			return "curl -fsSL https://nono.sh/install.sh | sh"
 		}
 		return ""
 	case "container runtime":
@@ -572,12 +570,10 @@ func installCommandFor(name, goos string) string {
 }
 
 // blockingPrereqs are the checks that must pass before setup proceeds: a missing
-// container runtime / Microsandbox / virtualization / rootless posture stops
-// setup.
+// container runtime / nono / rootless posture stops setup.
 var blockingPrereqs = map[string]bool{
 	"container runtime":     true,
-	"microsandbox runtime":  true,
-	"host virtualization":   true,
+	"nono runtime":          true,
 	"rootless service tier": true,
 }
 
@@ -586,9 +582,9 @@ var blockingPrereqs = map[string]bool{
 // the tier it actually runs:
 //   - standalone runs everything → the full set.
 //   - server runs only the service tier → container runtime + rootless only
-//     (no microVM runtime / virtualization).
-//   - client runs only workspaces → microVM runtime + virtualization only
-//     (no container runtime / rootless service tier).
+//     (no workspace runtime).
+//   - client runs only workspaces → nono runtime only (no container runtime /
+//     rootless service tier).
 //
 // Prerequisites not in the returned set are non-blocking for the role (surfaced
 // as warnings), so a missing one does not stop setup.
@@ -601,8 +597,7 @@ func blockingPrereqsForRole(role string) map[string]bool {
 		}
 	case runtime.RoleClient:
 		return map[string]bool{
-			"microsandbox runtime": true,
-			"host virtualization":  true,
+			"nono runtime": true,
 		}
 	default: // standalone
 		return blockingPrereqs
@@ -612,8 +607,8 @@ func blockingPrereqsForRole(role string) map[string]bool {
 // installablePrograms are the prerequisites whose absence is a missing dependency
 // (exit 3) rather than a host-capability failure (exit 4).
 var installablePrograms = map[string]bool{
-	"container runtime":    true,
-	"microsandbox runtime": true,
+	"container runtime": true,
+	"nono runtime":      true,
 }
 
 // MissingPrerequisites scans the host (reusing the doctor checks) and returns the
@@ -772,6 +767,19 @@ func Run(options Options, deps Deps) (*Report, error) {
 		effectiveServerAddr = "" // only a client routes to a remote server
 	}
 
+	// Best-effort auto-install nono BEFORE the prerequisite gate below: unlike the
+	// container runtime (which `ai setup` deliberately never installs — see the
+	// comment at the top of this function), nono has a scripted, unattended
+	// installer (brew or its curl script) safe to run automatically, mirroring
+	// ensureOmlxInstalled's same best-effort pattern in Reconcile. Without this,
+	// a host with no nono pre-installed fails the BLOCKING "nono runtime" check
+	// below on every run and never reaches Reconcile (so omlx, LiteLLM, etc. never
+	// get installed/started either) — the user would be stuck re-running `ai
+	// setup` forever unless they installed nono by hand first. A failed/offline
+	// install here is not fatal: the prerequisite check below still catches it
+	// and reports the actionable exit-3 error.
+	EnsureNonoInstalled(progress)
+
 	progress("Checking prerequisites…")
 	missing := MissingPrerequisites(deps, effectiveRole)
 	for _, prereq := range missing {
@@ -815,14 +823,11 @@ func Run(options Options, deps Deps) (*Report, error) {
 	// this host runs the gateway (standalone/server); harmless on a client.
 	detected.Guardrails = ResolveGuardrails(options, persisted)
 
-	// 2. Initialize the host layout and install the environment templates.
-	progress("Initializing ~/.ai-platform and installing templates…")
+	// 2. Initialize the host layout.
+	progress("Initializing ~/.ai-platform…")
 	platformDir, err := layout.Ensure()
 	if err != nil {
 		return nil, output.Errorf(output.ExitRuntimeFailure, "init layout: %s", err)
-	}
-	if err := templates.Install(); err != nil {
-		return nil, output.Errorf(output.ExitRuntimeFailure, "install templates: %s", err)
 	}
 
 	// 3. Persist the detected runtime.
@@ -903,14 +908,14 @@ func ServicesStatus(deps Deps) ([]ServiceStatus, error) {
 		return nil, output.Errorf(output.ExitRuntimeFailure, "load runtime.yaml: %s", err)
 	}
 	if detected != nil {
-		state := "unavailable"
-		if detected.Microsandbox.Available {
-			state = "ready"
+		state := "not installed"
+		if detected.Nono.Installed {
+			state = "installed"
 		}
-		endpoint, _ := console.EndpointFor("microsandbox")
+		endpoint, _ := console.EndpointFor("nono")
 		statuses = append(statuses, ServiceStatus{
-			Name: "microsandbox", Mode: "runtime", State: state,
-			Healthy: detected.Microsandbox.Available, Detail: detected.Microsandbox.Virtualization,
+			Name: "nono", Mode: "runtime", State: state,
+			Healthy: detected.Nono.Installed, Detail: "workspace sandboxing CLI",
 			Address: endpoint.Address, Console: endpoint.Console,
 		})
 	}

@@ -76,9 +76,9 @@ func TestEndpointAndAddress(test *testing.T) {
 		test.Errorf("proxy endpoint = (%+v,%v)", endpoint, ok)
 	}
 
-	// headroom (now behind nginx), presidio and microsandbox have neither an
+	// headroom (now behind nginx) and presidio have neither an
 	// address nor a console — all internal-only.
-	for _, name := range []string{"headroom", "presidio", "microsandbox"} {
+	for _, name := range []string{"headroom", "presidio"} {
 		endpoint, ok := EndpointFor(name)
 		if !ok {
 			test.Errorf("%s should be a known service", name)
@@ -128,7 +128,7 @@ func TestEndpointForHostRendersGivenDomain(test *testing.T) {
 	}
 
 	// Internal-only services stay empty regardless of domain.
-	for _, name := range []string{"headroom", "presidio", "microsandbox"} {
+	for _, name := range []string{"headroom", "presidio"} {
 		endpoint, ok := EndpointForHost(name, "build-host.lan")
 		if !ok {
 			test.Errorf("%s should be a known service", name)

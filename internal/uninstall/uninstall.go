@@ -6,15 +6,19 @@
 package uninstall
 
 import (
+	"context"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"sort"
 	"strings"
 	"time"
 
+	"github.com/jt-helsinki/stack-genie/internal/nono"
 	"github.com/jt-helsinki/stack-genie/internal/paths"
 	"github.com/jt-helsinki/stack-genie/internal/runtime"
+	"github.com/jt-helsinki/stack-genie/internal/state"
 	"github.com/jt-helsinki/stack-genie/internal/uihosts"
 	"github.com/jt-helsinki/stack-genie/internal/versions"
 )
@@ -42,7 +46,7 @@ type Options struct {
 	// caller injects it so tests need not delete the test binary; empty skips it.
 	BinaryPath string
 
-	// RemoveDeps are the external dependencies (msb) the user opted to also
+	// RemoveDeps are the external dependencies (nono) the user opted to also
 	// uninstall. The caller decides this (per-dependency prompt or flag); Run just
 	// removes their on-disk artifacts.
 	RemoveDeps []ExternalDep
@@ -119,36 +123,28 @@ func removeHostsBlock(record func(string)) bool {
 // by each tool's installer (verified against their install scripts) — we remove
 // those files/dirs rather than invent an uninstall subcommand the tool lacks.
 type ExternalDep struct {
-	Name    string   // human label, e.g. "msb (Microsandbox)"
+	Name    string   // human label, e.g. "nono"
 	Binary  string   // command name used to detect it on PATH
 	Targets []string // files/dirs removed when the user opts in
 }
 
-// ExternalDeps returns the external dependencies `ai setup` may install, with
-// their removal targets resolved against the environment (HOME, MSB_HOME). msb
-// installs to $MSB_HOME (default ~/.microsandbox) with ~/.local/bin symlinks.
+// ExternalDeps returns the external dependencies `ai setup` may install: just
+// nono (the workspace sandboxing CLI, github.com/EnsureNonoInstalled). Unlike
+// the old platform-pinned Microsandbox `msb` binary this replaced, nono's own
+// installer (brew, or its curl script) does not publish one fixed install
+// location, so Targets names whatever `nono` resolves to on PATH right now —
+// correct for either install method. A brew-managed install is better removed
+// via `brew uninstall nono` (this still detects it via Present, but blindly
+// deleting a brew-managed symlink leaves a stale Cellar reference); there is
+// no reliable way to distinguish the two from here, so this is a known,
+// narrow limitation, not a guessed path.
 func ExternalDeps() []ExternalDep {
-	home, err := paths.Home()
-	if err != nil {
-		return nil
+	var targets []string
+	if path, err := exec.LookPath("nono"); err == nil {
+		targets = append(targets, path)
 	}
-	localBin := filepath.Join(home, ".local", "bin")
-
-	msbHome := os.Getenv("MSB_HOME")
-	if msbHome == "" {
-		msbHome = filepath.Join(home, ".microsandbox")
-	}
-
 	return []ExternalDep{
-		{
-			Name:   "msb (Microsandbox)",
-			Binary: "msb",
-			Targets: []string{
-				msbHome,
-				filepath.Join(localBin, "msb"),
-				filepath.Join(localBin, "microsandbox"),
-			},
-		},
+		{Name: "nono", Binary: "nono", Targets: targets},
 	}
 }
 
@@ -193,11 +189,11 @@ func Run(options Options, prober runtime.Prober, progress Progress) (Report, err
 		emit(progress, line)
 	}
 
-	// Stop any running workspace microVMs FIRST — before removeContainers/removeImages
-	// and before a possible --remove-deps msb uninstall (so msb is still present to run
-	// `stop`). This only halts the VM runtime instances; workspace DATA (project source
-	// + /persist overlays are host bind mounts) is deliberately left untouched.
-	report.StoppedWorkspaces = stopWorkspaces(prober, record)
+	// Stop any running workspace sessions FIRST — before removeContainers/removeImages
+	// and before a possible --remove-deps nono uninstall (so nono is still present to
+	// run `stop`). This only halts the live sessions; workspace DATA (a project's
+	// source is a real host directory) is deliberately left untouched.
+	report.StoppedWorkspaces = stopWorkspaces(record)
 	// omlx is the sole host-native model runtime: stop every
 	// running `omlx serve` the platform started (best-effort; never fails uninstall).
 	// There is no aip-* container for it, so removeContainers won't catch it.
@@ -241,7 +237,7 @@ func Run(options Options, prober runtime.Prober, progress Progress) (Report, err
 		record(fmt.Sprintf("Removed %d completion script(s)", removed))
 	}
 
-	// External dependencies the user opted to also uninstall (msb).
+	// External dependencies the user opted to also uninstall (nono).
 	for _, dep := range options.RemoveDeps {
 		dep.remove()
 		report.RemovedDeps = append(report.RemovedDeps, dep.Name)
@@ -323,7 +319,7 @@ func Plan(purge bool) []string {
 		steps = append(steps, "remove platform state (~/.ai-platform) but KEEP downloaded models (volumes/models) — pass --purge to remove them too")
 	}
 	steps = append(steps, "ask whether to remove the host-native omlx runtime too (defaults to yes; --keep-runtimes to keep them; models are kept unless --purge)")
-	steps = append(steps, "ask, per external dependency (msb), whether to uninstall it too")
+	steps = append(steps, "ask, per external dependency (nono), whether to uninstall it too")
 	steps = append(steps, "leave your project directories untouched")
 	return steps
 }
@@ -334,69 +330,52 @@ func emit(progress Progress, line string) {
 	}
 }
 
-// msbBinary resolves the Microsandbox CLI WITHOUT importing internal/workspace
-// (which would risk an import cycle): the platform-managed pinned binary under
-// ~/.ai-platform/bin/msb if it exists, else bare "msb" on PATH.
-func msbBinary() string {
-	if binDir, err := paths.BinDir(); err == nil {
-		candidate := filepath.Join(binDir, "msb")
-		if _, err := os.Stat(candidate); err == nil {
-			return candidate
-		}
-	}
-	return "msb"
-}
+// nonoRunnerFn is the injectable seam over the real nono runner, mirroring
+// this project's established *Fn-variable pattern (e.g.
+// internal/workspace/profile.go's pullPackFn), so unit tests never shell out
+// to the real `nono` binary.
+var nonoRunnerFn = func() nono.Runner { return nono.RealRunner{} }
 
-// parseMsbWorkspaceNames extracts the aip-* sandbox names from `msb list` output:
-// the first whitespace-delimited field of each line, skipping a "NAME" header row
-// and any non-aip- entry (workspace VMs are named aip-<project>).
-func parseMsbWorkspaceNames(listOutput string) []string {
-	var names []string
-	for _, line := range strings.Split(listOutput, "\n") {
-		fields := strings.Fields(line)
-		if len(fields) == 0 {
-			continue
-		}
-		name := fields[0]
-		if name == "NAME" {
-			continue // header row
-		}
-		if strings.HasPrefix(name, "aip-") {
-			names = append(names, name)
-		}
-	}
-	return names
-}
-
-// stopWorkspaces stops (but never DELETES) any running workspace microVMs so an
-// uninstall leaves no VM instances running, while PRESERVING all workspace DATA:
-// project source and the /persist overlays are host bind mounts, untouched here —
-// this only halts the runtime instance via `msb stop`, never `msb delete` and never
-// a RemoveAll of any overlay/project dir. Workspace VMs are named aip-<project>; it
-// parses `msb list`'s NAME column for aip-* entries and `msb stop -f <name>`s each.
-// Best-effort: a missing msb, an unreadable list, or a stop error is not fatal. It
-// must run EARLY in Run (before msb might be --remove-deps uninstalled). Returns how
-// many it stopped.
-func stopWorkspaces(prober runtime.Prober, record func(string)) int {
-	msb := msbBinary()
-	if msb == "msb" {
-		// Only a bare name resolved — if it is not on PATH there is nothing to do.
-		if _, err := prober.LookPath("msb"); err != nil {
-			return 0
-		}
-	}
-	out, err := prober.Run(msb, "list")
+// stopWorkspaces stops every RUNNING nono session belonging to a registered
+// project, so an uninstall leaves no sandboxed agent/shell process orphaned,
+// while PRESERVING all workspace DATA: a project's source is a real host
+// directory, not a VM disk, so there is nothing to delete here — this only
+// stops the live session (`nono stop`), it never touches a project's files.
+// Unlike the old Microsandbox design (one persistent VM per project, found via
+// `msb list`'s aip-* names), there is no single "the workspace" to stop: every
+// agent/shell launch is its own ephemeral nono session, several of which can
+// be running at once for one project, so this lists ALL live sessions
+// (`nono ps`) and stops the ones whose working directory matches a path in
+// the registered project index. Best-effort: a missing nono, an unreadable
+// project index, or a stop error is not fatal. It must run EARLY in Run
+// (before nono might be --remove-deps uninstalled). Returns how many sessions
+// it stopped.
+func stopWorkspaces(record func(string)) int {
+	runner := nonoRunnerFn()
+	ctx := context.Background()
+	sessions, err := runner.ListSessions(ctx, false) // running only
 	if err != nil {
 		return 0
 	}
+	index, err := state.LoadIndex()
+	if err != nil {
+		return 0
+	}
+	roots := make(map[string]bool, len(index.Projects))
+	for _, entry := range index.Projects {
+		roots[entry.Path] = true
+	}
 	stopped := 0
-	for _, name := range parseMsbWorkspaceNames(string(out)) {
-		if _, err := prober.Run(msb, "stop", "-f", name); err == nil {
+	for _, session := range sessions {
+		if !roots[session.Workdir] {
+			continue
+		}
+		if err := runner.Stop(ctx, session.SessionID, true); err == nil {
 			stopped++
 		}
 	}
 	if stopped > 0 {
-		record(fmt.Sprintf("Stopped %d workspace microVM(s) (data preserved)", stopped))
+		record(fmt.Sprintf("Stopped %d workspace session(s) (data preserved)", stopped))
 	}
 	return stopped
 }
@@ -490,7 +469,7 @@ func removeContainers(prober runtime.Prober, record func(string)) int {
 
 // serviceImageRefs returns the pinned service-tier image refs (image:tag) from
 // the built-in defaults (versions.Default), skipping entries with no image (the
-// native microsandbox runtime). Sorted for a deterministic removal order/output.
+// host-native omlx runtime). Sorted for a deterministic removal order/output.
 func serviceImageRefs() []string {
 	refs := make([]string, 0, len(versions.Default().Services))
 	for _, svc := range versions.Default().Services {

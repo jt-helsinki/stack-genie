@@ -58,3 +58,13 @@ func firstArg(args []string) string {
 	}
 	return ""
 }
+
+// thirdArg returns args[2] or "" — the optional trailing <project> positional
+// for commands whose first two positionals are non-project values (e.g. `ai
+// tools <action> <tool> [name]`).
+func thirdArg(args []string) string {
+	if len(args) > 2 {
+		return args[2]
+	}
+	return ""
+}

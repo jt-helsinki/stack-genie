@@ -10,7 +10,6 @@ import (
 // the legacy internal/logs `services` slice (same order, same entries).
 func TestLogScopesMatchesCurrent(test *testing.T) {
 	want := []string{
-		"microsandbox",
 		"omlx",
 		"presidio",
 		"valkey",
@@ -30,7 +29,7 @@ func TestLogScopesIsFreshCopy(test *testing.T) {
 	first := LogScopes()
 	first[0] = "mutated"
 	second := LogScopes()
-	if second[0] != "microsandbox" {
+	if second[0] != "omlx" {
 		test.Errorf("LogScopes() shares mutable state: second[0] = %q", second[0])
 	}
 }
@@ -50,7 +49,6 @@ func TestEndpointsMatchCurrentConsoleRegistry(test *testing.T) {
 		"dns":          {LoopbackAddress: "127.0.0.1:15353/udp"},
 		"headroom":     {},
 		"presidio":     {},
-		"microsandbox": {},
 	}
 	got := Endpoints()
 	if !reflect.DeepEqual(got, want) {
@@ -171,22 +169,22 @@ func TestVersionPinsModeShapes(test *testing.T) {
 	}
 }
 
-// TestVersionPinsExcludesNativeRuntime asserts the native microsandbox runtime is
-// NOT emitted as a version pin (it is a detected prerequisite, not a pulled image),
-// while still being present in the registry for its log scope.
-func TestVersionPinsExcludesNativeRuntime(test *testing.T) {
-	if _, present := VersionPins()[nativeRuntime.Name]; present {
-		test.Errorf("VersionPins() includes the native runtime %q — it must be excluded from the image pin set", nativeRuntime.Name)
+// TestMicrosandboxFullyRemoved is a regression test: the retired Microsandbox
+// `msb` runtime must have no registry presence at all anymore — unlike the old
+// design, nono has no persistent process of its own to give a log scope,
+// endpoint, or version pin to (see logScopeOrder's doc comment), so there is
+// no "native runtime" slot to replace it with.
+func TestMicrosandboxFullyRemoved(test *testing.T) {
+	if _, present := VersionPins()["microsandbox"]; present {
+		test.Error("VersionPins() must not include microsandbox")
 	}
-	// It is still a log scope (registry slot retained).
-	found := false
 	for _, scope := range LogScopes() {
-		if scope == nativeRuntime.LogScope {
-			found = true
+		if scope == "microsandbox" {
+			test.Error("LogScopes() must not include microsandbox")
 		}
 	}
-	if !found {
-		test.Errorf("native runtime log scope %q missing from LogScopes()", nativeRuntime.LogScope)
+	if _, present := Endpoints()["microsandbox"]; present {
+		test.Error("Endpoints() must not include microsandbox")
 	}
 }
 

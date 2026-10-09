@@ -41,7 +41,7 @@ func appleSiliconDocker(rootless bool) fakeProber {
 		securityOptions = "[name=seccomp name=rootless]"
 	}
 	return fakeProber{
-		bins:      map[string]bool{"docker": true, "msb": true},
+		bins:      map[string]bool{"docker": true, "nono": true},
 		dockerOut: securityOptions,
 	}
 }
@@ -54,15 +54,15 @@ func TestDetectHappyPath(test *testing.T) {
 	if info.Detected != "docker" || !info.Rootless {
 		test.Fatalf("container: %+v", info)
 	}
-	if !info.Microsandbox.Available || info.Microsandbox.Virtualization != "hvf" {
-		test.Fatalf("microsandbox: %+v", info)
+	if !info.Nono.Installed {
+		test.Fatalf("nono: %+v", info)
 	}
-	// Detect now persists the pinned host-gateway DNS name, and the resolved
-	// gateway URL is unchanged for users (standalone → host.microsandbox.internal:18787).
+	// Detect now persists the resolved host-gateway address (plain loopback —
+	// nono-sandboxed agents run directly on the host, no guest-network DNS name).
 	if info.HostGateway != DefaultGatewayHost {
 		test.Fatalf("HostGateway = %q, want %q", info.HostGateway, DefaultGatewayHost)
 	}
-	if host, port, url := ResolveGateway(info.HostAddress()); host != DefaultGatewayHost || port != DefaultGatewayPort || url != "http://host.microsandbox.internal:18787/v1" {
+	if host, port, url := ResolveGateway(info.HostAddress()); host != DefaultGatewayHost || port != DefaultGatewayPort || url != "http://127.0.0.1:18787/v1" {
 		test.Fatalf("resolved gateway = %s:%d %q, want standalone default", host, port, url)
 	}
 	if err := Verify(info); err != nil {
@@ -71,62 +71,62 @@ func TestDetectHappyPath(test *testing.T) {
 }
 
 func TestDetectNoContainerRuntime(test *testing.T) {
-	_, err := Detect("darwin", "arm64", fakeProber{bins: map[string]bool{"msb": true}}, "test")
+	_, err := Detect("darwin", "arm64", fakeProber{bins: map[string]bool{"nono": true}}, "test")
 	if !errors.Is(err, ErrNoContainerRuntime) {
 		test.Fatalf("want ErrNoContainerRuntime, got %v", err)
 	}
 }
 
 func TestDetectForRoleClientToleratesNoContainerRuntime(test *testing.T) {
-	// A client runs no service tier, so a missing container runtime is fine; msb
-	// + virtualization (the only things a client needs) are present.
+	// A client runs no service tier, so a missing container runtime is fine; nono
+	// (the only thing a client needs) is present.
 	info, err := DetectForRole("darwin", "arm64", RoleClient,
-		fakeProber{bins: map[string]bool{"msb": true}}, "test")
+		fakeProber{bins: map[string]bool{"nono": true}}, "test")
 	if err != nil {
 		test.Fatalf("client detect should tolerate no container runtime: %v", err)
 	}
 	if info.Role != RoleClient || info.Detected != "" {
 		test.Fatalf("client info: %+v", info)
 	}
-	if !info.Microsandbox.Available {
-		test.Fatalf("client should still detect virtualization: %+v", info)
+	if !info.Nono.Installed {
+		test.Fatalf("client should still detect nono: %+v", info)
 	}
 }
 
-func TestDetectForRoleServerToleratesNoMsb(test *testing.T) {
-	// A server runs no microVMs, so a missing msb is fine; docker (the service
+func TestDetectForRoleServerToleratesNoNono(test *testing.T) {
+	// A server runs no workspaces, so a missing nono is fine; docker (the service
 	// tier) is present and rootless.
 	info, err := DetectForRole("darwin", "arm64", RoleServer,
 		fakeProber{bins: map[string]bool{"docker": true}, dockerOut: "[name=rootless]"}, "test")
 	if err != nil {
-		test.Fatalf("server detect should tolerate no msb: %v", err)
+		test.Fatalf("server detect should tolerate no nono: %v", err)
 	}
 	if info.Role != RoleServer || info.Detected != "docker" {
 		test.Fatalf("server info: %+v", info)
 	}
-}
-
-func TestDetectForRoleClientStillNeedsMsb(test *testing.T) {
-	// A client without the microVM runtime still fails (it is the client's tier).
-	_, err := DetectForRole("darwin", "arm64", RoleClient,
-		fakeProber{bins: map[string]bool{"docker": true}, dockerOut: "[name=rootless]"}, "test")
-	if !errors.Is(err, ErrMsbMissing) {
-		test.Fatalf("client without msb should fail with ErrMsbMissing, got %v", err)
+	if info.Nono.Installed {
+		test.Fatalf("server info should record nono as not installed: %+v", info)
 	}
 }
 
-func TestDetectMsbMissing(test *testing.T) {
-	prober := fakeProber{bins: map[string]bool{"docker": true}, dockerOut: "[name=rootless]"}
-	_, err := Detect("darwin", "arm64", prober, "test")
-	if !errors.Is(err, ErrMsbMissing) {
-		test.Fatalf("want ErrMsbMissing, got %v", err)
+// A client WITHOUT nono is no longer a hard failure — unlike the old Microsandbox
+// virtualization gate this replaced, nono has no capability prerequisite beyond the
+// binary existing, and even that is just recorded (not enforced) by DetectForRole.
+func TestDetectForRoleClientToleratesMissingNono(test *testing.T) {
+	info, err := DetectForRole("darwin", "arm64", RoleClient,
+		fakeProber{bins: map[string]bool{"docker": true}, dockerOut: "[name=rootless]"}, "test")
+	if err != nil {
+		test.Fatalf("client detect should tolerate missing nono: %v", err)
+	}
+	if info.Nono.Installed {
+		test.Fatalf("nono should be recorded as not installed: %+v", info)
 	}
 }
 
 func TestVerifyRootlessRequired(test *testing.T) {
 	// A rooted Linux Docker engine (no "rootless" in SecurityOptions) must fail.
 	prober := fakeProber{
-		bins:      map[string]bool{"docker": true, "msb": true},
+		bins:      map[string]bool{"docker": true, "nono": true},
 		files:     map[string]bool{"/dev/kvm": true},
 		dockerOut: "[name=seccomp]",
 	}
@@ -146,7 +146,7 @@ func TestDockerDesktopOnMacIsRootless(test *testing.T) {
 	// Docker Desktop on macOS runs the engine in a managed VM and does not report
 	// a "rootless" SecurityOption; it must still count as rootless (§6.1) so
 	// `ai setup` does not falsely fail with ErrRootlessUnavailable.
-	prober := fakeProber{bins: map[string]bool{"docker": true, "msb": true}, dockerOut: "[name=seccomp]"}
+	prober := fakeProber{bins: map[string]bool{"docker": true, "nono": true}, dockerOut: "[name=seccomp]"}
 	info, err := Detect("darwin", "arm64", prober, "test")
 	if err != nil {
 		test.Fatal(err)
@@ -159,20 +159,8 @@ func TestDockerDesktopOnMacIsRootless(test *testing.T) {
 	}
 }
 
-func TestVerifyVirtualizationRequired(test *testing.T) {
-	// Rootless docker, but Linux without /dev/kvm → virtualization unavailable.
-	prober := fakeProber{bins: map[string]bool{"docker": true, "msb": true}, dockerOut: "[name=rootless]"}
-	info, err := Detect("linux", "amd64", prober, "test")
-	if err != nil {
-		test.Fatal(err)
-	}
-	if !errors.Is(Verify(info), ErrVirtualizationUnavailable) {
-		test.Fatalf("verify should fail virtualization, got %v", Verify(info))
-	}
-}
-
 func TestPodmanDetectedRootless(test *testing.T) {
-	prober := fakeProber{bins: map[string]bool{"podman": true, "msb": true}, files: map[string]bool{"/dev/kvm": true}}
+	prober := fakeProber{bins: map[string]bool{"podman": true, "nono": true}}
 	info, err := Detect("linux", "arm64", prober, "test")
 	if err != nil {
 		test.Fatal(err)
@@ -185,8 +173,7 @@ func TestPodmanDetectedRootless(test *testing.T) {
 func TestPodmanRootfulDetected(test *testing.T) {
 	// An explicit "false" from `podman info` means a rootful install.
 	prober := fakeProber{
-		bins:      map[string]bool{"podman": true, "msb": true},
-		files:     map[string]bool{"/dev/kvm": true},
+		bins:      map[string]bool{"podman": true, "nono": true},
 		podmanOut: "false\n",
 	}
 	info, err := Detect("linux", "amd64", prober, "test")
@@ -204,8 +191,7 @@ func TestPodmanRootfulDetected(test *testing.T) {
 func TestPodmanRootlessProbeErrorDefaultsTrue(test *testing.T) {
 	// Podman is rootless by default; a probe hiccup must not block setup.
 	prober := fakeProber{
-		bins:      map[string]bool{"podman": true, "msb": true},
-		files:     map[string]bool{"/dev/kvm": true},
+		bins:      map[string]bool{"podman": true, "nono": true},
 		podmanErr: true,
 	}
 	info, err := Detect("linux", "amd64", prober, "test")
@@ -217,21 +203,21 @@ func TestPodmanRootlessProbeErrorDefaultsTrue(test *testing.T) {
 	}
 }
 
-// TestDetectLinuxSetupHappyPath is the [S6] Linux-bootstrap criterion: with a
-// rootless container runtime and KVM available, detection + Verify pass exactly
-// as on macOS — no workflow difference.
+// TestDetectLinuxSetupHappyPath is the [S6] Linux-bootstrap criterion: detection +
+// Verify pass exactly as on macOS — no workflow difference. Unlike the old
+// Microsandbox virtualization gate this replaced, nono has no per-host capability
+// prerequisite beyond the binary being installed.
 func TestDetectLinuxSetupHappyPath(test *testing.T) {
 	prober := fakeProber{
-		bins:      map[string]bool{"podman": true, "msb": true},
-		files:     map[string]bool{"/dev/kvm": true},
+		bins:      map[string]bool{"podman": true, "nono": true},
 		podmanOut: "true",
 	}
 	info, err := Detect("linux", "amd64", prober, "test")
 	if err != nil {
 		test.Fatal(err)
 	}
-	if info.Microsandbox.Virtualization != "kvm" || !info.Microsandbox.Available {
-		test.Fatalf("linux microVM via kvm expected: %+v", info)
+	if !info.Nono.Installed {
+		test.Fatalf("linux nono detection expected: %+v", info)
 	}
 	if err := Verify(info); err != nil {
 		test.Fatalf("linux setup should verify: %v", err)
@@ -279,7 +265,7 @@ func TestPersistLoadRoundTrip(test *testing.T) {
 	if err != nil {
 		test.Fatal(err)
 	}
-	if loaded == nil || loaded.Detected != "docker" || loaded.Microsandbox.Virtualization != "hvf" {
+	if loaded == nil || loaded.Detected != "docker" || !loaded.Nono.Installed {
 		test.Fatalf("round-trip: %+v", loaded)
 	}
 }
@@ -363,7 +349,7 @@ func TestResolveGateway(test *testing.T) {
 		wantPort   int
 		wantURL    string
 	}{
-		{"", DefaultGatewayHost, DefaultGatewayPort, "http://host.microsandbox.internal:18787/v1"},
+		{"", DefaultGatewayHost, DefaultGatewayPort, "http://127.0.0.1:18787/v1"},
 		{"srv", "srv", DefaultGatewayPort, "http://srv:18787/v1"},
 		{"srv:9999", "srv", 9999, "http://srv:9999/v1"},
 		{"  srv:9999  ", "srv", 9999, "http://srv:9999/v1"},
@@ -379,8 +365,9 @@ func TestResolveGateway(test *testing.T) {
 }
 
 func TestHostGatewayPinned(test *testing.T) {
-	// The host-gateway address is the fixed, backend-independent Microsandbox
-	// guest→host DNS name, pinned regardless of goos (HVF on macOS, KVM on Linux).
+	// The host-gateway address is always plain loopback regardless of goos — a
+	// nono-sandboxed agent runs directly on the host, so there is no guest-network
+	// DNS name to pin (unlike the old Microsandbox microVM this replaced).
 	for _, goos := range []string{"darwin", "linux"} {
 		if address, pinned := HostGateway(goos); !pinned || address != DefaultGatewayHost {
 			test.Errorf("HostGateway(%q) = (%q,%v), want (%q,true)", goos, address, pinned, DefaultGatewayHost)

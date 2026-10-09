@@ -1,9 +1,11 @@
 # Stack Genie - the local AI Development Platform
 
-Reproducible, isolated, AI-powered development environments. Each workspace is a
-hardware-isolated [Microsandbox](https://microsandbox.dev) microVM; the model
-path and guardrails run as a shared host container tier. One Go binary, `ai`, is
-the entire control plane.
+Reproducible, isolated, AI-powered development environments. Each agent session
+runs as an ordinary host process sandboxed per-invocation by
+[nono](https://nono.sh) (kernel-capability sandboxing — Landlock LSM on Linux,
+Seatbelt on macOS; same-kernel process isolation, not a VM); the model path and
+guardrails run as a shared host container tier. One Go binary, `ai`, is the
+entire control plane.
 
 **Model path:** agent → nginx gateway → LiteLLM → host-native **omlx**
 ([jundot/omlx](https://github.com/jundot/omlx), the local runtime — macOS on
@@ -25,10 +27,11 @@ serves every model it finds — this platform has no `ai models pull` equivalent
 anymore. Models are downloaded/added/removed entirely through **omlx's own admin
 panel** (`ai services console omlx`); `ai setup` (and `ai services start|restart
 omlx`) auto-syncs whatever omlx currently reports into LiteLLM as `omlx/<id>`.
-Workspace egress is a Microsandbox NetworkPolicy you configure with `ai network`;
-it defaults to **public** (DNS-audited outbound, private ranges blocked) so the
-in-VM container runtime can pull images and is re-lockable to default-deny per
-project. Caveman is a per-project output-compression skill inside the workspace.
+Workspace egress is a nono network policy you configure with `ai network`; it
+defaults to **public** (unrestricted outbound, private ranges blocked) and is
+re-lockable to default-deny per project, with every DNS query additionally
+logged host-wide for audit (`ai network log`). Caveman is a per-project
+output-compression skill inside the workspace.
 
 ## Install
 
@@ -54,25 +57,25 @@ yourself:
 | [omlx](https://github.com/jundot/omlx) | host-native local-model runtime (the sole local inference backend; macOS/Apple Silicon only) | `ai setup` best-effort installs the latest release wheel into the platform venv; `ai services start omlx` retries it; `ai doctor` prints manual steps |
 | [Ghostty](https://ghostty.org) | terminal emulator (recommended) | `brew install --cask ghostty` |
 
-You do **not** install Microsandbox (`msb`) yourself: the platform pins the `msb`
-CLI to the exact build of the embedded Microsandbox SDK and downloads it
-(sha256-verified) into `~/.ai-platform/bin/msb` on first workspace build. This keeps
-the CLI and the SDK's in-process runtime in lockstep — installing `msb` separately
-(e.g. from a different source) can desync their shared `~/.microsandbox` DB schema
-and break workspace loads.
+You mostly do **not** install [nono](https://nono.sh) yourself: `ai setup`
+best-effort auto-installs it (`brew install nono`, else nono's own
+`nono.sh/install.sh`) when it's not already on PATH; `ai doctor` reports it
+under "nono runtime" and prints manual install steps if the auto-install was
+skipped.
 
-Supported host: **macOS on Apple Silicon** (Microsandbox needs the Apple
-Hypervisor) or **Linux with KVM**. The sole local-inference backend, omlx, is
-macOS/Apple-Silicon-only with no fallback — a Linux host still runs the
-sandboxing + gateway (and cloud models work everywhere), it just has no local
-model runtime.
+Supported host: **macOS or Linux** — nono has no Apple-Silicon-only or
+hypervisor requirement (unlike the Microsandbox microVM runtime it replaced),
+since it sandboxes a process directly rather than virtualizing a machine. The
+sole local-inference backend, omlx, is macOS/Apple-Silicon-only with no
+fallback — a Linux host still runs the sandboxing + gateway (and cloud models
+work everywhere), it just has no local model runtime.
 
-> **Use [Ghostty](https://ghostty.org).** Workspace microVMs are headless — the
-> agent CLIs (OpenCode, etc.) run inside the VM and their terminal output is
-> rendered by *your* terminal emulator. A modern, truecolor- and CSI-u-capable
-> emulator is required for these TUIs to display correctly; **Ghostty is the
-> recommended choice** (WezTerm or a recent iTerm2 also work). The stock macOS
-> Terminal.app will not render them correctly.
+> **A modern terminal is still recommended.** opencode and other TUI-heavy agent
+> CLIs want a truecolor-, CSI-u-capable terminal emulator to render correctly;
+> **[Ghostty](https://ghostty.org)** is a good default (WezTerm or a recent
+> iTerm2 also work). Since agent sessions now run directly in your own
+> terminal (nono sandboxes the process, not a VM), this is the same requirement
+> any modern CLI TUI has — there is no VM-headlessness concern anymore.
 
 `ai setup` **never installs software** — it detects what's missing and prints how
 to install it (command + web address); `ai doctor` reports the same anytime. The
@@ -174,8 +177,9 @@ The four code-graph/memory tools are appended to the project image **only when
 chosen** — conditional Dockerfile snippets, not baked into every base. All are
 local and need no API key.
 
-**Work in the workspace** (one microVM per project; installed programs and agent
-state persist across restarts via the overlay):
+**Work in the workspace** (each agent CLI/shell launch is its own nono-sandboxed
+host-process session; the project directory on host is itself the persistent
+state):
 
 ```bash
 cd my-app
@@ -188,12 +192,16 @@ ai sessions                  # list sessions; ai attach picks one to reattach
 ai sessions kill build       # kill a named tmux session
 ```
 
-`ai delete` (alias `ai destroy`) is the single removal verb: it tears down the
-microVM, drops the project's `.ai-platform/` dir + overlay, and de-registers it,
-keeping your other files; `ai delete --purge` removes the whole directory.
+`ai delete` (alias `ai destroy`) is the single removal verb: it stops any live
+sessions, revokes the project's scoped gateway key, drops the project's
+`.ai-platform/` dir, and de-registers it, keeping your other files; `ai delete
+--purge` removes the whole directory.
 
+<!-- NOTE: the in-VM-app feature this section describes (internal/apps) was
+     removed from the platform along with the Microsandbox microVM runtime;
+     this section is stale pending a dedicated rewrite. -->
 **Run an in-VM app** (Open WebUI runs as a nerdctl container inside the
-microVM, on the rootful in-VM container runtime, routed through the same gateway and
+workspace, on the rootful in-VM container runtime, routed through the same gateway and
 published on a unique host port):
 
 ```bash
@@ -262,7 +270,7 @@ attach/new/kill) · Apps sub-tabs; the **Workspace** tab shows the summary plus 
 scrollable live **Sandbox Configuration** block, the **Logs** tab is the live,
 read-only workspace log (streamed on the SDK backend; `f`/`enter` follows it live
 in your real terminal), and the **Metrics** tab streams CPU/memory/disk/net.
-Workspace start/stop/restart run in the background (the microVM build/boot
+Workspace start/stop/restart run in the background (the session launch
 survives closing `ai ui` — a spinner tracks progress), and interactive shells run
 in your real terminal.
 
@@ -275,7 +283,7 @@ first and **never touches `~/projects`** (your source):
 ai uninstall                 # binary, PATH/completion entries, aip-* containers, ~/.ai-platform state (KEEPS downloaded models)
 ai uninstall --purge         # also the downloaded model store — removes ~/.ai-platform in full
 ai uninstall --keep-runtimes # opt out of the (currently no-op) host-native omlx runtime removal
-ai uninstall --remove-deps   # also uninstall msb
+ai uninstall --remove-deps   # also uninstall a leftover msb (Microsandbox) install from before the nono migration, if present
 ai uninstall --yes           # skip the prompt (automation); --dry-run to preview
 ```
 
@@ -288,9 +296,13 @@ dependency (`msb`), and logs to `~/ai-uninstall.log`.
 
 ## Develop
 
-Requires **Go 1.26+** and `CGO_ENABLED=1` (the Makefile exports it): the binary
-links the Microsandbox Go SDK, so the old pure-static build is gone. Build hosts
-are macOS (Apple Silicon) and Linux.
+Requires **Go 1.26+** and `CGO_ENABLED=1` (the Makefile still exports it).
+Note: the workspace runtime no longer uses the Microsandbox Go SDK (replaced by
+nono, a plain CLI shelled out to — no cgo binding needed for it), but the
+`CGO_ENABLED=1` build setting and the `github.com/superradcompany/microsandbox/sdk/go`
+module dependency are still present in the Makefile/go.mod as of this writing
+(not yet cleaned up post-migration) — do not assume cgo is still load-bearing
+without checking current `go.mod`. Build hosts are macOS and Linux.
 
 ```bash
 make build             # -> bin/ai (injects the version via -ldflags)
@@ -299,7 +311,7 @@ make fmt               # gofmt -w .
 make lint              # golangci-lint (also run standalone)
 make test              # unit tests (go test ./...)
 make test-acceptance   # acceptance suite (AIP_HARDWARE_TESTS=1 adds the full-stack [S1] tests)
-make test-integration  # LIVE suite vs a running Docker + Microsandbox stack (self-skips if absent)
+make test-integration  # LIVE suite vs a running Docker service tier + nono (self-skips if absent)
 make test-all          # all suites (unit + acceptance + integration)
 ```
 
@@ -320,9 +332,11 @@ host-arch binary locally for testing.
 The entire control-plane surface is implemented host-side and unit-tested: the
 `ai` CLI, project/workspace lifecycle, context/keys/models/network/state
 commands, `doctor`/`logs`, host detection, and the service-tier + guardrail +
-egress wiring. On a provisioned Apple Silicon host the service tier comes up live
-via `ai setup`, microVMs build and boot, LiteLLM virtual-key minting works, and
-the DNS egress audit captures attempted destinations — verified end-to-end. The
+egress wiring. The Docker-based service tier (nginx, LiteLLM, guardrails, DNS
+audit, omlx) has been verified end-to-end live on a provisioned Apple Silicon
+host under `ai setup`. The newer **nono**-based workspace/session model
+(replacing the previous Microsandbox-microVM runtime) is unit-tested with fakes
+but has not yet had the same live-hardware verification pass. The
 remaining live-integration details are tracked in
 [`docs/HARDWARE-BRINGUP.md`](docs/HARDWARE-BRINGUP.md); commands that need a piece
 not yet wired report their deferred status rather than pretending.

@@ -9,100 +9,19 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/jt-helsinki/stack-genie/internal/config"
 	"github.com/jt-helsinki/stack-genie/internal/create"
 	"github.com/jt-helsinki/stack-genie/internal/output"
 	"github.com/jt-helsinki/stack-genie/internal/project"
 )
 
-func TestOrNoneOrDefault(test *testing.T) {
-	if orNone("") != "(none)" || orNone("x") != "x" {
-		test.Fatalf("orNone bad: %q %q", orNone(""), orNone("x"))
-	}
-	if orDefault(0) != "(default)" || orDefault(-1) != "(default)" || orDefault(4) != "4" {
-		test.Fatalf("orDefault bad: %q %q %q", orDefault(0), orDefault(-1), orDefault(4))
-	}
-	if orDefaultStr("") != "(default)" || orDefaultStr("8G") != "8G" {
-		test.Fatalf("orDefaultStr bad: %q %q", orDefaultStr(""), orDefaultStr("8G"))
-	}
-}
-
-func TestFormatPublishPorts(test *testing.T) {
-	cases := []struct {
-		ports []config.PortMapping
-		want  string
-	}{
-		{nil, ""},
-		{[]config.PortMapping{{Host: 8080, Guest: 8080}}, "8080"},
-		{[]config.PortMapping{{Host: 8080, Guest: 80}}, "8080:80"},
-		{[]config.PortMapping{{Host: 3000, Guest: 3000}, {Host: 5432, Guest: 5000}}, "3000,5432:5000"},
-	}
-	for _, testCase := range cases {
-		if got := formatPublishPorts(testCase.ports); got != testCase.want {
-			test.Fatalf("formatPublishPorts(%v) = %q, want %q", testCase.ports, got, testCase.want)
-		}
-	}
-}
-
-func TestWizardAppPortValidator(test *testing.T) {
-	if wizardAppPortValidator("") != nil || wizardAppPortValidator("  ") != nil {
-		test.Fatal("blank should be valid (auto-assign)")
-	}
-	if wizardAppPortValidator("8080") != nil {
-		test.Fatal("8080 should be valid")
-	}
-	for _, bad := range []string{"0", "70000", "abc", "-1"} {
-		if wizardAppPortValidator(bad) == nil {
-			test.Fatalf("port %q should be rejected", bad)
-		}
-	}
-}
-
-func TestSelectedAppPorts(test *testing.T) {
-	valid := "8080"
-	blank := "  "
-	auto := "0"
-	values := map[string]*string{"openwebui": &valid, "webui-alt": &blank, "hermes": &auto}
-	got := selectedAppPorts([]string{"openwebui", "webui-alt", "hermes", "missing"}, values)
-	if got["openwebui"] != 8080 {
-		test.Fatalf("openwebui port = %d, want 8080", got["openwebui"])
-	}
-	if len(got) != 1 {
-		test.Fatalf("only the valid entry should survive: %v", got)
-	}
-}
-
-func TestParsePublishPortsInvalid(test *testing.T) {
-	if _, err := parsePublishPorts([]string{"notaport"}); err == nil {
-		test.Fatal("non-numeric host port should error")
-	}
-	if _, err := parsePublishPorts([]string{"8080:99999"}); err == nil {
-		test.Fatal("out-of-range guest port should error")
-	}
-	ports, err := parsePublishPorts([]string{"8080", "3000:80", "  "})
-	if err != nil {
-		test.Fatalf("valid ports errored: %v", err)
-	}
-	if len(ports) != 2 || ports[0].Host != 8080 || ports[1].Guest != 80 {
-		test.Fatalf("parsePublishPorts result unexpected: %v", ports)
-	}
-}
-
 func TestCreatePlan(test *testing.T) {
 	spec := project.Spec{
-		Name:         "app",
-		OS:           "debian-trixie",
-		Stacks:       []string{"go"},
-		AgentCLIs:    []string{"opencode"},
-		IdleTimeout:  "10m",
-		Apps:         []string{"openwebui"},
-		CPUs:         2,
-		Memory:       "8G",
-		PublishPorts: []config.PortMapping{{Host: 8080, Guest: 80}},
+		Name:      "app",
+		AgentCLIs: []string{"opencode", "codex"},
 	}
 	plan := createPlan(spec, "/tmp/app")
 	joined := strings.Join(plan, "\n")
-	for _, want := range []string{"/tmp/app", "debian-trixie", "opencode", "8080:80", "10m", "openwebui", "app"} {
+	for _, want := range []string{"/tmp/app", "opencode", "codex", "app"} {
 		if !strings.Contains(joined, want) {
 			test.Fatalf("createPlan missing %q:\n%s", want, joined)
 		}
@@ -150,20 +69,6 @@ func TestMapProjectErr(test *testing.T) {
 	}
 }
 
-func TestSanitizeName(test *testing.T) {
-	cases := map[string]string{
-		"My Project!": "my-project",
-		"already-ok":  "already-ok",
-		"UPPER_CASE":  "upper-case",
-		"--edge--":    "edge",
-	}
-	for input, want := range cases {
-		if got := sanitizeName(input); got != want {
-			test.Fatalf("sanitizeName(%q) = %q, want %q", input, got, want)
-		}
-	}
-}
-
 func TestDefaultProjectName(test *testing.T) {
 	if got := defaultProjectName([]string{"explicit"}, "/some/location"); got != "explicit" {
 		test.Fatalf("explicit arg should win: %q", got)
@@ -180,16 +85,6 @@ func TestDefaultProjectName(test *testing.T) {
 	test.Chdir(child)
 	if got := defaultProjectName(nil, ""); got != "my-repo" {
 		test.Fatalf("cwd-derived name = %q, want my-repo", got)
-	}
-}
-
-func TestSplitCommaList(test *testing.T) {
-	got := splitCommaList(" a, b ,,c ")
-	if !slices.Equal(got, []string{"a", "b", "c"}) {
-		test.Fatalf("splitCommaList = %v, want [a b c]", got)
-	}
-	if len(splitCommaList("   ")) != 0 {
-		test.Fatal("blank input should yield no items")
 	}
 }
 

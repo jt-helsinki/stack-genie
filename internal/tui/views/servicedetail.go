@@ -12,6 +12,9 @@ import (
 	"github.com/jt-helsinki/stack-genie/internal/ui"
 )
 
+// spinnerFrames are the braille spinner glyphs for an in-flight status line.
+var spinnerFrames = []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"}
+
 // ServiceStatusFetcher returns the current status of ONE named service (and whether
 // it was found). Injected; the parent resolves it from the live ServicesStatus set.
 type ServiceStatusFetcher func(service string) (setup.ServiceStatus, bool)

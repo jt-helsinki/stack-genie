@@ -38,14 +38,14 @@ All platform-wide data is stored under:
 ~/.ai-platform/
 ├── agents/        # reserved — created eagerly, not written to by any code path today
 ├── audit/         # reserved for audit logs (see §1.4) — created eagerly, not written to today
-├── bin/           # platform-managed host executables (today: the `msb` binary; see §1.9) — created on first use
+├── bin/           # vestigial — no code path creates or writes into it today (see §1.9)
 ├── cache/         # re-fetchable caches: catalog.yaml (models.dev); see §1.3
 ├── config/        # global settings + projects index (no per-project state)
 ├── logs/          # per-service-container log snapshots (see §6)
-├── overlays/      # per-workspace persistent overlays (see §1.10)
+├── overlays/      # reserved — created eagerly, not written to by any code path today (see §1.10)
 ├── prompts/       # reserved — created eagerly, not written to by any code path today
 ├── skills/        # reserved — created eagerly, not written to by any code path today
-├── templates/     # OS Dockerfile templates + shared templates
+├── templates/     # reserved — created eagerly, not written to by any code path today (see §1.5)
 ├── tools/         # reserved — created eagerly, not written to by any code path today
 ├── venv/          # platform-managed host Python venv (omlx; see §1.9/§12.6a) — created on first use
 └── volumes/       # ALL host-persisted SYSTEM data volumes — created on first use
@@ -58,12 +58,25 @@ All platform-wide data is stored under:
 
 `agents/`, `audit/`, `prompts/`, `skills/`, and `tools/` are created eagerly by
 `ai setup` (`internal/layout`), but as of this writing no code path writes into
-them — they are reserved placeholders, not live state. The real per-project
-shared resource pools (agents/skills/prompts) live at
-`<project>/.ai-platform/{agents,skills,prompts}` (§2.2), not here. `bin/`,
-`venv/`, and `volumes/` are, by contrast, real and populated, but created **on
-demand** by their own consumers (the `msb` binary download, `internal/pyenv`,
-and the omlx/LiteLLM-DB writers respectively) rather than eagerly by `ai setup`.
+them — they are reserved placeholders, not live state. `overlays/` and
+`templates/{dockerfiles,stacks}` are ALSO created eagerly by `internal/layout`
+but are now equally dead: the packages that used to populate them
+(`internal/overlay`, the per-workspace persistent VM-disk layer; and
+`internal/envimage`/`internal/templates`, the OCI-image/Dockerfile-template
+build) were deleted when workspaces moved from Microsandbox microVMs to **nono**
+(https://nono.sh) host-process sandboxing — there is no VM disk to overlay and
+no image to build anymore, so `internal/layout`'s eager-create list simply
+hasn't been pruned of their directories yet. `venv/` and `volumes/` are, by
+contrast, real and populated, created **on demand** by their own consumers
+(`internal/pyenv` and the omlx/LiteLLM-DB writers respectively) rather than
+eagerly by `ai setup`. `bin/` is not even in `internal/layout`'s eager-create
+list anymore (see §1.9) — on a fresh install nothing creates it at all; it
+survives only as a legacy artifact on a host upgraded from a pre-nono install,
+and `ai uninstall` still best-effort checks it for a leftover `msb` binary to
+report. There is no longer a real per-project shared resource pool either: the
+old `<project>/.ai-platform/{agents,skills,prompts}` pool and its
+start-time symlinking into each CLI's config dir are gone along with the
+`internal/workspace` code that used to create them — see §2.2.
 
 Global only — **no per-project state here**. Per-project state lives in
 `<project>/.ai-platform/` (see §2).
@@ -86,9 +99,8 @@ data volume** — keeping them in one discoverable place (rather than scattered
 Docker named volumes or ad-hoc paths under the platform dir) means
 `ai uninstall --purge` (which `RemoveAll`s `~/.ai-platform`) removes them all. The
 rule: **all system host volumes live under `~/.ai-platform/volumes/<name>`**
-(config files — the LiteLLM/DNS/nginx configs under `config/` — and the
-per-project workspace overlays are NOT system volumes and stay where they are).
-Today there are two:
+(config files — the LiteLLM/DNS/nginx configs under `config/` — are NOT system
+volumes and stay where they are). Today there are two:
 
 - `~/.ai-platform/volumes/litellm-db/` — the LiteLLM **Postgres data dir**,
   **HOST-BIND-MOUNTED** into `aip-litellm-db` at `/var/lib/postgresql` (NOT a
@@ -133,8 +145,11 @@ Rules:
 * **all state writes are atomic**: write to a temp file in the same directory,
   then `rename()` over the target, so a crash mid-write can never produce a
   partial or corrupt state file
-* `ai state repair` rebuilds `run/` from the project + Microsandbox; discovery
-  uses `projects.yaml` (VCS is out of scope — no git is consulted)
+* `ai state repair` (`internal/state.Repair`) drops `projects.yaml` index
+  entries whose project no longer exists on disk and ensures each remaining
+  project's `run/` shard directories exist; discovery uses `projects.yaml`
+  (VCS is out of scope — no git is consulted). It does not reconcile
+  individual workspace/session handles against a live runtime today.
 
 ---
 
@@ -197,113 +212,61 @@ Rules (once implemented):
 
 ---
 
-## 1.5 OS Dockerfile + Software-Stack Templates
+## 1.5 OS Dockerfile + Software-Stack Templates — Removed
 
-```text id="h9"
-~/.ai-platform/templates/dockerfiles/
-~/.ai-platform/templates/stacks/
-~/.ai-platform/templates/agentclis/
-~/.ai-platform/templates/tools/
-```
+There is no per-project image anymore, so there is nothing to template. This
+whole layer (`internal/templates`, the per-OS Dockerfile skeletons, the
+per-software-stack snippets, the per-agent-CLI install snippets, and the
+opt-in-tool Dockerfile snippets) was **deleted** when workspaces moved from
+Microsandbox microVMs (one OCI image built per project, run as a guest kernel)
+to **nono** (https://nono.sh) host-process sandboxing: an agent CLI now runs
+directly as a sandboxed process on the HOST, using whatever toolchains are
+already installed there — there is no OS choice at `ai create`, no `--stacks`
+selection, no per-workspace language-runtime provisioning, and no rootful
+in-VM container runtime (containerd/nerdctl/buildkit) to bootstrap.
 
-One Dockerfile template per supported OS key, one install snippet per software
-stack, per agent CLI, and per opt-in dev tool (architecture §25):
+What replaced it:
 
-```text id="h10"
-dockerfiles/alma/Dockerfile
-dockerfiles/debian-trixie/Dockerfile
-dockerfiles/ubuntu/Dockerfile
-
-stacks/go/Dockerfile.snippet
-stacks/go/Dockerfile.dnf.snippet      # AlmaLinux (dnf) variant — see below
-stacks/rust/Dockerfile.snippet        # rustup install is package-manager-agnostic, no dnf variant
-stacks/java/Dockerfile.snippet
-stacks/java/Dockerfile.dnf.snippet
-stacks/maven/Dockerfile.snippet
-stacks/maven/Dockerfile.dnf.snippet
-stacks/deno/Dockerfile.snippet
-stacks/deno/Dockerfile.dnf.snippet
-
-# opt-in AI tools — appended to the project Dockerfile only when selected at create (--tools)
-tools/graphify/Dockerfile.snippet
-tools/code-review-graph/Dockerfile.snippet
-tools/codebase-memory-mcp/Dockerfile.snippet
-tools/openviking/Dockerfile.snippet
-tools/tokensave/Dockerfile.snippet
-tools/agentmemory/Dockerfile.snippet
-# caveman + ponytail are deliberately NOT here — both runtime-only (own install/
-# registration step at workspace start; project.DockerfileTools excludes them)
-```
-
-Rules:
-
-* the OS template **seeds** a new workspace's `.ai-platform/Dockerfile` at
-  `ai create`; the selected **stack snippets** (wizard step 6) are
-  composed into it after the base tooling
-* every OS base template installs, beyond the base tooling, a **rootful in-VM OCI
-  container runtime** (containerd + nerdctl + runc + CNI + buildkit, from the
-  pinned `nerdctl-full` tarball into `/usr/local`, arch-aware) plus its CNI deps
-  (`iptables`, `iproute`); the runtime is started at workspace start (arch §7)
-* every OS base template also bakes in **Node.js** (pinned Node 24 LTS,
-  system-wide — so the agent-CLI snippets only `npm install -g` their CLI), the
-  latest **Python 3** (system-wide),
-  and **uv** (Astral's Python package/tool manager, installed for the workspace user
-  onto `~/.local/bin`). **Graphify** (PyPI `graphifyy`, CLI `graphify`) is NO LONGER baked
-  into the base — it is a selectable AI tool (`--tools graphify`, default on) installed by a
-  CONDITIONAL `tools/graphify/Dockerfile.snippet`
-  (`uv tool install "graphifyy[pdf,office,video,postgres,google,svg,sql,terraform,openai,gemini,anthropic,mcp]"`,
-  all optional extras except the region/DB/niche-specific `chinese,azure,bedrock,falkordb,neo4j,leiden,dm,pascal`)
-  appended only when selected. When selected, Graphify is then registered with each agent CLI
-  at WORKSPACE START (not in the Dockerfile), ONCE per project (guarded by a
-  `.ai-platform/.graphify-installed` marker) — `graphify install --project [--platform <cli>]`
-  run in `~/project` (`Manager.registerGraphify`, gated on `context.graphify_enabled`) —
-  because `--project` writes into the bind-mounted project dir, which only exists at runtime
-  (arch §12). REGARDLESS of the Graphify selection, when the project is not already a valid
-  git working tree (detected with `git rev-parse --is-inside-work-tree`, dropping a dangling
-  `.git` gitlink file first) `registerGraphify` runs `git init` so every workspace is
-  git-backed; when Graphify is selected it then runs `graphify hook install`
-  on EVERY start for a valid repo (the hook is idempotent, so there is deliberately no
-  marker, and it runs even for an omp/hermes-only project). Graphify's headless LLM
-  backend is a local model chosen at `ai create` (`agent.graphify_model`, §12.4) —
-  a plain model name already served by omlx (macOS + Apple Silicon only; no
-  download step, no curated-model picker), routed through the gateway as
-  `omlx/<model>`. **Neither Python nor Node is
-  a `--stacks` option** — both are baked into the base (the no-op `python`/`node`
-  stack snippets were removed entirely), so the selectable stacks are `go`, `rust`,
-  `java`, `maven`, `deno`, and the agent-CLI snippets now only `npm install` their
-  CLI (Node itself is in the base).
-* stack composition is **OS-aware**: `templates.StackSnippet(stack, osKey)` picks
-  the snippet variant for the target OS's package manager — for a dnf-based OS
-  (currently only `alma`; tracked by a `dnfOSKeys` set) it prefers a
-  `Dockerfile.dnf.snippet` sibling when one exists, falling back to the plain
-  `Dockerfile.snippet` otherwise (apt-based OSes always use the plain snippet).
-  `go`, `java`, `maven`, and `deno` ship both variants since their install step
-  invokes the OS package manager directly (`apt-get`/`dnf install`); `rust`
-  ships only the plain snippet, since its rustup installer is package-manager-
-  agnostic
-* the stack list is **extensible** — adding `stacks/<name>/Dockerfile.snippet`
-  (plus an optional `Dockerfile.dnf.snippet` sibling for dnf-based OSes)
-  makes `<name>` selectable
-* after creation the project owns its Dockerfile; templates/snippets are no
-  longer consulted
-* there is no snapshot versioning, storage, or pinning
+* **Agent CLIs install directly onto the host.** `internal/setup/agentcli_host.go`
+  (`EnsureHostAgentCLIsInstalled`, run at `ai setup`) installs claude-code,
+  codex, and opencode via each project's own official installer script when
+  the binary is not already on `PATH` (`curl -fsSL https://claude.ai/install.sh
+  | bash`, `curl -fsSL https://chatgpt.com/codex/install.sh | sh`,
+  `curl -fsSL https://opencode.ai/install | bash`) — Detect-gated and
+  best-effort, never failing setup. omp/gemini/hermes are expected to already be
+  on `PATH` (no installer is wired for them).
+* **nono itself installs the same way** — `internal/setup/nono_host.go`
+  (`EnsureNonoInstalled`) runs `brew install nono` when Homebrew is present,
+  else nono's own `curl -fsSL https://nono.sh/install.sh | sh` — see §1.9.
+* **AI tools are config toggles, not Dockerfile snippets.** `ai create --tools`/
+  `ai tools enable|disable` set the `context.*_enabled` flags in §12.4's
+  `config.yaml`; **as of this writing no verified code path in
+  `internal/workspace` actually installs or registers caveman, graphify,
+  code-review-graph, codebase-memory-mcp, openviking, tokensave, agentmemory,
+  ponytail, or agent-skills** — the install/registration steps that used to run
+  at workspace start in the Microsandbox era (`registerCaveman`,
+  `registerGraphify`, the MCP-injection wiring) were not found wired into the
+  current `internal/workspace` package (which now only launches/attaches/stops
+  nono sessions and writes each CLI's keyless provider config — see §2.2). The
+  toggles persist and round-trip through `ai tools list`, but whether flipping
+  one currently has any runtime effect beyond that could not be confirmed from
+  the code.
 
 ---
 
 ## 1.6 MCP Registry — Removed
 
-There is no platform MCP registry. Most MCP servers are configured and run by the
-in-workspace agent (architecture §12). The one exception: for the agent configs the
-platform rewrites whole on every start (codex/hermes/omp), it INJECTS the
-enabled AI tools' MCP servers (code-review-graph/codebase-memory-mcp/graphify/tokensave/
-agentmemory — `agentcfg.EnabledMCPServers`) directly into that render so the rewrite
-doesn't clobber them (architecture §12); the CLIs whose configs the platform does not own
-get those same servers via the tools' own native install (tokensave additionally
-registers natively with claude-code/opencode/gemini, agentmemory with claude-code/gemini,
-at workspace start — mirroring graphify/code-review-graph's own-install precedent).
-(Any provider credentials those MCP servers need are resolved through the
-keys-in-LiteLLM credential store, not stored on platform disk — architecture
-§17.)
+There is no platform MCP registry; MCP servers are the in-workspace agent's own
+concern. `internal/agentcfg` still carries the MCP-injection helpers built for
+the Microsandbox era (`EnabledMCPServers`, `AppendCodexMCP`, `InjectHermesMCP` —
+each still unit-tested in `agentcfg/mcp_test.go`), but a grep of
+`internal/workspace`'s current config writers (`writeCodexConfig`,
+`writeHermesConfig`, `writeOmpConfig`) shows none of them call
+`EnabledMCPServers` — the per-tool MCP injection into codex/hermes/omp's
+rewritten-whole configs is **not currently wired up**. Any provider
+credentials an MCP server needs would in any case be resolved through the
+keys-in-LiteLLM credential store, never stored on platform disk (architecture
+§17).
 
 ---
 
@@ -357,51 +320,57 @@ Rules:
 In **standalone** mode `ai setup` also writes an AI-platform-owned block to
 `/etc/hosts` (a privileged write, outside `~/.ai-platform/`) mapping the UI
 subdomains (`litellm.<domain>` → LiteLLM admin UI and `valkey.<domain>` →
-RedisInsight; Open WebUI is now a per-workspace in-VM app and Odysseus was
-removed) to `127.0.0.1`, so the nginx
+RedisInsight — there is no Open WebUI vhost anymore: it was an in-VM app under
+the now-deleted `internal/apps`, and Odysseus was removed outright) to
+`127.0.0.1`, so the nginx
 gateway's vhost resolves locally. Only the platform's delimited block is touched;
 `ai uninstall` removes it. (`internal/hostsfile` writes the managed block;
 `internal/uihosts` computes the entries from the service registry.)
 
 ## 1.9 Tools
 
-```text id="h19a"
-~/.ai-platform/bin/msb
-```
+There is no platform-managed, checksum-verified binary pin anymore. The
+Microsandbox `msb` CLI this section used to describe
+(`~/.ai-platform/bin/msb`, pinned in `internal/workspace/msb.go` and
+sha256-verified on download) is **gone** along with the microVM runtime it
+drove — `internal/workspace/msb.go` and `internal/sandbox` were both deleted.
+In its place, workspaces are sandboxed by **nono** (https://nono.sh), which the
+platform expects as a plain `PATH` binary:
 
-The one pinned, checksum-verified host binary today: the Microsandbox `msb`
-runtime. It is pinned to an exact version **in code**
-(`internal/workspace/msb.go`, matched to the go.mod Microsandbox Go SDK pin —
-not `config/versions.yaml`, see §12.6) and downloaded (sha256-verified) into
-`~/.ai-platform/bin/` (`paths.BinDir`) on first use, so it is not a
-user-installed `PATH` prerequisite. (omlx runs from the platform Python venv
-`~/.ai-platform/venv` instead, not from here — see §1.1 and §12.6a.) The
-top-level `~/.ai-platform/tools/` directory named in §1.1 is
-created by `ai setup` but, as of this writing, is not written to by any code
-path (reserved).
+* `internal/setup/nono_host.go` (`EnsureNonoInstalled`, run at `ai setup`)
+  installs it when absent via `brew install nono` (preferred, when Homebrew is
+  present) or nono's own official installer (`curl -fsSL
+  https://nono.sh/install.sh | sh`) — wherever either of those put it (e.g.
+  Homebrew's prefix), NOT into `~/.ai-platform/bin/`. Detect-gated and
+  best-effort; a manual re-run of `ai setup` retries a failed/skipped install.
+* `internal/nono.Detect` just does an `exec.LookPath("nono")` — there is no
+  version pin, no checksum verification, and no platform-managed copy to keep
+  in lockstep with anything (unlike the old `msb`/Go-SDK version-matching
+  requirement).
 
-## 1.10 Overlays (Persistence)
+`~/.ai-platform/bin/` is consequently vestigial: it is not even in
+`internal/layout`'s eager-create directory list anymore, and nothing in the
+current codebase writes into it. It survives only as a leftover on a host
+upgraded from a pre-nono install, and `ai uninstall` still best-effort looks
+for `~/.ai-platform/bin/msb` there to report/clean up (`internal/uninstall`'s
+`msbBinary`/legacy-cleanup path), purely for that upgrade case. (omlx
+continues to run from the platform Python venv `~/.ai-platform/venv` — see
+§1.1 and §12.6a — which is unrelated to this and unchanged.) The top-level
+`~/.ai-platform/tools/` directory named in §1.1 is created by `ai setup` but,
+as of this writing, is not written to by any code path (reserved).
 
-Per-workspace persistent writable layers (architecture §26), host-backed so
-installs and agent state survive workspace restart and recreation.
+## 1.10 Overlays — Removed
 
-```text id="h19"
-~/.ai-platform/overlays/<workspace-id>/
-```
-
-Each directory is the persistent writable layer for one workspace
-(`aip-<project>`), mounted over the read-only image
-(built from the project Dockerfile) at workspace start.
-
-Rules:
-
-* one overlay per workspace; the whole writable layer persists (no manifest of
-  declared paths)
-* local persistence, not a backup — removed only when its workspace is
-  permanently removed
-* never contains secrets
-* the `overlay.json` record described in §12.8 is aspirational — no code path
-  writes it today; `internal/overlay` only manages the directory itself
+There is no per-workspace persistent writable layer anymore. nono sandboxes a
+single host process per invocation (Landlock on Linux, Seatbelt on macOS) —
+there is no VM disk, no guest/host split, and therefore nothing to overlay:
+the project directory on the host **is** the persistent state, written to
+directly by whatever nono session runs there. The `internal/overlay` package
+(which used to manage `~/.ai-platform/overlays/<workspace-id>/`) was deleted
+in full. The `overlays/` directory named in §1.1 is still eagerly created by
+`internal/layout` (not yet pruned from its list) but nothing writes into it —
+it is dead weight, not live state. §12.8's `overlay.json` record is likewise
+fully retired, not merely aspirational.
 
 ---
 
@@ -448,93 +417,100 @@ the agent into this source tree — the platform does not manage them.
 
 ```text id="p4"
 .ai-platform/
-  Dockerfile           # tracked — environment (architecture §25)
   config.yaml          # tracked — project config (§12.4)
-  profile.yaml         # tracked — project profile (language/toolchain)
-  project.yaml         # tracked — { name, os, created } (§12.1)
-  agents/  skills/  prompts/  projects/   # shared resource pool (§12.1c) — NOT created
-                       #   by `ai create`/Scaffold; created + populated at workspace
-                       #   START (Manager.Start's linkSharedResources MkdirAll's each,
-                       #   then Caveman install + Graphify + symlinks into each CLI's
-                       #   dir). A freshly-created, never-started project has none of
-                       #   these dirs yet. Caveman is NOT platform-seeded/git-tracked
-                       #   (architecture §9)
+  project.yaml         # tracked — { schema_version, name, os, created } (§12.1)
   .gitignore           # ignores run/
   run/                 # gitignored — host-local runtime state
-    workspaces/<workspace-id>.yaml   # (§12.2)
+    workspaces/<session-id>.yaml   # one file per launched agent/shell session (§12.2)
+  nono-profile-<cli>.json   # host-local, regenerated on every launch — NOT covered by .gitignore (see below)
 
-# per-CLI provider configs — KEYLESS, written at workspace start (§12.1c, architecture §15):
+  # NOT present: there is no Dockerfile (nothing to build), no profile.yaml
+  # (no software-stack selection), and no shared agents/skills/prompts/projects
+  # resource pool (the code that used to create and symlink it was removed —
+  # see §1.5).
+
+# per-CLI provider configs — KEYLESS, written at workspace start (§12.1c):
 .opencode/opencode.json         # opencode provider config; apiKey "{env:AIP_GATEWAY_KEY}"
 .claude/settings.json           # claude-code env block (base URL only; token via env)
-.codex/config.toml              # codex provider block (key via env_key)
-.omp/config.yml                 # omp provider order + default model (models.yml is GLOBAL in-VM ~/.omp/agent/models.yml)
-.omp/mcp.json                   # omp MCP servers — injected AI-tool MCP servers, rewritten whole at start
-.hermes/…                       # hermes: config is the GLOBAL in-VM ~/.hermes/config.yaml (keyless)
+.codex/config.toml               # codex provider block (key via env_key); oauth mode writes a gateway-less variant instead
+.omp/config.yml                  # omp provider order (models.yml is GLOBAL at ~/.omp/agent/models.yml)
+.hermes/…                        # hermes: config is GLOBAL at ~/.hermes/config.yaml (keyless)
 # (gemini is ENV-only — no on-disk provider file)
 ```
 
-### 12.1c Per-CLI project configs + shared resource pool
+`project.DockerfileTools` and `agentArtifactDirs` in `internal/project/project.go`
+still enumerate `.opencode`, `.claude`, `.codex`, `.omp`, `.gemini`, `.hermes`, and
+`.venv-msb` as the per-CLI dirs `ai delete` best-effort removes — `.venv-msb` is a
+holdover from the Microsandbox era (a per-project Python venv created at workspace
+start); no current code path creates one, but the delete cleanup still looks for it
+in case an older project has one.
+
+`<project>/.ai-platform/nono-profile-<cli>.json` is the project's generated **nono
+profile** (`internal/nono.Profile`, JSON — nono requires JSON, not YAML; `cli` is the
+agent CLI name, or `shell` for `ai shell`'s profile). It is (re)written by
+`internal/workspace`'s `ensureProfile` on **every** `ai agent`/`ai shell` launch —
+cheap (a few lines of JSON) so a `config.yaml` network change (`ai network
+allow/deny`) takes effect on the very next launch, with no restart step. It declares:
+the project's filesystem access (granted via nono's own `--allow-cwd`, not written
+into the file itself), the `network` section mirrored straight from
+`config.yaml`'s `NetworkConfig` (`egress`/`allow_domain`/`deny_domain`), and, for
+gemini only, a non-secret `environment.set_vars.GOOGLE_GEMINI_BASE_URL` (gemini has
+no config-file base-URL setting). For opencode/claude-code/codex, the profile's
+`extends` field names an official nono registry pack (`nolabs-ai/opencode`,
+`nolabs-ai/claude`, `nolabs-ai/codex` — best-effort pulled via `nono pull`, §12.1c);
+other CLIs fall back to nono's own built-in `default` profile.
+
+### 12.1c Per-CLI project configs
 
 The old `<project>/.ai-platform/agents/` keyless-template layer is **retired**. Instead,
-at workspace start the platform writes each agent CLI's provider config at **that CLI's
-own default per-project location** under the project root (in the bind-mounted project
-dir = host disk, so the project is self-describing and portable). Every on-disk config is
-**KEYLESS** — the scoped virtual key is env-supplied and never written to disk — and any
-existing file is deep-merged so the managed block wins while the user's other keys survive:
+at workspace start (really: at each `ai agent <cli>` launch) the platform writes that
+agent CLI's provider config at **that CLI's own default per-project location** under
+the project root — a plain host directory now, not a bind mount into a guest. Every
+on-disk config is **KEYLESS**: the scoped virtual key is injected by nono directly into
+the sandboxed process's environment (`nono run --env-credential-map <keychain-ref>
+<ENV_VAR>`, reading the OS keychain — never written to any config file, profile, or
+plain host env file) and any existing file is deep-merged so the managed block wins
+while the user's other keys survive:
 
-* **opencode** → `.opencode/opencode.json` (`apiKey: "{env:AIP_GATEWAY_KEY}"`); the in-VM
-  agent env file exports `OPENCODE_CONFIG` to point opencode at it.
+* **opencode** → `.opencode/opencode.json` (`apiKey: "{env:AIP_GATEWAY_KEY}"`).
 * **claude-code** → `.claude/settings.json` — an `env` block with `ANTHROPIC_BASE_URL`;
-  the token stays in the exported `ANTHROPIC_AUTH_TOKEN` env var (no key in the file).
-* **codex** → `.codex/config.toml` (keyless, `env_key = "AIP_GATEWAY_KEY"`,
-  `wire_api = "responses"`) + a global in-VM `~/.codex/config.toml` trust entry so codex
-  loads the project config.
-* **gemini** → env-only (`GOOGLE_GEMINI_BASE_URL` + `GEMINI_API_KEY` in the in-VM agent
-  env file; no settings key for a base URL exists).
-* **omp** (a Pi fork) → the GLOBAL in-VM `~/.omp/agent/models.yml` (YAML, keyless — the
-  provider `apiKey` names the `AIP_GATEWAY_KEY` env var, `openai-models-list` discovery)
-  + `.omp/config.yml` (provider order + seed-then-remember `modelRoles.default`). These
-  use the `.yml` extension because omp documents those paths that way (the one external-tool
-  exception to the platform's `.yaml` rule).
+  the token is injected under `ANTHROPIC_AUTH_TOKEN` (no key in the file). In `oauth`
+  auth mode the env block is emptied instead (`MergeClaudeSettingsOAuth`) and claude's
+  own native login is used, bypassing the gateway.
+* **codex** → `.codex/config.toml` (keyless, `env_key = "AIP_GATEWAY_KEY"`) PLUS a
+  GLOBAL `~/.codex/config.toml` trust-entry append (`appendCodexTrust`) — a `[projects.
+  "<root>"]` entry per project, idempotently appended (never overwritten wholesale,
+  since this file is now shared across every project on the host rather than isolated
+  per VM) — so codex trusts and loads the project config.
+* **gemini** → env-only (`GOOGLE_GEMINI_BASE_URL` + `GEMINI_API_KEY`/credential
+  injection; no settings key for a base URL exists).
+* **omp** (a Pi fork) → the GLOBAL `~/.omp/agent/models.yml` (YAML, keyless — the
+  provider `apiKey` names the `AIP_GATEWAY_KEY` env var, `openai-models-list`
+  discovery) + `<project>/.omp/config.yml`. These use the `.yml` extension because omp
+  documents those paths that way (the one external-tool exception to the platform's
+  `.yaml` rule).
+* **hermes** → the GLOBAL `~/.hermes/config.yaml`, pointed at the project's
+  `.ai-platform/skills` dir via `external_dirs` (a path reference only — nothing
+  currently populates that directory's contents, see §1.5).
 
-**Injected MCP servers.** The three configs the platform rewrites whole on every start —
-codex's `.codex/config.toml`, hermes's global `~/.hermes/config.yaml`, and omp's
-`.omp/mcp.json` — carry the enabled AI tools'
-(code-review-graph/codebase-memory-mcp/graphify/tokensave/agentmemory) MCP servers,
-injected into the render so the start-time rewrite can't clobber them (architecture §12).
-CLIs whose configs the platform does not own (claude-code/opencode/gemini) get those
-servers via the tools' own native `install --platform`/auto-detect (tokensave on
-claude-code/opencode/gemini, agentmemory on claude-code/gemini).
+Agent CLIs with no subscription login (opencode/omp/hermes) share the
+`AIP_GATEWAY_KEY` env var name with codex; claude-code/gemini use their own
+provider-specific env var names. The credential itself is stored under OS-keychain
+entry name `aip-gateway-<project>` (`internal/nono.StoreCredential`/
+`DeleteCredential` — macOS Keychain via `security`, Linux via `secret-tool`), stable
+per project so re-minting a key overwrites it in place.
 
-The scoped virtual key lives **only** in the in-VM agent env file
-`~/.config/aip/agent-env.sh` (off host disk), sourced by every shell + agent session
-(architecture §15). A user's edits to the on-disk configs survive restart (present files
-are deep-merged, never clobbered).
-
-**Shared resource pool.** `<project>/.ai-platform/{agents,skills,prompts,projects}` holds
-ONE copy of the project's agents / skills / prompts. At workspace start (BEFORE Graphify
-registration) each pool is symlinked (relative) into each **installed** CLI's real
-per-project dir (`sharedResourceLinks` in `internal/workspace/workspace.go`): `skills` →
-`.opencode/skills`/`.claude/skills`/`.omp/skills`/`.hermes/skills`; `agents` →
-`.opencode/agents`/`.claude/agents`/`.omp/agents` (omp reads its own native
-`.omp/agents` and deliberately skips `.claude/agents`, so it needs its own symlink);
-`prompts` → `.opencode/commands`/`.claude/commands`/`.gemini/commands`/`.omp/commands`
-(hermes derives commands from skills instead, so it gets no prompts link). Kinds a CLI has
-no concept for are skipped (codex/gemini have no skills/agents). Caveman
-(`skills/caveman/SKILL.md`) is thereby shared to every skills-capable client. *(hardware
-bring-up: the symlinks resolving in-VM, and each CLI honouring its project config, are not
-yet verified live.)*
-
-The **Caveman** agent skill is **not** seeded at project creation and **not**
-git-tracked. It is installed into the shared `.ai-platform/skills` pool at
-workspace **start** by its own upstream installer (`registerCaveman`,
-once-guarded, network-bound, best-effort — `Scaffold` writes no caveman files),
-so `skills/caveman/` appears only after the first workspace start.
-
-* the tracked files define the environment + config
-  and are committable, so the project is reproducible from git
-* `run/` holds machine-specific runtime handles (Microsandbox ids, status) and is
-  gitignored
+* the tracked files (`config.yaml`, `project.yaml`, `.gitignore`) define the project
+  and are committable, so the project's platform-level configuration is reproducible
+  from git — unlike the Microsandbox era there is no Dockerfile to make the actual
+  *toolchain* reproducible: that now comes from whatever is installed on the host
+* `run/` holds machine-specific session handles (nono session ids, status) and is
+  gitignored. The written `.gitignore` contents are just `run/` (`project.Scaffold`) —
+  **the regenerated `nono-profile-<cli>.json` files sit at the `.ai-platform/` top
+  level and are NOT covered by that pattern**, so they would be tracked if a user
+  commits `.ai-platform/`; this looks like a gap carried over from the migration
+  rather than an intentional choice, since the files are purely host-local/machine-
+  specific and are rewritten on every launch
 * no platform-managed memory/history (delegated to the agent, architecture §11)
 
 ---
@@ -548,20 +524,14 @@ agents inside a workspace and those agents use worktrees (e.g. under
 
 ---
 
-# 3. Workspace Layout (Microsandbox)
+# 3. Workspace Layout — now identical to the Project Layout
 
-Inside the workspace microVM:
-
-```text id="w1"
-~/project/   (= /home/workspace/project)
-```
-
----
-
-## 3.1 Workspace Structure
+There is no separate guest filesystem anymore, so there is no host/guest mount
+to describe. A "workspace" is simply the registered project directory on the
+HOST (§2), run directly by nono:
 
 ```text id="w2"
-~/project/   (= /home/workspace/project)
+my-project/   (wherever the user chose to create it — same tree as §2.1)
 ├── .ai-platform/
 ├── src/
 ├── tests/
@@ -569,43 +539,36 @@ Inside the workspace microVM:
 └── docs/
 ```
 
----
-
-## 3.2 Mounting Rules
-
-Host project (wherever it was created, e.g.):
-
-```text id="w3"
-~/projects/my-project
-```
-
-Mounted into:
-
-```text id="w4"
-~/project   (= /home/workspace/project)
-```
+`ai agent <cli>`/`ai shell` launch nono with `--allow-cwd` and `Dir` set to the
+project root (`internal/workspace.Manager.Agent`/`Shell`), so the sandboxed
+process's working directory — and the filesystem access its generated nono
+profile grants — is this same directory nono runs from. There is nothing
+analogous to the old `~/project` (`/home/workspace/project`) in-guest path: the
+agent sees the real host path, not a remapped one.
 
 Rules:
 
-* the host project source is the single source of truth (mounted read-write)
-* the workspace **microVM is disposable** — its identity/runtime can be
-  destroyed and recreated at any time
-* non-source writes (installs, agent state) are **not** lost on recreation:
-  they persist via the per-workspace **overlay** (§1.10), from Slice 4 onward
+* the host project source is the single source of truth, read-write, with no
+  copy or mount in between
+* a nono **session is disposable** — it is a sandboxed invocation of one
+  command, not a persistent machine; stopping/restarting one never touches
+  project files
+* all writes (source edits, installs the agent CLI itself makes to its own
+  state dirs under the project, agent memory) land directly on the host
+  project directory — there is no separate overlay layer to persist them
+  through (see §1.10 — that concept no longer exists)
 
 ---
 
-# 4. Environment Images
+# 4. Environment Images — Removed
 
-There is no snapshot store or versioned image layout. A project's workspace
-image is **built from `<project>/.ai-platform/Dockerfile`** (architecture §25)
-as an OCI image and run as a Microsandbox microVM; image storage is handled by
-Microsandbox's own OCI image store (`msb image ls`). The platform does not
-maintain a bespoke `snapshots/` directory.
-
-* the per-OS **templates** that seed a new project's Dockerfile live under
-  `~/.ai-platform/templates/dockerfiles/<os>/Dockerfile` (§1.5)
-* build/image caching is the runtime's responsibility (no platform-managed versions)
+There is no image, no snapshot store, and no versioned image layout. nono does
+not build or run a guest OS image — it sandboxes an already-installed host
+binary directly (Landlock on Linux, Seatbelt on macOS). The per-project
+`Dockerfile` and the per-OS Dockerfile templates this section used to describe
+are gone (§1.5); so is `internal/envimage`, the package that used to compose
+and build them. Whatever language/tool runtimes the agent CLI needs must
+already be on the host.
 
 ---
 
@@ -712,8 +675,14 @@ No component may introduce ad-hoc directories outside this specification.
 System is valid when:
 
 * CLI can reconstruct runtime state from each project's `.ai-platform/run/`
-* a project is fully described by its `.ai-platform/` (Dockerfile + config)
-* the `.ai-platform/Dockerfile` recreates the environment
+* a project's platform-level configuration (installed agent CLIs, egress
+  policy, enabled context/AI-tool toggles) is fully described by its
+  `.ai-platform/config.yaml` — there is no environment/toolchain description to
+  reconstruct beyond that, since nono runs the host's own installed tools
+  directly rather than a platform-built image
+* a project's nono profile(s) (`.ai-platform/nono-profile-<cli>.json`) are
+  regenerated, not hand-maintained — they always reflect the current
+  `config.yaml` on the next launch
 * no manual directory setup is required
 
 ---
@@ -730,49 +699,59 @@ config files. Unknown fields must be rejected. All timestamps are RFC 3339 UTC.
 {
   "schema_version": 1,
   "name": "my-app",
-  "os": "debian-trixie",
+  "os": "darwin",
   "created": "2026-06-18T10:00:00Z"
 }
 ```
 
+Note `os` is no longer a user choice: `project.Scaffold` always sets it to
+`runtime.GOOS` (whatever platform `ai create` itself ran on) — there is no OS
+selection step in the create wizard anymore (§1.5).
+
 * tracked in git; the project's path is recorded in the global
   `config/projects.yaml` index (§12.7), not here
-* the selected software stacks live in `profile.yaml` (§12.1a), not here
 
-## 12.1a `<project>/.ai-platform/profile.yaml` (tracked)
+## 12.1a `<project>/.ai-platform/profile.yaml` — Removed
 
-The project's language/tool profile — the **software stacks** installed in the
-environment (architecture §25), chosen in the create wizard (CLI §3.1 step 6):
+There is no `profile.yaml` and no software-stack selection anymore — see §1.5.
 
-```yaml id="sc1a"
-schema_version: 1
-stacks: [go, rust]   # any subset of the available stack snippets (§1.5)
-```
+## 12.2 `<project>/.ai-platform/run/workspaces/<session-id>.yaml` (gitignored)
 
-* tracked in git so the environment is reproducible
-* the stacks are composed into `.ai-platform/Dockerfile` at creation; editing the
-  Dockerfile directly is also fine (the Dockerfile is the source of truth for the
-  build, §25)
-
-## 12.2 `<project>/.ai-platform/run/workspaces/<workspace-id>.yaml` (gitignored)
-
-Written atomically by `internal/state.Store.SaveWorkspace` (YAML-encoded, like every
-other platform-generated state file — see the Conventions note in AGENTS.md: everything
-the platform writes is `.yaml`, never `.json`):
+Written atomically by `internal/state.Store.SaveWorkspace` at
+`filepath.Join(runDir, "workspaces", workspace.ID+".yaml")` (YAML-encoded, like
+every other platform-generated state file — see the Conventions note in
+AGENTS.md: everything the platform writes is `.yaml`, never `.json`):
 
 ```yaml id="sc2"
 schema_version: 1
-id: aip-my-app
+id: 3f2a9c7e-...        # the nono session id RunDetached returned, NOT "aip-<name>"
 project: my-app
-microsandbox_id: msb-9f3c...
+microsandbox_id: ""     # vestigial field name from the Microsandbox era — always empty; never set by current code
 status: started
 created: "2026-06-18T10:00:05Z"
 last_started: "2026-06-18T10:00:05Z"
 ```
 
 * `status`: `created` | `started` | `stopped` | `archived` | `destroyed`
+  (`internal/state.WorkspaceStatus` still carries all five values, though
+  `internal/workspace.Manager` today only ever writes `started` from `Agent`
+  and `stopped` from `StopAll`)
 * host-local runtime handle — gitignored
-* one workspace per project (§12.1); there is no per-agent workspace
+* `id` is the **nono session id** returned by `nono run --detached` (an opaque
+  string nono assigns, not a platform-chosen name) — `Manager.Agent` writes a
+  **new** handle file on every launch, since the filename is derived from that
+  per-launch session id. This differs from the old one-handle-per-project
+  model the field names (and this section's title) still suggest: nothing
+  currently prunes or consolidates these files, so `run/workspaces/` can
+  accumulate one `.yaml` per `ai agent` invocation over a project's lifetime.
+  `StopAll` additionally writes a `stopped`-status handle with an **empty**
+  `id` (so its filename is literally `.yaml`), not into the most recent
+  session's file. `project.workspaceHandle` (used by `ai list`'s status
+  column) separately computes `id = "aip-" + name` and looks for a handle
+  matching that `id` — since real written ids are nono session ids, not
+  `"aip-<name>"`, this lookup likely never matches a handle `Agent` wrote; this
+  looks like an unresolved inconsistency from the migration rather than
+  intentional behavior, and was not confirmed either way by running the code.
 
 ## 12.3 Agent state — Removed
 
@@ -791,83 +770,59 @@ in-workspace agent CLI's concern (arch §20–22), so there are no `git`/`agents
 config blocks.
 
 ```yaml id="sc6"
-os: alma                   # alma | debian-trixie | ubuntu
+os: darwin                 # auto-detected runtime.GOOS at `ai create` — no longer a user choice; not os|arch-validated
 agent:
   tools: [opencode]        # installed agent CLIs (any subset of: opencode, omp, claude-code, codex, gemini, hermes); opencode by default
-  default_tool: opencode   # default agent CLI; must be one of agent.tools
+  default_tool: opencode   # default agent CLI; must be one of agent.tools (defaults to agent.tools[0])
   graphify_model: qwen2.5-coder  # optional: local model NAME already served by omlx that Graphify uses
                            # (chosen at `ai create`, no download step; routed through the gateway as omlx/<model>); omitted = none
-  hermes_dashboard_password: ""  # plaintext basic-auth password for the hermes web dashboard (hermes dashboard);
-                           # auto-generated + written by the platform on first start when hermes is selected
+  auth_modes:              # per-CLI auth mode for the OAuth-capable CLIs only (claude-code, codex, gemini);
+                           # "api-key" (default, routes through the gateway) | "oauth" (native login, bypasses
+                           # the gateway and its guardrails); set via `ai create --auth-mode cli=mode`
+    claude-code: oauth
+  hermes_dashboard_password: ""  # plaintext basic-auth password for the hermes web dashboard (hermes dashboard) —
+                           # a low-sensitivity LOCAL credential, not a provider/gateway secret. The field and its
+                           # hashing helper (agentcfg.HermesDashboardPasswordHash) exist, but
+                           # internal/workspace's writeHermesConfig currently always passes an empty password —
+                           # nothing in the verified code path reads or generates this value yet.
 context:
   strategy: balanced       # Headroom input compression: conservative | balanced | aggressive
                            # (mapped to Headroom per-request knobs keep_turns/output_buffer_tokens)
   caveman_level: full      # Caveman output compression: lite | full | ultra | wenyan
-  caveman_enabled: false   # AI tools — ONE `--tools` multi-select at create (§1.5), 8 keys total; ALL
+  caveman_enabled: false   # AI tools — ONE `--tools` multi-select at create (§1.5), 9 keys total; ALL
                            # opt-in with NO create-default selection (create.DefaultAITools() returns
                            # nil) — a vanilla `ai create` writes every context.*_enabled key false. A
                            # nil (never-written) value is the only case that still defaults true, for
                            # caveman/graphify, to preserve pre-toggle projects' original auto-install
                            # behavior (CavemanEnabledOrDefault/GraphifyEnabledOrDefault); every other
-                           # key defaults false when unset.
-  graphify_enabled: false  # install Graphify (conditional Dockerfile snippet, §1.5) + register it per CLI at start
-  code_review_graph_enabled: false   # OPT-IN: install code-review-graph (code-review-graph.com) + register it
-                                     # as an MCP server with each installed agent CLI at start
-  codebase_memory_enabled: false     # OPT-IN: install codebase-memory-mcp (DeusData/codebase-memory-mcp) +
-                                     # register it as an MCP server with each installed agent CLI at start
-  openviking_enabled: false          # OPT-IN: install OpenViking (docs.openviking.ai, the context database
-                                     # for AI agents; conditional Dockerfile snippet, §1.5) + register it with
-                                     # each supported installed agent CLI at start
-  tokensave_enabled: false           # OPT-IN: install tokensave (github.com/aovestdipaperino/tokensave, a
-                                     # 34-language code-graph MCP server; conditional Dockerfile snippet,
-                                     # §1.5) + register it natively with claude-code/opencode/gemini and via
-                                     # MCP injection with codex/hermes/omp at start
-  agentmemory_enabled: false         # OPT-IN: install agentmemory (github.com/rohitg00/agentmemory,
-                                     # persistent cross-session memory; conditional Dockerfile snippet,
-                                     # §1.5) + register it natively with claude-code/gemini and via MCP
-                                     # injection with codex/hermes/omp at start
-  ponytail_enabled: false            # OPT-IN: install the Ponytail skill (github.com/DietrichGebert/ponytail,
-                                     # nags the agent to check YAGNI/stdlib/existing code first) at start;
-                                     # runtime-only — no Dockerfile snippet (§1.5)
+                           # key defaults false when unset. See §1.5 for the (unverified) install story.
+  graphify_enabled: false  # toggle for Graphify
+  code_review_graph_enabled: false   # toggle for code-review-graph (code-review-graph.com)
+  codebase_memory_enabled: false     # toggle for codebase-memory-mcp (DeusData/codebase-memory-mcp)
+  openviking_enabled: false          # toggle for OpenViking (docs.openviking.ai)
+  tokensave_enabled: false           # toggle for tokensave (github.com/aovestdipaperino/tokensave)
+  agentmemory_enabled: false         # toggle for agentmemory (github.com/rohitg00/agentmemory)
+  ponytail_enabled: false            # toggle for the Ponytail skill (github.com/DietrichGebert/ponytail)
+  agent_skills_enabled: false        # toggle for addyosmani/agent-skills
 workspace:
-  cpu_limit: 4             # microVM resource limits wired into `msb create --cpus/--memory`
-  memory_limit: 8          # memory in GB (a plain number; a 512M/4G suffix still works); empty falls back to the microVM default (4G)
-  disk_limit: 16           # writable rootfs (OCI overlay upper) size in GiB — sizes the in-VM
-                           # disk holding containerd's image store (so multi-GB in-VM app images
-                           # fit); applied at create via the SDK's WithOCIUpperSize, changeable
-                           # later with `ai resize`; empty falls back to the workspace default
-  shell: bash              # default interactive shell (bash | zsh), chosen at `ai create --shell`; applied at every start
-  isolated_dirs:           # guest-relative paths under the project workdir (e.g. node_modules, target) EXCLUDED
-                           # from the host project bind mount and backed by a private, workspace-scoped volume
-                           # instead — in-VM writes never touch the host tree; applied at create as an extra
-                           # SDK mount over the subpath. Empty by default (`ai create --isolate-dirs`, or post-create
-                           # via `ai mounts add <relative-dir>`)
-    - node_modules
-  shared_mounts:           # additional host directories bind-mounted into the guest at an arbitrary guest path,
-                           # visible/writable on BOTH sides (unlike isolated_dirs); applied at create as an extra
-                           # SDK bind mount. Empty by default — no `ai create` flag; added post-create via
-                           # `ai mounts add <absolute-guest-dir> --host <host-path>`
-    - { guest_path: /home/workspace/shared, host_path: /Users/me/shared }
-microsandbox:
-  idle_timeout: 24h        # `msb create --idle-timeout`; default set by `ai create`, editable later
-network:                   # workspace networking (arch §29.6); all fields managed via `ai network`
-                           # enforced as a Microsandbox NetworkPolicy (no egress proxy); DNS-audited
-  egress: public           # public (DEFAULT, allow-outbound; private ranges still blocked) | deny | unrestricted
-                           # empty == "public" (the model gateway is always reachable in every mode)
-  allow_host_services:     # external destinations the workspace may reach (host/IP/domain or "gateway")
-    - { host: gateway, port: 5432 }
-  publish_ports:           # host → workspace port maps
-    - { guest: 3000, host: 3000 }
-apps:                      # opt-in in-VM AI apps (arch §7), chosen via `ai create --apps`/`--app-port` / `ai apps add`
-                           # each runs as a rootful nerdctl container in the workspace microVM, gateway-routed,
-                           # published on a unique host port (stable across restarts; seeded to the app's
-                           # familiar container port — Open WebUI 8080 — when free, else
-                           # auto-allocated from the 21000–21999 window — internal/apps/ports.go)
-  - { key: openwebui, port: 8080 }    # key one of: openwebui
-agent_dashboards:          # agent-CLI web dashboards (currently only hermes — `hermes dashboard`, default 9119);
-                           # prompted for a host port at create when the CLI is selected (--app-port <cli>=<port>),
-                           # published from the microVM the same way as apps (host==guest); reuses the AppEntry shape
-  - { key: hermes, port: 9119 }
+  shell: bash              # default interactive shell `ai shell` launches inside the nono sandbox (bash | zsh);
+                           # chosen at `ai create --shell`. There is no vCPU/memory/disk/idle-timeout/
+                           # isolated_dirs/shared_mounts to configure anymore — nono sandboxes a single host
+                           # process with no VM to size and no second "guest view" to mount into (§3).
+network:                   # per-project nono egress policy, edited via `ai network show|egress|allow|disallow`;
+                           # mirrors internal/nono.Profile's own `network` section shape directly —
+                           # internal/egress compiles this straight into the generated nono profile
+  egress: public           # public (DEFAULT — unrestricted outbound, nono's own default) | deny (nono --block-net)
+  allow_domain:            # bare domains or "*.suffix" wildcards (nono --allow-domain); meaningful when egress
+                           # is deny (carves exceptions into an otherwise-blocked default) — no port, no "gateway"
+                           # special case (the model gateway is reachable regardless of egress mode)
+    - api.github.com
+  deny_domain: []          # bare domains or "*.suffix" wildcards (nono --deny-domain)
+
+# NOT present: there is no microsandbox/apps/agent_dashboards block, no
+# cpu_limit/memory_limit/disk_limit, no isolated_dirs/shared_mounts, no
+# allow_host_services/publish_ports — all retired along with the microVM
+# runtime, published ports, and in-VM apps (§1.5, §3, §4).
 ```
 
 ## 12.5 `config/runtime.yaml` (platform-global, non-project)
@@ -878,32 +833,49 @@ agent_dashboards:          # agent-CLI web dashboards (currently only hermes —
   "role": "standalone",
   "detected": "docker",
   "rootless": true,
-  "microsandbox": { "available": true, "virtualization": "hvf" },
+  "nono": { "installed": true },
   "guardrails": ["headroom"],
   "ai_platform_host": "host.local",
-  "host_gateway": "host.microsandbox.internal",
+  "host_gateway": "127.0.0.1",
   "domain": "aip.local",
   "detected_at": "2026-06-18T09:59:00Z"
 }
 ```
 
+`microsandbox: { available, virtualization }` is **replaced** by `nono: {
+installed }` (`runtime.NonoInfo`) — unlike the Microsandbox slot it replaces,
+there is no separate "virtualization available" probe: nono's Landlock
+(Linux)/Seatbelt (macOS) enforcement works on any host the binary runs on, with
+no Apple-Silicon-only (or any hardware-virtualization) restriction. `detected`/
+`rootless` describe the Docker/Podman **service tier** (unchanged by this
+migration — still required for LiteLLM/Headroom/etc., see AGENTS.md). Also
+note `host_gateway`'s default is now plain loopback (`runtime.
+DefaultGatewayHost = "127.0.0.1"`), not a guest-network DNS name — a
+nono-sandboxed agent runs directly on the host, so there is no guest/host
+network translation to name.
+
 * `role`: `standalone` | `server` | `client` (chosen by `ai setup`; absent on a
   pre-role runtime.yaml). Drives the service bind host and which prereqs are
-  required.
+  required — `client` now only needs `nono` installed (not `msb` +
+  hardware-virtualization support); `server` needs neither (no workspaces run
+  there).
 * `optional_services`: the opt-in HOST services enabled at setup; the optional
   mechanism is retained but there are currently **no** optional host services
-  (Open WebUI moved to a per-workspace in-VM app and Odysseus was removed), so
-  this field is normally omitted.
+  (Open WebUI was an in-VM app under the now-deleted `internal/apps`, and
+  Odysseus was removed outright — in-VM apps are out of scope entirely now,
+  not replaced by anything), so this field is normally omitted.
 * `guardrails`: the set of LiteLLM guardrail keys enabled on the gateway,
   chosen from the picker at `ai setup` and persisted machine-wide — only
   `headroom` (input-compression) is on by default; `presidio` (secret
   masking), `detect-secrets`, and the destructive-command tool firewall are
   opt-in. A non-nil value (including an explicit empty list) means the user
   has made a choice; absent falls back to the built-in default set.
-* `ai_platform_host`: the machine-wide gateway address every workspace microVM
-  routes through (`ai gateway set` / `ai setup --mode client --server`).
-* `host_gateway`: the guest-visible host address (arch §29.2), default
-  `host.microsandbox.internal`.
+* `ai_platform_host`: the machine-wide gateway address every workspace routes
+  through (`ai gateway set` / `ai setup --mode client --server`).
+* `host_gateway`: the host address a nono-sandboxed agent reaches the gateway
+  at, default plain loopback `127.0.0.1` (`runtime.DefaultGatewayHost`) — there
+  is no guest network anymore, so (unlike the Microsandbox-era
+  `host.microsandbox.internal`) this is just the literal host address.
 * `domain`: the platform base domain the nginx UI subdomains hang off
   (`litellm.<domain>` and `valkey.<domain>`); empty resolves to the default
   `aip.local` (`ai domain` shows/sets it).
@@ -937,16 +909,18 @@ agent_dashboards:          # agent-CLI web dashboards (currently only hermes —
   `nginx:stable-alpine3.23-slim`, `valkey` → `valkey/valkey:9.1.0-alpine`) — **not by
   digest** (digests are platform/arch specific, so a digest pin breaks
   cross-platform pulls).
-* The **native microsandbox runtime is NOT pinned here**: it is not an image the
-  platform pulls, so it is deliberately excluded from this image pin set (it keeps a
-  registry slot only for its log scope). It is instead **platform-managed and pinned
-  in code** — `internal/workspace/msb.go` pins the `msb` CLI to `microsandboxVersion`
-  (matched to the go.mod Microsandbox SDK pin) and `MsbBinary` downloads the matching
-  fork binary (sha256-verified against `msbAssets`) into `~/.ai-platform/bin/msb`
-  (`paths.BinDir`) on first use, so it is NOT a user-installed PATH prerequisite and
-  `sandbox.Detect` counts the platform-managed binary as installed. Native pins
-  (`version` + `sha256`) in this file are reserved for any future genuinely-pinned
-  native component managed through `versions.yaml`.
+* **nono (the workspace sandboxing runtime) is NOT pinned here, and is not pinned
+  anywhere.** It is not an image the platform pulls, so it is excluded from this
+  image pin set; unlike the Microsandbox `msb` CLI this file's pin set used to
+  exclude for a different reason (that one WAS platform-managed-and-pinned, just
+  not through this file — `internal/workspace/msb.go`, now deleted, pinned an
+  exact version in code and downloaded a checksum-verified binary into
+  `~/.ai-platform/bin/`), nono has **no platform-managed pin or download at
+  all**: `internal/setup/nono_host.go` installs it via `brew install nono` or
+  nono's own official curl installer (§1.9), and `internal/nono.Detect` is a
+  bare `exec.LookPath("nono")` with no version or checksum check. Native pins
+  (`version` + `sha256`) in this file remain reserved for any future
+  genuinely-pinned native component managed through `versions.yaml`.
 * `ai setup` **resolves every service-tier image from this file** (via
   `internal/setup`'s `containerImage`, falling back to the built-in
   `versions.Default()` pins when the file is absent or an entry is incomplete);
@@ -987,21 +961,8 @@ demand via `ai models refresh`.
   `ai delete` (low-write)
 * lets the CLI find a project's `.ai-platform/` without scanning
 
-## 12.8 `overlays/<workspace-id>/overlay.json` (global overlay record) — not implemented
+## 12.8 `overlays/<workspace-id>/overlay.json` — Removed
 
-A tiny record beside the persistent layer (the layer contents are not described
-by a manifest — the whole writable layer persists).
-
-```json id="sc10"
-{
-  "schema_version": 1,
-  "workspace": "aip-my-app",
-  "updated": "2026-06-18T11:00:00Z"
-}
-```
-
-**Aspirational, not built.** `internal/overlay` only implements `Path`/`Ensure`/
-`Exists`/`Remove` over the overlay *directory* itself (`~/.ai-platform/overlays/
-<workspace-id>/`) — no code path writes an `overlay.json` file, and there is no
-Go type for this schema. Treat the JSON above as a proposed future record, not
-current behavior; §1.10 lists this dir with the same caveat.
+Fully retired, not merely unimplemented: `internal/overlay` (which this schema
+was proposed for) was deleted along with the whole overlay/persistent-VM-disk
+concept — see §1.10.

@@ -43,7 +43,7 @@ type networkLogResult struct {
 func (result networkLogResult) Human() string {
 	var builder strings.Builder
 	builder.WriteString(ui.Heading.Render("attempted DNS names (host-wide, all workspaces) — names only, not connection verdicts") + "\n")
-	builder.WriteString(ui.Muted.Render("enforcement is by the msb net-rules shown in `ai network show`; a resolved name") + "\n")
+	builder.WriteString(ui.Muted.Render("enforcement is by the project's nono network policy shown in `ai network show`; a resolved name") + "\n")
 	builder.WriteString(ui.Muted.Render("may still have been blocked at the network layer") + "\n")
 	if result.Note != "" {
 		builder.WriteString(ui.Muted.Render("("+result.Note+")") + "\n")
@@ -112,9 +112,9 @@ func newNetworkLogCmd(emitter *output.Emitter, exit *int) *cobra.Command {
 			"  - NAMES ONLY: it shows attempted resolutions, not connection verdicts and\n" +
 			"    not direct-IP egress (traffic to a literal IP never hits DNS).\n" +
 			"  - NOT ENFORCEMENT: a name appearing here was resolved, not necessarily\n" +
-			"    reached. Enforcement is by the msb net-rules shown in `ai network show`.\n" +
-			"    Under a default-deny posture msb may filter a denied name before it\n" +
-			"    reaches the resolver, so denied names can be absent here.",
+			"    reached. Enforcement is by the project's nono network policy shown in\n" +
+			"    `ai network show`. Under a default-deny posture nono may filter a denied\n" +
+			"    name before it reaches the resolver, so denied names can be absent here.",
 		Args:              cobra.MaximumNArgs(1),
 		ValidArgsFunction: completeProjectArg,
 		RunE: func(_ *cobra.Command, _ []string) error {

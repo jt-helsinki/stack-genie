@@ -1,25 +1,81 @@
 # Hardware bring-up checklist
 
-Slice 1 is implemented host-side **and** verified end-to-end on a provisioned
-Apple Silicon host: `ai setup` launches the full service tier; LiteLLM mints
-scoped agent virtual keys and holds provider keys; workspace OCI images build and
-boot as Microsandbox microVMs; commands run inside them; the
-per-project `ai network` egress policy is applied as `msb` net-rules at workspace
-create; and the DNS egress audit (`ai network log`) works.
+**Post-nono-migration note:** the workspace runtime changed from
+hardware-isolated **Microsandbox microVMs** to **[nono](https://nono.sh)**
+kernel-capability sandboxing (Landlock LSM on Linux, Seatbelt on macOS) — a
+same-kernel, per-invocation process sandbox, not a VM. This is a deliberate,
+accepted security-model change (same-kernel sandboxing, not hardware isolation).
+A large share of the items this checklist used to track no longer apply at
+all, because the capability they describe (a guest OS/image, in-VM container
+runtime, in-VM apps, VM resource sizing, VM-scoped mounts, the Microsandbox Go
+SDK) **no longer exists** — those sections are marked **REMOVED / MOOT** below
+rather than left as open bring-up items. A few *new* seams exist in their place
+(nono session lifecycle, OS-keychain credential injection, host-native agent-CLI
+installers) and are called out where relevant. The Docker-based service tier
+(nginx, LiteLLM, guardrails, Valkey, DNS audit, omlx) is **unaffected** by this
+migration and its bring-up status below is unchanged.
 
-This file is the **remaining** punch list — only the seams that still depend on
-further bring-up. Everything not listed here (workspace build/boot/exec, the
-service-tier launch, virtual-key minting, egress net-rules, the DNS audit) is
-done. The few genuinely-unwired spots are grep-able as `hardware bring-up` in the
-code.
+Slice 1 was implemented host-side **and** verified end-to-end on a provisioned
+Apple Silicon host under the **previous** Microsandbox-microVM design: `ai setup`
+launched the full service tier; LiteLLM minted scoped agent virtual keys and held
+provider keys; workspace OCI images built and booted as Microsandbox microVMs;
+commands ran inside them; the per-project `ai network` egress policy was applied
+as `msb` net-rules at workspace create; and the DNS egress audit (`ai network
+log`) worked. That verification record is kept below for history, but it no
+longer describes the live code — **the nono-based workspace model has not yet
+had the equivalent live-hardware verification pass** (nono session
+create/attach/stop, OS-keychain credential injection, per-session nono-profile
+network enforcement, and the host-native agent-CLI installers in
+`internal/setup/agentcli_host.go`/`nono_host.go` are unit-tested with fakes but
+not yet confirmed end-to-end on a live host). The service-tier items (service
+launch, virtual-key minting, the DNS audit log, the guardrails) remain done as
+described. The few genuinely-unwired spots are grep-able as `hardware bring-up`
+in the code.
 
-## What is already done (no longer pending)
+## REMOVED / MOOT (the retired Microsandbox-microVM design — historical record)
 
-- **Workspace build + microVM lifecycle** — `internal/workspace/workspace_real.go`:
-  `realBuilder.Build` runs `<rt> build` then `msb load`; `realSandbox`
-  Create/Start/Stop/Destroy/Exec/WriteFile drive `msb`; the project mounts at
-  `~/project` (`/home/workspace/project`), the overlay (§26) at `/persist`, and the microVM boots with
-  `--dns-nameserver` at the `aip-dns` audit resolver.
+These items were verified live under the **previous** workspace runtime and are
+kept here only as a historical record; the capability itself no longer exists,
+so there is nothing left to bring up for them:
+
+- **Workspace build + microVM lifecycle** — GONE. There is no OCI image build, no
+  `msb load`, no microVM. `internal/workspace/workspace_real.go`,
+  `workspace_sdk.go`, and `msb.go` (the Microsandbox Go SDK integration) were
+  deleted entirely, along with `internal/envimage` (OCI image build) and
+  `internal/overlay` (the persistent VM-disk overlay — the project directory on
+  host IS the persistent state now). The replacement is a nono session per
+  `ai agent <cli>`/`ai shell` launch (`internal/nono`, `internal/workspace`) — see
+  the "Not yet verified" section below.
+- **Egress net-rules via `msb`** — GONE. `egress.MsbNetworkArgs` and the whole
+  `host`-GROUP-token / always-on-DNS-pair mechanism it implemented no longer
+  exist. The replacement is a nono profile's `network` block (egress
+  `deny`/`public` + allow/deny domain lists), regenerated on every session
+  launch — see "Not yet verified" below.
+- **In-VM container runtime (containerd + nerdctl + runc + CNI)** — GONE. There
+  is no guest VM to run it in. `Manager.ensureContainerd`, `Sandbox.ExecRoot`,
+  and the whole rootful-runtime-boot dance are deleted.
+- **In-VM apps (Open WebUI, agent-CLI dashboards)** — GONE. `internal/apps` was
+  deleted entirely; there is no `ai apps` command, no published app ports, and
+  no in-VM app concept. Not replaced.
+- **Per-project host↔guest mounts (`ai mounts`)** — GONE. nono does not
+  virtualize the filesystem, so there is no guest/host mount concept, no
+  isolated dirs, no shared mounts.
+- **VM resource sizing (`ai resize`, vCPU/memory/disk)** — GONE. There is no VM
+  to size; a nono session runs with whatever resources the host process gets.
+- **OS/software-stack selection at `ai create`** (debian-trixie/ubuntu/alma;
+  go/rust/java/maven/deno) — GONE. A workspace runs on whatever OS/toolchains the
+  host actually has; the platform no longer provisions them.
+- **tmux-based in-VM session multiplexing** — GONE. Sessions are now native nono
+  sessions (`nono run --detached`/`nono attach`/`nono ps`/`nono stop`), not tmux
+  inside a VM.
+- **`docs/MSB-SDK-MIGRATION.md`** (the Microsandbox CLI-backend→SDK-backend
+  migration) — deleted outright; it described a now-twice-superseded migration of
+  a runtime that no longer exists.
+
+## Still true / unaffected by the nono migration
+
+The Docker-based service tier did not change:
+
 - **Service-tier launch** — `internal/setup/setup_real.go`: `realServices.Reconcile`
   brings up the container tier on `aip-net` in order **network → DNS →
   Presidio (only when secret-masking is enabled) → Valkey (+ RedisInsight) →
@@ -34,41 +90,9 @@ code.
   scans its own model directory and serves every model it finds — there is no
   per-model launch or port allocation), reached by the containers through the host
   gateway.
-- **Egress net-rules** — the project `network` block is rendered by
-  `egress.MsbNetworkArgs` and applied at `realSandbox.Create` (default-deny +
-  allow-listed host services + published ports).
-- **In-VM gateway + host-service reachability** — `egress.MsbNetworkArgs` targets
-  msb's `host` GROUP token (`allow:egress@host:tcp:<port>`) for the LOCAL gateway
-  rule (standalone) and the `gateway`/empty host-service allow-list entries — NOT
-  the resolved `host.microsandbox.internal` NAME. A host-NAME target lets the guest
-  connect to the msb gateway but does NOT engage msb's host-forwarding, so the
-  request never reaches the host service and the guest gets an empty reply (verified
-  live). A remote gateway (client mode) and explicit domain/IP host-services stay
-  verbatim. Verified live: the in-VM agent reaches the gateway (`/v1/models` → 200
-  with the served list) and `refresh-models` succeeds.
-- **In-VM DNS under default-deny** — `egress.MsbNetworkArgs` emits an always-on
-  DNS allow pair (`allow:egress@host:udp:53` + `allow:egress@host:tcp:53`, msb's
-  `host` GROUP token = `Rule::allow_dns()`) right after the gateway allow rule, in
-  EVERY mode. Without it, a default-deny policy whose rules are all host-name/IP
-  based matches nothing at DNS-decision time and every lookup is denied; the `host`
-  group matches the local gateway forwarder the query is delivered to (the only
-  target that re-opens DNS). Verified live — name resolution works under
-  `egress deny`.
-- **DNS egress audit** — `aip-dns` (CoreDNS) logs every queried name;
-  `ai network log` surfaces it.
-- **In-VM container runtime boots and persists** — `Manager.ensureContainerd`
-  (`internal/workspace/workspace.go`) probes `nerdctl info` and, if down, boots
-  containerd detached then **polls `nerdctl info` for true readiness** (bounded to
-  ~30s, 150 × 0.2s) so the daemon both establishes AND serves requests before the
-  boot exec returns (msb tears down the exec's process group on return, which would
-  otherwise kill the just-forked daemon; the poll also keeps the exec alive until
-  then). It **returns whether the runtime is ready**, and `Manager.Start` starts the
-  in-VM apps only when it is — otherwise it skips them with one clear warning rather
-  than letting nerdctl fatal on a dead socket. `Sandbox.ExecRoot` runs `msb exec -u
-  root` (msb's no-`-u` default is the unprivileged `workspace` uid 1000, NOT root —
-  so the earlier rootful boot failed with a silently-swallowed permission error).
-  Verified live: a plain `ai start` now leaves containerd running, which also
-  unblocks the in-VM apps.
+- **DNS egress audit** — `aip-dns` (CoreDNS) logs every queried name, host-wide;
+  `ai network log` surfaces it (names only, not a connection verdict — a
+  project's own egress enforcement is separate, see "Not yet verified" below).
 - **Virtual-key minting + provider-key storage** — `litellm.KeyManager` mints the
   scoped agent virtual key and stores provider keys in LiteLLM's credential store
   (keys-in-LiteLLM, §17), fronted by `ai keys`.
@@ -79,10 +103,64 @@ code.
   status`/`ai doctor` surface a single `omlx` `host`-mode line (running when the
   server answers, else stopped).
 
+## NEW seams to verify (nono-based workspace model)
+
+These replace the microVM-specific bring-up items removed above. The host-side
+wiring is unit-tested with fakes (`internal/nono`, `internal/workspace`,
+`internal/setup/nono_host.go`, `internal/setup/agentcli_host.go`); none of it has
+had a live-hardware verification pass yet:
+
+- [ ] **nono session lifecycle** — `nono run --detached` (launch), `nono attach`,
+      `nono shell`, `nono ps --json` (list), `nono inspect --json`, `nono stop
+      [--force]` against a real `nono` install. Confirm `ai agent <cli>`,
+      `ai shell`, `ai sessions`, `ai attach`, `ai stop`, `ai restart` all work
+      end-to-end on a live host (both macOS/Seatbelt and Linux/Landlock).
+- [ ] **OS-keychain credential injection** — the scoped LiteLLM virtual key is
+      stored via `internal/nono.StoreCredential`/`DeleteCredential` (macOS
+      Keychain via `security`, Linux via `secret-tool`) and handed to the
+      sandboxed process only via nono's `--env-credential-map`. Confirm this
+      round-trip on both macOS and a Linux host with `secret-tool`/a provider
+      (e.g. gnome-keyring) available, and confirm `ai delete` revokes the key
+      and removes the keychain entry.
+- [ ] **nono profile network enforcement** — a project's `network.egress`
+      (`deny`/`public`) and allow/deny domain lists are rendered into the
+      generated nono profile (`internal/workspace/profile.go`) and enforced by
+      nono itself. Confirm live: `egress deny` blocks a non-allow-listed
+      destination while the gateway stays reachable; `ai network allow
+      <domain>`/`disallow` take effect on the *next* session launch with no
+      restart step.
+- [ ] **Registry-pack profile extension** — `nonoPackForCLI` extends a fresh
+      profile from `nolabs-ai/opencode`/`nolabs-ai/claude`/`nolabs-ai/codex`
+      (`nono pull <pack>`, best-effort/20s-bounded). Confirm the packs resolve
+      against the real nono registry and the resulting profile behaves as
+      expected (falls back to nono's built-in `default` profile when the pull
+      fails or is slow).
+- [ ] **Host-native agent-CLI installers** (`internal/setup/agentcli_host.go`) —
+      `ai setup` can install claude-code, codex, and opencode directly onto the
+      host via each CLI's own official installer (`claude.ai/install.sh`,
+      `chatgpt.com/codex/install.sh`, `opencode.ai/install`). Confirm each
+      resolves and installs cleanly, and that `nono` itself installs via `brew
+      install nono` / `nono.sh/install.sh` (`internal/setup/nono_host.go`).
+      gemini/omp/hermes are not in this installer set — confirm what install
+      path (if any) `ai doctor`/`ai setup` guidance points them to.
+- [ ] **PTY-driven live-session testing** — unlike the old `msb exec -t`-backed
+      acceptance harness, there is not yet an automated integration test that
+      drives `ai agent <cli>`/`ai shell` through a real PTY against a live
+      `nono` session (tmux/terminfo concerns from the old design don't apply —
+      nono runs the CLI directly in the caller's own terminal — but line
+      editing, Ctrl-C, SIGWINCH resize, and a clean exit still need a live
+      check). This is a genuinely new gap, not a carried-over one.
+
 ## 1. Provision the host (prerequisites)
 
-- [ ] Apple Silicon Mac (Intel is unsupported — the Microsandbox runtime needs
-      the Apple Hypervisor). `ai doctor` must report `host virtualization: ok (hvf)`.
+- [ ] `nono` (https://nono.sh) — the kernel-capability sandboxing CLI that
+      replaces Microsandbox as the workspace runtime (Landlock LSM on Linux,
+      Seatbelt on macOS). No Apple-Silicon-only restriction and no hypervisor
+      requirement — unlike the runtime it replaces, nono has no
+      virtualization-capability gate; any host the binary runs on can use it.
+      `ai setup` best-effort auto-installs it (`EnsureNonoInstalled`:
+      `brew install nono`, else `curl -fsSL https://nono.sh/install.sh | sh`);
+      `ai doctor` reports it under "nono runtime".
 - [ ] Go 1.26+.
 - [ ] **Docker**, rootless. `ai doctor` → `container runtime: ok (docker)`;
       `ai setup` must verify rootless (`runtime.Verify`, exit 4 if not).
@@ -97,63 +175,40 @@ code.
       admin panel (`ai services console omlx`) — there is no `ai models pull`
       equivalent and no separate Hugging Face CLI install. omlx weights live at
       `~/.ai-platform/volumes/models/omlx`. See §2.9.
-- [ ] **Microsandbox** (`msb`) — the platform now MANAGES this itself: it is pinned
-      to `microsandboxVersion` (`v0.6.6`, matched to the go.mod
-      `superradcompany/microsandbox/sdk/go` pin) and downloaded (sha256-verified)
-      into `~/.ai-platform/bin/msb` on first use (`internal/workspace/msb.go`), so it
-      need NOT be on your `PATH` (`sandbox.Detect` counts the platform-managed binary
-      as installed). The downloaded binary must still be code-signed with the
-      `com.apple.security.hypervisor` entitlement under Developer ID + notarization to
-      use the Apple Hypervisor.
-- [ ] `git`, `gh` — workspace agent tooling and the acceptance suite's
-      `requireGit` gate. `ai create` does **not** use git; the only git the platform
-      runs is an internal in-VM `git init` at workspace start (to seat the Graphify
-      hook). No clone/remote/`gh`.
+- [ ] `git`, `gh` — host dev tooling the agent CLIs may expect to find on PATH,
+      and the acceptance suite's `requireGit` gate. `ai create` does **not** use
+      git itself. (Whether a per-project `git init`/Graphify-hook step still runs
+      at session launch under the nono model, as it did at microVM workspace
+      start in the previous design, needs re-confirming against current code —
+      not re-verified as part of this doc pass.)
 
 ## 2. Remaining seams to wire/verify
 
-### 2.1 Host-gateway pinning + networking reachability spike (arch §29.2, §29.5)
+### 2.1 Host-gateway reachability — MOOT (REMOVED)
 
-The host↔workspace networking is the last "will it actually work" unknown. The
-host-gateway address is now pinned; egress net-rules are applied at create, and
-allow-listed host services that use the `gateway` token resolve to it in every mode.
+This whole spike was about guest↔host networking inside a Microsandbox microVM
+(the pinned `host.microsandbox.internal` DNS name, `msb` net-rules resolving a
+`gateway` token, and proving a published guest port was reachable from the
+host). None of that applies anymore: the agent CLI runs **directly on the host**,
+so reaching the gateway is a plain loopback connection
+(`http://127.0.0.1:18787/v1`, `runtime.DefaultGatewayHost`/`DefaultGatewayPort`)
+with no guest-network translation layer at all. The property still worth
+confirming live — that `egress deny` actually blocks a non-allow-listed
+destination while the gateway and allow-listed domains stay reachable — is
+tracked under nono's own profile enforcement in the "NEW seams to verify"
+section above, not here.
 
-- [x] **Host gateway pinned.** The guest→host address is the fixed,
-      backend-independent Microsandbox DNS name `host.microsandbox.internal` (the
-      same under HVF on macOS and KVM on Linux, verified end-to-end during bring-up).
-      `runtime.HostGateway(_)` returns `(DefaultGatewayHost, true)`, Detect persists
-      it to `config/runtime.yaml` as `host_gateway`, and `egress`'s host-gateway
-      target derives from the same `runtime.DefaultGatewayHost`. `Info.HostAddress()`
-      prefers the `AI_PLATFORM_HOST` env override, else this value.
-- [ ] **Prove the four properties** (these make "it works" + "egress is confined"
-      falsifiable) on a live host. NOTE the default egress mode is now **"public"**
-      (allow-outbound — a deliberate security-posture change so in-VM nerdctl can
-      pull images and AI processes reach the internet); the deny properties below
-      apply when the project is re-locked with `ai network egress deny`:
-  1. a workspace reaches an **allow-listed** host service (start a host Postgres,
-     allow-list `gateway:5432`, connect from inside the microVM);
-  2. under `egress deny`, a **non-allow-listed** host/internet destination is
-     **denied** (default-deny); under the **default "public"**, the open internet
-     is reachable while **private ranges** stay blocked by the default-deny
-     fallthrough — verify both;
-  3. a **published** guest port (`network.publish_ports`) is reachable from the host;
-  4. the model-gateway path (nginx → LiteLLM, where LiteLLM calls Headroom
-     in-process as a `pre_call` guardrail) remains reachable in every mode (the
-     always-on host-gateway allow rule).
-
-### 2.2 Live service/microVM log capture (`ai logs`)
+### 2.2 Live service log capture (`ai logs`)
 
 - [x] **Live service-log viewing is done.** `ai logs --service <svc> --follow`
       streams `<runtime> logs -f` to stdout, and the `ai ui` Services view shows a
       service's logs full-pane, auto-refreshing (the `l` key). The on-disk
       snapshot (`ai setup` / `ai services status` → `~/.ai-platform/logs`) remains
       for the non-follow path.
-- [ ] **microVM (`msb`) log follow (CLI backend only)** — on the DEFAULT SDK
-      backend the workspace log already streams live over the relay-free
-      `LogStream` (see §2.8), so `ai ui`'s Logs sub-tab and `ai logs --workspace
-      <p> --follow` follow without polling. The remaining piece is the CLI-backend
-      (`AIP_WORKSPACE_BACKEND=cli`) fallback that shells out to `msb logs -f
-      <name>` (needs a running microVM under the CLI backend to verify).
+- **microVM (`msb`) log follow** — MOOT (REMOVED). There is no persistent microVM
+  log to tail anymore (no SDK `LogStream`, no CLI-backend `msb logs -f`, no
+  workspace Logs/Metrics TUI sub-tabs — a nono session's output is just the
+  sandboxed process's own stdout/stderr in whatever terminal launched it).
 - [ ] **Service detail metrics round-trip** — the Services detail **Service**
       sub-tab's live per-container stats (`setup.ServiceStats`, `<runtime> stats
       --no-stream` + `inspect`, polled ~2s) render a `── <container> ──` block per
@@ -191,8 +246,10 @@ verification work:
   KNOWN LIMIT (not a bring-up item — inherent): the firewall only sees the model's
   structured tool-call args, so chained/compound commands inside one call, scripts
   the agent writes then runs, free-text-parsed actions, and obfuscation
-  (`rm -r -f`, `$(echo rm) -rf`) are invisible. The microVM isolation + default-deny
-  egress remain the hard boundary; the firewall is thin defence-in-depth.
+  (`rm -r -f`, `$(echo rm) -rf`) are invisible. The nono sandbox (filesystem scope
+  + egress policy) remains the hard boundary; the firewall is thin defence-in-depth
+  — note this boundary is now same-kernel process sandboxing, not VM-level
+  hardware isolation (a deliberate, accepted trade-off of the nono migration).
   (There is no prompt-injection callback to verify — the in-process
   `detect_prompt_injection` and the unmaintained LLM Guard were both removed as
   false-positive sources on ordinary coding traffic; see arch §15.)
@@ -218,8 +275,9 @@ verification work:
   - the chat test (`ai models test`) on `localhost:18787/v1/chat/completions` still
     goes **directly to LiteLLM** (the real model path — LiteLLM applies the Headroom
     compression guardrail in-process), NOT `/llm`;
-  - the agent microVM `/v1` path (`host.microsandbox.internal:18787/v1` → LiteLLM)
-    is unchanged — confirm a workspace agent still routes correctly.
+  - the host-sandboxed agent's `/v1` path (now plain loopback
+    `http://127.0.0.1:18787/v1` → LiteLLM, not a guest-network DNS name) still
+    routes correctly from a nono session.
 
 - [ ] **UI Host-based vhosts on the single :18787 (the new topology)** — the host
       UIs are now subdomains (NOT separate host ports): nginx matches each by
@@ -230,7 +288,9 @@ verification work:
   - `http://valkey.<domain>:18787/` serves the RedisInsight UI (proxies to
     `aip-redisinsight:5540`), preconfigured with the standalone `aip-valkey` connection;
   - `<domain>` is the resolved platform base domain (default `aip.local`; `ai domain`).
-  - (Open WebUI is now a per-workspace in-VM app, not a host vhost; Odysseus was removed.)
+  - (Open WebUI and Odysseus were both removed from the platform entirely —
+    neither is a host vhost nor an in-VM app anymore; there is no bundled
+    web-chat UI today.)
 - [ ] **Standalone `/etc/hosts` write (the sudo seam)** — `ai setup` in standalone
       mode prompts for consent and writes the managed block via
       `uihosts.sudoWriteHosts` (temp file → `sudo cp <tmp> /etc/hosts`). Confirm on a
@@ -278,7 +338,7 @@ verification work:
       (conservative/balanced/aggressive) maps to Headroom's two real per-request body
       knobs `keep_turns`/`output_buffer_tokens` — (8,12000)/(5,8000)/(2,4000),
       `internal/contextopt.HeadroomParams` — baked into the agent CLI's request
-      `extra_body` at workspace start. Verify the knobs take effect live, and confirm
+      `extra_body` at session launch. Verify the knobs take effect live, and confirm
       whether LiteLLM's `headroom` guardrail forwards the `extra_body` knobs to
       `/v1/compress`.
 
@@ -346,207 +406,81 @@ Every host-persisted **system** volume now lives under `~/.ai-platform/volumes/<
       and local models must be re-downloaded into the fresh dirs. `ai uninstall` still
       best-effort `docker volume rm aip-*`s the legacy named volume on upgrade.
 
-### 2.6 In-VM container runtime (Phase 0 — arch §7)
+### 2.6 In-VM container runtime — MOOT (REMOVED)
 
-Every workspace microVM image now ships a **rootful** OCI container runtime —
-containerd + nerdctl + runc + CNI plugins + buildkit — installed from the pinned
-`nerdctl-full` release tarball (`NERDCTL_VERSION=2.3.4`, arch-aware amd64/arm64,
-extracted to `/usr/local`) in every OS base Dockerfile, plus the runtime OS deps
-CNI needs (`ca-certificates`, `iptables`/`iptables-nft`, `iproute`/`iproute2`).
-The runtime is **started at workspace start**, not baked running into the image:
-`Manager.Start` calls `ensureContainerd`, which probes `nerdctl info` (as root via
-`Sandbox.ExecRoot` = `msb exec -u root`) and, if the daemon is not up, boots it
-**detached** (`setsid sh -c 'containerd >/var/log/containerd.log 2>&1 &'`) then
-**polls `nerdctl info` for true readiness** (bounded to ~30s) to keep the boot exec
-alive until the daemon both establishes and serves requests — msb tears down the
-exec's process group on return, which would otherwise kill the just-forked daemon.
-`ensureContainerd` returns whether the runtime came up ready, and `Start` runs the
-in-VM apps only when it did (else it skips them with one warning). This is
-**best-effort** — a failure logs a warning and does NOT fail the workspace start.
+There is no guest VM, so there is nothing to run a container runtime inside.
+The whole rootful containerd+nerdctl+runc+CNI install (every OS base Dockerfile),
+`Manager.ensureContainerd`'s boot-and-poll dance, and `Sandbox.ExecRoot` (`msb
+exec -u root`) are gone with the Dockerfile/image/`msb` layer itself. Nothing to
+bring up here.
 
-The containerd boot and its daemon-persistence are **verified on the Apple Silicon
-host** (a plain `ai start` leaves containerd running, which also unblocks the in-VM
-apps); the host-side wiring (Dockerfile install lines, `ExecRoot` argv assembly,
-the probe + boot argv with the socket poll, the best-effort swallowing) is
-unit-tested. What remains:
+### 2.6b Base-image per-user dev tooling — rtk
 
-- [x] **containerd boots and persists in the microVM** — verified: `nerdctl info`
-      reports a running daemon after `ai start` (the `nerdctl info` readiness poll
-      keeps the detached daemon alive past the boot exec's return), and `ExecRoot`
-      running as `-u root` gives the rootful runtime the uid 0 it needs.
-- [ ] **`nerdctl run` end-to-end** — confirm `msb exec <name> -- nerdctl run --rm
-      hello-world` works (proves runc + CNI + image pull through the now-`public`
-      egress) — the live `nerdctl run`/`pull` is still a bring-up item (it overlaps
-      §2.7's in-VM apps).
-- [ ] **arch-aware tarball** — confirm `uname -m` → `arm64` on Apple Silicon
-      selects `nerdctl-full-2.3.4-linux-arm64.tar.gz` (and `amd64` on Linux x86_64).
-
-### 2.6b Base-image per-user dev tooling — rtk (arch §7)
-
-rtk ("Rust Token Killer", `github.com/rtk-ai/rtk`) is baked into ALL THREE OS base
-images (debian-trixie, ubuntu, alma) for the workspace user via its
-official `install.sh` (prebuilt **aarch64** Linux binary → `~/.local/bin`, on PATH,
-no root). It is a CLI proxy that compresses common dev-command output to cut agent
-token use; Claude Code's rtk PreToolUse hook (added by the user's `rtk init`) shells
-out to `rtk`, so the binary must be present. It is installed via `install.sh`, NEVER
-`cargo install rtk` (crates.io name collision) — mirroring the existing
-uv/graphify/headroom per-user installs.
-
-- [ ] **rtk install.sh resolves the aarch64 binary.** Confirm on the live Apple
-      Silicon build that `install.sh` selects and installs the prebuilt aarch64 Linux
-      binary to `~/.local/bin`, that `rtk` is on PATH for the workspace user, and that
-      a Claude Code `rtk`-based PreToolUse hook can shell out to it.
+**MOOT / possibly dropped, needs confirming.** rtk ("Rust Token Killer",
+`github.com/rtk-ai/rtk`) was previously baked into every OS base image via its
+`install.sh`. There is no OS image to bake it into anymore, and no reference to
+`rtk` was found anywhere in the current Go source (no host-install wiring
+equivalent to `internal/setup/agentcli_host.go`'s pattern) — it appears to have
+been dropped in the migration rather than carried over as a host install.
+Confirm whether rtk support is intentionally gone or a still-pending port; if
+the latter, wire a host-side installer analogous to `EnsureNonoInstalled`.
 
 ### 2.6c Shared skills pool — hermes skills directory
 
-hermes is a gateway agent like omp: it reads skills from its own config's
-`external_dirs`, not a per-CLI symlink the other platform CLIs use directly.
-`HermesConfig` points one `external_dirs` entry at `.hermes/skills`, and
-`linkSharedResources` (`internal/workspace`, `sharedResourceLinks`) symlinks that
-path to the shared `.ai-platform/skills` pool at workspace start, same as the
-other CLIs' skill dirs.
+**Needs re-confirming against current code.** Under the previous design, hermes
+(a gateway agent like omp that reads skills from its own config's
+`external_dirs` rather than a per-CLI symlink) had its `.hermes/skills` entry
+symlinked to the shared `.ai-platform/skills` pool at workspace start via a
+`linkSharedResources`/`sharedResourceLinks` step. `HermesConfig`
+(`internal/agentcfg/agentcfg.go`) still takes a `skillsDir` parameter pointing at
+`<project>/.ai-platform/skills`, but the symlink-creation step itself was not
+found in the current `internal/workspace` source during this doc pass — it is
+unclear whether it (and the equivalent pool-symlink wiring for the other
+skill-capable CLIs, and thus the host-install story for caveman/graphify/
+ponytail/agent-skills described in `docs/ARCHITECTURE.md`) has been ported to
+the nono/host-process model yet, or is a gap. Worth an explicit code check
+before relying on it.
 
-- [ ] **Confirm `.hermes/skills` resolves in-VM.** Verify on a live workspace that
-      the symlink resolves and hermes actually lists/loads the shared-pool skills
-      through its `external_dirs` config.
+### 2.6d Agent CLI installs — MOOT (REPLACED)
 
-### 2.6d Agent CLI installs — npm package + omp binary verification
+The per-CLI Dockerfile snippets (`internal/templates/files/agentclis/<cli>/`),
+`npm install -g` at image build, omp's binary-install snippet, and
+`Manager.registerHermes`'s workspace-start curl install are all gone along with
+`internal/templates` and the image itself. The replacement is host-native:
+`internal/setup/agentcli_host.go` installs **claude-code, codex, and opencode**
+directly onto the host via each CLI's own official installer
+(`claude.ai/install.sh`, `chatgpt.com/codex/install.sh`, `opencode.ai/install`)
+when `ai setup` is run with them selected — see "NEW seams to verify" above for
+what still needs a live check. gemini/omp/hermes are not in that installer set;
+how (or whether) the platform now installs/verifies those three on the host is
+unconfirmed and worth a follow-up code check.
 
-Each agent-CLI Dockerfile snippet
-(`internal/templates/files/agentclis/<cli>/Dockerfile.snippet`) installs the CLI at
-image build; the snippet comments flag the exact install target as unverified on
-real hardware:
+### 2.6e Software stack installs — MOOT (REMOVED)
 
-- [ ] **npm package names** — claude-code (`@anthropic-ai/claude-code`), gemini
-      (`@google/gemini-cli`), codex (`@openai/codex`), and opencode (`opencode-ai`)
-      are each installed via `npm install -g <package>` on top of the OS base's
-      pinned Node 24 LTS. (GitHub Copilot CLI was removed from the platform
-      entirely — there is no copilot snippet.) Verify each package name still
-      resolves on the npm registry and installs cleanly during a real image build.
-- [ ] **omp binary install** — omp's snippet curls `https://omp.sh/install` and
-      forces the prebuilt binary (`PI_INSTALL_DIR=... sh -s -- --binary`) into
-      `~/.local/bin`. Verify on a live build that `omp` lands on PATH for the
-      workspace user and that its config schema (`~/.omp/agent/models.yml`,
-      `<project>/.omp/config.yml`) still matches what `agentcfg` renders.
-- [ ] **hermes install (workspace start, not image build)** — unlike the other five
-      CLIs, hermes is NOT installed at image build. `Manager.registerHermes`
-      (`internal/workspace/workspace.go`) installs it at workspace START instead:
-      detached, once-guarded (`.ai-platform/.hermes-installed`), network-bound
-      (`curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash`), and
-      best-effort — it builds a complete venv at the final `~/.hermes` (= `/persist`)
-      path and requires `hermes --help` to actually run before recording success, so
-      an incomplete install retries on the next start. Verify on a live workspace
-      that the install completes, `hermes` lands on PATH, and the bundled `basic`
-      dashboard-auth plugin is enabled (required for `hermes dashboard` to bind
-      `0.0.0.0`, since hermes refuses to listen without a registered auth provider).
+There is no `--stacks` selector, no Dockerfile, and no `internal/templates`
+package anymore, so there is nothing to install per-OS. A workspace uses
+whatever `go`/`java`/`maven`/`deno`/`rust` toolchains are already on the host.
 
-### 2.6e Software stack installs — OS-aware apt/dnf variants (arch §7)
+### 2.7 In-VM apps — MOOT (REMOVED)
 
-`templates.StackSnippet(stack, osKey)` picks between an apt-based
-`Dockerfile.snippet` and a dnf-based `Dockerfile.dnf.snippet` sibling (`dnfOSKeys`
-= `{"alma"}`) for the `go`, `java`, `maven`, and `deno` stacks (`rust` installs via
-rustup and has no dnf variant — one snippet serves every OS); the alma base image
-is plain `almalinux:10.2` (not `-minimal`). The dnf variants
-(`internal/templates/files/stacks/{go,deno,maven,java}/Dockerfile.dnf.snippet`)
-are new and have not been built on real hardware.
+`internal/apps` (opt-in AI apps as `nerdctl` containers inside the workspace
+microVM — Open WebUI — plus agent-CLI web dashboards like hermes's) was deleted
+entirely. There is no `ai apps` command, no per-`(workspace, app)` published
+port, no app autostart, and no in-VM container runtime for it to run on. Not
+replaced — in-VM apps are simply out of scope now.
 
-- [ ] **dnf stack installs resolve on AlmaLinux** — confirm on a live build with
-      `--os alma` that each selected stack's `dnf install …` resolves and installs
-      cleanly (Go, Java, Maven, Deno), matching the apt variants' toolchain
-      versions.
+### 2.8 Microsandbox Go SDK workspace backend — MOOT (REMOVED)
 
-### 2.7 In-VM apps (Phase 1 — arch §7, CLI §4.5c)
-
-On the Phase-0 runtime the platform runs opt-in AI apps as `nerdctl` containers
-**inside** the workspace microVM — Open WebUI (`internal/apps`) — plus agent-CLI
-web **dashboards** (currently only hermes — `hermes dashboard`) launched as a
-workspace-user process rather than a container. Each in-VM app is a declarative
-manifest (image+tag pin, container port, persisted data dir, optional `/workspace`
-mount, gateway env). The host-side orchestration is fully unit-tested with fakes:
-
-- the manifest env (each app points at the resolved gateway
-  `http://host.microsandbox.internal:18787/v1` with the workspace's scoped virtual
-  key — the catalog-driven system has no default model, so the model handle is
-  empty);
-- **port allocation** — a unique host port per `(workspace, app)`, reserved
-  machine-wide across all workspaces' configs and persisted in the project
-  `config.yaml`'s `apps:` block (`agent_dashboards:` for dashboards, via
-  `apps.AllocateDashboardEntries`/`DashboardAgents`/`SuggestedDashboardPort`),
-  published ONLY while installed via the existing `egress.MsbNetworkArgs`
-  `-p <port>:<port>` plumbing (`apps.PublishedPorts` merged into the network
-  publish set at `Manager.Start`);
-- the lifecycle Manager (install/remove/update/start/stop/restart/list) and the
-  `nerdctl run -d` argv (`-p <port>:<containerPort>`, `-v
-  /persist/apps/<key>:<DataDir>`, optional `-v /workspace:/workspace`, the gateway
-  `-e` env, `--restart always`);
-- **auto-start at `ai start`**: installed apps + dashboards are now started
-  automatically on every workspace start, DETACHED + best-effort so a heavy
-  first-start image pull never blocks the start (`Manager.autostartApps`, run right
-  after `ensureContainerd`). App containers are staged to a guest-only script
-  (`apps.AppsAutostartScript`) and `setsid`'d into the background as ROOT (nerdctl
-  needs root); the script is idempotent (`nerdctl rm -f` then `run`), so only the
-  FIRST start actually pulls. Dashboards (hermes) launch as the WORKSPACE USER,
-  pgrep-guarded so a restart never double-launches, bound to `0.0.0.0:<port>` so the
-  published host port reaches them. Output goes to the bind-mounted
-  `run/apps-autostart.log`. Apps can still be (re)started/stopped on demand via
-  `ai apps` (`runContainer` calls `EnsureRuntime` to bring containerd up first,
-  retrying once if the runtime is unreachable). The microVM is created with the
-  project's `workspace.memory_limit` (create default 8 GB, capped below host RAM) so
-  a heavy app pull does not OOM-kill the in-VM containerd; an unset/unparsable value
-  falls back to 4G.
-
-The LIVE `nerdctl`/dashboard behaviour is the bring-up item (grep `hardware
-bring-up` in `internal/apps` and `internal/workspace`):
-
-- [ ] **app containers auto-start in the microVM** — on a provisioned host, `ai apps
-      add openwebui` then `ai restart` should publish the host port and
-      auto-launch `aip-app-openwebui` on THIS and every later `ai start`; confirm
-      `nerdctl ps` in the VM shows it and the app is reachable on
-      `http://localhost:<port>` from the host, routed through the gateway (`ai apps
-      list` STATUS → `running`) without a manual `ai apps start`.
-- [ ] **`nerdctl pull` on update** — `ai apps update <app>` pulls the latest image
-      and recreates the container.
-- [ ] **persisted data survives restart** — data written under
-      `/persist/apps/<key>` (the overlay) is retained across `ai restart`.
-- [ ] **agent-CLI dashboard auto-start (hermes)** — with hermes selected + a
-      dashboard port allocated at `ai create`, confirm `ai start` launches `hermes
-      dashboard --host 0.0.0.0 --port <port>` in-VM (as the workspace user) and it
-      is reachable from the host browser on the published port, including after a
-      restart (pgrep guard must not double-launch or fail on an already-running
-      dashboard).
-
-### 2.8 SDK workspace backend — live validation (arch §7; docs/MSB-SDK-MIGRATION.md)
-
-The default workspace backend is now the in-process **Microsandbox Go SDK**
-(`internal/workspace/workspace_sdk.go`; `AIP_WORKSPACE_BACKEND=cli` reverts to the
-msb-CLI backend). A bounded lifecycle smoke (create/boot, exec incl. root, FS
-write/read, `LogStream` history+follow, Detach→reconnect, stop/remove, and an
-`msb load`-ed local image booting via `WithImage` + `PullPolicy=Never`) **passed**
-on Apple Silicon (the runtime is now pinned to msb `v0.6.6`,
-`internal/workspace/msb.go`). The seams that still need validation **by real use**
-(a TTY and/or the full service tier — not reproducible headless):
-
-- [ ] **Interactive Attach (P3)** — `ai shell` / `ai attach` / `ai agent` route
-      through `sdkSandbox.ExecInteractive` → `sb.Attach(ctx, tmux…)` (a relay-native
-      PTY; no guest sshd). Validate on a real terminal: tmux truecolor, CSI-u
-      extended keys (OpenCode shift+enter / ctrl-combos), and **window-resize
-      forwarding** on SIGWINCH. If `sb.Attach` does not relay resize as cleanly as the
-      SDK's `SSH().OpenClient().Attach` (which documents PTY-resize relay), switch the
-      interactive path to the SSH client. The CLI already guards a non-TTY caller
-      (`interactive(emitter)`), so `ExecInteractive` is only reached with a real TTY.
-- [ ] **Full create→start→agent-config flow (item 4)** — `ai create` (SDK-created
-      microVM with the resolved `--cpus`/`--memory`/`--ports`/`--location`) →
-      `ai start` with a live aip-dns/gateway + overlay mounts → agent provider config
-      injection (`registerAgentProviders` via `Sandbox.WriteFile`/`Exec`) → in-VM apps
-      (`ai apps`). Confirm the published ports reach the guest and the resource caps
-      apply.
-- [ ] **Streaming log + metrics tabs live** — the Workspace **Sandbox Logs** tab
-      (SDK `LogStream`, relay-free) streams history then new entries; the **Metrics**
-      tab (`sb.MetricsStream`) updates the table every 2s; the **Sandbox
-      Configuration** block shows the live `SandboxConfig`.
-- [ ] **Single-handle churn fix** — confirm a long `ai ui` session holds at most one
-      relay client per workspace (no "max clients" growth) and releases it on project
-      switch / exit.
+`internal/workspace/workspace_sdk.go` (the in-process Microsandbox Go SDK
+backend), `workspace_real.go` (the `msb`-CLI backend), and `msb.go` (the pinned
+`msb` binary download) are all deleted, along with everything this section used
+to track: SDK create/boot/exec/FS/LogStream/Detach-reconnect, interactive
+`Attach`'s tmux/CSI-u/SIGWINCH handling, the Sandbox Logs/Metrics TUI sub-tabs,
+and the single-relay-handle lifecycle. `docs/MSB-SDK-MIGRATION.md`, which this
+section used to point at, has been deleted for the same reason. The nearest
+live-hardware equivalents that still need verification — nono session
+create/attach/stop and a real PTY through `ai agent`/`ai shell` — are tracked
+under "NEW seams to verify" above, not here.
 
 ### 2.9 Host-native model runtime — omlx (arch §17)
 
@@ -593,42 +527,25 @@ bring-up` (grep `hardware bring-up` in `internal/setup` and `internal/omlx`):
       actually wired. Wire the real per-OS removal (e.g. `pip uninstall omlx` from the
       platform venv) and verify.
 
-### 2.10 Per-project host↔guest mounts (`ai mounts`)
+### 2.10 Per-project host↔guest mounts (`ai mounts`) — MOOT (REMOVED)
 
-`ai mounts <list|add|remove> [dir] [name]` (`internal/cli/mounts.go`) manages two
-kinds of extra mount beyond the base project bind mount, both new SDK-level
-mechanisms applied at microVM create/recreate (`workspace_sdk.go extraMounts`,
-`WorkspaceConfig.IsolatedDirs`/`SharedMounts` in `internal/config/config.go`):
-
-- **isolated dir** (`ai mounts add node_modules`) — a guest-relative subpath
-  EXCLUDED from the host project bind mount and backed by a private,
-  workspace-scoped named volume instead, so writes in the sandbox (installed
-  deps, build artifacts) never touch the host directory and whatever the host has
-  there stays invisible to the guest — lets host-built and sandbox-built binaries
-  coexist without collision;
-- **shared mount** (`ai mounts add /home/workspace/shared --host ~/Downloads`) —
-  an absolute guest path bind-mounted from an arbitrary host directory (created if
-  missing), visible and writable on BOTH sides.
-
-A relative `<dir>` is an isolated dir; an absolute `<dir>` with `--host` is a
-shared mount. Both add/remove require (and the CLI offers) a workspace restart to
-take effect, since the mount set is only applied at create. Host-side
-validation/persistence is unit-tested; the live SDK mount behavior is unverified:
-
-- [ ] **isolated dir excludes the host subpath** — on a provisioned host, `ai
-      mounts add node_modules` + `ai restart`: confirm writes under
-      `~/project/node_modules` in-VM do NOT appear on the host project directory,
-      and a pre-existing host `node_modules` (if any) is not visible in-VM.
-      Confirm the private volume persists across `ai restart`/`ai stop`+`ai start`.
-- [ ] **shared mount is visible both ways** — `ai mounts add
-      /home/workspace/shared --host ~/Downloads` + `ai restart`: confirm a file
-      written on either side (host `~/Downloads` or in-VM
-      `/home/workspace/shared`) appears on the other.
-- [ ] **`ai mounts remove` tears down cleanly** — confirm removing an isolated dir
-      or shared mount + restart reverts to the base single project bind mount with
-      no stale SDK mount entry.
+`ai mounts` (isolated dirs backed by a private volume, shared mounts bind-mounted
+from an arbitrary host dir) was deleted along with `WorkspaceConfig.IsolatedDirs`/
+`SharedMounts` and the SDK-level mount mechanism it configured. nono does not
+virtualize the filesystem — a session simply sees the host filesystem through its
+profile's grants — so there is no second "guest view" to mount a second thing
+into, and nothing left to bring up here.
 
 ## 3. Turn on the remaining acceptance tests
+
+**Partially updated for nono; details below are from before the migration and
+need re-confirming.** `test/acceptance/harness_test.go`,
+`acceptance_test.go`, and `s1_remaining_test.go` already reference nono rather
+than Microsandbox/`msb`, so the suite was at least partly ported — but the
+specific checks itemized below (Dockerfile/agent-CLI/stack probes,
+workspace-isolation framed around a microVM) were written against the old
+design and were not individually re-verified against current test file
+contents as part of this doc pass.
 
 In `test/acceptance/` (harness, PTY driver, and the runnable `[S1]` subset already
 pass):
@@ -659,43 +576,50 @@ pass):
 
 ## 4. Smoke sequence (manual, on the host)
 
-1. `ai doctor` → all checks green.
+Rewritten for the nono-based CLI surface (the old sequence drove `ai create
+--os`, `ai exec`, and a tmux-in-microVM session model — all retired).
+
+1. `ai doctor` → all checks green, including the "nono runtime" check
+   (`nono.Detect`).
 2. `ai setup` → exit 0 (choose the guardrails at the picker / `--guardrails`); the
    core service tier (DNS, Valkey (+ RedisInsight), Headroom, LiteLLM + DB,
-   and the nginx proxy LAST) up, and omlx best-effort installed + started (the one
-   shared server) into the platform venv — Presidio starts **only when
-   secret-masking is selected** (`ai services status` shows it "disabled"
-   otherwise); templates installed. There are no optional host services (omlx is
-   host-native and serves every model it finds from ONE shared process).
-3. `ai create --name demo --os debian-trixie` → **scaffold-only**: writes the
-   project's `.ai-platform/` files in the cwd and registers it; it does **not**
-   build the image or boot a microVM.
-4. `ai start` (or `ai start demo`) → builds the workspace OCI image and boots its
-   microVM.
-5. `ai exec demo -- uname -a` → runs inside the microVM (one-shot).
-   `ai shell demo` (or `ai shell` from the project dir) → a real
-   interactive login PTY in the microVM via `msb exec -t -u workspace` (verify line
-   editing, Ctrl-C, and a clean exit back to the host).
-5a. **Workspace sessions (wired; needs a live microVM to verify).** The session
-   model — persistent, reattachable per-name **tmux** sessions inside the microVM,
-   with a managed `~/.tmux.conf` written at start — is fully wired host-side. On a
-   live microVM verify: `ai agent opencode` starts/attaches a per-CLI session;
-   `ai sessions` lists it (NAME/ATTACHED/IDLE; a no-server workspace lists zero,
-   not an error); detaching (`Ctrl-b d`) leaves it running and `ai attach opencode`
-   reattaches; `ai shell` ↔ a second agent run concurrently; the TUI **Shell**
-   sub-tab (`views.Sessions`, Title() "Shell") attaches/kills via `ai attach`.
-   (Needs `tmux` in the image — now
-   in every OS Dockerfile — and a booted microVM, so it is verified during
-   bring-up alongside the shell.)
+   and the nginx proxy LAST) comes up; omlx is best-effort installed + started
+   (the one shared server) into the platform venv — Presidio starts **only
+   when secret-masking is selected** (`ai services status` shows it "disabled"
+   otherwise); `nono` is best-effort installed (`EnsureNonoInstalled`) if
+   absent; claude-code/codex/opencode are best-effort installed onto the host
+   if selected (`EnsureHostAgentCLIsInstalled`). There are no optional host
+   services (omlx is host-native and serves every model it finds from ONE
+   shared process).
+3. `ai create demo` (no `--os` anymore) → scaffold-only: writes the project's
+   `.ai-platform/` files (`config.yaml`, `project.yaml`, `.gitignore`) in the
+   target directory and registers it in the global index. There is no image to
+   build and nothing to download — this finishes in milliseconds.
+4. `ai agent opencode demo` (or `cd demo && ai agent opencode`) → mints a
+   scoped LiteLLM virtual key, stores it in the OS keychain, writes opencode's
+   keyless project config, generates the project's nono profile, and launches
+   opencode as a detached nono session, then attaches to it interactively in
+   the real terminal. Verify: line editing, Ctrl-C, and a clean exit/detach
+   back to the host.
+5. `ai sessions demo` → lists the live nono session(s) for the project
+   (NAME/STATUS/ATTACHED/STARTED; zero sessions lists cleanly, not an error).
+   `ai attach <session> demo` reattaches an existing one; `ai shell demo` opens
+   a second, independent sandboxed shell session concurrently; `ai stop demo`
+   stops every live session for the project. The TUI **Shell** sub-tab mirrors
+   this (list/attach/new/stop).
 6. `ai keys add openai --stdin` (registers that provider's catalog models in the
    gateway); `ai models test gpt-5` → works (real key lives encrypted in LiteLLM,
-   only a scoped virtual key in the workspace).
-7. The default egress mode is **"public"** — from a fresh workspace the open
-   internet is reachable (in-VM `nerdctl` can pull images) while private ranges stay
-   blocked, and `ai network log` shows the resolved names. Re-lock with `ai network
-   egress deny`, then confirm a non-allowlisted destination is **denied**
-   (default-deny Microsandbox net-rules) while the gateway stays reachable.
-8. `make test-acceptance` → the `[S1]` suite is green.
+   only a scoped virtual key ever reaches the sandboxed session, via the OS
+   keychain).
+7. The default egress mode is **"public"** (nono's own unrestricted-outbound
+   default) — from a fresh session the open internet is reachable while
+   private ranges stay blocked. `ai network log` shows DNS names resolved
+   host-wide. Re-lock with `ai network egress deny`, then confirm a
+   non-allow-listed destination is **denied** by nono's own network
+   enforcement (`ai network show`) while the gateway stays reachable; `ai
+   network allow <domain>` opens one exception without a restart.
+8. `make test-acceptance` → the `[S1]` suite is green (see §3's caveat above
+   about re-confirming the suite's content against the current surface).
 
 ## 5. Deferred beyond Slice 1
 

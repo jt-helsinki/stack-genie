@@ -41,7 +41,7 @@ func preauthorizeHostsSudo(em *output.Emitter, interactive bool) {
 
 // newUninstallCmd builds `ai uninstall` (CLI §2.2): a native, offline teardown —
 // the inverse of install + setup. It streams status/progress as each step runs,
-// asks per external dependency (msb) whether to remove it too, then the process
+// asks per external dependency (nono) whether to remove it too, then the process
 // exits when finished (the running binary removes itself; its inode survives
 // until exit). It never touches your project directories.
 func newUninstallCmd(em *output.Emitter, exit *int) *cobra.Command {
@@ -54,7 +54,7 @@ func newUninstallCmd(em *output.Emitter, exit *int) *cobra.Command {
 			"~/.ai-platform — keeping only the downloaded models (volumes/models); pass\n" +
 			"--purge to remove those too. Runs entirely from this binary — no\n" +
 			"network or external script. On a terminal it asks, per external dependency\n" +
-			"(msb), whether to uninstall it too. Never touches your project directories\n" +
+			"(nono), whether to uninstall it too. Never touches your project directories\n" +
 			"(your source lives wherever you created it).",
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
@@ -196,7 +196,7 @@ func newUninstallCmd(em *output.Emitter, exit *int) *cobra.Command {
 	cmd.Flags().BoolVar(&purge, "purge", false,
 		"also remove the downloaded models (volumes/models); a plain uninstall already removes the rest of ~/.ai-platform (never your project directories)")
 	cmd.Flags().BoolVar(&removeDeps, "remove-deps", false,
-		"also uninstall the external dependencies (msb) without prompting")
+		"also uninstall the external dependencies (nono) without prompting")
 	cmd.Flags().BoolVar(&keepRuntimes, "keep-runtimes", false,
 		"keep the host-native omlx runtime installed (it is removed by default; the downloaded models are kept unless --purge)")
 	return cmd

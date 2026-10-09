@@ -2,7 +2,6 @@ package tui
 
 import (
 	"errors"
-	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -120,47 +119,6 @@ func TestResolveProjectRoot(test *testing.T) {
 	}
 }
 
-// TestLifecycleLogPathAndOpen covers lifecycleLogPath (unknown vs known project),
-// openLifecycleLog (creates the file with a header), and readCavemanInstallLog.
-func TestLifecycleLogPathAndOpen(test *testing.T) {
-	home := test.TempDir()
-	test.Setenv("HOME", home)
-
-	if _, ok := lifecycleLogPath("ghost", "start"); ok {
-		test.Error("an unresolvable project must yield ok=false")
-	}
-
-	root := filepath.Join(home, "projects", "app")
-	seedProjectIndex(test, "app", root)
-
-	logPath, ok := lifecycleLogPath("app", "start")
-	if !ok {
-		test.Fatal("a known project must resolve a lifecycle log path")
-	}
-	if !strings.HasSuffix(logPath, filepath.Join(".ai-platform", "run", "start.log")) {
-		test.Errorf("unexpected lifecycle log path %q", logPath)
-	}
-
-	// No caveman log yet.
-	if _, ok := readCavemanInstallLog("app"); ok {
-		test.Error("no caveman install log should be present initially")
-	}
-
-	file := openLifecycleLog("app", "start")
-	if file == nil {
-		test.Fatal("openLifecycleLog must create the log file")
-	}
-	_ = file.Close()
-
-	content, err := os.ReadFile(logPath)
-	if err != nil {
-		test.Fatalf("read lifecycle log: %v", err)
-	}
-	if !strings.Contains(string(content), "=== ai start app @") {
-		test.Errorf("lifecycle log missing its self-describing header: %q", content)
-	}
-}
-
 // TestRoleAndGatewayLabelDefaults: with no runtime.yaml the labels fall back to the
 // standalone role + the default local gateway URL.
 func TestRoleAndGatewayLabelDefaults(test *testing.T) {
@@ -192,14 +150,6 @@ func TestInitBatchesEveryViewInit(test *testing.T) {
 	application.Init()
 	if first.inits != 1 || second.inits != 1 {
 		test.Errorf("Init must init every view once, got %d/%d", first.inits, second.inits)
-	}
-}
-
-// TestLifecyclePollCmdReturnsCommand: the poll tick command is always non-nil.
-func TestLifecyclePollCmdReturnsCommand(test *testing.T) {
-	application := &app{}
-	if application.lifecyclePollCmd() == nil {
-		test.Fatal("lifecyclePollCmd must return a tick command")
 	}
 }
 
@@ -301,7 +251,6 @@ func TestOverlayOpeningMessagesOpenTerminal(test *testing.T) {
 		escCloses bool
 	}{
 		{"services update", views.ServiceUpdateRequestedMsg{Service: "litellm"}, true},
-		{"apps action", views.AppActionRequestedMsg{Action: "start", App: "open-webui", Project: "app"}, true},
 		{"keys add", views.APIKeyAddRequestedMsg{Provider: "openai"}, true},
 		{"keys remove", views.APIKeyRemoveRequestedMsg{Provider: "openai"}, true},
 	}
@@ -324,7 +273,6 @@ func TestFollowMessagesRunInRealTerminal(test *testing.T) {
 		name string
 		msg  tea.Msg
 	}{
-		{"workspace log follow", views.WorkspaceLogFollowRequestedMsg{Project: "app"}},
 		{"service log follow", views.ServiceLogFollowRequestedMsg{Service: "litellm"}},
 	} {
 		application := &app{views: []View{&fakeView{title: "X"}}}
@@ -342,9 +290,9 @@ func TestFollowMessagesRunInRealTerminal(test *testing.T) {
 // safe on an unspawned terminal) and the app refreshes the active sub-view.
 func TestTerminalOverlayClosesOnCtrlQ(test *testing.T) {
 	application, _ := newTestHubApp(test, "Workspace", "Network")
-	// Open an overlay (apps action) — routed to the current top-level view is
+	// Open an overlay (a services update) — routed to the current top-level view is
 	// irrelevant; openTerminal only sets application.terminal.
-	application.Update(views.AppActionRequestedMsg{Action: "start", App: "open-webui", Project: "app"})
+	application.Update(views.ServiceUpdateRequestedMsg{Service: "litellm"})
 	if application.terminal == nil {
 		test.Fatal("precondition: the overlay must be open")
 	}

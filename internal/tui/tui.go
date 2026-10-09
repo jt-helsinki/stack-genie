@@ -12,18 +12,14 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
-	"path/filepath"
 	goruntime "runtime"
-	"slices"
 	"sort"
-	"strconv"
 	"strings"
 	"time"
 
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
-	"github.com/jt-helsinki/stack-genie/internal/apps"
 	"github.com/jt-helsinki/stack-genie/internal/catalog"
 	"github.com/jt-helsinki/stack-genie/internal/config"
 	"github.com/jt-helsinki/stack-genie/internal/contextopt"
@@ -74,13 +70,7 @@ func Run(cwd string) error {
 	// detail already report the outcome.
 	setup.SetHostNativeProgressWriter(nil)
 	litellmClient := litellm.RealClient()
-	// One long-lived workspace Manager for the whole TUI session. Constructing it
-	// fresh per poll-closure (as the inline RealManager calls used to) would, on the
-	// SDK backend, build a new Sandbox with an EMPTY handle cache every tick — opening
-	// (and never releasing) a fresh agent-relay client per poll, the very churn that
-	// walks an idle sandbox's relay to "max clients reached". Sharing one Manager keeps
-	// a single reused relay connection per workspace across all Sessions/Apps/log polls.
-	workspaceManager := workspace.RealManager(goruntime.GOOS, nowRFC3339)
+	workspaceManager := workspace.RealManager(nowRFC3339)
 	application.workspaceManager = workspaceManager
 	// The per-project views (Network/Context) resolve the LIVE current project at
 	// fetch time, so switching projects reflects immediately without re-wiring.
@@ -91,8 +81,8 @@ func Run(cwd string) error {
 	// in-place lifecycle). The container log is the SAME generic LogView the workspace
 	// log uses (views.NewLogView), configured for a service container and tailed via
 	// the docker-logs tailer (setup.ServiceLogTail) — the service-tier analogue of
-	// Manager.WorkspaceLogTail's `msb logs`. The container log shows while the service
-	// is RUNNING; a stopped service shows the "not running" hint.
+	// `nono ps`. The container log shows while the service is RUNNING; a stopped
+	// service shows the "not running" hint.
 	servicesControl := func(action, service string) error {
 		_, err := setup.ControlService(deps, action, service)
 		return err
@@ -136,76 +126,7 @@ func Run(cwd string) error {
 	)
 	servicesView := views.NewServices(servicesStatus, servicesControl, serviceDetail)
 	projectsView := views.NewProjects(project.List)
-	// The workspace log is embedded in the Workspace (project detail) view, beneath
-	// the summary — not a separate tab. It streams the microVM's captured output (msb
-	// logs) for the live current project; with no project the tailer returns nothing.
-	// On a backend that supports it (SDK), the workspace log STREAMS — loads history
-	// then pushes new entries via one live, relay-free stream (no polling). On the CLI
-	// backend (no streaming) the opener is nil and the view falls back to the tailer
-	// poll below.
-	var workspaceLogStream views.LogStreamOpener
-	if workspaceManager.SupportsLogStreaming() {
-		workspaceLogStream = func(ctx context.Context) (views.LogStream, error) {
-			if application.currentProject == "" {
-				return nil, fmt.Errorf("no workspace selected")
-			}
-			stream, err := workspaceManager.OpenWorkspaceLogStream(ctx, application.currentProject)
-			if err != nil {
-				return nil, err
-			}
-			return stream, nil
-		}
-	}
-	workspaceLogView := views.NewWorkspaceLog(
-		func() (string, error) {
-			if application.currentProject == "" {
-				return "", nil
-			}
-			// While a start/restart is IN FLIGHT for this workspace, the authoritative
-			// live output is the detached `ai start|restart` build log — the CLI's
-			// progress + the in-VM install/setup output tee'd to run/<action>.log. Prefer
-			// it over the microVM stream, which during a RESTART shows the OLD VM shutting
-			// down ("reboot: Power down") and then stalls before the new VM's log appears.
-			// (startLifecycle disables streaming for the duration so this poll path runs.)
-			if application.lifecycles[application.currentProject] != nil {
-				if buildLog, ok := readLatestLifecycleLog(application.currentProject); ok {
-					return buildLog, nil
-				}
-			}
-			text, err := workspaceManager.WorkspaceLogTail(application.currentProject, 1000)
-			if err == nil && strings.TrimSpace(text) != "" {
-				return text, nil
-			}
-			// No microVM log yet — the image is still building, so no msb sandbox
-			// exists. Show the tee'd lifecycle build log so the Logs tab has output FROM
-			// THE BEGINNING; once the VM boots, WorkspaceLogTail returns the microVM log.
-			if buildLog, ok := readLatestLifecycleLog(application.currentProject); ok {
-				return buildLog, nil
-			}
-			return text, err
-		},
-		application.workspaceLogReadable,
-		func() string { return application.currentProject },
-		workspaceLogStream,
-	)
-	application.workspaceLogView = workspaceLogView
-	// Sandbox Configuration block (diagnostics), shown under the Workspace tab. It reads
-	// the DECLARED project config (config.yaml) — not the live sandbox — so edits via
-	// `ai network`/`ai create` (published ports, cpu/memory, egress) reflect as soon as
-	// the tab is (re)viewed, and the Workspace tab makes NO relay call. It re-reads on
-	// each activation (the hub Inits the sub-view on switch).
-	configFetcher := func(name string) ([]views.ConfigField, error) {
-		root, ok := resolveProjectRoot(name)
-		if !ok {
-			return nil, fmt.Errorf("workspace %q not found", name)
-		}
-		projectConfig, err := config.LoadProjectConfig(root)
-		if err != nil {
-			return nil, err
-		}
-		return workspaceConfigFields(projectConfig), nil
-	}
-	projectDetail := views.NewProject(projectInfo, configFetcher)
+	projectDetail := views.NewProject(projectInfo, workspaceConfigFetcher)
 	// Gateway Endpoints block: the host nginx entry to LiteLLM external apps use to reach
 	// the served models. Workspace-independent; resolved from runtime.yaml (domain +
 	// DefaultGatewayPort), mirroring the addresses `ai services` shows.
@@ -225,25 +146,10 @@ func Run(cwd string) error {
 		}
 	})
 
-	// The Metrics sub-tab streams live sandbox metrics (sb.MetricsStream) into a table
-	// when the backend supports it; otherwise it reports metrics unavailable.
-	var metricsOpener views.MetricsStreamOpener
-	if workspaceManager.SupportsMetrics() {
-		metricsOpener = func(ctx context.Context) (views.MetricsStream, error) {
-			if application.currentProject == "" {
-				return nil, fmt.Errorf("no workspace selected")
-			}
-			stream, err := workspaceManager.OpenWorkspaceMetricsStream(ctx, application.currentProject, 2*time.Second)
-			if err != nil {
-				return nil, err
-			}
-			return stream, nil
-		}
-	}
-	metricsView := views.NewMetrics(metricsOpener, application.workspaceLogReadable, func() string { return application.currentProject })
-	// The Sessions view resolves the LIVE current project at fetch time (over the
-	// real Manager), so switching projects reflects immediately. With no current
-	// project the lister is not invoked (the view shows "no project selected").
+	// The Sessions view (Shell tab) resolves the LIVE current project at fetch time
+	// (over the real Manager), so switching projects reflects immediately. With no
+	// current project the lister is not invoked (the view shows "no project
+	// selected").
 	sessionsView := views.NewSessions(
 		func() ([]workspace.Session, error) {
 			if application.currentProject == "" {
@@ -251,153 +157,18 @@ func Run(cwd string) error {
 			}
 			return workspaceManager.ListSessions(application.currentProject)
 		},
-		func(session string) error {
-			return workspaceManager.KillSession(application.currentProject, session)
+		func(sessionID string) error {
+			return workspaceManager.Stop(sessionID, false)
 		},
 		func() string { return application.currentProject },
 	)
-	// The Apps view resolves the LIVE current project at fetch time (over the real
-	// AppManager), so switching workspaces reflects immediately. With no current
-	// project the lister returns nothing (the view shows "no workspace selected").
-	appsView := views.NewApps(
-		func() ([]apps.Status, error) {
-			if application.currentProject == "" {
-				return nil, nil
-			}
-			manager, err := workspaceManager.AppManagerFor(application.currentProject)
-			if err != nil {
-				return nil, err
-			}
-			return manager.List()
-		},
-		// AI tools (caveman, graphify, tokensave, …) read from the live config.yaml —
-		// resolved lazily over currentRoot so switching workspaces reflects immediately,
-		// same pattern as the apps lister above.
-		func() ([]views.ToolRow, error) {
-			root, ok := currentRoot()
-			if !ok {
-				return nil, nil
-			}
-			projectConfig, err := config.LoadProjectConfig(root)
-			if err != nil {
-				return nil, err
-			}
-			tools := create.SupportedAITools()
-			rows := make([]views.ToolRow, 0, len(tools))
-			for _, tool := range tools {
-				rows = append(rows, views.ToolRow{
-					Key:     tool,
-					Name:    tool,
-					Enabled: projectConfig.Context.ToolEnabled(tool),
-				})
-			}
-			return rows, nil
-		},
-		func() string { return application.currentProject },
-	)
-	// Network management: add/remove allow-list entries + published ports. The view
-	// collects the raw "host[:port]" / "guest:host" string; the wiring parses it via
-	// egress.Split* and applies it, so the view holds no egress parsing.
+	// Network management: the egress mode plus the allow/deny domain lists. The view
+	// holds no egress parsing — these closures are its only wiring.
 	networkView := views.NewNetwork(currentRoot,
 		func() string { return application.currentProject },
-		egress.Get, egress.SetMode,
-		func(root, raw string) error {
-			host, port, err := egress.SplitHostPort(raw)
-			if err != nil {
-				return err
-			}
-			return egress.Allow(root, host, port)
-		},
-		func(root, raw string) error {
-			host, port, err := egress.SplitHostPort(raw)
-			if err != nil {
-				return err
-			}
-			return egress.Deny(root, host, port)
-		},
-		func(root, raw string) error {
-			guest, host, err := egress.SplitPortPair(raw)
-			if err != nil {
-				return err
-			}
-			return egress.Publish(root, guest, host)
-		},
-		func(root, raw string) error {
-			_, host, err := egress.SplitPortPair(raw)
-			if err != nil {
-				return err
-			}
-			return egress.Unpublish(root, host)
-		},
+		egress.Get, egress.SetMode, egress.Allow, egress.Deny,
 	)
 	contextView := views.NewContext(currentRoot, contextopt.GetStatus, contextopt.SetStrategy, contextopt.SetCavemanLevel)
-	// Mounts: every extra mount beyond the base project bind mount — ISOLATED dirs
-	// (config.yaml workspace.isolated_dirs, guest-private named volumes) and SHARED
-	// mounts (config.yaml workspace.shared_mounts, extra host↔guest bind mounts). The
-	// view holds no config I/O — these closures are its only wiring, mirroring
-	// networkView's egress.* wiring above. Mutators mirror `ai mounts`' CLI logic
-	// (internal/cli/mounts.go) so the two surfaces stay in lockstep.
-	mountsView := views.NewMounts(currentRoot,
-		func(root string) ([]string, []config.SharedMount, error) {
-			projectConfig, err := config.LoadProjectConfig(root)
-			if err != nil {
-				return nil, nil, err
-			}
-			return projectConfig.Workspace.IsolatedDirs, projectConfig.Workspace.SharedMounts, nil
-		},
-		func(root, dir string) error {
-			if err := create.ValidateIsolatedDirs([]string{dir}); err != nil {
-				return err
-			}
-			projectConfig, err := config.LoadProjectConfig(root)
-			if err != nil {
-				return err
-			}
-			if slices.Contains(projectConfig.Workspace.IsolatedDirs, dir) {
-				return fmt.Errorf("isolated dir %q already present", dir)
-			}
-			projectConfig.Workspace.IsolatedDirs = append(projectConfig.Workspace.IsolatedDirs, dir)
-			return config.WriteProject(root, projectConfig)
-		},
-		func(root, guestPath, hostPath string) error {
-			projectConfig, err := config.LoadProjectConfig(root)
-			if err != nil {
-				return err
-			}
-			mounts := projectConfig.Workspace.SharedMounts
-			if slices.ContainsFunc(mounts, func(mount config.SharedMount) bool { return mount.GuestPath == guestPath }) {
-				return fmt.Errorf("shared mount %q already present", guestPath)
-			}
-			candidate := append(slices.Clone(mounts), config.SharedMount{GuestPath: guestPath, HostPath: hostPath})
-			if err := create.ValidateSharedMounts(candidate); err != nil {
-				return err
-			}
-			projectConfig.Workspace.SharedMounts = candidate
-			return config.WriteProject(root, projectConfig)
-		},
-		func(root, guestPath string) error {
-			projectConfig, err := config.LoadProjectConfig(root)
-			if err != nil {
-				return err
-			}
-			if strings.HasPrefix(guestPath, "/") {
-				mounts := projectConfig.Workspace.SharedMounts
-				index := slices.IndexFunc(mounts, func(mount config.SharedMount) bool { return mount.GuestPath == guestPath })
-				if index < 0 {
-					return fmt.Errorf("shared mount %q not present", guestPath)
-				}
-				projectConfig.Workspace.SharedMounts = slices.Delete(slices.Clone(mounts), index, index+1)
-				return config.WriteProject(root, projectConfig)
-			}
-			dirs := projectConfig.Workspace.IsolatedDirs
-			index := slices.Index(dirs, guestPath)
-			if index < 0 {
-				return fmt.Errorf("isolated dir %q not present", guestPath)
-			}
-			projectConfig.Workspace.IsolatedDirs = slices.Delete(slices.Clone(dirs), index, index+1)
-			return config.WriteProject(root, projectConfig)
-		},
-	)
 	// Cloud Models: the models.dev catalog (with its data source for availability
 	// messaging), the gateway's live (registered) set, the `r`-refresh (re-fetch the
 	// catalog + resync the gateway), and the gateway tester. All over the existing
@@ -431,29 +202,25 @@ func Run(cwd string) error {
 
 	// The Workspaces tab is a two-level hub: it opens on the switcher (the
 	// workspace list) and, once a workspace is selected, reveals per-workspace
-	// sub-tabs — Workspace · Network · Context · Mounts · Shell · Apps — for it. The Workspace
-	// tab embeds the workspace log beneath the summary (no separate log tab). The
-	// "Shell" tab is the session manager (sessionsView): list/attach/new/kill, with
-	// the interactive shell run in the real terminal via ExecProcess.
+	// sub-tabs — Workspace · Network · Context · Shell — for it. The "Shell" tab is
+	// the session manager (sessionsView): list/attach/new/stop, with the
+	// interactive shell run in the real terminal via ExecProcess.
 	projectsHub := views.NewProjectsHub(
 		projectsView,
-		[]views.Screen{projectDetail, workspaceLogView, metricsView, networkView, contextView, mountsView, sessionsView, appsView},
-		[]string{"Workspace", "Logs", "Metrics", "Network", "Context", "Mounts", "Shell", "Apps"},
+		[]views.Screen{projectDetail, networkView, contextView, sessionsView},
+		[]string{"Workspace", "Network", "Context", "Shell"},
 	)
 
 	// Top-level tab order = menu order: Services · Workspaces · Cloud Models · API
 	// Keys · Settings. Local model management is gone — omlx (the sole
 	// local-inference runtime) manages its own models entirely through its own
-	// admin panel (`ai services console omlx`). Workspace / Network / Context /
-	// Sessions are nested under Workspaces (the hub); logs are consolidated into
-	// the Services view (the `l` key).
+	// admin panel (`ai services console omlx`).
 	application.views = []View{servicesView, projectsHub, cloudModelsView, apiKeysView, settingsView}
 	application.projectsIndex = 1
 	application.servicesView = servicesView
 	application.projectsHub = projectsHub
 	application.projectDetail = projectDetail
 	application.sessionsView = sessionsView
-	application.appsView = appsView
 	application.cloudModelsView = cloudModelsView
 	application.apiKeysView = apiKeysView
 
@@ -479,8 +246,6 @@ func Run(cwd string) error {
 	}
 	program := tea.NewProgram(application, programOptions...)
 	_, runErr := program.Run()
-	// Release any live workspace connection so no relay client lingers past the TUI.
-	application.workspaceManager.Close()
 	return runErr
 }
 
@@ -511,8 +276,8 @@ func executablePath() string {
 }
 
 // createDoneMsg reports that the in-process create.Execute for a new workspace has
-// finished (running off the event loop). warnings are best-effort issues (e.g. the
-// Graphify model pull); err is a hard failure.
+// finished (running off the event loop). warnings are best-effort issues; err is a
+// hard failure.
 type createDoneMsg struct {
 	name     string
 	warnings []string
@@ -520,8 +285,7 @@ type createDoneMsg struct {
 }
 
 // createProgressMsg carries one create.Progress event streamed from the in-process
-// create.Execute (via a channel), so the "creating…" pane shows a live log + a download
-// progress bar instead of a static message.
+// create.Execute (via a channel), so the "creating…" pane shows a live step log.
 type createProgressMsg struct {
 	progress create.Progress
 	ch       chan create.Progress // the source channel, re-read to stream the next event
@@ -540,9 +304,9 @@ func waitCreateProgress(ch chan create.Progress) tea.Cmd {
 	}
 }
 
-// sessionFinishedMsg reports that a suspended interactive shell/attach subprocess
-// (run via tea.ExecProcess in the user's real terminal) has exited, so the TUI can
-// refresh the session list + project detail.
+// sessionFinishedMsg reports that a suspended interactive shell/agent/attach
+// subprocess (run via tea.ExecProcess in the user's real terminal) has exited, so
+// the TUI can refresh the session list + project detail.
 type sessionFinishedMsg struct{ err error }
 
 // projectInfo returns the current state of one project by name (over project.List).
@@ -724,26 +488,18 @@ type app struct {
 	projectsIndex  int
 	currentProject string
 
-	// workspaceManager is the ONE long-lived workspace Manager for the whole session.
-	// On the SDK backend it holds a single reused relay connection at a time; the app
-	// releases it on project switch and closes it on exit, so only one workspace
-	// connection is ever active and none linger past the TUI.
+	// workspaceManager is the ONE workspace Manager for the whole session — a thin
+	// wrapper over the nono CLI; every call shells out independently (there is no
+	// persistent connection to share or release, unlike the old Microsandbox relay).
 	workspaceManager workspace.Manager
-	// workspaceLogView is the standalone "Sandbox Logs" sub-tab, kept so a lifecycle
-	// action can Reset it (clear the previous session's log while the VM recreates).
-	workspaceLogView *views.WorkspaceLog
 
 	// servicesView lets the app refresh the Services view (list or open detail) when
 	// a `services update` terminal overlay returns.
 	servicesView *views.Services
 
-	// sessionsView lets the app refresh the Sessions view when an attach
-	// subprocess returns (the user may have created/killed a session).
+	// sessionsView lets the app refresh the Sessions view when an attach/shell
+	// subprocess returns (the user may have created/stopped a session).
 	sessionsView *views.Sessions
-
-	// appsView lets the app refresh the Apps view when an apps lifecycle
-	// subprocess returns (the user may have installed/removed/started an app).
-	appsView *views.Apps
 
 	// cloudModelsView lets the app refresh the model list after a keys subprocess
 	// returns from the terminal overlay.
@@ -760,18 +516,16 @@ type app struct {
 	// creating holds the name of a workspace whose in-process create.Execute is
 	// running (async); the View shows a "creating…" pane while it is non-empty.
 	creating string
-	// createSteps is the accumulated log of create.Progress step labels, and createPull
-	// is the latest download frame (Total>0 → an active model pull to render as a bar) —
-	// both shown in the "creating…" pane.
+	// createSteps is the accumulated log of create.Progress step labels, shown in
+	// the "creating…" pane.
 	createSteps []string
-	createPull  create.Progress
 	// createFlash is a transient banner shown after a create completes (an error, or
 	// best-effort warnings); cleared on the next tab switch.
 	createFlash string
 
-	// terminal is the live embedded-terminal overlay (workspace start/stop/…,
-	// shell, agent, attach); non-nil only while it is open. While set it owns all
-	// input — keystrokes are forwarded to the PTY — except ctrl+q (force-detach)
+	// terminal is the live embedded-terminal overlay (delete confirm, services
+	// update, apps/keys prompts); non-nil only while it is open. While set it owns
+	// all input — keystrokes are forwarded to the PTY — except ctrl+q (force-detach)
 	// and, once the process has exited, any key (close).
 	terminal *views.Terminal
 	// terminalEscCloses makes <esc> cancel/close the terminal overlay (killing the
@@ -791,12 +545,6 @@ type app struct {
 	// this scroll, intercepted only while the pane overflows so the view keeps ↑/↓ and
 	// its own paging otherwise.
 	bodyViewport viewport.Model
-
-	// lifecycles tracks in-flight detached start/stop/restart actions KEYED BY WORKSPACE,
-	// so several workspaces can be starting/stopping concurrently and each is polled to
-	// completion independently — workspace management is isolated per workspace. The
-	// spinner + build-log only surface for the currently-viewed one (reconcilePending).
-	lifecycles map[string]*lifecycleOp
 }
 
 // textInputCapturer is implemented by a view (or the hub on behalf of its active
@@ -849,22 +597,15 @@ func (application *app) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case views.ProjectSelectedMsg:
 		// The switcher chose a project — make it current (so the closure-driven
-		// sub-views resolve it) and drop into it inside the Projects hub. Release the
-		// PREVIOUS workspace's live connection first so only one is ever active; the
-		// new project's logs/sessions/apps reconnect on their next poll.
-		if application.currentProject != "" && application.currentProject != message.Name {
-			application.workspaceManager.ReleaseConnection(application.currentProject)
-		}
+		// sub-views resolve it) and drop into it inside the Projects hub.
 		application.currentProject = message.Name
 		application.switchTab(application.projectsIndex)
-		cmd := application.projectsHub.OpenProject(message.Name)
-		application.reconcilePending() // align the spinner with THIS workspace's own op (if any)
-		return application, cmd
+		return application, application.projectsHub.OpenProject(message.Name)
 
 	case views.NewProjectRequestedMsg:
-		// Open the multi-step create WIZARD in-TUI (no subprocess). Seed it with the
-		// current directory and the host resource caps for the hints.
-		wizard := views.NewCreate(application.cwd, create.HostMemoryGB(), create.UsableHostMemoryGB(), omlxLiveModelNames)
+		// Open the multi-step create WIZARD in-TUI (no subprocess), seeded with the
+		// current directory.
+		wizard := views.NewCreate(application.cwd, omlxLiveModelNames)
 		bodyWidth, bodyHeight := application.bodyContentSize()
 		wizard.SetSize(bodyWidth, bodyHeight)
 		application.createView = wizard
@@ -876,17 +617,14 @@ func (application *app) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return application, nil
 
 	case views.CreateConfirmedMsg:
-		// Run create IN-PROCESS (shared create.Execute) off the event loop so the slow
-		// step (a Graphify model pull) doesn't freeze the UI; show a "creating…" pane
-		// until createDoneMsg arrives.
+		// Run create IN-PROCESS (shared create.Execute) off the event loop; show a
+		// "creating…" pane until createDoneMsg arrives. There is no image to build
+		// and nothing to download — this finishes almost immediately, but still runs
+		// off the event loop so the UI never blocks.
 		application.createView = nil
 		spec := message.Spec
 		application.creating = spec.Name
 		application.createSteps = nil
-		application.createPull = create.Progress{}
-		// Stream progress off the event loop: the goroutine reports each phase into a
-		// buffered channel (best-effort — dropped if full so create never blocks on the
-		// UI) and sends createDoneMsg when finished. Two cmds pump the two channels.
 		progressCh := make(chan create.Progress, 64)
 		doneCh := make(chan createDoneMsg, 1)
 		go func() {
@@ -905,10 +643,7 @@ func (application *app) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		)
 
 	case createProgressMsg:
-		application.createPull = create.Progress{}
-		if message.progress.Total > 0 {
-			application.createPull = message.progress // an active download → render a bar
-		} else if step := message.progress.Step; step != "" {
+		if step := message.progress.Step; step != "" {
 			application.createSteps = append(application.createSteps, step)
 		}
 		return application, waitCreateProgress(message.ch)
@@ -916,7 +651,6 @@ func (application *app) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case createDoneMsg:
 		application.creating = ""
 		application.createSteps = nil
-		application.createPull = create.Progress{}
 		application.switchTab(application.projectsIndex)
 		if message.err != nil {
 			application.createFlash = ui.Failure.Render(ui.IconFail + " create failed: " + message.err.Error())
@@ -926,170 +660,58 @@ func (application *app) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			application.createFlash = ui.Warn.Render(ui.IconDot + " created " + message.name + " with warnings: " + strings.Join(message.warnings, "; "))
 		}
 		// Land on the freshly-created workspace. Set currentProject FIRST (as
-		// ProjectSelectedMsg does) so the sub-views' closures (Logs/Metrics/Sessions)
-		// resolve it immediately — otherwise the Logs tab reports "no workspace selected"
-		// until the user backs out and reopens. Release any previous workspace's live
-		// connection so only one is ever active.
-		if application.currentProject != "" && application.currentProject != message.name {
-			application.workspaceManager.ReleaseConnection(application.currentProject)
-		}
+		// ProjectSelectedMsg does) so the sub-views' closures (Network/Shell)
+		// resolve it immediately.
 		application.currentProject = message.name
 		cmd := tea.Sequence(application.projectsHub.Reset(), application.projectsHub.OpenProject(message.name))
-		// A freshly-created workspace is NOT starting — clear any spinner left over from a
-		// different workspace that is still starting in the background (reconcilePending
-		// sees no lifecycle op for this new one). This is the "new workspace shows starting
-		// with no logs" fix.
-		application.reconcilePending()
 		return application, cmd
 
 	case views.WorkspaceActionRequestedMsg:
-		if message.Action == "delete" {
+		switch message.Action {
+		case "delete":
 			// Delete confirms inline, so run it in the embedded terminal overlay (its
 			// y/n prompt shows in the pane); esc cancels the pane.
 			cmd := application.openTerminal(
 				"delete "+message.Project, []string{"delete", message.Project}, false)
 			application.terminalEscCloses = true
 			return application, cmd
+		case "stop":
+			// Stop runs IN-PROCESS (no sandbox to suspend into — it just stops every
+			// live session for the workspace).
+			return application, application.stopWorkspaceCmd(message.Project)
+		default: // start, restart
+			// start/restart launch (or reattach to) the default agent CLI's sandboxed
+			// session: an INTERACTIVE program, so — exactly like ExecRequestedMsg/
+			// AttachRequestedMsg — the app SUSPENDS and runs it in the user's real
+			// terminal via tea.ExecProcess, restoring the TUI on exit.
+			command := exec.Command(executablePath(), message.Action, message.Project)
+			return application, tea.ExecProcess(command, func(execErr error) tea.Msg {
+				return sessionFinishedMsg{err: execErr}
+			})
 		}
-		// start/stop/restart run DETACHED (a new session via setsid) so the microVM
-		// build/boot keeps going even if `ai ui` is closed, and the TUI stays
-		// navigable — no log pane, just a spinner + status that we poll for.
-		return application, application.startLifecycle(message.Action, message.Project)
-
-	case views.WorkspaceResizeRequestedMsg:
-		// Persist the new disk size to the workspace config, then restart so the microVM's
-		// writable rootfs is rebuilt at the new size (the SDK applies WithOCIUpperSize on
-		// the --replace create at start). Validation + persistence are quick + in-process;
-		// the restart itself runs DETACHED with a spinner like any lifecycle action.
-		if err := create.ValidateDisk(message.Disk); err != nil {
-			application.projectDetail.SetFlash(ui.Warn.Render(ui.IconDot + " " + err.Error()))
-			return application, nil
-		}
-		root, ok := resolveProjectRoot(message.Project)
-		if !ok {
-			application.projectDetail.SetFlash(ui.Warn.Render(ui.IconDot + " could not resolve workspace path"))
-			return application, nil
-		}
-		projectConfig, err := config.LoadProjectConfig(root)
-		if err != nil {
-			application.projectDetail.SetFlash(ui.Warn.Render(ui.IconDot + " read config: " + err.Error()))
-			return application, nil
-		}
-		projectConfig.Workspace.DiskLimit = strings.TrimSpace(message.Disk)
-		if err := config.WriteProject(root, projectConfig); err != nil {
-			application.projectDetail.SetFlash(ui.Warn.Render(ui.IconDot + " write config: " + err.Error()))
-			return application, nil
-		}
-		return application, application.startLifecycle("restart", message.Project)
-
-	case views.WorkspaceNetworkToggleRequestedMsg:
-		// The new egress mode is already persisted (the Network view's "i" handler
-		// called egress.SetMode before emitting this). Net-rules are only applied to
-		// the microVM at create/restart, so restart to pick up the change — mirroring
-		// WorkspaceResizeRequestedMsg.
-		if message.Project == "" {
-			return application, nil
-		}
-		return application, application.startLifecycle("restart", message.Project)
-
-	case lifecyclePollMsg:
-		if len(application.lifecycles) == 0 {
-			return application, nil
-		}
-		// Advance the spinner only for the currently-viewed workspace's op (others run in
-		// the background, tracked but not spinning on this pane).
-		if viewed, ok := application.lifecycles[application.currentProject]; ok && viewed != nil {
-			application.projectDetail.TickSpinner()
-		}
-		var cmds []tea.Cmd
-		refreshHub := false
-		for project, op := range application.lifecycles {
-			entry, found, _ := projectInfo(op.project)
-			done := false
-			switch op.action {
-			case "start", "restart":
-				done = found && entry.Status == string(state.StatusStarted)
-			case "stop":
-				done = !found || entry.Status != string(state.StatusStarted)
-			}
-			if !done && time.Since(op.started) <= lifecycleTimeout {
-				continue
-			}
-			timedOut := !done
-			delete(application.lifecycles, project) // safe to delete during range in Go
-			refreshHub = true
-			// The spinner/build-log/flash surface only for the workspace being VIEWED; a
-			// background workspace's completion just updates the hub status list.
-			if project == application.currentProject {
-				application.projectDetail.ClearPending()
-				if timedOut {
-					// The action never took effect within the window — point the user at the
-					// detached process's tee'd log so the hang/error is inspectable.
-					hint := op.action + " did not complete in time"
-					if logPath, ok := lifecycleLogPath(op.project, op.action); ok {
-						hint += " — see " + logPath
-					}
-					application.projectDetail.SetFlash(ui.Warn.Render(ui.IconDot + " " + hint))
-				}
-				// Re-enable live streaming (disabled during the op), clear the build-log
-				// content, and — if the Logs sub-tab is the one currently being viewed —
-				// re-Init it NOW so it reopens a stream against the (possibly recreated)
-				// microVM immediately, instead of sitting empty until the user leaves and
-				// re-enters the tab. Init() itself checks the view's paused flag, so this
-				// is a no-op (streaming opens "on next activation" as before) when the Logs
-				// sub-tab isn't the one being looked at.
-				if application.workspaceLogView != nil {
-					application.workspaceLogView.SetStreamingEnabled(true)
-					application.workspaceLogView.Reset()
-					cmds = append(cmds, application.workspaceLogView.Init())
-				}
-				cmds = append(cmds, application.projectDetail.Init())
-			}
-		}
-		if refreshHub {
-			cmds = append(cmds, application.projectsHub.RefreshActive())
-		}
-		if len(application.lifecycles) > 0 {
-			cmds = append(cmds, application.lifecyclePollCmd())
-		}
-		return application, tea.Batch(cmds...)
 
 	case views.ExecRequestedMsg:
 		// An interactive shell runs in the user's REAL terminal: suspend the TUI and
 		// run `ai shell <name>` via tea.ExecProcess (full keys, native selection,
-		// in-place output via the host terminal), restoring the TUI on exit. The
-		// embedded emulator is not used for interactive sessions.
+		// in-place output via the host terminal), restoring the TUI on exit.
 		command := exec.Command(executablePath(), "shell", message.Project)
 		return application, tea.ExecProcess(command, func(execErr error) tea.Msg {
 			return sessionFinishedMsg{err: execErr}
 		})
 
 	case views.AttachRequestedMsg:
-		// Attach to (or create) a workspace session in the user's REAL terminal:
-		// suspend the TUI and run `ai attach <session> <name>` via tea.ExecProcess
-		// (tmux new-session -A creates it if absent), restoring the TUI on exit.
+		// Attach to an existing workspace session in the user's REAL terminal:
+		// suspend the TUI and run `ai attach <session> <name>` via tea.ExecProcess,
+		// restoring the TUI on exit.
 		command := exec.Command(executablePath(), "attach", message.Session, message.Project)
 		return application, tea.ExecProcess(command, func(execErr error) tea.Msg {
 			return sessionFinishedMsg{err: execErr}
 		})
 
-	case views.WorkspaceLogFollowRequestedMsg:
-		// Follow the microVM log live in the user's REAL terminal (msb logs -f on the
-		// host), so it renders natively — selectable, and in place when the captured
-		// stream carries the control codes. Returns to the TUI on exit (Ctrl-C).
-		msbBin, _ := workspace.MsbBinary() // best-effort; falls back to PATH "msb" below
-		if msbBin == "" {
-			msbBin = "msb"
-		}
-		command := exec.Command(msbBin, "logs", workspace.Name(message.Project), "-f")
-		return application, tea.ExecProcess(command, func(execErr error) tea.Msg {
-			return sessionFinishedMsg{err: execErr}
-		})
-
 	case views.ServiceLogFollowRequestedMsg:
-		// Follow a service's container log live in the user's REAL terminal, the twin of
-		// the workspace-log follow above. It runs `ai logs --service <svc> --follow`
-		// (setup.FollowServiceLogs → `<runtime> logs -f`), restoring the TUI on Ctrl-C.
+		// Follow a service's container log live in the user's REAL terminal. It runs
+		// `ai logs --service <svc> --follow` (setup.FollowServiceLogs → `<runtime>
+		// logs -f`), restoring the TUI on Ctrl-C.
 		command := exec.Command(executablePath(), "logs", "--service", message.Service, "--follow")
 		return application, tea.ExecProcess(command, func(execErr error) tea.Msg {
 			return sessionFinishedMsg{err: execErr}
@@ -1098,7 +720,7 @@ func (application *app) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case views.ServiceUpdateRequestedMsg:
 		// `p` (update) in the service detail: run `ai services update <svc>` live in the
 		// embedded terminal overlay (a real PTY → the CLI's pull spinner renders),
-		// EXACTLY like models pull / apps actions. The Services view refreshes when the
+		// EXACTLY like the keys subprocess. The Services view refreshes when the
 		// overlay closes; esc cancels it.
 		cmd := application.openTerminal(
 			"services update "+message.Service, []string{"services", "update", message.Service}, false)
@@ -1106,8 +728,9 @@ func (application *app) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return application, cmd
 
 	case sessionFinishedMsg:
-		// Back from an interactive shell/attach — refresh the Shell (sessions) list
-		// and the project detail so a newly-created/exited session is reflected.
+		// Back from an interactive shell/agent/attach, or a start/stop/restart —
+		// refresh the Shell (sessions) list and the project detail so the change is
+		// reflected.
 		commands := []tea.Cmd{}
 		if application.sessionsView != nil {
 			commands = append(commands, application.sessionsView.Init())
@@ -1117,27 +740,22 @@ func (application *app) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return application, tea.Batch(commands...)
 
-	case views.AppActionRequestedMsg:
-		// Run an apps lifecycle action live in the terminal overlay (`ai apps
-		// <action> <app> <name>` → nerdctl in the VM); the Apps view refreshes when
-		// the overlay closes.
-		cmd := application.openTerminal(
-			"apps "+message.Action+" "+message.App+" "+message.Project,
-			[]string{"apps", message.Action, message.App, message.Project}, false)
-		// Not an interactive program — let <esc> cancel/close the pane (like ctrl+q).
-		application.terminalEscCloses = true
-		return application, cmd
-
-	case views.ToolActionRequestedMsg:
-		// Run an AI-tool toggle live in the terminal overlay (`ai tools
-		// <enable|disable> <tool> <name>` — it persists config.yaml, regenerates the
-		// Dockerfile, and may itself prompt to restart the workspace now); the Apps
-		// view refreshes when the overlay closes.
-		cmd := application.openTerminal(
-			"tools "+message.Action+" "+message.Tool+" "+message.Project,
-			[]string{"tools", message.Action, message.Tool, message.Project}, false)
-		application.terminalEscCloses = true
-		return application, cmd
+	case workspaceStoppedMsg:
+		if application.projectDetail != nil {
+			if message.err != nil {
+				application.projectDetail.SetFlash(ui.Failure.Render(ui.IconFail + " stop: " + message.err.Error()))
+			} else {
+				application.projectDetail.SetFlash(ui.Success.Render(ui.IconOK + " stopped"))
+			}
+		}
+		commands := []tea.Cmd{}
+		if application.sessionsView != nil {
+			commands = append(commands, application.sessionsView.Init())
+		}
+		if application.projectDetail != nil {
+			commands = append(commands, application.projectDetail.Init())
+		}
+		return application, tea.Batch(commands...)
 
 	case views.APIKeyAddRequestedMsg:
 		// Add runs `ai keys add <provider>` live in the overlay (its hidden key
@@ -1183,7 +801,7 @@ func (application *app) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return application, nil
 		}
 		// A view with an inline text prompt open (e.g. the Shell "new session" or the
-		// Network allow/publish prompts) owns EVERY key, so typed characters like ':',
+		// Network allow/disallow prompts) owns EVERY key, so typed characters like ':',
 		// 'q' or '?' are not stolen by the global shortcuts.
 		if capturingInput(application.views[application.current]) {
 			return application, application.views[application.current].Update(msg)
@@ -1246,225 +864,49 @@ func (application *app) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return application, application.views[application.current].Update(msg)
 }
 
-// lifecycleOp tracks an in-flight detached start/stop/restart so the poll knows what
-// it is waiting for.
-type lifecycleOp struct {
-	project string
-	action  string
-	started time.Time
-}
+// workspaceStoppedMsg reports the outcome of an in-process StopAll triggered by
+// the Workspace tab's "x" key.
+type workspaceStoppedMsg struct{ err error }
 
-// reconcilePending aligns the Workspace pane's spinner + log streaming with whether the
-// CURRENTLY-VIEWED workspace has its OWN in-flight lifecycle op. Called on every workspace
-// switch (select, or open-after-create) so a workspace that is starting in the background
-// never bleeds its "starting…" spinner onto a different (idle or freshly-created) workspace
-// — workspace management is isolated per workspace.
-func (application *app) reconcilePending() {
-	if application.projectDetail == nil {
-		return
-	}
-	if op := application.lifecycles[application.currentProject]; op != nil {
-		application.projectDetail.StartPending(op.action)
-		if application.workspaceLogView != nil {
-			application.workspaceLogView.SetStreamingEnabled(false)
-		}
-		return
-	}
-	application.projectDetail.ClearPending()
-	if application.workspaceLogView != nil {
-		application.workspaceLogView.SetStreamingEnabled(true)
+// stopWorkspaceCmd stops every live session for project IN-PROCESS (there is no
+// sandbox process to suspend into, unlike start/restart/shell/agent/attach).
+func (application *app) stopWorkspaceCmd(projectName string) tea.Cmd {
+	manager := application.workspaceManager
+	return func() tea.Msg {
+		return workspaceStoppedMsg{err: manager.StopAll(projectName)}
 	}
 }
 
-// lifecyclePollMsg fires on a timer while a detached lifecycle action runs.
-type lifecyclePollMsg struct{}
-
-const (
-	lifecyclePollInterval = 300 * time.Millisecond
-	lifecycleTimeout      = 6 * time.Minute
-)
-
-// startLifecycle runs `ai <action> <project>` DETACHED (its own session via setsid,
-// stdio to /dev/null) so the microVM build/boot keeps running even if `ai ui` exits,
-// then shows a spinner on the workspace status line and begins polling for the action
-// to take effect — the TUI stays navigable and no log is shown.
-func (application *app) startLifecycle(action, project string) tea.Cmd {
-	command := exec.Command(executablePath(), action, project)
-	command.SysProcAttr = detachedSysProcAttr()
-	command.Stdin = nil
-	// Tee the detached process's stdout+stderr to a per-workspace log so this flow is
-	// DEBUGGABLE: it runs detached (stdio would otherwise go to /dev/null) and the
-	// parent polls the state handle, not the process, so it never sees the output.
-	// Best-effort — if the log can't be opened, discard output (nil → /dev/null) as
-	// before. The child dup's the fd on Start, so the parent copy is closed after.
-	if logFile := openLifecycleLog(project, action); logFile != nil {
-		command.Stdout, command.Stderr = logFile, logFile
-		defer func() { _ = logFile.Close() }()
-	} else {
-		command.Stdout, command.Stderr = nil, nil
-	}
-	if err := command.Start(); err != nil {
-		application.projectDetail.SetFlash(ui.Failure.Render(ui.IconFail + " could not " + action + ": " + err.Error()))
-		return nil
-	}
-	// Detach from the started process: we poll the state handle for completion, not
-	// the process exit, so it can outlive `ai ui`.
-	_ = command.Process.Release()
-	if application.lifecycles == nil {
-		application.lifecycles = map[string]*lifecycleOp{}
-	}
-	application.lifecycles[project] = &lifecycleOp{project: project, action: action, started: time.Now()}
-	// The action is always started from the currently-viewed workspace, so the spinner +
-	// build-log tail apply to it here. (A different workspace's op stays tracked in the map
-	// and surfaces via reconcilePending when the user switches back to it.)
-	application.projectDetail.StartPending(action)
-	// Clear the Sandbox Logs tab so the previous session's output does not linger
-	// while the microVM is (re)created. DISABLE streaming for the duration so the Logs
-	// tab TAILS the live build log (the detached action's progress + install output)
-	// via the poll path — the microVM stream would otherwise show the old VM shutting
-	// down and stall. Streaming is re-enabled on completion (lifecyclePollMsg).
-	var logViewCmd tea.Cmd
-	if application.workspaceLogView != nil {
-		application.workspaceLogView.SetStreamingEnabled(false)
-		application.workspaceLogView.Reset()
-		// Re-Init NOW (not just on completion): Reset() alone stops any prior
-		// activity but does not arm the poll-mode heartbeat — without this the Logs
-		// pane would sit empty for the whole duration of the op if it is the
-		// sub-tab currently being viewed. A no-op (per Init()'s paused check) when
-		// the Logs sub-tab isn't the one being looked at.
-		logViewCmd = application.workspaceLogView.Init()
-	}
-	// Drop the cached relay handle: start/stop/restart change the microVM out from
-	// under it, so the next poll reconnects ONCE to the fresh VM. This is the self-heal
-	// path that replaces the per-poll evict-on-error (which churned the relay).
-	application.workspaceManager.ReleaseConnection(project)
-	return tea.Batch(application.projectDetail.Init(), application.lifecyclePollCmd(), logViewCmd)
-}
-
-// lifecycleLogPath is the per-workspace file a detached lifecycle action tees its
-// stdout+stderr to: <project>/.ai-platform/run/<action>.log (run/ is gitignored). The
-// param is projectName so the `project` package resolves inside. ok=false when the
-// project root can't be resolved (the caller then discards output).
-func lifecycleLogPath(projectName, action string) (string, bool) {
-	root, found, err := project.Path(projectName)
-	if err != nil || !found || root == "" {
-		return "", false
-	}
-	return filepath.Join(root, ".ai-platform", "run", action+".log"), true
-}
-
-// readLatestLifecycleLog returns the tee'd output of the most recent detached
-// lifecycle action (start/restart) for the project — the build log — so the Logs tab
-// can show progress from the beginning while the microVM image is still building (no
-// msb sandbox log exists yet). ok=false when no lifecycle log is present.
-func readLatestLifecycleLog(projectName string) (string, bool) {
-	var newestPath string
-	var newestMod time.Time
-	for _, action := range []string{"start", "restart"} {
-		logPath, ok := lifecycleLogPath(projectName, action)
-		if !ok {
-			continue
-		}
-		info, err := os.Stat(logPath)
-		if err != nil {
-			continue
-		}
-		if newestPath == "" || info.ModTime().After(newestMod) {
-			newestPath, newestMod = logPath, info.ModTime()
-		}
-	}
-	if newestPath == "" {
-		return "", false
-	}
-	content, err := os.ReadFile(newestPath)
-	if err != nil {
-		return "", false
-	}
-	// Append the DETACHED Caveman install log if present: that install runs in the
-	// background (setsid) past the end of `ai start`, so its output lands in its own
-	// file rather than the lifecycle log — concatenating it here surfaces its progress
-	// in the Logs view alongside the start transcript.
-	if caveman, ok := readCavemanInstallLog(projectName); ok {
-		content = append(content, "\n── caveman install (background) ──\n"...)
-		content = append(content, caveman...)
-	}
-	return string(content), true
-}
-
-// readCavemanInstallLog returns the detached Caveman install log for the project
-// (<project>/.ai-platform/run/caveman-install.log), empty ok=false when absent.
-func readCavemanInstallLog(projectName string) ([]byte, bool) {
-	root, found, err := project.Path(projectName)
-	if err != nil || !found || root == "" {
-		return nil, false
-	}
-	content, err := os.ReadFile(filepath.Join(root, ".ai-platform", "run", "caveman-install.log"))
-	if err != nil {
-		return nil, false
-	}
-	return content, true
-}
-
-// openLifecycleLog opens (truncating) the per-workspace lifecycle log, writing a header
-// so it is self-describing. Best-effort: nil on any failure, so startLifecycle falls
-// back to discarding the detached process's output.
-func openLifecycleLog(projectName, action string) *os.File {
-	logPath, ok := lifecycleLogPath(projectName, action)
+// workspaceConfigFetcher renders the DECLARED project config (config.yaml) as the
+// Workspace tab's Configuration diagnostics — the values `ai create`/`ai network`
+// set, so edits reflect immediately (no live-sandbox read).
+func workspaceConfigFetcher(name string) ([]views.ConfigField, error) {
+	root, ok := resolveProjectRoot(name)
 	if !ok {
-		return nil
+		return nil, fmt.Errorf("workspace %q not found", name)
 	}
-	if err := os.MkdirAll(filepath.Dir(logPath), 0o755); err != nil {
-		return nil
-	}
-	file, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o644)
+	projectConfig, err := config.LoadProjectConfig(root)
 	if err != nil {
-		return nil
+		return nil, err
 	}
-	_, _ = fmt.Fprintf(file, "=== ai %s %s @ %s ===\n", action, projectName, time.Now().Format(time.RFC3339))
-	return file
+	return workspaceConfigFields(projectConfig), nil
 }
 
-func (application *app) workspaceLogReadable() bool {
-	if application.currentProject == "" {
-		return false
-	}
-	if op := application.lifecycles[application.currentProject]; op != nil {
-		switch op.action {
-		case "start", "restart":
-			return true
-		}
-	}
-	entry, found, err := projectInfo(application.currentProject)
-	return err == nil && found && entry.Status == string(state.StatusStarted)
-}
-
-// workspaceConfigFields renders the DECLARED project config (config.yaml) as the
-// Workspace tab's Sandbox Configuration diagnostics — the values `ai create`/`ai
-// network` set, so edits reflect immediately (no live-sandbox read, no relay call).
+// workspaceConfigFields renders the declared project config as the Workspace tab's
+// Configuration diagnostics.
 func workspaceConfigFields(projectConfig *config.Config) []views.ConfigField {
 	fields := []views.ConfigField{
 		{Label: "os", Value: dashIfEmpty(projectConfig.OS)},
-		{Label: "vcpus", Value: cpuLimitValue(projectConfig.Workspace.CPULimit)},
-		{Label: "memory", Value: valueOr(projectConfig.Workspace.MemoryLimit, config.Default().Workspace.MemoryLimit)},
-		{Label: "disk", Value: valueOr(projectConfig.Workspace.DiskLimit, config.Default().Workspace.DiskLimit)},
-		{Label: "idle timeout", Value: projectConfig.Microsandbox.ResolvedIdleTimeout()},
+		{Label: "shell", Value: dashIfEmpty(projectConfig.Workspace.Shell)},
 		{Label: "egress", Value: projectConfig.Network.ResolvedEgress()},
-		{Label: "published ports", Value: publishPortsValue(projectConfig.Network.PublishPorts)},
 	}
-	if count := len(projectConfig.Network.AllowHostServices); count > 0 {
-		fields = append(fields, views.ConfigField{Label: "allowed host services", Value: strconv.Itoa(count)})
+	if count := len(projectConfig.Network.AllowDomain); count > 0 {
+		fields = append(fields, views.ConfigField{Label: "allowed domains", Value: strings.Join(projectConfig.Network.AllowDomain, ", ")})
 	}
-	if count := len(projectConfig.Apps); count > 0 {
-		fields = append(fields, views.ConfigField{Label: "apps", Value: strconv.Itoa(count)})
+	if count := len(projectConfig.Network.DenyDomain); count > 0 {
+		fields = append(fields, views.ConfigField{Label: "denied domains", Value: strings.Join(projectConfig.Network.DenyDomain, ", ")})
 	}
 	return fields
-}
-
-func cpuLimitValue(cpus int) string {
-	if cpus <= 0 {
-		cpus = config.Default().Workspace.CPULimit
-	}
-	return strconv.Itoa(cpus)
 }
 
 func dashIfEmpty(value string) string {
@@ -1474,41 +916,13 @@ func dashIfEmpty(value string) string {
 	return value
 }
 
-func valueOr(value, fallback string) string {
-	if value == "" {
-		return fallback
-	}
-	return value
-}
-
-// publishPortsValue formats declared published ports for the config block.
-func publishPortsValue(ports []config.PortMapping) string {
-	if len(ports) == 0 {
-		return "none"
-	}
-	parts := make([]string, 0, len(ports))
-	for _, mapping := range ports {
-		if mapping.Host == mapping.Guest {
-			parts = append(parts, strconv.Itoa(mapping.Host))
-		} else {
-			parts = append(parts, fmt.Sprintf("%d→%d", mapping.Host, mapping.Guest))
-		}
-	}
-	return strings.Join(parts, ", ")
-}
-
-// lifecyclePollCmd schedules the next lifecycle poll tick.
-func (application *app) lifecyclePollCmd() tea.Cmd {
-	return tea.Tick(lifecyclePollInterval, func(time.Time) tea.Msg { return lifecyclePollMsg{} })
-}
-
 // openTerminal opens the live embedded-terminal overlay running `ai <args…>` on a
 // PTY, sized to the body. Workspace output streams into the pane (no suspend) and
 // interactive programs run inside it. interactive=true means the child is a full
 // interactive program that needs the arrow keys (a shell / attached session), so
 // arrows are forwarded to it; interactive=false means a command run whose output
-// streams (lifecycle, apps, models, keys), so the arrow/page keys SCROLL the pane's
-// scrollback instead of being forwarded (otherwise they echo as ^[[A).
+// streams (delete confirm, services update, keys), so the arrow/page keys SCROLL
+// the pane's scrollback instead of being forwarded (otherwise they echo as ^[[A).
 func (application *app) openTerminal(label string, args []string, interactive bool) tea.Cmd {
 	argv := append([]string{executablePath()}, args...)
 	term := views.NewTerminal(label, argv, interactive)
@@ -1566,16 +980,14 @@ func (application *app) updateTerminal(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 		// switcher rather than leaving the hub on a gone project.
 		if application.currentProject != "" {
 			if _, ok := resolveProjectRoot(application.currentProject); !ok {
-				application.workspaceManager.ReleaseConnection(application.currentProject)
 				application.currentProject = ""
 				application.switchTab(application.projectsIndex)
 				return application, application.projectsHub.Reset()
 			}
 		}
-		// Refresh ONLY the sub-view under the active sub-tab (not the workspace log +
-		// sessions + apps all at once — that fired three concurrent in-VM calls on
-		// every overlay close and timed them out). The top-level model/key views are
-		// cheap host-side fetches, so they always refresh.
+		// Refresh ONLY the sub-view under the active sub-tab (not every sub-view at
+		// once). The top-level model/key views are cheap host-side fetches, so they
+		// always refresh.
 		commands := []tea.Cmd{application.projectsHub.RefreshActive()}
 		if application.servicesView != nil {
 			// A `services update` overlay closing must re-fetch the Services list / open
@@ -1784,8 +1196,8 @@ func (application *app) View() string {
 	switch {
 	case application.terminal != nil:
 		content = application.terminal.View()
-		// When the terminal was launched from a workspace sub-tab (shell/attach/
-		// lifecycle/apps), keep the per-workspace sub-tab bar visible ABOVE it so the
+		// When the terminal was launched from a workspace sub-tab (delete/apps/keys
+		// prompts), keep the per-workspace sub-tab bar visible ABOVE it so the
 		// tabs don't disappear — it reads like the other sub-tab panes, just with a
 		// live terminal as the body.
 		if application.inWorkspaceSubTab() {
@@ -1832,9 +1244,9 @@ func (application *app) View() string {
 	)
 }
 
-// creatingView renders the live "creating…" pane: the accumulated step log (✓ per done
-// step, → on the one in progress) with a download progress bar beneath the Graphify-model
-// pull while it runs. Streamed from create.Execute via createProgressMsg.
+// creatingView renders the live "creating…" pane: the accumulated step log (✓ per
+// done step, → on the one in progress). Streamed from create.Execute via
+// createProgressMsg.
 func (application *app) creatingView() string {
 	var body strings.Builder
 	body.WriteString(ui.Heading.Render("Creating workspace "+application.creating+"…") + "\n\n")
@@ -1848,12 +1260,8 @@ func (application *app) creatingView() string {
 			marker = ui.Primary.Render("→")
 		}
 		body.WriteString("  " + marker + " " + step + "\n")
-		// A live download bar under the active pull step.
-		if last && application.createPull.Total > 0 && application.createPull.Step == step {
-			body.WriteString("      " + ui.ProgressBarLine(application.createPull.Completed, application.createPull.Total) + "\n")
-		}
 	}
-	body.WriteString("\n" + ui.Muted.Render("The UI stays responsive; start the workspace afterwards to build the image + boot the microVM."))
+	body.WriteString("\n" + ui.Muted.Render("The UI stays responsive; run `ai agent <cli>` or `ai shell` afterwards to start a sandboxed session."))
 	return body.String()
 }
 

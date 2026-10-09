@@ -69,10 +69,9 @@ func CacheDir() (string, error) {
 	return filepath.Join(p, "cache"), nil
 }
 
-// BinDir is ~/.ai-platform/bin — platform-managed host executables the platform
-// pins to an exact version (notably the Microsandbox `msb` CLI, kept in lockstep
-// with the embedded SDK FFI). Created on use via MkdirAll; removed by
-// `ai uninstall --purge`.
+// BinDir is ~/.ai-platform/bin — the home for any platform-managed host
+// executable pinned to an exact version. Created on use via MkdirAll; removed
+// by `ai uninstall --purge`.
 func BinDir() (string, error) {
 	p, err := PlatformDir()
 	if err != nil {
@@ -82,10 +81,11 @@ func BinDir() (string, error) {
 }
 
 // VenvDir is ~/.ai-platform/venv — the platform-managed, host-side Python virtual
-// environment. It is the single home for platform-wide Python tooling that runs on
-// the HOST (as opposed to a workspace's in-VM `.venv-msb`): notably the omlx
-// local-inference backend. Created on use (by internal/pyenv at `ai setup`) and
-// removed by `ai uninstall --purge` (RemoveAll ~/.ai-platform).
+// environment. It is the single home for platform-wide Python tooling (notably
+// the omlx local-inference backend), distinct from a project's own per-project
+// `.venv-msb` (internal/workspace/tools.go — used by Graphify's MCP server).
+// Created on use (by internal/pyenv at `ai setup`) and removed by
+// `ai uninstall --purge` (RemoveAll ~/.ai-platform).
 func VenvDir() (string, error) {
 	platformDir, err := PlatformDir()
 	if err != nil {

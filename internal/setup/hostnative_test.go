@@ -24,6 +24,11 @@ func TestMain(m *testing.M) {
 	// A reconcile-path test must never trigger the real (large) omlx pip install just
 	// because the host lacks it; the reconcile routes through this seam.
 	installOmlxFn = func() error { return nil }
+	// Run() calls EnsureNonoInstalled before the prerequisite gate; a test must never
+	// trigger the real brew/curl nono install just because the test host lacks it
+	// (nonoDetectFn itself is left as the real exec.LookPath check — cheap and
+	// side-effect-free either way, mirroring omlxDetectFn's precedent above).
+	installNonoFn = func() error { return nil }
 	os.Exit(m.Run())
 }
 

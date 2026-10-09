@@ -12,8 +12,8 @@ import (
 	"strings"
 
 	"github.com/jt-helsinki/stack-genie/internal/console"
+	"github.com/jt-helsinki/stack-genie/internal/nono"
 	"github.com/jt-helsinki/stack-genie/internal/runtime"
-	"github.com/jt-helsinki/stack-genie/internal/sandbox"
 	"github.com/jt-helsinki/stack-genie/internal/ui"
 )
 
@@ -102,26 +102,20 @@ type Service struct {
 }
 
 // WorkspaceRuntime is the per-workspace runtime posture supplied by the CLI when
-// the user is inside (or names) a workspace. It mirrors the fields the old
-// `ai workspace doctor` reported; Run turns it into the WORKSPACE section.
+// the user is inside (or names) a workspace. Run turns it into the WORKSPACE
+// section. Unlike the Microsandbox microVM runtime this replaced, there is no
+// container-runtime/rootless/virtualization posture to check here — nono
+// sandboxes a host process directly — so this just reports whether nono itself
+// is installed, plus whatever live per-workspace probes the CLI supplies.
 type WorkspaceRuntime struct {
 	// Project names the resolved workspace (for the section heading detail).
 	Project string
-	// RuntimeErr, when non-nil, is a missing-runtime failure (no container
-	// runtime / Microsandbox) — surfaced as an error Check rather than aborting.
-	RuntimeErr error
-	// VerifyErr, when non-nil, is a rootless/virtualization shortfall — surfaced
-	// as an error Check.
-	VerifyErr error
-	Rootless  bool
-	// Virtualization names the workspace virtualization backend (hvf, kvm, …).
-	Virtualization string
-	// Available reports whether the microVM virtualization is usable.
-	Available bool
+	// NonoInstalled reports whether the `nono` CLI is on PATH.
+	NonoInstalled bool
 	// LiveChecks are optional target-workspace probes supplied by the CLI when a
-	// concrete workspace is resolved: microVM presence, log readability, and exec
-	// responsiveness. Keeping them as Checks preserves doctor.Run's pure rendering
-	// role and avoids this package importing the workspace runtime.
+	// concrete workspace is resolved (e.g. live nono session status). Keeping
+	// them as Checks preserves doctor.Run's pure rendering role and avoids this
+	// package importing the workspace runtime.
 	LiveChecks []Check
 }
 
@@ -178,12 +172,10 @@ type Deps struct {
 // managed service, then (when supplied) the per-workspace runtime posture. It
 // always runs to completion and the report's OK is false if any check errored.
 func Run(deps Deps) Report {
-	detectedSandbox := sandbox.Detect(deps.GOOS, deps.GOARCH, deps.Prober)
 	checks := []Check{
 		containerRuntimeCheck(deps.GOOS, deps.Prober),
 		rootlessCheck(deps.GOOS, deps.Prober),
-		microsandboxCheck(detectedSandbox),
-		virtualizationCheck(deps.GOOS, detectedSandbox),
+		nonoCheck(deps.Prober),
 	}
 	for _, service := range deps.Services {
 		checks = append(checks, serviceCheck(service))
@@ -254,43 +246,22 @@ func serviceCheck(service Service) Check {
 	}
 }
 
-// workspaceChecks renders the per-workspace runtime posture as Checks (the old
-// `ai workspace doctor` content). A missing runtime or a rootless/virtualization
-// shortfall is folded into an error Check rather than a non-zero exit, so the
-// consolidated doctor still runs to completion and exits 0 with a full report.
+// workspaceChecks renders the per-workspace runtime posture as Checks. Unlike
+// the Microsandbox microVM runtime this replaced, there is no container-
+// runtime/rootless/virtualization posture to check — nono sandboxes a host
+// process directly, with no capability gate beyond the binary being installed
+// (already covered by the top-level "nono" check in Run). This just folds in
+// whatever live per-workspace probes the CLI supplied.
 func workspaceChecks(workspace WorkspaceRuntime) []Check {
-	if workspace.RuntimeErr != nil {
-		// Missing container runtime or Microsandbox.
-		return []Check{{
+	nonoCheck := Check{Name: "workspace runtime", Status: StatusOK, Detail: "nono installed"}
+	if !workspace.NonoInstalled {
+		nonoCheck = Check{
 			Name: "workspace runtime", Status: StatusError,
-			Detail:     workspace.RuntimeErr.Error(),
-			Suggestion: "install the missing runtime, then `ai setup`",
-		}}
-	}
-	rootless := Check{Name: "workspace rootless", Status: StatusOK, Detail: "rootless, unprivileged"}
-	if !workspace.Rootless {
-		rootless = Check{
-			Name: "workspace rootless", Status: StatusError,
-			Detail:     "container runtime runs as root",
-			Suggestion: "run the container runtime rootless (the platform never runs privileged)",
+			Detail:     "nono is not installed",
+			Suggestion: "run `ai setup` to install nono",
 		}
 	}
-	virt := Check{
-		Name: "workspace virtualization", Status: StatusOK,
-		Detail: "microvm (" + workspace.Virtualization + ")",
-	}
-	if !workspace.Available || workspace.VerifyErr != nil {
-		detail := "microVM virtualization unavailable"
-		if workspace.VerifyErr != nil {
-			detail = workspace.VerifyErr.Error()
-		}
-		virt = Check{
-			Name: "workspace virtualization", Status: StatusError,
-			Detail:     detail,
-			Suggestion: "enable hardware virtualization for the microVM runtime (Apple Silicon HVF / Linux KVM)",
-		}
-	}
-	checks := []Check{rootless, virt}
+	checks := []Check{nonoCheck}
 	checks = append(checks, workspace.LiveChecks...)
 	return checks
 }
@@ -397,41 +368,18 @@ func rootlessCheck(goos string, prober runtime.Prober) Check {
 	}
 }
 
-func microsandboxCheck(detected sandbox.Info) Check {
-	if detected.MsbInstalled {
-		return Check{Name: "microsandbox runtime", Status: StatusOK, Detail: "msb installed"}
+// nonoCheck reports whether the nono CLI (the workspace sandboxing runtime) is
+// installed. Unlike the Microsandbox microVM runtime this replaced, there is no
+// separate virtualization-capability check — nono's Landlock (Linux) / Seatbelt
+// (macOS) enforcement works on any host the binary runs on.
+func nonoCheck(prober nono.Prober) Check {
+	if nono.Detect(prober).Installed {
+		return Check{Name: "nono runtime", Status: StatusOK, Detail: "nono installed"}
 	}
 	return Check{
-		Name: "microsandbox runtime", Status: StatusError,
-		Detail:     "msb not found",
-		Suggestion: "install Microsandbox: curl -sSL https://get.microsandbox.dev | sh",
-		DocsURL:    "https://docs.microsandbox.dev  (installer: https://get.microsandbox.dev)",
-	}
-}
-
-func virtualizationCheck(goos string, detected sandbox.Info) Check {
-	if detected.Available {
-		return Check{Name: "host virtualization", Status: StatusOK, Detail: detected.Virtualization}
-	}
-	detail := "no usable virtualization"
-	if detected.Virtualization != "" {
-		detail = detected.Virtualization + " unavailable"
-	}
-	return Check{
-		Name: "host virtualization", Status: StatusError, Detail: detail,
-		Suggestion: virtualizationSuggestion(goos),
-	}
-}
-
-// virtualizationSuggestion gives the OS-specific remedy. Supported hosts are
-// macOS (Apple Silicon / HVF) and Linux (KVM) (arch §6.2).
-func virtualizationSuggestion(goos string) string {
-	switch goos {
-	case "linux":
-		return "enable hardware virtualization (KVM) so /dev/kvm is present"
-	case "darwin":
-		return "Apple Silicon is required for the microVM runtime (Intel Macs are unsupported)"
-	default:
-		return "unsupported OS — this platform requires macOS (Apple Silicon) or Linux (KVM)"
+		Name: "nono runtime", Status: StatusError,
+		Detail:     "nono not found",
+		Suggestion: "run `ai setup` to install nono, or see https://nono.sh/docs/cli/getting_started/installation",
+		DocsURL:    "https://nono.sh/docs",
 	}
 }

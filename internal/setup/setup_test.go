@@ -14,6 +14,7 @@ import (
 	"github.com/jt-helsinki/stack-genie/internal/conffile"
 	"github.com/jt-helsinki/stack-genie/internal/envfile"
 	"github.com/jt-helsinki/stack-genie/internal/litellm"
+	"github.com/jt-helsinki/stack-genie/internal/nono"
 	"github.com/jt-helsinki/stack-genie/internal/output"
 	"github.com/jt-helsinki/stack-genie/internal/paths"
 	"github.com/jt-helsinki/stack-genie/internal/runtime"
@@ -130,7 +131,7 @@ func healthyDeps() (Deps, *fakeServices) {
 	return Deps{
 		GOOS: "darwin", GOARCH: "arm64",
 		Prober: fakeProber{
-			bins:      map[string]bool{"docker": true, "msb": true},
+			bins:      map[string]bool{"docker": true, "nono": true},
 			dockerOut: "[name=seccomp name=rootless]",
 		},
 		Now:      func() string { return "2026-06-18T00:00:00Z" },
@@ -221,7 +222,7 @@ func TestRunClientRoleSkipsCatalogFetch(test *testing.T) {
 	deps := Deps{
 		GOOS: "darwin", GOARCH: "arm64",
 		Prober: fakeProber{
-			bins:      map[string]bool{"msb": true},
+			bins:      map[string]bool{"nono": true},
 			dockerOut: "[name=seccomp name=rootless]",
 		},
 		Now:      func() string { return "2026-06-18T00:00:00Z" },
@@ -318,8 +319,7 @@ func TestRunPreflightListsAllMissingPrerequisites(test *testing.T) {
 	// The message lists every missing prerequisite with its install command.
 	for _, fragment := range []string{
 		"container runtime", "https://get.docker.com",
-		"microsandbox runtime", "get.microsandbox.dev",
-		"host virtualization",
+		"nono runtime", "nono.sh",
 	} {
 		if !strings.Contains(platformErr.Message, fragment) {
 			test.Errorf("error message missing %q:\n%s", fragment, platformErr.Message)
@@ -327,7 +327,7 @@ func TestRunPreflightListsAllMissingPrerequisites(test *testing.T) {
 	}
 	// The structured list rides in error.details for --json consumers.
 	details, ok := platformErr.Details.([]Prerequisite)
-	if !ok || len(details) < 3 {
+	if !ok || len(details) < 2 {
 		test.Fatalf("details should be a []Prerequisite with the missing items, got %#v", platformErr.Details)
 	}
 }
@@ -364,12 +364,10 @@ func TestPrerequisiteInstallCommandPerOS(test *testing.T) {
 		goos string
 		want string
 	}{
-		{"microsandbox runtime", "darwin", "curl -sSL https://get.microsandbox.dev | sh"},
-		{"microsandbox runtime", "linux", "curl -sSL https://get.microsandbox.dev | sh"},
+		{"nono runtime", "darwin", "curl -fsSL https://nono.sh/install.sh | sh"},
+		{"nono runtime", "linux", "curl -fsSL https://nono.sh/install.sh | sh"},
 		{"container runtime", "linux", "curl -fsSL https://get.docker.com | sh"},
 		{"container runtime", "darwin", ""}, // Docker Desktop is a GUI app — instruct only
-		{"host virtualization", "linux", ""},
-		{"host virtualization", "darwin", ""},
 		{"rootless service tier", "linux", ""},
 	}
 	for _, testCase := range cases {
@@ -380,26 +378,23 @@ func TestPrerequisiteInstallCommandPerOS(test *testing.T) {
 }
 
 func TestMissingPrerequisitesPopulatesInstallCommand(test *testing.T) {
-	// Linux, nothing installed: msb + docker are missing AND auto-installable.
+	// Linux, nothing installed: nono + docker are missing AND auto-installable.
 	deps := Deps{GOOS: "linux", GOARCH: "amd64", Prober: fakeProber{}}
 	byName := map[string]Prerequisite{}
 	for _, prereq := range MissingPrerequisites(deps, runtime.RoleStandalone) {
 		byName[prereq.Name] = prereq
 	}
-	if cmd := byName["microsandbox runtime"].InstallCommand; cmd != "curl -sSL https://get.microsandbox.dev | sh" {
-		test.Errorf("microsandbox InstallCommand = %q", cmd)
+	if cmd := byName["nono runtime"].InstallCommand; cmd != "curl -fsSL https://nono.sh/install.sh | sh" {
+		test.Errorf("nono InstallCommand = %q", cmd)
 	}
 	if cmd := byName["container runtime"].InstallCommand; cmd != "curl -fsSL https://get.docker.com | sh" {
 		test.Errorf("container runtime InstallCommand = %q", cmd)
 	}
-	if cmd := byName["host virtualization"].InstallCommand; cmd != "" {
-		test.Errorf("host virtualization should be instruct-only, got %q", cmd)
-	}
 }
 
 func TestMissingPrerequisitesNoneWhenSatisfied(test *testing.T) {
-	// A healthy host (docker + msb + virtualization) has no missing prerequisites,
-	// so the interactive preflight would attempt no install.
+	// A healthy host (docker + nono) has no missing prerequisites, so the
+	// interactive preflight would attempt no install.
 	deps, _ := healthyDeps()
 	if missing := MissingPrerequisites(deps, runtime.RoleStandalone); len(missing) != 0 {
 		test.Fatalf("expected no missing prerequisites on a healthy host, got %+v", missing)
@@ -409,11 +404,39 @@ func TestMissingPrerequisitesNoneWhenSatisfied(test *testing.T) {
 func TestRunPreflightMissingDep(test *testing.T) {
 	test.Setenv("HOME", test.TempDir())
 	deps, _ := healthyDeps()
-	deps.Prober = fakeProber{bins: map[string]bool{"msb": true}} // no docker
+	deps.Prober = fakeProber{bins: map[string]bool{"nono": true}} // no docker
 
 	_, err := Run(Options{}, deps)
 	if got := exitCodeOf(test, err); got != output.ExitMissingDep {
 		test.Fatalf("exit = %d, want %d", got, output.ExitMissingDep)
+	}
+}
+
+// TestRunAutoInstallsNonoBeforePrereqGate is a regression test: Run() must
+// call EnsureNonoInstalled BEFORE the blocking prerequisite check, so a host
+// with no nono pre-installed gets it installed automatically instead of
+// failing `ai setup` forever (nono has no auto-install path otherwise, unlike
+// the container runtime, which `ai setup` deliberately never installs).
+func TestRunAutoInstallsNonoBeforePrereqGate(test *testing.T) {
+	test.Setenv("HOME", test.TempDir())
+	origDetect, origInstall := nonoDetectFn, installNonoFn
+	test.Cleanup(func() { nonoDetectFn, installNonoFn = origDetect, origInstall })
+
+	installed := false
+	calls := 0
+	nonoDetectFn = func() nono.Info {
+		calls++
+		return nono.Info{Installed: calls > 1} // absent on the first check, present after
+	}
+	installNonoFn = func() error { installed = true; return nil }
+
+	deps, _ := healthyDeps() // doctor's own prober check already reports nono present
+	_, err := Run(Options{}, deps)
+	if err != nil {
+		test.Fatalf("Run() = %v, want success", err)
+	}
+	if !installed {
+		test.Error("Run() must call EnsureNonoInstalled (and thus installNonoFn) before the prerequisite gate")
 	}
 }
 
@@ -425,7 +448,7 @@ func TestRunPreflightRootlessUnavailable(test *testing.T) {
 	// is Linux-specific.
 	deps.GOOS, deps.GOARCH = "linux", "amd64"
 	deps.Prober = fakeProber{
-		bins:      map[string]bool{"docker": true, "msb": true},
+		bins:      map[string]bool{"docker": true, "nono": true},
 		dockerOut: "[name=seccomp]", // not rootless
 	}
 	_, err := Run(Options{}, deps)
@@ -454,7 +477,7 @@ func TestRunIdempotent(test *testing.T) {
 	}
 }
 
-func TestServicesStatusIncludesMicrosandbox(test *testing.T) {
+func TestServicesStatusIncludesNono(test *testing.T) {
 	test.Setenv("HOME", test.TempDir())
 	deps, _ := healthyDeps()
 	if _, err := Run(Options{}, deps); err != nil {
@@ -465,17 +488,17 @@ func TestServicesStatusIncludesMicrosandbox(test *testing.T) {
 	if err != nil {
 		test.Fatal(err)
 	}
-	var foundMicrosandbox bool
+	var foundNono bool
 	for _, status := range statuses {
-		if status.Name == "microsandbox" {
-			foundMicrosandbox = true
-			if status.Mode != "runtime" || !status.Healthy || status.Detail != "hvf" {
-				test.Fatalf("microsandbox status: %+v", status)
+		if status.Name == "nono" {
+			foundNono = true
+			if status.Mode != "runtime" || !status.Healthy {
+				test.Fatalf("nono status: %+v", status)
 			}
 		}
 	}
-	if !foundMicrosandbox {
-		test.Fatal("microsandbox runtime missing from services status")
+	if !foundNono {
+		test.Fatal("nono runtime missing from services status")
 	}
 }
 
@@ -736,27 +759,27 @@ func TestRunUpgradeRepinsVersions(test *testing.T) {
 	}
 }
 
-// TestPreflightReportsMsbWithInstructionsNotInstalling verifies `ai setup` does
-// NOT install msb — when it's missing it is reported as a prerequisite with its
-// install instructions + web address, not auto-installed.
-func TestPreflightReportsMsbWithInstructionsNotInstalling(test *testing.T) {
+// TestPreflightReportsMissingNonoWithInstructions verifies `ai setup`'s blocking
+// preflight check reports a missing nono as a prerequisite with its install
+// instructions + web address (the actual best-effort auto-install happens later,
+// post-reconcile, in the CLI layer — see internal/setup/nono_host.go).
+func TestPreflightReportsMissingNonoWithInstructions(test *testing.T) {
 	test.Setenv("HOME", test.TempDir())
 	deps, _ := healthyDeps()
 	deps.GOOS, deps.GOARCH = "linux", "amd64"
-	// docker present + rootless, virtualization ok, but msb absent.
+	// docker present + rootless, but nono absent.
 	deps.Prober = fakeProber{
 		bins:      map[string]bool{"docker": true},
-		files:     map[string]bool{"/dev/kvm": true},
 		dockerOut: "[name=rootless]",
 	}
 
 	_, err := Run(Options{}, deps)
 	var platformErr *output.Error
 	if !errors.As(err, &platformErr) {
-		test.Fatalf("want *output.Error for missing msb, got %T", err)
+		test.Fatalf("want *output.Error for missing nono, got %T", err)
 	}
 	for _, fragment := range []string{
-		"microsandbox runtime", "get.microsandbox.dev", "docs.microsandbox.dev", "how to install", "web:",
+		"nono runtime", "nono.sh", "how to install", "web:",
 	} {
 		if !strings.Contains(platformErr.Message, fragment) {
 			test.Errorf("message missing %q (should instruct, not install):\n%s", fragment, platformErr.Message)
@@ -814,11 +837,11 @@ func TestLiteLLMRunArgsInternalOnly(test *testing.T) {
 }
 
 // TestBlockingPrereqsForRole pins the role → blocking-prerequisite mapping:
-// standalone requires everything, server drops the microVM runtime + virtualization,
+// standalone requires everything, server drops the nono runtime,
 // client drops the container runtime + rootless service tier.
 func TestBlockingPrereqsForRole(test *testing.T) {
 	standalone := blockingPrereqsForRole(runtime.RoleStandalone)
-	for _, name := range []string{"container runtime", "rootless service tier", "microsandbox runtime", "host virtualization"} {
+	for _, name := range []string{"container runtime", "rootless service tier", "nono runtime"} {
 		if !standalone[name] {
 			test.Errorf("standalone should block on %q", name)
 		}
@@ -827,26 +850,26 @@ func TestBlockingPrereqsForRole(test *testing.T) {
 	if !server["container runtime"] || !server["rootless service tier"] {
 		test.Errorf("server should block on the service tier: %v", server)
 	}
-	if server["microsandbox runtime"] || server["host virtualization"] {
-		test.Errorf("server must NOT block on the microVM runtime/virtualization: %v", server)
+	if server["nono runtime"] {
+		test.Errorf("server must NOT block on the nono runtime: %v", server)
 	}
 	client := blockingPrereqsForRole(runtime.RoleClient)
-	if !client["microsandbox runtime"] || !client["host virtualization"] {
-		test.Errorf("client should block on the microVM runtime: %v", client)
+	if !client["nono runtime"] {
+		test.Errorf("client should block on the nono runtime: %v", client)
 	}
 	if client["container runtime"] || client["rootless service tier"] {
 		test.Errorf("client must NOT block on the service tier: %v", client)
 	}
 }
 
-// TestClientModePassesPreflightWithoutDocker: a client only needs the microVM
-// runtime + virtualization, so a host with NO container runtime still passes
-// preflight, and the service-tier reconcile is skipped entirely.
+// TestClientModePassesPreflightWithoutDocker: a client only needs nono, so a
+// host with NO container runtime still passes preflight, and the service-tier
+// reconcile is skipped entirely.
 func TestClientModePassesPreflightWithoutDocker(test *testing.T) {
 	test.Setenv("HOME", test.TempDir())
 	deps, services := healthyDeps()
-	// msb + virtualization present, but no docker/podman at all.
-	deps.Prober = fakeProber{bins: map[string]bool{"msb": true}}
+	// nono present, but no docker/podman at all.
+	deps.Prober = fakeProber{bins: map[string]bool{"nono": true}}
 
 	report, err := Run(Options{Mode: runtime.RoleClient, ServerAddr: "gateway.example:14000"}, deps)
 	if err != nil {

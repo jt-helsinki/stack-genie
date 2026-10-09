@@ -5,13 +5,10 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
-	"strconv"
 	"strings"
 
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
-	"github.com/jt-helsinki/stack-genie/internal/apps"
-	"github.com/jt-helsinki/stack-genie/internal/config"
 	"github.com/jt-helsinki/stack-genie/internal/create"
 	"github.com/jt-helsinki/stack-genie/internal/project"
 	"github.com/jt-helsinki/stack-genie/internal/tui/scope"
@@ -33,78 +30,56 @@ type CreateCancelledMsg struct{}
 const (
 	stepLocation = iota
 	stepName
-	stepOS
 	stepShell
-	stepAgents // combined: agent CLIs + in-VM AI apps on one screen
+	stepAgents // the agent-CLI multi-select
 	stepDefault
-	stepStacks
-	stepCPUs
-	stepMemory
-	stepDisk
-	stepPorts
-	stepIsolatedDirs
-	stepIdle
-	stepTools // unified AI-tools multi-select (caveman/graphify/code-review-graph/codebase-memory)
-	stepModel
-	stepAppPorts // dynamic: one host-port input per selected in-VM app
-	stepAuth     // dynamic: one auth-mode select per OAuth-capable selected agent
+	stepTools // unified AI-tools multi-select (caveman/graphify/code-review-graph/codebase-memory/…)
+	stepModel // dynamic: shown only when graphify is among the selected tools
+	stepAuth  // dynamic: one auth-mode select per OAuth-capable selected agent
 	stepCount
 )
+
+// graphifyModelNone is the Graphify-model picker's "leave Graphify unconfigured" option
+// (mirrors the CLI wizard's sentinel — internal/cli can't be imported here since cli
+// imports this package).
+const graphifyModelNone = "(none — leave Graphify unconfigured)"
 
 // authModeDesc explains the per-agent auth-mode choice (mirrors the CLI wizard note).
 const authModeDesc = "How this agent authenticates. api-key routes through the gateway (keeps the tool firewall + secret masking); oauth uses the agent's own subscription login DIRECTLY, bypassing the gateway (guardrails do NOT apply)."
 
 // stepTitles labels each step for the header.
 var stepTitles = map[int]string{
-	stepLocation:     "Location",
-	stepName:         "Name",
-	stepOS:           "Operating system",
-	stepShell:        "Shell",
-	stepAgents:       "Agent CLIs & AI apps",
-	stepDefault:      "Default agent",
-	stepStacks:       "Software stacks",
-	stepCPUs:         "vCPUs",
-	stepMemory:       "Memory",
-	stepDisk:         "Disk",
-	stepPorts:        "Ports",
-	stepIsolatedDirs: "Isolated dirs",
-	stepIdle:         "Idle timeout",
-	stepTools:        "AI tools",
-	stepModel:        "Graphify model",
-	stepAppPorts:     "App port",
+	stepLocation: "Location",
+	stepName:     "Name",
+	stepShell:    "Shell",
+	stepAgents:   "Agent CLIs",
+	stepDefault:  "Default agent",
+	stepTools:    "AI tools",
+	stepModel:    "Graphify model",
 }
 
 // Create is the in-TUI new-workspace wizard: a multi-step form built from the same
 // bubbles widgets as the other views (textinput, the reusable listWindow), replacing
-// the old shell-out to `ai create`. It walks the steps below, assembles a project.Spec,
-// and emits CreateConfirmedMsg — the parent executes it in-process (no subprocess).
+// the old shell-out to `ai create`. It walks the steps below, assembles a
+// project.Spec, and emits CreateConfirmedMsg — the parent executes it in-process (no
+// subprocess, no image build — there is nothing to build in the nono model).
 type Create struct {
-	step int
-
+	step     int
 	location *locationStep
 	name     *textStep
-	// lastAutoName is the name value this wizard last auto-filled from the location
+	// lastAutoName is the name value the wizard last auto-filled from the location
 	// step (see followLocationDefaultName) — distinguishes "still following the
 	// location default" from "the user typed their own name", so a later location
 	// change doesn't clobber a deliberate edit.
 	lastAutoName string
-	osList       *selectList
 	shell        *selectList
+	// agents is the agent-CLI multi-select.
+	agents *multiSelectList
 	// tools is the unified AI-tools multi-select (caveman/graphify/code-review-graph/
-	// codebase-memory-mcp), mirroring the agent-CLI list instead of a screen each.
-	tools *multiSelectList
-	// agentApps is the combined agent-CLIs + in-VM-apps multi-select (agents listed
-	// first, then apps); split into AgentCLIs vs Apps via selectedAgentsAndApps.
-	agentApps    *multiSelectList
-	defaultTool  *selectList
-	stacks       *multiSelectList
-	cpus         *textStep
-	memory       *textStep
-	disk         *textStep
-	ports        *textStep
-	isolatedDirs *textStep
-	idle         *textStep
-	model        *selectList // the Graphify model picker, populated from omlx's live model list
+	// codebase-memory-mcp/…), mirroring the agent-CLI list instead of a screen each.
+	tools       *multiSelectList
+	defaultTool *selectList
+	model       *selectList // Graphify model picker, populated from omlx's live model list
 
 	// Per-agent auth-mode phase (stepAuth): one selectList per OAuth-capable selected
 	// agent, built when leaving the model step. authIndex walks them one at a time.
@@ -112,65 +87,37 @@ type Create struct {
 	authLists  []*selectList
 	authIndex  int
 
-	// Per-app host-port phase (stepAppPorts): one text input per SELECTED in-VM app,
-	// built when leaving the model step. appPortIndex walks them one at a time.
-	// reservedAppPorts is the machine-wide set of ports already taken by other
-	// workspaces' apps (for seeding a free suggested default).
-	appPortKeys      []string
-	appPortInputs    []*textStep
-	appPortIndex     int
-	reservedAppPorts map[int]bool
+	stepW, stepH int // per-step size, re-applied when a dynamic (auth-mode) step is built mid-wizard
 
-	width  int
-	height int
-	// stepW/stepH are the per-step body size (recorded so auth-mode lists built mid-wizard
-	// can be sized to match the pane).
-	stepW int
-	stepH int
+	width, height int
 }
 
-// NewCreate builds the wizard. startDir seeds the location field; hostGB / usableGB
-// annotate the memory hint.
-func NewCreate(startDir string, hostGB, usableGB int, omlxModels func() []string) *Create {
-	defaultCPUs := config.Default().Workspace.CPULimit
-	cpuHint := fmt.Sprintf("Blank uses the default (%d); host has %d logical CPUs", defaultCPUs, sysinfoCPUs())
-	memHint := fmt.Sprintf("A plain number in GB; blank uses the default (%s); usable max %d GB (host %d GB)",
-		config.Default().Workspace.MemoryLimit, usableGB, hostGB)
-
-	// The name defaults to the workspace's own (starting) directory — same default the
-	// user sees pre-filled in the location field just above it.
+// NewCreate builds the wizard seeded at startDir, with omlxModels as the injected
+// live lister feeding the Graphify-model picker.
+func NewCreate(startDir string, omlxModels func() []string) *Create {
+	// The name defaults to the workspace's own (starting) directory — the same
+	// default the user sees pre-filled in the location field just above it.
 	defaultName := create.DefaultDirName(createStartDir(startDir))
 	wizard := &Create{
-		location:     newLocationStep(startDir),
-		name:         newTextStep("name", "The workspace name (lowercase letters, digits, hyphens).", "my-workspace", defaultName, validateNameField),
+		location: newLocationStep(startDir),
+		name: newTextStep("name", "The workspace name (lowercase letters, digits, hyphens).",
+			"my-workspace", defaultName, validateNameField),
 		lastAutoName: defaultName,
-		osList:       newSelectListWithLabels("Base operating system.", create.SupportedOSes(), osDisplayLabels(), "debian-trixie"),
 		shell:        newSelectList("Default interactive shell for workspace sessions.", create.SupportedShells(), "bash"),
-		tools:        newMultiSelectListWithLabels("AI tools installed at workspace start — space to toggle. None selected by default.", create.SupportedAITools(), aiToolLabels(), create.DefaultAITools()),
-		agentApps:    newMultiSelectList("Agent CLIs (opencode is the default) and opt-in in-VM AI apps — space to toggle. Apps are the last rows.", combinedAgentAppOptions(), []string{"opencode"}),
-		defaultTool:  newSelectList("The agent CLI launched by default.", []string{"opencode"}, "opencode"),
-		stacks:       newMultiSelectList("Extra software stacks (Python, Node, uv + Graphify are installed by default).", create.SupportedStacks(), nil),
-		cpus:         newTextStep("vCPUs", cpuHint, "", "", validateCPUsField),
-		memory:       newTextStep("memory (GB)", memHint, "", "", validateMemoryField),
-		disk:         newTextStep("disk (GB)", fmt.Sprintf("Writable rootfs / in-VM container image size; a plain number in GB; blank uses the default (%s). Change later with `ai resize`.", config.Default().Workspace.DiskLimit), "", "", validateDiskField),
-		ports:        newTextStep("ports", "Ports to open: PORT or HOST:GUEST, comma-separated (e.g. 8080,9000:3000).", "", "", validatePortsField),
-		isolatedDirs: newTextStep("isolated dirs", "Guest-relative subdirs excluded from the host mount, comma-separated (e.g. node_modules,target) — each gets a private sandbox-only volume.", "", "", validateIsolatedDirsField),
-		idle:         newTextStep("idle timeout", "How long msb may leave the workspace idle before stopping it (e.g. 30m, 24h).", "", "", validateIdleField),
+		agents: newMultiSelectList("Agent CLIs installed on the host, wired to the gateway — space to toggle. Pick at least one.",
+			create.SupportedAgentCLIs(), []string{"opencode"}),
+		tools: newMultiSelectListWithLabels("AI tools installed on the host — space to toggle. None selected by default.",
+			create.SupportedAITools(), aiToolLabels(), create.DefaultAITools()),
+		defaultTool: newSelectList("The agent CLI launched by default.", []string{"opencode"}, "opencode"),
+		model: newSelectList("A model omlx is ALREADY serving (manage the list itself from its own admin "+
+			"panel — `ai services console omlx`); routed through the gateway as omlx/<name>. No download happens here.",
+			graphifyModelOptions(omlxModels), graphifyModelNone),
 	}
-	wizard.model = newSelectList(
-		"A model omlx is ALREADY serving (manage the list itself from its own admin panel — `ai services console omlx`); no download happens here.",
-		graphifyModelOptions(omlxModels), graphifyModelNone,
-	)
-	// Ports already taken by other workspaces' apps, so a suggested app port defaults to a
-	// free one (best-effort; a read error just yields an empty reserved set).
-	wizard.reservedAppPorts, _ = apps.ReservedPortsAcrossWorkspaces()
 	return wizard
 }
 
-// followLocationDefaultName re-derives the name field from the just-confirmed
-// location when the user left name at whatever this wizard last auto-filled — so
-// changing location keeps the name in sync — without clobbering a name the user
-// deliberately typed themselves.
+// followLocationDefaultName re-derives the auto-filled name from a just-confirmed
+// location change, UNLESS the user deliberately typed their own name.
 func (view *Create) followLocationDefaultName() {
 	if view.name.Value() != view.lastAutoName {
 		return // the user edited it — leave their choice alone
@@ -182,15 +129,17 @@ func (view *Create) followLocationDefaultName() {
 
 func (view *Create) Title() string { return "New Workspace" }
 
+func (view *Create) Init() tea.Cmd { return textinput.Blink }
+
 // Hints are step-aware, mirroring the widget in play.
 func (view *Create) Hints() string {
 	nav := " · shift+tab back · esc cancel"
 	switch view.step {
 	case stepLocation:
-		return "type to filter · ↓/↑ pick folder · tab open folder · enter next" + nav
-	case stepAgents, stepStacks, stepTools:
+		return "type to filter · ↓/↑ pick a folder · tab open folder · enter next" + nav
+	case stepAgents, stepTools:
 		return "↑/↓ move · space toggle · enter next" + nav
-	case stepOS, stepShell, stepDefault, stepAuth, stepModel:
+	case stepShell, stepDefault, stepAuth, stepModel:
 		return "↑/↓ move · enter select/next" + nav
 	default:
 		return "type · enter next" + nav
@@ -209,31 +158,15 @@ func (view *Create) SetSize(width, height int) {
 	for _, list := range view.authLists {
 		list.SetSize(stepWidth, stepHeight)
 	}
-	for _, input := range view.appPortInputs {
-		input.SetSize(stepWidth, stepHeight)
-	}
 	view.location.SetSize(stepWidth, stepHeight)
 	view.name.SetSize(stepWidth, stepHeight)
-	view.osList.SetSize(stepWidth, stepHeight)
 	view.shell.SetSize(stepWidth, stepHeight)
+	view.agents.SetSize(stepWidth, stepHeight)
 	view.tools.SetSize(stepWidth, stepHeight)
-	view.agentApps.SetSize(stepWidth, stepHeight)
 	view.defaultTool.SetSize(stepWidth, stepHeight)
-	view.stacks.SetSize(stepWidth, stepHeight)
-	view.cpus.SetSize(stepWidth, stepHeight)
-	view.memory.SetSize(stepWidth, stepHeight)
-	view.disk.SetSize(stepWidth, stepHeight)
-	view.ports.SetSize(stepWidth, stepHeight)
-	view.isolatedDirs.SetSize(stepWidth, stepHeight)
-	view.idle.SetSize(stepWidth, stepHeight)
 	view.model.SetSize(stepWidth, stepHeight)
 }
 
-func (view *Create) Init() tea.Cmd { return textinput.Blink }
-
-// Update advances the wizard. esc cancels (from any step); shift+tab goes to the
-// previous step; enter/tab validates + advances (or finishes on the last step). Each
-// step delegates its own keys to its widget.
 func (view *Create) Update(msg tea.Msg) tea.Cmd {
 	key, isKey := msg.(tea.KeyMsg)
 	if isKey {
@@ -248,28 +181,24 @@ func (view *Create) Update(msg tea.Msg) tea.Cmd {
 	switch view.step {
 	case stepLocation:
 		advance, cmd := view.location.Update(msg)
+		view.followLocationDefaultName()
 		if advance {
-			view.followLocationDefaultName()
 			return view.next()
 		}
 		return cmd
-	case stepName, stepCPUs, stepMemory, stepDisk, stepPorts, stepIsolatedDirs, stepIdle:
-		return view.updateTextStep(view.textStepFor(view.step), msg)
-	case stepOS, stepShell, stepDefault:
+	case stepName:
+		return view.updateTextStep(view.name, msg)
+	case stepShell, stepDefault:
 		return view.updateSelectStep(view.selectStepFor(view.step), msg)
-	case stepAgents, stepStacks, stepTools:
+	case stepAgents, stepTools:
 		return view.updateMultiStep(view.multiStepFor(view.step), msg)
 	case stepModel:
-		// Graphify model is relevant only when graphify is selected; skip otherwise.
+		// The Graphify model step is relevant only when graphify is selected; skip
+		// straight past it otherwise.
 		if !view.graphifySelected() {
 			return view.next()
 		}
 		return view.updateSelectStep(view.model, msg)
-	case stepAppPorts:
-		if len(view.appPortInputs) == 0 {
-			return view.next()
-		}
-		return view.updateTextStep(view.appPortInputs[view.appPortIndex], msg)
 	case stepAuth:
 		if len(view.authLists) == 0 {
 			return view.next()
@@ -330,65 +259,32 @@ func (view *Create) updateMultiStep(step *multiSelectList, msg tea.Msg) tea.Cmd 
 	return nil
 }
 
-func (view *Create) textStepFor(step int) *textStep {
-	switch step {
-	case stepName:
-		return view.name
-	case stepCPUs:
-		return view.cpus
-	case stepMemory:
-		return view.memory
-	case stepDisk:
-		return view.disk
-	case stepPorts:
-		return view.ports
-	case stepIsolatedDirs:
-		return view.isolatedDirs
-	default:
-		return view.idle
-	}
-}
-
 func (view *Create) selectStepFor(step int) *selectList {
 	switch step {
-	case stepOS:
-		return view.osList
 	case stepShell:
 		return view.shell
-	default:
+	case stepDefault:
 		return view.defaultTool
 	}
+	return nil
 }
 
-// graphifySelected reports whether graphify is among the chosen AI tools (drives whether
-// the Graphify-model step is shown).
+func (view *Create) multiStepFor(step int) *multiSelectList {
+	switch step {
+	case stepAgents:
+		return view.agents
+	case stepTools:
+		return view.tools
+	}
+	return nil
+}
+
 func (view *Create) graphifySelected() bool {
 	return slices.Contains(view.tools.Values(), create.AIToolGraphify)
 }
 
-// graphifyModelNone is the model-picker's "leave Graphify unconfigured" option —
-// always first, and the default cursor position. It is mapped back to "" (blank)
-// when the wizard assembles the final spec.
-const graphifyModelNone = "(none — leave Graphify unconfigured)"
-
-// graphifyModelOptions builds the model-picker's option list from omlxModels (the
-// injected live lister — nil-safe, and tolerated returning an empty list when omlx
-// isn't installed or is currently serving nothing): graphifyModelNone always
-// first, so a host with no models yet still shows a valid, selectable list rather
-// than an empty one.
-// osDisplayLabels renders create.SupportedOSes() into human-readable "name + version"
-// labels (create.OSDisplayName), same order, for the OS picker's display-only labels.
-func osDisplayLabels() []string {
-	keys := create.SupportedOSes()
-	labels := make([]string, len(keys))
-	for index, key := range keys {
-		labels[index] = create.OSDisplayName(key)
-	}
-	return labels
-}
-
 // aiToolLabels renders each AI tool as "<tool> — <description>" (create.AIToolDescription)
-// so the picker doubles as documentation — same convention the CLI wizard and
+// so the picker doubles as documentation — the same convention the CLI wizard and
 // `ai tools list` use.
 func aiToolLabels() []string {
 	keys := create.SupportedAITools()
@@ -407,46 +303,12 @@ func graphifyModelOptions(omlxModels func() []string) []string {
 	return append([]string{graphifyModelNone}, models...)
 }
 
-// combinedAgentAppOptions is the option list for the combined Agent-CLIs-&-apps
-// step: every agent CLI first, then the in-VM apps. Entries are the RAW keys (no
-// decoration) so they match the defaults and split cleanly by set membership.
-func combinedAgentAppOptions() []string {
-	options := append([]string{}, create.SupportedAgentCLIs()...)
-	return append(options, create.SupportedApps()...)
-}
-
-// selectedAgentsAndApps splits the combined step's selection into agent CLIs vs app
-// keys by set membership (order-independent), so downstream (default-agent options,
-// auth steps, the Spec) never confuses an app for an agent.
-func (view *Create) selectedAgentsAndApps() (agentCLIs, appKeys []string) {
-	return create.SplitAgentsAndApps(view.agentApps.Values())
-}
-
-func (view *Create) multiStepFor(step int) *multiSelectList {
-	switch step {
-	case stepAgents:
-		return view.agentApps
-	case stepTools:
-		return view.tools
-	default:
-		return view.stacks
-	}
-}
-
-// next advances to the following step, applying any cross-step wiring. Leaving the model
-// step enters the dynamic auth-mode phase (one select per OAuth-capable selected agent);
-// finishing the last auth step (or the model step with no oauth-capable agents) emits the
-// assembled spec.
+// next advances to the next step (or dynamic phase), skipping steps that don't apply
+// to the current selection.
 func (view *Create) next() tea.Cmd {
 	switch view.step {
 	case stepModel:
 		return view.leaveModelStep()
-	case stepAppPorts:
-		if view.appPortIndex+1 < len(view.appPortKeys) {
-			view.appPortIndex++
-			return nil
-		}
-		return view.enterAuthOrFinish()
 	case stepAuth:
 		if view.authIndex+1 < len(view.authAgents) {
 			view.authIndex++
@@ -455,36 +317,22 @@ func (view *Create) next() tea.Cmd {
 		return view.finish()
 	}
 	view.step++
-	// Entering the default-agent step: its options are exactly the chosen agent CLIs
-	// (apps from the combined screen are excluded — a default agent is never an app).
+	// Entering the default-agent step: its options are exactly the chosen agent CLIs.
 	if view.step == stepDefault {
-		agentCLIs, _ := view.selectedAgentsAndApps()
-		view.defaultTool.SetOptions(agentCLIs)
+		view.defaultTool.SetOptions(view.agents.Values())
 	}
-	// The Graphify-model step is shown only when graphify is selected AND a library is
-	// cached; otherwise skip straight into the app-port / auth phases.
+	// The Graphify-model step is shown only when graphify is selected; otherwise skip
+	// straight into the auth phase.
 	if view.step == stepModel && !view.graphifySelected() {
 		return view.leaveModelStep()
 	}
 	return nil
 }
 
-// leaveModelStep is the transition out of the (possibly-skipped) Graphify-model step: it
-// builds the per-app host-port phase and enters it, or continues to the auth phase when no
-// in-VM app is selected.
+// leaveModelStep is the transition out of the (possibly-skipped) Graphify-model step:
+// it builds the per-agent auth phase and enters it, or finishes when no OAuth-capable
+// agent is selected.
 func (view *Create) leaveModelStep() tea.Cmd {
-	view.buildAppPortSteps()
-	if len(view.appPortKeys) > 0 {
-		view.step = stepAppPorts
-		view.appPortIndex = 0
-		return nil
-	}
-	return view.enterAuthOrFinish()
-}
-
-// enterAuthOrFinish builds the per-agent auth phase and either enters it or finishes when
-// no OAuth-capable agent is selected.
-func (view *Create) enterAuthOrFinish() tea.Cmd {
 	view.buildAuthSteps()
 	if len(view.authAgents) == 0 {
 		return view.finish()
@@ -494,19 +342,8 @@ func (view *Create) enterAuthOrFinish() tea.Cmd {
 	return nil
 }
 
-// backToModelOrTools returns from a dynamic phase to the model step when it is shown, else
-// the tools step.
-func (view *Create) backToModelOrTools() {
-	if view.graphifySelected() {
-		view.step = stepModel
-		return
-	}
-	view.step = stepTools
-}
-
-// prev goes back a step (no-op at the first step). Within the dynamic phases it walks back
-// through the per-agent auth selects, then the per-app port inputs, then to the model/tools
-// step.
+// prev goes back a step (no-op at the first step). Within the auth phase it walks
+// back through the per-agent auth selects, then to the model/tools step.
 func (view *Create) prev() {
 	switch {
 	case view.step == stepAuth:
@@ -514,74 +351,23 @@ func (view *Create) prev() {
 			view.authIndex--
 			return
 		}
-		if len(view.appPortKeys) > 0 {
-			view.step = stepAppPorts
-			view.appPortIndex = len(view.appPortKeys) - 1
+		if view.graphifySelected() {
+			view.step = stepModel
 			return
 		}
-		view.backToModelOrTools()
-	case view.step == stepAppPorts:
-		if view.appPortIndex > 0 {
-			view.appPortIndex--
-			return
-		}
-		view.backToModelOrTools()
+		view.step = stepTools
 	case view.step > stepLocation:
 		view.step--
 	}
 }
 
-// buildAppPortSteps computes the per-item host-port phase from the current selection: one
-// text input per selected in-VM app AND per selected dashboard-capable agent CLI (e.g.
-// hermes), seeded with a suggested free port (the item's familiar port when free, else
-// auto-allocated). Rebuilt each time the model step is left, so toggling apps/agents earlier
-// is reflected. Blank input → auto-assign at create.
-func (view *Create) buildAppPortSteps() {
-	view.appPortKeys = nil
-	view.appPortInputs = nil
-	agentCLIs, appKeys := view.selectedAgentsAndApps()
-	// Local copy of the machine-wide reserved set, grown as each item is seeded so every
-	// item gets a DISTINCT free port (otherwise, when the familiar container ports are
-	// taken, every app would fall back to the same auto-allocated port). Not persisted back
-	// to view.reservedAppPorts — this phase is rebuilt whenever the selection changes.
-	seedReserved := make(map[int]bool, len(view.reservedAppPorts))
-	for port := range view.reservedAppPorts {
-		seedReserved[port] = true
-	}
-	for _, key := range appKeys {
-		label := key
-		if manifest, ok := apps.Lookup(key); ok {
-			label = manifest.Name
-		}
-		port := apps.SuggestedHostPort(key, seedReserved, nil)
-		seedReserved[port] = true
-		view.addAppPortStep(key, label+" host port",
-			"Host port to expose "+label+"'s web UI on (blank = auto-assign).", strconv.Itoa(port))
-	}
-	// Dashboard-capable agent CLIs (hermes) get the SAME prompt when selected.
-	for _, cli := range apps.SelectedDashboardAgents(agentCLIs) {
-		port := apps.SuggestedDashboardPort(cli, seedReserved, nil)
-		seedReserved[port] = true
-		view.addAppPortStep(cli, cli+" dashboard host port",
-			"Host port to expose the "+cli+" web dashboard on (blank = auto-assign).", strconv.Itoa(port))
-	}
-}
-
-// addAppPortStep appends one host-port text input to the app-port phase.
-func (view *Create) addAppPortStep(key, title, description, seed string) {
-	input := newTextStep(title, description, seed, seed, validateAppPortField)
-	input.SetSize(view.stepW, view.stepH)
-	view.appPortKeys = append(view.appPortKeys, key)
-	view.appPortInputs = append(view.appPortInputs, input)
-}
-
 // buildAuthSteps computes the auth-mode phase from the current agent selection: one
-// api-key/oauth select per OAuth-capable selected agent, seeded to api-key. Rebuilt each
-// time the model step is left, so toggling agents earlier is reflected.
+// api-key/oauth select per OAuth-capable selected agent, seeded to api-key. Rebuilt
+// each time the model step is left, so toggling agents earlier is reflected.
 func (view *Create) buildAuthSteps() {
 	view.authAgents = nil
 	view.authLists = nil
-	selected, _ := view.selectedAgentsAndApps()
+	selected := view.agents.Values()
 	for _, cli := range create.OAuthCapableCLIs() {
 		if !slices.Contains(selected, cli) {
 			continue
@@ -595,13 +381,8 @@ func (view *Create) buildAuthSteps() {
 
 // finish assembles the project.Spec from the collected fields and emits it.
 func (view *Create) finish() tea.Cmd {
-	cpus := 0
-	if raw := view.cpus.Value(); raw != "" {
-		cpus, _ = strconv.Atoi(raw)
-	}
-	ports, _ := parsePortsForSpec(view.ports.Value())
-	isolatedDirs := splitTrimmedComma(view.isolatedDirs.Value())
-	caveman, graphify, codeReviewGraph, codebaseMemory, openViking, tokenSave, agentMemory, ponytail, agentSkills := create.SplitAITools(view.tools.Values())
+	caveman, graphify, codeReviewGraph, codebaseMemory, openViking, tokenSave, agentMemory, ponytail, agentSkills :=
+		create.SplitAITools(view.tools.Values())
 	graphifyModel := ""
 	if graphify {
 		if value := view.model.Value(); value != graphifyModelNone {
@@ -615,33 +396,13 @@ func (view *Create) finish() tea.Cmd {
 			authModes[cli] = view.authLists[index].Value()
 		}
 	}
-	agentCLIs, appKeys := view.selectedAgentsAndApps()
-	// Per-app chosen host ports (blank/auto entries omitted → auto-allocated at create).
-	var appPorts map[string]int
-	for index, key := range view.appPortKeys {
-		if port, err := strconv.Atoi(strings.TrimSpace(view.appPortInputs[index].Value())); err == nil && port > 0 {
-			if appPorts == nil {
-				appPorts = make(map[string]int, len(view.appPortKeys))
-			}
-			appPorts[key] = port
-		}
-	}
+	agentCLIs := view.agents.Values()
 	spec := project.Spec{
 		Name:                   view.name.Value(),
-		OS:                     view.osList.Value(),
 		Shell:                  view.shell.Value(),
 		AgentCLIs:              agentCLIs,
 		DefaultTool:            view.defaultTool.Value(),
 		AuthModes:              authModes,
-		Stacks:                 view.stacks.Values(),
-		Apps:                   appKeys,
-		AppPorts:               appPorts,
-		CPUs:                   cpus,
-		Memory:                 view.memory.Value(),
-		Disk:                   view.disk.Value(),
-		IsolatedDirs:           isolatedDirs,
-		PublishPorts:           ports,
-		IdleTimeout:            view.idle.Value(),
 		GraphifyModel:          graphifyModel,
 		CavemanEnabled:         caveman,
 		GraphifyEnabled:        graphify,
@@ -657,23 +418,17 @@ func (view *Create) finish() tea.Cmd {
 	return func() tea.Msg { return CreateConfirmedMsg{Spec: spec} }
 }
 
-// View renders the step header (title + N/M) and the current step's body. The auth-mode
-// phase is dynamic, so the total step count grows once the (per-agent) auth steps are known.
+// View renders the step header (title + N/M) and the current step's body. The
+// auth-mode phase is dynamic, so the total step count grows once the (per-agent)
+// auth steps are known.
 func (view *Create) View() string {
 	baseSteps := stepModel + 1 // location..model inclusive
-	total := baseSteps + len(view.appPortKeys) + len(view.authAgents)
+	total := baseSteps + len(view.authAgents)
 	title := stepTitles[view.step]
 	current := view.step + 1
-	if view.step == stepAppPorts && view.appPortIndex < len(view.appPortKeys) {
-		key := view.appPortKeys[view.appPortIndex]
-		if manifest, ok := apps.Lookup(key); ok {
-			title = manifest.Name + " host port"
-		}
-		current = baseSteps + view.appPortIndex + 1
-	}
 	if view.step == stepAuth {
 		title = view.authAgents[view.authIndex] + " authentication"
-		current = baseSteps + len(view.appPortKeys) + view.authIndex + 1
+		current = baseSteps + view.authIndex + 1
 	}
 	header := ui.Heading.Render(title) +
 		ui.Muted.Render(fmt.Sprintf("   (step %d of %d)", current, total)) + "\n\n"
@@ -686,28 +441,12 @@ func (view *Create) stepBody() string {
 		return view.location.View()
 	case stepName:
 		return view.name.View()
-	case stepOS:
-		return view.osList.View()
 	case stepShell:
 		return view.shell.View()
 	case stepAgents:
-		return view.agentApps.View()
+		return view.agents.View()
 	case stepDefault:
 		return view.defaultTool.View()
-	case stepStacks:
-		return view.stacks.View()
-	case stepCPUs:
-		return view.cpus.View()
-	case stepMemory:
-		return view.memory.View()
-	case stepDisk:
-		return view.disk.View()
-	case stepPorts:
-		return view.ports.View()
-	case stepIsolatedDirs:
-		return view.isolatedDirs.View()
-	case stepIdle:
-		return view.idle.View()
 	case stepTools:
 		return view.tools.View()
 	case stepModel:
@@ -715,11 +454,6 @@ func (view *Create) stepBody() string {
 			return ui.Muted.Render("Graphify is not selected — the Graphify model step is skipped.")
 		}
 		return view.model.View()
-	case stepAppPorts:
-		if len(view.appPortInputs) == 0 {
-			return ""
-		}
-		return view.appPortInputs[view.appPortIndex].View()
 	case stepAuth:
 		if len(view.authLists) == 0 {
 			return ""
@@ -737,101 +471,6 @@ func validateNameField(value string) error {
 	}
 	return project.ValidateName(value)
 }
-
-func validateCPUsField(value string) error {
-	if value == "" {
-		return nil
-	}
-	number, err := strconv.Atoi(value)
-	if err != nil || number < 1 {
-		return fmt.Errorf("vCPUs must be a positive whole number")
-	}
-	return create.ValidateResourcesWithinHost(number, "")
-}
-
-func validateMemoryField(value string) error {
-	if value == "" {
-		return nil
-	}
-	return create.ValidateResourcesWithinHost(1, value)
-}
-
-func validateDiskField(value string) error {
-	return create.ValidateDisk(value)
-}
-
-func validateIsolatedDirsField(value string) error {
-	return create.ValidateIsolatedDirs(splitTrimmedComma(value))
-}
-
-// splitTrimmedComma splits a comma-separated field into trimmed, non-empty entries
-// (mirrors the CLI wizard's splitCommaList).
-func splitTrimmedComma(value string) []string {
-	var entries []string
-	for _, part := range strings.Split(value, ",") {
-		trimmed := strings.TrimSpace(part)
-		if trimmed != "" {
-			entries = append(entries, trimmed)
-		}
-	}
-	return entries
-}
-
-// validateAppPortField accepts a blank value (auto-assign) or a valid 1-65535 host port.
-func validateAppPortField(value string) error {
-	trimmed := strings.TrimSpace(value)
-	if trimmed == "" {
-		return nil
-	}
-	port, err := strconv.Atoi(trimmed)
-	if err != nil || port < 1 || port > 65535 {
-		return fmt.Errorf("port must be a number 1-65535 (or blank to auto-assign)")
-	}
-	return nil
-}
-
-func validatePortsField(value string) error {
-	_, err := parsePortsForSpec(value)
-	return err
-}
-
-func validateIdleField(value string) error {
-	if value == "" {
-		return nil
-	}
-	return config.ValidateIdleTimeout(value)
-}
-
-// parsePortsForSpec parses a comma-separated ports field into host↔guest mappings. Each
-// entry is "PORT" (host == guest) or "HOST:GUEST" (Docker-style host-first). Blank
-// yields no mappings.
-func parsePortsForSpec(value string) ([]config.PortMapping, error) {
-	var ports []config.PortMapping
-	for _, raw := range strings.Split(value, ",") {
-		raw = strings.TrimSpace(raw)
-		if raw == "" {
-			continue
-		}
-		hostText, guestText, hasGuest := strings.Cut(raw, ":")
-		hostPort, err := strconv.Atoi(strings.TrimSpace(hostText))
-		if err != nil || hostPort < 1 || hostPort > 65535 {
-			return nil, fmt.Errorf("invalid port %q (expected PORT or HOST:GUEST, 1-65535)", raw)
-		}
-		guestPort := hostPort
-		if hasGuest {
-			guestPort, err = strconv.Atoi(strings.TrimSpace(guestText))
-			if err != nil || guestPort < 1 || guestPort > 65535 {
-				return nil, fmt.Errorf("invalid port %q (expected PORT or HOST:GUEST, 1-65535)", raw)
-			}
-		}
-		ports = append(ports, config.PortMapping{Host: hostPort, Guest: guestPort})
-	}
-	return ports, nil
-}
-
-// sysinfoCPUs is a tiny indirection so the memory/cpu hints don't force a sysinfo
-// import at the top when unavailable; it returns the host logical CPU count.
-func sysinfoCPUs() int { return create.HostCPUs() }
 
 // ============================ location step ============================
 //

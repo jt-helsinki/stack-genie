@@ -31,7 +31,7 @@ func cwdProjectName() (string, error) {
 func newStartCmd(emitter *output.Emitter, exit *int) *cobra.Command {
 	return &cobra.Command{
 		Use:               "start [name]",
-		Short:             "Build the image and start the workspace microVM (defaults to the current directory)",
+		Short:             "Start (or reattach to) the workspace's default agent CLI session (defaults to the current directory)",
 		Args:              cobra.MaximumNArgs(1),
 		ValidArgsFunction: completeProjectArg,
 		RunE:              workspaceStartRunE(emitter, exit),
@@ -41,7 +41,7 @@ func newStartCmd(emitter *output.Emitter, exit *int) *cobra.Command {
 func newStopCmd(emitter *output.Emitter, exit *int) *cobra.Command {
 	return &cobra.Command{
 		Use:               "stop [name]",
-		Short:             "Stop the workspace microVM (state preserved; defaults to the current directory)",
+		Short:             "Stop every live session for the workspace (defaults to the current directory)",
 		Args:              cobra.MaximumNArgs(1),
 		ValidArgsFunction: completeProjectArg,
 		RunE:              workspaceStopRunE(emitter, exit),
@@ -51,7 +51,7 @@ func newStopCmd(emitter *output.Emitter, exit *int) *cobra.Command {
 func newRestartCmd(emitter *output.Emitter, exit *int) *cobra.Command {
 	return &cobra.Command{
 		Use:               "restart [name]",
-		Short:             "Restart the workspace microVM (rebuilds + recreates to re-apply config; defaults to the current directory)",
+		Short:             "Stop every live session, then start the default agent CLI fresh (defaults to the current directory)",
 		Args:              cobra.MaximumNArgs(1),
 		ValidArgsFunction: completeProjectArg,
 		RunE:              workspaceRestartRunE(emitter, exit),

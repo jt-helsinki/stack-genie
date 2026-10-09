@@ -70,7 +70,6 @@ type endpointSpec struct {
 //   - dns      127.0.0.1:15353/udp (aip-dns CoreDNS egress-audit resolver, loopback)
 //   - headroom is internal-only on :8787 behind nginx (no longer host-published)
 //   - presidio analyzer/anonymizer are internal-only on :3000 (not host-published)
-//   - microsandbox is the microVM runtime (no host address, no console)
 var registry = buildRegistry()
 
 // buildRegistry projects the internal/services endpoint topology into this

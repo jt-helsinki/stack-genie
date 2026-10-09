@@ -22,15 +22,16 @@ import (
 	"time"
 
 	"github.com/jt-helsinki/stack-genie/internal/conffile"
+	"github.com/jt-helsinki/stack-genie/internal/nono"
 	"github.com/jt-helsinki/stack-genie/internal/paths"
-	"github.com/jt-helsinki/stack-genie/internal/sandbox"
 )
 
-// DefaultGatewayHost is the in-microVM address that resolves to the host machine
-// (Microsandbox's host-side network stack). It is the standalone/local gateway
-// host: when no AI_PLATFORM_HOST is configured, every workspace reaches the model
-// gateway on the local host through this name (arch §29.2).
-const DefaultGatewayHost = "host.microsandbox.internal"
+// DefaultGatewayHost is the standalone/local gateway host: when no
+// AI_PLATFORM_HOST is configured, every workspace reaches the model gateway on
+// the local host through plain loopback — nono-sandboxed agents run directly on
+// the host, so (unlike the Microsandbox microVM this replaced) there is no
+// guest-network DNS name to pin.
+const DefaultGatewayHost = "127.0.0.1"
 
 // DefaultGatewayPort is the host port the in-workspace Headroom proxy reaches the
 // model gateway on (arch §29.2). It is the fallback port when AIPlatformHost
@@ -69,10 +70,8 @@ func RequireUIAuth(role string) bool {
 // Sentinel errors. Detect returns the missing-dependency ones (exit 3); Verify
 // returns the capability ones (exit 4).
 var (
-	ErrNoContainerRuntime        = errors.New("no container runtime (docker or podman) found")
-	ErrMsbMissing                = errors.New("microsandbox (msb) is not installed")
-	ErrRootlessUnavailable       = errors.New("rootless container runtime is unavailable")
-	ErrVirtualizationUnavailable = errors.New("host virtualization for microVMs is unavailable")
+	ErrNoContainerRuntime  = errors.New("no container runtime (docker or podman) found")
+	ErrRootlessUnavailable = errors.New("rootless container runtime is unavailable")
 )
 
 // Prober abstracts host probes (binaries, command output, files) for testability.
@@ -142,23 +141,22 @@ func (realProber) Exists(path string) bool { _, err := os.Stat(path); return err
 // RealProber probes the actual host.
 func RealProber() Prober { return realProber{} }
 
-// MicrosandboxInfo mirrors runtime.yaml's microsandbox object (§12.5). It carries
-// both json and yaml tags: yaml for config/runtime.yaml on disk, json for the
-// --json output envelope (it rides inside setup.Report).
-type MicrosandboxInfo struct {
-	Available      bool   `json:"available" yaml:"available"`
-	Virtualization string `json:"virtualization" yaml:"virtualization"`
+// NonoInfo mirrors runtime.yaml's nono object. Unlike the Microsandbox slot it
+// replaces, there is no virtualization-capability gate to record — nono's
+// Landlock/Seatbelt enforcement works on any host the binary runs on.
+type NonoInfo struct {
+	Installed bool `json:"installed" yaml:"installed"`
 }
 
 // Info is config/runtime.yaml (§12.5). It carries both json and yaml tags: yaml
 // for the on-disk file, json for the --json output envelope (setup.Report
 // embeds it), so the persisted snake_case keys are preserved in both encodings.
 type Info struct {
-	SchemaVersion int              `json:"schema_version" yaml:"schema_version"`
-	Role          string           `json:"role,omitempty" yaml:"role,omitempty"` // standalone | server | client (set by setup, not Detect)
-	Detected      string           `json:"detected" yaml:"detected"`             // docker | podman
-	Rootless      bool             `json:"rootless" yaml:"rootless"`
-	Microsandbox  MicrosandboxInfo `json:"microsandbox" yaml:"microsandbox"`
+	SchemaVersion int      `json:"schema_version" yaml:"schema_version"`
+	Role          string   `json:"role,omitempty" yaml:"role,omitempty"` // standalone | server | client (set by setup, not Detect)
+	Detected      string   `json:"detected" yaml:"detected"`             // docker | podman
+	Rootless      bool     `json:"rootless" yaml:"rootless"`
+	Nono          NonoInfo `json:"nono" yaml:"nono"`
 	// OptionalServices is the set of opt-in host services this host runs. CORE
 	// services are always reconciled; OPTIONAL ones are reconciled only when enabled
 	// here. There are currently no optional host services (the field stays for
@@ -166,7 +164,7 @@ type Info struct {
 	// machine-wide so it survives across runs.
 	OptionalServices []string `json:"optional_services,omitempty" yaml:"optional_services,omitempty"`
 	AIPlatformHost   string   `json:"ai_platform_host" yaml:"ai_platform_host"`
-	HostGateway      string   `json:"host_gateway" yaml:"host_gateway"` // guest-visible host address (arch §29.2)
+	HostGateway      string   `json:"host_gateway" yaml:"host_gateway"` // the address an agent CLI reaches the gateway at (loopback by default)
 	// Domain is the platform base domain the nginx UI subdomains hang off
 	// (litellm.<domain>). Empty falls back to
 	// DefaultDomain (aip.local); operators override it in server mode (`ai domain`).
@@ -232,30 +230,18 @@ func ResolveGateway(aiPlatformHost string) (host string, port int, url string) {
 	return host, port, url
 }
 
-// HostGateway returns the pinned address a workspace microVM reaches the host at
-// (arch §29.2): the fixed Microsandbox guest→host DNS name DefaultGatewayHost
-// (host.microsandbox.internal), verified end-to-end during hardware bring-up. The
-// address is backend-independent — Microsandbox publishes the same name under HVF
-// on macOS and KVM on Linux — so goos does not vary it (the parameter is kept for
-// call-site symmetry with the other goos-parameterized detectors). pinned is always
-// true. Detect/DetectForRole persist this into Info.HostGateway (a runtime.yaml
-// field), so do not change the returned value without a runtime.yaml migration.
+// HostGateway returns the address an agent CLI reaches the gateway at. Unlike
+// Microsandbox (a guest VM needing a special host→guest DNS name), nono-sandboxed
+// agents run directly on the host, so this is always plain loopback — no pinning,
+// no guest-network translation. goos/pinned are kept for call-site compatibility.
 func HostGateway(_ string) (address string, pinned bool) {
 	return DefaultGatewayHost, true
 }
 
-// sandboxAdapter adapts a runtime.Prober to a sandbox.Prober.
-type sandboxAdapter struct{ prober Prober }
-
-func (adapter sandboxAdapter) LookPath(file string) (string, error) {
-	return adapter.prober.LookPath(file)
-}
-func (adapter sandboxAdapter) Exists(path string) bool { return adapter.prober.Exists(path) }
-
 // Detect probes the host and builds an Info. detectedAt is an RFC 3339 UTC
-// timestamp supplied by the caller. Returns ErrNoContainerRuntime / ErrMsbMissing
-// for missing dependencies; rootless and virtualization shortfalls are recorded
-// in the Info (see Verify), not returned as errors.
+// timestamp supplied by the caller. Returns ErrNoContainerRuntime for a missing
+// container runtime; a missing nono CLI is recorded in Info.Nono, not returned
+// as an error (see Verify for the "fail loudly" check).
 func Detect(goos, goarch string, prober Prober, detectedAt string) (*Info, error) {
 	// The empty role requires the full dependency set (no role-specific tolerance),
 	// matching the historical standalone behavior; setup sets the concrete role.
@@ -264,12 +250,12 @@ func Detect(goos, goarch string, prober Prober, detectedAt string) (*Info, error
 
 // DetectForRole probes the host like Detect but only requires the dependencies
 // the deployment role actually uses (CLI §2.1): a server runs only the service
-// tier (no microVM runtime, so a missing msb is tolerated and recorded as
-// unavailable), and a client runs only workspaces (no service tier, so a missing
+// tier (no workspace runtime, so a missing nono is tolerated and recorded as not
+// installed), and a client runs only workspaces (no service tier, so a missing
 // container runtime is tolerated and recorded empty). standalone (the default,
 // and the empty-role case) requires everything, exactly like Detect. The role is
-// recorded on the returned Info; missing dependencies that the role does need
-// still return their sentinel error.
+// recorded on the returned Info; a missing container runtime the role DOES need
+// still returns its sentinel error.
 func DetectForRole(goos, goarch, role string, prober Prober, detectedAt string) (*Info, error) {
 	var name string
 	var rootless bool
@@ -284,34 +270,30 @@ func DetectForRole(goos, goarch, role string, prober Prober, detectedAt string) 
 		rootless = detectedRootless
 	}
 
-	detectedSandbox := sandbox.Detect(goos, goarch, sandboxAdapter{prober: prober})
-	// A server runs no microVMs, so a missing msb is fine.
-	if !detectedSandbox.MsbInstalled && role != RoleServer {
-		return nil, ErrMsbMissing
-	}
+	// prober satisfies nono.Prober structurally (LookPath), no adapter needed.
+	nonoInstalled := nono.Detect(prober).Installed
 
-	hostGateway, _ := HostGateway(goos) // pinned host.microsandbox.internal (§29.2)
+	hostGateway, _ := HostGateway(goos)
 	return &Info{
 		SchemaVersion:  SchemaVersion,
 		Role:           role,
 		Detected:       name,
 		Rootless:       rootless,
-		Microsandbox:   MicrosandboxInfo{Available: detectedSandbox.Available, Virtualization: detectedSandbox.Virtualization},
+		Nono:           NonoInfo{Installed: nonoInstalled},
 		AIPlatformHost: os.Getenv("AI_PLATFORM_HOST"),
 		HostGateway:    hostGateway,
 		DetectedAt:     detectedAt,
 	}, nil
 }
 
-// Verify enforces the Slice 1 requirements: a rootless service tier and usable
-// microVM virtualization (arch §6, "no silent degraded mode"). Returns a
-// sentinel error (→ exit 4) or nil.
+// Verify enforces the Slice 1 requirements: a rootless service tier (arch §6,
+// "no silent degraded mode"). Unlike Microsandbox, nono has no virtualization
+// gate to verify — its absence is reported via Info.Nono for `ai doctor`/`ai
+// setup` to offer installing it, not treated as a hard failure here (a
+// server-only host legitimately has no nono at all).
 func Verify(info *Info) error {
 	if !info.Rootless {
 		return ErrRootlessUnavailable
-	}
-	if !info.Microsandbox.Available {
-		return ErrVirtualizationUnavailable
 	}
 	return nil
 }

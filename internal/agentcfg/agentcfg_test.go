@@ -8,8 +8,9 @@ import (
 )
 
 const (
-	testGateway = "http://host.microsandbox.internal:18787/v1"
-	testKey     = "sk-workspace-scoped-1234"
+	testGateway   = "http://127.0.0.1:18787/v1"
+	testKey       = "sk-workspace-scoped-1234"
+	testSkillsDir = "/home/user/project/.ai-platform/skills"
 )
 
 // testModels mixes tool-capable and completion-only models so tests exercise both
@@ -115,7 +116,7 @@ func TestOpenCodeConfigStructure(test *testing.T) {
 }
 
 func TestHermesConfigStructure(test *testing.T) {
-	raw, err := HermesConfig(testGateway, "gemma4", "")
+	raw, err := HermesConfig(testGateway, "gemma4", "", testSkillsDir)
 	if err != nil {
 		test.Fatal(err)
 	}
@@ -127,7 +128,7 @@ func TestHermesConfigStructure(test *testing.T) {
 		"key_env", HermesKeyEnv,
 		"provider", ProviderID,
 		"default: gemma4",
-		"external_dirs", HermesSkillsExternalDir,
+		"external_dirs", testSkillsDir,
 	} {
 		if !strings.Contains(text, want) {
 			test.Errorf("hermes config missing %q:\n%s", want, text)
@@ -137,7 +138,7 @@ func TestHermesConfigStructure(test *testing.T) {
 		test.Errorf("hermes config must be keyless:\n%s", text)
 	}
 	// A blank default omits the default line (seed-then-remember).
-	blank, err := HermesConfig(testGateway, "", "")
+	blank, err := HermesConfig(testGateway, "", "", testSkillsDir)
 	if err != nil {
 		test.Fatal(err)
 	}
@@ -150,7 +151,7 @@ func TestHermesConfigStructure(test *testing.T) {
 	}
 	// A non-empty dashboard password appends dashboard.basic_auth with the fixed
 	// username + a scrypt hash — keyless still holds.
-	withDash, err := HermesConfig(testGateway, "gemma4", "s3cret-pw")
+	withDash, err := HermesConfig(testGateway, "gemma4", "s3cret-pw", testSkillsDir)
 	if err != nil {
 		test.Fatal(err)
 	}
@@ -220,7 +221,7 @@ func TestProjectConfigsAreKeyless(test *testing.T) {
 	}
 	configs := map[string][]byte{
 		"opencode": openCode, "codex": CodexConfig(testGateway, ""),
-		"claude": claude, "codex-trust": CodexTrustConfig(),
+		"claude": claude, "codex-trust": CodexTrustConfig("/home/user/project"),
 	}
 	for name, content := range configs {
 		if text := string(content); strings.Contains(text, testKey) || strings.Contains(text, "sk-") {
@@ -237,7 +238,7 @@ func TestProjectConfigsAreKeyless(test *testing.T) {
 		if name == "codex-trust" {
 			continue // trust file carries no base URL
 		}
-		if !strings.Contains(string(content), "host.microsandbox.internal:18787") {
+		if !strings.Contains(string(content), "127.0.0.1:18787") {
 			test.Errorf("%s config missing the gateway base URL:\n%s", name, content)
 		}
 	}
@@ -347,87 +348,6 @@ func TestCodexConfig(test *testing.T) {
 	}
 }
 
-// TestAgentEnvScript verifies the env-routed CLIs get the right gateway env vars,
-// with claude-code/gemini base URLs stripped of the /v1 suffix (they append their
-// own path) and the scoped key present.
-func TestAgentEnvScript(test *testing.T) {
-	env := string(AgentEnvScript(testGateway, testKey, "", nil))
-	root := "http://host.microsandbox.internal:18787" // testGateway minus /v1
-	for _, want := range []string{
-		`export ANTHROPIC_BASE_URL='` + root + `'`,
-		`export ANTHROPIC_AUTH_TOKEN='` + testKey + `'`,
-		`export AIP_GATEWAY_KEY='` + testKey + `'`,
-		`export GOOGLE_GEMINI_BASE_URL='` + root + `'`,
-		`export GEMINI_API_KEY='` + testKey + `'`,
-	} {
-		if !strings.Contains(env, want) {
-			test.Errorf("agent env missing %q:\n%s", want, env)
-		}
-	}
-	// The claude-code/gemini base URLs must NOT carry the /v1 suffix.
-	if strings.Contains(env, root+"/v1") {
-		test.Errorf("claude-code/gemini base URL must be the gateway root (no /v1):\n%s", env)
-	}
-	// With no graphify model configured, no OPENAI_* vars are exported.
-	if strings.Contains(env, "OPENAI_") {
-		test.Errorf("no graphify model → no OPENAI_* vars expected:\n%s", env)
-	}
-}
-
-// TestAgentEnvScriptGraphify verifies that when a graphify model IS configured,
-// its OpenAI-compatible backend is routed through the gateway's /v1 endpoint with
-// the scoped virtual key and the omlx/<alias> public name.
-func TestAgentEnvScriptGraphify(test *testing.T) {
-	env := string(AgentEnvScript(testGateway, testKey, "llama3.1:8b", nil))
-	for _, want := range []string{
-		`export OPENAI_BASE_URL='` + testGateway + `'`, // keeps /v1 (OpenAI SDK appends /chat/completions)
-		`export OPENAI_API_KEY='` + testKey + `'`,
-		`export OPENAI_MODEL='omlx/llama3.1:8b'`,
-	} {
-		if !strings.Contains(env, want) {
-			test.Errorf("graphify env missing %q:\n%s", want, env)
-		}
-	}
-}
-
-// TestAgentEnvScriptOAuth verifies that an OAuTH-mode agent's gateway env is OMITTED so
-// its native login wins, while api-key agents keep theirs. AIP_GATEWAY_KEY is shared with
-// opencode, so it is always exported.
-func TestAgentEnvScriptOAuth(test *testing.T) {
-	// claude-code + gemini in oauth: their gateway env must be gone.
-	oauth := string(AgentEnvScript(testGateway, testKey, "", map[string]bool{"claude-code": true, "gemini": true}))
-	for _, absent := range []string{"ANTHROPIC_BASE_URL", "ANTHROPIC_AUTH_TOKEN", "GOOGLE_GEMINI_BASE_URL", "GEMINI_API_KEY", "ANTHROPIC_API_KEY"} {
-		if strings.Contains(oauth, absent) {
-			test.Errorf("oauth agent env must NOT export %q:\n%s", absent, oauth)
-		}
-	}
-	// The shared gateway key (used by opencode) is still exported.
-	if !strings.Contains(oauth, "export AIP_GATEWAY_KEY='"+testKey+"'") {
-		test.Errorf("AIP_GATEWAY_KEY (shared with opencode) must still be exported:\n%s", oauth)
-	}
-
-	// api-key claude-code (empty/absent oauth set) keeps the ANTHROPIC_* exports.
-	apiKey := string(AgentEnvScript(testGateway, testKey, "", map[string]bool{"gemini": true}))
-	if !strings.Contains(apiKey, "ANTHROPIC_BASE_URL") || !strings.Contains(apiKey, "ANTHROPIC_AUTH_TOKEN") {
-		test.Errorf("api-key claude-code must keep its ANTHROPIC_* env:\n%s", apiKey)
-	}
-	if strings.Contains(apiKey, "GEMINI_API_KEY") {
-		test.Errorf("oauth gemini must NOT export GEMINI_API_KEY:\n%s", apiKey)
-	}
-
-	// A gateway-incapable forced-oauth CLI (a hypothetical one, since none is currently
-	// supported) is never referenced by the env script — an unrecognized oauth-set key is
-	// simply ignored, adding no env for it.
-	withUnknown := string(AgentEnvScript(testGateway, testKey, "", map[string]bool{"some-native-cli": true}))
-	for _, absent := range []string{"some-native-cli", "SOME_NATIVE_CLI"} {
-		if strings.Contains(withUnknown, absent) {
-			test.Errorf("an unrecognized oauth-set CLI must have no gateway env in the agent env script (found %q):\n%s", absent, withUnknown)
-		}
-	}
-}
-
-// TestCodexConfigOAuth verifies the OAuth codex config pins the ChatGPT login and file
-// credential store, and carries NO gateway provider block.
 func TestCodexConfigOAuth(test *testing.T) {
 	toml := string(CodexConfigOAuth())
 	for _, want := range []string{`forced_login_method = "chatgpt"`, `cli_auth_credentials_store = "file"`} {
@@ -498,41 +418,6 @@ func nested(test *testing.T, document map[string]any, key1, key2 string) map[str
 	return level2
 }
 
-// TmuxConfig renders the managed transparent tmux config: mouse ON with a wheel-up→
-// copy-mode binding (so the wheel scrolls tmux's scrollback past the alternate screen)
-// plus OSC 52 clipboard so copy still reaches the host, status off (invisible), vi
-// copy-mode keys, and a history limit, PLUS the terminal-capability directives modern
-// TUI agent CLIs need to render correctly through tmux (truecolor + extended keys + a
-// modern terminfo entry).
-func TestTmuxConfig(test *testing.T) {
-	conf := string(TmuxConfig())
-	for _, want := range []string{
-		// Mouse-scroll: wheel-up must reach tmux's scrollback via copy-mode, and copy
-		// must still land on the host clipboard now that tmux owns click-drag.
-		"set -g mouse on",
-		"WheelUpPane",
-		"copy-mode -e",
-		"set -g set-clipboard on",
-		"set -g status off",
-		"setw -g mode-keys vi",
-		"history-limit",
-		// Modern-TUI capabilities (see the task background):
-		// a modern terminfo entry, 24-bit truecolor passthrough, and CSI-u /
-		// kitty extended-key forwarding so OpenCode's key combos survive tmux.
-		`set -g default-terminal "tmux-256color"`,
-		`set -as terminal-features ",*:RGB"`,
-		`set -as terminal-features ",*:extkeys"`,
-		"set -g extended-keys on",
-		"set -g extended-keys-format csi-u",
-	} {
-		if !strings.Contains(conf, want) {
-			test.Errorf("tmux.conf missing %q:\n%s", want, conf)
-		}
-	}
-}
-
-// TestOmpModelsConfig verifies omp's global models.yml is keyless YAML with the
-// aip-gateway provider using openai-models-list discovery (no static model list).
 func TestOmpModelsConfig(test *testing.T) {
 	raw, err := OmpModelsConfig(testGateway, OmpAPIKeyRef)
 	if err != nil {
@@ -595,72 +480,5 @@ func TestHeadroomWrapName(test *testing.T) {
 		if got, ok := HeadroomWrapName(cli); ok {
 			test.Errorf("HeadroomWrapName(%q) = (%q, true), want ok=false (not Headroom-wrappable)", cli, got)
 		}
-	}
-}
-
-// TestShellAliases verifies the snippet aliases each wrappable installed CLI to
-// `headroom wrap <name>` and OMITS the non-wrappable ones (omp, gemini).
-func TestShellAliases(test *testing.T) {
-	snippet := string(ShellAliases([]string{"opencode", "omp", "claude-code", "codex", "gemini"}))
-	for _, want := range []string{
-		`alias claude='headroom wrap claude'`,
-		`alias codex='headroom wrap codex'`,
-		`alias opencode='headroom wrap opencode'`,
-	} {
-		if !strings.Contains(snippet, want) {
-			test.Errorf("ShellAliases missing %q:\n%s", want, snippet)
-		}
-	}
-	for _, absent := range []string{"alias omp=", "alias gemini="} {
-		if strings.Contains(snippet, absent) {
-			test.Errorf("ShellAliases must not alias a non-wrappable CLI (%q):\n%s", absent, snippet)
-		}
-	}
-	// Deterministic + de-duplicated: a repeated tool yields exactly one alias line.
-	repeated := string(ShellAliases([]string{"claude-code", "claude-code"}))
-	if strings.Count(repeated, "alias claude=") != 1 {
-		test.Errorf("ShellAliases must de-duplicate; got:\n%s", repeated)
-	}
-	// No tools → no alias lines (just the managed-by header comments).
-	if strings.Contains(string(ShellAliases(nil)), "alias ") {
-		test.Errorf("ShellAliases(nil) should define no aliases")
-	}
-}
-
-// TestShellRCBlock verifies the managed rc block is marker-delimited and sources BOTH the
-// agent gateway env file and the Headroom-wrap alias snippet, so bash + zsh interactive
-// shells route through the gateway with the aliases defined.
-func TestShellRCBlock(test *testing.T) {
-	block := string(ShellRCBlock())
-	for _, want := range []string{
-		ShellRCMarkerBegin,
-		ShellRCMarkerEnd,
-		AgentEnvFileGuestPath,
-		ShellAliasesFileGuestPath,
-	} {
-		if !strings.Contains(block, want) {
-			test.Errorf("ShellRCBlock missing %q:\n%s", want, block)
-		}
-	}
-	if !strings.HasPrefix(block, ShellRCMarkerBegin) {
-		test.Errorf("ShellRCBlock must start with the begin marker:\n%s", block)
-	}
-	if !strings.Contains(block, "&& . '"+AgentEnvFileGuestPath+"'") {
-		test.Errorf("ShellRCBlock must SOURCE the agent env file:\n%s", block)
-	}
-	if !strings.Contains(block, "&& . '"+ShellAliasesFileGuestPath+"'") {
-		test.Errorf("ShellRCBlock must SOURCE the shell-aliases file:\n%s", block)
-	}
-}
-
-// TestBashProfileSourcesAliases verifies the managed ~/.bash_profile also sources the
-// Headroom-wrap alias snippet (alongside the agent env), keeping login shells consistent.
-func TestBashProfileSourcesAliases(test *testing.T) {
-	profile := string(BashProfile())
-	if !strings.Contains(profile, ShellAliasesFileGuestPath) {
-		test.Errorf("BashProfile must source the shell-aliases file:\n%s", profile)
-	}
-	if !strings.Contains(profile, AgentEnvFileGuestPath) {
-		test.Errorf("BashProfile must still source the agent env file:\n%s", profile)
 	}
 }

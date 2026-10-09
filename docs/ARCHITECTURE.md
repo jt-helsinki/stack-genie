@@ -1,8 +1,8 @@
 # AI Development Platform — architecture
 
 This is the canonical architecture reference for the `ai` platform: the container
-topology, the model data path, and per-workspace tooling. For the exact CLI surface
-see `spec/04-cli-specification.md`; for the full end-state design see
+topology, the model data path, and per-session agent sandboxing. For the exact CLI
+surface see `spec/04-cli-specification.md`; for the full end-state design see
 `spec/01-architecture-spec.md`; for narrative implementation detail see `AGENTS.md`.
 
 The **canonical diagram** is [`docs/architecture.mmd`](architecture.mmd) (Mermaid
@@ -18,15 +18,35 @@ redisinsight, dns). Its rendered export is embedded below.
 
 ## End-to-end flow
 
-A coding agent runs inside a hardware-isolated **Microsandbox microVM** (one per
-project workspace) and speaks the OpenAI API to a single host gateway at
-`http://host.microsandbox.internal:18787/v1`, authenticating with a **scoped
-LiteLLM virtual key** — real provider keys are never on the workspace. Workspace
-egress defaults to **"public"** (the open internet is reachable — so in-VM
-`nerdctl` can pull images and AI processes reach the net — while private ranges
-stay blocked); every DNS name the VM resolves is logged for audit
-(`ai network log`), and a project is re-lockable to default-deny with
-`ai network egress deny`.
+A coding agent CLI (opencode, claude-code, codex, gemini, omp, or hermes) runs as
+an ordinary **host process**, sandboxed per-invocation by **[nono](https://nono.sh)**
+— a kernel-capability sandboxing tool (Landlock LSM on Linux, Seatbelt on macOS),
+**not** a virtual machine. This is a deliberate, accepted security-model change
+from the platform's previous Microsandbox-microVM design: nono is same-kernel
+process sandboxing, not hardware/VM isolation. There is no guest OS, no image to
+build, and no boot step — a "workspace" is just a registered project directory
+(`internal/project`) plus a generated nono profile (`internal/nono`, JSON at
+`<project>/.ai-platform/nono-profile-<cli>.json`) that grants filesystem access
+scoped to the project directory and a network policy. Every `ai agent <cli>` or
+`ai shell` launch is its own nono session (`nono run --detached` / `nono shell`),
+started, listed, reattached, and stopped independently via nono's own session
+lifecycle (`ai sessions`, `ai attach`, `ai stop`).
+
+The sandboxed CLI speaks the OpenAI API to the host gateway — by default plain
+loopback `http://127.0.0.1:18787/v1` (a remote gateway can be set machine-wide
+with `ai gateway set`) — authenticating with a **scoped LiteLLM virtual key**: a
+fresh key is minted per launch (revoking any prior one for the project) and
+handed to the sandboxed process only via nono's `--env-credential-map`, resolved
+from the OS keychain (macOS Keychain / Linux `secret-tool`) at launch time — the
+real key is never written to a config file or the project directory, and never
+touches platform disk. Workspace egress defaults to **"public"** (nono's own
+unrestricted-outbound default — the open internet is reachable while private
+ranges stay blocked); a project can allow- or deny-list individual domains
+(`ai network allow|disallow <domain>`, `*.suffix` wildcards supported) or be
+locked down entirely with `ai network egress deny`. Separately, every DNS name
+resolved host-wide (across all workspaces) is logged for audit by the `aip-dns`
+resolver (`ai network log`) — a names-only trail, independent of and in addition
+to nono's own per-project network enforcement (`ai network show`).
 
 1. The request hits **aip-proxy** (nginx, host `:18787`) — the **sole** host entry
    point; every other service container is internal-only on `aip-net` (the only
@@ -75,28 +95,20 @@ stay blocked); every DNS name the VM resolves is logged for audit
 
 ## The pieces
 
-- **Workspace microVM / agent CLI** — hardware-isolated per-project sandbox
-  (opencode · omp · claude-code · codex · gemini · hermes; opencode is
-  the default). Holds only a scoped LiteLLM virtual key. Beyond the base
-  project bind mount, `ai mounts add|remove|list` manages two extra mount
-  kinds applied at microVM create/recreate (`config.yaml`
-  `workspace.isolated_dirs` / `workspace.shared_mounts`): an **isolated dir**
-  (a guest-relative subpath, e.g. `node_modules`, excluded from the host bind
-  mount and backed by a private, workspace-scoped volume instead, so
-  sandbox-built artifacts never touch the host tree) and a **shared mount**
-  (an absolute guest path bind-mounted from an arbitrary host directory,
-  visible and writable both ways). Also surfaced in the `ai ui` TUI.
-- **In-VM container runtime + apps** — every workspace microVM ships a rootful OCI
-  runtime (containerd + nerdctl + runc + CNI), on which the platform runs opt-in AI
-  apps as `nerdctl` containers *inside* the VM — currently **Open WebUI** (guest
-  port 8080), selected with `ai create --apps` or managed with `ai apps`. Each app
-  mounts the project dir at `/workspace`, is published on a unique
-  per-`(workspace, app)` host port chosen at create (`--app-port <app>=<port>`,
-  persisted in `config.yaml` `apps:`), and routes its model calls through the
-  *same* gateway path as the agent — never LiteLLM directly. Agent-CLI web
-  dashboards get the same treatment — currently only **hermes**
-  (`hermes dashboard`, default port 9119, `--app-port hermes=<port>`, persisted in
-  `config.yaml` `agent_dashboards:`).
+- **Workspace / agent CLI session** — a registered project directory
+  (opencode · omp · claude-code · codex · gemini · hermes; opencode is the
+  default) sandboxed directly on the **host** by nono, one session per
+  `ai agent <cli>`/`ai shell` launch. There is no guest OS, no OS/stack choice
+  at `ai create`, and no per-workspace resource sizing (vCPU/memory/disk) —
+  whatever toolchains exist on the host are what's available inside the
+  sandbox. A session holds only a scoped LiteLLM virtual key, injected via
+  nono's `--env-credential-map` from the OS keychain, never written to disk.
+  Each selected agent CLI gets its own keyless host-side config at that CLI's
+  default project location (`.opencode/opencode.json`,
+  `.claude/settings.json`, `.codex/config.toml`, …), regenerated at every
+  launch so an `ai network`/`ai context` change takes effect on the next
+  session with no restart step. Surfaced in the `ai ui` TUI's **Shell**
+  sub-tab (list/attach/new/stop) and `ai sessions`/`ai attach`/`ai stop`.
 - **nginx gateway (`aip-proxy`, host `:18787`)** — the sole host entry point and
   TLS-termination point; routes `/` and `/v1` to LiteLLM, `/llm` to the LiteLLM
   admin surface, and serves two Host-vhost subdomains — `litellm.<domain>` (the
@@ -133,104 +145,82 @@ stay blocked); every DNS name the VM resolves is logged for audit
   single standalone Valkey instance backs LiteLLM's response cache; RedisInsight is
   its GUI, surfaced through nginx at the `valkey.<domain>` vhost. Both are
   always-on core services.
-- **DNS audit (`aip-dns`, CoreDNS, loopback `:15353`)** — the egress-audit resolver
-  microVMs forward DNS to, so attempted names are logged (`ai network log`) —
-  audit, not enforcement.
+- **DNS audit (`aip-dns`, CoreDNS, loopback `:15353`)** — an egress-audit
+  resolver whose query log `ai network log` surfaces (names only, host-wide
+  across every workspace, not per-project) — audit, not enforcement; a
+  project's own egress is enforced separately by its nono network policy
+  (`ai network show`).
 - **Keys-in-LiteLLM** — real provider keys (OpenAI/Anthropic/Gemini/Groq/…) live
   only in LiteLLM's credential store; the agent authenticates to the gateway with a
   revocable, scoped virtual key.
 
-There are no optional **host** services today: the former host Open WebUI is now
-the in-VM app above, and Odysseus was removed from the platform entirely.
+There are no optional **host** services today: the former host Open WebUI and
+Odysseus were both removed from the platform entirely, and the in-VM-app
+successor to host Open WebUI (plus the rest of `internal/apps` and the in-VM
+container runtime it ran on) was removed along with the microVM runtime itself
+— there is currently no bundled web-chat UI.
 
-## Dev tooling and AI tools baked into every workspace
+## Dev tooling and AI tools
 
-Every OS base image bakes in a common dev-tooling layer: Git, the GitHub CLI,
-**Node.js** (pinned Node 24 LTS), the latest **Python 3** (system-wide, backing the
-per-project `~/project/.venv-msb` virtualenv created at start), **uv** (Astral's
-Python package/tool manager, installed for the workspace user onto `~/.local/bin`),
-**rtk** (`rtk-ai/rtk`, a dev-command output compressor, via its `install.sh`), and
-the **Headroom** CLI (`headroom-ai[proxy]`, for in-VM `headroom wrap <cli>`).
-Because Node.js and Python 3 are baked in, neither is a `--stacks` option — the
-selectable software stacks are `go`, `rust`, `java`, `maven`, `deno`.
+There is no OS image to bake tooling into anymore: a nono-sandboxed session runs
+directly on the **host**, so it sees whatever dev tooling (git, language
+runtimes, compilers, …) is already installed there. `ai create` no longer has an
+OS choice or a `--stacks` selector — the platform does not provision per-workspace
+language runtimes. The only still-relevant per-CLI host install is **Headroom**
+(`headroom-ai[proxy]`): when the `headroom` binary is present on the host, a
+claude-code/codex/opencode launch is wrapped as `headroom wrap <cli>`
+(`agentcfg.HeadroomWrapName`) regardless of auth mode; omp/gemini/hermes have no
+wrap support and launch directly.
 
 The per-project **AI tools** are a separate, selectable set (one `--tools`
-multi-select at `ai create`, or the wizard's AI-tools step): **caveman**,
-**graphify**, **code-review-graph**, **codebase-memory-mcp**, **openviking**,
-**tokensave**, **agentmemory**, and **ponytail** — all opt-in, nothing
-pre-selected by default (`create.DefaultAITools()` returns an empty list). Each
-maps to a `context.*_enabled` bool in `config.yaml`.
+multi-select at `ai create`, or the wizard's AI-tools step), nine in total:
+**caveman**, **graphify**, **code-review-graph**, **codebase-memory-mcp**,
+**openviking**, **tokensave**, **agentmemory**, **ponytail**, and
+**agent-skills** — all opt-in, nothing pre-selected by default
+(`create.SupportedAITools()`/`create.DefaultAITools()`, the latter returning an
+empty list). Each maps to a `context.*_enabled` bool in `config.yaml`, and can
+be toggled after create too with `ai tools enable|disable <tool> [name]` (`ai
+tools list` shows each tool's enabled state). There is no image to bake a tool
+into anymore — enabling one takes effect at the **next** `ai agent`/`ai start`
+session launch, each tool installing directly on the host rather than ahead of
+time:
 
-- **graphify** (the knowledge-graph skill for AI coding assistants — PyPI
-  `graphifyy`, CLI `graphify`) is not baked into every OS base: when selected it is
-  installed for the workspace user by a conditional Dockerfile snippet
-  (`internal/templates/files/tools/graphify/`) via
-  `uv tool install "graphifyy[…extras]"` (all optional extras except the
-  region/DB/niche-specific `chinese,azure,bedrock,falkordb,neo4j,leiden,dm,pascal`),
-  and each selected agent CLI registers Graphify with itself **at workspace
-  start**, once per project — `graphify install --project` for claude-code,
-  `graphify install --project --platform <cli>` for codex/gemini/opencode —
-  not in the Dockerfile, since `--project` writes into the bind-mounted
-  project dir.
-  Graphify's headless LLM backend is a model picked from omlx's live model list
-  at `ai create` (`--graphify-model` / the wizard's picker) — no download
-  happens at create time, since model management stays entirely in omlx's own
-  admin panel — and it is routed through the gateway as `omlx/<name>`.
-- **code-review-graph** (`code-review-graph.com`; per-CLI `install --platform`,
-  then `build` + a D3 graph visualization) and **codebase-memory-mcp**
-  (`DeusData/codebase-memory-mcp`; auto-detecting `install`, optional on-demand 3D
-  graph UI on `:9749`) are likewise appended to the project Dockerfile as
-  conditional snippets only when chosen (not baked into every base) and, when
-  selected, registered as an MCP server with each installed agent CLI at
-  workspace start (`workspace.registerCodeReviewGraph` /
-  `registerCodebaseMemory`, once-guarded + best-effort). Both are local and
-  keyless.
-- **openviking** (`docs.openviking.ai` — "the context database for AI agents") is
-  opt-in and off by default: when selected it is appended to the project
-  Dockerfile as a conditional snippet (`internal/templates/files/tools/openviking/`)
-  installing the `openviking-server` (PyPI `openviking`), the `ov` CLI client (npm
-  `@openviking/cli`), and the OpenCode plugin (npm `@openviking/opencode-plugin`).
-  At workspace start (`workspace.registerOpenViking`, once-guarded + best-effort,
-  detached) it launches the server locally on loopback `:1933` in OpenViking's
-  unauthenticated "dev mode" (data persisted under `/persist/openviking`) and
-  registers it with each installed, supported agent CLI: claude-code and codex via
-  their own native plugin-marketplace commands, opencode and omp via OpenViking's
-  shared memory-plugin installer. gemini has no OpenViking integration in the
-  docs, and hermes's only documented registration path is an interactive wizard
-  with no non-interactive flags, so both are left unregistered.
-- **tokensave** (`aovestdipaperino/tokensave` — a code-graph MCP server for 34
-  languages, semantic queries instead of grepping/reading files) is opt-in and
-  off by default: when selected the binary is baked into the project Dockerfile
-  as a conditional snippet (`internal/templates/files/tools/tokensave/`). At
-  workspace start (`workspace.registerTokenSave`, once-guarded + best-effort,
-  detached) it builds the project's semantic index (`tokensave init
-  --no-git-hook`) and runs `tokensave install --agent <X> --local` for each
-  natively-supported, installed agent CLI (claude-code, opencode, gemini);
-  codex/hermes/omp get it via MCP injection instead
-  (`agentcfg.EnabledMCPServers`). Local and keyless.
-- **agentmemory** (`rohitg00/agentmemory` — persistent cross-session memory for
-  agents) is opt-in and off by default: when selected the npm package is baked
-  into the project Dockerfile as a conditional snippet
-  (`internal/templates/files/tools/agentmemory/`). At workspace start
-  (`workspace.registerAgentMemory`, once-guarded + best-effort, detached) it
-  runs `agentmemory connect claude-code --with-hooks` and/or `gemini mcp add
-  agentmemory npx -y @agentmemory/mcp --scope user` for whichever of those two
-  CLIs are installed; codex/hermes get it via MCP injection instead. **opencode
-  gets no agentmemory integration** — its native setup needs a nonstandard MCP
-  JSON shape plus a copied plugin file too fragile to script reliably, a
-  documented gap (mirrors the `graphifyPlatformFlag` omp gap).
-- **ponytail** (`DietrichGebert/ponytail` — nags the agent to check
-  YAGNI/stdlib/existing code before writing anything new) is opt-in and off by
-  default, and unlike the others ships no binary or MCP server: it is a single
-  markdown skill file, fetched at workspace start
-  (`workspace.registerPonytail`, once-guarded + best-effort, detached) straight
-  from GitHub into the shared skill pool
-  (`<project>/.ai-platform/skills/ponytail/SKILL.md`), reaching every
-  skill-capable CLI through the same symlinks Graphify/Caveman use. It also
-  best-effort runs `gemini extensions install` for gemini. codex/hermes get no
-  Ponytail integration (no MCP server, no viable non-interactive install path).
-- **caveman** is installed at workspace start by its own upstream installer
-  (`registerCaveman`).
+- **caveman** — compresses agent output into a terser style to cut tokens
+  (lite/full/ultra levels), installed by its own upstream installer.
+- **graphify** (PyPI `graphifyy`, CLI `graphify`) — builds a knowledge graph of
+  the codebase for faster, cheaper code-navigation queries. Its headless LLM
+  backend is a model picked from omlx's live model list at `ai create`
+  (`--graphify-model` / the wizard's picker, `agent.graphify_model` in
+  `config.yaml`) — no download happens at create time, since model management
+  stays entirely in omlx's own admin panel — and it is routed through the
+  gateway as `omlx/<name>`.
+- **code-review-graph** (`code-review-graph.com`) — a code-review
+  knowledge-graph MCP server that also generates a visual D3 dependency graph.
+- **codebase-memory-mcp** (`DeusData/codebase-memory-mcp`) — a persistent
+  codebase-memory MCP server, with an optional on-demand 3D graph UI.
+- **openviking** (`docs.openviking.ai`) — a local context-database server for
+  agents.
+- **tokensave** (a code-graph MCP server for 34 languages) — semantic queries
+  instead of grepping/reading files, cutting token use.
+- **agentmemory** (`rohitg00/agentmemory`) — persistent cross-session memory so
+  agents stop re-learning the codebase.
+- **ponytail** (`DietrichGebert/ponytail`) — nags the agent to check
+  YAGNI/stdlib/existing code before writing anything new.
+- **agent-skills** (`addyosmani/agent-skills`) — curated senior-engineer
+  skills (spec, TDD, review, security, shipping, …).
+
+For the three agent configs the platform rewrites **whole** on every session
+launch — codex, hermes, and omp — an enabled tool with an MCP server is
+injected directly into that render (`agentcfg.EnabledMCPServers`), so it can
+never be clobbered by the tool's own installer. claude-code, opencode, and
+gemini instead pick up a tool through the tool's own native
+install/MCP-registration mechanism, since the platform does not own those
+configs wholesale. code-review-graph, codebase-memory-mcp, tokensave, and
+agentmemory are local and keyless; graphify routes through the gateway only for
+its configured backend model (see above); the shared skill pool
+(`<project>/.ai-platform/{skills,agents,prompts}`) still carries caveman,
+graphify, ponytail, and agent-skills to every skill-capable CLI the same way it
+did under the microVM design.
 
 See `spec/01-architecture-spec.md` for the full design and `AGENTS.md` for the
 container/wiring summary.

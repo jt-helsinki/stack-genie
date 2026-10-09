@@ -13,16 +13,16 @@ func noMutator(string, string) error { return nil }
 
 func TestNetworkPopulatesOnRefresh(test *testing.T) {
 	network := config.NetworkConfig{
-		Egress:            "public",
-		AllowHostServices: []config.HostService{{Host: "registry.npmjs.org", Port: 443}},
-		PublishPorts:      []config.PortMapping{{Guest: 3000, Host: 8080}},
+		Egress:      "public",
+		AllowDomain: []string{"registry.npmjs.org"},
+		DenyDomain:  []string{"evil.example.com"},
 	}
 	view := NewNetwork(
 		func() (string, bool) { return "/proj", true },
 		func() string { return "proj" },
 		func(string) (config.NetworkConfig, error) { return network, nil },
 		func(string, string) error { return nil },
-		noMutator, noMutator, noMutator, noMutator,
+		noMutator, noMutator,
 	)
 
 	_ = view.Update(view.Init()())
@@ -34,11 +34,11 @@ func TestNetworkPopulatesOnRefresh(test *testing.T) {
 	if !strings.Contains(rendered, "public") {
 		test.Error("rendered view should show the egress mode")
 	}
-	if !strings.Contains(rendered, "registry.npmjs.org:443") {
+	if !strings.Contains(rendered, "registry.npmjs.org") {
 		test.Error("rendered view should show the allow-list")
 	}
-	if !strings.Contains(rendered, "8080") {
-		test.Error("rendered view should show published ports")
+	if !strings.Contains(rendered, "evil.example.com") {
+		test.Error("rendered view should show the deny-list")
 	}
 }
 
@@ -48,49 +48,22 @@ func TestNetworkNoProjectSelected(test *testing.T) {
 		func() string { return "" },
 		func(string) (config.NetworkConfig, error) { return config.NetworkConfig{}, nil },
 		func(string, string) error { return nil },
-		noMutator, noMutator, noMutator, noMutator,
+		noMutator, noMutator,
 	)
 	if cmd := view.Init(); cmd != nil {
 		test.Error("Init with no project selected must be a no-op")
 	}
-	if !strings.Contains(view.View(), "no project selected") {
+	if !strings.Contains(view.View(), "no workspace selected") {
 		test.Error("with no project, the view should say so")
 	}
-	if cmd := view.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("m")}); cmd != nil {
-		test.Error("the mode key must be inert with no project selected")
+	if cmd := view.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("i")}); cmd != nil {
+		test.Error("the toggle key must be inert with no project selected")
 	}
 }
 
-func TestNetworkCycleModeInvokesSetter(test *testing.T) {
-	var calls [][2]string
-	network := config.NetworkConfig{Egress: "deny"}
-	view := NewNetwork(
-		func() (string, bool) { return "/proj", true },
-		func() string { return "proj" },
-		func(string) (config.NetworkConfig, error) { return network, nil },
-		func(root, mode string) error { calls = append(calls, [2]string{root, mode}); return nil },
-		noMutator, noMutator, noMutator, noMutator,
-	)
-	_ = view.Update(view.Init()())
-
-	cmd := view.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("m")})
-	if cmd == nil {
-		test.Fatal("pressing m must return a mode command")
-	}
-	done := cmd()
-	// deny → public (next in config.EgressModes).
-	if len(calls) != 1 || calls[0] != [2]string{"/proj", "public"} {
-		test.Fatalf("setter calls = %v, want [{/proj public}]", calls)
-	}
-	_ = view.Update(done)
-	if !strings.Contains(view.View(), "egress set to public") {
-		test.Errorf("expected a success flash, got view:\n%s", view.View())
-	}
-}
-
-// Pressing `i` flips the egress mode between "deny" (off) and "public" (on), and
-// once persisted, bubbles a WorkspaceNetworkToggleRequestedMsg so the parent restarts
-// the running workspace (net-rules only apply at create/restart).
+// Pressing `i` flips the egress mode between "deny" (off) and "public" (on) directly
+// — there is no persistent sandbox to restart, so the change applies the next time a
+// nono profile is generated (the next `ai agent`/`ai shell`/`ai start`).
 func TestNetworkToggleInternet(test *testing.T) {
 	var calls [][2]string
 	network := config.NetworkConfig{Egress: "public"}
@@ -99,7 +72,7 @@ func TestNetworkToggleInternet(test *testing.T) {
 		func() string { return "proj" },
 		func(string) (config.NetworkConfig, error) { return network, nil },
 		func(root, mode string) error { calls = append(calls, [2]string{root, mode}); return nil },
-		noMutator, noMutator, noMutator, noMutator,
+		noMutator, noMutator,
 	)
 	_ = view.Update(view.Init()())
 
@@ -112,41 +85,12 @@ func TestNetworkToggleInternet(test *testing.T) {
 		test.Fatalf("setter calls = %v, want [{/proj deny}] (public -> off)", calls)
 	}
 
-	restartCmd := view.Update(done)
-	if restartCmd == nil {
-		test.Fatal("the toggle result must return a command to restart the workspace")
+	refreshCmd := view.Update(done)
+	if refreshCmd == nil {
+		test.Fatal("the toggle result must return a refresh command")
 	}
-	// The view batches a refresh alongside the bubbled message (tea.Batch yields a
-	// BatchMsg of sub-commands for the runtime to run individually).
-	batch, ok := restartCmd().(tea.BatchMsg)
-	if !ok {
-		test.Fatalf("expected a tea.BatchMsg, got %T", restartCmd())
-	}
-	var message WorkspaceNetworkToggleRequestedMsg
-	var found bool
-	for _, sub := range batch {
-		if result, ok := sub().(WorkspaceNetworkToggleRequestedMsg); ok {
-			message, found = result, true
-		}
-	}
-	if !found {
-		test.Fatal("expected one batched command to yield WorkspaceNetworkToggleRequestedMsg")
-	}
-	if message.Project != "proj" || message.Mode != "deny" {
-		test.Fatalf("got %+v, want {Project:proj Mode:deny}", message)
-	}
-	if !strings.Contains(view.View(), "internet off") {
-		test.Errorf("expected an 'internet off' success flash, got view:\n%s", view.View())
-	}
-}
-
-func TestNextEgressModeWraps(test *testing.T) {
-	last := config.EgressModes[len(config.EgressModes)-1]
-	if got := nextEgressMode(last); got != config.EgressModes[0] {
-		test.Errorf("nextEgressMode(%q) = %q, want wrap to %q", last, got, config.EgressModes[0])
-	}
-	if got := nextEgressMode("nonsense"); got != config.EgressModes[0] {
-		test.Errorf("nextEgressMode of unknown = %q, want %q", got, config.EgressModes[0])
+	if !strings.Contains(view.View(), "egress set to deny") {
+		test.Errorf("expected a success flash, got view:\n%s", view.View())
 	}
 }
 
@@ -160,7 +104,7 @@ func TestNetworkAllowPromptApplies(test *testing.T) {
 		func(string) (config.NetworkConfig, error) { return config.NetworkConfig{Egress: "public"}, nil },
 		func(string, string) error { return nil },
 		func(root, raw string) error { got = [2]string{root, raw}; return nil },
-		noMutator, noMutator, noMutator,
+		noMutator,
 	)
 	_ = view.Update(view.Init()())
 

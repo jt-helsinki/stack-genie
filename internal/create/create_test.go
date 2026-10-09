@@ -16,16 +16,14 @@ import (
 
 // Execute runs the full in-process create against a fresh location: it scaffolds the
 // project, seeds the context-optimization defaults + Caveman skill, and reports the
-// expected progress steps in order. A blank GraphifyModel keeps the path network-free
-// (no model pull), so no fakes are needed for the happy path.
+// expected progress steps in order. There is no image to build and nothing to
+// download, so no fakes are needed for the happy path.
 func TestExecuteHappyPath(test *testing.T) {
 	test.Setenv("HOME", test.TempDir())
 
 	root := filepath.Join(test.TempDir(), "location")
 	spec := project.Spec{
 		Name:        "my-app",
-		OS:          SupportedOSes()[0],
-		Stacks:      []string{SupportedStacks()[0]},
 		AgentCLIs:   []string{"opencode", "omp"},
 		DefaultTool: "opencode",
 		Root:        root,
@@ -39,18 +37,15 @@ func TestExecuteHappyPath(test *testing.T) {
 		test.Fatalf("Execute returned error: %v", err)
 	}
 	if len(warnings) != 0 {
-		test.Fatalf("warnings = %v, want none (blank Graphify model is network-free)", warnings)
+		test.Fatalf("warnings = %v, want none (no OAuth agents)", warnings)
 	}
 
 	// The Result mirrors the spec.
-	if result.Name != "my-app" || result.Root != root || result.OS != spec.OS {
-		test.Fatalf("Result = %+v, want name=my-app root=%q os=%q", result, root, spec.OS)
+	if result.Name != "my-app" || result.Root != root {
+		test.Fatalf("Result = %+v, want name=my-app root=%q", result, root)
 	}
 	if len(result.Tools) != 2 || result.Tools[0] != "opencode" || result.Tools[1] != "omp" {
 		test.Fatalf("Result.Tools = %v, want [opencode omp]", result.Tools)
-	}
-	if len(result.Stacks) != 1 || result.Stacks[0] != SupportedStacks()[0] {
-		test.Fatalf("Result.Stacks = %v, want [%s]", result.Stacks, SupportedStacks()[0])
 	}
 	if result.ConfigYAML == "" {
 		test.Error("Result.ConfigYAML is empty, want the scaffolded config.yaml contents")
@@ -72,18 +67,17 @@ func TestExecuteHappyPath(test *testing.T) {
 	if projectConfig.Context.CavemanLevel != contextopt.DefaultCavemanLevel {
 		test.Errorf("caveman level = %q, want %q", projectConfig.Context.CavemanLevel, contextopt.DefaultCavemanLevel)
 	}
-	// The Caveman skill is NOT seeded at create — it is installed by the real toolkit at
-	// workspace start (workspace.registerCaveman).
+	// The Caveman skill is NOT seeded at create — it is installed at the next
+	// `ai agent`/`ai shell` (workspace.registerCaveman).
 	if _, err := os.Stat(filepath.Join(root, ".ai-platform", "skills", "caveman", "SKILL.md")); err == nil {
 		test.Error("Caveman SKILL.md should not be seeded at create (installed at workspace start)")
 	}
 
-	// The report callback saw the expected steps, in order (no pull step for a blank
-	// Graphify model).
+	// The report callback saw the expected steps, in order.
 	want := []string{
-		"scaffolding project (Dockerfile, config, skills)",
+		"scaffolding workspace (config, skills)",
 		"seeding context-optimization defaults",
-		"workspace scaffolded — start it to build the image + boot the microVM",
+		"workspace registered — run `ai agent <cli>` or `ai shell` to start a sandboxed session",
 	}
 	if len(steps) != len(want) {
 		test.Fatalf("progress steps = %v, want %v", steps, want)
@@ -95,8 +89,6 @@ func TestExecuteHappyPath(test *testing.T) {
 	}
 }
 
-// An explicit over-host CPU request is rejected with exit 2 (invalid input) before any
-// scaffolding happens.
 // TestExecutePersistsShellChoice verifies the create wizard/flag shell choice flows
 // through project.Spec → Scaffold → config.yaml: an explicit zsh persists
 // workspace.shell: zsh, while an unset shell defaults to bash.
@@ -114,7 +106,6 @@ func TestExecutePersistsShellChoice(test *testing.T) {
 			root := filepath.Join(test.TempDir(), "location")
 			spec := project.Spec{
 				Name:        "shell-app",
-				OS:          SupportedOSes()[0],
 				AgentCLIs:   []string{"opencode", "omp"},
 				DefaultTool: "opencode",
 				Shell:       tc.shell,
@@ -150,7 +141,6 @@ func TestExecutePersistsCavemanChoice(test *testing.T) {
 			root := filepath.Join(test.TempDir(), "location")
 			spec := project.Spec{
 				Name:           "caveman-app",
-				OS:             SupportedOSes()[0],
 				AgentCLIs:      []string{"opencode", "omp"},
 				DefaultTool:    "opencode",
 				Root:           root,
@@ -193,7 +183,6 @@ func TestExecutePersistsCodeGraphAndMemoryChoices(test *testing.T) {
 			root := filepath.Join(test.TempDir(), "location")
 			spec := project.Spec{
 				Name:                   "tools-app",
-				OS:                     SupportedOSes()[0],
 				AgentCLIs:              []string{"opencode", "omp"},
 				DefaultTool:            "opencode",
 				Root:                   root,
@@ -217,10 +206,10 @@ func TestExecutePersistsCodeGraphAndMemoryChoices(test *testing.T) {
 	}
 }
 
-// TestExecutePersistsGraphifyChoice verifies that the Graphify AI-tool toggle flows
-// through project.Spec → Scaffold → config.yaml (context.graphify_enabled) AND controls
-// whether the graphify install lands in the scaffolded Dockerfile (conditional snippet,
-// no longer baked into the base).
+// TestExecutePersistsGraphifyChoice verifies the Graphify AI-tool toggle flows through
+// project.Spec → Scaffold → config.yaml (context.graphify_enabled). There is no image
+// to inspect for an install snippet anymore — graphify installs at the next
+// `ai agent`/`ai shell` (workspace.setupGraphifyMCP), not at create time.
 func TestExecutePersistsGraphifyChoice(test *testing.T) {
 	for _, enabled := range []bool{true, false} {
 		name := "graphify-off"
@@ -232,7 +221,6 @@ func TestExecutePersistsGraphifyChoice(test *testing.T) {
 			root := filepath.Join(test.TempDir(), "location")
 			spec := project.Spec{
 				Name:            "g-app",
-				OS:              SupportedOSes()[0],
 				AgentCLIs:       []string{"opencode", "omp"},
 				DefaultTool:     "opencode",
 				Root:            root,
@@ -248,36 +236,7 @@ func TestExecutePersistsGraphifyChoice(test *testing.T) {
 			if got := projectConfig.Context.GraphifyEnabledOrDefault(); got != enabled {
 				test.Errorf("GraphifyEnabledOrDefault = %v, want %v", got, enabled)
 			}
-			dockerfile, err := os.ReadFile(filepath.Join(root, ".ai-platform", "Dockerfile"))
-			if err != nil {
-				test.Fatalf("read Dockerfile: %v", err)
-			}
-			hasGraphify := strings.Contains(string(dockerfile), "graphifyy[")
-			if hasGraphify != enabled {
-				test.Errorf("Dockerfile contains graphify install = %v, want %v", hasGraphify, enabled)
-			}
 		})
-	}
-}
-
-func TestExecuteRejectsOverHostResources(test *testing.T) {
-	test.Setenv("HOME", test.TempDir())
-	spec := project.Spec{
-		Name: "big-app",
-		OS:   SupportedOSes()[0],
-		Root: filepath.Join(test.TempDir(), "location"),
-		CPUs: 1 << 20, // far more than any host has
-	}
-	_, _, err := Execute(spec, "t", nil)
-	if err == nil {
-		test.Fatal("Execute must reject an over-host CPU request")
-	}
-	var platformErr *output.Error
-	if !errors.As(err, &platformErr) {
-		test.Fatalf("error %v is not an *output.Error", err)
-	}
-	if platformErr.Code != output.ExitInvalidInput {
-		test.Fatalf("exit code = %d, want %d (invalid input)", platformErr.Code, output.ExitInvalidInput)
 	}
 }
 
@@ -294,71 +253,6 @@ func TestMapProjectErrAlreadyExistsIsInvalidInput(test *testing.T) {
 	}
 }
 
-func TestCappedResourcesCapsDefaultAtHost(test *testing.T) {
-	// Small host: the 4-cpu / 8G defaults are capped down to the host's 2 cpu and the
-	// USABLE memory (4096 MiB host → reserve max(2048, 4096/4=1024)=2048 → 2048 usable).
-	cpus, memory := cappedResources(0, "", 2, 4096, true)
-	if cpus != 2 {
-		test.Errorf("cpus = %d, want capped to host 2", cpus)
-	}
-	if memory != "2048M" {
-		test.Errorf("memory = %q, want capped to usable 2048M", memory)
-	}
-	// Large host: defaults fit, so they pass through unchanged.
-	cpus, memory = cappedResources(0, "", 16, 32768, true)
-	if cpus != config.Default().Workspace.CPULimit || memory != config.Default().Workspace.MemoryLimit {
-		test.Errorf("large host: got %d/%q, want defaults %d/%q", cpus, memory, config.Default().Workspace.CPULimit, config.Default().Workspace.MemoryLimit)
-	}
-	// Explicit values are preserved (capping only fills unset).
-	cpus, memory = cappedResources(1, "2G", 2, 4096, true)
-	if cpus != 1 || memory != "2G" {
-		test.Errorf("explicit values changed: got %d/%q, want 1/2G", cpus, memory)
-	}
-	// Unknown host RAM: the memory default is left as-is (no cap when we can't tell).
-	if _, memory = cappedResources(0, "", 2, 0, false); memory != config.Default().Workspace.MemoryLimit {
-		test.Errorf("unknown host RAM: memory = %q, want default unchanged", memory)
-	}
-}
-
-func TestValidateResourcesWithinHostRejectsOverCommit(test *testing.T) {
-	// A clearly-impossible CPU request must be rejected (host has far fewer).
-	if err := ValidateResourcesWithinHost(1<<20, ""); err == nil {
-		test.Error("an over-host CPU request must be rejected")
-	}
-	// A negative CPU count is invalid.
-	if err := ValidateResourcesWithinHost(-1, ""); err == nil {
-		test.Error("a negative CPU count must be rejected")
-	}
-	// A reasonable request (1 CPU, 1 GB) passes on any host.
-	if err := ValidateResourcesWithinHost(1, "1"); err != nil {
-		test.Errorf("1 CPU / 1 GB should be valid: %v", err)
-	}
-	// Below the boot minimum is rejected (also guards the unit footgun).
-	if err := ValidateResourcesWithinHost(1, "256M"); err == nil {
-		test.Error("256M (below the 512 MiB minimum) must be rejected")
-	}
-}
-
-func TestValidateDisk(test *testing.T) {
-	// Blank is allowed (the platform default applies).
-	if err := ValidateDisk(""); err != nil {
-		test.Errorf("blank disk should be valid: %v", err)
-	}
-	if err := ValidateDisk("  "); err != nil {
-		test.Errorf("whitespace disk should be valid: %v", err)
-	}
-	// A plain positive GB number is valid.
-	if err := ValidateDisk("20"); err != nil {
-		test.Errorf("20 GB should be valid: %v", err)
-	}
-	// Zero / non-numeric / negative are rejected.
-	for _, bad := range []string{"0", "abc", "-5", "10x"} {
-		if err := ValidateDisk(bad); err == nil {
-			test.Errorf("disk %q must be rejected", bad)
-		}
-	}
-}
-
 // TestExecuteWarnsOnOAuth verifies Execute emits a bypass warning for each oauth agent,
 // and none when all agents are api-key.
 func TestExecuteWarnsOnOAuth(test *testing.T) {
@@ -366,7 +260,6 @@ func TestExecuteWarnsOnOAuth(test *testing.T) {
 	root := filepath.Join(test.TempDir(), "location")
 	spec := project.Spec{
 		Name:        "oauth-app",
-		OS:          SupportedOSes()[0],
 		AgentCLIs:   []string{"opencode", "claude-code", "gemini"},
 		DefaultTool: "opencode",
 		AuthModes:   map[string]string{"claude-code": "oauth", "gemini": "api-key"},
@@ -385,87 +278,13 @@ func TestExecuteWarnsOnOAuth(test *testing.T) {
 	}
 }
 
-// TestSupportedAgentCLIsIncludesHermes pins the hermes gateway agent, confirms
-// SplitAgentsAndApps classes it as an AGENT (not an app), and that the removed openclaw is
-// absent.
+// TestSupportedAgentCLIsIncludesHermes pins the hermes gateway agent, and confirms the
+// removed openclaw is absent.
 func TestSupportedAgentCLIsIncludesHermes(test *testing.T) {
 	if !slices.Contains(SupportedAgentCLIs(), "hermes") {
 		test.Errorf("SupportedAgentCLIs() must include hermes: %v", SupportedAgentCLIs())
 	}
 	if slices.Contains(SupportedAgentCLIs(), "openclaw") {
 		test.Errorf("openclaw was removed and must not be a supported agent CLI: %v", SupportedAgentCLIs())
-	}
-	agentCLIs, appKeys := SplitAgentsAndApps([]string{"hermes", "openwebui"})
-	if !slices.Contains(agentCLIs, "hermes") {
-		test.Errorf("hermes must split as an agent, got agents=%v apps=%v", agentCLIs, appKeys)
-	}
-	if slices.Contains(appKeys, "hermes") {
-		test.Errorf("hermes must NOT be classed as an app: %v", appKeys)
-	}
-}
-
-// TestSplitAgentsAndApps verifies the combined agents+apps wizard selection splits into
-// the two known sets regardless of selection order, dropping unknown values.
-func TestSplitAgentsAndApps(test *testing.T) {
-	agentCLIs, appKeys := SplitAgentsAndApps([]string{"opencode", "openwebui", "omp", "bogus"})
-	if strings.Join(agentCLIs, ",") != "opencode,omp" {
-		test.Errorf("agent CLIs = %v, want [opencode omp]", agentCLIs)
-	}
-	if strings.Join(appKeys, ",") != "openwebui" {
-		test.Errorf("app keys = %v, want [openwebui]", appKeys)
-	}
-	agentCLIs, appKeys = SplitAgentsAndApps(nil)
-	if len(agentCLIs) != 0 || len(appKeys) != 0 {
-		test.Errorf("empty selection must split to empty sides, got %v / %v", agentCLIs, appKeys)
-	}
-}
-
-// TestValidateIsolatedDirs verifies the accept/reject rules for --isolate-dirs: blank
-// entries, absolute paths, "..", and duplicates are all rejected; a plain relative dir
-// is accepted.
-func TestValidateIsolatedDirs(test *testing.T) {
-	valid := []string{"node_modules", "apps/web/target"}
-	if err := ValidateIsolatedDirs(valid); err != nil {
-		test.Errorf("ValidateIsolatedDirs(%v) = %v, want nil", valid, err)
-	}
-	invalid := [][]string{
-		{""},
-		{"  "},
-		{"/etc"},
-		{"../escape"},
-		{"."},
-		{"node_modules", "node_modules"},
-	}
-	for _, dirs := range invalid {
-		if err := ValidateIsolatedDirs(dirs); err == nil {
-			test.Errorf("ValidateIsolatedDirs(%v) = nil, want an error", dirs)
-		}
-	}
-}
-
-// TestValidateSharedMounts verifies the accept/reject rules for --map-dir: a relative
-// or empty guest path, an empty host path, a reserved guest path (the platform's own
-// project/persist mounts), and a duplicate guest path are all rejected; a well-formed
-// entry is accepted.
-func TestValidateSharedMounts(test *testing.T) {
-	valid := []config.SharedMount{{GuestPath: "/home/workspace/shared", HostPath: "/host/downloads"}}
-	if err := ValidateSharedMounts(valid); err != nil {
-		test.Errorf("ValidateSharedMounts(%v) = %v, want nil", valid, err)
-	}
-	invalid := [][]config.SharedMount{
-		{{GuestPath: "", HostPath: "/host/downloads"}},
-		{{GuestPath: "relative/path", HostPath: "/host/downloads"}},
-		{{GuestPath: "/home/workspace/shared", HostPath: ""}},
-		{{GuestPath: "/home/workspace/project", HostPath: "/host/downloads"}},
-		{{GuestPath: "/persist", HostPath: "/host/downloads"}},
-		{
-			{GuestPath: "/home/workspace/shared", HostPath: "/host/a"},
-			{GuestPath: "/home/workspace/shared", HostPath: "/host/b"},
-		},
-	}
-	for _, mounts := range invalid {
-		if err := ValidateSharedMounts(mounts); err == nil {
-			test.Errorf("ValidateSharedMounts(%v) = nil, want an error", mounts)
-		}
 	}
 }

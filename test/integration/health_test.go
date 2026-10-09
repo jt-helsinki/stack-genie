@@ -33,8 +33,8 @@ func TestGroup01SetupHealth(test *testing.T) {
 		}
 		var report setup.Report
 		env.dataInto(test, &report)
-		if report.Runtime == nil || !report.Runtime.Microsandbox.Available {
-			test.Errorf("setup report: microVM runtime should be available, got %+v", report.Runtime)
+		if report.Runtime == nil || !report.Runtime.Nono.Installed {
+			test.Errorf("setup report: nono should be installed, got %+v", report.Runtime)
 		}
 	})
 

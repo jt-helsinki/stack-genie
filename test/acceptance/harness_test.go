@@ -1,8 +1,9 @@
 // Package acceptance is the Go acceptance-test harness (acceptance-tests spec
 // §1.6). It builds the `ai` binary once, runs commands against an ephemeral
 // HOME, and asserts the §19 JSON envelope and §18 exit codes — never scraped
-// text. Service-dependent tests skip when Docker/Microsandbox/LiteLLM are
-// absent (they run on a provisioned Apple Silicon host).
+// text. Service-dependent tests skip when Docker/nono/LiteLLM are absent (they
+// run on a provisioned host; unlike the old Microsandbox microVM runtime, nono
+// has no Apple-Silicon-only restriction).
 package acceptance
 
 import (
@@ -93,19 +94,6 @@ func (harness *Harness) env(extra ...string) []string {
 func (harness *Harness) Run(test *testing.T, args ...string) (Envelope, int) {
 	test.Helper()
 	return harness.runRaw(test, append(args, "--json")...)
-}
-
-// Exec runs `ai exec [project] --json -- <argv>` — placing --json before the
-// `--` so it is not swallowed as part of the inner command.
-func (harness *Harness) Exec(test *testing.T, project string, argv ...string) (Envelope, int) {
-	test.Helper()
-	args := []string{"exec"}
-	if project != "" {
-		args = append(args, project)
-	}
-	args = append(args, "--json", "--")
-	args = append(args, argv...)
-	return harness.runRaw(test, args...)
 }
 
 // runRaw runs `ai <args>` verbatim (no automatic --json) and parses the envelope.

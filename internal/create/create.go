@@ -1,19 +1,16 @@
 // Package create performs the deterministic, in-process work of creating a workspace
-// from an already-built project.Spec: validate + cap resources against the host,
-// scaffold the tracked .ai-platform/ files, and seed context-optimization defaults.
-// It is shared by `ai create` (the CLI) and the `ai ui` in-TUI create wizard so both
-// paths behave identically without a subprocess. It deliberately does NOT import
-// internal/cli — internal/cli imports internal/tui which imports this package, so
-// importing cli here would cycle.
+// from an already-built project.Spec: scaffold the tracked .ai-platform/ files and
+// seed context-optimization defaults. It is shared by `ai create` (the CLI) and the
+// `ai ui` in-TUI create wizard so both paths behave identically without a subprocess.
+// It deliberately does NOT import internal/cli — internal/cli imports internal/tui
+// which imports this package, so importing cli here would cycle.
 package create
 
 import (
 	"errors"
 	"fmt"
 	"os"
-	"path"
 	"slices"
-	"strings"
 
 	"github.com/jt-helsinki/stack-genie/internal/config"
 	"github.com/jt-helsinki/stack-genie/internal/contextopt"
@@ -27,46 +24,29 @@ import (
 type Result struct {
 	Name       string
 	Root       string
-	OS         string
 	Tools      []string
-	Stacks     []string
-	Apps       []string
 	ConfigYAML string
 }
 
-// Execute performs create for an ALREADY-RESOLVED spec (spec.Root must be an absolute
-// path; the caller owns location resolution / attach / dry-run). It validates + caps
-// resources against the host, scaffolds the project's tracked .ai-platform/ files,
-// seeds the context-optimization defaults (+ Caveman skill), and pulls the chosen
-// Graphify model (best-effort → warnings). Errors carry the right exit code
-// (*output.Error) where it matters.
-// Progress is a create-flow progress event: a human Step label plus, when the step is a
-// model download, live byte counters (Completed/Total; 0 when not a download). Execute
-// calls report (nil-safe) as it advances, so the CLI can render a progress bar + the TUI
-// can stream a live log of what's happening.
+// Progress is a create-flow progress event: a human Step label. Execute calls report
+// (nil-safe) as it advances, so the CLI can render a step log and the TUI can stream
+// a live log of what's happening.
 type Progress struct {
-	Step      string
-	Completed int64
-	Total     int64
+	Step string
 }
 
-// Execute runs the deterministic create work. report (may be nil) receives Progress
-// events for each phase + the Graphify-model pull, so callers can show progress.
+// Execute runs the deterministic create work for an ALREADY-RESOLVED spec (spec.Root
+// must be an absolute path; the caller owns location resolution / attach / dry-run):
+// it scaffolds the project's tracked .ai-platform/ files and seeds the
+// context-optimization defaults (+ Caveman level). There is no image to build and no
+// resources to validate — nono sandboxes the host directly, so a workspace is ready
+// to use the moment it's scaffolded (`ai agent <cli>`/`ai shell` generate its nono
+// profile on first launch). Errors carry the right exit code (*output.Error) where it
+// matters.
 func Execute(spec project.Spec, now string, report func(Progress)) (Result, []string, error) {
 	if report == nil {
 		report = func(Progress) {}
 	}
-	// Reject an EXPLICIT over-host CPU/memory request, then resolve an UNSET value to
-	// the platform default capped at the host — so the persisted config is never
-	// larger than the machine.
-	if err := ValidateResourcesWithinHost(spec.CPUs, spec.Memory); err != nil {
-		return Result{}, nil, err
-	}
-	if err := ValidateDisk(spec.Disk); err != nil {
-		return Result{}, nil, err
-	}
-	spec.CPUs, spec.Memory = CappedDefaultResources(spec.CPUs, spec.Memory)
-
 	if err := project.EnsureCreatable(spec.Name, spec.Root); err != nil {
 		return Result{}, nil, mapProjectErr(err)
 	}
@@ -75,13 +55,13 @@ func Execute(spec project.Spec, now string, report func(Progress)) (Result, []st
 	if err := os.MkdirAll(spec.Root, 0o755); err != nil {
 		return Result{}, nil, output.Errorf(output.ExitRuntimeFailure, "create location %s: %s", spec.Root, err)
 	}
-	report(Progress{Step: "scaffolding project (Dockerfile, config, skills)"})
+	report(Progress{Step: "scaffolding workspace (config, skills)"})
 	if _, err := project.Scaffold(spec, now); err != nil {
 		return Result{}, nil, mapProjectErr(err)
 	}
 	// Seed context-optimization defaults so the project config is self-describing. The
-	// Caveman level is recorded here; the Caveman skill itself is installed by the real
-	// toolkit at workspace start (workspace.registerCaveman), not scaffolded (arch §9).
+	// Caveman level is recorded here; the Caveman skill itself is installed at the next
+	// `ai agent`/`ai shell` (workspace.registerCaveman), not scaffolded.
 	report(Progress{Step: "seeding context-optimization defaults"})
 	if err := contextopt.SetStrategy(spec.Root, contextopt.DefaultStrategy); err != nil {
 		return Result{}, nil, output.Errorf(output.ExitRuntimeFailure, "seed context strategy: %s", err)
@@ -94,14 +74,11 @@ func Execute(spec project.Spec, now string, report func(Progress)) (Result, []st
 		return Result{}, nil, output.Errorf(output.ExitRuntimeFailure, "read config.yaml: %s", err)
 	}
 	warnings := oauthWarnings(spec)
-	report(Progress{Step: "workspace scaffolded — start it to build the image + boot the microVM"})
+	report(Progress{Step: "workspace registered — run `ai agent <cli>` or `ai shell` to start a sandboxed session"})
 	return Result{
 		Name:       spec.Name,
 		Root:       spec.Root,
-		OS:         spec.OS,
 		Tools:      spec.AgentCLIs,
-		Stacks:     spec.Stacks,
-		Apps:       spec.Apps,
 		ConfigYAML: string(configYAML),
 	}, warnings, nil
 }
@@ -151,157 +128,6 @@ func mapProjectErr(err error) error {
 	}
 }
 
-// ValidateResourcesWithinHost rejects a CPU/memory request that exceeds what the host
-// can back (exit 2). Memory is capped BELOW host RAM (config.UsableHostMemoryMiB) so a
-// microVM is never given the whole machine.
-func ValidateResourcesWithinHost(cpus int, memory string) error {
-	if err := config.ValidateCPUs(cpus); err != nil {
-		return output.Errorf(output.ExitInvalidInput, "%s", err)
-	}
-	if hostCPUs := sysinfo.CPUs(); cpus > hostCPUs {
-		return output.Errorf(output.ExitInvalidInput, "--cpus %d exceeds the host's %d logical CPUs", cpus, hostCPUs)
-	}
-	if err := config.ValidateMemory(memory); err != nil {
-		return output.Errorf(output.ExitInvalidInput, "%s", err)
-	}
-	if memory != "" {
-		if requested, err := config.ParseMemoryMiB(memory); err == nil {
-			if hostMiB, ok := sysinfo.MemoryMiB(); ok {
-				if usable := config.UsableHostMemoryMiB(hostMiB); requested > usable {
-					return output.Errorf(output.ExitInvalidInput,
-						"memory %s (%d MiB) exceeds the usable %d MiB — the platform reserves headroom for the host, service tier, and hypervisor (host has %d MiB; a microVM given all host RAM cannot boot)",
-						memory, requested, usable, hostMiB)
-				}
-			}
-		}
-	}
-	return nil
-}
-
-// ValidateDisk validates the workspace disk size ("<GB>", e.g. "20"). Blank is allowed
-// (the platform default applies). The upper is sparse, so it is not host-capped like
-// memory; only a malformed/non-positive value is rejected (exit 2).
-func ValidateDisk(disk string) error {
-	if strings.TrimSpace(disk) == "" {
-		return nil
-	}
-	mib, err := config.ParseMemoryMiB(disk)
-	if err != nil || mib <= 0 {
-		return output.Errorf(output.ExitInvalidInput, "invalid disk size %q — use a plain number of GB (e.g. 20)", disk)
-	}
-	return nil
-}
-
-// ValidateIsolatedDirs validates the --isolate-dirs list: each entry must be a
-// non-empty, relative, project-internal path (no leading "/", no ".." segment, no
-// "."-only/empty segment) — it names a subdirectory of the project workdir that gets
-// its own private per-workspace volume instead of the host bind mount. Duplicate
-// entries (after path cleaning) are rejected so the same guest mount is never
-// declared twice.
-func ValidateIsolatedDirs(dirs []string) error {
-	seen := make(map[string]bool, len(dirs))
-	for _, dir := range dirs {
-		trimmed := strings.TrimSpace(dir)
-		if trimmed == "" {
-			return output.Errorf(output.ExitInvalidInput, "isolated dir must not be empty")
-		}
-		if path.IsAbs(trimmed) {
-			return output.Errorf(output.ExitInvalidInput, "isolated dir %q must be relative to the project root, not absolute", trimmed)
-		}
-		clean := path.Clean(trimmed)
-		if clean == "." || strings.HasPrefix(clean, "../") || clean == ".." {
-			return output.Errorf(output.ExitInvalidInput, "isolated dir %q must stay inside the project root", trimmed)
-		}
-		if seen[clean] {
-			return output.Errorf(output.ExitInvalidInput, "isolated dir %q listed more than once", trimmed)
-		}
-		seen[clean] = true
-	}
-	return nil
-}
-
-// reservedGuestMountPaths are the guest paths the platform itself mounts (the project
-// bind mount and the persistent overlay — see workspace.workspaceWorkdir/"/persist";
-// duplicated here as literals to avoid an internal/create → internal/workspace import).
-// A --map-dir/--isolate-dirs guest path may not collide with either.
-var reservedGuestMountPaths = map[string]bool{
-	"/home/workspace/project": true,
-	"/persist":                true,
-}
-
-// ValidateSharedMounts validates the --map-dir list: each entry needs a non-empty,
-// absolute guest path (not colliding with the platform's own project/overlay mounts)
-// and a non-empty host path (created if missing — see workspace.Manager.Start). Guest
-// paths must be unique across entries.
-func ValidateSharedMounts(mounts []config.SharedMount) error {
-	seen := make(map[string]bool, len(mounts))
-	for _, mount := range mounts {
-		guestPath := path.Clean(strings.TrimSpace(mount.GuestPath))
-		hostPath := strings.TrimSpace(mount.HostPath)
-		if guestPath == "" || guestPath == "." {
-			return output.Errorf(output.ExitInvalidInput, "shared mount guest path must not be empty")
-		}
-		if !path.IsAbs(guestPath) {
-			return output.Errorf(output.ExitInvalidInput, "shared mount guest path %q must be absolute", mount.GuestPath)
-		}
-		if reservedGuestMountPaths[guestPath] {
-			return output.Errorf(output.ExitInvalidInput, "shared mount guest path %q is reserved by the platform", guestPath)
-		}
-		if hostPath == "" {
-			return output.Errorf(output.ExitInvalidInput, "shared mount %q needs a host path", guestPath)
-		}
-		if seen[guestPath] {
-			return output.Errorf(output.ExitInvalidInput, "shared mount guest path %q listed more than once", guestPath)
-		}
-		seen[guestPath] = true
-	}
-	return nil
-}
-
-// CappedDefaultResources resolves an UNSET cpu/memory to the platform default and caps
-// it at the host — so a host smaller than the default never yields an over-host config.
-// Explicit over-host values are rejected earlier by ValidateResourcesWithinHost.
-func CappedDefaultResources(cpus int, memory string) (int, string) {
-	hostMiB, ok := sysinfo.MemoryMiB()
-	return cappedResources(cpus, memory, sysinfo.CPUs(), hostMiB, ok)
-}
-
-// cappedResources is the host-agnostic core (host values injected so it is testable).
-func cappedResources(cpus int, memory string, hostCPUs int, hostMiB uint64, hostMiBKnown bool) (int, string) {
-	if cpus <= 0 {
-		cpus = config.Default().Workspace.CPULimit
-		if hostCPUs > 0 && cpus > hostCPUs {
-			cpus = hostCPUs
-		}
-	}
-	if memory == "" {
-		memory = config.Default().Workspace.MemoryLimit
-		if hostMiBKnown {
-			usable := config.UsableHostMemoryMiB(hostMiB)
-			if defaultMiB, err := config.ParseMemoryMiB(memory); err == nil && defaultMiB > usable {
-				memory = fmt.Sprintf("%dM", usable)
-			}
-		}
-	}
-	return cpus, memory
-}
-
-// HostCPUs returns the host's logical CPU count (for the create wizard's vCPU hint).
+// HostCPUs returns the host's logical CPU count (unused now that the resource-sizing
+// wizard steps are gone; kept for callers that still reference it).
 func HostCPUs() int { return sysinfo.CPUs() }
-
-// HostMemoryGB returns the host's total RAM in whole GB (0 if undeterminable).
-func HostMemoryGB() int {
-	if mib, ok := sysinfo.MemoryMiB(); ok {
-		return int(mib / 1024)
-	}
-	return 0
-}
-
-// UsableHostMemoryGB is the largest workspace memory (whole GB) the platform allocates
-// — host RAM minus the reserve for the host OS + service tier + hypervisor.
-func UsableHostMemoryGB() int {
-	if mib, ok := sysinfo.MemoryMiB(); ok {
-		return int(config.UsableHostMemoryMiB(mib) / 1024)
-	}
-	return 0
-}

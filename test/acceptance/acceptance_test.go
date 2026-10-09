@@ -4,34 +4,21 @@ import (
 	"os"
 	"os/exec"
 	"testing"
-
-	"github.com/jt-helsinki/stack-genie/internal/templates"
 )
 
-// installTemplates lays down ~/.ai-platform/templates into the harness HOME.
-// On a provisioned host `ai setup` does this; here it is a fixture so the
-// create wizard (which composes the Dockerfile from templates) can run without
-// the hardware-bound `ai setup`.
-func (harness *Harness) installTemplates(test *testing.T) {
-	test.Helper()
-	test.Setenv("HOME", harness.Home) // make the in-process Install target the same HOME
-	if err := templates.Install(); err != nil {
-		test.Fatal(err)
-	}
-}
-
-// hardwareAvailable gates the full-stack [S1] tests. They require not just the
-// tools on PATH but a provisioned Apple Silicon host that can actually boot
-// microVMs and launch the service tier — so detecting docker+msb is not enough.
-// Require an explicit opt-in (AIP_HARDWARE_TESTS=1), set on the provisioned host,
-// so `go test ./...` stays green on a tooled-but-not-provisioned machine.
+// hardwareAvailable gates the full-stack [S1] tests. They require a provisioned
+// host that can actually launch the Docker service tier (and, for workspace
+// tests, has nono installed) — so just detecting the binaries on PATH is not
+// enough to prove the stack actually comes up. Require an explicit opt-in
+// (AIP_HARDWARE_TESTS=1), set on the provisioned host, so `go test ./...` stays
+// green on a tooled-but-not-provisioned machine.
 func hardwareAvailable() bool {
 	if os.Getenv("AIP_HARDWARE_TESTS") != "1" {
 		return false
 	}
 	_, docker := exec.LookPath("docker")
-	_, msb := exec.LookPath("msb")
-	return docker == nil && msb == nil
+	_, nono := exec.LookPath("nono")
+	return docker == nil && nono == nil
 }
 
 // --- runnable [S1] subset ---------------------------------------------------
@@ -104,7 +91,7 @@ func TestDoctorAlwaysReportsExit0(test *testing.T) {
 	for _, check := range data.Checks {
 		names[check.Name] = true
 	}
-	for _, want := range []string{"container runtime", "microsandbox runtime", "host virtualization"} {
+	for _, want := range []string{"container runtime", "nono runtime"} {
 		if !names[want] {
 			test.Errorf("doctor report missing dependency check %q", want)
 		}
@@ -161,27 +148,25 @@ func TestStateRepairThenShow(test *testing.T) {
 
 func TestProjectCreateNoTTYExits2(test *testing.T) {
 	harness := New(test)
-	// harness.Run adds --json, which disables the wizard and requires the flags;
-	// "demo" has no --os, so it exits 2 (CLI §3.1).
-	envelope, code := harness.Run(test, "create", "demo")
+	// harness.Run adds --json, which disables the wizard: an unknown --agents
+	// value is rejected directly (CLI §3.1), with no prompt to fall back on.
+	envelope, code := harness.Run(test, "create", "demo", "--agents", "not-a-real-cli")
 	AssertError(test, envelope, code, 2)
 }
 
 func TestProjectLifecycle(test *testing.T) {
 	harness := New(test)
-	harness.installTemplates(test)
 
-	// Create non-interactively via flags (--json); the helper passes the default
-	// base OS and agent CLIs.
+	// Create non-interactively via flags (--json); the helper passes the
+	// default agent CLI.
 	created, code := harness.CreateProject(test, "lifecycle-test")
 	AssertOK(test, created, code, "project.create")
 	var createData struct {
-		Name string   `json:"name"`
-		OS   string   `json:"os"`
-		Tool []string `json:"tools"`
+		Name  string   `json:"name"`
+		Tools []string `json:"tools"`
 	}
 	created.dataInto(test, &createData)
-	if createData.Name != "lifecycle-test" || createData.OS != "debian-trixie" {
+	if createData.Name != "lifecycle-test" {
 		test.Fatalf("create data: %+v", createData)
 	}
 
@@ -219,7 +204,6 @@ func TestProjectLifecycle(test *testing.T) {
 // strategy/caveman edits round-trip through the project config.
 func TestContextOptimizationFlow(test *testing.T) {
 	harness := New(test)
-	harness.installTemplates(test)
 
 	created, code := harness.CreateProject(test, "context-test")
 	AssertOK(test, created, code, "project.create")
@@ -263,31 +247,27 @@ func TestContextOptimizationFlow(test *testing.T) {
 
 func TestSetupSucceedsOnHardware(test *testing.T) {
 	if !hardwareAvailable() {
-		test.Skip("requires Docker + Microsandbox (msb) — runs on a provisioned Apple Silicon host")
+		test.Skip("requires Docker + nono — runs on a provisioned host; set AIP_HARDWARE_TESTS=1")
 	}
 	harness := New(test)
 	envelope, code := harness.Run(test, "setup")
 	AssertOK(test, envelope, code, "setup")
 }
 
-// TestWorkspaceDoctorOnHardware covers AT §11.1 [S1]: a rootless service tier and
-// a microVM workspace. Off-hardware the command exits 3 (no msb) or 4 (no
-// virtualization); the rootless/privileged/microvm envelope is asserted only on a
-// provisioned host.
+// TestWorkspaceDoctorOnHardware covers AT §11.1 [S1]: a workspace with a live
+// nono session. Off-hardware the command exits 3 (no nono); the session posture
+// is asserted only on a provisioned host.
 func TestWorkspaceDoctorOnHardware(test *testing.T) {
 	if !hardwareAvailable() {
-		test.Skip("requires Docker + Microsandbox (msb) — runs on a provisioned Apple Silicon host")
+		test.Skip("requires Docker + nono — runs on a provisioned host; set AIP_HARDWARE_TESTS=1")
 	}
 	harness := New(test)
-	harness.installTemplates(test)
 
 	created, code := harness.CreateProject(test, "doctor-test")
 	AssertOK(test, created, code, "project.create")
 
 	// The consolidated `ai doctor [name]` adds the WORKSPACE-runtime section when a
-	// name is given. On a provisioned host the workspace rootless/virtualization
-	// checks must pass (the platform never runs privileged, workspaces are
-	// microVMs).
+	// name is given. On a provisioned host nono must be installed.
 	envelope, code := harness.Run(test, "doctor", "doctor-test")
 	AssertOK(test, envelope, code, "doctor")
 	var data struct {
@@ -301,67 +281,7 @@ func TestWorkspaceDoctorOnHardware(test *testing.T) {
 	for _, check := range data.Checks {
 		status[check.Name] = check.Status
 	}
-	for _, name := range []string{"workspace rootless", "workspace virtualization"} {
-		if status[name] != "ok" {
-			test.Fatalf("workspace doctor posture: %s = %q, want ok (checks: %+v)", name, status[name], data.Checks)
-		}
-	}
-}
-
-// TestOverlayPersistsAcrossRecreation covers the [S4] persistence criterion
-// (arch §26): a program installed inside the workspace, plus agent state written
-// outside the project mount, must survive `ai destroy` + `ai start`. This
-// needs a real microVM, so it runs only on a provisioned host.
-func TestOverlayPersistsAcrossRecreation(test *testing.T) {
-	if !hardwareAvailable() {
-		test.Skip("requires Docker + Microsandbox (msb) — runs on a provisioned Apple Silicon host")
-	}
-	harness := New(test)
-	harness.installTemplates(test)
-
-	created, code := harness.CreateProject(test, "overlay-test")
-	AssertOK(test, created, code, "project.create")
-
-	start, code := harness.Run(test, "start", "--project", "overlay-test")
-	AssertOK(test, start, code, "workspace.start")
-
-	// Write a marker outside the project mount; it must land in the overlay.
-	mark, code := harness.Exec(test, "overlay-test", "sh", "-c", "echo persisted > /root/marker")
-	AssertOK(test, mark, code, "workspace.exec")
-
-	destroy, code := harness.Run(test, "destroy", "--project", "overlay-test")
-	AssertOK(test, destroy, code, "workspace.destroy")
-	restart, code := harness.Run(test, "start", "--project", "overlay-test")
-	AssertOK(test, restart, code, "workspace.start")
-
-	check, code := harness.Exec(test, "overlay-test", "cat", "/root/marker")
-	AssertOK(test, check, code, "workspace.exec")
-}
-
-// TestOSEquivalenceOnHardware covers the [S5] OS-equivalence criterion (spec
-// §12.4): build a workspace from each of the four OS templates with the same
-// agent-CLI selection and confirm an identical base tooling surface (git, gh).
-// The composition-side equivalence is unit-tested in internal/envimage; this
-// end-to-end build-and-smoke check needs real images, so it runs only on a
-// provisioned host (and drives the wizard's OS picker per OS).
-func TestOSEquivalenceOnHardware(test *testing.T) {
-	if !hardwareAvailable() {
-		test.Skip("requires Docker + Microsandbox (msb) — runs on a provisioned Apple Silicon host")
-	}
-	harness := New(test)
-	harness.installTemplates(test)
-
-	for _, osKey := range []string{"debian-trixie", "ubuntu", "alma"} {
-		created, code := harness.CreateProjectWithOS(test, "os-"+osKey, osKey)
-		AssertOK(test, created, code, "project.create")
-
-		start, code := harness.Run(test, "start", "--project", "os-"+osKey)
-		AssertOK(test, start, code, "workspace.start")
-
-		// Same base tooling surface across every OS.
-		for _, tool := range []string{"git", "gh"} {
-			smoke, code := harness.Exec(test, "os-"+osKey, tool, "--version")
-			AssertOK(test, smoke, code, "workspace.exec")
-		}
+	if status["workspace runtime"] != "ok" {
+		test.Fatalf("workspace doctor posture: workspace runtime = %q, want ok (checks: %+v)", status["workspace runtime"], data.Checks)
 	}
 }

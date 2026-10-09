@@ -109,34 +109,9 @@ type Service struct {
 	Components  []Component
 }
 
-// Native is the microVM runtime (microsandbox): a native version pin, a log scope,
-// and a console entry — but NOT a reconciled service-tier container.
-type Native struct {
-	Name     string
-	LogScope string
-	Endpoint Endpoint
-	Pin      Pin
-}
-
-// nativeRuntime is the microVM runtime. It is tailable and has an (empty) console
-// entry, but is not reconciled as a container service.
-//
-// microsandbox is a user-installed PREREQUISITE that `ai setup`/`ai doctor` DETECT
-// (msb on PATH), not an image the platform pulls or pins — so the native
-// version/SHA below are informational placeholders, never an actionable pin. The
-// entry exists only to give the runtime a log scope + registry slot; the platform
-// detects msb rather than versioning it.
-var nativeRuntime = Native{
-	Name:     "microsandbox",
-	LogScope: "microsandbox",
-	Endpoint: Endpoint{},                                            // no host address, no console
-	Pin:      Pin{Mode: ModeNative, Version: "v0.x", SHA256: "TBD"}, // placeholders — see comment above
-}
-
 // registry is the single declaration of the logical service topology, in the
-// canonical order used to derive the log-scope list (LogScopes prepends the native
-// runtime). Each service lists its components in the order they were captured from
-// the production code.
+// canonical order used to derive the log-scope list. Each service lists its
+// components in the order they were captured from the production code.
 var registry = []Service{
 	{
 		// omlx is HOST-NATIVE and the SOLE local-inference backend: the platform runs
@@ -268,13 +243,16 @@ var registry = []Service{
 	},
 }
 
-// logScopeOrder is the canonical order log scopes are emitted in: the native
-// runtime first, then — walking the registry in declaration order — each logical
-// service's own scope, immediately followed by its companion components' scopes.
-// Presidio contributes one scope (its components carry none); litellm contributes
-// "litellm" (litellm-db carries none) — reproducing logs.services exactly.
+// logScopeOrder is the canonical order log scopes are emitted in: walking the
+// registry in declaration order, each logical service's own scope, immediately
+// followed by its companion components' scopes. Presidio contributes one scope
+// (its components carry none); litellm contributes "litellm" (litellm-db
+// carries none) — reproducing logs.services exactly. There is no scope for the
+// nono workspace runtime: unlike the old Microsandbox microVM (one long-running
+// instance with its own `msb logs` stream), nono has no persistent process of
+// its own to tail — every agent/shell launch is its own ephemeral session.
 func logScopeOrder() []string {
-	scopes := []string{nativeRuntime.LogScope}
+	var scopes []string
 	for _, service := range registry {
 		if service.LogScope != "" {
 			scopes = append(scopes, service.LogScope)
@@ -307,9 +285,6 @@ func All() []Service {
 	copy(out, registry)
 	return out
 }
-
-// NativeRuntime returns the microVM runtime pin/topology.
-func NativeRuntime() Native { return nativeRuntime }
 
 // CoreServiceNames returns the names of the non-optional services, in order.
 func CoreServiceNames() []string {
@@ -409,7 +384,6 @@ func Endpoints() map[string]Endpoint {
 			endpoints[component.ImageKey] = component.Endpoint
 		}
 	}
-	endpoints[nativeRuntime.Name] = nativeRuntime.Endpoint
 	return endpoints
 }
 
@@ -465,12 +439,11 @@ func UIVhosts() []UIVhost {
 // component's pin keyed by its image-key (including the split presidio keys and
 // litellm-db). This is exactly the key set versions.Default() produces.
 //
-// The native microsandbox runtime is deliberately EXCLUDED: it is a user-installed
-// prerequisite that `ai setup`/`ai doctor` DETECT on PATH, not an image the
-// platform pulls or pins — so emitting its placeholder version/SHA into
-// versions.yaml would be a fake, never-actionable "pin". It still lives in the
-// registry (NativeRuntime) for its log scope + console slot; it just does not
-// belong in the image pin set.
+// The nono workspace runtime is NOT in this registry at all: it is a
+// user-installed prerequisite that `ai setup`/`ai doctor` DETECT on PATH, not
+// an image the platform pulls or pins, and unlike the old Microsandbox `msb`
+// it has no persistent process of its own to give a log scope or console slot
+// to (see logScopeOrder's doc comment) — so there is nothing here to exclude.
 func VersionPins() map[string]Pin {
 	pins := make(map[string]Pin)
 	for _, service := range registry {

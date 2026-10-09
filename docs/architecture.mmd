@@ -1,22 +1,20 @@
 ---
-title: AI Development Platform — workspace microVM, host service tier, and model data path
+title: AI Development Platform — nono-sandboxed agent sessions, host service tier, and model data path
 ---
 flowchart LR
-  classDef vm fill:#eef6ff,stroke:#3b82f6,stroke-width:2px,color:#0b3a6b;
+  classDef host fill:#eef6ff,stroke:#3b82f6,stroke-width:2px,color:#0b3a6b;
   classDef gw fill:#fff7e6,stroke:#f59e0b,stroke-width:2px,color:#7a4a05;
   classDef core fill:#eafaf0,stroke:#16a34a,stroke-width:2px,color:#0b4a25;
   classDef store fill:#f3f0ff,stroke:#7c3aed,stroke-width:1.5px,color:#3b1d80;
   classDef opt fill:#f4f4f5,stroke:#9ca3af,stroke-width:1.5px,stroke-dasharray:4 3,color:#374151;
   classDef cloud fill:#fdecec,stroke:#dc2626,stroke-width:2px,color:#7a1212;
 
-  subgraph WS["Workspace · Microsandbox microVM (one per project)"]
+  subgraph WS["Workspace · nono session — host process, sandboxed per launch (no VM, no image)"]
     direction TB
-    AGENT["Agent CLI<br/>opencode · omp · claude · codex · gemini · hermes<br/><b>holds only a scoped LiteLLM virtual key</b>"]:::vm
-    MOUNTS["ai mounts add|remove|list<br/>isolated dirs (private volume) ·<br/>shared mounts (host↔guest bind)<br/>applied at microVM create/recreate"]:::opt
-    RT["In-VM container runtime<br/>rootful containerd · nerdctl · runc · CNI"]:::core
-    TOOLS["Baked-in dev tooling<br/>Node.js · Python 3 · uv · rtk · Headroom CLI<br/>per-project ~/project/.venv-msb"]:::core
-    AITOOLS["Opt-in AI tools (--tools)<br/><b>caveman · graphify · code-review-graph · codebase-memory-mcp · openviking</b><br/>conditional Dockerfile snippets · registered with each agent CLI at start"]:::opt
-    APPS["Opt-in in-VM apps (nerdctl)<br/>Open WebUI<br/>per-(workspace,app) host port · /workspace mount"]:::opt
+    AGENT["Agent CLI (plain host process)<br/>opencode · omp · claude-code · codex · gemini · hermes<br/><b>holds only a scoped LiteLLM virtual key</b><br/>sandboxed per-invocation by nono (Landlock/Seatbelt)"]:::host
+    PROFILE["nono profile (JSON)<br/>.ai-platform/nono-profile-&lt;cli&gt;.json<br/>filesystem scope (project dir) + network policy<br/>(egress deny|public, allow/deny domains)"]:::host
+    KEYCHAIN[("OS keychain<br/>scoped gateway key, injected via<br/>nono --env-credential-map<br/>(never written to disk)")]:::store
+    AITOOLS["Opt-in AI tools (--tools / ai tools enable)<br/><b>caveman · graphify · code-review-graph · codebase-memory-mcp ·<br/>openviking · tokensave · agentmemory · ponytail · agent-skills</b><br/>install directly on the host at the next session launch"]:::opt
   end
 
   subgraph TIER["Host · Docker service tier (aip-net) — internal-only but nginx (loopback: DNS only)"]
@@ -31,14 +29,15 @@ flowchart LR
     DNS["CoreDNS · aip-dns (loopback :15353)<br/>egress audit log"]:::core
   end
 
-  CLI["Host CLI / UI<br/>loopback 127.0.0.1:18787"]:::vm
+  CLI["Host CLI / UI<br/>loopback 127.0.0.1:18787"]:::host
   OMLX["omlx (host-native · sole local backend · macOS/Apple Silicon)<br/>ONE shared <b>omlx serve --model-dir &lt;dir&gt; --port 8100</b><br/>reached via host.docker.internal · models managed in omlx's OWN admin panel<br/>public handle omlx/&lt;id&gt; (DB-backed · no default)"]:::core
   CLOUD["Cloud providers<br/>OpenAI · Anthropic · Gemini · Groq<br/><b>real provider keys live in LiteLLM</b>"]:::cloud
 
-  AGENT == "OpenAI API · base_url http://host.microsandbox.internal:18787/v1<br/>egress default PUBLIC (DNS-audited) — re-lockable to deny" ==> PROXY
-  APPS == "same gateway path (model calls)" ==> PROXY
+  PROFILE -. "generated/refreshed at every launch" .-> AGENT
+  KEYCHAIN -. "--env-credential-map (never on disk)" .-> AGENT
+  AGENT == "OpenAI API · base_url http://127.0.0.1:18787/v1<br/>egress default PUBLIC — re-lockable to deny (ai network egress)" ==> PROXY
   CLI -- "/v1 model path · /llm admin" --> PROXY
-  AGENT -. "every DNS name audited" .-> DNS
+  AGENT -. "DNS queries audited host-wide" .-> DNS
   AGENT -. "consults <b>Graphify</b> knowledge graph" .-> AITOOLS
   PROXY -- "/ + /v1" --> LLM
   PROXY -. "/llm · litellm.&lt;domain&gt;" .-> LLM

@@ -6,7 +6,21 @@ import (
 	"io"
 	"strings"
 	"testing"
+
+	tea "github.com/charmbracelet/bubbletea"
 )
+
+// newTestLogView builds a LogView over the generic constructor (the streaming/
+// poll-fallback behavior under test here lives entirely in LogView itself — the
+// old workspace-specific NewWorkspaceLog was just a thin labels wrapper around it).
+func newTestLogView(tail LogTextTailer, running LogSubjectRunning, subject func() string, opener LogStreamOpener) *LogView {
+	view := NewLogView(tail, running, subject,
+		LogViewLabels{NotRunning: "not running", Loading: "loading…", Empty: "empty"},
+		func(string) tea.Msg { return nil },
+	)
+	view.openStream = opener
+	return view
+}
 
 // TestLogViewStreamOpenErrorFallsBackToTailer: when the live stream can't open (e.g.
 // the microVM doesn't exist yet — the image is still building), the view must NOT
@@ -14,7 +28,7 @@ import (
 // once the VM is up, the microVM log), returning a follow-up command.
 func TestLogViewStreamOpenErrorFallsBackToTailer(test *testing.T) {
 	opener := func(ctx context.Context) (LogStream, error) { return nil, errors.New("no sandbox yet") }
-	view := NewWorkspaceLog(
+	view := newTestLogView(
 		func() (string, error) { return "build log line\n", nil },
 		func() bool { return true },
 		func() string { return "demo" },
@@ -43,7 +57,7 @@ func TestLogViewSetStreamingEnabledFallsBackToTailer(test *testing.T) {
 	opener := func(ctx context.Context) (LogStream, error) {
 		return &fakeLogStream{chunks: []string{"vm log\n"}}, nil
 	}
-	view := NewWorkspaceLog(
+	view := newTestLogView(
 		func() (string, error) { return "=== ai restart demo ===\ninstalling…\n", nil },
 		func() bool { return true },
 		func() string { return "demo" },
@@ -104,7 +118,7 @@ func (stream *fakeLogStream) Close() error {
 func TestLogViewStreamsHistoryThenAppends(test *testing.T) {
 	stream := &fakeLogStream{chunks: []string{"history line\n", "live line\n"}}
 	opener := func(ctx context.Context) (LogStream, error) { return stream, nil }
-	view := NewWorkspaceLog(
+	view := newTestLogView(
 		func() (string, error) { return "", nil }, // tailer unused in stream mode
 		func() bool { return true },
 		func() string { return "demo" },
@@ -153,7 +167,7 @@ func TestLogViewStreamsHistoryThenAppends(test *testing.T) {
 // TestLogViewStreamStaleChunkIgnored verifies a chunk tagged with an old generation
 // (from a previous activation/subject) is discarded.
 func TestLogViewStreamStaleChunkIgnored(test *testing.T) {
-	view := NewWorkspaceLog(
+	view := newTestLogView(
 		func() (string, error) { return "", nil },
 		func() bool { return true },
 		func() string { return "demo" },
@@ -169,7 +183,7 @@ func TestLogViewStreamStaleChunkIgnored(test *testing.T) {
 // TestLogViewStaleStreamOpenedClosed verifies an opened stream that arrives for an old
 // generation is closed immediately (no leak).
 func TestLogViewStaleStreamOpenedClosed(test *testing.T) {
-	view := NewWorkspaceLog(
+	view := newTestLogView(
 		func() (string, error) { return "", nil },
 		func() bool { return true },
 		func() string { return "demo" },

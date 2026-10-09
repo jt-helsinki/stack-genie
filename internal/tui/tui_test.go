@@ -2,8 +2,6 @@ package tui
 
 import (
 	"fmt"
-	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 
@@ -13,7 +11,6 @@ import (
 	"github.com/jt-helsinki/stack-genie/internal/config"
 	"github.com/jt-helsinki/stack-genie/internal/create"
 	"github.com/jt-helsinki/stack-genie/internal/project"
-	"github.com/jt-helsinki/stack-genie/internal/state"
 	"github.com/jt-helsinki/stack-genie/internal/tui/views"
 	"github.com/jt-helsinki/stack-genie/internal/workspace"
 	"github.com/muesli/termenv"
@@ -288,7 +285,7 @@ func TestNewProjectRequestedOpensCreateOverlay(test *testing.T) {
 
 func TestCreateCancelledClosesOverlay(test *testing.T) {
 	application := &app{cwd: test.TempDir(), views: []View{&fakeView{title: "Projects"}}}
-	application.createView = views.NewCreate(application.cwd, 0, 0, nil)
+	application.createView = views.NewCreate(application.cwd, nil)
 
 	application.Update(views.CreateCancelledMsg{})
 	if application.createView != nil {
@@ -298,7 +295,7 @@ func TestCreateCancelledClosesOverlay(test *testing.T) {
 
 func TestCreateConfirmedClosesOverlayAndRunsCreate(test *testing.T) {
 	application := &app{cwd: test.TempDir(), projectsIndex: 0, views: []View{&fakeView{title: "Projects"}}}
-	application.createView = views.NewCreate(application.cwd, 0, 0, nil)
+	application.createView = views.NewCreate(application.cwd, nil)
 
 	// CreateConfirmedMsg closes the overlay, marks the workspace as creating, and
 	// returns the in-process create.Execute command (run off the event loop).
@@ -638,20 +635,6 @@ func TestWorkspaceDeleteOpensOverlay(test *testing.T) {
 	}
 }
 
-func TestWorkspaceLogReadableDuringPendingStart(test *testing.T) {
-	application := &app{
-		currentProject: "app",
-		lifecycles:     map[string]*lifecycleOp{"app": {project: "app", action: "start"}},
-	}
-	if !application.workspaceLogReadable() {
-		test.Fatal("workspace log should poll while start is pending so startup diagnostics stream")
-	}
-	application.lifecycles["app"].action = "restart"
-	if !application.workspaceLogReadable() {
-		test.Fatal("workspace log should poll while restart is pending so boot diagnostics stream")
-	}
-}
-
 func pgDownKey() tea.KeyMsg { return tea.KeyMsg{Type: tea.KeyPgDown} }
 
 // tallView is a no-sub-tab view whose content is always taller than any pane, so it
@@ -816,23 +799,27 @@ func TestTabWithSubTabsDelegatesScrollKeys(test *testing.T) {
 func TestWorkspaceConfigFieldsReflectDeclaredConfig(test *testing.T) {
 	projectConfig := &config.Config{
 		OS:        "ubuntu",
-		Workspace: config.WorkspaceConfig{CPULimit: 2, MemoryLimit: "4G"},
-		Network: config.NetworkConfig{PublishPorts: []config.PortMapping{
-			{Host: 8080, Guest: 8080}, {Host: 9000, Guest: 3000},
-		}},
+		Workspace: config.WorkspaceConfig{Shell: "zsh"},
+		Network:   config.NetworkConfig{Egress: "deny", AllowDomain: []string{"api.github.com"}, DenyDomain: []string{"evil.example.com"}},
 	}
 	got := map[string]string{}
 	for _, field := range workspaceConfigFields(projectConfig) {
 		got[field.Label] = field.Value
 	}
-	if got["published ports"] != "8080, 9000→3000" {
-		test.Errorf("published ports = %q, want '8080, 9000→3000'", got["published ports"])
+	if got["os"] != "ubuntu" {
+		test.Errorf("os = %q, want ubuntu", got["os"])
 	}
-	if got["vcpus"] != "2" || got["memory"] != "4G" {
-		test.Errorf("resources = %q/%q, want 2/4G", got["vcpus"], got["memory"])
+	if got["shell"] != "zsh" {
+		test.Errorf("shell = %q, want zsh", got["shell"])
 	}
-	if publishPortsValue(nil) != "none" {
-		test.Errorf("empty ports = %q, want 'none'", publishPortsValue(nil))
+	if got["egress"] != "deny" {
+		test.Errorf("egress = %q, want deny", got["egress"])
+	}
+	if got["allowed domains"] != "api.github.com" {
+		test.Errorf("allowed domains = %q, want api.github.com", got["allowed domains"])
+	}
+	if got["denied domains"] != "evil.example.com" {
+		test.Errorf("denied domains = %q, want evil.example.com", got["denied domains"])
 	}
 }
 
@@ -851,63 +838,23 @@ func TestCreatingSwallowsNavKeys(test *testing.T) {
 	}
 }
 
-// TestCreateProgressAccumulates verifies streamed create.Progress builds the step log +
-// a live download bar in the creating pane.
+// TestCreateProgressAccumulates verifies streamed create.Progress builds the step
+// log shown in the creating pane.
 func TestCreateProgressAccumulates(test *testing.T) {
 	application := newTestApp("Services")
 	application.creating = "app"
 	ch := make(chan create.Progress)
 	application.Update(createProgressMsg{progress: create.Progress{Step: "scaffolding"}, ch: ch})
-	application.Update(createProgressMsg{progress: create.Progress{Step: "pulling model"}, ch: ch})
-	application.Update(createProgressMsg{progress: create.Progress{Step: "pulling model", Completed: 1, Total: 2}, ch: ch})
+	application.Update(createProgressMsg{progress: create.Progress{Step: "registered"}, ch: ch})
 
-	if len(application.createSteps) != 2 || application.createSteps[0] != "scaffolding" || application.createSteps[1] != "pulling model" {
-		test.Errorf("step log = %v, want [scaffolding, pulling model]", application.createSteps)
-	}
-	if application.createPull.Total != 2 || application.createPull.Completed != 1 {
-		test.Errorf("createPull = %+v, want the live pull frame", application.createPull)
+	if len(application.createSteps) != 2 || application.createSteps[0] != "scaffolding" || application.createSteps[1] != "registered" {
+		test.Errorf("step log = %v, want [scaffolding, registered]", application.createSteps)
 	}
 	view := application.creatingView()
-	for _, want := range []string{"scaffolding", "pulling model", "50%"} {
+	for _, want := range []string{"scaffolding", "registered"} {
 		if !strings.Contains(view, want) {
 			test.Errorf("creating view missing %q:\n%s", want, view)
 		}
-	}
-}
-
-// TestReadLatestLifecycleLogAppendsCavemanLog verifies the Logs view's lifecycle
-// reader concatenates the detached Caveman install log (which is written past the
-// end of `ai start`) after the start transcript, so both are visible in the pane.
-func TestReadLatestLifecycleLogAppendsCavemanLog(test *testing.T) {
-	home := test.TempDir()
-	test.Setenv("HOME", home)
-
-	root := filepath.Join(home, "projects", "app")
-	runDir := filepath.Join(root, ".ai-platform", "run")
-	if err := os.MkdirAll(runDir, 0o755); err != nil {
-		test.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(runDir, "start.log"), []byte("▸ booting microVM\n"), 0o644); err != nil {
-		test.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(runDir, "caveman-install.log"), []byte("cloning caveman...\n"), 0o644); err != nil {
-		test.Fatal(err)
-	}
-	index := state.NewProjectsIndex()
-	index.Projects["app"] = state.ProjectIndexEntry{Path: root}
-	if err := state.SaveIndex(index); err != nil {
-		test.Fatal(err)
-	}
-
-	content, ok := readLatestLifecycleLog("app")
-	if !ok {
-		test.Fatal("expected a lifecycle log")
-	}
-	if !strings.Contains(content, "booting microVM") {
-		test.Errorf("missing the start transcript:\n%s", content)
-	}
-	if !strings.Contains(content, "caveman install (background)") || !strings.Contains(content, "cloning caveman") {
-		test.Errorf("missing the appended caveman install log:\n%s", content)
 	}
 }
 
@@ -924,7 +871,7 @@ func TestWheelTargetRouting(test *testing.T) {
 	}
 
 	withCreate := base()
-	withCreate.createView = views.NewCreate(test.TempDir(), 16, 12, nil)
+	withCreate.createView = views.NewCreate(test.TempDir(), nil)
 	if got := withCreate.wheelTarget(); got != wheelCreate {
 		test.Errorf("create wizard open: wheelTarget = %d, want wheelCreate (its lists must scroll)", got)
 	}

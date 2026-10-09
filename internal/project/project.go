@@ -1,29 +1,29 @@
 // Package project implements project scaffolding and teardown for
-// `ai create|delete|list` (CLI §3). Create's interactive wizard lives in
-// the CLI layer; this package owns the deterministic work: validate the choices,
-// write the project's tracked .ai-platform/ files (Dockerfile via envimage,
-// config.yaml, profile.yaml, project.yaml, .gitignore) and the global index.
+// `ai create|delete|list`. Create's interactive wizard lives in the CLI layer;
+// this package owns the deterministic work: validate the choices, write the
+// project's tracked .ai-platform/ files (config.yaml, project.yaml,
+// .gitignore) and the global index. There is no Dockerfile/image anymore — a
+// project is a host directory + a generated nono profile (internal/nono),
+// written at workspace start (internal/workspace), not here.
 package project
 
 import (
+	"context"
 	"errors"
 	"fmt"
+	goruntime "runtime"
+
 	"os"
 	"path/filepath"
 	"regexp"
 	"slices"
 
 	"github.com/jt-helsinki/stack-genie/internal/agentcfg"
-	"github.com/jt-helsinki/stack-genie/internal/apps"
-	"github.com/jt-helsinki/stack-genie/internal/conffile"
 	"github.com/jt-helsinki/stack-genie/internal/config"
-	"github.com/jt-helsinki/stack-genie/internal/envimage"
-	"github.com/jt-helsinki/stack-genie/internal/overlay"
+	"github.com/jt-helsinki/stack-genie/internal/nono"
 	"github.com/jt-helsinki/stack-genie/internal/paths"
 	"github.com/jt-helsinki/stack-genie/internal/state"
-	"github.com/jt-helsinki/stack-genie/internal/templates"
 	"github.com/jt-helsinki/stack-genie/internal/workspace"
-	"gopkg.in/yaml.v3"
 )
 
 // namePattern validates project names (arch §19): lowercase alphanumeric and
@@ -39,8 +39,6 @@ var (
 // Spec is the resolved set of choices from the create wizard (CLI §3.1).
 type Spec struct {
 	Name        string
-	OS          string
-	Stacks      []string
 	AgentCLIs   []string
 	DefaultTool string
 	// AuthModes records the per-CLI auth mode ("api-key"|"oauth") for the OAuth-capable
@@ -52,27 +50,6 @@ type Spec struct {
 	// management lives in omlx's own admin panel). Empty leaves Graphify's backend
 	// unconfigured.
 	GraphifyModel string
-	// Apps are the opt-in in-VM AI applications to install (subset of apps.Keys()).
-	// Empty by default — apps are opt-in.
-	Apps []string
-	// AppPorts is the user-chosen HOST port to expose each selected app's web UI on,
-	// keyed by app key (from the create prompt / --app-port flag). A key with no entry
-	// (or 0) is auto-allocated. Validated + honored by apps.AllocateEntries at Scaffold.
-	AppPorts map[string]int
-	// IdleTimeout is written to config.yaml microsandbox.idle_timeout and passed to
-	// `msb create --idle-timeout` at every workspace start/restart. Empty defaults to
-	// config.DefaultMicrosandboxIdleTimeout.
-	IdleTimeout string
-	// CPUs is the workspace vCPU limit written to config.yaml workspace.cpu_limit and
-	// applied to the microVM at start. 0 uses the platform default.
-	CPUs int
-	// Memory is the workspace memory limit (e.g. "8G") written to
-	// config.yaml workspace.memory_limit. Empty uses the platform default.
-	Memory string
-	// Disk is the workspace writable-rootfs size in GiB (e.g. "20") written to
-	// config.yaml workspace.disk_limit, sizing the in-VM containerd image store so
-	// multi-GB app images fit. Empty uses the platform default.
-	Disk string
 	// Shell is the workspace's default interactive shell ("bash" or "zsh"), written to
 	// config.yaml workspace.shell. Empty defaults to "bash" (today's behavior).
 	Shell string
@@ -119,20 +96,10 @@ type Spec struct {
 	// written to config.yaml context.agent_skills_enabled. Chosen at `ai create`
 	// (OPT-IN, default false).
 	AgentSkillsEnabled bool
-	// PublishPorts are the host↔guest ports to open into the sandbox, written to
-	// config.yaml network.publish_ports.
-	PublishPorts []config.PortMapping
 	// Root is the host source directory for the workspace. Empty falls back to
 	// ~/projects/<name> (RootPath); `ai create` sets it explicitly to the chosen
 	// location.
 	Root string
-	// IsolatedDirs are guest-relative paths excluded from the host project bind mount
-	// and backed by a private per-workspace volume instead, written to config.yaml
-	// workspace.isolated_dirs. Empty by default (nothing excluded).
-	IsolatedDirs []string
-	// SharedMounts are extra host↔guest bind mounts beyond the project dir, written to
-	// config.yaml workspace.shared_mounts. Empty by default (no extra mappings).
-	SharedMounts []config.SharedMount
 }
 
 // ValidateName reports whether a name is well-formed (arch §19).
@@ -161,12 +128,6 @@ func (spec Spec) resolvedRoot() (string, error) {
 		return spec.Root, nil
 	}
 	return RootPath(spec.Name)
-}
-
-// profileFile is <project>/.ai-platform/profile.yaml (repo-layout §12.1a).
-type profileFile struct {
-	SchemaVersion int      `yaml:"schema_version"`
-	Stacks        []string `yaml:"stacks"`
 }
 
 // EnsureCreatable validates the name and confirms no project with that name is
@@ -253,33 +214,13 @@ func Path(name string) (string, bool, error) {
 // config.yaml. caveman and ponytail are deliberately excluded: both are
 // runtime-only (no Dockerfile snippet), installed by their own registration step
 // at workspace start, not baked into the image.
-func DockerfileTools(graphify, codeReviewGraph, codebaseMemory, openViking, tokenSave, agentMemory bool) []string {
-	var tools []string
-	if graphify {
-		tools = append(tools, "graphify")
-	}
-	if codeReviewGraph {
-		tools = append(tools, "code-review-graph")
-	}
-	if codebaseMemory {
-		tools = append(tools, "codebase-memory-mcp")
-	}
-	if openViking {
-		tools = append(tools, "openviking")
-	}
-	if tokenSave {
-		tools = append(tools, "tokensave")
-	}
-	if agentMemory {
-		tools = append(tools, "agentmemory")
-	}
-	return tools
-}
-
 // Scaffold creates a project's tracked .ai-platform/ files and registers it in
 // the global index. It tolerates a directory that already has other content
 // (the files are left untouched) but refuses to overwrite an existing project.
-// It does NOT touch version control or start a workspace.
+// It does NOT touch version control or start a workspace. Unlike the Microsandbox
+// era there is no image to build here — agent CLIs run directly on the host, so
+// there is nothing to compose/build at create time; the nono profile + per-CLI
+// gateway configs are generated at workspace start (internal/workspace), not here.
 func Scaffold(spec Spec, createdAt string) (string, error) {
 	root, err := spec.resolvedRoot()
 	if err != nil {
@@ -296,69 +237,6 @@ func Scaffold(spec Spec, createdAt string) (string, error) {
 		return "", err
 	}
 
-	// Refresh the on-disk templates (~/.ai-platform/templates) from THIS binary's
-	// embedded copies before composing. envimage reads the on-disk copies, so an
-	// install left by an OLDER `ai` (e.g. before tmux was added to the base image)
-	// would otherwise silently seed a stale Dockerfile — a binary upgrade alone
-	// wouldn't fix it without re-running `ai setup`. Install overwrites and is
-	// idempotent (repo-layout §1.5), so create always reflects the running binary.
-	if err := templates.Install(); err != nil {
-		return "", err
-	}
-	// Dockerfile = OS base + selected stacks + selected agent CLIs + selected opt-in
-	// tools (§25, §12). The opt-in tools are baked ONLY when selected, so an
-	// unselected tool's installer never runs at build.
-	tools := DockerfileTools(spec.GraphifyEnabled, spec.CodeReviewGraphEnabled,
-		spec.CodebaseMemoryEnabled, spec.OpenVikingEnabled, spec.TokenSaveEnabled, spec.AgentMemoryEnabled)
-	if err := envimage.Write(root, spec.OS, spec.Stacks, spec.AgentCLIs, tools); err != nil {
-		return "", err
-	}
-
-	// config.yaml — project config with the installed agent CLIs + default, and
-	// the opt-in in-VM apps each allocated a unique machine-wide host port (so two
-	// running workspaces never publish the same port). Allocation avoids ports
-	// already in use by other workspaces' apps.
-	reserved, err := apps.ReservedPortsAcrossWorkspaces()
-	if err != nil {
-		return "", err
-	}
-	appEntries, err := apps.AllocateEntries(spec.Apps, spec.AppPorts, reserved, nil)
-	if err != nil {
-		return "", err
-	}
-	// Agent-CLI web dashboards (e.g. hermes) get a host port too, published from the microVM
-	// the same way as apps. Reserve the app entries just allocated so a dashboard can't
-	// collide with them (or with another workspace). spec.AppPorts carries the user's
-	// requested dashboard ports too (keyed by the agent CLI).
-	dashboardReserved := make(map[int]bool, len(reserved)+len(appEntries))
-	for port := range reserved {
-		dashboardReserved[port] = true
-	}
-	for _, entry := range appEntries {
-		dashboardReserved[entry.Port] = true
-	}
-	dashboardEntries, err := apps.AllocateDashboardEntries(apps.SelectedDashboardAgents(spec.AgentCLIs), spec.AppPorts, dashboardReserved, nil)
-	if err != nil {
-		return "", err
-	}
-	idleTimeout := spec.IdleTimeout
-	if idleTimeout == "" {
-		idleTimeout = config.DefaultMicrosandboxIdleTimeout
-	}
-	// Resource limits: an unset CPU/memory falls back to the platform default so the
-	// written config is self-describing (diagnostics + the Sandbox Configuration tab).
-	cpus := spec.CPUs
-	if cpus <= 0 {
-		cpus = config.Default().Workspace.CPULimit
-	}
-	memory := spec.Memory
-	if memory == "" {
-		memory = config.Default().Workspace.MemoryLimit
-	}
-	disk := spec.Disk
-	if disk == "" {
-		disk = config.Default().Workspace.DiskLimit
-	}
 	// Default interactive shell: bash unless the create wizard/flag chose zsh.
 	shell := spec.Shell
 	if shell == "" {
@@ -368,13 +246,15 @@ func Scaffold(spec Spec, createdAt string) (string, error) {
 	// The OAuth-CAPABLE CLIs (claude-code/codex/gemini) take the user's chosen mode
 	// (default api-key); a FORCED-oauth CLI (currently none) is always "oauth" — it has no
 	// api-key mode. Everything else is always gateway/api-key and is omitted. For each
-	// agent in oauth, allow-list its provider egress domains so its native login can reach
-	// the provider even under `deny` (explicit under `public`).
+	// agent in oauth, allow-list its provider domains so its native login can reach the
+	// provider even under `ai network egress deny`.
 	authModes := map[string]string{}
-	var oauthAllow []config.HostService
+	var oauthAllowDomains []string
 	allowOAuthDomains := func(cli string) {
 		for _, domain := range agentcfg.OAuthProviderDomains(cli) {
-			oauthAllow = appendUniqueHostService(oauthAllow, config.HostService{Host: domain, Port: 443})
+			if !slices.Contains(oauthAllowDomains, domain) {
+				oauthAllowDomains = append(oauthAllowDomains, domain)
+			}
 		}
 	}
 	for _, cli := range config.OAuthCapableCLIs() {
@@ -400,9 +280,6 @@ func Scaffold(spec Spec, createdAt string) (string, error) {
 	if len(authModes) == 0 {
 		authModes = nil
 	}
-	// Persist the AI-tools on/off choices (caveman + graphify + code-review-graph +
-	// codebase-memory-mcp) here; create.Execute's later SetStrategy/SetCavemanLevel calls
-	// are read-modify-write and preserve them.
 	cavemanEnabled := spec.CavemanEnabled
 	graphifyEnabled := spec.GraphifyEnabled
 	codeReviewGraphEnabled := spec.CodeReviewGraphEnabled
@@ -413,9 +290,9 @@ func Scaffold(spec Spec, createdAt string) (string, error) {
 	ponytailEnabled := spec.PonytailEnabled
 	agentSkillsEnabled := spec.AgentSkillsEnabled
 	projectConfig := &config.Config{
-		OS:        spec.OS,
+		OS:        goruntime.GOOS,
 		Agent:     config.AgentConfig{Tools: spec.AgentCLIs, DefaultTool: spec.DefaultTool, GraphifyModel: spec.GraphifyModel, AuthModes: authModes},
-		Workspace: config.WorkspaceConfig{CPULimit: cpus, MemoryLimit: memory, DiskLimit: disk, Shell: shell, IsolatedDirs: spec.IsolatedDirs, SharedMounts: spec.SharedMounts},
+		Workspace: config.WorkspaceConfig{Shell: shell},
 		Context: config.ContextConfig{
 			CavemanEnabled: &cavemanEnabled, GraphifyEnabled: &graphifyEnabled,
 			CodeReviewGraphEnabled: &codeReviewGraphEnabled, CodebaseMemoryEnabled: &codebaseMemoryEnabled,
@@ -423,29 +300,23 @@ func Scaffold(spec Spec, createdAt string) (string, error) {
 			AgentMemoryEnabled: &agentMemoryEnabled, PonytailEnabled: &ponytailEnabled,
 			AgentSkillsEnabled: &agentSkillsEnabled,
 		},
-		Microsandbox:    config.MicrosandboxConfig{IdleTimeout: idleTimeout},
-		Network:         config.NetworkConfig{PublishPorts: spec.PublishPorts, AllowHostServices: oauthAllow},
-		Apps:            appEntries,
-		AgentDashboards: dashboardEntries,
+		Network: config.NetworkConfig{Egress: "public", AllowDomain: oauthAllowDomains},
 	}
 	if err := config.WriteProject(root, projectConfig); err != nil {
 		return "", err
 	}
 
-	// profile.yaml — software stacks (§12.1a).
-	if err := writeProfile(root, spec.Stacks); err != nil {
-		return "", err
-	}
-
-	// The per-CLI gateway configs are no longer scaffolded here as `.ai-platform/agents/`
-	// templates — at workspace start the platform writes each CLI's KEYLESS config into
+	// The per-CLI gateway configs + the project's nono profile are NOT scaffolded
+	// here — at workspace start the platform writes each CLI's KEYLESS config into
 	// its own DEFAULT project location (<project>/.opencode/, .claude/, .codex/;
-	// gemini is env-only) with the scoped key supplied via env vars, so the key is never
-	// on host disk. The shared <project>/.ai-platform/{agents,skills,prompts,projects}
-	// pool + per-CLI symlinks are set up at start too.
+	// gemini is env-only) with the scoped key injected by nono at launch (never on
+	// host disk), and generates <project>/.ai-platform/nono-profile.json
+	// (internal/nono.WriteProfile). The shared
+	// <project>/.ai-platform/{agents,skills,prompts,projects} pool + per-CLI
+	// symlinks are set up at start too.
 
 	// project.yaml (tracked).
-	if err := state.OpenStore(root).SaveProject(&state.Project{Name: spec.Name, OS: spec.OS, Created: createdAt}); err != nil {
+	if err := state.OpenStore(root).SaveProject(&state.Project{Name: spec.Name, OS: goruntime.GOOS, Created: createdAt}); err != nil {
 		return "", err
 	}
 
@@ -460,45 +331,6 @@ func Scaffold(spec Spec, createdAt string) (string, error) {
 		return "", err
 	}
 	return root, nil
-}
-
-// appendUniqueHostService appends service to list unless an identical host:port entry is
-// already present (de-duplicated allow-list, e.g. two oauth agents sharing a domain).
-func appendUniqueHostService(list []config.HostService, service config.HostService) []config.HostService {
-	for _, existing := range list {
-		if existing.Host == service.Host && existing.Port == service.Port {
-			return list
-		}
-	}
-	return append(list, service)
-}
-
-func writeProfile(root string, stacks []string) error {
-	if stacks == nil {
-		stacks = []string{}
-	}
-	return conffile.WriteAtomic(filepath.Join(root, ".ai-platform", "profile.yaml"),
-		profileFile{SchemaVersion: 1, Stacks: stacks})
-}
-
-// ReadStacks returns the software stacks a project was created with (profile.yaml —
-// repo-layout §12.1a), the one record of them outside the Dockerfile itself. Used by
-// `ai tools enable|disable` to regenerate the Dockerfile without silently dropping the
-// project's stacks. A missing profile.yaml (pre-dates it, or was deleted) returns an
-// empty list rather than an error.
-func ReadStacks(root string) ([]string, error) {
-	raw, err := os.ReadFile(filepath.Join(root, ".ai-platform", "profile.yaml"))
-	if err != nil {
-		if os.IsNotExist(err) {
-			return nil, nil
-		}
-		return nil, err
-	}
-	var profile profileFile
-	if err := yaml.Unmarshal(raw, &profile); err != nil {
-		return nil, fmt.Errorf("profile.yaml: %w", err)
-	}
-	return profile.Stacks, nil
 }
 
 // Entry is one row of `ai list` (CLI §3.3): name, os, the active agent CLIs, the
@@ -518,18 +350,33 @@ type Entry struct {
 	LastStarted string `json:"last_started,omitempty"`
 }
 
+// listSessionsFn is the injectable seam over the real nono runner's `nono ps
+// --json` (mirrors the project's established *Fn-variable pattern) so unit
+// tests never shell out to the real `nono` binary.
+var listSessionsFn = func() ([]nono.Session, error) {
+	return nono.RealRunner{}.ListSessions(context.Background(), false)
+}
+
 // List returns the registered projects (from the global index), each enriched
 // with the OS + active agent CLIs from its config and the current workspace
-// status, so `ai list` reports the full row the spec promises (§3.3).
+// status, so `ai list` reports the full row the spec promises (§3.3). Status
+// is derived from LIVE nono sessions (`nono ps`), not a saved handle file: a
+// workspace has no persistent process to track anymore — every agent/shell
+// launch is its own ephemeral session, so the saved run/workspaces/*.yaml
+// handles (one per launch, by session id) are a history, not a singleton
+// "the" workspace state.
 func List() ([]Entry, error) {
 	index, err := state.LoadIndex()
 	if err != nil {
 		return nil, err
 	}
+	// Best-effort: nono not installed/reachable yet (e.g. before `ai setup`)
+	// degrades every row to "none" rather than failing the whole listing.
+	sessions, _ := listSessionsFn()
 	entries := make([]Entry, 0, len(index.Projects))
 	for name, indexEntry := range index.Projects {
 		entry := Entry{Name: name, Path: indexEntry.Path}
-		entry.ID, entry.Status, entry.Created, entry.LastStarted = workspaceHandle(name, indexEntry.Path)
+		entry.ID, entry.Status, entry.Created, entry.LastStarted = workspaceHandle(name, indexEntry.Path, sessions)
 		if project, err := state.OpenStore(indexEntry.Path).LoadProject(); err == nil {
 			entry.OS = project.OS
 		}
@@ -541,23 +388,27 @@ func List() ([]Entry, error) {
 	return entries, nil
 }
 
-// workspaceHandle reports a project's workspace microVM id and lifecycle handle
-// details: the id is deterministic (aip-<name>) even before a first start; the
-// status is "none" and the timestamps empty when no handle exists yet. An
-// unreadable store is reported as "none" rather than failing the whole listing.
-func workspaceHandle(name, root string) (id, status, created, lastStarted string) {
+// workspaceHandle reports a project's workspace id and lifecycle status from
+// the live session set: the most-recently-started session (by Started, a
+// nono-reported RFC 3339 timestamp sorting chronologically) whose Workdir
+// matches root represents the project's row. With no matching session the id
+// falls back to the deterministic placeholder (aip-<name>, pre-nono naming
+// convention kept for display stability) and status is "none".
+func workspaceHandle(name, root string, sessions []nono.Session) (id, status, created, lastStarted string) {
 	id = workspace.Name(name)
-	status = "none"
-	workspaces, err := state.OpenStore(root).ListWorkspaces()
-	if err != nil {
-		return id, status, "", ""
-	}
-	for index := range workspaces {
-		if workspaces[index].ID == id {
-			return id, string(workspaces[index].Status), workspaces[index].Created, workspaces[index].LastStarted
+	var latest *nono.Session
+	for index := range sessions {
+		if sessions[index].Workdir != root {
+			continue
+		}
+		if latest == nil || sessions[index].Started > latest.Started {
+			latest = &sessions[index]
 		}
 	}
-	return id, status, "", ""
+	if latest == nil {
+		return id, "none", "", ""
+	}
+	return latest.SessionID, latest.Status, latest.Started, latest.Started
 }
 
 // agentArtifactDirs are the per-CLI agent config dirs and the Python venv the platform
@@ -568,9 +419,9 @@ var agentArtifactDirs = []string{".opencode", ".claude", ".codex", ".omp", ".gem
 // Delete removes a project from the index and removes its persistent overlay. A plain
 // delete removes the whole .ai-platform tree (config + run state) and — when
 // removeAgentDirs is set — the per-CLI agent config folders + venv; the user's OTHER
-// files are kept. With purge it removes the ENTIRE project directory. Destroying the
-// workspace microVM is layered on by the CLI caller (workspace.DestroyIfPresent)
-// before this runs, so a delete never leaves a running microVM orphaned.
+// files are kept. With purge it removes the ENTIRE project directory. Stopping any
+// live nono sessions is layered on by the CLI caller (Manager.StopAll) before this
+// runs, so a delete never leaves a session orphaned.
 func Delete(name string, purge, removeAgentDirs bool) error {
 	index, err := state.LoadIndex()
 	if err != nil {
@@ -612,14 +463,6 @@ func Delete(name string, purge, removeAgentDirs bool) error {
 		target = entry.Path
 	}
 	if err := forceRemoveAll(target); err != nil && removeErr == nil {
-		removeErr = err
-	}
-
-	// Permanent removal: drop the project's persistent overlay (arch §26).
-	// Unlike `ai destroy`, deleting the project removes the overlay. Best-effort
-	// — an overlay-removal failure must NOT keep the project registered (and the
-	// .ai-platform dir is already gone), so we record it but still de-register.
-	if err := overlay.Remove(workspace.Name(name)); err != nil && removeErr == nil {
 		removeErr = err
 	}
 

@@ -105,7 +105,7 @@ func TestGatewayShowLocal(test *testing.T) {
 		test.Fatal("empty AIPlatformHost must resolve to local")
 	}
 	human := result.Human()
-	for _, want := range []string{"local (standalone)", "host.microsandbox.internal", "http://host.microsandbox.internal:18787/v1"} {
+	for _, want := range []string{"local (standalone)", "127.0.0.1", "http://127.0.0.1:18787/v1"} {
 		if !strings.Contains(human, want) {
 			test.Fatalf("Human() missing %q:\n%s", want, human)
 		}

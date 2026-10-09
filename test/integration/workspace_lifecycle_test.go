@@ -12,29 +12,12 @@ import (
 )
 
 // This file is the black-box, NON-INTERACTIVE workspace create/teardown suite. Unlike
-// workspace_test.go (which does a full create→start→…→delete against a live microVM and
-// takes many minutes), these scenarios exercise ONLY `ai create` (scaffold-only — it
-// writes <project>/.ai-platform and registers the project; it does NOT build or boot a
-// microVM) and `ai delete`/`destroy` (teardown). They therefore need no running service
-// tier or msb — only that `ai setup` has installed the on-disk templates — so they run
-// fast and everywhere the platform is set up. Everything is driven through the built `ai`
-// binary with `--json`; no TUI/PTY is used, and each scenario cleans up after itself.
-
-// requireSetup skips unless `ai setup` has installed the on-disk templates that `ai
-// create` composes the project Dockerfile from. Create/teardown need those templates but
-// NOT a running stack (no docker containers, no microVM), so this is a lighter gate than
-// requireStack.
-func requireSetup(test *testing.T) {
-	test.Helper()
-	home, err := os.UserHomeDir()
-	if err != nil {
-		test.Skipf("cannot resolve HOME: %v", err)
-	}
-	base := filepath.Join(home, ".ai-platform", "templates", "dockerfiles", "debian-trixie", "Dockerfile")
-	if _, err := os.Stat(base); err != nil {
-		test.Skipf("platform templates not installed (run `ai setup`): %v", err)
-	}
-}
+// workspace_test.go (which drives a full create→agent→…→delete against a live nono
+// session and a running service tier), these scenarios exercise ONLY `ai create`
+// (scaffold-only — it writes <project>/.ai-platform and registers the project; there is
+// no image to build and nothing to boot) and `ai delete`/`destroy` (teardown). Unlike the
+// old Microsandbox microVM model, `ai create` has NO external dependency at all (no
+// templates, no setup) — these tests run unconditionally, fast and everywhere.
 
 // nameCounter makes per-call workspace names unique within a run.
 var nameCounter int
@@ -62,8 +45,8 @@ func cleanupWorkspace(test *testing.T, name string) {
 // createWorkspace runs a non-interactive `ai create` at loc with the given extra flags.
 func createWorkspace(test *testing.T, name, loc string, extra ...string) (Envelope, int, string) {
 	test.Helper()
-	args := append([]string{"create", "--name", name, "--os", "debian-trixie", "--location", loc}, extra...)
-	return run(test, "", 4*time.Minute, args...)
+	args := append([]string{"create", "--name", name, "--location", loc}, extra...)
+	return run(test, "", time.Minute, args...)
 }
 
 // listNames returns the registered workspace names from `ai list`.
@@ -96,8 +79,6 @@ func contains(items []string, want string) bool {
 // TestWorkspaceCreateTeardown drives the create/teardown surface through the built binary
 // with --json, one scenario per subtest.
 func TestWorkspaceCreateTeardown(test *testing.T) {
-	requireSetup(test)
-
 	// 1. create scaffolds the tracked .ai-platform files, registers the project, and a
 	//    plain delete deregisters it + removes .ai-platform while LEAVING the user's own
 	//    files untouched.
@@ -114,7 +95,7 @@ func TestWorkspaceCreateTeardown(test *testing.T) {
 		if !assertOK(test, env, code, "project.create") {
 			test.Fatalf("create failed: %s", stderr)
 		}
-		for _, rel := range []string{"config.yaml", "Dockerfile", "project.yaml"} {
+		for _, rel := range []string{"config.yaml", "project.yaml"} {
 			if _, err := os.Stat(filepath.Join(loc, ".ai-platform", rel)); err != nil {
 				test.Errorf("create did not scaffold .ai-platform/%s: %v", rel, err)
 			}
@@ -160,25 +141,18 @@ func TestWorkspaceCreateTeardown(test *testing.T) {
 		}
 	})
 
-	// 3. non-interactive create REQUIRES --os; a missing --os is invalid input (exit 2).
-	test.Run("missing_os_exits_2", func(test *testing.T) {
+	// 3. an unknown --agents value is invalid input (exit 2), and nothing is scaffolded.
+	test.Run("unknown_agent_exits_2", func(test *testing.T) {
 		loc := test.TempDir()
-		env, code, _ := run(test, "", time.Minute, "create", "--name", uniqueName(test), "--location", loc)
+		env, code, _ := run(test, "", time.Minute, "create",
+			"--name", uniqueName(test), "--agents", "no-such-cli", "--location", loc)
 		assertError(test, env, code, 2)
 		if _, err := os.Stat(filepath.Join(loc, ".ai-platform")); !os.IsNotExist(err) {
 			test.Errorf("a rejected create must not scaffold anything")
 		}
 	})
 
-	// 4. an unknown --os is invalid input (exit 2).
-	test.Run("unknown_os_exits_2", func(test *testing.T) {
-		loc := test.TempDir()
-		env, code, _ := run(test, "", time.Minute, "create",
-			"--name", uniqueName(test), "--os", "no-such-os", "--location", loc)
-		assertError(test, env, code, 2)
-	})
-
-	// 5. selected agents + opt-in tools persist to the tracked config.yaml.
+	// 4. selected agents + opt-in tools persist to the tracked config.yaml.
 	test.Run("flags_persist_to_config", func(test *testing.T) {
 		name := uniqueName(test)
 		loc := test.TempDir()
@@ -200,7 +174,7 @@ func TestWorkspaceCreateTeardown(test *testing.T) {
 		}
 	})
 
-	// 6. a location that is (or is nested inside) an existing workspace is rejected (exit 2).
+	// 5. a location that is (or is nested inside) an existing workspace is rejected (exit 2).
 	test.Run("nested_location_rejected", func(test *testing.T) {
 		outer := uniqueName(test) + "-outer"
 		loc := test.TempDir()
@@ -213,11 +187,11 @@ func TestWorkspaceCreateTeardown(test *testing.T) {
 			test.Fatal(err)
 		}
 		env, code, _ := run(test, "", time.Minute, "create",
-			"--name", uniqueName(test)+"-inner", "--os", "debian-trixie", "--location", nested)
+			"--name", uniqueName(test)+"-inner", "--location", nested)
 		assertError(test, env, code, 2)
 	})
 
-	// 7. creating a second workspace at the same location is rejected (already a workspace).
+	// 6. creating a second workspace at the same location is rejected (already a workspace).
 	test.Run("duplicate_location_rejected", func(test *testing.T) {
 		name := uniqueName(test)
 		loc := test.TempDir()
@@ -231,7 +205,7 @@ func TestWorkspaceCreateTeardown(test *testing.T) {
 		}
 	})
 
-	// 8. --dry-run emits the plan but writes NOTHING.
+	// 7. --dry-run emits the plan but writes NOTHING.
 	test.Run("dry_run_has_no_side_effects", func(test *testing.T) {
 		name := uniqueName(test)
 		loc := test.TempDir()
@@ -247,7 +221,7 @@ func TestWorkspaceCreateTeardown(test *testing.T) {
 		}
 	})
 
-	// 9. deleting an unknown workspace is an error, not a silent success.
+	// 8. deleting an unknown workspace is an error, not a silent success.
 	test.Run("delete_unknown_errors", func(test *testing.T) {
 		env, code, _ := run(test, "", time.Minute, "delete", "ittest-does-not-exist-"+uniqueName(test), "--yes")
 		if env.OK || code == 0 {
@@ -255,7 +229,7 @@ func TestWorkspaceCreateTeardown(test *testing.T) {
 		}
 	})
 
-	// 10. `destroy` is an alias of `delete` (same teardown).
+	// 9. `destroy` is an alias of `delete` (same teardown).
 	test.Run("destroy_alias_tears_down", func(test *testing.T) {
 		name := uniqueName(test)
 		loc := test.TempDir()

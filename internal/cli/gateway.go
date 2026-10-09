@@ -12,12 +12,12 @@ import (
 )
 
 // gatewayResult is the `ai gateway show`/`set`/`clear` payload: the machine-wide
-// model-gateway address every workspace microVM routes through (arch §29.2).
+// model-gateway address every workspace routes through (arch §29.2).
 // Configured is the raw AIPlatformHost (empty in standalone/local mode); Host,
 // Port, and URL are the values resolved from it.
 type gatewayResult struct {
 	// Configured is the raw configured address (host or host:port); empty means
-	// local standalone (host.microsandbox.internal).
+	// local standalone (127.0.0.1).
 	Configured string `json:"configured"`
 	// Local is true when no AIPlatformHost is set (standalone/local fallback).
 	Local bool   `json:"local"`
@@ -28,36 +28,36 @@ type gatewayResult struct {
 }
 
 // Human renders the resolved gateway so an operator can confirm where every
-// microVM on this machine will route its model traffic.
+// workspace on this machine will route its model traffic.
 func (result gatewayResult) Human() string {
 	var builder strings.Builder
 	if result.Local {
 		builder.WriteString(ui.Label.Render("gateway:") + " " + ui.Muted.Render("local (standalone) —") + " ")
-		builder.WriteString(ui.Value.Render("host.microsandbox.internal:" + strconv.Itoa(result.Port)))
+		builder.WriteString(ui.Value.Render("127.0.0.1:" + strconv.Itoa(result.Port)))
 		builder.WriteString("\n")
 	} else {
 		builder.WriteString(ui.Label.Render("gateway:") + " ")
 		builder.WriteString(ui.Value.Render(result.Configured))
 		builder.WriteString(" " + ui.Muted.Render("(client mode)") + "\n")
 	}
-	builder.WriteString(ui.Label.Render("microVMs route to:") + " ")
+	builder.WriteString(ui.Label.Render("workspaces route to:") + " ")
 	builder.WriteString(ui.Value.Render(result.URL))
 	return builder.String()
 }
 
 // newGatewayCmd builds `ai gateway` and its subcommands (CLI §gateway). The
 // configured address is machine-wide (global config/runtime.yaml): it selects
-// the model gateway every workspace microVM on this host routes through.
+// the model gateway every workspace on this host routes through.
 func newGatewayCmd(emitter *output.Emitter, exit *int) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "gateway",
 		Short: "Configure the model gateway every workspace on this machine routes through",
-		Long: "Configure the model gateway address every workspace microVM on this machine\n" +
+		Long: "Configure the model gateway address every workspace on this machine\n" +
 			"routes through (machine-wide, config/runtime.yaml). Leave it unset for the\n" +
-			"local standalone gateway (host.microsandbox.internal); set it to a remote\n" +
-			"server (client mode) so every microVM reaches that server's LiteLLM.\n\n" +
+			"local standalone gateway (127.0.0.1); set it to a remote\n" +
+			"server (client mode) so every workspace reaches that server's LiteLLM.\n\n" +
 			"The address is a bare host or host:port (NOT a URL); the default port is\n" +
-			"18787 (the nginx gateway port). microVMs reach it at http://<host>:<port>/v1.",
+			"18787 (the nginx gateway port). workspaces reach it at http://<host>:<port>/v1.",
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			return cmd.Help() // `ai gateway` with no subcommand prints help (§17.0)
@@ -74,7 +74,7 @@ func newGatewayCmd(emitter *output.Emitter, exit *int) *cobra.Command {
 func newGatewayShowCmd(emitter *output.Emitter, exit *int) *cobra.Command {
 	return &cobra.Command{
 		Use:   "show",
-		Short: "Show the configured model gateway and the URL microVMs will use",
+		Short: "Show the configured model gateway and the URL workspaces will use",
 		Args:  cobra.NoArgs,
 		RunE: func(_ *cobra.Command, _ []string) error {
 			info, err := runtime.Load()
@@ -97,7 +97,7 @@ func newGatewaySetCmd(emitter *output.Emitter, exit *int) *cobra.Command {
 		Use:   "set [host[:port]]",
 		Short: "Route every workspace on this machine through a remote model gateway (client mode)",
 		Long: "Set the machine-wide model gateway to a remote server (client mode): every\n" +
-			"workspace microVM routes its model traffic through that server's LiteLLM.\n" +
+			"every workspace on this machine routes its model traffic through that server's LiteLLM.\n" +
 			"The address is a bare host or host:port (NOT a URL); the default port is 18787.\n\n" +
 			"Run on a terminal to be prompted for the address (pre-seeded with any value\n" +
 			"you pass); pass it as an argument under --json/no TTY for non-interactive use.",

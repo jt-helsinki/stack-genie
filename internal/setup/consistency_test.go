@@ -50,21 +50,18 @@ func TestEveryServiceIsLoggable(test *testing.T) {
 }
 
 // Reverse direction of TestEveryServiceIsLoggable: every entry in logs.Services()
-// must be a KNOWN target — a logical desiredService or the "microsandbox" microVM
-// runtime (which has no service-tier container but is tailable). Drift caught: a
-// log scope added to internal/logs with no real service behind it, so
-// `ai logs --service <x>` would advertise a source that nothing ever writes. Fix:
-// remove the orphan scope, or back it with a real service.
+// must be a KNOWN target — a logical desiredService. Drift caught: a log scope
+// added to internal/logs with no real service behind it, so `ai logs --service
+// <x>` would advertise a source that nothing ever writes. Fix: remove the
+// orphan scope, or back it with a real service.
 func TestNoOrphanLogScopes(test *testing.T) {
-	known := map[string]bool{
-		"microsandbox": true, // the microVM runtime — tailable, but not a service-tier container
-	}
+	known := map[string]bool{}
 	for _, spec := range desiredServices() {
 		known[spec.Name] = true
 	}
 	for _, name := range logs.Services() {
 		if !known[name] {
-			test.Errorf("log scope %q has no backing service — it is not a desiredService or the microsandbox runtime; remove it from internal/logs or add the service", name)
+			test.Errorf("log scope %q has no backing service — it is not a desiredService; remove it from internal/logs or add the service", name)
 		}
 	}
 }

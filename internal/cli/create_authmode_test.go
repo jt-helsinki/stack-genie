@@ -12,7 +12,6 @@ import (
 func TestSpecFromFlagsCarriesAuthModes(test *testing.T) {
 	spec, err := specFromFlags(createFlags{
 		name:        "demo",
-		osKey:       "ubuntu",
 		agents:      []string{"opencode", "claude-code", "codex"},
 		authMode:    "claude-code=oauth,codex=api-key",
 		defaultName: "demo",
@@ -68,7 +67,7 @@ func TestParseAuthModesEmpty(test *testing.T) {
 // TestSpecFromFlagsRejectsUnselectedAuthMode verifies specFromFlags maps a bad --auth-mode
 // to exit 2 via validateProvidedCreateFlags.
 func TestSpecFromFlagsRejectsUnselectedAuthMode(test *testing.T) {
-	_, err := specFromFlags(createFlags{name: "demo", osKey: "ubuntu", authMode: "gemini=oauth", defaultName: "demo"})
+	_, err := specFromFlags(createFlags{name: "demo", authMode: "gemini=oauth", defaultName: "demo"})
 	if err == nil {
 		test.Fatal("expected an error for a non-selected --auth-mode agent")
 	}

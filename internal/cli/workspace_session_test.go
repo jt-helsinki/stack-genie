@@ -2,6 +2,7 @@ package cli
 
 import (
 	"bytes"
+	"errors"
 	"io"
 	"testing"
 
@@ -10,17 +11,21 @@ import (
 	"github.com/spf13/cobra"
 )
 
-// `ai agent`/`ai attach` are interactive-only (they own the terminal and emit no
-// envelope), so under --json they are rejected at exit 2 before ever reaching the
-// Manager — like `ai shell`.
-func TestSessionCommandsGatedUnderJSON(test *testing.T) {
+// `ai agent`/`ai attach`/`ai shell`/`ai start`/`ai restart` are interactive-only
+// (they own the terminal and emit no envelope), so under --json they are
+// rejected at exit 2 before ever reaching the Manager.
+func TestInteractiveCommandsGatedUnderJSON(test *testing.T) {
+	test.Setenv("HOME", test.TempDir())
+	test.Chdir(test.TempDir())
 	cases := map[string]struct {
 		builder func(*output.Emitter, *int) *cobra.Command
 		args    []string
 	}{
-		"top-level agent":  {newAgentCmd, []string{"opencode"}},
-		"top-level attach": {newAttachCmd, nil},
-		"top-level shell":  {newShellCmd, nil},
+		"top-level agent":   {newAgentCmd, []string{"opencode"}},
+		"top-level attach":  {newAttachCmd, nil},
+		"top-level shell":   {newShellCmd, nil},
+		"top-level start":   {newStartCmd, nil},
+		"top-level restart": {newRestartCmd, nil},
 	}
 	for name, testCase := range cases {
 		test.Run(name, func(test *testing.T) {
@@ -39,10 +44,10 @@ func TestSessionCommandsGatedUnderJSON(test *testing.T) {
 }
 
 // AgentCLINames exposes the launchable agent CLIs (used by completion); the set
-// must include the defaults `ai project create` installs.
+// must include the defaults `ai create` installs.
 func TestAgentCLINamesIncludesDefaults(test *testing.T) {
 	names := workspace.AgentCLINames()
-	want := map[string]bool{"opencode": false, "omp": false, "claude-code": false, "codex": false, "gemini": false}
+	want := map[string]bool{"opencode": false, "omp": false, "claude-code": false, "codex": false, "gemini": false, "hermes": false}
 	for _, name := range names {
 		want[name] = true
 	}
@@ -53,17 +58,17 @@ func TestAgentCLINamesIncludesDefaults(test *testing.T) {
 	}
 }
 
-// sessionsResult renders a human table with the session names + attached flag.
+// sessionsResult renders a human table with the session id/name/status/attached.
 func TestSessionsResultHumanRendersNames(test *testing.T) {
 	result := sessionsResult{
 		Project: "app",
 		Sessions: []workspace.Session{
-			{Name: "shell", Attached: true, Activity: "1700000000"},
-			{Name: "opencode", Attached: false, Activity: ""},
+			{SessionID: "abc12345", Name: "shell", Status: "running", Attachment: "attached"},
+			{SessionID: "def67890", Name: "opencode", Status: "running", Attachment: "detached"},
 		},
 	}
 	rendered := result.Human()
-	for _, want := range []string{"NAME", "ATTACHED", "shell", "opencode"} {
+	for _, want := range []string{"NAME", "STATUS", "ATTACHED", "shell", "opencode"} {
 		if !bytes.Contains([]byte(rendered), []byte(want)) {
 			test.Errorf("sessions table missing %q:\n%s", want, rendered)
 		}
@@ -78,55 +83,73 @@ func TestSessionsResultHumanEmptyHint(test *testing.T) {
 	}
 }
 
-// `ai attach` with no sessions tells the user to use `ai shell` to create one.
-func TestAttachNoSessionsResultHumanPointsAtShell(test *testing.T) {
+// `ai attach` with no sessions tells the user to use `ai agent` to create one.
+func TestAttachNoSessionsResultHumanPointsAtAgent(test *testing.T) {
 	rendered := attachNoSessionsResult{Project: "app"}.Human()
-	for _, want := range []string{"No sessions", "app", "ai shell"} {
+	for _, want := range []string{"No sessions", "app", "ai agent"} {
 		if !bytes.Contains([]byte(rendered), []byte(want)) {
 			test.Errorf("no-sessions hint missing %q:\n%s", want, rendered)
 		}
 	}
 }
 
-// validateSessionName accepts tmux-safe names and rejects empty / punctuated ones
-// (tmux forbids '.'/':' and whitespace in session names).
-func TestValidateSessionName(test *testing.T) {
-	valid := []string{"shell", "build-2", "my_session", "OpenCode"}
-	for _, name := range valid {
-		if err := validateSessionName(name); err != nil {
-			test.Errorf("validateSessionName(%q) = %v, want nil", name, err)
-		}
-	}
-	invalid := []string{"", "   ", "has space", "dot.name", "colon:name", "slash/name"}
-	for _, name := range invalid {
-		if err := validateSessionName(name); err == nil {
-			test.Errorf("validateSessionName(%q) = nil, want an error", name)
-		}
-	}
-}
-
-// sessionNames projects the session list to plain names for the pickers.
-func TestSessionNames(test *testing.T) {
-	got := sessionNames([]workspace.Session{{Name: "shell"}, {Name: "opencode"}})
-	if len(got) != 2 || got[0] != "shell" || got[1] != "opencode" {
-		test.Fatalf("sessionNames = %v, want [shell opencode]", got)
-	}
-}
-
-// sessionOptions labels each attach choice with its attached/idle state but keeps
-// the option VALUE the bare session name (what gets attached).
+// sessionOptions labels each attach choice with its name + short id but keeps
+// the option VALUE the full SessionID (what gets attached).
 func TestSessionOptionsLabelsAndValues(test *testing.T) {
 	options := sessionOptions([]workspace.Session{
-		{Name: "shell", Attached: true},
-		{Name: "opencode", Attached: false, Activity: "1"},
+		{SessionID: "abc12345xyz", Name: "shell"},
+		{SessionID: "def67890xyz", Name: ""},
 	})
 	if len(options) != 2 {
 		test.Fatalf("expected 2 options, got %d", len(options))
 	}
-	if options[0].Value != "shell" || !bytes.Contains([]byte(options[0].Key), []byte("attached")) {
-		test.Errorf("attached session option = %+v, want value shell + 'attached' label", options[0])
+	if options[0].Value != "abc12345xyz" || !bytes.Contains([]byte(options[0].Key), []byte("shell")) {
+		test.Errorf("first option = %+v, want value abc12345xyz + 'shell' label", options[0])
 	}
-	if options[1].Value != "opencode" {
-		test.Errorf("second option value = %q, want opencode", options[1].Value)
+	if options[1].Value != "def67890xyz" || !bytes.Contains([]byte(options[1].Key), []byte("(shell)")) {
+		test.Errorf("unnamed session option = %+v, want value def67890xyz + '(shell)' label", options[1])
+	}
+}
+
+// runningSessionByName finds only a RUNNING session with a matching name.
+func TestRunningSessionByName(test *testing.T) {
+	sessions := []workspace.Session{
+		{SessionID: "a", Name: "codex", Status: "exited"},
+		{SessionID: "b", Name: "codex", Status: "running"},
+	}
+	id, found := runningSessionByName(sessions, "codex")
+	if !found || id != "b" {
+		test.Fatalf("runningSessionByName = (%q, %v), want (b, true)", id, found)
+	}
+	if _, found := runningSessionByName(sessions, "claude-code"); found {
+		test.Fatal("runningSessionByName should not match an absent name")
+	}
+}
+
+func TestMapWorkspaceErr(test *testing.T) {
+	var platformErr *output.Error
+
+	// Pre-coded errors pass through.
+	coded := output.Errorf(output.ExitPermission, "no")
+	if !errors.As(mapWorkspaceErr(coded), &platformErr) || platformErr.Code != output.ExitPermission {
+		test.Fatalf("coded error should pass through: %v", mapWorkspaceErr(coded))
+	}
+
+	// Unknown-project / unknown-agent / no-active-session → invalid input (exit 2).
+	for _, sentinel := range []error{workspace.ErrUnknownProject, workspace.ErrUnknownAgentCLI, workspace.ErrNoActiveSession} {
+		if !errors.As(mapWorkspaceErr(sentinel), &platformErr) || platformErr.Code != output.ExitInvalidInput {
+			test.Fatalf("%v should map to invalid input, got %v", sentinel, mapWorkspaceErr(sentinel))
+		}
+	}
+
+	// Missing nono → exit 3.
+	if !errors.As(mapWorkspaceErr(workspace.ErrNonoMissing), &platformErr) || platformErr.Code != output.ExitMissingDep {
+		test.Fatalf("ErrNonoMissing should map to missing dependency, got %v", mapWorkspaceErr(workspace.ErrNonoMissing))
+	}
+
+	// Anything else is a runtime failure (exit 4).
+	mapped := mapWorkspaceErr(errors.New("boom"))
+	if !errors.As(mapped, &platformErr) || platformErr.Code != output.ExitRuntimeFailure {
+		test.Fatalf("generic error should map to runtime failure, got %v", mapped)
 	}
 }

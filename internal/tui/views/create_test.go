@@ -7,7 +7,6 @@ import (
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
-	"github.com/jt-helsinki/stack-genie/internal/create"
 	"github.com/jt-helsinki/stack-genie/internal/state"
 )
 
@@ -170,7 +169,7 @@ func TestLocationAutocompletionPrefixMatchesChildDirs(test *testing.T) {
 // TestCreateWizardCancels verifies esc from the first step cancels the whole wizard.
 func TestCreateWizardCancels(test *testing.T) {
 	test.Setenv("HOME", test.TempDir())
-	wizard := NewCreate(test.TempDir(), 24, 18, nil)
+	wizard := NewCreate(test.TempDir(), nil)
 	cmd := wizard.Update(tea.KeyMsg{Type: tea.KeyEsc})
 	if cmd == nil {
 		test.Fatal("esc must emit a cancel command")
@@ -186,7 +185,7 @@ func TestCreateWizardAssemblesSpec(test *testing.T) {
 	base := test.TempDir()
 	target := filepath.Join(base, "demo-ws")
 
-	wizard := NewCreate(base, 24, 18, nil)
+	wizard := NewCreate(base, nil)
 	wizard.SetSize(80, 24)
 
 	enter := func() tea.Cmd { return wizard.Update(tea.KeyMsg{Type: tea.KeyEnter}) }
@@ -202,26 +201,20 @@ func TestCreateWizardAssemblesSpec(test *testing.T) {
 	// Step 2: name.
 	wizard.name.input.SetValue("demo-ws")
 	enter()
-	// Step 3: OS (default debian-trixie). Step 4: shell (default bash). Step 5: agents.
-	enter() // OS
 	if wizard.step != stepShell {
-		test.Fatalf("after OS, step = %d, want stepShell", wizard.step)
+		test.Fatalf("after name, step = %d, want stepShell", wizard.step)
 	}
 	enter() // shell (default bash)
 	if wizard.step != stepAgents {
 		test.Fatalf("after shell, step = %d, want stepAgents", wizard.step)
 	}
-	enter() // agents + apps combined (defaults satisfy the ≥1 requirement)
+	enter() // agents (default opencode satisfies ≥1)
+	if wizard.step != stepDefault {
+		test.Fatalf("after agents, step = %d, want stepDefault", wizard.step)
+	}
 	enter() // default agent
-	enter() // stacks (none)
-	enter() // cpus (blank)
-	enter() // memory (blank)
-	enter() // disk (blank)
-	enter() // ports (blank)
-	enter() // isolated dirs (blank)
-	enter() // idle (blank) → advances to the AI-tools step
 	if wizard.step != stepTools {
-		test.Fatalf("after idle, step = %d, want stepTools", wizard.step)
+		test.Fatalf("after default agent, step = %d, want stepTools", wizard.step)
 	}
 	// AI tools: none selected by default. Toggle caveman + graphify + code-review-graph
 	// on (indices 0, 1, 2) so the Graphify-model step is shown next.
@@ -247,9 +240,6 @@ func TestCreateWizardAssemblesSpec(test *testing.T) {
 	spec := confirmed.Spec
 	if spec.Name != "demo-ws" {
 		test.Errorf("spec.Name = %q, want demo-ws", spec.Name)
-	}
-	if spec.OS != "debian-trixie" {
-		test.Errorf("spec.OS = %q, want debian-trixie", spec.OS)
 	}
 	if spec.Shell != "bash" {
 		test.Errorf("spec.Shell = %q, want bash (default)", spec.Shell)
@@ -285,7 +275,7 @@ func TestCreateWizardAssemblesSpec(test *testing.T) {
 // over omlx's live model list (no free-text entry, no download): it defaults to
 // "none", and moving down selects an actual model name from the injected lister.
 func TestCreateWizardModelStepIsAPicker(test *testing.T) {
-	wizard := NewCreate(test.TempDir(), 24, 18, func() []string { return []string{"bge-m3", "qwen3-coder"} })
+	wizard := NewCreate(test.TempDir(), func() []string { return []string{"bge-m3", "qwen3-coder"} })
 	wizard.SetSize(80, 24)
 	wizard.tools.Move(1) // graphify
 	wizard.tools.Toggle()
@@ -306,7 +296,7 @@ func TestCreateWizardModelStepIsAPicker(test *testing.T) {
 // TestCreateWizardModelStepDegradesWithNoModels verifies a nil/empty lister still
 // yields a valid, selectable "none" option rather than an empty list.
 func TestCreateWizardModelStepDegradesWithNoModels(test *testing.T) {
-	wizard := NewCreate(test.TempDir(), 24, 18, nil)
+	wizard := NewCreate(test.TempDir(), nil)
 	wizard.SetSize(80, 24)
 	wizard.step = stepModel
 	if got := wizard.model.Value(); got != graphifyModelNone {
@@ -356,7 +346,7 @@ func TestCreateWizardAuthModeStep(test *testing.T) {
 	base := test.TempDir()
 	target := filepath.Join(base, "demo-ws")
 
-	wizard := NewCreate(base, 24, 18, nil)
+	wizard := NewCreate(base, nil)
 	wizard.SetSize(80, 24)
 	enter := func() tea.Cmd { return wizard.Update(tea.KeyMsg{Type: tea.KeyEnter}) }
 	press := func(k tea.KeyType) { wizard.Update(tea.KeyMsg{Type: k}) }
@@ -366,22 +356,14 @@ func TestCreateWizardAuthModeStep(test *testing.T) {
 	enter() // location
 	wizard.name.input.SetValue("demo-ws")
 	enter() // name
-	enter() // OS
 	enter() // shell
 	// agents: add claude-code (index 2: opencode, omp, claude-code) to the opencode default.
 	for index := 0; index < 2; index++ {
 		press(tea.KeyDown)
 	}
 	space() // toggle claude-code on
-	enter() // agents + apps combined
+	enter() // agents
 	enter() // default agent
-	enter() // stacks
-	enter() // cpus
-	enter() // memory
-	enter() // disk
-	enter() // ports
-	enter() // isolated dirs
-	enter() // idle → AI tools
 	if wizard.step != stepTools {
 		test.Fatalf("expected the AI-tools step, got step %d", wizard.step)
 	}
@@ -410,74 +392,5 @@ func TestCreateWizardAuthModeStep(test *testing.T) {
 	}
 	if confirmed.Spec.AuthModes["claude-code"] != "oauth" {
 		test.Errorf("Spec.AuthModes = %v, want claude-code=oauth", confirmed.Spec.AuthModes)
-	}
-}
-
-// TestCreateWizardPromptsAppPort verifies the wizard shows a host-port step for each
-// selected in-VM app and carries the chosen port into the spec.
-func TestCreateWizardPromptsAppPort(test *testing.T) {
-	test.Setenv("HOME", test.TempDir())
-	base := test.TempDir()
-	target := filepath.Join(base, "app-ws")
-
-	wizard := NewCreate(base, 24, 18, nil)
-	wizard.SetSize(80, 24)
-	enter := func() tea.Cmd { return wizard.Update(tea.KeyMsg{Type: tea.KeyEnter}) }
-	press := func(k tea.KeyType) { wizard.Update(tea.KeyMsg{Type: k}) }
-	space := func() { wizard.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(" ")}) }
-
-	wizard.location.input.SetValue(target)
-	enter()
-	wizard.name.input.SetValue("app-ws")
-	enter()
-	enter() // OS
-	enter() // shell
-	// agents+apps: move to the openwebui row (last option) and toggle it on (opencode stays).
-	openWebUIIndex := len(create.SupportedAgentCLIs())
-	for index, key := range create.SupportedApps() {
-		if key == "openwebui" {
-			openWebUIIndex += index
-		}
-	}
-	for step := 0; step < openWebUIIndex; step++ {
-		press(tea.KeyDown)
-	}
-	space()
-	enter() // leave agents+apps
-	enter() // default agent
-	enter() // stacks
-	enter() // cpus
-	enter() // memory
-	enter() // disk
-	enter() // ports
-	enter() // isolated dirs
-	enter() // idle → AI tools
-	if wizard.step != stepTools {
-		test.Fatalf("after idle, step = %d, want stepTools", wizard.step)
-	}
-	wizard.tools.Move(1) // graphify
-	wizard.tools.Toggle()
-	enter() // tools → model step (graphify toggled on)
-	if wizard.step != stepModel {
-		test.Fatalf("after AI tools, step = %d, want stepModel", wizard.step)
-	}
-	enter() // model (blank) → app-port phase
-	if wizard.step != stepAppPorts {
-		test.Fatalf("after model, step = %d, want stepAppPorts", wizard.step)
-	}
-	if len(wizard.appPortKeys) != 1 || wizard.appPortKeys[0] != "openwebui" {
-		test.Fatalf("app-port phase keys = %v, want [openwebui]", wizard.appPortKeys)
-	}
-	wizard.appPortInputs[0].input.SetValue("9999")
-	cmd := enter() // leave app-port → no OAuth agent → finish
-	if cmd == nil {
-		test.Fatal("leaving the app-port step should finish and emit a command")
-	}
-	confirmed, ok := cmd().(CreateConfirmedMsg)
-	if !ok {
-		test.Fatalf("want CreateConfirmedMsg, got %#v", cmd())
-	}
-	if confirmed.Spec.AppPorts["openwebui"] != 9999 {
-		test.Errorf("spec.AppPorts[openwebui] = %d, want 9999", confirmed.Spec.AppPorts["openwebui"])
 	}
 }

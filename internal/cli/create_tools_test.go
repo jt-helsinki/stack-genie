@@ -11,7 +11,7 @@ import (
 
 func TestSpecFromFlagsDefaultsAITools(test *testing.T) {
 	// --tools unset → no AI tools selected.
-	spec, err := specFromFlags(createFlags{name: "demo", osKey: "ubuntu", defaultName: "demo"})
+	spec, err := specFromFlags(createFlags{name: "demo", defaultName: "demo"})
 	if err != nil {
 		test.Fatalf("specFromFlags: %v", err)
 	}
@@ -24,7 +24,7 @@ func TestSpecFromFlagsDefaultsAITools(test *testing.T) {
 func TestSpecFromFlagsExplicitAITools(test *testing.T) {
 	// An explicit subset selects exactly those tools.
 	spec, err := specFromFlags(createFlags{
-		name: "demo", osKey: "ubuntu", defaultName: "demo",
+		name: "demo", defaultName: "demo",
 		tools:    []string{create.AIToolGraphify, create.AIToolCodebaseMemory},
 		toolsSet: true,
 	})
@@ -42,7 +42,7 @@ func TestSpecFromFlagsExplicitAITools(test *testing.T) {
 func TestSpecFromFlagsEmptyAIToolsSelectsNone(test *testing.T) {
 	// --tools="" (provided but empty) selects NO tools.
 	spec, err := specFromFlags(createFlags{
-		name: "demo", osKey: "ubuntu", defaultName: "demo",
+		name: "demo", defaultName: "demo",
 		tools: nil, toolsSet: true,
 	})
 	if err != nil {
@@ -55,7 +55,7 @@ func TestSpecFromFlagsEmptyAIToolsSelectsNone(test *testing.T) {
 
 func TestSpecFromFlagsRejectsUnknownAITool(test *testing.T) {
 	_, err := specFromFlags(createFlags{
-		name: "demo", osKey: "ubuntu", defaultName: "demo",
+		name: "demo", defaultName: "demo",
 		tools: []string{"not-a-tool"}, toolsSet: true,
 	})
 	if err == nil {

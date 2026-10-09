@@ -144,17 +144,6 @@ func TestHostResourceWrappers(test *testing.T) {
 	if cpus := HostCPUs(); cpus < 0 {
 		test.Errorf("HostCPUs() = %d, want non-negative", cpus)
 	}
-	hostGB := HostMemoryGB()
-	if hostGB < 0 {
-		test.Errorf("HostMemoryGB() = %d, want non-negative", hostGB)
-	}
-	usableGB := UsableHostMemoryGB()
-	if usableGB < 0 {
-		test.Errorf("UsableHostMemoryGB() = %d, want non-negative", usableGB)
-	}
-	if usableGB > hostGB {
-		test.Errorf("UsableHostMemoryGB() = %d must be <= HostMemoryGB() = %d", usableGB, hostGB)
-	}
 }
 
 // TestSanitizeName verifies the auto-derived-name character rules: lowercased,

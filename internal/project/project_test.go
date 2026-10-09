@@ -4,61 +4,42 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
-	"strings"
+	goruntime "runtime"
 	"testing"
 
 	"github.com/jt-helsinki/stack-genie/internal/config"
-	"github.com/jt-helsinki/stack-genie/internal/overlay"
+	"github.com/jt-helsinki/stack-genie/internal/nono"
 	"github.com/jt-helsinki/stack-genie/internal/state"
-	"github.com/jt-helsinki/stack-genie/internal/templates"
-	"github.com/jt-helsinki/stack-genie/internal/workspace"
 )
 
-func withTemplates(test *testing.T) {
-	test.Helper()
-	test.Setenv("HOME", test.TempDir())
-	if err := templates.Install(); err != nil {
-		test.Fatal(err)
-	}
+// TestMain stubs the nono session lister for the whole package's test run —
+// List()'s live `nono ps` query is a best-effort read that must never shell
+// out to a real `nono` binary (or depend on one being installed) in unit tests.
+func TestMain(m *testing.M) {
+	listSessionsFn = func() ([]nono.Session, error) { return nil, nil }
+	os.Exit(m.Run())
 }
 
 func sampleSpec() Spec {
 	return Spec{
 		Name:        "my-app",
-		OS:          "debian-trixie",
-		Stacks:      []string{"go"},
 		AgentCLIs:   []string{"opencode", "codex"},
 		DefaultTool: "opencode",
 	}
 }
 
 func TestScaffoldWritesArtifactsAndIndex(test *testing.T) {
-	withTemplates(test)
+	test.Setenv("HOME", test.TempDir())
 
 	root, err := Scaffold(sampleSpec(), "2026-06-18T00:00:00Z")
 	if err != nil {
 		test.Fatal(err)
 	}
 
-	dockerfile, err := os.ReadFile(filepath.Join(root, ".ai-platform", "Dockerfile"))
-	if err != nil {
-		test.Fatal(err)
-	}
-	for _, fragment := range []string{"FROM debian:trixie-slim", "# stack: go", "# agent CLI: opencode", "# agent CLI: codex"} {
-		if !strings.Contains(string(dockerfile), fragment) {
-			test.Errorf("Dockerfile missing %q", fragment)
-		}
-	}
-
-	for _, file := range []string{"config.yaml", "profile.yaml", "project.yaml", ".gitignore"} {
+	for _, file := range []string{"config.yaml", "project.yaml", ".gitignore"} {
 		if _, err := os.Stat(filepath.Join(root, ".ai-platform", file)); err != nil {
 			test.Errorf("missing %s: %v", file, err)
 		}
-	}
-
-	profile, _ := os.ReadFile(filepath.Join(root, ".ai-platform", "profile.yaml"))
-	if !strings.Contains(string(profile), "go") {
-		test.Errorf("profile.yaml missing stack: %s", profile)
 	}
 
 	index, err := state.LoadIndex()
@@ -70,75 +51,12 @@ func TestScaffoldWritesArtifactsAndIndex(test *testing.T) {
 	}
 }
 
-func TestScaffoldWritesDefaultMicrosandboxIdleTimeout(test *testing.T) {
-	withTemplates(test)
-	root, err := Scaffold(sampleSpec(), "t")
-	if err != nil {
-		test.Fatal(err)
-	}
-	projectConfig, err := config.LoadProjectConfig(root)
-	if err != nil {
-		test.Fatal(err)
-	}
-	if got := projectConfig.Microsandbox.IdleTimeout; got != config.DefaultMicrosandboxIdleTimeout {
-		test.Fatalf("microsandbox.idle_timeout = %q, want %q", got, config.DefaultMicrosandboxIdleTimeout)
-	}
-}
-
-func TestScaffoldWritesConfiguredMicrosandboxIdleTimeout(test *testing.T) {
-	withTemplates(test)
-	spec := sampleSpec()
-	spec.IdleTimeout = "2h"
-	root, err := Scaffold(spec, "t")
-	if err != nil {
-		test.Fatal(err)
-	}
-	projectConfig, err := config.LoadProjectConfig(root)
-	if err != nil {
-		test.Fatal(err)
-	}
-	if got := projectConfig.Microsandbox.IdleTimeout; got != "2h" {
-		test.Fatalf("microsandbox.idle_timeout = %q, want 2h", got)
-	}
-}
-
-// TestScaffoldRefreshesStaleTemplates: create must overwrite an on-disk template
-// left by an OLDER ai (here a tmux-less base) with THIS binary's embedded copy, so
-// a binary upgrade alone fixes the generated Dockerfile without re-running setup.
-func TestScaffoldRefreshesStaleTemplates(test *testing.T) {
-	test.Setenv("HOME", test.TempDir())
-	// Seed a stale on-disk base template (no tmux), as an old `ai setup` would have.
-	root, err := templates.InstalledRoot()
-	if err != nil {
-		test.Fatal(err)
-	}
-	stalePath := filepath.Join(root, "dockerfiles", "debian-trixie", "Dockerfile")
-	if err := os.MkdirAll(filepath.Dir(stalePath), 0o755); err != nil {
-		test.Fatal(err)
-	}
-	if err := os.WriteFile(stalePath, []byte("FROM debian:trixie-slim\nRUN apt-get install -y curl git\n"), 0o644); err != nil {
-		test.Fatal(err)
-	}
-
-	projectRoot, err := Scaffold(sampleSpec(), "t")
-	if err != nil {
-		test.Fatal(err)
-	}
-	dockerfile, err := os.ReadFile(filepath.Join(projectRoot, ".ai-platform", "Dockerfile"))
-	if err != nil {
-		test.Fatal(err)
-	}
-	if !strings.Contains(string(dockerfile), "tmux") {
-		test.Errorf("create must refresh stale on-disk templates from the embed (expected tmux in base):\n%s", dockerfile)
-	}
-}
-
 func TestScaffoldAtExplicitRoot(test *testing.T) {
-	withTemplates(test)
+	test.Setenv("HOME", test.TempDir())
 	home, _ := os.UserHomeDir()
 
-	// A directory entirely outside ~/projects — `ai project create` sets
-	// Spec.Root to the current directory, which can be anywhere.
+	// A directory entirely outside ~/projects — `ai create` sets Spec.Root to the
+	// current directory, which can be anywhere.
 	root := filepath.Join(home, "workspace", "testvm")
 	spec := sampleSpec()
 	spec.Root = root
@@ -164,7 +82,7 @@ func TestScaffoldAtExplicitRoot(test *testing.T) {
 }
 
 func TestScaffoldInvalidName(test *testing.T) {
-	withTemplates(test)
+	test.Setenv("HOME", test.TempDir())
 	spec := sampleSpec()
 	spec.Name = "-bad-"
 	if _, err := Scaffold(spec, "t"); !errors.Is(err, ErrInvalidName) {
@@ -173,7 +91,7 @@ func TestScaffoldInvalidName(test *testing.T) {
 }
 
 func TestScaffoldDuplicate(test *testing.T) {
-	withTemplates(test)
+	test.Setenv("HOME", test.TempDir())
 	if _, err := Scaffold(sampleSpec(), "t"); err != nil {
 		test.Fatal(err)
 	}
@@ -183,7 +101,7 @@ func TestScaffoldDuplicate(test *testing.T) {
 }
 
 func TestListReturnsProjects(test *testing.T) {
-	withTemplates(test)
+	test.Setenv("HOME", test.TempDir())
 	if _, err := Scaffold(sampleSpec(), "t"); err != nil {
 		test.Fatal(err)
 	}
@@ -191,8 +109,8 @@ func TestListReturnsProjects(test *testing.T) {
 	if err != nil {
 		test.Fatal(err)
 	}
-	if len(entries) != 1 || entries[0].Name != "my-app" || entries[0].OS != "debian-trixie" {
-		test.Fatalf("list = %+v", entries)
+	if len(entries) != 1 || entries[0].Name != "my-app" || entries[0].OS != goruntime.GOOS {
+		test.Fatalf("list = %+v, want OS=%q", entries, goruntime.GOOS)
 	}
 	// §3.3: the row also carries the active agent CLIs and the workspace status
 	// ("none" until a workspace is started).
@@ -204,8 +122,46 @@ func TestListReturnsProjects(test *testing.T) {
 	}
 }
 
+// TestListReflectsLiveSession is a regression test: `ai list`'s status must
+// come from a REAL running nono session for the project's root, matched by
+// Workdir — not a stale saved-handle id guess (the id a workspace launch
+// saves is the real nono session id, which never equals the old aip-<name>
+// placeholder `workspaceHandle` used to compare against, so status was stuck
+// at "none" forever even with a live session running).
+func TestListReflectsLiveSession(test *testing.T) {
+	test.Setenv("HOME", test.TempDir())
+	root, err := Scaffold(sampleSpec(), "t")
+	if err != nil {
+		test.Fatal(err)
+	}
+
+	original := listSessionsFn
+	defer func() { listSessionsFn = original }()
+	listSessionsFn = func() ([]nono.Session, error) {
+		return []nono.Session{
+			{SessionID: "sess-old", Workdir: root, Status: "exited", Started: "2026-01-01T00:00:00Z"},
+			{SessionID: "sess-new", Workdir: root, Status: "running", Started: "2026-01-02T00:00:00Z"},
+			{SessionID: "sess-other", Workdir: "/some/other/project", Status: "running", Started: "2026-01-03T00:00:00Z"},
+		}, nil
+	}
+
+	entries, err := List()
+	if err != nil {
+		test.Fatal(err)
+	}
+	if len(entries) != 1 {
+		test.Fatalf("list = %+v, want 1 entry", entries)
+	}
+	if entries[0].Status != "running" {
+		test.Errorf("status = %q, want running (live session for this project's workdir)", entries[0].Status)
+	}
+	if entries[0].ID != "sess-new" {
+		test.Errorf("id = %q, want the most-recently-started matching session id sess-new", entries[0].ID)
+	}
+}
+
 func TestDeleteRemovesPlatformDirKeepsOtherFiles(test *testing.T) {
-	withTemplates(test)
+	test.Setenv("HOME", test.TempDir())
 	root, err := Scaffold(sampleSpec(), "t")
 	if err != nil {
 		test.Fatal(err)
@@ -249,7 +205,7 @@ func TestDeleteRemovesPlatformDirKeepsOtherFiles(test *testing.T) {
 // KEPT (removeAgentDirs=false), their symlinks into the shared .ai-platform pool are
 // converted to real files before .ai-platform is removed, so the kept content survives.
 func TestDeleteKeepsAgentDirsAndMaterializesSymlinks(test *testing.T) {
-	withTemplates(test)
+	test.Setenv("HOME", test.TempDir())
 	root, err := Scaffold(sampleSpec(), "t")
 	if err != nil {
 		test.Fatal(err)
@@ -292,7 +248,7 @@ func TestDeleteKeepsAgentDirsAndMaterializesSymlinks(test *testing.T) {
 }
 
 func TestDeletePurgeRemovesSource(test *testing.T) {
-	withTemplates(test)
+	test.Setenv("HOME", test.TempDir())
 	root, err := Scaffold(sampleSpec(), "t")
 	if err != nil {
 		test.Fatal(err)
@@ -305,72 +261,17 @@ func TestDeletePurgeRemovesSource(test *testing.T) {
 	}
 }
 
-func TestDeleteRemovesOverlay(test *testing.T) {
-	withTemplates(test)
-	if _, err := Scaffold(sampleSpec(), "t"); err != nil {
-		test.Fatal(err)
-	}
-	// Simulate a provisioned workspace's persistent overlay.
-	workspaceID := workspace.Name("my-app")
-	if _, err := overlay.Ensure(workspaceID); err != nil {
-		test.Fatal(err)
-	}
-	if err := Delete("my-app", false, true); err != nil {
-		test.Fatal(err)
-	}
-	// Deleting the project is permanent removal (arch §26): the overlay goes too.
-	present, err := overlay.Exists(workspaceID)
-	if err != nil || present {
-		test.Fatalf("delete should remove the overlay: present=%v err=%v", present, err)
-	}
-}
-
 func TestDeleteUnknown(test *testing.T) {
-	withTemplates(test)
+	test.Setenv("HOME", test.TempDir())
 	if err := Delete("ghost", false, true); !errors.Is(err, ErrUnknownProject) {
 		test.Fatalf("want ErrUnknownProject, got %v", err)
-	}
-}
-
-func TestScaffoldAllocatesAppPorts(test *testing.T) {
-	withTemplates(test)
-	spec := sampleSpec()
-	spec.Apps = []string{"openwebui"}
-	root, err := Scaffold(spec, "t")
-	if err != nil {
-		test.Fatal(err)
-	}
-	cfg, err := config.LoadProjectConfig(root)
-	if err != nil {
-		test.Fatal(err)
-	}
-	if len(cfg.Apps) != 1 {
-		test.Fatalf("config has %d apps, want 1: %+v", len(cfg.Apps), cfg.Apps)
-	}
-	if cfg.Apps[0].Key != "openwebui" || cfg.Apps[0].Port == 0 {
-		test.Fatalf("app port not allocated: %+v", cfg.Apps)
-	}
-}
-
-func TestScaffoldNoAppsByDefault(test *testing.T) {
-	withTemplates(test)
-	root, err := Scaffold(sampleSpec(), "t")
-	if err != nil {
-		test.Fatal(err)
-	}
-	cfg, err := config.LoadProjectConfig(root)
-	if err != nil {
-		test.Fatal(err)
-	}
-	if len(cfg.Apps) != 0 {
-		test.Fatalf("apps default to %v, want empty", cfg.Apps)
 	}
 }
 
 // TestScaffoldWritesAuthModesAndOAuthEgress verifies Scaffold persists auth_modes for the
 // selected OAuth-capable CLIs and allow-lists an oauth agent's provider egress domains.
 func TestScaffoldWritesAuthModesAndOAuthEgress(test *testing.T) {
-	withTemplates(test)
+	test.Setenv("HOME", test.TempDir())
 	spec := sampleSpec()
 	spec.AgentCLIs = []string{"opencode", "claude-code", "gemini"}
 	spec.AuthModes = map[string]string{"claude-code": "oauth", "gemini": "api-key"}
@@ -394,18 +295,18 @@ func TestScaffoldWritesAuthModesAndOAuthEgress(test *testing.T) {
 		test.Error("opencode is not OAuth-capable and must not appear in auth_modes")
 	}
 	// The oauth claude-code's provider domain is allow-listed; gemini (api-key) adds none.
-	if !hasAllowedHost(projectConfig.Network.AllowHostServices, "api.anthropic.com") {
-		test.Errorf("oauth claude-code must allow-list api.anthropic.com: %+v", projectConfig.Network.AllowHostServices)
+	if !slicesContain(projectConfig.Network.AllowDomain, "api.anthropic.com") {
+		test.Errorf("oauth claude-code must allow-list api.anthropic.com: %+v", projectConfig.Network.AllowDomain)
 	}
-	if hasAllowedHost(projectConfig.Network.AllowHostServices, "generativelanguage.googleapis.com") {
-		test.Errorf("api-key gemini must NOT allow-list its provider domains: %+v", projectConfig.Network.AllowHostServices)
+	if slicesContain(projectConfig.Network.AllowDomain, "generativelanguage.googleapis.com") {
+		test.Errorf("api-key gemini must NOT allow-list its provider domains: %+v", projectConfig.Network.AllowDomain)
 	}
 }
 
 // TestScaffoldNoAuthModesWhenAllAPIKey verifies a default (all api-key) create writes no
 // auth_modes and no oauth egress rules.
 func TestScaffoldNoAuthModesWhenAllAPIKey(test *testing.T) {
-	withTemplates(test)
+	test.Setenv("HOME", test.TempDir())
 	spec := sampleSpec()
 	spec.AgentCLIs = []string{"opencode", "claude-code"}
 	// No AuthModes → default api-key everywhere.
@@ -420,14 +321,14 @@ func TestScaffoldNoAuthModesWhenAllAPIKey(test *testing.T) {
 	if got := projectConfig.Agent.AuthMode("claude-code"); got != "api-key" {
 		test.Errorf("default claude-code AuthMode = %q, want api-key", got)
 	}
-	if len(projectConfig.Network.AllowHostServices) != 0 {
-		test.Errorf("all-api-key create must add no egress allow rules: %+v", projectConfig.Network.AllowHostServices)
+	if len(projectConfig.Network.AllowDomain) != 0 {
+		test.Errorf("all-api-key create must add no egress allow rules: %+v", projectConfig.Network.AllowDomain)
 	}
 }
 
-func hasAllowedHost(services []config.HostService, host string) bool {
-	for _, service := range services {
-		if service.Host == host {
+func slicesContain(list []string, value string) bool {
+	for _, item := range list {
+		if item == value {
 			return true
 		}
 	}

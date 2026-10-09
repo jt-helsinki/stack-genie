@@ -2,15 +2,12 @@ package cli
 
 import (
 	"io"
-	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 
 	"github.com/jt-helsinki/stack-genie/internal/config"
 	"github.com/jt-helsinki/stack-genie/internal/output"
 	"github.com/jt-helsinki/stack-genie/internal/state"
-	"github.com/jt-helsinki/stack-genie/internal/templates"
 )
 
 // runTools drives a single `ai tools <args...>` invocation against a fresh command
@@ -29,21 +26,16 @@ func runTools(test *testing.T, args ...string) int {
 	return exit
 }
 
-// seedToolsProject installs the embedded templates (needed by envimage.Write, which
-// enable/disable calls to regenerate the Dockerfile) and registers a project with
-// graphify pre-enabled, caveman pre-disabled, so toggle tests have a known baseline.
+// seedToolsProject registers a project with graphify pre-enabled, caveman
+// pre-disabled, so toggle tests have a known baseline.
 func seedToolsProject(test *testing.T, project string) string {
 	test.Helper()
 	home := test.TempDir()
 	test.Setenv("HOME", home)
-	if err := templates.Install(); err != nil {
-		test.Fatal(err)
-	}
 	root := filepath.Join(home, "projects", project)
 	graphifyEnabled := true
 	cavemanEnabled := false
 	settings := config.Config{
-		OS:    "debian-trixie",
 		Agent: config.AgentConfig{Tools: []string{"opencode"}},
 		Context: config.ContextConfig{
 			GraphifyEnabled: &graphifyEnabled,
@@ -91,14 +83,6 @@ func TestToolsEnableDisableRoundTrip(test *testing.T) {
 	// graphify, pre-seeded on, must survive untouched.
 	if !projectConfig.Context.GraphifyEnabledOrDefault() {
 		test.Fatal("enabling tokensave must not disturb graphify's existing state")
-	}
-	raw, err := os.ReadFile(filepath.Join(root, ".ai-platform", "Dockerfile"))
-	if err != nil {
-		test.Fatal(err)
-	}
-	dockerfile := string(raw)
-	if !strings.Contains(dockerfile, "graphify") || !strings.Contains(dockerfile, "tokensave") {
-		test.Fatalf("regenerated Dockerfile should include both graphify and tokensave snippets:\n%s", dockerfile)
 	}
 
 	if exit := runTools(test, "disable", "tokensave", "demo"); exit != output.ExitOK {

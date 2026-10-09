@@ -14,7 +14,7 @@ Status: Target End-State Architecture
 
 This document defines the end-state architecture for the AI Development Platform.
 
-The platform provides reproducible AI-powered software development environments using Microsandbox microVMs, centralized model access, context optimization, off-disk provider credentials (held in the LiteLLM gateway), and host-backed project persistence.
+The platform provides reproducible AI-powered software development environments using nono (https://nono.sh) kernel-capability sandboxing — Landlock LSM on Linux, Seatbelt on macOS — to confine each agent CLI invocation to its project directory, centralized model access, context optimization, off-disk provider credentials (held in the LiteLLM gateway), and host-backed project persistence.
 
 This document describes the final architecture regardless of implementation phase.
 
@@ -35,12 +35,13 @@ The platform must provide:
 * Reproducible development environments
 * Host-backed persistent source code
 * AI-native development workflows
-* Hardware-isolated microVM workspaces (Microsandbox)
+* Kernel-capability-sandboxed workspaces (nono — Landlock/Seatbelt), each agent
+  invocation confined to its project directory
 * Rootless container runtime for the service tier by default
 * Centralized model access
 * Context optimization
 * Secure secret management
-* Dockerfile-defined, reproducible environments
+* Reproducible, config-defined environments (no per-workspace OS image)
 * Cross-platform host support
 
 ---
@@ -51,10 +52,14 @@ The platform must provide:
 
 All projects must be reproducible from:
 
-* source repository (including `.ai-platform/Dockerfile`)
-* project configuration
+* source repository
+* project configuration (`.ai-platform/config.yaml`)
 
-No project behavior should depend on manual workstation configuration.
+A workspace has no OS image or build step of its own — it runs on whatever
+toolchains already exist on the host — so reproducibility now rests on the
+project configuration and the host environment, not a platform-built image.
+No project behavior should depend on manual platform configuration beyond
+that.
 
 ---
 
@@ -63,19 +68,30 @@ No project behavior should depend on manual workstation configuration.
 Projects must be isolated from:
 
 * other projects
-* host operating system
 * unrelated agents
 
-Isolation is enforced through Microsandbox microVMs (hardware-level isolation
-via libkrun), one per workspace.
+Isolation is enforced by **nono** (https://nono.sh), a kernel-capability
+sandboxing CLI: Landlock LSM on Linux, Seatbelt (`sandbox-exec`) on macOS. Each
+agent CLI invocation runs as a single sandboxed **host process** — there is no
+VM, no guest kernel, and no OS image. This is **same-kernel** capability
+confinement (filesystem + network access grants), not hardware/VM isolation —
+a deliberate, accepted trade-off against the platform's former Microsandbox
+microVM runtime: a sandbox escape in nono is a kernel-LSM/Seatbelt bypass, not
+a hypervisor breakout. What nono *does* guarantee: a session only has the
+filesystem access its profile declares (project directory + explicitly granted
+paths) and only the network access its profile's egress policy allows — it
+cannot silently touch the rest of the host filesystem or reach the rest of the
+host's network.
 
 ---
 
 ## Persistence
 
-Project source code is always stored on the host.
-
-Workspace recreation must never destroy project data.
+Project source code is always stored on the host, in the project directory
+itself. There is no separate VM disk or overlay: the project directory **is**
+the persistent state, so there is nothing for "workspace recreation" to
+destroy — a nono session is stateless and disposable; only the project
+directory and the host's own installed programs persist.
 
 ---
 
@@ -88,7 +104,9 @@ Secrets must never be:
 * distributed through environment files
 
 Provider keys live only in the LiteLLM gateway (keys-in-LiteLLM, §17); the
-workspace agent holds only a scoped LiteLLM virtual key.
+agent CLI holds only a scoped LiteLLM virtual key, delivered via nono's own
+OS-keychain-backed credential injection (§7) rather than a disk file or plain
+process environment.
 
 ---
 
@@ -96,11 +114,15 @@ workspace agent holds only a scoped LiteLLM virtual key.
 
 The platform must function consistently on:
 
-* macOS (Apple Silicon — required by the Microsandbox microVM runtime)
-* Linux (KVM virtualization must be available)
+* macOS (Apple Silicon or Intel)
+* Linux
 
-Behavior must remain consistent regardless of runtime. Intel Macs are **not
-supported** because the Microsandbox microVM runtime requires Apple Silicon.
+nono's Landlock (Linux)/Seatbelt (macOS) sandboxing has no virtualization
+requirement and no Apple-Silicon-only restriction — any host the `nono`
+binary runs on can sandbox workspaces. (The host-side local-inference backend,
+omlx, is still macOS/Apple-Silicon-only — see §16 — but that restriction is
+about omlx specifically, not the workspace runtime.) Behavior must remain
+consistent regardless of host OS.
 
 ---
 
@@ -111,16 +133,15 @@ linear stack is misleading, so they are shown separately.
 
 ## 4.1 Infrastructure Containment (what runs inside what)
 
-The platform uses **two distinct runtimes** on the host, for two distinct
+The platform uses **two distinct mechanisms** on the host, for two distinct
 purposes:
 
 ```text
 Host Layer
- ├─ Microsandbox microVM runtime (libkrun)         ← workspaces
- │   └─ Sandbox Layer (workspace microVM)
- │       ├─ AI Tooling Layer (OpenCode by default; Claude Code / Codex / Gemini / omp / Hermes optional — selected per env)
- │       ├─ In-VM OCI runtime (rootful containerd + nerdctl) → opt-in apps: Open WebUI (§7)
- │       └─ Context Optimization (Caveman skill — per project, §8–10; Headroom is a host-side LiteLLM guardrail, §10)
+ ├─ nono (kernel-capability sandboxing: Landlock on Linux, Seatbelt on macOS) ← workspaces
+ │   └─ Sandbox Layer (one nono session per agent-CLI invocation, host process)
+ │       ├─ AI Tooling Layer (OpenCode by default; Claude Code / Codex / Gemini / omp / Hermes optional — selected per project, installed directly on host)
+ │       └─ Context Optimization (Caveman skill — per project, §8–10; Headroom is a host-side LiteLLM guardrail, §10, with an opportunistic `headroom wrap <cli>` around the sandboxed process when the `headroom` CLI is on host PATH)
  │
  ├─ Container Runtime (Docker / Podman)            ← service tier (network aip-net)
  │   └─ nginx reverse proxy (aip-proxy — SOLE host entry, publishes :18787)
@@ -131,17 +152,18 @@ Host Layer
      └─ omlx (host-side; ONE shared `omlx serve` OpenAI endpoint on :8100 serving every local model; platform probes it)
 ```
 
-Workspaces are **microVMs** (hardware isolation), not containers. The
-container runtime is used only for the stateless service tier, never for
-workspaces.
+Workspaces are **sandboxed host processes** (same-kernel capability
+confinement via nono), not VMs and not containers. The container runtime is
+used only for the stateless service tier; nono's sandboxing never touches
+Docker/Podman at all.
 
-Host services (run on the host, not inside a workspace):
+Host services (run on the host, not inside a sandbox):
 
 ```text
 nginx proxy (aip-proxy)                                 — the SOLE host entry, publishes :18787 (default server + UI vhosts)
 Headroom · LiteLLM (Model Layer) · Presidio             — container tier (Docker/Podman, network aip-net), INTERNAL-ONLY behind nginx
 omlx (local inference)                                  — host-side backend; the service tier reaches it via host.docker.internal
-Microsandbox                                            — microVM runtime, driven by the `ai` CLI via the Go SDK / `msb` (no daemon)
+nono                                                    — host-process sandboxing CLI, driven by the `ai` CLI per agent invocation (no daemon)
 ```
 
 The host service tier is containers on `aip-net`: nginx (`aip-proxy`),
@@ -154,29 +176,35 @@ There are no optional host services. There is no
 native host service. **`aip-proxy` (nginx) is the SOLE host entry point** — every
 other service container is INTERNAL-ONLY on `aip-net` (reached by name, no host
 publish), except the loopback-published support container `aip-dns`
-(`127.0.0.1:15353/udp`, for the microVM `--dns-nameserver`); `aip-litellm-db` is
-also INTERNAL-ONLY (no host port, reached at `aip-litellm-db:5432`). See §5/§10 for the full nginx routing model.
+(`127.0.0.1:15353/udp`, used only for the DNS egress-audit log, §29.7 — the
+sandboxed agent process resolves names through the host's own resolver like any
+other host process, so this is observability, not a routing requirement);
+`aip-litellm-db` is also INTERNAL-ONLY (no host port, reached at
+`aip-litellm-db:5432`). See §5/§10 for the full nginx routing model.
 
 Headroom is a **shared host container** (`aip-headroom`) that LiteLLM calls
-in-process as a `pre_call` compression guardrail; nginx does not route to it, and it
-is also installed inside each workspace image for a future in-VM `headroom wrap
-<cli>` (§10).
+in-process as a `pre_call` compression guardrail; nginx does not route to it.
+Separately, a host-installed `headroom` CLI (the user's own install — the
+platform does not install it) can opportunistically wrap an agent-CLI
+invocation (`headroom wrap <cli>`, §7/§10) for the three CLIs it supports
+(claude-code, codex, opencode) whenever it is found on host PATH.
 
 (The model-request path below involves the Headroom/LiteLLM/Presidio subset;
 omlx is a host-side local-inference backend the service
-tier reaches via `host.docker.internal` — see §5/§16. Microsandbox is not a
-long-running service: it is invoked directly to create and drive workspace
-microVMs.)
+tier reaches via `host.docker.internal` — see §5/§16. nono is not a
+long-running service either: it is invoked directly, per agent-CLI launch, to
+sandbox that one process.)
 
 The Project Layer is the top-level, user-facing artifact: host-stored source in
-the project directory (the cwd at `ai create`), bind-mounted into the workspace
-at `~/project` (i.e. `/home/workspace/project`, §12).
+the project directory (the cwd at `ai create`) — there is no bind mount or
+guest copy, since nono sandboxes the host process directly against that same
+directory (§7).
 
 ## 4.2 Model-Request Path (how a call flows)
 
 ```text
-Agent (AI Tooling, in workspace)
- ╎  microVM boundary → AI_PLATFORM_HOST
+Agent CLI (AI Tooling, sandboxed host process via nono)
+ ╎  plain host loopback → the resolved gateway address
 nginx (aip-proxy, host :18787, location /v1 → LiteLLM directly)  (SOLE host entry)
  ↓
 LiteLLM (Model Layer, aip-litellm:4000, internal-only)
@@ -187,14 +215,16 @@ Provider · Caveman steers output                         (Context Optimization)
 ```
 
 Context Optimization sits *between* the agent and the model (Caveman steers the
-agent's output; Headroom compresses the input). The path: the agent sends to the
-**nginx gateway** across the microVM boundary via `AI_PLATFORM_HOST`, nginx forwards
+agent's output; Headroom compresses the input). The path: the sandboxed agent
+process sends to the **nginx gateway** at a plain host address (loopback by
+default, §29.2 — there is no VM boundary to cross), nginx forwards
 `/v1` **directly to LiteLLM**, which compresses the input via its in-process
 `headroom` guardrail (§10), runs the other enabled guardrails (§15), and attaches the
 real provider key from its own store on cloud calls (keys-in-LiteLLM, §17). The
-workspace agent holds only a scoped LiteLLM virtual key. See Sections 8–9 (context
+agent process holds only a scoped LiteLLM virtual key, injected by nono from
+the OS keychain. See Sections 8–9 (context
 optimization), 15 (LiteLLM + guardrails), 17 (keys-in-LiteLLM), and **29 (the full
-per-component networking model + Microsandbox egress policy)** for detail.
+per-component networking model + the nono egress policy)** for detail.
 
 ---
 
@@ -204,7 +234,7 @@ The Host Layer provides all persistent infrastructure.
 
 Supported hosts:
 
-* macOS (Apple Silicon)
+* macOS (Apple Silicon or Intel)
 * Linux
 
 Responsibilities:
@@ -215,8 +245,13 @@ Responsibilities:
 * LiteLLM deployment
 * Presidio deployment (analyzer + anonymizer, backing LiteLLM's secret-masking guardrail when enabled)
 * Local-inference backend — host-side omlx (probed, not containerized); the service tier reaches it via `host.docker.internal` (§16)
-* OS Dockerfile templates
+* nono — the host-native kernel-capability sandboxing CLI (§7), installed via `ai setup`/`brew install nono`/`curl -fsSL https://nono.sh/install.sh | sh`
 * Platform state
+
+There is no per-workspace OS image or Dockerfile anymore (`internal/envimage`
+and the per-OS Dockerfile templates it composed were removed along with
+Microsandbox) — a workspace runs on whatever toolchains already exist on the
+host.
 
 ---
 
@@ -226,20 +261,19 @@ Responsibilities:
 ~/.ai-platform/
 ```
 
-Contains:
+Contains (`internal/layout.Ensure`):
 
 ```text
 ~/.ai-platform/
 ├── agents/
 ├── audit/
-├── bin/            # platform-managed native binaries (e.g. bin/msb, sha256-verified)
 ├── cache/          # re-fetchable caches: catalog.yaml (models.dev)
 ├── config/         # global settings + projects index (no per-project state)
 ├── logs/
-├── overlays/
+├── overlays/       # vestigial — the per-workspace VM-disk overlay this backed (§26 history) is gone; no code writes here anymore
 ├── prompts/
 ├── skills/
-├── templates/      # OS Dockerfile templates + shared templates
+├── templates/      # vestigial — the per-OS Dockerfile template composer (internal/templates) that used this is gone; no code writes here anymore
 ├── venv/           # platform-managed host Python venv (omlx)
 ├── volumes/        # host data volumes only (litellm-db, models store)
 └── tools/
@@ -247,7 +281,10 @@ Contains:
 
 `~/.ai-platform/` holds **only global settings and host artifacts** — there is
 no per-project state here. Per-project state lives in the project itself (see
-below).
+below). (The `bin/` directory that used to hold the platform-managed,
+sha256-verified `msb` CLI binary is gone with Microsandbox — nono is installed
+onto the regular host PATH, e.g. via Homebrew or its own installer, not
+platform-managed inside `~/.ai-platform`.)
 
 ---
 
@@ -265,35 +302,38 @@ State is split between **global** and **project-local**:
 
 ```text
 <project>/.ai-platform/
-├── Dockerfile        # tracked — defines the environment (§25)
 ├── config.yaml       # tracked — project config
-├── profile.yaml      # tracked — project profile
 ├── project.yaml      # tracked — { name, os, created }
+├── nono-profile-<cli>.json / nono-profile-shell.json  # gitignored — regenerated on every launch (§7)
 ├── {agents,skills,prompts,projects}/  # shared resource pool — dirs scaffolded empty;
 │                     #   populated at workspace start (Caveman install + Graphify +
 │                     #   symlinks). Caveman is NOT platform-seeded/git-tracked (§9).
 ├── .gitignore        # ignores run/
 └── run/              # gitignored — host-local runtime state
-    └── workspaces/<workspace-id>.json
+    └── workspaces/<session-id>.yaml
 ```
+
+There is no `Dockerfile` and no `profile.yaml` anymore — a workspace has no
+per-project OS image or software-stack list to define (§24, §25 history).
 
 Rules:
 
-* **tracked** files (`Dockerfile`, `config.yaml`, `profile.yaml`,
-  `project.yaml`) are the environment + config definition —
-  committable so the project is reproducible from git
-* **`run/`** holds host-local runtime handles (Microsandbox sandbox ids, status)
+* **tracked** files (`config.yaml`, `project.yaml`) are the config
+  definition — committable so the project is reproducible from git. The
+  generated `nono-profile-*.json` files are regenerated on every launch from
+  `config.yaml` (so a config change takes effect on the next launch with no
+  restart step) and are not meaningful to commit.
+* **`run/`** holds host-local runtime handles (the nono session id, status)
   and is **gitignored** — machine-specific, never committed
-* per-entity sharding (one file per workspace under `run/`)
+* per-entity sharding (one file per session under `run/`)
   avoids write contention
 * **all state writes are atomic**: write to a temp file in the same directory,
   then `rename()` over the target — a crash mid-write never corrupts state
-* `ai state repair` reconstructs `run/` by reading the project + Microsandbox/git;
+* `ai state repair` reconstructs `run/` by reading the project + nono/git;
   project discovery uses the global `projects.yaml` index
 
-Large host-local artifacts (the per-workspace **overlays**, §26) stay under
-`~/.ai-platform/overlays/` — they are not git material and do not belong in the
-project.
+There is no per-workspace **overlay** anymore (§26 history) — the project
+directory itself, on the host, is the only persistent state a workspace has.
 
 ---
 
@@ -302,9 +342,9 @@ project.
 The platform's host services — Headroom, LiteLLM (+ its Postgres), Presidio
 (analyzer + anonymizer), and the CoreDNS egress-audit resolver (there are no
 optional host services) — plus the local-inference backend (host-side omlx,
-§16) and the Microsandbox microVM runtime are installed,
+§16) and the host-native **nono** sandboxing CLI (§7) are installed,
 configured, and supervised by the `ai` CLI. The CLI is the **single control
-plane**: the user never invokes `docker compose`, `msb`, `launchctl`, or
+plane**: the user never invokes `docker compose`, `nono`, `launchctl`, or
 `systemctl` directly. The service-tier containers share a private docker network
 (`aip-net`) and are reconciled in order: network → DNS → Presidio →
 Valkey (+ RedisInsight) → Headroom → LiteLLM (+ DB) → nginx proxy (last).
@@ -329,8 +369,10 @@ by `server_name` — the default server (the model path + the `/llm`
 management surface) plus the two Host-based UI vhosts (`litellm.<domain>` → LiteLLM
 admin UI, `valkey.<domain>` → RedisInsight). The full route table, the UI vhosts, and
 the standalone `/etc/hosts` vs server-mode DNS operator contract are specified in §10.
-(Open WebUI is now a per-workspace in-VM app, §7 — not a host service; Odysseus has
-been removed from the platform entirely.)
+(There is no in-workspace app layer anymore — `internal/apps`, which ran opt-in
+containerized apps like Open WebUI inside the old microVM, was removed along
+with Microsandbox; see §7 history. Odysseus had already been removed from the
+platform entirely, independent of this migration.)
 
 TLS terminates **per-vhost at nginx** (out of scope now): the blocks are structured
 so a per-vhost `listen 443 ssl;` can be added later, and once HTTPS is configured the
@@ -338,8 +380,8 @@ so a per-vhost `listen 443 ssl;` can be added later, and once HTTPS is configure
 https://$host$request_uri;` (no redirect is emitted today because there is no https
 listener yet — a 301 with no :443 would break every plain-http caller). nginx is
 reconciled LAST so its upstreams are up first. (Only `aip-dns` stays
-loopback-published — DNS must stay `127.0.0.1:15353` for the microVM
-`--dns-nameserver`; `aip-litellm-db` has no host port at all, internal-only on
+loopback-published — DNS must stay `127.0.0.1:15353`, used for the egress-audit
+log (§29.7); `aip-litellm-db` has no host port at all, internal-only on
 `aip-net`.) The live end-to-end routing through these nginx routes — the
 litellm UI vhost and the sudo `/etc/hosts` write — is a **hardware bring-up**
 verification item (`docs/HARDWARE-BRINGUP.md`).
@@ -367,17 +409,18 @@ ai logs --service <svc>      one log surface
 | LiteLLM | container (via Runtime) `aip-litellm` (image tag `latest`) (+ `aip-litellm-db` Postgres, surfaced as its own `postgres` status line) | INTERNAL-ONLY: no host publish, reached by name (`aip-litellm:4000`) by nginx's model path + `/llm` route; it calls Headroom in-process; HTTP only; no host privileges |
 | Presidio | two containers (via Runtime) `aip-presidio-analyzer` + `aip-presidio-anonymizer` | back LiteLLM's secret-masking guardrail; started ONLY when `secret-masking` is selected (§15); internal-only, not published |
 | omlx (local backend) | **host-side, ONE shared process** (a single `omlx serve` answering for every locally-served model — NOT per-model processes, NOT containers) | the platform's sole local-inference backend, macOS + Apple Silicon only; probed at `http://127.0.0.1:8100/v1/models`, reached by the LiteLLM/nginx containers at `host.docker.internal:8100/v1`; ensured NON-fatally in reconcile — an unreachable omlx is a hint, not a setup failure. Install/serve mechanics, model management (entirely via omlx's own admin panel), and the hardware-bring-up caveats are §16 |
-| DNS audit resolver | container (via Runtime) `aip-dns` (CoreDNS) | egress-audit resolver: microVMs forward DNS here so attempted names are logged for `ai network log`; published to host loopback only; audit, not enforcement (§29.7) |
-| Microsandbox | microVM runtime, invoked on demand | drives workspace microVMs via the Go SDK / `msb`; no daemon to supervise (§7) |
+| DNS audit resolver | container (via Runtime) `aip-dns` (CoreDNS) | egress-audit resolver: a fixed host loopback nameserver so attempted names are logged for `ai network log`; published to host loopback only; audit, not enforcement (§29.7) |
+| nono | host-process sandboxing CLI, invoked per agent-CLI launch | sandboxes one host process per `nono run --detached`/`nono shell` invocation (Landlock on Linux, Seatbelt on macOS); no daemon to supervise (§7) |
 
 **docker compose is not used.** Container-tier services are managed directly
 through the runtime abstraction (§6), so docker and podman remain
 interchangeable and there is no second orchestration mechanism. The whole
 service tier runs as containers — there is no native OS service to register.
-Microsandbox is **not** a long-running service — the `ai` CLI invokes it
-directly (Go SDK / `msb`) to create, start, stop, and destroy workspace
-microVMs; `ai setup` only verifies the runtime is installed and the host
-supports virtualization (§6).
+nono is **not** a long-running service — the `ai` CLI invokes it directly, per
+agent-CLI launch, to start/attach/stop a sandboxed session (§7); `ai setup`
+only verifies the `nono` binary is installed (and best-effort installs it when
+absent, §7) — there is no virtualization capability to verify, unlike the
+Microsandbox runtime this replaced.
 
 ### Configuration by Reconciliation
 
@@ -391,29 +434,33 @@ service configs live under `config/<service>/`.
 
 * **install**: container images are pulled by pinned **image + tag** (default
   `latest`; no digests — they are platform/arch specific — `config/versions.yaml`,
-  §27); the Microsandbox `msb` CLI is downloaded as a pinned, sha256-verified
-  release binary into `~/.ai-platform/bin/msb` (flat — not a per-tool/per-version
-  subdirectory); omlx is `pip`-installed into the
+  §27); the `nono` CLI is installed onto the regular host PATH (`brew install
+  nono` when Homebrew is available, else `curl -fsSL https://nono.sh/install.sh
+  | sh`), best-effort and Detect-gated (§7); omlx is `pip`-installed into the
   platform-managed venv `~/.ai-platform/venv` by `ai setup` (or a manual
-  `ai services start omlx`, which retries the same install) (§16)
+  `ai services start omlx`, which retries the same install) (§16); the
+  claude-code/codex/opencode agent CLIs can likewise be host-installed by `ai
+  setup` via each CLI's own official installer (§12) when selected
 * **configure**: rendered from platform config — the LiteLLM config carries no
   model list (models are DB-backed, §14–15) and no key references; the real
   provider credentials live in the LiteLLM gateway, managed via `ai keys`
   (keys-in-LiteLLM, §17) — never on platform disk;
-  Microsandbox driven non-interactively per workspace (image, mounts/volumes,
-  resource limits) via the Go SDK / `msb`; local models are registered as
-  DB-backed LiteLLM models automatically, reconciled against omlx's own live
-  model list (`litellm.SyncOmlxModels`, also triggerable on demand via
-  `ai models refresh`) — omlx
+  nono's per-project profile (filesystem/network capability grant) is
+  regenerated from `config.yaml` on every agent/shell launch (§7) — there is no
+  image, mount, or resource-limit to configure ahead of time; local models are
+  registered as DB-backed LiteLLM models automatically, reconciled against
+  omlx's own live model list (`litellm.SyncOmlxModels`, also triggerable on
+  demand via `ai models refresh`) — omlx
   (host-side, one shared `omlx serve` process) is the sole local backend (§14, §16)
-* **startup ordering**: container runtime + Microsandbox runtime verified →
-  container tier reconciled in order
+* **startup ordering**: container runtime verified (nono's presence is checked
+  independently and does not gate the service-tier reconcile) → container tier
+  reconciled in order
   `aip-net` network → DNS (CoreDNS) → Presidio (analyzer + anonymizer,
   only when `secret-masking` is selected) → Valkey (+ RedisInsight) → Headroom →
   LiteLLM (+ Postgres) →
   **nginx proxy (last** — its upstreams must be up first since nginx resolves
   literal `proxy_pass` hosts at config-load) → verify
-  (workspace microVMs are created on demand, not at setup)
+  (nono sessions are created on demand, per `ai agent`/`ai shell`, not at setup)
 
 ### Secrets Boundary
 
@@ -467,52 +514,72 @@ and no host socket exposure; this satisfies the requirement by construction and
 the engine runs on the host kernel directly, a **genuine rootless engine** is
 required and is detected from `docker info` (Podman is rootless by default).
 
-## 6.2 microVM Runtime (workspaces)
+## 6.2 Sandboxing Runtime (workspaces) — nono
 
-Workspaces run as **Microsandbox microVMs** (libkrun), not containers. This
-runtime is driven directly by the `ai` CLI through the **in-process Microsandbox
-Go SDK** (the default backend — a cgo binding that holds one reused relay
-connection per workspace; the legacy `msb`-CLI shell-out is a fallback selected
-with `AIP_WORKSPACE_BACKEND=cli`). There is no daemon and no host Docker socket
-involved (§7, §30).
+Workspaces run as **nono-sandboxed host processes** (https://nono.sh), not
+containers and not VMs. This runtime is driven directly by the `ai` CLI,
+shelling out to the `nono` binary per agent-CLI invocation (`internal/nono`,
+`RealRunner`); an injectable `nono.Runner` interface (`RealRunner`/`FakeRunner`)
+keeps the orchestration code unit-testable without the real binary (§6.1's
+runtime-abstraction convention applies here too). There is no daemon and no
+host Docker socket involved (§7, §30).
 
-Host requirements:
+nono sandboxes using the host kernel's own capability-confinement facilities:
 
-* **macOS:** Apple Silicon (the microVM runtime requires the Apple Hypervisor;
-  Intel Macs are unsupported)
-* **Linux:** KVM virtualization available to the user
+* **Linux:** Landlock LSM
+* **macOS:** Seatbelt (`sandbox-exec`)
 
-The platform consumes OCI images: a workspace image is built from the project's
-`.ai-platform/Dockerfile` (§25) and run as a microVM. On any host that cannot
-provide the required virtualization, the platform must fail the relevant
-`doctor` check rather than silently degrade.
+Host requirements: **none beyond the `nono` binary itself** — there is no
+virtualization capability to verify (no KVM, no Apple Hypervisor requirement),
+and no Apple-Silicon-only restriction. Any host the `nono` binary runs on can
+sandbox workspaces (§3, Host Agnostic). `ai setup`/`ai doctor` simply check
+that `nono` is on PATH (`nono.Detect`) and best-effort install it when absent
+(§7).
+
+The platform consumes **no OCI images for workspaces** — there is nothing to
+build. A workspace is ready to use the moment its project is registered
+(`ai create`); the first `ai agent <cli>`/`ai shell` generates that invocation's
+nono profile on the fly (§7).
 
 ## Delivery Phasing
 
 Runtime support is delivered incrementally (see `02-implementation-roadmap.md`):
 
-* Slice 1: Docker (service tier) + Microsandbox (workspaces), rootless by
-  default, macOS (Apple Silicon).
+* Slice 1: Docker (service tier) + nono (workspaces), rootless by default.
 * Slice 6: Podman support + full container-runtime abstraction on Linux.
 
 Acceptance tests that exercise Podman or Docker/Podman equivalence apply from
 Slice 6 onward; the rootless test applies from Slice 1. Each test in
 `05-acceptance-tests.md` is tagged with the slice from which it is expected to
-pass.
+pass. (nono has no host-OS-specific slice gate — unlike the Microsandbox
+runtime it replaced, it needs no Apple-Silicon/KVM capability check — though
+this spec does not revise the CI/acceptance-suite config itself; see
+`docs/HARDWARE-BRINGUP.md`/CI workflow for whether the self-hosted
+Apple-Silicon-only runner constraint is still warranted now that the workspace
+runtime has no virtualization requirement.)
 
 ---
 
-# 7. Sandbox Layer (Microsandbox)
+# 7. Sandbox Layer (nono)
 
-Microsandbox provides:
+**nono** (https://nono.sh) provides:
 
-* workspace isolation (hardware-level, via libkrun microVMs)
-* workspace lifecycle (one workspace per project)
+* workspace isolation (kernel-capability sandboxing — Landlock LSM on Linux,
+  Seatbelt/`sandbox-exec` on macOS — confining a single host process per
+  invocation, NOT hardware/VM isolation; see §3 Isolation for the explicit
+  trade-off this replaces)
+* session lifecycle (one `nono` session per agent-CLI/shell invocation)
 
-Each workspace is a microVM with its own Linux kernel, root filesystem, and
-network boundary — a stronger isolation boundary than a container namespace.
-The runtime has **no daemon**: the `ai` CLI drives it directly through the
-Microsandbox Go SDK / `msb` CLI.
+There is no VM, no OS image, no guest kernel, and no persistent boot. A
+"workspace" is simply a **registered project directory** (tracked in
+`internal/project`, the same `.ai-platform/` state layout, minus the old
+Dockerfile/profile.yaml/apps pieces) plus a **generated nono profile**
+(`internal/nono`, a JSON capability grant written to
+`<project>/.ai-platform/nono-profile-<cli>.json`, regenerated on every
+launch). The runtime has **no daemon**: the `ai` CLI shells out to the `nono`
+binary directly, once per launch (`internal/nono.RealRunner`), via `nono run
+--detached` / `nono attach` / `nono shell` / `nono ps --json` / `nono inspect
+--json` / `nono stop`.
 
 ---
 
@@ -520,245 +587,183 @@ Microsandbox Go SDK / `msb` CLI.
 
 ### Project Workspace
 
-**One workspace per project** — the development environment for that project.
-There are no per-agent workspaces; running multiple agents inside the workspace
-is the in-workspace agent CLI's concern (§20).
+**One project directory, potentially several concurrent nono sessions.**
+Unlike the old one-microVM-per-project model, every `ai agent <cli>`/`ai
+shell` launch is its **own** nono session, sandboxed against the same project
+root: an anonymous session for `ai shell`, one named for the CLI for
+`ai agent <cli>`. `ai agent <cli> [name]` reattaches that CLI's
+already-running session if one exists, else it mints a fresh scoped key,
+writes that CLI's config, regenerates the profile, and launches a new
+detached session before attaching to it interactively. There are still no
+per-agent *workspaces* — multiple simultaneous sessions share the one project
+directory, and any source isolation a user wants between them (git branches,
+worktrees, separate checkouts) is the in-workspace agent CLI's concern (§20),
+unchanged from before.
 
 ---
 
 ## Workspace Lifecycle
 
-States:
+nono sessions have two live states — **running** and **stopped/exited** — not
+the five-state model a microVM lifecycle needed:
 
 ```text
-Created
+(project registered)
  ↓
-Started
+Running   (a nono session is live: `ai agent`/`ai shell`)
  ↓
-Stopped
- ↓
-Archived
- ↓
-Destroyed
+Stopped   (`ai stop` / `nono stop`; the session exited or was killed)
 ```
 
-Workspaces are disposable.
+The platform's `state.Workspace` type (`internal/state`) still carries its
+original five-value `WorkspaceStatus` enum (`created`/`started`/`stopped`/
+`archived`/`destroyed`) for continuity, but only `started` and `stopped` are
+actually written by current code (`Manager.Agent`/`Manager.StopAll`) — the
+others are unused legacy values.
 
-Project data is not.
+A session is disposable — stopping or killing it destroys nothing but that
+one sandboxed process. Project data is not: it is the project directory on
+the host, untouched by any session's lifecycle.
 
 ---
 
-## Microsandbox Integration Mapping
+## nono Integration Mapping
 
-The platform drives Microsandbox through the Microsandbox Go SDK / `msb` CLI.
-The mapping below is normative.
+The platform drives nono through the `nono.Runner` interface
+(`internal/nono`, real implementation shells out to the `nono` binary). The
+mapping below is normative.
 
-### Workspace Naming
-
-```text
-workspace:  aip-<project>
-```
-
-The name is derived deterministically from the project identifier, so the
-platform can resolve a workspace from state without a separate lookup table.
-
-### Image
-
-The workspace image is an **OCI image built from the project's
-`.ai-platform/Dockerfile`** (§25) and run as the Microsandbox microVM for that
-workspace. There is no shared, versioned snapshot image — each project builds
-from its own Dockerfile. (Microsandbox consumes OCI images directly, so the
-Dockerfile flow is unchanged; the image is built once and booted as a microVM.)
-
-Every workspace image also ships a **rootful in-VM OCI container runtime** —
-containerd + nerdctl + runc + CNI plugins + buildkit, installed from the pinned
-`nerdctl-full` release tarball (one static, distro-agnostic artifact, arch-aware
-amd64/arm64) into `/usr/local` in every OS base Dockerfile, alongside the CNI
-runtime deps (`ca-certificates`, `iptables`, `iproute`) and `fuse3` + `procps`.
-Because the microVM root (`/`) is ITSELF an overlay (the msb OCI upper) and the
-kernel refuses to stack a second overlay on it, containerd cannot use its
-**native `overlayfs` snapshotter** — a container rootfs mount would fail and
-images would pull but never start. So at start `ensureContainerd` launches the
-userspace **`fuse-overlayfs` snapshotter** (via `/dev/fuse` — the bundled
-`containerd-fuse-overlayfs-grpc` proxy plugin plus `fuse3`'s `mount.fuse3`
-helper) and points `nerdctl` at it, falling back to the copy-based `native`
-snapshotter only if the fuse proxy socket never comes up. The runtime is
-**started at workspace start** (not baked running into the image): `ensureContainerd`
-(`internal/workspace`) probes `nerdctl info` as root and, if needed, boots
-`containerd` detached (`setsid`, as root) so it runs for the VM's life, then **polls
-`nerdctl info`** (true readiness — the daemon serving requests, NOT merely the
-`/run/containerd/containerd.sock` file existing) so the runtime is actually up
-before the exec returns (msb tears down the exec's process group on return, which
-would otherwise kill the just-forked daemon). The poll is bounded (~30s, 150 ×
-0.2s) so a broken runtime never hangs forever, and `ensureContainerd` **returns
-whether containerd is READY**. Bringing it up is **best-effort** — a failure does
-not fail the workspace start; `Start` only launches the in-VM apps when the runtime
-IS ready, otherwise it skips them with one warning (no per-app "cannot access
-containerd socket" fatal).
-
-#### In-VM apps (Phase 1)
-
-On this runtime the platform runs **opt-in AI applications** as `nerdctl`
-containers **inside** the workspace microVM — currently **Open WebUI**
-(`ghcr.io/open-webui/open-webui:latest`, web port 8080, data `/app/backend/data`).
-Each app is described by a declarative manifest
-(`internal/apps`): image (pinned image+tag, no digest — same convention as the
-service tier), container port, persisted data dir, an optional `/workspace` mount,
-a memory limit, and a gateway-pointing env builder. Each app is routed through the
-**same model gateway** the agent CLIs use — `http://host.microsandbox.internal:18787/v1`
-(the resolved gateway) with the workspace's own scoped LiteLLM virtual key (the
-catalog-driven system has **no default model**, so the model handle passed is
-empty and the app's user picks a served model) — via
-`OPENAI_API_BASE_URL`/`OPENAI_API_KEY` (Open WebUI, plus
-`WEBUI_AUTH=false` for a single-user in-VM instance).
-
-Apps are **opt-in** (chosen at `ai create`, default OFF) and have a full
-lifecycle via **`ai apps <list|add|remove|update|start|stop|restart> [app] [name]`**
-and a per-workspace **Apps** view in `ai ui`. The web-UI **host port for each
-selected app is CHOSEN at create** — the wizard prompts for one per selected app and
-the `--app-port <app>=<port>` flag sets it non-interactively (seeded with the app's
-familiar container port — Open WebUI 8080 — when free, else an
-auto-allocated free port; validated unique + host-free and reserved machine-wide
-across all workspaces) — and it is persisted in the project `config.yaml`'s `apps:`
-block. **Agent-CLI web dashboards get the same treatment**: an agent CLI that ships a
-dashboard (currently only **hermes** — `hermes dashboard`, default port 9119) is
-prompted for a host port at create when selected (the same `--app-port <cli>=<port>`
-flag / wizard step) and persisted in `config.yaml`'s `agent_dashboards:` block.
-Installed apps **and** agent-CLI dashboards **AUTO-START at `ai start`** (their host
-ports were already published at start) so they are reachable from the host browser by
-default — but **DETACHED + best-effort**, never blocking or failing the start: a heavy
-first-start image pull is a long in-VM exec that, run inline, would block the whole
-start AND every other in-VM exec for the pull's duration, so the app-container launch
-is staged to a GUEST-ONLY script and `setsid`'d into the background as ROOT (idempotent
-`nerdctl rm -f` then `run`, so it runs every start; only the FIRST pulls, later starts
-reuse the cached image), and agent dashboards (hermes) launch as the workspace user,
-pgrep-guarded and bound to `0.0.0.0:<port>`. The scoped virtual key is NEVER staged:
-the app env is passed by shell-variable reference sourced from the in-VM agent env
-file. Apps can still be (re)started/stopped **on demand** via `ai apps`. The port
-chain is:
+### Naming
 
 ```text
-host:<port>  --(msb published port: -p <port>:<port>)-->  VM:<port>  --(nerdctl -p <port>:<containerPort>)-->  container:<containerPort>
+sandbox-facing name:  aip-<project>
 ```
 
-The host and guest side use the **same number**, reusing the existing
-`ai network publish` / `egress.MsbNetworkArgs` published-ports plumbing — a port is
-published **only while its app is installed**. App data is bind-mounted from
-`/persist/apps/<key>` (the workspace overlay, §26) so it survives restart. Adding
-or removing an app changes the published-port set, which `msb` only applies at
-workspace create, so it requires an **`ai restart`**; the container itself is
-(re)started best-effort immediately. App start is **best-effort per app** — one app
-failing must not fail the workspace or the others.
+Kept for continuity with the platform's prior naming/display even though it
+no longer names a microVM — `Name(project)` is used as the `nono run --name`
+prefix for agent sessions and in log/UI text.
 
-### Mount Rules
+### Profile (replaces "Image")
 
-```text
-host  <project dir> (the cwd at `ai create`)  →  workspace  ~/project (= /home/workspace/project)  (read-write)
-host  ~/.ai-platform/overlays/<workspace-id>  →  workspace  /persist    (overlay, §26)
-```
+There is no OCI image, no Dockerfile, and no build step. Instead, each launch
+generates a **nono profile** — a small JSON capability grant
+(`internal/nono.Profile`) describing exactly what that one sandboxed process
+may touch:
 
-* the project is created **in the current working directory** (no fixed
-  `~/projects` root — that path survives only as an unused fallback); the host
-  project directory is the single source of truth, bind-mounted read-write at
-  `~/project` (i.e. `/home/workspace/project`, the workspace working directory).
-  This is a SUBDIRECTORY of the `workspace` user's home `/home/workspace` —
-  deliberately not the home itself and not a top-level `/workspace`, so the bind
-  mount does not shadow the baked-in `~/.local/bin` (uv/Graphify) or the key-bearing
-  in-VM agent env file under `~/.config/aip/` (which must stay off the host). The
-  per-CLI provider configs ARE keyless and live in this project dir (§15).
-* the per-workspace overlay (§26) is mounted at `/persist`
-* no persistent data is written outside the mounted paths, the overlay, and the
-  optional per-workspace mount customizations below
-* (a shared read-only mount of the GLOBAL `~/.ai-platform/agents,skills,prompts,templates`
-  into the workspace is **deferred** — not currently wired into the `msb`
-  run-args. This is distinct from the PER-PROJECT
-  `<project>/.ai-platform/{agents,skills,prompts,projects}` shared pool, which IS
-  wired — symlinked into each CLI's dirs at start, §15.)
+* `filesystem` — path-level allow/read/write grants (today: `--allow-cwd`
+  grants the project root at launch; the profile itself carries no extra
+  filesystem block beyond what the base pack/`default` profile already grants)
+* `network` — `block` (true under the `deny` egress mode, §29.6) plus
+  `allow_domain`/`deny_domain` lists mirrored straight from the project's
+  `config.yaml` `network` block
+* `environment.set_vars` — plain (non-secret) environment variables, used only
+  for gemini's gateway base URL (gemini has no config-file base-URL setting)
+* `extends` — a base profile this one inherits from: for opencode/claude-code/
+  codex, a **nono registry pack** (`nolabs-ai/opencode`, `nolabs-ai/claude`,
+  `nolabs-ai/codex` respectively — official, battle-tested filesystem/
+  OAuth-flow grants for that CLI, best-effort `nono pull`led before first use);
+  every other CLI (gemini/omp/hermes) and plain `ai shell` fall back to nono's
+  own built-in `"default"` profile
 
-**Per-workspace mount customization** (`config.WorkspaceConfig.IsolatedDirs` /
-`.SharedMounts`, yaml `workspace.isolated_dirs` / `workspace.shared_mounts`) lets a
-project override the two fixed mounts above:
+The profile is cheap to regenerate (a few lines of JSON) and is rewritten on
+**every** launch, so a `config.yaml` network change (`ai network allow/deny`)
+takes effect on the very next `ai agent`/`ai shell` — there is no restart step
+and no persistent sandbox to recreate.
 
-* **isolated dirs** — guest-relative paths under the project workdir (e.g.
-  `node_modules`, `target`) are EXCLUDED from the host project bind mount and
-  instead backed by a private, workspace-scoped persistent volume applied as an
-  additional SDK mount over that subpath at workspace create: writes made in-VM
-  (installed deps, build artifacts) never touch the host directory tree, and
-  whatever the host has at that path stays untouched and invisible to the guest.
-  This lets host-built and sandbox-built binaries coexist without collision (a
-  host `node_modules` with host-native binaries vs. a guest `node_modules` with
-  Linux-native ones).
-* **shared mounts** — additional host directories bind-mounted into the guest at
-  an arbitrary guest path (beyond the base project mount at `~/project`), VISIBLE
-  and writable from BOTH sides — unlike isolated dirs, writes on either side are
-  seen by the other. Applied at workspace create as an additional SDK bind mount.
-  Each entry is a host path (created if missing) plus a guest path.
+### Credential delivery
 
-Both are empty by default (today's behavior: the whole project dir is one bind
-mount, nothing excluded, no extra host↔guest mappings). They are configured via
-**`ai mounts`** (list / add / remove for both isolated dirs and shared mounts),
-plus the `--isolate-dirs` `ai create` flag and wizard step for isolated dirs
-(shared mounts have no create-time flag/wizard step — they are added post-create
-only, via `ai mounts add <absolute-dir> --host <host-path>`), and surfaced in the
-TUI's mounts view. Changing them requires an `ai restart` (mounts apply only at
-workspace create).
+The scoped LiteLLM virtual key never touches the agent process's disk or a
+plain environment variable the process could leak via `/proc`/`ps`. It is
+stored in the host OS keystore (macOS Keychain via `security`, Linux via
+`secret-tool`/Secret Service — `internal/nono.StoreCredential`) under a
+per-project name (`aip-gateway-<project>`), and nono itself injects it into
+the sandboxed process's environment at launch via `--env-credential-map
+<keychain-ref> <ENV_VAR>` — e.g. `AIP_GATEWAY_KEY` for opencode/omp/hermes/
+codex, `ANTHROPIC_AUTH_TOKEN` for claude-code, `GEMINI_API_KEY` for gemini.
+This is the direct replacement for the old in-VM agent-env-file mechanism —
+same end state (the real secret never lands in a config file or on disk
+outside the OS keystore), delivered through nono's own credential-injection
+flag instead of VM isolation. `ai delete` best-effort revokes the project's
+LiteLLM key and deletes its keystore entry (`Manager.DeleteCredentials`).
 
-### Lifecycle Mapping
+**OAuth-mode agents** (claude-code/codex/gemini can still be set to `oauth`
+instead of `api-key` at `ai create`, exactly as before) skip the
+key-minting/credential-map step entirely — the CLI's native login talks
+directly to the provider, bypassing the gateway (the same bypass-the-firewall
+caveat as before, now a same-kernel sandboxed process talking out rather than
+a separate VM).
 
-| Platform state (workspace §7) | Microsandbox operation (`msb` / Go SDK) |
-|---|---|
-| Created   | `create` (no start) |
-| Started   | `start` |
-| Stopped   | `stop` |
-| Archived  | `stop` + retain metadata |
-| Destroyed | `rm` |
+### Per-CLI config files — now on real host paths
+
+Each CLI's provider config is written at **that CLI's own default project
+location**, but now directly on the **host filesystem** — there is no guest
+path to translate, since nono sandboxes the host process in place:
+
+* opencode → `<project>/.opencode/opencode.json`
+* claude-code → `<project>/.claude/settings.json`
+* codex → `<project>/.codex/config.toml`, **plus** a GLOBAL,
+  shared-across-ALL-projects `~/.codex/config.toml` trust-entry append (codex's
+  trust file is no longer per-VM-isolated, so the platform idempotently
+  APPENDS one `[projects."<path>"]` entry per project rather than overwriting
+  the whole file)
+* gemini → env-only, no config file (`GOOGLE_GEMINI_BASE_URL` set via the nono
+  profile's `environment.set_vars`, no `/v1` suffix)
+* omp → `~/.omp/agent/models.yml` (global) + `<project>/.omp/config.yml`
+* hermes → global `~/.hermes/config.yaml`
+
+All are still keyless — the real key is delivered only via nono's credential
+injection above, never written into these files.
 
 ### Ports
 
-Workspace microVMs reach host services via the **nginx gateway** at
-`AI_PLATFORM_HOST:18787` (§29) — never `host.docker.internal`. The agent sends its
-model calls to that single gateway port (`location /v1` → LiteLLM directly; LiteLLM
-compresses input via its in-process `headroom` guardrail, §10).
-The platform injects `AI_PLATFORM_HOST` and the service ports into the workspace
-environment at start. The workspace runs under a Microsandbox **NetworkPolicy**
-(§29.4) whose default posture is **`public`** — the open internet is reachable,
-private/internal ranges stay blocked, and the model gateway plus any explicitly
-allow-listed host services are always reachable; a project can re-lock to `deny`
-via `ai network`. The full per-component path is specified in §29.
+There is no VM network boundary and no port-publishing concept anymore — a
+nono-sandboxed process runs directly on the host, so it reaches the model
+gateway the same way any other host process would: a plain host address
+(loopback by default), resolved once by `internal/runtime` and threaded into
+each CLI's config/env (§29.2). There is no `AI_PLATFORM_HOST` guest↔host
+translation to perform and nothing analogous to the old `host:<port>` → VM →
+container port chain the in-VM apps layer used — that whole app layer
+(`internal/apps`, Open WebUI, agent-CLI dashboards, published app ports) was
+removed along with Microsandbox; in-VM apps are simply out of scope now, not
+replaced.
 
 ### Logs
 
-There is no persisted global `microsandbox.log` file. On the default SDK
-backend, workspace logs stream **live**: `Manager.OpenWorkspaceLogStream` /
-`sdkSandbox.OpenLogStream` open a relay-free SDK `LogStream{Follow:true}`
-(history first, then new entries pushed as they arrive). On the legacy CLI
-backend (`AIP_WORKSPACE_BACKEND=cli`), `Manager.WorkspaceLogTail` polls
-`msb logs` instead. Non-follow retrieval (`ai logs --workspace <project>`)
-reads the `.log` files under `<project>/.ai-platform/run/` (lifecycle
-start/stop/restart transcripts), not a global per-workspace log file.
+There is no persistent per-workspace log stream and no microVM to tail —
+`nono ps --json`/`nono inspect --json` report a session's live state, and
+`ai sessions [name]` surfaces it (ID/NAME/STATUS/ATTACHED/STARTED). The `ai ui`
+TUI's old Logs and Metrics sub-tabs are gone for the same reason — its
+per-workspace sub-tabs are now exactly Workspace/Network/Context/Shell: there
+is no persistent VM log and no per-VM metrics API to poll — just a
+short-lived sandboxed process you attach to or don't.
 
-### Cleanup
+### Lifecycle verbs
 
-Cleanup depends on whether the removal is recoverable:
-
-* **`ai stop`** stops the Microsandbox microVM but **keeps everything** —
-  state, overlay, definition. The workspace is recoverable with `ai start` or
-  `ai restart` (non-destructive — this is how you pause a workspace), but the
-  two differ in cost: a plain **`ai start`** on an already-created, stopped
-  workspace takes the **cheap path** — it just resumes the existing microVM
-  (`Sandbox.Start`) with **no image rebuild and no recreate**, so a changed
-  `.ai-platform/Dockerfile`/`config.yaml` is **not** picked up this way (it
-  self-heals to a full rebuild only if the cheap `Start` fails, e.g. the
-  microVM was removed out-of-band). **`ai restart`** always rebuilds the OCI
-  image and recreates the microVM (`Sandbox.Create`, re-mounting the same
-  overlay) — it is the only lifecycle verb guaranteed to pick up a
-  Dockerfile/config change.
-* **`ai delete`** (alias `ai destroy`) is permanent: it tears down the microVM
-  (idempotent), removes the project's whole `.ai-platform` directory **and its
-  overlay**, and de-registers it from `config/projects.yaml`. The user's OTHER
-  files are kept unless `--purge` is given (which removes the whole project
-  directory). There is **no** separate "tear down the microVM but keep the
-  project" verb — use `ai stop` to pause.
+* **`ai agent <cli> [name]`** reattaches that CLI's already-running session if
+  one exists, else mints a fresh scoped key, writes the CLI's config,
+  regenerates the nono profile, and launches + attaches a new detached
+  session — all in-process, no subprocess shell-out dance and nothing to
+  "boot".
+* **`ai shell [name]`** launches (or reattaches) an anonymous interactive nono
+  shell session sandboxed to the project root — no specific agent CLI.
+* **`ai start [name]`** launches (or reattaches) the project's **default
+  agent CLI** (`config.yaml` `agent.default_tool`) the same way `ai agent`
+  does — it is interactive (suspends into the real terminal) since there is no
+  detached VM boot to run non-interactively anymore.
+* **`ai stop [name]`** stops **every** live session for the project,
+  in-process (`Manager.StopAll` — a fast host-side `nono stop` per session, not
+  a VM shutdown).
+* **`ai restart [name]`** stops every live session, then relaunches the
+  default agent CLI fresh.
+* **`ai delete`** (alias `ai destroy`) is still the single permanent removal
+  verb: it now ALSO best-effort stops any live sessions for the project and
+  revokes/deletes its OS-keychain credential, before removing the project's
+  `.ai-platform` directory and de-registering it from `config/projects.yaml`.
+  The user's OTHER files are kept unless `--purge` is given (which removes the
+  whole project directory). There is still **no** separate "tear down but
+  keep the project" verb beyond `ai stop`.
+* **`ai exec`** is **gone** — there is no persistent sandbox process to exec
+  into anymore. Use `ai agent <cli>` or `ai shell` instead.
 
 ---
 
@@ -821,40 +826,51 @@ Caveman exposes selectable compression levels:
 
 ## Caveman Integration
 
-Caveman integrates as an agent skill, but it is **NOT** platform-seeded at create and
-is **NOT git-tracked**. It is installed at **workspace start** by Caveman's own
-upstream installer (`workspace.registerCaveman`, once-guarded, network-bound,
-best-effort — not baked into the image, not written by `Scaffold`). The install gives
-each caveman-detectable CLI (claude-code/opencode/gemini/codex/hermes) its
-native skills/agents/commands; `registerCaveman` then
-mirrors opencode's global caveman dirs into the shared `.ai-platform/{skills,agents,
-prompts}` pool so the symlinks distribute it to the pool-only CLIs (omp). It is the
-output-side complement to Headroom (the input-compression guardrail, §10). `ai context
-caveman <project> <level>` sets an advisory level in config; the installed skill
-controls intensity at runtime via `/caveman <level>`.
+Caveman is meant to integrate as an agent skill — installed per-project, not
+baked into anything platform-managed, not git-tracked. `ai context caveman
+<project> <level>` sets a level (`lite`/`full`/`ultra`/`wenyan`) in
+`config.yaml` (`contextopt.SetCavemanLevel`), and `ai create`'s AI-tools
+multi-select records whether Caveman is enabled for the project
+(`context.caveman_enabled`, default ON).
+
+**Status note (post-nono-migration):** in the prior Microsandbox architecture
+this toggle drove a real install step, `workspace.registerCaveman`, that ran
+Caveman's own upstream installer inside the workspace at start, giving each
+detected CLI its native skill/agent/command files. That function (and its
+equivalents for Graphify, code-review-graph, codebase-memory-mcp, OpenViking,
+tokensave, agentmemory, ponytail, and agent-skills — §12) **does not exist in
+the current `internal/workspace` package** — the config-level toggle and the
+`ai tools`/wizard UI around it are present and functional, but nothing in the
+current code actually runs an installer or writes skill files on the host.
+This section is therefore describing the **intended** integration point, not
+a currently-wired behavior; treat it as an open item for this migration cycle
+rather than working functionality until `internal/workspace` (or a successor)
+gains a host-side equivalent of the old per-tool `register*` functions.
 
 ---
 
 ## Context Optimization Workflow
 
-Headroom and Caveman are the two halves of context optimization. **Caveman** is a
-per-project, in-workspace generation-steering skill loaded in the agent.
-**Headroom** is a **shared host container** (`aip-headroom`, §10) that **LiteLLM
-calls as a `pre_call` compression guardrail** — but its tuning is still
-per-project: the platform maps a per-project strategy onto Headroom's request-body
-knobs (§10) so each project's compression behavior reaches the guardrail.
-Headroom shrinks what goes *in*; Caveman shrinks what comes *out*.
+Headroom and Caveman are the two halves of context optimization, though only
+Headroom's half is currently wired end-to-end (see the status note above for
+Caveman). **Headroom** is a **shared host container** (`aip-headroom`, §10)
+that **LiteLLM calls as a `pre_call` compression guardrail** — its tuning is
+per-project: the platform maps a per-project strategy onto Headroom's
+request-body knobs (`headroom_keep_turns`/`headroom_output_buffer_tokens`,
+§10) baked into the opencode config at every `ai agent opencode` launch
+(`internal/workspace/agentconfig.go` `writeOpenCodeConfig` →
+`headroomParams`), so each project's compression behavior reaches the
+guardrail. Separately, the host-installed `headroom` CLI can wrap an
+agent-CLI invocation directly (`headroom wrap <cli>`, §7) when found on PATH,
+for the three CLIs it supports.
 
 ```text
-   workspace microVM                          │ host
-   ─────────────────                          │
-        Caveman skill (loaded in agent → steers terse generation)
-                              │               │
-                              ▼               │
-  Agent ─ full context ─┼─► nginx ─────────► LiteLLM ─► Model
-    ▲  (per-project      │  (:18787,          │  ▲ pre_call headroom guardrail  │
-    │   knobs in body)   │   /v1)             │  └─► aip-headroom:8787/v1/compress
-    └──────────── compact output (Caveman-steered) ────────────────────────┘
+   sandboxed agent process (nono)              │ host
+   ─────────────────────────────               │
+  Agent ─ full context ──────┼──────────────► nginx ─────────► LiteLLM ─► Model
+    ▲  (per-project knobs    │  (:18787,         │  ▲ pre_call headroom guardrail  │
+    │   in request body)     │   /v1)            │  └─► aip-headroom:8787/v1/compress
+    └── compact output (Caveman-steered, when wired) ─────────────────────────────┘
 ```
 
 ---
@@ -879,9 +895,9 @@ dropped, which also prevents a litellm→headroom→litellm loop). Headroom is
 
 The gateway ENTRY is the **`aip-proxy` nginx reverse proxy**
 (`nginx:stable-alpine3.23-slim`), the **SOLE host entry point** to the whole service
-tier. The model path is **microVM → nginx (:18787, `location /v1`) → LiteLLM
+tier. The model path is **sandboxed agent process (host) → nginx (:18787, `location /v1`) → LiteLLM
 (:4000)** — nginx forwards `/v1` **directly to LiteLLM**, which runs the `headroom`
-compression guardrail in-process; this is what every workspace agent's
+compression guardrail in-process; this is what every agent CLI's
 `base_url=…/v1` hits, and the nginx config disables response buffering and uses long
 timeouts so streamed (SSE) LLM responses flush promptly. On the **same :18787**,
 nginx additionally fronts the LiteLLM admin/management surface on **`location /llm`**
@@ -904,16 +920,21 @@ publish to the host); only `aip-dns` stays loopback-published
 (`127.0.0.1:15353`) — `aip-litellm-db` has no host port at all, reached only
 by name on `aip-net`. (The local-inference backend — host-side omlx — is
 not on `aip-net` at all: it runs host-side and the container
-tier reaches it via `host.docker.internal`, §16.) This is transparent to workspaces (the gateway URL stays
-`host:18787`) and lets nginx terminate TLS later, per-vhost (in server mode it binds
-`0.0.0.0:18787` — the eventual public HTTPS endpoint). The host CLI reaches LiteLLM
-(admin via `…/llm`, the chat test via `…/v1`) through nginx, never the
-backend directly. Headroom is now **also installed inside each
-workspace image** (`uv tool install "headroom-ai[proxy]"`, the `proxy` extra only)
-for a future in-VM `headroom wrap <cli>`, wired in a follow-up. The live end-to-end
-routing through these nginx routes — the litellm UI vhost and the sudo `/etc/hosts`
-write — is verified at hardware bring-up. (Open WebUI is now a per-workspace in-VM
-app, §7; Odysseus has been removed from the platform.)
+tier reaches it via `host.docker.internal`, §16.) The gateway address resolves to a
+plain host loopback address now that agent sessions are sandboxed host processes
+rather than microVMs (§29.2), and nginx still lets TLS be terminated later,
+per-vhost (in server mode it binds `0.0.0.0:18787` — the eventual public HTTPS
+endpoint). The host CLI reaches LiteLLM (admin via `…/llm`, the chat test via
+`…/v1`) through nginx, never the backend directly. Separately from the
+container-tier Headroom, a user-installed `headroom` CLI on the host PATH can
+also opportunistically wrap an agent-CLI invocation (`headroom wrap <cli>`, §7)
+for the three CLIs it supports (claude-code, codex, opencode) — the platform
+does not install this CLI itself (the old plan to bake `headroom-ai[proxy]`
+into the workspace image no longer applies, since there is no workspace image).
+The live end-to-end routing through the nginx routes — the litellm UI vhost
+and the sudo `/etc/hosts` write — is verified at hardware bring-up. (There is
+no in-workspace app layer anymore — see §7 history; Odysseus has been removed
+from the platform.)
 
 The Github repository is found at:
 
@@ -980,212 +1001,109 @@ platform involvement. Reimplementing memory would duplicate the agent.
 
 # 12. AI Tooling Layer
 
-## Base tooling (always installed)
+**This whole layer changed shape with the nono migration.** There is no
+workspace image and no Dockerfile anymore, so there is nothing for the
+platform to "bake in" ahead of time — base tooling is whatever already
+exists on the host, agent CLIs are installed directly onto the host, and
+the per-project AI tools (Caveman, Graphify, …) are config-level toggles
+whose actual host-side installation logic is, as of this writing, **not yet
+reimplemented** — see the status note under "Per-project AI tools" below.
 
-Every workspace image installs this base tooling via the OS Dockerfile
-templates (§25); it is identical across all OSes:
+## Base tooling (host-provided, not platform-managed)
 
-* Git
-* GitHub CLI
-* **Shells** — `bash` + `zsh` with **oh-my-bash** and **oh-my-zsh**. The workspace's
-  default interactive shell is a first-class create input (`--shell`/the wizard,
-  `config.Workspace.Shell`, default `bash`), applied at every start by
-  `applyShellChoice`, which idempotently appends the managed agent-env/alias block to
-  both `~/.bashrc` and `~/.zshrc` and, when zsh is chosen, `chsh`es the workspace user's
-  login shell to zsh.
-* **Node.js** — pinned **Node 24 LTS**, installed system-wide. It backs every
-  agent-CLI install snippet (which only `npm install -g` their CLI, since Node is
-  in the base) and is why `node` is **not** a `--stacks` option.
-* **Python 3** — the base image's latest, installed system-wide (`python3` +
-  `python3-venv` where the distro splits it out). This backs the per-project
-  `~/project/.venv-msb` virtualenv created at workspace start (§26).
-* **uv** — Astral's Python package/tool manager, installed for the **workspace
-  user** (`curl -LsSf https://astral.sh/uv/install.sh | sh`, onto
-  `~/.local/bin`, which is on `PATH`).
-* **Graphify** — the knowledge-graph skill for AI coding assistants
-  (github.com/Graphify-Labs/graphify, PyPI package `graphifyy`, CLI `graphify`). It is a
-  selectable **AI tool** (`--tools graphify`; **opt-in, not pre-selected** —
-  `create.DefaultAITools()` returns an empty set, so nothing in the AI-tools
-  multi-select is checked by default), NO LONGER baked into the OS base:
-  when selected it is installed for the workspace user by a CONDITIONAL Dockerfile snippet
-  (`tools/graphify/`) via `uv tool install "graphifyy[<extras>]"`. The bundled optional
-  extras are all of Graphify's extras **except** the region/DB/niche-specific ones
-  (`chinese`, `azure`, `bedrock`, `falkordb`, `neo4j`, `leiden`, `dm`, `pascal`) — i.e. the
-  included set is
-  `pdf,office,video,postgres,google,svg,sql,terraform,openai,gemini,anthropic,mcp`.
-  When selected, each agent CLI then **registers Graphify with itself at workspace
-  start** (NOT at image build; gated on `context.graphify_enabled`):
-  `Manager.registerGraphify` runs `graphify install`
-  for Claude Code (the default `graphify` platform) and `graphify install --platform
-  <cli>` for Codex, the Gemini CLI, and OpenCode, all in `~/project`
-  (omp/hermes are not Graphify platforms — they inherit the skill via the
-  shared pool). It must run
-  at start because `--project` writes project-scoped skill/plugin/hook files into the
-  bind-mounted project dir (which does not exist at build); the `graphify install` step
-  runs **once per project**, guarded by a marker file
-  (`~/project/.ai-platform/.graphify-installed`) so user edits to those files are not
-  clobbered on every restart. `registerGraphify` ALSO runs **`git init`** — ALWAYS,
-  independent of whether Graphify is selected — when the project is not already a valid git
-  working tree, detected with `git rev-parse --is-inside-work-tree`, which recognizes both a
-  `.git` DIRECTORY and a `.git`-file gitlink (worktree/submodule), unlike a bare `[ -d .git ]`
-  test (so every workspace is git-backed; this writes `.git` into the bind-mounted project on
-  the host). The Graphify install + hook steps are the only parts gated on the selection.
-  A DANGLING `.git` gitlink FILE (a submodule checkout whose superproject/gitdir is absent,
-  which git rejects as "not a git repository") is removed first so `git init` produces a
-  real standalone repo rather than following the dead pointer; a `.git` DIRECTORY is never
-  removed. It then runs **`graphify hook install` on EVERY start** for a valid repo — `hook
-  install` is idempotent (it rewrites the managed hook), so there is deliberately no
-  marker, and the hook step is decoupled from the per-CLI install list (it runs even for
-  an omp/hermes-only project).
-  Graphify's headless LLM backend is a **local (omlx) model picked at `ai create`** — both
-  the CLI wizard and the TUI create wizard now render a SELECT built from omlx's live
-  `GET /v1/models` (not a free-text field), a `"(none — leave Graphify unconfigured)"`
-  option always first (shown alone when omlx has nothing loaded/isn't running — never
-  blocks the wizard), or `--graphify-model` (a pre-seeded value omlx doesn't currently
-  report is appended to the picker rather than dropped, preserving the pre-seed
-  contract) naming a model omlx is **already serving** (models are downloaded/managed
-  entirely through omlx's own admin panel, §16 — there is no Hugging-Face-repo-id
-  picker and no download/pull at create time), stored as
-  `agent.graphify_model` in the project `config.yaml`. At workspace start Graphify
-  is routed through the gateway as `omlx/<model>` via `OPENAI_*` env vars (see
-  §17) — never directly to the backend.
-  Graphify stays usable by every CLI as a **skill** (native `graphify install --platform`
-  for the platform CLIs opencode/claude-code/codex/gemini; the shared skill pool for
-  omp/hermes) — unchanged; ADDITIONALLY its stdio **MCP server** is registered into
-  the platform-managed configs (codex/hermes/omp) via the injection described below.
-  The platform installs `graphifyy[mcp]` into the project venv `.venv-msb` (detached
-  best-effort — the uv-tool install is isolated and not importable via `python -m`) and
-  builds the graph offline (`graphify update .`, AST-only) at start (`workspace.setupGraphifyMCP`),
-  so `python -m graphify.serve graphify-out/graph.json` has data; the git hook keeps it fresh
-  (gated on `context.graphify_enabled`).
-* **code-review-graph** and **codebase-memory-mcp** — two per-workspace code-graph
-  tools chosen from the single AI-tools multi-select at `ai create` (the `--tools`
-  flag / the wizard's one AI-tools step, alongside caveman + graphify;
-  `create.SupportedAITools`; **all eight AI tools are opt-in** —
-  `create.DefaultAITools()` returns an empty set, so none is pre-checked). Each maps to a
-  `context.*_enabled` bool in `config.yaml` (`code_review_graph_enabled` /
-  `codebase_memory_enabled`) and, when selected, is appended to the project Dockerfile
-  as a CONDITIONAL install snippet (`tools/code-review-graph/`,
-  `tools/codebase-memory-mcp/`) — NOT baked into every OS base — then
-  registered as an **MCP server** with each installed agent CLI **at workspace
-  start** (`Manager.registerCodeReviewGraph` / `registerCodebaseMemory`, mirroring
-  `registerGraphify`/`registerCaveman`: once-guarded by a marker under
-  `~/project/.ai-platform`, best-effort, never failing the start). **code-review-graph**
-  (code-review-graph.com, PyPI `code-review-graph`) runs `code-review-graph install
-  --platform <cli>` for each supported CLI (opencode/claude-code/gemini —
-  `codeReviewGraphPlatformFlag`; **codex was removed** because its `config.toml` is
-  platform-rewritten and a native install would be clobbered — codex/omp/hermes
-  get its MCP server via injection, below), then `build`s the graph
-  and writes a D3 force-directed graph **visualization** HTML at
-  `.code-review-graph/graph.html`; it is DETACHED (the `build` can be long, like the
-  Caveman install). **codebase-memory-mcp** (github.com/DeusData/codebase-memory-mcp) runs
-  the auto-detecting `codebase-memory-mcp install` (bounded blocking, config-only; it
-  auto-detects claude-code/opencode/codex/gemini/hermes, not omp) and
-  ships an optional on-demand **3D graph UI** (`codebase-memory-mcp --ui=true --port=9749`,
-  not auto-started). Both default to LOCAL operation and need no API key, so neither
-  touches the gateway or a provider key.
+There is no base-tooling layer anymore: a workspace is sandboxed directly
+against the host, so whatever language runtimes, shells, and CLIs already
+exist on the host are what the agent sees — the platform does not install
+Git, a shell, Node.js, Python, or `uv` on the user's behalf the way the old
+per-OS Dockerfile templates did. The **interactive shell** `ai shell` launches
+is still a first-class per-project choice (`--shell`/the wizard,
+`config.Workspace.Shell`, default `bash`, the alternative `zsh`) — nono simply
+runs that shell binary as the sandboxed process; it does not install or
+configure it.
 
-  **MCP-injection architecture.** The three agent configs the platform rewrites whole on
-  every start — codex's `.codex/config.toml`, hermes's global `~/.hermes/config.yaml`, and
-  omp's new `<project>/.omp/mcp.json` — would
-  clobber any native `install --platform`/auto-detect, so the platform instead INJECTS the
-  enabled AI tools' MCP servers directly into that render (`agentcfg.EnabledMCPServers` →
-  `AppendCodexMCP` [appends `[mcp_servers.<name>]` TOML tables] /
-  `InjectHermesMCP` [adds `mcp_servers`] / `OmpMcpConfig` [the standalone
-  `.omp/mcp.json`], wired in `registerAgentProviders` for codex/hermes/omp). The full
-  signature — `EnabledMCPServers(codeReviewGraph, codebaseMemory, graphify, tokensave,
-  agentMemory bool, venvPython string)` — can inject **five** servers, not three. The
-  injected commands: code-review-graph = `code-review-graph serve`, codebase-memory-mcp
-  = the `codebase-memory-mcp` binary, graphify = `<project>/.venv-msb/bin/python -m
-  graphify.serve graphify-out/graph.json`, tokensave = `tokensave serve`, agentmemory =
-  `npx -y @agentmemory/mcp`. So codex/hermes/omp reach all five tools via injection; the
-  CLIs whose configs the platform does not own (claude-code `~/.claude.json`, opencode,
-  gemini `settings.json`) keep getting the applicable ones via the tools' own native
-  install/auto-detect.
-* **OpenViking** — a per-workspace context/memory database
-  (docs.openviking.ai — "the context database for AI agents"), one of eight members of
-  the same AI-tools multi-select (`AIToolOpenViking`; **opt-in, off by default** —
-  nothing in `create.SupportedAITools()` is pre-checked), mapped to
-  `context.openviking_enabled` (`OpenVikingEnabledOrDefault`, unset defaults FALSE).
-  When selected, its Dockerfile snippet (`tools/openviking/`) installs the
-  `openviking-server` (PyPI `openviking`, via `uv tool install` onto the workspace
-  user's `~/.local/bin`) and its `ov` CLI client (npm `@openviking/cli`) plus the
-  OpenCode plugin package (npm `@openviking/opencode-plugin`) — the two npm globals
-  need root, so those two steps run as root before switching back to the workspace
-  user. Registration happens at **workspace start** (`Manager.registerOpenViking`,
-  mirroring code-review-graph/graphify: once-guarded by a marker under
-  `~/project/.ai-platform`, DETACHED via setsid, best-effort, never failing the
-  start) because it needs a running server plus per-CLI state directories that only
-  exist once the workspace is live. The server's own config
-  (`/persist/openviking/ov.conf`, distinct from `ov`'s connection config) is written
-  first (`openviking-server doctor` fails without it), omits the `embedding` section
-  (no `llama-cpp-python`/C++ toolchain is baked in, so it falls back to the built-in
-  local dense model — only semantic-search quality is affected, not server/MCP
-  startup), and points `storage.workspace` at the persistent overlay so the index
-  survives restarts; `~/.openviking` is symlinked to `/persist/openviking` for the
-  same reason. The server runs LOCALLY on loopback `:1933` with **no
-  authentication** (OpenViking's own "dev mode": no API key needed for a local
-  server with no `root_api_key` configured), so it never touches the gateway or a
-  provider key. Per-CLI registration is architecturally split in two:
-  **Claude Code** and **Codex** use OpenViking's own native plugin-marketplace
-  commands (`claude plugin marketplace add` / `claude plugin install` resp. `codex
-  plugin marketplace add` / `codex plugin add`, per OpenViking's docs) — Codex
-  additionally needs a `[features]\nplugin_hooks = true` block, which is
-  re-appended to its platform-rendered `config.toml` on EVERY start (that file is
-  rewritten whole, not merged, so the one-shot plugin registration alone would not
-  stick) by `registerAgentProviders`. **OpenCode** and **omp** instead use
-  OpenViking's shared memory-plugin harness installer script (`bash <(curl …
-  examples/memory-plugin-shared/install.sh) --harness <name>`,
-  `openVikingPluginFlag`: `opencode`→`opencode`, `omp`→`pi` — omp is a fork of
-  "pi", OpenViking's own harness name for it). Hermes and Gemini are NOT
-  registered: Hermes' only documented path (`hermes memory setup openviking`) is
-  an interactive wizard with no non-interactive flags in its docs, and Gemini has
-  no OpenViking integration documented at all — a genuine gap, not an oversight.
-  If OpenViking is enabled but none of the four supported CLIs is installed,
-  registration is skipped with a warning.
-* **tokensave** (`AIToolTokenSave`) — a code-graph MCP server for 34 languages
-  (github.com/aovestdipaperino/tokensave; semantic queries instead of grepping/
-  reading files, cutting token use). Its
-  Dockerfile snippet (`tools/tokensave/`) installs the `tokensave` binary onto the
-  workspace user. Registered at **workspace start** by `Manager.registerTokenSave`
-  (gated on `context.TokenSaveEnabledOrDefault()`, mirroring code-review-graph/
-  graphify: once-guarded by a marker under `~/project/.ai-platform`, DETACHED,
-  best-effort): for each installed CLI with a native flag (`tokenSaveAgentFlag`:
-  claude-code/opencode/gemini) it runs `tokensave install --agent <agent> --local`,
-  then `tokensave init --no-git-hook` to build the project's code index.
-  codex/hermes/omp instead reach it via the MCP-injection mechanism below
-  (`tokensave serve`).
-* **agentmemory** (`AIToolAgentMemory`) — persistent cross-session memory
-  (github.com/rohitg00/agentmemory) so an agent doesn't keep re-learning the
-  codebase. Its Dockerfile snippet installs the `agentmemory` npm package globally.
-  Registered at **workspace start** by `Manager.registerAgentMemory` (gated on
-  `context.AgentMemoryEnabledOrDefault()`, once-guarded, best-effort): when
-  claude-code is installed it runs `agentmemory connect claude-code --with-hooks`;
-  when gemini is installed it runs
-  `gemini mcp add agentmemory npx -y @agentmemory/mcp --scope user`. codex/hermes/omp
-  do NOT get a native install path — they reach agentmemory only via the
-  MCP-injection mechanism below; **opencode gets neither** the native path nor the
-  injection (it is not one of the three platform-rewritten configs), a genuine gap,
-  not an oversight.
-* **ponytail** (`AIToolPonytail`) — a skill, not an MCP server
-  (github.com/DietrichGebert/ponytail), that nags the agent to check
-  YAGNI/stdlib/existing code before writing anything new. It has NO Dockerfile
-  snippet — registration at **workspace start** (`Manager.registerPonytail`, gated on
-  `context.PonytailEnabledOrDefault()`, once-guarded, DETACHED, best-effort) simply
-  `curl`s its `SKILL.md` into the shared pool
-  (`<project>/.ai-platform/skills/ponytail/SKILL.md`), where it is symlinked into
-  every skill-capable CLI the same way as any other shared-pool skill, plus — when
-  gemini is installed — a best-effort `gemini extensions install` for its Gemini
-  extension.
-* **rtk** — "Rust Token Killer" (github.com/rtk-ai/rtk), a CLI proxy that compresses
-  common dev-command output to cut agent token use. Installed for the **workspace
-  user** via its official `install.sh` (a prebuilt aarch64 Linux binary → `~/.local/bin`,
-  on `PATH`, no root) — **never** `cargo install rtk` (crates.io name collision). It
-  must be present because Claude Code's rtk `PreToolUse` hook (added by the user's
-  `rtk init`) shells out to `rtk`. Mirrors the uv/Graphify/Headroom per-user install;
-  the live install on aarch64 is a hardware bring-up check.
+## Agent CLIs — installed directly on the host
 
-## Agent CLIs (selected per environment)
+Three of the six supported agent CLIs can be installed directly onto the host
+by the platform (`internal/setup/agentcli_host.go`, `SupportedHostAgentCLIs`),
+each via its own official installer, Detect-gated (left untouched if already
+on PATH) and strictly best-effort (a failed install is logged and swallowed —
+it never fails `ai setup`):
+
+| Agent CLI | Install command |
+|---|---|
+| claude-code | `curl -fsSL https://claude.ai/install.sh \| bash` |
+| codex | `curl -fsSL https://chatgpt.com/codex/install.sh \| sh` |
+| opencode | `curl -fsSL https://opencode.ai/install \| bash` |
+
+`ai setup`'s `--host-agents <cli,...>` flag (or its TTY picker) selects which
+of these three to install; `omp`, `gemini`, and `hermes` have no
+platform-managed host installer — the user installs them separately (or they
+are already present). Whichever CLIs a project selects at `ai create`
+(`--agents`) are recorded in `config.yaml` regardless of whether they are
+actually on the host yet — that is not re-validated until the first
+`ai agent <cli>` launch, which fails with
+an actionable error (exit code mapped from `workspace.ErrUnknownAgentCLI`/a
+generic not-installed error) if the binary is missing.
+
+## Per-project AI tools — selection exists; host-side installation does not (yet)
+
+**Status note (post-nono-migration):** `ai create`'s AI-tools multi-select and
+`ai tools list|enable|disable` are fully wired — they read/write the
+`context.*_enabled` booleans in `config.yaml` via `create.SupportedAITools()` /
+`create.SplitAITools()` / `config.ContextConfig.ToolEnabled()` — but **no code
+in the current `internal/workspace` package actually installs or registers any
+of these tools on the host**. The elaborate per-tool `register*` functions the
+prior (Microsandbox) architecture had — `registerCaveman`, `registerGraphify`
+(+ its `git init`/MCP-server/model-routing wiring), `registerCodeReviewGraph`,
+`registerCodebaseMemory`, `registerOpenViking`, `registerTokenSave`,
+`registerAgentMemory`, `registerPonytail`, and the MCP-injection mechanism
+(`agentcfg.EnabledMCPServers`) that fed codex/hermes/omp — do not exist in the
+current codebase (`EnabledMCPServers` itself is still defined in
+`internal/agentcfg` but has **no caller** anywhere). So today:
+
+* a user can select/toggle any of the nine tools below and the choice is
+  durably recorded;
+* nothing currently installs the tool, writes its skill/agent/command files,
+  registers it as an MCP server, or wires Graphify's model routing
+  (`agent.graphify_model` is likewise stored but unconsumed — `OmlxModelHandle`
+  has no caller either).
+
+This is tracked here as an explicit gap for this migration cycle, not
+described as working. The nine tools, with their intended purpose
+(`create.AIToolDescription`), are:
+
+* **caveman** (default ON) — compresses agent output into a terser style to
+  cut tokens (lite/full/ultra/wenyan levels, §9).
+* **graphify** (default ON) — builds a knowledge graph of the codebase for
+  faster, cheaper code navigation and queries; the wizard still offers a
+  Graphify-model picker sourced from omlx's live model list (§16) whenever
+  `graphify` is selected, storing the choice as `agent.graphify_model` (not
+  currently consumed — see the status note above).
+* **code-review-graph** (default ON) — code-review knowledge-graph MCP
+  server; generates a visual D3 dependency graph.
+* **codebase-memory-mcp** (default OFF) — persistent codebase-memory MCP
+  server, with an optional 3D graph UI.
+* **openviking** (default OFF) — local context database server for agents
+  (openviking.ai).
+* **tokensave** (default OFF) — code-graph MCP server for 34 languages —
+  semantic queries instead of grepping/reading files, cutting token use.
+* **agentmemory** (default OFF) — persistent cross-session memory — captures
+  and recalls prior work so agents stop re-learning the codebase.
+* **ponytail** (default OFF) — nags the agent to check
+  YAGNI/stdlib/existing code before writing anything new.
+* **agent-skills** (default OFF) — curated senior-engineer skills (spec,
+  TDD, review, security, shipping, …) from github.com/addyosmani/agent-skills.
+
+(`create.DefaultAITools()` returns caveman + graphify + code-review-graph ON,
+the other six OFF — `create.SplitAITools` maps the multi-select onto the nine
+`project.Spec` bools, which `Scaffold` writes straight into `config.yaml`.)
+
+There is no `rtk`/Headroom-CLI/Caveman per-user install step anymore either —
+those used to be baked into the OS base image; with no image, they are simply
+not installed by the platform (a user who wants `rtk` installs it themselves
+following its own `install.sh`).
+
+## Agent CLIs (selected per project)
 
 The AI coding-agent CLIs are **not** all baked in. One or more are chosen at
 environment setup (`ai create`, CLI §3.1) from the supported list:
@@ -1199,10 +1117,11 @@ environment setup (`ai create`, CLI §3.1) from the supported list:
 
 Selection is **multi-select**: install any subset (at least one), with **OpenCode**
 pre-selected by default. The chosen CLIs are written into the project's
-`.ai-platform/Dockerfile` at creation, so the installed set is reproducible from
-the project rather than a fixed, baked-in surface. The **default agent** — which
-CLI new agents use unless told otherwise — is recorded as `agent.default_tool`
-(repo-layout §12.4) and must be one of the installed CLIs (default OpenCode).
+`config.yaml` (`agent.tools`) at creation — this records which CLIs the
+project is *wired* to use, independent of whether they happen to be
+host-installed yet (see "Agent CLIs" above). The **default agent** — which
+CLI `ai start`/`ai restart` launches — is recorded as `agent.default_tool`
+(repo-layout §12.4) and must be one of the selected CLIs (default OpenCode).
 
 **Per-agent auth mode** (`agent.auth_modes`, chosen at `ai create`): each gateway-capable
 CLI records `api-key` (DEFAULT — route through the gateway with a scoped LiteLLM virtual
@@ -1218,13 +1137,12 @@ that an oauth agent's traffic bypasses the firewall/masking/egress audit.
 Context optimization (§8–10):
 
 * **Headroom** — input compression via LiteLLM's `pre_call` `headroom` guardrail;
-  per-project tuning rides in the request body (§8, §10). Also installed inside the
-  workspace image (`uv tool install "headroom-ai[proxy]"`) for a future in-VM
-  `headroom wrap <cli>`.
-* **Caveman** — output compression, **not** baked into the image and **not**
-  git-tracked: installed at workspace start by its own upstream installer
-  (`registerCaveman`, network-bound, best-effort) and mirrored into the shared skills
-  pool (an agent skill, see §9).
+  per-project tuning rides in the opencode config's request body (§8, §10). A
+  host-installed `headroom` CLI can additionally wrap claude-code/codex/opencode
+  sessions directly (`headroom wrap <cli>`, §7) when present on PATH.
+* **Caveman** — output compression, selectable at `ai create` and toggleable via
+  `ai tools`; the actual host-side install step is not currently wired (§9
+  status note).
 
 MCP servers are configured and run by the agent itself (the platform does not
 manage MCP).
@@ -1274,8 +1192,8 @@ via its `pre_call` `headroom` guardrail (§10), applies any other enabled guardr
 per-component networking path is in §29.3.
 
 ```text
-Agent
- ╎  microVM boundary → AI_PLATFORM_HOST
+Agent CLI (sandboxed host process, nono)
+ ╎  plain host address (loopback by default, §29.2)
 nginx (aip-proxy, host :18787, /v1 → LiteLLM directly)
  ↓
 LiteLLM
@@ -1398,7 +1316,8 @@ models.dev catalog, fetched as JSON but persisted as YAML; a legacy `catalog.jso
 the older `volumes/catalog.json` is one-shot converted).
 This is a re-downloadable copy, not SYSTEM data, and is likewise removed by
 `ai uninstall --purge`. Config files (the LiteLLM/DNS/nginx configs under `config/`)
-and the per-project workspace overlays are NOT system volumes and stay where they are.
+are NOT system volumes and stay where they are. (There is no per-project
+workspace overlay anymore to carve out an exception for — §26 history.)
 *Bring-up caveat:* Postgres on a host bind mount has data-dir ownership quirks on
 macOS Docker Desktop / Linux rootless (the container's `postgres` UID vs the host
 dir) — verify `initdb` succeeds; some hosts may need a uid/`:Z` tweak. *Migration
@@ -1571,9 +1490,13 @@ matches nothing. `on_disallowed_action: block` rejects the response. Because eve
 (opencode/claude-code) routes model calls through LiteLLM, this is tool-agnostic.
 
 It is **defence-in-depth**, not the only control: it catches the model's tool-calls
-(the agent path), but the microVM isolation + the per-project egress policy (§29.6 —
-which a project can re-lock to `deny` to block network-dependent destructive commands
-like push/terraform/kubectl) remain the hard boundary. The exact shell-tool name/param
+(the agent path), but nono's same-kernel sandboxing (§3, §7) + the per-project
+egress policy (§29.6 — which a project can re-lock to `deny` to block
+network-dependent destructive commands like push/terraform/kubectl) remain the
+other layers — note nono's isolation is capability confinement, not a VM
+boundary (§3), so this is a weaker backstop than the platform's former
+Microsandbox design for anything the sandbox profile's filesystem/network
+grants don't themselves prevent. The exact shell-tool name/param
 paths per agent CLI are a `hardware bring-up` verification item
 (`docs/HARDWARE-BRINGUP.md`).
 
@@ -1617,92 +1540,84 @@ authentication (real key vs. placeholder) and the sync mechanics (the same
 pure add/delete diff as the cloud-key sync, not a full rebuild) are covered in
 §16 (Registration).
 
-### In-VM agent provider config — keyless per-CLI project configs, key in-VM only
+### Per-CLI agent provider config — keyless host-path configs, key delivered by nono
 
 All **six** supported agent CLIs (§12) route through the gateway **by default** — subject
 to per-agent auth mode: an `oauth`-mode Claude
 Code/Codex/Gemini goes direct to its provider and gets no gateway config (see auth modes
 above). Each CLI's provider
-config is written at **that CLI's own default per-project location** inside the
-bind-mounted project dir (`~/project` = `/home/workspace/project`, one directory shared
-host↔guest, so the project is self-describing on host disk), (re)generated on **every
-workspace start/restart** by `workspace.registerAgentProviders` (over `internal/agentcfg`).
+config is written at **that CLI's own default per-project location**, now directly on
+the **real host filesystem** (there is no guest path to translate — nono sandboxes the
+host process against the project directory in place, §7), (re)generated on **every
+`ai agent <cli>`/`ai shell` launch** by `Manager.writeAgentConfig`
+(`internal/workspace/agentconfig.go`, over `internal/agentcfg`).
 Every on-disk config is **KEYLESS** — the scoped virtual key is referenced by env
-interpolation, never written to disk — and any pre-existing file is **deep-merged** so
-the dynamic managed block wins while the user's other keys survive:
+interpolation, never written to disk — and opencode's/claude-code's existing files are
+**deep/JSON-merged** so the dynamic managed block wins while the user's other keys survive:
 
 * **opencode** → `<project>/.opencode/opencode.json` (`apiKey: "{env:AIP_GATEWAY_KEY}"`);
-  the in-VM env file exports `OPENCODE_CONFIG` pointing opencode at this file. It carries
-  the per-request Headroom knobs (keep-turns / output-buffer-tokens) on every model.
+  it carries the per-request Headroom knobs (`headroom_keep_turns` /
+  `headroom_output_buffer_tokens`) on every model, and the served-model picker (below).
 * **claude-code** → `<project>/.claude/settings.json` — an `env` block setting only
-  `ANTHROPIC_BASE_URL` (the gateway root, no `/v1`); the bearer token stays in the
-  exported `ANTHROPIC_AUTH_TOKEN` env var (settings.json has no `${VAR}` interpolation),
-  so the file is keyless.
+  `ANTHROPIC_BASE_URL` (the gateway root, no `/v1`); the bearer token is injected
+  directly into the sandboxed process's environment by nono (settings.json has no
+  `${VAR}` interpolation), so the file is keyless.
 * **codex** → `<project>/.codex/config.toml` — a keyless `[model_providers.aip-gateway]`
-  block with `wire_api = "responses"` and `env_key = "AIP_GATEWAY_KEY"`, plus a **global
-  in-VM** `~/.codex/config.toml` trust entry (`[projects."/home/workspace/project"]
-  trust_level = "trusted"`, off host disk) so codex loads the keyless project config.
+  block with `wire_api = "responses"` and `env_key = "AIP_GATEWAY_KEY"`, plus a **global**
+  (shared across every project on the host — no VM isolation to separate them anymore)
+  `~/.codex/config.toml` trust-entry APPEND (`appendCodexTrust`, idempotent — it never
+  rewrites the whole file, since that would destroy other projects' trust entries):
+  `[projects."<project-root>"] trust_level = "trusted"` so codex loads the keyless
+  project config.
 * **gemini** → **env-only** (no settings key for a base URL exists): `GOOGLE_GEMINI_BASE_URL`
-  + `GEMINI_API_KEY` via the in-VM agent env file.
+  is set via the launch's nono profile (`environment.set_vars`, §7) and `GEMINI_API_KEY` is
+  injected by nono's credential map — there is no gemini config file at all.
+* **omp** → global `~/.omp/agent/models.yml` + `<project>/.omp/config.yml`.
+* **hermes** → global `~/.hermes/config.yaml`.
 
-The **scoped virtual key is NEVER on host disk**. It lives ONLY in the in-VM agent env
-file `~/.config/aip/agent-env.sh` (`agentcfg.AgentEnvScript`, written into the microVM,
-sourced by every shell + agent session), which exports `AIP_GATEWAY_KEY` (opencode/codex),
-`ANTHROPIC_AUTH_TOKEN` (claude-code), `GEMINI_API_KEY`/`GOOGLE_GEMINI_BASE_URL` (gemini),
-`OPENCODE_CONFIG`, and — when the project has a configured Graphify model
-(`agent.graphify_model`) — `OPENAI_BASE_URL` (the gateway `/v1`), `OPENAI_API_KEY` (the
-scoped virtual key), and `OPENAI_MODEL=omlx/<model>`, so `graphify --backend openai`
-routes through the gateway (nginx → LiteLLM → omlx, LiteLLM compressing input via
-its `headroom` guardrail) rather than directly to the backend.
+The **scoped virtual key is NEVER on host disk**. It lives ONLY in the host OS keystore
+(macOS Keychain / Linux Secret Service, §7) and is injected directly into the sandboxed
+process's environment by `nono run --env-credential-map` at launch — `AIP_GATEWAY_KEY`
+(opencode/codex/omp/hermes), `ANTHROPIC_AUTH_TOKEN` (claude-code), `GEMINI_API_KEY`
+(gemini). There is no shell-sourced env file anymore (the old in-VM
+`~/.config/aip/agent-env.sh` is gone with the VM); nono's own credential-injection flag
+is the direct replacement.
 
-**hardware bring-up** (not yet verified live): opencode honouring `.opencode/opencode.json`
-via `OPENCODE_CONFIG`; codex loading the trusted project config; the shared-pool symlinks (below)
-resolving in-VM.
+**Not currently wired** (tracked as a gap, not a hardware-bring-up item — this is a
+missing feature, not an unverified-on-hardware one): Graphify's `agent.graphify_model`
+routing through `OPENAI_BASE_URL`/`OPENAI_API_KEY`/`OPENAI_MODEL=omlx/<model>` env vars,
+and the shared `<project>/.ai-platform/{agents,skills,prompts,projects}` resource pool +
+its per-CLI symlinks into `.opencode/skills`, `.claude/skills`, etc. — neither has a
+caller in the current `internal/workspace` package (§9, §12, §18).
 
-#### Shared resource pool + per-CLI symlinks
+### Served-model picker
 
-`<project>/.ai-platform/{agents,skills,prompts,projects}` is a **shared resource pool** —
-ONE copy of the project's agents / skills / prompts. At workspace start (BEFORE Graphify
-registration, so Graphify's per-CLI skill files land in the pool) each pool is symlinked
-(relative) into each **installed** CLI's real per-project dir:
-
-* `skills` → `.opencode/skills`, `.claude/skills`, `.omp/skills`
-* `agents` → `.opencode/agents`, `.claude/agents`, `.omp/agents` (omp reads its own
-  native `.omp/agents` and deliberately skips `.claude/agents`)
-* `prompts` → `.opencode/commands`, `.claude/commands`, `.gemini/commands`,
-  `.omp/commands`
-
-Kinds a CLI has no concept for are skipped (codex/gemini have no skills/agents). Caveman
-still lives at `<project>/.ai-platform/skills/caveman/SKILL.md` (§9) and is thereby shared
-to every skills-capable client through the symlink.
-
-### In-VM model picker
-
-For discoverability the in-VM agent CLIs are seeded with a **picker** built at
-workspace start (`internal/workspace.pickerModels`): it is **exactly the set of
-models the LiteLLM gateway currently serves** — its live DB-backed models — sourced
-via the injected `workspace.ServedModels` → `litellm.KeyManager.ListModels`,
-deduped and sorted. If the gateway is unreachable the picker **degrades to an empty
-list** (never fatal — it must never fail a workspace start), and an empty picker
-LEAVES the existing served-model lists untouched (a transient outage never wipes them).
-The workspace **default model** is separate from the picker and follows a
-**seed-then-remember** policy: the model chosen at `ai create` (`agent.graphify_model`
-→ `omlx/<model>`) is SEEDED as every CLI's default on the **FIRST start only**
-(guarded by a `<project>/.ai-platform/.agent-default-seeded` marker), independent of
-picker/gateway reachability; LATER starts pass an EMPTY default so each CLI's persisted
-last-used selection wins — the agent state dirs (`~/.local/share/opencode`) are
-symlinked to the `/persist` overlay (`workspace.linkAgentStateDirs`) so that selection
-survives microVM restarts. The platform also installs an in-VM
-`refresh-models` command (`/usr/local/bin/refresh-models`, from
-`agentcfg.RefreshScript`) that re-fetches the served list from the gateway's
-`/v1/models` endpoint (authenticated with the scoped virtual key) and rewrites the
-opencode PROJECT config (`/home/workspace/project/.opencode/opencode.json`) — KEYLESS — to match a fresh start, so models registered after
-start can be picked up without recreating the workspace; on failure it leaves the configs
-untouched. (There is no host-side "browse available local models" surface anymore —
-no curated in-code list, no TUI Local Models tab. Adding/removing/tuning a local
-model is done entirely through **omlx's own admin panel** [`ai services console
-omlx`, §16]; the platform only keeps the gateway's `omlx/*` registrations synced to
-whatever omlx is currently serving, which is what feeds this in-VM picker.)
+For discoverability, opencode's config is seeded with a **picker** built at every
+launch (`Manager.pickerModels`, `internal/workspace/agentconfig.go`): it is **exactly
+the set of models the LiteLLM gateway currently serves** — its live DB-backed models —
+sourced via the injected `Manager.Served` → `litellm.KeyManager.ListModels`, deduped
+with empty names dropped. If the gateway is unreachable the picker **degrades to an
+empty list** (never fatal — it must never fail a launch), and `MergeOpenCodeConfig`
+only REPLACES the `provider.<id>.models` map when the fetched list is non-empty —
+an empty (outage) list falls back to the ordinary deep-merge, so the existing on-disk
+list survives a transient outage, same guarantee as before the migration. There is
+**no "default model" seeding anymore at all** — `writeOpenCodeConfig` always calls
+`MergeOpenCodeConfig` with an empty `defaultModel`, which actively drops any
+previously-seeded top-level `model` key, so opencode's own persisted last-used
+selection is what always wins; the old seed-then-remember policy (seeding
+`agent.graphify_model` as the default on a first start) has no equivalent in the
+current code, since `agent.graphify_model` is not consumed anywhere (see the status
+note above). There is also no `refresh-models` command anymore — simplified rather
+than lost, since a plain host install means opencode's own state directory
+(`~/.local/share/opencode`) is already permanent host-side state with no
+VM-restart/overlay-symlink concern, and every `ai agent opencode` launch already
+regenerates the config fresh from whatever LiteLLM reports at that moment, so there
+is nothing a separate in-session refresh command would add. There is no host-side
+"browse available local models" surface — no curated in-code list, no TUI Local
+Models tab. Adding/removing/tuning a local model is done entirely through **omlx's
+own admin panel** (`ai services console omlx`, §16); the platform only keeps the
+gateway's `omlx/*` registrations synced to whatever omlx is currently serving, which
+is what feeds this picker.
 
 ---
 
@@ -1811,7 +1726,7 @@ All access occurs through LiteLLM; LiteLLM routes local model calls to omlx via
 `host.docker.internal` (no credential needed for local) and applies
 whichever guardrails are enabled (§15) on these requests as on any other. Live
 end-to-end routing to the host backend is a hardware-bring-up verification item.
-Workspace egress to all of this is governed by the Microsandbox NetworkPolicy
+Workspace egress to all of this is governed by the project's nono egress policy
 (§29.4).
 
 ---
@@ -1819,7 +1734,7 @@ Workspace egress to all of this is governed by the Microsandbox NetworkPolicy
 # 17. Secrets Layer
 
 Provider credentials live **in the LiteLLM gateway** — never on platform disk and
-never in the workspace. This is the **keys-in-LiteLLM** model:
+never in the sandboxed agent process. This is the **keys-in-LiteLLM** model:
 
 * the real provider API keys (OpenAI, Anthropic, Gemini, Groq, …) are added with
   `ai keys add <provider>` and held **encrypted** in LiteLLM's **Postgres-backed
@@ -1835,33 +1750,39 @@ The two security concerns that used to be one component's job are now split
 across mechanisms that already exist on the path:
 
 * **off-disk credentials** — keys-in-LiteLLM (this section);
-* **egress enforcement** — the Microsandbox **NetworkPolicy** (default posture
-  `public`: open internet allowed, private ranges blocked; re-lockable to `deny`),
-  configured by `ai network` (§29.4, §29.6); there is **no egress proxy**;
+* **egress enforcement** — the per-project **nono egress policy** (default
+  posture `public`: open internet allowed, private ranges blocked; re-lockable
+  to `deny`), configured by `ai network` (§29.4, §29.6); there is **no egress
+  proxy**;
 * **secret masking / audit** — LiteLLM's enabled guardrails (§15), which run on
   every request and every route (each enabled guardrail can't be opted out of).
 
 ---
 
-## The workspace holds only a virtual key
+## The sandboxed agent process holds only a virtual key
 
-The in-workspace agent never holds a provider secret. It is given a scoped
-**LiteLLM virtual key** (the gateway key) and sends all model calls to the
-gateway path (nginx :18787 → LiteLLM directly, §29). LiteLLM authenticates the
-virtual key, then uses the *real* provider key from its own store to reach the
-upstream provider:
+The agent CLI, sandboxed by nono, never holds a provider secret on disk or in
+a plain env var it could leak. It is given a scoped **LiteLLM virtual key**
+(the gateway key), injected directly into its process environment by nono's
+own credential-injection mechanism at launch (`--env-credential-map`, §7),
+and sends all model calls to the gateway path (nginx :18787 → LiteLLM
+directly, §29). LiteLLM authenticates the virtual key, then uses the *real*
+provider key from its own store to reach the upstream provider:
 
 ```text
-Agent in workspace microVM  (holds only the LiteLLM virtual key)
- ↓  AI_PLATFORM_HOST → nginx (:18787, /v1) → LiteLLM (:4000, calls Headroom :8787/v1/compress)
+Sandboxed agent process (nono)  (holds only the LiteLLM virtual key, injected by nono)
+ ↓  plain host address → nginx (:18787, /v1) → LiteLLM (:4000, calls Headroom :8787/v1/compress)
 LiteLLM  (authenticates the virtual key; attaches the real provider key)
  ↓
 Provider (cloud) / omlx (local, no key)
 ```
 
-Because the real key lives only in the gateway, a compromise of the workspace
-cannot exfiltrate a provider secret — at worst it can spend against the scoped
-virtual key, which the gateway can revoke or rate-limit independently.
+Because the real key lives only in the gateway, a compromise of the sandboxed
+agent process cannot exfiltrate a provider secret — at worst it can spend
+against the scoped virtual key, which the gateway can revoke or rate-limit
+independently. (Unlike the old microVM boundary, this is a same-kernel
+sandbox — see §3, Isolation — so the relevant containment is the
+capability grant nono's profile makes, not a hardware wall.)
 
 ---
 
@@ -1899,9 +1820,9 @@ No:
 * plaintext secrets on platform disk
 * repository secrets
 
-Real provider keys never reach the workspace filesystem or environment — they
-live only in the LiteLLM gateway, and the workspace holds only the scoped virtual
-key.
+Real provider keys never reach the sandboxed agent process's filesystem — they
+live only in the LiteLLM gateway, and the sandboxed process holds only the scoped
+virtual key, injected into its environment by nono at launch.
 
 ---
 
@@ -1910,12 +1831,13 @@ key.
 The wire-level controls that used to be bundled with the secret store are now
 their own mechanisms:
 
-* **egress enforcement** is the Microsandbox NetworkPolicy applied per workspace
-  and declared via `ai network` — the default outbound posture (`public` by
-  default: open internet allowed, private ranges blocked; re-lockable to `deny`),
-  allow-listed host services, and published ports (§29.4, §29.6). The policy is
-  rendered into `msb` net-rules (`egress.MsbNetworkArgs`) and applied at workspace
-  create.
+* **egress enforcement** is the per-project nono profile's network policy,
+  declared via `ai network` — the default outbound posture (`public` by
+  default: open internet allowed, private ranges blocked; re-lockable to `deny`)
+  plus an allow/deny domain list (§29.4, §29.6). The policy is rendered into the
+  profile's `network` block (`internal/workspace.ensureProfile`) and regenerated
+  on every `ai agent`/`ai shell` launch — there are no published ports to declare
+  anymore (nono has no guest-network boundary to publish a port from).
 * **secret masking** is LiteLLM's enabled guardrails (§15): because each
   rendered guardrail is `default_on: true` and **every** route — cloud included —
   traverses the LiteLLM proxy, nothing bypasses an ENABLED guardrail (secret masking
@@ -1929,12 +1851,13 @@ their own mechanisms:
 
 * provider API keys (OpenAI, Anthropic, Gemini, Groq, …)
 * the LiteLLM master key and admin-UI password (§15)
-* LiteLLM virtual keys issued to workspaces
+* LiteLLM virtual keys issued to project workspaces
 
-Credentials a tool inside the workspace needs that are **not** model-provider keys
-(e.g. a git token or an MCP server's credential) are the user's / agent's own
-concern — the platform manages only the model-path credentials described here,
-and confines all other workspace egress with the NetworkPolicy (§29.4).
+Credentials a tool inside the sandboxed agent process needs that are **not**
+model-provider keys (e.g. a git token or an MCP server's credential) are the
+user's / agent's own concern — the platform manages only the model-path
+credentials described here, and confines all other egress with nono's network
+policy (§29.4).
 
 ---
 
@@ -1955,14 +1878,16 @@ prompts/
 templates/
 ```
 
-**Status: deferred.** A read-only mount of these GLOBAL directories into every
-workspace is not yet wired into the `msb` run-args (§7, Mount Rules) — there is
-no platform-wide skill/agent/prompt pool shared across projects today. What IS
-wired and mounted is the **per-project** shared pool,
-`<project>/.ai-platform/{agents,skills,prompts,projects}` (§5, §12, §15), which
-is symlinked into each installed agent CLI's own directories at workspace start.
-Do not confuse the two: this section describes the still-deferred global layer;
-the per-project pool is live.
+**Status: deferred.** There is no platform-wide skill/agent/prompt pool shared
+across projects today, global or per-project. The global directories above are
+pre-created empty by `internal/layout.Ensure` but nothing populates or mounts
+them. The **per-project** shared pool,
+`<project>/.ai-platform/{agents,skills,prompts,projects}`, that the prior
+(Microsandbox) architecture symlinked into each installed agent CLI's own
+directories at workspace start is likewise **not currently wired** — the
+`internal/workspace` package has no symlink-setup step anymore (§9, §12, §15
+status notes). Both the global and the per-project resource-pool layers are
+open items for this migration cycle, not working features.
 
 ---
 
@@ -1974,11 +1899,9 @@ Host location (the project directory — the cwd at `ai create`, not a fixed roo
 <project dir>/.ai-platform/
 ```
 
-Workspace mount location (guest):
-
-```text
-~/project  (= /home/workspace/project)
-```
+There is no separate guest mount location anymore — nono sandboxes the agent
+process directly against this same host directory (§7); a nono-sandboxed
+process's working directory IS the project directory, with no translation.
 
 ---
 
@@ -1986,19 +1909,19 @@ Workspace mount location (guest):
 
 ```text
 .ai-platform/
-  Dockerfile         # tracked — environment (§25)
   config.yaml        # tracked
-  profile.yaml       # tracked
   project.yaml       # tracked — { name, os, created }
-  # shared resource pool — symlinked into each installed CLI's dir at start (§15):
-  agents/            #   agent definitions
-  skills/            #   skills — incl. Caveman (installed at start, §9) + Graphify
-  prompts/           #   prompt/command definitions
+  nono-profile-<cli>.json / nono-profile-shell.json  # gitignored — regenerated every launch (§7)
+  # shared resource pool directories exist in the on-disk layout but nothing
+  # populates or symlinks them currently (§9, §12, §18 status notes):
+  agents/
+  skills/
+  prompts/
   projects/          #   reserved
   .gitignore         # ignores run/
   run/               # gitignored — workspace/agent runtime state
 
-# per-CLI provider configs (keyless, written at workspace start; §15):
+# per-CLI provider configs (keyless, (re)written on every `ai agent`/`ai shell` launch; §15):
 .opencode/opencode.json
 .claude/settings.json
 .codex/config.toml
@@ -2014,18 +1937,22 @@ tests/
 README.md
 ```
 
-`<project>/.ai-platform/` holds the project's environment (Dockerfile), config,
-gitignored runtime state, and the shared resource pool (§15) — no platform-managed
-memory (delegated to the agent, §11). The per-CLI provider configs live at each CLI's
-own default location under the project root (all keyless; the scoped key is env-supplied
-in-VM only, §15/§17). MCP is configured by the agent, not the platform. This matches the
-canonical project layout in `03-repository-layout.md` §2.1.
+`<project>/.ai-platform/` holds the project's config and gitignored runtime
+state — no platform-managed memory (delegated to the agent, §11), and no
+Dockerfile or profile.yaml anymore (§24, §25 history). The per-CLI provider
+configs live at each CLI's own default location under the project root (all
+keyless; the scoped key is delivered only via nono's credential injection,
+§7/§15/§17). MCP is configured by the agent, not the platform. This matches
+the canonical project layout in `03-repository-layout.md` §2.1 (which may
+still describe the pre-migration Dockerfile/profile.yaml layout — verify
+against `03-repository-layout.md` directly if precise cross-reference
+accuracy matters, since updating that file is outside this task's scope).
 
 ---
 
 ## Identifier Rules
 
-Project names become directory names and the Microsandbox workspace name (§7),
+Project names become directory names and the sandbox-facing name (§7),
 so they are validated:
 
 ```text
@@ -2035,8 +1962,8 @@ project name:  ^[a-z0-9][a-z0-9-]{0,38}[a-z0-9]$
 * lowercase alphanumeric and hyphens; 2–40 chars; no leading/trailing hyphen
 * a name that fails validation exits `2`
 * project names are unique across the platform
-* the derived workspace name is `aip-<project>` (§7), which therefore also
-  satisfies OCI image / Microsandbox naming constraints
+* the derived sandbox-facing name is `aip-<project>` (§7) — used as the
+  `nono run --name` prefix, not an OCI image or microVM name
 
 ---
 
@@ -2052,17 +1979,18 @@ platform never creates per-agent workspaces, branches, or worktrees.
 
 # 21. Git Workflow
 
-Version control is **largely** out of scope — with ONE deliberate exception. The
-`ai create` command writes only the `.ai-platform/` environment definition into the
-current directory and leaves existing files (including an existing repo) untouched; it
-does not clone, branch, commit, or merge. **The one git the platform runs** is an
-internal `git init` at every **workspace start** when the project is not already a git
-repo (immediately before Graphify registration, so the Graphify git hook — installed
-every start — always has a repo to attach to; this writes `.git` into the bind-mounted
-project on the host, §12). Everything else — clone, branches, commits, rebases, merges,
-conflict resolution, worktrees, remotes, and pull requests — is the user's and the
-in-workspace agent's job. The platform makes no model calls, and runs no git beyond
-that `git init` + `graphify hook install`.
+Version control is **out of scope** — there is no git package and `ai create`
+runs no git. `ai create` writes only the `.ai-platform/` config into the
+current directory and leaves existing files (including an existing repo)
+untouched; it does not clone, branch, commit, or merge. The prior
+(Microsandbox) architecture ran one internal `git init` at every workspace
+start (so the Graphify git hook always had a repo to attach to) — that step
+has **no equivalent in the current code** (`internal/workspace` has no git
+invocation at all post-migration; `grep -rn "git init"` over `internal/`
+returns nothing). Everything git — init, clone, branches, commits, rebases,
+merges, conflict resolution, worktrees, remotes, and pull requests — is now
+entirely the user's and the agent CLI's job, with no platform involvement of
+any kind.
 
 ---
 
@@ -2084,150 +2012,77 @@ agent CLI's concern.
 
 # 24. Sandbox Strategy
 
-Default — one hardware-isolated microVM per workspace:
+Default — one nono-sandboxed host process per agent-CLI/shell invocation:
 
 ```text
-Workspace
- └─ Microsandbox microVM (libkrun)
+Project directory (host)
+ └─ nono session (Landlock on Linux / Seatbelt on macOS)
+     └─ sandboxed agent-CLI or shell process
 ```
 
-Each project workspace is its own microVM, so installs
-and state are isolated and persist independently (overlay, §26). The container
-runtime (Docker/Podman) is used only for the service tier (§6.1), never to run
-a workspace.
+Each launch is its own sandboxed process, confined to the project directory by
+a generated nono profile (§7) — not hardware isolation, same-kernel capability
+confinement. There is no per-workspace overlay or disk image to keep separate
+(§26 history): the project directory on the host IS the persistent state, so
+"isolated and persisting independently" now just means "is a separate host
+directory," not "is a separate VM disk." The container runtime (Docker/Podman)
+is used only for the service tier (§6.1), never for a workspace.
 
 ---
 
-# 25. Project Environment (Dockerfile)
+# 25. Project Environment (Dockerfile) — Removed
 
-A project's environment is defined by a **Dockerfile that lives in the project**
-at `.ai-platform/Dockerfile`. The platform writes this Dockerfile at project creation,
-seeded from the OS template the user selects in the setup wizard (CLI §3.1) and
-extended with the selected agent CLIs (§12); from then on it is an ordinary file
-in the project's git repo — the user owns and edits it.
+**This whole section is obsolete and describes a removed feature.** The prior
+(Microsandbox) architecture gave every project a `.ai-platform/Dockerfile`,
+seeded from a per-OS template (`alma`/`debian-trixie`/`ubuntu`) the user chose
+at `ai create`, extended with selected agent CLIs and a multi-select of
+software stacks (`go`/`rust`/`java`/`maven`/`deno`), and built into the
+workspace's OCI image. nono sandboxes the **host process directly** — there is
+no image to build, so there is no Dockerfile, no OS choice, no `--os` flag, and
+no software-stacks selection at all anymore:
 
-The workspace image is **built from `.ai-platform/Dockerfile`**. There is no snapshot
-versioning, pinning, upgrade, or rollback: the Dockerfile (and its git history)
-is the single source of truth for the environment. To change the environment,
-edit `.ai-platform/Dockerfile` and recreate the workspace.
+* `internal/envimage` (the OCI image builder) — **deleted**, entirely unused.
+* `internal/templates` (the OS/Dockerfile-snippet composer) — **deleted**.
+* The `--os`/`--stacks` create flags and wizard steps — **removed**; `ai
+  create`'s current flag/wizard surface (§12, CLI §3.1) has no OS or stack
+  input at all.
+* A workspace now runs on **whatever toolchains already exist on the host** —
+  the platform does not provision per-project language runtimes. If a project
+  needs `go`/`rust`/`java`/etc., the user installs it on the host themselves
+  (or it's already there); there is no per-project override.
 
-## OS Templates
-
-The platform ships one Dockerfile **template** per supported OS, used only to
-seed a new project's `.ai-platform/Dockerfile`:
-
-| OS key (wizard choice) | base image | template |
-|---|---|---|
-| `alma` | Alma 10 (`almalinux:10.2`) | `templates/dockerfiles/alma/Dockerfile` |
-| `debian-trixie` | `debian:trixie-slim` | `templates/dockerfiles/debian-trixie/Dockerfile` |
-| `ubuntu` | Ubuntu (`ubuntu:24.04`) | `templates/dockerfiles/ubuntu/Dockerfile` |
-
-* **The OS is always chosen by the user** at creation, from the supported list,
-  via the interactive setup wizard (CLI §3.1) — on a TTY no default is applied
-  silently. A `--os` flag exists, but on a terminal it only *pre-seeds* the
-  wizard; the wizard always shows and the user confirms or changes the
-  recommended default (`debian-trixie`). The chosen key selects which template
-  seeds `.ai-platform/Dockerfile`.
-* each template installs the **base** tooling layer (§12: Git, GitHub CLI, Node.js,
-  Python 3, uv, Headroom, rtk, and the in-VM container runtime) on its
-  base image — identical across all OSes; the **agent CLIs** and **software stacks**
-  selected at creation (§12; see Software Stacks below) are then added to the
-  project's generated `.ai-platform/Dockerfile` (acceptance tests §6)
-* each template provisions a **non-root workspace user with passwordless sudo**,
-  so a user can install packages at runtime (those installs persist via the
-  overlay, §26)
-* after creation the template is irrelevant — the project's own
-  `.ai-platform/Dockerfile` is what builds the workspace, so a user can freely
-  customize it
-
-## Software Stacks
-
-The user selects the language/tool stacks to install when setting up the
-environment (CLI §3.1, step 6) — a **multi-select** of `go`, `rust`, `java`,
-`maven`, `deno`. **Neither Python nor Node is a stack option**: the latest
-**Python 3**, **uv**, and **Node.js** are baked into every OS base by default
-(§12: Base tooling), so there is nothing to select. (Graphify is no longer baked —
-it is a selectable AI tool; see CLI §3.1 step 9 / `--tools`.) (The no-op
-`python`/`node` stack snippets have been removed entirely.)
-The set is **extensible**: each stack is
-a small install snippet the platform ships under
-`~/.ai-platform/templates/stacks/<stack>` (repo-layout §1.5), and the
-`ai create` Dockerfile generator composes the selected snippets into the
-project's `.ai-platform/Dockerfile` (after the base tooling, alongside the agent
-CLIs). Snippet selection is **OS-aware**: `templates.StackSnippet(stack, osKey)`
-picks the package manager appropriate to the chosen base image — for the
-`alma` (dnf-based) OS key it first looks for a
-`stacks/<stack>/Dockerfile.dnf.snippet` sibling and falls back to the
-generic `Dockerfile.snippet` when no dnf variant exists; every other OS key
-always uses the generic (apt) snippet. `go`, `deno`, `maven`, and `java` each
-ship both variants today; a stack that installs generically (e.g. via a
-language's own installer script rather than a system package) needs only the
-one generic snippet. The selected set is recorded in the project's tracked `profile.yaml`
-(`stacks: [...]`, repo-layout §12) so it is reproducible from git, and — like the
-rest of the Dockerfile — the user owns and may edit it afterward. Adding a stack
-later is just editing `.ai-platform/Dockerfile` (or `profile.yaml` + re-seed) and
-recreating the workspace.
-
-## Rules
-
-* the workspace image is built from the project's `.ai-platform/Dockerfile`
-* rebuilding is the only "version" mechanism — there are no platform-managed
-  snapshot versions, pins, or rollbacks
-* ad-hoc installs made inside a running workspace persist via the overlay (§26)
-  without editing the Dockerfile
+`config.Config.OS` and `state.Project.OS` fields still exist and are still
+populated — but now with the **host's own `runtime.GOOS`** (`darwin`/`linux`,
+set by `project.Scaffold`), an informational record of what platform the
+project was created on, not a selectable Dockerfile template choice.
 
 ---
 
-# 26. Overlay System (Persistence)
+# 26. Overlay System (Persistence) — Removed
 
-A workspace is:
+**This whole section is obsolete.** It described `internal/overlay`, the
+host-bind-mounted VM-disk overlay (`~/.ai-platform/overlays/<workspace-id>` →
+microVM `/persist`) that made a disposable microVM root persist installed
+programs and agent state across restarts. `internal/overlay` is **deleted** —
+there is no VM disk to overlay anymore.
 
-```text
-Image    (built from <project>/.ai-platform/Dockerfile, §25; read-only)
- + Overlay (persistent writable layer, host-backed)
-```
+Persistence is now simply: **the project directory, on the host, is the only
+persistent state a workspace has.** A nono-sandboxed process runs directly
+against that directory with no copy-on-write layer in between — whatever it
+writes inside the project directory is immediately and permanently there, the
+same as any other host process. There is nothing analogous to the old
+"installed programs survive restart via the overlay" claim, because there is
+no separate VM filesystem for installs to land in outside the project
+directory in the first place — a `apt`/`npm i -g`/etc. run by the sandboxed
+process affects the **host's own** installed-program state (scoped by
+whatever nono's profile permits it to write), not a disposable VM root.
+Likewise, an in-workspace agent's own state (session, config, `AGENTS.md`,
+history) persists exactly where that agent CLI already keeps it on a normal
+host install — there is no platform-managed persistence layer to maintain.
 
-The **overlay is the persistence mechanism**, implemented as a **host bind mount**
-of `~/.ai-platform/overlays/<workspace-id>` into the microVM at `/persist` (per
-workspace) — not a Microsandbox named volume. The microVM root (from the OCI image)
-is disposable; everything written on top of it lands in the overlay dir on the host,
-re-mounted every time the workspace starts or is recreated.
-
-## What Persists
-
-Anything written in the workspace persists across stop / start / recreation:
-
-* **installed programs** — `apt`/`dnf`/`npm i -g`/etc. survive restart
-* **agent state** — whatever the in-workspace agent writes (its session,
-  config, `AGENTS.md`, history) persists; the platform doesn't manage it, but
-  the overlay keeps it
-* any other files written outside the mounted project source
-
-The whole writable layer is persisted — there is no manifest of "declared
-paths" to maintain. (Project source in the project directory is separately
-bind-mounted at `~/project` and is the user's git repo.)
-
-## Scope
-
-One overlay **per workspace** (one per project) — installs and state written in
-the workspace persist independently of the read-only image:
-
-```text
-~/.ai-platform/overlays/<workspace-id>/
-```
-
-## Lifecycle
-
-* mounted into the microVM at `/persist` at workspace start, as a host bind mount
-  of `~/.ai-platform/overlays/<workspace-id>` (§6.2, §7)
-* survives workspace stop/start
-  (`ai stop` keeps the overlay; `ai start`/`ai restart` re-mounts it)
-* removed only on **permanent** removal: `ai delete` (alias `ai destroy`) removes
-  the workspace overlay (via `overlay.Remove`)
-* it is **local persistence, not a backup** — if the host disk is lost the
-  overlay is lost; reinstall (source is in git, §32)
-* when `.ai-platform/Dockerfile` changes and the workspace is rebuilt, the same
-  overlay is re-mounted over the new image
+`~/.ai-platform/overlays/` still exists as a directory on disk
+(`internal/layout.Ensure` still creates it) but is vestigial — no current code
+writes to or reads from it.
 
 ---
 
@@ -2249,135 +2104,102 @@ Locations:
 ```
 
 A value set in the project's `config.yaml` overrides the global default. (There
-is no separate workspace layer — the workspace mounts the project, so the
-project config *is* the workspace config — and no snapshot-defaults layer, since
-the environment is defined by the project's Dockerfile, §25.)
+is no separate workspace layer — a workspace sandboxes the project directory
+directly, so the project config *is* the workspace config — and no
+snapshot-defaults/environment-image layer at all anymore, §25 history.)
 
 ---
 
-# 28. Resource Limits
+# 28. Resource Limits — Removed
 
-Example:
+**This whole section is obsolete.** It described per-workspace `cpu_limit`/
+`memory_limit`/`disk_limit` config fields and `ai resize`, which sized and
+later adjusted a microVM's vCPU count, memory ceiling, and writable-rootfs
+disk size (capped against host RAM/CPU via `config.UsableHostMemoryMiB`, etc.).
+None of that applies to a nono-sandboxed host process:
 
-```yaml
-workspace:
-  cpu_limit: 4
-  memory_limit: 8G
-  disk_limit: "16"
-```
-
-Purpose:
-
-* prevent runaway agents
-* improve system stability
-
-**Host caps.** `cpu_limit` is capped at the host's logical CPU count; `memory_limit`
-is capped **BELOW** the host's total RAM — the platform reserves headroom for the host
-OS, service tier, and hypervisor (`config.UsableHostMemoryMiB` reserves the larger of
-2 GiB or 25% of host RAM), because a microVM given all of host RAM cannot boot. An
-explicit over-ceiling `--cpus`/`--memory` is rejected at create (exit 2, CLI §3.1); an
-unset value resolves to the default clamped at the ceiling, and the value is clamped
-again at microVM creation (`workspace_sdk.go`/`workspace_real.go`) as a backstop.
-
-**Disk.** `disk_limit` (GiB, default **16**) sizes the microVM's writable rootfs —
-the OCI overlay upper — via the SDK's `WithOCIUpperSize`; this is where the in-VM
-containerd image store lives, so a heavy in-VM app image (Open WebUI) has room to
-extract. It is validated only loosely (rejects a non-positive/malformed value) —
-unlike CPU/memory it is not clamped against host disk space. The upper is sparse,
-so the limit is a ceiling, not upfront usage.
-
-**Resizing after creation.** CPU, memory, and disk are all changeable post-create
-with `ai resize [workspace] --disk <GB> [--memory <GB>] [--cpus <n>]` (at least one
-of the three flags is required) and from the TUI Workspace tab's `z` key. A resize
-persists the new value(s) to `config.yaml` then restarts the running workspace so
-the `--replace` rebuild applies the new size.
+* `config.WorkspaceConfig` no longer has `CPULimit`/`MemoryLimit`/`DiskLimit`
+  fields — it carries only `Shell` (§7, §12).
+* **`ai resize` is deleted entirely.** There is no VM to size — a sandboxed
+  process uses host resources directly, the same as any other process the
+  user runs; there is nothing for the platform to cap or resize.
+* A runaway agent is bounded by whatever limits the user's own host/OS
+  imposes on any process, not a platform-managed ceiling.
 
 ---
 
 # 29. Networking (how the workspace reaches every component)
 
-A workspace is a **microVM**, not a container, so it has its own network
-boundary. There is no shared Docker network and no `host.docker.internal`.
+A workspace is now a **sandboxed host process**, not a VM and not a container,
+so there is no separate guest network boundary, no virtual NIC, and no
+`host.docker.internal`-style guest↔host translation to speak of. The agent CLI
+sits directly on the host network stack; nono's sandboxing confines what it may
+reach via a per-launch capability profile rather than a virtual network device.
 
-## 29.1 Transport — virtual NIC + Microsandbox NetworkPolicy (user space)
+## 29.1 Transport — nono's network capability grant
 
-The workspace microVM is given a **virtual network interface** (Microsandbox
-virtio-net) behind the host-side userspace network stack (gvproxy). Egress is
-governed by a Microsandbox **NetworkPolicy** (§29.4) whose default outbound
-posture is **`public`** — the open internet is reachable while private/internal
-ranges stay blocked, and the model gateway plus any explicitly allow-listed host
-services are always reachable. The policy is implemented as a default-deny
-fallthrough that `public` mode widens with a broad allow-internet rule, so a
-project can re-lock to `deny` (only the gateway + allow-listed services) via
-`ai network`. There is no
-shared Docker network and the microVM never touches the host Docker socket (§30).
-There is **no egress proxy** — confinement is enforced by the NetworkPolicy, not
-a forward proxy on the wire.
+Each launch's nono profile carries a `network` block
+(`internal/nono.NetworkCapabilities`) with three pieces: `block` (true under
+the `deny` egress mode — blocks all network access), and `allow_domain`/
+`deny_domain` lists (mirrored from the project's `config.yaml`). How nono
+itself mediates a sandboxed process's traffic against these domain lists
+(Landlock network rules on Linux, a Seatbelt network profile on macOS, or an
+internal proxy — nono's own implementation detail) is outside this platform's
+code and is not asserted here beyond what nono's own profile schema
+documents; verify against nono's own docs
+(https://nono.sh/docs) rather than this spec for enforcement internals.
+There is **no egress proxy operated by this platform** and no virtual NIC —
+confinement is whatever nono's own sandboxing enforces from the declared
+profile.
 
-To avoid stacking privileged host facilities, **every plane stays in user
-space** — the hypervisor and the network stack never contend for the same host
-resource:
+Because there is no VM, there is also no separate hypervisor/NIC privilege
+plane to keep in user space (§29.1's prior "every plane stays in user space"
+table, keyed to the Microsandbox/libkrun design, no longer applies — nono has
+no hypervisor entitlement requirement at all, §3/§6.2).
 
-| Plane | Where it runs | Host privilege |
-|---|---|---|
-| libkrun microVM (HVF on Apple Silicon / KVM on Linux) | host, user space | hypervisor entitlement only (Apple Silicon), baked into code signing |
-| Workspace egress NIC | **gvproxy** (userspace; macOS has no host TAP) | none |
-| Egress enforcement | Microsandbox **NetworkPolicy** (default posture `public`, applied per workspace via the SDK) | none |
+## 29.2 Host address — a plain host address, not a guest↔host translation
 
-Keeping every plane in user space is what leaves the macOS hypervisor
-entitlement the *only* special privilege in the stack (no kext, no
-NetworkExtension, no admin networking prompt).
+There is no `AI_PLATFORM_HOST` guest-network boundary to cross anymore — the
+sandboxed agent process already runs on the host, so it reaches the gateway at
+a **plain host address**. `runtime.DefaultGatewayHost` is now **`127.0.0.1`**
+(plain loopback), not a Microsandbox-specific guest→host DNS name — there is
+nothing to pin against a hypervisor backend, since there is no hypervisor.
+`runtime.HostGateway(_)` always returns `(DefaultGatewayHost, true)` regardless
+of GOOS — the parameter is kept only for call-site compatibility with the
+pre-migration signature.
 
-## 29.2 Host address — `AI_PLATFORM_HOST`
-
-Never hardcode `host.docker.internal`. The workspace microVM reaches the host
-through the **gateway address of Microsandbox's host-side userspace network
-stack** — the slirp/gvproxy-family gateway through which every guest packet is
-already routed for DNS interception and policy (§29.1). The platform resolves
-that gateway once, persists it in `config/runtime.yaml` as `host_gateway`
-(`internal/runtime`), and injects it — with each service port — into the
-workspace environment as `AI_PLATFORM_HOST` at start (§7, Ports).
-
-The gateway address is the **fixed, backend-independent Microsandbox guest→host
-DNS name `host.microsandbox.internal`** — Microsandbox publishes the same name
-under HVF on macOS and KVM on Linux, verified end-to-end during hardware bring-up.
-It is **pinned** in `runtime.HostGateway` (which returns
-`(DefaultGatewayHost, true)`) and persisted as `config/runtime.yaml`'s
-`host_gateway`; it is never guessed. `Info.HostAddress()` returns the
-`AI_PLATFORM_HOST` environment override when set (e.g. the acceptance harness) else
-the persisted `host_gateway`.
-
-The trusted platform gateway is reached at `AI_PLATFORM_HOST:18787` — the **nginx
+The trusted platform gateway is reached at `<host>:18787` — the **nginx
 proxy** (the sole host entry), which routes `/v1` **directly to LiteLLM**
 (`aip-litellm:4000`); LiteLLM compresses input via its `headroom` guardrail (calling
 `aip-headroom:8787/v1/compress`, internal-only). All other egress is
-governed by the Microsandbox NetworkPolicy (§29.4). Reaching *other* host-local
-services — a developer's database or message broker — is a separate, explicitly
-allow-listed zone (§29.6).
+governed by the project's nono network policy (§29.4). Reaching *other*
+host-local services — a developer's database or message broker — remains a
+separate, explicitly allow-listed concern (§29.6), though the published-port
+mechanism that used to accompany it is gone (§7 history — there is no guest
+port to publish from).
 
-**Gateway resolution → microVM gateway URL + egress allow.** The model-gateway
-endpoint every workspace on a host routes through is derived from
+**Gateway resolution → base URL + egress allow.** The model-gateway endpoint
+every agent-CLI launch on a host routes through is derived from
 `Info.HostAddress()` (`internal/runtime`): the `ai_platform_host` field if set
 (machine-wide, configured by `ai setup --mode client --server` or `ai gateway
-set` — §CLI 10.5), else the resolved `host_gateway`. The field holds a **bare host
-or `host:port`** (NOT a URL); `runtime.ResolveGateway` applies: empty →
-`host.microsandbox.internal:18787` (standalone/local); `host` → that host on the
-default nginx-gateway port `18787`; `host:port` → that host and port. The result drives
-two things at workspace start (`internal/workspace`): (a) the in-VM agent provider
-configs' `base_url` is `http://<host>:<port>/v1`, and (b) the always-on egress
-allow rule (`egress.MsbNetworkArgs`) targets `<host>:tcp:<port>`. So in standalone
-mode every microVM reaches the local LiteLLM via `host.microsandbox.internal`, and
-in client mode every microVM on the machine routes through — and is allowed egress
-to — the configured remote server's gateway.
+set` — §CLI 10.5), else the resolved `host_gateway` (now plain `127.0.0.1`).
+The field holds a **bare host or `host:port`** (NOT a URL); `runtime.ResolveGateway`
+applies: empty → `127.0.0.1:18787` (standalone/local); `host` → that host on
+the default nginx-gateway port `18787`; `host:port` → that host and port. The
+result drives the per-CLI provider configs' `base_url`/`http://<host>:<port>/v1`
+at every `ai agent`/`ai shell` launch (§15). So in standalone mode every
+sandboxed process reaches the local LiteLLM via plain loopback, and in client
+mode every sandboxed process on the machine routes through the configured
+remote server's gateway instead.
 
 ## 29.3 Reaching each component
 
 ```text
-              workspace microVM (virtio-net)
+         sandboxed agent process (nono, host)
        ┌─────────────────────────────┐
-       │ agent                        │   egress = Microsandbox NetworkPolicy
-       └───────────────│─────────────┘   (default `public`; private ranges blocked)
-        trusted gateway │ (AI_PLATFORM_HOST:18787)
+       │ agent CLI                    │   egress = nono's per-launch network profile
+       └───────────────│─────────────┘   (default `public`; `deny` blocks all network)
+        trusted gateway │ (<host>:18787, plain loopback by default)
                         ▼
         nginx (host :18787) ─────────► LiteLLM ──────► provider (cloud)
         (sole host entry,             (routing +   │   (real key from
@@ -2390,211 +2212,177 @@ to — the configured remote server's gateway.
                              Headroom (aip-headroom:8787, /v1/compress — input compression)
 ```
 
-* **Model requests** — the in-workspace agent sends the request across the microVM
-  boundary to the **nginx gateway** at `AI_PLATFORM_HOST:18787` (the sole host
-  entry), which routes `/v1` **directly to LiteLLM** (routing + enabled guardrails,
-  §15). LiteLLM compresses the input via its `pre_call` `headroom` guardrail (calling
-  the shared Headroom container at `aip-headroom:8787/v1/compress`, internal-only),
-  then reaches **both** the local omlx backend **and** cloud
-  providers, attaching the real provider key from **its own store** on cloud calls
-  (keys-in-LiteLLM, §17). These hops are host-side; the workspace holds only the
-  scoped LiteLLM virtual key.
-* **omlx** — the local model backend (§16); never reached directly by
-  the workspace. **LiteLLM** routes local model calls to it (no credential needed)
-  and applies whichever guardrails are enabled (§15) as on any other request.
-* **All other workspace egress** (git push, MCP servers, arbitrary web) is
-  governed by the Microsandbox **NetworkPolicy** (§29.4): the default `public`
-  posture allows the open internet (private ranges still blocked) plus the
-  explicitly allow-listed host services, and a project can re-lock to `deny` via
-  `ai network`. There is no egress proxy and no wire-level credential
-  injection; any non-model-path credential a tool needs is the agent's own.
+* **Model requests** — the sandboxed agent process sends the request to the
+  **nginx gateway** at a plain host address (the sole host entry), which routes
+  `/v1` **directly to LiteLLM** (routing + enabled guardrails, §15). LiteLLM
+  compresses the input via its `pre_call` `headroom` guardrail (calling the
+  shared Headroom container at `aip-headroom:8787/v1/compress`, internal-only),
+  then reaches **both** the local omlx backend **and** cloud providers,
+  attaching the real provider key from **its own store** on cloud calls
+  (keys-in-LiteLLM, §17). These hops are host-side; the sandboxed process holds
+  only the scoped LiteLLM virtual key, injected by nono (§7).
+* **omlx** — the local model backend (§16); never reached directly by the
+  sandboxed process. **LiteLLM** routes local model calls to it (no credential
+  needed) and applies whichever guardrails are enabled (§15) as on any other
+  request.
+* **All other egress** (git push, MCP servers, arbitrary web) is governed by
+  nono's per-launch network profile (§29.4): the default `public` posture
+  allows the open internet (the `deny` mode blocks all network instead), with
+  an allow/deny domain list layered on top via `ai network`. There is no
+  egress proxy and no wire-level credential injection; any non-model-path
+  credential a tool needs is the agent's own.
 
-## 29.4 Egress confinement (Microsandbox NetworkPolicy)
+## 29.4 Egress confinement (the nono network policy)
 
-Each workspace microVM runs under a Microsandbox **NetworkPolicy** whose default
-outbound posture is **`public`** (§29.6). The always-reachable set is: (a) the
-trusted platform gateway at `AI_PLATFORM_HOST:18787` (the nginx proxy → LiteLLM
-directly), and (b) any host-local services explicitly allow-listed in
-`network.allow_host_services` (§29.6). On top of that, (c) the open internet is
-reachable under the default `public` posture (private/internal ranges stay blocked)
-and a project can re-lock to `deny` so only (a) and (b) are reachable (§29.6). The
-policy is implemented as a default-deny fallthrough that `public` mode widens with
-a broad allow-internet rule, so anything outside the permitted set is denied at the
-runtime — under `deny` the workspace fails closed rather than leaking traffic (§30).
+Each launch's nono profile carries the project's declared egress posture
+(§29.6). There are only **two** modes now (the old third mode,
+`unrestricted`, is gone):
 
-**The Microsandbox NetworkPolicy is the single egress authority.** It holds the
-declared posture + allow/deny rules in exactly one mechanism (§29.6, §30). Off-disk
-provider credentials
-are a separate concern handled by keys-in-LiteLLM (§17); secret masking and audit
-are LiteLLM's enabled guardrails (§15). The host-local-services zone
-(b) is plain TCP — a service's own credential, if any, is presented at that
-protocol's auth layer by the tool that connects — and remains gated by this
-allow-list (§29.6).
+* **`public`** (default) — nono's own default: unrestricted outbound, with the
+  project's `allow_domain`/`deny_domain` lists layered on top (`deny_domain`
+  entries are blocked even under `public`).
+* **`deny`** — `network.block = true` in the generated profile: no network
+  access at all for that sandboxed process, except whatever carve-out
+  `allow_domain` declares.
 
-This must work identically across all supported hosts. The NetworkPolicy is
-rendered into `msb` net-rules (`egress.MsbNetworkArgs`) and applied at workspace
-create (§29.5, §29.6).
+**The project's `config.yaml` `network` block is the single declared-policy
+source**, compiled straight into the nono profile's own `network` section on
+every launch (`internal/workspace.ensureProfile`) — there is no separate
+runtime net-rules format to translate into (contrast the old
+`egress.MsbNetworkArgs` msb-rules renderer, which no longer exists). Off-disk
+provider credentials are a separate concern handled by keys-in-LiteLLM (§17);
+secret masking and audit are LiteLLM's enabled guardrails (§15).
+
+This must work identically across all supported hosts — nono's own Landlock/
+Seatbelt backends are expected to honor the same declared profile shape on
+Linux and macOS respectively; cross-platform enforcement equivalence is
+nono's own concern, not re-implemented by this platform.
 
 ## 29.5 Delivery phasing
 
-The NetworkPolicy is **applied today**: `ai network` declares the
-project's `network` block and `ai start`/create translates it into
-`msb` net-rules (`egress.MsbNetworkArgs`) — the egress posture (`public` by
-default, re-lockable to `deny`), the allow-listed host services, and the
-published-port maps — which the Microsandbox runtime enforces. The §29.2 **host-gateway address** is now **pinned**:
-`runtime.HostGateway` returns the fixed `host.microsandbox.internal`, so
-`gateway`-token allow-listed host services resolve in every mode. The remaining
-deferred work is the **live host↔workspace reachability verification** below.
+The policy is **applied today**: `ai network` edits the project's `network`
+block in `config.yaml`, and it is compiled into that launch's nono profile on
+the very next `ai agent`/`ai shell` — there is no persistent sandbox to
+restart, so a policy change is live immediately (contrast the old
+Microsandbox design, which needed `ai start`/create to apply a net-rule
+change). The host-gateway address (§29.2) is now simply `127.0.0.1` — nothing
+to pin against a hypervisor backend.
 
-* **Now (host-side + applied).** `ai network` manages the project's `network`
-  block (egress posture + allow-listed host services + published ports) in
-  `config.yaml`, and it is rendered into `msb` net-rules at workspace create. The
-  egress policy fixture in the acceptance suite renders a known `deny` policy so
-  tests assert egress confinement against a defined policy, not ambient host
-  behavior. The
-  host-gateway address (§29.2) is pinned (`host.microsandbox.internal`).
-* **Hardware bring-up.** Verify host↔workspace reachability end-to-end (the spike
-  below).
+What is **not verified** for this migration cycle: a live end-to-end
+reachability check — on a provisioned host — that (1) `deny` actually blocks
+a non-gateway destination under real nono enforcement, (2) `allow_domain`
+actually carves out reachability for a listed domain, and (3) the gateway path
+itself stays reachable under `deny`. This is a smaller verification surface
+than the old Microsandbox design's spike (no published-port check is needed —
+there is nothing to publish, §7 history) but is still unconfirmed against a
+live `nono` binary in this review; treat it as an open item pending a
+hardware-equivalent (host) verification pass, same spirit as the prior
+`docs/HARDWARE-BRINGUP.md` tracking (though nono needs no special
+hardware/virtualization capability to verify — any host suffices, §6.2).
 
-The §29.4 confinement guarantee holds either way — the remaining work is the live
-host↔workspace reachability verification.
+## 29.6 Host-local services and the allow/deny domain list
 
-A **reachability spike** confirms, on a provisioned host, the SDK calls for policy
-+ port maps and the pinned host-gateway path of §29.2. It must demonstrate that: (1) a workspace
-reaches an **allow-listed** host service (e.g. Postgres) via the gateway; (2) a
-**non-allow-listed** host/internet destination is **denied**; (3) a **published**
-guest port is reachable from the host; and (4) the trusted model gateway path
-(nginx → LiteLLM) is reachable while all other egress is denied. These four
-make the platform's two headline promises — *it works* and *it confines egress* —
-falsifiable. (Tracked in `docs/HARDWARE-BRINGUP.md`.)
+There is no NAT boundary anymore — a nono-sandboxed process sits directly on
+the host network, so reaching a host-resident service (Postgres, Redis, Kafka)
+is no different from any other host process reaching it, **subject to**
+whatever the active profile's `network.block`/`allow_domain`/`deny_domain`
+permits. There is also no "publish a guest port to the host" direction to
+configure anymore (§7 history) — a dev server the sandboxed process starts is
+already bound on the host's own network interface like any other host
+process; nothing needs publishing.
 
-## 29.6 Host-local services and published ports
+`network.egress` (`config.NetworkConfig.Egress`, `config.EgressModes`) is now
+just:
 
-A workspace is behind the userspace network stack's NAT (§29.1), so the two
-"local development" directions are **explicit, not automatic**:
+* **`public`** (**default**) — nono's own default: unrestricted outbound,
+  minus anything on the `deny_domain` list. This is a deliberate
+  security-posture choice: usable out of the box, re-lockable per project.
+  Empty `network.egress` resolves to `public`.
+* **`deny`** — blocks all network for that sandboxed process (`network.block
+  = true`), except whatever is explicitly on `allow_domain`.
 
-**Workspace → host-local service (database, message broker, …).** Microsandbox's
-default posture does not expose the host's private network to the guest, so a
-workspace cannot reach a host-resident Postgres / Redis / Kafka unless it is
-**allow-listed by `host:port`**. These connections are made to the gateway
-address (§29.2) and are **plain, direct TCP**: the wire protocols are not
-necessarily HTTPS and there is no model-provider key involved (a service's own
-credential, if any, is presented at that protocol's auth layer by the tool that
-connects). They remain gated by the NetworkPolicy allow-list — anything not
-listed is denied (§29.4). This is a distinct trust zone from internet egress.
+A target in `ai network allow`/`disallow` is now a **bare domain**, not a
+`host:port` pair — there is no port concept anymore (no `host:port` allow-list
+entries, no `gateway` token special case, no `ai network publish`/`unpublish`
+command, since there are no ports to publish without the old in-VM apps
+layer, §7 history). `ai network allow <domain>` accepts a hostname/IP/domain
+or a `*.suffix` wildcard (e.g. `*.npmjs.org`, requiring at least two labels);
+`ai network disallow <domain>` clears it from BOTH the allow and deny lists.
+A domain can be moved between allow/deny/neither, never both at once
+(`internal/egress.Allow`/`Deny` each remove the entry from the other list).
 
-**Host → workspace (a dev server running in the workspace).** Because the guest
-is NAT'd, the host cannot address it directly; a guest port must be **published**
-to a host port (the microVM equivalent of `-p`), after which the host reaches it
-at `localhost:<host_port>`. Publishing is declared per project, never implicit.
-
-A third knob sets the **default outbound posture** — `network.egress`:
-
-* **`public`** (**default**) — the open internet is reachable, but
-  **private/internal ranges stay blocked** unless explicitly allow-listed (so the
-  agent can `pip install` / `npm install`, the in-VM container runtime can pull
-  images, and AI processes can hit public APIs without enumerating every domain).
-  This is a deliberate security-posture choice: the workspace ships allow-outbound
-  so it is usable out of the box, with egress still **DNS-audited** (`ai network
-  log`) and **re-lockable** per project. Empty `network.egress` resolves to
-  `public`.
-* **`deny`** — only the model gateway and `allow_host_services` are reachable;
-  everything else is blocked. Re-lock a project with `ai network egress deny`.
-* **`unrestricted`** — all egress allowed, including private ranges (escape hatch;
-  least safe).
-
-`host` in an allow rule may be a hostname/IP/**domain**, a **`*.suffix` wildcard**
-(e.g. `*.npmjs.org`, matching any subdomain), or the `gateway` token for a
-service on the host machine — so the same mechanism covers a host-local Postgres,
-a remote/managed database, a Kafka cluster, a specific internet API, or a whole
-package-registry domain family. Microsandbox enforces these targets natively
-(domain, suffix-wildcard, IP/CIDR, and `public`/`private` groups). The port is
-optional in `ai network allow` and defaults to **443 (HTTPS)** for bare hosts.
-
-All of this is configured entirely via the **`ai network`** commands (CLI §10.4) —
-no manual file editing is required, though the project `network` block
-(repo-layout §12.4) can still be edited by hand. `ai network` manages three
-declarations in the project `config.yaml`: the default outbound mode
-(`network.egress`: `public` (default) / `deny` / `unrestricted`), the
-allow-listed host services (`network.allow_host_services`), and the published
-ports (`network.publish_ports`):
+All of this is configured entirely via the **`ai network`** commands
+(`ai network show|egress|allow|disallow`, CLI §10.4) — no manual file editing
+is required, though the project `network` block (repo-layout §12.4) can still
+be edited by hand:
 
 ```yaml
 network:
-  egress: public                      # public (default) | deny | unrestricted
-  allow_host_services:                # extra egress the workspace may reach
-    - { host: gateway,          port: 5432 }   # host-local Postgres
-    - { host: db.prod.internal, port: 5432 }   # a remote/managed database
-    - { host: kafka-1,          port: 9092 }   # Kafka broker(s)
-    - { host: api.stripe.com,   port: 443 }    # a specific internet API
-  publish_ports:                      # host → workspace
-    - { guest: 3000, host: 3000 }
+  egress: public              # public (default) | deny
+  allow_domain:                # reachable even under deny
+    - api.github.com
+    - "*.npmjs.org"
+  deny_domain:                 # blocked even under public
+    - example-blocked.com
 ```
 
-`ai network` manages the **declaration** in `config.yaml`. The actual enforcement
-is the Microsandbox **NetworkPolicy**: workspace create translates this block into
-`msb` net-rules (`egress.MsbNetworkArgs`) — the allow-list entries, the
-default-egress mode, and the port maps — which the runtime enforces. Two rules are
-emitted **always, in every mode**, ahead of the declared ones: the model-gateway
-allow (§29.2) and a DNS allow pair
-(`allow:egress@host:udp:53` + `allow:egress@host:tcp:53`, msb's `host` group =
-`Rule::allow_dns()`) so name resolution survives default-deny (§29.7).
-Host-reaching rules MUST use msb's `host` GROUP token (`allow:egress@host:tcp:<port>`),
-NOT the `host.microsandbox.internal` NAME — only the `host` group engages msb's
-host-forwarding; a NAME target lets the guest connect to the msb gateway but is
-never forwarded to the host service (empty reply, verified live). So when the
-gateway is local (standalone) its allow rule and the `gateway`-token host-service
-entries target `host`; a remote gateway (client mode) and explicit domain/IP
-host-services stay verbatim (see §29.5). App-data connections
-(DB/Kafka/HTTP) go **direct** under this policy — they do not pass through the
-model gateway.
+`ai network` manages the **declaration** in `config.yaml`. The actual
+enforcement is nono's own: `internal/workspace.ensureProfile` compiles this
+block straight into the launch's nono profile's `network` section — there is
+no separate net-rules renderer and no always-on DNS-allow-pair carve-out to
+emit (that was specific to msb's L3/L4 rule engine needing help resolving
+names under default-deny; nono's own domain-based allow/deny list has no
+equivalent need, since it operates on names in the first place, not
+post-resolution IPs — though exactly how nono resolves a domain allow/deny
+rule at the network layer is nono's own implementation, not this platform's).
+App-data connections (DB/Kafka/HTTP) go **direct** under this policy — they do
+not pass through the model gateway.
 
-## 29.7 Attempted-egress-by-name audit (`aip-dns`)
+## 29.7 Attempted-egress-by-name audit (`aip-dns`) — status unclear post-migration
 
-The service tier (§5) includes **`aip-dns`**, a CoreDNS resolver that exists for
-**observability, not enforcement**. Every workspace microVM is booted with
-`--dns-nameserver` pointing at it (a fixed platform setting on the host loopback,
-`127.0.0.1:15353`), so Microsandbox's netstack forwards the guest's DNS to it.
-CoreDNS's `log` plugin records each query; `forward` resolves it upstream and a
-short `cache` smooths repeats. `ai network log` (CLI §10.4) reads that log and
-prints the attempted-egress-**by-name** audit.
+The service tier (§5) still includes **`aip-dns`**, a CoreDNS resolver, and
+`ai network log` (CLI §10.4) still reads its query log and renders the
+attempted-egress-**by-name** audit — this container and command are
+unchanged by the nono migration (they are part of the Docker service tier,
+which the brief for this migration explicitly says is untouched).
 
-This cleanly splits **audit** from **enforcement**:
+**What is unclear, and flagged here rather than asserted either way:** the
+old mechanism that made this audit meaningful was every Microsandbox microVM
+booting with `--dns-nameserver` pointed at `aip-dns` (`127.0.0.1:15353`), so
+*every* workspace's DNS resolution was forced through it. A nono-sandboxed
+host process has no such boot flag — `internal/nono.Profile`'s `network`
+block has no DNS-nameserver-override field, and no code in
+`internal/workspace`/`internal/nono` sets `network_profile` or otherwise
+routes a sandboxed process's DNS queries at `aip-dns`. So, as far as this
+review of the current code can tell, **nothing currently points a
+nono-sandboxed agent's DNS resolution at `aip-dns`** — the container and `ai
+network log` command still work exactly as documented below, but it is not
+verified whether they still see real agent-process traffic, or whether they
+are now effectively auditing nothing. This needs a live check (does a
+nono-sandboxed process's DNS actually arrive at `aip-dns`, or does it go
+straight to the host's normal resolver?) that is outside what static code
+reading can answer — flagged as an open question for whoever next touches
+this path, not resolved by this spec edit.
 
-* **Enforcement stays on the Microsandbox NetworkPolicy** (§29.4) at L3/L4. A
-  resolver *answer* cannot create reachability — a name resolving to an address
-  the net-rules deny is still blocked at the network layer. The resolver has no
-  authority over what a workspace may reach.
-* **The resolver is the audit source.** It sees the *names* a workspace tried to
-  resolve, which the L3/L4 rules (operating on IPs/CIDRs/domains) do not surface
-  as a human-readable list.
+Assuming it IS still wired (unverified):
+
+* **Enforcement stays on nono's own network policy** (§29.4). A resolver
+  *answer* cannot create reachability — a name resolving to an address nono's
+  own rules deny is still blocked. The resolver has no authority over what a
+  sandboxed process may reach.
+* **The resolver is the audit source.** It sees the *names* a process tried
+  to resolve, which domain-based allow/deny rules do not surface as a
+  human-readable list on their own.
 
 **v1 scope / caveats** (made explicit in `ai network log`'s output):
 
-* **Host-wide, not per-project.** All workspaces forward to the one resolver, so
-  the audit is every workspace's DNS on the machine; it is **not attributed per
-  project** in v1 (the queries arrive NAT'd from the netstack, so the originating
-  workspace is not distinguishable). `ai network log [project]` accepts the
-  argument for forward compatibility but does not filter on it in v1.
-* **Names only — not connection verdicts, not direct-IP egress.** It is a record
-  of attempted *resolutions*, not of allowed/blocked connections, and traffic to a
-  literal IP never touches DNS so never appears here.
-* **DNS resolves under default-deny via the `host` group (verified, msb 0.6.1).**
-  Under a `deny`/`public` posture msb filters DNS like any other egress, so a
-  policy whose rules are all host-name/IP based matches nothing at DNS-decision
-  time (the query name has not resolved to an IP yet) and *every* lookup would be
-  denied. To keep name resolution working, `egress.MsbNetworkArgs` emits an
-  always-on DNS allow pair — `allow:egress@host:udp:53` + `allow:egress@host:tcp:53`
-  (msb's `host` GROUP token = the convenience `Rule::allow_dns()`) — in **every**
-  mode. The `host` group matches the local gateway forwarder the query is
-  delivered to (the only target that re-opens DNS, scoped to port 53), so it does
-  **not** open general host-service access — the default-deny boundary is fully
-  preserved. Because the guest's resolver is `aip-dns`, those permitted lookups
-  reach CoreDNS and appear in the audit. A *denied* destination's name still
-  resolves (so it may appear in the log), but the connection to its IP is blocked
-  at L3/L4 — the audit is a record of *attempted resolutions*, not of
-  allowed/blocked connections, and is not a substitute for the policy shown in
-  `ai network show`, which remains the source of truth for what is reachable.
+* **Host-wide, not per-project.** If still wired, every sandboxed process
+  would forward to the one resolver, so the audit would be host-wide DNS, not
+  attributed per project. `ai network log [project]` accepts the argument for
+  forward compatibility but does not filter on it.
+* **Names only — not connection verdicts, not direct-IP egress.** It would be
+  a record of attempted *resolutions*, not of allowed/blocked connections, and
+  traffic to a literal IP never touches DNS so never appears here.
 
 ---
 
@@ -2603,33 +2391,47 @@ This cleanly splits **audit** from **enforcement**:
 Requirements:
 
 * **keys-in-LiteLLM** — real provider keys live only in the LiteLLM gateway
-  (§17); the workspace holds only a scoped LiteLLM virtual key
+  (§17); the sandboxed agent process holds only a scoped LiteLLM virtual key,
+  injected by nono at launch, never written to disk
 * no plaintext secrets on platform disk
-* no host Docker socket by default (the service tier runs rootless; workspaces
-  use the Microsandbox microVM runtime, which never touches the Docker socket)
-* workspace isolation (hardware-level — each workspace is a microVM, so a
-  workspace escape is contained at the VM boundary, not the host kernel)
-* project isolation
-* agent isolation
-* **egress confinement** — each workspace runs under a Microsandbox
-  **NetworkPolicy** with a deny-by-default fallthrough; its default `public`
-  posture allows the open internet (private/internal ranges stay blocked) plus the
-  trusted model gateway and explicitly allow-listed host services, and a project
-  can re-lock to `deny` so only the gateway + allow-listed services are reachable
-  (§29.4, §29.6). The policy is applied as `msb` net-rules at workspace create
-  (§29.5, §29.6)
+* no host Docker socket by default (the service tier runs rootless; nono
+  sandboxing never touches the Docker socket at all)
+* **workspace isolation is same-kernel, not hardware** — each agent-CLI/shell
+  invocation is a single sandboxed **host process**, confined by nono's
+  kernel-capability mechanism (Landlock LSM on Linux, Seatbelt on macOS), NOT
+  a VM boundary. This is a deliberate, accepted trade-off against the
+  platform's former Microsandbox microVM runtime (§3, Isolation): a sandbox
+  escape here is a Landlock/Seatbelt bypass at the shared host kernel, not a
+  hypervisor breakout. What nono's profile DOES guarantee is a filesystem
+  capability grant (only the project directory + explicitly granted paths)
+  and a network capability grant (only what the profile's egress policy
+  allows) — not an isolated kernel.
+* project isolation (separate project directories; no shared sandbox state
+  between projects)
+* agent isolation (each agent CLI/shell launch is its own nono session,
+  independently started/stopped/attached)
+* **egress confinement** — each launch's nono profile carries the project's
+  declared posture: the default `public` posture allows the open internet
+  (minus any `deny_domain` entries); `deny` blocks all network for that
+  process except `allow_domain` carve-outs. A project can re-lock to `deny`
+  via `ai network` (§29.4, §29.6), with the change taking effect on the very
+  next launch — no restart step, since there is no persistent sandbox to
+  restart.
 * **enforced secret protection when enabled** — each rendered LiteLLM guardrail is
   `default_on` on every request and every route (cloud included), so no model traffic
   can bypass an ENABLED guardrail; secret masking is opt-in (`secret-masking`, §15)
-* **least host privilege** — both the hypervisor and the workspace network stack
-  run in user space (§29.1). On Apple Silicon the *only* elevated facility is the
-  macOS hypervisor entitlement (code-signed, no kext); workspace networking
-  (gvproxy + Microsandbox NetworkPolicy) needs no `utun`, NetworkExtension, admin
-  approval, or host Docker socket
+* **least host privilege** — nono's sandboxing needs no hypervisor entitlement,
+  no kext, no NetworkExtension, and no admin networking prompt on either
+  supported OS (§6.2); the platform's only elevated-privilege host actions
+  remain the ones unrelated to workspace sandboxing (the service tier's
+  container runtime, and the opt-in rootful in-VM container runtime that no
+  longer exists post-migration, §7 history).
 
-Workspace isolation depends on the host hypervisor (KVM on Linux, HVF on macOS)
-being available; where it is not, the platform must fail the `doctor` check
-rather than run workspaces without microVM isolation (§6.2).
+There is no hypervisor/virtualization-capability gate for workspace sandboxing
+anymore (§6.2) — `ai doctor` simply checks that the `nono` binary is on PATH
+rather than verifying KVM/Apple-Hypervisor availability. (The host-side
+local-inference backend, omlx, is still macOS/Apple-Silicon-only, §16 — that
+restriction is unrelated to workspace sandboxing.)
 
 ---
 
@@ -2639,10 +2441,12 @@ rather than run workspaces without microVM isolation (§6.2).
 `internal/audit` package and no code writes workspace-creation/deletion,
 secret-access, or model-configuration events anywhere. The only thing that exists
 on disk is the empty `~/.ai-platform/audit/` directory that `ai setup` pre-creates
-(`internal/layout`) — reserved for this future layer, currently unused. What IS
-live today is the unrelated DNS-name egress audit (`aip-dns` / `ai network log`,
-§29.7), which is a different mechanism entirely (attempted-egress hostnames, not
-platform lifecycle/secret events) — do not confuse the two.
+(`internal/layout`) — reserved for this future layer, currently unused. The
+unrelated DNS-name egress audit (`aip-dns` / `ai network log`, §29.7) is a
+different mechanism entirely (attempted-egress hostnames, not platform
+lifecycle/secret events) — do not confuse the two; note also that §29.7 flags
+whether that mechanism still captures real nono-sandboxed-agent traffic
+post-migration as itself unverified.
 
 Location (once implemented):
 
@@ -2669,14 +2473,18 @@ model-configuration event occurred, with no secret material.
 The platform has no backup/restore feature. It isn't needed:
 
 * **project source** lives in the project directory (the cwd at `ai create`) and
-  is the user's own git repo (backed up by pushing to a remote)
+  is the user's own git repo, if any (backed up by pushing to a remote) —
+  unlike before, the platform runs no git of its own, so this is entirely the
+  user's responsibility (§21)
 * **platform state** is reconstructable from the filesystem via `ai state repair`
 * **provider keys** live in the LiteLLM gateway (§17), not on platform disk
-* **installed programs** persist in the per-workspace **overlay** (§26), which
-  survives workspace restart and recreation
+* **installed programs** live directly on the host — there is no VM disk or
+  overlay to lose anymore (§26 history); a nono-sandboxed process's installs
+  land exactly where any other host process's would
 
-The environment is reproducible from the project's `.ai-platform/Dockerfile`
-(§25), which is in git — so there is nothing bespoke to back up.
+There is no per-project environment image to reproduce from anymore (§25
+history) — there is nothing bespoke to back up beyond the project directory
+itself.
 
 ---
 
@@ -2691,13 +2499,14 @@ The platform must support:
 
 Monitoring is required for:
 
-* Microsandbox
+* nono (host-installed presence, plus a project's live session count when
+  resolvable — `ai doctor [name]`, §7)
 * nginx proxy (`aip-proxy` — the host entry; readiness probed end-to-end through
   the gateway, §10)
 * LiteLLM
 * Presidio
 * omlx
-* DNS audit resolver (`aip-dns`, §29.7)
+* DNS audit resolver (`aip-dns`, §29.7 — see that section's status-unclear note)
 * Docker
 * Podman
 * Caveman
@@ -2705,7 +2514,10 @@ Monitoring is required for:
 * Valkey (+ RedisInsight)
 
 (`ai doctor` reports every service-tier service — dns, omlx, presidio, valkey,
-redisinsight, litellm, headroom, proxy — §5.)
+redisinsight, litellm, headroom, proxy — §5 — plus a top-level "nono runtime"
+check and, when inside/naming a project, "workspace runtime" + "workspace
+sessions" checks, replacing the old workspace-microVM/exec/log/
+rootless-virtualization checks §6.2 no longer needs, §7.)
 
 ---
 
@@ -2716,24 +2528,29 @@ The architecture is considered successful when a user can:
 ```bash
 ai setup
 
-ai create my-project   # interactive wizard: select OS + agent CLIs (defaults: debian-trixie, OpenCode) — scaffolds .ai-platform/
-ai start               # build the OCI image + boot the microVM
+ai create my-project   # interactive wizard: name/location/shell/agent CLIs/AI tools — scaffolds .ai-platform/
+ai agent opencode       # (or: ai start) — mints a scoped key, generates a nono profile, launches a sandboxed session
 ```
 
-and immediately receive (for the OS the user selected):
+and immediately receive:
 
-* selected-OS workspace microVM (e.g. Debian trixie)
-* host-backed source code
-* hardware-isolated Microsandbox microVM (rootless container runtime for the
-  service tier)
+* a sandboxed host process per agent-CLI/shell session (nono — Landlock on
+  Linux, Seatbelt on macOS; same-kernel capability confinement, §3/§7 — not
+  hardware isolation, a deliberate trade-off against the platform's former
+  Microsandbox design), with no OS image, no build step, and no boot delay
+* host-backed source code (the project directory IS the only persistent
+  state, §26 history)
+* rootless container runtime for the service tier (Docker/Podman, §6.1)
 * LiteLLM integration (provider keys held in the gateway, §17)
 * user-selectable LiteLLM guardrails on every model request — Headroom input
   compression default-on; secret-masking / hide-secrets / tool-firewall opt-in (§15)
-* per-project Microsandbox egress policy — default `public` (open internet,
-  private ranges blocked), re-lockable to `deny` (`ai network`, §29.4)
+* a per-project nono egress policy — default `public` (open internet
+  reachable, `deny_domain` entries still blocked), re-lockable to `deny`
+  (`ai network`, §29.4), taking effect on the very next launch
 * Headroom input compression
-* Caveman output compression
-* reproducible, Dockerfile-defined environments
-* zero manual Microsandbox configuration
-* project persistence (overlay)
+* Caveman output compression (selectable/toggleable today; the host-side
+  install step itself is not yet reimplemented post-migration, §9)
+* zero manual nono configuration (profiles are generated automatically)
+* project persistence = the project directory on the host, with nothing else
+  to manage (§26 history)
     

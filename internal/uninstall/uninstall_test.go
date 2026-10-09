@@ -1,13 +1,16 @@
 package uninstall
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/jt-helsinki/stack-genie/internal/hostsfile"
+	"github.com/jt-helsinki/stack-genie/internal/nono"
 	"github.com/jt-helsinki/stack-genie/internal/runtime"
+	"github.com/jt-helsinki/stack-genie/internal/state"
 	"github.com/jt-helsinki/stack-genie/internal/uihosts"
 )
 
@@ -336,44 +339,66 @@ func TestRemoveImages(test *testing.T) {
 	}
 }
 
-// TestStopWorkspaces: uninstall stops running workspace microVMs (aip-* sandboxes
-// from `msb list`) via `msb stop -f <name>`, skips non-platform VMs, preserves DATA
-// (it only stops — never `msb delete`, never a filesystem removal), and records a
-// "data preserved" line.
-func TestStopWorkspaces(test *testing.T) {
-	test.Setenv("HOME", test.TempDir()) // no pinned ~/.ai-platform/bin/msb → resolves bare "msb"
-	listing := "NAME        STATE\naip-demo    running\nother-vm    running\n"
-	prober := &fakeProber{
-		present: map[string]bool{"msb": true},
-		output:  map[string][]byte{"msb list": []byte(listing)},
+// seedProjectIndex registers a project at path in the global index (same shape
+// internal/project.Scaffold produces), so stopWorkspaces can match a session's
+// Workdir against a REGISTERED project root.
+func seedProjectIndex(test *testing.T, name, path string) {
+	test.Helper()
+	index, err := state.LoadIndex()
+	if err != nil {
+		test.Fatal(err)
 	}
+	if index.Projects == nil {
+		index.Projects = map[string]state.ProjectIndexEntry{}
+	}
+	index.Projects[name] = state.ProjectIndexEntry{Path: path}
+	if err := state.SaveIndex(index); err != nil {
+		test.Fatal(err)
+	}
+}
+
+// TestStopWorkspaces: uninstall stops every RUNNING nono session whose working
+// directory matches a REGISTERED project (skipping a session belonging to a
+// directory the platform never registered), preserves DATA (it only stops a
+// session — never deletes a project's files), and records a "data preserved"
+// line.
+func TestStopWorkspaces(test *testing.T) {
+	home := test.TempDir()
+	test.Setenv("HOME", home)
+	projectRoot := filepath.Join(home, "myproject")
+	seedProjectIndex(test, "myproject", projectRoot)
+
+	runner := &nono.FakeRunner{Sessions: []nono.Session{
+		{SessionID: "sess-1", Workdir: projectRoot, Status: "running"},
+		{SessionID: "sess-2", Workdir: "/some/unregistered/dir", Status: "running"},
+	}}
+	original := nonoRunnerFn
+	defer func() { nonoRunnerFn = original }()
+	nonoRunnerFn = func() nono.Runner { return runner }
+
 	var lines []string
-	stopped := stopWorkspaces(prober, func(line string) { lines = append(lines, line) })
+	stopped := stopWorkspaces(func(line string) { lines = append(lines, line) })
 
 	if stopped != 1 {
-		test.Errorf("stopped = %d, want 1 (only the aip-* sandbox)", stopped)
+		test.Errorf("stopped = %d, want 1 (only the registered project's session)", stopped)
 	}
-	if !containsLine(prober.ran, "msb stop -f aip-demo") {
-		test.Errorf("expected `msb stop -f aip-demo`, ran: %v", prober.ran)
-	}
-	// The non-platform VM must NOT be stopped.
-	if containsLine(prober.ran, "msb stop -f other-vm") {
-		test.Errorf("must not stop non-platform VMs, ran: %v", prober.ran)
-	}
-	// DATA-preserving: only `msb list` + `msb stop` were run — no delete/rm of any kind.
-	for _, cmd := range prober.ran {
-		if strings.Contains(cmd, "delete") || strings.Contains(cmd, "rm ") || strings.Contains(cmd, "remove") {
-			test.Errorf("stopWorkspaces must not remove data, but ran: %q", cmd)
-		}
+	if len(runner.StopCalls) != 1 || runner.StopCalls[0].SessionID != "sess-1" {
+		test.Errorf("expected exactly one Stop call for sess-1, got: %+v", runner.StopCalls)
 	}
 	if !strings.Contains(strings.Join(lines, "\n"), "data preserved") {
 		test.Errorf("expected a 'data preserved' record line, got: %v", lines)
 	}
 
-	// No msb on PATH → nothing to stop, no line.
-	none := &fakeProber{present: map[string]bool{}}
-	if got := stopWorkspaces(none, func(string) {}); got != 0 {
-		test.Errorf("with no msb, stopWorkspaces must stop nothing, got %d", got)
+	// No running sessions at all → nothing to stop, no line.
+	nonoRunnerFn = func() nono.Runner { return &nono.FakeRunner{} }
+	if got := stopWorkspaces(func(string) {}); got != 0 {
+		test.Errorf("with no sessions, stopWorkspaces must stop nothing, got %d", got)
+	}
+
+	// nono unreachable (e.g. not installed) → best-effort no-op, never fails.
+	nonoRunnerFn = func() nono.Runner { return &nono.FakeRunner{ListSessionsErr: errors.New("nono unreachable")} }
+	if got := stopWorkspaces(func(string) {}); got != 0 {
+		test.Errorf("with nono unreachable, stopWorkspaces must stop nothing, got %d", got)
 	}
 }
 
@@ -419,49 +444,58 @@ func TestRunKeepsModelsWithoutPurge(test *testing.T) {
 	}
 }
 
+// withFakeNonoOnPath puts an executable named "nono" on PATH for the duration
+// of the test and returns its resolved path — ExternalDeps() resolves nono's
+// removal target via a real exec.LookPath, not a fixed HOME-relative location
+// (nono's own installer, unlike the old platform-pinned msb binary, does not
+// publish one fixed install path).
+func withFakeNonoOnPath(test *testing.T) string {
+	test.Helper()
+	dir := test.TempDir()
+	path := filepath.Join(dir, "nono")
+	mustWrite(test, path, "#!/bin/sh\n")
+	if err := os.Chmod(path, 0o755); err != nil {
+		test.Fatal(err)
+	}
+	test.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	return path
+}
+
 func TestExternalDepsPresenceAndRemoval(test *testing.T) {
 	home := test.TempDir()
 	test.Setenv("HOME", home)
-	test.Setenv("MSB_HOME", "")
+	test.Setenv("PATH", "") // start with nothing resolvable
 
-	prober := &fakeProber{present: map[string]bool{}} // nothing on PATH
+	prober := &fakeProber{present: map[string]bool{}} // nothing on PATH, per fakeProber
 
-	// Use msb: all of its targets are HOME-relative, so presence is isolated to
-	// the temp HOME.
-	var msb ExternalDep
-	for _, dep := range ExternalDeps() {
-		if dep.Binary == "msb" {
-			msb = dep
-		}
+	// Absent with nothing on PATH.
+	deps := ExternalDeps()
+	if len(deps) != 1 || deps[0].Binary != "nono" {
+		test.Fatalf("ExternalDeps() = %+v, want exactly one nono entry", deps)
+	}
+	if len(deps[0].Targets) != 0 {
+		test.Errorf("nono dep should have no targets when not on PATH, got %v", deps[0].Targets)
 	}
 
-	// Absent on a clean HOME.
-	if msb.Present(prober) {
-		test.Error("msb should not be detected on a clean HOME")
+	// Put a fake nono binary on PATH — ExternalDeps() should target its exact
+	// resolved location.
+	nonoPath := withFakeNonoOnPath(test)
+	nonoDep := ExternalDeps()[0]
+	if len(nonoDep.Targets) != 1 || nonoDep.Targets[0] != nonoPath {
+		test.Errorf("nono dep targets = %v, want [%q]", nonoDep.Targets, nonoPath)
 	}
 
-	// Install msb: ~/.microsandbox dir + a ~/.local/bin/msb symlink target.
-	msbHome := filepath.Join(home, ".microsandbox")
-	mustWrite(test, filepath.Join(msbHome, "bin", "msb"), "x")
-	mustWrite(test, filepath.Join(home, ".local", "bin", "msb"), "x")
-	if !msb.Present(prober) {
-		test.Error("msb should be detected present (install dir exists)")
-	}
-
-	// Removing msb via Run clears its targets.
+	// Removing nono via Run clears its resolved target.
 	withHostsSeams(test, filepath.Join(home, "etc-hosts"), func(string, []byte) error { return nil })
-	report, err := Run(Options{RemoveDeps: []ExternalDep{msb}}, prober, nil)
+	report, err := Run(Options{RemoveDeps: []ExternalDep{nonoDep}}, prober, nil)
 	if err != nil {
 		test.Fatal(err)
 	}
-	if len(report.RemovedDeps) != 1 || report.RemovedDeps[0] != msb.Name {
-		test.Errorf("RemovedDeps = %v, want [%q]", report.RemovedDeps, msb.Name)
+	if len(report.RemovedDeps) != 1 || report.RemovedDeps[0] != nonoDep.Name {
+		test.Errorf("RemovedDeps = %v, want [%q]", report.RemovedDeps, nonoDep.Name)
 	}
-	if _, statErr := os.Stat(msbHome); !os.IsNotExist(statErr) {
-		test.Error("~/.microsandbox should be removed")
-	}
-	if _, statErr := os.Stat(filepath.Join(home, ".local", "bin", "msb")); !os.IsNotExist(statErr) {
-		test.Error("~/.local/bin/msb symlink should be removed")
+	if _, statErr := os.Stat(nonoPath); !os.IsNotExist(statErr) {
+		test.Error("the resolved nono binary should be removed")
 	}
 }
 

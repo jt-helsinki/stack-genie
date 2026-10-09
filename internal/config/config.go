@@ -10,13 +10,9 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
-	"math"
 	"os"
 	"path/filepath"
 	"slices"
-	"strconv"
-	"strings"
-	"time"
 
 	"github.com/jt-helsinki/stack-genie/internal/conffile"
 	"github.com/jt-helsinki/stack-genie/internal/paths"
@@ -30,28 +26,7 @@ type Config struct {
 	Agent     AgentConfig     `yaml:"agent,omitempty" json:"agent,omitempty"`
 	Context   ContextConfig   `yaml:"context,omitempty" json:"context,omitempty"`
 	Workspace WorkspaceConfig `yaml:"workspace,omitempty" json:"workspace,omitempty"`
-	// Microsandbox holds per-project options passed to the workspace microVM runtime.
-	// It is separate from WorkspaceConfig (resource limits) so msb lifecycle/runtime
-	// knobs have a stable namespace in config.yaml.
-	Microsandbox MicrosandboxConfig `yaml:"microsandbox,omitempty" json:"microsandbox,omitempty"`
-	Network      NetworkConfig      `yaml:"network,omitempty" json:"network,omitempty"`
-	// Apps are the opt-in AI applications installed in this workspace, run as
-	// in-VM nerdctl containers (arch §7). Each carries the unique host port it is
-	// published on so concurrently-running workspaces never collide.
-	Apps []AppEntry `yaml:"apps,omitempty" json:"apps,omitempty"`
-	// AgentDashboards records the host port for each installed agent CLI that ships a
-	// web dashboard (e.g. hermes → `hermes dashboard`), published from the microVM the
-	// same way as Apps. Reuses AppEntry (Key = the agent CLI, Port = the host port).
-	AgentDashboards []AppEntry `yaml:"agent_dashboards,omitempty" json:"agent_dashboards,omitempty"`
-}
-
-// AppEntry records one installed in-VM app and the unique host port allocated
-// for it. The port is reserved at install time and reused on every restart, so a
-// workspace's app keeps a stable URL and two running workspaces never publish the
-// same host port. Port is only ever published while the app is installed.
-type AppEntry struct {
-	Key  string `yaml:"key" json:"key"`
-	Port int    `yaml:"port" json:"port"`
+	Network   NetworkConfig   `yaml:"network,omitempty" json:"network,omitempty"`
 }
 
 type AgentConfig struct {
@@ -294,161 +269,16 @@ func (settings ContextConfig) ToolEnabled(tool string) bool {
 
 // WorkspaceConfig holds the microVM resource limits applied at workspace start
 // (arch §7).
+// WorkspaceConfig holds workspace-level preferences that survive the move to
+// nono (host-process sandboxing, no VM): there is no vCPU/memory/disk to size
+// and no idle-timeout concept (a nono session simply runs until it exits or is
+// stopped), so those fields are gone along with IsolatedDirs/SharedMounts (nono
+// doesn't virtualize the filesystem — there's no second "guest view" to mount
+// into). Shell survives: it's just which interactive shell `ai shell` launches.
 type WorkspaceConfig struct {
-	CPULimit    int    `yaml:"cpu_limit,omitempty" json:"cpu_limit,omitempty"`
-	MemoryLimit string `yaml:"memory_limit,omitempty" json:"memory_limit,omitempty"`
-	// DiskLimit is the writable rootfs (OCI overlay upper) size in GiB, e.g. "20". It
-	// sizes the in-VM disk that holds containerd's image store, so in-VM apps (Open
-	// WebUI) whose images are multi-GB have room to extract. Applied at
-	// workspace create via the SDK's WithOCIUpperSize. Empty falls back to the
-	// workspace-package default (see microVMDisk). Same "<GiB>" form as MemoryLimit.
-	DiskLimit string `yaml:"disk_limit,omitempty" json:"disk_limit,omitempty"`
-	// Shell is the workspace's default interactive shell: "bash" (the platform
-	// default, today's behavior) or "zsh". It is chosen at `ai create` and applied at
-	// workspace start (the interactive-shell rc block, and — for zsh — chsh of the
-	// workspace user's login shell). Empty is treated as bash by callers.
+	// Shell is the interactive shell `ai shell` launches inside the nono sandbox:
+	// "bash" (the platform default) or "zsh". Empty is treated as bash.
 	Shell string `yaml:"shell,omitempty" json:"shell,omitempty"`
-	// IsolatedDirs are guest-relative paths under the project workdir (e.g.
-	// "node_modules", "target") that are EXCLUDED from the host project bind mount and
-	// instead backed by a private, workspace-scoped persistent volume: writes made
-	// in-VM (installed deps, build artifacts) never touch the host directory tree, and
-	// whatever the host has at that path stays untouched and invisible to the guest.
-	// This lets host-built and sandbox-built binaries coexist without collision (e.g. a
-	// host node_modules with host-native binaries vs. a guest node_modules with
-	// Linux-native ones). Applied at workspace create as an additional SDK mount over
-	// the subpath. Empty by default (today's behavior: the whole project dir is one
-	// bind mount, nothing excluded).
-	IsolatedDirs []string `yaml:"isolated_dirs,omitempty" json:"isolated_dirs,omitempty"`
-	// SharedMounts are additional host directories bind-mounted into the guest at an
-	// arbitrary guest path (beyond the base project mount at workspaceWorkdir), VISIBLE
-	// on both sides — unlike IsolatedDirs, writes on either side are seen by the other.
-	// Applied at workspace create as an additional SDK bind mount. Empty by default (no
-	// extra host↔guest mappings beyond the project dir).
-	SharedMounts []SharedMount `yaml:"shared_mounts,omitempty" json:"shared_mounts,omitempty"`
-}
-
-// SharedMount is one extra host↔guest bind mount (config.yaml
-// workspace.shared_mounts entry): HostPath (an absolute host directory, created if
-// missing) is mounted into the guest at GuestPath (an absolute guest path), visible
-// and writable from both sides.
-type SharedMount struct {
-	GuestPath string `yaml:"guest_path" json:"guest_path"`
-	HostPath  string `yaml:"host_path" json:"host_path"`
-}
-
-// MicrosandboxConfig holds options passed to `msb create` at workspace start.
-type MicrosandboxConfig struct {
-	// IdleTimeout is the duration passed to `msb create --idle-timeout`. Empty means
-	// use DefaultMicrosandboxIdleTimeout. Microsandbox accepts Go-like second/minute/
-	// hour strings such as 30s, 5m, 1h, 24h.
-	IdleTimeout string `yaml:"idle_timeout,omitempty" json:"idle_timeout,omitempty"`
-}
-
-// DefaultMicrosandboxIdleTimeout is the default for new projects and for missing
-// config values in older projects. It keeps development workspaces alive across
-// normal breaks without a heartbeat loop or host sleep prevention.
-const DefaultMicrosandboxIdleTimeout = "24h"
-
-// ResolvedIdleTimeout returns the effective msb idle timeout.
-func (microsandbox MicrosandboxConfig) ResolvedIdleTimeout() string {
-	if microsandbox.IdleTimeout == "" {
-		return DefaultMicrosandboxIdleTimeout
-	}
-	return microsandbox.IdleTimeout
-}
-
-// ValidateIdleTimeout checks a Microsandbox idle-timeout duration. The CLI accepts
-// positive Go duration strings (30s, 5m, 1h, 24h). A zero/negative value is rejected
-// because `msb --idle-timeout 0` would be an immediate idle stop, not "disabled".
-func ValidateIdleTimeout(value string) error {
-	if value == "" {
-		return nil
-	}
-	duration, err := time.ParseDuration(value)
-	if err != nil || duration <= 0 {
-		return fmt.Errorf("microsandbox.idle_timeout: %q (positive duration, e.g. 30s, 5m, 24h)", value)
-	}
-	return nil
-}
-
-// ParseMemoryMiB parses a memory string ("8G", "512M", "2Gi", "2048") into a MiB
-// count. A bare number is treated as MiB. G/Gi → ×1024; M/Mi → ×1. It errors on an
-// unparseable or non-positive value. Shared by config validation and the workspace
-// runtime so the units are interpreted identically everywhere.
-func ParseMemoryMiB(value string) (uint64, error) {
-	trimmed := strings.TrimSpace(value)
-	if trimmed == "" {
-		return 0, fmt.Errorf("empty memory value")
-	}
-	upper := strings.ToUpper(trimmed)
-	// A BARE number is GIGABYTES (the memory config is "just a number, in GB"), so
-	// the default multiplier is 1024 MiB/GiB. Unit suffixes stay supported for
-	// back-compat: G/Gi = GiB, M/Mi = MiB.
-	multiplier := uint64(1024)
-	number := upper
-	switch {
-	case strings.HasSuffix(upper, "GI"):
-		multiplier, number = 1024, strings.TrimSuffix(upper, "GI")
-	case strings.HasSuffix(upper, "G"):
-		multiplier, number = 1024, strings.TrimSuffix(upper, "G")
-	case strings.HasSuffix(upper, "MI"):
-		multiplier, number = 1, strings.TrimSuffix(upper, "MI")
-	case strings.HasSuffix(upper, "M"):
-		multiplier, number = 1, strings.TrimSuffix(upper, "M")
-	}
-	amount, err := strconv.ParseFloat(strings.TrimSpace(number), 64)
-	if err != nil || amount <= 0 || math.IsInf(amount, 0) || math.IsNaN(amount) {
-		return 0, fmt.Errorf("invalid memory %q (a bare number is GB, e.g. 8 or 16; a unit like 512M/4G also works)", value)
-	}
-	mib := amount * float64(multiplier)
-	// Guard the float→uint conversion against absurd input (e.g. "9e99G"), whose
-	// uint64 cast is implementation-defined. 1<<30 MiB (1 PiB) is far above any real host.
-	const maxMiB = 1 << 30
-	if mib > maxMiB {
-		return 0, fmt.Errorf("memory %q is unreasonably large", value)
-	}
-	return uint64(mib), nil
-}
-
-// ValidateMemory checks a workspace memory_limit. Empty is allowed (the platform
-// default applies); otherwise it must parse to a positive MiB count.
-// MinWorkspaceMemoryMiB is the smallest workspace memory that can boot the guest
-// kernel + the in-VM runtime. It also catches the common unit footgun: a bare
-// number is MiB, so "24" (meaning 24 GB) parses to 24 MiB — far too little.
-const MinWorkspaceMemoryMiB = 512
-
-func ValidateMemory(value string) error {
-	if value == "" {
-		return nil
-	}
-	mib, err := ParseMemoryMiB(value)
-	if err != nil {
-		return fmt.Errorf("workspace.memory_limit: %s", err)
-	}
-	if mib < MinWorkspaceMemoryMiB {
-		return fmt.Errorf("workspace.memory_limit %q is only %d MiB, below the %d MiB minimum needed to boot a workspace (the value is in GB — try 8)", value, mib, MinWorkspaceMemoryMiB)
-	}
-	return nil
-}
-
-// UsableHostMemoryMiB is the largest workspace memory that leaves enough host RAM for
-// the host OS, the Docker service tier, and the hypervisor. Allocating the WHOLE host
-// to a single microVM lets the guest boot its agent relay but leaves it unbackable, so
-// the sandbox wedges and msb stops it. Reserve the LARGER of 2 GiB or 25% of host RAM
-// (so the VM gets at most ~75% of host and the request is always strictly below host),
-// floored at the boot minimum.
-func UsableHostMemoryMiB(hostMiB uint64) uint64 {
-	reserve := uint64(2048)
-	if quarter := hostMiB / 4; quarter > reserve {
-		reserve = quarter
-	}
-	if hostMiB <= reserve {
-		return MinWorkspaceMemoryMiB
-	}
-	if usable := hostMiB - reserve; usable > MinWorkspaceMemoryMiB {
-		return usable
-	}
-	return MinWorkspaceMemoryMiB
 }
 
 // ValidateShell checks a workspace shell choice. Empty is allowed (callers treat it as
@@ -475,58 +305,33 @@ func ValidateAuthMode(value string) error {
 
 // ValidateCPUs checks a workspace cpu_limit. 0 means "use the runtime default"; a
 // negative count is invalid.
-func ValidateCPUs(cpus int) error {
-	if cpus < 0 {
-		return fmt.Errorf("workspace.cpu_limit: %d (must be >= 0; 0 uses the default)", cpus)
-	}
-	return nil
-}
-
-// NetworkConfig configures the workspace's two local-dev networking directions
-// (arch §29.6). AllowHostServices is the plain-TCP allow-list of host services
-// the workspace may reach via the host gateway (e.g. a database). PublishPorts
-// maps guest ports to host ports so the host can reach a server inside the
-// workspace.
+// NetworkConfig declares a project's egress policy, mirroring the shape of a
+// nono profile's own `network` section directly (internal/nono.Profile) —
+// internal/egress compiles this straight into that profile at `ai create`/
+// `ai network` time, rather than into Microsandbox net-rules.
 type NetworkConfig struct {
-	// Egress is the workspace's default outbound posture, enforced by the
-	// Microsandbox network policy (arch §29.6): "public" (DEFAULT — the open
-	// internet, private ranges still blocked; lets in-VM nerdctl pull images and
-	// AI processes reach the internet, with DNS still audited via `ai network
-	// log`), "deny" (only the model gateway + allow_host_services are reachable),
-	// or "unrestricted". Empty == "public". This default is a deliberate
-	// security-posture choice: the workspace ships allow-outbound and is
-	// re-lockable per project with `ai network egress deny`.
-	Egress            string        `yaml:"egress,omitempty" json:"egress,omitempty"`
-	AllowHostServices []HostService `yaml:"allow_host_services,omitempty" json:"allow_host_services,omitempty"`
-	PublishPorts      []PortMapping `yaml:"publish_ports,omitempty" json:"publish_ports,omitempty"`
+	// Egress is "public" (DEFAULT — unrestricted outbound, matching nono's own
+	// default) or "deny" (no network access at all, nono's --block-net). Empty ==
+	// "public". Re-lockable per project with `ai network egress deny`.
+	Egress string `yaml:"egress,omitempty" json:"egress,omitempty"`
+	// AllowDomain / DenyDomain are proxy allow/deny-list entries (nono
+	// --allow-domain/--deny-domain), only meaningful when Egress is "deny" (they
+	// carve exceptions into an otherwise-blocked default).
+	AllowDomain []string `yaml:"allow_domain,omitempty" json:"allow_domain,omitempty"`
+	DenyDomain  []string `yaml:"deny_domain,omitempty" json:"deny_domain,omitempty"`
 }
 
 // EgressModes are the valid network.egress values.
-var EgressModes = []string{"deny", "public", "unrestricted"}
+var EgressModes = []string{"deny", "public"}
 
 // ResolvedEgress returns the effective egress mode, defaulting empty to "public"
-// (allow-outbound). The default flipped from "deny" to "public" so a freshly
-// created workspace can pull in-VM container images and reach the internet out
-// of the box; egress is still DNS-audited (`ai network log`) and re-lockable per
-// project with `ai network egress deny`.
+// (nono's own default: unrestricted outbound). Re-lockable per project with
+// `ai network egress deny`.
 func (network NetworkConfig) ResolvedEgress() string {
 	if network.Egress == "" {
 		return "public"
 	}
 	return network.Egress
-}
-
-// HostService is one allow-listed host endpoint. Host defaults to "gateway" (the
-// §29.2 host-gateway address) when empty.
-type HostService struct {
-	Host string `yaml:"host,omitempty" json:"host,omitempty"`
-	Port int    `yaml:"port" json:"port"`
-}
-
-// PortMapping publishes a guest port to a host port (host → workspace, arch §29.6).
-type PortMapping struct {
-	Guest int `yaml:"guest" json:"guest"`
-	Host  int `yaml:"host" json:"host"`
 }
 
 // Default returns the built-in global defaults (repo-layout §12.4). It omits
@@ -535,58 +340,19 @@ func Default() *Config {
 	return &Config{
 		Agent:     AgentConfig{Tools: []string{"opencode"}, DefaultTool: "opencode"},
 		Context:   ContextConfig{Strategy: "balanced", CavemanLevel: "full"},
-		Workspace: WorkspaceConfig{CPULimit: 4, MemoryLimit: "8", DiskLimit: "16", Shell: "bash"},
-		Microsandbox: MicrosandboxConfig{
-			IdleTimeout: DefaultMicrosandboxIdleTimeout,
-		},
-		Network: NetworkConfig{Egress: "public"},
+		Workspace: WorkspaceConfig{Shell: "bash"},
+		Network:   NetworkConfig{Egress: "public"},
 	}
 }
 
-// gatewayToken is the placeholder in a HostService.Host that resolves to the
-// §29.2 host-gateway address at workspace start.
-const gatewayToken = "gateway"
-
-// Validate checks the network block: ports in range and publish-host ports
-// unique. It returns the first problem found, or nil.
+// Validate checks the network block.
 func (network NetworkConfig) Validate() error {
 	switch network.Egress {
-	case "", "deny", "public", "unrestricted":
+	case "", "deny", "public":
 	default:
-		return fmt.Errorf("network.egress: %q (one of deny|public|unrestricted)", network.Egress)
-	}
-	for _, service := range network.AllowHostServices {
-		if service.Port < 1 || service.Port > 65535 {
-			return fmt.Errorf("network.allow_host_services: port %d out of range", service.Port)
-		}
-	}
-	seenHostPorts := map[int]bool{}
-	for _, mapping := range network.PublishPorts {
-		if mapping.Guest < 1 || mapping.Guest > 65535 || mapping.Host < 1 || mapping.Host > 65535 {
-			return fmt.Errorf("network.publish_ports: %d:%d out of range", mapping.Host, mapping.Guest)
-		}
-		if seenHostPorts[mapping.Host] {
-			return fmt.Errorf("network.publish_ports: host port %d mapped twice", mapping.Host)
-		}
-		seenHostPorts[mapping.Host] = true
+		return fmt.Errorf("network.egress: %q (one of deny|public)", network.Egress)
 	}
 	return nil
-}
-
-// ResolveHostServices returns the allow-listed host endpoints as host:port
-// strings with the "gateway" token (or an empty host) replaced by the resolved
-// host-gateway address (arch §29.2, §29.6). This is what `ai start`
-// feeds to the Microsandbox network policy.
-func (network NetworkConfig) ResolveHostServices(gateway string) []string {
-	resolved := make([]string, 0, len(network.AllowHostServices))
-	for _, service := range network.AllowHostServices {
-		host := service.Host
-		if host == "" || host == gatewayToken {
-			host = gateway
-		}
-		resolved = append(resolved, fmt.Sprintf("%s:%d", host, service.Port))
-	}
-	return resolved
 }
 
 // EnsureGlobalDefault writes the default global config.yaml if none exists yet.

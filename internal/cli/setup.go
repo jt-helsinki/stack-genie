@@ -34,6 +34,7 @@ func newSetupCmd(em *output.Emitter, exit *int) *cobra.Command {
 	var serverAddr string
 	var optional string
 	var guardrails string
+	var hostAgentsFlag string
 	cmd := &cobra.Command{
 		Use:   "setup",
 		Short: "Install, configure, and start the platform host services (idempotent)",
@@ -65,8 +66,14 @@ func newSetupCmd(em *output.Emitter, exit *int) *cobra.Command {
 			// standalone/client; the server branch prompts for it (default localhost)
 			// on a TTY, or uses the persisted/default under --json / no TTY.
 			var serverDomain string
+			// hostAgents is which agent CLIs (claude-code/codex/opencode) to install
+			// directly onto this host, wired to the gateway — collected by the setup
+			// picker on a TTY or the --host-agents flag otherwise. Unlike optional/
+			// guardrails there is no persisted state: an empty selection just means
+			// "install nothing new" (already-installed CLIs are untouched either way).
+			var hostAgents []string
 			if interactive {
-				selectedMode, selectedServer, selectedOptional, selectedGuardrails, selectedDomain, promptErr := promptSetupConfig(mode, serverAddr, optional, guardrails)
+				selectedMode, selectedServer, selectedOptional, selectedGuardrails, selectedHostAgents, selectedDomain, promptErr := promptSetupConfig(mode, serverAddr, optional, guardrails, hostAgentsFlag)
 				if promptErr != nil {
 					*exit = em.Failure("setup", promptErr)
 					return nil
@@ -74,6 +81,7 @@ func newSetupCmd(em *output.Emitter, exit *int) *cobra.Command {
 				mode, serverAddr = selectedMode, selectedServer
 				optionalServices, optionalSet = selectedOptional, true
 				guardrailServices, guardrailsSet = selectedGuardrails, true
+				hostAgents = selectedHostAgents
 				serverDomain = selectedDomain
 			} else {
 				var optErr error
@@ -86,6 +94,12 @@ func newSetupCmd(em *output.Emitter, exit *int) *cobra.Command {
 				guardrailsSet, guardrailServices, guardrailErr = guardrailsFromFlag(guardrails)
 				if guardrailErr != nil {
 					*exit = em.Failure("setup", guardrailErr)
+					return nil
+				}
+				var hostAgentsErr error
+				hostAgents, hostAgentsErr = parseHostAgentsFlag(hostAgentsFlag)
+				if hostAgentsErr != nil {
+					*exit = em.Failure("setup", hostAgentsErr)
 					return nil
 				}
 				// Non-interactive server hostname: keep the persisted domain (or the
@@ -205,6 +219,21 @@ func newSetupCmd(em *output.Emitter, exit *int) *cobra.Command {
 			if report.Runtime != nil && report.Runtime.Role != runtime.RoleClient {
 				printLocalInferenceGuidance(em)
 			}
+			// Workspace runtime (nono) + any selected host agent CLIs: standalone and
+			// client both run workspaces (server does not), so install here for either
+			// of those two roles. Best-effort — mirrors the local-inference guidance
+			// above, never failing setup.
+			if report.Runtime == nil || report.Runtime.Role != runtime.RoleServer {
+				progress := func(line string) {
+					if !em.JSON {
+						_, _ = fmt.Fprintln(em.Err, line)
+					}
+				}
+				setup.EnsureNonoInstalled(progress)
+				if len(hostAgents) > 0 {
+					setup.EnsureHostAgentCLIsInstalled(hostAgents, progress)
+				}
+			}
 			*exit = em.Success("setup", report, report.Warnings...)
 			return nil
 		},
@@ -219,6 +248,9 @@ func newSetupCmd(em *output.Emitter, exit *int) *cobra.Command {
 		"client mode: address of the remote service tier to route to (host or host:port); seeds the prompt on a TTY")
 	cmd.Flags().StringVar(&optional, "optional", "",
 		"comma-separated opt-in host services to enable, or \"none\" to disable them all; seeds the checkbox on a TTY (there are currently no optional host services, so this is a no-op)")
+	cmd.Flags().StringVar(&hostAgentsFlag, "host-agents", "",
+		"agent CLIs to install on this host, wired directly to the LiteLLM gateway (comma-separated, one of "+
+			strings.Join(setup.SupportedHostAgentCLIs(), ",")+", or \"none\" — default none)")
 	cmd.Flags().StringVar(&guardrails, "guardrails", "",
 		"comma-separated LiteLLM guardrails to enable (headroom, secret-masking, hide-secrets, tool-firewall), or \"none\" to disable them all; seeds the checkbox on a TTY (default: headroom only)")
 	return cmd
@@ -340,7 +372,7 @@ func printPrerequisiteInstructions(em *output.Emitter, prereq setup.Prerequisite
 // The returned serverDomain is the hostname clients/browsers reach a SERVER-role
 // host at (it drives the UI subdomains + DNS guidance); it is "" for
 // standalone/client (those use their own defaults and are not newly prompted).
-func promptSetupConfig(seedMode, seedServer, seedOptional, seedGuardrails string) (mode, serverAddr string, optional []string, guardrails []string, serverDomain string, err error) {
+func promptSetupConfig(seedMode, seedServer, seedOptional, seedGuardrails, seedHostAgents string) (mode, serverAddr string, optional []string, guardrails []string, hostAgents []string, serverDomain string, err error) {
 	persisted, _ := runtime.Load()
 
 	// Role seed: flag > persisted > standalone.
@@ -368,7 +400,7 @@ func promptSetupConfig(seedMode, seedServer, seedOptional, seedGuardrails string
 	case strings.TrimSpace(seedOptional) != "":
 		parsed, parseErr := parseOptionalFlag(seedOptional)
 		if parseErr != nil {
-			return "", "", nil, nil, "", parseErr
+			return "", "", nil, nil, nil, "", parseErr
 		}
 		preChecked = parsed
 	case persisted != nil && persisted.OptionalServices != nil:
@@ -385,7 +417,7 @@ func promptSetupConfig(seedMode, seedServer, seedOptional, seedGuardrails string
 	case strings.TrimSpace(seedGuardrails) != "":
 		parsed, parseErr := parseGuardrailsFlag(seedGuardrails)
 		if parseErr != nil {
-			return "", "", nil, nil, "", parseErr
+			return "", "", nil, nil, nil, "", parseErr
 		}
 		preCheckedGuardrails = parsed
 	case persisted != nil && persisted.Guardrails != nil:
@@ -394,6 +426,19 @@ func promptSetupConfig(seedMode, seedServer, seedOptional, seedGuardrails string
 		preCheckedGuardrails = litellm.DefaultGuardrails()
 	}
 	selectedGuardrails := append([]string(nil), preCheckedGuardrails...)
+
+	// Host-agent-CLI seed: flag only — there is no persisted state (installing is a
+	// one-time, Detect-gated action, not a toggleable setting). A bad --host-agents
+	// name is exit 2 even on a TTY (validate inputs).
+	var preCheckedHostAgents []string
+	if strings.TrimSpace(seedHostAgents) != "" {
+		parsed, parseErr := parseHostAgentsFlag(seedHostAgents)
+		if parseErr != nil {
+			return "", "", nil, nil, nil, "", parseErr
+		}
+		preCheckedHostAgents = parsed
+	}
+	selectedHostAgents := append([]string(nil), preCheckedHostAgents...)
 
 	roleGroup := huh.NewGroup(
 		huh.NewSelect[string]().
@@ -450,21 +495,36 @@ func promptSetupConfig(seedMode, seedServer, seedOptional, seedGuardrails string
 			Value(&selectedGuardrails),
 	).WithHideFunc(func() bool { return mode == runtime.RoleClient })
 
-	if formErr := runForm(roleGroup, serverGroup, serverHostnameGroup, optionalGroup, guardrailGroup); formErr != nil {
-		return "", "", nil, nil, "", formErr
+	// Host agent CLIs: which of claude-code/codex/opencode to install directly on
+	// THIS host (wired to the gateway, run under `nono run --profile ... -- <cli>`
+	// at `ai agent`/`ai start`). Shown for standalone/client (both run workspaces);
+	// hidden for server (no workspaces there).
+	hostAgentGroup := huh.NewGroup(
+		huh.NewMultiSelect[string]().
+			Title("Agent CLIs to install on this host").
+			Description("Installed directly on this machine (not a VM) and wired to the LiteLLM gateway.").
+			Options(hostAgentOptions()...).
+			Value(&selectedHostAgents),
+	).WithHideFunc(func() bool { return mode == runtime.RoleServer })
+
+	if formErr := runForm(roleGroup, serverGroup, serverHostnameGroup, optionalGroup, guardrailGroup, hostAgentGroup); formErr != nil {
+		return "", "", nil, nil, nil, "", formErr
 	}
 	switch mode {
 	case runtime.RoleClient:
 		// The optional + guardrail groups were hidden; the selections are the untouched
 		// seeds — return them so a later switch to standalone doesn't clobber the choice.
-		// A client has no local UIs, so no server domain.
-		return mode, strings.TrimSpace(serverAddr), selectedOptional, selectedGuardrails, "", nil
+		// A client has no local UIs, so no server domain. hostAgentGroup was SHOWN for
+		// client (it runs workspaces), so selectedHostAgents reflects the real choice.
+		return mode, strings.TrimSpace(serverAddr), selectedOptional, selectedGuardrails, selectedHostAgents, "", nil
 	case runtime.RoleServer:
-		// Thread the chosen server hostname through to Options.Domain.
-		return mode, "", selectedOptional, selectedGuardrails, strings.TrimSpace(serverDomain), nil
+		// Thread the chosen server hostname through to Options.Domain. hostAgentGroup
+		// was hidden (no workspaces on a server) — selectedHostAgents is the untouched
+		// seed, effectively unused.
+		return mode, "", selectedOptional, selectedGuardrails, selectedHostAgents, strings.TrimSpace(serverDomain), nil
 	default:
 		// Standalone: keep the aip.local default (Domain empty → preserved/default).
-		return mode, "", selectedOptional, selectedGuardrails, "", nil
+		return mode, "", selectedOptional, selectedGuardrails, selectedHostAgents, "", nil
 	}
 }
 
@@ -569,6 +629,39 @@ func parseGuardrailsFlag(flagValue string) ([]string, error) {
 		selected = append(selected, key)
 	}
 	return selected, nil
+}
+
+// parseHostAgentsFlag turns the --host-agents CSV into a validated agent-CLI-key
+// list. Unlike --optional/--guardrails this has no persisted state to fall back
+// to — an empty flag simply means "install nothing" (the already-installed set
+// is unaffected either way, since installs are Detect-gated and idempotent).
+func parseHostAgentsFlag(flagValue string) ([]string, error) {
+	if strings.TrimSpace(flagValue) == "" || strings.EqualFold(strings.TrimSpace(flagValue), "none") {
+		return nil, nil
+	}
+	universe := setup.SupportedHostAgentCLIs()
+	var selected []string
+	for _, part := range strings.Split(flagValue, ",") {
+		key := strings.TrimSpace(part)
+		if key == "" {
+			continue
+		}
+		if !slices.Contains(universe, key) {
+			return nil, output.Errorf(output.ExitInvalidInput,
+				"unknown agent CLI %q (one of %v, or \"none\")", key, universe)
+		}
+		selected = append(selected, key)
+	}
+	return selected, nil
+}
+
+// hostAgentOptions builds the checkbox options for the host-installable agent CLIs.
+func hostAgentOptions() []huh.Option[string] {
+	options := make([]huh.Option[string], 0, len(setup.SupportedHostAgentCLIs()))
+	for _, key := range setup.SupportedHostAgentCLIs() {
+		options = append(options, huh.NewOption(key, key))
+	}
+	return options
 }
 
 // guardrailsPickerDescription is the hint shown above the guardrails checkbox.

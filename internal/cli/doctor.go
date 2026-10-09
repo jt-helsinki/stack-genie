@@ -1,13 +1,12 @@
 package cli
 
 import (
-	"context"
 	"fmt"
 	goruntime "runtime"
 	"strings"
-	"time"
 
 	"github.com/jt-helsinki/stack-genie/internal/doctor"
+	"github.com/jt-helsinki/stack-genie/internal/nono"
 	"github.com/jt-helsinki/stack-genie/internal/omlx"
 	"github.com/jt-helsinki/stack-genie/internal/output"
 	"github.com/jt-helsinki/stack-genie/internal/runtime"
@@ -17,13 +16,7 @@ import (
 	"github.com/spf13/cobra"
 )
 
-const doctorLiveProbeTimeout = 4 * time.Second
-
-const (
-	doctorWorkspaceMicroVMCheck = "workspace microVM"
-	doctorWorkspaceLogsCheck    = "workspace logs"
-	doctorWorkspaceExecLabel    = "workspace exec"
-)
+const doctorWorkspaceSessionsCheck = "workspace sessions"
 
 // newDoctorCmd builds the consolidated `ai doctor [name]` (CLI §10.1, §12.1):
 // dependency + service + (when inside/naming a workspace) runtime health checks
@@ -155,10 +148,10 @@ func doctorDomain() *doctor.DomainInfo {
 // resolveDoctorWorkspace builds the per-workspace runtime section for `ai doctor`
 // when an explicit name is given OR the cwd resolves to a workspace. It returns
 // nil (omit the section) when no name is given and the cwd is not inside a
-// workspace — that is not a failure. Runtime/verification shortfalls are folded
-// into the returned struct as errors so doctor renders them as Checks (exit 0
-// with a full report) rather than aborting (the old `ai workspace doctor` exited
-// 3/4 here).
+// workspace — that is not a failure. Unlike the Microsandbox microVM runtime
+// this replaced, there is no container-runtime/rootless/virtualization posture
+// to probe — nono sandboxes a host process directly — so this just reports
+// whether nono is installed plus the workspace's live nono session count.
 func resolveDoctorWorkspace(explicit string) *doctor.WorkspaceRuntime {
 	name := explicit
 	if name == "" {
@@ -169,100 +162,39 @@ func resolveDoctorWorkspace(explicit string) *doctor.WorkspaceRuntime {
 		}
 		name = resolved
 	}
-	workspaceRuntime := &doctor.WorkspaceRuntime{Project: name}
-	info, err := runtime.Detect(goruntime.GOOS, goruntime.GOARCH, runtime.RealProber(), nowRFC3339())
-	if err != nil {
-		// Missing container runtime or Microsandbox — surfaced as an error Check.
-		workspaceRuntime.RuntimeErr = err
-		return workspaceRuntime
+	return &doctor.WorkspaceRuntime{
+		Project:       name,
+		NonoInstalled: nono.Detect(runtime.RealProber()).Installed,
+		LiveChecks:    doctorWorkspaceLiveChecks(name),
 	}
-	workspaceRuntime.Rootless = info.Rootless
-	workspaceRuntime.Virtualization = info.Microsandbox.Virtualization
-	workspaceRuntime.Available = info.Microsandbox.Available
-	if verifyErr := runtime.Verify(info); verifyErr != nil {
-		workspaceRuntime.VerifyErr = verifyErr
-	}
-	workspaceRuntime.LiveChecks = doctorWorkspaceLiveChecks(name, workspace.RealManager(goruntime.GOOS, nowRFC3339).Sandbox)
-	return workspaceRuntime
 }
 
-func doctorWorkspaceLiveChecks(project string, sandbox workspace.Sandbox) []doctor.Check {
-	if sandbox == nil {
-		return nil
-	}
-	vmName := workspace.Name(project)
-	checks := make([]doctor.Check, 0, 3)
-	ctx, cancel := context.WithTimeout(context.Background(), doctorLiveProbeTimeout)
-	running, err := sandbox.IsRunning(ctx, vmName)
-	cancel()
+// doctorWorkspaceLiveChecks probes the workspace's live nono sessions: how many
+// are currently running, out of how many nono currently has recorded for it.
+func doctorWorkspaceLiveChecks(project string) []doctor.Check {
+	sessions, err := workspace.RealManager(nowRFC3339).ListSessions(project)
 	if err != nil {
 		return []doctor.Check{{
-			Name: doctorWorkspaceMicroVMCheck, Status: doctor.StatusError,
-			Detail:     "liveness probe failed: " + err.Error(),
-			Suggestion: "run `ai restart " + project + "` if the workspace should be running",
+			Name: doctorWorkspaceSessionsCheck, Status: doctor.StatusError,
+			Detail:     "listing sessions failed: " + err.Error(),
+			Suggestion: "run `ai agent <cli> " + project + "` to start one",
 		}}
 	}
-	if !running {
+	running := 0
+	for _, session := range sessions {
+		if session.Status == "running" {
+			running++
+		}
+	}
+	if running == 0 {
 		return []doctor.Check{{
-			Name: doctorWorkspaceMicroVMCheck, Status: doctor.StatusError,
-			Detail:     "not running",
-			Suggestion: "run `ai start " + project + "`",
+			Name: doctorWorkspaceSessionsCheck, Status: doctor.StatusWarn,
+			Detail:     fmt.Sprintf("0 running (%d recorded)", len(sessions)),
+			Suggestion: "run `ai agent <cli> " + project + "` or `ai shell " + project + "`",
 		}}
 	}
-	checks = append(checks, doctor.Check{Name: doctorWorkspaceMicroVMCheck, Status: doctor.StatusOK, Detail: "running"})
-	checks = append(checks, doctorWorkspaceLogCheck(project, vmName, sandbox))
-	checks = append(checks, doctorWorkspaceExecCheck(project, vmName, sandbox))
-	return checks
-}
-
-func doctorWorkspaceLogCheck(project, vmName string, sandbox workspace.Sandbox) doctor.Check {
-	ctx, cancel := context.WithTimeout(context.Background(), doctorLiveProbeTimeout)
-	logTail, err := sandbox.LogTailContext(ctx, vmName, 20)
-	timedOut := ctx.Err() != nil
-	cancel()
-	if err != nil || timedOut {
-		detail := errorDetail("log tail", err, timedOut)
-		return doctor.Check{
-			Name: doctorWorkspaceLogsCheck, Status: doctor.StatusError,
-			Detail:     detail,
-			Suggestion: "run `msb logs " + vmName + " --tail 200` for details, then `ai restart " + project + "` if needed",
-		}
-	}
-	detail := "readable"
-	if strings.TrimSpace(logTail) == "" {
-		detail = "readable; no output captured"
-	}
-	return doctor.Check{Name: doctorWorkspaceLogsCheck, Status: doctor.StatusOK, Detail: detail}
-}
-
-func doctorWorkspaceExecCheck(project, vmName string, sandbox workspace.Sandbox) doctor.Check {
-	ctx, cancel := context.WithTimeout(context.Background(), doctorLiveProbeTimeout)
-	result, err := sandbox.ExecContext(ctx, vmName, []string{"true"})
-	timedOut := ctx.Err() != nil
-	cancel()
-	if err != nil || timedOut {
-		return doctor.Check{
-			Name: doctorWorkspaceExecLabel, Status: doctor.StatusError,
-			Detail:     errorDetail("msb exec", err, timedOut),
-			Suggestion: "workspace logs may still be available; run `ai restart " + project + "` to recover the exec channel",
-		}
-	}
-	if result.ExitCode != 0 {
-		return doctor.Check{
-			Name: doctorWorkspaceExecLabel, Status: doctor.StatusError,
-			Detail:     fmt.Sprintf("probe exited %d: %s", result.ExitCode, strings.TrimSpace(result.Stderr)),
-			Suggestion: "run `ai restart " + project + "`",
-		}
-	}
-	return doctor.Check{Name: doctorWorkspaceExecLabel, Status: doctor.StatusOK, Detail: "responsive"}
-}
-
-func errorDetail(label string, err error, timedOut bool) string {
-	if timedOut {
-		return label + " timed out"
-	}
-	if err != nil {
-		return err.Error()
-	}
-	return label + " failed"
+	return []doctor.Check{{
+		Name: doctorWorkspaceSessionsCheck, Status: doctor.StatusOK,
+		Detail: fmt.Sprintf("%d running (%d recorded)", running, len(sessions)),
+	}}
 }

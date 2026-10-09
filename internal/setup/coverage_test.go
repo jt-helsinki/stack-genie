@@ -307,8 +307,9 @@ func TestParseContainerPorts(test *testing.T) {
 
 // --- ServicesStatus branches -----------------------------------------------
 
-// TestServicesStatusWithoutRuntimeYAML: with no persisted runtime.yaml the
-// microsandbox runtime line is omitted (only the service-tier statuses remain).
+// TestServicesStatusWithoutRuntimeYAML: with no persisted runtime.yaml, status
+// reporting still works and never fabricates a "microsandbox" line (there is
+// no such status anymore — only the service-tier statuses are returned).
 func TestServicesStatusWithoutRuntimeYAML(test *testing.T) {
 	test.Setenv("HOME", test.TempDir())
 	deps, _ := healthyDeps()
@@ -400,30 +401,30 @@ func TestPresence(test *testing.T) {
 }
 
 // TestReportHumanRendersRuntimeBlock covers the Runtime + state lines of Human for
-// both the microVM-available and unavailable cases.
+// both the nono-installed and not-installed cases.
 func TestReportHumanRendersRuntimeBlock(test *testing.T) {
-	available := &Report{
+	installed := &Report{
 		PlatformDir:     "/home/u/.ai-platform",
 		ConfigCreated:   true,
 		VersionsCreated: false,
 		Runtime: &runtime.Info{
-			Detected:     "docker",
-			Rootless:     true,
-			Microsandbox: runtime.MicrosandboxInfo{Available: true, Virtualization: "hvf"},
+			Detected: "docker",
+			Rootless: true,
+			Nono:     runtime.NonoInfo{Installed: true},
 		},
 	}
-	rendered := available.Human()
-	for _, fragment := range []string{"Runtime:", "docker", "hvf", "available", "config.yaml", "versions.yaml"} {
+	rendered := installed.Human()
+	for _, fragment := range []string{"Runtime:", "docker", "installed", "config.yaml", "versions.yaml"} {
 		if !strings.Contains(rendered, fragment) {
 			test.Errorf("Human() missing %q:\n%s", fragment, rendered)
 		}
 	}
 
-	unavailable := &Report{
+	notInstalled := &Report{
 		PlatformDir: "/home/u/.ai-platform",
-		Runtime:     &runtime.Info{Detected: "podman", Microsandbox: runtime.MicrosandboxInfo{Available: false, Virtualization: "none"}},
+		Runtime:     &runtime.Info{Detected: "podman", Nono: runtime.NonoInfo{Installed: false}},
 	}
-	if got := unavailable.Human(); !strings.Contains(got, "unavailable") {
-		test.Errorf("Human() for an unavailable microVM should say unavailable:\n%s", got)
+	if got := notInstalled.Human(); !strings.Contains(got, "not installed") {
+		test.Errorf("Human() for a missing nono install should say not installed:\n%s", got)
 	}
 }

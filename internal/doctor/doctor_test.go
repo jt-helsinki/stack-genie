@@ -1,7 +1,6 @@
 package doctor
 
 import (
-	"errors"
 	"os/exec"
 	"strings"
 	"testing"
@@ -49,7 +48,7 @@ func healthyServices() []Service {
 func TestServicesSectionListsEveryService(test *testing.T) {
 	deps := Deps{
 		GOOS: "darwin", GOARCH: "arm64",
-		Prober:   fakeProber{bins: map[string]bool{"docker": true, "msb": true}},
+		Prober:   fakeProber{bins: map[string]bool{"docker": true, "nono": true}},
 		Services: healthyServices(),
 	}
 	report := Run(deps)
@@ -67,7 +66,7 @@ func TestServicesSectionListsEveryService(test *testing.T) {
 func TestRequiredServiceDownIsError(test *testing.T) {
 	deps := Deps{
 		GOOS: "darwin", GOARCH: "arm64",
-		Prober: fakeProber{bins: map[string]bool{"docker": true, "msb": true}},
+		Prober: fakeProber{bins: map[string]bool{"docker": true, "nono": true}},
 		Services: []Service{
 			{Name: "omlx", State: "stopped", Healthy: false},
 		},
@@ -87,7 +86,7 @@ func TestRequiredServiceDownIsError(test *testing.T) {
 func TestDisabledServiceIsOKNotError(test *testing.T) {
 	deps := Deps{
 		GOOS: "darwin", GOARCH: "arm64",
-		Prober: fakeProber{bins: map[string]bool{"docker": true, "msb": true}},
+		Prober: fakeProber{bins: map[string]bool{"docker": true, "nono": true}},
 		Services: []Service{
 			{Name: "omlx", State: "running", Healthy: true},
 			{Name: "presidio", State: "disabled", Healthy: false},
@@ -109,7 +108,7 @@ func TestDisabledServiceIsOKNotError(test *testing.T) {
 func TestRunAllHealthy(test *testing.T) {
 	deps := Deps{
 		GOOS: "darwin", GOARCH: "arm64",
-		Prober:   fakeProber{bins: map[string]bool{"docker": true, "msb": true}},
+		Prober:   fakeProber{bins: map[string]bool{"docker": true, "nono": true}},
 		Services: healthyServices(),
 	}
 	report := Run(deps)
@@ -122,15 +121,15 @@ func TestRunAllHealthy(test *testing.T) {
 	if got := checkByName(report, "container runtime").Detail; got != "docker" {
 		test.Errorf("container detail = %q", got)
 	}
-	if checkByName(report, "host virtualization").Detail != "hvf" {
-		test.Errorf("virtualization: %+v", checkByName(report, "host virtualization"))
+	if checkByName(report, "nono runtime").Status != StatusOK {
+		test.Errorf("nono runtime: %+v", checkByName(report, "nono runtime"))
 	}
 }
 
 func TestDomainSectionStandaloneUpToDate(test *testing.T) {
 	deps := Deps{
 		GOOS: "darwin", GOARCH: "arm64",
-		Prober: fakeProber{bins: map[string]bool{"docker": true, "msb": true}},
+		Prober: fakeProber{bins: map[string]bool{"docker": true, "nono": true}},
 		Domain: &DomainInfo{
 			Domain: "aip.local", Role: "standalone", Standalone: true,
 			HostsPresent: true, HostsUpToDate: true,
@@ -152,7 +151,7 @@ func TestDomainSectionStandaloneUpToDate(test *testing.T) {
 func TestDomainSectionStandaloneMissingWarns(test *testing.T) {
 	deps := Deps{
 		GOOS: "darwin", GOARCH: "arm64",
-		Prober: fakeProber{bins: map[string]bool{"docker": true, "msb": true}},
+		Prober: fakeProber{bins: map[string]bool{"docker": true, "nono": true}},
 		Domain: &DomainInfo{Domain: "aip.local", Role: "standalone", Standalone: true},
 	}
 	report := Run(deps)
@@ -169,7 +168,7 @@ func TestDomainSectionStandaloneMissingWarns(test *testing.T) {
 func TestDomainSectionServerReminder(test *testing.T) {
 	deps := Deps{
 		GOOS: "darwin", GOARCH: "arm64",
-		Prober: fakeProber{bins: map[string]bool{"docker": true, "msb": true}},
+		Prober: fakeProber{bins: map[string]bool{"docker": true, "nono": true}},
 		Domain: &DomainInfo{
 			Domain: "aip.example.com", Role: "server",
 			ServerReminder:    "create DNS records (*.aip.example.com) → this server's IP, and terminate TLS at nginx",
@@ -190,7 +189,7 @@ func TestDomainSectionServerReminder(test *testing.T) {
 func TestHumanShowsServiceEndpoints(test *testing.T) {
 	deps := Deps{
 		GOOS: "darwin", GOARCH: "arm64",
-		Prober:   fakeProber{bins: map[string]bool{"docker": true, "msb": true}},
+		Prober:   fakeProber{bins: map[string]bool{"docker": true, "nono": true}},
 		Services: healthyServices(),
 	}
 	rendered := Run(deps).Human()
@@ -205,32 +204,27 @@ func TestHumanShowsServiceEndpoints(test *testing.T) {
 func TestWorkspaceSectionOmittedWhenAbsent(test *testing.T) {
 	deps := Deps{
 		GOOS: "darwin", GOARCH: "arm64",
-		Prober:   fakeProber{bins: map[string]bool{"docker": true, "msb": true}},
+		Prober:   fakeProber{bins: map[string]bool{"docker": true, "nono": true}},
 		Services: healthyServices(),
 	}
 	report := Run(deps)
-	for _, name := range []string{"workspace rootless", "workspace virtualization", "workspace runtime"} {
-		if checkByName(report, name).Name != "" {
-			test.Errorf("workspace section should be omitted when Workspace is nil, found %q", name)
-		}
+	if checkByName(report, "workspace runtime").Name != "" {
+		test.Error("workspace section should be omitted when Workspace is nil")
 	}
 }
 
 func TestWorkspaceSectionRendersWhenPresent(test *testing.T) {
 	deps := Deps{
 		GOOS: "darwin", GOARCH: "arm64",
-		Prober:   fakeProber{bins: map[string]bool{"docker": true, "msb": true}},
+		Prober:   fakeProber{bins: map[string]bool{"docker": true, "nono": true}},
 		Services: healthyServices(),
 		Workspace: &WorkspaceRuntime{
-			Project: "demo", Rootless: true, Virtualization: "hvf", Available: true,
+			Project: "demo", NonoInstalled: true,
 		},
 	}
 	report := Run(deps)
-	if got := checkByName(report, "workspace rootless").Status; got != StatusOK {
-		test.Errorf("workspace rootless = %q, want ok", got)
-	}
-	if got := checkByName(report, "workspace virtualization").Status; got != StatusOK {
-		test.Errorf("workspace virtualization = %q, want ok", got)
+	if got := checkByName(report, "workspace runtime").Status; got != StatusOK {
+		test.Errorf("workspace runtime = %q, want ok", got)
 	}
 	if !report.OK {
 		test.Error("a healthy workspace section must not fail the report")
@@ -240,52 +234,35 @@ func TestWorkspaceSectionRendersWhenPresent(test *testing.T) {
 func TestWorkspaceSectionAppendsLiveChecks(test *testing.T) {
 	report := Run(Deps{
 		GOOS: "darwin", GOARCH: "arm64",
-		Prober: fakeProber{bins: map[string]bool{"docker": true, "msb": true}},
+		Prober: fakeProber{bins: map[string]bool{"docker": true, "nono": true}},
 		Workspace: &WorkspaceRuntime{
-			Project: "demo", Rootless: true, Virtualization: "hvf", Available: true,
+			Project: "demo", NonoInstalled: true,
 			LiveChecks: []Check{
-				{Name: "workspace microVM", Status: StatusOK, Detail: "running"},
-				{Name: "workspace logs", Status: StatusOK, Detail: "readable"},
-				{Name: "workspace exec", Status: StatusError, Detail: "msb exec timed out"},
+				{Name: "workspace sessions", Status: StatusError, Detail: "listing sessions failed: timed out"},
 			},
 		},
 	})
-	if got := checkByName(report, "workspace exec").Status; got != StatusError {
-		test.Fatalf("workspace exec live check status = %q, want error", got)
+	if got := checkByName(report, "workspace sessions").Status; got != StatusError {
+		test.Fatalf("workspace sessions live check status = %q, want error", got)
 	}
 	if report.OK {
 		test.Fatal("a failing live workspace check must fail the doctor report")
 	}
 }
 
-// A missing-runtime / virtualization shortfall is folded into error Checks rather
-// than aborting (the old `ai workspace doctor` exited 3/4 here).
+// A missing nono binary is folded into an error Check rather than aborting (the
+// old `ai workspace doctor` exited 3/4 here).
 func TestWorkspaceSectionFoldsFailuresIntoChecks(test *testing.T) {
-	missingRuntime := Run(Deps{
+	missingNono := Run(Deps{
 		GOOS: "darwin", GOARCH: "arm64",
-		Prober:    fakeProber{bins: map[string]bool{"docker": true, "msb": true}},
-		Workspace: &WorkspaceRuntime{Project: "demo", RuntimeErr: errors.New("no container runtime")},
+		Prober:    fakeProber{bins: map[string]bool{"docker": true, "nono": true}},
+		Workspace: &WorkspaceRuntime{Project: "demo", NonoInstalled: false},
 	})
-	if got := checkByName(missingRuntime, "workspace runtime").Status; got != StatusError {
-		test.Errorf("missing runtime → workspace runtime check = %q, want error", got)
+	if got := checkByName(missingNono, "workspace runtime").Status; got != StatusError {
+		test.Errorf("missing nono → workspace runtime check = %q, want error", got)
 	}
-	if missingRuntime.OK {
-		test.Error("a missing workspace runtime must fail the report (as a check, not a non-zero exit)")
-	}
-
-	shortfall := Run(Deps{
-		GOOS: "darwin", GOARCH: "arm64",
-		Prober: fakeProber{bins: map[string]bool{"docker": true, "msb": true}},
-		Workspace: &WorkspaceRuntime{
-			Project: "demo", Rootless: false, Available: false,
-			VerifyErr: errors.New("virtualization unavailable"),
-		},
-	})
-	if got := checkByName(shortfall, "workspace rootless").Status; got != StatusError {
-		test.Errorf("non-rootless → workspace rootless check = %q, want error", got)
-	}
-	if got := checkByName(shortfall, "workspace virtualization").Status; got != StatusError {
-		test.Errorf("unavailable virt → workspace virtualization check = %q, want error", got)
+	if missingNono.OK {
+		test.Error("a missing workspace nono install must fail the report (as a check, not a non-zero exit)")
 	}
 }
 
@@ -298,7 +275,7 @@ func TestRunMissingDepsError(test *testing.T) {
 	if report.OK {
 		test.Fatal("expected not-OK with missing deps")
 	}
-	for _, name := range []string{"container runtime", "microsandbox runtime", "host virtualization"} {
+	for _, name := range []string{"container runtime", "nono runtime"} {
 		check := checkByName(report, name)
 		if check.Status != StatusError {
 			test.Errorf("%s status = %q, want error", name, check.Status)
@@ -309,25 +286,12 @@ func TestRunMissingDepsError(test *testing.T) {
 	}
 }
 
-// TestUnsupportedOSReportsVirtualizationUnavailable: only macOS and Linux are
-// supported hosts, so any other GOOS reports virtualization unavailable.
-func TestUnsupportedOSReportsVirtualizationUnavailable(test *testing.T) {
-	deps := Deps{
-		GOOS: "plan9", GOARCH: "amd64",
-		Prober: fakeProber{bins: map[string]bool{"docker": true, "msb": true}},
-	}
-	virtualization := checkByName(Run(deps), "host virtualization")
-	if virtualization.Status != StatusError {
-		test.Fatalf("unsupported OS should report virtualization unavailable: %+v", virtualization)
-	}
-}
-
 func TestRootlessCheckMacDockerDesktop(test *testing.T) {
 	// Docker Desktop on macOS reports no "rootless" SecurityOption but runs in a
 	// VM — the rootless check must pass (§6.1).
 	deps := Deps{
 		GOOS: "darwin", GOARCH: "arm64",
-		Prober: fakeProber{bins: map[string]bool{"docker": true, "msb": true}},
+		Prober: fakeProber{bins: map[string]bool{"docker": true, "nono": true}},
 	}
 	if got := checkByName(Run(deps), "rootless service tier").Status; got != StatusOK {
 		test.Fatalf("rootless service tier on macOS Docker Desktop = %q, want ok", got)
@@ -341,8 +305,8 @@ func TestMissingDepSuggestionsAreCopyPasteable(test *testing.T) {
 	}
 	report := Run(deps)
 	wants := map[string]string{
-		"microsandbox runtime": "curl -sSL https://get.microsandbox.dev | sh",
-		"container runtime":    "https://get.docker.com",
+		"nono runtime":      "nono.sh",
+		"container runtime": "https://get.docker.com",
 	}
 	for name, fragment := range wants {
 		if got := checkByName(report, name).Suggestion; !strings.Contains(got, fragment) {

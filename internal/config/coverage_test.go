@@ -13,10 +13,9 @@ func TestResolvedEgressDefault(test *testing.T) {
 		egress string
 		want   string
 	}{
-		{"", "public"},                   // default flipped to allow-outbound
-		{"public", "public"},             // pass-through
-		{"deny", "deny"},                 // pass-through
-		{"unrestricted", "unrestricted"}, // pass-through
+		{"", "public"},       // default flipped to allow-outbound
+		{"public", "public"}, // pass-through
+		{"deny", "deny"},     // pass-through
 	}
 	for _, testCase := range cases {
 		network := NetworkConfig{Egress: testCase.egress}
@@ -54,8 +53,8 @@ func TestEnsureGlobalDefault(test *testing.T) {
 	if err != nil {
 		test.Fatalf("global config should load: %v", err)
 	}
-	if loaded.Workspace.MemoryLimit != Default().Workspace.MemoryLimit {
-		test.Errorf("written config memory_limit = %q, want default %q", loaded.Workspace.MemoryLimit, Default().Workspace.MemoryLimit)
+	if loaded.Workspace.Shell != Default().Workspace.Shell {
+		test.Errorf("written config shell = %q, want default %q", loaded.Workspace.Shell, Default().Workspace.Shell)
 	}
 
 	created, err = EnsureGlobalDefault()
@@ -64,21 +63,6 @@ func TestEnsureGlobalDefault(test *testing.T) {
 	}
 	if created {
 		test.Error("second call should report created=false (idempotent)")
-	}
-}
-
-// TestValidateCPUs verifies negative counts are rejected and 0/positive are
-// accepted (0 means "use the runtime default").
-func TestValidateCPUs(test *testing.T) {
-	for _, cpus := range []int{0, 1, 4, 128} {
-		if err := ValidateCPUs(cpus); err != nil {
-			test.Errorf("ValidateCPUs(%d) should be valid: %v", cpus, err)
-		}
-	}
-	for _, cpus := range []int{-1, -4} {
-		if err := ValidateCPUs(cpus); err == nil {
-			test.Errorf("ValidateCPUs(%d) should be rejected", cpus)
-		}
 	}
 }
 
@@ -151,7 +135,7 @@ func TestLoadProjectConfigMissing(test *testing.T) {
 	if loaded == nil {
 		test.Fatal("missing project config should return a non-nil empty Config")
 	}
-	if loaded.OS != "" || len(loaded.Agent.Tools) != 0 || loaded.Workspace.CPULimit != 0 {
+	if loaded.OS != "" || len(loaded.Agent.Tools) != 0 || loaded.Workspace.Shell != "" {
 		test.Fatalf("missing project config should be empty, got %+v", loaded)
 	}
 }
@@ -161,7 +145,7 @@ func TestLoadProjectConfigRoundTrip(test *testing.T) {
 	root := test.TempDir()
 	original := &Config{
 		OS:        "debian-trixie",
-		Workspace: WorkspaceConfig{CPULimit: 6, MemoryLimit: "16", Shell: "zsh"},
+		Workspace: WorkspaceConfig{Shell: "zsh"},
 		Network:   NetworkConfig{Egress: "deny"},
 	}
 	if err := WriteProject(root, original); err != nil {
@@ -174,7 +158,7 @@ func TestLoadProjectConfigRoundTrip(test *testing.T) {
 	if loaded.OS != "debian-trixie" {
 		test.Errorf("os = %q, want debian-trixie", loaded.OS)
 	}
-	if loaded.Workspace.CPULimit != 6 || loaded.Workspace.MemoryLimit != "16" || loaded.Workspace.Shell != "zsh" {
+	if loaded.Workspace.Shell != "zsh" {
 		test.Errorf("workspace round-trip = %+v", loaded.Workspace)
 	}
 	if loaded.Network.Egress != "deny" {

@@ -1,11 +1,11 @@
 //go:build integration
 
 // Package integration is the LIVE integration suite: it exercises the real `ai`
-// binary against a RUNNING Docker + Microsandbox stack on this machine (the
+// binary against a RUNNING Docker service tier + nono on this machine (the
 // `hardware bring-up` path the unit tests deliberately fake). It is gated behind
 // the `integration` build tag so `go build ./...` / `go test ./...` never see it,
 // and it self-skips when the stack is not reachable (so it is a no-op on any host
-// without Docker + msb + a brought-up platform).
+// without Docker + nono + a brought-up platform).
 //
 // Run it with: make test-integration   (go test -tags integration ./test/integration/...)
 //
@@ -80,15 +80,15 @@ func TestMain(m *testing.M) {
 	os.Exit(code)
 }
 
-// probeStack checks that Docker + msb are installed and the platform stack is
+// probeStack checks that Docker + nono are installed and the platform stack is
 // reachable. It returns (false, reason) when any precondition is missing so the
 // suite can skip with a clear message.
 func probeStack() (bool, string) {
 	if _, err := exec.LookPath("docker"); err != nil {
 		return false, "docker not on PATH"
 	}
-	if _, err := exec.LookPath("msb"); err != nil {
-		return false, "msb (Microsandbox) not on PATH"
+	if _, err := exec.LookPath("nono"); err != nil {
+		return false, "nono not on PATH"
 	}
 	// `docker info` must succeed (daemon up).
 	if out, err := runCmd(20*time.Second, "docker", "info"); err != nil {
@@ -182,8 +182,7 @@ func runCmd(timeout time.Duration, name string, args ...string) (string, error) 
 
 // run is the test-facing wrapper: it runs `ai <args> --json` from the optional
 // working directory, parses the envelope, and returns it with the exit code and
-// raw stderr. The --json flag is appended automatically. For `exec` (which needs
-// --json before the `--`) use runExec.
+// raw stderr. The --json flag is appended automatically.
 func run(test *testing.T, dir string, timeout time.Duration, args ...string) (Envelope, int, string) {
 	test.Helper()
 	args = append(args, "--json")
@@ -192,25 +191,6 @@ func run(test *testing.T, dir string, timeout time.Duration, args ...string) (En
 	if err != nil {
 		test.Fatalf("`ai %s` did not emit a JSON envelope (exit %d): %v\nstdout:\n%s\nstderr:\n%s",
 			strings.Join(args, " "), code, err, stdout, stderr)
-	}
-	return env, code, stderr
-}
-
-// runExec runs `ai exec [name] --json -- <argv...>` (placing --json before `--`
-// so it is not swallowed by the inner command).
-func runExec(test *testing.T, dir string, timeout time.Duration, name string, argv ...string) (Envelope, int, string) {
-	test.Helper()
-	args := []string{"exec"}
-	if name != "" {
-		args = append(args, name)
-	}
-	args = append(args, "--json", "--")
-	args = append(args, argv...)
-	stdout, stderr, code := runBinary(timeout, dir, args...)
-	env, err := decode(stdout)
-	if err != nil {
-		test.Fatalf("`ai exec` did not emit a JSON envelope (exit %d): %v\nstdout:\n%s\nstderr:\n%s",
-			code, err, stdout, stderr)
 	}
 	return env, code, stderr
 }
@@ -298,37 +278,6 @@ func truncate(value string, max int) string {
 		return value[:max] + "…"
 	}
 	return value
-}
-
-// isMsbVersionMismatch reports whether output describes the msb (Microsandbox) binary
-// being older than the DB schema it wrote — a host tooling gap (upgrade/reinit msb), not
-// a product defect, so the caller skips rather than fails.
-func isMsbVersionMismatch(output string) bool {
-	lowered := strings.ToLower(output)
-	return strings.Contains(lowered, "schema is newer than this msb binary") ||
-		strings.Contains(lowered, "is not in this binary's migration prefix") ||
-		(strings.Contains(lowered, "database schema") && strings.Contains(lowered, "newer"))
-}
-
-// isImageBuildInfraError reports whether output describes the workspace IMAGE BUILD failing
-// for an ENVIRONMENTAL reason — the container registry being unreachable / flaky (Docker Hub
-// EOF, DNS/TLS/timeout, "failed to resolve source metadata") — rather than a defect in the
-// project's Dockerfile. Those are host/network gaps, so the caller skips rather than fails.
-func isImageBuildInfraError(output string) bool {
-	lowered := strings.ToLower(output)
-	// Must be an image-build failure (not some other runtime error) AND look network-ish.
-	buildish := strings.Contains(lowered, "could not build the workspace image") ||
-		strings.Contains(lowered, "failed to resolve source metadata") ||
-		strings.Contains(lowered, "failed to solve")
-	networkish := strings.Contains(lowered, "registry-1.docker.io") ||
-		strings.Contains(lowered, "failed to do request") ||
-		strings.Contains(lowered, ": eof") ||
-		strings.Contains(lowered, "i/o timeout") ||
-		strings.Contains(lowered, "tls handshake") ||
-		strings.Contains(lowered, "connection refused") ||
-		strings.Contains(lowered, "no such host") ||
-		strings.Contains(lowered, "temporary failure in name resolution")
-	return buildish && networkish
 }
 
 // isLiteLLMKeyNotConfigured reports whether output describes the gateway lacking an

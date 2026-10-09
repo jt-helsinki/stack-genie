@@ -33,13 +33,12 @@ const (
 // json tags: yaml for the on-disk handle, json for the --json output envelope
 // (`ai list` emits it directly).
 type Workspace struct {
-	SchemaVersion  int             `json:"schema_version" yaml:"schema_version"`
-	ID             string          `json:"id" yaml:"id"`
-	Project        string          `json:"project" yaml:"project"`
-	MicrosandboxID string          `json:"microsandbox_id" yaml:"microsandbox_id"`
-	Status         WorkspaceStatus `json:"status" yaml:"status"`
-	Created        string          `json:"created" yaml:"created"`
-	LastStarted    string          `json:"last_started" yaml:"last_started"`
+	SchemaVersion int             `json:"schema_version" yaml:"schema_version"`
+	ID            string          `json:"id" yaml:"id"`
+	Project       string          `json:"project" yaml:"project"`
+	Status        WorkspaceStatus `json:"status" yaml:"status"`
+	Created       string          `json:"created" yaml:"created"`
+	LastStarted   string          `json:"last_started" yaml:"last_started"`
 }
 
 // ProjectsIndex is config/projects.yaml (global, §12.7): name → path.

@@ -10,10 +10,9 @@ name: release
 # The assets are named ai-<os>-<arch>, exactly what installers/install.sh downloads from
 # releases/latest/download, so `curl … | sh` always pulls the newest release.
 #
-# The binary links the Microsandbox Go SDK, a cgo binding, so CGO_ENABLED=1 and the build
-# is NOT freely cross-compilable: darwin/arm64 is built NATIVELY on a macOS (Apple Silicon)
-# runner, linux/amd64 natively on ubuntu, and linux/arm64 by cross-compiling on ubuntu with
-# the aarch64 GNU C toolchain. `make release` names the output from `go env GOOS/GOARCH`
+# The binary is pure Go (no cgo — the `ai` CLI wraps the external `nono` CLI via
+# os/exec, not a linked SDK), so every target cross-compiles freely from one ubuntu
+# runner via GOOS/GOARCH. `make release` names the output from `go env GOOS/GOARCH`
 # (which honor the GOOS/GOARCH env vars), so the per-target env below is all it needs.
 on:
   push:
@@ -71,44 +70,33 @@ jobs:
           tag_prefix: v
           dry_run: true # compute only — the release job creates the tag on success
 
-  # Build one native/cross binary per supported host arch (only when a version was cut).
-  # Each uploads dist/ai-<os>-<arch> as an artifact for the release job to collect.
+  # Build one cross-compiled binary per supported target (only when a version was cut).
+  # Pure Go, no cgo — every target cross-compiles from one ubuntu runner. Each uploads
+  # dist/ai-<os>-<arch> as an artifact for the release job to collect.
   build:
     needs: version
     if: ${{ needs.version.outputs.new_tag != '' }}
+    runs-on: ubuntu-latest
     strategy:
       fail-fast: true
       matrix:
         include:
-          - runner: macos-latest # Apple Silicon → native darwin/arm64
-            goos: darwin
+          - goos: darwin
             goarch: arm64
-            cross: false
-          - runner: ubuntu-latest # native linux/amd64
-            goos: linux
+          - goos: linux
             goarch: amd64
-            cross: false
-          - runner: ubuntu-latest # cross-compiled linux/arm64 (cgo via aarch64 gcc)
-            goos: linux
+          - goos: linux
             goarch: arm64
-            cross: true
-    runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
-      # cgo cross-compile to linux/arm64 needs the aarch64 GNU C toolchain.
-      - name: Install aarch64 cross toolchain
-        if: ${{ matrix.cross }}
-        run: sudo apt-get update && sudo apt-get install -y gcc-aarch64-linux-gnu
       - name: Build ${{ matrix.goos }}/${{ matrix.goarch }}
         env:
           VERSION: ${{ needs.version.outputs.new_tag }} # computed semver, injected via -ldflags
           GOOS: ${{ matrix.goos }}
           GOARCH: ${{ matrix.goarch }}
-          # A cross build must name the arm64 C compiler; native builds use the default.
-          CC: ${{ matrix.cross && 'aarch64-linux-gnu-gcc' || '' }}
         run: make release VERSION="$VERSION"
       - uses: actions/upload-artifact@v4
         with:

@@ -5,7 +5,6 @@ import (
 	"slices"
 	"strings"
 
-	"github.com/jt-helsinki/stack-genie/internal/apps"
 	"github.com/jt-helsinki/stack-genie/internal/config"
 )
 
@@ -40,64 +39,11 @@ func DefaultDirName(path string) string {
 // create` wizard/flags and the `ai ui` in-TUI create wizard (the TUI cannot import cli,
 // so these live here, a package both import).
 
-// SupportedOSes are the base OS templates the user picks from (arch §25). All three
-// ship; the user always picks one — none is applied silently.
-func SupportedOSes() []string {
-	return []string{"debian-trixie", "ubuntu", "alma"}
-}
-
-// osDisplayNames maps each SupportedOSes() key to a human-readable "name + version"
-// label, kept in sync with the pinned base image in each
-// internal/templates/files/dockerfiles/<key>/Dockerfile FROM line.
-var osDisplayNames = map[string]string{
-	"debian-trixie": "Debian 13 (Trixie)",
-	"ubuntu":        "Ubuntu 24.04 LTS",
-	"alma":          "AlmaLinux 10.2",
-}
-
-// OSDisplayName returns the human-readable "name + version" label for a SupportedOSes()
-// key (e.g. "debian-trixie" -> "Debian 13 (Trixie)"), for the create wizard's OS picker.
-// An unrecognized key is returned unchanged.
-func OSDisplayName(key string) string {
-	if label, ok := osDisplayNames[key]; ok {
-		return label
-	}
-	return key
-}
-
-// SupportedStacks are the extra software stacks (Python + Node + uv + Graphify are
-// baked into every base by default, so they are NOT stacks).
-func SupportedStacks() []string {
-	return []string{"go", "rust", "java", "maven", "deno"}
-}
-
-// SupportedAgentCLIs are the agent CLIs installable into a workspace (opencode is the
+// SupportedAgentCLIs are the agent CLIs installable on the host (opencode is the
 // default). hermes is a gateway/api-key agent like opencode/omp (always routes
 // through the gateway, never OAuth).
 func SupportedAgentCLIs() []string {
 	return []string{"opencode", "omp", "claude-code", "codex", "gemini", "hermes"}
-}
-
-// SupportedApps are the opt-in in-VM AI applications (default none).
-func SupportedApps() []string { return apps.Keys() }
-
-// SplitAgentsAndApps partitions the combined "Agent CLIs & AI apps" wizard selection
-// into agent CLIs vs in-VM app keys using the known option sets (SupportedAgentCLIs /
-// SupportedApps) — both create wizards present agents and apps on ONE multi-select
-// screen, so the split must not depend on selection order. Values in neither set are
-// dropped; each side keeps the order the values were selected in.
-func SplitAgentsAndApps(selected []string) (agentCLIs, appKeys []string) {
-	knownAgents := SupportedAgentCLIs()
-	knownApps := SupportedApps()
-	for _, value := range selected {
-		switch {
-		case slices.Contains(knownAgents, value):
-			agentCLIs = append(agentCLIs, value)
-		case slices.Contains(knownApps, value):
-			appKeys = append(appKeys, value)
-		}
-	}
-	return agentCLIs, appKeys
 }
 
 // AI-tool keys for the "AI tools" multi-select (like the agent-CLI list): the
