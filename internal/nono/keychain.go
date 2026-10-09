@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os/exec"
 	"runtime"
+	"strings"
 	"time"
 
 	"github.com/creack/pty"
@@ -41,6 +42,32 @@ func StoreCredential(name, value string) error {
 		return nil
 	default:
 		return errors.New("nono: credential storage is not implemented on " + runtime.GOOS)
+	}
+}
+
+// FindCredential reads back a value previously stored by StoreCredential. This is
+// the read-back counterpart StoreCredential itself never needed: a nono
+// env-credential-map reference is resolved by nono directly, so this process never
+// reads the value back — but a platform-wide infra secret that THIS process
+// consumes at launch time (e.g. the LiteLLM master/salt key) does. Unlike
+// storeCredentialDarwin's write path, `security -w` on READ prints the password
+// straight to stdout with no interactive prompt, so no pty is needed here.
+func FindCredential(name string) (string, error) {
+	switch runtime.GOOS {
+	case "darwin":
+		output, err := exec.Command("security", "find-generic-password", "-s", "nono", "-a", name, "-w").Output()
+		if err != nil {
+			return "", err
+		}
+		return strings.TrimRight(string(output), "\n"), nil
+	case "linux":
+		output, err := exec.Command("secret-tool", "lookup", "service", "nono", "username", name).Output()
+		if err != nil {
+			return "", err
+		}
+		return strings.TrimRight(string(output), "\n"), nil
+	default:
+		return "", errors.New("nono: credential storage is not implemented on " + runtime.GOOS)
 	}
 }
 

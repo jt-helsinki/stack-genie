@@ -18,8 +18,8 @@ import (
 
 	"github.com/jt-helsinki/stack-genie/internal/catalog"
 	"github.com/jt-helsinki/stack-genie/internal/console"
-	"github.com/jt-helsinki/stack-genie/internal/envfile"
 	"github.com/jt-helsinki/stack-genie/internal/litellm"
+	"github.com/jt-helsinki/stack-genie/internal/nono"
 	"github.com/jt-helsinki/stack-genie/internal/output"
 	"github.com/jt-helsinki/stack-genie/internal/paths"
 	"github.com/jt-helsinki/stack-genie/internal/runtime"
@@ -80,8 +80,9 @@ func coreServices() []serviceSpec {
 // the user has explicitly enabled them at `ai setup`. The set is derived from the
 // internal/services registry (its optional services), so adding a new optional
 // service is a single registry edit (plus its ensure*/stop wiring). The optional
-// MECHANISM is retained for future host optional services, but there are currently
-// NONE: Open WebUI moved to a per-workspace in-VM app and Odysseus was removed.
+// MECHANISM is retained for a future genuinely-optional host service, but there are
+// currently NONE: Open WebUI is a core service with no setup picker, and Odysseus
+// was removed from the platform entirely.
 func optionalServices() []serviceSpec {
 	return serviceSpecsFor(services.OptionalServiceNames())
 }
@@ -239,6 +240,16 @@ const (
 	// trailing slash so /v1/... is forwarded verbatim.
 	proxyModelTargetURL = "http://" + litellmContainer + ":4000"
 
+	// Open WebUI is the chat UI for LiteLLM, always installed as a CORE service
+	// (no setup picker — see ensureOpenWebUI). INTERNAL-ONLY, fronted by nginx at
+	// chat.<domain>.
+	openWebUIContainer = "aip-open-webui"
+	openWebUIVolume    = "aip-open-webui-data"
+	// openWebUITargetURL routes Open WebUI's own model calls through the SAME
+	// gateway path every workspace agent uses (nginx → LiteLLM, so Headroom's
+	// in-process guardrail still applies) rather than hitting LiteLLM directly.
+	openWebUITargetURL = "http://" + proxyContainer + "/v1"
+
 	// Presidio backs LiteLLM's always-on PII guardrail (arch §17). The analyzer
 	// detects PII and the anonymizer masks it; LiteLLM reaches both by name on the
 	// shared network via PRESIDIO_*_API_BASE (port 3000, the image default). They
@@ -301,8 +312,8 @@ const (
 // nginx upstream either — it is a LiteLLM guardrail LiteLLM calls by name. Every location
 // forwards to LiteLLM, never to aip-headroom.
 //
-// litellm.<domain> is now the ONLY host UI vhost: Open WebUI moved to a per-workspace
-// in-VM app and Odysseus was removed from the platform.
+// litellm.<domain>, valkey.<domain>, and chat.<domain> (Open WebUI, a core service)
+// are the host UI vhosts today; Odysseus was removed from the platform entirely.
 //
 // All blocks are tuned for LLM/WebSocket traffic: HTTP/1.1, disabled response
 // buffering so streamed (SSE) responses flush promptly, long read/send timeouts,
@@ -746,6 +757,117 @@ func ensureHeadroom(prober runtime.Prober, containerRuntime string) error {
 	return nil
 }
 
+// currentRequireUIAuth resolves whether this host's persisted deployment role
+// requires a login wall on the platform's web UIs (runtime.RequireUIAuth — true
+// only for server), mirroring currentBindHost/reconcileDomain's same
+// runtime.Load() pattern. An absent/unreadable runtime.yaml defaults to false
+// (open), matching every other role-driven default in this file.
+func currentRequireUIAuth() bool {
+	info, err := runtime.Load()
+	if err != nil || info == nil {
+		return false
+	}
+	return runtime.RequireUIAuth(info.Role)
+}
+
+// openWebUIKeyAlias is the stable LiteLLM key_alias Open WebUI's scoped virtual key
+// is minted under — re-launching revokes+re-mints in place rather than
+// accumulating keys, mirroring the per-project workspace key convention
+// (credentialName in internal/workspace).
+const openWebUIKeyAlias = "aip-open-webui"
+
+// ensureOpenWebUIKeyFn is the injectable seam over ensureOpenWebUIKey so tests
+// exercise ensureOpenWebUI's use of the returned key without a real LiteLLM
+// admin API call.
+var ensureOpenWebUIKeyFn = ensureOpenWebUIKey
+
+// ensureOpenWebUIKey mints a fresh LiteLLM virtual key scoped to Open WebUI,
+// revoking any prior one under the same alias first. A virtual key (unlike the
+// LITELLM_MASTER_KEY) can only call inference routes — it has no admin
+// capability (minting/revoking keys, reading/changing provider credentials) —
+// so a compromised Open WebUI instance (an XSS, a dependency vuln, anyone who
+// reaches an open admin-signup window) gets chat access, never gateway admin.
+// Best-effort: a mint failure returns "" and Open WebUI just runs unauthenticated
+// to the gateway (LiteLLM then accepts the request with no key).
+func ensureOpenWebUIKey(prober runtime.Prober) string {
+	keyManager := litellm.NewKeyManager(prober)
+	_ = keyManager.DeleteKeyByAlias(openWebUIKeyAlias)
+	key, err := keyManager.GenerateKey(litellm.KeyScope{Alias: openWebUIKeyAlias})
+	if err != nil {
+		return ""
+	}
+	return key
+}
+
+// ensureOpenWebUI runs the Open WebUI chat UI INTERNAL-ONLY (no host publish):
+// users reach it at the Host-based vhost chat.<domain>:18787 THROUGH the nginx
+// gateway, and the UI sends model traffic to OPENAI_API_BASE_URL=http://aip-proxy/v1
+// (NOT direct to LiteLLM) — the same path workspace agents use, so every request
+// traverses LiteLLM's in-process guardrails (Headroom, Presidio, etc.). It is a
+// CORE service (unlike its old per-workspace/optional incarnations): always
+// installed, never a setup choice — there is no picker, no enable/disable, no
+// optional-services gate. The built-in Ollama backend and the login wall are
+// disabled unless requireAuth (server role). The gateway key is a DEDICATED
+// SCOPED virtual key (ensureOpenWebUIKey) — NEVER the LITELLM_MASTER_KEY: handing
+// a third-party web app the admin key would let a compromised instance mint/revoke
+// keys and read every provider credential, not just make chat requests. Passed as
+// ENV PASSTHROUGH (`-e OPENAI_API_KEY`, no value) so it never appears in argv or on
+// platform disk. Pulled image (no build). Idempotent.
+//
+// Reverse-proxy env: WEBUI_URL is set to the chat vhost's public URL so the app
+// builds correct absolute links behind nginx, and CORS_ALLOW_ORIGIN matches it so
+// the websocket handshake is not rejected (Open WebUI returns 403 on a CORS
+// mismatch).
+func ensureOpenWebUI(prober runtime.Prober, containerRuntime, domain string, requireAuth bool) error {
+	if containerRunning(prober, containerRuntime, openWebUIContainer) {
+		return nil
+	}
+	_, _ = prober.Run(containerRuntime, "rm", "-f", openWebUIContainer)
+	publicURL := "http://chat." + domain + ":" + proxyHostPort // the chat.<domain> vhost
+	// Role-based UI auth (runtime.RequireUIAuth): a server binds 0.0.0.0 and is
+	// network-exposed, so WEBUI_AUTH is true (the first signup becomes the admin —
+	// ENABLE_SIGNUP is left at its default so that first account can register).
+	// standalone/client bind loopback and run OPEN (no login wall) for a smooth
+	// single-user local experience.
+	//
+	// KNOWN RESIDUAL RISK (server role only): Open WebUI auto-disables further
+	// signups the moment the FIRST account registers (docs.openwebui.com), so this
+	// is a narrow, ONE-TIME race on first boot — not a persistent open window — but
+	// whoever reaches chat.<domain> first after this launch becomes the admin.
+	// There is no officially documented env var to pre-seed a specific admin
+	// account before first boot, so this is not fixed here: on server role, visit
+	// chat.<domain> and complete the first signup yourself promptly after `ai
+	// setup`/`ai services start open-webui`, before exposing the host publicly.
+	webuiAuth := "false"
+	if requireAuth {
+		webuiAuth = "true"
+	}
+	args := []string{
+		"run", "-d", "--name", openWebUIContainer,
+		"--network", platformNetwork,
+		"-v", openWebUIVolume + ":/app/backend/data",
+		"-e", "OPENAI_API_BASE_URL=" + openWebUITargetURL,
+		"-e", "ENABLE_OLLAMA_API=false",
+		"-e", "WEBUI_AUTH=" + webuiAuth,
+		// Reverse-proxy public URL + matching CORS origin so links + websockets work
+		// behind the chat.<domain> vhost.
+		"-e", "WEBUI_URL=" + publicURL,
+		"-e", "CORS_ALLOW_ORIGIN=" + publicURL,
+	}
+	// A dedicated scoped key, never the master key (see ensureOpenWebUI's doc
+	// comment) — passed via env passthrough so the value stays out of argv (and
+	// platform disk).
+	if key := ensureOpenWebUIKeyFn(prober); key != "" {
+		_ = os.Setenv("OPENAI_API_KEY", key)
+		args = append(args, "-e", "OPENAI_API_KEY")
+	}
+	args = append(args, containerImage("open-webui"))
+	if _, err := prober.Run(containerRuntime, args...); err != nil {
+		return serviceStartError("Open WebUI")
+	}
+	return nil
+}
+
 // ensureDNS runs the aip-dns CoreDNS resolver on the shared network, published to
 // the host loopback at dnsHostPort on BOTH udp/53 and tcp/53 so microVMs (booted
 // with --dns-nameserver DNSNameserver) forward their DNS there — including the
@@ -895,6 +1017,8 @@ func serviceContainers(service string) []string {
 		return []string{redisInsightContainer}
 	case "headroom":
 		return []string{headroomContainer}
+	case "open-webui":
+		return []string{openWebUIContainer}
 	case "proxy":
 		return []string{proxyContainer}
 	case "dns":
@@ -1070,27 +1194,52 @@ func generateMasterKey() string {
 	return "sk-" + hex.EncodeToString(buffer)
 }
 
-// persistLiteLLMInfraKeys best-effort writes the current process-env
-// LITELLM_MASTER_KEY + LITELLM_SALT_KEY to the 0600 ~/.ai-platform/.ai-platform.env
-// so they survive a full container-down + fresh-process relaunch (see the call site
-// in ensureLiteLLM). Salt-key stability is a correctness requirement — a changed
-// salt orphans stored provider credentials — and a stable master key keeps workspace
-// scoped-key minting working across recreates. The UI password is intentionally
-// excluded: it stays a user opt-in (offerPersistLiteLLMSecrets). envfile.Write MERGES
-// (other keys/lines are preserved), so this only ever updates these two entries.
-// Never returns an error — a persistence failure must not fail the reconcile.
+// persistLiteLLMInfraKeys best-effort stores the current process-env
+// LITELLM_MASTER_KEY + LITELLM_SALT_KEY in the host OS keychain
+// (internal/nono.StoreCredential) so they survive a full container-down +
+// fresh-process relaunch (see the call site in ensureLiteLLM) without ever
+// touching platform disk. Salt-key stability is a correctness requirement — a
+// changed salt orphans stored provider credentials — and a stable master key
+// keeps workspace scoped-key minting working across recreates. The UI password is
+// intentionally excluded: unlike these two, nono has no login/attach step where a
+// keychain credential-name reference alone would do — this process needs the
+// plaintext value itself — so it stays a user opt-in persisted to the 0600 env
+// file instead (offerPersistLiteLLMSecrets). Never returns an error — a
+// persistence failure must not fail the reconcile.
 func persistLiteLLMInfraKeys() {
-	secrets := map[string]string{}
 	if value := os.Getenv("LITELLM_MASTER_KEY"); value != "" {
-		secrets["LITELLM_MASTER_KEY"] = value
+		_ = storeCredentialFn("LITELLM_MASTER_KEY", value)
 	}
 	if value := os.Getenv("LITELLM_SALT_KEY"); value != "" {
-		secrets["LITELLM_SALT_KEY"] = value
+		_ = storeCredentialFn("LITELLM_SALT_KEY", value)
 	}
-	if len(secrets) == 0 {
-		return
+}
+
+// storeCredentialFn/findCredentialFn are the injectable seams over
+// nono.StoreCredential/FindCredential so unit tests exercise the LiteLLM
+// infra-key keychain persistence without touching a real OS keychain.
+var (
+	storeCredentialFn = nono.StoreCredential
+	findCredentialFn  = nono.FindCredential
+)
+
+// LoadLiteLLMInfraKeysFromKeychain fills LITELLM_MASTER_KEY/LITELLM_SALT_KEY into
+// this process's environment from the host OS keychain when not already set
+// (existing env wins, mirroring envfile.Load's fill-gaps-only semantics) — the
+// read-back counterpart to persistLiteLLMInfraKeys' write. Called once at CLI
+// startup (root.go, alongside envfile.Load) so a stable master/salt key survives a
+// full container-down + fresh-process relaunch without ever touching platform
+// disk. Best-effort: a missing/locked keychain entry is not an error — ensureLiteLLM
+// mints a fresh key when neither this nor the running container has one.
+func LoadLiteLLMInfraKeysFromKeychain() {
+	for _, key := range []string{"LITELLM_MASTER_KEY", "LITELLM_SALT_KEY"} {
+		if os.Getenv(key) != "" {
+			continue
+		}
+		if value, err := findCredentialFn(key); err == nil && value != "" {
+			_ = os.Setenv(key, value)
+		}
 	}
-	_ = envfile.Write(secrets)
 }
 
 // LiteLLMRunning reports whether the LiteLLM gateway container is up — used by
@@ -1221,18 +1370,26 @@ func RelaunchLiteLLMWithAuth(password, masterKey string) error {
 	// Best-effort removal of the running (likely unsecured) container.
 	_ = exec.Command(containerRuntime.Name, "rm", "-f", litellmContainer).Run() // #nosec G204 — fixed args
 
+	// Keep the salt key stable across relaunches (reuse the running container's,
+	// else mint one) so already-stored DB credentials remain decryptable.
+	saltKey := resolveLiteLLMSaltKey()
 	// #nosec G204 — fixed argv; secrets ride in the environment, not the command line.
 	command := exec.Command(containerRuntime.Name, litellmRunArgs(configPath, currentBindHost(), containerImage("litellm"))...)
 	command.Env = append(os.Environ(),
 		"UI_PASSWORD="+password,
 		"LITELLM_MASTER_KEY="+masterKey,
-		// Keep the salt key stable across relaunches (reuse the running container's,
-		// else mint one) so already-stored DB credentials remain decryptable.
-		"LITELLM_SALT_KEY="+resolveLiteLLMSaltKey(),
+		"LITELLM_SALT_KEY="+saltKey,
 	)
 	if _, err := command.CombinedOutput(); err != nil {
 		return serviceStartError("LiteLLM gateway")
 	}
+	// Persist the (possibly freshly-minted) master/salt key to the OS keychain so
+	// they survive a later restart — mirrors ensureLiteLLM's own persistLiteLLMInfraKeys
+	// call, needed here too since this relaunch path sets them straight on the
+	// child process's Env rather than via os.Setenv (persistLiteLLMInfraKeys reads
+	// os.Getenv, which would miss them). Best-effort: never fails the password change.
+	_ = storeCredentialFn("LITELLM_MASTER_KEY", masterKey)
+	_ = storeCredentialFn("LITELLM_SALT_KEY", saltKey)
 	// LiteLLM was just recreated, so on the aip-net bridge it likely came up on a
 	// NEW container IP. nginx resolves the literal `aip-litellm` proxy_pass upstream
 	// to an IP at config-LOAD and caches it for the worker's lifetime (no `resolver`
@@ -1416,10 +1573,15 @@ func (services realServices) Reconcile(providerConfig, bindHost string, optional
 	// The platform base domain the nginx UI vhost hangs off (runtime.yaml domain,
 	// default aip.local).
 	domain := reconcileDomain()
-	// There are currently NO optional host services to reconcile (Open WebUI moved to
-	// a per-workspace in-VM app and Odysseus was removed). The optional mechanism is
-	// retained (optional is still threaded through for status reporting), so a future
-	// host optional service would be brought up here, BEFORE the nginx proxy.
+	// Open WebUI: a CORE service (no setup picker, no enable/disable) — always
+	// installed, brought up here BEFORE the nginx proxy (nginx resolves its
+	// chat.<domain> upstream at config-load time, so the container must already
+	// exist). The optional-services mechanism itself is retained (still threaded
+	// through for status reporting) for a FUTURE genuinely-optional host service.
+	progress("  • Open WebUI (chat UI → LiteLLM)…")
+	if err := ensureOpenWebUI(services.prober, containerRuntime.Name, domain, currentRequireUIAuth()); err != nil {
+		return nil, err
+	}
 	// Platform-managed host Python venv (~/.ai-platform/venv): the single home for
 	// platform-wide host Python tooling — the omlx local-inference backend, the SOLE
 	// local-inference runtime on this platform. Created best-effort here so it exists
@@ -1677,6 +1839,12 @@ func (services realServices) serviceHealthy(name string) bool {
 			return false
 		}
 		return containerRunning(services.prober, containerRuntime.Name, headroomContainer)
+	case "open-webui":
+		containerRuntime, err := runtime.ContainerRuntimeName(services.prober)
+		if err != nil {
+			return false
+		}
+		return containerRunning(services.prober, containerRuntime.Name, openWebUIContainer)
 	case "proxy":
 		// Live readiness probe (arch §2.3): the nginx gateway is ready once it is
 		// running AND actually forwarding — an HTTP GET through the host entry
@@ -1833,6 +2001,14 @@ func (services realServices) Control(action, service string) ([]ServiceStatus, e
 				}
 				return stopContainer(litellmDBContainer)
 			}},
+		// AFTER litellm: ensureOpenWebUI reads LiteLLM's master key to authenticate
+		// its own gateway traffic (best-effort — it still starts, just unauthenticated
+		// to the gateway, if litellm isn't up yet).
+		{"open-webui",
+			func() error {
+				return ensureOpenWebUI(services.prober, containerRuntime.Name, reconcileDomain(), currentRequireUIAuth())
+			},
+			func() error { return stopContainer(openWebUIContainer) }},
 		{"proxy",
 			func() error {
 				return ensureProxy(services.prober, containerRuntime.Name, bindHost, reconcileDomain())
@@ -1875,7 +2051,7 @@ func (services realServices) Control(action, service string) ([]ServiceStatus, e
 			// (and emits the companion-container hint) before delegating here — but
 			// kept as a defensive guard for direct callers.
 			return nil, output.Errorf(output.ExitInvalidInput,
-				"unknown container service %q (expected one of: presidio, valkey, redisinsight, headroom, litellm, proxy, dns — omlx is host-native)", service)
+				"unknown container service %q (expected one of: presidio, valkey, redisinsight, headroom, litellm, open-webui, proxy, dns — omlx is host-native)", service)
 		}
 	}
 

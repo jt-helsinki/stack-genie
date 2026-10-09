@@ -80,8 +80,10 @@ func TestSyncHostsConsentWrites(t *testing.T) {
 	if gotPath != path {
 		t.Fatalf("write path %q != %q", gotPath, path)
 	}
-	if !bytes.Contains(gotContent, []byte("litellm.aip.local")) || bytes.Contains(gotContent, []byte("chat.aip.local")) {
-		t.Fatalf("planned bytes should contain litellm.aip.local and not chat.aip.local:\n%s", gotContent)
+	// chat.aip.local (Open WebUI) is a CORE service UI vhost now, so it belongs in
+	// the managed block alongside litellm.aip.local.
+	if !bytes.Contains(gotContent, []byte("litellm.aip.local")) || !bytes.Contains(gotContent, []byte("chat.aip.local")) {
+		t.Fatalf("planned bytes should contain both litellm.aip.local and chat.aip.local:\n%s", gotContent)
 	}
 	if !bytes.Contains(gotContent, []byte("127.0.0.1\tlocalhost")) {
 		t.Fatalf("planned bytes must preserve existing entries:\n%s", gotContent)

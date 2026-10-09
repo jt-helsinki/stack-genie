@@ -218,6 +218,23 @@ var registry = []Service{
 		},
 	},
 	{
+		// Open WebUI is a CORE service (not opt-in — there is no setup picker for
+		// it): always installed, always reconciled, started/stopped with the rest
+		// of the tier. INTERNAL-ONLY, fronted by nginx at chat.<domain>:GatewayPort
+		// (root IS the console) like every other UI vhost.
+		Name:        "open-webui",
+		Endpoint:    Endpoint{HasConsole: true, UISubdomain: "chat"},
+		LogScope:    "open-webui",
+		UISubdomain: "chat", // chat.<domain> → the Open WebUI chat UI
+		Components: []Component{
+			{
+				ImageKey:  "open-webui",
+				Container: "aip-open-webui",
+				Pin:       Pin{Mode: ModeContainer, Image: "ghcr.io/open-webui/open-webui", Tag: "latest"},
+			},
+		},
+	},
+	{
 		Name:     "proxy",
 		Endpoint: Endpoint{Port: 18787}, // aip-proxy nginx gateway entry, no UI
 		LogScope: "proxy",
@@ -413,6 +430,7 @@ type UIVhost struct {
 var uiUpstreams = map[string]string{
 	"litellm":      "http://aip-litellm:4000",
 	"redisinsight": "http://aip-redisinsight:5540",
+	"open-webui":   "http://aip-open-webui:8080",
 }
 
 // UIVhosts returns every service that is served as a Host-based UI vhost (those

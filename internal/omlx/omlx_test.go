@@ -24,6 +24,16 @@ func swapPyenv(test *testing.T) {
 	test.Cleanup(func() { pyenvEnsureVersionFn, pyenvPipInstallFn = ensureVersion, pip })
 }
 
+// swapLinkAdminWebAssets neutralizes Install's post-install linking step so a test
+// never shells out to a real (likely absent, in a test's temp HOME) venv python
+// interpreter.
+func swapLinkAdminWebAssets(test *testing.T) {
+	test.Helper()
+	original := linkAdminWebAssetsFn
+	test.Cleanup(func() { linkAdminWebAssetsFn = original })
+	linkAdminWebAssetsFn = func() {}
+}
+
 // resolveWheel picks the NEWEST cp-tagged wheel asset from the latest release.
 func TestResolveWheelPicksNewestPythonVersion(test *testing.T) {
 	swapReleaseGet(test)
@@ -66,6 +76,7 @@ func TestResolveWheelNetworkError(test *testing.T) {
 func TestInstallPinsVenvAndInstallsWheel(test *testing.T) {
 	swapReleaseGet(test)
 	swapPyenv(test)
+	swapLinkAdminWebAssets(test)
 	releaseGet = func(string) ([]byte, error) {
 		return []byte(`{"tag_name":"v0.6.4","assets":[{"name":"omlx-0.6.4-cp312-cp312-macosx_15_0_universal2.whl","browser_download_url":"https://example/cp312.whl"}]}`), nil
 	}
@@ -82,6 +93,105 @@ func TestInstallPinsVenvAndInstallsWheel(test *testing.T) {
 	}
 	if len(installed) != 1 || installed[0] != "https://example/cp312.whl" {
 		test.Errorf("installed = %v, want the resolved wheel URL", installed)
+	}
+}
+
+// swapResolvePackageDir stubs the python-interpreter lookup with a fixed table,
+// so linkAdminWebAssets is tested against real temp directories without a real
+// Python interpreter.
+func swapResolvePackageDir(test *testing.T, table map[string]string) {
+	test.Helper()
+	original := resolvePackageDirFn
+	test.Cleanup(func() { resolvePackageDirFn = original })
+	resolvePackageDirFn = func(_, pkg string) (string, error) {
+		dir, ok := table[pkg]
+		if !ok {
+			return "", errors.New("no such package: " + pkg)
+		}
+		return dir, nil
+	}
+}
+
+// TestLinkAdminWebAssetsCreatesSymlinksWhenMissing is a regression test for a real
+// bug found live: omlx's admin console 404s/throws TemplateNotFound because its
+// wheel never populates omlx/admin/templates or omlx/admin/static — the actual
+// files ship in a separate omlx_web package. linkAdminWebAssets must symlink both
+// missing directories to their omlx_web equivalents.
+func TestLinkAdminWebAssetsCreatesSymlinksWhenMissing(test *testing.T) {
+	root := test.TempDir()
+	omlxDir := filepath.Join(root, "omlx")
+	webDir := filepath.Join(root, "omlx_web")
+	for _, dir := range []string{filepath.Join(omlxDir, "admin"), filepath.Join(webDir, "templates"), filepath.Join(webDir, "static")} {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			test.Fatalf("MkdirAll(%s): %v", dir, err)
+		}
+	}
+	swapResolvePackageDir(test, map[string]string{"omlx": omlxDir, "omlx_web": webDir})
+
+	linkAdminWebAssets()
+
+	for _, name := range []string{"templates", "static"} {
+		link := filepath.Join(omlxDir, "admin", name)
+		info, err := os.Lstat(link)
+		if err != nil {
+			test.Fatalf("expected a symlink at %s: %v", link, err)
+		}
+		if info.Mode()&os.ModeSymlink == 0 {
+			test.Errorf("%s must be a symlink, got mode %v", link, info.Mode())
+		}
+		resolved, err := filepath.EvalSymlinks(link)
+		// EvalSymlinks both sides: on macOS test.TempDir() returns a /var/... path
+		// that is itself a symlink to /private/var/..., so comparing the resolved
+		// link against the UN-resolved expected path would spuriously fail there.
+		wantResolved, wantErr := filepath.EvalSymlinks(filepath.Join(webDir, name))
+		if err != nil || wantErr != nil || resolved != wantResolved {
+			test.Errorf("%s resolves to %q (err=%v), want %q (err=%v)", link, resolved, err, wantResolved, wantErr)
+		}
+	}
+}
+
+// TestLinkAdminWebAssetsLeavesExistingDirAlone pins the self-correcting half of
+// the fix: a future omlx release that ships its OWN admin/templates must never be
+// overwritten or replaced by this workaround.
+func TestLinkAdminWebAssetsLeavesExistingDirAlone(test *testing.T) {
+	root := test.TempDir()
+	omlxDir := filepath.Join(root, "omlx")
+	webDir := filepath.Join(root, "omlx_web")
+	realTemplates := filepath.Join(omlxDir, "admin", "templates")
+	if err := os.MkdirAll(realTemplates, 0o755); err != nil {
+		test.Fatalf("MkdirAll: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Join(webDir, "templates"), 0o755); err != nil {
+		test.Fatalf("MkdirAll: %v", err)
+	}
+	swapResolvePackageDir(test, map[string]string{"omlx": omlxDir, "omlx_web": webDir})
+
+	linkAdminWebAssets()
+
+	info, err := os.Lstat(realTemplates)
+	if err != nil {
+		test.Fatalf("Lstat: %v", err)
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		test.Error("an already-present admin/templates must never be replaced with a symlink")
+	}
+}
+
+// TestLinkAdminWebAssetsNoopWhenOmlxWebAbsent pins the case this workaround is
+// supposed to self-retire for: once omlx ships its own assets and drops omlx_web,
+// resolving it fails and nothing is linked — no panic, no stale link.
+func TestLinkAdminWebAssetsNoopWhenOmlxWebAbsent(test *testing.T) {
+	root := test.TempDir()
+	omlxDir := filepath.Join(root, "omlx")
+	if err := os.MkdirAll(filepath.Join(omlxDir, "admin"), 0o755); err != nil {
+		test.Fatalf("MkdirAll: %v", err)
+	}
+	swapResolvePackageDir(test, map[string]string{"omlx": omlxDir}) // no omlx_web entry
+
+	linkAdminWebAssets()
+
+	if _, err := os.Lstat(filepath.Join(omlxDir, "admin", "templates")); err == nil {
+		test.Error("must not create a templates link when omlx_web cannot be resolved")
 	}
 }
 

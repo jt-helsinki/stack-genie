@@ -9,6 +9,7 @@ import (
 
 	"github.com/jt-helsinki/stack-genie/internal/envfile"
 	"github.com/jt-helsinki/stack-genie/internal/output"
+	"github.com/jt-helsinki/stack-genie/internal/setup"
 	"github.com/jt-helsinki/stack-genie/internal/ui"
 	"github.com/jt-helsinki/stack-genie/internal/version"
 	"github.com/spf13/cobra"
@@ -51,11 +52,17 @@ func Execute() int {
 			emitter.JSON = flags.json
 			emitter.Plain = flags.plain
 			// Load ~/.ai-platform/.ai-platform.env into this process's environment FIRST (before
-			// any command runs), so persisted platform secrets (UI_PASSWORD,
-			// LITELLM_MASTER_KEY) are present for the container env-passthrough
-			// launches — WITHOUT the user having to edit their shell rc. Existing
-			// env wins (the file only fills gaps); a missing file is a no-op.
+			// any command runs), so the persisted UI_PASSWORD is present for the
+			// container env-passthrough launch — WITHOUT the user having to edit
+			// their shell rc. Existing env wins (the file only fills gaps); a
+			// missing file is a no-op.
 			_ = envfile.Load()
+			// The master/salt key live in the OS keychain instead (never on disk) —
+			// fill them in the same fill-gaps way, right after the env file.
+			setup.LoadLiteLLMInfraKeysFromKeychain()
+			// Likewise the omlx server's own API key (needed to authenticate this
+			// CLI's own requests to it, e.g. a health probe or `ai models refresh`).
+			setup.LoadOmlxAPIKeyFromKeychain()
 			// Apply the persisted UI theme so every command's prompts, forms, and
 			// headings match the user's choice (falls back to the default theme).
 			_ = ui.Apply(ui.LoadThemeName())

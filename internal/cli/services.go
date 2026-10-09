@@ -147,7 +147,7 @@ func newServicesToggleCmd(action string, em *output.Emitter, exit *int) *cobra.C
 			deps := setup.RealDeps(goruntime.GOOS, goruntime.GOARCH, nowRFC3339)
 			if len(setup.OptionalServiceNames()) == 0 {
 				*exit = em.Failure("services."+action, output.Errorf(output.ExitInvalidInput,
-					"there are no optional host services to %s (Open WebUI is now a per-workspace in-VM app; Odysseus was removed)", action))
+					"there are no optional host services to %s (Open WebUI is a core service, always on, with no enable/disable; Odysseus was removed)", action))
 				return nil
 			}
 			service := ""

@@ -19,6 +19,8 @@ package setup
 // are exercised only on a provisioned host.
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"fmt"
 	"net/http"
 	"os"
@@ -114,6 +116,7 @@ func startOmlxServerHost() error {
 			"omlx is not installed — %s; then run `ai services start omlx`",
 			strings.Join(omlx.InstallGuidance(), "; "))
 	}
+	ensureOmlxAPIKey()
 	hostNativeProgressWriter("  • starting the omlx local-inference server (best-effort)…")
 	manager := omlxManagerFn()
 	if _, err := manager.EnsureServed(); err != nil {
@@ -129,6 +132,92 @@ func startOmlxServerHost() error {
 		hostNativeProgressWriter(fmt.Sprintf("      omlx models synced: +%d -%d", len(result.Added), len(result.Deleted)))
 	}
 	return nil
+}
+
+// ensureOmlxAPIKey mints a persistent OMLX_API_KEY (OS keychain, mirroring
+// persistLiteLLMInfraKeys) the first time omlx is started, or loads an already-
+// minted one into this process's env. omlx REFUSES to bind to a non-loopback host
+// without one (RealRunner.Start binds 0.0.0.0 so the LiteLLM CONTAINER can reach it
+// via host.docker.internal — see its own doc comment): with no key, the server
+// process exits immediately ("Configuration error: An API key is required when
+// binding to a non-loopback host"), which looks exactly like "omlx never starts"
+// from the outside since startOmlxServerHost's caller discards the error. Once in
+// this process's env, RealRunner.Start's os.Environ() passthrough carries the key
+// to the omlx subprocess, and omlx.APIKey() (which already checks OMLX_API_KEY
+// first, mirroring omlx's own precedence) picks up the SAME value to authenticate
+// this CLI's own requests to the server. Before generating anything, it ADOPTS
+// whatever key omlx itself already reports (omlx.APIKey(), which falls through to
+// its own settings.json) — a user may already have set an admin-console password
+// through omlx's OWN admin panel before this platform ever minted one; generating
+// a fresh random key regardless would silently invalidate it and lock them out.
+// Best-effort: never fails — an unset key just means the next start attempt mints
+// one fresh.
+func ensureOmlxAPIKey() {
+	if os.Getenv("OMLX_API_KEY") != "" {
+		return
+	}
+	if value, err := findCredentialFn("OMLX_API_KEY"); err == nil && value != "" {
+		_ = os.Setenv("OMLX_API_KEY", value)
+		return
+	}
+	if value := omlx.APIKey(); value != "" {
+		_ = os.Setenv("OMLX_API_KEY", value)
+		_ = storeCredentialFn("OMLX_API_KEY", value)
+		return
+	}
+	key := generateOmlxAPIKey()
+	_ = os.Setenv("OMLX_API_KEY", key)
+	_ = storeCredentialFn("OMLX_API_KEY", key)
+}
+
+// OmlxAPIKeyConfigured reports whether an OMLX_API_KEY is already persisted in the
+// OS keychain, independent of this process's own env — a pure, read-only check
+// (unlike ensureOmlxAPIKey, it never mints one). `ai setup` reads this BEFORE the
+// reconcile runs (which may itself auto-mint one via ensureOmlxAPIKey) to decide
+// whether to offer the one-time interactive password prompt: once a key exists —
+// auto-generated or user-chosen — later `ai setup` runs must never re-prompt
+// (mirrors LiteLLM's LiteLLMUISecured check and its own "turned `ai setup` re-runs
+// into a hang" lesson).
+func OmlxAPIKeyConfigured() bool {
+	value, err := findCredentialFn("OMLX_API_KEY")
+	return err == nil && value != ""
+}
+
+// SetOmlxAPIKey sets a user-chosen OMLX_API_KEY in this process's env AND persists
+// it to the OS keychain (`ai setup`'s interactive password prompt). The caller
+// MUST restart omlx afterward (ControlService(deps, "restart", "omlx")) for an
+// already-running server to actually adopt it — like LiteLLM's admin password, a
+// running process never observes an env var change on its own.
+func SetOmlxAPIKey(key string) {
+	_ = os.Setenv("OMLX_API_KEY", key)
+	_ = storeCredentialFn("OMLX_API_KEY", key)
+}
+
+// generateOmlxAPIKey returns a random omlx API key, mirroring generateSaltKey's
+// shape (a fixed prefix + 24 random bytes hex-encoded).
+func generateOmlxAPIKey() string {
+	buffer := make([]byte, 24)
+	if _, err := rand.Read(buffer); err != nil {
+		return "omlx-aip-fallback-key"
+	}
+	return "omlx-" + hex.EncodeToString(buffer)
+}
+
+// LoadOmlxAPIKeyFromKeychain fills OMLX_API_KEY into this process's environment
+// from the OS keychain when not already set (read-only — it never mints one; that
+// is ensureOmlxAPIKey's job, run only on the start path). Called once at CLI
+// startup (root.go, alongside the LiteLLM infra-key loader) so every `ai` command —
+// not just `ai setup`/`ai services start omlx` — can authenticate its own requests
+// to an already-running omlx server (e.g. `ai doctor`/`ai services status`'s health
+// probe), which would otherwise send no Authorization header to a key-protected
+// server and misreport it as down.
+func LoadOmlxAPIKeyFromKeychain() {
+	if os.Getenv("OMLX_API_KEY") != "" {
+		return
+	}
+	if value, err := findCredentialFn("OMLX_API_KEY"); err == nil && value != "" {
+		_ = os.Setenv("OMLX_API_KEY", value)
+	}
 }
 
 // stopOmlxServerHost stops the host-native omlx server for `ai services stop

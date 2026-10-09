@@ -556,41 +556,69 @@ func TestGenerateMasterKey(test *testing.T) {
 }
 
 // TestPersistLiteLLMInfraKeysWritesMasterAndSalt verifies the master + salt keys in
-// the process env are written to the 0600 env file (so they survive a container-down
-// relaunch) while the UI password is deliberately NOT persisted.
+// the process env are stored to the OS keychain (so they survive a container-down
+// relaunch) while the UI password is deliberately NOT persisted at all by this
+// function (it stays a user opt-in to the env file, handled elsewhere).
 func TestPersistLiteLLMInfraKeysWritesMasterAndSalt(test *testing.T) {
 	test.Setenv("HOME", test.TempDir())
 	test.Setenv("LITELLM_MASTER_KEY", "sk-master-abc")
 	test.Setenv("LITELLM_SALT_KEY", "sk-salt-xyz")
 	test.Setenv("UI_PASSWORD", "hunter2")
+	origStore := storeCredentialFn
+	test.Cleanup(func() { storeCredentialFn = origStore })
+	stored := map[string]string{}
+	storeCredentialFn = func(name, value string) error {
+		stored[name] = value
+		return nil
+	}
 
 	persistLiteLLMInfraKeys()
 
+	if stored["LITELLM_MASTER_KEY"] != "sk-master-abc" {
+		test.Errorf("keychain missing master key; got: %+v", stored)
+	}
+	if stored["LITELLM_SALT_KEY"] != "sk-salt-xyz" {
+		test.Errorf("keychain missing salt key; got: %+v", stored)
+	}
+	if _, ok := stored["UI_PASSWORD"]; ok {
+		test.Errorf("UI password must NOT be auto-persisted; got: %+v", stored)
+	}
+	// Nothing must land on disk either — the env file stays untouched.
 	path, err := envfile.Path()
 	if err != nil {
 		test.Fatalf("envfile.Path() error: %s", err)
 	}
-	data, err := os.ReadFile(path)
-	if err != nil {
-		test.Fatalf("read env file: %s", err)
+	if _, statErr := os.Stat(path); statErr == nil {
+		test.Errorf("persistLiteLLMInfraKeys must NOT write the env file (keychain-only now): %s", path)
 	}
-	content := string(data)
-	if !strings.Contains(content, "sk-master-abc") {
-		test.Errorf("env file missing master key; got:\n%s", content)
+}
+
+// TestLoadLiteLLMInfraKeysFromKeychain verifies the read-back counterpart: an unset
+// env var is filled from the keychain, while an already-set one wins (fill-gaps
+// semantics, mirroring envfile.Load).
+func TestLoadLiteLLMInfraKeysFromKeychain(test *testing.T) {
+	origFind := findCredentialFn
+	test.Cleanup(func() { findCredentialFn = origFind })
+	test.Setenv("LITELLM_MASTER_KEY", "")
+	_ = os.Unsetenv("LITELLM_MASTER_KEY")
+	test.Setenv("LITELLM_SALT_KEY", "caller-set-salt")
+	findCredentialFn = func(name string) (string, error) {
+		switch name {
+		case "LITELLM_MASTER_KEY":
+			return "sk-from-keychain", nil
+		case "LITELLM_SALT_KEY":
+			return "sk-should-not-win", nil
+		}
+		return "", errors.New("not found")
 	}
-	if !strings.Contains(content, "sk-salt-xyz") {
-		test.Errorf("env file missing salt key; got:\n%s", content)
+
+	LoadLiteLLMInfraKeysFromKeychain()
+
+	if got := os.Getenv("LITELLM_MASTER_KEY"); got != "sk-from-keychain" {
+		test.Errorf("LITELLM_MASTER_KEY = %q, want the keychain value", got)
 	}
-	if strings.Contains(content, "hunter2") || strings.Contains(content, "UI_PASSWORD") {
-		test.Errorf("UI password must NOT be auto-persisted; got:\n%s", content)
-	}
-	// The file must be 0600 (it holds secrets).
-	info, err := os.Stat(path)
-	if err != nil {
-		test.Fatalf("stat env file: %s", err)
-	}
-	if perm := info.Mode().Perm(); perm != 0o600 {
-		test.Errorf("env file perm = %o, want 600", perm)
+	if got := os.Getenv("LITELLM_SALT_KEY"); got != "caller-set-salt" {
+		test.Errorf("an already-set LITELLM_SALT_KEY must win over the keychain, got %q", got)
 	}
 }
 
@@ -1189,12 +1217,18 @@ func TestEnsureProxyRendersGatewayConfig(test *testing.T) {
 	if !strings.Contains(rendered, "server_name litellm.aip.local;") || !strings.Contains(rendered, "proxy_pass http://aip-litellm:4000;") {
 		test.Errorf("nginx.conf must serve the litellm.<domain> vhost:\n%s", rendered)
 	}
-	// litellm is the ONLY host UI vhost — no chat/odysseus vhosts render anymore.
-	if strings.Contains(rendered, "server_name chat.aip.local;") || strings.Contains(rendered, "server_name odysseus.aip.local;") {
-		test.Errorf("no chat/odysseus UI vhosts should render (Open WebUI is in-VM; Odysseus removed):\n%s", rendered)
+	// Open WebUI is a CORE service now (chat.<domain>), so its vhost must render;
+	// odysseus was removed from the platform and must never reappear.
+	if !strings.Contains(rendered, "server_name chat.aip.local;") {
+		test.Errorf("the chat.<domain> (Open WebUI) UI vhost must render:\n%s", rendered)
+	}
+	if strings.Contains(rendered, "server_name odysseus.aip.local;") {
+		test.Errorf("no odysseus UI vhost should render (removed from the platform):\n%s", rendered)
 	}
 	// nginx takes over host :18787 and forwards on :80 internally; the UIs are
-	// subdomains on the SAME port, so no separate UI ports are published.
+	// subdomains on the SAME port (including Open WebUI's :8080, internal-only), so
+	// no separate UI ports are published on the HOST. launch is the PROXY
+	// container's own docker-run args, unrelated to any other container's ports.
 	launch := strings.Join(runArgsFor(prober), " ")
 	if !strings.Contains(launch, "-p 127.0.0.1:18787:80") {
 		test.Errorf("proxy must publish the gateway port 18787: %s", launch)
@@ -1227,9 +1261,43 @@ func TestProxyNginxConfThreadsDomain(test *testing.T) {
 	if strings.Contains(litellmBlock[:strings.Index(litellmBlock, "}")], "aip-headroom") {
 		test.Errorf("the litellm UI vhost must not reference aip-headroom:\n%s", rendered)
 	}
-	// No chat./odysseus. vhosts render anymore.
-	if strings.Contains(rendered, "chat.dev.example.com") || strings.Contains(rendered, "odysseus.dev.example.com") {
-		test.Errorf("no chat/odysseus vhost should render:\n%s", rendered)
+	// Open WebUI (chat.<domain>) is a CORE service now and must render; odysseus
+	// was removed from the platform and must never reappear.
+	if !strings.Contains(rendered, "server_name chat.dev.example.com;") {
+		test.Errorf("the chat.<domain> (Open WebUI) vhost must render:\n%s", rendered)
+	}
+	if strings.Contains(rendered, "odysseus.dev.example.com") {
+		test.Errorf("no odysseus vhost should render (removed from the platform):\n%s", rendered)
+	}
+}
+
+// TestEnsureOpenWebUINeverUsesMasterKey is a regression test for a real security
+// finding: ensureOpenWebUI must authenticate Open WebUI's gateway traffic with a
+// DEDICATED SCOPED virtual key (ensureOpenWebUIKeyFn), never the LITELLM_MASTER_KEY
+// — handing a third-party web app the admin key would let a compromised instance
+// mint/revoke keys and read every provider credential, not just make chat requests.
+func TestEnsureOpenWebUINeverUsesMasterKey(test *testing.T) {
+	test.Setenv("LITELLM_MASTER_KEY", "sk-master-must-not-leak")
+	_ = os.Unsetenv("OPENAI_API_KEY")
+	test.Cleanup(func() { _ = os.Unsetenv("OPENAI_API_KEY") })
+	origKeyFn := ensureOpenWebUIKeyFn
+	test.Cleanup(func() { ensureOpenWebUIKeyFn = origKeyFn })
+	ensureOpenWebUIKeyFn = func(runtime.Prober) string { return "sk-scoped-open-webui-key" }
+
+	prober := &recordingProber{}
+	if err := ensureOpenWebUI(prober, "docker", "aip.local", false); err != nil {
+		test.Fatalf("ensureOpenWebUI: %v", err)
+	}
+
+	launch := strings.Join(runArgsFor(prober), " ")
+	if !strings.Contains(launch, "-e OPENAI_API_KEY") {
+		test.Fatalf("expected an OPENAI_API_KEY env-passthrough flag, got: %s", launch)
+	}
+	if got := os.Getenv("OPENAI_API_KEY"); got != "sk-scoped-open-webui-key" {
+		test.Errorf("OPENAI_API_KEY = %q, want the scoped key from ensureOpenWebUIKeyFn", got)
+	}
+	if strings.Contains(launch, "sk-master-must-not-leak") {
+		test.Fatalf("the LiteLLM master key must never appear in the launch args: %s", launch)
 	}
 }
 
@@ -1245,7 +1313,7 @@ func TestNoOptionalServices(test *testing.T) {
 	if got := optionalServiceNames(); len(got) != 0 {
 		test.Errorf("optionalServiceNames = %v, want empty (no optional host services)", got)
 	}
-	for _, core := range []string{"omlx", "presidio", "litellm", "headroom", "proxy", "dns"} {
+	for _, core := range []string{"omlx", "presidio", "litellm", "headroom", "open-webui", "proxy", "dns"} {
 		if isOptionalService(core) {
 			test.Errorf("%q must be a core service, not optional", core)
 		}

@@ -161,8 +161,12 @@ func TestServerModeProducesCredentialsGuide(test *testing.T) {
 	if !strings.Contains(guide, "http://litellm.aip.example.com:18787/ui") {
 		test.Fatalf("server credentials guide must list the LiteLLM admin UI:\n%s", guide)
 	}
-	// No chat./odysseus. UIs anymore.
-	if strings.Contains(guide, "chat.aip.example.com") || strings.Contains(guide, "odysseus.aip.example.com") {
-		test.Fatalf("server credentials guide must not list chat/odysseus UIs:\n%s", guide)
+	// Open WebUI is a CORE service now (chat.<domain>), so it belongs in the guide;
+	// odysseus was removed from the platform entirely and must never reappear.
+	if !strings.Contains(guide, "chat.aip.example.com") {
+		test.Fatalf("server credentials guide must list the Open WebUI chat UI:\n%s", guide)
+	}
+	if strings.Contains(guide, "odysseus.aip.example.com") {
+		test.Fatalf("server credentials guide must not list odysseus (removed from the platform):\n%s", guide)
 	}
 }

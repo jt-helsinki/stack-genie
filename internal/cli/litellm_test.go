@@ -68,47 +68,50 @@ func TestLiteLLMPasswordRequiredAtSetup(test *testing.T) {
 }
 
 // TestOfferPersistNonInteractiveFallback: on a non-TTY the persist offer does
-// NOT write the env file (it prints the manual export block instead).
+// NOT write the env file (it prints the manual export block instead). The master/
+// salt key need no mention here — they are persisted to the OS keychain elsewhere
+// (RelaunchLiteLLMWithAuth/persistLiteLLMInfraKeys), not by this offer at all.
 func TestOfferPersistNonInteractiveFallback(test *testing.T) {
 	test.Setenv("HOME", test.TempDir())
 	err := &bytes.Buffer{}
 	emitter := &output.Emitter{Out: &bytes.Buffer{}, Err: err}
-	offerPersistLiteLLMSecrets(emitter, false, "pw", "sk-key", "sk-salt")
+	offerPersistLiteLLMSecrets(emitter, false, "pw")
 
 	path, _ := envfile.Path()
 	if _, statErr := os.Stat(path); statErr == nil {
 		test.Errorf("non-interactive offer must NOT write %s", path)
 	}
 	output := err.String()
-	// The no-file instructions must show both exports (master key inlined, password
-	// placeholder) and name when the secret is needed (the relaunch commands).
 	for _, want := range []string{
-		"export LITELLM_MASTER_KEY=sk-key",
 		"export UI_PASSWORD",
 		"ai services restart",
 		"ai litellm password",
+		"already in your OS keychain",
 	} {
 		if !strings.Contains(output, want) {
 			test.Errorf("non-interactive offer must print %q in the no-file instructions: %q", want, output)
 		}
 	}
+	if strings.Contains(output, "LITELLM_MASTER_KEY") {
+		test.Errorf("non-interactive offer must NOT mention LITELLM_MASTER_KEY (it lives in the OS keychain, not the env file): %q", output)
+	}
 }
 
 // TestPersistOfferWritesViaEnvfile confirms the YES-branch write the offer
 // performs round-trips through envfile (the offer's interactive branch can't be
-// driven without a TTY, so we exercise the same envfile.Write call it makes).
+// driven without a TTY, so we exercise the same envfile.Write call it makes) — the
+// UI password ONLY, since the master/salt key are no longer written to the env
+// file at all (they live in the OS keychain).
 func TestPersistOfferWritesViaEnvfile(test *testing.T) {
 	test.Setenv("HOME", test.TempDir())
-	if err := envfile.Write(map[string]string{"UI_PASSWORD": "pw", "LITELLM_MASTER_KEY": "sk-key"}); err != nil {
+	if err := envfile.Write(map[string]string{"UI_PASSWORD": "pw"}); err != nil {
 		test.Fatalf("Write: %v", err)
 	}
 	_ = os.Unsetenv("UI_PASSWORD")
-	_ = os.Unsetenv("LITELLM_MASTER_KEY")
 	if err := envfile.Load(); err != nil {
 		test.Fatalf("Load: %v", err)
 	}
-	if os.Getenv("UI_PASSWORD") != "pw" || os.Getenv("LITELLM_MASTER_KEY") != "sk-key" {
-		test.Errorf("persisted secrets did not round-trip: %q / %q",
-			os.Getenv("UI_PASSWORD"), os.Getenv("LITELLM_MASTER_KEY"))
+	if os.Getenv("UI_PASSWORD") != "pw" {
+		test.Errorf("persisted secret did not round-trip: %q", os.Getenv("UI_PASSWORD"))
 	}
 }

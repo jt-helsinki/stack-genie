@@ -1,6 +1,7 @@
 package setup
 
 import (
+	"errors"
 	"os"
 	"slices"
 	"strings"
@@ -29,6 +30,13 @@ func TestMain(m *testing.M) {
 	// (nonoDetectFn itself is left as the real exec.LookPath check — cheap and
 	// side-effect-free either way, mirroring omlxDetectFn's precedent above).
 	installNonoFn = func() error { return nil }
+	// startOmlxServerHost calls ensureOmlxAPIKey, which falls back to storeCredentialFn/
+	// findCredentialFn on a cache miss — a test must never shell out to the real OS
+	// keychain (security/secret-tool), which can mutate the developer's real login
+	// keychain or block on a GUI permission prompt. Tests that specifically exercise
+	// keychain behavior override these (with a cleanup restore).
+	storeCredentialFn = func(string, string) error { return nil }
+	findCredentialFn = func(string) (string, error) { return "", errors.New("not found (test stub)") }
 	os.Exit(m.Run())
 }
 
@@ -126,6 +134,91 @@ func TestStartOmlxHostNotInstalled(test *testing.T) {
 	}
 	if !strings.Contains(strings.ToLower(err.Error()), "omlx") {
 		test.Errorf("error must mention omlx/install guidance, got %v", err)
+	}
+}
+
+// ensureOmlxAPIKey is a regression test for a real bug: omlx REFUSES to bind to a
+// non-loopback host (RealRunner.Start always passes --host 0.0.0.0) without an API
+// key, so the server process exited immediately on every `ai setup`/`ai services
+// start omlx` — startOmlxServerHost must mint one (and set it in this process's
+// env, so RealRunner.Start's os.Environ() passthrough carries it to the child) the
+// first time it runs, from a keychain miss.
+func TestStartOmlxHostMintsAPIKeyWhenAbsent(test *testing.T) {
+	test.Setenv("HOME", test.TempDir())
+	_ = os.Unsetenv("OMLX_API_KEY")
+	test.Cleanup(func() { _ = os.Unsetenv("OMLX_API_KEY") }) // ensureOmlxAPIKey sets it as a side effect
+	fakeOmlxDetect(test, true)
+	originalManager, originalSync := omlxManagerFn, omlxSyncModelsFn
+	test.Cleanup(func() { omlxManagerFn, omlxSyncModelsFn = originalManager, originalSync })
+	omlxManagerFn = func() *omlx.Manager {
+		return omlx.NewManager(omlx.Config{Probe: func() bool { return true }})
+	}
+	omlxSyncModelsFn = func() (litellm.SyncResult, error) { return litellm.SyncResult{}, nil }
+
+	origStore, origFind := storeCredentialFn, findCredentialFn
+	test.Cleanup(func() { storeCredentialFn, findCredentialFn = origStore, origFind })
+	findCredentialFn = func(string) (string, error) { return "", errors.New("not found") }
+	var stored string
+	storeCredentialFn = func(name, value string) error {
+		if name == "OMLX_API_KEY" {
+			stored = value
+		}
+		return nil
+	}
+
+	if err := startOmlxServerHost(); err != nil {
+		test.Fatalf("startOmlxServerHost: %v", err)
+	}
+	if stored == "" {
+		test.Fatal("startOmlxServerHost must mint and store an OMLX_API_KEY when none exists")
+	}
+	if got := os.Getenv("OMLX_API_KEY"); got != stored {
+		test.Errorf("OMLX_API_KEY env = %q, want the minted+stored key %q (RealRunner.Start needs it in this process's env)", got, stored)
+	}
+}
+
+// TestOmlxAPIKeyConfigured pins the read-only check `ai setup` uses, captured
+// BEFORE the reconcile runs, to decide whether to offer the one-time admin
+// password prompt (checking after would always see the reconcile's own
+// auto-minted key and never offer it).
+func TestOmlxAPIKeyConfigured(test *testing.T) {
+	origFind := findCredentialFn
+	test.Cleanup(func() { findCredentialFn = origFind })
+
+	findCredentialFn = func(string) (string, error) { return "", errors.New("not found") }
+	if OmlxAPIKeyConfigured() {
+		test.Error("OmlxAPIKeyConfigured() = true, want false when the keychain has no entry")
+	}
+	findCredentialFn = func(string) (string, error) { return "omlx-existing-key", nil }
+	if !OmlxAPIKeyConfigured() {
+		test.Error("OmlxAPIKeyConfigured() = false, want true when the keychain already has a key")
+	}
+}
+
+// TestSetOmlxAPIKey pins `ai setup`'s password-prompt write path: the chosen value
+// lands in BOTH this process's env (so a subsequent restart's os.Environ()
+// passthrough carries it to the omlx subprocess) AND the keychain (so it survives
+// past this process).
+func TestSetOmlxAPIKey(test *testing.T) {
+	_ = os.Unsetenv("OMLX_API_KEY")
+	test.Cleanup(func() { _ = os.Unsetenv("OMLX_API_KEY") })
+	origStore := storeCredentialFn
+	test.Cleanup(func() { storeCredentialFn = origStore })
+	var stored string
+	storeCredentialFn = func(name, value string) error {
+		if name == "OMLX_API_KEY" {
+			stored = value
+		}
+		return nil
+	}
+
+	SetOmlxAPIKey("my-chosen-password")
+
+	if got := os.Getenv("OMLX_API_KEY"); got != "my-chosen-password" {
+		test.Errorf("OMLX_API_KEY env = %q, want %q", got, "my-chosen-password")
+	}
+	if stored != "my-chosen-password" {
+		test.Errorf("stored keychain value = %q, want %q", stored, "my-chosen-password")
 	}
 }
 

@@ -84,6 +84,7 @@ func TestSetupContainerConstsMatchRegistry(test *testing.T) {
 		"valkey":       {valkeyContainer},
 		"redisinsight": {redisInsightContainer},
 		"headroom":     {headroomContainer},
+		"open-webui":   {openWebUIContainer},
 		"proxy":        {proxyContainer},
 		"dns":          {dnsContainer},
 	}

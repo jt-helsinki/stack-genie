@@ -26,20 +26,27 @@ func TestURLAndKnown(test *testing.T) {
 
 func TestWithConsolesSortedAndFiltered(test *testing.T) {
 	named := WithConsoles()
-	// litellm + omlx + redisinsight expose consoles — litellm/redisinsight as nginx
-	// subdomain vhosts on the gateway port, omlx as its own direct loopback port
-	// (its admin panel). Sorted by name.
-	if len(named) != 3 || named[0].Name != "litellm" || named[1].Name != "omlx" || named[2].Name != "redisinsight" {
-		test.Fatalf("WithConsoles = %+v, want [litellm omlx redisinsight]", named)
+	// litellm + omlx + open-webui + redisinsight expose consoles — litellm/
+	// open-webui/redisinsight as nginx subdomain vhosts on the gateway port, omlx
+	// as its own direct loopback port (its admin panel). Sorted by name.
+	want := []string{"litellm", "omlx", "open-webui", "redisinsight"}
+	if len(named) != len(want) {
+		test.Fatalf("WithConsoles = %+v, want names %v", named, want)
 	}
-	want := map[string]string{
+	for i, name := range want {
+		if named[i].Name != name {
+			test.Fatalf("WithConsoles = %+v, want names %v", named, want)
+		}
+	}
+	wantURL := map[string]string{
 		"litellm":      "http://litellm.localhost:18787/ui/login",
 		"omlx":         "http://localhost:8100/admin",
+		"open-webui":   "http://chat.localhost:18787",
 		"redisinsight": "http://valkey.localhost:18787",
 	}
 	for _, namedURL := range named {
-		if namedURL.URL != want[namedURL.Name] {
-			test.Errorf("%s console = %q, want %q", namedURL.Name, namedURL.URL, want[namedURL.Name])
+		if namedURL.URL != wantURL[namedURL.Name] {
+			test.Errorf("%s console = %q, want %q", namedURL.Name, namedURL.URL, wantURL[namedURL.Name])
 		}
 		for _, deadPort := range []string{":14000", ":11434", ":18090", ":7000"} {
 			if strings.Contains(namedURL.URL, deadPort) {

@@ -133,26 +133,37 @@ func newSetupCmd(em *output.Emitter, exit *int) *cobra.Command {
 			if proceed := preflightPrerequisites(em, exit, opts, deps, interactive); !proceed {
 				return nil
 			}
+			// Captured BEFORE the reconcile runs: the reconcile's own startOmlxServerHost
+			// auto-mints an OMLX_API_KEY when none exists yet (omlx refuses to bind to a
+			// non-loopback host without one), so checking AFTER would always see one
+			// present and never offer the one-time password prompt below.
+			omlxKeyAlreadyConfigured := setup.OmlxAPIKeyConfigured()
 			// Pre-pull the service-tier images with STREAMED native progress before the
 			// reconcile, on a human (non-JSON) run that actually runs the service tier
-			// (standalone/server, not client). This calls UpdateImages, not PullImages:
-			// a `:latest`-tagged image (e.g. litellm) is FORCE-pulled every `ai setup`
-			// run — it does not skip one already present — so a moved tag is caught and
-			// the reconcile below recreates any service container found running a now-
-			// stale image; a PINNED-version image (e.g. postgres) is never force-pulled
-			// (an immutable tag can never have "a newer version"), so it is only pulled
-			// when altogether absent, same as PullImages. Each ensure* launches a
-			// container with `docker run -d`, whose implicit pull output the prober
-			// CAPTURES (invisible) — so a multi-GB first-run pull (e.g. presidio) looks
-			// hung; pulling here renders docker's native progress bars to the terminal,
-			// and the later `docker run -d` finds the freshly-pulled image present and
-			// returns instantly. This MUST be sequential with (and before) the bubbletea
-			// RunSteps below — native docker progress and a bubbletea program cannot both
-			// own the terminal at once. Under --json we skip it (keep stdout a clean
-			// envelope; the reconcile's implicit pull stays as-is). On error we warn and
-			// continue — the reconcile re-pulls anything still missing.
+			// (standalone/server, not client). A PLAIN `ai setup` calls PullImages: an
+			// already-present image (pinned OR `:latest`) is SKIPPED — no network pull
+			// at all — so a routine re-run of `ai setup` stays fast and offline-friendly.
+			// `ai setup --upgrade` calls UpdateImages instead: a `:latest`-tagged image
+			// (e.g. litellm) is FORCE-pulled so a moved tag (a newer version) is caught
+			// and the reconcile below recreates any service container found running a
+			// now-stale image; a PINNED-version image (e.g. postgres) is still only
+			// pulled when altogether absent — an immutable tag can never have "a newer
+			// version". Each ensure* launches a container with `docker run -d`, whose
+			// implicit pull output the prober CAPTURES (invisible) — so a multi-GB
+			// first-run pull (e.g. presidio) looks hung; pulling here renders docker's
+			// native progress bars to the terminal, and the later `docker run -d` finds
+			// the freshly-pulled image present and returns instantly. This MUST be
+			// sequential with (and before) the bubbletea RunSteps below — native docker
+			// progress and a bubbletea program cannot both own the terminal at once.
+			// Under --json we skip it (keep stdout a clean envelope; the reconcile's
+			// implicit pull stays as-is). On error we warn and continue — the reconcile
+			// re-pulls anything still missing.
 			if !em.JSON && mode != runtime.RoleClient {
-				_, _ = fmt.Fprintln(em.Err, ui.Heading.Render("Pulling the latest container images")+ui.Muted.Render(" (first run may take a few minutes)…"))
+				heading := "Checking container images"
+				if opts.Upgrade {
+					heading = "Pulling the latest container images"
+				}
+				_, _ = fmt.Fprintln(em.Err, ui.Heading.Render(heading)+ui.Muted.Render(" (first run may take a few minutes)…"))
 				// Resolve the effective enabled optional-service set so the pre-pull
 				// includes a disabled optional service's (large) images ONLY when it
 				// is enabled (same precedence as the reconcile: explicit choice >
@@ -163,7 +174,11 @@ func newSetupCmd(em *output.Emitter, exit *int) *cobra.Command {
 				// setup.Run) so a changed selection is honoured — an ON→OFF secret-masking
 				// change must not pull the Presidio images.
 				enabledGuardrails := setup.ResolveGuardrails(opts, persisted)
-				if err := deps.Services.UpdateImages(enabledOptional, enabledGuardrails, em.Err, func(line string) { _, _ = fmt.Fprintln(em.Err, line) }); err != nil {
+				pull := deps.Services.PullImages
+				if opts.Upgrade {
+					pull = deps.Services.UpdateImages
+				}
+				if err := pull(enabledOptional, enabledGuardrails, em.Err, func(line string) { _, _ = fmt.Fprintln(em.Err, line) }); err != nil {
 					_, _ = fmt.Fprintf(em.Err, "warning: image pull incomplete (%s) — continuing; the reconcile will retry\n", err)
 				}
 			}
@@ -201,6 +216,10 @@ func newSetupCmd(em *output.Emitter, exit *int) *cobra.Command {
 			// (standalone/server), so it is skipped in client mode.
 			if report.Runtime != nil && report.Runtime.Role != runtime.RoleClient {
 				setupLiteLLMUIPassword(em, interactive, report.Runtime.Role, report.Runtime.ResolveDomain())
+				// omlx's admin console password — same gate (standalone/server only;
+				// omlx never runs on a client). Offered once, regardless of role (unlike
+				// the LiteLLM password, omlx's key is not role-gated).
+				setupOmlxAdminPassword(em, interactive, deps, omlxKeyAlreadyConfigured)
 				// Run the initial catalog → gateway model sync so LiteLLM reflects any
 				// already-keyed providers' models + installed local models. Cloud-provider
 				// API keys are NOT prompted for here — add them anytime from `ai ui` (the
@@ -472,9 +491,9 @@ func promptSetupConfig(seedMode, seedServer, seedOptional, seedGuardrails, seedH
 	).WithHideFunc(func() bool { return mode != runtime.RoleServer })
 
 	// The optional-tools group is shown only when there ARE optional host services
-	// to offer. There are none today (Open WebUI moved to a per-workspace in-VM app
-	// and Odysseus was removed), so it is always hidden — the mechanism is retained
-	// for future host optional services.
+	// to offer. There are none today (Open WebUI is a core service with no setup
+	// picker; Odysseus was removed from the platform entirely), so it is always
+	// hidden — the mechanism is retained for a future genuinely-optional service.
 	hasOptional := len(setup.OptionalServiceNames()) > 0
 	optionalGroup := huh.NewGroup(
 		huh.NewMultiSelect[string]().
@@ -782,6 +801,73 @@ func printLiteLLMOpenInstructions(em *output.Emitter, server bool, domain string
 		ui.Value.Render(fmt.Sprintf("http://litellm.%s:18787/ui/login", domain)))
 }
 
+// omlxAdminURL is the omlx admin console's address — ALWAYS loopback, never a
+// domain-based nginx vhost like LiteLLM/Open WebUI: omlx is host-native and its
+// admin panel is reached directly on its own fixed port (omlx.Port), not through
+// the gateway.
+func omlxAdminURL() string {
+	return fmt.Sprintf("http://127.0.0.1:%d/admin", omlx.Port)
+}
+
+// setupOmlxAdminPassword offers (on a TTY, one time only) to set a custom omlx
+// admin-console password, mirroring setupLiteLLMUIPassword's shape. Unlike
+// LiteLLM's password, omlx's key is NOT role-gated — omlx refuses to even START
+// without one (it must bind to a non-loopback host for the LiteLLM container to
+// reach it), so the reconcile that already ran before this is called has ALREADY
+// auto-minted a random one via ensureOmlxAPIKey if none existed. This only offers
+// to REPLACE that auto-generated key with a chosen one; it is never required.
+// alreadyConfigured (captured BEFORE the reconcile ran) gates the one-time offer —
+// re-prompting on every `ai setup` run would be the same "hang"-like nag
+// setupLiteLLMUIPassword's own comment warns against.
+func setupOmlxAdminPassword(em *output.Emitter, interactive bool, deps setup.Deps, alreadyConfigured bool) {
+	if alreadyConfigured {
+		return
+	}
+	if !interactive {
+		_, _ = fmt.Fprintf(em.Err, "omlx: generated a random admin console password (keychain-stored). "+
+			"Retrieve it later with `security find-generic-password -s nono -a OMLX_API_KEY -w` (macOS) "+
+			"or `secret-tool lookup service nono username OMLX_API_KEY` (Linux). Console: %s\n", omlxAdminURL())
+		return
+	}
+	want, confirmErr := promptConfirmDefault(
+		"Set a custom omlx admin console password now?",
+		"omlx already has a random password generated for you (it needs one to run). "+
+			"Declining keeps that one — retrieve it anytime from your OS keychain.",
+		false,
+	)
+	if confirmErr != nil || !want {
+		_, _ = fmt.Fprintf(em.Err, "  Retrieve the generated password with "+
+			"`security find-generic-password -s nono -a OMLX_API_KEY -w` (macOS) or "+
+			"`secret-tool lookup service nono username OMLX_API_KEY` (Linux). Console: %s\n", omlxAdminURL())
+		return
+	}
+	password, promptErr := promptSecret("New omlx admin console password", "", nil)
+	if promptErr != nil || password == "" {
+		_, _ = fmt.Fprintln(em.Err, ui.Muted.Render("No password entered — keeping the generated one."))
+		return
+	}
+	setup.SetOmlxAPIKey(password)
+	// omlx must be RESTARTED to adopt the new key — a running process never
+	// observes an env var change on its own (same reason LiteLLM's password change
+	// relaunches its container).
+	restart := func() error {
+		_, err := setup.ControlService(deps, "restart", "omlx")
+		return err
+	}
+	var restartErr error
+	if interactive {
+		restartErr = ui.RunWithSpinner(em.Err, "restarting omlx with the new password", restart)
+	} else {
+		restartErr = restart()
+	}
+	if restartErr != nil {
+		_, _ = fmt.Fprintf(em.Err, "warning: could not restart omlx with the new password: %s\n", restartErr)
+		return
+	}
+	_, _ = fmt.Fprintf(em.Err, "%s omlx admin console password set — %s\n",
+		ui.Success.Render(ui.IconOK), ui.Value.Render(omlxAdminURL()))
+}
+
 // liteLLMPasswordRequiredAtSetup is the pure role decision for whether `ai setup`
 // must collect a LiteLLM admin-UI password: ONLY the server role (its gateway is
 // network-exposed on 0.0.0.0). standalone/client run open access (a user opts in
@@ -857,75 +943,70 @@ func secureLiteLLMUI(em *output.Emitter, interactive bool, password, domain stri
 		ui.Value.Render(fmt.Sprintf("litellm.%s", domain)),
 		ui.Label.Render("master key (also the API key):"),
 		ui.Value.Render(masterKey))
-	// Read the salt key the relaunch settled on (reused if already present, else
-	// freshly minted) so it persists alongside the password + master key — it MUST
-	// stay stable or stored DB credentials become undecryptable.
-	offerPersistLiteLLMSecrets(em, interactive, password, masterKey, setup.CurrentLiteLLMSaltKey())
+	// The master key + salt key are already in the OS keychain by now (stored
+	// unconditionally inside RelaunchLiteLLMWithAuth above) — only the UI password
+	// still needs an explicit opt-in to persist.
+	offerPersistLiteLLMSecrets(em, interactive, password)
 }
 
-// offerPersistLiteLLMSecrets offers (on a TTY) to save the LiteLLM UI password +
-// master key to ~/.ai-platform/.ai-platform.env, a 0600 file the `ai` CLI auto-loads
-// at startup, so they persist across restarts without the user editing their shell
-// rc. The consent prompt's DESCRIPTION states the trade-off concisely so the user
-// makes an INFORMED choice (pro: no re-entry/re-mint; con: a plaintext secret on
-// disk — prefer NOT saving on a shared/multi-user host or a synced home dir). On
-// YES it writes the file and confirms the path; on NO / non-TTY / write failure it
-// prints the no-file instructions (the interactive prompt, or an `export …` from a
-// Keychain/secrets manager, supply the secret only when the LiteLLM container is
-// (re)launched). Shared by `ai setup` (server) and `ai litellm password`.
-func offerPersistLiteLLMSecrets(em *output.Emitter, interactive bool, password, masterKey, saltKey string) {
+// offerPersistLiteLLMSecrets offers (on a TTY) to save the LiteLLM UI password to
+// ~/.ai-platform/.ai-platform.env, a 0600 file the `ai` CLI auto-loads at startup,
+// so it persists across restarts without the user editing their shell rc. The
+// master key + salt key need no such offer: persistLiteLLMInfraKeys already stored
+// them in the OS keychain (internal/nono.StoreCredential) unconditionally before
+// this runs — unlike the UI password, nono has no login/attach step where a
+// keychain credential-name reference alone would do, so the password stays the one
+// secret this CLI process needs as plaintext in its own env, with the file as its
+// only persistence option. The consent prompt's DESCRIPTION states the trade-off
+// concisely (pro: no re-entry; con: a plaintext secret on disk — prefer NOT saving
+// on a shared/multi-user host or a synced home dir). On YES it writes the file and
+// confirms the path; on NO / non-TTY / write failure it prints the no-file
+// instructions. Shared by `ai setup` (server) and `ai litellm password`.
+func offerPersistLiteLLMSecrets(em *output.Emitter, interactive bool, password string) {
 	if interactive {
 		save, err := promptConfirmDefault(
-			"Save these to ~/.ai-platform/.ai-platform.env so they persist across restarts?",
-			"PRO: persists the LiteLLM admin password + master key + salt key across restarts (no re-entry, "+
-				"no re-mint; the salt key must stay stable or stored model credentials become undecryptable), "+
-				"in a 0600 owner-only file under ~/.ai-platform (removed by `ai uninstall --purge`). "+
+			"Save the UI password to ~/.ai-platform/.ai-platform.env so it persists across restarts?",
+			"The master key + salt key are already kept in your OS keychain (macOS Keychain / Linux Secret "+
+				"Service) — never on disk. PRO: persists the LiteLLM admin PASSWORD across restarts too (no "+
+				"re-entry), in a 0600 owner-only file under ~/.ai-platform (removed by `ai uninstall --purge`). "+
 				"CON: it is a PLAINTEXT secret on disk — fine on a single-user machine, but on a SHARED/multi-user "+
-				"host or a synced/backed-up home dir prefer NOT saving (export it from your Keychain/secrets "+
-				"manager, or re-enter it at the prompt, to keep it off disk).",
+				"host or a synced/backed-up home dir prefer NOT saving (re-enter it at the prompt to keep it off "+
+				"disk).",
 			true,
 		)
 		if err == nil && save {
-			secrets := map[string]string{
-				"UI_PASSWORD":        password,
-				"LITELLM_MASTER_KEY": masterKey,
-			}
-			if saltKey != "" {
-				secrets["LITELLM_SALT_KEY"] = saltKey
-			}
-			if writeErr := envfile.Write(secrets); writeErr != nil {
+			if writeErr := envfile.Write(map[string]string{"UI_PASSWORD": password}); writeErr != nil {
 				_, _ = fmt.Fprintf(em.Err, "warning: could not write the env file: %s\n", writeErr)
 			} else {
 				path, _ := envfile.Path()
 				_, _ = fmt.Fprintf(em.Err,
-					"%s Saved to %s (loaded automatically by ai; add `source ~/.ai-platform/.ai-platform.env` "+
-						"to your shell rc if other tools need these)\n",
+					"%s Password saved to %s (loaded automatically by ai); master key + salt key are in your OS keychain\n",
 					ui.Success.Render(ui.IconOK), ui.Value.Render(path))
 				return
 			}
 		}
 	}
-	// No / non-TTY / write failure: print the no-file instructions. The secret is
-	// needed ONLY when the LiteLLM container is (re)launched — supply it then.
-	printNoEnvFileInstructions(em, masterKey)
+	// No / non-TTY / write failure: print the no-file instructions. The password is
+	// needed ONLY when the LiteLLM container is (re)launched — supply it then. The
+	// master/salt key need nothing here — they are already in the OS keychain.
+	printNoEnvFileInstructions(em)
 }
 
 // printNoEnvFileInstructions explains how to keep using the platform WITHOUT the
-// ~/.ai-platform/.ai-platform.env file: the LiteLLM admin password + master key are
-// needed only when the LiteLLM container is (re)launched — at `ai setup`,
-// `ai services restart`, or `ai litellm password` — and can be supplied then either
-// by the interactive prompt or by exporting them in that shell first (optionally
-// sourced from a Keychain/secrets manager). It also notes that `ai` auto-loads the
-// env file if the user later chooses to create it. Styled with the ui palette.
-func printNoEnvFileInstructions(em *output.Emitter, masterKey string) {
-	_, _ = fmt.Fprintln(em.Err, ui.Heading.Render("Not saving to disk — supply the secret when the LiteLLM container is (re)launched"))
+// ~/.ai-platform/.ai-platform.env file: the LiteLLM admin PASSWORD is needed only
+// when the LiteLLM container is (re)launched — at `ai setup`, `ai services
+// restart`, or `ai litellm password` — and can be supplied then either by the
+// interactive prompt or by exporting it in that shell first. The master/salt key
+// need no such instructions: they already live in the OS keychain regardless of
+// this choice. Styled with the ui palette.
+func printNoEnvFileInstructions(em *output.Emitter) {
+	_, _ = fmt.Fprintln(em.Err, ui.Heading.Render("Not saving the password to disk — supply it when the LiteLLM container is (re)launched"))
 	_, _ = fmt.Fprintf(em.Err, "  %s\n",
 		ui.Muted.Render("Needed only by: `ai setup`, `ai services restart`, `ai litellm password` (when LiteLLM is relaunched)."))
 	_, _ = fmt.Fprintf(em.Err, "  %s\n", ui.Muted.Render("Provide it then either by the interactive prompt, or by exporting it in that shell first:"))
-	_, _ = fmt.Fprintf(em.Err, "    %s\n", ui.Value.Render("export LITELLM_MASTER_KEY="+masterKey))
 	_, _ = fmt.Fprintf(em.Err, "    %s\n", ui.Value.Render("export UI_PASSWORD='<the password you just set>'"))
 	_, _ = fmt.Fprintf(em.Err, "  %s\n",
-		ui.Muted.Render("(optionally sourced from your Keychain / secrets manager so it stays off disk)."))
+		ui.Muted.Render("(the master key + salt key need nothing here — they are already in your OS keychain)."))
 	_, _ = fmt.Fprintf(em.Err, "  %s\n",
 		ui.Muted.Render("`ai` also auto-loads ~/.ai-platform/.ai-platform.env if you later choose to create it."))
 }

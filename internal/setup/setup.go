@@ -191,8 +191,8 @@ func OptionalServiceNames() []string {
 
 // OptionalServiceLabel returns a short human label for an optional service, used
 // in the setup checkbox. Unknown names get "". There are currently NO optional host
-// services (Open WebUI moved to a per-workspace in-VM app and Odysseus was
-// removed), so this returns "" for everything today.
+// services (Open WebUI is a CORE service with no setup picker; Odysseus was
+// removed from the platform entirely), so this returns "" for everything today.
 func OptionalServiceLabel(name string) string {
 	_ = name
 	return ""

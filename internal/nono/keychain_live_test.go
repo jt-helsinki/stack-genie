@@ -13,7 +13,13 @@ func TestStoreDeleteCredentialLive(test *testing.T) {
 	if err := StoreCredential(name, "sk-test-12345"); err != nil {
 		test.Fatalf("StoreCredential: %v", err)
 	}
+	if value, err := FindCredential(name); err != nil || value != "sk-test-12345" {
+		test.Fatalf("FindCredential: got (%q, %v), want (\"sk-test-12345\", nil)", value, err)
+	}
 	if err := DeleteCredential(name); err != nil {
 		test.Fatalf("DeleteCredential: %v", err)
+	}
+	if _, err := FindCredential(name); err == nil {
+		test.Fatal("FindCredential: want an error after DeleteCredential, got nil")
 	}
 }

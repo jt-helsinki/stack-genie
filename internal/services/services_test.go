@@ -16,6 +16,7 @@ func TestLogScopesMatchesCurrent(test *testing.T) {
 		"redisinsight",
 		"headroom",
 		"litellm",
+		"open-webui",
 		"proxy",
 		"dns",
 	}
@@ -45,6 +46,7 @@ func TestEndpointsMatchCurrentConsoleRegistry(test *testing.T) {
 		"valkey":       {},
 		"redisinsight": {HasConsole: true, UISubdomain: "valkey"},
 		"omlx":         {Port: OmlxPort, ConsolePath: "/admin", HasConsole: true},
+		"open-webui":   {HasConsole: true, UISubdomain: "chat"},
 		"proxy":        {Port: 18787},
 		"dns":          {LoopbackAddress: "127.0.0.1:15353/udp"},
 		"headroom":     {},
@@ -67,6 +69,7 @@ func TestVersionPinsMatchCurrentDefault(test *testing.T) {
 		"headroom":            {Mode: ModeContainer, Image: "ghcr.io/chopratejas/headroom", Tag: "latest"},
 		"presidio-analyzer":   {Mode: ModeContainer, Image: "mcr.microsoft.com/presidio-analyzer", Tag: "latest"},
 		"presidio-anonymizer": {Mode: ModeContainer, Image: "mcr.microsoft.com/presidio-anonymizer", Tag: "latest"},
+		"open-webui":          {Mode: ModeContainer, Image: "ghcr.io/open-webui/open-webui", Tag: "latest"},
 		"proxy":               {Mode: ModeContainer, Image: "nginx", Tag: "stable-alpine3.23-slim"},
 		// vLLM is host-native — no image pin (it is not a pulled container).
 		"dns":          {Mode: ModeContainer, Image: "coredns/coredns", Tag: "latest"},
@@ -82,7 +85,7 @@ func TestVersionPinsMatchCurrentDefault(test *testing.T) {
 // TestCoreAndOptionalServiceNames pins the logical core/optional partition (the
 // frozen API the internal/setup migration consumes).
 func TestCoreAndOptionalServiceNames(test *testing.T) {
-	wantCore := []string{"omlx", "presidio", "valkey", "redisinsight", "headroom", "litellm", "proxy", "dns"}
+	wantCore := []string{"omlx", "presidio", "valkey", "redisinsight", "headroom", "litellm", "open-webui", "proxy", "dns"}
 	if got := CoreServiceNames(); !reflect.DeepEqual(got, wantCore) {
 		test.Errorf("CoreServiceNames() = %v, want %v", got, wantCore)
 	}
@@ -210,8 +213,8 @@ func TestLogScopesAreUniqueAndKnown(test *testing.T) {
 }
 
 // TestUIVhostsMapping pins the UI→subdomain mapping the host-side nginx vhosts +
-// /etc/hosts logic depends on: litellm (core) → litellm, with a non-empty
-// in-network upstream. It is the only remaining host UI vhost.
+// /etc/hosts logic depends on — litellm, redisinsight, and open-webui (chat), all
+// CORE (no setup picker), each with a non-empty in-network upstream.
 func TestUIVhostsMapping(test *testing.T) {
 	want := map[string]struct {
 		subdomain string
@@ -219,6 +222,7 @@ func TestUIVhostsMapping(test *testing.T) {
 	}{
 		"litellm":      {"litellm", false},
 		"redisinsight": {"valkey", false},
+		"open-webui":   {"chat", false},
 	}
 	vhosts := UIVhosts()
 	if len(vhosts) != len(want) {

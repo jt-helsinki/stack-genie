@@ -46,9 +46,9 @@ type URL struct {
 // (e.g. [litellm.aip.local]), in registry order. domain is the already-resolved
 // base domain (the caller passes runtime Info.ResolveDomain()).
 //
-// It returns the names for ALL UI services. (Currently only litellm; the host UI
-// set has no optional members anymore — Open WebUI moved in-VM and Odysseus was
-// removed.)
+// It returns the names for ALL UI services: litellm, redisinsight (valkey), and
+// open-webui (chat) today — all core, no optional members (Odysseus was removed
+// from the platform entirely).
 func Names(domain string) []string {
 	var names []string
 	for _, vhost := range services.UIVhosts() {

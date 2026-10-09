@@ -230,6 +230,10 @@ var (
 	pyenvPipInstallFn    = pyenv.PipInstall
 )
 
+// linkAdminWebAssetsFn is the injectable seam over linkAdminWebAssets so Install is
+// unit-tested without a real Python interpreter/filesystem symlink.
+var linkAdminWebAssetsFn = linkAdminWebAssets
+
 // Install resolves and pip-installs the latest omlx wheel into the platform-managed
 // host venv (~/.ai-platform/venv), pinning the venv to the wheel's EXACT Python
 // version (pyenv.EnsureVersion, recreating a mismatched venv) since a cp-tag-specific
@@ -246,7 +250,72 @@ func Install() error {
 	if err := pyenvPipInstallFn(wheelURL); err != nil {
 		return fmt.Errorf("install omlx wheel into the platform venv: %w", err)
 	}
+	// Best-effort: never fails the install. See linkAdminWebAssets's own doc
+	// comment for the upstream packaging bug this works around.
+	linkAdminWebAssetsFn()
 	return nil
+}
+
+// linkAdminWebAssets works around a known omlx packaging gap (observed live
+// against a 0.7.1.dev1 install): the admin console's login page and its static
+// assets (CSS/JS/fonts) ship in a separate `omlx_web` package, but
+// omlx/admin/routes.py looks for them under omlx/admin/templates and
+// omlx/admin/static, which the wheel never populates — every request to the admin
+// console throws jinja2.exceptions.TemplateNotFound and its assets 404 (verified
+// live: http://127.0.0.1:8100/admin). Symlinking the two missing directories to
+// their omlx_web equivalents fixes this with zero omlx-side changes. Resolves both
+// packages' real install location via the venv's OWN python interpreter
+// (`import <pkg>; print(<pkg>.__path__[0])`) rather than guessing a
+// lib/python<version>/site-packages path, so it is robust to any layout.
+// Best-effort and self-correcting: it only links a name that is BOTH absent under
+// omlx/admin AND present under omlx_web, so a future omlx release that ships its
+// own admin assets (or drops omlx_web entirely once the gap is fixed upstream)
+// is left untouched — this becomes a silent no-op, not a stale/wrong link.
+func linkAdminWebAssets() {
+	pythonPath, err := pyenv.PythonPath()
+	if err != nil {
+		return
+	}
+	omlxDir, err := resolvePackageDirFn(pythonPath, "omlx")
+	if err != nil {
+		return
+	}
+	webDir, err := resolvePackageDirFn(pythonPath, "omlx_web")
+	if err != nil {
+		return // omlx_web absent — nothing to link (also true once upstream fixes this)
+	}
+	adminDir := filepath.Join(omlxDir, "admin")
+	for _, name := range []string{"templates", "static"} {
+		target := filepath.Join(adminDir, name)
+		source := filepath.Join(webDir, name)
+		if _, statErr := os.Lstat(target); statErr == nil {
+			continue // already present (a real dir or a prior link) — leave it
+		}
+		info, statErr := os.Stat(source)
+		if statErr != nil || !info.IsDir() {
+			continue // omlx_web doesn't have it either — nothing to link
+		}
+		relSource, relErr := filepath.Rel(adminDir, source)
+		if relErr != nil {
+			relSource = source
+		}
+		_ = os.Symlink(relSource, target)
+	}
+}
+
+// resolvePackageDirFn is the injectable seam over resolvePackageDir so tests cover
+// linkAdminWebAssets without a real Python interpreter.
+var resolvePackageDirFn = resolvePackageDir
+
+// resolvePackageDir asks the venv's own python interpreter where an installed
+// package actually lives (its __path__[0]) — robust to any site-packages layout,
+// unlike hand-building a lib/python<version>/site-packages path.
+func resolvePackageDir(pythonPath, pkg string) (string, error) {
+	output, err := exec.Command(pythonPath, "-c", "import "+pkg+"; print("+pkg+".__path__[0])").Output() // #nosec G204 — pkg is one of two fixed literals passed by this file
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(string(output)), nil
 }
 
 // InstallGuidance returns ordered manual steps to install omlx into the

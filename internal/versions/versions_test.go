@@ -19,6 +19,7 @@ var expectedServices = map[string]string{
 	"headroom":            "container",
 	"presidio-analyzer":   "container",
 	"presidio-anonymizer": "container",
+	"open-webui":          "container",
 	"proxy":               "container",
 	// omlx is host-native — not a pulled/pinned container image.
 	"dns":          "container",
