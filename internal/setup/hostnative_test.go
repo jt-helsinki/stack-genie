@@ -22,9 +22,13 @@ import (
 func TestMain(m *testing.M) {
 	hostNativeStartOmlx = func() error { return nil }
 	hostNativeStopOmlx = func() error { return nil }
-	// A reconcile-path test must never trigger the real (large) omlx pip install just
-	// because the host lacks it; the reconcile routes through this seam.
+	hostNativeStartColibri = func() error { return nil }
+	hostNativeStopColibri = func() error { return nil }
+	// A reconcile-path test must never trigger the real (large) omlx pip install, or
+	// the real colibri archive download, just because the test host lacks either;
+	// the reconcile routes through these seams.
 	installOmlxFn = func() error { return nil }
+	installColibriFn = func() error { return nil }
 	// Run() calls EnsureNonoInstalled before the prerequisite gate; a test must never
 	// trigger the real brew/curl nono install just because the test host lacks it
 	// (nonoDetectFn itself is left as the real exec.LookPath check — cheap and

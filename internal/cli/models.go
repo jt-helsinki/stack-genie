@@ -25,6 +25,10 @@ var litellmClient = litellm.RealClient
 // so tests exercise it without a real omlx server or gateway.
 var syncOmlxModelsFn = setup.SyncOmlxModels
 
+// syncColibriModelsFn mirrors syncOmlxModelsFn for the second, optional
+// local-inference backend (setup.SyncColibriModels).
+var syncColibriModelsFn = setup.SyncColibriModels
+
 // newModelsCmd builds `ai models` (CLI §8) — read-only gateway inspection. Local
 // model management (pull/configure/enable/disable/rm) is gone: omlx, the sole
 // local-inference backend, manages its own models entirely through its own admin
@@ -46,55 +50,87 @@ func newModelsCmd(em *output.Emitter, exit *int) *cobra.Command {
 	return cmd
 }
 
-// newModelsRefreshCmd builds `ai models refresh`: rebuilds LiteLLM's omlx/*
-// registrations from the omlx server's live GET /v1/models ON DEMAND — every
-// CURRENTLY-registered omlx model is deleted and every model omlx currently
-// reports is re-added fresh (even one whose name is unchanged), so a stale
-// registration can never survive a refresh. Use it after adding/removing/renaming
-// a model through omlx's own admin panel (`ai services console omlx`), without
-// needing a full `ai services restart omlx`. This is the SAME rebuild that
-// already runs automatically at `ai setup` and at `ai services start|restart
-// omlx`; this command just triggers it standalone.
+// newModelsRefreshCmd builds `ai models refresh`: rebuilds LiteLLM's omlx/* AND
+// colibri/* registrations from each backend's live GET /v1/models ON DEMAND —
+// every CURRENTLY-registered model under either prefix is deleted and every
+// model that backend currently reports is re-added fresh (even one whose name is
+// unchanged), so a stale registration can never survive a refresh. Use it after
+// adding/removing/renaming a model through omlx's own admin panel (`ai services
+// console omlx`) or colibri's dashboard (`ai services console colibri`), without
+// needing a full `ai services restart`. This is the SAME rebuild that already
+// runs automatically at `ai setup` and at `ai services start|restart
+// omlx|colibri`; this command just triggers both standalone. omlx is the
+// REQUIRED backend, so its sync error fails the command; colibri is OPTIONAL, so
+// its sync error (including simply "colibri isn't installed/configured") is
+// reported but never fails the command.
 func newModelsRefreshCmd(em *output.Emitter, exit *int) *cobra.Command {
 	return &cobra.Command{
 		Use:   "refresh",
-		Short: "Rebuild LiteLLM's registered models from omlx's live model list",
-		Long: "Rebuild LiteLLM's omlx/* model registrations from the omlx server's live\n" +
-			"GET /v1/models: every currently-registered omlx model is deleted and every\n" +
-			"model omlx currently reports is re-added fresh, so a model added/removed/\n" +
-			"renamed through omlx's own admin panel (`ai services console omlx`) shows up\n" +
-			"in the gateway immediately, without a full `ai services restart omlx`.",
+		Short: "Rebuild LiteLLM's registered models from omlx's and colibri's live model lists",
+		Long: "Rebuild LiteLLM's omlx/* and colibri/* model registrations from each\n" +
+			"backend's live GET /v1/models: every currently-registered model under that\n" +
+			"backend's prefix is deleted and every model it currently reports is re-added\n" +
+			"fresh, so a model added/removed/renamed through omlx's own admin panel (`ai\n" +
+			"services console omlx`) or colibri's dashboard (`ai services console\n" +
+			"colibri`) shows up in the gateway immediately, without a full `ai services\n" +
+			"restart`. colibri is optional — if it is not installed/configured, its half\n" +
+			"of the refresh is reported but does not fail the command.",
 		Args: cobra.NoArgs,
 		RunE: func(_ *cobra.Command, _ []string) error {
-			var result litellm.SyncResult
+			var result modelsRefreshResult
+			var omlxErr, colibriErr error
+			work := func() error {
+				result.Omlx, omlxErr = syncOmlxModelsFn()
+				result.Colibri, colibriErr = syncColibriModelsFn()
+				if colibriErr != nil {
+					result.ColibriErr = colibriErr.Error()
+				}
+				return omlxErr
+			}
 			var err error
 			if ui.Enabled(em) {
-				err = ui.RunWithSpinner(em.Err, "rebuilding omlx model registrations", func() error {
-					var workErr error
-					result, workErr = syncOmlxModelsFn()
-					return workErr
-				})
+				err = ui.RunWithSpinner(em.Err, "rebuilding model registrations", work)
 			} else {
-				result, err = syncOmlxModelsFn()
+				err = work()
 			}
 			if err != nil {
 				*exit = em.Failure("models.refresh", output.Errorf(output.ExitRuntimeFailure, "%s", err))
 				return nil
 			}
-			*exit = em.Success("models.refresh", modelsRefreshResult(result))
+			*exit = em.Success("models.refresh", result)
 			return nil
 		},
 	}
 }
 
-// modelsRefreshResult renders `ai models refresh`'s outcome.
-type modelsRefreshResult litellm.SyncResult
+// modelsRefreshResult renders `ai models refresh`'s outcome for BOTH backends.
+// ColibriErr is non-empty when colibri isn't installed/configured/reachable —
+// never a command failure (see newModelsRefreshCmd), just reported. A plain
+// string (not a wrapped error) so the --json envelope round-trips cleanly —
+// encoding/json cannot unmarshal into a bare `error` interface field.
+type modelsRefreshResult struct {
+	Omlx       litellm.SyncResult
+	Colibri    litellm.SyncResult
+	ColibriErr string
+}
 
 func (result modelsRefreshResult) Human() string {
-	if len(result.Added) == 0 && len(result.Deleted) == 0 {
-		return ui.Success.Render(ui.IconOK) + " omlx currently serves no models — nothing to rebuild"
+	lines := []string{renderSyncLine("omlx", result.Omlx)}
+	if result.ColibriErr != "" {
+		lines = append(lines, ui.Muted.Render("colibri: "+result.ColibriErr+" (optional, not a failure)"))
+	} else {
+		lines = append(lines, renderSyncLine("colibri", result.Colibri))
 	}
-	lines := []string{ui.Success.Render(ui.IconOK) + " rebuilt omlx model registrations"}
+	return strings.Join(lines, "\n")
+}
+
+// renderSyncLine renders one backend's add/delete summary, matching the original
+// single-backend `ai models refresh` output shape.
+func renderSyncLine(backend string, result litellm.SyncResult) string {
+	if len(result.Added) == 0 && len(result.Deleted) == 0 {
+		return ui.Success.Render(ui.IconOK) + " " + backend + " currently serves no models — nothing to rebuild"
+	}
+	lines := []string{ui.Success.Render(ui.IconOK) + " rebuilt " + backend + " model registrations"}
 	for _, name := range result.Added {
 		lines = append(lines, "  "+ui.Success.Render("+")+" "+ui.Value.Render(name))
 	}

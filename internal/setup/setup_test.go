@@ -1464,8 +1464,8 @@ func TestStatusForHasNoOptional(test *testing.T) {
 		test.Fatal(err)
 	}
 	for _, status := range statuses {
-		if status.Name == "omlx" {
-			continue // host-native opt-in backend; Optional is a doctor-severity marker
+		if status.Name == "omlx" || status.Name == "colibri" {
+			continue // host-native opt-in backends; Optional is a doctor-severity marker
 		}
 		if status.Optional {
 			test.Errorf("no service should be Optional, got %q", status.Name)

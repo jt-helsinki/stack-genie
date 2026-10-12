@@ -273,10 +273,10 @@ func TestRegisterOmlxModelRequestShape(test *testing.T) {
 	if _, present := params["litellm_credential_name"]; present {
 		test.Errorf("an omlx model must not reference a credential, got %v", params["litellm_credential_name"])
 	}
-	if params["api_key"] != omlxPlaceholderAPIKey {
+	if params["api_key"] != localPlaceholderAPIKey {
 		test.Errorf("api_key = %v, want the non-empty placeholder %q (LiteLLM's openai/ provider "+
 			"requires a non-empty key to construct its client even though omlx itself checks none)",
-			params["api_key"], omlxPlaceholderAPIKey)
+			params["api_key"], localPlaceholderAPIKey)
 	}
 	if params["drop_params"] != true {
 		test.Errorf("litellm_params.drop_params = %v, want true", params["drop_params"])

@@ -162,8 +162,8 @@ func requiredImages(optional []string, guardrails []string) []string {
 		if service.Name == "presidio" && !presidioSelected(guardrails) {
 			continue // secret-masking guardrail off: don't pull the Presidio images
 		}
-		if service.Name == "omlx" {
-			continue // host-native omlx: no container image to pull
+		if service.Name == "omlx" || service.Name == "colibri" {
+			continue // host-native: no container image to pull
 		}
 		serviceKeys = append(serviceKeys, serviceImageKeys(service.Name)...)
 	}
@@ -1583,20 +1583,28 @@ func (services realServices) Reconcile(providerConfig, bindHost string, optional
 		return nil, err
 	}
 	// Platform-managed host Python venv (~/.ai-platform/venv): the single home for
-	// platform-wide host Python tooling — the omlx local-inference backend, the SOLE
-	// local-inference runtime on this platform. Created best-effort here so it exists
-	// before omlx is installed into it; it NEVER fails the reconcile — a host lacking
-	// uv/python3 just gets a warning.
+	// platform-wide host Python tooling — the omlx local-inference backend (the
+	// platform's REQUIRED one; colibri, started below, is the second, optional one
+	// and manages its own CLI/engine install, not this venv). Created best-effort
+	// here so it exists before omlx is installed into it; it NEVER fails the
+	// reconcile — a host lacking uv/python3 just gets a warning.
 	ensurePlatformVenv(progress)
 	// omlx itself: best-effort install into that venv when it isn't already present,
 	// then start the one shared server + sync its live models into LiteLLM — see
-	// omlx_host.go. OPTIONAL — it NEVER fails the reconcile (a launch failure is
-	// logged with install guidance and skipped). It reaches the service tier through
-	// the host gateway, which LiteLLM/nginx already have via hostGatewayAddArg.
+	// omlx_host.go. It NEVER fails the reconcile (a launch failure is logged with
+	// install guidance and skipped). It reaches the service tier through the host
+	// gateway, which LiteLLM/nginx already have via hostGatewayAddArg.
 	ensureOmlxInstalled(progress)
 	previousProgress := hostNativeProgressWriter
 	SetHostNativeProgressWriter(progress)
 	_ = startOmlxServerHost()
+	// colibri: the second, OPTIONAL local-inference backend (internal/colibri,
+	// colibri_host.go) — best-effort install of its small CLI/engine archive, then
+	// start it IF the user has already configured a model via their own `coli
+	// setup` (this platform never triggers that itself — see colibri's package doc
+	// comment). Like omlx, it NEVER fails the reconcile.
+	ensureColibriInstalled(progress)
+	_ = startColibriServerHost()
 	SetHostNativeProgressWriter(previousProgress)
 	// nginx LAST: it is the SOLE host entry, fronting the gateway (/ + /v1 → LiteLLM
 	// directly), the LiteLLM /llm + LiteLLM /llm admin route, and the LiteLLM admin
@@ -1713,9 +1721,10 @@ func (services realServices) statusFor(enabled []string) ([]ServiceStatus, error
 	presidioOff := !presidioSelected(reconcileGuardrails())
 	statuses := make([]ServiceStatus, 0, len(specs))
 	for _, service := range specs {
-		// omlx is host-native and appended below with a richer summary line
-		// (services.omlxStatus): skip its registry pass so it is not listed twice.
-		if service.Name == "omlx" {
+		// omlx and colibri are host-native and appended below with their own richer
+		// summary lines (services.omlxStatus/colibriStatus): skip their registry pass
+		// so neither is listed twice.
+		if service.Name == "omlx" || service.Name == "colibri" {
 			continue
 		}
 		endpoint, _ := console.EndpointForHost(service.Name, displayDomain)
@@ -1776,6 +1785,12 @@ func (services realServices) statusFor(enabled []string) ([]ServiceStatus, error
 	omlxEndpoint, _ := console.EndpointForHost("omlx", displayDomain)
 	omlxStatus.Address, omlxStatus.Console = omlxEndpoint.Address, omlxEndpoint.Console
 	statuses = append(statuses, omlxStatus)
+	// Host-native colibri: the SAME treatment as omlx, just OPTIONAL (its own
+	// ServiceStatus.Optional is already true — see colibriStatus).
+	colibriStatus := services.colibriStatus()
+	colibriEndpoint, _ := console.EndpointForHost("colibri", displayDomain)
+	colibriStatus.Address, colibriStatus.Console = colibriEndpoint.Address, colibriEndpoint.Console
+	statuses = append(statuses, colibriStatus)
 	return statuses, nil
 }
 
@@ -1826,6 +1841,10 @@ func (services realServices) serviceHealthy(name string) bool {
 		// discovered by HTTP-probing the one server endpoint.
 
 		return omlxHealthy()
+	case "colibri":
+		// colibri is host-native too (see omlx's case above) — the second, optional
+		// local-inference backend.
+		return colibriHealthy()
 	case "presidio":
 		containerRuntime, err := runtime.ContainerRuntimeName(services.prober)
 		if err != nil {

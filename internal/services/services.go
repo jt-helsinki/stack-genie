@@ -62,6 +62,14 @@ const GatewayPort = 18787
 // managed now — see ConsolePath below).
 const OmlxPort = 8100
 
+// ColibriPort is the fixed host loopback port the colibri local-inference server
+// binds (`coli start`/`coli setup`, both configured with --port). Deliberately NOT
+// colibri's own default (8000 — a very commonly used dev port, high collision
+// risk) and distinct from OmlxPort, so both backends can run side by side.
+// Host-native, reached directly by LiteLLM (via host.docker.internal) and this
+// CLI's own `ai services console colibri` (colibri's own web dashboard).
+const ColibriPort = 8200
+
 // Pin is the version pin for one component: a container image+tag, or a native
 // version+sha256. Exactly one shape is populated, per Mode.
 type Pin struct {
@@ -114,9 +122,10 @@ type Service struct {
 // components in the order they were captured from the production code.
 var registry = []Service{
 	{
-		// omlx is HOST-NATIVE and the SOLE local-inference backend: the platform runs
-		// NO aip-* container and pulls no image for it — it is ONE shared `omlx serve`
-		// host process (multi-model, managed by omlx itself: LRU eviction, TTL, model
+		// omlx is HOST-NATIVE and the platform's REQUIRED local-inference backend (the
+		// second, OPTIONAL one is colibri, just below): the platform runs NO aip-*
+		// container and pulls no image for it — it is ONE shared `omlx serve` host
+		// process (multi-model, managed by omlx itself: LRU eviction, TTL, model
 		// downloads) reached directly on its fixed loopback port (OmlxPort), probed
 		// over HTTP. Its served models are reached through LiteLLM's `/v1` model path
 		// (there is no dedicated nginx /omlx route), so Endpoint carries no gateway
@@ -127,6 +136,23 @@ var registry = []Service{
 		Name:     "omlx",
 		Endpoint: Endpoint{Port: OmlxPort, HasConsole: true, ConsolePath: "/admin"},
 		LogScope: "omlx",
+	},
+	{
+		// colibri is the SECOND local-inference backend (internal/colibri,
+		// https://github.com/JustVugg/colibri) — HOST-NATIVE like omlx (no aip-*
+		// container, no image) but OPTIONAL end to end: a missing install or a failed
+		// start are never fatal to `ai setup` (see internal/setup/colibri_host.go).
+		// Keeps exactly ONE model loaded per process (unlike omlx's one-shared-
+		// server-many-models design), on its own fixed loopback port (ColibriPort,
+		// deliberately distinct from omlx's so both can run side by side). Its
+		// `coli start --no-browser` serves the OpenAI/Anthropic-compatible API AND its
+		// own web dashboard on that SAME port, so it gets a console entry too —
+		// `ai services console colibri` opens the dashboard directly. Model
+		// selection/download is the user's own one-time `coli setup`, never this
+		// platform's — see the package doc comment for why.
+		Name:     "colibri",
+		Endpoint: Endpoint{Port: ColibriPort, HasConsole: true},
+		LogScope: "colibri",
 	},
 	{
 		Name:     "presidio",

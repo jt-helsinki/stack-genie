@@ -11,6 +11,7 @@ import (
 func TestLogScopesMatchesCurrent(test *testing.T) {
 	want := []string{
 		"omlx",
+		"colibri",
 		"presidio",
 		"valkey",
 		"redisinsight",
@@ -46,6 +47,7 @@ func TestEndpointsMatchCurrentConsoleRegistry(test *testing.T) {
 		"valkey":       {},
 		"redisinsight": {HasConsole: true, UISubdomain: "valkey"},
 		"omlx":         {Port: OmlxPort, ConsolePath: "/admin", HasConsole: true},
+		"colibri":      {Port: ColibriPort, HasConsole: true},
 		"open-webui":   {HasConsole: true, UISubdomain: "chat"},
 		"proxy":        {Port: 18787},
 		"dns":          {LoopbackAddress: "127.0.0.1:15353/udp"},
@@ -85,7 +87,7 @@ func TestVersionPinsMatchCurrentDefault(test *testing.T) {
 // TestCoreAndOptionalServiceNames pins the logical core/optional partition (the
 // frozen API the internal/setup migration consumes).
 func TestCoreAndOptionalServiceNames(test *testing.T) {
-	wantCore := []string{"omlx", "presidio", "valkey", "redisinsight", "headroom", "litellm", "open-webui", "proxy", "dns"}
+	wantCore := []string{"omlx", "colibri", "presidio", "valkey", "redisinsight", "headroom", "litellm", "open-webui", "proxy", "dns"}
 	if got := CoreServiceNames(); !reflect.DeepEqual(got, wantCore) {
 		test.Errorf("CoreServiceNames() = %v, want %v", got, wantCore)
 	}

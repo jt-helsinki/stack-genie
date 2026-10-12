@@ -26,10 +26,11 @@ func TestURLAndKnown(test *testing.T) {
 
 func TestWithConsolesSortedAndFiltered(test *testing.T) {
 	named := WithConsoles()
-	// litellm + omlx + open-webui + redisinsight expose consoles — litellm/
-	// open-webui/redisinsight as nginx subdomain vhosts on the gateway port, omlx
-	// as its own direct loopback port (its admin panel). Sorted by name.
-	want := []string{"litellm", "omlx", "open-webui", "redisinsight"}
+	// litellm + omlx + colibri + open-webui + redisinsight expose consoles —
+	// litellm/open-webui/redisinsight as nginx subdomain vhosts on the gateway
+	// port, omlx/colibri as their own direct loopback ports (admin panel / web
+	// dashboard). Sorted by name.
+	want := []string{"colibri", "litellm", "omlx", "open-webui", "redisinsight"}
 	if len(named) != len(want) {
 		test.Fatalf("WithConsoles = %+v, want names %v", named, want)
 	}
@@ -41,6 +42,7 @@ func TestWithConsolesSortedAndFiltered(test *testing.T) {
 	wantURL := map[string]string{
 		"litellm":      "http://litellm.localhost:18787/ui/login",
 		"omlx":         "http://localhost:8100/admin",
+		"colibri":      "http://localhost:8200",
 		"open-webui":   "http://chat.localhost:18787",
 		"redisinsight": "http://valkey.localhost:18787",
 	}

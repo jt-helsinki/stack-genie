@@ -229,14 +229,16 @@ func ServiceNames() []string {
 
 // hostNativeServiceNames are the HOST-NATIVE inference runtimes: they run as host
 // PROCESSES (not aip-* containers), so their start/stop/restart is a host-exec path
-// (controlHostNativeService), NOT the container `Control` (`docker start/stop`). omlx
-// (the one shared `omlx serve` loopback process) is the sole one.
+// (controlHostNativeService), NOT the container `Control` (`docker start/stop`):
+// omlx (the one shared `omlx serve` loopback process, REQUIRED) and colibri (the
+// second, OPTIONAL local-inference backend — internal/colibri).
 func hostNativeServiceNames() []string {
-	return []string{"omlx"}
+	return []string{"omlx", "colibri"}
 }
 
-// isHostNativeService reports whether name is a host-native runtime (omlx),
-// which is controlled via the host-exec path rather than the container runtime.
+// isHostNativeService reports whether name is a host-native runtime (omlx,
+// colibri), which is controlled via the host-exec path rather than the container
+// runtime.
 func isHostNativeService(name string) bool {
 	return slices.Contains(hostNativeServiceNames(), name)
 }
@@ -311,8 +313,10 @@ func ControlService(deps Deps, action, service string) ([]ServiceStatus, error) 
 // override them (and a package TestMain neutralizes them so no container-path test
 // accidentally spawns a host process).
 var (
-	hostNativeStartOmlx = startOmlxServerHost
-	hostNativeStopOmlx  = stopOmlxServerHost
+	hostNativeStartOmlx    = startOmlxServerHost
+	hostNativeStopOmlx     = stopOmlxServerHost
+	hostNativeStartColibri = startColibriServerHost
+	hostNativeStopColibri  = stopColibriServerHost
 )
 
 // controlHostNativeService applies a lifecycle action to a host-native runtime
@@ -334,6 +338,8 @@ func applyHostNativeAction(action, service string) error {
 	switch service {
 	case "omlx":
 		start, stop = hostNativeStartOmlx, hostNativeStopOmlx
+	case "colibri":
+		start, stop = hostNativeStartColibri, hostNativeStopColibri
 	default:
 		return output.Errorf(output.ExitInvalidInput, "unknown host-native service %q", service)
 	}

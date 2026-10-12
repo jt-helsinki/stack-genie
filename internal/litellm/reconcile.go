@@ -2,15 +2,17 @@ package litellm
 
 // Sync / reconcile engine (Phase B). The DESIRED model set is derived from the
 // catalog (every model of each LiteLLM-routable provider the user has keyed); the
-// CURRENT set is the live gateway list (ListModels). Local omlx models
-// (omlx/<id>) are NOT part of the desired set here — they are synced separately
-// via SyncOmlxModels (driven by omlx's own live GET /v1/models, not the catalog)
-// and SHIELDED from this cloud-key resync's delete pass (see
-// localModelPrefixes/nonLocalModels). Reconcile is a PURE diff (add/delete by
-// model_name) and is unit-tested without a client; SyncModels wires the catalog →
-// desired build, the live list, the diff, and the apply behind the injectable
-// KeyManager — SyncOmlxModels (below) reuses the exact same Reconcile/ApplyPlan
-// machinery for the omlx side.
+// CURRENT set is the live gateway list (ListModels). Local models from EITHER
+// backend (omlx/<id>, colibri/<id>) are NOT part of the desired set here — each
+// is synced separately via SyncOmlxModels/SyncColibriModels (driven by that
+// backend's own live GET /v1/models, not the catalog) and SHIELDED from this
+// cloud-key resync's delete pass (see localModelPrefixes/nonLocalModels).
+// Reconcile is a PURE diff (add/delete by model_name) and is unit-tested without
+// a client; SyncModels wires the catalog → desired build, the live list, the
+// diff, and the apply behind the injectable KeyManager — SyncOmlxModels/
+// SyncColibriModels (below) reuse the exact same Reconcile/ApplyPlan machinery,
+// each scoped to its own prefix (syncLocalModels) so neither backend's sync can
+// delete the other's registrations.
 
 import (
 	"sort"
@@ -172,13 +174,33 @@ func (manager *KeyManager) SyncModels(cat *catalog.Catalog, keyedProviders []str
 // non-empty placeholder LiteLLM's client requires regardless. Result is sorted by
 // model_name.
 func DesiredOmlxModels(liveModelIDs []string, apiBase, apiKey string) []DesiredModel {
+	return desiredLocalModels(liveModelIDs, OmlxModelName, omlxModelParamsInfo, apiBase, apiKey)
+}
+
+// DesiredColibriModels mirrors DesiredOmlxModels exactly, for colibri's live
+// model list (internal/colibri.ListModels — colibri keeps exactly one model
+// loaded per process, so liveModelIDs has at most one entry in practice, but the
+// shape stays a slice for symmetry with the omlx path).
+func DesiredColibriModels(liveModelIDs []string, apiBase, apiKey string) []DesiredModel {
+	return desiredLocalModels(liveModelIDs, ColibriModelName, colibriModelParamsInfo, apiBase, apiKey)
+}
+
+// desiredLocalModels is the shared build behind DesiredOmlxModels/
+// DesiredColibriModels: every live id becomes one DesiredModel, named by
+// publicName and routed/authenticated by paramsInfo, sorted by model_name.
+func desiredLocalModels(
+	liveModelIDs []string,
+	publicName func(id string) string,
+	paramsInfo func(id, apiBase, apiKey string) (ModelParams, ModelInfo),
+	apiBase, apiKey string,
+) []DesiredModel {
 	desired := make([]DesiredModel, 0, len(liveModelIDs))
 	for _, id := range liveModelIDs {
 		if id == "" {
 			continue
 		}
-		params, info := omlxModelParamsInfo(id, apiBase, apiKey)
-		desired = append(desired, DesiredModel{Name: OmlxModelName(id), Params: params, Info: info})
+		params, info := paramsInfo(id, apiBase, apiKey)
+		desired = append(desired, DesiredModel{Name: publicName(id), Params: params, Info: info})
 	}
 	sort.Slice(desired, func(left, right int) bool { return desired[left].Name < desired[right].Name })
 	return desired
@@ -191,8 +213,8 @@ func DesiredOmlxModels(liveModelIDs []string, apiBase, apiKey string) []DesiredM
 // user hand-edited on it in LiteLLM's admin UI (rate limits, tags, custom
 // pricing, ...) survive a refresh untouched. Only a model omlx newly reports
 // gets added, and only one that disappeared from omlx's list gets deleted. It
-// is scoped to ONLY omlx/*-prefixed live entries (onlyLocalModels) so it never
-// touches cloud registrations — the mirror image of SyncModels' nonLocalModels
+// is scoped to ONLY omlx/*-prefixed live entries so it never touches cloud (or
+// colibri/*) registrations — the mirror image of SyncModels' nonLocalModels
 // guard. Called automatically at `ai setup` and at omlx service start/restart,
 // and on demand via `ai models refresh` / the TUI's Service Detail `m` key
 // (model management itself lives in omlx's own admin panel — this sync just
@@ -201,28 +223,51 @@ func DesiredOmlxModels(liveModelIDs []string, apiBase, apiKey string) []DesiredM
 // hardware bring-up: the live /model/new + /model/delete round-trips run only
 // against a running aip-litellm.
 func (manager *KeyManager) SyncOmlxModels(liveModelIDs []string, apiBase, apiKey string) (SyncResult, error) {
-	desired := DesiredOmlxModels(liveModelIDs, apiBase, apiKey)
+	return manager.syncLocalModels(OmlxModelPrefix, DesiredOmlxModels(liveModelIDs, apiBase, apiKey))
+}
+
+// SyncColibriModels mirrors SyncOmlxModels exactly, scoped to ONLY colibri/*-
+// prefixed live entries — it never touches omlx/* or cloud registrations, so
+// running both backends' syncs (as `ai models refresh`/the setup reconcile now
+// do) never has one backend's sync delete the other's registrations.
+func (manager *KeyManager) SyncColibriModels(liveModelIDs []string, apiBase, apiKey string) (SyncResult, error) {
+	return manager.syncLocalModels(ColibriModelPrefix, DesiredColibriModels(liveModelIDs, apiBase, apiKey))
+}
+
+// syncLocalModels is the shared reconcile behind SyncOmlxModels/SyncColibriModels:
+// diff desired against ONLY the live entries already under prefix (never the
+// other local backend's, never a cloud model's), then apply the add/delete plan.
+func (manager *KeyManager) syncLocalModels(prefix string, desired []DesiredModel) (SyncResult, error) {
 	current, err := manager.ListModels()
 	if err != nil {
 		return SyncResult{}, err
 	}
-	plan := Reconcile(desired, onlyLocalModels(current))
+	plan := Reconcile(desired, onlyPrefixedModels(current, prefix))
 	return manager.ApplyPlan(plan)
 }
 
-// localModelPrefixes are the public model_name prefixes owned by the local-inference
-// (omlx) sync, NOT by the catalog resync — so SyncModels must never delete them
-// (see nonLocalModels), and SyncOmlxModels must never consider anything else (see
-// onlyLocalModels).
-var localModelPrefixes = []string{"omlx/"}
+// OmlxModelPrefix / ColibriModelPrefix are the public model_name prefixes each
+// local-inference backend owns — the single source of truth localModelPrefixes
+// and syncLocalModels's per-backend scoping both derive from, so the two never
+// drift apart.
+const (
+	OmlxModelPrefix    = "omlx/"
+	ColibriModelPrefix = "colibri/"
+)
 
-// onlyLocalModels returns the models whose public name IS a local-backend route
-// (omlx/*) — the inverse of nonLocalModels, scoping SyncOmlxModels's reconcile to
-// exactly the entries it owns so it never proposes deleting a cloud model.
-func onlyLocalModels(models []LiveModel) []LiveModel {
+// localModelPrefixes are the public model_name prefixes owned by a local-inference
+// sync (omlx OR colibri), NOT by the catalog resync — so SyncModels must never
+// delete them (see nonLocalModels).
+var localModelPrefixes = []string{OmlxModelPrefix, ColibriModelPrefix}
+
+// onlyPrefixedModels returns the models whose public name starts with prefix —
+// scoping a single backend's sync (SyncOmlxModels/SyncColibriModels) to exactly
+// the entries IT owns, so it never proposes deleting a cloud model OR the OTHER
+// local backend's model.
+func onlyPrefixedModels(models []LiveModel, prefix string) []LiveModel {
 	kept := make([]LiveModel, 0, len(models))
 	for _, model := range models {
-		if isLocalModel(model.Name) {
+		if strings.HasPrefix(model.Name, prefix) {
 			kept = append(kept, model)
 		}
 	}

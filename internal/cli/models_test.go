@@ -166,13 +166,23 @@ func TestServedModelNamesGatewayDown(test *testing.T) {
 	}
 }
 
-// `ai models refresh` reports what the sync added/removed.
-func TestModelsRefreshReportsSyncResult(test *testing.T) {
-	original := syncOmlxModelsFn
-	defer func() { syncOmlxModelsFn = original }()
-	syncOmlxModelsFn = func() (litellm.SyncResult, error) {
-		return litellm.SyncResult{Added: []string{"omlx/qwen3-coder"}, Deleted: []string{"omlx/old-model"}}, nil
+// swapModelRefreshSeams stubs both backends' sync seams so `ai models refresh`
+// tests never hit a real omlx/colibri server or gateway. colibri defaults to
+// "not configured" (its ordinary state on a test host), matching how it is
+// optional end to end.
+func swapModelRefreshSeams(test *testing.T, omlxResult litellm.SyncResult, omlxErr error) {
+	test.Helper()
+	origOmlx, origColibri := syncOmlxModelsFn, syncColibriModelsFn
+	test.Cleanup(func() { syncOmlxModelsFn, syncColibriModelsFn = origOmlx, origColibri })
+	syncOmlxModelsFn = func() (litellm.SyncResult, error) { return omlxResult, omlxErr }
+	syncColibriModelsFn = func() (litellm.SyncResult, error) {
+		return litellm.SyncResult{}, errors.New("colibri not configured")
 	}
+}
+
+// `ai models refresh` reports what the sync added/removed, for BOTH backends.
+func TestModelsRefreshReportsSyncResult(test *testing.T) {
+	swapModelRefreshSeams(test, litellm.SyncResult{Added: []string{"omlx/qwen3-coder"}, Deleted: []string{"omlx/old-model"}}, nil)
 
 	var buf bytes.Buffer
 	emitter := &output.Emitter{Out: &buf, Err: io.Discard, JSON: true}
@@ -184,30 +194,27 @@ func TestModelsRefreshReportsSyncResult(test *testing.T) {
 		test.Fatalf("models refresh returned error: %v", err)
 	}
 	if exit != output.ExitOK {
-		test.Fatalf("exit = %d, want 0", exit)
+		test.Fatalf("exit = %d, want 0 — colibri's sync error must never fail the command (optional backend)", exit)
 	}
 	var envelope struct {
-		Data litellm.SyncResult `json:"data"`
+		Data modelsRefreshResult `json:"data"`
 	}
 	if err := json.Unmarshal(buf.Bytes(), &envelope); err != nil {
 		test.Fatalf("envelope not valid JSON: %v\n%s", err, buf.String())
 	}
-	if len(envelope.Data.Added) != 1 || envelope.Data.Added[0] != "omlx/qwen3-coder" {
-		test.Errorf("Added = %v, want [omlx/qwen3-coder]", envelope.Data.Added)
+	if len(envelope.Data.Omlx.Added) != 1 || envelope.Data.Omlx.Added[0] != "omlx/qwen3-coder" {
+		test.Errorf("Omlx.Added = %v, want [omlx/qwen3-coder]", envelope.Data.Omlx.Added)
 	}
-	if len(envelope.Data.Deleted) != 1 || envelope.Data.Deleted[0] != "omlx/old-model" {
-		test.Errorf("Deleted = %v, want [omlx/old-model]", envelope.Data.Deleted)
+	if len(envelope.Data.Omlx.Deleted) != 1 || envelope.Data.Omlx.Deleted[0] != "omlx/old-model" {
+		test.Errorf("Omlx.Deleted = %v, want [omlx/old-model]", envelope.Data.Omlx.Deleted)
 	}
 }
 
-// A sync failure is a real error (exit 4), not silently swallowed — the user asked
-// for a refresh and should know if it didn't happen.
+// An omlx sync failure is a real error (exit 4), not silently swallowed — omlx is
+// the REQUIRED backend, so the user asked for a refresh and should know if it
+// didn't happen.
 func TestModelsRefreshSyncFailure(test *testing.T) {
-	original := syncOmlxModelsFn
-	defer func() { syncOmlxModelsFn = original }()
-	syncOmlxModelsFn = func() (litellm.SyncResult, error) {
-		return litellm.SyncResult{}, errors.New("omlx unreachable")
-	}
+	swapModelRefreshSeams(test, litellm.SyncResult{}, errors.New("omlx unreachable"))
 
 	emitter := &output.Emitter{Out: io.Discard, Err: io.Discard, JSON: true}
 	exit := output.ExitOK
@@ -219,5 +226,23 @@ func TestModelsRefreshSyncFailure(test *testing.T) {
 	}
 	if exit != output.ExitRuntimeFailure {
 		test.Errorf("exit = %d, want ExitRuntimeFailure", exit)
+	}
+}
+
+// A colibri sync failure (its ordinary "not configured" state) must NEVER fail
+// `ai models refresh`, even when omlx succeeds — colibri is optional end to end.
+func TestModelsRefreshColibriFailureIsNotFatal(test *testing.T) {
+	swapModelRefreshSeams(test, litellm.SyncResult{}, nil)
+
+	emitter := &output.Emitter{Out: io.Discard, Err: io.Discard, JSON: true}
+	exit := output.ExitOK
+	cmd := newModelsRefreshCmd(emitter, &exit)
+	cmd.SetOut(io.Discard)
+	cmd.SetErr(io.Discard)
+	if err := cmd.Execute(); err != nil {
+		test.Fatalf("models refresh returned error: %v", err)
+	}
+	if exit != output.ExitOK {
+		test.Errorf("exit = %d, want 0 — an unconfigured/unreachable colibri must never fail the refresh", exit)
 	}
 }

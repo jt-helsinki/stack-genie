@@ -186,17 +186,18 @@ func OmlxRoutedModel(id string) string {
 	return "openai/" + id
 }
 
-// omlxPlaceholderAPIKey is a non-empty placeholder credential for omlx-routed
-// models, used ONLY when omlx has no API key of its own configured. omlx does not
-// require a key unless the user set one (via its own admin panel / --api-key
-// flag / OMLX_API_KEY env var — see internal/omlx.APIKey), but LiteLLM's
-// "openai/" provider goes through the actual OpenAI Python client underneath,
-// which hard-requires a non-empty api_key at load time regardless of whether the
+// localPlaceholderAPIKey is a non-empty placeholder credential for an
+// omlx-or-colibri-routed model, used ONLY when that backend has no API key of its
+// own configured. Neither backend requires a key unless the user/platform set one
+// (internal/omlx.APIKey / internal/colibri.APIKey), but LiteLLM's "openai/"
+// provider goes through the actual OpenAI Python client underneath, which
+// hard-requires a non-empty api_key at load time regardless of whether the
 // backend checks it — an empty/absent key fails every request with
 // "AuthenticationError: ... The api_key client option must be set" before the
-// request ever reaches omlx. "EMPTY" is the same placeholder convention vLLM's
-// own docs and llama.cpp's OpenAI-compatible server use for this exact situation.
-const omlxPlaceholderAPIKey = "EMPTY"
+// request ever reaches the local server. "EMPTY" is the same placeholder
+// convention vLLM's own docs and llama.cpp's OpenAI-compatible server use for this
+// exact situation.
+const localPlaceholderAPIKey = "EMPTY"
 
 // omlxModelParamsInfo builds the LiteLLM params + info for an omlx-served model. It
 // routes on the id VERBATIM (OmlxRoutedModel(id) = "openai/<id>") because that is
@@ -209,14 +210,47 @@ const omlxPlaceholderAPIKey = "EMPTY"
 // per-model vLLM api_base parameter. apiKey is the REAL key when the user has
 // configured one on omlx's side (see internal/omlx.APIKey) — required so LiteLLM's
 // requests to a key-protected omlx server authenticate, not just this platform's
-// own health/list probes; an empty apiKey falls back to omlxPlaceholderAPIKey
+// own health/list probes; an empty apiKey falls back to localPlaceholderAPIKey
 // (an unprotected omlx server ignores it).
 func omlxModelParamsInfo(id, apiBase, apiKey string) (ModelParams, ModelInfo) {
 	dropParams := true
 	if apiKey == "" {
-		apiKey = omlxPlaceholderAPIKey
+		apiKey = localPlaceholderAPIKey
 	}
 	return ModelParams{Model: OmlxRoutedModel(id), APIBase: apiBase, APIKey: apiKey, DropParams: &dropParams},
+		ModelInfo{}
+}
+
+// ColibriModelName is the PUBLIC model handle for a colibri-served model:
+// "colibri/<id>" — the exact mirror of OmlxModelName for the SECOND, optional
+// local-inference backend (internal/colibri). colibri keeps exactly one model
+// loaded per process (unlike omlx's one-shared-server-many-models design), so in
+// practice this ever resolves to at most one entry — but the shape matches omlx's
+// so the sync/reconcile machinery (Reconcile, ApplyPlan, localModelPrefixes)
+// treats both backends identically.
+func ColibriModelName(id string) string {
+	return "colibri/" + id
+}
+
+// ColibriRoutedModel is the value LiteLLM ROUTES on for a colibri-served model:
+// "openai/<id>" — colibri exposes an OpenAI-compatible HTTP API (confirmed
+// against its own docs/source: GET /v1/models, POST /v1/chat/completions), so the
+// routed value mirrors OmlxRoutedModel exactly.
+func ColibriRoutedModel(id string) string {
+	return "openai/" + id
+}
+
+// colibriModelParamsInfo mirrors omlxModelParamsInfo exactly, for colibri's
+// single served model. apiKey is the real COLI_API_KEY when the platform set one
+// (see internal/colibri.APIKey) — colibri does not require a key by default, so
+// an empty apiKey falls back to localPlaceholderAPIKey for the same reason
+// omlxModelParamsInfo does (LiteLLM's "openai/" provider hard-requires one).
+func colibriModelParamsInfo(id, apiBase, apiKey string) (ModelParams, ModelInfo) {
+	dropParams := true
+	if apiKey == "" {
+		apiKey = localPlaceholderAPIKey
+	}
+	return ModelParams{Model: ColibriRoutedModel(id), APIBase: apiBase, APIKey: apiKey, DropParams: &dropParams},
 		ModelInfo{}
 }
 
@@ -224,7 +258,7 @@ func omlxModelParamsInfo(id, apiBase, apiKey string) (ModelParams, ModelInfo) {
 // gateway. The public model_name is "omlx/<id>" (OmlxModelName, the agent-facing
 // handle) while the routed litellm_params.model is "openai/<id>" (OmlxRoutedModel)
 // with api_base pointing at the single shared omlx endpoint, with apiKey (the real
-// key when omlx has one configured, else the non-empty omlxPlaceholderAPIKey).
+// key when omlx has one configured, else the non-empty localPlaceholderAPIKey).
 //
 // Idempotent-ish and HEALING: if a model with this model_name already exists
 // (ListModels) it is re-registered (delete + add) only when the routed target is

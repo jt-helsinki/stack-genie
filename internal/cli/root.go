@@ -63,6 +63,8 @@ func Execute() int {
 			// Likewise the omlx server's own API key (needed to authenticate this
 			// CLI's own requests to it, e.g. a health probe or `ai models refresh`).
 			setup.LoadOmlxAPIKeyFromKeychain()
+			// ...and colibri's (the second, optional local-inference backend).
+			setup.LoadColibriAPIKeyFromKeychain()
 			// Apply the persisted UI theme so every command's prompts, forms, and
 			// headings match the user's choice (falls back to the default theme).
 			_ = ui.Apply(ui.LoadThemeName())

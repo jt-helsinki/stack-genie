@@ -222,13 +222,75 @@ func TestSyncOmlxModelsPreservesUnchanged(test *testing.T) {
 	}
 }
 
-func TestSyncModelsPreservesOmlx(test *testing.T) {
+// TestSyncModelsPreservesLocalModels verifies the cloud-key resync's delete pass
+// shields BOTH local-inference backends' registrations (omlx/* and colibri/*),
+// not just omlx's — localModelPrefixes/nonLocalModels must generalize cleanly.
+// TestSyncColibriModelsNeverTouchesOmlx is a regression test for the exact bug
+// this refactor had to avoid: SyncOmlxModels/SyncColibriModels share the same
+// Reconcile/ApplyPlan machinery, so scoping each to ONLY its own prefix
+// (onlyPrefixedModels) is what stops one backend's sync from proposing to delete
+// the OTHER backend's live registrations (both are "local", but not the SAME
+// local). Here, colibri now reports a different model than what's registered —
+// the omlx/* and cloud registrations must survive untouched.
+func TestSyncColibriModelsNeverTouchesOmlx(test *testing.T) {
+	var deleted, added []string
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		switch request.URL.Path {
+		case "/model/info":
+			_, _ = writer.Write([]byte(`{"data":[
+				{"model_name":"omlx/my-qwen","litellm_params":{"model":"openai/Qwen/Qwen3-8B"},"model_info":{"id":"omlx-keep"}},
+				{"model_name":"colibri/old-model","litellm_params":{"model":"openai/old-model"},"model_info":{"id":"colibri-stale"}},
+				{"model_name":"openai/gpt-5.5","litellm_params":{"model":"openai/gpt-5.5"},"model_info":{"id":"cloud-keep"}}
+			]}`))
+		case "/model/delete":
+			payload, _ := io.ReadAll(request.Body)
+			var body map[string]any
+			_ = json.Unmarshal(payload, &body)
+			deleted = append(deleted, body["id"].(string))
+			_, _ = writer.Write([]byte(`{}`))
+		case "/model/new":
+			payload, _ := io.ReadAll(request.Body)
+			var body map[string]any
+			_ = json.Unmarshal(payload, &body)
+			added = append(added, body["model_name"].(string))
+			_, _ = writer.Write([]byte(`{}`))
+		default:
+			test.Errorf("unexpected %s %s", request.Method, request.URL.Path)
+		}
+	}))
+	defer server.Close()
+	test.Setenv("LITELLM_BASE_URL", server.URL)
+
+	manager := NewKeyManager(okProber())
+	result, err := manager.SyncColibriModels([]string{"glm-5.2"}, "http://127.0.0.1:8200/v1", "")
+	if err != nil {
+		test.Fatalf("SyncColibriModels: %v", err)
+	}
+
+	if strings.Join(deleted, ",") != "colibri-stale" {
+		test.Errorf("deleted = %v, want only the stale colibri registration — omlx/cloud must be untouched", deleted)
+	}
+	if strings.Join(added, ",") != "colibri/glm-5.2" {
+		test.Errorf("added = %v, want [colibri/glm-5.2]", added)
+	}
+	for _, id := range deleted {
+		if id == "omlx-keep" || id == "cloud-keep" {
+			test.Errorf("SyncColibriModels must never delete a non-colibri registration, deleted %q", id)
+		}
+	}
+	if strings.Join(result.Added, ",") != "colibri/glm-5.2" {
+		test.Errorf("result.Added = %v, want [colibri/glm-5.2]", result.Added)
+	}
+}
+
+func TestSyncModelsPreservesLocalModels(test *testing.T) {
 	var deleted []string
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		switch request.URL.Path {
 		case "/model/info":
 			_, _ = writer.Write([]byte(`{"data":[
 				{"model_name":"omlx/my-qwen","litellm_params":{"model":"openai/Qwen/Qwen3-8B"},"model_info":{"id":"omlx-keep"}},
+				{"model_name":"colibri/glm-5.2","litellm_params":{"model":"openai/glm-5.2"},"model_info":{"id":"colibri-keep"}},
 				{"model_name":"openai/old","litellm_params":{"model":"openai/old"},"model_info":{"id":"cloud-stale"}}
 			]}`))
 		case "/model/delete":
@@ -247,8 +309,8 @@ func TestSyncModelsPreservesOmlx(test *testing.T) {
 	test.Setenv("LITELLM_BASE_URL", server.URL)
 
 	manager := NewKeyManager(okProber())
-	// No keyed providers — the resync must still preserve the omlx/* registration and
-	// delete only the stale cloud model.
+	// No keyed providers — the resync must still preserve BOTH local registrations
+	// and delete only the stale cloud model.
 	result, err := manager.SyncModels(testCatalog(test), nil)
 	if err != nil {
 		test.Fatalf("SyncModels: %v", err)
@@ -257,8 +319,8 @@ func TestSyncModelsPreservesOmlx(test *testing.T) {
 		test.Errorf("gateway saw deletes %v, want only [cloud-stale] — local models must be preserved", deleted)
 	}
 	for _, name := range result.Deleted {
-		if strings.HasPrefix(name, "omlx/") {
-			test.Errorf("a resync must not delete vLLM model %q", name)
+		if strings.HasPrefix(name, "omlx/") || strings.HasPrefix(name, "colibri/") {
+			test.Errorf("a resync must not delete a local-backend model %q", name)
 		}
 	}
 }
