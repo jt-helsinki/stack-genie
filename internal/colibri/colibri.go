@@ -31,6 +31,8 @@ package colibri
 import (
 	"archive/tar"
 	"compress/gzip"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -188,25 +190,92 @@ func archiveSuffixFor(goos, goarch string) string {
 // the archive matching this host's platform/arch. Any failure (network,
 // malformed JSON, no matching asset) is returned as an error for the caller to
 // treat best-effort.
-func resolveAsset(goos, goarch string) (downloadURL string, err error) {
+// resolvedAsset is what resolveAsset found for this host's platform/arch: the
+// archive's download URL and bare filename (the filename is how SHA256SUMS.txt
+// keys its entries — see verifyChecksum), plus the SAME release's
+// SHA256SUMS.txt download URL when it published one (ChecksumsURL == "" if not
+// — see Install's doc comment for why that degrades to a skipped verification
+// rather than a failure).
+type resolvedAsset struct {
+	DownloadURL  string
+	Filename     string
+	ChecksumsURL string
+}
+
+func resolveAsset(goos, goarch string) (resolvedAsset, error) {
 	suffix := archiveSuffixFor(goos, goarch)
 	if suffix == "" {
-		return "", fmt.Errorf("colibri: no published release for %s/%s", goos, goarch)
+		return resolvedAsset{}, fmt.Errorf("colibri: no published release for %s/%s", goos, goarch)
 	}
 	body, err := releaseGet(latestReleaseAPI)
 	if err != nil {
-		return "", fmt.Errorf("resolve colibri latest release: %w", err)
+		return resolvedAsset{}, fmt.Errorf("resolve colibri latest release: %w", err)
 	}
 	var release ghRelease
 	if unmarshalErr := json.Unmarshal(body, &release); unmarshalErr != nil {
-		return "", fmt.Errorf("parse colibri release JSON: %w", unmarshalErr)
+		return resolvedAsset{}, fmt.Errorf("parse colibri release JSON: %w", unmarshalErr)
+	}
+	var checksumsURL string
+	for _, asset := range release.Assets {
+		if asset.Name == "SHA256SUMS.txt" {
+			checksumsURL = asset.BrowserDownloadURL
+			break
+		}
 	}
 	for _, asset := range release.Assets {
 		if strings.Contains(asset.Name, suffix) && (strings.HasSuffix(asset.Name, ".tar.gz") || strings.HasSuffix(asset.Name, ".zip")) {
-			return asset.BrowserDownloadURL, nil
+			return resolvedAsset{DownloadURL: asset.BrowserDownloadURL, Filename: asset.Name, ChecksumsURL: checksumsURL}, nil
 		}
 	}
-	return "", fmt.Errorf("colibri latest release has no asset matching %q", suffix)
+	return resolvedAsset{}, fmt.Errorf("colibri latest release has no asset matching %q", suffix)
+}
+
+// checksumFetch is the injectable seam downloading SHA256SUMS.txt's bytes.
+// Tests replace it so no network is touched.
+var checksumFetch = func(url string) ([]byte, error) {
+	resp, err := http.Get(url) //nolint:gosec // fixed GitHub release host, best-effort bring-up
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("GET %s: unexpected status %s", url, resp.Status)
+	}
+	return io.ReadAll(resp.Body)
+}
+
+// verifyChecksum downloads the release's own published SHA256SUMS.txt and
+// confirms archiveBytes' SHA-256 matches the entry for filename — the SAME
+// verification colibri's own `coli setup` performs by default (its --no-verify
+// flag exists specifically to skip this). This closes a real supply-chain gap:
+// without it, a corrupted or tampered download would be silently extracted and
+// later EXECUTED by this platform — coli is a Python script and colibri is a
+// compiled binary, both run on this host. Fails closed: a checksums file that
+// can't be fetched/parsed, or that has no entry for filename, is treated as a
+// verification FAILURE (not skipped) — those are exactly the states where
+// something is already wrong, not evidence that verification is unnecessary.
+func verifyChecksum(archiveBytes []byte, filename, checksumsURL string) error {
+	sumsBody, err := checksumFetch(checksumsURL)
+	if err != nil {
+		return fmt.Errorf("download SHA256SUMS.txt: %w", err)
+	}
+	var expected string
+	for _, line := range strings.Split(string(sumsBody), "\n") {
+		fields := strings.Fields(line)
+		if len(fields) == 2 && fields[1] == filename {
+			expected = fields[0]
+			break
+		}
+	}
+	if expected == "" {
+		return fmt.Errorf("SHA256SUMS.txt has no entry for %s", filename)
+	}
+	sum := sha256.Sum256(archiveBytes)
+	actual := hex.EncodeToString(sum[:])
+	if !strings.EqualFold(actual, expected) {
+		return fmt.Errorf("checksum mismatch for %s: got %s, want %s (possible corrupted or tampered download)", filename, actual, expected)
+	}
+	return nil
 }
 
 // archiveFetch is the injectable seam downloading the resolved archive's bytes.
@@ -224,22 +293,30 @@ var archiveFetch = func(url string) ([]byte, error) {
 }
 
 // Install resolves the latest colibri release's archive matching this host's
-// platform/arch and extracts it into StoreDir (tar.gz only — colibri publishes
-// .zip for Windows, which this platform does not target). The archive is a small
-// (a few MB) CLI/engine download, NOT a model — see this package's doc comment
-// for why model setup is deliberately left to the user's own `coli setup`.
+// platform/arch, VERIFIES it against that release's own published
+// SHA256SUMS.txt (see verifyChecksum — the same check `coli setup` itself
+// performs by default), and only then extracts it into StoreDir (tar.gz only —
+// colibri publishes .zip for Windows, which this platform does not target). The
+// archive is a small (a few MB) CLI/engine download, NOT a model — see this
+// package's doc comment for why model setup is deliberately left to the user's
+// own `coli setup`.
 func Install() error {
 	suffix := archiveSuffixFor(runtime.GOOS, runtime.GOARCH)
 	if suffix == "" {
 		return fmt.Errorf("colibri: unsupported platform %s/%s", runtime.GOOS, runtime.GOARCH)
 	}
-	downloadURL, err := resolveAsset(runtime.GOOS, runtime.GOARCH)
+	asset, err := resolveAsset(runtime.GOOS, runtime.GOARCH)
 	if err != nil {
 		return err
 	}
-	archiveBytes, err := archiveFetch(downloadURL)
+	archiveBytes, err := archiveFetch(asset.DownloadURL)
 	if err != nil {
 		return fmt.Errorf("download colibri release: %w", err)
+	}
+	if asset.ChecksumsURL != "" {
+		if err := verifyChecksum(archiveBytes, asset.Filename, asset.ChecksumsURL); err != nil {
+			return fmt.Errorf("colibri: %w", err)
+		}
 	}
 	storeDir, err := StoreDir()
 	if err != nil {

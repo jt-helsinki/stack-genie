@@ -4,6 +4,8 @@ import (
 	"archive/tar"
 	"bytes"
 	"compress/gzip"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"os"
 	"path/filepath"
@@ -21,6 +23,12 @@ func swapArchiveFetch(test *testing.T) {
 	test.Helper()
 	original := archiveFetch
 	test.Cleanup(func() { archiveFetch = original })
+}
+
+func swapChecksumFetch(test *testing.T) {
+	test.Helper()
+	original := checksumFetch
+	test.Cleanup(func() { checksumFetch = original })
 }
 
 func TestArchiveSuffixFor(test *testing.T) {
@@ -52,12 +60,18 @@ func TestResolveAssetPicksMatchingPlatform(test *testing.T) {
 			{"name":"SHA256SUMS.txt","browser_download_url":"https://example/sums.txt"}
 		]}`), nil
 	}
-	url, err := resolveAsset("darwin", "arm64")
+	asset, err := resolveAsset("darwin", "arm64")
 	if err != nil {
 		test.Fatalf("resolveAsset: %v", err)
 	}
-	if url != "https://example/macos.tar.gz" {
-		test.Errorf("resolveAsset(darwin,arm64) = %q, want the macos asset", url)
+	if asset.DownloadURL != "https://example/macos.tar.gz" {
+		test.Errorf("resolveAsset(darwin,arm64).DownloadURL = %q, want the macos asset", asset.DownloadURL)
+	}
+	if asset.Filename != "colibri-v2.0.0-macos-arm64.tar.gz" {
+		test.Errorf("resolveAsset(darwin,arm64).Filename = %q, want the macos asset's bare name", asset.Filename)
+	}
+	if asset.ChecksumsURL != "https://example/sums.txt" {
+		test.Errorf("resolveAsset(darwin,arm64).ChecksumsURL = %q, want the release's SHA256SUMS.txt URL", asset.ChecksumsURL)
 	}
 }
 
@@ -143,6 +157,88 @@ func TestExtractTarGzRejectsPathTraversal(test *testing.T) {
 }
 
 // Install resolves the asset, downloads it, and extracts it into StoreDir.
+// TestVerifyChecksumMatches/Mismatch/NoEntry/FetchError are a regression suite
+// for a real supply-chain finding: Install() downloaded and extracted colibri's
+// release archive with ZERO integrity verification, even though colibri's own
+// release publishes a SHA256SUMS.txt and its own `coli setup` verifies against
+// it by default. verifyChecksum closes that gap.
+func TestVerifyChecksumMatches(test *testing.T) {
+	swapChecksumFetch(test)
+	archiveBytes := []byte("pretend archive contents")
+	sum := sha256.Sum256(archiveBytes)
+	checksumFetch = func(string) ([]byte, error) {
+		return []byte(hex.EncodeToString(sum[:]) + "  colibri-v2.0.0-macos-arm64.tar.gz\n" +
+			"deadbeef  colibri-v2.0.0-linux-x86_64.tar.gz\n"), nil
+	}
+	if err := verifyChecksum(archiveBytes, "colibri-v2.0.0-macos-arm64.tar.gz", "https://example/sums.txt"); err != nil {
+		test.Fatalf("verifyChecksum must succeed on a matching digest: %v", err)
+	}
+}
+
+func TestVerifyChecksumMismatch(test *testing.T) {
+	swapChecksumFetch(test)
+	checksumFetch = func(string) ([]byte, error) {
+		return []byte("0000000000000000000000000000000000000000000000000000000000000000  colibri-v2.0.0-macos-arm64.tar.gz\n"), nil
+	}
+	if err := verifyChecksum([]byte("tampered or corrupted bytes"), "colibri-v2.0.0-macos-arm64.tar.gz", "https://example/sums.txt"); err == nil {
+		test.Fatal("verifyChecksum must fail on a digest mismatch (possible corrupted or tampered download)")
+	}
+}
+
+func TestVerifyChecksumNoEntryForFile(test *testing.T) {
+	swapChecksumFetch(test)
+	checksumFetch = func(string) ([]byte, error) {
+		return []byte("deadbeef  colibri-v2.0.0-linux-x86_64.tar.gz\n"), nil
+	}
+	if err := verifyChecksum([]byte("anything"), "colibri-v2.0.0-macos-arm64.tar.gz", "https://example/sums.txt"); err == nil {
+		test.Fatal("verifyChecksum must fail CLOSED when SHA256SUMS.txt has no entry for this file, not silently skip")
+	}
+}
+
+func TestVerifyChecksumFetchError(test *testing.T) {
+	swapChecksumFetch(test)
+	checksumFetch = func(string) ([]byte, error) { return nil, errors.New("network down") }
+	if err := verifyChecksum([]byte("anything"), "colibri-v2.0.0-macos-arm64.tar.gz", "https://example/sums.txt"); err == nil {
+		test.Fatal("verifyChecksum must surface a SHA256SUMS.txt fetch error, not silently skip")
+	}
+}
+
+// TestInstallFailsOnChecksumMismatch pins the end-to-end wiring: when the
+// release publishes a SHA256SUMS.txt and the downloaded bytes don't match it,
+// Install must fail WITHOUT ever extracting the archive onto disk.
+func TestInstallFailsOnChecksumMismatch(test *testing.T) {
+	test.Setenv("HOME", test.TempDir())
+	swapReleaseGet(test)
+	swapArchiveFetch(test)
+	swapChecksumFetch(test)
+	suffix := archiveSuffixFor(runtime.GOOS, runtime.GOARCH)
+	if suffix == "" {
+		test.Skip("unsupported platform for this test environment")
+	}
+	filename := "colibri-v2.0.0-" + suffix + ".tar.gz"
+	releaseGet = func(string) ([]byte, error) {
+		return []byte(`{"tag_name":"v2.0.0","assets":[
+			{"name":"` + filename + `","browser_download_url":"https://example/archive.tar.gz"},
+			{"name":"SHA256SUMS.txt","browser_download_url":"https://example/sums.txt"}
+		]}`), nil
+	}
+	archiveFetch = func(string) ([]byte, error) { return buildTestTarGz(test), nil }
+	checksumFetch = func(string) ([]byte, error) {
+		return []byte("0000000000000000000000000000000000000000000000000000000000000000  " + filename + "\n"), nil
+	}
+
+	if err := Install(); err == nil {
+		test.Fatal("Install must fail when the downloaded archive does not match the published checksum")
+	}
+	storeDir, err := StoreDir()
+	if err != nil {
+		test.Fatalf("StoreDir: %v", err)
+	}
+	if _, statErr := os.Stat(filepath.Join(storeDir, "coli")); statErr == nil {
+		test.Error("Install must NOT extract the archive when checksum verification fails")
+	}
+}
+
 func TestInstallDownloadsAndExtracts(test *testing.T) {
 	test.Setenv("HOME", test.TempDir())
 	swapReleaseGet(test)
