@@ -217,8 +217,9 @@ func newSetupCmd(em *output.Emitter, exit *int) *cobra.Command {
 			if report.Runtime != nil && report.Runtime.Role != runtime.RoleClient {
 				setupLiteLLMUIPassword(em, interactive, report.Runtime.Role, report.Runtime.ResolveDomain())
 				// omlx's admin console password — same gate (standalone/server only;
-				// omlx never runs on a client). Offered once, regardless of role (unlike
-				// the LiteLLM password, omlx's key is not role-gated).
+				// omlx never runs on a client) and same interactive-prompt shape as the
+				// LiteLLM UI password above (though omlx's key is not role-gated — it
+				// needs one to even start, regardless of role).
 				setupOmlxAdminPassword(em, interactive, deps, omlxKeyAlreadyConfigured)
 				// Run the initial catalog → gateway model sync so LiteLLM reflects any
 				// already-keyed providers' models + installed local models. Cloud-provider
@@ -825,7 +826,7 @@ func setupOmlxAdminPassword(em *output.Emitter, interactive bool, deps setup.Dep
 	}
 	if !interactive {
 		_, _ = fmt.Fprintf(em.Err, "omlx: generated a random admin console password (keychain-stored). "+
-			"Retrieve it later with `security find-generic-password -s nono -a OMLX_API_KEY -w` (macOS) "+
+			"Retrieve it with `security find-generic-password -s nono -a OMLX_API_KEY -w` (macOS) "+
 			"or `secret-tool lookup service nono username OMLX_API_KEY` (Linux). Console: %s\n", omlxAdminURL())
 		return
 	}
@@ -846,10 +847,16 @@ func setupOmlxAdminPassword(em *output.Emitter, interactive bool, deps setup.Dep
 		_, _ = fmt.Fprintln(em.Err, ui.Muted.Render("No password entered — keeping the generated one."))
 		return
 	}
-	setup.SetOmlxAPIKey(password)
-	// omlx must be RESTARTED to adopt the new key — a running process never
-	// observes an env var change on its own (same reason LiteLLM's password change
-	// relaunches its container).
+	applyOmlxAPIKey(em, interactive, deps, password)
+}
+
+// applyOmlxAPIKey sets key as the omlx admin console password/API key (OS
+// keychain + this process's env) and restarts omlx so the already-running server
+// actually adopts it — a running process never observes an env var change on its
+// own (same reason LiteLLM's password change relaunches its container). Called
+// from setupOmlxAdminPassword's interactive accept branch.
+func applyOmlxAPIKey(em *output.Emitter, interactive bool, deps setup.Deps, key string) {
+	setup.SetOmlxAPIKey(key)
 	restart := func() error {
 		_, err := setup.ControlService(deps, "restart", "omlx")
 		return err
