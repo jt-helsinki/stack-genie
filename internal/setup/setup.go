@@ -157,7 +157,7 @@ type Options struct {
 	// ServerAddr is the remote service-tier address a client routes to (CLI §2.1).
 	// Ignored for standalone/server.
 	ServerAddr string
-	// Domain is the platform base domain the nginx UI subdomains hang off
+	// Domain is the platform base domain the proxy UI subdomains hang off
 	// (litellm.<domain>). Empty means "leave the
 	// persisted/default domain untouched" — Run does a load-modify-save so a domain
 	// set via `ai domain` is preserved. The server role prompts for it at `ai setup`
@@ -813,7 +813,7 @@ func Run(options Options, deps Deps) (*Report, error) {
 	// and Status can report not-enabled optional services as "disabled".
 	optional := ResolveOptional(options, persisted)
 	detected.OptionalServices = optional
-	// Carry the platform base domain (the nginx UI vhosts hang off it). An explicit
+	// Carry the platform base domain (the proxy UI vhosts hang off it). An explicit
 	// Options.Domain wins (the server role prompts for it at `ai setup`); otherwise
 	// PRESERVE a domain already set via `ai domain`/a prior run (load-modify-save —
 	// the freshly-detected Info has no domain). Empty stays empty so ResolveDomain

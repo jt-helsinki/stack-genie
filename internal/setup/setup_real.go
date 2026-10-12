@@ -62,7 +62,7 @@ type serviceSpec struct{ Name, Mode string }
 // coreServices is the always-on host-service set (arch §5), all containers:
 // Presidio (PII guardrail backend),
 // Headroom (the input-compression service LiteLLM calls as a pre_call guardrail),
-// LiteLLM (gateway/router), the nginx gateway proxy, and the aip-dns egress-audit
+// LiteLLM (gateway/router), the proxy gateway proxy, and the aip-dns egress-audit
 // resolver. Local inference is host-native omlx (a host process, NOT a container here) —
 // LiteLLM reaches it via host.docker.internal (arch §14, §16). Headroom is a standalone service on :8787 that LiteLLM POSTs to at
 // /v1/compress (NOT a proxy in front of LiteLLM); the per-project Caveman skill
@@ -220,33 +220,29 @@ const (
 	// Valkey (Redis-compatible) is LiteLLM's response cache — single instance,
 	// INTERNAL-ONLY on aip-net (aip-valkey:6379; LiteLLM's cache_params point here). No
 	// persistence volume: it is a cache. aip-redisinsight is its web UI (:5540 internal,
-	// reached through nginx at valkey.<domain>), preconfigured to aip-valkey.
+	// reached through the proxy at valkey.<domain>), preconfigured to aip-valkey.
 	valkeyContainer       = "aip-valkey"
 	redisInsightContainer = "aip-redisinsight"
 
-	// aip-proxy is the nginx reverse proxy that is the SOLE host ENTRY to the service
-	// tier: every other service container is internal-only on aip-net and only nginx
+	// aip-proxy is the reverse proxy that is the SOLE host ENTRY to the service
+	// tier: every other service container is internal-only on aip-net and only the proxy
 	// publishes to the host. It fronts the model path (host :18787 /v1 → LiteLLM
 	// DIRECTLY, what resolveGateway returns — transparent to workspaces; LiteLLM in
 	// turn calls Headroom as an in-process compression guardrail), the LiteLLM admin
 	// (/llm) surface on the same :18787, and the LiteLLM admin
 	// UI as a Host-based vhost on that SAME :18787 (litellm.<domain> — no separate host
-	// ports). Headroom is NO LONGER an nginx upstream. nginx terminates TLS later (the
+	// ports). Headroom is not an upstream here. the proxy terminates TLS later (the
 	// future HTTPS endpoint, per-vhost :443 + http→https redirect). Pinned minor tag.
 	proxyContainer = "aip-proxy"
 	proxyHostPort  = "18787"
-	// proxyModelTargetURL is the upstream the model path (/ and /v1) forwards to:
-	// LiteLLM directly (NOT Headroom — Headroom is a LiteLLM guardrail now). No
-	// trailing slash so /v1/... is forwarded verbatim.
-	proxyModelTargetURL = "http://" + litellmContainer + ":4000"
 
 	// Open WebUI is the chat UI for LiteLLM, always installed as a CORE service
-	// (no setup picker — see ensureOpenWebUI). INTERNAL-ONLY, fronted by nginx at
+	// (no setup picker — see ensureOpenWebUI). INTERNAL-ONLY, fronted by the proxy at
 	// chat.<domain>.
 	openWebUIContainer = "aip-open-webui"
 	openWebUIVolume    = "aip-open-webui-data"
 	// openWebUITargetURL routes Open WebUI's own model calls through the SAME
-	// gateway path every workspace agent uses (nginx → LiteLLM, so Headroom's
+	// gateway path every workspace agent uses (the proxy → LiteLLM, so Headroom's
 	// in-process guardrail still applies) rather than hitting LiteLLM directly.
 	openWebUITargetURL = "http://" + proxyContainer + "/v1"
 
@@ -285,89 +281,86 @@ const (
 	dnsUpstreams = "/etc/resolv.conf"
 )
 
-// proxyNginxConf renders the nginx reverse-proxy config written to
-// ~/.ai-platform/config/proxy/nginx.conf and bind-mounted at /etc/nginx/nginx.conf.
-// nginx (aip-proxy) is the SOLE host entry point to the service tier: every other
-// service container is internal-only on aip-net, reached BY NAME, and only nginx
-// publishes ports to the host. EVERYTHING listens on the SAME port :80 (host
-// :18787); the web UIs are now Host-based VHOSTS (subdomains), matched by
-// server_name, NOT separate host ports:
+// proxyCaddyfile renders the Caddy reverse-proxy config written to
+// ~/.ai-platform/config/proxy/Caddyfile and bind-mounted at /etc/caddy/Caddyfile.
+// aip-proxy (Caddy, formerly nginx) is the SOLE host entry point to the service
+// tier: every other service container is internal-only on aip-net, reached BY
+// NAME, and only this proxy publishes ports to the host. EVERYTHING listens on
+// the SAME port :80 (host :18787); the web UIs are Host-based VHOSTS
+// (subdomains), matched by hostname, NOT separate host ports:
 //
-//   - the DEFAULT server (server_name <domain> localhost _; default_server) — the
-//     model path + LiteLLM management surface:
-//   - location /     → LiteLLM (aip-litellm:4000) DIRECTLY: the DEFAULT route.
-//     The host CLI (localhost:18787) and the microVM gateway
-//     (host.microsandbox.internal:18787) hit this; agents + the UIs' MODEL calls
-//     ride it. LiteLLM runs the always-on guardrails, including the headroom
-//     compression guardrail (it POSTs to aip-headroom:8787/v1/compress in-process).
-//   - location /v1/  → LiteLLM too, with the SSE-friendly settings (the agent
-//     CHAT path; what every workspace agent's base_url=…/v1 hits) — PRESERVED.
-//   - location /llm/ → aip-litellm:4000 (prefix stripped): the LiteLLM ADMIN/
-//     management surface.
-//   - server_name litellm.<domain>; → aip-litellm:4000 at ROOT (the LiteLLM admin
-//     UI is served at /ui; / redirects there).
+//   - the bare `:80` site block (Caddy's default-server equivalent — it matches
+//     ANY Host not matched by a more specific block below, so localhost,
+//     <domain>, and host.docker.internal all land here) — the model path + the
+//     LiteLLM management surface:
+//   - "/llm/*" → aip-litellm:4000 (prefix stripped via uri strip_prefix): the
+//     LiteLLM ADMIN/management surface.
+//   - everything else → aip-litellm:4000 DIRECTLY: the DEFAULT route. The host
+//     CLI (localhost:18787) hits this; agents' /v1 CHAT calls ride it too — there
+//     is no separate /v1 block, since "everything else" already covers it
+//     (PRESERVED behavior, simplified Caddyfile). LiteLLM runs the always-on
+//     guardrails, including the headroom compression guardrail (it POSTs to
+//     aip-headroom:8787/v1/compress in-process).
+//   - litellm.<domain> → aip-litellm:4000 at ROOT (the LiteLLM admin UI is served
+//     at /ui; / redirects there).
 //
-// Local inference is host-native omlx (reached by LiteLLM directly, not nginx), so there
-// is NO local-inference route and no local-inference container. Headroom is NO LONGER an
-// nginx upstream either — it is a LiteLLM guardrail LiteLLM calls by name. Every location
-// forwards to LiteLLM, never to aip-headroom.
+// Local inference is host-native omlx/colibri (reached by LiteLLM directly, not
+// this proxy), so there is NO local-inference route and no local-inference
+// container. Headroom is NOT an upstream here either — it is a LiteLLM guardrail
+// LiteLLM calls by name. Every route forwards to LiteLLM, never to aip-headroom.
 //
-// litellm.<domain>, valkey.<domain>, and chat.<domain> (Open WebUI, a core service)
-// are the host UI vhosts today; Odysseus was removed from the platform entirely.
+// litellm.<domain>, valkey.<domain>, and chat.<domain> (Open WebUI, a core
+// service) are the host UI vhosts today; Odysseus was removed from the platform
+// entirely.
 //
-// All blocks are tuned for LLM/WebSocket traffic: HTTP/1.1, disabled response
-// buffering so streamed (SSE) responses flush promptly, long read/send timeouts,
-// and Upgrade/Connection headers so the LiteLLM admin UI's websockets work. The
-// blocks are structured so a `listen 443 ssl;` + per-vhost ssl directives can be
-// added later (TLS termination — out of scope now).
+// UNLIKE nginx (what this replaced), a Caddyfile needs NO manual tuning for
+// LLM/WebSocket/SSE traffic: Caddy's reverse_proxy preserves the Host header
+// VERBATIM (including the port — nginx needed $http_host specifically to avoid
+// $host silently stripping it), forwards WebSocket upgrades and the
+// X-Forwarded-* headers automatically, and never buffers responses. The global
+// `auto_https off` keeps this plain HTTP (TLS termination is out of scope for
+// now, same as the old nginx config — there is no https listener to redirect to
+// yet, and Caddy would otherwise try ACME certificate issuance for hostnames
+// like these that cannot actually be issued for).
 //
 // domain is the resolved platform base domain (runtime Info.ResolveDomain(),
 // default aip.local) the UI subdomains hang off.
-func proxyNginxConf(domain string) string {
+func proxyCaddyfile(domain string) string {
 	var builder strings.Builder
-	builder.WriteString("events {}\n")
-	builder.WriteString("http {\n")
-	// TLS (deferred — hardware bring-up): when HTTPS is enabled, each server block
-	// below gains a `listen 443 ssl;` (+ ssl_certificate/ssl_certificate_key — a
-	// wildcard for *.<domain> or per-vhost), TLS terminating per-vhost AT NGINX,
-	// and THIS http listener becomes a redirect-only block:
-	//     listen 80 default_server;
-	//     return 301 https://$host$request_uri;
-	// i.e. http MUST 301-redirect to https on the single :18787 entry. We do NOT
-	// emit that redirect now — there is no https listener yet, so a 301 would break
-	// every plain-http caller (the host CLI, the microVM gateway, the UIs).
-	// The DEFAULT server: the model path (/ + /v1 → LiteLLM directly) plus the LiteLLM
-	// admin (/llm) management surface. default_server so it answers localhost,
-	// host.microsandbox.internal, and any unmatched Host.
-	builder.WriteString("  server {\n")
-	builder.WriteString("    listen 80 default_server;\n")
-	builder.WriteString("    server_name " + domain + " localhost _;\n")
-	// LiteLLM admin/management surface (prefix stripped by the trailing slash).
-	builder.WriteString(proxyLocation("/llm/", "http://"+litellmContainer+":4000/"))
-	// The agent CHAT path → LiteLLM directly (PRESERVED). LiteLLM runs the headroom
-	// compression guardrail in-process. No trailing slash: /v1/... is forwarded
-	// verbatim.
-	builder.WriteString(proxyLocation("/v1/", proxyModelTargetURL))
-	// Catch-all DEFAULT route: any other model-path call also goes to LiteLLM.
-	builder.WriteString(proxyLocation("/", proxyModelTargetURL))
-	builder.WriteString("  }\n")
+	builder.WriteString("{\n\tauto_https off\n\tadmin off\n}\n\n")
+	// The default site: the LiteLLM admin surface on /llm (prefix stripped), model
+	// path everything else.
+	builder.WriteString(":80 {\n")
+	builder.WriteString("\t@llm path /llm/*\n")
+	builder.WriteString("\thandle @llm {\n")
+	builder.WriteString("\t\turi strip_prefix /llm\n")
+	builder.WriteString("\t\treverse_proxy " + litellmContainer + ":4000\n")
+	builder.WriteString("\t}\n")
+	builder.WriteString("\thandle {\n")
+	builder.WriteString("\t\treverse_proxy " + litellmContainer + ":4000\n")
+	builder.WriteString("\t}\n")
+	builder.WriteString("}\n")
 	// One Host-based UI vhost per service with a UISubdomain (data-driven from the
 	// registry: litellm.<domain> → the LiteLLM admin UI at /ui; valkey.<domain> →
-	// RedisInsight at root). They serve app UIs, not the model path. A
-	// ConsolePath other than "/" is the root redirect (litellm → /ui); root-served UIs
-	// (redisinsight) get none.
+	// RedisInsight at root). A ConsolePath other than "/" is the root redirect
+	// (litellm → /ui); root-served UIs (redisinsight, open-webui) get none.
 	for _, vhost := range services.UIVhosts() {
 		rootRedirect := vhost.ConsolePath
 		if rootRedirect == "/" {
 			rootRedirect = ""
 		}
-		builder.WriteString(proxyUIVhost(vhost.Subdomain+"."+domain, vhost.Upstream, rootRedirect))
+		builder.WriteString("\n")
+		builder.WriteString(vhost.Subdomain + "." + domain + ":80 {\n")
+		if rootRedirect != "" {
+			builder.WriteString("\tredir / " + rootRedirect + "\n")
+		}
+		builder.WriteString("\treverse_proxy " + vhost.Upstream + "\n")
+		builder.WriteString("}\n")
 	}
-	builder.WriteString("}\n")
 	return builder.String()
 }
 
-// hostGatewayName is the DNS name a service-tier CONTAINER (LiteLLM, nginx) uses to
+// hostGatewayName is the DNS name a service-tier CONTAINER (LiteLLM, the proxy) uses to
 // reach the HOST machine. Docker Desktop (macOS/Windows) provides it natively; on
 // Linux the container must be run with `--add-host=host.docker.internal:host-gateway`
 // (hostGatewayAddArg), which resolves it to the docker0 bridge gateway. It is how the
@@ -375,65 +368,10 @@ func proxyNginxConf(domain string) string {
 const hostGatewayName = "host.docker.internal"
 
 // hostGatewayAddArg is the `--add-host` flag that maps hostGatewayName to the host
-// gateway inside a container on Linux. It is ALWAYS added to the LiteLLM + nginx run
+// gateway inside a container on Linux. It is ALWAYS added to the LiteLLM + proxy run
 // args so both can reach the single shared host-native omlx server port; it is
 // harmless on Docker Desktop (which already provides the name).
 const hostGatewayAddArg = "--add-host=" + hostGatewayName + ":host-gateway"
-
-// proxyLocation renders one `location <prefix> { proxy_pass <target>; ... }` block
-// tuned for LLM/SSE streaming (HTTP/1.1, buffering off, long timeouts).
-func proxyLocation(prefix, target string) string {
-	return "    location " + prefix + " {\n" +
-		"      proxy_pass " + target + ";\n" +
-		"      proxy_http_version 1.1;\n" +
-		"      proxy_set_header Host $host;\n" +
-		"      proxy_set_header Connection \"\";\n" +
-		"      proxy_buffering off;\n" +
-		"      proxy_read_timeout 3600s;\n" +
-		"      proxy_send_timeout 3600s;\n" +
-		"    }\n"
-}
-
-// proxyUIVhost renders a Host-based `server { server_name <name>; ... }` vhost (on
-// the SHARED :80, host :18787) fronting a web UI at root, with WebSocket upgrade
-// headers (the UIs use websockets). It serves the app UI, not the model path (the
-// apps' model calls ride the default server's /v1 route).
-// rootRedirect, when non-empty, makes `/` 302 to that path (e.g. LiteLLM's /ui).
-// The block is structured so a `listen 443 ssl;` + ssl_* directives can be added
-// per-vhost later (TLS termination).
-func proxyUIVhost(serverName, target, rootRedirect string) string {
-	var builder strings.Builder
-	builder.WriteString("  server {\n")
-	builder.WriteString("    listen 80;\n")
-	builder.WriteString("    server_name " + serverName + ";\n")
-	// Keep nginx's own redirects (e.g. trailing-slash) relative so the client's
-	// host:port is preserved — an absolute redirect would drop the :18787.
-	builder.WriteString("    absolute_redirect off;\n")
-	if rootRedirect != "" {
-		builder.WriteString("    location = / {\n")
-		builder.WriteString("      return 302 " + rootRedirect + ";\n")
-		builder.WriteString("    }\n")
-	}
-	builder.WriteString("    location / {\n")
-	builder.WriteString("      proxy_pass " + target + ";\n")
-	builder.WriteString("      proxy_http_version 1.1;\n")
-	// Forward the ORIGINAL host INCLUDING the port ($http_host, not $host which
-	// strips it) + the forwarded-* headers, so the app builds absolute redirects
-	// (e.g. LiteLLM /ui) back to litellm.<domain>:18787 rather than dropping the
-	// port and sending the browser to :80.
-	builder.WriteString("      proxy_set_header Host $http_host;\n")
-	builder.WriteString("      proxy_set_header X-Forwarded-Host $http_host;\n")
-	builder.WriteString("      proxy_set_header X-Forwarded-Proto $scheme;\n")
-	builder.WriteString("      proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;\n")
-	builder.WriteString("      proxy_set_header Upgrade $http_upgrade;\n")
-	builder.WriteString("      proxy_set_header Connection \"upgrade\";\n")
-	builder.WriteString("      proxy_buffering off;\n")
-	builder.WriteString("      proxy_read_timeout 3600s;\n")
-	builder.WriteString("      proxy_send_timeout 3600s;\n")
-	builder.WriteString("    }\n")
-	builder.WriteString("  }\n")
-	return builder.String()
-}
 
 // litellmRunArgs is the `<runtime> run` argv that launches LiteLLM with the
 // rendered config mounted (docs.litellm.ai). Pure, so it is unit-testable.
@@ -452,9 +390,9 @@ func proxyUIVhost(serverName, target, rootRedirect string) string {
 // network) so the DB-backed admin UI / virtual keys work. The container joins
 // platformNetwork so it can reach aip-litellm-db by name.
 //
-// bindHost is now UNUSED for publishing — LiteLLM is internal-only (nginx is the
+// bindHost is now UNUSED for publishing — LiteLLM is internal-only (the proxy is the
 // sole host entry). The parameter is retained so the relaunch/reconcile callers
-// keep a stable signature; the role-driven bindHost governs the nginx publish
+// keep a stable signature; the role-driven bindHost governs the proxy publish
 // (ensureProxy), not LiteLLM.
 // The container ALWAYS gets `--add-host=host.docker.internal:host-gateway` so it can
 // reach the host-side inference backend (host-native omlx);
@@ -469,9 +407,9 @@ func litellmRunArgs(configPath, bindHost, image string) []string {
 	}
 	return append(args,
 		// INTERNAL-ONLY: no host publish. LiteLLM is reached by name on aip-net
-		// (aip-litellm:4000) — by the nginx gateway's model path (/ + /v1) and its
+		// (aip-litellm:4000) — by the proxy gateway's model path (/ + /v1) and its
 		// /llm route (the admin surface); LiteLLM in turn calls Headroom (the
-		// compression guardrail) by name. nginx (aip-proxy) is the only host entry.
+		// compression guardrail) by name. the proxy (aip-proxy) is the only host entry.
 		"-v", configPath+":/app/config.yaml",
 		"-e", "UI_USERNAME="+litellmUIUsername,
 		"-e", "UI_PASSWORD",
@@ -638,7 +576,7 @@ func containerOnCurrentImage(prober runtime.Prober, containerRuntime, name, imag
 
 // containerPublishesHostPort reports whether a container has any host port
 // binding. Used to detect a container left over from a previous topology — e.g. a
-// Headroom that still host-publishes :18787 from before nginx (aip-proxy) took
+// Headroom that still host-publishes :18787 from before the proxy (aip-proxy) took
 // that port — so the reconcile recreates it internal-only instead of skipping it
 // (idempotent "already running") and then failing when the proxy can't bind 18787.
 func containerPublishesHostPort(prober runtime.Prober, containerRuntime, name string) bool {
@@ -701,7 +639,7 @@ func ensureValkey(prober runtime.Prober, containerRuntime string) error {
 }
 
 // ensureRedisInsight runs RedisInsight (Redis's official GUI), INTERNAL-ONLY on :5540
-// (reached through the nginx gateway at valkey.<domain>, served at ROOT). It is
+// (reached through the proxy gateway at valkey.<domain>, served at ROOT). It is
 // preconfigured at startup with a SINGLE connection to the standalone aip-valkey cache via
 // RI_REDIS_HOST/RI_REDIS_PORT (no auth/TLS — the cache is unauthenticated on the private
 // network); RI_ACCEPT_TERMS_AND_CONDITIONS skips the EULA. Unlike valkey-admin it supports
@@ -731,11 +669,11 @@ func ensureRedisInsight(prober runtime.Prober, containerRuntime string) error {
 // requests to aip-headroom:8787/v1/compress in-process (see litellm.buildGuardrails).
 // So it needs NO OPENAI_TARGET_API_URL (dropping it also prevents a
 // litellm→headroom→litellm loop). It runs the image's default `headroom proxy` CMD
-// on :8787 with telemetry off, INTERNAL-ONLY on aip-net (no host publish) — nginx is
+// on :8787 with telemetry off, INTERNAL-ONLY on aip-net (no host publish) — the proxy is
 // the host gateway entry on :18787. Pulled image (no build). Idempotent.
 func ensureHeadroom(prober runtime.Prober, containerRuntime string) error {
 	// Skip only if it is running on the CURRENT image AND already internal-only. A
-	// Headroom left over from the pre-nginx topology still host-publishes :18787,
+	// Headroom left over from the pre-proxy-migration topology still host-publishes :18787,
 	// which collides with the aip-proxy gateway — recreate it internal-only in that
 	// case (self-heal, so a plain `ai setup` migrates it instead of failing when the
 	// proxy can't bind); a stale image likewise forces a recreate.
@@ -800,7 +738,7 @@ func ensureOpenWebUIKey(prober runtime.Prober) string {
 }
 
 // ensureOpenWebUI runs the Open WebUI chat UI INTERNAL-ONLY (no host publish):
-// users reach it at the Host-based vhost chat.<domain>:18787 THROUGH the nginx
+// users reach it at the Host-based vhost chat.<domain>:18787 THROUGH the proxy
 // gateway, and the UI sends model traffic to OPENAI_API_BASE_URL=http://aip-proxy/v1
 // (NOT direct to LiteLLM) — the same path workspace agents use, so every request
 // traverses LiteLLM's in-process guardrails (Headroom, Presidio, etc.). It is a
@@ -815,7 +753,7 @@ func ensureOpenWebUIKey(prober runtime.Prober) string {
 // platform disk. Pulled image (no build). Idempotent.
 //
 // Reverse-proxy env: WEBUI_URL is set to the chat vhost's public URL so the app
-// builds correct absolute links behind nginx, and CORS_ALLOW_ORIGIN matches it so
+// builds correct absolute links behind the proxy, and CORS_ALLOW_ORIGIN matches it so
 // the websocket handshake is not rejected (Open WebUI returns 403 on a CORS
 // mismatch).
 func ensureOpenWebUI(prober runtime.Prober, containerRuntime, domain string, requireAuth bool) error {
@@ -912,22 +850,22 @@ func ensureDNS(prober runtime.Prober, containerRuntime string) error {
 	return nil
 }
 
-// ensureProxy runs the nginx reverse proxy that is the SOLE host entry to the
-// service tier: microVM/host → nginx (bindHost:18787) → LiteLLM (:4000) DIRECTLY
+// ensureProxy runs the reverse proxy that is the SOLE host entry to the
+// service tier: host → proxy (bindHost:18787) → LiteLLM (:4000) DIRECTLY
 // (LiteLLM in turn calls Headroom as an in-process compression guardrail),
 // plus the LiteLLM /llm + LiteLLM /llm admin route and the single LiteLLM admin
 // UI Host-based vhost (litellm.<domain>) — ALL on the single :18787. It renders
-// the nginx config (proxyNginxConf, threading the resolved domain) to
-// ~/.ai-platform/config/proxy/nginx.conf, bind-mounts it at /etc/nginx/nginx.conf,
+// the proxy config (proxyCaddyfile, threading the resolved domain) to
+// ~/.ai-platform/config/proxy/Caddyfile, bind-mounts it at /etc/caddy/Caddyfile,
 // and publishes ONLY :18787 (the LiteLLM UI is a subdomain on the same port, not a
 // separate host port) on the role's bindHost (0.0.0.0 for a server, else
 // loopback). Pulled image (no build).
 //
 // It always recreates the container (rather than skipping when running) so a change
-// in the domain — which changes the rendered config — actually takes effect; nginx
+// in the domain — which changes the rendered config — actually takes effect; the proxy
 // is cheap to recreate.
 //
-// hardware bring-up: the live end-to-end routing through these nginx routes
+// hardware bring-up: the live end-to-end routing through these proxy routes
 // (/llm and the litellm.<domain> UI vhost) is verified on a
 // provisioned host.
 func ensureProxy(prober runtime.Prober, containerRuntime, bindHost, domain string) error {
@@ -939,25 +877,26 @@ func ensureProxy(prober runtime.Prober, containerRuntime, bindHost, domain strin
 	if err := os.MkdirAll(proxyDir, 0o755); err != nil {
 		return output.Errorf(output.ExitRuntimeFailure, "create proxy config dir %s: %s", proxyDir, err)
 	}
-	confPath := filepath.Join(proxyDir, "nginx.conf")
-	if err := os.WriteFile(confPath, []byte(proxyNginxConf(domain)), 0o644); err != nil {
-		return output.Errorf(output.ExitRuntimeFailure, "write nginx.conf %s: %s", confPath, err)
+	confPath := filepath.Join(proxyDir, "Caddyfile")
+	if err := os.WriteFile(confPath, []byte(proxyCaddyfile(domain)), 0o644); err != nil {
+		return output.Errorf(output.ExitRuntimeFailure, "write Caddyfile %s: %s", confPath, err)
 	}
 	_, _ = prober.Run(containerRuntime, "rm", "-f", proxyContainer) // recreate to apply config
 	args := []string{
 		"run", "-d", "--name", proxyContainer,
 		"--network", platformNetwork,
-		// Retain the host.docker.internal mapping on Linux so nginx can reach host-side
-		// services if a route needs it; local inference is host-native omlx (reached by
-		// LiteLLM, not nginx) so there is no local-inference route to the host any more.
+		// Retain the host.docker.internal mapping on Linux so the proxy can reach
+		// host-side services if a route needs it; local inference is host-native
+		// omlx/colibri (reached by LiteLLM, not this proxy) so there is no
+		// local-inference route to the host any more.
 		hostGatewayAddArg,
 	}
 	args = append(args,
-		// nginx is the only publisher and publishes ONLY the gateway port: the LiteLLM
-		// admin UI is a Host-based vhost (subdomain) on this SAME port, not a separate
-		// host publish.
+		// The proxy is the only publisher and publishes ONLY the gateway port: the
+		// LiteLLM admin UI is a Host-based vhost (subdomain) on this SAME port, not
+		// a separate host publish.
 		"-p", bindHost+":"+proxyHostPort+":80",
-		"-v", confPath+":/etc/nginx/nginx.conf:ro",
+		"-v", confPath+":/etc/caddy/Caddyfile:ro",
 		containerImage("proxy"),
 	)
 	if _, err := prober.Run(containerRuntime, args...); err != nil {
@@ -967,7 +906,7 @@ func ensureProxy(prober runtime.Prober, containerRuntime, bindHost, domain strin
 }
 
 // proxyReadinessURL is the host entry the proxy readiness probe GETs (arch §2.3).
-// It targets LiteLLM's unauthenticated liveness path THROUGH the nginx gateway
+// It targets LiteLLM's unauthenticated liveness path THROUGH the proxy gateway
 // (:18787 → aip-litellm:4000 directly), so a 200 means the forward chain is live;
 // but proxyReachable treats ANY HTTP response (even 404/502) as "the proxy is up
 // and forwarding", and only a transport error as down — so the probe stays
@@ -982,10 +921,10 @@ var proxyHTTPGet = func(url string) (*http.Response, error) {
 	return client.Get(url)
 }
 
-// proxyReachable reports whether the nginx gateway is up and forwarding: it GETs
+// proxyReachable reports whether the proxy gateway is up and forwarding: it GETs
 // url and treats ANY HTTP response (any status code, even 404/502 from a not-yet-
 // ready upstream) as "up and forwarding", and a transport error (e.g. connection
-// refused) as down. This is the live nginx-proxy readiness check (arch §2.3),
+// refused) as down. This is the live proxy readiness check (arch §2.3),
 // kept behind proxyHTTPGet so it is unit-testable.
 func proxyReachable(url string) bool {
 	response, err := proxyHTTPGet(url)
@@ -1322,7 +1261,7 @@ func currentBindHost() string {
 	return "127.0.0.1"
 }
 
-// reconcileDomain resolves the platform base domain the nginx UI vhosts hang off
+// reconcileDomain resolves the platform base domain the proxy UI vhosts hang off
 // from the persisted runtime.yaml (Info.ResolveDomain), falling back to the
 // default (aip.local) when runtime.yaml is absent/unreadable. It is the domain
 // source for ensureProxy in the Reconcile/Control paths, which do not receive a
@@ -1391,12 +1330,12 @@ func RelaunchLiteLLMWithAuth(password, masterKey string) error {
 	_ = storeCredentialFn("LITELLM_MASTER_KEY", masterKey)
 	_ = storeCredentialFn("LITELLM_SALT_KEY", saltKey)
 	// LiteLLM was just recreated, so on the aip-net bridge it likely came up on a
-	// NEW container IP. nginx resolves the literal `aip-litellm` proxy_pass upstream
+	// NEW container IP. the proxy resolves the literal `aip-litellm` proxy_pass upstream
 	// to an IP at config-LOAD and caches it for the worker's lifetime (no `resolver`
 	// directive) — so it keeps forwarding to the stale, now-dead IP and every
 	// gateway request returns 502 Bad Gateway. The reconcile sidesteps this by
-	// bringing nginx up LAST; the password relaunch is the one path that recreates
-	// an upstream AFTER nginx, so it must re-reconcile the proxy here to re-resolve
+	// bringing the proxy up LAST; the password relaunch is the one path that recreates
+	// an upstream AFTER the proxy, so it must re-reconcile the proxy here to re-resolve
 	// the upstream. Best-effort — a proxy hiccup must not fail the secure step.
 	_ = ensureProxy(runtime.RealProber(), containerRuntime.Name, currentBindHost(), reconcileDomain())
 	// Poll for the gateway to come back healthy THROUGH the freshly-recreated proxy
@@ -1525,7 +1464,7 @@ func (services realServices) Reconcile(providerConfig, bindHost string, optional
 	// (LiteLLM's config is rendered by ensureLiteLLM below — passing providerConfig
 	// through — so the same render happens whether launched here or by Control.)
 	// Bring up the container tier on the shared network: Headroom (the
-	// input-compression service), LiteLLM (+ its DB), and the nginx
+	// input-compression service), LiteLLM (+ its DB), and the proxy
 	// gateway. Headroom precedes LiteLLM (its always-on headroom guardrail POSTs to
 	// Headroom at aip-headroom:8787/v1/compress, so the backend must be up first).
 	// Presidio is started ONLY when the secret-masking guardrail is enabled (else its
@@ -1570,11 +1509,11 @@ func (services realServices) Reconcile(providerConfig, bindHost string, optional
 	if err := services.ensureLiteLLM(filepath.Join(configDir, "litellm", "config.yaml"), bindHost, providerConfig); err != nil {
 		return nil, err
 	}
-	// The platform base domain the nginx UI vhost hangs off (runtime.yaml domain,
+	// The platform base domain the proxy UI vhost hangs off (runtime.yaml domain,
 	// default aip.local).
 	domain := reconcileDomain()
 	// Open WebUI: a CORE service (no setup picker, no enable/disable) — always
-	// installed, brought up here BEFORE the nginx proxy (nginx resolves its
+	// installed, brought up here BEFORE the proxy (it resolves its
 	// chat.<domain> upstream at config-load time, so the container must already
 	// exist). The optional-services mechanism itself is retained (still threaded
 	// through for status reporting) for a FUTURE genuinely-optional host service.
@@ -1593,7 +1532,7 @@ func (services realServices) Reconcile(providerConfig, bindHost string, optional
 	// then start the one shared server + sync its live models into LiteLLM — see
 	// omlx_host.go. It NEVER fails the reconcile (a launch failure is logged with
 	// install guidance and skipped). It reaches the service tier through the host
-	// gateway, which LiteLLM/nginx already have via hostGatewayAddArg.
+	// gateway, which LiteLLM/the proxy already have via hostGatewayAddArg.
 	ensureOmlxInstalled(progress)
 	previousProgress := hostNativeProgressWriter
 	SetHostNativeProgressWriter(progress)
@@ -1606,11 +1545,11 @@ func (services realServices) Reconcile(providerConfig, bindHost string, optional
 	ensureColibriInstalled(progress)
 	_ = startColibriServerHost()
 	SetHostNativeProgressWriter(previousProgress)
-	// nginx LAST: it is the SOLE host entry, fronting the gateway (/ + /v1 → LiteLLM
+	// the proxy LAST: it is the SOLE host entry, fronting the gateway (/ + /v1 → LiteLLM
 	// directly), the LiteLLM /llm + LiteLLM /llm admin route, and the LiteLLM admin
 	// UI as a Host-based vhost on the same port. The UI vhost hangs off the resolved
 	// platform base domain (runtime.yaml domain, default aip.local).
-	progress("  • nginx reverse proxy (sole host entry → service tier)…")
+	progress("  • reverse proxy (sole host entry → service tier)…")
 	if err := ensureProxy(services.prober, containerRuntime.Name, bindHost, domain); err != nil {
 		return nil, err
 	}
@@ -1710,7 +1649,7 @@ func (services realServices) Status() ([]ServiceStatus, error) {
 // opt-in tool the user hasn't enabled yet.
 func (services realServices) statusFor(enabled []string) ([]ServiceStatus, error) {
 	specs := desiredServices()
-	// Endpoints render through the single nginx gateway against the platform base
+	// Endpoints render through the single proxy gateway against the platform base
 	// DOMAIN (the UI subdomains hang off it, the host-CLI gateway paths resolve
 	// under it). reconcileDomain resolves it from runtime.yaml (aip.local default,
 	// or the server-role domain). The per-service direct ports are internal-only.
@@ -1865,10 +1804,10 @@ func (services realServices) serviceHealthy(name string) bool {
 		}
 		return containerRunning(services.prober, containerRuntime.Name, openWebUIContainer)
 	case "proxy":
-		// Live readiness probe (arch §2.3): the nginx gateway is ready once it is
+		// Live readiness probe (arch §2.3): the proxy gateway is ready once it is
 		// running AND actually forwarding — an HTTP GET through the host entry
 		// (:18787 → aip-headroom:8787 → aip-litellm) returns SOME response. The
-		// container merely running is not enough (nginx can be up before its
+		// container merely running is not enough (the proxy can be up before its
 		// upstream resolves). proxyReady treats any HTTP status (even 404/502) as
 		// "up and forwarding" and only a transport error (connection refused) as
 		// down — see proxyReachable.
@@ -1919,7 +1858,7 @@ func (services realServices) serviceHealthy(name string) bool {
 
 // Control performs start/stop/restart on the host services. The platform owns
 // the entire container tier (Presidio, LiteLLM + its DB, Headroom, the
-// nginx gateway), so those are started, stopped, and restarted here. An empty service name (or
+// proxy gateway), so those are started, stopped, and restarted here. An empty service name (or
 // "all") acts on every platform container in dependency order. Returns the
 // post-action Status.
 // owningService maps a companion container that `ai services` does not manage
@@ -1968,13 +1907,13 @@ func (services realServices) Control(action, service string) ([]ServiceStatus, e
 		return nil
 	}
 
-	// The enabled optional set governs which web UIs the nginx proxy fronts (and
-	// publishes) — nginx is the sole host entry, so a `proxy` start/restart must
+	// The enabled optional set governs which web UIs the proxy fronts (and
+	// publishes) — the proxy is the sole host entry, so a `proxy` start/restart must
 	// render the config for whatever UIs are enabled on this host.
 	enabledOptional := enabledOptionalServices()
 
-	// The platform-owned services, in dependency order. nginx (proxy) is the SOLE
-	// host entry, so it comes AFTER the optional web UIs it fronts: nginx resolves a
+	// The platform-owned services, in dependency order. the proxy is the SOLE
+	// host entry, so it comes AFTER the optional web UIs it fronts: the proxy resolves a
 	// literal proxy_pass host at config-load time, so its upstreams must be up first.
 	// ensure() is the idempotent launcher; stop() halts every container the service
 	// owns (Presidio is two).

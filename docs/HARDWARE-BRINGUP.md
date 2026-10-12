@@ -12,7 +12,7 @@ SDK) **no longer exists** — those sections are marked **REMOVED / MOOT** below
 rather than left as open bring-up items. A few *new* seams exist in their place
 (nono session lifecycle, OS-keychain credential injection, host-native agent-CLI
 installers) and are called out where relevant. The Docker-based service tier
-(nginx, LiteLLM, guardrails, Valkey, DNS audit, omlx) is **unaffected** by this
+(Caddy, LiteLLM, guardrails, Valkey, DNS audit, omlx) is **unaffected** by this
 migration and its bring-up status below is unchanged.
 
 Slice 1 was implemented host-side **and** verified end-to-end on a provisioned
@@ -79,9 +79,9 @@ The Docker-based service tier did not change:
 - **Service-tier launch** — `internal/setup/setup_real.go`: `realServices.Reconcile`
   brings up the container tier on `aip-net` in order **network → DNS →
   Presidio (only when secret-masking is enabled) → Valkey (+ RedisInsight) →
-  Headroom → LiteLLM (+ DB) → nginx proxy (LAST)**, via the detected runtime
+  Headroom → LiteLLM (+ DB) → Caddy proxy (LAST)**, via the detected runtime
   (docker|podman). Headroom PRECEDES LiteLLM because LiteLLM's `headroom`
-  compression guardrail calls it in-process. nginx (`aip-proxy`) is the sole host
+  compression guardrail calls it in-process. Caddy (`aip-proxy`) is the sole host
   entry — all other containers are internal-only. **Separately** (not part of the
   container reconcile loop), `Reconcile` also brings up **omlx** — the SOLE
   local-inference runtime, a HOST-NATIVE process, not an `aip-*` container — between
@@ -217,11 +217,11 @@ section above, not here.
       round-trip against a running docker/podman engine has not been confirmed on
       a provisioned host.
 
-### 2.3 Tool-firewall verification + nginx proxy readiness probe
+### 2.3 Tool-firewall verification + Caddy proxy readiness probe
 
 `realServices.serviceHealthy("proxy")` now runs a **live** readiness probe
 (`proxyReachable` → GET `http://127.0.0.1:18787/health/liveliness` through the
-nginx → LiteLLM chain (LiteLLM calls Headroom in-process as a `pre_call`
+Caddy → LiteLLM chain (LiteLLM calls Headroom in-process as a `pre_call`
 guardrail); any HTTP response = up-and-forwarding, only a transport error = down).
 What remains is live-host verification of the forward chain itself. The remaining
 verification work:
@@ -253,20 +253,20 @@ verification work:
   (There is no prompt-injection callback to verify — the in-process
   `detect_prompt_injection` and the unmaintained LLM Guard were both removed as
   false-positive sources on ordinary coding traffic; see arch §15.)
-- [ ] **nginx → LiteLLM gateway path (LiteLLM calls Headroom in-process)** —
-      confirm the `aip-proxy` nginx entry on host :18787 forwards `/v1` **directly**
+- [ ] **Caddy → LiteLLM gateway path (LiteLLM calls Headroom in-process)** —
+      confirm the `aip-proxy` Caddy entry on host :18787 forwards `/v1` **directly**
       to LiteLLM (`aip-litellm:4000`) end-to-end, including **streamed (SSE)**
       responses flushing through (buffering off, long timeouts), AND that LiteLLM in
       turn reaches the internal-only Headroom (`aip-headroom:8787/v1/compress`) as
-      its `pre_call` compression guardrail (nginx no longer routes to Headroom
+      its `pre_call` compression guardrail (Caddy no longer routes to Headroom
       itself). In server mode verify the 0.0.0.0:18787 bind reaches a remote client.
       (The live `serviceHealthy("proxy")` readiness probe is already wired — see
       §2.3 intro; this item is the live end-to-end confirmation of the forward chain.)
-- [ ] **nginx as the SOLE host entry — the new routes** — every service container
+- [ ] **Caddy as the SOLE host entry — the new routes** — every service container
       is now INTERNAL-ONLY on `aip-net` (LiteLLM, Presidio, Headroom no
-      longer host-publish); only nginx publishes (omlx is host-native,
+      longer host-publish); only Caddy publishes (omlx is host-native,
       reached via the host gateway). Verify on a live
-      host that the new nginx routes work end-to-end:
+      host that the new Caddy routes work end-to-end:
   - `localhost:18787/llm/*` reaches the LiteLLM admin surface (e.g.
     `GET /llm/model/info`, `/llm/v1/models`, `/llm/health/liveliness`, the
     `/llm/key/*` + `/llm/credentials` paths) — the prefix is stripped to
@@ -280,7 +280,7 @@ verification work:
     routes correctly from a nono session.
 
 - [ ] **UI Host-based vhosts on the single :18787 (the new topology)** — the host
-      UIs are now subdomains (NOT separate host ports): nginx matches each by
+      UIs are now subdomains (NOT separate host ports): Caddy matches each by
       `server_name` on the same :18787, data-driven from `services.UIVhosts()`. Verify
       on a live host, for BOTH always-on vhosts:
   - `http://litellm.<domain>:18787/` serves the LiteLLM admin UI (redirects `/` →
@@ -300,13 +300,13 @@ verification work:
       setup). `ai uninstall` removes the block the same way (standalone only).
 - [ ] **Server-mode DNS/TLS contract** — in server mode `ai setup`/`ai doctor` print
       the operator contract (create `*.<domain>` or per-host DNS → this server, and
-      a TLS cert terminated at nginx). Confirm a remote client can reach the UI
+      a TLS cert terminated at Caddy). Confirm a remote client can reach the UI
       subdomains once real DNS + cert are in place (the platform does NOT edit
       `/etc/hosts` on a server). The server hostname is collected at `ai setup`
       (default `localhost`, which only resolves on the server itself) and persisted
       as runtime.yaml's `domain`; a real DNS name is set there or via `ai domain`.
 - [ ] **http→https redirect (TLS-time requirement)** — TLS terminates PER-VHOST at
-      nginx. Today nginx serves plain http on the single `:18787` entry; TLS is
+      Caddy. Today Caddy serves plain http on the single `:18787` entry; TLS is
       deferred. When HTTPS is configured (see the `proxyNginxConf` server-block
       comment): add a `listen 443 ssl;` + `ssl_certificate`/`ssl_certificate_key`
       (a wildcard for `*.<domain>` or per-vhost) to each vhost, and make the `:80`
@@ -333,7 +333,7 @@ verification work:
 
 - [ ] Headroom runs as the shared host container `aip-headroom`, now called
       IN-PROCESS by LiteLLM's `headroom` compression guardrail
-      (`pre_call`, POSTing to `aip-headroom:8787/v1/compress`) — no longer an nginx
+      (`pre_call`, POSTing to `aip-headroom:8787/v1/compress`) — no longer a Caddy
       proxy. The per-project `context.strategy`
       (conservative/balanced/aggressive) maps to Headroom's two real per-request body
       knobs `keep_turns`/`output_buffer_tokens` — (8,12000)/(5,8000)/(2,4000),
@@ -583,7 +583,7 @@ Rewritten for the nono-based CLI surface (the old sequence drove `ai create
    (`nono.Detect`).
 2. `ai setup` → exit 0 (choose the guardrails at the picker / `--guardrails`); the
    core service tier (DNS, Valkey (+ RedisInsight), Headroom, LiteLLM + DB,
-   and the nginx proxy LAST) comes up; omlx is best-effort installed + started
+   and the Caddy proxy LAST) comes up; omlx is best-effort installed + started
    (the one shared server) into the platform venv — Presidio starts **only
    when secret-masking is selected** (`ai services status` shows it "disabled"
    otherwise); `nono` is best-effort installed (`EnsureNonoInstalled`) if

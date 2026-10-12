@@ -1,5 +1,5 @@
 // Package uihosts is the host-side logic for the platform's UI subdomains: the
-// Host-based nginx vhosts the web UIs are served on (only litellm.<domain> now, on
+// Host-based proxy vhosts the web UIs are served on (only litellm.<domain> now, on
 // the single gateway port) and the /etc/hosts entries that point those names at
 // 127.0.0.1 in standalone mode. (Open WebUI is now a per-workspace in-VM app and
 // is no longer a host UI vhost; Odysseus has been removed from the platform.)
@@ -24,10 +24,10 @@ import (
 )
 
 // loopbackIP is where the UI subdomains resolve in standalone mode (the service
-// tier runs on this host, fronted by nginx on loopback).
+// tier runs on this host, fronted by the proxy on loopback).
 const loopbackIP = "127.0.0.1"
 
-// gatewayPort is the single host port the nginx gateway publishes; every UI vhost
+// gatewayPort is the single host port the proxy gateway publishes; every UI vhost
 // is reached at <subdomain>.<domain>:gatewayPort. Kept here (not imported from
 // internal/setup, which would be a cycle) and asserted against runtime's
 // DefaultGatewayPort by the caller's tests.
@@ -112,7 +112,7 @@ func ManualMessage(domain string) string {
 
 // ServerGuidance is the operator contract printed in SERVER mode (and surfaced by
 // `ai doctor` on a server): create real DNS records for the UI subdomains pointed
-// at this server, and provide a TLS cert terminated at nginx. The platform does
+// at this server, and provide a TLS cert terminated at the proxy. The platform does
 // NOT edit /etc/hosts on a server. It always ends with a trailing newline.
 func ServerGuidance(domain string) string {
 	var builder strings.Builder
@@ -124,7 +124,7 @@ func ServerGuidance(domain string) string {
 		builder.WriteString("       " + name + "\n")
 	}
 	_, _ = fmt.Fprintf(&builder,
-		"  2. Provide a TLS certificate terminated at nginx — a wildcard for *.%s\n"+
+		"  2. Provide a TLS certificate terminated at the proxy — a wildcard for *.%s\n"+
 			"     (e.g. Let's Encrypt DNS-01) or an internal CA. Clients then reach the\n"+
 			"     UIs over HTTPS at the names above (gateway port %d until TLS lands).\n",
 		domain, gatewayPort)

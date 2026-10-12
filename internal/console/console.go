@@ -26,7 +26,7 @@ type Endpoint struct {
 
 // DefaultHost is the display host used by the host-agnostic accessors
 // (EndpointFor/Address/URL/WithConsoles). It is the platform base DOMAIN the
-// nginx UI subdomains hang off and the host-CLI gateway paths resolve under. The
+// the proxy's UI subdomains hang off and the host-CLI gateway paths resolve under. The
 // gateway (aip-proxy) binds loopback in every role except server, and the UI
 // subdomains map to 127.0.0.1 via /etc/hosts in standalone — so the default
 // domain renders reachable browser URLs. Server/other domains are threaded in via
@@ -34,13 +34,13 @@ type Endpoint struct {
 // This is DISPLAY ONLY — it never changes the container bind.
 const DefaultHost = "localhost"
 
-// gatewayPort is the single nginx gateway (aip-proxy) host port — the SOLE host
+// gatewayPort is the single proxy gateway (aip-proxy) host port — the SOLE host
 // entry to the service tier. Every UI subdomain and host-CLI gateway path is
 // reached on this port. Mirrors services.GatewayPort.
 const gatewayPort = services.GatewayPort
 
 // endpointSpec is the host-agnostic data for a service's endpoint. Three shapes,
-// all reached through the single nginx gateway port now:
+// all reached through the single proxy gateway port now:
 //   - a UI vhost (uiSubdomain set): served at <uiSubdomain>.<domain>:gatewayPort,
 //     console at that base + consolePath.
 //   - a host-CLI gateway path (gatewayPath set): reached at
@@ -56,19 +56,19 @@ type endpointSpec struct {
 	consolePath     string // "" → no console; "/" or "" semantics: see endpointForHost
 	hasConsole      bool   // distinguishes "console at the root URL" from "no console"
 	loopbackAddress string // verbatim address, host-independent (loopback-only services)
-	uiSubdomain     string // nginx UI vhost label (<uiSubdomain>.<domain>:gatewayPort)
+	uiSubdomain     string // proxy UI vhost label (<uiSubdomain>.<domain>:gatewayPort)
 	gatewayPath     string // host-CLI gateway prefix (http://<host>:gatewayPort<path>)
 }
 
 // registry maps a host service to its endpoint spec. The data is DERIVED from the
 // internal/services registry (the single source of truth for the platform's
 // service topology), so it cannot drift from the log scopes / version pins / setup
-// reconcile. nginx (aip-proxy) is the SOLE host entry on the gateway port now; the
-// per-service direct ports are internal-only. The endpoints render through nginx:
-//   - litellm  admin UI at litellm.<domain>:18787/ui/login (nginx vhost; :4000 internal)
-//   - proxy    http://<domain>:18787 (aip-proxy nginx gateway entry; no separate UI)
+// reconcile. the proxy (aip-proxy, now Caddy) is the SOLE host entry on the gateway port now; the
+// per-service direct ports are internal-only. The endpoints render through the proxy:
+//   - litellm  admin UI at litellm.<domain>:18787/ui/login (proxy vhost; :4000 internal)
+//   - proxy    http://<domain>:18787 (aip-proxy gateway entry; no separate UI)
 //   - dns      127.0.0.1:15353/udp (aip-dns CoreDNS egress-audit resolver, loopback)
-//   - headroom is internal-only on :8787 behind nginx (no longer host-published)
+//   - headroom is internal-only on :8787 behind the proxy (no longer host-published)
 //   - presidio analyzer/anonymizer are internal-only on :3000 (not host-published)
 var registry = buildRegistry()
 
@@ -91,7 +91,7 @@ func buildRegistry() map[string]endpointSpec {
 
 // endpointForHost renders a spec into a concrete Endpoint for the given display
 // host (the platform base DOMAIN). All host-reachable endpoints now go through the
-// single nginx gateway port:
+// single proxy gateway port:
 //   - loopback-only specs (e.g. dns) ignore host and use their verbatim address;
 //   - a UI vhost renders http://<uiSubdomain>.<host>:gatewayPort (+ consolePath);
 //   - a gateway-path spec renders http://<host>:gatewayPort<path>

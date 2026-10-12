@@ -19,7 +19,7 @@ import (
 )
 
 // HeadroomAPIBase is where LiteLLM reaches the Headroom input-compression service
-// on the shared docker network (aip-net). Headroom is no longer an nginx proxy in
+// on the shared docker network (aip-net). Headroom is not a reverse-proxy hop in
 // FRONT of LiteLLM — it is a LiteLLM pre_call GUARDRAIL: LiteLLM POSTs the request
 // messages to {HeadroomAPIBase}/v1/compress in-process before dispatch (see the
 // headroom-compression guardrail in buildGuardrails). Requires LiteLLM v1.92.x+.
@@ -358,7 +358,7 @@ func buildGuardrails(enabled []string) []map[string]any {
 	}
 	// headroom-compression: input compression. LiteLLM POSTs the request messages to
 	// {api_base}/v1/compress and swaps in the compressed result before dispatch. Headroom
-	// is a standalone service on aip-net (HeadroomAPIBase), NOT an nginx proxy in front
+	// is a standalone service on aip-net (HeadroomAPIBase), NOT a reverse-proxy hop in front
 	// of LiteLLM. Requires LiteLLM v1.92.x+.
 	if on[GuardrailHeadroom] {
 		guardrails = append(guardrails, map[string]any{

@@ -32,9 +32,9 @@ const (
 // distinguishes "console at the root URL" from "no console". LoopbackAddress, when
 // set, is a verbatim host-independent address (loopback-only services, e.g. the DNS
 // resolver) used regardless of the display host. UISubdomain, when set, means the
-// service's UI is served as a Host-based nginx vhost on the single gateway port
+// service's UI is served as a Host-based proxy vhost on the single gateway port
 // (<UISubdomain>.<domain>:GatewayPort) — its direct Port is internal-only now, so
-// its host-reachable address + console are the nginx subdomain forms, NOT
+// its host-reachable address + console are the proxy subdomain forms, NOT
 // http://host:Port. GatewayPath, when set, is the prefix the host CLI reaches a
 // non-UI service through the gateway at (e.g. litellm → "/llm").
 type Endpoint struct {
@@ -46,7 +46,7 @@ type Endpoint struct {
 	GatewayPath     string
 }
 
-// GatewayPort is the single host port the nginx gateway (aip-proxy) publishes —
+// GatewayPort is the single host port the proxy gateway (aip-proxy) publishes —
 // the SOLE host entry to the service tier. Every UI subdomain and every host-CLI
 // gateway path (/llm, /v1) is reached on this port. It mirrors the
 // internal/setup proxyHostPort const (kept here so the leaf services package — and
@@ -56,7 +56,7 @@ const GatewayPort = 18787
 // OmlxPort is the fixed host loopback port the omlx local-inference server binds
 // (`omlx serve --model-dir <dir> --port <port>`) — one shared server for every
 // locally-served model, so unlike the old per-model vLLM ports there is exactly
-// ONE port to fix. It is reached directly (host-native, not through the nginx
+// ONE port to fix. It is reached directly (host-native, not through the proxy
 // gateway) by both LiteLLM (via host.docker.internal) and this CLI's own
 // `ai services console omlx` (the omlx admin panel, the ONLY place models are
 // managed now — see ConsolePath below).
@@ -107,11 +107,11 @@ type Service struct {
 	Endpoint Endpoint
 	LogScope string
 	// UISubdomain is the subdomain LABEL this service's web UI is served at, as a
-	// Host-based nginx vhost on the single gateway port: <label>.<domain> (e.g.
+	// Host-based proxy vhost on the single gateway port: <label>.<domain> (e.g.
 	// "litellm" → litellm.<domain>). Empty means the
 	// service has no UI vhost (it is reached on a path of the gateway, or is
 	// internal-only). It is the SINGLE source of truth for the UI→subdomain
-	// mapping consumed by internal/setup (nginx vhosts + /etc/hosts) and the
+	// mapping consumed by internal/setup (proxy vhosts + /etc/hosts) and the
 	// `ai doctor` / uninstall flows.
 	UISubdomain string
 	Components  []Component
@@ -128,7 +128,7 @@ var registry = []Service{
 		// process (multi-model, managed by omlx itself: LRU eviction, TTL, model
 		// downloads) reached directly on its fixed loopback port (OmlxPort), probed
 		// over HTTP. Its served models are reached through LiteLLM's `/v1` model path
-		// (there is no dedicated nginx /omlx route), so Endpoint carries no gateway
+		// (there is no dedicated /omlx route), so Endpoint carries no gateway
 		// path — but it DOES have a console: omlx's own admin panel at /admin is the
 		// ONLY place models are managed (this platform has no `ai models pull/rm`
 		// equivalent), so `ai services console omlx` opens it directly. It has NO
@@ -186,7 +186,7 @@ var registry = []Service{
 		},
 	},
 	{
-		// RedisInsight — Redis's official GUI for the cache, reached through the nginx
+		// RedisInsight — Redis's official GUI for the cache, reached through the proxy
 		// gateway at valkey.<domain>:GatewayPort (served at ROOT; its :5540 container
 		// port is internal-only). Preconfigured to the standalone aip-valkey.
 		Name:        "redisinsight",
@@ -204,7 +204,7 @@ var registry = []Service{
 	{
 		// Headroom precedes LiteLLM: it is a LiteLLM pre_call compression GUARDRAIL
 		// (LiteLLM POSTs to aip-headroom:8787/v1/compress in-process), so it must be
-		// up before LiteLLM. It is a standalone service, NOT an nginx proxy in front
+		// up before LiteLLM. It is a standalone service, not a reverse-proxy hop in front
 		// of LiteLLM. Internal-only on :8787.
 		Name:     "headroom",
 		Endpoint: Endpoint{}, // internal-only on :8787, called by LiteLLM by name
@@ -220,7 +220,7 @@ var registry = []Service{
 	{
 		Name: "litellm",
 		// The :14000 host port is GONE — LiteLLM is internal-only on aip-net now. Its
-		// admin UI is reached through the nginx gateway at litellm.<domain>:GatewayPort/ui/login.
+		// admin UI is reached through the proxy gateway at litellm.<domain>:GatewayPort/ui/login.
 		Endpoint:    Endpoint{ConsolePath: "/ui/login", HasConsole: true, UISubdomain: "litellm"},
 		LogScope:    "litellm",
 		UISubdomain: "litellm", // litellm.<domain> → the LiteLLM admin UI (/ui/login)
@@ -246,7 +246,7 @@ var registry = []Service{
 	{
 		// Open WebUI is a CORE service (not opt-in — there is no setup picker for
 		// it): always installed, always reconciled, started/stopped with the rest
-		// of the tier. INTERNAL-ONLY, fronted by nginx at chat.<domain>:GatewayPort
+		// of the tier. INTERNAL-ONLY, fronted by the proxy at chat.<domain>:GatewayPort
 		// (root IS the console) like every other UI vhost.
 		Name:        "open-webui",
 		Endpoint:    Endpoint{HasConsole: true, UISubdomain: "chat"},
@@ -262,13 +262,18 @@ var registry = []Service{
 	},
 	{
 		Name:     "proxy",
-		Endpoint: Endpoint{Port: 18787}, // aip-proxy nginx gateway entry, no UI
+		Endpoint: Endpoint{Port: 18787}, // aip-proxy gateway entry, no UI
 		LogScope: "proxy",
 		Components: []Component{
 			{
 				ImageKey:  "proxy",
 				Container: "aip-proxy",
-				Pin:       Pin{Mode: ModeContainer, Image: "nginx", Tag: "stable-alpine3.23-slim"},
+				// Caddy, not nginx: a Caddyfile needs no manual Host/X-Forwarded-*/
+				// Upgrade header wiring (reverse_proxy preserves the Host header
+				// VERBATIM, including the port, and forwards WebSocket upgrades and
+				// X-Forwarded-* automatically) and no buffering directive (it never
+				// buffers responses) — see proxyCaddyfile's doc comment.
+				Pin: Pin{Mode: ModeContainer, Image: "caddy", Tag: "2.11.7-alpine"},
 			},
 		},
 	},
@@ -430,10 +435,10 @@ func Endpoints() map[string]Endpoint {
 	return endpoints
 }
 
-// UIVhost is one Host-based nginx vhost the platform serves a web UI on: the
+// UIVhost is one Host-based proxy vhost the platform serves a web UI on: the
 // logical service Name, its Subdomain LABEL (Subdomain.<domain>), whether it is
 // Optional (rendered/wired only when enabled), and the in-network Upstream the
-// vhost proxies to (e.g. "http://aip-litellm:4000" — the host:port nginx forwards
+// vhost proxies to (e.g. "http://aip-litellm:4000" — the host:port the proxy forwards
 // to, BYPASSING Headroom: these are UI-serving routes, not the model path). It is
 // the single projection consumers (internal/setup, doctor, uninstall) use so the
 // UI→subdomain mapping is never duplicated.
@@ -442,13 +447,13 @@ type UIVhost struct {
 	Subdomain string
 	Optional  bool
 	Upstream  string
-	// ConsolePath is the service's UI path — nginx redirects the vhost root there when
+	// ConsolePath is the service's UI path — the proxy redirects the vhost root there when
 	// non-empty + not "/" (e.g. litellm serves its UI at /ui). Empty ("" or "/") means
 	// the UI is at the root, so no redirect (e.g. redisinsight).
 	ConsolePath string
 }
 
-// uiUpstreams maps each UI service to the in-network upstream nginx proxies its
+// uiUpstreams maps each UI service to the in-network upstream the proxy forwards its
 // vhost to. Declared alongside the registry so adding a UI service is a single
 // edit. The port is the container's internal listen port (reached by name on the
 // shared aip-net). These bypass Headroom — they serve the app UI, not the model

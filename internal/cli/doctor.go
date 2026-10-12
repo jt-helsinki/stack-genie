@@ -137,7 +137,7 @@ func doctorDomain() *doctor.DomainInfo {
 	} else if info.Role == runtime.RoleServer {
 		domainInfo.ServerReminder = "create DNS records (*." + domain +
 			" or per-host litellm." + domain +
-			") → this server's IP, and terminate a TLS cert at nginx. " +
+			") → this server's IP, and terminate a TLS cert at the proxy. " +
 			"Server mode is network-exposed: the LiteLLM admin UI requires a password " +
 			"(set at `ai setup`, or `ai litellm password`)"
 		domainInfo.ServerCredentials = uihosts.ServerCredentialsGuide(domain)

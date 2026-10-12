@@ -7,14 +7,14 @@ Seatbelt on macOS; same-kernel process isolation, not a VM); the model path and
 guardrails run as a shared host container tier. One Go binary, `ai`, is the
 entire control plane.
 
-**Model path:** agent → nginx gateway → LiteLLM → host-native **omlx**
+**Model path:** agent → Caddy gateway → LiteLLM → host-native **omlx**
 ([jundot/omlx](https://github.com/jundot/omlx), the local runtime — macOS on
 Apple Silicon only) or a cloud provider. LiteLLM applies a **user-selectable
 guardrail set** chosen at `ai setup`: the **Headroom** input-compression guardrail
 (LiteLLM POSTs the request to `aip-headroom:8787/v1/compress` in-process) is on
 by default, while Presidio secret-masking, detect-secrets, and a
 destructive-command tool-firewall are opt-in — Headroom is a compression service
-LiteLLM calls, not an nginx hop. A single nginx reverse proxy (`aip-proxy`) is the
+LiteLLM calls, not a Caddy hop. A single Caddy reverse proxy (`aip-proxy`) is the
 only host entry to the service tier — everything else runs internal-only on the
 `aip-net` network. Real provider API keys live only in the LiteLLM gateway
 (keys-in-LiteLLM), encrypted in its DB and added with `ai keys` — never on
@@ -79,12 +79,12 @@ work everywhere), it just has no local model runtime.
 
 `ai setup` **never installs software** — it detects what's missing and prints how
 to install it (command + web address); `ai doctor` reports the same anytime. The
-service tier (the nginx gateway, LiteLLM + Postgres, Headroom,
+service tier (the Caddy gateway, LiteLLM + Postgres, Headroom,
 Valkey + its RedisInsight GUI, and the DNS egress-audit resolver) is launched by
 `ai setup` as host containers on the `aip-net` network — you don't install those.
 Presidio (secret-masking) is opt-in: its containers only start when that
 guardrail is selected at `ai setup` (only Headroom is on by default).
-Only the nginx gateway (`aip-proxy`) publishes a host port (`:18787`); every other
+Only the Caddy gateway (`aip-proxy`) publishes a host port (`:18787`); every other
 service is internal-only and reached through it. The local model runtime is
 **host-native**, not a container: **omlx** runs as ONE shared server process
 (`omlx serve --model-dir <dir> --port 8100`) serving every model it finds in its
@@ -332,7 +332,7 @@ host-arch binary locally for testing.
 The entire control-plane surface is implemented host-side and unit-tested: the
 `ai` CLI, project/workspace lifecycle, context/keys/models/network/state
 commands, `doctor`/`logs`, host detection, and the service-tier + guardrail +
-egress wiring. The Docker-based service tier (nginx, LiteLLM, guardrails, DNS
+egress wiring. The Docker-based service tier (Caddy, LiteLLM, guardrails, DNS
 audit, omlx) has been verified end-to-end live on a provisioned Apple Silicon
 host under `ai setup`. The newer **nono**-based workspace/session model
 (replacing the previous Microsandbox-microVM runtime) is unit-tested with fakes

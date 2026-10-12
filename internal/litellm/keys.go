@@ -66,7 +66,7 @@ func NewKeyManager(prober runtime.Prober) *KeyManager {
 }
 
 // resolveBaseURL matches RealClient's admin base-URL resolution so the key API
-// (/key/*, an admin surface) targets the same nginx `/llm` route as
+// (/key/*, an admin surface) targets the same proxy `/llm` route as
 // `ai models status` — never the LiteLLM container directly.
 func resolveBaseURL() string {
 	return AdminBaseURL()

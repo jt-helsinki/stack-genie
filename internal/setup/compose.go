@@ -18,9 +18,9 @@ import (
 // docker-compose.yaml up -d`, then `logs -f <svc>` / `ps` / `restart <svc>` — for easier
 // debugging. It is generated from the SAME consts/helpers the reconcile uses (container
 // names, `containerImage`, `platformNetwork`, the volume/config paths), so it stays in
-// sync. Local inference is deliberately ABSENT — it is HOST-NATIVE omlx now (the reconcile
-// runs no local-inference container and no local-inference nginx route; LiteLLM reaches
-// the single shared `omlx serve` endpoint via host.docker.internal), so a containerized
+// sync. Local inference is deliberately ABSENT — it is HOST-NATIVE omlx/colibri now (the
+// reconcile runs no local-inference container and no local-inference proxy route; LiteLLM
+// reaches the single shared `omlx serve` endpoint via host.docker.internal), so a containerized
 // local backend here would NOT match the running topology. Secrets stay OFF disk: UI_PASSWORD / LITELLM_MASTER_KEY /
 // LITELLM_SALT_KEY are emitted in compose's PASSTHROUGH form (bare NAME, no value), so
 // `docker compose up` reads them from the environment (e.g. ~/.ai-platform/.ai-platform.env)
@@ -82,7 +82,7 @@ func WriteComposeFile() (string, error) {
 }
 
 // ServicesComposeYAML renders the service-tier docker-compose.yaml. bindHost governs the
-// nginx gateway publish (127.0.0.1 standalone / 0.0.0.0 server), matching ensureProxy.
+// proxy gateway publish (127.0.0.1 standalone / 0.0.0.0 server), matching ensureProxy.
 func ServicesComposeYAML(bindHost string) ([]byte, error) {
 	volumesDir, err := paths.VolumesDir()
 	if err != nil {
@@ -98,7 +98,7 @@ func ServicesComposeYAML(bindHost string) ([]byte, error) {
 	const net = platformNetwork
 	litellmConfig := filepath.Join(configDir, "litellm", "config.yaml")
 	corefile := filepath.Join(configDir, "dns", "Corefile")
-	nginxConf := filepath.Join(configDir, "proxy", "nginx.conf")
+	caddyfile := filepath.Join(configDir, "proxy", "Caddyfile")
 
 	file := composeFile{
 		Networks: map[string]composeNetwork{net: {Name: net}},
@@ -165,11 +165,12 @@ func ServicesComposeYAML(bindHost string) ([]byte, error) {
 				Environment: []string{"HEADROOM_TELEMETRY=off"},
 			},
 			proxyContainer: {
-				// nginx is the sole host entry; it forwards the model path to LiteLLM
-				// directly (LiteLLM calls Headroom in-process), so it depends on LiteLLM.
+				// The proxy (Caddy) is the sole host entry; it forwards the model path
+				// to LiteLLM directly (LiteLLM calls Headroom in-process), so it
+				// depends on LiteLLM.
 				Image: containerImage("proxy"), ContainerName: proxyContainer, Networks: []string{net}, Restart: "unless-stopped",
 				Ports:     []string{bindHost + ":" + proxyHostPort + ":80"},
-				Volumes:   []string{nginxConf + ":/etc/nginx/nginx.conf:ro"},
+				Volumes:   []string{caddyfile + ":/etc/caddy/Caddyfile:ro"},
 				DependsOn: []string{litellmContainer},
 			},
 		},

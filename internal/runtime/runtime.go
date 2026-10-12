@@ -38,7 +38,7 @@ const DefaultGatewayHost = "127.0.0.1"
 // carries only a host with no ":port".
 const DefaultGatewayPort = 18787
 
-// DefaultDomain is the platform base domain the nginx UI subdomains hang off
+// DefaultDomain is the platform base domain the the proxy's UI subdomains hang off
 // (litellm.<domain>). It is the local/standalone default; operators override it in
 // server mode via `ai domain`.
 const DefaultDomain = "aip.local"
@@ -165,7 +165,7 @@ type Info struct {
 	OptionalServices []string `json:"optional_services,omitempty" yaml:"optional_services,omitempty"`
 	AIPlatformHost   string   `json:"ai_platform_host" yaml:"ai_platform_host"`
 	HostGateway      string   `json:"host_gateway" yaml:"host_gateway"` // the address an agent CLI reaches the gateway at (loopback by default)
-	// Domain is the platform base domain the nginx UI subdomains hang off
+	// Domain is the platform base domain the the proxy's UI subdomains hang off
 	// (litellm.<domain>). Empty falls back to
 	// DefaultDomain (aip.local); operators override it in server mode (`ai domain`).
 	Domain string `json:"domain,omitempty" yaml:"domain,omitempty"`

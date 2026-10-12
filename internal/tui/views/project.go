@@ -21,7 +21,7 @@ type ConfigField struct{ Label, Value string }
 // ConfigFetcher returns the declared configuration fields for a workspace.
 type ConfigFetcher func(name string) ([]ConfigField, error)
 
-// EndpointsFetcher returns the host gateway endpoints (the nginx entry to LiteLLM)
+// EndpointsFetcher returns the host gateway endpoints (the proxy entry to LiteLLM)
 // that external apps use to reach the served models, as label/URL fields. It is
 // workspace-independent (one gateway per host) and resolved from runtime.yaml.
 // Injected; a nil fetcher (or empty result) omits the "Gateway Endpoints" block.
@@ -74,7 +74,7 @@ type Project struct {
 	// body so SetContent (and thus a scroll-position reset risk) only fires on change.
 	viewport viewport.Model
 	rendered string
-	// endpoints resolves the host gateway endpoints (nginx entry to LiteLLM) shown in the
+	// endpoints resolves the host gateway endpoints (proxy entry to LiteLLM) shown in the
 	// "Gateway Endpoints" block so external apps know how to reach the served models. It
 	// is workspace-independent; endpointFields caches the one-time resolution.
 	endpoints       EndpointsFetcher
@@ -82,7 +82,7 @@ type Project struct {
 	endpointsLoaded bool
 }
 
-// SetEndpoints injects the host gateway-endpoints fetcher (nginx → LiteLLM). Called
+// SetEndpoints injects the host gateway-endpoints fetcher (proxy → LiteLLM). Called
 // once at wiring; the result is cached and rendered in the "Gateway Endpoints" block.
 // A nil fetcher omits that block.
 func (view *Project) SetEndpoints(fetcher EndpointsFetcher) { view.endpoints = fetcher }
@@ -217,7 +217,7 @@ func (view *Project) renderBody() string {
 	default:
 		body.WriteString("  " + ui.Muted.Render("no configuration found") + "\n")
 	}
-	// Gateway Endpoints: the host nginx entry to LiteLLM external apps use to reach the
+	// Gateway Endpoints: the host proxy entry to LiteLLM external apps use to reach the
 	// served models. Workspace-independent (one gateway per host), so it shows regardless
 	// of workspace state. Resolved once and cached.
 	if view.endpoints != nil {

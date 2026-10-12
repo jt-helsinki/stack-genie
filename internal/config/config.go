@@ -38,7 +38,7 @@ type AgentConfig struct {
 	// GraphifyModel is the local omlx-served model Graphify uses for its (headless)
 	// LLM backend — the model NAME as omlx currently serves it (no download; model
 	// management lives entirely in omlx's own admin panel), reached THROUGH the
-	// gateway as `omlx/<name>` (nginx → LiteLLM → the shared omlx server). Empty
+	// gateway as `omlx/<name>` (proxy → LiteLLM → the shared omlx server). Empty
 	// leaves Graphify's backend unconfigured (the in-session /graphify skill still
 	// uses the agent session's own model).
 	GraphifyModel string `yaml:"graphify_model,omitempty" json:"graphify_model,omitempty"`

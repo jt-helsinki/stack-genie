@@ -1173,59 +1173,53 @@ func TestEnsureProxyRendersGatewayConfig(test *testing.T) {
 	if err := ensureProxy(prober, "docker", "127.0.0.1", "aip.local"); err != nil {
 		test.Fatal(err)
 	}
-	confPath := filepath.Join(home, ".ai-platform", "config", "proxy", "nginx.conf")
+	confPath := filepath.Join(home, ".ai-platform", "config", "proxy", "Caddyfile")
 	content, err := os.ReadFile(confPath)
 	if err != nil {
-		test.Fatalf("nginx.conf not written: %v", err)
+		test.Fatalf("Caddyfile not written: %v", err)
 	}
 	rendered := string(content)
-	// The default server matches the domain, localhost, and the catch-all.
-	if !strings.Contains(rendered, "server_name aip.local localhost _;") {
-		test.Errorf("default server must match the domain + localhost + _:\n%s", rendered)
+	// Plain HTTP only — no ACME/auto-cert attempts for internal hostnames.
+	if !strings.Contains(rendered, "auto_https off") {
+		test.Errorf("Caddyfile must disable automatic HTTPS:\n%s", rendered)
 	}
-	if !strings.Contains(rendered, "listen 80 default_server;") {
-		test.Errorf("default server must be the default_server on :80:\n%s", rendered)
+	// The default site (no hostname — Caddy's default_server equivalent) matches
+	// any Host not claimed by a more specific vhost below (aip.local, localhost,
+	// host.docker.internal, ...).
+	if !strings.Contains(rendered, ":80 {") {
+		test.Errorf("Caddyfile must have a bare :80 default site:\n%s", rendered)
 	}
-	// The agent CHAT path (/v1) now routes to LiteLLM DIRECTLY (LiteLLM calls
-	// Headroom as an in-process compression guardrail — nginx no longer hops to it).
-	if !strings.Contains(rendered, "location /v1/ {") || !strings.Contains(rendered, "proxy_pass http://aip-litellm:4000;") {
-		test.Errorf("nginx.conf must route the /v1 model path to LiteLLM directly:\n%s", rendered)
+	// The LiteLLM admin surface is fronted on /llm (prefix stripped).
+	if !strings.Contains(rendered, "path /llm/*") || !strings.Contains(rendered, "uri strip_prefix /llm") {
+		test.Errorf("Caddyfile must front the LiteLLM admin surface on /llm:\n%s", rendered)
 	}
-	// Headroom must NOT appear as an nginx upstream anymore.
+	// The agent CHAT path (/v1, and everything else) routes to LiteLLM DIRECTLY
+	// (LiteLLM calls Headroom as an in-process compression guardrail).
+	if strings.Count(rendered, "reverse_proxy aip-litellm:4000") != 2 {
+		test.Errorf("Caddyfile must route both /llm and the catch-all to aip-litellm:4000:\n%s", rendered)
+	}
+	// Headroom must NOT appear as a proxy upstream anymore.
 	if strings.Contains(rendered, "aip-headroom") {
-		test.Errorf("nginx.conf must not reference aip-headroom (it is a LiteLLM guardrail now):\n%s", rendered)
-	}
-	// The LiteLLM admin surface is fronted on /llm (prefix stripped → :4000).
-	if !strings.Contains(rendered, "location /llm/ {") || !strings.Contains(rendered, "proxy_pass http://aip-litellm:4000/;") {
-		test.Errorf("nginx.conf must front the LiteLLM admin surface on /llm:\n%s", rendered)
+		test.Errorf("Caddyfile must not reference aip-headroom (it is a LiteLLM guardrail now):\n%s", rendered)
 	}
 	// Ollama was removed — there must be no /ollama route.
-	if strings.Contains(rendered, "location /ollama/ {") {
-		test.Errorf("nginx.conf must NOT front an /ollama route (Ollama removed):\n%s", rendered)
-	}
-	// /llm must be matched BEFORE the catch-all `location /`.
-	llmIdx := strings.Index(rendered, "location /llm/ {")
-	catchAllIdx := strings.Index(rendered, "location / {")
-	if llmIdx < 0 || catchAllIdx < 0 || llmIdx > catchAllIdx {
-		test.Errorf("the specific /llm prefix must precede the catch-all:\n%s", rendered)
-	}
-	if !strings.Contains(rendered, "proxy_buffering off;") {
-		test.Errorf("nginx.conf must disable buffering for SSE streaming:\n%s", rendered)
+	if strings.Contains(rendered, "/ollama") {
+		test.Errorf("Caddyfile must NOT front an /ollama route (Ollama removed):\n%s", rendered)
 	}
 	// The LiteLLM admin UI is ALWAYS served as the litellm.<domain> vhost (it is a
 	// core service) → :4000 at root, bypassing Headroom.
-	if !strings.Contains(rendered, "server_name litellm.aip.local;") || !strings.Contains(rendered, "proxy_pass http://aip-litellm:4000;") {
-		test.Errorf("nginx.conf must serve the litellm.<domain> vhost:\n%s", rendered)
+	if !strings.Contains(rendered, "litellm.aip.local:80 {") || !strings.Contains(rendered, "reverse_proxy http://aip-litellm:4000") {
+		test.Errorf("Caddyfile must serve the litellm.<domain> vhost:\n%s", rendered)
 	}
 	// Open WebUI is a CORE service now (chat.<domain>), so its vhost must render;
 	// odysseus was removed from the platform and must never reappear.
-	if !strings.Contains(rendered, "server_name chat.aip.local;") {
+	if !strings.Contains(rendered, "chat.aip.local:80 {") {
 		test.Errorf("the chat.<domain> (Open WebUI) UI vhost must render:\n%s", rendered)
 	}
-	if strings.Contains(rendered, "server_name odysseus.aip.local;") {
+	if strings.Contains(rendered, "odysseus.aip.local") {
 		test.Errorf("no odysseus UI vhost should render (removed from the platform):\n%s", rendered)
 	}
-	// nginx takes over host :18787 and forwards on :80 internally; the UIs are
+	// The proxy takes over host :18787 and forwards on :80 internally; the UIs are
 	// subdomains on the SAME port (including Open WebUI's :8080, internal-only), so
 	// no separate UI ports are published on the HOST. launch is the PROXY
 	// container's own docker-run args, unrelated to any other container's ports.
@@ -1236,34 +1230,34 @@ func TestEnsureProxyRendersGatewayConfig(test *testing.T) {
 	if strings.Contains(launch, "18090") || strings.Contains(launch, ":7000") || strings.Contains(launch, ":8080") {
 		test.Errorf("no separate UI ports should be published (UIs are subdomains): %s", launch)
 	}
-	if !strings.Contains(launch, confPath+":/etc/nginx/nginx.conf:ro") {
-		test.Errorf("proxy did not bind-mount nginx.conf: %s", launch)
+	if !strings.Contains(launch, confPath+":/etc/caddy/Caddyfile:ro") {
+		test.Errorf("proxy did not bind-mount the Caddyfile: %s", launch)
 	}
 }
 
-// TestProxyNginxConfThreadsDomain: the rendered vhost server_names use the given
-// domain, the LiteLLM admin UI vhost redirects / → /ui and bypasses Headroom, and
-// litellm is the ONLY host UI vhost (no chat./odysseus.).
-func TestProxyNginxConfThreadsDomain(test *testing.T) {
-	rendered := proxyNginxConf("dev.example.com")
-	if !strings.Contains(rendered, "server_name dev.example.com localhost _;") {
-		test.Errorf("default server must use the threaded domain:\n%s", rendered)
+// TestProxyCaddyfileThreadsDomain: the rendered vhosts use the given domain, the
+// LiteLLM admin UI vhost redirects / → /ui/login and bypasses Headroom, and
+// litellm/valkey/chat are the host UI vhosts (no odysseus).
+func TestProxyCaddyfileThreadsDomain(test *testing.T) {
+	rendered := proxyCaddyfile("dev.example.com")
+	if !strings.Contains(rendered, ":80 {") {
+		test.Errorf("default site must render:\n%s", rendered)
 	}
-	if !strings.Contains(rendered, "server_name litellm.dev.example.com;") {
+	if !strings.Contains(rendered, "litellm.dev.example.com:80 {") {
 		test.Errorf("litellm vhost must use the threaded domain:\n%s", rendered)
 	}
 	// LiteLLM admin UI: / → /ui/login redirect.
-	if !strings.Contains(rendered, "return 302 /ui/login;") {
+	if !strings.Contains(rendered, "redir / /ui/login") {
 		test.Errorf("litellm vhost should redirect / → /ui/login:\n%s", rendered)
 	}
 	// The litellm UI vhost proxies to :4000 directly (Headroom is not an upstream).
-	litellmBlock := rendered[strings.Index(rendered, "server_name litellm.dev.example.com;"):]
+	litellmBlock := rendered[strings.Index(rendered, "litellm.dev.example.com:80 {"):]
 	if strings.Contains(litellmBlock[:strings.Index(litellmBlock, "}")], "aip-headroom") {
 		test.Errorf("the litellm UI vhost must not reference aip-headroom:\n%s", rendered)
 	}
 	// Open WebUI (chat.<domain>) is a CORE service now and must render; odysseus
 	// was removed from the platform and must never reappear.
-	if !strings.Contains(rendered, "server_name chat.dev.example.com;") {
+	if !strings.Contains(rendered, "chat.dev.example.com:80 {") {
 		test.Errorf("the chat.<domain> (Open WebUI) vhost must render:\n%s", rendered)
 	}
 	if strings.Contains(rendered, "odysseus.dev.example.com") {

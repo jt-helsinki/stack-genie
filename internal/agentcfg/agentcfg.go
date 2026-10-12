@@ -240,7 +240,7 @@ func OmpConfig(defaultModel string) ([]byte, error) {
 
 // hermes is a gateway/api-key agent like opencode/omp: it reaches models ONLY through the
 // gateway, keyless. Its config is GLOBAL (one file), written whole via Sandbox.WriteFile
-// (off host disk) — mirroring omp's global config. nginx :18787 fronts LiteLLM :4000;
+// (off host disk) — mirroring omp's global config. the proxy :18787 fronts LiteLLM :4000;
 // Headroom input-compression is a LiteLLM pre_call guardrail on that path, so it gets
 // compression automatically with no client-side wrap.
 // HermesKeyEnv is written as hermes' provider key_env: the NAME of the env var hermes

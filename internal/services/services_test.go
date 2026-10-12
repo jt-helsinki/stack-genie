@@ -72,7 +72,7 @@ func TestVersionPinsMatchCurrentDefault(test *testing.T) {
 		"presidio-analyzer":   {Mode: ModeContainer, Image: "mcr.microsoft.com/presidio-analyzer", Tag: "latest"},
 		"presidio-anonymizer": {Mode: ModeContainer, Image: "mcr.microsoft.com/presidio-anonymizer", Tag: "latest"},
 		"open-webui":          {Mode: ModeContainer, Image: "ghcr.io/open-webui/open-webui", Tag: "latest"},
-		"proxy":               {Mode: ModeContainer, Image: "nginx", Tag: "stable-alpine3.23-slim"},
+		"proxy":               {Mode: ModeContainer, Image: "caddy", Tag: "2.11.7-alpine"},
 		// vLLM is host-native — no image pin (it is not a pulled container).
 		"dns":          {Mode: ModeContainer, Image: "coredns/coredns", Tag: "latest"},
 		"valkey":       {Mode: ModeContainer, Image: "valkey/valkey", Tag: "9.1.0-alpine"},

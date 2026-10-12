@@ -14,32 +14,32 @@ import (
 	"github.com/jt-helsinki/stack-genie/internal/runtime"
 )
 
-// The host CLI reaches LiteLLM ONLY through the nginx gateway (aip-proxy) on the
+// The host CLI reaches LiteLLM ONLY through the proxy gateway (aip-proxy) on the
 // host — never the LiteLLM container directly (every service container is
-// internal-only on aip-net now). Two routes through nginx:
+// internal-only on aip-net now). Two routes through the proxy:
 //
 //   - the ADMIN/management surface (/model/info, /v1/models, /health*, /key*,
-//     /credentials, …) is fronted by nginx's `location /llm/` which strips the
+//     /credentials, …) is fronted by the proxy's `location /llm/` which strips the
 //     prefix and forwards to aip-litellm:4000. AdminBaseURL is that base.
-//   - the CHAT/model path (/v1/chat/completions) goes through nginx's `location
+//   - the CHAT/model path (/v1/chat/completions) goes through the proxy's `location
 //     /v1/` → Headroom → LiteLLM, exercising the REAL model path (compression +
 //     guardrails). GatewayBaseURL is that base.
 //
-// nginx publishes proxyHostPort (18787) on the host; the CLI reaches its own host
+// the proxy publishes proxyHostPort (18787) on the host; the CLI reaches its own host
 // gateway on 127.0.0.1 (IPv4) — NOT "localhost", which resolves to IPv6 ::1 and
-// fails the dial, since nginx publishes on the IPv4 bindHost in standalone.
+// fails the dial, since the proxy publishes on the IPv4 bindHost in standalone.
 // AdminBaseURL is overridable via LITELLM_BASE_URL (e.g. a remote gateway); the
 // chat base derives from the same host so a remote admin base keeps the chat test
 // on the matching gateway.
 const (
-	// proxyHostPort mirrors setup.proxyHostPort (the nginx gateway host port). Kept
+	// proxyHostPort mirrors setup.proxyHostPort (the proxy gateway host port). Kept
 	// as a local const to avoid an import cycle (setup imports litellm).
 	proxyHostPort = "18787"
-	// defaultAdminBaseURL is the LiteLLM admin surface via nginx `/llm`.
+	// defaultAdminBaseURL is the LiteLLM admin surface via the proxy `/llm`.
 	defaultAdminBaseURL = "http://127.0.0.1:" + proxyHostPort + "/llm"
 )
 
-// AdminBaseURL is the LiteLLM admin/management base URL (through nginx `/llm`),
+// AdminBaseURL is the LiteLLM admin/management base URL (through the proxy `/llm`),
 // overridable via LITELLM_BASE_URL. Trailing slash trimmed.
 func AdminBaseURL() string {
 	baseURL := os.Getenv("LITELLM_BASE_URL")
@@ -49,7 +49,7 @@ func AdminBaseURL() string {
 	return strings.TrimRight(baseURL, "/")
 }
 
-// GatewayBaseURL is the model-path base URL (nginx `/v1` → Headroom → LiteLLM),
+// GatewayBaseURL is the model-path base URL (the proxy `/v1` → Headroom → LiteLLM),
 // where the chat test runs so it exercises the real compression+guardrail path.
 // It derives from the admin base's scheme+host so a LITELLM_BASE_URL override
 // keeps the chat test on the matching gateway: it replaces a trailing "/llm" with
@@ -62,7 +62,7 @@ func GatewayBaseURL() string {
 	return admin + "/v1"
 }
 
-// realClient talks to a running LiteLLM gateway through the nginx host gateway.
+// realClient talks to a running LiteLLM gateway through the proxy.
 // adminURL fronts the management surface (`/health/liveliness`, `/model/info`),
 // gatewayURL fronts the model path (`/v1/chat/completions`).
 type realClient struct {
@@ -82,7 +82,7 @@ type realClient struct {
 // cover a cold model load (a 36B local model cold-loads in ~20-60s locally).
 const chatTestTimeout = 3 * time.Minute
 
-// RealClient returns a Client bound to the local LiteLLM gateway via nginx.
+// RealClient returns a Client bound to the local LiteLLM gateway via the proxy.
 func RealClient() Client {
 	return realClient{
 		adminURL:   AdminBaseURL(),

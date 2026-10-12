@@ -803,7 +803,7 @@ func printLiteLLMOpenInstructions(em *output.Emitter, server bool, domain string
 }
 
 // omlxAdminURL is the omlx admin console's address — ALWAYS loopback, never a
-// domain-based nginx vhost like LiteLLM/Open WebUI: omlx is host-native and its
+// domain-based proxy vhost like LiteLLM/Open WebUI: omlx is host-native and its
 // admin panel is reached directly on its own fixed port (omlx.Port), not through
 // the gateway.
 func omlxAdminURL() string {

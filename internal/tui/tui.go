@@ -127,7 +127,7 @@ func Run(cwd string) error {
 	servicesView := views.NewServices(servicesStatus, servicesControl, serviceDetail)
 	projectsView := views.NewProjects(project.List)
 	projectDetail := views.NewProject(projectInfo, workspaceConfigFetcher)
-	// Gateway Endpoints block: the host nginx entry to LiteLLM external apps use to reach
+	// Gateway Endpoints block: the host proxy entry to LiteLLM external apps use to reach
 	// the served models. Workspace-independent; resolved from runtime.yaml (domain +
 	// DefaultGatewayPort), mirroring the addresses `ai services` shows.
 	projectDetail.SetEndpoints(func() []views.ConfigField {
