@@ -19,6 +19,7 @@ func TestLogScopesMatchesCurrent(test *testing.T) {
 		"litellm",
 		"open-webui",
 		"multica",
+		"langflow",
 		"proxy",
 		"dns",
 	}
@@ -51,6 +52,7 @@ func TestEndpointsMatchCurrentConsoleRegistry(test *testing.T) {
 		"colibri":      {Port: ColibriPort, HasConsole: true},
 		"open-webui":   {HasConsole: true, UISubdomain: "chat"},
 		"multica":      {HasConsole: true, UISubdomain: "multica"},
+		"langflow":     {HasConsole: true, UISubdomain: "langflow"},
 		"proxy":        {Port: 18787},
 		"dns":          {LoopbackAddress: "127.0.0.1:15353/udp"},
 		"headroom":     {},
@@ -70,13 +72,14 @@ func TestVersionPinsMatchCurrentDefault(test *testing.T) {
 	want := map[string]Pin{
 		"litellm":             {Mode: ModeContainer, Image: "ghcr.io/berriai/litellm", Tag: "latest"},
 		"litellm-db":          {Mode: ModeContainer, Image: "postgres", Tag: "18.4-alpine3.23"},
-		"headroom":            {Mode: ModeContainer, Image: "ghcr.io/chopratejas/headroom", Tag: "latest"},
+		"headroom":            {Mode: ModeContainer, Image: "ghcr.io/headroomlabs-ai/headroom", Tag: "latest"},
 		"presidio-analyzer":   {Mode: ModeContainer, Image: "mcr.microsoft.com/presidio-analyzer", Tag: "latest"},
 		"presidio-anonymizer": {Mode: ModeContainer, Image: "mcr.microsoft.com/presidio-anonymizer", Tag: "latest"},
 		"open-webui":          {Mode: ModeContainer, Image: "ghcr.io/open-webui/open-webui", Tag: "latest"},
 		"multica":             {Mode: ModeContainer, Image: "ghcr.io/multica-ai/multica-web", Tag: "latest"},
 		"multica-backend":     {Mode: ModeContainer, Image: "ghcr.io/multica-ai/multica-backend", Tag: "latest"},
 		"multica-db":          {Mode: ModeContainer, Image: "pgvector/pgvector", Tag: "pg17"},
+		"langflow":            {Mode: ModeContainer, Image: "langflowai/langflow", Tag: "latest"},
 		"proxy":               {Mode: ModeContainer, Image: "caddy", Tag: "2.11.7-alpine"},
 		// vLLM is host-native — no image pin (it is not a pulled container).
 		"dns":          {Mode: ModeContainer, Image: "coredns/coredns", Tag: "latest"},
@@ -92,7 +95,7 @@ func TestVersionPinsMatchCurrentDefault(test *testing.T) {
 // TestCoreAndOptionalServiceNames pins the logical core/optional partition (the
 // frozen API the internal/setup migration consumes).
 func TestCoreAndOptionalServiceNames(test *testing.T) {
-	wantCore := []string{"omlx", "colibri", "presidio", "valkey", "redisinsight", "headroom", "litellm", "open-webui", "multica", "proxy", "dns"}
+	wantCore := []string{"omlx", "colibri", "presidio", "valkey", "redisinsight", "headroom", "litellm", "open-webui", "multica", "langflow", "proxy", "dns"}
 	if got := CoreServiceNames(); !reflect.DeepEqual(got, wantCore) {
 		test.Errorf("CoreServiceNames() = %v, want %v", got, wantCore)
 	}
@@ -131,6 +134,7 @@ func TestContainerNames(test *testing.T) {
 		"litellm":  {"aip-litellm", "aip-litellm-db"},
 		"headroom": {"aip-headroom"},
 		"multica":  {"aip-multica", "aip-multica-backend", "aip-multica-db"},
+		"langflow": {"aip-langflow"},
 		"proxy":    {"aip-proxy"},
 		"dns":      {"aip-dns"},
 	}
@@ -233,6 +237,7 @@ func TestUIVhostsMapping(test *testing.T) {
 		"redisinsight": {"valkey", false},
 		"open-webui":   {"chat", false},
 		"multica":      {"multica", false},
+		"langflow":     {"langflow", false},
 	}
 	vhosts := UIVhosts()
 	if len(vhosts) != len(want) {

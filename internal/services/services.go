@@ -213,7 +213,7 @@ var registry = []Service{
 			{
 				ImageKey:  "headroom",
 				Container: "aip-headroom",
-				Pin:       Pin{Mode: ModeContainer, Image: "ghcr.io/chopratejas/headroom", Tag: "latest"},
+				Pin:       Pin{Mode: ModeContainer, Image: "ghcr.io/headroomlabs-ai/headroom", Tag: "latest"},
 			},
 		},
 	},
@@ -289,6 +289,22 @@ var registry = []Service{
 				ImageKey:  "multica-db",
 				Container: "aip-multica-db",
 				Pin:       Pin{Mode: ModeContainer, Image: "pgvector/pgvector", Tag: "pg17"},
+			},
+		},
+	},
+	{
+		// Langflow (https://langflow.org) visual flow builder: a CORE service like Open
+		// WebUI — always installed, one INTERNAL-ONLY container (SQLite on a named
+		// volume), fronted by the proxy at langflow.<domain>:GatewayPort (root is the UI).
+		Name:        "langflow",
+		Endpoint:    Endpoint{HasConsole: true, UISubdomain: "langflow"},
+		LogScope:    "langflow",
+		UISubdomain: "langflow", // langflow.<domain> → the Langflow UI
+		Components: []Component{
+			{
+				ImageKey:  "langflow",
+				Container: "aip-langflow",
+				Pin:       Pin{Mode: ModeContainer, Image: "langflowai/langflow", Tag: "latest"},
 			},
 		},
 	},
@@ -499,6 +515,7 @@ var uiUpstreams = map[string]string{
 	"redisinsight": "http://aip-redisinsight:5540",
 	"open-webui":   "http://aip-open-webui:8080",
 	"multica":      "http://aip-multica:3000",
+	"langflow":     "http://aip-langflow:7860",
 }
 
 // uiWebSocketUpstreams maps a UI service to the upstream its vhost sends /ws to

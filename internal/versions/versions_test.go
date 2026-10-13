@@ -23,6 +23,7 @@ var expectedServices = map[string]string{
 	"multica":             "container",
 	"multica-backend":     "container",
 	"multica-db":          "container",
+	"langflow":            "container",
 	"proxy":               "container",
 	// omlx is host-native — not a pulled/pinned container image.
 	"dns":          "container",

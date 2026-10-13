@@ -34,6 +34,8 @@ import (
 type composeFile struct {
 	Services map[string]*composeService `yaml:"services"`
 	Networks map[string]composeNetwork  `yaml:"networks"`
+	// Volumes declares the named volumes services mount (compose rejects undeclared ones).
+	Volumes map[string]struct{} `yaml:"volumes,omitempty"`
 }
 
 type composeService struct {
@@ -103,6 +105,7 @@ func ServicesComposeYAML(bindHost string) ([]byte, error) {
 
 	file := composeFile{
 		Networks: map[string]composeNetwork{net: {Name: net}},
+		Volumes:  map[string]struct{}{langflowVolume: {}, multicaUploadsVolume: {}},
 		Services: map[string]*composeService{
 			dnsContainer: {
 				Image: containerImage("dns"), ContainerName: dnsContainer, Networks: []string{net}, Restart: "unless-stopped",
@@ -178,6 +181,15 @@ func ServicesComposeYAML(bindHost string) ([]byte, error) {
 				Image: containerImage("multica"), ContainerName: multicaWebContainer, Networks: []string{net}, Restart: "unless-stopped",
 				Environment: []string{"HOSTNAME=0.0.0.0", "REMOTE_API_URL=http://" + multicaBackendContainer + ":8080"},
 				DependsOn:   []string{multicaBackendContainer},
+			},
+			langflowContainer: {
+				Image: containerImage("langflow"), ContainerName: langflowContainer, Networks: []string{net}, Restart: "unless-stopped",
+				Volumes: []string{langflowVolume + ":" + langflowDataDir},
+				// Server role sets LANGFLOW_AUTO_LOGIN=false + LANGFLOW_SUPERUSER[_PASSWORD]; the
+				// password is passthrough — export it before `up`. Open (standalone) shown here.
+				Environment: []string{"LANGFLOW_CONFIG_DIR=" + langflowDataDir, "LANGFLOW_DATABASE_URL=" + langflowDatabaseURL, "DO_NOT_TRACK=true", "LANGFLOW_AUTO_LOGIN=true"},
+				// The langflow database must exist in aip-litellm-db (created by `ai setup`).
+				DependsOn: []string{litellmDBContainer},
 			},
 			headroomContainer: {
 				// Headroom is a standalone input-compression SERVICE LiteLLM calls as a

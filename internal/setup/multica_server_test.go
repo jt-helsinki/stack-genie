@@ -113,3 +113,18 @@ func TestEnsureMulticaLaunchesThreeInternalContainers(test *testing.T) {
 		test.Errorf("db bind-mount dir not created: %v", err)
 	}
 }
+
+// Compose rejects a service mounting an undeclared named volume, so every named volume the
+// service tier mounts must be declared at the top level of the debug artifact.
+func TestComposeDeclaresNamedVolumes(test *testing.T) {
+	test.Setenv("HOME", test.TempDir())
+	content, err := ServicesComposeYAML("127.0.0.1")
+	if err != nil {
+		test.Fatal(err)
+	}
+	for _, volume := range []string{langflowVolume, multicaUploadsVolume} {
+		if !strings.Contains(string(content), "\nvolumes:\n") || !strings.Contains(string(content), volume+": {}") {
+			test.Errorf("named volume %q not declared at the top level:\n%s", volume, content)
+		}
+	}
+}

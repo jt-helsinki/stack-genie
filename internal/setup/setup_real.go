@@ -970,6 +970,8 @@ func serviceContainers(service string) []string {
 		return []string{headroomContainer}
 	case "open-webui":
 		return []string{openWebUIContainer}
+	case "langflow":
+		return []string{langflowContainer}
 	case "multica":
 		return []string{multicaWebContainer, multicaBackendContainer, multicaDBContainer}
 	case "proxy":
@@ -1543,6 +1545,10 @@ func (services realServices) Reconcile(providerConfig, bindHost string, optional
 	}
 	// ...then its host half (verified CLI install, sandboxing shims, daemon) — best-effort.
 	ensureMulticaHost(progress, domain)
+	progress("  • Langflow (visual flow builder)…")
+	if err := ensureLangflow(services.prober, containerRuntime.Name, currentRequireUIAuth(), progress); err != nil {
+		return nil, err
+	}
 	// Platform-managed host Python venv (~/.ai-platform/venv): the single home for
 	// platform-wide host Python tooling — the omlx local-inference backend (the
 	// platform's REQUIRED one; colibri, started below, is the second, optional one
@@ -1829,6 +1835,12 @@ func (services realServices) serviceHealthy(name string) bool {
 			return false
 		}
 		return containerRunning(services.prober, containerRuntime.Name, openWebUIContainer)
+	case "langflow":
+		containerRuntime, err := runtime.ContainerRuntimeName(services.prober)
+		if err != nil {
+			return false
+		}
+		return containerRunning(services.prober, containerRuntime.Name, langflowContainer)
 	case "multica":
 		containerRuntime, err := runtime.ContainerRuntimeName(services.prober)
 		if err != nil {
@@ -2013,6 +2025,11 @@ func (services realServices) Control(action, service string) ([]ServiceStatus, e
 				stopMulticaDaemonHost() // before the server it talks to goes away
 				return stopMultica(services.prober, containerRuntime.Name)
 			}},
+		{"langflow",
+			func() error {
+				return ensureLangflow(services.prober, containerRuntime.Name, currentRequireUIAuth(), hostNativeProgressWriter)
+			},
+			func() error { return stopContainer(langflowContainer) }},
 		{"proxy",
 			func() error {
 				return ensureProxy(services.prober, containerRuntime.Name, bindHost, reconcileDomain())
@@ -2055,7 +2072,7 @@ func (services realServices) Control(action, service string) ([]ServiceStatus, e
 			// (and emits the companion-container hint) before delegating here — but
 			// kept as a defensive guard for direct callers.
 			return nil, output.Errorf(output.ExitInvalidInput,
-				"unknown container service %q (expected one of: presidio, valkey, redisinsight, headroom, litellm, open-webui, multica, proxy, dns — omlx is host-native)", service)
+				"unknown container service %q (expected one of: presidio, valkey, redisinsight, headroom, litellm, open-webui, multica, langflow, proxy, dns — omlx is host-native)", service)
 		}
 	}
 

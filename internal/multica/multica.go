@@ -139,7 +139,7 @@ func DaemonRunning(run Runner) bool {
 // platformSecrets are env vars `ai` itself holds (container passthroughs and host-backend
 // keys). The daemon spawns agent CLIs that inherit its environment, so none may reach it.
 var platformSecrets = []string{
-	"JWT_SECRET", "LITELLM_MASTER_KEY", "LITELLM_SALT_KEY", "UI_PASSWORD", "OMLX_API_KEY", "COLI_API_KEY",
+	"JWT_SECRET", "LANGFLOW_SUPERUSER_PASSWORD", "LITELLM_MASTER_KEY", "LITELLM_SALT_KEY", "UI_PASSWORD", "OMLX_API_KEY", "COLI_API_KEY",
 }
 
 // DaemonEnv is the environment the daemon is started with: the current environment

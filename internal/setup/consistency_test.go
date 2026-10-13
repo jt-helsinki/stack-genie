@@ -87,6 +87,7 @@ func TestSetupContainerConstsMatchRegistry(test *testing.T) {
 		"headroom":     {headroomContainer},
 		"open-webui":   {openWebUIContainer},
 		"multica":      {multicaWebContainer, multicaBackendContainer, multicaDBContainer},
+		"langflow":     {langflowContainer},
 		"proxy":        {proxyContainer},
 		"dns":          {dnsContainer},
 	}
