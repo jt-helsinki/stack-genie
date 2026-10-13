@@ -150,6 +150,26 @@ had a live-hardware verification pass yet:
       nono runs the CLI directly in the caller's own terminal — but line
       editing, Ctrl-C, SIGWINCH resize, and a clean exit still need a live
       check). This is a genuinely new gap, not a carried-over one.
+- [ ] **Multica service (server containers + host daemon)** —
+      `internal/setup/multica_server.go`, `multica_host.go`, `internal/multica`,
+      `internal/workspace/multica.go`. Verify on a provisioned host:
+      (a) the three containers (`aip-multica-db`/`-backend`/`aip-multica`) boot and the
+      backend's `/readyz` passes; first-account signup at `multica.<domain>:18787` works
+      (the verification code is in `ai logs --service multica` until an email provider
+      exists) and the browser WebSocket survives the proxy's `/ws` route;
+      (b) `multica config set server_url|app_url <vhost>` is accepted and the daemon
+      reaches the API through the web UI's rewrites on that single origin (if not, the
+      backend needs its own vhost);
+      (c) the release archive really holds `multica` at its root (`StoreDir()/multica`);
+      (d) **the shim round-trip**: the daemon finds `claude`/`codex`/`opencode`/`omp`/
+      `hermes` shims first on PATH, passes its `--version` probe through, and a real
+      task runs under `nono run` (foreground, stdio passthrough with no TTY — nono must
+      not write banners to stdout, or it corrupts the agent protocol the daemon parses);
+      (e) the profile's workspaces-root + temp grants are enough for git worktrees
+      (`.git` points into `<root>/.repos`) and Codex's home; per-CLI gateway config
+      written into the task worktree (`.claude/`, `.codex/`, `.opencode/`) does not get
+      committed by agents; (f) one shared scoped key (`aip-gateway-multica`) holds under
+      concurrent tasks. gemini has no Multica runtime and gets no shim.
 
 ## 1. Provision the host (prerequisites)
 

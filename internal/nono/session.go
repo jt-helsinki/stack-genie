@@ -73,6 +73,12 @@ type Runner interface {
 	// confirmation line — fail-closed: nono only prints it once the session
 	// registry entry and attach socket are both ready.
 	RunDetached(ctx context.Context, opts RunOptions) (sessionID string, err error)
+	// Run runs `nono run ... -- <command>` in the FOREGROUND, wiring the current
+	// process's stdin/stdout/stderr straight through (no session, no PTY of our
+	// own) and returning the wrapped command's failure as an *exec.ExitError. It is
+	// for callers that are themselves a pipe-driven parent — the Multica daemon
+	// streaming an agent CLI's stdio — where a detached session cannot work.
+	Run(ctx context.Context, opts RunOptions) error
 	// Attach runs `nono attach <sessionID>` with the current process's
 	// stdin/stdout/stderr, giving the caller the session's real PTY.
 	Attach(ctx context.Context, sessionID string) error
@@ -125,6 +131,17 @@ func (RealRunner) RunDetached(ctx context.Context, opts RunOptions) (string, err
 		}
 	}
 	return "", fmt.Errorf("nono run --detached: session id not found in output: %q", stderr.String())
+}
+
+func (RealRunner) Run(ctx context.Context, opts RunOptions) error {
+	args := []string{"run"}
+	args = append(args, runOptionFlags(opts)...)
+	args = append(args, "--")
+	args = append(args, opts.Command...)
+	command := exec.CommandContext(ctx, "nono", args...)
+	command.Dir = opts.Dir
+	command.Stdin, command.Stdout, command.Stderr = os.Stdin, os.Stdout, os.Stderr
+	return command.Run()
 }
 
 func (RealRunner) Attach(ctx context.Context, sessionID string) error {
@@ -229,6 +246,8 @@ type FakeRunner struct {
 	RunDetachedSessionID string
 	// RunDetachedErr, when non-nil, fails every RunDetached call.
 	RunDetachedErr error
+	// RunErr, when non-nil, fails every Run call.
+	RunErr error
 	// AttachErr, when non-nil, fails every Attach call.
 	AttachErr error
 	// ShellErr, when non-nil, fails every Shell call.
@@ -244,6 +263,7 @@ type FakeRunner struct {
 	// StopErr, when non-nil, fails every Stop call.
 	StopErr error
 
+	RunCalls          []RunOptions
 	RunDetachedCalls  []RunOptions
 	AttachCalls       []string
 	ShellCalls        []RunOptions
@@ -267,6 +287,11 @@ func (fake *FakeRunner) RunDetached(_ context.Context, opts RunOptions) (string,
 		return fake.RunDetachedSessionID, nil
 	}
 	return "fake-session", nil
+}
+
+func (fake *FakeRunner) Run(_ context.Context, opts RunOptions) error {
+	fake.RunCalls = append(fake.RunCalls, opts)
+	return fake.RunErr
 }
 
 func (fake *FakeRunner) Attach(_ context.Context, sessionID string) error {

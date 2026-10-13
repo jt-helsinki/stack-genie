@@ -86,6 +86,7 @@ func TestSetupContainerConstsMatchRegistry(test *testing.T) {
 		"redisinsight": {redisInsightContainer},
 		"headroom":     {headroomContainer},
 		"open-webui":   {openWebUIContainer},
+		"multica":      {multicaWebContainer, multicaBackendContainer, multicaDBContainer},
 		"proxy":        {proxyContainer},
 		"dns":          {dnsContainer},
 	}

@@ -354,7 +354,19 @@ func proxyCaddyfile(domain string) string {
 		if rootRedirect != "" {
 			builder.WriteString("\tredir / " + rootRedirect + "\n")
 		}
-		builder.WriteString("\treverse_proxy " + vhost.Upstream + "\n")
+		if vhost.WebSocketUpstream != "" {
+			// Multica's browser WebSocket: the web UI's Next.js rewrites cannot carry an
+			// Upgrade handshake, so /ws goes straight to the backend. Both paths are listed
+			// (not /ws*, which would also swallow the legitimate workspace slug /ws-foo),
+			// and flush_interval -1 stops Caddy buffering WebSocket frames.
+			builder.WriteString("\t@ws path /ws /ws/*\n")
+			builder.WriteString("\thandle @ws {\n")
+			builder.WriteString("\t\treverse_proxy " + vhost.WebSocketUpstream + " {\n\t\t\tflush_interval -1\n\t\t}\n")
+			builder.WriteString("\t}\n")
+			builder.WriteString("\thandle {\n\t\treverse_proxy " + vhost.Upstream + "\n\t}\n")
+		} else {
+			builder.WriteString("\treverse_proxy " + vhost.Upstream + "\n")
+		}
 		builder.WriteString("}\n")
 	}
 	return builder.String()
@@ -958,6 +970,8 @@ func serviceContainers(service string) []string {
 		return []string{headroomContainer}
 	case "open-webui":
 		return []string{openWebUIContainer}
+	case "multica":
+		return []string{multicaWebContainer, multicaBackendContainer, multicaDBContainer}
 	case "proxy":
 		return []string{proxyContainer}
 	case "dns":
@@ -1521,6 +1535,14 @@ func (services realServices) Reconcile(providerConfig, bindHost string, optional
 	if err := ensureOpenWebUI(services.prober, containerRuntime.Name, domain, currentRequireUIAuth()); err != nil {
 		return nil, err
 	}
+	// Multica: a CORE service like Open WebUI — three containers, brought up BEFORE the
+	// proxy (it resolves the multica.<domain> upstreams at config-load time).
+	progress("  • Multica (task-orchestration server → agent daemon)…")
+	if err := ensureMultica(services.prober, containerRuntime.Name, domain); err != nil {
+		return nil, err
+	}
+	// ...then its host half (verified CLI install, sandboxing shims, daemon) — best-effort.
+	ensureMulticaHost(progress, domain)
 	// Platform-managed host Python venv (~/.ai-platform/venv): the single home for
 	// platform-wide host Python tooling — the omlx local-inference backend (the
 	// platform's REQUIRED one; colibri, started below, is the second, optional one
@@ -1679,6 +1701,10 @@ func (services realServices) statusFor(enabled []string) ([]ServiceStatus, error
 			continue
 		}
 		healthy := services.serviceHealthy(service.Name)
+		detail := ""
+		if service.Name == "multica" {
+			detail = multicaDaemonDetail()
+		}
 		// Three states, so a container that is up but not yet ready (e.g. LiteLLM
 		// still creating its DB views right after launch) reads "starting", not the
 		// misleading "stopped": healthy → running; container(s) up but not healthy →
@@ -1692,7 +1718,7 @@ func (services realServices) statusFor(enabled []string) ([]ServiceStatus, error
 			state = "starting"
 		}
 		statuses = append(statuses, ServiceStatus{
-			Name: service.Name, Mode: mode, State: state, Healthy: healthy,
+			Name: service.Name, Mode: mode, State: state, Healthy: healthy, Detail: detail,
 			Address: endpoint.Address, Console: endpoint.Console, Optional: optional,
 		})
 		// Surface the Postgres backing LiteLLM's admin UI / virtual keys as its OWN
@@ -1803,6 +1829,12 @@ func (services realServices) serviceHealthy(name string) bool {
 			return false
 		}
 		return containerRunning(services.prober, containerRuntime.Name, openWebUIContainer)
+	case "multica":
+		containerRuntime, err := runtime.ContainerRuntimeName(services.prober)
+		if err != nil {
+			return false
+		}
+		return multicaContainersUp(services.prober, containerRuntime.Name)
 	case "proxy":
 		// Live readiness probe (arch §2.3): the proxy gateway is ready once it is
 		// running AND actually forwarding — an HTTP GET through the host entry
@@ -1967,6 +1999,20 @@ func (services realServices) Control(action, service string) ([]ServiceStatus, e
 				return ensureOpenWebUI(services.prober, containerRuntime.Name, reconcileDomain(), currentRequireUIAuth())
 			},
 			func() error { return stopContainer(openWebUIContainer) }},
+		{"multica",
+			func() error {
+				domain := reconcileDomain()
+				if err := ensureMultica(services.prober, containerRuntime.Name, domain); err != nil {
+					return err
+				}
+				// The daemon needs the server up (and the user signed in); host half is best-effort.
+				ensureMulticaHost(hostNativeProgressWriter, domain)
+				return nil
+			},
+			func() error {
+				stopMulticaDaemonHost() // before the server it talks to goes away
+				return stopMultica(services.prober, containerRuntime.Name)
+			}},
 		{"proxy",
 			func() error {
 				return ensureProxy(services.prober, containerRuntime.Name, bindHost, reconcileDomain())
@@ -2009,7 +2055,7 @@ func (services realServices) Control(action, service string) ([]ServiceStatus, e
 			// (and emits the companion-container hint) before delegating here — but
 			// kept as a defensive guard for direct callers.
 			return nil, output.Errorf(output.ExitInvalidInput,
-				"unknown container service %q (expected one of: presidio, valkey, redisinsight, headroom, litellm, open-webui, proxy, dns — omlx is host-native)", service)
+				"unknown container service %q (expected one of: presidio, valkey, redisinsight, headroom, litellm, open-webui, multica, proxy, dns — omlx is host-native)", service)
 		}
 	}
 

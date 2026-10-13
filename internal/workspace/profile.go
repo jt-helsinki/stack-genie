@@ -22,6 +22,22 @@ const profilePackPullTimeout = 20 * time.Second
 // unit tests never shell out to the real `nono` binary / hit its registry.
 var pullPackFn = nono.PullPack
 
+// profileBase returns the profile a CLI's generated profile extends: its official
+// registry pack (best-effort pulled) when one exists, else nono's built-in "default".
+func profileBase(cli string) string {
+	base := nonoPackForCLI[cli]
+	if base == "" {
+		return "default"
+	}
+	// Best-effort: an offline/slow registry must never block a launch — the
+	// profile's `extends` reference still resolves fine once the pack IS
+	// pulled, and nono itself prompts/degrades sensibly if it never is.
+	ctx, cancel := context.WithTimeout(context.Background(), profilePackPullTimeout)
+	defer cancel()
+	_ = pullPackFn(ctx, base)
+	return base
+}
+
 // ensureProfile generates (or regenerates) the nono profile for one agent CLI
 // invocation in project root, and returns its path. cli selects the base pack
 // (nonoPackForCLI) when a dedicated one exists; an empty cli (Shell) falls back
@@ -31,20 +47,10 @@ var pullPackFn = nono.PullPack
 // on every call (cheap — a few lines of JSON) so a config.yaml network change
 // (`ai network allow/deny`) takes effect on the very next launch, no restart.
 func ensureProfile(root, cli string, projectConfig *config.Config, gatewayURL string) (string, error) {
-	base := nonoPackForCLI[cli]
+	base := profileBase(cli)
 	profileKey := cli
 	if profileKey == "" {
 		profileKey = "shell"
-	}
-	if base != "" {
-		// Best-effort: an offline/slow registry must never block a launch — the
-		// profile's `extends` reference still resolves fine once the pack IS
-		// pulled, and nono itself prompts/degrades sensibly if it never is.
-		ctx, cancel := context.WithTimeout(context.Background(), profilePackPullTimeout)
-		_ = pullPackFn(ctx, base)
-		cancel()
-	} else {
-		base = "default"
 	}
 
 	allowDomain := projectConfig.Network.AllowDomain

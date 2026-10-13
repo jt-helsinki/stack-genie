@@ -99,6 +99,7 @@ func ServicesComposeYAML(bindHost string) ([]byte, error) {
 	litellmConfig := filepath.Join(configDir, "litellm", "config.yaml")
 	corefile := filepath.Join(configDir, "dns", "Corefile")
 	caddyfile := filepath.Join(configDir, "proxy", "Caddyfile")
+	composeDomain := reconcileDomain()
 
 	file := composeFile{
 		Networks: map[string]composeNetwork{net: {Name: net}},
@@ -157,6 +158,27 @@ func ServicesComposeYAML(bindHost string) ([]byte, error) {
 				// aip-headroom:8787/v1/compress, so Headroom must be up first.
 				DependsOn: []string{litellmDBContainer, presidioAnalyzerContainer, presidioAnonymizerContainer, valkeyContainer, headroomContainer},
 			},
+			multicaDBContainer: {
+				Image: containerImage("multica-db"), ContainerName: multicaDBContainer, Networks: []string{net}, Restart: "unless-stopped",
+				Volumes:     []string{filepath.Join(volumesDir, multicaDBVolume) + ":/var/lib/postgresql/data"},
+				Environment: []string{"POSTGRES_USER=" + multicaDBUser, "POSTGRES_DB=" + multicaDBName, "POSTGRES_HOST_AUTH_METHOD=trust"},
+			},
+			multicaBackendContainer: {
+				Image: containerImage("multica-backend"), ContainerName: multicaBackendContainer, Networks: []string{net}, Restart: "unless-stopped",
+				Volumes: []string{multicaUploadsVolume + ":/app/data/uploads"},
+				// JWT_SECRET is passthrough (a bare name) — export it before `up`.
+				Environment: []string{
+					"DATABASE_URL=" + multicaDatabaseURL, "PORT=8080", "JWT_SECRET", "APP_ENV=production",
+					"FRONTEND_ORIGIN=" + multicaPublicURL(composeDomain), "CORS_ALLOWED_ORIGINS=" + multicaPublicURL(composeDomain),
+					"MULTICA_APP_URL=" + multicaPublicURL(composeDomain), "DO_NOT_TRACK=1",
+				},
+				DependsOn: []string{multicaDBContainer},
+			},
+			multicaWebContainer: {
+				Image: containerImage("multica"), ContainerName: multicaWebContainer, Networks: []string{net}, Restart: "unless-stopped",
+				Environment: []string{"HOSTNAME=0.0.0.0", "REMOTE_API_URL=http://" + multicaBackendContainer + ":8080"},
+				DependsOn:   []string{multicaBackendContainer},
+			},
 			headroomContainer: {
 				// Headroom is a standalone input-compression SERVICE LiteLLM calls as a
 				// pre_call guardrail (NOT a proxy in front of LiteLLM) — no
@@ -186,7 +208,7 @@ func ServicesComposeYAML(bindHost string) ([]byte, error) {
 		"# stack via its per-container reconcile). Bring the SAME stack up under compose for\n" +
 		"# debugging with:  ai services stop  &&  docker compose -f " + mustComposePath() + " up -d\n" +
 		"# then `docker compose logs -f <service>` / `ps` / `restart <service>`. Secrets\n" +
-		"# (UI_PASSWORD, LITELLM_MASTER_KEY, LITELLM_SALT_KEY) are passthrough — export them\n" +
+		"# (UI_PASSWORD, LITELLM_MASTER_KEY, LITELLM_SALT_KEY, JWT_SECRET) are passthrough — export them\n" +
 		"# (or source ~/.ai-platform/.ai-platform.env) before `up`. Regenerate after changes.\n\n"
 	return append([]byte(header), buffer...), nil
 }

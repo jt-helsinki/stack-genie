@@ -118,6 +118,7 @@ func Execute() int {
 		newAttachCmd(emitter, &exitCode),
 		newSessionsCmd(emitter, &exitCode),
 		newToolsCmd(emitter, &exitCode),
+		newMulticaExecCmd(&exitCode),
 		// Other top-level commands.
 		newServicesCmd(emitter, &exitCode),
 		newLiteLLMCmd(emitter, &exitCode),

@@ -261,6 +261,38 @@ var registry = []Service{
 		},
 	},
 	{
+		// Multica (https://multica.ai) self-hosted server: a CORE service like
+		// Open WebUI — always installed, INTERNAL-ONLY, fronted by the proxy at
+		// multica.<domain>:GatewayPort. Three containers (the web UI is the primary
+		// component, so it carries the service's name/scope): the Next.js web UI,
+		// the Go backend (API + the /ws WebSocket the proxy routes straight to it),
+		// and its own pgvector Postgres. The host-side `multica` CLI + daemon (which
+		// runs agent CLIs for it) is NOT a container — see internal/multica.
+		Name:        "multica",
+		Endpoint:    Endpoint{HasConsole: true, UISubdomain: "multica"},
+		LogScope:    "multica",
+		UISubdomain: "multica", // multica.<domain> → the Multica web UI
+		Components: []Component{
+			{
+				ImageKey:  "multica",
+				Container: "aip-multica",
+				LogScope:  "multica",
+				Pin:       Pin{Mode: ModeContainer, Image: "ghcr.io/multica-ai/multica-web", Tag: "latest"},
+			},
+			{
+				ImageKey:  "multica-backend",
+				Container: "aip-multica-backend",
+				Pin:       Pin{Mode: ModeContainer, Image: "ghcr.io/multica-ai/multica-backend", Tag: "latest"},
+			},
+			{
+				// pgvector, not plain postgres: Multica's schema uses the vector extension.
+				ImageKey:  "multica-db",
+				Container: "aip-multica-db",
+				Pin:       Pin{Mode: ModeContainer, Image: "pgvector/pgvector", Tag: "pg17"},
+			},
+		},
+	},
+	{
 		Name:     "proxy",
 		Endpoint: Endpoint{Port: 18787}, // aip-proxy gateway entry, no UI
 		LogScope: "proxy",
@@ -447,6 +479,10 @@ type UIVhost struct {
 	Subdomain string
 	Optional  bool
 	Upstream  string
+	// WebSocketUpstream, when set, is a second in-network upstream the vhost routes
+	// its /ws path to (Next.js rewrites cannot carry an Upgrade handshake, so Multica's
+	// browser WebSocket must reach its backend directly).
+	WebSocketUpstream string
 	// ConsolePath is the service's UI path — the proxy redirects the vhost root there when
 	// non-empty + not "/" (e.g. litellm serves its UI at /ui). Empty ("" or "/") means
 	// the UI is at the root, so no redirect (e.g. redisinsight).
@@ -462,6 +498,13 @@ var uiUpstreams = map[string]string{
 	"litellm":      "http://aip-litellm:4000",
 	"redisinsight": "http://aip-redisinsight:5540",
 	"open-webui":   "http://aip-open-webui:8080",
+	"multica":      "http://aip-multica:3000",
+}
+
+// uiWebSocketUpstreams maps a UI service to the upstream its vhost sends /ws to
+// (see UIVhost.WebSocketUpstream).
+var uiWebSocketUpstreams = map[string]string{
+	"multica": "http://aip-multica-backend:8080",
 }
 
 // UIVhosts returns every service that is served as a Host-based UI vhost (those
@@ -474,11 +517,12 @@ func UIVhosts() []UIVhost {
 			continue
 		}
 		vhosts = append(vhosts, UIVhost{
-			Name:        service.Name,
-			Subdomain:   service.UISubdomain,
-			Optional:    service.Optional,
-			Upstream:    uiUpstreams[service.Name],
-			ConsolePath: service.Endpoint.ConsolePath,
+			Name:              service.Name,
+			Subdomain:         service.UISubdomain,
+			Optional:          service.Optional,
+			Upstream:          uiUpstreams[service.Name],
+			WebSocketUpstream: uiWebSocketUpstreams[service.Name],
+			ConsolePath:       service.Endpoint.ConsolePath,
 		})
 	}
 	return vhosts

@@ -23,6 +23,7 @@ func TestNamesAlwaysAllSubdomains(t *testing.T) {
 		"litellm.aip.example.com": true,
 		"valkey.aip.example.com":  true,
 		"chat.aip.example.com":    true, // Open WebUI — a core service UI vhost
+		"multica.aip.example.com": true, // Multica — a core service UI vhost
 	}
 	if len(names) != len(want) {
 		t.Fatalf("got %v want %v", names, want)
@@ -42,8 +43,8 @@ func TestEntriesSingleLoopbackEntry(t *testing.T) {
 	if entries[0].IP != "127.0.0.1" {
 		t.Fatalf("UI subdomains must resolve to loopback, got %q", entries[0].IP)
 	}
-	if len(entries[0].Names) != 4 {
-		t.Fatalf("expected 4 names (the UI subdomains + the bare domain), got %v", entries[0].Names)
+	if len(entries[0].Names) != 5 {
+		t.Fatalf("expected 5 names (the UI subdomains + the bare domain), got %v", entries[0].Names)
 	}
 	found := false
 	for _, name := range entries[0].Names {
@@ -58,8 +59,8 @@ func TestEntriesSingleLoopbackEntry(t *testing.T) {
 
 func TestURLsUseGatewayPort(t *testing.T) {
 	urls := URLs("aip.local")
-	if len(urls) != 3 {
-		t.Fatalf("expected 3 UI URLs, got %d", len(urls))
+	if len(urls) != 4 {
+		t.Fatalf("expected 4 UI URLs, got %d", len(urls))
 	}
 	for _, url := range urls {
 		if !strings.HasSuffix(url.URL, ":18787") {
