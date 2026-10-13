@@ -161,8 +161,10 @@ func ensureOmlxAPIKey() {
 		return
 	}
 	if value := omlx.APIKey(); value != "" {
+		// Set through omlx's own admin panel — the user's choice, so no setup offer is needed.
 		_ = os.Setenv("OMLX_API_KEY", value)
 		_ = storeCredentialFn("OMLX_API_KEY", value)
+		_ = storeCredentialFn(omlxKeyChosenMarker, "1")
 		return
 	}
 	key := generateOmlxAPIKey()
@@ -183,6 +185,19 @@ func OmlxAPIKeyConfigured() bool {
 	return err == nil && value != ""
 }
 
+// omlxKeyChosenMarker is the keychain entry recording that the omlx key is the USER's
+// choice rather than the one auto-minted so omlx can start. `ai setup` keeps offering the
+// password prompt until it exists (exactly like LiteLLM's "is the UI secured" check) —
+// OmlxAPIKeyConfigured can't gate that, because the first reconcile always mints a key.
+const omlxKeyChosenMarker = "OMLX_API_KEY_CHOSEN"
+
+// OmlxPasswordChosen reports whether the user has chosen their own omlx password (set it
+// at the setup prompt, or in omlx's own admin panel) instead of keeping the generated one.
+func OmlxPasswordChosen() bool {
+	value, err := findCredentialFn(omlxKeyChosenMarker)
+	return err == nil && value != ""
+}
+
 // SetOmlxAPIKey sets a user-chosen OMLX_API_KEY in this process's env AND persists
 // it to the OS keychain (`ai setup`'s interactive password prompt). The caller
 // MUST restart omlx afterward (ControlService(deps, "restart", "omlx")) for an
@@ -191,6 +206,7 @@ func OmlxAPIKeyConfigured() bool {
 func SetOmlxAPIKey(key string) {
 	_ = os.Setenv("OMLX_API_KEY", key)
 	_ = storeCredentialFn("OMLX_API_KEY", key)
+	_ = storeCredentialFn(omlxKeyChosenMarker, "1")
 }
 
 // generateOmlxAPIKey returns a random omlx API key, mirroring generateSaltKey's

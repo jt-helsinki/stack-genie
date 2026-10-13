@@ -133,11 +133,6 @@ func newSetupCmd(em *output.Emitter, exit *int) *cobra.Command {
 			if proceed := preflightPrerequisites(em, exit, opts, deps, interactive); !proceed {
 				return nil
 			}
-			// Captured BEFORE the reconcile runs: the reconcile's own startOmlxServerHost
-			// auto-mints an OMLX_API_KEY when none exists yet (omlx refuses to bind to a
-			// non-loopback host without one), so checking AFTER would always see one
-			// present and never offer the one-time password prompt below.
-			omlxKeyAlreadyConfigured := setup.OmlxAPIKeyConfigured()
 			// Pre-pull the service-tier images with STREAMED native progress before the
 			// reconcile, on a human (non-JSON) run that actually runs the service tier
 			// (standalone/server, not client). A PLAIN `ai setup` calls PullImages: an
@@ -220,7 +215,7 @@ func newSetupCmd(em *output.Emitter, exit *int) *cobra.Command {
 				// omlx never runs on a client) and same interactive-prompt shape as the
 				// LiteLLM UI password above (though omlx's key is not role-gated — it
 				// needs one to even start, regardless of role).
-				setupOmlxAdminPassword(em, interactive, deps, omlxKeyAlreadyConfigured)
+				setupOmlxAdminPassword(em, interactive, deps, setup.OmlxPasswordChosen())
 				// Run the initial catalog → gateway model sync so LiteLLM reflects any
 				// already-keyed providers' models + installed local models. Cloud-provider
 				// API keys are NOT prompted for here — add them anytime from `ai ui` (the
@@ -810,18 +805,19 @@ func omlxAdminURL() string {
 	return fmt.Sprintf("http://127.0.0.1:%d/admin", omlx.Port)
 }
 
-// setupOmlxAdminPassword offers (on a TTY, one time only) to set a custom omlx
-// admin-console password, mirroring setupLiteLLMUIPassword's shape. Unlike
+// setupOmlxAdminPassword offers (on a TTY) to set a custom omlx admin-console
+// password, mirroring setupLiteLLMUIPassword: it is offered on every `ai setup` until the
+// user has actually chosen one (the "chosen" marker — NOT mere key existence, since the
+// reconcile always auto-mints a key, which made the old gate suppress the offer forever
+// after the first run), defaulting to yes like the LiteLLM prompt. Unlike
 // LiteLLM's password, omlx's key is NOT role-gated — omlx refuses to even START
 // without one (it must bind to a non-loopback host for the LiteLLM container to
 // reach it), so the reconcile that already ran before this is called has ALREADY
 // auto-minted a random one via ensureOmlxAPIKey if none existed. This only offers
 // to REPLACE that auto-generated key with a chosen one; it is never required.
-// alreadyConfigured (captured BEFORE the reconcile ran) gates the one-time offer —
-// re-prompting on every `ai setup` run would be the same "hang"-like nag
-// setupLiteLLMUIPassword's own comment warns against.
-func setupOmlxAdminPassword(em *output.Emitter, interactive bool, deps setup.Deps, alreadyConfigured bool) {
-	if alreadyConfigured {
+// chosen means the user already has their own password, so there is nothing to offer.
+func setupOmlxAdminPassword(em *output.Emitter, interactive bool, deps setup.Deps, chosen bool) {
+	if chosen {
 		return
 	}
 	if !interactive {
@@ -833,8 +829,9 @@ func setupOmlxAdminPassword(em *output.Emitter, interactive bool, deps setup.Dep
 	want, confirmErr := promptConfirmDefault(
 		"Set a custom omlx admin console password now?",
 		"omlx already has a random password generated for you (it needs one to run). "+
-			"Declining keeps that one — retrieve it anytime from your OS keychain.",
-		false,
+			"Declining keeps that one — retrieve it anytime from your OS keychain, "+
+			"and you will be asked again on the next `ai setup`.",
+		true,
 	)
 	if confirmErr != nil || !want {
 		_, _ = fmt.Fprintf(em.Err, "  Retrieve the generated password with "+

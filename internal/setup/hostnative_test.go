@@ -299,3 +299,33 @@ func swapHostNativeSeams(test *testing.T) {
 		hostNativeStartOmlx, hostNativeStopOmlx = startOmlx, stopOmlx
 	})
 }
+
+// The setup offer keys off a "chosen" marker, NOT key existence: the first reconcile always
+// auto-mints a key, so gating on existence suppressed the prompt on every later run. Only a
+// password the user actually set marks it chosen; the auto-minted one must not.
+func TestOmlxPasswordChosenMarker(test *testing.T) {
+	_ = os.Unsetenv("OMLX_API_KEY")
+	test.Cleanup(func() { _ = os.Unsetenv("OMLX_API_KEY") })
+	origStore, origFind := storeCredentialFn, findCredentialFn
+	test.Cleanup(func() { storeCredentialFn, findCredentialFn = origStore, origFind })
+	vault := map[string]string{}
+	storeCredentialFn = func(name, value string) error { vault[name] = value; return nil }
+	findCredentialFn = func(name string) (string, error) {
+		if value, ok := vault[name]; ok {
+			return value, nil
+		}
+		return "", errors.New("not found")
+	}
+
+	ensureOmlxAPIKey() // the reconcile's auto-mint
+	if vault["OMLX_API_KEY"] == "" {
+		test.Fatal("expected an auto-minted key")
+	}
+	if OmlxPasswordChosen() {
+		test.Error("an auto-minted key must NOT count as chosen — the prompt would never show")
+	}
+	SetOmlxAPIKey("my-chosen-password")
+	if !OmlxPasswordChosen() {
+		test.Error("a password set via SetOmlxAPIKey must count as chosen")
+	}
+}
