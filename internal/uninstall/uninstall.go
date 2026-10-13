@@ -15,6 +15,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/jt-helsinki/stack-genie/internal/colibri"
 	"github.com/jt-helsinki/stack-genie/internal/nono"
 	"github.com/jt-helsinki/stack-genie/internal/paths"
 	"github.com/jt-helsinki/stack-genie/internal/runtime"
@@ -58,13 +59,21 @@ type Options struct {
 	// left installed. Either way the downloaded MODELS (volumes/models/omlx) survive a
 	// plain uninstall — only --purge removes those (via the RemoveAll of ~/.ai-platform).
 	RemoveRuntimes bool
+
+	// RemoveColibri opts into also removing the platform-installed colibri runtime (the
+	// optional second local-inference backend: its CLI/engine in ~/.ai-platform/bin/colibri).
+	// Decided by the caller like RemoveRuntimes (its own default-yes TTY prompt; --keep-runtimes
+	// opts out). When false the install is PRESERVED through the state wipe. The downloaded
+	// colibri models (volumes/models/colibri) survive a plain uninstall either way.
+	RemoveColibri bool
 }
 
 // Report describes what was removed.
 type Report struct {
 	StoppedWorkspaces int      `json:"stopped_workspaces"`
-	StoppedContainers int      `json:"stopped_containers"`     // aip-* service-tier containers gracefully stopped before removal
-	RemovedOmlx       bool     `json:"removed_omlx,omitempty"` // host-native omlx runtime removal attempted (RemoveRuntimes; bring-up stub)
+	StoppedContainers int      `json:"stopped_containers"`        // aip-* service-tier containers gracefully stopped before removal
+	RemovedOmlx       bool     `json:"removed_omlx,omitempty"`    // host-native omlx runtime removal attempted (RemoveRuntimes; bring-up stub)
+	RemovedColibri    bool     `json:"removed_colibri,omitempty"` // platform-installed colibri runtime removed (RemoveColibri)
 	RemovedContainers int      `json:"removed_containers"`
 	RemovedImages     int      `json:"removed_images"`
 	CleanedRC         []string `json:"cleaned_rc"`
@@ -207,6 +216,12 @@ func Run(options Options, prober runtime.Prober, progress Progress) (Report, err
 			report.RemovedOmlx = true
 		}
 	}
+	// colibri (optional): stop its server if installed, then remove the platform-installed
+	// runtime when the user opted in. Otherwise the install is kept through the state wipe below.
+	stopColibriServer(record)
+	if options.RemoveColibri && removeColibri(record) {
+		report.RemovedColibri = true
+	}
 	// Gracefully stop every running aip-* service-tier container FIRST (letting
 	// e.g. postgres checkpoint cleanly) before the force-remove below.
 	report.StoppedContainers = stopContainers(prober, record)
@@ -261,7 +276,7 @@ func Run(options Options, prober runtime.Prober, progress Progress) (Report, err
 			_ = os.RemoveAll(platformDir)
 			report.Purged = true
 			record("Purged ~/.ai-platform including downloaded models (your project directories were left untouched)")
-		} else if removePlatformStateKeepModels(platformDir) {
+		} else if removePlatformStateKeepModels(platformDir, !options.RemoveColibri) {
 			report.RemovedState = true
 			record("Removed ~/.ai-platform state; kept downloaded models (volumes/models) — re-run with --purge to remove them too")
 		}
@@ -319,6 +334,7 @@ func Plan(purge bool) []string {
 		steps = append(steps, "remove platform state (~/.ai-platform) but KEEP downloaded models (volumes/models) — pass --purge to remove them too")
 	}
 	steps = append(steps, "ask whether to remove the host-native omlx runtime too (defaults to yes; --keep-runtimes to keep them; models are kept unless --purge)")
+	steps = append(steps, "ask whether to remove the optional colibri runtime too, if installed (defaults to yes; --keep-runtimes to keep it; models are kept unless --purge)")
 	steps = append(steps, "ask, per external dependency (nono), whether to uninstall it too")
 	steps = append(steps, "leave your project directories untouched")
 	return steps
@@ -414,6 +430,48 @@ func stopOmlxServer(prober runtime.Prober, record func(string)) {
 func removeOmlx(record func(string)) bool {
 	record("Removed the host-native omlx runtime (install); kept the downloaded weights (hardware bring-up: per-OS uninstall)")
 	return true
+}
+
+// colibriDetectFn / colibriStopFn are the seams over the real colibri probe and `coli stop`
+// so tests never stop a developer's actual colibri server.
+var (
+	colibriDetectFn = colibri.Detect
+	colibriStopFn   = func() error { return colibri.NewManager(colibri.Config{}).Stop() }
+)
+
+// ColibriPresent reports whether colibri is installed (platform store or PATH) — the CLI asks
+// about removing it only then.
+func ColibriPresent() bool { return colibriDetectFn() }
+
+// stopColibriServer stops the host-native colibri server (the mirror of stopOmlxServer).
+// Best-effort; silent when colibri isn't installed (it is optional, so most hosts have none).
+func stopColibriServer(record func(string)) {
+	if !colibriDetectFn() {
+		return
+	}
+	_ = colibriStopFn()
+	record("Stopped the host-native colibri server; kept the colibri model store")
+}
+
+// removeColibri deletes the platform-installed colibri runtime (the CLI/engine in
+// colibri.StoreDir). Unlike removeOmlx this is a real removal: the store is platform-owned
+// and plain files. It never touches the downloaded models (volumes/models/colibri — only
+// --purge removes those) and cannot remove a copy installed elsewhere on PATH, which it says so.
+// Returns true when the store was removed.
+func removeColibri(record func(string)) bool {
+	storeDir, err := colibri.StoreDir()
+	if err == nil {
+		if _, statErr := os.Stat(storeDir); statErr == nil {
+			if os.RemoveAll(storeDir) == nil {
+				record("Removed the platform-installed colibri runtime (" + storeDir + "); kept the downloaded models")
+				return true
+			}
+		}
+	}
+	if colibriDetectFn() {
+		record("colibri is installed outside the platform store (on PATH) — remove that copy yourself; the platform did not install it")
+	}
+	return false
 }
 
 // stopContainers gracefully stops the platform's running aip-* containers (a
@@ -557,7 +615,10 @@ const modelsVolumeSubdir = "models"
 // uninstall a real uninstall — config, credentials, caches, overlays, logs and
 // the legacy resource pools are all gone, while the one expensive-to-refetch
 // piece survives. Best-effort; returns true if anything was removed.
-func removePlatformStateKeepModels(platformDir string) bool {
+//
+// keepColibri additionally preserves bin/colibri (the platform-installed colibri runtime)
+// when the user chose to keep it.
+func removePlatformStateKeepModels(platformDir string, keepColibri bool) bool {
 	entries, err := os.ReadDir(platformDir)
 	if err != nil {
 		return false
@@ -566,6 +627,10 @@ func removePlatformStateKeepModels(platformDir string) bool {
 	for _, entry := range entries {
 		if entry.Name() == "volumes" {
 			removedAny = pruneVolumesKeepModels(filepath.Join(platformDir, entry.Name())) || removedAny
+			continue
+		}
+		if entry.Name() == "bin" && keepColibri {
+			removedAny = pruneKeeping(filepath.Join(platformDir, entry.Name()), colibriBinSubdir) || removedAny
 			continue
 		}
 		if os.RemoveAll(filepath.Join(platformDir, entry.Name())) == nil {
@@ -579,16 +644,26 @@ func removePlatformStateKeepModels(platformDir string) bool {
 // subdir, leaving the volumes dir itself in place to hold it. Best-effort;
 // returns true if anything was removed.
 func pruneVolumesKeepModels(volumesDir string) bool {
-	entries, err := os.ReadDir(volumesDir)
+	return pruneKeeping(volumesDir, modelsVolumeSubdir)
+}
+
+// colibriBinSubdir is the platform-installed colibri runtime under ~/.ai-platform/bin
+// (colibri.StoreDir's last element).
+const colibriBinSubdir = "colibri"
+
+// pruneKeeping removes every entry of dir except the one named keep. Best-effort;
+// returns true if anything was removed.
+func pruneKeeping(dir, keep string) bool {
+	entries, err := os.ReadDir(dir)
 	if err != nil {
 		return false
 	}
 	removedAny := false
 	for _, entry := range entries {
-		if entry.Name() == modelsVolumeSubdir {
+		if entry.Name() == keep {
 			continue
 		}
-		if os.RemoveAll(filepath.Join(volumesDir, entry.Name())) == nil {
+		if os.RemoveAll(filepath.Join(dir, entry.Name())) == nil {
 			removedAny = true
 		}
 	}

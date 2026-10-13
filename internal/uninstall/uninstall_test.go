@@ -642,3 +642,111 @@ func TestRunPurgeWithRuntimesRemovesModelStore(test *testing.T) {
 		test.Error("--purge must RemoveAll ~/.ai-platform including the downloaded models")
 	}
 }
+
+// colibriFixture stubs the colibri seams and records stop calls; installed controls Detect.
+func colibriFixture(test *testing.T, installed bool) *int {
+	test.Helper()
+	origDetect, origStop := colibriDetectFn, colibriStopFn
+	test.Cleanup(func() { colibriDetectFn, colibriStopFn = origDetect, origStop })
+	stops := 0
+	colibriDetectFn = func() bool { return installed }
+	colibriStopFn = func() error { stops++; return nil }
+	return &stops
+}
+
+func uninstallHome(test *testing.T) string {
+	test.Helper()
+	home := test.TempDir()
+	test.Setenv("HOME", home)
+	test.Setenv("ZDOTDIR", "")
+	if err := runtime.Persist(&runtime.Info{SchemaVersion: runtime.SchemaVersion}); err != nil {
+		test.Fatalf("persist runtime: %v", err)
+	}
+	withHostsSeams(test, filepath.Join(home, "etc-hosts"), func(string, []byte) error { return nil })
+	return home
+}
+
+// Opting in stops the server and deletes the platform-installed runtime, but never the models.
+func TestRunRemoveColibriDeletesRuntimeKeepsModels(test *testing.T) {
+	home := uninstallHome(test)
+	stops := colibriFixture(test, true)
+	binary := filepath.Join(home, ".ai-platform", "bin", "colibri", "coli")
+	model := filepath.Join(home, ".ai-platform", "volumes", "models", "colibri", "weights.bin")
+	mustWrite(test, binary, "x")
+	mustWrite(test, model, "x")
+
+	report, err := Run(Options{RemoveColibri: true}, &fakeProber{present: map[string]bool{}}, nil)
+	if err != nil {
+		test.Fatal(err)
+	}
+	if !report.RemovedColibri || *stops != 1 {
+		test.Errorf("RemovedColibri=%v stops=%d, want true/1", report.RemovedColibri, *stops)
+	}
+	if _, statErr := os.Stat(binary); !os.IsNotExist(statErr) {
+		test.Error("the colibri runtime must be deleted when opted in")
+	}
+	if _, statErr := os.Stat(model); statErr != nil {
+		test.Error("colibri models must survive a plain uninstall")
+	}
+}
+
+// Declining must really keep it: the generic ~/.ai-platform wipe may not take bin/colibri,
+// while everything else under bin/ is still removed.
+func TestRunKeepColibriPreservesRuntimeThroughStateWipe(test *testing.T) {
+	home := uninstallHome(test)
+	stops := colibriFixture(test, true)
+	binary := filepath.Join(home, ".ai-platform", "bin", "colibri", "coli")
+	other := filepath.Join(home, ".ai-platform", "bin", "multica", "multica")
+	mustWrite(test, binary, "x")
+	mustWrite(test, other, "x")
+
+	report, err := Run(Options{}, &fakeProber{present: map[string]bool{}}, nil)
+	if err != nil {
+		test.Fatal(err)
+	}
+	if report.RemovedColibri {
+		test.Error("RemovedColibri must be false when kept")
+	}
+	if *stops != 1 {
+		test.Errorf("the server must still be stopped on uninstall, stops=%d", *stops)
+	}
+	if _, statErr := os.Stat(binary); statErr != nil {
+		test.Error("a kept colibri runtime must survive the state wipe")
+	}
+	if _, statErr := os.Stat(other); !os.IsNotExist(statErr) {
+		test.Error("other bin/ content must still be removed")
+	}
+}
+
+// --purge removes everything, kept colibri included — nothing is left behind.
+func TestRunPurgeRemovesKeptColibri(test *testing.T) {
+	home := uninstallHome(test)
+	colibriFixture(test, true)
+	binary := filepath.Join(home, ".ai-platform", "bin", "colibri", "coli")
+	mustWrite(test, binary, "x")
+	if _, err := Run(Options{Purge: true}, &fakeProber{present: map[string]bool{}}, nil); err != nil {
+		test.Fatal(err)
+	}
+	if _, statErr := os.Stat(binary); !os.IsNotExist(statErr) {
+		test.Error("--purge must remove colibri too")
+	}
+}
+
+// Most hosts have no colibri: nothing to stop, nothing reported, no stop attempt.
+func TestRunWithoutColibriDoesNothing(test *testing.T) {
+	uninstallHome(test)
+	stops := colibriFixture(test, false)
+	report, err := Run(Options{RemoveColibri: true}, &fakeProber{present: map[string]bool{}}, nil)
+	if err != nil {
+		test.Fatal(err)
+	}
+	if report.RemovedColibri || *stops != 0 {
+		test.Errorf("RemovedColibri=%v stops=%d, want false/0 when not installed", report.RemovedColibri, *stops)
+	}
+}
+
+// Hermetic by default: no test may probe for, or stop, a real colibri on the developer's host.
+func init() {
+	colibriDetectFn = func() bool { return false }
+	colibriStopFn = func() error { return nil }
+}

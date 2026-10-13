@@ -130,6 +130,25 @@ func newUninstallCmd(em *output.Emitter, exit *int) *cobra.Command {
 				removeRuntimes = runtimesAnswer
 			}
 
+			// colibri (the optional second local-inference backend) gets the SAME treatment,
+			// as its own prompt, but only when it is actually installed (most hosts have none).
+			// Defaults to yes; --keep-runtimes opts out. Its downloaded models are kept unless --purge.
+			removeColibri := !keepRuntimes && uninstall.ColibriPresent()
+			if interactive && uninstall.ColibriPresent() {
+				colibriAnswer, colibriErr := promptConfirmDefault(
+					"Remove the host-native colibri runtime?",
+					"Stops the colibri server and deletes the platform-installed runtime (CLI + "+
+						"engine). Say no to keep it installed. The downloaded models are kept "+
+						"either way — pass --purge to delete those too.",
+					!keepRuntimes,
+				)
+				if colibriErr != nil {
+					*exit = em.Failure("uninstall", colibriErr)
+					return nil
+				}
+				removeColibri = colibriAnswer
+			}
+
 			// Decide which external dependencies to also remove: --remove-deps
 			// takes all detected ones non-interactively; otherwise ask per
 			// dependency on a real terminal. With neither, they are left in place.
@@ -150,7 +169,7 @@ func newUninstallCmd(em *output.Emitter, exit *int) *cobra.Command {
 			}
 
 			binaryPath, _ := os.Executable()
-			runOpts := uninstall.Options{Purge: purge, BinaryPath: binaryPath, RemoveDeps: toRemove, RemoveRuntimes: removeRuntimes}
+			runOpts := uninstall.Options{Purge: purge, BinaryPath: binaryPath, RemoveDeps: toRemove, RemoveRuntimes: removeRuntimes, RemoveColibri: removeColibri}
 			var report uninstall.Report
 			var err error
 			// Acquire sudo for the /etc/hosts removal NOW, on the plain terminal, before
@@ -182,6 +201,7 @@ func newUninstallCmd(em *output.Emitter, exit *int) *cobra.Command {
 				StoppedWorkspaces: report.StoppedWorkspaces,
 				StoppedContainers: report.StoppedContainers,
 				RemovedOmlx:       report.RemovedOmlx,
+				RemovedColibri:    report.RemovedColibri,
 				RemovedContainers: report.RemovedContainers,
 				RemovedImages:     report.RemovedImages,
 				CleanedRC:         report.CleanedRC,
@@ -198,7 +218,7 @@ func newUninstallCmd(em *output.Emitter, exit *int) *cobra.Command {
 	cmd.Flags().BoolVar(&removeDeps, "remove-deps", false,
 		"also uninstall the external dependencies (nono) without prompting")
 	cmd.Flags().BoolVar(&keepRuntimes, "keep-runtimes", false,
-		"keep the host-native omlx runtime installed (it is removed by default; the downloaded models are kept unless --purge)")
+		"keep the host-native omlx and colibri runtimes installed (removed by default; the downloaded models are kept unless --purge)")
 	return cmd
 }
 
@@ -248,6 +268,7 @@ type uninstallResult struct {
 	StoppedWorkspaces int      `json:"stopped_workspaces,omitempty"`
 	StoppedContainers int      `json:"stopped_containers,omitempty"`
 	RemovedOmlx       bool     `json:"removed_omlx,omitempty"`
+	RemovedColibri    bool     `json:"removed_colibri,omitempty"`
 	RemovedContainers int      `json:"removed_containers,omitempty"`
 	RemovedImages     int      `json:"removed_images,omitempty"`
 	CleanedRC         []string `json:"cleaned_rc,omitempty"`
@@ -292,6 +313,9 @@ func (result uninstallResult) Human() string {
 	}
 	if result.RemovedOmlx {
 		summary += " Removed the host-native omlx runtime (downloaded models kept)."
+	}
+	if result.RemovedColibri {
+		summary += " Removed the host-native colibri runtime (downloaded models kept)."
 	}
 	if len(result.RemovedDeps) > 0 {
 		summary += " Also uninstalled: " + ui.Value.Render(strings.Join(result.RemovedDeps, ", ")) + "."
