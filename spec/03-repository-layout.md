@@ -888,7 +888,7 @@ network translation to name.
   "services": {
     "litellm":      { "mode": "container", "image": "ghcr.io/berriai/litellm", "tag": "latest" },
     "litellm-db":   { "mode": "container", "image": "postgres", "tag": "18.4-alpine3.23" },
-    "headroom":     { "mode": "container", "image": "ghcr.io/chopratejas/headroom", "tag": "latest" },
+    "headroom":     { "mode": "container", "image": "ghcr.io/headroomlabs-ai/headroom", "tag": "latest" },
     "presidio-analyzer":   { "mode": "container", "image": "mcr.microsoft.com/presidio-analyzer",   "tag": "latest" },
     "presidio-anonymizer": { "mode": "container", "image": "mcr.microsoft.com/presidio-anonymizer", "tag": "latest" },
     "valkey":       { "mode": "container", "image": "valkey/valkey", "tag": "9.1.0-alpine" },

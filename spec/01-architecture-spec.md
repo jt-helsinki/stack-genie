@@ -405,7 +405,7 @@ ai logs --service <svc>      one log surface
 | Service | Run mode | Why |
 |---|---|---|
 | nginx proxy | container (via Runtime) `aip-proxy` (`nginx:stable-alpine3.23-slim`) | the SOLE host ENTRY to the service tier: publishes ONLY :18787 — the default server (`/`+`/v1`→LiteLLM directly, `/llm`→LiteLLM) plus the two Host-based UI vhosts on the same port (`litellm.<domain>` → LiteLLM admin UI, `valkey.<domain>` → RedisInsight); HTTPS termination point later (§10) |
-| Headroom | container (via Runtime) `aip-headroom` (`ghcr.io/chopratejas/headroom:latest`) | LiteLLM's `pre_call` input-compression guardrail backend, called at `aip-headroom:8787/v1/compress`; INTERNAL-ONLY on :8787 on aip-net (no host publish, nginx never routes to it); carries only `HEADROOM_TELEMETRY=off`; HTTP only (§10) |
+| Headroom | container (via Runtime) `aip-headroom` (`ghcr.io/headroomlabs-ai/headroom:latest`) | LiteLLM's `pre_call` input-compression guardrail backend, called at `aip-headroom:8787/v1/compress`; INTERNAL-ONLY on :8787 on aip-net (no host publish, nginx never routes to it); carries only `HEADROOM_TELEMETRY=off`; HTTP only (§10) |
 | LiteLLM | container (via Runtime) `aip-litellm` (image tag `latest`) (+ `aip-litellm-db` Postgres, surfaced as its own `postgres` status line) | INTERNAL-ONLY: no host publish, reached by name (`aip-litellm:4000`) by nginx's model path + `/llm` route; it calls Headroom in-process; HTTP only; no host privileges |
 | Presidio | two containers (via Runtime) `aip-presidio-analyzer` + `aip-presidio-anonymizer` | back LiteLLM's secret-masking guardrail; started ONLY when `secret-masking` is selected (§15); internal-only, not published |
 | omlx (local backend) | **host-side, ONE shared process** (a single `omlx serve` answering for every locally-served model — NOT per-model processes, NOT containers) | the platform's sole local-inference backend, macOS + Apple Silicon only; probed at `http://127.0.0.1:8100/v1/models`, reached by the LiteLLM/nginx containers at `host.docker.internal:8100/v1`; ensured NON-fatally in reconcile — an unreachable omlx is a hint, not a setup failure. Install/serve mechanics, model management (entirely via omlx's own admin panel), and the hardware-bring-up caveats are §16 |
@@ -880,7 +880,7 @@ for the three CLIs it supports.
 Headroom manages context budgets.
 
 Headroom runs as a **shared host container** (`aip-headroom`, image
-`ghcr.io/chopratejas/headroom:latest` — pulled, never built, running the image's
+`ghcr.io/headroomlabs-ai/headroom:latest` — pulled, never built, running the image's
 default `headroom proxy --host 0.0.0.0 --port 8787` CMD on `:8787`). It is the
 backend for **LiteLLM's `pre_call` input-compression guardrail**: LiteLLM's
 `headroom` guardrail (guardrail_name `headroom-compression`, mode `pre_call`,

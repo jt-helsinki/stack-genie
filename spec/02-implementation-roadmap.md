@@ -278,7 +278,7 @@ Introduce Headroom + Caveman.
 
 * Headroom context management (input compression) — a LiteLLM `pre_call`
   **guardrail**, NOT an nginx proxy. The `aip-headroom` service (pulled image
-  `ghcr.io/chopratejas/headroom:latest`, internal port :8787, **internal-only on
+  `ghcr.io/headroomlabs-ai/headroom:latest`, internal port :8787, **internal-only on
   `aip-net`**, no host publish) is called BY LiteLLM: LiteLLM's `headroom`
   guardrail POSTs the request messages to `http://aip-headroom:8787/v1/compress`
   and swaps in the compressed result before dispatch (requires LiteLLM v1.92.x+;
