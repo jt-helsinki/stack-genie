@@ -25,6 +25,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"path/filepath"
 	"strings"
 
 	"golang.org/x/crypto/scrypt"
@@ -307,13 +308,26 @@ type MCPServer struct {
 // update`); until it exists the server yields no tools.
 var GraphifyMCPArgs = []string{"-m", "graphify.serve", "graphify-out/graph.json"}
 
+// SerenaBinary is the `serena` executable installed beside the project venv's python.
+func SerenaBinary(venvPython string) string {
+	return filepath.Join(filepath.Dir(venvPython), "serena")
+}
+
+// SerenaMCPArgs is the argv (after the serena binary) that runs its stdio MCP server for
+// whatever project the agent is launched in. context is Serena's client profile
+// ("claude-code" for Claude Code, "ide-assistant" for the generic MCP clients); the
+// dashboard is kept from auto-opening a browser tab, as a headless agent has no use for it.
+func SerenaMCPArgs(context string) []string {
+	return []string{"start-mcp-server", "--project-from-cwd", "--context", context, "--open-web-dashboard", "False"}
+}
+
 // EnabledMCPServers returns the MCP servers for the enabled AI tools, in a stable order.
 // codeReviewGraph/codebaseMemory/tokensave run their own installed binaries; agentMemory
 // runs via npx (the agentmemory npm package is globally installed, but its MCP entrypoint
 // is published as the separate @agentmemory/mcp package, fetched on demand); graphify runs
 // from the project venv (venvPython = <project>/.venv-msb/bin/python) where graphifyy[mcp]
 // lives. A blank venvPython omits graphify (venv path unknown).
-func EnabledMCPServers(codeReviewGraph, codebaseMemory, graphify, tokensave, agentMemory bool, venvPython string) []MCPServer {
+func EnabledMCPServers(codeReviewGraph, codebaseMemory, graphify, tokensave, agentMemory, serena bool, venvPython string) []MCPServer {
 	var servers []MCPServer
 	if codeReviewGraph {
 		servers = append(servers, MCPServer{Name: "code-review-graph", Command: "code-review-graph", Args: []string{"serve"}})
@@ -329,6 +343,9 @@ func EnabledMCPServers(codeReviewGraph, codebaseMemory, graphify, tokensave, age
 	}
 	if agentMemory {
 		servers = append(servers, MCPServer{Name: "agentmemory", Command: "npx", Args: []string{"-y", "@agentmemory/mcp"}})
+	}
+	if serena && venvPython != "" {
+		servers = append(servers, MCPServer{Name: "serena", Command: SerenaBinary(venvPython), Args: append([]string{}, SerenaMCPArgs("ide-assistant")...)})
 	}
 	return servers
 }

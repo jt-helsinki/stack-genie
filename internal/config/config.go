@@ -171,6 +171,12 @@ type ContextConfig struct {
 	// explicit false. It is OPT-IN — unset (nil) defaults to DISABLED — see
 	// AgentSkillsEnabledOrDefault.
 	AgentSkillsEnabled *bool `yaml:"agent_skills_enabled,omitempty" json:"agent_skills_enabled,omitempty"`
+	// SerenaEnabled records whether Serena (https://github.com/oraios/serena — an LSP-backed
+	// semantic code-navigation/editing MCP server) is installed into the project's Python
+	// environment (<project>/.venv-msb) and registered with each installed agent CLI (chosen
+	// at `ai create`). A pointer so three states are distinct: unset (nil), explicit true,
+	// explicit false. It is OPT-IN — unset (nil) defaults to DISABLED — see SerenaEnabledOrDefault.
+	SerenaEnabled *bool `yaml:"serena_enabled,omitempty" json:"serena_enabled,omitempty"`
 }
 
 // CavemanEnabledOrDefault reports whether Caveman should be installed at workspace
@@ -237,6 +243,13 @@ func (settings ContextConfig) AgentSkillsEnabledOrDefault() bool {
 	return settings.AgentSkillsEnabled != nil && *settings.AgentSkillsEnabled
 }
 
+// SerenaEnabledOrDefault reports whether Serena should be installed at workspace start. It
+// is OPT-IN: an unset (nil) value defaults FALSE, so it is only ever installed when
+// explicitly chosen at `ai create`.
+func (settings ContextConfig) SerenaEnabledOrDefault() bool {
+	return settings.SerenaEnabled != nil && *settings.SerenaEnabled
+}
+
 // ToolEnabled reports whether the given AI-tool key (one of create.SupportedAITools —
 // not imported here to avoid a dependency cycle, so the keys are matched as plain
 // strings) is enabled, via the matching *EnabledOrDefault method. An unknown key
@@ -262,6 +275,8 @@ func (settings ContextConfig) ToolEnabled(tool string) bool {
 		return settings.PonytailEnabledOrDefault()
 	case "agent-skills":
 		return settings.AgentSkillsEnabledOrDefault()
+	case "serena":
+		return settings.SerenaEnabledOrDefault()
 	default:
 		return false
 	}

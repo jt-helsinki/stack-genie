@@ -9,9 +9,9 @@ import (
 )
 
 func TestEnabledMCPServers(test *testing.T) {
-	servers := EnabledMCPServers(true, true, true, true, true, "/home/workspace/project/.venv-msb/bin/python")
-	if len(servers) != 5 {
-		test.Fatalf("want 5 servers, got %d: %+v", len(servers), servers)
+	servers := EnabledMCPServers(true, true, true, true, true, true, "/home/workspace/project/.venv-msb/bin/python")
+	if len(servers) != 6 {
+		test.Fatalf("want 6 servers, got %d: %+v", len(servers), servers)
 	}
 	byName := map[string]MCPServer{}
 	for _, server := range servers {
@@ -34,22 +34,27 @@ func TestEnabledMCPServers(test *testing.T) {
 	if got := byName["agentmemory"]; got.Command != "npx" || strings.Join(got.Args, " ") != "-y @agentmemory/mcp" {
 		test.Errorf("agentmemory server = %+v", got)
 	}
+	// serena runs from the project venv, beside its python, scoped to whatever cwd the agent has.
+	if got := byName["serena"]; got.Command != "/home/workspace/project/.venv-msb/bin/serena" ||
+		strings.Join(got.Args, " ") != "start-mcp-server --project-from-cwd --context ide-assistant --open-web-dashboard False" {
+		test.Errorf("serena server = %+v", got)
+	}
 }
 
 func TestEnabledMCPServersOmitsDisabledAndGraphifyWithoutVenv(test *testing.T) {
 	// Nothing enabled → empty.
-	if servers := EnabledMCPServers(false, false, false, false, false, "/x/python"); len(servers) != 0 {
+	if servers := EnabledMCPServers(false, false, false, false, false, false, "/x/python"); len(servers) != 0 {
 		test.Errorf("want no servers, got %+v", servers)
 	}
 	// graphify enabled but no venv path → graphify omitted (can't locate the server).
-	servers := EnabledMCPServers(true, false, true, false, false, "")
+	servers := EnabledMCPServers(true, false, true, false, false, false, "")
 	if len(servers) != 1 || servers[0].Name != "code-review-graph" {
 		test.Errorf("graphify must be omitted without a venv python: %+v", servers)
 	}
 }
 
 func TestOmpMcpConfig(test *testing.T) {
-	servers := EnabledMCPServers(true, false, false, false, false, "")
+	servers := EnabledMCPServers(true, false, false, false, false, false, "")
 	raw, err := OmpMcpConfig(servers)
 	if err != nil {
 		test.Fatalf("OmpMcpConfig: %v", err)
@@ -77,7 +82,7 @@ func TestInjectHermesMCP(test *testing.T) {
 	if same, _ := InjectHermesMCP(base, nil); string(same) != string(base) {
 		test.Error("empty servers must return the config unchanged")
 	}
-	out, err := InjectHermesMCP(base, EnabledMCPServers(true, false, false, false, false, ""))
+	out, err := InjectHermesMCP(base, EnabledMCPServers(true, false, false, false, false, false, ""))
 	if err != nil {
 		test.Fatalf("InjectHermesMCP: %v", err)
 	}
@@ -99,7 +104,7 @@ func TestAppendCodexMCP(test *testing.T) {
 	if same := AppendCodexMCP(base, nil); string(same) != string(base) {
 		test.Error("empty servers must return the config unchanged")
 	}
-	out := string(AppendCodexMCP(base, EnabledMCPServers(true, true, false, false, false, "")))
+	out := string(AppendCodexMCP(base, EnabledMCPServers(true, true, false, false, false, false, "")))
 	for _, want := range []string{
 		"[mcp_servers.code-review-graph]",
 		`command = "code-review-graph"`,

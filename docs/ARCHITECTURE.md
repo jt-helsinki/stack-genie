@@ -173,10 +173,10 @@ claude-code/codex/opencode launch is wrapped as `headroom wrap <cli>`
 wrap support and launch directly.
 
 The per-project **AI tools** are a separate, selectable set (one `--tools`
-multi-select at `ai create`, or the wizard's AI-tools step), nine in total:
+multi-select at `ai create`, or the wizard's AI-tools step), ten in total:
 **caveman**, **graphify**, **code-review-graph**, **codebase-memory-mcp**,
-**openviking**, **tokensave**, **agentmemory**, **ponytail**, and
-**agent-skills** — all opt-in, nothing pre-selected by default
+**openviking**, **tokensave**, **agentmemory**, **ponytail**,
+**agent-skills**, and **serena** — all opt-in, nothing pre-selected by default
 (`create.SupportedAITools()`/`create.DefaultAITools()`, the latter returning an
 empty list). Each maps to a `context.*_enabled` bool in `config.yaml`, and can
 be toggled after create too with `ai tools enable|disable <tool> [name]` (`ai
@@ -208,6 +208,12 @@ time:
   YAGNI/stdlib/existing code before writing anything new.
 - **agent-skills** (`addyosmani/agent-skills`) — curated senior-engineer
   skills (spec, TDD, review, security, shipping, …).
+- **serena** (PyPI `serena-agent`, `oraios/serena`) — LSP-backed semantic code
+navigation and editing (symbols, references, refactors). Installed into the
+**project** Python environment `<project>/.venv-msb` (created with `uv venv` when
+absent), then registered with claude-code (`claude mcp add --scope local`) and
+gemini (`gemini mcp add --scope project`); codex/hermes/omp get it via MCP
+injection; opencode gets neither (same gap as agentmemory).
 
 For the three agent configs the platform rewrites **whole** on every session
 launch — codex, hermes, and omp — an enabled tool with an MCP server is

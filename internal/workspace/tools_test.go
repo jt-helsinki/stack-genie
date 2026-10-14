@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/jt-helsinki/stack-genie/internal/config"
@@ -143,5 +144,87 @@ func TestRegisterOpenVikingNoCompatibleCLIWarns(test *testing.T) {
 	})
 	if output == "" {
 		test.Error("registerOpenViking with no supported CLI should warn")
+	}
+}
+
+// serenaScript runs registerSerena with the detached launcher stubbed and returns the staged script.
+func serenaScript(test *testing.T, tools ...string) (root, script string) {
+	test.Helper()
+	enabled := true
+	projectConfig := &config.Config{
+		Agent:   config.AgentConfig{Tools: tools},
+		Context: config.ContextConfig{SerenaEnabled: &enabled},
+	}
+	root = seedProject(test, "serena-proj", projectConfig)
+	original := runDetachedScriptFn
+	test.Cleanup(func() { runDetachedScriptFn = original })
+	var tool string
+	runDetachedScriptFn = func(_, name, staged string) error { tool, script = name, staged; return nil }
+	Manager{}.registerSerena(root, projectConfig)
+	if tool != "serena" {
+		test.Fatalf("detached tool = %q, want serena", tool)
+	}
+	return root, script
+}
+
+// Serena installs into the PROJECT environment (.venv-msb), creating it first, then registers
+// with claude-code at LOCAL scope (never the checked-in .mcp.json) and with gemini at project scope.
+func TestRegisterSerenaInstallsIntoProjectVenvAndRegisters(test *testing.T) {
+	requireBash(test)
+	root, script := serenaScript(test, "claude-code", "gemini", "codex")
+	venv := filepath.Join(root, ".venv-msb")
+	for _, want := range []string{
+		"uv venv '" + venv + "'",
+		"uv pip install --python '" + venv + "/bin/python' --quiet serena-agent",
+		"claude mcp add --scope local serena -- '" + venv + "/bin/serena' start-mcp-server --project-from-cwd --context claude-code --open-web-dashboard False",
+		"gemini mcp add --scope project serena '" + venv + "/bin/serena' start-mcp-server --project-from-cwd --context ide-assistant",
+		".serena-installed",
+	} {
+		if !strings.Contains(script, want) {
+			test.Errorf("script missing %q:\n%s", want, script)
+		}
+	}
+	if strings.Contains(script, "--scope user") || strings.Contains(script, "--scope project serena -- ") {
+		test.Errorf("registrations must not be user-scoped or write the shared .mcp.json:\n%s", script)
+	}
+	if out, err := exec.Command("bash", "-n", "-c", script).CombinedOutput(); err != nil {
+		test.Errorf("staged script is not valid bash: %v\n%s", err, out)
+	}
+}
+
+// codex/hermes/omp get Serena through MCP injection, so with only those selected there is
+// nothing to register natively — but the package is still installed for the injected server.
+func TestRegisterSerenaWithoutNativeCLIsStillInstalls(test *testing.T) {
+	requireBash(test)
+	_, script := serenaScript(test, "codex")
+	if !strings.Contains(script, "serena-agent") || strings.Contains(script, "mcp add") {
+		test.Errorf("expected an install with no native registration:\n%s", script)
+	}
+	if out, err := exec.Command("bash", "-n", "-c", script).CombinedOutput(); err != nil {
+		test.Errorf("staged script is not valid bash: %v\n%s", err, out)
+	}
+}
+
+// Disabling removes the registrations and the marker, and must stay valid bash with no native CLI.
+func TestTeardownSerenaIsValidScriptAndClearsMarker(test *testing.T) {
+	requireBash(test)
+	disabled := false
+	projectConfig := &config.Config{
+		Agent:   config.AgentConfig{Tools: []string{"codex"}},
+		Context: config.ContextConfig{SerenaEnabled: &disabled},
+	}
+	root := seedProject(test, "serena-off", projectConfig)
+	marker := filepath.Join(root, ".ai-platform", ".serena-installed")
+	if err := os.MkdirAll(filepath.Dir(marker), 0o755); err != nil {
+		test.Fatal(err)
+	}
+	if err := os.WriteFile(marker, nil, 0o644); err != nil {
+		test.Fatal(err)
+	}
+	if output := captureStderr(test, func() { Manager{}.teardownSerena(root, projectConfig) }); output != "" {
+		test.Errorf("teardown warned: %q", output)
+	}
+	if _, err := os.Stat(marker); !os.IsNotExist(err) {
+		test.Error("install marker must be removed on disable")
 	}
 }

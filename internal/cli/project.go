@@ -492,7 +492,7 @@ func runCreateWizard(seed project.Spec) (project.Spec, bool, error) {
 		"claude-code": authClaude, "codex": authCodex, "gemini": authGemini,
 	})
 
-	caveman, graphify, codeReviewGraph, codebaseMemory, openViking, tokenSave, agentMemory, ponytail, agentSkills := create.SplitAITools(toolsSelection)
+	caveman, graphify, codeReviewGraph, codebaseMemory, openViking, tokenSave, agentMemory, ponytail, agentSkills, serena := create.SplitAITools(toolsSelection)
 	// Only carry a graphify model when graphify is actually selected.
 	graphifyModel := ""
 	if graphify && graphifyModelSelection != graphifyModelNone {
@@ -515,6 +515,7 @@ func runCreateWizard(seed project.Spec) (project.Spec, bool, error) {
 		AgentMemoryEnabled:     agentMemory,
 		PonytailEnabled:        ponytail,
 		AgentSkillsEnabled:     agentSkills,
+		SerenaEnabled:          serena,
 	}, false, nil
 }
 
@@ -548,6 +549,9 @@ func aiToolsFromSpec(seed project.Spec) []string {
 	}
 	if seed.AgentSkillsEnabled {
 		selection = append(selection, create.AIToolAgentSkills)
+	}
+	if seed.SerenaEnabled {
+		selection = append(selection, create.AIToolSerena)
 	}
 	return selection
 }
@@ -759,7 +763,7 @@ func seedSpec(flags createFlags) project.Spec {
 	// Auth modes were validated by validateProvidedCreateFlags (called before seeding), so
 	// a parse error here is impossible — ignore it and seed the wizard's per-agent selects.
 	authModes, _ := parseAuthModes(flags.authMode, agents)
-	caveman, graphify, codeReviewGraph, codebaseMemory, openViking, tokenSave, agentMemory, ponytail, agentSkills := create.SplitAITools(effectiveAITools(flags))
+	caveman, graphify, codeReviewGraph, codebaseMemory, openViking, tokenSave, agentMemory, ponytail, agentSkills, serena := create.SplitAITools(effectiveAITools(flags))
 	return project.Spec{
 		Name:                   name,
 		Shell:                  flags.shell,
@@ -776,6 +780,7 @@ func seedSpec(flags createFlags) project.Spec {
 		AgentMemoryEnabled:     agentMemory,
 		PonytailEnabled:        ponytail,
 		AgentSkillsEnabled:     agentSkills,
+		SerenaEnabled:          serena,
 	}
 }
 
@@ -802,7 +807,7 @@ func specFromFlags(flags createFlags) (project.Spec, error) {
 	if err != nil {
 		return project.Spec{}, err
 	}
-	caveman, graphify, codeReviewGraph, codebaseMemory, openViking, tokenSave, agentMemory, ponytail, agentSkills := create.SplitAITools(effectiveAITools(flags))
+	caveman, graphify, codeReviewGraph, codebaseMemory, openViking, tokenSave, agentMemory, ponytail, agentSkills, serena := create.SplitAITools(effectiveAITools(flags))
 	return project.Spec{
 		Name:                   name,
 		Shell:                  flags.shell,
@@ -819,6 +824,7 @@ func specFromFlags(flags createFlags) (project.Spec, error) {
 		AgentMemoryEnabled:     agentMemory,
 		PonytailEnabled:        ponytail,
 		AgentSkillsEnabled:     agentSkills,
+		SerenaEnabled:          serena,
 	}, nil
 }
 

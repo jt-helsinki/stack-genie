@@ -9,9 +9,9 @@ import (
 // mis-provisions every workspace's per-project tooling.
 func TestSplitAITools(test *testing.T) {
 	cases := []struct {
-		name                                                                                                       string
-		tools                                                                                                      []string
-		caveman, graphify, codeReviewGraph, codebaseMem, openViking, tokenSave, agentMemory, ponytail, agentSkills bool
+		name                                                                                                               string
+		tools                                                                                                              []string
+		caveman, graphify, codeReviewGraph, codebaseMem, openViking, tokenSave, agentMemory, ponytail, agentSkills, serena bool
 	}{
 		{name: "empty is all false"},
 		{name: "caveman only", tools: []string{AIToolCaveman}, caveman: true},
@@ -23,11 +23,12 @@ func TestSplitAITools(test *testing.T) {
 		{name: "agentmemory only", tools: []string{AIToolAgentMemory}, agentMemory: true},
 		{name: "ponytail only", tools: []string{AIToolPonytail}, ponytail: true},
 		{name: "agent-skills only", tools: []string{AIToolAgentSkills}, agentSkills: true},
+		{name: "serena only", tools: []string{AIToolSerena}, serena: true},
 		{
-			name: "all nine",
+			name: "all ten",
 			tools: []string{
 				AIToolCaveman, AIToolGraphify, AIToolCodeReviewGraph, AIToolCodebaseMemory, AIToolOpenViking,
-				AIToolTokenSave, AIToolAgentMemory, AIToolPonytail, AIToolAgentSkills,
+				AIToolTokenSave, AIToolAgentMemory, AIToolPonytail, AIToolAgentSkills, AIToolSerena,
 			},
 			caveman:         true,
 			graphify:        true,
@@ -38,6 +39,7 @@ func TestSplitAITools(test *testing.T) {
 			agentMemory:     true,
 			ponytail:        true,
 			agentSkills:     true,
+			serena:          true,
 		},
 		{name: "unknown key ignored", tools: []string{"bogus-tool"}},
 		{
@@ -48,7 +50,7 @@ func TestSplitAITools(test *testing.T) {
 	}
 	for _, testCase := range cases {
 		test.Run(testCase.name, func(test *testing.T) {
-			caveman, graphify, codeReviewGraph, codebaseMem, openViking, tokenSave, agentMemory, ponytail, agentSkills := SplitAITools(testCase.tools)
+			caveman, graphify, codeReviewGraph, codebaseMem, openViking, tokenSave, agentMemory, ponytail, agentSkills, serena := SplitAITools(testCase.tools)
 			if caveman != testCase.caveman {
 				test.Errorf("caveman = %v, want %v", caveman, testCase.caveman)
 			}
@@ -76,6 +78,9 @@ func TestSplitAITools(test *testing.T) {
 			if agentSkills != testCase.agentSkills {
 				test.Errorf("agentSkills = %v, want %v", agentSkills, testCase.agentSkills)
 			}
+			if serena != testCase.serena {
+				test.Errorf("serena = %v, want %v", serena, testCase.serena)
+			}
 		})
 	}
 }
@@ -87,12 +92,12 @@ func TestDefaultAITools(test *testing.T) {
 	}
 }
 
-// TestSupportedAITools asserts all nine tool keys are offered, each with a description.
+// TestSupportedAITools asserts all ten tool keys are offered, each with a description.
 func TestSupportedAITools(test *testing.T) {
 	got := SupportedAITools()
 	for _, key := range []string{
 		AIToolCaveman, AIToolGraphify, AIToolCodeReviewGraph, AIToolCodebaseMemory, AIToolOpenViking,
-		AIToolTokenSave, AIToolAgentMemory, AIToolPonytail, AIToolAgentSkills,
+		AIToolTokenSave, AIToolAgentMemory, AIToolPonytail, AIToolAgentSkills, AIToolSerena,
 	} {
 		if !slices.Contains(got, key) {
 			test.Errorf("SupportedAITools() = %v, missing %q", got, key)
@@ -101,8 +106,8 @@ func TestSupportedAITools(test *testing.T) {
 			test.Errorf("AIToolDescription(%q) is empty", key)
 		}
 	}
-	if len(got) != 9 {
-		test.Errorf("SupportedAITools() should offer exactly 9 keys, got %d: %v", len(got), got)
+	if len(got) != 10 {
+		test.Errorf("SupportedAITools() should offer exactly 10 keys, got %d: %v", len(got), got)
 	}
 }
 

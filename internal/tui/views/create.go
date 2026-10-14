@@ -381,7 +381,7 @@ func (view *Create) buildAuthSteps() {
 
 // finish assembles the project.Spec from the collected fields and emits it.
 func (view *Create) finish() tea.Cmd {
-	caveman, graphify, codeReviewGraph, codebaseMemory, openViking, tokenSave, agentMemory, ponytail, agentSkills :=
+	caveman, graphify, codeReviewGraph, codebaseMemory, openViking, tokenSave, agentMemory, ponytail, agentSkills, serena :=
 		create.SplitAITools(view.tools.Values())
 	graphifyModel := ""
 	if graphify {
@@ -413,6 +413,7 @@ func (view *Create) finish() tea.Cmd {
 		AgentMemoryEnabled:     agentMemory,
 		PonytailEnabled:        ponytail,
 		AgentSkillsEnabled:     agentSkills,
+		SerenaEnabled:          serena,
 		Root:                   view.location.dir,
 	}
 	return func() tea.Msg { return CreateConfirmedMsg{Spec: spec} }

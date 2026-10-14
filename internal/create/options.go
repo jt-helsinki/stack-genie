@@ -60,6 +60,7 @@ const (
 	AIToolAgentMemory     = "agentmemory"
 	AIToolPonytail        = "ponytail"
 	AIToolAgentSkills     = "agent-skills"
+	AIToolSerena          = "serena"
 )
 
 // SupportedAITools are the per-project AI tools the user picks from one multi-select
@@ -68,7 +69,7 @@ const (
 func SupportedAITools() []string {
 	return []string{
 		AIToolCaveman, AIToolGraphify, AIToolCodeReviewGraph, AIToolCodebaseMemory, AIToolOpenViking,
-		AIToolTokenSave, AIToolAgentMemory, AIToolPonytail, AIToolAgentSkills,
+		AIToolTokenSave, AIToolAgentMemory, AIToolPonytail, AIToolAgentSkills, AIToolSerena,
 	}
 }
 
@@ -100,6 +101,8 @@ func AIToolDescription(tool string) string {
 		return "Nags the agent to check YAGNI/stdlib/existing code before writing anything new — an anti-over-engineering skill."
 	case AIToolAgentSkills:
 		return "Curated senior-engineer skills (spec, TDD, review, security, shipping, …) — github.com/addyosmani/agent-skills."
+	case AIToolSerena:
+		return "LSP-backed semantic code navigation and editing (symbols, references, refactors) — installed into the project's Python environment."
 	default:
 		return ""
 	}
@@ -107,7 +110,7 @@ func AIToolDescription(tool string) string {
 
 // SplitAITools reports, from a selected AI-tools list, whether each tool is enabled. Used
 // by both create wizards to set the project.Spec bool flags from one selection.
-func SplitAITools(tools []string) (caveman, graphify, codeReviewGraph, codebaseMemory, openViking, tokenSave, agentMemory, ponytail, agentSkills bool) {
+func SplitAITools(tools []string) (caveman, graphify, codeReviewGraph, codebaseMemory, openViking, tokenSave, agentMemory, ponytail, agentSkills, serena bool) {
 	return slices.Contains(tools, AIToolCaveman),
 		slices.Contains(tools, AIToolGraphify),
 		slices.Contains(tools, AIToolCodeReviewGraph),
@@ -116,7 +119,8 @@ func SplitAITools(tools []string) (caveman, graphify, codeReviewGraph, codebaseM
 		slices.Contains(tools, AIToolTokenSave),
 		slices.Contains(tools, AIToolAgentMemory),
 		slices.Contains(tools, AIToolPonytail),
-		slices.Contains(tools, AIToolAgentSkills)
+		slices.Contains(tools, AIToolAgentSkills),
+		slices.Contains(tools, AIToolSerena)
 }
 
 // SupportedShells are the interactive shells a workspace can default to. bash is the

@@ -88,12 +88,14 @@ func setToolEnabled(settings *config.ContextConfig, tool string, enabled bool) {
 		settings.PonytailEnabled = &enabled
 	case create.AIToolAgentSkills:
 		settings.AgentSkillsEnabled = &enabled
+	case create.AIToolSerena:
+		settings.SerenaEnabled = &enabled
 	}
 }
 
 // newToolsCmd builds `ai tools <list|enable|disable> [tool] [name]`: inspect and
 // toggle the opt-in AI tools (caveman, graphify, code-review-graph, codebase-memory-mcp,
-// openviking, tokensave, agentmemory, ponytail, agent-skills) after `ai create` time.
+// openviking, tokensave, agentmemory, ponytail, agent-skills, serena) after `ai create` time.
 // enable/disable just persist config.yaml — there is no image to rebuild, so the
 // change takes effect on the next `ai agent`/`ai start` (each AI tool installs
 // directly on the host at that point, not baked into anything ahead of time).

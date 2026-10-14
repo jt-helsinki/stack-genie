@@ -96,6 +96,11 @@ type Spec struct {
 	// written to config.yaml context.agent_skills_enabled. Chosen at `ai create`
 	// (OPT-IN, default false).
 	AgentSkillsEnabled bool
+	// SerenaEnabled records whether Serena is installed into the project's Python
+	// environment (.venv-msb) at start and registered with each installed agent CLI,
+	// written to config.yaml context.serena_enabled. Chosen at `ai create` (OPT-IN,
+	// default false).
+	SerenaEnabled bool
 	// Root is the host source directory for the workspace. Empty falls back to
 	// ~/projects/<name> (RootPath); `ai create` sets it explicitly to the chosen
 	// location.
@@ -289,6 +294,7 @@ func Scaffold(spec Spec, createdAt string) (string, error) {
 	agentMemoryEnabled := spec.AgentMemoryEnabled
 	ponytailEnabled := spec.PonytailEnabled
 	agentSkillsEnabled := spec.AgentSkillsEnabled
+	serenaEnabled := spec.SerenaEnabled
 	projectConfig := &config.Config{
 		OS:        goruntime.GOOS,
 		Agent:     config.AgentConfig{Tools: spec.AgentCLIs, DefaultTool: spec.DefaultTool, GraphifyModel: spec.GraphifyModel, AuthModes: authModes},
@@ -298,7 +304,7 @@ func Scaffold(spec Spec, createdAt string) (string, error) {
 			CodeReviewGraphEnabled: &codeReviewGraphEnabled, CodebaseMemoryEnabled: &codebaseMemoryEnabled,
 			OpenVikingEnabled: &openVikingEnabled, TokenSaveEnabled: &tokenSaveEnabled,
 			AgentMemoryEnabled: &agentMemoryEnabled, PonytailEnabled: &ponytailEnabled,
-			AgentSkillsEnabled: &agentSkillsEnabled,
+			AgentSkillsEnabled: &agentSkillsEnabled, SerenaEnabled: &serenaEnabled,
 		},
 		Network: config.NetworkConfig{Egress: "public", AllowDomain: oauthAllowDomains},
 	}

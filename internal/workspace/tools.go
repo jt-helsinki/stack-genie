@@ -11,12 +11,13 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/jt-helsinki/stack-genie/internal/agentcfg"
 	"github.com/jt-helsinki/stack-genie/internal/config"
 )
 
 // This file installs/registers the opt-in AI tools (config.yaml
 // context.*_enabled: caveman, graphify, code-review-graph, codebase-memory-mcp,
-// openviking, tokensave, agentmemory, ponytail, agent-skills) on the HOST, once
+// openviking, tokensave, agentmemory, ponytail, agent-skills, serena) on the HOST, once
 // per project, best-effort. Under Microsandbox each of these ran INSIDE a
 // project's own microVM via a staged script + `msb exec` — a filesystem and
 // process-tree boundary nono does not provide (nono sandboxes a single host
@@ -228,6 +229,7 @@ func (manager Manager) registerAITools(root string, projectConfig *config.Config
 	manager.registerAgentMemory(root, projectConfig)
 	manager.registerPonytail(root, projectConfig)
 	manager.registerAgentSkills(root, projectConfig)
+	manager.registerSerena(root, projectConfig)
 }
 
 // --- Graphify -----------------------------------------------------------
@@ -816,6 +818,78 @@ func (manager Manager) teardownAgentMemory(root string, projectConfig *config.Co
 	}
 	if err := runBlockingScript(root, script, toolTeardownTimeout); err != nil {
 		warnf("agentmemory teardown could not complete (will retry next launch): %v", err)
+	}
+}
+
+// --- serena ------------------------------------------------------------------
+
+// serenaVenvPython is the project Python environment Serena installs into — the same
+// <project>/.venv-msb that Graphify's MCP server and agentconfig.enabledMCPServers use.
+func serenaVenvPython(root string) string {
+	return filepath.Join(root, ".venv-msb", "bin", "python")
+}
+
+// registerSerena installs Serena (https://github.com/oraios/serena, PyPI `serena-agent`)
+// into the PROJECT's Python environment, creating <project>/.venv-msb with uv first when
+// nothing has (no other step creates it since the microVM went away), then registers it with
+// claude-code (`claude mcp add`, local scope — private to this machine, never the checked-in
+// .mcp.json) and gemini (`gemini mcp add`, project scope) when selected. codex/hermes/omp get
+// it through MCP injection (agentcfg.EnabledMCPServers) instead; opencode gets neither native
+// nor injected Serena — the same gap as agentmemory (its MCP shape is nonstandard).
+// DETACHED (a pip resolve plus language-server downloads) and ONCE-guarded by a marker; it
+// needs uv and exits quietly — retrying next launch — when uv isn't on PATH.
+func (manager Manager) registerSerena(root string, projectConfig *config.Config) {
+	pool := toolPool(root)
+	installMarker := filepath.Join(pool, ".serena-installed")
+	if !projectConfig.Context.SerenaEnabledOrDefault() {
+		manager.teardownSerena(root, projectConfig)
+		return
+	}
+	venvPython := serenaVenvPython(root)
+	serena := agentcfg.SerenaBinary(venvPython)
+	var registrations []string
+	if slices.Contains(projectConfig.Agent.Tools, "claude-code") {
+		registrations = append(registrations, "claude mcp get serena >/dev/null 2>&1 || claude mcp add --scope local serena -- "+
+			shQuote(serena)+" "+strings.Join(agentcfg.SerenaMCPArgs("claude-code"), " "))
+	}
+	if slices.Contains(projectConfig.Agent.Tools, "gemini") {
+		registrations = append(registrations, "gemini mcp add --scope project serena "+shQuote(serena)+" "+
+			strings.Join(agentcfg.SerenaMCPArgs("ide-assistant"), " "))
+	}
+	script := "#!/usr/bin/env bash\n" +
+		"export PATH=\"$HOME/.local/bin:$PATH\"\n" +
+		"[ -f " + shQuote(installMarker) + " ] && exit 0\n" +
+		"command -v uv >/dev/null 2>&1 || exit 0\n" +
+		"[ -x " + shQuote(venvPython) + " ] || uv venv " + shQuote(filepath.Join(root, ".venv-msb")) + " || exit 0\n" +
+		"uv pip install --python " + shQuote(venvPython) + " --quiet serena-agent || exit 0\n"
+	for _, registration := range registrations {
+		script += "{ " + registration + "; } || exit 0\n"
+	}
+	script += "touch " + shQuote(installMarker) + "\n"
+	if err := runDetachedScript(root, "serena", script); err != nil {
+		warnf("serena install could not be launched (will retry next launch): %v", err)
+	}
+}
+
+// teardownSerena best-effort removes the claude-code/gemini registrations when the tool is
+// disabled and clears the install marker. The serena-agent package stays in .venv-msb
+// (harmless; removed with the project's artifacts on `ai delete`). Not gated on the marker
+// (see teardownCaveman).
+func (manager Manager) teardownSerena(root string, projectConfig *config.Config) {
+	installMarker := filepath.Join(toolPool(root), ".serena-installed")
+	var uninstalls []string
+	if slices.Contains(projectConfig.Agent.Tools, "claude-code") {
+		uninstalls = append(uninstalls, "claude mcp remove --scope local serena || true")
+	}
+	if slices.Contains(projectConfig.Agent.Tools, "gemini") {
+		uninstalls = append(uninstalls, "gemini mcp remove --scope project serena || true")
+	}
+	script := "rm -f " + shQuote(installMarker)
+	if len(uninstalls) > 0 {
+		script = strings.Join(uninstalls, "; ") + "; " + script
+	}
+	if err := runBlockingScript(root, script, toolTeardownTimeout); err != nil {
+		warnf("serena teardown could not complete (will retry next launch): %v", err)
 	}
 }
 

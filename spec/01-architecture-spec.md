@@ -1093,9 +1093,11 @@ described as working. The nine tools, with their intended purpose
   YAGNI/stdlib/existing code before writing anything new.
 * **agent-skills** (default OFF) — curated senior-engineer skills (spec,
   TDD, review, security, shipping, …) from github.com/addyosmani/agent-skills.
+* **serena** (default OFF) — LSP-backed semantic code navigation/editing MCP
+server, installed into the project Python environment (`.venv-msb`).
 
 (`create.DefaultAITools()` returns caveman + graphify + code-review-graph ON,
-the other six OFF — `create.SplitAITools` maps the multi-select onto the nine
+the other seven OFF — `create.SplitAITools` maps the multi-select onto the ten
 `project.Spec` bools, which `Scaffold` writes straight into `config.yaml`.)
 
 There is no `rtk`/Headroom-CLI/Caveman per-user install step anymore either —

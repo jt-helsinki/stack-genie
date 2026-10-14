@@ -44,6 +44,7 @@ func enabledMCPServers(root string, projectConfig *config.Config) []agentcfg.MCP
 		projectConfig.Context.GraphifyEnabledOrDefault(),
 		projectConfig.Context.TokenSaveEnabledOrDefault(),
 		projectConfig.Context.AgentMemoryEnabledOrDefault(),
+		projectConfig.Context.SerenaEnabledOrDefault(),
 		venvPython,
 	)
 }
