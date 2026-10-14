@@ -134,6 +134,14 @@ func ensureColibriAPIKey() {
 	_ = storeCredentialFn("COLI_API_KEY", key)
 }
 
+// SetColibriAPIKey sets a user-chosen COLI_API_KEY in this process's env AND the OS
+// keychain (`ai colibri password`). The caller MUST restart colibri afterward for the
+// running server to adopt it.
+func SetColibriAPIKey(key string) {
+	_ = os.Setenv("COLI_API_KEY", key)
+	_ = storeCredentialFn("COLI_API_KEY", key)
+}
+
 // generateColibriAPIKey returns a random colibri API key, mirroring
 // generateOmlxAPIKey's shape (a fixed prefix + 24 random bytes hex-encoded).
 func generateColibriAPIKey() string {

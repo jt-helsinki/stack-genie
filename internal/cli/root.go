@@ -122,6 +122,8 @@ func Execute() int {
 		// Other top-level commands.
 		newServicesCmd(emitter, &exitCode),
 		newLiteLLMCmd(emitter, &exitCode),
+		newLocalBackendCmd(emitter, &exitCode, omlxBackend),
+		newLocalBackendCmd(emitter, &exitCode, colibriBackend),
 		newKeysCmd(emitter, &exitCode),
 		newModelsCmd(emitter, &exitCode),
 		newContextCmd(emitter, &exitCode),
