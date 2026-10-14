@@ -124,6 +124,20 @@ func Configure(run Runner, appURL string) error {
 	return nil
 }
 
+// SetupSelfHost runs `multica setup self-host --server-url <url> --app-url <url>` — the
+// documented one-command install (SELF_HOSTING_AI.md) — attached to the terminal: it opens
+// the browser to sign in, discovers workspaces and starts the daemon in the background. The
+// whole command (and so the daemon it starts, which inherits this environment) runs with
+// DaemonEnv: shim dir first on PATH so its agents are sandboxed, and platform secrets
+// stripped. serverURL and appURL are the same origin here (the proxy vhost serves the web
+// UI, the API via its rewrites, and /ws).
+func SetupSelfHost(shimDir, appURL string) error {
+	command := exec.Command(BinaryPath(), "setup", "self-host", "--server-url", appURL, "--app-url", appURL) //nolint:gosec // fixed platform-managed binary, platform-built URL
+	command.Env = DaemonEnv(shimDir)
+	command.Stdin, command.Stdout, command.Stderr = os.Stdin, os.Stdout, os.Stderr
+	return command.Run()
+}
+
 // LoggedIn reports whether `multica auth status` succeeds.
 func LoggedIn(run Runner) bool {
 	_, err := run(nil, "auth", "status")
@@ -222,7 +236,7 @@ func PathWithout(pathList, dir string) string {
 func InstallGuidance(appURL string) []string {
 	return []string{
 		"`ai setup` installs the multica CLI (SHA-256 verified) into " + displayStoreDir() + " and points it at " + appURL + ".",
-		"Sign in once in the browser: `multica login` (open " + appURL + " first and create your account; the verification code is in `ai logs --service multica`).",
+		"Sign in once: re-run `ai setup` (it offers to run `multica setup self-host` for you) or run `multica login` yourself — open " + appURL + " first and create your account; the verification code is in `ai logs --service multica`.",
 		"Then `ai services start multica` starts the daemon with every agent CLI wrapped in the nono sandbox.",
 	}
 }

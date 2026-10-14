@@ -973,7 +973,7 @@ func serviceContainers(service string) []string {
 	case "langflow":
 		return []string{langflowContainer}
 	case "multica":
-		return []string{multicaWebContainer, multicaBackendContainer, multicaDBContainer}
+		return []string{multicaWebContainer, multicaBackendContainer}
 	case "proxy":
 		return []string{proxyContainer}
 	case "dns":

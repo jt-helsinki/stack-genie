@@ -105,7 +105,7 @@ func ServicesComposeYAML(bindHost string) ([]byte, error) {
 
 	file := composeFile{
 		Networks: map[string]composeNetwork{net: {Name: net}},
-		Volumes:  map[string]struct{}{langflowVolume: {}, multicaUploadsVolume: {}},
+		Volumes:  map[string]struct{}{langflowVolume: {}},
 		Services: map[string]*composeService{
 			dnsContainer: {
 				Image: containerImage("dns"), ContainerName: dnsContainer, Networks: []string{net}, Restart: "unless-stopped",
@@ -161,21 +161,17 @@ func ServicesComposeYAML(bindHost string) ([]byte, error) {
 				// aip-headroom:8787/v1/compress, so Headroom must be up first.
 				DependsOn: []string{litellmDBContainer, presidioAnalyzerContainer, presidioAnonymizerContainer, valkeyContainer, headroomContainer},
 			},
-			multicaDBContainer: {
-				Image: containerImage("multica-db"), ContainerName: multicaDBContainer, Networks: []string{net}, Restart: "unless-stopped",
-				Volumes:     []string{filepath.Join(volumesDir, multicaDBVolume) + ":/var/lib/postgresql/data"},
-				Environment: []string{"POSTGRES_USER=" + multicaDBUser, "POSTGRES_DB=" + multicaDBName, "POSTGRES_HOST_AUTH_METHOD=trust"},
-			},
 			multicaBackendContainer: {
 				Image: containerImage("multica-backend"), ContainerName: multicaBackendContainer, Networks: []string{net}, Restart: "unless-stopped",
-				Volumes: []string{multicaUploadsVolume + ":/app/data/uploads"},
+				Volumes: []string{filepath.Join(volumesDir, multicaUploadsVolume) + ":" + multicaUploadsDir},
 				// JWT_SECRET is passthrough (a bare name) — export it before `up`.
 				Environment: []string{
-					"DATABASE_URL=" + multicaDatabaseURL, "PORT=8080", "JWT_SECRET", "APP_ENV=production",
+					"DATABASE_URL=" + multicaDatabaseURL, "LOCAL_UPLOAD_DIR=" + multicaUploadsDir, "PORT=8080", "JWT_SECRET", "APP_ENV=production", "COOKIE_DOMAIN=",
 					"FRONTEND_ORIGIN=" + multicaPublicURL(composeDomain), "CORS_ALLOWED_ORIGINS=" + multicaPublicURL(composeDomain),
 					"MULTICA_APP_URL=" + multicaPublicURL(composeDomain), "DO_NOT_TRACK=1",
 				},
-				DependsOn: []string{multicaDBContainer},
+				// The multica database must exist in aip-litellm-db (created by `ai setup`).
+				DependsOn: []string{litellmDBContainer},
 			},
 			multicaWebContainer: {
 				Image: containerImage("multica"), ContainerName: multicaWebContainer, Networks: []string{net}, Restart: "unless-stopped",

@@ -78,7 +78,6 @@ func TestVersionPinsMatchCurrentDefault(test *testing.T) {
 		"open-webui":          {Mode: ModeContainer, Image: "ghcr.io/open-webui/open-webui", Tag: "latest"},
 		"multica":             {Mode: ModeContainer, Image: "ghcr.io/multica-ai/multica-web", Tag: "latest"},
 		"multica-backend":     {Mode: ModeContainer, Image: "ghcr.io/multica-ai/multica-backend", Tag: "latest"},
-		"multica-db":          {Mode: ModeContainer, Image: "pgvector/pgvector", Tag: "pg17"},
 		"langflow":            {Mode: ModeContainer, Image: "langflowai/langflow", Tag: "latest"},
 		"proxy":               {Mode: ModeContainer, Image: "caddy", Tag: "2.11.7-alpine"},
 		// vLLM is host-native — no image pin (it is not a pulled container).
@@ -112,7 +111,7 @@ func TestImageKeysMatchServiceImageKeys(test *testing.T) {
 		"presidio": {"presidio-analyzer", "presidio-anonymizer"},
 		"litellm":  {"litellm", "litellm-db"},
 		"headroom": {"headroom"},
-		"multica":  {"multica", "multica-backend", "multica-db"},
+		"multica":  {"multica", "multica-backend"},
 		"proxy":    {"proxy"},
 		"dns":      {"dns"},
 	}
@@ -133,7 +132,7 @@ func TestContainerNames(test *testing.T) {
 		"presidio": {"aip-presidio-analyzer", "aip-presidio-anonymizer"},
 		"litellm":  {"aip-litellm", "aip-litellm-db"},
 		"headroom": {"aip-headroom"},
-		"multica":  {"aip-multica", "aip-multica-backend", "aip-multica-db"},
+		"multica":  {"aip-multica", "aip-multica-backend"},
 		"langflow": {"aip-langflow"},
 		"proxy":    {"aip-proxy"},
 		"dns":      {"aip-dns"},

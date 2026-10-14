@@ -263,10 +263,10 @@ var registry = []Service{
 	{
 		// Multica (https://multica.ai) self-hosted server: a CORE service like
 		// Open WebUI — always installed, INTERNAL-ONLY, fronted by the proxy at
-		// multica.<domain>:GatewayPort. Three containers (the web UI is the primary
-		// component, so it carries the service's name/scope): the Next.js web UI,
-		// the Go backend (API + the /ws WebSocket the proxy routes straight to it),
-		// and its own pgvector Postgres. The host-side `multica` CLI + daemon (which
+		// multica.<domain>:GatewayPort. Two containers (the web UI is the primary
+		// component, so it carries the service's name/scope): the Next.js web UI and
+		// the Go backend (API + the /ws WebSocket the proxy routes straight to it). Its
+		// database lives in the existing LiteLLM Postgres. The host-side `multica` CLI + daemon (which
 		// runs agent CLIs for it) is NOT a container — see internal/multica.
 		Name:        "multica",
 		Endpoint:    Endpoint{HasConsole: true, UISubdomain: "multica"},
@@ -283,12 +283,6 @@ var registry = []Service{
 				ImageKey:  "multica-backend",
 				Container: "aip-multica-backend",
 				Pin:       Pin{Mode: ModeContainer, Image: "ghcr.io/multica-ai/multica-backend", Tag: "latest"},
-			},
-			{
-				// pgvector, not plain postgres: Multica's schema uses the vector extension.
-				ImageKey:  "multica-db",
-				Container: "aip-multica-db",
-				Pin:       Pin{Mode: ModeContainer, Image: "pgvector/pgvector", Tag: "pg17"},
 			},
 		},
 	},

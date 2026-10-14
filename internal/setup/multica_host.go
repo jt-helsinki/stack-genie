@@ -19,10 +19,11 @@ import (
 
 // Injectable seams so tests never install, shell out to multica, or touch the keychain.
 var (
-	multicaDetectFn  = multica.Detect
-	multicaInstallFn = multica.Install
-	multicaRunFn     = multica.RealRunner
-	multicaMintKeyFn = func() error {
+	multicaDetectFn        = multica.Detect
+	multicaInstallFn       = multica.Install
+	multicaRunFn           = multica.RealRunner
+	multicaSetupSelfHostFn = multica.SetupSelfHost
+	multicaMintKeyFn       = func() error {
 		return workspace.RealManager(func() string { return time.Now().UTC().Format(time.RFC3339) }).EnsureMulticaKey()
 	}
 )
@@ -114,6 +115,33 @@ func startMulticaDaemonHost(progress func(string), appURL string) {
 		return
 	}
 	progress("  • multica daemon started — agents run inside nono via the gateway")
+}
+
+// MulticaNeedsSignIn reports whether the multica CLI is installed but not signed in — the
+// state in which `ai setup` offers to run the documented `multica setup self-host`.
+func MulticaNeedsSignIn() bool {
+	return multicaDetectFn() && !multica.LoggedIn(multicaRunFn)
+}
+
+// MulticaURL is the origin the self-hosted Multica is served at (the proxy vhost).
+func MulticaURL(domain string) string { return multicaPublicURL(domain) }
+
+// MulticaSignIn runs `multica setup self-host` (browser sign-in + daemon start) attached to the
+// terminal, per SELF_HOSTING_AI.md. Beforehand it writes the sandboxing shims and mints the shared
+// gateway key, so the daemon that command starts is already shim-first and sandboxed — there is
+// no window where agents run bare. Must be called OUTSIDE the progress UI (it owns the terminal).
+func MulticaSignIn(domain string) error {
+	if err := writeMulticaShims(); err != nil {
+		return err
+	}
+	if err := multicaMintKeyFn(); err != nil {
+		return err
+	}
+	shimDir, err := multica.ShimDir()
+	if err != nil {
+		return err
+	}
+	return multicaSetupSelfHostFn(shimDir, multicaPublicURL(domain))
 }
 
 // stopMulticaDaemonHost stops the host daemon, best-effort.

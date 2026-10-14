@@ -144,3 +144,45 @@ func TestMulticaDaemonDetailStates(test *testing.T) {
 		test.Errorf("running: %q", got)
 	}
 }
+
+// The documented `multica setup self-host` must run with the shims already written, the shared
+// gateway key already minted, and the shim dir handed to it (so the daemon it starts is sandboxed
+// from the first moment), against the proxy vhost as both server and app URL.
+func TestMulticaSignInPreparesShimsAndKeyBeforeSelfHostSetup(test *testing.T) {
+	fixture := newMulticaHostFixture(test)
+	fixture.installed = true
+	orig := multicaSetupSelfHostFn
+	test.Cleanup(func() { multicaSetupSelfHostFn = orig })
+	var gotShimDir, gotURL string
+	var shimsExisted, keyMinted bool
+	multicaSetupSelfHostFn = func(shimDir, appURL string) error {
+		gotShimDir, gotURL = shimDir, appURL
+		_, err := os.Stat(filepath.Join(shimDir, "claude"))
+		shimsExisted, keyMinted = err == nil, fixture.minted
+		return nil
+	}
+	if err := MulticaSignIn("aip.local"); err != nil {
+		test.Fatal(err)
+	}
+	if !shimsExisted || !keyMinted {
+		test.Errorf("shims written=%v key minted=%v before self-host setup, want both", shimsExisted, keyMinted)
+	}
+	if !strings.HasSuffix(gotShimDir, filepath.Join("bin", "multica-shims")) || gotURL != "http://multica.aip.local:18787" {
+		test.Errorf("self-host setup got shimDir=%q url=%q", gotShimDir, gotURL)
+	}
+}
+
+func TestMulticaNeedsSignIn(test *testing.T) {
+	fixture := newMulticaHostFixture(test)
+	if MulticaNeedsSignIn() {
+		test.Error("not installed must not offer sign-in")
+	}
+	fixture.installed = true
+	if !MulticaNeedsSignIn() {
+		test.Error("installed but signed out must offer sign-in")
+	}
+	fixture.loggedIn = true
+	if MulticaNeedsSignIn() {
+		test.Error("a signed-in host has nothing to offer")
+	}
+}

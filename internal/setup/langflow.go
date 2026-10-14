@@ -3,11 +3,8 @@ package setup
 // langflow.go runs Langflow (https://langflow.org), the visual flow builder, as a CORE
 // service like Open WebUI: always installed, ONE INTERNAL-ONLY container fronted by the
 // proxy at langflow.<domain>:18787. It stores its flows in its OWN database (and role)
-// inside the existing LiteLLM Postgres (aip-litellm-db) rather than SQLite or a DB
-// container of its own. Tradeoffs the user accepted: that Postgres uses trust auth, so the
-// separate role is hygiene, not a boundary (a compromised Langflow could reach the LiteLLM
-// database); and `ai services stop|restart litellm` stops that DB, taking Langflow's
-// storage down with it.
+// inside the existing LiteLLM Postgres (see shared_db.go for the accepted tradeoffs) rather
+// than SQLite or a DB container of its own.
 // Auth follows the role policy (runtime.RequireUIAuth): standalone/client run OPEN via
 // Langflow's auto-login; server requires a login, with a superuser password generated
 // once into the OS keychain and shown ONCE when generated.
@@ -23,7 +20,6 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"os"
-	"strings"
 
 	"github.com/jt-helsinki/stack-genie/internal/runtime"
 )
@@ -60,36 +56,13 @@ func ensureLangflowPassword(report func(string)) error {
 	return os.Setenv(langflowPassword, password)
 }
 
-// ensureLangflowDatabase makes sure Langflow's own database exists in the LiteLLM
-// Postgres, starting that Postgres first if needed (ensureLiteLLMDB is idempotent).
-// Idempotent: an existing database is left untouched. Admin runs as the LiteLLM DB's own
-// superuser over the container's local socket.
-func ensureLangflowDatabase(prober runtime.Prober, containerRuntime string) error {
-	if err := ensureLiteLLMDB(prober, containerRuntime); err != nil {
-		return err
-	}
-	psql := func(query string) ([]byte, error) {
-		return prober.Run(containerRuntime, "exec", litellmDBContainer, "psql",
-			"-U", litellmDBUser, "-d", litellmDBName, "-tA", "-c", query)
-	}
-	if out, err := psql("SELECT 1 FROM pg_database WHERE datname = '" + langflowDBName + "'"); err == nil && strings.TrimSpace(string(out)) == "1" {
-		return nil
-	}
-	// The role may already exist from an interrupted earlier run; only the database must succeed.
-	_, _ = psql("CREATE ROLE " + langflowDBUser + " LOGIN")
-	if _, err := psql("CREATE DATABASE " + langflowDBName + " OWNER " + langflowDBUser); err != nil {
-		return serviceStartError("Langflow database")
-	}
-	return nil
-}
-
 // ensureLangflow starts the Langflow container unless it is already running on the
 // current image. Idempotent.
 func ensureLangflow(prober runtime.Prober, containerRuntime string, requireAuth bool, report func(string)) error {
 	if containerOnCurrentImage(prober, containerRuntime, langflowContainer, containerImage("langflow")) {
 		return nil
 	}
-	if err := ensureLangflowDatabase(prober, containerRuntime); err != nil {
+	if err := ensureLiteLLMPostgresDatabase(prober, containerRuntime, langflowDBName, langflowDBUser); err != nil {
 		return err
 	}
 	_, _ = prober.Run(containerRuntime, "rm", "-f", langflowContainer)

@@ -153,11 +153,15 @@ had a live-hardware verification pass yet:
 - [ ] **Multica service (server containers + host daemon)** —
       `internal/setup/multica_server.go`, `multica_host.go`, `internal/multica`,
       `internal/workspace/multica.go`. Verify on a provisioned host:
-      (a) the three containers (`aip-multica-db`/`-backend`/`aip-multica`) boot and the
-      backend's `/readyz` passes; first-account signup at `multica.<domain>:18787` works
+      (a) the two containers (`aip-multica-backend`/`aip-multica`) boot against the
+      `multica` database in `aip-litellm-db` — Multica's docs call for PostgreSQL 17 and
+      the LiteLLM Postgres is 18.4, so confirm every migration applies and
+      `SELECT extname FROM pg_extension` (in the `multica` db) lists pgcrypto + pg_trgm;
+      the backend's `/readyz` passes; uploads land in `~/.ai-platform/volumes/multica-uploads`
+      (bind-mount ownership on Linux); first-account signup at `multica.<domain>:18787` works
       (the verification code is in `ai logs --service multica` until an email provider
       exists) and the browser WebSocket survives the proxy's `/ws` route;
-      (b) `multica config set server_url|app_url <vhost>` is accepted and the daemon
+      (b) `multica setup self-host --server-url <vhost> --app-url <vhost>` (offered by `ai setup`) signs in and starts a daemon that is already shim-first, and that daemon
       reaches the API through the web UI's rewrites on that single origin (if not, the
       backend needs its own vhost);
       (c) the release archive really holds `multica` at its root (`StoreDir()/multica`);

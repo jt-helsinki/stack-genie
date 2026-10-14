@@ -1,11 +1,19 @@
 package setup
 
 // multica_server.go runs the self-hosted Multica server (https://multica.ai) — the
-// CONTAINER half of the Multica service: its own pgvector Postgres, the Go backend,
-// and the Next.js web UI. Like Open WebUI it is a CORE service (always installed, no
-// setup picker), INTERNAL-ONLY, and fronted by the proxy at multica.<domain>:18787
-// (the backend's /ws goes straight to it — see proxyCaddyfile). The host-side
-// `multica` CLI + daemon that actually runs agent CLIs is the other half
+// CONTAINER half of the Multica service: the Go backend and the Next.js web UI, wired per
+// SELF_HOSTING_ADVANCED.md's same-origin layout. Like Open WebUI it is a CORE service (always
+// installed, no setup picker), INTERNAL-ONLY, and fronted by the proxy at
+// multica.<domain>:18787 (the backend's /ws goes straight to it — see proxyCaddyfile).
+//
+// Storage: Multica's own database (and role) lives in the existing LiteLLM Postgres
+// (shared_db.go). Its docs state it does NOT use pgvector — the bundled pgvector/pgvector:pg17
+// image is only a historical name — and needs just the pgcrypto and pg_trgm extensions, which
+// the stock image ships. Uploads are a bind mount under ~/.ai-platform/volumes, removed with
+// the rest of the platform's data. The docs call for PostgreSQL 17; aip-litellm-db is 18.4,
+// which is untested against Multica's migrations (hardware bring-up).
+//
+// The host-side `multica` CLI + daemon that actually runs agent CLIs is the other half
 // (multica_host.go); it is NOT a container.
 //
 // hardware bring-up: the three-container boot, first-account signup (the verification
@@ -23,14 +31,17 @@ import (
 const (
 	multicaWebContainer     = "aip-multica"
 	multicaBackendContainer = "aip-multica-backend"
-	multicaDBContainer      = "aip-multica-db"
-	multicaDBVolume         = "multica-db"
-	multicaUploadsVolume    = "aip-multica-uploads"
-	multicaDBUser           = "multica"
-	multicaDBName           = "multica"
-	// multicaDatabaseURL carries no secret: the DB is internal-only on aip-net with
+	// multicaUploadsVolume is the per-name subdir under ~/.ai-platform/volumes holding
+	// attachments, bind-mounted at multicaUploadsDir. LOCAL_UPLOAD_DIR is set to that absolute
+	// path explicitly: the docs warn a relative default silently orphans uploads when the
+	// launch directory changes.
+	multicaUploadsVolume = "multica-uploads"
+	multicaUploadsDir    = "/app/data/uploads"
+	multicaDBUser        = "multica"
+	multicaDBName        = "multica"
+	// multicaDatabaseURL carries no secret: the shared Postgres is internal-only on aip-net with
 	// trust auth, mirroring litellmDatabaseURL.
-	multicaDatabaseURL = "postgres://" + multicaDBUser + "@" + multicaDBContainer + ":5432/" + multicaDBName + "?sslmode=disable"
+	multicaDatabaseURL = "postgres://" + multicaDBUser + "@" + litellmDBContainer + ":5432/" + multicaDBName + "?sslmode=disable"
 	// multicaJWTCredential is the OS-keychain entry holding the backend's JWT signing
 	// secret. It must stay stable across relaunches (a changed secret logs every user
 	// out), so it is generated once and reloaded — never written to platform disk.
@@ -63,12 +74,15 @@ func ensureMulticaJWTSecret() error {
 	return os.Setenv("JWT_SECRET", secret)
 }
 
-// ensureMultica brings up the three Multica containers in dependency order (DB →
-// backend → web), each recreated only when not already running on its current image.
-// Idempotent. The proxy must be reconciled AFTER this (it resolves the multica
-// upstreams at config-load).
+// ensureMultica brings up the two Multica containers in dependency order (backend → web),
+// each recreated only when not already running on its current image, after making sure its
+// database exists in the shared Postgres. Idempotent. The proxy must be reconciled AFTER this
+// (it resolves the multica upstreams at config-load).
 func ensureMultica(prober runtime.Prober, containerRuntime, domain string) error {
-	dbDir, err := systemVolumeDir(multicaDBVolume, 0o700)
+	if err := ensureLiteLLMPostgresDatabase(prober, containerRuntime, multicaDBName, multicaDBUser, "pgcrypto", "pg_trgm"); err != nil {
+		return err
+	}
+	uploadsDir, err := systemVolumeDir(multicaUploadsVolume, 0o755)
 	if err != nil {
 		return err
 	}
@@ -81,46 +95,42 @@ func ensureMultica(prober runtime.Prober, containerRuntime, domain string) error
 	defer func() { _ = os.Unsetenv("JWT_SECRET") }()
 	publicURL := multicaPublicURL(domain)
 	containers := []struct {
-		name string
-		args []string
+		name  string
+		image string
+		args  []string
 	}{
-		{multicaDBContainer, []string{
-			"-e", "POSTGRES_USER=" + multicaDBUser,
-			"-e", "POSTGRES_DB=" + multicaDBName,
-			"-e", "POSTGRES_HOST_AUTH_METHOD=trust",
-			// pg17: the data dir is the pre-18 /var/lib/postgresql/data (unlike litellm-db's pg18).
-			"-v", dbDir + ":/var/lib/postgresql/data",
-			containerImage("multica-db"),
-		}},
-		{multicaBackendContainer, []string{
-			"-v", multicaUploadsVolume + ":/app/data/uploads",
+		{multicaBackendContainer, containerImage("multica-backend"), []string{
+			"-v", uploadsDir + ":" + multicaUploadsDir,
+			"-e", "LOCAL_UPLOAD_DIR=" + multicaUploadsDir,
 			"-e", "DATABASE_URL=" + multicaDatabaseURL,
 			"-e", "PORT=8080",
 			"-e", "JWT_SECRET", // passthrough (ensureMulticaJWTSecret) — value stays out of argv
 			"-e", "APP_ENV=production",
+			// Same-origin layout (SELF_HOSTING_ADVANCED.md): the browser reaches everything on
+			// one origin, so cookies stay host-only (COOKIE_DOMAIN empty) and one value covers
+			// both HTTP CORS and the WebSocket Origin check.
 			"-e", "FRONTEND_ORIGIN=" + publicURL,
 			"-e", "CORS_ALLOWED_ORIGINS=" + publicURL,
+			"-e", "COOKIE_DOMAIN=",
 			"-e", "MULTICA_APP_URL=" + publicURL,
 			"-e", "DO_NOT_TRACK=1", // internal service: no usage telemetry
-			containerImage("multica-backend"),
 		}},
-		{multicaWebContainer, []string{
+		{multicaWebContainer, containerImage("multica"), []string{
 			"-e", "HOSTNAME=0.0.0.0",
+			// Next.js rewrites proxy /v1, /api, /auth and /uploads here; only /ws bypasses
+			// them, which the proxy vhost routes straight to the backend.
 			"-e", "REMOTE_API_URL=http://" + multicaBackendContainer + ":8080",
-			containerImage("multica"),
+			"-e", "NEXT_PUBLIC_API_URL=", // empty: the client uses relative paths on the page origin
+			"-e", "NEXT_PUBLIC_WS_URL=",
 		}},
-	}
-	images := map[string]string{
-		multicaDBContainer:      containerImage("multica-db"),
-		multicaBackendContainer: containerImage("multica-backend"),
-		multicaWebContainer:     containerImage("multica"),
 	}
 	for _, container := range containers {
-		if containerOnCurrentImage(prober, containerRuntime, container.name, images[container.name]) {
+		if containerOnCurrentImage(prober, containerRuntime, container.name, container.image) {
 			continue
 		}
 		_, _ = prober.Run(containerRuntime, "rm", "-f", container.name)
 		args := append([]string{"run", "-d", "--name", container.name, "--network", platformNetwork}, container.args...)
+		args = append(args, container.image)
 		if _, err := prober.Run(containerRuntime, args...); err != nil {
 			return serviceStartError("Multica")
 		}
@@ -128,10 +138,10 @@ func ensureMultica(prober runtime.Prober, containerRuntime, domain string) error
 	return nil
 }
 
-// stopMultica stops all three Multica containers (web first, DB last), skipping any
-// that are not running.
+// stopMultica stops the Multica containers (web first), skipping any that are not running.
+// The shared Postgres is LiteLLM's and is left to it.
 func stopMultica(prober runtime.Prober, containerRuntime string) error {
-	for _, name := range []string{multicaWebContainer, multicaBackendContainer, multicaDBContainer} {
+	for _, name := range []string{multicaWebContainer, multicaBackendContainer} {
 		if !containerRunning(prober, containerRuntime, name) {
 			continue
 		}
@@ -142,11 +152,11 @@ func stopMultica(prober runtime.Prober, containerRuntime string) error {
 	return nil
 }
 
-// multicaContainersUp reports whether all three Multica containers are running — the
+// multicaContainersUp reports whether both Multica containers are running — the
 // service's readiness signal (the backend retries its own DB connect for minutes, so
 // "running" is the honest cheap probe, matching headroom/open-webui).
 func multicaContainersUp(prober runtime.Prober, containerRuntime string) bool {
-	for _, name := range []string{multicaWebContainer, multicaBackendContainer, multicaDBContainer} {
+	for _, name := range []string{multicaWebContainer, multicaBackendContainer} {
 		if !containerRunning(prober, containerRuntime, name) {
 			return false
 		}

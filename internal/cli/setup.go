@@ -216,6 +216,7 @@ func newSetupCmd(em *output.Emitter, exit *int) *cobra.Command {
 				// LiteLLM UI password above (though omlx's key is not role-gated — it
 				// needs one to even start, regardless of role).
 				setupOmlxAdminPassword(em, interactive, deps, setup.OmlxPasswordChosen())
+				setupMulticaSignIn(em, interactive, report.Runtime.ResolveDomain())
 				// Run the initial catalog → gateway model sync so LiteLLM reflects any
 				// already-keyed providers' models + installed local models. Cloud-provider
 				// API keys are NOT prompted for here — add them anytime from `ai ui` (the
@@ -795,6 +796,34 @@ func printLiteLLMOpenInstructions(em *output.Emitter, server bool, domain string
 	_, _ = fmt.Fprintf(em.Err, "  Secure it anytime with %s. UI: %s\n",
 		ui.Primary.Render("`ai litellm password`"),
 		ui.Value.Render(fmt.Sprintf("http://litellm.%s:18787/ui/login", domain)))
+}
+
+// setupMulticaSignIn offers (on a TTY) to run the documented `multica setup self-host` for the
+// freshly installed CLI: browser sign-in, workspace discovery, and the sandboxed daemon start
+// (SELF_HOSTING_AI.md). Only when the CLI is installed and not yet signed in — a signed-in host
+// has nothing to offer. It runs after the setup progress UI has finished, since the command
+// owns the terminal. Declining just prints how to do it later; it never fails setup.
+func setupMulticaSignIn(em *output.Emitter, interactive bool, domain string) {
+	if !interactive || !setup.MulticaNeedsSignIn() {
+		return
+	}
+	url := setup.MulticaURL(domain)
+	want, confirmErr := promptConfirmDefault(
+		"Sign in to Multica now?",
+		"Runs `multica setup self-host` against "+url+": opens your browser to sign in (create your "+
+			"account there first — the verification code is in `ai logs --service multica`), then starts "+
+			"the daemon with every agent CLI sandboxed in nono.",
+		true,
+	)
+	if confirmErr != nil || !want {
+		_, _ = fmt.Fprintln(em.Err, ui.Muted.Render("Skipped Multica sign-in — re-run `ai setup`, or run `multica login` then `ai services start multica`."))
+		return
+	}
+	if err := setup.MulticaSignIn(domain); err != nil {
+		_, _ = fmt.Fprintf(em.Err, "warning: multica setup self-host did not complete: %s\n", err)
+		return
+	}
+	_, _ = fmt.Fprintf(em.Err, "%s Multica signed in — daemon started with sandboxed agents\n", ui.Success.Render(ui.IconOK))
 }
 
 // omlxAdminURL is the omlx admin console's address — ALWAYS loopback, never a
