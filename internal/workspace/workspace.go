@@ -388,3 +388,16 @@ func (manager Manager) DeleteCredentials(project string) error {
 	}
 	return manager.Credentials.DeleteCredential(credentialName(project))
 }
+
+// PrepareProject runs every opt-in AI tool's install/teardown step for the project at root.
+// `ai create` calls it so a workspace is fully set up the moment it exists; every Agent/Shell
+// launch runs the same steps again (each is marker-guarded, so that is cheap) to pick up
+// `ai tools enable|disable` changes.
+func PrepareProject(root string) error {
+	projectConfig, err := config.Load(root)
+	if err != nil {
+		return err
+	}
+	Manager{}.registerAITools(root, projectConfig)
+	return nil
+}

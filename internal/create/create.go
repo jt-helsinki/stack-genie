@@ -17,6 +17,7 @@ import (
 	"github.com/jt-helsinki/stack-genie/internal/output"
 	"github.com/jt-helsinki/stack-genie/internal/project"
 	"github.com/jt-helsinki/stack-genie/internal/sysinfo"
+	"github.com/jt-helsinki/stack-genie/internal/workspace"
 )
 
 // Result is what a successful create produces, for the caller to render (the CLI's
@@ -43,6 +44,9 @@ type Progress struct {
 // to use the moment it's scaffolded (`ai agent <cli>`/`ai shell` generate its nono
 // profile on first launch). Errors carry the right exit code (*output.Error) where it
 // matters.
+// prepareWorkspace is the tool-install step, a var so tests do not run real installers.
+var prepareWorkspace = workspace.PrepareProject
+
 func Execute(spec project.Spec, now string, report func(Progress)) (Result, []string, error) {
 	if report == nil {
 		report = func(Progress) {}
@@ -60,14 +64,20 @@ func Execute(spec project.Spec, now string, report func(Progress)) (Result, []st
 		return Result{}, nil, mapProjectErr(err)
 	}
 	// Seed context-optimization defaults so the project config is self-describing. The
-	// Caveman level is recorded here; the Caveman skill itself is installed at the next
-	// `ai agent`/`ai shell` (workspace.registerCaveman), not scaffolded.
+	// Caveman level is recorded here; the Caveman skill itself is installed by the
+	// tool-install step below, not scaffolded.
 	report(Progress{Step: "seeding context-optimization defaults"})
 	if err := contextopt.SetStrategy(spec.Root, contextopt.DefaultStrategy); err != nil {
 		return Result{}, nil, output.Errorf(output.ExitRuntimeFailure, "seed context strategy: %s", err)
 	}
 	if err := contextopt.SetCavemanLevel(spec.Root, contextopt.DefaultCavemanLevel); err != nil {
 		return Result{}, nil, output.Errorf(output.ExitRuntimeFailure, "seed caveman level: %s", err)
+	}
+	// Install the selected AI tools now, at creation, rather than on first launch (slow steps
+	// run detached; logs land in <project>/.ai-platform/run).
+	report(Progress{Step: "installing AI tools"})
+	if err := prepareWorkspace(spec.Root); err != nil {
+		return Result{}, nil, output.Errorf(output.ExitRuntimeFailure, "set up workspace tools: %s", err)
 	}
 	configYAML, err := os.ReadFile(config.ProjectPath(spec.Root))
 	if err != nil {

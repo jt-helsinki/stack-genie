@@ -14,6 +14,28 @@ import (
 	"github.com/jt-helsinki/stack-genie/internal/project"
 )
 
+// Real tool installers (git clones, uv/npm installs) must never run from unit tests.
+func TestMain(main *testing.M) {
+	prepareWorkspace = func(string) error { return nil }
+	os.Exit(main.Run())
+}
+
+func TestExecuteInstallsToolsAtCreation(test *testing.T) {
+	test.Setenv("HOME", test.TempDir())
+	var prepared string
+	prepareWorkspace = func(root string) error { prepared = root; return nil }
+	test.Cleanup(func() { prepareWorkspace = func(string) error { return nil } })
+
+	root := filepath.Join(test.TempDir(), "location")
+	spec := project.Spec{Name: "tools-app", AgentCLIs: []string{"opencode"}, DefaultTool: "opencode", Root: root}
+	if _, _, err := Execute(spec, "2026-07-05T00:00:00Z", nil); err != nil {
+		test.Fatalf("Execute: %v", err)
+	}
+	if prepared != root {
+		test.Fatalf("tool install ran for %q, want %q", prepared, root)
+	}
+}
+
 // Execute runs the full in-process create against a fresh location: it scaffolds the
 // project, seeds the context-optimization defaults + Caveman skill, and reports the
 // expected progress steps in order. There is no image to build and nothing to
@@ -77,6 +99,7 @@ func TestExecuteHappyPath(test *testing.T) {
 	want := []string{
 		"scaffolding workspace (config, skills)",
 		"seeding context-optimization defaults",
+		"installing AI tools",
 		"workspace registered — run `ai agent <cli>` or `ai shell` to start a sandboxed session",
 	}
 	if len(steps) != len(want) {
