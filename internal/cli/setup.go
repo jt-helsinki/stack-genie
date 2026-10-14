@@ -816,7 +816,7 @@ func setupMulticaSignIn(em *output.Emitter, interactive bool, domain string) {
 		true,
 	)
 	if confirmErr != nil || !want {
-		_, _ = fmt.Fprintln(em.Err, ui.Muted.Render("Skipped Multica sign-in — re-run `ai setup`, or run `multica login` then `ai services start multica`."))
+		_, _ = fmt.Fprintln(em.Err, ui.Muted.Render("Skipped Multica sign-in — run `ai multica login` later."))
 		return
 	}
 	if err := setup.MulticaSignIn(domain); err != nil {

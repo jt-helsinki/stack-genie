@@ -123,6 +123,9 @@ func MulticaNeedsSignIn() bool {
 	return multicaDetectFn() && !multica.LoggedIn(multicaRunFn)
 }
 
+// MulticaInstalled reports whether the multica CLI is present.
+func MulticaInstalled() bool { return multicaDetectFn() }
+
 // MulticaURL is the origin the self-hosted Multica is served at (the proxy vhost).
 func MulticaURL(domain string) string { return multicaPublicURL(domain) }
 

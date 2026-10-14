@@ -236,7 +236,7 @@ func PathWithout(pathList, dir string) string {
 func InstallGuidance(appURL string) []string {
 	return []string{
 		"`ai setup` installs the multica CLI (SHA-256 verified) into " + displayStoreDir() + " and points it at " + appURL + ".",
-		"Sign in once: re-run `ai setup` (it offers to run `multica setup self-host` for you) or run `multica login` yourself — open " + appURL + " first and create your account; the verification code is in `ai logs --service multica`.",
+		"Sign in once: run `ai multica login` (it runs `multica setup self-host` with the agents sandboxed) — open " + appURL + " first and create your account; the verification code is in `ai logs --service multica`.",
 		"Then `ai services start multica` starts the daemon with every agent CLI wrapped in the nono sandbox.",
 	}
 }
